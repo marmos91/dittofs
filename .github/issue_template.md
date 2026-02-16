@@ -32,7 +32,7 @@ assignees: ''
 
 ```bash
 # Command used to start DittoFS
-./dittofs -port 2049 -log-level DEBUG
+./dfs -port 2049 -log-level DEBUG
 
 # Mount command used
 sudo mount -t nfs -o nfsvers=3,tcp,port=2049,mountport=2049 localhost:/export /mnt/nfs

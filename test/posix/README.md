@@ -14,8 +14,8 @@ The setup script handles starting the server, configuring stores/shares via API,
 
 ```bash
 # Build binaries
-go build -o dittofs ./cmd/dittofs
-go build -o dittofsctl ./cmd/dittofsctl
+go build -o dfs ./cmd/dfs
+go build -o dfsctl ./cmd/dfsctl
 
 # Setup with memory metadata store (default)
 sudo ./test/posix/setup-posix.sh
@@ -53,25 +53,25 @@ If you prefer manual setup:
 
 ```bash
 # Terminal 1: Start DittoFS server
-./dittofs start --config test/posix/configs/config.yaml
+./dfs start --config test/posix/configs/config.yaml
 
 # Terminal 2: Configure via API (server generates admin password on first start)
 # Check server output for the generated password
 ADMIN_PASSWORD="<from-server-output>"
 
 # Login
-./dittofsctl login --server http://localhost:8080 --username admin --password "$ADMIN_PASSWORD"
+./dfsctl login --server http://localhost:8080 --username admin --password "$ADMIN_PASSWORD"
 
 # Create stores
-./dittofsctl store metadata add --name default --type memory
-./dittofsctl store payload add --name default --type filesystem \
-  --config '{"path":"/tmp/dittofs-content"}'
+./dfsctl store metadata add --name default --type memory
+./dfsctl store payload add --name default --type filesystem \
+  --config '{"path":"/tmp/dfs-content"}'
 
 # Create share
-./dittofsctl share create --name /export --metadata default --content default
+./dfsctl share create --name /export --metadata default --payload default
 
 # Enable NFS adapter
-./dittofsctl adapter update nfs --enabled true --port 12049
+./dfsctl adapter update nfs --enabled true --port 12049
 
 # Mount NFS share
 sudo mkdir -p /tmp/dittofs-test

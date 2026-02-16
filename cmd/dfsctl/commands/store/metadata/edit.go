@@ -31,7 +31,7 @@ Examples:
   dfsctl store metadata edit default
 
   # Update config with JSON
-  dfsctl store metadata edit default --config '{"db_path":"/new/path"}'
+  dfsctl store metadata edit default --config '{"path":"/new/path"}'
 
   # Update type
   dfsctl store metadata edit default --type badger
@@ -82,7 +82,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		req.Config = config
 		hasUpdate = true
 	} else if editDBPath != "" {
-		req.Config = map[string]any{"db_path": editDBPath}
+		req.Config = map[string]any{"path": editDBPath}
 		hasUpdate = true
 	}
 
@@ -122,7 +122,7 @@ func runEditInteractive(client *apiclient.Client, name string, current *apiclien
 	case "badger":
 		currentPath := ""
 		if currentConfig != nil {
-			if p, ok := currentConfig["db_path"].(string); ok {
+			if p, ok := currentConfig["path"].(string); ok {
 				currentPath = p
 			}
 		}
@@ -132,7 +132,7 @@ func runEditInteractive(client *apiclient.Client, name string, current *apiclien
 			return cmdutil.HandleAbort(err)
 		}
 		if newPath != currentPath {
-			req.Config = map[string]any{"db_path": newPath}
+			req.Config = map[string]any{"path": newPath}
 			hasUpdate = true
 		}
 

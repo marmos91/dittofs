@@ -222,36 +222,21 @@ The Control Plane is the central management component enabling flexible, multi-s
 
 ### Configuration Example
 
-```yaml
-# Define named stores (created once, shared across shares)
-metadata:
-  stores:
-    fast-meta:
-      type: memory
-    persistent-meta:
-      type: badger
-      badger:
-        db_path: /data/metadata
+Stores, shares, and adapters are managed at runtime via `dfsctl` (persisted in the control plane database):
 
-content:
-  stores:
-    fast-content:
-      type: memory
-    s3-content:
-      type: s3
-      s3:
-        region: us-east-1
-        bucket: my-bucket
+```bash
+# Create named stores (created once, shared across shares)
+./dfsctl store metadata add --name fast-meta --type memory
+./dfsctl store metadata add --name persistent-meta --type badger \
+  --config '{"path":"/data/metadata"}'
 
-# Define shares that reference stores
-shares:
-  - name: /temp
-    metadata_store: fast-meta           # Uses memory store for metadata
-    content_store: fast-content         # Uses memory store for content
+./dfsctl store payload add --name fast-payload --type memory
+./dfsctl store payload add --name s3-payload --type s3 \
+  --config '{"region":"us-east-1","bucket":"my-bucket"}'
 
-  - name: /archive
-    metadata_store: persistent-meta     # Uses BadgerDB for metadata
-    content_store: s3-content           # Uses S3 for content
+# Create shares that reference stores by name
+./dfsctl share create --name /temp --metadata fast-meta --payload fast-payload
+./dfsctl share create --name /archive --metadata persistent-meta --payload s3-payload
 ```
 
 ### Benefits
@@ -339,24 +324,15 @@ type ContentStore interface {
 
 ### Using Built-In Backends
 
-No custom code required - configure via YAML:
+No custom code required - configure via CLI:
 
-```yaml
-# config.yaml
-metadata:
-  stores:
-    default-meta:
-      type: memory  # or badger, postgres
+```bash
+# Create stores
+./dfsctl store metadata add --name default-meta --type memory  # or badger, postgres
+./dfsctl store payload add --name default-payload --type memory  # or filesystem, s3
 
-content:
-  stores:
-    default-content:
-      type: memory  # or fs, s3
-
-shares:
-  - name: /export
-    metadata_store: default-meta
-    content_store: default-content
+# Create share referencing stores
+./dfsctl share create --name /export --metadata default-meta --payload default-payload
 ```
 
 Or programmatically:
@@ -613,7 +589,7 @@ type Persister interface {
 }
 
 // MmapPersister - memory-mapped file for high performance
-persister, err := wal.NewMmapPersister("/var/lib/dittofs/wal")
+persister, err := wal.NewMmapPersister("/var/lib/dfs/wal")
 if err != nil {
     return err
 }
@@ -687,20 +663,20 @@ The PostgreSQL metadata store enables horizontal scaling for high-availability a
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: dittofs
+  name: dfs
 spec:
   replicas: 3  # Multiple instances for HA
   selector:
     matchLabels:
-      app: dittofs
+      app: dfs
   template:
     metadata:
       labels:
-        app: dittofs
+        app: dfs
     spec:
       containers:
-      - name: dittofs
-        image: dittofs:latest
+      - name: dfs
+        image: dfs:latest
         ports:
         - containerPort: 12049
           name: nfs
@@ -723,10 +699,10 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: dittofs-nfs
+  name: dfs-nfs
 spec:
   selector:
-    app: dittofs
+    app: dfs
   ports:
   - port: 2049
     targetPort: 12049

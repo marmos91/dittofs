@@ -64,7 +64,7 @@ contexts := creds.List()
 creds.Delete(context)
 ```
 
-Credentials stored in `~/.config/dittofs/credentials.json` (or `$XDG_CONFIG_HOME`).
+Credentials stored in `~/.config/dfs/credentials.json` (or `$XDG_CONFIG_HOME`).
 
 ## Health Package
 

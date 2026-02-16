@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 DittoFS is an experimental modular virtual filesystem written in Go that decouples file interfaces from storage backends.
-It implements NFSv3 protocol server in pure Go (userspace, no FUSE required) with pluggable metadata and content repositories.
+It implements NFSv3 protocol server in pure Go (userspace, no FUSE required) with pluggable metadata and payload repositories.
 
 **Status**: Experimental - not production ready.
 
@@ -19,7 +19,7 @@ DittoFS has comprehensive documentation organized by topic:
 - **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** - Complete configuration guide with examples
 - **[docs/NFS.md](docs/NFS.md)** - NFSv3 protocol implementation details and client usage
 - **[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)** - Development guide and contribution guidelines
-- **[docs/IMPLEMENTING_STORES.md](docs/IMPLEMENTING_STORES.md)** - Guide for implementing custom metadata and content stores
+- **[docs/IMPLEMENTING_STORES.md](docs/IMPLEMENTING_STORES.md)** - Guide for implementing custom metadata and payload stores
 
 ### Operational Guides
 - **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** - Common issues and solutions
@@ -174,7 +174,7 @@ go mod download
 
 **Configuration File**: See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for complete configuration guide.
 
-**Default Location**: `~/.config/dittofs/config.yaml` (or `$XDG_CONFIG_HOME/dittofs/config.yaml`)
+**Default Location**: `~/.config/dfs/config.yaml` (or `$XDG_CONFIG_HOME/dfs/config.yaml`)
 
 ### Testing
 
@@ -264,11 +264,11 @@ sudo go test -tags=e2e -v -race -timeout 30m ./test/e2e/...
 - Optional Localstack integration for S3 testing
 
 **Available Test Configurations**:
-- `memory/memory` - Both metadata and content in memory
-- `memory/filesystem` - Memory metadata, filesystem content
-- `badger/filesystem` - BadgerDB metadata, filesystem content
-- `memory/s3` - Memory metadata, S3 content (requires Localstack)
-- `badger/s3` - BadgerDB metadata, S3 content (requires Localstack)
+- `memory/memory` - Both metadata and payload in memory
+- `memory/filesystem` - Memory metadata, filesystem payload
+- `badger/filesystem` - BadgerDB metadata, filesystem payload
+- `memory/s3` - Memory metadata, S3 payload (requires Localstack)
+- `badger/s3` - BadgerDB metadata, S3 payload (requires Localstack)
 
 See `test/e2e/README.md` for detailed documentation.
 
@@ -676,36 +676,21 @@ The control plane has two main components:
 
 ### Configuration Example
 
-```yaml
-# Define named stores (created once, shared across shares)
-metadata:
-  stores:
-    fast-meta:
-      type: memory
-    persistent-meta:
-      type: badger
-      badger:
-        db_path: /data/metadata
+Stores, shares, and adapters are managed at runtime via `dfsctl` (persisted in the control plane database):
 
-content:
-  stores:
-    fast-content:
-      type: memory
-    s3-content:
-      type: s3
-      s3:
-        region: us-east-1
-        bucket: my-bucket
+```bash
+# Create named stores (created once, shared across shares)
+./dfsctl store metadata add --name fast-meta --type memory
+./dfsctl store metadata add --name persistent-meta --type badger \
+  --config '{"path":"/data/metadata"}'
 
-# Define shares that reference stores
-shares:
-  - name: /temp
-    metadata_store: fast-meta           # Uses memory store for metadata
-    content_store: fast-content         # Uses memory store for content
+./dfsctl store payload add --name fast-payload --type memory
+./dfsctl store payload add --name s3-payload --type s3 \
+  --config '{"region":"us-east-1","bucket":"my-bucket"}'
 
-  - name: /archive
-    metadata_store: persistent-meta     # Uses BadgerDB for metadata
-    content_store: s3-content           # Uses S3 for content
+# Create shares that reference stores by name
+./dfsctl share create --name /temp --metadata fast-meta --payload fast-payload
+./dfsctl share create --name /archive --metadata persistent-meta --payload s3-payload
 ```
 
 ### Benefits
@@ -813,8 +798,8 @@ Log appropriately:
 - `LOOKUP`: Resolve name in directory → file handle
 - `GETATTR`: Get file attributes
 - `SETATTR`: Update attributes (size, mode, times)
-- `READ`: Read file content (uses content store)
-- `WRITE`: Write file content (coordinates metadata + content stores)
+- `READ`: Read file content (uses payload store)
+- `WRITE`: Write file content (coordinates metadata + payload stores)
 - `CREATE`: Create file
 - `MKDIR`: Create directory
 - `REMOVE`: Delete file
@@ -824,14 +809,14 @@ Log appropriately:
 
 ### Write Coordination Pattern
 
-WRITE operations require coordination between metadata and content stores:
+WRITE operations require coordination between metadata and payload stores:
 
 ```go
 // 1. Update metadata (validates permissions, updates size/timestamps)
 attr, preSize, preMtime, preCtime, err := metadataStore.WriteFile(handle, newSize, authCtx)
 
-// 2. Write actual data via content store
-err = contentStore.WriteAt(attr.ContentID, data, offset)
+// 2. Write actual data via payload store
+err = payloadStore.WriteAt(attr.PayloadID, data, offset)
 
 // 3. Return updated attributes to client for cache consistency
 ```
@@ -841,7 +826,7 @@ The metadata store:
 - Returns pre-operation attributes (for WCC data)
 - Updates file size if extended
 - Updates mtime/ctime timestamps
-- Ensures ContentID exists
+- Ensures PayloadID exists
 
 ### Buffer Pooling
 

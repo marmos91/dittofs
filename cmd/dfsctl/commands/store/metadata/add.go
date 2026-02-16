@@ -113,7 +113,7 @@ func buildMetadataConfig(storeType, jsonConfig, dbPath string) (any, error) {
 				return nil, err
 			}
 		}
-		return map[string]any{"db_path": path}, nil
+		return map[string]any{"path": path}, nil
 
 	case "postgres":
 		host, err := prompt.Input("PostgreSQL host", "localhost")

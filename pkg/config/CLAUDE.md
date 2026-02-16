@@ -8,24 +8,22 @@ Configuration parsing and validation - transforms YAML/env vars into typed confi
 - `stores.go` - Factory functions creating stores from config
 - `runtime.go` - Control plane runtime initialization from config
 - `defaults.go` - Default values for all configurations
-- `init.go` - `dittofs init` file generation
+- `init.go` - `dfs init` file generation
 
 ## Named Stores Pattern
 
-```yaml
-metadata:
-  stores:
-    fast-meta: { type: memory }
-    persistent-meta: { type: badger, badger: { db_path: /data } }
+Stores, shares, and adapters are managed via `dfsctl` (persisted in the control plane database):
 
-content:
-  stores:
-    s3-content: { type: s3, s3: { bucket: my-bucket } }
+```bash
+# Create named stores
+./dfsctl store metadata add --name fast-meta --type memory
+./dfsctl store metadata add --name persistent-meta --type badger \
+  --config '{"path":"/data"}'
+./dfsctl store payload add --name s3-payload --type s3 \
+  --config '{"bucket":"my-bucket"}'
 
-shares:
-  - name: /archive
-    metadata: persistent-meta   # reference by name
-    content_store: s3-content
+# Create share referencing stores by name
+./dfsctl share create --name /archive --metadata persistent-meta --payload s3-payload
 ```
 
 - Stores created once, shared across shares
@@ -43,19 +41,16 @@ DITTOFS_SERVER_SHUTDOWN_TIMEOUT=60s
 
 ## Type-Specific Nested Config
 
-Only matching type's nested config is used:
-```yaml
-content:
-  stores:
-    mystore:
-      type: s3           # ← this determines which nested config applies
-      s3: { ... }        # ← used
-      filesystem: { ... } # ← ignored
+When using the `--config` JSON flag, only the fields matching the store type are used:
+```bash
+# The type determines which config fields apply
+./dfsctl store payload add --name mystore --type s3 \
+  --config '{"bucket":"my-bucket","region":"us-east-1"}'  # S3-specific fields
 ```
 
 ## Common Mistakes
 
-1. **Store name typo in share** - silent failure, store not found at runtime
+1. **Store name typo in CLI** - `dfsctl share create` will fail if the referenced store doesn't exist
 2. **Forgetting defaults** - `defaults.go` fills missing values before validation
 3. **Environment case** - must be uppercase with underscores
 4. **NTHash in config** - chmod 600, highly sensitive (pass-the-hash risk)
