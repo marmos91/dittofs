@@ -1,0 +1,130 @@
+# Known POSIX Compliance Failures for DittoFS (NFSv4.0)
+# =====================================================
+#
+# This file documents expected test failures when running pjdfstest
+# against DittoFS via an NFSv4.0 mount.
+#
+# NFSv4 differences from NFSv3:
+#   - NFSv4 uses integrated locking (no NLM/NFS Lock Manager)
+#   - NFSv4 may return different error codes (NFS4ERR_* vs NFS3ERR_*)
+#   - NFSv4 supports ACLs natively
+#   - NFSv4 supports extended attributes via named attributes
+#   - NFSv4 uses COMPOUND operations (multiple ops per RPC)
+#   - NFSv4 has 64-bit timestamps (no year-2106 limitation)
+#
+# This file should be updated as failures are identified during testing.
+# Start with known v3 failures and add v4-specific entries.
+#
+# Format: <test_pattern>|<reason>
+#
+# ===========================================
+
+# ---------------------------------------------
+# ETXTBSY (NFS Protocol Limitation)
+# ---------------------------------------------
+# ETXTBSY ("text file busy") should prevent writing to an executing file.
+# This is IMPOSSIBLE to implement over NFS (v3 or v4):
+# - The NFS server has no way to know if any client is executing a file
+# - NFS clients don't enforce it either (removed in SVR4 for consistency)
+# - This is a well-documented, fundamental NFS protocol limitation
+#
+# See: https://lwn.net/Articles/866493/
+# See: https://utcc.utoronto.ca/~cks/space/blog/unix/WhyTextFileBusyError
+
+open/etxtbsy|ETXTBSY cannot be enforced over NFS - server has no execution visibility
+open::etxtbsy|ETXTBSY cannot be enforced over NFS - server has no execution visibility
+
+# ---------------------------------------------
+# BSD File Flags (FreeBSD-specific)
+# ---------------------------------------------
+# File flags (chflags) are a BSD-specific feature not in POSIX.
+
+chflags/*|BSD-specific feature, not implemented
+lchflags/*|BSD-specific feature, not implemented
+
+# ---------------------------------------------
+# fallocate/posix_fallocate (Not Implemented)
+# ---------------------------------------------
+# NFSv4 does have an ALLOCATE operation (RFC 7862), but DittoFS
+# implements NFSv4.0 (RFC 7530), which does not include ALLOCATE.
+
+fallocate/*|No ALLOCATE procedure in NFSv4.0 (requires NFSv4.2)
+posix_fallocate/*|No ALLOCATE procedure in NFSv4.0 (requires NFSv4.2)
+
+# ---------------------------------------------
+# Special Files (Metadata Only)
+# ---------------------------------------------
+# DittoFS can create special file entries (MKNOD) but they don't
+# function as actual devices/sockets/FIFOs.
+# Note: NFSv4 CREATE can create special files, same limitation applies.
+
+# mknod/chr/*|Character devices - metadata only, no functionality
+# mknod/blk/*|Block devices - metadata only, no functionality
+
+# ---------------------------------------------
+# PATH_MAX Test Environment Limitation
+# ---------------------------------------------
+# pjdfstest open/03.t tests PATH_MAX handling by generating a path of
+# exactly PATH_MAX-1 (4095) characters. However, this test assumes the
+# current working directory is the filesystem root.
+#
+# On a mounted filesystem, the ABSOLUTE path seen by the Linux kernel VFS
+# layer includes the mount point prefix, causing paths to exceed PATH_MAX.
+# This is NOT a DittoFS bug - it affects ANY NFS server tested with a
+# non-root mount point.
+
+open/03.t|PATH_MAX test fails due to mount point path adding to total length - client-side kernel limitation
+
+# =============================================================================
+# NFSv4-specific known failures
+# =============================================================================
+#
+# The following entries are specific to NFSv4.0 behavior differences.
+# NFSv4 uses integrated locking (no NLM), different error codes, and
+# a stateful protocol model that may affect some pjdfstest expectations.
+
+# ---------------------------------------------
+# File Locking (NFSv4 Integrated Locking)
+# ---------------------------------------------
+# NFSv4 uses integrated LOCK/LOCKT/LOCKU operations instead of NLM.
+# pjdfstest locking tests may expect NLM-style behavior or error codes.
+# NFSv4 locking should largely work, but some edge cases may differ.
+# Note: Unlike NFSv3, locking IS supported in NFSv4, so fewer failures
+# are expected in this category.
+
+# flock tests may behave differently with NFSv4 integrated locking
+# (uncomment entries as specific failures are identified during testing)
+# flock/*|NFSv4 integrated locking may return different error behavior
+
+# ---------------------------------------------
+# Extended Attributes (NFSv4 Named Attributes)
+# ---------------------------------------------
+# NFSv4 supports named attributes, but DittoFS does not implement
+# the OPENATTR operation (returns NFS4ERR_NOTSUPP).
+# pjdfstest xattr tests may still fail.
+
+xattr/*|NFSv4 named attributes (OPENATTR) not implemented in DittoFS
+getxattr/*|NFSv4 named attributes not implemented
+setxattr/*|NFSv4 named attributes not implemented
+listxattr/*|NFSv4 named attributes not implemented
+removexattr/*|NFSv4 named attributes not implemented
+
+# ---------------------------------------------
+# ACLs (Partial Support)
+# ---------------------------------------------
+# NFSv4 ACLs are implemented in DittoFS, but pjdfstest may test
+# POSIX ACLs (setfacl/getfacl) which use a different model than
+# NFSv4 ACLs. POSIX ACLs use the system.posix_acl_access xattr
+# which is different from NFSv4's native ACL mechanism.
+
+# acl/*|pjdfstest uses POSIX ACLs, not NFSv4 ACLs
+# getfacl/*|POSIX ACL tools, not NFSv4 ACL tools
+# setfacl/*|POSIX ACL tools, not NFSv4 ACL tools
+
+# ---------------------------------------------
+# Potential Future Additions
+# ---------------------------------------------
+# Add new patterns here as they are discovered during NFSv4 testing.
+# Always include a clear explanation of why the failure is expected.
+# Compare behavior with the official Linux NFS client/server to verify
+# whether failures are DittoFS-specific or protocol-inherent.

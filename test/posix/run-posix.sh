@@ -3,16 +3,40 @@
 #
 # Usage (from nix shell):
 #   cd /tmp/dittofs-test
-#   sudo env PATH="$PATH" /path/to/run-posix.sh [test_pattern]
+#   sudo env PATH="$PATH" /path/to/run-posix.sh [--nfs-version 3|4|4.0] [test_pattern]
 #
 # Examples:
-#   sudo env PATH="$PATH" ./run-posix.sh                # Run all tests
-#   sudo env PATH="$PATH" ./run-posix.sh chmod          # Run chmod tests
-#   sudo env PATH="$PATH" ./run-posix.sh 'chmod/*.t'    # Run specific test pattern
+#   sudo env PATH="$PATH" ./run-posix.sh                        # Run all tests
+#   sudo env PATH="$PATH" ./run-posix.sh chmod                  # Run chmod tests
+#   sudo env PATH="$PATH" ./run-posix.sh 'chmod/*.t'            # Run specific test pattern
+#   sudo env PATH="$PATH" ./run-posix.sh --nfs-version 4        # Run all tests (log NFSv4)
+#   sudo env PATH="$PATH" ./run-posix.sh --nfs-version 4 chmod  # Run chmod tests (log NFSv4)
 
 set -euo pipefail
 
 MOUNT_POINT="${DITTOFS_MOUNT:-/tmp/dittofs-test}"
+NFS_VERSION=""
+
+# Parse --nfs-version if provided (for informational logging)
+POSITIONAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --nfs-version)
+            NFS_VERSION="${2:-}"
+            shift 2
+            ;;
+        --nfs-version=*)
+            NFS_VERSION="${1#*=}"
+            shift
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+# Restore positional arguments
+set -- "${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}"
 
 # Check if running as root
 if [[ $EUID -ne 0 ]]; then
@@ -86,6 +110,17 @@ cd "$MOUNT_POINT"
 
 echo "Running POSIX compliance tests..."
 echo "Mount point: $MOUNT_POINT"
+if [[ -n "$NFS_VERSION" ]]; then
+    echo "NFS version: NFSv${NFS_VERSION}"
+else
+    # Try to detect NFS version from mount output
+    DETECTED_VERSION=$(mount | grep "$MOUNT_POINT" | grep -oP 'vers=\K[0-9.]+' 2>/dev/null || echo "")
+    if [[ -n "$DETECTED_VERSION" ]]; then
+        echo "NFS version: NFSv${DETECTED_VERSION} (detected from mount)"
+    else
+        echo "NFS version: unknown (use --nfs-version to specify)"
+    fi
+fi
 echo "Tests directory: $WORK_DIR/tests"
 echo "pjdfstest binary: $PJDFSTEST_BIN"
 echo ""

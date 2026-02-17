@@ -124,6 +124,59 @@ dittofs-posix chmod chown              # Run multiple test categories
 sudo ./test/posix/teardown-posix.sh
 ```
 
+## NFSv4 Testing
+
+The POSIX test suite supports NFSv4.0 via the `--nfs-version` parameter. This allows running the same pjdfstest suite against both NFSv3 and NFSv4 mounts.
+
+### Setup
+
+```bash
+# Setup with NFSv4 mount
+sudo ./test/posix/setup-posix.sh memory --nfs-version 4
+
+# Run POSIX tests against NFSv4 mount
+cd /tmp/dittofs-test
+sudo env PATH="$PATH" ./test/posix/run-posix.sh --nfs-version 4
+
+# Run specific test category
+sudo env PATH="$PATH" ./test/posix/run-posix.sh --nfs-version 4 chmod
+
+# Teardown
+sudo ./test/posix/teardown-posix.sh
+```
+
+### NFSv4 Mount Differences
+
+NFSv4 uses different mount options than NFSv3:
+
+| Option | NFSv3 | NFSv4 |
+|--------|-------|-------|
+| Version | `nfsvers=3` | `vers=4.0` |
+| Mount port | `mountport=PORT` | Not used (no separate mount protocol) |
+| Locking | `nolock` (NLM disabled) | Not needed (integrated locking) |
+| Caching | `noac,sync,lookupcache=none` | `noac,sync,lookupcache=none` |
+
+### Known Failures
+
+NFSv4-specific known failures are documented in `known_failures_v4.txt`. Key differences from NFSv3:
+
+- **Locking**: NFSv4 has integrated locking (no NLM), so locking tests may behave differently
+- **Extended attributes**: NFSv4 named attributes (OPENATTR) not implemented
+- **ACLs**: NFSv4 ACLs are supported, but pjdfstest uses POSIX ACLs which are different
+- **Timestamps**: NFSv4 supports 64-bit timestamps (no year-2106 limitation unlike NFSv3)
+- **Error codes**: Some tests may get different NFS4ERR_* codes vs NFS3ERR_*
+
+### CI-Level Parallelism
+
+POSIX tests are sequential by design -- pjdfstest runs stateful filesystem operations that depend on prior state. To run both v3 and v4 POSIX suites in parallel at the CI level, use separate server instances on different ports:
+
+```bash
+# CI job 1: NFSv3
+NFS_PORT=12049 sudo ./test/posix/setup-posix.sh memory
+# CI job 2: NFSv4 (different server instance)
+NFS_PORT=12050 sudo ./test/posix/setup-posix.sh memory --nfs-version 4
+```
+
 ## Test Categories
 
 The test suite includes these categories:
@@ -161,21 +214,23 @@ Some tests will fail or be skipped due to NFSv3/DittoFS limitations:
 
 See [docs/KNOWN_LIMITATIONS.md](../../docs/KNOWN_LIMITATIONS.md) for detailed explanations of each limitation.
 
-See `known_failures.txt` for expected test failures with reasons.
+See `known_failures.txt` for expected NFSv3 test failures with reasons.
+See `known_failures_v4.txt` for expected NFSv4-specific test failures with reasons.
 
 ## Files
 
 ```
 test/posix/
-├── README.md              # This file
-├── setup-posix.sh         # Automated setup script
-├── teardown-posix.sh      # Cleanup script
-├── run-posix.sh           # Test runner
-├── Dockerfile.pjdfstest   # pjdfstest container (for macOS/Docker)
-├── known_failures.txt     # Expected failures with reasons
-├── configs/               # Configuration files
-│   └── config.yaml        # Single config (paths set via env vars)
-└── results/               # Test results (not committed)
+├── README.md                # This file
+├── setup-posix.sh           # Automated setup script (supports --nfs-version)
+├── teardown-posix.sh        # Cleanup script
+├── run-posix.sh             # Test runner (supports --nfs-version for logging)
+├── Dockerfile.pjdfstest     # pjdfstest container (for macOS/Docker)
+├── known_failures.txt       # Expected NFSv3 failures with reasons
+├── known_failures_v4.txt    # Expected NFSv4-specific failures with reasons
+├── configs/                 # Configuration files
+│   └── config.yaml          # Single config (paths set via env vars)
+└── results/                 # Test results (not committed)
 ```
 
 ## CI Integration
