@@ -20,6 +20,7 @@ type Mount struct {
 	Path     string
 	Protocol string // "nfs" or "smb"
 	Port     int
+	Version  string // NFS version: "3", "4.0", or "" (unset for SMB)
 	mounted  bool
 }
 
@@ -84,6 +85,103 @@ func MountNFS(t *testing.T, port int) *Mount {
 		Path:     mountPath,
 		Protocol: "nfs",
 		Port:     port,
+		mounted:  true,
+	}
+}
+
+// MountNFSWithVersion mounts an NFS share with a specific NFS version and returns the mount info.
+// version should be "3" for NFSv3 or "4.0" for NFSv4.0.
+// For version "3", behavior is identical to MountNFS (backward compatible).
+// For version "4.0", uses vers=4.0 mount option without mountport or nolock
+// (NFSv4 is stateful and does not use the separate mount protocol).
+func MountNFSWithVersion(t *testing.T, port int, version string) *Mount {
+	t.Helper()
+	return MountNFSExportWithVersion(t, port, "/export", version)
+}
+
+// MountNFSExportWithVersion mounts an NFS share at a custom export path with a specific NFS version.
+// version should be "3" for NFSv3 or "4.0" for NFSv4.0.
+// exportPath is the NFS export path (e.g., "/export", "/archive").
+func MountNFSExportWithVersion(t *testing.T, port int, exportPath string, version string) *Mount {
+	t.Helper()
+
+	// Give the NFS server a moment to fully initialize
+	time.Sleep(500 * time.Millisecond)
+
+	// Create mount directory
+	mountPath, err := os.MkdirTemp("", "dittofs-e2e-nfs-*")
+	if err != nil {
+		t.Fatalf("Failed to create NFS mount directory: %v", err)
+	}
+
+	// Build mount command parameters based on version and platform
+	var mountOptions string
+	var mountArgs []string
+
+	switch version {
+	case "3":
+		// NFSv3: same behavior as MountNFS
+		mountOptions = fmt.Sprintf("nfsvers=3,tcp,port=%d,mountport=%d,actimeo=0", port, port)
+		switch runtime.GOOS {
+		case "darwin":
+			mountOptions += ",resvport"
+		case "linux":
+			mountOptions += ",nolock"
+		default:
+			_ = os.RemoveAll(mountPath)
+			t.Fatalf("Unsupported platform for NFS: %s", runtime.GOOS)
+		}
+	case "4.0":
+		// NFSv4.0: no mountport, no nolock (stateful protocol)
+		mountOptions = fmt.Sprintf("vers=4.0,port=%d,actimeo=0", port)
+		switch runtime.GOOS {
+		case "darwin":
+			mountOptions += ",resvport"
+		case "linux":
+			// No additional options needed for NFSv4 on Linux
+		default:
+			_ = os.RemoveAll(mountPath)
+			t.Fatalf("Unsupported platform for NFS: %s", runtime.GOOS)
+		}
+	default:
+		_ = os.RemoveAll(mountPath)
+		t.Fatalf("Unsupported NFS version: %q (expected \"3\" or \"4.0\")", version)
+	}
+
+	mountArgs = []string{"-t", "nfs", "-o", mountOptions, fmt.Sprintf("localhost:%s", exportPath), mountPath}
+
+	// Execute mount command with retries (up to 3 times with 1s sleep)
+	var output []byte
+	var lastErr error
+	maxRetries := 3
+
+	for i := 0; i < maxRetries; i++ {
+		cmd := exec.Command("mount", mountArgs...)
+		output, lastErr = cmd.CombinedOutput()
+
+		if lastErr == nil {
+			t.Logf("NFSv%s share mounted successfully at %s (export: %s)", version, mountPath, exportPath)
+			break
+		}
+
+		if i < maxRetries-1 {
+			t.Logf("NFSv%s mount attempt %d failed (error: %v), retrying in 1 second...", version, i+1, lastErr)
+			time.Sleep(time.Second)
+		}
+	}
+
+	if lastErr != nil {
+		_ = os.RemoveAll(mountPath)
+		t.Fatalf("Failed to mount NFSv%s share after %d attempts: %v\nOutput: %s\nMount command: mount %v",
+			version, maxRetries, lastErr, string(output), mountArgs)
+	}
+
+	return &Mount{
+		T:        t,
+		Path:     mountPath,
+		Protocol: "nfs",
+		Port:     port,
+		Version:  version,
 		mounted:  true,
 	}
 }
@@ -369,6 +467,7 @@ func CleanupStaleMounts() {
 		"/tmp/dittofs-test-*",
 		"/tmp/dittofs-e2e-*",
 		"/tmp/dittofs-e2e-nfs-*",
+		"/tmp/dittofs-e2e-nfsv4-*",
 		"/tmp/dittofs-e2e-smb-*",
 		"/tmp/dittofs-e2e-matrix-*",
 		"/tmp/dittofs-interop-nfs-*",
@@ -384,6 +483,7 @@ func CleanupStaleMounts() {
 			"/private/tmp/dittofs-test-*",
 			"/private/tmp/dittofs-e2e-*",
 			"/private/tmp/dittofs-e2e-nfs-*",
+			"/private/tmp/dittofs-e2e-nfsv4-*",
 			"/private/tmp/dittofs-e2e-smb-*",
 			"/private/tmp/dittofs-e2e-matrix-*",
 			"/private/tmp/dittofs-interop-nfs-*",

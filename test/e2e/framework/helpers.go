@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"io"
 	"os"
+	"os/exec"
+	"runtime"
 	"testing"
 )
 
@@ -216,4 +218,37 @@ func CountDirs(t *testing.T, path string) int {
 		}
 	}
 	return count
+}
+
+// SkipIfDarwin skips the test on macOS with an explanatory message.
+// NFSv4 feature tests require Linux because macOS NFSv4 client has known
+// limitations and reliability issues.
+func SkipIfDarwin(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "darwin" {
+		t.Skip("Skipping: NFSv4 feature tests require Linux")
+	}
+}
+
+// SkipIfNoNFS4ACLTools skips the test if nfs4_setfacl and nfs4_getfacl
+// are not found in PATH. These tools are provided by nfs4-acl-tools and
+// are required for NFSv4 ACL manipulation tests.
+func SkipIfNoNFS4ACLTools(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("nfs4_setfacl"); err != nil {
+		t.Skip("Skipping: nfs4_setfacl not found in PATH (install nfs4-acl-tools)")
+	}
+	if _, err := exec.LookPath("nfs4_getfacl"); err != nil {
+		t.Skip("Skipping: nfs4_getfacl not found in PATH (install nfs4-acl-tools)")
+	}
+}
+
+// SkipIfNFSv4Unsupported skips the test on platforms where NFSv4 mount
+// is not reliable. On macOS (Darwin), the NFSv4 client has known issues
+// with pseudo-filesystem browsing, delegations, and stateful operations.
+func SkipIfNFSv4Unsupported(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "darwin" {
+		t.Skip("Skipping: NFSv4 mount is unreliable on macOS (Darwin NFSv4 client known issues)")
+	}
 }
