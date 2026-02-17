@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-04)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking and Kerberos authentication
-**Current focus:** v1.0 COMPLETE — v2.0 (NFSv4.0 + Kerberos + ACLs + Control Plane v2.0), Phase 14 COMPLETE
+**Current focus:** v2.0 Testing Phase 15 in progress
 
 ## Current Position
 
-Phase: 14 of 28 (Control Plane v2.0) - COMPLETE
-Plan: 7 of 7 complete
-Status: Phase 14 COMPLETE. All 7 plans executed: data layer, REST API, settings watcher, adapter enforcement, CLI, integration tests, E2E tests.
-Last activity: 2026-02-16 - Completed Plan 14-07 (Control Plane v2.0 E2E Tests)
+Phase: 15 of 28 (v2.0 Testing)
+Plan: 5 of 5 complete
+Status: Phase 15 COMPLETE. All v2.0 testing plans executed.
+Last activity: 2026-02-17 - Completed Plan 15-05 (POSIX NFSv4, Control Plane Mount-Level, Stress Tests)
 
-Progress: [################################] 100% (54/54 plans complete)
+Progress: [#####################################---] 88% (59/67 plans complete)
 
 ## Performance Metrics
 
@@ -43,12 +43,14 @@ Progress: [################################] 100% (54/54 plans complete)
 | 13-nfsv4-acls | 5/5 | 43 min | 8.6 min | COMPLETE |
 
 | 14-control-plane-v2-0 | 7/7 | 48 min | 6.9 min | COMPLETE |
+| 15-v2-0-testing | 5/5 | 24 min | 4.8 min | COMPLETE |
 
 **Recent Trend:**
-- Last 5 plans: 14-03 (3 min), 14-05 (5 min), 14-04 (12 min), 14-06 (10 min), 14-07 (4 min)
-- Trend: Phase 14 complete, avg 6.9 min/plan
+- Last 5 plans: 15-01 (5 min), 15-02 (4 min), 15-03 (3 min), 15-04 (4 min), 15-05 (7 min)
+- Trend: Phase 15 COMPLETE, all 5 plans avg 4.8 min
 
 *Updated after each plan completion*
+| Phase 15 P02 | 4 | 2 tasks | 2 files |
 
 ## Phase 01 Accomplishments
 
@@ -494,6 +496,54 @@ Progress: [################################] 100% (54/54 plans complete)
 - IdentityMapper field on Handler struct for FATTR4_OWNER reverse resolution
 - Package-level SetIdentityMapper for runtime configuration without signature changes
 
+## Phase 15 Accomplishments
+
+### Plan 15-01: NFSv4 E2E Framework and Basic Operations - COMPLETE
+- MountNFSWithVersion/MountNFSExportWithVersion helpers for v3/v4.0 parameterized mounts
+- Version field on Mount struct for NFS version tracking
+- SkipIfDarwin, SkipIfNoNFS4ACLTools, SkipIfNFSv4Unsupported platform skip helpers
+- CleanupStaleMounts updated for dittofs-e2e-nfsv4-* patterns
+- 8 E2E test functions: basic ops, advanced ops, OPEN modes, pseudo-FS, READDIR pagination, golden path, stale handle, backward compat
+- All existing v1.0 E2E tests compile without changes (backward compat verified)
+
+### Plan 15-02: NFSv4 Locking and Delegation E2E Tests - COMPLETE
+- TestNFSv4Locking with 6 subtests (ReadWriteLocks, ExclusiveLock, OverlappingRanges, LockUpgrade, LockUnlock, CrossClientConflict) parameterized for v3 and v4.0
+- TestNFSv4BlockingLock for v4-only blocking lock semantics (F_SETLKW with goroutine monitoring)
+- TestNFSv4DelegationBasicLifecycle with server log verification for delegation grants
+- TestNFSv4DelegationRecall with multi-client data consistency and CB_RECALL log scraping
+- TestNFSv4DelegationRevocation for unresponsive client revocation scenario
+- TestNFSv4NoDelegationConflict for concurrent read access without conflicts
+- Log-based delegation observability helpers (readLogFile, extractNewLogs)
+
+### Plan 15-03: NFSv4 ACL and Kerberos E2E Tests - COMPLETE
+- NFSv4 ACL lifecycle E2E tests: set/read ACLs via nfs4_setfacl/nfs4_getfacl, deny ACE enforcement
+- ACL inheritance tests with FILE_INHERIT/DIRECTORY_INHERIT flags
+- ACL access enforcement test (restrictive ACL, chmod interop)
+- Cross-protocol ACL interop test (NFSv4 -> SMB, skips when unavailable)
+- NFSv4 Kerberos extended E2E tests with explicit vers=4.0: all 3 flavors (krb5/krb5i/krb5p)
+- Authorization denial for unmapped users, file ownership mapping, AUTH_SYS fallback
+- Concurrent Kerberos users test with cross-visibility verification
+- Helper functions: nfs4SetACL, nfs4AddACE, nfs4GetACL, krbV4Mount
+
+### Plan 15-04: Store Matrix, Recovery, and Concurrency Tests - COMPLETE
+- TestStoreMatrixV4: 18 subtests (2 versions x 9 backends) with file I/O verification
+- TestFileSizeMatrix: v3+v4 x 500KB/1MB/10MB/100MB with SHA-256 checksum verification
+- TestMultiShareConcurrent: two shares mounted simultaneously with isolation verification
+- TestMultiClientConcurrency: two mounts to same share with goroutine-based concurrent writes
+- TestServerRestartRecovery: BadgerDB+filesystem persistent backends survive graceful restart
+- TestStaleNFSHandle: memory backend restart returns ENOENT after unmount+remount
+- TestSquashBehavior: root_squash/all_squash ownership verification (requires root)
+- TestClientReconnection: adapter disable/re-enable with 30s reconnection timeout
+
+### Plan 15-05: POSIX NFSv4, Control Plane Mount-Level, and Stress Tests - COMPLETE
+- setup-posix.sh --nfs-version parameter for NFSv3/NFSv4 POSIX compliance testing
+- known_failures_v4.txt documenting NFSv4-specific pjdfstest expected failures
+- TestNFSv4ControlPlaneBlockedOps: block/unblock WRITE via API, verify mount behavior
+- TestNFSv4ControlPlaneNetgroup: netgroup access control via NFS mount
+- TestNFSv4ControlPlaneSettingsHotReload: delegation policy and blocked ops hot-reload
+- TestStressLargeDirectory/ConcurrentDelegations/ConcurrentFileCreation behind -tags=stress
+- run-e2e.sh with --coverage, --stress, --s3, --nfs-version, --race flags
+
 ## Accumulated Context
 
 ### Decisions
@@ -707,6 +757,8 @@ Recent decisions affecting current work:
 - [13-04]: Group reverse resolution not implemented (only owner uses mapper; group falls back to numeric)
 - [13-04]: ACL validation at XDR decode time via acl.ValidateACL before reaching MetadataService
 - [13-04]: badXDRError (NFS4ERR_BADXDR) and invalidACLError (NFS4ERR_INVAL) as NFS4StatusError types
+- [Phase 15]: Log approach for delegation observability since Prometheus metrics not yet instrumented
+- [Phase 15]: Two mount points for cross-client NFS conflict simulation (different open-owners)
 
 ### Plan 13-05: SMB Security Descriptor and Control Plane Integration - COMPLETE
 - SMB Security Descriptor encoding/decoding per MS-DTYP with self-relative format
@@ -766,6 +818,35 @@ Recent decisions affecting current work:
 - [14-07]: NFS mount verification not duplicated in lifecycle test (covered by store_matrix_test.go)
 - [14-07]: Delegation grant/deny not observable from client side; test covers API persistence only
 
+- [15-01]: MountNFSExportWithVersion as core; MountNFSWithVersion delegates with "/export" default
+- [15-01]: NFSv4 mount uses vers=4.0 without mountport or nolock (stateful protocol)
+- [15-01]: setupNFSv4TestServer helper encapsulates server lifecycle for DRY test setup
+- [15-01]: Version-parameterized subtests for ver in ["3", "4.0"] with SkipIfNFSv4Unsupported guard
+- [15-01]: Pseudo-FS browsing test mounts "/" root to verify share junctions
+
+- [15-03]: Local krbV4Mount type instead of framework.KerberosMount to avoid unexported field access
+- [15-03]: All Kerberos v4 mounts use vers=4.0 explicitly (never vers=4) per locked decision #5
+- [15-03]: Cross-protocol ACL test uses MountSMBWithError for graceful skip on SMB unavailability
+- [15-03]: nfs4SetACL/nfs4AddACE/nfs4GetACL CLI wrappers for E2E ACL manipulation
+
+- [15-04]: Reuse storeMatrix variable from store_matrix_test.go (same package, no duplication)
+- [15-04]: isNFSv4SkippedPlatform() helper to programmatically build version lists
+- [15-04]: TestStaleNFSHandle expects ENOENT (not ESTALE) because unmount+remount = fresh LOOKUP
+- [15-04]: TestClientReconnection tolerates ENOENT for memory backends (adapter restart loses state)
+- [15-04]: Concurrent write test uses sync.WaitGroup + goroutines with SHA-256 checksums
+
+- [15-02]: Log approach (fallback) for delegation observability since Prometheus metrics not yet instrumented
+- [15-02]: Two mount points per test for cross-client NFS conflict simulation (different open-owners)
+- [15-02]: POSIX fcntl locks (F_SETLK/F_SETLKW) work for both v3 (NLM) and v4 (integrated locking)
+- [15-02]: Graceful handling of same-process POSIX lock semantics (per-process, not per-fd)
+- [15-02]: Delegation tests NFSv4-only; locking tests parameterized for v3+v4
+
+- [15-05]: NFSv4 mount uses vers=4.0 without mountport or nolock for POSIX tests
+- [15-05]: known_failures_v4.txt inherits common v3 failures, removes locking (NFSv4 has integrated)
+- [15-05]: Stress tests use //go:build e2e && stress dual tag for CI-excluded execution
+- [15-05]: run-e2e.sh uses -coverprofile=coverage-e2e.out for E2E coverage profiling
+- [15-05]: Netgroup E2E test handles both per-operation and mount-time-only access patterns
+
 ### Pending Todos
 
 None.
@@ -776,17 +857,17 @@ None.
 
 ## Next Steps
 
-**Phase 14 — COMPLETE (7/7 plans)**
-- Plan 14-01 COMPLETE: Data Layer Foundation (GORM models, store interface, migration)
-- Plan 14-02 COMPLETE: REST API and API Client (handlers, router, apiclient with patch)
-- Plan 14-03 COMPLETE: Settings Hot-Reload and Netgroup Access (SettingsWatcher, CheckNetgroupAccess, DNS cache)
-- Plan 14-04 COMPLETE: Adapter Settings Enforcement (NFS/SMB settings consumption, operation blocklist, security policy, delegation policy, netgroup)
-- Plan 14-05 COMPLETE: CLI commands for adapter settings and netgroup management
-- Plan 14-06 COMPLETE: Control plane v2.0 tests (71 integration tests for store, handler, runtime)
-- Plan 14-07 COMPLETE: E2E tests (10 test scenarios for full lifecycle, validation, netgroups, security policy)
+**Phase 15 — COMPLETE (5/5 plans)**
+- Plan 15-01 COMPLETE: NFSv4 E2E framework (mount helpers, platform skips, 8 basic operation test functions)
+- Plan 15-02 COMPLETE: NFSv4 locking E2E tests
+- Plan 15-03 COMPLETE: NFSv4 delegations E2E tests
+- Plan 15-04 COMPLETE: Store matrix, recovery, and concurrency E2E tests
+- Plan 15-05 COMPLETE: POSIX NFSv4, control plane mount-level, stress tests, E2E coverage
+
+**Ready for Phase 16**
 
 ## Session Continuity
 
 Last session: 2026-02-17
-Stopped at: Phase 15 context gathered
-Resume file: .planning/phases/15-v2-0-testing/15-CONTEXT.md
+Stopped at: Completed 15-05-PLAN.md (Phase 15 COMPLETE)
+Resume file: Phase 16 planning
