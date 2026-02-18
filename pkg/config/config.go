@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/pkg/controlplane/api"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/mitchellh/mapstructure"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
@@ -296,6 +297,33 @@ type StaticIdentity struct {
 
 	// GIDs is a list of supplementary group IDs
 	GIDs []uint32 `mapstructure:"gids" yaml:"gids,omitempty"`
+}
+
+// BuildStaticMapper converts an IdentityMappingConfig to an identity.StaticMapper.
+// This is the canonical conversion point between config types and identity types.
+func BuildStaticMapper(idCfg *IdentityMappingConfig) *identity.StaticMapper {
+	if idCfg == nil {
+		return identity.NewStaticMapper(&identity.StaticMapperConfig{})
+	}
+
+	staticMap := make(map[string]identity.StaticIdentity, len(idCfg.StaticMap))
+	for k, v := range idCfg.StaticMap {
+		var gidsCopy []uint32
+		if v.GIDs != nil {
+			gidsCopy = make([]uint32, len(v.GIDs))
+			copy(gidsCopy, v.GIDs)
+		}
+		staticMap[k] = identity.StaticIdentity{
+			UID:  v.UID,
+			GID:  v.GID,
+			GIDs: gidsCopy,
+		}
+	}
+	return identity.NewStaticMapper(&identity.StaticMapperConfig{
+		StaticMap:  staticMap,
+		DefaultUID: idCfg.DefaultUID,
+		DefaultGID: idCfg.DefaultGID,
+	})
 }
 
 // Load loads configuration from file, environment, and defaults.

@@ -5,10 +5,6 @@ import (
 	"testing"
 )
 
-// ============================================================================
-// StaticMapper tests
-// ============================================================================
-
 func TestStaticMapper_KnownPrincipal(t *testing.T) {
 	cfg := &StaticMapperConfig{
 		StaticMap: map[string]StaticIdentity{
@@ -114,54 +110,5 @@ func TestStaticMapper_GIDsAreCopied(t *testing.T) {
 	result2, _ := m.Resolve(context.Background(), "alice@EXAMPLE.COM")
 	if result2.GIDs[0] != 100 {
 		t.Fatal("GIDs were not deep copied - modifying result affected source")
-	}
-}
-
-// ============================================================================
-// MapPrincipal backward compatibility tests
-// ============================================================================
-
-func TestStaticMapper_MapPrincipal_Known(t *testing.T) {
-	cfg := &StaticMapperConfig{
-		StaticMap: map[string]StaticIdentity{
-			"alice@EXAMPLE.COM": {UID: 1000, GID: 1000, GIDs: []uint32{1000}},
-		},
-		DefaultUID: 65534,
-		DefaultGID: 65534,
-	}
-
-	m := NewStaticMapper(cfg)
-	uid, gid, gids, err := m.MapPrincipal("alice", "EXAMPLE.COM")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if uid != 1000 {
-		t.Fatalf("expected UID=1000, got %d", uid)
-	}
-	if gid != 1000 {
-		t.Fatalf("expected GID=1000, got %d", gid)
-	}
-	if len(gids) != 1 || gids[0] != 1000 {
-		t.Fatalf("expected GIDs=[1000], got %v", gids)
-	}
-}
-
-func TestStaticMapper_MapPrincipal_Unknown(t *testing.T) {
-	cfg := &StaticMapperConfig{
-		StaticMap:  map[string]StaticIdentity{},
-		DefaultUID: 65534,
-		DefaultGID: 65534,
-	}
-
-	m := NewStaticMapper(cfg)
-	uid, gid, _, err := m.MapPrincipal("unknown", "EXAMPLE.COM")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if uid != 65534 {
-		t.Fatalf("expected UID=65534, got %d", uid)
-	}
-	if gid != 65534 {
-		t.Fatalf("expected GID=65534, got %d", gid)
 	}
 }

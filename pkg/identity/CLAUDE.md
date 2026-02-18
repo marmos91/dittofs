@@ -47,10 +47,10 @@ Implementations provided by the control plane (Plan 05).
 
 ## StaticMapper
 
-Migrated from `pkg/auth/kerberos` for backward compatibility:
+Canonical static identity mapper (originally from `pkg/auth/kerberos`, fully migrated):
 - Always returns `Found=true` (falls back to defaults for unknown principals)
-- Has `MapPrincipal(principal, realm)` for backward compat with Kerberos code
-- `pkg/auth/kerberos/identity.go` delegates to this via wrapper
+- Used directly by GSS framework via `identity.IdentityMapper` interface
+- The old `kerberos.IdentityMapper` wrapper has been removed
 
 ## Common Gotchas
 

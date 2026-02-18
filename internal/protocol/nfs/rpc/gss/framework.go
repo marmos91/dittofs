@@ -1,6 +1,7 @@
 package gss
 
 import (
+	"context"
 	"encoding/asn1"
 	"encoding/binary"
 	"fmt"
@@ -14,16 +15,11 @@ import (
 	"github.com/jcmturner/gokrb5/v8/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
+	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// ============================================================================
-// Verifier Interface (mockable for testing)
-// ============================================================================
-
 // VerifiedContext contains the result of a successful GSS token verification.
-//
-// This is returned by the Verifier interface after validating an AP-REQ.
 // It provides the information needed to create a GSSContext.
 type VerifiedContext struct {
 	// Principal is the client's Kerberos principal name (e.g., "alice").
@@ -46,11 +42,8 @@ type VerifiedContext struct {
 	HasAcceptorSubkey bool
 }
 
-// Verifier abstracts the GSS token verification step.
-//
-// This interface allows the GSSProcessor to be tested without a real KDC
-// by providing a mock implementation. The production implementation uses
-// gokrb5's service.VerifyAPREQ.
+// Verifier abstracts the GSS token verification step, allowing the
+// GSSProcessor to be tested without a real KDC.
 type Verifier interface {
 	// VerifyToken verifies a GSS-API token (containing an AP-REQ).
 	//
@@ -67,14 +60,7 @@ type Verifier interface {
 	VerifyToken(gssToken []byte) (*VerifiedContext, error)
 }
 
-// ============================================================================
-// Production Verifier (uses gokrb5)
-// ============================================================================
-
 // Krb5Verifier implements Verifier using gokrb5 AP-REQ verification.
-//
-// It uses the KerberosProvider's keytab to decrypt and validate the service
-// ticket, extract the session key, and verify the authenticator.
 type Krb5Verifier struct {
 	provider *kerberos.Provider
 }
@@ -214,12 +200,10 @@ func (v *Krb5Verifier) VerifyToken(gssToken []byte) (*VerifiedContext, error) {
 		logger.Debug("Mutual auth not required, not sending AP-REP")
 	}
 
-	// Build the verified context
-	// Use contextKey (which may be the subkey if present) for subsequent operations
 	vc := &VerifiedContext{
 		Principal:         clientPrincipal,
 		Realm:             clientRealm,
-		SessionKey:        contextKey, // Use subkey if present, otherwise session key
+		SessionKey:        contextKey,
 		APRepToken:        apRepToken,
 		HasAcceptorSubkey: hasAcceptorSubkey,
 	}
@@ -512,10 +496,6 @@ func decodeOpaqueToken(data []byte) ([]byte, error) {
 	return data[4 : 4+int(length)], nil
 }
 
-// ============================================================================
-// GSS Process Result
-// ============================================================================
-
 // GSSProcessResult contains the result of processing an RPCSEC_GSS call.
 //
 // For control messages (INIT/CONTINUE_INIT/DESTROY), GSSReply contains the
@@ -576,10 +556,6 @@ type GSSProcessResult struct {
 	AuthStat uint32
 }
 
-// ============================================================================
-// GSSProcessor
-// ============================================================================
-
 // GSSProcessorOption is a functional option for configuring GSSProcessor.
 type GSSProcessorOption func(*GSSProcessor)
 
@@ -607,23 +583,15 @@ func WithMetrics(m *GSSMetrics) GSSProcessorOption {
 type GSSProcessor struct {
 	contexts *ContextStore
 	verifier Verifier
-	mapper   kerberos.IdentityMapper
+	mapper   identity.IdentityMapper
 	metrics  *GSSMetrics
 	mu       sync.RWMutex
 }
 
 // NewGSSProcessor creates a new GSS processor.
-//
-// Parameters:
-//   - verifier: Token verifier (use NewKrb5Verifier for production)
-//   - mapper: Identity mapper for principal-to-UID/GID conversion
-//   - maxContexts: Maximum concurrent GSS contexts (0 = unlimited)
-//   - contextTTL: Time after which idle contexts expire
-//   - opts: Optional configuration (e.g., WithMetrics)
-//
-// Returns:
-//   - *GSSProcessor: Initialized processor
-func NewGSSProcessor(verifier Verifier, mapper kerberos.IdentityMapper, maxContexts int, contextTTL time.Duration, opts ...GSSProcessorOption) *GSSProcessor {
+// Use NewKrb5Verifier for the production verifier.
+// maxContexts of 0 means unlimited; contextTTL controls idle context expiry.
+func NewGSSProcessor(verifier Verifier, mapper identity.IdentityMapper, maxContexts int, contextTTL time.Duration, opts ...GSSProcessorOption) *GSSProcessor {
 	p := &GSSProcessor{
 		contexts: NewContextStore(maxContexts, contextTTL),
 		verifier: verifier,
@@ -637,17 +605,9 @@ func NewGSSProcessor(verifier Verifier, mapper kerberos.IdentityMapper, maxConte
 
 // Process is the main entry point for RPCSEC_GSS call processing.
 //
-// It decodes the RPCSEC_GSS credential from the RPC call, determines the
-// GSS procedure type, and routes to the appropriate handler.
-//
-// Parameters:
-//   - credBody: The raw credential body from the RPC call (OpaqueAuth.Body)
-//   - verifBody: The raw verifier body from the RPC call (OpaqueAuth.Body)
-//   - requestBody: The procedure arguments (call body after cred/verifier)
-//
-// Returns:
-//   - *GSSProcessResult: Result containing either control reply or unwrapped data
-func (p *GSSProcessor) Process(credBody []byte, verifBody []byte, requestBody []byte) *GSSProcessResult {
+// It decodes the credential, determines the GSS procedure type, and routes
+// to the appropriate handler (INIT, DATA, or DESTROY).
+func (p *GSSProcessor) Process(ctx context.Context, credBody []byte, verifBody []byte, requestBody []byte) *GSSProcessResult {
 	// Decode the RPCSEC_GSS credential
 	cred, err := DecodeGSSCred(credBody)
 	if err != nil {
@@ -661,7 +621,7 @@ func (p *GSSProcessor) Process(credBody []byte, verifBody []byte, requestBody []
 	case RPCGSSInit, RPCGSSContinueInit:
 		return p.handleInit(cred, requestBody)
 	case RPCGSSData:
-		return p.handleData(cred, verifBody, requestBody)
+		return p.handleData(ctx, cred, verifBody, requestBody)
 	case RPCGSSDestroy:
 		return p.handleDestroy(cred)
 	default:
@@ -688,7 +648,6 @@ func (p *GSSProcessor) handleInit(cred *RPCGSSCredV1, requestBody []byte) *GSSPr
 
 	p.mu.RLock()
 	verifier := p.verifier
-	mapper := p.mapper
 	p.mu.RUnlock()
 
 	if verifier == nil {
@@ -698,19 +657,12 @@ func (p *GSSProcessor) handleInit(cred *RPCGSSCredV1, requestBody []byte) *GSSPr
 		}
 	}
 
-	// Extract the GSS token from the XDR-encoded rpc_gss_init_arg struct.
-	// Per RFC 2203 Section 5.2.1, the init args are:
-	//   struct rpc_gss_init_arg { opaque gss_token<>; };
-	// So we need to decode the length-prefixed opaque value.
-	logger.Debug("GSS INIT credential info",
+	// Extract the GSS token from the XDR-encoded rpc_gss_init_arg struct
+	logger.Debug("GSS INIT request",
 		"gss_proc", cred.GSSProc,
 		"seq_num", cred.SeqNum,
 		"service", cred.Service,
-		"handle_len", len(cred.Handle),
-	)
-	logger.Debug("GSS INIT raw requestBody",
-		"len", len(requestBody),
-		"first_bytes", fmt.Sprintf("%x", firstN(requestBody, 32)),
+		"body_len", len(requestBody),
 	)
 	gssToken, err := decodeOpaqueToken(requestBody)
 	if err != nil {
@@ -723,11 +675,6 @@ func (p *GSSProcessor) handleInit(cred *RPCGSSCredV1, requestBody []byte) *GSSPr
 			Err:       fmt.Errorf("decode GSS init arg: %w", err),
 		}
 	}
-	logger.Debug("GSS INIT decoded token",
-		"len", len(gssToken),
-		"first_bytes", fmt.Sprintf("%x", firstN(gssToken, 32)),
-	)
-
 	// Verify the GSS token (AP-REQ)
 	verified, err := verifier.VerifyToken(gssToken)
 	if err != nil {
@@ -739,11 +686,7 @@ func (p *GSSProcessor) handleInit(cred *RPCGSSCredV1, requestBody []byte) *GSSPr
 
 		// Return an error init response per RFC 2203
 		errRes := &RPCGSSInitRes{
-			Handle:    nil,
-			GSSMajor:  GSSDefectiveCredential,
-			GSSMinor:  0,
-			SeqWindow: 0,
-			GSSToken:  nil,
+			GSSMajor: GSSDefectiveCredential,
 		}
 		errResBytes, encErr := EncodeGSSInitRes(errRes)
 		if encErr != nil {
@@ -786,40 +729,18 @@ func (p *GSSProcessor) handleInit(cred *RPCGSSCredV1, requestBody []byte) *GSSPr
 	// the client's first DATA request will fail with "context not found".
 	p.contexts.Store(gssCtx)
 
-	// Map principal to Unix identity (for logging; identity is resolved on each DATA call)
-	if mapper != nil {
-		identity, mapErr := mapper.MapPrincipal(verified.Principal, verified.Realm)
-		if mapErr != nil {
-			logger.Debug("GSS identity mapping failed (non-fatal during INIT)",
-				"principal", verified.Principal,
-				"realm", verified.Realm,
-				"error", mapErr,
-			)
-		} else if identity != nil && identity.UID != nil {
-			logger.Debug("GSS context established",
-				"principal", verified.Principal,
-				"realm", verified.Realm,
-				"uid", *identity.UID,
-			)
-		}
-	}
+	logger.Debug("GSS context established",
+		"principal", verified.Principal,
+		"realm", verified.Realm,
+	)
 
 	// Build the INIT response
 	initRes := &RPCGSSInitRes{
 		Handle:    handle,
 		GSSMajor:  GSSComplete,
-		GSSMinor:  0,
 		SeqWindow: DefaultSeqWindowSize,
-		GSSToken:  verified.APRepToken, // May be empty if mutual auth not supported
+		GSSToken:  verified.APRepToken,
 	}
-
-	logger.Debug("GSS INIT response fields",
-		"handle_len", len(handle),
-		"gss_major", initRes.GSSMajor,
-		"gss_minor", initRes.GSSMinor,
-		"seq_window", initRes.SeqWindow,
-		"gss_token_len", len(initRes.GSSToken),
-	)
 
 	resBytes, err := EncodeGSSInitRes(initRes)
 	if err != nil {
@@ -829,15 +750,12 @@ func (p *GSSProcessor) handleInit(cred *RPCGSSCredV1, requestBody []byte) *GSSPr
 		}
 	}
 
-	// Log detailed response structure for debugging
-	logger.Debug("GSS INIT response encoded (rpc_gss_init_res)",
+	logger.Debug("GSS INIT response encoded",
 		"total_len", len(resBytes),
 		"handle_len", len(handle),
 		"gss_major", initRes.GSSMajor,
-		"gss_minor", initRes.GSSMinor,
 		"seq_window", initRes.SeqWindow,
 		"gss_token_len", len(initRes.GSSToken),
-		"hex_dump", fmt.Sprintf("%x", resBytes),
 	)
 
 	p.metrics.RecordContextCreation(true)
@@ -848,8 +766,8 @@ func (p *GSSProcessor) handleInit(cred *RPCGSSCredV1, requestBody []byte) *GSSPr
 		IsControl:         true,
 		SeqNum:            cred.SeqNum,
 		Service:           cred.Service,
-		SessionKey:        verified.SessionKey,        // Needed for reply verifier MIC
-		HasAcceptorSubkey: verified.HasAcceptorSubkey, // Needed for MIC flags
+		SessionKey:        verified.SessionKey,
+		HasAcceptorSubkey: verified.HasAcceptorSubkey,
 	}
 }
 
@@ -888,15 +806,14 @@ func lastN(b []byte, n int) []byte {
 // 1. Look up the context by handle (RPCSEC_GSS_CREDPROBLEM if not found)
 // 2. Validate the sequence number (silent discard if invalid per RFC 2203 Section 5.3.3.1)
 // 3. Check for MAXSEQ exceeded (context must be destroyed per RFC 2203)
-// 4. For svc_none (krb5 auth-only): requestBody IS the procedure arguments
-// 5. For svc_integrity/privacy: not yet implemented (Plan 04)
-// 6. Map principal to Unix identity via IdentityMapper
-// 7. Return unwrapped procedure arguments and identity
-func (p *GSSProcessor) handleData(cred *RPCGSSCredV1, verifBody []byte, requestBody []byte) *GSSProcessResult {
+// 4. Unwrap based on service level (svc_none / svc_integrity / svc_privacy)
+// 5. Map principal to Unix identity via IdentityMapper
+// 6. Return unwrapped procedure arguments and identity
+func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verifBody []byte, requestBody []byte) *GSSProcessResult {
 	dataStart := time.Now()
 
 	// 1. Look up context by handle
-	ctx, found := p.contexts.Lookup(cred.Handle)
+	gssCtx, found := p.contexts.Lookup(cred.Handle)
 	if !found {
 		logger.Debug("GSS DATA: context not found for handle",
 			"cred_service", cred.Service,
@@ -910,25 +827,25 @@ func (p *GSSProcessor) handleData(cred *RPCGSSCredV1, verifBody []byte, requestB
 	}
 
 	// Log service level comparison for debugging krb5i issues
-	if cred.Service != ctx.Service {
+	if cred.Service != gssCtx.Service {
 		logger.Warn("GSS DATA: service level mismatch",
 			"cred_service", cred.Service,
-			"ctx_service", ctx.Service,
-			"principal", ctx.Principal,
+			"ctx_service", gssCtx.Service,
+			"principal", gssCtx.Principal,
 		)
 	}
 	logger.Debug("GSS DATA: credential and context info",
 		"cred_service", cred.Service,
-		"ctx_service", ctx.Service,
+		"ctx_service", gssCtx.Service,
 		"seq_num", cred.SeqNum,
-		"principal", ctx.Principal,
+		"principal", gssCtx.Principal,
 	)
 
 	// 2. Check for MAXSEQ exceeded -- context must be destroyed per RFC 2203
 	if cred.SeqNum >= MAXSEQ {
 		logger.Debug("GSS DATA: sequence number exceeds MAXSEQ, destroying context",
 			"seq_num", cred.SeqNum,
-			"principal", ctx.Principal,
+			"principal", gssCtx.Principal,
 		)
 		p.contexts.Delete(cred.Handle)
 		p.metrics.RecordAuthFailure("context_problem")
@@ -939,11 +856,11 @@ func (p *GSSProcessor) handleData(cred *RPCGSSCredV1, verifBody []byte, requestB
 	}
 
 	// 3. Validate sequence number via sliding window
-	if !ctx.SeqWindow.Accept(cred.SeqNum) {
+	if !gssCtx.SeqWindow.Accept(cred.SeqNum) {
 		// Per RFC 2203 Section 5.3.3.1: silent discard for sequence violations
 		logger.Debug("GSS DATA: sequence number rejected (duplicate or out of window)",
 			"seq_num", cred.SeqNum,
-			"principal", ctx.Principal,
+			"principal", gssCtx.Principal,
 		)
 		p.metrics.RecordAuthFailure("sequence_violation")
 		return &GSSProcessResult{
@@ -951,31 +868,18 @@ func (p *GSSProcessor) handleData(cred *RPCGSSCredV1, verifBody []byte, requestB
 		}
 	}
 
-	// 4. Process based on service level from CREDENTIAL (per-call), not context
-	//
-	// Per RFC 2203 Section 5.3.3.4:
-	//   "The service field is set to rpc_gss_svc_none, rpc_gss_svc_integrity,
-	//    or rpc_gss_svc_privacy to indicate the service used for the call data."
-	//
-	// The service level is determined PER-CALL via the credential, not locked
-	// at context establishment. This allows clients to use different protection
-	// levels for different operations (e.g., MOUNT with auth-only, NFS with integrity).
-	//
-	// SECURITY NOTE: We use the credential's service level for unwrapping because
-	// that's what the client used to wrap the data. The session key from the context
-	// is still used for cryptographic operations.
+	// 4. Unwrap based on credential's service level (per-call, per RFC 2203 Section 5.3.3.4).
+	// The session key from the context is used for cryptographic operations.
 	var processedData []byte
 	switch cred.Service {
 	case RPCGSSSvcNone:
-		// krb5 (auth-only): requestBody IS the procedure arguments, no unwrapping
 		processedData = requestBody
 
 	case RPCGSSSvcIntegrity:
-		// krb5i: Unwrap integrity-protected data
-		args, bodySeqNum, err := UnwrapIntegrity(ctx.SessionKey, cred.SeqNum, requestBody)
+		args, _, err := UnwrapIntegrity(gssCtx.SessionKey, cred.SeqNum, requestBody)
 		if err != nil {
 			logger.Debug("GSS DATA: integrity unwrap failed",
-				"principal", ctx.Principal,
+				"principal", gssCtx.Principal,
 				"cred_service", cred.Service,
 				"error", err,
 			)
@@ -984,15 +888,13 @@ func (p *GSSProcessor) handleData(cred *RPCGSSCredV1, verifBody []byte, requestB
 				Err: fmt.Errorf("integrity unwrap failed: %w", err),
 			}
 		}
-		_ = bodySeqNum // Already validated by UnwrapIntegrity (dual validation)
 		processedData = args
 
 	case RPCGSSSvcPrivacy:
-		// krb5p: Unwrap privacy-protected data
-		args, bodySeqNum, err := UnwrapPrivacy(ctx.SessionKey, cred.SeqNum, requestBody)
+		args, _, err := UnwrapPrivacy(gssCtx.SessionKey, cred.SeqNum, requestBody)
 		if err != nil {
 			logger.Debug("GSS DATA: privacy unwrap failed",
-				"principal", ctx.Principal,
+				"principal", gssCtx.Principal,
 				"cred_service", cred.Service,
 				"error", err,
 			)
@@ -1001,7 +903,6 @@ func (p *GSSProcessor) handleData(cred *RPCGSSCredV1, verifBody []byte, requestB
 				Err: fmt.Errorf("privacy unwrap failed: %w", err),
 			}
 		}
-		_ = bodySeqNum // Already validated by UnwrapPrivacy (dual validation)
 		processedData = args
 
 	default:
@@ -1015,25 +916,45 @@ func (p *GSSProcessor) handleData(cred *RPCGSSCredV1, verifBody []byte, requestB
 	mapper := p.mapper
 	p.mu.RUnlock()
 
-	var identity *metadata.Identity
+	var ident *metadata.Identity
 	if mapper != nil {
-		id, err := mapper.MapPrincipal(ctx.Principal, ctx.Realm)
+		principalKey := gssCtx.Principal + "@" + gssCtx.Realm
+		resolved, err := mapper.Resolve(ctx, principalKey)
 		if err != nil {
 			logger.Debug("GSS DATA: identity mapping failed",
-				"principal", ctx.Principal,
-				"realm", ctx.Realm,
+				"principal", gssCtx.Principal,
+				"realm", gssCtx.Realm,
 				"error", err,
 			)
 			return &GSSProcessResult{
-				Err: fmt.Errorf("identity mapping failed for %s@%s: %w", ctx.Principal, ctx.Realm, err),
+				Err: fmt.Errorf("identity mapping failed for %s@%s: %w", gssCtx.Principal, gssCtx.Realm, err),
 			}
 		}
-		identity = id
+		if resolved == nil {
+			return &GSSProcessResult{
+				Err: fmt.Errorf("identity mapping returned nil for %s@%s", gssCtx.Principal, gssCtx.Realm),
+			}
+		}
+		if !resolved.Found {
+			logger.Debug("GSS DATA: identity not found, falling back to nobody",
+				"principal", gssCtx.Principal,
+				"realm", gssCtx.Realm,
+			)
+			nobody := identity.NobodyIdentity()
+			resolved = nobody
+		}
+		ident = &metadata.Identity{
+			UID:      &resolved.UID,
+			GID:      &resolved.GID,
+			GIDs:     resolved.GIDs,
+			Username: resolved.Username,
+			Domain:   resolved.Domain,
+		}
 	}
 
 	logger.Debug("GSS DATA: request authenticated",
-		"principal", ctx.Principal,
-		"realm", ctx.Realm,
+		"principal", gssCtx.Principal,
+		"realm", gssCtx.Realm,
 		"seq_num", cred.SeqNum,
 		"cred_service", cred.Service,
 	)
@@ -1042,11 +963,11 @@ func (p *GSSProcessor) handleData(cred *RPCGSSCredV1, verifBody []byte, requestB
 
 	return &GSSProcessResult{
 		ProcessedData: processedData,
-		Identity:      identity,
+		Identity:      ident,
 		IsControl:     false,
 		SeqNum:        cred.SeqNum,
-		Service:       cred.Service, // Use credential's service level (per-call)
-		SessionKey:    ctx.SessionKey,
+		Service:       cred.Service,
+		SessionKey:    gssCtx.SessionKey,
 	}
 }
 
@@ -1071,15 +992,10 @@ func (p *GSSProcessor) handleDestroy(cred *RPCGSSCredV1) *GSSProcessResult {
 	// Delete the context
 	p.contexts.Delete(cred.Handle)
 
-	// Build an empty INIT response structure to serve as the DESTROY reply.
-	// Per RFC 2203, the DESTROY reply uses the same format as INIT response
-	// with an empty token.
+	// Per RFC 2203, DESTROY reply uses the same format as INIT response
 	destroyRes := &RPCGSSInitRes{
-		Handle:    cred.Handle,
-		GSSMajor:  GSSComplete,
-		GSSMinor:  0,
-		SeqWindow: 0,
-		GSSToken:  nil,
+		Handle:   cred.Handle,
+		GSSMajor: GSSComplete,
 	}
 
 	resBytes, err := EncodeGSSInitRes(destroyRes)
@@ -1125,7 +1041,7 @@ func (p *GSSProcessor) SetVerifier(v Verifier) {
 }
 
 // SetMapper replaces the identity mapper.
-func (p *GSSProcessor) SetMapper(m kerberos.IdentityMapper) {
+func (p *GSSProcessor) SetMapper(m identity.IdentityMapper) {
 	p.mu.Lock()
 	p.mapper = m
 	p.mu.Unlock()
