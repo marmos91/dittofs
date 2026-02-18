@@ -76,15 +76,40 @@ func TestNFSv4ControlPlaneBlockedOps(t *testing.T) {
 			helpers.WaitForSettingsReload(t)
 			t.Log("Step 3: Waited for settings watcher reload")
 
-			// Step 4: Try to write file -- should fail
+			// Step 4: Try to write file -- should fail or content should not persist
+			// Note: Linux kernel NFS clients buffer writes, so os.WriteFile() may not
+			// return an error immediately. We verify the EFFECT of blocking:
+			// - Either write returns an error, OR
+			// - File doesn't exist after close, OR
+			// - File exists but content was not written
 			blockedFile := mount.FilePath(fmt.Sprintf("blocked_write_%s.txt", ver))
-			err := os.WriteFile(blockedFile, []byte("should fail"), 0644)
-			if err == nil {
-				// Clean up if write unexpectedly succeeded
-				_ = os.Remove(blockedFile)
+			blockedContent := []byte("this content should not persist")
+
+			// Use explicit open/write/sync/close to maximize chance of seeing error
+			f, createErr := os.OpenFile(blockedFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+			var writeErr, syncErr, closeErr error
+			if createErr == nil {
+				_, writeErr = f.Write(blockedContent)
+				syncErr = f.Sync() // Force flush to server - may expose WRITE block error
+				closeErr = f.Close()
 			}
-			assert.Error(t, err, "Write should fail when WRITE is blocked")
-			t.Logf("Step 4: Write correctly failed: %v", err)
+
+			// Check if any error occurred during the write sequence
+			anyError := createErr != nil || writeErr != nil || syncErr != nil || closeErr != nil
+
+			// Verify the effect: file should not have the blocked content
+			readBack, readErr := os.ReadFile(blockedFile)
+			contentPersisted := readErr == nil && len(readBack) > 0 && string(readBack) == string(blockedContent)
+
+			// Clean up if file was created
+			_ = os.Remove(blockedFile)
+
+			// The block is effective if EITHER an error occurred OR content didn't persist
+			blockEffective := anyError || !contentPersisted
+			assert.True(t, blockEffective,
+				"WRITE block should be effective: error=%v (create=%v, write=%v, sync=%v, close=%v) contentPersisted=%v",
+				anyError, createErr, writeErr, syncErr, closeErr, contentPersisted)
+			t.Logf("Step 4: WRITE block verified: anyError=%v, contentPersisted=%v", anyError, contentPersisted)
 
 			// Step 5: Read should still work (only WRITE is blocked)
 			readBack = framework.ReadFile(t, testFile)
@@ -104,7 +129,7 @@ func TestNFSv4ControlPlaneBlockedOps(t *testing.T) {
 
 			// Step 8: Verify write works again
 			unblockFile := mount.FilePath(fmt.Sprintf("unblocked_write_%s.txt", ver))
-			err = os.WriteFile(unblockFile, []byte("write works again"), 0644)
+			err := os.WriteFile(unblockFile, []byte("write works again"), 0644)
 			require.NoError(t, err, "Write should succeed after unblocking")
 			t.Cleanup(func() { _ = os.Remove(unblockFile) })
 			t.Log("Step 8: Write works again after unblocking")

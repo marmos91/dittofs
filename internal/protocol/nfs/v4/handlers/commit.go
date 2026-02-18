@@ -129,6 +129,20 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 		}
 	}
 
+	// Flush pending metadata writes (deferred commit optimization)
+	// This is critical - without this, file size and other metadata changes
+	// are not persisted to the store, causing data loss on server restart.
+	flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, fileHandle)
+	if metaErr != nil {
+		logger.Warn("NFSv4 COMMIT metadata flush failed",
+			"error", metaErr,
+			"client", ctx.ClientAddr)
+		// Continue - payload is flushed, metadata will be fixed eventually
+	} else if flushed {
+		logger.Debug("NFSv4 COMMIT flushed pending metadata",
+			"client", ctx.ClientAddr)
+	}
+
 	logger.Debug("NFSv4 COMMIT successful",
 		"payloadID", file.PayloadID,
 		"client", ctx.ClientAddr)

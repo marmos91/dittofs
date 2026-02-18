@@ -121,6 +121,9 @@ type Runtime struct {
 	dnsCache     *dnsCache
 	dnsCacheOnce sync.Once
 
+	// Share change callbacks for dynamic updates (e.g., NFSv4 pseudo-fs rebuild)
+	shareChangeCallbacks []func(shares []string)
+
 	// Shutdown management
 	shutdownTimeout time.Duration
 
@@ -287,6 +290,19 @@ func (r *Runtime) shutdown() {
 	logger.Info("Stopping all adapters")
 	if err := r.StopAllAdapters(); err != nil {
 		logger.Warn("Error stopping adapters", "error", err)
+	}
+
+	// Flush any pending metadata writes before closing stores
+	// This is critical for deferred commit optimization - without this,
+	// file size and other metadata changes may be lost on shutdown.
+	if r.metadataService != nil {
+		logger.Info("Flushing pending metadata writes")
+		flushed, err := r.metadataService.FlushAllPendingWritesForShutdown(10 * time.Second)
+		if err != nil {
+			logger.Warn("Error flushing pending writes", "error", err, "flushed", flushed)
+		} else if flushed > 0 {
+			logger.Info("Flushed pending metadata writes", "count", flushed)
+		}
 	}
 
 	// Close metadata stores
@@ -460,21 +476,23 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	}
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	// Validate that metadata service exists
 	if r.metadataService == nil {
+		r.mu.Unlock()
 		return fmt.Errorf("metadata service not initialized")
 	}
 
 	// Check if share already exists
 	if _, exists := r.shares[config.Name]; exists {
+		r.mu.Unlock()
 		return fmt.Errorf("share %q already exists", config.Name)
 	}
 
 	// Validate that metadata store exists
 	metadataStore, exists := r.metadata[config.MetadataStore]
 	if !exists {
+		r.mu.Unlock()
 		return fmt.Errorf("metadata store %q not found", config.MetadataStore)
 	}
 
@@ -499,12 +517,14 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	// Create the root directory
 	rootFile, err := metadataStore.CreateRootDirectory(ctx, config.Name, rootAttr)
 	if err != nil {
+		r.mu.Unlock()
 		return fmt.Errorf("failed to create root directory: %w", err)
 	}
 
 	// Encode the root file handle
 	rootHandle, err := metadata.EncodeFileHandle(rootFile)
 	if err != nil {
+		r.mu.Unlock()
 		return fmt.Errorf("failed to encode root handle: %w", err)
 	}
 
@@ -540,8 +560,14 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	// Register the metadata store with the MetadataService for this share
 	if err := r.metadataService.RegisterStoreForShare(config.Name, metadataStore); err != nil {
 		delete(r.shares, config.Name)
+		r.mu.Unlock()
 		return fmt.Errorf("failed to configure metadata for share: %w", err)
 	}
+
+	r.mu.Unlock()
+
+	// Notify after releasing lock (callbacks may call ListShares)
+	r.notifyShareChange()
 
 	return nil
 }
@@ -550,14 +576,19 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 // Note: This does NOT close the underlying metadata store.
 func (r *Runtime) RemoveShare(name string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	_, exists := r.shares[name]
 	if !exists {
+		r.mu.Unlock()
 		return fmt.Errorf("share %q not found", name)
 	}
 
 	delete(r.shares, name)
+	r.mu.Unlock()
+
+	// Notify after releasing lock (callbacks may call ListShares)
+	r.notifyShareChange()
+
 	return nil
 }
 
@@ -624,6 +655,33 @@ func (r *Runtime) ShareExists(name string) bool {
 	defer r.mu.RUnlock()
 	_, exists := r.shares[name]
 	return exists
+}
+
+// OnShareChange registers a callback to be invoked when shares are added,
+// removed, or updated. The callback receives the current list of share names.
+// This is used by protocol adapters (e.g., NFS) to rebuild virtual namespaces.
+func (r *Runtime) OnShareChange(callback func(shares []string)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.shareChangeCallbacks = append(r.shareChangeCallbacks, callback)
+}
+
+// notifyShareChange invokes all registered share change callbacks.
+// Must NOT be called while holding r.mu to avoid deadlock (callbacks may call ListShares).
+func (r *Runtime) notifyShareChange() {
+	// Get current shares while holding lock
+	r.mu.RLock()
+	callbacks := r.shareChangeCallbacks
+	shares := make([]string, 0, len(r.shares))
+	for name := range r.shares {
+		shares = append(shares, name)
+	}
+	r.mu.RUnlock()
+
+	// Invoke callbacks without holding lock
+	for _, cb := range callbacks {
+		cb(shares)
+	}
 }
 
 // ============================================================================

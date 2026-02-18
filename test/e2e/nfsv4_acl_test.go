@@ -86,7 +86,8 @@ func TestNFSv4ACLLifecycle(t *testing.T) {
 		t.Cleanup(func() { _ = os.Remove(testFile) })
 
 		// Set ACL: OWNER@ gets full control, EVERYONE@ gets read+execute
-		aclSpec := "A::OWNER@:rwatTnNcCoy A::EVERYONE@:rtncy"
+		// ACEs must be newline-separated for nfs4_setfacl -s
+		aclSpec := "A::OWNER@:rwatTnNcCoy\nA::EVERYONE@:rtncy"
 		nfs4SetACL(t, testFile, aclSpec)
 
 		// Read ACL back
@@ -118,7 +119,7 @@ func TestNFSv4ACLLifecycle(t *testing.T) {
 		framework.WriteFile(t, testFile, []byte("owner access test"))
 		t.Cleanup(func() { _ = os.Remove(testFile) })
 
-		aclSpec := "A::OWNER@:rwatTnNcCoy A::EVERYONE@:rtncy"
+		aclSpec := "A::OWNER@:rwatTnNcCoy\nA::EVERYONE@:rtncy"
 		nfs4SetACL(t, testFile, aclSpec)
 
 		// OWNER@ (current user) should be able to read and write
@@ -137,7 +138,7 @@ func TestNFSv4ACLLifecycle(t *testing.T) {
 		t.Cleanup(func() { _ = os.Remove(testFile) })
 
 		// Set initial ACL with OWNER@ read/write and EVERYONE@ read
-		aclSpec := "A::OWNER@:rwatTnNcCoy A::EVERYONE@:rtncy"
+		aclSpec := "A::OWNER@:rwatTnNcCoy\nA::EVERYONE@:rtncy"
 		nfs4SetACL(t, testFile, aclSpec)
 
 		// Add deny ACE for EVERYONE@ write
@@ -186,7 +187,7 @@ func TestNFSv4ACLInheritance(t *testing.T) {
 
 	// Set ACL on directory with FILE_INHERIT (f) and DIRECTORY_INHERIT (d) flags
 	// A:fd: means ALLOW with file_inherit and directory_inherit
-	aclSpec := "A:fd:OWNER@:rwaDxtTnNcCoy A:fd:EVERYONE@:rxtncy"
+	aclSpec := "A:fd:OWNER@:rwaDxtTnNcCoy\nA:fd:EVERYONE@:rxtncy"
 	nfs4SetACL(t, parentDir, aclSpec)
 
 	// Verify ACL was set on parent directory
@@ -274,8 +275,11 @@ func TestNFSv4ACLAccessEnforcement(t *testing.T) {
 		t.Cleanup(func() { _ = os.Remove(testFile) })
 
 		// Set restrictive ACL: only OWNER@ can read/write
-		aclSpec := "A::OWNER@:rwatTnNcCoy D::EVERYONE@:rwaxdDtTnNcCoy"
+		// First set base ACL, then add deny ACE (same pattern as DenyACE test)
+		aclSpec := "A::OWNER@:rwatTnNcCoy\nA::EVERYONE@:rtncy"
 		nfs4SetACL(t, testFile, aclSpec)
+		// Add deny ACE for EVERYONE@ to prevent write/execute
+		nfs4AddACE(t, testFile, "D::EVERYONE@:wx")
 
 		// Read ACL back to verify enforcement rules are set
 		aces := nfs4GetACL(t, testFile)
@@ -298,7 +302,7 @@ func TestNFSv4ACLAccessEnforcement(t *testing.T) {
 		t.Cleanup(func() { _ = os.Remove(testFile) })
 
 		// Set initial ACL
-		aclSpec := "A::OWNER@:rwatTnNcCoy A::GROUP@:rtncy A::EVERYONE@:rtncy"
+		aclSpec := "A::OWNER@:rwatTnNcCoy\nA::GROUP@:rtncy\nA::EVERYONE@:rtncy"
 		nfs4SetACL(t, testFile, aclSpec)
 
 		// chmod should adjust OWNER@/GROUP@/EVERYONE@ ACEs
@@ -399,7 +403,7 @@ func TestNFSv4ACLCrossProtocol(t *testing.T) {
 	framework.WriteFile(t, testFile, []byte("cross-protocol ACL test"))
 	t.Cleanup(func() { _ = os.Remove(testFile) })
 
-	aclSpec := "A::OWNER@:rwatTnNcCoy A::EVERYONE@:rtncy"
+	aclSpec := "A::OWNER@:rwatTnNcCoy\nA::EVERYONE@:rtncy"
 	nfs4SetACL(t, testFile, aclSpec)
 
 	// Verify ACL was set on NFSv4 side

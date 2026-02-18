@@ -157,7 +157,9 @@ func SupportedAttrs() []uint32 {
 	SetBit(&bitmap, FATTR4_OWNER_GROUP)
 	SetBit(&bitmap, FATTR4_SPACE_USED)
 	SetBit(&bitmap, FATTR4_TIME_ACCESS)
+	SetBit(&bitmap, FATTR4_TIME_ACCESS_SET)  // Writable: allows clients to set atime via SETATTR
 	SetBit(&bitmap, FATTR4_TIME_MODIFY)
+	SetBit(&bitmap, FATTR4_TIME_MODIFY_SET)  // Writable: allows clients to set mtime via SETATTR
 	SetBit(&bitmap, FATTR4_MOUNTED_ON_FILEID)
 
 	return bitmap

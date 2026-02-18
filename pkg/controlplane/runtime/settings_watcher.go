@@ -182,6 +182,7 @@ func (w *SettingsWatcher) pollNFSSettings(ctx context.Context) error {
 				"delegations_enabled", settings.DelegationsEnabled,
 				"max_connections", settings.MaxConnections,
 				"max_compound_ops", settings.MaxCompoundOps,
+				"blocked_operations", settings.GetBlockedOperations(),
 			)
 		}
 	}

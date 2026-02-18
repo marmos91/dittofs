@@ -38,13 +38,32 @@ func GenerateRandomData(t *testing.T, size int64) []byte {
 }
 
 // WriteRandomFile creates a file with random content and returns its checksum.
+// The file is synced after writing to ensure data is flushed to the server,
+// which is important for async storage backends like S3.
 func WriteRandomFile(t *testing.T, path string, size int64) string {
 	t.Helper()
 
 	data := GenerateRandomData(t, size)
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	// Use explicit open/write/sync/close for proper flush on NFS
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("Failed to create file: %v", err)
+	}
+
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
 		t.Fatalf("Failed to write file: %v", err)
+	}
+
+	// Sync to ensure data is flushed to server (critical for S3 backend)
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		t.Fatalf("Failed to sync file: %v", err)
+	}
+
+	if err := f.Close(); err != nil {
+		t.Fatalf("Failed to close file: %v", err)
 	}
 
 	hash := sha256.Sum256(data)
@@ -98,12 +117,30 @@ func ReadFile(t *testing.T, path string) []byte {
 	return data
 }
 
-// WriteFile writes data to a file.
+// WriteFile writes data to a file with explicit sync.
+// The sync ensures data is flushed to the NFS server, which is critical
+// for NFSv4 with write-back caching and async backends.
 func WriteFile(t *testing.T, path string, data []byte) {
 	t.Helper()
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("Failed to create file %s: %v", path, err)
+	}
+
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
 		t.Fatalf("Failed to write file %s: %v", path, err)
+	}
+
+	// Sync to ensure data is flushed to server (critical for NFSv4)
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		t.Fatalf("Failed to sync file %s: %v", path, err)
+	}
+
+	if err := f.Close(); err != nil {
+		t.Fatalf("Failed to close file %s: %v", path, err)
 	}
 }
 

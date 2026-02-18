@@ -211,11 +211,13 @@ func TestDecodeFattr4ToSetAttrs_ServerTime(t *testing.T) {
 	if !setAttrs.MtimeNow {
 		t.Error("MtimeNow should be true")
 	}
-	if setAttrs.Atime != nil {
-		t.Error("Atime should be nil when using server time")
+	// SET_TO_SERVER_TIME should also populate Atime/Mtime with server time
+	// (matching NFSv3 behavior for compatibility with SetFileAttributes)
+	if setAttrs.Atime == nil {
+		t.Error("Atime should be set to server time")
 	}
-	if setAttrs.Mtime != nil {
-		t.Error("Mtime should be nil when using server time")
+	if setAttrs.Mtime == nil {
+		t.Error("Mtime should be set to server time")
 	}
 }
 

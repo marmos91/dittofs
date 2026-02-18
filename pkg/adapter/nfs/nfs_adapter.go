@@ -392,7 +392,12 @@ func (s *NFSAdapter) SetRuntime(rt *runtime.Runtime) {
 	v4StateManager := v4state.NewStateManager(v4state.DefaultLeaseDuration)
 	s.v4Handler = v4handlers.NewHandler(rt, s.pseudoFS, v4StateManager)
 	s.v4Handler.KerberosEnabled = s.kerberosConfig != nil
-	// TODO: Rebuild pseudo-fs dynamically when shares change (on share add/remove)
+
+	// Register callback to rebuild pseudo-fs when shares change (add/remove)
+	rt.OnShareChange(func(shares []string) {
+		s.pseudoFS.Rebuild(shares)
+		logger.Info("NFSv4 pseudo-fs rebuilt", "shares", len(shares))
+	})
 
 	// Create blocking queue for NLM lock operations
 	s.blockingQueue = blocking.NewBlockingQueue(nlm_handlers.DefaultBlockingQueueSize)

@@ -201,7 +201,32 @@ func (h *Handler) SetBlockedOps(opNames []string) {
 // IsOperationBlocked returns true if the given operation number is blocked
 // at the adapter level. Per-share blocked operations are checked separately
 // in the COMPOUND dispatcher using the CompoundContext after PUTFH resolves.
+//
+// This method reads live settings from the runtime's SettingsWatcher on every
+// call to support hot-reload of blocked operations. The SettingsWatcher provides
+// thread-safe reads via RLock, so this is safe for concurrent access.
+//
+// Fallback behavior:
+//   - If Registry is nil, check local blockedOps cache (for tests)
+//   - If settings are nil, check local blockedOps cache (settings not loaded yet)
+//   - Otherwise, read directly from live settings
 func (h *Handler) IsOperationBlocked(opNum uint32) bool {
+	// Try to read from live settings first (supports hot-reload)
+	if h.Registry != nil {
+		settings := h.Registry.GetNFSSettings()
+		if settings != nil {
+			blockedOps := settings.GetBlockedOperations()
+			// Check if this operation is in the blocked list
+			for _, name := range blockedOps {
+				if num, ok := types.OpNameToNum(name); ok && num == opNum {
+					return true
+				}
+			}
+			return false
+		}
+	}
+
+	// Fall back to local cache (for tests or when settings not available)
 	h.blockedOpsMu.RLock()
 	blocked := h.blockedOps
 	h.blockedOpsMu.RUnlock()

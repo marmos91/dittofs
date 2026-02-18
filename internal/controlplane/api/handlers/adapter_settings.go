@@ -168,16 +168,52 @@ func (h *AdapterSettingsHandler) GetSettings(w http.ResponseWriter, r *http.Requ
 	case "nfs":
 		settings, err := h.store.GetNFSAdapterSettings(r.Context(), adapter.ID)
 		if err != nil {
-			InternalServerError(w, "Failed to get NFS adapter settings")
-			return
+			// Settings may not exist yet if adapter was created without them.
+			// Try to create default settings on-demand.
+			if errors.Is(err, models.ErrAdapterNotFound) {
+				if ensureErr := h.store.EnsureAdapterSettings(r.Context()); ensureErr != nil {
+					logger.Error("Failed to ensure adapter settings", "error", ensureErr)
+					InternalServerError(w, "Failed to create NFS adapter settings")
+					return
+				}
+				// Retry after ensuring settings exist
+				settings, err = h.store.GetNFSAdapterSettings(r.Context(), adapter.ID)
+				if err != nil {
+					logger.Error("Failed to get NFS adapter settings after ensure", "adapter_id", adapter.ID, "error", err)
+					InternalServerError(w, "Failed to get NFS adapter settings")
+					return
+				}
+			} else {
+				logger.Error("Failed to get NFS adapter settings", "adapter_id", adapter.ID, "error", err)
+				InternalServerError(w, "Failed to get NFS adapter settings")
+				return
+			}
 		}
 		WriteJSONOK(w, nfsSettingsToResponse(settings))
 
 	case "smb":
 		settings, err := h.store.GetSMBAdapterSettings(r.Context(), adapter.ID)
 		if err != nil {
-			InternalServerError(w, "Failed to get SMB adapter settings")
-			return
+			// Settings may not exist yet if adapter was created without them.
+			// Try to create default settings on-demand.
+			if errors.Is(err, models.ErrAdapterNotFound) {
+				if ensureErr := h.store.EnsureAdapterSettings(r.Context()); ensureErr != nil {
+					logger.Error("Failed to ensure adapter settings", "error", ensureErr)
+					InternalServerError(w, "Failed to create SMB adapter settings")
+					return
+				}
+				// Retry after ensuring settings exist
+				settings, err = h.store.GetSMBAdapterSettings(r.Context(), adapter.ID)
+				if err != nil {
+					logger.Error("Failed to get SMB adapter settings after ensure", "adapter_id", adapter.ID, "error", err)
+					InternalServerError(w, "Failed to get SMB adapter settings")
+					return
+				}
+			} else {
+				logger.Error("Failed to get SMB adapter settings", "adapter_id", adapter.ID, "error", err)
+				InternalServerError(w, "Failed to get SMB adapter settings")
+				return
+			}
 		}
 		WriteJSONOK(w, smbSettingsToResponse(settings))
 
@@ -295,8 +331,15 @@ func (h *AdapterSettingsHandler) PutSettings(w http.ResponseWriter, r *http.Requ
 			return
 		}
 
+		// Re-fetch to get updated version (incremented by store)
+		updatedSettings, err := h.store.GetNFSAdapterSettings(r.Context(), adapter.ID)
+		if err != nil {
+			InternalServerError(w, "Failed to get updated NFS adapter settings")
+			return
+		}
+
 		h.auditLog(r, "NFS adapter settings replaced")
-		WriteJSONOK(w, nfsSettingsToResponse(settings))
+		WriteJSONOK(w, nfsSettingsToResponse(updatedSettings))
 
 	case "smb":
 		var req PutSMBSettingsRequest
@@ -333,8 +376,15 @@ func (h *AdapterSettingsHandler) PutSettings(w http.ResponseWriter, r *http.Requ
 			return
 		}
 
+		// Re-fetch to get updated version (incremented by store)
+		updatedSettings, err := h.store.GetSMBAdapterSettings(r.Context(), adapter.ID)
+		if err != nil {
+			InternalServerError(w, "Failed to get updated SMB adapter settings")
+			return
+		}
+
 		h.auditLog(r, "SMB adapter settings replaced")
-		WriteJSONOK(w, smbSettingsToResponse(settings))
+		WriteJSONOK(w, smbSettingsToResponse(updatedSettings))
 
 	default:
 		BadRequest(w, fmt.Sprintf("Unsupported adapter type: %s", adapterType))
@@ -431,8 +481,15 @@ func (h *AdapterSettingsHandler) PatchSettings(w http.ResponseWriter, r *http.Re
 			return
 		}
 
+		// Re-fetch to get updated version (incremented by store)
+		updatedSettings, err := h.store.GetNFSAdapterSettings(r.Context(), adapter.ID)
+		if err != nil {
+			InternalServerError(w, "Failed to get updated NFS adapter settings")
+			return
+		}
+
 		h.auditLog(r, "NFS adapter settings updated (patch)")
-		WriteJSONOK(w, nfsSettingsToResponse(settings))
+		WriteJSONOK(w, nfsSettingsToResponse(updatedSettings))
 
 	case "smb":
 		var req PatchSMBSettingsRequest
@@ -485,8 +542,15 @@ func (h *AdapterSettingsHandler) PatchSettings(w http.ResponseWriter, r *http.Re
 			return
 		}
 
+		// Re-fetch to get updated version (incremented by store)
+		updatedSettings, err := h.store.GetSMBAdapterSettings(r.Context(), adapter.ID)
+		if err != nil {
+			InternalServerError(w, "Failed to get updated SMB adapter settings")
+			return
+		}
+
 		h.auditLog(r, "SMB adapter settings updated (patch)")
-		WriteJSONOK(w, smbSettingsToResponse(settings))
+		WriteJSONOK(w, smbSettingsToResponse(updatedSettings))
 
 	default:
 		BadRequest(w, fmt.Sprintf("Unsupported adapter type: %s", adapterType))
@@ -561,8 +625,14 @@ func (h *AdapterSettingsHandler) ResetSettings(w http.ResponseWriter, r *http.Re
 			InternalServerError(w, "Failed to reset NFS adapter setting")
 			return
 		}
+		// Re-fetch to get updated version (incremented by store)
+		updatedSettings, err := h.store.GetNFSAdapterSettings(r.Context(), adapter.ID)
+		if err != nil {
+			InternalServerError(w, "Failed to get updated NFS adapter settings")
+			return
+		}
 		h.auditLog(r, fmt.Sprintf("NFS adapter setting '%s' reset to default", settingName))
-		WriteJSONOK(w, nfsSettingsToResponse(settings))
+		WriteJSONOK(w, nfsSettingsToResponse(updatedSettings))
 
 	case "smb":
 		settings, err := h.store.GetSMBAdapterSettings(r.Context(), adapter.ID)
@@ -579,8 +649,14 @@ func (h *AdapterSettingsHandler) ResetSettings(w http.ResponseWriter, r *http.Re
 			InternalServerError(w, "Failed to reset SMB adapter setting")
 			return
 		}
+		// Re-fetch to get updated version (incremented by store)
+		updatedSettings, err := h.store.GetSMBAdapterSettings(r.Context(), adapter.ID)
+		if err != nil {
+			InternalServerError(w, "Failed to get updated SMB adapter settings")
+			return
+		}
 		h.auditLog(r, fmt.Sprintf("SMB adapter setting '%s' reset to default", settingName))
-		WriteJSONOK(w, smbSettingsToResponse(settings))
+		WriteJSONOK(w, smbSettingsToResponse(updatedSettings))
 
 	default:
 		BadRequest(w, fmt.Sprintf("Unsupported adapter type: %s", adapterType))

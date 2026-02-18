@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
@@ -131,6 +132,19 @@ func (h *Handler) readDirRealFS(ctx *types.CompoundContext, cookie uint64, maxco
 		}
 	}
 
+	// Debug logging for READDIR
+	entryNames := make([]string, len(page.Entries))
+	for i, e := range page.Entries {
+		entryNames[i] = e.Name
+	}
+	logger.Debug("NFSv4 READDIR entries from metadata service",
+		"cookie", cookie,
+		"maxcount", maxcount,
+		"entries_count", len(page.Entries),
+		"entries", entryNames,
+		"has_more", page.HasMore,
+		"client", ctx.ClientAddr)
+
 	// Build response
 	var buf bytes.Buffer
 	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
@@ -140,6 +154,8 @@ func (h *Handler) readDirRealFS(ctx *types.CompoundContext, cookie uint64, maxco
 
 	// Encode directory entries
 	encodedSize := uint32(buf.Len())
+	entriesEncoded := 0
+	truncatedDueToSize := false
 	for _, entry := range page.Entries {
 		// Pre-encode the entry to check size
 		var entryBuf bytes.Buffer
@@ -171,29 +187,39 @@ func (h *Handler) readDirRealFS(ctx *types.CompoundContext, cookie uint64, maxco
 		// Check maxcount limit
 		entrySize := uint32(entryBuf.Len())
 		if maxcount > 0 && encodedSize+entrySize+4 > maxcount { // +4 for eof bool
-			if encodedSize == uint32(12+8) { // status(4) + cookieverf(8)
+			if encodedSize == uint32(12) { // status(4) + cookieverf(8)
 				return &types.CompoundResult{
 					Status: types.NFS4ERR_TOOSMALL,
 					OpCode: types.OP_READDIR,
 					Data:   encodeStatusOnly(types.NFS4ERR_TOOSMALL),
 				}
 			}
+			truncatedDueToSize = true
 			break
 		}
 
 		buf.Write(entryBuf.Bytes())
 		encodedSize += entrySize
+		entriesEncoded++
 	}
 
 	// value_follows = false (no more entries in this batch)
 	_ = xdr.WriteUint32(&buf, 0)
 
-	// eof
-	if !page.HasMore {
+	// eof: true only if metadata service says no more AND we didn't truncate due to size
+	eof := !page.HasMore && !truncatedDueToSize
+	if eof {
 		_ = xdr.WriteUint32(&buf, 1) // true: no more entries
 	} else {
 		_ = xdr.WriteUint32(&buf, 0) // false: more entries available
 	}
+
+	logger.Debug("NFSv4 READDIR response",
+		"entries_encoded", entriesEncoded,
+		"truncated", truncatedDueToSize,
+		"eof", eof,
+		"response_size", buf.Len(),
+		"client", ctx.ClientAddr)
 
 	return &types.CompoundResult{
 		Status: types.NFS4_OK,
@@ -231,6 +257,8 @@ func (h *Handler) readDirPseudoFS(ctx *types.CompoundContext, cookie uint64, max
 	//
 	// entry4: cookie (uint64) + name (XDR string) + attrs (fattr4)
 	encodedSize := uint32(buf.Len())
+	truncatedDueToSize := false
+	allEntriesProcessed := true
 	for i, child := range children {
 		// Cookie is child index + 1 (0 means "start from beginning")
 		entryCookie := uint64(i + 1)
@@ -259,7 +287,7 @@ func (h *Handler) readDirPseudoFS(ctx *types.CompoundContext, cookie uint64, max
 		entrySize := uint32(entryBuf.Len())
 		if maxcount > 0 && encodedSize+entrySize+4 > maxcount { // +4 for eof bool
 			// Would exceed maxcount; if no entries encoded yet, return NFS4ERR_TOOSMALL
-			if encodedSize == uint32(12+8) { // status(4) + cookieverf(8)
+			if encodedSize == uint32(12) { // status(4) + cookieverf(8)
 				return &types.CompoundResult{
 					Status: types.NFS4ERR_TOOSMALL,
 					OpCode: types.OP_READDIR,
@@ -267,6 +295,8 @@ func (h *Handler) readDirPseudoFS(ctx *types.CompoundContext, cookie uint64, max
 				}
 			}
 			// Stop encoding entries; not EOF since more entries exist
+			truncatedDueToSize = true
+			allEntriesProcessed = false
 			break
 		}
 
@@ -277,8 +307,12 @@ func (h *Handler) readDirPseudoFS(ctx *types.CompoundContext, cookie uint64, max
 	// value_follows = false (no more entries)
 	_ = xdr.WriteUint32(&buf, 0)
 
-	// eof = true (pseudo-fs directories are always fully enumerable)
-	_ = xdr.WriteUint32(&buf, 1)
+	// eof: true only if all entries were processed and we didn't truncate due to size
+	if allEntriesProcessed && !truncatedDueToSize {
+		_ = xdr.WriteUint32(&buf, 1) // true: no more entries
+	} else {
+		_ = xdr.WriteUint32(&buf, 0) // false: more entries available
+	}
 
 	return &types.CompoundResult{
 		Status: types.NFS4_OK,

@@ -129,6 +129,10 @@ func TestServerRestartRecovery(t *testing.T) {
 
 	for _, ver := range versions {
 		t.Run(fmt.Sprintf("VerifyAfterRestart/v%s", ver), func(t *testing.T) {
+			// NFSv4 metadata persistence was fixed by adding FlushPendingWriteForFile
+			// calls to COMMIT and CLOSE handlers, plus FlushAllPendingWritesForShutdown
+			// during graceful shutdown.
+
 			mount := framework.MountNFSExportWithVersion(t, nfsPort, "/export", ver)
 			t.Cleanup(mount.Cleanup)
 
@@ -174,32 +178,6 @@ func TestStaleNFSHandle(t *testing.T) {
 		t.Skip("Skipping stale NFS handle test in short mode")
 	}
 
-	nfsPort := helpers.FindFreePort(t)
-
-	// -- Phase 1: Start first server, create file --
-
-	sp1 := helpers.StartServerProcess(t, "")
-	runner1 := helpers.LoginAsAdmin(t, sp1.APIURL())
-
-	metaStore := helpers.UniqueTestName("stale-meta")
-	payloadStore := helpers.UniqueTestName("stale-payload")
-
-	_, err := runner1.CreateMetadataStore(metaStore, "memory")
-	require.NoError(t, err)
-
-	_, err = runner1.CreatePayloadStore(payloadStore, "memory")
-	require.NoError(t, err)
-
-	_, err = runner1.CreateShare("/export", metaStore, payloadStore)
-	require.NoError(t, err)
-
-	_, err = runner1.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
-	require.NoError(t, err)
-
-	err = helpers.WaitForAdapterStatus(t, runner1, "nfs", true, 5*time.Second)
-	require.NoError(t, err)
-	framework.WaitForServer(t, nfsPort, 10*time.Second)
-
 	versions := []string{"3"}
 	if !isNFSv4SkippedPlatform() {
 		versions = append(versions, "4.0")
@@ -208,17 +186,43 @@ func TestStaleNFSHandle(t *testing.T) {
 	for _, ver := range versions {
 		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
+			// Each version runs its own complete test cycle to avoid
+			// server lifecycle conflicts between subtests.
+			nfsPort := helpers.FindFreePort(t)
+			fileName := fmt.Sprintf("stale_handle_v%s.txt", ver)
+
+			// -- Phase 1: Start first server, create file --
+
+			sp1 := helpers.StartServerProcess(t, "")
+			runner1 := helpers.LoginAsAdmin(t, sp1.APIURL())
+
+			metaStore := helpers.UniqueTestName("stale-meta")
+			payloadStore := helpers.UniqueTestName("stale-payload")
+
+			_, err := runner1.CreateMetadataStore(metaStore, "memory")
+			require.NoError(t, err)
+
+			_, err = runner1.CreatePayloadStore(payloadStore, "memory")
+			require.NoError(t, err)
+
+			_, err = runner1.CreateShare("/export", metaStore, payloadStore)
+			require.NoError(t, err)
+
+			_, err = runner1.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
+			require.NoError(t, err)
+
+			err = helpers.WaitForAdapterStatus(t, runner1, "nfs", true, 5*time.Second)
+			require.NoError(t, err)
+			framework.WaitForServer(t, nfsPort, 10*time.Second)
+
 			// Mount and create a file
 			mount := framework.MountNFSExportWithVersion(t, nfsPort, "/export", ver)
 
-			filePath := mount.FilePath(fmt.Sprintf("stale_handle_v%s.txt", ver))
+			filePath := mount.FilePath(fileName)
 			framework.WriteFile(t, filePath, []byte("ephemeral content"))
 
 			assert.True(t, framework.FileExists(filePath),
 				"File should exist before server restart (v%s)", ver)
-
-			// Remember the filename for later check
-			fileName := fmt.Sprintf("stale_handle_v%s.txt", ver)
 
 			// Unmount before stopping server
 			mount.Unmount()
@@ -238,7 +242,7 @@ func TestStaleNFSHandle(t *testing.T) {
 			metaStore2 := helpers.UniqueTestName("stale-meta2")
 			payloadStore2 := helpers.UniqueTestName("stale-payload2")
 
-			_, err := runner2.CreateMetadataStore(metaStore2, "memory")
+			_, err = runner2.CreateMetadataStore(metaStore2, "memory")
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = runner2.DeleteMetadataStore(metaStore2) })
 
@@ -274,9 +278,6 @@ func TestStaleNFSHandle(t *testing.T) {
 				"Error should be ENOENT (file not found), got: %v", readErr)
 
 			t.Logf("Stale handle v%s: PASSED (ENOENT after memory backend restart)", ver)
-
-			// Reset: start a fresh server for the next iteration
-			// Only needed if there are more versions to test
 		})
 	}
 }

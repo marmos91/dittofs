@@ -259,6 +259,8 @@ func decodeSingleSetAttr(reader io.Reader, bit uint32, setAttrs *metadata.SetAtt
 		}
 		switch how {
 		case SET_TO_SERVER_TIME4:
+			t := time.Now()
+			setAttrs.Atime = &t
 			setAttrs.AtimeNow = true
 		case SET_TO_CLIENT_TIME4:
 			t, err := decodeNFSTime4(reader)
@@ -278,6 +280,8 @@ func decodeSingleSetAttr(reader io.Reader, bit uint32, setAttrs *metadata.SetAtt
 		}
 		switch how {
 		case SET_TO_SERVER_TIME4:
+			t := time.Now()
+			setAttrs.Mtime = &t
 			setAttrs.MtimeNow = true
 		case SET_TO_CLIENT_TIME4:
 			t, err := decodeNFSTime4(reader)

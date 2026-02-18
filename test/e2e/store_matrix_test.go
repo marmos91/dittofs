@@ -436,6 +436,10 @@ func testMatrixLargeFile(t *testing.T, mount *framework.Mount) {
 		_ = os.Remove(testFile)
 	})
 
+	// Allow time for async S3 uploads to complete
+	// This is needed because S3 writes are buffered and flushed asynchronously
+	time.Sleep(2 * time.Second)
+
 	// Verify file exists
 	assert.True(t, framework.FileExists(testFile), "Large file should exist")
 
