@@ -80,6 +80,7 @@ func (s *GORMStore) DeleteAdapter(ctx context.Context, adapterType string) error
 }
 
 // EnsureDefaultAdapters creates the default NFS and SMB adapters if they don't exist.
+// Also creates default adapter settings for any adapters that lack them.
 // Returns true if any adapters were created.
 func (s *GORMStore) EnsureDefaultAdapters(ctx context.Context) (bool, error) {
 	created := false
@@ -112,6 +113,11 @@ func (s *GORMStore) EnsureDefaultAdapters(ctx context.Context) (bool, error) {
 			return created, err
 		}
 		created = true
+	}
+
+	// Ensure adapter settings exist for all adapters (including newly created ones)
+	if err := s.EnsureAdapterSettings(ctx); err != nil {
+		return created, err
 	}
 
 	return created, nil

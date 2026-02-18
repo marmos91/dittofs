@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"io"
 	"os"
+	"os/exec"
+	"runtime"
 	"testing"
 )
 
@@ -36,13 +38,32 @@ func GenerateRandomData(t *testing.T, size int64) []byte {
 }
 
 // WriteRandomFile creates a file with random content and returns its checksum.
+// The file is synced after writing to ensure data is flushed to the server,
+// which is important for async storage backends like S3.
 func WriteRandomFile(t *testing.T, path string, size int64) string {
 	t.Helper()
 
 	data := GenerateRandomData(t, size)
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	// Use explicit open/write/sync/close for proper flush on NFS
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("Failed to create file: %v", err)
+	}
+
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
 		t.Fatalf("Failed to write file: %v", err)
+	}
+
+	// Sync to ensure data is flushed to server (critical for S3 backend)
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		t.Fatalf("Failed to sync file: %v", err)
+	}
+
+	if err := f.Close(); err != nil {
+		t.Fatalf("Failed to close file: %v", err)
 	}
 
 	hash := sha256.Sum256(data)
@@ -96,12 +117,30 @@ func ReadFile(t *testing.T, path string) []byte {
 	return data
 }
 
-// WriteFile writes data to a file.
+// WriteFile writes data to a file with explicit sync.
+// The sync ensures data is flushed to the NFS server, which is critical
+// for NFSv4 with write-back caching and async backends.
 func WriteFile(t *testing.T, path string, data []byte) {
 	t.Helper()
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("Failed to create file %s: %v", path, err)
+	}
+
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
 		t.Fatalf("Failed to write file %s: %v", path, err)
+	}
+
+	// Sync to ensure data is flushed to server (critical for NFSv4)
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		t.Fatalf("Failed to sync file %s: %v", path, err)
+	}
+
+	if err := f.Close(); err != nil {
+		t.Fatalf("Failed to close file %s: %v", path, err)
 	}
 }
 
@@ -216,4 +255,37 @@ func CountDirs(t *testing.T, path string) int {
 		}
 	}
 	return count
+}
+
+// SkipIfDarwin skips the test on macOS with an explanatory message.
+// NFSv4 feature tests require Linux because macOS NFSv4 client has known
+// limitations and reliability issues.
+func SkipIfDarwin(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "darwin" {
+		t.Skip("Skipping: NFSv4 feature tests require Linux")
+	}
+}
+
+// SkipIfNoNFS4ACLTools skips the test if nfs4_setfacl and nfs4_getfacl
+// are not found in PATH. These tools are provided by nfs4-acl-tools and
+// are required for NFSv4 ACL manipulation tests.
+func SkipIfNoNFS4ACLTools(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("nfs4_setfacl"); err != nil {
+		t.Skip("Skipping: nfs4_setfacl not found in PATH (install nfs4-acl-tools)")
+	}
+	if _, err := exec.LookPath("nfs4_getfacl"); err != nil {
+		t.Skip("Skipping: nfs4_getfacl not found in PATH (install nfs4-acl-tools)")
+	}
+}
+
+// SkipIfNFSv4Unsupported skips the test on platforms where NFSv4 mount
+// is not reliable. On macOS (Darwin), the NFSv4 client has known issues
+// with pseudo-filesystem browsing, delegations, and stateful operations.
+func SkipIfNFSv4Unsupported(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "darwin" {
+		t.Skip("Skipping: NFSv4 mount is unreliable on macOS (Darwin NFSv4 client known issues)")
+	}
 }

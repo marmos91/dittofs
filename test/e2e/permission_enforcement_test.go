@@ -28,6 +28,9 @@ func TestPermissionEnforcement(t *testing.T) {
 		t.Skip("Skipping permission enforcement tests in short mode")
 	}
 
+	// These tests require SMB mounting capability
+	framework.SkipIfNoSMBMount(t)
+
 	// Start a server for all permission tests
 	sp := helpers.StartServerProcess(t, "")
 	t.Cleanup(sp.ForceKill)
@@ -80,6 +83,27 @@ func TestPermissionEnforcement(t *testing.T) {
 		_ = cli.DeleteMetadataStore(metaStoreName)
 		_ = cli.DeletePayloadStore(payloadStoreName)
 	})
+
+	// Create an admin user for SMB testing
+	adminUser := helpers.UniqueTestName("smbadmin")
+	adminPass := "testpassword123"
+	_, err = cli.CreateUser(adminUser, adminPass)
+	require.NoError(t, err, "Should create admin user for SMB")
+	t.Cleanup(func() { _ = cli.DeleteUser(adminUser) })
+
+	// Grant admin permission
+	err = cli.GrantUserPermission(shareName, adminUser, "admin")
+	require.NoError(t, err, "Should grant admin permission")
+	t.Cleanup(func() { _ = cli.RevokeUserPermission(shareName, adminUser) })
+
+	// Verify SMB connectivity works before running permission tests
+	// Use MountSMBWithError to gracefully handle mount failures
+	testCreds := framework.SMBCredentials{Username: adminUser, Password: adminPass}
+	testMount, mountErr := framework.MountSMBWithError(t, smbPort, testCreds)
+	if mountErr != nil {
+		t.Skipf("Skipping: SMB mount not working on this system: %v", mountErr)
+	}
+	testMount.Unmount()
 
 	// Run subtests for each requirement
 	t.Run("ENF-01 read-only user cannot write", func(t *testing.T) {

@@ -53,7 +53,7 @@ services:
       - s3-backend
 
   localstack:
-    image: localstack/localstack:latest
+    image: localstack/localstack:4.13.1
     container_name: dfs-localstack
     ports:
       - "4566:4566"

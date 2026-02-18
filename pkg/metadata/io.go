@@ -1,6 +1,7 @@
 package metadata
 
 import (
+	"context"
 	"time"
 
 	"github.com/google/uuid"
@@ -383,6 +384,40 @@ func (s *MetadataService) flushPendingWrite(ctx *AuthContext, handle FileHandle,
 // Used by GETATTR to return accurate file size before flush.
 func (s *MetadataService) GetPendingSize(handle FileHandle) (uint64, bool) {
 	return s.pendingWrites.GetPendingSize(handle)
+}
+
+// FlushAllPendingWritesForShutdown flushes all pending metadata writes during shutdown.
+// Unlike FlushPendingWrites, this method doesn't require an AuthContext and uses a
+// background context with a timeout. This should be called during graceful shutdown
+// to ensure all metadata changes are persisted before closing stores.
+func (s *MetadataService) FlushAllPendingWritesForShutdown(timeout time.Duration) (int, error) {
+	entries := s.pendingWrites.PopAllPending()
+	if len(entries) == 0 {
+		return 0, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	// Create a minimal auth context for store operations.
+	// This is safe because flushPendingWrite only uses authCtx.Context for
+	// deadline/cancellation - it does not check UID/GID/Groups since the
+	// write was already authorized when the pending state was created.
+	authCtx := &AuthContext{Context: ctx}
+
+	flushed := 0
+	var lastErr error
+
+	for _, entry := range entries {
+		if err := s.flushPendingWrite(authCtx, entry.Handle, entry.State); err != nil {
+			lastErr = err
+			// Continue flushing other files
+		} else {
+			flushed++
+		}
+	}
+
+	return flushed, lastErr
 }
 
 // PrewarmWriteCache pre-populates the file metadata cache for a file.

@@ -626,6 +626,21 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 	default:
 	}
 
+	// Check if this operation is blocked via adapter settings.
+	if c.isOperationBlocked(procedure.Name) {
+		logger.Debug("NFSv3 operation blocked by adapter settings",
+			"procedure", procedure.Name,
+			"client", clientAddr,
+			"xid", fmt.Sprintf("0x%x", call.XID))
+
+		// Return a minimal NFS3ERR_NOTSUPP response
+		result := c.makeBlockedOpResponse()
+		if c.server.metrics != nil {
+			c.server.metrics.RecordRequest(procedure.Name, share, 0, nfs.NFSStatusToString(nfs_types.NFS3ErrNotSupp))
+		}
+		return result.Data, nil
+	}
+
 	// ============================================================================
 	// Metrics Instrumentation (Transparent to Handlers)
 	// ============================================================================
@@ -1226,5 +1241,46 @@ func (c *NFSConnection) handleRequestPanic(clientAddr string, xid uint32) {
 			"xid", fmt.Sprintf("0x%x", xid),
 			"error", r,
 			"stack", stack)
+	}
+}
+
+// isOperationBlocked checks if the given operation is blocked via adapter
+// settings. Reads from the runtime's settings watcher for hot-reload support.
+// Used for NFSv3 dispatch; NFSv4 has its own blocked ops mechanism via Handler.SetBlockedOps.
+func (c *NFSConnection) isOperationBlocked(opName string) bool {
+	if c.server.registry == nil {
+		return false
+	}
+
+	settings := c.server.registry.GetNFSSettings()
+	if settings == nil {
+		return false
+	}
+
+	blockedOps := settings.GetBlockedOperations()
+	for _, blocked := range blockedOps {
+		if blocked == opName {
+			return true
+		}
+	}
+	return false
+}
+
+// makeBlockedOpResponse creates an NFS3ERR_NOTSUPP response for a blocked operation.
+// The response contains the status code followed by empty WCC data (pre_op=false,
+// post_op=false), which clients handle gracefully per RFC 1813.
+func (c *NFSConnection) makeBlockedOpResponse() *nfs.HandlerResult {
+	response := make([]byte, 12)
+
+	// Write status code as big-endian uint32
+	status := uint32(nfs_types.NFS3ErrNotSupp)
+	binary.BigEndian.PutUint32(response[0:4], status)
+	// bytes 4-7: pre_op_attr present flag = 0 (false)
+	// bytes 8-11: post_op_attr present flag = 0 (false)
+	// (already zero-initialized)
+
+	return &nfs.HandlerResult{
+		Data:      response,
+		NFSStatus: nfs_types.NFS3ErrNotSupp,
 	}
 }

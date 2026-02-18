@@ -339,14 +339,14 @@ Plans:
   3. Delegation E2E tests verify grant and recall
   4. Kerberos E2E tests verify all three flavors
   5. NFSv3 backward compatibility confirmed (still works)
-**Plans**: TBD
+**Plans**: 5 plans in 2 waves
 
 Plans:
-- [ ] 15-01: Basic NFSv4 operation E2E tests
-- [ ] 15-02: NFSv4 locking E2E tests
-- [ ] 15-03: Delegation E2E tests
-- [ ] 15-04: Kerberos authentication E2E tests
-- [ ] 15-05: ACL and backward compatibility tests
+- [ ] 15-01-PLAN.md — Framework extensions (MountNFSWithVersion, platform skips) + basic NFSv4 operations E2E (mount, file I/O, symlink, hardlink, SETATTR, RENAME, OPEN modes, pseudo-fs, READDIR, golden path, stale handle, backward compat)
+- [ ] 15-02-PLAN.md — NFSv4 locking E2E (lock/unlock cycles, read/write locks, overlapping ranges, upgrade, cross-client) + delegation E2E (grant, recall, revoke, multi-client)
+- [ ] 15-03-PLAN.md — NFSv4 ACL E2E (set/read/enforce/inherit, cross-protocol interop) + Kerberos v4 extended tests (auth denial, identity mapping, multi-flavor, concurrent users)
+- [ ] 15-04-PLAN.md — Version-parameterized store matrix (v3+v4 x 9 backends), file size matrix, multi-share/multi-client + server restart/recovery, squash behavior, client reconnection
+- [ ] 15-05-PLAN.md — pjdfstest NFSv4 support (issue #122), control plane v2.0 mount-level tests, stress tests (-tags=stress)
 
 ---
 
@@ -615,7 +615,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 | 12. Kerberos Authentication | v2.0 | 5/5 | Complete | 2026-02-15 |
 | 13. NFSv4 ACLs | v2.0 | 0/5 | Planned | - |
 | 14. Control Plane v2.0 | v2.0 | Complete    | 2026-02-16 | - |
-| 15. v2.0 Testing | v2.0 | 0/5 | Not started | - |
+| 15. v2.0 Testing | v2.0 | 0/5 | Planned | - |
 | 16. Session Infrastructure | v3.0 | 0/4 | Not started | - |
 | 17. Exactly-Once Semantics | v3.0 | 0/4 | Not started | - |
 | 18. Backchannel | v3.0 | 0/4 | Not started | - |
@@ -658,3 +658,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 28
 *Phase 12 completed: 2026-02-15*
 *Phase 13 planned: 2026-02-16 (5 plans in 3 waves -- ACL core, identity mapper, metadata+NFS integration, SMB interop+CLI)*
 *Phase 14 planned: 2026-02-16 (7 plans in 4 waves -- data models, API+CLI+runtime, adapter enforcement+tests, E2E tests)*
+*Phase 15 planned: 2026-02-17 (5 plans in 2 waves -- framework+basic ops, then locking/delegation/ACL/Kerberos/matrix/recovery/POSIX/stress in parallel)*

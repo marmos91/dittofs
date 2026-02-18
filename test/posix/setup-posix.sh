@@ -8,7 +8,7 @@
 # 4. Mounts the NFS share
 #
 # Usage:
-#   ./setup-posix.sh [config-type]
+#   ./setup-posix.sh [config-type] [--nfs-version 3|4|4.0]
 #
 # Config types:
 #   memory         - Memory metadata store (default)
@@ -17,14 +17,78 @@
 #   memory-content - Memory metadata + memory payload store
 #   cache-s3       - Memory metadata + S3 payload store (requires localstack)
 #
+# NFS versions:
+#   3   - NFSv3 (default, backward compatible)
+#   4   - NFSv4.0
+#   4.0 - NFSv4.0 (explicit minor version)
+#
 # Example:
 #   sudo ./setup-posix.sh memory
+#   sudo ./setup-posix.sh memory --nfs-version 4
+#   sudo ./setup-posix.sh badger --nfs-version 4.0
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-CONFIG_TYPE="${1:-memory}"
+
+# Parse arguments: first positional arg is config type, then named params
+CONFIG_TYPE="memory"
+NFS_VERSION="3"
+
+# Parse positional and named arguments
+POSITIONAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --nfs-version)
+            NFS_VERSION="${2:-3}"
+            shift 2
+            ;;
+        --nfs-version=*)
+            NFS_VERSION="${1#*=}"
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: $0 [config-type] [--nfs-version 3|4|4.0]"
+            echo ""
+            echo "Config types: memory (default), badger, postgres, memory-content, cache-s3"
+            echo "NFS versions: 3 (default), 4, 4.0"
+            echo ""
+            echo "Examples:"
+            echo "  sudo $0 memory                    # NFSv3 with memory stores"
+            echo "  sudo $0 memory --nfs-version 4    # NFSv4 with memory stores"
+            echo "  sudo $0 badger --nfs-version 4.0  # NFSv4 with BadgerDB stores"
+            exit 0
+            ;;
+        -*)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [config-type] [--nfs-version 3|4|4.0]"
+            exit 1
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# First positional arg is config type
+if [[ ${#POSITIONAL_ARGS[@]} -gt 0 ]]; then
+    CONFIG_TYPE="${POSITIONAL_ARGS[0]}"
+fi
+
+# Normalize NFS version: "4" -> "4.0"
+case "$NFS_VERSION" in
+    3) ;;
+    4|4.0)
+        NFS_VERSION="4.0"
+        ;;
+    *)
+        echo "Error: Invalid NFS version '$NFS_VERSION'. Valid values: 3, 4, 4.0"
+        exit 1
+        ;;
+esac
+
 CONFIG_FILE="$SCRIPT_DIR/configs/config.yaml"
 
 # Set paths based on config type
@@ -116,7 +180,7 @@ wait_for_api() {
 
 # Start DittoFS server
 start_server() {
-    log_info "Starting DittoFS server (config type: $CONFIG_TYPE)"
+    log_info "Starting DittoFS server (config type: $CONFIG_TYPE, NFS version: $NFS_VERSION)"
 
     # Create data directory
     mkdir -p "$DATA_DIR"
@@ -218,7 +282,7 @@ configure_via_api() {
     # Verify NFS port is listening
     if ! nc -zv localhost $NFS_PORT 2>&1; then
         log_error "NFS adapter failed to start on port $NFS_PORT"
-        cat /tmp/dittofs-posix-server.log | tail -50
+        tail -50 /tmp/dittofs-posix-server.log
         return 1
     fi
 
@@ -227,24 +291,37 @@ configure_via_api() {
 
 # Mount NFS share
 mount_nfs() {
-    log_info "Mounting NFS share..."
+    log_info "Mounting NFS share (version: NFSv${NFS_VERSION})..."
 
     mkdir -p "$MOUNT_POINT"
 
-    # Mount with NFSv3
-    # noac disables attribute caching to ensure fresh attributes for tests
-    # that delete and recreate files with the same name
-    # sync forces synchronous operations to prevent SETATTR coalescing issues
-    # lookupcache=none disables name lookup caching
-    mount -t nfs -o nfsvers=3,tcp,port=$NFS_PORT,mountport=$NFS_PORT,nolock,noac,sync,lookupcache=none \
-        localhost:/export "$MOUNT_POINT"
+    case "$NFS_VERSION" in
+        3)
+            # NFSv3 mount options:
+            # noac disables attribute caching to ensure fresh attributes for tests
+            # that delete and recreate files with the same name
+            # sync forces synchronous operations to prevent SETATTR coalescing issues
+            # lookupcache=none disables name lookup caching
+            mount -t nfs -o nfsvers=3,tcp,port=$NFS_PORT,mountport=$NFS_PORT,nolock,noac,sync,lookupcache=none \
+                localhost:/export "$MOUNT_POINT"
+            ;;
+        4.0)
+            # NFSv4.0 mount options:
+            # No mountport (NFSv4 does not use separate mount protocol)
+            # No nolock (NFSv4 has integrated locking, not NLM-based)
+            # noac and sync for test consistency
+            # lookupcache=none disables name lookup caching
+            mount -t nfs -o vers=4.0,port=$NFS_PORT,noac,sync,lookupcache=none \
+                localhost:/export "$MOUNT_POINT"
+            ;;
+    esac
 
-    log_info "NFS share mounted at $MOUNT_POINT"
+    log_info "NFS share mounted at $MOUNT_POINT (NFSv${NFS_VERSION})"
 }
 
 # Main
 main() {
-    log_info "Setting up POSIX tests with config type: $CONFIG_TYPE"
+    log_info "Setting up POSIX tests with config type: $CONFIG_TYPE, NFS version: $NFS_VERSION"
 
     cleanup_existing
     start_server
@@ -255,6 +332,7 @@ main() {
     log_info "Setup complete!"
     log_info ""
     log_info "Mount point: $MOUNT_POINT"
+    log_info "NFS version: NFSv${NFS_VERSION}"
     log_info "Server log:  /tmp/dittofs-posix-server.log"
     log_info "Data dir:    $DATA_DIR"
     log_info ""

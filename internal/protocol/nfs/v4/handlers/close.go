@@ -8,6 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/protocol/xdr"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // handleClose implements the CLOSE operation (RFC 7530 Section 16.3).
@@ -82,6 +83,26 @@ func (h *Handler) handleClose(ctx *types.CompoundContext, reader io.Reader) *typ
 			Status: nfsStatus,
 			OpCode: types.OP_CLOSE,
 			Data:   encodeStatusOnly(nfsStatus),
+		}
+	}
+
+	// Flush pending metadata writes to persist file size and other changes,
+	// even if the client doesn't send COMMIT.
+	if authCtx, _, err := h.buildV4AuthContext(ctx, ctx.CurrentFH); err != nil {
+		logger.Warn("NFSv4 CLOSE: failed to build auth context for flush",
+			"error", err, "client", ctx.ClientAddr)
+	} else if metaSvc, metaErr := getMetadataServiceForCtx(h); metaErr != nil {
+		logger.Warn("NFSv4 CLOSE: metadata service unavailable for flush",
+			"error", metaErr, "client", ctx.ClientAddr)
+	} else {
+		fileHandle := metadata.FileHandle(ctx.CurrentFH)
+		flushed, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, fileHandle)
+		if flushErr != nil {
+			logger.Warn("NFSv4 CLOSE metadata flush failed",
+				"error", flushErr, "client", ctx.ClientAddr)
+		} else if flushed {
+			logger.Debug("NFSv4 CLOSE flushed pending metadata",
+				"client", ctx.ClientAddr)
 		}
 	}
 
