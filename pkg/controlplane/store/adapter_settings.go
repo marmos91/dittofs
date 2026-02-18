@@ -62,22 +62,45 @@ func (s *GORMStore) UpdateNFSAdapterSettings(ctx context.Context, settings *mode
 }
 
 func (s *GORMStore) ResetNFSAdapterSettings(ctx context.Context, adapterID string) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Verify adapter exists
-		var adapter models.AdapterConfig
-		if err := tx.Where("id = ?", adapterID).First(&adapter).Error; err != nil {
-			return convertNotFoundError(err, models.ErrAdapterNotFound)
-		}
+	// Get existing settings to verify they exist
+	var existing models.NFSAdapterSettings
+	if err := s.db.WithContext(ctx).Where("adapter_id = ?", adapterID).First(&existing).Error; err != nil {
+		return convertNotFoundError(err, models.ErrAdapterNotFound)
+	}
 
-		// Delete existing settings
-		if err := tx.Where("adapter_id = ?", adapterID).Delete(&models.NFSAdapterSettings{}).Error; err != nil {
-			return err
-		}
+	// Reset all fields to defaults while preserving identity and incrementing version.
+	// Using update-in-place instead of delete+create to maintain monotonic version counter.
+	defaults := models.NewDefaultNFSSettings(adapterID)
+	result := s.db.WithContext(ctx).
+		Model(&models.NFSAdapterSettings{}).
+		Where("id = ?", existing.ID).
+		Updates(map[string]any{
+			"min_version":               defaults.MinVersion,
+			"max_version":               defaults.MaxVersion,
+			"lease_time":                defaults.LeaseTime,
+			"grace_period":              defaults.GracePeriod,
+			"delegation_recall_timeout": defaults.DelegationRecallTimeout,
+			"callback_timeout":          defaults.CallbackTimeout,
+			"lease_break_timeout":       defaults.LeaseBreakTimeout,
+			"max_connections":           defaults.MaxConnections,
+			"max_clients":               defaults.MaxClients,
+			"max_compound_ops":          defaults.MaxCompoundOps,
+			"max_read_size":             defaults.MaxReadSize,
+			"max_write_size":            defaults.MaxWriteSize,
+			"preferred_transfer_size":   defaults.PreferredTransferSize,
+			"delegations_enabled":       defaults.DelegationsEnabled,
+			"blocked_operations":        "",
+			"version":                   gorm.Expr("version + 1"),
+			"updated_at":                time.Now(),
+		})
 
-		// Create new default settings
-		defaults := models.NewDefaultNFSSettings(adapterID)
-		return tx.Create(defaults).Error
-	})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return models.ErrAdapterNotFound
+	}
+	return nil
 }
 
 func (s *GORMStore) GetSMBAdapterSettings(ctx context.Context, adapterID string) (*models.SMBAdapterSettings, error) {
@@ -122,22 +145,38 @@ func (s *GORMStore) UpdateSMBAdapterSettings(ctx context.Context, settings *mode
 }
 
 func (s *GORMStore) ResetSMBAdapterSettings(ctx context.Context, adapterID string) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Verify adapter exists
-		var adapter models.AdapterConfig
-		if err := tx.Where("id = ?", adapterID).First(&adapter).Error; err != nil {
-			return convertNotFoundError(err, models.ErrAdapterNotFound)
-		}
+	// Get existing settings to verify they exist
+	var existing models.SMBAdapterSettings
+	if err := s.db.WithContext(ctx).Where("adapter_id = ?", adapterID).First(&existing).Error; err != nil {
+		return convertNotFoundError(err, models.ErrAdapterNotFound)
+	}
 
-		// Delete existing settings
-		if err := tx.Where("adapter_id = ?", adapterID).Delete(&models.SMBAdapterSettings{}).Error; err != nil {
-			return err
-		}
+	// Reset all fields to defaults while preserving identity and incrementing version.
+	// Using update-in-place instead of delete+create to maintain monotonic version counter.
+	defaults := models.NewDefaultSMBSettings(adapterID)
+	result := s.db.WithContext(ctx).
+		Model(&models.SMBAdapterSettings{}).
+		Where("id = ?", existing.ID).
+		Updates(map[string]any{
+			"min_dialect":          defaults.MinDialect,
+			"max_dialect":          defaults.MaxDialect,
+			"session_timeout":      defaults.SessionTimeout,
+			"oplock_break_timeout": defaults.OplockBreakTimeout,
+			"max_connections":      defaults.MaxConnections,
+			"max_sessions":         defaults.MaxSessions,
+			"enable_encryption":    defaults.EnableEncryption,
+			"blocked_operations":   "",
+			"version":              gorm.Expr("version + 1"),
+			"updated_at":           time.Now(),
+		})
 
-		// Create new default settings
-		defaults := models.NewDefaultSMBSettings(adapterID)
-		return tx.Create(defaults).Error
-	})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return models.ErrAdapterNotFound
+	}
+	return nil
 }
 
 // EnsureAdapterSettings creates default settings records for adapters that lack them.
