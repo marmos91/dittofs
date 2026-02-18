@@ -376,7 +376,7 @@
             inherit version;
             src = ./.;
 
-            vendorHash = "sha256-ObvJ0kEBS+DM+SOrY0D8qwOsbIsmQCWgpLXXf6oRdqQ=";
+            vendorHash = "sha256-nEbpeEH1cDv0bLYdjI3ewMGQDokq7WF0C172PPZHSH8=";
 
             subPackages = [ "cmd/dfs" ];
 
