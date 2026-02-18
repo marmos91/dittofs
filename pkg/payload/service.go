@@ -2,13 +2,25 @@ package payload
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/payload/chunk"
 	"github.com/marmos91/dittofs/pkg/payload/transfer"
+)
+
+// Cache-full retry constants.
+// When the cache is full of pending data, we retry with exponential backoff
+// to allow background uploads to drain pending blocks before failing.
+const (
+	cacheFullMaxRetries    = 10
+	cacheFullInitialDelay  = 5 * time.Millisecond
+	cacheFullMaxDelay      = 100 * time.Millisecond
+	cacheFullBackoffFactor = 2
 )
 
 // PayloadService is the persistence layer for file payload (content) data.
@@ -230,6 +242,11 @@ func (s *PayloadService) Exists(ctx context.Context, id metadata.PayloadID) (boo
 // Eager upload: After each block write, complete 4MB blocks are uploaded
 // immediately in background goroutines. This reduces data remaining for
 // Flush() and improves SMB CLOSE latency.
+//
+// Backpressure: If the cache is full of pending data (ErrCacheFull), the write
+// retries with exponential backoff to allow background uploads to drain pending
+// blocks. This prevents data loss during large sequential writes where the write
+// rate temporarily exceeds the upload drain rate.
 func (s *PayloadService) WriteAt(ctx context.Context, id metadata.PayloadID, data []byte, offset uint64) error {
 	if len(data) == 0 {
 		return nil
@@ -244,10 +261,11 @@ func (s *PayloadService) WriteAt(ctx context.Context, id metadata.PayloadID, dat
 		// Calculate chunk-level offset from block coordinates
 		chunkOffset := chunk.ChunkOffsetForBlock(blockRange.BlockIndex) + blockRange.Offset
 
-		// Write block range to cache
-		err := s.cache.WriteAt(ctx, payloadID, blockRange.ChunkIndex, data[blockRange.BufOffset:dataEnd], chunkOffset)
+		// Write block range to cache with retry on backpressure
+		err := s.writeBlockWithRetry(ctx, payloadID, blockRange.ChunkIndex, blockRange.BlockIndex,
+			data[blockRange.BufOffset:dataEnd], chunkOffset)
 		if err != nil {
-			return fmt.Errorf("write block %d/%d failed: %w", blockRange.ChunkIndex, blockRange.BlockIndex, err)
+			return err
 		}
 
 		// Trigger eager upload for any complete 4MB blocks (non-blocking)
@@ -255,6 +273,57 @@ func (s *PayloadService) WriteAt(ctx context.Context, id metadata.PayloadID, dat
 	}
 
 	return nil
+}
+
+// writeBlockWithRetry writes a block range to cache, retrying with exponential
+// backoff when the cache is full of pending data (ErrCacheFull).
+//
+// This implements backpressure: instead of failing immediately when the cache
+// is temporarily full, we wait for background uploads to drain pending blocks.
+// This is critical for large sequential writes (e.g., 100MB file copy) where
+// write throughput can temporarily exceed the eager upload drain rate.
+func (s *PayloadService) writeBlockWithRetry(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32, data []byte, chunkOffset uint32) error {
+	delay := cacheFullInitialDelay
+
+	for attempt := 0; attempt <= cacheFullMaxRetries; attempt++ {
+		err := s.cache.WriteAt(ctx, payloadID, chunkIdx, data, chunkOffset)
+		if err == nil {
+			return nil
+		}
+
+		// Only retry on cache-full backpressure errors
+		if !errors.Is(err, cache.ErrCacheFull) {
+			return fmt.Errorf("write block %d/%d failed: %w", chunkIdx, blockIdx, err)
+		}
+
+		// Check context before retrying
+		if ctx.Err() != nil {
+			return fmt.Errorf("write block %d/%d failed (context cancelled during backpressure): %w", chunkIdx, blockIdx, err)
+		}
+
+		if attempt < cacheFullMaxRetries {
+			logger.Debug("Cache full, waiting for uploads to drain",
+				"payloadID", payloadID,
+				"chunkIdx", chunkIdx,
+				"blockIdx", blockIdx,
+				"attempt", attempt+1,
+				"delay", delay)
+
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return fmt.Errorf("write block %d/%d failed (context cancelled during backpressure): %w", chunkIdx, blockIdx, err)
+			}
+
+			// Exponential backoff with cap
+			delay *= time.Duration(cacheFullBackoffFactor)
+			if delay > cacheFullMaxDelay {
+				delay = cacheFullMaxDelay
+			}
+		}
+	}
+
+	return fmt.Errorf("write block %d/%d failed after %d retries: %w", chunkIdx, blockIdx, cacheFullMaxRetries, cache.ErrCacheFull)
 }
 
 // Truncate truncates payload to the specified size.
