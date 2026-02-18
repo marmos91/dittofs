@@ -535,7 +535,7 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 	}
 
 	if attrs.Mtime != nil {
-		logger.Info("SetFileAttributes: applying mtime change",
+		logger.Debug("SetFileAttributes: applying mtime change",
 			"old_mtime", file.Mtime.Unix(),
 			"new_mtime", attrs.Mtime.Unix(),
 			"path", file.Path)

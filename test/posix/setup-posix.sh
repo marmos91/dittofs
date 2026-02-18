@@ -79,9 +79,7 @@ fi
 
 # Normalize NFS version: "4" -> "4.0"
 case "$NFS_VERSION" in
-    3)
-        NFS_VERSION="3"
-        ;;
+    3) ;;
     4|4.0)
         NFS_VERSION="4.0"
         ;;
@@ -284,7 +282,7 @@ configure_via_api() {
     # Verify NFS port is listening
     if ! nc -zv localhost $NFS_PORT 2>&1; then
         log_error "NFS adapter failed to start on port $NFS_PORT"
-        cat /tmp/dittofs-posix-server.log | tail -50
+        tail -50 /tmp/dittofs-posix-server.log
         return 1
     fi
 

@@ -169,11 +169,7 @@ func TestLookup_RealFS_ResolvesChild(t *testing.T) {
 	ctx.CurrentFH = make([]byte, len(fx.rootHandle))
 	copy(ctx.CurrentFH, fx.rootHandle)
 
-	// Call the handler directly
-	reader := bytes.NewReader(nil)
 	result := fx.handler.lookupInRealFS(ctx, "hello.txt")
-
-	_ = reader // reader unused for LOOKUP real-FS (name passed directly)
 
 	if result.Status != types.NFS4_OK {
 		t.Fatalf("LOOKUP status = %d, want NFS4_OK", result.Status)
@@ -467,9 +463,8 @@ func TestReadDir_RealFS_PaginationWithTruncation(t *testing.T) {
 		t.Fatalf("encoded status = %d, want NFS4_OK", status)
 	}
 
-	// Cookie verifier (8 bytes)
-	cookieVerf := make([]byte, 8)
-	_, _ = reader.Read(cookieVerf)
+	// Skip cookie verifier (8 bytes)
+	_, _ = reader.Read(make([]byte, 8))
 
 	// Read entries and track last cookie for pagination
 	var entryNames []string
@@ -509,7 +504,7 @@ func TestReadDir_RealFS_PaginationWithTruncation(t *testing.T) {
 
 	// If truncated, eof MUST be 0 (false)
 	if eof != 0 {
-		t.Errorf("eof = %d when entries were truncated, want 0 (false) - THIS IS THE BUG!", eof)
+		t.Errorf("eof = %d when entries were truncated, want 0 (false)", eof)
 	}
 
 	// Continue pagination with the last cookie

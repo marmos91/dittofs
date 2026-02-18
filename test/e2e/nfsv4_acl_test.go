@@ -3,7 +3,6 @@
 package e2e
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -436,16 +435,3 @@ func TestNFSv4ACLCrossProtocol(t *testing.T) {
 	t.Log("NFSv4 ACL cross-protocol interop test passed")
 }
 
-// =============================================================================
-// Server Setup Helper (NFSv4 ACL-specific)
-// =============================================================================
-
-// setupNFSv4ACLTestServer is a convenience alias for the shared setup.
-// ACL tests use memory/memory stores and require only NFS adapter.
-func setupNFSv4ACLTestServer(t *testing.T) (*helpers.ServerProcess, *helpers.CLIRunner, int) {
-	t.Helper()
-	return setupNFSv4TestServer(t)
-}
-
-// Ensure fmt is used (for cross-protocol test logging)
-var _ = fmt.Sprintf

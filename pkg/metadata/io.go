@@ -392,15 +392,6 @@ func (s *MetadataService) GetPendingSize(handle FileHandle) (uint64, bool) {
 // to ensure all metadata changes are persisted before closing stores.
 func (s *MetadataService) FlushAllPendingWritesForShutdown(timeout time.Duration) (int, error) {
 	entries := s.pendingWrites.PopAllPending()
-
-	// Log how many entries we're about to flush
-	if len(entries) > 0 {
-		for _, entry := range entries {
-			// Log each entry's details for debugging
-			_ = entry // Will iterate and process below
-		}
-	}
-
 	if len(entries) == 0 {
 		return 0, nil
 	}

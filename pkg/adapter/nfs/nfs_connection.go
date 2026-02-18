@@ -626,14 +626,7 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 	default:
 	}
 
-	// ============================================================================
-	// Blocked Operations Check (Control Plane v2.0)
-	// ============================================================================
-	//
-	// Check if this operation is blocked via adapter settings before dispatch.
-	// Blocked operations return NFS3ERR_NOTSUPP to the client.
-	// This mirrors NFSv4 compound.go behavior at line 97.
-	//
+	// Check if this operation is blocked via adapter settings.
 	if c.isNFSv3OperationBlocked(procedure.Name) {
 		logger.Debug("NFSv3 operation blocked by adapter settings",
 			"procedure", procedure.Name,
@@ -641,7 +634,7 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 			"xid", fmt.Sprintf("0x%x", call.XID))
 
 		// Return a minimal NFS3ERR_NOTSUPP response
-		result := c.makeBlockedOpResponse(procedure.Name)
+		result := c.makeBlockedOpResponse()
 		if c.server.metrics != nil {
 			c.server.metrics.RecordRequest(procedure.Name, share, 0, nfs.NFSStatusToString(nfs_types.NFS3ErrNotSupp))
 		}
@@ -1252,13 +1245,8 @@ func (c *NFSConnection) handleRequestPanic(clientAddr string, xid uint32) {
 }
 
 // isNFSv3OperationBlocked checks if the given NFSv3 operation is blocked
-// via adapter settings. This reads from the runtime's settings watcher
-// for hot-reload support.
-//
-// Parameters:
-//   - opName: The operation name (e.g., "WRITE", "READ", "REMOVE")
-//
-// Returns true if the operation is in the blocked operations list.
+// via adapter settings. Reads from the runtime's settings watcher for
+// hot-reload support.
 func (c *NFSConnection) isNFSv3OperationBlocked(opName string) bool {
 	if c.server.registry == nil {
 		return false
@@ -1279,24 +1267,9 @@ func (c *NFSConnection) isNFSv3OperationBlocked(opName string) bool {
 }
 
 // makeBlockedOpResponse creates an NFS3ERR_NOTSUPP response for a blocked operation.
-// This is used when an operation is blocked via control plane settings.
-//
-// The response is a minimal XDR-encoded structure with:
-//   - Status: NFS3ERR_NOTSUPP (10004)
-//   - For operations requiring WCC data: empty/nil WCC data
-//
-// Parameters:
-//   - opName: The operation name (for logging/debugging purposes)
-//
-// Returns a HandlerResult with the encoded error response.
-func (c *NFSConnection) makeBlockedOpResponse(opName string) *nfs.HandlerResult {
-	// Most NFSv3 error responses start with status code.
-	// For operations that require WCC data, we include empty WCC.
-	// The client handles missing WCC gracefully per RFC 1813.
-
-	// Create response with status + empty WCC data (pre_op=false, post_op=false)
-	// This handles WRITE, SETATTR, CREATE, MKDIR, REMOVE, RMDIR, RENAME, LINK, SYMLINK, etc.
-	// Total: 12 bytes for status + minimal WCC
+// The response contains the status code followed by empty WCC data (pre_op=false,
+// post_op=false), which clients handle gracefully per RFC 1813.
+func (c *NFSConnection) makeBlockedOpResponse() *nfs.HandlerResult {
 	response := make([]byte, 12)
 
 	// Write status code as big-endian uint32

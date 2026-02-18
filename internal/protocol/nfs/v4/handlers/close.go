@@ -86,35 +86,23 @@ func (h *Handler) handleClose(ctx *types.CompoundContext, reader io.Reader) *typ
 		}
 	}
 
-	// Flush pending metadata writes (deferred commit optimization)
-	// This ensures file size and other metadata changes are persisted
-	// when the file is closed, even if the client doesn't send COMMIT.
-	authCtx, _, err := h.buildV4AuthContext(ctx, ctx.CurrentFH)
-	if err != nil {
-		logger.Warn("NFSv4 CLOSE: buildV4AuthContext failed, skipping flush",
-			"error", err,
-			"client", ctx.ClientAddr)
+	// Flush pending metadata writes to persist file size and other changes,
+	// even if the client doesn't send COMMIT.
+	if authCtx, _, err := h.buildV4AuthContext(ctx, ctx.CurrentFH); err != nil {
+		logger.Warn("NFSv4 CLOSE: failed to build auth context for flush",
+			"error", err, "client", ctx.ClientAddr)
+	} else if metaSvc, metaErr := getMetadataServiceForCtx(h); metaErr != nil {
+		logger.Warn("NFSv4 CLOSE: metadata service unavailable for flush",
+			"error", metaErr, "client", ctx.ClientAddr)
 	} else {
-		metaSvc, metaErr := getMetadataServiceForCtx(h)
-		if metaErr != nil {
-			logger.Warn("NFSv4 CLOSE: getMetadataServiceForCtx failed, skipping flush",
-				"error", metaErr,
+		fileHandle := metadata.FileHandle(ctx.CurrentFH)
+		flushed, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, fileHandle)
+		if flushErr != nil {
+			logger.Warn("NFSv4 CLOSE metadata flush failed",
+				"error", flushErr, "client", ctx.ClientAddr)
+		} else if flushed {
+			logger.Debug("NFSv4 CLOSE flushed pending metadata",
 				"client", ctx.ClientAddr)
-		} else {
-			fileHandle := metadata.FileHandle(ctx.CurrentFH)
-			flushed, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, fileHandle)
-			if flushErr != nil {
-				logger.Warn("NFSv4 CLOSE metadata flush failed",
-					"error", flushErr,
-					"client", ctx.ClientAddr)
-				// Continue - state is closed, metadata will be fixed eventually
-			} else if flushed {
-				logger.Info("NFSv4 CLOSE flushed pending metadata",
-					"client", ctx.ClientAddr)
-			} else {
-				logger.Debug("NFSv4 CLOSE no pending metadata to flush",
-					"client", ctx.ClientAddr)
-			}
 		}
 	}
 

@@ -62,6 +62,31 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 log_step()  { echo -e "${BLUE}[STEP]${NC} $*"; }
 
+usage() {
+    cat <<'USAGE'
+Usage: sudo ./run-e2e.sh [options]
+
+Options:
+  --s3                 Start Localstack for S3 tests (stop after tests)
+  --keep-localstack    Keep Localstack running after tests (for repeated runs)
+  --test PATTERN       Run specific test pattern (-run PATTERN)
+  --verbose            Enable verbose test output (-v)
+  --coverage           Generate coverage profile (-coverprofile=coverage-e2e.out)
+  --stress             Include stress tests (-tags='e2e,stress')
+  --nfs-version VER    Set DITTOFS_E2E_NFS_VERSION env var (3, 4, 4.0)
+  --timeout DURATION   Set test timeout (default: 30m)
+  --race               Enable race detector (-race)
+  --help               Show this help message
+
+Examples:
+  sudo ./run-e2e.sh                                  # Run all E2E tests
+  sudo ./run-e2e.sh --verbose                        # Run with verbose output
+  sudo ./run-e2e.sh --test TestNFSv4BasicOperations  # Run specific test
+  sudo ./run-e2e.sh --s3                             # Include S3 tests
+  sudo ./run-e2e.sh --nfs-version 4                  # Set NFS version for tests
+USAGE
+}
+
 # =============================================================================
 # Parse arguments
 # =============================================================================
@@ -104,7 +129,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --timeout)
-            TIMEOUT="${2:-30m}"
+            TIMEOUT="${2:-}"
             shift 2
             ;;
         --timeout=*)
@@ -116,7 +141,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --help|-h)
-            head -40 "$0" | tail -35
+            usage
             exit 0
             ;;
         *)

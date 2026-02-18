@@ -38,8 +38,10 @@ go.work.sum
 *.swo
 *~
 
-# Build artifacts (binary at root level only)
+# Build artifacts (binaries at root level only)
 /dittofs
+/dfs
+/dfsctl
 /main
 
 # Operator binaries and tools

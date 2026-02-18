@@ -257,8 +257,7 @@ func (h *Handler) readDirPseudoFS(ctx *types.CompoundContext, cookie uint64, max
 	//
 	// entry4: cookie (uint64) + name (XDR string) + attrs (fattr4)
 	encodedSize := uint32(buf.Len())
-	truncatedDueToSize := false
-	allEntriesProcessed := true
+	allEntriesEncoded := true
 	for i, child := range children {
 		// Cookie is child index + 1 (0 means "start from beginning")
 		entryCookie := uint64(i + 1)
@@ -294,9 +293,7 @@ func (h *Handler) readDirPseudoFS(ctx *types.CompoundContext, cookie uint64, max
 					Data:   encodeStatusOnly(types.NFS4ERR_TOOSMALL),
 				}
 			}
-			// Stop encoding entries; not EOF since more entries exist
-			truncatedDueToSize = true
-			allEntriesProcessed = false
+			allEntriesEncoded = false
 			break
 		}
 
@@ -307,8 +304,8 @@ func (h *Handler) readDirPseudoFS(ctx *types.CompoundContext, cookie uint64, max
 	// value_follows = false (no more entries)
 	_ = xdr.WriteUint32(&buf, 0)
 
-	// eof: true only if all entries were processed and we didn't truncate due to size
-	if allEntriesProcessed && !truncatedDueToSize {
+	// eof: true only if all entries fit within maxcount
+	if allEntriesEncoded {
 		_ = xdr.WriteUint32(&buf, 1) // true: no more entries
 	} else {
 		_ = xdr.WriteUint32(&buf, 0) // false: more entries available

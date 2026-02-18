@@ -114,7 +114,7 @@ if [[ -n "$NFS_VERSION" ]]; then
     echo "NFS version: NFSv${NFS_VERSION}"
 else
     # Try to detect NFS version from mount output
-    DETECTED_VERSION=$(mount | grep "$MOUNT_POINT" | grep -oP 'vers=\K[0-9.]+' 2>/dev/null || echo "")
+    DETECTED_VERSION=$(mount | grep "$MOUNT_POINT" | sed -n 's/.*vers=\([0-9.]*\).*/\1/p' 2>/dev/null || echo "")
     if [[ -n "$DETECTED_VERSION" ]]; then
         echo "NFS version: NFSv${DETECTED_VERSION} (detected from mount)"
     else
