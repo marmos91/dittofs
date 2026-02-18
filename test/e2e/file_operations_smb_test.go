@@ -27,9 +27,7 @@ import (
 // Note: SMB requires authenticated user (unlike NFS AUTH_UNIX).
 // Tests create a dedicated user with read-write permission on the share.
 func TestSMBFileOperations(t *testing.T) {
-	// TODO: Fix SMB file operations - see GitHub issue for details
-	// SMB adapter has implementation issues causing file operation failures
-	t.Skip("Skipping: SMB file operations need investigation (SMB-01 through SMB-06)")
+	// SMB file operations - investigating for GitHub issue #130
 
 	if testing.Short() {
 		t.Skip("Skipping SMB file operations tests in short mode")

@@ -27,9 +27,7 @@ import (
 // This test proves the shared metadata/content store architecture works correctly
 // by validating that changes made via one protocol are visible via the other.
 func TestCrossProtocolInterop(t *testing.T) {
-	// TODO: Fix cross-protocol tests - requires SMB adapter fixes first
-	// See GitHub issue for SMB file operation failures
-	t.Skip("Skipping: Cross-protocol tests depend on SMB fixes (XPR-01 through XPR-06)")
+	// Cross-protocol tests - investigating for GitHub issue #130
 
 	if testing.Short() {
 		t.Skip("Skipping cross-protocol interop tests in short mode")
