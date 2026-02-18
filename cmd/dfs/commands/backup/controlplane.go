@@ -165,6 +165,12 @@ func runControlplaneBackup(cmd *cobra.Command, args []string) error {
 
 // backupSQLiteNative creates a backup using VACUUM INTO (pure Go, no CLI needed).
 func backupSQLiteNative(_ context.Context, cfg *store.Config, outputPath string) error {
+	// Check if source database exists before attempting backup.
+	// This prevents store.New() from creating a new empty database.
+	if _, err := os.Stat(cfg.SQLite.Path); os.IsNotExist(err) {
+		return fmt.Errorf("source database not found: %s", cfg.SQLite.Path)
+	}
+
 	cpStore, err := store.New(cfg)
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
