@@ -436,16 +436,13 @@ func testMatrixLargeFile(t *testing.T, mount *framework.Mount) {
 		_ = os.Remove(testFile)
 	})
 
-	// Allow time for async S3 uploads to complete
-	// This is needed because S3 writes are buffered and flushed asynchronously
-	time.Sleep(2 * time.Second)
-
-	// Verify file exists
-	assert.True(t, framework.FileExists(testFile), "Large file should exist")
-
-	// Verify file size
-	info := framework.GetFileInfo(t, testFile)
-	assert.Equal(t, int64(1*1024*1024), info.Size, "File size should be 1MB")
+	// Wait for async S3 uploads to complete by polling for expected file size.
+	// S3 writes are buffered and flushed asynchronously, so we retry until the
+	// file is fully visible rather than using a fixed sleep.
+	require.Eventually(t, func() bool {
+		info, err := os.Stat(testFile)
+		return err == nil && info.Size() == int64(1*1024*1024)
+	}, 10*time.Second, 250*time.Millisecond, "Large file should reach 1MB within timeout")
 
 	// Verify checksum
 	framework.VerifyFileChecksum(t, testFile, checksum)

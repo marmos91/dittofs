@@ -627,7 +627,7 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 	}
 
 	// Check if this operation is blocked via adapter settings.
-	if c.isNFSv3OperationBlocked(procedure.Name) {
+	if c.isOperationBlocked(procedure.Name) {
 		logger.Debug("NFSv3 operation blocked by adapter settings",
 			"procedure", procedure.Name,
 			"client", clientAddr,
@@ -1244,10 +1244,10 @@ func (c *NFSConnection) handleRequestPanic(clientAddr string, xid uint32) {
 	}
 }
 
-// isNFSv3OperationBlocked checks if the given NFSv3 operation is blocked
-// via adapter settings. Reads from the runtime's settings watcher for
-// hot-reload support.
-func (c *NFSConnection) isNFSv3OperationBlocked(opName string) bool {
+// isOperationBlocked checks if the given operation is blocked via adapter
+// settings. Reads from the runtime's settings watcher for hot-reload support.
+// Used for NFSv3 dispatch; NFSv4 has its own blocked ops mechanism via Handler.SetBlockedOps.
+func (c *NFSConnection) isOperationBlocked(opName string) bool {
 	if c.server.registry == nil {
 		return false
 	}

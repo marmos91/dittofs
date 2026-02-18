@@ -228,7 +228,7 @@ start_localstack() {
         -p 4566:4566 \
         -e SERVICES=s3 \
         -e DEFAULT_REGION=us-east-1 \
-        localstack/localstack:latest
+        localstack/localstack:4.13.1
 
     LOCALSTACK_CONTAINER="dittofs-localstack"
 

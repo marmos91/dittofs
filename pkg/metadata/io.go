@@ -399,7 +399,10 @@ func (s *MetadataService) FlushAllPendingWritesForShutdown(timeout time.Duration
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	// Create a minimal auth context for store operations
+	// Create a minimal auth context for store operations.
+	// This is safe because flushPendingWrite only uses authCtx.Context for
+	// deadline/cancellation - it does not check UID/GID/Groups since the
+	// write was already authorized when the pending state was created.
 	authCtx := &AuthContext{Context: ctx}
 
 	flushed := 0

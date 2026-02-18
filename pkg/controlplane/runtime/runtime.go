@@ -668,6 +668,9 @@ func (r *Runtime) OnShareChange(callback func(shares []string)) {
 
 // notifyShareChange invokes all registered share change callbacks.
 // Must NOT be called while holding r.mu to avoid deadlock (callbacks may call ListShares).
+// Note: there is a benign race between reading the share list and invoking callbacks -
+// if a share is added/removed concurrently, callbacks may see a slightly stale list.
+// This is acceptable because callbacks reconcile state and will catch up on the next change.
 func (r *Runtime) notifyShareChange() {
 	// Get current shares while holding lock
 	r.mu.RLock()
