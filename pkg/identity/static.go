@@ -2,7 +2,6 @@ package identity
 
 import (
 	"context"
-	"fmt"
 )
 
 // StaticIdentity represents a Unix identity for a specific principal.
@@ -97,18 +96,4 @@ func (m *StaticMapper) Resolve(_ context.Context, principal string) (*ResolvedId
 		Domain:   domain,
 		Found:    true,
 	}, nil
-}
-
-// MapPrincipal provides backward compatibility with the Kerberos IdentityMapper
-// interface from Phase 12.
-//
-// It constructs a "principal@realm" key, resolves it, and returns a result
-// compatible with the metadata.Identity type via UID/GID pointers.
-func (m *StaticMapper) MapPrincipal(principal string, realm string) (uid, gid uint32, gids []uint32, err error) {
-	key := fmt.Sprintf("%s@%s", principal, realm)
-	result, resolveErr := m.Resolve(context.Background(), key)
-	if resolveErr != nil {
-		return 0, 0, nil, resolveErr
-	}
-	return result.UID, result.GID, result.GIDs, nil
 }

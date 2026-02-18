@@ -488,10 +488,7 @@ func (s *NFSAdapter) initGSSProcessor() {
 	}
 	s.kerberosProvider = provider
 
-	// Create identity mapper from config
-	mapper := kerberos.NewStaticMapper(&s.kerberosConfig.IdentityMapping)
-
-	// Create GSS verifier using the provider
+	mapper := config.BuildStaticMapper(&s.kerberosConfig.IdentityMapping)
 	verifier := gss.NewKrb5Verifier(provider)
 
 	// Create GSS metrics if metrics are enabled

@@ -346,7 +346,7 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 	// GSS DATA messages have their procedureData replaced with the unwrapped
 	// arguments and GSS identity injected into the context.
 	if call.GetAuthFlavor() == rpc.AuthRPCSECGSS && c.server.gssProcessor != nil {
-		gssResult := c.server.gssProcessor.Process(call.GetAuthBody(), call.GetVerifierBody(), procedureData)
+		gssResult := c.server.gssProcessor.Process(ctx, call.GetAuthBody(), call.GetVerifierBody(), procedureData)
 
 		// Handle GSS processing errors (CREDPROBLEM / CTXPROBLEM)
 		if gssResult.Err != nil {

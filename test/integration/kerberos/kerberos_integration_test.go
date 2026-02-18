@@ -12,6 +12,7 @@ package kerberos_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -33,6 +34,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc/gss"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	dconfig "github.com/marmos91/dittofs/pkg/config"
+	"github.com/marmos91/dittofs/pkg/identity"
 )
 
 const (
@@ -72,7 +74,7 @@ func TestRealKDC(t *testing.T) {
 			SeqNum:  0,
 			Service: gss.RPCGSSSvcNone,
 		})
-		initResult := proc.Process(initCred, nil, gssToken)
+		initResult := proc.Process(context.Background(), initCred, nil, gssToken)
 		if initResult.Err != nil {
 			t.Fatalf("INIT failed: %v", initResult.Err)
 		}
@@ -93,7 +95,7 @@ func TestRealKDC(t *testing.T) {
 			Service: gss.RPCGSSSvcNone,
 			Handle:  handle,
 		})
-		dataResult := proc.Process(dataCred, nil, procArgs)
+		dataResult := proc.Process(context.Background(), dataCred, nil, procArgs)
 		if dataResult.Err != nil {
 			t.Fatalf("DATA failed: %v", dataResult.Err)
 		}
@@ -126,7 +128,7 @@ func TestRealKDC(t *testing.T) {
 			Service: gss.RPCGSSSvcNone,
 			Handle:  handle,
 		})
-		replayResult := proc.Process(replayCred, nil, procArgs)
+		replayResult := proc.Process(context.Background(), replayCred, nil, procArgs)
 		if !replayResult.SilentDiscard {
 			t.Error("expected silent discard for replay, got normal result")
 		}
@@ -139,7 +141,7 @@ func TestRealKDC(t *testing.T) {
 			Service: gss.RPCGSSSvcNone,
 			Handle:  handle,
 		})
-		dataResult2 := proc.Process(dataCred2, nil, []byte("second request"))
+		dataResult2 := proc.Process(context.Background(), dataCred2, nil, []byte("second request"))
 		if dataResult2.Err != nil {
 			t.Fatalf("second DATA failed: %v", dataResult2.Err)
 		}
@@ -152,7 +154,7 @@ func TestRealKDC(t *testing.T) {
 			Service: gss.RPCGSSSvcNone,
 			Handle:  handle,
 		})
-		destroyResult := proc.Process(destroyCred, nil, nil)
+		destroyResult := proc.Process(context.Background(), destroyCred, nil, nil)
 		if destroyResult.Err != nil {
 			t.Fatalf("DESTROY failed: %v", destroyResult.Err)
 		}
@@ -168,7 +170,7 @@ func TestRealKDC(t *testing.T) {
 			Service: gss.RPCGSSSvcNone,
 			Handle:  handle,
 		})
-		staleResult := proc.Process(staleCred, nil, procArgs)
+		staleResult := proc.Process(context.Background(), staleCred, nil, procArgs)
 		if staleResult.Err == nil {
 			t.Fatal("expected error for stale handle")
 		}
@@ -189,7 +191,7 @@ func TestRealKDC(t *testing.T) {
 			SeqNum:  0,
 			Service: gss.RPCGSSSvcIntegrity,
 		})
-		initResult := proc.Process(initCred, nil, gssToken)
+		initResult := proc.Process(context.Background(), initCred, nil, gssToken)
 		if initResult.Err != nil {
 			t.Fatalf("INIT failed: %v", initResult.Err)
 		}
@@ -207,7 +209,7 @@ func TestRealKDC(t *testing.T) {
 			Service: gss.RPCGSSSvcIntegrity,
 			Handle:  handle,
 		})
-		dataResult := proc.Process(dataCred, nil, integrityBody)
+		dataResult := proc.Process(context.Background(), dataCred, nil, integrityBody)
 		if dataResult.Err != nil {
 			t.Fatalf("krb5i DATA failed: %v", dataResult.Err)
 		}
@@ -231,7 +233,7 @@ func TestRealKDC(t *testing.T) {
 			Service: gss.RPCGSSSvcIntegrity,
 			Handle:  handle,
 		})
-		proc.Process(destroyCred, nil, nil)
+		proc.Process(context.Background(), destroyCred, nil, nil)
 	})
 
 	t.Run("krb5p_privacy", func(t *testing.T) {
@@ -247,7 +249,7 @@ func TestRealKDC(t *testing.T) {
 			SeqNum:  0,
 			Service: gss.RPCGSSSvcPrivacy,
 		})
-		initResult := proc.Process(initCred, nil, gssToken)
+		initResult := proc.Process(context.Background(), initCred, nil, gssToken)
 		if initResult.Err != nil {
 			t.Fatalf("INIT failed: %v", initResult.Err)
 		}
@@ -265,7 +267,7 @@ func TestRealKDC(t *testing.T) {
 			Service: gss.RPCGSSSvcPrivacy,
 			Handle:  handle,
 		})
-		dataResult := proc.Process(dataCred, nil, privacyBody)
+		dataResult := proc.Process(context.Background(), dataCred, nil, privacyBody)
 		if dataResult.Err != nil {
 			t.Fatalf("krb5p DATA failed: %v", dataResult.Err)
 		}
@@ -289,7 +291,7 @@ func TestRealKDC(t *testing.T) {
 			Service: gss.RPCGSSSvcPrivacy,
 			Handle:  handle,
 		})
-		proc.Process(destroyCred, nil, nil)
+		proc.Process(context.Background(), destroyCred, nil, nil)
 	})
 
 	t.Run("default_identity_mapping", func(t *testing.T) {
@@ -306,12 +308,11 @@ func TestRealKDC(t *testing.T) {
 		}
 		defer provider.Close()
 
-		emptyMapping := dconfig.IdentityMappingConfig{
+		verifier := gss.NewKrb5Verifier(provider)
+		mapper := identity.NewStaticMapper(&identity.StaticMapperConfig{
 			DefaultUID: 65534,
 			DefaultGID: 65534,
-		}
-		verifier := gss.NewKrb5Verifier(provider)
-		mapper := kerberos.NewStaticMapper(&emptyMapping)
+		})
 		proc := gss.NewGSSProcessor(verifier, mapper, 100, 10*time.Minute)
 		defer proc.Stop()
 
@@ -322,7 +323,7 @@ func TestRealKDC(t *testing.T) {
 			SeqNum:  0,
 			Service: gss.RPCGSSSvcNone,
 		})
-		initResult := proc.Process(initCred, nil, gssToken)
+		initResult := proc.Process(context.Background(), initCred, nil, gssToken)
 		if initResult.Err != nil {
 			t.Fatalf("INIT failed: %v", initResult.Err)
 		}
@@ -334,7 +335,7 @@ func TestRealKDC(t *testing.T) {
 			Service: gss.RPCGSSSvcNone,
 			Handle:  handle,
 		})
-		dataResult := proc.Process(dataCred, nil, []byte("test"))
+		dataResult := proc.Process(context.Background(), dataCred, nil, []byte("test"))
 		if dataResult.Err != nil {
 			t.Fatalf("DATA failed: %v", dataResult.Err)
 		}
@@ -351,9 +352,7 @@ func TestRealKDC(t *testing.T) {
 	})
 }
 
-// ============================================================================
 // KDC Docker Setup
-// ============================================================================
 
 func setupKDC(t *testing.T) (kdcHostPort int, keytabPath string, krb5ConfPath string, cleanup func()) {
 	t.Helper()
@@ -553,9 +552,7 @@ func waitForPort(t *testing.T, port int, timeout time.Duration) {
 	t.Fatalf("port %d not ready within %s", port, timeout)
 }
 
-// ============================================================================
 // GSS Stack Creation
-// ============================================================================
 
 func createGSSStack(t *testing.T, keytabPath, krb5ConfPath string) (*kerberos.Provider, *gss.GSSProcessor) {
 	t.Helper()
@@ -584,16 +581,13 @@ func createGSSStack(t *testing.T, keytabPath, krb5ConfPath string) (*kerberos.Pr
 	}
 
 	verifier := gss.NewKrb5Verifier(provider)
-	idMapping := cfg.IdentityMapping
-	mapper := kerberos.NewStaticMapper(&idMapping)
+	mapper := dconfig.BuildStaticMapper(&cfg.IdentityMapping)
 	proc := gss.NewGSSProcessor(verifier, mapper, cfg.MaxContexts, cfg.ContextTTL)
 
 	return provider, proc
 }
 
-// ============================================================================
 // Real Kerberos Token Generation
-// ============================================================================
 
 // getRealAPREQ authenticates against the real KDC and builds a GSS-API
 // wrapped AP-REQ token suitable for RPCSEC_GSS_INIT.
@@ -645,9 +639,7 @@ func getRealAPREQ(t *testing.T, krb5ConfPath string, kdcPort int) (gssToken []by
 	return gssToken, sessionKey
 }
 
-// ============================================================================
 // GSS-API Token Building
-// ============================================================================
 
 // wrapInGSSAPIToken wraps an AP-REQ in a GSS-API initial context token.
 //
@@ -687,9 +679,7 @@ func writeASN1Length(buf *bytes.Buffer, length int) {
 	buf.WriteByte(byte(length))
 }
 
-// ============================================================================
 // RPCSEC_GSS Credential and Response Helpers
-// ============================================================================
 
 func encodeCredOrFatal(t *testing.T, cred *gss.RPCGSSCredV1) []byte {
 	t.Helper()
@@ -726,9 +716,7 @@ func decodeInitRes(t *testing.T, gssReply []byte) (handle []byte, gssMajor uint3
 	return
 }
 
-// ============================================================================
 // Integrity/Privacy Wrapping (Client/Initiator Side)
-// ============================================================================
 
 // wrapIntegrityAsInitiator builds an rpc_gss_integ_data body as the client would.
 func wrapIntegrityAsInitiator(t *testing.T, sessionKey types.EncryptionKey, seqNum uint32, args []byte) []byte {
