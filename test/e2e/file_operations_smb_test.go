@@ -35,7 +35,13 @@ func TestSMBFileOperations(t *testing.T) {
 
 	// Start a server for all SMB tests
 	sp := helpers.StartServerProcess(t, "")
-	t.Cleanup(sp.ForceKill)
+	t.Cleanup(func() {
+		// Dump logs on failure for debugging
+		if t.Failed() {
+			sp.DumpLogs(t)
+		}
+		sp.ForceKill()
+	})
 
 	// Login as admin to configure the server
 	cli := helpers.LoginAsAdmin(t, sp.APIURL())

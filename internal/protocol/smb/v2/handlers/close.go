@@ -307,7 +307,32 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	}
 
 	// ========================================================================
-	// Step 3: Check for MFsymlink conversion
+	// Step 3b: Flush pending metadata writes (deferred commit optimization)
+	// ========================================================================
+	//
+	// The MetadataService uses deferred commits by default for performance.
+	// This means CommitWrite only records changes in pending state, not to the store.
+	// We must call FlushPendingWriteForFile to persist the metadata changes.
+	// Without this, file size and other metadata changes are lost.
+
+	if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
+		authCtx, authErr := BuildAuthContext(ctx)
+		if authErr != nil {
+			logger.Warn("CLOSE: failed to build auth context for metadata flush", "path", openFile.Path, "error", authErr)
+		} else {
+			metaSvc := h.Registry.GetMetadataService()
+			flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle)
+			if metaErr != nil {
+				logger.Warn("CLOSE: metadata flush failed", "path", openFile.Path, "error", metaErr)
+				// Continue with close even if metadata flush fails
+			} else if flushed {
+				logger.Debug("CLOSE: metadata flushed", "path", openFile.Path)
+			}
+		}
+	}
+
+	// ========================================================================
+	// Step 5: Check for MFsymlink conversion
 	// ========================================================================
 	//
 	// macOS/Windows SMB clients create symlinks by writing MFsymlink content
@@ -321,7 +346,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	}
 
 	// ========================================================================
-	// Step 4: Build response with optional attributes
+	// Step 6: Build response with optional attributes
 	// ========================================================================
 
 	resp := &CloseResponse{
@@ -349,7 +374,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	}
 
 	// ========================================================================
-	// Step 5: Release any byte-range locks held by this session on this file
+	// Step 7: Release any byte-range locks held by this session on this file
 	// Note: This must happen before delete-on-close so locks are released
 	// while the file still exists in the metadata store.
 	// ========================================================================
@@ -363,7 +388,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	}
 
 	// ========================================================================
-	// Step 6: Handle delete-on-close (FileDispositionInformation)
+	// Step 8: Handle delete-on-close (FileDispositionInformation)
 	// ========================================================================
 
 	if openFile.DeletePending {
@@ -405,7 +430,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	}
 
 	// ========================================================================
-	// Step 7: Release oplock if held
+	// Step 9: Release oplock if held
 	// ========================================================================
 
 	if openFile.OplockLevel != OplockLevelNone {
@@ -414,7 +439,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	}
 
 	// ========================================================================
-	// Step 8: Unregister any pending CHANGE_NOTIFY watches
+	// Step 10: Unregister any pending CHANGE_NOTIFY watches
 	// ========================================================================
 	//
 	// If this is a directory with pending CHANGE_NOTIFY requests, unregister them.
@@ -429,7 +454,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	}
 
 	// ========================================================================
-	// Step 9: Remove the open file handle
+	// Step 11: Remove the open file handle
 	// ========================================================================
 
 	h.DeleteOpenFile(req.FileID)
@@ -439,7 +464,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 		"path", openFile.Path)
 
 	// ========================================================================
-	// Step 10: Return success response
+	// Step 12: Return success response
 	// ========================================================================
 
 	return resp, nil

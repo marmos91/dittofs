@@ -396,11 +396,13 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// ========================================================================
 
 	newSize := req.Offset + uint64(len(req.Data))
+	logger.Debug("WRITE: PrepareWrite", "path", openFile.Path, "handle", fmt.Sprintf("%x", openFile.MetadataHandle), "newSize", newSize)
 	writeOp, err := metaSvc.PrepareWrite(authCtx, openFile.MetadataHandle, newSize)
 	if err != nil {
 		logger.Debug("WRITE: prepare failed", "path", openFile.Path, "error", err)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
 	}
+	logger.Debug("WRITE: PrepareWrite succeeded", "path", openFile.Path, "payloadID", writeOp.PayloadID)
 
 	// ========================================================================
 	// Step 8: Write data to ContentService (uses Cache internally)

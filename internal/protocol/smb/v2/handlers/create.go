@@ -625,6 +625,8 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		FileName:     baseName,
 		// Store oplock level
 		OplockLevel: grantedOplock,
+		// Set delete-on-close from create options
+		DeletePending: req.CreateOptions&types.FileDeleteOnClose != 0,
 	}
 	h.StoreOpenFile(openFile)
 

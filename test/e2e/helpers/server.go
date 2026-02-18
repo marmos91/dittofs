@@ -344,6 +344,11 @@ func (sp *ServerProcess) dumpLogs(t *testing.T) {
 	t.Logf("Server logs:\n%s", string(content))
 }
 
+// DumpLogs is the exported version of dumpLogs for use by tests.
+func (sp *ServerProcess) DumpLogs(t *testing.T) {
+	sp.dumpLogs(t)
+}
+
 // findDfsBinary locates the dfs binary, building it if necessary.
 func findDfsBinary(t *testing.T) string {
 	t.Helper()
