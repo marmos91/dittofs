@@ -370,35 +370,33 @@
         };
 
         # Package for building DittoFS
-        packages.default = pkgs.buildGoModule {
-          pname = "dittofs";
-          inherit version;
-          src = ./.;
+        packages = {
+          default = pkgs.buildGoModule {
+            pname = "dittofs";
+            inherit version;
+            src = ./.;
 
-          # To update: set to "", run `nix build`, copy hash from error
-          vendorHash = "sha256-ObvJ0kEBS+DM+SOrY0D8qwOsbIsmQCWgpLXXf6oRdqQ=";
+            vendorHash = "sha256-ObvJ0kEBS+DM+SOrY0D8qwOsbIsmQCWgpLXXf6oRdqQ=";
 
-          subPackages = [ "cmd/dfs" ];
+            subPackages = [ "cmd/dfs" ];
 
-          ldflags = [
-            "-s"
-            "-w"
-            "-X main.version=${version}"
-            "-X main.commit=${gitRev}"
-          ];
+            ldflags = [
+              "-s"
+              "-w"
+              "-X main.version=${version}"
+              "-X main.commit=${gitRev}"
+            ];
 
-          meta = with pkgs.lib; {
-            description = "Modular virtual filesystem with pluggable storage backends";
-            homepage = "https://github.com/marmos91/dittofs";
-            license = licenses.mit;
-            platforms = platforms.unix;
+            meta = with pkgs.lib; {
+              description = "Modular virtual filesystem with pluggable storage backends";
+              homepage = "https://github.com/marmos91/dittofs";
+              license = licenses.mit;
+              platforms = platforms.unix;
+            };
           };
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          inherit pjdfstest;
         };
-
-      }
-      // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-        # Export pjdfstest package (Linux only - uses Linux-specific syscalls)
-        packages.pjdfstest = pjdfstest;
       }
     );
 }
