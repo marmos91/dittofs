@@ -385,6 +385,12 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		attrs.GID == nil && attrs.Size == nil &&
 		(attrs.AtimeNow || attrs.MtimeNow)
 
+	// POSIX: truncate() requires write access, not ownership.
+	// Check if we're ONLY setting Size (truncate operation).
+	onlySettingSize := attrs.Mode == nil && attrs.UID == nil &&
+		attrs.GID == nil && attrs.Size != nil &&
+		!attrs.AtimeNow && !attrs.MtimeNow
+
 	if onlySettingTimesToNow && !isOwner && !isRoot {
 		// Check write permission instead of ownership
 		if err := s.checkWritePermission(ctx, handle); err != nil {
@@ -395,6 +401,16 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 			}
 		}
 		// Write permission granted, allow timestamp update
+	} else if onlySettingSize && !isOwner && !isRoot {
+		// POSIX truncate(): write permission is sufficient, ownership not required
+		if err := s.checkWritePermission(ctx, handle); err != nil {
+			return &StoreError{
+				Code:    ErrPermissionDenied,
+				Message: "operation not permitted",
+				Path:    file.Path,
+			}
+		}
+		// Write permission granted, allow truncate
 	} else if !isOwner && !isRoot {
 		return &StoreError{
 			Code:    ErrPermissionDenied,
