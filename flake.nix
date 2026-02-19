@@ -21,7 +21,7 @@
     }:
     let
       # Version configuration - update this for releases
-      version = "0.5.0";
+      version = "0.5.1";
     in
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -376,6 +376,7 @@
             inherit version;
             src = ./.;
 
+            # To update: set to "", run `nix build`, copy hash from error
             vendorHash = "sha256-nEbpeEH1cDv0bLYdjI3ewMGQDokq7WF0C172PPZHSH8=";
 
             subPackages = [ "cmd/dfs" ];
@@ -394,7 +395,8 @@
               platforms = platforms.unix;
             };
           };
-        } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+        }
+        // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           inherit pjdfstest;
         };
       }
