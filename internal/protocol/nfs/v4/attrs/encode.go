@@ -46,7 +46,7 @@ const (
 	FATTR4_FILEHANDLE        = 19 // nfs_fh4: the file handle itself
 	FATTR4_FILEID            = 20 // uint64: unique file identifier
 	FATTR4_MODE              = 33 // uint32: POSIX mode bits
-	FATTR4_RAWDEV            = 34 // specdata4: raw device (major/minor)
+	FATTR4_RAWDEV            = 41 // specdata4: raw device (major/minor)
 	FATTR4_NUMLINKS          = 35 // uint32: number of hard links
 	FATTR4_OWNER             = 36 // utf8str_mixed: owner name
 	FATTR4_OWNER_GROUP       = 37 // utf8str_mixed: group owner name

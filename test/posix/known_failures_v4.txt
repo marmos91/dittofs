@@ -122,6 +122,25 @@ removexattr/*|NFSv4 named attributes not implemented
 # setfacl/*|POSIX ACL tools, not NFSv4 ACL tools
 
 # ---------------------------------------------
+# Silly-Rename / Open-Unlink nlink (NFSv4 Client Behavior)
+# ---------------------------------------------
+# NFSv4 is a stateful protocol: the client sends OPEN to the server
+# and receives a stateid. This means the kernel NFS client holds an
+# extra dentry reference for each OPEN state. When unlink() is called
+# on an open file, the kernel sees d_count > 1 and performs a
+# "silly rename" (renames to .nfsXXXX) instead of sending REMOVE.
+# The file still has nlink=1 because it was renamed, not removed.
+#
+# In contrast, NFSv3 is stateless: open() doesn't send anything to
+# the server. The dentry reference count is typically 1, so unlink()
+# sends REMOVE directly, and the server sets nlink=0.
+#
+# This is fundamental Linux NFS client behavior, not a server bug.
+# The same behavior occurs with the Linux kernel NFS server (knfsd).
+
+unlink/14.t|NFSv4 silly-rename: open file + unlink triggers rename instead of remove, nlink stays 1
+
+# ---------------------------------------------
 # Potential Future Additions
 # ---------------------------------------------
 # Add new patterns here as they are discovered during NFSv4 testing.

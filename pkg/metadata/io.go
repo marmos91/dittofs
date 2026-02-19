@@ -213,6 +213,31 @@ func (s *MetadataService) deferredCommitWrite(ctx *AuthContext, intent *WriteOpe
 	// Determine if we need to clear setuid/setgid
 	clearSetuid := ctx.Identity != nil && ctx.Identity.UID != nil && *ctx.Identity.UID != 0
 
+	// POSIX: If SUID/SGID needs clearing and the file has those bits set,
+	// persist the mode change to the store immediately. This ensures any
+	// subsequent GETATTR (e.g., from NFSv4 COMPOUND piggybacked GETATTR
+	// or fstat with noac) returns the correct cleared mode. Without this,
+	// the clearing only exists in pending state which some protocol paths
+	// may not merge (e.g., NFSv4 cache_consistency_bitmask doesn't include MODE).
+	if clearSetuid && intent.PreWriteAttr.Mode&0o6000 != 0 {
+		store, storeErr := s.storeForHandle(intent.Handle)
+		if storeErr == nil {
+			_ = store.WithTransaction(ctx.Context, func(tx Transaction) error {
+				file, err := tx.GetFile(ctx.Context, intent.Handle)
+				if err != nil {
+					return err
+				}
+				file.Mode &= ^uint32(0o6000)
+				file.Ctime = intent.NewMtime
+				return tx.PutFile(ctx.Context, file)
+			})
+			// Update the cached file to reflect the cleared mode
+			s.pendingWrites.InvalidateCache(intent.Handle)
+			// Update PreWriteAttr so the synthetic response below is correct
+			intent.PreWriteAttr.Mode &= ^uint32(0o6000)
+		}
+	}
+
 	// Record in pending writes tracker (lock-free for the hot path)
 	state := s.pendingWrites.RecordWrite(intent.Handle, intent, clearSetuid)
 
