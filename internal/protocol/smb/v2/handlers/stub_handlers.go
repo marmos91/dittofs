@@ -64,6 +64,20 @@ func (h *Handler) Ioctl(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 		// FSCTL_GET_REPARSE_POINT - read symlink target [MS-FSCC] 2.3.30
 		return h.handleGetReparsePoint(ctx, body)
 
+	case FsctlSrvEnumerateSnapshots:
+		// FSCTL_SRV_ENUMERATE_SNAPSHOTS [MS-SMB2] 2.2.32.2
+		// Return empty snapshot list so Windows "Previous Versions" tab shows
+		// "no previous versions" instead of an error.
+		if len(body) < 24 {
+			return NewErrorResult(types.StatusInvalidParameter), nil
+		}
+		var fileID [16]byte
+		copy(fileID[:], body[8:24])
+		// SRV_SNAPSHOT_ARRAY: NumberOfSnapshots(4) + NumberOfSnapshotsReturned(4) + SnapshotArraySize(4)
+		output := make([]byte, 12)
+		resp := buildIoctlResponse(FsctlSrvEnumerateSnapshots, fileID, output)
+		return NewResult(types.StatusSuccess, resp), nil
+
 	case FsctlPipeTransceive:
 		// FSCTL_PIPE_TRANSCEIVE - named pipe transact [MS-FSCC] 2.3.50
 		// Combined write+read for RPC over named pipes
