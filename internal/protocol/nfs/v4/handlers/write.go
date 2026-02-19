@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"time"
 
@@ -193,6 +194,20 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 			OpCode: types.OP_WRITE,
 			Data:   encodeStatusOnly(status),
 		}
+	}
+
+	// Trace SUID/SGID-related writes for debugging
+	if intent.PreWriteAttr.Mode&0o6000 != 0 {
+		uid := uint32(0)
+		if authCtx.Identity != nil && authCtx.Identity.UID != nil {
+			uid = *authCtx.Identity.UID
+		}
+		logger.Debug("NFSv4 WRITE to SUID/SGID file",
+			"pre_mode", fmt.Sprintf("0%o", intent.PreWriteAttr.Mode),
+			"uid", uid,
+			"offset", offset,
+			"count", len(data),
+			"client", ctx.ClientAddr)
 	}
 
 	// Phase 2: Write actual data via PayloadService

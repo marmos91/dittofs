@@ -173,8 +173,8 @@ jobs:
             if [ "${{ matrix.nfs_version }}" = "4" ]; then
               SUMMARY_BLOCK=$(sed -n '/Test Summary Report/,/^Files=/p' "$LOG_FILE")
 
-              # Extract failed test file paths (non-indented lines containing .t with "Failed" counts)
-              echo "$SUMMARY_BLOCK" | grep -oP '/\S+\.t' | sed 's|.*/tests/||' | while read -r failed_test; do
+              # Extract test files with actual failures (Failed: N where N > 0)
+              echo "$SUMMARY_BLOCK" | grep -P 'Failed:\s+[1-9]' | grep -oP '/\S+\.t' | sed 's|.*/tests/||' | while read -r failed_test; do
                 case "$failed_test" in
                   unlink/14.t)
                     echo "  Known failure: $failed_test"
@@ -349,8 +349,8 @@ jobs:
             if [ "${{ matrix.nfs_version }}" = "4" ]; then
               SUMMARY_BLOCK=$(sed -n '/Test Summary Report/,/^Files=/p' "$LOG_FILE")
 
-              # Extract failed test file paths (non-indented lines containing .t with "Failed" counts)
-              echo "$SUMMARY_BLOCK" | grep -oP '/\S+\.t' | sed 's|.*/tests/||' | while read -r failed_test; do
+              # Extract test files with actual failures (Failed: N where N > 0)
+              echo "$SUMMARY_BLOCK" | grep -P 'Failed:\s+[1-9]' | grep -oP '/\S+\.t' | sed 's|.*/tests/||' | while read -r failed_test; do
                 case "$failed_test" in
                   unlink/14.t)
                     echo "  Known failure: $failed_test"
@@ -433,7 +433,7 @@ jobs:
                   fi
                   # NFSv4 known failure: unlink/14.t (silly-rename)
                   if [ "$version" = "4" ]; then
-                    echo "$SUMMARY" | grep -oP '/\S+\.t' | sed 's|.*/tests/||' | while read -r ft; do
+                    echo "$SUMMARY" | grep -P 'Failed:\s+[1-9]' | grep -oP '/\S+\.t' | sed 's|.*/tests/||' | while read -r ft; do
                       case "$ft" in
                         unlink/14.t) ;;
                         *) echo "1" > /tmp/summary_unexpected ;;

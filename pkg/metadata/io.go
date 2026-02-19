@@ -2,9 +2,11 @@ package metadata
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // WriteOperation represents a validated intent to write to a file.
@@ -220,9 +222,12 @@ func (s *MetadataService) deferredCommitWrite(ctx *AuthContext, intent *WriteOpe
 	// the clearing only exists in pending state which some protocol paths
 	// may not merge (e.g., NFSv4 cache_consistency_bitmask doesn't include MODE).
 	if clearSetuid && intent.PreWriteAttr.Mode&0o6000 != 0 {
+		logger.Debug("deferredCommitWrite: clearing SUID/SGID bits",
+			"pre_mode", fmt.Sprintf("0%o", intent.PreWriteAttr.Mode),
+			"handle", fmt.Sprintf("%x", intent.Handle))
 		store, storeErr := s.storeForHandle(intent.Handle)
 		if storeErr == nil {
-			_ = store.WithTransaction(ctx.Context, func(tx Transaction) error {
+			txErr := store.WithTransaction(ctx.Context, func(tx Transaction) error {
 				file, err := tx.GetFile(ctx.Context, intent.Handle)
 				if err != nil {
 					return err
@@ -231,10 +236,17 @@ func (s *MetadataService) deferredCommitWrite(ctx *AuthContext, intent *WriteOpe
 				file.Ctime = intent.NewMtime
 				return tx.PutFile(ctx.Context, file)
 			})
+			if txErr != nil {
+				logger.Error("deferredCommitWrite: SUID clearing transaction failed",
+					"error", txErr)
+			}
 			// Update the cached file to reflect the cleared mode
 			s.pendingWrites.InvalidateCache(intent.Handle)
 			// Update PreWriteAttr so the synthetic response below is correct
 			intent.PreWriteAttr.Mode &= ^uint32(0o6000)
+		} else {
+			logger.Error("deferredCommitWrite: storeForHandle failed for SUID clearing",
+				"error", storeErr)
 		}
 	}
 
