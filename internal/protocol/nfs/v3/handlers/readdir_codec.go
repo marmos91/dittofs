@@ -43,51 +43,22 @@ import (
 //	}
 //	// Use req.DirHandle, req.Cookie, req.Count in READDIR procedure
 func DecodeReadDirRequest(data []byte) (*ReadDirRequest, error) {
-	// Validate minimum data length for basic structure
-	// Need at least: 4 (handle len) + 8 (cookie) + 8 (verifier) + 4 (count) = 24 bytes
 	if len(data) < 24 {
 		return nil, fmt.Errorf("data too short: need at least 24 bytes, got %d", len(data))
 	}
 
 	reader := bytes.NewReader(data)
 
-	// ========================================================================
 	// Decode directory handle
-	// ========================================================================
-
-	// Read directory handle length
-	var handleLen uint32
-	if err := binary.Read(reader, binary.BigEndian, &handleLen); err != nil {
-		return nil, fmt.Errorf("read handle length: %w", err)
+	dirHandle, err := xdr.DecodeFileHandleFromReader(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode directory handle: %w", err)
 	}
-
-	// Validate handle length
-	if handleLen > 64 {
-		return nil, fmt.Errorf("invalid handle length: %d (max 64)", handleLen)
-	}
-
-	if handleLen == 0 {
+	if dirHandle == nil {
 		return nil, fmt.Errorf("invalid handle length: 0 (must be > 0)")
 	}
 
-	// Read directory handle
-	dirHandle := make([]byte, handleLen)
-	if err := binary.Read(reader, binary.BigEndian, &dirHandle); err != nil {
-		return nil, fmt.Errorf("read handle: %w", err)
-	}
-
-	// Skip padding to 4-byte boundary
-	padding := (4 - (handleLen % 4)) % 4
-	for range padding {
-		if _, err := reader.ReadByte(); err != nil {
-			return nil, fmt.Errorf("read padding: %w", err)
-		}
-	}
-
-	// ========================================================================
 	// Decode cookie
-	// ========================================================================
-
 	var cookie uint64
 	if err := binary.Read(reader, binary.BigEndian, &cookie); err != nil {
 		return nil, fmt.Errorf("read cookie: %w", err)
@@ -111,7 +82,7 @@ func DecodeReadDirRequest(data []byte) (*ReadDirRequest, error) {
 		return nil, fmt.Errorf("read count: %w", err)
 	}
 
-	logger.Debug("Decoded READDIR request", "handle_len", handleLen, "cookie", cookie, "count", count)
+	logger.Debug("Decoded READDIR request", "handle_len", len(dirHandle), "cookie", cookie, "count", count)
 
 	return &ReadDirRequest{
 		DirHandle:  dirHandle,

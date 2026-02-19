@@ -51,9 +51,12 @@ func DecodePathConfRequest(data []byte) (*PathConfRequest, error) {
 	// Decode file handle
 	// ========================================================================
 
-	handle, err := xdr.DecodeOpaque(reader)
+	handle, err := xdr.DecodeFileHandleFromReader(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode handle: %w", err)
+	}
+	if handle == nil {
+		return nil, fmt.Errorf("invalid handle length: 0 (must be > 0)")
 	}
 
 	logger.Debug("Decoded PATHCONF request", "handle_len", len(handle))

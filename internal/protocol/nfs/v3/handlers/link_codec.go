@@ -56,18 +56,24 @@ func DecodeLinkRequest(data []byte) (*LinkRequest, error) {
 	// Decode source file handle
 	// ========================================================================
 
-	fileHandle, err := xdr.DecodeOpaque(reader)
+	fileHandle, err := xdr.DecodeFileHandleFromReader(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode file handle: %w", err)
+	}
+	if fileHandle == nil {
+		return nil, fmt.Errorf("invalid file handle length: 0 (must be > 0)")
 	}
 
 	// ========================================================================
 	// Decode target directory handle
 	// ========================================================================
 
-	dirHandle, err := xdr.DecodeOpaque(reader)
+	dirHandle, err := xdr.DecodeFileHandleFromReader(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode directory handle: %w", err)
+	}
+	if dirHandle == nil {
+		return nil, fmt.Errorf("invalid directory handle length: 0 (must be > 0)")
 	}
 
 	// ========================================================================

@@ -50,34 +50,12 @@ func DecodeReadDirPlusRequest(data []byte) (*ReadDirPlusRequest, error) {
 	// Decode directory handle
 	// ========================================================================
 
-	// Read handle length (4 bytes, big-endian)
-	var handleLen uint32
-	if err := binary.Read(reader, binary.BigEndian, &handleLen); err != nil {
-		return nil, fmt.Errorf("failed to read handle length: %w", err)
+	dirHandle, err := xdr.DecodeFileHandleFromReader(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode directory handle: %w", err)
 	}
-
-	// Validate handle length (NFS v3 handles are typically <= 64 bytes per RFC 1813)
-	if handleLen > 64 {
-		return nil, fmt.Errorf("invalid handle length: %d (max 64)", handleLen)
-	}
-
-	// Prevent zero-length handles
-	if handleLen == 0 {
+	if dirHandle == nil {
 		return nil, fmt.Errorf("invalid handle length: 0 (must be > 0)")
-	}
-
-	// Read directory handle
-	dirHandle := make([]byte, handleLen)
-	if err := binary.Read(reader, binary.BigEndian, &dirHandle); err != nil {
-		return nil, fmt.Errorf("failed to read handle data: %w", err)
-	}
-
-	// Skip padding to 4-byte boundary
-	padding := (4 - (handleLen % 4)) % 4
-	for i := range padding {
-		if _, err := reader.ReadByte(); err != nil {
-			return nil, fmt.Errorf("failed to read handle padding byte %d: %w", i, err)
-		}
 	}
 
 	// ========================================================================
@@ -116,7 +94,7 @@ func DecodeReadDirPlusRequest(data []byte) (*ReadDirPlusRequest, error) {
 		return nil, fmt.Errorf("failed to read maxcount: %w", err)
 	}
 
-	logger.Debug("Decoded READDIRPLUS request", "handle_len", handleLen, "cookie", cookie, "cookieverf", cookieVerf, "dircount", dirCount, "maxcount", maxCount)
+	logger.Debug("Decoded READDIRPLUS request", "handle_len", len(dirHandle), "cookie", cookie, "cookieverf", cookieVerf, "dircount", dirCount, "maxcount", maxCount)
 
 	return &ReadDirPlusRequest{
 		DirHandle:  dirHandle,

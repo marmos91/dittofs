@@ -42,71 +42,34 @@ import (
 //	}
 //	// Use req.Handle, req.Offset, req.Count in READ procedure
 func DecodeReadRequest(data []byte) (*ReadRequest, error) {
-	// Validate minimum data length
-	// 4 bytes (handle length) + 8 bytes (offset) + 4 bytes (count) = 16 bytes minimum
 	if len(data) < 16 {
 		return nil, fmt.Errorf("data too short: need at least 16 bytes, got %d", len(data))
 	}
 
 	reader := bytes.NewReader(data)
 
-	// ========================================================================
 	// Decode file handle
-	// ========================================================================
-
-	// Read handle length (4 bytes, big-endian)
-	var handleLen uint32
-	if err := binary.Read(reader, binary.BigEndian, &handleLen); err != nil {
-		return nil, fmt.Errorf("failed to read handle length: %w", err)
+	handle, err := xdr.DecodeFileHandleFromReader(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode file handle: %w", err)
 	}
-
-	// Validate handle length
-	if handleLen > 64 {
-		return nil, fmt.Errorf("invalid handle length: %d (max 64)", handleLen)
-	}
-
-	if handleLen == 0 {
+	if handle == nil {
 		return nil, fmt.Errorf("invalid handle length: 0 (must be > 0)")
 	}
 
-	// PERFORMANCE OPTIMIZATION: Use stack-allocated buffer for file handles
-	// File handles are max 64 bytes per RFC 1813, so we can avoid heap allocation
-	var handleBuf [64]byte
-	handleSlice := handleBuf[:handleLen]
-	if err := binary.Read(reader, binary.BigEndian, &handleSlice); err != nil {
-		return nil, fmt.Errorf("failed to read handle data: %w", err)
-	}
-	// Make a copy to return (original stack buffer will be reused)
-	handle := make([]byte, handleLen)
-	copy(handle, handleSlice)
-
-	// Skip padding to 4-byte boundary
-	padding := (4 - (handleLen % 4)) % 4
-	for i := uint32(0); i < padding; i++ {
-		if _, err := reader.ReadByte(); err != nil {
-			return nil, fmt.Errorf("failed to read handle padding byte %d: %w", i, err)
-		}
-	}
-
-	// ========================================================================
 	// Decode offset
-	// ========================================================================
-
 	var offset uint64
 	if err := binary.Read(reader, binary.BigEndian, &offset); err != nil {
 		return nil, fmt.Errorf("failed to read offset: %w", err)
 	}
 
-	// ========================================================================
 	// Decode count
-	// ========================================================================
-
 	var count uint32
 	if err := binary.Read(reader, binary.BigEndian, &count); err != nil {
 		return nil, fmt.Errorf("failed to read count: %w", err)
 	}
 
-	logger.Debug("Decoded READ request", "handle_len", handleLen, "offset", offset, "count", count)
+	logger.Debug("Decoded READ request", "handle_len", len(handle), "offset", offset, "count", count)
 
 	return &ReadRequest{
 		Handle: handle,

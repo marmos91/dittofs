@@ -35,36 +35,18 @@ import (
 //   - "invalid handle length": Handle length exceeds RFC 1813 limit (64 bytes)
 //   - "read handle": Failed to read the handle data
 func DecodeFsStatRequest(data []byte) (*FsStatRequest, error) {
-	// Minimum size: 4 bytes for handle length
 	if len(data) < 4 {
 		return nil, fmt.Errorf("data too short for FSSTAT request: got %d bytes, need at least 4", len(data))
 	}
 
 	reader := bytes.NewReader(data)
 
-	// Read handle length
-	var handleLen uint32
-	if err := binary.Read(reader, binary.BigEndian, &handleLen); err != nil {
-		return nil, fmt.Errorf("read handle length: %w", err)
+	handle, err := xdr.DecodeFileHandleFromReader(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode file handle: %w", err)
 	}
 
-	// Validate handle length per RFC 1813 (max 64 bytes)
-	if handleLen > 64 {
-		return nil, fmt.Errorf("invalid handle length: %d bytes (max 64)", handleLen)
-	}
-
-	// Ensure buffer has enough data for the handle
-	if len(data) < 4+int(handleLen) {
-		return nil, fmt.Errorf("data too short for handle: need %d bytes, got %d", 4+int(handleLen), len(data))
-	}
-
-	// Read file handle
-	handle := make([]byte, handleLen)
-	if err := binary.Read(reader, binary.BigEndian, &handle); err != nil {
-		return nil, fmt.Errorf("read handle: %w", err)
-	}
-
-	logger.Debug("Decoded FSSTAT request", "handle_len", handleLen)
+	logger.Debug("Decoded FSSTAT request", "handle_len", len(handle))
 	return &FsStatRequest{Handle: handle}, nil
 }
 

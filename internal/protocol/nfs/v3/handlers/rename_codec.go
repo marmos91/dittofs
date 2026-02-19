@@ -59,9 +59,12 @@ func DecodeRenameRequest(data []byte) (*RenameRequest, error) {
 	// Decode source directory handle
 	// ========================================================================
 
-	fromDirHandle, err := xdr.DecodeOpaque(reader)
+	fromDirHandle, err := xdr.DecodeFileHandleFromReader(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode source directory handle: %w", err)
+	}
+	if fromDirHandle == nil {
+		return nil, fmt.Errorf("invalid source directory handle length: 0 (must be > 0)")
 	}
 
 	// ========================================================================
@@ -77,9 +80,12 @@ func DecodeRenameRequest(data []byte) (*RenameRequest, error) {
 	// Decode destination directory handle
 	// ========================================================================
 
-	toDirHandle, err := xdr.DecodeOpaque(reader)
+	toDirHandle, err := xdr.DecodeFileHandleFromReader(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode destination directory handle: %w", err)
+	}
+	if toDirHandle == nil {
+		return nil, fmt.Errorf("invalid destination directory handle length: 0 (must be > 0)")
 	}
 
 	// ========================================================================
