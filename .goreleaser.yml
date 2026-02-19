@@ -43,10 +43,60 @@ builds:
       - -X main.date={{.Date}}
       - -X main.builtBy=goreleaser
 
+  - id: dfsctl
+    main: ./cmd/dfsctl/main.go
+    binary: dfsctl
+
+    env:
+      - CGO_ENABLED=0  # Static binaries
+
+    goos:
+      - linux
+      - darwin
+
+    goarch:
+      - amd64
+      - arm64
+      - arm
+
+    goarm:
+      - "7"  # ARMv7 for Raspberry Pi, etc.
+
+    # Ignore combinations that don't make sense
+    ignore:
+      - goos: darwin
+        goarch: arm
+
+    ldflags:
+      # Inject version info
+      - -s -w  # Strip debug info
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+      - -X main.builtBy=goreleaser
+
 archives:
   - id: dfs-archive
+    builds:
+      - dfs
     name_template: >-
-      {{ .ProjectName }}_
+      dfs_
+      {{- .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+
+    files:
+      - README.md
+      - LICENSE
+
+  - id: dfsctl-archive
+    builds:
+      - dfsctl
+    name_template: >-
+      dfsctl_
       {{- .Version }}_
       {{- title .Os }}_
       {{- if eq .Arch "amd64" }}x86_64
@@ -152,6 +202,48 @@ docker_manifests:
       - "marmos91c/dittofs:{{ .Tag }}-amd64"
       - "marmos91c/dittofs:{{ .Tag }}-arm64"
 
+# Homebrew tap formulae
+brews:
+  - name: dfs
+    ids:
+      - dfs-archive
+    repository:
+      owner: marmos91
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    homepage: "https://github.com/marmos91/dittofs"
+    description: "DittoFS server daemon — modular virtual filesystem with pluggable storage backends"
+    license: "MIT"
+    skip_upload: auto
+    install: |
+      bin.install "dfs"
+      generate_completions_from_executable(bin/"dfs", "completion")
+    test: |
+      system bin/"dfs", "version", "--short"
+
+  - name: dfsctl
+    ids:
+      - dfsctl-archive
+    repository:
+      owner: marmos91
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    homepage: "https://github.com/marmos91/dittofs"
+    description: "DittoFS CLI client — remote management for DittoFS servers"
+    license: "MIT"
+    skip_upload: auto
+    install: |
+      bin.install "dfsctl"
+      generate_completions_from_executable(bin/"dfsctl", "completion")
+    test: |
+      system bin/"dfsctl", "version", "--short"
+
 release:
   github:
     owner: marmos91
@@ -168,16 +260,34 @@ release:
 
     ### Installation
 
+    **Homebrew:**
+    ```bash
+    brew tap marmos91/tap
+    brew install marmos91/tap/dfs      # Server daemon
+    brew install marmos91/tap/dfsctl   # Client CLI
+    ```
+
     **Binary Download:**
     ```bash
+    # dfs (server daemon)
     # Linux (x86_64)
-    curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dittofs_{{ .Version }}_Linux_x86_64.tar.gz | tar xz
+    curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfs_{{ .Version }}_Linux_x86_64.tar.gz | tar xz
 
     # macOS (Apple Silicon)
-    curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dittofs_{{ .Version }}_Darwin_arm64.tar.gz | tar xz
+    curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfs_{{ .Version }}_Darwin_arm64.tar.gz | tar xz
 
     # macOS (Intel)
-    curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dittofs_{{ .Version }}_Darwin_x86_64.tar.gz | tar xz
+    curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfs_{{ .Version }}_Darwin_x86_64.tar.gz | tar xz
+
+    # dfsctl (client CLI)
+    # Linux (x86_64)
+    curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfsctl_{{ .Version }}_Linux_x86_64.tar.gz | tar xz
+
+    # macOS (Apple Silicon)
+    curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfsctl_{{ .Version }}_Darwin_arm64.tar.gz | tar xz
+
+    # macOS (Intel)
+    curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfsctl_{{ .Version }}_Darwin_x86_64.tar.gz | tar xz
     ```
 
     **Docker:**
