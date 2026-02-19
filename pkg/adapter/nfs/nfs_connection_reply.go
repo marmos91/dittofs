@@ -2,12 +2,12 @@ package nfs
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc/gss"
-	"time"
 )
 
 // sendGSSReply sends an RPC reply with a GSS verifier for RPCSEC_GSS DATA requests.
