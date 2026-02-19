@@ -285,6 +285,9 @@ release:
 
     # macOS (Apple Silicon)
     curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfsctl_{{ .Version }}_Darwin_arm64.tar.gz | tar xz
+
+    # macOS (Intel)
+    curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfsctl_{{ .Version }}_Darwin_x86_64.tar.gz | tar xz
     ```
 
     **Docker:**
