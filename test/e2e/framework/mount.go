@@ -14,6 +14,13 @@ import (
 	"time"
 )
 
+// cifsMountOptions builds the mount options string for Linux CIFS mounts.
+// cache=none disables CIFS client caching to ensure tests see fresh data.
+func cifsMountOptions(port int, creds SMBCredentials) string {
+	return fmt.Sprintf("port=%d,username=%s,password=%s,vers=2.1,cache=none",
+		port, creds.Username, creds.Password)
+}
+
 // Mount represents a mounted filesystem (NFS or SMB).
 type Mount struct {
 	T        *testing.T
@@ -222,13 +229,10 @@ func MountSMB(t *testing.T, port int, creds SMBCredentials) *Mount {
 		cmd = exec.Command("mount_smbfs", smbURL, mountPath)
 	case "linux":
 		// Linux: mount -t cifs
-		// cache=none disables CIFS client caching to ensure tests see fresh data
-		// (equivalent to actimeo=0 for NFS)
 		cmd = exec.Command("mount", "-t", "cifs",
 			"//localhost/export",
 			mountPath,
-			"-o", fmt.Sprintf("port=%d,username=%s,password=%s,vers=2.1,cache=none",
-				port, creds.Username, creds.Password))
+			"-o", cifsMountOptions(port, creds))
 	default:
 		_ = os.RemoveAll(mountPath)
 		t.Fatalf("Unsupported platform for SMB: %s", runtime.GOOS)
@@ -260,8 +264,7 @@ func MountSMB(t *testing.T, port int, creds SMBCredentials) *Mount {
 				cmd = exec.Command("mount", "-t", "cifs",
 					"//localhost/export",
 					mountPath,
-					"-o", fmt.Sprintf("port=%d,username=%s,password=%s,vers=2.1,cache=none",
-						port, creds.Username, creds.Password))
+					"-o", cifsMountOptions(port, creds))
 			}
 		}
 	}
@@ -305,13 +308,10 @@ func MountSMBWithError(t *testing.T, port int, creds SMBCredentials) (*Mount, er
 		cmd = exec.Command("mount_smbfs", smbURL, mountPath)
 	case "linux":
 		// Linux: mount -t cifs
-		// cache=none disables CIFS client caching to ensure tests see fresh data
-		// (equivalent to actimeo=0 for NFS)
 		cmd = exec.Command("mount", "-t", "cifs",
 			"//localhost/export",
 			mountPath,
-			"-o", fmt.Sprintf("port=%d,username=%s,password=%s,vers=2.1,cache=none",
-				port, creds.Username, creds.Password))
+			"-o", cifsMountOptions(port, creds))
 	default:
 		_ = os.RemoveAll(mountPath)
 		return nil, fmt.Errorf("unsupported platform for SMB: %s", runtime.GOOS)
@@ -349,8 +349,7 @@ func MountSMBWithError(t *testing.T, port int, creds SMBCredentials) (*Mount, er
 				cmd = exec.Command("mount", "-t", "cifs",
 					"//localhost/export",
 					mountPath,
-					"-o", fmt.Sprintf("port=%d,username=%s,password=%s,vers=2.1,cache=none",
-						port, creds.Username, creds.Password))
+					"-o", cifsMountOptions(port, creds))
 			}
 		}
 	}

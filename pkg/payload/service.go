@@ -296,30 +296,33 @@ func (s *PayloadService) writeBlockWithRetry(ctx context.Context, payloadID stri
 			return fmt.Errorf("write block %d/%d failed: %w", chunkIdx, blockIdx, err)
 		}
 
-		// Check context before retrying
-		if ctx.Err() != nil {
-			return fmt.Errorf("write block %d/%d failed (context cancelled during backpressure): %w", chunkIdx, blockIdx, err)
+		// Last attempt exhausted
+		if attempt == cacheFullMaxRetries {
+			break
 		}
 
-		if attempt < cacheFullMaxRetries {
-			logger.Debug("Cache full, waiting for uploads to drain",
-				"payloadID", payloadID,
-				"chunkIdx", chunkIdx,
-				"blockIdx", blockIdx,
-				"attempt", attempt+1,
-				"delay", delay)
+		// Check context before waiting
+		if ctx.Err() != nil {
+			return fmt.Errorf("write block %d/%d: context cancelled during backpressure: %w", chunkIdx, blockIdx, ctx.Err())
+		}
 
-			select {
-			case <-time.After(delay):
-			case <-ctx.Done():
-				return fmt.Errorf("write block %d/%d failed (context cancelled during backpressure): %w", chunkIdx, blockIdx, err)
-			}
+		logger.Debug("Cache full, waiting for uploads to drain",
+			"payloadID", payloadID,
+			"chunkIdx", chunkIdx,
+			"blockIdx", blockIdx,
+			"attempt", attempt+1,
+			"delay", delay)
 
-			// Exponential backoff with cap
-			delay *= time.Duration(cacheFullBackoffFactor)
-			if delay > cacheFullMaxDelay {
-				delay = cacheFullMaxDelay
-			}
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return fmt.Errorf("write block %d/%d: context cancelled during backpressure: %w", chunkIdx, blockIdx, ctx.Err())
+		}
+
+		// Exponential backoff with cap
+		delay *= time.Duration(cacheFullBackoffFactor)
+		if delay > cacheFullMaxDelay {
+			delay = cacheFullMaxDelay
 		}
 	}
 

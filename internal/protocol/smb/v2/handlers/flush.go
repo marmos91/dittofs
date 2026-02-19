@@ -147,8 +147,8 @@ func (resp *FlushResponse) Encode() ([]byte, error) {
 //
 //  1. Validate FileID maps to an open file
 //  2. Get metadata store and verify file exists
-//  3. Check if cache has data to flush
-//  4. Flush cache to content store using shared flush logic
+//  3. Flush cache to content store using shared flush logic
+//  4. Flush pending metadata writes (deferred commit optimization)
 //  5. Return success response
 //
 // **Cache Integration:**
@@ -247,15 +247,12 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	if authErr != nil {
 		logger.Warn("FLUSH: failed to build auth context for metadata flush", "path", openFile.Path, "error", authErr)
 	} else {
-		logger.Debug("FLUSH: calling FlushPendingWriteForFile", "path", openFile.Path, "handle", fmt.Sprintf("%x", openFile.MetadataHandle))
 		flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle)
 		if metaErr != nil {
 			logger.Warn("FLUSH: metadata flush failed", "path", openFile.Path, "error", metaErr)
 			// Continue - content is flushed, metadata will be fixed eventually
 		} else if flushed {
-			logger.Debug("FLUSH: metadata flushed successfully", "path", openFile.Path)
-		} else {
-			logger.Debug("FLUSH: no pending metadata to flush", "path", openFile.Path)
+			logger.Debug("FLUSH: metadata flushed", "path", openFile.Path)
 		}
 	}
 

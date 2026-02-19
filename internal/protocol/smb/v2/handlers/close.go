@@ -215,11 +215,12 @@ func (resp *CloseResponse) Encode() ([]byte, error) {
 //
 //  1. Validate FileID maps to an open file
 //  2. Flush any cached data to content store (ensures durability)
-//  3. Check for MFsymlink conversion (SMB→NFS symlink interop)
-//  4. Optionally return final file attributes (POSTQUERY_ATTRIB flag)
-//  5. Handle delete-on-close if pending
-//  6. Remove the open file handle
-//  7. Return success response
+//  3. Flush pending metadata writes (deferred commit optimization)
+//  4. Check for MFsymlink conversion (SMB→NFS symlink interop)
+//  5. Optionally return final file attributes (POSTQUERY_ATTRIB flag)
+//  6. Handle delete-on-close if pending
+//  7. Remove the open file handle
+//  8. Return success response
 //
 // **Cache Integration:**
 //
@@ -307,7 +308,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	}
 
 	// ========================================================================
-	// Step 3b: Flush pending metadata writes (deferred commit optimization)
+	// Step 4: Flush pending metadata writes (deferred commit optimization)
 	// ========================================================================
 	//
 	// The MetadataService uses deferred commits by default for performance.

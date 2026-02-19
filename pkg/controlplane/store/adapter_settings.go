@@ -13,6 +13,18 @@ import (
 // ADAPTER SETTINGS OPERATIONS
 // ============================================
 
+// checkUpdateResult validates a GORM update result, returning ErrAdapterNotFound
+// if no rows were affected.
+func checkUpdateResult(result *gorm.DB) error {
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return models.ErrAdapterNotFound
+	}
+	return nil
+}
+
 func (s *GORMStore) GetNFSAdapterSettings(ctx context.Context, adapterID string) (*models.NFSAdapterSettings, error) {
 	var settings models.NFSAdapterSettings
 	if err := s.db.WithContext(ctx).Where("adapter_id = ?", adapterID).First(&settings).Error; err != nil {
@@ -52,13 +64,7 @@ func (s *GORMStore) UpdateNFSAdapterSettings(ctx context.Context, settings *mode
 			"updated_at":                time.Now(),
 		})
 
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return models.ErrAdapterNotFound
-	}
-	return nil
+	return checkUpdateResult(result)
 }
 
 func (s *GORMStore) ResetNFSAdapterSettings(ctx context.Context, adapterID string) error {
@@ -94,13 +100,7 @@ func (s *GORMStore) ResetNFSAdapterSettings(ctx context.Context, adapterID strin
 			"updated_at":                time.Now(),
 		})
 
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return models.ErrAdapterNotFound
-	}
-	return nil
+	return checkUpdateResult(result)
 }
 
 func (s *GORMStore) GetSMBAdapterSettings(ctx context.Context, adapterID string) (*models.SMBAdapterSettings, error) {
@@ -135,13 +135,7 @@ func (s *GORMStore) UpdateSMBAdapterSettings(ctx context.Context, settings *mode
 			"updated_at":           time.Now(),
 		})
 
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return models.ErrAdapterNotFound
-	}
-	return nil
+	return checkUpdateResult(result)
 }
 
 func (s *GORMStore) ResetSMBAdapterSettings(ctx context.Context, adapterID string) error {
@@ -170,13 +164,7 @@ func (s *GORMStore) ResetSMBAdapterSettings(ctx context.Context, adapterID strin
 			"updated_at":           time.Now(),
 		})
 
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return models.ErrAdapterNotFound
-	}
-	return nil
+	return checkUpdateResult(result)
 }
 
 // EnsureAdapterSettings creates default settings records for adapters that lack them.

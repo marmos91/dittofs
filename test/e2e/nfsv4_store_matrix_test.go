@@ -245,8 +245,6 @@ func runStoreMatrixVersionTest(t *testing.T, version string, sc storeConfig, pgH
 // both NFSv3 and NFSv4.0. Verifies write, read-back, and checksum correctness.
 // The 100MB test is gated behind !testing.Short() to avoid CI slowness.
 func TestFileSizeMatrix(t *testing.T) {
-	// File size matrix tests - investigating for GitHub issue #130
-
 	if testing.Short() {
 		t.Skip("Skipping file size matrix tests in short mode")
 	}

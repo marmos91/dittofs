@@ -2,11 +2,9 @@ package metadata
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // WriteOperation represents a validated intent to write to a file.
@@ -215,12 +213,8 @@ func (s *MetadataService) deferredCommitWrite(ctx *AuthContext, intent *WriteOpe
 	// Determine if we need to clear setuid/setgid
 	clearSetuid := ctx.Identity != nil && ctx.Identity.UID != nil && *ctx.Identity.UID != 0
 
-	// Debug: Log the handle being used for write
-	logger.Debug("deferredCommitWrite called", "handle", fmt.Sprintf("%x", intent.Handle), "newSize", intent.NewSize, "payloadID", intent.PayloadID)
-
 	// Record in pending writes tracker (lock-free for the hot path)
 	state := s.pendingWrites.RecordWrite(intent.Handle, intent, clearSetuid)
-	logger.Debug("deferredCommitWrite: after record", "pendingCount", s.pendingWrites.Count(), "stateMaxSize", state.MaxSize)
 
 	// Build a synthetic File response with the pending state
 	// This avoids a store read on the hot path
@@ -347,14 +341,10 @@ func (s *MetadataService) FlushPendingWrites(ctx *AuthContext) (int, error) {
 // FlushPendingWriteForFile commits pending metadata for a specific file.
 // Returns true if there was pending data to flush.
 func (s *MetadataService) FlushPendingWriteForFile(ctx *AuthContext, handle FileHandle) (bool, error) {
-	// Debug: Log the handle being used for flush lookup
-	logger.Debug("FlushPendingWriteForFile called", "handle", fmt.Sprintf("%x", handle), "pendingCount", s.pendingWrites.Count())
 	state, exists := s.pendingWrites.PopPending(handle)
 	if !exists {
-		logger.Debug("FlushPendingWriteForFile: no pending state", "handle", fmt.Sprintf("%x", handle))
 		return false, nil
 	}
-	logger.Debug("FlushPendingWriteForFile: found pending state", "maxSize", state.MaxSize, "payloadID", state.PayloadID)
 
 	return true, s.flushPendingWrite(ctx, handle, state)
 }

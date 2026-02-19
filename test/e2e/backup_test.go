@@ -15,8 +15,6 @@ import (
 // TestBackupRestore tests control plane backup and restore operations.
 // Tests are sequential since each manages server lifecycle.
 func TestBackupRestore(t *testing.T) {
-	// Backup/restore tests - investigating for GitHub issue #130
-
 	// These tests are sequential - each needs server control
 	// Do not use t.Parallel() at suite level
 

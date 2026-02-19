@@ -608,8 +608,6 @@ func TestControlPlaneV2_BlockedOperations(t *testing.T) {
 // TestControlPlaneV2_SettingsVersionTracking verifies that the version counter
 // increments correctly and provides change detection.
 func TestControlPlaneV2_SettingsVersionTracking(t *testing.T) {
-	// Settings version tracking - investigating for GitHub issue #130
-
 	if testing.Short() {
 		t.Skip("Skipping version tracking test in short mode")
 	}

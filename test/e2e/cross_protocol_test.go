@@ -27,8 +27,6 @@ import (
 // This test proves the shared metadata/content store architecture works correctly
 // by validating that changes made via one protocol are visible via the other.
 func TestCrossProtocolInterop(t *testing.T) {
-	// Cross-protocol tests - investigating for GitHub issue #130
-
 	if testing.Short() {
 		t.Skip("Skipping cross-protocol interop tests in short mode")
 	}

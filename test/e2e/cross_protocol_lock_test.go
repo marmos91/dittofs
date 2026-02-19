@@ -27,8 +27,6 @@ import (
 //   - SMB leases are designed to be breakable for NFS lock requests
 //   - Tests use 5-second shortened timeout for CI
 func TestCrossProtocolLocking(t *testing.T) {
-	// Cross-protocol locking tests - investigating for GitHub issue #130
-
 	if testing.Short() {
 		t.Skip("Skipping cross-protocol locking tests in short mode")
 	}
@@ -432,8 +430,6 @@ func testCrossProtocolDataIntegrity(t *testing.T, nfsMount, smbMount *framework.
 // TestCrossProtocolLockingByteRange tests byte-range specific lock interactions.
 // This tests finer-grained locking scenarios where NFS and SMB lock different regions.
 func TestCrossProtocolLockingByteRange(t *testing.T) {
-	// Cross-protocol byte-range locking - investigating for GitHub issue #130
-
 	if testing.Short() {
 		t.Skip("Skipping cross-protocol byte-range locking tests in short mode")
 	}
