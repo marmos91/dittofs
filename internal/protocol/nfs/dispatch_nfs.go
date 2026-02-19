@@ -1,6 +1,7 @@
 package nfs
 
 import (
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	nfs "github.com/marmos91/dittofs/internal/protocol/nfs/v3/handlers"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
@@ -262,33 +263,58 @@ func handleNFSRead(
 	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
-	result, err := handleRequest(
-		data,
-		nfs.DecodeReadRequest,
-		func(req *nfs.ReadRequest) (*nfs.ReadResponse, error) {
-			return handler.Read(ctx, req)
-		},
-		types.NFS3ErrIO,
-		func(status uint32) *nfs.ReadResponse {
-			return &nfs.ReadResponse{NFSResponseBase: nfs.NFSResponseBase{Status: status}}
-		},
-	)
+	// Custom dispatch (not using generic handleRequest) to capture
+	// resp.Count for metrics without re-decoding the request.
 
-	// Extract bytes read for metrics (if read was successful)
-	if result != nil && result.NFSStatus == types.NFS3OK && err == nil {
-		// Decode the response to get actual bytes read
-		// Note: We can't easily decode the response here without duplicating logic,
-		// so we'll decode the request and use the requested count as an approximation.
-		// This is acceptable since successful READs typically return the requested count.
-		req, decodeErr := nfs.DecodeReadRequest(data)
-		if decodeErr == nil {
-			// Use requested count - actual count would require decoding the response
-			// which is already XDR-encoded in result.Data
-			result.BytesRead = uint64(req.Count)
+	// Decode request
+	req, err := nfs.DecodeReadRequest(data)
+	if err != nil {
+		logger.Debug("Error decoding READ request", "error", err)
+		errResp := &nfs.ReadResponse{NFSResponseBase: nfs.NFSResponseBase{Status: types.NFS3ErrIO}}
+		encoded, encErr := errResp.Encode()
+		if encErr != nil {
+			return &HandlerResult{Data: nil, NFSStatus: types.NFS3ErrIO}, encErr
 		}
+		return &HandlerResult{Data: encoded, NFSStatus: types.NFS3ErrIO}, err
 	}
 
-	return result, err
+	// Call handler
+	resp, err := handler.Read(ctx, req)
+	if err != nil {
+		logger.Debug("READ handler error", "error", err)
+		errResp := &nfs.ReadResponse{NFSResponseBase: nfs.NFSResponseBase{Status: types.NFS3ErrIO}}
+		encoded, encErr := errResp.Encode()
+		if encErr != nil {
+			return &HandlerResult{Data: nil, NFSStatus: types.NFS3ErrIO}, encErr
+		}
+		return &HandlerResult{Data: encoded, NFSStatus: types.NFS3ErrIO}, err
+	}
+
+	// Extract status and byte count before encoding
+	status := resp.GetStatus()
+	bytesRead := uint64(resp.Count)
+
+	// Encode response
+	encoded, err := resp.Encode()
+
+	// Release pooled resources after encoding
+	resp.Release()
+
+	if err != nil {
+		logger.Debug("Error encoding READ response", "error", err)
+		errResp := &nfs.ReadResponse{NFSResponseBase: nfs.NFSResponseBase{Status: types.NFS3ErrIO}}
+		encodedErr, encErr := errResp.Encode()
+		if encErr != nil {
+			return &HandlerResult{Data: nil, NFSStatus: types.NFS3ErrIO}, encErr
+		}
+		return &HandlerResult{Data: encodedErr, NFSStatus: types.NFS3ErrIO}, err
+	}
+
+	result := &HandlerResult{Data: encoded, NFSStatus: status}
+	if status == types.NFS3OK {
+		result.BytesRead = bytesRead
+	}
+	return result, nil
 }
 
 func handleNFSWrite(
@@ -297,28 +323,54 @@ func handleNFSWrite(
 	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
-	result, err := handleRequest(
-		data,
-		nfs.DecodeWriteRequest,
-		func(req *nfs.WriteRequest) (*nfs.WriteResponse, error) {
-			return handler.Write(ctx, req)
-		},
-		types.NFS3ErrIO,
-		func(status uint32) *nfs.WriteResponse {
-			return &nfs.WriteResponse{NFSResponseBase: nfs.NFSResponseBase{Status: status}}
-		},
-	)
+	// Custom dispatch (not using generic handleRequest) to capture
+	// resp.Count for metrics without re-decoding the request.
 
-	// Extract bytes written for metrics (if write was successful)
-	if result != nil && result.NFSStatus == types.NFS3OK && err == nil {
-		// Decode the request to get the count
-		req, decodeErr := nfs.DecodeWriteRequest(data)
-		if decodeErr == nil {
-			result.BytesWritten = uint64(len(req.Data))
+	// Decode request
+	req, err := nfs.DecodeWriteRequest(data)
+	if err != nil {
+		logger.Debug("Error decoding WRITE request", "error", err)
+		errResp := &nfs.WriteResponse{NFSResponseBase: nfs.NFSResponseBase{Status: types.NFS3ErrIO}}
+		encoded, encErr := errResp.Encode()
+		if encErr != nil {
+			return &HandlerResult{Data: nil, NFSStatus: types.NFS3ErrIO}, encErr
 		}
+		return &HandlerResult{Data: encoded, NFSStatus: types.NFS3ErrIO}, err
 	}
 
-	return result, err
+	// Call handler
+	resp, err := handler.Write(ctx, req)
+	if err != nil {
+		logger.Debug("WRITE handler error", "error", err)
+		errResp := &nfs.WriteResponse{NFSResponseBase: nfs.NFSResponseBase{Status: types.NFS3ErrIO}}
+		encoded, encErr := errResp.Encode()
+		if encErr != nil {
+			return &HandlerResult{Data: nil, NFSStatus: types.NFS3ErrIO}, encErr
+		}
+		return &HandlerResult{Data: encoded, NFSStatus: types.NFS3ErrIO}, err
+	}
+
+	// Extract status and byte count before encoding
+	status := resp.GetStatus()
+	bytesWritten := uint64(resp.Count)
+
+	// Encode response
+	encoded, err := resp.Encode()
+	if err != nil {
+		logger.Debug("Error encoding WRITE response", "error", err)
+		errResp := &nfs.WriteResponse{NFSResponseBase: nfs.NFSResponseBase{Status: types.NFS3ErrIO}}
+		encodedErr, encErr := errResp.Encode()
+		if encErr != nil {
+			return &HandlerResult{Data: nil, NFSStatus: types.NFS3ErrIO}, encErr
+		}
+		return &HandlerResult{Data: encodedErr, NFSStatus: types.NFS3ErrIO}, err
+	}
+
+	result := &HandlerResult{Data: encoded, NFSStatus: status}
+	if status == types.NFS3OK {
+		result.BytesWritten = bytesWritten
+	}
+	return result, nil
 }
 
 func handleNFSCreate(
