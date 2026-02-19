@@ -529,6 +529,11 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		file.Size = *attrs.Size
 		modified = true
 
+		// POSIX: truncate updates mtime and ctime when size changes
+		// The server must do this even if the client doesn't send TIME_MODIFY_SET,
+		// because POSIX requires it and NFS clients may rely on server-side updates.
+		file.Mtime = now
+
 		// POSIX: Clear SUID/SGID bits on truncate for non-root users (like write)
 		if file.Type == FileTypeRegular && !isRoot {
 			file.Mode &= ^uint32(0o6000)
