@@ -402,7 +402,7 @@
                 "cmd/dfs"
                 "cmd/dfsctl"
               ];
-              meta.mainProgram = "dfs";
+              meta = commonArgs.meta // { mainProgram = "dfs"; };
             });
 
             # Build only the server daemon
