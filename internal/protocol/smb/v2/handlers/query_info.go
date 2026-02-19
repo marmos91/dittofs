@@ -454,10 +454,10 @@ func (h *Handler) buildFileInfoFromStore(file *metadata.File, class types.FileIn
 		// Return the default unnamed data stream (::$DATA)
 		streamName := []byte{':', 0, ':', 0, '$', 0, 'D', 0, 'A', 0, 'T', 0, 'A', 0} // "::$DATA" UTF-16LE
 		info := make([]byte, 24+len(streamName))
-		binary.LittleEndian.PutUint32(info[0:4], 0)                        // NextEntryOffset (last entry)
-		binary.LittleEndian.PutUint32(info[4:8], uint32(len(streamName)))   // StreamNameLength
-		binary.LittleEndian.PutUint64(info[8:16], file.FileAttr.Size)      // StreamSize
-		binary.LittleEndian.PutUint64(info[16:24], file.FileAttr.Size)     // StreamAllocationSize
+		binary.LittleEndian.PutUint32(info[0:4], 0)                       // NextEntryOffset (last entry)
+		binary.LittleEndian.PutUint32(info[4:8], uint32(len(streamName))) // StreamNameLength
+		binary.LittleEndian.PutUint64(info[8:16], file.Size)              // StreamSize
+		binary.LittleEndian.PutUint64(info[16:24], file.Size)             // StreamAllocationSize
 		copy(info[24:], streamName)
 		return info, nil
 
