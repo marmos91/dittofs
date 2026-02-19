@@ -68,6 +68,7 @@ func (h *Handler) Ioctl(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 		// FSCTL_SRV_ENUMERATE_SNAPSHOTS [MS-SMB2] 2.2.32.2
 		// Return empty snapshot list so Windows "Previous Versions" tab shows
 		// "no previous versions" instead of an error.
+		logger.Debug("IOCTL FSCTL_SRV_ENUMERATE_SNAPSHOTS: returning empty snapshot list")
 		if len(body) < 24 {
 			return NewErrorResult(types.StatusInvalidParameter), nil
 		}
