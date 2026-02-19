@@ -415,6 +415,9 @@
             dfsctl = pkgs.buildGoModule (commonArgs // {
               pname = "dfsctl";
               subPackages = [ "cmd/dfsctl" ];
+              meta = commonArgs.meta // {
+                description = "Command-line client for managing DittoFS";
+              };
             });
           }
         // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
@@ -430,6 +433,7 @@
             touch $out
           '';
           default-has-dfsctl = pkgs.runCommand "check-default-has-dfsctl" { } ''
+            ${self.packages.${system}.default}/bin/dfsctl version > /dev/null 2>&1 || \
             ${self.packages.${system}.default}/bin/dfsctl --help > /dev/null 2>&1
             touch $out
           '';
@@ -441,6 +445,7 @@
             touch $out
           '';
           dfsctl-binary = pkgs.runCommand "check-dfsctl-binary" { } ''
+            ${self.packages.${system}.dfsctl}/bin/dfsctl version > /dev/null 2>&1 || \
             ${self.packages.${system}.dfsctl}/bin/dfsctl --help > /dev/null 2>&1
             touch $out
           '';
