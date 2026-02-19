@@ -449,6 +449,20 @@ func (h *Handler) buildFileInfoFromStore(file *metadata.File, class types.FileIn
 		binary.LittleEndian.PutUint32(info[0:4], 0x001F01FF) // AccessFlags (full access)
 		return info, nil
 
+	case types.FileStreamInformation:
+		// FileStreamInformation [MS-FSCC] 2.4.44
+		// Return the default unnamed data stream (::$DATA)
+		streamName := []byte{':', 0, ':', 0, '$', 0, 'D', 0, 'A', 0, 'T', 0, 'A', 0} // "::$DATA" UTF-16LE
+		size := getSMBSize(&file.FileAttr)
+		alloc := calculateAllocationSize(size)
+		info := make([]byte, 24+len(streamName))
+		binary.LittleEndian.PutUint32(info[0:4], 0)                       // NextEntryOffset (last entry)
+		binary.LittleEndian.PutUint32(info[4:8], uint32(len(streamName))) // StreamNameLength
+		binary.LittleEndian.PutUint64(info[8:16], size)                   // StreamSize
+		binary.LittleEndian.PutUint64(info[16:24], alloc)                 // StreamAllocationSize
+		copy(info[24:], streamName)
+		return info, nil
+
 	case types.FileNetworkOpenInformation:
 		networkInfo := FileAttrToFileNetworkOpenInfo(&file.FileAttr)
 		return EncodeFileNetworkOpenInfo(networkInfo), nil
