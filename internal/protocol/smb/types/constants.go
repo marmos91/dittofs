@@ -502,6 +502,7 @@ const (
 	FileDispositionInformation     FileInfoClass = 13
 	FileAllInformation             FileInfoClass = 18
 	FileEndOfFileInformation       FileInfoClass = 20
+	FileStreamInformation          FileInfoClass = 22
 	FileNetworkOpenInformation     FileInfoClass = 34
 	FileIdBothDirectoryInformation FileInfoClass = 37
 	FileIdFullDirectoryInformation FileInfoClass = 38
