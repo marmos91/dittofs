@@ -124,6 +124,14 @@ dfs init && dfs start
 nix develop github:marmos91/dittofs
 ```
 
+#### Using Homebrew
+
+```bash
+brew tap marmos91/tap
+brew install marmos91/tap/dfs      # Server daemon
+brew install marmos91/tap/dfsctl   # Client CLI
+```
+
 #### Build from Source
 
 ```bash
