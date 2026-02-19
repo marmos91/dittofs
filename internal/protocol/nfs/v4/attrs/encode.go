@@ -292,12 +292,12 @@ func encodeSingleAttr(buf *bytes.Buffer, bit uint32, node PseudoFSAttrSource) er
 		return xdr.WriteUint32(buf, 2)
 
 	case FATTR4_OWNER:
-		// utf8str_mixed: NFSv4 identity format "user@domain"
-		return xdr.WriteXDRString(buf, "root@localdomain")
+		// utf8str_mixed: numeric UID for nfs4_disable_idmapping=Y compatibility
+		return xdr.WriteXDRString(buf, "0")
 
 	case FATTR4_OWNER_GROUP:
-		// utf8str_mixed: NFSv4 identity format "group@domain"
-		return xdr.WriteXDRString(buf, "wheel@localdomain")
+		// utf8str_mixed: numeric GID for nfs4_disable_idmapping=Y compatibility
+		return xdr.WriteXDRString(buf, "0")
 
 	case FATTR4_SPACE_USED:
 		// uint64: 0 for pseudo-fs directories
@@ -513,11 +513,17 @@ func MapFileTypeToNFS4(fileType metadata.FileType) uint32 {
 // Identity Mapper Helpers for OWNER/OWNER_GROUP
 // ============================================================================
 
-// resolveOwnerString converts a UID to an NFSv4 "user@domain" string.
+// resolveOwnerString converts a UID to an NFSv4 owner string.
 //
-// When an identity mapper is configured, it attempts to reverse-resolve the UID.
-// Falls back to numeric format: "uid@localdomain" with well-known overrides
-// (UID 0 = "root@localdomain").
+// When an identity mapper is configured, it attempts to reverse-resolve the UID
+// to a "user@domain" string for Kerberos/RPCSEC_GSS environments.
+//
+// Without an identity mapper (or when resolution fails), returns a purely numeric
+// string (e.g., "0", "1000"). This is compatible with the Linux kernel NFS client's
+// default nfs4_disable_idmapping=Y mode, which passes numeric strings through
+// directly as UIDs without idmapd resolution. Using "user@domain" format without
+// matching idmapd configuration would cause the client to map all owners to
+// nobody (65534).
 func resolveOwnerString(uid uint32) string {
 	if identityMapper != nil {
 		// Try numeric UID format as the principal for reverse lookup
@@ -532,24 +538,19 @@ func resolveOwnerString(uid uint32) string {
 		}
 	}
 
-	// Fallback: well-known UIDs and numeric format
-	if uid == 0 {
-		return "root@localdomain"
-	}
-	return fmt.Sprintf("%d@localdomain", uid)
+	// Numeric fallback: compatible with nfs4_disable_idmapping=Y (Linux default)
+	return fmt.Sprintf("%d", uid)
 }
 
-// resolveGroupString converts a GID to an NFSv4 "group@domain" string.
+// resolveGroupString converts a GID to an NFSv4 group owner string.
 //
-// Falls back to numeric format: "gid@localdomain" with well-known overrides
-// (GID 0 = "wheel@localdomain").
+// Without an identity mapper, returns a purely numeric string (e.g., "0", "1000").
+// This is compatible with the Linux kernel NFS client's default
+// nfs4_disable_idmapping=Y mode. See resolveOwnerString for details.
 func resolveGroupString(gid uint32) string {
 	// Note: Identity mapper does not currently support group reverse resolution.
 	// This can be extended when GroupResolver implements reverse lookup.
-	if gid == 0 {
-		return "wheel@localdomain"
-	}
-	return fmt.Sprintf("%d@localdomain", gid)
+	return fmt.Sprintf("%d", gid)
 }
 
 // shareNameToFSIDMinor generates a consistent minor FSID number from a share name.
