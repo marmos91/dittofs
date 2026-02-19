@@ -369,35 +369,86 @@
           '';
         };
 
-        # Package for building DittoFS
-        packages = {
-          default = pkgs.buildGoModule {
-            pname = "dittofs";
-            inherit version;
-            src = ./.;
+        # Packages for building DittoFS
+        packages =
+          let
+            commonArgs = {
+              inherit version;
+              src = ./.;
 
-            # To update: set to "", run `nix build`, copy hash from error
-            vendorHash = "sha256-nEbpeEH1cDv0bLYdjI3ewMGQDokq7WF0C172PPZHSH8=";
+              # To update: set to "", run `nix build`, copy hash from error
+              vendorHash = "sha256-nEbpeEH1cDv0bLYdjI3ewMGQDokq7WF0C172PPZHSH8=";
 
-            subPackages = [ "cmd/dfs" ];
+              ldflags = [
+                "-s"
+                "-w"
+                "-X main.version=${version}"
+                "-X main.commit=${gitRev}"
+              ];
 
-            ldflags = [
-              "-s"
-              "-w"
-              "-X main.version=${version}"
-              "-X main.commit=${gitRev}"
-            ];
-
-            meta = with pkgs.lib; {
-              description = "Modular virtual filesystem with pluggable storage backends";
-              homepage = "https://github.com/marmos91/dittofs";
-              license = licenses.mit;
-              platforms = platforms.unix;
+              meta = with pkgs.lib; {
+                description = "Modular virtual filesystem with pluggable storage backends";
+                homepage = "https://github.com/marmos91/dittofs";
+                license = licenses.mit;
+                platforms = platforms.unix;
+              };
             };
-          };
-        }
+          in
+          {
+            # Build both dfs and dfsctl
+            default = pkgs.buildGoModule (commonArgs // {
+              pname = "dittofs";
+              subPackages = [
+                "cmd/dfs"
+                "cmd/dfsctl"
+              ];
+              meta = commonArgs.meta // { mainProgram = "dfs"; };
+            });
+
+            # Build only the server daemon
+            dfs = pkgs.buildGoModule (commonArgs // {
+              pname = "dfs";
+              subPackages = [ "cmd/dfs" ];
+            });
+
+            # Build only the client CLI
+            dfsctl = pkgs.buildGoModule (commonArgs // {
+              pname = "dfsctl";
+              subPackages = [ "cmd/dfsctl" ];
+              meta = commonArgs.meta // {
+                description = "Command-line client for managing DittoFS";
+              };
+            });
+          }
         // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           inherit pjdfstest;
+        };
+
+        # Flake checks - run with `nix flake check`
+        checks = {
+          # Verify the default package builds and contains both binaries
+          default-has-dfs = pkgs.runCommand "check-default-has-dfs" { } ''
+            ${self.packages.${system}.default}/bin/dfs version > /dev/null 2>&1 || \
+            ${self.packages.${system}.default}/bin/dfs --help > /dev/null 2>&1
+            touch $out
+          '';
+          default-has-dfsctl = pkgs.runCommand "check-default-has-dfsctl" { } ''
+            ${self.packages.${system}.default}/bin/dfsctl version > /dev/null 2>&1 || \
+            ${self.packages.${system}.default}/bin/dfsctl --help > /dev/null 2>&1
+            touch $out
+          '';
+
+          # Verify individual packages produce the correct binary
+          dfs-binary = pkgs.runCommand "check-dfs-binary" { } ''
+            ${self.packages.${system}.dfs}/bin/dfs version > /dev/null 2>&1 || \
+            ${self.packages.${system}.dfs}/bin/dfs --help > /dev/null 2>&1
+            touch $out
+          '';
+          dfsctl-binary = pkgs.runCommand "check-dfsctl-binary" { } ''
+            ${self.packages.${system}.dfsctl}/bin/dfsctl version > /dev/null 2>&1 || \
+            ${self.packages.${system}.dfsctl}/bin/dfsctl --help > /dev/null 2>&1
+            touch $out
+          '';
         };
       }
     );

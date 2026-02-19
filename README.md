@@ -113,10 +113,11 @@ graph TD
 
 ```bash
 # Run directly without installation
-nix run github:marmos91/dittofs -- init
+nix run github:marmos91/dittofs -- init        # runs dfs (server)
 nix run github:marmos91/dittofs -- start
+nix run github:marmos91/dittofs#dfsctl -- login # runs dfsctl (client CLI)
 
-# Or install to your profile
+# Or install to your profile (installs both dfs and dfsctl)
 nix profile install github:marmos91/dittofs
 dfs init && dfs start
 
