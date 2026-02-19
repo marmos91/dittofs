@@ -327,7 +327,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	}
 
 	// ========================================================================
-	// Step 3: Get session and tree connection
+	// Step 4: Get session and tree connection
 	// ========================================================================
 
 	tree, ok := h.GetTree(openFile.TreeID)
@@ -349,7 +349,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	ctx.Permission = tree.Permission
 
 	// ========================================================================
-	// Step 4: Check write permission at share level
+	// Step 5: Check write permission at share level
 	// ========================================================================
 
 	if !HasWritePermission(ctx) {
@@ -358,14 +358,14 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	}
 
 	// ========================================================================
-	// Step 5: Get metadata and content services
+	// Step 6: Get metadata and content services
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
 	payloadSvc := h.Registry.GetBlockService()
 
 	// ========================================================================
-	// Step 6: Build AuthContext
+	// Step 7: Build AuthContext
 	// ========================================================================
 
 	authCtx, err := BuildAuthContext(ctx)
@@ -375,7 +375,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	}
 
 	// ========================================================================
-	// Step 6.5: Check for conflicting byte-range locks
+	// Step 8: Check for conflicting byte-range locks
 	// ========================================================================
 
 	// Writes are blocked by any other session's lock (shared or exclusive)
@@ -392,7 +392,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	}
 
 	// ========================================================================
-	// Step 7: Prepare write operation
+	// Step 9: Prepare write operation
 	// ========================================================================
 
 	newSize := req.Offset + uint64(len(req.Data))
@@ -403,7 +403,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	}
 
 	// ========================================================================
-	// Step 8: Write data to ContentService (uses Cache internally)
+	// Step 10: Write data to ContentService (uses Cache internally)
 	// ========================================================================
 
 	bytesWritten := len(req.Data)
@@ -415,7 +415,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	}
 
 	// ========================================================================
-	// Step 9: Commit write operation
+	// Step 11: Commit write operation
 	// ========================================================================
 
 	_, err = metaSvc.CommitWrite(authCtx, writeOp)
@@ -435,7 +435,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		"bytes", bytesWritten)
 
 	// ========================================================================
-	// Step 10: Return success response
+	// Step 12: Return success response
 	// ========================================================================
 
 	return &WriteResponse{

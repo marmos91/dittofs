@@ -27,17 +27,19 @@ import (
 // Note: SMB requires authenticated user (unlike NFS AUTH_UNIX).
 // Tests create a dedicated user with read-write permission on the share.
 func TestSMBFileOperations(t *testing.T) {
-	// TODO: Fix SMB file operations - see GitHub issue for details
-	// SMB adapter has implementation issues causing file operation failures
-	t.Skip("Skipping: SMB file operations need investigation (SMB-01 through SMB-06)")
-
 	if testing.Short() {
 		t.Skip("Skipping SMB file operations tests in short mode")
 	}
 
 	// Start a server for all SMB tests
 	sp := helpers.StartServerProcess(t, "")
-	t.Cleanup(sp.ForceKill)
+	t.Cleanup(func() {
+		// Dump logs on failure for debugging
+		if t.Failed() {
+			sp.DumpLogs(t)
+		}
+		sp.ForceKill()
+	})
 
 	// Login as admin to configure the server
 	cli := helpers.LoginAsAdmin(t, sp.APIURL())

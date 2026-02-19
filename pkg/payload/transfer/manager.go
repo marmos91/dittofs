@@ -712,17 +712,33 @@ func (m *TransferManager) uploadRemainingBlocks(ctx context.Context, payloadID s
 			}
 		}
 
-		// Atomically claim and detach the block buffer for upload.
-		// This is a zero-copy operation that transfers ownership of the buffer
-		// to the upload goroutine, preventing data corruption from concurrent writes.
-		blockData, dataSize, ok := m.cache.DetachBlockForUpload(ctx, payloadID, chunkIdx, blockIdx)
-		if !ok {
+		// Mark the block as Uploading to prevent eviction during upload.
+		// Unlike DetachBlockForUpload, we keep the data in cache so concurrent
+		// reads can still access it. We copy the data for the upload goroutine.
+		//
+		// DetachBlockForUpload was previously used here for zero-copy performance,
+		// but it caused data corruption: when Flush runs during active writes
+		// (e.g., COMMIT during a 100MB write), detaching partial blocks removes
+		// data from cache. Subsequent writes re-allocate the block buffer with
+		// a fresh coverage bitmap, losing the previously-written data. Reads then
+		// return zeros for the lost region instead of the actual data.
+		if !m.cache.MarkBlockUploading(ctx, payloadID, chunkIdx, blockIdx) {
 			logger.Debug("Flush: block already being uploaded or not found, skipping",
 				"payloadID", payloadID,
 				"chunkIdx", chunkIdx,
 				"blockIdx", blockIdx)
 			continue
 		}
+
+		// Copy block data for upload (data stays in cache for concurrent reads)
+		blockData, dataSize, err := m.cache.GetBlockData(ctx, payloadID, chunkIdx, blockIdx)
+		if err != nil {
+			// Revert to Pending if we can't get the data
+			m.cache.MarkBlockPending(ctx, payloadID, chunkIdx, blockIdx)
+			continue
+		}
+		uploadData := make([]byte, dataSize)
+		copy(uploadData, blockData[:dataSize])
 
 		// Also mark in state.uploaded to prevent future flushes from trying
 		if state != nil {
@@ -737,7 +753,7 @@ func (m *TransferManager) uploadRemainingBlocks(ctx context.Context, payloadID s
 		// Acquire semaphore slot (blocking for flush)
 		m.uploadSem <- struct{}{}
 
-		go func(blockData []byte, dataSize, chunkIdx, blockIdx uint32, hash [32]byte) {
+		go func(uploadData []byte, dataSize, chunkIdx, blockIdx uint32, hash [32]byte) {
 			defer func() {
 				<-m.uploadSem // Release semaphore slot
 				wg.Done()
@@ -753,14 +769,14 @@ func (m *TransferManager) uploadRemainingBlocks(ctx context.Context, payloadID s
 				"activeUploads", len(m.uploadSem),
 				"maxUploads", cap(m.uploadSem))
 
-			if err := m.blockStore.WriteBlock(ctx, blockKeyStr, blockData[:dataSize]); err != nil {
+			if err := m.blockStore.WriteBlock(ctx, blockKeyStr, uploadData); err != nil {
 				logger.Error("Flush upload failed",
 					"payloadID", payloadID,
 					"blockKey", blockKeyStr,
 					"duration", time.Since(startTime),
 					"error", err)
-				// Restore buffer to cache so it can be retried
-				m.cache.RestoreBlockBuffer(ctx, payloadID, chunkIdx, blockIdx, blockData)
+				// Revert block to Pending so it can be retried
+				m.cache.MarkBlockPending(ctx, payloadID, chunkIdx, blockIdx)
 				if state != nil {
 					key := blockKey{chunkIdx: chunkIdx, blockIdx: blockIdx}
 					state.blocksMu.Lock()
@@ -771,7 +787,7 @@ func (m *TransferManager) uploadRemainingBlocks(ctx context.Context, payloadID s
 			}
 
 			// Handle successful upload (ObjectStore, hash tracking, cache marking)
-			// Buffer is discarded - data is now in S3. If needed later, it can be downloaded.
+			// Data stays in cache for reads, evictable by LRU when marked Uploaded.
 			m.handleUploadSuccess(ctx, payloadID, chunkIdx, blockIdx, hash, dataSize)
 
 			logger.Info("Flush upload complete",
@@ -780,7 +796,7 @@ func (m *TransferManager) uploadRemainingBlocks(ctx context.Context, payloadID s
 				"hash", hashB64(hash),
 				"duration", time.Since(startTime),
 				"size", dataSize)
-		}(blockData, dataSize, chunkIdx, blockIdx, hash)
+		}(uploadData, dataSize, chunkIdx, blockIdx, hash)
 	}
 
 	wg.Wait()

@@ -171,9 +171,14 @@ func (c *Cache) writeToBlock(ctx context.Context, entry *fileEntry, payloadID st
 
 	// For normal writes (not downloaded), handle state transitions
 	if !opts.isDownloaded {
-		// Cannot write to a block that is currently being uploaded.
+		// Write to a block that is currently being uploaded.
+		// Since flush upload uses a copy of the data (not detach), it's safe to
+		// write new data here. The in-flight upload will complete with the old data,
+		// and this block will need to be re-uploaded with the new data.
+		// We revert to Pending so the block will be picked up by the next flush.
 		if !isNew && blk.state == BlockStateUploading {
-			return ErrCacheFull
+			blk.state = BlockStatePending
+			blk.hash = [32]byte{} // Invalidate hash - data has changed
 		}
 
 		// Handle write to ReadyForUpload block - cancel pending upload and revert to Pending.

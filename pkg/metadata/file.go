@@ -379,14 +379,21 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 	isOwner := identity != nil && identity.UID != nil && *identity.UID == file.UID
 	isRoot := identity != nil && identity.UID != nil && *identity.UID == 0
 
+	noOwnershipAttrs := attrs.Mode == nil && attrs.UID == nil && attrs.GID == nil
+
 	// POSIX: For utimensat() with UTIME_NOW, write permission is sufficient.
-	// Check if we're ONLY setting times to "now" (no other attribute changes).
-	onlySettingTimesToNow := attrs.Mode == nil && attrs.UID == nil &&
-		attrs.GID == nil && attrs.Size == nil &&
+	onlySettingTimesToNow := noOwnershipAttrs && attrs.Size == nil &&
 		(attrs.AtimeNow || attrs.MtimeNow)
 
-	if onlySettingTimesToNow && !isOwner && !isRoot {
-		// Check write permission instead of ownership
+	// POSIX: truncate() requires write access, not ownership.
+	onlySettingSize := noOwnershipAttrs && attrs.Size != nil &&
+		!attrs.AtimeNow && !attrs.MtimeNow
+
+	// Both timestamp-now and truncate-only operations allow write permission
+	// as an alternative to ownership (POSIX semantics).
+	writePermSufficient := onlySettingTimesToNow || onlySettingSize
+
+	if writePermSufficient && !isOwner && !isRoot {
 		if err := s.checkWritePermission(ctx, handle); err != nil {
 			return &StoreError{
 				Code:    ErrPermissionDenied,
@@ -394,7 +401,6 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 				Path:    file.Path,
 			}
 		}
-		// Write permission granted, allow timestamp update
 	} else if !isOwner && !isRoot {
 		return &StoreError{
 			Code:    ErrPermissionDenied,

@@ -666,9 +666,6 @@ func TestGracePeriodEarlyExit(t *testing.T) {
 // TestGracePeriodWithSMBLeases tests grace period behavior for SMB leases.
 // Per CONTEXT.md: SMB leases are part of the shared grace period.
 func TestGracePeriodWithSMBLeases(t *testing.T) {
-	// TODO: SMB lease grace period tests depend on SMB fixes
-	t.Skip("Skipping: Grace period SMB leases test depends on SMB fixes")
-
 	if testing.Short() {
 		t.Skip("Skipping grace period SMB leases test in short mode")
 	}
