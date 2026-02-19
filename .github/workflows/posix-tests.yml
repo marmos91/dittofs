@@ -65,8 +65,16 @@ jobs:
         nfs_version: ['3', '4']
         include:
           - store: memory
+            nfs_version: '3'
+            store_label: Memory
+          - store: memory
+            nfs_version: '4'
             store_label: Memory
           - store: badger
+            nfs_version: '3'
+            store_label: BadgerDB
+          - store: badger
+            nfs_version: '4'
             store_label: BadgerDB
 
     steps:
@@ -149,7 +157,7 @@ jobs:
           fi
 
           if grep -q "Result: FAIL" "$LOG_FILE"; then
-            FAILED_FILES=$(sed -n '/Test Summary Report/,/^Files=/p' "$LOG_FILE" | grep -cE "Failed tests?:" || echo "0")
+            FAILED_FILES=$(sed -n '/Test Summary Report/,/^Files=/p' "$LOG_FILE" | grep -cE "Failed tests?:" || true)
             echo "Number of test files with failures: $FAILED_FILES"
 
             # NFSv3 known failure: utimensat/09.t test 5 (32-bit timestamp limit)
@@ -160,17 +168,15 @@ jobs:
               fi
             fi
 
-            # NFSv4 known failures:
-            # - open/03.t: PATH_MAX mount point limitation
+            # NFSv4 known failure:
             # - unlink/14.t: NFSv4 silly-rename (stateful OPEN causes client to rename instead of remove)
             if [ "${{ matrix.nfs_version }}" = "4" ]; then
               SUMMARY_BLOCK=$(sed -n '/Test Summary Report/,/^Files=/p' "$LOG_FILE")
-              UNEXPECTED=0
 
-              # Check each failed file against known NFSv4 failures
-              echo "$SUMMARY_BLOCK" | grep -E "^\s" | grep -oP '\S+\.t' | while read -r failed_test; do
+              # Extract failed test file paths (non-indented lines containing .t with "Failed" counts)
+              echo "$SUMMARY_BLOCK" | grep -oP '/\S+\.t' | sed 's|.*/tests/||' | while read -r failed_test; do
                 case "$failed_test" in
-                  open/03.t|unlink/14.t)
+                  unlink/14.t)
                     echo "  Known failure: $failed_test"
                     ;;
                   *)
@@ -327,7 +333,7 @@ jobs:
           fi
 
           if grep -q "Result: FAIL" "$LOG_FILE"; then
-            FAILED_FILES=$(sed -n '/Test Summary Report/,/^Files=/p' "$LOG_FILE" | grep -cE "Failed tests?:" || echo "0")
+            FAILED_FILES=$(sed -n '/Test Summary Report/,/^Files=/p' "$LOG_FILE" | grep -cE "Failed tests?:" || true)
             echo "Number of test files with failures: $FAILED_FILES"
 
             # NFSv3 known failure: utimensat/09.t test 5 (32-bit timestamp limit)
@@ -338,17 +344,15 @@ jobs:
               fi
             fi
 
-            # NFSv4 known failures:
-            # - open/03.t: PATH_MAX mount point limitation
+            # NFSv4 known failure:
             # - unlink/14.t: NFSv4 silly-rename (stateful OPEN causes client to rename instead of remove)
             if [ "${{ matrix.nfs_version }}" = "4" ]; then
               SUMMARY_BLOCK=$(sed -n '/Test Summary Report/,/^Files=/p' "$LOG_FILE")
-              UNEXPECTED=0
 
-              # Check each failed file against known NFSv4 failures
-              echo "$SUMMARY_BLOCK" | grep -E "^\s" | grep -oP '\S+\.t' | while read -r failed_test; do
+              # Extract failed test file paths (non-indented lines containing .t with "Failed" counts)
+              echo "$SUMMARY_BLOCK" | grep -oP '/\S+\.t' | sed 's|.*/tests/||' | while read -r failed_test; do
                 case "$failed_test" in
-                  open/03.t|unlink/14.t)
+                  unlink/14.t)
                     echo "  Known failure: $failed_test"
                     ;;
                   *)
@@ -420,19 +424,18 @@ jobs:
                   echo "| ${store^} | :white_check_mark: Pass |" >> $GITHUB_STEP_SUMMARY
                 elif grep -q "Result: FAIL" "$LOG"; then
                   SUMMARY=$(sed -n '/Test Summary Report/,/^Files=/p' "$LOG")
-                  FAILED_COUNT=$(echo "$SUMMARY" | grep -cE "Failed tests?:" || echo "0")
+                  FAILED_COUNT=$(echo "$SUMMARY" | grep -cE "Failed tests?:" || true)
 
                   # Check for known expected failures
                   EXPECTED=false
                   if [ "$version" = "3" ] && [ "$FAILED_COUNT" = "1" ] && echo "$SUMMARY" | grep -q "utimensat/09.t"; then
                     EXPECTED=true
                   fi
-                  # NFSv4: known failures are open/03.t and unlink/14.t
+                  # NFSv4 known failure: unlink/14.t (silly-rename)
                   if [ "$version" = "4" ]; then
-                    HAS_UNEXPECTED=false
-                    echo "$SUMMARY" | grep -oP '\S+\.t' | while read -r ft; do
+                    echo "$SUMMARY" | grep -oP '/\S+\.t' | sed 's|.*/tests/||' | while read -r ft; do
                       case "$ft" in
-                        open/03.t|unlink/14.t) ;;
+                        unlink/14.t) ;;
                         *) echo "1" > /tmp/summary_unexpected ;;
                       esac
                     done
@@ -460,5 +463,4 @@ jobs:
 
           echo "**Known failures:**" >> $GITHUB_STEP_SUMMARY
           echo "- NFSv3: utimensat/09.t test #5 (32-bit timestamp limit)" >> $GITHUB_STEP_SUMMARY
-          echo "- NFSv4: open/03.t (PATH_MAX mount point limitation)" >> $GITHUB_STEP_SUMMARY
           echo "- NFSv4: unlink/14.t (silly-rename: NFSv4 stateful OPEN causes client to rename instead of remove)" >> $GITHUB_STEP_SUMMARY

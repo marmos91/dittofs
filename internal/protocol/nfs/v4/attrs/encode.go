@@ -304,11 +304,11 @@ func encodeSingleAttr(buf *bytes.Buffer, bit uint32, node PseudoFSAttrSource) er
 
 	case FATTR4_OWNER:
 		// utf8str_mixed: numeric UID for nfs4_disable_idmapping=Y compatibility
-		return xdr.WriteXDRString(buf, "0")
+		return xdr.WriteXDRString(buf, resolveOwnerString(0))
 
 	case FATTR4_OWNER_GROUP:
 		// utf8str_mixed: numeric GID for nfs4_disable_idmapping=Y compatibility
-		return xdr.WriteXDRString(buf, "0")
+		return xdr.WriteXDRString(buf, resolveGroupString(0))
 
 	case FATTR4_SPACE_USED:
 		// uint64: 0 for pseudo-fs directories

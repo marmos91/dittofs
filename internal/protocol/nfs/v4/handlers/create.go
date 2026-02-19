@@ -148,7 +148,7 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 
 	// Decode createattrs (fattr4): bitmap + opaque attr values
 	// Parse the attributes to apply mode/owner/group to the new entry
-	setAttrs, requestedBitmap, fattr4Err := attrs.DecodeFattr4ToSetAttrs(reader)
+	setAttrs, _, fattr4Err := attrs.DecodeFattr4ToSetAttrs(reader)
 	if fattr4Err != nil {
 		// Check for typed NFS4 error (e.g., ATTRNOTSUPP, BADOWNER)
 		if nfsErr, ok := fattr4Err.(attrs.NFS4StatusError); ok {
@@ -330,9 +330,6 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 		newFile, createErr = metaSvc.CreateSpecialFile(authCtx, parentHandle, objName,
 			metadata.FileTypeFIFO, fifoAttr, 0, 0)
 	}
-
-	// Determine which createattrs were actually applied (for attrsset response)
-	_ = requestedBitmap
 
 	if createErr != nil {
 		status := types.MapMetadataErrorToNFS4(createErr)
