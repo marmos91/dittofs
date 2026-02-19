@@ -558,7 +558,7 @@ func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoC
 	case 5: // FileFsAttributeInformation [MS-FSCC] 2.5.1
 		fsName := []byte{'N', 0, 'T', 0, 'F', 0, 'S', 0} // "NTFS" in UTF-16LE
 		info := make([]byte, 12+len(fsName))
-		binary.LittleEndian.PutUint32(info[0:4], 0x00000003) // FILE_CASE_SENSITIVE_SEARCH | FILE_CASE_PRESERVED_NAMES
+		binary.LittleEndian.PutUint32(info[0:4], 0x0000008F) // FILE_CASE_SENSITIVE_SEARCH | FILE_CASE_PRESERVED_NAMES | FILE_UNICODE_ON_DISK | FILE_PERSISTENT_ACLS | FILE_SUPPORTS_REPARSE_POINTS
 		binary.LittleEndian.PutUint32(info[4:8], 255)
 		binary.LittleEndian.PutUint32(info[8:12], uint32(len(fsName)))
 		copy(info[12:], fsName)
