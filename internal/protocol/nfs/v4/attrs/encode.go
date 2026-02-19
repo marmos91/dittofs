@@ -46,12 +46,14 @@ const (
 	FATTR4_FILEHANDLE        = 19 // nfs_fh4: the file handle itself
 	FATTR4_FILEID            = 20 // uint64: unique file identifier
 	FATTR4_MODE              = 33 // uint32: POSIX mode bits
+	FATTR4_RAWDEV            = 34 // specdata4: raw device (major/minor)
 	FATTR4_NUMLINKS          = 35 // uint32: number of hard links
 	FATTR4_OWNER             = 36 // utf8str_mixed: owner name
 	FATTR4_OWNER_GROUP       = 37 // utf8str_mixed: group owner name
 	FATTR4_SPACE_USED        = 45 // uint64: disk space used
 	FATTR4_TIME_ACCESS       = 47 // nfstime4: last access time
 	FATTR4_TIME_ACCESS_SET   = 48 // settime4: set atime (writable)
+	FATTR4_TIME_METADATA     = 52 // nfstime4: last metadata change time (ctime)
 	FATTR4_TIME_MODIFY       = 53 // nfstime4: last modify time
 	FATTR4_TIME_MODIFY_SET   = 54 // settime4: set mtime (writable)
 	FATTR4_MOUNTED_ON_FILEID = 55 // uint64: fileid of mounted-on dir
@@ -152,12 +154,14 @@ func SupportedAttrs() []uint32 {
 
 	// Recommended attributes (word 1, bits 33-55)
 	SetBit(&bitmap, FATTR4_MODE)
+	SetBit(&bitmap, FATTR4_RAWDEV)
 	SetBit(&bitmap, FATTR4_NUMLINKS)
 	SetBit(&bitmap, FATTR4_OWNER)
 	SetBit(&bitmap, FATTR4_OWNER_GROUP)
 	SetBit(&bitmap, FATTR4_SPACE_USED)
 	SetBit(&bitmap, FATTR4_TIME_ACCESS)
 	SetBit(&bitmap, FATTR4_TIME_ACCESS_SET)
+	SetBit(&bitmap, FATTR4_TIME_METADATA)
 	SetBit(&bitmap, FATTR4_TIME_MODIFY)
 	SetBit(&bitmap, FATTR4_TIME_MODIFY_SET)
 	SetBit(&bitmap, FATTR4_MOUNTED_ON_FILEID)
@@ -287,6 +291,13 @@ func encodeSingleAttr(buf *bytes.Buffer, bit uint32, node PseudoFSAttrSource) er
 		// uint32: 0755 for directories
 		return xdr.WriteUint32(buf, 0755)
 
+	case FATTR4_RAWDEV:
+		// specdata4: {specdata1 (major), specdata2 (minor)} = 0,0 for pseudo-fs
+		if err := xdr.WriteUint32(buf, 0); err != nil {
+			return err
+		}
+		return xdr.WriteUint32(buf, 0)
+
 	case FATTR4_NUMLINKS:
 		// uint32: 2 for directories (. and ..)
 		return xdr.WriteUint32(buf, 2)
@@ -309,6 +320,13 @@ func encodeSingleAttr(buf *bytes.Buffer, bit uint32, node PseudoFSAttrSource) er
 			return err
 		}
 		return xdr.WriteUint32(buf, 0) // nseconds
+
+	case FATTR4_TIME_METADATA:
+		// nfstime4: {seconds: 0, nseconds: 0} for pseudo-fs (ctime)
+		if err := xdr.WriteUint64(buf, 0); err != nil {
+			return err
+		}
+		return xdr.WriteUint32(buf, 0)
 
 	case FATTR4_TIME_MODIFY:
 		// nfstime4: {seconds: 0, nseconds: 0} for pseudo-fs
@@ -448,6 +466,13 @@ func encodeRealFileAttr(buf *bytes.Buffer, bit uint32, file *metadata.File, hand
 	case FATTR4_MODE:
 		return xdr.WriteUint32(buf, file.Mode&0o7777)
 
+	case FATTR4_RAWDEV:
+		// specdata4: {specdata1 (major), specdata2 (minor)}
+		if err := xdr.WriteUint32(buf, metadata.RdevMajor(file.Rdev)); err != nil {
+			return err
+		}
+		return xdr.WriteUint32(buf, metadata.RdevMinor(file.Rdev))
+
 	case FATTR4_NUMLINKS:
 		return xdr.WriteUint32(buf, file.Nlink)
 
@@ -472,6 +497,13 @@ func encodeRealFileAttr(buf *bytes.Buffer, bit uint32, file *metadata.File, hand
 			return err
 		}
 		return xdr.WriteUint32(buf, uint32(file.Atime.Nanosecond()))
+
+	case FATTR4_TIME_METADATA:
+		// nfstime4: ctime (last metadata change time)
+		if err := xdr.WriteUint64(buf, uint64(file.Ctime.Unix())); err != nil {
+			return err
+		}
+		return xdr.WriteUint32(buf, uint32(file.Ctime.Nanosecond()))
 
 	case FATTR4_TIME_MODIFY:
 		if err := xdr.WriteUint64(buf, uint64(file.Mtime.Unix())); err != nil {

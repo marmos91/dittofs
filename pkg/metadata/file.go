@@ -396,8 +396,8 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 	if writePermSufficient && !isOwner && !isRoot {
 		if err := s.checkWritePermission(ctx, handle); err != nil {
 			return &StoreError{
-				Code:    ErrPermissionDenied,
-				Message: "operation not permitted",
+				Code:    ErrAccessDenied,
+				Message: "permission denied",
 				Path:    file.Path,
 			}
 		}
