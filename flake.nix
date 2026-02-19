@@ -21,7 +21,7 @@
     }:
     let
       # Version configuration - update this for releases
-      version = "0.5.1";
+      version = "0.6.0";
     in
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -396,33 +396,44 @@
           in
           {
             # Build both dfs and dfsctl
-            default = pkgs.buildGoModule (commonArgs // {
-              pname = "dittofs";
-              subPackages = [
-                "cmd/dfs"
-                "cmd/dfsctl"
-              ];
-              meta = commonArgs.meta // { mainProgram = "dfs"; };
-            });
+            default = pkgs.buildGoModule (
+              commonArgs
+              // {
+                pname = "dittofs";
+                subPackages = [
+                  "cmd/dfs"
+                  "cmd/dfsctl"
+                ];
+                meta = commonArgs.meta // {
+                  mainProgram = "dfs";
+                };
+              }
+            );
 
             # Build only the server daemon
-            dfs = pkgs.buildGoModule (commonArgs // {
-              pname = "dfs";
-              subPackages = [ "cmd/dfs" ];
-            });
+            dfs = pkgs.buildGoModule (
+              commonArgs
+              // {
+                pname = "dfs";
+                subPackages = [ "cmd/dfs" ];
+              }
+            );
 
             # Build only the client CLI
-            dfsctl = pkgs.buildGoModule (commonArgs // {
-              pname = "dfsctl";
-              subPackages = [ "cmd/dfsctl" ];
-              meta = commonArgs.meta // {
-                description = "Command-line client for managing DittoFS";
-              };
-            });
+            dfsctl = pkgs.buildGoModule (
+              commonArgs
+              // {
+                pname = "dfsctl";
+                subPackages = [ "cmd/dfsctl" ];
+                meta = commonArgs.meta // {
+                  description = "Command-line client for managing DittoFS";
+                };
+              }
+            );
           }
-        // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-          inherit pjdfstest;
-        };
+          // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+            inherit pjdfstest;
+          };
 
         # Flake checks - run with `nix flake check`
         checks = {
