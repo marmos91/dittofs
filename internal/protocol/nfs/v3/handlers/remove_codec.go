@@ -53,67 +53,34 @@ func DecodeRemoveRequest(data []byte) (*RemoveRequest, error) {
 	// Decode directory handle
 	// ========================================================================
 
-	// Read directory handle length (4 bytes, big-endian)
-	var handleLen uint32
-	if err := binary.Read(reader, binary.BigEndian, &handleLen); err != nil {
-		return nil, fmt.Errorf("failed to read handle length: %w", err)
+	dirHandle, err := xdr.DecodeFileHandleFromReader(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode directory handle: %w", err)
 	}
-
-	// Validate handle length (NFS v3 handles are typically <= 64 bytes per RFC 1813)
-	if handleLen > 64 {
-		return nil, fmt.Errorf("invalid handle length: %d (max 64)", handleLen)
-	}
-
-	// Prevent zero-length handles
-	if handleLen == 0 {
+	if dirHandle == nil {
 		return nil, fmt.Errorf("invalid handle length: 0 (must be > 0)")
-	}
-
-	// Read directory handle
-	dirHandle := make([]byte, handleLen)
-	if err := binary.Read(reader, binary.BigEndian, &dirHandle); err != nil {
-		return nil, fmt.Errorf("failed to read handle data: %w", err)
-	}
-
-	// Skip padding to 4-byte boundary
-	padding := (4 - (handleLen % 4)) % 4
-	for i := uint32(0); i < padding; i++ {
-		if _, err := reader.ReadByte(); err != nil {
-			return nil, fmt.Errorf("failed to read handle padding byte %d: %w", i, err)
-		}
 	}
 
 	// ========================================================================
 	// Decode filename
 	// ========================================================================
 
-	// Read filename length (4 bytes, big-endian)
-	var filenameLen uint32
-	if err := binary.Read(reader, binary.BigEndian, &filenameLen); err != nil {
-		return nil, fmt.Errorf("failed to read filename length: %w", err)
+	filename, err := xdr.DecodeString(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read filename: %w", err)
 	}
-
-	// Validate filename length (NFS limit is typically 255 bytes)
-	if filenameLen > 255 {
-		return nil, fmt.Errorf("invalid filename length: %d (max 255)", filenameLen)
-	}
-
-	// Prevent zero-length filenames
-	if filenameLen == 0 {
+	if len(filename) == 0 {
 		return nil, fmt.Errorf("invalid filename length: 0 (must be > 0)")
 	}
-
-	// Read filename
-	filenameBytes := make([]byte, filenameLen)
-	if err := binary.Read(reader, binary.BigEndian, &filenameBytes); err != nil {
-		return nil, fmt.Errorf("failed to read filename data: %w", err)
+	if len(filename) > 255 {
+		return nil, fmt.Errorf("invalid filename length: %d (max 255)", len(filename))
 	}
 
-	logger.Debug("Decoded REMOVE request", "handle_len", handleLen, "name", string(filenameBytes))
+	logger.Debug("Decoded REMOVE request", "handle_len", len(dirHandle), "name", filename)
 
 	return &RemoveRequest{
 		DirHandle: dirHandle,
-		Filename:  string(filenameBytes),
+		Filename:  filename,
 	}, nil
 }
 

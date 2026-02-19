@@ -42,68 +42,34 @@ import (
 //	}
 //	// Use req.Handle, req.Offset, req.Count in COMMIT procedure
 func DecodeCommitRequest(data []byte) (*CommitRequest, error) {
-	// Validate minimum data length (4 bytes handle len + at least 1 byte handle + 8 bytes offset + 4 bytes count)
 	if len(data) < 17 {
 		return nil, fmt.Errorf("data too short: need at least 17 bytes, got %d", len(data))
 	}
 
 	reader := bytes.NewReader(data)
 
-	// ========================================================================
 	// Decode file handle
-	// ========================================================================
-
-	// Read handle length (4 bytes, big-endian)
-	var handleLen uint32
-	if err := binary.Read(reader, binary.BigEndian, &handleLen); err != nil {
-		return nil, fmt.Errorf("failed to read handle length: %w", err)
+	handle, err := xdr.DecodeFileHandleFromReader(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode file handle: %w", err)
 	}
-
-	// Validate handle length (NFS v3 handles are typically <= 64 bytes per RFC 1813)
-	if handleLen > 64 {
-		return nil, fmt.Errorf("invalid handle length: %d (max 64)", handleLen)
-	}
-
-	// Prevent zero-length handles
-	if handleLen == 0 {
+	if handle == nil {
 		return nil, fmt.Errorf("invalid handle length: 0 (must be > 0)")
 	}
 
-	// Read handle
-	handle := make([]byte, handleLen)
-	if err := binary.Read(reader, binary.BigEndian, &handle); err != nil {
-		return nil, fmt.Errorf("failed to read handle data: %w", err)
-	}
-
-	// Skip padding to 4-byte boundary
-	padding := (4 - (handleLen % 4)) % 4
-	for i := uint32(0); i < padding; i++ {
-		if _, err := reader.ReadByte(); err != nil {
-			break // tolerate missing padding bytes, as in DecodeWriteRequest
-		}
-	}
-
-	// ========================================================================
 	// Decode offset
-	// ========================================================================
-
-	// Read offset (8 bytes, big-endian)
 	var offset uint64
 	if err := binary.Read(reader, binary.BigEndian, &offset); err != nil {
 		return nil, fmt.Errorf("failed to read offset: %w", err)
 	}
 
-	// ========================================================================
 	// Decode count
-	// ========================================================================
-
-	// Read count (4 bytes, big-endian)
 	var count uint32
 	if err := binary.Read(reader, binary.BigEndian, &count); err != nil {
 		return nil, fmt.Errorf("failed to read count: %w", err)
 	}
 
-	logger.Debug("Decoded COMMIT request", "handle_len", handleLen, "offset", offset, "count", count)
+	logger.Debug("Decoded COMMIT request", "handle_len", len(handle), "offset", offset, "count", count)
 
 	return &CommitRequest{
 		Handle: handle,

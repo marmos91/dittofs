@@ -40,48 +40,18 @@ import (
 //	}
 //	// Use req.Handle and req.Access in ACCESS procedure
 func DecodeAccessRequest(data []byte) (*AccessRequest, error) {
-	// Validate minimum data length for handle length field
 	if len(data) < 4 {
 		return nil, fmt.Errorf("data too short: need at least 4 bytes for handle length, got %d", len(data))
 	}
 
 	reader := bytes.NewReader(data)
 
-	// Read handle length (4 bytes, big-endian)
-	var handleLen uint32
-	if err := binary.Read(reader, binary.BigEndian, &handleLen); err != nil {
-		return nil, fmt.Errorf("failed to read handle length: %w", err)
+	handle, err := xdr.DecodeFileHandleFromReader(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode file handle: %w", err)
 	}
-
-	// Validate handle length (NFS v3 handles are typically <= 64 bytes per RFC 1813)
-	if handleLen > 64 {
-		return nil, fmt.Errorf("invalid handle length: %d (max 64)", handleLen)
-	}
-
-	// Prevent zero-length handles
-	if handleLen == 0 {
+	if handle == nil {
 		return nil, fmt.Errorf("invalid handle length: 0 (must be > 0)")
-	}
-
-	// Ensure we have enough data for the handle
-	// 4 bytes for length + handleLen bytes for data + up to 3 bytes padding + 4 bytes for access
-	minRequired := 4 + handleLen
-	if uint32(len(data)) < minRequired {
-		return nil, fmt.Errorf("data too short for handle: need at least %d bytes, got %d", minRequired, len(data))
-	}
-
-	// Read handle data
-	handle := make([]byte, handleLen)
-	if err := binary.Read(reader, binary.BigEndian, &handle); err != nil {
-		return nil, fmt.Errorf("failed to read handle data: %w", err)
-	}
-
-	// Skip padding to 4-byte boundary
-	padding := (4 - (handleLen % 4)) % 4
-	for i := uint32(0); i < padding; i++ {
-		if _, err := reader.ReadByte(); err != nil {
-			return nil, fmt.Errorf("failed to read padding byte %d: %w", i, err)
-		}
 	}
 
 	// Read access bitmap (4 bytes, big-endian)

@@ -57,9 +57,12 @@ func DecodeRmdirRequest(data []byte) (*RmdirRequest, error) {
 	// Decode parent directory handle
 	// ========================================================================
 
-	handle, err := xdr.DecodeOpaque(reader)
+	handle, err := xdr.DecodeFileHandleFromReader(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode directory handle: %w", err)
+	}
+	if handle == nil {
+		return nil, fmt.Errorf("invalid handle length: 0 (must be > 0)")
 	}
 
 	// ========================================================================

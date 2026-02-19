@@ -44,9 +44,12 @@ func DecodeCreateRequest(data []byte) (*CreateRequest, error) {
 	reader := bytes.NewReader(data)
 
 	// Decode directory handle
-	dirHandle, err := xdr.DecodeOpaque(reader)
+	dirHandle, err := xdr.DecodeFileHandleFromReader(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode directory handle: %w", err)
+	}
+	if dirHandle == nil {
+		return nil, fmt.Errorf("invalid handle length: 0 (must be > 0)")
 	}
 
 	// Decode filename

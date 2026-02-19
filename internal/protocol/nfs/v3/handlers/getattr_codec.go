@@ -40,48 +40,22 @@ import (
 //	}
 //	// Use req.Handle in GETATTR procedure
 func DecodeGetAttrRequest(data []byte) (*GetAttrRequest, error) {
-	// Validate minimum data length for handle length field
 	if len(data) < 4 {
 		return nil, fmt.Errorf("data too short: need at least 4 bytes for handle length, got %d", len(data))
 	}
 
 	reader := bytes.NewReader(data)
 
-	// Read handle length (4 bytes, big-endian)
-	var handleLen uint32
-	if err := binary.Read(reader, binary.BigEndian, &handleLen); err != nil {
-		return nil, fmt.Errorf("failed to read handle length: %w", err)
+	handle, err := xdr.DecodeFileHandleFromReader(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode file handle: %w", err)
 	}
-
-	// Validate handle length (NFS v3 handles are typically <= 64 bytes per RFC 1813)
-	if handleLen > 64 {
-		return nil, fmt.Errorf("invalid handle length: %d (max 64)", handleLen)
-	}
-
-	// Prevent zero-length handles
-	if handleLen == 0 {
+	if handle == nil {
 		return nil, fmt.Errorf("invalid handle length: 0 (must be > 0)")
 	}
 
-	// Ensure we have enough data for the handle
-	// 4 bytes for length + handleLen bytes for data
-	if uint32(len(data)) < 4+handleLen {
-		return nil, fmt.Errorf("data too short for handle: need %d bytes total, got %d", 4+handleLen, len(data))
-	}
-
-	// PERFORMANCE OPTIMIZATION: Use stack-allocated buffer for file handles
-	// File handles are max 64 bytes per RFC 1813, so we can avoid heap allocation
-	var handleBuf [64]byte
-	handleSlice := handleBuf[:handleLen]
-	if err := binary.Read(reader, binary.BigEndian, &handleSlice); err != nil {
-		return nil, fmt.Errorf("failed to read handle data: %w", err)
-	}
-	// Make a copy to return (original stack buffer will be reused)
-	handle := make([]byte, handleLen)
-	copy(handle, handleSlice)
-
 	logger.Debug("Decoded GETATTR request",
-		"handle_len", handleLen)
+		"handle_len", len(handle))
 
 	return &GetAttrRequest{Handle: handle}, nil
 }
