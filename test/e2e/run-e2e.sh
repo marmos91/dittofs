@@ -19,6 +19,7 @@
 #   --nfs-version VER    Set DITTOFS_E2E_NFS_VERSION env var (3, 4, 4.0)
 #   --timeout DURATION   Set test timeout (default: 30m)
 #   --race               Enable race detector (-race)
+#   --portmap            Run only portmapper tests (TestPortmapper)
 #   --help               Show this help message
 #
 # Examples:
@@ -28,6 +29,7 @@
 #   sudo ./run-e2e.sh --coverage                       # Generate coverage profile
 #   sudo ./run-e2e.sh --stress --verbose               # Include stress tests
 #   sudo ./run-e2e.sh --s3                             # Include S3 tests
+#   sudo ./run-e2e.sh --portmap                        # Run portmapper tests only
 #   sudo ./run-e2e.sh --nfs-version 4                  # Set NFS version for tests
 
 set -euo pipefail
@@ -47,6 +49,7 @@ STRESS=false
 NFS_VERSION=""
 TIMEOUT="30m"
 RACE=false
+PORTMAP=false
 
 # =============================================================================
 # Colors for output
@@ -76,6 +79,7 @@ Options:
   --nfs-version VER    Set DITTOFS_E2E_NFS_VERSION env var (3, 4, 4.0)
   --timeout DURATION   Set test timeout (default: 30m)
   --race               Enable race detector (-race)
+  --portmap            Run only portmapper tests (TestPortmapper)
   --help               Show this help message
 
 Examples:
@@ -83,6 +87,7 @@ Examples:
   sudo ./run-e2e.sh --verbose                        # Run with verbose output
   sudo ./run-e2e.sh --test TestNFSv4BasicOperations  # Run specific test
   sudo ./run-e2e.sh --s3                             # Include S3 tests
+  sudo ./run-e2e.sh --portmap                        # Run portmapper tests only
   sudo ./run-e2e.sh --nfs-version 4                  # Set NFS version for tests
 USAGE
 }
@@ -140,6 +145,10 @@ while [[ $# -gt 0 ]]; do
             RACE=true
             shift
             ;;
+        --portmap)
+            PORTMAP=true
+            shift
+            ;;
         --help|-h)
             usage
             exit 0
@@ -192,6 +201,10 @@ if [[ "$COVERAGE" == "true" ]]; then
     COVERAGE_FILE="${REPO_ROOT}/coverage-e2e.out"
     GO_TEST_ARGS+=("-coverprofile=${COVERAGE_FILE}")
     GO_TEST_ARGS+=("-coverpkg=./pkg/...,./internal/...,./cmd/...")
+fi
+
+if [[ "$PORTMAP" == "true" ]]; then
+    TEST_PATTERN="TestPortmapper"
 fi
 
 if [[ -n "$TEST_PATTERN" ]]; then
@@ -270,6 +283,7 @@ log_info "Coverage:      ${COVERAGE}"
 log_info "Stress:        ${STRESS}"
 log_info "S3:            ${USE_S3}"
 log_info "Race:          ${RACE}"
+log_info "Portmap:       ${PORTMAP}"
 if [[ -n "$NFS_VERSION" ]]; then
     log_info "NFS version:   ${NFS_VERSION}"
 fi

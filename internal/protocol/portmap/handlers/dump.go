@@ -1,8 +1,6 @@
 package handlers
 
-import (
-	"github.com/marmos91/dittofs/internal/protocol/portmap/xdr"
-)
+import "github.com/marmos91/dittofs/internal/protocol/portmap/xdr"
 
 // Dump handles the portmap DUMP procedure (procedure 4).
 //

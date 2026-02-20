@@ -3,6 +3,7 @@ package portmap
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"testing"
@@ -16,124 +17,8 @@ import (
 // Integration Test Helpers
 // ============================================================================
 
-// buildRPCCallMsg constructs a complete RPC call message for integration tests.
-//
-// Wire format:
-//
-//	xid(4) + msg_type=0(4) + rpc_vers=2(4) + prog(4) + vers(4) + proc(4)
-//	+ cred_flavor=0(4) + cred_len=0(4) + verf_flavor=0(4) + verf_len=0(4)
-//	+ [procedure args]
-func buildRPCCallMsg(xid, prog, vers, proc uint32, args []byte) []byte {
-	header := make([]byte, 40) // 10 uint32 fields = 40 bytes
-
-	binary.BigEndian.PutUint32(header[0:4], xid)
-	binary.BigEndian.PutUint32(header[4:8], 0)  // msg_type = CALL
-	binary.BigEndian.PutUint32(header[8:12], 2) // rpc_vers = 2
-	binary.BigEndian.PutUint32(header[12:16], prog)
-	binary.BigEndian.PutUint32(header[16:20], vers)
-	binary.BigEndian.PutUint32(header[20:24], proc)
-	binary.BigEndian.PutUint32(header[24:28], 0) // cred_flavor = AUTH_NULL
-	binary.BigEndian.PutUint32(header[28:32], 0) // cred_len = 0
-	binary.BigEndian.PutUint32(header[32:36], 0) // verf_flavor = AUTH_NULL
-	binary.BigEndian.PutUint32(header[36:40], 0) // verf_len = 0
-
-	if len(args) > 0 {
-		msg := make([]byte, len(header)+len(args))
-		copy(msg, header)
-		copy(msg[len(header):], args)
-		return msg
-	}
-	return header
-}
-
-// sendTCPRPCMsg sends a record-marked TCP RPC request and reads the reply body.
-func sendTCPRPCMsg(t *testing.T, addr string, callBody []byte) []byte {
-	t.Helper()
-
-	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
-	if err != nil {
-		t.Fatalf("sendTCPRPC: dial %s: %v", addr, err)
-	}
-	defer func() { _ = conn.Close() }()
-
-	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		t.Fatalf("sendTCPRPC: set deadline: %v", err)
-	}
-
-	// Write with record marking header (last-fragment bit set)
-	header := make([]byte, 4)
-	binary.BigEndian.PutUint32(header, 0x80000000|uint32(len(callBody)))
-	if _, err := conn.Write(header); err != nil {
-		t.Fatalf("sendTCPRPC: write header: %v", err)
-	}
-	if _, err := conn.Write(callBody); err != nil {
-		t.Fatalf("sendTCPRPC: write body: %v", err)
-	}
-
-	// Read reply fragment header
-	var replyHeader [4]byte
-	if _, err := readFull(conn, replyHeader[:]); err != nil {
-		t.Fatalf("sendTCPRPC: read reply header: %v", err)
-	}
-	replyLen := binary.BigEndian.Uint32(replyHeader[:]) & 0x7FFFFFFF
-
-	// Read reply body
-	replyBody := make([]byte, replyLen)
-	if _, err := readFull(conn, replyBody); err != nil {
-		t.Fatalf("sendTCPRPC: read reply body: %v", err)
-	}
-
-	return replyBody
-}
-
-// sendUDPRPCMsg sends a raw UDP RPC request and reads the reply.
-func sendUDPRPCMsg(t *testing.T, addr string, callBody []byte) []byte {
-	t.Helper()
-
-	udpAddr, err := net.ResolveUDPAddr("udp", addr)
-	if err != nil {
-		t.Fatalf("sendUDPRPC: resolve %s: %v", addr, err)
-	}
-
-	conn, err := net.DialUDP("udp", nil, udpAddr)
-	if err != nil {
-		t.Fatalf("sendUDPRPC: dial: %v", err)
-	}
-	defer func() { _ = conn.Close() }()
-
-	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		t.Fatalf("sendUDPRPC: set deadline: %v", err)
-	}
-
-	// Send raw (no record marking for UDP)
-	if _, err := conn.Write(callBody); err != nil {
-		t.Fatalf("sendUDPRPC: write: %v", err)
-	}
-
-	// Read reply
-	buf := make([]byte, 65535)
-	n, err := conn.Read(buf)
-	if err != nil {
-		t.Fatalf("sendUDPRPC: read reply: %v", err)
-	}
-
-	return buf[:n]
-}
-
-// readFull reads exactly len(buf) bytes from conn.
-func readFull(conn net.Conn, buf []byte) (int, error) {
-	total := 0
-	for total < len(buf) {
-		n, err := conn.Read(buf[total:])
-		total += n
-		if err != nil {
-			return total, err
-		}
-	}
-	return total, nil
-}
-
 // parseRPCReply extracts the accept_stat and reply data from an RPC reply body.
+// Unlike parseReplyHeader, this handles variable-length verifier bodies.
 //
 // Reply body format:
 //
@@ -162,13 +47,6 @@ func parseRPCReply(data []byte) (acceptStat uint32, replyData []byte, err error)
 	return acceptStat, replyData, nil
 }
 
-// encodeGetportArgs creates XDR-encoded GETPORT arguments.
-func encodeGetportArgs(prog, vers, prot uint32) []byte {
-	return xdr.EncodeMapping(&xdr.Mapping{
-		Prog: prog, Vers: vers, Prot: prot, Port: 0,
-	})
-}
-
 // ============================================================================
 // TestPortmapperIntegrationTCP: Full TCP integration test
 // ============================================================================
@@ -182,9 +60,9 @@ func TestPortmapperIntegrationTCP(t *testing.T) {
 	tcpAddr := srv.Addr()
 
 	t.Run("GETPORT_found", func(t *testing.T) {
-		args := encodeGetportArgs(100003, 3, types.ProtoTCP)
-		msg := buildRPCCallMsg(0x10000001, types.ProgramPortmap, types.PortmapVersion2, types.ProcGetport, args)
-		reply := sendTCPRPCMsg(t, tcpAddr, msg)
+		args := encodeMappingArgs(100003, 3, types.ProtoTCP, 0)
+		msg := buildRPCCall(0x10000001, types.ProgramPortmap, types.PortmapVersion2, types.ProcGetport, args)
+		reply := sendTCPRequest(t, tcpAddr, msg)
 
 		acceptStat, data, err := parseRPCReply(reply)
 		if err != nil {
@@ -203,9 +81,9 @@ func TestPortmapperIntegrationTCP(t *testing.T) {
 	})
 
 	t.Run("GETPORT_not_found", func(t *testing.T) {
-		args := encodeGetportArgs(999999, 1, types.ProtoTCP)
-		msg := buildRPCCallMsg(0x10000002, types.ProgramPortmap, types.PortmapVersion2, types.ProcGetport, args)
-		reply := sendTCPRPCMsg(t, tcpAddr, msg)
+		args := encodeMappingArgs(999999, 1, types.ProtoTCP, 0)
+		msg := buildRPCCall(0x10000002, types.ProgramPortmap, types.PortmapVersion2, types.ProcGetport, args)
+		reply := sendTCPRequest(t, tcpAddr, msg)
 
 		acceptStat, data, err := parseRPCReply(reply)
 		if err != nil {
@@ -221,8 +99,8 @@ func TestPortmapperIntegrationTCP(t *testing.T) {
 	})
 
 	t.Run("DUMP", func(t *testing.T) {
-		msg := buildRPCCallMsg(0x10000003, types.ProgramPortmap, types.PortmapVersion2, types.ProcDump, nil)
-		reply := sendTCPRPCMsg(t, tcpAddr, msg)
+		msg := buildRPCCall(0x10000003, types.ProgramPortmap, types.PortmapVersion2, types.ProcDump, nil)
+		reply := sendTCPRequest(t, tcpAddr, msg)
 
 		acceptStat, data, err := parseRPCReply(reply)
 		if err != nil {
@@ -269,8 +147,8 @@ func TestPortmapperIntegrationTCP(t *testing.T) {
 	})
 
 	t.Run("NULL", func(t *testing.T) {
-		msg := buildRPCCallMsg(0x10000004, types.ProgramPortmap, types.PortmapVersion2, types.ProcNull, nil)
-		reply := sendTCPRPCMsg(t, tcpAddr, msg)
+		msg := buildRPCCall(0x10000004, types.ProgramPortmap, types.PortmapVersion2, types.ProcNull, nil)
+		reply := sendTCPRequest(t, tcpAddr, msg)
 
 		acceptStat, data, err := parseRPCReply(reply)
 		if err != nil {
@@ -285,8 +163,8 @@ func TestPortmapperIntegrationTCP(t *testing.T) {
 	})
 
 	t.Run("CALLIT_returns_PROC_UNAVAIL", func(t *testing.T) {
-		msg := buildRPCCallMsg(0x10000005, types.ProgramPortmap, types.PortmapVersion2, types.ProcCallit, nil)
-		reply := sendTCPRPCMsg(t, tcpAddr, msg)
+		msg := buildRPCCall(0x10000005, types.ProgramPortmap, types.PortmapVersion2, types.ProcCallit, nil)
+		reply := sendTCPRequest(t, tcpAddr, msg)
 
 		acceptStat, _, err := parseRPCReply(reply)
 		if err != nil {
@@ -311,9 +189,9 @@ func TestPortmapperIntegrationUDP(t *testing.T) {
 	udpAddr := srv.UDPAddr()
 
 	t.Run("GETPORT_over_UDP", func(t *testing.T) {
-		args := encodeGetportArgs(100005, 3, types.ProtoUDP)
-		msg := buildRPCCallMsg(0x20000001, types.ProgramPortmap, types.PortmapVersion2, types.ProcGetport, args)
-		reply := sendUDPRPCMsg(t, udpAddr, msg)
+		args := encodeMappingArgs(100005, 3, types.ProtoUDP, 0)
+		msg := buildRPCCall(0x20000001, types.ProgramPortmap, types.PortmapVersion2, types.ProcGetport, args)
+		reply := sendUDPRequest(t, udpAddr, msg)
 
 		acceptStat, data, err := parseRPCReply(reply)
 		if err != nil {
@@ -332,8 +210,8 @@ func TestPortmapperIntegrationUDP(t *testing.T) {
 	})
 
 	t.Run("NULL_over_UDP", func(t *testing.T) {
-		msg := buildRPCCallMsg(0x20000002, types.ProgramPortmap, types.PortmapVersion2, types.ProcNull, nil)
-		reply := sendUDPRPCMsg(t, udpAddr, msg)
+		msg := buildRPCCall(0x20000002, types.ProgramPortmap, types.PortmapVersion2, types.ProcNull, nil)
+		reply := sendUDPRequest(t, udpAddr, msg)
 
 		acceptStat, data, err := parseRPCReply(reply)
 		if err != nil {
@@ -379,9 +257,9 @@ func TestPortmapperFullServiceRegistry(t *testing.T) {
 
 	for _, svc := range services {
 		t.Run(svc.name, func(t *testing.T) {
-			args := encodeGetportArgs(svc.prog, svc.vers, svc.prot)
-			msg := buildRPCCallMsg(0x30000000, types.ProgramPortmap, types.PortmapVersion2, types.ProcGetport, args)
-			reply := sendTCPRPCMsg(t, tcpAddr, msg)
+			args := encodeMappingArgs(svc.prog, svc.vers, svc.prot, 0)
+			msg := buildRPCCall(0x30000000, types.ProgramPortmap, types.PortmapVersion2, types.ProcGetport, args)
+			reply := sendTCPRequest(t, tcpAddr, msg)
 
 			acceptStat, data, err := parseRPCReply(reply)
 			if err != nil {
@@ -402,8 +280,8 @@ func TestPortmapperFullServiceRegistry(t *testing.T) {
 
 	// Verify DUMP returns exactly 5 entries (TCP-only)
 	t.Run("DUMP_5_entries", func(t *testing.T) {
-		msg := buildRPCCallMsg(0x30000001, types.ProgramPortmap, types.PortmapVersion2, types.ProcDump, nil)
-		reply := sendTCPRPCMsg(t, tcpAddr, msg)
+		msg := buildRPCCall(0x30000001, types.ProgramPortmap, types.PortmapVersion2, types.ProcDump, nil)
+		reply := sendTCPRequest(t, tcpAddr, msg)
 
 		acceptStat, data, err := parseRPCReply(reply)
 		if err != nil {
@@ -448,8 +326,8 @@ func TestPortmapperSetUnsetFlow(t *testing.T) {
 
 	// Step 1: SET -- register a custom service (prog=200000, vers=1, prot=TCP, port=9999)
 	setArgs := xdr.EncodeMapping(&xdr.Mapping{Prog: 200000, Vers: 1, Prot: types.ProtoTCP, Port: 9999})
-	setMsg := buildRPCCallMsg(0x40000001, types.ProgramPortmap, types.PortmapVersion2, types.ProcSet, setArgs)
-	setReply := sendTCPRPCMsg(t, tcpAddr, setMsg)
+	setMsg := buildRPCCall(0x40000001, types.ProgramPortmap, types.PortmapVersion2, types.ProcSet, setArgs)
+	setReply := sendTCPRequest(t, tcpAddr, setMsg)
 
 	acceptStat, data, err := parseRPCReply(setReply)
 	if err != nil {
@@ -467,9 +345,9 @@ func TestPortmapperSetUnsetFlow(t *testing.T) {
 	}
 
 	// Step 2: GETPORT -- verify registered
-	getArgs := encodeGetportArgs(200000, 1, types.ProtoTCP)
-	getMsg := buildRPCCallMsg(0x40000002, types.ProgramPortmap, types.PortmapVersion2, types.ProcGetport, getArgs)
-	getReply := sendTCPRPCMsg(t, tcpAddr, getMsg)
+	getArgs := encodeMappingArgs(200000, 1, types.ProtoTCP, 0)
+	getMsg := buildRPCCall(0x40000002, types.ProgramPortmap, types.PortmapVersion2, types.ProcGetport, getArgs)
+	getReply := sendTCPRequest(t, tcpAddr, getMsg)
 
 	acceptStat, data, err = parseRPCReply(getReply)
 	if err != nil {
@@ -485,8 +363,8 @@ func TestPortmapperSetUnsetFlow(t *testing.T) {
 
 	// Step 3: UNSET -- remove the service
 	unsetArgs := xdr.EncodeMapping(&xdr.Mapping{Prog: 200000, Vers: 1, Prot: types.ProtoTCP, Port: 0})
-	unsetMsg := buildRPCCallMsg(0x40000003, types.ProgramPortmap, types.PortmapVersion2, types.ProcUnset, unsetArgs)
-	unsetReply := sendTCPRPCMsg(t, tcpAddr, unsetMsg)
+	unsetMsg := buildRPCCall(0x40000003, types.ProgramPortmap, types.PortmapVersion2, types.ProcUnset, unsetArgs)
+	unsetReply := sendTCPRequest(t, tcpAddr, unsetMsg)
 
 	acceptStat, data, err = parseRPCReply(unsetReply)
 	if err != nil {
@@ -501,8 +379,8 @@ func TestPortmapperSetUnsetFlow(t *testing.T) {
 	}
 
 	// Step 4: GETPORT -- verify removed
-	getMsg2 := buildRPCCallMsg(0x40000004, types.ProgramPortmap, types.PortmapVersion2, types.ProcGetport, getArgs)
-	getReply2 := sendTCPRPCMsg(t, tcpAddr, getMsg2)
+	getMsg2 := buildRPCCall(0x40000004, types.ProgramPortmap, types.PortmapVersion2, types.ProcGetport, getArgs)
+	getReply2 := sendTCPRequest(t, tcpAddr, getMsg2)
 
 	acceptStat, data, err = parseRPCReply(getReply2)
 	if err != nil {
@@ -535,15 +413,15 @@ func TestPortmapperConcurrentQueries(t *testing.T) {
 	var wg sync.WaitGroup
 	errors := make(chan error, numGoroutines*queriesPerGoroutine)
 
-	for g := 0; g < numGoroutines; g++ {
+	for g := range numGoroutines {
 		wg.Add(1)
 		go func(goroutineID int) {
 			defer wg.Done()
 
-			for i := 0; i < queriesPerGoroutine; i++ {
+			for i := range queriesPerGoroutine {
 				xid := uint32(goroutineID*queriesPerGoroutine + i + 0x50000000)
-				args := encodeGetportArgs(100003, 3, types.ProtoTCP)
-				msg := buildRPCCallMsg(xid, types.ProgramPortmap, types.PortmapVersion2, types.ProcGetport, args)
+				args := encodeMappingArgs(100003, 3, types.ProtoTCP, 0)
+				msg := buildRPCCall(xid, types.ProgramPortmap, types.PortmapVersion2, types.ProcGetport, args)
 
 				conn, err := net.DialTimeout("tcp", tcpAddr, 2*time.Second)
 				if err != nil {
@@ -558,22 +436,18 @@ func TestPortmapperConcurrentQueries(t *testing.T) {
 				}
 
 				// Send with record marking
-				header := make([]byte, 4)
-				binary.BigEndian.PutUint32(header, 0x80000000|uint32(len(msg)))
-				if _, err := conn.Write(header); err != nil {
+				framedMsg := make([]byte, 4+len(msg))
+				binary.BigEndian.PutUint32(framedMsg[0:4], 0x80000000|uint32(len(msg)))
+				copy(framedMsg[4:], msg)
+				if _, err := conn.Write(framedMsg); err != nil {
 					_ = conn.Close()
-					errors <- fmt.Errorf("goroutine %d query %d: write header: %w", goroutineID, i, err)
-					continue
-				}
-				if _, err := conn.Write(msg); err != nil {
-					_ = conn.Close()
-					errors <- fmt.Errorf("goroutine %d query %d: write body: %w", goroutineID, i, err)
+					errors <- fmt.Errorf("goroutine %d query %d: write: %w", goroutineID, i, err)
 					continue
 				}
 
 				// Read reply header
 				var replyHeader [4]byte
-				if _, err := readFull(conn, replyHeader[:]); err != nil {
+				if _, err := io.ReadFull(conn, replyHeader[:]); err != nil {
 					_ = conn.Close()
 					errors <- fmt.Errorf("goroutine %d query %d: read reply header: %w", goroutineID, i, err)
 					continue
@@ -582,7 +456,7 @@ func TestPortmapperConcurrentQueries(t *testing.T) {
 
 				// Read reply body
 				replyBody := make([]byte, replyLen)
-				if _, err := readFull(conn, replyBody); err != nil {
+				if _, err := io.ReadFull(conn, replyBody); err != nil {
 					_ = conn.Close()
 					errors <- fmt.Errorf("goroutine %d query %d: read reply body: %w", goroutineID, i, err)
 					continue

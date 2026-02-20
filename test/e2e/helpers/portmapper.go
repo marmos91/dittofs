@@ -5,6 +5,7 @@ package helpers
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"os/exec"
 	"strings"
@@ -89,6 +90,32 @@ func IsRpcinfoSystemError(err error) bool {
 		strings.Contains(msg, "Unable to send")
 }
 
+// HasSystemRpcbind returns true if a system portmapper is listening on port 111.
+// When a system rpcbind is running, the rpcinfo tool will query it first before
+// probing the target port, which causes our tests to fail even though our
+// embedded portmapper works correctly.
+func HasSystemRpcbind() bool {
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:111", time.Second)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+// SkipIfSystemRpcbind skips the test if a system rpcbind is running on port 111.
+// This is used for tests that rely on rpcinfo behavior, which queries the system
+// portmapper first. For full portmapper testing without system rpcbind, use:
+//
+//	./test/integration/portmap/run.sh
+func SkipIfSystemRpcbind(t *testing.T) {
+	t.Helper()
+	if HasSystemRpcbind() {
+		t.Skip("system rpcbind detected on port 111; rpcinfo queries system portmapper first. " +
+			"For full portmapper tests, run: ./test/integration/portmap/run.sh")
+	}
+}
+
 // PortmapNull sends a NULL (ping) RPC call to the portmapper and checks the response.
 func PortmapNull(t *testing.T, host string, port int) error {
 	t.Helper()
@@ -112,13 +139,13 @@ func PortmapNull(t *testing.T, host string, port int) error {
 	}
 
 	respHeader := make([]byte, 4)
-	if _, err := readFull(conn, respHeader); err != nil {
+	if _, err := io.ReadFull(conn, respHeader); err != nil {
 		return fmt.Errorf("read header: %w", err)
 	}
 	fragLen := binary.BigEndian.Uint32(respHeader) & 0x7FFFFFFF
 
 	respBody := make([]byte, fragLen)
-	if _, err := readFull(conn, respBody); err != nil {
+	if _, err := io.ReadFull(conn, respBody); err != nil {
 		return fmt.Errorf("read body: %w", err)
 	}
 
@@ -162,13 +189,13 @@ func PortmapDump(t *testing.T, host string, port int) []PortmapEntry {
 
 	// Read response: 4-byte fragment header + reply
 	respHeader := make([]byte, 4)
-	if _, err := readFull(conn, respHeader); err != nil {
+	if _, err := io.ReadFull(conn, respHeader); err != nil {
 		t.Fatalf("failed to read response header: %v", err)
 	}
 	fragLen := binary.BigEndian.Uint32(respHeader) & 0x7FFFFFFF
 
 	respBody := make([]byte, fragLen)
-	if _, err := readFull(conn, respBody); err != nil {
+	if _, err := io.ReadFull(conn, respBody); err != nil {
 		t.Fatalf("failed to read response body: %v", err)
 	}
 
@@ -219,13 +246,13 @@ func PortmapGetPort(t *testing.T, host string, port int, prog, vers, prot uint32
 	}
 
 	respHeader := make([]byte, 4)
-	if _, err := readFull(conn, respHeader); err != nil {
+	if _, err := io.ReadFull(conn, respHeader); err != nil {
 		t.Fatalf("failed to read response header: %v", err)
 	}
 	fragLen := binary.BigEndian.Uint32(respHeader) & 0x7FFFFFFF
 
 	respBody := make([]byte, fragLen)
-	if _, err := readFull(conn, respBody); err != nil {
+	if _, err := io.ReadFull(conn, respBody); err != nil {
 		t.Fatalf("failed to read response body: %v", err)
 	}
 
@@ -265,15 +292,15 @@ func HasProgramVersion(entries []PortmapEntry, program, version uint32) bool {
 func buildPortmapRPCCall(xid, prog, vers, proc uint32, args []byte) []byte {
 	header := make([]byte, 40)
 	binary.BigEndian.PutUint32(header[0:4], xid)
-	binary.BigEndian.PutUint32(header[4:8], 0)    // msg_type = CALL
-	binary.BigEndian.PutUint32(header[8:12], 2)    // rpc_vers = 2
+	binary.BigEndian.PutUint32(header[4:8], 0)  // msg_type = CALL
+	binary.BigEndian.PutUint32(header[8:12], 2) // rpc_vers = 2
 	binary.BigEndian.PutUint32(header[12:16], prog)
 	binary.BigEndian.PutUint32(header[16:20], vers)
 	binary.BigEndian.PutUint32(header[20:24], proc)
-	binary.BigEndian.PutUint32(header[24:28], 0)   // cred_flavor = AUTH_NULL
-	binary.BigEndian.PutUint32(header[28:32], 0)   // cred_len = 0
-	binary.BigEndian.PutUint32(header[32:36], 0)   // verf_flavor = AUTH_NULL
-	binary.BigEndian.PutUint32(header[36:40], 0)   // verf_len = 0
+	binary.BigEndian.PutUint32(header[24:28], 0) // cred_flavor = AUTH_NULL
+	binary.BigEndian.PutUint32(header[28:32], 0) // cred_len = 0
+	binary.BigEndian.PutUint32(header[32:36], 0) // verf_flavor = AUTH_NULL
+	binary.BigEndian.PutUint32(header[36:40], 0) // verf_len = 0
 
 	if len(args) > 0 {
 		return append(header, args...)
@@ -311,17 +338,4 @@ func parseDumpResponse(t *testing.T, data []byte) []PortmapEntry {
 	}
 
 	return entries
-}
-
-// readFull reads exactly len(buf) bytes from conn.
-func readFull(conn net.Conn, buf []byte) (int, error) {
-	total := 0
-	for total < len(buf) {
-		n, err := conn.Read(buf[total:])
-		total += n
-		if err != nil {
-			return total, err
-		}
-	}
-	return total, nil
 }

@@ -103,8 +103,7 @@ func EncodeBoolResponse(val bool) []byte {
 	buf := make([]byte, 4)
 	if val {
 		binary.BigEndian.PutUint32(buf, 1)
-	} else {
-		binary.BigEndian.PutUint32(buf, 0)
 	}
+	// buf is zero-initialized, so false case needs no explicit write
 	return buf
 }

@@ -3,6 +3,7 @@ package portmap
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -70,11 +71,8 @@ func NewServer(cfg ServerConfig) *Server {
 func (s *Server) Serve(ctx context.Context) error {
 	addr := fmt.Sprintf(":%d", s.config.Port)
 
-	enableTCP := s.config.EnableTCP
-	enableUDP := s.config.EnableUDP
-
 	// Start TCP listener (unless disabled)
-	if enableTCP {
+	if s.config.EnableTCP {
 		tcpListener, err := net.Listen("tcp", addr)
 		if err != nil {
 			return fmt.Errorf("listen TCP %s: %w", addr, err)
@@ -83,7 +81,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 
 	// Start UDP listener (unless disabled)
-	if enableUDP {
+	if s.config.EnableUDP {
 		udpAddr, err := net.ResolveUDPAddr("udp", addr)
 		if err != nil {
 			if s.tcpListener != nil {
@@ -104,14 +102,14 @@ func (s *Server) Serve(ctx context.Context) error {
 	// Signal that listeners are ready
 	close(s.listenerReady)
 
-	logger.Info("Portmapper server started", "address", addr, "tcp", enableTCP, "udp", enableUDP)
+	logger.Info("Portmapper server started", "address", addr, "tcp", s.config.EnableTCP, "udp", s.config.EnableUDP)
 
 	// Launch TCP and UDP goroutines
-	if enableTCP {
+	if s.config.EnableTCP {
 		s.wg.Add(1)
 		go s.serveTCP(ctx)
 	}
-	if enableUDP {
+	if s.config.EnableUDP {
 		s.wg.Add(1)
 		go s.serveUDP(ctx)
 	}
@@ -204,7 +202,8 @@ func (s *Server) handleTCPConn(ctx context.Context, conn net.Conn) {
 		if _, err := io.ReadFull(conn, headerBuf[:]); err != nil {
 			if err != io.EOF {
 				// Timeout is expected for idle connections -- don't log
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				var netErr net.Error
+				if errors.As(err, &netErr) && netErr.Timeout() {
 					return
 				}
 				logger.Debug("Portmap: read fragment header error", "client", clientAddr, "error", err)
@@ -254,7 +253,7 @@ func (s *Server) handleTCPConn(ctx context.Context, conn net.Conn) {
 // amplification, other procedures (especially DUMP) can still produce responses
 // larger than the request. In production deployments, consider firewalling the
 // portmapper UDP port from external networks.
-func (s *Server) serveUDP(ctx context.Context) {
+func (s *Server) serveUDP(_ context.Context) {
 	defer s.wg.Done()
 
 	buf := make([]byte, 65535) // Max UDP packet size
@@ -279,7 +278,8 @@ func (s *Server) serveUDP(ctx context.Context) {
 
 		n, clientAddr, err := s.udpConn.ReadFromUDP(buf)
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
 				continue // Normal timeout, check shutdown and retry
 			}
 			select {
@@ -324,23 +324,20 @@ func (s *Server) processRPCMessage(data []byte, clientAddr string) []byte {
 	// Validate program number
 	if call.Program != types.ProgramPortmap {
 		logger.Debug("Portmap: wrong program", "program", call.Program, "client", clientAddr)
-		reply := makeErrorReplyBody(call.XID, rpc.RPCProgUnavail)
-		return reply
+		return makeErrorReplyBody(call.XID, rpc.RPCProgUnavail)
 	}
 
 	// Validate version
 	if call.Version != types.PortmapVersion2 {
 		logger.Debug("Portmap: version mismatch", "version", call.Version, "client", clientAddr)
-		reply := makeProgMismatchReplyBody(call.XID, types.PortmapVersion2, types.PortmapVersion2)
-		return reply
+		return makeProgMismatchReplyBody(call.XID, types.PortmapVersion2, types.PortmapVersion2)
 	}
 
 	// Look up procedure in dispatch table
 	proc, ok := DispatchTable[call.Procedure]
 	if !ok {
 		logger.Debug("Portmap: procedure unavailable", "procedure", call.Procedure, "client", clientAddr)
-		reply := makeErrorReplyBody(call.XID, rpc.RPCProcUnavail)
-		return reply
+		return makeErrorReplyBody(call.XID, rpc.RPCProcUnavail)
 	}
 
 	// Extract procedure data
@@ -353,18 +350,17 @@ func (s *Server) processRPCMessage(data []byte, clientAddr string) []byte {
 	logger.Debug("Portmap RPC", "procedure", proc.Name, "client", clientAddr)
 
 	// Call handler
-	result, err := proc.Handler(s.handler, procData, clientAddr)
+	respData, err := proc.Handler(s.handler, procData, clientAddr)
 	if err != nil {
 		logger.Debug("Portmap: handler error", "procedure", proc.Name, "client", clientAddr, "error", err)
-		// Still return the result data if available (e.g., false for SET with bad decode)
-		if result != nil && result.Data != nil {
-			return makeSuccessReplyBody(call.XID, result.Data)
+		// Still return the response data if available (e.g., false for SET with bad decode)
+		if respData != nil {
+			return makeSuccessReplyBody(call.XID, respData)
 		}
-		reply := makeErrorReplyBody(call.XID, rpc.RPCSystemErr)
-		return reply
+		return makeErrorReplyBody(call.XID, rpc.RPCSystemErr)
 	}
 
-	return makeSuccessReplyBody(call.XID, result.Data)
+	return makeSuccessReplyBody(call.XID, respData)
 }
 
 // Stop gracefully shuts down the portmapper server and waits for all

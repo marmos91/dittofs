@@ -1,15 +1,16 @@
 // Package portmap provides an embedded portmapper (RFC 1057) service registry.
 //
 // The Registry stores program/version/protocol -> port mappings that NFS clients
-// query via rpcinfo or showmount. DittoFS runs this on the same port as NFS,
-// eliminating the need for a system-level rpcbind/portmap daemon.
+// query via rpcinfo or showmount. DittoFS runs this on a dedicated port (default
+// 10111), eliminating the need for a system-level rpcbind/portmap daemon.
 //
 // References:
 //   - RFC 1057 Section A (Port Mapper Program Protocol)
 package portmap
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 	"sync"
 
 	"github.com/marmos91/dittofs/internal/protocol/portmap/types"
@@ -113,14 +114,14 @@ func (r *Registry) Dump() []*xdr.Mapping {
 	}
 
 	// Sort for deterministic output: by prog, then vers, then prot
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].Prog != result[j].Prog {
-			return result[i].Prog < result[j].Prog
+	slices.SortFunc(result, func(a, b *xdr.Mapping) int {
+		if c := cmp.Compare(a.Prog, b.Prog); c != 0 {
+			return c
 		}
-		if result[i].Vers != result[j].Vers {
-			return result[i].Vers < result[j].Vers
+		if c := cmp.Compare(a.Vers, b.Vers); c != 0 {
+			return c
 		}
-		return result[i].Prot < result[j].Prot
+		return cmp.Compare(a.Prot, b.Prot)
 	})
 
 	return result

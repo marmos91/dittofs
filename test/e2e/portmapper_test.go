@@ -128,12 +128,23 @@ func testPortmapperGetPort(t *testing.T, pmapPort, nfsPort int) {
 // testPortmapperRpcinfo verifies the portmapper responds to rpcinfo probes.
 // Uses the real rpcinfo binary (available on macOS and Linux).
 //
-// Note: On macOS, rpcinfo always tries to contact the system portmapper on
-// port 111 first, and fails with "Broken pipe" if it's not running. The -n
-// flag does not bypass this check on macOS. This test works on Linux where
-// rpcinfo -n correctly connects directly to the specified port.
+// Note: The rpcinfo tool has platform-specific behavior:
+//   - On macOS without system portmapper: fails with "Broken pipe"
+//   - On Linux with system rpcbind: queries system portmapper first, then probes
+//
+// When a system rpcbind is running, rpcinfo -n <port> still queries the system
+// portmapper (port 111) to check if the program is registered before probing.
+// Since our NFS is registered with our embedded portmapper (not the system one),
+// rpcinfo reports "Program not registered" even though our portmapper works.
+//
+// For full portmapper testing without system rpcbind interference, run:
+//
+//	./test/integration/portmap/run.sh
 func testPortmapperRpcinfo(t *testing.T, pmapPort, nfsPort int) {
 	t.Helper()
+
+	// Skip if system rpcbind is running - it interferes with rpcinfo probes
+	helpers.SkipIfSystemRpcbind(t)
 
 	// Probe portmapper program (100000) on the portmapper port
 	err := helpers.RpcinfoProbe(t, "127.0.0.1", pmapPort, helpers.ProgPortmapper, 2)

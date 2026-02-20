@@ -117,10 +117,8 @@ func buildRPCCall(xid, prog, vers, proc uint32, args []byte) []byte {
 
 // wrapWithRecordMarking adds TCP record marking header.
 func wrapWithRecordMarking(data []byte) []byte {
-	header := make([]byte, 4)
-	binary.BigEndian.PutUint32(header, 0x80000000|uint32(len(data)))
 	result := make([]byte, 4+len(data))
-	copy(result, header)
+	binary.BigEndian.PutUint32(result[0:4], 0x80000000|uint32(len(data)))
 	copy(result[4:], data)
 	return result
 }
@@ -411,7 +409,7 @@ func TestServerTCPConnectionReuse(t *testing.T) {
 	defer func() { _ = conn.Close() }()
 
 	// Send multiple requests over the same connection
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		xid := uint32(0xD0000000 + i)
 		args := encodeMappingArgs(100003, 3, 6, 0)
 		msg := buildRPCCall(xid, types.ProgramPortmap, types.PortmapVersion2, types.ProcGetport, args)
@@ -683,9 +681,9 @@ func TestServerUDPDump(t *testing.T) {
 		count++
 	}
 
-	// RegisterDittoFSServices registers 10 entries
-	if count != 10 {
-		t.Errorf("DUMP entry count: got %d, want 10", count)
+	// RegisterDittoFSServices registers 5 entries (TCP-only)
+	if count != 5 {
+		t.Errorf("DUMP entry count: got %d, want 5", count)
 	}
 }
 
@@ -745,7 +743,7 @@ func TestServerMultipleTCPClients(t *testing.T) {
 	const numClients = 5
 	results := make(chan error, numClients)
 
-	for i := 0; i < numClients; i++ {
+	for i := range numClients {
 		go func(idx int) {
 			args := encodeMappingArgs(100003, 3, 6, 0)
 			msg := buildRPCCall(uint32(0xF0000000+idx), types.ProgramPortmap, types.PortmapVersion2, types.ProcGetport, args)
@@ -798,7 +796,7 @@ func TestServerMultipleTCPClients(t *testing.T) {
 		}(i)
 	}
 
-	for i := 0; i < numClients; i++ {
+	for range numClients {
 		if err := <-results; err != nil {
 			t.Error(err)
 		}

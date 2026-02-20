@@ -28,7 +28,7 @@ func (s *NFSAdapter) isPortmapperEnabled() bool {
 //
 // The portmapper (RFC 1057) enables NFS clients to discover DittoFS services
 // via standard tools like rpcinfo and showmount. It registers all DittoFS
-// services (NFS, MOUNT, NLM, NSM) on both TCP and UDP.
+// services (NFS, MOUNT, NLM, NSM) on TCP.
 //
 // The portmapper runs in a background goroutine. If it fails to start
 // (e.g., port in use), the error is returned but should be treated as

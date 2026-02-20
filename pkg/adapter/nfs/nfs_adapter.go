@@ -524,7 +524,7 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 	// Start embedded portmapper (RFC 1057) for NFS service discovery.
 	// This allows clients to query rpcinfo/showmount without needing
 	// a system-level rpcbind daemon. Portmapper failure is non-fatal
-	// (port 111 may require root privileges).
+	// (privileged ports like 111 may require root privileges).
 	if err := s.startPortmapper(ctx); err != nil {
 		logger.Warn("Portmapper failed to start (NFS will continue without it)", "error", err)
 	}

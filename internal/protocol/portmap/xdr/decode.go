@@ -9,7 +9,7 @@ import (
 //
 // Wire format: [prog:uint32][vers:uint32][prot:uint32][port:uint32]
 //
-// The input must be exactly 16 bytes. Used for SET, UNSET, and GETPORT
+// The input must be at least 16 bytes (trailing bytes are ignored). Used for SET, UNSET, and GETPORT
 // request arguments, which all send a mapping struct as their argument.
 func DecodeMapping(data []byte) (*Mapping, error) {
 	if len(data) < MappingSize {

@@ -252,7 +252,7 @@ func (h *AdapterSettingsHandler) GetDefaults(w http.ResponseWriter, r *http.Requ
 				"max_read_size":             {Min: ranges.MaxReadSizeMin, Max: ranges.MaxReadSizeMax},
 				"max_write_size":            {Min: ranges.MaxWriteSizeMin, Max: ranges.MaxWriteSizeMax},
 				"preferred_transfer_size":   {Min: ranges.PreferredTransferSizeMin, Max: ranges.PreferredTransferSizeMax},
-				"portmapper_port":          {Min: ranges.PortmapperPortMin, Max: ranges.PortmapperPortMax},
+				"portmapper_port":           {Min: ranges.PortmapperPortMin, Max: ranges.PortmapperPortMax},
 			},
 		}
 		WriteJSONOK(w, resp)

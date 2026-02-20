@@ -1,8 +1,6 @@
 package handlers
 
-import (
-	"github.com/marmos91/dittofs/internal/protocol/portmap/xdr"
-)
+import "github.com/marmos91/dittofs/internal/protocol/portmap/xdr"
 
 // Getport handles the portmap GETPORT procedure (procedure 3).
 //
