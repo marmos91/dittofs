@@ -109,7 +109,7 @@ jobs:
           echo "### Test Suites" >> $GITHUB_STEP_SUMMARY
           echo "| Suite | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-          for suite in Server Users Groups Shares Permissions MetadataStores PayloadStores Adapters Backup Context FileOperations CrossProtocol StoreMatrix Kerberos; do
+          for suite in Server Users Groups Shares Permissions MetadataStores PayloadStores Adapters Portmapper Backup Context FileOperations CrossProtocol StoreMatrix Kerberos; do
             if grep -q "Test${suite}.*PASS" "$GITHUB_WORKSPACE/e2e.log"; then
               echo "| ${suite} | :white_check_mark: |" >> $GITHUB_STEP_SUMMARY
             elif grep -q "Test${suite}.*FAIL" "$GITHUB_WORKSPACE/e2e.log"; then

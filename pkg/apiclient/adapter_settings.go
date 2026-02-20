@@ -22,6 +22,8 @@ type NFSAdapterSettingsResponse struct {
 	PreferredTransferSize   int      `json:"preferred_transfer_size"`
 	DelegationsEnabled      bool     `json:"delegations_enabled"`
 	BlockedOperations       []string `json:"blocked_operations"`
+	PortmapperEnabled       bool     `json:"portmapper_enabled"`
+	PortmapperPort          int      `json:"portmapper_port"`
 	Version                 int      `json:"version"`
 }
 
@@ -74,6 +76,8 @@ type PatchNFSSettingsRequest struct {
 	PreferredTransferSize   *int      `json:"preferred_transfer_size,omitempty"`
 	DelegationsEnabled      *bool     `json:"delegations_enabled,omitempty"`
 	BlockedOperations       *[]string `json:"blocked_operations,omitempty"`
+	PortmapperEnabled       *bool     `json:"portmapper_enabled,omitempty"`
+	PortmapperPort          *int      `json:"portmapper_port,omitempty"`
 }
 
 // PatchSMBSettingsRequest uses pointer fields for partial updates.

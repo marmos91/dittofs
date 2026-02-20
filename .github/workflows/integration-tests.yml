@@ -31,6 +31,18 @@ jobs:
       - name: Run all integration tests
         run: go test -tags=integration -v -timeout=15m ./...
 
+      - name: Install and start rpcbind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpcbind
+          sudo systemctl start rpcbind || sudo rpcbind
+
+      - name: Run portmap system integration tests
+        run: |
+          # Tests RPC client against system rpcbind
+          # Skips automatically if rpcbind unavailable or NFS already registered
+          go test -tags=portmap_system -v -timeout=2m ./test/integration/portmap/...
+
       - name: Upload test logs on failure
         if: failure()
         uses: actions/upload-artifact@v4

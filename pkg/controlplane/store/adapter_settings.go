@@ -60,6 +60,8 @@ func (s *GORMStore) UpdateNFSAdapterSettings(ctx context.Context, settings *mode
 			"preferred_transfer_size":   settings.PreferredTransferSize,
 			"delegations_enabled":       settings.DelegationsEnabled,
 			"blocked_operations":        settings.BlockedOperations,
+			"portmapper_enabled":        settings.PortmapperEnabled,
+			"portmapper_port":           settings.PortmapperPort,
 			"version":                   gorm.Expr("version + 1"),
 			"updated_at":                time.Now(),
 		})
@@ -96,6 +98,8 @@ func (s *GORMStore) ResetNFSAdapterSettings(ctx context.Context, adapterID strin
 			"preferred_transfer_size":   defaults.PreferredTransferSize,
 			"delegations_enabled":       defaults.DelegationsEnabled,
 			"blocked_operations":        "",
+			"portmapper_enabled":        defaults.PortmapperEnabled,
+			"portmapper_port":           defaults.PortmapperPort,
 			"version":                   gorm.Expr("version + 1"),
 			"updated_at":                time.Now(),
 		})

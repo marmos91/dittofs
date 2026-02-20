@@ -353,19 +353,11 @@ func (sp *ServerProcess) DumpLogs(t *testing.T) {
 func findDfsBinary(t *testing.T) string {
 	t.Helper()
 
-	// Check for dfs in PATH
-	if path, err := exec.LookPath("dfs"); err == nil {
-		return path
-	}
-
-	// Check for dfs in project root
+	// Always build a fresh binary from source to ensure E2E tests run against
+	// the current code, not a stale release (e.g. Homebrew install).
 	projectRoot := findProjectRoot(t)
 	localBinary := filepath.Join(projectRoot, "dfs")
-	if _, err := os.Stat(localBinary); err == nil {
-		return localBinary
-	}
 
-	// Try to build it
 	t.Log("Building dfs binary...")
 	cmd := exec.Command("go", "build", "-o", localBinary, "./cmd/dfs/")
 	cmd.Dir = projectRoot

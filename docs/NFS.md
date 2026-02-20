@@ -4,16 +4,96 @@ This document details DittoFS's NFSv3 implementation, protocol status, and clien
 
 ## Table of Contents
 
-- [Mounting Without Portmapper](#mounting-without-portmapper)
+- [Embedded Portmapper](#embedded-portmapper)
+- [Mounting](#mounting)
 - [Protocol Implementation Status](#protocol-implementation-status)
 - [Implementation Details](#implementation-details)
 - [Testing NFS Operations](#testing-nfs-operations)
 
-## Mounting Without Portmapper
+## Embedded Portmapper
 
-DittoFS uses a fixed port and does not require portmapper/rpcbind.
+DittoFS includes an embedded portmapper (RFC 1057) that enables standard NFS service discovery without requiring a system-level `rpcbind` daemon.
 
-### Mount with Explicit Port
+### Why an Embedded Portmapper?
+
+NFS clients traditionally rely on a portmapper (port 111) to discover which port an NFS server is listening on. Without a portmapper, clients require explicit port options (`-o port=12049,mountport=12049`), and standard tools like `rpcinfo` and `showmount` don't work.
+
+The embedded portmapper solves this by:
+
+- Registering all DittoFS services (NFS, MOUNT, NLM, NSM) automatically on startup
+- Responding to standard portmap queries via TCP and UDP
+- Running on an unprivileged port (default 10111) to avoid requiring root
+- Enabling `rpcinfo` and `showmount` to discover DittoFS services
+
+### Service Discovery
+
+With the portmapper running, standard NFS tools work:
+
+```bash
+# Query registered services
+rpcinfo -p localhost -n 10111
+
+# Show available exports
+showmount -e localhost
+```
+
+### Configuration
+
+The portmapper is disabled by default. Enable it via `dfsctl`:
+
+```bash
+# Check current settings
+dfsctl adapter settings nfs
+
+# Change the portmapper port
+dfsctl adapter settings nfs --set portmapper_port=10111
+
+# Disable the portmapper entirely
+dfsctl adapter settings nfs --set portmapper_enabled=false
+```
+
+Or via environment variables:
+
+```bash
+DITTOFS_ADAPTERS_NFS_PORTMAPPER_PORT=10111
+DITTOFS_ADAPTERS_NFS_PORTMAPPER_ENABLED=false
+```
+
+### Security
+
+The embedded portmapper follows standard security practices:
+
+- **SET/UNSET restricted to localhost**: Only local clients can register or unregister services
+- **CALLIT (procedure 5) omitted**: Prevents DDoS amplification attacks
+- **Connection limits**: TCP connections are capped at 64 concurrent
+- **Non-privileged port**: Default port 10111 avoids requiring root privileges
+
+### Portmapper Failure is Non-Fatal
+
+If the portmapper fails to start (e.g., port already in use), NFS continues to operate normally. Clients just need to specify ports explicitly in mount options.
+
+## Mounting
+
+### With Portmapper on Port 111
+
+When the portmapper runs on the standard port 111 (requires root or `CAP_NET_BIND_SERVICE`), NFS clients can auto-discover ports and mount commands are simplified:
+
+```bash
+# Configure portmapper on standard port (requires root)
+dfsctl adapter settings nfs --set portmapper_port=111
+
+# Linux - no port options needed, client queries portmapper automatically
+sudo mkdir -p /mnt/nfs
+sudo mount -t nfs -o tcp localhost:/export /mnt/nfs
+
+# macOS
+mkdir -p /tmp/nfs
+mount -t nfs -o tcp localhost:/export /tmp/nfs
+```
+
+### With Explicit Ports
+
+When the portmapper is disabled or running on a non-standard port, specify the NFS port explicitly:
 
 ```bash
 # Linux
@@ -31,10 +111,6 @@ mount -t nfs -o tcp,port=12049,mountport=12049,resvport localhost:/export /tmp/n
 sudo umount /mnt/nfs   # Linux
 umount /tmp/nfs        # macOS
 ```
-
-### Traditional Tools
-
-Traditional tools like `showmount` require portmapper and will not work with DittoFS. Instead, use direct mount commands or the provided test clients.
 
 ## Protocol Implementation Status
 
@@ -196,6 +272,7 @@ go test -v ./test/e2e -run TestE2E/memory/BasicOperations
 - [RFC 1813](https://tools.ietf.org/html/rfc1813) - NFS Version 3 Protocol Specification
 - [RFC 5531](https://tools.ietf.org/html/rfc5531) - RPC: Remote Procedure Call Protocol Specification
 - [RFC 4506](https://tools.ietf.org/html/rfc4506) - XDR: External Data Representation Standard
+- [RFC 1057](https://tools.ietf.org/html/rfc1057) - RPC: Remote Procedure Call Protocol (Portmapper)
 - [RFC 1094](https://tools.ietf.org/html/rfc1094) - NFS: Network File System Protocol (Version 2)
 
 ### Related Projects

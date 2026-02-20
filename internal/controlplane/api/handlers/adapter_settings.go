@@ -45,6 +45,8 @@ type PatchNFSSettingsRequest struct {
 	PreferredTransferSize   *int      `json:"preferred_transfer_size,omitempty"`
 	DelegationsEnabled      *bool     `json:"delegations_enabled,omitempty"`
 	BlockedOperations       *[]string `json:"blocked_operations,omitempty"`
+	PortmapperEnabled       *bool     `json:"portmapper_enabled,omitempty"`
+	PortmapperPort          *int      `json:"portmapper_port,omitempty"`
 }
 
 // PutNFSSettingsRequest requires all fields for full replacement.
@@ -64,6 +66,8 @@ type PutNFSSettingsRequest struct {
 	PreferredTransferSize   int      `json:"preferred_transfer_size"`
 	DelegationsEnabled      bool     `json:"delegations_enabled"`
 	BlockedOperations       []string `json:"blocked_operations"`
+	PortmapperEnabled       bool     `json:"portmapper_enabled"`
+	PortmapperPort          int      `json:"portmapper_port"`
 }
 
 // --- SMB request types ---
@@ -111,6 +115,8 @@ type NFSSettingsResponse struct {
 	PreferredTransferSize   int      `json:"preferred_transfer_size"`
 	DelegationsEnabled      bool     `json:"delegations_enabled"`
 	BlockedOperations       []string `json:"blocked_operations"`
+	PortmapperEnabled       bool     `json:"portmapper_enabled"`
+	PortmapperPort          int      `json:"portmapper_port"`
 	Version                 int      `json:"version"`
 }
 
@@ -246,6 +252,7 @@ func (h *AdapterSettingsHandler) GetDefaults(w http.ResponseWriter, r *http.Requ
 				"max_read_size":             {Min: ranges.MaxReadSizeMin, Max: ranges.MaxReadSizeMax},
 				"max_write_size":            {Min: ranges.MaxWriteSizeMin, Max: ranges.MaxWriteSizeMax},
 				"preferred_transfer_size":   {Min: ranges.PreferredTransferSizeMin, Max: ranges.PreferredTransferSizeMax},
+				"portmapper_port":           {Min: ranges.PortmapperPortMin, Max: ranges.PortmapperPortMax},
 			},
 		}
 		WriteJSONOK(w, resp)
@@ -316,6 +323,8 @@ func (h *AdapterSettingsHandler) PutSettings(w http.ResponseWriter, r *http.Requ
 		settings.PreferredTransferSize = req.PreferredTransferSize
 		settings.DelegationsEnabled = req.DelegationsEnabled
 		settings.SetBlockedOperations(req.BlockedOperations)
+		settings.PortmapperEnabled = req.PortmapperEnabled
+		settings.PortmapperPort = req.PortmapperPort
 
 		if !h.validateAndRespond(w, adapterType, settings, nil, force) {
 			return
@@ -465,6 +474,12 @@ func (h *AdapterSettingsHandler) PatchSettings(w http.ResponseWriter, r *http.Re
 		}
 		if req.BlockedOperations != nil {
 			settings.SetBlockedOperations(*req.BlockedOperations)
+		}
+		if req.PortmapperEnabled != nil {
+			settings.PortmapperEnabled = *req.PortmapperEnabled
+		}
+		if req.PortmapperPort != nil {
+			settings.PortmapperPort = *req.PortmapperPort
 		}
 
 		if !h.validateAndRespond(w, adapterType, settings, nil, force) {
@@ -691,6 +706,7 @@ func validateNFSSettings(s *models.NFSAdapterSettings) map[string]string {
 	validateIntRange(errs, "max_read_size", s.MaxReadSize, ranges.MaxReadSizeMin, ranges.MaxReadSizeMax)
 	validateIntRange(errs, "max_write_size", s.MaxWriteSize, ranges.MaxWriteSizeMin, ranges.MaxWriteSizeMax)
 	validateIntRange(errs, "preferred_transfer_size", s.PreferredTransferSize, ranges.PreferredTransferSizeMin, ranges.PreferredTransferSizeMax)
+	validateIntRange(errs, "portmapper_port", s.PortmapperPort, ranges.PortmapperPortMin, ranges.PortmapperPortMax)
 
 	// Blocked operations validation
 	for _, op := range s.GetBlockedOperations() {
@@ -867,6 +883,10 @@ func resetNFSSetting(settings, defaults *models.NFSAdapterSettings, name string)
 		settings.DelegationsEnabled = defaults.DelegationsEnabled
 	case "blocked_operations":
 		settings.BlockedOperations = defaults.BlockedOperations
+	case "portmapper_enabled":
+		settings.PortmapperEnabled = defaults.PortmapperEnabled
+	case "portmapper_port":
+		settings.PortmapperPort = defaults.PortmapperPort
 	default:
 		return false
 	}
@@ -921,6 +941,8 @@ func nfsSettingsToResponse(s *models.NFSAdapterSettings) NFSSettingsResponse {
 		PreferredTransferSize:   s.PreferredTransferSize,
 		DelegationsEnabled:      s.DelegationsEnabled,
 		BlockedOperations:       ops,
+		PortmapperEnabled:       s.PortmapperEnabled,
+		PortmapperPort:          s.PortmapperPort,
 		Version:                 s.Version,
 	}
 }

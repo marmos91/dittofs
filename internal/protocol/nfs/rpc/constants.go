@@ -130,6 +130,10 @@ const (
 	// contains the procedure's return values.
 	RPCSuccess = 0
 
+	// RPCProgUnavail indicates the program is not available.
+	// The server does not support the requested RPC program number.
+	RPCProgUnavail = 1
+
 	// RPCProgMismatch indicates program version mismatch.
 	// The server supports the requested program number but not
 	// the requested version. The reply includes the range of
