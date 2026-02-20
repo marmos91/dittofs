@@ -202,7 +202,11 @@ jobs:
             exit 1
           fi
 
-          echo "Tests completed"
+          # If we reach here, the log didn't match any expected pattern
+          echo "::error::Test output format not recognized - neither 'All tests successful' nor 'Result: FAIL' found"
+          echo "=== Last 30 lines of log ==="
+          tail -30 "$LOG_FILE"
+          exit 1
 
       - name: Cleanup
         if: always()
@@ -378,7 +382,11 @@ jobs:
             exit 1
           fi
 
-          echo "Tests completed"
+          # If we reach here, the log didn't match any expected pattern
+          echo "::error::Test output format not recognized - neither 'All tests successful' nor 'Result: FAIL' found"
+          echo "=== Last 30 lines of log ==="
+          tail -30 "$LOG_FILE"
+          exit 1
 
       - name: Cleanup
         if: always()
@@ -451,7 +459,7 @@ jobs:
                     echo "| ${store^} | :x: Fail |" >> $GITHUB_STEP_SUMMARY
                   fi
                 else
-                  echo "| ${store^} | :white_check_mark: Pass |" >> $GITHUB_STEP_SUMMARY
+                  echo "| ${store^} | :warning: Unknown (no pass/fail marker) |" >> $GITHUB_STEP_SUMMARY
                 fi
               else
                 echo "| ${store^} | :warning: No results |" >> $GITHUB_STEP_SUMMARY

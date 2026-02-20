@@ -121,7 +121,7 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 	// 7. Apply attributes via MetadataService (all-or-nothing semantics)
 	if err := metaSvc.SetFileAttributes(authCtx, metadata.FileHandle(ctx.CurrentFH), setAttrs); err != nil {
 		nfsStatus := types.MapMetadataErrorToNFS4(err)
-		logger.Warn("NFSv4 SETATTR failed",
+		logger.Debug("NFSv4 SETATTR failed",
 			"error", err,
 			"nfs4status", nfsStatus,
 			"mode_requested", setAttrs.Mode,

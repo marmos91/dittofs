@@ -408,11 +408,7 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 
 	if writePermSufficient && !isOwner && !isRoot {
 		if err := s.checkWritePermission(ctx, handle); err != nil {
-			return &StoreError{
-				Code:    ErrAccessDenied,
-				Message: "permission denied",
-				Path:    file.Path,
-			}
+			return err
 		}
 	} else if !isOwner && !isRoot {
 		return &StoreError{
@@ -546,6 +542,7 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		// The server must do this even if the client doesn't send TIME_MODIFY_SET,
 		// because POSIX requires it and NFS clients may rely on server-side updates.
 		file.Mtime = now
+		file.Ctime = now
 
 		// POSIX: Clear SUID/SGID bits on truncate for non-root users (like write)
 		if file.Type == FileTypeRegular && !isRoot {
