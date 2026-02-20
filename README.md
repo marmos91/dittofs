@@ -728,5 +728,7 @@ MIT License - See [LICENSE](LICENSE) file for details
 ---
 
 **Getting Started?** → [Quick Start](#quick-start)
+
 **Questions?** → [FAQ](docs/FAQ.md) or [open an issue](https://github.com/marmos91/dittofs/issues)
+
 **Want to Contribute?** → [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)
