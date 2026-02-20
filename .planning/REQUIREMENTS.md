@@ -17,9 +17,9 @@ Requirements for NFSv4.1 Sessions milestone. Each maps to roadmap phases.
 
 ### Exactly-Once Semantics
 
-- [ ] **EOS-01**: Slot table caches full COMPOUND response for replay detection on duplicate requests
-- [ ] **EOS-02**: Sequence ID validation detects retries, misordered requests, and stale slots
-- [ ] **EOS-03**: Server supports dynamic slot count adjustment via target_highest_slotid in SEQUENCE response
+- [x] **EOS-01**: Slot table caches full COMPOUND response for replay detection on duplicate requests
+- [x] **EOS-02**: Sequence ID validation detects retries, misordered requests, and stale slots
+- [x] **EOS-03**: Server supports dynamic slot count adjustment via target_highest_slotid in SEQUENCE response
 
 ### Backchannel
 
@@ -112,9 +112,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SESS-03 | Phase 19 | Pending |
 | SESS-04 | Phase 20 | Pending |
 | SESS-05 | Phase 16 | Complete |
-| EOS-01 | Phase 17 | Pending |
-| EOS-02 | Phase 17 | Pending |
-| EOS-03 | Phase 17 | Pending |
+| EOS-01 | Phase 17 | Complete |
+| EOS-02 | Phase 17 | Complete |
+| EOS-03 | Phase 17 | Complete |
 | BACK-01 | Phase 22 | Pending |
 | BACK-02 | Phase 21 | Pending |
 | BACK-03 | Phase 22 | Pending |
