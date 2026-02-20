@@ -3,6 +3,8 @@ package types
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
+	"fmt"
 	"io"
 
 	"github.com/marmos91/dittofs/internal/protocol/xdr"
@@ -253,4 +255,34 @@ func RequireSavedFH(ctx *CompoundContext) uint32 {
 		return NFS4ERR_RESTOREFH
 	}
 	return NFS4_OK
+}
+
+// ============================================================================
+// NFSv4.1 Request Context
+// ============================================================================
+
+// V41RequestContext holds session context for NFSv4.1 operations.
+// Populated by SEQUENCE processing and passed to subsequent operations
+// within a COMPOUND request.
+type V41RequestContext struct {
+	// SessionID is the NFSv4.1 session identifier.
+	SessionID SessionId4
+
+	// SlotID identifies the slot within the session.
+	SlotID uint32
+
+	// SequenceID is the sequence number for this slot.
+	SequenceID uint32
+
+	// HighestSlot is the highest slot ID the client intends to use.
+	HighestSlot uint32
+
+	// CacheThis indicates whether the server should cache the reply.
+	CacheThis bool
+}
+
+// String returns a human-readable representation of the V41RequestContext.
+func (c *V41RequestContext) String() string {
+	return fmt.Sprintf("V41Ctx{session=%s, slot=%d, seq=%d, highest=%d, cache=%t}",
+		hex.EncodeToString(c.SessionID[:]), c.SlotID, c.SequenceID, c.HighestSlot, c.CacheThis)
 }

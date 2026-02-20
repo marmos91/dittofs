@@ -8,6 +8,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
@@ -22,9 +23,14 @@ import (
 // with the operation's status and XDR-encoded response data.
 type OpHandler func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult
 
+// V41OpHandler is the type signature for NFSv4.1 operation handlers.
+// Unlike v4.0 OpHandler, it receives a V41RequestContext with session/slot info
+// populated by SEQUENCE processing. For stub handlers, the context is nil.
+type V41OpHandler func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult
+
 // Handler is the concrete implementation for NFSv4 protocol handlers.
 // It processes COMPOUND RPCs by dispatching operations through
-// the opDispatchTable.
+// the opDispatchTable (v4.0) and v41DispatchTable (v4.1).
 type Handler struct {
 	// Registry provides access to all stores and shares.
 	Registry *runtime.Runtime
@@ -54,8 +60,13 @@ type Handler struct {
 	// If an operation is in this set, COMPOUND returns NFS4ERR_NOTSUPP for it.
 	blockedOps map[uint32]bool
 
-	// opDispatchTable maps operation numbers to handler functions.
+	// opDispatchTable maps v4.0 operation numbers to handler functions.
 	opDispatchTable map[uint32]OpHandler
+
+	// v41DispatchTable maps v4.1 operation numbers (40-58) to handler functions.
+	// v4.0 operations (3-39) are accessible from v4.1 compounds via fallback
+	// to opDispatchTable.
+	v41DispatchTable map[uint32]V41OpHandler
 }
 
 // NewHandler creates a new NFSv4 handler with the given runtime, pseudo-fs,
@@ -73,10 +84,11 @@ func NewHandler(registry *runtime.Runtime, pfs *pseudofs.PseudoFS, stateManager 
 	}
 
 	h := &Handler{
-		Registry:        registry,
-		PseudoFS:        pfs,
-		StateManager:    sm,
-		opDispatchTable: make(map[uint32]OpHandler),
+		Registry:         registry,
+		PseudoFS:         pfs,
+		StateManager:     sm,
+		opDispatchTable:  make(map[uint32]OpHandler),
+		v41DispatchTable: make(map[uint32]V41OpHandler),
 	}
 
 	// Register all implemented operation handlers.
@@ -156,7 +168,115 @@ func NewHandler(registry *runtime.Runtime, pfs *pseudofs.PseudoFS, stateManager 
 	//   // serialize snapshots to disk
 	//   handler.StateManager.Shutdown()
 
+	// ============================================================================
+	// NFSv4.1 dispatch table (stub handlers for all 19 v4.1 operations)
+	// ============================================================================
+	//
+	// Each stub decodes its operation's XDR args (to prevent stream desync)
+	// and returns NFS4ERR_NOTSUPP. Real handlers replace stubs in Phases 17-24.
+
+	h.v41DispatchTable[types.OP_BACKCHANNEL_CTL] = v41StubHandler(types.OP_BACKCHANNEL_CTL, func(r io.Reader) error {
+		var args types.BackchannelCtlArgs
+		return args.Decode(r)
+	})
+	h.v41DispatchTable[types.OP_BIND_CONN_TO_SESSION] = v41StubHandler(types.OP_BIND_CONN_TO_SESSION, func(r io.Reader) error {
+		var args types.BindConnToSessionArgs
+		return args.Decode(r)
+	})
+	h.v41DispatchTable[types.OP_EXCHANGE_ID] = v41StubHandler(types.OP_EXCHANGE_ID, func(r io.Reader) error {
+		var args types.ExchangeIdArgs
+		return args.Decode(r)
+	})
+	h.v41DispatchTable[types.OP_CREATE_SESSION] = v41StubHandler(types.OP_CREATE_SESSION, func(r io.Reader) error {
+		var args types.CreateSessionArgs
+		return args.Decode(r)
+	})
+	h.v41DispatchTable[types.OP_DESTROY_SESSION] = v41StubHandler(types.OP_DESTROY_SESSION, func(r io.Reader) error {
+		var args types.DestroySessionArgs
+		return args.Decode(r)
+	})
+	h.v41DispatchTable[types.OP_FREE_STATEID] = v41StubHandler(types.OP_FREE_STATEID, func(r io.Reader) error {
+		var args types.FreeStateidArgs
+		return args.Decode(r)
+	})
+	h.v41DispatchTable[types.OP_GET_DIR_DELEGATION] = v41StubHandler(types.OP_GET_DIR_DELEGATION, func(r io.Reader) error {
+		var args types.GetDirDelegationArgs
+		return args.Decode(r)
+	})
+	h.v41DispatchTable[types.OP_GETDEVICEINFO] = v41StubHandler(types.OP_GETDEVICEINFO, func(r io.Reader) error {
+		var args types.GetDeviceInfoArgs
+		return args.Decode(r)
+	})
+	h.v41DispatchTable[types.OP_GETDEVICELIST] = v41StubHandler(types.OP_GETDEVICELIST, func(r io.Reader) error {
+		var args types.GetDeviceListArgs
+		return args.Decode(r)
+	})
+	h.v41DispatchTable[types.OP_LAYOUTCOMMIT] = v41StubHandler(types.OP_LAYOUTCOMMIT, func(r io.Reader) error {
+		var args types.LayoutCommitArgs
+		return args.Decode(r)
+	})
+	h.v41DispatchTable[types.OP_LAYOUTGET] = v41StubHandler(types.OP_LAYOUTGET, func(r io.Reader) error {
+		var args types.LayoutGetArgs
+		return args.Decode(r)
+	})
+	h.v41DispatchTable[types.OP_LAYOUTRETURN] = v41StubHandler(types.OP_LAYOUTRETURN, func(r io.Reader) error {
+		var args types.LayoutReturnArgs
+		return args.Decode(r)
+	})
+	h.v41DispatchTable[types.OP_SECINFO_NO_NAME] = v41StubHandler(types.OP_SECINFO_NO_NAME, func(r io.Reader) error {
+		var args types.SecinfoNoNameArgs
+		return args.Decode(r)
+	})
+	h.v41DispatchTable[types.OP_SEQUENCE] = v41StubHandler(types.OP_SEQUENCE, func(r io.Reader) error {
+		var args types.SequenceArgs
+		return args.Decode(r)
+	})
+	h.v41DispatchTable[types.OP_SET_SSV] = v41StubHandler(types.OP_SET_SSV, func(r io.Reader) error {
+		var args types.SetSsvArgs
+		return args.Decode(r)
+	})
+	h.v41DispatchTable[types.OP_TEST_STATEID] = v41StubHandler(types.OP_TEST_STATEID, func(r io.Reader) error {
+		var args types.TestStateidArgs
+		return args.Decode(r)
+	})
+	h.v41DispatchTable[types.OP_WANT_DELEGATION] = v41StubHandler(types.OP_WANT_DELEGATION, func(r io.Reader) error {
+		var args types.WantDelegationArgs
+		return args.Decode(r)
+	})
+	h.v41DispatchTable[types.OP_DESTROY_CLIENTID] = v41StubHandler(types.OP_DESTROY_CLIENTID, func(r io.Reader) error {
+		var args types.DestroyClientidArgs
+		return args.Decode(r)
+	})
+	h.v41DispatchTable[types.OP_RECLAIM_COMPLETE] = v41StubHandler(types.OP_RECLAIM_COMPLETE, func(r io.Reader) error {
+		var args types.ReclaimCompleteArgs
+		return args.Decode(r)
+	})
+
 	return h
+}
+
+// v41StubHandler creates a v4.1 stub handler that decodes args and returns NOTSUPP.
+// The decoder parameter consumes the operation's XDR args from the reader to
+// prevent stream desync (the CRITICAL invariant for COMPOUND processing).
+func v41StubHandler(opCode uint32, decoder func(io.Reader) error) V41OpHandler {
+	return func(ctx *types.CompoundContext, _ *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
+		if err := decoder(reader); err != nil {
+			logger.Debug("NFSv4.1 stub decode error",
+				"op", types.OpName(opCode), "error", err, "client", ctx.ClientAddr)
+			return &types.CompoundResult{
+				Status: types.NFS4ERR_BADXDR,
+				OpCode: opCode,
+				Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+			}
+		}
+		logger.Debug("NFSv4.1 operation not yet implemented",
+			"op", types.OpName(opCode), "client", ctx.ClientAddr)
+		return &types.CompoundResult{
+			Status: types.NFS4ERR_NOTSUPP,
+			OpCode: opCode,
+			Data:   encodeStatusOnly(types.NFS4ERR_NOTSUPP),
+		}
+	}
 }
 
 // handleIllegal handles the OP_ILLEGAL operation.
