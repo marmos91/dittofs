@@ -533,10 +533,10 @@ func TestReconcileContainerPorts_AddsAdapterPorts(t *testing.T) {
 
 	ports := updated.Spec.Template.Spec.Containers[0].Ports
 	if len(ports) != 4 {
-		t.Fatalf("Expected 4 ports (nfs, api, adapter-nfs, adapter-portmap), got %d: %v", len(ports), portNames(ports))
+		t.Fatalf("Expected 4 ports (nfs, api, adapter-nfs, %s), got %d: %v", portmapperContainerPortName, len(ports), portNames(ports))
 	}
 
-	// Verify both static "nfs" and dynamic "adapter-nfs" + "adapter-portmap" coexist.
+	// Verify both static "nfs" and dynamic "adapter-nfs" + portmapper coexist.
 	portMap := make(map[string]int32)
 	for _, p := range ports {
 		portMap[p.Name] = p.ContainerPort
@@ -552,7 +552,7 @@ func TestReconcileContainerPorts_AddsAdapterPorts(t *testing.T) {
 		t.Errorf("Dynamic adapter-nfs port should be 12049, got %d", portMap["adapter-nfs"])
 	}
 	if portMap[portmapperContainerPortName] != portmapperContainerPort {
-		t.Errorf("Dynamic adapter-portmap port should be %d, got %d", portmapperContainerPort, portMap[portmapperContainerPortName])
+		t.Errorf("Dynamic %s port should be %d, got %d", portmapperContainerPortName, portmapperContainerPort, portMap[portmapperContainerPortName])
 	}
 }
 
@@ -579,7 +579,7 @@ func TestReconcileContainerPorts_RemovesStoppedAdapterPorts(t *testing.T) {
 		t.Fatalf("reconcileContainerPorts returned error: %v", err)
 	}
 
-	// Verify adapter-smb was removed, adapter-nfs and adapter-portmap were added.
+	// Verify adapter-smb was removed, adapter-nfs and portmapper were added.
 	updated := &appsv1.StatefulSet{}
 	if err := r.Get(context.Background(), client.ObjectKey{
 		Namespace: "default", Name: "test-server",
@@ -606,9 +606,9 @@ func TestReconcileContainerPorts_RemovesStoppedAdapterPorts(t *testing.T) {
 		t.Errorf("Expected adapter-nfs port 12049, got %d", portMap["adapter-nfs"])
 	}
 
-	// adapter-portmap added for NFS.
+	// Portmapper container port added for NFS.
 	if portMap[portmapperContainerPortName] != portmapperContainerPort {
-		t.Errorf("Expected adapter-portmap port %d, got %d", portmapperContainerPort, portMap[portmapperContainerPortName])
+		t.Errorf("Expected %s port %d, got %d", portmapperContainerPortName, portmapperContainerPort, portMap[portmapperContainerPortName])
 	}
 
 	// adapter-smb removed.

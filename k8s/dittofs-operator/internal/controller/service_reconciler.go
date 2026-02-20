@@ -53,8 +53,10 @@ const (
 	// portmapperPortName is the Service/container port name for the portmapper.
 	portmapperPortName = "portmap"
 	// portmapperContainerPortName is the container port name for the portmapper.
+	// Namespaced under NFS to avoid collision with dynamic adapter port names
+	// (e.g., adapterPortName("portmap") would also produce "adapter-portmap").
 	// Uses the adapter- prefix so it's managed as a dynamic port and cleaned up with NFS.
-	portmapperContainerPortName = "adapter-portmap"
+	portmapperContainerPortName = "adapter-nfs-pm"
 	// nfsAdapterType is the canonical sanitized type string for the NFS adapter.
 	nfsAdapterType = "nfs"
 )
@@ -341,7 +343,7 @@ func (r *DittoServerReconciler) updateAdapterServiceIfNeeded(ctx context.Context
 	}
 
 	r.Recorder.Eventf(ds, corev1.EventTypeNormal, "AdapterServiceUpdated",
-		"Updated Service %s for adapter %s (port %d -> %d)", fresh.Name, adapterType, oldPort, int32(info.Port))
+		"Updated Service %s for adapter %s (port %d -> %d, %d ports total)", fresh.Name, adapterType, oldPort, int32(info.Port), len(desiredPorts))
 
 	return nil
 }

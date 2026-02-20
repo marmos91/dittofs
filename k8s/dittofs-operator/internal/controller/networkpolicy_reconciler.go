@@ -367,7 +367,7 @@ func (r *DittoServerReconciler) updateAdapterNetworkPolicyIfNeeded(ctx context.C
 	}
 
 	r.Recorder.Eventf(ds, corev1.EventTypeNormal, "AdapterNetworkPolicyUpdated",
-		"Updated NetworkPolicy %s for adapter %s (port %d -> %d)", fresh.Name, adapterType, oldPort, int32(info.Port))
+		"Updated NetworkPolicy %s for adapter %s (port %d -> %d, %d ingress ports)", fresh.Name, adapterType, oldPort, int32(info.Port), len(desiredPorts))
 
 	return nil
 }
