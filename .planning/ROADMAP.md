@@ -312,7 +312,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 32
 | 15. v2.0 Testing | v2.0 | 5/5 | Complete | 2026-02-18 |
 | 15.5. Manual Verification v2.0 | v2.0 | - | Complete | 2026-02-19 |
 | 16. NFSv4.1 Types and Constants | v3.0 | 5/5 | Complete | 2026-02-20 |
-| 17. Slot Table and Session Data Structures | v3.0 | 0/2 | Not started | - |
+| 17. Slot Table and Session Data Structures | 1/2 | In Progress|  | - |
 | 18. EXCHANGE_ID and Client Registration | v3.0 | 0/? | Not started | - |
 | 19. Session Lifecycle | v3.0 | 0/? | Not started | - |
 | 20. SEQUENCE and COMPOUND Bifurcation | v3.0 | 0/? | Not started | - |
