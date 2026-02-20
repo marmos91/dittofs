@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -47,12 +48,15 @@ func networkPolicyLabels(crName, adapterType string) map[string]string {
 	return labels
 }
 
-// currentIngressPort extracts the first ingress port from a NetworkPolicy, or 0 if absent.
-func currentIngressPort(np *networkingv1.NetworkPolicy) int32 {
-	if len(np.Spec.Ingress) > 0 && len(np.Spec.Ingress[0].Ports) > 0 && np.Spec.Ingress[0].Ports[0].Port != nil {
-		return np.Spec.Ingress[0].Ports[0].Port.IntVal
+// formatIngressPorts formats NetworkPolicy ingress ports for event messages.
+func formatIngressPorts(ports []networkingv1.NetworkPolicyPort) string {
+	parts := make([]string, 0, len(ports))
+	for _, p := range ports {
+		if p.Port != nil {
+			parts = append(parts, fmt.Sprintf("%d", p.Port.IntVal))
+		}
 	}
-	return 0
+	return fmt.Sprintf("ports %s", strings.Join(parts, ", "))
 }
 
 // buildAdapterIngressPorts returns the NetworkPolicy ingress ports for an adapter.
@@ -353,8 +357,6 @@ func (r *DittoServerReconciler) updateAdapterNetworkPolicyIfNeeded(ctx context.C
 		return fmt.Errorf("failed to get fresh network policy: %w", err)
 	}
 
-	oldPort := currentIngressPort(fresh)
-
 	// Update ingress ports.
 	fresh.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{
 		{
@@ -367,7 +369,7 @@ func (r *DittoServerReconciler) updateAdapterNetworkPolicyIfNeeded(ctx context.C
 	}
 
 	r.Recorder.Eventf(ds, corev1.EventTypeNormal, "AdapterNetworkPolicyUpdated",
-		"Updated NetworkPolicy %s for adapter %s (port %d -> %d, %d ingress ports)", fresh.Name, adapterType, oldPort, int32(info.Port), len(desiredPorts))
+		"Updated NetworkPolicy %s for adapter %s (%s)", fresh.Name, adapterType, formatIngressPorts(desiredPorts))
 
 	return nil
 }

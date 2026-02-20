@@ -430,8 +430,10 @@ func TestReconcileNetworkPolicies_BaselineCreated(t *testing.T) {
 		t.Errorf("Baseline NetworkPolicy missing label %s", baselineNetworkPolicyLabel)
 	}
 
-	port := currentIngressPort(baselineNP)
-	if port != defaultAPIPort {
+	if len(baselineNP.Spec.Ingress) == 0 || len(baselineNP.Spec.Ingress[0].Ports) == 0 || baselineNP.Spec.Ingress[0].Ports[0].Port == nil {
+		t.Fatal("Baseline NetworkPolicy has no ingress ports")
+	}
+	if port := baselineNP.Spec.Ingress[0].Ports[0].Port.IntVal; port != defaultAPIPort {
 		t.Errorf("Baseline NetworkPolicy port = %d, want %d", port, defaultAPIPort)
 	}
 

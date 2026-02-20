@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"regexp"
 	"sort"
 	"strings"
@@ -324,11 +325,6 @@ func (r *DittoServerReconciler) updateAdapterServiceIfNeeded(ctx context.Context
 		return fmt.Errorf("failed to get fresh service: %w", err)
 	}
 
-	oldPort := int32(0)
-	if len(fresh.Spec.Ports) > 0 {
-		oldPort = fresh.Spec.Ports[0].Port
-	}
-
 	// Rebuild ports to desired shape (single port for most adapters, multi-port for NFS).
 	fresh.Spec.Ports = desiredPorts
 
@@ -343,7 +339,7 @@ func (r *DittoServerReconciler) updateAdapterServiceIfNeeded(ctx context.Context
 	}
 
 	r.Recorder.Eventf(ds, corev1.EventTypeNormal, "AdapterServiceUpdated",
-		"Updated Service %s for adapter %s (port %d -> %d, %d ports total)", fresh.Name, adapterType, oldPort, int32(info.Port), len(desiredPorts))
+		"Updated Service %s for adapter %s (%s)", fresh.Name, adapterType, formatServicePorts(desiredPorts))
 
 	return nil
 }
@@ -377,7 +373,7 @@ func annotationsMatch(existing, desired map[string]string) bool {
 	}
 	// Check for stale managed annotations that should be removed.
 	if managed, ok := existing[managedAnnotationsKey]; ok && managed != "" {
-		for _, k := range strings.Split(managed, ",") {
+		for k := range strings.SplitSeq(managed, ",") {
 			if _, stillDesired := desired[k]; !stillDesired {
 				return false
 			}
@@ -395,16 +391,14 @@ func syncManagedAnnotations(annotations map[string]string, desired map[string]st
 	}
 	// Remove previously managed keys that are no longer desired.
 	if managed, ok := annotations[managedAnnotationsKey]; ok && managed != "" {
-		for _, k := range strings.Split(managed, ",") {
+		for k := range strings.SplitSeq(managed, ",") {
 			if _, stillDesired := desired[k]; !stillDesired {
 				delete(annotations, k)
 			}
 		}
 	}
 	// Apply desired annotations.
-	for k, v := range desired {
-		annotations[k] = v
-	}
+	maps.Copy(annotations, desired)
 	// Update the tracking annotation.
 	if len(desired) > 0 {
 		keys := make([]string, 0, len(desired))
@@ -505,6 +499,19 @@ func (r *DittoServerReconciler) reconcileContainerPorts(ctx context.Context, ds 
 		"Updated StatefulSet container ports (%d static + %d dynamic)", len(staticPorts), len(dynamicPorts))
 
 	return nil
+}
+
+// formatServicePorts formats a slice of Service ports for event messages.
+func formatServicePorts(ports []corev1.ServicePort) string {
+	parts := make([]string, len(ports))
+	for i, p := range ports {
+		if p.Port != p.TargetPort.IntVal {
+			parts[i] = fmt.Sprintf("%s %d->%d", p.Name, p.Port, p.TargetPort.IntVal)
+		} else {
+			parts[i] = fmt.Sprintf("%s %d", p.Name, p.Port)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // sortContainerPorts sorts a slice of container ports by Name for deterministic comparison.
