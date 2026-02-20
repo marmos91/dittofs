@@ -66,6 +66,10 @@ type NFSAdapterSettings struct {
 	// Operation blocklist (JSON array stored as text)
 	BlockedOperations string `gorm:"type:text" json:"-"`
 
+	// Portmapper settings
+	PortmapperEnabled bool `gorm:"default:true" json:"portmapper_enabled"`
+	PortmapperPort    int  `gorm:"default:10111" json:"portmapper_port"`
+
 	// Version counter for change detection (monotonic, starts at 1, incremented on every update)
 	Version int `gorm:"default:1" json:"version"`
 
@@ -153,6 +157,8 @@ func NewDefaultNFSSettings(adapterID string) *NFSAdapterSettings {
 		MaxWriteSize:            1048576,
 		PreferredTransferSize:   1048576,
 		DelegationsEnabled:      true,
+		PortmapperEnabled:       true,
+		PortmapperPort:          10111,
 		Version:                 1,
 	}
 }
@@ -197,6 +203,8 @@ type NFSSettingsValidRange struct {
 	MaxWriteSizeMax            int
 	PreferredTransferSizeMin   int
 	PreferredTransferSizeMax   int
+	PortmapperPortMin          int
+	PortmapperPortMax          int
 }
 
 // DefaultNFSSettingsValidRange returns the default valid ranges for NFS settings.
@@ -224,6 +232,8 @@ func DefaultNFSSettingsValidRange() NFSSettingsValidRange {
 		MaxWriteSizeMax:            16777216, // 16MB
 		PreferredTransferSizeMin:   4096,
 		PreferredTransferSizeMax:   16777216, // 16MB
+		PortmapperPortMin:          1,
+		PortmapperPortMax:          65535,
 	}
 }
 

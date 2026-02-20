@@ -368,17 +368,13 @@ func TestPortmapperFullServiceRegistry(t *testing.T) {
 		prot uint32
 	}
 
+	// DittoFS NFS adapter is TCP-only, so only TCP mappings are registered
 	services := []serviceQuery{
 		{"NFS_v3_TCP", 100003, 3, types.ProtoTCP},
 		{"NFS_v4_TCP", 100003, 4, types.ProtoTCP},
 		{"MOUNT_v3_TCP", 100005, 3, types.ProtoTCP},
 		{"NLM_v4_TCP", 100021, 4, types.ProtoTCP},
 		{"NSM_v1_TCP", 100024, 1, types.ProtoTCP},
-		{"NFS_v3_UDP", 100003, 3, types.ProtoUDP},
-		{"NFS_v4_UDP", 100003, 4, types.ProtoUDP},
-		{"MOUNT_v3_UDP", 100005, 3, types.ProtoUDP},
-		{"NLM_v4_UDP", 100021, 4, types.ProtoUDP},
-		{"NSM_v1_UDP", 100024, 1, types.ProtoUDP},
 	}
 
 	for _, svc := range services {
@@ -404,8 +400,8 @@ func TestPortmapperFullServiceRegistry(t *testing.T) {
 		})
 	}
 
-	// Verify DUMP returns exactly 10 entries
-	t.Run("DUMP_10_entries", func(t *testing.T) {
+	// Verify DUMP returns exactly 5 entries (TCP-only)
+	t.Run("DUMP_5_entries", func(t *testing.T) {
 		msg := buildRPCCallMsg(0x30000001, types.ProgramPortmap, types.PortmapVersion2, types.ProcDump, nil)
 		reply := sendTCPRPCMsg(t, tcpAddr, msg)
 
@@ -435,8 +431,8 @@ func TestPortmapperFullServiceRegistry(t *testing.T) {
 			count++
 		}
 
-		if count != 10 {
-			t.Errorf("DUMP count: got %d, want 10", count)
+		if count != 5 {
+			t.Errorf("DUMP count: got %d, want 5", count)
 		}
 	})
 }

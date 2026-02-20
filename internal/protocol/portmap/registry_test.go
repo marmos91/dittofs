@@ -186,9 +186,10 @@ func TestRegisterDittoFSServices(t *testing.T) {
 	r := NewRegistry()
 	r.RegisterDittoFSServices(12049)
 
-	// Should have 10 mappings: 5 program/version pairs x 2 protocols
-	if r.Count() != 10 {
-		t.Fatalf("RegisterDittoFSServices created %d mappings, want 10", r.Count())
+	// Should have 5 mappings: 5 program/version pairs x TCP only
+	// (DittoFS NFS adapter is TCP-only, no UDP transport)
+	if r.Count() != 5 {
+		t.Fatalf("RegisterDittoFSServices created %d mappings, want 5", r.Count())
 	}
 
 	// Verify each expected registration
@@ -210,9 +211,10 @@ func TestRegisterDittoFSServices(t *testing.T) {
 			t.Errorf("%s TCP: port = %d, want 12049", exp.name, tcpPort)
 		}
 
+		// UDP should NOT be registered (NFS adapter is TCP-only)
 		udpPort := r.Getport(exp.prog, exp.vers, 17)
-		if udpPort != 12049 {
-			t.Errorf("%s UDP: port = %d, want 12049", exp.name, udpPort)
+		if udpPort != 0 {
+			t.Errorf("%s UDP: port = %d, want 0 (should not be registered)", exp.name, udpPort)
 		}
 	}
 }

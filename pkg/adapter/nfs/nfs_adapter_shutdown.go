@@ -213,6 +213,9 @@ func (s *NFSAdapter) forceCloseConnections() {
 // Thread safety:
 // Safe to call concurrently from multiple goroutines.
 func (s *NFSAdapter) Stop(ctx context.Context) error {
+	// Stop portmapper first (stops accepting new queries before NFS stops)
+	s.stopPortmapper()
+
 	// Stop GSS processor if running (releases background cleanup goroutine)
 	if s.gssProcessor != nil {
 		s.gssProcessor.Stop()

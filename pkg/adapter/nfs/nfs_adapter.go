@@ -19,6 +19,7 @@ import (
 	nlm_handlers "github.com/marmos91/dittofs/internal/protocol/nlm/handlers"
 	"github.com/marmos91/dittofs/internal/protocol/nsm"
 	nsm_handlers "github.com/marmos91/dittofs/internal/protocol/nsm/handlers"
+	"github.com/marmos91/dittofs/internal/protocol/portmap"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
@@ -101,6 +102,14 @@ type NFSAdapter struct {
 	// kerberosConfig holds the Kerberos configuration for GSS initialization.
 	// nil when Kerberos is not enabled.
 	kerberosConfig *config.KerberosConfig
+
+	// portmapServer is the embedded portmapper server (RFC 1057).
+	// nil when portmapper is disabled.
+	portmapServer *portmap.Server
+
+	// portmapRegistry holds the portmap service registry.
+	// nil when portmapper is disabled.
+	portmapRegistry *portmap.Registry
 
 	// nsmClientStore persists client registrations for crash recovery
 	nsmClientStore lock.ClientRegistrationStore
@@ -238,6 +247,33 @@ type NFSConfig struct {
 	// 0 disables periodic metrics logging.
 	// Recommended: 5m for production monitoring.
 	MetricsLogInterval time.Duration `mapstructure:"metrics_log_interval" validate:"min=0"`
+
+	// Portmapper configures the embedded portmapper (RFC 1057).
+	// The portmapper allows NFS clients to discover DittoFS services
+	// via rpcinfo/showmount without requiring a system-level rpcbind daemon.
+	// Default: enabled on port 10111.
+	Portmapper PortmapConfig `mapstructure:"portmapper"`
+}
+
+// PortmapConfig holds configuration for the embedded portmapper.
+//
+// The portmapper enables NFS clients to discover DittoFS services without
+// needing a system-level rpcbind/portmap daemon. It runs on a configurable
+// port (default 10111, an unprivileged port to avoid requiring root).
+//
+// Configuration path: adapters.nfs.portmapper.enabled / adapters.nfs.portmapper.port
+//
+// The Enabled field uses a *bool pointer type to distinguish between
+// "not set in config" (nil, defaults to true) and "explicitly set to false".
+type PortmapConfig struct {
+	// Enabled controls whether the portmapper is active.
+	// When nil (not specified in config), defaults to true.
+	// Set to false to explicitly disable the portmapper.
+	Enabled *bool `mapstructure:"enabled"`
+
+	// Port is the port to listen on for portmapper requests.
+	// Default: 10111 (unprivileged port; standard portmapper uses 111 but requires root).
+	Port int `mapstructure:"port" validate:"min=0,max=65535"`
 }
 
 // applyDefaults fills in zero values with sensible defaults.
@@ -265,6 +301,13 @@ func (c *NFSConfig) applyDefaults() {
 	}
 	if c.MetricsLogInterval == 0 {
 		c.MetricsLogInterval = 5 * time.Minute
+	}
+	// Portmapper port defaults to 10111 (unprivileged port).
+	// Note: Portmapper.Enabled is NOT set here -- it uses a *bool pointer where
+	// nil means "default to true" and explicit false means "disabled".
+	// This is handled by isPortmapperEnabled().
+	if c.Portmapper.Port == 0 {
+		c.Portmapper.Port = 10111
 	}
 }
 
@@ -477,6 +520,14 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 
 	logger.Info("NFS server listening", "port", s.config.Port)
 	logger.Debug("NFS config", "max_connections", s.config.MaxConnections, "read_timeout", s.config.Timeouts.Read, "write_timeout", s.config.Timeouts.Write, "idle_timeout", s.config.Timeouts.Idle)
+
+	// Start embedded portmapper (RFC 1057) for NFS service discovery.
+	// This allows clients to query rpcinfo/showmount without needing
+	// a system-level rpcbind daemon. Portmapper failure is non-fatal
+	// (port 111 may require root privileges).
+	if err := s.startPortmapper(ctx); err != nil {
+		logger.Warn("Portmapper failed to start (NFS will continue without it)", "error", err)
+	}
 
 	// NSM startup: Load persisted registrations and notify all clients
 	// Per CONTEXT.md: Parallel notification for fastest recovery

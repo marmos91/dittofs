@@ -24,8 +24,10 @@ func startTestServer(t *testing.T) (*Server, *Registry) {
 
 	registry := NewRegistry()
 	srv := NewServer(ServerConfig{
-		Port:     0, // Random port
-		Registry: registry,
+		Port:      0, // Random port
+		EnableTCP: true,
+		EnableUDP: true,
+		Registry:  registry,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -49,6 +51,9 @@ func startTestServer(t *testing.T) (*Server, *Registry) {
 	}
 	srv.udpConn = udpConn
 
+	// Signal that listeners are ready (since we bound manually)
+	close(srv.listenerReady)
+
 	srv.wg.Add(2)
 	go srv.serveTCP(ctx)
 	go srv.serveUDP(ctx)
@@ -57,14 +62,23 @@ func startTestServer(t *testing.T) (*Server, *Registry) {
 	go func() {
 		select {
 		case <-ctx.Done():
-			srv.Stop()
+			srv.shutdownOnce.Do(func() {
+				close(srv.shutdown)
+				_ = srv.tcpListener.Close()
+				_ = srv.udpConn.Close()
+			})
 		case <-srv.shutdown:
 		}
 	}()
 
 	t.Cleanup(func() {
 		cancel()
-		srv.Stop()
+		// Close listeners to unblock goroutines
+		srv.shutdownOnce.Do(func() {
+			close(srv.shutdown)
+			_ = srv.tcpListener.Close()
+			_ = srv.udpConn.Close()
+		})
 		srv.wg.Wait()
 	})
 
@@ -368,6 +382,79 @@ func TestServerTCPVersionMismatch(t *testing.T) {
 	}
 }
 
+func TestServerTCPWrongProgram(t *testing.T) {
+	srv, _ := startTestServer(t)
+
+	// Send request with wrong program number -- should get PROG_UNAVAIL (1)
+	msg := buildRPCCall(0xCCCCCCCC, 999999, types.PortmapVersion2, types.ProcNull, nil)
+	reply := sendTCPRequest(t, srv.Addr(), msg)
+
+	xid, acceptStat, _ := parseReplyHeader(reply)
+	if xid != 0xCCCCCCCC {
+		t.Errorf("XID mismatch: got 0x%x, want 0xCCCCCCCC", xid)
+	}
+	if acceptStat != 1 { // PROG_UNAVAIL
+		t.Errorf("accept_stat: got %d, want 1 (PROG_UNAVAIL)", acceptStat)
+	}
+}
+
+func TestServerTCPConnectionReuse(t *testing.T) {
+	srv, registry := startTestServer(t)
+
+	registry.Set(&xdr.Mapping{Prog: 100003, Vers: 3, Prot: 6, Port: 12049})
+
+	// Open a single TCP connection
+	conn, err := net.DialTimeout("tcp", srv.Addr(), 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// Send multiple requests over the same connection
+	for i := 0; i < 3; i++ {
+		xid := uint32(0xD0000000 + i)
+		args := encodeMappingArgs(100003, 3, 6, 0)
+		msg := buildRPCCall(xid, types.ProgramPortmap, types.PortmapVersion2, types.ProcGetport, args)
+		framedMsg := wrapWithRecordMarking(msg)
+
+		if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			t.Fatalf("set deadline: %v", err)
+		}
+
+		if _, err := conn.Write(framedMsg); err != nil {
+			t.Fatalf("write request %d: %v", i, err)
+		}
+
+		// Read reply
+		var headerBuf [4]byte
+		if _, err := io.ReadFull(conn, headerBuf[:]); err != nil {
+			t.Fatalf("read reply header %d: %v", i, err)
+		}
+		headerVal := binary.BigEndian.Uint32(headerBuf[:])
+		replyLen := headerVal & 0x7FFFFFFF
+
+		replyBuf := make([]byte, replyLen)
+		if _, err := io.ReadFull(conn, replyBuf); err != nil {
+			t.Fatalf("read reply body %d: %v", i, err)
+		}
+
+		replyXID, acceptStat, payload := parseReplyHeader(replyBuf)
+		if replyXID != xid {
+			t.Errorf("request %d: XID mismatch: got 0x%x, want 0x%x", i, replyXID, xid)
+		}
+		if acceptStat != 0 {
+			t.Errorf("request %d: accept_stat: got %d, want 0", i, acceptStat)
+		}
+		if len(payload) < 4 {
+			t.Fatalf("request %d: payload too short", i)
+		}
+		port := binary.BigEndian.Uint32(payload[0:4])
+		if port != 12049 {
+			t.Errorf("request %d: port: got %d, want 12049", i, port)
+		}
+	}
+}
+
 // ============================================================================
 // UDP Tests
 // ============================================================================
@@ -434,8 +521,12 @@ func TestServerGracefulShutdown(t *testing.T) {
 	}
 	_ = conn.Close()
 
-	// Stop the server
-	srv.Stop()
+	// Stop the server (closes listeners and waits for goroutines)
+	srv.shutdownOnce.Do(func() {
+		close(srv.shutdown)
+		_ = srv.tcpListener.Close()
+		_ = srv.udpConn.Close()
+	})
 
 	// Give a moment for shutdown to propagate
 	time.Sleep(100 * time.Millisecond)
@@ -477,7 +568,7 @@ func TestServerSetUnset(t *testing.T) {
 
 	tcpAddr := srv.Addr()
 
-	// Step 1: SET -- register a service
+	// Step 1: SET -- register a service (from localhost, so it should succeed)
 	setArgs := encodeMappingArgs(100099, 1, 6, 9999)
 	setMsg := buildRPCCall(0x00000001, types.ProgramPortmap, types.PortmapVersion2, types.ProcSet, setArgs)
 	setReply := sendTCPRequest(t, tcpAddr, setMsg)

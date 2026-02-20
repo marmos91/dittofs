@@ -6,6 +6,8 @@
 package handlers
 
 import (
+	"net"
+
 	"github.com/marmos91/dittofs/internal/protocol/portmap/xdr"
 )
 
@@ -28,4 +30,20 @@ func NewHandler(registry PortmapRegistry) *Handler {
 	return &Handler{
 		Registry: registry,
 	}
+}
+
+// IsLocalhost returns true if the given address is a loopback address.
+// This is used to restrict SET/UNSET procedures to localhost only,
+// per standard portmapper security practices.
+func IsLocalhost(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// Try treating the whole string as an IP (no port)
+		host = addr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
 }

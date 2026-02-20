@@ -304,6 +304,8 @@ func TestPutNFSSettings_FullReplace(t *testing.T) {
 		PreferredTransferSize:   2097152,
 		DelegationsEnabled:      false,
 		BlockedOperations:       []string{"WRITE"},
+		PortmapperEnabled:       true,
+		PortmapperPort:          10111,
 	}
 
 	req := makeAdapterSettingsRequest(t, http.MethodPut, "nfs", "", putReq)

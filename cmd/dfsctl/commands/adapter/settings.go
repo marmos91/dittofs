@@ -181,6 +181,8 @@ var (
 	settingsMaxVersion              string
 	settingsDelegationsEnabled      bool
 	settingsBlockedOperations       string
+	settingsPortmapperEnabled       bool
+	settingsPortmapperPort          int
 
 	// SMB update flags
 	settingsMinDialect         string
@@ -248,6 +250,8 @@ func registerNFSUpdateFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&settingsMaxVersion, "max-version", "", "Maximum NFS version (e.g., 4.1)")
 	cmd.Flags().BoolVar(&settingsDelegationsEnabled, "delegations-enabled", false, "Enable NFSv4 delegations")
 	cmd.Flags().StringVar(&settingsBlockedOperations, "blocked-operations", "", "Comma-separated list of blocked operations")
+	cmd.Flags().BoolVar(&settingsPortmapperEnabled, "portmapper-enabled", false, "Enable embedded portmapper")
+	cmd.Flags().IntVar(&settingsPortmapperPort, "portmapper-port", 0, "Portmapper listen port")
 	cmd.Flags().BoolVar(&settingsDryRun, "dry-run", false, "Validate without applying changes")
 	cmd.Flags().BoolVar(&settingsForce, "force", false, "Bypass range validation")
 }
@@ -326,6 +330,10 @@ func showNFSSettings(client *apiclient.Client, format output.Format) error {
 	})
 	printSettingsGroup("Delegation", []settingRow{
 		newSettingRowBool("delegations_enabled", settings.DelegationsEnabled, d.DelegationsEnabled),
+	})
+	printSettingsGroup("Portmapper", []settingRow{
+		newSettingRowBool("portmapper_enabled", settings.PortmapperEnabled, d.PortmapperEnabled),
+		newSettingRowInt("portmapper_port", settings.PortmapperPort, d.PortmapperPort, ""),
 	})
 	printSettingsGroup("Operations", []settingRow{
 		newSettingRowStrSlice("blocked_operations", settings.BlockedOperations, d.BlockedOperations),
@@ -527,6 +535,14 @@ func updateNFSSettings(cmd *cobra.Command, client *apiclient.Client) error {
 	if cmd.Flags().Changed("blocked-operations") {
 		ops := cmdutil.ParseCommaSeparatedList(settingsBlockedOperations)
 		req.BlockedOperations = &ops
+		hasChanges = true
+	}
+	if cmd.Flags().Changed("portmapper-enabled") {
+		req.PortmapperEnabled = &settingsPortmapperEnabled
+		hasChanges = true
+	}
+	if cmd.Flags().Changed("portmapper-port") {
+		req.PortmapperPort = &settingsPortmapperPort
 		hasChanges = true
 	}
 

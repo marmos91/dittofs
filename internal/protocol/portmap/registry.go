@@ -128,15 +128,15 @@ func (r *Registry) Dump() []*xdr.Mapping {
 
 // RegisterDittoFSServices registers all DittoFS RPC services on the given port.
 // This populates the portmap registry with NFS, MOUNT, NLM, and NSM services
-// on both TCP and UDP protocols.
+// on TCP only (DittoFS NFS adapter is TCP-only, no UDP transport).
 //
 // Registered services:
-//   - NFS (100003) v3 and v4 on TCP and UDP
-//   - MOUNT (100005) v3 on TCP and UDP
-//   - NLM (100021) v4 on TCP and UDP
-//   - NSM (100024) v1 on TCP and UDP
+//   - NFS (100003) v3 and v4 on TCP
+//   - MOUNT (100005) v3 on TCP
+//   - NLM (100021) v4 on TCP
+//   - NSM (100024) v1 on TCP
 //
-// This results in 10 mappings total (5 program/version pairs x 2 protocols).
+// This results in 5 mappings total (5 program/version pairs x TCP).
 func (r *Registry) RegisterDittoFSServices(nfsPort int) {
 	port := uint32(nfsPort)
 
@@ -155,8 +155,19 @@ func (r *Registry) RegisterDittoFSServices(nfsPort int) {
 
 	for _, s := range services {
 		r.Set(&xdr.Mapping{Prog: s.prog, Vers: s.vers, Prot: types.ProtoTCP, Port: port})
-		r.Set(&xdr.Mapping{Prog: s.prog, Vers: s.vers, Prot: types.ProtoUDP, Port: port})
 	}
+}
+
+// RegisterPortmapper registers the portmapper itself in the service registry.
+// Per RFC 1057, the portmapper should advertise its own presence so that
+// clients querying via DUMP or GETPORT can discover it.
+//
+// Registered mappings:
+//   - Portmapper (100000) v2 on TCP and UDP
+func (r *Registry) RegisterPortmapper(portmapPort int) {
+	port := uint32(portmapPort)
+	r.Set(&xdr.Mapping{Prog: types.ProgramPortmap, Vers: types.PortmapVersion2, Prot: types.ProtoTCP, Port: port})
+	r.Set(&xdr.Mapping{Prog: types.ProgramPortmap, Vers: types.PortmapVersion2, Prot: types.ProtoUDP, Port: port})
 }
 
 // Clear removes all mappings from the registry.

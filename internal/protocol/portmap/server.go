@@ -15,10 +15,22 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/portmap/types"
 )
 
+// maxTCPConns is the maximum number of concurrent TCP connections the
+// portmapper will accept. Portmapper is lightweight so 64 is generous.
+const maxTCPConns = 64
+
 // ServerConfig holds configuration for the portmapper server.
 type ServerConfig struct {
-	// Port is the port to listen on (default 111 per RFC 1057).
+	// Port is the port to listen on (default 10111).
 	Port int
+
+	// EnableTCP controls whether the TCP listener is started.
+	// Default: true.
+	EnableTCP bool
+
+	// EnableUDP controls whether the UDP listener is started.
+	// Default: true.
+	EnableUDP bool
 
 	// Registry is the service registry used by procedure handlers.
 	Registry *Registry
@@ -26,58 +38,83 @@ type ServerConfig struct {
 
 // Server implements an RFC 1057 portmapper that listens on both TCP and UDP.
 //
-// TCP uses RPC record marking (4-byte fragment header).
+// TCP uses RPC record marking (4-byte fragment header) and supports
+// connection reuse (multiple requests per connection).
 // UDP treats each packet as one complete RPC message (no record marking).
 type Server struct {
-	config       ServerConfig
-	handler      *handlers.Handler
-	tcpListener  net.Listener
-	udpConn      *net.UDPConn
-	shutdown     chan struct{}
-	shutdownOnce sync.Once
-	wg           sync.WaitGroup
+	config        ServerConfig
+	handler       *handlers.Handler
+	tcpListener   net.Listener
+	udpConn       *net.UDPConn
+	shutdown      chan struct{}
+	shutdownOnce  sync.Once
+	wg            sync.WaitGroup
+	listenerReady chan struct{}
+	connSemaphore chan struct{}
 }
 
 // NewServer creates a new portmapper server with the given configuration.
 func NewServer(cfg ServerConfig) *Server {
 	return &Server{
-		config:   cfg,
-		handler:  handlers.NewHandler(cfg.Registry),
-		shutdown: make(chan struct{}),
+		config:        cfg,
+		handler:       handlers.NewHandler(cfg.Registry),
+		shutdown:      make(chan struct{}),
+		listenerReady: make(chan struct{}),
+		connSemaphore: make(chan struct{}, maxTCPConns),
 	}
 }
 
 // Serve starts the portmapper server on both TCP and UDP.
 // It blocks until the context is cancelled or Stop is called.
+// After both TCP and UDP listeners are bound, WaitReady() unblocks.
 func (s *Server) Serve(ctx context.Context) error {
 	addr := fmt.Sprintf(":%d", s.config.Port)
 
-	// Start TCP listener
-	tcpListener, err := net.Listen("tcp", addr)
-	if err != nil {
-		return fmt.Errorf("listen TCP %s: %w", addr, err)
-	}
-	s.tcpListener = tcpListener
+	enableTCP := s.config.EnableTCP
+	enableUDP := s.config.EnableUDP
 
-	// Start UDP listener
-	udpAddr, err := net.ResolveUDPAddr("udp", addr)
-	if err != nil {
-		_ = s.tcpListener.Close()
-		return fmt.Errorf("resolve UDP %s: %w", addr, err)
+	// Start TCP listener (unless disabled)
+	if enableTCP {
+		tcpListener, err := net.Listen("tcp", addr)
+		if err != nil {
+			return fmt.Errorf("listen TCP %s: %w", addr, err)
+		}
+		s.tcpListener = tcpListener
 	}
-	udpConn, err := net.ListenUDP("udp", udpAddr)
-	if err != nil {
-		_ = s.tcpListener.Close()
-		return fmt.Errorf("listen UDP %s: %w", addr, err)
-	}
-	s.udpConn = udpConn
 
-	logger.Info("Portmapper server started", "address", addr)
+	// Start UDP listener (unless disabled)
+	if enableUDP {
+		udpAddr, err := net.ResolveUDPAddr("udp", addr)
+		if err != nil {
+			if s.tcpListener != nil {
+				_ = s.tcpListener.Close()
+			}
+			return fmt.Errorf("resolve UDP %s: %w", addr, err)
+		}
+		udpConn, err := net.ListenUDP("udp", udpAddr)
+		if err != nil {
+			if s.tcpListener != nil {
+				_ = s.tcpListener.Close()
+			}
+			return fmt.Errorf("listen UDP %s: %w", addr, err)
+		}
+		s.udpConn = udpConn
+	}
+
+	// Signal that listeners are ready
+	close(s.listenerReady)
+
+	logger.Info("Portmapper server started", "address", addr, "tcp", enableTCP, "udp", enableUDP)
 
 	// Launch TCP and UDP goroutines
-	s.wg.Add(2)
-	go s.serveTCP(ctx)
-	go s.serveUDP(ctx)
+	if enableTCP {
+		s.wg.Add(1)
+		go s.serveTCP(ctx)
+	}
+	if enableUDP {
+		s.wg.Add(1)
+		go s.serveUDP(ctx)
+	}
 
 	// Monitor context cancellation
 	go func() {
@@ -91,6 +128,14 @@ func (s *Server) Serve(ctx context.Context) error {
 	// Block until both goroutines complete
 	s.wg.Wait()
 	return nil
+}
+
+// WaitReady returns a channel that is closed when both TCP and UDP
+// listeners are successfully bound and ready to accept requests.
+// Callers should select on this channel with a timeout to detect
+// startup failures.
+func (s *Server) WaitReady() <-chan struct{} {
+	return s.listenerReady
 }
 
 // serveTCP accepts TCP connections and handles them.
@@ -109,72 +154,106 @@ func (s *Server) serveTCP(ctx context.Context) {
 			}
 		}
 
+		// Enforce connection limit via semaphore
+		select {
+		case s.connSemaphore <- struct{}{}:
+			// Acquired slot
+		default:
+			// At limit, reject connection
+			logger.Debug("Portmap: TCP connection limit reached, rejecting", "client", conn.RemoteAddr())
+			_ = conn.Close()
+			continue
+		}
+
 		s.wg.Add(1)
 		go func(c net.Conn) {
 			defer s.wg.Done()
+			defer func() { <-s.connSemaphore }() // Release semaphore slot
 			s.handleTCPConn(ctx, c)
 		}(conn)
 	}
 }
 
-// handleTCPConn handles a single TCP connection.
+// handleTCPConn handles a single TCP connection with support for connection reuse.
 // TCP uses RPC record marking: a 4-byte fragment header (last-fragment bit + length)
-// precedes each RPC message.
+// precedes each RPC message. The handler loops to support multiple requests per
+// connection, breaking on EOF, error, or shutdown.
 func (s *Server) handleTCPConn(ctx context.Context, conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 
 	clientAddr := conn.RemoteAddr().String()
 
-	// Set reasonable read/write timeout
-	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		logger.Debug("Portmap: failed to set deadline", "client", clientAddr, "error", err)
-		return
-	}
-
-	// Read fragment header (4 bytes)
-	var headerBuf [4]byte
-	if _, err := io.ReadFull(conn, headerBuf[:]); err != nil {
-		if err != io.EOF {
-			logger.Debug("Portmap: read fragment header error", "client", clientAddr, "error", err)
+	for {
+		// Check for shutdown via context
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.shutdown:
+			return
+		default:
 		}
-		return
-	}
 
-	headerVal := binary.BigEndian.Uint32(headerBuf[:])
-	length := headerVal & 0x7FFFFFFF
+		// Set idle timeout per iteration (5s between requests)
+		if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			logger.Debug("Portmap: failed to set deadline", "client", clientAddr, "error", err)
+			return
+		}
 
-	// Validate fragment size
-	const maxFragmentSize = 1 << 16 // 64KB -- portmap messages are tiny
-	if length > maxFragmentSize {
-		logger.Warn("Portmap: fragment too large", "size", length, "client", clientAddr)
-		return
-	}
+		// Read fragment header (4 bytes)
+		var headerBuf [4]byte
+		if _, err := io.ReadFull(conn, headerBuf[:]); err != nil {
+			if err != io.EOF {
+				// Timeout is expected for idle connections -- don't log
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					return
+				}
+				logger.Debug("Portmap: read fragment header error", "client", clientAddr, "error", err)
+			}
+			return
+		}
 
-	// Read the RPC message body
-	msgBuf := make([]byte, length)
-	if _, err := io.ReadFull(conn, msgBuf); err != nil {
-		logger.Debug("Portmap: read RPC message error", "client", clientAddr, "error", err)
-		return
-	}
+		headerVal := binary.BigEndian.Uint32(headerBuf[:])
+		length := headerVal & 0x7FFFFFFF
 
-	// Process and get reply body (without record marking)
-	replyBody := s.processRPCMessage(msgBuf, clientAddr)
-	if replyBody == nil {
-		return
-	}
+		// Validate fragment size
+		const maxFragmentSize = 1 << 16 // 64KB -- portmap messages are tiny
+		if length > maxFragmentSize {
+			logger.Warn("Portmap: fragment too large", "size", length, "client", clientAddr)
+			return
+		}
 
-	// Write reply with record marking header
-	reply := make([]byte, 4+len(replyBody))
-	binary.BigEndian.PutUint32(reply[0:4], 0x80000000|uint32(len(replyBody)))
-	copy(reply[4:], replyBody)
+		// Read the RPC message body
+		msgBuf := make([]byte, length)
+		if _, err := io.ReadFull(conn, msgBuf); err != nil {
+			logger.Debug("Portmap: read RPC message error", "client", clientAddr, "error", err)
+			return
+		}
 
-	if _, err := conn.Write(reply); err != nil {
-		logger.Debug("Portmap: write TCP reply error", "client", clientAddr, "error", err)
+		// Process and get reply body (without record marking)
+		replyBody := s.processRPCMessage(msgBuf, clientAddr)
+		if replyBody == nil {
+			continue
+		}
+
+		// Write reply with record marking header
+		reply := make([]byte, 4+len(replyBody))
+		binary.BigEndian.PutUint32(reply[0:4], 0x80000000|uint32(len(replyBody)))
+		copy(reply[4:], replyBody)
+
+		if _, err := conn.Write(reply); err != nil {
+			logger.Debug("Portmap: write TCP reply error", "client", clientAddr, "error", err)
+			return
+		}
 	}
 }
 
 // serveUDP reads UDP packets and handles them.
 // UDP has NO record marking -- each packet is one complete RPC message.
+//
+// Note: While CALLIT (procedure 5) is intentionally omitted to prevent DDoS
+// amplification, other procedures (especially DUMP) can still produce responses
+// larger than the request. In production deployments, consider firewalling the
+// portmapper UDP port from external networks.
 func (s *Server) serveUDP(ctx context.Context) {
 	defer s.wg.Done()
 
@@ -245,7 +324,7 @@ func (s *Server) processRPCMessage(data []byte, clientAddr string) []byte {
 	// Validate program number
 	if call.Program != types.ProgramPortmap {
 		logger.Debug("Portmap: wrong program", "program", call.Program, "client", clientAddr)
-		reply := makeErrorReplyBody(call.XID, rpc.RPCProgMismatch)
+		reply := makeErrorReplyBody(call.XID, rpc.RPCProgUnavail)
 		return reply
 	}
 
@@ -274,7 +353,7 @@ func (s *Server) processRPCMessage(data []byte, clientAddr string) []byte {
 	logger.Debug("Portmap RPC", "procedure", proc.Name, "client", clientAddr)
 
 	// Call handler
-	result, err := proc.Handler(s.handler, procData)
+	result, err := proc.Handler(s.handler, procData, clientAddr)
 	if err != nil {
 		logger.Debug("Portmap: handler error", "procedure", proc.Name, "client", clientAddr, "error", err)
 		// Still return the result data if available (e.g., false for SET with bad decode)
@@ -288,7 +367,9 @@ func (s *Server) processRPCMessage(data []byte, clientAddr string) []byte {
 	return makeSuccessReplyBody(call.XID, result.Data)
 }
 
-// Stop gracefully shuts down the portmapper server.
+// Stop gracefully shuts down the portmapper server and waits for all
+// goroutines (TCP accept loop, UDP loop, and active connection handlers)
+// to complete before returning.
 func (s *Server) Stop() {
 	s.shutdownOnce.Do(func() {
 		close(s.shutdown)
@@ -299,6 +380,8 @@ func (s *Server) Stop() {
 			_ = s.udpConn.Close()
 		}
 	})
+	// Wait for all goroutines to finish
+	s.wg.Wait()
 }
 
 // Addr returns the TCP listener address (for tests).
