@@ -80,6 +80,19 @@ func (b *ServiceBuilder) AddTCPPort(name string, port int32) *ServiceBuilder {
 	return b
 }
 
+// AddTCPPortWithTarget adds a TCP port to the Service with a different target port.
+// Use this when the Service port (what clients connect to) differs from the container port
+// (e.g., Service port 111 → container port 10111 for unprivileged portmapper).
+func (b *ServiceBuilder) AddTCPPortWithTarget(name string, port, targetPort int32) *ServiceBuilder {
+	b.ports = append(b.ports, corev1.ServicePort{
+		Name:       name,
+		Port:       port,
+		TargetPort: intstr.FromInt32(targetPort),
+		Protocol:   corev1.ProtocolTCP,
+	})
+	return b
+}
+
 // Build constructs the Service object.
 func (b *ServiceBuilder) Build() *corev1.Service {
 	svc := &corev1.Service{

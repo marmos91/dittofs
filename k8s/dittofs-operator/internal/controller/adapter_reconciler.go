@@ -91,9 +91,50 @@ func (r *DittoServerReconciler) reconcileAdapters(ctx context.Context, dittoServ
 	// Store successful result
 	r.setLastKnownAdapters(dittoServer, adapters)
 
+	// Best-effort: enable portmapper on NFS adapter if active.
+	r.ensurePortmapperEnabled(ctx, apiClient, adapters)
+
 	logger.V(1).Info("Adapter polling succeeded", "adapterCount", len(adapters), "nextPoll", pollingInterval)
 
 	return ctrl.Result{RequeueAfter: pollingInterval}, nil
+}
+
+// ensurePortmapperEnabled checks if an active NFS adapter has portmapper enabled,
+// and enables it if not. Best-effort: failures are logged but don't block reconciliation.
+// Retried on next polling cycle.
+func (r *DittoServerReconciler) ensurePortmapperEnabled(ctx context.Context, apiClient *DittoFSClient, adapters []AdapterInfo) {
+	logger := logf.FromContext(ctx)
+
+	// Check if NFS adapter is active.
+	hasNFS := false
+	for _, a := range adapters {
+		if a.Enabled && a.Running && isNFSAdapter(a.Type) {
+			hasNFS = true
+			break
+		}
+	}
+	if !hasNFS {
+		return
+	}
+
+	// Check current settings.
+	settings, err := apiClient.GetNFSSettings(ctx)
+	if err != nil {
+		logger.V(1).Info("Failed to get NFS settings for portmapper check", "error", err.Error())
+		return
+	}
+
+	if settings.PortmapperEnabled {
+		return
+	}
+
+	// Enable portmapper.
+	if err := apiClient.EnablePortmapper(ctx); err != nil {
+		logger.Info("Failed to enable portmapper on NFS adapter (will retry)", "error", err.Error())
+		return
+	}
+
+	logger.Info("Enabled portmapper on NFS adapter")
 }
 
 // setLastKnownAdapters stores the last successful adapter poll result.

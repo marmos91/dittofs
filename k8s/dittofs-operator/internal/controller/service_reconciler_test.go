@@ -186,7 +186,7 @@ func TestReconcileAdapterServices_CreateServices(t *testing.T) {
 		svcByType[adapterType] = svc
 	}
 
-	// Check NFS Service.
+	// Check NFS Service (should have 2 ports: NFS + portmapper).
 	nfsSvc, ok := svcByType["nfs"]
 	if !ok {
 		t.Fatal("NFS adapter Service not found")
@@ -194,14 +194,24 @@ func TestReconcileAdapterServices_CreateServices(t *testing.T) {
 	if nfsSvc.Name != "test-server-adapter-nfs" {
 		t.Errorf("Expected NFS service name 'test-server-adapter-nfs', got %s", nfsSvc.Name)
 	}
-	if len(nfsSvc.Spec.Ports) != 1 || nfsSvc.Spec.Ports[0].Port != 12049 {
-		t.Errorf("Expected NFS port 12049, got %v", nfsSvc.Spec.Ports)
+	if len(nfsSvc.Spec.Ports) != 2 {
+		t.Fatalf("Expected NFS service to have 2 ports (NFS + portmapper), got %d: %v", len(nfsSvc.Spec.Ports), nfsSvc.Spec.Ports)
+	}
+	nfsSvcPortMap := make(map[string]corev1.ServicePort)
+	for _, p := range nfsSvc.Spec.Ports {
+		nfsSvcPortMap[p.Name] = p
+	}
+	if nfsPort, ok := nfsSvcPortMap[adapterPortName("nfs")]; !ok || nfsPort.Port != 12049 {
+		t.Errorf("Expected NFS port 12049, got %v", nfsSvcPortMap)
+	}
+	if pmPort, ok := nfsSvcPortMap[portmapperPortName]; !ok || pmPort.Port != 111 || pmPort.TargetPort.IntVal != 10111 {
+		t.Errorf("Expected portmapper port 111->10111, got %v", nfsSvcPortMap)
 	}
 	if nfsSvc.Spec.Type != corev1.ServiceTypeLoadBalancer {
 		t.Errorf("Expected NFS service type LoadBalancer, got %s", nfsSvc.Spec.Type)
 	}
 
-	// Check SMB Service.
+	// Check SMB Service (should have 1 port, no portmapper).
 	smbSvc, ok := svcByType["smb"]
 	if !ok {
 		t.Fatal("SMB adapter Service not found")
@@ -277,7 +287,7 @@ func TestReconcileAdapterServices_UpdatePortChange(t *testing.T) {
 		t.Fatalf("reconcileAdapterServices returned error: %v", err)
 	}
 
-	// Verify the Service was updated with new port.
+	// Verify the Service was updated with new port (NFS has 2 ports: NFS + portmapper).
 	updated := &corev1.Service{}
 	err = r.Get(context.Background(), client.ObjectKey{
 		Namespace: "default",
@@ -287,14 +297,18 @@ func TestReconcileAdapterServices_UpdatePortChange(t *testing.T) {
 		t.Fatalf("Failed to get updated Service: %v", err)
 	}
 
-	if len(updated.Spec.Ports) != 1 {
-		t.Fatalf("Expected 1 port, got %d", len(updated.Spec.Ports))
+	if len(updated.Spec.Ports) != 2 {
+		t.Fatalf("Expected 2 ports (NFS + portmapper), got %d", len(updated.Spec.Ports))
 	}
-	if updated.Spec.Ports[0].Port != 2049 {
-		t.Errorf("Expected port 2049, got %d", updated.Spec.Ports[0].Port)
+	updatedPortMap := make(map[string]corev1.ServicePort)
+	for _, p := range updated.Spec.Ports {
+		updatedPortMap[p.Name] = p
 	}
-	if updated.Spec.Ports[0].TargetPort.IntVal != 2049 {
-		t.Errorf("Expected targetPort 2049, got %d", updated.Spec.Ports[0].TargetPort.IntVal)
+	if nfsPort, ok := updatedPortMap[adapterPortName("nfs")]; !ok || nfsPort.Port != 2049 || nfsPort.TargetPort.IntVal != 2049 {
+		t.Errorf("Expected NFS port 2049->2049, got %v", updatedPortMap)
+	}
+	if pmPort, ok := updatedPortMap[portmapperPortName]; !ok || pmPort.Port != 111 || pmPort.TargetPort.IntVal != 10111 {
+		t.Errorf("Expected portmapper port 111->10111 preserved, got %v", updatedPortMap)
 	}
 }
 
@@ -509,7 +523,7 @@ func TestReconcileContainerPorts_AddsAdapterPorts(t *testing.T) {
 		t.Fatalf("reconcileContainerPorts returned error: %v", err)
 	}
 
-	// Verify StatefulSet was updated with adapter-nfs port alongside static ports.
+	// Verify StatefulSet was updated with adapter-nfs and adapter-portmap ports alongside static ports.
 	updated := &appsv1.StatefulSet{}
 	if err := r.Get(context.Background(), client.ObjectKey{
 		Namespace: "default", Name: "test-server",
@@ -518,11 +532,11 @@ func TestReconcileContainerPorts_AddsAdapterPorts(t *testing.T) {
 	}
 
 	ports := updated.Spec.Template.Spec.Containers[0].Ports
-	if len(ports) != 3 {
-		t.Fatalf("Expected 3 ports (nfs, api, adapter-nfs), got %d: %v", len(ports), portNames(ports))
+	if len(ports) != 4 {
+		t.Fatalf("Expected 4 ports (nfs, api, adapter-nfs, adapter-portmap), got %d: %v", len(ports), portNames(ports))
 	}
 
-	// Verify both static "nfs" and dynamic "adapter-nfs" coexist (Phase 3 coexistence).
+	// Verify both static "nfs" and dynamic "adapter-nfs" + "adapter-portmap" coexist.
 	portMap := make(map[string]int32)
 	for _, p := range ports {
 		portMap[p.Name] = p.ContainerPort
@@ -536,6 +550,9 @@ func TestReconcileContainerPorts_AddsAdapterPorts(t *testing.T) {
 	}
 	if portMap["adapter-nfs"] != 12049 {
 		t.Errorf("Dynamic adapter-nfs port should be 12049, got %d", portMap["adapter-nfs"])
+	}
+	if portMap[portmapperContainerPortName] != portmapperContainerPort {
+		t.Errorf("Dynamic adapter-portmap port should be %d, got %d", portmapperContainerPort, portMap[portmapperContainerPortName])
 	}
 }
 
@@ -562,7 +579,7 @@ func TestReconcileContainerPorts_RemovesStoppedAdapterPorts(t *testing.T) {
 		t.Fatalf("reconcileContainerPorts returned error: %v", err)
 	}
 
-	// Verify adapter-smb was removed and adapter-nfs was added.
+	// Verify adapter-smb was removed, adapter-nfs and adapter-portmap were added.
 	updated := &appsv1.StatefulSet{}
 	if err := r.Get(context.Background(), client.ObjectKey{
 		Namespace: "default", Name: "test-server",
@@ -589,6 +606,11 @@ func TestReconcileContainerPorts_RemovesStoppedAdapterPorts(t *testing.T) {
 		t.Errorf("Expected adapter-nfs port 12049, got %d", portMap["adapter-nfs"])
 	}
 
+	// adapter-portmap added for NFS.
+	if portMap[portmapperContainerPortName] != portmapperContainerPort {
+		t.Errorf("Expected adapter-portmap port %d, got %d", portmapperContainerPort, portMap[portmapperContainerPortName])
+	}
+
 	// adapter-smb removed.
 	if _, exists := portMap["adapter-smb"]; exists {
 		t.Error("adapter-smb port should have been removed")
@@ -598,11 +620,12 @@ func TestReconcileContainerPorts_RemovesStoppedAdapterPorts(t *testing.T) {
 func TestReconcileContainerPorts_NoChange_NoUpdate(t *testing.T) {
 	ds := newTestDittoServer("test-server", "default")
 
-	// Create StatefulSet with static ports AND matching dynamic adapter-nfs port.
+	// Create StatefulSet with static ports AND matching dynamic adapter-nfs + adapter-portmap ports.
 	ports := []corev1.ContainerPort{
 		{Name: "nfs", ContainerPort: 12049, Protocol: corev1.ProtocolTCP},
 		{Name: "api", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
 		{Name: "adapter-nfs", ContainerPort: 12049, Protocol: corev1.ProtocolTCP},
+		{Name: portmapperContainerPortName, ContainerPort: portmapperContainerPort, Protocol: corev1.ProtocolTCP},
 	}
 	sts := newTestStatefulSet("test-server", "default", ports)
 
@@ -908,5 +931,160 @@ func TestSyncManagedAnnotations_ClearsAll(t *testing.T) {
 	}
 	if _, exists := result[managedAnnotationsKey]; exists {
 		t.Error("managed annotations tracking key should have been removed")
+	}
+}
+
+func TestBuildAdapterServicePorts_NFS(t *testing.T) {
+	ports := buildAdapterServicePorts("nfs", AdapterInfo{Port: 12049})
+	if len(ports) != 2 {
+		t.Fatalf("Expected 2 ports for NFS (NFS + portmapper), got %d", len(ports))
+	}
+
+	// First port: NFS
+	if ports[0].Port != 12049 || ports[0].TargetPort.IntVal != 12049 {
+		t.Errorf("Expected NFS port 12049->12049, got %d->%d", ports[0].Port, ports[0].TargetPort.IntVal)
+	}
+
+	// Second port: portmapper
+	if ports[1].Name != portmapperPortName {
+		t.Errorf("Expected portmapper port name %q, got %q", portmapperPortName, ports[1].Name)
+	}
+	if ports[1].Port != portmapperServicePort || ports[1].TargetPort.IntVal != portmapperContainerPort {
+		t.Errorf("Expected portmapper port %d->%d, got %d->%d",
+			portmapperServicePort, portmapperContainerPort, ports[1].Port, ports[1].TargetPort.IntVal)
+	}
+}
+
+func TestBuildAdapterServicePorts_SMB(t *testing.T) {
+	ports := buildAdapterServicePorts("smb", AdapterInfo{Port: 12445})
+	if len(ports) != 1 {
+		t.Fatalf("Expected 1 port for SMB (no portmapper), got %d", len(ports))
+	}
+	if ports[0].Port != 12445 {
+		t.Errorf("Expected SMB port 12445, got %d", ports[0].Port)
+	}
+}
+
+func TestServicePortsMatch(t *testing.T) {
+	tests := []struct {
+		name     string
+		existing []corev1.ServicePort
+		desired  []corev1.ServicePort
+		expected bool
+	}{
+		{
+			name: "identical single port",
+			existing: []corev1.ServicePort{
+				{Name: "nfs", Port: 12049, TargetPort: intstr.FromInt32(12049), Protocol: corev1.ProtocolTCP},
+			},
+			desired: []corev1.ServicePort{
+				{Name: "nfs", Port: 12049, TargetPort: intstr.FromInt32(12049), Protocol: corev1.ProtocolTCP},
+			},
+			expected: true,
+		},
+		{
+			name: "identical multi port different order",
+			existing: []corev1.ServicePort{
+				{Name: "portmap", Port: 111, TargetPort: intstr.FromInt32(10111), Protocol: corev1.ProtocolTCP},
+				{Name: "nfs", Port: 12049, TargetPort: intstr.FromInt32(12049), Protocol: corev1.ProtocolTCP},
+			},
+			desired: []corev1.ServicePort{
+				{Name: "nfs", Port: 12049, TargetPort: intstr.FromInt32(12049), Protocol: corev1.ProtocolTCP},
+				{Name: "portmap", Port: 111, TargetPort: intstr.FromInt32(10111), Protocol: corev1.ProtocolTCP},
+			},
+			expected: true,
+		},
+		{
+			name: "different lengths",
+			existing: []corev1.ServicePort{
+				{Name: "nfs", Port: 12049, TargetPort: intstr.FromInt32(12049), Protocol: corev1.ProtocolTCP},
+			},
+			desired: []corev1.ServicePort{
+				{Name: "nfs", Port: 12049, TargetPort: intstr.FromInt32(12049), Protocol: corev1.ProtocolTCP},
+				{Name: "portmap", Port: 111, TargetPort: intstr.FromInt32(10111), Protocol: corev1.ProtocolTCP},
+			},
+			expected: false,
+		},
+		{
+			name: "different port number",
+			existing: []corev1.ServicePort{
+				{Name: "nfs", Port: 12049, TargetPort: intstr.FromInt32(12049), Protocol: corev1.ProtocolTCP},
+			},
+			desired: []corev1.ServicePort{
+				{Name: "nfs", Port: 2049, TargetPort: intstr.FromInt32(2049), Protocol: corev1.ProtocolTCP},
+			},
+			expected: false,
+		},
+		{
+			name: "ignores NodePort differences",
+			existing: []corev1.ServicePort{
+				{Name: "nfs", Port: 12049, TargetPort: intstr.FromInt32(12049), Protocol: corev1.ProtocolTCP, NodePort: 31234},
+			},
+			desired: []corev1.ServicePort{
+				{Name: "nfs", Port: 12049, TargetPort: intstr.FromInt32(12049), Protocol: corev1.ProtocolTCP},
+			},
+			expected: true,
+		},
+		{
+			name:     "both empty",
+			existing: nil,
+			desired:  nil,
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := servicePortsMatch(tt.existing, tt.desired)
+			if result != tt.expected {
+				t.Errorf("servicePortsMatch() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestReconcileContainerPorts_SMB_NoPortmapperPort(t *testing.T) {
+	ds := newTestDittoServer("test-server", "default")
+
+	// Create StatefulSet with static ports only.
+	staticPorts := []corev1.ContainerPort{
+		{Name: "api", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
+	}
+	sts := newTestStatefulSet("test-server", "default", staticPorts)
+
+	r := setupAuthReconciler(t, ds, sts)
+
+	// Active adapters: only SMB.
+	activeAdapters := map[string]AdapterInfo{
+		"smb": {Type: "smb", Enabled: true, Running: true, Port: 12445},
+	}
+
+	err := r.reconcileContainerPorts(context.Background(), ds, activeAdapters)
+	if err != nil {
+		t.Fatalf("reconcileContainerPorts returned error: %v", err)
+	}
+
+	updated := &appsv1.StatefulSet{}
+	if err := r.Get(context.Background(), client.ObjectKey{
+		Namespace: "default", Name: "test-server",
+	}, updated); err != nil {
+		t.Fatalf("Failed to get StatefulSet: %v", err)
+	}
+
+	ports := updated.Spec.Template.Spec.Containers[0].Ports
+	portMap := make(map[string]int32)
+	for _, p := range ports {
+		portMap[p.Name] = p.ContainerPort
+	}
+
+	// Should have api (static) + adapter-smb (dynamic), no portmapper.
+	if len(ports) != 2 {
+		t.Fatalf("Expected 2 ports (api, adapter-smb), got %d: %v", len(ports), portNames(ports))
+	}
+	if _, exists := portMap[portmapperContainerPortName]; exists {
+		t.Error("SMB adapter should NOT have portmapper container port")
+	}
+	if portMap["adapter-smb"] != 12445 {
+		t.Errorf("Expected adapter-smb port 12445, got %d", portMap["adapter-smb"])
 	}
 }

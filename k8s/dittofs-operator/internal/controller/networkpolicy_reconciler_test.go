@@ -170,19 +170,23 @@ func TestReconcileNetworkPolicies_CreatesForRunningAdapter(t *testing.T) {
 		t.Errorf("Expected PolicyTypes [Ingress], got %v", np.Spec.PolicyTypes)
 	}
 
-	// Verify Ingress rules.
+	// Verify Ingress rules (NFS gets 2 ports: NFS + portmapper).
 	if len(np.Spec.Ingress) != 1 {
 		t.Fatalf("Expected 1 ingress rule, got %d", len(np.Spec.Ingress))
 	}
-	if len(np.Spec.Ingress[0].Ports) != 1 {
-		t.Fatalf("Expected 1 ingress port, got %d", len(np.Spec.Ingress[0].Ports))
+	if len(np.Spec.Ingress[0].Ports) != 2 {
+		t.Fatalf("Expected 2 ingress ports (NFS + portmapper), got %d", len(np.Spec.Ingress[0].Ports))
 	}
 	ingressPort := np.Spec.Ingress[0].Ports[0]
 	if ingressPort.Port == nil || ingressPort.Port.IntVal != 12049 {
-		t.Errorf("Expected ingress port 12049, got %v", ingressPort.Port)
+		t.Errorf("Expected first ingress port 12049, got %v", ingressPort.Port)
 	}
 	if ingressPort.Protocol == nil || *ingressPort.Protocol != "TCP" {
 		t.Errorf("Expected TCP protocol, got %v", ingressPort.Protocol)
+	}
+	portmapPort := np.Spec.Ingress[0].Ports[1]
+	if portmapPort.Port == nil || portmapPort.Port.IntVal != portmapperContainerPort {
+		t.Errorf("Expected second ingress port %d (portmapper), got %v", portmapperContainerPort, portmapPort.Port)
 	}
 }
 
@@ -223,7 +227,11 @@ func TestReconcileNetworkPolicies_MultipleAdapters(t *testing.T) {
 	if nfsNP.Name != "test-server-adapter-nfs" {
 		t.Errorf("Expected NFS NetworkPolicy name 'test-server-adapter-nfs', got %s", nfsNP.Name)
 	}
-	if len(nfsNP.Spec.Ingress) > 0 && len(nfsNP.Spec.Ingress[0].Ports) > 0 {
+	// NFS should have 2 ingress ports (NFS + portmapper).
+	if len(nfsNP.Spec.Ingress) > 0 {
+		if len(nfsNP.Spec.Ingress[0].Ports) != 2 {
+			t.Errorf("Expected NFS NetworkPolicy to have 2 ingress ports, got %d", len(nfsNP.Spec.Ingress[0].Ports))
+		}
 		if nfsNP.Spec.Ingress[0].Ports[0].Port.IntVal != 12049 {
 			t.Errorf("Expected NFS port 12049, got %d", nfsNP.Spec.Ingress[0].Ports[0].Port.IntVal)
 		}
@@ -236,7 +244,11 @@ func TestReconcileNetworkPolicies_MultipleAdapters(t *testing.T) {
 	if smbNP.Name != "test-server-adapter-smb" {
 		t.Errorf("Expected SMB NetworkPolicy name 'test-server-adapter-smb', got %s", smbNP.Name)
 	}
-	if len(smbNP.Spec.Ingress) > 0 && len(smbNP.Spec.Ingress[0].Ports) > 0 {
+	// SMB should have 1 ingress port (no portmapper).
+	if len(smbNP.Spec.Ingress) > 0 {
+		if len(smbNP.Spec.Ingress[0].Ports) != 1 {
+			t.Errorf("Expected SMB NetworkPolicy to have 1 ingress port, got %d", len(smbNP.Spec.Ingress[0].Ports))
+		}
 		if smbNP.Spec.Ingress[0].Ports[0].Port.IntVal != 12445 {
 			t.Errorf("Expected SMB port 12445, got %d", smbNP.Spec.Ingress[0].Ports[0].Port.IntVal)
 		}
@@ -284,7 +296,7 @@ func TestReconcileNetworkPolicies_UpdatesWhenPortChanges(t *testing.T) {
 		t.Fatalf("reconcileNetworkPolicies returned error: %v", err)
 	}
 
-	// Verify the NetworkPolicy was updated with new port.
+	// Verify the NetworkPolicy was updated with new port (NFS has 2 ingress ports).
 	updated := &networkingv1.NetworkPolicy{}
 	err = r.Get(context.Background(), client.ObjectKey{
 		Namespace: "default",
@@ -297,11 +309,14 @@ func TestReconcileNetworkPolicies_UpdatesWhenPortChanges(t *testing.T) {
 	if len(updated.Spec.Ingress) != 1 {
 		t.Fatalf("Expected 1 ingress rule, got %d", len(updated.Spec.Ingress))
 	}
-	if len(updated.Spec.Ingress[0].Ports) != 1 {
-		t.Fatalf("Expected 1 ingress port, got %d", len(updated.Spec.Ingress[0].Ports))
+	if len(updated.Spec.Ingress[0].Ports) != 2 {
+		t.Fatalf("Expected 2 ingress ports (NFS + portmapper), got %d", len(updated.Spec.Ingress[0].Ports))
 	}
 	if updated.Spec.Ingress[0].Ports[0].Port.IntVal != 2049 {
-		t.Errorf("Expected port 2049, got %d", updated.Spec.Ingress[0].Ports[0].Port.IntVal)
+		t.Errorf("Expected NFS port 2049, got %d", updated.Spec.Ingress[0].Ports[0].Port.IntVal)
+	}
+	if updated.Spec.Ingress[0].Ports[1].Port.IntVal != portmapperContainerPort {
+		t.Errorf("Expected portmapper port %d, got %d", portmapperContainerPort, updated.Spec.Ingress[0].Ports[1].Port.IntVal)
 	}
 }
 
@@ -444,5 +459,79 @@ func TestReconcileNetworkPolicies_BaselineCreatedEvenWithNilAdapters(t *testing.
 	}, baselineNP)
 	if err != nil {
 		t.Fatalf("Baseline NetworkPolicy not found even with nil adapters: %v", err)
+	}
+}
+
+func TestBuildAdapterNetworkPolicy_NFS_MultiPort(t *testing.T) {
+	np := buildAdapterNetworkPolicy("test-server", "default", "nfs", 12049)
+
+	if len(np.Spec.Ingress) != 1 {
+		t.Fatalf("Expected 1 ingress rule, got %d", len(np.Spec.Ingress))
+	}
+	if len(np.Spec.Ingress[0].Ports) != 2 {
+		t.Fatalf("Expected 2 ingress ports for NFS (NFS + portmapper), got %d", len(np.Spec.Ingress[0].Ports))
+	}
+
+	// First port: NFS
+	if np.Spec.Ingress[0].Ports[0].Port.IntVal != 12049 {
+		t.Errorf("Expected first port 12049, got %d", np.Spec.Ingress[0].Ports[0].Port.IntVal)
+	}
+
+	// Second port: portmapper container port
+	if np.Spec.Ingress[0].Ports[1].Port.IntVal != portmapperContainerPort {
+		t.Errorf("Expected second port %d (portmapper), got %d", portmapperContainerPort, np.Spec.Ingress[0].Ports[1].Port.IntVal)
+	}
+}
+
+func TestBuildAdapterNetworkPolicy_SMB_SinglePort(t *testing.T) {
+	np := buildAdapterNetworkPolicy("test-server", "default", "smb", 12445)
+
+	if len(np.Spec.Ingress) != 1 {
+		t.Fatalf("Expected 1 ingress rule, got %d", len(np.Spec.Ingress))
+	}
+	if len(np.Spec.Ingress[0].Ports) != 1 {
+		t.Fatalf("Expected 1 ingress port for SMB (no portmapper), got %d", len(np.Spec.Ingress[0].Ports))
+	}
+	if np.Spec.Ingress[0].Ports[0].Port.IntVal != 12445 {
+		t.Errorf("Expected port 12445, got %d", np.Spec.Ingress[0].Ports[0].Port.IntVal)
+	}
+}
+
+func TestUpdateNetworkPolicy_NFS_SinglePortToMultiPort(t *testing.T) {
+	ds := newTestDittoServer("test-server", "default")
+
+	// Pre-create NFS NetworkPolicy with only NFS port (old format, no portmapper).
+	oldNP := buildAdapterNetworkPolicy("test-server", "default", "smb", 12049)
+	// Override: set labels and name to look like an NFS NP with old single-port format.
+	oldNP.Name = adapterResourceName("test-server", "nfs")
+	oldNP.Labels = networkPolicyLabels("test-server", "nfs")
+
+	r := setupAuthReconciler(t, ds, oldNP)
+
+	// Set NFS adapter as active.
+	r.setLastKnownAdapters(ds, []AdapterInfo{
+		{Type: "nfs", Enabled: true, Running: true, Port: 12049},
+	})
+
+	err := r.reconcileNetworkPolicies(context.Background(), ds)
+	if err != nil {
+		t.Fatalf("reconcileNetworkPolicies returned error: %v", err)
+	}
+
+	// Verify the NetworkPolicy now has 2 ports.
+	updated := &networkingv1.NetworkPolicy{}
+	err = r.Get(context.Background(), client.ObjectKey{
+		Namespace: "default",
+		Name:      adapterResourceName("test-server", "nfs"),
+	}, updated)
+	if err != nil {
+		t.Fatalf("Failed to get updated NetworkPolicy: %v", err)
+	}
+
+	if len(updated.Spec.Ingress) != 1 {
+		t.Fatalf("Expected 1 ingress rule, got %d", len(updated.Spec.Ingress))
+	}
+	if len(updated.Spec.Ingress[0].Ports) != 2 {
+		t.Fatalf("Expected 2 ingress ports after update (NFS + portmapper), got %d", len(updated.Spec.Ingress[0].Ports))
 	}
 }
