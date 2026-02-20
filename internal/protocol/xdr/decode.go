@@ -119,6 +119,26 @@ func DecodeUint64(reader io.Reader) (uint64, error) {
 	return v, nil
 }
 
+// DecodeInt64 decodes a 64-bit signed integer from XDR format.
+//
+// Per RFC 4506 Section 4.5 (Hyper Integer):
+// Signed 64-bit integers are encoded in big-endian byte order using
+// two's complement representation.
+//
+// Parameters:
+//   - reader: Input stream positioned at start of int64
+//
+// Returns:
+//   - int64: Decoded value
+//   - error: Decoding error
+func DecodeInt64(reader io.Reader) (int64, error) {
+	var v int64
+	if err := binary.Read(reader, binary.BigEndian, &v); err != nil {
+		return 0, fmt.Errorf("read int64: %w", err)
+	}
+	return v, nil
+}
+
 // DecodeInt32 decodes a 32-bit signed integer from XDR format.
 //
 // Per RFC 4506 Section 4.1 (Integer):

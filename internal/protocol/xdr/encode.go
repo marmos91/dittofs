@@ -178,6 +178,25 @@ func WriteInt32(buf *bytes.Buffer, v int32) error {
 	return nil
 }
 
+// WriteInt64 encodes a 64-bit signed integer in XDR format.
+//
+// Per RFC 4506 Section 4.5 (Hyper Integer):
+// Signed 64-bit integers are encoded in big-endian byte order using
+// two's complement representation.
+//
+// Parameters:
+//   - buf: Output buffer for encoded data
+//   - v: Value to encode
+//
+// Returns:
+//   - error: Encoding error
+func WriteInt64(buf *bytes.Buffer, v int64) error {
+	if err := binary.Write(buf, binary.BigEndian, v); err != nil {
+		return fmt.Errorf("write int64: %w", err)
+	}
+	return nil
+}
+
 // WriteBool encodes a boolean value in XDR format.
 //
 // Per RFC 4506 Section 4.4 (Boolean):
