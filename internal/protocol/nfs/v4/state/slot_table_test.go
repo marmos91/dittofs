@@ -75,7 +75,7 @@ func TestValidateSequence_NewRequest(t *testing.T) {
 		st := NewSlotTable(4)
 
 		// ValidateSequence atomically marks slot in-use for SeqNew
-		st.ValidateSequence(0, 1)
+		_, _, _ = st.ValidateSequence(0, 1)
 		st.CompleteSlotRequest(0, 1, true, []byte("reply1"))
 
 		// Next request: seqID=2
@@ -354,7 +354,7 @@ func TestCompleteSlotRequest(t *testing.T) {
 		st := NewSlotTable(4)
 
 		// ValidateSequence atomically marks slot in-use
-		st.ValidateSequence(0, 1)
+		_, _, _ = st.ValidateSequence(0, 1)
 
 		originalReply := []byte("original-reply-data")
 		st.CompleteSlotRequest(0, 1, true, originalReply)
@@ -382,7 +382,7 @@ func TestCompleteSlotRequest(t *testing.T) {
 		st := NewSlotTable(4)
 
 		// ValidateSequence atomically marks slot in-use
-		st.ValidateSequence(0, 1)
+		_, _, _ = st.ValidateSequence(0, 1)
 
 		st.CompleteSlotRequest(0, 1, false, nil)
 
@@ -412,7 +412,7 @@ func TestCompleteSlotRequest(t *testing.T) {
 		st := NewSlotTable(4)
 
 		// ValidateSequence atomically marks slot in-use
-		st.ValidateSequence(0, 1)
+		_, _, _ = st.ValidateSequence(0, 1)
 
 		// While in-use, same seqID should return DELAY (retransmission)
 		_, _, err := st.ValidateSequence(0, 1)
