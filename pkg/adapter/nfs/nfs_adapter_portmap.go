@@ -10,16 +10,16 @@ import (
 
 // isPortmapperEnabled returns whether the embedded portmapper should be started.
 //
-// The portmapper is enabled by default. Users can explicitly disable it by
-// setting adapters.nfs.portmapper.enabled to false in the configuration file.
+// The portmapper is disabled by default. Users can explicitly enable it by
+// setting adapters.nfs.portmapper.enabled to true in the configuration file.
 //
 // The *bool pointer approach allows distinguishing between:
-//   - nil (not set in config) -> default to true (portmapper enabled)
+//   - nil (not set in config) -> default to false (portmapper disabled)
 //   - false (explicitly disabled) -> portmapper disabled
 //   - true (explicitly enabled) -> portmapper enabled
 func (s *NFSAdapter) isPortmapperEnabled() bool {
 	if s.config.Portmapper.Enabled == nil {
-		return true // Default: enabled
+		return false // Default: disabled
 	}
 	return *s.config.Portmapper.Enabled
 }

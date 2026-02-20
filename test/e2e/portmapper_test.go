@@ -29,7 +29,7 @@ func TestPortmapper(t *testing.T) {
 	runner := helpers.LoginAsAdmin(t, sp.APIURL())
 	client := helpers.GetAPIClient(t, sp.APIURL())
 
-	// Enable NFS adapter (portmapper starts automatically with it)
+	// Enable NFS adapter
 	nfsPort := helpers.FindFreePort(t)
 	_, err := runner.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
 	require.NoError(t, err, "Should enable NFS adapter")
@@ -37,11 +37,30 @@ func TestPortmapper(t *testing.T) {
 	err = helpers.WaitForAdapterStatus(t, runner, "nfs", true, 5*time.Second)
 	require.NoError(t, err, "NFS adapter should become enabled")
 
-	// Get portmapper port from settings
+	// Portmapper is disabled by default; enable it for testing
 	settings := helpers.GetNFSSettings(t, client)
+	require.False(t, settings.PortmapperEnabled, "Portmapper should be disabled by default")
+
+	enabled := true
+	helpers.PatchNFSSetting(t, client, &apiclient.PatchNFSSettingsRequest{
+		PortmapperEnabled: &enabled,
+	})
+
+	// Re-read settings after enabling
+	settings = helpers.GetNFSSettings(t, client)
 	pmapPort := settings.PortmapperPort
-	require.True(t, settings.PortmapperEnabled, "Portmapper should be enabled by default")
+	require.True(t, settings.PortmapperEnabled, "Portmapper should now be enabled")
 	require.Greater(t, pmapPort, 0, "Portmapper port should be set")
+
+	// Restart NFS adapter to apply the portmapper change
+	_, err = runner.DisableAdapter("nfs")
+	require.NoError(t, err)
+	err = helpers.WaitForAdapterStatus(t, runner, "nfs", false, 5*time.Second)
+	require.NoError(t, err)
+	_, err = runner.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
+	require.NoError(t, err)
+	err = helpers.WaitForAdapterStatus(t, runner, "nfs", true, 5*time.Second)
+	require.NoError(t, err)
 
 	// Wait a moment for portmapper to bind
 	time.Sleep(500 * time.Millisecond)

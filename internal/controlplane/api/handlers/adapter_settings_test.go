@@ -304,7 +304,7 @@ func TestPutNFSSettings_FullReplace(t *testing.T) {
 		PreferredTransferSize:   2097152,
 		DelegationsEnabled:      false,
 		BlockedOperations:       []string{"WRITE"},
-		PortmapperEnabled:       true,
+		PortmapperEnabled:       false,
 		PortmapperPort:          10111,
 	}
 

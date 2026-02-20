@@ -39,7 +39,7 @@ showmount -e localhost
 
 ### Configuration
 
-The portmapper is enabled by default. It can be configured via `dfsctl`:
+The portmapper is disabled by default. Enable it via `dfsctl`:
 
 ```bash
 # Check current settings

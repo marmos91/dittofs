@@ -67,7 +67,7 @@ type NFSAdapterSettings struct {
 	BlockedOperations string `gorm:"type:text" json:"-"`
 
 	// Portmapper settings
-	PortmapperEnabled bool `gorm:"default:true" json:"portmapper_enabled"`
+	PortmapperEnabled bool `gorm:"default:false" json:"portmapper_enabled"`
 	PortmapperPort    int  `gorm:"default:10111" json:"portmapper_port"`
 
 	// Version counter for change detection (monotonic, starts at 1, incremented on every update)
@@ -157,7 +157,7 @@ func NewDefaultNFSSettings(adapterID string) *NFSAdapterSettings {
 		MaxWriteSize:            1048576,
 		PreferredTransferSize:   1048576,
 		DelegationsEnabled:      true,
-		PortmapperEnabled:       true,
+		PortmapperEnabled:       false,
 		PortmapperPort:          10111,
 		Version:                 1,
 	}

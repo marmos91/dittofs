@@ -214,11 +214,11 @@ func New(config *Config) (*GORMStore, error) {
 		return nil, fmt.Errorf("failed to apply post-migration defaults: %w", err)
 	}
 
-	// Post-migration: fix portmapper_enabled for existing NFS adapter settings.
-	// Same zero-value trap: ALTER TABLE ADD COLUMN sets bool to false, not true.
+	// Post-migration: fix portmapper_port for existing NFS adapter settings.
+	// ALTER TABLE ADD COLUMN sets int to 0, not the default 10111.
 	if err := db.Exec(
-		"UPDATE nfs_adapter_settings SET portmapper_enabled = ? WHERE portmapper_enabled = ? AND portmapper_port = ?",
-		true, false, 0,
+		"UPDATE nfs_adapter_settings SET portmapper_port = ? WHERE portmapper_port = ?",
+		10111, 0,
 	).Error; err != nil {
 		return nil, fmt.Errorf("failed to apply portmapper defaults: %w", err)
 	}
