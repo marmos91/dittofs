@@ -96,11 +96,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Existing v4.0 constants and types compile unchanged (no regressions)
 **Plans**: 5 plans
 Plans:
-- [ ] 16-01-PLAN.md -- Foundation: constants, error codes, XDR interfaces, shared session types, test fixtures
-- [ ] 16-02-PLAN.md -- Core session ops: EXCHANGE_ID, CREATE_SESSION, DESTROY_SESSION, SEQUENCE, BIND_CONN_TO_SESSION, BACKCHANNEL_CTL
-- [ ] 16-03-PLAN.md -- Remaining forward ops: FREE_STATEID, TEST_STATEID, DESTROY_CLIENTID, RECLAIM_COMPLETE, SECINFO_NO_NAME, SET_SSV, WANT_DELEGATION, GET_DIR_DELEGATION, pNFS layout ops
-- [ ] 16-04-PLAN.md -- Callback ops: CB_SEQUENCE, CB_LAYOUTRECALL, CB_NOTIFY, and 7 remaining CB operations
-- [ ] 16-05-PLAN.md -- COMPOUND v4.1 dispatch: minorversion bifurcation, v4.1 dispatch table with NOTSUPP stubs, protocol CLAUDE.md
+- [x] 16-01-PLAN.md -- Foundation: constants, error codes, XDR interfaces, shared session types, test fixtures
+- [x] 16-02-PLAN.md -- Core session ops: EXCHANGE_ID, CREATE_SESSION, DESTROY_SESSION, SEQUENCE, BIND_CONN_TO_SESSION, BACKCHANNEL_CTL
+- [x] 16-03-PLAN.md -- Remaining forward ops: FREE_STATEID, TEST_STATEID, DESTROY_CLIENTID, RECLAIM_COMPLETE, SECINFO_NO_NAME, SET_SSV, WANT_DELEGATION, GET_DIR_DELEGATION, pNFS layout ops
+- [x] 16-04-PLAN.md -- Callback ops: CB_SEQUENCE, CB_LAYOUTRECALL, CB_NOTIFY, and 7 remaining CB operations
+- [x] 16-05-PLAN.md -- COMPOUND v4.1 dispatch: minorversion bifurcation, v4.1 dispatch table with NOTSUPP stubs, protocol CLAUDE.md
 
 ### Phase 17: Slot Table and Session Data Structures
 **Goal**: Session infrastructure data structures are implemented and unit-tested, ready for use by operation handlers
@@ -111,7 +111,10 @@ Plans:
   2. Sequence ID validation correctly identifies retries (same seqid), misordered requests, and stale slots
   3. Server can dynamically adjust slot count via target_highest_slotid signaling
   4. Per-SlotTable mutex provides concurrency without serializing on the global StateManager RWMutex
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 17-01-PLAN.md -- SlotTable struct, Slot struct, sequence validation algorithm (RFC 8881), dynamic sizing, unit tests
+- [ ] 17-02-PLAN.md -- Session record struct, NewSession constructor, slot table wiring, session tests
 
 ### Phase 18: EXCHANGE_ID and Client Registration
 **Goal**: NFSv4.1 clients can register with the server and receive a client ID for session creation
@@ -308,8 +311,8 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 32
 | 14. Control Plane v2.0 | v2.0 | 7/7 | Complete | 2026-02-16 |
 | 15. v2.0 Testing | v2.0 | 5/5 | Complete | 2026-02-18 |
 | 15.5. Manual Verification v2.0 | v2.0 | - | Complete | 2026-02-19 |
-| 16. NFSv4.1 Types and Constants | 5/5 | Complete    | 2026-02-20 | - |
-| 17. Slot Table and Session Data Structures | v3.0 | 0/? | Not started | - |
+| 16. NFSv4.1 Types and Constants | v3.0 | 5/5 | Complete | 2026-02-20 |
+| 17. Slot Table and Session Data Structures | v3.0 | 0/2 | Not started | - |
 | 18. EXCHANGE_ID and Client Registration | v3.0 | 0/? | Not started | - |
 | 19. Session Lifecycle | v3.0 | 0/? | Not started | - |
 | 20. SEQUENCE and COMPOUND Bifurcation | v3.0 | 0/? | Not started | - |
@@ -326,7 +329,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 32
 | 31. Documentation | v4.0 | 0/? | Not started | - |
 | 32. v4.0 Testing | v4.0 | 0/? | Not started | - |
 
-**Total:** 61/? plans complete
+**Total:** 66/? plans complete
 
 ---
 *Roadmap created: 2026-02-04*
