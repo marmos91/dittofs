@@ -74,8 +74,8 @@ func TestValidateSequence_NewRequest(t *testing.T) {
 	t.Run("subsequent request after complete", func(t *testing.T) {
 		st := NewSlotTable(4)
 
-		// Complete first request
-		st.MarkSlotInUse(0)
+		// ValidateSequence atomically marks slot in-use for SeqNew
+		st.ValidateSequence(0, 1)
 		st.CompleteSlotRequest(0, 1, true, []byte("reply1"))
 
 		// Next request: seqID=2
@@ -245,32 +245,31 @@ func TestValidateSequence_BadSlot(t *testing.T) {
 func TestValidateSequence_SlotInUse(t *testing.T) {
 	st := NewSlotTable(4)
 
-	// Validate and mark slot 0 as in-use
+	// ValidateSequence(0, 1) returns SeqNew and atomically marks slot in-use
 	result, _, err := st.ValidateSequence(0, 1)
 	if err != nil || result != SeqNew {
 		t.Fatalf("initial validate failed: result=%d, err=%v", result, err)
 	}
-	st.MarkSlotInUse(0)
 
-	t.Run("new request while in use", func(t *testing.T) {
-		// Try the expected next seqID (which is the same seqID=1 because
-		// the slot hasn't been completed yet, so expected = 0+1 = 1)
+	t.Run("retransmission of in-flight request", func(t *testing.T) {
+		// Same seqID=1 while slot is in-use should return NFS4ERR_DELAY
+		// (the client is retransmitting the request that's still processing)
 		_, _, err := st.ValidateSequence(0, 1)
 		if err == nil {
-			t.Fatal("expected error for slot in use with new seqid")
+			t.Fatal("expected error for retransmission while in flight")
 		}
 		stateErr, ok := err.(*NFS4StateError)
 		if !ok {
 			t.Fatalf("expected *NFS4StateError, got %T", err)
 		}
-		if stateErr.Status != types.NFS4ERR_SEQ_MISORDERED {
-			t.Errorf("status = %d, want NFS4ERR_SEQ_MISORDERED (%d)",
-				stateErr.Status, types.NFS4ERR_SEQ_MISORDERED)
+		if stateErr.Status != types.NFS4ERR_DELAY {
+			t.Errorf("status = %d, want NFS4ERR_DELAY (%d)",
+				stateErr.Status, types.NFS4ERR_DELAY)
 		}
 	})
 
-	t.Run("retry while in flight", func(t *testing.T) {
-		// Retry the cached seqID (0) while slot is in use
+	t.Run("retry of previous completed while in flight", func(t *testing.T) {
+		// seqID=0 (the previous completed seqid) while slot is in use
 		_, _, err := st.ValidateSequence(0, 0)
 		if err == nil {
 			t.Fatal("expected error for retry while in flight")
@@ -296,29 +295,53 @@ func TestValidateSequence_SeqIDWrap(t *testing.T) {
 	// Set slot seqID to 0xFFFFFFFF via CompleteSlotRequest
 	st.CompleteSlotRequest(0, 0xFFFFFFFF, true, []byte("max-reply"))
 
+	// Verify retry of 0xFFFFFFFF works before advancing
+	result, slot, err := st.ValidateSequence(0, 0xFFFFFFFF)
+	if err != nil {
+		t.Fatalf("unexpected error on retry at max: %v", err)
+	}
+	if result != SeqRetry {
+		t.Errorf("result = %d, want SeqRetry (%d)", result, SeqRetry)
+	}
+	if string(slot.CachedReply) != "max-reply" {
+		t.Errorf("CachedReply = %q, want %q", slot.CachedReply, "max-reply")
+	}
+
 	// Expected next: 0xFFFFFFFF + 1 = 0 (uint32 natural overflow)
 	// In v4.1, seqid=0 IS valid (unlike v4.0 where 0 is reserved)
-	result, slot, err := st.ValidateSequence(0, 0)
-	if err != nil {
-		t.Fatalf("unexpected error on wrap: %v", err)
+	result2, slot2, err2 := st.ValidateSequence(0, 0)
+	if err2 != nil {
+		t.Fatalf("unexpected error on wrap: %v", err2)
 	}
-	if result != SeqNew {
-		t.Errorf("result = %d, want SeqNew (%d)", result, SeqNew)
+	if result2 != SeqNew {
+		t.Errorf("result = %d, want SeqNew (%d)", result2, SeqNew)
 	}
-	if slot == nil {
+	if slot2 == nil {
 		t.Fatal("slot should not be nil")
 	}
 
-	// Verify retry of 0xFFFFFFFF still works
-	result2, slot2, err2 := st.ValidateSequence(0, 0xFFFFFFFF)
-	if err2 != nil {
-		t.Fatalf("unexpected error on retry at max: %v", err2)
+	// Complete wrapped request and verify we can continue
+	st.CompleteSlotRequest(0, 0, true, []byte("wrap-reply"))
+
+	// Retry of wrapped seqID=0 works
+	result3, slot3, err3 := st.ValidateSequence(0, 0)
+	if err3 != nil {
+		t.Fatalf("unexpected error on retry after wrap: %v", err3)
 	}
-	if result2 != SeqRetry {
-		t.Errorf("result = %d, want SeqRetry (%d)", result2, SeqRetry)
+	if result3 != SeqRetry {
+		t.Errorf("result = %d, want SeqRetry (%d)", result3, SeqRetry)
 	}
-	if string(slot2.CachedReply) != "max-reply" {
-		t.Errorf("CachedReply = %q, want %q", slot2.CachedReply, "max-reply")
+	if string(slot3.CachedReply) != "wrap-reply" {
+		t.Errorf("CachedReply = %q, want %q", slot3.CachedReply, "wrap-reply")
+	}
+
+	// Next request after wrap: seqID=1
+	result4, _, err4 := st.ValidateSequence(0, 1)
+	if err4 != nil {
+		t.Fatalf("unexpected error on post-wrap next: %v", err4)
+	}
+	if result4 != SeqNew {
+		t.Errorf("result = %d, want SeqNew (%d)", result4, SeqNew)
 	}
 }
 
@@ -329,7 +352,9 @@ func TestValidateSequence_SeqIDWrap(t *testing.T) {
 func TestCompleteSlotRequest(t *testing.T) {
 	t.Run("cache reply with cacheThis=true", func(t *testing.T) {
 		st := NewSlotTable(4)
-		st.MarkSlotInUse(0)
+
+		// ValidateSequence atomically marks slot in-use
+		st.ValidateSequence(0, 1)
 
 		originalReply := []byte("original-reply-data")
 		st.CompleteSlotRequest(0, 1, true, originalReply)
@@ -355,7 +380,9 @@ func TestCompleteSlotRequest(t *testing.T) {
 
 	t.Run("no cache with cacheThis=false", func(t *testing.T) {
 		st := NewSlotTable(4)
-		st.MarkSlotInUse(0)
+
+		// ValidateSequence atomically marks slot in-use
+		st.ValidateSequence(0, 1)
 
 		st.CompleteSlotRequest(0, 1, false, nil)
 
@@ -383,9 +410,11 @@ func TestCompleteSlotRequest(t *testing.T) {
 
 	t.Run("clears InUse flag", func(t *testing.T) {
 		st := NewSlotTable(4)
-		st.MarkSlotInUse(0)
 
-		// While in-use, next seqID should fail
+		// ValidateSequence atomically marks slot in-use
+		st.ValidateSequence(0, 1)
+
+		// While in-use, same seqID should return DELAY (retransmission)
 		_, _, err := st.ValidateSequence(0, 1)
 		if err == nil {
 			t.Fatal("expected error while in use")
@@ -452,30 +481,6 @@ func TestSetTargetHighestSlotID(t *testing.T) {
 }
 
 // ============================================================================
-// MarkSlotInUse Tests
-// ============================================================================
-
-func TestMarkSlotInUse(t *testing.T) {
-	t.Run("updates highestSlotID", func(t *testing.T) {
-		st := NewSlotTable(8)
-
-		// highestSlotID starts at 7 (numSlots - 1)
-		// Using slot 3 shouldn't change it (3 < 7)
-		st.MarkSlotInUse(3)
-		if got := st.GetHighestSlotID(); got != 7 {
-			t.Errorf("after slot 3: GetHighestSlotID() = %d, want 7", got)
-		}
-	})
-
-	t.Run("out of range no panic", func(t *testing.T) {
-		st := NewSlotTable(4)
-		// Should not panic
-		st.MarkSlotInUse(10)
-		st.MarkSlotInUse(100)
-	})
-}
-
-// ============================================================================
 // Concurrent Access Tests
 // ============================================================================
 
@@ -498,7 +503,7 @@ func TestSlotTable_Concurrent(t *testing.T) {
 			for i := 0; i < opsPerGoroutine; i++ {
 				seqID := uint32(i + 1)
 
-				// Validate
+				// ValidateSequence atomically validates and marks in-use
 				result, _, err := st.ValidateSequence(slotID, seqID)
 				if err != nil {
 					// Another goroutine may have advanced the slot;
@@ -507,10 +512,7 @@ func TestSlotTable_Concurrent(t *testing.T) {
 				}
 
 				if result == SeqNew {
-					// Mark in use
-					st.MarkSlotInUse(slotID)
-
-					// Complete
+					// Complete (slot already marked in-use by ValidateSequence)
 					st.CompleteSlotRequest(slotID, seqID, true, []byte("reply"))
 				}
 			}
@@ -560,7 +562,7 @@ func TestSlotTable_ConcurrentMixedOps(t *testing.T) {
 				continue
 			}
 			if result == SeqNew {
-				st.MarkSlotInUse(0)
+				// Slot already marked in-use by ValidateSequence
 				st.CompleteSlotRequest(0, uint32(i), i%2 == 0, []byte("data"))
 			}
 		}
@@ -577,11 +579,11 @@ func TestSlotTable_FullWorkflow(t *testing.T) {
 	st := NewSlotTable(4)
 
 	// Step 1: First request on slot 0 (seqID=1)
+	// ValidateSequence atomically marks slot in-use for SeqNew
 	result, _, err := st.ValidateSequence(0, 1)
 	if err != nil || result != SeqNew {
 		t.Fatalf("step 1: result=%d, err=%v; want SeqNew, nil", result, err)
 	}
-	st.MarkSlotInUse(0)
 
 	// Step 2: Complete with cached reply
 	st.CompleteSlotRequest(0, 1, true, []byte("response-1"))
@@ -600,7 +602,6 @@ func TestSlotTable_FullWorkflow(t *testing.T) {
 	if err != nil || result != SeqNew {
 		t.Fatalf("step 4: result=%d, err=%v; want SeqNew, nil", result, err)
 	}
-	st.MarkSlotInUse(0)
 	st.CompleteSlotRequest(0, 2, false, nil)
 
 	// Step 5: Retry seqID=2 without cache -> RETRY_UNCACHED_REP
@@ -631,7 +632,6 @@ func TestSlotTable_MultipleSlots(t *testing.T) {
 		if err != nil || result != SeqNew {
 			t.Fatalf("slot 0 seqID=%d: result=%d, err=%v", seqID, result, err)
 		}
-		st.MarkSlotInUse(0)
 		st.CompleteSlotRequest(0, seqID, true, []byte("slot0"))
 	}
 
@@ -641,7 +641,6 @@ func TestSlotTable_MultipleSlots(t *testing.T) {
 		if err != nil || result != SeqNew {
 			t.Fatalf("slot 2 seqID=%d: result=%d, err=%v", seqID, result, err)
 		}
-		st.MarkSlotInUse(2)
 		st.CompleteSlotRequest(2, seqID, true, []byte("slot2"))
 	}
 

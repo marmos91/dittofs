@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-20)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking and Kerberos authentication
-**Current focus:** v3.0 NFSv4.1 Sessions — Phase 17 executing
+**Current focus:** v3.0 NFSv4.1 Sessions — Phase 17 complete, ready for Phase 18
 
 ## Current Position
 
-Phase: 17 of 25 (Slot Table and Session Data Structures)
-Plan: 2 of 2 in current phase
-Status: Executing
-Last activity: 2026-02-20 — Completed 17-01 (SlotTable data structure with RFC 8881 sequence validation)
+Phase: 18 of 25 (EXCHANGE_ID Handler)
+Plan: 1 of ? in current phase
+Status: Ready
+Last activity: 2026-02-20 — Completed Phase 17 (Slot Table and Session Data Structures)
 
-Progress: [#######################################-] 96% (67/70 plans complete)
+Progress: [########################################] 97% (69/70 plans complete)
 
 ## Completed Milestones
 
@@ -55,6 +55,7 @@ Progress: [#######################################-] 96% (67/70 plans complete)
 | Phase 16 P04 | 6min | 2 tasks | 18 files |
 | Phase 16 P05 | 6min | 2 tasks | 4 files |
 | Phase 17 P01 | 3min | 2 tasks | 2 files |
+| Phase 17 P02 | 2min | 2 tasks | 2 files |
 
 ## Quick Tasks Completed
 
@@ -83,6 +84,9 @@ Recent decisions affecting current work:
 - [Phase 17-01]: Per-SlotTable mutex instead of global StateManager.mu for SEQUENCE hot path
 - [Phase 17-01]: SequenceValidation is separate type from v4.0 SeqIDValidation (v4.1 seqid wraps through 0)
 - [Phase 17-01]: CachedReply stores full XDR bytes for complete replay detection
+- [Phase 17-02]: Session struct is independent of StateManager -- registration is Phase 19's job
+- [Phase 17-02]: crypto/rand session ID with deterministic fallback (clientID + nanotime)
+- [Phase 17-02]: Back channel slot table only allocated when CONN_BACK_CHAN flag is set
 
 ### Pending Todos
 
@@ -96,5 +100,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-20
-Stopped at: Completed 17-01-PLAN.md
-Resume file: `/gsd:execute-phase 17` (continue with 17-02)
+Stopped at: Completed 17-02-PLAN.md (Phase 17 complete)
+Resume file: `/gsd:execute-phase 18`

@@ -86,7 +86,7 @@ type SlotTable struct {
 	// slots is the array of slot entries. Length is fixed at creation.
 	slots []Slot
 
-	// highestSlotID is the highest slot ID that has been used in a request.
+	// highestSlotID is the highest allocated slot ID (max valid slot index).
 	// Returned as sr_highest_slotid in SEQUENCE responses.
 	highestSlotID uint32
 
@@ -129,8 +129,9 @@ func NewSlotTable(numSlots uint32) *SlotTable {
 // Returns the validation result, a pointer to the slot (for SeqNew/SeqRetry),
 // and an error (for BADSLOT, SEQ_MISORDERED, DELAY, RETRY_UNCACHED_REP).
 //
-// The caller must call MarkSlotInUse after a successful SeqNew validation,
-// and CompleteSlotRequest when the request is finished.
+// For a SeqNew result, this method also marks the slot as in-use while
+// holding st.mu, making validation and reservation atomic. The caller must
+// call CompleteSlotRequest when the request is finished.
 //
 // Thread-safe: acquires st.mu for the duration of validation.
 func (st *SlotTable) ValidateSequence(slotID, seqID uint32) (SequenceValidation, *Slot, error) {
@@ -156,12 +157,18 @@ func (st *SlotTable) ValidateSequence(slotID, seqID uint32) (SequenceValidation,
 	// Step 4: New request (seqid == expected next)
 	if seqID == expectedSeqID {
 		if slot.InUse {
-			// Slot is already processing a request with the current seqid.
-			// Per RFC 8881: misordered if the slot is in use for the next seqid.
+			// Slot is already processing a request for this seqid.
+			// This is a retransmission of the in-flight request; tell
+			// the client to wait (RFC 8881 Section 2.10.6.1).
 			return SeqMisordered, nil, &NFS4StateError{
-				Status:  types.NFS4ERR_SEQ_MISORDERED,
-				Message: "slot in use",
+				Status:  types.NFS4ERR_DELAY,
+				Message: "slot in use; request in flight",
 			}
+		}
+		// Atomically mark slot in-use and update highestSlotID.
+		slot.InUse = true
+		if slotID > st.highestSlotID {
+			st.highestSlotID = slotID
 		}
 		return SeqNew, slot, nil
 	}
@@ -189,27 +196,6 @@ func (st *SlotTable) ValidateSequence(slotID, seqID uint32) (SequenceValidation,
 	return SeqMisordered, nil, &NFS4StateError{
 		Status:  types.NFS4ERR_SEQ_MISORDERED,
 		Message: "sequence ID misordered",
-	}
-}
-
-// MarkSlotInUse marks a slot as in-use (request being processed).
-// Called by the SEQUENCE handler after ValidateSequence returns SeqNew.
-//
-// Also updates highestSlotID if this slot is higher than any previously used.
-//
-// Thread-safe: acquires st.mu.
-func (st *SlotTable) MarkSlotInUse(slotID uint32) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-
-	if slotID >= st.maxSlots {
-		return
-	}
-
-	st.slots[slotID].InUse = true
-
-	if slotID > st.highestSlotID {
-		st.highestSlotID = slotID
 	}
 }
 
