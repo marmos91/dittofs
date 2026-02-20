@@ -2,9 +2,11 @@ package metadata
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // WriteOperation represents a validated intent to write to a file.
@@ -212,6 +214,41 @@ func applyCOWState(attr *FileAttr, payloadID PayloadID, cowSource PayloadID) {
 func (s *MetadataService) deferredCommitWrite(ctx *AuthContext, intent *WriteOperation) (*File, error) {
 	// Determine if we need to clear setuid/setgid
 	clearSetuid := ctx.Identity != nil && ctx.Identity.UID != nil && *ctx.Identity.UID != 0
+
+	// POSIX: If SUID/SGID needs clearing and the file has those bits set,
+	// persist the mode change to the store immediately. This ensures any
+	// subsequent GETATTR (e.g., from NFSv4 COMPOUND piggybacked GETATTR
+	// or fstat with noac) returns the correct cleared mode. Without this,
+	// the clearing only exists in pending state which some protocol paths
+	// may not merge (e.g., NFSv4 cache_consistency_bitmask doesn't include MODE).
+	if clearSetuid && intent.PreWriteAttr.Mode&0o6000 != 0 {
+		logger.Debug("deferredCommitWrite: clearing SUID/SGID bits",
+			"pre_mode", fmt.Sprintf("0%o", intent.PreWriteAttr.Mode),
+			"handle", fmt.Sprintf("%x", intent.Handle))
+		store, storeErr := s.storeForHandle(intent.Handle)
+		if storeErr == nil {
+			txErr := store.WithTransaction(ctx.Context, func(tx Transaction) error {
+				file, err := tx.GetFile(ctx.Context, intent.Handle)
+				if err != nil {
+					return err
+				}
+				file.Mode &= ^uint32(0o6000)
+				file.Ctime = intent.NewMtime
+				return tx.PutFile(ctx.Context, file)
+			})
+			if txErr != nil {
+				logger.Error("deferredCommitWrite: SUID clearing transaction failed",
+					"error", txErr)
+			}
+			// Update the cached file to reflect the cleared mode
+			s.pendingWrites.InvalidateCache(intent.Handle)
+			// Update PreWriteAttr so the synthetic response below is correct
+			intent.PreWriteAttr.Mode &= ^uint32(0o6000)
+		} else {
+			logger.Error("deferredCommitWrite: storeForHandle failed for SUID clearing",
+				"error", storeErr)
+		}
+	}
 
 	// Record in pending writes tracker (lock-free for the hot path)
 	state := s.pendingWrites.RecordWrite(intent.Handle, intent, clearSetuid)

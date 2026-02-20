@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/protocol/xdr"
@@ -66,6 +67,7 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 
 	// Decode type-specific data
 	var linkTarget string
+	var specMajor, specMinor uint32
 
 	switch objType {
 	case types.NF4LNK:
@@ -80,39 +82,26 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 		}
 
 	case types.NF4BLK, types.NF4CHR:
-		// Block/character device: decode specdata (two uint32s), then return NOTSUPP
-		_, err1 := xdr.DecodeUint32(reader) // specdata1 (major)
-		_, err2 := xdr.DecodeUint32(reader) // specdata2 (minor)
-		if err1 != nil || err2 != nil {
+		// Block/character device: decode specdata (two uint32s)
+		specMajor, err = xdr.DecodeUint32(reader) // specdata1 (major)
+		if err != nil {
 			return &types.CompoundResult{
 				Status: types.NFS4ERR_BADXDR,
 				OpCode: types.OP_CREATE,
 				Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
 			}
 		}
-		// Consume remaining args (objname + createattrs) before returning error
-		// to keep the XDR stream aligned. Read objname.
-		_, _ = xdr.DecodeString(reader)
-		// Skip createattrs bitmap
-		skipFattr4(reader)
-
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_NOTSUPP,
-			OpCode: types.OP_CREATE,
-			Data:   encodeStatusOnly(types.NFS4ERR_NOTSUPP),
+		specMinor, err = xdr.DecodeUint32(reader) // specdata2 (minor)
+		if err != nil {
+			return &types.CompoundResult{
+				Status: types.NFS4ERR_BADXDR,
+				OpCode: types.OP_CREATE,
+				Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+			}
 		}
 
 	case types.NF4SOCK, types.NF4FIFO:
-		// Socket/FIFO: no type-specific data, but not supported
-		// Consume remaining args before returning error
-		_, _ = xdr.DecodeString(reader)
-		skipFattr4(reader)
-
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_NOTSUPP,
-			OpCode: types.OP_CREATE,
-			Data:   encodeStatusOnly(types.NFS4ERR_NOTSUPP),
-		}
+		// Socket/FIFO: no type-specific data
 
 	case types.NF4DIR:
 		// Directory: no type-specific data
@@ -158,8 +147,24 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 	}
 
 	// Decode createattrs (fattr4): bitmap + opaque attr values
-	// For now we skip the attributes and use defaults
-	skipFattr4(reader)
+	// Parse the attributes to apply mode/owner/group to the new entry
+	setAttrs, _, fattr4Err := attrs.DecodeFattr4ToSetAttrs(reader)
+	if fattr4Err != nil {
+		// Check for typed NFS4 error (e.g., ATTRNOTSUPP, BADOWNER)
+		if nfsErr, ok := fattr4Err.(attrs.NFS4StatusError); ok {
+			status := nfsErr.NFS4Status()
+			return &types.CompoundResult{
+				Status: status,
+				OpCode: types.OP_CREATE,
+				Data:   encodeStatusOnly(status),
+			}
+		}
+		return &types.CompoundResult{
+			Status: types.NFS4ERR_BADXDR,
+			OpCode: types.OP_CREATE,
+			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+		}
+	}
 
 	// Build auth context
 	authCtx, _, err := h.buildV4AuthContext(ctx, ctx.CurrentFH)
@@ -197,6 +202,16 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 	}
 	beforeCtime := uint64(parentFile.Ctime.UnixNano())
 
+	// Build default attributes from auth context
+	defaultUID := uint32(0)
+	defaultGID := uint32(0)
+	if authCtx.Identity.UID != nil {
+		defaultUID = *authCtx.Identity.UID
+	}
+	if authCtx.Identity.GID != nil {
+		defaultGID = *authCtx.Identity.GID
+	}
+
 	// Perform the create operation
 	var newFile *metadata.File
 	var createErr error
@@ -206,12 +221,18 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 		dirAttr := &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o755,
+			UID:  defaultUID,
+			GID:  defaultGID,
 		}
-		if authCtx.Identity.UID != nil {
-			dirAttr.UID = *authCtx.Identity.UID
+		// Apply createattrs if provided
+		if setAttrs.Mode != nil {
+			dirAttr.Mode = *setAttrs.Mode
 		}
-		if authCtx.Identity.GID != nil {
-			dirAttr.GID = *authCtx.Identity.GID
+		if setAttrs.UID != nil {
+			dirAttr.UID = *setAttrs.UID
+		}
+		if setAttrs.GID != nil {
+			dirAttr.GID = *setAttrs.GID
 		}
 		newFile, createErr = metaSvc.CreateDirectory(authCtx, parentHandle, objName, dirAttr)
 
@@ -219,14 +240,95 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 		symlinkAttr := &metadata.FileAttr{
 			Type: metadata.FileTypeSymlink,
 			Mode: 0o777,
+			UID:  defaultUID,
+			GID:  defaultGID,
 		}
-		if authCtx.Identity.UID != nil {
-			symlinkAttr.UID = *authCtx.Identity.UID
+		if setAttrs.Mode != nil {
+			symlinkAttr.Mode = *setAttrs.Mode
 		}
-		if authCtx.Identity.GID != nil {
-			symlinkAttr.GID = *authCtx.Identity.GID
+		if setAttrs.UID != nil {
+			symlinkAttr.UID = *setAttrs.UID
+		}
+		if setAttrs.GID != nil {
+			symlinkAttr.GID = *setAttrs.GID
 		}
 		newFile, createErr = metaSvc.CreateSymlink(authCtx, parentHandle, objName, linkTarget, symlinkAttr)
+
+	case types.NF4BLK:
+		blkAttr := &metadata.FileAttr{
+			Type: metadata.FileTypeBlockDevice,
+			Mode: 0o644,
+			UID:  defaultUID,
+			GID:  defaultGID,
+		}
+		if setAttrs.Mode != nil {
+			blkAttr.Mode = *setAttrs.Mode
+		}
+		if setAttrs.UID != nil {
+			blkAttr.UID = *setAttrs.UID
+		}
+		if setAttrs.GID != nil {
+			blkAttr.GID = *setAttrs.GID
+		}
+		newFile, createErr = metaSvc.CreateSpecialFile(authCtx, parentHandle, objName,
+			metadata.FileTypeBlockDevice, blkAttr, specMajor, specMinor)
+
+	case types.NF4CHR:
+		chrAttr := &metadata.FileAttr{
+			Type: metadata.FileTypeCharDevice,
+			Mode: 0o644,
+			UID:  defaultUID,
+			GID:  defaultGID,
+		}
+		if setAttrs.Mode != nil {
+			chrAttr.Mode = *setAttrs.Mode
+		}
+		if setAttrs.UID != nil {
+			chrAttr.UID = *setAttrs.UID
+		}
+		if setAttrs.GID != nil {
+			chrAttr.GID = *setAttrs.GID
+		}
+		newFile, createErr = metaSvc.CreateSpecialFile(authCtx, parentHandle, objName,
+			metadata.FileTypeCharDevice, chrAttr, specMajor, specMinor)
+
+	case types.NF4SOCK:
+		sockAttr := &metadata.FileAttr{
+			Type: metadata.FileTypeSocket,
+			Mode: 0o644,
+			UID:  defaultUID,
+			GID:  defaultGID,
+		}
+		if setAttrs.Mode != nil {
+			sockAttr.Mode = *setAttrs.Mode
+		}
+		if setAttrs.UID != nil {
+			sockAttr.UID = *setAttrs.UID
+		}
+		if setAttrs.GID != nil {
+			sockAttr.GID = *setAttrs.GID
+		}
+		newFile, createErr = metaSvc.CreateSpecialFile(authCtx, parentHandle, objName,
+			metadata.FileTypeSocket, sockAttr, 0, 0)
+
+	case types.NF4FIFO:
+		fifoAttr := &metadata.FileAttr{
+			Type: metadata.FileTypeFIFO,
+			Mode: 0o644,
+			UID:  defaultUID,
+			GID:  defaultGID,
+		}
+		if setAttrs.Mode != nil {
+			fifoAttr.Mode = *setAttrs.Mode
+		}
+		if setAttrs.UID != nil {
+			fifoAttr.UID = *setAttrs.UID
+		}
+		if setAttrs.GID != nil {
+			fifoAttr.GID = *setAttrs.GID
+		}
+		newFile, createErr = metaSvc.CreateSpecialFile(authCtx, parentHandle, objName,
+			metadata.FileTypeFIFO, fifoAttr, 0, 0)
 	}
 
 	if createErr != nil {
@@ -282,8 +384,19 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
 	// change_info4
 	encodeChangeInfo4(&buf, true, beforeCtime, afterCtime)
-	// attrset: empty bitmap (no attrs from createattrs applied by server)
-	_ = xdr.WriteUint32(&buf, 0) // bitmap4 length = 0
+	// attrset: report back which createattrs were applied
+	// Build bitmap of attrs we actually applied (mode, owner, owner_group)
+	var appliedBitmap []uint32
+	if setAttrs.Mode != nil {
+		attrs.SetBit(&appliedBitmap, attrs.FATTR4_MODE)
+	}
+	if setAttrs.UID != nil {
+		attrs.SetBit(&appliedBitmap, attrs.FATTR4_OWNER)
+	}
+	if setAttrs.GID != nil {
+		attrs.SetBit(&appliedBitmap, attrs.FATTR4_OWNER_GROUP)
+	}
+	_ = attrs.EncodeBitmap4(&buf, appliedBitmap)
 
 	return &types.CompoundResult{
 		Status: types.NFS4_OK,

@@ -389,17 +389,26 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 	onlySettingSize := noOwnershipAttrs && attrs.Size != nil &&
 		!attrs.AtimeNow && !attrs.MtimeNow
 
+	// POSIX: When a non-owner writes to a file with SUID/SGID bits set, those
+	// bits must be cleared. The Linux NFS client implements this via
+	// file_remove_privs() which sends SETATTR(mode = current & ~06000) before
+	// the WRITE. We must allow this SETATTR even from non-owners who have write
+	// permission, as long as the ONLY mode change is clearing SUID/SGID bits.
+	onlyClearingSuidSgid := false
+	if attrs.Mode != nil && attrs.UID == nil && attrs.GID == nil && attrs.Size == nil {
+		clearedMode := file.Mode & ^uint32(0o6000)
+		if *attrs.Mode == clearedMode && file.Mode&0o6000 != 0 {
+			onlyClearingSuidSgid = true
+		}
+	}
+
 	// Both timestamp-now and truncate-only operations allow write permission
 	// as an alternative to ownership (POSIX semantics).
-	writePermSufficient := onlySettingTimesToNow || onlySettingSize
+	writePermSufficient := onlySettingTimesToNow || onlySettingSize || onlyClearingSuidSgid
 
 	if writePermSufficient && !isOwner && !isRoot {
 		if err := s.checkWritePermission(ctx, handle); err != nil {
-			return &StoreError{
-				Code:    ErrPermissionDenied,
-				Message: "operation not permitted",
-				Path:    file.Path,
-			}
+			return err
 		}
 	} else if !isOwner && !isRoot {
 		return &StoreError{
@@ -528,6 +537,12 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		}
 		file.Size = *attrs.Size
 		modified = true
+
+		// POSIX: truncate updates mtime and ctime when size changes
+		// The server must do this even if the client doesn't send TIME_MODIFY_SET,
+		// because POSIX requires it and NFS clients may rely on server-side updates.
+		file.Mtime = now
+		file.Ctime = now
 
 		// POSIX: Clear SUID/SGID bits on truncate for non-root users (like write)
 		if file.Type == FileTypeRegular && !isRoot {

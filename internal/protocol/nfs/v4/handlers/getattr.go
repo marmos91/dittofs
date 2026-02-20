@@ -100,6 +100,14 @@ func (h *Handler) getAttrRealFS(ctx *types.CompoundContext, requested []uint32) 
 		"size", file.Size,
 		"client", ctx.ClientAddr)
 
+	// Trace SUID/SGID mode for debugging
+	if file.Mode&0o6000 != 0 {
+		logger.Debug("NFSv4 GETATTR returning SUID/SGID mode",
+			"path", file.Path,
+			"mode", fmt.Sprintf("0%o", file.Mode),
+			"client", ctx.ClientAddr)
+	}
+
 	// Encode response: status + fattr4 (bitmap + opaque attr values)
 	var buf bytes.Buffer
 	_ = xdr.WriteUint32(&buf, types.NFS4_OK)

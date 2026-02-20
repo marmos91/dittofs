@@ -557,6 +557,13 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 			}
 		}
 
+		// Re-apply live NFS settings on each new connection.
+		// This ensures dynamic settings changes (e.g., delegations-enabled)
+		// propagate from the SettingsWatcher to the StateManager.
+		if s.registry != nil {
+			s.applyNFSSettings(s.registry)
+		}
+
 		// Track connection for graceful shutdown
 		s.activeConns.Add(1)
 		s.connCount.Add(1)

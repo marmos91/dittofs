@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
@@ -107,6 +108,7 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 	}
 
 	var createMode uint32
+	var createAttrs *metadata.SetAttrs
 
 	if openType == types.OPEN4_CREATE {
 		// Decode createhow4: createmode (uint32)
@@ -118,7 +120,14 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 		switch createMode {
 		case types.UNCHECKED4, types.GUARDED4:
 			// Decode createattrs (fattr4 = bitmap4 + opaque)
-			skipFattr4(reader)
+			setAttrs, _, fattr4Err := attrs.DecodeFattr4ToSetAttrs(reader)
+			if fattr4Err != nil {
+				if nfsErr, ok := fattr4Err.(attrs.NFS4StatusError); ok {
+					return openError(nfsErr.NFS4Status())
+				}
+				return openError(types.NFS4ERR_BADXDR)
+			}
+			createAttrs = setAttrs
 		case types.EXCLUSIVE4:
 			// Decode verifier (8 bytes) -- treat as GUARDED4
 			var verifier [8]byte
@@ -153,7 +162,7 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 		}
 
 		return h.handleOpenClaimNull(ctx, reader, seqid, shareAccess, shareDeny,
-			clientID, ownerData, openType, createMode, claimType)
+			clientID, ownerData, openType, createMode, claimType, createAttrs)
 
 	case types.CLAIM_PREVIOUS:
 		return h.handleOpenClaimPrevious(ctx, reader, seqid, shareAccess, shareDeny,
@@ -183,6 +192,7 @@ func (h *Handler) handleOpenClaimNull(
 	seqid, shareAccess, shareDeny uint32,
 	clientID uint64, ownerData []byte,
 	openType, createMode, claimType uint32,
+	createAttrs *metadata.SetAttrs,
 ) *types.CompoundResult {
 	// CLAIM_NULL: decode filename (component4 = XDR string)
 	filename, err := xdr.DecodeString(reader)
@@ -237,6 +247,10 @@ func (h *Handler) handleOpenClaimNull(
 		if encErr != nil {
 			return openError(types.NFS4ERR_SERVERFAULT)
 		}
+		// Check access permissions for the requested share_access
+		if accessErr := checkOpenAccess(metaSvc, authCtx, fh, shareAccess); accessErr != nil {
+			return openError(types.MapMetadataErrorToNFS4(accessErr))
+		}
 		fileHandle = fh
 	} else {
 		// OPEN4_CREATE: create or open existing
@@ -251,12 +265,20 @@ func (h *Handler) handleOpenClaimNull(
 			if encErr != nil {
 				return openError(types.NFS4ERR_SERVERFAULT)
 			}
+			// Check access permissions for the requested share_access
+			if accessErr := checkOpenAccess(metaSvc, authCtx, fh, shareAccess); accessErr != nil {
+				return openError(types.MapMetadataErrorToNFS4(accessErr))
+			}
 			fileHandle = fh
 		} else {
 			// File doesn't exist: create it
 			uid, gid := effectiveUIDGID(authCtx)
+			fileMode := uint32(0o644) // Default mode
+			if createAttrs != nil && createAttrs.Mode != nil {
+				fileMode = *createAttrs.Mode
+			}
 			newFile, createErr := metaSvc.CreateFile(authCtx, parentHandle, filename, &metadata.FileAttr{
-				Mode: 0o644,
+				Mode: fileMode,
 				UID:  uid,
 				GID:  gid,
 			})
@@ -643,6 +665,35 @@ func openError(status uint32) *types.CompoundResult {
 		OpCode: types.OP_OPEN,
 		Data:   encodeStatusOnly(status),
 	}
+}
+
+// checkOpenAccess verifies that the caller has appropriate file-level permissions
+// for the requested share_access mode. This is required by NFSv4 OPEN to enforce
+// POSIX access control -- without it, any user can open any file regardless of mode bits.
+func checkOpenAccess(metaSvc *metadata.MetadataService, authCtx *metadata.AuthContext, handle metadata.FileHandle, shareAccess uint32) error {
+	var requiredPerm metadata.Permission
+	if shareAccess&types.OPEN4_SHARE_ACCESS_READ != 0 {
+		requiredPerm |= metadata.PermissionRead
+	}
+	if shareAccess&types.OPEN4_SHARE_ACCESS_WRITE != 0 {
+		requiredPerm |= metadata.PermissionWrite
+	}
+	if requiredPerm == 0 {
+		return nil
+	}
+
+	granted, err := metaSvc.CheckPermissions(authCtx, handle, requiredPerm)
+	if err != nil {
+		return err
+	}
+
+	if granted&requiredPerm != requiredPerm {
+		return &metadata.StoreError{
+			Code:    metadata.ErrAccessDenied,
+			Message: "open access denied",
+		}
+	}
+	return nil
 }
 
 // effectiveUIDGID extracts the UID and GID from the auth context identity,

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -97,6 +98,15 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 		}
 	}
 
+	// Trace mode changes for debugging SUID/SGID operations
+	if setAttrs.Mode != nil {
+		logger.Debug("NFSv4 SETATTR mode change",
+			"new_mode", fmt.Sprintf("0%o", *setAttrs.Mode),
+			"uid", authCtx.Identity.UID,
+			"handle", string(ctx.CurrentFH),
+			"client", ctx.ClientAddr)
+	}
+
 	// 6. Get MetadataService
 	metaSvc, err := getMetadataServiceForCtx(h)
 	if err != nil {
@@ -114,7 +124,10 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 		logger.Debug("NFSv4 SETATTR failed",
 			"error", err,
 			"nfs4status", nfsStatus,
-			"handle", string(ctx.CurrentFH))
+			"mode_requested", setAttrs.Mode,
+			"uid", authCtx.Identity.UID,
+			"handle", string(ctx.CurrentFH),
+			"client", ctx.ClientAddr)
 		return &types.CompoundResult{
 			Status: nfsStatus,
 			OpCode: types.OP_SETATTR,

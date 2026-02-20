@@ -279,6 +279,21 @@ configure_via_api() {
     log_info "Waiting for NFS adapter to be ready..."
     sleep 3
 
+    # For NFSv4 POSIX testing: disable delegations.
+    # With WRITE delegations enabled, the Linux NFS client services writes
+    # locally without sending WRITE/SETATTR to the server. This prevents
+    # server-side SUID/SGID clearing (chmod/12.t) and other POSIX semantics
+    # that require the server to process every operation.
+    if [ "$NFS_VERSION" = "4.0" ]; then
+        log_info "Disabling NFSv4 delegations for POSIX compliance testing..."
+        "$DITTOFSCTL_BIN" adapter settings nfs update --delegations-enabled=false --force || {
+            log_warn "Failed to disable delegations (non-fatal)"
+        }
+        # Wait for SettingsWatcher to pick up the change (polls every 10s)
+        log_info "Waiting for settings to propagate..."
+        sleep 12
+    fi
+
     # Verify NFS port is listening
     if ! nc -zv localhost $NFS_PORT 2>&1; then
         log_error "NFS adapter failed to start on port $NFS_PORT"

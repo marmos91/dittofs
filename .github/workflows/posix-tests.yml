@@ -2,6 +2,7 @@
 #
 # Runs pjdfstest (8,789 tests) to validate filesystem behavior against POSIX standards.
 # Tests all metadata store backends: Memory, BadgerDB, PostgreSQL.
+# Tests both NFSv3 and NFSv4.0 protocol versions.
 
 name: POSIX Compliance Tests
 
@@ -50,11 +51,31 @@ jobs:
             dfsctl
           retention-days: 1
 
-  posix-memory:
-    name: Memory Store
+  # NFS POSIX tests for memory and badger stores (no external services needed)
+  posix-nfs:
+    name: NFS v${{ matrix.nfs_version }} / ${{ matrix.store_label }}
     runs-on: ubuntu-latest
     needs: build
     timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        store: [memory, badger]
+        nfs_version: ['3', '4']
+        include:
+          - store: memory
+            nfs_version: '3'
+            store_label: Memory
+          - store: memory
+            nfs_version: '4'
+            store_label: Memory
+          - store: badger
+            nfs_version: '3'
+            store_label: BadgerDB
+          - store: badger
+            nfs_version: '4'
+            store_label: BadgerDB
 
     steps:
       - name: Checkout
@@ -82,9 +103,14 @@ jobs:
           PJDFSTEST=$(nix build .#pjdfstest --print-out-paths)
           echo "PJDFSTEST_DIR=$PJDFSTEST" >> $GITHUB_ENV
 
-      - name: Setup DittoFS (Memory)
+      - name: Setup DittoFS
         id: setup
-        run: sudo -E ./test/posix/setup-posix.sh memory
+        run: |
+          if [ "${{ matrix.nfs_version }}" = "4" ]; then
+            sudo -E ./test/posix/setup-posix.sh ${{ matrix.store }} --nfs-version 4
+          else
+            sudo -E ./test/posix/setup-posix.sh ${{ matrix.store }}
+          fi
 
       - name: Debug - Show server log on failure
         if: failure() && steps.setup.outcome == 'failure'
@@ -104,57 +130,83 @@ jobs:
       - name: Run POSIX tests
         run: |
           TESTS_DIR="$PJDFSTEST_DIR/share/pjdfstest/tests"
+          LOG_FILE=~/posix-nfs-v${{ matrix.nfs_version }}-${{ matrix.store }}.log
 
           cd $DITTOFS_MOUNT
           sudo env PATH="$PJDFSTEST_DIR/bin:$PATH" prove -rv --timer "$TESTS_DIR" \
-            2>&1 | tee ~/posix-memory.log || true
+            2>&1 | tee "$LOG_FILE" || true
 
-          # Extract summary
-          echo "## Memory Store Results" >> $GITHUB_STEP_SUMMARY
+          echo "## NFS v${{ matrix.nfs_version }} / ${{ matrix.store_label }} Results" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          tail -30 ~/posix-memory.log >> $GITHUB_STEP_SUMMARY
+          tail -30 "$LOG_FILE" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Verify pass rate
         run: |
-          # First check for critical errors that mean tests didn't actually run
-          if grep -q "could not find pjdfstest" ~/posix-memory.log; then
-            echo "✗ CRITICAL: pjdfstest binary not found or not executable!"
+          LOG_FILE=~/posix-nfs-v${{ matrix.nfs_version }}-${{ matrix.store }}.log
+
+          # Check for critical errors that mean tests didn't actually run
+          if grep -q "could not find pjdfstest" "$LOG_FILE"; then
             echo "::error::pjdfstest not found - tests did not run"
             exit 1
           fi
 
-          # Check for test failures in the log
-          # Expected: Only 1 known failure (utimensat/09.t test 5 - NFSv3 timestamp limit)
-
-          if grep -q "All tests successful" ~/posix-memory.log; then
+          if grep -q "All tests successful" "$LOG_FILE"; then
             echo "✓ All tests passed!"
             exit 0
           fi
 
-          # Check if Result: FAIL is in the output
-          if grep -q "Result: FAIL" ~/posix-memory.log; then
-            # Extract the Test Summary Report section and count failed test files
-            FAILED_FILES=$(sed -n '/Test Summary Report/,/^Files=/p' ~/posix-memory.log | grep -cE "Failed tests?:" || echo "0")
+          if grep -q "Result: FAIL" "$LOG_FILE"; then
+            FAILED_FILES=$(sed -n '/Test Summary Report/,/^Files=/p' "$LOG_FILE" | grep -cE "Failed tests?:" || true)
             echo "Number of test files with failures: $FAILED_FILES"
 
-            # Check if only 1 test file failed AND it's the expected utimensat/09.t
-            if [ "$FAILED_FILES" = "1" ]; then
-              if sed -n '/Test Summary Report/,/^Files=/p' ~/posix-memory.log | grep -q "utimensat/09.t"; then
+            # NFSv3 known failure: utimensat/09.t test 5 (32-bit timestamp limit)
+            if [ "${{ matrix.nfs_version }}" = "3" ] && [ "$FAILED_FILES" = "1" ]; then
+              if sed -n '/Test Summary Report/,/^Files=/p' "$LOG_FILE" | grep -q "utimensat/09.t"; then
                 echo "✓ Only expected failure (utimensat/09.t - NFSv3 timestamp limit)"
                 exit 0
               fi
             fi
 
-            echo "✗ Unexpected test failures detected!"
-            echo "::error::POSIX tests failed - $FAILED_FILES test files failed"
+            # NFSv4 known failure:
+            # - unlink/14.t: NFSv4 silly-rename (stateful OPEN causes client to rename instead of remove)
+            if [ "${{ matrix.nfs_version }}" = "4" ]; then
+              SUMMARY_BLOCK=$(sed -n '/Test Summary Report/,/^Files=/p' "$LOG_FILE")
+
+              # Extract test files with actual failures (Failed: N where N > 0)
+              echo "$SUMMARY_BLOCK" | grep -P 'Failed:\s+[1-9]' | grep -oP '/\S+\.t' | sed 's|.*/tests/||' | while read -r failed_test; do
+                case "$failed_test" in
+                  unlink/14.t)
+                    echo "  Known failure: $failed_test"
+                    ;;
+                  *)
+                    echo "  UNEXPECTED failure: $failed_test"
+                    echo "1" > /tmp/nfsv4_unexpected
+                    ;;
+                esac
+              done
+
+              if [ ! -f /tmp/nfsv4_unexpected ]; then
+                echo "All NFSv4 failures are known/expected"
+                rm -f /tmp/nfsv4_unexpected
+                exit 0
+              fi
+              rm -f /tmp/nfsv4_unexpected
+            fi
+
+            echo "Unexpected test failures detected!"
+            echo "::error::POSIX NFS v${{ matrix.nfs_version }} tests failed - $FAILED_FILES test files failed"
             echo ""
             echo "=== Test Summary Report ==="
-            sed -n '/Test Summary Report/,/Result:/p' ~/posix-memory.log
+            sed -n '/Test Summary Report/,/Result:/p' "$LOG_FILE"
             exit 1
           fi
 
-          echo "✓ Tests completed"
+          # If we reach here, the log didn't match any expected pattern
+          echo "::error::Test output format not recognized - neither 'All tests successful' nor 'Result: FAIL' found"
+          echo "=== Last 30 lines of log ==="
+          tail -30 "$LOG_FILE"
+          exit 1
 
       - name: Cleanup
         if: always()
@@ -164,133 +216,23 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: posix-memory-results
+          name: posix-nfs-v${{ matrix.nfs_version }}-${{ matrix.store }}-results
           path: |
-            ~/posix-memory.log
+            ~/posix-nfs-v${{ matrix.nfs_version }}-${{ matrix.store }}.log
             /tmp/dittofs-posix-server.log
           retention-days: 30
 
-  posix-badger:
-    name: BadgerDB Store
+  # PostgreSQL store tests (requires postgres service container)
+  posix-nfs-postgres:
+    name: NFS v${{ matrix.nfs_version }} / PostgreSQL
     runs-on: ubuntu-latest
     needs: build
     timeout-minutes: 60
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-
-      - name: Setup Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-
-      - name: Install NFS client utilities
-        run: sudo apt-get update && sudo apt-get install -y nfs-common
-
-      - name: Download binaries
-        uses: actions/download-artifact@v4
-        with:
-          name: dfs-binaries
-
-      - name: Make binaries executable
-        run: chmod +x dfs dfsctl
-
-      - name: Build pjdfstest in Nix
-        run: |
-          PJDFSTEST=$(nix build .#pjdfstest --print-out-paths)
-          echo "PJDFSTEST_DIR=$PJDFSTEST" >> $GITHUB_ENV
-
-      - name: Setup DittoFS (BadgerDB)
-        id: setup-badger
-        run: sudo -E ./test/posix/setup-posix.sh badger
-
-      - name: Debug - Show server log on failure
-        if: failure() && steps.setup-badger.outcome == 'failure'
-        run: |
-          echo "=== Server Log ==="
-          cat /tmp/dittofs-posix-server.log 2>/dev/null || echo "No server log found"
-          echo ""
-          echo "=== Process List ==="
-          ps aux | grep dfs || true
-          echo ""
-          echo "=== Port 8080 ==="
-          ss -tlnp | grep 8080 || echo "Port 8080 not listening"
-
-      - name: Run POSIX tests
-        run: |
-          TESTS_DIR="$PJDFSTEST_DIR/share/pjdfstest/tests"
-
-          cd $DITTOFS_MOUNT
-          sudo env PATH="$PJDFSTEST_DIR/bin:$PATH" prove -rv --timer "$TESTS_DIR" \
-            2>&1 | tee ~/posix-badger.log || true
-
-          echo "## BadgerDB Store Results" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          tail -30 ~/posix-badger.log >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Verify pass rate
-        run: |
-          # First check for critical errors that mean tests didn't actually run
-          if grep -q "could not find pjdfstest" ~/posix-badger.log; then
-            echo "✗ CRITICAL: pjdfstest binary not found or not executable!"
-            echo "::error::pjdfstest not found - tests did not run"
-            exit 1
-          fi
-
-          # Check for test failures in the log
-          # Expected: Only 1 known failure (utimensat/09.t test 5 - NFSv3 timestamp limit)
-
-          if grep -q "All tests successful" ~/posix-badger.log; then
-            echo "✓ All tests passed!"
-            exit 0
-          fi
-
-          # Check if Result: FAIL is in the output
-          if grep -q "Result: FAIL" ~/posix-badger.log; then
-            # Extract the Test Summary Report section and count failed test files
-            FAILED_FILES=$(sed -n '/Test Summary Report/,/^Files=/p' ~/posix-badger.log | grep -cE "Failed tests?:" || echo "0")
-            echo "Number of test files with failures: $FAILED_FILES"
-
-            # Check if only 1 test file failed AND it's the expected utimensat/09.t
-            if [ "$FAILED_FILES" = "1" ]; then
-              if sed -n '/Test Summary Report/,/^Files=/p' ~/posix-badger.log | grep -q "utimensat/09.t"; then
-                echo "✓ Only expected failure (utimensat/09.t - NFSv3 timestamp limit)"
-                exit 0
-              fi
-            fi
-
-            echo "✗ Unexpected test failures detected!"
-            echo "::error::POSIX tests failed - $FAILED_FILES test files failed"
-            echo ""
-            echo "=== Test Summary Report ==="
-            sed -n '/Test Summary Report/,/Result:/p' ~/posix-badger.log
-            exit 1
-          fi
-
-          echo "✓ Tests completed"
-
-      - name: Cleanup
-        if: always()
-        run: sudo ./test/posix/teardown-posix.sh || true
-
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: posix-badger-results
-          path: |
-            ~/posix-badger.log
-            /tmp/dittofs-posix-server.log
-          retention-days: 30
-
-  posix-postgres:
-    name: PostgreSQL Store
-    runs-on: ubuntu-latest
-    needs: build
-    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        nfs_version: ['3', '4']
 
     services:
       postgres:
@@ -299,7 +241,6 @@ jobs:
           POSTGRES_USER: dittofs
           POSTGRES_PASSWORD: dittofs
           POSTGRES_DB: dittofs_test
-          # Performance tuning for high-throughput testing
           POSTGRES_INITDB_ARGS: "--data-checksums"
         ports:
           - 5432:5432
@@ -338,21 +279,22 @@ jobs:
 
       - name: Tune PostgreSQL for testing
         run: |
-          # Disable synchronous commit for faster writes (safe for testing)
           PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "ALTER SYSTEM SET synchronous_commit = 'off';"
-          # Increase checkpoint timeout to reduce I/O
           PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "ALTER SYSTEM SET checkpoint_timeout = '30min';"
-          # Increase work_mem for faster sorts/joins
           PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "ALTER SYSTEM SET work_mem = '64MB';"
-          # Reload configuration
           PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "SELECT pg_reload_conf();"
 
-      - name: Setup DittoFS (PostgreSQL)
-        id: setup-postgres
-        run: sudo -E ./test/posix/setup-posix.sh postgres
+      - name: Setup DittoFS
+        id: setup
+        run: |
+          if [ "${{ matrix.nfs_version }}" = "4" ]; then
+            sudo -E ./test/posix/setup-posix.sh postgres --nfs-version 4
+          else
+            sudo -E ./test/posix/setup-posix.sh postgres
+          fi
 
       - name: Debug - Show server log on failure
-        if: failure() && steps.setup-postgres.outcome == 'failure'
+        if: failure() && steps.setup.outcome == 'failure'
         run: |
           echo "=== Server Log ==="
           cat /tmp/dittofs-posix-server.log 2>/dev/null || echo "No server log found"
@@ -362,60 +304,89 @@ jobs:
           echo ""
           echo "=== Port 8080 ==="
           ss -tlnp | grep 8080 || echo "Port 8080 not listening"
+          echo ""
+          echo "=== Port 12049 ==="
+          ss -tlnp | grep 12049 || echo "Port 12049 not listening"
 
       - name: Run POSIX tests
         run: |
           TESTS_DIR="$PJDFSTEST_DIR/share/pjdfstest/tests"
+          LOG_FILE=~/posix-nfs-v${{ matrix.nfs_version }}-postgres.log
 
           cd $DITTOFS_MOUNT
           sudo env PATH="$PJDFSTEST_DIR/bin:$PATH" prove -rv --timer "$TESTS_DIR" \
-            2>&1 | tee ~/posix-postgres.log || true
+            2>&1 | tee "$LOG_FILE" || true
 
-          echo "## PostgreSQL Store Results" >> $GITHUB_STEP_SUMMARY
+          echo "## NFS v${{ matrix.nfs_version }} / PostgreSQL Results" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          tail -30 ~/posix-postgres.log >> $GITHUB_STEP_SUMMARY
+          tail -30 "$LOG_FILE" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Verify pass rate
         run: |
-          # First check for critical errors that mean tests didn't actually run
-          if grep -q "could not find pjdfstest" ~/posix-postgres.log; then
-            echo "✗ CRITICAL: pjdfstest binary not found or not executable!"
+          LOG_FILE=~/posix-nfs-v${{ matrix.nfs_version }}-postgres.log
+
+          if grep -q "could not find pjdfstest" "$LOG_FILE"; then
             echo "::error::pjdfstest not found - tests did not run"
             exit 1
           fi
 
-          # Check for test failures in the log
-          # Expected: Only 1 known failure (utimensat/09.t test 5 - NFSv3 timestamp limit)
-
-          if grep -q "All tests successful" ~/posix-postgres.log; then
-            echo "✓ All tests passed!"
+          if grep -q "All tests successful" "$LOG_FILE"; then
+            echo "All tests passed!"
             exit 0
           fi
 
-          # Check if Result: FAIL is in the output
-          if grep -q "Result: FAIL" ~/posix-postgres.log; then
-            # Extract the Test Summary Report section and count failed test files
-            FAILED_FILES=$(sed -n '/Test Summary Report/,/^Files=/p' ~/posix-postgres.log | grep -cE "Failed tests?:" || echo "0")
+          if grep -q "Result: FAIL" "$LOG_FILE"; then
+            FAILED_FILES=$(sed -n '/Test Summary Report/,/^Files=/p' "$LOG_FILE" | grep -cE "Failed tests?:" || true)
             echo "Number of test files with failures: $FAILED_FILES"
 
-            # Check if only 1 test file failed AND it's the expected utimensat/09.t
-            if [ "$FAILED_FILES" = "1" ]; then
-              if sed -n '/Test Summary Report/,/^Files=/p' ~/posix-postgres.log | grep -q "utimensat/09.t"; then
-                echo "✓ Only expected failure (utimensat/09.t - NFSv3 timestamp limit)"
+            # NFSv3 known failure: utimensat/09.t test 5 (32-bit timestamp limit)
+            if [ "${{ matrix.nfs_version }}" = "3" ] && [ "$FAILED_FILES" = "1" ]; then
+              if sed -n '/Test Summary Report/,/^Files=/p' "$LOG_FILE" | grep -q "utimensat/09.t"; then
+                echo "Only expected failure (utimensat/09.t - NFSv3 timestamp limit)"
                 exit 0
               fi
             fi
 
-            echo "✗ Unexpected test failures detected!"
-            echo "::error::POSIX tests failed - $FAILED_FILES test files failed"
+            # NFSv4 known failure:
+            # - unlink/14.t: NFSv4 silly-rename (stateful OPEN causes client to rename instead of remove)
+            if [ "${{ matrix.nfs_version }}" = "4" ]; then
+              SUMMARY_BLOCK=$(sed -n '/Test Summary Report/,/^Files=/p' "$LOG_FILE")
+
+              # Extract test files with actual failures (Failed: N where N > 0)
+              echo "$SUMMARY_BLOCK" | grep -P 'Failed:\s+[1-9]' | grep -oP '/\S+\.t' | sed 's|.*/tests/||' | while read -r failed_test; do
+                case "$failed_test" in
+                  unlink/14.t)
+                    echo "  Known failure: $failed_test"
+                    ;;
+                  *)
+                    echo "  UNEXPECTED failure: $failed_test"
+                    echo "1" > /tmp/nfsv4_unexpected
+                    ;;
+                esac
+              done
+
+              if [ ! -f /tmp/nfsv4_unexpected ]; then
+                echo "All NFSv4 failures are known/expected"
+                rm -f /tmp/nfsv4_unexpected
+                exit 0
+              fi
+              rm -f /tmp/nfsv4_unexpected
+            fi
+
+            echo "Unexpected test failures detected!"
+            echo "::error::POSIX NFS v${{ matrix.nfs_version }} tests failed - $FAILED_FILES test files failed"
             echo ""
             echo "=== Test Summary Report ==="
-            sed -n '/Test Summary Report/,/Result:/p' ~/posix-postgres.log
+            sed -n '/Test Summary Report/,/Result:/p' "$LOG_FILE"
             exit 1
           fi
 
-          echo "✓ Tests completed"
+          # If we reach here, the log didn't match any expected pattern
+          echo "::error::Test output format not recognized - neither 'All tests successful' nor 'Result: FAIL' found"
+          echo "=== Last 30 lines of log ==="
+          tail -30 "$LOG_FILE"
+          exit 1
 
       - name: Cleanup
         if: always()
@@ -425,16 +396,16 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: posix-postgres-results
+          name: posix-nfs-v${{ matrix.nfs_version }}-postgres-results
           path: |
-            ~/posix-postgres.log
+            ~/posix-nfs-v${{ matrix.nfs_version }}-postgres.log
             /tmp/dittofs-posix-server.log
           retention-days: 30
 
   summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [posix-memory, posix-badger, posix-postgres]
+    needs: [posix-nfs, posix-nfs-postgres]
     if: always()
 
     steps:
@@ -447,22 +418,57 @@ jobs:
         run: |
           echo "# POSIX Compliance Test Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Store | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
 
-          for store in memory badger postgres; do
-            if [ -f "results/posix-${store}-results/posix-${store}.log" ]; then
-              if grep -q "All tests successful" "results/posix-${store}-results/posix-${store}.log" || \
-                 grep -q "Failed 1/" "results/posix-${store}-results/posix-${store}.log"; then
-                echo "| ${store^} | :white_check_mark: Pass |" >> $GITHUB_STEP_SUMMARY
+          for version in 3 4; do
+            echo "## NFS v${version}" >> $GITHUB_STEP_SUMMARY
+            echo "| Store | Status |" >> $GITHUB_STEP_SUMMARY
+            echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+
+            for store in memory badger postgres; do
+              LOG="results/posix-nfs-v${version}-${store}-results/posix-nfs-v${version}-${store}.log"
+
+              if [ -f "$LOG" ]; then
+                if grep -q "All tests successful" "$LOG"; then
+                  echo "| ${store^} | :white_check_mark: Pass |" >> $GITHUB_STEP_SUMMARY
+                elif grep -q "Result: FAIL" "$LOG"; then
+                  SUMMARY=$(sed -n '/Test Summary Report/,/^Files=/p' "$LOG")
+                  FAILED_COUNT=$(echo "$SUMMARY" | grep -cE "Failed tests?:" || true)
+
+                  # Check for known expected failures
+                  EXPECTED=false
+                  if [ "$version" = "3" ] && [ "$FAILED_COUNT" = "1" ] && echo "$SUMMARY" | grep -q "utimensat/09.t"; then
+                    EXPECTED=true
+                  fi
+                  # NFSv4 known failure: unlink/14.t (silly-rename)
+                  if [ "$version" = "4" ]; then
+                    echo "$SUMMARY" | grep -P 'Failed:\s+[1-9]' | grep -oP '/\S+\.t' | sed 's|.*/tests/||' | while read -r ft; do
+                      case "$ft" in
+                        unlink/14.t) ;;
+                        *) echo "1" > /tmp/summary_unexpected ;;
+                      esac
+                    done
+                    if [ ! -f /tmp/summary_unexpected ]; then
+                      EXPECTED=true
+                    fi
+                    rm -f /tmp/summary_unexpected
+                  fi
+
+                  if [ "$EXPECTED" = "true" ]; then
+                    echo "| ${store^} | :white_check_mark: Pass |" >> $GITHUB_STEP_SUMMARY
+                  else
+                    echo "| ${store^} | :x: Fail |" >> $GITHUB_STEP_SUMMARY
+                  fi
+                else
+                  echo "| ${store^} | :warning: Unknown (no pass/fail marker) |" >> $GITHUB_STEP_SUMMARY
+                fi
               else
-                echo "| ${store^} | :x: Fail |" >> $GITHUB_STEP_SUMMARY
+                echo "| ${store^} | :warning: No results |" >> $GITHUB_STEP_SUMMARY
               fi
-            else
-              echo "| ${store^} | :warning: No results |" >> $GITHUB_STEP_SUMMARY
-            fi
+            done
+
+            echo "" >> $GITHUB_STEP_SUMMARY
           done
 
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Expected: 8788/8789 tests pass (99.99%)" >> $GITHUB_STEP_SUMMARY
-          echo "Known failure: utimensat/09.t test #5 (NFSv3 32-bit timestamp limit)" >> $GITHUB_STEP_SUMMARY
+          echo "**Known failures:**" >> $GITHUB_STEP_SUMMARY
+          echo "- NFSv3: utimensat/09.t test #5 (32-bit timestamp limit)" >> $GITHUB_STEP_SUMMARY
+          echo "- NFSv4: unlink/14.t (silly-rename: NFSv4 stateful OPEN causes client to rename instead of remove)" >> $GITHUB_STEP_SUMMARY

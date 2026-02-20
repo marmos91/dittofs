@@ -60,6 +60,34 @@ func encodeCreateBlockDevArgs(name string) []byte {
 	return buf.Bytes()
 }
 
+// encodeCreateFIFOArgs encodes CREATE4args for creating a FIFO (named pipe).
+func encodeCreateFIFOArgs(name string) []byte {
+	var buf bytes.Buffer
+	// objtype = NF4FIFO
+	_ = xdr.WriteUint32(&buf, types.NF4FIFO)
+	// No type-specific data for NF4FIFO
+	// objname
+	_ = xdr.WriteXDRString(&buf, name)
+	// createattrs: empty bitmap + empty opaque
+	_ = xdr.WriteUint32(&buf, 0) // bitmap length = 0
+	_ = xdr.WriteUint32(&buf, 0) // attr data length = 0
+	return buf.Bytes()
+}
+
+// encodeCreateSocketArgs encodes CREATE4args for creating a socket.
+func encodeCreateSocketArgs(name string) []byte {
+	var buf bytes.Buffer
+	// objtype = NF4SOCK
+	_ = xdr.WriteUint32(&buf, types.NF4SOCK)
+	// No type-specific data for NF4SOCK
+	// objname
+	_ = xdr.WriteXDRString(&buf, name)
+	// createattrs: empty bitmap + empty opaque
+	_ = xdr.WriteUint32(&buf, 0) // bitmap length = 0
+	_ = xdr.WriteUint32(&buf, 0) // attr data length = 0
+	return buf.Bytes()
+}
+
 // encodeCreateRegularFileArgs encodes CREATE4args for a regular file (invalid for CREATE).
 func encodeCreateRegularFileArgs(name string) []byte {
 	var buf bytes.Buffer
@@ -256,19 +284,78 @@ func TestCreate_InvalidName_Slash(t *testing.T) {
 	}
 }
 
-func TestCreate_UnsupportedType_BlockDevice(t *testing.T) {
+func TestCreate_BlockDevice_Success(t *testing.T) {
 	fx := newRealFSTestFixture(t, "/export")
 
-	ctx := newRealFSContext(0, 0)
+	ctx := newRealFSContext(0, 0) // root user (required for device creation)
 	ctx.CurrentFH = make([]byte, len(fx.rootHandle))
 	copy(ctx.CurrentFH, fx.rootHandle)
 
 	args := encodeCreateBlockDevArgs("myblkdev")
 	result := fx.handler.handleCreate(ctx, bytes.NewReader(args))
 
-	if result.Status != types.NFS4ERR_NOTSUPP {
-		t.Errorf("CREATE block device status = %d, want NFS4ERR_NOTSUPP (%d)",
-			result.Status, types.NFS4ERR_NOTSUPP)
+	if result.Status != types.NFS4_OK {
+		t.Fatalf("CREATE block device status = %d, want NFS4_OK", result.Status)
+	}
+
+	// Verify the block device exists
+	authCtx := newTestAuthCtx(0, 0)
+	child, err := fx.metaSvc.Lookup(authCtx, fx.rootHandle, "myblkdev")
+	if err != nil {
+		t.Fatalf("Lookup after CREATE block device: %v", err)
+	}
+	if child.Type != metadata.FileTypeBlockDevice {
+		t.Errorf("created entry type = %v, want block device", child.Type)
+	}
+}
+
+func TestCreate_FIFO_Success(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+
+	ctx := newRealFSContext(0, 0)
+	ctx.CurrentFH = make([]byte, len(fx.rootHandle))
+	copy(ctx.CurrentFH, fx.rootHandle)
+
+	args := encodeCreateFIFOArgs("myfifo")
+	result := fx.handler.handleCreate(ctx, bytes.NewReader(args))
+
+	if result.Status != types.NFS4_OK {
+		t.Fatalf("CREATE FIFO status = %d, want NFS4_OK", result.Status)
+	}
+
+	// Verify the FIFO exists
+	authCtx := newTestAuthCtx(0, 0)
+	child, err := fx.metaSvc.Lookup(authCtx, fx.rootHandle, "myfifo")
+	if err != nil {
+		t.Fatalf("Lookup after CREATE FIFO: %v", err)
+	}
+	if child.Type != metadata.FileTypeFIFO {
+		t.Errorf("created entry type = %v, want FIFO", child.Type)
+	}
+}
+
+func TestCreate_Socket_Success(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+
+	ctx := newRealFSContext(0, 0)
+	ctx.CurrentFH = make([]byte, len(fx.rootHandle))
+	copy(ctx.CurrentFH, fx.rootHandle)
+
+	args := encodeCreateSocketArgs("mysock")
+	result := fx.handler.handleCreate(ctx, bytes.NewReader(args))
+
+	if result.Status != types.NFS4_OK {
+		t.Fatalf("CREATE socket status = %d, want NFS4_OK", result.Status)
+	}
+
+	// Verify the socket exists
+	authCtx := newTestAuthCtx(0, 0)
+	child, err := fx.metaSvc.Lookup(authCtx, fx.rootHandle, "mysock")
+	if err != nil {
+		t.Fatalf("Lookup after CREATE socket: %v", err)
+	}
+	if child.Type != metadata.FileTypeSocket {
+		t.Errorf("created entry type = %v, want socket", child.Type)
 	}
 }
 
