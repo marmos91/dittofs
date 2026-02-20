@@ -289,6 +289,9 @@ configure_via_api() {
         "$DITTOFSCTL_BIN" adapter settings nfs update --delegations-enabled=false --force || {
             log_warn "Failed to disable delegations (non-fatal)"
         }
+        # Wait for SettingsWatcher to pick up the change (polls every 10s)
+        log_info "Waiting for settings to propagate..."
+        sleep 12
     fi
 
     # Verify NFS port is listening
