@@ -34,7 +34,7 @@ const (
 // For DELETE, ndc_immediate is not present on the wire. We use the Type
 // discriminant to decide encoding.
 type NotifyDeviceIdChange4 struct {
-	Type      uint32   // NOTIFY_DEVICEID4_CHANGE or NOTIFY_DEVICEID4_DELETE
+	Type      uint32 // NOTIFY_DEVICEID4_CHANGE or NOTIFY_DEVICEID4_DELETE
 	DeviceID  DeviceId4
 	Immediate bool // only meaningful for NOTIFY_DEVICEID4_CHANGE
 }

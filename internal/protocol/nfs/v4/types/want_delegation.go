@@ -37,8 +37,8 @@ type WantDelegationClaim struct {
 //	    deleg_claim4 wda_claim;
 //	};
 type WantDelegationArgs struct {
-	Want  uint32               // bitmap of delegation types wanted
-	Claim WantDelegationClaim  // delegation claim
+	Want  uint32              // bitmap of delegation types wanted
+	Claim WantDelegationClaim // delegation claim
 }
 
 // Encode writes the WANT_DELEGATION args in XDR format.
@@ -92,17 +92,19 @@ func (a *WantDelegationArgs) String() string {
 // WantDelegationRes represents WANT_DELEGATION4res per RFC 8881 Section 18.49.
 //
 // The result is a union switched on delegation_type:
+//
 //   - OPEN_DELEGATE_NONE: void (just status)
+//
 //   - OPEN_DELEGATE_READ/WRITE: delegation struct (stored as raw opaque)
 //
-//	union open_delegation4 switch (open_delegation_type4 delegation_type) {
-//	    case OPEN_DELEGATE_NONE:
-//	        void;
-//	    case OPEN_DELEGATE_READ:
-//	        open_read_delegation4 read;
-//	    case OPEN_DELEGATE_WRITE:
-//	        open_write_delegation4 write;
-//	};
+//     union open_delegation4 switch (open_delegation_type4 delegation_type) {
+//     case OPEN_DELEGATE_NONE:
+//     void;
+//     case OPEN_DELEGATE_READ:
+//     open_read_delegation4 read;
+//     case OPEN_DELEGATE_WRITE:
+//     open_write_delegation4 write;
+//     };
 type WantDelegationRes struct {
 	Status         uint32
 	DelegationType uint32 // OPEN_DELEGATE_NONE/READ/WRITE (only if NFS4_OK)

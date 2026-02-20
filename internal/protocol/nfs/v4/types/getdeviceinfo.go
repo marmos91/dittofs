@@ -35,7 +35,7 @@ type DeviceId4 [DeviceId4Size]byte
 //	};
 type GetDeviceInfoArgs struct {
 	DeviceID    DeviceId4
-	LayoutType  uint32  // LAYOUT4_* constant
+	LayoutType  uint32 // LAYOUT4_* constant
 	MaxCount    uint32
 	NotifyTypes Bitmap4
 }

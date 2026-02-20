@@ -118,10 +118,10 @@ func TestCreateSessionArgs_RoundTrip_MultipleSec(t *testing.T) {
 // TestCreateSessionRes_RoundTrip tests a success response with negotiated attrs.
 func TestCreateSessionRes_RoundTrip(t *testing.T) {
 	original := &CreateSessionRes{
-		Status:     NFS4_OK,
-		SessionID:  ValidSessionId(),
-		SequenceID: 1,
-		Flags:      CREATE_SESSION4_FLAG_PERSIST | CREATE_SESSION4_FLAG_CONN_BACK_CHAN,
+		Status:           NFS4_OK,
+		SessionID:        ValidSessionId(),
+		SequenceID:       1,
+		Flags:            CREATE_SESSION4_FLAG_PERSIST | CREATE_SESSION4_FLAG_CONN_BACK_CHAN,
 		ForeChannelAttrs: ValidChannelAttrs(),
 		BackChannelAttrs: ChannelAttrs{
 			HeaderPadSize:         0,

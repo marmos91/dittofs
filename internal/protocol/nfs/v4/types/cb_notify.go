@@ -94,9 +94,9 @@ func (n *Notify4) String() string {
 //	    notify4     cna_changes<>;
 //	};
 type CbNotifyArgs struct {
-	Stateid Stateid4   // directory delegation stateid
-	FH      []byte     // filehandle of directory
-	Changes []Notify4  // variable-length array of notification entries
+	Stateid Stateid4  // directory delegation stateid
+	FH      []byte    // filehandle of directory
+	Changes []Notify4 // variable-length array of notification entries
 }
 
 // Encode writes the CB_NOTIFY args in XDR format.

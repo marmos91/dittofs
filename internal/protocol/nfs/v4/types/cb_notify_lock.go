@@ -66,7 +66,7 @@ func (lo *LockOwner4) String() string {
 //	    lock_owner4  cnla_lock_owner;
 //	};
 type CbNotifyLockArgs struct {
-	FH        []byte     // filehandle
+	FH        []byte // filehandle
 	LockOwner LockOwner4
 }
 

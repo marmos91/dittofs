@@ -8,8 +8,8 @@ import (
 // TestBindConnToSessionArgs_RoundTrip tests with CDFC4_FORE_OR_BOTH direction.
 func TestBindConnToSessionArgs_RoundTrip(t *testing.T) {
 	original := &BindConnToSessionArgs{
-		SessionID:       ValidSessionId(),
-		Dir:             CDFC4_FORE_OR_BOTH,
+		SessionID:         ValidSessionId(),
+		Dir:               CDFC4_FORE_OR_BOTH,
 		UseConnInRDMAMode: false,
 	}
 
@@ -43,8 +43,8 @@ func TestBindConnToSessionArgs_RoundTrip(t *testing.T) {
 // TestBindConnToSessionArgs_RoundTrip_BackOrBoth tests with CDFC4_BACK_OR_BOTH direction.
 func TestBindConnToSessionArgs_RoundTrip_BackOrBoth(t *testing.T) {
 	original := &BindConnToSessionArgs{
-		SessionID:       ValidSessionId(),
-		Dir:             CDFC4_BACK_OR_BOTH,
+		SessionID:         ValidSessionId(),
+		Dir:               CDFC4_BACK_OR_BOTH,
 		UseConnInRDMAMode: true,
 	}
 

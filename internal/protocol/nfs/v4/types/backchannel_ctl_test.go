@@ -48,7 +48,7 @@ func TestBackchannelCtlArgs_RoundTrip_MultipleSecParms(t *testing.T) {
 		SecParms: []CallbackSecParms4{
 			{CbSecFlavor: 0}, // AUTH_NONE
 			{CbSecFlavor: 1, AuthSysData: []byte{0xca, 0xfe, 0xba, 0xbe}}, // AUTH_SYS
-			{CbSecFlavor: 6, RpcGssData: []byte{0xde, 0xad}},               // RPCSEC_GSS
+			{CbSecFlavor: 6, RpcGssData: []byte{0xde, 0xad}},              // RPCSEC_GSS
 		},
 	}
 

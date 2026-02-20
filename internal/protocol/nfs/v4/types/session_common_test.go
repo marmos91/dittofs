@@ -54,7 +54,7 @@ func TestSessionId4_String(t *testing.T) {
 	sid := SessionId4{0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89,
 		0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77}
 	s := sid.String()
-	if s != "abcdef012345678900112233445566" + "77" {
+	if s != "abcdef012345678900112233445566"+"77" {
 		// Verify it's valid hex
 		if len(s) != 32 {
 			t.Errorf("String() length = %d, want 32", len(s))

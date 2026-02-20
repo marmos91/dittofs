@@ -244,24 +244,24 @@ const (
 	NFS4ERR_UNKNOWN_LAYOUTTYPE        = 10062 // Unknown layout type
 	NFS4ERR_SEQ_MISORDERED            = 10063 // Sequence misordered
 	NFS4ERR_SEQUENCE_POS              = 10064 // SEQUENCE not first operation
-	NFS4ERR_REQ_TOO_BIG              = 10065 // Request too big for session
-	NFS4ERR_REP_TOO_BIG              = 10066 // Reply too big for session
-	NFS4ERR_REP_TOO_BIG_TO_CACHE     = 10067 // Reply too big to cache
-	NFS4ERR_RETRY_UNCACHED_REP       = 10068 // Retry uncached reply
-	NFS4ERR_UNSAFE_COMPOUND          = 10069 // Unsafe compound request
-	NFS4ERR_TOO_MANY_OPS             = 10070 // Too many operations
-	NFS4ERR_OP_NOT_IN_SESSION        = 10071 // Op not in session
-	NFS4ERR_HASH_ALG_UNSUPP          = 10072 // Hash algorithm unsupported
+	NFS4ERR_REQ_TOO_BIG               = 10065 // Request too big for session
+	NFS4ERR_REP_TOO_BIG               = 10066 // Reply too big for session
+	NFS4ERR_REP_TOO_BIG_TO_CACHE      = 10067 // Reply too big to cache
+	NFS4ERR_RETRY_UNCACHED_REP        = 10068 // Retry uncached reply
+	NFS4ERR_UNSAFE_COMPOUND           = 10069 // Unsafe compound request
+	NFS4ERR_TOO_MANY_OPS              = 10070 // Too many operations
+	NFS4ERR_OP_NOT_IN_SESSION         = 10071 // Op not in session
+	NFS4ERR_HASH_ALG_UNSUPP           = 10072 // Hash algorithm unsupported
 	// 10073 intentionally skipped (no error code assigned)
 	NFS4ERR_CLIENTID_BUSY    = 10074 // Client ID busy
-	NFS4ERR_PNFS_IO_HOLE    = 10075 // pNFS I/O hole
+	NFS4ERR_PNFS_IO_HOLE     = 10075 // pNFS I/O hole
 	NFS4ERR_SEQ_FALSE_RETRY  = 10076 // Sequence false retry
 	NFS4ERR_BAD_HIGH_SLOT    = 10077 // Bad highest slot
 	NFS4ERR_DEADSESSION      = 10078 // Dead session
 	NFS4ERR_ENCR_ALG_UNSUPP  = 10079 // Encryption algorithm unsupported
-	NFS4ERR_PNFS_NO_LAYOUT  = 10080 // pNFS no layout
-	NFS4ERR_NOT_ONLY_OP     = 10081 // Not the only operation
-	NFS4ERR_WRONG_CRED      = 10082 // Wrong credentials
+	NFS4ERR_PNFS_NO_LAYOUT   = 10080 // pNFS no layout
+	NFS4ERR_NOT_ONLY_OP      = 10081 // Not the only operation
+	NFS4ERR_WRONG_CRED       = 10082 // Wrong credentials
 	NFS4ERR_WRONG_TYPE       = 10083 // Wrong type
 	NFS4ERR_DIRDELEG_UNAVAIL = 10084 // Directory delegation unavailable
 	NFS4ERR_REJECT_DELEG     = 10085 // Reject delegation
@@ -485,9 +485,9 @@ const (
 // ============================================================================
 
 const (
-	CREATE_SESSION4_FLAG_PERSIST       = 0x00000001
+	CREATE_SESSION4_FLAG_PERSIST        = 0x00000001
 	CREATE_SESSION4_FLAG_CONN_BACK_CHAN = 0x00000002
-	CREATE_SESSION4_FLAG_CONN_RDMA     = 0x00000004
+	CREATE_SESSION4_FLAG_CONN_RDMA      = 0x00000004
 )
 
 // ============================================================================
@@ -559,12 +559,12 @@ const (
 // ============================================================================
 
 const (
-	NOTIFY4_CHANGE_CHILD_ATTRS      = 0
-	NOTIFY4_CHANGE_DIR_ATTRS        = 1
-	NOTIFY4_REMOVE_ENTRY            = 2
-	NOTIFY4_ADD_ENTRY               = 3
-	NOTIFY4_RENAME_ENTRY            = 4
-	NOTIFY4_CHANGE_COOKIE_VERIFIER  = 5
+	NOTIFY4_CHANGE_CHILD_ATTRS     = 0
+	NOTIFY4_CHANGE_DIR_ATTRS       = 1
+	NOTIFY4_REMOVE_ENTRY           = 2
+	NOTIFY4_ADD_ENTRY              = 3
+	NOTIFY4_RENAME_ENTRY           = 4
+	NOTIFY4_CHANGE_COOKIE_VERIFIER = 5
 )
 
 // OpName returns a human-readable name for an NFSv4 operation number.

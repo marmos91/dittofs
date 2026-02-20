@@ -54,7 +54,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 ### v3.0 NFSv4.1 Sessions
 
-- [ ] **Phase 16: NFSv4.1 Types and Constants** - Operation numbers, error codes, XDR structures for all v4.1 wire types
+- [x] **Phase 16: NFSv4.1 Types and Constants** - Operation numbers, error codes, XDR structures for all v4.1 wire types (completed 2026-02-20)
 - [ ] **Phase 17: Slot Table and Session Data Structures** - SlotTable, SessionRecord, ChannelAttrs, EOS replay cache with per-table locking
 - [ ] **Phase 18: EXCHANGE_ID and Client Registration** - v4.1 client identity establishment with owner/implementation tracking
 - [ ] **Phase 19: Session Lifecycle** - CREATE_SESSION, DESTROY_SESSION with slot table allocation and channel negotiation
@@ -308,7 +308,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 32
 | 14. Control Plane v2.0 | v2.0 | 7/7 | Complete | 2026-02-16 |
 | 15. v2.0 Testing | v2.0 | 5/5 | Complete | 2026-02-18 |
 | 15.5. Manual Verification v2.0 | v2.0 | - | Complete | 2026-02-19 |
-| 16. NFSv4.1 Types and Constants | v3.0 | 0/? | Not started | - |
+| 16. NFSv4.1 Types and Constants | 5/5 | Complete    | 2026-02-20 | - |
 | 17. Slot Table and Session Data Structures | v3.0 | 0/? | Not started | - |
 | 18. EXCHANGE_ID and Client Registration | v3.0 | 0/? | Not started | - |
 | 19. Session Lifecycle | v3.0 | 0/? | Not started | - |

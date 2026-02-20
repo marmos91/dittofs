@@ -30,9 +30,9 @@ import (
 // NOT an XDR optional. Encode as uint32 count + 0 or 1 elements.
 type ExchangeIdArgs struct {
 	ClientOwner  ClientOwner4
-	Flags        uint32           // EXCHGID4_FLAG_* bitmask
-	StateProtect StateProtect4A   // union switched on SP4_*
-	ClientImplId []NfsImplId4     // max 1 element (XDR array <1>)
+	Flags        uint32         // EXCHGID4_FLAG_* bitmask
+	StateProtect StateProtect4A // union switched on SP4_*
+	ClientImplId []NfsImplId4   // max 1 element (XDR array <1>)
 }
 
 // Encode writes the EXCHANGE_ID args in XDR format.
@@ -116,13 +116,13 @@ func (a *ExchangeIdArgs) String() string {
 //	};
 type ExchangeIdRes struct {
 	Status       uint32
-	ClientID     uint64           // only if NFS4_OK
-	SequenceID   uint32           // only if NFS4_OK
-	Flags        uint32           // only if NFS4_OK
-	StateProtect StateProtect4R   // only if NFS4_OK
-	ServerOwner  ServerOwner4     // only if NFS4_OK
-	ServerScope  []byte           // only if NFS4_OK
-	ServerImplId []NfsImplId4     // only if NFS4_OK, max 1
+	ClientID     uint64         // only if NFS4_OK
+	SequenceID   uint32         // only if NFS4_OK
+	Flags        uint32         // only if NFS4_OK
+	StateProtect StateProtect4R // only if NFS4_OK
+	ServerOwner  ServerOwner4   // only if NFS4_OK
+	ServerScope  []byte         // only if NFS4_OK
+	ServerImplId []NfsImplId4   // only if NFS4_OK, max 1
 }
 
 // Encode writes the EXCHANGE_ID response in XDR format.

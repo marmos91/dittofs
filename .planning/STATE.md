@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-20)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking and Kerberos authentication
-**Current focus:** v3.0 NFSv4.1 Sessions — Phase 16 ready to plan
+**Current focus:** v3.0 NFSv4.1 Sessions — Phase 16 executing
 
 ## Current Position
 
 Phase: 16 of 25 (NFSv4.1 Types and Constants)
-Plan: 0 of ? in current phase
-Status: Ready to plan
-Last activity: 2026-02-20 — v3.0 roadmap created with 10 phases (16-25)
+Plan: 5 of 5 in current phase
+Status: Phase Complete
+Last activity: 2026-02-20 — Completed 16-05 (COMPOUND v4.1 dispatch table and minorversion branch)
 
-Progress: [#####################################---] 88% (61/? plans complete — v3.0 plan counts TBD)
+Progress: [#######################################-] 94% (66/70 plans complete)
 
 ## Completed Milestones
 
@@ -49,6 +49,11 @@ Progress: [#####################################---] 88% (61/? plans complete �
 | 13-nfsv4-acls | 5 | 43 min | 8.6 min | COMPLETE |
 | 14-control-plane-v2-0 | 7 | 48 min | 6.9 min | COMPLETE |
 | 15-v2-0-testing | 5 | 24 min | 4.8 min | COMPLETE |
+| Phase 16 P01 | 7min | 2 tasks | 9 files |
+| Phase 16 P02 | 5min | 2 tasks | 12 files |
+| Phase 16 P03 | 7min | 2 tasks | 26 files |
+| Phase 16 P04 | 6min | 2 tasks | 18 files |
+| Phase 16 P05 | 6min | 2 tasks | 4 files |
 
 ## Quick Tasks Completed
 
@@ -66,6 +71,14 @@ Recent decisions affecting current work:
 
 - [v3.0 roadmap]: 10 phases derived from 32 requirements, ordered by dependency chain (types -> slot table -> EXCHANGE_ID -> CREATE_SESSION -> SEQUENCE -> connections -> backchannel -> dir delegations)
 - [v3.0 roadmap]: SMB Kerberos (SMBKRB-01, SMBKRB-02) placed in Phase 25 (testing) since it reuses shared Kerberos layer from v2.0
+- [Phase 16]: SessionId4 encoded as raw 16 bytes (no length prefix) per RFC 4506 fixed-size opaque
+- [Phase 16-02]: Response types use status-gated encoding -- if Status != NFS4_OK only status is encoded/decoded
+- [Phase 16-03]: LAYOUTCOMMIT uses bool-gated conditional unions for newoffset/time_modify/layout_update fields
+- [Phase 16-03]: DeviceId4 encoded as fixed 16 bytes (no length prefix) per RFC 8881 Section 3.3.14
+- [Phase 16-04]: CB_NOTIFY entries stored as raw opaque deferring sub-type parsing to Phase 24
+- [Phase 16-04]: CB_NOTIFY_DEVICEID uses conditional encoding (Immediate only for CHANGE, not DELETE)
+- [Phase 16-05]: v41StubHandler uses typed decoder closures to validate XDR args and prevent stream desync
+- [Phase 16-05]: v4.0 ops accessible from v4.1 compounds via fallback to opDispatchTable (per RFC 8881)
 
 ### Pending Todos
 
@@ -79,5 +92,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-20
-Stopped at: v3.0 roadmap created
-Resume file: `/gsd:plan-phase 16`
+Stopped at: Completed 16-05-PLAN.md (Phase 16 complete)
+Resume file: `/gsd:execute-phase 17`

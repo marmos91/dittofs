@@ -29,13 +29,13 @@ import (
 //	    callback_sec_parms4    csa_sec_parms<>;
 //	};
 type CreateSessionArgs struct {
-	ClientID        uint64
-	SequenceID      uint32
-	Flags           uint32 // CREATE_SESSION4_FLAG_*
+	ClientID         uint64
+	SequenceID       uint32
+	Flags            uint32 // CREATE_SESSION4_FLAG_*
 	ForeChannelAttrs ChannelAttrs
 	BackChannelAttrs ChannelAttrs
-	CbProgram       uint32
-	CbSecParms      []CallbackSecParms4
+	CbProgram        uint32
+	CbSecParms       []CallbackSecParms4
 }
 
 // Encode writes the CREATE_SESSION args in XDR format.

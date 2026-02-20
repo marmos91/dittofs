@@ -32,16 +32,16 @@ import (
 //	    layoutupdate4    loca_layoutupdate;
 //	};
 type LayoutCommitArgs struct {
-	Offset           uint64
-	Length           uint64
-	Reclaim          bool
-	Stateid          Stateid4
-	NewOffsetPresent bool
-	NewOffset        uint64   // only if NewOffsetPresent
+	Offset            uint64
+	Length            uint64
+	Reclaim           bool
+	Stateid           Stateid4
+	NewOffsetPresent  bool
+	NewOffset         uint64 // only if NewOffsetPresent
 	TimeModifyPresent bool
-	TimeModify       NFS4Time // only if TimeModifyPresent
-	LayoutUpdateType uint32
-	LayoutUpdate     []byte   // opaque layout-type-specific data
+	TimeModify        NFS4Time // only if TimeModifyPresent
+	LayoutUpdateType  uint32
+	LayoutUpdate      []byte // opaque layout-type-specific data
 }
 
 // Encode writes the LAYOUTCOMMIT args in XDR format.

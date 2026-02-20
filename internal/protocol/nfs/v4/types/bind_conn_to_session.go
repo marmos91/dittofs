@@ -24,8 +24,8 @@ import (
 //	    bool           bctsa_use_conn_in_rdma_mode;
 //	};
 type BindConnToSessionArgs struct {
-	SessionID       SessionId4
-	Dir             uint32 // CDFC4_FORE, CDFC4_BACK, CDFC4_FORE_OR_BOTH, CDFC4_BACK_OR_BOTH
+	SessionID         SessionId4
+	Dir               uint32 // CDFC4_FORE, CDFC4_BACK, CDFC4_FORE_OR_BOTH, CDFC4_BACK_OR_BOTH
 	UseConnInRDMAMode bool
 }
 

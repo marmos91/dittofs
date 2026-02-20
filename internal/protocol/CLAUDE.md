@@ -53,6 +53,57 @@ types/    - SMB2 constants
 v2/       - SMB2 command handlers
 ```
 
+## NFSv4.0/v4.1 Coexistence
+
+### Version Routing
+
+COMPOUND dispatcher routes based on `minorversion`:
+- `0` -> v4.0 dispatch table (OpHandler signature)
+- `1` -> v4.1 dispatch table (V41OpHandler signature), with fallback to v4.0 table for shared ops
+- `2+` -> NFS4ERR_MINOR_VERS_MISMATCH
+
+### Handler Signatures
+
+v4.0 and v4.1 use different handler types:
+
+```go
+// v4.0: no session context
+type OpHandler func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult
+
+// v4.1: includes session context from SEQUENCE
+type V41OpHandler func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult
+```
+
+### Dispatch Table Strategy
+
+- **v4.0-only ops** (3-39): Only in `opDispatchTable`, accessible from both v4.0 and v4.1 compounds
+- **v4.1-only ops** (40-58): Only in `v41DispatchTable`, return OP_ILLEGAL in v4.0 compounds
+- **Shared ops** (PUTFH, GETATTR, READ, WRITE, etc.): In `opDispatchTable`, called from v4.1 compounds via fallback
+- **v4.0-only rejected in v4.1**: SETCLIENTID, SETCLIENTID_CONFIRM, RENEW, OPEN_CONFIRM, RELEASE_LOCKOWNER -> NFS4ERR_NOTSUPP in v4.1 (Phase 23)
+
+### Type File Organization
+
+- v4.0 types: `types.go` (compound structs, Stateid4, etc.)
+- v4.1 per-op types: `exchange_id.go`, `create_session.go`, etc. (one file per operation)
+- v4.1 shared types: `session_common.go` (types used by 2+ operations)
+- Constants: `constants.go` (both v4.0 and v4.1, separated by comment blocks)
+- Error codes: `errors.go` (both v4.0 and v4.1)
+
+### Adding a New v4.1 Handler (Phases 17-24)
+
+1. Create handler in `v4/handlers/` (e.g., `exchange_id_handler.go`)
+2. Use V41OpHandler signature with V41RequestContext
+3. Replace stub in v41DispatchTable with real handler in NewHandler()
+4. The stub automatically consumed args -- the real handler replaces this
+5. Test with compound_test.go pattern
+
+### Common Mistakes (v4.1 Specific)
+
+1. **XDR desync in v4.1 stubs** -- Stubs MUST decode args even when returning NOTSUPP. The COMPOUND reader position must advance past the current op's args.
+2. **Wrong dispatch table** -- v4.1 ops go in v41DispatchTable, not opDispatchTable
+3. **Missing fallback** -- v4.0 ops must be accessible from v4.1 compounds
+4. **OP_ILLEGAL vs NFS4ERR_NOTSUPP** -- Unknown opcodes outside valid ranges get OP_ILLEGAL; known but unimplemented ops get NOTSUPP
+
 ## Common Mistakes
 
 1. **Business logic in handlers** - permissions, validation belong in service layer
