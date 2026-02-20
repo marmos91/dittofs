@@ -5,14 +5,14 @@
 See: .planning/PROJECT.md (updated 2026-02-04)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking and Kerberos authentication
-**Current focus:** v2.0 Testing Phase 15 in progress
+**Current focus:** Ready for Phase 16 (v3.0 NFSv4.1 Sessions)
 
 ## Current Position
 
-Phase: 15 of 28 (v2.0 Testing)
+Phase: 15 of 28 (v2.0 complete, ready for Phase 16)
 Plan: 5 of 5 complete
-Status: Phase 15 COMPLETE. All v2.0 testing plans executed.
-Last activity: 2026-02-19 - Completed quick task 1: NFS adapter refactor (issue #148)
+Status: v2.0 milestone COMPLETE. K8s operator portmapper PR merged (#155).
+Last activity: 2026-02-20 - Merged PR #155 (K8s operator NFS portmapper support)
 
 Progress: [#####################################---] 88% (59/67 plans complete)
 
@@ -868,12 +868,13 @@ None.
 
 ## Quick Tasks Completed
 
-| # | Description | Branch | Commits | Date |
-|---|------------|--------|---------|------|
-| 1 | NFS adapter refactor (issue #148): split 3 oversized files, extract XDR decoder, fix metrics double-decode, add 32 tests | refactor/148-nfs-adapter-cleanup | 6ba07bf, 37f5596, 36cde37, cf4dc9a, 1aabde0, 9fc6d94 | 2026-02-19 |
+| # | Description | Branch | PR | Date |
+|---|------------|--------|----|------|
+| 1 | NFS adapter refactor (issue #148): split 3 oversized files, extract XDR decoder, fix metrics double-decode, add 32 tests | refactor/148-nfs-adapter-cleanup | - | 2026-02-19 |
+| 2 | K8s operator: expose NFS portmapper port (Service 111→10111, NetworkPolicy, best-effort enablement) | feat/k8s-nfs-portmapper | #155 | 2026-02-20 |
 
 ## Session Continuity
 
-Last session: 2026-02-19
-Stopped at: Completed quick task 1 (NFS adapter refactor, issue #148)
+Last session: 2026-02-20
+Stopped at: Merged K8s operator portmapper PR #155, fixed branch protection rulesets
 Resume file: Phase 16 planning
