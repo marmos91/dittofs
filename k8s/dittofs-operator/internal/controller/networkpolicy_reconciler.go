@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -47,19 +48,41 @@ func networkPolicyLabels(crName, adapterType string) map[string]string {
 	return labels
 }
 
-// currentIngressPort extracts the first ingress port from a NetworkPolicy, or 0 if absent.
-func currentIngressPort(np *networkingv1.NetworkPolicy) int32 {
-	if len(np.Spec.Ingress) > 0 && len(np.Spec.Ingress[0].Ports) > 0 && np.Spec.Ingress[0].Ports[0].Port != nil {
-		return np.Spec.Ingress[0].Ports[0].Port.IntVal
+// formatIngressPorts formats NetworkPolicy ingress ports for event messages.
+func formatIngressPorts(ports []networkingv1.NetworkPolicyPort) string {
+	parts := make([]string, 0, len(ports))
+	for _, p := range ports {
+		if p.Port != nil {
+			parts = append(parts, fmt.Sprintf("%d", p.Port.IntVal))
+		}
 	}
-	return 0
+	return fmt.Sprintf("ports %s", strings.Join(parts, ", "))
 }
 
-// buildAdapterNetworkPolicy constructs a NetworkPolicy allowing TCP ingress on a single adapter port.
+// buildAdapterIngressPorts returns the NetworkPolicy ingress ports for an adapter.
+// NFS adapters get 2 ports (NFS + portmapper container port), all others get 1.
+func buildAdapterIngressPorts(adapterType string, port int32) []networkingv1.NetworkPolicyPort {
+	tcp := corev1.ProtocolTCP
+	ports := []networkingv1.NetworkPolicyPort{
+		{
+			Protocol: &tcp,
+			Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: port},
+		},
+	}
+	if isNFSAdapter(adapterType) {
+		ports = append(ports, networkingv1.NetworkPolicyPort{
+			Protocol: &tcp,
+			Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: portmapperContainerPort},
+		})
+	}
+	return ports
+}
+
+// buildAdapterNetworkPolicy constructs a NetworkPolicy allowing TCP ingress on adapter port(s).
+// NFS adapters get both the NFS port and the portmapper container port (10111).
 // Only ingress is restricted; egress is left unrestricted because DittoFS pods need outbound
 // access to S3, external metadata stores, and other backend services.
 func buildAdapterNetworkPolicy(crName, namespace, adapterType string, port int32) *networkingv1.NetworkPolicy {
-	tcp := corev1.ProtocolTCP
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      adapterResourceName(crName, adapterType),
@@ -75,15 +98,7 @@ func buildAdapterNetworkPolicy(crName, namespace, adapterType string, port int32
 			},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{
 				{
-					Ports: []networkingv1.NetworkPolicyPort{
-						{
-							Protocol: &tcp,
-							Port: &intstr.IntOrString{
-								Type:   intstr.Int,
-								IntVal: port,
-							},
-						},
-					},
+					Ports: buildAdapterIngressPorts(adapterType, port),
 				},
 			},
 		},
@@ -326,12 +341,13 @@ func (r *DittoServerReconciler) createAdapterNetworkPolicy(ctx context.Context, 
 	return nil
 }
 
-// updateAdapterNetworkPolicyIfNeeded updates an existing adapter NetworkPolicy if its port changed.
+// updateAdapterNetworkPolicyIfNeeded updates an existing adapter NetworkPolicy if its ingress ports changed.
 func (r *DittoServerReconciler) updateAdapterNetworkPolicyIfNeeded(ctx context.Context, ds *dittoiov1alpha1.DittoServer, existing *networkingv1.NetworkPolicy, info AdapterInfo) error {
-	desiredPort := int32(info.Port)
+	adapterType := existing.Labels[adapterTypeLabel]
+	desiredPorts := buildAdapterIngressPorts(adapterType, int32(info.Port))
 
-	// Early return if port already matches.
-	if currentIngressPort(existing) == desiredPort {
+	// Early return if ingress ports already match.
+	if ingressPortsMatch(existing.Spec.Ingress, desiredPorts) {
 		return nil
 	}
 
@@ -341,22 +357,10 @@ func (r *DittoServerReconciler) updateAdapterNetworkPolicyIfNeeded(ctx context.C
 		return fmt.Errorf("failed to get fresh network policy: %w", err)
 	}
 
-	adapterType := fresh.Labels[adapterTypeLabel]
-	oldPort := currentIngressPort(fresh)
-
-	// Update ingress port.
-	tcp := corev1.ProtocolTCP
+	// Update ingress ports.
 	fresh.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{
 		{
-			Ports: []networkingv1.NetworkPolicyPort{
-				{
-					Protocol: &tcp,
-					Port: &intstr.IntOrString{
-						Type:   intstr.Int,
-						IntVal: desiredPort,
-					},
-				},
-			},
+			Ports: desiredPorts,
 		},
 	}
 
@@ -365,7 +369,7 @@ func (r *DittoServerReconciler) updateAdapterNetworkPolicyIfNeeded(ctx context.C
 	}
 
 	r.Recorder.Eventf(ds, corev1.EventTypeNormal, "AdapterNetworkPolicyUpdated",
-		"Updated NetworkPolicy %s for adapter %s (port %d -> %d)", fresh.Name, adapterType, oldPort, desiredPort)
+		"Updated NetworkPolicy %s for adapter %s (%s)", fresh.Name, adapterType, formatIngressPorts(desiredPorts))
 
 	return nil
 }

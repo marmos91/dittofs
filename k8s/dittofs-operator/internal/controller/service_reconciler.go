@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"regexp"
 	"sort"
 	"strings"
@@ -44,6 +45,21 @@ const (
 	// adapterPortPrefix is the naming prefix for dynamic adapter container ports.
 	// This avoids collision with static port names like "nfs", "smb", "api", "metrics".
 	adapterPortPrefix = "adapter-"
+
+	// portmapperServicePort is the standard RFC 1057 portmapper port that NFS clients query.
+	portmapperServicePort = int32(111)
+	// portmapperContainerPort is the unprivileged container port the portmapper listens on.
+	// K8s Service port mapping (111 → 10111) avoids needing privileged security context.
+	portmapperContainerPort = int32(10111)
+	// portmapperPortName is the Service/container port name for the portmapper.
+	portmapperPortName = "portmap"
+	// portmapperContainerPortName is the container port name for the portmapper.
+	// Namespaced under NFS to avoid collision with dynamic adapter port names
+	// (e.g., adapterPortName("portmap") would also produce "adapter-portmap").
+	// Uses the adapter- prefix so it's managed as a dynamic port and cleaned up with NFS.
+	portmapperContainerPortName = "adapter-nfs-pm"
+	// nfsAdapterType is the canonical sanitized type string for the NFS adapter.
+	nfsAdapterType = "nfs"
 )
 
 // invalidDNSChars matches characters not allowed in DNS-1035 labels.
@@ -104,6 +120,60 @@ func adapterServiceLabels(crName, adapterType string) map[string]string {
 	labels[adapterServiceLabel] = "true"
 	labels[adapterTypeLabel] = sanitizeAdapterType(adapterType)
 	return labels
+}
+
+// isNFSAdapter returns true if the sanitized adapter type is "nfs".
+func isNFSAdapter(adapterType string) bool {
+	return sanitizeAdapterType(adapterType) == nfsAdapterType
+}
+
+// buildAdapterServicePorts returns the Service ports for an adapter.
+// NFS adapters get 2 ports (NFS + portmapper 111→10111), all others get 1.
+func buildAdapterServicePorts(adapterType string, info AdapterInfo) []corev1.ServicePort {
+	portName := adapterPortName(adapterType)
+	ports := []corev1.ServicePort{
+		{
+			Name:       portName,
+			Port:       int32(info.Port),
+			TargetPort: intstr.FromInt32(int32(info.Port)),
+			Protocol:   corev1.ProtocolTCP,
+		},
+	}
+	if isNFSAdapter(adapterType) {
+		ports = append(ports, corev1.ServicePort{
+			Name:       portmapperPortName,
+			Port:       portmapperServicePort,
+			TargetPort: intstr.FromInt32(portmapperContainerPort),
+			Protocol:   corev1.ProtocolTCP,
+		})
+	}
+	return ports
+}
+
+// servicePortsMatch returns true if two Service port slices are equivalent,
+// comparing by name, port, targetPort, and protocol. NodePort is ignored because
+// K8s auto-assigns it.
+func servicePortsMatch(existing, desired []corev1.ServicePort) bool {
+	if len(existing) != len(desired) {
+		return false
+	}
+	// Build map for O(n) comparison instead of requiring sorted input.
+	type portKey struct {
+		name       string
+		port       int32
+		targetPort int32
+		protocol   corev1.Protocol
+	}
+	set := make(map[portKey]struct{}, len(desired))
+	for _, p := range desired {
+		set[portKey{p.Name, p.Port, p.TargetPort.IntVal, p.Protocol}] = struct{}{}
+	}
+	for _, p := range existing {
+		if _, ok := set[portKey{p.Name, p.Port, p.TargetPort.IntVal, p.Protocol}]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // getAdapterServiceType reads the Service type from the CRD spec.adapterServices.type,
@@ -200,12 +270,14 @@ func (r *DittoServerReconciler) createAdapterService(ctx context.Context, ds *di
 	svcType := getAdapterServiceType(ds)
 	annotations := getAdapterServiceAnnotations(ds)
 
-	portName := adapterPortName(adapterType)
 	builder := resources.NewServiceBuilder(svcName, ds.Namespace).
 		WithLabels(labels).
 		WithSelector(podSelectorLabels(ds.Name)).
-		WithType(svcType).
-		AddTCPPort(portName, int32(info.Port))
+		WithType(svcType)
+
+	for _, sp := range buildAdapterServicePorts(adapterType, info) {
+		builder.AddTCPPortWithTarget(sp.Name, sp.Port, sp.TargetPort.IntVal)
+	}
 
 	if annotations != nil {
 		builder.WithAnnotations(annotations)
@@ -232,18 +304,18 @@ func (r *DittoServerReconciler) createAdapterService(ctx context.Context, ds *di
 	return nil
 }
 
-// updateAdapterServiceIfNeeded updates an existing adapter Service if its port, type, or annotations changed.
+// updateAdapterServiceIfNeeded updates an existing adapter Service if its ports, type, or annotations changed.
 func (r *DittoServerReconciler) updateAdapterServiceIfNeeded(ctx context.Context, ds *dittoiov1alpha1.DittoServer, existing *corev1.Service, info AdapterInfo) error {
-	desiredPort := int32(info.Port)
+	adapterType := existing.Labels[adapterTypeLabel]
+	desiredPorts := buildAdapterServicePorts(adapterType, info)
 	desiredType := getAdapterServiceType(ds)
 	desiredAnnotations := getAdapterServiceAnnotations(ds)
 
-	// Treat empty/malformed ports as drift so the Service self-heals.
-	portChanged := len(existing.Spec.Ports) == 0 || existing.Spec.Ports[0].Port != desiredPort
+	portsChanged := !servicePortsMatch(existing.Spec.Ports, desiredPorts)
 	typeChanged := existing.Spec.Type != desiredType
 	annotationsChanged := !annotationsMatch(existing.Annotations, desiredAnnotations)
 
-	if !portChanged && !typeChanged && !annotationsChanged {
+	if !portsChanged && !typeChanged && !annotationsChanged {
 		return nil
 	}
 
@@ -253,21 +325,8 @@ func (r *DittoServerReconciler) updateAdapterServiceIfNeeded(ctx context.Context
 		return fmt.Errorf("failed to get fresh service: %w", err)
 	}
 
-	oldPort := int32(0)
-	if len(fresh.Spec.Ports) > 0 {
-		oldPort = fresh.Spec.Ports[0].Port
-	}
-
-	// Rebuild port to the desired single-port shape, ensuring TargetPort is always correct.
-	adapterType := fresh.Labels[adapterTypeLabel]
-	fresh.Spec.Ports = []corev1.ServicePort{
-		{
-			Name:       adapterPortName(adapterType),
-			Port:       desiredPort,
-			TargetPort: intstr.FromInt32(desiredPort),
-			Protocol:   corev1.ProtocolTCP,
-		},
-	}
+	// Rebuild ports to desired shape (single port for most adapters, multi-port for NFS).
+	fresh.Spec.Ports = desiredPorts
 
 	// Update Service type.
 	fresh.Spec.Type = desiredType
@@ -280,7 +339,7 @@ func (r *DittoServerReconciler) updateAdapterServiceIfNeeded(ctx context.Context
 	}
 
 	r.Recorder.Eventf(ds, corev1.EventTypeNormal, "AdapterServiceUpdated",
-		"Updated Service %s for adapter %s (port %d -> %d)", fresh.Name, adapterType, oldPort, desiredPort)
+		"Updated Service %s for adapter %s (%s)", fresh.Name, adapterType, formatServicePorts(desiredPorts))
 
 	return nil
 }
@@ -314,7 +373,7 @@ func annotationsMatch(existing, desired map[string]string) bool {
 	}
 	// Check for stale managed annotations that should be removed.
 	if managed, ok := existing[managedAnnotationsKey]; ok && managed != "" {
-		for _, k := range strings.Split(managed, ",") {
+		for k := range strings.SplitSeq(managed, ",") {
 			if _, stillDesired := desired[k]; !stillDesired {
 				return false
 			}
@@ -332,16 +391,14 @@ func syncManagedAnnotations(annotations map[string]string, desired map[string]st
 	}
 	// Remove previously managed keys that are no longer desired.
 	if managed, ok := annotations[managedAnnotationsKey]; ok && managed != "" {
-		for _, k := range strings.Split(managed, ",") {
+		for k := range strings.SplitSeq(managed, ",") {
 			if _, stillDesired := desired[k]; !stillDesired {
 				delete(annotations, k)
 			}
 		}
 	}
 	// Apply desired annotations.
-	for k, v := range desired {
-		annotations[k] = v
-	}
+	maps.Copy(annotations, desired)
 	// Update the tracking annotation.
 	if len(desired) > 0 {
 		keys := make([]string, 0, len(desired))
@@ -399,6 +456,14 @@ func (r *DittoServerReconciler) reconcileContainerPorts(ctx context.Context, ds 
 			ContainerPort: int32(info.Port),
 			Protocol:      corev1.ProtocolTCP,
 		})
+		// NFS adapter also needs the portmapper container port.
+		if isNFSAdapter(adapterType) {
+			dynamicPorts = append(dynamicPorts, corev1.ContainerPort{
+				Name:          portmapperContainerPortName,
+				ContainerPort: portmapperContainerPort,
+				Protocol:      corev1.ProtocolTCP,
+			})
+		}
 	}
 
 	// Build final desired ports: static (preserved) + dynamic (from active adapters).
@@ -434,6 +499,19 @@ func (r *DittoServerReconciler) reconcileContainerPorts(ctx context.Context, ds 
 		"Updated StatefulSet container ports (%d static + %d dynamic)", len(staticPorts), len(dynamicPorts))
 
 	return nil
+}
+
+// formatServicePorts formats a slice of Service ports for event messages.
+func formatServicePorts(ports []corev1.ServicePort) string {
+	parts := make([]string, len(ports))
+	for i, p := range ports {
+		if p.Port != p.TargetPort.IntVal {
+			parts[i] = fmt.Sprintf("%s %d->%d", p.Name, p.Port, p.TargetPort.IntVal)
+		} else {
+			parts[i] = fmt.Sprintf("%s %d", p.Name, p.Port)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // sortContainerPorts sorts a slice of container ports by Name for deterministic comparison.

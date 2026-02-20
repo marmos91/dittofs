@@ -390,3 +390,82 @@ func TestMergeRequeueAfter(t *testing.T) {
 		})
 	}
 }
+
+func TestEnsurePortmapperEnabled_EnablesWhenDisabled(t *testing.T) {
+	r := setupAuthReconciler(t, newTestDittoServer("test-server", "default"))
+
+	var patchCalled bool
+	server := mockDittoFSServer(t, map[string]http.HandlerFunc{
+		"GET /api/v1/adapters/nfs/settings": func(w http.ResponseWriter, req *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"portmapper_enabled":false}`))
+		},
+		"PATCH /api/v1/adapters/nfs/settings": func(w http.ResponseWriter, req *http.Request) {
+			patchCalled = true
+			w.WriteHeader(http.StatusOK)
+		},
+	})
+
+	apiClient := NewDittoFSClient(server.URL)
+	adapters := []AdapterInfo{
+		{Type: "nfs", Enabled: true, Running: true, Port: 12049},
+	}
+
+	r.ensurePortmapperEnabled(context.Background(), apiClient, adapters)
+
+	if !patchCalled {
+		t.Error("Expected PATCH to enable portmapper, but it was not called")
+	}
+}
+
+func TestEnsurePortmapperEnabled_SkipsWhenAlreadyEnabled(t *testing.T) {
+	r := setupAuthReconciler(t, newTestDittoServer("test-server", "default"))
+
+	var patchCalled bool
+	server := mockDittoFSServer(t, map[string]http.HandlerFunc{
+		"GET /api/v1/adapters/nfs/settings": func(w http.ResponseWriter, req *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"portmapper_enabled":true}`))
+		},
+		"PATCH /api/v1/adapters/nfs/settings": func(w http.ResponseWriter, req *http.Request) {
+			patchCalled = true
+			w.WriteHeader(http.StatusOK)
+		},
+	})
+
+	apiClient := NewDittoFSClient(server.URL)
+	adapters := []AdapterInfo{
+		{Type: "nfs", Enabled: true, Running: true, Port: 12049},
+	}
+
+	r.ensurePortmapperEnabled(context.Background(), apiClient, adapters)
+
+	if patchCalled {
+		t.Error("PATCH should NOT be called when portmapper is already enabled")
+	}
+}
+
+func TestEnsurePortmapperEnabled_SkipsWhenNoNFSAdapter(t *testing.T) {
+	r := setupAuthReconciler(t, newTestDittoServer("test-server", "default"))
+
+	var getCalled bool
+	server := mockDittoFSServer(t, map[string]http.HandlerFunc{
+		"GET /api/v1/adapters/nfs/settings": func(w http.ResponseWriter, req *http.Request) {
+			getCalled = true
+			w.WriteHeader(http.StatusOK)
+		},
+	})
+
+	apiClient := NewDittoFSClient(server.URL)
+	adapters := []AdapterInfo{
+		{Type: "smb", Enabled: true, Running: true, Port: 12445},
+	}
+
+	r.ensurePortmapperEnabled(context.Background(), apiClient, adapters)
+
+	if getCalled {
+		t.Error("GET /api/v1/adapters/nfs/settings should NOT be called when no NFS adapter is active")
+	}
+}

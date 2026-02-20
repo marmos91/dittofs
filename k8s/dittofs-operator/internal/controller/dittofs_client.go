@@ -222,3 +222,23 @@ func (c *DittoFSClient) ListAdapters(ctx context.Context) ([]AdapterInfo, error)
 	}
 	return adapters, nil
 }
+
+// NFSSettingsResponse represents the NFS adapter settings returned by the DittoFS API.
+type NFSSettingsResponse struct {
+	PortmapperEnabled bool `json:"portmapper_enabled"`
+}
+
+// GetNFSSettings calls GET /api/v1/adapters/nfs/settings and returns NFS settings.
+func (c *DittoFSClient) GetNFSSettings(ctx context.Context) (*NFSSettingsResponse, error) {
+	var settings NFSSettingsResponse
+	if err := c.do(ctx, http.MethodGet, "/api/v1/adapters/nfs/settings", nil, &settings); err != nil {
+		return nil, err
+	}
+	return &settings, nil
+}
+
+// EnablePortmapper calls PATCH /api/v1/adapters/nfs/settings to enable the portmapper.
+func (c *DittoFSClient) EnablePortmapper(ctx context.Context) error {
+	req := map[string]bool{"portmapper_enabled": true}
+	return c.do(ctx, http.MethodPatch, "/api/v1/adapters/nfs/settings", req, nil)
+}
