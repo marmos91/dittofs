@@ -101,6 +101,7 @@ func (s *NFSAdapterSettings) SetBlockedOperations(ops []string) {
 }
 
 // GetV4MinMinorVersion returns the minimum NFSv4 minor version as uint32.
+// Defaults to 0 (v4.0) for negative values, which is the lowest supported version.
 func (s *NFSAdapterSettings) GetV4MinMinorVersion() uint32 {
 	if s.V4MinMinorVersion < 0 {
 		return 0
@@ -109,6 +110,7 @@ func (s *NFSAdapterSettings) GetV4MinMinorVersion() uint32 {
 }
 
 // GetV4MaxMinorVersion returns the maximum NFSv4 minor version as uint32.
+// Defaults to 1 (v4.1) for negative values, which is the highest supported version.
 func (s *NFSAdapterSettings) GetV4MaxMinorVersion() uint32 {
 	if s.V4MaxMinorVersion < 0 {
 		return 1
