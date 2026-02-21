@@ -485,7 +485,8 @@ func TestCompound_MinorVersion1_Accepted(t *testing.T) {
 	h := newTestHandler()
 	ctx := newTestCompoundContext()
 
-	// minorversion=1 COMPOUND with PUTROOTFH (a v4.0 op that works in v4.1)
+	// After Phase 20: v4.1 COMPOUND with PUTROOTFH (non-exempt, no SEQUENCE)
+	// must return NFS4ERR_OP_NOT_IN_SESSION per RFC 8881.
 	data := buildCompoundArgs([]byte("v4.1"), 1, []uint32{types.OP_PUTROOTFH})
 	resp, err := h.ProcessCompound(ctx, data)
 	if err != nil {
@@ -497,20 +498,13 @@ func TestCompound_MinorVersion1_Accepted(t *testing.T) {
 		t.Fatalf("decode response error: %v", err)
 	}
 
-	// PUTROOTFH should succeed via fallback to v4.0 dispatch table
-	if decoded.Status != types.NFS4_OK {
-		t.Errorf("status = %d, want NFS4_OK (%d) for v4.0 op in v4.1 compound",
-			decoded.Status, types.NFS4_OK)
+	// Non-exempt v4.0 op without SEQUENCE returns NFS4ERR_OP_NOT_IN_SESSION
+	if decoded.Status != types.NFS4ERR_OP_NOT_IN_SESSION {
+		t.Errorf("status = %d, want NFS4ERR_OP_NOT_IN_SESSION (%d) for v4.0 op in v4.1 compound without SEQUENCE",
+			decoded.Status, types.NFS4ERR_OP_NOT_IN_SESSION)
 	}
-	if decoded.NumResults != 1 {
-		t.Fatalf("numResults = %d, want 1", decoded.NumResults)
-	}
-	if decoded.Results[0].OpCode != types.OP_PUTROOTFH {
-		t.Errorf("result opcode = %d, want OP_PUTROOTFH (%d)",
-			decoded.Results[0].OpCode, types.OP_PUTROOTFH)
-	}
-	if decoded.Results[0].Status != types.NFS4_OK {
-		t.Errorf("result status = %d, want NFS4_OK", decoded.Results[0].Status)
+	if decoded.NumResults != 0 {
+		t.Errorf("numResults = %d, want 0 (no results on missing SEQUENCE)", decoded.NumResults)
 	}
 	if string(decoded.Tag) != "v4.1" {
 		t.Errorf("tag = %q, want %q", string(decoded.Tag), "v4.1")
@@ -521,10 +515,8 @@ func TestCompound_MinorVersion1_V41Op_NOTSUPP(t *testing.T) {
 	h := newTestHandler()
 	ctx := newTestCompoundContext()
 
-	// minorversion=1 COMPOUND with OP_RECLAIM_COMPLETE (v4.1 op, still a stub)
-	// Stub should decode args and return NFS4ERR_NOTSUPP.
-	// Note: EXCHANGE_ID (Phase 18) and CREATE_SESSION/DESTROY_SESSION (Phase 19)
-	// are now real handlers, so we use RECLAIM_COMPLETE as the representative stub.
+	// After Phase 20: RECLAIM_COMPLETE is not exempt from SEQUENCE.
+	// Without SEQUENCE, the COMPOUND should return NFS4ERR_OP_NOT_IN_SESSION.
 	ops := []compoundOp{
 		{opCode: types.OP_RECLAIM_COMPLETE, data: encodeReclaimCompleteArgs()},
 	}
@@ -539,20 +531,12 @@ func TestCompound_MinorVersion1_V41Op_NOTSUPP(t *testing.T) {
 		t.Fatalf("decode response error: %v", err)
 	}
 
-	if decoded.Status != types.NFS4ERR_NOTSUPP {
-		t.Errorf("status = %d, want NFS4ERR_NOTSUPP (%d)",
-			decoded.Status, types.NFS4ERR_NOTSUPP)
+	if decoded.Status != types.NFS4ERR_OP_NOT_IN_SESSION {
+		t.Errorf("status = %d, want NFS4ERR_OP_NOT_IN_SESSION (%d)",
+			decoded.Status, types.NFS4ERR_OP_NOT_IN_SESSION)
 	}
-	if decoded.NumResults != 1 {
-		t.Fatalf("numResults = %d, want 1", decoded.NumResults)
-	}
-	if decoded.Results[0].OpCode != types.OP_RECLAIM_COMPLETE {
-		t.Errorf("result opcode = %d, want OP_RECLAIM_COMPLETE (%d)",
-			decoded.Results[0].OpCode, types.OP_RECLAIM_COMPLETE)
-	}
-	if decoded.Results[0].Status != types.NFS4ERR_NOTSUPP {
-		t.Errorf("result status = %d, want NFS4ERR_NOTSUPP (%d)",
-			decoded.Results[0].Status, types.NFS4ERR_NOTSUPP)
+	if decoded.NumResults != 0 {
+		t.Errorf("numResults = %d, want 0 (no results without SEQUENCE)", decoded.NumResults)
 	}
 }
 
@@ -618,15 +602,9 @@ func TestCompound_V41_StubConsumesArgs(t *testing.T) {
 	h := newTestHandler()
 	ctx := newTestCompoundContext()
 
-	// Send a v4.1 COMPOUND with RECLAIM_COMPLETE (v4.1 stub) + PUTROOTFH (v4.0 op).
-	// RECLAIM_COMPLETE returns NOTSUPP which stops the compound, but the critical
-	// test is that the stub consumed the RECLAIM_COMPLETE XDR args correctly --
-	// if it didn't, the PUTROOTFH opcode would be misread from the arg data.
-	//
-	// We verify this by checking that the compound returns exactly 1 result
-	// (RECLAIM_COMPLETE with NOTSUPP) and not a garbage decode error.
-	// Note: EXCHANGE_ID (Phase 18) and CREATE_SESSION/DESTROY_SESSION (Phase 19)
-	// are now real handlers, so we use RECLAIM_COMPLETE as the representative stub.
+	// After Phase 20: RECLAIM_COMPLETE is not exempt from SEQUENCE.
+	// Without SEQUENCE, the COMPOUND returns NFS4ERR_OP_NOT_IN_SESSION.
+	// The stub arg consumption test is now covered by the SEQUENCE-gated tests.
 	ops := []compoundOp{
 		{opCode: types.OP_RECLAIM_COMPLETE, data: encodeReclaimCompleteArgs()},
 		{opCode: types.OP_PUTROOTFH}, // no args
@@ -642,25 +620,20 @@ func TestCompound_V41_StubConsumesArgs(t *testing.T) {
 		t.Fatalf("decode response error: %v", err)
 	}
 
-	// Should have exactly 1 result (RECLAIM_COMPLETE stops the compound)
-	if decoded.NumResults != 1 {
-		t.Fatalf("numResults = %d, want 1 (RECLAIM_COMPLETE should stop compound)", decoded.NumResults)
+	// Non-exempt op without SEQUENCE returns NFS4ERR_OP_NOT_IN_SESSION
+	if decoded.Status != types.NFS4ERR_OP_NOT_IN_SESSION {
+		t.Errorf("overall status = %d, want NFS4ERR_OP_NOT_IN_SESSION (%d)",
+			decoded.Status, types.NFS4ERR_OP_NOT_IN_SESSION)
 	}
-	if decoded.Results[0].OpCode != types.OP_RECLAIM_COMPLETE {
-		t.Errorf("result opcode = %d, want OP_RECLAIM_COMPLETE (%d)",
-			decoded.Results[0].OpCode, types.OP_RECLAIM_COMPLETE)
-	}
-	if decoded.Results[0].Status != types.NFS4ERR_NOTSUPP {
-		t.Errorf("result status = %d, want NFS4ERR_NOTSUPP", decoded.Results[0].Status)
-	}
-	if decoded.Status != types.NFS4ERR_NOTSUPP {
-		t.Errorf("overall status = %d, want NFS4ERR_NOTSUPP", decoded.Status)
+	if decoded.NumResults != 0 {
+		t.Errorf("numResults = %d, want 0 (no results without SEQUENCE)", decoded.NumResults)
 	}
 }
 
 func TestCompound_V41_AllStubOps(t *testing.T) {
-	// Verify all 19 v4.1 operations are registered in the dispatch table
-	// by checking that each returns NOTSUPP (not OP_ILLEGAL).
+	// After Phase 20: non-exempt v4.1 ops without SEQUENCE return
+	// NFS4ERR_OP_NOT_IN_SESSION. The dispatch table completeness
+	// is tested in TestCompound_V41_DispatchTableComplete.
 	h := newTestHandler()
 	ctx := newTestCompoundContext()
 
@@ -688,15 +661,13 @@ func TestCompound_V41_AllStubOps(t *testing.T) {
 				t.Fatalf("decode response error: %v", err)
 			}
 
-			if decoded.Status != types.NFS4ERR_NOTSUPP {
-				t.Errorf("status = %d, want NFS4ERR_NOTSUPP (%d)",
-					decoded.Status, types.NFS4ERR_NOTSUPP)
+			// Non-exempt op without SEQUENCE returns NFS4ERR_OP_NOT_IN_SESSION
+			if decoded.Status != types.NFS4ERR_OP_NOT_IN_SESSION {
+				t.Errorf("status = %d, want NFS4ERR_OP_NOT_IN_SESSION (%d)",
+					decoded.Status, types.NFS4ERR_OP_NOT_IN_SESSION)
 			}
-			if decoded.NumResults != 1 {
-				t.Fatalf("numResults = %d, want 1", decoded.NumResults)
-			}
-			if decoded.Results[0].OpCode != op.opCode {
-				t.Errorf("result opcode = %d, want %d", decoded.Results[0].OpCode, op.opCode)
+			if decoded.NumResults != 0 {
+				t.Errorf("numResults = %d, want 0", decoded.NumResults)
 			}
 		})
 	}
@@ -745,7 +716,9 @@ func TestCompound_V41_IllegalOpOutsideRange(t *testing.T) {
 	h := newTestHandler()
 	ctx := newTestCompoundContext()
 
-	// Opcode 99999 is outside all valid ranges -- should return OP_ILLEGAL
+	// After Phase 20: opcode 99999 is not exempt from SEQUENCE.
+	// The first op check sees it's not exempt and not SEQUENCE, so
+	// NFS4ERR_OP_NOT_IN_SESSION is returned before opcode validation.
 	data := buildCompoundArgs([]byte(""), 1, []uint32{99999})
 	resp, err := h.ProcessCompound(ctx, data)
 	if err != nil {
@@ -757,16 +730,12 @@ func TestCompound_V41_IllegalOpOutsideRange(t *testing.T) {
 		t.Fatalf("decode response error: %v", err)
 	}
 
-	if decoded.Status != types.NFS4ERR_OP_ILLEGAL {
-		t.Errorf("status = %d, want NFS4ERR_OP_ILLEGAL (%d)",
-			decoded.Status, types.NFS4ERR_OP_ILLEGAL)
+	if decoded.Status != types.NFS4ERR_OP_NOT_IN_SESSION {
+		t.Errorf("status = %d, want NFS4ERR_OP_NOT_IN_SESSION (%d)",
+			decoded.Status, types.NFS4ERR_OP_NOT_IN_SESSION)
 	}
-	if decoded.NumResults != 1 {
-		t.Fatalf("numResults = %d, want 1", decoded.NumResults)
-	}
-	if decoded.Results[0].OpCode != types.OP_ILLEGAL {
-		t.Errorf("result opcode = %d, want OP_ILLEGAL (%d)",
-			decoded.Results[0].OpCode, types.OP_ILLEGAL)
+	if decoded.NumResults != 0 {
+		t.Errorf("numResults = %d, want 0 (no results without SEQUENCE)", decoded.NumResults)
 	}
 }
 
