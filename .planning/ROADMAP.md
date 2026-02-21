@@ -127,8 +127,8 @@ Plans:
   4. Duplicate EXCHANGE_ID from same owner updates existing client record (idempotent)
 **Plans**: 2 plans
 Plans:
-- [ ] 18-01-PLAN.md -- V41ClientRecord, ServerIdentity, ExchangeID on StateManager, handler + dispatch wiring, unit/integration tests
-- [ ] 18-02-PLAN.md -- REST API /clients endpoint, /health server info, apiclient methods, dfsctl client list/evict commands
+- [x] 18-01-PLAN.md -- V41ClientRecord, ServerIdentity, ExchangeID on StateManager, handler + dispatch wiring, unit/integration tests
+- [x] 18-02-PLAN.md -- REST API /clients endpoint, /health server info, apiclient methods, dfsctl client list/evict commands
 
 ### Phase 19: Session Lifecycle
 **Goal**: NFSv4.1 clients can create and destroy sessions with negotiated channel attributes
@@ -139,7 +139,9 @@ Plans:
   2. Session ID is returned to client and usable for subsequent SEQUENCE operations
   3. DESTROY_SESSION tears down session, releases all slot table memory, and unbinds connections
   4. Channel attribute negotiation respects server-imposed limits (max slots, max request/response size)
-**Plans**: TBD
+**Plans**: 1 plan
+Plans:
+- [ ] 19-01-PLAN.md -- StateManager session methods, CREATE_SESSION/DESTROY_SESSION handlers, channel negotiation, replay detection, reaper, metrics, REST API, dfsctl CLI
 
 ### Phase 20: SEQUENCE and COMPOUND Bifurcation
 **Goal**: Every v4.1 COMPOUND is gated by SEQUENCE validation, providing exactly-once semantics while v4.0 clients continue working unchanged
@@ -316,8 +318,8 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 32
 | 15.5. Manual Verification v2.0 | v2.0 | - | Complete | 2026-02-19 |
 | 16. NFSv4.1 Types and Constants | v3.0 | 5/5 | Complete | 2026-02-20 |
 | 17. Slot Table and Session Data Structures | v3.0 | 2/2 | Complete | 2026-02-20 |
-| 18. EXCHANGE_ID and Client Registration | 2/2 | Complete    | 2026-02-20 | - |
-| 19. Session Lifecycle | v3.0 | 0/? | Not started | - |
+| 18. EXCHANGE_ID and Client Registration | v3.0 | 2/2 | Complete | 2026-02-20 |
+| 19. Session Lifecycle | v3.0 | 0/1 | Not started | - |
 | 20. SEQUENCE and COMPOUND Bifurcation | v3.0 | 0/? | Not started | - |
 | 21. Connection Management and Trunking | v3.0 | 0/? | Not started | - |
 | 22. Backchannel Multiplexing | v3.0 | 0/? | Not started | - |
