@@ -762,3 +762,148 @@ func TestCompound_V41_OpCountLimit(t *testing.T) {
 			decoded.Status, types.NFS4ERR_RESOURCE)
 	}
 }
+
+// ============================================================================
+// Benchmarks (Phase 20-02)
+// ============================================================================
+
+func BenchmarkSequenceValidation(b *testing.B) {
+	// Benchmark SEQUENCE validation throughput.
+	// Creates a session and sends SEQUENCE ops in a loop with incrementing seqids.
+	h := newTestHandler()
+	clientID, seqID := registerExchangeIDBench(b, h, "bench-seq-client")
+	sessionID := createTestSessionBench(b, h, clientID, seqID)
+
+	ctx := newTestCompoundContext()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		seqArgs := encodeSequenceArgs(sessionID, 0, uint32(i+1), 0, false)
+		ops := []compoundOp{
+			{opCode: types.OP_SEQUENCE, data: seqArgs},
+		}
+		data := buildCompoundArgsWithOps([]byte("bench"), 1, ops)
+
+		resp, err := h.ProcessCompound(ctx, data)
+		if err != nil {
+			b.Fatalf("ProcessCompound error: %v", err)
+		}
+		if resp == nil {
+			b.Fatal("nil response")
+		}
+	}
+}
+
+func BenchmarkCompoundDispatch(b *testing.B) {
+	// Benchmark full COMPOUND dispatch: SEQUENCE + PUTROOTFH.
+	h := newTestHandler()
+	clientID, seqID := registerExchangeIDBench(b, h, "bench-dispatch-client")
+	sessionID := createTestSessionBench(b, h, clientID, seqID)
+
+	ctx := newTestCompoundContext()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		seqArgs := encodeSequenceArgs(sessionID, 0, uint32(i+1), 0, false)
+		ops := []compoundOp{
+			{opCode: types.OP_SEQUENCE, data: seqArgs},
+			{opCode: types.OP_PUTROOTFH},
+		}
+		data := buildCompoundArgsWithOps([]byte("bench"), 1, ops)
+
+		resp, err := h.ProcessCompound(ctx, data)
+		if err != nil {
+			b.Fatalf("ProcessCompound error: %v", err)
+		}
+		if resp == nil {
+			b.Fatal("nil response")
+		}
+	}
+}
+
+func BenchmarkCompoundDispatch_V40(b *testing.B) {
+	// Benchmark v4.0 COMPOUND dispatch for comparison: PUTROOTFH only.
+	h := newTestHandler()
+	ctx := newTestCompoundContext()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		data := buildCompoundArgs([]byte("bench-v40"), 0, []uint32{types.OP_PUTROOTFH})
+		resp, err := h.ProcessCompound(ctx, data)
+		if err != nil {
+			b.Fatalf("ProcessCompound error: %v", err)
+		}
+		if resp == nil {
+			b.Fatal("nil response")
+		}
+	}
+}
+
+// registerExchangeIDBench is a benchmark-friendly version of registerExchangeID.
+func registerExchangeIDBench(b *testing.B, h *Handler, ownerID string) (uint64, uint32) {
+	b.Helper()
+	ctx := newTestCompoundContext()
+
+	ownerIDBytes := []byte(ownerID)
+	var verifier [8]byte
+	copy(verifier[:], "benchvrf")
+	eidArgs := encodeExchangeIdArgs(ownerIDBytes, verifier, 0, types.SP4_NONE, nil)
+
+	ops := []compoundOp{{opCode: types.OP_EXCHANGE_ID, data: eidArgs}}
+	data := buildCompoundArgsWithOps([]byte("eid"), 1, ops)
+
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		b.Fatalf("EXCHANGE_ID ProcessCompound error: %v", err)
+	}
+
+	reader := bytes.NewReader(resp)
+	status, _ := xdr.DecodeUint32(reader)
+	if status != types.NFS4_OK {
+		b.Fatalf("EXCHANGE_ID status = %d, want NFS4_OK", status)
+	}
+	_, _ = xdr.DecodeOpaque(reader) // tag
+	_, _ = xdr.DecodeUint32(reader) // numResults
+	_, _ = xdr.DecodeUint32(reader) // opcode
+
+	var eidRes types.ExchangeIdRes
+	if err := eidRes.Decode(reader); err != nil {
+		b.Fatalf("decode ExchangeIdRes: %v", err)
+	}
+	// Return seqID+1: CREATE_SESSION must send record.SequenceID + 1
+	return eidRes.ClientID, eidRes.SequenceID + 1
+}
+
+// createTestSessionBench is a benchmark-friendly version of createTestSession.
+func createTestSessionBench(b *testing.B, h *Handler, clientID uint64, seqID uint32) types.SessionId4 {
+	b.Helper()
+	ctx := newTestCompoundContext()
+
+	secParms := []types.CallbackSecParms4{{CbSecFlavor: 0}}
+	csArgs := encodeCreateSessionArgsWithSec(clientID, seqID, 0, secParms)
+	ops := []compoundOp{{opCode: types.OP_CREATE_SESSION, data: csArgs}}
+	data := buildCompoundArgsWithOps([]byte("cs"), 1, ops)
+
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		b.Fatalf("CREATE_SESSION ProcessCompound error: %v", err)
+	}
+
+	reader := bytes.NewReader(resp)
+	status, _ := xdr.DecodeUint32(reader)
+	if status != types.NFS4_OK {
+		b.Fatalf("CREATE_SESSION overall status = %d, want NFS4_OK", status)
+	}
+	_, _ = xdr.DecodeOpaque(reader) // tag
+	_, _ = xdr.DecodeUint32(reader) // numResults
+	_, _ = xdr.DecodeUint32(reader) // opcode
+
+	var csRes types.CreateSessionRes
+	if err := csRes.Decode(reader); err != nil {
+		b.Fatalf("decode CreateSessionRes: %v", err)
+	}
+	if csRes.Status != types.NFS4_OK {
+		b.Fatalf("CREATE_SESSION status = %d, want NFS4_OK", csRes.Status)
+	}
+	return csRes.SessionID
+}
