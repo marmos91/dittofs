@@ -63,6 +63,10 @@ type NFSAdapterSettings struct {
 	// Delegation policy
 	DelegationsEnabled bool `gorm:"default:true" json:"delegations_enabled"`
 
+	// TODO: Wire NFSv4.1 session limits into StateManager (these fields are not yet active; future: settings watcher).
+	V4MaxSessionSlots      int `gorm:"default:64" json:"v4_max_session_slots"`       // fore channel max slots per session
+	V4MaxSessionsPerClient int `gorm:"default:16" json:"v4_max_sessions_per_client"` // max sessions per client
+
 	// Operation blocklist (JSON array stored as text)
 	BlockedOperations string `gorm:"type:text" json:"-"`
 
@@ -157,6 +161,8 @@ func NewDefaultNFSSettings(adapterID string) *NFSAdapterSettings {
 		MaxWriteSize:            1048576,
 		PreferredTransferSize:   1048576,
 		DelegationsEnabled:      true,
+		V4MaxSessionSlots:       64,
+		V4MaxSessionsPerClient:  16,
 		PortmapperEnabled:       false,
 		PortmapperPort:          10111,
 		Version:                 1,

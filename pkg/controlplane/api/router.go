@@ -41,6 +41,7 @@ import (
 //   - /api/v1/adapters/* - Adapter management (admin only)
 //   - /api/v1/settings/* - System settings management (admin only)
 //   - /api/v1/clients - NFS client management (admin only)
+//   - /api/v1/clients/{id}/sessions - NFS client session management (admin only)
 func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.Store) http.Handler {
 	r := chi.NewRouter()
 
@@ -246,6 +247,10 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 					r.Use(apiMiddleware.RequireAdmin())
 					r.Get("/", clientHandler.List)
 					r.Delete("/{id}", clientHandler.Evict)
+					r.Route("/{id}/sessions", func(r chi.Router) {
+						r.Get("/", clientHandler.ListSessions)
+						r.Delete("/{sid}", clientHandler.ForceDestroySession)
+					})
 				})
 			}
 		})

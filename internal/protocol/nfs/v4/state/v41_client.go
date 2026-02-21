@@ -62,6 +62,11 @@ type V41ClientRecord struct {
 
 	// Lease is the lease timer for this client (shared behavior via pointer, same as v4.0 pattern).
 	Lease *LeaseState
+
+	// CachedCreateSessionRes holds the full XDR-encoded CREATE_SESSION
+	// response bytes for replay detection (RFC 8881 Section 18.36).
+	// nil until the first successful CREATE_SESSION.
+	CachedCreateSessionRes []byte
 }
 
 // ============================================================================
@@ -267,7 +272,8 @@ func applyImplInfo(record *V41ClientRecord, clientImplId []types.NfsImplId4) {
 	}
 }
 
-// purgeV41Client removes a V41ClientRecord from both lookup maps.
+// purgeV41Client removes a V41ClientRecord from both lookup maps
+// and destroys all associated sessions.
 // Only deletes from v41ClientsByOwner if the map entry still points to this
 // record (guards against a concurrent createV41Client having already replaced it).
 // Caller must hold sm.mu.
@@ -275,6 +281,14 @@ func (sm *StateManager) purgeV41Client(record *V41ClientRecord) {
 	if record.Lease != nil {
 		record.Lease.Stop()
 	}
+
+	// Destroy all sessions for this client
+	for _, session := range sm.sessionsByClientID[record.ClientID] {
+		delete(sm.sessionsByID, session.SessionID)
+		sm.sessionMetrics.recordDestroyed("purged", time.Since(session.CreatedAt).Seconds())
+	}
+	delete(sm.sessionsByClientID, record.ClientID)
+
 	delete(sm.v41ClientsByID, record.ClientID)
 	ownerKey := string(record.OwnerID)
 	if existing := sm.v41ClientsByOwner[ownerKey]; existing == record {
@@ -320,9 +334,8 @@ func (sm *StateManager) ListV40Clients() []ClientRecord {
 }
 
 // EvictV41Client removes a v4.1 client record by client ID.
+// Also destroys all associated sessions (handled by purgeV41Client).
 // Thread-safe: acquires sm.mu.Lock.
-//
-// TODO: Extend to destroy associated sessions in Phase 19 (CREATE_SESSION).
 func (sm *StateManager) EvictV41Client(clientID uint64) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -416,4 +429,131 @@ func (sm *StateManager) EvictV40Client(clientID uint64) error {
 // ServerInfo returns the immutable server identity for API responses.
 func (sm *StateManager) ServerInfo() *ServerIdentity {
 	return sm.serverIdentity
+}
+
+// ============================================================================
+// Channel Negotiation (RFC 8881 Section 18.36)
+// ============================================================================
+
+// ChannelLimits defines server-imposed limits for channel attribute negotiation.
+type ChannelLimits struct {
+	MaxSlots              uint32
+	MaxRequestSize        uint32
+	MaxResponseSize       uint32
+	MaxResponseSizeCached uint32
+	MinRequestSize        uint32
+	MinResponseSize       uint32
+}
+
+// DefaultForeLimits returns the default server limits for fore channel negotiation.
+func DefaultForeLimits() ChannelLimits {
+	return ChannelLimits{
+		MaxSlots:              64,
+		MaxRequestSize:        1048576, // 1MB
+		MaxResponseSize:       1048576, // 1MB
+		MaxResponseSizeCached: 65536,   // 64KB
+		MinRequestSize:        8192,    // 8KB
+		MinResponseSize:       8192,    // 8KB
+	}
+}
+
+// DefaultBackLimits returns the default server limits for back channel negotiation.
+func DefaultBackLimits() ChannelLimits {
+	return ChannelLimits{
+		MaxSlots:              8,
+		MaxRequestSize:        65536, // 64KB
+		MaxResponseSize:       65536, // 64KB
+		MaxResponseSizeCached: 65536, // 64KB
+		MinRequestSize:        8192,  // 8KB
+		MinResponseSize:       8192,  // 8KB
+	}
+}
+
+// negotiateChannelAttrs clamps the client-requested channel attributes
+// to the server-imposed limits, per RFC 8881 Section 18.36.
+func negotiateChannelAttrs(requested types.ChannelAttrs, limits ChannelLimits) types.ChannelAttrs {
+	negotiated := types.ChannelAttrs{
+		// HeaderPadSize is always 0 (no RDMA).
+		HeaderPadSize: 0,
+		// MaxOperations is 0 (unlimited per locked decision).
+		MaxOperations: 0,
+		// RdmaIrd is always nil (no RDMA per locked decision).
+		RdmaIrd: nil,
+	}
+
+	// Clamp MaxRequests (slots) to [1, limits.MaxSlots]
+	negotiated.MaxRequests = clampUint32(requested.MaxRequests, 1, limits.MaxSlots)
+
+	// Clamp MaxRequestSize to [MinRequestSize, limits.MaxRequestSize]
+	negotiated.MaxRequestSize = clampUint32(requested.MaxRequestSize, limits.MinRequestSize, limits.MaxRequestSize)
+
+	// Clamp MaxResponseSize to [MinResponseSize, limits.MaxResponseSize]
+	negotiated.MaxResponseSize = clampUint32(requested.MaxResponseSize, limits.MinResponseSize, limits.MaxResponseSize)
+
+	// Clamp MaxResponseSizeCached to min(requested, limits.MaxResponseSizeCached)
+	negotiated.MaxResponseSizeCached = requested.MaxResponseSizeCached
+	if negotiated.MaxResponseSizeCached > limits.MaxResponseSizeCached {
+		negotiated.MaxResponseSizeCached = limits.MaxResponseSizeCached
+	}
+
+	return negotiated
+}
+
+// clampUint32 clamps v to [min, max].
+func clampUint32(v, min, max uint32) uint32 {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
+
+// HasAcceptableCallbackSecurity checks whether at least one of the callback
+// security parameters uses an acceptable auth flavor (AUTH_NONE=0 or AUTH_SYS=1).
+// Returns true if the slice is empty (no callback security = ok) or contains
+// at least one acceptable flavor. Rejects RPCSEC_GSS-only (flavor 6).
+func HasAcceptableCallbackSecurity(secParms []types.CallbackSecParms4) bool {
+	if len(secParms) == 0 {
+		return true
+	}
+	for _, sp := range secParms {
+		if sp.CbSecFlavor == 0 || sp.CbSecFlavor == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// ============================================================================
+// Session Error Sentinels
+// ============================================================================
+
+var (
+	// ErrBadSession indicates the session ID is not recognized.
+	ErrBadSession = &NFS4StateError{Status: types.NFS4ERR_BADSESSION, Message: "session not found"}
+
+	// ErrDelay indicates the operation cannot proceed now; the client should retry.
+	ErrDelay = &NFS4StateError{Status: types.NFS4ERR_DELAY, Message: "operation in progress, retry later"}
+
+	// ErrTooManySessions indicates the per-client session limit has been reached.
+	ErrTooManySessions = &NFS4StateError{Status: types.NFS4ERR_RESOURCE, Message: "per-client session limit exceeded"}
+
+	// ErrSeqMisordered indicates a CREATE_SESSION sequence ID mismatch.
+	ErrSeqMisordered = &NFS4StateError{Status: types.NFS4ERR_SEQ_MISORDERED, Message: "sequence ID misordered"}
+)
+
+// ============================================================================
+// CreateSessionResult
+// ============================================================================
+
+// CreateSessionResult holds the output of StateManager.CreateSession for the
+// handler to encode into the CREATE_SESSION response.
+type CreateSessionResult struct {
+	SessionID        types.SessionId4
+	SequenceID       uint32
+	Flags            uint32
+	ForeChannelAttrs types.ChannelAttrs
+	BackChannelAttrs types.ChannelAttrs
 }

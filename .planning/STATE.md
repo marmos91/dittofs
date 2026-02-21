@@ -9,10 +9,10 @@ See: .planning/PROJECT.md (updated 2026-02-20)
 
 ## Current Position
 
-Phase: 18 of 25 (EXCHANGE_ID Handler) -- COMPLETE
-Plan: 2 of 2 in current phase -- COMPLETE
-Status: Phase Complete
-Last activity: 2026-02-20 — Completed 18-02-PLAN.md
+Phase: 19 of 25 (Session Lifecycle) -- IN PROGRESS
+Plan: 1 of 1 in current phase -- COMPLETE
+Status: Plan Complete
+Last activity: 2026-02-21 — Completed 19-01-PLAN.md
 
 Progress: [########################################] 100% (72/72 plans complete)
 
@@ -58,6 +58,7 @@ Progress: [########################################] 100% (72/72 plans complete)
 | Phase 17 P02 | 2min | 2 tasks | 2 files |
 | Phase 18 P01 | 18min | 2 tasks | 7 files |
 | Phase 18 P02 | 8min | 2 tasks | 12 files |
+| Phase 19 P01 | 23min | 3 tasks | 20 files |
 
 ## Quick Tasks Completed
 
@@ -94,6 +95,10 @@ Recent decisions affecting current work:
 - [Phase 18-01]: ServerIdentity singleton with os.Hostname() for server_owner, consistent across all EXCHANGE_ID calls
 - [Phase 18-02]: NFSClientProvider stored as any on Runtime to avoid pkg/ -> internal/ import cycle
 - [Phase 18-02]: EvictV40Client with full cleanup (open states, lock states, delegations, lease timers)
+- [Phase 19-01]: CREATE_SESSION replay: handler caches encoded XDR bytes via CacheCreateSessionResponse(), StateManager owns multi-case seqid algorithm
+- [Phase 19-01]: Channel negotiation clamps to server limits (64 fore slots, 8 back slots, 1MB sizes), no RDMA, MaxOperations=0
+- [Phase 19-01]: Session reaper sweeps every 30s, 2x lease duration for unconfirmed client timeout
+- [Phase 19-01]: V4MaxSessionSlots/V4MaxSessionsPerClient config fields exist but not yet wired to StateManager
 
 ### Pending Todos
 
@@ -106,6 +111,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-02-20
-Stopped at: Completed 18-02-PLAN.md (Phase 18 complete)
+Last session: 2026-02-21
+Stopped at: Completed 19-01-PLAN.md
 Resume file: `/gsd:execute-phase 19`
