@@ -68,13 +68,21 @@ func NewSequenceMetrics(reg prometheus.Registerer) *SequenceMetrics {
 	}
 
 	if reg != nil {
-		reg.MustRegister(
+		collectors := []prometheus.Collector{
 			m.SequenceTotal,
 			m.ErrorsTotal,
 			m.ReplayHitsTotal,
 			m.SlotsInUse,
 			m.ReplayCacheBytes,
-		)
+		}
+		for _, c := range collectors {
+			if err := reg.Register(c); err != nil {
+				// Ignore AlreadyRegisteredError (server restart re-registers).
+				if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
+					panic(err)
+				}
+			}
+		}
 	}
 
 	return m

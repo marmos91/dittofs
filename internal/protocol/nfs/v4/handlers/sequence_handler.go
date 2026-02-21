@@ -78,15 +78,14 @@ func (h *Handler) handleSequenceOp(compCtx *types.CompoundContext, reader io.Rea
 		if slot != nil && slot.CachedReply != nil {
 			return nil, nil, nil, slot.CachedReply, nil
 		}
-		// Defensive guard: SeqRetry should only be returned when CachedReply != nil.
-		// ValidateSequence returns SeqMisordered (not SeqRetry) for uncached retries.
-		// This path handles an unexpected invariant violation gracefully rather than
-		// panicking or returning a misleading success.
+		// Invariant violation: SeqRetry should only be returned when CachedReply != nil.
+		// ValidateSequence returns SeqMisordered with NFS4ERR_RETRY_UNCACHED_REP for
+		// retries without cache. If we ever reach this point, treat as internal error.
 		h.sequenceMetrics.RecordError("retry_uncached")
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_RETRY_UNCACHED_REP,
+			Status: types.NFS4ERR_SERVERFAULT,
 			OpCode: types.OP_SEQUENCE,
-			Data:   encodeStatusOnly(types.NFS4ERR_RETRY_UNCACHED_REP),
+			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
 		}, nil, nil, nil, nil
 
 	case state.SeqMisordered:

@@ -58,12 +58,20 @@ func NewSessionMetrics(reg prometheus.Registerer) *SessionMetrics {
 	}
 
 	if reg != nil {
-		reg.MustRegister(
+		collectors := []prometheus.Collector{
 			m.CreatedTotal,
 			m.DestroyedTotal,
 			m.ActiveGauge,
 			m.DurationHistogram,
-		)
+		}
+		for _, c := range collectors {
+			if err := reg.Register(c); err != nil {
+				// Ignore AlreadyRegisteredError (server restart re-registers).
+				if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
+					panic(err)
+				}
+			}
+		}
 	}
 
 	return m
