@@ -9,7 +9,7 @@ Requirements for NFSv4.1 Sessions milestone. Each maps to roadmap phases.
 
 ### Session Infrastructure
 
-- [ ] **SESS-01**: Server handles EXCHANGE_ID to register v4.1 clients with owner/implementation ID tracking
+- [x] **SESS-01**: Server handles EXCHANGE_ID to register v4.1 clients with owner/implementation ID tracking
 - [ ] **SESS-02**: Server handles CREATE_SESSION to establish sessions with negotiated channel attributes and slot tables
 - [ ] **SESS-03**: Server handles DESTROY_SESSION to tear down sessions and release slot table memory
 - [ ] **SESS-04**: Server handles SEQUENCE as first operation in every v4.1 COMPOUND with slot validation and lease renewal
@@ -45,7 +45,7 @@ Requirements for NFSv4.1 Sessions milestone. Each maps to roadmap phases.
 ### Trunking
 
 - [ ] **TRUNK-01**: Multiple connections can be bound to a single session via BIND_CONN_TO_SESSION
-- [ ] **TRUNK-02**: Server reports consistent server_owner in EXCHANGE_ID for trunking detection
+- [x] **TRUNK-02**: Server reports consistent server_owner in EXCHANGE_ID for trunking detection
 
 ### Coexistence
 
@@ -107,7 +107,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SESS-01 | Phase 18 | Pending |
+| SESS-01 | Phase 18 | Complete |
 | SESS-02 | Phase 19 | Pending |
 | SESS-03 | Phase 19 | Pending |
 | SESS-04 | Phase 20 | Pending |
@@ -128,7 +128,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DDELEG-02 | Phase 24 | Pending |
 | DDELEG-03 | Phase 24 | Pending |
 | TRUNK-01 | Phase 21 | Pending |
-| TRUNK-02 | Phase 18 | Pending |
+| TRUNK-02 | Phase 18 | Complete |
 | COEX-01 | Phase 20 | Pending |
 | COEX-02 | Phase 20 | Pending |
 | COEX-03 | Phase 20 | Pending |

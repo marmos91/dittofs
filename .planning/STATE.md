@@ -9,12 +9,12 @@ See: .planning/PROJECT.md (updated 2026-02-20)
 
 ## Current Position
 
-Phase: 18 of 25 (EXCHANGE_ID Handler)
-Plan: 1 of ? in current phase
-Status: Ready
-Last activity: 2026-02-20 — Completed Phase 17 (Slot Table and Session Data Structures)
+Phase: 18 of 25 (EXCHANGE_ID Handler) -- COMPLETE
+Plan: 2 of 2 in current phase -- COMPLETE
+Status: Phase Complete
+Last activity: 2026-02-20 — Completed 18-02-PLAN.md
 
-Progress: [########################################] 97% (69/70 plans complete)
+Progress: [########################################] 100% (72/72 plans complete)
 
 ## Completed Milestones
 
@@ -56,6 +56,8 @@ Progress: [########################################] 97% (69/70 plans complete)
 | Phase 16 P05 | 6min | 2 tasks | 4 files |
 | Phase 17 P01 | 3min | 2 tasks | 2 files |
 | Phase 17 P02 | 2min | 2 tasks | 2 files |
+| Phase 18 P01 | 18min | 2 tasks | 7 files |
+| Phase 18 P02 | 8min | 2 tasks | 12 files |
 
 ## Quick Tasks Completed
 
@@ -87,6 +89,11 @@ Recent decisions affecting current work:
 - [Phase 17-02]: Session struct is independent of StateManager -- registration is Phase 19's job
 - [Phase 17-02]: crypto/rand session ID with deterministic fallback (clientID + nanotime)
 - [Phase 17-02]: Back channel slot table only allocated when CONN_BACK_CHAN flag is set
+- [Phase 18-01]: V41ClientRecord is separate struct from v4.0 ClientRecord (different registration flow)
+- [Phase 18-01]: SP4_MACH_CRED/SP4_SSV rejected with NFS4ERR_ENCR_ALG_UNSUPP before state allocation (matches Linux nfsd)
+- [Phase 18-01]: ServerIdentity singleton with os.Hostname() for server_owner, consistent across all EXCHANGE_ID calls
+- [Phase 18-02]: NFSClientProvider stored as any on Runtime to avoid pkg/ -> internal/ import cycle
+- [Phase 18-02]: EvictV40Client with full cleanup (open states, lock states, delegations, lease timers)
 
 ### Pending Todos
 
@@ -100,5 +107,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-20
-Stopped at: Completed 17-02-PLAN.md (Phase 17 complete)
-Resume file: `/gsd:execute-phase 18`
+Stopped at: Completed 18-02-PLAN.md (Phase 18 complete)
+Resume file: `/gsd:execute-phase 19`
