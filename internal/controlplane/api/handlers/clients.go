@@ -163,12 +163,30 @@ func (h *ClientHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 
 // ForceDestroySession handles DELETE /api/v1/clients/{id}/sessions/{sid}.
 func (h *ClientHandler) ForceDestroySession(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	clientID, err := strconv.ParseUint(idStr, 16, 64)
+	if err != nil {
+		BadRequest(w, "invalid client ID format, expected hex")
+		return
+	}
+
 	sidStr := chi.URLParam(r, "sid")
 
 	// Parse hex session ID (32 hex chars = 16 bytes)
 	sidBytes, err := parseSessionID(sidStr)
 	if err != nil {
 		BadRequest(w, "invalid session ID format, expected 32 hex characters")
+		return
+	}
+
+	// Verify the session belongs to the specified client
+	session := h.sm.GetSession(sidBytes)
+	if session == nil {
+		NotFound(w, "session not found")
+		return
+	}
+	if session.ClientID != clientID {
+		NotFound(w, "session not found for this client")
 		return
 	}
 

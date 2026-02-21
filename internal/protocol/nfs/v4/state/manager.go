@@ -125,7 +125,8 @@ type StateManager struct {
 	maxSessionsPerClient int
 
 	// sessionMetrics holds Prometheus metrics for session lifecycle.
-	// nil-safe: all metric calls check for nil before recording.
+	// May be nil; SessionMetrics methods are nil-safe so callers can invoke
+	// them without additional nil checks.
 	sessionMetrics *SessionMetrics
 
 	// serverIdentity is the immutable server identity returned in EXCHANGE_ID responses.
@@ -2074,6 +2075,10 @@ func (sm *StateManager) ListSessionsForClient(clientID uint64) []*Session {
 
 // StartSessionReaper starts a background goroutine that periodically sweeps
 // for expired client leases and unconfirmed clients, destroying their sessions.
+//
+// Callers (typically the NFS adapter startup path) MUST invoke this after
+// constructing the StateManager, passing a context that is cancelled on
+// shutdown. If not started, expired/unconfirmed v4.1 clients will never be reaped.
 //
 // The reaper runs every 30 seconds and checks:
 //   - Clients with expired leases: destroys all sessions, purges client

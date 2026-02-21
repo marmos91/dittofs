@@ -121,7 +121,7 @@ type V41OpHandler func(ctx *types.CompoundContext, v41ctx *types.V41RequestConte
 - `dittofs_nfs_sessions_destroyed_total` (counter, label: reason)
 - `dittofs_nfs_sessions_active` (gauge)
 - `dittofs_nfs_sessions_duration_seconds` (histogram)
-- All metric calls nil-safe (StateManager checks `sm.sessionMetrics != nil`)
+- All metric calls are nil-safe via receiver methods on a possibly-nil `*SessionMetrics` (no explicit nil check needed in StateManager)
 
 **Logging:** INFO for session create/destroy, DEBUG for expected errors (not found, replay)
 
