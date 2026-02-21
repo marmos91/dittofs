@@ -161,7 +161,7 @@ type ExchangeIDResult struct {
 func (sm *StateManager) ExchangeID(
 	ownerID []byte,
 	verifier [8]byte,
-	flags uint32,
+	_ uint32,
 	clientImplId []types.NfsImplId4,
 	clientAddr string,
 ) (*ExchangeIDResult, error) {
@@ -294,7 +294,14 @@ func (sm *StateManager) ListV41Clients() []V41ClientRecord {
 
 	clients := make([]V41ClientRecord, 0, len(sm.v41ClientsByID))
 	for _, record := range sm.v41ClientsByID {
-		clients = append(clients, *record)
+		rec := *record
+		if rec.OwnerID != nil {
+			ownerCopy := make([]byte, len(rec.OwnerID))
+			copy(ownerCopy, rec.OwnerID)
+			rec.OwnerID = ownerCopy
+		}
+		rec.Lease = nil
+		clients = append(clients, rec)
 	}
 	return clients
 }

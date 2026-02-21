@@ -1,18 +1,22 @@
 package apiclient
 
-import "fmt"
+import (
+	"fmt"
+	"net/url"
+	"time"
+)
 
 // ClientInfo represents a connected NFS client returned by the API.
 type ClientInfo struct {
-	ClientID    string `json:"client_id"`
-	Address     string `json:"address"`
-	NFSVersion  string `json:"nfs_version"`
-	ConnectedAt string `json:"connected_at"`
-	LastRenewal string `json:"last_renewal"`
-	LeaseStatus string `json:"lease_status"`
-	Confirmed   bool   `json:"confirmed"`
-	ImplName    string `json:"impl_name,omitempty"`
-	ImplDomain  string `json:"impl_domain,omitempty"`
+	ClientID    string    `json:"client_id"`
+	Address     string    `json:"address"`
+	NFSVersion  string    `json:"nfs_version"`
+	ConnectedAt time.Time `json:"connected_at"`
+	LastRenewal time.Time `json:"last_renewal"`
+	LeaseStatus string    `json:"lease_status"`
+	Confirmed   bool      `json:"confirmed"`
+	ImplName    string    `json:"impl_name,omitempty"`
+	ImplDomain  string    `json:"impl_domain,omitempty"`
 }
 
 // ListClients returns all connected NFS clients.
@@ -26,5 +30,5 @@ func (c *Client) ListClients() ([]ClientInfo, error) {
 
 // EvictClient evicts a connected NFS client by hex client ID.
 func (c *Client) EvictClient(clientID string) error {
-	return c.delete(fmt.Sprintf("/api/v1/clients/%s", clientID), nil)
+	return c.delete(fmt.Sprintf("/api/v1/clients/%s", url.PathEscape(clientID)), nil)
 }
