@@ -14,6 +14,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
 	nfs_types "github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	v4handlers "github.com/marmos91/dittofs/internal/protocol/nfs/v4/handlers"
+	v4state "github.com/marmos91/dittofs/internal/protocol/nfs/v4/state"
 	v4types "github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
 	nlm "github.com/marmos91/dittofs/internal/protocol/nlm"
 	nlm_handlers "github.com/marmos91/dittofs/internal/protocol/nlm/handlers"
@@ -522,6 +523,12 @@ func (c *NFSConnection) handleNFSv4Procedure(ctx context.Context, call *rpc.RPCC
 		compCtx.ConnectionID = c.connectionID
 
 		result, err := c.server.v4Handler.ProcessCompound(compCtx, data)
+
+		// After COMPOUND completes, check if this connection was bound for
+		// back-channel. If so, register a ConnWriter and PendingCBReplies
+		// so the read loop can demux backchannel replies.
+		c.maybeRegisterBackchannel(ctx)
+
 		if c.server.metrics != nil {
 			duration := time.Since(startTime)
 			var responseStatus string
@@ -565,6 +572,55 @@ func (c *NFSConnection) isOperationBlocked(opName string) bool {
 		}
 	}
 	return false
+}
+
+// maybeRegisterBackchannel checks if this connection has been bound for
+// back-channel after a COMPOUND completes. If it has, registers a ConnWriter
+// callback (capturing the NFSConnection's writeMu for serialization) and a
+// PendingCBReplies instance for demuxing backchannel replies.
+//
+// This is called after every NFSv4 COMPOUND to detect BIND_CONN_TO_SESSION
+// or CREATE_SESSION auto-bind results that include back-channel direction.
+// The check is cheap (one map lookup) and idempotent (no-op if already registered).
+func (c *NFSConnection) maybeRegisterBackchannel(ctx context.Context) {
+	if c.server.v4Handler == nil || c.server.v4Handler.StateManager == nil {
+		return
+	}
+
+	sm := c.server.v4Handler.StateManager
+
+	// Check if this connection is bound with a back-channel direction
+	binding := sm.GetConnectionBinding(c.connectionID)
+	if binding == nil {
+		return
+	}
+	if binding.Direction != v4state.ConnDirBack && binding.Direction != v4state.ConnDirBoth {
+		return
+	}
+
+	// Already registered -- no-op
+	if c.pendingCBReplies != nil {
+		return
+	}
+
+	// Register ConnWriter: captures this NFSConnection's writeMu to prevent
+	// interleaving between fore-channel replies and backchannel callbacks.
+	writer := v4state.ConnWriter(func(data []byte) error {
+		c.writeMu.Lock()
+		defer c.writeMu.Unlock()
+		_, err := c.conn.Write(data)
+		return err
+	})
+	pending := sm.RegisterConnWriter(c.connectionID, writer)
+	c.pendingCBReplies = pending
+
+	// Start the BackchannelSender for this session (idempotent)
+	sm.StartBackchannelSender(ctx, binding.SessionID)
+
+	logger.Debug("Backchannel registered for connection",
+		"conn_id", c.connectionID,
+		"session_id", binding.SessionID.String(),
+		"direction", binding.Direction.String())
 }
 
 // makeBlockedOpResponse creates an NFS3ERR_NOTSUPP response for a blocked operation.

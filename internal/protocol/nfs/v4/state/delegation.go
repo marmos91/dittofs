@@ -330,13 +330,72 @@ func (sm *StateManager) CheckDelegationConflict(fileHandle []byte, clientID uint
 	return false, nil
 }
 
+// startRevocationTimer starts a recall timer on the delegation that will revoke it
+// on expiry. Uses a short timeout (5s) for failure cases or the full lease duration
+// for successful recalls.
+func (sm *StateManager) startRevocationTimer(deleg *DelegationState, timeout time.Duration) {
+	deleg.StartRecallTimer(timeout, func() {
+		sm.RevokeDelegation(deleg.Stateid.Other)
+	})
+}
+
 // sendRecall sends a CB_RECALL to the delegation holder.
 //
+// For v4.1 clients, the recall is enqueued to the BackchannelSender goroutine
+// which sends it over a back-bound TCP connection.
+// For v4.0 clients, the recall uses the dial-out path (SendCBRecall).
+//
 // IMPORTANT: This must NOT hold sm.mu during the TCP call.
-// It acquires RLock only to read the client's callback info, then releases
-// the lock before the network call.
 func (sm *StateManager) sendRecall(deleg *DelegationState) {
-	// Read callback info under RLock
+	sender := sm.getBackchannelSender(deleg.ClientID)
+	if sender != nil {
+		sm.sendRecallV41(deleg, sender)
+		return
+	}
+	sm.sendRecallV40(deleg)
+}
+
+// sendRecallV41 sends CB_RECALL via the v4.1 BackchannelSender.
+func (sm *StateManager) sendRecallV41(deleg *DelegationState, sender *BackchannelSender) {
+	recallOp := EncodeCBRecallOp(&deleg.Stateid, false, deleg.FileHandle)
+
+	resultCh := make(chan error, 1)
+	req := CallbackRequest{
+		OpCode:   types.OP_CB_RECALL,
+		Payload:  recallOp,
+		ResultCh: resultCh,
+	}
+
+	if !sender.Enqueue(req) {
+		logger.Warn("CB_RECALL: backchannel queue full, starting short revocation timer",
+			"client_id", deleg.ClientID)
+		sm.startRevocationTimer(deleg, 5*time.Second)
+		return
+	}
+
+	select {
+	case err := <-resultCh:
+		if err != nil {
+			logger.Warn("CB_RECALL (v4.1) failed",
+				"client_id", deleg.ClientID,
+				"error", err)
+			sm.startRevocationTimer(deleg, 5*time.Second)
+			return
+		}
+		sm.startRevocationTimer(deleg, sm.leaseDuration)
+		logger.Debug("CB_RECALL (v4.1) sent successfully",
+			"client_id", deleg.ClientID,
+			"deleg_type", deleg.DelegType)
+
+	case <-time.After(30 * time.Second):
+		logger.Warn("CB_RECALL (v4.1) result timeout",
+			"client_id", deleg.ClientID)
+		sm.startRevocationTimer(deleg, 5*time.Second)
+	}
+}
+
+// sendRecallV40 sends CB_RECALL via the v4.0 dial-out path.
+func (sm *StateManager) sendRecallV40(deleg *DelegationState) {
 	sm.mu.RLock()
 	client, exists := sm.clientsByID[deleg.ClientID]
 	var callback CallbackInfo
@@ -348,23 +407,16 @@ func (sm *StateManager) sendRecall(deleg *DelegationState) {
 	if !exists || callback.Addr == "" {
 		logger.Warn("CB_RECALL: no callback info for client",
 			"client_id", deleg.ClientID)
-		// Start a short revocation timer since callback path is unavailable
-		deleg.StartRecallTimer(5*time.Second, func() {
-			sm.RevokeDelegation(deleg.Stateid.Other)
-		})
+		sm.startRevocationTimer(deleg, 5*time.Second)
 		return
 	}
 
-	// Network call without holding any lock
 	err := SendCBRecall(context.Background(), callback, &deleg.Stateid, false, deleg.FileHandle)
 	if err != nil {
 		logger.Warn("CB_RECALL failed",
 			"client_id", deleg.ClientID,
 			"error", err)
-		// Callback path is down: start short revocation timer and mark CBPathUp = false
-		deleg.StartRecallTimer(5*time.Second, func() {
-			sm.RevokeDelegation(deleg.Stateid.Other)
-		})
+		sm.startRevocationTimer(deleg, 5*time.Second)
 		sm.mu.Lock()
 		if c, ok := sm.clientsByID[deleg.ClientID]; ok {
 			c.CBPathUp = false
@@ -373,11 +425,7 @@ func (sm *StateManager) sendRecall(deleg *DelegationState) {
 		return
 	}
 
-	// CB_RECALL succeeded: start recall timer for the full lease duration
-	deleg.StartRecallTimer(sm.leaseDuration, func() {
-		sm.RevokeDelegation(deleg.Stateid.Other)
-	})
-
+	sm.startRevocationTimer(deleg, sm.leaseDuration)
 	logger.Debug("CB_RECALL sent successfully",
 		"client_id", deleg.ClientID,
 		"deleg_type", deleg.DelegType)
