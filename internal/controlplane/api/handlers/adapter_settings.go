@@ -30,48 +30,50 @@ func NewAdapterSettingsHandler(cpStore store.Store, rt *runtime.Runtime) *Adapte
 
 // PatchNFSSettingsRequest uses pointer fields for partial updates (nil = keep current).
 type PatchNFSSettingsRequest struct {
-	MinVersion              *string   `json:"min_version,omitempty"`
-	MaxVersion              *string   `json:"max_version,omitempty"`
-	LeaseTime               *int      `json:"lease_time,omitempty"`
-	GracePeriod             *int      `json:"grace_period,omitempty"`
-	DelegationRecallTimeout *int      `json:"delegation_recall_timeout,omitempty"`
-	CallbackTimeout         *int      `json:"callback_timeout,omitempty"`
-	LeaseBreakTimeout       *int      `json:"lease_break_timeout,omitempty"`
-	MaxConnections          *int      `json:"max_connections,omitempty"`
-	MaxClients              *int      `json:"max_clients,omitempty"`
-	MaxCompoundOps          *int      `json:"max_compound_ops,omitempty"`
-	MaxReadSize             *int      `json:"max_read_size,omitempty"`
-	MaxWriteSize            *int      `json:"max_write_size,omitempty"`
-	PreferredTransferSize   *int      `json:"preferred_transfer_size,omitempty"`
-	DelegationsEnabled      *bool     `json:"delegations_enabled,omitempty"`
-	V4MinMinorVersion       *int      `json:"v4_min_minor_version,omitempty"`
-	V4MaxMinorVersion       *int      `json:"v4_max_minor_version,omitempty"`
-	BlockedOperations       *[]string `json:"blocked_operations,omitempty"`
-	PortmapperEnabled       *bool     `json:"portmapper_enabled,omitempty"`
-	PortmapperPort          *int      `json:"portmapper_port,omitempty"`
+	MinVersion                 *string   `json:"min_version,omitempty"`
+	MaxVersion                 *string   `json:"max_version,omitempty"`
+	LeaseTime                  *int      `json:"lease_time,omitempty"`
+	GracePeriod                *int      `json:"grace_period,omitempty"`
+	DelegationRecallTimeout    *int      `json:"delegation_recall_timeout,omitempty"`
+	CallbackTimeout            *int      `json:"callback_timeout,omitempty"`
+	LeaseBreakTimeout          *int      `json:"lease_break_timeout,omitempty"`
+	MaxConnections             *int      `json:"max_connections,omitempty"`
+	MaxClients                 *int      `json:"max_clients,omitempty"`
+	MaxCompoundOps             *int      `json:"max_compound_ops,omitempty"`
+	MaxReadSize                *int      `json:"max_read_size,omitempty"`
+	MaxWriteSize               *int      `json:"max_write_size,omitempty"`
+	PreferredTransferSize      *int      `json:"preferred_transfer_size,omitempty"`
+	DelegationsEnabled         *bool     `json:"delegations_enabled,omitempty"`
+	V4MinMinorVersion          *int      `json:"v4_min_minor_version,omitempty"`
+	V4MaxMinorVersion          *int      `json:"v4_max_minor_version,omitempty"`
+	V4MaxConnectionsPerSession *int      `json:"v4_max_connections_per_session,omitempty"`
+	BlockedOperations          *[]string `json:"blocked_operations,omitempty"`
+	PortmapperEnabled          *bool     `json:"portmapper_enabled,omitempty"`
+	PortmapperPort             *int      `json:"portmapper_port,omitempty"`
 }
 
 // PutNFSSettingsRequest requires all fields for full replacement.
 type PutNFSSettingsRequest struct {
-	MinVersion              string   `json:"min_version"`
-	MaxVersion              string   `json:"max_version"`
-	LeaseTime               int      `json:"lease_time"`
-	GracePeriod             int      `json:"grace_period"`
-	DelegationRecallTimeout int      `json:"delegation_recall_timeout"`
-	CallbackTimeout         int      `json:"callback_timeout"`
-	LeaseBreakTimeout       int      `json:"lease_break_timeout"`
-	MaxConnections          int      `json:"max_connections"`
-	MaxClients              int      `json:"max_clients"`
-	MaxCompoundOps          int      `json:"max_compound_ops"`
-	MaxReadSize             int      `json:"max_read_size"`
-	MaxWriteSize            int      `json:"max_write_size"`
-	PreferredTransferSize   int      `json:"preferred_transfer_size"`
-	DelegationsEnabled      bool     `json:"delegations_enabled"`
-	V4MinMinorVersion       int      `json:"v4_min_minor_version"`
-	V4MaxMinorVersion       int      `json:"v4_max_minor_version"`
-	BlockedOperations       []string `json:"blocked_operations"`
-	PortmapperEnabled       bool     `json:"portmapper_enabled"`
-	PortmapperPort          int      `json:"portmapper_port"`
+	MinVersion                 string   `json:"min_version"`
+	MaxVersion                 string   `json:"max_version"`
+	LeaseTime                  int      `json:"lease_time"`
+	GracePeriod                int      `json:"grace_period"`
+	DelegationRecallTimeout    int      `json:"delegation_recall_timeout"`
+	CallbackTimeout            int      `json:"callback_timeout"`
+	LeaseBreakTimeout          int      `json:"lease_break_timeout"`
+	MaxConnections             int      `json:"max_connections"`
+	MaxClients                 int      `json:"max_clients"`
+	MaxCompoundOps             int      `json:"max_compound_ops"`
+	MaxReadSize                int      `json:"max_read_size"`
+	MaxWriteSize               int      `json:"max_write_size"`
+	PreferredTransferSize      int      `json:"preferred_transfer_size"`
+	DelegationsEnabled         bool     `json:"delegations_enabled"`
+	V4MinMinorVersion          int      `json:"v4_min_minor_version"`
+	V4MaxMinorVersion          int      `json:"v4_max_minor_version"`
+	V4MaxConnectionsPerSession int      `json:"v4_max_connections_per_session"`
+	BlockedOperations          []string `json:"blocked_operations"`
+	PortmapperEnabled          bool     `json:"portmapper_enabled"`
+	PortmapperPort             int      `json:"portmapper_port"`
 }
 
 // --- SMB request types ---
@@ -104,26 +106,27 @@ type PutSMBSettingsRequest struct {
 
 // NFSSettingsResponse is the API response for NFS adapter settings.
 type NFSSettingsResponse struct {
-	MinVersion              string   `json:"min_version"`
-	MaxVersion              string   `json:"max_version"`
-	LeaseTime               int      `json:"lease_time"`
-	GracePeriod             int      `json:"grace_period"`
-	DelegationRecallTimeout int      `json:"delegation_recall_timeout"`
-	CallbackTimeout         int      `json:"callback_timeout"`
-	LeaseBreakTimeout       int      `json:"lease_break_timeout"`
-	MaxConnections          int      `json:"max_connections"`
-	MaxClients              int      `json:"max_clients"`
-	MaxCompoundOps          int      `json:"max_compound_ops"`
-	MaxReadSize             int      `json:"max_read_size"`
-	MaxWriteSize            int      `json:"max_write_size"`
-	PreferredTransferSize   int      `json:"preferred_transfer_size"`
-	DelegationsEnabled      bool     `json:"delegations_enabled"`
-	V4MinMinorVersion       int      `json:"v4_min_minor_version"`
-	V4MaxMinorVersion       int      `json:"v4_max_minor_version"`
-	BlockedOperations       []string `json:"blocked_operations"`
-	PortmapperEnabled       bool     `json:"portmapper_enabled"`
-	PortmapperPort          int      `json:"portmapper_port"`
-	Version                 int      `json:"version"`
+	MinVersion                 string   `json:"min_version"`
+	MaxVersion                 string   `json:"max_version"`
+	LeaseTime                  int      `json:"lease_time"`
+	GracePeriod                int      `json:"grace_period"`
+	DelegationRecallTimeout    int      `json:"delegation_recall_timeout"`
+	CallbackTimeout            int      `json:"callback_timeout"`
+	LeaseBreakTimeout          int      `json:"lease_break_timeout"`
+	MaxConnections             int      `json:"max_connections"`
+	MaxClients                 int      `json:"max_clients"`
+	MaxCompoundOps             int      `json:"max_compound_ops"`
+	MaxReadSize                int      `json:"max_read_size"`
+	MaxWriteSize               int      `json:"max_write_size"`
+	PreferredTransferSize      int      `json:"preferred_transfer_size"`
+	DelegationsEnabled         bool     `json:"delegations_enabled"`
+	V4MinMinorVersion          int      `json:"v4_min_minor_version"`
+	V4MaxMinorVersion          int      `json:"v4_max_minor_version"`
+	V4MaxConnectionsPerSession int      `json:"v4_max_connections_per_session"`
+	BlockedOperations          []string `json:"blocked_operations"`
+	PortmapperEnabled          bool     `json:"portmapper_enabled"`
+	PortmapperPort             int      `json:"portmapper_port"`
+	Version                    int      `json:"version"`
 }
 
 // SMBSettingsResponse is the API response for SMB adapter settings.
@@ -245,22 +248,23 @@ func (h *AdapterSettingsHandler) GetDefaults(w http.ResponseWriter, r *http.Requ
 		resp := SettingsDefaultsResponse{
 			Defaults: nfsSettingsToResponse(defaults),
 			Ranges: map[string]*SettingRange{
-				"min_version":               {Values: models.ValidNFSVersions},
-				"max_version":               {Values: models.ValidNFSVersions},
-				"lease_time":                {Min: ranges.LeaseTimeMin, Max: ranges.LeaseTimeMax},
-				"grace_period":              {Min: ranges.GracePeriodMin, Max: ranges.GracePeriodMax},
-				"delegation_recall_timeout": {Min: ranges.DelegationRecallTimeoutMin, Max: ranges.DelegationRecallTimeoutMax},
-				"callback_timeout":          {Min: ranges.CallbackTimeoutMin, Max: ranges.CallbackTimeoutMax},
-				"lease_break_timeout":       {Min: ranges.LeaseBreakTimeoutMin, Max: ranges.LeaseBreakTimeoutMax},
-				"max_connections":           {Min: ranges.MaxConnectionsMin, Max: ranges.MaxConnectionsMax},
-				"max_clients":               {Min: ranges.MaxClientsMin, Max: ranges.MaxClientsMax},
-				"max_compound_ops":          {Min: ranges.MaxCompoundOpsMin, Max: ranges.MaxCompoundOpsMax},
-				"max_read_size":             {Min: ranges.MaxReadSizeMin, Max: ranges.MaxReadSizeMax},
-				"max_write_size":            {Min: ranges.MaxWriteSizeMin, Max: ranges.MaxWriteSizeMax},
-				"preferred_transfer_size":   {Min: ranges.PreferredTransferSizeMin, Max: ranges.PreferredTransferSizeMax},
-				"v4_min_minor_version":      {Min: 0, Max: 1},
-				"v4_max_minor_version":      {Min: 0, Max: 1},
-				"portmapper_port":           {Min: ranges.PortmapperPortMin, Max: ranges.PortmapperPortMax},
+				"min_version":                    {Values: models.ValidNFSVersions},
+				"max_version":                    {Values: models.ValidNFSVersions},
+				"lease_time":                     {Min: ranges.LeaseTimeMin, Max: ranges.LeaseTimeMax},
+				"grace_period":                   {Min: ranges.GracePeriodMin, Max: ranges.GracePeriodMax},
+				"delegation_recall_timeout":      {Min: ranges.DelegationRecallTimeoutMin, Max: ranges.DelegationRecallTimeoutMax},
+				"callback_timeout":               {Min: ranges.CallbackTimeoutMin, Max: ranges.CallbackTimeoutMax},
+				"lease_break_timeout":            {Min: ranges.LeaseBreakTimeoutMin, Max: ranges.LeaseBreakTimeoutMax},
+				"max_connections":                {Min: ranges.MaxConnectionsMin, Max: ranges.MaxConnectionsMax},
+				"max_clients":                    {Min: ranges.MaxClientsMin, Max: ranges.MaxClientsMax},
+				"max_compound_ops":               {Min: ranges.MaxCompoundOpsMin, Max: ranges.MaxCompoundOpsMax},
+				"max_read_size":                  {Min: ranges.MaxReadSizeMin, Max: ranges.MaxReadSizeMax},
+				"max_write_size":                 {Min: ranges.MaxWriteSizeMin, Max: ranges.MaxWriteSizeMax},
+				"preferred_transfer_size":        {Min: ranges.PreferredTransferSizeMin, Max: ranges.PreferredTransferSizeMax},
+				"v4_min_minor_version":           {Min: 0, Max: 1},
+				"v4_max_minor_version":           {Min: 0, Max: 1},
+				"v4_max_connections_per_session": {Min: 0, Max: 1024},
+				"portmapper_port":                {Min: ranges.PortmapperPortMin, Max: ranges.PortmapperPortMax},
 			},
 		}
 		WriteJSONOK(w, resp)
@@ -332,6 +336,7 @@ func (h *AdapterSettingsHandler) PutSettings(w http.ResponseWriter, r *http.Requ
 		settings.DelegationsEnabled = req.DelegationsEnabled
 		settings.V4MinMinorVersion = req.V4MinMinorVersion
 		settings.V4MaxMinorVersion = req.V4MaxMinorVersion
+		settings.V4MaxConnectionsPerSession = req.V4MaxConnectionsPerSession
 		settings.SetBlockedOperations(req.BlockedOperations)
 		settings.PortmapperEnabled = req.PortmapperEnabled
 		settings.PortmapperPort = req.PortmapperPort
@@ -487,6 +492,9 @@ func (h *AdapterSettingsHandler) PatchSettings(w http.ResponseWriter, r *http.Re
 		}
 		if req.V4MaxMinorVersion != nil {
 			settings.V4MaxMinorVersion = *req.V4MaxMinorVersion
+		}
+		if req.V4MaxConnectionsPerSession != nil {
+			settings.V4MaxConnectionsPerSession = *req.V4MaxConnectionsPerSession
 		}
 		if req.BlockedOperations != nil {
 			settings.SetBlockedOperations(*req.BlockedOperations)
@@ -728,6 +736,7 @@ func validateNFSSettings(s *models.NFSAdapterSettings) map[string]string {
 	if s.V4MinMinorVersion > s.V4MaxMinorVersion {
 		errs["v4_min_minor_version"] = "must be <= v4_max_minor_version"
 	}
+	validateIntRange(errs, "v4_max_connections_per_session", s.V4MaxConnectionsPerSession, 0, 1024)
 
 	// Blocked operations validation
 	for _, op := range s.GetBlockedOperations() {
@@ -906,6 +915,8 @@ func resetNFSSetting(settings, defaults *models.NFSAdapterSettings, name string)
 		settings.V4MinMinorVersion = defaults.V4MinMinorVersion
 	case "v4_max_minor_version":
 		settings.V4MaxMinorVersion = defaults.V4MaxMinorVersion
+	case "v4_max_connections_per_session":
+		settings.V4MaxConnectionsPerSession = defaults.V4MaxConnectionsPerSession
 	case "blocked_operations":
 		settings.BlockedOperations = defaults.BlockedOperations
 	case "portmapper_enabled":
@@ -951,26 +962,27 @@ func nfsSettingsToResponse(s *models.NFSAdapterSettings) NFSSettingsResponse {
 		ops = []string{}
 	}
 	return NFSSettingsResponse{
-		MinVersion:              s.MinVersion,
-		MaxVersion:              s.MaxVersion,
-		LeaseTime:               s.LeaseTime,
-		GracePeriod:             s.GracePeriod,
-		DelegationRecallTimeout: s.DelegationRecallTimeout,
-		CallbackTimeout:         s.CallbackTimeout,
-		LeaseBreakTimeout:       s.LeaseBreakTimeout,
-		MaxConnections:          s.MaxConnections,
-		MaxClients:              s.MaxClients,
-		MaxCompoundOps:          s.MaxCompoundOps,
-		MaxReadSize:             s.MaxReadSize,
-		MaxWriteSize:            s.MaxWriteSize,
-		PreferredTransferSize:   s.PreferredTransferSize,
-		DelegationsEnabled:      s.DelegationsEnabled,
-		V4MinMinorVersion:       s.V4MinMinorVersion,
-		V4MaxMinorVersion:       s.V4MaxMinorVersion,
-		BlockedOperations:       ops,
-		PortmapperEnabled:       s.PortmapperEnabled,
-		PortmapperPort:          s.PortmapperPort,
-		Version:                 s.Version,
+		MinVersion:                 s.MinVersion,
+		MaxVersion:                 s.MaxVersion,
+		LeaseTime:                  s.LeaseTime,
+		GracePeriod:                s.GracePeriod,
+		DelegationRecallTimeout:    s.DelegationRecallTimeout,
+		CallbackTimeout:            s.CallbackTimeout,
+		LeaseBreakTimeout:          s.LeaseBreakTimeout,
+		MaxConnections:             s.MaxConnections,
+		MaxClients:                 s.MaxClients,
+		MaxCompoundOps:             s.MaxCompoundOps,
+		MaxReadSize:                s.MaxReadSize,
+		MaxWriteSize:               s.MaxWriteSize,
+		PreferredTransferSize:      s.PreferredTransferSize,
+		DelegationsEnabled:         s.DelegationsEnabled,
+		V4MinMinorVersion:          s.V4MinMinorVersion,
+		V4MaxMinorVersion:          s.V4MaxMinorVersion,
+		V4MaxConnectionsPerSession: s.V4MaxConnectionsPerSession,
+		BlockedOperations:          ops,
+		PortmapperEnabled:          s.PortmapperEnabled,
+		PortmapperPort:             s.PortmapperPort,
+		Version:                    s.Version,
 	}
 }
 

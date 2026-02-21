@@ -73,6 +73,11 @@ type Handler struct {
 	// them without additional nil checks.
 	sequenceMetrics *state.SequenceMetrics
 
+	// connectionMetrics holds Prometheus metrics for connection binding tracking.
+	// May be nil; ConnectionMetrics methods are nil-safe so callers can invoke
+	// them without additional nil checks.
+	connectionMetrics *state.ConnectionMetrics
+
 	// minMinorVersion is the minimum accepted NFSv4 minor version (default 0).
 	// Compounds with minorversion < minMinorVersion get NFS4ERR_MINOR_VERS_MISMATCH.
 	minMinorVersion uint32
@@ -193,10 +198,8 @@ func NewHandler(registry *runtime.Runtime, pfs *pseudofs.PseudoFS, stateManager 
 		var args types.BackchannelCtlArgs
 		return args.Decode(r)
 	})
-	h.v41DispatchTable[types.OP_BIND_CONN_TO_SESSION] = v41StubHandler(types.OP_BIND_CONN_TO_SESSION, func(r io.Reader) error {
-		var args types.BindConnToSessionArgs
-		return args.Decode(r)
-	})
+	// BIND_CONN_TO_SESSION: connection binding (RFC 8881 Section 18.34)
+	h.v41DispatchTable[types.OP_BIND_CONN_TO_SESSION] = h.handleBindConnToSession
 	// EXCHANGE_ID: client identity registration (RFC 8881 Section 18.35)
 	h.v41DispatchTable[types.OP_EXCHANGE_ID] = h.handleExchangeID
 	// CREATE_SESSION: session lifecycle (RFC 8881 Section 18.36)
@@ -373,6 +376,13 @@ func (h *Handler) IsOperationBlocked(opNum uint32) bool {
 // Must be called before any SEQUENCE operations. Safe to leave nil (no-op metrics).
 func (h *Handler) SetSequenceMetrics(m *state.SequenceMetrics) {
 	h.sequenceMetrics = m
+}
+
+// SetConnectionMetrics sets the Prometheus metrics collector for connection binding.
+// Must be called before any connection binding operations. Safe to leave nil (no-op metrics).
+func (h *Handler) SetConnectionMetrics(m *state.ConnectionMetrics) {
+	h.connectionMetrics = m
+	h.StateManager.SetConnectionMetrics(m)
 }
 
 // SetMinorVersionRange sets the accepted minor version range for COMPOUND requests.

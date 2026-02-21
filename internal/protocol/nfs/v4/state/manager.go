@@ -131,6 +131,29 @@ type StateManager struct {
 
 	// serverIdentity is the immutable server identity returned in EXCHANGE_ID responses.
 	serverIdentity *ServerIdentity
+
+	// ============================================================================
+	// Connection Binding State (Phase 21)
+	// ============================================================================
+
+	// connMu protects connection binding maps. Separate from sm.mu to avoid
+	// contention between session operations (sm.mu) and connection binding
+	// operations (connMu). Lock ordering: sm.mu before connMu (never reverse).
+	connMu sync.RWMutex
+
+	// connByID maps connectionID -> binding.
+	connByID map[uint64]*BoundConnection
+
+	// connBySession maps sessionID -> list of bindings.
+	connBySession map[types.SessionId4][]*BoundConnection
+
+	// maxConnsPerSession is the maximum number of connections per session (default 16).
+	maxConnsPerSession int
+
+	// connectionMetrics holds Prometheus metrics for connection binding.
+	// May be nil; ConnectionMetrics methods are nil-safe so callers can invoke
+	// them without additional nil checks.
+	connectionMetrics *ConnectionMetrics
 }
 
 // NewStateManager creates a new StateManager with the given lease duration.
@@ -172,6 +195,10 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		sessionsByClientID:   make(map[uint64][]*Session),
 		maxSessionsPerClient: 16,
 		serverIdentity:       newServerIdentity(epoch),
+		// Connection binding state (Phase 21)
+		connByID:           make(map[uint64]*BoundConnection),
+		connBySession:      make(map[types.SessionId4][]*BoundConnection),
+		maxConnsPerSession: 16,
 	}
 }
 
@@ -2122,6 +2149,17 @@ func (sm *StateManager) destroySessionLocked(sessionID types.SessionId4, force b
 		delete(sm.sessionsByClientID, session.ClientID)
 	}
 
+	// Clean up connection bindings for this session.
+	// Lock ordering: sm.mu (held by caller) before connMu.
+	sm.connMu.Lock()
+	for _, b := range sm.connBySession[sessionID] {
+		delete(sm.connByID, b.ConnectionID)
+		sm.connectionMetrics.RecordUnbind("session_destroy")
+	}
+	delete(sm.connBySession, sessionID)
+	sm.connectionMetrics.RemoveSessionGauge(sessionID.String())
+	sm.connMu.Unlock()
+
 	// Record metrics
 	duration := time.Since(session.CreatedAt).Seconds()
 	sm.sessionMetrics.recordDestroyed(reason, duration)
@@ -2231,4 +2269,263 @@ func (sm *StateManager) reapExpiredSessions() {
 	for _, record := range toPurge {
 		sm.purgeV41Client(record)
 	}
+
+	// Clean up orphaned connection bindings (connections referencing sessions
+	// that no longer exist). This handles edge cases where a session was
+	// destroyed but the connection was not yet unbound.
+	sm.connMu.Lock()
+	for connID, binding := range sm.connByID {
+		if _, exists := sm.sessionsByID[binding.SessionID]; !exists {
+			delete(sm.connByID, connID)
+			sm.removeConnFromSessionLocked(connID, binding.SessionID)
+		}
+	}
+	sm.connMu.Unlock()
+}
+
+// ============================================================================
+// Connection Binding (Phase 21)
+// ============================================================================
+
+// BindConnToSession associates a TCP connection with a session.
+//
+// Per RFC 8881 Section 18.34, the server:
+//   - Validates the session exists
+//   - Negotiates the channel direction (generous policy)
+//   - Silently unbinds the connection from a previous session if needed
+//   - Enforces a per-session connection limit (NFS4ERR_RESOURCE)
+//   - Ensures at least one fore-channel connection remains (NFS4ERR_INVAL)
+//
+// Thread-safe: acquires sm.mu.RLock then sm.connMu.Lock.
+func (sm *StateManager) BindConnToSession(connectionID uint64, sessionID types.SessionId4, clientDir uint32) (*BindConnResult, error) {
+	// Validate session exists under sm.mu.RLock
+	sm.mu.RLock()
+	_, exists := sm.sessionsByID[sessionID]
+	sm.mu.RUnlock()
+
+	if !exists {
+		return nil, ErrBadSession
+	}
+
+	// Negotiate direction
+	direction, serverDir := negotiateDirection(clientDir)
+
+	sm.connMu.Lock()
+	defer sm.connMu.Unlock()
+
+	// If connection already bound to a different session, silently unbind
+	if existing, ok := sm.connByID[connectionID]; ok && existing.SessionID != sessionID {
+		sm.unbindConnectionLocked(connectionID, "explicit")
+	}
+
+	// Check connection limit: count bindings for this session, allow rebind
+	bindings := sm.connBySession[sessionID]
+	isRebind := false
+	for _, b := range bindings {
+		if b.ConnectionID == connectionID {
+			isRebind = true
+			break
+		}
+	}
+	if sm.maxConnsPerSession > 0 && !isRebind && len(bindings) >= sm.maxConnsPerSession {
+		return nil, &NFS4StateError{
+			Status:  types.NFS4ERR_RESOURCE,
+			Message: "per-session connection limit exceeded",
+		}
+	}
+
+	// Fore-channel enforcement: if binding as back-only, ensure at least one
+	// fore connection remains (excluding self in case of rebind)
+	if direction == ConnDirBack {
+		foreCount := 0
+		for _, b := range bindings {
+			if b.ConnectionID == connectionID {
+				continue // skip self (rebind case)
+			}
+			if b.Direction == ConnDirFore || b.Direction == ConnDirBoth {
+				foreCount++
+			}
+		}
+		if foreCount == 0 {
+			return nil, &NFS4StateError{
+				Status:  types.NFS4ERR_INVAL,
+				Message: "cannot leave session with zero fore-channel connections",
+			}
+		}
+	}
+
+	now := time.Now()
+
+	// Remove old binding for this connID from session list (rebind case)
+	sm.removeConnFromSessionLocked(connectionID, sessionID)
+
+	// Create or update binding
+	binding := &BoundConnection{
+		ConnectionID: connectionID,
+		SessionID:    sessionID,
+		Direction:    direction,
+		ConnType:     ConnTypeTCP,
+		BoundAt:      now,
+		LastActivity: now,
+	}
+
+	sm.connByID[connectionID] = binding
+	sm.connBySession[sessionID] = append(sm.connBySession[sessionID], binding)
+
+	// Record metrics
+	sm.connectionMetrics.RecordBind(direction.String())
+	sm.connectionMetrics.SetBoundConnections(sessionID.String(), float64(len(sm.connBySession[sessionID])))
+
+	return &BindConnResult{ServerDir: serverDir}, nil
+}
+
+// UnbindConnection removes a connection binding from all tracking maps.
+// Called on TCP disconnect cleanup.
+//
+// Thread-safe: acquires sm.connMu.Lock.
+func (sm *StateManager) UnbindConnection(connectionID uint64) {
+	sm.connMu.Lock()
+	defer sm.connMu.Unlock()
+	sm.unbindConnectionLocked(connectionID, "disconnect")
+}
+
+// unbindConnectionLocked removes a connection binding. Caller must hold sm.connMu.
+// The reason parameter is recorded in metrics (e.g., "explicit", "disconnect", "session_destroy", "reaper").
+func (sm *StateManager) unbindConnectionLocked(connectionID uint64, reason string) {
+	binding, ok := sm.connByID[connectionID]
+	if !ok {
+		return
+	}
+	sessionID := binding.SessionID
+	delete(sm.connByID, connectionID)
+	sm.removeConnFromSessionLocked(connectionID, sessionID)
+
+	// Record metrics
+	sm.connectionMetrics.RecordUnbind(reason)
+	sm.connectionMetrics.SetBoundConnections(sessionID.String(), float64(len(sm.connBySession[sessionID])))
+}
+
+// removeConnFromSessionLocked removes a connection from the session binding list.
+// Caller must hold sm.connMu.
+func (sm *StateManager) removeConnFromSessionLocked(connectionID uint64, sessionID types.SessionId4) {
+	bindings := sm.connBySession[sessionID]
+	for i, b := range bindings {
+		if b.ConnectionID == connectionID {
+			sm.connBySession[sessionID] = append(bindings[:i], bindings[i+1:]...)
+			break
+		}
+	}
+	// Clean up empty slice
+	if len(sm.connBySession[sessionID]) == 0 {
+		delete(sm.connBySession, sessionID)
+	}
+}
+
+// UnbindAllForSession removes all connection bindings for a session.
+// Called when a session is destroyed.
+//
+// Thread-safe: acquires sm.connMu.Lock.
+func (sm *StateManager) UnbindAllForSession(sessionID types.SessionId4) {
+	sm.connMu.Lock()
+	defer sm.connMu.Unlock()
+
+	bindings := sm.connBySession[sessionID]
+	for _, b := range bindings {
+		delete(sm.connByID, b.ConnectionID)
+		sm.connectionMetrics.RecordUnbind("session_destroy")
+	}
+	delete(sm.connBySession, sessionID)
+	sm.connectionMetrics.RemoveSessionGauge(sessionID.String())
+}
+
+// GetConnectionBindings returns a copy of all connection bindings for a session.
+//
+// Thread-safe: acquires sm.connMu.RLock.
+func (sm *StateManager) GetConnectionBindings(sessionID types.SessionId4) []*BoundConnection {
+	sm.connMu.RLock()
+	defer sm.connMu.RUnlock()
+
+	bindings := sm.connBySession[sessionID]
+	if len(bindings) == 0 {
+		return nil
+	}
+
+	result := make([]*BoundConnection, len(bindings))
+	for i, b := range bindings {
+		copied := *b
+		result[i] = &copied
+	}
+	return result
+}
+
+// GetConnectionBinding returns a copy of the binding for a specific connection.
+//
+// Thread-safe: acquires sm.connMu.RLock.
+func (sm *StateManager) GetConnectionBinding(connectionID uint64) *BoundConnection {
+	sm.connMu.RLock()
+	defer sm.connMu.RUnlock()
+
+	binding, ok := sm.connByID[connectionID]
+	if !ok {
+		return nil
+	}
+	copied := *binding
+	return &copied
+}
+
+// UpdateConnectionActivity updates the LastActivity timestamp for a connection.
+//
+// Thread-safe: acquires sm.connMu.Lock.
+func (sm *StateManager) UpdateConnectionActivity(connectionID uint64) {
+	sm.connMu.Lock()
+	defer sm.connMu.Unlock()
+
+	if binding, ok := sm.connByID[connectionID]; ok {
+		binding.LastActivity = time.Now()
+	}
+}
+
+// SetConnectionDraining sets the draining flag on a connection.
+// When draining, the server returns NFS4ERR_DELAY for new requests.
+//
+// Thread-safe: acquires sm.connMu.Lock.
+func (sm *StateManager) SetConnectionDraining(connectionID uint64, draining bool) error {
+	sm.connMu.Lock()
+	defer sm.connMu.Unlock()
+
+	binding, ok := sm.connByID[connectionID]
+	if !ok {
+		return fmt.Errorf("connection %d not found", connectionID)
+	}
+	binding.Draining = draining
+	return nil
+}
+
+// IsConnectionDraining returns true if the connection is being drained.
+//
+// Thread-safe: acquires sm.connMu.RLock.
+func (sm *StateManager) IsConnectionDraining(connectionID uint64) bool {
+	sm.connMu.RLock()
+	defer sm.connMu.RUnlock()
+
+	if binding, ok := sm.connByID[connectionID]; ok {
+		return binding.Draining
+	}
+	return false
+}
+
+// SetMaxConnectionsPerSession sets the maximum number of connections per session.
+// A value of 0 means unlimited (no limit enforced).
+func (sm *StateManager) SetMaxConnectionsPerSession(max int) {
+	sm.connMu.Lock()
+	defer sm.connMu.Unlock()
+	if max >= 0 {
+		sm.maxConnsPerSession = max
+	}
+}
+
+// SetConnectionMetrics sets the Prometheus metrics collector for connection binding.
+// Must be called before any connection binding operations. Safe to leave nil (no-op metrics).
+func (sm *StateManager) SetConnectionMetrics(m *ConnectionMetrics) {
+	sm.connectionMetrics = m
 }

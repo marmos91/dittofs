@@ -9,12 +9,12 @@ See: .planning/PROJECT.md (updated 2026-02-20)
 
 ## Current Position
 
-Phase: 20 of 25 (Sequence and Compound Bifurcation) -- COMPLETE
+Phase: 21 of 25 (Connection Management and Trunking)
 Plan: 2 of 2 in current phase -- COMPLETE
 Status: Phase Complete
-Last activity: 2026-02-21 — Completed 20-02-PLAN.md
+Last activity: 2026-02-21 -- Completed 21-02-PLAN.md
 
-Progress: [########################################] 100% (74/74 plans complete)
+Progress: [########################################] 100% (76/76 plans complete)
 
 ## Completed Milestones
 
@@ -61,6 +61,8 @@ Progress: [########################################] 100% (74/74 plans complete)
 | Phase 19 P01 | 23min | 3 tasks | 20 files |
 | Phase 20 P01 | 25min | 2 tasks | 7 files |
 | Phase 20 P02 | 14min | 2 tasks | 11 files |
+| Phase 21 P01 | 10min | 2 tasks | 14 files |
+| Phase 21 P02 | 18min | 2 tasks | 12 files |
 
 ## Quick Tasks Completed
 
@@ -107,6 +109,14 @@ Recent decisions affecting current work:
 - [Phase 20-02]: SequenceMetrics follows exact SessionMetrics nil-safe receiver pattern
 - [Phase 20-02]: Minor version range defaults to 0-1 (both v4.0 and v4.1 enabled)
 - [Phase 20-02]: Version range check placed before minorversion switch in ProcessCompound
+- [Phase 21-01]: Separate connMu RWMutex for connection state (not global sm.mu) to reduce contention
+- [Phase 21-01]: Generous direction negotiation: FORE_OR_BOTH -> BOTH, BACK_OR_BOTH -> BOTH
+- [Phase 21-01]: Auto-bind on CREATE_SESSION is best-effort (errors logged, do not fail CREATE_SESSION)
+- [Phase 21-01]: Lock ordering: sm.mu before connMu (enforced in destroySessionLocked)
+- [Phase 21-01]: Connection limit default 16/session with NFS4ERR_RESOURCE enforcement
+- [Phase 21-02]: ConnectionMetrics follows nil-safe receiver pattern (registerOrReuse for Prometheus re-registration)
+- [Phase 21-02]: unbindConnectionLocked accepts reason parameter for accurate metrics labeling
+- [Phase 21-02]: Session API includes ConnectionInfo list and ConnectionSummary in same response
 
 ### Pending Todos
 
@@ -120,5 +130,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-21
-Stopped at: Completed 20-02-PLAN.md (Phase 20 complete)
-Resume file: `/gsd:execute-phase 21`
+Stopped at: Completed 21-02-PLAN.md (Phase 21 complete)
+Resume file: `/gsd:execute-phase 22`

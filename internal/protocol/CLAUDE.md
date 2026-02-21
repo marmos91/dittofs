@@ -180,6 +180,38 @@ All methods nil-safe: `RecordSequence()`, `RecordError(errType)`, `RecordReplayH
 5. **CREATE_SESSION seqid off-by-one** -- Client must send `record.SequenceID + 1` for a new CREATE_SESSION request. EXCHANGE_ID returns `record.SequenceID`; the client increments it before sending CREATE_SESSION.
 6. **SEQUENCE replay vs re-execute** -- On replay hit, return `slot.CachedReply` directly. Do NOT re-execute ops. The cached bytes are the full COMPOUND response.
 
+### Connection Management (Phase 21)
+
+NFSv4.1 trunking requires tracking which TCP connections are bound to which sessions.
+
+**Connection ID assignment:**
+- Global `atomic.Uint64` counter (`nextConnID`) in `NFSAdapter`, incremented at `accept()` time
+- Stored on `NFSConnection.connectionID`, set on `CompoundContext.ConnectionID` before `ProcessCompound`
+
+**BIND_CONN_TO_SESSION (RFC 8881 Section 18.34):**
+- Session-exempt operation (no SEQUENCE required, checked via `isSessionExemptOp`)
+- Handler: `bind_conn_to_session_handler.go` delegates to `StateManager.BindConnToSession`
+- Direction negotiation: generous policy (FORE_OR_BOTH -> BOTH, BACK_OR_BOTH -> BOTH)
+
+**Auto-bind on CREATE_SESSION:**
+- After successful `CreateSession`, the originating connection is auto-bound as fore-channel
+- Best-effort: failure is logged at DEBUG, does not fail CREATE_SESSION
+
+**Disconnect cleanup:**
+- `UnbindConnection(connID)` called in deferred close handler in `nfs_adapter.go` accept loop
+- Removes connection from both `connByID` and `connBySession` maps
+
+**Draining:**
+- `IsConnectionDraining(connID)` checked in `dispatchV41()` after SEQUENCE succeeds
+- Returns `NFS4ERR_DELAY` to redirect client to another connection
+- SEQUENCE itself always works on draining connections
+
+**Lock ordering:** `sm.mu` before `connMu` (never reverse). Connection maps protected by separate `connMu RWMutex`.
+
+**Connection limit:** Default 16 per session. `NFS4ERR_RESOURCE` when exceeded. Rebinding existing connection at limit succeeds.
+
+**Fore-channel enforcement:** At least one fore-channel connection must remain. Rebinding the sole fore connection as back-only returns `NFS4ERR_INVAL`.
+
 ## Common Mistakes
 
 1. **Business logic in handlers** - permissions, validation belong in service layer

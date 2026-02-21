@@ -24,7 +24,7 @@ Requirements for NFSv4.1 Sessions milestone. Each maps to roadmap phases.
 ### Backchannel
 
 - [ ] **BACK-01**: Server sends callbacks via CB_SEQUENCE over the client's existing TCP connection (no separate dial)
-- [ ] **BACK-02**: Server handles BIND_CONN_TO_SESSION to associate connections with sessions for fore/back/both directions
+- [x] **BACK-02**: Server handles BIND_CONN_TO_SESSION to associate connections with sessions for fore/back/both directions
 - [ ] **BACK-03**: Server handles BACKCHANNEL_CTL to update backchannel security and attributes
 - [ ] **BACK-04**: Existing CB_RECALL works over backchannel for v4.1 clients (fallback to separate TCP for v4.0)
 
@@ -44,7 +44,7 @@ Requirements for NFSv4.1 Sessions milestone. Each maps to roadmap phases.
 
 ### Trunking
 
-- [ ] **TRUNK-01**: Multiple connections can be bound to a single session via BIND_CONN_TO_SESSION
+- [x] **TRUNK-01**: Multiple connections can be bound to a single session via BIND_CONN_TO_SESSION
 - [x] **TRUNK-02**: Server reports consistent server_owner in EXCHANGE_ID for trunking detection
 
 ### Coexistence
@@ -116,7 +116,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | EOS-02 | Phase 17 | Complete |
 | EOS-03 | Phase 17 | Complete |
 | BACK-01 | Phase 22 | Pending |
-| BACK-02 | Phase 21 | Pending |
+| BACK-02 | Phase 21 | Complete |
 | BACK-03 | Phase 22 | Pending |
 | BACK-04 | Phase 22 | Pending |
 | LIFE-01 | Phase 23 | Pending |
@@ -127,7 +127,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DDELEG-01 | Phase 24 | Pending |
 | DDELEG-02 | Phase 24 | Pending |
 | DDELEG-03 | Phase 24 | Pending |
-| TRUNK-01 | Phase 21 | Pending |
+| TRUNK-01 | Phase 21 | Complete |
 | TRUNK-02 | Phase 18 | Complete |
 | COEX-01 | Phase 20 | Complete |
 | COEX-02 | Phase 20 | Complete |

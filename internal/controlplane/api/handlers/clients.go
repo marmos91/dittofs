@@ -119,15 +119,35 @@ func leaseStatus(lease *state.LeaseState) string {
 	return "active"
 }
 
+// ConnectionInfo represents a single bound connection in the session detail response.
+type ConnectionInfo struct {
+	ConnectionID uint64 `json:"connection_id"`
+	Direction    string `json:"direction"`     // "fore", "back", "both"
+	ConnType     string `json:"conn_type"`     // "TCP", "RDMA"
+	BoundAt      string `json:"bound_at"`      // RFC3339
+	LastActivity string `json:"last_activity"` // RFC3339
+	Draining     bool   `json:"draining"`
+}
+
+// ConnectionSummary provides a per-direction breakdown of bound connections.
+type ConnectionSummary struct {
+	Fore  int `json:"fore"`
+	Back  int `json:"back"`
+	Both  int `json:"both"`
+	Total int `json:"total"`
+}
+
 // SessionInfo is the response type for session list endpoints.
 type SessionInfo struct {
-	SessionID   string    `json:"session_id"`
-	ClientID    string    `json:"client_id"`
-	CreatedAt   time.Time `json:"created_at"`
-	ForeSlots   uint32    `json:"fore_slots"`
-	BackSlots   uint32    `json:"back_slots"`
-	Flags       uint32    `json:"flags"`
-	BackChannel bool      `json:"back_channel"`
+	SessionID         string             `json:"session_id"`
+	ClientID          string             `json:"client_id"`
+	CreatedAt         time.Time          `json:"created_at"`
+	ForeSlots         uint32             `json:"fore_slots"`
+	BackSlots         uint32             `json:"back_slots"`
+	Flags             uint32             `json:"flags"`
+	BackChannel       bool               `json:"back_channel"`
+	Connections       []ConnectionInfo   `json:"connections,omitempty"`
+	ConnectionSummary *ConnectionSummary `json:"connection_summary,omitempty"`
 }
 
 // ListSessions handles GET /api/v1/clients/{id}/sessions.
@@ -147,7 +167,8 @@ func (h *ClientHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 		if hasBackChan {
 			backSlots = s.BackChannelAttrs.MaxRequests
 		}
-		result = append(result, SessionInfo{
+
+		info := SessionInfo{
 			SessionID:   s.SessionID.String(),
 			ClientID:    fmt.Sprintf("%016x", s.ClientID),
 			CreatedAt:   s.CreatedAt,
@@ -155,7 +176,36 @@ func (h *ClientHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 			BackSlots:   backSlots,
 			Flags:       s.Flags,
 			BackChannel: hasBackChan,
-		})
+		}
+
+		// Enrich with connection binding information
+		bindings := h.sm.GetConnectionBindings(s.SessionID)
+		if len(bindings) > 0 {
+			connInfos := make([]ConnectionInfo, 0, len(bindings))
+			summary := ConnectionSummary{Total: len(bindings)}
+			for _, b := range bindings {
+				connInfos = append(connInfos, ConnectionInfo{
+					ConnectionID: b.ConnectionID,
+					Direction:    b.Direction.String(),
+					ConnType:     b.ConnType.String(),
+					BoundAt:      b.BoundAt.Format(time.RFC3339),
+					LastActivity: b.LastActivity.Format(time.RFC3339),
+					Draining:     b.Draining,
+				})
+				switch b.Direction {
+				case state.ConnDirFore:
+					summary.Fore++
+				case state.ConnDirBack:
+					summary.Back++
+				case state.ConnDirBoth:
+					summary.Both++
+				}
+			}
+			info.Connections = connInfos
+			info.ConnectionSummary = &summary
+		}
+
+		result = append(result, info)
 	}
 
 	WriteJSONOK(w, result)
@@ -204,7 +254,7 @@ func parseSessionID(hexStr string) (types.SessionId4, error) {
 	if len(hexStr) != 32 {
 		return sid, fmt.Errorf("expected 32 hex chars, got %d", len(hexStr))
 	}
-	for i := 0; i < 16; i++ {
+	for i := range 16 {
 		b, err := strconv.ParseUint(hexStr[i*2:i*2+2], 16, 8)
 		if err != nil {
 			return sid, fmt.Errorf("invalid hex at position %d: %w", i*2, err)

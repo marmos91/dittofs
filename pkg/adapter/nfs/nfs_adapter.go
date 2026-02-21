@@ -167,6 +167,10 @@ type NFSAdapter struct {
 
 	// listenerMu protects access to the listener field
 	listenerMu sync.RWMutex
+
+	// nextConnID is a global atomic counter for assigning unique connection IDs.
+	// Incremented at TCP accept() time and passed to each NFSConnection.
+	nextConnID atomic.Uint64
 }
 
 // NFSTimeoutsConfig groups all timeout-related configuration.
@@ -644,13 +648,21 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 		// Log new connection (debug level to avoid log spam under load)
 		logger.Debug("NFS connection accepted", "address", tcpConn.RemoteAddr(), "active", currentConns)
 
+		// Assign unique connection ID at accept() time
+		connID := s.nextConnID.Add(1)
+
 		// Handle connection in separate goroutine
 		// Capture connAddr and tcpConn in closure to avoid races
-		conn := s.newConn(tcpConn)
-		go func(addr string, tcp net.Conn) {
+		conn := s.newConn(tcpConn, connID)
+		go func(addr string, tcp net.Conn, cid uint64) {
 			defer func() {
 				// Unregister connection from tracking map
 				s.activeConnections.Delete(addr)
+
+				// Unbind connection from any NFSv4.1 session on disconnect
+				if s.v4Handler != nil && s.v4Handler.StateManager != nil {
+					s.v4Handler.StateManager.UnbindConnection(cid)
+				}
 
 				// Cleanup on connection close
 				s.activeConns.Done()
@@ -672,7 +684,7 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 			// Handle connection requests
 			// Pass shutdownCtx so requests can detect shutdown and abort
 			conn.Serve(s.shutdownCtx)
-		}(connAddr, tcpConn)
+		}(connAddr, tcpConn, connID)
 	}
 }
 
@@ -743,8 +755,8 @@ func (s *NFSAdapter) GetListenerAddr() string {
 //   - tcpConn: The accepted TCP connection
 //
 // Returns a conn instance ready to serve requests.
-func (s *NFSAdapter) newConn(tcpConn net.Conn) *NFSConnection {
-	return NewNFSConnection(s, tcpConn)
+func (s *NFSAdapter) newConn(tcpConn net.Conn, connectionID uint64) *NFSConnection {
+	return NewNFSConnection(s, tcpConn, connectionID)
 }
 
 // Port returns the TCP port the NFS server is listening on.

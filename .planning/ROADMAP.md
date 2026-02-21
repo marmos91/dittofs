@@ -60,7 +60,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 19: Session Lifecycle** - CREATE_SESSION, DESTROY_SESSION with slot table allocation and channel negotiation (completed 2026-02-21)
 - [x] **Phase 20: SEQUENCE and COMPOUND Bifurcation** - v4.1 request processing with EOS enforcement and v4.0/v4.1 coexistence (completed 2026-02-21)
 - [ ] **Phase 20.5: Manual Verification - Sessions** USER CHECKPOINT - Test session establishment and EOS
-- [ ] **Phase 21: Connection Management and Trunking** - BIND_CONN_TO_SESSION, multi-connection sessions, server_owner consistency
+- [x] **Phase 21: Connection Management and Trunking** - BIND_CONN_TO_SESSION, multi-connection sessions, server_owner consistency (completed 2026-02-21)
 - [ ] **Phase 22: Backchannel Multiplexing** - CB_SEQUENCE over fore-channel, bidirectional I/O, NAT-friendly callbacks
 - [ ] **Phase 23: Client Lifecycle and Cleanup** - DESTROY_CLIENTID, FREE_STATEID, TEST_STATEID, RECLAIM_COMPLETE, v4.0-only rejections
 - [ ] **Phase 24: Directory Delegations** - GET_DIR_DELEGATION, CB_NOTIFY, delegation state tracking with recall
@@ -166,7 +166,10 @@ Plans:
   1. BIND_CONN_TO_SESSION associates a new TCP connection with an existing session in fore, back, or both directions
   2. Multiple connections bound to one session can each send COMPOUND requests and receive responses
   3. Server tracks which connections are bound to which sessions and cleans up on disconnect
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [x] 21-01-PLAN.md -- Core binding model: connection ID plumbing, StateManager connection methods, BIND_CONN_TO_SESSION handler, auto-bind on CREATE_SESSION, disconnect cleanup, draining support, unit tests
+- [ ] 21-02-PLAN.md -- Observability & API: Prometheus connection metrics, REST API session detail extension (connection breakdown), V4MaxConnectionsPerSession config full stack, CLI updates, multi-connection integration tests
 
 ### Phase 22: Backchannel Multiplexing
 **Goal**: Server sends callbacks to v4.1 clients over the fore-channel TCP connection without requiring a separate connection
@@ -324,7 +327,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 32
 | 18. EXCHANGE_ID and Client Registration | v3.0 | 2/2 | Complete | 2026-02-20 |
 | 19. Session Lifecycle | v3.0 | 1/1 | Complete | 2026-02-21 |
 | 20. SEQUENCE and COMPOUND Bifurcation | 2/2 | Complete    | 2026-02-21 | - |
-| 21. Connection Management and Trunking | v3.0 | 0/? | Not started | - |
+| 21. Connection Management and Trunking | 2/2 | Complete    | 2026-02-21 | - |
 | 22. Backchannel Multiplexing | v3.0 | 0/? | Not started | - |
 | 23. Client Lifecycle and Cleanup | v3.0 | 0/? | Not started | - |
 | 24. Directory Delegations | v3.0 | 0/? | Not started | - |

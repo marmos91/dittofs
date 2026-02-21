@@ -33,15 +33,35 @@ func (c *Client) EvictClient(clientID string) error {
 	return c.delete(fmt.Sprintf("/api/v1/clients/%s", url.PathEscape(clientID)), nil)
 }
 
+// ConnectionInfo represents a single bound connection in a session.
+type ConnectionInfo struct {
+	ConnectionID uint64 `json:"connection_id"`
+	Direction    string `json:"direction"`     // "fore", "back", "both"
+	ConnType     string `json:"conn_type"`     // "TCP", "RDMA"
+	BoundAt      string `json:"bound_at"`      // RFC3339
+	LastActivity string `json:"last_activity"` // RFC3339
+	Draining     bool   `json:"draining"`
+}
+
+// ConnectionSummary provides a per-direction breakdown of bound connections.
+type ConnectionSummary struct {
+	Fore  int `json:"fore"`
+	Back  int `json:"back"`
+	Both  int `json:"both"`
+	Total int `json:"total"`
+}
+
 // SessionInfo represents an NFSv4.1 session returned by the API.
 type SessionInfo struct {
-	SessionID   string    `json:"session_id"`
-	ClientID    string    `json:"client_id"`
-	CreatedAt   time.Time `json:"created_at"`
-	ForeSlots   uint32    `json:"fore_slots"`
-	BackSlots   uint32    `json:"back_slots"`
-	Flags       uint32    `json:"flags"`
-	BackChannel bool      `json:"back_channel"`
+	SessionID         string             `json:"session_id"`
+	ClientID          string             `json:"client_id"`
+	CreatedAt         time.Time          `json:"created_at"`
+	ForeSlots         uint32             `json:"fore_slots"`
+	BackSlots         uint32             `json:"back_slots"`
+	Flags             uint32             `json:"flags"`
+	BackChannel       bool               `json:"back_channel"`
+	Connections       []ConnectionInfo   `json:"connections,omitempty"`
+	ConnectionSummary *ConnectionSummary `json:"connection_summary,omitempty"`
 }
 
 // ListSessions returns all sessions for a given NFS client.

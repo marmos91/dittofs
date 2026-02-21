@@ -1427,3 +1427,628 @@ func TestCompound_VersionRangeGating(t *testing.T) {
 		}
 	})
 }
+
+// ============================================================================
+// Connection Binding Integration Tests (Phase 21-01)
+// ============================================================================
+
+func TestCompound_BindConnToSession_ExemptOp(t *testing.T) {
+	// BIND_CONN_TO_SESSION as first op (no SEQUENCE) should work as exempt op.
+	h, sessionID := createTestSession(t)
+	ctx := newTestCompoundContext()
+	ctx.ConnectionID = 7001
+
+	bcsArgs := encodeBindConnToSessionArgs(sessionID, types.CDFC4_FORE, false)
+	ops := []compoundOp{
+		{opCode: types.OP_BIND_CONN_TO_SESSION, data: bcsArgs},
+	}
+	data := buildCompoundArgsWithOps([]byte("bcs-exempt"), 1, ops)
+
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+
+	reader := bytes.NewReader(resp)
+	status, _ := xdr.DecodeUint32(reader)
+	if status != types.NFS4_OK {
+		t.Fatalf("overall status = %d, want NFS4_OK (exempt op)", status)
+	}
+	_, _ = xdr.DecodeOpaque(reader) // tag
+	numResults, _ := xdr.DecodeUint32(reader)
+	if numResults != 1 {
+		t.Fatalf("numResults = %d, want 1", numResults)
+	}
+	opCode, _ := xdr.DecodeUint32(reader)
+	if opCode != types.OP_BIND_CONN_TO_SESSION {
+		t.Errorf("result opcode = %d, want OP_BIND_CONN_TO_SESSION", opCode)
+	}
+
+	var res types.BindConnToSessionRes
+	if err := res.Decode(reader); err != nil {
+		t.Fatalf("decode BindConnToSessionRes: %v", err)
+	}
+	if res.Status != types.NFS4_OK {
+		t.Errorf("res.Status = %d, want NFS4_OK", res.Status)
+	}
+	if res.Dir != types.CDFS4_FORE {
+		t.Errorf("res.Dir = %d, want CDFS4_FORE", res.Dir)
+	}
+}
+
+func TestCompound_CreateSession_AutoBinds(t *testing.T) {
+	// CREATE_SESSION with ConnectionID set should auto-bind the connection.
+	h := newTestHandler()
+	clientID, seqID := registerExchangeID(t, h, "autobind-client")
+
+	ctx := newTestCompoundContext()
+	ctx.ConnectionID = 7002 // set connection ID
+
+	secParms := []types.CallbackSecParms4{{CbSecFlavor: 0}}
+	csArgs := encodeCreateSessionArgsWithSec(clientID, seqID, 0, secParms)
+	ops := []compoundOp{{opCode: types.OP_CREATE_SESSION, data: csArgs}}
+	data := buildCompoundArgsWithOps([]byte("autobind"), 1, ops)
+
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+
+	// Extract session ID from response
+	reader := bytes.NewReader(resp)
+	status, _ := xdr.DecodeUint32(reader)
+	if status != types.NFS4_OK {
+		t.Fatalf("overall status = %d, want NFS4_OK", status)
+	}
+	_, _ = xdr.DecodeOpaque(reader) // tag
+	_, _ = xdr.DecodeUint32(reader) // numResults
+	_, _ = xdr.DecodeUint32(reader) // opcode
+
+	var csRes types.CreateSessionRes
+	if err := csRes.Decode(reader); err != nil {
+		t.Fatalf("decode CreateSessionRes: %v", err)
+	}
+	if csRes.Status != types.NFS4_OK {
+		t.Fatalf("CREATE_SESSION status = %d, want NFS4_OK", csRes.Status)
+	}
+
+	// Verify the connection is auto-bound to the session
+	bindings := h.StateManager.GetConnectionBindings(csRes.SessionID)
+	if len(bindings) != 1 {
+		t.Fatalf("expected 1 auto-bound connection, got %d", len(bindings))
+	}
+	if bindings[0].ConnectionID != 7002 {
+		t.Errorf("auto-bound connection ID = %d, want 7002", bindings[0].ConnectionID)
+	}
+}
+
+func TestCompound_MultiConnection_SameSession(t *testing.T) {
+	// Two connections (different ConnectionIDs) bound to the same session,
+	// both sending SEQUENCE on the same session. Both should succeed.
+	h, sessionID := createTestSession(t)
+
+	// Bind two connections to the session
+	ctx1 := newTestCompoundContext()
+	ctx1.ConnectionID = 7003
+
+	bcsArgs1 := encodeBindConnToSessionArgs(sessionID, types.CDFC4_FORE, false)
+	ops1 := []compoundOp{{opCode: types.OP_BIND_CONN_TO_SESSION, data: bcsArgs1}}
+	data1 := buildCompoundArgsWithOps([]byte("bind1"), 1, ops1)
+
+	resp1, err := h.ProcessCompound(ctx1, data1)
+	if err != nil {
+		t.Fatalf("bind conn 7003 error: %v", err)
+	}
+	dec1, err := decodeCompoundResponse(resp1)
+	if err != nil || dec1.Status != types.NFS4_OK {
+		t.Fatalf("bind conn 7003 failed: status=%d err=%v", dec1.Status, err)
+	}
+
+	ctx2 := newTestCompoundContext()
+	ctx2.ConnectionID = 7004
+
+	bcsArgs2 := encodeBindConnToSessionArgs(sessionID, types.CDFC4_FORE, false)
+	ops2 := []compoundOp{{opCode: types.OP_BIND_CONN_TO_SESSION, data: bcsArgs2}}
+	data2 := buildCompoundArgsWithOps([]byte("bind2"), 1, ops2)
+
+	resp2, err := h.ProcessCompound(ctx2, data2)
+	if err != nil {
+		t.Fatalf("bind conn 7004 error: %v", err)
+	}
+	dec2, err := decodeCompoundResponse(resp2)
+	if err != nil || dec2.Status != types.NFS4_OK {
+		t.Fatalf("bind conn 7004 failed: status=%d err=%v", dec2.Status, err)
+	}
+
+	// Both connections send SEQUENCE on the same session (different slots)
+	seqArgs1 := encodeSequenceArgs(sessionID, 0, 1, 1, true)
+	seqOps1 := []compoundOp{
+		{opCode: types.OP_SEQUENCE, data: seqArgs1},
+		{opCode: types.OP_PUTROOTFH},
+	}
+	seqData1 := buildCompoundArgsWithOps([]byte("seq1"), 1, seqOps1)
+	seqResp1, err := h.ProcessCompound(ctx1, seqData1)
+	if err != nil {
+		t.Fatalf("SEQUENCE on conn 7003 error: %v", err)
+	}
+	seqDec1, _ := decodeSequenceRes(t, seqResp1)
+	if seqDec1.Status != types.NFS4_OK {
+		t.Errorf("SEQUENCE on conn 7003 status = %d, want NFS4_OK", seqDec1.Status)
+	}
+
+	seqArgs2 := encodeSequenceArgs(sessionID, 1, 1, 1, true)
+	seqOps2 := []compoundOp{
+		{opCode: types.OP_SEQUENCE, data: seqArgs2},
+		{opCode: types.OP_PUTROOTFH},
+	}
+	seqData2 := buildCompoundArgsWithOps([]byte("seq2"), 1, seqOps2)
+	seqResp2, err := h.ProcessCompound(ctx2, seqData2)
+	if err != nil {
+		t.Fatalf("SEQUENCE on conn 7004 error: %v", err)
+	}
+	seqDec2, _ := decodeSequenceRes(t, seqResp2)
+	if seqDec2.Status != types.NFS4_OK {
+		t.Errorf("SEQUENCE on conn 7004 status = %d, want NFS4_OK", seqDec2.Status)
+	}
+
+	// Verify both connections are bound
+	bindings := h.StateManager.GetConnectionBindings(sessionID)
+	// createTestSession auto-binds one connection (ID varies), plus 7003 and 7004
+	if len(bindings) < 2 {
+		t.Errorf("expected at least 2 bindings, got %d", len(bindings))
+	}
+}
+
+// encodeBindConnToSessionArgs builds BIND_CONN_TO_SESSION XDR args for compound tests.
+func encodeBindConnToSessionArgs(sessionID types.SessionId4, dir uint32, rdma bool) []byte {
+	var buf bytes.Buffer
+	args := types.BindConnToSessionArgs{
+		SessionID:         sessionID,
+		Dir:               dir,
+		UseConnInRDMAMode: rdma,
+	}
+	_ = args.Encode(&buf)
+	return buf.Bytes()
+}
+
+// ============================================================================
+// Multi-Connection Integration Tests (Phase 21-02)
+// ============================================================================
+
+// createTestSessionWithConnectionID creates a session using CREATE_SESSION
+// with the given ConnectionID set on the context, causing auto-bind.
+func createTestSessionWithConnectionID(t *testing.T, connID uint64) (*Handler, types.SessionId4) {
+	t.Helper()
+	h := newTestHandler()
+	clientID, seqID := registerExchangeID(t, h, fmt.Sprintf("conn-test-client-%d", connID))
+
+	ctx := newTestCompoundContext()
+	ctx.ConnectionID = connID
+
+	secParms := []types.CallbackSecParms4{{CbSecFlavor: 0}}
+	csArgs := encodeCreateSessionArgsWithSec(clientID, seqID, 0, secParms)
+	ops := []compoundOp{{opCode: types.OP_CREATE_SESSION, data: csArgs}}
+	data := buildCompoundArgsWithOps([]byte("cs"), 1, ops)
+
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		t.Fatalf("CREATE_SESSION ProcessCompound error: %v", err)
+	}
+
+	reader := bytes.NewReader(resp)
+	status, _ := xdr.DecodeUint32(reader)
+	if status != types.NFS4_OK {
+		t.Fatalf("CREATE_SESSION overall status = %d, want NFS4_OK", status)
+	}
+	_, _ = xdr.DecodeOpaque(reader) // tag
+	_, _ = xdr.DecodeUint32(reader) // numResults
+	_, _ = xdr.DecodeUint32(reader) // opcode
+
+	var csRes types.CreateSessionRes
+	if err := csRes.Decode(reader); err != nil {
+		t.Fatalf("decode CreateSessionRes: %v", err)
+	}
+	if csRes.Status != types.NFS4_OK {
+		t.Fatalf("CREATE_SESSION status = %d, want NFS4_OK", csRes.Status)
+	}
+
+	return h, csRes.SessionID
+}
+
+// bindConnection sends BIND_CONN_TO_SESSION for the given connection and direction.
+func bindConnection(t *testing.T, h *Handler, sessionID types.SessionId4, connID uint64, dir uint32) {
+	t.Helper()
+	ctx := newTestCompoundContext()
+	ctx.ConnectionID = connID
+
+	bcsArgs := encodeBindConnToSessionArgs(sessionID, dir, false)
+	ops := []compoundOp{{opCode: types.OP_BIND_CONN_TO_SESSION, data: bcsArgs}}
+	data := buildCompoundArgsWithOps([]byte("bind"), 1, ops)
+
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		t.Fatalf("BIND_CONN_TO_SESSION ProcessCompound error: %v", err)
+	}
+
+	decoded, err := decodeCompoundResponse(resp)
+	if err != nil {
+		t.Fatalf("decode response error: %v", err)
+	}
+	if decoded.Status != types.NFS4_OK {
+		t.Fatalf("BIND_CONN_TO_SESSION status = %d, want NFS4_OK", decoded.Status)
+	}
+}
+
+func TestCompound_MultiConnection_DifferentSlots(t *testing.T) {
+	// Two connections (different ConnectionIDs) each send SEQUENCE on the same
+	// session using different slots. Both succeed. Verify both connections are bound.
+	h, sessionID := createTestSessionWithConnectionID(t, 8001)
+
+	// Bind second connection
+	bindConnection(t, h, sessionID, 8002, types.CDFC4_FORE)
+
+	// Connection 8001 sends SEQUENCE on slot 0
+	ctx1 := newTestCompoundContext()
+	ctx1.ConnectionID = 8001
+	seqArgs1 := encodeSequenceArgs(sessionID, 0, 1, 1, true)
+	seqOps1 := []compoundOp{
+		{opCode: types.OP_SEQUENCE, data: seqArgs1},
+		{opCode: types.OP_PUTROOTFH},
+	}
+	seqData1 := buildCompoundArgsWithOps([]byte("slot0"), 1, seqOps1)
+	seqResp1, err := h.ProcessCompound(ctx1, seqData1)
+	if err != nil {
+		t.Fatalf("SEQUENCE on conn 8001 error: %v", err)
+	}
+	seqDec1, _ := decodeSequenceRes(t, seqResp1)
+	if seqDec1.Status != types.NFS4_OK {
+		t.Errorf("SEQUENCE on conn 8001 status = %d, want NFS4_OK", seqDec1.Status)
+	}
+
+	// Connection 8002 sends SEQUENCE on slot 1
+	ctx2 := newTestCompoundContext()
+	ctx2.ConnectionID = 8002
+	seqArgs2 := encodeSequenceArgs(sessionID, 1, 1, 1, true)
+	seqOps2 := []compoundOp{
+		{opCode: types.OP_SEQUENCE, data: seqArgs2},
+		{opCode: types.OP_PUTROOTFH},
+	}
+	seqData2 := buildCompoundArgsWithOps([]byte("slot1"), 1, seqOps2)
+	seqResp2, err := h.ProcessCompound(ctx2, seqData2)
+	if err != nil {
+		t.Fatalf("SEQUENCE on conn 8002 error: %v", err)
+	}
+	seqDec2, _ := decodeSequenceRes(t, seqResp2)
+	if seqDec2.Status != types.NFS4_OK {
+		t.Errorf("SEQUENCE on conn 8002 status = %d, want NFS4_OK", seqDec2.Status)
+	}
+
+	// Verify both connections are bound
+	bindings := h.StateManager.GetConnectionBindings(sessionID)
+	if len(bindings) != 2 {
+		t.Fatalf("expected 2 bindings, got %d", len(bindings))
+	}
+	connIDs := make(map[uint64]bool)
+	for _, b := range bindings {
+		connIDs[b.ConnectionID] = true
+	}
+	if !connIDs[8001] || !connIDs[8002] {
+		t.Errorf("expected conn 8001 and 8002 bound, got %v", connIDs)
+	}
+}
+
+func TestCompound_BindConnToSession_Rebind(t *testing.T) {
+	// Bind connection with FORE, then rebind with BACK_OR_BOTH.
+	// Verify direction changed to BOTH.
+	h, sessionID := createTestSessionWithConnectionID(t, 8010)
+
+	// Initial bind is fore (from auto-bind during CREATE_SESSION)
+	bindings := h.StateManager.GetConnectionBindings(sessionID)
+	if len(bindings) != 1 {
+		t.Fatalf("expected 1 auto-bound connection, got %d", len(bindings))
+	}
+	if bindings[0].Direction.String() != "fore" {
+		t.Errorf("initial direction = %s, want fore", bindings[0].Direction.String())
+	}
+
+	// Rebind with BACK_OR_BOTH -- generous policy should return BOTH
+	ctx := newTestCompoundContext()
+	ctx.ConnectionID = 8010
+
+	bcsArgs := encodeBindConnToSessionArgs(sessionID, types.CDFC4_BACK_OR_BOTH, false)
+	ops := []compoundOp{{opCode: types.OP_BIND_CONN_TO_SESSION, data: bcsArgs}}
+	data := buildCompoundArgsWithOps([]byte("rebind"), 1, ops)
+
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+
+	reader := bytes.NewReader(resp)
+	status, _ := xdr.DecodeUint32(reader)
+	if status != types.NFS4_OK {
+		t.Fatalf("overall status = %d, want NFS4_OK", status)
+	}
+	_, _ = xdr.DecodeOpaque(reader) // tag
+	_, _ = xdr.DecodeUint32(reader) // numResults
+	_, _ = xdr.DecodeUint32(reader) // opcode
+
+	var res types.BindConnToSessionRes
+	if err := res.Decode(reader); err != nil {
+		t.Fatalf("decode BindConnToSessionRes: %v", err)
+	}
+	if res.Dir != types.CDFS4_BOTH {
+		t.Errorf("rebind Dir = %d, want CDFS4_BOTH (%d)", res.Dir, types.CDFS4_BOTH)
+	}
+
+	// Verify direction changed in state
+	bindings = h.StateManager.GetConnectionBindings(sessionID)
+	if len(bindings) != 1 {
+		t.Fatalf("expected 1 binding after rebind, got %d", len(bindings))
+	}
+	if bindings[0].Direction.String() != "both" {
+		t.Errorf("rebound direction = %s, want both", bindings[0].Direction.String())
+	}
+}
+
+func TestCompound_BindConnToSession_LimitExceeded(t *testing.T) {
+	// Create max_connections bindings, attempt one more, verify NFS4ERR_RESOURCE.
+	h, sessionID := createTestSessionWithConnectionID(t, 8020)
+
+	// Set max connections per session to 3 (conn 8020 auto-bound = 1 already)
+	h.StateManager.SetMaxConnectionsPerSession(3)
+
+	// Bind 2 more connections to fill up the limit
+	bindConnection(t, h, sessionID, 8021, types.CDFC4_FORE)
+	bindConnection(t, h, sessionID, 8022, types.CDFC4_FORE)
+
+	// Verify we have 3 connections bound
+	bindings := h.StateManager.GetConnectionBindings(sessionID)
+	if len(bindings) != 3 {
+		t.Fatalf("expected 3 bindings at limit, got %d", len(bindings))
+	}
+
+	// Attempt one more -- should fail with NFS4ERR_RESOURCE
+	ctx := newTestCompoundContext()
+	ctx.ConnectionID = 8023
+
+	bcsArgs := encodeBindConnToSessionArgs(sessionID, types.CDFC4_FORE, false)
+	ops := []compoundOp{{opCode: types.OP_BIND_CONN_TO_SESSION, data: bcsArgs}}
+	data := buildCompoundArgsWithOps([]byte("overflow"), 1, ops)
+
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+
+	decoded, err := decodeCompoundResponse(resp)
+	if err != nil {
+		t.Fatalf("decode response error: %v", err)
+	}
+
+	if decoded.Status != types.NFS4ERR_RESOURCE {
+		t.Errorf("status = %d, want NFS4ERR_RESOURCE (%d)", decoded.Status, types.NFS4ERR_RESOURCE)
+	}
+}
+
+func TestCompound_BindConnToSession_ForeEnforcement(t *testing.T) {
+	// Bind 1 connection as BOTH (the only fore-capable connection),
+	// attempt to rebind as BACK only, verify NFS4ERR_INVAL.
+	h, sessionID := createTestSessionWithConnectionID(t, 8030)
+
+	// Rebind the only connection as BOTH first (so it is the only fore-capable)
+	bindConnection(t, h, sessionID, 8030, types.CDFC4_FORE_OR_BOTH)
+
+	// Verify it is BOTH
+	bindings := h.StateManager.GetConnectionBindings(sessionID)
+	if len(bindings) != 1 || bindings[0].Direction.String() != "both" {
+		t.Fatalf("expected single BOTH binding, got %v", bindings)
+	}
+
+	// Try to rebind as BACK-only -- should fail since no other fore-capable connection
+	ctx := newTestCompoundContext()
+	ctx.ConnectionID = 8030
+
+	bcsArgs := encodeBindConnToSessionArgs(sessionID, types.CDFC4_BACK, false)
+	ops := []compoundOp{{opCode: types.OP_BIND_CONN_TO_SESSION, data: bcsArgs}}
+	data := buildCompoundArgsWithOps([]byte("back-only"), 1, ops)
+
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+
+	decoded, err := decodeCompoundResponse(resp)
+	if err != nil {
+		t.Fatalf("decode response error: %v", err)
+	}
+
+	if decoded.Status != types.NFS4ERR_INVAL {
+		t.Errorf("status = %d, want NFS4ERR_INVAL (%d)", decoded.Status, types.NFS4ERR_INVAL)
+	}
+}
+
+func TestCompound_DisconnectCleanup(t *testing.T) {
+	// Bind a connection, call UnbindConnection (simulating disconnect),
+	// verify GetConnectionBindings returns empty.
+	h, sessionID := createTestSessionWithConnectionID(t, 8040)
+
+	// Verify auto-bound connection exists
+	bindings := h.StateManager.GetConnectionBindings(sessionID)
+	if len(bindings) != 1 {
+		t.Fatalf("expected 1 auto-bound connection, got %d", len(bindings))
+	}
+
+	// Simulate disconnect
+	h.StateManager.UnbindConnection(8040)
+
+	// Verify connection is removed
+	bindings = h.StateManager.GetConnectionBindings(sessionID)
+	if len(bindings) != 0 {
+		t.Errorf("expected 0 bindings after disconnect, got %d", len(bindings))
+	}
+
+	// Verify GetConnectionBinding also returns nil
+	binding := h.StateManager.GetConnectionBinding(8040)
+	if binding != nil {
+		t.Errorf("expected nil binding after disconnect, got %v", binding)
+	}
+}
+
+func TestCompound_Draining_RejectsNewRequests(t *testing.T) {
+	// Set a connection as draining, send a SEQUENCE+PUTROOTFH compound,
+	// verify the compound returns NFS4ERR_DELAY after SEQUENCE.
+	h, sessionID := createTestSessionWithConnectionID(t, 8050)
+
+	// Set the connection as draining
+	if err := h.StateManager.SetConnectionDraining(8050, true); err != nil {
+		t.Fatalf("SetConnectionDraining error: %v", err)
+	}
+
+	// Send SEQUENCE+PUTROOTFH on the draining connection
+	ctx := newTestCompoundContext()
+	ctx.ConnectionID = 8050
+
+	seqArgs := encodeSequenceArgs(sessionID, 0, 1, 0, true)
+	ops := []compoundOp{
+		{opCode: types.OP_SEQUENCE, data: seqArgs},
+		{opCode: types.OP_PUTROOTFH},
+	}
+	data := buildCompoundArgsWithOps([]byte("drain"), 1, ops)
+
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+
+	// Overall status should be NFS4ERR_DELAY (draining redirect)
+	reader := bytes.NewReader(resp)
+	status, _ := xdr.DecodeUint32(reader)
+	if status != types.NFS4ERR_DELAY {
+		t.Errorf("overall status = %d, want NFS4ERR_DELAY (%d)", status, types.NFS4ERR_DELAY)
+	}
+
+	_, _ = xdr.DecodeOpaque(reader) // tag
+	numResults, _ := xdr.DecodeUint32(reader)
+
+	// Only SEQUENCE result should be present (PUTROOTFH was not dispatched)
+	if numResults != 1 {
+		t.Fatalf("numResults = %d, want 1 (only SEQUENCE)", numResults)
+	}
+}
+
+func TestCompound_BindConnToSession_SilentUnbind(t *testing.T) {
+	// Bind connection to session A, then bind same connection to session B,
+	// verify session A has 0 connections and session B has 1.
+	h := newTestHandler()
+
+	// Create session A
+	clientID1, seqID1 := registerExchangeID(t, h, "silent-unbind-client-a")
+	ctxA := newTestCompoundContext()
+	ctxA.ConnectionID = 8060
+
+	secParms := []types.CallbackSecParms4{{CbSecFlavor: 0}}
+	csArgs1 := encodeCreateSessionArgsWithSec(clientID1, seqID1, 0, secParms)
+	ops1 := []compoundOp{{opCode: types.OP_CREATE_SESSION, data: csArgs1}}
+	data1 := buildCompoundArgsWithOps([]byte("csA"), 1, ops1)
+
+	resp1, err := h.ProcessCompound(ctxA, data1)
+	if err != nil {
+		t.Fatalf("CREATE_SESSION A error: %v", err)
+	}
+	reader1 := bytes.NewReader(resp1)
+	st1, _ := xdr.DecodeUint32(reader1)
+	if st1 != types.NFS4_OK {
+		t.Fatalf("CREATE_SESSION A status = %d, want NFS4_OK", st1)
+	}
+	_, _ = xdr.DecodeOpaque(reader1) // tag
+	_, _ = xdr.DecodeUint32(reader1) // numResults
+	_, _ = xdr.DecodeUint32(reader1) // opcode
+	var csResA types.CreateSessionRes
+	if err := csResA.Decode(reader1); err != nil {
+		t.Fatalf("decode CreateSessionRes A: %v", err)
+	}
+	sessionA := csResA.SessionID
+
+	// Verify conn 8060 is auto-bound to session A
+	bindingsA := h.StateManager.GetConnectionBindings(sessionA)
+	if len(bindingsA) != 1 {
+		t.Fatalf("expected 1 binding on session A, got %d", len(bindingsA))
+	}
+
+	// Create session B with a different client
+	clientID2, seqID2 := registerExchangeID(t, h, "silent-unbind-client-b")
+	ctxB := newTestCompoundContext()
+	ctxB.ConnectionID = 8061
+
+	csArgs2 := encodeCreateSessionArgsWithSec(clientID2, seqID2, 0, secParms)
+	ops2 := []compoundOp{{opCode: types.OP_CREATE_SESSION, data: csArgs2}}
+	data2 := buildCompoundArgsWithOps([]byte("csB"), 1, ops2)
+
+	resp2, err := h.ProcessCompound(ctxB, data2)
+	if err != nil {
+		t.Fatalf("CREATE_SESSION B error: %v", err)
+	}
+	reader2 := bytes.NewReader(resp2)
+	st2, _ := xdr.DecodeUint32(reader2)
+	if st2 != types.NFS4_OK {
+		t.Fatalf("CREATE_SESSION B status = %d, want NFS4_OK", st2)
+	}
+	_, _ = xdr.DecodeOpaque(reader2) // tag
+	_, _ = xdr.DecodeUint32(reader2) // numResults
+	_, _ = xdr.DecodeUint32(reader2) // opcode
+	var csResB types.CreateSessionRes
+	if err := csResB.Decode(reader2); err != nil {
+		t.Fatalf("decode CreateSessionRes B: %v", err)
+	}
+	sessionB := csResB.SessionID
+
+	// Now bind conn 8060 (currently on session A) to session B
+	ctxRebind := newTestCompoundContext()
+	ctxRebind.ConnectionID = 8060
+
+	bcsArgs := encodeBindConnToSessionArgs(sessionB, types.CDFC4_FORE, false)
+	ops3 := []compoundOp{{opCode: types.OP_BIND_CONN_TO_SESSION, data: bcsArgs}}
+	data3 := buildCompoundArgsWithOps([]byte("rebind-sess"), 1, ops3)
+
+	resp3, err := h.ProcessCompound(ctxRebind, data3)
+	if err != nil {
+		t.Fatalf("BIND_CONN_TO_SESSION error: %v", err)
+	}
+	dec3, err := decodeCompoundResponse(resp3)
+	if err != nil || dec3.Status != types.NFS4_OK {
+		t.Fatalf("BIND_CONN_TO_SESSION failed: status=%d err=%v", dec3.Status, err)
+	}
+
+	// Verify session A has 0 connections (silently unbound)
+	bindingsA = h.StateManager.GetConnectionBindings(sessionA)
+	if len(bindingsA) != 0 {
+		t.Errorf("expected 0 bindings on session A after silent unbind, got %d", len(bindingsA))
+	}
+
+	// Verify session B has 2 connections (8061 auto-bound + 8060 rebound)
+	bindingsB := h.StateManager.GetConnectionBindings(sessionB)
+	if len(bindingsB) != 2 {
+		t.Errorf("expected 2 bindings on session B, got %d", len(bindingsB))
+	}
+}
+
+func TestCompound_CreateSession_AutoBind_Verify(t *testing.T) {
+	// Create a session with ConnectionID set, immediately call
+	// GetConnectionBindings, verify exactly 1 connection bound as fore.
+	h, sessionID := createTestSessionWithConnectionID(t, 8070)
+
+	bindings := h.StateManager.GetConnectionBindings(sessionID)
+	if len(bindings) != 1 {
+		t.Fatalf("expected 1 auto-bound connection, got %d", len(bindings))
+	}
+	if bindings[0].ConnectionID != 8070 {
+		t.Errorf("auto-bound connection ID = %d, want 8070", bindings[0].ConnectionID)
+	}
+	if bindings[0].Direction.String() != "fore" {
+		t.Errorf("auto-bound direction = %s, want fore", bindings[0].Direction.String())
+	}
+	if bindings[0].ConnType.String() != "TCP" {
+		t.Errorf("auto-bound conn type = %s, want TCP", bindings[0].ConnType.String())
+	}
+}
