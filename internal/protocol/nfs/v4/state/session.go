@@ -90,3 +90,12 @@ func NewSession(clientID uint64, foreAttrs, backAttrs types.ChannelAttrs, flags,
 
 	return s, nil
 }
+
+// HasInFlightRequests returns true if the session's fore channel slot table
+// has any slots currently in use (processing a request).
+func (s *Session) HasInFlightRequests() bool {
+	if s.ForeChannelSlots == nil {
+		return false
+	}
+	return s.ForeChannelSlots.HasInFlightRequests()
+}

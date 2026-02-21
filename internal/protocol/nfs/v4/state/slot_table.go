@@ -277,3 +277,18 @@ func (st *SlotTable) GetTargetHighestSlotID() uint32 {
 func (st *SlotTable) MaxSlots() uint32 {
 	return st.maxSlots
 }
+
+// HasInFlightRequests returns true if any slot in the table is currently
+// processing a request (InUse == true).
+// Thread-safe: acquires st.mu.
+func (st *SlotTable) HasInFlightRequests() bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	for i := uint32(0); i < st.maxSlots; i++ {
+		if st.slots[i].InUse {
+			return true
+		}
+	}
+	return false
+}

@@ -115,6 +115,19 @@ type StateManager struct {
 	// Uses string(ownerID) for byte-exact comparison.
 	v41ClientsByOwner map[string]*V41ClientRecord
 
+	// sessionsByID maps session IDs to session objects.
+	sessionsByID map[types.SessionId4]*Session
+
+	// sessionsByClientID maps client IDs to their sessions.
+	sessionsByClientID map[uint64][]*Session
+
+	// maxSessionsPerClient is the per-client session limit (default 16).
+	maxSessionsPerClient int
+
+	// sessionMetrics holds Prometheus metrics for session lifecycle.
+	// nil-safe: all metric calls check for nil before recording.
+	sessionMetrics *SessionMetrics
+
 	// serverIdentity is the immutable server identity returned in EXCHANGE_ID responses.
 	serverIdentity *ServerIdentity
 }
@@ -152,9 +165,12 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		leaseDuration:       leaseDuration,
 		graceDuration:       gd,
 		// NFSv4.1 state
-		v41ClientsByID:    make(map[uint64]*V41ClientRecord),
-		v41ClientsByOwner: make(map[string]*V41ClientRecord),
-		serverIdentity:    newServerIdentity(epoch),
+		v41ClientsByID:       make(map[uint64]*V41ClientRecord),
+		v41ClientsByOwner:    make(map[string]*V41ClientRecord),
+		sessionsByID:         make(map[types.SessionId4]*Session),
+		sessionsByClientID:   make(map[uint64][]*Session),
+		maxSessionsPerClient: 16,
+		serverIdentity:       newServerIdentity(epoch),
 	}
 }
 
@@ -1838,4 +1854,289 @@ func parseConflictOwner(ownerID string, denied *LOCK4denied) {
 	}
 	// Fallback: use raw OwnerID as opaque data
 	denied.Owner.OwnerData = []byte(ownerID)
+}
+
+// ============================================================================
+// NFSv4.1 Session Management (Phase 19)
+// ============================================================================
+
+// SetSessionMetrics sets the Prometheus metrics collector for session lifecycle.
+// Must be called before any session operations. Safe to leave nil (no-op metrics).
+func (sm *StateManager) SetSessionMetrics(m *SessionMetrics) {
+	sm.sessionMetrics = m
+}
+
+// CreateSession implements the CREATE_SESSION algorithm per RFC 8881 Section 18.36.
+//
+// The algorithm uses the client's sequence ID to detect replays:
+//   - sequenceID == record.SequenceID: replay -- return cached response
+//   - sequenceID == record.SequenceID + 1: new request -- create session
+//   - otherwise: misordered -- return error
+//
+// On success, returns the CreateSessionResult and nil cached bytes.
+// On replay, returns nil result and the cached XDR response bytes.
+// On error, returns an appropriate NFS4StateError.
+//
+// The first successful CREATE_SESSION confirms the client and starts its lease.
+//
+// Caller must NOT hold sm.mu.
+func (sm *StateManager) CreateSession(
+	clientID uint64,
+	sequenceID uint32,
+	flags uint32,
+	foreAttrs, backAttrs types.ChannelAttrs,
+	cbProgram uint32,
+	cbSecParms []types.CallbackSecParms4,
+) (*CreateSessionResult, []byte, error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	// Case 1: Unknown client
+	record, exists := sm.v41ClientsByID[clientID]
+	if !exists {
+		return nil, nil, ErrStaleClientID
+	}
+
+	// Case 2: Replay (same seqid)
+	if sequenceID == record.SequenceID {
+		if record.CachedCreateSessionRes == nil {
+			return nil, nil, ErrSeqMisordered
+		}
+		return nil, record.CachedCreateSessionRes, nil
+	}
+
+	// Case 4: Misordered (not seqid+1)
+	if sequenceID != record.SequenceID+1 {
+		return nil, nil, ErrSeqMisordered
+	}
+
+	// Case 3: New request (seqid == record.SequenceID + 1)
+
+	// Check per-client session limit
+	if len(sm.sessionsByClientID[clientID]) >= sm.maxSessionsPerClient {
+		return nil, nil, ErrTooManySessions
+	}
+
+	// Negotiate channel attributes
+	negotiatedFore := negotiateChannelAttrs(foreAttrs, DefaultForeLimits())
+	negotiatedBack := negotiateChannelAttrs(backAttrs, DefaultBackLimits())
+
+	// Compute response flags: clear PERSIST, set CONN_BACK_CHAN if requested
+	responseFlags := flags & ^uint32(types.CREATE_SESSION4_FLAG_PERSIST)
+	// Also clear CONN_RDMA (we don't support RDMA)
+	responseFlags = responseFlags & ^uint32(types.CREATE_SESSION4_FLAG_CONN_RDMA)
+
+	// Create session
+	session, err := NewSession(clientID, negotiatedFore, negotiatedBack, responseFlags, cbProgram)
+	if err != nil {
+		return nil, nil, &NFS4StateError{
+			Status:  types.NFS4ERR_SERVERFAULT,
+			Message: fmt.Sprintf("failed to create session: %v", err),
+		}
+	}
+
+	// Store session in maps
+	sm.sessionsByID[session.SessionID] = session
+	sm.sessionsByClientID[clientID] = append(sm.sessionsByClientID[clientID], session)
+
+	// First CREATE_SESSION confirms the client
+	if !record.Confirmed {
+		record.Confirmed = true
+		record.Lease = NewLeaseState(record.ClientID, sm.leaseDuration, nil)
+		record.LastRenewal = time.Now()
+	}
+
+	// Increment sequence ID
+	record.SequenceID++
+
+	// Record metrics
+	sm.sessionMetrics.recordCreated()
+
+	logger.Info("CREATE_SESSION: session created",
+		"client_id", fmt.Sprintf("0x%x", clientID),
+		"session_id", session.SessionID.String(),
+		"fore_slots", negotiatedFore.MaxRequests)
+
+	return &CreateSessionResult{
+		SessionID:        session.SessionID,
+		SequenceID:       record.SequenceID,
+		Flags:            responseFlags,
+		ForeChannelAttrs: negotiatedFore,
+		BackChannelAttrs: negotiatedBack,
+	}, nil, nil
+}
+
+// CacheCreateSessionResponse stores the full XDR-encoded CREATE_SESSION
+// response bytes on the client record for replay detection.
+// Thread-safe: acquires sm.mu.Lock.
+func (sm *StateManager) CacheCreateSessionResponse(clientID uint64, responseBytes []byte) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	record, exists := sm.v41ClientsByID[clientID]
+	if !exists {
+		return
+	}
+
+	// Copy the bytes to avoid holding references to caller's buffer
+	cached := make([]byte, len(responseBytes))
+	copy(cached, responseBytes)
+	record.CachedCreateSessionRes = cached
+}
+
+// DestroySession removes a session from the state manager.
+// Returns ErrBadSession if the session is not found, or ErrDelay if
+// the session has in-flight requests.
+// Thread-safe: acquires sm.mu.Lock.
+func (sm *StateManager) DestroySession(sessionID types.SessionId4) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	return sm.destroySessionLocked(sessionID, false, "client_request")
+}
+
+// ForceDestroySession removes a session from the state manager, bypassing
+// the in-flight request check. Used by admin eviction.
+// Thread-safe: acquires sm.mu.Lock.
+func (sm *StateManager) ForceDestroySession(sessionID types.SessionId4) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	return sm.destroySessionLocked(sessionID, true, "admin_evict")
+}
+
+// destroySessionLocked removes a session. Caller must hold sm.mu.
+// If force is false, returns ErrDelay when the session has in-flight requests.
+func (sm *StateManager) destroySessionLocked(sessionID types.SessionId4, force bool, reason string) error {
+	session, exists := sm.sessionsByID[sessionID]
+	if !exists {
+		return ErrBadSession
+	}
+
+	// Check for in-flight requests (unless force-destroying)
+	if !force && session.HasInFlightRequests() {
+		return ErrDelay
+	}
+
+	// Remove from sessionsByID
+	delete(sm.sessionsByID, sessionID)
+
+	// Remove from sessionsByClientID
+	sessions := sm.sessionsByClientID[session.ClientID]
+	for i, s := range sessions {
+		if s.SessionID == sessionID {
+			sm.sessionsByClientID[session.ClientID] = append(sessions[:i], sessions[i+1:]...)
+			break
+		}
+	}
+	// Clean up empty slice
+	if len(sm.sessionsByClientID[session.ClientID]) == 0 {
+		delete(sm.sessionsByClientID, session.ClientID)
+	}
+
+	// Record metrics
+	duration := time.Since(session.CreatedAt).Seconds()
+	sm.sessionMetrics.recordDestroyed(reason, duration)
+
+	logger.Info("Session destroyed",
+		"session_id", session.SessionID.String(),
+		"client_id", fmt.Sprintf("0x%x", session.ClientID),
+		"reason", reason,
+		"duration_s", fmt.Sprintf("%.1f", duration))
+
+	return nil
+}
+
+// GetSession returns the session for the given session ID, or nil if not found.
+// Thread-safe: acquires sm.mu.RLock.
+func (sm *StateManager) GetSession(sessionID types.SessionId4) *Session {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	return sm.sessionsByID[sessionID]
+}
+
+// ListSessionsForClient returns a copy of the session slice for the given client.
+// Thread-safe: acquires sm.mu.RLock.
+func (sm *StateManager) ListSessionsForClient(clientID uint64) []*Session {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	sessions := sm.sessionsByClientID[clientID]
+	if len(sessions) == 0 {
+		return nil
+	}
+
+	result := make([]*Session, len(sessions))
+	copy(result, sessions)
+	return result
+}
+
+// StartSessionReaper starts a background goroutine that periodically sweeps
+// for expired client leases and unconfirmed clients, destroying their sessions.
+//
+// The reaper runs every 30 seconds and checks:
+//   - Clients with expired leases: destroys all sessions, purges client
+//   - Unconfirmed clients older than 2x lease duration: purges client
+//
+// Stops when ctx is cancelled.
+func (sm *StateManager) StartSessionReaper(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				sm.reapExpiredSessions()
+			}
+		}
+	}()
+}
+
+// reapExpiredSessions checks for and cleans up expired/unconfirmed v4.1 clients.
+// Thread-safe: acquires sm.mu.Lock.
+func (sm *StateManager) reapExpiredSessions() {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	now := time.Now()
+
+	// Collect client IDs to purge (avoid modifying map during iteration)
+	var toPurge []*V41ClientRecord
+
+	for _, record := range sm.v41ClientsByID {
+		// Check lease expiry for confirmed clients
+		if record.Lease != nil && record.Lease.IsExpired() {
+			logger.Info("Session reaper: lease expired",
+				"client_id", fmt.Sprintf("0x%x", record.ClientID),
+				"client_addr", record.ClientAddr)
+
+			// Destroy all sessions for this client with "lease_expired" reason
+			for _, session := range sm.sessionsByClientID[record.ClientID] {
+				delete(sm.sessionsByID, session.SessionID)
+				sm.sessionMetrics.recordDestroyed("lease_expired", time.Since(session.CreatedAt).Seconds())
+			}
+			delete(sm.sessionsByClientID, record.ClientID)
+
+			toPurge = append(toPurge, record)
+			continue
+		}
+
+		// Check for unconfirmed clients that timed out
+		if !record.Confirmed && now.Sub(record.CreatedAt) > 2*sm.leaseDuration {
+			logger.Info("Session reaper: unconfirmed client timed out",
+				"client_id", fmt.Sprintf("0x%x", record.ClientID),
+				"client_addr", record.ClientAddr,
+				"age", now.Sub(record.CreatedAt).String())
+			toPurge = append(toPurge, record)
+		}
+	}
+
+	// Purge collected records
+	for _, record := range toPurge {
+		sm.purgeV41Client(record)
+	}
 }
