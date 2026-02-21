@@ -118,6 +118,13 @@ type CompoundContext struct {
 	// ClientState holds minimal NFSv4 connection state.
 	// This is a placeholder for Phase 9 (State Management).
 	ClientState *V4ClientState
+
+	// SkipOwnerSeqid is set to true by the v4.1 dispatch path after
+	// SEQUENCE succeeds. When true, v4.0 handlers called from v4.1
+	// compounds pass seqid=0 to StateManager, bypassing per-owner seqid
+	// validation. The slot table provides replay protection for v4.1,
+	// making per-owner seqid redundant.
+	SkipOwnerSeqid bool
 }
 
 // V4ClientState holds NFSv4 client state associated with a connection.

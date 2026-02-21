@@ -221,10 +221,23 @@ func NewHandler(registry *runtime.Runtime, pfs *pseudofs.PseudoFS, stateManager 
 		var args types.SecinfoNoNameArgs
 		return args.Decode(r)
 	})
-	h.v41DispatchTable[types.OP_SEQUENCE] = v41StubHandler(types.OP_SEQUENCE, func(r io.Reader) error {
+	// SEQUENCE at position > 0 returns NFS4ERR_SEQUENCE_POS per RFC 8881.
+	// SEQUENCE at position 0 is handled specially in dispatchV41 before the op loop.
+	h.v41DispatchTable[types.OP_SEQUENCE] = func(ctx *types.CompoundContext, _ *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
 		var args types.SequenceArgs
-		return args.Decode(r)
-	})
+		if err := args.Decode(reader); err != nil {
+			return &types.CompoundResult{
+				Status: types.NFS4ERR_BADXDR,
+				OpCode: types.OP_SEQUENCE,
+				Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+			}
+		}
+		return &types.CompoundResult{
+			Status: types.NFS4ERR_SEQUENCE_POS,
+			OpCode: types.OP_SEQUENCE,
+			Data:   encodeStatusOnly(types.NFS4ERR_SEQUENCE_POS),
+		}
+	}
 	h.v41DispatchTable[types.OP_SET_SSV] = v41StubHandler(types.OP_SET_SSV, func(r io.Reader) error {
 		var args types.SetSsvArgs
 		return args.Decode(r)
