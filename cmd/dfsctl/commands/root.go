@@ -6,6 +6,7 @@ import (
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	adaptercmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/adapter"
+	clientcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/client"
 	ctxcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/context"
 	groupcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/group"
 	idmapcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/idmap"
@@ -74,6 +75,7 @@ func init() {
 	rootCmd.AddCommand(sharecmd.Cmd)
 	rootCmd.AddCommand(storecmd.Cmd)
 	rootCmd.AddCommand(adaptercmd.Cmd)
+	rootCmd.AddCommand(clientcmd.Cmd)
 	rootCmd.AddCommand(netgroupcmd.Cmd)
 	rootCmd.AddCommand(idmapcmd.Cmd)
 	rootCmd.AddCommand(settingscmd.Cmd)

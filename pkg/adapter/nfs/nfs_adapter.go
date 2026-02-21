@@ -433,6 +433,9 @@ func (s *NFSAdapter) SetRuntime(rt *runtime.Runtime) {
 	s.v4Handler = v4handlers.NewHandler(rt, s.pseudoFS, v4StateManager)
 	s.v4Handler.KerberosEnabled = s.kerberosConfig != nil
 
+	// Expose StateManager to REST API via runtime (for /clients endpoint and /health server info)
+	rt.SetNFSClientProvider(v4StateManager)
+
 	// Register callback to rebuild pseudo-fs when shares change (add/remove)
 	rt.OnShareChange(func(shares []string) {
 		s.pseudoFS.Rebuild(shares)

@@ -1,0 +1,156 @@
+package handlers
+
+import (
+	"encoding/binary"
+	"fmt"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/state"
+)
+
+// ClientHandler handles NFS client management API endpoints.
+type ClientHandler struct {
+	sm *state.StateManager
+}
+
+// NewClientHandler creates a handler for NFS client endpoints.
+// Returns nil if sm is nil (no NFS adapter configured).
+func NewClientHandler(sm *state.StateManager) *ClientHandler {
+	if sm == nil {
+		return nil
+	}
+	return &ClientHandler{sm: sm}
+}
+
+// NewClientHandlerFromProvider creates a ClientHandler from an untyped provider.
+// Used by the router in pkg/ which cannot import the state package directly.
+func NewClientHandlerFromProvider(provider any) *ClientHandler {
+	if provider == nil {
+		return nil
+	}
+	sm, ok := provider.(*state.StateManager)
+	if !ok {
+		return nil
+	}
+	return NewClientHandler(sm)
+}
+
+// ClientInfo is the response type for client list and detail endpoints.
+type ClientInfo struct {
+	ClientID    string    `json:"client_id"`
+	Address     string    `json:"address"`
+	NFSVersion  string    `json:"nfs_version"`
+	ConnectedAt time.Time `json:"connected_at"`
+	LastRenewal time.Time `json:"last_renewal"`
+	LeaseStatus string    `json:"lease_status"`
+	Confirmed   bool      `json:"confirmed"`
+	ImplName    string    `json:"impl_name,omitempty"`
+	ImplDomain  string    `json:"impl_domain,omitempty"`
+}
+
+// List handles GET /api/v1/clients.
+func (h *ClientHandler) List(w http.ResponseWriter, r *http.Request) {
+	clients := make([]ClientInfo, 0)
+
+	for _, rec := range h.sm.ListV40Clients() {
+		clients = append(clients, ClientInfo{
+			ClientID:    fmt.Sprintf("%016x", rec.ClientID),
+			Address:     rec.ClientAddr,
+			NFSVersion:  "4.0",
+			ConnectedAt: rec.CreatedAt,
+			LastRenewal: rec.LastRenewal,
+			LeaseStatus: leaseStatus(rec.Lease),
+			Confirmed:   rec.Confirmed,
+		})
+	}
+
+	for _, rec := range h.sm.ListV41Clients() {
+		clients = append(clients, ClientInfo{
+			ClientID:    fmt.Sprintf("%016x", rec.ClientID),
+			Address:     rec.ClientAddr,
+			NFSVersion:  "4.1",
+			ConnectedAt: rec.CreatedAt,
+			LastRenewal: rec.LastRenewal,
+			LeaseStatus: leaseStatus(rec.Lease),
+			Confirmed:   rec.Confirmed,
+			ImplName:    rec.ImplName,
+			ImplDomain:  rec.ImplDomain,
+		})
+	}
+
+	WriteJSONOK(w, clients)
+}
+
+// Evict handles DELETE /api/v1/clients/{id}.
+func (h *ClientHandler) Evict(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	clientID, err := strconv.ParseUint(idStr, 16, 64)
+	if err != nil {
+		BadRequest(w, "invalid client ID format, expected hex")
+		return
+	}
+
+	// Try v4.1 first, then v4.0
+	if err := h.sm.EvictV41Client(clientID); err == nil {
+		WriteNoContent(w)
+		return
+	}
+
+	if err := h.sm.EvictV40Client(clientID); err == nil {
+		WriteNoContent(w)
+		return
+	}
+
+	NotFound(w, "client not found")
+}
+
+// leaseStatus derives a human-readable lease status string.
+// Returns "unknown" if the lease has not yet been established (e.g. v4.1 pre-CREATE_SESSION).
+func leaseStatus(lease *state.LeaseState) string {
+	if lease == nil {
+		return "unknown"
+	}
+	if lease.IsExpired() {
+		return "expired"
+	}
+	return "active"
+}
+
+// ServerIdentityFromProvider extracts server identity info from an untyped provider.
+// Returns nil if provider is nil or not a *state.StateManager.
+func ServerIdentityFromProvider(provider any) map[string]interface{} {
+	if provider == nil {
+		return nil
+	}
+	sm, ok := provider.(*state.StateManager)
+	if !ok {
+		return nil
+	}
+	si := sm.ServerInfo()
+	if si == nil {
+		return nil
+	}
+	return serverIdentityToMap(si)
+}
+
+// serverIdentityToMap converts a ServerIdentity to a map for health endpoint JSON.
+func serverIdentityToMap(si *state.ServerIdentity) map[string]interface{} {
+	epochBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(epochBytes, uint32(si.ServerOwner.MinorID))
+	minorIDHex := fmt.Sprintf("%x", epochBytes)
+
+	return map[string]interface{}{
+		"server_owner": map[string]interface{}{
+			"major_id": string(si.ServerOwner.MajorID),
+			"minor_id": minorIDHex,
+		},
+		"server_impl": map[string]interface{}{
+			"name":   si.ImplID.Name,
+			"domain": si.ImplID.Domain,
+		},
+		"server_scope": string(si.ServerScope),
+	}
+}

@@ -40,14 +40,28 @@ func NewHealthHandler(registry *runtime.Runtime) *HealthHandler {
 // Returns 200 OK if the server process is running. This endpoint is designed
 // for Kubernetes liveness probes and should always succeed as long as the
 // HTTP server is responsive.
+//
+// When an NFS adapter is configured, the response includes server identity
+// information (server_owner, server_impl, server_scope) for trunking verification.
 func (h *HealthHandler) Liveness(w http.ResponseWriter, r *http.Request) {
 	uptime := time.Since(h.startTime)
-	writeJSON(w, http.StatusOK, healthyResponse(map[string]interface{}{
+	data := map[string]interface{}{
 		"service":    "dittofs",
 		"started_at": h.startTime.UTC().Format(time.RFC3339),
 		"uptime":     uptime.Round(time.Second).String(),
 		"uptime_sec": int64(uptime.Seconds()),
-	}))
+	}
+
+	// Include NFS server identity if available (enables trunking verification)
+	if h.registry != nil {
+		if serverInfo := ServerIdentityFromProvider(h.registry.NFSClientProvider()); serverInfo != nil {
+			for k, v := range serverInfo {
+				data[k] = v
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, healthyResponse(data))
 }
 
 // Readiness handles GET /health/ready - readiness probe.
