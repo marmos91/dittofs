@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/binary"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -121,7 +120,7 @@ func leaseStatus(lease *state.LeaseState) string {
 
 // ServerIdentityFromProvider extracts server identity info from an untyped provider.
 // Returns nil if provider is nil or not a *state.StateManager.
-func ServerIdentityFromProvider(provider any) map[string]interface{} {
+func ServerIdentityFromProvider(provider any) map[string]any {
 	if provider == nil {
 		return nil
 	}
@@ -137,17 +136,13 @@ func ServerIdentityFromProvider(provider any) map[string]interface{} {
 }
 
 // serverIdentityToMap converts a ServerIdentity to a map for health endpoint JSON.
-func serverIdentityToMap(si *state.ServerIdentity) map[string]interface{} {
-	epochBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(epochBytes, uint32(si.ServerOwner.MinorID))
-	minorIDHex := fmt.Sprintf("%x", epochBytes)
-
-	return map[string]interface{}{
-		"server_owner": map[string]interface{}{
+func serverIdentityToMap(si *state.ServerIdentity) map[string]any {
+	return map[string]any{
+		"server_owner": map[string]any{
 			"major_id": string(si.ServerOwner.MajorID),
-			"minor_id": minorIDHex,
+			"minor_id": fmt.Sprintf("%08x", uint32(si.ServerOwner.MinorID)),
 		},
-		"server_impl": map[string]interface{}{
+		"server_impl": map[string]any{
 			"name":   si.ImplID.Name,
 			"domain": si.ImplID.Domain,
 		},

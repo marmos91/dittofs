@@ -199,7 +199,8 @@ func (sm *StateManager) ExchangeID(
 		}
 		sm.purgeV41Client(existing)
 		record = sm.createV41Client(ownerID, verifier, clientImplId, clientAddr)
-		logger.Info("EXCHANGE_ID: "+reason+", new v4.1 client",
+		logger.Info("EXCHANGE_ID: new v4.1 client",
+			"reason", reason,
 			"old_client_id", existing.ClientID,
 			"new_client_id", record.ClientID,
 			"client_addr", clientAddr)

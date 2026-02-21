@@ -45,7 +45,7 @@ func NewHealthHandler(registry *runtime.Runtime) *HealthHandler {
 // information (server_owner, server_impl, server_scope) for trunking verification.
 func (h *HealthHandler) Liveness(w http.ResponseWriter, r *http.Request) {
 	uptime := time.Since(h.startTime)
-	data := map[string]interface{}{
+	data := map[string]any{
 		"service":    "dittofs",
 		"started_at": h.startTime.UTC().Format(time.RFC3339),
 		"uptime":     uptime.Round(time.Second).String(),
@@ -73,10 +73,10 @@ func (h *HealthHandler) Readiness(w http.ResponseWriter, r *http.Request) {
 	}
 
 	runningAdapters := h.registry.ListRunningAdapters()
-	writeJSON(w, http.StatusOK, healthyResponse(map[string]interface{}{
+	writeJSON(w, http.StatusOK, healthyResponse(map[string]any{
 		"shares":          h.registry.CountShares(),
 		"metadata_stores": h.registry.CountMetadataStores(),
-		"adapters": map[string]interface{}{
+		"adapters": map[string]any{
 			"running": len(runningAdapters),
 			"types":   runningAdapters,
 		},
