@@ -28,6 +28,9 @@ type SessionMetrics struct {
 // NewSessionMetrics creates and registers session metrics with the given
 // Prometheus registerer. If reg is nil, metrics are created but not registered
 // (useful for testing).
+//
+// On re-registration (server restart), existing collectors from the registry
+// are reused so that metrics continue to be exported correctly.
 func NewSessionMetrics(reg prometheus.Registerer) *SessionMetrics {
 	m := &SessionMetrics{
 		CreatedTotal: prometheus.NewCounter(prometheus.CounterOpts{
@@ -58,20 +61,10 @@ func NewSessionMetrics(reg prometheus.Registerer) *SessionMetrics {
 	}
 
 	if reg != nil {
-		collectors := []prometheus.Collector{
-			m.CreatedTotal,
-			m.DestroyedTotal,
-			m.ActiveGauge,
-			m.DurationHistogram,
-		}
-		for _, c := range collectors {
-			if err := reg.Register(c); err != nil {
-				// Ignore AlreadyRegisteredError (server restart re-registers).
-				if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
-					panic(err)
-				}
-			}
-		}
+		m.CreatedTotal = registerOrReuse(reg, m.CreatedTotal).(prometheus.Counter)
+		m.DestroyedTotal = registerOrReuse(reg, m.DestroyedTotal).(*prometheus.CounterVec)
+		m.ActiveGauge = registerOrReuse(reg, m.ActiveGauge).(prometheus.Gauge)
+		m.DurationHistogram = registerOrReuse(reg, m.DurationHistogram).(prometheus.Histogram)
 	}
 
 	return m

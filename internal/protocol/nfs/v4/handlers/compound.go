@@ -288,21 +288,24 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 
 	// Dispatch remaining ops (numOps - 1)
 	for i := uint32(1); i < numOps; i++ {
-		// Check context cancellation between operations
-		select {
-		case <-compCtx.Context.Done():
+		// Check context cancellation between operations.
+		// Instead of returning an error (which would skip slot caching and break
+		// replay semantics), encode the partial response so the defer caches it.
+		if compCtx.Context.Err() != nil {
 			logger.Debug("NFSv4.1 COMPOUND cancelled between ops",
 				"op_index", i,
 				"total_ops", numOps,
 				"client", compCtx.ClientAddr)
-			return nil, compCtx.Context.Err()
-		default:
+			lastStatus = types.NFS4ERR_DELAY
+			break
 		}
 
-		// Read operation code
+		// Read operation code. On decode error, encode partial response so the
+		// defer caches it (preserving replay semantics for completed ops).
 		opCode, err := xdr.DecodeUint32(reader)
 		if err != nil {
-			return nil, fmt.Errorf("decode v4.1 op %d opcode: %w", i, err)
+			lastStatus = types.NFS4ERR_BADXDR
+			break
 		}
 
 		// Check adapter-level operation blocklist before dispatch.

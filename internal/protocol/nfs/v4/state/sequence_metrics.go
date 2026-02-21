@@ -33,6 +33,9 @@ type SequenceMetrics struct {
 // NewSequenceMetrics creates and registers SEQUENCE metrics with the given
 // Prometheus registerer. If reg is nil, metrics are created but not registered
 // (useful for testing).
+//
+// On re-registration (server restart), existing collectors from the registry
+// are reused so that metrics continue to be exported correctly.
 func NewSequenceMetrics(reg prometheus.Registerer) *SequenceMetrics {
 	m := &SequenceMetrics{
 		SequenceTotal: prometheus.NewCounter(prometheus.CounterOpts{
@@ -68,21 +71,11 @@ func NewSequenceMetrics(reg prometheus.Registerer) *SequenceMetrics {
 	}
 
 	if reg != nil {
-		collectors := []prometheus.Collector{
-			m.SequenceTotal,
-			m.ErrorsTotal,
-			m.ReplayHitsTotal,
-			m.SlotsInUse,
-			m.ReplayCacheBytes,
-		}
-		for _, c := range collectors {
-			if err := reg.Register(c); err != nil {
-				// Ignore AlreadyRegisteredError (server restart re-registers).
-				if _, ok := err.(prometheus.AlreadyRegisteredError); !ok {
-					panic(err)
-				}
-			}
-		}
+		m.SequenceTotal = registerOrReuse(reg, m.SequenceTotal).(prometheus.Counter)
+		m.ErrorsTotal = registerOrReuse(reg, m.ErrorsTotal).(*prometheus.CounterVec)
+		m.ReplayHitsTotal = registerOrReuse(reg, m.ReplayHitsTotal).(prometheus.Counter)
+		m.SlotsInUse = registerOrReuse(reg, m.SlotsInUse).(*prometheus.GaugeVec)
+		m.ReplayCacheBytes = registerOrReuse(reg, m.ReplayCacheBytes).(prometheus.Gauge)
 	}
 
 	return m
