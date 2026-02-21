@@ -9,12 +9,12 @@ See: .planning/PROJECT.md (updated 2026-02-20)
 
 ## Current Position
 
-Phase: 21 of 25 (Connection Management and Trunking)
-Plan: 2 of 2 in current phase -- COMPLETE
+Phase: 22 of 25 (Backchannel Multiplexing)
+Plan: 2 of 2 in current phase (COMPLETE)
 Status: Phase Complete
-Last activity: 2026-02-21 -- Completed 21-02-PLAN.md
+Last activity: 2026-02-22 -- Completed 22-02-PLAN.md
 
-Progress: [########################################] 100% (76/76 plans complete)
+Progress: [########################################] 100% (79/79 plans complete)
 
 ## Completed Milestones
 
@@ -63,6 +63,8 @@ Progress: [########################################] 100% (76/76 plans complete)
 | Phase 20 P02 | 14min | 2 tasks | 11 files |
 | Phase 21 P01 | 10min | 2 tasks | 14 files |
 | Phase 21 P02 | 18min | 2 tasks | 12 files |
+| Phase 22 P01 | 35min | 2 tasks | 13 files |
+| Phase 22 P02 | 25min | 2 tasks | 8 files |
 
 ## Quick Tasks Completed
 
@@ -117,6 +119,14 @@ Recent decisions affecting current work:
 - [Phase 21-02]: ConnectionMetrics follows nil-safe receiver pattern (registerOrReuse for Prometheus re-registration)
 - [Phase 21-02]: unbindConnectionLocked accepts reason parameter for accurate metrics labeling
 - [Phase 21-02]: Session API includes ConnectionInfo list and ConnectionSummary in same response
+- [Phase 22-01]: Shared wire-format helpers exported to callback_common.go, reused by both v4.0 and v4.1 paths
+- [Phase 22-01]: ConnWriter registered lazily after COMPOUND (maybeRegisterBackchannel), not during BIND_CONN_TO_SESSION handler
+- [Phase 22-01]: Read-loop demux checks msg_type (bytes 4-7) before RPC parsing to route REPLY messages to PendingCBReplies
+- [Phase 22-01]: Callback routing via getBackchannelSender(clientID) -- v4.1 gets BackchannelSender, v4.0 uses dial-out
+- [Phase 22-01]: BackchannelSender uses exponential backoff (5s/10s/20s) with 3 retry attempts
+- [Phase 22-02]: BackchannelMetrics follows nil-safe receiver + registerOrReuse pattern (same as SessionMetrics/ConnectionMetrics/SequenceMetrics)
+- [Phase 22-02]: net.Pipe() for backchannel integration tests (no real TCP listeners, no port conflicts)
+- [Phase 22-02]: Metrics wired into sendCallbackWithRetry() for accurate per-attempt tracking
 
 ### Pending Todos
 
@@ -129,6 +139,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-02-21
-Stopped at: Completed 21-02-PLAN.md (Phase 21 complete)
-Resume file: `/gsd:execute-phase 22`
+Last session: 2026-02-22
+Stopped at: Completed 22-02-PLAN.md (Phase 22 complete)
+Resume file: `/gsd:execute-phase 23`

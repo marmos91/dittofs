@@ -212,6 +212,55 @@ NFSv4.1 trunking requires tracking which TCP connections are bound to which sess
 
 **Fore-channel enforcement:** At least one fore-channel connection must remain. Rebinding the sole fore connection as back-only returns `NFS4ERR_INVAL`.
 
+### Backchannel Multiplexing (Phase 22)
+
+NFSv4.1 callbacks (CB_RECALL, CB_NOTIFY, etc.) are sent over existing TCP connections
+instead of dialing out, enabling callbacks through NAT/firewalls.
+
+**BackchannelSender lifecycle:**
+- Created lazily via `StateManager.StartBackchannelSender()` when a session has back-channel slots
+- Runs as a goroutine processing a queue of `CallbackRequest` entries
+- Stopped on session destruction (`destroySessionLocked` calls `stopBackchannelSender`)
+- Uses exponential backoff (5s/10s/20s) with 3 retry attempts
+
+**Wire format:**
+- v4.1 CB_COMPOUND uses `minorversion=1` and `callback_ident=0` (session-based, not callback ID)
+- CB_SEQUENCE is always the first operation in a v4.1 CB_COMPOUND (exactly-once semantics)
+- Record marking: standard RPC fragment header (4 bytes, last-fragment bit set)
+
+**Read-loop demux:**
+- When a TCP connection carries both fore and back channels, the read loop must distinguish
+  RPC CALL messages (client requests) from RPC REPLY messages (callback responses)
+- Check `msg_type` field (bytes 4-7 of the RPC message): 0=CALL, 1=REPLY
+- REPLY messages are routed to `PendingCBReplies` via the XID; CALL messages are processed normally
+- Sentinel error (`errBackchannelReply`) signals the Serve loop that a reply was handled, not a real error
+
+**Callback routing:**
+- `sendRecall()` checks `getBackchannelSender(clientID)` first
+- If a BackchannelSender exists -> v4.1 path (enqueue to BackchannelSender)
+- If no BackchannelSender -> v4.0 path (dial-out via `SendCBRecall`)
+
+**Write serialization:**
+- Backchannel writes use `NFSConnection.writeMu` via the `ConnWriter` callback
+- ConnWriter is registered lazily after each COMPOUND via `maybeRegisterBackchannel()`
+- This prevents interleaving backchannel messages with fore-channel replies on the same TCP connection
+
+**Lock ordering:** `sm.mu` before `connMu`. Never hold locks during network I/O.
+
+**Metrics:** `BackchannelMetrics` follows the nil-safe receiver pattern (same as SessionMetrics/ConnectionMetrics/SequenceMetrics):
+- `dittofs_nfs_backchannel_callbacks_total` (counter)
+- `dittofs_nfs_backchannel_callback_failures_total` (counter)
+- `dittofs_nfs_backchannel_callback_duration_seconds` (histogram)
+- `dittofs_nfs_backchannel_callback_retries_total` (counter)
+
+Set via `Handler.SetBackchannelMetrics()` which propagates to StateManager and BackchannelSender.
+
+**Adding a new callback operation (e.g., CB_NOTIFY in Phase 24):**
+1. Encode the callback op args (similar to `EncodeCBRecallOp` in `callback_common.go`)
+2. Create a `CallbackRequest{OpCode: OP_CB_NOTIFY, Payload: encodedOp}`
+3. Enqueue to the BackchannelSender (or use dial-out for v4.0 clients)
+4. The sender wraps it in CB_COMPOUND with CB_SEQUENCE automatically
+
 ## Common Mistakes
 
 1. **Business logic in handlers** - permissions, validation belong in service layer

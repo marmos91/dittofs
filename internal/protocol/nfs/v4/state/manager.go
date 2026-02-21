@@ -154,6 +154,28 @@ type StateManager struct {
 	// May be nil; ConnectionMetrics methods are nil-safe so callers can invoke
 	// them without additional nil checks.
 	connectionMetrics *ConnectionMetrics
+
+	// ============================================================================
+	// Backchannel State (Phase 22)
+	// ============================================================================
+
+	// connWriters maps connectionID -> ConnWriter callback for writing backchannel
+	// data to a TCP connection. Registered when a connection is bound for back-channel.
+	// Protected by connMu.
+	connWriters map[uint64]ConnWriter
+
+	// cbRepliesByConn maps connectionID -> PendingCBReplies for routing backchannel
+	// REPLY messages to the sender goroutine. Protected by connMu.
+	cbRepliesByConn map[uint64]*PendingCBReplies
+
+	// backchannelFaults tracks per-client backchannel fault state. Set when a
+	// callback send fails, cleared on success. Protected by connMu.
+	backchannelFaults map[uint64]bool
+
+	// backchannelMetrics holds Prometheus metrics for backchannel callbacks.
+	// May be nil; BackchannelMetrics methods are nil-safe so callers can invoke
+	// them without additional nil checks.
+	backchannelMetrics *BackchannelMetrics
 }
 
 // NewStateManager creates a new StateManager with the given lease duration.
@@ -199,6 +221,10 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		connByID:           make(map[uint64]*BoundConnection),
 		connBySession:      make(map[types.SessionId4][]*BoundConnection),
 		maxConnsPerSession: 16,
+		// Backchannel state (Phase 22)
+		connWriters:       make(map[uint64]ConnWriter),
+		cbRepliesByConn:   make(map[uint64]*PendingCBReplies),
+		backchannelFaults: make(map[uint64]bool),
 	}
 }
 
@@ -707,8 +733,8 @@ func (sm *StateManager) RevokeDelegation(delegOther [types.NFS4_OTHER_SIZE]byte)
 // Shutdown stops all active lease timers, recall timers, and the grace period
 // for graceful server shutdown.
 func (sm *StateManager) Shutdown() {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
 
 	for _, record := range sm.clientsByID {
 		if record.Lease != nil {
@@ -722,11 +748,19 @@ func (sm *StateManager) Shutdown() {
 		deleg.StopRecallTimer()
 	}
 
+	// Stop all backchannel senders to prevent orphan goroutines
+	for _, session := range sm.sessionsByID {
+		if session.backchannelSender != nil {
+			session.backchannelSender.Stop()
+			session.backchannelSender = nil
+		}
+	}
+
 	if sm.gracePeriod != nil {
 		sm.gracePeriod.Stop()
 	}
 
-	logger.Info("StateManager: all lease and recall timers stopped")
+	logger.Info("StateManager: all lease, recall timers, and backchannel senders stopped")
 }
 
 // ============================================================================
@@ -1947,10 +1981,19 @@ func (sm *StateManager) GetStatusFlags(session *Session) uint32 {
 
 	var flags uint32
 
-	// CB_PATH_DOWN and BACKCHANNEL_FAULT: set if no backchannel bound.
-	// Phase 22 (backchannel) will clear these when backchannel is established.
-	if session.BackChannelSlots == nil {
+	// CB_PATH_DOWN: set when no back-bound connection exists for any session
+	// of this client. Cleared when at least one back-bound connection is present.
+	sm.connMu.RLock()
+	hasBack := sm.hasBackBoundConnection(session.ClientID)
+	hasFault := sm.backchannelFaults[session.ClientID]
+	sm.connMu.RUnlock()
+
+	if session.BackChannelSlots == nil || !hasBack {
 		flags |= types.SEQ4_STATUS_CB_PATH_DOWN
+	}
+
+	// BACKCHANNEL_FAULT: set when a callback send actually fails.
+	if hasFault {
 		flags |= types.SEQ4_STATUS_BACKCHANNEL_FAULT
 	}
 
@@ -2132,6 +2175,9 @@ func (sm *StateManager) destroySessionLocked(sessionID types.SessionId4, force b
 	if !force && session.HasInFlightRequests() {
 		return ErrDelay
 	}
+
+	// Stop backchannel sender before removing session (prevents orphan goroutines)
+	sm.stopBackchannelSender(sessionID)
 
 	// Remove from sessionsByID
 	delete(sm.sessionsByID, sessionID)
@@ -2400,6 +2446,10 @@ func (sm *StateManager) unbindConnectionLocked(connectionID uint64, reason strin
 	delete(sm.connByID, connectionID)
 	sm.removeConnFromSessionLocked(connectionID, sessionID)
 
+	// Clean up backchannel state for this connection
+	delete(sm.connWriters, connectionID)
+	delete(sm.cbRepliesByConn, connectionID)
+
 	// Record metrics
 	sm.connectionMetrics.RecordUnbind(reason)
 	sm.connectionMetrics.SetBoundConnections(sessionID.String(), float64(len(sm.connBySession[sessionID])))
@@ -2528,4 +2578,220 @@ func (sm *StateManager) SetMaxConnectionsPerSession(max int) {
 // Must be called before any connection binding operations. Safe to leave nil (no-op metrics).
 func (sm *StateManager) SetConnectionMetrics(m *ConnectionMetrics) {
 	sm.connectionMetrics = m
+}
+
+// SetBackchannelMetrics sets the Prometheus metrics collector for backchannel callbacks.
+// Must be called before any backchannel operations. Safe to leave nil (no-op metrics).
+func (sm *StateManager) SetBackchannelMetrics(m *BackchannelMetrics) {
+	sm.backchannelMetrics = m
+}
+
+// ============================================================================
+// Backchannel Operations (Phase 22)
+// ============================================================================
+
+// RegisterConnWriter registers a ConnWriter callback for a back-bound connection.
+// Called by the NFS adapter when a connection is bound for back-channel.
+// Also creates a PendingCBReplies instance for the connection.
+//
+// Thread-safe: acquires sm.connMu.Lock.
+func (sm *StateManager) RegisterConnWriter(connectionID uint64, writer ConnWriter) *PendingCBReplies {
+	sm.connMu.Lock()
+	defer sm.connMu.Unlock()
+
+	sm.connWriters[connectionID] = writer
+	pending := NewPendingCBReplies()
+	sm.cbRepliesByConn[connectionID] = pending
+	return pending
+}
+
+// UnregisterConnWriter removes the ConnWriter and PendingCBReplies for a connection.
+// Called on disconnect cleanup.
+//
+// Thread-safe: acquires sm.connMu.Lock.
+func (sm *StateManager) UnregisterConnWriter(connectionID uint64) {
+	sm.connMu.Lock()
+	defer sm.connMu.Unlock()
+	delete(sm.connWriters, connectionID)
+	delete(sm.cbRepliesByConn, connectionID)
+}
+
+// GetPendingCBReplies returns the PendingCBReplies for a connection, or nil.
+//
+// Thread-safe: acquires sm.connMu.RLock.
+func (sm *StateManager) GetPendingCBReplies(connectionID uint64) *PendingCBReplies {
+	sm.connMu.RLock()
+	defer sm.connMu.RUnlock()
+	return sm.cbRepliesByConn[connectionID]
+}
+
+// StartBackchannelSender creates and starts a BackchannelSender for a session
+// if the session has back-channel slots and no sender exists yet.
+// Called lazily on first back-channel bind or first callback enqueue.
+//
+// Thread-safe: acquires sm.mu.Lock.
+func (sm *StateManager) StartBackchannelSender(ctx context.Context, sessionID types.SessionId4) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	session, exists := sm.sessionsByID[sessionID]
+	if !exists || session.BackChannelSlots == nil {
+		return
+	}
+	if session.backchannelSender != nil {
+		return // Already started
+	}
+
+	sender := NewBackchannelSender(
+		sessionID,
+		session.ClientID,
+		session.CbProgram,
+		session.BackChannelSlots,
+		sm,
+		sm.backchannelMetrics,
+	)
+	session.backchannelSender = sender
+
+	go sender.Run(ctx)
+
+	logger.Info("BackchannelSender started for session",
+		"session_id", sessionID.String(),
+		"client_id", fmt.Sprintf("0x%x", session.ClientID))
+}
+
+// stopBackchannelSender stops the BackchannelSender for a session.
+// Called from destroySessionLocked to prevent orphan goroutines.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) stopBackchannelSender(sessionID types.SessionId4) {
+	session, exists := sm.sessionsByID[sessionID]
+	if !exists {
+		return
+	}
+	if session.backchannelSender != nil {
+		session.backchannelSender.Stop()
+		session.backchannelSender = nil
+	}
+}
+
+// getBackchannelSender returns the BackchannelSender for the client's first
+// session that has a backchannel. Returns nil if no v4.1 backchannel exists.
+//
+// Thread-safe: acquires sm.mu.RLock.
+func (sm *StateManager) getBackchannelSender(clientID uint64) *BackchannelSender {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	for _, session := range sm.sessionsByClientID[clientID] {
+		if session.backchannelSender != nil {
+			return session.backchannelSender
+		}
+	}
+	return nil
+}
+
+// getBackBoundConnWriter finds a back-bound connection for the session,
+// optionally excluding a specific connection ID (pass 0 for no exclusion).
+// Selects the connection with the most recent fore-channel activity.
+//
+// Lock ordering: acquires sm.connMu.RLock only (no sm.mu needed).
+func (sm *StateManager) getBackBoundConnWriter(sessionID types.SessionId4, excludeConnID uint64) (uint64, ConnWriter, *PendingCBReplies, bool) {
+	sm.connMu.RLock()
+	defer sm.connMu.RUnlock()
+
+	return sm.getBackBoundConnWriterLocked(sessionID, excludeConnID)
+}
+
+// getBackBoundConnWriterLocked is the common implementation for finding a
+// back-bound connection. Caller must hold sm.connMu.RLock.
+func (sm *StateManager) getBackBoundConnWriterLocked(sessionID types.SessionId4, excludeConnID uint64) (uint64, ConnWriter, *PendingCBReplies, bool) {
+	bindings := sm.connBySession[sessionID]
+	var bestConn *BoundConnection
+	var bestTime time.Time
+
+	for _, b := range bindings {
+		if b.ConnectionID == excludeConnID {
+			continue
+		}
+		if b.Direction != ConnDirBack && b.Direction != ConnDirBoth {
+			continue
+		}
+		if bestConn == nil || b.LastActivity.After(bestTime) {
+			bestConn = b
+			bestTime = b.LastActivity
+		}
+	}
+
+	if bestConn == nil {
+		return 0, nil, nil, false
+	}
+
+	writer, ok := sm.connWriters[bestConn.ConnectionID]
+	if !ok {
+		return 0, nil, nil, false
+	}
+	pending := sm.cbRepliesByConn[bestConn.ConnectionID]
+	if pending == nil {
+		return 0, nil, nil, false
+	}
+
+	return bestConn.ConnectionID, writer, pending, true
+}
+
+// UpdateBackchannelParams stores new callback parameters on a session.
+// Called by the BACKCHANNEL_CTL handler.
+//
+// Thread-safe: acquires sm.mu.Lock.
+func (sm *StateManager) UpdateBackchannelParams(sessionID types.SessionId4, cbProgram uint32, secParms []types.CallbackSecParms4) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	session, exists := sm.sessionsByID[sessionID]
+	if !exists {
+		return ErrBadSession
+	}
+
+	session.CbProgram = cbProgram
+	session.BackchannelSecParms = secParms
+
+	// Update the sender's program number if it exists
+	if session.backchannelSender != nil {
+		session.backchannelSender.cbProgram = cbProgram
+	}
+
+	logger.Info("Backchannel params updated",
+		"session_id", sessionID.String(),
+		"cb_program", fmt.Sprintf("0x%x", cbProgram),
+		"sec_parms_count", len(secParms))
+
+	return nil
+}
+
+// setBackchannelFault sets or clears the backchannel fault flag for a client.
+// Called by BackchannelSender on send failure/success.
+//
+// Thread-safe: acquires sm.connMu.Lock.
+func (sm *StateManager) setBackchannelFault(clientID uint64, fault bool) {
+	sm.connMu.Lock()
+	defer sm.connMu.Unlock()
+	if fault {
+		sm.backchannelFaults[clientID] = true
+	} else {
+		delete(sm.backchannelFaults, clientID)
+	}
+}
+
+// hasBackBoundConnection returns true if the client has at least one
+// back-bound connection across any of its sessions.
+//
+// Caller must hold sm.mu.RLock and sm.connMu.RLock (or ensure no concurrent access).
+func (sm *StateManager) hasBackBoundConnection(clientID uint64) bool {
+	for _, session := range sm.sessionsByClientID[clientID] {
+		for _, b := range sm.connBySession[session.SessionID] {
+			if b.Direction == ConnDirBack || b.Direction == ConnDirBoth {
+				return true
+			}
+		}
+	}
+	return false
 }

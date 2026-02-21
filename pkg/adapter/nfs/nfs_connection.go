@@ -3,6 +3,7 @@ package nfs
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,7 +15,13 @@ import (
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/state"
 )
+
+// errBackchannelReply is a sentinel error returned by readRequest when the
+// incoming message is a backchannel REPLY (msg_type=1) rather than a CALL.
+// The Serve loop checks for this and continues without treating it as an error.
+var errBackchannelReply = errors.New("backchannel reply routed")
 
 type NFSConnection struct {
 	server *NFSAdapter
@@ -27,6 +34,12 @@ type NFSConnection struct {
 	requestSem chan struct{}  // Semaphore to limit concurrent requests
 	wg         sync.WaitGroup // Track active requests for graceful shutdown
 	writeMu    sync.Mutex     // Protects connection writes (replies must be serialized)
+
+	// pendingCBReplies routes backchannel REPLY messages to the sender goroutine.
+	// nil by default; set when the connection is bound for back-channel via
+	// SetPendingCBReplies. When non-nil, the read loop demuxes incoming messages:
+	// CALL (msg_type=0) dispatches to handlers, REPLY (msg_type=1) routes here.
+	pendingCBReplies *state.PendingCBReplies
 }
 
 type fragmentHeader struct {
@@ -41,6 +54,13 @@ func NewNFSConnection(server *NFSAdapter, conn net.Conn, connectionID uint64) *N
 		connectionID: connectionID,
 		requestSem:   make(chan struct{}, server.config.MaxRequestsPerConnection),
 	}
+}
+
+// SetPendingCBReplies sets the PendingCBReplies instance for this connection,
+// enabling the read-loop demux to route backchannel REPLY messages to the
+// BackchannelSender goroutine. Called when a connection is bound for back-channel.
+func (c *NFSConnection) SetPendingCBReplies(p *state.PendingCBReplies) {
+	c.pendingCBReplies = p
 }
 
 // serve handles all RPC requests for this connection.
@@ -86,6 +106,10 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 		// This is done synchronously to maintain request order on the wire
 		call, rawMessage, err := c.readRequest(ctx)
 		if err != nil {
+			// Backchannel REPLY messages are routed internally; continue loop
+			if errors.Is(err, errBackchannelReply) {
+				continue
+			}
 			if err == io.EOF {
 				logger.Debug("Connection closed by client", "address", clientAddr)
 			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
@@ -182,6 +206,31 @@ func (c *NFSConnection) readRequest(ctx context.Context) (*rpc.RPCCallMessage, [
 	message, err := c.readRPCMessage(header.Length)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read RPC message: %w", err)
+	}
+
+	// Demux: check if this is a CALL (msg_type=0) or REPLY (msg_type=1).
+	// NFSv4.1 multiplexes fore-channel requests and backchannel replies on the
+	// same TCP connection. The first 8 bytes are XID (4 bytes) + msg_type (4 bytes).
+	if len(message) >= 8 && c.pendingCBReplies != nil {
+		msgType := binary.BigEndian.Uint32(message[4:8])
+		if msgType == rpc.RPCReply {
+			xid := binary.BigEndian.Uint32(message[0:4])
+			// Copy the message bytes for delivery since the buffer is pooled
+			replyBytes := make([]byte, len(message))
+			copy(replyBytes, message)
+			bufpool.Put(message) // Return pooled buffer
+
+			if c.pendingCBReplies.Deliver(xid, replyBytes) {
+				logger.Debug("Backchannel REPLY routed",
+					"xid", fmt.Sprintf("0x%x", xid),
+					"conn_id", c.connectionID)
+			} else {
+				logger.Debug("Backchannel REPLY for unknown XID (dropped)",
+					"xid", fmt.Sprintf("0x%x", xid),
+					"conn_id", c.connectionID)
+			}
+			return nil, nil, errBackchannelReply
+		}
 	}
 
 	// Parse RPC call header

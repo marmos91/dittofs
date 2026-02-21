@@ -61,7 +61,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 20: SEQUENCE and COMPOUND Bifurcation** - v4.1 request processing with EOS enforcement and v4.0/v4.1 coexistence (completed 2026-02-21)
 - [ ] **Phase 20.5: Manual Verification - Sessions** USER CHECKPOINT - Test session establishment and EOS
 - [x] **Phase 21: Connection Management and Trunking** - BIND_CONN_TO_SESSION, multi-connection sessions, server_owner consistency (completed 2026-02-21)
-- [ ] **Phase 22: Backchannel Multiplexing** - CB_SEQUENCE over fore-channel, bidirectional I/O, NAT-friendly callbacks
+- [x] **Phase 22: Backchannel Multiplexing** - CB_SEQUENCE over fore-channel, bidirectional I/O, NAT-friendly callbacks (completed 2026-02-21)
 - [ ] **Phase 23: Client Lifecycle and Cleanup** - DESTROY_CLIENTID, FREE_STATEID, TEST_STATEID, RECLAIM_COMPLETE, v4.0-only rejections
 - [ ] **Phase 24: Directory Delegations** - GET_DIR_DELEGATION, CB_NOTIFY, delegation state tracking with recall
 - [ ] **Phase 25: v3.0 Integration Testing** - E2E tests for sessions, EOS, backchannel, directory delegations, and coexistence
@@ -169,7 +169,7 @@ Plans:
 **Plans**: 2 plans
 Plans:
 - [x] 21-01-PLAN.md -- Core binding model: connection ID plumbing, StateManager connection methods, BIND_CONN_TO_SESSION handler, auto-bind on CREATE_SESSION, disconnect cleanup, draining support, unit tests
-- [ ] 21-02-PLAN.md -- Observability & API: Prometheus connection metrics, REST API session detail extension (connection breakdown), V4MaxConnectionsPerSession config full stack, CLI updates, multi-connection integration tests
+- [x] 21-02-PLAN.md -- Observability & API: Prometheus connection metrics, REST API session detail extension (connection breakdown), V4MaxConnectionsPerSession config full stack, CLI updates, multi-connection integration tests
 
 ### Phase 22: Backchannel Multiplexing
 **Goal**: Server sends callbacks to v4.1 clients over the fore-channel TCP connection without requiring a separate connection
@@ -180,7 +180,10 @@ Plans:
   2. BACKCHANNEL_CTL allows client to update backchannel security parameters
   3. Existing CB_RECALL works over backchannel for v4.1 clients while v4.0 clients continue using separate TCP callback
   4. Callbacks work through NAT/firewall (server never initiates new TCP connections for v4.1 clients)
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 22-01-PLAN.md -- Core backchannel infrastructure: shared wire-format helpers, BackchannelSender goroutine, read-loop demux, callback routing, BACKCHANNEL_CTL handler, GetStatusFlags update
+- [ ] 22-02-PLAN.md -- Prometheus backchannel metrics, integration tests with TCP loopback, BACKCHANNEL_CTL handler tests, protocol documentation
 
 ### Phase 23: Client Lifecycle and Cleanup
 **Goal**: Server supports full client lifecycle management including graceful cleanup, stateid validation, and v4.0-only operation rejection
@@ -328,7 +331,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 32
 | 19. Session Lifecycle | v3.0 | 1/1 | Complete | 2026-02-21 |
 | 20. SEQUENCE and COMPOUND Bifurcation | 2/2 | Complete    | 2026-02-21 | - |
 | 21. Connection Management and Trunking | 2/2 | Complete    | 2026-02-21 | - |
-| 22. Backchannel Multiplexing | v3.0 | 0/? | Not started | - |
+| 22. Backchannel Multiplexing | 2/2 | Complete    | 2026-02-21 | - |
 | 23. Client Lifecycle and Cleanup | v3.0 | 0/? | Not started | - |
 | 24. Directory Delegations | v3.0 | 0/? | Not started | - |
 | 25. v3.0 Integration Testing | v3.0 | 0/? | Not started | - |
@@ -340,7 +343,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 32
 | 31. Documentation | v4.0 | 0/? | Not started | - |
 | 32. v4.0 Testing | v4.0 | 0/? | Not started | - |
 
-**Total:** 72/? plans complete
+**Total:** 76/? plans complete
 
 ---
 *Roadmap created: 2026-02-04*

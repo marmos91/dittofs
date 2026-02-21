@@ -46,6 +46,18 @@ type Session struct {
 
 	// CreatedAt is when this session was created.
 	CreatedAt time.Time
+
+	// ============================================================================
+	// Backchannel State (Phase 22)
+	// ============================================================================
+
+	// BackchannelSecParms stores the callback security parameters from
+	// BACKCHANNEL_CTL. Updated when the client sends BACKCHANNEL_CTL.
+	BackchannelSecParms []types.CallbackSecParms4
+
+	// backchannelSender is the goroutine that sends callbacks over back-bound
+	// connections. nil until first backchannel operation or first back-channel bind.
+	backchannelSender *BackchannelSender
 }
 
 // NewSession creates a new Session with a crypto/rand-generated session ID,

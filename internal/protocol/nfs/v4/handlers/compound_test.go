@@ -2052,3 +2052,99 @@ func TestCompound_CreateSession_AutoBind_Verify(t *testing.T) {
 		t.Errorf("auto-bound conn type = %s, want TCP", bindings[0].ConnType.String())
 	}
 }
+
+// ============================================================================
+// BACKCHANNEL_CTL Compound Integration Test (Phase 22-02)
+// ============================================================================
+
+func TestCompound_SequenceAndBackchannelCtl(t *testing.T) {
+	// Create a session with backchannel support
+	h := newTestHandler()
+	clientID, seqID := registerExchangeID(t, h, "bctl-compound-client")
+
+	ctx := newTestCompoundContext()
+	secParms := []types.CallbackSecParms4{{CbSecFlavor: 0}}
+	csArgs := encodeCreateSessionArgsWithSec(clientID, seqID,
+		types.CREATE_SESSION4_FLAG_CONN_BACK_CHAN, secParms)
+	csOps := []compoundOp{{opCode: types.OP_CREATE_SESSION, data: csArgs}}
+	csData := buildCompoundArgsWithOps([]byte("cs"), 1, csOps)
+	csResp, err := h.ProcessCompound(ctx, csData)
+	if err != nil {
+		t.Fatalf("CREATE_SESSION error: %v", err)
+	}
+	csReader := bytes.NewReader(csResp)
+	csStatus, _ := xdr.DecodeUint32(csReader)
+	if csStatus != types.NFS4_OK {
+		t.Fatalf("CREATE_SESSION status = %d", csStatus)
+	}
+	_, _ = xdr.DecodeOpaque(csReader) // tag
+	_, _ = xdr.DecodeUint32(csReader) // numResults
+	_, _ = xdr.DecodeUint32(csReader) // opcode
+	var csRes types.CreateSessionRes
+	_ = csRes.Decode(csReader)
+	sessionID := csRes.SessionID
+
+	// SEQUENCE + BACKCHANNEL_CTL in a single COMPOUND
+	seqArgs := encodeSequenceArgs(sessionID, 0, 1, 0, false)
+	bctlArgs := encodeBackchannelCtlArgs(0x70000000, []types.CallbackSecParms4{
+		{CbSecFlavor: 0},
+	})
+	ops := []compoundOp{
+		{opCode: types.OP_SEQUENCE, data: seqArgs},
+		{opCode: types.OP_BACKCHANNEL_CTL, data: bctlArgs},
+	}
+	data := buildCompoundArgsWithOps([]byte("seq-bctl"), 1, ops)
+
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+
+	// Manually decode: SEQUENCE has fields beyond status, so decodeCompoundResponse
+	// would desync. Parse the full response.
+	reader := bytes.NewReader(resp)
+	status, _ := xdr.DecodeUint32(reader)
+	if status != types.NFS4_OK {
+		t.Fatalf("overall status = %d, want NFS4_OK", status)
+	}
+	_, _ = xdr.DecodeOpaque(reader) // tag
+	numResults, _ := xdr.DecodeUint32(reader)
+	if numResults != 2 {
+		t.Fatalf("numResults = %d, want 2", numResults)
+	}
+
+	// Result 0: SEQUENCE
+	op0, _ := xdr.DecodeUint32(reader)
+	if op0 != types.OP_SEQUENCE {
+		t.Errorf("result[0] opcode = %d, want OP_SEQUENCE", op0)
+	}
+	var seqRes types.SequenceRes
+	if err := seqRes.Decode(reader); err != nil {
+		t.Fatalf("decode SequenceRes: %v", err)
+	}
+	if seqRes.Status != types.NFS4_OK {
+		t.Errorf("SEQUENCE status = %d, want NFS4_OK", seqRes.Status)
+	}
+
+	// Result 1: BACKCHANNEL_CTL
+	op1, _ := xdr.DecodeUint32(reader)
+	if op1 != types.OP_BACKCHANNEL_CTL {
+		t.Errorf("result[1] opcode = %d, want OP_BACKCHANNEL_CTL (%d)", op1, types.OP_BACKCHANNEL_CTL)
+	}
+	var bctlRes types.BackchannelCtlRes
+	if err := bctlRes.Decode(reader); err != nil {
+		t.Fatalf("decode BackchannelCtlRes: %v", err)
+	}
+	if bctlRes.Status != types.NFS4_OK {
+		t.Errorf("BACKCHANNEL_CTL status = %d, want NFS4_OK", bctlRes.Status)
+	}
+
+	// Verify params stored
+	session := h.StateManager.GetSession(sessionID)
+	if session == nil {
+		t.Fatal("session not found")
+	}
+	if session.CbProgram != 0x70000000 {
+		t.Errorf("CbProgram = 0x%x, want 0x70000000", session.CbProgram)
+	}
+}
