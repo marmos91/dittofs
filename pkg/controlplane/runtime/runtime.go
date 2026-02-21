@@ -124,6 +124,9 @@ type Runtime struct {
 	// Share change callbacks for dynamic updates (e.g., NFSv4 pseudo-fs rebuild)
 	shareChangeCallbacks []func(shares []string)
 
+	// NFSv4 client provider (stored as any to avoid import cycle with internal/protocol)
+	nfsClientProvider any
+
 	// Shutdown management
 	shutdownTimeout time.Duration
 
@@ -1205,6 +1208,27 @@ func (r *Runtime) GetSMBSettings() *models.SMBAdapterSettings {
 		return nil
 	}
 	return r.settingsWatcher.GetSMBSettings()
+}
+
+// ============================================================================
+// NFS Client Provider (Phase 18)
+// ============================================================================
+
+// SetNFSClientProvider stores the NFS state manager reference for REST API access.
+// Stored as any to avoid import cycles between pkg/ and internal/ packages.
+// The NFS adapter calls this during setup; API handlers type-assert as needed.
+func (r *Runtime) SetNFSClientProvider(p any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nfsClientProvider = p
+}
+
+// NFSClientProvider returns the NFS state manager reference for REST API access.
+// Returns nil if no NFS adapter is configured.
+func (r *Runtime) NFSClientProvider() any {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.nfsClientProvider
 }
 
 // ============================================================================

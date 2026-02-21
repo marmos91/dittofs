@@ -183,10 +183,8 @@ func NewHandler(registry *runtime.Runtime, pfs *pseudofs.PseudoFS, stateManager 
 		var args types.BindConnToSessionArgs
 		return args.Decode(r)
 	})
-	h.v41DispatchTable[types.OP_EXCHANGE_ID] = v41StubHandler(types.OP_EXCHANGE_ID, func(r io.Reader) error {
-		var args types.ExchangeIdArgs
-		return args.Decode(r)
-	})
+	// EXCHANGE_ID: client identity registration (RFC 8881 Section 18.35)
+	h.v41DispatchTable[types.OP_EXCHANGE_ID] = h.handleExchangeID
 	h.v41DispatchTable[types.OP_CREATE_SESSION] = v41StubHandler(types.OP_CREATE_SESSION, func(r io.Reader) error {
 		var args types.CreateSessionArgs
 		return args.Decode(r)

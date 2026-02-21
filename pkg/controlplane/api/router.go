@@ -40,6 +40,7 @@ import (
 //   - GET /api/v1/adapters - Adapter list (admin + operator)
 //   - /api/v1/adapters/* - Adapter management (admin only)
 //   - /api/v1/settings/* - System settings management (admin only)
+//   - /api/v1/clients - NFS client management (admin only)
 func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.Store) http.Handler {
 	r := chi.NewRouter()
 
@@ -238,10 +239,27 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Put("/{key}", settingsHandler.Set)
 				r.Delete("/{key}", settingsHandler.Delete)
 			})
+
+			// NFS client management (admin only)
+			if clientHandler := newClientHandler(rt); clientHandler != nil {
+				r.Route("/clients", func(r chi.Router) {
+					r.Use(apiMiddleware.RequireAdmin())
+					r.Get("/", clientHandler.List)
+					r.Delete("/{id}", clientHandler.Evict)
+				})
+			}
 		})
 	})
 
 	return r
+}
+
+// newClientHandler returns a ClientHandler if an NFS adapter with state management is configured.
+func newClientHandler(rt *runtime.Runtime) *handlers.ClientHandler {
+	if rt == nil {
+		return nil
+	}
+	return handlers.NewClientHandlerFromProvider(rt.NFSClientProvider())
 }
 
 // requestLogger is a custom middleware that logs requests using the internal logger.
