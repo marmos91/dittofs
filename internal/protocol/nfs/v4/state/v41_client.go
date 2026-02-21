@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/hex"
 	"fmt"
 	"os"
 	"time"
@@ -353,6 +354,19 @@ func (sm *StateManager) EvictV40Client(clientID uint64) error {
 		for _, openState := range owner.OpenStates {
 			for _, lockState := range openState.LockStates {
 				delete(sm.lockStateByOther, lockState.Stateid.Other)
+
+				// Remove actual locks from unified lock manager (matches onLeaseExpired)
+				if sm.lockManager != nil && lockState.LockOwner != nil {
+					ownerID := fmt.Sprintf("nfs4:%d:%s", lockState.LockOwner.ClientID,
+						hex.EncodeToString(lockState.LockOwner.OwnerData))
+					handleKey := string(lockState.FileHandle)
+					for _, l := range sm.lockManager.ListEnhancedLocks(handleKey) {
+						if l.Owner.OwnerID == ownerID {
+							_ = sm.lockManager.RemoveEnhancedLock(handleKey, l.Owner, l.Offset, l.Length)
+						}
+					}
+				}
+
 				if lockState.LockOwner != nil {
 					lockKey := makeLockOwnerKey(lockState.LockOwner.ClientID, lockState.LockOwner.OwnerData)
 					delete(sm.lockOwners, lockKey)
