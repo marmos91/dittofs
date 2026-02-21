@@ -519,6 +519,7 @@ func (c *NFSConnection) handleNFSv4Procedure(ctx context.Context, call *rpc.RPCC
 	case v4types.NFSPROC4_COMPOUND:
 		// Extract CompoundContext with auth credentials
 		compCtx := v4handlers.ExtractV4HandlerContext(ctx, call, clientAddr)
+		compCtx.ConnectionID = c.connectionID
 
 		result, err := c.server.v4Handler.ProcessCompound(compCtx, data)
 		if c.server.metrics != nil {

@@ -281,6 +281,23 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 		}
 	}()
 
+	// Check if the connection is draining (returns NFS4ERR_DELAY to redirect
+	// client to another connection). SEQUENCE itself always works on draining
+	// connections so it is checked after SEQUENCE validation succeeds.
+	if compCtx.ConnectionID != 0 && h.StateManager.IsConnectionDraining(compCtx.ConnectionID) {
+		logger.Debug("NFSv4.1 COMPOUND connection draining",
+			"connection_id", compCtx.ConnectionID,
+			"client", compCtx.ClientAddr)
+		// Return SEQUENCE result plus a DELAY error for the compound
+		results := []types.CompoundResult{*seqResult}
+		encoded, encErr := encodeCompoundResponse(types.NFS4ERR_DELAY, tag, results)
+		if encErr != nil {
+			return nil, encErr
+		}
+		responseBytes = encoded
+		return encoded, nil
+	}
+
 	// Build results starting with SEQUENCE result
 	results := make([]types.CompoundResult, 0, int(numOps))
 	results = append(results, *seqResult)

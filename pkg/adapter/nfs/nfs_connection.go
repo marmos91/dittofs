@@ -20,6 +20,9 @@ type NFSConnection struct {
 	server *NFSAdapter
 	conn   net.Conn
 
+	// connectionID is the unique identifier for this connection, assigned at accept() time.
+	connectionID uint64
+
 	// Concurrent request handling
 	requestSem chan struct{}  // Semaphore to limit concurrent requests
 	wg         sync.WaitGroup // Track active requests for graceful shutdown
@@ -31,11 +34,12 @@ type fragmentHeader struct {
 	Length uint32
 }
 
-func NewNFSConnection(server *NFSAdapter, conn net.Conn) *NFSConnection {
+func NewNFSConnection(server *NFSAdapter, conn net.Conn, connectionID uint64) *NFSConnection {
 	return &NFSConnection{
-		server:     server,
-		conn:       conn,
-		requestSem: make(chan struct{}, server.config.MaxRequestsPerConnection),
+		server:       server,
+		conn:         conn,
+		connectionID: connectionID,
+		requestSem:   make(chan struct{}, server.config.MaxRequestsPerConnection),
 	}
 }
 

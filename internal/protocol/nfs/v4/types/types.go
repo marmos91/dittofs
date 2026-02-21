@@ -125,6 +125,11 @@ type CompoundContext struct {
 	// validation. The slot table provides replay protection for v4.1,
 	// making per-owner seqid redundant.
 	SkipOwnerSeqid bool
+
+	// ConnectionID is the unique identifier for the TCP connection, assigned
+	// at accept() time and threaded through dispatch. Used by
+	// BIND_CONN_TO_SESSION and connection draining checks.
+	ConnectionID uint64
 }
 
 // V4ClientState holds NFSv4 client state associated with a connection.
