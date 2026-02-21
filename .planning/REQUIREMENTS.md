@@ -12,7 +12,7 @@ Requirements for NFSv4.1 Sessions milestone. Each maps to roadmap phases.
 - [x] **SESS-01**: Server handles EXCHANGE_ID to register v4.1 clients with owner/implementation ID tracking
 - [x] **SESS-02**: Server handles CREATE_SESSION to establish sessions with negotiated channel attributes and slot tables
 - [x] **SESS-03**: Server handles DESTROY_SESSION to tear down sessions and release slot table memory
-- [ ] **SESS-04**: Server handles SEQUENCE as first operation in every v4.1 COMPOUND with slot validation and lease renewal
+- [x] **SESS-04**: Server handles SEQUENCE as first operation in every v4.1 COMPOUND with slot validation and lease renewal
 - [x] **SESS-05**: NFSv4.1 constants, types, and XDR structures defined for all new operations (ops 40-58, CB ops 5-14)
 
 ### Exactly-Once Semantics
@@ -49,9 +49,9 @@ Requirements for NFSv4.1 Sessions milestone. Each maps to roadmap phases.
 
 ### Coexistence
 
-- [ ] **COEX-01**: COMPOUND dispatcher routes minorversion=0 to existing v4.0 path and minorversion=1 to v4.1 path
-- [ ] **COEX-02**: v4.0 clients continue working unchanged when v4.1 is enabled
-- [ ] **COEX-03**: Per-owner seqid validation bypassed for v4.1 operations (slot table provides replay protection)
+- [x] **COEX-01**: COMPOUND dispatcher routes minorversion=0 to existing v4.0 path and minorversion=1 to v4.1 path
+- [x] **COEX-02**: v4.0 clients continue working unchanged when v4.1 is enabled
+- [x] **COEX-03**: Per-owner seqid validation bypassed for v4.1 operations (slot table provides replay protection)
 
 ### SMB Kerberos
 
@@ -110,7 +110,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SESS-01 | Phase 18 | Complete |
 | SESS-02 | Phase 19 | Complete |
 | SESS-03 | Phase 19 | Complete |
-| SESS-04 | Phase 20 | Pending |
+| SESS-04 | Phase 20 | Complete |
 | SESS-05 | Phase 16 | Complete |
 | EOS-01 | Phase 17 | Complete |
 | EOS-02 | Phase 17 | Complete |
@@ -129,9 +129,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DDELEG-03 | Phase 24 | Pending |
 | TRUNK-01 | Phase 21 | Pending |
 | TRUNK-02 | Phase 18 | Complete |
-| COEX-01 | Phase 20 | Pending |
-| COEX-02 | Phase 20 | Pending |
-| COEX-03 | Phase 20 | Pending |
+| COEX-01 | Phase 20 | Complete |
+| COEX-02 | Phase 20 | Complete |
+| COEX-03 | Phase 20 | Complete |
 | SMBKRB-01 | Phase 25 | Pending |
 | SMBKRB-02 | Phase 25 | Pending |
 | TEST-01 | Phase 25 | Pending |
