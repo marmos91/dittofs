@@ -20,6 +20,8 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nsm"
 	nsm_handlers "github.com/marmos91/dittofs/internal/protocol/nsm/handlers"
 	"github.com/marmos91/dittofs/internal/protocol/portmap"
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
@@ -535,6 +537,12 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 	// NSM startup: Load persisted registrations and notify all clients
 	// Per CONTEXT.md: Parallel notification for fastest recovery
 	s.performNSMStartup(ctx)
+
+	// Start NFSv4.1 session reaper for expired/unconfirmed client cleanup
+	if s.v4Handler != nil && s.v4Handler.StateManager != nil {
+		s.v4Handler.StateManager.SetSessionMetrics(v4state.NewSessionMetrics(prometheus.DefaultRegisterer))
+		s.v4Handler.StateManager.StartSessionReaper(ctx)
+	}
 
 	// Monitor context cancellation in separate goroutine
 	// This allows the main accept loop to focus on accepting connections
