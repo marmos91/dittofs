@@ -103,6 +103,20 @@ type StateManager struct {
 	// graceDuration is the duration of the grace period.
 	// Defaults to leaseDuration if not explicitly set.
 	graceDuration time.Duration
+
+	// ============================================================================
+	// NFSv4.1 State (Phase 18+)
+	// ============================================================================
+
+	// v41ClientsByID maps server-assigned client IDs to v4.1 client records.
+	v41ClientsByID map[uint64]*V41ClientRecord
+
+	// v41ClientsByOwner maps owner ID bytes (string key) to v4.1 client records.
+	// Uses string(ownerID) for byte-exact comparison.
+	v41ClientsByOwner map[string]*V41ClientRecord
+
+	// serverIdentity is the immutable server identity returned in EXCHANGE_ID responses.
+	serverIdentity *ServerIdentity
 }
 
 // NewStateManager creates a new StateManager with the given lease duration.
@@ -119,6 +133,8 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		gd = graceDuration[0]
 	}
 
+	epoch := uint32(time.Now().Unix())
+
 	return &StateManager{
 		clientsByID:         make(map[uint64]*ClientRecord),
 		clientsByName:       make(map[string]*ClientRecord),
@@ -132,9 +148,13 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		recentlyRecalled:    make(map[string]time.Time),
 		recentlyRecalledTTL: RecentlyRecalledTTL,
 		delegationsEnabled:  true,
-		bootEpoch:           uint32(time.Now().Unix()),
+		bootEpoch:           epoch,
 		leaseDuration:       leaseDuration,
 		graceDuration:       gd,
+		// NFSv4.1 state
+		v41ClientsByID:    make(map[uint64]*V41ClientRecord),
+		v41ClientsByOwner: make(map[string]*V41ClientRecord),
+		serverIdentity:    newServerIdentity(epoch),
 	}
 }
 
