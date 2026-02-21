@@ -469,19 +469,32 @@ func buildCompoundArgsWithOps(tag []byte, minorVersion uint32, ops []compoundOp)
 	return buf.Bytes()
 }
 
-// encodeExchangeIdArgs encodes minimal EXCHANGE_ID args for testing.
-// Uses SP4_NONE (simplest) with a dummy client owner and no impl_id.
-func encodeExchangeIdArgs() []byte {
+// encodeCreateSessionArgs encodes minimal CREATE_SESSION args for testing.
+// Uses dummy values sufficient for the stub to decode without error.
+func encodeCreateSessionArgs() []byte {
 	var buf bytes.Buffer
-	// ClientOwner4: co_verifier (8 bytes) + co_ownerid (opaque)
-	buf.Write(make([]byte, 8))                     // co_verifier
-	_ = xdr.WriteXDROpaque(&buf, []byte("testcl")) // co_ownerid
-	// flags (uint32)
-	_ = xdr.WriteUint32(&buf, 0)
-	// state_protect4_a: SP4_NONE (just type=0)
-	_ = xdr.WriteUint32(&buf, 0) // SP4_NONE
-	// eia_client_impl_id<1>: count=0 (empty optional array)
-	_ = xdr.WriteUint32(&buf, 0)
+	args := types.CreateSessionArgs{
+		ClientID:   1,
+		SequenceID: 1,
+		Flags:      0,
+		ForeChannelAttrs: types.ChannelAttrs{
+			MaxRequestSize:        1048576,
+			MaxResponseSize:       1048576,
+			MaxResponseSizeCached: 4096,
+			MaxOperations:         16,
+			MaxRequests:           64,
+		},
+		BackChannelAttrs: types.ChannelAttrs{
+			MaxRequestSize:        4096,
+			MaxResponseSize:       4096,
+			MaxResponseSizeCached: 0,
+			MaxOperations:         2,
+			MaxRequests:           1,
+		},
+		CbProgram:  0x40000000,
+		CbSecParms: []types.CallbackSecParms4{},
+	}
+	_ = args.Encode(&buf)
 	return buf.Bytes()
 }
 
@@ -537,10 +550,12 @@ func TestCompound_MinorVersion1_V41Op_NOTSUPP(t *testing.T) {
 	h := newTestHandler()
 	ctx := newTestCompoundContext()
 
-	// minorversion=1 COMPOUND with OP_EXCHANGE_ID (v4.1 op)
-	// Stub should decode args and return NFS4ERR_NOTSUPP
+	// minorversion=1 COMPOUND with OP_CREATE_SESSION (v4.1 op, still a stub)
+	// Stub should decode args and return NFS4ERR_NOTSUPP.
+	// Note: EXCHANGE_ID is now a real handler (Phase 18), so we use CREATE_SESSION
+	// as the representative v4.1 stub operation.
 	ops := []compoundOp{
-		{opCode: types.OP_EXCHANGE_ID, data: encodeExchangeIdArgs()},
+		{opCode: types.OP_CREATE_SESSION, data: encodeCreateSessionArgs()},
 	}
 	data := buildCompoundArgsWithOps([]byte("v41-stub"), 1, ops)
 	resp, err := h.ProcessCompound(ctx, data)
@@ -560,9 +575,9 @@ func TestCompound_MinorVersion1_V41Op_NOTSUPP(t *testing.T) {
 	if decoded.NumResults != 1 {
 		t.Fatalf("numResults = %d, want 1", decoded.NumResults)
 	}
-	if decoded.Results[0].OpCode != types.OP_EXCHANGE_ID {
-		t.Errorf("result opcode = %d, want OP_EXCHANGE_ID (%d)",
-			decoded.Results[0].OpCode, types.OP_EXCHANGE_ID)
+	if decoded.Results[0].OpCode != types.OP_CREATE_SESSION {
+		t.Errorf("result opcode = %d, want OP_CREATE_SESSION (%d)",
+			decoded.Results[0].OpCode, types.OP_CREATE_SESSION)
 	}
 	if decoded.Results[0].Status != types.NFS4ERR_NOTSUPP {
 		t.Errorf("result status = %d, want NFS4ERR_NOTSUPP (%d)",
@@ -632,15 +647,17 @@ func TestCompound_V41_StubConsumesArgs(t *testing.T) {
 	h := newTestHandler()
 	ctx := newTestCompoundContext()
 
-	// Send a v4.1 COMPOUND with EXCHANGE_ID (v4.1 stub) + PUTROOTFH (v4.0 op).
-	// EXCHANGE_ID returns NOTSUPP which stops the compound, but the critical
-	// test is that the stub consumed the EXCHANGE_ID XDR args correctly --
+	// Send a v4.1 COMPOUND with CREATE_SESSION (v4.1 stub) + PUTROOTFH (v4.0 op).
+	// CREATE_SESSION returns NOTSUPP which stops the compound, but the critical
+	// test is that the stub consumed the CREATE_SESSION XDR args correctly --
 	// if it didn't, the PUTROOTFH opcode would be misread from the arg data.
 	//
-	// We can verify this by checking that the compound returns exactly 1 result
-	// (EXCHANGE_ID with NOTSUPP) and not a garbage decode error.
+	// We verify this by checking that the compound returns exactly 1 result
+	// (CREATE_SESSION with NOTSUPP) and not a garbage decode error.
+	// Note: EXCHANGE_ID is now a real handler (Phase 18), so we use
+	// CREATE_SESSION as the representative stub operation.
 	ops := []compoundOp{
-		{opCode: types.OP_EXCHANGE_ID, data: encodeExchangeIdArgs()},
+		{opCode: types.OP_CREATE_SESSION, data: encodeCreateSessionArgs()},
 		{opCode: types.OP_PUTROOTFH}, // no args
 	}
 	data := buildCompoundArgsWithOps([]byte("consume"), 1, ops)
@@ -654,13 +671,13 @@ func TestCompound_V41_StubConsumesArgs(t *testing.T) {
 		t.Fatalf("decode response error: %v", err)
 	}
 
-	// Should have exactly 1 result (EXCHANGE_ID stops the compound)
+	// Should have exactly 1 result (CREATE_SESSION stops the compound)
 	if decoded.NumResults != 1 {
-		t.Fatalf("numResults = %d, want 1 (EXCHANGE_ID should stop compound)", decoded.NumResults)
+		t.Fatalf("numResults = %d, want 1 (CREATE_SESSION should stop compound)", decoded.NumResults)
 	}
-	if decoded.Results[0].OpCode != types.OP_EXCHANGE_ID {
-		t.Errorf("result opcode = %d, want OP_EXCHANGE_ID (%d)",
-			decoded.Results[0].OpCode, types.OP_EXCHANGE_ID)
+	if decoded.Results[0].OpCode != types.OP_CREATE_SESSION {
+		t.Errorf("result opcode = %d, want OP_CREATE_SESSION (%d)",
+			decoded.Results[0].OpCode, types.OP_CREATE_SESSION)
 	}
 	if decoded.Results[0].Status != types.NFS4ERR_NOTSUPP {
 		t.Errorf("result status = %d, want NFS4ERR_NOTSUPP", decoded.Results[0].Status)
