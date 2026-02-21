@@ -63,7 +63,7 @@ type NFSAdapterSettings struct {
 	// Delegation policy
 	DelegationsEnabled bool `gorm:"default:true" json:"delegations_enabled"`
 
-	// NFSv4.1 session limits (not yet wired to StateManager -- future: settings watcher)
+	// TODO: Wire NFSv4.1 session limits into StateManager (these fields are not yet active; future: settings watcher).
 	V4MaxSessionSlots      int `gorm:"default:64" json:"v4_max_session_slots"`       // fore channel max slots per session
 	V4MaxSessionsPerClient int `gorm:"default:16" json:"v4_max_sessions_per_client"` // max sessions per client
 
