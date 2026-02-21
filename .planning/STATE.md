@@ -9,12 +9,12 @@ See: .planning/PROJECT.md (updated 2026-02-20)
 
 ## Current Position
 
-Phase: 19 of 25 (Session Lifecycle) -- IN PROGRESS
-Plan: 1 of 1 in current phase -- COMPLETE
-Status: Plan Complete
-Last activity: 2026-02-21 — Completed 19-01-PLAN.md
+Phase: 20 of 25 (Sequence and Compound Bifurcation) -- COMPLETE
+Plan: 2 of 2 in current phase -- COMPLETE
+Status: Phase Complete
+Last activity: 2026-02-21 — Completed 20-02-PLAN.md
 
-Progress: [########################################] 100% (72/72 plans complete)
+Progress: [########################################] 100% (74/74 plans complete)
 
 ## Completed Milestones
 
@@ -59,6 +59,8 @@ Progress: [########################################] 100% (72/72 plans complete)
 | Phase 18 P01 | 18min | 2 tasks | 7 files |
 | Phase 18 P02 | 8min | 2 tasks | 12 files |
 | Phase 19 P01 | 23min | 3 tasks | 20 files |
+| Phase 20 P01 | 25min | 2 tasks | 7 files |
+| Phase 20 P02 | 14min | 2 tasks | 11 files |
 
 ## Quick Tasks Completed
 
@@ -99,6 +101,12 @@ Recent decisions affecting current work:
 - [Phase 19-01]: Channel negotiation clamps to server limits (64 fore slots, 8 back slots, 1MB sizes), no RDMA, MaxOperations=0
 - [Phase 19-01]: Session reaper sweeps every 30s, 2x lease duration for unconfirmed client timeout
 - [Phase 19-01]: V4MaxSessionSlots/V4MaxSessionsPerClient config fields exist but not yet wired to StateManager
+- [Phase 20-01]: seqid=0 sentinel for v4.1 bypass of per-owner seqid validation (safe because v4.0 seqids never use 0)
+- [Phase 20-01]: Replay cache at COMPOUND level -- full XDR bytes cached in slot, returned byte-identical on duplicate
+- [Phase 20-01]: GetStatusFlags reports CB_PATH_DOWN/BACKCHANNEL_FAULT until backchannel is bound (Phase 22)
+- [Phase 20-02]: SequenceMetrics follows exact SessionMetrics nil-safe receiver pattern
+- [Phase 20-02]: Minor version range defaults to 0-1 (both v4.0 and v4.1 enabled)
+- [Phase 20-02]: Version range check placed before minorversion switch in ProcessCompound
 
 ### Pending Todos
 
@@ -112,5 +120,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-21
-Stopped at: Completed 19-01-PLAN.md
-Resume file: `/gsd:execute-phase 19`
+Stopped at: Completed 20-02-PLAN.md (Phase 20 complete)
+Resume file: `/gsd:execute-phase 21`

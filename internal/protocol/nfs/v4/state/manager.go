@@ -855,23 +855,26 @@ func (sm *StateManager) OpenFile(
 
 	if ownerExists {
 		// Existing owner: validate seqid
-		validation := owner.ValidateSeqID(seqid)
-		switch validation {
-		case SeqIDReplay:
-			// Return cached result
-			if owner.LastResult != nil {
-				return &OpenFileResult{
-					IsReplay:     true,
-					CachedStatus: owner.LastResult.Status,
-					CachedData:   owner.LastResult.Data,
-				}, nil
+		// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
+		if seqid != 0 {
+			validation := owner.ValidateSeqID(seqid)
+			switch validation {
+			case SeqIDReplay:
+				// Return cached result
+				if owner.LastResult != nil {
+					return &OpenFileResult{
+						IsReplay:     true,
+						CachedStatus: owner.LastResult.Status,
+						CachedData:   owner.LastResult.Data,
+					}, nil
+				}
+				// No cached result (shouldn't happen), treat as bad seqid
+				return nil, ErrBadSeqid
+			case SeqIDBad:
+				return nil, ErrBadSeqid
+			case SeqIDOK:
+				// Continue with normal processing
 			}
-			// No cached result (shouldn't happen), treat as bad seqid
-			return nil, ErrBadSeqid
-		case SeqIDBad:
-			return nil, ErrBadSeqid
-		case SeqIDOK:
-			// Continue with normal processing
 		}
 	} else {
 		// New owner: create it
@@ -1005,19 +1008,22 @@ func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32) (*typ
 	owner := openState.Owner
 
 	// Validate seqid on the owner
-	validation := owner.ValidateSeqID(seqid)
-	switch validation {
-	case SeqIDReplay:
-		if owner.LastResult != nil {
-			// For OPEN_CONFIRM replay, return the confirmed stateid
-			resultStateid := openState.Stateid
-			return &resultStateid, nil
+	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
+	if seqid != 0 {
+		validation := owner.ValidateSeqID(seqid)
+		switch validation {
+		case SeqIDReplay:
+			if owner.LastResult != nil {
+				// For OPEN_CONFIRM replay, return the confirmed stateid
+				resultStateid := openState.Stateid
+				return &resultStateid, nil
+			}
+			return nil, ErrBadSeqid
+		case SeqIDBad:
+			return nil, ErrBadSeqid
+		case SeqIDOK:
+			// Continue
 		}
-		return nil, ErrBadSeqid
-	case SeqIDBad:
-		return nil, ErrBadSeqid
-	case SeqIDOK:
-		// Continue
 	}
 
 	// Promote to confirmed
@@ -1071,16 +1077,19 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (*types
 	owner := openState.Owner
 
 	// Validate seqid on the owner
-	validation := owner.ValidateSeqID(seqid)
-	switch validation {
-	case SeqIDReplay:
-		// CLOSE replay: return zeroed stateid
-		var zeroed types.Stateid4
-		return &zeroed, nil
-	case SeqIDBad:
-		return nil, ErrBadSeqid
-	case SeqIDOK:
-		// Continue
+	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
+	if seqid != 0 {
+		validation := owner.ValidateSeqID(seqid)
+		switch validation {
+		case SeqIDReplay:
+			// CLOSE replay: return zeroed stateid
+			var zeroed types.Stateid4
+			return &zeroed, nil
+		case SeqIDBad:
+			return nil, ErrBadSeqid
+		case SeqIDOK:
+			// Continue
+		}
 	}
 
 	// Phase 10: Check for held locks before closing
@@ -1156,15 +1165,18 @@ func (sm *StateManager) DowngradeOpen(stateid *types.Stateid4, seqid uint32, new
 	owner := openState.Owner
 
 	// Validate seqid on the owner
-	validation := owner.ValidateSeqID(seqid)
-	switch validation {
-	case SeqIDReplay:
-		resultStateid := openState.Stateid
-		return &resultStateid, nil
-	case SeqIDBad:
-		return nil, ErrBadSeqid
-	case SeqIDOK:
-		// Continue
+	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
+	if seqid != 0 {
+		validation := owner.ValidateSeqID(seqid)
+		switch validation {
+		case SeqIDReplay:
+			resultStateid := openState.Stateid
+			return &resultStateid, nil
+		case SeqIDBad:
+			return nil, ErrBadSeqid
+		case SeqIDOK:
+			// Continue
+		}
 	}
 
 	// Verify the new access is a subset of current (can only remove bits)
@@ -1344,16 +1356,19 @@ func (sm *StateManager) LockNew(
 	}
 
 	// 2. Validate open-owner seqid
-	validation := openState.Owner.ValidateSeqID(openSeqid)
-	switch validation {
-	case SeqIDBad:
-		return nil, ErrBadSeqid
-	case SeqIDReplay:
-		// For replay on a lock-new, we don't have a cached lock result
-		// on the open-owner (those belong to OPEN operations).
-		return nil, ErrBadSeqid
-	case SeqIDOK:
-		// Continue
+	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
+	if openSeqid != 0 {
+		validation := openState.Owner.ValidateSeqID(openSeqid)
+		switch validation {
+		case SeqIDBad:
+			return nil, ErrBadSeqid
+		case SeqIDReplay:
+			// For replay on a lock-new, we don't have a cached lock result
+			// on the open-owner (those belong to OPEN operations).
+			return nil, ErrBadSeqid
+		case SeqIDOK:
+			// Continue
+		}
 	}
 
 	// 3. Validate open mode for lock type
@@ -1405,7 +1420,8 @@ func (sm *StateManager) LockNew(
 	}
 
 	// 6. Validate lock seqid on lock-owner
-	if ownerExists {
+	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
+	if ownerExists && lockSeqid != 0 {
 		lockValidation := lockOwner.ValidateSeqID(lockSeqid)
 		switch lockValidation {
 		case SeqIDBad:
@@ -1481,15 +1497,18 @@ func (sm *StateManager) LockExisting(
 	}
 
 	// 3. Validate lock seqid on lock-owner
+	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
 	lockOwner := lockState.LockOwner
-	lockValidation := lockOwner.ValidateSeqID(lockSeqid)
-	switch lockValidation {
-	case SeqIDBad:
-		return nil, ErrBadSeqid
-	case SeqIDReplay:
-		return nil, ErrBadSeqid
-	case SeqIDOK:
-		// Continue
+	if lockSeqid != 0 {
+		lockValidation := lockOwner.ValidateSeqID(lockSeqid)
+		switch lockValidation {
+		case SeqIDBad:
+			return nil, ErrBadSeqid
+		case SeqIDReplay:
+			return nil, ErrBadSeqid
+		case SeqIDOK:
+			// Continue
+		}
 	}
 
 	// 4. Acquire the lock
@@ -1712,17 +1731,20 @@ func (sm *StateManager) UnlockFile(
 	}
 
 	// 3. Validate seqid on lock-owner
+	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
 	lockOwner := lockState.LockOwner
-	validation := lockOwner.ValidateSeqID(seqid)
-	switch validation {
-	case SeqIDBad:
-		return nil, ErrBadSeqid
-	case SeqIDReplay:
-		// For LOCKU replay, return current stateid (idempotent)
-		resultStateid := lockState.Stateid
-		return &resultStateid, nil
-	case SeqIDOK:
-		// Continue
+	if seqid != 0 {
+		validation := lockOwner.ValidateSeqID(seqid)
+		switch validation {
+		case SeqIDBad:
+			return nil, ErrBadSeqid
+		case SeqIDReplay:
+			// For LOCKU replay, return current stateid (idempotent)
+			resultStateid := lockState.Stateid
+			return &resultStateid, nil
+		case SeqIDOK:
+			// Continue
+		}
 	}
 
 	// 4. Release the lock via unified lock manager
@@ -1855,6 +1877,71 @@ func parseConflictOwner(ownerID string, denied *LOCK4denied) {
 	}
 	// Fallback: use raw OwnerID as opaque data
 	denied.Owner.OwnerData = []byte(ownerID)
+}
+
+// ============================================================================
+// NFSv4.1 Lease and Status (Phase 20)
+// ============================================================================
+
+// RenewV41Lease renews the lease for a v4.1 client by updating LastRenewal.
+// Called by the SEQUENCE handler on every successful validation, per
+// RFC 8881 Section 8.1.3 (implicit lease renewal).
+//
+// Thread-safe: acquires sm.mu.Lock.
+func (sm *StateManager) RenewV41Lease(clientID uint64) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	record, exists := sm.v41ClientsByID[clientID]
+	if !exists {
+		return
+	}
+
+	record.LastRenewal = time.Now()
+	if record.Lease != nil {
+		record.Lease.Renew()
+	}
+
+	logger.Debug("RenewV41Lease: v4.1 lease renewed",
+		"client_id", fmt.Sprintf("0x%x", clientID))
+}
+
+// GetStatusFlags computes the SEQ4_STATUS_* bitmask for a SEQUENCE response.
+//
+// Per RFC 8881 Section 18.46, the server reports status flags covering:
+//   - Callback path health (CB_PATH_DOWN, BACKCHANNEL_FAULT)
+//   - Lease expiry (EXPIRED_ALL_STATE_REVOKED)
+//   - Delegation state (RECALLABLE_STATE_REVOKED)
+//
+// Thread-safe: acquires sm.mu.RLock.
+func (sm *StateManager) GetStatusFlags(session *Session) uint32 {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	var flags uint32
+
+	// CB_PATH_DOWN and BACKCHANNEL_FAULT: set if no backchannel bound.
+	// Phase 22 (backchannel) will clear these when backchannel is established.
+	if session.BackChannelSlots == nil {
+		flags |= types.SEQ4_STATUS_CB_PATH_DOWN
+		flags |= types.SEQ4_STATUS_BACKCHANNEL_FAULT
+	}
+
+	// Check client lease expiry
+	record, exists := sm.v41ClientsByID[session.ClientID]
+	if exists && record.Lease != nil && record.Lease.IsExpired() {
+		flags |= types.SEQ4_STATUS_EXPIRED_ALL_STATE_REVOKED
+	}
+
+	// Check for revoked delegations for this client
+	for _, deleg := range sm.delegByOther {
+		if deleg.ClientID == session.ClientID && deleg.Revoked {
+			flags |= types.SEQ4_STATUS_RECALLABLE_STATE_REVOKED
+			break
+		}
+	}
+
+	return flags
 }
 
 // ============================================================================

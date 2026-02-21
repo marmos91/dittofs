@@ -58,7 +58,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 17: Slot Table and Session Data Structures** - SlotTable, SessionRecord, ChannelAttrs, EOS replay cache with per-table locking (completed 2026-02-20)
 - [x] **Phase 18: EXCHANGE_ID and Client Registration** - v4.1 client identity establishment with owner/implementation tracking (completed 2026-02-20)
 - [x] **Phase 19: Session Lifecycle** - CREATE_SESSION, DESTROY_SESSION with slot table allocation and channel negotiation (completed 2026-02-21)
-- [ ] **Phase 20: SEQUENCE and COMPOUND Bifurcation** - v4.1 request processing with EOS enforcement and v4.0/v4.1 coexistence
+- [x] **Phase 20: SEQUENCE and COMPOUND Bifurcation** - v4.1 request processing with EOS enforcement and v4.0/v4.1 coexistence (completed 2026-02-21)
 - [ ] **Phase 20.5: Manual Verification - Sessions** USER CHECKPOINT - Test session establishment and EOS
 - [ ] **Phase 21: Connection Management and Trunking** - BIND_CONN_TO_SESSION, multi-connection sessions, server_owner consistency
 - [ ] **Phase 22: Backchannel Multiplexing** - CB_SEQUENCE over fore-channel, bidirectional I/O, NAT-friendly callbacks
@@ -141,7 +141,7 @@ Plans:
   4. Channel attribute negotiation respects server-imposed limits (max slots, max request/response size)
 **Plans**: 1 plan
 Plans:
-- [ ] 19-01-PLAN.md -- StateManager session methods, CREATE_SESSION/DESTROY_SESSION handlers, channel negotiation, replay detection, reaper, metrics, REST API, dfsctl CLI
+- [x] 19-01-PLAN.md -- StateManager session methods, CREATE_SESSION/DESTROY_SESSION handlers, channel negotiation, replay detection, reaper, metrics, REST API, dfsctl CLI
 
 ### Phase 20: SEQUENCE and COMPOUND Bifurcation
 **Goal**: Every v4.1 COMPOUND is gated by SEQUENCE validation, providing exactly-once semantics while v4.0 clients continue working unchanged
@@ -153,7 +153,10 @@ Plans:
   3. Duplicate v4.1 requests (same slot + seqid) return the cached response without re-execution
   4. v4.0 clients continue working unchanged with per-owner seqid validation
   5. Per-owner seqid validation is bypassed for v4.1 operations (slot table provides replay protection)
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 20-01-PLAN.md -- SEQUENCE handler, dispatchV41 SEQUENCE gating, replay cache, seqid bypass, lease renewal, status flags
+- [ ] 20-02-PLAN.md -- Prometheus metrics, minor version range config (full stack), v4.0 regression + coexistence + concurrent tests, benchmark
 
 ### Phase 21: Connection Management and Trunking
 **Goal**: Multiple TCP connections can be bound to a single session, enabling trunking and reconnection after network disruption
@@ -319,8 +322,8 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 32
 | 16. NFSv4.1 Types and Constants | v3.0 | 5/5 | Complete | 2026-02-20 |
 | 17. Slot Table and Session Data Structures | v3.0 | 2/2 | Complete | 2026-02-20 |
 | 18. EXCHANGE_ID and Client Registration | v3.0 | 2/2 | Complete | 2026-02-20 |
-| 19. Session Lifecycle | 1/1 | Complete    | 2026-02-21 | - |
-| 20. SEQUENCE and COMPOUND Bifurcation | v3.0 | 0/? | Not started | - |
+| 19. Session Lifecycle | v3.0 | 1/1 | Complete | 2026-02-21 |
+| 20. SEQUENCE and COMPOUND Bifurcation | 2/2 | Complete    | 2026-02-21 | - |
 | 21. Connection Management and Trunking | v3.0 | 0/? | Not started | - |
 | 22. Backchannel Multiplexing | v3.0 | 0/? | Not started | - |
 | 23. Client Lifecycle and Cleanup | v3.0 | 0/? | Not started | - |
@@ -334,7 +337,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 32
 | 31. Documentation | v4.0 | 0/? | Not started | - |
 | 32. v4.0 Testing | v4.0 | 0/? | Not started | - |
 
-**Total:** 66/? plans complete
+**Total:** 72/? plans complete
 
 ---
 *Roadmap created: 2026-02-04*

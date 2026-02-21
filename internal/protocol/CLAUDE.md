@@ -127,6 +127,50 @@ type V41OpHandler func(ctx *types.CompoundContext, v41ctx *types.V41RequestConte
 
 **Config:** `NFSAdapterSettings.V4MaxSessionSlots` (default 64) and `V4MaxSessionsPerClient` (default 16) exist but are NOT yet wired to StateManager. Future: settings watcher integration.
 
+### SEQUENCE-Gated Dispatch (Phase 20)
+
+Every non-exempt NFSv4.1 COMPOUND must begin with SEQUENCE (RFC 8881). The dispatcher
+enforces this in `dispatchV41()`:
+
+1. Read first opcode
+2. If exempt (`isSessionExemptOp`): dispatch all ops without session context
+3. If SEQUENCE: validate session/slot/seqid via `handleSequenceOp()`, then dispatch remaining ops
+4. If neither: return `NFS4ERR_OP_NOT_IN_SESSION`
+
+**Exempt operations** (can appear as first op without SEQUENCE):
+- `EXCHANGE_ID`, `CREATE_SESSION`, `DESTROY_SESSION`, `BIND_CONN_TO_SESSION`
+- Checked via `isSessionExemptOp(opCode)` in `sequence_handler.go`
+
+**Seqid bypass via SkipOwnerSeqid:**
+After SEQUENCE validates successfully, `compCtx.SkipOwnerSeqid = true` is set.
+This tells v4.0 ops called from v4.1 compounds (via fallback) to skip per-owner
+seqid validation, since v4.1 uses slot-based exactly-once semantics instead.
+
+**Replay cache at COMPOUND level:**
+- SEQUENCE validation returns cached COMPOUND response bytes for replays (same slot+seqid)
+- The full XDR-encoded response is stored in the slot via `CompleteSlotRequest()`
+- On replay: `slot.CachedReply` bytes returned directly (byte-identical to original)
+- `CacheThis` flag in SEQUENCE args controls whether response is cached
+
+**Minor version range configuration:**
+- `Handler.minMinorVersion` / `Handler.maxMinorVersion` (default 0, 1)
+- Set via `SetMinorVersionRange(min, max)` or from `NFSAdapterSettings.V4MinMinorVersion`/`V4MaxMinorVersion`
+- Checked before the minorversion switch in `ProcessCompound()`
+- Out-of-range returns `NFS4ERR_MINOR_VERS_MISMATCH`
+
+### Prometheus Metrics: SEQUENCE (sequence_metrics.go)
+
+Follows same nil-safe receiver pattern as SessionMetrics:
+- `dittofs_nfs_sequence_total` (counter): total SEQUENCE operations
+- `dittofs_nfs_sequence_errors_total` (counter_vec, label: error_type): per-error counters
+  - Labels: "bad_session", "seq_misordered", "replay_hit", "slot_busy", "bad_xdr", "bad_slot", "retry_uncached"
+- `dittofs_nfs_replay_hits_total` (counter): successful replay cache hits
+- `dittofs_nfs_slots_in_use` (gauge_vec, label: session_id): slots in use per session
+- `dittofs_nfs_replay_cache_bytes` (gauge): total cached response bytes
+
+All methods nil-safe: `RecordSequence()`, `RecordError(errType)`, `RecordReplayHit()`,
+`SetSlotsInUse(sessionID, count)`, `SetReplayCacheBytes(bytes)`. Set via `Handler.SetSequenceMetrics()`.
+
 ### Common Mistakes (v4.1 Specific)
 
 1. **XDR desync in v4.1 stubs** -- Stubs MUST decode args even when returning NOTSUPP. The COMPOUND reader position must advance past the current op's args.
@@ -134,6 +178,7 @@ type V41OpHandler func(ctx *types.CompoundContext, v41ctx *types.V41RequestConte
 3. **Missing fallback** -- v4.0 ops must be accessible from v4.1 compounds
 4. **OP_ILLEGAL vs NFS4ERR_NOTSUPP** -- Unknown opcodes outside valid ranges get OP_ILLEGAL; known but unimplemented ops get NOTSUPP
 5. **CREATE_SESSION seqid off-by-one** -- Client must send `record.SequenceID + 1` for a new CREATE_SESSION request. EXCHANGE_ID returns `record.SequenceID`; the client increments it before sending CREATE_SESSION.
+6. **SEQUENCE replay vs re-execute** -- On replay hit, return `slot.CachedReply` directly. Do NOT re-execute ops. The cached bytes are the full COMPOUND response.
 
 ## Common Mistakes
 
