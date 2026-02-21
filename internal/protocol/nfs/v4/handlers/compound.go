@@ -63,6 +63,16 @@ func (h *Handler) ProcessCompound(compCtx *types.CompoundContext, data []byte) (
 		"num_ops", numOps,
 		"client", compCtx.ClientAddr)
 
+	// Check configurable minor version range
+	if minorVersion < h.minMinorVersion || minorVersion > h.maxMinorVersion {
+		logger.Debug("NFSv4 minor version out of configured range",
+			"requested", minorVersion,
+			"min", h.minMinorVersion,
+			"max", h.maxMinorVersion,
+			"client", compCtx.ClientAddr)
+		return encodeCompoundResponse(types.NFS4ERR_MINOR_VERS_MISMATCH, tag, nil)
+	}
+
 	switch minorVersion {
 	case types.NFS4_MINOR_VERSION_0:
 		return h.dispatchV40(compCtx, tag, numOps, reader)

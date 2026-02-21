@@ -44,6 +44,8 @@ type PatchNFSSettingsRequest struct {
 	MaxWriteSize            *int      `json:"max_write_size,omitempty"`
 	PreferredTransferSize   *int      `json:"preferred_transfer_size,omitempty"`
 	DelegationsEnabled      *bool     `json:"delegations_enabled,omitempty"`
+	V4MinMinorVersion       *int      `json:"v4_min_minor_version,omitempty"`
+	V4MaxMinorVersion       *int      `json:"v4_max_minor_version,omitempty"`
 	BlockedOperations       *[]string `json:"blocked_operations,omitempty"`
 	PortmapperEnabled       *bool     `json:"portmapper_enabled,omitempty"`
 	PortmapperPort          *int      `json:"portmapper_port,omitempty"`
@@ -65,6 +67,8 @@ type PutNFSSettingsRequest struct {
 	MaxWriteSize            int      `json:"max_write_size"`
 	PreferredTransferSize   int      `json:"preferred_transfer_size"`
 	DelegationsEnabled      bool     `json:"delegations_enabled"`
+	V4MinMinorVersion       int      `json:"v4_min_minor_version"`
+	V4MaxMinorVersion       int      `json:"v4_max_minor_version"`
 	BlockedOperations       []string `json:"blocked_operations"`
 	PortmapperEnabled       bool     `json:"portmapper_enabled"`
 	PortmapperPort          int      `json:"portmapper_port"`
@@ -114,6 +118,8 @@ type NFSSettingsResponse struct {
 	MaxWriteSize            int      `json:"max_write_size"`
 	PreferredTransferSize   int      `json:"preferred_transfer_size"`
 	DelegationsEnabled      bool     `json:"delegations_enabled"`
+	V4MinMinorVersion       int      `json:"v4_min_minor_version"`
+	V4MaxMinorVersion       int      `json:"v4_max_minor_version"`
 	BlockedOperations       []string `json:"blocked_operations"`
 	PortmapperEnabled       bool     `json:"portmapper_enabled"`
 	PortmapperPort          int      `json:"portmapper_port"`
@@ -252,6 +258,8 @@ func (h *AdapterSettingsHandler) GetDefaults(w http.ResponseWriter, r *http.Requ
 				"max_read_size":             {Min: ranges.MaxReadSizeMin, Max: ranges.MaxReadSizeMax},
 				"max_write_size":            {Min: ranges.MaxWriteSizeMin, Max: ranges.MaxWriteSizeMax},
 				"preferred_transfer_size":   {Min: ranges.PreferredTransferSizeMin, Max: ranges.PreferredTransferSizeMax},
+				"v4_min_minor_version":      {Min: 0, Max: 1},
+				"v4_max_minor_version":      {Min: 0, Max: 1},
 				"portmapper_port":           {Min: ranges.PortmapperPortMin, Max: ranges.PortmapperPortMax},
 			},
 		}
@@ -322,6 +330,8 @@ func (h *AdapterSettingsHandler) PutSettings(w http.ResponseWriter, r *http.Requ
 		settings.MaxWriteSize = req.MaxWriteSize
 		settings.PreferredTransferSize = req.PreferredTransferSize
 		settings.DelegationsEnabled = req.DelegationsEnabled
+		settings.V4MinMinorVersion = req.V4MinMinorVersion
+		settings.V4MaxMinorVersion = req.V4MaxMinorVersion
 		settings.SetBlockedOperations(req.BlockedOperations)
 		settings.PortmapperEnabled = req.PortmapperEnabled
 		settings.PortmapperPort = req.PortmapperPort
@@ -471,6 +481,12 @@ func (h *AdapterSettingsHandler) PatchSettings(w http.ResponseWriter, r *http.Re
 		}
 		if req.DelegationsEnabled != nil {
 			settings.DelegationsEnabled = *req.DelegationsEnabled
+		}
+		if req.V4MinMinorVersion != nil {
+			settings.V4MinMinorVersion = *req.V4MinMinorVersion
+		}
+		if req.V4MaxMinorVersion != nil {
+			settings.V4MaxMinorVersion = *req.V4MaxMinorVersion
 		}
 		if req.BlockedOperations != nil {
 			settings.SetBlockedOperations(*req.BlockedOperations)
@@ -707,6 +723,11 @@ func validateNFSSettings(s *models.NFSAdapterSettings) map[string]string {
 	validateIntRange(errs, "max_write_size", s.MaxWriteSize, ranges.MaxWriteSizeMin, ranges.MaxWriteSizeMax)
 	validateIntRange(errs, "preferred_transfer_size", s.PreferredTransferSize, ranges.PreferredTransferSizeMin, ranges.PreferredTransferSizeMax)
 	validateIntRange(errs, "portmapper_port", s.PortmapperPort, ranges.PortmapperPortMin, ranges.PortmapperPortMax)
+	validateIntRange(errs, "v4_min_minor_version", s.V4MinMinorVersion, 0, 1)
+	validateIntRange(errs, "v4_max_minor_version", s.V4MaxMinorVersion, 0, 1)
+	if s.V4MinMinorVersion > s.V4MaxMinorVersion {
+		errs["v4_min_minor_version"] = "must be <= v4_max_minor_version"
+	}
 
 	// Blocked operations validation
 	for _, op := range s.GetBlockedOperations() {
@@ -881,6 +902,10 @@ func resetNFSSetting(settings, defaults *models.NFSAdapterSettings, name string)
 		settings.PreferredTransferSize = defaults.PreferredTransferSize
 	case "delegations_enabled":
 		settings.DelegationsEnabled = defaults.DelegationsEnabled
+	case "v4_min_minor_version":
+		settings.V4MinMinorVersion = defaults.V4MinMinorVersion
+	case "v4_max_minor_version":
+		settings.V4MaxMinorVersion = defaults.V4MaxMinorVersion
 	case "blocked_operations":
 		settings.BlockedOperations = defaults.BlockedOperations
 	case "portmapper_enabled":
@@ -940,6 +965,8 @@ func nfsSettingsToResponse(s *models.NFSAdapterSettings) NFSSettingsResponse {
 		MaxWriteSize:            s.MaxWriteSize,
 		PreferredTransferSize:   s.PreferredTransferSize,
 		DelegationsEnabled:      s.DelegationsEnabled,
+		V4MinMinorVersion:       s.V4MinMinorVersion,
+		V4MaxMinorVersion:       s.V4MaxMinorVersion,
 		BlockedOperations:       ops,
 		PortmapperEnabled:       s.PortmapperEnabled,
 		PortmapperPort:          s.PortmapperPort,

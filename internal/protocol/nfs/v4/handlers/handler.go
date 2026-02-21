@@ -67,6 +67,19 @@ type Handler struct {
 	// v4.0 operations (3-39) are accessible from v4.1 compounds via fallback
 	// to opDispatchTable.
 	v41DispatchTable map[uint32]V41OpHandler
+
+	// sequenceMetrics holds Prometheus metrics for SEQUENCE operation tracking.
+	// May be nil; SequenceMetrics methods are nil-safe so callers can invoke
+	// them without additional nil checks.
+	sequenceMetrics *state.SequenceMetrics
+
+	// minMinorVersion is the minimum accepted NFSv4 minor version (default 0).
+	// Compounds with minorversion < minMinorVersion get NFS4ERR_MINOR_VERS_MISMATCH.
+	minMinorVersion uint32
+
+	// maxMinorVersion is the maximum accepted NFSv4 minor version (default 1).
+	// Compounds with minorversion > maxMinorVersion get NFS4ERR_MINOR_VERS_MISMATCH.
+	maxMinorVersion uint32
 }
 
 // NewHandler creates a new NFSv4 handler with the given runtime, pseudo-fs,
@@ -89,6 +102,7 @@ func NewHandler(registry *runtime.Runtime, pfs *pseudofs.PseudoFS, stateManager 
 		StateManager:     sm,
 		opDispatchTable:  make(map[uint32]OpHandler),
 		v41DispatchTable: make(map[uint32]V41OpHandler),
+		maxMinorVersion:  1, // default: accept v4.0 and v4.1
 	}
 
 	// Register all implemented operation handlers.
@@ -353,6 +367,20 @@ func (h *Handler) IsOperationBlocked(opNum uint32) bool {
 		return false
 	}
 	return blocked[opNum]
+}
+
+// SetSequenceMetrics sets the Prometheus metrics collector for SEQUENCE operations.
+// Must be called before any SEQUENCE operations. Safe to leave nil (no-op metrics).
+func (h *Handler) SetSequenceMetrics(m *state.SequenceMetrics) {
+	h.sequenceMetrics = m
+}
+
+// SetMinorVersionRange sets the accepted minor version range for COMPOUND requests.
+// Compounds with minorversion outside [min, max] get NFS4ERR_MINOR_VERS_MISMATCH.
+// Default: min=0, max=1 (both v4.0 and v4.1 enabled).
+func (h *Handler) SetMinorVersionRange(min, max uint32) {
+	h.minMinorVersion = min
+	h.maxMinorVersion = max
 }
 
 // encodeStatusOnly XDR-encodes a status-only response (just the nfsstat4).

@@ -63,6 +63,10 @@ type NFSAdapterSettings struct {
 	// Delegation policy
 	DelegationsEnabled bool `gorm:"default:true" json:"delegations_enabled"`
 
+	// NFSv4 minor version range (0=v4.0, 1=v4.1)
+	V4MinMinorVersion int `gorm:"default:0" json:"v4_min_minor_version"` // minimum NFSv4 minor version
+	V4MaxMinorVersion int `gorm:"default:1" json:"v4_max_minor_version"` // maximum NFSv4 minor version
+
 	// TODO: Wire NFSv4.1 session limits into StateManager (these fields are not yet active; future: settings watcher).
 	V4MaxSessionSlots      int `gorm:"default:64" json:"v4_max_session_slots"`       // fore channel max slots per session
 	V4MaxSessionsPerClient int `gorm:"default:16" json:"v4_max_sessions_per_client"` // max sessions per client
@@ -94,6 +98,22 @@ func (s *NFSAdapterSettings) GetBlockedOperations() []string {
 // SetBlockedOperations serializes the blocked operations from a string slice.
 func (s *NFSAdapterSettings) SetBlockedOperations(ops []string) {
 	s.BlockedOperations = marshalBlockedOps(ops)
+}
+
+// GetV4MinMinorVersion returns the minimum NFSv4 minor version as uint32.
+func (s *NFSAdapterSettings) GetV4MinMinorVersion() uint32 {
+	if s.V4MinMinorVersion < 0 {
+		return 0
+	}
+	return uint32(s.V4MinMinorVersion)
+}
+
+// GetV4MaxMinorVersion returns the maximum NFSv4 minor version as uint32.
+func (s *NFSAdapterSettings) GetV4MaxMinorVersion() uint32 {
+	if s.V4MaxMinorVersion < 0 {
+		return 1
+	}
+	return uint32(s.V4MaxMinorVersion)
 }
 
 // SMBAdapterSettings stores SMB-specific adapter settings.
@@ -161,6 +181,8 @@ func NewDefaultNFSSettings(adapterID string) *NFSAdapterSettings {
 		MaxWriteSize:            1048576,
 		PreferredTransferSize:   1048576,
 		DelegationsEnabled:      true,
+		V4MinMinorVersion:       0,
+		V4MaxMinorVersion:       1,
 		V4MaxSessionSlots:       64,
 		V4MaxSessionsPerClient:  16,
 		PortmapperEnabled:       false,

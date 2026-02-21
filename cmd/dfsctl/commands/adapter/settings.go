@@ -183,6 +183,8 @@ var (
 	settingsBlockedOperations       string
 	settingsPortmapperEnabled       bool
 	settingsPortmapperPort          int
+	settingsV4MinMinorVersion       int
+	settingsV4MaxMinorVersion       int
 
 	// SMB update flags
 	settingsMinDialect         string
@@ -252,6 +254,8 @@ func registerNFSUpdateFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&settingsBlockedOperations, "blocked-operations", "", "Comma-separated list of blocked operations")
 	cmd.Flags().BoolVar(&settingsPortmapperEnabled, "portmapper-enabled", false, "Enable embedded portmapper")
 	cmd.Flags().IntVar(&settingsPortmapperPort, "portmapper-port", 0, "Portmapper listen port")
+	cmd.Flags().IntVar(&settingsV4MinMinorVersion, "v4-min-minor-version", 0, "Minimum NFSv4 minor version (0=v4.0, 1=v4.1)")
+	cmd.Flags().IntVar(&settingsV4MaxMinorVersion, "v4-max-minor-version", 0, "Maximum NFSv4 minor version (0=v4.0, 1=v4.1)")
 	cmd.Flags().BoolVar(&settingsDryRun, "dry-run", false, "Validate without applying changes")
 	cmd.Flags().BoolVar(&settingsForce, "force", false, "Bypass range validation")
 }
@@ -330,6 +334,10 @@ func showNFSSettings(client *apiclient.Client, format output.Format) error {
 	})
 	printSettingsGroup("Delegation", []settingRow{
 		newSettingRowBool("delegations_enabled", settings.DelegationsEnabled, d.DelegationsEnabled),
+	})
+	printSettingsGroup("NFSv4 Minor Version Range", []settingRow{
+		newSettingRowInt("v4_min_minor_version", settings.V4MinMinorVersion, d.V4MinMinorVersion, ""),
+		newSettingRowInt("v4_max_minor_version", settings.V4MaxMinorVersion, d.V4MaxMinorVersion, ""),
 	})
 	printSettingsGroup("Portmapper", []settingRow{
 		newSettingRowBool("portmapper_enabled", settings.PortmapperEnabled, d.PortmapperEnabled),
@@ -543,6 +551,14 @@ func updateNFSSettings(cmd *cobra.Command, client *apiclient.Client) error {
 	}
 	if cmd.Flags().Changed("portmapper-port") {
 		req.PortmapperPort = &settingsPortmapperPort
+		hasChanges = true
+	}
+	if cmd.Flags().Changed("v4-min-minor-version") {
+		req.V4MinMinorVersion = &settingsV4MinMinorVersion
+		hasChanges = true
+	}
+	if cmd.Flags().Changed("v4-max-minor-version") {
+		req.V4MaxMinorVersion = &settingsV4MaxMinorVersion
 		hasChanges = true
 	}
 

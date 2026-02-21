@@ -278,6 +278,21 @@ func (st *SlotTable) MaxSlots() uint32 {
 	return st.maxSlots
 }
 
+// SlotsInUse returns the count of slots currently in use (InUse == true).
+// Thread-safe: acquires st.mu.
+func (st *SlotTable) SlotsInUse() int {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	count := 0
+	for i := uint32(0); i < st.maxSlots; i++ {
+		if st.slots[i].InUse {
+			count++
+		}
+	}
+	return count
+}
+
 // HasInFlightRequests returns true if any slot in the table is currently
 // processing a request (InUse == true).
 // Thread-safe: acquires st.mu.

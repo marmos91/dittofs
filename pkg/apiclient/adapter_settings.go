@@ -21,6 +21,8 @@ type NFSAdapterSettingsResponse struct {
 	MaxWriteSize            int      `json:"max_write_size"`
 	PreferredTransferSize   int      `json:"preferred_transfer_size"`
 	DelegationsEnabled      bool     `json:"delegations_enabled"`
+	V4MinMinorVersion       int      `json:"v4_min_minor_version"`
+	V4MaxMinorVersion       int      `json:"v4_max_minor_version"`
 	BlockedOperations       []string `json:"blocked_operations"`
 	PortmapperEnabled       bool     `json:"portmapper_enabled"`
 	PortmapperPort          int      `json:"portmapper_port"`
@@ -75,6 +77,8 @@ type PatchNFSSettingsRequest struct {
 	MaxWriteSize            *int      `json:"max_write_size,omitempty"`
 	PreferredTransferSize   *int      `json:"preferred_transfer_size,omitempty"`
 	DelegationsEnabled      *bool     `json:"delegations_enabled,omitempty"`
+	V4MinMinorVersion       *int      `json:"v4_min_minor_version,omitempty"`
+	V4MaxMinorVersion       *int      `json:"v4_max_minor_version,omitempty"`
 	BlockedOperations       *[]string `json:"blocked_operations,omitempty"`
 	PortmapperEnabled       *bool     `json:"portmapper_enabled,omitempty"`
 	PortmapperPort          *int      `json:"portmapper_port,omitempty"`
