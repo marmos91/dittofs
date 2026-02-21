@@ -890,9 +890,9 @@ func TestHasAcceptableCallbackSecurity(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := hasAcceptableCallbackSecurity(tt.parms)
+			result := HasAcceptableCallbackSecurity(tt.parms)
 			if result != tt.expected {
-				t.Errorf("hasAcceptableCallbackSecurity = %v, want %v", result, tt.expected)
+				t.Errorf("HasAcceptableCallbackSecurity = %v, want %v", result, tt.expected)
 			}
 		})
 	}

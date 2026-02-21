@@ -550,12 +550,12 @@ func TestCompound_MinorVersion1_V41Op_NOTSUPP(t *testing.T) {
 	h := newTestHandler()
 	ctx := newTestCompoundContext()
 
-	// minorversion=1 COMPOUND with OP_CREATE_SESSION (v4.1 op, still a stub)
+	// minorversion=1 COMPOUND with OP_RECLAIM_COMPLETE (v4.1 op, still a stub)
 	// Stub should decode args and return NFS4ERR_NOTSUPP.
-	// Note: EXCHANGE_ID is now a real handler (Phase 18), so we use CREATE_SESSION
-	// as the representative v4.1 stub operation.
+	// Note: EXCHANGE_ID (Phase 18) and CREATE_SESSION/DESTROY_SESSION (Phase 19)
+	// are now real handlers, so we use RECLAIM_COMPLETE as the representative stub.
 	ops := []compoundOp{
-		{opCode: types.OP_CREATE_SESSION, data: encodeCreateSessionArgs()},
+		{opCode: types.OP_RECLAIM_COMPLETE, data: encodeReclaimCompleteArgs()},
 	}
 	data := buildCompoundArgsWithOps([]byte("v41-stub"), 1, ops)
 	resp, err := h.ProcessCompound(ctx, data)
@@ -575,9 +575,9 @@ func TestCompound_MinorVersion1_V41Op_NOTSUPP(t *testing.T) {
 	if decoded.NumResults != 1 {
 		t.Fatalf("numResults = %d, want 1", decoded.NumResults)
 	}
-	if decoded.Results[0].OpCode != types.OP_CREATE_SESSION {
-		t.Errorf("result opcode = %d, want OP_CREATE_SESSION (%d)",
-			decoded.Results[0].OpCode, types.OP_CREATE_SESSION)
+	if decoded.Results[0].OpCode != types.OP_RECLAIM_COMPLETE {
+		t.Errorf("result opcode = %d, want OP_RECLAIM_COMPLETE (%d)",
+			decoded.Results[0].OpCode, types.OP_RECLAIM_COMPLETE)
 	}
 	if decoded.Results[0].Status != types.NFS4ERR_NOTSUPP {
 		t.Errorf("result status = %d, want NFS4ERR_NOTSUPP (%d)",
@@ -647,17 +647,17 @@ func TestCompound_V41_StubConsumesArgs(t *testing.T) {
 	h := newTestHandler()
 	ctx := newTestCompoundContext()
 
-	// Send a v4.1 COMPOUND with CREATE_SESSION (v4.1 stub) + PUTROOTFH (v4.0 op).
-	// CREATE_SESSION returns NOTSUPP which stops the compound, but the critical
-	// test is that the stub consumed the CREATE_SESSION XDR args correctly --
+	// Send a v4.1 COMPOUND with RECLAIM_COMPLETE (v4.1 stub) + PUTROOTFH (v4.0 op).
+	// RECLAIM_COMPLETE returns NOTSUPP which stops the compound, but the critical
+	// test is that the stub consumed the RECLAIM_COMPLETE XDR args correctly --
 	// if it didn't, the PUTROOTFH opcode would be misread from the arg data.
 	//
 	// We verify this by checking that the compound returns exactly 1 result
-	// (CREATE_SESSION with NOTSUPP) and not a garbage decode error.
-	// Note: EXCHANGE_ID is now a real handler (Phase 18), so we use
-	// CREATE_SESSION as the representative stub operation.
+	// (RECLAIM_COMPLETE with NOTSUPP) and not a garbage decode error.
+	// Note: EXCHANGE_ID (Phase 18) and CREATE_SESSION/DESTROY_SESSION (Phase 19)
+	// are now real handlers, so we use RECLAIM_COMPLETE as the representative stub.
 	ops := []compoundOp{
-		{opCode: types.OP_CREATE_SESSION, data: encodeCreateSessionArgs()},
+		{opCode: types.OP_RECLAIM_COMPLETE, data: encodeReclaimCompleteArgs()},
 		{opCode: types.OP_PUTROOTFH}, // no args
 	}
 	data := buildCompoundArgsWithOps([]byte("consume"), 1, ops)
@@ -671,13 +671,13 @@ func TestCompound_V41_StubConsumesArgs(t *testing.T) {
 		t.Fatalf("decode response error: %v", err)
 	}
 
-	// Should have exactly 1 result (CREATE_SESSION stops the compound)
+	// Should have exactly 1 result (RECLAIM_COMPLETE stops the compound)
 	if decoded.NumResults != 1 {
-		t.Fatalf("numResults = %d, want 1 (CREATE_SESSION should stop compound)", decoded.NumResults)
+		t.Fatalf("numResults = %d, want 1 (RECLAIM_COMPLETE should stop compound)", decoded.NumResults)
 	}
-	if decoded.Results[0].OpCode != types.OP_CREATE_SESSION {
-		t.Errorf("result opcode = %d, want OP_CREATE_SESSION (%d)",
-			decoded.Results[0].OpCode, types.OP_CREATE_SESSION)
+	if decoded.Results[0].OpCode != types.OP_RECLAIM_COMPLETE {
+		t.Errorf("result opcode = %d, want OP_RECLAIM_COMPLETE (%d)",
+			decoded.Results[0].OpCode, types.OP_RECLAIM_COMPLETE)
 	}
 	if decoded.Results[0].Status != types.NFS4ERR_NOTSUPP {
 		t.Errorf("result status = %d, want NFS4ERR_NOTSUPP", decoded.Results[0].Status)

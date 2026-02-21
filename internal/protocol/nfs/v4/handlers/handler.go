@@ -185,14 +185,10 @@ func NewHandler(registry *runtime.Runtime, pfs *pseudofs.PseudoFS, stateManager 
 	})
 	// EXCHANGE_ID: client identity registration (RFC 8881 Section 18.35)
 	h.v41DispatchTable[types.OP_EXCHANGE_ID] = h.handleExchangeID
-	h.v41DispatchTable[types.OP_CREATE_SESSION] = v41StubHandler(types.OP_CREATE_SESSION, func(r io.Reader) error {
-		var args types.CreateSessionArgs
-		return args.Decode(r)
-	})
-	h.v41DispatchTable[types.OP_DESTROY_SESSION] = v41StubHandler(types.OP_DESTROY_SESSION, func(r io.Reader) error {
-		var args types.DestroySessionArgs
-		return args.Decode(r)
-	})
+	// CREATE_SESSION: session lifecycle (RFC 8881 Section 18.36)
+	h.v41DispatchTable[types.OP_CREATE_SESSION] = h.handleCreateSession
+	// DESTROY_SESSION: session teardown (RFC 8881 Section 18.37)
+	h.v41DispatchTable[types.OP_DESTROY_SESSION] = h.handleDestroySession
 	h.v41DispatchTable[types.OP_FREE_STATEID] = v41StubHandler(types.OP_FREE_STATEID, func(r io.Reader) error {
 		var args types.FreeStateidArgs
 		return args.Decode(r)

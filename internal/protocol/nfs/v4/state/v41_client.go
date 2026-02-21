@@ -510,11 +510,11 @@ func clampUint32(v, min, max uint32) uint32 {
 	return v
 }
 
-// hasAcceptableCallbackSecurity checks whether at least one of the callback
+// HasAcceptableCallbackSecurity checks whether at least one of the callback
 // security parameters uses an acceptable auth flavor (AUTH_NONE=0 or AUTH_SYS=1).
 // Returns true if the slice is empty (no callback security = ok) or contains
 // at least one acceptable flavor. Rejects RPCSEC_GSS-only (flavor 6).
-func hasAcceptableCallbackSecurity(secParms []types.CallbackSecParms4) bool {
+func HasAcceptableCallbackSecurity(secParms []types.CallbackSecParms4) bool {
 	if len(secParms) == 0 {
 		return true
 	}
