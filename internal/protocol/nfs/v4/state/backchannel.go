@@ -326,9 +326,12 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 		if !ok2 {
 			return fmt.Errorf("write to back-bound connection %d failed and no alternate: %w", connID, err)
 		}
-		replyCh = pending2.Register(xid)
+		// Update pending to the new connection's PendingCBReplies so the
+		// timeout path below cancels the correct waiter.
+		pending = pending2
+		replyCh = pending.Register(xid)
 		if err2 := writer2(framedMsg); err2 != nil {
-			pending2.Cancel(xid)
+			pending.Cancel(xid)
 			return fmt.Errorf("write to alternate connection %d also failed: %w", connID2, err2)
 		}
 	}

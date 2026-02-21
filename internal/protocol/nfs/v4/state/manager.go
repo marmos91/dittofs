@@ -733,8 +733,8 @@ func (sm *StateManager) RevokeDelegation(delegOther [types.NFS4_OTHER_SIZE]byte)
 // Shutdown stops all active lease timers, recall timers, and the grace period
 // for graceful server shutdown.
 func (sm *StateManager) Shutdown() {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
 
 	for _, record := range sm.clientsByID {
 		if record.Lease != nil {

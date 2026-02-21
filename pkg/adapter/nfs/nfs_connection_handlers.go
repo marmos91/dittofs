@@ -598,9 +598,16 @@ func (c *NFSConnection) maybeRegisterBackchannel(ctx context.Context) {
 		return
 	}
 
-	// Already registered -- no-op
+	// Already registered -- verify StateManager still has pending replies.
+	// If the connection was unbound/rebound, StateManager may have cleared
+	// the ConnWriter and PendingCBReplies, so we need to re-register.
 	if c.pendingCBReplies != nil {
-		return
+		if smPending := sm.GetPendingCBReplies(c.connectionID); smPending != nil {
+			return
+		}
+		// Local state is stale: StateManager no longer tracks this connection.
+		// Clear the local flag so we can re-register the backchannel below.
+		c.pendingCBReplies = nil
 	}
 
 	// Register ConnWriter: captures this NFSConnection's writeMu to prevent
