@@ -469,35 +469,6 @@ func buildCompoundArgsWithOps(tag []byte, minorVersion uint32, ops []compoundOp)
 	return buf.Bytes()
 }
 
-// encodeCreateSessionArgs encodes minimal CREATE_SESSION args for testing.
-// Uses dummy values sufficient for the stub to decode without error.
-func encodeCreateSessionArgs() []byte {
-	var buf bytes.Buffer
-	args := types.CreateSessionArgs{
-		ClientID:   1,
-		SequenceID: 1,
-		Flags:      0,
-		ForeChannelAttrs: types.ChannelAttrs{
-			MaxRequestSize:        1048576,
-			MaxResponseSize:       1048576,
-			MaxResponseSizeCached: 4096,
-			MaxOperations:         16,
-			MaxRequests:           64,
-		},
-		BackChannelAttrs: types.ChannelAttrs{
-			MaxRequestSize:        4096,
-			MaxResponseSize:       4096,
-			MaxResponseSizeCached: 0,
-			MaxOperations:         2,
-			MaxRequests:           1,
-		},
-		CbProgram:  0x40000000,
-		CbSecParms: []types.CallbackSecParms4{},
-	}
-	_ = args.Encode(&buf)
-	return buf.Bytes()
-}
-
 // encodeReclaimCompleteArgs encodes RECLAIM_COMPLETE args for testing.
 // rca_one_fs is a bool (uint32).
 func encodeReclaimCompleteArgs() []byte {

@@ -535,11 +535,11 @@ func TestCreateSession_ChannelNegotiation(t *testing.T) {
 
 	// Request with values exceeding server limits
 	oversizedFore := types.ChannelAttrs{
-		MaxRequestSize:        5000000,  // Exceeds 1MB limit
-		MaxResponseSize:       5000000,  // Exceeds 1MB limit
-		MaxResponseSizeCached: 1000000,  // Exceeds 64KB limit
-		MaxRequests:           200,      // Exceeds 64 slot limit
-		HeaderPadSize:         100,      // Should be forced to 0
+		MaxRequestSize:        5000000, // Exceeds 1MB limit
+		MaxResponseSize:       5000000, // Exceeds 1MB limit
+		MaxResponseSizeCached: 1000000, // Exceeds 64KB limit
+		MaxRequests:           200,     // Exceeds 64 slot limit
+		HeaderPadSize:         100,     // Should be forced to 0
 		RdmaIrd:               []uint32{4},
 	}
 

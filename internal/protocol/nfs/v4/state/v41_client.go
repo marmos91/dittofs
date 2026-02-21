@@ -461,11 +461,11 @@ func DefaultForeLimits() ChannelLimits {
 func DefaultBackLimits() ChannelLimits {
 	return ChannelLimits{
 		MaxSlots:              8,
-		MaxRequestSize:        65536,  // 64KB
-		MaxResponseSize:       65536,  // 64KB
-		MaxResponseSizeCached: 65536,  // 64KB
-		MinRequestSize:        8192,   // 8KB
-		MinResponseSize:       8192,   // 8KB
+		MaxRequestSize:        65536, // 64KB
+		MaxResponseSize:       65536, // 64KB
+		MaxResponseSizeCached: 65536, // 64KB
+		MinRequestSize:        8192,  // 8KB
+		MinResponseSize:       8192,  // 8KB
 	}
 }
 
