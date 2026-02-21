@@ -149,6 +149,11 @@ type StateManager struct {
 
 	// maxConnsPerSession is the maximum number of connections per session (default 16).
 	maxConnsPerSession int
+
+	// connectionMetrics holds Prometheus metrics for connection binding.
+	// May be nil; ConnectionMetrics methods are nil-safe so callers can invoke
+	// them without additional nil checks.
+	connectionMetrics *ConnectionMetrics
 }
 
 // NewStateManager creates a new StateManager with the given lease duration.
@@ -2149,8 +2154,10 @@ func (sm *StateManager) destroySessionLocked(sessionID types.SessionId4, force b
 	sm.connMu.Lock()
 	for _, b := range sm.connBySession[sessionID] {
 		delete(sm.connByID, b.ConnectionID)
+		sm.connectionMetrics.RecordUnbind("session_destroy")
 	}
 	delete(sm.connBySession, sessionID)
+	sm.connectionMetrics.RemoveSessionGauge(sessionID.String())
 	sm.connMu.Unlock()
 
 	// Record metrics
@@ -2308,7 +2315,7 @@ func (sm *StateManager) BindConnToSession(connectionID uint64, sessionID types.S
 
 	// If connection already bound to a different session, silently unbind
 	if existing, ok := sm.connByID[connectionID]; ok && existing.SessionID != sessionID {
-		sm.unbindConnectionLocked(connectionID)
+		sm.unbindConnectionLocked(connectionID, "explicit")
 	}
 
 	// Check connection limit: count bindings for this session, allow rebind
@@ -2365,6 +2372,10 @@ func (sm *StateManager) BindConnToSession(connectionID uint64, sessionID types.S
 	sm.connByID[connectionID] = binding
 	sm.connBySession[sessionID] = append(sm.connBySession[sessionID], binding)
 
+	// Record metrics
+	sm.connectionMetrics.RecordBind(direction.String())
+	sm.connectionMetrics.SetBoundConnections(sessionID.String(), float64(len(sm.connBySession[sessionID])))
+
 	return &BindConnResult{ServerDir: serverDir}, nil
 }
 
@@ -2375,17 +2386,23 @@ func (sm *StateManager) BindConnToSession(connectionID uint64, sessionID types.S
 func (sm *StateManager) UnbindConnection(connectionID uint64) {
 	sm.connMu.Lock()
 	defer sm.connMu.Unlock()
-	sm.unbindConnectionLocked(connectionID)
+	sm.unbindConnectionLocked(connectionID, "disconnect")
 }
 
 // unbindConnectionLocked removes a connection binding. Caller must hold sm.connMu.
-func (sm *StateManager) unbindConnectionLocked(connectionID uint64) {
+// The reason parameter is recorded in metrics (e.g., "explicit", "disconnect", "session_destroy", "reaper").
+func (sm *StateManager) unbindConnectionLocked(connectionID uint64, reason string) {
 	binding, ok := sm.connByID[connectionID]
 	if !ok {
 		return
 	}
+	sessionID := binding.SessionID
 	delete(sm.connByID, connectionID)
-	sm.removeConnFromSessionLocked(connectionID, binding.SessionID)
+	sm.removeConnFromSessionLocked(connectionID, sessionID)
+
+	// Record metrics
+	sm.connectionMetrics.RecordUnbind(reason)
+	sm.connectionMetrics.SetBoundConnections(sessionID.String(), float64(len(sm.connBySession[sessionID])))
 }
 
 // removeConnFromSessionLocked removes a connection from the session binding list.
@@ -2415,8 +2432,10 @@ func (sm *StateManager) UnbindAllForSession(sessionID types.SessionId4) {
 	bindings := sm.connBySession[sessionID]
 	for _, b := range bindings {
 		delete(sm.connByID, b.ConnectionID)
+		sm.connectionMetrics.RecordUnbind("session_destroy")
 	}
 	delete(sm.connBySession, sessionID)
+	sm.connectionMetrics.RemoveSessionGauge(sessionID.String())
 }
 
 // GetConnectionBindings returns a copy of all connection bindings for a session.
@@ -2503,4 +2522,10 @@ func (sm *StateManager) SetMaxConnectionsPerSession(max int) {
 	if max >= 0 {
 		sm.maxConnsPerSession = max
 	}
+}
+
+// SetConnectionMetrics sets the Prometheus metrics collector for connection binding.
+// Must be called before any connection binding operations. Safe to leave nil (no-op metrics).
+func (sm *StateManager) SetConnectionMetrics(m *ConnectionMetrics) {
+	sm.connectionMetrics = m
 }

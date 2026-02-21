@@ -73,6 +73,11 @@ type Handler struct {
 	// them without additional nil checks.
 	sequenceMetrics *state.SequenceMetrics
 
+	// connectionMetrics holds Prometheus metrics for connection binding tracking.
+	// May be nil; ConnectionMetrics methods are nil-safe so callers can invoke
+	// them without additional nil checks.
+	connectionMetrics *state.ConnectionMetrics
+
 	// minMinorVersion is the minimum accepted NFSv4 minor version (default 0).
 	// Compounds with minorversion < minMinorVersion get NFS4ERR_MINOR_VERS_MISMATCH.
 	minMinorVersion uint32
@@ -371,6 +376,13 @@ func (h *Handler) IsOperationBlocked(opNum uint32) bool {
 // Must be called before any SEQUENCE operations. Safe to leave nil (no-op metrics).
 func (h *Handler) SetSequenceMetrics(m *state.SequenceMetrics) {
 	h.sequenceMetrics = m
+}
+
+// SetConnectionMetrics sets the Prometheus metrics collector for connection binding.
+// Must be called before any connection binding operations. Safe to leave nil (no-op metrics).
+func (h *Handler) SetConnectionMetrics(m *state.ConnectionMetrics) {
+	h.connectionMetrics = m
+	h.StateManager.SetConnectionMetrics(m)
 }
 
 // SetMinorVersionRange sets the accepted minor version range for COMPOUND requests.

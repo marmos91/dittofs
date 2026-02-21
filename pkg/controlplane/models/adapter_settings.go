@@ -68,8 +68,9 @@ type NFSAdapterSettings struct {
 	V4MaxMinorVersion int `gorm:"default:1" json:"v4_max_minor_version"` // maximum NFSv4 minor version
 
 	// TODO: Wire NFSv4.1 session limits into StateManager (these fields are not yet active; future: settings watcher).
-	V4MaxSessionSlots      int `gorm:"default:64" json:"v4_max_session_slots"`       // fore channel max slots per session
-	V4MaxSessionsPerClient int `gorm:"default:16" json:"v4_max_sessions_per_client"` // max sessions per client
+	V4MaxSessionSlots          int `gorm:"default:64" json:"v4_max_session_slots"`           // fore channel max slots per session
+	V4MaxSessionsPerClient     int `gorm:"default:16" json:"v4_max_sessions_per_client"`     // max sessions per client
+	V4MaxConnectionsPerSession int `gorm:"default:16" json:"v4_max_connections_per_session"` // max connections per session (0=unlimited)
 
 	// Operation blocklist (JSON array stored as text)
 	BlockedOperations string `gorm:"type:text" json:"-"`
@@ -167,29 +168,30 @@ func (s *SMBAdapterSettings) SetBlockedOperations(ops []string) {
 // NewDefaultNFSSettings creates an NFSAdapterSettings with all default values.
 func NewDefaultNFSSettings(adapterID string) *NFSAdapterSettings {
 	return &NFSAdapterSettings{
-		ID:                      uuid.New().String(),
-		AdapterID:               adapterID,
-		MinVersion:              "3",
-		MaxVersion:              "4.0",
-		LeaseTime:               90,
-		GracePeriod:             90,
-		DelegationRecallTimeout: 90,
-		CallbackTimeout:         5,
-		LeaseBreakTimeout:       35,
-		MaxConnections:          0,
-		MaxClients:              10000,
-		MaxCompoundOps:          50,
-		MaxReadSize:             1048576,
-		MaxWriteSize:            1048576,
-		PreferredTransferSize:   1048576,
-		DelegationsEnabled:      true,
-		V4MinMinorVersion:       0,
-		V4MaxMinorVersion:       1,
-		V4MaxSessionSlots:       64,
-		V4MaxSessionsPerClient:  16,
-		PortmapperEnabled:       false,
-		PortmapperPort:          10111,
-		Version:                 1,
+		ID:                         uuid.New().String(),
+		AdapterID:                  adapterID,
+		MinVersion:                 "3",
+		MaxVersion:                 "4.0",
+		LeaseTime:                  90,
+		GracePeriod:                90,
+		DelegationRecallTimeout:    90,
+		CallbackTimeout:            5,
+		LeaseBreakTimeout:          35,
+		MaxConnections:             0,
+		MaxClients:                 10000,
+		MaxCompoundOps:             50,
+		MaxReadSize:                1048576,
+		MaxWriteSize:               1048576,
+		PreferredTransferSize:      1048576,
+		DelegationsEnabled:         true,
+		V4MinMinorVersion:          0,
+		V4MaxMinorVersion:          1,
+		V4MaxSessionSlots:          64,
+		V4MaxSessionsPerClient:     16,
+		V4MaxConnectionsPerSession: 16,
+		PortmapperEnabled:          false,
+		PortmapperPort:             10111,
+		Version:                    1,
 	}
 }
 

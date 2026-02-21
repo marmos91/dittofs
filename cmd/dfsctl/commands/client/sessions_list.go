@@ -29,7 +29,7 @@ type SessionList []apiclient.SessionInfo
 
 // Headers implements TableRenderer.
 func (sl SessionList) Headers() []string {
-	return []string{"SESSION_ID", "FORE_SLOTS", "BACK_SLOTS", "BACK_CHANNEL", "CREATED_AT"}
+	return []string{"SESSION_ID", "FORE_SLOTS", "BACK_SLOTS", "BACK_CHANNEL", "CONNECTIONS", "CREATED_AT"}
 }
 
 // Rows implements TableRenderer.
@@ -41,11 +41,16 @@ func (sl SessionList) Rows() [][]string {
 		if len(shortSID) > 16 {
 			shortSID = shortSID[:16] + "..."
 		}
+		connCount := "0"
+		if s.ConnectionSummary != nil {
+			connCount = fmt.Sprintf("%d", s.ConnectionSummary.Total)
+		}
 		rows = append(rows, []string{
 			shortSID,
 			fmt.Sprintf("%d", s.ForeSlots),
 			fmt.Sprintf("%d", s.BackSlots),
 			cmdutil.BoolToYesNo(s.BackChannel),
+			connCount,
 			s.CreatedAt.Format("2006-01-02 15:04:05"),
 		})
 	}

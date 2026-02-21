@@ -166,25 +166,26 @@ var settingsResetCmdSMB = &cobra.Command{
 
 var (
 	// NFS update flags
-	settingsLeaseTime               int
-	settingsGracePeriod             int
-	settingsDelegationRecallTimeout int
-	settingsCallbackTimeout         int
-	settingsLeaseBreakTimeout       int
-	settingsMaxConnections          int
-	settingsMaxClients              int
-	settingsMaxCompoundOps          int
-	settingsMaxReadSize             int
-	settingsMaxWriteSize            int
-	settingsPreferredTransferSize   int
-	settingsMinVersion              string
-	settingsMaxVersion              string
-	settingsDelegationsEnabled      bool
-	settingsBlockedOperations       string
-	settingsPortmapperEnabled       bool
-	settingsPortmapperPort          int
-	settingsV4MinMinorVersion       int
-	settingsV4MaxMinorVersion       int
+	settingsLeaseTime                  int
+	settingsGracePeriod                int
+	settingsDelegationRecallTimeout    int
+	settingsCallbackTimeout            int
+	settingsLeaseBreakTimeout          int
+	settingsMaxConnections             int
+	settingsMaxClients                 int
+	settingsMaxCompoundOps             int
+	settingsMaxReadSize                int
+	settingsMaxWriteSize               int
+	settingsPreferredTransferSize      int
+	settingsMinVersion                 string
+	settingsMaxVersion                 string
+	settingsDelegationsEnabled         bool
+	settingsBlockedOperations          string
+	settingsPortmapperEnabled          bool
+	settingsPortmapperPort             int
+	settingsV4MinMinorVersion          int
+	settingsV4MaxMinorVersion          int
+	settingsV4MaxConnectionsPerSession int
 
 	// SMB update flags
 	settingsMinDialect         string
@@ -256,6 +257,7 @@ func registerNFSUpdateFlags(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&settingsPortmapperPort, "portmapper-port", 0, "Portmapper listen port")
 	cmd.Flags().IntVar(&settingsV4MinMinorVersion, "v4-min-minor-version", 0, "Minimum NFSv4 minor version (0=v4.0, 1=v4.1)")
 	cmd.Flags().IntVar(&settingsV4MaxMinorVersion, "v4-max-minor-version", 0, "Maximum NFSv4 minor version (0=v4.0, 1=v4.1)")
+	cmd.Flags().IntVar(&settingsV4MaxConnectionsPerSession, "v4-max-connections-per-session", 0, "Maximum connections per NFSv4.1 session (0=unlimited)")
 	cmd.Flags().BoolVar(&settingsDryRun, "dry-run", false, "Validate without applying changes")
 	cmd.Flags().BoolVar(&settingsForce, "force", false, "Bypass range validation")
 }
@@ -335,9 +337,10 @@ func showNFSSettings(client *apiclient.Client, format output.Format) error {
 	printSettingsGroup("Delegation", []settingRow{
 		newSettingRowBool("delegations_enabled", settings.DelegationsEnabled, d.DelegationsEnabled),
 	})
-	printSettingsGroup("NFSv4 Minor Version Range", []settingRow{
+	printSettingsGroup("NFSv4.1 Configuration", []settingRow{
 		newSettingRowInt("v4_min_minor_version", settings.V4MinMinorVersion, d.V4MinMinorVersion, ""),
 		newSettingRowInt("v4_max_minor_version", settings.V4MaxMinorVersion, d.V4MaxMinorVersion, ""),
+		newSettingRowInt("v4_max_connections_per_session", settings.V4MaxConnectionsPerSession, d.V4MaxConnectionsPerSession, ""),
 	})
 	printSettingsGroup("Portmapper", []settingRow{
 		newSettingRowBool("portmapper_enabled", settings.PortmapperEnabled, d.PortmapperEnabled),
@@ -559,6 +562,10 @@ func updateNFSSettings(cmd *cobra.Command, client *apiclient.Client) error {
 	}
 	if cmd.Flags().Changed("v4-max-minor-version") {
 		req.V4MaxMinorVersion = &settingsV4MaxMinorVersion
+		hasChanges = true
+	}
+	if cmd.Flags().Changed("v4-max-connections-per-session") {
+		req.V4MaxConnectionsPerSession = &settingsV4MaxConnectionsPerSession
 		hasChanges = true
 	}
 
