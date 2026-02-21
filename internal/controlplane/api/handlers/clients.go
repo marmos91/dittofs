@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/state"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
 )
 
 // ClientHandler handles NFS client management API endpoints.
@@ -116,6 +117,83 @@ func leaseStatus(lease *state.LeaseState) string {
 		return "expired"
 	}
 	return "active"
+}
+
+// SessionInfo is the response type for session list endpoints.
+type SessionInfo struct {
+	SessionID   string    `json:"session_id"`
+	ClientID    string    `json:"client_id"`
+	CreatedAt   time.Time `json:"created_at"`
+	ForeSlots   uint32    `json:"fore_slots"`
+	BackSlots   uint32    `json:"back_slots"`
+	Flags       uint32    `json:"flags"`
+	BackChannel bool      `json:"back_channel"`
+}
+
+// ListSessions handles GET /api/v1/clients/{id}/sessions.
+func (h *ClientHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
+	idStr := chi.URLParam(r, "id")
+	clientID, err := strconv.ParseUint(idStr, 16, 64)
+	if err != nil {
+		BadRequest(w, "invalid client ID format, expected hex")
+		return
+	}
+
+	sessions := h.sm.ListSessionsForClient(clientID)
+	result := make([]SessionInfo, 0, len(sessions))
+	for _, s := range sessions {
+		var backSlots uint32
+		hasBackChan := s.BackChannelSlots != nil
+		if hasBackChan {
+			backSlots = s.BackChannelAttrs.MaxRequests
+		}
+		result = append(result, SessionInfo{
+			SessionID:   s.SessionID.String(),
+			ClientID:    fmt.Sprintf("%016x", s.ClientID),
+			CreatedAt:   s.CreatedAt,
+			ForeSlots:   s.ForeChannelAttrs.MaxRequests,
+			BackSlots:   backSlots,
+			Flags:       s.Flags,
+			BackChannel: hasBackChan,
+		})
+	}
+
+	WriteJSONOK(w, result)
+}
+
+// ForceDestroySession handles DELETE /api/v1/clients/{id}/sessions/{sid}.
+func (h *ClientHandler) ForceDestroySession(w http.ResponseWriter, r *http.Request) {
+	sidStr := chi.URLParam(r, "sid")
+
+	// Parse hex session ID (32 hex chars = 16 bytes)
+	sidBytes, err := parseSessionID(sidStr)
+	if err != nil {
+		BadRequest(w, "invalid session ID format, expected 32 hex characters")
+		return
+	}
+
+	if err := h.sm.ForceDestroySession(sidBytes); err != nil {
+		NotFound(w, "session not found")
+		return
+	}
+
+	WriteNoContent(w)
+}
+
+// parseSessionID parses a 32-character hex string into a SessionId4.
+func parseSessionID(hexStr string) (types.SessionId4, error) {
+	var sid types.SessionId4
+	if len(hexStr) != 32 {
+		return sid, fmt.Errorf("expected 32 hex chars, got %d", len(hexStr))
+	}
+	for i := 0; i < 16; i++ {
+		b, err := strconv.ParseUint(hexStr[i*2:i*2+2], 16, 8)
+		if err != nil {
+			return sid, fmt.Errorf("invalid hex at position %d: %w", i*2, err)
+		}
+		sid[i] = byte(b)
+	}
+	return sid, nil
 }
 
 // ServerIdentityFromProvider extracts server identity info from an untyped provider.

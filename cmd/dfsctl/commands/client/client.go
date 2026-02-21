@@ -25,7 +25,28 @@ Examples:
   dfsctl client evict 0000000100000001`,
 }
 
+// sessionsCmd is the parent command for client session management.
+var sessionsCmd = &cobra.Command{
+	Use:   "sessions",
+	Short: "Manage client sessions",
+	Long: `Manage NFSv4.1 sessions for a connected NFS client.
+
+Session commands allow you to list active sessions and force-destroy
+misbehaving sessions. These operations require admin privileges.
+
+Examples:
+  # List sessions for a client
+  dfsctl client sessions list 0000000100000001
+
+  # Force-destroy a session
+  dfsctl client sessions destroy 0000000100000001 a1b2c3d4...`,
+}
+
 func init() {
+	sessionsCmd.AddCommand(sessionsListCmd)
+	sessionsCmd.AddCommand(sessionsDestroyCmd)
+
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(evictCmd)
+	Cmd.AddCommand(sessionsCmd)
 }

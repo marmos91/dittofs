@@ -97,12 +97,43 @@ type V41OpHandler func(ctx *types.CompoundContext, v41ctx *types.V41RequestConte
 4. The stub automatically consumed args -- the real handler replaces this
 5. Test with compound_test.go pattern
 
+### NFSv4.1 Session Handler Conventions (Phase 19)
+
+**Handler pattern (CREATE_SESSION, DESTROY_SESSION):**
+- File naming: `{op_name}_handler.go` (e.g., `create_session_handler.go`)
+- Decode XDR args -> validate callback security -> delegate to StateManager -> encode response -> cache replay bytes
+- CREATE_SESSION caches response bytes AFTER encoding via `StateManager.CacheCreateSessionResponse()`. The handler owns encoding; the StateManager owns the replay detection algorithm.
+
+**State management:**
+- `StateManager.sessionsByID` maps SessionId4 -> *Session
+- `StateManager.sessionsByClientID` maps clientID -> []*Session
+- `CreateSession()` implements RFC 8881 multi-case replay detection (same seqid=replay, seqid+1=new, other=misordered)
+- `DestroySession()` checks for in-flight requests before destroying (NFS4ERR_DELAY)
+- `ForceDestroySession()` bypasses in-flight check (admin force-destroy)
+- `purgeV41Client()` destroys all sessions before purging client
+
+**Reaper goroutine:**
+- `StartSessionReaper(ctx)` sweeps every 30s for lease-expired and unconfirmed clients
+- Unconfirmed client timeout: 2x lease duration
+
+**Prometheus metrics (session_metrics.go):**
+- `dittofs_nfs_sessions_created_total` (counter)
+- `dittofs_nfs_sessions_destroyed_total` (counter, label: reason)
+- `dittofs_nfs_sessions_active` (gauge)
+- `dittofs_nfs_sessions_duration_seconds` (histogram)
+- All metric calls nil-safe (StateManager checks `sm.sessionMetrics != nil`)
+
+**Logging:** INFO for session create/destroy, DEBUG for expected errors (not found, replay)
+
+**Config:** `NFSAdapterSettings.V4MaxSessionSlots` (default 64) and `V4MaxSessionsPerClient` (default 16) exist but are NOT yet wired to StateManager. Future: settings watcher integration.
+
 ### Common Mistakes (v4.1 Specific)
 
 1. **XDR desync in v4.1 stubs** -- Stubs MUST decode args even when returning NOTSUPP. The COMPOUND reader position must advance past the current op's args.
 2. **Wrong dispatch table** -- v4.1 ops go in v41DispatchTable, not opDispatchTable
 3. **Missing fallback** -- v4.0 ops must be accessible from v4.1 compounds
 4. **OP_ILLEGAL vs NFS4ERR_NOTSUPP** -- Unknown opcodes outside valid ranges get OP_ILLEGAL; known but unimplemented ops get NOTSUPP
+5. **CREATE_SESSION seqid off-by-one** -- Client must send `record.SequenceID + 1` for a new CREATE_SESSION request. EXCHANGE_ID returns `record.SequenceID`; the client increments it before sending CREATE_SESSION.
 
 ## Common Mistakes
 
