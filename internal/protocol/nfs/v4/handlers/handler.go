@@ -193,10 +193,8 @@ func NewHandler(registry *runtime.Runtime, pfs *pseudofs.PseudoFS, stateManager 
 		var args types.BackchannelCtlArgs
 		return args.Decode(r)
 	})
-	h.v41DispatchTable[types.OP_BIND_CONN_TO_SESSION] = v41StubHandler(types.OP_BIND_CONN_TO_SESSION, func(r io.Reader) error {
-		var args types.BindConnToSessionArgs
-		return args.Decode(r)
-	})
+	// BIND_CONN_TO_SESSION: connection binding (RFC 8881 Section 18.34)
+	h.v41DispatchTable[types.OP_BIND_CONN_TO_SESSION] = h.handleBindConnToSession
 	// EXCHANGE_ID: client identity registration (RFC 8881 Section 18.35)
 	h.v41DispatchTable[types.OP_EXCHANGE_ID] = h.handleExchangeID
 	// CREATE_SESSION: session lifecycle (RFC 8881 Section 18.36)

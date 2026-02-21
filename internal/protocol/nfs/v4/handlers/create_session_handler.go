@@ -102,6 +102,18 @@ func (h *Handler) handleCreateSession(ctx *types.CompoundContext, _ *types.V41Re
 	// Cache the encoded response bytes for replay detection
 	h.StateManager.CacheCreateSessionResponse(args.ClientID, buf.Bytes())
 
+	// Auto-bind the connection that created the session as fore-channel.
+	// This is best-effort: CREATE_SESSION already succeeded, so we only
+	// log a warning if the bind fails (e.g., connection ID not plumbed).
+	if ctx.ConnectionID != 0 {
+		if _, bindErr := h.StateManager.BindConnToSession(ctx.ConnectionID, result.SessionID, types.CDFC4_FORE); bindErr != nil {
+			logger.Debug("CREATE_SESSION: auto-bind connection failed",
+				"connection_id", ctx.ConnectionID,
+				"session_id", result.SessionID.String(),
+				"error", bindErr)
+		}
+	}
+
 	logger.Info("CREATE_SESSION: session created",
 		"client_id", fmt.Sprintf("0x%x", args.ClientID),
 		"session_id", result.SessionID.String(),

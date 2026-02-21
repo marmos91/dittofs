@@ -204,7 +204,7 @@ func parseSessionID(hexStr string) (types.SessionId4, error) {
 	if len(hexStr) != 32 {
 		return sid, fmt.Errorf("expected 32 hex chars, got %d", len(hexStr))
 	}
-	for i := 0; i < 16; i++ {
+	for i := range 16 {
 		b, err := strconv.ParseUint(hexStr[i*2:i*2+2], 16, 8)
 		if err != nil {
 			return sid, fmt.Errorf("invalid hex at position %d: %w", i*2, err)
