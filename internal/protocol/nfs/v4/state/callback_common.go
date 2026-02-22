@@ -205,7 +205,7 @@ func EncodeCBNotifyOp(stateid *types.Stateid4, dirFH []byte, notifs []DirNotific
 					NewEntryName: entry.NewName,
 				}
 				_ = enc.Encode(&entryBuf)
-			case types.NOTIFY4_CHANGE_CHILD_ATTRS:
+			case types.NOTIFY4_CHANGE_CHILD_ATTRS, types.NOTIFY4_CHANGE_DIR_ATTRS:
 				enc := &types.NotifyAttrChange4{
 					EntryName: entry.EntryName,
 					Cookie:    entry.Cookie,

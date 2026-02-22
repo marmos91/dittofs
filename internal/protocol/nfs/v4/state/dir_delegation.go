@@ -189,19 +189,19 @@ func (sm *StateManager) flushDirNotifications(deleg *DelegationState) {
 		return
 	}
 
-	sm.delegationMetrics.RecordDirNotification()
-
 	// Encode CB_NOTIFY payload
 	encoded := EncodeCBNotifyOp(&deleg.Stateid, deleg.FileHandle, pending, deleg.NotificationMask)
 
-	// Send via backchannel
+	// Send via backchannel — only record metric on successful enqueue
 	sender := sm.getBackchannelSender(deleg.ClientID)
 	if sender != nil {
 		req := CallbackRequest{
 			OpCode:  types.CB_NOTIFY,
 			Payload: encoded,
 		}
-		if !sender.Enqueue(req) {
+		if sender.Enqueue(req) {
+			sm.delegationMetrics.RecordDirNotification()
+		} else {
 			logger.Warn("CB_NOTIFY: backchannel queue full, notifications lost",
 				"client_id", deleg.ClientID,
 				"count", len(pending))

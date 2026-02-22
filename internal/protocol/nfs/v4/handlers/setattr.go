@@ -141,8 +141,13 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 		// Check if the target is a directory by inspecting the file
 		file, getErr := metaSvc.GetFile(ctx.Context, metadata.FileHandle(ctx.CurrentFH))
 		if getErr == nil && file != nil && file.Type == metadata.FileTypeDirectory {
+			var originClientID uint64
+			if ctx.ClientState != nil {
+				originClientID = ctx.ClientState.ClientID
+			}
 			h.StateManager.NotifyDirChange(ctx.CurrentFH, state.DirNotification{
-				Type: types.NOTIFY4_CHANGE_DIR_ATTRS,
+				Type:           types.NOTIFY4_CHANGE_DIR_ATTRS,
+				OriginClientID: originClientID,
 			})
 		}
 	}

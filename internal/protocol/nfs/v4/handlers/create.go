@@ -380,14 +380,16 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 		"handle", string(newHandle),
 		"client", ctx.ClientAddr)
 
-	// Notify directory delegation holders about the new entry.
-	// OriginClientID is 0 here because CREATE is a v4.0 handler without
-	// access to the client ID; conflict recall requires OriginClientID
-	// and is supported via OPEN (which has the client ID from open_owner4).
+	// Notify directory delegation holders about the new entry
 	if h.StateManager != nil {
+		var originClientID uint64
+		if ctx.ClientState != nil {
+			originClientID = ctx.ClientState.ClientID
+		}
 		h.StateManager.NotifyDirChange([]byte(parentHandle), state.DirNotification{
-			Type:      types.NOTIFY4_ADD_ENTRY,
-			EntryName: objName,
+			Type:           types.NOTIFY4_ADD_ENTRY,
+			EntryName:      objName,
+			OriginClientID: originClientID,
 		})
 	}
 
