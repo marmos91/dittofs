@@ -144,6 +144,13 @@ func (g *GracePeriodState) ClientReclaimed(clientID uint64) {
 		return
 	}
 
+	// Only track clients that were expected during this grace period.
+	// Clients created after grace started should not affect the reclaim quota.
+	if !g.expectedClients[clientID] {
+		g.mu.Unlock()
+		return
+	}
+
 	g.reclaimedClients[clientID] = true
 
 	logger.Debug("NFSv4 grace period: client reclaimed",

@@ -421,10 +421,19 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 		var result *types.CompoundResult
 
 		if v40OnlyOps[opCode] {
-			_ = consumeV40OnlyArgs(opCode, reader)
-			logger.Debug("NFSv4.1 COMPOUND rejected v4.0-only operation",
-				"opcode", opCode, "op_name", types.OpName(opCode), "client", compCtx.ClientAddr)
-			result = notSuppHandler(opCode)
+			if err := consumeV40OnlyArgs(opCode, reader); err != nil {
+				logger.Debug("NFSv4.1 COMPOUND failed to consume v4.0-only op args",
+					"opcode", opCode, "op_name", types.OpName(opCode), "error", err, "client", compCtx.ClientAddr)
+				result = &types.CompoundResult{
+					Status: types.NFS4ERR_BADXDR,
+					OpCode: opCode,
+					Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+				}
+			} else {
+				logger.Debug("NFSv4.1 COMPOUND rejected v4.0-only operation",
+					"opcode", opCode, "op_name", types.OpName(opCode), "client", compCtx.ClientAddr)
+				result = notSuppHandler(opCode)
+			}
 		} else if v41Handler, ok := h.v41DispatchTable[opCode]; ok {
 			// v4.1-only operation (40-58)
 			result = v41Handler(compCtx, v41ctx, reader)
@@ -537,10 +546,19 @@ func (h *Handler) dispatchV41Ops(compCtx *types.CompoundContext, tag []byte, fir
 		var result *types.CompoundResult
 
 		if v40OnlyOps[opCode] {
-			_ = consumeV40OnlyArgs(opCode, reader)
-			logger.Debug("NFSv4.1 COMPOUND rejected v4.0-only operation",
-				"opcode", opCode, "op_name", types.OpName(opCode), "client", compCtx.ClientAddr)
-			result = notSuppHandler(opCode)
+			if err := consumeV40OnlyArgs(opCode, reader); err != nil {
+				logger.Debug("NFSv4.1 COMPOUND failed to consume v4.0-only op args",
+					"opcode", opCode, "op_name", types.OpName(opCode), "error", err, "client", compCtx.ClientAddr)
+				result = &types.CompoundResult{
+					Status: types.NFS4ERR_BADXDR,
+					OpCode: opCode,
+					Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+				}
+			} else {
+				logger.Debug("NFSv4.1 COMPOUND rejected v4.0-only operation",
+					"opcode", opCode, "op_name", types.OpName(opCode), "client", compCtx.ClientAddr)
+				result = notSuppHandler(opCode)
+			}
 		} else if v41Handler, ok := h.v41DispatchTable[opCode]; ok {
 			result = v41Handler(compCtx, v41ctx, reader)
 		} else if v40Handler, ok := h.opDispatchTable[opCode]; ok {
