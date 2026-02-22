@@ -531,25 +531,7 @@ func TestDirDelegation_Concurrent(t *testing.T) {
 // registerTestClient creates a confirmed v4.0 client for testing.
 func registerTestClient(t *testing.T, sm *StateManager) uint64 {
 	t.Helper()
-	result, err := sm.SetClientID("test-client-dir-deleg", [8]byte{1, 2, 3, 4, 5, 6, 7, 8}, CallbackInfo{
-		Addr:    "127.0.0.1",
-		Program: 0x40000000,
-	}, "127.0.0.1")
-	if err != nil {
-		t.Fatalf("SetClientID failed: %v", err)
-	}
-	if err := sm.ConfirmClientID(result.ClientID, result.ConfirmVerifier); err != nil {
-		t.Fatalf("ConfirmClientID failed: %v", err)
-	}
-
-	// Mark callback path as up
-	sm.mu.Lock()
-	if client, ok := sm.clientsByID[result.ClientID]; ok {
-		client.CBPathUp = true
-	}
-	sm.mu.Unlock()
-
-	return result.ClientID
+	return registerTestClientWithName(t, sm, "test-client-dir-deleg")
 }
 
 // registerTestV41Client creates a v4.1 client record for testing.

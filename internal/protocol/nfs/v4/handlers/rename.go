@@ -6,6 +6,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/pseudofs"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/protocol/xdr"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -199,6 +200,23 @@ func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *ty
 		"oldname", oldName,
 		"newname", newName,
 		"client", ctx.ClientAddr)
+
+	// Notify directory delegation holders about the rename
+	if h.StateManager != nil {
+		// Notify source directory with RENAME event
+		h.StateManager.NotifyDirChange(ctx.SavedFH, state.DirNotification{
+			Type:      types.NOTIFY4_RENAME_ENTRY,
+			EntryName: oldName,
+			NewName:   newName,
+		})
+		// For cross-directory renames, also notify destination directory with ADD
+		if !bytes.Equal(ctx.SavedFH, ctx.CurrentFH) {
+			h.StateManager.NotifyDirChange(ctx.CurrentFH, state.DirNotification{
+				Type:      types.NOTIFY4_ADD_ENTRY,
+				EntryName: newName,
+			})
+		}
+	}
 
 	// Encode RENAME4resok
 	var buf bytes.Buffer

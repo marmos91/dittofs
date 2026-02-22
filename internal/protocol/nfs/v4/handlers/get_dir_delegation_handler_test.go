@@ -60,7 +60,7 @@ func TestGetDirDelegation_Success(t *testing.T) {
 	if overallStatus != types.NFS4_OK {
 		t.Fatalf("overall status = %d, want NFS4_OK", overallStatus)
 	}
-	_, _ = xdr.DecodeOpaque(reader)          // tag
+	_, _ = xdr.DecodeOpaque(reader)           // tag
 	numResults, _ := xdr.DecodeUint32(reader) // numResults
 	if numResults != 3 {
 		t.Fatalf("numResults = %d, want 3 (SEQUENCE + PUTFH + GET_DIR_DELEGATION)", numResults)
@@ -144,7 +144,7 @@ func TestGetDirDelegation_Unavail_LimitReached(t *testing.T) {
 	if overallStatus != types.NFS4_OK {
 		t.Fatalf("overall status = %d, want NFS4_OK (GDD4_UNAVAIL is non-fatal)", overallStatus)
 	}
-	_, _ = xdr.DecodeOpaque(reader)          // tag
+	_, _ = xdr.DecodeOpaque(reader)           // tag
 	numResults, _ := xdr.DecodeUint32(reader) // numResults
 	if numResults != 3 {
 		t.Fatalf("numResults = %d, want 3", numResults)

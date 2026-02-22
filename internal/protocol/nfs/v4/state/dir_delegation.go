@@ -80,7 +80,7 @@ func (sm *StateManager) GrantDirDelegation(clientID uint64, dirFH []byte, notifM
 	if _, err := rand.Read(cookieVerf[:]); err != nil {
 		// Fallback to time-based if crypto/rand fails
 		now := time.Now().UnixNano()
-		for i := 0; i < 8; i++ {
+		for i := range 8 {
 			cookieVerf[i] = byte(now >> (uint(i) * 8))
 		}
 	}
@@ -105,6 +105,8 @@ func (sm *StateManager) GrantDirDelegation(clientID uint64, dirFH []byte, notifM
 		"client_id", clientID,
 		"notification_mask", fmt.Sprintf("0x%x", notifMask),
 		"stateid_seqid", stateid.Seqid)
+
+	sm.delegationMetrics.RecordGrant("directory")
 
 	return deleg, nil
 }
@@ -133,6 +135,13 @@ func (sm *StateManager) NotifyDirChange(dirFH []byte, notif DirNotification) {
 
 	for _, deleg := range targets {
 		if !deleg.IsDirectory || deleg.Revoked || deleg.RecallSent {
+			continue
+		}
+
+		// Conflict-based recall: if the notification comes from a different
+		// client than the delegation holder, recall the delegation.
+		if notif.OriginClientID != 0 && deleg.ClientID != notif.OriginClientID {
+			go sm.RecallDirDelegation(deleg, "conflict")
 			continue
 		}
 
@@ -177,6 +186,8 @@ func (sm *StateManager) flushDirNotifications(deleg *DelegationState) {
 	if len(pending) == 0 {
 		return
 	}
+
+	sm.delegationMetrics.RecordDirNotification()
 
 	// Encode CB_NOTIFY payload
 	encoded := EncodeCBNotifyOp(&deleg.Stateid, deleg.FileHandle, pending, deleg.NotificationMask)
@@ -236,6 +247,8 @@ func (sm *StateManager) resetBatchTimer(deleg *DelegationState) {
 func (sm *StateManager) RecallDirDelegation(deleg *DelegationState, reason string) {
 	deleg.RecallReason = reason
 
+	sm.delegationMetrics.RecordRecall("directory", reason)
+
 	// For directory_deleted: revoke immediately (no recall)
 	if reason == "directory_deleted" {
 		sm.RevokeDelegation(deleg.Stateid.Other)
@@ -253,6 +266,39 @@ func (sm *StateManager) RecallDirDelegation(deleg *DelegationState, reason strin
 
 	// Send recall asynchronously (same pattern as file delegations)
 	go sm.sendRecall(deleg)
+}
+
+// ShouldRecallDirDelegation checks if any directory delegation holders exist for
+// the given directory handle from a DIFFERENT client. If so, sends recall to
+// those holders (CB_RECALL for the directory delegation) and proceeds immediately
+// (does not block).
+//
+// This enables the pattern: "client B modifies directory -> server recalls
+// delegation from client A -> client A gets CB_RECALL -> client B's operation
+// proceeds immediately".
+//
+// Caller must NOT hold sm.mu (method acquires RLock, then Lock for recall).
+func (sm *StateManager) ShouldRecallDirDelegation(dirFH []byte, clientID uint64) {
+	sm.mu.RLock()
+	delegs := sm.delegByFile[string(dirFH)]
+	if len(delegs) == 0 {
+		sm.mu.RUnlock()
+		return
+	}
+
+	// Find directory delegations from different clients
+	var toRecall []*DelegationState
+	for _, deleg := range delegs {
+		if deleg.IsDirectory && !deleg.Revoked && !deleg.RecallSent && deleg.ClientID != clientID {
+			toRecall = append(toRecall, deleg)
+		}
+	}
+	sm.mu.RUnlock()
+
+	// Recall each conflicting delegation (non-blocking)
+	for _, deleg := range toRecall {
+		sm.RecallDirDelegation(deleg, "conflict")
+	}
 }
 
 // cleanupDirDelegation stops the batch timer and clears pending notifications

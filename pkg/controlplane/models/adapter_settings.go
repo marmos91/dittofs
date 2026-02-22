@@ -62,8 +62,8 @@ type NFSAdapterSettings struct {
 
 	// Delegation policy
 	DelegationsEnabled    bool `gorm:"default:true" json:"delegations_enabled"`
-	MaxDelegations        int  `gorm:"default:10000" json:"max_delegations"`           // max total outstanding delegations (file + directory combined)
-	DirDelegBatchWindowMs int  `gorm:"default:50" json:"dir_deleg_batch_window_ms"`    // notification batching window in milliseconds
+	MaxDelegations        int  `gorm:"default:10000" json:"max_delegations"`        // max total outstanding delegations (file + directory combined)
+	DirDelegBatchWindowMs int  `gorm:"default:50" json:"dir_deleg_batch_window_ms"` // notification batching window in milliseconds
 
 	// NFSv4 minor version range (0=v4.0, 1=v4.1)
 	V4MinMinorVersion int `gorm:"default:0" json:"v4_min_minor_version"` // minimum NFSv4 minor version

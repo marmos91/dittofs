@@ -257,6 +257,105 @@ go test -v -timeout 30m ./test/e2e/...
 go test -v ./test/e2e -run TestE2E/memory/BasicOperations
 ```
 
+## NFSv4 Directory Delegations
+
+DittoFS supports NFSv4.1 directory delegations (RFC 8881 Section 18.39), allowing clients to cache directory listings and receive change notifications instead of re-issuing READDIR after every mutation.
+
+### Overview
+
+A directory delegation grants a client the right to cache the contents of a directory. While the delegation is held, the server sends CB_NOTIFY callbacks whenever the directory changes, so the client can update its cache without a round-trip READDIR.
+
+### Requesting a Directory Delegation
+
+Clients request directory delegations via the GET_DIR_DELEGATION operation, specifying a notification bitmask indicating which change types they want to receive:
+
+| Notification Type | Value | Trigger |
+|-------------------|-------|---------|
+| NOTIFY4_CHANGE_CHILD_ATTRS | 0x01 | Child file/directory attributes changed |
+| NOTIFY4_CHANGE_DIR_ATTRS | 0x02 | Directory's own attributes changed (mode, owner, size) |
+| NOTIFY4_REMOVE_ENTRY | 0x04 | Entry removed from directory (REMOVE, RMDIR) |
+| NOTIFY4_ADD_ENTRY | 0x08 | Entry added to directory (CREATE, LINK, OPEN+CREATE) |
+| NOTIFY4_RENAME_ENTRY | 0x10 | Entry renamed within directory (RENAME) |
+
+The server may grant the delegation with a subset of the requested notification types.
+
+### How Notifications are Delivered
+
+Notifications are delivered via CB_NOTIFY over the NFSv4.1 backchannel:
+
+1. A directory mutation occurs (CREATE, REMOVE, RENAME, LINK, OPEN+CREATE, SETATTR)
+2. The server batches the notification into the delegation's pending queue
+3. After a configurable batch window (default 50ms), all pending notifications are flushed as a single CB_NOTIFY callback
+4. If the batch queue exceeds 100 entries, an immediate flush is triggered
+
+This batching reduces backchannel traffic when many mutations happen in quick succession (e.g., `tar xf` extracting files).
+
+### Mutation Handler Hooks
+
+Each directory-mutating NFSv4 operation triggers the appropriate notification:
+
+| Operation | Notification Type | Details |
+|-----------|-------------------|---------|
+| CREATE | NOTIFY4_ADD_ENTRY | Parent directory notified of new entry |
+| REMOVE | NOTIFY4_REMOVE_ENTRY | Parent directory notified; if removed entry is a directory with its own delegation, that delegation is immediately revoked |
+| RENAME (same dir) | NOTIFY4_RENAME_ENTRY | Single notification with old and new names |
+| RENAME (cross dir) | NOTIFY4_RENAME_ENTRY + NOTIFY4_ADD_ENTRY | Source directory gets RENAME, destination directory gets ADD |
+| LINK | NOTIFY4_ADD_ENTRY | Target directory notified of new hard link entry |
+| OPEN+CREATE | NOTIFY4_ADD_ENTRY | Parent directory notified when OPEN creates a new file |
+| SETATTR (on dir) | NOTIFY4_CHANGE_DIR_ATTRS | Only for significant changes (mode, owner, group, size); atime-only changes are filtered |
+
+### Conflict-Based Recall
+
+When a client modifies a directory that another client has delegated:
+
+1. Client B sends a mutation (e.g., CREATE) to a directory delegated to Client A
+2. The server detects the conflict via `OriginClientID` in the notification
+3. Client A's delegation is recalled via CB_RECALL (non-blocking)
+4. Client B's operation proceeds immediately (no waiting for recall completion)
+5. If Client A does not return the delegation within the lease period, it is forcibly revoked
+
+### Directory Deletion
+
+When a directory is deleted (REMOVE/RMDIR), any directory delegations on that directory are immediately revoked (not just recalled). Since the directory no longer exists, there is no point in waiting for the client to return the delegation.
+
+### Configuration
+
+Directory delegation settings are managed via `dfsctl adapter settings nfs`:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `delegations_enabled` | `true` | Enable/disable all delegations (file and directory) |
+| `max_delegations` | `0` (unlimited) | Maximum concurrent delegations across all clients |
+| `dir_deleg_batch_window_ms` | `50` | Notification batch window in milliseconds |
+
+```bash
+# Enable delegations
+dfsctl adapter settings nfs --set delegations_enabled=true
+
+# Set maximum delegations
+dfsctl adapter settings nfs --set max_delegations=1000
+
+# Adjust batch window (lower = more responsive, higher = less backchannel traffic)
+dfsctl adapter settings nfs --set dir_deleg_batch_window_ms=100
+```
+
+### Prometheus Metrics
+
+Directory delegation metrics are exposed alongside file delegation metrics with a `type` label:
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `dittofs_nfs_delegations_granted_total` | Counter | `type` (file/directory) | Total delegations granted |
+| `dittofs_nfs_delegations_recalled_total` | Counter | `type`, `reason` | Total delegations recalled |
+| `dittofs_nfs_delegations_active` | Gauge | `type` (file/directory) | Currently active delegations |
+| `dittofs_nfs_dir_notifications_sent_total` | Counter | - | Total CB_NOTIFY batches sent |
+
+### Limitations
+
+- **Ephemeral state**: Directory delegations are lost on server restart (in-memory only)
+- **Linux client support**: The Linux NFS client does not currently request directory delegations; this feature is primarily useful for custom NFSv4.1 clients
+- **No persistent notification queue**: If the backchannel is unavailable when notifications flush, they are silently dropped
+
 ## Known Limitations
 
 1. **No file locking**: NLM protocol not implemented

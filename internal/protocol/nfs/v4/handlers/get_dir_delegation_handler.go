@@ -90,7 +90,11 @@ func (h *Handler) handleGetDirDelegation(
 			logger.Debug("GET_DIR_DELEGATION: expired lease",
 				"client_id", session.ClientID,
 				"client", ctx.ClientAddr)
-			return encodeGetDirDelegationError(types.NFS4ERR_EXPIRED)
+			return &types.CompoundResult{
+				Status: types.NFS4ERR_EXPIRED,
+				OpCode: types.OP_GET_DIR_DELEGATION,
+				Data:   encodeStatusOnly(types.NFS4ERR_EXPIRED),
+			}
 		}
 
 		// All other errors (disabled, limit exceeded, duplicate) -> GDD4_UNAVAIL
@@ -165,14 +169,5 @@ func encodeGetDirDelegationUnavail() *types.CompoundResult {
 		Status: types.NFS4_OK,
 		OpCode: types.OP_GET_DIR_DELEGATION,
 		Data:   buf.Bytes(),
-	}
-}
-
-// encodeGetDirDelegationError encodes an error-only GET_DIR_DELEGATION response.
-func encodeGetDirDelegationError(status uint32) *types.CompoundResult {
-	return &types.CompoundResult{
-		Status: status,
-		OpCode: types.OP_GET_DIR_DELEGATION,
-		Data:   encodeStatusOnly(status),
 	}
 }

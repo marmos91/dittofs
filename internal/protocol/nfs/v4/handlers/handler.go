@@ -210,10 +210,7 @@ func NewHandler(registry *runtime.Runtime, pfs *pseudofs.PseudoFS, stateManager 
 	// DESTROY_SESSION: session teardown (RFC 8881 Section 18.37)
 	h.v41DispatchTable[types.OP_DESTROY_SESSION] = h.handleDestroySession
 	h.v41DispatchTable[types.OP_FREE_STATEID] = h.handleFreeStateid
-	h.v41DispatchTable[types.OP_GET_DIR_DELEGATION] = v41StubHandler(types.OP_GET_DIR_DELEGATION, func(r io.Reader) error {
-		var args types.GetDirDelegationArgs
-		return args.Decode(r)
-	})
+	h.v41DispatchTable[types.OP_GET_DIR_DELEGATION] = h.handleGetDirDelegation
 	h.v41DispatchTable[types.OP_GETDEVICEINFO] = v41StubHandler(types.OP_GETDEVICEINFO, func(r io.Reader) error {
 		var args types.GetDeviceInfoArgs
 		return args.Decode(r)

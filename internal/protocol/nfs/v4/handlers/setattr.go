@@ -8,6 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/pseudofs"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/protocol/xdr"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -135,7 +136,18 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 		}
 	}
 
-	// 8. Success: encode response with attrsset bitmap
+	// 8. Notify directory delegation holders about significant attribute changes
+	if h.StateManager != nil && isSignificantAttrChange(requestedBitmap) {
+		// Check if the target is a directory by inspecting the file
+		file, getErr := metaSvc.GetFile(ctx.Context, metadata.FileHandle(ctx.CurrentFH))
+		if getErr == nil && file != nil && file.Type == metadata.FileTypeDirectory {
+			h.StateManager.NotifyDirChange(ctx.CurrentFH, state.DirNotification{
+				Type: types.NOTIFY4_CHANGE_DIR_ATTRS,
+			})
+		}
+	}
+
+	// 9. Success: encode response with attrsset bitmap
 	logger.Debug("NFSv4 SETATTR success",
 		"handle", string(ctx.CurrentFH))
 
@@ -144,6 +156,17 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 		OpCode: types.OP_SETATTR,
 		Data:   encodeSetAttrSuccess(requestedBitmap),
 	}
+}
+
+// isSignificantAttrChange returns true if the attribute bitmap contains
+// significant changes (mode, owner, owner_group, size) that warrant
+// directory delegation notifications. Ignores atime-only and ctime-only
+// changes as they are too noisy.
+func isSignificantAttrChange(bitmap []uint32) bool {
+	return attrs.IsBitSet(bitmap, attrs.FATTR4_MODE) ||
+		attrs.IsBitSet(bitmap, attrs.FATTR4_OWNER) ||
+		attrs.IsBitSet(bitmap, attrs.FATTR4_OWNER_GROUP) ||
+		attrs.IsBitSet(bitmap, attrs.FATTR4_SIZE)
 }
 
 // encodeSetAttrSuccess encodes a successful SETATTR response.

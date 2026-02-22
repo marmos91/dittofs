@@ -123,7 +123,7 @@ func TestHandleReclaimComplete(t *testing.T) {
 		// Decode second response to check RECLAIM_COMPLETE status
 		reader := bytes.NewReader(resp2)
 		overallStatus, _ := xdr.DecodeUint32(reader)
-		_, _ = xdr.DecodeOpaque(reader)          // tag
+		_, _ = xdr.DecodeOpaque(reader)           // tag
 		numResults, _ := xdr.DecodeUint32(reader) // numResults
 
 		if numResults < 2 {

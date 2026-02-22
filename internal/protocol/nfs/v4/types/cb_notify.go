@@ -22,8 +22,8 @@ import (
 // ============================================================================
 
 // NotifyEntry4 represents a single opaque notification entry.
-// The actual format depends on the notification type (NOTIFY4_ADD_ENTRY,
-// NOTIFY4_REMOVE_ENTRY, etc.) and will be parsed in Phase 24.
+// The format depends on the notification type (NOTIFY4_ADD_ENTRY,
+// NOTIFY4_REMOVE_ENTRY, etc.) and is encoded by the sub-type encoders below.
 type NotifyEntry4 struct {
 	Data []byte // raw opaque entry data
 }
@@ -69,7 +69,7 @@ func (n *Notify4) Decode(r io.Reader) error {
 		return fmt.Errorf("notify values count %d exceeds limit", count)
 	}
 	n.Values = make([]NotifyEntry4, count)
-	for i := uint32(0); i < count; i++ {
+	for i := range n.Values {
 		data, err := xdr.DecodeOpaque(r)
 		if err != nil {
 			return fmt.Errorf("decode notify_entry[%d]: %w", i, err)
@@ -137,7 +137,7 @@ func (a *CbNotifyArgs) Decode(r io.Reader) error {
 		return fmt.Errorf("cb_notify changes count %d exceeds limit", count)
 	}
 	a.Changes = make([]Notify4, count)
-	for i := uint32(0); i < count; i++ {
+	for i := range a.Changes {
 		if err := a.Changes[i].Decode(r); err != nil {
 			return fmt.Errorf("decode cb_notify change[%d]: %w", i, err)
 		}

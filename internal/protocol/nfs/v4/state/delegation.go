@@ -107,6 +107,12 @@ type DirNotification struct {
 
 	// NewDirFH is the destination directory handle for cross-directory RENAME.
 	NewDirFH []byte
+
+	// OriginClientID is the client ID that caused this notification.
+	// Used for conflict-based recall: if a different client modifies the
+	// directory, the delegation is recalled from other holders.
+	// Zero means unknown (no conflict recall triggered).
+	OriginClientID uint64
 }
 
 // StartRecallTimer starts a timer that fires onExpiry after leaseDuration.
@@ -190,6 +196,8 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 		"deleg_type", delegType,
 		"stateid_seqid", stateid.Seqid)
 
+	sm.delegationMetrics.RecordGrant("file")
+
 	return deleg
 }
 
@@ -197,6 +205,10 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 //
 // Per RFC 7530 Section 16.8, DELEGRETURN returns a delegation to the server.
 // This method removes the delegation from both delegByOther and delegByFile maps.
+//
+// For directory delegations, pending notifications are flushed via CB_NOTIFY
+// before the delegation is removed (ensuring the client receives all pending
+// changes before the delegation is acknowledged as returned).
 //
 // Idempotent: returning an already-returned delegation succeeds with nil error
 // (per Pitfall 3 from research -- race between DELEGRETURN and CB_RECALL).
@@ -206,13 +218,14 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 //
 // Caller must NOT hold sm.mu (method acquires it).
 func (sm *StateManager) ReturnDelegation(stateid *types.Stateid4) error {
+	// Phase 1: Look up delegation under lock
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
 	deleg, exists := sm.delegByOther[stateid.Other]
 	if !exists {
 		// Not found: check boot epoch for stale vs idempotent success
-		if !sm.isCurrentEpoch(stateid.Other) {
+		isCurrentEpoch := sm.isCurrentEpoch(stateid.Other)
+		sm.mu.Unlock()
+		if !isCurrentEpoch {
 			return ErrStaleStateid
 		}
 		// Current epoch but not found: already returned (idempotent)
@@ -223,9 +236,34 @@ func (sm *StateManager) ReturnDelegation(stateid *types.Stateid4) error {
 	// Stop the recall timer to prevent revocation of a voluntarily returned delegation
 	deleg.StopRecallTimer()
 
-	// Remove from both maps (works for both active and revoked delegations)
+	// For directory delegations: stop batch timer and flush pending notifications
+	// before removal. We must release sm.mu before flushing because
+	// flushDirNotifications calls getBackchannelSender which needs sm.mu.RLock.
+	if deleg.IsDirectory {
+		// Stop the batch timer under NotifMu (prevents new timer-triggered flushes)
+		deleg.NotifMu.Lock()
+		if deleg.BatchTimer != nil {
+			deleg.BatchTimer.Stop()
+			deleg.BatchTimer = nil
+		}
+		deleg.NotifMu.Unlock()
+
+		// Release sm.mu before flushing (flushDirNotifications needs RLock for backchannel)
+		sm.mu.Unlock()
+		sm.flushDirNotifications(deleg)
+
+		// Re-acquire for removal
+		sm.mu.Lock()
+	}
+
+	// Phase 2: Remove from both maps (works for both active and revoked delegations)
 	delete(sm.delegByOther, stateid.Other)
 	sm.removeDelegFromFile(deleg)
+
+	delegType := "file"
+	if deleg.IsDirectory {
+		delegType = "directory"
+	}
 
 	if deleg.Revoked {
 		logger.Info("Revoked delegation returned by client",
@@ -234,8 +272,12 @@ func (sm *StateManager) ReturnDelegation(stateid *types.Stateid4) error {
 	} else {
 		logger.Info("Delegation returned",
 			"client_id", deleg.ClientID,
-			"deleg_type", deleg.DelegType)
+			"deleg_type", deleg.DelegType,
+			"kind", delegType)
 	}
+
+	sm.delegationMetrics.RecordReturn(delegType)
+	sm.mu.Unlock()
 
 	return nil
 }
@@ -378,6 +420,8 @@ func (sm *StateManager) CheckDelegationConflict(fileHandle []byte, clientID uint
 		if isConflict {
 			deleg.RecallSent = true
 			deleg.RecallTime = time.Now()
+
+			sm.delegationMetrics.RecordRecall("file", "conflict")
 
 			// Launch async recall (non-blocking per Pitfall 2)
 			go sm.sendRecall(deleg)

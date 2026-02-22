@@ -7,6 +7,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/pseudofs"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/protocol/xdr"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -108,6 +109,20 @@ func (h *Handler) handleRemove(ctx *types.CompoundContext, reader io.Reader) *ty
 	}
 	beforeCtime := uint64(parentFile.Ctime.UnixNano())
 
+	// Look up the child entry before removal to get its handle.
+	// This is needed to revoke any directory delegations on the child
+	// if it's a directory being removed.
+	var childFH metadata.FileHandle
+	if h.StateManager != nil {
+		child, lookupErr := metaSvc.Lookup(authCtx, parentHandle, target)
+		if lookupErr == nil {
+			fh, encErr := metadata.EncodeFileHandle(child)
+			if encErr == nil {
+				childFH = fh
+			}
+		}
+	}
+
 	// Try RemoveFile first (works for regular files, symlinks, etc.)
 	_, removeErr := metaSvc.RemoveFile(authCtx, parentHandle, target)
 	if removeErr != nil {
@@ -146,6 +161,24 @@ func (h *Handler) handleRemove(ctx *types.CompoundContext, reader io.Reader) *ty
 	logger.Debug("NFSv4 REMOVE successful",
 		"target", target,
 		"client", ctx.ClientAddr)
+
+	// Notify directory delegation holders about the removed entry
+	if h.StateManager != nil {
+		h.StateManager.NotifyDirChange([]byte(parentHandle), state.DirNotification{
+			Type:      types.NOTIFY4_REMOVE_ENTRY,
+			EntryName: target,
+		})
+
+		// If the removed entry was a directory, revoke any directory delegations on it
+		if childFH != nil {
+			delegs := h.StateManager.GetDelegationsForFile([]byte(childFH))
+			for _, deleg := range delegs {
+				if deleg.IsDirectory {
+					h.StateManager.RecallDirDelegation(deleg, "directory_deleted")
+				}
+			}
+		}
+	}
 
 	// Encode REMOVE4resok
 	var buf bytes.Buffer

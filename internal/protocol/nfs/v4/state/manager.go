@@ -184,6 +184,11 @@ type StateManager struct {
 	// May be nil; BackchannelMetrics methods are nil-safe so callers can invoke
 	// them without additional nil checks.
 	backchannelMetrics *BackchannelMetrics
+
+	// delegationMetrics holds Prometheus metrics for delegation lifecycle.
+	// May be nil; DelegationMetrics methods are nil-safe so callers can invoke
+	// them without additional nil checks.
+	delegationMetrics *DelegationMetrics
 }
 
 // NewStateManager creates a new StateManager with the given lease duration.
@@ -2634,6 +2639,12 @@ func (sm *StateManager) SetConnectionMetrics(m *ConnectionMetrics) {
 // Must be called before any backchannel operations. Safe to leave nil (no-op metrics).
 func (sm *StateManager) SetBackchannelMetrics(m *BackchannelMetrics) {
 	sm.backchannelMetrics = m
+}
+
+// SetDelegationMetrics sets the Prometheus metrics collector for delegation lifecycle.
+// Must be called before any delegation operations. Safe to leave nil (no-op metrics).
+func (sm *StateManager) SetDelegationMetrics(m *DelegationMetrics) {
+	sm.delegationMetrics = m
 }
 
 // ============================================================================

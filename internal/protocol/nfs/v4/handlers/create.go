@@ -7,6 +7,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/pseudofs"
+	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/protocol/xdr"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -378,6 +379,14 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 		"type", objType,
 		"handle", string(newHandle),
 		"client", ctx.ClientAddr)
+
+	// Notify directory delegation holders about the new entry
+	if h.StateManager != nil {
+		h.StateManager.NotifyDirChange([]byte(parentHandle), state.DirNotification{
+			Type:      types.NOTIFY4_ADD_ENTRY,
+			EntryName: objName,
+		})
+	}
 
 	// Encode CREATE4resok
 	var buf bytes.Buffer

@@ -341,7 +341,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 32
 | 21. Connection Management and Trunking | 2/2 | Complete    | 2026-02-21 | - |
 | 22. Backchannel Multiplexing | 2/2 | Complete    | 2026-02-21 | - |
 | 23. Client Lifecycle and Cleanup | 3/3 | Complete    | 2026-02-22 | - |
-| 24. Directory Delegations | 3/3 | Complete   | 2026-02-22 | - |
+| 24. Directory Delegations | 3/3 | Complete    | 2026-02-22 | - |
 | 25. v3.0 Integration Testing | v3.0 | 0/? | Not started | - |
 | 26. Server-Side Copy | v4.0 | 0/? | Not started | - |
 | 27. Clone/Reflinks | v4.0 | 0/? | Not started | - |
