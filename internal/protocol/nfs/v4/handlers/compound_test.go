@@ -2148,3 +2148,243 @@ func TestCompound_SequenceAndBackchannelCtl(t *testing.T) {
 		t.Errorf("CbProgram = 0x%x, want 0x70000000", session.CbProgram)
 	}
 }
+
+// ============================================================================
+// v4.0-only operation rejection in v4.1 COMPOUNDs (Phase 23-02)
+// ============================================================================
+
+func TestCompound_V41_RejectsV40OnlyOps(t *testing.T) {
+	// For each v4.0-only op, verify it returns NFS4ERR_NOTSUPP in a v4.1 COMPOUND
+	// with SEQUENCE. The SEQUENCE must succeed, then the v4.0-only op is rejected.
+
+	v40Ops := []struct {
+		opCode uint32
+		name   string
+		args   []byte // XDR-encoded args to consume
+	}{
+		{
+			types.OP_SETCLIENTID,
+			"SETCLIENTID",
+			encodeSetClientIDArgsForTest(),
+		},
+		{
+			types.OP_SETCLIENTID_CONFIRM,
+			"SETCLIENTID_CONFIRM",
+			encodeSetClientIDConfirmArgsForTest(),
+		},
+		{
+			types.OP_RENEW,
+			"RENEW",
+			encodeRenewArgsForTest(),
+		},
+		{
+			types.OP_OPEN_CONFIRM,
+			"OPEN_CONFIRM",
+			encodeOpenConfirmArgsForTest(),
+		},
+		{
+			types.OP_RELEASE_LOCKOWNER,
+			"RELEASE_LOCKOWNER",
+			encodeReleaseLockOwnerArgsForTest(),
+		},
+	}
+
+	for _, op := range v40Ops {
+		t.Run(op.name, func(t *testing.T) {
+			h, sessionID := createTestSession(t)
+			ctx := newTestCompoundContext()
+
+			seqArgs := encodeSequenceArgs(sessionID, 0, 1, 0, false)
+			ops := []compoundOp{
+				{opCode: types.OP_SEQUENCE, data: seqArgs},
+				{opCode: op.opCode, data: op.args},
+			}
+			data := buildCompoundArgsWithOps([]byte("v41-reject"), 1, ops)
+
+			resp, err := h.ProcessCompound(ctx, data)
+			if err != nil {
+				t.Fatalf("ProcessCompound error: %v", err)
+			}
+
+			// Decode to check SEQUENCE succeeded and v4.0-only op got NOTSUPP
+			reader := bytes.NewReader(resp)
+			overallStatus, _ := xdr.DecodeUint32(reader)
+			_, _ = xdr.DecodeOpaque(reader)          // tag
+			numResults, _ := xdr.DecodeUint32(reader) // numResults
+
+			if numResults < 2 {
+				t.Fatalf("numResults = %d, want >= 2 (SEQUENCE + %s)", numResults, op.name)
+			}
+
+			// First result: SEQUENCE should be NFS4_OK
+			seqOpCode, _ := xdr.DecodeUint32(reader)
+			if seqOpCode != types.OP_SEQUENCE {
+				t.Errorf("result[0] opcode = %d, want OP_SEQUENCE", seqOpCode)
+			}
+			var seqRes types.SequenceRes
+			if err := seqRes.Decode(reader); err != nil {
+				t.Fatalf("decode SequenceRes: %v", err)
+			}
+			if seqRes.Status != types.NFS4_OK {
+				t.Errorf("SEQUENCE status = %d, want NFS4_OK", seqRes.Status)
+			}
+
+			// Second result: v4.0-only op should be NOTSUPP
+			v40OpCode, _ := xdr.DecodeUint32(reader)
+			if v40OpCode != op.opCode {
+				t.Errorf("result[1] opcode = %d, want %d (%s)", v40OpCode, op.opCode, op.name)
+			}
+			v40Status, _ := xdr.DecodeUint32(reader)
+			if v40Status != types.NFS4ERR_NOTSUPP {
+				t.Errorf("%s status = %d, want NFS4ERR_NOTSUPP (%d)",
+					op.name, v40Status, types.NFS4ERR_NOTSUPP)
+			}
+
+			// Overall status should be NOTSUPP
+			if overallStatus != types.NFS4ERR_NOTSUPP {
+				t.Errorf("overall status = %d, want NFS4ERR_NOTSUPP (%d)",
+					overallStatus, types.NFS4ERR_NOTSUPP)
+			}
+		})
+	}
+}
+
+func TestCompound_V40_AllowsV40Ops(t *testing.T) {
+	// Verify v4.0 COMPOUNDs still allow these ops (no regression).
+	// Each op may fail on business logic, but it should NOT return NOTSUPP.
+
+	v40Ops := []struct {
+		opCode uint32
+		name   string
+		args   []byte
+	}{
+		{
+			types.OP_SETCLIENTID,
+			"SETCLIENTID",
+			encodeSetClientIDArgsForTest(),
+		},
+		{
+			types.OP_RENEW,
+			"RENEW",
+			encodeRenewArgsForTest(),
+		},
+		{
+			types.OP_RELEASE_LOCKOWNER,
+			"RELEASE_LOCKOWNER",
+			encodeReleaseLockOwnerArgsForTest(),
+		},
+	}
+
+	for _, op := range v40Ops {
+		t.Run(op.name, func(t *testing.T) {
+			h := newTestHandler()
+			ctx := newTestCompoundContext()
+
+			ops := []compoundOp{
+				{opCode: op.opCode, data: op.args},
+			}
+			data := buildCompoundArgsWithOps([]byte("v40-allow"), 0, ops)
+
+			resp, err := h.ProcessCompound(ctx, data)
+			if err != nil {
+				t.Fatalf("ProcessCompound error: %v", err)
+			}
+
+			decoded, err := decodeCompoundResponse(resp)
+			if err != nil {
+				t.Fatalf("decode response error: %v", err)
+			}
+
+			// The op should NOT return NFS4ERR_NOTSUPP -- it may fail for other
+			// reasons (e.g. stale clientid for RENEW), but the dispatch must work.
+			if decoded.NumResults < 1 {
+				t.Fatalf("numResults = %d, want >= 1", decoded.NumResults)
+			}
+			if decoded.Results[0].Status == types.NFS4ERR_NOTSUPP {
+				t.Errorf("%s returned NFS4ERR_NOTSUPP in v4.0 COMPOUND (regression)",
+					op.name)
+			}
+		})
+	}
+}
+
+func TestCompound_V41_DestroyClientID_SessionExempt(t *testing.T) {
+	// DESTROY_CLIENTID as only op in v4.1 COMPOUND (no SEQUENCE) should work.
+	h := newTestHandler()
+	clientID, _ := registerExchangeID(t, h, "dc-exempt-compound")
+
+	var buf bytes.Buffer
+	args := types.DestroyClientidArgs{ClientID: clientID}
+	_ = args.Encode(&buf)
+
+	ops := []compoundOp{
+		{opCode: types.OP_DESTROY_CLIENTID, data: buf.Bytes()},
+	}
+	data := buildCompoundArgsWithOps([]byte("dc-exempt"), 1, ops)
+
+	ctx := newTestCompoundContext()
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+
+	decoded, err := decodeCompoundResponse(resp)
+	if err != nil {
+		t.Fatalf("decode response error: %v", err)
+	}
+
+	if decoded.Status != types.NFS4_OK {
+		t.Errorf("status = %d, want NFS4_OK (session-exempt)", decoded.Status)
+	}
+	if decoded.NumResults != 1 {
+		t.Fatalf("numResults = %d, want 1", decoded.NumResults)
+	}
+	if decoded.Results[0].OpCode != types.OP_DESTROY_CLIENTID {
+		t.Errorf("result opcode = %d, want OP_DESTROY_CLIENTID", decoded.Results[0].OpCode)
+	}
+	if decoded.Results[0].Status != types.NFS4_OK {
+		t.Errorf("result status = %d, want NFS4_OK", decoded.Results[0].Status)
+	}
+}
+
+// ============================================================================
+// Test helper functions for v4.0-only op args encoding
+// ============================================================================
+
+func encodeSetClientIDConfirmArgsForTest() []byte {
+	var buf bytes.Buffer
+	// clientid (uint64)
+	_ = xdr.WriteUint64(&buf, 0x1234567890ABCDEF)
+	// confirm verifier (8 bytes raw)
+	var verifier [8]byte
+	copy(verifier[:], "confverf")
+	buf.Write(verifier[:])
+	return buf.Bytes()
+}
+
+func encodeRenewArgsForTest() []byte {
+	var buf bytes.Buffer
+	// clientid (uint64)
+	_ = xdr.WriteUint64(&buf, 0x1234567890ABCDEF)
+	return buf.Bytes()
+}
+
+func encodeOpenConfirmArgsForTest() []byte {
+	var buf bytes.Buffer
+	// stateid4: seqid (uint32) + other (12 bytes)
+	_ = xdr.WriteUint32(&buf, 1) // seqid
+	var other [12]byte
+	copy(other[:], "fakestateoth")
+	buf.Write(other[:])
+	// seqid (uint32)
+	_ = xdr.WriteUint32(&buf, 1)
+	return buf.Bytes()
+}
+
+func encodeReleaseLockOwnerArgsForTest() []byte {
+	var buf bytes.Buffer
+	// lock_owner4: clientid (uint64) + owner (opaque)
+	_ = xdr.WriteUint64(&buf, 0x1234567890ABCDEF)
+	_ = xdr.WriteXDROpaque(&buf, []byte("test-lock-owner"))
+	return buf.Bytes()
+}
