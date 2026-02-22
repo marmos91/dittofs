@@ -87,6 +87,25 @@ func consumeV40OnlyArgs(opCode uint32, reader io.Reader) error {
 	return nil
 }
 
+// rejectV40OnlyOp consumes XDR args for a v4.0-only operation and returns
+// a NOTSUPP result. If the args cannot be consumed, returns BADXDR.
+// Used by both dispatchV41 and dispatchV41Ops to reject v4.0-only ops
+// in v4.1 COMPOUNDs with proper stream advancement.
+func rejectV40OnlyOp(opCode uint32, reader io.Reader, clientAddr string) *types.CompoundResult {
+	if err := consumeV40OnlyArgs(opCode, reader); err != nil {
+		logger.Debug("NFSv4.1 COMPOUND failed to consume v4.0-only op args",
+			"opcode", opCode, "op_name", types.OpName(opCode), "error", err, "client", clientAddr)
+		return &types.CompoundResult{
+			Status: types.NFS4ERR_BADXDR,
+			OpCode: opCode,
+			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+		}
+	}
+	logger.Debug("NFSv4.1 COMPOUND rejected v4.0-only operation",
+		"opcode", opCode, "op_name", types.OpName(opCode), "client", clientAddr)
+	return notSuppHandler(opCode)
+}
+
 // ProcessCompound is the main NFSv4 COMPOUND dispatcher.
 //
 // Per RFC 7530 Section 16.2, COMPOUND bundles multiple operations into a single
@@ -416,47 +435,25 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 			break
 		}
 
-		// Reject v4.0-only operations in v4.1 COMPOUNDs.
-		// Consume XDR args to prevent stream desync, then return NOTSUPP.
+		// Dispatch: reject v4.0-only, then v4.1 table, then v4.0 fallback.
 		var result *types.CompoundResult
 
 		if v40OnlyOps[opCode] {
-			if err := consumeV40OnlyArgs(opCode, reader); err != nil {
-				logger.Debug("NFSv4.1 COMPOUND failed to consume v4.0-only op args",
-					"opcode", opCode, "op_name", types.OpName(opCode), "error", err, "client", compCtx.ClientAddr)
-				result = &types.CompoundResult{
-					Status: types.NFS4ERR_BADXDR,
-					OpCode: opCode,
-					Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
-				}
-			} else {
-				logger.Debug("NFSv4.1 COMPOUND rejected v4.0-only operation",
-					"opcode", opCode, "op_name", types.OpName(opCode), "client", compCtx.ClientAddr)
-				result = notSuppHandler(opCode)
-			}
+			result = rejectV40OnlyOp(opCode, reader, compCtx.ClientAddr)
 		} else if v41Handler, ok := h.v41DispatchTable[opCode]; ok {
-			// v4.1-only operation (40-58)
 			result = v41Handler(compCtx, v41ctx, reader)
 		} else if v40Handler, ok := h.opDispatchTable[opCode]; ok {
-			// v4.0 operation accessible from v4.1 compound (3-39)
-			// compCtx.SkipOwnerSeqid is already set to true
 			result = v40Handler(compCtx, reader)
+		} else if opCode >= 3 && opCode <= types.OP_RECLAIM_COMPLETE {
+			result = notSuppHandler(opCode)
 		} else {
-			// Unknown opcode: determine error based on range
-			if opCode >= 3 && opCode <= types.OP_RECLAIM_COMPLETE {
-				// Within valid range (3-58) but not in either table
-				result = notSuppHandler(opCode)
-			} else {
-				// Outside all valid ranges: truly illegal
-				result = &types.CompoundResult{
-					Status: types.NFS4ERR_OP_ILLEGAL,
-					OpCode: types.OP_ILLEGAL,
-					Data:   encodeStatusOnly(types.NFS4ERR_OP_ILLEGAL),
-				}
+			result = &types.CompoundResult{
+				Status: types.NFS4ERR_OP_ILLEGAL,
+				OpCode: types.OP_ILLEGAL,
+				Data:   encodeStatusOnly(types.NFS4ERR_OP_ILLEGAL),
 			}
 		}
 
-		// Set the opcode on the result (in case handler didn't set it)
 		if result.OpCode == 0 && opCode != 0 {
 			result.OpCode = opCode
 		}
@@ -464,7 +461,6 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 		results = append(results, *result)
 		lastStatus = result.Status
 
-		// Log every operation for debugging
 		logger.Debug("NFSv4.1 COMPOUND op dispatched",
 			"op_index", i,
 			"opcode", opCode,
@@ -542,36 +538,22 @@ func (h *Handler) dispatchV41Ops(compCtx *types.CompoundContext, tag []byte, fir
 			break
 		}
 
-		// Reject v4.0-only operations in v4.1 COMPOUNDs (exempt path).
+		// Dispatch: reject v4.0-only, then v4.1 table, then v4.0 fallback.
 		var result *types.CompoundResult
 
 		if v40OnlyOps[opCode] {
-			if err := consumeV40OnlyArgs(opCode, reader); err != nil {
-				logger.Debug("NFSv4.1 COMPOUND failed to consume v4.0-only op args",
-					"opcode", opCode, "op_name", types.OpName(opCode), "error", err, "client", compCtx.ClientAddr)
-				result = &types.CompoundResult{
-					Status: types.NFS4ERR_BADXDR,
-					OpCode: opCode,
-					Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
-				}
-			} else {
-				logger.Debug("NFSv4.1 COMPOUND rejected v4.0-only operation",
-					"opcode", opCode, "op_name", types.OpName(opCode), "client", compCtx.ClientAddr)
-				result = notSuppHandler(opCode)
-			}
+			result = rejectV40OnlyOp(opCode, reader, compCtx.ClientAddr)
 		} else if v41Handler, ok := h.v41DispatchTable[opCode]; ok {
 			result = v41Handler(compCtx, v41ctx, reader)
 		} else if v40Handler, ok := h.opDispatchTable[opCode]; ok {
 			result = v40Handler(compCtx, reader)
+		} else if opCode >= 3 && opCode <= types.OP_RECLAIM_COMPLETE {
+			result = notSuppHandler(opCode)
 		} else {
-			if opCode >= 3 && opCode <= types.OP_RECLAIM_COMPLETE {
-				result = notSuppHandler(opCode)
-			} else {
-				result = &types.CompoundResult{
-					Status: types.NFS4ERR_OP_ILLEGAL,
-					OpCode: types.OP_ILLEGAL,
-					Data:   encodeStatusOnly(types.NFS4ERR_OP_ILLEGAL),
-				}
+			result = &types.CompoundResult{
+				Status: types.NFS4ERR_OP_ILLEGAL,
+				OpCode: types.OP_ILLEGAL,
+				Data:   encodeStatusOnly(types.NFS4ERR_OP_ILLEGAL),
 			}
 		}
 

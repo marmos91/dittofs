@@ -274,8 +274,11 @@ func isSpecialOther(other [types.NFS4_OTHER_SIZE]byte) bool {
 		if b != 0xFF {
 			allOnes = false
 		}
+		if !allZeros && !allOnes {
+			return false
+		}
 	}
-	return allZeros || allOnes
+	return true
 }
 
 // FreeStateid implements the NFSv4.1 FREE_STATEID operation per
