@@ -352,6 +352,56 @@ func (sm *StateManager) EvictV41Client(clientID uint64) error {
 	return nil
 }
 
+// DestroyV41ClientID implements the NFSv4.1 DESTROY_CLIENTID operation per
+// RFC 8881 Section 18.50.
+//
+// The operation destroys a client ID and all associated state (sessions,
+// delegations, open state, lock state, backchannel). The destruction is
+// synchronous: after returning NFS4_OK, the client ID is immediately invalid.
+//
+// Returns:
+//   - NFS4ERR_STALE_CLIENTID if the client ID is not found
+//   - NFS4ERR_CLIENTID_BUSY if the client still has active sessions
+//
+// Caller must NOT hold sm.mu.
+func (sm *StateManager) DestroyV41ClientID(clientID uint64) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	record, exists := sm.v41ClientsByID[clientID]
+	if !exists {
+		return &NFS4StateError{
+			Status:  types.NFS4ERR_STALE_CLIENTID,
+			Message: fmt.Sprintf("v4.1 client %d not found", clientID),
+		}
+	}
+
+	// Strict RFC compliance: reject if sessions remain
+	if sessions := sm.sessionsByClientID[clientID]; len(sessions) > 0 {
+		return &NFS4StateError{
+			Status:  types.NFS4ERR_CLIENTID_BUSY,
+			Message: fmt.Sprintf("v4.1 client %d has %d active sessions", clientID, len(sessions)),
+		}
+	}
+
+	// Synchronous purge of all v4.1 client state
+	sm.purgeV41Client(record)
+
+	// If grace period is active and this client was expected, notify grace
+	// to prevent the grace period from hanging (Pitfall 6).
+	if sm.gracePeriod != nil {
+		// ClientReclaimed handles its own locking and checks if active.
+		// Call outside of grace.mu scope (grace has its own lock).
+		go sm.gracePeriod.ClientReclaimed(clientID)
+	}
+
+	logger.Info("DESTROY_CLIENTID: client destroyed",
+		"client_id", clientID,
+		"client_addr", record.ClientAddr)
+
+	return nil
+}
+
 // EvictV40Client removes a v4.0 client record by client ID and cleans up all
 // associated state (open owners, open states, lock states, delegations).
 // Thread-safe: acquires sm.mu.Lock.
