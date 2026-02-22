@@ -194,7 +194,11 @@ Plans:
   2. RECLAIM_COMPLETE signals end of grace period reclaim, allowing server to free reclaim-tracking resources
   3. FREE_STATEID releases individual stateids and TEST_STATEID batch-validates stateid liveness
   4. v4.0-only operations (SETCLIENTID, SETCLIENTID_CONFIRM, RENEW, OPEN_CONFIRM, RELEASE_LOCKOWNER) return NFS4ERR_NOTSUPP for minorversion=1
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 23-01-PLAN.md -- State methods: DestroyV41ClientID, FreeStateid, TestStateids, grace enrichment (Status, ForceEnd, ReclaimComplete), state tests with race detection
+- [ ] 23-02-PLAN.md -- Handlers + dispatch: 4 handler files (destroy_clientid, reclaim_complete, free_stateid, test_stateid), v4.0-only rejection in v4.1 COMPOUNDs, DESTROY_CLIENTID session-exempt, handler tests
+- [ ] 23-03-PLAN.md -- Grace API/CLI: REST endpoints (GET /api/v1/grace, POST /api/v1/grace/end), health enrichment, `dfs status` countdown, `dfsctl grace status/end` commands
 
 ### Phase 24: Directory Delegations
 **Goal**: Server can grant directory delegations and notify clients of directory changes via backchannel
