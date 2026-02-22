@@ -9,12 +9,12 @@ See: .planning/PROJECT.md (updated 2026-02-20)
 
 ## Current Position
 
-Phase: 22 of 25 (Backchannel Multiplexing)
-Plan: 2 of 2 in current phase (COMPLETE)
-Status: Phase Complete
-Last activity: 2026-02-22 -- Completed 22-02-PLAN.md
+Phase: 23 of 25 (Client Lifecycle and Cleanup)
+Plan: 1 of 3 in current phase
+Status: Executing
+Last activity: 2026-02-22 -- Completed 23-01-PLAN.md
 
-Progress: [########################################] 100% (79/79 plans complete)
+Progress: [########################################] 100% (80/82 plans complete)
 
 ## Completed Milestones
 
@@ -65,6 +65,7 @@ Progress: [########################################] 100% (79/79 plans complete)
 | Phase 21 P02 | 18min | 2 tasks | 12 files |
 | Phase 22 P01 | 35min | 2 tasks | 13 files |
 | Phase 22 P02 | 25min | 2 tasks | 8 files |
+| Phase 23 P01 | 12min | 2 tasks | 7 files |
 
 ## Quick Tasks Completed
 
@@ -127,6 +128,11 @@ Recent decisions affecting current work:
 - [Phase 22-02]: BackchannelMetrics follows nil-safe receiver + registerOrReuse pattern (same as SessionMetrics/ConnectionMetrics/SequenceMetrics)
 - [Phase 22-02]: net.Pipe() for backchannel integration tests (no real TCP listeners, no port conflicts)
 - [Phase 22-02]: Metrics wired into sendCallbackWithRetry() for accurate per-attempt tracking
+- [Phase 23-01]: DestroyV41ClientID rejects NFS4ERR_CLIENTID_BUSY when sessions remain (strict RFC 8881)
+- [Phase 23-01]: FreeStateid uses type byte from Other[0] to route to correct cleanup path (0x01=open, 0x02=lock, 0x03=deleg)
+- [Phase 23-01]: TestStateids uses RLock only -- no lease renewal side effects per RFC 8881
+- [Phase 23-01]: ReclaimComplete returns NFS4_OK outside grace period (not an error per RFC 8881)
+- [Phase 23-01]: GraceStatusInfo exposes RemainingSeconds for API/CLI countdown display
 
 ### Pending Todos
 
@@ -140,5 +146,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-22
-Stopped at: Completed 22-02-PLAN.md (Phase 22 complete)
+Stopped at: Completed 23-01-PLAN.md
 Resume file: `/gsd:execute-phase 23`

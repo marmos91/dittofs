@@ -119,10 +119,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | BACK-02 | Phase 21 | Complete |
 | BACK-03 | Phase 22 | Complete |
 | BACK-04 | Phase 22 | Complete |
-| LIFE-01 | Phase 23 | Pending |
-| LIFE-02 | Phase 23 | Pending |
-| LIFE-03 | Phase 23 | Pending |
-| LIFE-04 | Phase 23 | Pending |
+| LIFE-01 | Phase 23 | In Progress |
+| LIFE-02 | Phase 23 | In Progress |
+| LIFE-03 | Phase 23 | In Progress |
+| LIFE-04 | Phase 23 | In Progress |
 | LIFE-05 | Phase 23 | Pending |
 | DDELEG-01 | Phase 24 | Pending |
 | DDELEG-02 | Phase 24 | Pending |
