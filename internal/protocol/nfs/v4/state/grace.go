@@ -144,6 +144,13 @@ func (g *GracePeriodState) ClientReclaimed(clientID uint64) {
 		return
 	}
 
+	// Only track clients that were expected during this grace period.
+	// Clients created after grace started should not affect the reclaim quota.
+	if !g.expectedClients[clientID] {
+		g.mu.Unlock()
+		return
+	}
+
 	g.reclaimedClients[clientID] = true
 
 	logger.Debug("NFSv4 grace period: client reclaimed",
@@ -152,15 +159,7 @@ func (g *GracePeriodState) ClientReclaimed(clientID uint64) {
 		"expected", len(g.expectedClients))
 
 	// Check if all expected clients have reclaimed
-	allReclaimed := true
-	for id := range g.expectedClients {
-		if !g.reclaimedClients[id] {
-			allReclaimed = false
-			break
-		}
-	}
-
-	if allReclaimed {
+	if len(g.reclaimedClients) >= len(g.expectedClients) {
 		logger.Info("NFSv4 grace period ending early: all expected clients reclaimed",
 			"reclaimed", len(g.reclaimedClients))
 
@@ -185,34 +184,7 @@ func (g *GracePeriodState) ClientReclaimed(clientID uint64) {
 // endGrace transitions out of the grace period. Idempotent.
 // Called by the timer goroutine or by ClientReclaimed when all clients are done.
 func (g *GracePeriodState) endGrace() {
-	g.mu.Lock()
-
-	if !g.active {
-		g.mu.Unlock()
-		return
-	}
-
-	g.active = false
-
-	if g.timer != nil {
-		g.timer.Stop()
-		g.timer = nil
-	}
-
-	callback := g.onGraceEnd
-	reclaimed := len(g.reclaimedClients)
-	expected := len(g.expectedClients)
-
-	logger.Info("NFSv4 grace period ended",
-		"reclaimed_clients", reclaimed,
-		"expected_clients", expected)
-
-	g.mu.Unlock()
-
-	// Call callback outside lock to avoid deadlocks
-	if callback != nil {
-		callback()
-	}
+	g.endGraceWithReason("ended")
 }
 
 // Stop cleanly shuts down the grace period state, stopping any pending timer.
@@ -259,9 +231,15 @@ func (g *GracePeriodState) Status() GraceStatusInfo {
 }
 
 // ForceEnd immediately ends the grace period and invokes the callback.
-// This is the public version of endGrace(), callable externally.
 // Idempotent: no-op if grace period is not active.
 func (g *GracePeriodState) ForceEnd() {
+	g.endGraceWithReason("force-ended")
+}
+
+// endGraceWithReason deactivates the grace period and invokes the end callback.
+// The reason string is used for logging ("ended", "force-ended").
+// Idempotent: no-op if grace period is not active.
+func (g *GracePeriodState) endGraceWithReason(reason string) {
 	g.mu.Lock()
 
 	if !g.active {
@@ -280,7 +258,7 @@ func (g *GracePeriodState) ForceEnd() {
 	reclaimed := len(g.reclaimedClients)
 	expected := len(g.expectedClients)
 
-	logger.Info("NFSv4 grace period force-ended",
+	logger.Info("NFSv4 grace period "+reason,
 		"reclaimed_clients", reclaimed,
 		"expected_clients", expected)
 

@@ -2209,7 +2209,7 @@ func TestCompound_V41_RejectsV40OnlyOps(t *testing.T) {
 			// Decode to check SEQUENCE succeeded and v4.0-only op got NOTSUPP
 			reader := bytes.NewReader(resp)
 			overallStatus, _ := xdr.DecodeUint32(reader)
-			_, _ = xdr.DecodeOpaque(reader)          // tag
+			_, _ = xdr.DecodeOpaque(reader)           // tag
 			numResults, _ := xdr.DecodeUint32(reader) // numResults
 
 			if numResults < 2 {

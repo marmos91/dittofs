@@ -39,7 +39,7 @@ func TestHandleFreeStateid(t *testing.T) {
 		// Decode response -- should have SEQUENCE OK + FREE_STATEID error
 		reader := bytes.NewReader(resp)
 		overallStatus, _ := xdr.DecodeUint32(reader)
-		_, _ = xdr.DecodeOpaque(reader)          // tag
+		_, _ = xdr.DecodeOpaque(reader)           // tag
 		numResults, _ := xdr.DecodeUint32(reader) // numResults
 
 		if numResults < 2 {

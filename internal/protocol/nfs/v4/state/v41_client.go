@@ -391,8 +391,7 @@ func (sm *StateManager) DestroyV41ClientID(clientID uint64) error {
 	// to prevent the grace period from hanging (Pitfall 6).
 	if sm.gracePeriod != nil {
 		// ClientReclaimed handles its own locking and checks if active.
-		// Call outside of grace.mu scope (grace has its own lock).
-		go sm.gracePeriod.ClientReclaimed(clientID)
+		sm.gracePeriod.ClientReclaimed(clientID)
 	}
 
 	logger.Info("DESTROY_CLIENTID: client destroyed",

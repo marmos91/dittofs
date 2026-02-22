@@ -88,18 +88,6 @@ func runGraceStatus(cmd *cobra.Command, args []string) error {
 			fmt.Println("No active grace period")
 			return nil
 		}
-
-		fmt.Println()
-		fmt.Println("Grace Period Status")
-		fmt.Println("===================")
-		fmt.Println()
-		fmt.Printf("  Active:     true\n")
-		fmt.Printf("  Remaining:  %.0fs\n", resp.RemainingSeconds)
-		fmt.Printf("  Expected:   %d clients\n", resp.ExpectedClients)
-		fmt.Printf("  Reclaimed:  %d clients\n", resp.ReclaimedClients)
-		fmt.Printf("  Duration:   %s\n", resp.TotalDuration)
-		fmt.Printf("  Started:    %s\n", resp.StartedAt)
-		fmt.Println()
-		return nil
+		return output.PrintTable(os.Stdout, graceStatusRenderer{resp: resp})
 	}
 }

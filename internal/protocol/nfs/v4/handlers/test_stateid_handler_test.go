@@ -35,7 +35,7 @@ func TestHandleTestStateid(t *testing.T) {
 		if overallStatus != types.NFS4_OK {
 			t.Fatalf("overall status = %d, want NFS4_OK", overallStatus)
 		}
-		_, _ = xdr.DecodeOpaque(reader)          // tag
+		_, _ = xdr.DecodeOpaque(reader)           // tag
 		numResults, _ := xdr.DecodeUint32(reader) // numResults
 		if numResults != 2 {
 			t.Fatalf("numResults = %d, want 2", numResults)
