@@ -8,6 +8,7 @@ import (
 	adaptercmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/adapter"
 	clientcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/client"
 	ctxcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/context"
+	gracecmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/grace"
 	groupcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/group"
 	idmapcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/idmap"
 	netgroupcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/netgroup"
@@ -76,6 +77,7 @@ func init() {
 	rootCmd.AddCommand(storecmd.Cmd)
 	rootCmd.AddCommand(adaptercmd.Cmd)
 	rootCmd.AddCommand(clientcmd.Cmd)
+	rootCmd.AddCommand(gracecmd.Cmd)
 	rootCmd.AddCommand(netgroupcmd.Cmd)
 	rootCmd.AddCommand(idmapcmd.Cmd)
 	rootCmd.AddCommand(settingscmd.Cmd)
