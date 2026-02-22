@@ -142,6 +142,94 @@ func ReadFragment(r io.Reader) ([]byte, error) {
 	return body, nil
 }
 
+// EncodeCBNotifyOp encodes one nfs_cb_argop4 for CB_NOTIFY.
+//
+// Wire format per RFC 8881 Section 20.4:
+//
+//	uint32    argop = OP_CB_NOTIFY (6)
+//	stateid4  stateid
+//	nfs_fh4   fh
+//	notify4   changes<>
+//
+// Notifications are grouped by type into Notify4 entries. Each Notify4
+// carries a bitmap indicating the notification type and an array of
+// opaque entries encoded using the appropriate sub-type encoder.
+func EncodeCBNotifyOp(stateid *types.Stateid4, dirFH []byte, notifs []DirNotification, mask uint32) []byte {
+	var buf bytes.Buffer
+
+	// argop: CB_NOTIFY = 6
+	_ = xdr.WriteUint32(&buf, types.CB_NOTIFY)
+
+	// Build CbNotifyArgs using types
+	args := types.CbNotifyArgs{
+		Stateid: *stateid,
+		FH:      dirFH,
+	}
+
+	// Group notifications by type
+	grouped := make(map[uint32][]DirNotification)
+	for _, n := range notifs {
+		grouped[n.Type] = append(grouped[n.Type], n)
+	}
+
+	// Encode each group as a Notify4
+	for notifType, entries := range grouped {
+		// Only include types the client subscribed to
+		if mask&(1<<notifType) == 0 {
+			continue
+		}
+
+		notify := types.Notify4{
+			Mask: types.Bitmap4{1 << notifType},
+		}
+
+		for _, entry := range entries {
+			var entryBuf bytes.Buffer
+			switch notifType {
+			case types.NOTIFY4_ADD_ENTRY:
+				enc := &types.NotifyAdd4{
+					EntryName: entry.EntryName,
+					Cookie:    entry.Cookie,
+					Attrs:     entry.Attrs,
+				}
+				_ = enc.Encode(&entryBuf)
+			case types.NOTIFY4_REMOVE_ENTRY:
+				enc := &types.NotifyRemove4{
+					EntryName: entry.EntryName,
+					Cookie:    entry.Cookie,
+				}
+				_ = enc.Encode(&entryBuf)
+			case types.NOTIFY4_RENAME_ENTRY:
+				enc := &types.NotifyRename4{
+					OldEntryName: entry.EntryName,
+					NewEntryName: entry.NewName,
+				}
+				_ = enc.Encode(&entryBuf)
+			case types.NOTIFY4_CHANGE_CHILD_ATTRS:
+				enc := &types.NotifyAttrChange4{
+					EntryName: entry.EntryName,
+					Cookie:    entry.Cookie,
+					Attrs:     entry.Attrs,
+				}
+				_ = enc.Encode(&entryBuf)
+			default:
+				// Unknown notification type -- encode as raw opaque
+				_, _ = entryBuf.Write([]byte(entry.EntryName))
+			}
+
+			notify.Values = append(notify.Values, types.NotifyEntry4{
+				Data: entryBuf.Bytes(),
+			})
+		}
+
+		args.Changes = append(args.Changes, notify)
+	}
+
+	_ = args.Encode(&buf)
+
+	return buf.Bytes()
+}
+
 // ValidateCBReply validates an RPC reply message buffer.
 //
 // It parses the RPC reply status and for CB_COMPOUND responses, checks the

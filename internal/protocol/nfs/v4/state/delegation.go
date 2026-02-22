@@ -3,6 +3,7 @@ package state
 import (
 	"bytes"
 	"context"
+	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -16,12 +17,16 @@ import (
 // grant-recall-grant-recall storms (Pitfall 7 from research).
 const RecentlyRecalledTTL = 30 * time.Second
 
-// DelegationState represents a granted delegation for a file.
+// DelegationState represents a granted delegation for a file or directory.
 //
 // Per RFC 7530 Section 10.4, a delegation allows the server to delegate
 // file management to a client for improved caching performance.
 // The client can locally service OPEN, CLOSE, LOCK, READ, WRITE
 // without server interaction until the delegation is recalled.
+//
+// Directory delegations (RFC 8881 Section 18.39) additionally carry a
+// notification bitmask and a batch of pending notifications that are
+// periodically flushed via CB_NOTIFY.
 type DelegationState struct {
 	// Stateid is the delegation stateid (type tag = 0x03).
 	Stateid types.Stateid4
@@ -29,7 +34,7 @@ type DelegationState struct {
 	// ClientID is the server-assigned client identifier that holds this delegation.
 	ClientID uint64
 
-	// FileHandle is the file handle of the delegated file.
+	// FileHandle is the file handle of the delegated file or directory.
 	FileHandle []byte
 
 	// DelegType is the delegation type: OPEN_DELEGATE_READ or OPEN_DELEGATE_WRITE.
@@ -48,6 +53,60 @@ type DelegationState struct {
 	// Per RFC 7530 Section 10.4.6: "The server MUST NOT revoke the delegation
 	// before the lease period has expired."
 	RecallTimer *time.Timer
+
+	// ========================================================================
+	// Directory delegation fields (zero values for file delegations)
+	// Per RFC 8881 Section 18.39 (GET_DIR_DELEGATION)
+	// ========================================================================
+
+	// IsDirectory is true for directory delegations, false for file delegations.
+	IsDirectory bool
+
+	// NotificationMask is the NOTIFY4_* bitmask from GET_DIR_DELEGATION.
+	// Each bit indicates a notification type the client wants to receive.
+	NotificationMask uint32
+
+	// CookieVerf is the cookie verifier for directory delegations.
+	CookieVerf [8]byte
+
+	// PendingNotifs holds batched notifications awaiting flush via CB_NOTIFY.
+	// Protected by NotifMu (separate from sm.mu to avoid holding the global
+	// lock during backchannel sends).
+	PendingNotifs []DirNotification
+
+	// NotifMu protects PendingNotifs and BatchTimer.
+	// Lock ordering: sm.mu before NotifMu (never reverse).
+	NotifMu sync.Mutex
+
+	// BatchTimer is the notification batch flush timer.
+	// When it fires, accumulated notifications are flushed via CB_NOTIFY.
+	BatchTimer *time.Timer
+
+	// RecallReason records why this delegation was recalled for metrics/logging.
+	// Values: "conflict", "resource_pressure", "admin", "directory_deleted".
+	RecallReason string
+}
+
+// DirNotification represents a single directory change notification to be
+// batched and sent via CB_NOTIFY per RFC 8881 Section 20.4.
+type DirNotification struct {
+	// Type is the notification type (NOTIFY4_ADD_ENTRY, NOTIFY4_REMOVE_ENTRY, etc.).
+	Type uint32
+
+	// EntryName is the name of the affected directory entry.
+	EntryName string
+
+	// Cookie is the readdir cookie for the entry.
+	Cookie uint64
+
+	// Attrs is pre-encoded fattr4 bytes (optional, for attribute change notifications).
+	Attrs []byte
+
+	// NewName is the new name for RENAME notifications (EntryName is the old name).
+	NewName string
+
+	// NewDirFH is the destination directory handle for cross-directory RENAME.
+	NewDirFH []byte
 }
 
 // StartRecallTimer starts a timer that fires onExpiry after leaseDuration.

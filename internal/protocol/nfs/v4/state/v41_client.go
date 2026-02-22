@@ -282,6 +282,17 @@ func (sm *StateManager) purgeV41Client(record *V41ClientRecord) {
 		record.Lease.Stop()
 	}
 
+	// Clean up all delegations (file + directory) for this client
+	for other, deleg := range sm.delegByOther {
+		if deleg.ClientID != record.ClientID {
+			continue
+		}
+		sm.cleanupDirDelegation(deleg)
+		deleg.StopRecallTimer()
+		delete(sm.delegByOther, other)
+		sm.removeDelegFromFile(deleg)
+	}
+
 	// Destroy all sessions for this client
 	for _, session := range sm.sessionsByClientID[record.ClientID] {
 		delete(sm.sessionsByID, session.SessionID)
@@ -452,6 +463,7 @@ func (sm *StateManager) EvictV40Client(clientID uint64) error {
 		if deleg.ClientID != clientID {
 			continue
 		}
+		sm.cleanupDirDelegation(deleg)
 		delete(sm.delegByOther, other)
 		sm.removeDelegFromFile(deleg)
 	}

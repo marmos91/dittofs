@@ -3,8 +3,10 @@
 // CB_NOTIFY sends directory change notifications to clients holding directory
 // delegations. Each notification carries a bitmap of change types and opaque
 // notification entries whose format depends on the notification type.
-// Full parsing of notification sub-types (notify_add4, notify_remove4, etc.)
-// will be done in Phase 24 (directory delegations).
+//
+// Sub-type encoders (NotifyAdd4, NotifyRemove4, NotifyRename4,
+// NotifyAttrChange4) produce the inner opaque data for each notification
+// type within the notify4 structure per RFC 8881 Section 20.4.
 package types
 
 import (
@@ -183,4 +185,157 @@ func (res *CbNotifyRes) Decode(r io.Reader) error {
 // String returns a human-readable representation.
 func (res *CbNotifyRes) String() string {
 	return fmt.Sprintf("CbNotifyRes{status=%d}", res.Status)
+}
+
+// ============================================================================
+// CB_NOTIFY Sub-Type Encoders (RFC 8881 Section 20.4)
+// ============================================================================
+
+// NotifyAdd4 represents a notify_add4 entry per RFC 8881.
+// Encodes an ADD_ENTRY notification when a new directory entry is created.
+//
+//	struct notify_add4 {
+//	    notify_entry4_pair  nad_new_entry;
+//	    /* what was added */
+//	    notify_entry4_pair  nad_old_entry<1>;
+//	    /* what it was added beside */
+//	};
+//
+//	struct notify_entry4_pair {
+//	    component4  ne_name;
+//	    nfs_cookie4 ne_cookie;
+//	    fattr4      ne_attrs;
+//	};
+type NotifyAdd4 struct {
+	EntryName  string // component4: name of the new entry
+	Cookie     uint64 // nfs_cookie4: readdir cookie for the entry
+	Attrs      []byte // pre-encoded fattr4 bytes (may be empty)
+	HasPrev    bool   // whether a previous entry hint is included
+	PrevName   string // component4: name of the predecessor entry
+	PrevCookie uint64 // nfs_cookie4: cookie of the predecessor entry
+}
+
+// Encode writes the NotifyAdd4 in XDR format.
+func (n *NotifyAdd4) Encode(buf *bytes.Buffer) error {
+	// nad_new_entry: notify_entry4_pair
+	if err := xdr.WriteXDRString(buf, n.EntryName); err != nil {
+		return fmt.Errorf("encode add entry name: %w", err)
+	}
+	if err := xdr.WriteUint64(buf, n.Cookie); err != nil {
+		return fmt.Errorf("encode add entry cookie: %w", err)
+	}
+	// fattr4: bitmap4 + opaque attrlist
+	if len(n.Attrs) > 0 {
+		_, _ = buf.Write(n.Attrs)
+	} else {
+		// Empty fattr4: bitmap count=0, attrlist length=0
+		_ = xdr.WriteUint32(buf, 0) // bitmap count
+		_ = xdr.WriteUint32(buf, 0) // attrlist length
+	}
+
+	// nad_old_entry<1>: optional array
+	if n.HasPrev {
+		_ = xdr.WriteUint32(buf, 1) // array count = 1
+		if err := xdr.WriteXDRString(buf, n.PrevName); err != nil {
+			return fmt.Errorf("encode add prev name: %w", err)
+		}
+		if err := xdr.WriteUint64(buf, n.PrevCookie); err != nil {
+			return fmt.Errorf("encode add prev cookie: %w", err)
+		}
+		// Empty fattr4 for prev entry
+		_ = xdr.WriteUint32(buf, 0) // bitmap count
+		_ = xdr.WriteUint32(buf, 0) // attrlist length
+	} else {
+		_ = xdr.WriteUint32(buf, 0) // array count = 0
+	}
+	return nil
+}
+
+// NotifyRemove4 represents a notify_remove4 entry per RFC 8881.
+// Encodes a REMOVE_ENTRY notification when a directory entry is deleted.
+//
+//	struct notify_remove4 {
+//	    notify_entry4_pair  nrm_old_entry;
+//	};
+type NotifyRemove4 struct {
+	EntryName string // component4: name of the removed entry
+	Cookie    uint64 // nfs_cookie4: readdir cookie for the entry
+}
+
+// Encode writes the NotifyRemove4 in XDR format.
+func (n *NotifyRemove4) Encode(buf *bytes.Buffer) error {
+	if err := xdr.WriteXDRString(buf, n.EntryName); err != nil {
+		return fmt.Errorf("encode remove entry name: %w", err)
+	}
+	if err := xdr.WriteUint64(buf, n.Cookie); err != nil {
+		return fmt.Errorf("encode remove entry cookie: %w", err)
+	}
+	// Empty fattr4 for removed entry
+	_ = xdr.WriteUint32(buf, 0) // bitmap count
+	_ = xdr.WriteUint32(buf, 0) // attrlist length
+	return nil
+}
+
+// NotifyRename4 represents a notify_rename4 entry per RFC 8881.
+// Encodes a RENAME_ENTRY notification as a single RENAME event.
+//
+//	struct notify_rename4 {
+//	    notify_entry4_pair  nrn_old_entry;
+//	    notify_entry4_pair  nrn_new_entry;
+//	};
+type NotifyRename4 struct {
+	OldEntryName string // component4: old name
+	NewEntryName string // component4: new name
+}
+
+// Encode writes the NotifyRename4 in XDR format.
+func (n *NotifyRename4) Encode(buf *bytes.Buffer) error {
+	// nrn_old_entry
+	if err := xdr.WriteXDRString(buf, n.OldEntryName); err != nil {
+		return fmt.Errorf("encode rename old name: %w", err)
+	}
+	_ = xdr.WriteUint64(buf, 0) // cookie (zero for old entry)
+	_ = xdr.WriteUint32(buf, 0) // empty fattr4 bitmap count
+	_ = xdr.WriteUint32(buf, 0) // empty fattr4 attrlist length
+
+	// nrn_new_entry
+	if err := xdr.WriteXDRString(buf, n.NewEntryName); err != nil {
+		return fmt.Errorf("encode rename new name: %w", err)
+	}
+	_ = xdr.WriteUint64(buf, 0) // cookie (zero for new entry)
+	_ = xdr.WriteUint32(buf, 0) // empty fattr4 bitmap count
+	_ = xdr.WriteUint32(buf, 0) // empty fattr4 attrlist length
+	return nil
+}
+
+// NotifyAttrChange4 represents a notify_attr_change4 entry per RFC 8881.
+// Encodes a CHANGE_CHILD_ATTRS notification when a child entry's attributes change.
+//
+//	struct notify_attr_change4 {
+//	    component4  nac_name;
+//	    nfs_cookie4 nac_cookie;
+//	    fattr4      nac_new_attrs;
+//	};
+type NotifyAttrChange4 struct {
+	EntryName string // component4: name of the entry whose attrs changed
+	Cookie    uint64 // nfs_cookie4: readdir cookie
+	Attrs     []byte // pre-encoded fattr4 bytes (must be non-empty for attr changes)
+}
+
+// Encode writes the NotifyAttrChange4 in XDR format.
+func (n *NotifyAttrChange4) Encode(buf *bytes.Buffer) error {
+	if err := xdr.WriteXDRString(buf, n.EntryName); err != nil {
+		return fmt.Errorf("encode attr_change entry name: %w", err)
+	}
+	if err := xdr.WriteUint64(buf, n.Cookie); err != nil {
+		return fmt.Errorf("encode attr_change cookie: %w", err)
+	}
+	if len(n.Attrs) > 0 {
+		_, _ = buf.Write(n.Attrs)
+	} else {
+		// Empty fattr4
+		_ = xdr.WriteUint32(buf, 0) // bitmap count
+		_ = xdr.WriteUint32(buf, 0) // attrlist length
+	}
+	return nil
 }

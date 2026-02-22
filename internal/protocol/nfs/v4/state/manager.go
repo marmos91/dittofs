@@ -79,6 +79,14 @@ type StateManager struct {
 	// Defaults to true; updated from live adapter settings.
 	delegationsEnabled bool
 
+	// maxDelegations is the maximum total outstanding delegations (file + directory).
+	// 0 means unlimited. Updated via SetMaxDelegations.
+	maxDelegations int
+
+	// dirDelegBatchWindow is the duration of the notification batching window
+	// for directory delegations. Defaults to 50ms.
+	dirDelegBatchWindow time.Duration
+
 	// lockManager is the unified lock manager for actual byte-range conflict
 	// detection and cross-protocol locking. Set via SetLockManager() or constructor.
 	lockManager *lock.Manager
@@ -742,10 +750,11 @@ func (sm *StateManager) Shutdown() {
 		}
 	}
 
-	// Stop all active delegation recall timers to prevent timer goroutines
-	// firing after shutdown.
+	// Stop all active delegation recall timers and directory delegation
+	// batch timers to prevent timer goroutines firing after shutdown.
 	for _, deleg := range sm.delegByOther {
 		deleg.StopRecallTimer()
+		sm.cleanupDirDelegation(deleg)
 	}
 
 	// Stop all backchannel senders to prevent orphan goroutines

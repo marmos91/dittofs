@@ -61,7 +61,9 @@ type NFSAdapterSettings struct {
 	PreferredTransferSize int `gorm:"default:1048576" json:"preferred_transfer_size"` // 1MB
 
 	// Delegation policy
-	DelegationsEnabled bool `gorm:"default:true" json:"delegations_enabled"`
+	DelegationsEnabled    bool `gorm:"default:true" json:"delegations_enabled"`
+	MaxDelegations        int  `gorm:"default:10000" json:"max_delegations"`           // max total outstanding delegations (file + directory combined)
+	DirDelegBatchWindowMs int  `gorm:"default:50" json:"dir_deleg_batch_window_ms"`    // notification batching window in milliseconds
 
 	// NFSv4 minor version range (0=v4.0, 1=v4.1)
 	V4MinMinorVersion int `gorm:"default:0" json:"v4_min_minor_version"` // minimum NFSv4 minor version
@@ -184,6 +186,8 @@ func NewDefaultNFSSettings(adapterID string) *NFSAdapterSettings {
 		MaxWriteSize:               1048576,
 		PreferredTransferSize:      1048576,
 		DelegationsEnabled:         true,
+		MaxDelegations:             10000,
+		DirDelegBatchWindowMs:      50,
 		V4MinMinorVersion:          0,
 		V4MaxMinorVersion:          1,
 		V4MaxSessionSlots:          64,
