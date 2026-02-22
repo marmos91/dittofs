@@ -463,6 +463,7 @@ func (sm *StateManager) EvictV40Client(clientID uint64) error {
 		if deleg.ClientID != clientID {
 			continue
 		}
+		deleg.StopRecallTimer()
 		sm.cleanupDirDelegation(deleg)
 		delete(sm.delegByOther, other)
 		sm.removeDelegFromFile(deleg)

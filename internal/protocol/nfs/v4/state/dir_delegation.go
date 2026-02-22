@@ -124,19 +124,21 @@ func (sm *StateManager) GrantDirDelegation(clientID uint64, dirFH []byte, notifM
 func (sm *StateManager) NotifyDirChange(dirFH []byte, notif DirNotification) {
 	sm.mu.RLock()
 	delegs := sm.delegByFile[string(dirFH)]
-	if len(delegs) == 0 {
-		sm.mu.RUnlock()
-		return
+	// Filter eligible delegations while holding the lock to avoid data races
+	// on deleg.Revoked and deleg.RecallSent (written under sm.mu.Lock).
+	var targets []*DelegationState
+	for _, deleg := range delegs {
+		if deleg.IsDirectory && !deleg.Revoked && !deleg.RecallSent {
+			targets = append(targets, deleg)
+		}
 	}
-	// Copy the slice so we can release the lock
-	targets := make([]*DelegationState, len(delegs))
-	copy(targets, delegs)
 	sm.mu.RUnlock()
 
+	if len(targets) == 0 {
+		return
+	}
+
 	for _, deleg := range targets {
-		if !deleg.IsDirectory || deleg.Revoked || deleg.RecallSent {
-			continue
-		}
 
 		// Conflict-based recall: if the notification comes from a different
 		// client than the delegation holder, recall the delegation.
@@ -245,12 +247,13 @@ func (sm *StateManager) resetBatchTimer(deleg *DelegationState) {
 //
 // Caller must NOT hold sm.mu (method acquires Lock).
 func (sm *StateManager) RecallDirDelegation(deleg *DelegationState, reason string) {
-	deleg.RecallReason = reason
-
 	sm.delegationMetrics.RecordRecall("directory", reason)
 
 	// For directory_deleted: revoke immediately (no recall)
 	if reason == "directory_deleted" {
+		sm.mu.Lock()
+		deleg.RecallReason = reason
+		sm.mu.Unlock()
 		sm.RevokeDelegation(deleg.Stateid.Other)
 		return
 	}
@@ -258,8 +261,9 @@ func (sm *StateManager) RecallDirDelegation(deleg *DelegationState, reason strin
 	// Flush pending notifications before recall
 	sm.flushDirNotifications(deleg)
 
-	// Mark as recalled and send recall
+	// Mark as recalled and send recall (all fields written under sm.mu)
 	sm.mu.Lock()
+	deleg.RecallReason = reason
 	deleg.RecallSent = true
 	deleg.RecallTime = time.Now()
 	sm.mu.Unlock()

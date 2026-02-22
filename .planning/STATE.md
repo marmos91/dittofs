@@ -71,7 +71,6 @@ Progress: [########################################] 100% (85/85 plans complete)
 | Phase 24 P01 | 7min | 2 tasks | 8 files |
 | Phase 24 P02 | 12min | 2 tasks | 7 files |
 | Phase 24 P03 | 12min | 2 tasks | 13 files |
-| Phase 24 P02 | 3min | 2 tasks | 7 files |
 
 ## Quick Tasks Completed
 
