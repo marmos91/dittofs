@@ -209,10 +209,7 @@ func NewHandler(registry *runtime.Runtime, pfs *pseudofs.PseudoFS, stateManager 
 	h.v41DispatchTable[types.OP_CREATE_SESSION] = h.handleCreateSession
 	// DESTROY_SESSION: session teardown (RFC 8881 Section 18.37)
 	h.v41DispatchTable[types.OP_DESTROY_SESSION] = h.handleDestroySession
-	h.v41DispatchTable[types.OP_FREE_STATEID] = v41StubHandler(types.OP_FREE_STATEID, func(r io.Reader) error {
-		var args types.FreeStateidArgs
-		return args.Decode(r)
-	})
+	h.v41DispatchTable[types.OP_FREE_STATEID] = h.handleFreeStateid
 	h.v41DispatchTable[types.OP_GET_DIR_DELEGATION] = v41StubHandler(types.OP_GET_DIR_DELEGATION, func(r io.Reader) error {
 		var args types.GetDirDelegationArgs
 		return args.Decode(r)
@@ -262,22 +259,13 @@ func NewHandler(registry *runtime.Runtime, pfs *pseudofs.PseudoFS, stateManager 
 		var args types.SetSsvArgs
 		return args.Decode(r)
 	})
-	h.v41DispatchTable[types.OP_TEST_STATEID] = v41StubHandler(types.OP_TEST_STATEID, func(r io.Reader) error {
-		var args types.TestStateidArgs
-		return args.Decode(r)
-	})
+	h.v41DispatchTable[types.OP_TEST_STATEID] = h.handleTestStateid
 	h.v41DispatchTable[types.OP_WANT_DELEGATION] = v41StubHandler(types.OP_WANT_DELEGATION, func(r io.Reader) error {
 		var args types.WantDelegationArgs
 		return args.Decode(r)
 	})
-	h.v41DispatchTable[types.OP_DESTROY_CLIENTID] = v41StubHandler(types.OP_DESTROY_CLIENTID, func(r io.Reader) error {
-		var args types.DestroyClientidArgs
-		return args.Decode(r)
-	})
-	h.v41DispatchTable[types.OP_RECLAIM_COMPLETE] = v41StubHandler(types.OP_RECLAIM_COMPLETE, func(r io.Reader) error {
-		var args types.ReclaimCompleteArgs
-		return args.Decode(r)
-	})
+	h.v41DispatchTable[types.OP_DESTROY_CLIENTID] = h.handleDestroyClientID
+	h.v41DispatchTable[types.OP_RECLAIM_COMPLETE] = h.handleReclaimComplete
 
 	return h
 }
