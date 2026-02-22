@@ -78,6 +78,11 @@ type Handler struct {
 	// them without additional nil checks.
 	connectionMetrics *state.ConnectionMetrics
 
+	// backchannelMetrics holds Prometheus metrics for backchannel callback tracking.
+	// May be nil; BackchannelMetrics methods are nil-safe so callers can invoke
+	// them without additional nil checks.
+	backchannelMetrics *state.BackchannelMetrics
+
 	// minMinorVersion is the minimum accepted NFSv4 minor version (default 0).
 	// Compounds with minorversion < minMinorVersion get NFS4ERR_MINOR_VERS_MISMATCH.
 	minMinorVersion uint32
@@ -194,10 +199,8 @@ func NewHandler(registry *runtime.Runtime, pfs *pseudofs.PseudoFS, stateManager 
 	// Each stub decodes its operation's XDR args (to prevent stream desync)
 	// and returns NFS4ERR_NOTSUPP. Real handlers replace stubs in Phases 17-24.
 
-	h.v41DispatchTable[types.OP_BACKCHANNEL_CTL] = v41StubHandler(types.OP_BACKCHANNEL_CTL, func(r io.Reader) error {
-		var args types.BackchannelCtlArgs
-		return args.Decode(r)
-	})
+	// BACKCHANNEL_CTL: update callback program and security params (RFC 8881 Section 18.33)
+	h.v41DispatchTable[types.OP_BACKCHANNEL_CTL] = h.handleBackchannelCtl
 	// BIND_CONN_TO_SESSION: connection binding (RFC 8881 Section 18.34)
 	h.v41DispatchTable[types.OP_BIND_CONN_TO_SESSION] = h.handleBindConnToSession
 	// EXCHANGE_ID: client identity registration (RFC 8881 Section 18.35)
@@ -383,6 +386,13 @@ func (h *Handler) SetSequenceMetrics(m *state.SequenceMetrics) {
 func (h *Handler) SetConnectionMetrics(m *state.ConnectionMetrics) {
 	h.connectionMetrics = m
 	h.StateManager.SetConnectionMetrics(m)
+}
+
+// SetBackchannelMetrics sets the Prometheus metrics collector for backchannel callbacks.
+// Must be called before any backchannel operations. Safe to leave nil (no-op metrics).
+func (h *Handler) SetBackchannelMetrics(m *state.BackchannelMetrics) {
+	h.backchannelMetrics = m
+	h.StateManager.SetBackchannelMetrics(m)
 }
 
 // SetMinorVersionRange sets the accepted minor version range for COMPOUND requests.

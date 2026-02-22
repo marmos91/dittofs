@@ -153,7 +153,7 @@ func TestEncodeCBRecallOp(t *testing.T) {
 	fh := []byte{0xAA, 0xBB, 0xCC}
 	truncate := true
 
-	encoded := encodeCBRecallOp(stateid, truncate, fh)
+	encoded := EncodeCBRecallOp(stateid, truncate, fh)
 
 	reader := bytes.NewReader(encoded)
 
@@ -289,7 +289,7 @@ func TestBuildCBRPCCallMessage(t *testing.T) {
 	proc := uint32(1)
 	args := []byte{0xCA, 0xFE}
 
-	msg := buildCBRPCCallMessage(xid, prog, vers, proc, args)
+	msg := BuildCBRPCCallMessage(xid, prog, vers, proc, args)
 
 	reader := bytes.NewReader(msg)
 
@@ -374,7 +374,7 @@ func TestBuildCBRPCCallMessage(t *testing.T) {
 func TestAddCBRecordMark(t *testing.T) {
 	msg := []byte{0x01, 0x02, 0x03, 0x04, 0x05}
 
-	framed := addCBRecordMark(msg, true)
+	framed := AddCBRecordMark(msg, true)
 
 	if len(framed) != 4+5 {
 		t.Fatalf("framed length = %d, want 9", len(framed))
@@ -396,7 +396,7 @@ func TestAddCBRecordMark(t *testing.T) {
 func TestAddCBRecordMark_NotLastFragment(t *testing.T) {
 	msg := []byte{0xAA, 0xBB}
 
-	framed := addCBRecordMark(msg, false)
+	framed := AddCBRecordMark(msg, false)
 
 	header := binary.BigEndian.Uint32(framed[0:4])
 	// No last fragment bit, just length 2

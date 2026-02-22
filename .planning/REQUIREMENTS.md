@@ -23,10 +23,10 @@ Requirements for NFSv4.1 Sessions milestone. Each maps to roadmap phases.
 
 ### Backchannel
 
-- [ ] **BACK-01**: Server sends callbacks via CB_SEQUENCE over the client's existing TCP connection (no separate dial)
+- [x] **BACK-01**: Server sends callbacks via CB_SEQUENCE over the client's existing TCP connection (no separate dial)
 - [x] **BACK-02**: Server handles BIND_CONN_TO_SESSION to associate connections with sessions for fore/back/both directions
-- [ ] **BACK-03**: Server handles BACKCHANNEL_CTL to update backchannel security and attributes
-- [ ] **BACK-04**: Existing CB_RECALL works over backchannel for v4.1 clients (fallback to separate TCP for v4.0)
+- [x] **BACK-03**: Server handles BACKCHANNEL_CTL to update backchannel security and attributes
+- [x] **BACK-04**: Existing CB_RECALL works over backchannel for v4.1 clients (fallback to separate TCP for v4.0)
 
 ### Client Lifecycle
 
@@ -115,10 +115,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | EOS-01 | Phase 17 | Complete |
 | EOS-02 | Phase 17 | Complete |
 | EOS-03 | Phase 17 | Complete |
-| BACK-01 | Phase 22 | Pending |
+| BACK-01 | Phase 22 | Complete |
 | BACK-02 | Phase 21 | Complete |
-| BACK-03 | Phase 22 | Pending |
-| BACK-04 | Phase 22 | Pending |
+| BACK-03 | Phase 22 | Complete |
+| BACK-04 | Phase 22 | Complete |
 | LIFE-01 | Phase 23 | Pending |
 | LIFE-02 | Phase 23 | Pending |
 | LIFE-03 | Phase 23 | Pending |

@@ -659,6 +659,11 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 				// Unregister connection from tracking map
 				s.activeConnections.Delete(addr)
 
+				// Unregister backchannel ConnWriter and PendingCBReplies on disconnect
+				if s.v4Handler != nil && s.v4Handler.StateManager != nil {
+					s.v4Handler.StateManager.UnregisterConnWriter(cid)
+				}
+
 				// Unbind connection from any NFSv4.1 session on disconnect
 				if s.v4Handler != nil && s.v4Handler.StateManager != nil {
 					s.v4Handler.StateManager.UnbindConnection(cid)

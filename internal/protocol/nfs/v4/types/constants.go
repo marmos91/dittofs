@@ -366,6 +366,10 @@ const (
 
 	// OP_CB_RECALL recalls a delegation from the client.
 	OP_CB_RECALL uint32 = 4
+
+	// OP_CB_SEQUENCE is the v4.1 callback sequence operation (RFC 8881 Section 20.9).
+	// Must be the first operation in every v4.1 CB_COMPOUND.
+	OP_CB_SEQUENCE uint32 = 11
 )
 
 // --- NFSv4.1 Callback Operation Numbers (RFC 8881 Section 20) ---
