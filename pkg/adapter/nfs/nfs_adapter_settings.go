@@ -41,8 +41,10 @@ func (s *NFSAdapter) applyNFSSettings(rt *runtime.Runtime) {
 	// Max delegations -> StateManager
 	s.v4Handler.StateManager.SetMaxDelegations(settings.MaxDelegations)
 
-	// Directory delegation batch window -> StateManager
-	if settings.DirDelegBatchWindowMs >= 0 {
+	// Directory delegation batch window -> StateManager.
+	// Only propagate positive values; 0 means "use default" (50ms fallback
+	// in resetBatchTimer), negative values are invalid and ignored.
+	if settings.DirDelegBatchWindowMs > 0 {
 		s.v4Handler.StateManager.SetDirDelegBatchWindow(
 			time.Duration(settings.DirDelegBatchWindowMs) * time.Millisecond,
 		)
