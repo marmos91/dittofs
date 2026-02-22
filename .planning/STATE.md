@@ -10,11 +10,11 @@ See: .planning/PROJECT.md (updated 2026-02-20)
 ## Current Position
 
 Phase: 23 of 25 (Client Lifecycle and Cleanup)
-Plan: 1 of 3 in current phase
+Plan: 2 of 3 in current phase
 Status: Executing
-Last activity: 2026-02-22 -- Completed 23-01-PLAN.md
+Last activity: 2026-02-22 -- Completed 23-02-PLAN.md
 
-Progress: [########################################] 100% (80/82 plans complete)
+Progress: [########################################] 100% (81/82 plans complete)
 
 ## Completed Milestones
 
@@ -66,6 +66,7 @@ Progress: [########################################] 100% (80/82 plans complete)
 | Phase 22 P01 | 35min | 2 tasks | 13 files |
 | Phase 22 P02 | 25min | 2 tasks | 8 files |
 | Phase 23 P01 | 12min | 2 tasks | 7 files |
+| Phase 23 P02 | 8min | 2 tasks | 12 files |
 
 ## Quick Tasks Completed
 
@@ -133,6 +134,9 @@ Recent decisions affecting current work:
 - [Phase 23-01]: TestStateids uses RLock only -- no lease renewal side effects per RFC 8881
 - [Phase 23-01]: ReclaimComplete returns NFS4_OK outside grace period (not an error per RFC 8881)
 - [Phase 23-01]: GraceStatusInfo exposes RemainingSeconds for API/CLI countdown display
+- [Phase 23-02]: DESTROY_CLIENTID is session-exempt per RFC 8881 Section 18.50.3
+- [Phase 23-02]: v4.0-only ops (5 ops) rejected with NFS4ERR_NOTSUPP in v4.1 COMPOUNDs via consumeV40OnlyArgs
+- [Phase 23-02]: TEST_STATEID returns NFS4_OK overall with per-stateid error codes array (not fail-on-first)
 
 ### Pending Todos
 
@@ -146,5 +150,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-22
-Stopped at: Completed 23-01-PLAN.md
+Stopped at: Completed 23-02-PLAN.md
 Resume file: `/gsd:execute-phase 23`

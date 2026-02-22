@@ -30,11 +30,11 @@ Requirements for NFSv4.1 Sessions milestone. Each maps to roadmap phases.
 
 ### Client Lifecycle
 
-- [ ] **LIFE-01**: Server handles DESTROY_CLIENTID for graceful client cleanup (all sessions destroyed first)
-- [ ] **LIFE-02**: Server handles RECLAIM_COMPLETE to signal end of grace period reclaim for a client
-- [ ] **LIFE-03**: Server handles FREE_STATEID to release individual stateids
-- [ ] **LIFE-04**: Server handles TEST_STATEID to batch-validate stateid liveness
-- [ ] **LIFE-05**: v4.0-only operations (SETCLIENTID, SETCLIENTID_CONFIRM, RENEW, OPEN_CONFIRM, RELEASE_LOCKOWNER) return NFS4ERR_NOTSUPP for minorversion=1
+- [x] **LIFE-01**: Server handles DESTROY_CLIENTID for graceful client cleanup (all sessions destroyed first)
+- [x] **LIFE-02**: Server handles RECLAIM_COMPLETE to signal end of grace period reclaim for a client
+- [x] **LIFE-03**: Server handles FREE_STATEID to release individual stateids
+- [x] **LIFE-04**: Server handles TEST_STATEID to batch-validate stateid liveness
+- [x] **LIFE-05**: v4.0-only operations (SETCLIENTID, SETCLIENTID_CONFIRM, RENEW, OPEN_CONFIRM, RELEASE_LOCKOWNER) return NFS4ERR_NOTSUPP for minorversion=1
 
 ### Directory Delegations
 
@@ -123,7 +123,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | LIFE-02 | Phase 23 | In Progress |
 | LIFE-03 | Phase 23 | In Progress |
 | LIFE-04 | Phase 23 | In Progress |
-| LIFE-05 | Phase 23 | Pending |
+| LIFE-05 | Phase 23 | Complete |
 | DDELEG-01 | Phase 24 | Pending |
 | DDELEG-02 | Phase 24 | Pending |
 | DDELEG-03 | Phase 24 | Pending |

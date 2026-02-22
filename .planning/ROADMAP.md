@@ -336,7 +336,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 32
 | 20. SEQUENCE and COMPOUND Bifurcation | 2/2 | Complete    | 2026-02-21 | - |
 | 21. Connection Management and Trunking | 2/2 | Complete    | 2026-02-21 | - |
 | 22. Backchannel Multiplexing | 2/2 | Complete    | 2026-02-21 | - |
-| 23. Client Lifecycle and Cleanup | v3.0 | 0/? | Not started | - |
+| 23. Client Lifecycle and Cleanup | 2/3 | In Progress|  | - |
 | 24. Directory Delegations | v3.0 | 0/? | Not started | - |
 | 25. v3.0 Integration Testing | v3.0 | 0/? | Not started | - |
 | 26. Server-Side Copy | v4.0 | 0/? | Not started | - |
