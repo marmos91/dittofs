@@ -21,6 +21,8 @@ type NFSAdapterSettingsResponse struct {
 	MaxWriteSize               int      `json:"max_write_size"`
 	PreferredTransferSize      int      `json:"preferred_transfer_size"`
 	DelegationsEnabled         bool     `json:"delegations_enabled"`
+	MaxDelegations             int      `json:"max_delegations"`
+	DirDelegBatchWindowMs      int      `json:"dir_deleg_batch_window_ms"`
 	V4MinMinorVersion          int      `json:"v4_min_minor_version"`
 	V4MaxMinorVersion          int      `json:"v4_max_minor_version"`
 	V4MaxConnectionsPerSession int      `json:"v4_max_connections_per_session"`
@@ -78,6 +80,8 @@ type PatchNFSSettingsRequest struct {
 	MaxWriteSize               *int      `json:"max_write_size,omitempty"`
 	PreferredTransferSize      *int      `json:"preferred_transfer_size,omitempty"`
 	DelegationsEnabled         *bool     `json:"delegations_enabled,omitempty"`
+	MaxDelegations             *int      `json:"max_delegations,omitempty"`
+	DirDelegBatchWindowMs      *int      `json:"dir_deleg_batch_window_ms,omitempty"`
 	V4MinMinorVersion          *int      `json:"v4_min_minor_version,omitempty"`
 	V4MaxMinorVersion          *int      `json:"v4_max_minor_version,omitempty"`
 	V4MaxConnectionsPerSession *int      `json:"v4_max_connections_per_session,omitempty"`

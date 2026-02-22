@@ -180,6 +180,8 @@ var (
 	settingsMinVersion                 string
 	settingsMaxVersion                 string
 	settingsDelegationsEnabled         bool
+	settingsMaxDelegations             int
+	settingsDirDelegBatchWindowMs      int
 	settingsBlockedOperations          string
 	settingsPortmapperEnabled          bool
 	settingsPortmapperPort             int
@@ -252,6 +254,8 @@ func registerNFSUpdateFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&settingsMinVersion, "min-version", "", "Minimum NFS version (e.g., 3)")
 	cmd.Flags().StringVar(&settingsMaxVersion, "max-version", "", "Maximum NFS version (e.g., 4.1)")
 	cmd.Flags().BoolVar(&settingsDelegationsEnabled, "delegations-enabled", false, "Enable NFSv4 delegations")
+	cmd.Flags().IntVar(&settingsMaxDelegations, "max-delegations", 0, "Maximum total outstanding delegations (0=unlimited)")
+	cmd.Flags().IntVar(&settingsDirDelegBatchWindowMs, "dir-deleg-batch-window-ms", 0, "Directory delegation notification batch window in milliseconds")
 	cmd.Flags().StringVar(&settingsBlockedOperations, "blocked-operations", "", "Comma-separated list of blocked operations")
 	cmd.Flags().BoolVar(&settingsPortmapperEnabled, "portmapper-enabled", false, "Enable embedded portmapper")
 	cmd.Flags().IntVar(&settingsPortmapperPort, "portmapper-port", 0, "Portmapper listen port")
@@ -336,6 +340,8 @@ func showNFSSettings(client *apiclient.Client, format output.Format) error {
 	})
 	printSettingsGroup("Delegation", []settingRow{
 		newSettingRowBool("delegations_enabled", settings.DelegationsEnabled, d.DelegationsEnabled),
+		newSettingRowInt("max_delegations", settings.MaxDelegations, d.MaxDelegations, ""),
+		newSettingRowInt("dir_deleg_batch_window_ms", settings.DirDelegBatchWindowMs, d.DirDelegBatchWindowMs, "ms"),
 	})
 	printSettingsGroup("NFSv4.1 Configuration", []settingRow{
 		newSettingRowInt("v4_min_minor_version", settings.V4MinMinorVersion, d.V4MinMinorVersion, ""),
@@ -541,6 +547,14 @@ func updateNFSSettings(cmd *cobra.Command, client *apiclient.Client) error {
 	}
 	if cmd.Flags().Changed("delegations-enabled") {
 		req.DelegationsEnabled = &settingsDelegationsEnabled
+		hasChanges = true
+	}
+	if cmd.Flags().Changed("max-delegations") {
+		req.MaxDelegations = &settingsMaxDelegations
+		hasChanges = true
+	}
+	if cmd.Flags().Changed("dir-deleg-batch-window-ms") {
+		req.DirDelegBatchWindowMs = &settingsDirDelegBatchWindowMs
 		hasChanges = true
 	}
 	if cmd.Flags().Changed("blocked-operations") {

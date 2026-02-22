@@ -38,6 +38,16 @@ func (s *NFSAdapter) applyNFSSettings(rt *runtime.Runtime) {
 	// Delegation policy
 	s.v4Handler.StateManager.SetDelegationsEnabled(settings.DelegationsEnabled)
 
+	// Max delegations -> StateManager
+	s.v4Handler.StateManager.SetMaxDelegations(settings.MaxDelegations)
+
+	// Directory delegation batch window -> StateManager
+	if settings.DirDelegBatchWindowMs >= 0 {
+		s.v4Handler.StateManager.SetDirDelegBatchWindow(
+			time.Duration(settings.DirDelegBatchWindowMs) * time.Millisecond,
+		)
+	}
+
 	// Operation blocklist -> v4 Handler
 	blockedOps := settings.GetBlockedOperations()
 	s.v4Handler.SetBlockedOps(blockedOps)

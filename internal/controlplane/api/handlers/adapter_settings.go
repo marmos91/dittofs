@@ -44,6 +44,8 @@ type PatchNFSSettingsRequest struct {
 	MaxWriteSize               *int      `json:"max_write_size,omitempty"`
 	PreferredTransferSize      *int      `json:"preferred_transfer_size,omitempty"`
 	DelegationsEnabled         *bool     `json:"delegations_enabled,omitempty"`
+	MaxDelegations             *int      `json:"max_delegations,omitempty"`
+	DirDelegBatchWindowMs      *int      `json:"dir_deleg_batch_window_ms,omitempty"`
 	V4MinMinorVersion          *int      `json:"v4_min_minor_version,omitempty"`
 	V4MaxMinorVersion          *int      `json:"v4_max_minor_version,omitempty"`
 	V4MaxConnectionsPerSession *int      `json:"v4_max_connections_per_session,omitempty"`
@@ -68,6 +70,8 @@ type PutNFSSettingsRequest struct {
 	MaxWriteSize               int      `json:"max_write_size"`
 	PreferredTransferSize      int      `json:"preferred_transfer_size"`
 	DelegationsEnabled         bool     `json:"delegations_enabled"`
+	MaxDelegations             int      `json:"max_delegations"`
+	DirDelegBatchWindowMs      int      `json:"dir_deleg_batch_window_ms"`
 	V4MinMinorVersion          int      `json:"v4_min_minor_version"`
 	V4MaxMinorVersion          int      `json:"v4_max_minor_version"`
 	V4MaxConnectionsPerSession int      `json:"v4_max_connections_per_session"`
@@ -120,6 +124,8 @@ type NFSSettingsResponse struct {
 	MaxWriteSize               int      `json:"max_write_size"`
 	PreferredTransferSize      int      `json:"preferred_transfer_size"`
 	DelegationsEnabled         bool     `json:"delegations_enabled"`
+	MaxDelegations             int      `json:"max_delegations"`
+	DirDelegBatchWindowMs      int      `json:"dir_deleg_batch_window_ms"`
 	V4MinMinorVersion          int      `json:"v4_min_minor_version"`
 	V4MaxMinorVersion          int      `json:"v4_max_minor_version"`
 	V4MaxConnectionsPerSession int      `json:"v4_max_connections_per_session"`
@@ -261,6 +267,8 @@ func (h *AdapterSettingsHandler) GetDefaults(w http.ResponseWriter, r *http.Requ
 				"max_read_size":                  {Min: ranges.MaxReadSizeMin, Max: ranges.MaxReadSizeMax},
 				"max_write_size":                 {Min: ranges.MaxWriteSizeMin, Max: ranges.MaxWriteSizeMax},
 				"preferred_transfer_size":        {Min: ranges.PreferredTransferSizeMin, Max: ranges.PreferredTransferSizeMax},
+				"max_delegations":                {Min: 0, Max: 1000000},
+				"dir_deleg_batch_window_ms":      {Min: 0, Max: 5000},
 				"v4_min_minor_version":           {Min: 0, Max: 1},
 				"v4_max_minor_version":           {Min: 0, Max: 1},
 				"v4_max_connections_per_session": {Min: 0, Max: 1024},
@@ -334,6 +342,8 @@ func (h *AdapterSettingsHandler) PutSettings(w http.ResponseWriter, r *http.Requ
 		settings.MaxWriteSize = req.MaxWriteSize
 		settings.PreferredTransferSize = req.PreferredTransferSize
 		settings.DelegationsEnabled = req.DelegationsEnabled
+		settings.MaxDelegations = req.MaxDelegations
+		settings.DirDelegBatchWindowMs = req.DirDelegBatchWindowMs
 		settings.V4MinMinorVersion = req.V4MinMinorVersion
 		settings.V4MaxMinorVersion = req.V4MaxMinorVersion
 		settings.V4MaxConnectionsPerSession = req.V4MaxConnectionsPerSession
@@ -486,6 +496,12 @@ func (h *AdapterSettingsHandler) PatchSettings(w http.ResponseWriter, r *http.Re
 		}
 		if req.DelegationsEnabled != nil {
 			settings.DelegationsEnabled = *req.DelegationsEnabled
+		}
+		if req.MaxDelegations != nil {
+			settings.MaxDelegations = *req.MaxDelegations
+		}
+		if req.DirDelegBatchWindowMs != nil {
+			settings.DirDelegBatchWindowMs = *req.DirDelegBatchWindowMs
 		}
 		if req.V4MinMinorVersion != nil {
 			settings.V4MinMinorVersion = *req.V4MinMinorVersion
@@ -731,6 +747,8 @@ func validateNFSSettings(s *models.NFSAdapterSettings) map[string]string {
 	validateIntRange(errs, "max_write_size", s.MaxWriteSize, ranges.MaxWriteSizeMin, ranges.MaxWriteSizeMax)
 	validateIntRange(errs, "preferred_transfer_size", s.PreferredTransferSize, ranges.PreferredTransferSizeMin, ranges.PreferredTransferSizeMax)
 	validateIntRange(errs, "portmapper_port", s.PortmapperPort, ranges.PortmapperPortMin, ranges.PortmapperPortMax)
+	validateIntRange(errs, "max_delegations", s.MaxDelegations, 0, 1000000)
+	validateIntRange(errs, "dir_deleg_batch_window_ms", s.DirDelegBatchWindowMs, 0, 5000)
 	validateIntRange(errs, "v4_min_minor_version", s.V4MinMinorVersion, 0, 1)
 	validateIntRange(errs, "v4_max_minor_version", s.V4MaxMinorVersion, 0, 1)
 	if s.V4MinMinorVersion > s.V4MaxMinorVersion {
@@ -911,6 +929,10 @@ func resetNFSSetting(settings, defaults *models.NFSAdapterSettings, name string)
 		settings.PreferredTransferSize = defaults.PreferredTransferSize
 	case "delegations_enabled":
 		settings.DelegationsEnabled = defaults.DelegationsEnabled
+	case "max_delegations":
+		settings.MaxDelegations = defaults.MaxDelegations
+	case "dir_deleg_batch_window_ms":
+		settings.DirDelegBatchWindowMs = defaults.DirDelegBatchWindowMs
 	case "v4_min_minor_version":
 		settings.V4MinMinorVersion = defaults.V4MinMinorVersion
 	case "v4_max_minor_version":
@@ -976,6 +998,8 @@ func nfsSettingsToResponse(s *models.NFSAdapterSettings) NFSSettingsResponse {
 		MaxWriteSize:               s.MaxWriteSize,
 		PreferredTransferSize:      s.PreferredTransferSize,
 		DelegationsEnabled:         s.DelegationsEnabled,
+		MaxDelegations:             s.MaxDelegations,
+		DirDelegBatchWindowMs:      s.DirDelegBatchWindowMs,
 		V4MinMinorVersion:          s.V4MinMinorVersion,
 		V4MaxMinorVersion:          s.V4MaxMinorVersion,
 		V4MaxConnectionsPerSession: s.V4MaxConnectionsPerSession,
