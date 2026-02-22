@@ -11,6 +11,82 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/xdr"
 )
 
+// v40OnlyOps contains operations that are valid only in NFSv4.0 COMPOUNDs.
+// Per RFC 8881, these operations MUST return NFS4ERR_NOTSUPP when encountered
+// in a v4.1 COMPOUND. Their XDR args must be consumed to prevent stream desync.
+var v40OnlyOps = map[uint32]bool{
+	types.OP_SETCLIENTID:         true, // op 35
+	types.OP_SETCLIENTID_CONFIRM: true, // op 36
+	types.OP_RENEW:               true, // op 30
+	types.OP_OPEN_CONFIRM:        true, // op 20
+	types.OP_RELEASE_LOCKOWNER:   true, // op 39
+}
+
+// consumeV40OnlyArgs reads and discards XDR args for v4.0-only operations
+// to prevent stream desync when rejecting them in v4.1 COMPOUNDs.
+// Returns nil on success or error if the reader doesn't have enough data.
+func consumeV40OnlyArgs(opCode uint32, reader io.Reader) error {
+	switch opCode {
+	case types.OP_SETCLIENTID:
+		// verifier (8 bytes) + client id string (opaque) + cb_program (uint32)
+		// + netid (string) + addr (string) + callback_ident (uint32)
+		var verifier [8]byte
+		if _, err := io.ReadFull(reader, verifier[:]); err != nil {
+			return err
+		}
+		if _, err := xdr.DecodeString(reader); err != nil { // client id string
+			return err
+		}
+		if _, err := xdr.DecodeUint32(reader); err != nil { // cb_program
+			return err
+		}
+		if _, err := xdr.DecodeString(reader); err != nil { // netid
+			return err
+		}
+		if _, err := xdr.DecodeString(reader); err != nil { // addr
+			return err
+		}
+		if _, err := xdr.DecodeUint32(reader); err != nil { // callback_ident
+			return err
+		}
+
+	case types.OP_SETCLIENTID_CONFIRM:
+		// clientid (uint64) + setclientid_confirm verifier (8 bytes)
+		if _, err := xdr.DecodeUint64(reader); err != nil {
+			return err
+		}
+		var verifier [8]byte
+		if _, err := io.ReadFull(reader, verifier[:]); err != nil {
+			return err
+		}
+
+	case types.OP_RENEW:
+		// clientid (uint64)
+		if _, err := xdr.DecodeUint64(reader); err != nil {
+			return err
+		}
+
+	case types.OP_OPEN_CONFIRM:
+		// stateid4 (seqid:uint32 + other:12 bytes) + seqid (uint32)
+		if _, err := types.DecodeStateid4(reader); err != nil {
+			return err
+		}
+		if _, err := xdr.DecodeUint32(reader); err != nil {
+			return err
+		}
+
+	case types.OP_RELEASE_LOCKOWNER:
+		// lock_owner4: clientid (uint64) + owner (opaque)
+		if _, err := xdr.DecodeUint64(reader); err != nil {
+			return err
+		}
+		if _, err := xdr.DecodeOpaque(reader); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ProcessCompound is the main NFSv4 COMPOUND dispatcher.
 //
 // Per RFC 7530 Section 16.2, COMPOUND bundles multiple operations into a single
@@ -340,10 +416,16 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 			break
 		}
 
-		// Dispatch: v4.1 table first, then fallback to v4.0 table.
+		// Reject v4.0-only operations in v4.1 COMPOUNDs.
+		// Consume XDR args to prevent stream desync, then return NOTSUPP.
 		var result *types.CompoundResult
 
-		if v41Handler, ok := h.v41DispatchTable[opCode]; ok {
+		if v40OnlyOps[opCode] {
+			_ = consumeV40OnlyArgs(opCode, reader)
+			logger.Debug("NFSv4.1 COMPOUND rejected v4.0-only operation",
+				"opcode", opCode, "op_name", types.OpName(opCode), "client", compCtx.ClientAddr)
+			result = notSuppHandler(opCode)
+		} else if v41Handler, ok := h.v41DispatchTable[opCode]; ok {
 			// v4.1-only operation (40-58)
 			result = v41Handler(compCtx, v41ctx, reader)
 		} else if v40Handler, ok := h.opDispatchTable[opCode]; ok {
@@ -451,10 +533,15 @@ func (h *Handler) dispatchV41Ops(compCtx *types.CompoundContext, tag []byte, fir
 			break
 		}
 
-		// Dispatch: v4.1 table first, then fallback to v4.0 table.
+		// Reject v4.0-only operations in v4.1 COMPOUNDs (exempt path).
 		var result *types.CompoundResult
 
-		if v41Handler, ok := h.v41DispatchTable[opCode]; ok {
+		if v40OnlyOps[opCode] {
+			_ = consumeV40OnlyArgs(opCode, reader)
+			logger.Debug("NFSv4.1 COMPOUND rejected v4.0-only operation",
+				"opcode", opCode, "op_name", types.OpName(opCode), "client", compCtx.ClientAddr)
+			result = notSuppHandler(opCode)
+		} else if v41Handler, ok := h.v41DispatchTable[opCode]; ok {
 			result = v41Handler(compCtx, v41ctx, reader)
 		} else if v40Handler, ok := h.opDispatchTable[opCode]; ok {
 			result = v40Handler(compCtx, reader)

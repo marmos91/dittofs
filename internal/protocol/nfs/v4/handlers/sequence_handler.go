@@ -195,12 +195,15 @@ func (h *Handler) handleSequenceOp(compCtx *types.CompoundContext, reader io.Rea
 //   - CREATE_SESSION: session creation (must work before any session exists)
 //   - DESTROY_SESSION: session teardown (can target a different session)
 //   - BIND_CONN_TO_SESSION: connection binding (must work on new connections)
+//   - DESTROY_CLIENTID: client teardown (RFC 8881 Section 18.50.3 -- MAY be
+//     the only operation, allowing it after the client's last session is destroyed)
 func isSessionExemptOp(opCode uint32) bool {
 	switch opCode {
 	case types.OP_EXCHANGE_ID,
 		types.OP_CREATE_SESSION,
 		types.OP_DESTROY_SESSION,
-		types.OP_BIND_CONN_TO_SESSION:
+		types.OP_BIND_CONN_TO_SESSION,
+		types.OP_DESTROY_CLIENTID:
 		return true
 	default:
 		return false
