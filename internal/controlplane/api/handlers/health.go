@@ -66,6 +66,7 @@ func (h *HealthHandler) Liveness(w http.ResponseWriter, r *http.Request) {
 
 // Readiness handles GET /health/ready - readiness probe.
 // Returns 200 OK if registry is initialized.
+// Includes grace period information when a grace period is active.
 func (h *HealthHandler) Readiness(w http.ResponseWriter, r *http.Request) {
 	if h.registry == nil {
 		writeJSON(w, http.StatusServiceUnavailable, unhealthyResponse("registry not initialized"))
@@ -73,14 +74,27 @@ func (h *HealthHandler) Readiness(w http.ResponseWriter, r *http.Request) {
 	}
 
 	runningAdapters := h.registry.ListRunningAdapters()
-	writeJSON(w, http.StatusOK, healthyResponse(map[string]any{
+	data := map[string]any{
 		"shares":          h.registry.CountShares(),
 		"metadata_stores": h.registry.CountMetadataStores(),
 		"adapters": map[string]any{
 			"running": len(runningAdapters),
 			"types":   runningAdapters,
 		},
-	}))
+	}
+
+	// Include grace period info if NFS adapter is configured
+	if graceHandler := NewGraceHandlerFromProvider(h.registry.NFSClientProvider()); graceHandler != nil {
+		info := graceHandler.sm.GraceStatus()
+		data["grace_period"] = map[string]any{
+			"active":            info.Active,
+			"remaining_seconds": info.RemainingSeconds,
+			"expected_clients":  info.ExpectedClients,
+			"reclaimed_clients": info.ReclaimedClients,
+		}
+	}
+
+	writeJSON(w, http.StatusOK, healthyResponse(data))
 }
 
 // StoreHealth represents the health status of a single store.

@@ -62,6 +62,11 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 		r.Get("/stores", healthHandler.Stores)
 	})
 
+	// Grace period status - unauthenticated (like health probes)
+	if graceHandler := newGraceHandler(rt); graceHandler != nil {
+		r.Get("/api/v1/grace", graceHandler.Status)
+	}
+
 	// Root redirect to health for convenience
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/health", http.StatusTemporaryRedirect)
@@ -253,6 +258,14 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 					})
 				})
 			}
+
+			// Grace period management (admin only - force end)
+			if graceHandler := newGraceHandler(rt); graceHandler != nil {
+				r.Route("/grace", func(r chi.Router) {
+					r.Use(apiMiddleware.RequireAdmin())
+					r.Post("/end", graceHandler.ForceEnd)
+				})
+			}
 		})
 	})
 
@@ -265,6 +278,14 @@ func newClientHandler(rt *runtime.Runtime) *handlers.ClientHandler {
 		return nil
 	}
 	return handlers.NewClientHandlerFromProvider(rt.NFSClientProvider())
+}
+
+// newGraceHandler returns a GraceHandler if an NFS adapter with state management is configured.
+func newGraceHandler(rt *runtime.Runtime) *handlers.GraceHandler {
+	if rt == nil {
+		return nil
+	}
+	return handlers.NewGraceHandlerFromProvider(rt.NFSClientProvider())
 }
 
 // requestLogger is a custom middleware that logs requests using the internal logger.
