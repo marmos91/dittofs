@@ -9,12 +9,12 @@ See: .planning/PROJECT.md (updated 2026-02-20)
 
 ## Current Position
 
-Phase: 23 of 25 (Client Lifecycle and Cleanup)
+Phase: 24 of 25 (Directory Delegations)
 Plan: 3 of 3 in current phase
 Status: Phase Complete
-Last activity: 2026-02-22 -- Completed 23-03-PLAN.md
+Last activity: 2026-02-22 -- Completed 24-03-PLAN.md
 
-Progress: [########################################] 100% (82/82 plans complete)
+Progress: [########################################] 100% (85/85 plans complete)
 
 ## Completed Milestones
 
@@ -68,6 +68,10 @@ Progress: [########################################] 100% (82/82 plans complete)
 | Phase 23 P01 | 12min | 2 tasks | 7 files |
 | Phase 23 P02 | 8min | 2 tasks | 12 files |
 | Phase 23 P03 | 6min | 2 tasks | 9 files |
+| Phase 24 P01 | 7min | 2 tasks | 8 files |
+| Phase 24 P02 | 12min | 2 tasks | 7 files |
+| Phase 24 P03 | 12min | 2 tasks | 13 files |
+| Phase 24 P02 | 3min | 2 tasks | 7 files |
 
 ## Quick Tasks Completed
 
@@ -140,6 +144,17 @@ Recent decisions affecting current work:
 - [Phase 23-02]: TEST_STATEID returns NFS4_OK overall with per-stateid error codes array (not fail-on-first)
 - [Phase 23-03]: Grace status endpoint unauthenticated (like health probes) for K8s and monitoring access
 - [Phase 23-03]: Grace period info only shown in dfs status when active (clean output by default)
+- [Phase 24-01]: Separate NotifMu per delegation (not global sm.mu) to avoid holding global lock during backchannel sends
+- [Phase 24-01]: Directory delegations reuse StateTypeDeleg (0x03) type byte -- same as file delegations
+- [Phase 24-01]: Count-based flush at maxBatchSize=100 + timer-based flush at configurable window (default 50ms)
+- [Phase 24-01]: directory_deleted recall triggers immediate revocation (no CB_RECALL needed)
+- [Phase 24-01]: purgeV41Client now cleans up all delegations (file+directory) for destroyed clients
+- [Phase 24-03]: OriginClientID on DirNotification enables conflict recall without separate conflict-checking API
+- [Phase 24-03]: isSignificantAttrChange filters atime/ctime-only SETATTR notifications (only mode/owner/group/size)
+- [Phase 24-03]: DelegationMetrics uses shared counters with type label (file/directory) following nil-safe receiver pattern
+- [Phase 24-03]: REMOVE handler does pre-removal lookup to get child handle for directory delegation revocation
+- [Phase 24-02]: GDD4_UNAVAIL is non-fatal per RFC 8881 -- does not fail COMPOUND, just signals no delegation available
+- [Phase 24-02]: Two-phase DELEGRETURN for directory delegations: flush with lock released, re-acquire for removal (avoids backchannel deadlock)
 
 ### Pending Todos
 
@@ -153,5 +168,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-22
-Stopped at: Completed 23-03-PLAN.md (Phase 23 complete)
-Resume file: `/gsd:execute-phase 24`
+Stopped at: Completed 24-03-PLAN.md (Phase 24 complete)
+Resume file: `/gsd:execute-phase 25`

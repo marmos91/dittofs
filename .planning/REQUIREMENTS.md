@@ -38,9 +38,9 @@ Requirements for NFSv4.1 Sessions milestone. Each maps to roadmap phases.
 
 ### Directory Delegations
 
-- [ ] **DDELEG-01**: Server handles GET_DIR_DELEGATION to grant directory delegations with notification bitmask
-- [ ] **DDELEG-02**: Server sends CB_NOTIFY when directory entries change (add/remove/rename/attr change)
-- [ ] **DDELEG-03**: Directory delegation state tracked in StateManager with recall and revocation support
+- [x] **DDELEG-01**: Server handles GET_DIR_DELEGATION to grant directory delegations with notification bitmask
+- [x] **DDELEG-02**: Server sends CB_NOTIFY when directory entries change (add/remove/rename/attr change)
+- [x] **DDELEG-03**: Directory delegation state tracked in StateManager with recall and revocation support
 
 ### Trunking
 
@@ -124,9 +124,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | LIFE-03 | Phase 23 | In Progress |
 | LIFE-04 | Phase 23 | In Progress |
 | LIFE-05 | Phase 23 | Complete |
-| DDELEG-01 | Phase 24 | Pending |
-| DDELEG-02 | Phase 24 | Pending |
-| DDELEG-03 | Phase 24 | Pending |
+| DDELEG-01 | Phase 24 | Complete |
+| DDELEG-02 | Phase 24 | Complete |
+| DDELEG-03 | Phase 24 | Complete |
 | TRUNK-01 | Phase 21 | Complete |
 | TRUNK-02 | Phase 18 | Complete |
 | COEX-01 | Phase 20 | Complete |

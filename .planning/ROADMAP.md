@@ -63,7 +63,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 21: Connection Management and Trunking** - BIND_CONN_TO_SESSION, multi-connection sessions, server_owner consistency (completed 2026-02-21)
 - [x] **Phase 22: Backchannel Multiplexing** - CB_SEQUENCE over fore-channel, bidirectional I/O, NAT-friendly callbacks (completed 2026-02-21)
 - [x] **Phase 23: Client Lifecycle and Cleanup** - DESTROY_CLIENTID, FREE_STATEID, TEST_STATEID, RECLAIM_COMPLETE, v4.0-only rejections (completed 2026-02-22)
-- [ ] **Phase 24: Directory Delegations** - GET_DIR_DELEGATION, CB_NOTIFY, delegation state tracking with recall
+- [x] **Phase 24: Directory Delegations** - GET_DIR_DELEGATION, CB_NOTIFY, delegation state tracking with recall (completed 2026-02-22)
 - [ ] **Phase 25: v3.0 Integration Testing** - E2E tests for sessions, EOS, backchannel, directory delegations, and coexistence
 - [ ] **Phase 25.5: Manual Verification v3.0** USER CHECKPOINT - Full NFSv4.1 validation with Linux client
 
@@ -209,7 +209,11 @@ Plans:
   2. CB_NOTIFY sent over backchannel when directory entries are added, removed, renamed, or have attributes changed
   3. Directory delegation state is tracked in StateManager with recall and revocation support (same pattern as file delegations)
   4. Directory delegation is recalled when a conflicting client modifies the directory
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 24-01-PLAN.md -- State model: DelegationState extensions, DirNotification type, CB_NOTIFY sub-type encoders, GrantDirDelegation, NotifyDirChange, batch flush, config fields
+- [ ] 24-02-PLAN.md -- GET_DIR_DELEGATION handler, DELEGRETURN flush, dispatch registration, config full stack (store, API, apiclient, CLI, settings watcher)
+- [ ] 24-03-PLAN.md -- Mutation handler hooks (CREATE, REMOVE, RENAME, LINK, OPEN, SETATTR), conflict recall, Prometheus metrics, integration tests, docs/NFS.md
 
 ### Phase 25: v3.0 Integration Testing
 **Goal**: All NFSv4.1 functionality verified end-to-end with real Linux NFS client mounts
@@ -337,7 +341,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 32
 | 21. Connection Management and Trunking | 2/2 | Complete    | 2026-02-21 | - |
 | 22. Backchannel Multiplexing | 2/2 | Complete    | 2026-02-21 | - |
 | 23. Client Lifecycle and Cleanup | 3/3 | Complete    | 2026-02-22 | - |
-| 24. Directory Delegations | v3.0 | 0/? | Not started | - |
+| 24. Directory Delegations | 3/3 | Complete   | 2026-02-22 | - |
 | 25. v3.0 Integration Testing | v3.0 | 0/? | Not started | - |
 | 26. Server-Side Copy | v4.0 | 0/? | Not started | - |
 | 27. Clone/Reflinks | v4.0 | 0/? | Not started | - |
@@ -347,7 +351,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 32
 | 31. Documentation | v4.0 | 0/? | Not started | - |
 | 32. v4.0 Testing | v4.0 | 0/? | Not started | - |
 
-**Total:** 76/? plans complete
+**Total:** 82/? plans complete
 
 ---
 *Roadmap created: 2026-02-04*
