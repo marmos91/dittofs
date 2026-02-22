@@ -8,6 +8,28 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
 )
 
+// GraceStatusInfo holds structured information about the grace period state.
+// Returned by GracePeriodState.Status() for API consumers.
+type GraceStatusInfo struct {
+	// Active indicates whether the grace period is currently in effect.
+	Active bool
+
+	// RemainingSeconds is the estimated time remaining (0 if not active).
+	RemainingSeconds float64
+
+	// TotalDuration is the configured grace period duration.
+	TotalDuration time.Duration
+
+	// ExpectedClients is the number of clients expected to reclaim.
+	ExpectedClients int
+
+	// ReclaimedClients is the number of clients that have completed reclaim.
+	ReclaimedClients int
+
+	// StartedAt is when the grace period started (zero if never started).
+	StartedAt time.Time
+}
+
 // GracePeriodState manages the NFSv4 grace period for server restart recovery.
 //
 // When the server restarts, clients need a window to reclaim their previously-held
@@ -31,6 +53,9 @@ type GracePeriodState struct {
 	// duration is the configured grace period duration.
 	duration time.Duration
 
+	// startedAt is when the grace period was started.
+	startedAt time.Time
+
 	// timer fires endGrace() after duration elapses without early completion.
 	timer *time.Timer
 
@@ -40,6 +65,10 @@ type GracePeriodState struct {
 
 	// reclaimedClients maps clients that have completed reclaim.
 	reclaimedClients map[uint64]bool
+
+	// reclaimCompleted tracks per-client RECLAIM_COMPLETE tracking (RFC 8881).
+	// Separate from reclaimedClients which tracks grace period early-exit.
+	reclaimCompleted map[uint64]bool
 
 	// onGraceEnd is the callback invoked when the grace period ends.
 	// Called outside the mutex to avoid deadlocks.
@@ -53,6 +82,7 @@ func NewGracePeriodState(duration time.Duration, onGraceEnd func()) *GracePeriod
 		duration:         duration,
 		expectedClients:  make(map[uint64]bool),
 		reclaimedClients: make(map[uint64]bool),
+		reclaimCompleted: make(map[uint64]bool),
 		onGraceEnd:       onGraceEnd,
 	}
 }
@@ -77,6 +107,7 @@ func (g *GracePeriodState) StartGrace(expectedClientIDs []uint64) {
 	}
 
 	g.active = true
+	g.startedAt = time.Now()
 
 	// Populate expected clients map
 	g.expectedClients = make(map[uint64]bool, len(expectedClientIDs))
@@ -84,6 +115,7 @@ func (g *GracePeriodState) StartGrace(expectedClientIDs []uint64) {
 		g.expectedClients[id] = true
 	}
 	g.reclaimedClients = make(map[uint64]bool)
+	g.reclaimCompleted = make(map[uint64]bool)
 
 	logger.Info("NFSv4 grace period started",
 		"duration", g.duration,
@@ -194,6 +226,113 @@ func (g *GracePeriodState) Stop() {
 		g.timer.Stop()
 		g.timer = nil
 	}
+}
+
+// ============================================================================
+// Grace Period Status, Force End, and RECLAIM_COMPLETE
+// ============================================================================
+
+// Status returns structured information about the grace period state.
+// Thread-safe: acquires g.mu.
+func (g *GracePeriodState) Status() GraceStatusInfo {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	info := GraceStatusInfo{
+		Active:           g.active,
+		TotalDuration:    g.duration,
+		ExpectedClients:  len(g.expectedClients),
+		ReclaimedClients: len(g.reclaimedClients),
+		StartedAt:        g.startedAt,
+	}
+
+	if g.active {
+		elapsed := time.Since(g.startedAt)
+		remaining := g.duration - elapsed
+		if remaining < 0 {
+			remaining = 0
+		}
+		info.RemainingSeconds = remaining.Seconds()
+	}
+
+	return info
+}
+
+// ForceEnd immediately ends the grace period and invokes the callback.
+// This is the public version of endGrace(), callable externally.
+// Idempotent: no-op if grace period is not active.
+func (g *GracePeriodState) ForceEnd() {
+	g.mu.Lock()
+
+	if !g.active {
+		g.mu.Unlock()
+		return
+	}
+
+	g.active = false
+
+	if g.timer != nil {
+		g.timer.Stop()
+		g.timer = nil
+	}
+
+	callback := g.onGraceEnd
+	reclaimed := len(g.reclaimedClients)
+	expected := len(g.expectedClients)
+
+	logger.Info("NFSv4 grace period force-ended",
+		"reclaimed_clients", reclaimed,
+		"expected_clients", expected)
+
+	g.mu.Unlock()
+
+	// Call callback outside lock to avoid deadlocks
+	if callback != nil {
+		callback()
+	}
+}
+
+// ReclaimComplete tracks per-client RECLAIM_COMPLETE per RFC 8881 Section 18.51.
+//
+// Returns:
+//   - NFS4ERR_COMPLETE_ALREADY if the client has already sent RECLAIM_COMPLETE
+//   - nil on success (including when not in grace period, per RFC 8881)
+//
+// When in grace period, also calls ClientReclaimed() for grace period early-exit tracking.
+func (g *GracePeriodState) ReclaimComplete(clientID uint64) error {
+	g.mu.Lock()
+
+	// Check for duplicate
+	if g.reclaimCompleted[clientID] {
+		g.mu.Unlock()
+		return &NFS4StateError{
+			Status:  types.NFS4ERR_COMPLETE_ALREADY,
+			Message: "reclaim already completed for this client",
+		}
+	}
+
+	// Mark as reclaim-complete
+	g.reclaimCompleted[clientID] = true
+
+	isActive := g.active
+	var reclaimDuration time.Duration
+	if isActive {
+		reclaimDuration = time.Since(g.startedAt)
+	}
+
+	logger.Info("RECLAIM_COMPLETE: client reclaim complete",
+		"client_id", clientID,
+		"in_grace", isActive,
+		"reclaim_duration", reclaimDuration)
+
+	g.mu.Unlock()
+
+	// If in grace period, also track for early exit
+	if isActive {
+		g.ClientReclaimed(clientID)
+	}
+
+	return nil
 }
 
 // ============================================================================

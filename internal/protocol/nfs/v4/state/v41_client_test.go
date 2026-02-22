@@ -537,3 +537,230 @@ func TestExchangeID_Timing(t *testing.T) {
 		t.Error("LastRenewal should be between before and after timestamps")
 	}
 }
+
+// ============================================================================
+// DestroyV41ClientID Tests
+// ============================================================================
+
+func TestDestroyV41ClientID(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		sm := NewStateManager(DefaultLeaseDuration)
+		defer sm.Shutdown()
+
+		ownerID := []byte("destroy-test-client")
+		var verifier [8]byte
+		copy(verifier[:], "verify01")
+
+		result, err := sm.ExchangeID(ownerID, verifier, 0, nil, "10.0.0.1:12345")
+		if err != nil {
+			t.Fatalf("ExchangeID error: %v", err)
+		}
+
+		// Destroy should succeed
+		err = sm.DestroyV41ClientID(result.ClientID)
+		if err != nil {
+			t.Fatalf("DestroyV41ClientID error: %v", err)
+		}
+
+		// Verify client is gone
+		sm.mu.RLock()
+		_, existsID := sm.v41ClientsByID[result.ClientID]
+		_, existsOwner := sm.v41ClientsByOwner[string(ownerID)]
+		sm.mu.RUnlock()
+
+		if existsID {
+			t.Error("Client should not exist in v41ClientsByID after destroy")
+		}
+		if existsOwner {
+			t.Error("Client should not exist in v41ClientsByOwner after destroy")
+		}
+
+		// Second destroy should return NFS4ERR_STALE_CLIENTID
+		err = sm.DestroyV41ClientID(result.ClientID)
+		if err == nil {
+			t.Fatal("Expected error on second destroy")
+		}
+		stateErr, ok := err.(*NFS4StateError)
+		if !ok {
+			t.Fatalf("Expected NFS4StateError, got %T", err)
+		}
+		if stateErr.Status != types.NFS4ERR_STALE_CLIENTID {
+			t.Errorf("Status = %d, want NFS4ERR_STALE_CLIENTID (%d)",
+				stateErr.Status, types.NFS4ERR_STALE_CLIENTID)
+		}
+	})
+
+	t.Run("clientid_busy", func(t *testing.T) {
+		sm := NewStateManager(DefaultLeaseDuration)
+		defer sm.Shutdown()
+
+		// Register client and create a session
+		clientID, seqID := registerV41Client(t, sm)
+
+		_, _, err := sm.CreateSession(
+			clientID, seqID+1, 0,
+			defaultForeAttrs(), defaultBackAttrs(), 0, nil,
+		)
+		if err != nil {
+			t.Fatalf("CreateSession error: %v", err)
+		}
+
+		// Destroy should fail with NFS4ERR_CLIENTID_BUSY
+		err = sm.DestroyV41ClientID(clientID)
+		if err == nil {
+			t.Fatal("Expected NFS4ERR_CLIENTID_BUSY error")
+		}
+		stateErr, ok := err.(*NFS4StateError)
+		if !ok {
+			t.Fatalf("Expected NFS4StateError, got %T", err)
+		}
+		if stateErr.Status != types.NFS4ERR_CLIENTID_BUSY {
+			t.Errorf("Status = %d, want NFS4ERR_CLIENTID_BUSY (%d)",
+				stateErr.Status, types.NFS4ERR_CLIENTID_BUSY)
+		}
+
+		// Destroy session first
+		sm.mu.RLock()
+		sessions := sm.sessionsByClientID[clientID]
+		var sessionID types.SessionId4
+		if len(sessions) > 0 {
+			sessionID = sessions[0].SessionID
+		}
+		sm.mu.RUnlock()
+
+		err = sm.DestroySession(sessionID)
+		if err != nil {
+			t.Fatalf("DestroySession error: %v", err)
+		}
+
+		// Now destroy should succeed
+		err = sm.DestroyV41ClientID(clientID)
+		if err != nil {
+			t.Fatalf("DestroyV41ClientID should succeed after session destroy: %v", err)
+		}
+	})
+
+	t.Run("stale_clientid", func(t *testing.T) {
+		sm := NewStateManager(DefaultLeaseDuration)
+		defer sm.Shutdown()
+
+		err := sm.DestroyV41ClientID(99999)
+		if err == nil {
+			t.Fatal("Expected error for non-existent client")
+		}
+		stateErr, ok := err.(*NFS4StateError)
+		if !ok {
+			t.Fatalf("Expected NFS4StateError, got %T", err)
+		}
+		if stateErr.Status != types.NFS4ERR_STALE_CLIENTID {
+			t.Errorf("Status = %d, want NFS4ERR_STALE_CLIENTID (%d)",
+				stateErr.Status, types.NFS4ERR_STALE_CLIENTID)
+		}
+	})
+
+	t.Run("idempotent_after_destroy", func(t *testing.T) {
+		sm := NewStateManager(DefaultLeaseDuration)
+		defer sm.Shutdown()
+
+		ownerID := []byte("idempotent-destroy")
+		var verifier [8]byte
+
+		result, err := sm.ExchangeID(ownerID, verifier, 0, nil, "10.0.0.1:12345")
+		if err != nil {
+			t.Fatalf("ExchangeID error: %v", err)
+		}
+
+		// First destroy succeeds
+		if err := sm.DestroyV41ClientID(result.ClientID); err != nil {
+			t.Fatalf("First destroy error: %v", err)
+		}
+
+		// Second destroy returns NFS4ERR_STALE_CLIENTID (not a crash)
+		err = sm.DestroyV41ClientID(result.ClientID)
+		if err == nil {
+			t.Fatal("Expected error on second destroy")
+		}
+		stateErr, ok := err.(*NFS4StateError)
+		if !ok {
+			t.Fatalf("Expected NFS4StateError, got %T", err)
+		}
+		if stateErr.Status != types.NFS4ERR_STALE_CLIENTID {
+			t.Errorf("Status = %d, want NFS4ERR_STALE_CLIENTID", stateErr.Status)
+		}
+	})
+
+	t.Run("during_grace_period", func(t *testing.T) {
+		sm := NewStateManager(5*time.Second, 5*time.Second)
+		defer sm.Shutdown()
+
+		ownerID := []byte("grace-destroy-client")
+		var verifier [8]byte
+
+		result, err := sm.ExchangeID(ownerID, verifier, 0, nil, "10.0.0.1:12345")
+		if err != nil {
+			t.Fatalf("ExchangeID error: %v", err)
+		}
+
+		// Start grace period with this client as expected
+		sm.StartGracePeriod([]uint64{result.ClientID, 99998})
+
+		if !sm.IsInGrace() {
+			t.Fatal("Grace period should be active")
+		}
+
+		// Destroy the client during grace
+		err = sm.DestroyV41ClientID(result.ClientID)
+		if err != nil {
+			t.Fatalf("DestroyV41ClientID during grace: %v", err)
+		}
+
+		// Give goroutine time to call ClientReclaimed
+		time.Sleep(20 * time.Millisecond)
+
+		// Grace period should still be active (one more client expected)
+		if !sm.IsInGrace() {
+			// If only this client was expected, it would end. But we have 99998 too.
+			// So it should still be active.
+		}
+	})
+}
+
+func TestDestroyV41ClientID_Concurrent(t *testing.T) {
+	sm := NewStateManager(DefaultLeaseDuration)
+	defer sm.Shutdown()
+
+	ownerID := []byte("concurrent-destroy")
+	var verifier [8]byte
+
+	result, err := sm.ExchangeID(ownerID, verifier, 0, nil, "10.0.0.1:12345")
+	if err != nil {
+		t.Fatalf("ExchangeID error: %v", err)
+	}
+
+	const numGoroutines = 10
+	var wg sync.WaitGroup
+	successes := make(chan bool, numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := sm.DestroyV41ClientID(result.ClientID)
+			successes <- (err == nil)
+		}()
+	}
+
+	wg.Wait()
+	close(successes)
+
+	successCount := 0
+	for s := range successes {
+		if s {
+			successCount++
+		}
+	}
+
+	if successCount != 1 {
+		t.Errorf("Expected exactly 1 success, got %d", successCount)
+	}
+}

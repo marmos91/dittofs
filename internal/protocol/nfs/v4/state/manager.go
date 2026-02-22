@@ -802,6 +802,47 @@ func (sm *StateManager) IsInGrace() bool {
 	return gp.IsInGrace()
 }
 
+// GraceStatus returns structured information about the grace period.
+// Returns a zero GraceStatusInfo if no grace period has been configured.
+func (sm *StateManager) GraceStatus() GraceStatusInfo {
+	sm.mu.RLock()
+	gp := sm.gracePeriod
+	sm.mu.RUnlock()
+
+	if gp == nil {
+		return GraceStatusInfo{}
+	}
+	return gp.Status()
+}
+
+// ForceEndGrace immediately ends the grace period.
+// No-op if no grace period is active.
+func (sm *StateManager) ForceEndGrace() {
+	sm.mu.RLock()
+	gp := sm.gracePeriod
+	sm.mu.RUnlock()
+
+	if gp == nil {
+		return
+	}
+	gp.ForceEnd()
+}
+
+// ReclaimComplete tracks per-client RECLAIM_COMPLETE for the grace period.
+// Delegates to GracePeriodState.ReclaimComplete.
+// Returns nil if no grace period has been configured (not an error per RFC 8881).
+func (sm *StateManager) ReclaimComplete(clientID uint64) error {
+	sm.mu.RLock()
+	gp := sm.gracePeriod
+	sm.mu.RUnlock()
+
+	if gp == nil {
+		// Not in grace period, but RECLAIM_COMPLETE outside grace is OK per RFC 8881
+		return nil
+	}
+	return gp.ReclaimComplete(clientID)
+}
+
 // CheckGraceForNewState returns NFS4ERR_GRACE if the server is in a grace period
 // and the operation would create new state. Returns nil if the operation is allowed.
 //

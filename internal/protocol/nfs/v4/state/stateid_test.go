@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // ============================================================================
@@ -1056,4 +1057,425 @@ func TestFullLifecycle_OpenConfirmClose(t *testing.T) {
 	if sm.GetOpenState(openResult.Stateid.Other) != nil {
 		t.Error("open state should be removed after CLOSE")
 	}
+}
+
+// ============================================================================
+// FreeStateid Tests
+// ============================================================================
+
+func TestFreeStateid(t *testing.T) {
+	t.Run("free_lock_stateid", func(t *testing.T) {
+		lm := lock.NewManager()
+		sm := NewStateManager(90 * time.Second)
+		sm.SetLockManager(lm)
+		defer sm.Shutdown()
+
+		// Create open state
+		fh := []byte("fh-free-lock")
+		openResult, err := sm.OpenFile(0, []byte("owner1"), 1, fh,
+			types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+		if err != nil {
+			t.Fatalf("OpenFile: %v", err)
+		}
+
+		// Confirm open
+		confirmedStateid, err := sm.ConfirmOpen(&openResult.Stateid, 2)
+		if err != nil {
+			t.Fatalf("ConfirmOpen: %v", err)
+		}
+
+		// Create lock state
+		lockResult, err := sm.LockNew(
+			0, []byte("lock-owner1"), 1,
+			confirmedStateid, 3,
+			fh, types.WRITE_LT, 0, 100, false,
+		)
+		if err != nil {
+			t.Fatalf("LockNew: %v", err)
+		}
+
+		// Free the lock stateid
+		err = sm.FreeStateid(0, &lockResult.Stateid)
+		if err != nil {
+			t.Fatalf("FreeStateid lock: %v", err)
+		}
+
+		// Verify lock state is gone
+		sm.mu.RLock()
+		_, exists := sm.lockStateByOther[lockResult.Stateid.Other]
+		sm.mu.RUnlock()
+
+		if exists {
+			t.Error("Lock state should be removed after FreeStateid")
+		}
+	})
+
+	t.Run("free_open_stateid", func(t *testing.T) {
+		sm := NewStateManager(90 * time.Second)
+		defer sm.Shutdown()
+
+		fh := []byte("fh-free-open")
+		openResult, err := sm.OpenFile(0, []byte("owner1"), 1, fh,
+			types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+		if err != nil {
+			t.Fatalf("OpenFile: %v", err)
+		}
+
+		// Confirm open
+		_, err = sm.ConfirmOpen(&openResult.Stateid, 2)
+		if err != nil {
+			t.Fatalf("ConfirmOpen: %v", err)
+		}
+
+		// Free the open stateid (no locks held)
+		err = sm.FreeStateid(0, &openResult.Stateid)
+		if err != nil {
+			t.Fatalf("FreeStateid open: %v", err)
+		}
+
+		// Verify open state is gone
+		if sm.GetOpenState(openResult.Stateid.Other) != nil {
+			t.Error("Open state should be removed after FreeStateid")
+		}
+	})
+
+	t.Run("free_open_with_locks_held", func(t *testing.T) {
+		lm := lock.NewManager()
+		sm := NewStateManager(90 * time.Second)
+		sm.SetLockManager(lm)
+		defer sm.Shutdown()
+
+		fh := []byte("fh-free-open-locked")
+		openResult, err := sm.OpenFile(0, []byte("owner1"), 1, fh,
+			types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+		if err != nil {
+			t.Fatalf("OpenFile: %v", err)
+		}
+
+		confirmedStateid, err := sm.ConfirmOpen(&openResult.Stateid, 2)
+		if err != nil {
+			t.Fatalf("ConfirmOpen: %v", err)
+		}
+
+		// Create a lock
+		_, err = sm.LockNew(
+			0, []byte("lock-owner1"), 1,
+			confirmedStateid, 3,
+			fh, types.WRITE_LT, 0, 100, false,
+		)
+		if err != nil {
+			t.Fatalf("LockNew: %v", err)
+		}
+
+		// Try to free open stateid -- should fail with NFS4ERR_LOCKS_HELD
+		err = sm.FreeStateid(0, &openResult.Stateid)
+		if err == nil {
+			t.Fatal("Expected NFS4ERR_LOCKS_HELD error")
+		}
+		stateErr, ok := err.(*NFS4StateError)
+		if !ok {
+			t.Fatalf("Expected NFS4StateError, got %T", err)
+		}
+		if stateErr.Status != types.NFS4ERR_LOCKS_HELD {
+			t.Errorf("Status = %d, want NFS4ERR_LOCKS_HELD (%d)",
+				stateErr.Status, types.NFS4ERR_LOCKS_HELD)
+		}
+	})
+
+	t.Run("free_delegation_stateid", func(t *testing.T) {
+		sm := NewStateManager(90 * time.Second)
+		defer sm.Shutdown()
+
+		fh := []byte("fh-free-deleg")
+		deleg := sm.GrantDelegation(100, fh, types.OPEN_DELEGATE_WRITE)
+
+		// Free the delegation stateid
+		err := sm.FreeStateid(100, &deleg.Stateid)
+		if err != nil {
+			t.Fatalf("FreeStateid delegation: %v", err)
+		}
+
+		// Verify delegation is gone
+		sm.mu.RLock()
+		_, exists := sm.delegByOther[deleg.Stateid.Other]
+		sm.mu.RUnlock()
+
+		if exists {
+			t.Error("Delegation should be removed after FreeStateid")
+		}
+	})
+
+	t.Run("bad_stateid", func(t *testing.T) {
+		sm := NewStateManager(90 * time.Second)
+		defer sm.Shutdown()
+
+		// Create a stateid with current epoch but not in any map
+		other := sm.generateStateidOther(StateTypeOpen)
+		stateid := &types.Stateid4{Seqid: 1, Other: other}
+
+		err := sm.FreeStateid(0, stateid)
+		if err == nil {
+			t.Fatal("Expected NFS4ERR_BAD_STATEID error")
+		}
+		stateErr, ok := err.(*NFS4StateError)
+		if !ok {
+			t.Fatalf("Expected NFS4StateError, got %T", err)
+		}
+		if stateErr.Status != types.NFS4ERR_BAD_STATEID {
+			t.Errorf("Status = %d, want NFS4ERR_BAD_STATEID (%d)",
+				stateErr.Status, types.NFS4ERR_BAD_STATEID)
+		}
+	})
+
+	t.Run("special_stateid", func(t *testing.T) {
+		sm := NewStateManager(90 * time.Second)
+		defer sm.Shutdown()
+
+		// All-zeros (anonymous)
+		zeroStateid := &types.Stateid4{Seqid: 0}
+		err := sm.FreeStateid(0, zeroStateid)
+		if err == nil {
+			t.Fatal("Expected NFS4ERR_BAD_STATEID for all-zeros stateid")
+		}
+		stateErr, ok := err.(*NFS4StateError)
+		if !ok {
+			t.Fatalf("Expected NFS4StateError, got %T", err)
+		}
+		if stateErr.Status != types.NFS4ERR_BAD_STATEID {
+			t.Errorf("Status = %d, want NFS4ERR_BAD_STATEID", stateErr.Status)
+		}
+
+		// All-ones (read bypass)
+		onesStateid := &types.Stateid4{Seqid: 0xFFFFFFFF}
+		for i := range onesStateid.Other {
+			onesStateid.Other[i] = 0xFF
+		}
+		err = sm.FreeStateid(0, onesStateid)
+		if err == nil {
+			t.Fatal("Expected NFS4ERR_BAD_STATEID for all-ones stateid")
+		}
+		stateErr, ok = err.(*NFS4StateError)
+		if !ok {
+			t.Fatalf("Expected NFS4StateError, got %T", err)
+		}
+		if stateErr.Status != types.NFS4ERR_BAD_STATEID {
+			t.Errorf("Status = %d, want NFS4ERR_BAD_STATEID", stateErr.Status)
+		}
+	})
+}
+
+func TestFreeStateid_Concurrent(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+	defer sm.Shutdown()
+
+	// Create multiple delegations
+	const numDelegs = 10
+	delegations := make([]*DelegationState, numDelegs)
+	for i := 0; i < numDelegs; i++ {
+		fh := []byte("fh-concurrent-free-" + string(rune('A'+i)))
+		delegations[i] = sm.GrantDelegation(uint64(100+i), fh, types.OPEN_DELEGATE_READ)
+	}
+
+	// Concurrently free all delegations
+	var wg sync.WaitGroup
+	errCh := make(chan error, numDelegs)
+
+	for i := 0; i < numDelegs; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			err := sm.FreeStateid(uint64(100+idx), &delegations[idx].Stateid)
+			if err != nil {
+				errCh <- err
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Errorf("Concurrent FreeStateid error: %v", err)
+	}
+
+	// Verify all delegations are gone
+	sm.mu.RLock()
+	remainingDelegs := len(sm.delegByOther)
+	sm.mu.RUnlock()
+
+	if remainingDelegs != 0 {
+		t.Errorf("Expected 0 delegations remaining, got %d", remainingDelegs)
+	}
+}
+
+// ============================================================================
+// TestStateids Tests
+// ============================================================================
+
+func TestTestStateids(t *testing.T) {
+	t.Run("all_valid", func(t *testing.T) {
+		sm := NewStateManager(90 * time.Second)
+		defer sm.Shutdown()
+
+		// Create several stateids
+		fh1 := []byte("fh-test-valid-1")
+		result1, err := sm.OpenFile(0, []byte("owner1"), 1, fh1,
+			types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+		if err != nil {
+			t.Fatalf("OpenFile 1: %v", err)
+		}
+
+		fh2 := []byte("fh-test-valid-2")
+		deleg := sm.GrantDelegation(100, fh2, types.OPEN_DELEGATE_READ)
+
+		stateids := []types.Stateid4{result1.Stateid, deleg.Stateid}
+		results := sm.TestStateids(stateids)
+
+		if len(results) != 2 {
+			t.Fatalf("Expected 2 results, got %d", len(results))
+		}
+		for i, status := range results {
+			if status != types.NFS4_OK {
+				t.Errorf("Result[%d] = %d, want NFS4_OK", i, status)
+			}
+		}
+	})
+
+	t.Run("mixed_valid_invalid", func(t *testing.T) {
+		sm := NewStateManager(90 * time.Second)
+		defer sm.Shutdown()
+
+		// Create a valid open state
+		fh := []byte("fh-test-mixed")
+		openResult, err := sm.OpenFile(0, []byte("owner1"), 1, fh,
+			types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+		if err != nil {
+			t.Fatalf("OpenFile: %v", err)
+		}
+
+		// Create an invalid stateid (current epoch but not in maps)
+		invalidOther := sm.generateStateidOther(StateTypeOpen)
+		invalidStateid := types.Stateid4{Seqid: 1, Other: invalidOther}
+
+		// Create a stale stateid (wrong epoch)
+		var staleOther [types.NFS4_OTHER_SIZE]byte
+		staleOther[0] = StateTypeOpen
+		staleOther[1] = 0xFF
+		staleOther[2] = 0xFF
+		staleOther[3] = 0xFF
+		staleStateid := types.Stateid4{Seqid: 1, Other: staleOther}
+
+		stateids := []types.Stateid4{openResult.Stateid, invalidStateid, staleStateid}
+		results := sm.TestStateids(stateids)
+
+		if len(results) != 3 {
+			t.Fatalf("Expected 3 results, got %d", len(results))
+		}
+		if results[0] != types.NFS4_OK {
+			t.Errorf("Valid stateid: status = %d, want NFS4_OK", results[0])
+		}
+		if results[1] != types.NFS4ERR_BAD_STATEID {
+			t.Errorf("Invalid stateid: status = %d, want NFS4ERR_BAD_STATEID", results[1])
+		}
+		if results[2] != types.NFS4ERR_STALE_STATEID {
+			t.Errorf("Stale stateid: status = %d, want NFS4ERR_STALE_STATEID", results[2])
+		}
+	})
+
+	t.Run("empty_list", func(t *testing.T) {
+		sm := NewStateManager(90 * time.Second)
+		defer sm.Shutdown()
+
+		results := sm.TestStateids([]types.Stateid4{})
+		if len(results) != 0 {
+			t.Errorf("Expected empty results for empty input, got %d", len(results))
+		}
+	})
+
+	t.Run("expired_stateid", func(t *testing.T) {
+		sm := NewStateManager(50 * time.Millisecond) // Short lease
+		defer sm.Shutdown()
+
+		// Create and confirm a v4.0 client with a short lease
+		verifier := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
+		callback := CallbackInfo{Program: 0x40000000, NetID: "tcp", Addr: "10.0.0.1.8.1"}
+
+		clientResult, err := sm.SetClientID("expired-test", verifier, callback, "10.0.0.1:1234")
+		if err != nil {
+			t.Fatalf("SetClientID: %v", err)
+		}
+		err = sm.ConfirmClientID(clientResult.ClientID, clientResult.ConfirmVerifier)
+		if err != nil {
+			t.Fatalf("ConfirmClientID: %v", err)
+		}
+
+		// Open a file with this client
+		fh := []byte("fh-expired-test")
+		openResult, err := sm.OpenFile(clientResult.ClientID, []byte("owner1"), 1, fh,
+			types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+		if err != nil {
+			t.Fatalf("OpenFile: %v", err)
+		}
+
+		// Wait for lease to expire
+		time.Sleep(100 * time.Millisecond)
+
+		stateids := []types.Stateid4{openResult.Stateid}
+		results := sm.TestStateids(stateids)
+
+		if len(results) != 1 {
+			t.Fatalf("Expected 1 result, got %d", len(results))
+		}
+		// Should be expired or bad (depends on whether lease cleanup already ran)
+		if results[0] != types.NFS4ERR_EXPIRED && results[0] != types.NFS4ERR_BAD_STATEID {
+			t.Errorf("Expired stateid: status = %d, want NFS4ERR_EXPIRED or NFS4ERR_BAD_STATEID", results[0])
+		}
+	})
+
+	t.Run("no_lease_renewal", func(t *testing.T) {
+		sm := NewStateManager(90 * time.Second)
+		defer sm.Shutdown()
+
+		// Create and confirm a v4.0 client
+		verifier := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
+		callback := CallbackInfo{Program: 0x40000000, NetID: "tcp", Addr: "10.0.0.1.8.1"}
+
+		clientResult, err := sm.SetClientID("no-renew-test", verifier, callback, "10.0.0.1:1234")
+		if err != nil {
+			t.Fatalf("SetClientID: %v", err)
+		}
+		err = sm.ConfirmClientID(clientResult.ClientID, clientResult.ConfirmVerifier)
+		if err != nil {
+			t.Fatalf("ConfirmClientID: %v", err)
+		}
+
+		// Open a file with this client
+		fh := []byte("fh-no-renew")
+		openResult, err := sm.OpenFile(clientResult.ClientID, []byte("owner1"), 1, fh,
+			types.OPEN4_SHARE_ACCESS_READ, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+		if err != nil {
+			t.Fatalf("OpenFile: %v", err)
+		}
+
+		// Record last renewal time
+		client := sm.GetClient(clientResult.ClientID)
+		lastRenew := client.LastRenewal
+
+		// Wait a bit to detect renewal
+		time.Sleep(5 * time.Millisecond)
+
+		// TestStateids should NOT renew the lease
+		stateids := []types.Stateid4{openResult.Stateid}
+		results := sm.TestStateids(stateids)
+
+		if results[0] != types.NFS4_OK {
+			t.Fatalf("TestStateids should return NFS4_OK, got %d", results[0])
+		}
+
+		// Check that LastRenewal was NOT updated
+		client = sm.GetClient(clientResult.ClientID)
+		if client.LastRenewal != lastRenew {
+			t.Error("TestStateids should NOT renew the lease (read-only operation)")
+		}
+	})
 }
