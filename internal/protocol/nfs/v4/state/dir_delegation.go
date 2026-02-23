@@ -132,6 +132,8 @@ func (sm *StateManager) NotifyDirChange(dirFH []byte, notif DirNotification) {
 			targets = append(targets, deleg)
 		}
 	}
+	// Snapshot batch window under RLock to avoid race with SetDirDelegBatchWindow
+	batchWindow := sm.dirDelegBatchWindow
 	sm.mu.RUnlock()
 
 	if len(targets) == 0 {
@@ -157,7 +159,7 @@ func (sm *StateManager) NotifyDirChange(dirFH []byte, notif DirNotification) {
 		count := len(deleg.PendingNotifs)
 
 		// Start/reset batch timer if not already running
-		sm.resetBatchTimer(deleg)
+		sm.resetBatchTimer(deleg, batchWindow)
 
 		// Count-based flush: if too many notifications have accumulated
 		if count >= maxBatchSize {
@@ -216,14 +218,16 @@ func (sm *StateManager) flushDirNotifications(deleg *DelegationState) {
 // resetBatchTimer starts a new batch timer if one is not already running.
 // Uses time.AfterFunc to trigger flushDirNotifications after the batch window.
 //
+// The window parameter is a snapshot of sm.dirDelegBatchWindow taken under
+// sm.mu.RLock by the caller, avoiding a data race with SetDirDelegBatchWindow.
+//
 // Caller must hold deleg.NotifMu.
-func (sm *StateManager) resetBatchTimer(deleg *DelegationState) {
+func (sm *StateManager) resetBatchTimer(deleg *DelegationState, window time.Duration) {
 	if deleg.BatchTimer != nil {
 		// Timer already running -- let it expire naturally
 		return
 	}
 
-	window := sm.dirDelegBatchWindow
 	if window <= 0 {
 		window = 50 * time.Millisecond // default
 	}

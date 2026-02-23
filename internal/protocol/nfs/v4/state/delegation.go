@@ -170,6 +170,11 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	// Check total delegation count against limit (same check as GrantDirDelegation)
+	if sm.maxDelegations > 0 && len(sm.delegByOther) >= sm.maxDelegations {
+		return nil
+	}
+
 	other := sm.generateStateidOther(StateTypeDeleg)
 	stateid := types.Stateid4{
 		Seqid: 1,
@@ -240,6 +245,10 @@ func (sm *StateManager) ReturnDelegation(stateid *types.Stateid4) error {
 	// before removal. We must release sm.mu before flushing because
 	// flushDirNotifications calls getBackchannelSender which needs sm.mu.RLock.
 	if deleg.IsDirectory {
+		// Mark as recalled so NotifyDirChange skips this delegation during
+		// the window between sm.mu.Unlock and the re-acquire below.
+		deleg.RecallSent = true
+
 		// Stop the batch timer under NotifMu (prevents new timer-triggered flushes)
 		deleg.NotifMu.Lock()
 		if deleg.BatchTimer != nil {

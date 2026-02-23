@@ -7,9 +7,11 @@ package state
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/binary"
 	"fmt"
 	"io"
+	"slices"
 
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
@@ -172,8 +174,16 @@ func EncodeCBNotifyOp(stateid *types.Stateid4, dirFH []byte, notifs []DirNotific
 		grouped[n.Type] = append(grouped[n.Type], n)
 	}
 
+	// Sort notification types for deterministic CB_NOTIFY encoding
+	notifTypes := make([]uint32, 0, len(grouped))
+	for t := range grouped {
+		notifTypes = append(notifTypes, t)
+	}
+	slices.SortFunc(notifTypes, cmp.Compare)
+
 	// Encode each group as a Notify4
-	for notifType, entries := range grouped {
+	for _, notifType := range notifTypes {
+		entries := grouped[notifType]
 		// Only include types the client subscribed to
 		if mask&(1<<notifType) == 0 {
 			continue

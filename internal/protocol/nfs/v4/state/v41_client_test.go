@@ -717,10 +717,10 @@ func TestDestroyV41ClientID(t *testing.T) {
 		// Give goroutine time to call ClientReclaimed
 		time.Sleep(20 * time.Millisecond)
 
-		// Grace period should still be active (one more client expected)
+		// Grace period should still be active (one more client expected).
+		// If only this client was expected, it would end. But we have 99998 too.
 		if !sm.IsInGrace() {
-			// If only this client was expected, it would end. But we have 99998 too.
-			// So it should still be active.
+			t.Error("grace period should still be active with other expected clients")
 		}
 	})
 }
