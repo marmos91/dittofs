@@ -45,18 +45,22 @@ func (sm *StateManager) GrantDirDelegation(clientID uint64, dirFH []byte, notifM
 		return nil, fmt.Errorf("delegations disabled")
 	}
 
-	// Check client has valid lease (v4.0 or v4.1)
-	_, v40Exists := sm.clientsByID[clientID]
-	_, v41Exists := sm.v41ClientsByID[clientID]
-	if !v40Exists && !v41Exists {
+	// Check client has valid, non-expired lease (v4.0 or v4.1)
+	var leaseValid bool
+	if v40, ok := sm.clientsByID[clientID]; ok {
+		leaseValid = v40.Lease != nil && !v40.Lease.IsExpired()
+	} else if v41, ok := sm.v41ClientsByID[clientID]; ok {
+		leaseValid = v41.Lease != nil && !v41.Lease.IsExpired()
+	}
+	if !leaseValid {
 		return nil, &NFS4StateError{
 			Status:  types.NFS4ERR_EXPIRED,
-			Message: fmt.Sprintf("client %d not found", clientID),
+			Message: fmt.Sprintf("client %d not found or lease expired", clientID),
 		}
 	}
 
-	// Check total delegation count against limit
-	if sm.maxDelegations > 0 && len(sm.delegByOther) >= sm.maxDelegations {
+	// Check total active delegation count against limit (revoked delegations excluded)
+	if sm.maxDelegations > 0 && sm.countActiveDelegations() >= sm.maxDelegations {
 		return nil, fmt.Errorf("delegation limit exceeded (%d)", sm.maxDelegations)
 	}
 

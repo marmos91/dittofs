@@ -139,6 +139,21 @@ func (d *DelegationState) StopRecallTimer() {
 // Delegation Operations on StateManager
 // ============================================================================
 
+// countActiveDelegations returns the number of non-revoked delegations.
+// Revoked delegations are kept in delegByOther for stale stateid detection
+// but should not count toward the maxDelegations limit.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) countActiveDelegations() int {
+	count := 0
+	for _, deleg := range sm.delegByOther {
+		if !deleg.Revoked {
+			count++
+		}
+	}
+	return count
+}
+
 // removeDelegFromFile removes a delegation from the delegByFile map.
 // Cleans up the map entry if no delegations remain for the file.
 //
@@ -170,8 +185,8 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// Check total delegation count against limit (same check as GrantDirDelegation)
-	if sm.maxDelegations > 0 && len(sm.delegByOther) >= sm.maxDelegations {
+	// Check total active delegation count against limit
+	if sm.maxDelegations > 0 && sm.countActiveDelegations() >= sm.maxDelegations {
 		return nil
 	}
 
