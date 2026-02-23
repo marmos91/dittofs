@@ -163,9 +163,14 @@ func (h *Handler) handleLink(ctx *types.CompoundContext, reader io.Reader) *type
 
 	// Notify directory delegation holders about the new link entry
 	if h.StateManager != nil {
+		var originClientID uint64
+		if ctx.ClientState != nil {
+			originClientID = ctx.ClientState.ClientID
+		}
 		h.StateManager.NotifyDirChange(ctx.CurrentFH, state.DirNotification{
-			Type:      types.NOTIFY4_ADD_ENTRY,
-			EntryName: newName,
+			Type:           types.NOTIFY4_ADD_ENTRY,
+			EntryName:      newName,
+			OriginClientID: originClientID,
 		})
 	}
 

@@ -45,18 +45,22 @@ func (sm *StateManager) GrantDirDelegation(clientID uint64, dirFH []byte, notifM
 		return nil, fmt.Errorf("delegations disabled")
 	}
 
-	// Check client has valid lease (v4.0 or v4.1)
-	_, v40Exists := sm.clientsByID[clientID]
-	_, v41Exists := sm.v41ClientsByID[clientID]
-	if !v40Exists && !v41Exists {
+	// Check client has valid, non-expired lease (v4.0 or v4.1)
+	var leaseValid bool
+	if v40, ok := sm.clientsByID[clientID]; ok {
+		leaseValid = v40.Lease != nil && !v40.Lease.IsExpired()
+	} else if v41, ok := sm.v41ClientsByID[clientID]; ok {
+		leaseValid = v41.Lease != nil && !v41.Lease.IsExpired()
+	}
+	if !leaseValid {
 		return nil, &NFS4StateError{
 			Status:  types.NFS4ERR_EXPIRED,
-			Message: fmt.Sprintf("client %d not found", clientID),
+			Message: fmt.Sprintf("client %d not found or lease expired", clientID),
 		}
 	}
 
-	// Check total delegation count against limit
-	if sm.maxDelegations > 0 && len(sm.delegByOther) >= sm.maxDelegations {
+	// Check total active delegation count against limit (revoked delegations excluded)
+	if sm.maxDelegations > 0 && sm.countActiveDelegations() >= sm.maxDelegations {
 		return nil, fmt.Errorf("delegation limit exceeded (%d)", sm.maxDelegations)
 	}
 
@@ -124,19 +128,23 @@ func (sm *StateManager) GrantDirDelegation(clientID uint64, dirFH []byte, notifM
 func (sm *StateManager) NotifyDirChange(dirFH []byte, notif DirNotification) {
 	sm.mu.RLock()
 	delegs := sm.delegByFile[string(dirFH)]
-	if len(delegs) == 0 {
-		sm.mu.RUnlock()
-		return
+	// Filter eligible delegations while holding the lock to avoid data races
+	// on deleg.Revoked and deleg.RecallSent (written under sm.mu.Lock).
+	var targets []*DelegationState
+	for _, deleg := range delegs {
+		if deleg.IsDirectory && !deleg.Revoked && !deleg.RecallSent {
+			targets = append(targets, deleg)
+		}
 	}
-	// Copy the slice so we can release the lock
-	targets := make([]*DelegationState, len(delegs))
-	copy(targets, delegs)
+	// Snapshot batch window under RLock to avoid race with SetDirDelegBatchWindow
+	batchWindow := sm.dirDelegBatchWindow
 	sm.mu.RUnlock()
 
+	if len(targets) == 0 {
+		return
+	}
+
 	for _, deleg := range targets {
-		if !deleg.IsDirectory || deleg.Revoked || deleg.RecallSent {
-			continue
-		}
 
 		// Conflict-based recall: if the notification comes from a different
 		// client than the delegation holder, recall the delegation.
@@ -155,7 +163,7 @@ func (sm *StateManager) NotifyDirChange(dirFH []byte, notif DirNotification) {
 		count := len(deleg.PendingNotifs)
 
 		// Start/reset batch timer if not already running
-		sm.resetBatchTimer(deleg)
+		sm.resetBatchTimer(deleg, batchWindow)
 
 		// Count-based flush: if too many notifications have accumulated
 		if count >= maxBatchSize {
@@ -187,19 +195,19 @@ func (sm *StateManager) flushDirNotifications(deleg *DelegationState) {
 		return
 	}
 
-	sm.delegationMetrics.RecordDirNotification()
-
 	// Encode CB_NOTIFY payload
 	encoded := EncodeCBNotifyOp(&deleg.Stateid, deleg.FileHandle, pending, deleg.NotificationMask)
 
-	// Send via backchannel
+	// Send via backchannel — only record metric on successful enqueue
 	sender := sm.getBackchannelSender(deleg.ClientID)
 	if sender != nil {
 		req := CallbackRequest{
 			OpCode:  types.CB_NOTIFY,
 			Payload: encoded,
 		}
-		if !sender.Enqueue(req) {
+		if sender.Enqueue(req) {
+			sm.delegationMetrics.RecordDirNotification()
+		} else {
 			logger.Warn("CB_NOTIFY: backchannel queue full, notifications lost",
 				"client_id", deleg.ClientID,
 				"count", len(pending))
@@ -214,14 +222,16 @@ func (sm *StateManager) flushDirNotifications(deleg *DelegationState) {
 // resetBatchTimer starts a new batch timer if one is not already running.
 // Uses time.AfterFunc to trigger flushDirNotifications after the batch window.
 //
+// The window parameter is a snapshot of sm.dirDelegBatchWindow taken under
+// sm.mu.RLock by the caller, avoiding a data race with SetDirDelegBatchWindow.
+//
 // Caller must hold deleg.NotifMu.
-func (sm *StateManager) resetBatchTimer(deleg *DelegationState) {
+func (sm *StateManager) resetBatchTimer(deleg *DelegationState, window time.Duration) {
 	if deleg.BatchTimer != nil {
 		// Timer already running -- let it expire naturally
 		return
 	}
 
-	window := sm.dirDelegBatchWindow
 	if window <= 0 {
 		window = 50 * time.Millisecond // default
 	}
@@ -245,12 +255,13 @@ func (sm *StateManager) resetBatchTimer(deleg *DelegationState) {
 //
 // Caller must NOT hold sm.mu (method acquires Lock).
 func (sm *StateManager) RecallDirDelegation(deleg *DelegationState, reason string) {
-	deleg.RecallReason = reason
-
 	sm.delegationMetrics.RecordRecall("directory", reason)
 
 	// For directory_deleted: revoke immediately (no recall)
 	if reason == "directory_deleted" {
+		sm.mu.Lock()
+		deleg.RecallReason = reason
+		sm.mu.Unlock()
 		sm.RevokeDelegation(deleg.Stateid.Other)
 		return
 	}
@@ -258,8 +269,9 @@ func (sm *StateManager) RecallDirDelegation(deleg *DelegationState, reason strin
 	// Flush pending notifications before recall
 	sm.flushDirNotifications(deleg)
 
-	// Mark as recalled and send recall
+	// Mark as recalled and send recall (all fields written under sm.mu)
 	sm.mu.Lock()
+	deleg.RecallReason = reason
 	deleg.RecallSent = true
 	deleg.RecallTime = time.Now()
 	sm.mu.Unlock()

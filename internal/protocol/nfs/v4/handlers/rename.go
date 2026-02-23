@@ -203,17 +203,29 @@ func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *ty
 
 	// Notify directory delegation holders about the rename
 	if h.StateManager != nil {
-		// Notify source directory with RENAME event
-		h.StateManager.NotifyDirChange(ctx.SavedFH, state.DirNotification{
-			Type:      types.NOTIFY4_RENAME_ENTRY,
-			EntryName: oldName,
-			NewName:   newName,
-		})
-		// For cross-directory renames, also notify destination directory with ADD
-		if !bytes.Equal(ctx.SavedFH, ctx.CurrentFH) {
+		var originClientID uint64
+		if ctx.ClientState != nil {
+			originClientID = ctx.ClientState.ClientID
+		}
+		if bytes.Equal(ctx.SavedFH, ctx.CurrentFH) {
+			// Same-directory rename: single RENAME notification
+			h.StateManager.NotifyDirChange(ctx.SavedFH, state.DirNotification{
+				Type:           types.NOTIFY4_RENAME_ENTRY,
+				EntryName:      oldName,
+				NewName:        newName,
+				OriginClientID: originClientID,
+			})
+		} else {
+			// Cross-directory rename: REMOVE from source, ADD to destination
+			h.StateManager.NotifyDirChange(ctx.SavedFH, state.DirNotification{
+				Type:           types.NOTIFY4_REMOVE_ENTRY,
+				EntryName:      oldName,
+				OriginClientID: originClientID,
+			})
 			h.StateManager.NotifyDirChange(ctx.CurrentFH, state.DirNotification{
-				Type:      types.NOTIFY4_ADD_ENTRY,
-				EntryName: newName,
+				Type:           types.NOTIFY4_ADD_ENTRY,
+				EntryName:      newName,
+				OriginClientID: originClientID,
 			})
 		}
 	}

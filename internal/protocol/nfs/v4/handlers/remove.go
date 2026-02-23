@@ -164,9 +164,14 @@ func (h *Handler) handleRemove(ctx *types.CompoundContext, reader io.Reader) *ty
 
 	// Notify directory delegation holders about the removed entry
 	if h.StateManager != nil {
+		var originClientID uint64
+		if ctx.ClientState != nil {
+			originClientID = ctx.ClientState.ClientID
+		}
 		h.StateManager.NotifyDirChange([]byte(parentHandle), state.DirNotification{
-			Type:      types.NOTIFY4_REMOVE_ENTRY,
-			EntryName: target,
+			Type:           types.NOTIFY4_REMOVE_ENTRY,
+			EntryName:      target,
+			OriginClientID: originClientID,
 		})
 
 		// If the removed entry was a directory, revoke any directory delegations on it

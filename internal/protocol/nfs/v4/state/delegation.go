@@ -139,6 +139,21 @@ func (d *DelegationState) StopRecallTimer() {
 // Delegation Operations on StateManager
 // ============================================================================
 
+// countActiveDelegations returns the number of non-revoked delegations.
+// Revoked delegations are kept in delegByOther for stale stateid detection
+// but should not count toward the maxDelegations limit.
+//
+// Caller must hold sm.mu.
+func (sm *StateManager) countActiveDelegations() int {
+	count := 0
+	for _, deleg := range sm.delegByOther {
+		if !deleg.Revoked {
+			count++
+		}
+	}
+	return count
+}
+
 // removeDelegFromFile removes a delegation from the delegByFile map.
 // Cleans up the map entry if no delegations remain for the file.
 //
@@ -169,6 +184,11 @@ func (sm *StateManager) removeDelegFromFile(deleg *DelegationState) {
 func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, delegType uint32) *DelegationState {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+
+	// Check total active delegation count against limit
+	if sm.maxDelegations > 0 && sm.countActiveDelegations() >= sm.maxDelegations {
+		return nil
+	}
 
 	other := sm.generateStateidOther(StateTypeDeleg)
 	stateid := types.Stateid4{
@@ -240,6 +260,10 @@ func (sm *StateManager) ReturnDelegation(stateid *types.Stateid4) error {
 	// before removal. We must release sm.mu before flushing because
 	// flushDirNotifications calls getBackchannelSender which needs sm.mu.RLock.
 	if deleg.IsDirectory {
+		// Mark as recalled so NotifyDirChange skips this delegation during
+		// the window between sm.mu.Unlock and the re-acquire below.
+		deleg.RecallSent = true
+
 		// Stop the batch timer under NotifMu (prevents new timer-triggered flushes)
 		deleg.NotifMu.Lock()
 		if deleg.BatchTimer != nil {

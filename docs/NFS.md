@@ -325,7 +325,7 @@ Directory delegation settings are managed via `dfsctl adapter settings nfs`:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `delegations_enabled` | `true` | Enable/disable all delegations (file and directory) |
-| `max_delegations` | `0` (unlimited) | Maximum concurrent delegations across all clients |
+| `max_delegations` | `10000` | Maximum concurrent delegations across all clients |
 | `dir_deleg_batch_window_ms` | `50` | Notification batch window in milliseconds |
 
 ```bash

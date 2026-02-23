@@ -356,8 +356,9 @@ func (h *Handler) handleOpenClaimNull(
 	// Notify directory delegation holders when a new file is created via OPEN
 	if h.StateManager != nil && openType == types.OPEN4_CREATE && created {
 		h.StateManager.NotifyDirChange([]byte(parentHandle), state.DirNotification{
-			Type:      types.NOTIFY4_ADD_ENTRY,
-			EntryName: filename,
+			Type:           types.NOTIFY4_ADD_ENTRY,
+			EntryName:      filename,
+			OriginClientID: clientID,
 		})
 	}
 

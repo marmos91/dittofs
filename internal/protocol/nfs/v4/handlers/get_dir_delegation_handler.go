@@ -1,4 +1,4 @@
-// Package handlers -- GET_DIR_DELEGATION operation handler (op 47).
+// Package handlers -- GET_DIR_DELEGATION operation handler (op 46).
 //
 // GET_DIR_DELEGATION allows a client to request directory change notifications
 // from the server. Per RFC 8881 Section 18.39.
