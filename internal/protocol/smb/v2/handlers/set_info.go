@@ -5,6 +5,7 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"path"
@@ -365,15 +366,8 @@ func (h *Handler) setFileInfoFromStore(
 		var toName string
 
 		// Check if RootDirectory is non-zero (handle-relative rename)
-		isRootDirZero := true
-		for _, b := range renameInfo.RootDirectory {
-			if b != 0 {
-				isRootDirZero = false
-				break
-			}
-		}
-
-		if !isRootDirZero {
+		var zeroRootDir [8]byte
+		if !bytes.Equal(renameInfo.RootDirectory[:], zeroRootDir[:]) {
 			// RootDirectory is non-zero: FileName is relative to the directory
 			// identified by RootDirectory. For now, we don't resolve FileId handles
 			// to directory handles, so fall back to same-directory rename.

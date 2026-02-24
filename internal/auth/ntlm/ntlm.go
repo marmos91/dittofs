@@ -723,15 +723,7 @@ func ComputeNTHash(password string) [16]byte {
 // [MS-NLMP] Section 3.3.2
 func ComputeNTLMv2Hash(ntHash [16]byte, username, domain string) [16]byte {
 	// Uppercase username, keep domain as-is
-	userUpper := strings.ToUpper(username)
-
-	// Convert to UTF-16LE
-	combined := userUpper + domain
-	utf16Combined := utf16.Encode([]rune(combined))
-	combinedBytes := make([]byte, len(utf16Combined)*2)
-	for i, r := range utf16Combined {
-		binary.LittleEndian.PutUint16(combinedBytes[i*2:], r)
-	}
+	combinedBytes := encodeUTF16LE(strings.ToUpper(username) + domain)
 
 	// Compute HMAC-MD5
 	mac := hmac.New(md5.New, ntHash[:])

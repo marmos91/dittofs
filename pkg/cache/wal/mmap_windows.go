@@ -243,7 +243,7 @@ func (p *MmapPersister) AppendBlockWrite(entry *BlockWriteEntry) error {
 	p.header.TotalDataSize += uint64(len(entry.Data))
 	p.header.Version = mmapVersion
 	p.writeHeader()
-	p.dirty = true
+	p.dirty = false // Header is now in sync with mmap region
 
 	return nil
 }
@@ -283,7 +283,7 @@ func (p *MmapPersister) AppendBlockUploaded(payloadID string, chunkIdx, blockIdx
 	p.header.EntryCount++
 	p.header.Version = mmapVersion
 	p.writeHeader()
-	p.dirty = true
+	p.dirty = false
 
 	return nil
 }
@@ -317,7 +317,7 @@ func (p *MmapPersister) AppendRemove(payloadID string) error {
 	p.header.EntryCount++
 	p.header.Version = mmapVersion
 	p.writeHeader()
-	p.dirty = true
+	p.dirty = false
 
 	return nil
 }

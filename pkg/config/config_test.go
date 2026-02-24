@@ -7,13 +7,6 @@ import (
 	"time"
 )
 
-// yamlSafePath converts a filesystem path to a YAML-safe representation.
-// On Windows, backslashes in double-quoted YAML strings are interpreted as
-// escape sequences (e.g. \U -> Unicode escape), causing parse errors.
-func yamlSafePath(p string) string {
-	return filepath.ToSlash(p)
-}
-
 func TestLoad_DefaultConfig(t *testing.T) {
 	// Create a temporary config file
 	tmpDir := t.TempDir()

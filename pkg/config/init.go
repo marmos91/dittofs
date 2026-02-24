@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // InitConfig creates a sample configuration file at the default location.
@@ -53,11 +52,11 @@ func InitConfig(force bool) (string, error) {
 	return configPath, nil
 }
 
-// yamlSafeCachePath converts a filesystem path to a YAML-safe representation.
+// yamlSafePath converts a filesystem path to a YAML-safe representation.
 // On Windows, backslashes in double-quoted YAML strings are interpreted as
 // escape sequences (e.g. \U -> Unicode escape), causing parse errors.
-func yamlSafeCachePath(p string) string {
-	return strings.ReplaceAll(p, `\`, `/`)
+func yamlSafePath(p string) string {
+	return filepath.ToSlash(p)
 }
 
 // generateJWTSecret generates a cryptographically secure random JWT secret.
@@ -146,7 +145,7 @@ controlplane:
 # All writes go through the WAL cache for durability
 cache:
   # Directory path for the cache WAL file (required)
-  path: "` + yamlSafeCachePath(cfg.Cache.Path) + `"
+  path: "` + yamlSafePath(cfg.Cache.Path) + `"
   # Maximum cache size (supports human-readable formats: "1GB", "512MB", "10Gi")
   size: 1Gi
 
