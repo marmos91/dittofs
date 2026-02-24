@@ -28,8 +28,13 @@ func (p *MmapPersister) Sync() error {
 	return ErrUnsupportedPlatform
 }
 
+// AppendBlockUploaded is not supported on Windows.
+func (p *MmapPersister) AppendBlockUploaded(_ string, _, _ uint32) error {
+	return ErrUnsupportedPlatform
+}
+
 // Recover is not supported on Windows.
-func (p *MmapPersister) Recover() ([]BlockWriteEntry, error) {
+func (p *MmapPersister) Recover() (*RecoveryResult, error) {
 	return nil, ErrUnsupportedPlatform
 }
 
