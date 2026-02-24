@@ -338,8 +338,11 @@ release:
     # macOS (Intel)
     curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfs_{{ .Version }}_Darwin_x86_64.tar.gz | tar xz
 
-    # Windows (x86_64) — download and extract the .zip
-    # https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfs_{{ .Version }}_Windows_x86_64.zip
+    # Windows (x86_64)
+    Invoke-WebRequest -Uri "https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfs_{{ .Version }}_Windows_x86_64.zip" -OutFile dfs.zip; Expand-Archive dfs.zip -DestinationPath .; Remove-Item dfs.zip
+
+    # Windows (arm64)
+    Invoke-WebRequest -Uri "https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfs_{{ .Version }}_Windows_arm64.zip" -OutFile dfs.zip; Expand-Archive dfs.zip -DestinationPath .; Remove-Item dfs.zip
 
     # dfsctl (client CLI)
     # Linux (x86_64)
@@ -351,8 +354,11 @@ release:
     # macOS (Intel)
     curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfsctl_{{ .Version }}_Darwin_x86_64.tar.gz | tar xz
 
-    # Windows (x86_64) — download and extract the .zip
-    # https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfsctl_{{ .Version }}_Windows_x86_64.zip
+    # Windows (x86_64)
+    Invoke-WebRequest -Uri "https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfsctl_{{ .Version }}_Windows_x86_64.zip" -OutFile dfsctl.zip; Expand-Archive dfsctl.zip -DestinationPath .; Remove-Item dfsctl.zip
+
+    # Windows (arm64)
+    Invoke-WebRequest -Uri "https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfsctl_{{ .Version }}_Windows_arm64.zip" -OutFile dfsctl.zip; Expand-Archive dfsctl.zip -DestinationPath .; Remove-Item dfsctl.zip
     ```
 
     **Docker:**
