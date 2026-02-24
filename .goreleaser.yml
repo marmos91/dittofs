@@ -321,7 +321,7 @@ release:
 
     **Scoop (Windows):**
     ```powershell
-    scoop bucket add dittofs https://github.com/marmos91/scoop-bucket
+    scoop bucket add marmos91 https://github.com/marmos91/scoop-bucket
     scoop install dfs       # Server daemon
     scoop install dfsctl    # Client CLI
     ```
