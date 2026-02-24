@@ -113,6 +113,46 @@ If the `HOMEBREW_TAP_TOKEN` needs to be rotated:
 2. Update the `HOMEBREW_TAP_TOKEN` secret in `marmos91/dittofs` repository settings
 3. The old token is invalidated automatically when the new PAT is created with the same name
 
+## Scoop Bucket (Windows)
+
+Releases automatically publish Scoop manifests to [`marmos91/scoop-bucket`](https://github.com/marmos91/scoop-bucket). Users can install via:
+
+```powershell
+scoop bucket add dittofs https://github.com/marmos91/scoop-bucket
+scoop install dfs       # Server daemon
+scoop install dfsctl    # Client CLI
+```
+
+### How It Works
+
+GoReleaser's `scoops` section generates JSON manifest files and pushes them to the bucket repository on each non-prerelease tag push. The `skip_upload: auto` setting prevents prerelease versions from being published.
+
+### Prerequisites
+
+1. **Bucket repository**: `marmos91/scoop-bucket` must exist on GitHub
+2. **Personal Access Token**: A fine-grained token scoped to `marmos91/scoop-bucket` with Contents read+write permission, stored as `SCOOP_BUCKET_TOKEN` in the `marmos91/dittofs` repository secrets
+
+### Local Testing
+
+```bash
+# Set a dummy token for local testing
+export SCOOP_BUCKET_TOKEN=dummy
+
+goreleaser release --snapshot --clean
+
+# Verify generated manifests
+cat dist/scoop/dfs.json
+cat dist/scoop/dfsctl.json
+```
+
+### Token Rotation
+
+If the `SCOOP_BUCKET_TOKEN` needs to be rotated:
+
+1. Create a new fine-grained PAT at https://github.com/settings/tokens scoped to `marmos91/scoop-bucket` (Contents: read+write)
+2. Update the `SCOOP_BUCKET_TOKEN` secret in `marmos91/dittofs` repository settings
+3. The old token is invalidated automatically when the new PAT is created with the same name
+
 ## Delete a Tag
 
 ```bash
