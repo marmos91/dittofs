@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 )
 
@@ -101,14 +102,28 @@ func NewStore() (*Store, error) {
 
 // getConfigPath returns the path to the config file.
 func getConfigPath() (string, error) {
-	// Use XDG_CONFIG_HOME if set, otherwise ~/.config
-	configHome := os.Getenv("XDG_CONFIG_HOME")
-	if configHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("cannot determine home directory: %w", err)
+	var configHome string
+
+	if runtime.GOOS == "windows" {
+		// On Windows, use %APPDATA%\dfsctl
+		configHome = os.Getenv("APPDATA")
+		if configHome == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", fmt.Errorf("cannot determine home directory: %w", err)
+			}
+			configHome = filepath.Join(home, "AppData", "Roaming")
 		}
-		configHome = filepath.Join(home, ".config")
+	} else {
+		// On Unix, use XDG_CONFIG_HOME or ~/.config
+		configHome = os.Getenv("XDG_CONFIG_HOME")
+		if configHome == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", fmt.Errorf("cannot determine home directory: %w", err)
+			}
+			configHome = filepath.Join(home, ".config")
+		}
 	}
 
 	return filepath.Join(configHome, DefaultConfigDir, ConfigFileName), nil

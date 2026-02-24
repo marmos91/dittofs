@@ -3,12 +3,25 @@ package credentials
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// setTestConfigHome sets the appropriate env var for config home based on OS.
+// On Windows it sets APPDATA, on Unix it sets XDG_CONFIG_HOME.
+// t.Setenv automatically restores the original value when the test completes.
+func setTestConfigHome(t *testing.T, dir string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Setenv("APPDATA", dir)
+	} else {
+		t.Setenv("XDG_CONFIG_HOME", dir)
+	}
+}
 
 func TestContextIsExpired(t *testing.T) {
 	tests := []struct {
@@ -60,10 +73,8 @@ func TestStoreOperations(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	// Set XDG_CONFIG_HOME to temp directory
-	oldXDG := os.Getenv("XDG_CONFIG_HOME")
-	_ = os.Setenv("XDG_CONFIG_HOME", tmpDir)
-	defer func() { _ = os.Setenv("XDG_CONFIG_HOME", oldXDG) }()
+	// Set config home to temp directory (APPDATA on Windows, XDG_CONFIG_HOME on Unix)
+	setTestConfigHome(t, tmpDir)
 
 	// Create store
 	store, err := NewStore()
@@ -144,9 +155,7 @@ func TestStoreUpdateTokens(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	oldXDG := os.Getenv("XDG_CONFIG_HOME")
-	_ = os.Setenv("XDG_CONFIG_HOME", tmpDir)
-	defer func() { _ = os.Setenv("XDG_CONFIG_HOME", oldXDG) }()
+	setTestConfigHome(t, tmpDir)
 
 	store, err := NewStore()
 	require.NoError(t, err)
@@ -180,9 +189,7 @@ func TestStoreClearCurrentContext(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	oldXDG := os.Getenv("XDG_CONFIG_HOME")
-	_ = os.Setenv("XDG_CONFIG_HOME", tmpDir)
-	defer func() { _ = os.Setenv("XDG_CONFIG_HOME", oldXDG) }()
+	setTestConfigHome(t, tmpDir)
 
 	store, err := NewStore()
 	require.NoError(t, err)
@@ -219,9 +226,7 @@ func TestStorePreferences(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	oldXDG := os.Getenv("XDG_CONFIG_HOME")
-	_ = os.Setenv("XDG_CONFIG_HOME", tmpDir)
-	defer func() { _ = os.Setenv("XDG_CONFIG_HOME", oldXDG) }()
+	setTestConfigHome(t, tmpDir)
 
 	store, err := NewStore()
 	require.NoError(t, err)

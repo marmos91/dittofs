@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/config"
@@ -24,11 +25,24 @@ func InitLogger(cfg *config.Config) error {
 
 // GetDefaultStateDir returns the default state directory path.
 func GetDefaultStateDir() string {
+	if runtime.GOOS == "windows" {
+		// On Windows, use %LOCALAPPDATA%\dittofs
+		localAppData := os.Getenv("LOCALAPPDATA")
+		if localAppData != "" {
+			return filepath.Join(localAppData, "dittofs")
+		}
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return filepath.Join(os.TempDir(), "dittofs")
+		}
+		return filepath.Join(homeDir, "AppData", "Local", "dittofs")
+	}
+
 	stateDir := os.Getenv("XDG_STATE_HOME")
 	if stateDir == "" {
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
-			return "/tmp"
+			return filepath.Join(os.TempDir(), "dittofs")
 		}
 		stateDir = filepath.Join(homeDir, ".local", "state")
 	}
