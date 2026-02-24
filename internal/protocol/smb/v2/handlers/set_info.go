@@ -107,8 +107,14 @@ type FileRenameInfo struct {
 	// ReplaceIfExists indicates whether to replace an existing file.
 	ReplaceIfExists bool
 
+	// RootDirectory is the file handle of the destination directory.
+	// Per MS-SMB2 2.2.39: If zero, FileName is a full path from the share root.
+	// If non-zero, FileName is relative to this directory handle.
+	RootDirectory [8]byte
+
 	// FileName is the new name for the file.
-	// May be a full path or just a filename.
+	// When RootDirectory is zero, this is a full path from the share root.
+	// When RootDirectory is non-zero, this is relative to that directory.
 	FileName string
 }
 
@@ -188,8 +194,10 @@ func DecodeFileRenameInfo(buffer []byte) (*FileRenameInfo, error) {
 		ReplaceIfExists: buffer[0] != 0,
 	}
 
-	// Skip: Reserved (7 bytes at offset 1-7)
-	// Skip: RootDirectory (8 bytes at offset 8-15)
+	// Reserved (7 bytes at offset 1-7) - skip
+	// RootDirectory (8 bytes at offset 8-15) - extract
+	copy(info.RootDirectory[:], buffer[8:16])
+
 	fileNameLength := binary.LittleEndian.Uint32(buffer[16:20])
 
 	// FileName starts at offset 20
@@ -346,18 +354,36 @@ func (h *Handler) setFileInfoFromStore(
 		newPath := strings.ReplaceAll(renameInfo.FileName, "\\", "/")
 		newPath = strings.TrimPrefix(newPath, "/")
 
-		// Determine source and destination
-		// If newPath contains a directory separator, it's a move to a different directory
-		// Otherwise, it's a rename within the same directory
+		// Determine source and destination.
+		//
+		// Per MS-FSCC 2.4.34 / MS-SMB2 2.2.39:
+		// - If RootDirectory is zero, FileName is a full path from the share root.
+		//   Even a bare filename like "foo.txt" means "put file at share root/foo.txt".
+		// - If RootDirectory is non-zero, FileName is relative to that directory handle.
+		//   (Not yet implemented - we'd need to resolve the FileId to a directory handle.)
 		var toDir metadata.FileHandle
 		var toName string
 
-		if strings.Contains(newPath, "/") {
-			// Move to different directory
-			dirPath := path.Dir(newPath)
-			toName = path.Base(newPath)
+		// Check if RootDirectory is non-zero (handle-relative rename)
+		isRootDirZero := true
+		for _, b := range renameInfo.RootDirectory {
+			if b != 0 {
+				isRootDirZero = false
+				break
+			}
+		}
 
-			// Get root handle for the share
+		if !isRootDirZero {
+			// RootDirectory is non-zero: FileName is relative to the directory
+			// identified by RootDirectory. For now, we don't resolve FileId handles
+			// to directory handles, so fall back to same-directory rename.
+			logger.Debug("SET_INFO: rename with non-zero RootDirectory (using same-dir fallback)",
+				"rootDirectory", fmt.Sprintf("%x", renameInfo.RootDirectory))
+			toDir = openFile.ParentHandle
+			toName = path.Base(newPath)
+		} else {
+			// RootDirectory is zero: FileName is a full path from the share root.
+			// Get root handle for the share.
 			tree, ok := h.GetTree(openFile.TreeID)
 			if !ok {
 				logger.Debug("SET_INFO: invalid tree for rename", "treeID", openFile.TreeID)
@@ -370,8 +396,11 @@ func (h *Handler) setFileInfoFromStore(
 				return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectPathNotFound}}, nil
 			}
 
-			// Walk to destination directory
-			if dirPath == "." || dirPath == "" {
+			toName = path.Base(newPath)
+			dirPath := path.Dir(newPath)
+
+			// Walk to destination directory (or use root if no directory component)
+			if dirPath == "." || dirPath == "" || dirPath == "/" {
 				toDir = rootHandle
 			} else {
 				toDir, err = h.walkPath(authCtx, rootHandle, dirPath)
@@ -380,10 +409,6 @@ func (h *Handler) setFileInfoFromStore(
 					return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectPathNotFound}}, nil
 				}
 			}
-		} else {
-			// Simple rename within same directory
-			toDir = openFile.ParentHandle
-			toName = newPath
 		}
 
 		// Validate we have source info
@@ -429,18 +454,8 @@ func (h *Handler) setFileInfoFromStore(
 			}
 		}
 
-		// Update open file state
-		if strings.Contains(newPath, "/") {
-			openFile.Path = newPath
-		} else {
-			// Update just the filename part
-			dir := path.Dir(openFile.Path)
-			if dir == "." {
-				openFile.Path = toName
-			} else {
-				openFile.Path = dir + "/" + toName
-			}
-		}
+		// Update open file state to reflect the new path
+		openFile.Path = newPath
 		openFile.FileName = toName
 		openFile.ParentHandle = toDir
 		h.StoreOpenFile(openFile)

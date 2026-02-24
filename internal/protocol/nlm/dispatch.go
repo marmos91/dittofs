@@ -84,6 +84,16 @@ func initNLMDispatchTable() {
 			Handler:   handleNLMUnlock,
 			NeedsAuth: true,
 		},
+		types.NLMProcShare: {
+			Name:      "SHARE",
+			Handler:   handleNLMShare,
+			NeedsAuth: true,
+		},
+		types.NLMProcUnshare: {
+			Name:      "UNSHARE",
+			Handler:   handleNLMUnshare,
+			NeedsAuth: true,
+		},
 		types.NLMProcFreeAll: {
 			Name:      "FREE_ALL",
 			Handler:   handleNLMFreeAll,
@@ -260,6 +270,64 @@ func handleNLMFreeAll(
 
 	// FREE_ALL returns void per NLM spec
 	return &HandlerResult{Data: encoded, NLMStatus: types.NLM4Granted}, nil
+}
+
+func handleNLMShare(
+	ctx *handlers.NLMHandlerContext,
+	handler *handlers.Handler,
+	reg *runtime.Runtime,
+	data []byte,
+) (*HandlerResult, error) {
+	req, err := handlers.DecodeShareRequest(data)
+	if err != nil {
+		logger.Debug("NLM SHARE decode error", "error", err)
+		encoded, _ := handlers.EncodeShareResponse(&handlers.ShareResponse{Status: types.NLM4Failed})
+		return &HandlerResult{Data: encoded, NLMStatus: types.NLM4Failed}, err
+	}
+
+	resp, err := handler.Share(ctx, req)
+	if err != nil {
+		logger.Debug("NLM SHARE handler error", "error", err)
+		encoded, _ := handlers.EncodeShareResponse(&handlers.ShareResponse{Cookie: req.Cookie, Status: types.NLM4Failed})
+		return &HandlerResult{Data: encoded, NLMStatus: types.NLM4Failed}, err
+	}
+
+	encoded, err := handlers.EncodeShareResponse(resp)
+	if err != nil {
+		logger.Debug("NLM SHARE encode error", "error", err)
+		return &HandlerResult{Data: nil, NLMStatus: types.NLM4Failed}, err
+	}
+
+	return &HandlerResult{Data: encoded, NLMStatus: resp.Status}, nil
+}
+
+func handleNLMUnshare(
+	ctx *handlers.NLMHandlerContext,
+	handler *handlers.Handler,
+	reg *runtime.Runtime,
+	data []byte,
+) (*HandlerResult, error) {
+	req, err := handlers.DecodeShareRequest(data)
+	if err != nil {
+		logger.Debug("NLM UNSHARE decode error", "error", err)
+		encoded, _ := handlers.EncodeShareResponse(&handlers.ShareResponse{Status: types.NLM4Failed})
+		return &HandlerResult{Data: encoded, NLMStatus: types.NLM4Failed}, err
+	}
+
+	resp, err := handler.Unshare(ctx, req)
+	if err != nil {
+		logger.Debug("NLM UNSHARE handler error", "error", err)
+		encoded, _ := handlers.EncodeShareResponse(&handlers.ShareResponse{Cookie: req.Cookie, Status: types.NLM4Failed})
+		return &HandlerResult{Data: encoded, NLMStatus: types.NLM4Failed}, err
+	}
+
+	encoded, err := handlers.EncodeShareResponse(resp)
+	if err != nil {
+		logger.Debug("NLM UNSHARE encode error", "error", err)
+		return &HandlerResult{Data: nil, NLMStatus: types.NLM4Failed}, err
+	}
+
+	return &HandlerResult{Data: encoded, NLMStatus: resp.Status}, nil
 }
 
 // ============================================================================

@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/marmos91/dittofs/pkg/apiclient"
 )
@@ -18,7 +21,7 @@ const (
 	defaultModeLinux  = "0755"
 )
 
-func getDefaultModeForPlatform() (mode, help string) {
+func getDefaultModeForPlatform() (string, string) {
 	if runtime.GOOS == "darwin" {
 		return defaultModeDarwin, "File permissions for SMB mount (octal, default 0777 on macOS since uid/gid not supported)"
 	}
@@ -42,24 +45,29 @@ func checkMountPrivileges(mountPoint, protocol, sharePath string) error {
 		if homeDir, _ := os.UserHomeDir(); homeDir != "" && strings.HasPrefix(mountPoint, homeDir) {
 			return nil
 		}
-
-		return fmt.Errorf(
-			"mount requires root privileges (or mount to home directory on macOS)\nHint: Run with sudo: sudo dfsctl share mount --protocol %s %s %s\n"+
-				"Or mount to your home directory: dfsctl share mount --protocol %s %s ~/mnt/share",
-			protocol, sharePath, mountPoint, protocol, sharePath,
-		)
 	}
 
-	return fmt.Errorf(
-		"mount requires root privileges\nHint: Run with sudo: sudo dfsctl share mount --protocol %s %s %s",
-		protocol, sharePath, mountPoint,
-	)
+	// Check if mount point is owned by current user (may work without sudo on some systems)
+	u, _ := user.Current()
+	if u != nil {
+		info, err := os.Stat(mountPoint)
+		if err == nil {
+			if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+				if strconv.FormatUint(uint64(stat.Uid), 10) == u.Uid {
+					return nil
+				}
+			}
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "Warning: mount commands typically require root privileges.\nTry: sudo dfsctl share mount --protocol %s %s %s\n", protocol, sharePath, mountPoint)
+	return nil
 }
 
 func validateMountPoint(mountPoint string) error {
 	info, err := os.Stat(mountPoint)
 	if os.IsNotExist(err) {
-		return fmt.Errorf("mount point does not exist: %s\nHint: Create the directory first with 'mkdir %s'", mountPoint, mountPoint)
+		return fmt.Errorf("mount point does not exist: %s\nHint: Create the directory first with 'mkdir -p %s'", mountPoint, mountPoint)
 	}
 	if err != nil {
 		return fmt.Errorf("failed to access mount point: %w", err)
@@ -117,58 +125,75 @@ func mountSMB(sharePath, mountPoint string, adapters []apiclient.Adapter) error 
 		return err
 	}
 
-	shareName := strings.TrimPrefix(sharePath, "/")
-	cmd := buildSMBMountCommand(username, password, port, shareName, mountPoint)
+	if runtime.GOOS == "darwin" {
+		return mountSMBDarwin(sharePath, mountPoint, port, username, password)
+	}
+	return mountSMBLinux(sharePath, mountPoint, port, username, password)
+}
 
+func mountSMBLinux(sharePath, mountPoint string, port int, username, password string) error {
+	opts := fmt.Sprintf("vers=2.1,port=%d,username=%s,password=%s", port, username, password)
+
+	// If running as root with SUDO_UID, set uid/gid so files are owned by original user
+	if os.Geteuid() == 0 {
+		if sudoUID := os.Getenv("SUDO_UID"); sudoUID != "" {
+			opts += fmt.Sprintf(",uid=%s", sudoUID)
+		}
+		if sudoGID := os.Getenv("SUDO_GID"); sudoGID != "" {
+			opts += fmt.Sprintf(",gid=%s", sudoGID)
+		}
+	}
+
+	if mountFileMode != "" {
+		opts += fmt.Sprintf(",file_mode=%s", mountFileMode)
+	}
+	if mountDirMode != "" {
+		opts += fmt.Sprintf(",dir_mode=%s", mountDirMode)
+	}
+
+	uncPath := fmt.Sprintf("//localhost%s", sharePath)
+	cmd := exec.Command("mount", "-t", "cifs", "-o", opts, uncPath, mountPoint)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return formatMountError(err, string(output), "SMB", port)
 	}
-
-	fmt.Printf("Mounted %s at %s (SMB)\n", sharePath, mountPoint)
+	fmt.Printf("Mounted %s at %s via SMB (port %d)\n", sharePath, mountPoint, port)
 	return nil
 }
 
-func buildSMBMountCommand(username, password string, port int, shareName, mountPoint string) *exec.Cmd {
-	if runtime.GOOS == "darwin" {
-		return buildDarwinSMBCommand(username, password, port, shareName, mountPoint)
+func mountSMBDarwin(sharePath, mountPoint string, port int, username, password string) error {
+	// On macOS, use mount_smbfs with file/dir mode flags.
+	// If running with sudo, use sudo -u to mount as original user
+	// (macOS security restriction: only mount owner can access files).
+	smbURL := fmt.Sprintf("smb://%s:%s@localhost:%d%s", username, password, port, sharePath)
+
+	args := []string{}
+	if mountFileMode != "" {
+		args = append(args, "-f", mountFileMode)
 	}
-	return buildLinuxSMBCommand(username, password, port, shareName, mountPoint)
-}
-
-func buildDarwinSMBCommand(username, password string, port int, shareName, mountPoint string) *exec.Cmd {
-	// macOS: mount_smbfs -f MODE -d MODE //USER:PASS@localhost:PORT/SHARE MOUNTPOINT
-	// Note: Modern macOS (Ventura+) removed -u/-g options for setting owner.
-	// Files will be owned by root when mounted with sudo.
-	// Default is 0777 to allow all users to write to the mounted share.
-	smbURL := fmt.Sprintf("//%s:%s@localhost:%d/%s", username, password, port, shareName)
-	args := []string{"-f", mountFileMode, "-d", mountDirMode, smbURL, mountPoint}
-
-	// macOS security restriction: only the mount owner can access files,
-	// regardless of Unix permissions (Apple's "works as intended" behavior).
-	// When running with sudo, we use "sudo -u <original_user>" to mount as
-	// that user instead of root, so they can actually access the mounted files.
-	// See: https://discussions.apple.com/thread/4927134
-	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
-		return exec.Command("sudo", append([]string{"-u", sudoUser, "mount_smbfs"}, args...)...)
+	if mountDirMode != "" {
+		args = append(args, "-d", mountDirMode)
 	}
-	return exec.Command("mount_smbfs", args...)
-}
+	args = append(args, smbURL, mountPoint)
 
-func buildLinuxSMBCommand(username, password string, port int, shareName, mountPoint string) *exec.Cmd {
-	// Linux: mount -t cifs //localhost/SHARE MOUNTPOINT -o port=PORT,username=USER,password=PASS,vers=2.1,uid=UID,gid=GID
-	// When running with sudo, set uid/gid to the original user (not root)
-	mountOpts := fmt.Sprintf("port=%d,username=%s,password=%s,vers=2.1", port, username, password)
-
-	if sudoUID := os.Getenv("SUDO_UID"); sudoUID != "" {
-		mountOpts += ",uid=" + sudoUID
-	}
-	if sudoGID := os.Getenv("SUDO_GID"); sudoGID != "" {
-		mountOpts += ",gid=" + sudoGID
+	var cmd *exec.Cmd
+	if os.Geteuid() == 0 {
+		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+			sudoArgs := append([]string{"-u", sudoUser, "mount_smbfs"}, args...)
+			cmd = exec.Command("sudo", sudoArgs...)
+		} else {
+			cmd = exec.Command("mount_smbfs", args...)
+		}
+	} else {
+		cmd = exec.Command("mount_smbfs", args...)
 	}
 
-	return exec.Command("mount", "-t", "cifs",
-		fmt.Sprintf("//localhost/%s", shareName),
-		mountPoint,
-		"-o", mountOpts)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Sanitize password from error output
+		sanitized := strings.ReplaceAll(string(output), password, "****")
+		return formatMountError(err, sanitized, "SMB", port)
+	}
+	fmt.Printf("Mounted %s at %s via SMB (port %d)\n", sharePath, mountPoint, port)
+	return nil
 }

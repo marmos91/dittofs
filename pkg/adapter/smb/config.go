@@ -70,6 +70,11 @@ type SMBConfig struct {
 	// If 0, defaults to 12445.
 	Port int `mapstructure:"port" validate:"min=0,max=65535"`
 
+	// BindAddress is the IP address to bind to.
+	// Empty string or "0.0.0.0" binds to all interfaces.
+	// Use a specific IP (e.g., "127.0.0.1") to restrict access.
+	BindAddress string `mapstructure:"bind_address"`
+
 	// MaxConnections limits the number of concurrent client connections.
 	// When reached, new connections are rejected until existing ones close.
 	// 0 means unlimited (not recommended for production).

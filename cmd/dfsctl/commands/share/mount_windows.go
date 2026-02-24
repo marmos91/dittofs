@@ -13,7 +13,7 @@ import (
 
 const defaultNFSPortStandard = 2049
 
-func getDefaultModeForPlatform() (mode, help string) {
+func getDefaultModeForPlatform() (string, string) {
 	return "", "File permissions (not applicable on Windows)"
 }
 
@@ -21,13 +21,9 @@ func validatePlatform() error {
 	return nil
 }
 
-func checkMountPrivileges(mountPoint, protocol, sharePath string) error {
-	// net use does not require elevated privileges for standard drive mappings
-	return nil
-}
-
 func validateMountPoint(mountPoint string) error {
-	// Accept drive letters like Z:
+	// On Windows, SMB mount points are drive letters (e.g., Z:).
+	// NFS mount can use drive letters or directory paths.
 	if len(mountPoint) == 2 && mountPoint[1] == ':' {
 		letter := mountPoint[0]
 		if (letter >= 'A' && letter <= 'Z') || (letter >= 'a' && letter <= 'z') {
@@ -50,22 +46,12 @@ func validateMountPoint(mountPoint string) error {
 	return nil
 }
 
+func checkMountPrivileges(mountPoint, protocol, sharePath string) error {
+	return nil
+}
+
 func mountNFS(sharePath, mountPoint string, adapters []apiclient.Adapter) error {
 	port := getAdapterPort(adapters, "nfs", defaultNFSPort)
-
-	fmt.Println(`Note: NFS mounting on Windows requires the 'Client for NFS' feature to be installed.
-
-To enable it:
-  1. Open 'Turn Windows features on or off' (Win+R > optionalfeatures.exe)
-  2. Expand 'Services for NFS' and check 'Client for NFS'
-  3. Click OK and restart your computer if prompted
-
-Alternatively, install via PowerShell (run as Administrator):
-  Enable-WindowsOptionalFeature -FeatureName ServicesForNFS-ClientOnly -Online
-
-For more details, see:
-  https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/mount
-  https://learn.microsoft.com/en-us/windows-server/storage/nfs/deploy-nfs`)
 
 	// The Windows NFS mount command does NOT support specifying a custom port via -o options.
 	// Supported -o options are: rsize, wsize, timeout, retry, mtype, lang, fileaccess, anon,
@@ -88,6 +74,16 @@ For more details, see:
 			port, port, port,
 		)
 	}
+
+	fmt.Println(`Note: NFS mounting on Windows requires the 'Client for NFS' feature to be installed.
+
+To enable it:
+  1. Open 'Turn Windows features on or off' (Win+R > optionalfeatures.exe)
+  2. Expand 'Services for NFS' and check 'Client for NFS'
+  3. Click OK and restart your computer if prompted
+
+Alternatively, install via PowerShell (run as Administrator):
+  Enable-WindowsOptionalFeature -FeatureName ServicesForNFS-ClientOnly -Online`)
 
 	source := fmt.Sprintf("\\\\localhost%s", strings.ReplaceAll(sharePath, "/", "\\"))
 	cmd := exec.Command("mount",
@@ -125,7 +121,6 @@ func mountSMB(sharePath, mountPoint string, adapters []apiclient.Adapter) error 
 
 	// The standard 'net use' command does not support custom SMB ports.
 	// Windows Insider builds (25992+) added /TCPPORT: support to net use.
-	// See: https://techcommunity.microsoft.com/blog/filecab/smb-alternative-ports-now-supported-in-windows-insider/3974509
 	if port != 445 {
 		fmt.Printf("Note: Server is using non-standard SMB port %d.\n", port)
 		fmt.Printf("Attempting 'net use' with /TCPPORT:%d (requires Windows 11 Insider Build 25992+ or Windows Server 2025+).\n\n", port)

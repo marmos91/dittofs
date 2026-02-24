@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/binary"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -173,7 +174,7 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 
 		switch msgType {
 		case ntlm.Negotiate:
-			return h.handleNTLMNegotiate(ctx)
+			return h.handleNTLMNegotiate(ctx, isWrapped)
 		case ntlm.Authenticate:
 			// Type 3 without pending auth - create guest session
 			return h.createGuestSession(ctx)
@@ -358,7 +359,7 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte) (
 //
 // The client will respond with Type 3 (AUTHENTICATE) which completes
 // the handshake in completeNTLMAuth().
-func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext) (*HandlerResult, error) {
+func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool) (*HandlerResult, error) {
 	// Generate session ID for this authentication attempt
 	sessionID := h.GenerateSessionID()
 
@@ -373,22 +374,37 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext) (*HandlerResult, e
 		ClientAddr:      ctx.ClientAddr,
 		CreatedAt:       time.Now(),
 		ServerChallenge: serverChallenge,
+		UsedSPNEGO:      usedSPNEGO,
 	}
 	h.StorePendingAuth(pending)
 
 	// Update context so response includes the session ID
 	ctx.SessionID = sessionID
 
+	// Wrap the NTLM challenge in SPNEGO if the client used SPNEGO wrapping.
+	// Windows SSPI requires SPNEGO-wrapped responses throughout the handshake.
+	securityBuffer := challengeMsg
+	if usedSPNEGO {
+		spnegoResp, err := spnego.BuildAcceptIncomplete(spnego.OIDNTLMSSP, challengeMsg)
+		if err != nil {
+			logger.Debug("Failed to build SPNEGO challenge wrapper", "error", err)
+			// Fall back to raw NTLM
+		} else {
+			securityBuffer = spnegoResp
+		}
+	}
+
 	logger.Debug("Sending NTLM CHALLENGE",
 		"sessionID", sessionID,
-		"challengeLength", len(challengeMsg))
+		"challengeLength", len(challengeMsg),
+		"spnegoWrapped", usedSPNEGO)
 
 	// Return response with STATUS_MORE_PROCESSING_REQUIRED
 	// Client will send Type 3 (AUTHENTICATE) next
 	return h.buildSessionSetupResponse(
 		types.StatusMoreProcessingRequired,
 		0, // No session flags yet
-		challengeMsg,
+		securityBuffer,
 	), nil
 }
 
@@ -450,34 +466,61 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 			ntHash, hasNTHash := user.GetNTHash()
 
 			if hasNTHash && len(authMsg.NtChallengeResponse) > 0 {
-				// Validate NTLMv2 response and derive session base key
-				sessionBaseKey, err := ntlm.ValidateNTLMv2Response(
-					ntHash,
-					authMsg.Username,
-					authMsg.Domain,
-					pending.ServerChallenge,
-					authMsg.NtChallengeResponse,
-				)
+				// Validate NTLMv2 response and derive session base key.
+				// Windows clients may compute the NTLMv2 hash using different domain values
+				// depending on how credentials were specified. Try the domain from the
+				// AUTHENTICATE message first, then fall back to common alternatives.
+				// [MS-NLMP] Section 3.3.2: UserDom may be empty, the target name, or
+				// the MsvAvNbDomainName from the challenge's TargetInfo.
+				hostname, _ := os.Hostname()
+				domainsToTry := uniqueStrings([]string{
+					authMsg.Domain,            // Domain from AUTHENTICATE message
+					"",                        // Empty domain
+					strings.ToUpper(hostname), // Server hostname (TargetName)
+					"WORKGROUP",               // Default workgroup
+				})
 
-				if err != nil {
-					logger.Debug("NTLMv2 validation failed",
+				logger.Debug("NTLMv2 validation attempt",
+					"username", authMsg.Username,
+					"ntResponseLen", len(authMsg.NtChallengeResponse),
+					"domainsToTry", domainsToTry)
+
+				var sessionBaseKey [16]byte
+				var validationErr error
+				for _, domain := range domainsToTry {
+					sessionBaseKey, validationErr = ntlm.ValidateNTLMv2Response(
+						ntHash,
+						authMsg.Username,
+						domain,
+						pending.ServerChallenge,
+						authMsg.NtChallengeResponse,
+					)
+					if validationErr == nil {
+						logger.Debug("NTLMv2 validation succeeded",
+							"username", authMsg.Username,
+							"domain", domain)
+						break
+					}
+					logger.Debug("NTLMv2 domain attempt failed",
+						"domain", domain)
+				}
+
+				if validationErr != nil {
+					logger.Debug("NTLMv2 validation failed with all domain variants",
 						"username", authMsg.Username,
-						"error", err)
+						"triedDomains", domainsToTry,
+						"error", validationErr)
 					return NewErrorResult(types.StatusLogonFailure), nil
 				}
 
 				// Derive the final signing key
 				// When KEY_EXCH is negotiated, the client sends an encrypted random session key
 				// that we need to decrypt to get the actual signing key.
-				logger.Debug("NTLM key derivation details",
+				logger.Debug("NTLM key derivation",
 					"sessionID", pending.SessionID,
-					"negotiateFlags", fmt.Sprintf("0x%08x", authMsg.NegotiateFlags),
 					"keyExchFlag", (authMsg.NegotiateFlags&ntlm.FlagKeyExch) != 0,
 					"signFlag", (authMsg.NegotiateFlags&ntlm.FlagSign) != 0,
-					"encryptedKeyLen", len(authMsg.EncryptedRandomSessionKey),
-					"encryptedKey", fmt.Sprintf("%x", authMsg.EncryptedRandomSessionKey),
-					"sessionBaseKey", fmt.Sprintf("%x", sessionBaseKey),
-					"serverChallenge", fmt.Sprintf("%x", pending.ServerChallenge))
+					"encryptedKeyLen", len(authMsg.EncryptedRandomSessionKey))
 
 				signingKey := ntlm.DeriveSigningKey(
 					sessionBaseKey,
@@ -485,9 +528,8 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 					authMsg.EncryptedRandomSessionKey,
 				)
 
-				logger.Debug("Derived signing key (will be used for HMAC-SHA256)",
+				logger.Debug("Derived signing key",
 					"sessionID", pending.SessionID,
-					"signingKey", fmt.Sprintf("%x", signingKey),
 					"usedKeyExch", (authMsg.NegotiateFlags&ntlm.FlagKeyExch) != 0 && len(authMsg.EncryptedRandomSessionKey) == 16)
 
 				// Authentication successful with validated credentials
@@ -504,12 +546,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 					"isGuest", sess.IsGuest,
 					"signingEnabled", sess.ShouldSign())
 
-				// Return success without guest flag
-				return h.buildSessionSetupResponse(
-					types.StatusSuccess,
-					0, // No guest flag - authenticated user
-					nil,
-				), nil
+				return h.buildAuthenticatedResponse(pending.UsedSPNEGO), nil
 			}
 
 			// SECURITY: User exists but no valid NT hash configured.
@@ -531,11 +568,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 				"domain", sess.Domain,
 				"isGuest", sess.IsGuest)
 
-			return h.buildSessionSetupResponse(
-				types.StatusSuccess,
-				0, // No guest flag - authenticated user
-				nil,
-			), nil
+			return h.buildAuthenticatedResponse(pending.UsedSPNEGO), nil
 		}
 
 		// User not found or disabled
@@ -619,10 +652,9 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 		return
 	}
 
-	// Log the signing key for debugging (16 bytes)
 	logger.Debug("Configuring session signing key",
 		"sessionID", sess.SessionID,
-		"signingKey", fmt.Sprintf("%x", sessionKey))
+		"signingKeyLen", len(sessionKey))
 
 	// Set the signing key on the session
 	sess.SetSigningKey(sessionKey)
@@ -692,4 +724,37 @@ func (h *Handler) buildSessionSetupResponse(
 	}
 
 	return NewResult(status, resp)
+}
+
+// buildAuthenticatedResponse builds a SESSION_SETUP success response for an
+// authenticated (non-guest) user. If the client used SPNEGO wrapping, the
+// response includes an accept-completed token to finalize the GSSAPI context.
+func (h *Handler) buildAuthenticatedResponse(usedSPNEGO bool) *HandlerResult {
+	var acceptToken []byte
+	if usedSPNEGO {
+		var err error
+		acceptToken, err = spnego.BuildAcceptComplete(spnego.OIDNTLMSSP, nil)
+		if err != nil {
+			logger.Debug("Failed to build SPNEGO accept token", "error", err)
+		}
+	}
+
+	return h.buildSessionSetupResponse(
+		types.StatusSuccess,
+		0, // No guest flag - authenticated user
+		acceptToken,
+	)
+}
+
+// uniqueStrings returns a deduplicated slice preserving order.
+func uniqueStrings(ss []string) []string {
+	seen := make(map[string]bool, len(ss))
+	result := make([]string, 0, len(ss))
+	for _, s := range ss {
+		if !seen[s] {
+			seen[s] = true
+			result = append(result, s)
+		}
+	}
+	return result
 }

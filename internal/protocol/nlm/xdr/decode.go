@@ -484,3 +484,34 @@ func DecodeNLM4TestRes(r io.Reader) (*types.NLM4TestRes, error) {
 
 	return res, nil
 }
+
+// DecodeNLM4ShareRes decodes an NLM4ShareRes response structure from XDR format.
+//
+// Wire format:
+//
+//	cookie:   [length:uint32][data:bytes][padding]
+//	stat:     [uint32]
+//	sequence: [int32]
+func DecodeNLM4ShareRes(r io.Reader) (*types.NLM4ShareRes, error) {
+	res := &types.NLM4ShareRes{}
+
+	cookie, err := xdr.DecodeOpaque(r)
+	if err != nil {
+		return nil, fmt.Errorf("decode cookie: %w", err)
+	}
+	res.Cookie = cookie
+
+	stat, err := xdr.DecodeUint32(r)
+	if err != nil {
+		return nil, fmt.Errorf("decode stat: %w", err)
+	}
+	res.Status = stat
+
+	seq, err := xdr.DecodeInt32(r)
+	if err != nil {
+		return nil, fmt.Errorf("decode sequence: %w", err)
+	}
+	res.Sequence = seq
+
+	return res, nil
+}

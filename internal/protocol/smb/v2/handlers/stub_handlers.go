@@ -520,12 +520,18 @@ func (h *Handler) handleValidateNegotiateInfo(ctx *SMBHandlerContext, body []byt
 	var fileID [16]byte
 	copy(fileID[:], body[8:24])
 
-	// Per [MS-SMB2] 2.2.31.4, FSCTL_VALIDATE_NEGOTIATE_INFO MUST use a NULL file identifier.
+	// Per [MS-SMB2] 2.2.31.4, FSCTL_VALIDATE_NEGOTIATE_INFO MUST use FileId
+	// {0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF} (all 0xFF bytes).
+	isValidFileID := true
 	for _, b := range fileID {
-		if b != 0 {
-			logger.Debug("IOCTL VALIDATE_NEGOTIATE_INFO: non-NULL FileId", "fileID", fileID)
-			return NewErrorResult(types.StatusInvalidParameter), nil
+		if b != 0xFF {
+			isValidFileID = false
+			break
 		}
+	}
+	if !isValidFileID {
+		logger.Debug("IOCTL VALIDATE_NEGOTIATE_INFO: unexpected FileId (expected all 0xFF)", "fileID", fileID)
+		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
 	inputCount := binary.LittleEndian.Uint32(body[28:32])

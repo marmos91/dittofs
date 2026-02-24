@@ -257,7 +257,8 @@ func (s *SMBAdapter) applySMBSettings(rt *runtime.Runtime) {
 // Serve() should only be called once per SMBAdapter instance.
 func (s *SMBAdapter) Serve(ctx context.Context) error {
 	// Create TCP listener
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", s.config.Port))
+	listenAddr := fmt.Sprintf("%s:%d", s.config.BindAddress, s.config.Port)
+	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("failed to create SMB listener on port %d: %w", s.config.Port, err)
 	}
