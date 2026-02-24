@@ -4,9 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -274,100 +272,6 @@ func getConfigSource(configFile string) string {
 		return config.GetDefaultConfigPath()
 	}
 	return "defaults"
-}
-
-// startDaemon starts the server as a background daemon process.
-func startDaemon() error {
-	// Determine state directory for PID and log files
-	stateDir := os.Getenv("XDG_STATE_HOME")
-	if stateDir == "" {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("failed to get home directory: %w", err)
-		}
-		stateDir = filepath.Join(homeDir, ".local", "state")
-	}
-	dittofsStateDir := filepath.Join(stateDir, "dittofs")
-
-	// Create state directory if it doesn't exist
-	if err := os.MkdirAll(dittofsStateDir, 0755); err != nil {
-		return fmt.Errorf("failed to create state directory: %w", err)
-	}
-
-	// Set default PID file if not specified
-	pidPath := pidFile
-	if pidPath == "" {
-		pidPath = filepath.Join(dittofsStateDir, "dittofs.pid")
-	}
-
-	// Check if already running
-	if _, err := os.Stat(pidPath); err == nil {
-		pidData, err := os.ReadFile(pidPath)
-		if err == nil {
-			var pid int
-			if _, err := fmt.Sscanf(string(pidData), "%d", &pid); err == nil {
-				// Check if process is still running
-				if process, err := os.FindProcess(pid); err == nil {
-					if err := process.Signal(syscall.Signal(0)); err == nil {
-						return fmt.Errorf("DittoFS is already running (PID %d)\nUse 'dittofs stop' to stop the running instance", pid)
-					}
-				}
-			}
-		}
-		// Stale PID file, remove it
-		_ = os.Remove(pidPath)
-	}
-
-	// Set default log file if not specified
-	logPath := logFile
-	if logPath == "" {
-		logPath = filepath.Join(dittofsStateDir, "dittofs.log")
-	}
-
-	// Get the executable path
-	executable, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("failed to get executable path: %w", err)
-	}
-
-	// Build arguments for the daemon process
-	daemonArgs := []string{"start", "--foreground", "--pid-file", pidPath}
-	if GetConfigFile() != "" {
-		daemonArgs = append(daemonArgs, "--config", GetConfigFile())
-	}
-
-	// Create the daemon process
-	cmd := exec.Command(executable, daemonArgs...)
-
-	// Open log file for stdout/stderr
-	logFileHandle, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to open log file: %w", err)
-	}
-
-	cmd.Stdout = logFileHandle
-	cmd.Stderr = logFileHandle
-
-	// Detach from parent process
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true,
-	}
-
-	// Start the daemon
-	if err := cmd.Start(); err != nil {
-		_ = logFileHandle.Close()
-		return fmt.Errorf("failed to start daemon: %w", err)
-	}
-
-	_ = logFileHandle.Close()
-
-	fmt.Printf("DittoFS started in background (PID %d)\n", cmd.Process.Pid)
-	fmt.Printf("  PID file: %s\n", pidPath)
-	fmt.Printf("  Log file: %s\n", logPath)
-	fmt.Println("\nUse 'dittofs stop' to stop the server")
-	fmt.Println("Use 'dittofs status' to check server status")
-
-	return nil
 }
 
 // createAdapterFactory returns a factory function that creates protocol adapters

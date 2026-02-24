@@ -1,11 +1,11 @@
 package commands
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/spf13/cobra"
 )
@@ -15,29 +15,32 @@ var (
 	stopForce   bool
 )
 
+// errProcessDone is a sentinel returned by stopProcess when the process has already exited.
+var errProcessDone = errors.New("process already done")
+
 var stopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop the DittoFS server",
 	Long: `Stop a running DittoFS server.
 
-By default, sends SIGTERM for graceful shutdown. Use --force for immediate
-termination with SIGKILL.
+By default, sends a graceful shutdown signal. Use --force for immediate
+termination.
 
 Examples:
   # Stop server (uses default PID file)
-  dittofs stop
+  dfs stop
 
   # Stop server using custom PID file
-  dittofs stop --pid-file /var/run/dittofs.pid
+  dfs stop --pid-file /var/run/dittofs.pid
 
-  # Force stop (SIGKILL)
-  dittofs stop --force`,
+  # Force stop
+  dfs stop --force`,
 	RunE: runStop,
 }
 
 func init() {
 	stopCmd.Flags().StringVar(&stopPidFile, "pid-file", "", "Path to PID file (default: $XDG_STATE_HOME/dittofs/dittofs.pid)")
-	stopCmd.Flags().BoolVarP(&stopForce, "force", "f", false, "Force kill (SIGKILL) instead of graceful shutdown (SIGTERM)")
+	stopCmd.Flags().BoolVarP(&stopForce, "force", "f", false, "Force kill instead of graceful shutdown")
 }
 
 func runStop(cmd *cobra.Command, args []string) error {
@@ -68,25 +71,14 @@ func runStop(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to find process %d: %w", pid, err)
 	}
 
-	// Send signal
-	var sig syscall.Signal
-	if stopForce {
-		sig = syscall.SIGKILL
-		fmt.Printf("Sending SIGKILL to process %d...\n", pid)
-	} else {
-		sig = syscall.SIGTERM
-		fmt.Printf("Sending SIGTERM to process %d...\n", pid)
-	}
-
-	if err := process.Signal(sig); err != nil {
-		// Check if process already exited
-		if err == os.ErrProcessDone {
+	// Send signal (platform-specific)
+	if err := stopProcess(process, pid, stopForce); err != nil {
+		if errors.Is(err, errProcessDone) {
 			fmt.Println("Server already stopped")
-			// Clean up PID file
 			_ = os.Remove(pidPath)
 			return nil
 		}
-		return fmt.Errorf("failed to send signal: %w", err)
+		return err
 	}
 
 	if stopForce {
