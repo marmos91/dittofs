@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -211,7 +213,7 @@ func GetDefaultConfig() *Config {
 			Type: store.DatabaseTypeSQLite, // Default to SQLite for single-node
 		},
 		Cache: CacheConfig{
-			Path: "/tmp/dittofs-cache",
+			Path: filepath.Join(os.TempDir(), "dittofs-cache"),
 			Size: bytesize.ByteSize(bytesize.GiB), // 1 GiB
 		},
 		Admin: AdminConfig{
