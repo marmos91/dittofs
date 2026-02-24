@@ -21,6 +21,7 @@ builds:
     goos:
       - linux
       - darwin
+      - windows
 
     goarch:
       - amd64
@@ -33,6 +34,8 @@ builds:
     # Ignore combinations that don't make sense
     ignore:
       - goos: darwin
+        goarch: arm
+      - goos: windows
         goarch: arm
 
     ldflags:
@@ -53,6 +56,7 @@ builds:
     goos:
       - linux
       - darwin
+      - windows
 
     goarch:
       - amd64
@@ -65,6 +69,8 @@ builds:
     # Ignore combinations that don't make sense
     ignore:
       - goos: darwin
+        goarch: arm
+      - goos: windows
         goarch: arm
 
     ldflags:
@@ -88,6 +94,10 @@ archives:
       {{- else }}{{ .Arch }}{{ end }}
       {{- if .Arm }}v{{ .Arm }}{{ end }}
 
+    format_overrides:
+      - goos: windows
+        format: zip
+
     files:
       - README.md
       - LICENSE
@@ -103,6 +113,10 @@ archives:
       {{- else if eq .Arch "386" }}i386
       {{- else }}{{ .Arch }}{{ end }}
       {{- if .Arm }}v{{ .Arm }}{{ end }}
+
+    format_overrides:
+      - goos: windows
+        format: zip
 
     files:
       - README.md
@@ -248,6 +262,40 @@ brews:
     test: |
       system bin/"dfsctl", "version", "--short"
 
+# Scoop bucket manifests for Windows distribution
+scoops:
+  - name: dfs
+    ids:
+      - dfs-archive
+    repository:
+      owner: marmos91
+      name: scoop-bucket
+      token: "{{ .Env.SCOOP_BUCKET_TOKEN }}"
+    commit_msg_template: "Scoop update for dfs version {{ .Tag }}"
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    homepage: "https://github.com/marmos91/dittofs"
+    description: "DittoFS server daemon — modular virtual filesystem with pluggable storage backends"
+    license: "MIT"
+    skip_upload: auto
+
+  - name: dfsctl
+    ids:
+      - dfsctl-archive
+    repository:
+      owner: marmos91
+      name: scoop-bucket
+      token: "{{ .Env.SCOOP_BUCKET_TOKEN }}"
+    commit_msg_template: "Scoop update for dfsctl version {{ .Tag }}"
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    homepage: "https://github.com/marmos91/dittofs"
+    description: "DittoFS CLI client — remote management for DittoFS servers"
+    license: "MIT"
+    skip_upload: auto
+
 release:
   github:
     owner: marmos91
@@ -264,11 +312,18 @@ release:
 
     ### Installation
 
-    **Homebrew:**
+    **Homebrew (macOS/Linux):**
     ```bash
     brew tap marmos91/tap
     brew install marmos91/tap/dfs      # Server daemon
     brew install marmos91/tap/dfsctl   # Client CLI
+    ```
+
+    **Scoop (Windows):**
+    ```powershell
+    scoop bucket add dittofs https://github.com/marmos91/scoop-bucket
+    scoop install dfs       # Server daemon
+    scoop install dfsctl    # Client CLI
     ```
 
     **Binary Download:**
@@ -283,6 +338,9 @@ release:
     # macOS (Intel)
     curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfs_{{ .Version }}_Darwin_x86_64.tar.gz | tar xz
 
+    # Windows (x86_64) — download and extract the .zip
+    # https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfs_{{ .Version }}_Windows_x86_64.zip
+
     # dfsctl (client CLI)
     # Linux (x86_64)
     curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfsctl_{{ .Version }}_Linux_x86_64.tar.gz | tar xz
@@ -292,6 +350,9 @@ release:
 
     # macOS (Intel)
     curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfsctl_{{ .Version }}_Darwin_x86_64.tar.gz | tar xz
+
+    # Windows (x86_64) — download and extract the .zip
+    # https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfsctl_{{ .Version }}_Windows_x86_64.zip
     ```
 
     **Docker:**
