@@ -2,7 +2,7 @@
 
 ## What This Is
 
-A comprehensive NFS protocol upgrade for DittoFS that adds NFSv4.0/4.1/4.2 support with Kerberos authentication, unified cross-protocol locking (NFS + SMB), and advanced features like server-side copy, sparse files, and delegations. v1.0 (NLM + unified locking), v2.0 (NFSv4.0 + Kerberos), and v3.0 (NFSv4.1 sessions) are shipped. Next: adapter/core refactoring (v3.5) and Windows compatibility (v3.6) before NFSv4.2 features (v4.0).
+A comprehensive NFS protocol upgrade for DittoFS that adds NFSv4.0/4.1/4.2 support with Kerberos authentication, unified cross-protocol locking (NFS + SMB), and advanced features like server-side copy, sparse files, and delegations. v1.0 (NLM + unified locking), v2.0 (NFSv4.0 + Kerberos), and v3.0 (NFSv4.1 sessions) are shipped. Next: adapter/core refactoring (v3.5), Windows compatibility (v3.6), benchmarking suite (v3.7), and SMB3 protocol upgrade (v3.8) before NFSv4.2 features (v4.0).
 
 Target: Cloud-native enterprise NAS with feature parity exceeding JuiceFS and Hammerspace, particularly in security (Kerberos), session reliability (EOS), cross-protocol consistency, and Windows SMB compatibility.
 
@@ -16,6 +16,7 @@ Target: Cloud-native enterprise NAS with feature parity exceeding JuiceFS and Ha
 - NFS adapter restructured: `internal/adapter/nfs/` with v4/v4.1 split
 - SMB adapter restructured: BaseAdapter shared with NFS, dispatch in `internal/adapter/smb/`
 - Core objects decomposed: Store interface (9 sub-interfaces), Runtime split, Offloader rename/split
+- Protocol-agnostic ClientRecord for unified NFS/SMB session tracking (#157)
 
 ## Next Milestone: v3.6 Windows Compatibility
 
@@ -25,6 +26,36 @@ Target: Cloud-native enterprise NAS with feature parity exceeding JuiceFS and Ha
 - SMB bugs fixed (#180 sparse file READ, #181 renamed dir listing)
 - NT Security Descriptors with Unix-to-SID mapping and icacls support (#182)
 - Validated with smbtorture, Microsoft WindowsProtocolTestSuites, and manual Windows 11 testing
+
+## Upcoming Milestone: v3.7 Benchmarking Suite
+
+**Goal:** Comprehensive benchmarking suite comparing DittoFS against competitors (JuiceFS, NFS-Ganesha, RClone, kernel NFS, Samba) to prove performance advantage of pure-Go, FUSE-less architecture.
+
+**Target outcomes:**
+- Docker Compose infrastructure with profiles for each system under test (#194)
+- fio workloads (sequential, random, mixed) and metadata benchmark scripts (#195)
+- Orchestrator scripts with platform variants (Linux, macOS, Windows SMB) (#196)
+- Python analysis pipeline with charts and markdown report generation (#197)
+- Competitor configuration and setup scripts for fair comparison (#198)
+- DittoFS profiling integration (Prometheus, Pyroscope, pprof) for bottleneck identification (#199)
+- `dfs bench` CLI command for user-facing performance evaluation (#188)
+
+**Tracking:** [GitHub #193](https://github.com/marmos91/dittofs/issues/193)
+
+## Upcoming Milestone: v3.8 SMB3 Protocol Upgrade
+
+**Goal:** Upgrade SMB implementation from SMB2.0.2/2.1 to full SMB3.0/3.0.2/3.1.1 support with enterprise-grade security, leases, Kerberos authentication, durable handles, and cross-protocol integration.
+
+**Target outcomes:**
+- SMB3 dialect negotiation (3.0, 3.0.2, 3.1.1) with preauth integrity
+- AES encryption (128/256-bit CCM/GCM) and signing (CMAC/GMAC)
+- SMB3 leases (Read/Write/Handle + directory) integrated with Unified Lock Manager
+- SPNEGO/Kerberos authentication via shared Kerberos layer + NTLM fallback
+- Windows security descriptors (SID/ACE/DACL) with control plane ACL translation
+- Durable handles v1/v2 for connection resilience
+- Cross-protocol integration (immediate visibility, bidirectional locking, ACL consistency)
+
+**Source:** feat/smb3 branch planning
 
 ## Core Value
 
@@ -86,6 +117,7 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 - [ ] Runtime decomposition (AdapterManager, MetadataStoreManager extraction)
 - [ ] TransferManager -> Offloader rename and split
 - [ ] Error unification and boilerplate reduction
+- [ ] Protocol-agnostic ClientRecord in metadata layer (#157)
 
 #### v3.6 — Windows Compatibility
 - [ ] Sparse file READ fix (#180) — return zeros for unwritten blocks
@@ -95,6 +127,33 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 - [ ] smbtorture SMB2 conformance testing
 - [ ] Microsoft WindowsProtocolTestSuites BVT and feature tests
 - [ ] Full Windows 11 manual validation (Explorer, cmd, PowerShell)
+
+#### v3.7 — Benchmarking Suite
+- [ ] Docker Compose infrastructure with per-system profiles and shared services (#194)
+- [ ] fio workload files (seq read/write, random 4K, mixed rw) and metadata benchmark script (#195)
+- [ ] Orchestrator scripts (run-bench.sh) with platform variants for Linux, macOS, Windows (#196)
+- [ ] Python analysis pipeline (parse fio/metadata, generate charts, markdown report) (#197)
+- [ ] Competitor configs and setup scripts (JuiceFS, NFS-Ganesha, RClone, kernel NFS, Samba) (#198)
+- [ ] DittoFS profiling integration (Prometheus, Pyroscope, pprof capture) (#199)
+- [ ] Statistical rigor: 3+ iterations, p50/p95/p99, stddev across all workloads
+- [ ] Benchmark CLI (`dfs bench <mountpoint>`) for user-facing performance evaluation (#188)
+
+#### v3.8 — SMB3 Protocol Upgrade
+- [ ] SMB 3.0/3.0.2/3.1.1 dialect negotiation with negotiate contexts
+- [ ] Preauth integrity (SHA-512 hash chain) and secure dialect negotiation
+- [ ] AES encryption (128/256-bit CCM/GCM) configurable per share
+- [ ] AES signing (CMAC for 3.0+, GMAC for 3.1.1)
+- [ ] SMB3 leases (Read/Write/Handle + directory) with Unified Lock Manager integration
+- [ ] SMB lease <-> NFS delegation cross-protocol coordination
+- [ ] SPNEGO/Kerberos via shared layer, NTLM fallback, guest access
+- [ ] Windows security descriptors (SID/ACE/DACL) with control plane translation
+- [ ] Durable handles v1/v2 for connection resilience
+- [ ] Cross-protocol integration (immediate visibility, bidirectional locking, ACL consistency)
+- [ ] E2E tests for encryption, signing, leases, Kerberos, and cross-protocol scenarios
+- [ ] Client compatibility: Windows 10/11, macOS, Linux
+- [ ] Microsoft WindowsProtocolTestSuites FileServer conformance (BVT + SMB3 feature tests)
+- [ ] Samba smbtorture SMB3 protocol torture tests (durable_v2, lease, replay, session)
+- [ ] Go integration tests (hirochachacha/go-smb2) for native client-server interop
 
 #### v4.0 — NFSv4.2
 - [ ] Server-side COPY (async with OFFLOAD_STATUS polling)
@@ -207,8 +266,12 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 | Xattrs in metadata layer | Clean abstraction, expose via NFSv4.2 and SMB | — Pending (v4.0) |
 | Async COPY with polling | Better for large files, standard NFSv4.2 pattern | — Pending (v4.0) |
 | CLONE via content-addressed storage | Efficient reflinks using existing dedup infrastructure | — Pending (v4.0) |
+| Benchmark before NFSv4.2 | Establish performance baseline before adding complexity | — Pending (v3.7) |
+| Docker Compose per-system profiles | Fair comparison: one system at a time, symmetric overhead | — Pending (v3.7) |
+| SMB3 before NFSv4.2 | Complete SMB protocol upgrade, validate cross-protocol before adding NFS features | — Pending (v3.8) |
+| Shared Kerberos layer for SMB3 | Reuse existing RPCSEC_GSS infrastructure from NFSv4 | — Pending (v3.8) |
 | Auto-register with system rpcbind | NFS clients discover NLM via portmapper | ✓ Good — Embedded portmapper |
 | Per-adapter connection pools | Isolation between NFS and SMB, simpler limits | ✓ Good — Phase 01 |
 
 ---
-*Last updated: 2026-02-25 after v3.5/v3.6 milestone planning*
+*Last updated: 2026-02-25 — added #157 to v3.5, #188 to v3.7*

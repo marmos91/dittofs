@@ -1,4 +1,4 @@
-# Requirements: v3.5 Adapter + Core Refactoring & v3.6 Windows Compatibility
+# Requirements: v3.5 Refactoring, v3.6 Windows, v3.7 Benchmarks & v3.8 SMB3
 
 ## v3.5 Adapter + Core Refactoring
 
@@ -149,6 +149,189 @@ Comprehensive validation using open-source test suites and manual Windows 11 tes
 
 ---
 
+## v3.7 Benchmarking Suite
+
+### BENCH-01: Core Infrastructure
+**Priority**: High
+**Source**: GitHub #194
+
+Docker Compose infrastructure with per-system profiles, directory structure, and configuration files.
+
+- [ ] BENCH-01.1: `bench/` directory structure (configs/, workloads/, scripts/, analysis/, results/)
+- [ ] BENCH-01.2: `docker-compose.yml` with profiles for all systems (dittofs variants, juicefs, ganesha, rclone, kernel-nfs, samba, monitoring)
+- [ ] BENCH-01.3: `.env.example` with S3, PostgreSQL, and benchmark configuration variables
+- [ ] BENCH-01.4: DittoFS config files for each backend combination (badger+s3, postgres+s3, badger+fs)
+- [ ] BENCH-01.5: `scripts/check-prerequisites.sh` validates all required tools
+- [ ] BENCH-01.6: `results/` directory gitignored
+
+### BENCH-02: Benchmark Workloads
+**Priority**: High
+**Source**: GitHub #195
+
+fio job files for all I/O workloads and custom metadata benchmark script.
+
+- [ ] BENCH-02.1: fio jobs — seq-read-large (1MB), seq-write-large (1MB), rand-read-4k, rand-write-4k, mixed-rw-70-30, large-file-1gb
+- [ ] BENCH-02.2: Common fio parameters (runtime=60, time_based, json+ output, parameterized threads/mountpoint)
+- [ ] BENCH-02.3: macOS variants (posixaio engine, direct=0)
+- [ ] BENCH-02.4: `scripts/metadata-bench.sh` — create/stat/readdir/delete for 1K/10K files + deep tree benchmark
+- [ ] BENCH-02.5: Metadata script outputs JSON with ops/sec and total time
+
+### BENCH-03: Competitor Setup
+**Priority**: High
+**Source**: GitHub #198
+
+Configuration and setup scripts for fair comparison against competitors.
+
+- [ ] BENCH-03.1: JuiceFS config (PostgreSQL + S3, cache-size matched)
+- [ ] BENCH-03.2: NFS-Ganesha config (FSAL_VFS, local FS baseline)
+- [ ] BENCH-03.3: RClone config (S3 remote, vfs-cache-max-size matched)
+- [ ] BENCH-03.4: Kernel NFS config (erichough/nfs-server, gold standard)
+- [ ] BENCH-03.5: Samba config (SMB baseline)
+- [ ] BENCH-03.6: DittoFS setup script (automated dfsctl store/share/adapter creation)
+- [ ] BENCH-03.7: Fairness ensured — matched cache sizes, same S3 endpoints, symmetric Docker overhead
+
+### BENCH-04: Orchestrator Scripts
+**Priority**: High
+**Source**: GitHub #196
+
+Main benchmark orchestrator and helper scripts with platform variants.
+
+- [ ] BENCH-04.1: `run-bench.sh` orchestrator with --systems, --tiers, --iterations, --threads, --output, --quick flags
+- [ ] BENCH-04.2: Helper scripts (setup-systems, start/stop-system, mount-nfs/smb, umount-all, drop-caches, warmup, collect-metrics)
+- [ ] BENCH-04.3: Between-test cleanup (sync, drop caches, 5s cooldown, volume prune)
+- [ ] BENCH-04.4: `run-bench-macos.sh` variant
+- [ ] BENCH-04.5: `run-bench-smb.sh` for Linux SMB and `run-bench-smb.ps1` for Windows
+
+### BENCH-05: Analysis & Reporting
+**Priority**: High
+**Source**: GitHub #197
+
+Python analysis pipeline for results parsing, chart generation, and report production.
+
+- [ ] BENCH-05.1: `parse_fio.py` — throughput, IOPS, latency (p50/p95/p99/p99.9), mean/stddev
+- [ ] BENCH-05.2: `parse_metadata.py` — create/stat/readdir/delete ops/sec
+- [ ] BENCH-05.3: `generate_charts.py` — tier1-4 throughput/IOPS/latency/scaling charts + SMB comparison
+- [ ] BENCH-05.4: `generate_report.py` with Jinja2 template → markdown report
+- [ ] BENCH-05.5: `requirements.txt` (pandas, matplotlib, seaborn, jinja2)
+- [ ] BENCH-05.6: Results organized in `results/YYYY-MM-DD_HHMMSS/` with raw/, metrics/, charts/, report.md, summary.csv
+
+### BENCH-06: Profiling Integration
+**Priority**: Medium
+**Source**: GitHub #199
+
+DittoFS observability integration for bottleneck identification during benchmarks.
+
+- [ ] BENCH-06.1: DittoFS config with metrics + telemetry + profiling (when --with-profiling)
+- [ ] BENCH-06.2: Monitoring stack — Prometheus (1s scrape), Pyroscope (continuous), Grafana (optional)
+- [ ] BENCH-06.3: `collect-metrics.sh` — Prometheus range queries, pprof CPU/heap/mutex/goroutine
+- [ ] BENCH-06.4: Bottleneck analysis — CPU flame graphs, S3 vs metadata latency, GC pauses, cache effectiveness
+- [ ] BENCH-06.5: Benchmark-specific Grafana dashboard
+
+---
+
+## v3.8 SMB3 Protocol Upgrade
+
+### SMB3-SEC: Security & Encryption
+**Priority**: High
+**Source**: feat/smb3 branch, MS-SMB2
+
+SMB3 dialect negotiation, signing, and encryption.
+
+- [ ] SMB3-SEC.1: SMB 3.0 dialect negotiation
+- [ ] SMB3-SEC.2: SMB 3.0.2 dialect negotiation
+- [ ] SMB3-SEC.3: SMB 3.1.1 dialect negotiation with negotiate contexts
+- [ ] SMB3-SEC.4: Pre-authentication integrity (SHA-512 hash chain)
+- [ ] SMB3-SEC.5: AES-CMAC signing (SMB 3.0+)
+- [ ] SMB3-SEC.6: AES-GMAC signing (SMB 3.1.1)
+- [ ] SMB3-SEC.7: AES-128-CCM encryption (SMB 3.0/3.0.2)
+- [ ] SMB3-SEC.8: AES-128-GCM encryption (SMB 3.1.1 default)
+- [ ] SMB3-SEC.9: AES-256-GCM encryption (Windows 11+)
+- [ ] SMB3-SEC.10: AES-256-CCM encryption (Windows Server 2022+)
+- [ ] SMB3-SEC.11: Secure dialect negotiation (prevent downgrade attacks)
+- [ ] SMB3-SEC.12: Encryption configurable per share
+
+### SMB3-LEASE: Leases & Locking
+**Priority**: High
+**Source**: feat/smb3 branch
+
+SMB3 leases with Unified Lock Manager integration.
+
+- [ ] SMB3-LEASE.1: Read lease support
+- [ ] SMB3-LEASE.2: Write lease support
+- [ ] SMB3-LEASE.3: Handle lease support
+- [ ] SMB3-LEASE.4: Lease break notifications (server-initiated)
+- [ ] SMB3-LEASE.5: Directory leases
+- [ ] SMB3-LEASE.6: Lease integration with Unified Lock Manager
+- [ ] SMB3-LEASE.7: SMB lease <-> NFS delegation coordination
+
+### SMB3-AUTH: Authentication & ACLs
+**Priority**: High
+**Source**: feat/smb3 branch, MS-DTYP
+
+SPNEGO/Kerberos authentication and Windows security descriptors.
+
+- [ ] SMB3-AUTH.1: SPNEGO framework implementation
+- [ ] SMB3-AUTH.2: Kerberos authentication via shared layer
+- [ ] SMB3-AUTH.3: External KDC integration (Active Directory)
+- [ ] SMB3-AUTH.4: Kerberos ticket validation
+- [ ] SMB3-AUTH.5: NTLM fallback (enhanced)
+- [ ] SMB3-AUTH.6: Guest/anonymous access (SMB3 compatible)
+- [ ] SMB3-AUTH.7: Windows security descriptors (SID/ACE/DACL)
+- [ ] SMB3-AUTH.8: Control plane -> SMB ACL translation
+- [ ] SMB3-AUTH.9: SET_INFO/QUERY_INFO security descriptor handling
+- [ ] SMB3-AUTH.10: Cross-protocol ACL consistency
+
+### SMB3-RES: Resilience
+**Priority**: Medium
+**Source**: feat/smb3 branch
+
+Durable handles for connection reliability.
+
+- [ ] SMB3-RES.1: Durable handles v1 (survive brief disconnects)
+- [ ] SMB3-RES.2: Durable handles v2 with create GUID
+- [ ] SMB3-RES.3: Handle state tracking
+- [ ] SMB3-RES.4: Reconnection with handle restoration
+
+### SMB3-XPROTO: Cross-Protocol Integration
+**Priority**: High
+**Source**: feat/smb3 branch
+
+Unified behavior across SMB3/NFSv3/NFSv4.
+
+- [ ] SMB3-XPROTO.1: Cross-protocol visibility (write SMB -> read NFS immediate)
+- [ ] SMB3-XPROTO.2: Cross-protocol lock coordination (bidirectional)
+- [ ] SMB3-XPROTO.3: Cross-protocol ACL consistency
+
+### SMB3-TEST: Per-Phase Testing
+**Priority**: High
+**Source**: feat/smb3 branch
+
+E2E tests built alongside each implementation phase.
+
+- [ ] SMB3-TEST.1: E2E tests for SMB3 encryption
+- [ ] SMB3-TEST.2: E2E tests for SMB3 signing
+- [ ] SMB3-TEST.3: E2E tests for SMB3 leases
+- [ ] SMB3-TEST.4: E2E tests for Kerberos authentication
+- [ ] SMB3-TEST.5: E2E tests for cross-protocol scenarios
+- [ ] SMB3-TEST.6: Client compatibility tests (Windows 10/11, macOS, Linux)
+
+### SMB3-CONF: Conformance Testing
+**Priority**: High
+**Source**: [Microsoft WindowsProtocolTestSuites](https://github.com/microsoft/WindowsProtocolTestSuites) (MIT), [Samba smbtorture](https://wiki.samba.org/index.php/Writing_Torture_Tests) (GPLv3), [hirochachacha/go-smb2](https://github.com/hirochachacha/go-smb2) (BSD-2-Clause)
+
+Industry-standard conformance validation against the official Microsoft test suite, Samba torture tests, and Go-native integration tests.
+
+- [ ] SMB3-CONF.1: Microsoft WindowsProtocolTestSuites FileServer BVT (101 core tests) — via Docker image `mcr.microsoft.com/windowsprotocoltestsuites:fileserver`
+- [ ] SMB3-CONF.2: Microsoft WPTS SMB3 feature tests — Encryption (AES-128/256-CCM/GCM), Signing (CMAC/GMAC), Negotiate (dialect contexts, preauth integrity), DurableHandle (v1+v2 reconnect), Leasing (file+directory, break, upgrade/downgrade), Replay (SMB 3.0+), SessionMgmt (reauthentication, binding)
+- [ ] SMB3-CONF.3: Microsoft WPTS dialect-specific tests — filter by `TestCategory=Smb30`, `TestCategory=Smb302`, `TestCategory=Smb311` to verify each dialect independently
+- [ ] SMB3-CONF.4: Samba smbtorture SMB3 suites — smb2.durable_v2_open, smb2.lease, smb2.dirlease, smb2.replay, smb2.session, smb2.session_req_sign, smb2.compound, smb2.oplocks, smb2.lock, smb2.acls, smb2.create, smb2.getinfo, smb2.setinfo
+- [ ] SMB3-CONF.5: Go integration tests (hirochachacha/go-smb2) — connect, authenticate (NTLM), read, write, create, delete with SMB 3.0/3.0.2/3.1.1 dialects
+- [ ] SMB3-CONF.6: Client compatibility matrix — Windows 10 (3.0.2), Windows 11 (3.1.1), macOS Ventura+ (3.0.2), Linux cifs.ko 5.6+ (3.1.1)
+- [ ] SMB3-CONF.7: No regressions on SMB2 clients or NFS mounts
+- [ ] SMB3-CONF.8: Test infrastructure Dockerized for CI repeatability (WPTS Docker + smbtorture container + Go test runner)
+
+---
+
 ## Traceability
 
 | Requirement | Phase(s) | Status |
@@ -162,6 +345,20 @@ Comprehensive validation using open-source test suites and manual Windows 11 tes
 | WIN-01: SMB Bug Fixes | 30 | Not started |
 | WIN-02: Windows ACL Support | 31 | Not started |
 | WIN-03: Windows Integration Testing | 32 | Not started |
+| BENCH-01: Core Infrastructure | 33 | Not started |
+| BENCH-02: Benchmark Workloads | 34 | Not started |
+| BENCH-03: Competitor Setup | 35 | Not started |
+| BENCH-04: Orchestrator Scripts | 36 | Not started |
+| BENCH-05: Analysis & Reporting | 37 | Not started |
+| BENCH-06: Profiling Integration | 38 | Not started |
+| SMB3-SEC: Security & Encryption | 39 | Not started |
+| SMB3-LEASE: Leases & Locking | 40 | Not started |
+| SMB3-AUTH: Authentication & ACLs | 41 | Not started |
+| SMB3-RES: Resilience | 42 | Not started |
+| SMB3-XPROTO: Cross-Protocol Integration | 43 | Not started |
+| SMB3-TEST: Per-Phase Testing | 39-43 | Not started |
+| SMB3-CONF: Conformance Testing | 44 | Not started |
 
 ---
 *Requirements created: 2026-02-25*
+*Updated: 2026-02-25 — added v3.7 benchmarking and v3.8 SMB3 requirements*
