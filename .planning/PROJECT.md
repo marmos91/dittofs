@@ -2,22 +2,22 @@
 
 ## What This Is
 
-A comprehensive NFS protocol upgrade for DittoFS that adds NFSv4.0/4.1/4.2 support with Kerberos authentication, unified cross-protocol locking (NFS + SMB), and advanced features like server-side copy, sparse files, and delegations. v1.0 (NLM + unified locking) and v2.0 (NFSv4.0 + Kerberos) are shipped. Next: NFSv4.1 sessions (v3.0), then NFSv4.2 features (v4.0).
+A comprehensive NFS protocol upgrade for DittoFS that adds NFSv4.0/4.1/4.2 support with Kerberos authentication, unified cross-protocol locking (NFS + SMB), and advanced features like server-side copy, sparse files, and delegations. v1.0 (NLM + unified locking), v2.0 (NFSv4.0 + Kerberos), and v3.0 (NFSv4.1 sessions) are shipped. Next: NFSv4.2 features (v4.0).
 
-Target: Cloud-native enterprise NAS with feature parity exceeding JuiceFS and Hammerspace, particularly in security (Kerberos) and cross-protocol consistency.
+Target: Cloud-native enterprise NAS with feature parity exceeding JuiceFS and Hammerspace, particularly in security (Kerberos), session reliability (EOS), and cross-protocol consistency.
 
-## Current Milestone: v3.0 NFSv4.1 Sessions
+## Current Milestone: v4.0 NFSv4.2 Extensions
 
-**Goal:** Add NFSv4.1 session infrastructure with exactly-once semantics, backchannel multiplexing, and directory delegations for NAT-friendly, reliable enterprise NFS.
+**Goal:** Complete the NFSv4.2 protocol suite with server-side copy, clone/reflinks, sparse files, extended attributes, and POSIX compliance testing.
 
 **Target features:**
-- Sessions and sequence IDs (EXCHANGE_ID, CREATE_SESSION, DESTROY_SESSION)
-- Exactly-once semantics via session slot table replay cache
-- Directory delegations (GET_DIR_DELEGATION, CB_NOTIFY)
-- Backchannel over existing connection (NAT-friendly, no separate TCP)
-- Multiple connections per session (trunking-ready)
-- DESTROY_CLIENTID for graceful client cleanup
-- Optional: SMB Kerberos via shared RPCSEC_GSS layer
+- Server-side COPY with async OFFLOAD_STATUS polling
+- CLONE/reflinks leveraging content-addressed storage
+- Sparse files: SEEK, ALLOCATE, DEALLOCATE
+- Extended attributes (GETXATTR, SETXATTR, LISTXATTRS, REMOVEXATTR)
+- Application I/O hints (IO_ADVISE)
+- pjdfstest POSIX compliance for NFSv3 and NFSv4
+- Full documentation updates
 
 ## Core Value
 
@@ -60,17 +60,15 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 - ✓ Control plane updates for NFSv4 configuration — v2.0
 - ✓ NFSv4 handlers in internal/protocol/nfs/v4/ — v2.0
 - ✓ Comprehensive E2E tests for NFSv4.0 — v2.0
+- ✓ Sessions and sequence IDs (EXCHANGE_ID, CREATE_SESSION, DESTROY_SESSION) — v3.0
+- ✓ Exactly-once semantics via session slot table replay cache — v3.0
+- ✓ Directory delegations (GET_DIR_DELEGATION, CB_NOTIFY) — v3.0
+- ✓ Backchannel over existing connection (NAT-friendly callbacks) — v3.0
+- ✓ Multiple connections per session (trunking-ready) — v3.0
+- ✓ DESTROY_CLIENTID for graceful cleanup — v3.0
+- ✓ SMB Kerberos via shared RPCSEC_GSS layer — v3.0
 
 ### Active
-
-#### v3.0 — NFSv4.1
-- [ ] Sessions and sequence IDs
-- [ ] Exactly-once semantics
-- [ ] Directory delegations
-- [ ] Backchannel over existing connection (NAT-friendly callbacks)
-- [ ] Multiple connections per session (trunking-ready)
-- [ ] DESTROY_CLIENTID for graceful cleanup
-- [ ] Optional: SMB Kerberos via shared layer
 
 #### v4.0 — NFSv4.2
 - [ ] Server-side COPY (async with OFFLOAD_STATUS polling)
@@ -98,16 +96,21 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 
 ## Context
 
-**Current State (post-v2.0):**
-- 224,306 LOC Go across ~1,294 files
-- NFSv3 + NFSv4.0 + NLM + SMB fully implemented
+**Current State (post-v3.0):**
+- 256,842 LOC Go across ~1,600 files
+- NFSv3 + NFSv4.0 + NFSv4.1 + NLM + SMB fully implemented
+- NFSv4.1 sessions with exactly-once semantics, backchannel multiplexing, directory delegations
 - RPCSEC_GSS Kerberos (krb5/krb5i/krb5p) with keytab hot-reload
-- 33+ NFSv4 operation handlers, StateManager with client IDs, stateids, leases
-- Read/write delegations with CB_RECALL, recall timers, revocation
+- SMB Kerberos via SPNEGO with shared identity mapping
+- 33+ NFSv4 operation handlers + 19 v4.1 handlers
+- StateManager with client IDs, sessions, stateids, slot tables, leases
+- Connection management with trunking support (multi-conn per session)
+- Read/write/directory delegations with CB_RECALL and CB_NOTIFY
 - NFSv4 ACLs with identity mapping and SMB Security Descriptor interop
-- Control plane v2.0 with settings watcher, netgroup CRUD, blocked operations
-- 50+ NFSv4 E2E tests covering all major features
+- Control plane v2.0 with settings watcher, netgroup CRUD
+- 50+ NFSv4 E2E tests + NFSv4.1 session/EOS/backchannel/delegation tests
 - K8s operator with portmapper support
+- Windows build support (cross-compilation)
 
 **Target Environment:**
 - Kubernetes-first (containerized)
@@ -118,7 +121,7 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 **Competitive Landscape:**
 - JuiceFS: NFSv3 only, no v4, no Kerberos
 - Hammerspace: NFSv3/v4/v4.1, limited v4.2, enterprise pricing
-- DittoFS target: Full NFSv4.2 + Kerberos + cross-protocol locks
+- DittoFS target: Full NFSv4.2 + Kerberos + cross-protocol locks + sessions
 
 **Reference Implementations:**
 - [Linux kernel fs/nfs](https://github.com/torvalds/linux/tree/master/fs/nfs) — client
@@ -146,7 +149,7 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 | Flexible lock model | Preserve native semantics (NLM/NFSv4/SMB), translate at boundary | ✓ Good — Phase 05 |
 | Full SMB2/3 leases in v1.0 | Cross-protocol consistency from day one | ✓ Good — Phase 04 |
 | Kerberos with NFSv4.0 | Standard pairing, security + stateful protocol | ✓ Good — Phase 12 |
-| Shared Kerberos layer | Reuse for NFSv4 (RPCSEC_GSS) and SMB (SPNEGO) | ✓ Good — Phase 12 |
+| Shared Kerberos layer | Reuse for NFSv4 (RPCSEC_GSS) and SMB (SPNEGO) | ✓ Good — Phase 12, 25 |
 | External KDC only | Enterprise target uses AD, simplifies implementation | ✓ Good — Phase 12 |
 | Client-first flush | Standard delegation behavior, simpler consistency | ✓ Good — Phase 11 |
 | Extend existing ACL model | Unified ACLs for NFSv4 and SMB | ✓ Good — Phase 13 |
@@ -155,7 +158,11 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 | Async CB_RECALL via goroutine | Prevents holding state lock during TCP callback | ✓ Good — Phase 11 |
 | Package-level SetIdentityMapper | Runtime configuration without handler signature changes | ✓ Good — Phase 13 |
 | SettingsWatcher 10s polling | Simple, reliable settings propagation to adapters | ✓ Good — Phase 14 |
-| NFSv4.1 backchannel | NAT-friendly callbacks, works in containers | — Pending |
+| Per-SlotTable mutex | Avoids global lock contention on SEQUENCE hot path | ✓ Good — Phase 17 |
+| Separate connMu RWMutex | Connection state isolation from global state lock | ✓ Good — Phase 21 |
+| Backchannel over fore-channel | NAT-friendly callbacks, works in containers | ✓ Good — Phase 22 |
+| Separate NotifMu per delegation | Avoids holding global lock during backchannel sends | ✓ Good — Phase 24 |
+| v4.0/v4.1 coexistence | Minorversion routing, independent state, simultaneous mounts | ✓ Good — Phase 20 |
 | Xattrs in metadata layer | Clean abstraction, expose via NFSv4.2 and SMB | — Pending |
 | Async COPY with polling | Better for large files, standard NFSv4.2 pattern | — Pending |
 | CLONE via content-addressed storage | Efficient reflinks using existing dedup infrastructure | — Pending |
@@ -163,4 +170,4 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 | Per-adapter connection pools | Isolation between NFS and SMB, simpler limits | ✓ Good — Phase 01 |
 
 ---
-*Last updated: 2026-02-20 after v3.0 milestone start*
+*Last updated: 2026-02-25 after v3.0 milestone completion*
