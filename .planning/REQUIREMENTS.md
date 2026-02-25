@@ -49,11 +49,11 @@ Restructure NFS adapter directory layout and dispatch consolidation.
 - [ ] REF-03.4: `internal/auth/` moved to `internal/adapter/smb/auth/`
 - [ ] REF-03.5: `pkg/adapter/nfs/` files renamed (remove `nfs_` prefix, split mixed-concern files)
 - [ ] REF-03.6: v4.1-specific handlers and types moved to `v4/v4_1/` nested hierarchy
-- [ ] REF-03.7: Dispatch consolidated: single `nfs.Dispatch()` entry point in `internal/adapter/nfs/`
-- [ ] REF-03.8: Connection code split by version (connection.go + connection_v4.go)
-- [ ] REF-03.9: Shared handler helpers extracted
+- [x] REF-03.7: Dispatch consolidated: single `nfs.Dispatch()` entry point in `internal/adapter/nfs/`
+- [x] REF-03.8: Connection code split by version (connection.go + connection_v4.go)
+- [x] REF-03.9: Shared handler helpers extracted
 - [ ] REF-03.10: Handler documentation added (3-5 lines each, all v3/v4/mount handlers)
-- [ ] REF-03.11: Version negotiation tests added
+- [x] REF-03.11: Version negotiation tests added
 
 ### REF-04: SMB Adapter Restructuring
 **Priority**: High
@@ -155,7 +155,7 @@ Comprehensive validation using open-source test suites and manual Windows 11 tes
 |-------------|----------|--------|
 | REF-01: Generic Lock Interface | 26 | Not started |
 | REF-02: Protocol Leak Purge | 26 | In progress (3/11 sub-reqs done) |
-| REF-03: NFS Adapter Restructuring | 27 | Not started |
+| REF-03: NFS Adapter Restructuring | 27 | In Progress (7,8,9,11 done) |
 | REF-04: SMB Adapter Restructuring | 28 | Not started |
 | REF-05: Core Object Decomposition | 29 | Not started |
 | REF-06: Code Quality Improvements | 29 | Not started |
