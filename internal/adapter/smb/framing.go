@@ -11,12 +11,13 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/pool"
 	"github.com/marmos91/dittofs/internal/adapter/smb/header"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/internal/adapter/smb/v2/handlers"
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // SigningVerifier is called during request reading to verify message signatures.
-// It takes the parsed header and full message bytes and returns an error if
-// signature verification fails.
+// It takes the session ID and returns whether the message should be verified,
+// whether signing is required, and a verify function.
 //
 // This callback pattern decouples the framing layer from session management,
 // allowing internal/ code to verify signatures without accessing Connection fields.
@@ -83,6 +84,8 @@ func ReadRequest(
 	}
 
 	// SMB messages must be at least 4 bytes to read the protocol ID.
+	// SMB1 header is 32 bytes, SMB2 header is 64 bytes.
+	// We defer the full size check until after we know the protocol version.
 	const minProtocolIDSize = 4
 	if msgLen < minProtocolIDSize {
 		return nil, nil, nil, fmt.Errorf("SMB message too small: %d bytes", msgLen)
@@ -102,6 +105,7 @@ func ReadRequest(
 	}
 
 	// Check if this is SMB1 (legacy negotiate) - needs upgrade to SMB2
+	// SMB1 messages can be smaller than 64 bytes (SMB1 header is 32 bytes)
 	protocolID := binary.LittleEndian.Uint32(message[0:4])
 	if protocolID == types.SMB1ProtocolID {
 		// Handle SMB1 NEGOTIATE by responding with SMB2 NEGOTIATE response
@@ -134,17 +138,20 @@ func ReadRequest(
 	var body []byte
 	var remainingCompound []byte
 	if hdr.NextCommand > 0 {
+		// Body is from after header to next command offset
 		bodyEnd := int(hdr.NextCommand)
 		if bodyEnd > len(message) {
 			bodyEnd = len(message)
 		}
 		body = message[header.HeaderSize:bodyEnd]
+		// Return remaining compound bytes
 		if int(hdr.NextCommand) < len(message) {
 			remainingCompound = message[hdr.NextCommand:]
 			logger.Debug("Compound request detected",
 				"remainingBytes", len(remainingCompound))
 		}
 	} else {
+		// Last or only command - body is everything after header
 		body = message[header.HeaderSize:]
 	}
 
@@ -160,8 +167,10 @@ func ReadRequest(
 }
 
 // WriteNetBIOSFrame wraps an SMB2 payload in a NetBIOS session header and
-// writes it to the connection. This is the single point for all wire writes,
+// writes it to the writer. This is the single point for all wire writes,
 // handling buffer pooling and NetBIOS framing.
+//
+// The writeMu mutex must be held by the caller or passed to ensure serialized writes.
 //
 // NetBIOS header format: Type (1 byte, 0x00) + Length (3 bytes, big-endian).
 func WriteNetBIOSFrame(conn net.Conn, writeMu *LockedWriter, writeTimeout time.Duration, smbPayload []byte) error {
@@ -191,6 +200,77 @@ func WriteNetBIOSFrame(conn net.Conn, writeMu *LockedWriter, writeTimeout time.D
 	_, err := conn.Write(frame)
 	if err != nil {
 		return fmt.Errorf("write SMB message: %w", err)
+	}
+
+	return nil
+}
+
+// sessionSigningVerifier implements SigningVerifier using the Handler's session state.
+// Per MS-SMB2 3.3.5.2.4: verify if session requires signing or message is signed.
+// For compound requests, only the first command's bytes are verified here.
+type sessionSigningVerifier struct {
+	handler *handlers.Handler
+	conn    net.Conn
+}
+
+// NewSessionSigningVerifier creates a SigningVerifier backed by the Handler's session
+// state. It verifies message signatures per MS-SMB2 3.3.5.2.4 using session signing keys.
+func NewSessionSigningVerifier(handler *handlers.Handler, conn net.Conn) SigningVerifier {
+	return &sessionSigningVerifier{handler: handler, conn: conn}
+}
+
+func (sv *sessionSigningVerifier) VerifyRequest(hdr *header.SMB2Header, message []byte) error {
+	// Skip verification for messages without a session (SessionID == 0)
+	// and for NEGOTIATE/SESSION_SETUP which may not have signing set up yet.
+	if hdr.SessionID == 0 || hdr.Command == types.SMB2Negotiate || hdr.Command == types.SMB2SessionSetup {
+		return nil
+	}
+
+	sess, ok := sv.handler.GetSession(hdr.SessionID)
+	if !ok {
+		return nil
+	}
+
+	isSigned := hdr.Flags.IsSigned()
+
+	if sess.Signing != nil && sess.Signing.SigningRequired && !isSigned {
+		logger.Warn("SMB2 message not signed but signing required",
+			"command", hdr.Command.String(),
+			"sessionID", hdr.SessionID,
+			"client", sv.conn.RemoteAddr().String())
+		return fmt.Errorf("STATUS_ACCESS_DENIED: message not signed")
+	}
+
+	if isSigned && sess.ShouldVerify() {
+		// For compound requests, verify only the first command's bytes.
+		verifyBytes := message
+		if hdr.NextCommand > 0 && int(hdr.NextCommand) <= len(message) {
+			verifyBytes = message[:hdr.NextCommand]
+		}
+
+		logger.Debug("Verifying incoming SMB2 message signature",
+			"command", hdr.Command.String(),
+			"sessionID", hdr.SessionID,
+			"messageLen", len(message),
+			"verifyLen", len(verifyBytes),
+			"isCompound", hdr.NextCommand > 0)
+		if !sess.VerifyMessage(verifyBytes) {
+			hasKey := sess.Signing != nil && sess.Signing.SigningKey != nil
+			logger.Warn("SMB2 message signature verification failed",
+				"command", hdr.Command.String(),
+				"sessionID", hdr.SessionID,
+				"client", sv.conn.RemoteAddr().String(),
+				"hasSigningKey", hasKey,
+				"msgSignature", fmt.Sprintf("%x", message[48:64]))
+			return fmt.Errorf("STATUS_ACCESS_DENIED: signature verification failed")
+		}
+		logger.Debug("Verified incoming SMB2 message signature",
+			"command", hdr.Command.String(),
+			"sessionID", hdr.SessionID)
+	} else if !isSigned {
+		logger.Debug("Accepting unsigned message (signing not required)",
+			"command", hdr.Command.String(),
+			"sessionID", hdr.SessionID)
 	}
 
 	return nil

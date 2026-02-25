@@ -122,10 +122,12 @@ func ParseCompoundCommand(data []byte) (*header.SMB2Header, []byte, []byte, erro
 			bodyEnd = len(data)
 		}
 		body = data[header.HeaderSize:bodyEnd]
+		// Return remaining data
 		if int(hdr.NextCommand) < len(data) {
 			remaining = data[hdr.NextCommand:]
 		}
 	} else {
+		// Last command in compound
 		body = data[header.HeaderSize:]
 	}
 
@@ -160,6 +162,7 @@ func VerifyCompoundCommandSignature(data []byte, hdr *header.SMB2Header, connInf
 	}
 
 	if isSigned && sess.ShouldVerify() {
+		// Determine the bytes this command's signature covers
 		verifyBytes := data
 		if hdr.NextCommand > 0 && int(hdr.NextCommand) <= len(data) {
 			verifyBytes = data[:hdr.NextCommand]
@@ -182,6 +185,7 @@ func VerifyCompoundCommandSignature(data []byte, hdr *header.SMB2Header, connInf
 // InjectFileID injects a FileID into the appropriate position in the request body.
 // Offsets are per [MS-SMB2] specification for each command.
 func InjectFileID(command types.Command, body []byte, fileID [16]byte) []byte {
+	// FileID offset within the request body, per [MS-SMB2] spec for each command.
 	var offset int
 	switch command {
 	case types.SMB2Close, types.SMB2QueryDirectory:
@@ -203,6 +207,7 @@ func InjectFileID(command types.Command, body []byte, fileID [16]byte) []byte {
 		return body
 	}
 
+	// Make a copy to avoid modifying the original
 	newBody := make([]byte, len(body))
 	copy(newBody, body)
 	copy(newBody[offset:offset+16], fileID[:])

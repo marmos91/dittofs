@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v4.2
 milestone_name: Adapter + Core Refactoring
 status: unknown
-last_updated: "2026-02-25T20:55:06.556Z"
+last_updated: "2026-02-25T21:09:14.252Z"
 progress:
   total_phases: 27
   completed_phases: 26
@@ -52,7 +52,7 @@ Last activity: 2026-02-25 -- Completed 28-04 (Authenticator Interface)
 | 27 | 03 | 35min | 2 | 6 |
 | 28 | 01 | 6min | 2 | 13 |
 | 28 | 02 | 8min | 2 | 9 |
-| 28 | 03 | - | - | - |
+| 28 | 03 | 35min | 2 | 6 |
 | 28 | 04 | 6min | 2 | 5 |
 
 ## Quick Tasks Completed
@@ -101,6 +101,9 @@ Last activity: 2026-02-25 -- Completed 28-04 (Authenticator Interface)
 - [Phase 28]: [28-04] Standalone AUTH_UNIX parser in nfs/auth to avoid RPC package import dependency
 - [Phase 28]: [28-04] SMBAuthenticator uses sync.Map for pending auth state tracking across concurrent sessions
 - [Phase 28]: [28-04] Unknown UIDs produce synthetic users (unix:UID) for NFS backward compat
+- [Phase 28]: [28-03] Created response.go instead of expanding dispatch.go to keep dispatch table separate from response/send logic
+- [Phase 28]: [28-03] ConnInfo struct + SessionTracker interface pattern decouples pkg/ Connection from internal/ dispatch without circular imports
+- [Phase 28]: [28-03] sessionSigningVerifier moved to internal/adapter/smb/framing.go as NewSessionSigningVerifier for co-location with framing logic
 
 ### Pending Todos
 
