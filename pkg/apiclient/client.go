@@ -78,9 +78,13 @@ func (c *Client) do(method, path string, body, result any) error {
 	if resp.StatusCode >= 400 {
 		var apiErr APIError
 		if json.Unmarshal(respBody, &apiErr) == nil && apiErr.Message != "" {
+			apiErr.StatusCode = resp.StatusCode
 			return &apiErr
 		}
-		return fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(respBody))
+		return &APIError{
+			StatusCode: resp.StatusCode,
+			Message:    string(respBody),
+		}
 	}
 
 	if result != nil && len(respBody) > 0 {

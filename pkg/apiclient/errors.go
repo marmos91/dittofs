@@ -6,9 +6,10 @@ import (
 
 // APIError represents an error response from the API.
 type APIError struct {
-	Code    string `json:"code,omitempty"`
-	Message string `json:"message"`
-	Details string `json:"details,omitempty"`
+	Code       string `json:"code,omitempty"`
+	Message    string `json:"message"`
+	Details    string `json:"details,omitempty"`
+	StatusCode int    `json:"-"`
 }
 
 // Error implements the error interface.
@@ -26,7 +27,7 @@ func (e *APIError) IsAuthError() bool {
 
 // IsNotFound returns true if this is a not found error.
 func (e *APIError) IsNotFound() bool {
-	return e.Code == "NOT_FOUND"
+	return e.Code == "NOT_FOUND" || e.StatusCode == 404
 }
 
 // IsConflict returns true if this is a conflict error.
