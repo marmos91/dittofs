@@ -28,8 +28,8 @@ func newTestSMBConnection(conn net.Conn) *SMBConnection {
 
 func TestSMBConnection_TrackUntrackSession(t *testing.T) {
 	server, client := net.Pipe()
-	defer server.Close()
-	defer client.Close()
+	defer func() { _ = server.Close() }()
+	defer func() { _ = client.Close() }()
 
 	c := newTestSMBConnection(server)
 
@@ -109,8 +109,8 @@ func TestSMBConnection_TrackUntrackSession(t *testing.T) {
 func TestSMBConnection_WriteNetBIOSFrame(t *testing.T) {
 	t.Run("WritesCorrectFrameFormat", func(t *testing.T) {
 		server, client := net.Pipe()
-		defer server.Close()
-		defer client.Close()
+		defer func() { _ = server.Close() }()
+		defer func() { _ = client.Close() }()
 
 		c := newTestSMBConnection(server)
 
@@ -154,8 +154,8 @@ func TestSMBConnection_WriteNetBIOSFrame(t *testing.T) {
 
 	t.Run("WritesEmptyPayload", func(t *testing.T) {
 		server, client := net.Pipe()
-		defer server.Close()
-		defer client.Close()
+		defer func() { _ = server.Close() }()
+		defer func() { _ = client.Close() }()
 
 		c := newTestSMBConnection(server)
 
@@ -184,8 +184,8 @@ func TestSMBConnection_WriteNetBIOSFrame(t *testing.T) {
 
 	t.Run("WritesLargePayload", func(t *testing.T) {
 		server, client := net.Pipe()
-		defer server.Close()
-		defer client.Close()
+		defer func() { _ = server.Close() }()
+		defer func() { _ = client.Close() }()
 
 		c := newTestSMBConnection(server)
 
@@ -230,8 +230,8 @@ func TestSMBConnection_WriteNetBIOSFrame(t *testing.T) {
 
 func TestSMBConnection_InjectFileID(t *testing.T) {
 	server, client := net.Pipe()
-	defer server.Close()
-	defer client.Close()
+	defer func() { _ = server.Close() }()
+	defer func() { _ = client.Close() }()
 
 	c := newTestSMBConnection(server)
 
@@ -522,8 +522,8 @@ func TestParseCompoundCommand(t *testing.T) {
 func TestTrackSessionLifecycle(t *testing.T) {
 	t.Run("TracksOnSessionSetupSuccess", func(t *testing.T) {
 		server, client := net.Pipe()
-		defer server.Close()
-		defer client.Close()
+		defer func() { _ = server.Close() }()
+		defer func() { _ = client.Close() }()
 
 		c := newTestSMBConnection(server)
 
@@ -540,8 +540,8 @@ func TestTrackSessionLifecycle(t *testing.T) {
 
 	t.Run("DoesNotTrackOnMoreProcessingRequired", func(t *testing.T) {
 		server, client := net.Pipe()
-		defer server.Close()
-		defer client.Close()
+		defer func() { _ = server.Close() }()
+		defer func() { _ = client.Close() }()
 
 		c := newTestSMBConnection(server)
 
@@ -558,8 +558,8 @@ func TestTrackSessionLifecycle(t *testing.T) {
 
 	t.Run("UntracksOnLogoffSuccess", func(t *testing.T) {
 		server, client := net.Pipe()
-		defer server.Close()
-		defer client.Close()
+		defer func() { _ = server.Close() }()
+		defer func() { _ = client.Close() }()
 
 		c := newTestSMBConnection(server)
 
@@ -580,8 +580,8 @@ func TestTrackSessionLifecycle(t *testing.T) {
 
 	t.Run("UsesReqSessionIDForLogoff", func(t *testing.T) {
 		server, client := net.Pipe()
-		defer server.Close()
-		defer client.Close()
+		defer func() { _ = server.Close() }()
+		defer func() { _ = client.Close() }()
 
 		c := newTestSMBConnection(server)
 
@@ -601,8 +601,8 @@ func TestTrackSessionLifecycle(t *testing.T) {
 
 	t.Run("FallsBackToReqSessionID", func(t *testing.T) {
 		server, client := net.Pipe()
-		defer server.Close()
-		defer client.Close()
+		defer func() { _ = server.Close() }()
+		defer func() { _ = client.Close() }()
 
 		c := newTestSMBConnection(server)
 
@@ -620,8 +620,8 @@ func TestTrackSessionLifecycle(t *testing.T) {
 
 	t.Run("IgnoresOtherCommands", func(t *testing.T) {
 		server, client := net.Pipe()
-		defer server.Close()
-		defer client.Close()
+		defer func() { _ = server.Close() }()
+		defer func() { _ = client.Close() }()
 
 		c := newTestSMBConnection(server)
 
