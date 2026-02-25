@@ -14,17 +14,176 @@ import (
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 	"github.com/marmos91/dittofs/pkg/metrics"
 )
 
-// metadataFileChecker adapts MetadataService to the FileChecker interface
-// used by NLMService, avoiding import cycles with the metadata package.
+// fileChecker provides file existence checking without importing pkg/metadata.
+// This avoids an import cycle between the NFS adapter and the metadata package.
+type fileChecker interface {
+	GetFile(ctx context.Context, handle []byte) (exists bool, isDir bool, err error)
+}
+
+// nlmService provides NLM-specific lock operations using LockManager directly.
+//
+// Wraps a single share's lock.Manager and a fileChecker for validating file
+// existence before lock operations.
+//
+// Thread Safety: Safe for concurrent use (delegates to thread-safe Manager).
+type nlmService struct {
+	lockMgr     *lock.Manager
+	fileChecker fileChecker
+	onUnlock    func(handle []byte)
+}
+
+func newNLMService(lockMgr *lock.Manager, fc fileChecker) *nlmService {
+	return &nlmService{
+		lockMgr:     lockMgr,
+		fileChecker: fc,
+	}
+}
+
+func lockTypeFromExclusive(exclusive bool) lock.LockType {
+	if exclusive {
+		return lock.LockTypeExclusive
+	}
+	return lock.LockTypeShared
+}
+
+func (s *nlmService) checkFileExists(ctx context.Context, handle []byte) error {
+	exists, _, err := s.fileChecker.GetFile(ctx, handle)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return &errors.StoreError{
+			Code:    errors.ErrNotFound,
+			Message: "file not found",
+			Path:    string(handle),
+		}
+	}
+	return nil
+}
+
+func (s *nlmService) SetUnlockCallback(fn func(handle []byte)) {
+	s.onUnlock = fn
+}
+
+func (s *nlmService) LockFileNLM(
+	ctx context.Context,
+	handle []byte,
+	owner lock.LockOwner,
+	offset, length uint64,
+	exclusive bool,
+	reclaim bool,
+) (*lock.LockResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	if err := s.checkFileExists(ctx, handle); err != nil {
+		return nil, err
+	}
+
+	unifiedLock := lock.NewUnifiedLock(owner, lock.FileHandle(handle), offset, length, lockTypeFromExclusive(exclusive))
+	unifiedLock.Reclaim = reclaim
+
+	handleKey := string(handle)
+	err := s.lockMgr.AddUnifiedLock(handleKey, unifiedLock)
+	if err == nil {
+		return &lock.LockResult{
+			Success: true,
+			Lock:    unifiedLock,
+		}, nil
+	}
+
+	storeErr, ok := err.(*errors.StoreError)
+	if !ok || storeErr.Code != errors.ErrLockConflict {
+		return nil, err
+	}
+
+	existing := s.lockMgr.ListUnifiedLocks(handleKey)
+	for _, el := range existing {
+		if lock.IsUnifiedLockConflicting(el, unifiedLock) {
+			return &lock.LockResult{
+				Success:  false,
+				Conflict: &lock.UnifiedLockConflict{Lock: el, Reason: "conflict"},
+			}, nil
+		}
+	}
+
+	return &lock.LockResult{Success: false}, nil
+}
+
+func (s *nlmService) TestLockNLM(
+	ctx context.Context,
+	handle []byte,
+	owner lock.LockOwner,
+	offset, length uint64,
+	exclusive bool,
+) (bool, *lock.UnifiedLockConflict, error) {
+	if err := ctx.Err(); err != nil {
+		return false, nil, err
+	}
+
+	if err := s.checkFileExists(ctx, handle); err != nil {
+		return false, nil, err
+	}
+
+	testLock := lock.NewUnifiedLock(owner, lock.FileHandle(handle), offset, length, lockTypeFromExclusive(exclusive))
+
+	handleKey := string(handle)
+	existing := s.lockMgr.ListUnifiedLocks(handleKey)
+	for _, el := range existing {
+		if lock.IsUnifiedLockConflicting(el, testLock) {
+			return false, &lock.UnifiedLockConflict{Lock: el, Reason: "conflict"}, nil
+		}
+	}
+	return true, nil, nil
+}
+
+func (s *nlmService) UnlockFileNLM(
+	ctx context.Context,
+	handle []byte,
+	ownerID string,
+	offset, length uint64,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	handleKey := string(handle)
+	err := s.lockMgr.RemoveUnifiedLock(handleKey, lock.LockOwner{OwnerID: ownerID}, offset, length)
+	if err != nil {
+		if storeErr, ok := err.(*errors.StoreError); ok && storeErr.Code == errors.ErrLockNotFound {
+			return nil
+		}
+		return err
+	}
+
+	if s.onUnlock != nil {
+		s.onUnlock(handle)
+	}
+
+	return nil
+}
+
+func (s *nlmService) CancelBlockingLock(
+	ctx context.Context,
+	handle []byte,
+	ownerID string,
+	offset, length uint64,
+) error {
+	return nil
+}
+
+// metadataFileChecker adapts MetadataService to the fileChecker interface,
+// avoiding import cycles with the metadata package.
 type metadataFileChecker struct {
 	metaSvc *metadata.MetadataService
 }
 
-// GetFile checks if a file exists and returns basic type info.
 func (c *metadataFileChecker) GetFile(ctx context.Context, handle []byte) (bool, bool, error) {
 	file, err := c.metaSvc.GetFile(ctx, metadata.FileHandle(handle))
 	if err != nil {
@@ -35,11 +194,7 @@ func (c *metadataFileChecker) GetFile(ctx context.Context, handle []byte) (bool,
 
 // createRoutingNLMService creates a routingNLMService that routes NLM operations
 // to the correct per-share lock manager.
-//
-// Since NLM handles are share-specific (the handle encodes the share name),
-// the routing service resolves the lock manager from the handle at each call.
 func (s *NFSAdapter) createRoutingNLMService(metaSvc *metadata.MetadataService) *routingNLMService {
-	// Create the file checker wrapper
 	checker := &metadataFileChecker{metaSvc: metaSvc}
 
 	nlmSvc := &routingNLMService{
@@ -56,10 +211,9 @@ func (s *NFSAdapter) createRoutingNLMService(metaSvc *metadata.MetadataService) 
 }
 
 // routingNLMService routes NLM operations to the correct per-share lock manager.
-// This replaces the single NLMService for multi-share environments.
 type routingNLMService struct {
 	metaSvc     *metadata.MetadataService
-	fileChecker FileChecker
+	fileChecker fileChecker
 	onUnlock    func(handle []byte)
 }
 
@@ -132,8 +286,7 @@ func (s *routingNLMService) CancelBlockingLock(
 	return nil // Blocking queue handles cancellation directly
 }
 
-// serviceForHandle creates an NLMService routed to the correct share's lock manager.
-func (s *routingNLMService) serviceForHandle(handle []byte) (*NLMService, error) {
+func (s *routingNLMService) serviceForHandle(handle []byte) (*nlmService, error) {
 	shareName, _, err := metadata.DecodeFileHandle(metadata.FileHandle(handle))
 	if err != nil {
 		return nil, err
@@ -144,7 +297,7 @@ func (s *routingNLMService) serviceForHandle(handle []byte) (*NLMService, error)
 		return nil, fmt.Errorf("no lock manager for share %q", shareName)
 	}
 
-	svc := NewNLMService(lm, s.fileChecker)
+	svc := newNLMService(lm, s.fileChecker)
 	svc.SetUnlockCallback(s.onUnlock)
 	return svc, nil
 }
