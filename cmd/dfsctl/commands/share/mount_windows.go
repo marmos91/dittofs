@@ -102,6 +102,12 @@ Alternatively, install via PowerShell (run as Administrator):
 }
 
 func mountSMB(sharePath, mountPoint string, adapters []apiclient.Adapter) error {
+	// On Windows, 'net use' requires a drive letter (e.g., Z:) as the local device name.
+	if !(len(mountPoint) == 2 && mountPoint[1] == ':' &&
+		((mountPoint[0] >= 'A' && mountPoint[0] <= 'Z') || (mountPoint[0] >= 'a' && mountPoint[0] <= 'z'))) {
+		return fmt.Errorf("on Windows, SMB mount point must be a drive letter (e.g., Z:), got: %s", mountPoint)
+	}
+
 	port := getAdapterPort(adapters, "smb", defaultSMBPort)
 
 	username, err := resolveSMBUsername()

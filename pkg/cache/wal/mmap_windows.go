@@ -8,6 +8,7 @@ package wal
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -172,6 +173,11 @@ func (p *MmapPersister) mapFile() error {
 		return fmt.Errorf("MapViewOfFile: %w", err)
 	}
 
+	if p.size > uint64(math.MaxInt) {
+		_ = windows.CloseHandle(mapping)
+		return fmt.Errorf("mmap size %d exceeds maximum addressable size", p.size)
+	}
+
 	p.mapping = mapping
 	p.data = unsafe.Slice((*byte)(unsafe.Pointer(addr)), int(p.size))
 
@@ -243,7 +249,7 @@ func (p *MmapPersister) AppendBlockWrite(entry *BlockWriteEntry) error {
 	p.header.TotalDataSize += uint64(len(entry.Data))
 	p.header.Version = mmapVersion
 	p.writeHeader()
-	p.dirty = false // Header is now in sync with mmap region
+	p.dirty = true // Data written to mmap region but not yet flushed to disk
 
 	return nil
 }
@@ -283,7 +289,7 @@ func (p *MmapPersister) AppendBlockUploaded(payloadID string, chunkIdx, blockIdx
 	p.header.EntryCount++
 	p.header.Version = mmapVersion
 	p.writeHeader()
-	p.dirty = false
+	p.dirty = true // Data written to mmap region but not yet flushed to disk
 
 	return nil
 }
@@ -317,7 +323,7 @@ func (p *MmapPersister) AppendRemove(payloadID string) error {
 	p.header.EntryCount++
 	p.header.Version = mmapVersion
 	p.writeHeader()
-	p.dirty = false
+	p.dirty = true // Data written to mmap region but not yet flushed to disk
 
 	return nil
 }

@@ -9,6 +9,26 @@ import (
 	"syscall"
 )
 
+// stopProcess sends a termination signal to the given process on Unix.
+// If force is true, sends SIGKILL; otherwise sends SIGTERM for graceful shutdown.
+func stopProcess(process *os.Process, pid int, force bool) error {
+	// Check if the process is still alive.
+	if err := process.Signal(syscall.Signal(0)); err != nil {
+		return errProcessDone
+	}
+
+	if force {
+		if err := process.Signal(syscall.SIGKILL); err != nil {
+			return fmt.Errorf("failed to kill process %d: %w", pid, err)
+		}
+	} else {
+		if err := process.Signal(syscall.SIGTERM); err != nil {
+			return fmt.Errorf("failed to stop process %d: %w", pid, err)
+		}
+	}
+	return nil
+}
+
 // isProcessRunning reads a PID from the given file and checks whether
 // that process is still alive. Returns the PID and true if running,
 // or 0 and false otherwise.
