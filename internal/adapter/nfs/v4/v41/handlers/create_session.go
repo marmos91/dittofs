@@ -1,4 +1,4 @@
-package handlers
+package v41handlers
 
 import (
 	"bytes"
@@ -19,14 +19,14 @@ import (
 // The state manager handles the multi-case replay detection algorithm;
 // the handler only does XDR decode/encode, callback security validation,
 // response caching, and error mapping.
-func (h *Handler) handleCreateSession(ctx *types.CompoundContext, _ *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
+func HandleCreateSession(d *Deps, ctx *types.CompoundContext, _ *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
 	var args types.CreateSessionArgs
 	if err := args.Decode(reader); err != nil {
 		logger.Debug("CREATE_SESSION: decode error", "error", err, "client", ctx.ClientAddr)
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_BADXDR,
 			OpCode: types.OP_CREATE_SESSION,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+			Data:   EncodeStatusOnly(types.NFS4ERR_BADXDR),
 		}
 	}
 
@@ -38,12 +38,12 @@ func (h *Handler) handleCreateSession(ctx *types.CompoundContext, _ *types.V41Re
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_ENCR_ALG_UNSUPP,
 			OpCode: types.OP_CREATE_SESSION,
-			Data:   encodeStatusOnly(types.NFS4ERR_ENCR_ALG_UNSUPP),
+			Data:   EncodeStatusOnly(types.NFS4ERR_ENCR_ALG_UNSUPP),
 		}
 	}
 
 	// Delegate to StateManager for the multi-case algorithm
-	result, cachedReply, err := h.StateManager.CreateSession(
+	result, cachedReply, err := d.StateManager.CreateSession(
 		args.ClientID,
 		args.SequenceID,
 		args.Flags,
@@ -66,7 +66,7 @@ func (h *Handler) handleCreateSession(ctx *types.CompoundContext, _ *types.V41Re
 	}
 
 	if err != nil {
-		nfsStatus := mapStateError(err)
+		nfsStatus := MapStateError(err)
 		logger.Debug("CREATE_SESSION: state error",
 			"error", err,
 			"nfs_status", nfsStatus,
@@ -75,7 +75,7 @@ func (h *Handler) handleCreateSession(ctx *types.CompoundContext, _ *types.V41Re
 		return &types.CompoundResult{
 			Status: nfsStatus,
 			OpCode: types.OP_CREATE_SESSION,
-			Data:   encodeStatusOnly(nfsStatus),
+			Data:   EncodeStatusOnly(nfsStatus),
 		}
 	}
 
@@ -95,18 +95,18 @@ func (h *Handler) handleCreateSession(ctx *types.CompoundContext, _ *types.V41Re
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
 			OpCode: types.OP_CREATE_SESSION,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   EncodeStatusOnly(types.NFS4ERR_SERVERFAULT),
 		}
 	}
 
 	// Cache the encoded response bytes for replay detection
-	h.StateManager.CacheCreateSessionResponse(args.ClientID, buf.Bytes())
+	d.StateManager.CacheCreateSessionResponse(args.ClientID, buf.Bytes())
 
 	// Auto-bind the connection that created the session as fore-channel.
 	// This is best-effort: CREATE_SESSION already succeeded, so we only
 	// log a warning if the bind fails (e.g., connection ID not plumbed).
 	if ctx.ConnectionID != 0 {
-		if _, bindErr := h.StateManager.BindConnToSession(ctx.ConnectionID, result.SessionID, types.CDFC4_FORE); bindErr != nil {
+		if _, bindErr := d.StateManager.BindConnToSession(ctx.ConnectionID, result.SessionID, types.CDFC4_FORE); bindErr != nil {
 			logger.Debug("CREATE_SESSION: auto-bind connection failed",
 				"connection_id", ctx.ConnectionID,
 				"session_id", result.SessionID.String(),

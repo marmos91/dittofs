@@ -3,7 +3,7 @@
 // FREE_STATEID frees a stateid that the client no longer needs.
 // Per RFC 8881 Section 18.38.
 // FREE_STATEID requires SEQUENCE (not session-exempt).
-package handlers
+package v41handlers
 
 import (
 	"bytes"
@@ -23,7 +23,8 @@ import (
 // the client identified by the SEQUENCE session.
 //
 // Does NOT trigger a cache flush (locked decision).
-func (h *Handler) handleFreeStateid(
+func HandleFreeStateid(
+	d *Deps,
 	ctx *types.CompoundContext,
 	v41ctx *types.V41RequestContext,
 	reader io.Reader,
@@ -34,7 +35,7 @@ func (h *Handler) handleFreeStateid(
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_BADXDR,
 			OpCode: types.OP_FREE_STATEID,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+			Data:   EncodeStatusOnly(types.NFS4ERR_BADXDR),
 		}
 	}
 
@@ -44,12 +45,12 @@ func (h *Handler) handleFreeStateid(
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_OP_NOT_IN_SESSION,
 			OpCode: types.OP_FREE_STATEID,
-			Data:   encodeStatusOnly(types.NFS4ERR_OP_NOT_IN_SESSION),
+			Data:   EncodeStatusOnly(types.NFS4ERR_OP_NOT_IN_SESSION),
 		}
 	}
 
 	// Extract client ID from the session
-	session := h.StateManager.GetSession(v41ctx.SessionID)
+	session := d.StateManager.GetSession(v41ctx.SessionID)
 	if session == nil {
 		logger.Debug("FREE_STATEID: session not found",
 			"session_id", v41ctx.SessionID.String(),
@@ -57,16 +58,16 @@ func (h *Handler) handleFreeStateid(
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_BADSESSION,
 			OpCode: types.OP_FREE_STATEID,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADSESSION),
+			Data:   EncodeStatusOnly(types.NFS4ERR_BADSESSION),
 		}
 	}
 
 	clientID := session.ClientID
 
 	// Delegate to StateManager
-	err := h.StateManager.FreeStateid(clientID, &args.Stateid)
+	err := d.StateManager.FreeStateid(clientID, &args.Stateid)
 	if err != nil {
-		nfsStatus := mapStateError(err)
+		nfsStatus := MapStateError(err)
 		logger.Debug("FREE_STATEID: state error",
 			"error", err,
 			"client_id", fmt.Sprintf("0x%016x", clientID),
@@ -76,7 +77,7 @@ func (h *Handler) handleFreeStateid(
 		return &types.CompoundResult{
 			Status: nfsStatus,
 			OpCode: types.OP_FREE_STATEID,
-			Data:   encodeStatusOnly(nfsStatus),
+			Data:   EncodeStatusOnly(nfsStatus),
 		}
 	}
 
@@ -88,7 +89,7 @@ func (h *Handler) handleFreeStateid(
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
 			OpCode: types.OP_FREE_STATEID,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   EncodeStatusOnly(types.NFS4ERR_SERVERFAULT),
 		}
 	}
 

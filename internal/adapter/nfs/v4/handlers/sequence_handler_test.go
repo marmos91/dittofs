@@ -5,6 +5,7 @@ import (
 	"io"
 	"testing"
 
+	v41handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/v41/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 )
@@ -598,9 +599,9 @@ func TestCompound_V41_ExemptOps_AllFour(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ok := isSessionExemptOp(tt.opCode)
+			ok := v41handlers.IsSessionExemptOp(tt.opCode)
 			if !ok {
-				t.Errorf("isSessionExemptOp(%s) = false, want true", tt.name)
+				t.Errorf("IsSessionExemptOp(%s) = false, want true", tt.name)
 			}
 		})
 	}
@@ -621,9 +622,9 @@ func TestCompound_V41_NonExemptOps(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ok := isSessionExemptOp(tt.opCode)
+			ok := v41handlers.IsSessionExemptOp(tt.opCode)
 			if ok {
-				t.Errorf("isSessionExemptOp(%s) = true, want false", tt.name)
+				t.Errorf("IsSessionExemptOp(%s) = true, want false", tt.name)
 			}
 		})
 	}

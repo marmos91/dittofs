@@ -1,4 +1,4 @@
-package handlers
+package v41handlers
 
 import (
 	"bytes"
@@ -22,7 +22,8 @@ import (
 //   - CDFC4_BACK -> CDFS4_BACK
 //   - CDFC4_FORE_OR_BOTH -> CDFS4_BOTH
 //   - CDFC4_BACK_OR_BOTH -> CDFS4_BOTH
-func (h *Handler) handleBindConnToSession(
+func HandleBindConnToSession(
+	d *Deps,
 	ctx *types.CompoundContext,
 	_ *types.V41RequestContext, // nil for session-exempt ops
 	reader io.Reader,
@@ -33,7 +34,7 @@ func (h *Handler) handleBindConnToSession(
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_BADXDR,
 			OpCode: types.OP_BIND_CONN_TO_SESSION,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+			Data:   EncodeStatusOnly(types.NFS4ERR_BADXDR),
 		}
 	}
 
@@ -51,14 +52,14 @@ func (h *Handler) handleBindConnToSession(
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
 			OpCode: types.OP_BIND_CONN_TO_SESSION,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   EncodeStatusOnly(types.NFS4ERR_SERVERFAULT),
 		}
 	}
 
 	// Delegate to StateManager
-	result, err := h.StateManager.BindConnToSession(ctx.ConnectionID, args.SessionID, args.Dir)
+	result, err := d.StateManager.BindConnToSession(ctx.ConnectionID, args.SessionID, args.Dir)
 	if err != nil {
-		nfsStatus := mapStateError(err)
+		nfsStatus := MapStateError(err)
 		logger.Debug("BIND_CONN_TO_SESSION: state error",
 			"error", err,
 			"nfs_status", nfsStatus,
@@ -68,7 +69,7 @@ func (h *Handler) handleBindConnToSession(
 		return &types.CompoundResult{
 			Status: nfsStatus,
 			OpCode: types.OP_BIND_CONN_TO_SESSION,
-			Data:   encodeStatusOnly(nfsStatus),
+			Data:   EncodeStatusOnly(nfsStatus),
 		}
 	}
 
@@ -86,7 +87,7 @@ func (h *Handler) handleBindConnToSession(
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
 			OpCode: types.OP_BIND_CONN_TO_SESSION,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   EncodeStatusOnly(types.NFS4ERR_SERVERFAULT),
 		}
 	}
 

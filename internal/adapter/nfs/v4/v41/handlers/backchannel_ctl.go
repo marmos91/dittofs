@@ -3,7 +3,7 @@
 // BACKCHANNEL_CTL allows the client to update the backchannel's callback
 // program and security parameters without destroying the session.
 // Per RFC 8881 Section 18.33.
-package handlers
+package v41handlers
 
 import (
 	"bytes"
@@ -25,7 +25,8 @@ import (
 //   - Session must have a backchannel (BackChannelSlots != nil)
 //   - At least one security flavor must be acceptable (AUTH_SYS or AUTH_NONE)
 //   - BACKCHANNEL_CTL requires SEQUENCE (non-exempt per RFC 8881)
-func (h *Handler) handleBackchannelCtl(
+func HandleBackchannelCtl(
+	d *Deps,
 	ctx *types.CompoundContext,
 	v41ctx *types.V41RequestContext,
 	reader io.Reader,
@@ -36,12 +37,12 @@ func (h *Handler) handleBackchannelCtl(
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_BADXDR,
 			OpCode: types.OP_BACKCHANNEL_CTL,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+			Data:   EncodeStatusOnly(types.NFS4ERR_BADXDR),
 		}
 	}
 
 	// Look up the session from the V41RequestContext session ID
-	session := h.StateManager.GetSession(v41ctx.SessionID)
+	session := d.StateManager.GetSession(v41ctx.SessionID)
 	if session == nil {
 		logger.Debug("BACKCHANNEL_CTL: session not found",
 			"session_id", v41ctx.SessionID.String(),
@@ -49,7 +50,7 @@ func (h *Handler) handleBackchannelCtl(
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_BADSESSION,
 			OpCode: types.OP_BACKCHANNEL_CTL,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADSESSION),
+			Data:   EncodeStatusOnly(types.NFS4ERR_BADSESSION),
 		}
 	}
 
@@ -61,7 +62,7 @@ func (h *Handler) handleBackchannelCtl(
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_INVAL,
 			OpCode: types.OP_BACKCHANNEL_CTL,
-			Data:   encodeStatusOnly(types.NFS4ERR_INVAL),
+			Data:   EncodeStatusOnly(types.NFS4ERR_INVAL),
 		}
 	}
 
@@ -74,17 +75,17 @@ func (h *Handler) handleBackchannelCtl(
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_INVAL,
 			OpCode: types.OP_BACKCHANNEL_CTL,
-			Data:   encodeStatusOnly(types.NFS4ERR_INVAL),
+			Data:   EncodeStatusOnly(types.NFS4ERR_INVAL),
 		}
 	}
 
 	// Update backchannel params on the session
-	if err := h.StateManager.UpdateBackchannelParams(
+	if err := d.StateManager.UpdateBackchannelParams(
 		v41ctx.SessionID,
 		args.CbProgram,
 		args.SecParms,
 	); err != nil {
-		nfsStatus := mapStateError(err)
+		nfsStatus := MapStateError(err)
 		logger.Debug("BACKCHANNEL_CTL: state error",
 			"error", err,
 			"session_id", v41ctx.SessionID.String(),
@@ -92,7 +93,7 @@ func (h *Handler) handleBackchannelCtl(
 		return &types.CompoundResult{
 			Status: nfsStatus,
 			OpCode: types.OP_BACKCHANNEL_CTL,
-			Data:   encodeStatusOnly(nfsStatus),
+			Data:   EncodeStatusOnly(nfsStatus),
 		}
 	}
 
@@ -106,7 +107,7 @@ func (h *Handler) handleBackchannelCtl(
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
 			OpCode: types.OP_BACKCHANNEL_CTL,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   EncodeStatusOnly(types.NFS4ERR_SERVERFAULT),
 		}
 	}
 

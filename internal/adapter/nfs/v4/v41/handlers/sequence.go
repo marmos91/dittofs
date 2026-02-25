@@ -1,4 +1,4 @@
-package handlers
+package v41handlers
 
 import (
 	"bytes"
@@ -26,7 +26,7 @@ import (
 //   - session: the Session object (nil on error/replay)
 //   - cachedReply: non-nil on replay (full COMPOUND response bytes to return directly)
 //   - err: non-nil on decode failure
-func (h *Handler) handleSequenceOp(compCtx *types.CompoundContext, reader io.Reader) (
+func HandleSequenceOp(d *Deps, compCtx *types.CompoundContext, reader io.Reader) (
 	sequenceResult *types.CompoundResult,
 	v41ctx *types.V41RequestContext,
 	session *state.Session,
@@ -34,31 +34,31 @@ func (h *Handler) handleSequenceOp(compCtx *types.CompoundContext, reader io.Rea
 	err error,
 ) {
 	// Record every SEQUENCE invocation
-	h.sequenceMetrics.RecordSequence()
+	d.SequenceMetrics.RecordSequence()
 
 	// Decode SEQUENCE args
 	var args types.SequenceArgs
 	if err := args.Decode(reader); err != nil {
 		logger.Debug("SEQUENCE: decode error", "error", err, "client", compCtx.ClientAddr)
-		h.sequenceMetrics.RecordError("bad_xdr")
+		d.SequenceMetrics.RecordError("bad_xdr")
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_BADXDR,
 			OpCode: types.OP_SEQUENCE,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+			Data:   EncodeStatusOnly(types.NFS4ERR_BADXDR),
 		}, nil, nil, nil, nil
 	}
 
 	// Look up session
-	sess := h.StateManager.GetSession(args.SessionID)
+	sess := d.StateManager.GetSession(args.SessionID)
 	if sess == nil {
 		logger.Debug("SEQUENCE: session not found",
 			"session_id", hex.EncodeToString(args.SessionID[:]),
 			"client", compCtx.ClientAddr)
-		h.sequenceMetrics.RecordError("bad_session")
+		d.SequenceMetrics.RecordError("bad_session")
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_BADSESSION,
 			OpCode: types.OP_SEQUENCE,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADSESSION),
+			Data:   EncodeStatusOnly(types.NFS4ERR_BADSESSION),
 		}, nil, nil, nil, nil
 	}
 
@@ -73,19 +73,19 @@ func (h *Handler) handleSequenceOp(compCtx *types.CompoundContext, reader io.Rea
 			"slot", args.SlotID,
 			"seqid", args.SequenceID,
 			"client", compCtx.ClientAddr)
-		h.sequenceMetrics.RecordError("replay_hit")
-		h.sequenceMetrics.RecordReplayHit()
+		d.SequenceMetrics.RecordError("replay_hit")
+		d.SequenceMetrics.RecordReplayHit()
 		if slot != nil && slot.CachedReply != nil {
 			return nil, nil, nil, slot.CachedReply, nil
 		}
 		// Invariant violation: SeqRetry should only be returned when CachedReply != nil.
 		// ValidateSequence returns SeqMisordered with NFS4ERR_RETRY_UNCACHED_REP for
 		// retries without cache. If we ever reach this point, treat as internal error.
-		h.sequenceMetrics.RecordError("retry_uncached")
+		d.SequenceMetrics.RecordError("retry_uncached")
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
 			OpCode: types.OP_SEQUENCE,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   EncodeStatusOnly(types.NFS4ERR_SERVERFAULT),
 		}, nil, nil, nil, nil
 
 	case state.SeqMisordered:
@@ -97,15 +97,15 @@ func (h *Handler) handleSequenceOp(compCtx *types.CompoundContext, reader io.Rea
 		// Classify error type for metrics
 		switch nfsStatus {
 		case types.NFS4ERR_SEQ_MISORDERED:
-			h.sequenceMetrics.RecordError("seq_misordered")
+			d.SequenceMetrics.RecordError("seq_misordered")
 		case types.NFS4ERR_BADSLOT:
-			h.sequenceMetrics.RecordError("bad_slot")
+			d.SequenceMetrics.RecordError("bad_slot")
 		case types.NFS4ERR_DELAY:
-			h.sequenceMetrics.RecordError("slot_busy")
+			d.SequenceMetrics.RecordError("slot_busy")
 		case types.NFS4ERR_RETRY_UNCACHED_REP:
-			h.sequenceMetrics.RecordError("retry_uncached")
+			d.SequenceMetrics.RecordError("retry_uncached")
 		default:
-			h.sequenceMetrics.RecordError("seq_misordered")
+			d.SequenceMetrics.RecordError("seq_misordered")
 		}
 		logger.Debug("SEQUENCE: validation failed",
 			"session_id", args.SessionID.String(),
@@ -117,7 +117,7 @@ func (h *Handler) handleSequenceOp(compCtx *types.CompoundContext, reader io.Rea
 		return &types.CompoundResult{
 			Status: nfsStatus,
 			OpCode: types.OP_SEQUENCE,
-			Data:   encodeStatusOnly(nfsStatus),
+			Data:   EncodeStatusOnly(nfsStatus),
 		}, nil, nil, nil, nil
 
 	case state.SeqNew:
@@ -126,13 +126,13 @@ func (h *Handler) handleSequenceOp(compCtx *types.CompoundContext, reader io.Rea
 
 		// Update slot utilization metrics
 		sessionIDHex := args.SessionID.String()
-		h.sequenceMetrics.SetSlotsInUse(sessionIDHex, float64(sess.ForeChannelSlots.SlotsInUse()))
+		d.SequenceMetrics.SetSlotsInUse(sessionIDHex, float64(sess.ForeChannelSlots.SlotsInUse()))
 
 		// Renew lease (implicit per RFC 8881 Section 8.1.3)
-		h.StateManager.RenewV41Lease(sess.ClientID)
+		d.StateManager.RenewV41Lease(sess.ClientID)
 
 		// Compute status flags
-		statusFlags := h.StateManager.GetStatusFlags(sess)
+		statusFlags := d.StateManager.GetStatusFlags(sess)
 
 		// Build SEQUENCE response
 		res := &types.SequenceRes{
@@ -151,7 +151,7 @@ func (h *Handler) handleSequenceOp(compCtx *types.CompoundContext, reader io.Rea
 			return &types.CompoundResult{
 				Status: types.NFS4ERR_SERVERFAULT,
 				OpCode: types.OP_SEQUENCE,
-				Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+				Data:   EncodeStatusOnly(types.NFS4ERR_SERVERFAULT),
 			}, nil, nil, nil, nil
 		}
 
@@ -182,7 +182,7 @@ func (h *Handler) handleSequenceOp(compCtx *types.CompoundContext, reader io.Rea
 	return &types.CompoundResult{
 		Status: types.NFS4ERR_SERVERFAULT,
 		OpCode: types.OP_SEQUENCE,
-		Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+		Data:   EncodeStatusOnly(types.NFS4ERR_SERVERFAULT),
 	}, nil, nil, nil, nil
 }
 
@@ -197,7 +197,7 @@ func (h *Handler) handleSequenceOp(compCtx *types.CompoundContext, reader io.Rea
 //   - BIND_CONN_TO_SESSION: connection binding (must work on new connections)
 //   - DESTROY_CLIENTID: client teardown (RFC 8881 Section 18.50.3 -- MAY be
 //     the only operation, allowing it after the client's last session is destroyed)
-func isSessionExemptOp(opCode uint32) bool {
+func IsSessionExemptOp(opCode uint32) bool {
 	switch opCode {
 	case types.OP_EXCHANGE_ID,
 		types.OP_CREATE_SESSION,

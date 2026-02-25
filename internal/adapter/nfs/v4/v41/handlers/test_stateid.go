@@ -3,7 +3,7 @@
 // TEST_STATEID tests a set of stateids for validity, returning per-stateid
 // status codes. Per RFC 8881 Section 18.48.
 // TEST_STATEID requires SEQUENCE (not session-exempt).
-package handlers
+package v41handlers
 
 import (
 	"bytes"
@@ -21,7 +21,8 @@ import (
 // NFS4_OK; individual stateid validity is reported in the status codes array.
 //
 // Uses RLock only in StateManager -- no lease renewal side effects per RFC 8881.
-func (h *Handler) handleTestStateid(
+func HandleTestStateid(
+	d *Deps,
 	ctx *types.CompoundContext,
 	_ *types.V41RequestContext,
 	reader io.Reader,
@@ -32,12 +33,12 @@ func (h *Handler) handleTestStateid(
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_BADXDR,
 			OpCode: types.OP_TEST_STATEID,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+			Data:   EncodeStatusOnly(types.NFS4ERR_BADXDR),
 		}
 	}
 
 	// Delegate to StateManager for per-stateid validation
-	statusCodes := h.StateManager.TestStateids(args.Stateids)
+	statusCodes := d.StateManager.TestStateids(args.Stateids)
 
 	// Encode response with per-stateid status codes
 	res := &types.TestStateidRes{
@@ -50,7 +51,7 @@ func (h *Handler) handleTestStateid(
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
 			OpCode: types.OP_TEST_STATEID,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   EncodeStatusOnly(types.NFS4ERR_SERVERFAULT),
 		}
 	}
 

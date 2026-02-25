@@ -3,7 +3,7 @@
 // GET_DIR_DELEGATION allows a client to request directory change notifications
 // from the server. Per RFC 8881 Section 18.39.
 // GET_DIR_DELEGATION requires SEQUENCE (not session-exempt).
-package handlers
+package v41handlers
 
 import (
 	"bytes"
@@ -27,7 +27,8 @@ import (
 //   - On expired lease: NFS4ERR_EXPIRED
 //   - On missing FH: NFS4ERR_NOFILEHANDLE
 //   - On bad session: NFS4ERR_BADSESSION
-func (h *Handler) handleGetDirDelegation(
+func HandleGetDirDelegation(
+	d *Deps,
 	ctx *types.CompoundContext,
 	v41ctx *types.V41RequestContext,
 	reader io.Reader,
@@ -39,7 +40,7 @@ func (h *Handler) handleGetDirDelegation(
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_BADXDR,
 			OpCode: types.OP_GET_DIR_DELEGATION,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+			Data:   EncodeStatusOnly(types.NFS4ERR_BADXDR),
 		}
 	}
 
@@ -48,7 +49,7 @@ func (h *Handler) handleGetDirDelegation(
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_GET_DIR_DELEGATION,
-			Data:   encodeStatusOnly(status),
+			Data:   EncodeStatusOnly(status),
 		}
 	}
 
@@ -58,12 +59,12 @@ func (h *Handler) handleGetDirDelegation(
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_OP_NOT_IN_SESSION,
 			OpCode: types.OP_GET_DIR_DELEGATION,
-			Data:   encodeStatusOnly(types.NFS4ERR_OP_NOT_IN_SESSION),
+			Data:   EncodeStatusOnly(types.NFS4ERR_OP_NOT_IN_SESSION),
 		}
 	}
 
 	// Look up session to get clientID
-	session := h.StateManager.GetSession(v41ctx.SessionID)
+	session := d.StateManager.GetSession(v41ctx.SessionID)
 	if session == nil {
 		logger.Debug("GET_DIR_DELEGATION: session not found",
 			"session_id", v41ctx.SessionID.String(),
@@ -71,7 +72,7 @@ func (h *Handler) handleGetDirDelegation(
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_BADSESSION,
 			OpCode: types.OP_GET_DIR_DELEGATION,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADSESSION),
+			Data:   EncodeStatusOnly(types.NFS4ERR_BADSESSION),
 		}
 	}
 
@@ -83,7 +84,7 @@ func (h *Handler) handleGetDirDelegation(
 	}
 
 	// Attempt to grant the directory delegation
-	deleg, err := h.StateManager.GrantDirDelegation(session.ClientID, ctx.CurrentFH, notifMask)
+	deleg, err := d.StateManager.GrantDirDelegation(session.ClientID, ctx.CurrentFH, notifMask)
 	if err != nil {
 		// Check if this is an expired lease error
 		if stateErr, ok := err.(*state.NFS4StateError); ok && stateErr.Status == types.NFS4ERR_EXPIRED {
@@ -93,7 +94,7 @@ func (h *Handler) handleGetDirDelegation(
 			return &types.CompoundResult{
 				Status: types.NFS4ERR_EXPIRED,
 				OpCode: types.OP_GET_DIR_DELEGATION,
-				Data:   encodeStatusOnly(types.NFS4ERR_EXPIRED),
+				Data:   EncodeStatusOnly(types.NFS4ERR_EXPIRED),
 			}
 		}
 
@@ -135,7 +136,7 @@ func encodeGetDirDelegationOK(deleg *state.DelegationState) *types.CompoundResul
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
 			OpCode: types.OP_GET_DIR_DELEGATION,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   EncodeStatusOnly(types.NFS4ERR_SERVERFAULT),
 		}
 	}
 
@@ -161,7 +162,7 @@ func encodeGetDirDelegationUnavail() *types.CompoundResult {
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
 			OpCode: types.OP_GET_DIR_DELEGATION,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   EncodeStatusOnly(types.NFS4ERR_SERVERFAULT),
 		}
 	}
 

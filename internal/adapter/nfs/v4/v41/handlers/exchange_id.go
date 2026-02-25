@@ -1,4 +1,4 @@
-package handlers
+package v41handlers
 
 import (
 	"bytes"
@@ -17,14 +17,14 @@ import (
 //
 // SP4_MACH_CRED and SP4_SSV are rejected with NFS4ERR_ENCR_ALG_UNSUPP
 // (matching Linux nfsd behavior).
-func (h *Handler) handleExchangeID(ctx *types.CompoundContext, _ *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
+func HandleExchangeID(d *Deps, ctx *types.CompoundContext, _ *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
 	var args types.ExchangeIdArgs
 	if err := args.Decode(reader); err != nil {
 		logger.Debug("EXCHANGE_ID: decode error", "error", err, "client", ctx.ClientAddr)
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_BADXDR,
 			OpCode: types.OP_EXCHANGE_ID,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+			Data:   EncodeStatusOnly(types.NFS4ERR_BADXDR),
 		}
 	}
 
@@ -35,7 +35,7 @@ func (h *Handler) handleExchangeID(ctx *types.CompoundContext, _ *types.V41Reque
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_ENCR_ALG_UNSUPP,
 			OpCode: types.OP_EXCHANGE_ID,
-			Data:   encodeStatusOnly(types.NFS4ERR_ENCR_ALG_UNSUPP),
+			Data:   EncodeStatusOnly(types.NFS4ERR_ENCR_ALG_UNSUPP),
 		}
 	}
 
@@ -48,7 +48,7 @@ func (h *Handler) handleExchangeID(ctx *types.CompoundContext, _ *types.V41Reque
 	}
 
 	// Delegate to StateManager for the multi-case algorithm
-	result, err := h.StateManager.ExchangeID(
+	result, err := d.StateManager.ExchangeID(
 		args.ClientOwner.OwnerID,
 		args.ClientOwner.Verifier,
 		args.Flags,
@@ -56,13 +56,13 @@ func (h *Handler) handleExchangeID(ctx *types.CompoundContext, _ *types.V41Reque
 		ctx.ClientAddr,
 	)
 	if err != nil {
-		nfsStatus := mapStateError(err)
+		nfsStatus := MapStateError(err)
 		logger.Debug("EXCHANGE_ID: state error",
 			"error", err, "nfs_status", nfsStatus, "client", ctx.ClientAddr)
 		return &types.CompoundResult{
 			Status: nfsStatus,
 			OpCode: types.OP_EXCHANGE_ID,
-			Data:   encodeStatusOnly(nfsStatus),
+			Data:   EncodeStatusOnly(nfsStatus),
 		}
 	}
 
@@ -85,7 +85,7 @@ func (h *Handler) handleExchangeID(ctx *types.CompoundContext, _ *types.V41Reque
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
 			OpCode: types.OP_EXCHANGE_ID,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   EncodeStatusOnly(types.NFS4ERR_SERVERFAULT),
 		}
 	}
 

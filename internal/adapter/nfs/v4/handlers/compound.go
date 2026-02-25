@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	v41handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/v41/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 )
@@ -324,7 +325,7 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 	}
 
 	// Check if the first operation is session-exempt
-	if isSessionExemptOp(firstOpCode) {
+	if v41handlers.IsSessionExemptOp(firstOpCode) {
 		logger.Debug("NFSv4.1 COMPOUND exempt op",
 			"op_name", types.OpName(firstOpCode),
 			"num_ops", numOps,
@@ -341,7 +342,7 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 	}
 
 	// Process SEQUENCE
-	seqResult, v41ctx, sess, cachedReply, seqErr := h.handleSequenceOp(compCtx, reader)
+	seqResult, v41ctx, sess, cachedReply, seqErr := v41handlers.HandleSequenceOp(h.v41Deps, compCtx, reader)
 	if seqErr != nil {
 		return nil, fmt.Errorf("SEQUENCE processing error: %w", seqErr)
 	}

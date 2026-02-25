@@ -3,7 +3,7 @@
 // RECLAIM_COMPLETE indicates the client has finished reclaiming state
 // after a server restart. Per RFC 8881 Section 18.51.
 // RECLAIM_COMPLETE requires SEQUENCE (not session-exempt).
-package handlers
+package v41handlers
 
 import (
 	"bytes"
@@ -25,7 +25,8 @@ import (
 //   - RECLAIM_COMPLETE requires SEQUENCE (not session-exempt)
 //   - If called twice for the same client, returns NFS4ERR_COMPLETE_ALREADY
 //   - Outside grace period, returns NFS4_OK (not an error per RFC 8881)
-func (h *Handler) handleReclaimComplete(
+func HandleReclaimComplete(
+	d *Deps,
 	ctx *types.CompoundContext,
 	v41ctx *types.V41RequestContext,
 	reader io.Reader,
@@ -36,7 +37,7 @@ func (h *Handler) handleReclaimComplete(
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_BADXDR,
 			OpCode: types.OP_RECLAIM_COMPLETE,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+			Data:   EncodeStatusOnly(types.NFS4ERR_BADXDR),
 		}
 	}
 
@@ -46,12 +47,12 @@ func (h *Handler) handleReclaimComplete(
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_OP_NOT_IN_SESSION,
 			OpCode: types.OP_RECLAIM_COMPLETE,
-			Data:   encodeStatusOnly(types.NFS4ERR_OP_NOT_IN_SESSION),
+			Data:   EncodeStatusOnly(types.NFS4ERR_OP_NOT_IN_SESSION),
 		}
 	}
 
 	// Extract client ID from the session
-	session := h.StateManager.GetSession(v41ctx.SessionID)
+	session := d.StateManager.GetSession(v41ctx.SessionID)
 	if session == nil {
 		logger.Debug("RECLAIM_COMPLETE: session not found",
 			"session_id", v41ctx.SessionID.String(),
@@ -59,16 +60,16 @@ func (h *Handler) handleReclaimComplete(
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_BADSESSION,
 			OpCode: types.OP_RECLAIM_COMPLETE,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADSESSION),
+			Data:   EncodeStatusOnly(types.NFS4ERR_BADSESSION),
 		}
 	}
 
 	clientID := session.ClientID
 
 	// Delegate to StateManager
-	err := h.StateManager.ReclaimComplete(clientID)
+	err := d.StateManager.ReclaimComplete(clientID)
 	if err != nil {
-		nfsStatus := mapStateError(err)
+		nfsStatus := MapStateError(err)
 		logger.Debug("RECLAIM_COMPLETE: state error",
 			"error", err,
 			"client_id", fmt.Sprintf("0x%016x", clientID),
@@ -77,7 +78,7 @@ func (h *Handler) handleReclaimComplete(
 		return &types.CompoundResult{
 			Status: nfsStatus,
 			OpCode: types.OP_RECLAIM_COMPLETE,
-			Data:   encodeStatusOnly(nfsStatus),
+			Data:   EncodeStatusOnly(nfsStatus),
 		}
 	}
 
@@ -89,7 +90,7 @@ func (h *Handler) handleReclaimComplete(
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
 			OpCode: types.OP_RECLAIM_COMPLETE,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   EncodeStatusOnly(types.NFS4ERR_SERVERFAULT),
 		}
 	}
 

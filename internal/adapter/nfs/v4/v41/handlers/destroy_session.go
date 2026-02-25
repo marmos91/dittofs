@@ -1,4 +1,4 @@
-package handlers
+package v41handlers
 
 import (
 	"bytes"
@@ -13,21 +13,21 @@ import (
 // DESTROY_SESSION tears down a session, releases slot table memory, and
 // unbinds connections. If the session has in-flight requests, the operation
 // returns NFS4ERR_DELAY to let the client retry.
-func (h *Handler) handleDestroySession(ctx *types.CompoundContext, _ *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
+func HandleDestroySession(d *Deps, ctx *types.CompoundContext, _ *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
 	var args types.DestroySessionArgs
 	if err := args.Decode(reader); err != nil {
 		logger.Debug("DESTROY_SESSION: decode error", "error", err, "client", ctx.ClientAddr)
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_BADXDR,
 			OpCode: types.OP_DESTROY_SESSION,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
+			Data:   EncodeStatusOnly(types.NFS4ERR_BADXDR),
 		}
 	}
 
 	// Delegate to StateManager
-	err := h.StateManager.DestroySession(args.SessionID)
+	err := d.StateManager.DestroySession(args.SessionID)
 	if err != nil {
-		nfsStatus := mapStateError(err)
+		nfsStatus := MapStateError(err)
 		logger.Debug("DESTROY_SESSION: state error",
 			"error", err,
 			"nfs_status", nfsStatus,
@@ -36,7 +36,7 @@ func (h *Handler) handleDestroySession(ctx *types.CompoundContext, _ *types.V41R
 		return &types.CompoundResult{
 			Status: nfsStatus,
 			OpCode: types.OP_DESTROY_SESSION,
-			Data:   encodeStatusOnly(nfsStatus),
+			Data:   EncodeStatusOnly(nfsStatus),
 		}
 	}
 
@@ -48,7 +48,7 @@ func (h *Handler) handleDestroySession(ctx *types.CompoundContext, _ *types.V41R
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
 			OpCode: types.OP_DESTROY_SESSION,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   EncodeStatusOnly(types.NFS4ERR_SERVERFAULT),
 		}
 	}
 

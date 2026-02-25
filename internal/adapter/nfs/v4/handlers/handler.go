@@ -10,6 +10,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
+	v41handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/v41/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
@@ -70,6 +71,8 @@ type Handler struct {
 	// sequenceMetrics holds Prometheus metrics for SEQUENCE operation tracking.
 	// May be nil; SequenceMetrics methods are nil-safe so callers can invoke
 	// them without additional nil checks.
+	v41Deps *v41handlers.Deps
+
 	sequenceMetrics *state.SequenceMetrics
 
 	// connectionMetrics holds Prometheus metrics for connection binding tracking.
@@ -113,6 +116,13 @@ func NewHandler(registry *runtime.Runtime, pfs *pseudofs.PseudoFS, stateManager 
 		v41DispatchTable: make(map[uint32]V41OpHandler),
 		maxMinorVersion:  1, // default: accept v4.0 and v4.1
 	}
+
+	// Initialize v4.1 handler dependencies
+	v41d := &v41handlers.Deps{
+		StateManager:    sm,
+		SequenceMetrics: nil, // set later via SetSequenceMetrics
+	}
+	h.v41Deps = v41d
 
 	// Register all implemented operation handlers.
 	// Filehandle management
@@ -199,17 +209,31 @@ func NewHandler(registry *runtime.Runtime, pfs *pseudofs.PseudoFS, stateManager 
 	// and returns NFS4ERR_NOTSUPP. Real handlers replace stubs in Phases 17-24.
 
 	// BACKCHANNEL_CTL: update callback program and security params (RFC 8881 Section 18.33)
-	h.v41DispatchTable[types.OP_BACKCHANNEL_CTL] = h.handleBackchannelCtl
+	h.v41DispatchTable[types.OP_BACKCHANNEL_CTL] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
+		return v41handlers.HandleBackchannelCtl(h.v41Deps, ctx, v41ctx, reader)
+	}
 	// BIND_CONN_TO_SESSION: connection binding (RFC 8881 Section 18.34)
-	h.v41DispatchTable[types.OP_BIND_CONN_TO_SESSION] = h.handleBindConnToSession
+	h.v41DispatchTable[types.OP_BIND_CONN_TO_SESSION] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
+		return v41handlers.HandleBindConnToSession(h.v41Deps, ctx, v41ctx, reader)
+	}
 	// EXCHANGE_ID: client identity registration (RFC 8881 Section 18.35)
-	h.v41DispatchTable[types.OP_EXCHANGE_ID] = h.handleExchangeID
+	h.v41DispatchTable[types.OP_EXCHANGE_ID] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
+		return v41handlers.HandleExchangeID(h.v41Deps, ctx, v41ctx, reader)
+	}
 	// CREATE_SESSION: session lifecycle (RFC 8881 Section 18.36)
-	h.v41DispatchTable[types.OP_CREATE_SESSION] = h.handleCreateSession
+	h.v41DispatchTable[types.OP_CREATE_SESSION] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
+		return v41handlers.HandleCreateSession(h.v41Deps, ctx, v41ctx, reader)
+	}
 	// DESTROY_SESSION: session teardown (RFC 8881 Section 18.37)
-	h.v41DispatchTable[types.OP_DESTROY_SESSION] = h.handleDestroySession
-	h.v41DispatchTable[types.OP_FREE_STATEID] = h.handleFreeStateid
-	h.v41DispatchTable[types.OP_GET_DIR_DELEGATION] = h.handleGetDirDelegation
+	h.v41DispatchTable[types.OP_DESTROY_SESSION] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
+		return v41handlers.HandleDestroySession(h.v41Deps, ctx, v41ctx, reader)
+	}
+	h.v41DispatchTable[types.OP_FREE_STATEID] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
+		return v41handlers.HandleFreeStateid(h.v41Deps, ctx, v41ctx, reader)
+	}
+	h.v41DispatchTable[types.OP_GET_DIR_DELEGATION] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
+		return v41handlers.HandleGetDirDelegation(h.v41Deps, ctx, v41ctx, reader)
+	}
 	h.v41DispatchTable[types.OP_GETDEVICEINFO] = v41StubHandler(types.OP_GETDEVICEINFO, func(r io.Reader) error {
 		var args types.GetDeviceInfoArgs
 		return args.Decode(r)
@@ -255,13 +279,19 @@ func NewHandler(registry *runtime.Runtime, pfs *pseudofs.PseudoFS, stateManager 
 		var args types.SetSsvArgs
 		return args.Decode(r)
 	})
-	h.v41DispatchTable[types.OP_TEST_STATEID] = h.handleTestStateid
+	h.v41DispatchTable[types.OP_TEST_STATEID] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
+		return v41handlers.HandleTestStateid(h.v41Deps, ctx, v41ctx, reader)
+	}
 	h.v41DispatchTable[types.OP_WANT_DELEGATION] = v41StubHandler(types.OP_WANT_DELEGATION, func(r io.Reader) error {
 		var args types.WantDelegationArgs
 		return args.Decode(r)
 	})
-	h.v41DispatchTable[types.OP_DESTROY_CLIENTID] = h.handleDestroyClientID
-	h.v41DispatchTable[types.OP_RECLAIM_COMPLETE] = h.handleReclaimComplete
+	h.v41DispatchTable[types.OP_DESTROY_CLIENTID] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
+		return v41handlers.HandleDestroyClientID(h.v41Deps, ctx, v41ctx, reader)
+	}
+	h.v41DispatchTable[types.OP_RECLAIM_COMPLETE] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
+		return v41handlers.HandleReclaimComplete(h.v41Deps, ctx, v41ctx, reader)
+	}
 
 	return h
 }
@@ -362,6 +392,9 @@ func (h *Handler) IsOperationBlocked(opNum uint32) bool {
 // SetSequenceMetrics sets the Prometheus metrics collector for SEQUENCE operations.
 // Must be called before any SEQUENCE operations. Safe to leave nil (no-op metrics).
 func (h *Handler) SetSequenceMetrics(m *state.SequenceMetrics) {
+	if h.v41Deps != nil {
+		h.v41Deps.SequenceMetrics = m
+	}
 	h.sequenceMetrics = m
 }
 
