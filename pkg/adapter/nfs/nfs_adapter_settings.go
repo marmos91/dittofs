@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	v4attrs "github.com/marmos91/dittofs/internal/protocol/nfs/v4/attrs"
+	v4attrs "github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 

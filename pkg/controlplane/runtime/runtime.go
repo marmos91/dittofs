@@ -122,7 +122,7 @@ type Runtime struct {
 	// Share change callbacks for dynamic updates (e.g., pseudo-fs rebuild, session index rebuild)
 	shareChangeCallbacks []func(shares []string)
 
-	// Adapter data providers (stored as any to avoid import cycles with internal/protocol)
+	// Adapter data providers (stored as any to avoid import cycles with internal/adapter)
 	// Each adapter can store a provider for API handler access via GetAdapterProvider/SetAdapterProvider.
 	adapterProviders   map[string]any
 	adapterProvidersMu sync.RWMutex

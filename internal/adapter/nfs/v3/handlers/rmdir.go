@@ -1,0 +1,471 @@
+package handlers
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
+	"github.com/marmos91/dittofs/pkg/metadata"
+)
+
+// ============================================================================
+// Request and Response Structures
+// ============================================================================
+
+// RmdirRequest represents a RMDIR request from an NFS client.
+// The client provides a parent directory handle and the name of the
+// directory to remove.
+//
+// This structure is decoded from XDR-encoded data received over the network.
+//
+// RFC 1813 Section 3.3.13 specifies the RMDIR procedure as:
+//
+//	RMDIR3res NFSPROC3_RMDIR(RMDIR3args) = 13;
+//
+// The RMDIR procedure removes (deletes) a subdirectory from a directory.
+// The directory must be empty (contain no entries other than "." and "..").
+type RmdirRequest struct {
+	// DirHandle is the file handle of the parent directory containing
+	// the directory to be removed.
+	// Must be a valid directory handle obtained from MOUNT or LOOKUP.
+	// Maximum length is 64 bytes per RFC 1813.
+	DirHandle []byte
+
+	// Name is the name of the directory to remove within the parent directory.
+	// Must follow NFS naming conventions:
+	//   - Cannot be empty, ".", or ".."
+	//   - Maximum length is 255 bytes per NFS specification
+	//   - Should not contain null bytes or path separators (/)
+	//   - Should not contain control characters
+	Name string
+}
+
+// RmdirResponse represents the response to a RMDIR request.
+// It contains the status of the operation and WCC (Weak Cache Consistency)
+// data for the parent directory to help clients maintain cache coherency.
+//
+// The response is encoded in XDR format before being sent back to the client.
+type RmdirResponse struct {
+	NFSResponseBase // Embeds Status field and GetStatus() method
+
+	// DirWccBefore contains pre-operation attributes of the parent directory.
+	// Used for weak cache consistency to help clients detect if the parent
+	// directory changed during the operation. May be nil.
+	DirWccBefore *types.WccAttr
+
+	// DirWccAfter contains post-operation attributes of the parent directory.
+	// Used for weak cache consistency to provide the updated parent state.
+	// May be nil on error, but should be present on success.
+	DirWccAfter *types.NFSFileAttr
+}
+
+// ============================================================================
+// Protocol Handler
+// ============================================================================
+
+// Rmdir removes an empty directory from the filesystem.
+//
+// This implements the NFS RMDIR procedure as defined in RFC 1813 Section 3.3.13.
+//
+// **Purpose:**
+//
+// RMDIR is used to delete empty subdirectories from the filesystem. It provides
+// a safe way to remove directories by ensuring they contain no files or
+// subdirectories (other than the special "." and ".." entries).
+//
+// Common use cases:
+//   - Cleaning up temporary or empty directories
+//   - Removing obsolete directory structures
+//   - Filesystem maintenance and organization
+//
+// **Process:**
+//
+//  1. Check for context cancellation before starting
+//  2. Validate request parameters (handle format, name syntax)
+//  3. Extract client IP and authentication credentials from context
+//  4. Verify parent directory exists and is a directory (via store)
+//  5. Capture pre-operation parent state (for WCC)
+//  6. Delegate directory removal to store (includes validation and deletion)
+//  7. Return status and WCC data for parent directory
+//
+// **Design Principles:**
+//
+//   - Protocol layer handles only XDR encoding/decoding and validation
+//   - All business logic (removal, validation, access control) delegated to store
+//   - File handle validation performed by store.GetFile()
+//   - Comprehensive logging at INFO level for operations, DEBUG for details
+//   - Respects context cancellation for graceful shutdown and timeouts
+//
+// **Directory Removal Requirements:**
+//
+// Per RFC 1813 and POSIX semantics:
+//   - Directory must be empty (no entries except "." and "..")
+//   - User must have write permission on parent directory
+//   - Cannot remove "." (current directory)
+//   - Cannot remove ".." (parent directory)
+//   - Directory being removed must not be in use (no open file handles in some implementations)
+//
+// **Authentication:**
+//
+// The context contains authentication credentials from the RPC layer.
+// The protocol layer passes these to the store, which can implement:
+//   - Write permission checking on the parent directory
+//   - Access control based on UID/GID
+//   - Ownership verification (some systems require ownership for deletion)
+//
+// **Naming Restrictions:**
+//
+// Per RFC 1813 and POSIX conventions, the name to remove:
+//   - Must not be empty
+//   - Must not be "." (current directory)
+//   - Must not be ".." (parent directory)
+//   - Must not exceed 255 bytes
+//   - Must not contain null bytes (string terminator)
+//   - Must not contain '/' (path separator)
+//   - Should not contain control characters (0x00-0x1F, 0x7F)
+//
+// **Error Handling:**
+//
+// Protocol-level errors return appropriate NFS status codes.
+// store errors are mapped to NFS status codes:
+//   - Parent not found → types.NFS3ErrNoEnt
+//   - Parent not directory → types.NFS3ErrNotDir
+//   - Directory not found → types.NFS3ErrNoEnt
+//   - Target not directory → types.NFS3ErrNotDir
+//   - Directory not empty → NFS3ErrNotEmpty
+//   - Invalid name → NFS3ErrInval
+//   - Name too long → NFS3ErrNameTooLong
+//   - Permission denied → NFS3ErrAcces
+//   - I/O error → types.NFS3ErrIO
+//   - Context cancelled → types.NFS3ErrIO
+//
+// **Weak Cache Consistency (WCC):**
+//
+// WCC data helps NFS clients detect if the parent directory changed between
+// operations and maintain cache consistency. The server:
+//  1. Captures parent attributes before the operation (WccBefore)
+//  2. Performs the directory removal
+//  3. Captures parent attributes after the operation (WccAfter)
+//
+// Clients use this to:
+//   - Detect concurrent modifications to the parent directory
+//   - Update their cached parent directory attributes
+//   - Invalidate stale cached data
+//
+// **Context Cancellation:**
+//
+// This operation respects context cancellation:
+//   - Checks at operation start before any work
+//   - Checks before GetFile (parent directory validation)
+//   - Checks before RemoveDirectory (actual removal operation)
+//   - Returns types.NFS3ErrIO on cancellation with WCC data when available
+//
+// Although RMDIR is typically quick (metadata-only), respecting cancellation
+// ensures proper handling of client disconnects and server shutdown scenarios.
+//
+// **Security Considerations:**
+//
+//   - Handle validation prevents malformed requests
+//   - store enforces write permission on parent directory
+//   - Name validation prevents directory traversal attacks
+//   - Client context enables audit logging
+//   - Access control prevents unauthorized directory removal
+//
+// **Parameters:**
+//   - ctx: Context with cancellation, client address and authentication credentials
+//   - metadataStore: The metadata store for directory operations
+//   - req: The rmdir request containing parent handle and directory name
+//
+// **Returns:**
+//   - *RmdirResponse: Response with status and WCC data for the parent directory
+//   - error: Returns error only for catastrophic internal failures; protocol-level
+//     errors are indicated via the response Status field
+//
+// **RFC 1813 Section 3.3.13: RMDIR Procedure**
+//
+// Example:
+//
+//	handler := &DefaultNFSHandler{}
+//	req := &RmdirRequest{
+//	    DirHandle: parentHandle,
+//	    Name:      "temp",
+//	}
+//	ctx := &RmdirContext{
+//	    Context:    context.Background(),
+//	    ClientAddr: "192.168.1.100:1234",
+//	    AuthFlavor: 1, // AUTH_UNIX
+//	    UID:        &uid,
+//	    GID:        &gid,
+//	}
+//	resp, err := handler.Rmdir(ctx, store, req)
+//	if err != nil {
+//	    // Internal server error
+//	}
+//	if resp.Status == types.NFS3OK {
+//	    // Directory removed successfully
+//	}
+func (h *Handler) Rmdir(
+	ctx *NFSHandlerContext,
+	req *RmdirRequest,
+) (*RmdirResponse, error) {
+	// Extract client IP for logging
+	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+
+	logger.InfoCtx(ctx.Context, "RMDIR", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
+
+	// ========================================================================
+	// Step 1: Check for context cancellation before starting work
+	// ========================================================================
+
+	if ctx.isContextCancelled() {
+		logger.WarnCtx(ctx.Context, "RMDIR cancelled", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
+		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
+
+	// ========================================================================
+	// Step 2: Validate request parameters
+	// ========================================================================
+
+	if err := validateRmdirRequest(req); err != nil {
+		logger.WarnCtx(ctx.Context, "RMDIR validation failed", "name", req.Name, "client", clientIP, "error", err)
+		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
+	}
+
+	// ========================================================================
+	// Step 3: Get metadata store from context
+	// ========================================================================
+
+	metaSvc, err := getMetadataService(h.Registry)
+	if err != nil {
+		logger.ErrorCtx(ctx.Context, "RMDIR failed: metadata service not initialized", "client", clientIP, "error", err)
+		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
+
+	parentHandle := metadata.FileHandle(req.DirHandle)
+
+	logger.DebugCtx(ctx.Context, "RMDIR", "share", ctx.Share, "name", req.Name)
+
+	// ========================================================================
+	// Step 4: Verify parent directory exists and is valid
+	// ========================================================================
+
+	// Check context before store call
+	if ctx.isContextCancelled() {
+		logger.WarnCtx(ctx.Context, "RMDIR cancelled before GetFile", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
+		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
+
+	parentFile, err := metaSvc.GetFile(ctx.Context, parentHandle)
+	if err != nil {
+		logger.WarnCtx(ctx.Context, "RMDIR failed: parent not found", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
+		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
+	}
+
+	// Capture pre-operation attributes for WCC data
+	wccBefore := xdr.CaptureWccAttr(&parentFile.FileAttr)
+
+	// Verify parent is actually a directory
+	if parentFile.Type != metadata.FileTypeDirectory {
+		logger.WarnCtx(ctx.Context, "RMDIR failed: parent not a directory", "handle", fmt.Sprintf("%x", req.DirHandle), "type", parentFile.Type, "client", clientIP)
+
+		// Get current parent state for WCC
+		wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
+
+		return &RmdirResponse{
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNotDir},
+			DirWccBefore:    wccBefore,
+			DirWccAfter:     wccAfter,
+		}, nil
+	}
+
+	// ========================================================================
+	// Step 4: Build authentication context with share-level identity mapping
+	// ========================================================================
+
+	authCtx, wccAfter, err := h.buildAuthContextWithWCCError(ctx, parentHandle, &parentFile.FileAttr, "RMDIR", req.Name, req.DirHandle)
+	if authCtx == nil {
+		return &RmdirResponse{
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			DirWccBefore:    wccBefore,
+			DirWccAfter:     wccAfter,
+		}, err
+	}
+
+	// ========================================================================
+	// Step 5: Remove directory via store
+	// ========================================================================
+	// The store is responsible for:
+	// - Verifying the directory exists
+	// - Verifying it's actually a directory
+	// - Checking it's empty (no entries except "." and "..")
+	// - Checking write permission on parent directory
+	// - Removing the directory entry from parent
+	// - Deleting the directory metadata
+	// - Updating parent directory timestamps
+
+	// Check context before store call
+	if ctx.isContextCancelled() {
+		logger.WarnCtx(ctx.Context, "RMDIR cancelled before RemoveDirectory", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
+
+		// Get updated parent attributes for WCC data
+		parentFile, _ = metaSvc.GetFile(ctx.Context, parentHandle)
+		wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
+
+		return &RmdirResponse{
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			DirWccBefore:    wccBefore,
+			DirWccAfter:     wccAfter,
+		}, nil
+	}
+
+	// Delegate to metaSvc for directory removal
+	err = metaSvc.RemoveDirectory(authCtx, parentHandle, req.Name)
+	if err != nil {
+		logger.DebugCtx(ctx.Context, "RMDIR failed: store error", "name", req.Name, "client", clientIP, "error", err)
+
+		// Get updated parent attributes for WCC data
+		parentFile, _ = metaSvc.GetFile(ctx.Context, parentHandle)
+		wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
+
+		// Map store errors to NFS status codes
+		status := mapRmdirErrorToNFSStatus(err)
+
+		return &RmdirResponse{
+			NFSResponseBase: NFSResponseBase{Status: status},
+			DirWccBefore:    wccBefore,
+			DirWccAfter:     wccAfter,
+		}, nil
+	}
+
+	// ========================================================================
+	// Step 5: Build success response with updated parent attributes
+	// ========================================================================
+
+	// Get updated parent directory attributes
+	parentFile, _ = metaSvc.GetFile(ctx.Context, parentHandle)
+	wccAfter = h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
+
+	logger.InfoCtx(ctx.Context, "RMDIR successful", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
+
+	logger.DebugCtx(ctx.Context, "RMDIR details", "parent_handle", fmt.Sprintf("%x", parentHandle))
+
+	return &RmdirResponse{
+		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+		DirWccBefore:    wccBefore,
+		DirWccAfter:     wccAfter,
+	}, nil
+}
+
+// ============================================================================
+// Request Validation
+// ============================================================================
+
+// rmdirValidationError represents a RMDIR request validation error.
+type rmdirValidationError struct {
+	message   string
+	nfsStatus uint32
+}
+
+func (e *rmdirValidationError) Error() string {
+	return e.message
+}
+
+// validateRmdirRequest validates RMDIR request parameters.
+//
+// Checks performed:
+//   - Parent directory handle is not empty and within limits
+//   - Directory name is valid (not empty, not "." or "..", length, characters)
+//
+// Returns:
+//   - nil if valid
+//   - *rmdirValidationError with NFS status if invalid
+func validateRmdirRequest(req *RmdirRequest) *rmdirValidationError {
+	// Validate parent directory handle
+	if len(req.DirHandle) == 0 {
+		return &rmdirValidationError{
+			message:   "empty parent directory handle",
+			nfsStatus: types.NFS3ErrBadHandle,
+		}
+	}
+
+	if len(req.DirHandle) > 64 {
+		return &rmdirValidationError{
+			message:   fmt.Sprintf("parent handle too long: %d bytes (max 64)", len(req.DirHandle)),
+			nfsStatus: types.NFS3ErrBadHandle,
+		}
+	}
+
+	// Handle must be at least 8 bytes for file ID extraction
+	if len(req.DirHandle) < 8 {
+		return &rmdirValidationError{
+			message:   fmt.Sprintf("parent handle too short: %d bytes (min 8)", len(req.DirHandle)),
+			nfsStatus: types.NFS3ErrBadHandle,
+		}
+	}
+
+	// Validate directory name
+	if req.Name == "" {
+		return &rmdirValidationError{
+			message:   "empty directory name",
+			nfsStatus: types.NFS3ErrInval,
+		}
+	}
+
+	// Check for reserved names
+	if req.Name == "." || req.Name == ".." {
+		return &rmdirValidationError{
+			message:   fmt.Sprintf("directory name cannot be '%s'", req.Name),
+			nfsStatus: types.NFS3ErrInval,
+		}
+	}
+
+	// Check name length (NFS limit is typically 255 bytes)
+	if len(req.Name) > 255 {
+		return &rmdirValidationError{
+			message:   fmt.Sprintf("directory name too long: %d bytes (max 255)", len(req.Name)),
+			nfsStatus: types.NFS3ErrNameTooLong,
+		}
+	}
+
+	// Check for null bytes (string terminator, invalid in filenames)
+	if strings.ContainsAny(req.Name, "\x00") {
+		return &rmdirValidationError{
+			message:   "directory name contains null byte",
+			nfsStatus: types.NFS3ErrInval,
+		}
+	}
+
+	// Check for path separators (prevents directory traversal attacks)
+	if strings.ContainsAny(req.Name, "/") {
+		return &rmdirValidationError{
+			message:   "directory name contains path separator",
+			nfsStatus: types.NFS3ErrInval,
+		}
+	}
+
+	// Check for control characters (including tab, newline, etc.)
+	// This prevents potential issues with terminal output and logs
+	for i, r := range req.Name {
+		if r < 0x20 || r == 0x7F {
+			return &rmdirValidationError{
+				message:   fmt.Sprintf("directory name contains control character at position %d", i),
+				nfsStatus: types.NFS3ErrInval,
+			}
+		}
+	}
+
+	return nil
+}
+
+// ============================================================================
+// Error Mapping
+// ============================================================================
+
+// mapRmdirErrorToNFSStatus maps store errors to NFS status codes.
+// This provides consistent error mapping for RMDIR operations.
+func mapRmdirErrorToNFSStatus(err error) uint32 {
+	// Use the common metadata error mapper
+	return mapMetadataErrorToNFS(err)
+}

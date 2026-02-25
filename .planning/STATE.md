@@ -9,10 +9,10 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 
 ## Current Position
 
-Phase: 26 - Generic Lock Interface Protocol Leak Purge
-Current Plan: 5 of 5 (COMPLETE)
-Status: Phase 26 Complete
-Last activity: 2026-02-25 -- Completed 26-05 (Runtime purge, identity dissolution, final validation)
+Phase: 27 - NFS Adapter Restructuring
+Current Plan: 1 of 4 (COMPLETE)
+Status: Executing Phase 27
+Last activity: 2026-02-25 -- Completed 27-01 (Directory rename and consolidation)
 
 ## Completed Milestones
 
@@ -25,7 +25,7 @@ Last activity: 2026-02-25 -- Completed 26-05 (Runtime purge, identity dissolutio
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 91 (19 v1.0 + 42 v2.0 + 25 v3.0 + 5 v3.5)
+- Total plans completed: 92 (19 v1.0 + 42 v2.0 + 25 v3.0 + 6 v3.5)
 - 3 milestones in 25 days
 
 | Phase | Plan | Duration | Tasks | Files |
@@ -35,6 +35,7 @@ Last activity: 2026-02-25 -- Completed 26-05 (Runtime purge, identity dissolutio
 | 26 | 03 | 25min | 2 | 6 |
 | 26 | 04 | 15min | 2 | 17 |
 | 26 | 05 | 25min | 3 | 32 |
+| 27 | 01 | 6min | 2 | 614 |
 
 ## Quick Tasks Completed
 
@@ -66,6 +67,9 @@ Last activity: 2026-02-25 -- Completed 26-05 (Runtime purge, identity dissolutio
 - [26-05] Kept shareChangeCallbacks in Runtime (generic mechanism, not NFS-specific)
 - [26-05] NFS handler code stays in internal/controlplane/api/handlers/ (simpler import graph)
 - [26-05] pkg/identity dissolved to pkg/adapter/nfs/identity (no import cycles)
+- [27-01] Package pool renamed from bufpool to match directory convention (4 consumer call sites updated)
+- [27-01] Generic XDR uses package xdr declaration despite living in core/ directory (preserves call sites)
+- [27-01] Comments referencing old paths updated alongside import rewrites for consistency
 
 ### Pending Todos
 
@@ -78,5 +82,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-25
-Stopped at: Completed 26-05-PLAN.md (Phase 26 complete)
-Resume file: Phase 26 fully complete. Ready for next phase.
+Stopped at: Completed 27-01-PLAN.md
+Resume file: Continue with 27-02-PLAN.md

@@ -5,10 +5,10 @@ import (
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	mount_handlers "github.com/marmos91/dittofs/internal/protocol/nfs/mount/handlers"
-	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
-	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc/gss"
-	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
+	mount_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 )
 
 // handleRPCCall dispatches an RPC call to the appropriate handler.

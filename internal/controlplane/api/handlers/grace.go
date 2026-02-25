@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/state"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 )
 
 // GraceHandler handles grace period management API endpoints.

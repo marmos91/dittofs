@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/protocol/smb/session"
-	"github.com/marmos91/dittofs/internal/protocol/smb/signing"
+	"github.com/marmos91/dittofs/internal/adapter/smb/session"
+	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
 )
 
 // DefaultMaxMessageSize is the default maximum allowed size for a single SMB2 message (64MB).

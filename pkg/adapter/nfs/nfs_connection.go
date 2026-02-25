@@ -14,8 +14,8 @@ import (
 	"github.com/marmos91/dittofs/internal/bufpool"
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc"
-	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/state"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 )
 
 // errBackchannelReply is a sentinel error returned by readRequest when the
