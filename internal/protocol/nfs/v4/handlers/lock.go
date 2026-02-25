@@ -129,6 +129,10 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 				Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
 			}
 		}
+		// In NFSv4.1, per-owner seqid is obsoleted by the slot table (SEQUENCE).
+		if ctx.SkipOwnerSeqid {
+			openSeqid = 0
+		}
 
 		openStateid, decErr := types.DecodeStateid4(reader)
 		if decErr != nil {
@@ -146,6 +150,10 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 				OpCode: types.OP_LOCK,
 				Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
 			}
+		}
+		// In NFSv4.1, per-owner seqid is obsoleted by the slot table (SEQUENCE).
+		if ctx.SkipOwnerSeqid {
+			lockSeqid = 0
 		}
 
 		lockOwnerClientID, decErr := xdr.DecodeUint64(reader)
@@ -199,6 +207,10 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 				OpCode: types.OP_LOCK,
 				Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
 			}
+		}
+		// In NFSv4.1, per-owner seqid is obsoleted by the slot table (SEQUENCE).
+		if ctx.SkipOwnerSeqid {
+			lockSeqid = 0
 		}
 
 		logger.Debug("NFSv4 LOCK (existing lock-owner)",
@@ -443,6 +455,10 @@ func (h *Handler) handleLockU(ctx *types.CompoundContext, reader io.Reader) *typ
 			OpCode: types.OP_LOCKU,
 			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
 		}
+	}
+	// In NFSv4.1, per-owner seqid is obsoleted by the slot table (SEQUENCE).
+	if ctx.SkipOwnerSeqid {
+		seqid = 0
 	}
 
 	lockStateid, err := types.DecodeStateid4(reader)

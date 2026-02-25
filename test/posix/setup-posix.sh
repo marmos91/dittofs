@@ -8,7 +8,7 @@
 # 4. Mounts the NFS share
 #
 # Usage:
-#   ./setup-posix.sh [config-type] [--nfs-version 3|4|4.0]
+#   ./setup-posix.sh [config-type] [--nfs-version 3|4|4.0|4.1]
 #
 # Config types:
 #   memory         - Memory metadata store (default)
@@ -21,11 +21,12 @@
 #   3   - NFSv3 (default, backward compatible)
 #   4   - NFSv4.0
 #   4.0 - NFSv4.0 (explicit minor version)
+#   4.1 - NFSv4.1
 #
 # Example:
 #   sudo ./setup-posix.sh memory
 #   sudo ./setup-posix.sh memory --nfs-version 4
-#   sudo ./setup-posix.sh badger --nfs-version 4.0
+#   sudo ./setup-posix.sh badger --nfs-version 4.1
 
 set -euo pipefail
 
@@ -49,20 +50,20 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --help|-h)
-            echo "Usage: $0 [config-type] [--nfs-version 3|4|4.0]"
+            echo "Usage: $0 [config-type] [--nfs-version 3|4|4.0|4.1]"
             echo ""
             echo "Config types: memory (default), badger, postgres, memory-content, cache-s3"
-            echo "NFS versions: 3 (default), 4, 4.0"
+            echo "NFS versions: 3 (default), 4, 4.0, 4.1"
             echo ""
             echo "Examples:"
-            echo "  sudo $0 memory                    # NFSv3 with memory stores"
-            echo "  sudo $0 memory --nfs-version 4    # NFSv4 with memory stores"
-            echo "  sudo $0 badger --nfs-version 4.0  # NFSv4 with BadgerDB stores"
+            echo "  sudo $0 memory                     # NFSv3 with memory stores"
+            echo "  sudo $0 memory --nfs-version 4     # NFSv4.0 with memory stores"
+            echo "  sudo $0 badger --nfs-version 4.1   # NFSv4.1 with BadgerDB stores"
             exit 0
             ;;
         -*)
             echo "Unknown option: $1"
-            echo "Usage: $0 [config-type] [--nfs-version 3|4|4.0]"
+            echo "Usage: $0 [config-type] [--nfs-version 3|4|4.0|4.1]"
             exit 1
             ;;
         *)
@@ -83,8 +84,11 @@ case "$NFS_VERSION" in
     4|4.0)
         NFS_VERSION="4.0"
         ;;
+    4.1)
+        NFS_VERSION="4.1"
+        ;;
     *)
-        echo "Error: Invalid NFS version '$NFS_VERSION'. Valid values: 3, 4, 4.0"
+        echo "Error: Invalid NFS version '$NFS_VERSION'. Valid values: 3, 4, 4.0, 4.1"
         exit 1
         ;;
 esac
@@ -284,7 +288,7 @@ configure_via_api() {
     # locally without sending WRITE/SETATTR to the server. This prevents
     # server-side SUID/SGID clearing (chmod/12.t) and other POSIX semantics
     # that require the server to process every operation.
-    if [ "$NFS_VERSION" = "4.0" ]; then
+    if [ "$NFS_VERSION" = "4.0" ] || [ "$NFS_VERSION" = "4.1" ]; then
         log_info "Disabling NFSv4 delegations for POSIX compliance testing..."
         "$DITTOFSCTL_BIN" adapter settings nfs update --delegations-enabled=false --force || {
             log_warn "Failed to disable delegations (non-fatal)"
@@ -295,11 +299,13 @@ configure_via_api() {
     fi
 
     # Verify NFS port is listening
+    log_info "Checking NFS port..."
     if ! nc -zv localhost $NFS_PORT 2>&1; then
         log_error "NFS adapter failed to start on port $NFS_PORT"
         tail -50 /tmp/dittofs-posix-server.log
         return 1
     fi
+    log_info "NFS port $NFS_PORT is listening"
 
     log_info "API configuration complete"
 }
@@ -310,6 +316,7 @@ mount_nfs() {
 
     mkdir -p "$MOUNT_POINT"
 
+    local mount_opts=""
     case "$NFS_VERSION" in
         3)
             # NFSv3 mount options:
@@ -317,8 +324,7 @@ mount_nfs() {
             # that delete and recreate files with the same name
             # sync forces synchronous operations to prevent SETATTR coalescing issues
             # lookupcache=none disables name lookup caching
-            mount -t nfs -o nfsvers=3,tcp,port=$NFS_PORT,mountport=$NFS_PORT,nolock,noac,sync,lookupcache=none \
-                localhost:/export "$MOUNT_POINT"
+            mount_opts="nfsvers=3,tcp,port=$NFS_PORT,mountport=$NFS_PORT,nolock,noac,sync,lookupcache=none"
             ;;
         4.0)
             # NFSv4.0 mount options:
@@ -326,10 +332,31 @@ mount_nfs() {
             # No nolock (NFSv4 has integrated locking, not NLM-based)
             # noac and sync for test consistency
             # lookupcache=none disables name lookup caching
-            mount -t nfs -o vers=4.0,port=$NFS_PORT,noac,sync,lookupcache=none \
-                localhost:/export "$MOUNT_POINT"
+            mount_opts="vers=4.0,port=$NFS_PORT,noac,sync,lookupcache=none"
+            ;;
+        4.1)
+            # NFSv4.1 mount options:
+            # Same as v4.0 but with vers=4.1.
+            mount_opts="vers=4.1,port=$NFS_PORT,noac,sync,lookupcache=none"
             ;;
     esac
+
+    log_info "Mount command: mount -t nfs -o $mount_opts localhost:/export $MOUNT_POINT"
+
+    # Use timeout to prevent infinite hangs during mount negotiation
+    if ! timeout 60 mount -t nfs -o "$mount_opts" localhost:/export "$MOUNT_POINT"; then
+        log_error "Mount failed or timed out after 60 seconds"
+        log_error "Checking server state..."
+        log_info "=== Server log (last 30 lines) ==="
+        tail -30 /tmp/dittofs-posix-server.log 2>/dev/null || true
+        log_info "=== dmesg NFS errors ==="
+        dmesg | grep -i nfs | tail -20 2>/dev/null || true
+        log_info "=== rpcinfo ==="
+        rpcinfo -p localhost 2>/dev/null || true
+        log_info "=== NFS kernel modules ==="
+        lsmod | grep nfs 2>/dev/null || true
+        return 1
+    fi
 
     log_info "NFS share mounted at $MOUNT_POINT (NFSv${NFS_VERSION})"
 }

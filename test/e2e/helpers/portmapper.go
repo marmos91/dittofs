@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -270,22 +271,16 @@ func PortmapGetPort(t *testing.T, host string, port int, prog, vers, prot uint32
 
 // HasProgram checks if any entry matches the given program number.
 func HasProgram(entries []PortmapEntry, program uint32) bool {
-	for _, e := range entries {
-		if e.Program == program {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(entries, func(e PortmapEntry) bool {
+		return e.Program == program
+	})
 }
 
 // HasProgramVersion checks if any entry matches the given program and version.
 func HasProgramVersion(entries []PortmapEntry, program, version uint32) bool {
-	for _, e := range entries {
-		if e.Program == program && e.Version == version {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(entries, func(e PortmapEntry) bool {
+		return e.Program == program && e.Version == version
+	})
 }
 
 // buildPortmapRPCCall constructs a raw RPC CALL message.

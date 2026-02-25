@@ -115,8 +115,8 @@ func WriteXDRString(buf *bytes.Buffer, s string) error {
 func WriteXDRPadding(buf *bytes.Buffer, dataLen uint32) error {
 	padding := (4 - (dataLen % 4)) % 4
 	if padding > 0 {
-		paddingBytes := make([]byte, padding)
-		if _, err := buf.Write(paddingBytes); err != nil {
+		var padBuf [3]byte
+		if _, err := buf.Write(padBuf[:padding]); err != nil {
 			return fmt.Errorf("write padding: %w", err)
 		}
 	}

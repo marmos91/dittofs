@@ -38,7 +38,7 @@ func createTestBackchannelSender(t *testing.T) (*BackchannelSender, *StateManage
 	// Create session with CONN_BACK_CHAN flag
 	csResult, _, err := sm.CreateSession(
 		clientID,
-		eidResult.SequenceID+1, // CREATE_SESSION must send seqID + 1
+		eidResult.SequenceID, // EXCHANGE_ID returns the value CREATE_SESSION expects
 		types.CREATE_SESSION4_FLAG_CONN_BACK_CHAN,
 		types.ChannelAttrs{
 			MaxRequestSize: 1048576, MaxResponseSize: 1048576,
@@ -526,7 +526,7 @@ func TestCallbackRouting_V41VsV40(t *testing.T) {
 
 	csResult, _, err := sm.CreateSession(
 		v41ClientID,
-		eidResult.SequenceID+1,
+		eidResult.SequenceID,
 		types.CREATE_SESSION4_FLAG_CONN_BACK_CHAN,
 		types.ChannelAttrs{
 			MaxRequestSize: 1048576, MaxResponseSize: 1048576,

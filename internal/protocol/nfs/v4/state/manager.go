@@ -271,7 +271,7 @@ func (sm *StateManager) generateConfirmVerifier() [8]byte {
 		// If it does, generate a non-zero fallback from time (degraded security).
 		logger.Error("crypto/rand.Read failed, using time-based fallback", "error", err)
 		now := time.Now().UnixNano()
-		for i := 0; i < 8; i++ {
+		for i := range 8 {
 			v[i] = byte(now >> (uint(i) * 8))
 		}
 	}
@@ -1159,6 +1159,30 @@ func (sm *StateManager) ConfirmOpen(stateid *types.Stateid4, seqid uint32) (*typ
 		"stateid_seqid", resultStateid.Seqid)
 
 	return &resultStateid, nil
+}
+
+// ConfirmOpenV41 confirms an open-owner for NFSv4.1 without incrementing
+// the stateid seqid. In v4.1, OPEN_CONFIRM doesn't exist; owners are
+// implicitly confirmed through the session/slot mechanism. The stateid
+// must remain at seqid=1 (the initial value) because the Linux NFS client's
+// nfs_set_open_stateid_locked() expects sequential stateids starting from 1.
+//
+// Caller must NOT hold sm.mu.
+func (sm *StateManager) ConfirmOpenV41(stateid *types.Stateid4) error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	openState, exists := sm.openStateByOther[stateid.Other]
+	if !exists {
+		return &NFS4StateError{
+			Status:  types.NFS4ERR_BAD_STATEID,
+			Message: "stateid not found for v4.1 auto-confirm",
+		}
+	}
+
+	openState.Confirmed = true
+	openState.Owner.Confirmed = true
+	return nil
 }
 
 // CloseFile implements the CLOSE operation's state management.

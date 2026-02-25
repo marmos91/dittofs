@@ -200,15 +200,17 @@ func (h *Handler) dispatchV40(compCtx *types.CompoundContext, tag []byte, numOps
 	var lastStatus uint32 = types.NFS4_OK
 
 	for i := uint32(0); i < numOps; i++ {
-		// Check context cancellation between operations
-		select {
-		case <-compCtx.Context.Done():
+		// Check context cancellation between operations.
+		// Instead of returning an error (which would cause the RPC layer to
+		// silently drop the reply, hanging the client), encode a partial
+		// response with NFS4ERR_DELAY so the client can retry.
+		if compCtx.Context.Err() != nil {
 			logger.Debug("NFSv4 COMPOUND cancelled between ops",
 				"op_index", i,
 				"total_ops", numOps,
 				"client", compCtx.ClientAddr)
-			return nil, compCtx.Context.Err()
-		default:
+			lastStatus = types.NFS4ERR_DELAY
+			break
 		}
 
 		// Read operation code

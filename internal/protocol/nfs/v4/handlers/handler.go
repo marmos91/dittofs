@@ -4,7 +4,7 @@
 package handlers
 
 import (
-	"bytes"
+	"encoding/binary"
 	"io"
 	"sync"
 
@@ -12,7 +12,6 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
-	"github.com/marmos91/dittofs/internal/protocol/xdr"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/identity"
 )
@@ -391,7 +390,7 @@ func (h *Handler) SetMinorVersionRange(min, max uint32) {
 // encodeStatusOnly XDR-encodes a status-only response (just the nfsstat4).
 // Many NFSv4 operation error responses consist of only the status code.
 func encodeStatusOnly(status uint32) []byte {
-	var buf bytes.Buffer
-	_ = xdr.WriteUint32(&buf, status)
-	return buf.Bytes()
+	b := make([]byte, 4)
+	binary.BigEndian.PutUint32(b, status)
+	return b
 }

@@ -39,7 +39,7 @@ func encodeCreateSessionArgsWithSec(clientID uint64, seqID uint32, flags uint32,
 
 // registerExchangeID performs EXCHANGE_ID via COMPOUND and returns the
 // allocated client ID and the next sequence ID to use for CREATE_SESSION.
-// Per RFC 8881, CREATE_SESSION must send record.SequenceID + 1.
+// EXCHANGE_ID returns the value the client sends directly in CREATE_SESSION.
 func registerExchangeID(t *testing.T, h *Handler, ownerID string) (uint64, uint32) {
 	t.Helper()
 	ctx := newTestCompoundContext()
@@ -72,8 +72,8 @@ func registerExchangeID(t *testing.T, h *Handler, ownerID string) (uint64, uint3
 		t.Fatalf("EXCHANGE_ID status = %d, want NFS4_OK", res.Status)
 	}
 
-	// Return seqID+1: CREATE_SESSION must send record.SequenceID + 1
-	return res.ClientID, res.SequenceID + 1
+	// EXCHANGE_ID now returns slot+1 (the value CREATE_SESSION expects directly)
+	return res.ClientID, res.SequenceID
 }
 
 func TestHandleCreateSession_Success(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/smb/rpc"
 	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 	"github.com/marmos91/dittofs/internal/protocol/smb/signing"
+	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -54,6 +55,18 @@ type Handler struct {
 
 	// Signing configuration
 	SigningConfig signing.SigningConfig
+
+	// KerberosProvider holds the shared Kerberos keytab/config provider.
+	// When set, the SESSION_SETUP handler supports Kerberos authentication
+	// via SPNEGO in addition to NTLM. The same provider is used by the NFS
+	// adapter, ensuring a shared Kerberos infrastructure across protocols.
+	// nil when Kerberos is not enabled.
+	//
+	// Lifecycle: Not initialized by NewHandler/NewHandlerWithSessionManager.
+	// Must be injected by the adapter layer (e.g., SMBAdapter.SetKerberosProvider)
+	// before Serve() is called. When nil, Kerberos auth requests return
+	// STATUS_LOGON_FAILURE gracefully (NTLM and guest auth still work).
+	KerberosProvider *kerberos.Provider
 }
 
 // PendingAuth tracks sessions in the middle of NTLM authentication.

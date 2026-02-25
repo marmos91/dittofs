@@ -21,11 +21,10 @@ func (s *NFSAdapter) applyNFSSettings(rt *runtime.Runtime) {
 
 	// Lease time -> StateManager + attrs package (FATTR4_LEASE_TIME)
 	if settings.LeaseTime > 0 {
-		leaseSeconds := settings.LeaseTime
-		s.v4Handler.StateManager.SetLeaseTime(time.Duration(leaseSeconds) * time.Second)
-		v4attrs.SetLeaseTime(uint32(leaseSeconds))
+		s.v4Handler.StateManager.SetLeaseTime(time.Duration(settings.LeaseTime) * time.Second)
+		v4attrs.SetLeaseTime(uint32(settings.LeaseTime))
 		logger.Debug("NFS adapter: applied lease time from settings",
-			"lease_time_seconds", leaseSeconds)
+			"lease_time_seconds", settings.LeaseTime)
 	}
 
 	// Grace period -> StateManager

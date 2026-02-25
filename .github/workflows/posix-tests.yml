@@ -2,7 +2,7 @@
 #
 # Runs pjdfstest (8,789 tests) to validate filesystem behavior against POSIX standards.
 # Tests all metadata store backends: Memory, BadgerDB, PostgreSQL.
-# Tests both NFSv3 and NFSv4.0 protocol versions.
+# Tests NFSv3, NFSv4.0, and NFSv4.1 protocol versions.
 
 name: POSIX Compliance Tests
 
@@ -62,7 +62,7 @@ jobs:
       fail-fast: false
       matrix:
         store: [memory, badger]
-        nfs_version: ['3', '4']
+        nfs_version: ['3', '4', '4.1']
         include:
           - store: memory
             nfs_version: '3'
@@ -70,11 +70,17 @@ jobs:
           - store: memory
             nfs_version: '4'
             store_label: Memory
+          - store: memory
+            nfs_version: '4.1'
+            store_label: Memory
           - store: badger
             nfs_version: '3'
             store_label: BadgerDB
           - store: badger
             nfs_version: '4'
+            store_label: BadgerDB
+          - store: badger
+            nfs_version: '4.1'
             store_label: BadgerDB
 
     steps:
@@ -88,7 +94,9 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@main
 
       - name: Install NFS client utilities
-        run: sudo apt-get update && sudo apt-get install -y nfs-common
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nfs-common
 
       - name: Download binaries
         uses: actions/download-artifact@v4
@@ -106,8 +114,8 @@ jobs:
       - name: Setup DittoFS
         id: setup
         run: |
-          if [ "${{ matrix.nfs_version }}" = "4" ]; then
-            sudo -E ./test/posix/setup-posix.sh ${{ matrix.store }} --nfs-version 4
+          if [ "${{ matrix.nfs_version }}" != "3" ]; then
+            sudo -E ./test/posix/setup-posix.sh ${{ matrix.store }} --nfs-version ${{ matrix.nfs_version }}
           else
             sudo -E ./test/posix/setup-posix.sh ${{ matrix.store }}
           fi
@@ -168,9 +176,9 @@ jobs:
               fi
             fi
 
-            # NFSv4 known failure:
+            # NFSv4.x known failure:
             # - unlink/14.t: NFSv4 silly-rename (stateful OPEN causes client to rename instead of remove)
-            if [ "${{ matrix.nfs_version }}" = "4" ]; then
+            if [ "${{ matrix.nfs_version }}" = "4" ] || [ "${{ matrix.nfs_version }}" = "4.1" ]; then
               SUMMARY_BLOCK=$(sed -n '/Test Summary Report/,/^Files=/p' "$LOG_FILE")
 
               # Extract test files with actual failures (Failed: N where N > 0)
@@ -187,7 +195,7 @@ jobs:
               done
 
               if [ ! -f /tmp/nfsv4_unexpected ]; then
-                echo "All NFSv4 failures are known/expected"
+                echo "All NFSv4.x failures are known/expected"
                 rm -f /tmp/nfsv4_unexpected
                 exit 0
               fi
@@ -232,7 +240,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        nfs_version: ['3', '4']
+        nfs_version: ['3', '4', '4.1']
 
     services:
       postgres:
@@ -262,7 +270,9 @@ jobs:
         uses: DeterminateSystems/magic-nix-cache-action@main
 
       - name: Install NFS client utilities
-        run: sudo apt-get update && sudo apt-get install -y nfs-common
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nfs-common
 
       - name: Download binaries
         uses: actions/download-artifact@v4
@@ -287,8 +297,8 @@ jobs:
       - name: Setup DittoFS
         id: setup
         run: |
-          if [ "${{ matrix.nfs_version }}" = "4" ]; then
-            sudo -E ./test/posix/setup-posix.sh postgres --nfs-version 4
+          if [ "${{ matrix.nfs_version }}" != "3" ]; then
+            sudo -E ./test/posix/setup-posix.sh postgres --nfs-version ${{ matrix.nfs_version }}
           else
             sudo -E ./test/posix/setup-posix.sh postgres
           fi
@@ -348,9 +358,9 @@ jobs:
               fi
             fi
 
-            # NFSv4 known failure:
+            # NFSv4.x known failure:
             # - unlink/14.t: NFSv4 silly-rename (stateful OPEN causes client to rename instead of remove)
-            if [ "${{ matrix.nfs_version }}" = "4" ]; then
+            if [ "${{ matrix.nfs_version }}" = "4" ] || [ "${{ matrix.nfs_version }}" = "4.1" ]; then
               SUMMARY_BLOCK=$(sed -n '/Test Summary Report/,/^Files=/p' "$LOG_FILE")
 
               # Extract test files with actual failures (Failed: N where N > 0)
@@ -367,7 +377,7 @@ jobs:
               done
 
               if [ ! -f /tmp/nfsv4_unexpected ]; then
-                echo "All NFSv4 failures are known/expected"
+                echo "All NFSv4.x failures are known/expected"
                 rm -f /tmp/nfsv4_unexpected
                 exit 0
               fi
@@ -419,7 +429,7 @@ jobs:
           echo "# POSIX Compliance Test Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          for version in 3 4; do
+          for version in 3 4 4.1; do
             echo "## NFS v${version}" >> $GITHUB_STEP_SUMMARY
             echo "| Store | Status |" >> $GITHUB_STEP_SUMMARY
             echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
@@ -439,8 +449,8 @@ jobs:
                   if [ "$version" = "3" ] && [ "$FAILED_COUNT" = "1" ] && echo "$SUMMARY" | grep -q "utimensat/09.t"; then
                     EXPECTED=true
                   fi
-                  # NFSv4 known failure: unlink/14.t (silly-rename)
-                  if [ "$version" = "4" ]; then
+                  # NFSv4.x known failure: unlink/14.t (silly-rename)
+                  if [ "$version" = "4" ] || [ "$version" = "4.1" ]; then
                     echo "$SUMMARY" | grep -P 'Failed:\s+[1-9]' | grep -oP '/\S+\.t' | sed 's|.*/tests/||' | while read -r ft; do
                       case "$ft" in
                         unlink/14.t) ;;
@@ -471,4 +481,4 @@ jobs:
 
           echo "**Known failures:**" >> $GITHUB_STEP_SUMMARY
           echo "- NFSv3: utimensat/09.t test #5 (32-bit timestamp limit)" >> $GITHUB_STEP_SUMMARY
-          echo "- NFSv4: unlink/14.t (silly-rename: NFSv4 stateful OPEN causes client to rename instead of remove)" >> $GITHUB_STEP_SUMMARY
+          echo "- NFSv4.x: unlink/14.t (silly-rename: NFSv4 stateful OPEN causes client to rename instead of remove)" >> $GITHUB_STEP_SUMMARY

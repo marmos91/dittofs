@@ -156,17 +156,23 @@ func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byt
 		}
 	}
 
-	// Step 4: Compare seqid
-	if stateid.Seqid < openState.Stateid.Seqid {
-		return nil, &NFS4StateError{
-			Status:  types.NFS4ERR_OLD_STATEID,
-			Message: fmt.Sprintf("stateid seqid %d < current %d", stateid.Seqid, openState.Stateid.Seqid),
+	// Step 4: Compare seqid.
+	// Per RFC 8881 Section 8.2.2 (NFSv4.1): if the client sends seqid=0
+	// in a non-special stateid, the server MUST accept it regardless of
+	// the current seqid value.  This is safe for v4.0 too since v4.0
+	// clients never legitimately send seqid=0 for real stateids.
+	if stateid.Seqid != 0 {
+		if stateid.Seqid < openState.Stateid.Seqid {
+			return nil, &NFS4StateError{
+				Status:  types.NFS4ERR_OLD_STATEID,
+				Message: fmt.Sprintf("stateid seqid %d < current %d", stateid.Seqid, openState.Stateid.Seqid),
+			}
 		}
-	}
-	if stateid.Seqid > openState.Stateid.Seqid {
-		return nil, &NFS4StateError{
-			Status:  types.NFS4ERR_BAD_STATEID,
-			Message: fmt.Sprintf("stateid seqid %d > current %d", stateid.Seqid, openState.Stateid.Seqid),
+		if stateid.Seqid > openState.Stateid.Seqid {
+			return nil, &NFS4StateError{
+				Status:  types.NFS4ERR_BAD_STATEID,
+				Message: fmt.Sprintf("stateid seqid %d > current %d", stateid.Seqid, openState.Stateid.Seqid),
+			}
 		}
 	}
 
@@ -223,17 +229,19 @@ func (sm *StateManager) validateDelegStateid(stateid *types.Stateid4, currentFH 
 		}
 	}
 
-	// Compare seqid
-	if stateid.Seqid < deleg.Stateid.Seqid {
-		return nil, &NFS4StateError{
-			Status:  types.NFS4ERR_OLD_STATEID,
-			Message: fmt.Sprintf("delegation stateid seqid %d < current %d", stateid.Seqid, deleg.Stateid.Seqid),
+	// Compare seqid (seqid=0 means "any" per RFC 8881 Section 8.2.2)
+	if stateid.Seqid != 0 {
+		if stateid.Seqid < deleg.Stateid.Seqid {
+			return nil, &NFS4StateError{
+				Status:  types.NFS4ERR_OLD_STATEID,
+				Message: fmt.Sprintf("delegation stateid seqid %d < current %d", stateid.Seqid, deleg.Stateid.Seqid),
+			}
 		}
-	}
-	if stateid.Seqid > deleg.Stateid.Seqid {
-		return nil, &NFS4StateError{
-			Status:  types.NFS4ERR_BAD_STATEID,
-			Message: fmt.Sprintf("delegation stateid seqid %d > current %d", stateid.Seqid, deleg.Stateid.Seqid),
+		if stateid.Seqid > deleg.Stateid.Seqid {
+			return nil, &NFS4StateError{
+				Status:  types.NFS4ERR_BAD_STATEID,
+				Message: fmt.Sprintf("delegation stateid seqid %d > current %d", stateid.Seqid, deleg.Stateid.Seqid),
+			}
 		}
 	}
 
@@ -514,12 +522,14 @@ func (sm *StateManager) testOpenStateid(stateid *types.Stateid4) uint32 {
 		return types.NFS4ERR_BAD_STATEID
 	}
 
-	// Check seqid
-	if stateid.Seqid < openState.Stateid.Seqid {
-		return types.NFS4ERR_OLD_STATEID
-	}
-	if stateid.Seqid > openState.Stateid.Seqid {
-		return types.NFS4ERR_BAD_STATEID
+	// Check seqid (seqid=0 means "any" per RFC 8881 Section 8.2.2)
+	if stateid.Seqid != 0 {
+		if stateid.Seqid < openState.Stateid.Seqid {
+			return types.NFS4ERR_OLD_STATEID
+		}
+		if stateid.Seqid > openState.Stateid.Seqid {
+			return types.NFS4ERR_BAD_STATEID
+		}
 	}
 
 	// Check lease expiry WITHOUT renewal (read-only test)
@@ -541,12 +551,14 @@ func (sm *StateManager) testLockStateid(stateid *types.Stateid4) uint32 {
 		return types.NFS4ERR_BAD_STATEID
 	}
 
-	// Check seqid
-	if stateid.Seqid < lockState.Stateid.Seqid {
-		return types.NFS4ERR_OLD_STATEID
-	}
-	if stateid.Seqid > lockState.Stateid.Seqid {
-		return types.NFS4ERR_BAD_STATEID
+	// Check seqid (seqid=0 means "any" per RFC 8881 Section 8.2.2)
+	if stateid.Seqid != 0 {
+		if stateid.Seqid < lockState.Stateid.Seqid {
+			return types.NFS4ERR_OLD_STATEID
+		}
+		if stateid.Seqid > lockState.Stateid.Seqid {
+			return types.NFS4ERR_BAD_STATEID
+		}
 	}
 
 	return types.NFS4_OK
@@ -564,12 +576,14 @@ func (sm *StateManager) testDelegStateid(stateid *types.Stateid4) uint32 {
 		return types.NFS4ERR_BAD_STATEID
 	}
 
-	// Check seqid
-	if stateid.Seqid < deleg.Stateid.Seqid {
-		return types.NFS4ERR_OLD_STATEID
-	}
-	if stateid.Seqid > deleg.Stateid.Seqid {
-		return types.NFS4ERR_BAD_STATEID
+	// Check seqid (seqid=0 means "any" per RFC 8881 Section 8.2.2)
+	if stateid.Seqid != 0 {
+		if stateid.Seqid < deleg.Stateid.Seqid {
+			return types.NFS4ERR_OLD_STATEID
+		}
+		if stateid.Seqid > deleg.Stateid.Seqid {
+			return types.NFS4ERR_BAD_STATEID
+		}
 	}
 
 	return types.NFS4_OK

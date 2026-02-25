@@ -870,8 +870,8 @@ func registerExchangeIDBench(b *testing.B, h *Handler, ownerID string) (uint64, 
 	if err := eidRes.Decode(reader); err != nil {
 		b.Fatalf("decode ExchangeIdRes: %v", err)
 	}
-	// Return seqID+1: CREATE_SESSION must send record.SequenceID + 1
-	return eidRes.ClientID, eidRes.SequenceID + 1
+	// EXCHANGE_ID now returns slot+1 (the value CREATE_SESSION expects directly)
+	return eidRes.ClientID, eidRes.SequenceID
 }
 
 // createTestSessionBench is a benchmark-friendly version of createTestSession.

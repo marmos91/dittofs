@@ -68,8 +68,7 @@ func FindFreePort(t *testing.T) int {
 	}
 	defer func() { _ = listener.Close() }()
 
-	addr := listener.Addr().(*net.TCPAddr)
-	return addr.Port
+	return listener.Addr().(*net.TCPAddr).Port
 }
 
 // StartServerProcess starts a DittoFS server in foreground mode with a custom config.

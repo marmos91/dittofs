@@ -52,7 +52,7 @@ func TestStoreMatrixV4(t *testing.T) {
 		localstackHelper = framework.NewLocalstackHelper(t)
 	}
 
-	versions := []string{"3", "4.0"}
+	versions := []string{"3", "4.0", "4.1"}
 
 	for _, ver := range versions {
 		ver := ver
@@ -61,9 +61,7 @@ func TestStoreMatrixV4(t *testing.T) {
 			testName := fmt.Sprintf("v%s/%s/%s", ver, sc.metadataType, sc.payloadType)
 
 			t.Run(testName, func(t *testing.T) {
-				if ver == "4.0" {
-					framework.SkipIfNFSv4Unsupported(t)
-				}
+				framework.SkipIfNFSVersionUnsupported(t, ver)
 
 				// Skip postgres combinations if container unavailable
 				if sc.metadataType == "postgres" && !postgresAvailable {
@@ -262,14 +260,12 @@ func TestFileSizeMatrix(t *testing.T) {
 		{"100MB", 100 * 1024 * 1024, true}, // gated
 	}
 
-	versions := []string{"3", "4.0"}
+	versions := []string{"3", "4.0", "4.1"}
 
 	for _, ver := range versions {
 		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
-			if ver == "4.0" {
-				framework.SkipIfNFSv4Unsupported(t)
-			}
+			framework.SkipIfNFSVersionUnsupported(t, ver)
 
 			// Start a single server for all sizes in this version
 			_, _, nfsPort := setupNFSv4TestServer(t)
@@ -363,13 +359,11 @@ func TestMultiShareConcurrent(t *testing.T) {
 	require.NoError(t, err)
 	framework.WaitForServer(t, nfsPort, 10*time.Second)
 
-	versions := []string{"3", "4.0"}
+	versions := []string{"3", "4.0", "4.1"}
 	for _, ver := range versions {
 		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
-			if ver == "4.0" {
-				framework.SkipIfNFSv4Unsupported(t)
-			}
+			framework.SkipIfNFSVersionUnsupported(t, ver)
 
 			// Mount both shares simultaneously
 			mountAlpha := framework.MountNFSExportWithVersion(t, nfsPort, "/share-alpha", ver)
@@ -423,13 +417,11 @@ func TestMultiClientConcurrency(t *testing.T) {
 
 	_, _, nfsPort := setupNFSv4TestServer(t)
 
-	versions := []string{"3", "4.0"}
+	versions := []string{"3", "4.0", "4.1"}
 	for _, ver := range versions {
 		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
-			if ver == "4.0" {
-				framework.SkipIfNFSv4Unsupported(t)
-			}
+			framework.SkipIfNFSVersionUnsupported(t, ver)
 
 			// Mount the same share twice
 			mount1 := framework.MountNFSWithVersion(t, nfsPort, ver)

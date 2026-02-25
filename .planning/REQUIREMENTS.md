@@ -55,16 +55,16 @@ Requirements for NFSv4.1 Sessions milestone. Each maps to roadmap phases.
 
 ### SMB Kerberos
 
-- [ ] **SMBKRB-01**: SMB adapter authenticates via SPNEGO/Kerberos using the shared Kerberos layer from v2.0
-- [ ] **SMBKRB-02**: Kerberos principal maps to control plane identity for SMB sessions (same identity mapping as NFS)
+- [x] **SMBKRB-01**: SMB adapter authenticates via SPNEGO/Kerberos using the shared Kerberos layer from v2.0
+- [x] **SMBKRB-02**: Kerberos principal maps to control plane identity for SMB sessions (same identity mapping as NFS)
 
 ### Testing
 
-- [ ] **TEST-01**: E2E tests with Linux NFS client using vers=4.1 mount option
-- [ ] **TEST-02**: EOS replay verification (retry same slot+seqid, confirm cached response returned)
-- [ ] **TEST-03**: Backchannel delegation recall test (CB_RECALL over fore-channel)
-- [ ] **TEST-04**: v4.0/v4.1 coexistence test (both versions mounted simultaneously)
-- [ ] **TEST-05**: Directory delegation notification test (CB_NOTIFY on directory mutation)
+- [x] **TEST-01**: E2E tests with Linux NFS client using vers=4.1 mount option
+- [x] **TEST-02**: EOS replay verification (retry same slot+seqid, confirm cached response returned)
+- [x] **TEST-03**: Backchannel delegation recall test (CB_RECALL over fore-channel)
+- [x] **TEST-04**: v4.0/v4.1 coexistence test (both versions mounted simultaneously)
+- [x] **TEST-05**: Directory delegation notification test (CB_NOTIFY on directory mutation)
 
 ## Future Requirements
 
@@ -132,13 +132,13 @@ Which phases cover which requirements. Updated during roadmap creation.
 | COEX-01 | Phase 20 | Complete |
 | COEX-02 | Phase 20 | Complete |
 | COEX-03 | Phase 20 | Complete |
-| SMBKRB-01 | Phase 25 | Pending |
-| SMBKRB-02 | Phase 25 | Pending |
-| TEST-01 | Phase 25 | Pending |
-| TEST-02 | Phase 25 | Pending |
-| TEST-03 | Phase 25 | Pending |
-| TEST-04 | Phase 25 | Pending |
-| TEST-05 | Phase 25 | Pending |
+| SMBKRB-01 | Phase 25 | Complete |
+| SMBKRB-02 | Phase 25 | Complete |
+| TEST-01 | Phase 25 | Complete |
+| TEST-02 | Phase 25 | Complete |
+| TEST-03 | Phase 25 | Complete |
+| TEST-04 | Phase 25 | Complete |
+| TEST-05 | Phase 25 | Complete |
 
 **Coverage:**
 - v3.0 requirements: 32 total

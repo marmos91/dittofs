@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
@@ -106,14 +107,9 @@ func (r *DittoServerReconciler) ensurePortmapperEnabled(ctx context.Context, api
 	logger := logf.FromContext(ctx)
 
 	// Check if NFS adapter is active.
-	hasNFS := false
-	for _, a := range adapters {
-		if a.Enabled && a.Running && isNFSAdapter(a.Type) {
-			hasNFS = true
-			break
-		}
-	}
-	if !hasNFS {
+	if !slices.ContainsFunc(adapters, func(a AdapterInfo) bool {
+		return a.Enabled && a.Running && isNFSAdapter(a.Type)
+	}) {
 		return
 	}
 

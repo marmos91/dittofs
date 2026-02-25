@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	v4types "github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/protocol/xdr"
@@ -43,20 +44,24 @@ const (
 
 // Recommended attributes (used for pseudo-fs and real files)
 const (
-	FATTR4_FILEHANDLE        = 19 // nfs_fh4: the file handle itself
-	FATTR4_FILEID            = 20 // uint64: unique file identifier
-	FATTR4_MODE              = 33 // uint32: POSIX mode bits
-	FATTR4_RAWDEV            = 41 // specdata4: raw device (major/minor)
-	FATTR4_NUMLINKS          = 35 // uint32: number of hard links
-	FATTR4_OWNER             = 36 // utf8str_mixed: owner name
-	FATTR4_OWNER_GROUP       = 37 // utf8str_mixed: group owner name
-	FATTR4_SPACE_USED        = 45 // uint64: disk space used
-	FATTR4_TIME_ACCESS       = 47 // nfstime4: last access time
-	FATTR4_TIME_ACCESS_SET   = 48 // settime4: set atime (writable)
-	FATTR4_TIME_METADATA     = 52 // nfstime4: last metadata change time (ctime)
-	FATTR4_TIME_MODIFY       = 53 // nfstime4: last modify time
-	FATTR4_TIME_MODIFY_SET   = 54 // settime4: set mtime (writable)
-	FATTR4_MOUNTED_ON_FILEID = 55 // uint64: fileid of mounted-on dir
+	FATTR4_FILEHANDLE         = 19 // nfs_fh4: the file handle itself
+	FATTR4_FILEID             = 20 // uint64: unique file identifier
+	FATTR4_MAXFILESIZE        = 27 // uint64: maximum file size in bytes
+	FATTR4_MAXREAD            = 30 // uint64: maximum read size in bytes (RFC 8881 attr #30)
+	FATTR4_MAXWRITE           = 31 // uint64: maximum write size in bytes (RFC 8881 attr #31)
+	FATTR4_MODE               = 33 // uint32: POSIX mode bits
+	FATTR4_NUMLINKS           = 35 // uint32: number of hard links
+	FATTR4_OWNER              = 36 // utf8str_mixed: owner name
+	FATTR4_OWNER_GROUP        = 37 // utf8str_mixed: group owner name
+	FATTR4_RAWDEV             = 41 // specdata4: raw device (major/minor)
+	FATTR4_SPACE_USED         = 45 // uint64: disk space used
+	FATTR4_TIME_ACCESS        = 47 // nfstime4: last access time
+	FATTR4_TIME_ACCESS_SET    = 48 // settime4: set atime (writable)
+	FATTR4_TIME_METADATA      = 52 // nfstime4: last metadata change time (ctime)
+	FATTR4_TIME_MODIFY        = 53 // nfstime4: last modify time
+	FATTR4_TIME_MODIFY_SET    = 54 // settime4: set mtime (writable)
+	FATTR4_MOUNTED_ON_FILEID  = 55 // uint64: fileid of mounted-on dir
+	FATTR4_SUPPATTR_EXCLCREAT = 75 // bitmap4: attrs settable during EXCLUSIVE4_1 create (RFC 8881 Section 5.8.1.10)
 )
 
 // time_how4 constants for SETATTR timestamp setting (RFC 7530 Section 5.7)
@@ -82,6 +87,31 @@ func SetLeaseTime(seconds uint32) {
 // GetLeaseTime returns the currently configured lease time in seconds.
 func GetLeaseTime() uint32 {
 	return leaseTimeSeconds
+}
+
+// Filesystem capability defaults (matching metadata store defaults).
+// Updated by SetFilesystemCapabilities() when capabilities are available.
+// Uses atomic operations to avoid data races with concurrent GETATTR encoding.
+var (
+	fsMaxFileSize  atomic.Uint64
+	fsMaxReadSize  atomic.Uint64
+	fsMaxWriteSize atomic.Uint64
+)
+
+func init() {
+	fsMaxFileSize.Store(1<<63 - 1) // max int64 (practically unlimited)
+	fsMaxReadSize.Store(1048576)   // 1MB
+	fsMaxWriteSize.Store(1048576)  // 1MB
+}
+
+// SetFilesystemCapabilities configures the filesystem capability values
+// returned by FATTR4_MAXFILESIZE, FATTR4_MAXREAD, and FATTR4_MAXWRITE.
+// Called by the handler layer when metadata store capabilities are available.
+// Thread-safe: uses atomic stores.
+func SetFilesystemCapabilities(maxFileSize uint64, maxReadSize, maxWriteSize uint32) {
+	fsMaxFileSize.Store(maxFileSize)
+	fsMaxReadSize.Store(uint64(maxReadSize))
+	fsMaxWriteSize.Store(uint64(maxWriteSize))
 }
 
 // identityMapper holds the configured identity mapper for FATTR4_OWNER/OWNER_GROUP encoding.
@@ -152,6 +182,11 @@ func SupportedAttrs() []uint32 {
 	SetBit(&bitmap, FATTR4_FILEHANDLE)
 	SetBit(&bitmap, FATTR4_FILEID)
 
+	// Filesystem capability attributes (word 0, bits 27, 30-31)
+	SetBit(&bitmap, FATTR4_MAXFILESIZE)
+	SetBit(&bitmap, FATTR4_MAXREAD)
+	SetBit(&bitmap, FATTR4_MAXWRITE)
+
 	// Recommended attributes (word 1, bits 33-55)
 	SetBit(&bitmap, FATTR4_MODE)
 	SetBit(&bitmap, FATTR4_RAWDEV)
@@ -165,6 +200,9 @@ func SupportedAttrs() []uint32 {
 	SetBit(&bitmap, FATTR4_TIME_MODIFY)
 	SetBit(&bitmap, FATTR4_TIME_MODIFY_SET)
 	SetBit(&bitmap, FATTR4_MOUNTED_ON_FILEID)
+
+	// NFSv4.1 exclusive create attributes (word 2)
+	SetBit(&bitmap, FATTR4_SUPPATTR_EXCLCREAT)
 
 	return bitmap
 }
@@ -287,6 +325,18 @@ func encodeSingleAttr(buf *bytes.Buffer, bit uint32, node PseudoFSAttrSource) er
 		// uint64: unique file identifier
 		return xdr.WriteUint64(buf, node.GetFileID())
 
+	case FATTR4_MAXFILESIZE:
+		// uint64: maximum file size in bytes
+		return xdr.WriteUint64(buf, fsMaxFileSize.Load())
+
+	case FATTR4_MAXREAD:
+		// uint64: maximum read size in bytes
+		return xdr.WriteUint64(buf, fsMaxReadSize.Load())
+
+	case FATTR4_MAXWRITE:
+		// uint64: maximum write size in bytes
+		return xdr.WriteUint64(buf, fsMaxWriteSize.Load())
+
 	case FATTR4_MODE:
 		// uint32: 0755 for directories
 		return xdr.WriteUint32(buf, 0755)
@@ -339,10 +389,28 @@ func encodeSingleAttr(buf *bytes.Buffer, bit uint32, node PseudoFSAttrSource) er
 		// uint64: same as fileid for pseudo-fs nodes
 		return xdr.WriteUint64(buf, node.GetFileID())
 
+	case FATTR4_SUPPATTR_EXCLCREAT:
+		// bitmap4: attributes that can be set atomically during EXCLUSIVE4_1 create.
+		// This tells the Linux NFS client which attrs to include in the cattr field
+		// of EXCLUSIVE4_1, rather than requiring a follow-up SETATTR.
+		return EncodeBitmap4(buf, exclcreatAttrs())
+
 	default:
 		// Unknown attribute -- should not reach here if Intersect is correct
 		return fmt.Errorf("unsupported attribute bit %d", bit)
 	}
+}
+
+// exclcreatAttrs returns the bitmap of attributes settable during EXCLUSIVE4_1 create.
+func exclcreatAttrs() []uint32 {
+	var bitmap []uint32
+	SetBit(&bitmap, FATTR4_SIZE)
+	SetBit(&bitmap, FATTR4_MODE)
+	SetBit(&bitmap, FATTR4_OWNER)
+	SetBit(&bitmap, FATTR4_OWNER_GROUP)
+	SetBit(&bitmap, FATTR4_TIME_ACCESS_SET)
+	SetBit(&bitmap, FATTR4_TIME_MODIFY_SET)
+	return bitmap
 }
 
 // ============================================================================
@@ -463,6 +531,15 @@ func encodeRealFileAttr(buf *bytes.Buffer, bit uint32, file *metadata.File, hand
 	case FATTR4_FILEID:
 		return xdr.WriteUint64(buf, metadata.HandleToINode(handle))
 
+	case FATTR4_MAXFILESIZE:
+		return xdr.WriteUint64(buf, fsMaxFileSize.Load())
+
+	case FATTR4_MAXREAD:
+		return xdr.WriteUint64(buf, fsMaxReadSize.Load())
+
+	case FATTR4_MAXWRITE:
+		return xdr.WriteUint64(buf, fsMaxWriteSize.Load())
+
 	case FATTR4_MODE:
 		return xdr.WriteUint32(buf, file.Mode&0o7777)
 
@@ -513,6 +590,9 @@ func encodeRealFileAttr(buf *bytes.Buffer, bit uint32, file *metadata.File, hand
 
 	case FATTR4_MOUNTED_ON_FILEID:
 		return xdr.WriteUint64(buf, metadata.HandleToINode(handle))
+
+	case FATTR4_SUPPATTR_EXCLCREAT:
+		return EncodeBitmap4(buf, exclcreatAttrs())
 
 	default:
 		return fmt.Errorf("unsupported attribute bit %d", bit)

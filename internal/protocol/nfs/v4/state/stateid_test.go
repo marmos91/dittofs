@@ -392,8 +392,10 @@ func TestValidateStateid_DelegationStateid_OldSeqid(t *testing.T) {
 
 	deleg := sm.GrantDelegation(100, []byte("fh-deleg-old"), types.OPEN_DELEGATE_WRITE)
 
-	// Use a seqid older than the current one
-	oldStateid := types.Stateid4{Seqid: 0, Other: deleg.Stateid.Other}
+	// Use a non-zero seqid older than the current one (seqid=1)
+	// to trigger OLD_STATEID. We manually bump the delegation seqid first.
+	deleg.Stateid.Seqid = 3 // simulate the server having advanced the seqid
+	oldStateid := types.Stateid4{Seqid: 1, Other: deleg.Stateid.Other}
 	_, err := sm.ValidateStateid(&oldStateid, nil)
 	if err == nil {
 		t.Fatal("ValidateStateid should fail for old delegation seqid")
@@ -405,6 +407,30 @@ func TestValidateStateid_DelegationStateid_OldSeqid(t *testing.T) {
 	if stateErr.Status != types.NFS4ERR_OLD_STATEID {
 		t.Errorf("status = %d, want NFS4ERR_OLD_STATEID (%d)",
 			stateErr.Status, types.NFS4ERR_OLD_STATEID)
+	}
+}
+
+func TestValidateStateid_Seqid0_AcceptedAsAny(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+
+	fileHandle := []byte("test-handle-seqid0")
+	result, err := sm.OpenFile(0, []byte("owner1"), 1, fileHandle, 1, 0, 0)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+
+	// Confirm to increment seqid to 2
+	_, err = sm.ConfirmOpen(&result.Stateid, 2)
+	if err != nil {
+		t.Fatalf("ConfirmOpen: %v", err)
+	}
+
+	// Per RFC 8881 Section 8.2.2, seqid=0 means "any seqid" and
+	// MUST be accepted regardless of the current seqid value.
+	anyStateid := types.Stateid4{Seqid: 0, Other: result.Stateid.Other}
+	_, err = sm.ValidateStateid(&anyStateid, nil)
+	if err != nil {
+		t.Errorf("ValidateStateid should accept seqid=0 (any), got: %v", err)
 	}
 }
 

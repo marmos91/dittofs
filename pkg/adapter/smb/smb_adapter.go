@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/smb/session"
 	"github.com/marmos91/dittofs/internal/protocol/smb/v2/handlers"
+	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -558,6 +559,16 @@ func (s *SMBAdapter) GetListenerAddr() string {
 // newConn creates a new connection wrapper for a TCP connection.
 func (s *SMBAdapter) newConn(tcpConn net.Conn) *SMBConnection {
 	return NewSMBConnection(s, tcpConn)
+}
+
+// SetKerberosProvider injects the shared Kerberos provider into the SMB handler.
+// This enables Kerberos authentication via SPNEGO in SESSION_SETUP.
+// Must be called before Serve(). When not called, Kerberos auth is disabled
+// and only NTLM/guest authentication is available.
+func (s *SMBAdapter) SetKerberosProvider(provider *kerberos.Provider) {
+	s.handler.KerberosProvider = provider
+	logger.Debug("SMB adapter Kerberos provider configured",
+		"principal", provider.ServicePrincipal())
 }
 
 // Port returns the TCP port the SMB server is listening on.

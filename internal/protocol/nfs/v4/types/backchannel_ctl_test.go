@@ -47,8 +47,8 @@ func TestBackchannelCtlArgs_RoundTrip_MultipleSecParms(t *testing.T) {
 		CbProgram: 0x40000001,
 		SecParms: []CallbackSecParms4{
 			{CbSecFlavor: 0}, // AUTH_NONE
-			{CbSecFlavor: 1, AuthSysData: []byte{0xca, 0xfe, 0xba, 0xbe}}, // AUTH_SYS
-			{CbSecFlavor: 6, RpcGssData: []byte{0xde, 0xad}},              // RPCSEC_GSS
+			{CbSecFlavor: 1, AuthSysParms: &AuthSysParms{Stamp: 42, MachineName: "host", UID: 1000, GID: 1000}}, // AUTH_SYS
+			{CbSecFlavor: 6, RpcGssData: []byte{0xde, 0xad}},                                                    // RPCSEC_GSS
 		},
 	}
 
@@ -71,9 +71,8 @@ func TestBackchannelCtlArgs_RoundTrip_MultipleSecParms(t *testing.T) {
 	if decoded.SecParms[1].CbSecFlavor != 1 {
 		t.Errorf("SecParms[1].CbSecFlavor = %d, want 1", decoded.SecParms[1].CbSecFlavor)
 	}
-	if !bytes.Equal(decoded.SecParms[1].AuthSysData, original.SecParms[1].AuthSysData) {
-		t.Errorf("SecParms[1].AuthSysData = %x, want %x",
-			decoded.SecParms[1].AuthSysData, original.SecParms[1].AuthSysData)
+	if decoded.SecParms[1].AuthSysParms == nil || decoded.SecParms[1].AuthSysParms.UID != 1000 {
+		t.Errorf("SecParms[1].AuthSysParms roundtrip failed")
 	}
 	if decoded.SecParms[2].CbSecFlavor != 6 {
 		t.Errorf("SecParms[2].CbSecFlavor = %d, want 6", decoded.SecParms[2].CbSecFlavor)
