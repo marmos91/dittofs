@@ -445,7 +445,7 @@ func (s *MetadataService) TestLock(ctx *AuthContext, handle FileHandle, sessionI
 	}
 
 	handleKey := string(handle)
-	ok, conflict := lm.TestLock(handleKey, sessionID, offset, length, exclusive)
+	ok, conflict := lm.TestLockByParams(handleKey, sessionID, offset, length, exclusive)
 	return ok, conflict, nil
 }
 

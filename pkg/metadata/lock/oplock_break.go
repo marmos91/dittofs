@@ -41,6 +41,50 @@ type OpLockBreakCallback interface {
 }
 
 // ============================================================================
+// Typed Break Callbacks Interface
+// ============================================================================
+
+// BreakCallbacks provides typed callback methods for cross-protocol coordination.
+//
+// Protocol adapters register implementations to receive notifications when
+// lock breaks are required. Each method corresponds to a different break type:
+//   - OnOpLockBreak: OpLock/lease must be broken (e.g., NFS delegation recall)
+//   - OnByteRangeRevoke: Byte-range lock must be revoked
+//   - OnAccessConflict: Access mode conflict detected
+//
+// NFS adapter typically only registers OnOpLockBreak (for delegation recall).
+// SMB adapter registers all three callbacks.
+//
+// Callbacks are invoked synchronously during lock operations. Implementations
+// should be lightweight or offload heavy work to background goroutines.
+type BreakCallbacks interface {
+	// OnOpLockBreak is called when an oplock/lease must be broken.
+	//
+	// Parameters:
+	//   - handleKey: The file handle key for the affected file
+	//   - lock: The lock whose oplock must be broken
+	//   - breakToState: The target lease state after break (e.g., LeaseStateRead or LeaseStateNone)
+	OnOpLockBreak(handleKey string, lock *UnifiedLock, breakToState uint32)
+
+	// OnByteRangeRevoke is called when a byte-range lock must be revoked
+	// due to a cross-protocol conflict.
+	//
+	// Parameters:
+	//   - handleKey: The file handle key for the affected file
+	//   - lock: The byte-range lock that conflicts
+	//   - reason: Human-readable reason for the revocation
+	OnByteRangeRevoke(handleKey string, lock *UnifiedLock, reason string)
+
+	// OnAccessConflict is called when an SMB access mode conflict is detected.
+	//
+	// Parameters:
+	//   - handleKey: The file handle key for the affected file
+	//   - existingLock: The lock holding the conflicting access mode
+	//   - requestedMode: The access mode that was requested
+	OnAccessConflict(handleKey string, existingLock *UnifiedLock, requestedMode AccessMode)
+}
+
+// ============================================================================
 // Lease Break Scanner
 // ============================================================================
 

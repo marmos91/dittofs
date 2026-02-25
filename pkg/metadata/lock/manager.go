@@ -5,7 +5,146 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/marmos91/dittofs/internal/logger"
 )
+
+// ============================================================================
+// LockManager Interface
+// ============================================================================
+
+// LockManager provides unified lock management for all protocols.
+//
+// This is the single interface that both NFS and SMB adapters use for lock
+// operations. It unifies byte-range locks, oplocks/leases, grace period
+// management, and break callback registration into a single coherent API.
+//
+// The interface covers:
+//   - Unified lock CRUD (AddUnifiedLock, RemoveUnifiedLock, etc.)
+//   - Centralized break operations (replaces OplockChecker global)
+//   - Legacy byte-range locks (backward compat for existing callers)
+//   - Grace period management
+//   - Break callback registration
+//   - Connection/cleanup operations
+type LockManager interface {
+	// ========================================================================
+	// Unified Lock CRUD
+	// ========================================================================
+
+	// AddUnifiedLock adds a unified lock (byte-range or oplock).
+	// Returns error if the lock conflicts with existing locks.
+	AddUnifiedLock(handleKey string, lock *UnifiedLock) error
+
+	// RemoveUnifiedLock removes a unified lock using POSIX splitting semantics.
+	RemoveUnifiedLock(handleKey string, owner LockOwner, offset, length uint64) error
+
+	// ListUnifiedLocks returns all unified locks on a file.
+	ListUnifiedLocks(handleKey string) []*UnifiedLock
+
+	// RemoveFileUnifiedLocks removes all unified locks for a file.
+	RemoveFileUnifiedLocks(handleKey string)
+
+	// UpgradeLock atomically converts a shared lock to exclusive if no other readers exist.
+	UpgradeLock(handleKey string, owner LockOwner, offset, length uint64) (*UnifiedLock, error)
+
+	// GetUnifiedLock retrieves a specific unified lock by owner and range.
+	GetUnifiedLock(handleKey string, owner LockOwner, offset, length uint64) (*UnifiedLock, error)
+
+	// ========================================================================
+	// Centralized Break Operations (replaces OplockChecker global)
+	// ========================================================================
+
+	// CheckAndBreakOpLocksForWrite checks and breaks oplocks that conflict with a write.
+	// Write breaks all Write oplocks to None, Read oplocks to None.
+	// excludeOwner can be nil to check all owners.
+	CheckAndBreakOpLocksForWrite(handleKey string, excludeOwner *LockOwner) error
+
+	// CheckAndBreakOpLocksForRead checks and breaks oplocks that conflict with a read.
+	// Read only breaks Write oplocks (to Read).
+	// excludeOwner can be nil to check all owners.
+	CheckAndBreakOpLocksForRead(handleKey string, excludeOwner *LockOwner) error
+
+	// CheckAndBreakOpLocksForDelete checks and breaks all oplocks on a file.
+	// Delete breaks all oplocks to None.
+	// excludeOwner can be nil to check all owners.
+	CheckAndBreakOpLocksForDelete(handleKey string, excludeOwner *LockOwner) error
+
+	// ========================================================================
+	// Legacy Byte-Range (backward compat for existing callers)
+	// ========================================================================
+
+	// Lock attempts to acquire a byte-range lock on a file.
+	Lock(handleKey string, lock FileLock) error
+
+	// Unlock releases a specific byte-range lock.
+	Unlock(handleKey string, sessionID uint64, offset, length uint64) error
+
+	// TestLock checks if a lock would succeed without acquiring it.
+	TestLock(handleKey string, lock FileLock) (*LockConflict, error)
+
+	// ListLocks returns all active byte-range locks on a file.
+	ListLocks(handleKey string) []FileLock
+
+	// ========================================================================
+	// Grace Period (part of LockManager per user decision)
+	// ========================================================================
+
+	// EnterGracePeriod transitions to grace period state.
+	EnterGracePeriod(expectedClients []string)
+
+	// ExitGracePeriod manually exits the grace period.
+	ExitGracePeriod()
+
+	// IsOperationAllowed checks if a lock operation is allowed in the current state.
+	IsOperationAllowed(op Operation) (bool, error)
+
+	// MarkReclaimed records that a client has reclaimed their locks.
+	MarkReclaimed(clientID string)
+
+	// IsInGracePeriod returns true if grace period is currently active.
+	IsInGracePeriod() bool
+
+	// ========================================================================
+	// Break Callbacks
+	// ========================================================================
+
+	// RegisterBreakCallbacks registers typed callbacks for break notifications.
+	RegisterBreakCallbacks(callbacks BreakCallbacks)
+
+	// ========================================================================
+	// Connection/Cleanup
+	// ========================================================================
+
+	// RemoveAllLocks removes all locks (both legacy and unified) for a file.
+	RemoveAllLocks(handleKey string)
+
+	// RemoveClientLocks removes all locks held by a specific client.
+	RemoveClientLocks(clientID string)
+
+	// GetStats returns current lock manager statistics.
+	GetStats() ManagerStats
+}
+
+// ManagerStats contains statistics about the lock manager state.
+type ManagerStats struct {
+	// TotalLegacyLocks is the total number of legacy byte-range locks.
+	TotalLegacyLocks int
+
+	// TotalUnifiedLocks is the total number of unified locks.
+	TotalUnifiedLocks int
+
+	// TotalFiles is the number of files with any locks.
+	TotalFiles int
+
+	// BreakCallbackCount is the number of registered break callbacks.
+	BreakCallbackCount int
+
+	// GracePeriodActive indicates if grace period is active.
+	GracePeriodActive bool
+}
+
+// Verify Manager satisfies LockManager at compile time.
+var _ LockManager = (*Manager)(nil)
 
 // ============================================================================
 // File Locking Types (SMB/NLM support)
@@ -160,19 +299,34 @@ func conflictFrom(fl *FileLock) *LockConflict {
 // This is a shared, in-memory implementation that can be embedded in any
 // metadata store. Locks are ephemeral and lost on server restart.
 //
+// Manager implements the LockManager interface, providing unified lock
+// management including byte-range locks, oplocks, grace period, and
+// typed break callbacks.
+//
 // Thread Safety:
 // Manager is safe for concurrent use by multiple goroutines.
 type Manager struct {
-	mu            sync.RWMutex
-	locks         map[string][]FileLock      // handle key -> locks (legacy)
-	unifiedLocks map[string][]*UnifiedLock // handle key -> enhanced locks
+	mu             sync.RWMutex
+	locks          map[string][]FileLock    // handle key -> locks (legacy)
+	unifiedLocks   map[string][]*UnifiedLock // handle key -> unified locks
+	breakCallbacks []BreakCallbacks          // registered break callbacks
+	gracePeriod    *GracePeriodManager       // grace period state (may be nil)
 }
 
 // NewManager creates a new lock manager.
 func NewManager() *Manager {
 	return &Manager{
-		locks:         make(map[string][]FileLock),
+		locks:        make(map[string][]FileLock),
 		unifiedLocks: make(map[string][]*UnifiedLock),
+	}
+}
+
+// NewManagerWithGracePeriod creates a new lock manager with a grace period manager.
+func NewManagerWithGracePeriod(gracePeriod *GracePeriodManager) *Manager {
+	return &Manager{
+		locks:        make(map[string][]FileLock),
+		unifiedLocks: make(map[string][]*UnifiedLock),
+		gracePeriod:  gracePeriod,
 	}
 }
 
@@ -288,27 +442,37 @@ func (lm *Manager) UnlockAllForSession(handleKey string, sessionID uint64) int {
 
 // TestLock checks if a lock would succeed without acquiring it.
 //
-// Returns (true, nil) if lock would succeed, (false, conflict) if conflict exists.
-func (lm *Manager) TestLock(handleKey string, sessionID, offset, length uint64, exclusive bool) (bool, *LockConflict) {
+// Returns (*LockConflict, nil) if conflict exists, or (nil, nil) if lock would succeed.
+func (lm *Manager) TestLock(handleKey string, lock FileLock) (*LockConflict, error) {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
 
 	existing := lm.locks[handleKey]
 
-	// Create a test lock to check conflicts
-	testLock := &FileLock{
+	for i := range existing {
+		if IsLockConflicting(&existing[i], &lock) {
+			return conflictFrom(&existing[i]), nil
+		}
+	}
+
+	return nil, nil
+}
+
+// TestLockByParams checks if a lock would succeed without acquiring it (legacy params).
+//
+// Returns (true, nil) if lock would succeed, (false, conflict) if conflict exists.
+func (lm *Manager) TestLockByParams(handleKey string, sessionID, offset, length uint64, exclusive bool) (bool, *LockConflict) {
+	testLock := FileLock{
 		SessionID: sessionID,
 		Offset:    offset,
 		Length:    length,
 		Exclusive: exclusive,
 	}
 
-	for i := range existing {
-		if IsLockConflicting(&existing[i], testLock) {
-			return false, conflictFrom(&existing[i])
-		}
+	conflict, _ := lm.TestLock(handleKey, testLock)
+	if conflict != nil {
+		return false, conflict
 	}
-
 	return true, nil
 }
 
@@ -656,16 +820,19 @@ func (lm *Manager) getUnifiedLocksLocked(handleKey string) []*UnifiedLock {
 	return lm.unifiedLocks[handleKey]
 }
 
-// AddUnifiedLock adds an enhanced lock to the storage.
+// AddUnifiedLock adds a unified lock to the storage.
+//
+// Checks for conflicts using the ConflictsWith method which handles all 4
+// conflict cases: access modes, oplock-oplock, oplock-byterange, byterange-byterange.
 func (lm *Manager) AddUnifiedLock(handleKey string, lock *UnifiedLock) error {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 
 	existing := lm.unifiedLocks[handleKey]
 
-	// Check for conflicts with existing locks
+	// Check for conflicts with existing locks using ConflictsWith
 	for _, el := range existing {
-		if IsUnifiedLockConflicting(el, lock) {
+		if lock.ConflictsWith(el) {
 			return NewLockConflictError("", &UnifiedLockConflict{
 				Lock:   el,
 				Reason: "lock conflict",
@@ -761,9 +928,279 @@ func (lm *Manager) ListUnifiedLocks(handleKey string) []*UnifiedLock {
 	return result
 }
 
-// RemoveFileUnifiedLocks removes all enhanced locks for a file.
+// RemoveFileUnifiedLocks removes all unified locks for a file.
 func (lm *Manager) RemoveFileUnifiedLocks(handleKey string) {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 	delete(lm.unifiedLocks, handleKey)
+}
+
+// GetUnifiedLock retrieves a specific unified lock by owner and range.
+//
+// Returns the matching lock or ErrLockNotFound if no matching lock exists.
+func (lm *Manager) GetUnifiedLock(handleKey string, owner LockOwner, offset, length uint64) (*UnifiedLock, error) {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+
+	for _, lock := range lm.unifiedLocks[handleKey] {
+		if lock.Owner.OwnerID == owner.OwnerID &&
+			lock.Offset == offset &&
+			lock.Length == length {
+			return lock.Clone(), nil
+		}
+	}
+
+	return nil, NewLockNotFoundError("")
+}
+
+// ============================================================================
+// Centralized Break Operations
+// ============================================================================
+
+// CheckAndBreakOpLocksForWrite checks and initiates breaks for oplocks that
+// conflict with a write operation.
+//
+// Write operations require breaking:
+//   - Write oplocks -> None (flush dirty data)
+//   - Read oplocks -> None (invalidate caches)
+//
+// This replaces the global OplockChecker pattern with centralized break logic.
+func (lm *Manager) CheckAndBreakOpLocksForWrite(handleKey string, excludeOwner *LockOwner) error {
+	lm.mu.RLock()
+	locks := lm.unifiedLocks[handleKey]
+
+	var toBreak []*UnifiedLock
+	for _, lock := range locks {
+		if lock.Lease == nil {
+			continue // Not an oplock
+		}
+		if excludeOwner != nil && lock.Owner.OwnerID == excludeOwner.OwnerID {
+			continue // Skip excluded owner
+		}
+		// Write breaks all oplocks with Read or Write state
+		if lock.Lease.HasRead() || lock.Lease.HasWrite() {
+			toBreak = append(toBreak, lock)
+		}
+	}
+	lm.mu.RUnlock()
+
+	// Dispatch break callbacks outside of lock
+	for _, lock := range toBreak {
+		lm.dispatchOpLockBreak(handleKey, lock, LeaseStateNone)
+	}
+
+	return nil
+}
+
+// CheckAndBreakOpLocksForRead checks and initiates breaks for oplocks that
+// conflict with a read operation.
+//
+// Read operations only require breaking Write oplocks:
+//   - Write oplocks -> Read (allow reads while keeping read cache)
+//
+// Read oplocks are not affected by reads.
+func (lm *Manager) CheckAndBreakOpLocksForRead(handleKey string, excludeOwner *LockOwner) error {
+	lm.mu.RLock()
+	locks := lm.unifiedLocks[handleKey]
+
+	var toBreak []*UnifiedLock
+	for _, lock := range locks {
+		if lock.Lease == nil {
+			continue // Not an oplock
+		}
+		if excludeOwner != nil && lock.Owner.OwnerID == excludeOwner.OwnerID {
+			continue // Skip excluded owner
+		}
+		// Read only breaks Write oplocks
+		if lock.Lease.HasWrite() {
+			toBreak = append(toBreak, lock)
+		}
+	}
+	lm.mu.RUnlock()
+
+	// Dispatch break callbacks outside of lock
+	for _, lock := range toBreak {
+		lm.dispatchOpLockBreak(handleKey, lock, LeaseStateRead)
+	}
+
+	return nil
+}
+
+// CheckAndBreakOpLocksForDelete checks and initiates breaks for all oplocks
+// on a file being deleted.
+//
+// Delete operations require breaking all oplocks to None.
+func (lm *Manager) CheckAndBreakOpLocksForDelete(handleKey string, excludeOwner *LockOwner) error {
+	lm.mu.RLock()
+	locks := lm.unifiedLocks[handleKey]
+
+	var toBreak []*UnifiedLock
+	for _, lock := range locks {
+		if lock.Lease == nil {
+			continue // Not an oplock
+		}
+		if excludeOwner != nil && lock.Owner.OwnerID == excludeOwner.OwnerID {
+			continue // Skip excluded owner
+		}
+		// Delete breaks all oplocks
+		if lock.Lease.LeaseState != LeaseStateNone {
+			toBreak = append(toBreak, lock)
+		}
+	}
+	lm.mu.RUnlock()
+
+	// Dispatch break callbacks outside of lock
+	for _, lock := range toBreak {
+		lm.dispatchOpLockBreak(handleKey, lock, LeaseStateNone)
+	}
+
+	return nil
+}
+
+// dispatchOpLockBreak notifies all registered break callbacks about an oplock break.
+func (lm *Manager) dispatchOpLockBreak(handleKey string, lock *UnifiedLock, breakToState uint32) {
+	lm.mu.RLock()
+	callbacks := make([]BreakCallbacks, len(lm.breakCallbacks))
+	copy(callbacks, lm.breakCallbacks)
+	lm.mu.RUnlock()
+
+	if len(callbacks) == 0 {
+		logger.Debug("oplock break with no callbacks registered",
+			"handleKey", handleKey,
+			"owner", lock.Owner.OwnerID,
+			"breakToState", LeaseStateToString(breakToState))
+		return
+	}
+
+	for _, cb := range callbacks {
+		cb.OnOpLockBreak(handleKey, lock, breakToState)
+	}
+}
+
+// ============================================================================
+// Grace Period Delegation
+// ============================================================================
+
+// EnterGracePeriod transitions to grace period state.
+// If no grace period manager is configured, this is a no-op.
+func (lm *Manager) EnterGracePeriod(expectedClients []string) {
+	if lm.gracePeriod != nil {
+		lm.gracePeriod.EnterGracePeriod(expectedClients)
+	}
+}
+
+// ExitGracePeriod manually exits the grace period.
+// If no grace period manager is configured, this is a no-op.
+func (lm *Manager) ExitGracePeriod() {
+	if lm.gracePeriod != nil {
+		lm.gracePeriod.ExitGracePeriod()
+	}
+}
+
+// IsOperationAllowed checks if a lock operation is allowed in the current state.
+// If no grace period manager is configured, all operations are allowed.
+func (lm *Manager) IsOperationAllowed(op Operation) (bool, error) {
+	if lm.gracePeriod != nil {
+		return lm.gracePeriod.IsOperationAllowed(op)
+	}
+	return true, nil
+}
+
+// MarkReclaimed records that a client has reclaimed their locks.
+// If no grace period manager is configured, this is a no-op.
+func (lm *Manager) MarkReclaimed(clientID string) {
+	if lm.gracePeriod != nil {
+		lm.gracePeriod.MarkReclaimed(clientID)
+	}
+}
+
+// IsInGracePeriod returns true if grace period is currently active.
+func (lm *Manager) IsInGracePeriod() bool {
+	if lm.gracePeriod != nil {
+		return lm.gracePeriod.GetState() == GraceStateActive
+	}
+	return false
+}
+
+// ============================================================================
+// Break Callback Registration
+// ============================================================================
+
+// RegisterBreakCallbacks registers typed callbacks for break notifications.
+//
+// Multiple callbacks can be registered (one per protocol adapter).
+// Callbacks are invoked in registration order during break operations.
+func (lm *Manager) RegisterBreakCallbacks(callbacks BreakCallbacks) {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	lm.breakCallbacks = append(lm.breakCallbacks, callbacks)
+}
+
+// ============================================================================
+// Connection/Cleanup Operations
+// ============================================================================
+
+// RemoveAllLocks removes all locks (both legacy and unified) for a file.
+func (lm *Manager) RemoveAllLocks(handleKey string) {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	delete(lm.locks, handleKey)
+	delete(lm.unifiedLocks, handleKey)
+}
+
+// RemoveClientLocks removes all locks held by a specific client.
+//
+// This iterates all files and removes any unified locks owned by the
+// specified client ID. Also removes legacy locks by scanning all sessions.
+func (lm *Manager) RemoveClientLocks(clientID string) {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	// Remove unified locks for this client
+	for handleKey, locks := range lm.unifiedLocks {
+		var remaining []*UnifiedLock
+		for _, lock := range locks {
+			if lock.Owner.ClientID != clientID {
+				remaining = append(remaining, lock)
+			}
+		}
+		if len(remaining) == 0 {
+			delete(lm.unifiedLocks, handleKey)
+		} else {
+			lm.unifiedLocks[handleKey] = remaining
+		}
+	}
+}
+
+// GetStats returns current lock manager statistics.
+func (lm *Manager) GetStats() ManagerStats {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+
+	totalLegacy := 0
+	for _, locks := range lm.locks {
+		totalLegacy += len(locks)
+	}
+
+	totalUnified := 0
+	for _, locks := range lm.unifiedLocks {
+		totalUnified += len(locks)
+	}
+
+	// Count unique files (files that have any locks)
+	fileSet := make(map[string]struct{})
+	for key := range lm.locks {
+		fileSet[key] = struct{}{}
+	}
+	for key := range lm.unifiedLocks {
+		fileSet[key] = struct{}{}
+	}
+
+	return ManagerStats{
+		TotalLegacyLocks:   totalLegacy,
+		TotalUnifiedLocks:  totalUnified,
+		TotalFiles:         len(fileSet),
+		BreakCallbackCount: len(lm.breakCallbacks),
+		GracePeriodActive:  lm.gracePeriod != nil && lm.gracePeriod.GetState() == GraceStateActive,
+	}
 }

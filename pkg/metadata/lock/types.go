@@ -260,6 +260,97 @@ func (el *UnifiedLock) IsLease() bool {
 	return el.Lease != nil
 }
 
+// HasOpLock returns true if this lock has an associated OpLock/lease.
+// Alias for IsLease() for clarity in conflict detection code.
+func (el *UnifiedLock) HasOpLock() bool {
+	return el.Lease != nil
+}
+
+// ConflictsWith checks if this lock conflicts with another lock.
+//
+// This method handles all 4 conflict cases:
+//  1. Access mode conflicts (SMB deny modes)
+//  2. OpLock vs OpLock (lease-to-lease conflicts)
+//  3. OpLock vs byte-range (cross-type conflicts)
+//  4. Byte-range vs byte-range (traditional range overlap + type check)
+//
+// Same owner never conflicts (allows re-locking and upgrading).
+//
+// Returns true if the locks conflict and one must be denied or broken.
+func (ul *UnifiedLock) ConflictsWith(other *UnifiedLock) bool {
+	// Same owner = no conflict
+	if ul.Owner.OwnerID == other.Owner.OwnerID {
+		return false
+	}
+
+	// Case 1: Access mode conflicts (SMB share modes)
+	if accessModesConflict(ul.AccessMode, other.AccessMode) {
+		return true
+	}
+
+	// Case 2: OpLock vs OpLock
+	if ul.HasOpLock() && other.HasOpLock() {
+		return OpLocksConflict(ul.Lease, other.Lease)
+	}
+
+	// Case 3: OpLock vs byte-range (one has oplock, other doesn't)
+	if ul.HasOpLock() != other.HasOpLock() {
+		return opLockConflictsWithByteLock2(ul, other)
+	}
+
+	// Case 4: Byte-range vs byte-range
+	if !RangesOverlap(ul.Offset, ul.Length, other.Offset, other.Length) {
+		return false
+	}
+	return !(ul.Type == LockTypeShared && other.Type == LockTypeShared)
+}
+
+// accessModesConflict checks if two access modes (SMB share reservations) conflict.
+//
+// Conflict rules:
+//   - DenyRead blocks AccessRead (and vice versa)
+//   - DenyWrite blocks AccessWrite (and vice versa)
+//   - DenyAll blocks both AccessRead and AccessWrite
+//
+// AccessModeNone never conflicts with anything.
+func accessModesConflict(a, b AccessMode) bool {
+	// If both are None, no conflict
+	if a == AccessModeNone && b == AccessModeNone {
+		return false
+	}
+
+	// a denies read and b wants to read (DenyRead or DenyAll blocks read)
+	if (a == AccessModeDenyRead || a == AccessModeDenyAll) && b != AccessModeNone {
+		return true
+	}
+
+	// a denies write and b wants to write (DenyWrite or DenyAll blocks write)
+	if (a == AccessModeDenyWrite || a == AccessModeDenyAll) && b != AccessModeNone {
+		return true
+	}
+
+	// b denies read and a wants to read
+	if (b == AccessModeDenyRead || b == AccessModeDenyAll) && a != AccessModeNone {
+		return true
+	}
+
+	// b denies write and a wants to write
+	if (b == AccessModeDenyWrite || b == AccessModeDenyAll) && a != AccessModeNone {
+		return true
+	}
+
+	return false
+}
+
+// opLockConflictsWithByteLock2 checks if one lock with an oplock conflicts
+// with a lock without an oplock. This handles both orderings.
+func opLockConflictsWithByteLock2(a, b *UnifiedLock) bool {
+	if a.HasOpLock() {
+		return opLockConflictsWithByteLock(a.Lease, a.Owner.OwnerID, b)
+	}
+	return opLockConflictsWithByteLock(b.Lease, b.Owner.OwnerID, a)
+}
+
 // ============================================================================
 // Enhanced Lock Conflict Detection
 // ============================================================================
