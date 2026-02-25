@@ -8,7 +8,7 @@ progress:
   total_phases: 27
   completed_phases: 26
   total_plans: 95
-  completed_plans: 92
+  completed_plans: 94
 ---
 
 # Project State
@@ -23,9 +23,9 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 ## Current Position
 
 Phase: 28 - SMB Adapter Restructuring
-Current Plan: 2 of 5 (COMPLETE)
+Current Plan: 4 of 5 (COMPLETE)
 Status: Executing Phase 28
-Last activity: 2026-02-25 -- Completed 28-02 (BaseAdapter extraction)
+Last activity: 2026-02-25 -- Completed 28-04 (Authenticator Interface)
 
 ## Completed Milestones
 
@@ -52,6 +52,8 @@ Last activity: 2026-02-25 -- Completed 28-02 (BaseAdapter extraction)
 | 27 | 03 | 35min | 2 | 6 |
 | 28 | 01 | 6min | 2 | 13 |
 | 28 | 02 | 8min | 2 | 9 |
+| 28 | 03 | - | - | - |
+| 28 | 04 | 6min | 2 | 5 |
 
 ## Quick Tasks Completed
 
@@ -96,6 +98,9 @@ Last activity: 2026-02-25 -- Completed 28-02 (BaseAdapter extraction)
 - [Phase 28]: [28-01] Auth packages flattened from ntlm/spnego to single auth package (no naming conflicts)
 - [Phase 28]: [28-01] Test function names updated to match new type names (TestConnection_ instead of TestSMBConnection_)
 - [Phase 28]: BaseAdapter uses pointer embedding (*adapter.BaseAdapter) to avoid go vet sync primitive copy warnings
+- [Phase 28]: [28-04] Standalone AUTH_UNIX parser in nfs/auth to avoid RPC package import dependency
+- [Phase 28]: [28-04] SMBAuthenticator uses sync.Map for pending auth state tracking across concurrent sessions
+- [Phase 28]: [28-04] Unknown UIDs produce synthetic users (unix:UID) for NFS backward compat
 
 ### Pending Todos
 
@@ -108,5 +113,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-25
-Stopped at: Completed 28-02-PLAN.md
-Resume file: Continue with 28-03-PLAN.md
+Stopped at: Completed 28-04-PLAN.md
+Resume file: Continue with 28-05-PLAN.md

@@ -563,7 +563,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 51
 | 25.5. Manual Verification v3.0 | v3.0 | - | Complete | 2026-02-25 |
 | 26. Generic Lock Interface & Protocol Leak Purge | 5/5 | Complete    | 2026-02-25 | - |
 | 27. NFS Adapter Restructuring | v3.5 | 4/4 | Complete | 2026-02-25 |
-| 28. SMB Adapter Restructuring | 2/5 | In Progress|  | - |
+| 28. SMB Adapter Restructuring | 3/5 | In Progress|  | - |
 | 29. Core Layer Decomposition | v3.5 | 0/? | Not started | - |
 | 30. SMB Bug Fixes | v3.6 | 0/? | Not started | - |
 | 31. Windows ACL Support | v3.6 | 0/? | Not started | - |
