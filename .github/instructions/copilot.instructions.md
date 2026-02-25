@@ -1,27 +1,27 @@
 # DittoFS Copilot Reviewer Instructions
 
-You are reviewing pull requests for **DittoFS**, a modular virtual filesystem written in Go that implements NFSv3 and SMB2 protocols with pluggable metadata and content stores.
+You are reviewing pull requests for **DittoFS**, a modular virtual filesystem written in Go that implements NFSv3, NFSv4, and SMB2 protocols with pluggable metadata and payload stores.
 
 ## Project Context
 
 **Architecture Overview:**
 - **Protocol Adapters** (NFS, SMB): Handle protocol-specific operations
-- **Store Registry**: Manages named, reusable metadata and content stores
+- **Store Registry**: Manages named, reusable metadata and payload stores
 - **Metadata Stores**: Manage file structure, attributes, permissions (memory, BadgerDB, PostgreSQL)
-- **Content Stores**: Manage file data (memory, filesystem, S3)
+- **Payload Stores**: Manage file data (memory, filesystem, S3)
 - **Cache Layer**: Unified read/write caching per share
 
 **Key Principles:**
 - **Separation of Concerns**: Protocol handlers only handle protocol logic; business logic belongs in stores
 - **Stateless NFS vs Stateful SMB**: Different connection models
 - **Path-based file handles**: Deterministic, recoverable handles
-- **Two-phase write protocol**: Validate → Write → Commit
+- **Two-phase write protocol**: PrepareWrite → PayloadStore.WriteAt → CommitWrite
 
 ## Review Focus Areas
 
 ### 1. Protocol Implementation Correctness
 
-**NFS (NFSv3 - RFC 1813):**
+**NFS (NFSv3 - RFC 1813, NFSv4):**
 - ✅ Verify RPC message parsing/encoding follows RFC 5531
 - ✅ Check XDR encoding uses big-endian, 4-byte alignment with proper padding
 - ✅ Validate file handle format and consistency (path-based, recoverable)
@@ -51,18 +51,19 @@ You are reviewing pull requests for **DittoFS**, a modular virtual filesystem wr
 **Protocol Handlers (internal/protocol/{nfs,smb}/):**
 - ❌ Protocol handlers should NOT implement business logic (permission checks, file creation, etc.)
 - ✅ Handlers should only: parse requests, extract auth context, call store methods, encode responses
-- ✅ Check handlers delegate to metadata/content stores correctly
+- ✅ Check handlers delegate to metadata/payload stores correctly
 - ❌ Handlers should NOT directly manipulate file attributes or perform authorization
+- ✅ NFS auxiliary protocols (NLM, NSM, Portmap) in internal/protocol/{nlm,nsm,portmap}/
 
-**Store Layer (pkg/store/{metadata,content}/):**
-- ✅ Metadata stores handle: permissions, file structure, attributes
-- ✅ Content stores handle: file data read/write operations only
-- ✅ Verify two-phase write pattern: PrepareWrite → ContentStore.WriteAt → CommitWrite
+**Store Layer (pkg/metadata/, pkg/payload/):**
+- ✅ Metadata stores handle: permissions, file structure, attributes (pkg/metadata/store/{memory,badger,postgres}/)
+- ✅ Payload stores handle: file data read/write operations only (pkg/payload/store/{memory,fs,s3}/)
+- ✅ Verify two-phase write pattern: PrepareWrite → PayloadStore.WriteAt → CommitWrite
 - ✅ Check thread safety (mutexes, atomic operations)
 - ✅ Validate context cancellation is respected
 
 **Cache Layer (pkg/cache/):**
-- ✅ Cache should be content-store agnostic (no S3/filesystem-specific code)
+- ✅ Cache should be payload-store agnostic (no S3/filesystem-specific code)
 - ✅ Verify dirty entry protection (Buffering/Uploading states cannot be evicted)
 - ✅ Check read cache coherency (mtime/size validation)
 - ✅ Ensure background flusher respects inactivity timeout
@@ -88,9 +89,9 @@ You are reviewing pull requests for **DittoFS**, a modular virtual filesystem wr
 **DittoFS-Specific Patterns:**
 - ✅ Use `metadata.HandleToINode()` for directory entry IDs (NOT custom generation)
 - ✅ Use `metadata.EncodeShareHandle()` / `metadata.DecodeFileHandle()` consistently
-- ✅ Use shared helper functions from `pkg/store/metadata/helpers.go`
-- ✅ Use error factory functions from `pkg/store/metadata/errors.go`
-- ✅ Implement `ReadAtContentStore` interface for efficient partial reads
+- ✅ Use shared helper functions from `pkg/metadata/types.go`
+- ✅ Use error factory functions from `pkg/metadata/errors.go` and `pkg/metadata/errors/errors.go`
+- ✅ Implement `ReadBlockRange` on payload stores for efficient partial reads
 
 **Concurrency Safety:**
 - ✅ Check for data races (maps, slices accessed by multiple goroutines)
@@ -210,10 +211,10 @@ for i := 0; i < 1000000; i++ {
 }
 ```
 
-❌ **Not implementing ReadAt for object storage**
+❌ **Not implementing ReadBlockRange for object storage**
 ```go
-// WRONG: Only ReadContent() - downloads entire file for 4KB read
-// RIGHT: Implement ReadAt with range requests
+// WRONG: Only ReadBlock() - downloads entire block for 4KB read
+// RIGHT: Implement ReadBlockRange with range requests
 ```
 
 ❌ **Breaking atomicity of multi-step operations**
