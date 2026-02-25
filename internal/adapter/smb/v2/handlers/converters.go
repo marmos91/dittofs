@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/mfsymlink"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/internal/mfsymlink"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 

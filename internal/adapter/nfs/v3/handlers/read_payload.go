@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
@@ -87,7 +88,7 @@ func readFromPayloadService(
 		}, nil
 	}
 
-	if readErr == context.Canceled || readErr == context.DeadlineExceeded {
+	if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
 		// Return buffer to pool on error
 		pool.Put(data)
 		logger.DebugCtx(ctx.Context, "READ: request cancelled during ReadAt", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "read", n, "client", clientIP)

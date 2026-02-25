@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/payload"
 )
@@ -30,7 +31,7 @@ func (h *Handler) buildV4AuthContext(ctx *types.CompoundContext, handle []byte) 
 
 	// Map auth flavor to auth method string
 	authMethod := "anonymous"
-	if ctx.AuthFlavor == 1 {
+	if ctx.AuthFlavor == rpc.AuthUnix {
 		authMethod = "unix"
 	}
 

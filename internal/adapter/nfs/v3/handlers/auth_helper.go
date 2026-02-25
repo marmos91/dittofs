@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
@@ -59,7 +60,7 @@ func BuildAuthContextWithMapping(
 
 	// Map auth flavor to auth method string
 	authMethod := "anonymous"
-	if authFlavor == 1 {
+	if authFlavor == rpc.AuthUnix {
 		authMethod = "unix"
 	}
 

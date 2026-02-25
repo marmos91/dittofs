@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap/types"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // maxTCPConns is the maximum number of concurrent TCP connections the

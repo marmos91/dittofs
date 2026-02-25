@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -385,16 +385,6 @@ func (h *Handler) Rename(
 // Request Validation
 // ============================================================================
 
-// renameValidationError represents a RENAME request validation error.
-type renameValidationError struct {
-	message   string
-	nfsStatus uint32
-}
-
-func (e *renameValidationError) Error() string {
-	return e.message
-}
-
 // validateRenameRequest validates RENAME request parameters.
 //
 // Checks performed:
@@ -405,18 +395,18 @@ func (e *renameValidationError) Error() string {
 //
 // Returns:
 //   - nil if valid
-//   - *renameValidationError with NFS status if invalid
-func validateRenameRequest(req *RenameRequest) *renameValidationError {
+//   - *validationError with NFS status if invalid
+func validateRenameRequest(req *RenameRequest) *validationError {
 	// Validate source directory handle
 	if len(req.FromDirHandle) == 0 {
-		return &renameValidationError{
+		return &validationError{
 			message:   "empty source directory handle",
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
 	if len(req.FromDirHandle) > 64 {
-		return &renameValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("source directory handle too long: %d bytes (max 64)", len(req.FromDirHandle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -424,14 +414,14 @@ func validateRenameRequest(req *RenameRequest) *renameValidationError {
 
 	// Validate destination directory handle
 	if len(req.ToDirHandle) == 0 {
-		return &renameValidationError{
+		return &validationError{
 			message:   "empty destination directory handle",
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
 	if len(req.ToDirHandle) > 64 {
-		return &renameValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("destination directory handle too long: %d bytes (max 64)", len(req.ToDirHandle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -439,14 +429,14 @@ func validateRenameRequest(req *RenameRequest) *renameValidationError {
 
 	// Validate source name
 	if req.FromName == "" {
-		return &renameValidationError{
+		return &validationError{
 			message:   "empty source name",
 			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
 	if len(req.FromName) > 255 {
-		return &renameValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("source name too long: %d bytes (max 255)", len(req.FromName)),
 			nfsStatus: types.NFS3ErrNameTooLong,
 		}
@@ -454,7 +444,7 @@ func validateRenameRequest(req *RenameRequest) *renameValidationError {
 
 	// Check for reserved names
 	if req.FromName == "." || req.FromName == ".." {
-		return &renameValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("cannot rename '%s'", req.FromName),
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -462,7 +452,7 @@ func validateRenameRequest(req *RenameRequest) *renameValidationError {
 
 	// Check for invalid characters in source name
 	if strings.ContainsAny(req.FromName, "/\x00") {
-		return &renameValidationError{
+		return &validationError{
 			message:   "source name contains invalid characters (null or path separator)",
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -470,14 +460,14 @@ func validateRenameRequest(req *RenameRequest) *renameValidationError {
 
 	// Validate destination name
 	if req.ToName == "" {
-		return &renameValidationError{
+		return &validationError{
 			message:   "empty destination name",
 			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
 	if len(req.ToName) > 255 {
-		return &renameValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("destination name too long: %d bytes (max 255)", len(req.ToName)),
 			nfsStatus: types.NFS3ErrNameTooLong,
 		}
@@ -485,7 +475,7 @@ func validateRenameRequest(req *RenameRequest) *renameValidationError {
 
 	// Check for reserved names
 	if req.ToName == "." || req.ToName == ".." {
-		return &renameValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("cannot rename to '%s'", req.ToName),
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -493,7 +483,7 @@ func validateRenameRequest(req *RenameRequest) *renameValidationError {
 
 	// Check for invalid characters in destination name
 	if strings.ContainsAny(req.ToName, "/\x00") {
-		return &renameValidationError{
+		return &validationError{
 			message:   "destination name contains invalid characters (null or path separator)",
 			nfsStatus: types.NFS3ErrInval,
 		}

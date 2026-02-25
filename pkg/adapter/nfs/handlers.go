@@ -9,20 +9,21 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	nfs "github.com/marmos91/dittofs/internal/adapter/nfs"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/middleware"
 	mount_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	nfs_types "github.com/marmos91/dittofs/internal/adapter/nfs/types"
-	v4handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/handlers"
-	v4state "github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
-	v4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	nlm "github.com/marmos91/dittofs/internal/adapter/nfs/nlm"
 	nlm_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/nlm/handlers"
 	nlm_types "github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
 	nsm "github.com/marmos91/dittofs/internal/adapter/nfs/nsm"
 	nsm_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/nsm/handlers"
 	nsm_types "github.com/marmos91/dittofs/internal/adapter/nfs/nsm/types"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
+	nfs_types "github.com/marmos91/dittofs/internal/adapter/nfs/types"
+	v4handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/handlers"
+	v4state "github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
+	v4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/telemetry"
 )
 
@@ -209,25 +210,8 @@ func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCC
 		))
 	defer span.End()
 
-	// Extract handler context for mount requests
-	handlerCtx := &mount_handlers.MountHandlerContext{
-		Context:         ctx,
-		ClientAddr:      clientAddr,
-		AuthFlavor:      call.GetAuthFlavor(),
-		KerberosEnabled: c.server.gssProcessor != nil,
-	}
-
-	// Parse Unix credentials if AUTH_UNIX
-	if handlerCtx.AuthFlavor == rpc.AuthUnix {
-		authBody := call.GetAuthBody()
-		if len(authBody) > 0 {
-			if unixAuth, err := rpc.ParseUnixAuth(authBody); err == nil {
-				handlerCtx.UID = &unixAuth.UID
-				handlerCtx.GID = &unixAuth.GID
-				handlerCtx.GIDs = unixAuth.GIDs
-			}
-		}
-	}
+	// Extract handler context using shared middleware
+	handlerCtx := middleware.ExtractMountHandlerContext(ctx, call, clientAddr, c.server.gssProcessor != nil)
 
 	// Log request with trace context
 	logger.DebugCtx(ctx, "Mount request",

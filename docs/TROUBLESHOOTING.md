@@ -453,6 +453,79 @@ shares:
 ./dfsctl share create --name /export --metadata my-store --payload my-payload
 ```
 
+### NFSv4 Session Issues
+
+#### Client cannot establish NFSv4 session
+
+**Symptoms:**
+```
+mount.nfs4: Protocol not supported
+```
+
+**Solutions:**
+1. Verify NFSv4 is enabled in the adapter settings:
+   ```bash
+   dfsctl adapter settings nfs
+   ```
+2. Check that the client supports NFSv4. Some older clients default to NFSv3.
+3. Try mounting with explicit version:
+   ```bash
+   sudo mount -t nfs4 localhost:/export /mnt/test
+   ```
+
+#### Session expired or lost
+
+**Symptoms:**
+```
+NFS4ERR_EXPIRED or NFS4ERR_STALE_CLIENTID
+```
+
+**Solutions:**
+1. The server may have restarted, causing session loss. Remount the share.
+2. Check the grace period status:
+   ```bash
+   dfsctl grace status
+   ```
+3. If in grace period, wait for it to complete before retrying.
+
+### Kerberos Authentication Issues
+
+#### Kerberos authentication fails
+
+**Symptoms:**
+```
+mount.nfs4: access denied by server
+```
+with RPCSEC_GSS configured.
+
+**Solutions:**
+1. Verify the keytab file is accessible:
+   ```bash
+   klist -k /etc/krb5.keytab
+   ```
+2. Check that the service principal matches the server hostname
+3. Verify clock synchronization between client and KDC (Kerberos requires clocks within 5 minutes)
+4. Enable debug logging to see the RPCSEC_GSS negotiation:
+   ```bash
+   DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+   ```
+
+### ACL Issues
+
+#### ACL operations fail with NFS3ERR_NOTSUPP
+
+**Symptoms:**
+```
+setfacl: Operation not supported
+```
+
+**Solutions:**
+1. ACLs require NFSv4. Ensure you are mounting with NFSv4:
+   ```bash
+   sudo mount -t nfs4 localhost:/export /mnt/test
+   ```
+2. NFSv3 does not support ACLs - only standard POSIX mode bits.
+
 ## Getting More Help
 
 If you're still experiencing issues:

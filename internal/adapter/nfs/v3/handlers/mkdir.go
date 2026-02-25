@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -352,16 +352,6 @@ func (h *Handler) Mkdir(
 // Request Validation
 // ============================================================================
 
-// mkdirValidationError represents a MKDIR request validation error.
-type mkdirValidationError struct {
-	message   string
-	nfsStatus uint32
-}
-
-func (e *mkdirValidationError) Error() string {
-	return e.message
-}
-
 // validateMkdirRequest validates MKDIR request parameters.
 //
 // Checks performed:
@@ -370,18 +360,18 @@ func (e *mkdirValidationError) Error() string {
 //
 // Returns:
 //   - nil if valid
-//   - *mkdirValidationError with NFS status if invalid
-func validateMkdirRequest(req *MkdirRequest) *mkdirValidationError {
+//   - *validationError with NFS status if invalid
+func validateMkdirRequest(req *MkdirRequest) *validationError {
 	// Validate parent directory handle
 	if len(req.DirHandle) == 0 {
-		return &mkdirValidationError{
+		return &validationError{
 			message:   "empty parent directory handle",
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
 	if len(req.DirHandle) > 64 {
-		return &mkdirValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("parent handle too long: %d bytes (max 64)", len(req.DirHandle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -389,7 +379,7 @@ func validateMkdirRequest(req *MkdirRequest) *mkdirValidationError {
 
 	// Handle must be at least 8 bytes for file ID extraction
 	if len(req.DirHandle) < 8 {
-		return &mkdirValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("parent handle too short: %d bytes (min 8)", len(req.DirHandle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -397,7 +387,7 @@ func validateMkdirRequest(req *MkdirRequest) *mkdirValidationError {
 
 	// Validate directory name
 	if req.Name == "" {
-		return &mkdirValidationError{
+		return &validationError{
 			message:   "empty directory name",
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -405,7 +395,7 @@ func validateMkdirRequest(req *MkdirRequest) *mkdirValidationError {
 
 	// Check for reserved names
 	if req.Name == "." || req.Name == ".." {
-		return &mkdirValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("directory name cannot be '%s'", req.Name),
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -413,7 +403,7 @@ func validateMkdirRequest(req *MkdirRequest) *mkdirValidationError {
 
 	// Check name length (NFS limit is typically 255 bytes)
 	if len(req.Name) > 255 {
-		return &mkdirValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("directory name too long: %d bytes (max 255)", len(req.Name)),
 			nfsStatus: types.NFS3ErrNameTooLong,
 		}
@@ -421,7 +411,7 @@ func validateMkdirRequest(req *MkdirRequest) *mkdirValidationError {
 
 	// Check for null bytes (string terminator, invalid in filenames)
 	if bytes.ContainsAny([]byte(req.Name), "\x00") {
-		return &mkdirValidationError{
+		return &validationError{
 			message:   "directory name contains null byte",
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -429,7 +419,7 @@ func validateMkdirRequest(req *MkdirRequest) *mkdirValidationError {
 
 	// Check for path separators (prevents directory traversal attacks)
 	if bytes.ContainsAny([]byte(req.Name), "/") {
-		return &mkdirValidationError{
+		return &validationError{
 			message:   "directory name contains path separator",
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -439,7 +429,7 @@ func validateMkdirRequest(req *MkdirRequest) *mkdirValidationError {
 	// This prevents potential issues with terminal output and logs
 	for i, r := range req.Name {
 		if r < 0x20 || r == 0x7F {
-			return &mkdirValidationError{
+			return &validationError{
 				message:   fmt.Sprintf("directory name contains control character at position %d", i),
 				nfsStatus: types.NFS3ErrInval,
 			}

@@ -3,8 +3,8 @@ package handlers
 import (
 	"bytes"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // FreeAllRequest represents an NLM4_FREE_ALL request.

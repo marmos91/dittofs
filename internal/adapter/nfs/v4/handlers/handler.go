@@ -4,15 +4,14 @@
 package handlers
 
 import (
-	"encoding/binary"
 	"io"
 	"sync"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
-	v41handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/v41/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	v41handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/v41/handlers"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
@@ -384,12 +383,9 @@ func (h *Handler) IsOperationBlocked(opNum uint32) bool {
 
 	// Fall back to local cache (for tests or when settings not available)
 	h.blockedOpsMu.RLock()
-	blocked := h.blockedOps
+	blocked := h.blockedOps[opNum]
 	h.blockedOpsMu.RUnlock()
-	if blocked == nil {
-		return false
-	}
-	return blocked[opNum]
+	return blocked
 }
 
 // SetSequenceMetrics sets the Prometheus metrics collector for SEQUENCE operations.
@@ -424,9 +420,7 @@ func (h *Handler) SetMinorVersionRange(min, max uint32) {
 }
 
 // encodeStatusOnly XDR-encodes a status-only response (just the nfsstat4).
-// Many NFSv4 operation error responses consist of only the status code.
+// Delegates to v41handlers.EncodeStatusOnly to avoid duplicating the encoding logic.
 func encodeStatusOnly(status uint32) []byte {
-	b := make([]byte, 4)
-	binary.BigEndian.PutUint32(b, status)
-	return b
+	return v41handlers.EncodeStatusOnly(status)
 }

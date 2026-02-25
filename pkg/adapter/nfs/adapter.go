@@ -8,18 +8,18 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	mount "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
-	v3 "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
-	v4handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/handlers"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
-	v4state "github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/blocking"
 	nlm_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/nlm/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm"
 	nsm_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/nsm/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
+	v3 "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
+	v4handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/handlers"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
+	v4state "github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
@@ -653,13 +653,9 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 				// Unregister connection from tracking map
 				s.activeConnections.Delete(addr)
 
-				// Unregister backchannel ConnWriter and PendingCBReplies on disconnect
+				// Unregister backchannel and unbind connection on disconnect
 				if s.v4Handler != nil && s.v4Handler.StateManager != nil {
 					s.v4Handler.StateManager.UnregisterConnWriter(cid)
-				}
-
-				// Unbind connection from any NFSv4.1 session on disconnect
-				if s.v4Handler != nil && s.v4Handler.StateManager != nil {
 					s.v4Handler.StateManager.UnbindConnection(cid)
 				}
 

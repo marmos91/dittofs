@@ -1,8 +1,10 @@
 package xdr
 
 import (
-	"github.com/marmos91/dittofs/internal/logger"
+	"errors"
+
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -49,9 +51,9 @@ func MapStoreErrorToNFSStatus(err error, clientIP string, operation string) uint
 		return types.NFS3OK
 	}
 
-	// Check if it's a typed StoreError
-	storeErr, ok := err.(*metadata.StoreError)
-	if !ok {
+	// Check if it's a typed StoreError (using errors.As to handle wrapped errors)
+	var storeErr *metadata.StoreError
+	if !errors.As(err, &storeErr) {
 		// Generic error: log and return I/O error
 		logger.Error("Operation failed", "operation", operation, "error", err, "client", clientIP)
 		return types.NFS3ErrIO
@@ -183,9 +185,9 @@ func MapContentErrorToNFSStatus(err error) uint32 {
 		return types.NFS3OK
 	}
 
-	// Check if it's a typed StoreError first
-	_, ok := err.(*metadata.StoreError)
-	if ok {
+	// Check if it's a typed StoreError first (using errors.As to handle wrapped errors)
+	var storeErr *metadata.StoreError
+	if errors.As(err, &storeErr) {
 		// Use the more specific error mapping
 		return MapStoreErrorToNFSStatus(err, "", "content operation")
 	}

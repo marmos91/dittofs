@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -258,16 +258,6 @@ func (h *Handler) Remove(
 // Request Validation
 // ============================================================================
 
-// removeValidationError represents a REMOVE request validation error.
-type removeValidationError struct {
-	message   string
-	nfsStatus uint32
-}
-
-func (e *removeValidationError) Error() string {
-	return e.message
-}
-
 // validateRemoveRequest validates REMOVE request parameters.
 //
 // Checks performed:
@@ -276,18 +266,18 @@ func (e *removeValidationError) Error() string {
 //
 // Returns:
 //   - nil if valid
-//   - *removeValidationError with NFS status if invalid
-func validateRemoveRequest(req *RemoveRequest) *removeValidationError {
+//   - *validationError with NFS status if invalid
+func validateRemoveRequest(req *RemoveRequest) *validationError {
 	// Validate parent directory handle
 	if len(req.DirHandle) == 0 {
-		return &removeValidationError{
+		return &validationError{
 			message:   "empty parent directory handle",
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
 	if len(req.DirHandle) > 64 {
-		return &removeValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("parent handle too long: %d bytes (max 64)", len(req.DirHandle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -295,7 +285,7 @@ func validateRemoveRequest(req *RemoveRequest) *removeValidationError {
 
 	// Handle must be at least 8 bytes for file ID extraction
 	if len(req.DirHandle) < 8 {
-		return &removeValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("parent handle too short: %d bytes (min 8)", len(req.DirHandle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -303,7 +293,7 @@ func validateRemoveRequest(req *RemoveRequest) *removeValidationError {
 
 	// Validate filename
 	if req.Filename == "" {
-		return &removeValidationError{
+		return &validationError{
 			message:   "empty filename",
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -311,7 +301,7 @@ func validateRemoveRequest(req *RemoveRequest) *removeValidationError {
 
 	// Check for reserved names
 	if req.Filename == "." || req.Filename == ".." {
-		return &removeValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("cannot remove '%s'", req.Filename),
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -319,7 +309,7 @@ func validateRemoveRequest(req *RemoveRequest) *removeValidationError {
 
 	// Check filename length (NFS limit is typically 255 bytes)
 	if len(req.Filename) > 255 {
-		return &removeValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("filename too long: %d bytes (max 255)", len(req.Filename)),
 			nfsStatus: types.NFS3ErrNameTooLong,
 		}
@@ -327,7 +317,7 @@ func validateRemoveRequest(req *RemoveRequest) *removeValidationError {
 
 	// Check for null bytes (string terminator, invalid in filenames)
 	if strings.ContainsAny(req.Filename, "\x00") {
-		return &removeValidationError{
+		return &validationError{
 			message:   "filename contains null byte",
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -335,7 +325,7 @@ func validateRemoveRequest(req *RemoveRequest) *removeValidationError {
 
 	// Check for path separators (prevents directory traversal attacks)
 	if strings.ContainsAny(req.Filename, "/") {
-		return &removeValidationError{
+		return &validationError{
 			message:   "filename contains path separator",
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -344,7 +334,7 @@ func validateRemoveRequest(req *RemoveRequest) *removeValidationError {
 	// Check for control characters (including tab, newline, etc.)
 	for i, r := range req.Filename {
 		if r < 0x20 || r == 0x7F {
-			return &removeValidationError{
+			return &validationError{
 				message:   fmt.Sprintf("filename contains control character at position %d", i),
 				nfsStatus: types.NFS3ErrInval,
 			}

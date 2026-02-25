@@ -3,9 +3,9 @@ package handlers
 import (
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -269,16 +269,6 @@ func (h *Handler) Commit(
 // Request Validation
 // ============================================================================
 
-// commitValidationError represents a COMMIT request validation error.
-type commitValidationError struct {
-	message   string
-	nfsStatus uint32
-}
-
-func (e *commitValidationError) Error() string {
-	return e.message
-}
-
 // validateCommitRequest validates COMMIT request parameters.
 //
 // Checks performed:
@@ -288,18 +278,18 @@ func (e *commitValidationError) Error() string {
 //
 // Returns:
 //   - nil if valid
-//   - *commitValidationError with NFS status if invalid
-func validateCommitRequest(req *CommitRequest) *commitValidationError {
+//   - *validationError with NFS status if invalid
+func validateCommitRequest(req *CommitRequest) *validationError {
 	// Validate file handle
 	if len(req.Handle) == 0 {
-		return &commitValidationError{
+		return &validationError{
 			message:   "empty file handle",
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
 	if len(req.Handle) > 64 {
-		return &commitValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("handle too long: %d bytes (max 64)", len(req.Handle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -307,7 +297,7 @@ func validateCommitRequest(req *CommitRequest) *commitValidationError {
 
 	// Handle must be at least 8 bytes for file ID extraction
 	if len(req.Handle) < 8 {
-		return &commitValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("handle too short: %d bytes (min 8)", len(req.Handle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -317,7 +307,7 @@ func validateCommitRequest(req *CommitRequest) *commitValidationError {
 	// This prevents potential integer overflow attacks
 	if req.Count > 0 {
 		if req.Offset > ^uint64(0)-uint64(req.Count) {
-			return &commitValidationError{
+			return &validationError{
 				message:   fmt.Sprintf("offset + count overflow: offset=%d count=%d", req.Offset, req.Count),
 				nfsStatus: types.NFS3ErrInval,
 			}

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -295,16 +295,6 @@ func (h *Handler) Symlink(
 // Request Validation
 // ============================================================================
 
-// symlinkValidationError represents a SYMLINK request validation error.
-type symlinkValidationError struct {
-	message   string
-	nfsStatus uint32
-}
-
-func (e *symlinkValidationError) Error() string {
-	return e.message
-}
-
 // validateSymlinkRequest validates SYMLINK request parameters.
 //
 // Checks performed:
@@ -314,18 +304,18 @@ func (e *symlinkValidationError) Error() string {
 //
 // Returns:
 //   - nil if valid
-//   - *symlinkValidationError with NFS status if invalid
-func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
+//   - *validationError with NFS status if invalid
+func validateSymlinkRequest(req *SymlinkRequest) *validationError {
 	// Validate parent directory handle
 	if len(req.DirHandle) == 0 {
-		return &symlinkValidationError{
+		return &validationError{
 			message:   "empty parent directory handle",
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
 	if len(req.DirHandle) > 64 {
-		return &symlinkValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("parent handle too long: %d bytes (max 64)", len(req.DirHandle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -333,7 +323,7 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 
 	// Handle must be at least 8 bytes for file ID extraction
 	if len(req.DirHandle) < 8 {
-		return &symlinkValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("parent handle too short: %d bytes (min 8)", len(req.DirHandle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -341,7 +331,7 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 
 	// Validate symlink name
 	if req.Name == "" {
-		return &symlinkValidationError{
+		return &validationError{
 			message:   "empty symlink name",
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -349,7 +339,7 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 
 	// Check for reserved names
 	if req.Name == "." || req.Name == ".." {
-		return &symlinkValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("cannot create symlink named '%s'", req.Name),
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -357,7 +347,7 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 
 	// Check symlink name length (NFS limit is typically 255 bytes)
 	if len(req.Name) > 255 {
-		return &symlinkValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("symlink name too long: %d bytes (max 255)", len(req.Name)),
 			nfsStatus: types.NFS3ErrNameTooLong,
 		}
@@ -365,7 +355,7 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 
 	// Check for null bytes (string terminator, invalid in filenames)
 	if strings.ContainsAny(req.Name, "\x00") {
-		return &symlinkValidationError{
+		return &validationError{
 			message:   "symlink name contains null byte",
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -373,7 +363,7 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 
 	// Check for path separators (prevents directory traversal attacks)
 	if strings.ContainsAny(req.Name, "/") {
-		return &symlinkValidationError{
+		return &validationError{
 			message:   "symlink name contains path separator",
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -382,7 +372,7 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 	// Check for control characters (including tab, newline, etc.)
 	for i, r := range req.Name {
 		if r < 0x20 || r == 0x7F {
-			return &symlinkValidationError{
+			return &validationError{
 				message:   fmt.Sprintf("symlink name contains control character at position %d", i),
 				nfsStatus: types.NFS3ErrInval,
 			}
@@ -391,7 +381,7 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 
 	// Validate target path
 	if req.Target == "" {
-		return &symlinkValidationError{
+		return &validationError{
 			message:   "empty target path",
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -401,7 +391,7 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 	// While RFC 1813 specifies NFS3_MAXPATHLEN as 1024, we use PATH_MAX
 	// for POSIX compliance - symlink targets can be up to 4095 bytes
 	if len(req.Target) > types.NFS3MaxPathLen {
-		return &symlinkValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("target path too long: %d bytes (max %d)", len(req.Target), types.NFS3MaxPathLen),
 			nfsStatus: types.NFS3ErrNameTooLong,
 		}
@@ -409,7 +399,7 @@ func validateSymlinkRequest(req *SymlinkRequest) *symlinkValidationError {
 
 	// Check for null bytes in target path
 	if strings.ContainsAny(req.Target, "\x00") {
-		return &symlinkValidationError{
+		return &validationError{
 			message:   "target path contains null byte",
 			nfsStatus: types.NFS3ErrInval,
 		}

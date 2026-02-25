@@ -4,8 +4,8 @@ import (
 	"encoding/binary"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // Negotiate handles SMB2 NEGOTIATE command [MS-SMB2] 2.2.3, 2.2.4

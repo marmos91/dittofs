@@ -30,7 +30,8 @@ func EncodeStatusOnly(status uint32) []byte {
 
 // MapStateError converts a state-layer error to an NFS status code.
 func MapStateError(err error) uint32 {
-	if stateErr, ok := err.(*state.NFS4StateError); ok {
+	var stateErr *state.NFS4StateError
+	if errors.As(err, &stateErr) {
 		return stateErr.Status
 	}
 	switch {

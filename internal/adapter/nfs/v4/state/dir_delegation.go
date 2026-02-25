@@ -17,8 +17,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // maxBatchSize is the maximum number of notifications per delegation before

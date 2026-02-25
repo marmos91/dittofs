@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/payload"
 )
@@ -624,16 +624,6 @@ func mapMetadataErrorToNFS(err error) uint32 {
 // Request Validation
 // ============================================================================
 
-// createValidationError represents a CREATE request validation error.
-type createValidationError struct {
-	message   string
-	nfsStatus uint32
-}
-
-func (e *createValidationError) Error() string {
-	return e.message
-}
-
 // validateCreateRequest validates CREATE request parameters.
 //
 // Checks performed:
@@ -645,18 +635,18 @@ func (e *createValidationError) Error() string {
 //
 // Returns:
 //   - nil if valid
-//   - *createValidationError with NFS status if invalid
-func validateCreateRequest(req *CreateRequest) *createValidationError {
+//   - *validationError with NFS status if invalid
+func validateCreateRequest(req *CreateRequest) *validationError {
 	// Validate parent directory handle
 	if len(req.DirHandle) == 0 {
-		return &createValidationError{
+		return &validationError{
 			message:   "empty parent directory handle",
 			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
 	if len(req.DirHandle) > 64 {
-		return &createValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("parent handle too long: %d bytes (max 64)", len(req.DirHandle)),
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -664,14 +654,14 @@ func validateCreateRequest(req *CreateRequest) *createValidationError {
 
 	// Validate filename
 	if req.Filename == "" {
-		return &createValidationError{
+		return &validationError{
 			message:   "empty filename",
 			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
 	if len(req.Filename) > 255 {
-		return &createValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("filename too long: %d bytes (max 255)", len(req.Filename)),
 			nfsStatus: types.NFS3ErrNameTooLong,
 		}
@@ -679,7 +669,7 @@ func validateCreateRequest(req *CreateRequest) *createValidationError {
 
 	// Check for invalid characters
 	if bytes.ContainsAny([]byte(req.Filename), "/\x00") {
-		return &createValidationError{
+		return &validationError{
 			message:   "filename contains invalid characters (null or path separator)",
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -687,7 +677,7 @@ func validateCreateRequest(req *CreateRequest) *createValidationError {
 
 	// Check for reserved names
 	if req.Filename == "." || req.Filename == ".." {
-		return &createValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("filename cannot be '%s'", req.Filename),
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -695,7 +685,7 @@ func validateCreateRequest(req *CreateRequest) *createValidationError {
 
 	// Validate creation mode
 	if req.Mode > types.CreateExclusive {
-		return &createValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("invalid creation mode: %d", req.Mode),
 			nfsStatus: types.NFS3ErrInval,
 		}

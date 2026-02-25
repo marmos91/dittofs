@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
 	nlm_xdr "github.com/marmos91/dittofs/internal/adapter/nfs/nlm/xdr"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // CancelRequest represents an NLM_CANCEL request.

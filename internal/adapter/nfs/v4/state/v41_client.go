@@ -6,8 +6,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // BuildDate is set via -ldflags "-X ...state.BuildDate=..." at compile time.

@@ -3,9 +3,9 @@ package handlers
 import (
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -382,16 +382,6 @@ func (h *Handler) ReadDirPlus(
 // Request Validation
 // ============================================================================
 
-// readDirPlusValidationError represents a READDIRPLUS request validation error.
-type readDirPlusValidationError struct {
-	message   string
-	nfsStatus uint32
-}
-
-func (e *readDirPlusValidationError) Error() string {
-	return e.message
-}
-
 // validateReadDirPlusRequest validates READDIRPLUS request parameters.
 //
 // Checks performed:
@@ -403,11 +393,11 @@ func (e *readDirPlusValidationError) Error() string {
 //
 // Returns:
 //   - nil if valid
-//   - *readDirPlusValidationError with NFS status if invalid
-func validateReadDirPlusRequest(req *ReadDirPlusRequest) *readDirPlusValidationError {
+//   - *validationError with NFS status if invalid
+func validateReadDirPlusRequest(req *ReadDirPlusRequest) *validationError {
 	// Validate directory handle
 	if len(req.DirHandle) == 0 {
-		return &readDirPlusValidationError{
+		return &validationError{
 			message:   "empty directory handle",
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -415,7 +405,7 @@ func validateReadDirPlusRequest(req *ReadDirPlusRequest) *readDirPlusValidationE
 
 	// RFC 1813 specifies maximum handle size of 64 bytes
 	if len(req.DirHandle) > 64 {
-		return &readDirPlusValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("directory handle too long: %d bytes (max 64)", len(req.DirHandle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -423,7 +413,7 @@ func validateReadDirPlusRequest(req *ReadDirPlusRequest) *readDirPlusValidationE
 
 	// Handle must be at least 8 bytes for file ID extraction
 	if len(req.DirHandle) < 8 {
-		return &readDirPlusValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("directory handle too short: %d bytes (min 8)", len(req.DirHandle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -431,7 +421,7 @@ func validateReadDirPlusRequest(req *ReadDirPlusRequest) *readDirPlusValidationE
 
 	// Validate DirCount (should be reasonable)
 	if req.DirCount == 0 {
-		return &readDirPlusValidationError{
+		return &validationError{
 			message:   "dircount cannot be zero",
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -439,14 +429,14 @@ func validateReadDirPlusRequest(req *ReadDirPlusRequest) *readDirPlusValidationE
 
 	// Validate MaxCount (should be reasonable and >= DirCount)
 	if req.MaxCount == 0 {
-		return &readDirPlusValidationError{
+		return &validationError{
 			message:   "maxcount cannot be zero",
 			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
 	if req.MaxCount < req.DirCount {
-		return &readDirPlusValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("maxcount (%d) must be >= dircount (%d)", req.MaxCount, req.DirCount),
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -455,7 +445,7 @@ func validateReadDirPlusRequest(req *ReadDirPlusRequest) *readDirPlusValidationE
 	// Check for excessively large counts that might indicate a malformed request
 	const maxReasonableSize = 1024 * 1024 // 1MB
 	if req.MaxCount > maxReasonableSize {
-		return &readDirPlusValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("maxcount too large: %d bytes (max %d)", req.MaxCount, maxReasonableSize),
 			nfsStatus: types.NFS3ErrInval,
 		}

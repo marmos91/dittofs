@@ -1,9 +1,9 @@
 package handlers
 
 import (
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/xdr"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // Notify handles NSM NOTIFY (RFC 1813, SM procedure 6).

@@ -3,9 +3,9 @@ package handlers
 import (
 	"bytes"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
 	nlm_xdr "github.com/marmos91/dittofs/internal/adapter/nfs/nlm/xdr"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // GrantedRequest represents an NLM_GRANTED request (callback response).

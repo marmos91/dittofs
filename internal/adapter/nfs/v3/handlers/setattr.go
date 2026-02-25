@@ -2,11 +2,12 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -268,7 +269,7 @@ func (h *Handler) SetAttr(
 		err = metaSvc.SetFileAttributes(authCtx, fileHandle, &sizeOnlyAttrs)
 		if err != nil {
 			// Handle size change error
-			if err == context.Canceled || err == context.DeadlineExceeded {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				logger.DebugCtx(ctx.Context, "SETATTR: size change cancelled",
 					"handle", fmt.Sprintf("%x", req.Handle),
 					"client", clientIP)
@@ -307,7 +308,7 @@ func (h *Handler) SetAttr(
 	}
 	if err != nil {
 		// Check if error is due to context cancellation
-		if err == context.Canceled || err == context.DeadlineExceeded {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			logger.DebugCtx(ctx.Context, "SETATTR: store operation cancelled",
 				"handle", fmt.Sprintf("%x", req.Handle),
 				"client", clientIP)
@@ -380,16 +381,6 @@ func (h *Handler) SetAttr(
 // Request Validation
 // ============================================================================
 
-// setAttrValidationError represents a SETATTR request validation error.
-type setAttrValidationError struct {
-	message   string
-	nfsStatus uint32
-}
-
-func (e *setAttrValidationError) Error() string {
-	return e.message
-}
-
 // validateSetAttrRequest validates SETATTR request parameters.
 //
 // Checks performed:
@@ -400,18 +391,18 @@ func (e *setAttrValidationError) Error() string {
 //
 // Returns:
 //   - nil if valid
-//   - *setAttrValidationError with NFS status if invalid
-func validateSetAttrRequest(req *SetAttrRequest) *setAttrValidationError {
+//   - *validationError with NFS status if invalid
+func validateSetAttrRequest(req *SetAttrRequest) *validationError {
 	// Validate file handle
 	if len(req.Handle) == 0 {
-		return &setAttrValidationError{
+		return &validationError{
 			message:   "empty file handle",
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
 	if len(req.Handle) > 64 {
-		return &setAttrValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("file handle too long: %d bytes (max 64)", len(req.Handle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -419,7 +410,7 @@ func validateSetAttrRequest(req *SetAttrRequest) *setAttrValidationError {
 
 	// Handle must be at least 8 bytes for file ID extraction
 	if len(req.Handle) < 8 {
-		return &setAttrValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("file handle too short: %d bytes (min 8)", len(req.Handle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}

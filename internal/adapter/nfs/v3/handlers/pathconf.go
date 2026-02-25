@@ -3,9 +3,9 @@ package handlers
 import (
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -197,16 +197,6 @@ func (h *Handler) PathConf(
 // Request Validation
 // ============================================================================
 
-// pathConfValidationError represents a PATHCONF request validation error.
-type pathConfValidationError struct {
-	message   string
-	nfsStatus uint32
-}
-
-func (e *pathConfValidationError) Error() string {
-	return e.message
-}
-
 // validatePathConfHandle validates a PATHCONF file handle.
 //
 // Checks performed:
@@ -216,10 +206,10 @@ func (e *pathConfValidationError) Error() string {
 //
 // Returns:
 //   - nil if valid
-//   - *pathConfValidationError with NFS status if invalid
-func validatePathConfHandle(handle []byte) *pathConfValidationError {
+//   - *validationError with NFS status if invalid
+func validatePathConfHandle(handle []byte) *validationError {
 	if len(handle) == 0 {
-		return &pathConfValidationError{
+		return &validationError{
 			message:   "empty file handle",
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -227,7 +217,7 @@ func validatePathConfHandle(handle []byte) *pathConfValidationError {
 
 	// RFC 1813 specifies maximum handle size of 64 bytes
 	if len(handle) > 64 {
-		return &pathConfValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("file handle too long: %d bytes (max 64)", len(handle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -235,7 +225,7 @@ func validatePathConfHandle(handle []byte) *pathConfValidationError {
 
 	// Handle must be at least 8 bytes for file ID extraction
 	if len(handle) < 8 {
-		return &pathConfValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("file handle too short: %d bytes (min 8)", len(handle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}

@@ -5,11 +5,11 @@ package middleware
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	mount "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
 	nfs "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // ExtractHandlerContext creates an NFSHandlerContext from an RPC call message.

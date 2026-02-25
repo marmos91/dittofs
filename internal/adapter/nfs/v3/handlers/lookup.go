@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -292,16 +292,6 @@ func (h *Handler) Lookup(
 // Request Validation
 // ============================================================================
 
-// lookupValidationError represents a LOOKUP request validation error.
-type lookupValidationError struct {
-	message   string
-	nfsStatus uint32
-}
-
-func (e *lookupValidationError) Error() string {
-	return e.message
-}
-
 // validateLookupRequest validates LOOKUP request parameters.
 //
 // Checks performed:
@@ -315,11 +305,11 @@ func (e *lookupValidationError) Error() string {
 //
 // Returns:
 //   - nil if valid
-//   - *lookupValidationError with NFS status if invalid
-func validateLookupRequest(req *LookupRequest) *lookupValidationError {
+//   - *validationError with NFS status if invalid
+func validateLookupRequest(req *LookupRequest) *validationError {
 	// Validate directory handle
 	if len(req.DirHandle) == 0 {
-		return &lookupValidationError{
+		return &validationError{
 			message:   "empty directory handle",
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -327,7 +317,7 @@ func validateLookupRequest(req *LookupRequest) *lookupValidationError {
 
 	// RFC 1813 specifies maximum handle size of 64 bytes
 	if len(req.DirHandle) > 64 {
-		return &lookupValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("directory handle too long: %d bytes (max 64)", len(req.DirHandle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -335,7 +325,7 @@ func validateLookupRequest(req *LookupRequest) *lookupValidationError {
 
 	// Handle must be at least 8 bytes for file ID extraction
 	if len(req.DirHandle) < 8 {
-		return &lookupValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("directory handle too short: %d bytes (min 8)", len(req.DirHandle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -343,7 +333,7 @@ func validateLookupRequest(req *LookupRequest) *lookupValidationError {
 
 	// Validate filename
 	if req.Filename == "" {
-		return &lookupValidationError{
+		return &validationError{
 			message:   "empty filename",
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -351,7 +341,7 @@ func validateLookupRequest(req *LookupRequest) *lookupValidationError {
 
 	// NFS filename limit is typically 255 bytes
 	if len(req.Filename) > 255 {
-		return &lookupValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("filename too long: %d bytes (max 255)", len(req.Filename)),
 			nfsStatus: types.NFS3ErrNameTooLong,
 		}
@@ -359,7 +349,7 @@ func validateLookupRequest(req *LookupRequest) *lookupValidationError {
 
 	// Check for null bytes (string terminator, invalid in filenames)
 	if bytes.ContainsAny([]byte(req.Filename), "\x00") {
-		return &lookupValidationError{
+		return &validationError{
 			message:   "filename contains null byte",
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -368,7 +358,7 @@ func validateLookupRequest(req *LookupRequest) *lookupValidationError {
 	// Check for path separators (prevents directory traversal attacks)
 	// Note: "." and ".." are allowed (handled specially by store)
 	if bytes.ContainsAny([]byte(req.Filename), "/") {
-		return &lookupValidationError{
+		return &validationError{
 			message:   "filename contains path separator",
 			nfsStatus: types.NFS3ErrInval,
 		}

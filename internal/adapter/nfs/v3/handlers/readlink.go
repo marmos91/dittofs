@@ -2,11 +2,12 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -135,7 +136,7 @@ func (h *Handler) ReadLink(
 	target, file, err := metaSvc.ReadSymlink(authCtx, fileHandle)
 	if err != nil {
 		// Check if error is due to context cancellation
-		if err == context.Canceled || err == context.DeadlineExceeded {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			logger.DebugCtx(ctx.Context, "READLINK: store operation cancelled", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
 			return nil, err
 		}
@@ -186,16 +187,6 @@ func (h *Handler) ReadLink(
 // Request Validation
 // ============================================================================
 
-// readLinkValidationError represents a READLINK request validation error.
-type readLinkValidationError struct {
-	message   string
-	nfsStatus uint32
-}
-
-func (e *readLinkValidationError) Error() string {
-	return e.message
-}
-
 // validateReadLinkRequest validates READLINK request parameters.
 //
 // Checks performed:
@@ -205,11 +196,11 @@ func (e *readLinkValidationError) Error() string {
 //
 // Returns:
 //   - nil if valid
-//   - *readLinkValidationError with NFS status if invalid
-func validateReadLinkRequest(req *ReadLinkRequest) *readLinkValidationError {
+//   - *validationError with NFS status if invalid
+func validateReadLinkRequest(req *ReadLinkRequest) *validationError {
 	// Validate file handle presence
 	if len(req.Handle) == 0 {
-		return &readLinkValidationError{
+		return &validationError{
 			message:   "file handle is empty",
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -217,7 +208,7 @@ func validateReadLinkRequest(req *ReadLinkRequest) *readLinkValidationError {
 
 	// RFC 1813 specifies maximum handle size of 64 bytes
 	if len(req.Handle) > 64 {
-		return &readLinkValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("file handle too long: %d bytes (max 64)", len(req.Handle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -225,7 +216,7 @@ func validateReadLinkRequest(req *ReadLinkRequest) *readLinkValidationError {
 
 	// Handle must be at least 8 bytes for file ID extraction
 	if len(req.Handle) < 8 {
-		return &readLinkValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("file handle too short: %d bytes (min 8)", len(req.Handle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}

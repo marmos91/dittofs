@@ -1,13 +1,11 @@
 package handlers
 
 import (
-	"encoding/binary"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -179,8 +177,7 @@ func (h *Handler) FsStat(
 	// ========================================================================
 
 	// Generate file ID from handle for attributes
-	fileid := binary.BigEndian.Uint64(req.Handle[:8])
-	nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 	// Convert ValidFor duration to seconds for Invarsec
 	invarsec := uint32(stats.ValidFor.Seconds())

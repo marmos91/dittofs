@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	v41handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/v41/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	v41handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/v41/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // v40OnlyOps contains operations that are valid only in NFSv4.0 COMPOUNDs.

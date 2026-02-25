@@ -4,10 +4,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -171,16 +170,8 @@ func (h *Handler) FsInfo(
 		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	// Generate file ID from handle for attributes
-	// This is a protocol-layer concern for creating the NFS attribute structure
-	fileid, err := ExtractFileIDFromHandle(req.Handle)
-	if err != nil {
-		traceError(ctx.Context, err, "FSINFO failed to extract file ID", "handle", fmt.Sprintf("0x%x", req.Handle), "client", ctx.ClientAddr)
-		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
-	}
-
 	// Convert metadata attributes to NFS wire format
-	nfsAttr := xdr.MetadataToNFS(&file.FileAttr, fileid)
+	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 	// Convert timestamp resolution to NFS TimeVal format
 	timeDelta := durationToTimeVal(capabilities.TimestampResolution)

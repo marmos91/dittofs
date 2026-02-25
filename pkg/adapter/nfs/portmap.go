@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // isPortmapperEnabled returns whether the embedded portmapper should be started.

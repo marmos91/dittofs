@@ -13,8 +13,8 @@ graph TB
     SMB --> SMBWIRE
 
     subgraph "Protocol Translation"
-        NFSWIRE["<b>NFS ACL Wire Format</b><br/><code>internal/protocol/nfs/v4/attrs/acl.go</code><br/><br/>EncodeACLAttr()<br/>DecodeACLAttr()<br/>EncodeACLSupportAttr()"]
-        SMBWIRE["<b>SMB Security Descriptor</b><br/><code>internal/protocol/smb/v2/handlers/security.go</code><br/><br/>BuildSecurityDescriptor()<br/>ParseSecurityDescriptor()<br/>PrincipalToSID() / SIDToPrincipal()"]
+        NFSWIRE["<b>NFS ACL Wire Format</b><br/><code>internal/adapter/nfs/v4/attrs/acl.go</code><br/><br/>EncodeACLAttr()<br/>DecodeACLAttr()<br/>EncodeACLSupportAttr()"]
+        SMBWIRE["<b>SMB Security Descriptor</b><br/><code>internal/adapter/smb/v2/handlers/security.go</code><br/><br/>BuildSecurityDescriptor()<br/>ParseSecurityDescriptor()<br/>PrincipalToSID() / SIDToPrincipal()"]
     end
 
     NFSWIRE --> ACL
@@ -143,7 +143,7 @@ Unix mode bits (rwx) and ACLs are kept in sync:
 
 ## NFS Integration
 
-**File**: `internal/protocol/nfs/v4/attrs/acl.go`
+**File**: `internal/adapter/nfs/v4/attrs/acl.go`
 
 NFSv4 ACLs are the native format, so translation is zero-cost:
 
@@ -155,7 +155,7 @@ Identity strings (`user@domain`) are used as-is in the `Who` field.
 
 ## SMB Integration
 
-**File**: `internal/protocol/smb/v2/handlers/security.go`
+**File**: `internal/adapter/smb/v2/handlers/security.go`
 
 SMB uses Windows Security Descriptors, which require translation:
 

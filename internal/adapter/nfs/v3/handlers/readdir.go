@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -304,16 +304,6 @@ func (h *Handler) ReadDir(
 // Request Validation
 // ============================================================================
 
-// readDirValidationError represents a READDIR request validation error.
-type readDirValidationError struct {
-	message   string
-	nfsStatus uint32
-}
-
-func (e *readDirValidationError) Error() string {
-	return e.message
-}
-
 // validateReadDirRequest validates READDIR request parameters.
 //
 // Checks performed:
@@ -322,11 +312,11 @@ func (e *readDirValidationError) Error() string {
 //
 // Returns:
 //   - nil if valid
-//   - *readDirValidationError with NFS status if invalid
-func validateReadDirRequest(req *ReadDirRequest) *readDirValidationError {
+//   - *validationError with NFS status if invalid
+func validateReadDirRequest(req *ReadDirRequest) *validationError {
 	// Validate directory handle
 	if len(req.DirHandle) == 0 {
-		return &readDirValidationError{
+		return &validationError{
 			message:   "empty directory handle",
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -334,7 +324,7 @@ func validateReadDirRequest(req *ReadDirRequest) *readDirValidationError {
 
 	// RFC 1813 specifies maximum handle size of 64 bytes
 	if len(req.DirHandle) > 64 {
-		return &readDirValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("directory handle too long: %d bytes (max 64)", len(req.DirHandle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -342,7 +332,7 @@ func validateReadDirRequest(req *ReadDirRequest) *readDirValidationError {
 
 	// Handle must be at least 8 bytes for file ID extraction
 	if len(req.DirHandle) < 8 {
-		return &readDirValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("directory handle too short: %d bytes (min 8)", len(req.DirHandle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -350,7 +340,7 @@ func validateReadDirRequest(req *ReadDirRequest) *readDirValidationError {
 
 	// Validate count parameter
 	if req.Count == 0 {
-		return &readDirValidationError{
+		return &validationError{
 			message:   "count cannot be zero",
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -359,7 +349,7 @@ func validateReadDirRequest(req *ReadDirRequest) *readDirValidationError {
 	// Sanity check: count shouldn't be excessively large (prevent DoS)
 	// Most clients use 4096-8192 bytes; 1MB is a reasonable upper limit
 	if req.Count > 1024*1024 {
-		return &readDirValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("count too large: %d bytes (max 1MB)", req.Count),
 			nfsStatus: types.NFS3ErrInval,
 		}

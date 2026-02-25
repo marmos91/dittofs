@@ -47,6 +47,23 @@ dfsctl
     ├── current   Show current context
     ├── rename    Rename a context
     └── delete    Delete a context
+├── grace         Grace period management
+│   ├── end       End the current grace period
+│   └── status    Show grace period status
+├── client        Client management
+│   ├── evict     Evict a client
+│   ├── list      List connected clients
+│   └── sessions  List client sessions
+├── idmap         Identity mapping management
+│   ├── add       Add identity mapping
+│   ├── list      List identity mappings
+│   └── remove    Remove identity mapping
+└── netgroup      Netgroup management
+    ├── create    Create a netgroup
+    ├── delete    Delete a netgroup
+    ├── list      List netgroups
+    ├── show      Show netgroup details
+    └── members   Manage netgroup members
 ```
 
 ## Package Structure
@@ -239,14 +256,3 @@ dfsctl logout
 - `--no-color` - Disable colored output
 - `--verbose, -v` - Enable verbose output
 
-## Next Phases
-
-Future phases will add:
-
-1. **Phase 2**: Complete dfs commands (logs)
-2. **Phase 3**: API client methods for users, groups, shares
-3. **Phase 4**: dfsctl user/group commands
-4. **Phase 5**: REST API extensions
-5. **Phase 6**: dfsctl share commands
-6. **Phase 7**: dfsctl store/adapter commands
-7. **Phase 8**: Shell completion and polish

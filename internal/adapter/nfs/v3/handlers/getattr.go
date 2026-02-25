@@ -3,9 +3,9 @@ package handlers
 import (
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -146,16 +146,6 @@ func (h *Handler) GetAttr(
 // Request Validation
 // ============================================================================
 
-// getAttrValidationError represents a GETATTR request validation error.
-type getAttrValidationError struct {
-	message   string
-	nfsStatus uint32
-}
-
-func (e *getAttrValidationError) Error() string {
-	return e.message
-}
-
 // validateGetAttrRequest validates GETATTR request parameters.
 //
 // Checks performed:
@@ -165,11 +155,11 @@ func (e *getAttrValidationError) Error() string {
 //
 // Returns:
 //   - nil if valid
-//   - *getAttrValidationError with NFS status if invalid
-func validateGetAttrRequest(req *GetAttrRequest) *getAttrValidationError {
+//   - *validationError with NFS status if invalid
+func validateGetAttrRequest(req *GetAttrRequest) *validationError {
 	// Validate file handle presence
 	if len(req.Handle) == 0 {
-		return &getAttrValidationError{
+		return &validationError{
 			message:   "file handle is empty",
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -177,7 +167,7 @@ func validateGetAttrRequest(req *GetAttrRequest) *getAttrValidationError {
 
 	// RFC 1813 specifies maximum handle size of 64 bytes
 	if len(req.Handle) > 64 {
-		return &getAttrValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("file handle too long: %d bytes (max 64)", len(req.Handle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -186,7 +176,7 @@ func validateGetAttrRequest(req *GetAttrRequest) *getAttrValidationError {
 	// Handle must be at least 8 bytes for file ID extraction
 	// This is a protocol-specific requirement for generating the fileid field
 	if len(req.Handle) < 8 {
-		return &getAttrValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("file handle too short: %d bytes (min 8)", len(req.Handle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}

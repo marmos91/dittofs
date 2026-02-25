@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/middleware"
 	mount "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	nfs "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
@@ -440,7 +440,7 @@ type mountProcedure struct {
 	NeedsAuth bool
 }
 
-// MountDispatchTable maps Mount procedure numbers to their nfs.
+// MountDispatchTable maps Mount procedure numbers to their handlers.
 var MountDispatchTable map[uint32]*mountProcedure
 
 // init initializes the procedure dispatch tables.

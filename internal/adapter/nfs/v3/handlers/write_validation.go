@@ -3,23 +3,13 @@ package handlers
 import (
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // ============================================================================
 // Write Request Validation
 // ============================================================================
-
-// writeValidationError represents a WRITE request validation error.
-type writeValidationError struct {
-	message   string
-	nfsStatus uint32
-}
-
-func (e *writeValidationError) Error() string {
-	return e.message
-}
 
 // validateWriteRequest validates WRITE request parameters.
 //
@@ -37,11 +27,11 @@ func (e *writeValidationError) Error() string {
 //
 // Returns:
 //   - nil if valid
-//   - *writeValidationError with NFS status if invalid
-func validateWriteRequest(req *WriteRequest, maxWriteSize uint32) *writeValidationError {
+//   - *validationError with NFS status if invalid
+func validateWriteRequest(req *WriteRequest, maxWriteSize uint32) *validationError {
 	// Validate file handle
 	if len(req.Handle) == 0 {
-		return &writeValidationError{
+		return &validationError{
 			message:   "empty file handle",
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -49,7 +39,7 @@ func validateWriteRequest(req *WriteRequest, maxWriteSize uint32) *writeValidati
 
 	// RFC 1813 specifies maximum handle size of 64 bytes
 	if len(req.Handle) > 64 {
-		return &writeValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("file handle too long: %d bytes (max 64)", len(req.Handle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -57,7 +47,7 @@ func validateWriteRequest(req *WriteRequest, maxWriteSize uint32) *writeValidati
 
 	// Handle must be at least 8 bytes for file ID extraction
 	if len(req.Handle) < 8 {
-		return &writeValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("file handle too short: %d bytes (min 8)", len(req.Handle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -75,7 +65,7 @@ func validateWriteRequest(req *WriteRequest, maxWriteSize uint32) *writeValidati
 	// The store can configure this based on its constraints and the
 	// wtmax value advertised in FSINFO.
 	if dataLen > maxWriteSize {
-		return &writeValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("write data too large: %d bytes (max %d)", dataLen, maxWriteSize),
 			nfsStatus: types.NFS3ErrFBig,
 		}
@@ -85,7 +75,7 @@ func validateWriteRequest(req *WriteRequest, maxWriteSize uint32) *writeValidati
 	// This prevents integer overflow attacks
 	// CRITICAL: This must be checked BEFORE any calculations use offset + count
 	if req.Offset > ^uint64(0)-uint64(dataLen) {
-		return &writeValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("offset + count would overflow: offset=%d count=%d", req.Offset, dataLen),
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -93,7 +83,7 @@ func validateWriteRequest(req *WriteRequest, maxWriteSize uint32) *writeValidati
 
 	// Validate stability level
 	if req.Stable > FileSyncWrite {
-		return &writeValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("invalid stability level: %d (max %d)", req.Stable, FileSyncWrite),
 			nfsStatus: types.NFS3ErrInval,
 		}

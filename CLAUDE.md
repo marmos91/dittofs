@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 DittoFS is an experimental modular virtual filesystem written in Go that decouples file interfaces from storage backends.
-It implements NFSv3 protocol server in pure Go (userspace, no FUSE required) with pluggable metadata and payload repositories.
+It implements NFSv3, NFSv4.0, and NFSv4.1 protocol servers in pure Go (userspace, no FUSE required) with pluggable metadata and payload repositories.
 
 **Status**: Experimental - not production ready.
 
@@ -17,7 +17,7 @@ DittoFS has comprehensive documentation organized by topic:
 - **[README.md](README.md)** - Quick start and project overview
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** - Deep dive into design patterns and implementation
 - **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** - Complete configuration guide with examples
-- **[docs/NFS.md](docs/NFS.md)** - NFSv3 protocol implementation details and client usage
+- **[docs/NFS.md](docs/NFS.md)** - NFS protocol implementation details (v3, v4.0, v4.1) and client usage
 - **[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)** - Development guide and contribution guidelines
 - **[docs/IMPLEMENTING_STORES.md](docs/IMPLEMENTING_STORES.md)** - Guide for implementing custom metadata and payload stores
 
@@ -30,17 +30,6 @@ DittoFS has comprehensive documentation organized by topic:
 ### Testing and Performance
 - **[test/e2e/BENCHMARKS.md](test/e2e/BENCHMARKS.md)** - Performance benchmark documentation
 - **[test/e2e/COMPARISON_GUIDE.md](test/e2e/COMPARISON_GUIDE.md)** - Comparing with other NFS implementations
-
-### Submodule Documentation
-Each major subsystem has its own CLAUDE.md with non-obvious conventions and gotchas:
-- **[pkg/metadata/CLAUDE.md](pkg/metadata/CLAUDE.md)** - Metadata service layer, file handles, locking
-- **[pkg/blocks/CLAUDE.md](pkg/blocks/CLAUDE.md)** - Block service layer, S3 async behavior
-- **[pkg/adapter/CLAUDE.md](pkg/adapter/CLAUDE.md)** - Protocol adapter lifecycle
-- **[pkg/cache/CLAUDE.md](pkg/cache/CLAUDE.md)** - Block-aware cache, WAL persistence
-- **[pkg/transfer/CLAUDE.md](pkg/transfer/CLAUDE.md)** - Transfer manager, background queue
-- **[pkg/cache/wal/CLAUDE.md](pkg/cache/wal/CLAUDE.md)** - WAL persistence layer
-- **[pkg/config/CLAUDE.md](pkg/config/CLAUDE.md)** - Named stores pattern, env overrides
-- **[internal/protocol/CLAUDE.md](internal/protocol/CLAUDE.md)** - NFS/SMB wire formats, handler rules
 
 ## CLI Architecture
 
@@ -434,26 +423,26 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
 └───────┬───────────────────┬─────────────┘
         │                   │
         ▼                   ▼
-┌────────────────┐  ┌────────────────────┐
-│   Metadata     │  │   Block Storage    │
-│     Stores     │  │                    │
-│                │  │  ┌──────────────┐  │
-│  - Memory      │  │  │ Cache + WAL  │  │
-│  - BadgerDB    │  │  │ pkg/cache/   │  │
-│  - PostgreSQL  │  │  │ pkg/cache/wal│  │
-│                │  │  └──────┬───────┘  │
-│                │  │         │          │
-│                │  │  ┌──────▼───────┐  │
-│                │  │  │ Transfer Mgr │  │
-│                │  │  │ pkg/transfer/│  │
-│                │  │  └──────┬───────┘  │
-│                │  │         │          │
-│                │  │  ┌──────▼───────┐  │
-│                │  │  │ Block Stores │  │
-│                │  │  │ - Memory     │  │
-│                │  │  │ - S3         │  │
-│                │  │  └──────────────┘  │
-└────────────────┘  └────────────────────┘
+┌────────────────┐  ┌──────────────────────┐
+│   Metadata     │  │   Payload Storage    │
+│     Stores     │  │                      │
+│                │  │  ┌──────────────┐    │
+│  - Memory      │  │  │ Cache + WAL  │    │
+│  - BadgerDB    │  │  │ pkg/cache/   │    │
+│  - PostgreSQL  │  │  │ pkg/cache/wal│    │
+│                │  │  └──────┬───────┘    │
+│                │  │         │            │
+│                │  │  ┌──────▼───────┐    │
+│                │  │  │ Transfer Mgr │    │
+│                │  │  │ pkg/transfer/│    │
+│                │  │  └──────┬───────┘    │
+│                │  │         │            │
+│                │  │  ┌──────▼────────┐   │
+│                │  │  │ Payload Stores│   │
+│                │  │  │ - Memory      │   │
+│                │  │  │ - S3          │   │
+│                │  │  └──────────────-┘   │
+└────────────────┘  └──────────────────────┘
 ```
 
 ### Key Interfaces
@@ -506,12 +495,12 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
 - BadgerDB handles are path-based, enabling metadata recovery from content store
 - PostgreSQL handles encode shareName + UUID for multi-share, distributed deployments
 
-**4. Block Store** (`pkg/blocks/store/`)
+**4. Payload Store** (`pkg/payload/store/`)
 - Stores actual file data as blocks
 - Supports read, write-at, truncate operations
 - Implementations:
-  - `pkg/blocks/store/memory/`: In-memory (fast, ephemeral, testing)
-  - `pkg/blocks/store/s3/`: **Production-ready** S3 storage with:
+  - `pkg/payload/store/memory/`: In-memory (fast, ephemeral, testing)
+  - `pkg/payload/store/s3/`: **Production-ready** S3 storage with:
     - **Range Reads**: Efficient byte-range requests (100x faster for small reads from large files)
     - **Streaming Multipart Uploads**: Automatic multipart for large files (98% memory reduction)
     - **Configurable Retry**: Exponential backoff for transient errors (network, throttling, 5xx)
@@ -520,7 +509,7 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
     - **Path-Based Keys**: Objects stored as `export/path/to/file` for easy inspection
 
 **5. Cache Layer** (`pkg/cache/`)
-- Block-aware caching for the Chunk/Block storage model
+- Block-aware caching for the Chunk/Payload storage model
 - Uses **WAL persistence** (`pkg/cache/wal/`) for crash recovery
 - **Key features**:
   - Block buffer model (4MB buffers with coverage bitmaps)
@@ -540,7 +529,7 @@ DittoFS uses the **Registry pattern** to enable named, reusable stores that can 
 - Enables cache data survival across server restarts
 
 **7. Transfer Manager** (`pkg/transfer/`)
-- Async cache-to-block-store transfer orchestration
+- Async cache-to-payload-store transfer orchestration
 - `TransferManager`: Coordinates flush operations on NFS COMMIT
 - `TransferQueue`: Background upload queue with priority
 - `TransferQueueEntry`: Generic interface for transfer operations
@@ -574,11 +563,11 @@ dittofs/
 │   │       ├── badger/       # BadgerDB (persistent)
 │   │       └── postgres/     # PostgreSQL (distributed)
 │   │
-│   ├── blocks/               # Block storage layer
-│   │   ├── service.go        # BlockService (caching, routing, flush)
+│   ├── payload/              # Payload storage layer
+│   │   ├── service.go        # PayloadService (caching, routing, flush)
 │   │   ├── types.go          # StorageStats, FlushResult, etc.
-│   │   └── store/            # Block store implementations
-│   │       ├── store.go      # BlockStore interface (CRUD)
+│   │   └── store/            # Payload store implementations
+│   │       ├── store.go      # PayloadStore interface (CRUD)
 │   │       ├── memory/       # In-memory (ephemeral)
 │   │       └── s3/           # S3-backed (multipart, streaming)
 │   │
@@ -633,13 +622,14 @@ dittofs/
 │   │   ├── prompt/           # Interactive prompts
 │   │   └── credentials/      # Multi-context credential storage
 │   │
-│   ├── protocol/nfs/         # NFS protocol implementation
+│   ├── adapter/nfs/          # NFS protocol implementation
 │   │   ├── dispatch.go       # RPC procedure routing
 │   │   ├── rpc/              # RPC layer (call/reply handling)
 │   │   ├── xdr/              # XDR encoding/decoding
 │   │   ├── types/            # NFS constants and types
 │   │   ├── mount/handlers/   # Mount protocol procedures
-│   │   └── v3/handlers/      # NFSv3 procedures (READ, WRITE, etc.)
+│   │   ├── v3/handlers/      # NFSv3 procedures (READ, WRITE, etc.)
+│   │   └── v4/handlers/      # NFSv4.0 and v4.1 procedures
 │   └── logger/               # Logging utilities
 │
 └── test/                     # Test suites
@@ -739,7 +729,7 @@ All operations require an `*metadata.AuthContext` containing:
 - Auth flavor (AUTH_UNIX, AUTH_NULL)
 - Unix credentials (UID, GID, GIDs)
 
-The context is created in `dispatch.go:ExtractAuthContext()` and passed through:
+The context is created in `dispatch.go:ExtractAuthContext (internal/adapter/nfs/dispatch.go)()` and passed through:
 ```
 RPC Call → ExtractAuthContext() → Handler → Repository Method
 ```
@@ -775,26 +765,28 @@ Log appropriately:
 - `logger.Debug()`: Expected/normal errors (permission denied, file not found)
 - `logger.Error()`: Unexpected errors (I/O errors, invariant violations)
 
-## NFSv3 Implementation Details
+## NFS Implementation Details
+
+DittoFS supports NFSv3, NFSv4.0, and NFSv4.1. NFSv4 includes built-in file locking and Kerberos authentication via RPCSEC_GSS.
 
 ### RPC Flow
 1. TCP connection accepted
 2. RPC message parsed (`rpc/message.go`)
 3. Program/version/procedure validated
-4. Auth context extracted (`dispatch.go:ExtractAuthContext`)
+4. Auth context extracted (`dispatch.go:ExtractAuthContext (internal/adapter/nfs/dispatch.go)`)
 5. Procedure handler dispatched
 6. Handler calls repository methods
 7. Response encoded and sent
 
 ### Critical Procedures
 
-**Mount Protocol** (`internal/protocol/nfs/mount/handlers/`)
+**Mount Protocol** (`internal/adapter/nfs/mount/handlers/`)
 - `MNT`: Validates export access, records mount, returns root handle
 - `UMNT`: Removes mount record
 - `EXPORT`: Lists available exports
 - `DUMP`: Lists active mounts (can be restricted)
 
-**NFSv3 Core** (`internal/protocol/nfs/v3/handlers/`)
+**NFSv3 Core** (`internal/adapter/nfs/v3/handlers/`)
 - `LOOKUP`: Resolve name in directory → file handle
 - `GETATTR`: Get file attributes
 - `SETATTR`: Update attributes (size, mode, times)
@@ -830,7 +822,7 @@ The metadata store:
 
 ### Buffer Pooling
 
-Large I/O operations use buffer pools (`internal/protocol/nfs/bufpool.go`):
+Large I/O operations use buffer pools (`internal/adapter/nfs/bufpool.go`):
 - Reduces GC pressure
 - Reuses buffers for READ/WRITE
 - Automatically sizes based on request
@@ -839,7 +831,7 @@ Large I/O operations use buffer pools (`internal/protocol/nfs/bufpool.go`):
 
 ### Adding a New NFS Procedure
 
-1. Add handler in `internal/protocol/nfs/v3/handlers/` or `internal/protocol/nfs/mount/handlers/`
+1. Add handler in `internal/adapter/nfs/v3/handlers/` or `internal/adapter/nfs/mount/handlers/`
 2. Implement XDR request/response parsing
 3. Extract auth context from call
 4. Delegate business logic to repository methods
@@ -856,11 +848,11 @@ Large I/O operations use buffer pools (`internal/protocol/nfs/bufpool.go`):
 5. Ensure thread safety (concurrent access across shares)
 6. Consider persistence strategy for handles
 
-**Block Store:**
-1. Implement `pkg/blocks/store.BlockStore` interface
+**Payload Store:**
+1. Implement `pkg/payload/store.PayloadStore` interface
 2. Support random-access reads/writes (`ReadAt`/`WriteAt`)
 3. Handle sparse files and truncation
-4. Consider implementing `ReadAtBlockStore` for efficient partial reads
+4. Consider implementing `ReadAtPayloadStore` for efficient partial reads
 5. Test with the integration test suite in `test/integration/`
 
 ### Adding a New Protocol Adapter
@@ -955,27 +947,14 @@ ln file1 file2      # LINK (hard link)
 2. **ETXTBSY not enforced**: Writing to executing files is allowed (NFS protocol limitation)
    - NFS servers cannot know if clients are executing files
    - This affects ALL NFS implementations, not a DittoFS bug
-   - See [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) for details
+   - See [docs/FAQ.md](docs/FAQ.md) for details
 
-3. **No file locking**: NLM (Network Lock Manager) protocol not implemented
-   - Applications requiring file locks may not work correctly
-   - No protection against concurrent writes from multiple clients
-
-4. **No NFSv4**: Only NFSv3 is supported
-   - No ACLs, no named attributes, no delegations
-   - Use NFSv3-compatible clients only
-
-5. **Limited security**: Basic AUTH_UNIX only
-   - No Kerberos authentication
-   - No built-in encryption (use VPN or network-level encryption)
-   - See [docs/SECURITY.md](docs/SECURITY.md) for recommendations
-
-6. **Single-node only**: No distributed/HA support
+3. **Single-node only**: No distributed/HA support
    - No clustering or high availability
    - No replication (except via S3 bucket replication)
    - Single point of failure
 
-See [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) for comprehensive documentation of all limitations, including POSIX compliance details.
+See [docs/FAQ.md](docs/FAQ.md) for comprehensive documentation of all limitations, including POSIX compliance details.
 
 ## References
 

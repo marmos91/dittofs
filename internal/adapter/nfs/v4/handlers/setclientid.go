@@ -2,13 +2,13 @@ package handlers
 
 import (
 	"bytes"
-	"errors"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	v41handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/v41/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // handleSetClientID implements the SETCLIENTID operation (RFC 7530 Section 16.33).
@@ -159,18 +159,7 @@ func (h *Handler) handleSetClientIDConfirm(ctx *types.CompoundContext, reader io
 }
 
 // mapStateError maps state package errors to NFS4 status codes.
-// Handles both NFS4StateError (which carry a status directly) and
-// sentinel errors (ErrStaleClientID, ErrClientIDInUse).
+// Delegates to v41handlers.MapStateError to avoid duplicating the error mapping logic.
 func mapStateError(err error) uint32 {
-	if stateErr, ok := err.(*state.NFS4StateError); ok {
-		return stateErr.Status
-	}
-	switch {
-	case errors.Is(err, state.ErrStaleClientID):
-		return types.NFS4ERR_STALE_CLIENTID
-	case errors.Is(err, state.ErrClientIDInUse):
-		return types.NFS4ERR_CLID_INUSE
-	default:
-		return types.NFS4ERR_SERVERFAULT
-	}
+	return v41handlers.MapStateError(err)
 }

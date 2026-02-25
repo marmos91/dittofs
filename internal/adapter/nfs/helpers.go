@@ -1,9 +1,9 @@
 package nfs
 
 import (
-	"github.com/marmos91/dittofs/internal/logger"
 	mount "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
 	nfs "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 type rpcRequest interface {

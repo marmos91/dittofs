@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -18,6 +18,7 @@ import (
 // Delegates to MetadataService.CreateFile/GetChild and StateManager.OpenFile; handles delegation grants.
 // Creates open/lock state in StateManager; sets CurrentFH to the opened file; may grant delegations.
 // Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_EXIST, NFS4ERR_GRACE, NFS4ERR_DELAY, NFS4ERR_SHARE_DENIED.
+//
 //	  opaque   owner<>
 //	openflag4:
 //	  uint32   opentype     (OPEN4_NOCREATE or OPEN4_CREATE)

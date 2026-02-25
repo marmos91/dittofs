@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -399,16 +399,6 @@ func specialFileTypeName(fileType uint32) string {
 // Request Validation
 // ============================================================================
 
-// mknodValidationError represents a MKNOD request validation error.
-type mknodValidationError struct {
-	message   string
-	nfsStatus uint32
-}
-
-func (e *mknodValidationError) Error() string {
-	return e.message
-}
-
 // validateMknodRequest validates MKNOD request parameters.
 //
 // Checks performed:
@@ -418,18 +408,18 @@ func (e *mknodValidationError) Error() string {
 //
 // Returns:
 //   - nil if valid
-//   - *mknodValidationError with NFS status if invalid
-func validateMknodRequest(req *MknodRequest) *mknodValidationError {
+//   - *validationError with NFS status if invalid
+func validateMknodRequest(req *MknodRequest) *validationError {
 	// Validate parent directory handle
 	if len(req.DirHandle) == 0 {
-		return &mknodValidationError{
+		return &validationError{
 			message:   "empty parent directory handle",
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
 	if len(req.DirHandle) > 64 {
-		return &mknodValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("parent handle too long: %d bytes (max 64)", len(req.DirHandle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -437,7 +427,7 @@ func validateMknodRequest(req *MknodRequest) *mknodValidationError {
 
 	// Handle must be at least 8 bytes for file ID extraction
 	if len(req.DirHandle) < 8 {
-		return &mknodValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("parent handle too short: %d bytes (min 8)", len(req.DirHandle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -445,7 +435,7 @@ func validateMknodRequest(req *MknodRequest) *mknodValidationError {
 
 	// Validate special file name
 	if req.Name == "" {
-		return &mknodValidationError{
+		return &validationError{
 			message:   "empty special file name",
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -453,7 +443,7 @@ func validateMknodRequest(req *MknodRequest) *mknodValidationError {
 
 	// Check for reserved names
 	if req.Name == "." || req.Name == ".." {
-		return &mknodValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("special file name cannot be '%s'", req.Name),
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -461,7 +451,7 @@ func validateMknodRequest(req *MknodRequest) *mknodValidationError {
 
 	// Check name length (NFS limit is typically 255 bytes)
 	if len(req.Name) > 255 {
-		return &mknodValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("special file name too long: %d bytes (max 255)", len(req.Name)),
 			nfsStatus: types.NFS3ErrNameTooLong,
 		}
@@ -469,7 +459,7 @@ func validateMknodRequest(req *MknodRequest) *mknodValidationError {
 
 	// Check for null bytes (string terminator, invalid in filenames)
 	if bytes.Contains([]byte(req.Name), []byte{0}) {
-		return &mknodValidationError{
+		return &validationError{
 			message:   "special file name contains null byte",
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -477,7 +467,7 @@ func validateMknodRequest(req *MknodRequest) *mknodValidationError {
 
 	// Check for path separators (prevents directory traversal attacks)
 	if bytes.Contains([]byte(req.Name), []byte{'/'}) {
-		return &mknodValidationError{
+		return &validationError{
 			message:   "special file name contains path separator",
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -486,7 +476,7 @@ func validateMknodRequest(req *MknodRequest) *mknodValidationError {
 	// Check for control characters
 	for i, r := range req.Name {
 		if r < 0x20 || r == 0x7F {
-			return &mknodValidationError{
+			return &validationError{
 				message:   fmt.Sprintf("special file name contains control character at position %d", i),
 				nfsStatus: types.NFS3ErrInval,
 			}
@@ -499,22 +489,22 @@ func validateMknodRequest(req *MknodRequest) *mknodValidationError {
 	case types.NF3CHR, types.NF3BLK, types.NF3SOCK, types.NF3FIFO:
 		// Valid special file types
 	case types.NF3REG:
-		return &mknodValidationError{
+		return &validationError{
 			message:   "use CREATE procedure for regular files, not MKNOD",
 			nfsStatus: types.NFS3ErrInval,
 		}
 	case types.NF3DIR:
-		return &mknodValidationError{
+		return &validationError{
 			message:   "use MKDIR procedure for directories, not MKNOD",
 			nfsStatus: types.NFS3ErrInval,
 		}
 	case types.NF3LNK:
-		return &mknodValidationError{
+		return &validationError{
 			message:   "use SYMLINK procedure for symbolic links, not MKNOD",
 			nfsStatus: types.NFS3ErrInval,
 		}
 	default:
-		return &mknodValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("invalid file type for MKNOD: %d", req.Type),
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -528,7 +518,7 @@ func validateMknodRequest(req *MknodRequest) *mknodValidationError {
 		// Major device number should be in reasonable range (0-4095 covers most systems)
 		// This matches Linux's 12-bit major number on modern systems
 		if req.Spec.SpecData1 > 0xFFF {
-			return &mknodValidationError{
+			return &validationError{
 				message:   fmt.Sprintf("major device number out of range: %d (max 4095)", req.Spec.SpecData1),
 				nfsStatus: types.NFS3ErrInval,
 			}
@@ -536,7 +526,7 @@ func validateMknodRequest(req *MknodRequest) *mknodValidationError {
 		// Minor device number should be in reasonable range (0-1048575 for 20-bit minor)
 		// This matches Linux's 20-bit minor number on modern systems
 		if req.Spec.SpecData2 > 0xFFFFF {
-			return &mknodValidationError{
+			return &validationError{
 				message:   fmt.Sprintf("minor device number out of range: %d (max 1048575)", req.Spec.SpecData2),
 				nfsStatus: types.NFS3ErrInval,
 			}

@@ -3,10 +3,10 @@ package handlers
 import (
 	"context"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // ExtractV4HandlerContext creates a CompoundContext from an RPC call message.

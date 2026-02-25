@@ -4,8 +4,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // GraceStatusInfo holds structured information about the grace period state.

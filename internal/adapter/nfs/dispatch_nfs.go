@@ -1,9 +1,9 @@
 package nfs
 
 import (
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	nfs "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
@@ -148,7 +148,6 @@ func handleNFSNull(
 	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
-
 	return handleRequest(
 		data,
 		nfs.DecodeNullRequest,

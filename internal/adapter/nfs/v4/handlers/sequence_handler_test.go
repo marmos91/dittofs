@@ -5,8 +5,8 @@ import (
 	"io"
 	"testing"
 
-	v41handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/v41/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	v41handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/v41/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 )
 

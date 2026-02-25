@@ -77,7 +77,7 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
             │
             ▼
 ┌────────────────┐  ┌────────────────────┐
-│   Metadata     │  │   Block            │
+│   Metadata     │  │   Payload          │
 │     Stores     │  │     Stores         │
 │    (CRUD)      │  │    (CRUD)          │
 │                │  │                    │
@@ -119,7 +119,7 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 - Provides high-level operations with business logic
 - Protocol handlers should use this instead of stores directly
 
-**4. BlockService** (`pkg/blocks/service.go`)
+**4. PayloadService** (`pkg/payload/service.go`)
 - **Central service for all content operations**
 - Routes operations to the correct store based on share name
 - Owns cache coordination (writes to cache, flushed on COMMIT, reads from cache)
@@ -155,7 +155,7 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 - Newest-wins read merging for overlapping slices
 - LRU eviction with dirty data protection
 - Uses `wal.Persister` interface for crash recovery
-- See [CACHE.md](CACHE.md) for detailed architecture
+- See [Cache README](../pkg/cache/README.md) for detailed architecture
 
 **9. WAL Persistence** (`pkg/cache/wal/`)
 - Write-Ahead Log for cache crash recovery
@@ -171,7 +171,7 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 - **Prefetch**: Speculatively fetches upcoming blocks
 - **Non-blocking flush**: COMMIT returns immediately (data safe in WAL)
 - Handles crash recovery from WAL on startup
-- See [PAYLOAD.md](PAYLOAD.md) for detailed architecture
+- See [Payload README](../pkg/payload/README.md) for detailed architecture
 
 ## Adapter Pattern
 
@@ -274,19 +274,19 @@ entries, err := metaSvc.ReadDir(ctx, dirHandle)
 lock, err := metaSvc.AcquireLock(ctx, shareName, handle, offset, length, exclusive)
 ```
 
-### BlockService
+### PayloadService
 
 Handles all content operations with caching:
 
 ```go
-// BlockService - central service for content operations
-type BlockService struct {
+// PayloadService - central service for content operations
+type PayloadService struct {
     stores map[string]ContentStore  // shareName -> store
     caches map[string]cache.Cache   // shareName -> cache (optional)
 }
 
 // Usage by protocol handlers
-payloadSvc := content.New()
+payloadSvc := payload.New()
 payloadSvc.RegisterStoreForShare("/export", memoryStore)
 payloadSvc.RegisterCacheForShare("/export", memoryCache)
 
@@ -346,13 +346,13 @@ contentStore := fscontent.New("/data/content")
 metaSvc := metadata.New()
 metaSvc.RegisterStoreForShare("/export", metadataStore)
 
-payloadSvc := content.New()
+payloadSvc := payload.New()
 payloadSvc.RegisterStoreForShare("/export", contentStore)
 
 // Create registry and wire services
 registry := registry.New()
 registry.SetMetadataService(metaSvc)
-registry.SetBlockService(payloadSvc)
+registry.SetPayloadService(payloadSvc)
 
 // Start server
 server := server.New(registry)
@@ -475,21 +475,19 @@ dittofs/
 │       └── server.go         # Multi-adapter server management
 │
 ├── internal/                 # Private implementation details
-│   ├── protocol/nfs/         # NFS protocol implementation
+│   ├── adapter/nfs/          # NFS protocol implementation
 │   │   ├── dispatch.go       # RPC procedure routing
 │   │   ├── rpc/              # RPC layer (call/reply handling)
 │   │   ├── xdr/              # XDR encoding/decoding
 │   │   ├── types/            # NFS constants and types
 │   │   ├── mount/handlers/   # Mount protocol procedures
 │   │   └── v3/handlers/      # NFSv3 procedures (READ, WRITE, etc.)
-│   ├── protocol/smb/         # SMB protocol implementation
+│   ├── adapter/smb/          # SMB protocol implementation
 │   │   └── v2/handlers/      # SMB2 command handlers
 │   └── logger/               # Logging utilities
 │
 ├── docs/                     # Documentation
 │   ├── ARCHITECTURE.md       # This file
-│   ├── CACHE.md              # Cache design documentation
-│   ├── PAYLOAD.md            # Payload module documentation
 │   ├── CONFIGURATION.md      # Configuration guide
 │   └── ...
 │
@@ -509,8 +507,8 @@ NFS WRITE Request
         │
         ▼
 ┌───────────────────┐
-│   BlockService    │──────────────────────────────┐
-│  pkg/blocks/      │                              │
+│  PayloadService   │──────────────────────────────┐
+│  pkg/payload/     │                              │
 └────────┬──────────┘                              │
          │                                         │
          ▼                                         │
@@ -527,7 +525,7 @@ NFS WRITE Request
          ▼                                         │
 ┌───────────────────┐                              │
 │ TransferManager   │                              │
-│  pkg/transfer/    │                              │
+│pkg/payload/transfer│                              │
 │                   │                              │
 │ • Flush dirty     │                              │
 │ • Priority queue  │                              │
@@ -536,8 +534,8 @@ NFS WRITE Request
          │                                         │
          ▼                                         │
 ┌───────────────────┐                              │
-│    BlockStore     │◄─────────────────────────────┘
-│ pkg/blocks/store/ │         (Direct reads bypass cache)
+│   PayloadStore    │◄─────────────────────────────┘
+│ pkg/payload/store/│         (Direct reads bypass cache)
 │                   │
 │ • Memory          │
 │ • S3              │
@@ -601,7 +599,7 @@ persister := wal.NewNullPersister()
 cache, err := cache.NewWithWal(maxSize, persister)
 ```
 
-### Transfer Manager (`pkg/transfer/`)
+### Transfer Manager (`pkg/payload/transfer/`)
 
 Orchestrates async cache-to-block-store transfers:
 

@@ -109,7 +109,7 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 				logger.Debug("Connection closed by client", "address", clientAddr)
 			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				logger.Debug("Connection timed out", "address", clientAddr, "error", err)
-			} else if err == context.Canceled || err == context.DeadlineExceeded {
+			} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				logger.Debug("Connection cancelled", "address", clientAddr, "error", err)
 			} else {
 				logger.Debug("Error reading request", "address", clientAddr, "error", err)

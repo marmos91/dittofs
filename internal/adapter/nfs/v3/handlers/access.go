@@ -3,9 +3,9 @@ package handlers
 import (
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -353,16 +353,6 @@ func permissionsToNFSAccess(perms metadata.Permission, fileType metadata.FileTyp
 // Request Validation
 // ============================================================================
 
-// accessValidationError represents an ACCESS request validation error.
-type accessValidationError struct {
-	message   string
-	nfsStatus uint32
-}
-
-func (e *accessValidationError) Error() string {
-	return e.message
-}
-
 // validateAccessRequest validates ACCESS request parameters.
 //
 // Checks performed:
@@ -373,11 +363,11 @@ func (e *accessValidationError) Error() string {
 //
 // Returns:
 //   - nil if valid
-//   - *accessValidationError with NFS status if invalid
-func validateAccessRequest(req *AccessRequest) *accessValidationError {
+//   - *validationError with NFS status if invalid
+func validateAccessRequest(req *AccessRequest) *validationError {
 	// Validate file handle
 	if len(req.Handle) == 0 {
-		return &accessValidationError{
+		return &validationError{
 			message:   "file handle is empty",
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -385,7 +375,7 @@ func validateAccessRequest(req *AccessRequest) *accessValidationError {
 
 	// RFC 1813 specifies maximum handle size of 64 bytes
 	if len(req.Handle) > 64 {
-		return &accessValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("file handle too long: %d bytes (max 64)", len(req.Handle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -393,7 +383,7 @@ func validateAccessRequest(req *AccessRequest) *accessValidationError {
 
 	// Handle must be at least 8 bytes for file ID extraction
 	if len(req.Handle) < 8 {
-		return &accessValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("file handle too short: %d bytes (min 8)", len(req.Handle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}

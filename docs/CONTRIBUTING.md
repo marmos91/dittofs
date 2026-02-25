@@ -162,6 +162,8 @@ go test -v ./test/e2e -run TestE2E/memory/BasicOperations
 go test -v ./test/e2e -run TestE2E/filesystem/
 ```
 
+NFSv4/v4.1 tests are in `internal/adapter/nfs/v4/handlers/` and cover sessions, delegations, ACLs, and Kerberos.
+
 See [test/e2e/README.md](../test/e2e/README.md) for detailed documentation.
 
 ### NFS Client Testing
@@ -228,7 +230,7 @@ See `test/e2e/BENCHMARKS.md` for detailed documentation and `test/e2e/COMPARISON
 
 ### Adding a New NFS Procedure
 
-1. Add handler in `internal/protocol/nfs/v3/handlers/` or `internal/protocol/nfs/mount/handlers/`
+1. Add handler in `internal/adapter/nfs/v3/handlers/` or `internal/adapter/nfs/mount/handlers/`
 2. Implement XDR request/response parsing
 3. Extract auth context from call
 4. Delegate business logic to repository methods
@@ -237,7 +239,7 @@ See `test/e2e/BENCHMARKS.md` for detailed documentation and `test/e2e/COMPARISON
 
 Example:
 ```go
-// internal/protocol/nfs/v3/handlers/myproc.go
+// internal/adapter/nfs/v3/handlers/myproc.go
 func HandleMyProc(ctx context.Context, call *rpc.Call, metadata metadata.Store) (*rpc.Reply, error) {
     // 1. Parse XDR request
     req := xdr.DecodeMyProcArgs(call.Body)
@@ -255,7 +257,7 @@ func HandleMyProc(ctx context.Context, call *rpc.Call, metadata metadata.Store) 
 
 ### Adding a New Store Backend
 
-DittoFS uses a Service-oriented architecture where **stores are simple CRUD interfaces**. Business logic (permission checking, caching, locking) lives in the Service layer (`MetadataService`, `BlockService`).
+DittoFS uses a Service-oriented architecture where **stores are simple CRUD interfaces**. Business logic (permission checking, caching, locking) lives in the Service layer (`MetadataService`, `PayloadService`).
 
 **Metadata Store:**
 
@@ -268,30 +270,30 @@ DittoFS uses a Service-oriented architecture where **stores are simple CRUD inte
 
 **Content Store:**
 
-1. Implement `pkg/blocks/ContentStore` interface (simple CRUD operations)
+1. Implement `pkg/payload/PayloadStore` interface (simple CRUD operations)
 2. Support random-access reads/writes (`ReadAt`/`WriteAt`)
 3. Handle sparse files and truncation
 4. Consider implementing optional interfaces for efficiency (`IncrementalWriteStore`)
-5. **Note**: Caching is handled by `BlockService`, not stores
+5. **Note**: Caching is handled by `PayloadService`, not stores
 6. Test with the integration test suite in `test/integration/`
 
 Example:
 ```go
-// pkg/blocks/store/mybackend/store.go
-type MyContentStore struct {
+// pkg/payload/store/mybackend/store.go
+type MyPayloadStore struct {
     // Your implementation - just CRUD, no business logic
 }
 
-func (s *MyContentStore) ReadAt(ctx context.Context, id content.ContentID, offset int64, size int64) ([]byte, error) {
+func (s *MyPayloadStore) ReadAt(ctx context.Context, id content.ContentID, offset int64, size int64) ([]byte, error) {
     // Simple read from your backend
 }
 
-func (s *MyContentStore) WriteAt(ctx context.Context, id content.ContentID, data []byte, offset int64) error {
+func (s *MyPayloadStore) WriteAt(ctx context.Context, id content.ContentID, data []byte, offset int64) error {
     // Simple write to your backend
 }
 
-// Register with BlockService (which handles caching, routing)
-payloadSvc.RegisterStoreForShare("/myshare", myContentStore)
+// Register with PayloadService (which handles caching, routing)
+payloadSvc.RegisterStoreForShare("/myshare", myPayloadStore)
 ```
 
 See [IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md) for detailed implementation guide.
@@ -307,7 +309,7 @@ Adapters receive a runtime reference and **interact with services, not stores di
    - `SetRuntime()`: Receive runtime reference (provides access to services)
    - `Protocol()`: Return name
    - `Port()`: Return listen port
-3. Use `runtime.GetMetadataService()` and `runtime.GetBlockService()` for operations
+3. Use `runtime.GetMetadataService()` and `runtime.GetPayloadService()` for operations
 4. Register in `cmd/dfs/main.go`
 5. Update README with usage instructions
 
@@ -324,8 +326,8 @@ func (a *SMBAdapter) SetRuntime(rt *runtime.Runtime) {
 }
 
 func (a *SMBAdapter) handleRead(ctx context.Context, shareName string, contentID content.ContentID) ([]byte, error) {
-    // Use BlockService (handles caching automatically)
-    return a.runtime.GetBlockService().ReadAt(ctx, shareName, contentID, 0, size)
+    // Use PayloadService (handles caching automatically)
+    return a.runtime.GetPayloadService().ReadAt(ctx, shareName, contentID, 0, size)
 }
 
 func (a *SMBAdapter) Serve(ctx context.Context) error {
@@ -341,21 +343,21 @@ func (a *SMBAdapter) Stop(ctx context.Context) error {
 
 ### High Priority
 
-- Additional repository backend implementations (Redis, PostgreSQL, custom)
+- Additional repository backend implementations (Redis, custom)
 - Performance optimization and profiling
-- Test coverage expansion
+- Test coverage expansion (especially NFSv4 test coverage)
 - Protocol compliance testing
+- Kerberos authentication testing
 
 ### Medium Priority
 
-- SMB/CIFS adapter implementation
 - Documentation improvements
 - Example applications and tutorials
 - Monitoring and observability
+- Distributed PostgreSQL testing
 
 ### Future Work
 
-- NFSv4 support
 - Advanced caching strategies
 - Multi-region replication
 

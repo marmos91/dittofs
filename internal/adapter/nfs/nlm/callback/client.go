@@ -14,9 +14,9 @@ import (
 	"net"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
 	nlm_xdr "github.com/marmos91/dittofs/internal/adapter/nfs/nlm/xdr"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 )
 
 const (

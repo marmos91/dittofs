@@ -1,8 +1,8 @@
 package handlers
 
 import (
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // ============================================================================

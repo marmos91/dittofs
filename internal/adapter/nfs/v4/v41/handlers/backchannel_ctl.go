@@ -9,9 +9,9 @@ import (
 	"bytes"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // HandleBackchannelCtl implements the BACKCHANNEL_CTL operation (RFC 8881 Section 18.33).

@@ -2,13 +2,14 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/adapter/pool"
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -224,10 +225,7 @@ func (h *Handler) Read(
 	}
 
 	// Calculate actual read length (clamped to file size)
-	readEnd := req.Offset + uint64(req.Count)
-	if readEnd > file.Size {
-		readEnd = file.Size
-	}
+	readEnd := min(req.Offset+uint64(req.Count), file.Size)
 	actualLength := uint32(readEnd - req.Offset)
 
 	// ========================================================================
@@ -239,7 +237,7 @@ func (h *Handler) Read(
 	readResult, readErr := readFromPayloadService(ctx, payloadSvc, file.PayloadID, file.COWSourcePayloadID, req.Offset, actualLength, clientIP, req.Handle)
 	if readErr != nil {
 		// Check if cancellation error
-		if readErr == context.Canceled || readErr == context.DeadlineExceeded {
+		if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
 			return nil, readErr
 		}
 

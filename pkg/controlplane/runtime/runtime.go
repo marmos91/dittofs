@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"sync"
 	"time"
 
@@ -1227,9 +1228,7 @@ func (r *Runtime) CloseMetadataStores() {
 	// Collect stores while holding lock
 	r.mu.RLock()
 	stores := make(map[string]metadata.MetadataStore, len(r.metadata))
-	for name, store := range r.metadata {
-		stores[name] = store
-	}
+	maps.Copy(stores, r.metadata)
 	r.mu.RUnlock()
 
 	// Close stores outside of lock

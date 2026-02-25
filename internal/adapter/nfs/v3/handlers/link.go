@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -311,16 +311,6 @@ func (h *Handler) Link(
 // Request Validation
 // ============================================================================
 
-// linkValidationError represents a LINK request validation error.
-type linkValidationError struct {
-	message   string
-	nfsStatus uint32
-}
-
-func (e *linkValidationError) Error() string {
-	return e.message
-}
-
 // validateLinkRequest validates LINK request parameters.
 //
 // Checks performed:
@@ -330,18 +320,18 @@ func (e *linkValidationError) Error() string {
 //
 // Returns:
 //   - nil if valid
-//   - *linkValidationError with NFS status if invalid
-func validateLinkRequest(req *LinkRequest) *linkValidationError {
+//   - *validationError with NFS status if invalid
+func validateLinkRequest(req *LinkRequest) *validationError {
 	// Validate source file handle
 	if len(req.FileHandle) == 0 {
-		return &linkValidationError{
+		return &validationError{
 			message:   "empty source file handle",
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
 	if len(req.FileHandle) > 64 {
-		return &linkValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("source file handle too long: %d bytes (max 64)", len(req.FileHandle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -349,14 +339,14 @@ func validateLinkRequest(req *LinkRequest) *linkValidationError {
 
 	// Validate target directory handle
 	if len(req.DirHandle) == 0 {
-		return &linkValidationError{
+		return &validationError{
 			message:   "empty directory handle",
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
 	}
 
 	if len(req.DirHandle) > 64 {
-		return &linkValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("directory handle too long: %d bytes (max 64)", len(req.DirHandle)),
 			nfsStatus: types.NFS3ErrBadHandle,
 		}
@@ -364,14 +354,14 @@ func validateLinkRequest(req *LinkRequest) *linkValidationError {
 
 	// Validate link name
 	if req.Name == "" {
-		return &linkValidationError{
+		return &validationError{
 			message:   "empty link name",
 			nfsStatus: types.NFS3ErrInval,
 		}
 	}
 
 	if len(req.Name) > 255 {
-		return &linkValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("link name too long: %d bytes (max 255)", len(req.Name)),
 			nfsStatus: types.NFS3ErrNameTooLong,
 		}
@@ -379,7 +369,7 @@ func validateLinkRequest(req *LinkRequest) *linkValidationError {
 
 	// Check for invalid characters
 	if bytes.ContainsAny([]byte(req.Name), "/\x00") {
-		return &linkValidationError{
+		return &validationError{
 			message:   "link name contains invalid characters (null or path separator)",
 			nfsStatus: types.NFS3ErrInval,
 		}
@@ -387,7 +377,7 @@ func validateLinkRequest(req *LinkRequest) *linkValidationError {
 
 	// Check for reserved names
 	if req.Name == "." || req.Name == ".." {
-		return &linkValidationError{
+		return &validationError{
 			message:   fmt.Sprintf("link name cannot be '%s'", req.Name),
 			nfsStatus: types.NFS3ErrInval,
 		}

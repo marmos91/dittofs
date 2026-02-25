@@ -4,14 +4,25 @@ import (
 	"context"
 	"errors"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/mfsymlink"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/telemetry"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/payload"
 )
+
+// validationError represents a request validation error with an NFS status code.
+// This is the single shared validation error type used by all v3 handler validators.
+type validationError struct {
+	message   string
+	nfsStatus uint32
+}
+
+func (e *validationError) Error() string {
+	return e.message
+}
 
 // ErrMetadataServiceNotInitialized is returned when the metadata service is not available.
 var ErrMetadataServiceNotInitialized = errors.New("metadata service not initialized")

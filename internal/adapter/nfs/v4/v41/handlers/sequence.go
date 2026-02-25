@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // HandleSequenceOp implements the SEQUENCE operation (RFC 8881 Section 18.46).
