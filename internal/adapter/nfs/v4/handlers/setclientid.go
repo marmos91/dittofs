@@ -8,7 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/internal/adapter/xdr"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 )
 
 // handleSetClientID implements the SETCLIENTID operation (RFC 7530 Section 16.33).

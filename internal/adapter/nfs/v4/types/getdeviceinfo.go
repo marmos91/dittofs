@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/xdr"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 )
 
 // DeviceId4Size is the size of a device ID in bytes.

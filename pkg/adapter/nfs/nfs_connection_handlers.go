@@ -17,12 +17,12 @@ import (
 	v4handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/handlers"
 	v4state "github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	v4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	nlm "github.com/marmos91/dittofs/internal/adapter/nlm"
-	nlm_handlers "github.com/marmos91/dittofs/internal/adapter/nlm/handlers"
-	nlm_types "github.com/marmos91/dittofs/internal/adapter/nlm/types"
-	nsm "github.com/marmos91/dittofs/internal/adapter/nsm"
-	nsm_handlers "github.com/marmos91/dittofs/internal/adapter/nsm/handlers"
-	nsm_types "github.com/marmos91/dittofs/internal/adapter/nsm/types"
+	nlm "github.com/marmos91/dittofs/internal/adapter/nfs/nlm"
+	nlm_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/nlm/handlers"
+	nlm_types "github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
+	nsm "github.com/marmos91/dittofs/internal/adapter/nfs/nsm"
+	nsm_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/nsm/handlers"
+	nsm_types "github.com/marmos91/dittofs/internal/adapter/nfs/nsm/types"
 	"github.com/marmos91/dittofs/internal/telemetry"
 )
 

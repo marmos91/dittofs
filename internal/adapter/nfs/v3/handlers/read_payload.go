@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/bufpool"
+	"github.com/marmos91/dittofs/internal/adapter/pool"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/payload"
@@ -20,14 +20,14 @@ type payloadReadResult struct {
 	data      []byte
 	bytesRead int
 	eof       bool
-	pooled    bool // true if data buffer came from bufpool and should be returned
+	pooled    bool // true if data buffer came from pool and should be returned
 }
 
 // Release returns the data buffer to the pool if it was pooled.
 // Must be called after the data is no longer needed (e.g., after encoding).
 func (r *payloadReadResult) Release() {
 	if r.pooled && r.data != nil {
-		bufpool.Put(r.data)
+		pool.Put(r.data)
 		r.data = nil
 		r.pooled = false
 	}
@@ -65,7 +65,7 @@ func readFromPayloadService(
 	logger.DebugCtx(ctx.Context, "READ: reading from Payload Service", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "count", count, "content_id", payloadID, "cow_source", cowSource)
 
 	// Get a pooled buffer for the read
-	data := bufpool.Get(int(count))
+	data := pool.Get(int(count))
 
 	var n int
 	var readErr error
@@ -89,14 +89,14 @@ func readFromPayloadService(
 
 	if readErr == context.Canceled || readErr == context.DeadlineExceeded {
 		// Return buffer to pool on error
-		bufpool.Put(data)
+		pool.Put(data)
 		logger.DebugCtx(ctx.Context, "READ: request cancelled during ReadAt", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "read", n, "client", clientIP)
 		return payloadReadResult{}, readErr
 	}
 
 	if readErr != nil {
 		// Return buffer to pool on error
-		bufpool.Put(data)
+		pool.Put(data)
 		return payloadReadResult{}, fmt.Errorf("ReadAt error: %w", readErr)
 	}
 

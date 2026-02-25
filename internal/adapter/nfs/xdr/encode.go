@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
-	"github.com/marmos91/dittofs/internal/adapter/xdr"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 )
 
 // ============================================================================

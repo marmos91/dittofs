@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/bufpool"
+	"github.com/marmos91/dittofs/internal/adapter/pool"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/smb"
 	"github.com/marmos91/dittofs/internal/adapter/smb/header"
@@ -1051,8 +1051,8 @@ func (c *SMBConnection) writeNetBIOSFrame(smbPayload []byte) error {
 
 	msgLen := len(smbPayload)
 	totalLen := 4 + msgLen
-	frame := bufpool.Get(totalLen)
-	defer bufpool.Put(frame)
+	frame := pool.Get(totalLen)
+	defer pool.Put(frame)
 
 	// NetBIOS session header
 	frame[0] = 0x00 // Session message type

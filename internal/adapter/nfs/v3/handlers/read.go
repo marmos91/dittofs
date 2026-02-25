@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/bufpool"
+	"github.com/marmos91/dittofs/internal/adapter/pool"
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
@@ -79,7 +79,7 @@ type ReadResponse struct {
 	// Empty if Count == 0 or Status != types.NFS3OK.
 	Data []byte
 
-	// pooled indicates the Data buffer came from bufpool and should be returned.
+	// pooled indicates the Data buffer came from pool and should be returned.
 	pooled bool
 }
 
@@ -88,7 +88,7 @@ type ReadResponse struct {
 // Safe to call multiple times - subsequent calls are no-ops.
 func (r *ReadResponse) Release() {
 	if r.pooled && r.Data != nil {
-		bufpool.Put(r.Data)
+		pool.Put(r.Data)
 		r.Data = nil
 		r.pooled = false
 	}

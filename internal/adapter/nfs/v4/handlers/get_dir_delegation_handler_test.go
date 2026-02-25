@@ -6,7 +6,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/internal/adapter/xdr"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 )
 
 // encodeGetDirDelegationArgs encodes GET_DIR_DELEGATION4args for testing.

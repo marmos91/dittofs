@@ -8,7 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/internal/adapter/xdr"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 )
 
 // handleLock implements the LOCK operation (RFC 7530 Section 16.10).

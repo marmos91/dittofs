@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/xdr"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 )
 
 // CB_RECALL_ANY type mask bit positions per RFC 8881 Section 20.6.

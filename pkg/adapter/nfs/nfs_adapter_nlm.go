@@ -7,9 +7,9 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
-	"github.com/marmos91/dittofs/internal/adapter/nlm/callback"
-	"github.com/marmos91/dittofs/internal/adapter/nsm"
-	nsm_handlers "github.com/marmos91/dittofs/internal/adapter/nsm/handlers"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/callback"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm"
+	nsm_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/nsm/handlers"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"

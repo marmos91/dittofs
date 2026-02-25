@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/marmos91/dittofs/internal/adapter/xdr"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 )
 
 // Layout I/O mode constants per RFC 8881 Section 3.3.20.

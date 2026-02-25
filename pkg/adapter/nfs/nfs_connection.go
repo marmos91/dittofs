@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/bufpool"
+	"github.com/marmos91/dittofs/internal/adapter/pool"
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
@@ -129,11 +129,11 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 		// NFS clients send requests sequentially for dependent operations (e.g., chown
 		// followed by rename). Processing them in parallel can cause TOCTOU races where
 		// a later operation checks stale metadata (e.g., sticky bit check sees old UID).
-		// NOTE: rawMessage is a pooled buffer - must be returned via bufpool.Put()
+		// NOTE: rawMessage is a pooled buffer - must be returned via pool.Put()
 		c.wg.Add(1)
 		func(call *rpc.RPCCallMessage, rawMessage []byte) {
 			defer c.handleRequestPanic(clientAddr, call.XID)
-			defer bufpool.Put(rawMessage) // Return pooled buffer after processing
+			defer pool.Put(rawMessage) // Return pooled buffer after processing
 
 			// Process and send reply
 			if err := c.processRequest(ctx, call, rawMessage); err != nil {
@@ -154,7 +154,7 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 //
 // This reads the fragment header, validates the message size, reads the RPC message,
 // and parses the RPC header. The pooled buffer is NOT returned to the pool here -
-// the caller is responsible for returning it via bufpool.Put() after processing.
+// the caller is responsible for returning it via pool.Put() after processing.
 //
 // Returns:
 //   - call: The parsed RPC call message (for routing and XID)
@@ -204,7 +204,7 @@ func (c *NFSConnection) readRequest(ctx context.Context) (*rpc.RPCCallMessage, [
 	}
 
 	// Read RPC message (uses buffer pool)
-	// NOTE: Caller is responsible for returning buffer via bufpool.Put()
+	// NOTE: Caller is responsible for returning buffer via pool.Put()
 	message, err := c.readRPCMessage(header.Length)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read RPC message: %w", err)
@@ -220,7 +220,7 @@ func (c *NFSConnection) readRequest(ctx context.Context) (*rpc.RPCCallMessage, [
 			// Copy the message bytes for delivery since the buffer is pooled
 			replyBytes := make([]byte, len(message))
 			copy(replyBytes, message)
-			bufpool.Put(message) // Return pooled buffer
+			pool.Put(message) // Return pooled buffer
 
 			if c.pendingCBReplies.Deliver(xid, replyBytes) {
 				logger.Debug("Backchannel REPLY routed",
@@ -238,7 +238,7 @@ func (c *NFSConnection) readRequest(ctx context.Context) (*rpc.RPCCallMessage, [
 	// Parse RPC call header
 	call, err := rpc.ReadCall(message)
 	if err != nil {
-		bufpool.Put(message) // Return buffer on error
+		pool.Put(message) // Return buffer on error
 		logger.Debug("Error parsing RPC call", "error", err)
 		return nil, nil, err
 	}
@@ -246,7 +246,7 @@ func (c *NFSConnection) readRequest(ctx context.Context) (*rpc.RPCCallMessage, [
 	logger.Debug("RPC Call", "xid", fmt.Sprintf("0x%x", call.XID), "program", call.Program, "version", call.Version, "procedure", call.Procedure)
 
 	// Return pooled buffer directly - no copy needed
-	// Caller must return buffer to pool via bufpool.Put() after processing
+	// Caller must return buffer to pool via pool.Put() after processing
 	return call, message, nil
 }
 
@@ -304,13 +304,13 @@ func (c *NFSConnection) readFragmentHeader() (*fragmentHeader, error) {
 // Returns the message buffer or an error if reading fails.
 func (c *NFSConnection) readRPCMessage(length uint32) ([]byte, error) {
 	// Get buffer from pool
-	message := bufpool.GetUint32(length)
+	message := pool.GetUint32(length)
 
 	// Read directly into pooled buffer
 	_, err := io.ReadFull(c.conn, message)
 	if err != nil {
 		// Return buffer to pool on error
-		bufpool.Put(message)
+		pool.Put(message)
 		return nil, fmt.Errorf("read message: %w", err)
 	}
 
