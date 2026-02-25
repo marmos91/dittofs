@@ -25,9 +25,9 @@ Unify the lock model so all protocols (NFS, SMB, NLM) share the same types with 
 
 Remove protocol-specific code from generic layers (metadata, controlplane, lock).
 
-- [ ] REF-02.1: SMB lock types removed from `pkg/metadata/lock/` (ShareReservation, LeaseInfo, lease_break.go moved/renamed)
-- [ ] REF-02.2: SMB lease methods removed from MetadataService (CheckAndBreakLeases*, ReclaimLeaseSMB, OplockChecker)
-- [ ] REF-02.3: NLM methods moved from MetadataService to NFS adapter (LockFileNLM, TestLockNLM, UnlockFileNLM, CancelBlockingLock)
+- [x] REF-02.1: SMB lock types removed from `pkg/metadata/lock/` (ShareReservation, LeaseInfo, lease_break.go moved/renamed)
+- [x] REF-02.2: SMB lease methods removed from MetadataService (CheckAndBreakLeases*, ReclaimLeaseSMB, OplockChecker)
+- [x] REF-02.3: NLM methods moved from MetadataService to NFS adapter (LockFileNLM, TestLockNLM, UnlockFileNLM, CancelBlockingLock)
 - [ ] REF-02.4: Share model cleaned — NFS fields (AllowAuthSys, RequireKerberos, Squash, etc.) to NFSExportOptions JSON config
 - [ ] REF-02.5: Share model cleaned — SMB fields (GuestEnabled, GuestUID, GuestGID) to SMBShareOptions JSON config
 - [ ] REF-02.6: SquashMode moved to NFS adapter
@@ -154,7 +154,7 @@ Comprehensive validation using open-source test suites and manual Windows 11 tes
 | Requirement | Phase(s) | Status |
 |-------------|----------|--------|
 | REF-01: Generic Lock Interface | 26 | Not started |
-| REF-02: Protocol Leak Purge | 26 | Not started |
+| REF-02: Protocol Leak Purge | 26 | In progress (3/11 sub-reqs done) |
 | REF-03: NFS Adapter Restructuring | 27 | Not started |
 | REF-04: SMB Adapter Restructuring | 28 | Not started |
 | REF-05: Core Object Decomposition | 29 | Not started |

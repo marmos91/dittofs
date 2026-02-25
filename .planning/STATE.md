@@ -9,9 +9,10 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 
 ## Current Position
 
-Phase: Starting milestone v3.5 (Phase 26 next)
-Status: Milestone planning complete, ready for /gsd:discuss-phase
-Last activity: 2026-02-25 -- Planned v3.5 and v3.6 milestones
+Phase: 26 - Generic Lock Interface Protocol Leak Purge
+Current Plan: 5 of 5 (COMPLETE)
+Status: Phase 26 Complete
+Last activity: 2026-02-25 -- Completed 26-05 (Runtime purge, identity dissolution, final validation)
 
 ## Completed Milestones
 
@@ -24,8 +25,16 @@ Last activity: 2026-02-25 -- Planned v3.5 and v3.6 milestones
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 86 (19 v1.0 + 42 v2.0 + 25 v3.0)
+- Total plans completed: 91 (19 v1.0 + 42 v2.0 + 25 v3.0 + 5 v3.5)
 - 3 milestones in 25 days
+
+| Phase | Plan | Duration | Tasks | Files |
+|-------|------|----------|-------|-------|
+| 26 | 01 | 7min | 3 | 34 |
+| 26 | 02 | 16min | 3 | 20 |
+| 26 | 03 | 25min | 2 | 6 |
+| 26 | 04 | 15min | 2 | 17 |
+| 26 | 05 | 25min | 3 | 32 |
 
 ## Quick Tasks Completed
 
@@ -42,6 +51,21 @@ Last activity: 2026-02-25 -- Planned v3.5 and v3.6 milestones
 - v3.6 milestone inserted: Windows compatibility (bugs #180/#181/#182 + ACL support + test suite validation)
 - v4.0 phases renumbered from 26-32.5 to 33-39.5
 - Test suites chosen: smbtorture (GPL) + Microsoft WindowsProtocolTestSuites (MIT)
+- [26-01] Combined Task 1+2 into atomic commit (types and consumers must rename together)
+- [26-01] Kept AccessMode as int enum for backward compat (bitmask conversion deferred)
+- [26-02] SquashMode stays in models/permission.go (shared by NFS adapter and runtime identity mapping)
+- [26-02] Runtime Share struct retains NFS fields for fast handler access (populated from adapter config at load)
+- [26-02] Router conditionally registers netgroup/identity routes via type assertion
+- [26-03] ConflictsWith as method on UnifiedLock rather than standalone function
+- [26-03] Break callbacks dispatched outside lock to avoid deadlock
+- [26-03] TestLockByParams wrapper added for backward compat with service.go
+- [26-04] routingNLMService resolves per-share lock manager from NLM file handles
+- [26-04] CheckAndBreakLeases* replaced with TODO(plan-03) placeholders (Plan 03 dependency)
+- [26-04] ErrLeaseBreakPending defined locally in SMB handlers (removed from metadata)
+- [26-05] Package-level DNS cache (sync.Once) instead of Runtime struct fields
+- [26-05] Kept shareChangeCallbacks in Runtime (generic mechanism, not NFS-specific)
+- [26-05] NFS handler code stays in internal/controlplane/api/handlers/ (simpler import graph)
+- [26-05] pkg/identity dissolved to pkg/adapter/nfs/identity (no import cycles)
 
 ### Pending Todos
 
@@ -54,5 +78,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-25
-Stopped at: Completed milestone planning for v3.5 and v3.6
-Resume file: Ready for /gsd:discuss-phase on Phase 26
+Stopped at: Completed 26-05-PLAN.md (Phase 26 complete)
+Resume file: Phase 26 fully complete. Ready for next phase.
