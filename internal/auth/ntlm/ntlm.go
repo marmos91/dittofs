@@ -17,7 +17,9 @@ import (
 	"crypto/rand"
 	"crypto/rc4" //nolint:gosec // RC4 required for NTLM KEY_EXCH; only encrypts session key, not message data
 	"encoding/binary"
+	"os"
 	"strings"
+	"time"
 	"unicode/utf16"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -275,6 +277,18 @@ const (
 	// AvNbDomainName (0x0002) contains the NetBIOS domain name.
 	// Example: "CORP" or "WORKGROUP" for standalone servers
 	AvNbDomainName AvID = 0x0002
+
+	// AvDnsComputerName (0x0003) contains the server's DNS hostname.
+	// Example: "fileserver.corp.com"
+	AvDnsComputerName AvID = 0x0003
+
+	// AvDnsDomainName (0x0004) contains the DNS domain name.
+	// Example: "corp.com"
+	AvDnsDomainName AvID = 0x0004
+
+	// AvTimestamp (0x0007) contains the server's FILETIME timestamp.
+	// Used by NTLMv2 for replay protection.
+	AvTimestamp AvID = 0x0007
 )
 
 // =============================================================================
@@ -335,11 +349,15 @@ func BuildChallenge() (message []byte, serverChallenge [8]byte) {
 	_, _ = rand.Read(challenge)
 	copy(serverChallenge[:], challenge)
 
-	// Target name: empty for anonymous/guest authentication
-	targetName := []byte{}
+	// Target name: server hostname for client identification.
+	// Windows clients require a non-empty TargetName when FlagRequestTarget is set.
+	hostname, _ := os.Hostname()
+	if hostname == "" {
+		hostname = "DITTOFS"
+	}
+	targetName := encodeUTF16LE(strings.ToUpper(hostname))
 
-	// Flags for guest/anonymous support
-	// These flags indicate our server capabilities to the client.
+	// Flags for server capabilities.
 	// TODO: Implement encryption. We currently advertise Flag128 and
 	// Flag56 but don't actually encrypt traffic. This requires
 	// implementing session key derivation and RC4/AES encryption per [MS-NLMP].
@@ -355,8 +373,10 @@ func BuildChallenge() (message []byte, serverChallenge [8]byte) {
 		Flag128 | // Support 128-bit encryption
 		Flag56 // Support 56-bit encryption (legacy)
 
-	// Build minimal target info (just the terminator)
-	targetInfo := BuildMinimalTargetInfo()
+	// Build target info with required AV_PAIRs for Windows compatibility.
+	// Windows clients need at minimum: NbDomainName, NbComputerName,
+	// DnsComputerName, and Timestamp (for NTLMv2 replay protection).
+	targetInfo := buildTargetInfo(hostname)
 
 	// Calculate payload offsets
 	// Payload starts immediately after the fixed fields (56 bytes)
@@ -426,32 +446,78 @@ func BuildChallenge() (message []byte, serverChallenge [8]byte) {
 }
 
 // BuildMinimalTargetInfo creates a minimal AV_PAIR list with just the terminator.
-//
-// AV_PAIR structures are used in the TargetInfo field of Type 2 messages.
-// Each AV_PAIR has the format:
-//
-//	Offset  Size  Field   Description
-//	------  ----  ------  ----------------------------------
-//	0       2     AvId    Attribute ID (see MsvAv* constants)
-//	2       2     AvLen   Length of Value field
-//	4       var   Value   Attribute value (AvLen bytes)
-//
-// The list is terminated by MsvAvEOL (AvId=0, AvLen=0).
-//
-// For guest authentication, we only include the terminator.
-// Production implementations would include:
-//   - AvNbDomainName: NetBIOS domain name
-//   - AvNbComputerName: NetBIOS computer name
-//   - MsvAvTimestamp: FILETIME timestamp (for NTLMv2)
+// This is kept for backward compatibility and testing.
 //
 // [MS-NLMP] Section 2.2.2.1
 func BuildMinimalTargetInfo() []byte {
-	// Minimal AV_PAIR list: just the terminator
-	// MsvAvEOL (0x0000) with AvLen=0
 	return []byte{
 		0x00, 0x00, // AvId: AvEOL
 		0x00, 0x00, // AvLen: 0
 	}
+}
+
+// buildTargetInfo creates a complete AV_PAIR list required by Windows clients.
+//
+// Windows NTLM clients require the following AV_PAIRs in the TargetInfo:
+//   - MsvAvNbDomainName: NetBIOS domain name (WORKGROUP for standalone)
+//   - MsvAvNbComputerName: NetBIOS server name
+//   - MsvAvDnsComputerName: DNS hostname
+//   - MsvAvDnsDomainName: DNS domain name
+//   - MsvAvTimestamp: FILETIME timestamp (critical for NTLMv2)
+//   - MsvAvEOL: terminator
+//
+// Without these fields, Windows clients reject the NTLM challenge and
+// disconnect immediately after receiving the Type 2 message.
+//
+// [MS-NLMP] Section 2.2.2.1
+func buildTargetInfo(hostname string) []byte {
+	domain := "WORKGROUP"
+	nbName := strings.ToUpper(hostname)
+	dnsName := strings.ToLower(hostname)
+
+	// Encode all values as UTF-16LE
+	nbDomainBytes := encodeUTF16LE(domain)
+	nbComputerBytes := encodeUTF16LE(nbName)
+	dnsComputerBytes := encodeUTF16LE(dnsName)
+	dnsDomainBytes := encodeUTF16LE("local")
+
+	// Timestamp: Windows FILETIME (100-nanosecond intervals since 1601-01-01)
+	// Go epoch is 1970-01-01, offset is 116444736000000000 (100ns intervals)
+	const epochDiff = 116444736000000000
+	ft := uint64(time.Now().UnixNano()/100) + epochDiff
+	timestampBytes := make([]byte, 8)
+	binary.LittleEndian.PutUint64(timestampBytes, ft)
+
+	// Build AV_PAIR list
+	var buf []byte
+	buf = append(buf, buildAvPair(AvNbDomainName, nbDomainBytes)...)
+	buf = append(buf, buildAvPair(AvNbComputerName, nbComputerBytes)...)
+	buf = append(buf, buildAvPair(AvDnsComputerName, dnsComputerBytes)...)
+	buf = append(buf, buildAvPair(AvDnsDomainName, dnsDomainBytes)...)
+	buf = append(buf, buildAvPair(AvTimestamp, timestampBytes)...)
+	// Terminator
+	buf = append(buf, 0x00, 0x00, 0x00, 0x00)
+
+	return buf
+}
+
+// buildAvPair creates a single AV_PAIR structure.
+func buildAvPair(id AvID, value []byte) []byte {
+	pair := make([]byte, 4+len(value))
+	binary.LittleEndian.PutUint16(pair[0:2], uint16(id))
+	binary.LittleEndian.PutUint16(pair[2:4], uint16(len(value)))
+	copy(pair[4:], value)
+	return pair
+}
+
+// encodeUTF16LE encodes a string as UTF-16LE bytes.
+func encodeUTF16LE(s string) []byte {
+	encoded := utf16.Encode([]rune(s))
+	b := make([]byte, len(encoded)*2)
+	for i, v := range encoded {
+		binary.LittleEndian.PutUint16(b[i*2:], v)
+	}
+	return b
 }
 
 // =============================================================================
@@ -657,15 +723,7 @@ func ComputeNTHash(password string) [16]byte {
 // [MS-NLMP] Section 3.3.2
 func ComputeNTLMv2Hash(ntHash [16]byte, username, domain string) [16]byte {
 	// Uppercase username, keep domain as-is
-	userUpper := strings.ToUpper(username)
-
-	// Convert to UTF-16LE
-	combined := userUpper + domain
-	utf16Combined := utf16.Encode([]rune(combined))
-	combinedBytes := make([]byte, len(utf16Combined)*2)
-	for i, r := range utf16Combined {
-		binary.LittleEndian.PutUint16(combinedBytes[i*2:], r)
-	}
+	combinedBytes := encodeUTF16LE(strings.ToUpper(username) + domain)
 
 	// Compute HMAC-MD5
 	mac := hmac.New(md5.New, ntHash[:])

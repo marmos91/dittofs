@@ -40,7 +40,10 @@ func buildValidateNegotiateInfoRequest(capabilities uint32, clientGUID [16]byte,
 	// IOCTL header
 	binary.LittleEndian.PutUint16(body[0:2], 57)                         // StructureSize
 	binary.LittleEndian.PutUint32(body[4:8], FsctlValidateNegotiateInfo) // CtlCode
-	// FileId at 8:24 is all zeros (NULL file identifier)
+	// FileId at 8:24 must be all 0xFF per MS-SMB2 2.2.31.4
+	for i := 8; i < 24; i++ {
+		body[i] = 0xFF
+	}
 	binary.LittleEndian.PutUint32(body[24:28], 56+64)             // InputOffset (after SMB header)
 	binary.LittleEndian.PutUint32(body[28:32], uint32(inputSize)) // InputCount
 	binary.LittleEndian.PutUint32(body[44:48], 24)                // MaxOutputResponse

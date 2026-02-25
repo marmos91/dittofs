@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"unicode/utf16"
@@ -9,6 +10,10 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/smb/types"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// allFFFileID is the sentinel FileID (all 0xFF bytes) required by
+// FSCTL_VALIDATE_NEGOTIATE_INFO per [MS-SMB2] 2.2.31.4.
+var allFFFileID = bytes.Repeat([]byte{0xFF}, 16)
 
 // Common IOCTL/FSCTL codes [MS-FSCC] 2.3
 const (
@@ -520,12 +525,11 @@ func (h *Handler) handleValidateNegotiateInfo(ctx *SMBHandlerContext, body []byt
 	var fileID [16]byte
 	copy(fileID[:], body[8:24])
 
-	// Per [MS-SMB2] 2.2.31.4, FSCTL_VALIDATE_NEGOTIATE_INFO MUST use a NULL file identifier.
-	for _, b := range fileID {
-		if b != 0 {
-			logger.Debug("IOCTL VALIDATE_NEGOTIATE_INFO: non-NULL FileId", "fileID", fileID)
-			return NewErrorResult(types.StatusInvalidParameter), nil
-		}
+	// Per [MS-SMB2] 2.2.31.4, FSCTL_VALIDATE_NEGOTIATE_INFO MUST use FileId
+	// {0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF} (all 0xFF bytes).
+	if !bytes.Equal(fileID[:], allFFFileID) {
+		logger.Debug("IOCTL VALIDATE_NEGOTIATE_INFO: unexpected FileId (expected all 0xFF)", "fileID", fileID)
+		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
 	inputCount := binary.LittleEndian.Uint32(body[28:32])

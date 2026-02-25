@@ -56,4 +56,15 @@ func (s *NFSAdapter) applyNFSSettings(rt *runtime.Runtime) {
 		logger.Info("NFS adapter: operation blocklist active",
 			"blocked_ops", blockedOps)
 	}
+
+	// Portmapper settings -> adapter config
+	// The DB model uses plain bool; the adapter config uses *bool pointer.
+	// We always set the pointer from the DB value so it's never nil.
+	enabled := settings.PortmapperEnabled
+	s.config.Portmapper.Enabled = &enabled
+	if settings.PortmapperPort > 0 {
+		s.config.Portmapper.Port = settings.PortmapperPort
+	}
+	logger.Debug("NFS adapter: applied portmapper settings from DB",
+		"enabled", settings.PortmapperEnabled, "port", s.config.Portmapper.Port)
 }

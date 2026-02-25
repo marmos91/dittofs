@@ -77,6 +77,7 @@ type PendingAuth struct {
 	ClientAddr      string
 	CreatedAt       time.Time
 	ServerChallenge [8]byte // Random challenge sent in Type 2 message
+	UsedSPNEGO      bool    // Whether client used SPNEGO wrapping
 }
 
 // TreeConnection represents a tree connection (share)

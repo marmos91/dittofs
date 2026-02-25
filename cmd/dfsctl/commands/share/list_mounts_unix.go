@@ -12,25 +12,13 @@ import (
 // Patterns for DittoFS mounts (NFS and SMB from localhost).
 //
 // These regular expressions parse the output of the `mount` command, which differs
-// by platform. They assume the following output formats:
+// by platform:
 //
-//	macOS/BSD (no explicit "type" keyword):
-//	  NFS: localhost:/export        on /private/tmp/nfs (nfs, ...)
-//	  SMB: //user@localhost/share   on /private/tmp/smb (smbfs, ...)
-//
-//	Linux (explicit "type" keyword):
-//	  NFS: localhost:/export        on /mnt/nfs type nfs (...)
-//	  SMB: //localhost/share        on /mnt/smb type cifs (...)
-//
-// Key assumptions:
-//   - Source appears at line start, mount point follows " on "
-//   - Filesystem type is in parentheses (macOS) or after "type" (Linux)
-//   - Only mounts from "localhost" are considered DittoFS candidates
-//
-// If mount output format changes across OS versions, these patterns may need updates.
+//	macOS/BSD: localhost:/export on /mnt (nfs, ...)
+//	Linux:     localhost:/export on /mnt type nfs (...)
 var (
-	nfsPattern = regexp.MustCompile(`^localhost:(/\S+)\s+on\s+(\S+)\s+.*\((nfs|type nfs)`)
-	smbPattern = regexp.MustCompile(`^//[^@]*@?localhost[:/](\S+)\s+on\s+(\S+)\s+.*\((smbfs|cifs|type cifs)`)
+	nfsPattern = regexp.MustCompile(`^localhost:(/\S+)\s+on\s+(\S+)\s+.*(?:\(nfs|type nfs)`)
+	smbPattern = regexp.MustCompile(`^//[^@]*@?localhost[:/](\S+)\s+on\s+(\S+)\s+.*(?:\(smbfs|\(cifs|type cifs)`)
 )
 
 func getDittoFSMounts() ([]MountInfo, error) {
@@ -67,7 +55,6 @@ func getDittoFSMounts() ([]MountInfo, error) {
 		}
 
 		// Fallback: catch localhost NFS mounts that don't match the strict regex
-		// (e.g., unusual mount output formatting on some distros)
 		if strings.Contains(line, "(nfs") || strings.Contains(line, "type nfs") {
 			parts := strings.Fields(line)
 			if len(parts) >= 3 && parts[1] == "on" {

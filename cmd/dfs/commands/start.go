@@ -312,6 +312,9 @@ func createAdapterFactory(kerberosConfig *config.KerberosConfig) runtime.Adapter
 
 			// Apply parsed config for SMB-specific settings
 			if parsedConfig != nil {
+				if bindAddr, ok := parsedConfig["bind_address"].(string); ok {
+					smbCfg.BindAddress = bindAddr
+				}
 				if signingCfg, ok := parsedConfig["signing"].(map[string]any); ok {
 					if enabled, ok := signingCfg["enabled"].(bool); ok {
 						smbCfg.Signing.Enabled = &enabled

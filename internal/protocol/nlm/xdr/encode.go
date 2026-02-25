@@ -373,3 +373,52 @@ func EncodeNLM4CancelArgs(buf *bytes.Buffer, args *types.NLM4CancelArgs) error {
 
 	return nil
 }
+
+// EncodeNLM4ShareArgs encodes NLM_SHARE/NLM_UNSHARE request arguments to XDR format.
+//
+// Wire format:
+//
+//	cookie:      [length:uint32][data:bytes][padding]
+//	caller_name: [length:uint32][data:bytes][padding]
+//	fh:          [length:uint32][data:bytes][padding]
+//	oh:          [length:uint32][data:bytes][padding]
+//	mode:        [uint32]
+//	access:      [uint32]
+//	reclaim:     [uint32] (0=false, 1=true)
+//
+// Primarily used for testing decode functions.
+func EncodeNLM4ShareArgs(buf *bytes.Buffer, args *types.NLM4ShareArgs) error {
+	if args == nil {
+		return fmt.Errorf("NLM4ShareArgs is nil")
+	}
+
+	if err := xdr.WriteXDROpaque(buf, args.Cookie); err != nil {
+		return fmt.Errorf("encode cookie: %w", err)
+	}
+
+	if err := xdr.WriteXDRString(buf, args.CallerName); err != nil {
+		return fmt.Errorf("encode caller_name: %w", err)
+	}
+
+	if err := xdr.WriteXDROpaque(buf, args.FH); err != nil {
+		return fmt.Errorf("encode fh: %w", err)
+	}
+
+	if err := xdr.WriteXDROpaque(buf, args.OH); err != nil {
+		return fmt.Errorf("encode oh: %w", err)
+	}
+
+	if err := xdr.WriteUint32(buf, args.Mode); err != nil {
+		return fmt.Errorf("encode mode: %w", err)
+	}
+
+	if err := xdr.WriteUint32(buf, args.Access); err != nil {
+		return fmt.Errorf("encode access: %w", err)
+	}
+
+	if err := xdr.WriteBool(buf, args.Reclaim); err != nil {
+		return fmt.Errorf("encode reclaim: %w", err)
+	}
+
+	return nil
+}

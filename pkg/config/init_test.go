@@ -13,18 +13,15 @@ func TestInitConfig_Success(t *testing.T) {
 	// Create a temporary directory to act as config dir
 	tmpDir := t.TempDir()
 
-	// Override the config directory for this test
-	// We'll use environment variable to control this
-	oldHome := os.Getenv("HOME")
-	_ = os.Setenv("HOME", tmpDir)
-	defer func() { _ = os.Setenv("HOME", oldHome) }()
-
-	// Clear XDG_CONFIG_HOME
+	// Override XDG_CONFIG_HOME so getConfigDir() resolves to our temp directory.
+	// Using HOME doesn't work on Windows where os.UserHomeDir() reads USERPROFILE.
 	oldXDG := os.Getenv("XDG_CONFIG_HOME")
-	_ = os.Unsetenv("XDG_CONFIG_HOME")
+	_ = os.Setenv("XDG_CONFIG_HOME", tmpDir)
 	defer func() {
 		if oldXDG != "" {
 			_ = os.Setenv("XDG_CONFIG_HOME", oldXDG)
+		} else {
+			_ = os.Unsetenv("XDG_CONFIG_HOME")
 		}
 	}()
 
@@ -69,15 +66,14 @@ func TestInitConfig_Success(t *testing.T) {
 
 func TestInitConfig_AlreadyExists(t *testing.T) {
 	tmpDir := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	_ = os.Setenv("HOME", tmpDir)
-	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	oldXDG := os.Getenv("XDG_CONFIG_HOME")
-	_ = os.Unsetenv("XDG_CONFIG_HOME")
+	_ = os.Setenv("XDG_CONFIG_HOME", tmpDir)
 	defer func() {
 		if oldXDG != "" {
 			_ = os.Setenv("XDG_CONFIG_HOME", oldXDG)
+		} else {
+			_ = os.Unsetenv("XDG_CONFIG_HOME")
 		}
 	}()
 
@@ -99,15 +95,14 @@ func TestInitConfig_AlreadyExists(t *testing.T) {
 
 func TestInitConfig_Force(t *testing.T) {
 	tmpDir := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	_ = os.Setenv("HOME", tmpDir)
-	defer func() { _ = os.Setenv("HOME", oldHome) }()
 
 	oldXDG := os.Getenv("XDG_CONFIG_HOME")
-	_ = os.Unsetenv("XDG_CONFIG_HOME")
+	_ = os.Setenv("XDG_CONFIG_HOME", tmpDir)
 	defer func() {
 		if oldXDG != "" {
 			_ = os.Setenv("XDG_CONFIG_HOME", oldXDG)
+		} else {
+			_ = os.Unsetenv("XDG_CONFIG_HOME")
 		}
 	}()
 

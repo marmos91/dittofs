@@ -18,7 +18,7 @@ logging:
   level: "INFO"
 
 cache:
-  path: "` + tmpDir + `/cache"
+  path: "` + yamlSafePath(tmpDir) + `/cache"
   size: 100Mi
 
 database:
@@ -107,7 +107,7 @@ level = "WARN"
 format = "json"
 
 [cache]
-path = "` + tmpDir + `/cache"
+path = "` + yamlSafePath(tmpDir) + `/cache"
 size = "100Mi"
 
 [database]
@@ -208,7 +208,7 @@ logging:
   level: "INFO"
 
 cache:
-  path: "` + tmpDir + `/cache"
+  path: "` + yamlSafePath(tmpDir) + `/cache"
   size: 100Mi
 
 database:

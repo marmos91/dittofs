@@ -245,6 +245,13 @@ func (c *SMBConnection) readRequest(ctx context.Context) (*header.SMB2Header, []
 	//
 	// If signing is enabled but not required, and the client doesn't sign,
 	// we accept the unsigned message (signing is optional).
+	//
+	// Per MS-SMB2 3.2.4.1.4: For compound requests, each command is signed
+	// individually. The signature for command N covers bytes from command N's
+	// header start to command N+1's header start (NextCommand offset), or to
+	// the end of the message for the last command. We must verify only the
+	// first command's bytes here; subsequent commands are verified in
+	// processCompoundRequest.
 	if hdr.SessionID != 0 && hdr.Command != types.SMB2Negotiate && hdr.Command != types.SMB2SessionSetup {
 		if sess, ok := c.server.handler.GetSession(hdr.SessionID); ok {
 			// Check if message is signed (SMB2_FLAGS_SIGNED = 0x00000008)
@@ -260,16 +267,27 @@ func (c *SMBConnection) readRequest(ctx context.Context) (*header.SMB2Header, []
 			}
 
 			if isSigned && sess.ShouldVerify() {
-				// Message is signed - verify it
+				// For compound requests, verify only the first command's bytes.
+				// The signature covers from byte 0 to NextCommand offset.
+				verifyBytes := message
+				if hdr.NextCommand > 0 && int(hdr.NextCommand) <= len(message) {
+					verifyBytes = message[:hdr.NextCommand]
+				}
+
 				logger.Debug("Verifying incoming SMB2 message signature",
 					"command", hdr.Command.String(),
 					"sessionID", hdr.SessionID,
-					"messageLen", len(message))
-				if !sess.VerifyMessage(message) {
+					"messageLen", len(message),
+					"verifyLen", len(verifyBytes),
+					"isCompound", hdr.NextCommand > 0)
+				if !sess.VerifyMessage(verifyBytes) {
+					hasKey := sess.Signing != nil && sess.Signing.SigningKey != nil
 					logger.Warn("SMB2 message signature verification failed",
 						"command", hdr.Command.String(),
 						"sessionID", hdr.SessionID,
-						"client", c.conn.RemoteAddr().String())
+						"client", c.conn.RemoteAddr().String(),
+						"hasSigningKey", hasKey,
+						"msgSignature", fmt.Sprintf("%x", message[48:64]))
 					return nil, nil, nil, fmt.Errorf("STATUS_ACCESS_DENIED: signature verification failed")
 				}
 				logger.Debug("Verified incoming SMB2 message signature",
@@ -359,6 +377,45 @@ func parseCompoundCommand(data []byte) (*header.SMB2Header, []byte, []byte, erro
 	return hdr, body, remaining, nil
 }
 
+// verifyCompoundCommandSignature verifies the signature of a compound sub-command.
+// Per MS-SMB2 3.2.4.1.4, each command in a compound is signed individually.
+// The signature covers only this command's bytes (from its header to NextCommand or end).
+func (c *SMBConnection) verifyCompoundCommandSignature(data []byte, hdr *header.SMB2Header) error {
+	if hdr.SessionID == 0 || hdr.Command == types.SMB2Negotiate || hdr.Command == types.SMB2SessionSetup {
+		return nil
+	}
+
+	sess, ok := c.server.handler.GetSession(hdr.SessionID)
+	if !ok {
+		return nil
+	}
+
+	isSigned := hdr.Flags.IsSigned()
+	if sess.Signing != nil && sess.Signing.SigningRequired && !isSigned {
+		return fmt.Errorf("STATUS_ACCESS_DENIED: compound message not signed")
+	}
+
+	if isSigned && sess.ShouldVerify() {
+		// Determine the bytes this command's signature covers
+		verifyBytes := data
+		if hdr.NextCommand > 0 && int(hdr.NextCommand) <= len(data) {
+			verifyBytes = data[:hdr.NextCommand]
+		}
+
+		if !sess.VerifyMessage(verifyBytes) {
+			logger.Warn("SMB2 compound command signature verification failed",
+				"command", hdr.Command.String(),
+				"sessionID", hdr.SessionID,
+				"verifyLen", len(verifyBytes))
+			return fmt.Errorf("STATUS_ACCESS_DENIED: compound signature verification failed")
+		}
+		logger.Debug("Verified compound command signature",
+			"command", hdr.Command.String(),
+			"sessionID", hdr.SessionID)
+	}
+	return nil
+}
+
 // processCompoundRequest processes all commands in a compound request sequentially.
 // Related operations share FileID from the previous response.
 // compoundData contains the remaining commands after the first one.
@@ -384,12 +441,25 @@ func (c *SMBConnection) processCompoundRequest(ctx context.Context, firstHeader 
 	// Process remaining commands from compound data
 	remaining := compoundData
 	for len(remaining) >= header.HeaderSize {
+		// Keep a reference to the current command's start for signature verification.
+		// Per MS-SMB2 3.2.4.1.4, each compound command is signed over its own bytes.
+		currentCommandData := remaining
+
 		hdr, body, nextRemaining, err := parseCompoundCommand(remaining)
 		if err != nil {
 			logger.Debug("Error parsing compound command", "error", err)
 			break
 		}
 		remaining = nextRemaining
+
+		// Verify signature for this compound sub-command
+		if err := c.verifyCompoundCommandSignature(currentCommandData, hdr); err != nil {
+			logger.Warn("Compound command signature verification failed", "error", err)
+			if sendErr := c.sendErrorResponse(hdr, types.StatusAccessDenied); sendErr != nil {
+				logger.Debug("Failed to send error response for signature failure", "error", sendErr)
+			}
+			break
+		}
 
 		// Handle related operations - inherit IDs from previous command
 		if hdr.IsRelated() {
@@ -504,59 +574,36 @@ func (c *SMBConnection) processRequestWithInheritedFileID(ctx context.Context, r
 // injectFileID injects a FileID into the appropriate position in the request body.
 // Offsets are per [MS-SMB2] specification for each command.
 func (c *SMBConnection) injectFileID(command types.Command, body []byte, fileID [16]byte) []byte {
+	// FileID offset within the request body, per [MS-SMB2] spec for each command.
+	var offset int
+	switch command {
+	case types.SMB2Close, types.SMB2QueryDirectory:
+		offset = 8 // [MS-SMB2] 2.2.15, 2.2.33
+	case types.SMB2Read, types.SMB2Write, types.SMB2SetInfo:
+		offset = 16 // [MS-SMB2] 2.2.19, 2.2.21, 2.2.39
+	case types.SMB2QueryInfo:
+		offset = 24 // [MS-SMB2] 2.2.37
+	default:
+		return body
+	}
+
+	requiredLen := offset + 16
+	if len(body) < requiredLen {
+		logger.Debug("Body too small for FileID injection",
+			"command", command.String(),
+			"need", requiredLen,
+			"have", len(body))
+		return body
+	}
+
 	// Make a copy to avoid modifying the original
 	newBody := make([]byte, len(body))
 	copy(newBody, body)
+	copy(newBody[offset:offset+16], fileID[:])
 
-	logger.Debug("Injecting FileID",
+	logger.Debug("Injected FileID",
 		"command", command.String(),
-		"bodyLen", len(body),
-		"fileID", fmt.Sprintf("%x", fileID))
-
-	switch command {
-	case types.SMB2QueryInfo:
-		// FileId is at offset 24-40 in QUERY_INFO request [MS-SMB2] 2.2.37
-		if len(newBody) >= 40 {
-			copy(newBody[24:40], fileID[:])
-			logger.Debug("Injected FileID into QUERY_INFO at offset 24")
-		} else {
-			logger.Debug("Body too small for QUERY_INFO FileID injection", "need", 40, "have", len(newBody))
-		}
-	case types.SMB2Close:
-		// FileId is at offset 8-24 in CLOSE request [MS-SMB2] 2.2.15
-		if len(newBody) >= 24 {
-			copy(newBody[8:24], fileID[:])
-			logger.Debug("Injected FileID into CLOSE at offset 8")
-		} else {
-			logger.Debug("Body too small for CLOSE FileID injection", "need", 24, "have", len(newBody))
-		}
-	case types.SMB2Read:
-		// FileId is at offset 16-32 in READ request [MS-SMB2] 2.2.19
-		if len(newBody) >= 32 {
-			copy(newBody[16:32], fileID[:])
-		}
-	case types.SMB2Write:
-		// FileId is at offset 16-32 in WRITE request [MS-SMB2] 2.2.21
-		if len(newBody) >= 32 {
-			copy(newBody[16:32], fileID[:])
-		}
-	case types.SMB2QueryDirectory:
-		// FileId is at offset 8-24 in QUERY_DIRECTORY request [MS-SMB2] 2.2.33
-		if len(newBody) >= 24 {
-			copy(newBody[8:24], fileID[:])
-			logger.Debug("Injected FileID into QUERY_DIRECTORY at offset 8")
-		} else {
-			logger.Debug("Body too small for QUERY_DIRECTORY FileID injection", "need", 24, "have", len(newBody))
-		}
-	case types.SMB2SetInfo:
-		// FileId is at offset 16-32 in SET_INFO request [MS-SMB2] 2.2.39
-		if len(newBody) >= 32 {
-			copy(newBody[16:32], fileID[:])
-			logger.Debug("Injected FileID into SET_INFO at offset 16")
-		} else {
-			logger.Debug("Body too small for SET_INFO FileID injection", "need", 32, "have", len(newBody))
-		}
-	}
+		"offset", offset)
 
 	return newBody
 }
@@ -729,67 +776,28 @@ func (c *SMBConnection) sendErrorResponse(reqHeader *header.SMB2Header, status t
 
 	respHeader := header.NewResponseHeaderWithCredits(reqHeader, status, credits)
 
-	// Error response body (8 bytes minimum)
-	// StructureSize (2) + ErrorContextCount (1) + Reserved (1) + ByteCount (4)
-	errorBody := make([]byte, 9)
-	binary.LittleEndian.PutUint16(errorBody[0:2], 9) // StructureSize
-	errorBody[2] = 0                                 // ErrorContextCount
-	errorBody[3] = 0                                 // Reserved
-	binary.LittleEndian.PutUint32(errorBody[4:8], 0) // ByteCount
-
-	return c.sendMessage(respHeader, errorBody)
+	return c.sendMessage(respHeader, makeErrorBody())
 }
 
 // sendMessage sends an SMB2 message with NetBIOS framing.
 // If the session has signing enabled, the message is signed before sending.
 func (c *SMBConnection) sendMessage(hdr *header.SMB2Header, body []byte) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-
-	// Apply write timeout if configured
-	if c.server.config.Timeouts.Write > 0 {
-		deadline := time.Now().Add(c.server.config.Timeouts.Write)
-		if err := c.conn.SetWriteDeadline(deadline); err != nil {
-			return fmt.Errorf("set write deadline: %w", err)
-		}
-	}
-
-	// Encode SMB2 header
 	headerBytes := hdr.Encode()
 
-	// Calculate total message length
-	msgLen := len(headerBytes) + len(body)
-
-	// Get a pooled buffer for the complete message (NetBIOS header + SMB2 message)
-	// Buffer layout: [4-byte NetBIOS header][SMB2 header + body]
-	totalLen := 4 + msgLen
-	message := bufpool.Get(totalLen)
-	defer bufpool.Put(message)
-
-	// Build NetBIOS session header at the start
-	// Type (1 byte) = 0x00 for session message
-	// Length (3 bytes) = message length in big-endian
-	message[0] = 0x00 // Session message type
-	message[1] = byte(msgLen >> 16)
-	message[2] = byte(msgLen >> 8)
-	message[3] = byte(msgLen)
-
-	// Copy SMB2 header and body after NetBIOS header
-	smbMessage := message[4 : 4+msgLen]
-	copy(smbMessage[0:len(headerBytes)], headerBytes)
-	copy(smbMessage[len(headerBytes):], body)
-
-	// Sign the message if session requires signing
-	// Skip signing for messages without a session (SessionID == 0)
+	// Sign the SMB2 payload if session has signing enabled.
+	// We build the SMB payload (header + body) first, sign in place, then frame it.
 	//
-	// Per MS-SMB2: Sign if SigningRequired is TRUE.
-	// If signing is enabled but not required, we only sign if the client is signing
-	// (which we track by whether the session requires it).
+	// Per MS-SMB2 3.3.5.5.3: Once a session is established with signing negotiated,
+	// the server MUST sign responses. ShouldSign() checks both that signing is
+	// enabled and that a valid signing key exists.
+	smbPayload := make([]byte, len(headerBytes)+len(body))
+	copy(smbPayload, headerBytes)
+	copy(smbPayload[len(headerBytes):], body)
+
 	if hdr.SessionID != 0 {
 		if sess, ok := c.server.handler.GetSession(hdr.SessionID); ok {
-			shouldSign := sess.Signing != nil && sess.Signing.SigningRequired && sess.ShouldSign()
-			if shouldSign {
-				sess.SignMessage(smbMessage)
+			if sess.ShouldSign() {
+				sess.SignMessage(smbPayload)
 				logger.Debug("Signed outgoing SMB2 message",
 					"command", hdr.Command.String(),
 					"sessionID", hdr.SessionID)
@@ -797,16 +805,15 @@ func (c *SMBConnection) sendMessage(hdr *header.SMB2Header, body []byte) error {
 		}
 	}
 
-	_, err := c.conn.Write(message)
-	if err != nil {
-		return fmt.Errorf("write SMB message: %w", err)
+	if err := c.writeNetBIOSFrame(smbPayload); err != nil {
+		return err
 	}
 
 	logger.Debug("Sent SMB2 response",
 		"command", hdr.Command.String(),
 		"status", hdr.Status.String(),
 		"messageId", hdr.MessageID,
-		"bytes", msgLen)
+		"bytes", len(smbPayload))
 
 	return nil
 }
@@ -1016,12 +1023,25 @@ func (c *SMBConnection) SendAsyncChangeNotifyResponse(sessionID, messageID uint6
 	return c.sendMessage(respHeader, body)
 }
 
-// sendRawMessage sends an SMB2 message with NetBIOS framing (without building from SMB2Header struct).
+// sendRawMessage sends pre-encoded header and body bytes with NetBIOS framing.
+// Used for SMB1-to-SMB2 upgrade responses where the header is manually constructed.
 func (c *SMBConnection) sendRawMessage(headerBytes, body []byte) error {
+	payload := make([]byte, len(headerBytes)+len(body))
+	copy(payload, headerBytes)
+	copy(payload[len(headerBytes):], body)
+
+	return c.writeNetBIOSFrame(payload)
+}
+
+// writeNetBIOSFrame wraps an SMB2 payload in a NetBIOS session header and
+// writes it to the connection. This is the single point for all wire writes,
+// handling write timeouts, buffer pooling, and NetBIOS framing.
+//
+// NetBIOS header format: Type (1 byte, 0x00) + Length (3 bytes, big-endian).
+func (c *SMBConnection) writeNetBIOSFrame(smbPayload []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 
-	// Apply write timeout if configured
 	if c.server.config.Timeouts.Write > 0 {
 		deadline := time.Now().Add(c.server.config.Timeouts.Write)
 		if err := c.conn.SetWriteDeadline(deadline); err != nil {
@@ -1029,31 +1049,23 @@ func (c *SMBConnection) sendRawMessage(headerBytes, body []byte) error {
 		}
 	}
 
-	// Calculate total message length
-	msgLen := len(headerBytes) + len(body)
-
-	// Get a pooled buffer for the complete message (NetBIOS header + SMB2 message)
+	msgLen := len(smbPayload)
 	totalLen := 4 + msgLen
-	message := bufpool.Get(totalLen)
-	defer bufpool.Put(message)
+	frame := bufpool.Get(totalLen)
+	defer bufpool.Put(frame)
 
-	// Build NetBIOS session header at the start
-	message[0] = 0x00 // Session message type
-	message[1] = byte(msgLen >> 16)
-	message[2] = byte(msgLen >> 8)
-	message[3] = byte(msgLen)
+	// NetBIOS session header
+	frame[0] = 0x00 // Session message type
+	frame[1] = byte(msgLen >> 16)
+	frame[2] = byte(msgLen >> 8)
+	frame[3] = byte(msgLen)
 
-	// Copy header and body after NetBIOS header
-	copy(message[4:4+len(headerBytes)], headerBytes)
-	copy(message[4+len(headerBytes):], body)
+	copy(frame[4:], smbPayload)
 
-	_, err := c.conn.Write(message)
+	_, err := c.conn.Write(frame)
 	if err != nil {
 		return fmt.Errorf("write SMB message: %w", err)
 	}
-
-	logger.Debug("Sent SMB2 NEGOTIATE response (upgrade from SMB1)",
-		"bytes", msgLen)
 
 	return nil
 }
