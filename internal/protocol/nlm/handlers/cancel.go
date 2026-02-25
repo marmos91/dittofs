@@ -7,7 +7,6 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nlm/types"
 	nlm_xdr "github.com/marmos91/dittofs/internal/protocol/nlm/xdr"
-	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // CancelRequest represents an NLM_CANCEL request.
@@ -98,7 +97,7 @@ func (h *Handler) Cancel(ctx *NLMHandlerContext, req *CancelRequest) (*CancelRes
 		"length", req.Lock.Length)
 
 	// Convert file handle
-	handle := metadata.FileHandle(req.Lock.FH)
+	handle := req.Lock.FH
 	handleKey := string(handle)
 
 	// Try to cancel from blocking queue

@@ -390,33 +390,12 @@ func (h *Handler) Rename(
 	}
 
 	// ========================================================================
-	// Step 4.5: Break SMB Handle leases on source and destination
+	// Step 4.5: Cross-protocol oplock break on source and destination (placeholder)
 	// ========================================================================
-	// RENAME may delete the destination file if it exists, and the source file
-	// is effectively "moved". SMB clients use Handle leases (H) to protect against
-	// surprise deletion, so we must break H leases on:
-	//   1. Source file (being moved/renamed)
-	//   2. Destination file (if exists, being replaced)
-
-	// Break Handle leases on source file
-	if sourceHandle, sourceErr := metaSvc.GetChild(ctx.Context, fromDirHandle, req.FromName); sourceErr == nil {
-		if leaseErr := metaSvc.CheckAndBreakLeasesForDelete(ctx.Context, sourceHandle); leaseErr != nil {
-			logger.InfoCtx(ctx.Context, "RENAME: Handle lease break initiated on source",
-				"name", req.FromName,
-				"handle", fmt.Sprintf("%x", sourceHandle),
-				"client", clientIP)
-		}
-	}
-
-	// Break Handle leases on destination file (if exists)
-	if destHandle, destErr := metaSvc.GetChild(ctx.Context, toDirHandle, req.ToName); destErr == nil {
-		if leaseErr := metaSvc.CheckAndBreakLeasesForDelete(ctx.Context, destHandle); leaseErr != nil {
-			logger.InfoCtx(ctx.Context, "RENAME: Handle lease break initiated on destination",
-				"name", req.ToName,
-				"handle", fmt.Sprintf("%x", destHandle),
-				"client", clientIP)
-		}
-	}
+	// TODO(plan-03): Wire to LockManager.CheckAndBreakOpLocksForDelete() once
+	// centralized break methods are available (Phase 26 Plan 03).
+	// Previously: metaSvc.CheckAndBreakLeasesForDelete(ctx.Context, sourceHandle)
+	//             metaSvc.CheckAndBreakLeasesForDelete(ctx.Context, destHandle)
 
 	// ========================================================================
 	// Step 5: Perform rename via store

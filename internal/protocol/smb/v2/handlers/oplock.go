@@ -10,20 +10,21 @@ package handlers
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"path"
 	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
-// ErrLeaseBreakPending is the shared sentinel error from the metadata package.
-// Re-exported here for backward compatibility with code that references it
-// from the SMB handlers package.
-var ErrLeaseBreakPending = metadata.ErrLeaseBreakPending
+// ErrLeaseBreakPending indicates that a lease break is in progress and the
+// caller should wait for acknowledgment before proceeding with the operation.
+// Returned by OplockManager methods when an SMB client has a Write lease that
+// must be broken before an operation can complete.
+var ErrLeaseBreakPending = errors.New("lease break pending, operation must wait")
 
 // ============================================================================
 // SMB2 Oplock Constants [MS-SMB2] 2.2.14

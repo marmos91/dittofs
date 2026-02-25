@@ -8,7 +8,6 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nlm/types"
 	nlm_xdr "github.com/marmos91/dittofs/internal/protocol/nlm/xdr"
-	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -101,15 +100,15 @@ func (h *Handler) Test(ctx *NLMHandlerContext, req *TestRequest) (*TestResponse,
 		"length", req.Lock.Length)
 
 	// Convert file handle
-	handle := metadata.FileHandle(req.Lock.FH)
+	handle := req.Lock.FH
 
 	// Build lock owner
 	owner := lock.LockOwner{
 		OwnerID: ownerID,
 	}
 
-	// Call MetadataService to test lock
-	granted, conflict, err := h.metadataService.TestLockNLM(
+	// Call NLMService to test lock
+	granted, conflict, err := h.nlmService.TestLockNLM(
 		ctx.Context,
 		handle,
 		owner,
