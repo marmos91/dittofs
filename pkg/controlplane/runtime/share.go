@@ -79,8 +79,10 @@ type ShareConfig struct {
 	BlockedOperations []string
 }
 
-// MountInfo represents an active NFS mount from a client.
-type MountInfo struct {
+// LegacyMountInfo represents a legacy NFS mount record.
+// Deprecated: Use MountTracker and MountInfo from mounts.go instead.
+// Kept for backward compatibility with existing callers during migration.
+type LegacyMountInfo struct {
 	ClientAddr string // Client IP address
 	ShareName  string // Name of the mounted share
 	MountTime  int64  // Unix timestamp when mounted

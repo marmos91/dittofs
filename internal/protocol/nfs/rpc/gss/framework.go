@@ -15,7 +15,7 @@ import (
 	"github.com/jcmturner/gokrb5/v8/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
-	"github.com/marmos91/dittofs/pkg/identity"
+	"github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 

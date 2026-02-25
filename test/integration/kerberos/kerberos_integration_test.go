@@ -34,7 +34,7 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nfs/rpc/gss"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	dconfig "github.com/marmos91/dittofs/pkg/config"
-	"github.com/marmos91/dittofs/pkg/identity"
+	"github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
 )
 
 const (

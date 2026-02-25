@@ -305,106 +305,100 @@ func TestCheckNetgroupAccess_NetgroupNotFound(t *testing.T) {
 }
 
 // --- matchHostname tests ---
-// matchHostname is a method on *Runtime that uses the DNS cache.
+// matchHostname is now a package-level function that uses the package-level DNS cache.
 // We test it by pre-populating the DNS cache to avoid real DNS lookups.
 
 func TestMatchHostname_ExactMatch(t *testing.T) {
-	rt, _ := createTestRuntimeWithStore(t)
-	rt.ensureDNSCache()
+	ensureDNSCache()
 
 	// Pre-populate DNS cache with a known result
-	rt.dnsCache.mu.Lock()
-	rt.dnsCache.entries["192.168.1.50"] = &dnsCacheEntry{
+	pkgDNSCache.mu.Lock()
+	pkgDNSCache.entries["192.168.1.50"] = &dnsCacheEntry{
 		hostnames: []string{"host.example.com."},
 		expiresAt: time.Now().Add(5 * time.Minute),
 	}
-	rt.dnsCache.mu.Unlock()
+	pkgDNSCache.mu.Unlock()
 
-	if !rt.matchHostname("192.168.1.50", "host.example.com") {
+	if !matchHostname("192.168.1.50", "host.example.com") {
 		t.Error("Expected exact hostname match")
 	}
 }
 
 func TestMatchHostname_ExactMatch_CaseInsensitive(t *testing.T) {
-	rt, _ := createTestRuntimeWithStore(t)
-	rt.ensureDNSCache()
+	ensureDNSCache()
 
-	rt.dnsCache.mu.Lock()
-	rt.dnsCache.entries["192.168.1.50"] = &dnsCacheEntry{
+	pkgDNSCache.mu.Lock()
+	pkgDNSCache.entries["192.168.1.50"] = &dnsCacheEntry{
 		hostnames: []string{"Host.Example.COM."},
 		expiresAt: time.Now().Add(5 * time.Minute),
 	}
-	rt.dnsCache.mu.Unlock()
+	pkgDNSCache.mu.Unlock()
 
-	if !rt.matchHostname("192.168.1.50", "host.example.com") {
+	if !matchHostname("192.168.1.50", "host.example.com") {
 		t.Error("Expected case-insensitive hostname match")
 	}
 }
 
 func TestMatchHostname_WildcardMatch(t *testing.T) {
-	rt, _ := createTestRuntimeWithStore(t)
-	rt.ensureDNSCache()
+	ensureDNSCache()
 
-	rt.dnsCache.mu.Lock()
-	rt.dnsCache.entries["192.168.1.50"] = &dnsCacheEntry{
+	pkgDNSCache.mu.Lock()
+	pkgDNSCache.entries["192.168.1.50"] = &dnsCacheEntry{
 		hostnames: []string{"web01.example.com."},
 		expiresAt: time.Now().Add(5 * time.Minute),
 	}
-	rt.dnsCache.mu.Unlock()
+	pkgDNSCache.mu.Unlock()
 
-	if !rt.matchHostname("192.168.1.50", "*.example.com") {
+	if !matchHostname("192.168.1.50", "*.example.com") {
 		t.Error("Expected wildcard hostname match")
 	}
 }
 
 func TestMatchHostname_WildcardNoMatch(t *testing.T) {
-	rt, _ := createTestRuntimeWithStore(t)
-	rt.ensureDNSCache()
+	ensureDNSCache()
 
-	rt.dnsCache.mu.Lock()
-	rt.dnsCache.entries["192.168.1.50"] = &dnsCacheEntry{
+	pkgDNSCache.mu.Lock()
+	pkgDNSCache.entries["192.168.1.50"] = &dnsCacheEntry{
 		hostnames: []string{"host.other.com."},
 		expiresAt: time.Now().Add(5 * time.Minute),
 	}
-	rt.dnsCache.mu.Unlock()
+	pkgDNSCache.mu.Unlock()
 
-	if rt.matchHostname("192.168.1.50", "*.example.com") {
+	if matchHostname("192.168.1.50", "*.example.com") {
 		t.Error("Expected wildcard NOT to match different domain")
 	}
 }
 
 func TestMatchHostname_DNSLookupFails(t *testing.T) {
-	rt, _ := createTestRuntimeWithStore(t)
-	rt.ensureDNSCache()
+	ensureDNSCache()
 
 	// Pre-populate with an error entry
-	rt.dnsCache.mu.Lock()
-	rt.dnsCache.entries["192.168.1.50"] = &dnsCacheEntry{
+	pkgDNSCache.mu.Lock()
+	pkgDNSCache.entries["192.168.1.50"] = &dnsCacheEntry{
 		err:       net.UnknownNetworkError("no PTR record"),
 		expiresAt: time.Now().Add(1 * time.Minute),
 	}
-	rt.dnsCache.mu.Unlock()
+	pkgDNSCache.mu.Unlock()
 
 	// Should return false gracefully, not panic
-	if rt.matchHostname("192.168.1.50", "host.example.com") {
+	if matchHostname("192.168.1.50", "host.example.com") {
 		t.Error("Expected no match when DNS lookup fails")
 	}
 }
 
 func TestMatchHostname_MultipleHostnames(t *testing.T) {
-	rt, _ := createTestRuntimeWithStore(t)
-	rt.ensureDNSCache()
+	ensureDNSCache()
 
 	// IP has multiple PTR records
-	rt.dnsCache.mu.Lock()
-	rt.dnsCache.entries["192.168.1.50"] = &dnsCacheEntry{
+	pkgDNSCache.mu.Lock()
+	pkgDNSCache.entries["192.168.1.50"] = &dnsCacheEntry{
 		hostnames: []string{"alias1.other.com.", "actual.example.com."},
 		expiresAt: time.Now().Add(5 * time.Minute),
 	}
-	rt.dnsCache.mu.Unlock()
+	pkgDNSCache.mu.Unlock()
 
 	// Should match against the second hostname
-	if !rt.matchHostname("192.168.1.50", "*.example.com") {
+	if !matchHostname("192.168.1.50", "*.example.com") {
 		t.Error("Expected wildcard to match second PTR record")
 	}
 }

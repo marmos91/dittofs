@@ -23,5 +23,5 @@ func (c *Client) GraceStatus() (*GraceStatusResponse, error) {
 
 // ForceEndGrace force-ends the grace period (admin only).
 func (c *Client) ForceEndGrace() error {
-	return c.post("/api/v1/grace/end", nil, nil)
+	return c.post("/api/v1/adapters/nfs/grace/end", nil, nil)
 }
