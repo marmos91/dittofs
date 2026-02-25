@@ -56,7 +56,7 @@ type GracePeriodState struct {
 	// startedAt is when the grace period was started.
 	startedAt time.Time
 
-	// timer fires endGrace() after duration elapses without early completion.
+	// timer fires endGraceWithReason after duration elapses without early completion.
 	timer *time.Timer
 
 	// expectedClients maps client IDs that existed before restart.
@@ -123,7 +123,7 @@ func (g *GracePeriodState) StartGrace(expectedClientIDs []uint64) {
 
 	// Start timer for automatic exit
 	g.timer = time.AfterFunc(g.duration, func() {
-		g.endGrace()
+		g.endGraceWithReason("ended")
 	})
 }
 
@@ -179,12 +179,6 @@ func (g *GracePeriodState) ClientReclaimed(clientID uint64) {
 	}
 
 	g.mu.Unlock()
-}
-
-// endGrace transitions out of the grace period. Idempotent.
-// Called by the timer goroutine or by ClientReclaimed when all clients are done.
-func (g *GracePeriodState) endGrace() {
-	g.endGraceWithReason("ended")
 }
 
 // Stop cleanly shuts down the grace period state, stopping any pending timer.

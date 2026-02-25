@@ -580,10 +580,10 @@ func IsNativeSMBAvailable() bool {
 		return true
 	case "darwin":
 		// macOS always has mount_smbfs
-		return fileExists("/sbin/mount_smbfs") || fileExists("/usr/sbin/mount_smbfs")
+		return FileExists("/sbin/mount_smbfs") || FileExists("/usr/sbin/mount_smbfs")
 	case "linux":
 		// Linux needs cifs-utils installed
-		if fileExists("/sbin/mount.cifs") || fileExists("/usr/sbin/mount.cifs") {
+		if FileExists("/sbin/mount.cifs") || FileExists("/usr/sbin/mount.cifs") {
 			return true
 		}
 		// Try running mount -t cifs to see if kernel module is available
@@ -594,12 +594,6 @@ func IsNativeSMBAvailable() bool {
 	default:
 		return false
 	}
-}
-
-// fileExists checks if a file exists.
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
 }
 
 // SkipIfNoSMBMount skips the test if no native SMB mount capability is available.

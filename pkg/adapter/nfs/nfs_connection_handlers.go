@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
@@ -298,7 +299,7 @@ func (c *NFSConnection) handleNLMProcedure(ctx context.Context, call *rpc.RPCCal
 		return []byte{}, nil
 	}
 
-	procedureName := fmt.Sprintf("NLM_%s", procedure.Name)
+	procedureName := "NLM_" + procedure.Name
 
 	// Start a span for this NLM operation
 	ctx, span := telemetry.StartSpan(ctx, "nlm."+procedure.Name,
@@ -396,7 +397,7 @@ func (c *NFSConnection) handleNSMProcedure(ctx context.Context, call *rpc.RPCCal
 		return []byte{}, nil
 	}
 
-	procedureName := fmt.Sprintf("NSM_%s", procedure.Name)
+	procedureName := "NSM_" + procedure.Name
 
 	// Start a span for this NSM operation
 	ctx, span := telemetry.StartSpan(ctx, "nsm."+procedure.Name,
@@ -565,13 +566,7 @@ func (c *NFSConnection) isOperationBlocked(opName string) bool {
 		return false
 	}
 
-	blockedOps := settings.GetBlockedOperations()
-	for _, blocked := range blockedOps {
-		if blocked == opName {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(settings.GetBlockedOperations(), opName)
 }
 
 // maybeRegisterBackchannel checks if this connection has been bound for
@@ -637,8 +632,7 @@ func (c *NFSConnection) makeBlockedOpResponse() *nfs.HandlerResult {
 	response := make([]byte, 12)
 
 	// Write status code as big-endian uint32
-	status := uint32(nfs_types.NFS3ErrNotSupp)
-	binary.BigEndian.PutUint32(response[0:4], status)
+	binary.BigEndian.PutUint32(response[0:4], uint32(nfs_types.NFS3ErrNotSupp))
 	// bytes 4-7: pre_op_attr present flag = 0 (false)
 	// bytes 8-11: post_op_attr present flag = 0 (false)
 	// (already zero-initialized)

@@ -56,6 +56,10 @@ func (h *Handler) handleClose(ctx *types.CompoundContext, reader io.Reader) *typ
 			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
 		}
 	}
+	// In NFSv4.1, per-owner seqid is obsoleted by the slot table (SEQUENCE).
+	if ctx.SkipOwnerSeqid {
+		closeSeqid = 0
+	}
 
 	stateid, err := types.DecodeStateid4(reader)
 	if err != nil {

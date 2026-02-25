@@ -46,6 +46,17 @@ func NewLeaseState(clientID uint64, duration time.Duration, onExpire func(uint64
 	}
 
 	ls.timer = time.AfterFunc(duration, func() {
+		// Check if the lease was renewed between timer fire and callback execution.
+		// A Renew() call resets the timer, but if it races with this callback
+		// the timer may fire before Reset takes effect. We re-check under the
+		// lock and only expire if the lease is truly stale.
+		ls.mu.Lock()
+		if ls.stopped || time.Since(ls.LastRenew) < ls.Duration {
+			ls.mu.Unlock()
+			return
+		}
+		ls.mu.Unlock()
+
 		// Timer callback must NOT hold ls.mu when calling onExpire
 		// to avoid deadlock with StateManager.mu.
 		if onExpire != nil {

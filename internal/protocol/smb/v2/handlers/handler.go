@@ -61,6 +61,11 @@ type Handler struct {
 	// via SPNEGO in addition to NTLM. The same provider is used by the NFS
 	// adapter, ensuring a shared Kerberos infrastructure across protocols.
 	// nil when Kerberos is not enabled.
+	//
+	// Lifecycle: Not initialized by NewHandler/NewHandlerWithSessionManager.
+	// Must be injected by the adapter layer (e.g., SMBAdapter.SetKerberosProvider)
+	// before Serve() is called. When nil, Kerberos auth requests return
+	// STATUS_LOGON_FAILURE gracefully (NTLM and guest auth still work).
 	KerberosProvider *kerberos.Provider
 }
 

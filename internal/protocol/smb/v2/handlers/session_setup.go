@@ -250,12 +250,20 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte) (
 		return NewErrorResult(types.StatusLogonFailure), nil
 	}
 
+	// Derive the SMB (CIFS) service principal from the configured NFS principal.
+	// The shared Kerberos provider is configured with the NFS SPN (nfs/host@REALM),
+	// but SMB clients present tickets for the CIFS SPN (cifs/host@REALM).
+	smbPrincipal := h.KerberosProvider.ServicePrincipal()
+	if strings.HasPrefix(smbPrincipal, "nfs/") {
+		smbPrincipal = "cifs/" + strings.TrimPrefix(smbPrincipal, "nfs/")
+	}
+
 	// Build gokrb5 service settings using the shared keytab
 	settings := service.NewSettings(
 		h.KerberosProvider.Keytab(),
 		service.MaxClockSkew(h.KerberosProvider.MaxClockSkew()),
 		service.DecodePAC(false),
-		service.KeytabPrincipal(h.KerberosProvider.ServicePrincipal()),
+		service.KeytabPrincipal(smbPrincipal),
 	)
 
 	// Verify the AP-REQ
@@ -314,8 +322,11 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte) (
 		"principal", principalName,
 		"realm", realm)
 
-	// Build SPNEGO accept-complete response
-	// For Kerberos, we wrap the success in a NegTokenResp with accept-completed state
+	// Build SPNEGO accept-complete response.
+	// For Kerberos, we wrap the success in a NegTokenResp with accept-completed state.
+	// The mechToken (AP-REP) is nil because SMB2 does not require it: the SPNEGO
+	// accept-completed negState is sufficient to signal success. Windows clients
+	// and Samba both accept a nil responseToken in the final leg.
 	spnegoResp, err := spnego.BuildAcceptComplete(spnego.OIDKerberosV5, nil)
 	if err != nil {
 		logger.Debug("Failed to build SPNEGO accept response", "error", err)

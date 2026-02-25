@@ -100,10 +100,7 @@ func FileExists(path string) bool {
 // DirExists checks if a directory exists.
 func DirExists(path string) bool {
 	info, err := os.Stat(path)
-	if err != nil {
-		return false
-	}
-	return info.IsDir()
+	return err == nil && info.IsDir()
 }
 
 // ReadFile reads and returns the contents of a file.

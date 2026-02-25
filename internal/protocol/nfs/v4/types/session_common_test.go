@@ -415,7 +415,13 @@ func TestCallbackSecParms4_RoundTrip_AuthNone(t *testing.T) {
 func TestCallbackSecParms4_RoundTrip_AuthSys(t *testing.T) {
 	original := CallbackSecParms4{
 		CbSecFlavor: 1, // AUTH_SYS
-		AuthSysData: []byte{0x01, 0x02, 0x03, 0x04},
+		AuthSysParms: &AuthSysParms{
+			Stamp:       12345,
+			MachineName: "test",
+			UID:         1000,
+			GID:         1000,
+			GIDs:        []uint32{4, 24},
+		},
 	}
 
 	var buf bytes.Buffer
@@ -431,8 +437,14 @@ func TestCallbackSecParms4_RoundTrip_AuthSys(t *testing.T) {
 	if decoded.CbSecFlavor != 1 {
 		t.Errorf("CbSecFlavor = %d, want 1 (AUTH_SYS)", decoded.CbSecFlavor)
 	}
-	if !bytes.Equal(decoded.AuthSysData, original.AuthSysData) {
-		t.Errorf("AuthSysData = %v, want %v", decoded.AuthSysData, original.AuthSysData)
+	if decoded.AuthSysParms == nil {
+		t.Fatal("AuthSysParms is nil")
+	}
+	if decoded.AuthSysParms.UID != 1000 {
+		t.Errorf("UID = %d, want 1000", decoded.AuthSysParms.UID)
+	}
+	if decoded.AuthSysParms.MachineName != "test" {
+		t.Errorf("MachineName = %q, want %q", decoded.AuthSysParms.MachineName, "test")
 	}
 }
 

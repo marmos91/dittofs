@@ -43,8 +43,11 @@ type V41ClientRecord struct {
 	// ImplDate is the build date from nfs_impl_id4.
 	ImplDate time.Time
 
-	// SequenceID is the eir_sequenceid -- starts at 1 for new clients.
-	// Used by CREATE_SESSION (Phase 19) to detect replays.
+	// SequenceID is the CREATE_SESSION slot sequence ID, initialized to 0.
+	// ExchangeID returns SequenceID+1 as eir_sequenceid so the client
+	// sends that value as csa_sequenceid. CreateSession validates
+	// csa_sequenceid == SequenceID+1 (the "new request" check per
+	// RFC 8881 Section 18.36), then advances SequenceID to match.
 	SequenceID uint32
 
 	// Confirmed becomes true after CREATE_SESSION completes (Phase 19).
@@ -218,9 +221,13 @@ func (sm *StateManager) ExchangeID(
 		resultFlags |= types.EXCHGID4_FLAG_CONFIRMED_R
 	}
 
+	// Per RFC 8881 Section 18.35, eir_sequenceid must be the value the
+	// server will accept in the next CREATE_SESSION. Since CreateSession
+	// checks csa_sequenceid == slot+1, we return slot+1 here so the
+	// client sends exactly that value.
 	return &ExchangeIDResult{
 		ClientID:     record.ClientID,
-		SequenceID:   record.SequenceID,
+		SequenceID:   record.SequenceID + 1,
 		Flags:        resultFlags,
 		ServerOwner:  sm.serverIdentity.ServerOwner,
 		ServerScope:  sm.serverIdentity.ServerScope,
@@ -242,7 +249,7 @@ func (sm *StateManager) createV41Client(
 		ClientID:    sm.generateClientID(),
 		OwnerID:     make([]byte, len(ownerID)),
 		Verifier:    verifier,
-		SequenceID:  1,
+		SequenceID:  0,
 		ClientAddr:  clientAddr,
 		CreatedAt:   now,
 		LastRenewal: now,
@@ -311,22 +318,15 @@ func (sm *StateManager) purgeV41Client(record *V41ClientRecord) {
 // Helper Methods (for REST API in Plan 02)
 // ============================================================================
 
-// ListV41Clients returns copies of all registered v4.1 client records.
+// ListV41Clients returns pointers to all registered v4.1 client records.
 // Thread-safe: acquires sm.mu.RLock.
-func (sm *StateManager) ListV41Clients() []V41ClientRecord {
+func (sm *StateManager) ListV41Clients() []*V41ClientRecord {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
-	clients := make([]V41ClientRecord, 0, len(sm.v41ClientsByID))
+	clients := make([]*V41ClientRecord, 0, len(sm.v41ClientsByID))
 	for _, record := range sm.v41ClientsByID {
-		rec := *record
-		if rec.OwnerID != nil {
-			ownerCopy := make([]byte, len(rec.OwnerID))
-			copy(ownerCopy, rec.OwnerID)
-			rec.OwnerID = ownerCopy
-		}
-		rec.Lease = nil
-		clients = append(clients, rec)
+		clients = append(clients, record)
 	}
 	return clients
 }
@@ -520,9 +520,12 @@ func DefaultForeLimits() ChannelLimits {
 }
 
 // DefaultBackLimits returns the default server limits for back channel negotiation.
+// MaxSlots must be at least 16 because the Linux kernel NFS client requests 16
+// back channel slots and rejects CREATE_SESSION with EINVAL if the server
+// returns fewer than requested.
 func DefaultBackLimits() ChannelLimits {
 	return ChannelLimits{
-		MaxSlots:              8,
+		MaxSlots:              32,
 		MaxRequestSize:        65536, // 64KB
 		MaxResponseSize:       65536, // 64KB
 		MaxResponseSizeCached: 65536, // 64KB
@@ -531,45 +534,36 @@ func DefaultBackLimits() ChannelLimits {
 	}
 }
 
-// negotiateChannelAttrs clamps the client-requested channel attributes
-// to the server-imposed limits, per RFC 8881 Section 18.36.
+// negotiateChannelAttrs negotiates channel attributes per RFC 8881 Section 18.36.
+// The server MUST NOT return values larger than the client requested (the client
+// knows its own resource limits). The server MAY reduce values down to its own
+// minimums.
 func negotiateChannelAttrs(requested types.ChannelAttrs, limits ChannelLimits) types.ChannelAttrs {
 	negotiated := types.ChannelAttrs{
 		// HeaderPadSize is always 0 (no RDMA).
 		HeaderPadSize: 0,
-		// MaxOperations is 0 (unlimited per locked decision).
-		MaxOperations: 0,
+		// MaxOperations: min(client request, server limit).
+		// Server MUST NOT exceed client's requested value (RFC 8881).
+		MaxOperations: min(requested.MaxOperations, types.MaxCompoundOps),
 		// RdmaIrd is always nil (no RDMA per locked decision).
 		RdmaIrd: nil,
 	}
 
-	// Clamp MaxRequests (slots) to [1, limits.MaxSlots]
+	// MaxRequests (slots): at least 1, at most the server's limit,
+	// but never more than what the client asked for.
 	negotiated.MaxRequests = clampUint32(requested.MaxRequests, 1, limits.MaxSlots)
 
-	// Clamp MaxRequestSize to [MinRequestSize, limits.MaxRequestSize]
-	negotiated.MaxRequestSize = clampUint32(requested.MaxRequestSize, limits.MinRequestSize, limits.MaxRequestSize)
-
-	// Clamp MaxResponseSize to [MinResponseSize, limits.MaxResponseSize]
-	negotiated.MaxResponseSize = clampUint32(requested.MaxResponseSize, limits.MinResponseSize, limits.MaxResponseSize)
-
-	// Clamp MaxResponseSizeCached to min(requested, limits.MaxResponseSizeCached)
-	negotiated.MaxResponseSizeCached = requested.MaxResponseSizeCached
-	if negotiated.MaxResponseSizeCached > limits.MaxResponseSizeCached {
-		negotiated.MaxResponseSizeCached = limits.MaxResponseSizeCached
-	}
+	// Size fields: min(requested, server_max). Never exceed the client's request.
+	negotiated.MaxRequestSize = min(requested.MaxRequestSize, limits.MaxRequestSize)
+	negotiated.MaxResponseSize = min(requested.MaxResponseSize, limits.MaxResponseSize)
+	negotiated.MaxResponseSizeCached = min(requested.MaxResponseSizeCached, limits.MaxResponseSizeCached)
 
 	return negotiated
 }
 
-// clampUint32 clamps v to [min, max].
-func clampUint32(v, min, max uint32) uint32 {
-	if v < min {
-		return min
-	}
-	if v > max {
-		return max
-	}
-	return v
+// clampUint32 clamps v to [lo, hi].
+func clampUint32(v, lo, hi uint32) uint32 {
+	return min(max(v, lo), hi)
 }
 
 // HasAcceptableCallbackSecurity checks whether at least one of the callback

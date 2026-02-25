@@ -14,6 +14,7 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOUNT_POINT="${DITTOFS_MOUNT:-/tmp/dittofs-test}"
 NFS_VERSION=""
 
@@ -108,27 +109,96 @@ cp -rs "$TESTS_DIR" "$WORK_DIR/tests"
 
 cd "$MOUNT_POINT"
 
+# Determine effective NFS version (from flag or mount detection)
+EFFECTIVE_NFS_VERSION="$NFS_VERSION"
+if [[ -z "$EFFECTIVE_NFS_VERSION" ]]; then
+    EFFECTIVE_NFS_VERSION=$(mount | grep "$MOUNT_POINT" | sed -n 's/.*vers=\([0-9.]*\).*/\1/p' 2>/dev/null || echo "")
+fi
+
+# Select known failures file based on NFS version
+case "$EFFECTIVE_NFS_VERSION" in
+    4|4.0|4.1|4.2)
+        KNOWN_FAILURES_FILE="$SCRIPT_DIR/known_failures_v4.txt"
+        ;;
+    *)
+        KNOWN_FAILURES_FILE="$SCRIPT_DIR/known_failures.txt"
+        ;;
+esac
+
+# Parse file-level exclusion patterns from known failures file
+EXCLUDE_PATTERNS=()
+if [[ -f "$KNOWN_FAILURES_FILE" ]]; then
+    while IFS='|' read -r pattern _; do
+        # Trim leading/trailing whitespace
+        pattern="${pattern#"${pattern%%[![:space:]]*}"}"
+        pattern="${pattern%"${pattern##*[![:space:]]}"}"
+        # Skip comments and empty lines
+        [[ -z "$pattern" || "$pattern" == \#* ]] && continue
+        # Skip non-file patterns (:: separator = test name, not file path)
+        [[ "$pattern" == *::* ]] && continue
+        # Strip subtest marker (:testN) to get file-level path
+        pattern="${pattern%%:test[0-9]*}"
+        EXCLUDE_PATTERNS+=("$pattern")
+    done < "$KNOWN_FAILURES_FILE"
+fi
+
+# Check if a test file matches any exclusion pattern
+is_excluded() {
+    local test_path="$1"  # relative to tests dir, e.g. "unlink/14.t"
+    for pat in "${EXCLUDE_PATTERNS[@]}"; do
+        # shellcheck disable=SC2254
+        case "$test_path" in
+            $pat) return 0 ;;
+        esac
+        # Try with .t suffix for patterns without extension (e.g. "open/etxtbsy")
+        if [[ "$pat" != *.t && "$pat" != *\* ]]; then
+            # shellcheck disable=SC2254
+            case "$test_path" in
+                ${pat}.t) return 0 ;;
+                ${pat}/*) return 0 ;;
+            esac
+        fi
+    done
+    return 1
+}
+
 echo "Running POSIX compliance tests..."
 echo "Mount point: $MOUNT_POINT"
 if [[ -n "$NFS_VERSION" ]]; then
     echo "NFS version: NFSv${NFS_VERSION}"
+elif [[ -n "$EFFECTIVE_NFS_VERSION" ]]; then
+    echo "NFS version: NFSv${EFFECTIVE_NFS_VERSION} (detected from mount)"
 else
-    # Try to detect NFS version from mount output
-    DETECTED_VERSION=$(mount | grep "$MOUNT_POINT" | sed -n 's/.*vers=\([0-9.]*\).*/\1/p' 2>/dev/null || echo "")
-    if [[ -n "$DETECTED_VERSION" ]]; then
-        echo "NFS version: NFSv${DETECTED_VERSION} (detected from mount)"
-    else
-        echo "NFS version: unknown (use --nfs-version to specify)"
-    fi
+    echo "NFS version: unknown (use --nfs-version to specify)"
 fi
 echo "Tests directory: $WORK_DIR/tests"
 echo "pjdfstest binary: $PJDFSTEST_BIN"
+if [[ ${#EXCLUDE_PATTERNS[@]} -gt 0 ]]; then
+    echo "Known failures: ${#EXCLUDE_PATTERNS[@]} patterns from $(basename "$KNOWN_FAILURES_FILE")"
+fi
 echo ""
 
+# Collect test files, filtering out known failures
+collect_tests() {
+    local search_dir="$1"
+    find -L "$search_dir" -name '*.t' -type f 2>/dev/null | sort | while IFS= read -r test_file; do
+        local rel_path="${test_file#$WORK_DIR/tests/}"
+        if ! is_excluded "$rel_path"; then
+            echo "$test_file"
+        fi
+    done
+}
+
 if [[ $# -gt 0 ]]; then
-    # Run specific test pattern
-    exec prove -rv "$WORK_DIR/tests/$1"
+    TEST_FILES=$(collect_tests "$WORK_DIR/tests/$1")
 else
-    # Run all tests
-    exec prove -rv "$WORK_DIR/tests"
+    TEST_FILES=$(collect_tests "$WORK_DIR/tests")
 fi
+
+if [[ -z "$TEST_FILES" ]]; then
+    echo "No test files found (all excluded or missing)"
+    exit 1
+fi
+
+# shellcheck disable=SC2086
+exec prove -rv $TEST_FILES

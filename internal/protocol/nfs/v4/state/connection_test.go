@@ -17,7 +17,7 @@ func setupClientAndSession(t *testing.T, sm *StateManager) (uint64, types.Sessio
 
 	result, _, err := sm.CreateSession(
 		clientID,
-		seqID+1,
+		seqID,
 		0,
 		defaultForeAttrs(),
 		defaultBackAttrs(),

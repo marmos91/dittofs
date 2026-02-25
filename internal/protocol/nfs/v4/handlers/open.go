@@ -76,6 +76,11 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 	if err != nil {
 		return openError(types.NFS4ERR_BADXDR)
 	}
+	// In NFSv4.1, per-owner seqid is obsoleted by the slot table (SEQUENCE).
+	// RFC 8881 Section 8.13: seqid MUST be ignored by the server.
+	if ctx.SkipOwnerSeqid {
+		seqid = 0
+	}
 	logger.Debug("NFSv4 OPEN", "seqid", seqid, "client", ctx.ClientAddr)
 
 	// 2. share_access (uint32)
@@ -134,6 +139,22 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 			if _, err := io.ReadFull(reader, verifier[:]); err != nil {
 				return openError(types.NFS4ERR_BADXDR)
 			}
+			createMode = types.GUARDED4
+		case types.EXCLUSIVE4_1:
+			// NFSv4.1 exclusive create (RFC 8881 Section 18.16.3):
+			// createverf4 (8 bytes) + cattr (fattr4)
+			var verifier [8]byte
+			if _, err := io.ReadFull(reader, verifier[:]); err != nil {
+				return openError(types.NFS4ERR_BADXDR)
+			}
+			setAttrs, _, fattr4Err := attrs.DecodeFattr4ToSetAttrs(reader)
+			if fattr4Err != nil {
+				if nfsErr, ok := fattr4Err.(attrs.NFS4StatusError); ok {
+					return openError(nfsErr.NFS4Status())
+				}
+				return openError(types.NFS4ERR_BADXDR)
+			}
+			createAttrs = setAttrs
 			createMode = types.GUARDED4
 		default:
 			return openError(types.NFS4ERR_INVAL)
@@ -343,6 +364,16 @@ func (h *Handler) handleOpenClaimNull(
 		}
 	}
 
+	// In NFSv4.1, OPEN_CONFIRM was removed (RFC 8881 Section 18.16).
+	// The server MUST NOT set OPEN4_RESULT_CONFIRM; owners are implicitly
+	// confirmed through the session/slot mechanism.
+	if ctx.SkipOwnerSeqid && openResult.RFlags&types.OPEN4_RESULT_CONFIRM != 0 {
+		openResult.RFlags &^= types.OPEN4_RESULT_CONFIRM
+		// Auto-confirm the owner so subsequent OPENs don't require confirmation.
+		// Use ConfirmOpenV41 which does NOT increment seqid (must stay at 1).
+		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid)
+	}
+
 	// ========================================================================
 	// Try to grant a delegation
 	// ========================================================================
@@ -437,6 +468,12 @@ func (h *Handler) handleOpenClaimPrevious(
 			OpCode: types.OP_OPEN,
 			Data:   openResult.CachedData,
 		}
+	}
+
+	// In NFSv4.1, OPEN_CONFIRM was removed; auto-confirm if needed.
+	if ctx.SkipOwnerSeqid && openResult.RFlags&types.OPEN4_RESULT_CONFIRM != 0 {
+		openResult.RFlags &^= types.OPEN4_RESULT_CONFIRM
+		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid)
 	}
 
 	logger.Debug("NFSv4 OPEN CLAIM_PREVIOUS successful",

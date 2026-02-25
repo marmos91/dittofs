@@ -258,7 +258,7 @@ func TestCreateSession_Success(t *testing.T) {
 	clientID, seqID := registerV41Client(t, sm)
 
 	result, cached, err := sm.CreateSession(
-		clientID, seqID+1, types.CREATE_SESSION4_FLAG_CONN_BACK_CHAN,
+		clientID, seqID, types.CREATE_SESSION4_FLAG_CONN_BACK_CHAN,
 		defaultForeAttrs(), defaultBackAttrs(), 0x40000000, nil,
 	)
 	if err != nil {
@@ -278,8 +278,8 @@ func TestCreateSession_Success(t *testing.T) {
 	}
 
 	// Verify sequence ID was incremented
-	if result.SequenceID != seqID+1 {
-		t.Errorf("SequenceID = %d, want %d", result.SequenceID, seqID+1)
+	if result.SequenceID != seqID {
+		t.Errorf("SequenceID = %d, want %d", result.SequenceID, seqID)
 	}
 
 	// Verify PERSIST flag was cleared
@@ -317,7 +317,7 @@ func TestCreateSession_ConfirmsClient(t *testing.T) {
 	}
 
 	_, _, err := sm.CreateSession(
-		clientID, seqID+1, 0,
+		clientID, seqID, 0,
 		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
 	)
 	if err != nil {
@@ -360,7 +360,7 @@ func TestCreateSession_Replay(t *testing.T) {
 
 	// First request
 	_, _, err := sm.CreateSession(
-		clientID, seqID+1, 0,
+		clientID, seqID, 0,
 		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
 	)
 	if err != nil {
@@ -370,9 +370,9 @@ func TestCreateSession_Replay(t *testing.T) {
 	// Cache the response (handler normally does this)
 	sm.CacheCreateSessionResponse(clientID, []byte("cached-response-bytes"))
 
-	// Replay with same seqid (which is now seqID+1 after increment)
+	// Replay with same seqid (which is now seqID after increment)
 	replayResult, cached, err := sm.CreateSession(
-		clientID, seqID+1, 0,
+		clientID, seqID, 0,
 		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
 	)
 	if err != nil {
@@ -401,16 +401,16 @@ func TestCreateSession_ReplayNoCachedResponse(t *testing.T) {
 
 	// First request - but don't cache the response
 	_, _, err := sm.CreateSession(
-		clientID, seqID+1, 0,
+		clientID, seqID, 0,
 		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession error: %v", err)
 	}
 
-	// Replay with same seqid (record's SequenceID is now seqID+1)
+	// Replay with same seqid (record's SequenceID is now seqID)
 	_, _, err = sm.CreateSession(
-		clientID, seqID+1, 0,
+		clientID, seqID, 0,
 		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
 	)
 	if err == nil {
@@ -437,7 +437,7 @@ func TestCreateSession_MisorderedSeqID(t *testing.T) {
 		t.Errorf("Expected ErrSeqMisordered, got: %v", err)
 	}
 
-	// Send with seqid lower than current (seqID=1 initially, so try 0)
+	// Send with seqid lower than current (slot=0, so try 0 which hits replay-without-cache)
 	_, _, err = sm.CreateSession(
 		clientID, 0, 0,
 		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
@@ -461,7 +461,7 @@ func TestCreateSession_PerClientLimit(t *testing.T) {
 	// Create 3 sessions (the max)
 	for i := 0; i < 3; i++ {
 		_, _, err := sm.CreateSession(
-			clientID, seqID+uint32(i)+1, 0,
+			clientID, seqID+uint32(i), 0,
 			defaultForeAttrs(), defaultBackAttrs(), 0, nil,
 		)
 		if err != nil {
@@ -473,7 +473,7 @@ func TestCreateSession_PerClientLimit(t *testing.T) {
 
 	// 4th should fail
 	_, _, err := sm.CreateSession(
-		clientID, seqID+4, 0,
+		clientID, seqID+3, 0,
 		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
 	)
 	if err == nil {
@@ -489,7 +489,7 @@ func TestCreateSession_PersistFlagCleared(t *testing.T) {
 	clientID, seqID := registerV41Client(t, sm)
 
 	result, _, err := sm.CreateSession(
-		clientID, seqID+1,
+		clientID, seqID,
 		types.CREATE_SESSION4_FLAG_PERSIST|types.CREATE_SESSION4_FLAG_CONN_BACK_CHAN,
 		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
 	)
@@ -511,7 +511,7 @@ func TestCreateSession_ConnBackChanFlag(t *testing.T) {
 
 	// Without CONN_BACK_CHAN
 	result, _, err := sm.CreateSession(
-		clientID, seqID+1, 0,
+		clientID, seqID, 0,
 		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
 	)
 	if err != nil {
@@ -544,7 +544,7 @@ func TestCreateSession_ChannelNegotiation(t *testing.T) {
 	}
 
 	result, _, err := sm.CreateSession(
-		clientID, seqID+1, 0,
+		clientID, seqID, 0,
 		oversizedFore, defaultBackAttrs(), 0, nil,
 	)
 	if err != nil {
@@ -581,7 +581,7 @@ func TestDestroySession_Success(t *testing.T) {
 	clientID, seqID := registerV41Client(t, sm)
 
 	result, _, err := sm.CreateSession(
-		clientID, seqID+1, 0,
+		clientID, seqID, 0,
 		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
 	)
 	if err != nil {
@@ -625,7 +625,7 @@ func TestDestroySession_InFlightRequest(t *testing.T) {
 	clientID, seqID := registerV41Client(t, sm)
 
 	result, _, err := sm.CreateSession(
-		clientID, seqID+1, 0,
+		clientID, seqID, 0,
 		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
 	)
 	if err != nil {
@@ -658,7 +658,7 @@ func TestForceDestroySession_BypassesInFlight(t *testing.T) {
 	clientID, seqID := registerV41Client(t, sm)
 
 	result, _, err := sm.CreateSession(
-		clientID, seqID+1, 0,
+		clientID, seqID, 0,
 		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
 	)
 	if err != nil {
@@ -722,8 +722,8 @@ func TestNegotiateChannelAttrs_ClampToLimits(t *testing.T) {
 	if result.MaxResponseSizeCached != 65536 {
 		t.Errorf("MaxResponseSizeCached = %d, want 65536", result.MaxResponseSizeCached)
 	}
-	if result.MaxOperations != 0 {
-		t.Errorf("MaxOperations = %d, want 0", result.MaxOperations)
+	if result.MaxOperations != 10 {
+		t.Errorf("MaxOperations = %d, want 10", result.MaxOperations)
 	}
 	if result.MaxRequests != 64 {
 		t.Errorf("MaxRequests = %d, want 64", result.MaxRequests)
@@ -736,7 +736,8 @@ func TestNegotiateChannelAttrs_ClampToLimits(t *testing.T) {
 func TestNegotiateChannelAttrs_BelowFloor(t *testing.T) {
 	limits := DefaultForeLimits()
 
-	// Request below floor
+	// Request below server limits -- per RFC 8881, server MUST NOT
+	// return values larger than the client requested.
 	requested := types.ChannelAttrs{
 		MaxRequestSize:  100,
 		MaxResponseSize: 100,
@@ -745,12 +746,14 @@ func TestNegotiateChannelAttrs_BelowFloor(t *testing.T) {
 
 	result := negotiateChannelAttrs(requested, limits)
 
-	if result.MaxRequestSize != 8192 {
-		t.Errorf("MaxRequestSize = %d, want 8192 (floor)", result.MaxRequestSize)
+	// Size fields use min(requested, server_max), so client's value is kept.
+	if result.MaxRequestSize != 100 {
+		t.Errorf("MaxRequestSize = %d, want 100 (server must not exceed client)", result.MaxRequestSize)
 	}
-	if result.MaxResponseSize != 8192 {
-		t.Errorf("MaxResponseSize = %d, want 8192 (floor)", result.MaxResponseSize)
+	if result.MaxResponseSize != 100 {
+		t.Errorf("MaxResponseSize = %d, want 100 (server must not exceed client)", result.MaxResponseSize)
 	}
+	// MaxRequests still has a minimum of 1 to prevent zero-slot sessions.
 	if result.MaxRequests != 1 {
 		t.Errorf("MaxRequests = %d, want 1 (minimum)", result.MaxRequests)
 	}
@@ -767,8 +770,8 @@ func TestNegotiateChannelAttrs_BackChannelSmaller(t *testing.T) {
 
 	result := negotiateChannelAttrs(requested, backLimits)
 
-	if result.MaxRequests != 8 {
-		t.Errorf("Back channel MaxRequests = %d, want 8", result.MaxRequests)
+	if result.MaxRequests != 32 {
+		t.Errorf("Back channel MaxRequests = %d, want 32", result.MaxRequests)
 	}
 	if result.MaxRequestSize != 65536 {
 		t.Errorf("Back channel MaxRequestSize = %d, want 65536", result.MaxRequestSize)
@@ -909,7 +912,7 @@ func TestReaper_ExpiredLease(t *testing.T) {
 
 	// Create a session (this confirms the client and creates its lease)
 	_, _, err := sm.CreateSession(
-		clientID, seqID+1, 0,
+		clientID, seqID, 0,
 		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
 	)
 	if err != nil {
@@ -978,7 +981,7 @@ func TestReaper_ActiveLeaseNotCleaned(t *testing.T) {
 
 	// Create a session (confirms client, starts lease)
 	_, _, err := sm.CreateSession(
-		clientID, seqID+1, 0,
+		clientID, seqID, 0,
 		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
 	)
 	if err != nil {
@@ -1027,7 +1030,7 @@ func TestPurgeV41Client_DestroysAllSessions(t *testing.T) {
 	sessionIDs := make([]types.SessionId4, 3)
 	for i := 0; i < 3; i++ {
 		result, _, err := sm.CreateSession(
-			clientID, seqID+uint32(i)+1, 0,
+			clientID, seqID+uint32(i), 0,
 			defaultForeAttrs(), defaultBackAttrs(), 0, nil,
 		)
 		if err != nil {
@@ -1080,7 +1083,7 @@ func TestListSessionsForClient_MultipleSessions(t *testing.T) {
 	// Create 2 sessions
 	for i := 0; i < 2; i++ {
 		_, _, err := sm.CreateSession(
-			clientID, seqID+uint32(i)+1, 0,
+			clientID, seqID+uint32(i), 0,
 			defaultForeAttrs(), defaultBackAttrs(), 0, nil,
 		)
 		if err != nil {

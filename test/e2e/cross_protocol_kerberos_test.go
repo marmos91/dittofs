@@ -349,9 +349,13 @@ func installCrossProtocolKerberosConfig(t *testing.T, kdc *framework.KDCHelper) 
 	t.Cleanup(func() {
 		if len(origKrb5Conf) > 0 {
 			_ = os.WriteFile("/etc/krb5.conf", origKrb5Conf, 0644)
+		} else {
+			_ = os.Remove("/etc/krb5.conf")
 		}
 		if len(origKeytab) > 0 {
 			_ = os.WriteFile("/etc/krb5.keytab", origKeytab, 0600)
+		} else {
+			_ = os.Remove("/etc/krb5.keytab")
 		}
 		_ = exec.Command("systemctl", "restart", "rpc-gssd").Run()
 	})

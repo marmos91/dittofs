@@ -292,9 +292,10 @@ const (
 // Specifies how attributes are set during creation (used by OPEN with CREATE).
 
 const (
-	UNCHECKED4 = 0 // Set attrs; if exists, no error
-	GUARDED4   = 1 // Set attrs; if exists, error
-	EXCLUSIVE4 = 2 // Use verifier for exclusive create
+	UNCHECKED4   = 0 // Set attrs; if exists, no error
+	GUARDED4     = 1 // Set attrs; if exists, error
+	EXCLUSIVE4   = 2 // Use verifier for exclusive create (v4.0)
+	EXCLUSIVE4_1 = 3 // Verifier + attrs for exclusive create (v4.1, RFC 8881)
 )
 
 // ============================================================================

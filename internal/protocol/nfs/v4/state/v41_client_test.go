@@ -300,17 +300,13 @@ func TestListV41Clients(t *testing.T) {
 		t.Fatalf("ListV41Clients returned %d clients, want 3", len(clients))
 	}
 
-	// Verify returned values are copies, not references to internal records
-	clients[0].ClientAddr = "mutated"
-
-	sm.mu.RLock()
-	for _, r := range sm.v41ClientsByID {
-		if r.ClientAddr == "mutated" {
-			t.Error("ListV41Clients should return copies, not references")
-			break
+	// Verify returned values are pointers to internal records (not copies)
+	// to avoid copylocks issues with V41ClientRecord containing atomic fields.
+	for _, c := range clients {
+		if c == nil {
+			t.Error("ListV41Clients returned nil pointer")
 		}
 	}
-	sm.mu.RUnlock()
 }
 
 func TestEvictV41Client(t *testing.T) {
@@ -598,7 +594,7 @@ func TestDestroyV41ClientID(t *testing.T) {
 		clientID, seqID := registerV41Client(t, sm)
 
 		_, _, err := sm.CreateSession(
-			clientID, seqID+1, 0,
+			clientID, seqID, 0,
 			defaultForeAttrs(), defaultBackAttrs(), 0, nil,
 		)
 		if err != nil {

@@ -86,7 +86,7 @@ func TestCreateSessionArgs_RoundTrip_MultipleSec(t *testing.T) {
 		CbProgram:        0x40000001,
 		CbSecParms: []CallbackSecParms4{
 			{CbSecFlavor: 0}, // AUTH_NONE
-			{CbSecFlavor: 1, AuthSysData: []byte{0x01, 0x02, 0x03, 0x04}}, // AUTH_SYS
+			{CbSecFlavor: 1, AuthSysParms: &AuthSysParms{Stamp: 1, MachineName: "test", UID: 0, GID: 0}}, // AUTH_SYS
 		},
 	}
 
@@ -109,9 +109,8 @@ func TestCreateSessionArgs_RoundTrip_MultipleSec(t *testing.T) {
 	if decoded.CbSecParms[1].CbSecFlavor != 1 {
 		t.Errorf("CbSecParms[1].CbSecFlavor = %d, want 1", decoded.CbSecParms[1].CbSecFlavor)
 	}
-	if !bytes.Equal(decoded.CbSecParms[1].AuthSysData, original.CbSecParms[1].AuthSysData) {
-		t.Errorf("CbSecParms[1].AuthSysData = %x, want %x",
-			decoded.CbSecParms[1].AuthSysData, original.CbSecParms[1].AuthSysData)
+	if decoded.CbSecParms[1].AuthSysParms == nil || decoded.CbSecParms[1].AuthSysParms.MachineName != "test" {
+		t.Errorf("CbSecParms[1].AuthSysParms roundtrip failed")
 	}
 }
 

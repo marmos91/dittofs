@@ -187,8 +187,10 @@ func (c *NFSConnection) readRequest(ctx context.Context) (*rpc.RPCCallMessage, [
 	}
 	logger.Debug("Read fragment header", "address", c.conn.RemoteAddr().String(), "last", header.IsLast, "length", bytesize.ByteSize(header.Length))
 
-	// Validate fragment size to prevent memory exhaustion
-	const maxFragmentSize = 1 << 20 // 1MB - NFS messages are typically much smaller
+	// Validate fragment size to prevent memory exhaustion.
+	// Must be larger than advertised MAXREAD/MAXWRITE (1MB) to accommodate
+	// RPC headers + NFS compound headers (~200 bytes overhead per request).
+	const maxFragmentSize = (1 << 20) + (1 << 18) // 1MB + 256KB headroom for protocol headers
 	if header.Length > maxFragmentSize {
 		logger.Warn("Fragment size exceeds maximum", "size", bytesize.ByteSize(header.Length), "max", bytesize.ByteSize(maxFragmentSize), "address", c.conn.RemoteAddr().String())
 		return nil, nil, fmt.Errorf("fragment too large: %d bytes", header.Length)

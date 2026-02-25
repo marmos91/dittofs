@@ -53,6 +53,7 @@ func TestNFSv41DisconnectDuringLargeWrite(t *testing.T) {
 
 	// Mount v4.1
 	mount := framework.MountNFSWithVersion(t, nfsPort, "4.1")
+	t.Cleanup(func() { _ = exec.Command("umount", "-f", mount.Path).Run() })
 
 	// Capture log position before disconnect
 	logBefore := readLogFile(t, sp)
@@ -161,6 +162,7 @@ func TestNFSv41DisconnectDuringReadDir(t *testing.T) {
 
 	// First mount: create many files to make READDIR take longer
 	setupMount := framework.MountNFSWithVersion(t, nfsPort, "4.1")
+	t.Cleanup(func() { _ = exec.Command("umount", "-f", setupMount.Path).Run() })
 
 	dirName := helpers.UniqueTestName("disconnect_readdir")
 	dirPath := setupMount.FilePath(dirName)
@@ -176,6 +178,7 @@ func TestNFSv41DisconnectDuringReadDir(t *testing.T) {
 
 	// Second mount: will be disconnected during readdir
 	mount := framework.MountNFSWithVersion(t, nfsPort, "4.1")
+	t.Cleanup(func() { _ = exec.Command("umount", "-f", mount.Path).Run() })
 
 	// Capture log position
 	logBefore := readLogFile(t, sp)

@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
@@ -234,12 +235,9 @@ func ingressPortsMatch(existing []networkingv1.NetworkPolicyIngressRule, desired
 
 // hasOwnerReference checks if the object has an owner reference to the given owner.
 func hasOwnerReference(obj, owner client.Object) bool {
-	for _, ref := range obj.GetOwnerReferences() {
-		if ref.UID == owner.GetUID() {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(obj.GetOwnerReferences(), func(ref metav1.OwnerReference) bool {
+		return ref.UID == owner.GetUID()
+	})
 }
 
 // reconcileNetworkPolicies synchronizes K8s NetworkPolicies with the discovered adapter state.

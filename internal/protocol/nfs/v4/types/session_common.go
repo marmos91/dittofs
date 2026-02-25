@@ -10,6 +10,7 @@ package types
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -516,15 +517,27 @@ func (s *StateProtect4R) String() string {
 // CallbackSecParms4 - Callback Security Parameters
 // ============================================================================
 
+// AuthSysParms represents authsys_parms per RFC 5531 Section 8.2.
+// This is the AUTH_SYS credential structure used in callback_sec_parms4.
+type AuthSysParms struct {
+	Stamp       uint32
+	MachineName string
+	UID         uint32
+	GID         uint32
+	GIDs        []uint32
+}
+
 // CallbackSecParms4 represents callback_sec_parms4 per RFC 8881 Section 18.35.
 // Union switched on CbSecFlavor (AUTH_NONE=0, AUTH_SYS=1, RPCSEC_GSS=6).
 type CallbackSecParms4 struct {
 	CbSecFlavor uint32
 
-	// AUTH_SYS: raw opaque bytes (defer full authsys_parms parsing to handler phase)
-	AuthSysData []byte
+	// AUTH_SYS: authsys_parms struct per RFC 5531 Section 8.2.
+	// Encoded as struct fields directly in the XDR stream (NOT opaque-wrapped).
+	AuthSysParms *AuthSysParms
 
-	// RPCSEC_GSS: raw opaque bytes (defer full parsing to handler phase)
+	// RPCSEC_GSS: gss_cb_handles4 per RFC 8881 Section 18.35.
+	// Stored as raw bytes (defer full parsing to handler phase).
 	RpcGssData []byte
 }
 
@@ -537,8 +550,38 @@ func (c *CallbackSecParms4) Encode(buf *bytes.Buffer) error {
 	case 0: // AUTH_NONE - void
 		// nothing to encode
 	case 1: // AUTH_SYS
-		if err := xdr.WriteXDROpaque(buf, c.AuthSysData); err != nil {
-			return fmt.Errorf("encode auth_sys_data: %w", err)
+		p := c.AuthSysParms
+		if p == nil {
+			p = &AuthSysParms{}
+		}
+		if err := binary.Write(buf, binary.BigEndian, p.Stamp); err != nil {
+			return fmt.Errorf("encode auth_sys stamp: %w", err)
+		}
+		// machinename as XDR string (length-prefixed + padded)
+		nameBytes := []byte(p.MachineName)
+		if err := binary.Write(buf, binary.BigEndian, uint32(len(nameBytes))); err != nil {
+			return fmt.Errorf("encode auth_sys machinename len: %w", err)
+		}
+		if _, err := buf.Write(nameBytes); err != nil {
+			return fmt.Errorf("encode auth_sys machinename: %w", err)
+		}
+		padding := (4 - (len(nameBytes) % 4)) % 4
+		for i := 0; i < padding; i++ {
+			_ = buf.WriteByte(0)
+		}
+		if err := binary.Write(buf, binary.BigEndian, p.UID); err != nil {
+			return fmt.Errorf("encode auth_sys uid: %w", err)
+		}
+		if err := binary.Write(buf, binary.BigEndian, p.GID); err != nil {
+			return fmt.Errorf("encode auth_sys gid: %w", err)
+		}
+		if err := binary.Write(buf, binary.BigEndian, uint32(len(p.GIDs))); err != nil {
+			return fmt.Errorf("encode auth_sys gids count: %w", err)
+		}
+		for i, gid := range p.GIDs {
+			if err := binary.Write(buf, binary.BigEndian, gid); err != nil {
+				return fmt.Errorf("encode auth_sys gid[%d]: %w", i, err)
+			}
 		}
 	case 6: // RPCSEC_GSS
 		if err := xdr.WriteXDROpaque(buf, c.RpcGssData); err != nil {
@@ -561,11 +604,35 @@ func (c *CallbackSecParms4) Decode(r io.Reader) error {
 	case 0: // AUTH_NONE - void
 		// nothing to decode
 	case 1: // AUTH_SYS
-		data, err := xdr.DecodeOpaque(r)
-		if err != nil {
-			return fmt.Errorf("decode auth_sys_data: %w", err)
+		// Per RFC 8881 Section 18.35 + RFC 5531 Section 8.2:
+		// authsys_parms is encoded as struct fields (NOT opaque-wrapped).
+		p := &AuthSysParms{}
+		if p.Stamp, err = xdr.DecodeUint32(r); err != nil {
+			return fmt.Errorf("decode auth_sys stamp: %w", err)
 		}
-		c.AuthSysData = data
+		if p.MachineName, err = xdr.DecodeString(r); err != nil {
+			return fmt.Errorf("decode auth_sys machinename: %w", err)
+		}
+		if p.UID, err = xdr.DecodeUint32(r); err != nil {
+			return fmt.Errorf("decode auth_sys uid: %w", err)
+		}
+		if p.GID, err = xdr.DecodeUint32(r); err != nil {
+			return fmt.Errorf("decode auth_sys gid: %w", err)
+		}
+		gidsCount, err := xdr.DecodeUint32(r)
+		if err != nil {
+			return fmt.Errorf("decode auth_sys gids count: %w", err)
+		}
+		if gidsCount > 16 {
+			return fmt.Errorf("auth_sys gids count %d exceeds limit 16", gidsCount)
+		}
+		p.GIDs = make([]uint32, gidsCount)
+		for i := uint32(0); i < gidsCount; i++ {
+			if p.GIDs[i], err = xdr.DecodeUint32(r); err != nil {
+				return fmt.Errorf("decode auth_sys gid[%d]: %w", i, err)
+			}
+		}
+		c.AuthSysParms = p
 	case 6: // RPCSEC_GSS
 		data, err := xdr.DecodeOpaque(r)
 		if err != nil {
@@ -584,7 +651,11 @@ func (c *CallbackSecParms4) String() string {
 	case 0:
 		return "CallbackSecParms4{AUTH_NONE}"
 	case 1:
-		return fmt.Sprintf("CallbackSecParms4{AUTH_SYS, %d bytes}", len(c.AuthSysData))
+		if c.AuthSysParms != nil {
+			return fmt.Sprintf("CallbackSecParms4{AUTH_SYS, uid=%d, gid=%d, machine=%s}",
+				c.AuthSysParms.UID, c.AuthSysParms.GID, c.AuthSysParms.MachineName)
+		}
+		return "CallbackSecParms4{AUTH_SYS}"
 	case 6:
 		return fmt.Sprintf("CallbackSecParms4{RPCSEC_GSS, %d bytes}", len(c.RpcGssData))
 	default:

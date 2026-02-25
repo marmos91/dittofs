@@ -23,7 +23,7 @@ import (
 // Uses RLock only in StateManager -- no lease renewal side effects per RFC 8881.
 func (h *Handler) handleTestStateid(
 	ctx *types.CompoundContext,
-	v41ctx *types.V41RequestContext,
+	_ *types.V41RequestContext,
 	reader io.Reader,
 ) *types.CompoundResult {
 	var args types.TestStateidArgs

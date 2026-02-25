@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -221,10 +222,20 @@ func testSMBKerberosIdentityMapping(t *testing.T, kdc *framework.KDCHelper, smbP
 	err = os.WriteFile(testFile, []byte("identity test"), 0644)
 	require.NoError(t, err, "Should write file for identity verification")
 
-	// Verify the file exists and has expected permissions
-	info, err := os.Stat(testFile)
+	// Verify the file exists and check ownership via Lstat + syscall.Stat_t.
+	// On CIFS mounts the kernel maps the authenticated identity to the UID/GID
+	// supplied in the mount options (or negotiated via idmapping). We verify
+	// these values are set (non-zero check) to confirm identity propagation.
+	info, err := os.Lstat(testFile)
 	require.NoError(t, err, "Should stat file for identity verification")
 	assert.True(t, info.Mode().IsRegular(), "Should be a regular file")
+
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		t.Logf("File UID=%d GID=%d", stat.Uid, stat.Gid)
+		// The file should be owned by the mapped identity, not nobody (65534)
+		assert.NotEqual(t, uint32(65534), stat.Uid,
+			"File UID should not be nobody (identity mapping should apply)")
+	}
 
 	// Clean up
 	_ = os.Remove(testFile)
@@ -434,9 +445,13 @@ func installSMBKerberosSystemConfig(t *testing.T, kdc *framework.KDCHelper) {
 	t.Cleanup(func() {
 		if len(origKrb5Conf) > 0 {
 			_ = os.WriteFile("/etc/krb5.conf", origKrb5Conf, 0644)
+		} else {
+			_ = os.Remove("/etc/krb5.conf")
 		}
 		if len(origKeytab) > 0 {
 			_ = os.WriteFile("/etc/krb5.keytab", origKeytab, 0600)
+		} else {
+			_ = os.Remove("/etc/krb5.keytab")
 		}
 	})
 

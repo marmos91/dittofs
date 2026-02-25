@@ -97,11 +97,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y nfs-common
-          # NFSv4.1 mount negotiation requires rpc-gssd on the client
-          if [ "${{ matrix.nfs_version }}" = "4.1" ]; then
-            sudo apt-get install -y krb5-user
-            sudo systemctl start rpc-gssd || true
-          fi
 
       - name: Download binaries
         uses: actions/download-artifact@v4
@@ -278,11 +273,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y nfs-common
-          # NFSv4.1 mount negotiation requires rpc-gssd on the client
-          if [ "${{ matrix.nfs_version }}" = "4.1" ]; then
-            sudo apt-get install -y krb5-user
-            sudo systemctl start rpc-gssd || true
-          fi
 
       - name: Download binaries
         uses: actions/download-artifact@v4
