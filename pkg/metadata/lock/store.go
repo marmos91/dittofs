@@ -11,7 +11,7 @@ import (
 
 // PersistedLock represents a lock stored in the metadata store.
 //
-// This is the serializable form of EnhancedLock, designed for persistence
+// This is the serializable form of UnifiedLock, designed for persistence
 // across server restarts. All protocol-specific information is encoded
 // in the OwnerID field as an opaque string.
 //
@@ -47,8 +47,8 @@ type PersistedLock struct {
 	// Length is the number of bytes locked (0 = to EOF).
 	Length uint64 `json:"length"`
 
-	// ShareReservation is the SMB share mode (0=none, 1=deny-read, 2=deny-write, 3=deny-all).
-	ShareReservation int `json:"share_reservation"`
+	// AccessMode is the SMB share mode (0=none, 1=deny-read, 2=deny-write, 3=deny-all).
+	AccessMode int `json:"share_reservation"`
 
 	// AcquiredAt is when the lock was acquired.
 	AcquiredAt time.Time `json:"acquired_at"`
@@ -217,16 +217,16 @@ type LockStore interface {
 	//   - clientID: Client identifier for ownership verification
 	//
 	// Returns:
-	//   - *EnhancedLock: The reclaimed lease on success
+	//   - *UnifiedLock: The reclaimed lease on success
 	//   - error: ErrLockNotFound if lease doesn't exist
-	ReclaimLease(ctx context.Context, fileHandle FileHandle, leaseKey [16]byte, clientID string) (*EnhancedLock, error)
+	ReclaimLease(ctx context.Context, fileHandle FileHandle, leaseKey [16]byte, clientID string) (*UnifiedLock, error)
 }
 
 // ============================================================================
 // Conversion Functions
 // ============================================================================
 
-// ToPersistedLock converts an EnhancedLock to a PersistedLock for storage.
+// ToPersistedLock converts an UnifiedLock to a PersistedLock for storage.
 //
 // Parameters:
 //   - lock: The in-memory lock to persist
@@ -237,19 +237,19 @@ type LockStore interface {
 //
 // For leases, the Lease field must be non-nil. The 128-bit LeaseKey,
 // LeaseState, Epoch, BreakToState, and Breaking are all preserved.
-func ToPersistedLock(lock *EnhancedLock, epoch uint64) *PersistedLock {
+func ToPersistedLock(lock *UnifiedLock, epoch uint64) *PersistedLock {
 	pl := &PersistedLock{
-		ID:               lock.ID,
-		ShareName:        lock.Owner.ShareName,
-		FileID:           string(lock.FileHandle),
-		OwnerID:          lock.Owner.OwnerID,
-		ClientID:         lock.Owner.ClientID,
-		LockType:         int(lock.Type),
-		Offset:           lock.Offset,
-		Length:           lock.Length,
-		ShareReservation: int(lock.ShareReservation),
-		AcquiredAt:       lock.AcquiredAt,
-		ServerEpoch:      epoch,
+		ID:          lock.ID,
+		ShareName:   lock.Owner.ShareName,
+		FileID:      string(lock.FileHandle),
+		OwnerID:     lock.Owner.OwnerID,
+		ClientID:    lock.Owner.ClientID,
+		LockType:    int(lock.Type),
+		Offset:      lock.Offset,
+		Length:      lock.Length,
+		AccessMode:  int(lock.AccessMode),
+		AcquiredAt:  lock.AcquiredAt,
+		ServerEpoch: epoch,
 	}
 
 	// Persist lease fields if this is a lease
@@ -264,31 +264,31 @@ func ToPersistedLock(lock *EnhancedLock, epoch uint64) *PersistedLock {
 	return pl
 }
 
-// FromPersistedLock converts a PersistedLock back to an EnhancedLock.
+// FromPersistedLock converts a PersistedLock back to an UnifiedLock.
 //
 // Parameters:
 //   - pl: The persisted lock from storage
 //
 // Returns:
-//   - *EnhancedLock: In-memory lock for use in lock manager
+//   - *UnifiedLock: In-memory lock for use in lock manager
 //
-// For leases (identified by non-empty LeaseKey), the LeaseInfo struct
+// For leases (identified by non-empty LeaseKey), the OpLock struct
 // is populated with the persisted lease state. Blocking and Reclaim
 // are runtime-only and not restored.
-func FromPersistedLock(pl *PersistedLock) *EnhancedLock {
-	el := &EnhancedLock{
+func FromPersistedLock(pl *PersistedLock) *UnifiedLock {
+	el := &UnifiedLock{
 		ID: pl.ID,
 		Owner: LockOwner{
 			OwnerID:   pl.OwnerID,
 			ClientID:  pl.ClientID,
 			ShareName: pl.ShareName,
 		},
-		FileHandle:       FileHandle(pl.FileID),
-		Offset:           pl.Offset,
-		Length:           pl.Length,
-		Type:             LockType(pl.LockType),
-		ShareReservation: ShareReservation(pl.ShareReservation),
-		AcquiredAt:       pl.AcquiredAt,
+		FileHandle: FileHandle(pl.FileID),
+		Offset:     pl.Offset,
+		Length:     pl.Length,
+		Type:       LockType(pl.LockType),
+		AccessMode: AccessMode(pl.AccessMode),
+		AcquiredAt: pl.AcquiredAt,
 		// Blocking and Reclaim are runtime-only, not persisted
 	}
 
@@ -296,7 +296,7 @@ func FromPersistedLock(pl *PersistedLock) *EnhancedLock {
 	if len(pl.LeaseKey) == 16 {
 		var leaseKey [16]byte
 		copy(leaseKey[:], pl.LeaseKey)
-		el.Lease = &LeaseInfo{
+		el.Lease = &OpLock{
 			LeaseKey:     leaseKey,
 			LeaseState:   pl.LeaseState,
 			Epoch:        pl.LeaseEpoch,

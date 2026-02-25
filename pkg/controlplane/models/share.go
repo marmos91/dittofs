@@ -13,6 +13,8 @@ const (
 )
 
 // Share defines a DittoFS share/export configuration.
+// Protocol-specific settings (NFS squash, SMB guest access, etc.) are stored
+// in the share_adapter_configs table via ShareAdapterConfig.
 type Share struct {
 	ID                string    `gorm:"primaryKey;size:36" json:"id"`
 	Name              string    `gorm:"uniqueIndex;not null;size:255" json:"name"` // e.g., "/export"
@@ -20,26 +22,10 @@ type Share struct {
 	PayloadStoreID    string    `gorm:"not null;size:36" json:"payload_store_id"`
 	ReadOnly          bool      `gorm:"default:false" json:"read_only"`
 	DefaultPermission string    `gorm:"default:read-write;size:50" json:"default_permission"` // none, read, read-write, admin
-	Squash            string    `gorm:"default:root_to_admin;size:50" json:"squash"`          // Identity mapping mode
 	Config            string    `gorm:"type:text" json:"-"`                                   // JSON blob for additional share config
+	BlockedOperations string    `gorm:"type:text" json:"-"`                                   // JSON array of blocked operations
 	CreatedAt         time.Time `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt         time.Time `gorm:"autoUpdateTime" json:"updated_at"`
-
-	// Anonymous UID/GID for squashing (used by root_to_guest and all_to_guest)
-	AnonymousUID *uint32 `json:"anonymous_uid,omitempty"`
-	AnonymousGID *uint32 `json:"anonymous_gid,omitempty"`
-
-	// Guest access (per-share) - for SMB anonymous access
-	GuestEnabled bool    `gorm:"default:false" json:"guest_enabled"`
-	GuestUID     *uint32 `json:"guest_uid,omitempty"`
-	GuestGID     *uint32 `json:"guest_gid,omitempty"`
-
-	// Security policy fields
-	AllowAuthSys      bool    `gorm:"default:true" json:"allow_auth_sys"`             // Allow AUTH_SYS connections
-	RequireKerberos   bool    `gorm:"default:false" json:"require_kerberos"`          // Require Kerberos authentication
-	MinKerberosLevel  string  `gorm:"default:krb5;size:20" json:"min_kerberos_level"` // krb5, krb5i, krb5p
-	NetgroupID        *string `gorm:"size:36" json:"netgroup_id,omitempty"`           // FK to netgroups (nullable)
-	BlockedOperations string  `gorm:"type:text" json:"-"`                             // JSON array of blocked operations
 
 	// Relationships
 	MetadataStore    MetadataStoreConfig    `gorm:"foreignKey:MetadataStoreID" json:"metadata_store,omitempty"`
@@ -84,30 +70,9 @@ func (s *Share) SetConfig(cfg map[string]any) error {
 	return nil
 }
 
-// GetSquashMode returns the squash mode as a SquashMode type.
-func (s *Share) GetSquashMode() SquashMode {
-	return ParseSquashMode(s.Squash)
-}
-
 // GetDefaultPermission returns the default permission as a SharePermission type.
 func (s *Share) GetDefaultPermission() SharePermission {
 	return ParseSharePermission(s.DefaultPermission)
-}
-
-// GetAnonymousUID returns the anonymous UID, defaulting to 65534 (nobody).
-func (s *Share) GetAnonymousUID() uint32 {
-	if s.AnonymousUID != nil {
-		return *s.AnonymousUID
-	}
-	return 65534 // nobody
-}
-
-// GetAnonymousGID returns the anonymous GID, defaulting to 65534 (nogroup).
-func (s *Share) GetAnonymousGID() uint32 {
-	if s.AnonymousGID != nil {
-		return *s.AnonymousGID
-	}
-	return 65534 // nogroup
 }
 
 // ShareAccessRule defines client access rules for a share.

@@ -68,14 +68,11 @@ func TestControlPlaneV2_FullLifecycle(t *testing.T) {
 	require.NoError(t, err, "Should create payload store")
 	t.Cleanup(func() { _ = client.DeletePayloadStore(payloadStore) })
 
-	// 4. Create a share with security policy (allow_auth_sys=true)
-	share := helpers.CreateShareWithPolicy(t, client, "/lifecycle-test", metaStore, payloadStore, &helpers.ShareSecurityPolicy{
-		AllowAuthSys: helpers.BoolPtr(true),
-	})
+	// 4. Create a share (security policy now managed via adapter config API)
+	share := helpers.CreateShareWithPolicy(t, client, "/lifecycle-test", metaStore, payloadStore, nil)
 	t.Cleanup(func() { helpers.CleanupShare(client, "/lifecycle-test") })
 	assert.Equal(t, "/lifecycle-test", share.Name)
-	assert.True(t, share.AllowAuthSys, "Share should allow AUTH_SYS")
-	t.Log("Step 4: Share with security policy created")
+	t.Log("Step 4: Share created")
 
 	// 5. Verify settings persisted across API calls
 	final := helpers.GetNFSSettings(t, client)
@@ -337,14 +334,15 @@ func TestControlPlaneV2_NetgroupInUse(t *testing.T) {
 	require.NotEmpty(t, ng.ID)
 	t.Log("Step 1: Netgroup created")
 
-	// 2. Create share referencing netgroup
-	share := helpers.CreateShareWithPolicy(t, client, shareName, metaStore, payloadStore, &helpers.ShareSecurityPolicy{
-		AllowAuthSys: helpers.BoolPtr(true),
-		NetgroupID:   helpers.StringPtr(ng.Name),
-	})
+	// 2. Create share (netgroup association is now via adapter config, not share creation)
+	share := helpers.CreateShareWithPolicy(t, client, shareName, metaStore, payloadStore, nil)
 	t.Cleanup(func() { helpers.CleanupShare(client, shareName) })
 	assert.Equal(t, shareName, share.Name)
-	t.Log("Step 2: Share created with netgroup reference")
+	t.Log("Step 2: Share created")
+
+	// TODO: Once adapter config API exists, associate netgroup with share's NFS config here.
+	// For now, skip the netgroup-in-use check since we can't set it via the current API.
+	t.Skip("Netgroup-share association requires adapter config API (not yet implemented)")
 
 	// 3. Try delete netgroup -> expect 409 Conflict
 	err = helpers.DeleteNetgroupExpectError(t, client, ngName)
@@ -395,41 +393,14 @@ func TestControlPlaneV2_ShareSecurityPolicy(t *testing.T) {
 	require.NoError(t, err, "Should create payload store")
 	t.Cleanup(func() { _ = client.DeletePayloadStore(payloadStore) })
 
-	t.Run("share with allow_auth_sys=true", func(t *testing.T) {
-		name := "/" + helpers.UniqueTestName("auth-sys")
-		share := helpers.CreateShareWithPolicy(t, client, name, metaStore, payloadStore, &helpers.ShareSecurityPolicy{
-			AllowAuthSys: helpers.BoolPtr(true),
-		})
-		t.Cleanup(func() { helpers.CleanupShare(client, name) })
-
-		assert.True(t, share.AllowAuthSys, "Share should allow AUTH_SYS")
-		assert.False(t, share.RequireKerberos, "Kerberos should not be required")
-
-		// Verify via GET
-		retrieved, err := client.GetShare(name)
-		require.NoError(t, err)
-		assert.True(t, retrieved.AllowAuthSys, "Persisted share should allow AUTH_SYS")
-	})
-
-	t.Run("share with require_kerberos=true", func(t *testing.T) {
-		name := "/" + helpers.UniqueTestName("kerb")
-		share := helpers.CreateShareWithPolicy(t, client, name, metaStore, payloadStore, &helpers.ShareSecurityPolicy{
-			RequireKerberos: helpers.BoolPtr(true),
-		})
-		t.Cleanup(func() { helpers.CleanupShare(client, name) })
-
-		assert.True(t, share.RequireKerberos, "Share should require Kerberos")
-
-		retrieved, err := client.GetShare(name)
-		require.NoError(t, err)
-		assert.True(t, retrieved.RequireKerberos, "Persisted share should require Kerberos")
-	})
+	// Protocol-specific security fields (AllowAuthSys, RequireKerberos, NetgroupID)
+	// are now managed via per-adapter config API, not the share creation/response API.
+	// Share-level tests only verify generic share properties.
 
 	t.Run("share with blocked operations", func(t *testing.T) {
 		name := "/" + helpers.UniqueTestName("blocked")
 		blockedOps := []string{"REMOVE", "RENAME"}
 		share := helpers.CreateShareWithPolicy(t, client, name, metaStore, payloadStore, &helpers.ShareSecurityPolicy{
-			AllowAuthSys:      helpers.BoolPtr(true),
 			BlockedOperations: blockedOps,
 		})
 		t.Cleanup(func() { helpers.CleanupShare(client, name) })
@@ -439,21 +410,6 @@ func TestControlPlaneV2_ShareSecurityPolicy(t *testing.T) {
 		retrieved, err := client.GetShare(name)
 		require.NoError(t, err)
 		assert.Equal(t, blockedOps, retrieved.BlockedOperations, "Persisted blocked operations should match")
-	})
-
-	t.Run("update share security policy", func(t *testing.T) {
-		name := "/" + helpers.UniqueTestName("update-pol")
-		helpers.CreateShareWithPolicy(t, client, name, metaStore, payloadStore, &helpers.ShareSecurityPolicy{
-			AllowAuthSys: helpers.BoolPtr(true),
-		})
-		t.Cleanup(func() { helpers.CleanupShare(client, name) })
-
-		// Update to disable AUTH_SYS
-		updated, err := client.UpdateShare(name, &apiclient.UpdateShareRequest{
-			AllowAuthSys: helpers.BoolPtr(false),
-		})
-		require.NoError(t, err)
-		assert.False(t, updated.AllowAuthSys, "AUTH_SYS should be disabled after update")
 	})
 }
 

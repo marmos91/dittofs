@@ -1,28 +1,13 @@
 package handlers
 
 import (
-	"context"
 	"fmt"
-	"time"
 
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/types"
 	"github.com/marmos91/dittofs/internal/protocol/nfs/xdr"
 	"github.com/marmos91/dittofs/pkg/metadata"
-)
-
-// ============================================================================
-// Cross-Protocol Lease Constants
-// ============================================================================
-
-const (
-	// leaseBreakTimeout is the maximum time to wait for SMB lease break acknowledgment.
-	// Per MS-SMB2, the default is 35 seconds.
-	leaseBreakTimeout = 35 * time.Second
-
-	// leaseBreakPollInterval is how often to check if a lease break completed.
-	leaseBreakPollInterval = 100 * time.Millisecond
 )
 
 // ============================================================================
@@ -378,19 +363,11 @@ func (h *Handler) Write(
 	}
 
 	// ========================================================================
-	// Step 5b: Cross-protocol lease check (SMB leases)
+	// Step 5b: Cross-protocol oplock break (placeholder)
 	// ========================================================================
-	// If an SMB client holds a Write lease on this file, we must break it
-	// before proceeding with the NFS write. The SMB client needs to flush
-	// its cached writes first.
-
-	if err := waitForLeaseBreak(ctx.Context, metaSvc, fileHandle, true /* isWrite */); err != nil {
-		logger.WarnCtx(ctx.Context, "WRITE failed: lease break error",
-			"handle", fmt.Sprintf("0x%x", req.Handle),
-			"client", clientIP,
-			"error", err)
-		// Continue with write - lease timeout scanner will force-revoke if needed
-	}
+	// TODO(plan-03): Wire to LockManager.CheckAndBreakOpLocksForWrite() once
+	// centralized break methods are available (Phase 26 Plan 03).
+	// Previously: metaSvc.CheckAndBreakLeasesForWrite(ctx, handle)
 
 	// ========================================================================
 	// Step 6: Prepare write operation (validate permissions)
@@ -538,67 +515,6 @@ func (h *Handler) buildWriteErrorResponse(
 	}
 }
 
-// waitForLeaseBreak waits for any pending SMB lease breaks to complete.
-//
-// This implements cross-protocol visibility: when an NFS operation conflicts
-// with an SMB lease, we wait for the SMB client to acknowledge the break
-// before proceeding. The SMB client needs to flush cached data.
-//
-// Parameters:
-//   - ctx: Context for cancellation
-//   - metaSvc: Metadata service for cross-protocol check
-//   - handle: File handle being accessed
-//   - isWrite: true for write operations, false for reads
-//
-// Returns nil when no lease conflict or lease break completed.
-// Returns context error if cancelled during wait.
-// Logs and returns nil on timeout (lease scanner will force-revoke).
-func waitForLeaseBreak(ctx context.Context, metaSvc *metadata.MetadataService, handle metadata.FileHandle, isWrite bool) error {
-	var checkErr error
-	if isWrite {
-		checkErr = metaSvc.CheckAndBreakLeasesForWrite(ctx, handle)
-	} else {
-		checkErr = metaSvc.CheckAndBreakLeasesForRead(ctx, handle)
-	}
-
-	// Check if error indicates pending break
-	if checkErr == nil {
-		return nil // No conflict
-	}
-
-	// Check if it's the lease break pending error
-	if checkErr.Error() != "lease break pending, operation must wait" {
-		return nil // Different error, don't wait
-	}
-
-	// Wait for lease break acknowledgment with timeout
-	deadline := time.Now().Add(leaseBreakTimeout)
-	for time.Now().Before(deadline) {
-		// Check for context cancellation
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		time.Sleep(leaseBreakPollInterval)
-
-		// Re-check lease status
-		if isWrite {
-			checkErr = metaSvc.CheckAndBreakLeasesForWrite(ctx, handle)
-		} else {
-			checkErr = metaSvc.CheckAndBreakLeasesForRead(ctx, handle)
-		}
-
-		if checkErr == nil {
-			return nil // Break completed
-		}
-		if checkErr.Error() != "lease break pending, operation must wait" {
-			return nil // Different error or break completed
-		}
-	}
-
-	// Timeout - log and continue (scanner will force-revoke)
-	logger.Warn("NFS: lease break timeout, proceeding anyway",
-		"handle", fmt.Sprintf("0x%x", handle),
-		"isWrite", isWrite)
-	return nil
-}
+// Cross-protocol oplock break function removed (Phase 26 Plan 04).
+// Will be replaced by LockManager.CheckAndBreakOpLocksFor{Write,Read}()
+// once centralized break methods are available (Phase 26 Plan 03).

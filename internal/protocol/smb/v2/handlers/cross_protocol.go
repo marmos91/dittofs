@@ -55,7 +55,7 @@ const StatusLockNotGranted uint32 = 0xC0000054
 //
 //	"owner=nlm:host1:1234, range=0-1024, type=exclusive"
 //	"owner=nlm:host1:1234, range=entire-file, type=shared"
-func formatNLMLockInfo(nlmLock *lock.EnhancedLock) string {
+func formatNLMLockInfo(nlmLock *lock.UnifiedLock) string {
 	if nlmLock == nil {
 		return "nil"
 	}
@@ -104,14 +104,14 @@ func formatNLMLockInfo(nlmLock *lock.EnhancedLock) string {
 //   - requestedState: The requested lease state (R/W/H flags)
 //
 // Returns:
-//   - []*lock.EnhancedLock: List of conflicting NLM locks (empty if no conflicts)
+//   - []*lock.UnifiedLock: List of conflicting NLM locks (empty if no conflicts)
 //   - error: Query error (nil on success)
 func checkNLMLocksForLeaseConflict(
 	ctx context.Context,
 	lockStore lock.LockStore,
 	fileHandle lock.FileHandle,
 	requestedState uint32,
-) ([]*lock.EnhancedLock, error) {
+) ([]*lock.UnifiedLock, error) {
 	if lockStore == nil {
 		return nil, nil
 	}
@@ -127,7 +127,7 @@ func checkNLMLocksForLeaseConflict(
 		return nil, fmt.Errorf("failed to query NLM locks: %w", err)
 	}
 
-	var conflicts []*lock.EnhancedLock
+	var conflicts []*lock.UnifiedLock
 
 	// Determine what conflicts based on requested lease state
 	wantsWrite := requestedState&lock.LeaseStateWrite != 0

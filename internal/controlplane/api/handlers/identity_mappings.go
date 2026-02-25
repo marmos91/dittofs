@@ -12,12 +12,13 @@ import (
 
 // IdentityMappingHandler handles identity mapping API endpoints.
 type IdentityMappingHandler struct {
-	store store.Store
+	store store.IdentityMappingStore
 }
 
 // NewIdentityMappingHandler creates a new IdentityMappingHandler.
-func NewIdentityMappingHandler(store store.Store) *IdentityMappingHandler {
-	return &IdentityMappingHandler{store: store}
+// The cpStore must implement store.IdentityMappingStore (GORMStore does).
+func NewIdentityMappingHandler(cpStore store.IdentityMappingStore) *IdentityMappingHandler {
+	return &IdentityMappingHandler{store: cpStore}
 }
 
 // CreateIdentityMappingRequest is the request body for POST /api/v1/identity-mappings.

@@ -63,7 +63,13 @@ func runEnable(cmd *cobra.Command, args []string) error {
 			}
 			adapter, err = client.CreateAdapter(createReq)
 			if err != nil {
-				return fmt.Errorf("failed to create adapter: %w", err)
+				// Handle race: adapter was created between our update and create calls
+				if apiErr2, ok := err.(*apiclient.APIError); ok && apiErr2.IsConflict() {
+					adapter, err = client.UpdateAdapter(adapterType, updateReq)
+				}
+				if err != nil {
+					return fmt.Errorf("failed to enable adapter: %w", err)
+				}
 			}
 		} else {
 			return fmt.Errorf("failed to enable adapter: %w", err)

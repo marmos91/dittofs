@@ -1,13 +1,403 @@
 package lock
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
 
+// ============================================================================
+// ConflictsWith - All 4 Conflict Cases
+// ============================================================================
+
+func TestConflictsWith_SameOwnerNeverConflicts(t *testing.T) {
+	t.Parallel()
+
+	owner := LockOwner{OwnerID: "smb:client1"}
+
+	// Exclusive vs Exclusive from same owner - no conflict
+	a := &UnifiedLock{Owner: owner, Offset: 0, Length: 100, Type: LockTypeExclusive}
+	b := &UnifiedLock{Owner: owner, Offset: 0, Length: 100, Type: LockTypeExclusive}
+
+	if a.ConflictsWith(b) {
+		t.Error("Same owner should never conflict (exclusive vs exclusive)")
+	}
+}
+
+// --- Case 1: Access Mode Conflicts ---
+
+func TestConflictsWith_AccessMode_DenyReadConflicts(t *testing.T) {
+	t.Parallel()
+
+	a := &UnifiedLock{
+		Owner:      LockOwner{OwnerID: "smb:client1"},
+		AccessMode: AccessModeDenyRead,
+		Offset:     0, Length: 100, Type: LockTypeShared,
+	}
+	b := &UnifiedLock{
+		Owner:      LockOwner{OwnerID: "smb:client2"},
+		AccessMode: AccessModeDenyWrite, // Non-None access mode
+		Offset:     0, Length: 100, Type: LockTypeShared,
+	}
+
+	if !a.ConflictsWith(b) {
+		t.Error("DenyRead should conflict with non-None access mode")
+	}
+}
+
+func TestConflictsWith_AccessMode_DenyAllConflicts(t *testing.T) {
+	t.Parallel()
+
+	a := &UnifiedLock{
+		Owner:      LockOwner{OwnerID: "smb:client1"},
+		AccessMode: AccessModeDenyAll,
+		Offset:     0, Length: 100, Type: LockTypeShared,
+	}
+	b := &UnifiedLock{
+		Owner:      LockOwner{OwnerID: "smb:client2"},
+		AccessMode: AccessModeDenyRead,
+		Offset:     0, Length: 100, Type: LockTypeShared,
+	}
+
+	if !a.ConflictsWith(b) {
+		t.Error("DenyAll should conflict with any non-None access mode")
+	}
+}
+
+func TestConflictsWith_AccessMode_BothNoneNoConflict(t *testing.T) {
+	t.Parallel()
+
+	a := &UnifiedLock{
+		Owner:      LockOwner{OwnerID: "smb:client1"},
+		AccessMode: AccessModeNone,
+		Offset:     0, Length: 100, Type: LockTypeShared,
+	}
+	b := &UnifiedLock{
+		Owner:      LockOwner{OwnerID: "smb:client2"},
+		AccessMode: AccessModeNone,
+		Offset:     0, Length: 100, Type: LockTypeShared,
+	}
+
+	if a.ConflictsWith(b) {
+		t.Error("Both AccessModeNone should not conflict")
+	}
+}
+
+// --- Case 2: OpLock vs OpLock ---
+
+func TestConflictsWith_OpLock_ReadReadNoConflict(t *testing.T) {
+	t.Parallel()
+
+	a := &UnifiedLock{
+		Owner: LockOwner{OwnerID: "smb:client1"},
+		Lease: &OpLock{LeaseKey: [16]byte{1}, LeaseState: LeaseStateRead},
+	}
+	b := &UnifiedLock{
+		Owner: LockOwner{OwnerID: "smb:client2"},
+		Lease: &OpLock{LeaseKey: [16]byte{2}, LeaseState: LeaseStateRead},
+	}
+
+	if a.ConflictsWith(b) {
+		t.Error("Read-Read oplocks should not conflict")
+	}
+}
+
+func TestConflictsWith_OpLock_ReadWriteConflict(t *testing.T) {
+	t.Parallel()
+
+	a := &UnifiedLock{
+		Owner: LockOwner{OwnerID: "smb:client1"},
+		Lease: &OpLock{LeaseKey: [16]byte{1}, LeaseState: LeaseStateRead},
+	}
+	b := &UnifiedLock{
+		Owner: LockOwner{OwnerID: "smb:client2"},
+		Lease: &OpLock{LeaseKey: [16]byte{2}, LeaseState: LeaseStateRead | LeaseStateWrite},
+	}
+
+	if !a.ConflictsWith(b) {
+		t.Error("Read vs Write oplock should conflict")
+	}
+}
+
+func TestConflictsWith_OpLock_WriteWriteConflict(t *testing.T) {
+	t.Parallel()
+
+	a := &UnifiedLock{
+		Owner: LockOwner{OwnerID: "smb:client1"},
+		Lease: &OpLock{LeaseKey: [16]byte{1}, LeaseState: LeaseStateRead | LeaseStateWrite},
+	}
+	b := &UnifiedLock{
+		Owner: LockOwner{OwnerID: "smb:client2"},
+		Lease: &OpLock{LeaseKey: [16]byte{2}, LeaseState: LeaseStateRead | LeaseStateWrite},
+	}
+
+	if !a.ConflictsWith(b) {
+		t.Error("Write vs Write oplock should conflict")
+	}
+}
+
+func TestConflictsWith_OpLock_SameLeaseKeyNoConflict(t *testing.T) {
+	t.Parallel()
+
+	sameKey := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	a := &UnifiedLock{
+		Owner: LockOwner{OwnerID: "smb:client1"},
+		Lease: &OpLock{LeaseKey: sameKey, LeaseState: LeaseStateRead | LeaseStateWrite},
+	}
+	b := &UnifiedLock{
+		Owner: LockOwner{OwnerID: "smb:client2"},
+		Lease: &OpLock{LeaseKey: sameKey, LeaseState: LeaseStateRead | LeaseStateWrite},
+	}
+
+	if a.ConflictsWith(b) {
+		t.Error("Same LeaseKey should never conflict (same caching unit)")
+	}
+}
+
+func TestConflictsWith_OpLock_HandleOnlyNoConflict(t *testing.T) {
+	t.Parallel()
+
+	a := &UnifiedLock{
+		Owner: LockOwner{OwnerID: "smb:client1"},
+		Lease: &OpLock{LeaseKey: [16]byte{1}, LeaseState: LeaseStateRead | LeaseStateHandle},
+	}
+	b := &UnifiedLock{
+		Owner: LockOwner{OwnerID: "smb:client2"},
+		Lease: &OpLock{LeaseKey: [16]byte{2}, LeaseState: LeaseStateRead},
+	}
+
+	if a.ConflictsWith(b) {
+		t.Error("ReadHandle vs Read should not conflict (no Write involved)")
+	}
+}
+
+// --- Case 3: OpLock vs Byte-Range ---
+
+func TestConflictsWith_OpLockVsByteRange_WriteOpLockExclusiveLock(t *testing.T) {
+	t.Parallel()
+
+	oplock := &UnifiedLock{
+		Owner: LockOwner{OwnerID: "smb:client1"},
+		Lease: &OpLock{LeaseKey: [16]byte{1}, LeaseState: LeaseStateRead | LeaseStateWrite},
+	}
+	byteRange := &UnifiedLock{
+		Owner:  LockOwner{OwnerID: "nlm:host1:123:abc"},
+		Offset: 0, Length: 100,
+		Type: LockTypeExclusive,
+	}
+
+	if !oplock.ConflictsWith(byteRange) {
+		t.Error("Write oplock should conflict with exclusive byte-range lock")
+	}
+}
+
+func TestConflictsWith_OpLockVsByteRange_ReadOpLockSharedLockNoConflict(t *testing.T) {
+	t.Parallel()
+
+	oplock := &UnifiedLock{
+		Owner: LockOwner{OwnerID: "smb:client1"},
+		Lease: &OpLock{LeaseKey: [16]byte{1}, LeaseState: LeaseStateRead},
+	}
+	byteRange := &UnifiedLock{
+		Owner:  LockOwner{OwnerID: "nlm:host1:123:abc"},
+		Offset: 0, Length: 100,
+		Type: LockTypeShared,
+	}
+
+	if oplock.ConflictsWith(byteRange) {
+		t.Error("Read oplock should not conflict with shared byte-range lock")
+	}
+}
+
+func TestConflictsWith_OpLockVsByteRange_Bidirectional(t *testing.T) {
+	t.Parallel()
+
+	oplock := &UnifiedLock{
+		Owner: LockOwner{OwnerID: "smb:client1"},
+		Lease: &OpLock{LeaseKey: [16]byte{1}, LeaseState: LeaseStateRead | LeaseStateWrite},
+	}
+	byteRange := &UnifiedLock{
+		Owner:  LockOwner{OwnerID: "nlm:host1:123:abc"},
+		Offset: 0, Length: 100,
+		Type: LockTypeExclusive,
+	}
+
+	// Both orderings should give the same result
+	ab := oplock.ConflictsWith(byteRange)
+	ba := byteRange.ConflictsWith(oplock)
+
+	if ab != ba {
+		t.Errorf("ConflictsWith should be symmetric: oplock->byteRange=%v, byteRange->oplock=%v", ab, ba)
+	}
+}
+
+// --- Case 4: Byte-Range vs Byte-Range ---
+
+func TestConflictsWith_ByteRange_ExclusiveOverlapConflict(t *testing.T) {
+	t.Parallel()
+
+	a := &UnifiedLock{
+		Owner:  LockOwner{OwnerID: "nlm:host1:1:00"},
+		Offset: 0, Length: 100,
+		Type: LockTypeExclusive,
+	}
+	b := &UnifiedLock{
+		Owner:  LockOwner{OwnerID: "nlm:host2:2:00"},
+		Offset: 50, Length: 100,
+		Type: LockTypeExclusive,
+	}
+
+	if !a.ConflictsWith(b) {
+		t.Error("Overlapping exclusive byte-range locks should conflict")
+	}
+}
+
+func TestConflictsWith_ByteRange_SharedOverlapNoConflict(t *testing.T) {
+	t.Parallel()
+
+	a := &UnifiedLock{
+		Owner:  LockOwner{OwnerID: "nlm:host1:1:00"},
+		Offset: 0, Length: 100,
+		Type: LockTypeShared,
+	}
+	b := &UnifiedLock{
+		Owner:  LockOwner{OwnerID: "nlm:host2:2:00"},
+		Offset: 50, Length: 100,
+		Type: LockTypeShared,
+	}
+
+	if a.ConflictsWith(b) {
+		t.Error("Overlapping shared byte-range locks should not conflict")
+	}
+}
+
+func TestConflictsWith_ByteRange_NoOverlapNoConflict(t *testing.T) {
+	t.Parallel()
+
+	a := &UnifiedLock{
+		Owner:  LockOwner{OwnerID: "nlm:host1:1:00"},
+		Offset: 0, Length: 50,
+		Type: LockTypeExclusive,
+	}
+	b := &UnifiedLock{
+		Owner:  LockOwner{OwnerID: "nlm:host2:2:00"},
+		Offset: 100, Length: 50,
+		Type: LockTypeExclusive,
+	}
+
+	if a.ConflictsWith(b) {
+		t.Error("Non-overlapping exclusive byte-range locks should not conflict")
+	}
+}
+
+func TestConflictsWith_ByteRange_SharedExclusiveConflict(t *testing.T) {
+	t.Parallel()
+
+	a := &UnifiedLock{
+		Owner:  LockOwner{OwnerID: "nlm:host1:1:00"},
+		Offset: 0, Length: 100,
+		Type: LockTypeShared,
+	}
+	b := &UnifiedLock{
+		Owner:  LockOwner{OwnerID: "nlm:host2:2:00"},
+		Offset: 50, Length: 100,
+		Type: LockTypeExclusive,
+	}
+
+	if !a.ConflictsWith(b) {
+		t.Error("Shared + overlapping exclusive should conflict")
+	}
+}
+
+// ============================================================================
+// Cross-Protocol Scenario: NFS delegation broken by SMB write
+// ============================================================================
+
+func TestCrossProtocol_NFSDelegationBrokenBySMBWrite(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+
+	cb := &crossProtocolBreakCallback{}
+	lm.RegisterBreakCallbacks(cb)
+
+	// NFS client has a Read oplock (delegation equivalent)
+	nfsDelegation := &UnifiedLock{
+		ID:    "nfs-delegation-1",
+		Owner: LockOwner{OwnerID: "nfs4:client1:stateid1", ClientID: "nfs-conn1"},
+		Lease: &OpLock{
+			LeaseKey:   [16]byte{10, 20, 30},
+			LeaseState: LeaseStateRead,
+		},
+	}
+	if err := lm.AddUnifiedLock("shared-file", nfsDelegation); err != nil {
+		t.Fatalf("AddUnifiedLock failed: %v", err)
+	}
+
+	// SMB client performs write - should trigger break of NFS delegation
+	smbWriter := &LockOwner{OwnerID: "smb:session456"}
+	err := lm.CheckAndBreakOpLocksForWrite("shared-file", smbWriter)
+	if err != nil {
+		t.Fatalf("CheckAndBreakOpLocksForWrite failed: %v", err)
+	}
+
+	breaks := cb.getBreaks()
+	if len(breaks) != 1 {
+		t.Fatalf("Expected 1 break (NFS delegation), got %d", len(breaks))
+	}
+	if breaks[0].ownerID != "nfs4:client1:stateid1" {
+		t.Fatalf("Expected NFS owner break, got '%s'", breaks[0].ownerID)
+	}
+	if breaks[0].breakToState != LeaseStateNone {
+		t.Fatalf("Expected break to None for write, got %d", breaks[0].breakToState)
+	}
+}
+
+// crossProtocolBreakCallback is a test helper for cross-protocol break tests.
+type crossProtocolBreakCallback struct {
+	mu     sync.Mutex
+	breaks []crossBreakEvent
+}
+
+type crossBreakEvent struct {
+	handleKey    string
+	ownerID      string
+	breakToState uint32
+}
+
+func (c *crossProtocolBreakCallback) OnOpLockBreak(handleKey string, lock *UnifiedLock, breakToState uint32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.breaks = append(c.breaks, crossBreakEvent{
+		handleKey:    handleKey,
+		ownerID:      lock.Owner.OwnerID,
+		breakToState: breakToState,
+	})
+}
+
+func (c *crossProtocolBreakCallback) OnByteRangeRevoke(handleKey string, lock *UnifiedLock, reason string) {
+	// Not used in this test
+}
+
+func (c *crossProtocolBreakCallback) OnAccessConflict(handleKey string, existingLock *UnifiedLock, requestedMode AccessMode) {
+	// Not used in this test
+}
+
+func (c *crossProtocolBreakCallback) getBreaks() []crossBreakEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	result := make([]crossBreakEvent, len(c.breaks))
+	copy(result, c.breaks)
+	return result
+}
+
+// ============================================================================
+// Existing Cross-Protocol Translation Tests (kept from original)
+// ============================================================================
+
 func TestTranslateToNLMHolder_WriteLease(t *testing.T) {
 	leaseKey := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
-	lease := &EnhancedLock{
+	lease := &UnifiedLock{
 		ID: "lease1",
 		Owner: LockOwner{
 			OwnerID:   "smb:client123",
@@ -19,7 +409,7 @@ func TestTranslateToNLMHolder_WriteLease(t *testing.T) {
 		Length:     0,
 		Type:       LockTypeExclusive,
 		AcquiredAt: time.Now(),
-		Lease: &LeaseInfo{
+		Lease: &OpLock{
 			LeaseKey:   leaseKey,
 			LeaseState: LeaseStateRead | LeaseStateWrite,
 			Epoch:      1,
@@ -67,7 +457,7 @@ func TestTranslateToNLMHolder_WriteLease(t *testing.T) {
 
 func TestTranslateToNLMHolder_ReadOnlyLease(t *testing.T) {
 	leaseKey := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
-	lease := &EnhancedLock{
+	lease := &UnifiedLock{
 		ID: "lease2",
 		Owner: LockOwner{
 			OwnerID:   "smb:client456",
@@ -79,7 +469,7 @@ func TestTranslateToNLMHolder_ReadOnlyLease(t *testing.T) {
 		Length:     0,
 		Type:       LockTypeShared,
 		AcquiredAt: time.Now(),
-		Lease: &LeaseInfo{
+		Lease: &OpLock{
 			LeaseKey:   leaseKey,
 			LeaseState: LeaseStateRead, // Read-only lease
 			Epoch:      1,
@@ -102,7 +492,7 @@ func TestTranslateToNLMHolder_PanicsOnNonLease(t *testing.T) {
 	}()
 
 	// Create a byte-range lock (not a lease)
-	lock := &EnhancedLock{
+	lock := &UnifiedLock{
 		ID: "lock1",
 		Owner: LockOwner{
 			OwnerID: "nlm:host1:123:abc",
@@ -118,7 +508,7 @@ func TestTranslateToNLMHolder_PanicsOnNonLease(t *testing.T) {
 }
 
 func TestTranslateByteRangeLockToNLMHolder_NLMFormat(t *testing.T) {
-	lock := &EnhancedLock{
+	lock := &UnifiedLock{
 		ID: "lock1",
 		Owner: LockOwner{
 			OwnerID:   "nlm:hostname1:12345:deadbeef",
@@ -170,7 +560,7 @@ func TestTranslateByteRangeLockToNLMHolder_NLMFormat(t *testing.T) {
 }
 
 func TestTranslateByteRangeLockToNLMHolder_SharedLock(t *testing.T) {
-	lock := &EnhancedLock{
+	lock := &UnifiedLock{
 		ID: "lock1",
 		Owner: LockOwner{
 			OwnerID: "nlm:host1:1:00",
@@ -189,7 +579,7 @@ func TestTranslateByteRangeLockToNLMHolder_SharedLock(t *testing.T) {
 }
 
 func TestTranslateSMBConflictReason_ExclusiveLock(t *testing.T) {
-	lock := &EnhancedLock{
+	lock := &UnifiedLock{
 		ID: "lock1",
 		Owner: LockOwner{
 			OwnerID: "nlm:fileserver:123:abc",
@@ -209,7 +599,7 @@ func TestTranslateSMBConflictReason_ExclusiveLock(t *testing.T) {
 }
 
 func TestTranslateSMBConflictReason_SharedLock(t *testing.T) {
-	lock := &EnhancedLock{
+	lock := &UnifiedLock{
 		ID: "lock1",
 		Owner: LockOwner{
 			OwnerID: "nlm:client1:456:def",
@@ -229,7 +619,7 @@ func TestTranslateSMBConflictReason_SharedLock(t *testing.T) {
 }
 
 func TestTranslateSMBConflictReason_WholeFileLock(t *testing.T) {
-	lock := &EnhancedLock{
+	lock := &UnifiedLock{
 		ID: "lock1",
 		Owner: LockOwner{
 			OwnerID: "nlm:host:1:00",
@@ -250,13 +640,13 @@ func TestTranslateSMBConflictReason_WholeFileLock(t *testing.T) {
 
 func TestTranslateNFSConflictReason_WriteLease(t *testing.T) {
 	leaseKey := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
-	lease := &EnhancedLock{
+	lease := &UnifiedLock{
 		ID: "lease1",
 		Owner: LockOwner{
 			OwnerID: "smb:smbclient1",
 		},
 		FileHandle: "file1",
-		Lease: &LeaseInfo{
+		Lease: &OpLock{
 			LeaseKey:   leaseKey,
 			LeaseState: LeaseStateRead | LeaseStateWrite,
 		},
@@ -272,13 +662,13 @@ func TestTranslateNFSConflictReason_WriteLease(t *testing.T) {
 
 func TestTranslateNFSConflictReason_HandleLease(t *testing.T) {
 	leaseKey := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
-	lease := &EnhancedLock{
+	lease := &UnifiedLock{
 		ID: "lease1",
 		Owner: LockOwner{
 			OwnerID: "smb:smbclient2",
 		},
 		FileHandle: "file1",
-		Lease: &LeaseInfo{
+		Lease: &OpLock{
 			LeaseKey:   leaseKey,
 			LeaseState: LeaseStateRead | LeaseStateHandle,
 		},
@@ -294,13 +684,13 @@ func TestTranslateNFSConflictReason_HandleLease(t *testing.T) {
 
 func TestTranslateNFSConflictReason_ReadOnlyLease(t *testing.T) {
 	leaseKey := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
-	lease := &EnhancedLock{
+	lease := &UnifiedLock{
 		ID: "lease1",
 		Owner: LockOwner{
 			OwnerID: "smb:reader",
 		},
 		FileHandle: "file1",
-		Lease: &LeaseInfo{
+		Lease: &OpLock{
 			LeaseKey:   leaseKey,
 			LeaseState: LeaseStateRead,
 		},

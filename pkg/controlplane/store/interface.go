@@ -410,9 +410,42 @@ type Store interface {
 	EnsureAdapterSettings(ctx context.Context) error
 
 	// ============================================
-	// NETGROUP OPERATIONS
+	// SHARE ADAPTER CONFIG OPERATIONS
 	// ============================================
 
+	// GetShareAdapterConfig returns the adapter config for a share and adapter type.
+	// Returns nil (no error) if no config exists.
+	GetShareAdapterConfig(ctx context.Context, shareID, adapterType string) (*models.ShareAdapterConfig, error)
+
+	// SetShareAdapterConfig creates or updates an adapter config for a share.
+	// Uses upsert semantics: creates if not found, updates if exists.
+	SetShareAdapterConfig(ctx context.Context, config *models.ShareAdapterConfig) error
+
+	// DeleteShareAdapterConfig deletes an adapter config for a share and adapter type.
+	// No error if the config didn't exist.
+	DeleteShareAdapterConfig(ctx context.Context, shareID, adapterType string) error
+
+	// ListShareAdapterConfigs returns all adapter configs for a share.
+	ListShareAdapterConfigs(ctx context.Context, shareID string) ([]models.ShareAdapterConfig, error)
+
+	// ============================================
+	// HEALTH & LIFECYCLE
+	// ============================================
+
+	// Healthcheck verifies the store is operational.
+	// Returns an error if the store is not healthy.
+	Healthcheck(ctx context.Context) error
+
+	// Close closes the store and releases resources.
+	Close() error
+}
+
+// NetgroupStore provides netgroup operations.
+// This is a separate interface from Store so that only NFS-aware components
+// need to depend on netgroup functionality. Use type assertion to check:
+//
+//	if ns, ok := store.(NetgroupStore); ok { ... }
+type NetgroupStore interface {
 	// GetNetgroup returns a netgroup by name with members preloaded.
 	// Returns models.ErrNetgroupNotFound if the netgroup doesn't exist.
 	GetNetgroup(ctx context.Context, name string) (*models.Netgroup, error)
@@ -451,11 +484,12 @@ type Store interface {
 	// GetSharesByNetgroup returns all shares referencing a netgroup.
 	// Used to check ErrNetgroupInUse before deletion.
 	GetSharesByNetgroup(ctx context.Context, netgroupName string) ([]*models.Share, error)
+}
 
-	// ============================================
-	// IDENTITY MAPPING OPERATIONS
-	// ============================================
-
+// IdentityMappingStore provides identity mapping operations.
+// This is a separate interface from Store so that only NFS/Kerberos-aware
+// components need to depend on identity mapping functionality.
+type IdentityMappingStore interface {
 	// GetIdentityMapping returns an identity mapping by principal.
 	// Returns models.ErrMappingNotFound if the mapping doesn't exist.
 	GetIdentityMapping(ctx context.Context, principal string) (*models.IdentityMapping, error)
@@ -470,15 +504,11 @@ type Store interface {
 	// DeleteIdentityMapping deletes an identity mapping by principal.
 	// Returns models.ErrMappingNotFound if the mapping doesn't exist.
 	DeleteIdentityMapping(ctx context.Context, principal string) error
-
-	// ============================================
-	// HEALTH & LIFECYCLE
-	// ============================================
-
-	// Healthcheck verifies the store is operational.
-	// Returns an error if the store is not healthy.
-	Healthcheck(ctx context.Context) error
-
-	// Close closes the store and releases resources.
-	Close() error
 }
+
+// Compile-time assertions that GORMStore implements all interfaces.
+var (
+	_ Store                = (*GORMStore)(nil)
+	_ NetgroupStore        = (*GORMStore)(nil)
+	_ IdentityMappingStore = (*GORMStore)(nil)
+)

@@ -9,6 +9,7 @@ func AllModels() []any {
 		&PayloadStoreConfig{},
 		&Share{},
 		&ShareAccessRule{},
+		&ShareAdapterConfig{},
 		&UserSharePermission{},
 		&GroupSharePermission{},
 		&AdapterConfig{},

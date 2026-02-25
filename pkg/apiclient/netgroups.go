@@ -24,7 +24,7 @@ type NetgroupMember struct {
 // ListNetgroups returns all netgroups.
 func (c *Client) ListNetgroups() ([]*Netgroup, error) {
 	var netgroups []*Netgroup
-	if err := c.get("/api/v1/netgroups", &netgroups); err != nil {
+	if err := c.get("/api/v1/adapters/nfs/netgroups", &netgroups); err != nil {
 		return nil, err
 	}
 	return netgroups, nil
@@ -33,7 +33,7 @@ func (c *Client) ListNetgroups() ([]*Netgroup, error) {
 // GetNetgroup returns a netgroup by name.
 func (c *Client) GetNetgroup(name string) (*Netgroup, error) {
 	var netgroup Netgroup
-	if err := c.get(fmt.Sprintf("/api/v1/netgroups/%s", name), &netgroup); err != nil {
+	if err := c.get(fmt.Sprintf("/api/v1/adapters/nfs/netgroups/%s", name), &netgroup); err != nil {
 		return nil, err
 	}
 	return &netgroup, nil
@@ -43,7 +43,7 @@ func (c *Client) GetNetgroup(name string) (*Netgroup, error) {
 func (c *Client) CreateNetgroup(name string) (*Netgroup, error) {
 	req := map[string]string{"name": name}
 	var netgroup Netgroup
-	if err := c.post("/api/v1/netgroups", req, &netgroup); err != nil {
+	if err := c.post("/api/v1/adapters/nfs/netgroups", req, &netgroup); err != nil {
 		return nil, err
 	}
 	return &netgroup, nil
@@ -51,7 +51,7 @@ func (c *Client) CreateNetgroup(name string) (*Netgroup, error) {
 
 // DeleteNetgroup deletes a netgroup by name.
 func (c *Client) DeleteNetgroup(name string) error {
-	return c.delete(fmt.Sprintf("/api/v1/netgroups/%s", name), nil)
+	return c.delete(fmt.Sprintf("/api/v1/adapters/nfs/netgroups/%s", name), nil)
 }
 
 // AddNetgroupMember adds a member to a netgroup.
@@ -61,7 +61,7 @@ func (c *Client) AddNetgroupMember(netgroupName, memberType, memberValue string)
 		"value": memberValue,
 	}
 	var member NetgroupMember
-	if err := c.post(fmt.Sprintf("/api/v1/netgroups/%s/members", netgroupName), req, &member); err != nil {
+	if err := c.post(fmt.Sprintf("/api/v1/adapters/nfs/netgroups/%s/members", netgroupName), req, &member); err != nil {
 		return nil, err
 	}
 	return &member, nil
@@ -69,5 +69,5 @@ func (c *Client) AddNetgroupMember(netgroupName, memberType, memberValue string)
 
 // RemoveNetgroupMember removes a member from a netgroup.
 func (c *Client) RemoveNetgroupMember(netgroupName, memberID string) error {
-	return c.delete(fmt.Sprintf("/api/v1/netgroups/%s/members/%s", netgroupName, memberID), nil)
+	return c.delete(fmt.Sprintf("/api/v1/adapters/nfs/netgroups/%s/members/%s", netgroupName, memberID), nil)
 }

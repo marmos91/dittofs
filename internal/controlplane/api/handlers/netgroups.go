@@ -13,11 +13,12 @@ import (
 
 // NetgroupHandler handles netgroup management API endpoints.
 type NetgroupHandler struct {
-	store store.Store
+	store store.NetgroupStore
 }
 
 // NewNetgroupHandler creates a new NetgroupHandler.
-func NewNetgroupHandler(cpStore store.Store) *NetgroupHandler {
+// The cpStore must implement store.NetgroupStore (GORMStore does).
+func NewNetgroupHandler(cpStore store.NetgroupStore) *NetgroupHandler {
 	return &NetgroupHandler{store: cpStore}
 }
 

@@ -96,11 +96,13 @@ type Runtime struct {
 	mu              sync.RWMutex
 	metadata        map[string]metadata.MetadataStore // Named metadata store instances
 	shares          map[string]*Share                 // Share runtime state
-	mounts          map[string]*MountInfo             // Active NFS mounts (key: clientAddr)
 	store           store.Store                       // Persistent configuration store
 	metadataService *metadata.MetadataService         // High-level metadata operations
 	payloadService  *payload.PayloadService           // High-level content operations
 	cacheInstance   *cache.Cache                      // WAL-backed cache for content operations
+
+	// Unified mount tracking across all protocols (NFS, SMB)
+	mountTracker *MountTracker
 
 	// Cache configuration (set at startup, used for lazy PayloadService creation)
 	cacheConfig *CacheConfig
@@ -117,15 +119,13 @@ type Runtime struct {
 	// Settings hot-reload
 	settingsWatcher *SettingsWatcher
 
-	// DNS cache for netgroup hostname matching
-	dnsCache     *dnsCache
-	dnsCacheOnce sync.Once
-
-	// Share change callbacks for dynamic updates (e.g., NFSv4 pseudo-fs rebuild)
+	// Share change callbacks for dynamic updates (e.g., pseudo-fs rebuild, session index rebuild)
 	shareChangeCallbacks []func(shares []string)
 
-	// NFSv4 client provider (stored as any to avoid import cycle with internal/protocol)
-	nfsClientProvider any
+	// Adapter data providers (stored as any to avoid import cycles with internal/protocol)
+	// Each adapter can store a provider for API handler access via GetAdapterProvider/SetAdapterProvider.
+	adapterProviders   map[string]any
+	adapterProvidersMu sync.RWMutex
 
 	// Shutdown management
 	shutdownTimeout time.Duration
@@ -138,13 +138,14 @@ type Runtime struct {
 // New creates a new Runtime with the given persistent store.
 func New(s store.Store) *Runtime {
 	rt := &Runtime{
-		metadata:        make(map[string]metadata.MetadataStore),
-		shares:          make(map[string]*Share),
-		mounts:          make(map[string]*MountInfo),
-		adapters:        make(map[string]*adapterEntry),
-		store:           s,
-		metadataService: metadata.New(),
-		shutdownTimeout: DefaultShutdownTimeout,
+		metadata:         make(map[string]metadata.MetadataStore),
+		shares:           make(map[string]*Share),
+		adapters:         make(map[string]*adapterEntry),
+		store:            s,
+		metadataService:  metadata.New(),
+		mountTracker:     NewMountTracker(),
+		adapterProviders: make(map[string]any),
+		shutdownTimeout:  DefaultShutdownTimeout,
 	}
 
 	// Create settings watcher if store is available
@@ -705,54 +706,50 @@ func (r *Runtime) GetPayloadService() *payload.PayloadService {
 }
 
 // ============================================================================
-// Mount Tracking (Ephemeral)
+// Mount Tracking (Unified)
 // ============================================================================
 
-// RecordMount registers that a client has mounted a share.
-func (r *Runtime) RecordMount(clientAddr, shareName string, mountTime int64) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+// Mounts returns the unified mount tracker for cross-protocol mount management.
+// All protocol adapters record their mounts here.
+func (r *Runtime) Mounts() *MountTracker {
+	return r.mountTracker
+}
 
-	r.mounts[clientAddr] = &MountInfo{
-		ClientAddr: clientAddr,
-		ShareName:  shareName,
-		MountTime:  mountTime,
-	}
+// RecordMount registers that a client has mounted a share.
+// This is a convenience method that delegates to the unified MountTracker with protocol "nfs".
+// Adapters should use r.Mounts().Record() directly for protocol-specific tracking.
+func (r *Runtime) RecordMount(clientAddr, shareName string, mountTime int64) {
+	r.mountTracker.Record(clientAddr, "nfs", shareName, mountTime)
 }
 
 // RemoveMount removes a mount record for the given client.
+// This is a convenience method for backward compatibility.
 func (r *Runtime) RemoveMount(clientAddr string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if _, exists := r.mounts[clientAddr]; exists {
-		delete(r.mounts, clientAddr)
-		return true
-	}
-	return false
+	return r.mountTracker.RemoveByClient(clientAddr)
 }
 
 // RemoveAllMounts removes all mount records.
+// This is a convenience method for backward compatibility.
 func (r *Runtime) RemoveAllMounts() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	count := len(r.mounts)
-	r.mounts = make(map[string]*MountInfo)
-	return count
+	return r.mountTracker.RemoveAll()
 }
 
 // ListMounts returns all active mount records.
-func (r *Runtime) ListMounts() []*MountInfo {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	mounts := make([]*MountInfo, 0, len(r.mounts))
-	for _, mount := range r.mounts {
-		mounts = append(mounts, &MountInfo{
+// Returns a legacy-compatible view of all mounts (flattened to LegacyMountInfo).
+func (r *Runtime) ListMounts() []*LegacyMountInfo {
+	unified := r.mountTracker.List()
+	mounts := make([]*LegacyMountInfo, 0, len(unified))
+	for _, mount := range unified {
+		var mountTime int64
+		if ts, ok := mount.AdapterData.(int64); ok {
+			mountTime = ts
+		} else {
+			mountTime = mount.MountedAt.Unix()
+		}
+		mounts = append(mounts, &LegacyMountInfo{
 			ClientAddr: mount.ClientAddr,
 			ShareName:  mount.ShareName,
-			MountTime:  mount.MountTime,
+			MountTime:  mountTime,
 		})
 	}
 	return mounts
@@ -1002,40 +999,12 @@ func (r *Runtime) startAdapter(cfg *models.AdapterConfig) error {
 		return fmt.Errorf("adapter factory not set")
 	}
 
-	// Create adapter instance using factory
 	adp, err := r.adapterFactory(cfg)
 	if err != nil {
 		return fmt.Errorf("failed to create adapter: %w", err)
 	}
 
-	// Create per-adapter context
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
-
-	// Inject runtime into adapter if it supports RuntimeSetter
-	if setter, ok := adp.(RuntimeSetter); ok {
-		setter.SetRuntime(r)
-	}
-
-	// Start in goroutine
-	go func() {
-		logger.Info("Starting adapter", "protocol", adp.Protocol(), "port", adp.Port())
-		err := adp.Serve(ctx)
-		if err != nil && err != context.Canceled && ctx.Err() == nil {
-			logger.Error("Adapter failed", "protocol", adp.Protocol(), "error", err)
-		}
-		errCh <- err
-	}()
-
-	r.adapters[cfg.Type] = &adapterEntry{
-		adapter: adp,
-		config:  cfg,
-		ctx:     ctx,
-		cancel:  cancel,
-		errCh:   errCh,
-	}
-
-	logger.Info("Adapter started", "type", cfg.Type, "port", cfg.Port)
+	r.registerAndRunAdapterLocked(adp, cfg)
 	return nil
 }
 
@@ -1149,35 +1118,39 @@ func (r *Runtime) AddAdapter(adapter ProtocolAdapter) error {
 		return fmt.Errorf("adapter %s already running", adapterType)
 	}
 
-	// Create per-adapter context
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
+	cfg := &models.AdapterConfig{Type: adapterType, Port: adapter.Port(), Enabled: true}
+	r.registerAndRunAdapterLocked(adapter, cfg)
+	return nil
+}
 
-	// Inject runtime into adapter if it supports RuntimeSetter
-	if setter, ok := adapter.(RuntimeSetter); ok {
+// registerAndRunAdapterLocked injects the runtime, starts the adapter in a goroutine,
+// and records it in the adapters map. Caller must hold adaptersMu.
+func (r *Runtime) registerAndRunAdapterLocked(adp ProtocolAdapter, cfg *models.AdapterConfig) {
+	if setter, ok := adp.(RuntimeSetter); ok {
 		setter.SetRuntime(r)
 	}
 
-	// Start in goroutine
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+
 	go func() {
-		logger.Info("Starting adapter", "protocol", adapter.Protocol(), "port", adapter.Port())
-		err := adapter.Serve(ctx)
+		logger.Info("Starting adapter", "protocol", adp.Protocol(), "port", adp.Port())
+		err := adp.Serve(ctx)
 		if err != nil && err != context.Canceled && ctx.Err() == nil {
-			logger.Error("Adapter failed", "protocol", adapter.Protocol(), "error", err)
+			logger.Error("Adapter failed", "protocol", adp.Protocol(), "error", err)
 		}
 		errCh <- err
 	}()
 
-	r.adapters[adapterType] = &adapterEntry{
-		adapter: adapter,
-		config:  &models.AdapterConfig{Type: adapterType, Port: adapter.Port(), Enabled: true},
+	r.adapters[cfg.Type] = &adapterEntry{
+		adapter: adp,
+		config:  cfg,
 		ctx:     ctx,
 		cancel:  cancel,
 		errCh:   errCh,
 	}
 
-	logger.Info("Adapter added and started", "type", adapterType, "port", adapter.Port())
-	return nil
+	logger.Info("Adapter started", "type", cfg.Type, "port", cfg.Port)
 }
 
 // ============================================================================
@@ -1211,24 +1184,37 @@ func (r *Runtime) GetSMBSettings() *models.SMBAdapterSettings {
 }
 
 // ============================================================================
-// NFS Client Provider (Phase 18)
+// Adapter Providers (Generic)
 // ============================================================================
 
+// SetAdapterProvider stores an adapter-specific provider for REST API access.
+// This is a generic replacement for SetNFSClientProvider -- any adapter can store
+// a provider that API handlers can type-assert as needed.
+// The key is typically the adapter protocol name (e.g., "nfs", "smb").
+func (r *Runtime) SetAdapterProvider(key string, p any) {
+	r.adapterProvidersMu.Lock()
+	defer r.adapterProvidersMu.Unlock()
+	r.adapterProviders[key] = p
+}
+
+// GetAdapterProvider returns an adapter-specific provider for REST API access.
+// Returns nil if no provider is registered for the given key.
+func (r *Runtime) GetAdapterProvider(key string) any {
+	r.adapterProvidersMu.RLock()
+	defer r.adapterProvidersMu.RUnlock()
+	return r.adapterProviders[key]
+}
+
 // SetNFSClientProvider stores the NFS state manager reference for REST API access.
-// Stored as any to avoid import cycles between pkg/ and internal/ packages.
-// The NFS adapter calls this during setup; API handlers type-assert as needed.
+// Deprecated: Use SetAdapterProvider("nfs", p) instead. Kept for backward compatibility.
 func (r *Runtime) SetNFSClientProvider(p any) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.nfsClientProvider = p
+	r.SetAdapterProvider("nfs", p)
 }
 
 // NFSClientProvider returns the NFS state manager reference for REST API access.
-// Returns nil if no NFS adapter is configured.
+// Deprecated: Use GetAdapterProvider("nfs") instead. Kept for backward compatibility.
 func (r *Runtime) NFSClientProvider() any {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.nfsClientProvider
+	return r.GetAdapterProvider("nfs")
 }
 
 // ============================================================================

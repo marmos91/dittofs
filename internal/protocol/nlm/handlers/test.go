@@ -8,7 +8,6 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nlm/types"
 	nlm_xdr "github.com/marmos91/dittofs/internal/protocol/nlm/xdr"
-	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -101,15 +100,15 @@ func (h *Handler) Test(ctx *NLMHandlerContext, req *TestRequest) (*TestResponse,
 		"length", req.Lock.Length)
 
 	// Convert file handle
-	handle := metadata.FileHandle(req.Lock.FH)
+	handle := req.Lock.FH
 
 	// Build lock owner
 	owner := lock.LockOwner{
 		OwnerID: ownerID,
 	}
 
-	// Call MetadataService to test lock
-	granted, conflict, err := h.metadataService.TestLockNLM(
+	// Call NLMService to test lock
+	granted, conflict, err := h.nlmService.TestLockNLM(
 		ctx.Context,
 		handle,
 		owner,
@@ -155,16 +154,16 @@ func buildOwnerID(callerName string, svid int32, oh []byte) string {
 	return fmt.Sprintf("nlm:%s:%d:%s", callerName, svid, hex.EncodeToString(oh))
 }
 
-// conflictToHolder converts an EnhancedLockConflict to NLM4Holder.
+// conflictToHolder converts an UnifiedLockConflict to NLM4Holder.
 // Returns nil if conflict is nil.
-func conflictToHolder(conflict *lock.EnhancedLockConflict) *types.NLM4Holder {
+func conflictToHolder(conflict *lock.UnifiedLockConflict) *types.NLM4Holder {
 	if conflict == nil || conflict.Lock == nil {
 		return nil
 	}
 
 	return &types.NLM4Holder{
 		Exclusive: conflict.Lock.IsExclusive(),
-		Svid:      0, // We don't track svid in EnhancedLock - would need to parse OwnerID
+		Svid:      0, // We don't track svid in UnifiedLock - would need to parse OwnerID
 		OH:        nil,
 		Offset:    conflict.Lock.Offset,
 		Length:    conflict.Lock.Length,

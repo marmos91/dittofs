@@ -14,6 +14,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/cache/wal"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
@@ -361,33 +362,43 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			}
 		}
 
+		// Load NFS adapter config for protocol-specific options
+		nfsOpts := models.DefaultNFSExportOptions()
+		nfsCfg, err := s.GetShareAdapterConfig(ctx, share.ID, "nfs")
+		if err == nil && nfsCfg != nil {
+			_ = nfsCfg.ParseConfig(&nfsOpts)
+		}
+
 		// Resolve netgroup name from ID for runtime
 		var netgroupName string
-		if share.NetgroupID != nil && *share.NetgroupID != "" {
-			ng, err := s.GetNetgroupByID(ctx, *share.NetgroupID)
-			if err == nil {
-				netgroupName = ng.Name
-			} else {
-				logger.Warn("Share references unknown netgroup",
-					"share", share.Name,
-					"netgroup_id", *share.NetgroupID)
+		if nfsOpts.NetgroupID != nil && *nfsOpts.NetgroupID != "" {
+			if ns, ok := s.(store.NetgroupStore); ok {
+				ng, ngErr := ns.GetNetgroupByID(ctx, *nfsOpts.NetgroupID)
+				if ngErr == nil {
+					netgroupName = ng.Name
+				} else {
+					logger.Warn("Share references unknown netgroup",
+						"share", share.Name,
+						"netgroup_id", *nfsOpts.NetgroupID)
+				}
 			}
 		}
 
 		shareConfig := &ShareConfig{
-			Name:              share.Name,
-			MetadataStore:     metaStoreCfg.Name,
-			ReadOnly:          share.ReadOnly,
-			DefaultPermission: share.DefaultPermission,
-			Squash:            share.GetSquashMode(),
-			AnonymousUID:      share.GetAnonymousUID(),
-			AnonymousGID:      share.GetAnonymousGID(),
-			AllowAuthSys:      share.AllowAuthSys,
-			AllowAuthSysSet:   true,
-			RequireKerberos:   share.RequireKerberos,
-			MinKerberosLevel:  share.MinKerberosLevel,
-			NetgroupName:      netgroupName,
-			BlockedOperations: share.GetBlockedOps(),
+			Name:               share.Name,
+			MetadataStore:      metaStoreCfg.Name,
+			ReadOnly:           share.ReadOnly,
+			DefaultPermission:  share.DefaultPermission,
+			Squash:             nfsOpts.GetSquashMode(),
+			AnonymousUID:       nfsOpts.GetAnonymousUID(),
+			AnonymousGID:       nfsOpts.GetAnonymousGID(),
+			AllowAuthSys:       nfsOpts.AllowAuthSys,
+			AllowAuthSysSet:    true,
+			RequireKerberos:    nfsOpts.RequireKerberos,
+			MinKerberosLevel:   nfsOpts.MinKerberosLevel,
+			DisableReaddirplus: nfsOpts.DisableReaddirplus,
+			NetgroupName:       netgroupName,
+			BlockedOperations:  share.GetBlockedOps(),
 		}
 
 		if err := rt.AddShare(ctx, shareConfig); err != nil {

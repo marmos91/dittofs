@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/jcmturner/gokrb5/v8/types"
-	"github.com/marmos91/dittofs/pkg/identity"
+	"github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"

@@ -2,11 +2,14 @@ package store
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
@@ -80,16 +83,13 @@ func (s *GORMStore) UpdateShare(ctx context.Context, share *models.Share) error 
 	// Only update fields that don't have foreign key constraints
 	// MetadataStoreID and PayloadStoreID are not updated here to avoid FK issues
 	// Use specific methods to change stores if needed
+	// Protocol-specific fields (Squash, AllowAuthSys, etc.) are stored in share_adapter_configs.
 	result := s.db.WithContext(ctx).
 		Model(&models.Share{}).
 		Where("id = ?", share.ID).
 		Updates(map[string]any{
 			"read_only":          share.ReadOnly,
 			"default_permission": share.DefaultPermission,
-			"allow_auth_sys":     share.AllowAuthSys,
-			"require_kerberos":   share.RequireKerberos,
-			"min_kerberos_level": share.MinKerberosLevel,
-			"netgroup_id":        share.NetgroupID,
 			"blocked_operations": share.BlockedOperations,
 			"updated_at":         share.UpdatedAt,
 		})
@@ -108,6 +108,11 @@ func (s *GORMStore) DeleteShare(ctx context.Context, name string) error {
 		var share models.Share
 		if err := tx.Where("name = ?", name).First(&share).Error; err != nil {
 			return convertNotFoundError(err, models.ErrShareNotFound)
+		}
+
+		// Delete adapter configs
+		if err := tx.Where("share_id = ?", share.ID).Delete(&models.ShareAdapterConfig{}).Error; err != nil {
+			return err
 		}
 
 		// Delete access rules
@@ -257,7 +262,21 @@ func (s *GORMStore) GetGuestUser(ctx context.Context, shareName string) (*models
 		return nil, err
 	}
 
-	if !share.GuestEnabled {
+	// Load SMB adapter config to check guest access
+	smbConfig, err := s.GetShareAdapterConfig(ctx, share.ID, "smb")
+	if err != nil {
+		return nil, err // Propagate real DB errors
+	}
+	if smbConfig == nil {
+		return nil, models.ErrGuestDisabled
+	}
+
+	var smbOpts models.SMBShareOptions
+	if err := smbConfig.ParseConfig(&smbOpts); err != nil {
+		return nil, fmt.Errorf("failed to parse SMB share config: %w", err)
+	}
+
+	if !smbOpts.GuestEnabled {
 		return nil, models.ErrGuestDisabled
 	}
 
@@ -266,8 +285,8 @@ func (s *GORMStore) GetGuestUser(ctx context.Context, shareName string) (*models
 		Username:    "guest",
 		Enabled:     true,
 		Role:        string(models.RoleUser),
-		UID:         share.GuestUID,
-		GID:         share.GuestGID,
+		UID:         smbOpts.GuestUID,
+		GID:         smbOpts.GuestGID,
 		DisplayName: "Guest",
 	}, nil
 }
@@ -275,7 +294,26 @@ func (s *GORMStore) GetGuestUser(ctx context.Context, shareName string) (*models
 func (s *GORMStore) IsGuestEnabled(ctx context.Context, shareName string) bool {
 	share, err := s.GetShare(ctx, shareName)
 	if err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) && !errors.Is(err, models.ErrShareNotFound) {
+			logger.Warn("IsGuestEnabled: failed to get share", "share", shareName, "error", err)
+		}
 		return false
 	}
-	return share.GuestEnabled
+
+	smbConfig, err := s.GetShareAdapterConfig(ctx, share.ID, "smb")
+	if err != nil {
+		logger.Warn("IsGuestEnabled: failed to get adapter config", "share", shareName, "error", err)
+		return false
+	}
+	if smbConfig == nil {
+		return false // No SMB config = guest disabled
+	}
+
+	var smbOpts models.SMBShareOptions
+	if err := smbConfig.ParseConfig(&smbOpts); err != nil {
+		logger.Warn("IsGuestEnabled: failed to parse SMB config", "share", shareName, "error", err)
+		return false
+	}
+
+	return smbOpts.GuestEnabled
 }

@@ -188,17 +188,17 @@ func (s *memoryLockStore) IncrementServerEpoch(ctx context.Context) (uint64, err
 // cloneLock creates a deep copy of a PersistedLock.
 func cloneLock(lk *lock.PersistedLock) *lock.PersistedLock {
 	clone := &lock.PersistedLock{
-		ID:               lk.ID,
-		ShareName:        lk.ShareName,
-		FileID:           lk.FileID,
-		OwnerID:          lk.OwnerID,
-		ClientID:         lk.ClientID,
-		LockType:         lk.LockType,
-		Offset:           lk.Offset,
-		Length:           lk.Length,
-		ShareReservation: lk.ShareReservation,
-		AcquiredAt:       lk.AcquiredAt,
-		ServerEpoch:      lk.ServerEpoch,
+		ID:          lk.ID,
+		ShareName:   lk.ShareName,
+		FileID:      lk.FileID,
+		OwnerID:     lk.OwnerID,
+		ClientID:    lk.ClientID,
+		LockType:    lk.LockType,
+		Offset:      lk.Offset,
+		Length:      lk.Length,
+		AccessMode:  lk.AccessMode,
+		AcquiredAt:  lk.AcquiredAt,
+		ServerEpoch: lk.ServerEpoch,
 		// Lease fields
 		LeaseState:   lk.LeaseState,
 		LeaseEpoch:   lk.LeaseEpoch,
@@ -341,7 +341,7 @@ func (s *MemoryMetadataStore) IncrementServerEpoch(ctx context.Context) (uint64,
 
 // ReclaimLease reclaims an existing lease during grace period.
 // Memory store returns ErrLockNotFound since leases are not persisted across restarts.
-func (s *MemoryMetadataStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.EnhancedLock, error) {
+func (s *MemoryMetadataStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.UnifiedLock, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -434,7 +434,7 @@ func (s *MemoryMetadataStore) incrementServerEpochLocked(_ context.Context) (uin
 
 // reclaimLeaseLocked searches for a lease matching the criteria.
 // Memory store looks for existing leases that match the lease key.
-func (s *MemoryMetadataStore) reclaimLeaseLocked(_ context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.EnhancedLock, error) {
+func (s *MemoryMetadataStore) reclaimLeaseLocked(_ context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.UnifiedLock, error) {
 	// Search for a persisted lease with matching file handle and lease key
 	for _, lk := range s.lockStore.locks {
 		// Must be a lease (has 16-byte key)
@@ -451,7 +451,7 @@ func (s *MemoryMetadataStore) reclaimLeaseLocked(_ context.Context, fileHandle l
 		if storedKey != leaseKey {
 			continue
 		}
-		// Found matching lease - convert to EnhancedLock
+		// Found matching lease - convert to UnifiedLock
 		enhanced := lock.FromPersistedLock(lk)
 		if enhanced.Lease != nil {
 			enhanced.Lease.Reclaim = true
@@ -536,7 +536,7 @@ func (tx *memoryTransaction) IncrementServerEpoch(ctx context.Context) (uint64, 
 	return tx.store.incrementServerEpochLocked(ctx)
 }
 
-func (tx *memoryTransaction) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.EnhancedLock, error) {
+func (tx *memoryTransaction) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.UnifiedLock, error) {
 	if tx.store.lockStore == nil {
 		return nil, &errors.StoreError{
 			Code:    errors.ErrLockNotFound,

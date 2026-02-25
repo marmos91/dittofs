@@ -7,7 +7,6 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/protocol/nlm/types"
 	nlm_xdr "github.com/marmos91/dittofs/internal/protocol/nlm/xdr"
-	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // UnlockRequest represents an NLM_UNLOCK request.
@@ -87,11 +86,11 @@ func (h *Handler) Unlock(ctx *NLMHandlerContext, req *UnlockRequest) (*UnlockRes
 		"length", req.Lock.Length)
 
 	// Convert file handle
-	handle := metadata.FileHandle(req.Lock.FH)
+	handle := req.Lock.FH
 
-	// Call MetadataService to release lock
-	// Per CONTEXT.md: unlock of non-existent lock silently succeeds
-	err := h.metadataService.UnlockFileNLM(
+	// Call NLMService to release lock
+	// Per NLM spec: unlock of non-existent lock silently succeeds
+	err := h.nlmService.UnlockFileNLM(
 		ctx.Context,
 		handle,
 		ownerID,

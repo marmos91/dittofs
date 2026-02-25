@@ -318,7 +318,7 @@ func (m *OplockManager) RequestLease(
 	}
 
 	// Grant new lease
-	leaseLock := lock.NewEnhancedLock(
+	leaseLock := lock.NewUnifiedLock(
 		lock.LockOwner{
 			OwnerID:   ownerID,
 			ClientID:  clientID,
@@ -328,7 +328,7 @@ func (m *OplockManager) RequestLease(
 		0, 0, // Whole file
 		lock.LockTypeShared, // Base type; lease flags determine actual behavior
 	)
-	leaseLock.Lease = &lock.LeaseInfo{
+	leaseLock.Lease = &lock.OpLock{
 		LeaseKey:   leaseKey,
 		LeaseState: requestedState,
 		Epoch:      1,
@@ -470,19 +470,19 @@ func (m *OplockManager) GetLeaseState(ctx context.Context, leaseKey [16]byte) (u
 
 // findLeaseByKey finds a lease by key on a specific file.
 // Must be called with m.mu held.
-func (m *OplockManager) findLeaseByKey(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte) *lock.EnhancedLock {
+func (m *OplockManager) findLeaseByKey(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte) *lock.UnifiedLock {
 	return m.findLeaseByQuery(ctx, lock.LockQuery{FileID: string(fileHandle)}, leaseKey)
 }
 
 // findLeaseByKeyGlobal finds a lease by key across all files.
 // Must be called with m.mu held (for read).
-func (m *OplockManager) findLeaseByKeyGlobal(ctx context.Context, leaseKey [16]byte) *lock.EnhancedLock {
+func (m *OplockManager) findLeaseByKeyGlobal(ctx context.Context, leaseKey [16]byte) *lock.UnifiedLock {
 	return m.findLeaseByQuery(ctx, lock.LockQuery{}, leaseKey)
 }
 
 // findLeaseByQuery searches for a lease matching the given key within the query scope.
 // Must be called with m.mu held.
-func (m *OplockManager) findLeaseByQuery(ctx context.Context, query lock.LockQuery, leaseKey [16]byte) *lock.EnhancedLock {
+func (m *OplockManager) findLeaseByQuery(ctx context.Context, query lock.LockQuery, leaseKey [16]byte) *lock.UnifiedLock {
 	if m.lockStore == nil {
 		return nil
 	}
@@ -511,7 +511,7 @@ func (m *OplockManager) findLeaseByQuery(ctx context.Context, query lock.LockQue
 
 // checkLeaseConflict checks for conflicting leases on a file.
 // Must be called with m.mu held.
-func (m *OplockManager) checkLeaseConflict(ctx context.Context, fileHandle lock.FileHandle, requestedState uint32, excludeKey [16]byte) *lock.EnhancedLock {
+func (m *OplockManager) checkLeaseConflict(ctx context.Context, fileHandle lock.FileHandle, requestedState uint32, excludeKey [16]byte) *lock.UnifiedLock {
 	if m.lockStore == nil {
 		return nil
 	}
@@ -528,7 +528,7 @@ func (m *OplockManager) checkLeaseConflict(ctx context.Context, fileHandle lock.
 	}
 
 	// Build a temporary lease info for conflict checking
-	requestedInfo := &lock.LeaseInfo{
+	requestedInfo := &lock.OpLock{
 		LeaseKey:   excludeKey,
 		LeaseState: requestedState,
 	}
@@ -545,7 +545,7 @@ func (m *OplockManager) checkLeaseConflict(ctx context.Context, fileHandle lock.
 		}
 
 		el := lock.FromPersistedLock(pl)
-		if el.Lease != nil && lock.LeasesConflict(el.Lease, requestedInfo) {
+		if el.Lease != nil && lock.OpLocksConflict(el.Lease, requestedInfo) {
 			return el
 		}
 	}
@@ -573,7 +573,7 @@ func (m *OplockManager) calculateBreakToState(requestedState uint32) uint32 {
 
 // upgradeLeaseState handles upgrading/maintaining lease state for same key.
 // Must be called with m.mu held.
-func (m *OplockManager) upgradeLeaseState(ctx context.Context, existing *lock.EnhancedLock, requestedState uint32) (uint32, uint16, error) {
+func (m *OplockManager) upgradeLeaseState(ctx context.Context, existing *lock.UnifiedLock, requestedState uint32) (uint32, uint16, error) {
 	if existing.Lease == nil {
 		return lock.LeaseStateNone, 0, fmt.Errorf("existing lock is not a lease")
 	}
@@ -614,7 +614,7 @@ func (m *OplockManager) upgradeLeaseState(ctx context.Context, existing *lock.En
 
 // initiateLeaseBreak starts a lease break and notifies the holder.
 // Must be called with m.mu held.
-func (m *OplockManager) initiateLeaseBreak(lease *lock.EnhancedLock, breakToState uint32) {
+func (m *OplockManager) initiateLeaseBreak(lease *lock.UnifiedLock, breakToState uint32) {
 	if lease.Lease == nil {
 		return
 	}
@@ -667,7 +667,7 @@ func (m *OplockManager) initiateLeaseBreak(lease *lock.EnhancedLock, breakToStat
 // invalidateCache clears the lease cache.
 // Must be called with m.mu held.
 func (m *OplockManager) invalidateCache() {
-	m.leaseCache = make(map[string][]*lock.EnhancedLock)
+	m.leaseCache = make(map[string][]*lock.UnifiedLock)
 	m.cacheValid = false
 }
 

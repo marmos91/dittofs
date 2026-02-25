@@ -26,29 +26,29 @@ const (
 	LockTypeExclusive = lock.LockTypeExclusive
 )
 
-// ShareReservation is re-exported from the lock package.
+// AccessMode is re-exported from the lock package.
 // Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
-type ShareReservation = lock.ShareReservation
+type AccessMode = lock.AccessMode
 
 // Share reservation constants re-exported for backward compatibility.
 const (
-	// ShareReservationNone is re-exported from the lock package.
-	ShareReservationNone = lock.ShareReservationNone
-	// ShareReservationDenyRead is re-exported from the lock package.
-	ShareReservationDenyRead = lock.ShareReservationDenyRead
-	// ShareReservationDenyWrite is re-exported from the lock package.
-	ShareReservationDenyWrite = lock.ShareReservationDenyWrite
-	// ShareReservationDenyAll is re-exported from the lock package.
-	ShareReservationDenyAll = lock.ShareReservationDenyAll
+	// AccessModeNone is re-exported from the lock package.
+	AccessModeNone = lock.AccessModeNone
+	// AccessModeDenyRead is re-exported from the lock package.
+	AccessModeDenyRead = lock.AccessModeDenyRead
+	// AccessModeDenyWrite is re-exported from the lock package.
+	AccessModeDenyWrite = lock.AccessModeDenyWrite
+	// AccessModeDenyAll is re-exported from the lock package.
+	AccessModeDenyAll = lock.AccessModeDenyAll
 )
 
 // LockOwner is re-exported from the lock package.
 // Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type LockOwner = lock.LockOwner
 
-// EnhancedLock is re-exported from the lock package.
+// UnifiedLock is re-exported from the lock package.
 // Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
-type EnhancedLock = lock.EnhancedLock
+type UnifiedLock = lock.UnifiedLock
 
 // FileLock is re-exported from the lock package.
 // Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
@@ -214,11 +214,11 @@ type PersistedLock = lock.PersistedLock
 // Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type LockQuery = lock.LockQuery
 
-// ToPersistedLock converts an EnhancedLock to a PersistedLock.
+// ToPersistedLock converts an UnifiedLock to a PersistedLock.
 // Deprecated: Use lock.ToPersistedLock() directly.
 var ToPersistedLock = lock.ToPersistedLock
 
-// FromPersistedLock converts a PersistedLock to an EnhancedLock.
+// FromPersistedLock converts a PersistedLock to an UnifiedLock.
 // Deprecated: Use lock.FromPersistedLock() directly.
 var FromPersistedLock = lock.FromPersistedLock
 
@@ -234,9 +234,9 @@ var RangesOverlap = lock.RangesOverlap
 // Deprecated: Use lock.IsLockConflicting() directly.
 var IsLockConflicting = lock.IsLockConflicting
 
-// IsEnhancedLockConflicting checks if two enhanced locks conflict.
-// Deprecated: Use lock.IsEnhancedLockConflicting() directly.
-var IsEnhancedLockConflicting = lock.IsEnhancedLockConflicting
+// IsUnifiedLockConflicting checks if two unified locks conflict.
+// Deprecated: Use lock.IsUnifiedLockConflicting() directly.
+var IsUnifiedLockConflicting = lock.IsUnifiedLockConflicting
 
 // CheckIOConflict checks if an I/O operation conflicts with a lock.
 // Deprecated: Use lock.CheckIOConflict() directly.
@@ -250,6 +250,30 @@ var SplitLock = lock.SplitLock
 // Deprecated: Use lock.MergeLocks() directly.
 var MergeLocks = lock.MergeLocks
 
-// NewEnhancedLock creates a new EnhancedLock with a generated UUID.
-// Deprecated: Use lock.NewEnhancedLock() directly.
-var NewEnhancedLock = lock.NewEnhancedLock
+// NewUnifiedLock creates a new UnifiedLock with a generated UUID.
+// Deprecated: Use lock.NewUnifiedLock() directly.
+var NewUnifiedLock = lock.NewUnifiedLock
+
+// OpLock is re-exported from the lock package.
+// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
+type OpLock = lock.OpLock
+
+// OpLockBreakScanner is re-exported from the lock package.
+// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
+type OpLockBreakScanner = lock.OpLockBreakScanner
+
+// OpLockBreakCallback is re-exported from the lock package.
+// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
+type OpLockBreakCallback = lock.OpLockBreakCallback
+
+// OpLocksConflict checks if two OpLock leases conflict.
+// Deprecated: Use lock.OpLocksConflict() directly.
+var OpLocksConflict = lock.OpLocksConflict
+
+// NLMHolderInfo is re-exported from the lock package.
+// Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
+type NLMHolderInfo = lock.NLMHolderInfo
+
+// TranslateToNLMHolder translates an SMB lease to NLM holder format.
+// Deprecated: Use lock.TranslateToNLMHolder() directly.
+var TranslateToNLMHolder = lock.TranslateToNLMHolder

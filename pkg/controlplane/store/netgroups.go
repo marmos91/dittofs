@@ -73,12 +73,15 @@ func (s *GORMStore) DeleteNetgroup(ctx context.Context, name string) error {
 			return convertNotFoundError(err, models.ErrNetgroupNotFound)
 		}
 
-		// Check if any shares reference this netgroup
-		var shareCount int64
-		if err := tx.Model(&models.Share{}).Where("netgroup_id = ?", netgroup.ID).Count(&shareCount).Error; err != nil {
+		// Check if any NFS adapter configs reference this netgroup ID in their JSON config.
+		// The netgroup_id is stored inside share_adapter_configs.config JSON blob.
+		var refCount int64
+		if err := tx.Model(&models.ShareAdapterConfig{}).
+			Where("adapter_type = ? AND config LIKE ?", "nfs", "%"+netgroup.ID+"%").
+			Count(&refCount).Error; err != nil {
 			return err
 		}
-		if shareCount > 0 {
+		if refCount > 0 {
 			return models.ErrNetgroupInUse
 		}
 
@@ -149,11 +152,28 @@ func (s *GORMStore) GetSharesByNetgroup(ctx context.Context, netgroupName string
 		return nil, err
 	}
 
+	// Find share IDs from NFS adapter configs that reference this netgroup in their JSON config.
+	var configs []models.ShareAdapterConfig
+	if err := s.db.WithContext(ctx).
+		Where("adapter_type = ? AND config LIKE ?", "nfs", "%"+netgroup.ID+"%").
+		Find(&configs).Error; err != nil {
+		return nil, err
+	}
+
+	if len(configs) == 0 {
+		return nil, nil
+	}
+
+	shareIDs := make([]string, len(configs))
+	for i, cfg := range configs {
+		shareIDs[i] = cfg.ShareID
+	}
+
 	var shares []*models.Share
 	if err := s.db.WithContext(ctx).
 		Preload("MetadataStore").
 		Preload("PayloadStore").
-		Where("netgroup_id = ?", netgroup.ID).
+		Where("id IN ?", shareIDs).
 		Find(&shares).Error; err != nil {
 		return nil, err
 	}

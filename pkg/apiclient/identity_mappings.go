@@ -23,7 +23,7 @@ type CreateIdentityMappingRequest struct {
 // ListIdentityMappings returns all identity mappings.
 func (c *Client) ListIdentityMappings() ([]IdentityMapping, error) {
 	var mappings []IdentityMapping
-	if err := c.get("/api/v1/identity-mappings", &mappings); err != nil {
+	if err := c.get("/api/v1/adapters/nfs/identity-mappings", &mappings); err != nil {
 		return nil, err
 	}
 	return mappings, nil
@@ -36,7 +36,7 @@ func (c *Client) CreateIdentityMapping(principal, username string) (*IdentityMap
 		Username:  username,
 	}
 	var mapping IdentityMapping
-	if err := c.post("/api/v1/identity-mappings", req, &mapping); err != nil {
+	if err := c.post("/api/v1/adapters/nfs/identity-mappings", req, &mapping); err != nil {
 		return nil, err
 	}
 	return &mapping, nil
@@ -44,6 +44,6 @@ func (c *Client) CreateIdentityMapping(principal, username string) (*IdentityMap
 
 // DeleteIdentityMapping deletes an identity mapping by principal.
 func (c *Client) DeleteIdentityMapping(principal string) error {
-	path := fmt.Sprintf("/api/v1/identity-mappings/%s", url.PathEscape(principal))
+	path := fmt.Sprintf("/api/v1/adapters/nfs/identity-mappings/%s", url.PathEscape(principal))
 	return c.delete(path, nil)
 }

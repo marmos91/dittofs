@@ -36,10 +36,10 @@ func TestLeaseStateCombinations(t *testing.T) {
 }
 
 // ============================================================================
-// LeaseInfo Helper Methods Tests
+// OpLock Helper Methods Tests
 // ============================================================================
 
-func TestLeaseInfo_HasRead(t *testing.T) {
+func TestOpLock_HasRead(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -58,13 +58,13 @@ func TestLeaseInfo_HasRead(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			lease := &LeaseInfo{LeaseState: tc.state}
+			lease := &OpLock{LeaseState: tc.state}
 			assert.Equal(t, tc.expected, lease.HasRead())
 		})
 	}
 }
 
-func TestLeaseInfo_HasWrite(t *testing.T) {
+func TestOpLock_HasWrite(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -83,13 +83,13 @@ func TestLeaseInfo_HasWrite(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			lease := &LeaseInfo{LeaseState: tc.state}
+			lease := &OpLock{LeaseState: tc.state}
 			assert.Equal(t, tc.expected, lease.HasWrite())
 		})
 	}
 }
 
-func TestLeaseInfo_HasHandle(t *testing.T) {
+func TestOpLock_HasHandle(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -108,23 +108,23 @@ func TestLeaseInfo_HasHandle(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			lease := &LeaseInfo{LeaseState: tc.state}
+			lease := &OpLock{LeaseState: tc.state}
 			assert.Equal(t, tc.expected, lease.HasHandle())
 		})
 	}
 }
 
-func TestLeaseInfo_IsBreaking(t *testing.T) {
+func TestOpLock_IsBreaking(t *testing.T) {
 	t.Parallel()
 
-	lease := &LeaseInfo{LeaseState: LeaseStateRead | LeaseStateWrite}
+	lease := &OpLock{LeaseState: LeaseStateRead | LeaseStateWrite}
 	assert.False(t, lease.IsBreaking())
 
 	lease.Breaking = true
 	assert.True(t, lease.IsBreaking())
 }
 
-func TestLeaseInfo_StateString(t *testing.T) {
+func TestOpLock_StateString(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -143,7 +143,7 @@ func TestLeaseInfo_StateString(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.expected, func(t *testing.T) {
-			lease := &LeaseInfo{LeaseState: tc.state}
+			lease := &OpLock{LeaseState: tc.state}
 			assert.Equal(t, tc.expected, lease.StateString())
 		})
 	}
@@ -232,13 +232,13 @@ func TestIsValidDirectoryLeaseState(t *testing.T) {
 }
 
 // ============================================================================
-// LeaseInfo Clone Tests
+// OpLock Clone Tests
 // ============================================================================
 
-func TestLeaseInfo_Clone(t *testing.T) {
+func TestOpLock_Clone(t *testing.T) {
 	t.Parallel()
 
-	original := &LeaseInfo{
+	original := &OpLock{
 		LeaseKey:     [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
 		LeaseState:   LeaseStateRead | LeaseStateWrite,
 		BreakToState: LeaseStateRead,
@@ -265,10 +265,10 @@ func TestLeaseInfo_Clone(t *testing.T) {
 	assert.True(t, original.Breaking)
 }
 
-func TestLeaseInfo_Clone_Nil(t *testing.T) {
+func TestOpLock_Clone_Nil(t *testing.T) {
 	t.Parallel()
 
-	var lease *LeaseInfo
+	var lease *OpLock
 	clone := lease.Clone()
 	assert.Nil(t, clone)
 }
@@ -277,87 +277,87 @@ func TestLeaseInfo_Clone_Nil(t *testing.T) {
 // Lease Conflict Detection Tests
 // ============================================================================
 
-func TestLeasesConflict_SameKey(t *testing.T) {
+func TestOpLocksConflict_SameKey(t *testing.T) {
 	t.Parallel()
 
 	key := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
 
-	lease1 := &LeaseInfo{LeaseKey: key, LeaseState: LeaseStateRead | LeaseStateWrite | LeaseStateHandle}
-	lease2 := &LeaseInfo{LeaseKey: key, LeaseState: LeaseStateRead | LeaseStateWrite | LeaseStateHandle}
+	lease1 := &OpLock{LeaseKey: key, LeaseState: LeaseStateRead | LeaseStateWrite | LeaseStateHandle}
+	lease2 := &OpLock{LeaseKey: key, LeaseState: LeaseStateRead | LeaseStateWrite | LeaseStateHandle}
 
 	// Same key = no conflict, regardless of state
-	assert.False(t, LeasesConflict(lease1, lease2), "Same key should never conflict")
+	assert.False(t, OpLocksConflict(lease1, lease2), "Same key should never conflict")
 }
 
-func TestLeasesConflict_DifferentKeys_Write(t *testing.T) {
+func TestOpLocksConflict_DifferentKeys_Write(t *testing.T) {
 	t.Parallel()
 
 	key1 := [16]byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 	key2 := [16]byte{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 
 	// Existing has Write - conflicts with any Read or Write request
-	existing := &LeaseInfo{LeaseKey: key1, LeaseState: LeaseStateRead | LeaseStateWrite}
-	requested := &LeaseInfo{LeaseKey: key2, LeaseState: LeaseStateRead}
+	existing := &OpLock{LeaseKey: key1, LeaseState: LeaseStateRead | LeaseStateWrite}
+	requested := &OpLock{LeaseKey: key2, LeaseState: LeaseStateRead}
 
-	assert.True(t, LeasesConflict(existing, requested), "Write lease should conflict with Read request")
+	assert.True(t, OpLocksConflict(existing, requested), "Write lease should conflict with Read request")
 
 	// Requested wants Write - conflicts with existing Read
-	existing2 := &LeaseInfo{LeaseKey: key1, LeaseState: LeaseStateRead}
-	requested2 := &LeaseInfo{LeaseKey: key2, LeaseState: LeaseStateRead | LeaseStateWrite}
+	existing2 := &OpLock{LeaseKey: key1, LeaseState: LeaseStateRead}
+	requested2 := &OpLock{LeaseKey: key2, LeaseState: LeaseStateRead | LeaseStateWrite}
 
-	assert.True(t, LeasesConflict(existing2, requested2), "Write request should conflict with Read lease")
+	assert.True(t, OpLocksConflict(existing2, requested2), "Write request should conflict with Read lease")
 }
 
-func TestLeasesConflict_DifferentKeys_ReadOnly(t *testing.T) {
+func TestOpLocksConflict_DifferentKeys_ReadOnly(t *testing.T) {
 	t.Parallel()
 
 	key1 := [16]byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 	key2 := [16]byte{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 
 	// Multiple Read leases can coexist
-	lease1 := &LeaseInfo{LeaseKey: key1, LeaseState: LeaseStateRead}
-	lease2 := &LeaseInfo{LeaseKey: key2, LeaseState: LeaseStateRead}
+	lease1 := &OpLock{LeaseKey: key1, LeaseState: LeaseStateRead}
+	lease2 := &OpLock{LeaseKey: key2, LeaseState: LeaseStateRead}
 
-	assert.False(t, LeasesConflict(lease1, lease2), "Read leases should not conflict")
+	assert.False(t, OpLocksConflict(lease1, lease2), "Read leases should not conflict")
 
 	// Read+Handle also doesn't conflict with Read
-	lease3 := &LeaseInfo{LeaseKey: key1, LeaseState: LeaseStateRead | LeaseStateHandle}
-	lease4 := &LeaseInfo{LeaseKey: key2, LeaseState: LeaseStateRead | LeaseStateHandle}
+	lease3 := &OpLock{LeaseKey: key1, LeaseState: LeaseStateRead | LeaseStateHandle}
+	lease4 := &OpLock{LeaseKey: key2, LeaseState: LeaseStateRead | LeaseStateHandle}
 
-	assert.False(t, LeasesConflict(lease3, lease4), "RH leases should not conflict")
+	assert.False(t, OpLocksConflict(lease3, lease4), "RH leases should not conflict")
 }
 
-func TestLeasesConflict_BreakingLease(t *testing.T) {
+func TestOpLocksConflict_BreakingLease(t *testing.T) {
 	t.Parallel()
 
 	key1 := [16]byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 	key2 := [16]byte{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 
 	// Breaking lease - should use BreakToState for conflict check
-	existing := &LeaseInfo{
+	existing := &OpLock{
 		LeaseKey:     key1,
 		LeaseState:   LeaseStateRead | LeaseStateWrite, // Currently has RW
 		BreakToState: LeaseStateRead,                   // Breaking to R
 		Breaking:     true,
 	}
-	requested := &LeaseInfo{LeaseKey: key2, LeaseState: LeaseStateRead | LeaseStateWrite}
+	requested := &OpLock{LeaseKey: key2, LeaseState: LeaseStateRead | LeaseStateWrite}
 
 	// After break completes, existing will be R only - no conflict with new RW
 	// But during break, we use BreakToState (R) for conflict check
 	// R doesn't conflict with RW request's Read component, but RW request has Write
 	// which conflicts with any existing read (need exclusive)
-	assert.True(t, LeasesConflict(existing, requested), "Write request conflicts with Read lease")
+	assert.True(t, OpLocksConflict(existing, requested), "Write request conflicts with Read lease")
 }
 
 // ============================================================================
 // Lease vs Byte-Range Lock Conflict Tests
 // ============================================================================
 
-func TestLeaseConflictsWithByteRangeLock_SameOwner(t *testing.T) {
+func TestOpLockConflictsWithByteLock_SameOwner(t *testing.T) {
 	t.Parallel()
 
-	lease := &LeaseInfo{LeaseState: LeaseStateRead | LeaseStateWrite}
-	lock := &EnhancedLock{
+	lease := &OpLock{LeaseState: LeaseStateRead | LeaseStateWrite}
+	lock := &UnifiedLock{
 		Owner:  LockOwner{OwnerID: "owner1"},
 		Type:   LockTypeExclusive,
 		Offset: 0,
@@ -365,14 +365,14 @@ func TestLeaseConflictsWithByteRangeLock_SameOwner(t *testing.T) {
 	}
 
 	// Same owner - no conflict
-	assert.False(t, LeaseConflictsWithByteRangeLock(lease, "owner1", lock))
+	assert.False(t, opLockConflictsWithByteLock(lease, "owner1", lock))
 }
 
-func TestLeaseConflictsWithByteRangeLock_WriteLeaseVsExclusive(t *testing.T) {
+func TestOpLockConflictsWithByteLock_WriteLeaseVsExclusive(t *testing.T) {
 	t.Parallel()
 
-	lease := &LeaseInfo{LeaseState: LeaseStateRead | LeaseStateWrite}
-	lock := &EnhancedLock{
+	lease := &OpLock{LeaseState: LeaseStateRead | LeaseStateWrite}
+	lock := &UnifiedLock{
 		Owner:  LockOwner{OwnerID: "owner2"},
 		Type:   LockTypeExclusive,
 		Offset: 0,
@@ -380,14 +380,14 @@ func TestLeaseConflictsWithByteRangeLock_WriteLeaseVsExclusive(t *testing.T) {
 	}
 
 	// Write lease conflicts with exclusive byte-range lock
-	assert.True(t, LeaseConflictsWithByteRangeLock(lease, "owner1", lock))
+	assert.True(t, opLockConflictsWithByteLock(lease, "owner1", lock))
 }
 
-func TestLeaseConflictsWithByteRangeLock_ReadLeaseVsShared(t *testing.T) {
+func TestOpLockConflictsWithByteLock_ReadLeaseVsShared(t *testing.T) {
 	t.Parallel()
 
-	lease := &LeaseInfo{LeaseState: LeaseStateRead}
-	lock := &EnhancedLock{
+	lease := &OpLock{LeaseState: LeaseStateRead}
+	lock := &UnifiedLock{
 		Owner:  LockOwner{OwnerID: "owner2"},
 		Type:   LockTypeShared,
 		Offset: 0,
@@ -395,14 +395,14 @@ func TestLeaseConflictsWithByteRangeLock_ReadLeaseVsShared(t *testing.T) {
 	}
 
 	// Read lease doesn't conflict with shared byte-range lock
-	assert.False(t, LeaseConflictsWithByteRangeLock(lease, "owner1", lock))
+	assert.False(t, opLockConflictsWithByteLock(lease, "owner1", lock))
 }
 
-func TestLeaseConflictsWithByteRangeLock_ReadLeaseVsExclusive(t *testing.T) {
+func TestOpLockConflictsWithByteLock_ReadLeaseVsExclusive(t *testing.T) {
 	t.Parallel()
 
-	lease := &LeaseInfo{LeaseState: LeaseStateRead}
-	lock := &EnhancedLock{
+	lease := &OpLock{LeaseState: LeaseStateRead}
+	lock := &UnifiedLock{
 		Owner:  LockOwner{OwnerID: "owner2"},
 		Type:   LockTypeExclusive,
 		Offset: 0,
@@ -410,18 +410,18 @@ func TestLeaseConflictsWithByteRangeLock_ReadLeaseVsExclusive(t *testing.T) {
 	}
 
 	// Read-only lease doesn't conflict with exclusive lock (no Write to protect)
-	assert.False(t, LeaseConflictsWithByteRangeLock(lease, "owner1", lock))
+	assert.False(t, opLockConflictsWithByteLock(lease, "owner1", lock))
 }
 
 // ============================================================================
-// EnhancedLock with Lease Tests
+// UnifiedLock with Lease Tests
 // ============================================================================
 
-func TestEnhancedLock_IsLease(t *testing.T) {
+func TestUnifiedLock_IsLease(t *testing.T) {
 	t.Parallel()
 
 	// Byte-range lock (no Lease field)
-	byteRangeLock := &EnhancedLock{
+	byteRangeLock := &UnifiedLock{
 		Owner:  LockOwner{OwnerID: "owner1"},
 		Offset: 0,
 		Length: 100,
@@ -430,12 +430,12 @@ func TestEnhancedLock_IsLease(t *testing.T) {
 	assert.False(t, byteRangeLock.IsLease())
 
 	// Lease (has Lease field)
-	lease := &EnhancedLock{
+	lease := &UnifiedLock{
 		Owner:  LockOwner{OwnerID: "owner1"},
 		Offset: 0,
 		Length: 0, // Whole file
 		Type:   LockTypeShared,
-		Lease: &LeaseInfo{
+		Lease: &OpLock{
 			LeaseKey:   [16]byte{1, 2, 3},
 			LeaseState: LeaseStateRead,
 		},
@@ -443,10 +443,10 @@ func TestEnhancedLock_IsLease(t *testing.T) {
 	assert.True(t, lease.IsLease())
 }
 
-func TestEnhancedLock_Clone_WithLease(t *testing.T) {
+func TestUnifiedLock_Clone_WithLease(t *testing.T) {
 	t.Parallel()
 
-	original := &EnhancedLock{
+	original := &UnifiedLock{
 		ID:         "lock-123",
 		Owner:      LockOwner{OwnerID: "owner1", ClientID: "client1", ShareName: "/share"},
 		FileHandle: FileHandle("file-handle"),
@@ -454,7 +454,7 @@ func TestEnhancedLock_Clone_WithLease(t *testing.T) {
 		Length:     0,
 		Type:       LockTypeShared,
 		AcquiredAt: time.Now(),
-		Lease: &LeaseInfo{
+		Lease: &OpLock{
 			LeaseKey:   [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
 			LeaseState: LeaseStateRead | LeaseStateWrite,
 			Epoch:      5,
@@ -475,33 +475,33 @@ func TestEnhancedLock_Clone_WithLease(t *testing.T) {
 	assert.Equal(t, LeaseStateRead|LeaseStateWrite, original.Lease.LeaseState)
 }
 
-func TestIsEnhancedLockConflicting_LeaseVsLease(t *testing.T) {
+func TestIsUnifiedLockConflicting_LeaseVsLease(t *testing.T) {
 	t.Parallel()
 
 	key1 := [16]byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 	key2 := [16]byte{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 
-	lease1 := &EnhancedLock{
+	lease1 := &UnifiedLock{
 		Owner: LockOwner{OwnerID: "owner1"},
-		Lease: &LeaseInfo{LeaseKey: key1, LeaseState: LeaseStateRead | LeaseStateWrite},
+		Lease: &OpLock{LeaseKey: key1, LeaseState: LeaseStateRead | LeaseStateWrite},
 	}
-	lease2 := &EnhancedLock{
+	lease2 := &UnifiedLock{
 		Owner: LockOwner{OwnerID: "owner2"},
-		Lease: &LeaseInfo{LeaseKey: key2, LeaseState: LeaseStateRead},
+		Lease: &OpLock{LeaseKey: key2, LeaseState: LeaseStateRead},
 	}
 
 	// Write lease conflicts with Read lease from different owner
-	assert.True(t, IsEnhancedLockConflicting(lease1, lease2))
+	assert.True(t, IsUnifiedLockConflicting(lease1, lease2))
 }
 
-func TestIsEnhancedLockConflicting_LeaseVsByteRange(t *testing.T) {
+func TestIsUnifiedLockConflicting_LeaseVsByteRange(t *testing.T) {
 	t.Parallel()
 
-	lease := &EnhancedLock{
+	lease := &UnifiedLock{
 		Owner: LockOwner{OwnerID: "owner1"},
-		Lease: &LeaseInfo{LeaseState: LeaseStateRead | LeaseStateWrite},
+		Lease: &OpLock{LeaseState: LeaseStateRead | LeaseStateWrite},
 	}
-	byteRange := &EnhancedLock{
+	byteRange := &UnifiedLock{
 		Owner:  LockOwner{OwnerID: "owner2"},
 		Offset: 0,
 		Length: 100,
@@ -509,20 +509,20 @@ func TestIsEnhancedLockConflicting_LeaseVsByteRange(t *testing.T) {
 	}
 
 	// Write lease conflicts with exclusive byte-range lock
-	assert.True(t, IsEnhancedLockConflicting(lease, byteRange))
-	assert.True(t, IsEnhancedLockConflicting(byteRange, lease))
+	assert.True(t, IsUnifiedLockConflicting(lease, byteRange))
+	assert.True(t, IsUnifiedLockConflicting(byteRange, lease))
 }
 
-func TestIsEnhancedLockConflicting_ByteRangeVsByteRange(t *testing.T) {
+func TestIsUnifiedLockConflicting_ByteRangeVsByteRange(t *testing.T) {
 	t.Parallel()
 
-	lock1 := &EnhancedLock{
+	lock1 := &UnifiedLock{
 		Owner:  LockOwner{OwnerID: "owner1"},
 		Offset: 0,
 		Length: 100,
 		Type:   LockTypeShared,
 	}
-	lock2 := &EnhancedLock{
+	lock2 := &UnifiedLock{
 		Owner:  LockOwner{OwnerID: "owner2"},
 		Offset: 50,
 		Length: 100,
@@ -530,22 +530,22 @@ func TestIsEnhancedLockConflicting_ByteRangeVsByteRange(t *testing.T) {
 	}
 
 	// Shared locks don't conflict
-	assert.False(t, IsEnhancedLockConflicting(lock1, lock2))
+	assert.False(t, IsUnifiedLockConflicting(lock1, lock2))
 
 	// Make lock2 exclusive
 	lock2.Type = LockTypeExclusive
-	assert.True(t, IsEnhancedLockConflicting(lock1, lock2))
+	assert.True(t, IsUnifiedLockConflicting(lock1, lock2))
 }
 
-func TestIsEnhancedLockConflicting_SameOwner(t *testing.T) {
+func TestIsUnifiedLockConflicting_SameOwner(t *testing.T) {
 	t.Parallel()
 
 	// Same owner, different lock types - no conflict
-	lock1 := &EnhancedLock{
+	lock1 := &UnifiedLock{
 		Owner: LockOwner{OwnerID: "owner1"},
-		Lease: &LeaseInfo{LeaseState: LeaseStateRead | LeaseStateWrite},
+		Lease: &OpLock{LeaseState: LeaseStateRead | LeaseStateWrite},
 	}
-	lock2 := &EnhancedLock{
+	lock2 := &UnifiedLock{
 		Owner:  LockOwner{OwnerID: "owner1"},
 		Offset: 0,
 		Length: 100,
@@ -553,5 +553,5 @@ func TestIsEnhancedLockConflicting_SameOwner(t *testing.T) {
 	}
 
 	// Same owner - never conflicts
-	assert.False(t, IsEnhancedLockConflicting(lock1, lock2))
+	assert.False(t, IsUnifiedLockConflicting(lock1, lock2))
 }

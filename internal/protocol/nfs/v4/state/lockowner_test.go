@@ -782,7 +782,7 @@ func TestLeaseExpiry_CleansLockState(t *testing.T) {
 	}
 
 	// Verify the lock exists in the lock manager
-	locks := lm.ListEnhancedLocks(string(fileHandle))
+	locks := lm.ListUnifiedLocks(string(fileHandle))
 	if len(locks) == 0 {
 		t.Fatal("expected lock to exist in lock manager before expiry")
 	}
@@ -797,7 +797,7 @@ func TestLeaseExpiry_CleansLockState(t *testing.T) {
 	}
 
 	// Verify locks removed from lock manager
-	locks = lm.ListEnhancedLocks(string(fileHandle))
+	locks = lm.ListUnifiedLocks(string(fileHandle))
 	if len(locks) != 0 {
 		t.Errorf("expected 0 locks in lock manager after lease expiry, got %d", len(locks))
 	}

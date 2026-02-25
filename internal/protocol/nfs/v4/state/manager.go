@@ -662,10 +662,10 @@ func (sm *StateManager) onLeaseExpired(clientID uint64) {
 					ownerID := fmt.Sprintf("nfs4:%d:%s", lockState.LockOwner.ClientID,
 						hex.EncodeToString(lockState.LockOwner.OwnerData))
 					handleKey := string(lockState.FileHandle)
-					locks := sm.lockManager.ListEnhancedLocks(handleKey)
+					locks := sm.lockManager.ListUnifiedLocks(handleKey)
 					for _, l := range locks {
 						if l.Owner.OwnerID == ownerID {
-							_ = sm.lockManager.RemoveEnhancedLock(
+							_ = sm.lockManager.RemoveUnifiedLock(
 								handleKey,
 								l.Owner, l.Offset, l.Length,
 							)
@@ -1697,18 +1697,18 @@ func (sm *StateManager) acquireLock(lockState *LockState, lockType uint32, offse
 	}
 
 	// Create enhanced lock
-	enhLock := lock.NewEnhancedLock(owner, lock.FileHandle(lockState.FileHandle), offset, length, mappedType)
+	enhLock := lock.NewUnifiedLock(owner, lock.FileHandle(lockState.FileHandle), offset, length, mappedType)
 	enhLock.Reclaim = reclaim
 
 	// Try to add the lock
 	handleKey := string(lockState.FileHandle)
-	err := sm.lockManager.AddEnhancedLock(handleKey, enhLock)
+	err := sm.lockManager.AddUnifiedLock(handleKey, enhLock)
 	if err != nil {
 		// Lock conflict: query existing locks to find the conflicting one
 		// for the LOCK4denied response
-		existingLocks := sm.lockManager.ListEnhancedLocks(handleKey)
+		existingLocks := sm.lockManager.ListUnifiedLocks(handleKey)
 		for _, el := range existingLocks {
-			if lock.IsEnhancedLockConflicting(el, enhLock) {
+			if lock.IsUnifiedLockConflicting(el, enhLock) {
 				// Map the conflicting lock type back to NFS4
 				var conflictType uint32
 				if el.Type == lock.LockTypeExclusive {
@@ -1783,7 +1783,7 @@ func (sm *StateManager) TestLock(
 	}
 
 	// Create a temporary test lock (not added to the manager)
-	testLock := &lock.EnhancedLock{
+	testLock := &lock.UnifiedLock{
 		Owner:  lock.LockOwner{OwnerID: ownerID},
 		Offset: offset,
 		Length: length,
@@ -1792,11 +1792,11 @@ func (sm *StateManager) TestLock(
 
 	// Query existing locks on this file
 	handleKey := string(fileHandle)
-	existingLocks := sm.lockManager.ListEnhancedLocks(handleKey)
+	existingLocks := sm.lockManager.ListUnifiedLocks(handleKey)
 
 	// Check each existing lock for conflict
 	for _, el := range existingLocks {
-		if lock.IsEnhancedLockConflicting(el, testLock) {
+		if lock.IsUnifiedLockConflicting(el, testLock) {
 			// Build LOCK4denied from the conflicting lock
 			var conflictType uint32
 			if el.Type == lock.LockTypeExclusive {
@@ -1832,7 +1832,7 @@ func (sm *StateManager) TestLock(
 //
 // Per RFC 7530 Section 16.12:
 //   - Validates the lock stateid and seqid
-//   - Calls the lock manager's RemoveEnhancedLock for POSIX splitting
+//   - Calls the lock manager's RemoveUnifiedLock for POSIX splitting
 //   - Increments the lock stateid seqid on success
 //   - The lock state is NOT removed (persists for future LOCK operations)
 //   - RELEASE_LOCKOWNER (Plan 10-03) handles state cleanup
@@ -1896,13 +1896,13 @@ func (sm *StateManager) UnlockFile(
 		}
 
 		handleKey := string(lockState.FileHandle)
-		err := sm.lockManager.RemoveEnhancedLock(handleKey, owner, offset, length)
+		err := sm.lockManager.RemoveUnifiedLock(handleKey, owner, offset, length)
 		if err != nil {
 			// Lock-not-found is OK for LOCKU (idempotent).
 			// Only fail on unexpected errors.
-			// RemoveEnhancedLock returns StoreError with ErrLockNotFound code.
+			// RemoveUnifiedLock returns StoreError with ErrLockNotFound code.
 			// We treat all errors as non-fatal for idempotency.
-			logger.Debug("LOCKU: lock manager RemoveEnhancedLock returned error (idempotent OK)",
+			logger.Debug("LOCKU: lock manager RemoveUnifiedLock returned error (idempotent OK)",
 				"error", err,
 				"handle", handleKey,
 				"offset", offset,
@@ -1955,7 +1955,7 @@ func (sm *StateManager) ReleaseLockOwner(clientID uint64, ownerData []byte) erro
 			}
 			// Check if any locks are held for this owner on this file
 			handleKey := string(ls.FileHandle)
-			locks := sm.lockManager.ListEnhancedLocks(handleKey)
+			locks := sm.lockManager.ListUnifiedLocks(handleKey)
 			for _, l := range locks {
 				if l.Owner.OwnerID == ownerID {
 					return &NFS4StateError{

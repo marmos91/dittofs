@@ -15,7 +15,7 @@ import (
 
 // createTestRuntimeWithStore creates a Runtime backed by an in-memory SQLite store.
 // Callers can add shares and netgroups for netgroup access tests.
-func createTestRuntimeWithStore(t *testing.T) (*Runtime, store.Store) {
+func createTestRuntimeWithStore(t *testing.T) (*Runtime, store.Store, store.NetgroupStore) {
 	t.Helper()
 
 	dbConfig := store.Config{
@@ -30,7 +30,7 @@ func createTestRuntimeWithStore(t *testing.T) (*Runtime, store.Store) {
 	}
 
 	rt := New(cpStore)
-	return rt, cpStore
+	return rt, cpStore, cpStore
 }
 
 // addShareDirect injects a share directly into the runtime's shares map
@@ -47,7 +47,7 @@ func addShareDirect(rt *Runtime, name string, netgroupName string) {
 // --- CheckNetgroupAccess tests ---
 
 func TestCheckNetgroupAccess_NoNetgroup_AllowAll(t *testing.T) {
-	rt, _ := createTestRuntimeWithStore(t)
+	rt, _, _ := createTestRuntimeWithStore(t)
 	ctx := context.Background()
 
 	// Share with no netgroup -> should allow all
@@ -63,7 +63,7 @@ func TestCheckNetgroupAccess_NoNetgroup_AllowAll(t *testing.T) {
 }
 
 func TestCheckNetgroupAccess_ShareNotFound(t *testing.T) {
-	rt, _ := createTestRuntimeWithStore(t)
+	rt, _, _ := createTestRuntimeWithStore(t)
 	ctx := context.Background()
 
 	allowed, err := rt.CheckNetgroupAccess(ctx, "/nonexistent", net.ParseIP("10.0.0.1"))
@@ -76,7 +76,7 @@ func TestCheckNetgroupAccess_ShareNotFound(t *testing.T) {
 }
 
 func TestCheckNetgroupAccess_IPMatch(t *testing.T) {
-	rt, cpStore := createTestRuntimeWithStore(t)
+	rt, _, ngStore := createTestRuntimeWithStore(t)
 	ctx := context.Background()
 
 	// Create netgroup with an IP member
@@ -84,10 +84,10 @@ func TestCheckNetgroupAccess_IPMatch(t *testing.T) {
 		ID:   uuid.New().String(),
 		Name: "office-ips",
 	}
-	if _, err := cpStore.CreateNetgroup(ctx, netgroup); err != nil {
+	if _, err := ngStore.CreateNetgroup(ctx, netgroup); err != nil {
 		t.Fatalf("CreateNetgroup failed: %v", err)
 	}
-	if err := cpStore.AddNetgroupMember(ctx, "office-ips", &models.NetgroupMember{
+	if err := ngStore.AddNetgroupMember(ctx, "office-ips", &models.NetgroupMember{
 		Type:  "ip",
 		Value: "192.168.1.100",
 	}); err != nil {
@@ -108,17 +108,17 @@ func TestCheckNetgroupAccess_IPMatch(t *testing.T) {
 }
 
 func TestCheckNetgroupAccess_IPNoMatch(t *testing.T) {
-	rt, cpStore := createTestRuntimeWithStore(t)
+	rt, _, ngStore := createTestRuntimeWithStore(t)
 	ctx := context.Background()
 
 	netgroup := &models.Netgroup{
 		ID:   uuid.New().String(),
 		Name: "office-ips",
 	}
-	if _, err := cpStore.CreateNetgroup(ctx, netgroup); err != nil {
+	if _, err := ngStore.CreateNetgroup(ctx, netgroup); err != nil {
 		t.Fatalf("CreateNetgroup failed: %v", err)
 	}
-	if err := cpStore.AddNetgroupMember(ctx, "office-ips", &models.NetgroupMember{
+	if err := ngStore.AddNetgroupMember(ctx, "office-ips", &models.NetgroupMember{
 		Type:  "ip",
 		Value: "192.168.1.100",
 	}); err != nil {
@@ -138,17 +138,17 @@ func TestCheckNetgroupAccess_IPNoMatch(t *testing.T) {
 }
 
 func TestCheckNetgroupAccess_CIDRMatch(t *testing.T) {
-	rt, cpStore := createTestRuntimeWithStore(t)
+	rt, _, ngStore := createTestRuntimeWithStore(t)
 	ctx := context.Background()
 
 	netgroup := &models.Netgroup{
 		ID:   uuid.New().String(),
 		Name: "internal-net",
 	}
-	if _, err := cpStore.CreateNetgroup(ctx, netgroup); err != nil {
+	if _, err := ngStore.CreateNetgroup(ctx, netgroup); err != nil {
 		t.Fatalf("CreateNetgroup failed: %v", err)
 	}
-	if err := cpStore.AddNetgroupMember(ctx, "internal-net", &models.NetgroupMember{
+	if err := ngStore.AddNetgroupMember(ctx, "internal-net", &models.NetgroupMember{
 		Type:  "cidr",
 		Value: "10.0.0.0/8",
 	}); err != nil {
@@ -168,17 +168,17 @@ func TestCheckNetgroupAccess_CIDRMatch(t *testing.T) {
 }
 
 func TestCheckNetgroupAccess_CIDRNoMatch(t *testing.T) {
-	rt, cpStore := createTestRuntimeWithStore(t)
+	rt, _, ngStore := createTestRuntimeWithStore(t)
 	ctx := context.Background()
 
 	netgroup := &models.Netgroup{
 		ID:   uuid.New().String(),
 		Name: "internal-net",
 	}
-	if _, err := cpStore.CreateNetgroup(ctx, netgroup); err != nil {
+	if _, err := ngStore.CreateNetgroup(ctx, netgroup); err != nil {
 		t.Fatalf("CreateNetgroup failed: %v", err)
 	}
-	if err := cpStore.AddNetgroupMember(ctx, "internal-net", &models.NetgroupMember{
+	if err := ngStore.AddNetgroupMember(ctx, "internal-net", &models.NetgroupMember{
 		Type:  "cidr",
 		Value: "10.0.0.0/8",
 	}); err != nil {
@@ -198,7 +198,7 @@ func TestCheckNetgroupAccess_CIDRNoMatch(t *testing.T) {
 }
 
 func TestCheckNetgroupAccess_EmptyNetgroup_DeniesAccess(t *testing.T) {
-	rt, cpStore := createTestRuntimeWithStore(t)
+	rt, _, ngStore := createTestRuntimeWithStore(t)
 	ctx := context.Background()
 
 	// Create netgroup with no members
@@ -206,7 +206,7 @@ func TestCheckNetgroupAccess_EmptyNetgroup_DeniesAccess(t *testing.T) {
 		ID:   uuid.New().String(),
 		Name: "empty-group",
 	}
-	if _, err := cpStore.CreateNetgroup(ctx, netgroup); err != nil {
+	if _, err := ngStore.CreateNetgroup(ctx, netgroup); err != nil {
 		t.Fatalf("CreateNetgroup failed: %v", err)
 	}
 
@@ -223,19 +223,19 @@ func TestCheckNetgroupAccess_EmptyNetgroup_DeniesAccess(t *testing.T) {
 }
 
 func TestCheckNetgroupAccess_MixedMembers(t *testing.T) {
-	rt, cpStore := createTestRuntimeWithStore(t)
+	rt, _, ngStore := createTestRuntimeWithStore(t)
 	ctx := context.Background()
 
 	netgroup := &models.Netgroup{
 		ID:   uuid.New().String(),
 		Name: "mixed-group",
 	}
-	if _, err := cpStore.CreateNetgroup(ctx, netgroup); err != nil {
+	if _, err := ngStore.CreateNetgroup(ctx, netgroup); err != nil {
 		t.Fatalf("CreateNetgroup failed: %v", err)
 	}
 
 	// Add an IP member
-	if err := cpStore.AddNetgroupMember(ctx, "mixed-group", &models.NetgroupMember{
+	if err := ngStore.AddNetgroupMember(ctx, "mixed-group", &models.NetgroupMember{
 		Type:  "ip",
 		Value: "172.16.0.1",
 	}); err != nil {
@@ -243,7 +243,7 @@ func TestCheckNetgroupAccess_MixedMembers(t *testing.T) {
 	}
 
 	// Add a CIDR member
-	if err := cpStore.AddNetgroupMember(ctx, "mixed-group", &models.NetgroupMember{
+	if err := ngStore.AddNetgroupMember(ctx, "mixed-group", &models.NetgroupMember{
 		Type:  "cidr",
 		Value: "10.0.0.0/8",
 	}); err != nil {
@@ -251,7 +251,7 @@ func TestCheckNetgroupAccess_MixedMembers(t *testing.T) {
 	}
 
 	// Add a hostname member (won't match in test since DNS won't resolve these)
-	if err := cpStore.AddNetgroupMember(ctx, "mixed-group", &models.NetgroupMember{
+	if err := ngStore.AddNetgroupMember(ctx, "mixed-group", &models.NetgroupMember{
 		Type:  "hostname",
 		Value: "*.example.com",
 	}); err != nil {
@@ -289,7 +289,7 @@ func TestCheckNetgroupAccess_MixedMembers(t *testing.T) {
 }
 
 func TestCheckNetgroupAccess_NetgroupNotFound(t *testing.T) {
-	rt, _ := createTestRuntimeWithStore(t)
+	rt, _, _ := createTestRuntimeWithStore(t)
 	ctx := context.Background()
 
 	// Share references a netgroup that doesn't exist in DB
@@ -305,106 +305,100 @@ func TestCheckNetgroupAccess_NetgroupNotFound(t *testing.T) {
 }
 
 // --- matchHostname tests ---
-// matchHostname is a method on *Runtime that uses the DNS cache.
+// matchHostname is now a package-level function that uses the package-level DNS cache.
 // We test it by pre-populating the DNS cache to avoid real DNS lookups.
 
 func TestMatchHostname_ExactMatch(t *testing.T) {
-	rt, _ := createTestRuntimeWithStore(t)
-	rt.ensureDNSCache()
+	ensureDNSCache()
 
 	// Pre-populate DNS cache with a known result
-	rt.dnsCache.mu.Lock()
-	rt.dnsCache.entries["192.168.1.50"] = &dnsCacheEntry{
+	pkgDNSCache.mu.Lock()
+	pkgDNSCache.entries["192.168.1.50"] = &dnsCacheEntry{
 		hostnames: []string{"host.example.com."},
 		expiresAt: time.Now().Add(5 * time.Minute),
 	}
-	rt.dnsCache.mu.Unlock()
+	pkgDNSCache.mu.Unlock()
 
-	if !rt.matchHostname("192.168.1.50", "host.example.com") {
+	if !matchHostname("192.168.1.50", "host.example.com") {
 		t.Error("Expected exact hostname match")
 	}
 }
 
 func TestMatchHostname_ExactMatch_CaseInsensitive(t *testing.T) {
-	rt, _ := createTestRuntimeWithStore(t)
-	rt.ensureDNSCache()
+	ensureDNSCache()
 
-	rt.dnsCache.mu.Lock()
-	rt.dnsCache.entries["192.168.1.50"] = &dnsCacheEntry{
+	pkgDNSCache.mu.Lock()
+	pkgDNSCache.entries["192.168.1.50"] = &dnsCacheEntry{
 		hostnames: []string{"Host.Example.COM."},
 		expiresAt: time.Now().Add(5 * time.Minute),
 	}
-	rt.dnsCache.mu.Unlock()
+	pkgDNSCache.mu.Unlock()
 
-	if !rt.matchHostname("192.168.1.50", "host.example.com") {
+	if !matchHostname("192.168.1.50", "host.example.com") {
 		t.Error("Expected case-insensitive hostname match")
 	}
 }
 
 func TestMatchHostname_WildcardMatch(t *testing.T) {
-	rt, _ := createTestRuntimeWithStore(t)
-	rt.ensureDNSCache()
+	ensureDNSCache()
 
-	rt.dnsCache.mu.Lock()
-	rt.dnsCache.entries["192.168.1.50"] = &dnsCacheEntry{
+	pkgDNSCache.mu.Lock()
+	pkgDNSCache.entries["192.168.1.50"] = &dnsCacheEntry{
 		hostnames: []string{"web01.example.com."},
 		expiresAt: time.Now().Add(5 * time.Minute),
 	}
-	rt.dnsCache.mu.Unlock()
+	pkgDNSCache.mu.Unlock()
 
-	if !rt.matchHostname("192.168.1.50", "*.example.com") {
+	if !matchHostname("192.168.1.50", "*.example.com") {
 		t.Error("Expected wildcard hostname match")
 	}
 }
 
 func TestMatchHostname_WildcardNoMatch(t *testing.T) {
-	rt, _ := createTestRuntimeWithStore(t)
-	rt.ensureDNSCache()
+	ensureDNSCache()
 
-	rt.dnsCache.mu.Lock()
-	rt.dnsCache.entries["192.168.1.50"] = &dnsCacheEntry{
+	pkgDNSCache.mu.Lock()
+	pkgDNSCache.entries["192.168.1.50"] = &dnsCacheEntry{
 		hostnames: []string{"host.other.com."},
 		expiresAt: time.Now().Add(5 * time.Minute),
 	}
-	rt.dnsCache.mu.Unlock()
+	pkgDNSCache.mu.Unlock()
 
-	if rt.matchHostname("192.168.1.50", "*.example.com") {
+	if matchHostname("192.168.1.50", "*.example.com") {
 		t.Error("Expected wildcard NOT to match different domain")
 	}
 }
 
 func TestMatchHostname_DNSLookupFails(t *testing.T) {
-	rt, _ := createTestRuntimeWithStore(t)
-	rt.ensureDNSCache()
+	ensureDNSCache()
 
 	// Pre-populate with an error entry
-	rt.dnsCache.mu.Lock()
-	rt.dnsCache.entries["192.168.1.50"] = &dnsCacheEntry{
+	pkgDNSCache.mu.Lock()
+	pkgDNSCache.entries["192.168.1.50"] = &dnsCacheEntry{
 		err:       net.UnknownNetworkError("no PTR record"),
 		expiresAt: time.Now().Add(1 * time.Minute),
 	}
-	rt.dnsCache.mu.Unlock()
+	pkgDNSCache.mu.Unlock()
 
 	// Should return false gracefully, not panic
-	if rt.matchHostname("192.168.1.50", "host.example.com") {
+	if matchHostname("192.168.1.50", "host.example.com") {
 		t.Error("Expected no match when DNS lookup fails")
 	}
 }
 
 func TestMatchHostname_MultipleHostnames(t *testing.T) {
-	rt, _ := createTestRuntimeWithStore(t)
-	rt.ensureDNSCache()
+	ensureDNSCache()
 
 	// IP has multiple PTR records
-	rt.dnsCache.mu.Lock()
-	rt.dnsCache.entries["192.168.1.50"] = &dnsCacheEntry{
+	pkgDNSCache.mu.Lock()
+	pkgDNSCache.entries["192.168.1.50"] = &dnsCacheEntry{
 		hostnames: []string{"alias1.other.com.", "actual.example.com."},
 		expiresAt: time.Now().Add(5 * time.Minute),
 	}
-	rt.dnsCache.mu.Unlock()
+	pkgDNSCache.mu.Unlock()
 
 	// Should match against the second hostname
-	if !rt.matchHostname("192.168.1.50", "*.example.com") {
+	if !matchHostname("192.168.1.50", "*.example.com") {
 		t.Error("Expected wildcard to match second PTR record")
 	}
 }

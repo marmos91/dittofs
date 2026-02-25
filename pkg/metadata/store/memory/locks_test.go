@@ -13,17 +13,17 @@ func TestMemoryLockStore_PutAndGetLock(t *testing.T) {
 	ctx := context.Background()
 
 	lock := &metadata.PersistedLock{
-		ID:               "test-lock-1",
-		ShareName:        "/export",
-		FileID:           "/export:file1",
-		OwnerID:          "nlm:client1:pid123",
-		ClientID:         "client-conn-1",
-		LockType:         1, // Exclusive
-		Offset:           100,
-		Length:           500,
-		ShareReservation: 0,
-		AcquiredAt:       time.Now().Truncate(time.Millisecond),
-		ServerEpoch:      1,
+		ID:          "test-lock-1",
+		ShareName:   "/export",
+		FileID:      "/export:file1",
+		OwnerID:     "nlm:client1:pid123",
+		ClientID:    "client-conn-1",
+		LockType:    1, // Exclusive
+		Offset:      100,
+		Length:      500,
+		AccessMode:  0,
+		AcquiredAt:  time.Now().Truncate(time.Millisecond),
+		ServerEpoch: 1,
 	}
 
 	// Put lock

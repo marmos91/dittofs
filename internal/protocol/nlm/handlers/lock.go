@@ -9,7 +9,6 @@ import (
 	"github.com/marmos91/dittofs/internal/protocol/nlm/blocking"
 	"github.com/marmos91/dittofs/internal/protocol/nlm/types"
 	nlm_xdr "github.com/marmos91/dittofs/internal/protocol/nlm/xdr"
-	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -119,24 +118,7 @@ func (h *Handler) Lock(ctx *NLMHandlerContext, req *LockRequest) (*LockResponse,
 		"length", req.Lock.Length)
 
 	// Convert file handle
-	handle := metadata.FileHandle(req.Lock.FH)
-
-	// ========================================================================
-	// Cross-Protocol: Check for SMB leases before acquiring NLM lock
-	// ========================================================================
-	// Per CONTEXT.md: NLM LOCK must check for SMB Write leases and wait for
-	// lease break acknowledgment before granting the lock.
-	checker := metadata.GetOplockChecker()
-	if checker != nil {
-		if err := checkForSMBLeaseConflicts(ctx.Context, checker, lock.FileHandle(handle), h.config); err != nil {
-			// Context cancelled during wait - return error
-			logger.Info("NLM LOCK: lease break wait interrupted",
-				"client", ctx.ClientAddr,
-				"error", err)
-			// Don't fail the operation - proceed with lock attempt
-			// The SMB client may have released the lease
-		}
-	}
+	handle := req.Lock.FH
 
 	// Build lock owner
 	owner := lock.LockOwner{
@@ -144,8 +126,8 @@ func (h *Handler) Lock(ctx *NLMHandlerContext, req *LockRequest) (*LockResponse,
 		ClientID: ctx.ClientAddr,
 	}
 
-	// Call MetadataService to acquire lock
-	result, err := h.metadataService.LockFileNLM(
+	// Call NLMService to acquire lock (cross-protocol lease checks happen at lock manager level)
+	result, err := h.nlmService.LockFileNLM(
 		ctx.Context,
 		handle,
 		owner,
@@ -180,7 +162,7 @@ func (h *Handler) Lock(ctx *NLMHandlerContext, req *LockRequest) (*LockResponse,
 	if req.Block {
 		// Blocking request - queue the waiter
 		waiter := &blocking.Waiter{
-			Lock: &lock.EnhancedLock{
+			Lock: &lock.UnifiedLock{
 				Owner:      owner,
 				FileHandle: lock.FileHandle(handle),
 				Offset:     req.Lock.Offset,

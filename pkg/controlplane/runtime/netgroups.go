@@ -2,18 +2,27 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
 // Default DNS cache TTLs.
 const (
 	DefaultDNSCacheTTL    = 5 * time.Minute // Positive result cache
 	DefaultDNSCacheNegTTL = 1 * time.Minute // Negative result (error) cache
+)
+
+// Package-level DNS cache for netgroup hostname matching.
+// This was moved from Runtime struct fields to avoid NFS-specific state in the generic runtime.
+var (
+	pkgDNSCache     *dnsCache
+	pkgDNSCacheOnce sync.Once
 )
 
 // dnsCache provides a thread-safe cache for reverse DNS lookups.
@@ -122,8 +131,16 @@ func (r *Runtime) CheckNetgroupAccess(ctx context.Context, shareName string, cli
 		return true, nil
 	}
 
-	// 3. Get netgroup members from store
-	members, err := r.store.GetNetgroupMembers(ctx, share.NetgroupName)
+	// 3. Get netgroup members from store (requires NetgroupStore interface)
+	ns, ok := r.store.(store.NetgroupStore)
+	if !ok {
+		logger.Warn("Store does not implement NetgroupStore, denying access",
+			"share", shareName,
+			"netgroup", share.NetgroupName)
+		return false, fmt.Errorf("store does not support netgroup operations")
+	}
+
+	members, err := ns.GetNetgroupMembers(ctx, share.NetgroupName)
 	if err != nil {
 		logger.Warn("Failed to get netgroup members, denying access",
 			"share", shareName,
@@ -139,7 +156,7 @@ func (r *Runtime) CheckNetgroupAccess(ctx context.Context, shareName string, cli
 	}
 
 	// Initialize DNS cache lazily
-	r.ensureDNSCache()
+	ensureDNSCache()
 
 	// 4. Match client IP against each member
 	ipString := clientIP.String()
@@ -158,7 +175,7 @@ func (r *Runtime) CheckNetgroupAccess(ctx context.Context, shareName string, cli
 			}
 
 		case "hostname":
-			if r.matchHostname(ipString, member.Value) {
+			if matchHostname(ipString, member.Value) {
 				return true, nil
 			}
 		}
@@ -171,8 +188,8 @@ func (r *Runtime) CheckNetgroupAccess(ctx context.Context, shareName string, cli
 // matchHostname checks if a client IP's reverse DNS matches a hostname pattern.
 // Supports wildcards: "*.example.com" matches any hostname ending in ".example.com".
 // Falls back gracefully if DNS lookup fails (returns false, does not block).
-func (r *Runtime) matchHostname(clientIP string, pattern string) bool {
-	hostnames, err := r.dnsCache.lookupAddr(clientIP)
+func matchHostname(clientIP string, pattern string) bool {
+	hostnames, err := pkgDNSCache.lookupAddr(clientIP)
 	if err != nil {
 		// DNS lookup failed - fall back to no match
 		logger.Debug("Reverse DNS lookup failed, falling back to IP matching",
@@ -202,9 +219,9 @@ func (r *Runtime) matchHostname(clientIP string, pattern string) bool {
 	return false
 }
 
-// ensureDNSCache lazily initializes the DNS cache.
-func (r *Runtime) ensureDNSCache() {
-	r.dnsCacheOnce.Do(func() {
-		r.dnsCache = newDNSCache(DefaultDNSCacheTTL, DefaultDNSCacheNegTTL)
+// ensureDNSCache lazily initializes the package-level DNS cache.
+func ensureDNSCache() {
+	pkgDNSCacheOnce.Do(func() {
+		pkgDNSCache = newDNSCache(DefaultDNSCacheTTL, DefaultDNSCacheNegTTL)
 	})
 }

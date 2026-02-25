@@ -25,7 +25,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
-	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 	"github.com/marmos91/dittofs/pkg/metrics"
 )
@@ -451,15 +450,10 @@ func (s *NFSAdapter) SetRuntime(rt *runtime.Runtime) {
 	// Create blocking queue for NLM lock operations
 	s.blockingQueue = blocking.NewBlockingQueue(nlm_handlers.DefaultBlockingQueueSize)
 
-	// Initialize NLM handler with MetadataService and blocking queue
+	// Initialize NLM handler with routingNLMService (uses LockManager directly, not MetadataService)
 	metadataService := rt.GetMetadataService()
-	s.nlmHandler = nlm_handlers.NewHandler(metadataService, s.blockingQueue)
-
-	// Set unlock callback to process waiting locks when a lock is released
-	metadataService.SetNLMUnlockCallback(func(handle metadata.FileHandle) {
-		// Process waiters in a goroutine to avoid blocking unlock path
-		go s.processNLMWaiters(handle)
-	})
+	nlmSvc := s.createRoutingNLMService(metadataService)
+	s.nlmHandler = nlm_handlers.NewHandler(nlmSvc, s.blockingQueue)
 
 	// Initialize NSM handler for crash recovery
 	// NSM uses the ConnectionTracker from the MetadataService and ClientRegistrationStore

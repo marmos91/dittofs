@@ -74,7 +74,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 ### v3.5 Adapter + Core Refactoring
 
-- [ ] **Phase 26: Generic Lock Interface & Protocol Leak Purge** - Unify lock model (OpLock/AccessMode/UnifiedLock), purge NFS/SMB types from generic layers
+- [x] **Phase 26: Generic Lock Interface & Protocol Leak Purge** - Unify lock model (OpLock/AccessMode/UnifiedLock), purge NFS/SMB types from generic layers (completed 2026-02-25)
 - [ ] **Phase 27: NFS Adapter Restructuring** - Rename internal/protocol/ to internal/adapter/, consolidate NFS ecosystem, split v4/v4.1
 - [ ] **Phase 28: SMB Adapter Restructuring** - Extract BaseAdapter, move framing/signing/dispatch to internal/, Authenticator interface
 - [ ] **Phase 29: Core Layer Decomposition** - Store interface split, Runtime decomposition, Offloader rename/split, error unification
@@ -121,7 +121,13 @@ Decimal phases appear between their surrounding integers in numeric order.
   8. NFS-specific API handlers, runtime fields, and `pkg/identity/` moved to NFS adapter
   9. All existing tests pass with renamed types
   10. Centralized conflict detection handles all cases (oplock vs oplock, oplock vs byte-range, byte-range vs byte-range, access mode)
-**Plans**: TBD
+**Plans**: 5 plans
+Plans:
+- [ ] 26-01-PLAN.md — Lock type renames (UnifiedLock, OpLock, AccessMode) + mechanical rename across all consumers
+- [ ] 26-02-PLAN.md — Share model cleanup, adapter config table, Store interface extraction
+- [ ] 26-03-PLAN.md — LockManager interface, ConflictsWith, typed break callbacks
+- [ ] 26-04-PLAN.md — NLM extraction to NFS adapter, SMB lease purge from MetadataService
+- [ ] 26-05-PLAN.md — Runtime/API/identity purge, adapter-scoped settings API
 
 ### Phase 27: NFS Adapter Restructuring
 **Goal**: Restructure NFS adapter for clean directory layout and dispatch consolidation
@@ -343,7 +349,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 39
 | 24. Directory Delegations | v3.0 | 3/3 | Complete | 2026-02-22 |
 | 25. v3.0 Integration Testing | v3.0 | 3/3 | Complete | 2026-02-23 |
 | 25.5. Manual Verification v3.0 | v3.0 | - | Complete | 2026-02-25 |
-| 26. Generic Lock Interface & Protocol Leak Purge | v3.5 | 0/? | Not started | - |
+| 26. Generic Lock Interface & Protocol Leak Purge | 5/5 | Complete    | 2026-02-25 | - |
 | 27. NFS Adapter Restructuring | v3.5 | 0/? | Not started | - |
 | 28. SMB Adapter Restructuring | v3.5 | 0/? | Not started | - |
 | 29. Core Layer Decomposition | v3.5 | 0/? | Not started | - |

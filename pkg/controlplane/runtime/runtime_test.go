@@ -23,8 +23,8 @@ func TestNew(t *testing.T) {
 	if rt.shares == nil {
 		t.Error("expected shares map to be initialized")
 	}
-	if rt.mounts == nil {
-		t.Error("expected mounts map to be initialized")
+	if rt.mountTracker == nil {
+		t.Error("expected mount tracker to be initialized")
 	}
 	if rt.adapters == nil {
 		t.Error("expected adapters map to be initialized")

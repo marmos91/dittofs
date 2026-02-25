@@ -15,21 +15,21 @@ import (
 func TestToPersistedLock_ByteRangeLock(t *testing.T) {
 	t.Parallel()
 
-	lock := &EnhancedLock{
+	lock := &UnifiedLock{
 		ID: "lock-123",
 		Owner: LockOwner{
 			OwnerID:   "nlm:client1:pid123",
 			ClientID:  "nlm-conn-1",
 			ShareName: "/export",
 		},
-		FileHandle:       FileHandle("file-handle-abc"),
-		Offset:           100,
-		Length:           500,
-		Type:             LockTypeExclusive,
-		ShareReservation: ShareReservationDenyWrite,
-		AcquiredAt:       time.Date(2026, 2, 5, 12, 0, 0, 0, time.UTC),
-		Blocking:         true,
-		Reclaim:          true,
+		FileHandle: FileHandle("file-handle-abc"),
+		Offset:     100,
+		Length:     500,
+		Type:       LockTypeExclusive,
+		AccessMode: AccessModeDenyWrite,
+		AcquiredAt: time.Date(2026, 2, 5, 12, 0, 0, 0, time.UTC),
+		Blocking:   true,
+		Reclaim:    true,
 		// No Lease field
 	}
 
@@ -43,7 +43,7 @@ func TestToPersistedLock_ByteRangeLock(t *testing.T) {
 	assert.Equal(t, 1, pl.LockType) // LockTypeExclusive = 1
 	assert.Equal(t, uint64(100), pl.Offset)
 	assert.Equal(t, uint64(500), pl.Length)
-	assert.Equal(t, 2, pl.ShareReservation) // ShareReservationDenyWrite = 2
+	assert.Equal(t, 2, pl.AccessMode) // AccessModeDenyWrite = 2
 	assert.Equal(t, lock.AcquiredAt, pl.AcquiredAt)
 	assert.Equal(t, uint64(42), pl.ServerEpoch)
 
@@ -62,7 +62,7 @@ func TestToPersistedLock_Lease(t *testing.T) {
 	t.Parallel()
 
 	leaseKey := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
-	lock := &EnhancedLock{
+	lock := &UnifiedLock{
 		ID: "lease-456",
 		Owner: LockOwner{
 			OwnerID:   "smb:lease:0102030405060708090a0b0c0d0e0f10",
@@ -74,7 +74,7 @@ func TestToPersistedLock_Lease(t *testing.T) {
 		Length:     0, // Whole file
 		Type:       LockTypeShared,
 		AcquiredAt: time.Date(2026, 2, 5, 12, 0, 0, 0, time.UTC),
-		Lease: &LeaseInfo{
+		Lease: &OpLock{
 			LeaseKey:     leaseKey,
 			LeaseState:   LeaseStateRead | LeaseStateWrite | LeaseStateHandle,
 			BreakToState: LeaseStateRead,
@@ -106,17 +106,17 @@ func TestFromPersistedLock_ByteRangeLock(t *testing.T) {
 	t.Parallel()
 
 	pl := &PersistedLock{
-		ID:               "lock-789",
-		ShareName:        "/export",
-		FileID:           "file-id-xyz",
-		OwnerID:          "nlm:client2:pid456",
-		ClientID:         "nlm-conn-2",
-		LockType:         0, // Shared
-		Offset:           200,
-		Length:           300,
-		ShareReservation: 3, // DenyAll
-		AcquiredAt:       time.Date(2026, 2, 5, 14, 0, 0, 0, time.UTC),
-		ServerEpoch:      10,
+		ID:          "lock-789",
+		ShareName:   "/export",
+		FileID:      "file-id-xyz",
+		OwnerID:     "nlm:client2:pid456",
+		ClientID:    "nlm-conn-2",
+		LockType:    0, // Shared
+		Offset:      200,
+		Length:      300,
+		AccessMode:  3, // DenyAll
+		AcquiredAt:  time.Date(2026, 2, 5, 14, 0, 0, 0, time.UTC),
+		ServerEpoch: 10,
 		// No lease fields
 	}
 
@@ -130,7 +130,7 @@ func TestFromPersistedLock_ByteRangeLock(t *testing.T) {
 	assert.Equal(t, uint64(200), lock.Offset)
 	assert.Equal(t, uint64(300), lock.Length)
 	assert.Equal(t, LockTypeShared, lock.Type)
-	assert.Equal(t, ShareReservationDenyAll, lock.ShareReservation)
+	assert.Equal(t, AccessModeDenyAll, lock.AccessMode)
 	assert.Equal(t, pl.AcquiredAt, lock.AcquiredAt)
 
 	// Runtime-only fields should be default
@@ -184,19 +184,19 @@ func TestFromPersistedLock_Lease(t *testing.T) {
 func TestPersistedLock_RoundTrip_ByteRangeLock(t *testing.T) {
 	t.Parallel()
 
-	original := &EnhancedLock{
+	original := &UnifiedLock{
 		ID: "roundtrip-byte-range",
 		Owner: LockOwner{
 			OwnerID:   "nlm:test:999",
 			ClientID:  "test-client",
 			ShareName: "/test",
 		},
-		FileHandle:       FileHandle("test-file"),
-		Offset:           1000,
-		Length:           2000,
-		Type:             LockTypeExclusive,
-		ShareReservation: ShareReservationDenyRead,
-		AcquiredAt:       time.Now().Truncate(time.Millisecond),
+		FileHandle: FileHandle("test-file"),
+		Offset:     1000,
+		Length:     2000,
+		Type:       LockTypeExclusive,
+		AccessMode: AccessModeDenyRead,
+		AcquiredAt: time.Now().Truncate(time.Millisecond),
 	}
 
 	// Convert to persisted and back
@@ -212,7 +212,7 @@ func TestPersistedLock_RoundTrip_ByteRangeLock(t *testing.T) {
 	assert.Equal(t, original.Offset, restored.Offset)
 	assert.Equal(t, original.Length, restored.Length)
 	assert.Equal(t, original.Type, restored.Type)
-	assert.Equal(t, original.ShareReservation, restored.ShareReservation)
+	assert.Equal(t, original.AccessMode, restored.AccessMode)
 	assert.Equal(t, original.AcquiredAt, restored.AcquiredAt)
 	assert.Nil(t, restored.Lease)
 }
@@ -221,7 +221,7 @@ func TestPersistedLock_RoundTrip_Lease(t *testing.T) {
 	t.Parallel()
 
 	leaseKey := [16]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00}
-	original := &EnhancedLock{
+	original := &UnifiedLock{
 		ID: "roundtrip-lease",
 		Owner: LockOwner{
 			OwnerID:   "smb:lease:aabbccdd",
@@ -233,7 +233,7 @@ func TestPersistedLock_RoundTrip_Lease(t *testing.T) {
 		Length:     0,
 		Type:       LockTypeShared,
 		AcquiredAt: time.Now().Truncate(time.Millisecond),
-		Lease: &LeaseInfo{
+		Lease: &OpLock{
 			LeaseKey:     leaseKey,
 			LeaseState:   LeaseStateRead | LeaseStateWrite,
 			BreakToState: LeaseStateRead,

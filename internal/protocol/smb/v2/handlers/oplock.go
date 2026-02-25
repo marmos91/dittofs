@@ -10,20 +10,21 @@ package handlers
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"path"
 	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
-// ErrLeaseBreakPending is the shared sentinel error from the metadata package.
-// Re-exported here for backward compatibility with code that references it
-// from the SMB handlers package.
-var ErrLeaseBreakPending = metadata.ErrLeaseBreakPending
+// ErrLeaseBreakPending indicates that a lease break is in progress and the
+// caller should wait for acknowledgment before proceeding with the operation.
+// Returned by OplockManager methods when an SMB client has a Write lease that
+// must be broken before an operation can complete.
+var ErrLeaseBreakPending = errors.New("lease break pending, operation must wait")
 
 // ============================================================================
 // SMB2 Oplock Constants [MS-SMB2] 2.2.14
@@ -91,9 +92,9 @@ type OplockManager struct {
 	notify OplockBreakNotifier     // callback for sending break notifications
 
 	// Unified lock manager integration
-	lockStore   lock.LockStore          // For lease persistence
-	leaseNotify LeaseBreakNotifier      // Lease-specific notifications
-	scanner     *lock.LeaseBreakScanner // Lease break timeout scanner
+	lockStore   lock.LockStore           // For lease persistence
+	leaseNotify LeaseBreakNotifier       // Lease-specific notifications
+	scanner     *lock.OpLockBreakScanner // Lease break timeout scanner
 
 	// Active break tracking (for timeout management)
 	activeBreaks map[string]time.Time // leaseKeyHex -> breakStartTime
@@ -101,9 +102,9 @@ type OplockManager struct {
 	// Session tracking for break notifications
 	sessionMap map[string]uint64 // leaseKeyHex -> sessionID
 
-	// Quick lookup cache: FileHandle -> lease EnhancedLocks
+	// Quick lookup cache: FileHandle -> lease UnifiedLocks
 	// Populated from lock store on demand, cleared on modification
-	leaseCache map[string][]*lock.EnhancedLock
+	leaseCache map[string][]*lock.UnifiedLock
 	cacheValid bool
 }
 
@@ -129,7 +130,7 @@ func NewOplockManagerWithStore(lockStore lock.LockStore) *OplockManager {
 		lockStore:    lockStore,
 		activeBreaks: make(map[string]time.Time),
 		sessionMap:   make(map[string]uint64),
-		leaseCache:   make(map[string][]*lock.EnhancedLock),
+		leaseCache:   make(map[string][]*lock.UnifiedLock),
 	}
 }
 
@@ -527,7 +528,7 @@ func (m *OplockManager) StartScanner() {
 	}
 
 	if m.scanner == nil {
-		m.scanner = lock.NewLeaseBreakScanner(m.lockStore, m, 0)
+		m.scanner = lock.NewOpLockBreakScanner(m.lockStore, m, 0)
 	}
 	m.scanner.Start()
 
@@ -546,7 +547,7 @@ func (m *OplockManager) StopScanner() {
 	}
 }
 
-// OnLeaseBreakTimeout implements lock.LeaseBreakCallback.
+// OnLeaseBreakTimeout implements lock.OpLockBreakCallback.
 // Called by the scanner when a lease break times out without acknowledgment.
 func (m *OplockManager) OnLeaseBreakTimeout(leaseKey [16]byte) {
 	m.mu.Lock()
@@ -574,7 +575,7 @@ func (m *OplockManager) OnLeaseBreakTimeout(leaseKey [16]byte) {
 // getFileLeasesLocked queries active leases for a file from the lock store.
 // Returns only valid lease entries (16-byte lease key, non-nil lease info).
 // Must be called with m.mu held.
-func (m *OplockManager) getFileLeasesLocked(ctx context.Context, fileHandle lock.FileHandle) []*lock.EnhancedLock {
+func (m *OplockManager) getFileLeasesLocked(ctx context.Context, fileHandle lock.FileHandle) []*lock.UnifiedLock {
 	if m.lockStore == nil {
 		return nil
 	}
@@ -588,7 +589,7 @@ func (m *OplockManager) getFileLeasesLocked(ctx context.Context, fileHandle lock
 		return nil
 	}
 
-	var result []*lock.EnhancedLock
+	var result []*lock.UnifiedLock
 	for _, pl := range persisted {
 		if len(pl.LeaseKey) != 16 {
 			continue
@@ -604,7 +605,7 @@ func (m *OplockManager) getFileLeasesLocked(ctx context.Context, fileHandle lock
 // breakOrMarkPending initiates a lease break if not already in progress and
 // returns true if the caller should wait for a pending break acknowledgment.
 // Must be called with m.mu held.
-func (m *OplockManager) breakOrMarkPending(el *lock.EnhancedLock, breakTo uint32) bool {
+func (m *OplockManager) breakOrMarkPending(el *lock.UnifiedLock, breakTo uint32) bool {
 	if el.Lease.Breaking {
 		return true
 	}

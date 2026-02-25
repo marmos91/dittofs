@@ -83,7 +83,7 @@ func ProcessGrantedCallback(
 
 		// Per CONTEXT.md locked decision: release lock immediately if callback fails
 		handleKey := string(waiter.Lock.FileHandle)
-		_ = lm.RemoveEnhancedLock(handleKey, waiter.Lock.Owner,
+		_ = lm.RemoveUnifiedLock(handleKey, waiter.Lock.Owner,
 			waiter.Lock.Offset, waiter.Lock.Length)
 
 		if metrics != nil {
