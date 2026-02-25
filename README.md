@@ -17,7 +17,7 @@
 
 **A modular virtual filesystem written entirely in Go**
 
-Decouple file interfaces from storage backends. NFSv3 and SMB2 server with pluggable metadata and payload stores. Kubernetes-ready with official operator.
+Decouple file interfaces from storage backends. NFSv3/v4/v4.1 and SMB2 server with pluggable metadata and payload stores. Kubernetes-ready with official operator.
 
 [Quick Start](#quick-start) • [Documentation](#documentation) • [Features](#features) • [Use Cases](#use-cases) • [Contributing](docs/CONTRIBUTING.md)
 
@@ -95,8 +95,9 @@ graph TD
 
 ## Features
 
-- ✅ **Production-Ready NFSv3**: 28 procedures fully implemented
-- ✅ **SMB2 Support**: Windows/macOS file sharing with NTLM authentication
+- ✅ **NFS Support**: NFSv3 (28 procedures), NFSv4.0, and NFSv4.1 with sessions, delegations, and ACLs
+- ✅ **SMB2 Support**: Windows/macOS file sharing with NTLM authentication, byte-range locking, and oplocks
+- ✅ **Kerberos Authentication**: RPCSEC_GSS for NFS and SPNEGO for SMB
 - ✅ **No Special Permissions**: Runs entirely in userspace - no FUSE, no kernel modules
 - ✅ **Pluggable Storage**: Mix protocols with any backend (S3, filesystem, custom)
 - ✅ **Cloud-Native**: S3 backend with production optimizations
@@ -497,14 +498,13 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 
 - **[Architecture](docs/ARCHITECTURE.md)** - Deep dive into design patterns and internal implementation
 - **[Configuration](docs/CONFIGURATION.md)** - Complete configuration guide with examples
-- **[NFS Implementation](docs/NFS.md)** - NFSv3 protocol status and client usage
-- **[SMB Implementation](docs/SMB_IMPLEMENTATION_PLAN.md)** - SMB2 protocol status, capabilities, and roadmap
+- **[NFS Implementation](docs/NFS.md)** - NFSv3/v4/v4.1 protocol status and client usage
+- **[SMB Implementation](docs/SMB.md)** - SMB2 protocol status, capabilities, and client usage
 - **[Contributing](docs/CONTRIBUTING.md)** - Development guide and contribution guidelines
 - **[Implementing Stores](docs/IMPLEMENTING_STORES.md)** - Guide for implementing custom metadata and payload stores
 
 ### Operational Guides
 
-- **[Known Limitations](docs/KNOWN_LIMITATIONS.md)** - NFS protocol and implementation limitations
 - **[Troubleshooting](docs/TROUBLESHOOTING.md)** - Common issues and solutions
 - **[Security](docs/SECURITY.md)** - Security considerations and best practices
 - **[FAQ](docs/FAQ.md)** - Frequently asked questions
@@ -518,9 +518,12 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 
 ### ✅ Implemented
 
-**NFS Adapter (NFSv3)**
-- All core read/write operations (28 procedures)
-- Mount protocol support
+**NFS Adapter (NFSv3, NFSv4.0, NFSv4.1)**
+- NFSv3: All core read/write operations (28 procedures)
+- NFSv4.0: Compound operations, ACLs, delegations, built-in file locking
+- NFSv4.1: Sessions, sequence slots, backchannel support
+- Kerberos authentication via RPCSEC_GSS
+- Mount protocol support (v3)
 - TCP transport with graceful shutdown
 - Buffer pooling and performance optimizations
 - Read/write caching with background flush
@@ -528,11 +531,13 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 **SMB2 Protocol Adapter**
 - SMB2 dialect 0x0202 negotiation
 - NTLM authentication with SPNEGO
+- Kerberos authentication via SPNEGO
 - Session management with adaptive credit flow control
 - Tree connect with share-level permission checking
 - File operations: CREATE, READ, WRITE, CLOSE, FLUSH
 - Directory operations: QUERY_DIRECTORY
 - Metadata operations: QUERY_INFO, SET_INFO
+- Byte-range locking and oplocks
 - Compound request handling (CREATE+QUERY_INFO+CLOSE)
 - Read/write caching (shared with NFS)
 - Parallel request processing
@@ -542,19 +547,19 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 - In-memory metadata (ephemeral, fast)
 - BadgerDB metadata (persistent, path-based handles)
 - PostgreSQL metadata (persistent, distributed)
-- In-memory block store (ephemeral, testing)
-- S3 block store (production-ready with range reads, streaming uploads, stats caching)
+- In-memory payload store (ephemeral, testing)
+- S3 payload store (production-ready with range reads, streaming uploads, stats caching)
 
 **Caching & Persistence**
 - Slice-aware cache with sequential write optimization
 - WAL (Write-Ahead Log) persistence for crash recovery
-- Transfer manager for async cache-to-block-store flushing
+- Transfer manager for async cache-to-payload-store flushing
 
 **POSIX Compliance**
 - 99.99% pass rate on pjdfstest (8,788/8,789 tests)
 - All metadata stores (Memory, BadgerDB, PostgreSQL) achieve parity
 - Single expected failure due to NFSv3 32-bit timestamp limitation (year 2106)
-- See [Known Limitations](docs/KNOWN_LIMITATIONS.md) for details
+- See [FAQ](docs/FAQ.md) for known limitations
 
 **User Management & Control Plane**
 - Unified identity system for NFS and SMB
@@ -584,10 +589,10 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 
 **SMB Advanced Features**
 - [ ] SMBv3 support (encryption, multichannel)
-- [ ] File locking (oplocks, byte-range locks)
+- [x] File locking (oplocks, byte-range locks)
 - [ ] Security descriptors and Windows ACLs
 - [ ] Extended attributes (xattrs) support
-- [ ] Kerberos/LDAP/Active Directory integration
+- [x] Kerberos authentication via SPNEGO
 
 **Kubernetes Integration**
 - [x] Kubernetes Operator for deployment
@@ -598,7 +603,8 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 - [ ] Sync between DittoFS replicas
 - [ ] Scan content stores to populate metadata stores
 - [x] Admin REST API for users/permissions/shares/configs
-- [ ] NFSv4 support
+- [x] NFSv4.0 and NFSv4.1 support (sessions, delegations, ACLs, built-in locking)
+- [x] Kerberos authentication (RPCSEC_GSS for NFS, SPNEGO for SMB)
 - [ ] Advanced caching strategies
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for complete roadmap.
@@ -695,9 +701,8 @@ DittoFS welcomes contributions! See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)
 ⚠️ **DittoFS is experimental software** - not yet production ready.
 
 - No security audit performed
-- Basic AUTH_UNIX only (no Kerberos)
-- No built-in encryption
-- Use behind VPN or with network encryption
+- AUTH_UNIX and Kerberos (RPCSEC_GSS) for NFS; NTLM and Kerberos (SPNEGO) for SMB
+- No built-in encryption (use VPN or network-level encryption)
 
 See [docs/SECURITY.md](docs/SECURITY.md) for details and recommendations.
 
@@ -705,6 +710,8 @@ See [docs/SECURITY.md](docs/SECURITY.md) for details and recommendations.
 
 ### Specifications
 - [RFC 1813](https://tools.ietf.org/html/rfc1813) - NFS Version 3
+- [RFC 7530](https://tools.ietf.org/html/rfc7530) - NFS Version 4.0
+- [RFC 8881](https://tools.ietf.org/html/rfc8881) - NFS Version 4.1
 - [RFC 5531](https://tools.ietf.org/html/rfc5531) - RPC Protocol
 - [RFC 4506](https://tools.ietf.org/html/rfc4506) - XDR Standard
 

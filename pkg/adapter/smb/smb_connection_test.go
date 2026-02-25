@@ -6,8 +6,8 @@ import (
 	"net"
 	"testing"
 
-	"github.com/marmos91/dittofs/internal/protocol/smb/header"
-	"github.com/marmos91/dittofs/internal/protocol/smb/types"
+	"github.com/marmos91/dittofs/internal/adapter/smb/header"
+	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
 
 // =============================================================================

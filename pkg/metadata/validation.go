@@ -276,7 +276,7 @@ func ApplyCreateDefaults(attr *FileAttr, ctx *AuthContext, linkTarget string) {
 
 	// NOTE: UID/GID defaults are NOT applied here.
 	// The XDR layer handles this correctly using pointer semantics.
-	// See ConvertSetAttrsToMetadata in internal/protocol/nfs/xdr/attributes.go
+	// See ConvertSetAttrsToMetadata in internal/adapter/nfs/xdr/attributes.go
 
 	// Set timestamps
 	attr.Atime = now

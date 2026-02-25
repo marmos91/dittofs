@@ -1,0 +1,281 @@
+package handlers
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
+	"github.com/marmos91/dittofs/internal/adapter/pool"
+	"github.com/marmos91/dittofs/internal/bytesize"
+	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/metadata"
+)
+
+// ============================================================================
+// Request and Response Structures
+// ============================================================================
+
+// ReadRequest represents a READ request from an NFS client.
+// The client specifies a file handle, offset, and number of bytes to read.
+//
+// This structure is decoded from XDR-encoded data received over the network.
+//
+// RFC 1813 Section 3.3.6 specifies the READ procedure as:
+//
+//	READ3res NFSPROC3_READ(READ3args) = 6;
+//
+// The READ procedure is used to read data from a file. It's one of the most
+// fundamental and frequently called NFS operations.
+type ReadRequest struct {
+	// Handle is the file handle of the file to read from.
+	// Must be a valid file handle for a regular file (not a directory).
+	// Maximum length is 64 bytes per RFC 1813.
+	Handle []byte
+
+	// Offset is the byte offset in the file to start reading from.
+	// Can be any value from 0 to file size - 1.
+	// Reading beyond EOF returns 0 bytes with Eof=true.
+	Offset uint64
+
+	// Count is the number of bytes to read.
+	// The server may return fewer bytes than requested if:
+	//   - EOF is encountered
+	//   - Count exceeds server's maximum read size (rtmax from FSINFO)
+	//   - Internal constraints apply
+	Count uint32
+}
+
+// ReadResponse represents the response to a READ request.
+// It contains the status, optional file attributes, and the data read.
+//
+// The response is encoded in XDR format before being sent back to the client.
+//
+// ReadResponse implements the Releaser interface. After encoding, Release()
+// must be called to return any pooled buffers to the buffer pool.
+type ReadResponse struct {
+	NFSResponseBase // Embeds Status field and GetStatus() method
+
+	// Attr contains post-operation attributes of the file.
+	// Optional, may be nil if Status != types.NFS3OK or attributes unavailable.
+	// Helps clients maintain cache consistency.
+	Attr *types.NFSFileAttr
+
+	// Count is the actual number of bytes read.
+	// May be less than requested if:
+	//   - EOF was reached
+	//   - Server constraints apply
+	// Only present when Status == types.NFS3OK.
+	Count uint32
+
+	// Eof indicates whether the end of file was reached.
+	// true: The read reached or passed the end of file
+	// false: More data exists beyond the bytes returned
+	// Only present when Status == types.NFS3OK.
+	Eof bool
+
+	// Data contains the actual bytes read from the file.
+	// Length matches Count field.
+	// Empty if Count == 0 or Status != types.NFS3OK.
+	Data []byte
+
+	// pooled indicates the Data buffer came from pool and should be returned.
+	pooled bool
+}
+
+// Release returns the Data buffer to the pool if it was pooled.
+// Implements the Releaser interface.
+// Safe to call multiple times - subsequent calls are no-ops.
+func (r *ReadResponse) Release() {
+	if r.pooled && r.Data != nil {
+		pool.Put(r.Data)
+		r.Data = nil
+		r.pooled = false
+	}
+}
+
+// ============================================================================
+// Protocol Handler
+// ============================================================================
+
+// Read handles NFS READ (RFC 1813 Section 3.3.6).
+// Reads data from a regular file at a given offset, returning bytes and EOF flag.
+// Delegates to PayloadService.ReadAt via pooled buffers; MetadataService validates file existence.
+// No side effects; read-only, high-frequency data operation using buffer pools to reduce GC.
+// Errors: NFS3ErrStale (bad handle), NFS3ErrIsDir (not regular file), NFS3ErrIO.
+func (h *Handler) Read(
+	ctx *NFSHandlerContext,
+	req *ReadRequest,
+) (*ReadResponse, error) {
+	// ========================================================================
+	// Context Cancellation Check - Entry Point
+	// ========================================================================
+	// Check if the client has disconnected or the request has timed out
+	// before we start any expensive operations.
+	if ctx.isContextCancelled() {
+		logger.DebugCtx(ctx.Context, "READ: request cancelled at entry", "handle", fmt.Sprintf("0x%x", req.Handle), "client", ctx.ClientAddr, "error", ctx.Context.Err())
+		return nil, ctx.Context.Err()
+	}
+
+	// Extract client IP for logging
+	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+
+	logger.DebugCtx(ctx.Context, "READ", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "count", bytesize.ByteSize(req.Count), "client", clientIP, "auth", ctx.AuthFlavor)
+
+	// ========================================================================
+	// Step 1: Validate request parameters
+	// ========================================================================
+
+	if err := validateReadRequest(req); err != nil {
+		logger.WarnCtx(ctx.Context, "READ validation failed", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP, "error", err)
+		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
+	}
+
+	// Clamp offset to OffsetMax per RFC 1813 (match Linux nfs3proc.c behavior)
+	// This prevents issues with large offsets on certain platforms or backends
+	if req.Offset > uint64(types.OffsetMax) {
+		req.Offset = uint64(types.OffsetMax)
+	}
+
+	// ========================================================================
+	// Step 2: Get content service from registry
+	// ========================================================================
+
+	payloadSvc, err := getPayloadService(h.Registry)
+	if err != nil {
+		logger.ErrorCtx(ctx.Context, "READ failed: payload service not initialized", "client", clientIP, "error", err)
+		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
+
+	fileHandle := metadata.FileHandle(req.Handle)
+
+	logger.DebugCtx(ctx.Context, "READ: share", "share", ctx.Share)
+
+	// ========================================================================
+	// Step 3: Verify file exists and is a regular file
+	// ========================================================================
+
+	file, status, err := h.getFileOrError(ctx, fileHandle, "READ", req.Handle)
+	if file == nil {
+		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
+	}
+
+	// Verify it's a regular file (not a directory or special file)
+	if file.Type != metadata.FileTypeRegular {
+		logger.WarnCtx(ctx.Context, "READ failed: not a regular file", "handle", fmt.Sprintf("0x%x", req.Handle), "type", file.Type, "client", clientIP)
+
+		// Return file attributes even on error for cache consistency
+		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
+
+		return &ReadResponse{
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIsDir}, // types.NFS3ErrIsDir is used for all non-regular files
+			Attr:            nfsAttr,
+		}, nil
+	}
+
+	// ========================================================================
+	// Context Cancellation Check - After Metadata Lookup
+	// ========================================================================
+	// Check again before opening content (which may be expensive)
+	if ctx.isContextCancelled() {
+		logger.DebugCtx(ctx.Context, "READ: request cancelled after metadata lookup", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
+		return nil, ctx.Context.Err()
+	}
+
+	// ========================================================================
+	// Step 3b: Cross-protocol oplock break (placeholder)
+	// ========================================================================
+	// TODO(plan-03): Wire to LockManager.CheckAndBreakOpLocksForRead() once
+	// centralized break methods are available (Phase 26 Plan 03).
+	// Previously: waitForLeaseBreak(ctx.Context, metaSvc, fileHandle, false)
+
+	// ========================================================================
+	// Step 3: Check for empty file or invalid offset
+	// ========================================================================
+
+	// If file has no content, return empty data with EOF
+	if file.PayloadID == "" || file.Size == 0 {
+		logger.DebugCtx(ctx.Context, "READ: empty file", "handle", fmt.Sprintf("0x%x", req.Handle), "size", bytesize.ByteSize(file.Size), "client", clientIP)
+
+		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
+
+		return &ReadResponse{
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+			Attr:            nfsAttr,
+			Count:           0,
+			Eof:             true,
+			Data:            []byte{},
+		}, nil
+	}
+
+	// If offset is at or beyond EOF, return empty data with EOF
+	if req.Offset >= file.Size {
+		logger.DebugCtx(ctx.Context, "READ: offset beyond EOF", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "size", bytesize.ByteSize(file.Size), "client", clientIP)
+
+		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
+
+		return &ReadResponse{
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+			Attr:            nfsAttr,
+			Count:           0,
+			Eof:             true,
+			Data:            []byte{},
+		}, nil
+	}
+
+	// Calculate actual read length (clamped to file size)
+	readEnd := min(req.Offset+uint64(req.Count), file.Size)
+	actualLength := uint32(readEnd - req.Offset)
+
+	// ========================================================================
+	// Step 4: Read content data from Cache
+	// ========================================================================
+	// All reads go through ContentService.ReadAt which reads from Cache.
+	// Cache handles slice merging (newest-wins semantics).
+
+	readResult, readErr := readFromPayloadService(ctx, payloadSvc, file.PayloadID, file.COWSourcePayloadID, req.Offset, actualLength, clientIP, req.Handle)
+	if readErr != nil {
+		// Check if cancellation error
+		if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
+			return nil, readErr
+		}
+
+		// I/O error
+		traceError(ctx.Context, readErr, "READ failed", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "client", clientIP)
+		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
+		return &ReadResponse{
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			Attr:            nfsAttr,
+		}, nil
+	}
+
+	data := readResult.data
+	n := readResult.bytesRead
+	eof := readResult.eof
+	pooled := readResult.pooled
+
+	// Check if we're at or past EOF
+	if req.Offset+uint64(n) >= file.Size {
+		eof = true
+	}
+
+	// ========================================================================
+	// Step 5: Build success response
+	// ========================================================================
+
+	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
+
+	logger.DebugCtx(ctx.Context, "READ successful", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "requested", bytesize.ByteSize(req.Count), "read", bytesize.ByteSize(n), "eof", eof, "client", clientIP)
+
+	logger.DebugCtx(ctx.Context, "READ details", "size", bytesize.ByteSize(file.Size), "type", nfsAttr.Type, "mode", fmt.Sprintf("%o", file.Mode))
+
+	return &ReadResponse{
+		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
+		Attr:            nfsAttr,
+		Count:           uint32(n),
+		Eof:             eof,
+		Data:            data,
+		pooled:          pooled,
+	}, nil
+}

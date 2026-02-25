@@ -1,6 +1,6 @@
 # Implementing Custom Stores
 
-This guide provides comprehensive instructions for implementing custom metadata and content stores for DittoFS. Whether you're building a database-backed metadata store or a custom cloud storage integration, this document will walk you through the process with best practices and practical examples.
+This guide provides comprehensive instructions for implementing custom metadata and payload stores for DittoFS. Whether you're building a database-backed metadata store or a custom cloud storage integration, this document will walk you through the process with best practices and practical examples.
 
 ## Table of Contents
 
@@ -8,7 +8,7 @@ This guide provides comprehensive instructions for implementing custom metadata 
 2. [When to Implement Custom Stores](#when-to-implement-custom-stores)
 3. [Understanding the Architecture](#understanding-the-architecture)
 4. [Implementing Metadata Stores](#implementing-metadata-stores)
-5. [Implementing Content Stores](#implementing-content-stores)
+5. [Implementing Payload Stores](#implementing-payload-stores)
 6. [Best Practices](#best-practices)
 7. [Testing Your Implementation](#testing-your-implementation)
 8. [Common Pitfalls](#common-pitfalls)
@@ -18,15 +18,15 @@ This guide provides comprehensive instructions for implementing custom metadata 
 
 DittoFS uses a **Service-oriented architecture** with three distinct layers:
 
-- **Services** (`MetadataService`, `BlockService`): Business logic, coordination, caching
+- **Services** (`MetadataService`, `PayloadService`): Business logic, coordination, caching
 - **Metadata Stores**: Simple CRUD operations for file/directory structure, attributes, permissions
-- **Content Stores**: Simple CRUD operations for actual file data (bytes)
+- **Payload Stores**: Simple CRUD operations for actual file data (bytes)
 
 **Key Design Principle**: Stores are simple CRUD interfaces. Business logic (permission checking, cache coordination, locking) lives in the Service layer. This makes implementing custom stores much simpler.
 
 This separation enables:
-- Independent scaling of metadata and content
-- Content deduplication (multiple files sharing same data)
+- Independent scaling of metadata and payload
+- Payload deduplication (multiple files sharing same data)
 - Flexible storage backends (databases, object storage, distributed systems)
 - Different storage tiers (hot/cold storage, SSD/HDD)
 - **Simple store implementations** (just implement CRUD, services handle the rest)
@@ -45,9 +45,9 @@ Implement a custom metadata store when you need:
 
 **Example**: A PostgreSQL-backed metadata store for enterprise environments requiring audit trails, complex permission queries, and high availability.
 
-### Content Store Use Cases
+### Payload Store Use Cases
 
-Implement a custom content store when you need:
+Implement a custom payload store when you need:
 
 - **Cloud storage integration**: Azure Blob, Google Cloud Storage, custom object stores
 - **Specialized storage**: Tape archives, HSM systems, data lakes
@@ -55,7 +55,7 @@ Implement a custom content store when you need:
 - **Tiering**: Automatic hot/cold data movement based on access patterns
 - **Deduplication**: Content-addressable storage, block-level dedup
 
-**Example**: An Azure Blob Storage content store with automatic tiering to cold storage for infrequently accessed files.
+**Example**: An Azure Blob Storage payload store with automatic tiering to cold storage for infrequently accessed files.
 
 ## Understanding the Architecture
 
@@ -70,31 +70,31 @@ Example: "/export:550e8400-e29b-41d4-a716-446655440000"
 
 **Why Path-Based?**
 - **Deterministic**: Same file always has same handle
-- **Recoverable**: Metadata can be reconstructed from content stores
+- **Recoverable**: Metadata can be reconstructed from payload stores
 - **Human-readable**: Easy to debug and inspect
 - **NFS-compatible**: Under 64-byte limit for most share names
 
 **Implementation Note**: Use `metadata.EncodeShareHandle()` and `metadata.DecodeFileHandle()` for consistent handle encoding/decoding.
 
-### Content ID Design
+### Payload ID Design
 
-Content IDs link metadata to actual file data:
+Payload IDs link metadata to actual file data:
 
 ```
 Format: "shareName/path/to/file"
 Example: "export/documents/report.pdf"
 ```
 
-**Why Path-Based Content IDs?**
+**Why Path-Based Payload IDs?**
 - **Inspectable**: Browse S3 buckets like a filesystem
-- **Recoverable**: Reconstruct metadata from content store listing
+- **Recoverable**: Reconstruct metadata from payload store listing
 - **Migration-friendly**: Import existing filesystem structures
 
-Use `internal.BuildContentID(shareName, fullPath)` for consistent generation.
+Use `internal.BuildPayloadID(shareName, fullPath)` for consistent generation.
 
 ### Store Coordination
 
-Services coordinate between metadata and content stores. **Protocol handlers interact with services, not stores directly.**
+Services coordinate between metadata and payload stores. **Protocol handlers interact with services, not stores directly.**
 
 ```
 Protocol Handler → Service → Store
@@ -102,15 +102,15 @@ Protocol Handler → Service → Store
                    Cache
 ```
 
-**Write Flow** (handled by `BlockService`):
-1. Protocol handler calls `BlockService.WriteAt(shareName, contentID, data, offset)`
-2. BlockService checks if cache is configured for this share
+**Write Flow** (handled by `PayloadService`):
+1. Protocol handler calls `PayloadService.WriteAt(shareName, payloadID, data, offset)`
+2. PayloadService checks if cache is configured for this share
 3. If cached: writes to cache, marks dirty for later flush
 4. If not cached: writes directly to store
 
-**Read Flow** (handled by `BlockService`):
-1. Protocol handler calls `BlockService.ReadAt(shareName, contentID, offset, size)`
-2. BlockService checks cache first (if configured)
+**Read Flow** (handled by `PayloadService`):
+1. Protocol handler calls `PayloadService.ReadAt(shareName, payloadID, offset, size)`
+2. PayloadService checks cache first (if configured)
 3. On cache hit: returns cached data
 4. On cache miss: reads from store, optionally caches result
 
@@ -284,7 +284,7 @@ func (s *MyMetadataStore) CheckPermissions(
 // 1. Validate parent exists and is a directory
 // 2. Check write permission on parent
 // 3. Check if name already exists (return ErrAlreadyExists)
-// 4. Generate file handle and ContentID
+// 4. Generate file handle and PayloadID
 // 5. Initialize attributes (timestamps, owner, etc.)
 // 6. Persist file metadata atomically
 // 7. Update parent directory (mtime, ctime)
@@ -363,10 +363,10 @@ func (s *MyMetadataStore) Create(
         },
     }
 
-    // Generate ContentID for regular files
+    // Generate PayloadID for regular files
     if attr.Type == metadata.FileTypeRegular {
-        file.ContentID = metadata.ContentID(
-            internal.BuildContentID(shareName, fullPath),
+        file.PayloadID = metadata.PayloadID(
+            internal.BuildPayloadID(shareName, fullPath),
         )
     }
 
@@ -530,7 +530,7 @@ func (s *MyMetadataStore) PrepareWrite(
     now := time.Now()
     intent := &metadata.WriteOperation{
         Handle:    handle,
-        ContentID: file.ContentID,
+        PayloadID: file.PayloadID,
         OldSize:   file.Size,
         NewSize:   newSize,
         OldMtime:  file.Mtime,
@@ -543,7 +543,7 @@ func (s *MyMetadataStore) PrepareWrite(
     return intent, nil
 }
 
-// CommitWrite applies metadata changes after successful content write (Phase 3).
+// CommitWrite applies metadata changes after successful payload write (Phase 3).
 func (s *MyMetadataStore) CommitWrite(
     ctx *metadata.AuthContext,
     intent *metadata.WriteOperation,
@@ -697,7 +697,7 @@ func (s *MyMetadataStore) GetFilesystemStatistics(
 }
 ```
 
-## Implementing Content Stores
+## Implementing Payload Stores
 
 ### Step 1: Define Your Store Structure
 
@@ -709,12 +709,12 @@ import (
     "io"
     "sync"
 
-    "github.com/marmos91/dittofs/pkg/blocks"
+    "github.com/marmos91/dittofs/pkg/payload"
     "github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// MyContentStore implements content.ContentStore.
-type MyContentStore struct {
+// MyPayloadStore implements payload.PayloadStore.
+type MyPayloadStore struct {
     // Your backend (API client, connection pool, etc.)
     client *MyStorageClient
 
@@ -726,7 +726,7 @@ type MyContentStore struct {
     mu sync.RWMutex
 
     // Per-object locks for concurrent writes
-    objectLocks   map[metadata.ContentID]*sync.Mutex
+    objectLocks   map[metadata.PayloadID]*sync.Mutex
     objectLocksMu sync.Mutex
 }
 ```
@@ -734,10 +734,10 @@ type MyContentStore struct {
 ### Step 2: Implement Core Read Operations
 
 ```go
-// ReadContent returns a reader for the entire content.
-func (s *MyContentStore) ReadContent(
+// ReadPayload returns a reader for the entire payload.
+func (s *MyPayloadStore) ReadPayload(
     ctx context.Context,
-    id metadata.ContentID,
+    id metadata.PayloadID,
 ) (io.ReadCloser, error) {
     // Check context before operation
     if err := ctx.Err(); err != nil {
@@ -751,7 +751,7 @@ func (s *MyContentStore) ReadContent(
     reader, err := s.client.GetObject(ctx, s.bucket, key)
     if err != nil {
         if isNotFoundError(err) {
-            return nil, content.ErrContentNotFound
+            return nil, payload.ErrPayloadNotFound
         }
         return nil, err
     }
@@ -759,10 +759,10 @@ func (s *MyContentStore) ReadContent(
     return reader, nil
 }
 
-// GetContentSize returns content size without reading data.
-func (s *MyContentStore) GetContentSize(
+// GetPayloadSize returns payload size without reading data.
+func (s *MyPayloadStore) GetPayloadSize(
     ctx context.Context,
-    id metadata.ContentID,
+    id metadata.PayloadID,
 ) (uint64, error) {
     if err := ctx.Err(); err != nil {
         return 0, err
@@ -774,7 +774,7 @@ func (s *MyContentStore) GetContentSize(
     meta, err := s.client.HeadObject(ctx, s.bucket, key)
     if err != nil {
         if isNotFoundError(err) {
-            return 0, content.ErrContentNotFound
+            return 0, payload.ErrPayloadNotFound
         }
         return 0, err
     }
@@ -782,10 +782,10 @@ func (s *MyContentStore) GetContentSize(
     return uint64(meta.ContentLength), nil
 }
 
-// ContentExists checks if content exists.
-func (s *MyContentStore) ContentExists(
+// PayloadExists checks if payload exists.
+func (s *MyPayloadStore) PayloadExists(
     ctx context.Context,
-    id metadata.ContentID,
+    id metadata.PayloadID,
 ) (bool, error) {
     if err := ctx.Err(); err != nil {
         return false, err
@@ -816,9 +816,9 @@ func (s *MyContentStore) ContentExists(
 //   1. Read-modify-write (simple but slow)
 //   2. Chunked storage (complex but efficient)
 //   3. Hybrid: buffer writes, flush on threshold
-func (s *MyContentStore) WriteAt(
+func (s *MyPayloadStore) WriteAt(
     ctx context.Context,
-    id metadata.ContentID,
+    id metadata.PayloadID,
     data []byte,
     offset uint64,
 ) error {
@@ -836,7 +836,7 @@ func (s *MyContentStore) WriteAt(
     // Strategy: Read-modify-write (simple example)
     // Production: Use chunked storage or write buffering
 
-    // Read existing content
+    // Read existing payload
     var existing []byte
     reader, err := s.client.GetObject(ctx, s.bucket, key)
     if err != nil && !isNotFoundError(err) {
@@ -866,10 +866,10 @@ func (s *MyContentStore) WriteAt(
     return s.client.PutObject(ctx, s.bucket, key, existing)
 }
 
-// Truncate changes content size.
-func (s *MyContentStore) Truncate(
+// Truncate changes payload size.
+func (s *MyPayloadStore) Truncate(
     ctx context.Context,
-    id metadata.ContentID,
+    id metadata.PayloadID,
     newSize uint64,
 ) error {
     if err := ctx.Err(); err != nil {
@@ -883,7 +883,7 @@ func (s *MyContentStore) Truncate(
     key := s.buildKey(id)
 
     // Get current size
-    currentSize, err := s.GetContentSize(ctx, id)
+    currentSize, err := s.GetPayloadSize(ctx, id)
     if err != nil {
         return err
     }
@@ -916,10 +916,10 @@ func (s *MyContentStore) Truncate(
     return s.client.PutObject(ctx, s.bucket, key, data)
 }
 
-// WriteContent writes entire content in one operation.
-func (s *MyContentStore) WriteContent(
+// WritePayload writes entire payload in one operation.
+func (s *MyPayloadStore) WritePayload(
     ctx context.Context,
-    id metadata.ContentID,
+    id metadata.PayloadID,
     data []byte,
 ) error {
     if err := ctx.Err(); err != nil {
@@ -930,10 +930,10 @@ func (s *MyContentStore) WriteContent(
     return s.client.PutObject(ctx, s.bucket, key, data)
 }
 
-// Delete removes content.
-func (s *MyContentStore) Delete(
+// Delete removes payload.
+func (s *MyPayloadStore) Delete(
     ctx context.Context,
-    id metadata.ContentID,
+    id metadata.PayloadID,
 ) error {
     if err := ctx.Err(); err != nil {
         return err
@@ -953,16 +953,16 @@ func (s *MyContentStore) Delete(
 
 ### Step 4: Implement Optional Interfaces
 
-#### ReadAtContentStore (Highly Recommended)
+#### ReadAtPayloadStore (Highly Recommended)
 
 ```go
 // ReadAt reads from specific offset (efficient partial read).
 //
 // This is CRITICAL for performance with protocols like NFS that
 // request small chunks (4-64KB) from large files.
-func (s *MyContentStore) ReadAt(
+func (s *MyPayloadStore) ReadAt(
     ctx context.Context,
-    id metadata.ContentID,
+    id metadata.PayloadID,
     p []byte,
     offset uint64,
 ) (int, error) {
@@ -1002,7 +1002,7 @@ func (s *MyContentStore) ReadAt(
 
 #### IncrementalWriteStore (For Large Files)
 
-This is complex and primarily needed for S3-like stores with multipart upload. See `pkg/blocks/store/s3/s3_incremental.go` for a complete implementation example.
+This is complex and primarily needed for S3-like stores with multipart upload. See `pkg/payload/store/s3/s3_incremental.go` for a complete implementation example.
 
 **Key Concepts**:
 - Part-based uploads (5MB+ parts)
@@ -1016,9 +1016,9 @@ This is complex and primarily needed for S3-like stores with multipart upload. S
 // GetStorageStats returns storage statistics.
 //
 // For cloud storage, use caching to avoid expensive list operations.
-func (s *MyContentStore) GetStorageStats(
+func (s *MyPayloadStore) GetStorageStats(
     ctx context.Context,
-) (*content.StorageStats, error) {
+) (*payload.StorageStats, error) {
     if err := ctx.Err(); err != nil {
         return nil, err
     }
@@ -1043,11 +1043,11 @@ func (s *MyContentStore) GetStorageStats(
         avgSize = totalSize / count
     }
 
-    return &content.StorageStats{
+    return &payload.StorageStats{
         TotalSize:     ^uint64(0), // Unlimited
         UsedSize:      totalSize,
         AvailableSize: ^uint64(0), // Unlimited
-        ContentCount:  count,
+        PayloadCount:  count,
         AverageSize:   avgSize,
     }, nil
 }
@@ -1061,7 +1061,7 @@ func (s *MyContentStore) GetStorageStats(
 
 ```go
 // Good: Per-operation locking
-func (s *MyStore) WriteAt(ctx context.Context, id ContentID, data []byte, offset uint64) error {
+func (s *MyStore) WriteAt(ctx context.Context, id PayloadID, data []byte, offset uint64) error {
     lock := s.getObjectLock(id)
     lock.Lock()
     defer lock.Unlock()
@@ -1070,7 +1070,7 @@ func (s *MyStore) WriteAt(ctx context.Context, id ContentID, data []byte, offset
 }
 
 // Bad: No synchronization
-func (s *MyStore) WriteAt(ctx context.Context, id ContentID, data []byte, offset uint64) error {
+func (s *MyStore) WriteAt(ctx context.Context, id PayloadID, data []byte, offset uint64) error {
     // Concurrent writes will corrupt data!
     // ... perform write ...
 }
@@ -1087,7 +1087,7 @@ func (s *MyStore) WriteAt(ctx context.Context, id ContentID, data []byte, offset
 
 ```go
 // Good: Check context before expensive operations
-func (s *MyStore) ProcessLargeFile(ctx context.Context, id ContentID) error {
+func (s *MyStore) ProcessLargeFile(ctx context.Context, id PayloadID) error {
     for i := 0; i < parts; i++ {
         // Check context periodically
         if err := ctx.Err(); err != nil {
@@ -1099,7 +1099,7 @@ func (s *MyStore) ProcessLargeFile(ctx context.Context, id ContentID) error {
 }
 
 // Bad: Ignore context
-func (s *MyStore) ProcessLargeFile(ctx context.Context, id ContentID) error {
+func (s *MyStore) ProcessLargeFile(ctx context.Context, id PayloadID) error {
     // Long-running operation with no cancellation checks
     for i := 0; i < parts; i++ {
         // Process part...
@@ -1259,12 +1259,12 @@ func (s *MyMetadataStore) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 
 ```go
 // Good: Batch operations
-func (s *MyStore) DeleteMultiple(ctx context.Context, ids []ContentID) error {
+func (s *MyStore) DeleteMultiple(ctx context.Context, ids []PayloadID) error {
     return s.client.DeleteObjects(ctx, s.bucket, ids)
 }
 
 // Bad: Individual deletes
-func (s *MyStore) DeleteMultiple(ctx context.Context, ids []ContentID) error {
+func (s *MyStore) DeleteMultiple(ctx context.Context, ids []PayloadID) error {
     for _, id := range ids {
         if err := s.Delete(ctx, id); err != nil {
             return err
@@ -1335,7 +1335,7 @@ func createTestStore(t *testing.T) (*mystore.MyMetadataStore, func()) {
 }
 ```
 
-### Content Store Testing
+### Payload Store Testing
 
 ```go
 package mystore_test
@@ -1343,16 +1343,16 @@ package mystore_test
 import (
     "testing"
 
-    "github.com/marmos91/dittofs/pkg/blocks/store/testing"
+    "github.com/marmos91/dittofs/pkg/payload/store/testing"
     "github.com/yourorg/dittofs-mystore"
 )
 
-func TestMyContentStore(t *testing.T) {
-    store, cleanup := createTestContentStore(t)
+func TestMyPayloadStore(t *testing.T) {
+    store, cleanup := createTestPayloadStore(t)
     defer cleanup()
 
     // Run the standard test suite
-    testing.RunContentStoreTests(t, store)
+    testing.RunPayloadStoreTests(t, store)
 }
 ```
 
@@ -1363,10 +1363,10 @@ func TestConcurrentWrites(t *testing.T) {
     store, cleanup := createTestStore(t)
     defer cleanup()
 
-    contentID := metadata.ContentID("test-file")
+    payloadID := metadata.PayloadID("test-file")
 
     // Create file
-    store.WriteContent(context.Background(), contentID, []byte("initial"))
+    store.WritePayload(context.Background(), payloadID, []byte("initial"))
 
     // Concurrent writes to different offsets
     var wg sync.WaitGroup
@@ -1375,7 +1375,7 @@ func TestConcurrentWrites(t *testing.T) {
         go func(offset int) {
             defer wg.Done()
             data := []byte{byte(offset)}
-            err := store.WriteAt(context.Background(), contentID, data, uint64(offset))
+            err := store.WriteAt(context.Background(), payloadID, data, uint64(offset))
             if err != nil {
                 t.Errorf("WriteAt failed: %v", err)
             }
@@ -1384,7 +1384,7 @@ func TestConcurrentWrites(t *testing.T) {
     wg.Wait()
 
     // Verify no corruption
-    reader, err := store.ReadContent(context.Background(), contentID)
+    reader, err := store.ReadPayload(context.Background(), payloadID)
     if err != nil {
         t.Fatal(err)
     }
@@ -1479,7 +1479,7 @@ func (s *MyStore) ReadDirectory(...) (*ReadDirPage, error) {
 
 ```go
 // WRONG: Long operation without context checks
-func (s *MyStore) ProcessLargeFile(ctx context.Context, id ContentID) error {
+func (s *MyStore) ProcessLargeFile(ctx context.Context, id PayloadID) error {
     for i := 0; i < 1000000; i++ {
         // No context check - operation can't be cancelled
         processChunk(i)
@@ -1487,7 +1487,7 @@ func (s *MyStore) ProcessLargeFile(ctx context.Context, id ContentID) error {
 }
 
 // CORRECT: Check context periodically
-func (s *MyStore) ProcessLargeFile(ctx context.Context, id ContentID) error {
+func (s *MyStore) ProcessLargeFile(ctx context.Context, id PayloadID) error {
     for i := 0; i < 1000000; i++ {
         if i%1000 == 0 { // Check every 1000 iterations
             if err := ctx.Err(); err != nil {
@@ -1502,11 +1502,11 @@ func (s *MyStore) ProcessLargeFile(ctx context.Context, id ContentID) error {
 ### 3. Not Implementing ReadAt for Object Storage
 
 ```go
-// WRONG: Only implementing ReadContent
+// WRONG: Only implementing ReadPayload
 // Client requests 4KB from 100MB file → downloads entire 100MB
 
-// CORRECT: Implement ReadAtContentStore interface
-func (s *MyStore) ReadAt(ctx context.Context, id ContentID, p []byte, offset uint64) (int, error) {
+// CORRECT: Implement ReadAtPayloadStore interface
+func (s *MyStore) ReadAt(ctx context.Context, id PayloadID, p []byte, offset uint64) (int, error) {
     // Use range request to fetch only requested bytes
     return s.client.GetRange(ctx, id, p, offset)
 }
@@ -1588,8 +1588,8 @@ func (s *MyStore) Move(ctx *AuthContext, from, to FileHandle) error {
 
 ```go
 // WRONG: Return error if not found
-func (s *MyStore) Delete(ctx context.Context, id ContentID) error {
-    exists, err := s.ContentExists(ctx, id)
+func (s *MyStore) Delete(ctx context.Context, id PayloadID) error {
+    exists, err := s.PayloadExists(ctx, id)
     if err != nil {
         return err
     }
@@ -1600,7 +1600,7 @@ func (s *MyStore) Delete(ctx context.Context, id ContentID) error {
 }
 
 // CORRECT: Idempotent delete
-func (s *MyStore) Delete(ctx context.Context, id ContentID) error {
+func (s *MyStore) Delete(ctx context.Context, id PayloadID) error {
     err := s.backend.Delete(ctx, id)
     if err != nil && !isNotFoundError(err) {
         return err
@@ -1626,8 +1626,8 @@ func initMyMetadataStore(config MyMetadataStoreConfig) (metadata.MetadataStore, 
     })
 }
 
-func initMyContentStore(config MyContentStoreConfig) (content.ContentStore, error) {
-    return mystore.NewMyContentStore(mystore.Config{
+func initMyPayloadStore(config MyPayloadStoreConfig) (payload.PayloadStore, error) {
+    return mystore.NewMyPayloadStore(mystore.Config{
         Endpoint: config.Endpoint,
         Bucket:   config.Bucket,
     })
@@ -1685,13 +1685,13 @@ metadata:
         dsn: "postgres://user:pass@localhost/dittofs"
         max_conns: 100
 
-content:
+payload:
   stores:
-    my-content:
+    my-payload:
       type: mystore
       mystore:
         endpoint: "https://storage.example.com"
-        bucket: "dittofs-content"
+        bucket: "dittofs-payload"
 ```
 
 ## Conclusion
@@ -1710,12 +1710,12 @@ By following this guide, you can create production-ready store implementations t
 
 ## Additional Resources
 
-- **Interface Definitions**: `pkg/metadata/store.go`, `pkg/blocks/store.go`
+- **Interface Definitions**: `pkg/metadata/store.go`, `pkg/payload/store/store.go`
 - **Reference Implementations**:
-  - Memory: `pkg/metadata/store/memory/`, `pkg/blocks/store/memory/`
+  - Memory: `pkg/metadata/store/memory/`, `pkg/payload/store/memory/`
   - BadgerDB: `pkg/metadata/store/badger/`
-  - S3: `pkg/blocks/store/s3/`
-- **Test Suites**: `pkg/blocks/store/testing/`
+  - S3: `pkg/payload/store/s3/`
+- **Test Suites**: `pkg/payload/store/testing/`
 - **Architecture**: `docs/ARCHITECTURE.md`
 - **Configuration**: `docs/CONFIGURATION.md`
 - **Contributing**: `docs/CONTRIBUTING.md`

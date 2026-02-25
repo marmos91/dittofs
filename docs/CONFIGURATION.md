@@ -732,6 +732,46 @@ adapters:
 > Higher credits = more parallelism but more server resource consumption.
 > The adaptive strategy balances throughput and protection automatically.
 
+### 12. NFSv4 Configuration
+
+```yaml
+adapters:
+  nfs:
+    # NFSv4 settings
+    v4_enabled: true
+    delegations_enabled: true
+    max_delegations: 10000
+    grace_period: 90s
+    lease_time: 90s
+```
+
+### 13. Kerberos Configuration
+
+```yaml
+adapters:
+  nfs:
+    # Kerberos (RPCSEC_GSS) settings
+    kerberos:
+      enabled: true
+      keytab: /etc/krb5.keytab
+      realm: EXAMPLE.COM
+      service_principal: nfs/server.example.com@EXAMPLE.COM
+```
+
+### 14. Identity Mapping Configuration
+
+```yaml
+identity:
+  # Identity mapping for NFSv4
+  idmap:
+    domain: example.com
+    # Static mappings
+    mappings:
+      - nfs_name: "user@EXAMPLE.COM"
+        local_uid: 1000
+        local_gid: 1000
+```
+
 ## Environment Variables
 
 Override configuration using environment variables with the `DITTOFS_` prefix:

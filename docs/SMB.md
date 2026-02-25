@@ -1,19 +1,96 @@
 # SMB Implementation
 
-This document details DittoFS's SMB2 implementation, protocol status, and client usage.
+This document details DittoFS's SMB2 implementation, protocol status, client usage, and protocol internals for maintainers and users.
 
 ## Table of Contents
 
+- [Protocol Overview](#protocol-overview)
 - [Mounting SMB Shares](#mounting-smb-shares)
 - [Protocol Implementation Status](#protocol-implementation-status)
 - [Implementation Details](#implementation-details)
 - [Authentication](#authentication)
+- [Byte-Range Locking](#byte-range-locking)
+- [Opportunistic Locks](#opportunistic-locks)
+- [Change Notifications](#change-notifications)
+- [Cross-Protocol Behavior](#cross-protocol-behavior)
 - [Testing SMB Operations](#testing-smb-operations)
 - [Troubleshooting](#troubleshooting)
+- [Known Limitations](#known-limitations)
+- [Glossary](#glossary)
+- [References](#references)
+
+## Protocol Overview
+
+### What is SMB?
+
+**SMB (Server Message Block)** is a network file sharing protocol originally developed by IBM in 1983 and later extended by Microsoft. It is the native file sharing protocol for Windows and is also known as **CIFS (Common Internet File System)**.
+
+DittoFS implements **SMB2 dialect 0x0202 (SMB 2.0.2)** -- the simplest modern dialect that provides good compatibility without the complexity of SMB3.x features.
+
+### SMB vs NFS: Key Differences
+
+| Aspect | NFS (v3) | SMB2 |
+|--------|----------|------|
+| **Origin** | Unix (Sun Microsystems, 1984) | Windows (IBM/Microsoft, 1983) |
+| **Design** | Stateless, simple operations | Stateful, session-based |
+| **Identity** | UID/GID (Unix) | SID (Windows Security ID) |
+| **Permissions** | Unix mode bits (rwxrwxrwx) | ACLs (Access Control Lists) |
+| **Transport** | TCP (port 2049) | TCP (port 445) |
+| **Framing** | RPC record marking | NetBIOS session header |
+| **Encoding** | XDR (big-endian) | Custom (little-endian) |
+| **Header** | Variable (RPC) | Fixed 64 bytes |
+| **Strings** | UTF-8 | UTF-16LE |
+| **Flow control** | None (relies on TCP) | Credit-based |
+
+### Conceptual Mapping
+
+| NFS Concept | SMB Equivalent | Notes |
+|-------------|----------------|-------|
+| Export | Share | Network-accessible directory |
+| Mount | Tree Connect | Establishing access to a share |
+| File Handle | FileID | Opaque identifier for open file |
+| UID/GID | SID | User/group identity |
+| Mode bits | Security Descriptor | Permission model |
+| LOOKUP | Part of CREATE | SMB combines lookup and open |
+| GETATTR | QUERY_INFO | Get file metadata |
+| SETATTR | SET_INFO | Set file metadata |
+| READDIR | QUERY_DIRECTORY | List directory contents |
+| COMMIT | FLUSH | Sync to disk |
+
+### Message Format
+
+Every SMB2 message follows this structure:
+
+```
++------------------------------------------------------------+
+|                    NetBIOS Session Header                   |
+|                         (4 bytes)                           |
++------------------------------------------------------------+
+|                       SMB2 Header                           |
+|                        (64 bytes)                           |
++------------------------------------------------------------+
+|                      Command Body                           |
+|                       (variable)                            |
++------------------------------------------------------------+
+```
+
+The **NetBIOS session header** contains a type byte (0x00 for session messages) and a 24-bit big-endian length. The **SMB2 header** is always 64 bytes and includes the protocol magic (`0xFE 'S' 'M' 'B'`), command code, credit charge/grant, session ID, tree ID, message ID, flags, and signature.
+
+### Connection Lifecycle
+
+SMB connections follow a multi-phase setup before file operations can begin:
+
+1. **NEGOTIATE** -- Client and server agree on protocol dialect and capabilities
+2. **SESSION_SETUP** -- Client authenticates (NTLM or Kerberos via SPNEGO), receives a SessionID
+3. **TREE_CONNECT** -- Client connects to a specific share, receives a TreeID
+4. **File Operations** -- CREATE opens a file (returns FileID), then READ/WRITE/CLOSE use that FileID
+5. **Cleanup** -- CLOSE releases file handles, TREE_DISCONNECT leaves the share, LOGOFF ends the session
+
+This is fundamentally different from NFS, where each request is independent and carries its own auth context.
 
 ## Mounting SMB Shares
 
-DittoFS uses a configurable port (default 12445) and supports NTLM authentication.
+DittoFS uses a configurable port (default 12445) and supports NTLM and Kerberos authentication.
 
 ### Using dfsctl (Recommended)
 
@@ -125,44 +202,43 @@ smbclient //localhost/export -p 12445 -U testuser -c "put localfile.txt"
 
 ## Protocol Implementation Status
 
-### SMB2 Negotiation & Session
+### SMB2 Negotiation and Session
 
 | Command | Status | Notes |
 |---------|--------|-------|
-| NEGOTIATE | ✅ | SMB2 dialect 0x0202 |
-| SESSION_SETUP | ✅ | NTLM via SPNEGO |
-| LOGOFF | ✅ | |
-| TREE_CONNECT | ✅ | Share-level permissions |
-| TREE_DISCONNECT | ✅ | |
+| NEGOTIATE | Implemented | SMB2 dialect 0x0202 |
+| SESSION_SETUP | Implemented | NTLM and Kerberos via SPNEGO |
+| LOGOFF | Implemented | |
+| TREE_CONNECT | Implemented | Share-level permissions |
+| TREE_DISCONNECT | Implemented | |
 
 ### SMB2 File Operations
 
 | Command | Status | Notes |
 |---------|--------|-------|
-| CREATE | ✅ | Files and directories |
-| CLOSE | ✅ | |
-| FLUSH | ✅ | Flushes cache to content store |
-| READ | ✅ | With cache support |
-| WRITE | ✅ | With cache support |
-| QUERY_INFO | ✅ | Multiple info classes |
-| SET_INFO | ✅ | Attributes, timestamps, rename, delete |
-| QUERY_DIRECTORY | ✅ | With pagination |
-| CHANGE_NOTIFY | ⚠️ | Accepts watches, no async delivery |
+| CREATE | Implemented | Files and directories |
+| CLOSE | Implemented | |
+| FLUSH | Implemented | Flushes cache to payload store |
+| READ | Implemented | With cache support |
+| WRITE | Implemented | With cache support |
+| QUERY_INFO | Implemented | Multiple info classes |
+| SET_INFO | Implemented | Attributes, timestamps, rename, delete |
+| QUERY_DIRECTORY | Implemented | With pagination |
+| CHANGE_NOTIFY | Partial | Accepts watches, no async delivery |
 
 ### SMB2 Advanced Features
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Compound Requests | ✅ | CREATE+QUERY_INFO+CLOSE |
-| Credit Management | ✅ | Adaptive flow control |
-| Parallel Requests | ✅ | Per-connection concurrency |
-| Byte-Range Locking | ✅ | Shared/exclusive locks |
-| Message Signing | ✅ | HMAC-SHA256 |
-| Oplocks | ✅ | Level II, Exclusive, Batch |
-| Change Notifications | ⚠️ | Registered only (no async delivery) |
-| SMB3 Encryption | ❌ | Planned |
-
-**Total**: Core file operations, locking, and oplocks fully implemented
+| Compound Requests | Implemented | CREATE+QUERY_INFO+CLOSE |
+| Credit Management | Implemented | Adaptive flow control |
+| Parallel Requests | Implemented | Per-connection concurrency |
+| Byte-Range Locking | Implemented | Shared/exclusive locks |
+| Message Signing | Implemented | HMAC-SHA256 |
+| Oplocks | Implemented | Level II, Exclusive, Batch |
+| Kerberos Auth | Implemented | Via SPNEGO alongside NTLM |
+| Change Notifications | Partial | Registered only (no async delivery) |
+| SMB3 Encryption | Not implemented | Planned |
 
 ## Implementation Details
 
@@ -173,7 +249,7 @@ smbclient //localhost/export -p 12445 -U testuser -c "put localfile.txt"
 3. SMB2 message decoded
 4. Session/tree context validated
 5. Command handler dispatched
-6. Handler calls metadata/content stores
+6. Handler calls metadata/payload stores
 7. Response encoded and sent
 
 ### Request Processing
@@ -188,21 +264,45 @@ for {
 
 ### Critical Commands
 
-**Session Management** (`internal/protocol/smb/v2/handlers/`)
+**Session Management** (`internal/adapter/smb/v2/handlers/`)
 - `NEGOTIATE`: Protocol version negotiation (SMB2 0x0202)
-- `SESSION_SETUP`: NTLM authentication via SPNEGO
+- `SESSION_SETUP`: NTLM or Kerberos authentication via SPNEGO
 - `TREE_CONNECT`: Share access with permission validation
 
-**File Operations** (`internal/protocol/smb/v2/handlers/`)
+**File Operations** (`internal/adapter/smb/v2/handlers/`)
 - `CREATE`: Create/open files and directories
 - `READ`: Read file content (with cache support)
 - `WRITE`: Write file content (with cache support)
 - `CLOSE`: Close file handle and cleanup
-- `FLUSH`: Flush cached data to content store
+- `FLUSH`: Flush cached data to payload store
 - `QUERY_INFO`: Get file/directory attributes
 - `SET_INFO`: Modify attributes, rename, delete
 - `QUERY_DIRECTORY`: List directory contents
 - `LOCK`: Acquire/release byte-range locks
+
+### Code Structure
+
+```
+NFS Implementation:              SMB Implementation:
+internal/adapter/nfs/            internal/adapter/smb/
+├── dispatch.go                  ├── dispatch.go
+├── rpc/                         ├── header/
+│   ├── message.go              │   ├── header.go
+│   └── reply.go                │   ├── parser.go
+├── xdr/                         │   └── encoder.go
+│   ├── reader.go               ├── types/
+│   └── writer.go               │   ├── constants.go
+├── types/                       │   ├── status.go
+│   └── constants.go            │   └── filetime.go
+├── mount/handlers/              └── v2/handlers/
+│   ├── mnt.go                      ├── handler.go
+│   └── export.go                   ├── negotiate.go
+└── v3/handlers/                     ├── session_setup.go
+    ├── lookup.go                   ├── tree_connect.go
+    ├── read.go                     ├── create.go
+    ├── write.go                    ├── read.go
+    └── ...                         └── ...
+```
 
 ### Two-Phase Write Pattern
 
@@ -212,7 +312,7 @@ WRITE operations use a two-phase commit pattern:
 // 1. Prepare write (validate permissions, get ContentID)
 writeOp, err := metadataStore.PrepareWrite(authCtx, handle, newSize)
 
-// 2. Write data to cache or content store
+// 2. Write data to cache or payload store
 cache.WriteAt(writeOp.ContentID, data, offset)
 
 // 3. Commit write (update metadata: size, timestamps)
@@ -228,14 +328,14 @@ SMB handlers use the same cache layer as NFS:
 if cache != nil {
     cache.WriteAt(contentID, data, offset)  // Async
 } else {
-    contentStore.WriteAt(contentID, data, offset)  // Sync
+    payloadStore.WriteAt(contentID, data, offset)  // Sync
 }
 
 // Read path
 if cacheHit := tryReadFromCache(cache, contentID, offset, length); cacheHit {
     return cacheHit.data
 }
-return contentStore.ReadAt(contentID, buf, offset)
+return payloadStore.ReadAt(contentID, buf, offset)
 ```
 
 ### Credit Flow Control
@@ -257,155 +357,6 @@ Strategies:
 - **Echo**: Grant what client requests (within bounds)
 - **Adaptive**: Adjust based on server load (default)
 
-### Byte-Range Locking
-
-DittoFS implements SMB2 byte-range locking per [MS-SMB2] 2.2.26/2.2.27:
-
-#### Lock Types
-
-- **Shared (Read) Locks**: Multiple clients can hold shared locks on overlapping ranges
-- **Exclusive (Write) Locks**: Only one client can hold an exclusive lock on a range
-
-#### Lock Behavior
-
-```go
-// Lock request processing
-for each lockElement in request.Locks {
-    if lockElement.Flags & UNLOCK {
-        // Release lock - NOT rolled back on batch failure
-        store.UnlockFile(handle, sessionID, offset, length)
-    } else {
-        // Acquire lock - rolled back if later operation fails
-        store.LockFile(handle, lock)
-        acquiredLocks = append(acquiredLocks, lockElement)
-    }
-}
-```
-
-#### Lock Enforcement
-
-Locks are enforced on READ/WRITE operations:
-- **READ**: Blocked by another session's exclusive lock on overlapping range
-- **WRITE**: Blocked by any other session's lock (shared or exclusive) on overlapping range
-
-Same-session locks never block the owning session's I/O operations.
-
-#### Lock Lifetime
-
-Locks are ephemeral (in-memory only) and persist until:
-- Explicitly released via LOCK with SMB2_LOCKFLAG_UNLOCK
-- File handle is closed (CLOSE command)
-- Session disconnects (LOGOFF or connection drop)
-- Server restarts (all locks lost)
-
-#### Atomicity Limitations
-
-Per SMB2 specification ([MS-SMB2] 2.2.26):
-
-1. **Unlock operations are NOT rolled back**: If a batch LOCK request includes unlocks and a later lock acquisition fails, the successful unlocks remain in effect.
-
-2. **Lock type changes**: When re-locking an existing range with a different type (shared → exclusive), rollback removes the lock entirely rather than reverting to the original type.
-
-#### Configuration
-
-Locking is automatically enabled with no additional configuration required. Locks are stored in-memory per metadata store instance.
-
-### Opportunistic Locks (Oplocks)
-
-DittoFS implements SMB2 opportunistic locks per [MS-SMB2] 2.2.14, 2.2.23, 2.2.24:
-
-#### Oplock Levels
-
-- **None (0x00)**: No caching allowed
-- **Level II (0x01)**: Shared read caching - multiple clients can cache read data
-- **Exclusive (0x08)**: Exclusive read/write caching - single client can cache reads and writes
-- **Batch (0x09)**: Like Exclusive with handle caching - client can delay close operations
-
-#### How Oplocks Work
-
-1. **Grant**: Client requests oplock level in CREATE request
-2. **Cache**: Client caches file data according to granted level
-3. **Break**: When another client opens the file, server sends OPLOCK_BREAK notification
-4. **Acknowledge**: Original client flushes cached data and acknowledges break
-
-#### Oplock Behavior
-
-```go
-// Level II allows multiple readers (first holder tracked)
-clientA opens file → granted Level II
-clientB opens file (Level II) → granted Level II (coexistence)
-
-// Exclusive/Batch requires break on conflict
-clientA opens file → granted Exclusive
-clientB opens file → server initiates break to Level II
-                   → clientB gets None (must retry after break)
-```
-
-**Note**: When an oplock break is initiated, the conflicting client is not granted
-an oplock immediately. It must retry after the break acknowledgment.
-
-#### Benefits
-
-- **Reduced network traffic**: Clients cache reads locally
-- **Better write performance**: Exclusive oplock allows write caching
-- **Handle caching**: Batch oplock reduces CREATE/CLOSE round trips
-
-#### Current Limitations
-
-- **No lease support**: SMB2.1+ leases (0xFF) are downgraded to traditional oplocks
-- **In-memory tracking**: Oplock state is lost on server restart
-- **No async break delivery**: Oplock break notifications require notifier setup
-- **Single holder tracking**: Only tracks one Level II holder (others coexist but aren't tracked)
-
-### Change Notifications (CHANGE_NOTIFY)
-
-DittoFS implements partial CHANGE_NOTIFY support per [MS-SMB2] 2.2.35/2.2.36.
-
-#### Current Status
-
-The implementation accepts CHANGE_NOTIFY requests and tracks pending watches, but **does not deliver async notifications** to clients. This is an MVP implementation with the following characteristics:
-
-- **Watch Registration**: ✅ Clients can register directory watches with completion filters
-- **Change Detection**: ✅ CREATE, CLOSE (delete-on-close), and SET_INFO (rename) trigger change events
-- **Async Delivery**: ❌ Changes are logged but not delivered asynchronously to clients
-
-#### What Works
-
-```go
-// Client opens directory and requests notification
-// Server registers watch and returns STATUS_PENDING
-CHANGE_NOTIFY request accepted → STATUS_PENDING
-
-// When changes occur (file created, deleted, renamed):
-// Server logs the event but doesn't send async response
-[DEBUG] CHANGE_NOTIFY: would notify watcher path=/watched-dir fileName=new-file.txt action=ADDED
-```
-
-#### Limitations
-
-1. **No Async Response**: Clients wait indefinitely for notifications that won't arrive
-2. **Polling Required**: Clients must manually poll (QUERY_DIRECTORY) for changes
-3. **Watch Cleanup**: Watches are properly cleaned up when directory handles are closed
-
-#### Completion Filter Support
-
-The following filters are recognized (but not delivered):
-
-| Filter | Value | Description |
-|--------|-------|-------------|
-| FILE_NOTIFY_CHANGE_FILE_NAME | 0x0001 | File create/delete/rename |
-| FILE_NOTIFY_CHANGE_DIR_NAME | 0x0002 | Directory create/delete/rename |
-| FILE_NOTIFY_CHANGE_ATTRIBUTES | 0x0004 | Attribute changes |
-| FILE_NOTIFY_CHANGE_SIZE | 0x0008 | File size changes |
-| FILE_NOTIFY_CHANGE_LAST_WRITE | 0x0010 | Last write time changes |
-
-#### Future Work
-
-Full async notification delivery requires:
-1. Connection-level async response infrastructure
-2. Message ID tracking for pending requests
-3. Proper SMB2 async response framing
-
 ## Authentication
 
 ### NTLM Authentication
@@ -416,6 +367,19 @@ DittoFS implements NTLMv2 authentication with SPNEGO negotiation:
 2. Server responds with NTLM challenge
 3. Client sends SESSION_SETUP with NTLM response
 4. Server validates credentials and creates session
+
+### Kerberos Authentication
+
+DittoFS supports Kerberos authentication via SPNEGO alongside NTLM. When a client presents a Kerberos AP-REQ token in the SPNEGO negotiation, the server validates the ticket using the configured service keytab and maps the Kerberos principal to a control plane user.
+
+Key details:
+
+- **Single round-trip**: Unlike NTLM's multi-step handshake, Kerberos authentication completes in one exchange (AP-REQ/AP-REP)
+- **Shared keytab**: The SMB adapter shares the Kerberos keytab with the NFS adapter; the server automatically derives the `cifs/` service principal from the configured `nfs/` principal
+- **Principal-to-user mapping**: The client principal name (without realm) is looked up in the control plane user store
+- **SPNEGO negotiation**: The server advertises both NTLM and Kerberos OIDs; clients choose based on their configuration
+
+See `test/e2e/smb_kerberos_test.go` for end-to-end Kerberos authentication tests.
 
 ### User Configuration
 
@@ -446,7 +410,188 @@ guest:
 - `read-write`: Full read/write access
 - `admin`: Full access (future)
 
-Resolution order: User explicit → Group permissions → Share default
+Resolution order: User explicit -> Group permissions -> Share default
+
+## Byte-Range Locking
+
+DittoFS implements SMB2 byte-range locking per [MS-SMB2] 2.2.26/2.2.27.
+
+### Lock Types
+
+- **Shared (Read) Locks**: Multiple clients can hold shared locks on overlapping ranges
+- **Exclusive (Write) Locks**: Only one client can hold an exclusive lock on a range
+
+### Lock Behavior
+
+```go
+// Lock request processing
+for each lockElement in request.Locks {
+    if lockElement.Flags & UNLOCK {
+        // Release lock - NOT rolled back on batch failure
+        store.UnlockFile(handle, sessionID, offset, length)
+    } else {
+        // Acquire lock - rolled back if later operation fails
+        store.LockFile(handle, lock)
+        acquiredLocks = append(acquiredLocks, lockElement)
+    }
+}
+```
+
+### Lock Enforcement
+
+Locks are enforced on READ/WRITE operations:
+- **READ**: Blocked by another session's exclusive lock on overlapping range
+- **WRITE**: Blocked by any other session's lock (shared or exclusive) on overlapping range
+
+Same-session locks never block the owning session's I/O operations.
+
+### Lock Lifetime
+
+Locks are ephemeral (in-memory only) and persist until:
+- Explicitly released via LOCK with SMB2_LOCKFLAG_UNLOCK
+- File handle is closed (CLOSE command)
+- Session disconnects (LOGOFF or connection drop)
+- Server restarts (all locks lost)
+
+### Atomicity Limitations
+
+Per SMB2 specification ([MS-SMB2] 2.2.26):
+
+1. **Unlock operations are NOT rolled back**: If a batch LOCK request includes unlocks and a later lock acquisition fails, the successful unlocks remain in effect.
+
+2. **Lock type changes**: When re-locking an existing range with a different type (shared to exclusive), rollback removes the lock entirely rather than reverting to the original type.
+
+### Configuration
+
+Locking is automatically enabled with no additional configuration required. Locks are stored in-memory per metadata store instance.
+
+## Opportunistic Locks
+
+DittoFS implements SMB2 opportunistic locks per [MS-SMB2] 2.2.14, 2.2.23, 2.2.24.
+
+### Oplock Levels
+
+- **None (0x00)**: No caching allowed
+- **Level II (0x01)**: Shared read caching -- multiple clients can cache read data
+- **Exclusive (0x08)**: Exclusive read/write caching -- single client can cache reads and writes
+- **Batch (0x09)**: Like Exclusive with handle caching -- client can delay close operations
+
+### How Oplocks Work
+
+1. **Grant**: Client requests oplock level in CREATE request
+2. **Cache**: Client caches file data according to granted level
+3. **Break**: When another client opens the file, server sends OPLOCK_BREAK notification
+4. **Acknowledge**: Original client flushes cached data and acknowledges break
+
+### Oplock Behavior
+
+```go
+// Level II allows multiple readers (first holder tracked)
+clientA opens file -> granted Level II
+clientB opens file (Level II) -> granted Level II (coexistence)
+
+// Exclusive/Batch requires break on conflict
+clientA opens file -> granted Exclusive
+clientB opens file -> server initiates break to Level II
+                   -> clientB gets None (must retry after break)
+```
+
+When an oplock break is initiated, the conflicting client is not granted an oplock immediately. It must retry after the break acknowledgment.
+
+### Benefits
+
+- **Reduced network traffic**: Clients cache reads locally
+- **Better write performance**: Exclusive oplock allows write caching
+- **Handle caching**: Batch oplock reduces CREATE/CLOSE round trips
+
+### Current Limitations
+
+- **No lease support**: SMB2.1+ leases (0xFF) are downgraded to traditional oplocks
+- **In-memory tracking**: Oplock state is lost on server restart
+- **No async break delivery**: Oplock break notifications require notifier setup
+- **Single holder tracking**: Only tracks one Level II holder (others coexist but are not tracked)
+
+## Change Notifications
+
+DittoFS implements partial CHANGE_NOTIFY support per [MS-SMB2] 2.2.35/2.2.36.
+
+### Current Status
+
+The implementation accepts CHANGE_NOTIFY requests and tracks pending watches, but **does not deliver async notifications** to clients. This is an MVP implementation with the following characteristics:
+
+- **Watch Registration**: Clients can register directory watches with completion filters
+- **Change Detection**: CREATE, CLOSE (delete-on-close), and SET_INFO (rename) trigger change events
+- **Async Delivery**: Changes are logged but not delivered asynchronously to clients
+
+### What Works
+
+```go
+// Client opens directory and requests notification
+// Server registers watch and returns STATUS_PENDING
+CHANGE_NOTIFY request accepted -> STATUS_PENDING
+
+// When changes occur (file created, deleted, renamed):
+// Server logs the event but does not send async response
+[DEBUG] CHANGE_NOTIFY: would notify watcher path=/watched-dir fileName=new-file.txt action=ADDED
+```
+
+### Limitations
+
+1. **No Async Response**: Clients wait indefinitely for notifications that will not arrive
+2. **Polling Required**: Clients must manually poll (QUERY_DIRECTORY) for changes
+3. **Watch Cleanup**: Watches are properly cleaned up when directory handles are closed
+
+### Completion Filter Support
+
+The following filters are recognized (but not delivered):
+
+| Filter | Value | Description |
+|--------|-------|-------------|
+| FILE_NOTIFY_CHANGE_FILE_NAME | 0x0001 | File create/delete/rename |
+| FILE_NOTIFY_CHANGE_DIR_NAME | 0x0002 | Directory create/delete/rename |
+| FILE_NOTIFY_CHANGE_ATTRIBUTES | 0x0004 | Attribute changes |
+| FILE_NOTIFY_CHANGE_SIZE | 0x0008 | File size changes |
+| FILE_NOTIFY_CHANGE_LAST_WRITE | 0x0010 | Last write time changes |
+
+### Future Work
+
+Full async notification delivery requires:
+1. Connection-level async response infrastructure
+2. Message ID tracking for pending requests
+3. Proper SMB2 async response framing
+
+## Cross-Protocol Behavior
+
+DittoFS supports cross-protocol access between NFS and SMB. This section documents behavior differences.
+
+### Hidden Files
+
+Hidden files are handled differently between Unix and Windows:
+
+- **Unix convention**: Files starting with `.` are hidden
+- **Windows convention**: Files with the Hidden attribute flag are hidden
+
+DittoFS bridges both conventions:
+- Dot-prefix files (`.gitignore`, `.DS_Store`) appear with `FILE_ATTRIBUTE_HIDDEN` in SMB listings
+- The `Hidden` attribute can also be explicitly set via SMB `SET_INFO` (FileBasicInformation)
+- Both conventions are persisted: dot-prefix detection is automatic, explicit Hidden flag is stored in metadata
+
+### Special Files (FIFO, Socket, Device Nodes)
+
+Unix special files (FIFO, socket, block device, character device) have no meaningful representation in SMB:
+
+- **Via NFS**: Full support -- MKNOD creates, GETATTR returns correct type
+- **Via SMB**: Hidden from directory listings entirely
+
+This behavior matches commercial NAS devices (Synology, QNAP) which typically do not expose special files via SMB.
+
+### Symlinks
+
+Symlinks are handled transparently via MFsymlink format:
+
+- **NFS-created symlinks**: Appear as MFsymlink files (1067 bytes) when read via SMB
+- **SMB-created symlinks**: MFsymlink files are automatically converted to real symlinks on CLOSE
+- Both NFS and SMB clients can follow symlinks correctly
 
 ## Testing SMB Operations
 
@@ -491,11 +636,14 @@ smb: \> exit
 # Run SMB E2E tests
 sudo go test -tags=e2e -v ./test/e2e/ -run TestSMB
 
-# Run interoperability tests (NFS ↔ SMB)
+# Run interoperability tests (NFS <-> SMB)
 sudo go test -tags=e2e -v ./test/e2e/ -run TestInterop
 
 # Run specific test
 sudo go test -tags=e2e -v ./test/e2e/ -run TestSMBCreateFileWithContent
+
+# Run SMB Kerberos authentication tests
+sudo go test -tags=e2e -v ./test/e2e/ -run TestSMBKerberos
 ```
 
 ## Troubleshooting
@@ -512,11 +660,12 @@ sudo go test -tags=e2e -v ./test/e2e/ -run TestSMBCreateFileWithContent
 2. Check password hash is valid bcrypt
 3. Enable debug logging to see authentication flow
 4. Ensure user has share permissions
+5. For Kerberos: verify the keytab contains the `cifs/` service principal and the KDC is reachable
 
 ### Operations Timeout
 
 1. Increase timeout in SMB config
-2. Check content store connectivity (S3, filesystem)
+2. Check payload store connectivity (S3, filesystem)
 3. Enable debug logging for detailed timing
 
 ### macOS-Specific Issues
@@ -543,41 +692,6 @@ sudo yum install cifs-utils      # RHEL/CentOS
 lsmod | grep cifs
 ```
 
-## Cross-Protocol Behavior
-
-DittoFS supports cross-protocol access between NFS and SMB. This section documents behavior differences.
-
-### Hidden Files
-
-Hidden files are handled differently between Unix and Windows:
-
-- **Unix convention**: Files starting with `.` are hidden
-- **Windows convention**: Files with the Hidden attribute flag are hidden
-
-DittoFS bridges both conventions:
-- Dot-prefix files (`.gitignore`, `.DS_Store`) appear with `FILE_ATTRIBUTE_HIDDEN` in SMB listings
-- The `Hidden` attribute can also be explicitly set via SMB `SET_INFO` (FileBasicInformation)
-- Both conventions are persisted: dot-prefix detection is automatic, explicit Hidden flag is stored in metadata
-
-### Special Files (FIFO, Socket, Device Nodes)
-
-Unix special files (FIFO, socket, block device, character device) have no meaningful representation in SMB:
-
-- **Via NFS**: Full support - MKNOD creates, GETATTR returns correct type
-- **Via SMB**: Hidden from directory listings entirely
-
-This behavior matches commercial NAS devices (Synology, QNAP) which typically don't expose special files via SMB.
-
-### Symlinks
-
-Symlinks are handled transparently via MFsymlink format:
-
-- **NFS-created symlinks**: Appear as MFsymlink files (1067 bytes) when read via SMB
-- **SMB-created symlinks**: MFsymlink files are automatically converted to real symlinks on CLOSE
-- Both NFS and SMB clients can follow symlinks correctly
-
-See the plan file for detailed symlink interoperability design.
-
 ## Known Limitations
 
 1. **SMB2 only**: SMB1 and SMB3 not supported
@@ -590,16 +704,25 @@ See the plan file for detailed symlink interoperability design.
 8. **No blocking locks**: Lock requests always fail immediately if conflicting lock exists
 9. **No lease support**: SMB2.1+ leases are downgraded to traditional oplocks
 
-## Roadmap
+## Glossary
 
-See [SMB_IMPLEMENTATION_PLAN.md](SMB_IMPLEMENTATION_PLAN.md) for detailed roadmap:
-
-1. **SMBv3 Support**: Encryption, multichannel
-2. **Leases**: SMB2.1+ directory leases for better caching
-3. **Security Descriptors**: Windows ACLs
-4. **Extended Attributes**: xattr support
-5. **Kerberos/LDAP/AD**: Enterprise authentication
-6. **Blocking Locks**: Wait for lock availability (with timeout)
+| Term | Definition |
+|------|------------|
+| **ACL** | Access Control List -- Windows permission model |
+| **CIFS** | Common Internet File System -- older name for SMB |
+| **Credit** | Flow control unit in SMB2 |
+| **Dialect** | SMB protocol version (e.g., 0x0202 = SMB 2.0.2) |
+| **FileID** | 16-byte handle for open file (8 persistent + 8 volatile) |
+| **GUID** | 16-byte globally unique identifier |
+| **NetBIOS** | Network Basic Input/Output System -- legacy session layer |
+| **NT_STATUS** | Windows error code format |
+| **Oplock** | Opportunistic lock -- client caching hint |
+| **SessionID** | 64-bit identifier for authenticated session |
+| **Share** | Network-accessible folder (like NFS export) |
+| **SID** | Security Identifier -- Windows user/group identity |
+| **SPNEGO** | Simple and Protected GSSAPI Negotiation Mechanism -- wraps NTLM/Kerberos tokens |
+| **TreeID** | 32-bit identifier for share connection |
+| **UTF-16LE** | 16-bit Unicode, little-endian byte order |
 
 ## References
 
@@ -607,8 +730,10 @@ See [SMB_IMPLEMENTATION_PLAN.md](SMB_IMPLEMENTATION_PLAN.md) for detailed roadma
 
 - [MS-SMB2](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/) - SMB2 Protocol Specification
 - [MS-NLMP](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-nlmp/) - NTLM Authentication Protocol
-- [RFC 4178](https://tools.ietf.org/html/rfc4178) - SPNEGO Protocol
+- [MS-FSCC](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/) - File System Control Codes
 - [MS-ERREF](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/) - Windows Error Codes
+- [RFC 4178](https://tools.ietf.org/html/rfc4178) - SPNEGO Protocol
+- [RFC 1813](https://tools.ietf.org/html/rfc1813) - NFS Version 3 Protocol Specification
 
 ### Related Projects
 

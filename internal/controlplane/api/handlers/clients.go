@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/state"
-	"github.com/marmos91/dittofs/internal/protocol/nfs/v4/types"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 )
 
 // ClientHandler handles NFS client management API endpoints.

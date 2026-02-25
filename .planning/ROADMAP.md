@@ -137,15 +137,20 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. `internal/protocol/` renamed to `internal/adapter/`
   2. Generic XDR, NLM, NSM, portmapper consolidated under `internal/adapter/nfs/`
-  3. `internal/auth/` (ntlm+spnego) moved to `internal/adapter/smb/auth/`
-  4. `pkg/adapter/nfs/` files renamed (remove `nfs_` prefix)
-  5. v4/v4.1 split into nested hierarchy (`v4/v4_1/`)
-  6. Dispatch consolidated: single `nfs.Dispatch()` entry point in `internal/adapter/nfs/`
-  7. Connection code split by version concern (connection.go + connection_v4.go)
-  8. Shared handler helpers extracted to `internal/adapter/nfs/helpers.go`
-  9. Handler documentation added (3-5 lines each)
-  10. Version negotiation tests added (v2 reject, v5 reject, minor=2 reject, unknown program)
-**Plans**: TBD
+  3. `pkg/adapter/nfs/` files renamed (remove `nfs_` prefix)
+  4. v4/v4.1 split into nested hierarchy (`v4/v4_1/`)
+  5. Dispatch consolidated: single `nfs.Dispatch()` entry point in `internal/adapter/nfs/`
+  6. Connection code split by version concern (connection.go + connection_v4.go)
+  7. Shared handler helpers extracted to `internal/adapter/nfs/helpers.go`
+  8. Handler documentation added (3-5 lines each)
+  9. Version negotiation tests added (v2 reject, v5 reject, minor=2 reject, unknown program)
+  _Note: `internal/auth/` (ntlm+spnego) move deferred to Phase 28 per discuss-phase decision_
+**Plans**: 4 plans
+Plans:
+- [ ] 27-01-PLAN.md — Rename internal/protocol/ to internal/adapter/, consolidate NLM/NSM/portmap under nfs/, move XDR and bufpool
+- [ ] 27-02-PLAN.md — Rename pkg/adapter/nfs/ files (drop nfs_ prefix), split v4.1 into v4/v41/ hierarchy
+- [ ] 27-03-PLAN.md — Consolidated dispatch entry point, auth middleware, connection split, version negotiation tests
+- [ ] 27-04-PLAN.md — Handler documentation (5-line Godoc) for all ~80+ handler functions
 
 ### Phase 28: SMB Adapter Restructuring
 **Goal**: Restructure SMB adapter to mirror NFS pattern, extract shared BaseAdapter
@@ -153,16 +158,17 @@ Plans:
 **Requirements**: REF-04
 **Reference**: `docs/SMB_REFACTORING_PLAN.md` Steps 4-11
 **Success Criteria** (what must be TRUE):
-  1. `pkg/adapter/smb/` files renamed (remove `smb_` prefix)
-  2. `BaseAdapter` extracted to `pkg/adapter/base.go` (shared NFS+SMB lifecycle)
-  3. NetBIOS framing moved to `internal/adapter/smb/framing.go`
-  4. Signing verification moved to `internal/adapter/smb/signing.go`
-  5. Dispatch + response logic consolidated in `internal/adapter/smb/dispatch.go`
-  6. Compound request handling in `internal/adapter/smb/compound.go`
-  7. `Authenticator` interface defined, NTLM + Kerberos implementations extracted
-  8. Shared handler helpers extracted to `internal/adapter/smb/helpers.go`
-  9. `pkg/adapter/smb/connection.go` reduced to ~150 lines (thin read/dispatch/write loop)
-  10. Handler documentation added (3-5 lines each)
+  1. `internal/auth/` (ntlm+spnego) moved to `internal/adapter/smb/auth/`
+  2. `pkg/adapter/smb/` files renamed (remove `smb_` prefix)
+  3. `BaseAdapter` extracted to `pkg/adapter/base.go` (shared NFS+SMB lifecycle)
+  4. NetBIOS framing moved to `internal/adapter/smb/framing.go`
+  5. Signing verification moved to `internal/adapter/smb/signing.go`
+  6. Dispatch + response logic consolidated in `internal/adapter/smb/dispatch.go`
+  7. Compound request handling in `internal/adapter/smb/compound.go`
+  8. `Authenticator` interface defined, NTLM + Kerberos implementations extracted
+  9. Shared handler helpers extracted to `internal/adapter/smb/helpers.go`
+  10. `pkg/adapter/smb/connection.go` reduced to ~150 lines (thin read/dispatch/write loop)
+  11. Handler documentation added (3-5 lines each)
 **Plans**: TBD
 
 ### Phase 29: Core Layer Decomposition
@@ -350,7 +356,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 39
 | 25. v3.0 Integration Testing | v3.0 | 3/3 | Complete | 2026-02-23 |
 | 25.5. Manual Verification v3.0 | v3.0 | - | Complete | 2026-02-25 |
 | 26. Generic Lock Interface & Protocol Leak Purge | 5/5 | Complete    | 2026-02-25 | - |
-| 27. NFS Adapter Restructuring | v3.5 | 0/? | Not started | - |
+| 27. NFS Adapter Restructuring | v3.5 | 4/4 | Complete | 2026-02-25 |
 | 28. SMB Adapter Restructuring | v3.5 | 0/? | Not started | - |
 | 29. Core Layer Decomposition | v3.5 | 0/? | Not started | - |
 | 30. SMB Bug Fixes | v3.6 | 0/? | Not started | - |

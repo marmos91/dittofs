@@ -6,7 +6,7 @@
 //   - Identity mapping from Kerberos principals to Unix UID/GID
 //
 // The package does NOT contain RPCSEC_GSS wire protocol logic (see
-// internal/protocol/nfs/rpc/gss/) or the GSS context state machine
+// internal/adapter/nfs/rpc/gss/) or the GSS context state machine
 // (implemented in subsequent plans).
 //
 // Configuration is defined in pkg/config.KerberosConfig to avoid circular imports.
