@@ -448,8 +448,20 @@ func (h *Handler) setFileInfoFromStore(
 			}
 		}
 
-		// Update open file state to reflect the new path
-		openFile.Path = newPath
+		// Update open file state to reflect the new path.
+		// Compute actual resulting path from the destination directory and name,
+		// since newPath may be relative when RootDirectory is non-zero.
+		actualNewPath := newPath
+		if !bytes.Equal(renameInfo.RootDirectory[:], zeroRootDir[:]) {
+			// Handle-relative rename: build path from parent path + new name
+			parentPath := GetParentPath(openFile.Path)
+			if parentPath == "" || parentPath == "/" {
+				actualNewPath = toName
+			} else {
+				actualNewPath = parentPath + "/" + toName
+			}
+		}
+		openFile.Path = actualNewPath
 		openFile.FileName = toName
 		openFile.ParentHandle = toDir
 		h.StoreOpenFile(openFile)

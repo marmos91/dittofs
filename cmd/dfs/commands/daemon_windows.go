@@ -10,25 +10,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// stopProcess sends a termination signal to the given process on Windows.
-// If force is true, it kills immediately; otherwise it attempts graceful shutdown.
-func stopProcess(process *os.Process, pid int, force bool) error {
-	// Check if the process is still alive first.
-	const processQueryLimitedInformation = 0x1000
-	handle, err := windows.OpenProcess(processQueryLimitedInformation, false, uint32(pid))
-	if err != nil {
-		return errProcessDone
-	}
-	_ = windows.CloseHandle(handle)
-
-	// On Windows, there is no SIGINT/SIGTERM distinction for non-console processes.
-	// We use process.Kill() which calls TerminateProcess.
-	if err := process.Kill(); err != nil {
-		return fmt.Errorf("failed to stop process %d: %w", pid, err)
-	}
-	return nil
-}
-
 // isProcessRunning reads a PID from the given file and checks whether
 // that process is still alive on Windows.
 //
