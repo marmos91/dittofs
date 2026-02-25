@@ -55,3 +55,41 @@
 
 ---
 
+
+## v3.0 NFSv4.1 Sessions (Shipped: 2026-02-25)
+
+**Delivered:** NFSv4.1 session infrastructure with exactly-once semantics, backchannel multiplexing, directory delegations, trunking, and SMB Kerberos authentication.
+
+**Phases completed:** 16-25 (25 plans total)
+
+**Key accomplishments:**
+
+- NFSv4.1 XDR types and constants: 19 forward ops, 10 callback ops, 40+ error codes, full encode/decode
+- Session infrastructure: EXCHANGE_ID, CREATE_SESSION, DESTROY_SESSION with slot table allocation and channel negotiation
+- Exactly-once semantics via per-slot replay cache with SEQUENCE validation on every v4.1 COMPOUND
+- Backchannel multiplexing: CB_SEQUENCE over fore-channel TCP connection (NAT-friendly, no separate dial-out)
+- Connection management and trunking: BIND_CONN_TO_SESSION, multi-connection sessions, server_owner consistency
+- Client lifecycle: DESTROY_CLIENTID, FREE_STATEID, TEST_STATEID, RECLAIM_COMPLETE, grace period API
+- Directory delegations: GET_DIR_DELEGATION, CB_NOTIFY with batched notifications and conflict recall
+- SMB Kerberos: SPNEGO/Kerberos in SESSION_SETUP with shared Kerberos layer and identity mapping
+- v4.0/v4.1 coexistence: minorversion routing, independent state, simultaneous mounts
+- E2E tests: session lifecycle, EOS replay, backchannel delegation recall, directory notifications, disconnect robustness
+
+**Stats:**
+
+- 10 phases, 25 plans
+- 256,842 LOC Go
+- 336 files changed, +61,004 / -5,037 lines
+- Feb 20 - Feb 25, 2026 (5 days)
+
+**Known tech debt:**
+
+- ACL enforcement in CheckAccess (carried from v2.0)
+- Delegation Prometheus metrics (carried from v2.0)
+- Netgroup mount enforcement (carried from v2.0)
+- LIFE-01 through LIFE-04 traceability entries stale (work complete, table not updated)
+
+**Archive:** [v3.0-ROADMAP.md](milestones/v3.0-ROADMAP.md) | [v3.0-REQUIREMENTS.md](milestones/v3.0-REQUIREMENTS.md)
+
+---
+

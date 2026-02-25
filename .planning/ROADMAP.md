@@ -2,14 +2,16 @@
 
 ## Overview
 
-DittoFS evolves from NFSv3 to full NFSv4.2 support across four milestones. v1.0 builds the unified locking foundation (NLM + SMB leases), v2.0 adds NFSv4.0 stateful operations with Kerberos authentication, v3.0 introduces NFSv4.1 sessions for reliability and NAT-friendliness, and v4.0 completes the protocol suite with NFSv4.2 advanced features (server-side copy, sparse files, extended attributes). Each milestone delivers complete, testable functionality.
+DittoFS evolves from NFSv3 to full NFSv4.2 support across six milestones. v1.0 builds the unified locking foundation (NLM + SMB leases), v2.0 adds NFSv4.0 stateful operations with Kerberos authentication, v3.0 introduces NFSv4.1 sessions for reliability and NAT-friendliness, v3.5 refactors the adapter layer and core for clean protocol separation, v3.6 achieves Windows SMB compatibility with proper ACL support, and v4.0 completes the protocol suite with NFSv4.2 advanced features. Each milestone delivers complete, testable functionality.
 
 ## Milestones
 
 - [x] **v1.0 NLM + Unified Lock Manager** - Phases 1-5.5 (shipped 2026-02-07) — [archive](milestones/v1.0-ROADMAP.md)
 - [x] **v2.0 NFSv4.0 + Kerberos** - Phases 6-15.5 (shipped 2026-02-20) — [archive](milestones/v2.0-ROADMAP.md)
-- [ ] **v3.0 NFSv4.1 Sessions** - Phases 16-25.5 (32 requirements across 10 phases)
-- [ ] **v4.0 NFSv4.2 Extensions** - Phases 26-32.5 (planned)
+- [x] **v3.0 NFSv4.1 Sessions** - Phases 16-25.5 (shipped 2026-02-25) — [archive](milestones/v3.0-ROADMAP.md)
+- [ ] **v3.5 Adapter + Core Refactoring** - Phases 26-29.5 (planned)
+- [ ] **v3.6 Windows Compatibility** - Phases 30-32.5 (planned)
+- [ ] **v4.0 NFSv4.2 Extensions** - Phases 33-39.5 (planned)
 
 **USER CHECKPOINT** phases require your manual testing before proceeding. Use `/gsd:verify-work` to validate.
 
@@ -52,192 +54,185 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 </details>
 
-### v3.0 NFSv4.1 Sessions
+<details>
+<summary>[x] v3.0 NFSv4.1 Sessions (Phases 16-25) - SHIPPED 2026-02-25</summary>
 
 - [x] **Phase 16: NFSv4.1 Types and Constants** - Operation numbers, error codes, XDR structures for all v4.1 wire types (completed 2026-02-20)
 - [x] **Phase 17: Slot Table and Session Data Structures** - SlotTable, SessionRecord, ChannelAttrs, EOS replay cache with per-table locking (completed 2026-02-20)
 - [x] **Phase 18: EXCHANGE_ID and Client Registration** - v4.1 client identity establishment with owner/implementation tracking (completed 2026-02-20)
 - [x] **Phase 19: Session Lifecycle** - CREATE_SESSION, DESTROY_SESSION with slot table allocation and channel negotiation (completed 2026-02-21)
 - [x] **Phase 20: SEQUENCE and COMPOUND Bifurcation** - v4.1 request processing with EOS enforcement and v4.0/v4.1 coexistence (completed 2026-02-21)
-- [ ] **Phase 20.5: Manual Verification - Sessions** USER CHECKPOINT - Test session establishment and EOS
+- [x] **Phase 20.5: Manual Verification - Sessions** USER CHECKPOINT
 - [x] **Phase 21: Connection Management and Trunking** - BIND_CONN_TO_SESSION, multi-connection sessions, server_owner consistency (completed 2026-02-21)
 - [x] **Phase 22: Backchannel Multiplexing** - CB_SEQUENCE over fore-channel, bidirectional I/O, NAT-friendly callbacks (completed 2026-02-21)
 - [x] **Phase 23: Client Lifecycle and Cleanup** - DESTROY_CLIENTID, FREE_STATEID, TEST_STATEID, RECLAIM_COMPLETE, v4.0-only rejections (completed 2026-02-22)
 - [x] **Phase 24: Directory Delegations** - GET_DIR_DELEGATION, CB_NOTIFY, delegation state tracking with recall (completed 2026-02-22)
 - [x] **Phase 25: v3.0 Integration Testing** - E2E tests for sessions, EOS, backchannel, directory delegations, and coexistence (completed 2026-02-23)
-- [ ] **Phase 25.5: Manual Verification v3.0** USER CHECKPOINT - Full NFSv4.1 validation with Linux client
+- [x] **Phase 25.5: Manual Verification v3.0** USER CHECKPOINT
+
+</details>
+
+### v3.5 Adapter + Core Refactoring
+
+- [ ] **Phase 26: Generic Lock Interface & Protocol Leak Purge** - Unify lock model (OpLock/AccessMode/UnifiedLock), purge NFS/SMB types from generic layers
+- [ ] **Phase 27: NFS Adapter Restructuring** - Rename internal/protocol/ to internal/adapter/, consolidate NFS ecosystem, split v4/v4.1
+- [ ] **Phase 28: SMB Adapter Restructuring** - Extract BaseAdapter, move framing/signing/dispatch to internal/, Authenticator interface
+- [ ] **Phase 29: Core Layer Decomposition** - Store interface split, Runtime decomposition, Offloader rename/split, error unification
+- [ ] **Phase 29.5: Manual Verification - Refactoring** USER CHECKPOINT - Verify NFS + SMB functionality preserved
+
+### v3.6 Windows Compatibility
+
+- [ ] **Phase 30: SMB Bug Fixes** - Fix sparse file READ (#180), renamed directory listing (#181)
+- [ ] **Phase 31: Windows ACL Support** - NT Security Descriptors, Unix-to-SID mapping, icacls support (#182)
+- [ ] **Phase 32: Windows Integration Testing** - smbtorture + Microsoft Protocol Test Suite + manual Windows 11 validation
+- [ ] **Phase 32.5: Manual Verification - Windows** USER CHECKPOINT - Full Windows validation
 
 ### v4.0 NFSv4.2 Extensions
 
-- [ ] **Phase 26: Server-Side Copy** - Async COPY with OFFLOAD_STATUS polling
-- [ ] **Phase 27: Clone/Reflinks** - Copy-on-write via content-addressed storage
-- [ ] **Phase 28: Sparse Files** - SEEK, ALLOCATE, DEALLOCATE operations
-- [ ] **Phase 28.5: Manual Verification - Advanced Ops** USER CHECKPOINT - Test copy/clone/sparse
-- [ ] **Phase 29: Extended Attributes** - xattrs in metadata layer, exposed via NFS/SMB
-- [ ] **Phase 30: NFSv4.2 Operations** - IO_ADVISE and optional pNFS operations
-- [ ] **Phase 31: Documentation** - Complete documentation for all new features
-- [ ] **Phase 32: v4.0 Testing** - Final testing and pjdfstest POSIX compliance
-- [ ] **Phase 32.5: Final Manual Verification** USER CHECKPOINT - Complete validation of all features
+- [ ] **Phase 33: Server-Side Copy** - Async COPY with OFFLOAD_STATUS polling
+- [ ] **Phase 34: Clone/Reflinks** - Copy-on-write via content-addressed storage
+- [ ] **Phase 35: Sparse Files** - SEEK, ALLOCATE, DEALLOCATE operations
+- [ ] **Phase 35.5: Manual Verification - Advanced Ops** USER CHECKPOINT - Test copy/clone/sparse
+- [ ] **Phase 36: Extended Attributes** - xattrs in metadata layer, exposed via NFS/SMB
+- [ ] **Phase 37: NFSv4.2 Operations** - IO_ADVISE and optional pNFS operations
+- [ ] **Phase 38: Documentation** - Complete documentation for all new features
+- [ ] **Phase 39: v4.0 Testing** - Final testing and pjdfstest POSIX compliance
+- [ ] **Phase 39.5: Final Manual Verification** USER CHECKPOINT - Complete validation of all features
 
 ## Phase Details
 
 ---
 
-## v3.0 NFSv4.1 Sessions
+## v3.5 Adapter + Core Refactoring
 
-### Phase 16: NFSv4.1 Types and Constants
-**Goal**: All NFSv4.1 wire types, operation numbers, error codes, and XDR structures are defined and available for subsequent phases
-**Depends on**: Phase 15 (v2.0 complete)
-**Requirements**: SESS-05
+### Phase 26: Generic Lock Interface & Protocol Leak Purge
+**Goal**: Unify lock types across NFS/SMB and purge protocol-specific code from generic layers
+**Depends on**: Phase 25 (v3.0 complete)
+**Requirements**: REF-01, REF-02
+**Reference**: `docs/GENERIC_LOCK_INTERFACE_PLAN.md`, `docs/CORE_REFACTORING_PLAN.md` Phase 1
 **Success Criteria** (what must be TRUE):
-  1. NFSv4.1 operation numbers (ops 40-58) and callback operations (CB ops 5-14) are defined as constants
-  2. XDR encode/decode structures exist for all v4.1 request/response types (EXCHANGE_ID, CREATE_SESSION, SEQUENCE, etc.)
-  3. New NFSv4.1 error codes (NFS4ERR_BACK_CHAN_BUSY, NFS4ERR_CONN_NOT_BOUND_TO_SESSION, etc.) are defined
-  4. Existing v4.0 constants and types compile unchanged (no regressions)
-**Plans**: 5 plans
-Plans:
-- [x] 16-01-PLAN.md -- Foundation: constants, error codes, XDR interfaces, shared session types, test fixtures
-- [x] 16-02-PLAN.md -- Core session ops: EXCHANGE_ID, CREATE_SESSION, DESTROY_SESSION, SEQUENCE, BIND_CONN_TO_SESSION, BACKCHANNEL_CTL
-- [x] 16-03-PLAN.md -- Remaining forward ops: FREE_STATEID, TEST_STATEID, DESTROY_CLIENTID, RECLAIM_COMPLETE, SECINFO_NO_NAME, SET_SSV, WANT_DELEGATION, GET_DIR_DELEGATION, pNFS layout ops
-- [x] 16-04-PLAN.md -- Callback ops: CB_SEQUENCE, CB_LAYOUTRECALL, CB_NOTIFY, and 7 remaining CB operations
-- [x] 16-05-PLAN.md -- COMPOUND v4.1 dispatch: minorversion bifurcation, v4.1 dispatch table with NOTSUPP stubs, protocol CLAUDE.md
+  1. `EnhancedLock` renamed to `UnifiedLock` with `OpLock` (was `LeaseInfo`) and `AccessMode` (was `ShareReservation`)
+  2. All SMB lock types (ShareReservation, LeaseInfo, lease_break) removed from `pkg/metadata/lock/`
+  3. SMB lease methods removed from MetadataService (CheckAndBreakLeases*, ReclaimLeaseSMB, OplockChecker)
+  4. NLM methods moved from MetadataService to NFS adapter layer
+  5. GracePeriodManager stays generic in `pkg/metadata/lock/` (used by NLM, NFSv4, SMB reconnect)
+  6. Share model cleaned: NFS/SMB-specific fields moved to JSON config blob
+  7. SquashMode, Netgroup, IdentityMapping removed from generic store/runtime interfaces
+  8. NFS-specific API handlers, runtime fields, and `pkg/identity/` moved to NFS adapter
+  9. All existing tests pass with renamed types
+  10. Centralized conflict detection handles all cases (oplock vs oplock, oplock vs byte-range, byte-range vs byte-range, access mode)
+**Plans**: TBD
 
-### Phase 17: Slot Table and Session Data Structures
-**Goal**: Session infrastructure data structures are implemented and unit-tested, ready for use by operation handlers
-**Depends on**: Phase 16
-**Requirements**: EOS-01, EOS-02, EOS-03
+### Phase 27: NFS Adapter Restructuring
+**Goal**: Restructure NFS adapter for clean directory layout and dispatch consolidation
+**Depends on**: Phase 26
+**Requirements**: REF-03
+**Reference**: `docs/NFS_REFACTORING_PLAN.md` Steps 1-9
 **Success Criteria** (what must be TRUE):
-  1. SlotTable stores full COMPOUND responses for replay detection with per-slot sequence ID tracking
-  2. Sequence ID validation correctly identifies retries (same seqid), misordered requests, and stale slots
-  3. Server can dynamically adjust slot count via target_highest_slotid signaling
-  4. Per-SlotTable mutex provides concurrency without serializing on the global StateManager RWMutex
-**Plans**: 2 plans
-Plans:
-- [x] 17-01-PLAN.md -- SlotTable struct, Slot struct, sequence validation algorithm (RFC 8881), dynamic sizing, unit tests
-- [x] 17-02-PLAN.md -- Session record struct, NewSession constructor, slot table wiring, session tests
+  1. `internal/protocol/` renamed to `internal/adapter/`
+  2. Generic XDR, NLM, NSM, portmapper consolidated under `internal/adapter/nfs/`
+  3. `internal/auth/` (ntlm+spnego) moved to `internal/adapter/smb/auth/`
+  4. `pkg/adapter/nfs/` files renamed (remove `nfs_` prefix)
+  5. v4/v4.1 split into nested hierarchy (`v4/v4_1/`)
+  6. Dispatch consolidated: single `nfs.Dispatch()` entry point in `internal/adapter/nfs/`
+  7. Connection code split by version concern (connection.go + connection_v4.go)
+  8. Shared handler helpers extracted to `internal/adapter/nfs/helpers.go`
+  9. Handler documentation added (3-5 lines each)
+  10. Version negotiation tests added (v2 reject, v5 reject, minor=2 reject, unknown program)
+**Plans**: TBD
 
-### Phase 18: EXCHANGE_ID and Client Registration
-**Goal**: NFSv4.1 clients can register with the server and receive a client ID for session creation
-**Depends on**: Phase 17
-**Requirements**: SESS-01, TRUNK-02
+### Phase 28: SMB Adapter Restructuring
+**Goal**: Restructure SMB adapter to mirror NFS pattern, extract shared BaseAdapter
+**Depends on**: Phase 27
+**Requirements**: REF-04
+**Reference**: `docs/SMB_REFACTORING_PLAN.md` Steps 4-11
 **Success Criteria** (what must be TRUE):
-  1. Client sends EXCHANGE_ID with owner string and receives a unique clientid and sequence ID
-  2. Server tracks implementation ID (name, domain, build date) for each registered v4.1 client
-  3. Server reports consistent server_owner across calls so clients can detect trunking opportunities
-  4. Duplicate EXCHANGE_ID from same owner updates existing client record (idempotent)
-**Plans**: 2 plans
-Plans:
-- [x] 18-01-PLAN.md -- V41ClientRecord, ServerIdentity, ExchangeID on StateManager, handler + dispatch wiring, unit/integration tests
-- [x] 18-02-PLAN.md -- REST API /clients endpoint, /health server info, apiclient methods, dfsctl client list/evict commands
+  1. `pkg/adapter/smb/` files renamed (remove `smb_` prefix)
+  2. `BaseAdapter` extracted to `pkg/adapter/base.go` (shared NFS+SMB lifecycle)
+  3. NetBIOS framing moved to `internal/adapter/smb/framing.go`
+  4. Signing verification moved to `internal/adapter/smb/signing.go`
+  5. Dispatch + response logic consolidated in `internal/adapter/smb/dispatch.go`
+  6. Compound request handling in `internal/adapter/smb/compound.go`
+  7. `Authenticator` interface defined, NTLM + Kerberos implementations extracted
+  8. Shared handler helpers extracted to `internal/adapter/smb/helpers.go`
+  9. `pkg/adapter/smb/connection.go` reduced to ~150 lines (thin read/dispatch/write loop)
+  10. Handler documentation added (3-5 lines each)
+**Plans**: TBD
 
-### Phase 19: Session Lifecycle
-**Goal**: NFSv4.1 clients can create and destroy sessions with negotiated channel attributes
-**Depends on**: Phase 18
-**Requirements**: SESS-02, SESS-03
+### Phase 29: Core Layer Decomposition
+**Goal**: Decompose god objects, unify errors, reduce boilerplate
+**Depends on**: Phase 26
+**Requirements**: REF-05, REF-06
+**Reference**: `docs/CORE_REFACTORING_PLAN.md` Phases 2-9
 **Success Criteria** (what must be TRUE):
-  1. CREATE_SESSION allocates a session with fore-channel and back-channel slot tables using negotiated attributes
-  2. Session ID is returned to client and usable for subsequent SEQUENCE operations
-  3. DESTROY_SESSION tears down session, releases all slot table memory, and unbinds connections
-  4. Channel attribute negotiation respects server-imposed limits (max slots, max request/response size)
-**Plans**: 1 plan
-Plans:
-- [x] 19-01-PLAN.md -- StateManager session methods, CREATE_SESSION/DESTROY_SESSION handlers, channel negotiation, replay detection, reaper, metrics, REST API, dfsctl CLI
+  1. ControlPlane Store interface decomposed into 9 sub-interfaces (UserStore, GroupStore, etc.)
+  2. API handlers accept narrowest interface needed
+  3. Runtime split: AdapterManager and MetadataStoreManager extracted (~500 lines remaining)
+  4. TransferManager renamed to Offloader, package moved to `pkg/payload/offloader/`
+  5. Offloader split into upload.go, download.go, dedup.go (~400 lines in main file)
+  6. Structured PayloadError type with errors.Is() compatibility
+  7. Generic GORM helpers reduce CRUD boilerplate
+  8. API error mapping centralized
+  9. `pkg/metadata/file.go` (1217 lines) split into file_create.go, file_modify.go, file_remove.go, file_helpers.go
+  10. `pkg/metadata/authentication.go` (796 lines) split into identity.go, permissions.go
+**Plans**: TBD
 
-### Phase 20: SEQUENCE and COMPOUND Bifurcation
-**Goal**: Every v4.1 COMPOUND is gated by SEQUENCE validation, providing exactly-once semantics while v4.0 clients continue working unchanged
-**Depends on**: Phase 19
-**Requirements**: SESS-04, COEX-01, COEX-02, COEX-03
-**Success Criteria** (what must be TRUE):
-  1. COMPOUND dispatcher routes minorversion=0 to existing v4.0 path and minorversion=1 to v4.1 path with SEQUENCE enforcement
-  2. SEQUENCE validates slot ID, sequence ID, and session ID before any other v4.1 operation executes
-  3. Duplicate v4.1 requests (same slot + seqid) return the cached response without re-execution
-  4. v4.0 clients continue working unchanged with per-owner seqid validation
-  5. Per-owner seqid validation is bypassed for v4.1 operations (slot table provides replay protection)
-**Plans**: 2 plans
-Plans:
-- [ ] 20-01-PLAN.md -- SEQUENCE handler, dispatchV41 SEQUENCE gating, replay cache, seqid bypass, lease renewal, status flags
-- [ ] 20-02-PLAN.md -- Prometheus metrics, minor version range config (full stack), v4.0 regression + coexistence + concurrent tests, benchmark
+---
 
-### Phase 21: Connection Management and Trunking
-**Goal**: Multiple TCP connections can be bound to a single session, enabling trunking and reconnection after network disruption
-**Depends on**: Phase 20
-**Requirements**: BACK-02, TRUNK-01
-**Success Criteria** (what must be TRUE):
-  1. BIND_CONN_TO_SESSION associates a new TCP connection with an existing session in fore, back, or both directions
-  2. Multiple connections bound to one session can each send COMPOUND requests and receive responses
-  3. Server tracks which connections are bound to which sessions and cleans up on disconnect
-**Plans**: 2 plans
-Plans:
-- [x] 21-01-PLAN.md -- Core binding model: connection ID plumbing, StateManager connection methods, BIND_CONN_TO_SESSION handler, auto-bind on CREATE_SESSION, disconnect cleanup, draining support, unit tests
-- [x] 21-02-PLAN.md -- Observability & API: Prometheus connection metrics, REST API session detail extension (connection breakdown), V4MaxConnectionsPerSession config full stack, CLI updates, multi-connection integration tests
+## v3.6 Windows Compatibility
 
-### Phase 22: Backchannel Multiplexing
-**Goal**: Server sends callbacks to v4.1 clients over the fore-channel TCP connection without requiring a separate connection
-**Depends on**: Phase 21
-**Requirements**: BACK-01, BACK-03, BACK-04
+### Phase 30: SMB Bug Fixes
+**Goal**: Fix known SMB bugs found during Windows testing
+**Depends on**: Phase 29 (refactoring complete)
+**Requirements**: WIN-01
+**Reference**: GitHub issues #180, #181
 **Success Criteria** (what must be TRUE):
-  1. Server sends CB_SEQUENCE + CB_RECALL over a connection bound for backchannel traffic (no separate dial-out)
-  2. BACKCHANNEL_CTL allows client to update backchannel security parameters
-  3. Existing CB_RECALL works over backchannel for v4.1 clients while v4.0 clients continue using separate TCP callback
-  4. Callbacks work through NAT/firewall (server never initiates new TCP connections for v4.1 clients)
-**Plans**: 2 plans
-Plans:
-- [ ] 22-01-PLAN.md -- Core backchannel infrastructure: shared wire-format helpers, BackchannelSender goroutine, read-loop demux, callback routing, BACKCHANNEL_CTL handler, GetStatusFlags update
-- [ ] 22-02-PLAN.md -- Prometheus backchannel metrics, integration tests with TCP loopback, BACKCHANNEL_CTL handler tests, protocol documentation
+  1. Sparse file READ returns zeros for unwritten blocks instead of "block not found" error (#180)
+  2. TransferManager/Offloader downloadBlock() handles ErrBlockNotFound as sparse region
+  3. Renamed directories show as `<DIR>` in parent listing (#181)
+  4. Move operation updates file Path field in metadata
+  5. E2E tests cover both bug scenarios
+**Plans**: TBD
 
-### Phase 23: Client Lifecycle and Cleanup
-**Goal**: Server supports full client lifecycle management including graceful cleanup, stateid validation, and v4.0-only operation rejection
-**Depends on**: Phase 20
-**Requirements**: LIFE-01, LIFE-02, LIFE-03, LIFE-04, LIFE-05
+### Phase 31: Windows ACL Support
+**Goal**: Implement NT Security Descriptors for proper Windows ACL display and control
+**Depends on**: Phase 30
+**Requirements**: WIN-02
+**Reference**: GitHub issue #182, MS-DTYP, MS-SMB2 Section 2.2.39
 **Success Criteria** (what must be TRUE):
-  1. DESTROY_CLIENTID removes all client state after all sessions are destroyed
-  2. RECLAIM_COMPLETE signals end of grace period reclaim, allowing server to free reclaim-tracking resources
-  3. FREE_STATEID releases individual stateids and TEST_STATEID batch-validates stateid liveness
-  4. v4.0-only operations (SETCLIENTID, SETCLIENTID_CONFIRM, RENEW, OPEN_CONFIRM, RELEASE_LOCKOWNER) return NFS4ERR_NOTSUPP for minorversion=1
-**Plans**: 3 plans
-Plans:
-- [x] 23-01-PLAN.md -- State methods: DestroyV41ClientID, FreeStateid, TestStateids, grace enrichment (Status, ForceEnd, ReclaimComplete), state tests with race detection
-- [ ] 23-02-PLAN.md -- Handlers + dispatch: 4 handler files (destroy_clientid, reclaim_complete, free_stateid, test_stateid), v4.0-only rejection in v4.1 COMPOUNDs, DESTROY_CLIENTID session-exempt, handler tests
-- [ ] 23-03-PLAN.md -- Grace API/CLI: REST endpoints (GET /api/v1/grace, POST /api/v1/grace/end), health enrichment, `dfs status` countdown, `dfsctl grace status/end` commands
+  1. QUERY_INFO SecurityInformation returns proper NT Security Descriptor (Owner SID, Group SID, DACL)
+  2. Unix UID/GID mapped to Windows SIDs (well-known SIDs for common accounts, S-1-22-x-y for Unix)
+  3. Unix file permissions (rwx) translated to Windows ACE entries in DACL
+  4. `icacls` on mounted share shows meaningful permissions (not Everyone:(F))
+  5. SET_INFO SecurityInformation accepts permission changes (best-effort mapping back to Unix)
+  6. Directory inheritance flags set correctly (CONTAINER_INHERIT_ACE, OBJECT_INHERIT_ACE)
+  7. SMB and NFSv4 ACLs remain interoperable through shared metadata model
+**Plans**: TBD
 
-### Phase 24: Directory Delegations
-**Goal**: Server can grant directory delegations and notify clients of directory changes via backchannel
-**Depends on**: Phase 22
-**Requirements**: DDELEG-01, DDELEG-02, DDELEG-03
+### Phase 32: Windows Integration Testing
+**Goal**: Comprehensive Windows compatibility validation using automated test suites and manual testing
+**Depends on**: Phase 31
+**Requirements**: WIN-03
+**Reference**: Microsoft WindowsProtocolTestSuites (MIT), Samba smbtorture (GPL)
 **Success Criteria** (what must be TRUE):
-  1. GET_DIR_DELEGATION grants a delegation with notification bitmask specifying which changes the client wants to hear about
-  2. CB_NOTIFY sent over backchannel when directory entries are added, removed, renamed, or have attributes changed
-  3. Directory delegation state is tracked in StateManager with recall and revocation support (same pattern as file delegations)
-  4. Directory delegation is recalled when a conflicting client modifies the directory
-**Plans**: 3 plans
-Plans:
-- [ ] 24-01-PLAN.md -- State model: DelegationState extensions, DirNotification type, CB_NOTIFY sub-type encoders, GrantDirDelegation, NotifyDirChange, batch flush, config fields
-- [ ] 24-02-PLAN.md -- GET_DIR_DELEGATION handler, DELEGRETURN flush, dispatch registration, config full stack (store, API, apiclient, CLI, settings watcher)
-- [ ] 24-03-PLAN.md -- Mutation handler hooks (CREATE, REMOVE, RENAME, LINK, OPEN, SETATTR), conflict recall, Prometheus metrics, integration tests, docs/NFS.md
-
-### Phase 25: v3.0 Integration Testing
-**Goal**: All NFSv4.1 functionality verified end-to-end with real Linux NFS client mounts
-**Depends on**: Phase 22, Phase 23, Phase 24
-**Requirements**: TEST-01, TEST-02, TEST-03, TEST-04, TEST-05, SMBKRB-01, SMBKRB-02
-**Success Criteria** (what must be TRUE):
-  1. Linux NFS client mounts with vers=4.1 and performs basic file operations (create, read, write, delete, rename)
-  2. EOS replay verification passes: retrying same slot+seqid returns cached response without re-execution
-  3. Backchannel delegation recall works: CB_RECALL delivered over fore-channel connection to v4.1 client
-  4. v4.0 and v4.1 clients coexist: both versions mounted simultaneously with independent state
-  5. SMB adapter authenticates via SPNEGO/Kerberos using shared Kerberos layer with correct identity mapping
-**Plans**: 3 plans
-Plans:
-- [ ] 25-01-PLAN.md -- NFSv4.1 mount framework, version-parametrized tests (v3/v4.0/v4.1), store matrix extension, coexistence tests
-- [ ] 25-02-PLAN.md -- SMB Kerberos auth (SPNEGO/Kerberos in SESSION_SETUP), identity mapping, E2E tests, cross-protocol identity verification
-- [ ] 25-03-PLAN.md -- EOS replay verification, backchannel CB_RECALL test, directory delegation CB_NOTIFY tests, disconnect robustness
+  1. Samba smbtorture SMB2 basic tests pass (smb2.connect, smb2.read, smb2.write, smb2.lock, smb2.oplock, smb2.lease)
+  2. Samba smbtorture SMB2 ACL tests pass (smb2.acls, smb2.dir)
+  3. Microsoft WindowsProtocolTestSuites File Server BVT suite passes (101 core tests)
+  4. Microsoft WindowsProtocolTestSuites selected feature tests pass (lease, oplock, lock, signing, encryption categories)
+  5. Windows 11 manual validation: Explorer file operations (create, rename, delete, copy, move, drag-and-drop)
+  6. Windows 11 manual validation: cmd.exe operations (dir, type, copy, move, ren, del, mkdir, rmdir, icacls, fsutil)
+  7. Windows 11 manual validation: PowerShell operations (Get-Item, Set-Item, Get-Acl, Set-Acl)
+  8. All issues #180, #181, #182 verified fixed on Windows
+  9. No regressions on Linux/macOS NFS or SMB mounts
+**Plans**: TBD
 
 ---
 
 ## v4.0 NFSv4.2 Extensions
 
-### Phase 26: Server-Side Copy
+### Phase 33: Server-Side Copy
 **Goal**: Implement async server-side COPY operation
-**Depends on**: Phase 25 (v3.0 complete)
+**Depends on**: Phase 32 (v3.6 complete)
 **Requirements**: V42-01
 **Success Criteria** (what must be TRUE):
   1. COPY operation copies data without client I/O
@@ -247,9 +242,9 @@ Plans:
   5. Large file copy completes efficiently via block store
 **Plans**: TBD
 
-### Phase 27: Clone/Reflinks
+### Phase 34: Clone/Reflinks
 **Goal**: Implement CLONE operation leveraging content-addressed storage
-**Depends on**: Phase 26
+**Depends on**: Phase 33
 **Requirements**: V42-02
 **Success Criteria** (what must be TRUE):
   1. CLONE creates copy-on-write file instantly
@@ -257,9 +252,9 @@ Plans:
   3. Modification triggers copy of affected blocks only
 **Plans**: TBD
 
-### Phase 28: Sparse Files
+### Phase 35: Sparse Files
 **Goal**: Implement sparse file operations (SEEK, ALLOCATE, DEALLOCATE)
-**Depends on**: Phase 26
+**Depends on**: Phase 33
 **Requirements**: V42-03
 **Success Criteria** (what must be TRUE):
   1. SEEK locates DATA or HOLE regions in file
@@ -268,9 +263,9 @@ Plans:
   4. Sparse file metadata correctly tracks allocated regions
 **Plans**: TBD
 
-### Phase 29: Extended Attributes
+### Phase 36: Extended Attributes
 **Goal**: Implement xattr storage and NFSv4.2/SMB exposure
-**Depends on**: Phase 26
+**Depends on**: Phase 33
 **Requirements**: V42-04
 **Success Criteria** (what must be TRUE):
   1. GETXATTR retrieves extended attribute value
@@ -280,18 +275,18 @@ Plans:
   5. Xattrs accessible via both NFSv4.2 and SMB
 **Plans**: TBD
 
-### Phase 30: NFSv4.2 Operations
+### Phase 37: NFSv4.2 Operations
 **Goal**: Implement remaining NFSv4.2 operations
-**Depends on**: Phase 28
+**Depends on**: Phase 35
 **Requirements**: V42-05
 **Success Criteria** (what must be TRUE):
   1. IO_ADVISE accepts application I/O hints
   2. LAYOUTERROR and LAYOUTSTATS available if pNFS enabled
 **Plans**: TBD
 
-### Phase 31: Documentation
+### Phase 38: Documentation
 **Goal**: Complete documentation for all new features
-**Depends on**: Phase 29
+**Depends on**: Phase 36
 **Requirements**: (documentation)
 **Success Criteria** (what must be TRUE):
   1. docs/NFS.md updated with NFSv4.1 and NFSv4.2 details
@@ -299,9 +294,9 @@ Plans:
   3. docs/SECURITY.md describes Kerberos security model for NFS and SMB
 **Plans**: TBD
 
-### Phase 32: v4.0 Testing
+### Phase 39: v4.0 Testing
 **Goal**: Final testing including pjdfstest POSIX compliance
-**Depends on**: Phase 26, Phase 27, Phase 28, Phase 29, Phase 30, Phase 31
+**Depends on**: Phase 33, Phase 34, Phase 35, Phase 36, Phase 37, Phase 38
 **Requirements**: V42-06
 **Success Criteria** (what must be TRUE):
   1. Server-side copy E2E tests pass for various file sizes
@@ -317,7 +312,7 @@ Plans:
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 32
+Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 39
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
@@ -341,24 +336,32 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 32
 | 17. Slot Table and Session Data Structures | v3.0 | 2/2 | Complete | 2026-02-20 |
 | 18. EXCHANGE_ID and Client Registration | v3.0 | 2/2 | Complete | 2026-02-20 |
 | 19. Session Lifecycle | v3.0 | 1/1 | Complete | 2026-02-21 |
-| 20. SEQUENCE and COMPOUND Bifurcation | 2/2 | Complete    | 2026-02-21 | - |
-| 21. Connection Management and Trunking | 2/2 | Complete    | 2026-02-21 | - |
-| 22. Backchannel Multiplexing | 2/2 | Complete    | 2026-02-21 | - |
-| 23. Client Lifecycle and Cleanup | 3/3 | Complete    | 2026-02-22 | - |
-| 24. Directory Delegations | 3/3 | Complete    | 2026-02-22 | - |
-| 25. v3.0 Integration Testing | 3/3 | Complete    | 2026-02-23 | - |
-| 26. Server-Side Copy | v4.0 | 0/? | Not started | - |
-| 27. Clone/Reflinks | v4.0 | 0/? | Not started | - |
-| 28. Sparse Files | v4.0 | 0/? | Not started | - |
-| 29. Extended Attributes | v4.0 | 0/? | Not started | - |
-| 30. NFSv4.2 Operations | v4.0 | 0/? | Not started | - |
-| 31. Documentation | v4.0 | 0/? | Not started | - |
-| 32. v4.0 Testing | v4.0 | 0/? | Not started | - |
+| 20. SEQUENCE and COMPOUND Bifurcation | v3.0 | 2/2 | Complete | 2026-02-21 |
+| 21. Connection Management and Trunking | v3.0 | 2/2 | Complete | 2026-02-21 |
+| 22. Backchannel Multiplexing | v3.0 | 2/2 | Complete | 2026-02-21 |
+| 23. Client Lifecycle and Cleanup | v3.0 | 3/3 | Complete | 2026-02-22 |
+| 24. Directory Delegations | v3.0 | 3/3 | Complete | 2026-02-22 |
+| 25. v3.0 Integration Testing | v3.0 | 3/3 | Complete | 2026-02-23 |
+| 25.5. Manual Verification v3.0 | v3.0 | - | Complete | 2026-02-25 |
+| 26. Generic Lock Interface & Protocol Leak Purge | v3.5 | 0/? | Not started | - |
+| 27. NFS Adapter Restructuring | v3.5 | 0/? | Not started | - |
+| 28. SMB Adapter Restructuring | v3.5 | 0/? | Not started | - |
+| 29. Core Layer Decomposition | v3.5 | 0/? | Not started | - |
+| 30. SMB Bug Fixes | v3.6 | 0/? | Not started | - |
+| 31. Windows ACL Support | v3.6 | 0/? | Not started | - |
+| 32. Windows Integration Testing | v3.6 | 0/? | Not started | - |
+| 33. Server-Side Copy | v4.0 | 0/? | Not started | - |
+| 34. Clone/Reflinks | v4.0 | 0/? | Not started | - |
+| 35. Sparse Files | v4.0 | 0/? | Not started | - |
+| 36. Extended Attributes | v4.0 | 0/? | Not started | - |
+| 37. NFSv4.2 Operations | v4.0 | 0/? | Not started | - |
+| 38. Documentation | v4.0 | 0/? | Not started | - |
+| 39. v4.0 Testing | v4.0 | 0/? | Not started | - |
 
-**Total:** 82/? plans complete
+**Total:** 86/? plans complete
 
 ---
 *Roadmap created: 2026-02-04*
 *v1.0 shipped: 2026-02-07*
 *v2.0 shipped: 2026-02-20*
-*v3.0 roadmap created: 2026-02-20*
+*v3.0 shipped: 2026-02-25*
