@@ -2,7 +2,6 @@ package nfs
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -11,11 +10,12 @@ import (
 	"sync"
 	"time"
 
+	nfs_internal "github.com/marmos91/dittofs/internal/adapter/nfs"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/pool"
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 )
 
 // errBackchannelReply is a sentinel error returned by readRequest when the
@@ -40,11 +40,6 @@ type NFSConnection struct {
 	// SetPendingCBReplies. When non-nil, the read loop demuxes incoming messages:
 	// CALL (msg_type=0) dispatches to handlers, REPLY (msg_type=1) routes here.
 	pendingCBReplies *state.PendingCBReplies
-}
-
-type fragmentHeader struct {
-	IsLast bool
-	Length uint32
 }
 
 func NewNFSConnection(server *NFSAdapter, conn net.Conn, connectionID uint64) *NFSConnection {
@@ -176,8 +171,8 @@ func (c *NFSConnection) readRequest(ctx context.Context) (*rpc.RPCCallMessage, [
 		}
 	}
 
-	// Read fragment header
-	header, err := c.readFragmentHeader()
+	// Read fragment header using shared RPC framing utility
+	header, err := nfs_internal.ReadFragmentHeader(c.conn)
 	if err != nil {
 		// Don't log EOF as an error - it's a normal client disconnect
 		if err != io.EOF {
@@ -187,13 +182,9 @@ func (c *NFSConnection) readRequest(ctx context.Context) (*rpc.RPCCallMessage, [
 	}
 	logger.Debug("Read fragment header", "address", c.conn.RemoteAddr().String(), "last", header.IsLast, "length", bytesize.ByteSize(header.Length))
 
-	// Validate fragment size to prevent memory exhaustion.
-	// Must be larger than advertised MAXREAD/MAXWRITE (1MB) to accommodate
-	// RPC headers + NFS compound headers (~200 bytes overhead per request).
-	const maxFragmentSize = (1 << 20) + (1 << 18) // 1MB + 256KB headroom for protocol headers
-	if header.Length > maxFragmentSize {
-		logger.Warn("Fragment size exceeds maximum", "size", bytesize.ByteSize(header.Length), "max", bytesize.ByteSize(maxFragmentSize), "address", c.conn.RemoteAddr().String())
-		return nil, nil, fmt.Errorf("fragment too large: %d bytes", header.Length)
+	// Validate fragment size to prevent memory exhaustion
+	if err := nfs_internal.ValidateFragmentSize(header.Length, c.conn.RemoteAddr().String()); err != nil {
+		return nil, nil, err
 	}
 
 	// Check context before reading potentially large message
@@ -203,36 +194,17 @@ func (c *NFSConnection) readRequest(ctx context.Context) (*rpc.RPCCallMessage, [
 	default:
 	}
 
-	// Read RPC message (uses buffer pool)
+	// Read RPC message using shared utility (uses buffer pool)
 	// NOTE: Caller is responsible for returning buffer via pool.Put()
-	message, err := c.readRPCMessage(header.Length)
+	message, err := nfs_internal.ReadRPCMessage(c.conn, header.Length)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read RPC message: %w", err)
 	}
 
-	// Demux: check if this is a CALL (msg_type=0) or REPLY (msg_type=1).
-	// NFSv4.1 multiplexes fore-channel requests and backchannel replies on the
-	// same TCP connection. The first 8 bytes are XID (4 bytes) + msg_type (4 bytes).
-	if len(message) >= 8 && c.pendingCBReplies != nil {
-		msgType := binary.BigEndian.Uint32(message[4:8])
-		if msgType == rpc.RPCReply {
-			xid := binary.BigEndian.Uint32(message[0:4])
-			// Copy the message bytes for delivery since the buffer is pooled
-			replyBytes := make([]byte, len(message))
-			copy(replyBytes, message)
-			pool.Put(message) // Return pooled buffer
-
-			if c.pendingCBReplies.Deliver(xid, replyBytes) {
-				logger.Debug("Backchannel REPLY routed",
-					"xid", fmt.Sprintf("0x%x", xid),
-					"conn_id", c.connectionID)
-			} else {
-				logger.Debug("Backchannel REPLY for unknown XID (dropped)",
-					"xid", fmt.Sprintf("0x%x", xid),
-					"conn_id", c.connectionID)
-			}
-			return nil, nil, errBackchannelReply
-		}
+	// Demux: check if this is a backchannel REPLY (NFSv4.1 multiplexing).
+	// The shared connection helper handles the backchannel reply routing.
+	if nfs_internal.DemuxBackchannelReply(message, c.connectionID, c.pendingCBReplies) {
+		return nil, nil, errBackchannelReply
 	}
 
 	// Parse RPC call header
@@ -273,48 +245,6 @@ func (c *NFSConnection) processRequest(ctx context.Context, call *rpc.RPCCallMes
 
 	// Dispatch to handler (this is where the real work happens - COMMIT, etc.)
 	return c.handleRPCCall(ctx, call, procedureData)
-}
-
-// readFragmentHeader reads the 4-byte RPC fragment header.
-//
-// The fragment header contains:
-// - Bit 31: Last fragment flag (1 = last, 0 = more fragments)
-// - Bits 0-30: Fragment length in bytes
-//
-// Returns the parsed header or an error if reading fails.
-func (c *NFSConnection) readFragmentHeader() (*fragmentHeader, error) {
-	var buf [4]byte
-	_, err := io.ReadFull(c.conn, buf[:])
-	if err != nil {
-		return nil, err
-	}
-
-	header := binary.BigEndian.Uint32(buf[:])
-	return &fragmentHeader{
-		IsLast: (header & 0x80000000) != 0,
-		Length: header & 0x7FFFFFFF,
-	}, nil
-}
-
-// readRPCMessage reads an RPC message of the specified length.
-//
-// It uses a buffer pool to reduce allocations for frequently sized messages.
-// The caller is responsible for returning the buffer to the pool via PutBuffer.
-//
-// Returns the message buffer or an error if reading fails.
-func (c *NFSConnection) readRPCMessage(length uint32) ([]byte, error) {
-	// Get buffer from pool
-	message := pool.GetUint32(length)
-
-	// Read directly into pooled buffer
-	_, err := io.ReadFull(c.conn, message)
-	if err != nil {
-		// Return buffer to pool on error
-		pool.Put(message)
-		return nil, fmt.Errorf("read message: %w", err)
-	}
-
-	return message, nil
 }
 
 // handleUnsupportedVersion handles version mismatch for NFS/Mount protocols.

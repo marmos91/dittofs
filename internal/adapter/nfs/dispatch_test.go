@@ -210,3 +210,239 @@ func TestNFSDispatchTable_AuthRequirements(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================================
+// Version Negotiation Tests
+// ============================================================================
+
+// parseRPCReply extracts the AcceptStat and (for PROG_MISMATCH) the low/high
+// version range from an RPC reply byte slice. The input includes the 4-byte
+// RPC fragment header prefix.
+func parseRPCReply(t *testing.T, data []byte) (xid, acceptStat, lowVersion, highVersion uint32) {
+	t.Helper()
+
+	require.True(t, len(data) >= 4+24, "reply too short: need at least 28 bytes, got %d", len(data))
+
+	// Skip 4-byte fragment header
+	body := data[4:]
+	xid = binary.BigEndian.Uint32(body[0:4])
+	// body[4:8] = MsgType (1 = REPLY)
+	// body[8:12] = ReplyState (0 = MSG_ACCEPTED)
+	// body[12:16] = Verf Flavor (0 = AUTH_NULL)
+	// body[16:20] = Verf Body Length (0)
+	acceptStat = binary.BigEndian.Uint32(body[20:24])
+
+	if acceptStat == rpc.RPCProgMismatch && len(body) >= 32 {
+		lowVersion = binary.BigEndian.Uint32(body[24:28])
+		highVersion = binary.BigEndian.Uint32(body[28:32])
+	}
+
+	return
+}
+
+// makeTestCall constructs a minimal RPC call message for dispatch testing.
+func makeTestCall(xid, program, version, procedure uint32) *rpc.RPCCallMessage {
+	return &rpc.RPCCallMessage{
+		XID:       xid,
+		Program:   program,
+		Version:   version,
+		Procedure: procedure,
+		Cred: rpc.OpaqueAuth{
+			Flavor: rpc.AuthNull,
+			Body:   []byte{},
+		},
+		Verf: rpc.OpaqueAuth{
+			Flavor: rpc.AuthNull,
+			Body:   []byte{},
+		},
+	}
+}
+
+// TestDispatch_VersionNegotiation tests the consolidated Dispatch entry point
+// for correct version negotiation behavior across all supported programs.
+func TestDispatch_VersionNegotiation(t *testing.T) {
+	ctx := context.Background()
+	clientAddr := "10.0.0.1:12345"
+
+	// Minimal deps with nil handlers -- sufficient for version rejection tests
+	// since the version check happens before handler dispatch.
+	deps := &DispatchDeps{}
+
+	tests := []struct {
+		name        string
+		program     uint32
+		version     uint32
+		procedure   uint32
+		wantStat    uint32
+		wantLow     uint32
+		wantHigh    uint32
+		expectReply bool // true if rpcReply (second return) should be non-nil
+	}{
+		{
+			name:        "NFS_v2_rejected_with_PROG_MISMATCH",
+			program:     rpc.ProgramNFS,
+			version:     2,
+			procedure:   0,
+			wantStat:    rpc.RPCProgMismatch,
+			wantLow:     rpc.NFSVersion3,
+			wantHigh:    rpc.NFSVersion4,
+			expectReply: true,
+		},
+		{
+			name:        "NFS_v5_rejected_with_PROG_MISMATCH",
+			program:     rpc.ProgramNFS,
+			version:     5,
+			procedure:   0,
+			wantStat:    rpc.RPCProgMismatch,
+			wantLow:     rpc.NFSVersion3,
+			wantHigh:    rpc.NFSVersion4,
+			expectReply: true,
+		},
+		{
+			name:        "NFS_v1_rejected_with_PROG_MISMATCH",
+			program:     rpc.ProgramNFS,
+			version:     1,
+			procedure:   0,
+			wantStat:    rpc.RPCProgMismatch,
+			wantLow:     rpc.NFSVersion3,
+			wantHigh:    rpc.NFSVersion4,
+			expectReply: true,
+		},
+		{
+			name:        "NFS_v4_without_handler_returns_PROG_MISMATCH_v3_only",
+			program:     rpc.ProgramNFS,
+			version:     rpc.NFSVersion4,
+			procedure:   0,
+			wantStat:    rpc.RPCProgMismatch,
+			wantLow:     rpc.NFSVersion3,
+			wantHigh:    rpc.NFSVersion3,
+			expectReply: true,
+		},
+		{
+			name:        "NLM_v1_rejected_with_PROG_MISMATCH",
+			program:     rpc.ProgramNLM,
+			version:     1,
+			procedure:   0,
+			wantStat:    rpc.RPCProgMismatch,
+			wantLow:     rpc.NLMVersion4,
+			wantHigh:    rpc.NLMVersion4,
+			expectReply: true,
+		},
+		{
+			name:        "NSM_v2_rejected_with_PROG_MISMATCH",
+			program:     rpc.ProgramNSM,
+			version:     2,
+			procedure:   0,
+			wantStat:    rpc.RPCProgMismatch,
+			wantLow:     rpc.NSMVersion1,
+			wantHigh:    rpc.NSMVersion1,
+			expectReply: true,
+		},
+		{
+			name:        "Mount_MNT_v1_rejected_with_PROG_MISMATCH",
+			program:     rpc.ProgramMount,
+			version:     1,
+			procedure:   mount.MountProcMnt,
+			wantStat:    rpc.RPCProgMismatch,
+			wantLow:     rpc.MountVersion3,
+			wantHigh:    rpc.MountVersion3,
+			expectReply: true,
+		},
+		{
+			name:        "unknown_program_returns_PROG_UNAVAIL",
+			program:     999999,
+			version:     1,
+			procedure:   0,
+			wantStat:    rpc.RPCProgUnavail,
+			expectReply: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			call := makeTestCall(0x1234, tt.program, tt.version, tt.procedure)
+
+			replyData, rpcReply, err := Dispatch(ctx, call, []byte{}, clientAddr, deps)
+			require.NoError(t, err, "Dispatch should not return system error for version negotiation")
+
+			if tt.expectReply {
+				require.NotNil(t, rpcReply, "rpcReply should be non-nil for rejected versions")
+				assert.Nil(t, replyData, "replyData should be nil when rpcReply is used")
+
+				xid, acceptStat, low, high := parseRPCReply(t, rpcReply)
+				assert.Equal(t, uint32(0x1234), xid, "XID should be echoed back")
+				assert.Equal(t, tt.wantStat, acceptStat, "AcceptStat mismatch")
+
+				if tt.wantStat == rpc.RPCProgMismatch {
+					assert.Equal(t, tt.wantLow, low, "Low version mismatch")
+					assert.Equal(t, tt.wantHigh, high, "High version mismatch")
+				}
+			}
+		})
+	}
+}
+
+// TestDispatch_NFS_v3_NULL_accepted verifies that NFSv3 NULL procedure is dispatched.
+// The NULL procedure requires no special setup and returns an empty response.
+func TestDispatch_NFS_v3_NULL_accepted(t *testing.T) {
+	ctx := context.Background()
+	clientAddr := "10.0.0.1:12345"
+
+	// NULL procedure needs a v3 handler. We test that the dispatch reaches
+	// the v3 handler path (no PROG_MISMATCH), even though the handler will
+	// return nil since we don't provide a full Handler.
+	deps := &DispatchDeps{}
+
+	call := makeTestCall(0xABCD, rpc.ProgramNFS, rpc.NFSVersion3, types.NFSProcNull)
+
+	replyData, rpcReply, err := Dispatch(ctx, call, []byte{}, clientAddr, deps)
+	require.NoError(t, err)
+
+	// v3 dispatch should NOT return an RPC error reply for a valid version.
+	// It routes to dispatchNFSv3Procedure which looks up the procedure table.
+	// NULL is in the table but the handler may fail without a real Handler;
+	// the key assertion is that we did NOT get a version mismatch.
+	assert.Nil(t, rpcReply, "NFSv3 NULL should not produce an RPC error reply (PROG_MISMATCH)")
+
+	// replyData may be nil (handler panics without real deps) or non-nil;
+	// the important thing is no PROG_MISMATCH was returned.
+	_ = replyData
+}
+
+// TestDispatch_Mount_Non_MNT_v1_not_version_rejected verifies that Mount
+// procedures other than MNT accept v1/v2 (macOS sends UMNT with mount v1).
+// The handler may fail on data parsing, but the version should not be rejected.
+func TestDispatch_Mount_Non_MNT_v1_not_version_rejected(t *testing.T) {
+	ctx := context.Background()
+	clientAddr := "10.0.0.1:12345"
+	deps := &DispatchDeps{}
+
+	// UMNT with v1 should NOT be rejected at the version check level.
+	// The handler may fail on parsing the empty data, but that is a handler
+	// error, not a version rejection.
+	call := makeTestCall(0x5678, rpc.ProgramMount, 1, mount.MountProcUmnt)
+
+	_, rpcReply, _ := Dispatch(ctx, call, []byte{}, clientAddr, deps)
+
+	// The critical assertion: no PROG_MISMATCH reply for UMNT with v1.
+	// A handler error is acceptable, but a version rejection is not.
+	assert.Nil(t, rpcReply, "Mount UMNT with v1 should not produce PROG_MISMATCH")
+}
+
+// TestDispatch_Mount_NULL_v1_accepted verifies that Mount NULL with v1 works.
+// NULL procedures typically require no data and succeed with minimal deps.
+func TestDispatch_Mount_NULL_v1_accepted(t *testing.T) {
+	ctx := context.Background()
+	clientAddr := "10.0.0.1:12345"
+	deps := &DispatchDeps{}
+
+	call := makeTestCall(0x9ABC, rpc.ProgramMount, 1, mount.MountProcNull)
+
+	replyData, rpcReply, err := Dispatch(ctx, call, []byte{}, clientAddr, deps)
+	require.NoError(t, err)
+
+	// No version rejection for NULL with v1
+	assert.Nil(t, rpcReply, "Mount NULL with v1 should not produce PROG_MISMATCH")
+	// NULL procedure returns empty success
+	_ = replyData
+}
