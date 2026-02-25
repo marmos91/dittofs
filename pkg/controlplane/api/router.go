@@ -39,12 +39,14 @@ import (
 //   - /api/v1/payload-stores/* - Payload store management (admin only)
 //   - GET /api/v1/adapters - Adapter list (admin + operator)
 //   - /api/v1/adapters/* - Adapter management (admin only)
+//   - /api/v1/adapters/{type}/settings - Adapter settings (admin only)
+//   - /api/v1/adapters/{type}/clients - NFS client management (admin only)
+//   - /api/v1/adapters/{type}/clients/{id}/sessions - NFS client sessions (admin only)
+//   - /api/v1/adapters/{type}/grace - NFS grace period management (admin only)
+//   - /api/v1/adapters/{type}/netgroups - NFS netgroup management (admin only)
+//   - /api/v1/adapters/{type}/identity-mappings - NFS identity mapping management (admin only)
+//   - /api/v1/adapters/{type}/mounts - Protocol-specific mount listing (admin only)
 //   - /api/v1/settings/* - System settings management (admin only)
-//   - /api/v1/adapters/nfs/clients - NFS client management (admin only)
-//   - /api/v1/adapters/nfs/clients/{id}/sessions - NFS client session management (admin only)
-//   - /api/v1/adapters/nfs/grace - NFS grace period management (admin only)
-//   - /api/v1/adapters/nfs/netgroups - NFS netgroup management (admin only)
-//   - /api/v1/adapters/nfs/identity-mappings - NFS identity mapping management (admin only)
 //   - /api/v1/mounts - Unified mount listing (admin only)
 func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.Store) http.Handler {
 	r := chi.NewRouter()
@@ -189,9 +191,15 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 			})
 
 			// Adapter configuration - split read/write access
+			//
+			// All adapter routes (generic CRUD, settings, and protocol-specific)
+			// are nested under /adapters/{type} to avoid chi routing conflicts.
+			// Previously, separate /adapters/nfs and /adapters/smb route groups
+			// shadowed the /{type} parameterized routes for those adapter types.
 			r.Route("/adapters", func(r chi.Router) {
 				adapterHandler := handlers.NewAdapterHandler(rt)
 				settingsHandler := handlers.NewAdapterSettingsHandler(cpStore, rt)
+				mountHandler := handlers.NewMountHandler(rt)
 
 				// Read endpoint: admin + operator (list only)
 				r.Group(func(r chi.Router) {
@@ -203,16 +211,71 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Group(func(r chi.Router) {
 					r.Use(apiMiddleware.RequireAdmin())
 					r.Post("/", adapterHandler.Create)
-					r.Get("/{type}", adapterHandler.Get)
-					r.Put("/{type}", adapterHandler.Update)
-					r.Delete("/{type}", adapterHandler.Delete)
 
-					// Adapter settings routes
-					r.Get("/{type}/settings", settingsHandler.GetSettings)
-					r.Put("/{type}/settings", settingsHandler.PutSettings)
-					r.Patch("/{type}/settings", settingsHandler.PatchSettings)
-					r.Get("/{type}/settings/defaults", settingsHandler.GetDefaults)
-					r.Post("/{type}/settings/reset", settingsHandler.ResetSettings)
+					// All type-scoped routes under /{type}
+					r.Route("/{type}", func(r chi.Router) {
+						// Adapter CRUD
+						r.Get("/", adapterHandler.Get)
+						r.Put("/", adapterHandler.Update)
+						r.Delete("/", adapterHandler.Delete)
+
+						// Adapter settings
+						r.Route("/settings", func(r chi.Router) {
+							r.Get("/", settingsHandler.GetSettings)
+							r.Put("/", settingsHandler.PutSettings)
+							r.Patch("/", settingsHandler.PatchSettings)
+							r.Get("/defaults", settingsHandler.GetDefaults)
+							r.Post("/reset", settingsHandler.ResetSettings)
+						})
+
+						// Protocol-specific mount listing
+						r.Get("/mounts", func(w http.ResponseWriter, req *http.Request) {
+							adapterType := chi.URLParam(req, "type")
+							mountHandler.ListByProtocol(adapterType)(w, req)
+						})
+
+						// NFS client management (handlers are nil if NFS state not available)
+						if clientHandler := newClientHandler(rt); clientHandler != nil {
+							r.Route("/clients", func(r chi.Router) {
+								r.Get("/", clientHandler.List)
+								r.Delete("/{id}", clientHandler.Evict)
+								r.Route("/{id}/sessions", func(r chi.Router) {
+									r.Get("/", clientHandler.ListSessions)
+									r.Delete("/{sid}", clientHandler.ForceDestroySession)
+								})
+							})
+						}
+
+						// NFS grace period management
+						if graceHandler := newGraceHandler(rt); graceHandler != nil {
+							r.Route("/grace", func(r chi.Router) {
+								r.Post("/end", graceHandler.ForceEnd)
+							})
+						}
+
+						// NFS netgroup management - requires NetgroupStore capability
+						if ns, ok := cpStore.(store.NetgroupStore); ok {
+							r.Route("/netgroups", func(r chi.Router) {
+								netgroupHandler := handlers.NewNetgroupHandler(ns)
+								r.Post("/", netgroupHandler.Create)
+								r.Get("/", netgroupHandler.List)
+								r.Get("/{name}", netgroupHandler.Get)
+								r.Delete("/{name}", netgroupHandler.Delete)
+								r.Post("/{name}/members", netgroupHandler.AddMember)
+								r.Delete("/{name}/members/{id}", netgroupHandler.RemoveMember)
+							})
+						}
+
+						// NFS identity mapping management - requires IdentityMappingStore capability
+						if ims, ok := cpStore.(store.IdentityMappingStore); ok {
+							r.Route("/identity-mappings", func(r chi.Router) {
+								idmapHandler := handlers.NewIdentityMappingHandler(ims)
+								r.Get("/", idmapHandler.List)
+								r.Post("/", idmapHandler.Create)
+								r.Delete("/{principal}", idmapHandler.Delete)
+							})
+						}
+					})
 				})
 			})
 
@@ -232,67 +295,6 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Use(apiMiddleware.RequireAdmin())
 				mountHandler := handlers.NewMountHandler(rt)
 				r.Get("/", mountHandler.List)
-			})
-
-			// NFS adapter-scoped routes (admin only)
-			// These are NFS-specific operations registered under the NFS adapter namespace.
-			r.Route("/adapters/nfs", func(r chi.Router) {
-				r.Use(apiMiddleware.RequireAdmin())
-
-				// NFS client management
-				if clientHandler := newClientHandler(rt); clientHandler != nil {
-					r.Route("/clients", func(r chi.Router) {
-						r.Get("/", clientHandler.List)
-						r.Delete("/{id}", clientHandler.Evict)
-						r.Route("/{id}/sessions", func(r chi.Router) {
-							r.Get("/", clientHandler.ListSessions)
-							r.Delete("/{sid}", clientHandler.ForceDestroySession)
-						})
-					})
-				}
-
-				// NFS grace period management
-				if graceHandler := newGraceHandler(rt); graceHandler != nil {
-					r.Route("/grace", func(r chi.Router) {
-						r.Post("/end", graceHandler.ForceEnd)
-					})
-				}
-
-				// NFS netgroup management - requires NetgroupStore capability
-				if ns, ok := cpStore.(store.NetgroupStore); ok {
-					r.Route("/netgroups", func(r chi.Router) {
-						netgroupHandler := handlers.NewNetgroupHandler(ns)
-						r.Post("/", netgroupHandler.Create)
-						r.Get("/", netgroupHandler.List)
-						r.Get("/{name}", netgroupHandler.Get)
-						r.Delete("/{name}", netgroupHandler.Delete)
-						r.Post("/{name}/members", netgroupHandler.AddMember)
-						r.Delete("/{name}/members/{id}", netgroupHandler.RemoveMember)
-					})
-				}
-
-				// NFS identity mapping management - requires IdentityMappingStore capability
-				if ims, ok := cpStore.(store.IdentityMappingStore); ok {
-					r.Route("/identity-mappings", func(r chi.Router) {
-						idmapHandler := handlers.NewIdentityMappingHandler(ims)
-						r.Get("/", idmapHandler.List)
-						r.Post("/", idmapHandler.Create)
-						r.Delete("/{principal}", idmapHandler.Delete)
-					})
-				}
-
-				// NFS mount listing (NFS-specific view)
-				mountHandler := handlers.NewMountHandler(rt)
-				r.Get("/mounts", mountHandler.ListByProtocol("nfs"))
-			})
-
-			// SMB adapter-scoped routes (admin only)
-			r.Route("/adapters/smb", func(r chi.Router) {
-				r.Use(apiMiddleware.RequireAdmin())
-
-				// SMB mount listing (SMB-specific view)
-				mountHandler := handlers.NewMountHandler(rt)
-				r.Get("/mounts", mountHandler.ListByProtocol("smb"))
 			})
 		})
 	})
