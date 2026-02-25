@@ -17,7 +17,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
-func setupNetgroupTest(t *testing.T) (store.Store, *NetgroupHandler) {
+func setupNetgroupTest(t *testing.T) (*store.GORMStore, *NetgroupHandler) {
 	t.Helper()
 
 	dbConfig := store.Config{
@@ -178,10 +178,16 @@ func TestDeleteNetgroup_InUse(t *testing.T) {
 		Name:            "/shared",
 		MetadataStoreID: metaStore.ID,
 		PayloadStoreID:  payloadStore.ID,
-		NetgroupID:      &ngID,
 		CreatedAt:       time.Now(),
 	}
 	cpStore.CreateShare(ctx, share)
+
+	// Associate netgroup via NFS adapter config
+	nfsOpts := models.DefaultNFSExportOptions()
+	nfsOpts.NetgroupID = &ngID
+	nfsCfg := &models.ShareAdapterConfig{ShareID: share.ID, AdapterType: "nfs"}
+	nfsCfg.SetConfig(nfsOpts)
+	cpStore.SetShareAdapterConfig(ctx, nfsCfg)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/netgroups/in-use-ng", nil)
 	rctx := chi.NewRouteContext()

@@ -2,12 +2,14 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
 // Default DNS cache TTLs.
@@ -122,8 +124,16 @@ func (r *Runtime) CheckNetgroupAccess(ctx context.Context, shareName string, cli
 		return true, nil
 	}
 
-	// 3. Get netgroup members from store
-	members, err := r.store.GetNetgroupMembers(ctx, share.NetgroupName)
+	// 3. Get netgroup members from store (requires NetgroupStore interface)
+	ns, ok := r.store.(store.NetgroupStore)
+	if !ok {
+		logger.Warn("Store does not implement NetgroupStore, denying access",
+			"share", shareName,
+			"netgroup", share.NetgroupName)
+		return false, fmt.Errorf("store does not support netgroup operations")
+	}
+
+	members, err := ns.GetNetgroupMembers(ctx, share.NetgroupName)
 	if err != nil {
 		logger.Warn("Failed to get netgroup members, denying access",
 			"share", shareName,

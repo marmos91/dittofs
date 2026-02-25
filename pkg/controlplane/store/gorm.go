@@ -193,6 +193,20 @@ func New(config *Config) (*GORMStore, error) {
 		return nil, fmt.Errorf("failed to run database migration: %w", err)
 	}
 
+	// Post-migration: drop protocol-specific columns from shares table.
+	// These have been moved to share_adapter_configs.
+	migrator := db.Migrator()
+	for _, col := range []string{"squash", "anonymous_uid", "anonymous_gid", "allow_auth_sys", "require_kerberos", "min_kerberos_level", "netgroup_id", "disable_readdirplus"} {
+		if migrator.HasColumn(&models.Share{}, col) {
+			_ = migrator.DropColumn(&models.Share{}, col)
+		}
+	}
+	for _, col := range []string{"guest_enabled", "guest_uid", "guest_gid"} {
+		if migrator.HasColumn(&models.Share{}, col) {
+			_ = migrator.DropColumn(&models.Share{}, col)
+		}
+	}
+
 	store := &GORMStore{
 		db:     db,
 		config: config,
@@ -201,17 +215,6 @@ func New(config *Config) (*GORMStore, error) {
 	// Post-migration: populate default settings for existing adapters
 	if err := store.EnsureAdapterSettings(context.Background()); err != nil {
 		return nil, fmt.Errorf("failed to ensure adapter settings: %w", err)
-	}
-
-	// Post-migration: set correct defaults for existing shares that got zero-values
-	// from column addition. GORM's default tag only applies on INSERT, not ALTER TABLE.
-	// Existing shares would get allow_auth_sys=false (zero value) instead of true.
-	// Only update shares where all security fields are zero-valued (untouched by migration).
-	if err := db.Exec(
-		"UPDATE shares SET allow_auth_sys = ? WHERE allow_auth_sys = ? AND require_kerberos = ? AND blocked_operations IS NULL",
-		true, false, false,
-	).Error; err != nil {
-		return nil, fmt.Errorf("failed to apply post-migration defaults: %w", err)
 	}
 
 	// Post-migration: fix portmapper_port for existing NFS adapter settings.

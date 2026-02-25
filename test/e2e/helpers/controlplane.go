@@ -123,10 +123,9 @@ func CleanupNetgroup(client *apiclient.Client, name string) {
 // =============================================================================
 
 // ShareSecurityPolicy defines security policy options for share creation.
+// Protocol-specific security fields (AllowAuthSys, RequireKerberos, NetgroupID)
+// are now managed via per-adapter config API, not the share creation API.
 type ShareSecurityPolicy struct {
-	AllowAuthSys      *bool
-	RequireKerberos   *bool
-	NetgroupID        *string
 	BlockedOperations []string
 }
 
@@ -142,9 +141,6 @@ func CreateShareWithPolicy(t *testing.T, client *apiclient.Client, name, metadat
 	}
 
 	if policy != nil {
-		req.AllowAuthSys = policy.AllowAuthSys
-		req.RequireKerberos = policy.RequireKerberos
-		req.NetgroupID = policy.NetgroupID
 		req.BlockedOperations = &policy.BlockedOperations
 	}
 

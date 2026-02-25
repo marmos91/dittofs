@@ -436,16 +436,26 @@ func TestDeleteNetgroup_InUse(t *testing.T) {
 	}
 	s.CreatePayloadStore(ctx, payloadStore)
 
-	// Create share referencing netgroup
+	// Create share and associate netgroup via NFS adapter config
 	share := &models.Share{
 		ID:              uuid.New().String(),
 		Name:            "/test-share",
 		MetadataStoreID: metaStore.ID,
 		PayloadStoreID:  payloadStore.ID,
-		NetgroupID:      &ngID,
 		CreatedAt:       time.Now(),
 	}
 	s.CreateShare(ctx, share)
+
+	// Create NFS adapter config referencing the netgroup
+	nfsOpts := models.DefaultNFSExportOptions()
+	nfsOpts.NetgroupID = &ngID
+	nfsCfg := &models.ShareAdapterConfig{ShareID: share.ID, AdapterType: "nfs"}
+	if err := nfsCfg.SetConfig(nfsOpts); err != nil {
+		t.Fatalf("Failed to set NFS config: %v", err)
+	}
+	if err := s.SetShareAdapterConfig(ctx, nfsCfg); err != nil {
+		t.Fatalf("Failed to set adapter config: %v", err)
+	}
 
 	// Try to delete - should fail
 	err := s.DeleteNetgroup(ctx, "in-use-test")

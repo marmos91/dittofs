@@ -212,28 +212,32 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				})
 			})
 
-			// Netgroup management (admin only)
-			r.Route("/netgroups", func(r chi.Router) {
-				r.Use(apiMiddleware.RequireAdmin())
+			// Netgroup management (admin only) - requires NetgroupStore capability
+			if ns, ok := cpStore.(store.NetgroupStore); ok {
+				r.Route("/netgroups", func(r chi.Router) {
+					r.Use(apiMiddleware.RequireAdmin())
 
-				netgroupHandler := handlers.NewNetgroupHandler(cpStore)
-				r.Post("/", netgroupHandler.Create)
-				r.Get("/", netgroupHandler.List)
-				r.Get("/{name}", netgroupHandler.Get)
-				r.Delete("/{name}", netgroupHandler.Delete)
-				r.Post("/{name}/members", netgroupHandler.AddMember)
-				r.Delete("/{name}/members/{id}", netgroupHandler.RemoveMember)
-			})
+					netgroupHandler := handlers.NewNetgroupHandler(ns)
+					r.Post("/", netgroupHandler.Create)
+					r.Get("/", netgroupHandler.List)
+					r.Get("/{name}", netgroupHandler.Get)
+					r.Delete("/{name}", netgroupHandler.Delete)
+					r.Post("/{name}/members", netgroupHandler.AddMember)
+					r.Delete("/{name}/members/{id}", netgroupHandler.RemoveMember)
+				})
+			}
 
-			// Identity mapping management (admin only)
-			r.Route("/identity-mappings", func(r chi.Router) {
-				r.Use(apiMiddleware.RequireAdmin())
+			// Identity mapping management (admin only) - requires IdentityMappingStore capability
+			if ims, ok := cpStore.(store.IdentityMappingStore); ok {
+				r.Route("/identity-mappings", func(r chi.Router) {
+					r.Use(apiMiddleware.RequireAdmin())
 
-				idmapHandler := handlers.NewIdentityMappingHandler(cpStore)
-				r.Get("/", idmapHandler.List)
-				r.Post("/", idmapHandler.Create)
-				r.Delete("/{principal}", idmapHandler.Delete)
-			})
+					idmapHandler := handlers.NewIdentityMappingHandler(ims)
+					r.Get("/", idmapHandler.List)
+					r.Post("/", idmapHandler.Create)
+					r.Delete("/{principal}", idmapHandler.Delete)
+				})
+			}
 
 			// System settings (admin only)
 			r.Route("/settings", func(r chi.Router) {

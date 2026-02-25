@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"time"
 
@@ -47,32 +46,20 @@ func NewShareHandler(store store.Store, rt *runtime.Runtime) *ShareHandler {
 
 // CreateShareRequest is the request body for POST /api/v1/shares.
 type CreateShareRequest struct {
-	Name              string `json:"name"`
-	MetadataStoreID   string `json:"metadata_store_id"`
-	PayloadStoreID    string `json:"payload_store_id"`
-	ReadOnly          bool   `json:"read_only,omitempty"`
-	DefaultPermission string `json:"default_permission,omitempty"`
-
-	// Security policy fields
-	AllowAuthSys      *bool     `json:"allow_auth_sys,omitempty"`
-	RequireKerberos   *bool     `json:"require_kerberos,omitempty"`
-	MinKerberosLevel  *string   `json:"min_kerberos_level,omitempty"`
-	NetgroupID        *string   `json:"netgroup_id,omitempty"`
+	Name              string    `json:"name"`
+	MetadataStoreID   string    `json:"metadata_store_id"`
+	PayloadStoreID    string    `json:"payload_store_id"`
+	ReadOnly          bool      `json:"read_only,omitempty"`
+	DefaultPermission string    `json:"default_permission,omitempty"`
 	BlockedOperations *[]string `json:"blocked_operations,omitempty"`
 }
 
 // UpdateShareRequest is the request body for PUT /api/v1/shares/{name}.
 type UpdateShareRequest struct {
-	MetadataStoreID   *string `json:"metadata_store_id,omitempty"`
-	PayloadStoreID    *string `json:"payload_store_id,omitempty"`
-	ReadOnly          *bool   `json:"read_only,omitempty"`
-	DefaultPermission *string `json:"default_permission,omitempty"`
-
-	// Security policy fields
-	AllowAuthSys      *bool     `json:"allow_auth_sys,omitempty"`
-	RequireKerberos   *bool     `json:"require_kerberos,omitempty"`
-	MinKerberosLevel  *string   `json:"min_kerberos_level,omitempty"`
-	NetgroupID        *string   `json:"netgroup_id,omitempty"`
+	MetadataStoreID   *string   `json:"metadata_store_id,omitempty"`
+	PayloadStoreID    *string   `json:"payload_store_id,omitempty"`
+	ReadOnly          *bool     `json:"read_only,omitempty"`
+	DefaultPermission *string   `json:"default_permission,omitempty"`
 	BlockedOperations *[]string `json:"blocked_operations,omitempty"`
 }
 
@@ -84,15 +71,9 @@ type ShareResponse struct {
 	PayloadStoreID    string    `json:"payload_store_id"`
 	ReadOnly          bool      `json:"read_only"`
 	DefaultPermission string    `json:"default_permission"`
+	BlockedOperations []string  `json:"blocked_operations,omitempty"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
-
-	// Security policy
-	AllowAuthSys      bool     `json:"allow_auth_sys"`
-	RequireKerberos   bool     `json:"require_kerberos"`
-	MinKerberosLevel  string   `json:"min_kerberos_level"`
-	NetgroupID        *string  `json:"netgroup_id,omitempty"`
-	BlockedOperations []string `json:"blocked_operations,omitempty"`
 }
 
 // Create handles POST /api/v1/shares.
@@ -148,41 +129,6 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		defaultPerm = "read-write"
 	}
 
-	// Apply security policy defaults for nil fields
-	allowAuthSys := true
-	if req.AllowAuthSys != nil {
-		allowAuthSys = *req.AllowAuthSys
-	}
-	requireKerberos := false
-	if req.RequireKerberos != nil {
-		requireKerberos = *req.RequireKerberos
-	}
-	minKerberosLevel := models.KerberosLevelKrb5
-	if req.MinKerberosLevel != nil {
-		minKerberosLevel = *req.MinKerberosLevel
-	}
-
-	// Validate MinKerberosLevel
-	if !isValidKerberosLevel(minKerberosLevel) {
-		BadRequest(w, "Invalid min_kerberos_level. Must be one of: krb5, krb5i, krb5p")
-		return
-	}
-
-	// Validate NetgroupID references existing netgroup and resolve to actual ID
-	var netgroupID *string
-	if req.NetgroupID != nil && *req.NetgroupID != "" {
-		ng, err := h.store.GetNetgroupByID(r.Context(), *req.NetgroupID)
-		if err != nil {
-			// Try by name as well
-			ng, err = h.store.GetNetgroup(r.Context(), *req.NetgroupID)
-			if err != nil {
-				BadRequest(w, "Netgroup not found: "+*req.NetgroupID)
-				return
-			}
-		}
-		netgroupID = &ng.ID
-	}
-
 	// Validate BlockedOperations entries
 	if req.BlockedOperations != nil {
 		for _, op := range *req.BlockedOperations {
@@ -193,15 +139,6 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Fail-fast: Kerberos required but NFS adapter may not have keytab configured
-	// This is a safety check - runtime enforcement happens at share load time
-	if requireKerberos {
-		logger.Info("Share created with require_kerberos=true",
-			"share", req.Name,
-			"min_kerberos_level", minKerberosLevel,
-		)
-	}
-
 	now := time.Now()
 	share := &models.Share{
 		ID:                uuid.New().String(),
@@ -210,10 +147,6 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		PayloadStoreID:    payloadStore.ID, // Use actual store ID (UUID), not name
 		ReadOnly:          req.ReadOnly,
 		DefaultPermission: defaultPerm,
-		AllowAuthSys:      allowAuthSys,
-		RequireKerberos:   requireKerberos,
-		MinKerberosLevel:  minKerberosLevel,
-		NetgroupID:        netgroupID,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
@@ -232,6 +165,19 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Create default adapter configs for the new share
+	nfsOpts := models.DefaultNFSExportOptions()
+	nfsCfg := &models.ShareAdapterConfig{ShareID: share.ID, AdapterType: "nfs"}
+	if err := nfsCfg.SetConfig(nfsOpts); err == nil {
+		_ = h.store.SetShareAdapterConfig(r.Context(), nfsCfg)
+	}
+
+	smbOpts := models.DefaultSMBShareOptions()
+	smbCfg := &models.ShareAdapterConfig{ShareID: share.ID, AdapterType: "smb"}
+	if err := smbCfg.SetConfig(smbOpts); err == nil {
+		_ = h.store.SetShareAdapterConfig(r.Context(), smbCfg)
+	}
+
 	// Add share to runtime if runtime is available
 	if h.runtime != nil {
 		shareConfig := &runtime.ShareConfig{
@@ -239,13 +185,13 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			MetadataStore:     metaStore.Name,
 			ReadOnly:          req.ReadOnly,
 			DefaultPermission: defaultPerm,
-			Squash:            share.GetSquashMode(),
-			AnonymousUID:      share.GetAnonymousUID(),
-			AnonymousGID:      share.GetAnonymousGID(),
-			AllowAuthSys:      allowAuthSys,
+			Squash:            nfsOpts.GetSquashMode(),
+			AnonymousUID:      nfsOpts.GetAnonymousUID(),
+			AnonymousGID:      nfsOpts.GetAnonymousGID(),
+			AllowAuthSys:      nfsOpts.AllowAuthSys,
 			AllowAuthSysSet:   true,
-			RequireKerberos:   requireKerberos,
-			MinKerberosLevel:  minKerberosLevel,
+			RequireKerberos:   nfsOpts.RequireKerberos,
+			MinKerberosLevel:  nfsOpts.MinKerberosLevel,
 			BlockedOperations: share.GetBlockedOps(),
 		}
 
@@ -337,38 +283,6 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.DefaultPermission != nil {
 		share.DefaultPermission = *req.DefaultPermission
 	}
-
-	// Security policy updates (PATCH semantics: only apply non-nil)
-	if req.AllowAuthSys != nil {
-		share.AllowAuthSys = *req.AllowAuthSys
-	}
-	if req.RequireKerberos != nil {
-		share.RequireKerberos = *req.RequireKerberos
-	}
-	if req.MinKerberosLevel != nil {
-		if !isValidKerberosLevel(*req.MinKerberosLevel) {
-			BadRequest(w, "Invalid min_kerberos_level. Must be one of: krb5, krb5i, krb5p")
-			return
-		}
-		share.MinKerberosLevel = *req.MinKerberosLevel
-	}
-	if req.NetgroupID != nil {
-		if *req.NetgroupID != "" {
-			// Validate netgroup exists and resolve to actual ID
-			ng, ngErr := h.store.GetNetgroupByID(r.Context(), *req.NetgroupID)
-			if ngErr != nil {
-				ng, ngErr = h.store.GetNetgroup(r.Context(), *req.NetgroupID)
-				if ngErr != nil {
-					BadRequest(w, "Netgroup not found: "+*req.NetgroupID)
-					return
-				}
-			}
-			share.NetgroupID = &ng.ID
-		} else {
-			// Empty string means remove netgroup association
-			share.NetgroupID = nil
-		}
-	}
 	if req.BlockedOperations != nil {
 		for _, op := range *req.BlockedOperations {
 			if !isValidBlockedOperation(op) {
@@ -377,14 +291,6 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		share.SetBlockedOps(*req.BlockedOperations)
-	}
-
-	// Fail-fast: Kerberos required log
-	if share.RequireKerberos {
-		logger.Info("Share updated with require_kerberos=true",
-			"share", share.Name,
-			"min_kerberos_level", share.MinKerberosLevel,
-		)
 	}
 
 	share.UpdatedAt = time.Now()
@@ -676,19 +582,10 @@ func shareToResponse(s *models.Share) ShareResponse {
 		PayloadStoreID:    s.PayloadStoreID,
 		ReadOnly:          s.ReadOnly,
 		DefaultPermission: s.DefaultPermission,
-		AllowAuthSys:      s.AllowAuthSys,
-		RequireKerberos:   s.RequireKerberos,
-		MinKerberosLevel:  s.MinKerberosLevel,
-		NetgroupID:        s.NetgroupID,
 		BlockedOperations: s.GetBlockedOps(),
 		CreatedAt:         s.CreatedAt,
 		UpdatedAt:         s.UpdatedAt,
 	}
-}
-
-// isValidKerberosLevel checks if a Kerberos level string is valid.
-func isValidKerberosLevel(level string) bool {
-	return slices.Contains(models.ValidKerberosLevels, level)
 }
 
 // isValidBlockedOperation checks if a blocked operation name is valid for any protocol.
