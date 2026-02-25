@@ -1,7 +1,3 @@
-// Package handlers provides SMB2 command handlers and session management.
-//
-// This file implements the SMB2 CHANGE_NOTIFY command [MS-SMB2] 2.2.35, 2.2.36.
-// CHANGE_NOTIFY allows clients to watch directories for changes.
 package handlers
 
 import (
@@ -65,20 +61,9 @@ const (
 // ============================================================================
 
 // ChangeNotifyRequest represents an SMB2 CHANGE_NOTIFY request [MS-SMB2] 2.2.35.
-//
 // Clients use this to register for directory change notifications.
-// The server responds asynchronously when changes occur.
-//
-// **Wire Format (32 bytes):**
-//
-//	Offset  Size  Field              Description
-//	------  ----  -----------------  ----------------------------------
-//	0       2     StructureSize      Always 32
-//	2       2     Flags              SMB2_WATCH_TREE for recursive
-//	4       4     OutputBufferLength Maximum response size
-//	8       16    FileId             Directory handle
-//	24      4     CompletionFilter   Types of changes to watch
-//	28      4     Reserved           Reserved (0)
+// The server responds asynchronously when changes occur. The fixed wire
+// format is 32 bytes.
 type ChangeNotifyRequest struct {
 	// Flags controls watch behavior.
 	// SMB2_WATCH_TREE (0x0001) enables recursive watching.
@@ -96,15 +81,7 @@ type ChangeNotifyRequest struct {
 }
 
 // ChangeNotifyResponse represents an SMB2 CHANGE_NOTIFY response [MS-SMB2] 2.2.36.
-//
-// **Wire Format (8 bytes + variable):**
-//
-//	Offset  Size  Field              Description
-//	------  ----  -----------------  ----------------------------------
-//	0       2     StructureSize      Always 9
-//	2       2     OutputBufferOffset Offset to output buffer
-//	4       4     OutputBufferLength Length of output buffer
-//	8+      var   Buffer             Array of FileNotifyInformation
+// Contains an array of FileNotifyInformation entries describing the changes.
 type ChangeNotifyResponse struct {
 	SMBResponseBase
 	OutputBufferOffset uint16
@@ -113,15 +90,6 @@ type ChangeNotifyResponse struct {
 }
 
 // FileNotifyInformation represents a single change notification [MS-FSCC] 2.4.42.
-//
-// **Wire Format (12 bytes + variable):**
-//
-//	Offset  Size  Field             Description
-//	------  ----  ----------------  ----------------------------------
-//	0       4     NextEntryOffset   Offset to next entry (0 if last)
-//	4       4     Action            FileAction* constant
-//	8       4     FileNameLength    Length of file name in bytes
-//	12      var   FileName          UTF-16LE file name
 type FileNotifyInformation struct {
 	Action   uint32
 	FileName string // Relative path within watched directory
@@ -136,7 +104,11 @@ type FileNotifyInformation struct {
 // Returns an error if the response could not be sent (e.g., connection closed).
 type AsyncResponseCallback func(sessionID, messageID uint64, response *ChangeNotifyResponse) error
 
-// PendingNotify tracks a pending CHANGE_NOTIFY request waiting for events.
+// PendingNotify tracks a pending CHANGE_NOTIFY request waiting for filesystem events.
+// Each instance represents one client watch registered via the CHANGE_NOTIFY command.
+// It stores the watch path, completion filter, and the async callback for delivering
+// notifications. CHANGE_NOTIFY is one-shot: after a notification is sent, the watcher
+// is unregistered and the client must re-issue the request for more notifications.
 type PendingNotify struct {
 	// Request identification
 	FileID    [16]byte
@@ -156,7 +128,12 @@ type PendingNotify struct {
 	AsyncCallback AsyncResponseCallback
 }
 
-// NotifyRegistry manages pending CHANGE_NOTIFY requests.
+// NotifyRegistry manages pending CHANGE_NOTIFY requests from SMB2 clients.
+// It maps directory watch paths to pending notifications and supports both
+// exact-path and recursive (WatchTree) matching. When a filesystem change
+// occurs (via NotifyChange), it walks up the directory hierarchy to find
+// matching watchers and delivers async responses via AsyncCallback.
+// Thread-safe: all operations are protected by a read-write mutex.
 type NotifyRegistry struct {
 	mu       sync.RWMutex
 	pending  map[string][]*PendingNotify // path -> pending requests
@@ -247,7 +224,10 @@ func (r *NotifyRegistry) GetWatchersForPath(path string) []*PendingNotify {
 	return result
 }
 
-// MatchesFilter checks if an action matches a completion filter.
+// MatchesFilter checks if a filesystem change action matches a CHANGE_NOTIFY
+// completion filter [MS-SMB2] 2.2.35. It maps FileAction* constants to the
+// corresponding FileNotifyChange* flags. For example, FileActionAdded matches
+// FileNotifyChangeFileName and FileNotifyChangeDirName.
 func MatchesFilter(action uint32, filter uint32) bool {
 	switch action {
 	case FileActionAdded, FileActionRemoved:
@@ -268,7 +248,10 @@ func MatchesFilter(action uint32, filter uint32) bool {
 // Decode/Encode Functions
 // ============================================================================
 
-// DecodeChangeNotifyRequest parses a CHANGE_NOTIFY request.
+// DecodeChangeNotifyRequest parses an SMB2 CHANGE_NOTIFY request [MS-SMB2] 2.2.35
+// from the wire format. The request body must be at least 32 bytes containing
+// the structure size, flags, output buffer length, file ID, and completion filter.
+// Returns an error if the body is too short or the structure size is invalid.
 func DecodeChangeNotifyRequest(body []byte) (*ChangeNotifyRequest, error) {
 	if len(body) < 32 {
 		return nil, fmt.Errorf("CHANGE_NOTIFY request too short: %d bytes", len(body))

@@ -1,8 +1,3 @@
-// Package handlers provides SMB2 command handlers and session management.
-//
-// This file implements the SMB2 QUERY_DIRECTORY command handler [MS-SMB2] 2.2.33, 2.2.34.
-// QUERY_DIRECTORY enumerates files in a directory, returning entries that match
-// a specified search pattern.
 package handlers
 
 import (
@@ -29,32 +24,9 @@ const maxDirectoryReadBytes uint32 = 65536
 // ============================================================================
 
 // QueryDirectoryRequest represents an SMB2 QUERY_DIRECTORY request from a client [MS-SMB2] 2.2.33.
-//
-// QUERY_DIRECTORY enumerates files and subdirectories in a directory handle.
-// Results can be filtered using a search pattern.
-//
-// **Wire format (32 bytes fixed + variable filename):**
-//
-//	Offset  Size  Field              Description
-//	0       2     StructureSize      Always 33 (includes 1 byte of buffer)
-//	2       1     FileInfoClass      Type of directory info to return
-//	3       1     Flags              Query flags (restart, single, etc.)
-//	4       4     FileIndex          Index for resuming enumeration
-//	8       16    FileId             SMB2 directory handle
-//	24      2     FileNameOffset     Offset to search pattern
-//	26      2     FileNameLength     Length of search pattern
-//	28      4     OutputBufferLength Max bytes to return
-//	32+     var   Buffer             Search pattern (UTF-16LE)
-//
-// **Example:**
-//
-//	req := &QueryDirectoryRequest{
-//	    FileInfoClass:      FileIdBothDirectoryInformation,
-//	    Flags:              0x01, // SMB2_RESTART_SCANS
-//	    FileID:             dirID,
-//	    FileName:           "*.txt",
-//	    OutputBufferLength: 65536,
-//	}
+// QUERY_DIRECTORY enumerates files and subdirectories in a directory handle,
+// optionally filtered by a search pattern. The fixed wire format is 32 bytes
+// plus a variable-length search pattern.
 type QueryDirectoryRequest struct {
 	// FileInfoClass specifies the type of directory information to return.
 	// Common values:
@@ -94,16 +66,7 @@ type QueryDirectoryRequest struct {
 }
 
 // QueryDirectoryResponse represents an SMB2 QUERY_DIRECTORY response to a client [MS-SMB2] 2.2.34.
-//
 // The response contains an array of directory entries matching the search pattern.
-//
-// **Wire format (8 bytes fixed + variable data):**
-//
-//	Offset  Size  Field              Description
-//	0       2     StructureSize      Always 9 (includes 1 byte of buffer)
-//	2       2     OutputBufferOffset Offset from header to data
-//	4       4     OutputBufferLength Length of data
-//	8+      var   Buffer             Directory entries
 type QueryDirectoryResponse struct {
 	SMBResponseBase // Embeds Status field and GetStatus() method
 
@@ -113,19 +76,8 @@ type QueryDirectoryResponse struct {
 }
 
 // DirectoryEntry represents a file entry in directory listing.
-//
 // Used by QUERY_DIRECTORY to return information about files and
-// subdirectories within a directory. This is a convenience structure
-// that maps to various FILE_*_INFORMATION structures.
-//
-// **Example:**
-//
-//	entry := &DirectoryEntry{
-//	    FileName:       "document.txt",
-//	    FileAttributes: types.FileAttributeNormal,
-//	    EndOfFile:      1024,
-//	    CreationTime:   time.Now(),
-//	}
+// subdirectories. Maps to various FILE_*_INFORMATION wire structures.
 type DirectoryEntry struct {
 	// FileName is the name of the file or directory.
 	FileName string
@@ -169,20 +121,7 @@ type DirectoryEntry struct {
 // ============================================================================
 
 // DecodeQueryDirectoryRequest parses an SMB2 QUERY_DIRECTORY request body [MS-SMB2] 2.2.33.
-//
-// **Parameters:**
-//   - body: Request body starting after the SMB2 header (64 bytes)
-//
-// **Returns:**
-//   - *QueryDirectoryRequest: Parsed request structure
-//   - error: Decoding error if body is malformed
-//
-// **Example:**
-//
-//	req, err := DecodeQueryDirectoryRequest(body)
-//	if err != nil {
-//	    return NewErrorResult(types.StatusInvalidParameter), nil
-//	}
+// Returns an error if the body is less than 32 bytes.
 func DecodeQueryDirectoryRequest(body []byte) (*QueryDirectoryRequest, error) {
 	if len(body) < 32 {
 		return nil, fmt.Errorf("QUERY_DIRECTORY request too short: %d bytes", len(body))
@@ -220,10 +159,6 @@ func DecodeQueryDirectoryRequest(body []byte) (*QueryDirectoryRequest, error) {
 }
 
 // Encode serializes the QueryDirectoryResponse into SMB2 wire format [MS-SMB2] 2.2.34.
-//
-// **Returns:**
-//   - []byte: Response body with 8-byte header + directory entries
-//   - error: Encoding error (currently always nil)
 func (resp *QueryDirectoryResponse) Encode() ([]byte, error) {
 	// Fixed response header is 8 bytes, data follows immediately
 	buf := make([]byte, 8+len(resp.Data))
@@ -236,14 +171,7 @@ func (resp *QueryDirectoryResponse) Encode() ([]byte, error) {
 }
 
 // EncodeDirectoryEntry encodes a single directory entry for FILE_ID_BOTH_DIRECTORY_INFORMATION.
-// This function is used for building directory listing responses.
-//
-// **Parameters:**
-//   - entry: Directory entry to encode
-//   - nextOffset: Offset to next entry (0 for last entry)
-//
-// **Returns:**
-//   - []byte: Encoded entry (8-byte aligned)
+// The result is 8-byte aligned. nextOffset should be 0 for the last entry.
 func EncodeDirectoryEntry(entry *DirectoryEntry, nextOffset uint32) []byte {
 	// FILE_ID_BOTH_DIRECTORY_INFORMATION structure
 	// Fixed part is 104 bytes + variable FileName
@@ -286,44 +214,11 @@ func EncodeDirectoryEntry(entry *DirectoryEntry, nextOffset uint32) []byte {
 
 // QueryDirectory handles SMB2 QUERY_DIRECTORY command [MS-SMB2] 2.2.33, 2.2.34.
 //
-// QUERY_DIRECTORY enumerates files and subdirectories in a directory handle.
-// Results can be filtered using a search pattern and returned in various formats.
-//
-// **Purpose:**
-//
-// The QUERY_DIRECTORY command allows clients to:
-//   - List all files in a directory
-//   - Search for files matching a pattern (e.g., "*.txt")
-//   - Get detailed file information during enumeration
-//   - Resume enumeration across multiple calls
-//
-// **Process:**
-//
-//  1. Decode and validate the request
-//  2. Look up the open directory by FileID
-//  3. Verify the handle is a directory
-//  4. Handle enumeration state (restart, resume)
-//  5. Read directory entries from metadata store
-//  6. Filter entries based on search pattern
-//  7. Build entries in the requested FileInfoClass format
-//  8. Return the encoded response
-//
-// **Error Handling:**
-//
-// Returns appropriate SMB status codes:
-//   - StatusInvalidParameter: Malformed request or not a directory
-//   - StatusInvalidHandle: Invalid FileID
-//   - StatusBadNetworkName: Share not found
-//   - StatusAccessDenied: Permission denied
-//   - StatusNoMoreFiles: Enumeration complete
-//
-// **Parameters:**
-//   - ctx: SMB handler context with session information
-//   - req: Parsed QUERY_DIRECTORY request
-//
-// **Returns:**
-//   - *QueryDirectoryResponse: Response with directory entries
-//   - error: Internal error (rare)
+// QUERY_DIRECTORY enumerates files and subdirectories in a directory handle,
+// filtered by an optional search pattern. It supports multiple FileInfoClass
+// formats, handles enumeration state (restart/resume), and adds the "." and
+// ".." special entries on the first scan. Returns StatusNoMoreFiles when
+// enumeration is complete.
 func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequest) (*QueryDirectoryResponse, error) {
 	logger.Debug("QUERY_DIRECTORY request",
 		"fileInfoClass", req.FileInfoClass,

@@ -8,7 +8,7 @@ progress:
   total_phases: 27
   completed_phases: 26
   total_plans: 95
-  completed_plans: 94
+  completed_plans: 95
 ---
 
 # Project State
@@ -23,9 +23,9 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 ## Current Position
 
 Phase: 28 - SMB Adapter Restructuring
-Current Plan: 4 of 5 (COMPLETE)
-Status: Executing Phase 28
-Last activity: 2026-02-25 -- Completed 28-04 (Authenticator Interface)
+Current Plan: 5 of 5 (COMPLETE)
+Status: Phase 28 Complete
+Last activity: 2026-02-25 -- Completed 28-05 (Handler Documentation)
 
 ## Completed Milestones
 
@@ -38,7 +38,7 @@ Last activity: 2026-02-25 -- Completed 28-04 (Authenticator Interface)
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 94 (19 v1.0 + 42 v2.0 + 25 v3.0 + 8 v3.5)
+- Total plans completed: 95 (19 v1.0 + 42 v2.0 + 25 v3.0 + 9 v3.5)
 - 3 milestones in 25 days
 
 | Phase | Plan | Duration | Tasks | Files |
@@ -54,6 +54,7 @@ Last activity: 2026-02-25 -- Completed 28-04 (Authenticator Interface)
 | 28 | 02 | 8min | 2 | 9 |
 | 28 | 03 | 35min | 2 | 6 |
 | 28 | 04 | 6min | 2 | 5 |
+| 28 | 05 | 12min | 2 | 7 |
 
 ## Quick Tasks Completed
 
@@ -104,6 +105,7 @@ Last activity: 2026-02-25 -- Completed 28-04 (Authenticator Interface)
 - [Phase 28]: [28-03] Created response.go instead of expanding dispatch.go to keep dispatch table separate from response/send logic
 - [Phase 28]: [28-03] ConnInfo struct + SessionTracker interface pattern decouples pkg/ Connection from internal/ dispatch without circular imports
 - [Phase 28]: [28-03] sessionSigningVerifier moved to internal/adapter/smb/framing.go as NewSessionSigningVerifier for co-location with framing logic
+- [Phase 28]: [28-05] Skipped files with adequate existing Godoc, focused edits on under-documented exports (handler types, converter functions, change_notify registry)
 
 ### Pending Todos
 
@@ -116,5 +118,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-25
-Stopped at: Completed 28-04-PLAN.md
-Resume file: Continue with 28-05-PLAN.md
+Stopped at: Completed 28-05-PLAN.md (Phase 28 complete)
+Resume file: Next phase

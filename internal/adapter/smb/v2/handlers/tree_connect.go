@@ -29,7 +29,11 @@ const treeConnectFixedSize = 8
 // This is the minimum access required for RPC operations over named pipes.
 const ipcMaximalAccess = 0x1F
 
-// TreeConnect handles SMB2 TREE_CONNECT command [MS-SMB2] 2.2.9, 2.2.10
+// TreeConnect handles the SMB2 TREE_CONNECT command [MS-SMB2] 2.2.9, 2.2.10.
+// It maps a client's UNC path (\\server\share) to a DittoFS share, resolves
+// share-level permissions for the authenticated user, and creates a tree
+// connection. The IPC$ virtual share is handled separately for named pipe
+// operations. Returns the share type, flags, and MaximalAccess bitmask.
 func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	if len(body) < 9 {
 		return NewErrorResult(types.StatusInvalidParameter), nil
@@ -183,8 +187,6 @@ func calculateMaximalAccess(perm models.SharePermission) uint32 {
 		return 0
 	}
 }
-
-// Note: decodeUTF16LE and encodeUTF16LE are defined in encoding.go
 
 // handleIPCShare handles TREE_CONNECT to the virtual IPC$ share.
 // IPC$ is used for inter-process communication including:

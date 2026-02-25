@@ -246,8 +246,8 @@ func TestUnixAuthenticator_Authenticate_InvalidFormat(t *testing.T) {
 	// Corrupt data: valid stamp but absurd machine name length
 	token := make([]byte, 12)
 	binary.BigEndian.PutUint32(token[0:4], 1)     // stamp
-	binary.BigEndian.PutUint32(token[4:8], 10000)  // machine name length (too large)
-	binary.BigEndian.PutUint32(token[8:12], 0)     // garbage
+	binary.BigEndian.PutUint32(token[4:8], 10000) // machine name length (too large)
+	binary.BigEndian.PutUint32(token[8:12], 0)    // garbage
 
 	_, _, err := auth.Authenticate(context.Background(), token)
 	if err == nil {
@@ -276,44 +276,29 @@ func TestUnixAuthenticator_NeverReturnsMoreProcessingRequired(t *testing.T) {
 
 // buildAuthUnixToken creates XDR-encoded AUTH_UNIX credentials for testing.
 func buildAuthUnixToken(uid, gid uint32, machineName string, gids []uint32) []byte {
-	var buf []byte
+	// Pre-calculate total size to avoid repeated allocations.
+	nameLen := len(machineName)
+	padding := (4 - (nameLen % 4)) % 4
+	size := 4 + 4 + nameLen + padding + 4 + 4 + 4 + len(gids)*4
+	buf := make([]byte, size)
 
-	// Stamp (4 bytes)
-	stampBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(stampBytes, 0)
-	buf = append(buf, stampBytes...)
+	offset := 0
 
-	// Machine name (XDR string: length + data + padding)
-	nameLen := make([]byte, 4)
-	binary.BigEndian.PutUint32(nameLen, uint32(len(machineName)))
-	buf = append(buf, nameLen...)
-	buf = append(buf, []byte(machineName)...)
-
-	// Pad to 4-byte boundary
-	padding := (4 - (len(machineName) % 4)) % 4
-	for i := 0; i < padding; i++ {
-		buf = append(buf, 0)
+	// Helper to write a big-endian uint32 and advance the offset.
+	putUint32 := func(v uint32) {
+		binary.BigEndian.PutUint32(buf[offset:offset+4], v)
+		offset += 4
 	}
 
-	// UID (4 bytes)
-	uidBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(uidBytes, uid)
-	buf = append(buf, uidBytes...)
-
-	// GID (4 bytes)
-	gidBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(gidBytes, gid)
-	buf = append(buf, gidBytes...)
-
-	// Supplementary GIDs (count + elements)
-	gidsCountBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(gidsCountBytes, uint32(len(gids)))
-	buf = append(buf, gidsCountBytes...)
-
+	putUint32(0)                    // Stamp
+	putUint32(uint32(nameLen))      // Machine name length
+	copy(buf[offset:], machineName) // Machine name
+	offset += nameLen + padding     // Skip name + XDR padding (zero-filled by make)
+	putUint32(uid)                  // UID
+	putUint32(gid)                  // GID
+	putUint32(uint32(len(gids)))    // Supplementary GIDs count
 	for _, g := range gids {
-		gBytes := make([]byte, 4)
-		binary.BigEndian.PutUint32(gBytes, g)
-		buf = append(buf, gBytes...)
+		putUint32(g)
 	}
 
 	return buf

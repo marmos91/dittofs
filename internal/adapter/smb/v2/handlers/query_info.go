@@ -1,7 +1,3 @@
-// Package handlers provides SMB2 command handlers and session management.
-//
-// This file implements the SMB2 QUERY_INFO command handler [MS-SMB2] 2.2.37, 2.2.38.
-// QUERY_INFO retrieves file, filesystem, or security information about an open file.
 package handlers
 
 import (
@@ -20,33 +16,9 @@ import (
 // ============================================================================
 
 // QueryInfoRequest represents an SMB2 QUERY_INFO request from a client [MS-SMB2] 2.2.37.
-//
 // QUERY_INFO retrieves metadata about a file, directory, filesystem, or security
 // descriptor. The type of information returned depends on InfoType and FileInfoClass.
-//
-// **Wire format (40 bytes fixed):**
-//
-//	Offset  Size  Field              Description
-//	0       2     StructureSize      Always 41 (includes 1 byte of buffer)
-//	2       1     InfoType           Type of info: file (1), filesystem (2), security (3), quota (4)
-//	3       1     FileInfoClass      Class of info within type
-//	4       4     OutputBufferLength Max bytes to return
-//	8       2     InputBufferOffset  Offset to input buffer (usually 0)
-//	10      2     Reserved           Reserved (must be 0)
-//	12      4     InputBufferLength  Length of input buffer (usually 0)
-//	16      4     AdditionalInfo     Additional info for security queries
-//	20      4     Flags              Query flags
-//	24      16    FileId             SMB2 file identifier
-//	40+     var   Buffer             Input buffer (if any)
-//
-// **Example:**
-//
-//	req := &QueryInfoRequest{
-//	    InfoType:           types.SMB2InfoTypeFile,
-//	    FileInfoClass:      FileBasicInformation,
-//	    OutputBufferLength: 4096,
-//	    FileID:             fileID,
-//	}
+// The fixed wire format is 40 bytes.
 type QueryInfoRequest struct {
 	// InfoType specifies what type of information to query.
 	// Valid values:
@@ -83,16 +55,8 @@ type QueryInfoRequest struct {
 }
 
 // QueryInfoResponse represents an SMB2 QUERY_INFO response to a client [MS-SMB2] 2.2.38.
-//
 // The response contains the requested information encoded in the Data field.
-//
-// **Wire format (8 bytes fixed + variable data):**
-//
-//	Offset  Size  Field              Description
-//	0       2     StructureSize      Always 9 (includes 1 byte of buffer)
-//	2       2     OutputBufferOffset Offset from header to data
-//	4       4     OutputBufferLength Length of data
-//	8+      var   Buffer             Query result data
+// The fixed wire format is 8 bytes plus variable-length data.
 type QueryInfoResponse struct {
 	SMBResponseBase // Embeds Status field and GetStatus() method
 
@@ -105,20 +69,8 @@ type QueryInfoResponse struct {
 // Shared Info Types (used by multiple handlers)
 // ============================================================================
 
-// FileBasicInfo represents FILE_BASIC_INFORMATION [MS-FSCC] 2.4.7.
-//
-// This structure is used by both QUERY_INFO and SET_INFO to get/set
-// timestamps and attributes.
-//
-// **Wire format (40 bytes):**
-//
-//	Offset  Size  Field              Description
-//	0       8     CreationTime       FILETIME
-//	8       8     LastAccessTime     FILETIME
-//	16      8     LastWriteTime      FILETIME
-//	24      8     ChangeTime         FILETIME
-//	32      4     FileAttributes     File attribute flags
-//	36      4     Reserved           Reserved
+// FileBasicInfo represents FILE_BASIC_INFORMATION [MS-FSCC] 2.4.7 (40 bytes).
+// Used by both QUERY_INFO and SET_INFO to get/set timestamps and attributes.
 type FileBasicInfo struct {
 	CreationTime   time.Time
 	LastAccessTime time.Time
@@ -127,19 +79,8 @@ type FileBasicInfo struct {
 	FileAttributes types.FileAttributes
 }
 
-// FileStandardInfo represents FILE_STANDARD_INFORMATION [MS-FSCC] 2.4.41.
-//
-// This structure is used by QUERY_INFO to return file size and metadata.
-//
-// **Wire format (24 bytes):**
-//
-//	Offset  Size  Field              Description
-//	0       8     AllocationSize     Allocated size (cluster-aligned)
-//	8       8     EndOfFile          Actual file size
-//	16      4     NumberOfLinks      Hard link count
-//	20      1     DeletePending      File marked for deletion
-//	21      1     Directory          True if directory
-//	22      2     Reserved           Reserved
+// FileStandardInfo represents FILE_STANDARD_INFORMATION [MS-FSCC] 2.4.41 (24 bytes).
+// Used by QUERY_INFO to return file size, link count, and deletion status.
 type FileStandardInfo struct {
 	AllocationSize uint64
 	EndOfFile      uint64
@@ -148,22 +89,8 @@ type FileStandardInfo struct {
 	Directory      bool
 }
 
-// FileNetworkOpenInfo represents FILE_NETWORK_OPEN_INFORMATION [MS-FSCC] 2.4.27.
-//
-// This structure is optimized for network access and combines timestamps,
-// sizes, and attributes into one response.
-//
-// **Wire format (56 bytes):**
-//
-//	Offset  Size  Field              Description
-//	0       8     CreationTime       FILETIME
-//	8       8     LastAccessTime     FILETIME
-//	16      8     LastWriteTime      FILETIME
-//	24      8     ChangeTime         FILETIME
-//	32      8     AllocationSize     Allocated size
-//	40      8     EndOfFile          Actual size
-//	48      4     FileAttributes     File attributes
-//	52      4     Reserved           Reserved
+// FileNetworkOpenInfo represents FILE_NETWORK_OPEN_INFORMATION [MS-FSCC] 2.4.27 (56 bytes).
+// Optimized for network access, combining timestamps, sizes, and attributes.
 type FileNetworkOpenInfo struct {
 	CreationTime   time.Time
 	LastAccessTime time.Time
@@ -195,20 +122,7 @@ type FileAllInfo struct {
 // ============================================================================
 
 // DecodeQueryInfoRequest parses an SMB2 QUERY_INFO request body [MS-SMB2] 2.2.37.
-//
-// **Parameters:**
-//   - body: Request body starting after the SMB2 header (64 bytes)
-//
-// **Returns:**
-//   - *QueryInfoRequest: Parsed request structure
-//   - error: Decoding error if body is malformed
-//
-// **Example:**
-//
-//	req, err := DecodeQueryInfoRequest(body)
-//	if err != nil {
-//	    return NewErrorResult(types.StatusInvalidParameter), nil
-//	}
+// Returns an error if the body is less than 40 bytes.
 func DecodeQueryInfoRequest(body []byte) (*QueryInfoRequest, error) {
 	if len(body) < 40 {
 		return nil, fmt.Errorf("QUERY_INFO request too short: %d bytes", len(body))
@@ -229,10 +143,6 @@ func DecodeQueryInfoRequest(body []byte) (*QueryInfoRequest, error) {
 }
 
 // Encode serializes the QueryInfoResponse into SMB2 wire format [MS-SMB2] 2.2.38.
-//
-// **Returns:**
-//   - []byte: Response body with 8-byte header + data
-//   - error: Encoding error (currently always nil)
 func (resp *QueryInfoResponse) Encode() ([]byte, error) {
 	buf := make([]byte, 9+len(resp.Data))
 	binary.LittleEndian.PutUint16(buf[0:2], 9)                      // StructureSize
@@ -306,47 +216,10 @@ func EncodeFileNetworkOpenInfo(info *FileNetworkOpenInfo) []byte {
 
 // QueryInfo handles SMB2 QUERY_INFO command [MS-SMB2] 2.2.37, 2.2.38.
 //
-// QUERY_INFO retrieves metadata about an open file handle. This includes
-// file timestamps, sizes, attributes, filesystem information, and security
-// descriptors.
-//
-// **Purpose:**
-//
-// The QUERY_INFO command allows clients to:
-//   - Get file timestamps and attributes (FileBasicInformation)
-//   - Get file size and allocation (FileStandardInformation)
-//   - Get combined information (FileAllInformation, FileNetworkOpenInformation)
-//   - Get filesystem space and capabilities (FileFsSizeInformation, etc.)
-//   - Get security descriptors for access control
-//
-// **Process:**
-//
-//  1. Decode and validate the request
-//  2. Look up the open file by FileID
-//  3. Get the file metadata from the metadata store
-//  4. Build the response based on InfoType and FileInfoClass:
-//     - InfoType=1 (File): Build file information
-//     - InfoType=2 (Filesystem): Build filesystem information
-//     - InfoType=3 (Security): Build security descriptor
-//  5. Truncate response if larger than OutputBufferLength
-//  6. Return the encoded response
-//
-// **Error Handling:**
-//
-// Returns appropriate SMB status codes:
-//   - StatusInvalidParameter: Malformed request
-//   - StatusInvalidHandle: Invalid FileID
-//   - StatusBadNetworkName: Share not found
-//   - StatusNotSupported: Unsupported info class
-//   - StatusBufferOverflow: Response truncated (partial success)
-//
-// **Parameters:**
-//   - ctx: SMB handler context with session information
-//   - req: Parsed QUERY_INFO request
-//
-// **Returns:**
-//   - *QueryInfoResponse: Response with requested information
-//   - error: Internal error (rare)
+// QUERY_INFO retrieves metadata about an open file handle including file
+// timestamps, sizes, attributes, filesystem information, and security
+// descriptors. The response format depends on InfoType and FileInfoClass.
+// Results are truncated to OutputBufferLength if necessary.
 func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*QueryInfoResponse, error) {
 	logger.Debug("QUERY_INFO request",
 		"infoType", req.InfoType,

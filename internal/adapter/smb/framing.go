@@ -197,8 +197,7 @@ func WriteNetBIOSFrame(conn net.Conn, writeMu *LockedWriter, writeTimeout time.D
 
 	copy(frame[4:], smbPayload)
 
-	_, err := conn.Write(frame)
-	if err != nil {
+	if _, err := conn.Write(frame); err != nil {
 		return fmt.Errorf("write SMB message: %w", err)
 	}
 

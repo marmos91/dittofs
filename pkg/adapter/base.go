@@ -79,8 +79,8 @@ type BaseAdapter struct {
 	// Config holds the shared configuration (bind address, port, limits, timeouts)
 	Config BaseConfig
 
-	// Protocol is the human-readable protocol name for logging (e.g., "NFS", "SMB")
-	Protocol string
+	// protocolName is the human-readable protocol name for logging (e.g., "NFS", "SMB")
+	protocolName string
 
 	// Metrics is an optional recorder for connection lifecycle metrics.
 	// If nil, no metrics are collected (zero overhead).
@@ -153,7 +153,7 @@ func NewBaseAdapter(config BaseConfig, protocol string) *BaseAdapter {
 
 	return &BaseAdapter{
 		Config:         config,
-		Protocol:       protocol,
+		protocolName:   protocol,
 		Shutdown:       make(chan struct{}),
 		connSemaphore:  connSemaphore,
 		ShutdownCtx:    shutdownCtx,
@@ -194,7 +194,7 @@ func (b *BaseAdapter) ServeWithFactory(
 	listenAddr := fmt.Sprintf("%s:%d", b.Config.BindAddress, b.Config.Port)
 	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
-		return fmt.Errorf("failed to create %s listener on port %d: %w", b.Protocol, b.Config.Port, err)
+		return fmt.Errorf("failed to create %s listener on port %d: %w", b.protocolName, b.Config.Port, err)
 	}
 
 	// Store listener with mutex protection and signal readiness
@@ -203,12 +203,12 @@ func (b *BaseAdapter) ServeWithFactory(
 	b.listenerMu.Unlock()
 	close(b.ListenerReady)
 
-	logger.Info(b.Protocol+" server listening", "port", b.Config.Port)
+	logger.Info(b.protocolName+" server listening", "port", b.Config.Port)
 
 	// Monitor context cancellation in separate goroutine
 	go func() {
 		<-ctx.Done()
-		logger.Info(b.Protocol+" shutdown signal received", "error", ctx.Err())
+		logger.Info(b.protocolName+" shutdown signal received", "error", ctx.Err())
 		b.initiateShutdown()
 	}()
 
@@ -245,7 +245,7 @@ func (b *BaseAdapter) ServeWithFactory(
 				return b.gracefulShutdown()
 			default:
 				// Unexpected error - log but continue
-				logger.Debug("Error accepting "+b.Protocol+" connection", "error", err)
+				logger.Debug("Error accepting "+b.protocolName+" connection", "error", err)
 				continue
 			}
 		}
@@ -282,7 +282,7 @@ func (b *BaseAdapter) ServeWithFactory(
 		}
 
 		// Log new connection
-		logger.Debug(b.Protocol+" connection accepted", "address", tcpConn.RemoteAddr(), "active", currentConns)
+		logger.Debug(b.protocolName+" connection accepted", "address", tcpConn.RemoteAddr(), "active", currentConns)
 
 		// Create protocol-specific connection handler
 		conn := factory.NewConnection(tcpConn)
@@ -311,7 +311,7 @@ func (b *BaseAdapter) ServeWithFactory(
 					b.Metrics.SetActiveConnections(b.ConnCount.Load())
 				}
 
-				logger.Debug(b.Protocol+" connection closed", "address", tcp.RemoteAddr(), "active", b.ConnCount.Load())
+				logger.Debug(b.protocolName+" connection closed", "address", tcp.RemoteAddr(), "active", b.ConnCount.Load())
 			}()
 
 			// Handle connection requests
@@ -332,7 +332,7 @@ func (b *BaseAdapter) ServeWithFactory(
 // Safe to call multiple times and from multiple goroutines.
 func (b *BaseAdapter) initiateShutdown() {
 	b.shutdownOnce.Do(func() {
-		logger.Debug(b.Protocol + " shutdown initiated")
+		logger.Debug(b.protocolName + " shutdown initiated")
 
 		// Close shutdown channel (signals accept loop)
 		close(b.Shutdown)
@@ -341,7 +341,7 @@ func (b *BaseAdapter) initiateShutdown() {
 		b.listenerMu.Lock()
 		if b.listener != nil {
 			if err := b.listener.Close(); err != nil {
-				logger.Debug("Error closing "+b.Protocol+" listener", "error", err)
+				logger.Debug("Error closing "+b.protocolName+" listener", "error", err)
 			}
 		}
 		b.listenerMu.Unlock()
@@ -351,7 +351,7 @@ func (b *BaseAdapter) initiateShutdown() {
 
 		// Cancel all in-flight request contexts
 		b.CancelRequests()
-		logger.Debug(b.Protocol + " request cancellation signal sent to all in-flight operations")
+		logger.Debug(b.protocolName + " request cancellation signal sent to all in-flight operations")
 	})
 }
 
@@ -369,7 +369,7 @@ func (b *BaseAdapter) interruptBlockingReads() {
 		}
 		return true
 	})
-	logger.Debug(b.Protocol + " shutdown: interrupted blocking reads on all connections")
+	logger.Debug(b.protocolName + " shutdown: interrupted blocking reads on all connections")
 }
 
 // gracefulShutdown waits for active connections to complete or timeout.
@@ -379,7 +379,7 @@ func (b *BaseAdapter) interruptBlockingReads() {
 //   - error if shutdown timeout exceeded (connections were force-closed)
 func (b *BaseAdapter) gracefulShutdown() error {
 	activeCount := b.ConnCount.Load()
-	logger.Info(b.Protocol+" graceful shutdown: waiting for active connections",
+	logger.Info(b.protocolName+" graceful shutdown: waiting for active connections",
 		"active", activeCount, "timeout", b.Config.ShutdownTimeout)
 
 	// Create channel that closes when all connections are done
@@ -392,24 +392,24 @@ func (b *BaseAdapter) gracefulShutdown() error {
 	// Wait for completion or timeout
 	select {
 	case <-done:
-		logger.Info(b.Protocol + " graceful shutdown complete: all connections closed")
+		logger.Info(b.protocolName + " graceful shutdown complete: all connections closed")
 		return nil
 
 	case <-time.After(b.Config.ShutdownTimeout):
 		remaining := b.ConnCount.Load()
-		logger.Warn(b.Protocol+" shutdown timeout exceeded - forcing closure",
+		logger.Warn(b.protocolName+" shutdown timeout exceeded - forcing closure",
 			"active", remaining, "timeout", b.Config.ShutdownTimeout)
 
 		// Force-close all remaining connections
 		b.forceCloseConnections()
 
-		return fmt.Errorf("%s shutdown timeout: %d connections force-closed", b.Protocol, remaining)
+		return fmt.Errorf("%s shutdown timeout: %d connections force-closed", b.protocolName, remaining)
 	}
 }
 
 // forceCloseConnections closes all active TCP connections to accelerate shutdown.
 func (b *BaseAdapter) forceCloseConnections() {
-	logger.Info("Force-closing active " + b.Protocol + " connections")
+	logger.Info("Force-closing active " + b.protocolName + " connections")
 
 	closedCount := 0
 	b.ActiveConnections.Range(func(key, value any) bool {
@@ -460,7 +460,7 @@ func (b *BaseAdapter) Stop(ctx context.Context) error {
 
 	// Wait for graceful shutdown with context timeout
 	activeCount := b.ConnCount.Load()
-	logger.Info(b.Protocol+" graceful shutdown: waiting for active connections (context timeout)",
+	logger.Info(b.protocolName+" graceful shutdown: waiting for active connections (context timeout)",
 		"active", activeCount)
 
 	// Create channel that closes when all connections are done
@@ -473,12 +473,12 @@ func (b *BaseAdapter) Stop(ctx context.Context) error {
 	// Wait for completion or context cancellation
 	select {
 	case <-done:
-		logger.Info(b.Protocol + " graceful shutdown complete: all connections closed")
+		logger.Info(b.protocolName + " graceful shutdown complete: all connections closed")
 		return nil
 
 	case <-ctx.Done():
 		remaining := b.ConnCount.Load()
-		logger.Warn(b.Protocol+" shutdown context cancelled",
+		logger.Warn(b.protocolName+" shutdown context cancelled",
 			"active", remaining, "error", ctx.Err())
 		return ctx.Err()
 	}
@@ -495,7 +495,7 @@ func (b *BaseAdapter) logMetrics(ctx context.Context) {
 			return
 		case <-ticker.C:
 			activeConns := b.ConnCount.Load()
-			logger.Info(b.Protocol+" metrics", "active_connections", activeConns)
+			logger.Info(b.protocolName+" metrics", "active_connections", activeConns)
 		}
 	}
 }
@@ -522,4 +522,9 @@ func (b *BaseAdapter) GetListenerAddr() string {
 // Port returns the configured TCP port.
 func (b *BaseAdapter) Port() int {
 	return b.Config.Port
+}
+
+// Protocol returns the human-readable protocol name (e.g., "NFS", "SMB").
+func (b *BaseAdapter) Protocol() string {
+	return b.protocolName
 }

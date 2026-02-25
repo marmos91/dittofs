@@ -196,20 +196,24 @@ func (s *Adapter) Serve(ctx context.Context) error {
 // Per locked decision: existing connections are grandfathered; only new
 // connections are rejected when the live limit is exceeded.
 func (s *Adapter) preAcceptCheck(conn net.Conn) bool {
-	if s.Registry != nil {
-		if liveSettings := s.Registry.GetSMBSettings(); liveSettings != nil {
-			if liveSettings.MaxConnections > 0 {
-				currentActive := s.ConnCount.Load()
-				if int(currentActive) >= liveSettings.MaxConnections {
-					logger.Warn("SMB connection rejected: live settings max_connections exceeded",
-						"active", currentActive,
-						"max_connections", liveSettings.MaxConnections,
-						"client", conn.RemoteAddr())
-					return false
-				}
-			}
-		}
+	if s.Registry == nil {
+		return true
 	}
+
+	liveSettings := s.Registry.GetSMBSettings()
+	if liveSettings == nil || liveSettings.MaxConnections <= 0 {
+		return true
+	}
+
+	currentActive := s.ConnCount.Load()
+	if int(currentActive) >= liveSettings.MaxConnections {
+		logger.Warn("SMB connection rejected: live settings max_connections exceeded",
+			"active", currentActive,
+			"max_connections", liveSettings.MaxConnections,
+			"client", conn.RemoteAddr())
+		return false
+	}
+
 	return true
 }
 
@@ -217,23 +221,6 @@ func (s *Adapter) preAcceptCheck(conn net.Conn) bool {
 // TCP connection. This implements the adapter.ConnectionFactory interface.
 func (s *Adapter) NewConnection(conn net.Conn) adapter.ConnectionHandler {
 	return NewConnection(s, conn)
-}
-
-// Stop initiates graceful shutdown of the SMB server.
-//
-// Stop is safe to call multiple times and safe to call concurrently with Serve().
-func (s *Adapter) Stop(ctx context.Context) error {
-	return s.BaseAdapter.Stop(ctx)
-}
-
-// GetActiveConnections returns the current number of active connections.
-func (s *Adapter) GetActiveConnections() int32 {
-	return s.BaseAdapter.GetActiveConnections()
-}
-
-// GetListenerAddr returns the address the server is listening on.
-func (s *Adapter) GetListenerAddr() string {
-	return s.BaseAdapter.GetListenerAddr()
 }
 
 // SetKerberosProvider injects the shared Kerberos provider into the SMB handler.
@@ -244,16 +231,6 @@ func (s *Adapter) SetKerberosProvider(provider *kerberos.Provider) {
 	s.handler.KerberosProvider = provider
 	logger.Debug("SMB adapter Kerberos provider configured",
 		"principal", provider.ServicePrincipal())
-}
-
-// Port returns the TCP port the SMB server is listening on.
-func (s *Adapter) Port() int {
-	return s.config.Port
-}
-
-// Protocol returns "SMB" as the protocol identifier.
-func (s *Adapter) Protocol() string {
-	return "SMB"
 }
 
 // ============================================================================

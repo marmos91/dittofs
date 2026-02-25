@@ -105,10 +105,6 @@ const (
 	authBaseSize                     = 64 // Minimum size without payload (not including Version)
 )
 
-// NTLM challenge sizes
-const (
-	serverChallengeSize = 8 // ServerChallenge is always 8 bytes
-)
 
 // =============================================================================
 // NTLM Negotiate Flags
@@ -342,12 +338,10 @@ func GetMessageType(buf []byte) MessageType {
 //
 // [MS-NLMP] Section 2.2.1.2
 func BuildChallenge() (message []byte, serverChallenge [8]byte) {
-	// Generate random 8-byte challenge
+	// Generate random 8-byte challenge.
 	// This challenge is used to validate the client's NTLMv2 response
 	// and derive the session key for message signing.
-	challenge := make([]byte, serverChallengeSize)
-	_, _ = rand.Read(challenge)
-	copy(serverChallenge[:], challenge)
+	_, _ = rand.Read(serverChallenge[:])
 
 	// Target name: server hostname for client identification.
 	// Windows clients require a non-empty TargetName when FlagRequestTarget is set.
@@ -418,7 +412,7 @@ func BuildChallenge() (message []byte, serverChallenge [8]byte) {
 	)
 
 	// ServerChallenge at offset 24
-	copy(msg[challengeServerChalOffset:challengeServerChalOffset+8], challenge)
+	copy(msg[challengeServerChalOffset:challengeServerChalOffset+8], serverChallenge[:])
 
 	// Reserved at offset 32: already zero (from make())
 
@@ -446,7 +440,7 @@ func BuildChallenge() (message []byte, serverChallenge [8]byte) {
 }
 
 // BuildMinimalTargetInfo creates a minimal AV_PAIR list with just the terminator.
-// This is kept for backward compatibility and testing.
+// Useful for testing NTLM message parsing without full target info.
 //
 // [MS-NLMP] Section 2.2.2.1
 func BuildMinimalTargetInfo() []byte {

@@ -36,10 +36,10 @@ type nfsMetricsRecorder struct {
 	m metrics.NFSMetrics
 }
 
-func (r *nfsMetricsRecorder) RecordConnectionAccepted()         { r.m.RecordConnectionAccepted() }
-func (r *nfsMetricsRecorder) RecordConnectionClosed()           { r.m.RecordConnectionClosed() }
-func (r *nfsMetricsRecorder) RecordConnectionForceClosed()      { r.m.RecordConnectionForceClosed() }
-func (r *nfsMetricsRecorder) SetActiveConnections(count int32)  { r.m.SetActiveConnections(count) }
+func (r *nfsMetricsRecorder) RecordConnectionAccepted()        { r.m.RecordConnectionAccepted() }
+func (r *nfsMetricsRecorder) RecordConnectionClosed()          { r.m.RecordConnectionClosed() }
+func (r *nfsMetricsRecorder) RecordConnectionForceClosed()     { r.m.RecordConnectionForceClosed() }
+func (r *nfsMetricsRecorder) SetActiveConnections(count int32) { r.m.SetActiveConnections(count) }
 
 // NFSAdapter implements the adapter.Adapter interface for NFS protocol.
 //
@@ -352,8 +352,8 @@ func New(
 	}
 
 	return &NFSAdapter{
-		BaseAdapter: base,
-		config:      nfsConfig,
+		BaseAdapter:  base,
+		config:       nfsConfig,
 		nfsHandler:   &v3.Handler{Metrics: nfsMetrics},
 		mountHandler: &mount.Handler{},
 		metrics:      nfsMetrics,
@@ -476,45 +476,36 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 		s.v4Handler.StateManager.StartSessionReaper(ctx)
 	}
 
-	return s.ServeWithFactory(ctx, s, s.preAcceptCheck, s.onConnectionClose)
+	// Note: onClose is nil because v4 backchannel cleanup is handled per-connection
+	// in NewNFSConnection's defer, not at the adapter level.
+	return s.ServeWithFactory(ctx, s, s.preAcceptCheck, nil)
 }
 
 // preAcceptCheck checks live settings for dynamic max_connections limit and
 // re-applies NFS settings on each new connection.
 func (s *NFSAdapter) preAcceptCheck(conn net.Conn) bool {
-	if s.Registry != nil {
-		if liveSettings := s.Registry.GetNFSSettings(); liveSettings != nil {
-			if liveSettings.MaxConnections > 0 {
-				currentActive := s.ConnCount.Load()
-				if int(currentActive) >= liveSettings.MaxConnections {
-					logger.Warn("NFS connection rejected: live settings max_connections exceeded",
-						"active", currentActive,
-						"max_connections", liveSettings.MaxConnections,
-						"client", conn.RemoteAddr())
-					return false
-				}
-			}
+	if s.Registry == nil {
+		return true
+	}
+
+	// Check live max_connections limit
+	if liveSettings := s.Registry.GetNFSSettings(); liveSettings != nil && liveSettings.MaxConnections > 0 {
+		currentActive := s.ConnCount.Load()
+		if int(currentActive) >= liveSettings.MaxConnections {
+			logger.Warn("NFS connection rejected: live settings max_connections exceeded",
+				"active", currentActive,
+				"max_connections", liveSettings.MaxConnections,
+				"client", conn.RemoteAddr())
+			return false
 		}
 	}
 
 	// Re-apply live NFS settings on each new connection.
 	// This ensures dynamic settings changes (e.g., delegations-enabled)
 	// propagate from the SettingsWatcher to the StateManager.
-	if s.Registry != nil {
-		s.applyNFSSettings(s.Registry)
-	}
+	s.applyNFSSettings(s.Registry)
 
 	return true
-}
-
-// onConnectionClose is called when a connection's goroutine exits, before
-// WaitGroup.Done and semaphore release. Handles NFS-specific cleanup.
-func (s *NFSAdapter) onConnectionClose(addr string) {
-	// Note: v4 backchannel unregistration needs the connection ID, which is
-	// not available via the address-based callback. This cleanup is still
-	// handled in the NFS Serve() goroutine via the connection-level defer
-	// in NewConnection. The onClose callback here handles any future
-	// adapter-level cleanup needs.
 }
 
 // NewConnection creates a protocol-specific connection handler for an accepted
@@ -525,24 +516,6 @@ func (s *NFSAdapter) onConnectionClose(addr string) {
 func (s *NFSAdapter) NewConnection(conn net.Conn) adapter.ConnectionHandler {
 	connID := s.nextConnID.Add(1)
 	return NewNFSConnection(s, conn, connID)
-}
-
-// Port returns the TCP port the NFS server is listening on.
-//
-// This implements the adapter.Adapter interface.
-//
-// Returns the configured port number.
-func (s *NFSAdapter) Port() int {
-	return s.config.Port
-}
-
-// Protocol returns "NFS" as the protocol identifier.
-//
-// This implements the adapter.Adapter interface.
-//
-// Returns "NFS" for logging and metrics.
-func (s *NFSAdapter) Protocol() string {
-	return "NFS"
 }
 
 // logV3FirstUse logs at INFO level the first time a client uses NFSv3.

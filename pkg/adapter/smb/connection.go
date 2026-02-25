@@ -2,6 +2,7 @@ package smb
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"runtime/debug"
@@ -20,8 +21,8 @@ type Connection struct {
 	conn   net.Conn
 
 	// Concurrent request handling
-	requestSem chan struct{}  // Semaphore to limit concurrent requests
-	wg         sync.WaitGroup // Track active requests for graceful shutdown
+	requestSem chan struct{}    // Semaphore to limit concurrent requests
+	wg         sync.WaitGroup   // Track active requests for graceful shutdown
 	writeMu    smb.LockedWriter // Protects connection writes (replies must be serialized)
 
 	// Session tracking for cleanup on disconnect
@@ -121,23 +122,24 @@ func (c *Connection) Serve(ctx context.Context) {
 			c.server.config.Timeouts.Read, verifier, handleSMB1,
 		)
 		if err != nil {
-			if err == io.EOF {
+			switch {
+			case err == io.EOF:
 				logger.Debug("SMB connection closed by client", "address", clientAddr)
-			} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			case isNetTimeout(err):
 				logger.Debug("SMB connection timed out", "address", clientAddr, "error", err)
-			} else if err == context.Canceled || err == context.DeadlineExceeded {
+			case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
 				logger.Debug("SMB connection cancelled", "address", clientAddr, "error", err)
-			} else {
+			default:
 				logger.Debug("Error reading SMB request", "address", clientAddr, "error", err)
 			}
 			return
 		}
 
-		// Check if this is the start of a compound request
-		if len(remainingCompound) > 0 {
-			c.requestSem <- struct{}{}
-			c.wg.Add(1)
+		// Acquire semaphore slot and track the request goroutine
+		c.requestSem <- struct{}{}
+		c.wg.Add(1)
 
+		if len(remainingCompound) > 0 {
 			// Copy compound data to avoid races (goroutine owns this copy)
 			compoundData := make([]byte, len(remainingCompound))
 			copy(compoundData, remainingCompound)
@@ -147,9 +149,6 @@ func (c *Connection) Serve(ctx context.Context) {
 				smb.ProcessCompoundRequest(ctx, hdr, body, compoundData, ci)
 			}()
 		} else {
-			c.requestSem <- struct{}{}
-			c.wg.Add(1)
-
 			go func(reqHeader *header.SMB2Header, reqBody []byte) {
 				defer c.handleRequestPanic(clientAddr, reqHeader.MessageID)
 
@@ -235,4 +234,10 @@ func (c *Connection) handleRequestPanic(clientAddr string, messageID uint64) {
 			"error", r,
 			"stack", stack)
 	}
+}
+
+// isNetTimeout reports whether err is a network timeout error.
+func isNetTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }

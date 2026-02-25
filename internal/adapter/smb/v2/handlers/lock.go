@@ -46,28 +46,8 @@ const (
 // ============================================================================
 
 // LockRequest represents an SMB2 LOCK request [MS-SMB2] 2.2.26.
-//
 // The client specifies a FileID and an array of lock elements describing
-// byte ranges to lock or unlock.
-//
-// **Wire Format (48 bytes header + variable lock elements):**
-//
-//	Offset  Size  Field               Description
-//	------  ----  ------------------  ----------------------------------
-//	0       2     StructureSize       Always 48
-//	2       2     LockCount           Number of lock elements
-//	4       4     LockSequence        Lock sequence for replay detection
-//	8       16    FileId              SMB2 file identifier
-//	24      24*N  Locks               Array of SMB2_LOCK_ELEMENT
-//
-// **SMB2_LOCK_ELEMENT (24 bytes each):**
-//
-//	Offset  Size  Field               Description
-//	------  ----  ------------------  ----------------------------------
-//	0       8     Offset              Starting byte offset
-//	8       8     Length              Number of bytes
-//	16      4     Flags               Lock flags
-//	20      4     Reserved            Reserved (0)
+// byte ranges to lock or unlock. Each lock element is 24 bytes.
 type LockRequest struct {
 	// LockCount is the number of lock elements in the request.
 	LockCount uint16
@@ -97,15 +77,7 @@ type LockElement struct {
 }
 
 // LockResponse represents an SMB2 LOCK response [MS-SMB2] 2.2.27.
-//
-// The response is very simple - just a status code and minimal structure.
-//
-// **Wire Format (4 bytes):**
-//
-//	Offset  Size  Field               Description
-//	------  ----  ------------------  ----------------------------------
-//	0       2     StructureSize       Always 4
-//	2       2     Reserved            Reserved (0)
+// The 4-byte response contains only a structure size and reserved field.
 type LockResponse struct {
 	SMBResponseBase
 	StructureSize uint16

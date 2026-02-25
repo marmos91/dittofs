@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"testing"
 
@@ -313,81 +314,42 @@ func TestErrMoreProcessingRequired(t *testing.T) {
 func buildNTLMNegotiate() []byte {
 	msg := make([]byte, 32)
 	copy(msg[0:8], Signature)
-	msg[8] = byte(Negotiate)
-	msg[9] = 0
-	msg[10] = 0
-	msg[11] = 0
-	// Flags: NTLM | Unicode
-	flags := uint32(FlagNTLM | FlagUnicode)
-	msg[12] = byte(flags)
-	msg[13] = byte(flags >> 8)
-	msg[14] = byte(flags >> 16)
-	msg[15] = byte(flags >> 24)
+	binary.LittleEndian.PutUint32(msg[8:12], uint32(Negotiate))
+	binary.LittleEndian.PutUint32(msg[12:16], uint32(FlagNTLM|FlagUnicode))
 	return msg
 }
 
 // buildNTLMAuthenticate creates a minimal NTLM Type 3 (AUTHENTICATE) message
 // with the given username and domain.
 func buildNTLMAuthenticate(username, domain string) []byte {
-	// Encode strings as UTF-16LE
 	usernameBytes := encodeUTF16LE(username)
 	domainBytes := encodeUTF16LE(domain)
 
-	// Calculate payload offsets - payload starts after fixed fields (88 bytes to be safe)
+	// Payload starts after fixed fields (88 bytes to be safe)
 	payloadOffset := 88
 	domainOffset := payloadOffset
 	userOffset := domainOffset + len(domainBytes)
 
-	// Allocate buffer
-	totalSize := userOffset + len(usernameBytes)
-	msg := make([]byte, totalSize)
+	msg := make([]byte, userOffset+len(usernameBytes))
 
-	// Signature
+	// Header
 	copy(msg[0:8], Signature)
-
-	// MessageType: 3 (AUTHENTICATE)
-	msg[8] = byte(Authenticate)
-
-	// LmChallengeResponse: empty (offset 12-19)
-	// Already zero
-
-	// NtChallengeResponse: empty (offset 20-27)
-	// Already zero
+	binary.LittleEndian.PutUint32(msg[8:12], uint32(Authenticate))
 
 	// DomainName fields (offset 28-35)
-	msg[28] = byte(len(domainBytes))
-	msg[29] = byte(len(domainBytes) >> 8)
-	msg[30] = byte(len(domainBytes))
-	msg[31] = byte(len(domainBytes) >> 8)
-	msg[32] = byte(domainOffset)
-	msg[33] = byte(domainOffset >> 8)
-	msg[34] = byte(domainOffset >> 16)
-	msg[35] = byte(domainOffset >> 24)
+	binary.LittleEndian.PutUint16(msg[28:30], uint16(len(domainBytes)))
+	binary.LittleEndian.PutUint16(msg[30:32], uint16(len(domainBytes)))
+	binary.LittleEndian.PutUint32(msg[32:36], uint32(domainOffset))
 
 	// UserName fields (offset 36-43)
-	msg[36] = byte(len(usernameBytes))
-	msg[37] = byte(len(usernameBytes) >> 8)
-	msg[38] = byte(len(usernameBytes))
-	msg[39] = byte(len(usernameBytes) >> 8)
-	msg[40] = byte(userOffset)
-	msg[41] = byte(userOffset >> 8)
-	msg[42] = byte(userOffset >> 16)
-	msg[43] = byte(userOffset >> 24)
+	binary.LittleEndian.PutUint16(msg[36:38], uint16(len(usernameBytes)))
+	binary.LittleEndian.PutUint16(msg[38:40], uint16(len(usernameBytes)))
+	binary.LittleEndian.PutUint32(msg[40:44], uint32(userOffset))
 
-	// Workstation: empty (offset 44-51)
-	// Already zero
+	// NegotiateFlags (offset 60)
+	binary.LittleEndian.PutUint32(msg[60:64], uint32(FlagUnicode|FlagNTLM))
 
-	// EncryptedRandomSessionKey: empty (offset 52-59)
-	// Already zero
-
-	// NegotiateFlags at offset 60: Unicode flag
-	flags := uint32(FlagUnicode | FlagNTLM)
-	msg[60] = byte(flags)
-	msg[61] = byte(flags >> 8)
-	msg[62] = byte(flags >> 16)
-	msg[63] = byte(flags >> 24)
-
-	// Copy payload
+	// Payload
 	copy(msg[domainOffset:], domainBytes)
 	copy(msg[userOffset:], usernameBytes)
 

@@ -126,7 +126,10 @@ func FileAttrToSMBTimes(attr *metadata.FileAttr) (creation, access, write, chang
 	return
 }
 
-// FileAttrToFileBasicInfo converts FileAttr to SMB FILE_BASIC_INFORMATION.
+// FileAttrToFileBasicInfo converts metadata FileAttr to SMB FILE_BASIC_INFORMATION
+// [MS-FSCC] 2.4.7. Populates creation, access, write, and change timestamps,
+// plus the SMB file attributes bitmask. Used by QUERY_INFO to respond to
+// FileBasicInformation queries from clients.
 func FileAttrToFileBasicInfo(attr *metadata.FileAttr) *FileBasicInfo {
 	creation, access, write, change := FileAttrToSMBTimes(attr)
 
@@ -139,7 +142,10 @@ func FileAttrToFileBasicInfo(attr *metadata.FileAttr) *FileBasicInfo {
 	}
 }
 
-// FileAttrToFileStandardInfo converts FileAttr to SMB FILE_STANDARD_INFORMATION.
+// FileAttrToFileStandardInfo converts metadata FileAttr to SMB FILE_STANDARD_INFORMATION
+// [MS-FSCC] 2.4.41. Computes AllocationSize (cluster-aligned) and EndOfFile from the
+// file size, and reports link count, delete-pending, and directory flags. For symlinks,
+// the EndOfFile reflects the MFsymlink size (1067 bytes) rather than the target path length.
 func FileAttrToFileStandardInfo(attr *metadata.FileAttr, isDeletePending bool) *FileStandardInfo {
 	// Get appropriate size (MFsymlink size for symlinks)
 	size := getSMBSize(attr)
@@ -155,7 +161,10 @@ func FileAttrToFileStandardInfo(attr *metadata.FileAttr, isDeletePending bool) *
 	}
 }
 
-// FileAttrToFileNetworkOpenInfo converts FileAttr to SMB FILE_NETWORK_OPEN_INFORMATION.
+// FileAttrToFileNetworkOpenInfo converts metadata FileAttr to SMB FILE_NETWORK_OPEN_INFORMATION
+// [MS-FSCC] 2.4.27. Combines timestamps, allocation size, end of file, and attributes
+// into a single structure. This is a performance optimization for SMB2 CREATE since
+// clients can retrieve all open information in a single query instead of multiple calls.
 func FileAttrToFileNetworkOpenInfo(attr *metadata.FileAttr) *FileNetworkOpenInfo {
 	creation, access, write, change := FileAttrToSMBTimes(attr)
 	// Get appropriate size (MFsymlink size for symlinks)
@@ -173,7 +182,10 @@ func FileAttrToFileNetworkOpenInfo(attr *metadata.FileAttr) *FileNetworkOpenInfo
 	}
 }
 
-// FileAttrToDirectoryEntry converts FileAttr to a directory listing entry.
+// FileAttrToDirectoryEntry converts metadata File to an SMB directory listing entry
+// for QUERY_DIRECTORY responses [MS-SMB2] 2.2.33. Populates all fields including
+// timestamps, sizes, attributes, and the file index used for enumeration continuations.
+// For symlinks, sizes reflect the MFsymlink on-disk representation.
 func FileAttrToDirectoryEntry(file *metadata.File, name string, fileIndex uint64) *DirectoryEntry {
 	creation, access, write, change := FileAttrToSMBTimes(&file.FileAttr)
 	// Get appropriate size (MFsymlink size for symlinks)
@@ -194,8 +206,10 @@ func FileAttrToDirectoryEntry(file *metadata.File, name string, fileIndex uint64
 	}
 }
 
-// DirEntryToDirectoryEntry converts a metadata DirEntry to SMB DirectoryEntry.
-// If the DirEntry has Attr populated, uses it; otherwise uses default values.
+// DirEntryToDirectoryEntry converts a metadata DirEntry to an SMB DirectoryEntry.
+// This is the preferred conversion for QUERY_DIRECTORY since DirEntry contains
+// pre-resolved attributes from the metadata store. If the entry has Attr populated,
+// uses it for timestamps, sizes, and attributes; otherwise falls back to defaults.
 func DirEntryToDirectoryEntry(entry *metadata.DirEntry, fileIndex uint64) *DirectoryEntry {
 	dirEntry := &DirectoryEntry{
 		FileName:  entry.Name,
@@ -224,7 +238,10 @@ func DirEntryToDirectoryEntry(entry *metadata.DirEntry, fileIndex uint64) *Direc
 	return dirEntry
 }
 
-// SMBAttributesToFileType converts SMB file attributes to metadata FileType.
+// SMBAttributesToFileType converts SMB file attributes to the corresponding
+// metadata FileType. Checks FileAttributeDirectory and FileAttributeReparsePoint
+// flags to distinguish directories, symlinks, and regular files. Used during
+// SET_INFO operations to determine the target file type from client-provided attributes.
 func SMBAttributesToFileType(attrs types.FileAttributes) metadata.FileType {
 	if attrs&types.FileAttributeDirectory != 0 {
 		return metadata.FileTypeDirectory
@@ -235,7 +252,10 @@ func SMBAttributesToFileType(attrs types.FileAttributes) metadata.FileType {
 	return metadata.FileTypeRegular
 }
 
-// SMBTimesToSetAttrs converts SMB time fields and attributes to SetAttrs for SETATTR operations.
+// SMBTimesToSetAttrs converts SMB FILE_BASIC_INFORMATION time fields and attributes
+// to a metadata SetAttrs struct for SETATTR operations. Only populates fields whose
+// SMB timestamps are non-zero and not the sentinel -1 value (meaning "don't change").
+// Also handles the Hidden attribute flag from FileAttributes.
 func SMBTimesToSetAttrs(basicInfo *FileBasicInfo) *metadata.SetAttrs {
 	attrs := &metadata.SetAttrs{}
 
@@ -267,7 +287,10 @@ func SMBTimesToSetAttrs(basicInfo *FileBasicInfo) *metadata.SetAttrs {
 	return attrs
 }
 
-// MetadataErrorToSMBStatus maps metadata store errors to SMB NT status codes.
+// MetadataErrorToSMBStatus maps metadata store errors to SMB NT status codes
+// per MS-ERREF 2.3. Translates DittoFS error codes (ErrNotFound, ErrAccessDenied,
+// etc.) to their SMB equivalents (STATUS_OBJECT_NAME_NOT_FOUND, STATUS_ACCESS_DENIED).
+// Returns StatusInternalError for unrecognized errors or nil input returns StatusSuccess.
 func MetadataErrorToSMBStatus(err error) types.Status {
 	if err == nil {
 		return types.StatusSuccess
@@ -307,7 +330,9 @@ func MetadataErrorToSMBStatus(err error) types.Status {
 	return types.StatusInternalError
 }
 
-// ContentErrorToSMBStatus maps content store errors to SMB NT status codes.
+// ContentErrorToSMBStatus maps payload/content store errors to SMB NT status codes.
+// Currently maps all non-nil errors to StatusUnexpectedIOError since payload store
+// errors are typically I/O-related (S3 failures, disk errors). Nil returns StatusSuccess.
 func ContentErrorToSMBStatus(err error) types.Status {
 	if err == nil {
 		return types.StatusSuccess
@@ -318,8 +343,11 @@ func ContentErrorToSMBStatus(err error) types.Status {
 	return types.StatusUnexpectedIOError
 }
 
-// ResolveCreateDisposition determines the action based on disposition and file existence.
-// Returns the create action and any error.
+// ResolveCreateDisposition determines the CREATE action based on the requested
+// disposition and whether the file already exists [MS-SMB2] 2.2.13.
+// Handles all six dispositions: FILE_OPEN, FILE_CREATE, FILE_OPEN_IF,
+// FILE_OVERWRITE, FILE_OVERWRITE_IF, and FILE_SUPERSEDE. Returns the
+// appropriate CreateAction (Opened, Created, Overwritten, Superseded) or an error.
 func ResolveCreateDisposition(disposition types.CreateDisposition, exists bool) (types.CreateAction, error) {
 	switch disposition {
 	case types.FileOpen:
@@ -381,7 +409,10 @@ func ResolveCreateDisposition(disposition types.CreateDisposition, exists bool) 
 	}
 }
 
-// CreateOptionsToMetadataType converts SMB create options to metadata file type.
+// CreateOptionsToMetadataType converts SMB2 CREATE options and file attributes to the
+// corresponding metadata FileType [MS-SMB2] 2.2.13. Checks FILE_DIRECTORY_FILE option
+// first, then the FileAttributeDirectory attribute flag. Returns FileTypeDirectory
+// for directories, FileTypeRegular for all other file types.
 func CreateOptionsToMetadataType(options types.CreateOptions, attrs types.FileAttributes) metadata.FileType {
 	if options&types.FileDirectoryFile != 0 {
 		return metadata.FileTypeDirectory
@@ -392,8 +423,10 @@ func CreateOptionsToMetadataType(options types.CreateOptions, attrs types.FileAt
 	return metadata.FileTypeRegular
 }
 
-// SMBModeFromAttrs converts SMB file attributes to Unix mode.
-// This is a simplified conversion for file creation.
+// SMBModeFromAttrs converts SMB file attributes to a Unix permission mode for file
+// creation. Directories default to 0755 (rwxr-xr-x) and files to 0644 (rw-r--r--).
+// If the FileAttributeReadonly flag is set, write bits are removed. This provides
+// a reasonable default since SMB does not carry full Unix permission information.
 func SMBModeFromAttrs(attrs types.FileAttributes, isDirectory bool) uint32 {
 	var mode uint32
 

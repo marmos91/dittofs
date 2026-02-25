@@ -8,7 +8,12 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// Negotiate handles SMB2 NEGOTIATE command [MS-SMB2] 2.2.3, 2.2.4
+// Negotiate handles the SMB2 NEGOTIATE command [MS-SMB2] 2.2.3, 2.2.4.
+// It negotiates the protocol dialect (2.0.2 or 2.1), security mode
+// (signing enabled/required), and server capabilities with the client.
+// The response includes the server GUID, max transaction/read/write sizes,
+// and the selected dialect revision. Returns StatusNotSupported if no
+// mutually supported dialect is found.
 func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	if len(body) < 36 {
 		return NewErrorResult(types.StatusInvalidParameter), nil

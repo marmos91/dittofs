@@ -35,7 +35,11 @@ const (
 	IoReparseTagSymlink uint32 = 0xA000000C
 )
 
-// Ioctl handles SMB2 IOCTL command [MS-SMB2] 2.2.31, 2.2.32
+// Ioctl handles the SMB2 IOCTL command [MS-SMB2] 2.2.31, 2.2.32.
+// It dispatches filesystem control codes including FSCTL_VALIDATE_NEGOTIATE_INFO
+// (man-in-the-middle protection), FSCTL_GET_REPARSE_POINT (symlink target reads),
+// FSCTL_PIPE_TRANSCEIVE (named pipe RPC), and FSCTL_SRV_ENUMERATE_SNAPSHOTS.
+// Unsupported FSCTLs return StatusNotSupported gracefully.
 func (h *Handler) Ioctl(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	// Minimum size to read CtlCode is 8 bytes (StructureSize + Reserved + CtlCode)
 	if len(body) < 8 {

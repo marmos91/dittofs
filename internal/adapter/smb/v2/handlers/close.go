@@ -16,31 +16,12 @@ import (
 // ============================================================================
 
 // CloseRequest represents an SMB2 CLOSE request from a client [MS-SMB2] 2.2.15.
-//
 // The client specifies a FileID to close and optional flags controlling the
-// response behavior. This is the final operation in a file handle's lifecycle.
+// response behavior. The fixed wire format is 24 bytes.
 //
-// This structure is decoded from little-endian binary data received over the network.
-//
-// **Wire Format (24 bytes):**
-//
-//	Offset  Size  Field           Description
-//	------  ----  --------------  ----------------------------------
-//	0       2     StructureSize   Always 24
-//	2       2     Flags           POSTQUERY_ATTRIB (0x0001) to return attrs
-//	4       4     Reserved        Must be ignored
-//	8       16    FileId          SMB2 file identifier (persistent + volatile)
-//
-// **Flags:**
-//
-//   - SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB (0x0001): Request final attributes in response
-//
-// **Semantics:**
-//
-// CLOSE releases the file handle and ensures all cached data is persisted.
-// This is a durability point - when CLOSE completes, the client expects
-// data to be safely stored. For delete-on-close files, the deletion
-// occurs during CLOSE processing.
+// When POSTQUERY_ATTRIB (0x0001) is set, the server returns final file
+// attributes in the response. CLOSE is a durability point -- the client
+// expects data to be safely stored when it completes.
 type CloseRequest struct {
 	// Flags controls the close behavior.
 	// If SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB (0x0001) is set, the server
@@ -54,30 +35,8 @@ type CloseRequest struct {
 }
 
 // CloseResponse represents an SMB2 CLOSE response [MS-SMB2] 2.2.16.
-//
-// The response optionally includes the final file attributes if the
+// The 60-byte response optionally includes final file attributes if the
 // POSTQUERY_ATTRIB flag was set in the request.
-//
-// **Wire Format (60 bytes):**
-//
-//	Offset  Size  Field            Description
-//	------  ----  ---------------  ----------------------------------
-//	0       2     StructureSize    Always 60
-//	2       2     Flags            Echo of request flags
-//	4       4     Reserved         Must be ignored
-//	8       8     CreationTime     File creation time (FILETIME)
-//	16      8     LastAccessTime   Last access time (FILETIME)
-//	24      8     LastWriteTime    Last modification time (FILETIME)
-//	32      8     ChangeTime       Attribute change time (FILETIME)
-//	40      8     AllocationSize   Disk allocation size
-//	48      8     EndOfFile        Logical file size
-//	56      4     FileAttributes   FILE_ATTRIBUTE_* flags
-//
-// **Status Codes:**
-//
-//   - StatusSuccess: File handle closed successfully
-//   - StatusInvalidHandle: The FileID does not refer to a valid open file
-//   - StatusFileDeleted: File was deleted (delete-on-close)
 type CloseResponse struct {
 	SMBResponseBase // Embeds Status field and GetStatus() method
 
@@ -118,25 +77,7 @@ type CloseResponse struct {
 // ============================================================================
 
 // DecodeCloseRequest parses an SMB2 CLOSE request from wire format [MS-SMB2] 2.2.15.
-//
-// The decoding extracts the Flags and FileID from the binary request body.
-// All fields use little-endian byte order per SMB2 specification.
-//
-// **Parameters:**
-//   - body: Raw request bytes (24 bytes minimum)
-//
-// **Returns:**
-//   - *CloseRequest: The decoded request containing Flags and FileID
-//   - error: ErrRequestTooShort if body is less than 24 bytes
-//
-// **Example:**
-//
-//	body := []byte{...} // SMB2 CLOSE request from network
-//	req, err := DecodeCloseRequest(body)
-//	if err != nil {
-//	    return NewErrorResult(types.StatusInvalidParameter)
-//	}
-//	// Use req.FileID to locate the file handle to close
+// Returns an error if the body is less than 24 bytes.
 func DecodeCloseRequest(body []byte) (*CloseRequest, error) {
 	if len(body) < 24 {
 		return nil, fmt.Errorf("CLOSE request too short: %d bytes", len(body))
@@ -151,38 +92,8 @@ func DecodeCloseRequest(body []byte) (*CloseRequest, error) {
 }
 
 // Encode serializes the CloseResponse to SMB2 wire format [MS-SMB2] 2.2.16.
-//
-// The response includes the echoed flags and optionally the file attributes
-// if POSTQUERY_ATTRIB was requested. Times are converted to FILETIME format.
-//
-// **Wire Format (60 bytes):**
-//
-//	Offset  Size  Field            Value
-//	------  ----  ---------------  ------
-//	0       2     StructureSize    60
-//	2       2     Flags            Echo of request flags
-//	4       4     Reserved         0
-//	8       8     CreationTime     FILETIME
-//	16      8     LastAccessTime   FILETIME
-//	24      8     LastWriteTime    FILETIME
-//	32      8     ChangeTime       FILETIME
-//	40      8     AllocationSize   Disk allocation
-//	48      8     EndOfFile        File size
-//	56      4     FileAttributes   Attribute flags
-//
-// **Returns:**
-//   - []byte: 60-byte encoded response body
-//   - error: Always nil (encoding cannot fail for this structure)
-//
-// **Example:**
-//
-//	resp := &CloseResponse{
-//	    SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
-//	    Flags:           0x0001,
-//	    EndOfFile:       1024,
-//	}
-//	data, _ := resp.Encode()
-//	// Send data as response body after SMB2 header
+// Returns a 60-byte response body with echoed flags and optionally file
+// attributes (if POSTQUERY_ATTRIB was requested).
 func (resp *CloseResponse) Encode() ([]byte, error) {
 	buf := make([]byte, 60)
 	binary.LittleEndian.PutUint16(buf[0:2], 60)                                          // StructureSize
@@ -205,59 +116,13 @@ func (resp *CloseResponse) Encode() ([]byte, error) {
 
 // Close handles SMB2 CLOSE command [MS-SMB2] 2.2.15, 2.2.16.
 //
-// **Purpose:**
+// CLOSE releases the file handle and ensures all data is persisted. It flushes
+// cached payload data and pending metadata writes, checks for MFsymlink
+// conversion (SMB-to-NFS symlink interop), handles delete-on-close, releases
+// byte-range locks and oplocks, and unregisters any pending CHANGE_NOTIFY watches.
 //
-// CLOSE releases the file handle and ensures all data is persisted to storage.
-// This is a critical durability point - when CLOSE completes, the client
-// expects data to be safely stored.
-//
-// **Process:**
-//
-//  1. Validate FileID maps to an open file
-//  2. Flush any cached data to content store (ensures durability)
-//  3. Flush pending metadata writes (deferred commit optimization)
-//  4. Check for MFsymlink conversion (SMB→NFS symlink interop)
-//  5. Optionally return final file attributes (POSTQUERY_ATTRIB flag)
-//  6. Handle delete-on-close if pending
-//  7. Remove the open file handle
-//  8. Return success response
-//
-// **Cache Integration:**
-//
-// Unlike FLUSH which just persists cached data, CLOSE also finalizes any
-// pending uploads (e.g., completes S3 multipart uploads). This ensures
-// data is fully durable when CLOSE returns.
-//
-// **MFsymlink Conversion:**
-//
-// macOS/Windows SMB clients create symlinks by writing MFsymlink content
-// (1067-byte files with XSym\n header). On CLOSE, we detect and convert
-// these to real symlinks in the metadata store for NFS interoperability.
-//
-// **Delete-on-Close:**
-//
-// If SET_INFO with FileDispositionInformation marked the file for deletion,
-// CLOSE performs the actual deletion after flushing and before releasing
-// the handle.
-//
-// **Error Handling:**
-//
-// Returns appropriate SMB status codes:
-//   - StatusInvalidHandle: Invalid FileID
-//   - StatusInternalError: Encoding failed
-//   - StatusSuccess: Close completed (even if flush or delete failed)
-//
-// Note: Flush and delete errors are logged but don't fail the CLOSE.
-// The handle is always released to prevent resource leaks.
-//
-// **Example:**
-//
-//	req := &CloseRequest{FileID: fileID, Flags: 0x0001}
-//	resp, err := handler.Close(ctx, req)
-//	if resp.GetStatus() == types.StatusSuccess {
-//	    // File handle released, data persisted
-//	    // resp contains final attributes if POSTQUERY_ATTRIB was set
-//	}
+// Flush and delete errors are logged but do not fail the CLOSE -- the handle
+// is always released to prevent resource leaks.
 func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseResponse, error) {
 	logger.Debug("CLOSE request",
 		"fileID", fmt.Sprintf("%x", req.FileID),
@@ -398,33 +263,20 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			logger.Warn("CLOSE: failed to build auth context for delete", "error", err)
 		} else {
 			metaSvc := h.Registry.GetMetadataService()
+			var deleteErr error
 			if openFile.IsDirectory {
-				// Delete directory
-				err = metaSvc.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName)
-				if err != nil {
-					logger.Debug("CLOSE: failed to delete directory", "path", openFile.Path, "error", err)
-					// Continue with close even if delete fails
-				} else {
-					logger.Debug("CLOSE: directory deleted", "path", openFile.Path)
-					// Notify watchers about deletion
-					if h.NotifyRegistry != nil {
-						parentPath := GetParentPath(openFile.Path)
-						h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, openFile.FileName, FileActionRemoved)
-					}
-				}
+				deleteErr = metaSvc.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName)
 			} else {
-				// Delete file
-				_, err = metaSvc.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName)
-				if err != nil {
-					logger.Debug("CLOSE: failed to delete file", "path", openFile.Path, "error", err)
-					// Continue with close even if delete fails
-				} else {
-					logger.Debug("CLOSE: file deleted", "path", openFile.Path)
-					// Notify watchers about deletion
-					if h.NotifyRegistry != nil {
-						parentPath := GetParentPath(openFile.Path)
-						h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, openFile.FileName, FileActionRemoved)
-					}
+				_, deleteErr = metaSvc.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName)
+			}
+
+			if deleteErr != nil {
+				logger.Debug("CLOSE: failed to delete", "path", openFile.Path, "isDir", openFile.IsDirectory, "error", deleteErr)
+			} else {
+				logger.Debug("CLOSE: deleted", "path", openFile.Path, "isDir", openFile.IsDirectory)
+				if h.NotifyRegistry != nil {
+					parentPath := GetParentPath(openFile.Path)
+					h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, openFile.FileName, FileActionRemoved)
 				}
 			}
 		}

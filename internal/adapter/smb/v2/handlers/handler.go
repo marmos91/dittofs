@@ -17,7 +17,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// Handler manages SMB2 protocol handling
+// Handler manages SMB2 protocol handling including session management,
+// tree connections, open file state, oplocks, leases, and named pipe RPC.
+// It delegates to the Runtime registry for metadata and payload operations,
+// and uses SessionManager for unified session/credit tracking.
+// Thread-safe: all mutable state uses sync.Map or atomic operations.
 type Handler struct {
 	Registry  *runtime.Runtime
 	StartTime time.Time
@@ -70,8 +74,9 @@ type Handler struct {
 }
 
 // PendingAuth tracks sessions in the middle of NTLM authentication.
-// This stores the server's challenge for NTLMv2 response validation
-// and session key derivation.
+// It stores the server's challenge for NTLMv2 response validation
+// and session key derivation. Created during Type 1 (NEGOTIATE) and
+// consumed during Type 3 (AUTHENTICATE) of the NTLM handshake.
 type PendingAuth struct {
 	SessionID       uint64
 	ClientAddr      string
@@ -80,7 +85,9 @@ type PendingAuth struct {
 	UsedSPNEGO      bool    // Whether client used SPNEGO wrapping
 }
 
-// TreeConnection represents a tree connection (share)
+// TreeConnection represents an active tree connection mapping a client
+// to a DittoFS share. Created by TreeConnect and removed by TreeDisconnect.
+// Stores the effective permission level for access control during file operations.
 type TreeConnection struct {
 	TreeID     uint32
 	SessionID  uint64
@@ -90,7 +97,10 @@ type TreeConnection struct {
 	Permission models.SharePermission // User's permission level for this share
 }
 
-// OpenFile represents an open file handle
+// OpenFile represents an open file handle created by the CREATE command.
+// It links the SMB2 FileID to the underlying metadata handle and payload ID,
+// tracks directory enumeration state, delete-on-close flags, and oplock level.
+// Stored in a sync.Map keyed by the 16-byte FileID.
 type OpenFile struct {
 	FileID              [16]byte
 	TreeID              uint32
@@ -126,15 +136,18 @@ type OpenFile struct {
 	OplockLevel uint8
 }
 
-// NewHandler creates a new SMB2 handler with default session metaSvc.
-// For custom session management (e.g., shared across adapters), use
-// NewHandlerWithSessionManager instead.
+// NewHandler creates a new SMB2 handler with a default session manager.
+// It initializes the pipe manager, oplock manager, notify registry,
+// and generates a random server GUID. For custom session management
+// (e.g., shared across adapters), use NewHandlerWithSessionManager.
 func NewHandler() *Handler {
 	return NewHandlerWithSessionManager(session.NewDefaultManager())
 }
 
-// NewHandlerWithSessionManager creates a new SMB2 handler with an external session metaSvc.
-// This allows sharing the session metaSvc with other components (e.g., Adapter for credits).
+// NewHandlerWithSessionManager creates a new SMB2 handler with an external session manager.
+// This allows sharing the session manager with other components (e.g., the Adapter
+// for credit tracking). Initializes pipe manager, oplock manager, notify registry,
+// generates a random server GUID, and sets default max sizes (64KB).
 func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 	h := &Handler{
 		StartTime:       time.Now(),

@@ -46,7 +46,6 @@ type SMBAuthenticator struct {
 
 // pendingNTLMAuth tracks state between NTLM authentication rounds.
 type pendingNTLMAuth struct {
-	sessionID       uint64
 	serverChallenge [8]byte
 }
 
@@ -148,7 +147,6 @@ func (a *SMBAuthenticator) handleNTLMNegotiate(wrapSPNEGO bool) (*adapter.AuthRe
 	// Generate session ID and store pending auth
 	sessionID := a.nextSessionID.Add(1)
 	a.pendingAuths.Store(sessionID, &pendingNTLMAuth{
-		sessionID:       sessionID,
 		serverChallenge: serverChallenge,
 	})
 
@@ -268,10 +266,7 @@ func (a *SMBAuthenticator) validateAgainstPendingAuths(
 // cleanupAllPendingAuths removes all pending authentication state.
 // Called after authentication completes (success or failure).
 func (a *SMBAuthenticator) cleanupAllPendingAuths() {
-	a.pendingAuths.Range(func(key, _ any) bool {
-		a.pendingAuths.Delete(key)
-		return true
-	})
+	a.pendingAuths.Clear()
 }
 
 // uniqueStrings returns a deduplicated slice preserving order.

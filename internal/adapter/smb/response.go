@@ -39,22 +39,9 @@ func ProcessSingleRequest(
 	connInfo.SessionManager.RequestStarted(reqHeader.SessionID)
 	defer connInfo.SessionManager.RequestCompleted(reqHeader.SessionID)
 
-	clientAddr := connInfo.Conn.RemoteAddr().String()
-
-	// Look up command in dispatch table
-	cmd, ok := DispatchTable[reqHeader.Command]
-	if !ok {
-		logger.Debug("Unknown SMB2 command", "command", reqHeader.Command)
-		return SendErrorResponse(reqHeader, types.StatusNotSupported, connInfo)
-	}
-
-	// Create handler context
-	handlerCtx := &handlers.SMBHandlerContext{
-		Context:    ctx,
-		ClientAddr: clientAddr,
-		SessionID:  reqHeader.SessionID,
-		TreeID:     reqHeader.TreeID,
-		MessageID:  reqHeader.MessageID,
+	cmd, handlerCtx, errStatus := prepareDispatch(ctx, reqHeader, connInfo)
+	if errStatus != 0 {
+		return SendErrorResponse(reqHeader, errStatus, connInfo)
 	}
 
 	// For CHANGE_NOTIFY, set up async callback so notifications can be sent
@@ -62,29 +49,10 @@ func ProcessSingleRequest(
 		handlerCtx.AsyncNotifyCallback = asyncNotifyCallback
 	}
 
-	// Validate session if required
-	if cmd.NeedsSession && reqHeader.SessionID != 0 {
-		session, ok := connInfo.Handler.GetSession(reqHeader.SessionID)
-		if !ok {
-			return SendErrorResponse(reqHeader, types.StatusUserSessionDeleted, connInfo)
-		}
-		handlerCtx.IsGuest = session.IsGuest
-		handlerCtx.Username = session.Username
-	}
-
-	// Validate tree connection if required
-	if cmd.NeedsTree && reqHeader.TreeID != 0 {
-		tree, ok := connInfo.Handler.GetTree(reqHeader.TreeID)
-		if !ok {
-			return SendErrorResponse(reqHeader, types.StatusNetworkNameDeleted, connInfo)
-		}
-		handlerCtx.ShareName = tree.ShareName
-	}
-
 	logger.Debug("Dispatching SMB2 command",
 		"command", cmd.Name,
 		"messageId", reqHeader.MessageID,
-		"client", clientAddr)
+		"client", handlerCtx.ClientAddr)
 
 	// Execute handler
 	result, err := cmd.Handler(handlerCtx, connInfo.Handler, connInfo.Handler.Registry, body)
@@ -100,48 +68,59 @@ func ProcessSingleRequest(
 	return SendResponse(reqHeader, handlerCtx, result, connInfo)
 }
 
-// ProcessRequestWithFileID processes a request and returns the FileID if applicable (for CREATE).
-// Used in compound request processing where FileID propagation is needed.
-func ProcessRequestWithFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte, connInfo *ConnInfo) (*HandlerResult, [16]byte) {
-	var fileID [16]byte
-
-	clientAddr := connInfo.Conn.RemoteAddr().String()
-
+// prepareDispatch looks up the command in the dispatch table, builds the handler context,
+// and validates session/tree requirements. Returns the command, context, and an error
+// status (0 on success). This consolidates the shared setup logic used by both
+// ProcessSingleRequest and ProcessRequestWithFileID.
+func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo *ConnInfo) (*Command, *handlers.SMBHandlerContext, types.Status) {
 	cmd, ok := DispatchTable[reqHeader.Command]
 	if !ok {
 		logger.Debug("Unknown SMB2 command", "command", reqHeader.Command)
-		return &HandlerResult{Status: types.StatusNotSupported, Data: MakeErrorBody()}, fileID
+		return nil, nil, types.StatusNotSupported
 	}
 
-	handlerCtx := &handlers.SMBHandlerContext{
-		Context:    ctx,
-		ClientAddr: clientAddr,
-		SessionID:  reqHeader.SessionID,
-		TreeID:     reqHeader.TreeID,
-		MessageID:  reqHeader.MessageID,
-	}
+	handlerCtx := handlers.NewSMBHandlerContext(
+		ctx,
+		connInfo.Conn.RemoteAddr().String(),
+		reqHeader.SessionID,
+		reqHeader.TreeID,
+		reqHeader.MessageID,
+	)
 
 	if cmd.NeedsSession && reqHeader.SessionID != 0 {
-		session, ok := connInfo.Handler.GetSession(reqHeader.SessionID)
+		sess, ok := connInfo.Handler.GetSession(reqHeader.SessionID)
 		if !ok {
-			return &HandlerResult{Status: types.StatusUserSessionDeleted, Data: MakeErrorBody()}, fileID
+			return nil, nil, types.StatusUserSessionDeleted
 		}
-		handlerCtx.IsGuest = session.IsGuest
-		handlerCtx.Username = session.Username
+		handlerCtx.IsGuest = sess.IsGuest
+		handlerCtx.Username = sess.Username
 	}
 
 	if cmd.NeedsTree && reqHeader.TreeID != 0 {
 		tree, ok := connInfo.Handler.GetTree(reqHeader.TreeID)
 		if !ok {
-			return &HandlerResult{Status: types.StatusNetworkNameDeleted, Data: MakeErrorBody()}, fileID
+			return nil, nil, types.StatusNetworkNameDeleted
 		}
 		handlerCtx.ShareName = tree.ShareName
+	}
+
+	return cmd, handlerCtx, 0
+}
+
+// ProcessRequestWithFileID processes a request and returns the FileID if applicable (for CREATE).
+// Used in compound request processing where FileID propagation is needed.
+func ProcessRequestWithFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte, connInfo *ConnInfo) (*HandlerResult, [16]byte) {
+	var fileID [16]byte
+
+	cmd, handlerCtx, errStatus := prepareDispatch(ctx, reqHeader, connInfo)
+	if errStatus != 0 {
+		return &HandlerResult{Status: errStatus, Data: MakeErrorBody()}, fileID
 	}
 
 	logger.Debug("Dispatching SMB2 command",
 		"command", cmd.Name,
 		"messageId", reqHeader.MessageID,
-		"client", clientAddr)
+		"client", handlerCtx.ClientAddr)
 
 	result, err := cmd.Handler(handlerCtx, connInfo.Handler, connInfo.Handler.Registry, body)
 	if err != nil {
@@ -161,14 +140,9 @@ func ProcessRequestWithFileID(ctx context.Context, reqHeader *header.SMB2Header,
 }
 
 // ProcessRequestWithInheritedFileID processes a request using an inherited FileID.
+// InjectFileID is a no-op for commands that do not use a FileID, so no pre-filtering is needed.
 func ProcessRequestWithInheritedFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte, inheritedFileID [16]byte, connInfo *ConnInfo) *HandlerResult {
-	// For commands that use FileID, inject the inherited FileID into the request body
-	if reqHeader.Command == types.SMB2QueryInfo || reqHeader.Command == types.SMB2Close ||
-		reqHeader.Command == types.SMB2Read || reqHeader.Command == types.SMB2Write ||
-		reqHeader.Command == types.SMB2QueryDirectory || reqHeader.Command == types.SMB2SetInfo {
-		body = InjectFileID(reqHeader.Command, body, inheritedFileID)
-	}
-
+	body = InjectFileID(reqHeader.Command, body, inheritedFileID)
 	result, _ := ProcessRequestWithFileID(ctx, reqHeader, body, connInfo)
 	return result
 }
@@ -299,76 +273,40 @@ func HandleSMB1Negotiate(connInfo *ConnInfo) error {
 	logger.Debug("Received SMB1 NEGOTIATE, responding with SMB2 upgrade",
 		"address", connInfo.Conn.RemoteAddr().String())
 
-	// Build SMB2 NEGOTIATE response header
-	// When responding to SMB1 NEGOTIATE, we use a special SMB2 header format
+	// Build SMB2 NEGOTIATE response header.
+	// When responding to SMB1 NEGOTIATE, we use a special SMB2 header format.
+	// Fields not explicitly set below are zero (CreditCharge, NextCommand,
+	// MessageID, Reserved, TreeID, SessionID, Signature).
 	respHeader := make([]byte, header.HeaderSize)
+	binary.LittleEndian.PutUint32(respHeader[0:4], types.SMB2ProtocolID)           // Protocol ID
+	binary.LittleEndian.PutUint16(respHeader[4:6], header.HeaderSize)              // Structure Size: 64
+	binary.LittleEndian.PutUint32(respHeader[8:12], uint32(types.StatusSuccess))   // Status
+	binary.LittleEndian.PutUint16(respHeader[12:14], uint16(types.SMB2Negotiate))  // Command
+	binary.LittleEndian.PutUint16(respHeader[14:16], 1)                            // Credits: 1
+	binary.LittleEndian.PutUint32(respHeader[16:20], types.SMB2FlagsServerToRedir) // Flags: response
 
-	// Protocol ID: SMB2
-	binary.LittleEndian.PutUint32(respHeader[0:4], types.SMB2ProtocolID)
-	// Structure Size: 64
-	binary.LittleEndian.PutUint16(respHeader[4:6], header.HeaderSize)
-	// Credit Charge: 0
-	binary.LittleEndian.PutUint16(respHeader[6:8], 0)
-	// Status: STATUS_SUCCESS
-	binary.LittleEndian.PutUint32(respHeader[8:12], uint32(types.StatusSuccess))
-	// Command: NEGOTIATE
-	binary.LittleEndian.PutUint16(respHeader[12:14], uint16(types.SMB2Negotiate))
-	// Credits: 1
-	binary.LittleEndian.PutUint16(respHeader[14:16], 1)
-	// Flags: SERVER_TO_REDIR (response)
-	binary.LittleEndian.PutUint32(respHeader[16:20], types.SMB2FlagsServerToRedir)
-	// NextCommand: 0
-	binary.LittleEndian.PutUint32(respHeader[20:24], 0)
-	// MessageID: 0
-	binary.LittleEndian.PutUint64(respHeader[24:32], 0)
-	// Reserved: 0
-	binary.LittleEndian.PutUint32(respHeader[32:36], 0)
-	// TreeID: 0
-	binary.LittleEndian.PutUint32(respHeader[36:40], 0)
-	// SessionID: 0
-	binary.LittleEndian.PutUint64(respHeader[40:48], 0)
-	// Signature: zeros (no signing)
-
-	// Build NEGOTIATE response body (65 bytes structure)
+	// Build NEGOTIATE response body (65 bytes structure).
+	// Fields not explicitly set are zero (Reserved, NegotiateContextCount,
+	// Capabilities, SecurityBufferLength, NegotiateContextOffset).
 	respBody := make([]byte, 65)
+	binary.LittleEndian.PutUint16(respBody[0:2], 65) // StructureSize
 
-	// StructureSize: 65
-	binary.LittleEndian.PutUint16(respBody[0:2], 65)
-	// SecurityMode: Set based on signing configuration [MS-SMB2 2.2.4]
-	var securityMode byte
+	// SecurityMode: set based on signing configuration [MS-SMB2 2.2.4]
 	if connInfo.Handler.SigningConfig.Enabled {
-		securityMode |= 0x01 // SMB2_NEGOTIATE_SIGNING_ENABLED
+		respBody[2] |= 0x01 // SMB2_NEGOTIATE_SIGNING_ENABLED
 	}
 	if connInfo.Handler.SigningConfig.Required {
-		securityMode |= 0x02 // SMB2_NEGOTIATE_SIGNING_REQUIRED
+		respBody[2] |= 0x02 // SMB2_NEGOTIATE_SIGNING_REQUIRED
 	}
-	respBody[2] = securityMode
-	// Reserved
-	respBody[3] = 0
-	// DialectRevision: SMB 2.0.2
-	binary.LittleEndian.PutUint16(respBody[4:6], uint16(types.SMB2Dialect0202))
-	// NegotiateContextCount: 0 (SMB 3.1.1 only)
-	binary.LittleEndian.PutUint16(respBody[6:8], 0)
-	// ServerGUID (16 bytes)
-	copy(respBody[8:24], connInfo.Handler.ServerGUID[:])
-	// Capabilities: 0
-	binary.LittleEndian.PutUint32(respBody[24:28], 0)
-	// MaxTransactSize
+
+	binary.LittleEndian.PutUint16(respBody[4:6], uint16(types.SMB2Dialect0202)) // DialectRevision: SMB 2.0.2
+	copy(respBody[8:24], connInfo.Handler.ServerGUID[:])                        // ServerGUID
 	binary.LittleEndian.PutUint32(respBody[28:32], connInfo.Handler.MaxTransactSize)
-	// MaxReadSize
 	binary.LittleEndian.PutUint32(respBody[32:36], connInfo.Handler.MaxReadSize)
-	// MaxWriteSize
 	binary.LittleEndian.PutUint32(respBody[36:40], connInfo.Handler.MaxWriteSize)
-	// SystemTime
-	binary.LittleEndian.PutUint64(respBody[40:48], types.TimeToFiletime(time.Now()))
-	// ServerStartTime
-	binary.LittleEndian.PutUint64(respBody[48:56], types.TimeToFiletime(connInfo.Handler.StartTime))
-	// SecurityBufferOffset: offset from start of SMB2 header = 64 (header) + 64 (fixed body) = 128
-	binary.LittleEndian.PutUint16(respBody[56:58], 128)
-	// SecurityBufferLength: 0
-	binary.LittleEndian.PutUint16(respBody[58:60], 0)
-	// NegotiateContextOffset: 0
-	binary.LittleEndian.PutUint32(respBody[60:64], 0)
+	binary.LittleEndian.PutUint64(respBody[40:48], types.TimeToFiletime(time.Now()))                 // SystemTime
+	binary.LittleEndian.PutUint64(respBody[48:56], types.TimeToFiletime(connInfo.Handler.StartTime)) // ServerStartTime
+	binary.LittleEndian.PutUint16(respBody[56:58], 128)                                              // SecurityBufferOffset: 64 (header) + 64 (fixed body)
 
 	// Send the response
 	return SendRawMessage(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, respHeader, respBody)
@@ -401,14 +339,10 @@ func TrackSessionLifecycle(command types.Command, reqSessionID, ctxSessionID uin
 	}
 }
 
-// MakeErrorBody creates a minimal error response body per MS-SMB2 spec.
-// Error response body (8 bytes minimum):
-// StructureSize (2) + ErrorContextCount (1) + Reserved (1) + ByteCount (4)
+// MakeErrorBody creates a minimal error response body per MS-SMB2 2.2.2.
+// Layout (9 bytes): StructureSize (2) + ErrorContextCount (1) + Reserved (1) + ByteCount (4) + ErrorData (1 padding).
 func MakeErrorBody() []byte {
 	body := make([]byte, 9)
 	binary.LittleEndian.PutUint16(body[0:2], 9) // StructureSize
-	body[2] = 0                                 // ErrorContextCount
-	body[3] = 0                                 // Reserved
-	binary.LittleEndian.PutUint32(body[4:8], 0) // ByteCount
 	return body
 }
