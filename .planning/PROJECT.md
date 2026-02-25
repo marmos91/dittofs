@@ -16,6 +16,7 @@ Target: Cloud-native enterprise NAS with feature parity exceeding JuiceFS and Ha
 - NFS adapter restructured: `internal/adapter/nfs/` with v4/v4.1 split
 - SMB adapter restructured: BaseAdapter shared with NFS, dispatch in `internal/adapter/smb/`
 - Core objects decomposed: Store interface (9 sub-interfaces), Runtime split, Offloader rename/split
+- Protocol-agnostic ClientRecord for unified NFS/SMB session tracking (#157)
 
 ## Next Milestone: v3.6 Windows Compatibility
 
@@ -37,6 +38,7 @@ Target: Cloud-native enterprise NAS with feature parity exceeding JuiceFS and Ha
 - Python analysis pipeline with charts and markdown report generation (#197)
 - Competitor configuration and setup scripts for fair comparison (#198)
 - DittoFS profiling integration (Prometheus, Pyroscope, pprof) for bottleneck identification (#199)
+- `dfs bench` CLI command for user-facing performance evaluation (#188)
 
 **Tracking:** [GitHub #193](https://github.com/marmos91/dittofs/issues/193)
 
@@ -115,6 +117,7 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 - [ ] Runtime decomposition (AdapterManager, MetadataStoreManager extraction)
 - [ ] TransferManager -> Offloader rename and split
 - [ ] Error unification and boilerplate reduction
+- [ ] Protocol-agnostic ClientRecord in metadata layer (#157)
 
 #### v3.6 — Windows Compatibility
 - [ ] Sparse file READ fix (#180) — return zeros for unwritten blocks
@@ -133,6 +136,7 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 - [ ] Competitor configs and setup scripts (JuiceFS, NFS-Ganesha, RClone, kernel NFS, Samba) (#198)
 - [ ] DittoFS profiling integration (Prometheus, Pyroscope, pprof capture) (#199)
 - [ ] Statistical rigor: 3+ iterations, p50/p95/p99, stddev across all workloads
+- [ ] Benchmark CLI (`dfs bench <mountpoint>`) for user-facing performance evaluation (#188)
 
 #### v3.8 — SMB3 Protocol Upgrade
 - [ ] SMB 3.0/3.0.2/3.1.1 dialect negotiation with negotiate contexts
@@ -270,4 +274,4 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 | Per-adapter connection pools | Isolation between NFS and SMB, simpler limits | ✓ Good — Phase 01 |
 
 ---
-*Last updated: 2026-02-25 after v3.7 benchmarking milestone planning*
+*Last updated: 2026-02-25 — added #157 to v3.5, #188 to v3.7*
