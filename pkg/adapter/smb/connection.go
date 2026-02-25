@@ -144,10 +144,10 @@ func (c *Connection) Serve(ctx context.Context) {
 			compoundData := make([]byte, len(remainingCompound))
 			copy(compoundData, remainingCompound)
 
-			go func() {
-				defer c.handleRequestPanic(clientAddr, hdr.MessageID)
-				smb.ProcessCompoundRequest(ctx, hdr, body, compoundData, ci)
-			}()
+			go func(reqHeader *header.SMB2Header, reqBody []byte) {
+				defer c.handleRequestPanic(clientAddr, reqHeader.MessageID)
+				smb.ProcessCompoundRequest(ctx, reqHeader, reqBody, compoundData, ci)
+			}(hdr, body)
 		} else {
 			go func(reqHeader *header.SMB2Header, reqBody []byte) {
 				defer c.handleRequestPanic(clientAddr, reqHeader.MessageID)

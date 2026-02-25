@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 
 	"github.com/marmos91/dittofs/pkg/adapter"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -142,7 +143,7 @@ func parseUnixAuth(body []byte) (*unixAuthResult, error) {
 	}
 
 	nameBytes := make([]byte, nameLen)
-	if _, err := reader.Read(nameBytes); err != nil {
+	if _, err := io.ReadFull(reader, nameBytes); err != nil {
 		return nil, fmt.Errorf("read machine name: %w", err)
 	}
 	auth.MachineName = string(nameBytes)
@@ -150,7 +151,9 @@ func parseUnixAuth(body []byte) (*unixAuthResult, error) {
 	// Skip XDR padding to 4-byte boundary
 	padding := (4 - (nameLen % 4)) % 4
 	for i := uint32(0); i < padding; i++ {
-		_, _ = reader.ReadByte()
+		if _, err := reader.ReadByte(); err != nil {
+			return nil, fmt.Errorf("read machine name padding: %w", err)
+		}
 	}
 
 	// Read UID

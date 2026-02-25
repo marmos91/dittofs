@@ -174,19 +174,16 @@ func (a *SMBAuthenticator) handleNTLMAuthenticate(ctx context.Context, ntlmToken
 
 	// Anonymous/empty username -> guest
 	if authMsg.IsAnonymous || authMsg.Username == "" {
-		a.cleanupAllPendingAuths()
 		return &adapter.AuthResult{IsGuest: true}, nil, nil
 	}
 
 	// Look up user
 	if a.userStore == nil {
-		a.cleanupAllPendingAuths()
 		return &adapter.AuthResult{IsGuest: true}, nil, nil
 	}
 
 	user, err := a.userStore.GetUser(ctx, authMsg.Username)
 	if err != nil || user == nil || !user.Enabled {
-		a.cleanupAllPendingAuths()
 		if user != nil && !user.Enabled {
 			return nil, nil, fmt.Errorf("user account disabled: %s", authMsg.Username)
 		}
@@ -196,11 +193,11 @@ func (a *SMBAuthenticator) handleNTLMAuthenticate(ctx context.Context, ntlmToken
 	// Try NTLMv2 validation against all pending auths
 	ntHash, hasNTHash := user.GetNTHash()
 	if hasNTHash && len(authMsg.NtChallengeResponse) > 0 {
-		sessionKey, pending := a.validateAgainstPendingAuths(ntHash, authMsg)
+		sessionKey, pending, matchedID := a.validateAgainstPendingAuths(ntHash, authMsg)
 		if pending != nil {
 			// Derive signing key
 			signingKey := DeriveSigningKey(sessionKey, authMsg.NegotiateFlags, authMsg.EncryptedRandomSessionKey)
-			a.cleanupAllPendingAuths()
+			a.cleanupPendingAuth(matchedID)
 
 			return &adapter.AuthResult{
 				User:       user,
@@ -209,13 +206,11 @@ func (a *SMBAuthenticator) handleNTLMAuthenticate(ctx context.Context, ntlmToken
 			}, nil, nil
 		}
 
-		// Validation failed
-		a.cleanupAllPendingAuths()
+		// Validation failed - no matching pending auth found
 		return nil, nil, errors.New("ntlm: authentication failed")
 	}
 
 	// User exists but no NT hash - allow without credential validation
-	a.cleanupAllPendingAuths()
 	return &adapter.AuthResult{
 		User:    user,
 		IsGuest: false,
@@ -223,12 +218,13 @@ func (a *SMBAuthenticator) handleNTLMAuthenticate(ctx context.Context, ntlmToken
 }
 
 // validateAgainstPendingAuths tries to validate the NTLM response against
-// all pending authentication challenges. Returns the session key and the
-// matching pending auth on success, or zero values on failure.
+// all pending authentication challenges. Returns the session key, the
+// matching pending auth, and the matched session ID on success.
+// On failure, returns zero values and matchedID 0.
 func (a *SMBAuthenticator) validateAgainstPendingAuths(
 	ntHash [16]byte,
 	authMsg *AuthenticateMessage,
-) ([16]byte, *pendingNTLMAuth) {
+) ([16]byte, *pendingNTLMAuth, uint64) {
 	hostname, _ := os.Hostname()
 	domainsToTry := uniqueStrings([]string{
 		authMsg.Domain,
@@ -239,6 +235,7 @@ func (a *SMBAuthenticator) validateAgainstPendingAuths(
 
 	var resultKey [16]byte
 	var matchedPending *pendingNTLMAuth
+	var matchedID uint64
 
 	a.pendingAuths.Range(func(key, value any) bool {
 		pending := value.(*pendingNTLMAuth)
@@ -254,19 +251,20 @@ func (a *SMBAuthenticator) validateAgainstPendingAuths(
 			if err == nil {
 				resultKey = sessionKey
 				matchedPending = pending
+				matchedID = key.(uint64)
 				return false // stop iteration
 			}
 		}
 		return true // continue
 	})
 
-	return resultKey, matchedPending
+	return resultKey, matchedPending, matchedID
 }
 
-// cleanupAllPendingAuths removes all pending authentication state.
-// Called after authentication completes (success or failure).
-func (a *SMBAuthenticator) cleanupAllPendingAuths() {
-	a.pendingAuths.Clear()
+// cleanupPendingAuth removes the pending auth entry for the given session ID.
+// Only deletes the specific entry to avoid breaking concurrent handshakes.
+func (a *SMBAuthenticator) cleanupPendingAuth(sessionID uint64) {
+	a.pendingAuths.Delete(sessionID)
 }
 
 // uniqueStrings returns a deduplicated slice preserving order.
