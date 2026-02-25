@@ -23,14 +23,10 @@ func HandleSequenceOp(d *Deps, compCtx *types.CompoundContext, reader io.Reader)
 	cachedReply []byte,
 	err error,
 ) {
-	// Record every SEQUENCE invocation
-	d.SequenceMetrics.RecordSequence()
-
 	// Decode SEQUENCE args
 	var args types.SequenceArgs
 	if err := args.Decode(reader); err != nil {
 		logger.Debug("SEQUENCE: decode error", "error", err, "client", compCtx.ClientAddr)
-		d.SequenceMetrics.RecordError("bad_xdr")
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_BADXDR,
 			OpCode: types.OP_SEQUENCE,
@@ -44,7 +40,6 @@ func HandleSequenceOp(d *Deps, compCtx *types.CompoundContext, reader io.Reader)
 		logger.Debug("SEQUENCE: session not found",
 			"session_id", hex.EncodeToString(args.SessionID[:]),
 			"client", compCtx.ClientAddr)
-		d.SequenceMetrics.RecordError("bad_session")
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_BADSESSION,
 			OpCode: types.OP_SEQUENCE,
@@ -63,15 +58,12 @@ func HandleSequenceOp(d *Deps, compCtx *types.CompoundContext, reader io.Reader)
 			"slot", args.SlotID,
 			"seqid", args.SequenceID,
 			"client", compCtx.ClientAddr)
-		d.SequenceMetrics.RecordError("replay_hit")
-		d.SequenceMetrics.RecordReplayHit()
 		if slot != nil && slot.CachedReply != nil {
 			return nil, nil, nil, slot.CachedReply, nil
 		}
 		// Invariant violation: SeqRetry should only be returned when CachedReply != nil.
 		// ValidateSequence returns SeqMisordered with NFS4ERR_RETRY_UNCACHED_REP for
 		// retries without cache. If we ever reach this point, treat as internal error.
-		d.SequenceMetrics.RecordError("retry_uncached")
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
 			OpCode: types.OP_SEQUENCE,
@@ -83,19 +75,6 @@ func HandleSequenceOp(d *Deps, compCtx *types.CompoundContext, reader io.Reader)
 		nfsStatus := uint32(types.NFS4ERR_SEQ_MISORDERED)
 		if stateErr, ok := validationErr.(*state.NFS4StateError); ok {
 			nfsStatus = stateErr.Status
-		}
-		// Classify error type for metrics
-		switch nfsStatus {
-		case types.NFS4ERR_SEQ_MISORDERED:
-			d.SequenceMetrics.RecordError("seq_misordered")
-		case types.NFS4ERR_BADSLOT:
-			d.SequenceMetrics.RecordError("bad_slot")
-		case types.NFS4ERR_DELAY:
-			d.SequenceMetrics.RecordError("slot_busy")
-		case types.NFS4ERR_RETRY_UNCACHED_REP:
-			d.SequenceMetrics.RecordError("retry_uncached")
-		default:
-			d.SequenceMetrics.RecordError("seq_misordered")
 		}
 		logger.Debug("SEQUENCE: validation failed",
 			"session_id", args.SessionID.String(),
@@ -113,10 +92,6 @@ func HandleSequenceOp(d *Deps, compCtx *types.CompoundContext, reader io.Reader)
 	case state.SeqNew:
 		// New request: build context, renew lease, compute status flags
 		_ = slot // slot is reserved (InUse=true), will be released by caller via defer
-
-		// Update slot utilization metrics
-		sessionIDHex := args.SessionID.String()
-		d.SequenceMetrics.SetSlotsInUse(sessionIDHex, float64(sess.ForeChannelSlots.SlotsInUse()))
 
 		// Renew lease (implicit per RFC 8881 Section 8.1.3)
 		d.StateManager.RenewV41Lease(sess.ClientID)

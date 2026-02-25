@@ -14,7 +14,6 @@ const (
 	DefaultLoggingOutput   = "stdout"
 	DefaultShutdownTimeout = "30s"
 	DefaultSQLitePath      = "/data/controlplane/controlplane.db"
-	DefaultMetricsPort     = 9090
 	DefaultAPIPort         = 8080
 	DefaultAccessDuration  = "15m"
 	DefaultRefreshDuration = "168h" // 7 days
@@ -37,12 +36,8 @@ func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, er
 			Format: DefaultLoggingFormat,
 			Output: DefaultLoggingOutput,
 		},
-		Telemetry: TelemetryConfig{
-			Enabled: false,
-		},
 		ShutdownTimeout: DefaultShutdownTimeout,
 		Database:        buildDatabaseConfig(dittoServer),
-		Metrics:         buildMetricsConfig(dittoServer),
 		ControlPlane:    buildControlPlaneConfig(dittoServer),
 		Cache:           buildCacheConfig(dittoServer),
 	}
@@ -96,25 +91,6 @@ func buildDatabaseConfig(ds *dittoiov1alpha1.DittoServer) DatabaseConfig {
 		if ds.Spec.Database.SQLite != nil && ds.Spec.Database.SQLite.Path != "" {
 			cfg.SQLite.Path = ds.Spec.Database.SQLite.Path
 		}
-	}
-
-	return cfg
-}
-
-// buildMetricsConfig constructs metrics configuration
-func buildMetricsConfig(ds *dittoiov1alpha1.DittoServer) MetricsConfig {
-	cfg := MetricsConfig{
-		Enabled: false,
-		Port:    DefaultMetricsPort,
-	}
-
-	if ds.Spec.Metrics == nil {
-		return cfg
-	}
-
-	cfg.Enabled = ds.Spec.Metrics.Enabled
-	if ds.Spec.Metrics.Port > 0 {
-		cfg.Port = int(ds.Spec.Metrics.Port)
 	}
 
 	return cfg

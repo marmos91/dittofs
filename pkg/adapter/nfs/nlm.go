@@ -16,7 +16,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/errors"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
-	"github.com/marmos91/dittofs/pkg/metrics"
 )
 
 // fileChecker provides file existence checking without importing pkg/metadata.
@@ -372,7 +371,6 @@ func (s *NFSAdapter) processNLMWaiters(handle metadata.FileHandle) {
 			s.shutdownCtx,
 			waiter,
 			lm,
-			nil, // metrics - can add later
 		)
 
 		if success {
@@ -443,9 +441,6 @@ func (s *NFSAdapter) initNSMHandler(rt *runtime.Runtime, metadataService *metada
 		MaxClients:   nsm_handlers.DefaultMaxClients,
 	})
 
-	// Create NSM metrics (no registration for now, can be added later)
-	s.nsmMetrics = nsm.NewMetrics(nil)
-
 	// Create onClientCrash callback that releases locks across all shares
 	// Per CONTEXT.md: Immediate cleanup when crash detected (no delay/grace window)
 	onClientCrash := func(ctx context.Context, clientID string) error {
@@ -457,7 +452,6 @@ func (s *NFSAdapter) initNSMHandler(rt *runtime.Runtime, metadataService *metada
 		Handler:       s.nsmHandler,
 		ServerName:    serverName,
 		OnClientCrash: onClientCrash,
-		Metrics:       s.nsmMetrics,
 	})
 
 	logger.Debug("NSM handler and notifier initialized",
@@ -519,11 +513,6 @@ func (s *NFSAdapter) handleClientCrash(ctx context.Context, clientID string, met
 	logger.Info("NSM: completed lock cleanup for crashed client",
 		"client", clientID,
 		"total_released", totalReleased)
-
-	// Record metrics
-	if s.nsmMetrics != nil {
-		s.nsmMetrics.RecordLocksCleanedOnCrash(totalReleased)
-	}
 
 	return nil
 }
@@ -604,20 +593,12 @@ func (s *NFSAdapter) initGSSProcessor() {
 	mapper := config.BuildStaticMapper(&s.kerberosConfig.IdentityMapping)
 	verifier := gss.NewKrb5Verifier(provider)
 
-	// Create GSS metrics if metrics are enabled
-	var gssOpts []gss.GSSProcessorOption
-	if metrics.IsEnabled() {
-		gssMetrics := gss.NewGSSMetrics(metrics.GetRegistry())
-		gssOpts = append(gssOpts, gss.WithMetrics(gssMetrics))
-	}
-
 	// Create the GSS processor
 	s.gssProcessor = gss.NewGSSProcessor(
 		verifier,
 		mapper,
 		s.kerberosConfig.MaxContexts,
 		s.kerberosConfig.ContextTTL,
-		gssOpts...,
 	)
 
 	logger.Info("RPCSEC_GSS (Kerberos) authentication enabled",

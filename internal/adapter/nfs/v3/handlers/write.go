@@ -136,7 +136,7 @@ func (h *Handler) Write(
 	// ========================================================================
 
 	if ctx.isContextCancelled() {
-		traceWarn(ctx.Context, ctx.Context.Err(), "WRITE cancelled", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP)
+		logWarn(ctx.Context, ctx.Context.Err(), "WRITE cancelled", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -163,7 +163,7 @@ func (h *Handler) Write(
 
 	const maxWriteSize uint32 = 1 << 20 // 1MB - matches default config
 	if err := validateWriteRequest(req, maxWriteSize); err != nil {
-		traceWarn(ctx.Context, err, "WRITE validation failed", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
+		logWarn(ctx.Context, err, "WRITE validation failed", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
@@ -200,7 +200,7 @@ func (h *Handler) Write(
 			return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
-		traceError(ctx.Context, err, "WRITE failed: failed to build auth context", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
+		logError(ctx.Context, err, "WRITE failed: failed to build auth context", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 
 		// No WCC data available - we haven't called PrepareWrite yet
 		return &WriteResponse{
@@ -258,7 +258,7 @@ func (h *Handler) Write(
 	// Write to ContentService (uses Cache, will be flushed on COMMIT)
 	err = payloadSvc.WriteAt(ctx.Context, writeIntent.PayloadID, req.Data, req.Offset)
 	if err != nil {
-		traceError(ctx.Context, err, "WRITE failed: content write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "content_id", writeIntent.PayloadID, "client", clientIP)
+		logError(ctx.Context, err, "WRITE failed: content write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "content_id", writeIntent.PayloadID, "client", clientIP)
 		status := xdr.MapContentErrorToNFSStatus(err)
 		return h.buildWriteErrorResponse(status, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}
@@ -270,7 +270,7 @@ func (h *Handler) Write(
 
 	updatedFile, err := metaSvc.CommitWrite(authCtx, writeIntent)
 	if err != nil {
-		traceError(ctx.Context, err, "WRITE failed: CommitWrite error (content written but metadata not updated)", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "client", clientIP)
+		logError(ctx.Context, err, "WRITE failed: CommitWrite error (content written but metadata not updated)", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "client", clientIP)
 
 		// Content is written but metadata not updated - this is an inconsistent state
 		// Map error to NFS status

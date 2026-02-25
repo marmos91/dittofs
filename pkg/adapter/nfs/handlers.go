@@ -5,26 +5,19 @@ import (
 	"encoding/binary"
 	"fmt"
 	"slices"
-	"time"
-
-	"go.opentelemetry.io/otel/trace"
 
 	nfs "github.com/marmos91/dittofs/internal/adapter/nfs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/middleware"
-	mount_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
 	nlm "github.com/marmos91/dittofs/internal/adapter/nfs/nlm"
 	nlm_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/nlm/handlers"
-	nlm_types "github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
 	nsm "github.com/marmos91/dittofs/internal/adapter/nfs/nsm"
 	nsm_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/nsm/handlers"
-	nsm_types "github.com/marmos91/dittofs/internal/adapter/nfs/nsm/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	nfs_types "github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	v4handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/handlers"
 	v4state "github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	v4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/telemetry"
 )
 
 // handleNFSProcedure dispatches an NFS procedure call to the appropriate handler.
@@ -59,17 +52,6 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 		share = ""
 	}
 
-	// Start a span for this NFS operation
-	// The span will be passed through the context to all downstream operations
-	ctx, span := telemetry.StartNFSSpan(ctx, procedure.Name, nil,
-		telemetry.ClientAddr(clientAddr),
-		telemetry.RPCXID(call.XID),
-		telemetry.NFSShare(share))
-	defer span.End()
-
-	// Inject trace context into logger context for log-trace correlation
-	ctx = telemetry.InjectTraceContext(ctx)
-
 	// Extract handler context (includes share and authentication for handlers)
 	handlerCtx := nfs.ExtractHandlerContext(ctx, call, clientAddr, share, procedure.Name)
 
@@ -83,7 +65,6 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 	// Check context before dispatching to handler
 	select {
 	case <-ctx.Done():
-		telemetry.RecordError(ctx, ctx.Err())
 		logger.DebugCtx(ctx, "NFS request cancelled before handler",
 			"procedure", procedure.Name,
 			"xid", fmt.Sprintf("0x%x", call.XID))
@@ -100,81 +81,16 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 
 		// Return a minimal NFS3ERR_NOTSUPP response
 		result := c.makeBlockedOpResponse()
-		if c.server.metrics != nil {
-			c.server.metrics.RecordRequest(procedure.Name, share, 0, nfs.NFSStatusToString(nfs_types.NFS3ErrNotSupp))
-		}
 		return result.Data, nil
 	}
 
-	// ============================================================================
-	// Metrics Instrumentation (Transparent to Handlers)
-	// ============================================================================
-	//
-	// Three metrics are recorded for each request, following Prometheus best practices:
-	//
-	// 1. In-Flight Gauge (RecordRequestStart/End):
-	//    - Tracks concurrent requests at any moment
-	//    - Useful for capacity planning and detecting overload
-	//    - Metric: dittofs_nfs_requests_in_flight
-	//
-	// 2. Request Counter (RecordRequest):
-	//    - Counts total requests by procedure, share, status, and error code
-	//    - Enables calculation of success/error rates and error type distribution
-	//    - Metric: dittofs_nfs_requests_total
-	//
-	// 3. Duration Histogram (RecordRequest):
-	//    - Tracks latency distribution for percentile calculations (p50, p95, p99)
-	//    - Same call records both counter and histogram for efficiency
-	//    - Metric: dittofs_nfs_request_duration_milliseconds
-	//
-	// This pattern ensures:
-	//  - Handlers remain unaware of metrics (clean separation of concerns)
-	//  - All procedures are instrumented consistently
-	//  - Metrics include NFS protocol status codes, not Go errors
-	//  - Share-level tracking enables per-tenant analysis
-	//
-	if c.server.metrics != nil {
-		c.server.metrics.RecordRequestStart(procedure.Name, share)
-		defer c.server.metrics.RecordRequestEnd(procedure.Name, share)
-	}
-
-	// Execute handler and measure duration
-	startTime := time.Now()
+	// Dispatch to handler
 	result, err := procedure.Handler(
 		handlerCtx,
 		c.server.nfsHandler,
 		c.server.registry,
 		data,
 	)
-	duration := time.Since(startTime)
-
-	// Record completion with NFS status code (e.g., "NFS3_OK", "NFS3ERR_NOENT")
-	// This provides RFC-compliant error tracking for observability
-	// Note: Pass empty string for NFS3_OK (success) to avoid labeling as error
-	if c.server.metrics != nil {
-		var responseStatus string
-		if result != nil {
-			if result.NFSStatus != nfs_types.NFS3OK {
-				responseStatus = nfs.NFSStatusToString(result.NFSStatus)
-			}
-
-			// Record bytes transferred for READ/WRITE operations
-			// Only successful operations populate these fields
-			if result.NFSStatus == nfs_types.NFS3OK {
-				if result.BytesRead > 0 {
-					c.server.metrics.RecordBytesTransferred(procedure.Name, share, "read", result.BytesRead)
-					c.server.metrics.RecordOperationSize("read", share, result.BytesRead)
-				}
-				if result.BytesWritten > 0 {
-					c.server.metrics.RecordBytesTransferred(procedure.Name, share, "write", result.BytesWritten)
-					c.server.metrics.RecordOperationSize("write", share, result.BytesWritten)
-				}
-			}
-		} else if err != nil {
-			responseStatus = "ERROR_NO_RESULT"
-		}
-		c.server.metrics.RecordRequest(procedure.Name, share, duration, responseStatus)
-	}
 
 	if result == nil {
 		return nil, err
@@ -198,31 +114,18 @@ func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCC
 		return []byte{}, nil
 	}
 
-	// Mount requests don't have file handles, so no share
-	share := ""
-	procedureName := "MOUNT_" + procedure.Name
-
-	// Start a span for this Mount operation
-	ctx, span := telemetry.StartSpan(ctx, "mount."+procedure.Name,
-		trace.WithAttributes(
-			telemetry.ClientAddr(clientAddr),
-			telemetry.RPCXID(call.XID),
-		))
-	defer span.End()
-
 	// Extract handler context using shared middleware
 	handlerCtx := middleware.ExtractMountHandlerContext(ctx, call, clientAddr, c.server.gssProcessor != nil)
 
 	// Log request with trace context
 	logger.DebugCtx(ctx, "Mount request",
-		"procedure", procedureName,
+		"procedure", "MOUNT_"+procedure.Name,
 		"client", clientAddr,
 		"xid", fmt.Sprintf("0x%x", call.XID))
 
 	// Check context before dispatching to handler
 	select {
 	case <-ctx.Done():
-		telemetry.RecordError(ctx, ctx.Err())
 		logger.DebugCtx(ctx, "Mount request cancelled before handler",
 			"procedure", procedure.Name,
 			"xid", fmt.Sprintf("0x%x", call.XID))
@@ -230,35 +133,13 @@ func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCC
 	default:
 	}
 
-	// Record request start in metrics
-	if c.server.metrics != nil {
-		c.server.metrics.RecordRequestStart(procedureName, share)
-		defer c.server.metrics.RecordRequestEnd(procedureName, share)
-	}
-
-	// Dispatch to handler with context and record metrics
-	startTime := time.Now()
+	// Dispatch to handler
 	result, err := procedure.Handler(
 		handlerCtx,
 		c.server.mountHandler,
 		c.server.registry,
 		data,
 	)
-	duration := time.Since(startTime)
-
-	// Record request completion in metrics with Mount status code
-	// Note: Pass empty string for MountOK (success) to avoid labeling as error
-	if c.server.metrics != nil {
-		var responseStatus string
-		if result != nil {
-			if result.NFSStatus != mount_handlers.MountOK {
-				responseStatus = nfs.MountStatusToString(result.NFSStatus)
-			}
-		} else if err != nil {
-			responseStatus = "ERROR_NO_RESULT"
-		}
-		c.server.metrics.RecordRequest(procedureName, share, duration, responseStatus)
-	}
 
 	if result == nil {
 		return nil, err
@@ -283,16 +164,6 @@ func (c *NFSConnection) handleNLMProcedure(ctx context.Context, call *rpc.RPCCal
 		return []byte{}, nil
 	}
 
-	procedureName := "NLM_" + procedure.Name
-
-	// Start a span for this NLM operation
-	ctx, span := telemetry.StartSpan(ctx, "nlm."+procedure.Name,
-		trace.WithAttributes(
-			telemetry.ClientAddr(clientAddr),
-			telemetry.RPCXID(call.XID),
-		))
-	defer span.End()
-
 	// Extract handler context for NLM requests
 	handlerCtx := &nlm_handlers.NLMHandlerContext{
 		Context:    ctx,
@@ -314,14 +185,13 @@ func (c *NFSConnection) handleNLMProcedure(ctx context.Context, call *rpc.RPCCal
 
 	// Log request with trace context
 	logger.DebugCtx(ctx, "NLM request",
-		"procedure", procedureName,
+		"procedure", procedure.Name,
 		"client", clientAddr,
 		"xid", fmt.Sprintf("0x%x", call.XID))
 
 	// Check context before dispatching to handler
 	select {
 	case <-ctx.Done():
-		telemetry.RecordError(ctx, ctx.Err())
 		logger.DebugCtx(ctx, "NLM request cancelled before handler",
 			"procedure", procedure.Name,
 			"xid", fmt.Sprintf("0x%x", call.XID))
@@ -329,34 +199,13 @@ func (c *NFSConnection) handleNLMProcedure(ctx context.Context, call *rpc.RPCCal
 	default:
 	}
 
-	// Record request start in metrics
-	if c.server.metrics != nil {
-		c.server.metrics.RecordRequestStart(procedureName, "")
-		defer c.server.metrics.RecordRequestEnd(procedureName, "")
-	}
-
-	// Dispatch to handler with context and record metrics
-	startTime := time.Now()
+	// Dispatch to handler
 	result, err := procedure.Handler(
 		handlerCtx,
 		c.server.nlmHandler,
 		c.server.registry,
 		data,
 	)
-	duration := time.Since(startTime)
-
-	// Record request completion in metrics with NLM status code
-	if c.server.metrics != nil {
-		var responseStatus string
-		if result != nil {
-			if result.NLMStatus != nlm_types.NLM4Granted {
-				responseStatus = nlm.NLMStatusToString(result.NLMStatus)
-			}
-		} else if err != nil {
-			responseStatus = "ERROR_NO_RESULT"
-		}
-		c.server.metrics.RecordRequest(procedureName, "", duration, responseStatus)
-	}
 
 	if result == nil {
 		return nil, err
@@ -381,16 +230,6 @@ func (c *NFSConnection) handleNSMProcedure(ctx context.Context, call *rpc.RPCCal
 		return []byte{}, nil
 	}
 
-	procedureName := "NSM_" + procedure.Name
-
-	// Start a span for this NSM operation
-	ctx, span := telemetry.StartSpan(ctx, "nsm."+procedure.Name,
-		trace.WithAttributes(
-			telemetry.ClientAddr(clientAddr),
-			telemetry.RPCXID(call.XID),
-		))
-	defer span.End()
-
 	// Extract handler context for NSM requests
 	handlerCtx := &nsm_handlers.NSMHandlerContext{
 		Context:    ctx,
@@ -413,14 +252,13 @@ func (c *NFSConnection) handleNSMProcedure(ctx context.Context, call *rpc.RPCCal
 
 	// Log request with trace context
 	logger.DebugCtx(ctx, "NSM request",
-		"procedure", procedureName,
+		"procedure", procedure.Name,
 		"client", clientAddr,
 		"xid", fmt.Sprintf("0x%x", call.XID))
 
 	// Check context before dispatching to handler
 	select {
 	case <-ctx.Done():
-		telemetry.RecordError(ctx, ctx.Err())
 		logger.DebugCtx(ctx, "NSM request cancelled before handler",
 			"procedure", procedure.Name,
 			"xid", fmt.Sprintf("0x%x", call.XID))
@@ -428,33 +266,12 @@ func (c *NFSConnection) handleNSMProcedure(ctx context.Context, call *rpc.RPCCal
 	default:
 	}
 
-	// Record request start in metrics
-	if c.server.metrics != nil {
-		c.server.metrics.RecordRequestStart(procedureName, "")
-		defer c.server.metrics.RecordRequestEnd(procedureName, "")
-	}
-
-	// Dispatch to handler with context and record metrics
-	startTime := time.Now()
+	// Dispatch to handler
 	result, err := procedure.Handler(
 		handlerCtx,
 		c.server.nsmHandler,
 		data,
 	)
-	duration := time.Since(startTime)
-
-	// Record request completion in metrics with NSM status code
-	if c.server.metrics != nil {
-		var responseStatus string
-		if result != nil {
-			if result.NSMStatus != nsm_types.StatSucc {
-				responseStatus = nsm.NSMStatusToString(result.NSMStatus)
-			}
-		} else if err != nil {
-			responseStatus = "ERROR_NO_RESULT"
-		}
-		c.server.metrics.RecordRequest(procedureName, "", duration, responseStatus)
-	}
 
 	if result == nil {
 		return nil, err
@@ -473,34 +290,9 @@ func (c *NFSConnection) handleNFSv4Procedure(ctx context.Context, call *rpc.RPCC
 	// Log first v4 call per server lifetime
 	c.server.logV4FirstUse()
 
-	// Start a span for this NFSv4 operation
-	ctx, span := telemetry.StartSpan(ctx, "nfs4.procedure",
-		trace.WithAttributes(
-			telemetry.ClientAddr(clientAddr),
-			telemetry.RPCXID(call.XID),
-		))
-	defer span.End()
-
-	// Record metrics
-	if c.server.metrics != nil {
-		procedureName := "NFSv4_COMPOUND"
-		if call.Procedure == v4types.NFSPROC4_NULL {
-			procedureName = "NFSv4_NULL"
-		}
-		c.server.metrics.RecordRequestStart(procedureName, "")
-		defer c.server.metrics.RecordRequestEnd(procedureName, "")
-	}
-
-	startTime := time.Now()
-
 	switch call.Procedure {
 	case v4types.NFSPROC4_NULL:
-		result, err := c.server.v4Handler.HandleNull(data)
-		if c.server.metrics != nil {
-			duration := time.Since(startTime)
-			c.server.metrics.RecordRequest("NFSv4_NULL", "", duration, "")
-		}
-		return result, err
+		return c.server.v4Handler.HandleNull(data)
 
 	case v4types.NFSPROC4_COMPOUND:
 		// Extract CompoundContext with auth credentials
@@ -514,14 +306,6 @@ func (c *NFSConnection) handleNFSv4Procedure(ctx context.Context, call *rpc.RPCC
 		// so the read loop can demux backchannel replies.
 		c.maybeRegisterBackchannel(ctx)
 
-		if c.server.metrics != nil {
-			duration := time.Since(startTime)
-			var responseStatus string
-			if err != nil {
-				responseStatus = "ERROR"
-			}
-			c.server.metrics.RecordRequest("NFSv4_COMPOUND", "", duration, responseStatus)
-		}
 		return result, err
 
 	default:

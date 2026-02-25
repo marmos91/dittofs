@@ -4,10 +4,8 @@ package config
 // This is infrastructure-only config - stores, shares, adapters, users are managed via REST API.
 type DittoFSConfig struct {
 	Logging         LoggingConfig      `yaml:"logging"`
-	Telemetry       TelemetryConfig    `yaml:"telemetry,omitempty"`
 	ShutdownTimeout string             `yaml:"shutdown_timeout"`
 	Database        DatabaseConfig     `yaml:"database"`
-	Metrics         MetricsConfig      `yaml:"metrics"`
 	ControlPlane    ControlPlaneConfig `yaml:"controlplane"`
 	Cache           CacheConfig        `yaml:"cache"`
 	Admin           AdminConfig        `yaml:"admin,omitempty"`
@@ -20,14 +18,6 @@ type LoggingConfig struct {
 	Output string `yaml:"output"`
 }
 
-// TelemetryConfig controls OpenTelemetry tracing
-type TelemetryConfig struct {
-	Enabled    bool    `yaml:"enabled"`
-	Endpoint   string  `yaml:"endpoint,omitempty"`
-	Insecure   bool    `yaml:"insecure,omitempty"`
-	SampleRate float64 `yaml:"sample_rate,omitempty"`
-}
-
 // DatabaseConfig configures the control plane database
 type DatabaseConfig struct {
 	Type   string        `yaml:"type"`
@@ -37,12 +27,6 @@ type DatabaseConfig struct {
 // SQLiteConfig configures SQLite database
 type SQLiteConfig struct {
 	Path string `yaml:"path"`
-}
-
-// MetricsConfig configures Prometheus metrics
-type MetricsConfig struct {
-	Enabled bool `yaml:"enabled"`
-	Port    int  `yaml:"port,omitempty"`
 }
 
 // ControlPlaneConfig configures the control plane REST API

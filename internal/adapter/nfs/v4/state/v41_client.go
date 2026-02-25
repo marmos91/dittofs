@@ -303,7 +303,6 @@ func (sm *StateManager) purgeV41Client(record *V41ClientRecord) {
 	// Destroy all sessions for this client
 	for _, session := range sm.sessionsByClientID[record.ClientID] {
 		delete(sm.sessionsByID, session.SessionID)
-		sm.sessionMetrics.recordDestroyed("purged", time.Since(session.CreatedAt).Seconds())
 	}
 	delete(sm.sessionsByClientID, record.ClientID)
 

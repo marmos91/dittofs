@@ -216,8 +216,6 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 		"deleg_type", delegType,
 		"stateid_seqid", stateid.Seqid)
 
-	sm.delegationMetrics.RecordGrant("file")
-
 	return deleg
 }
 
@@ -300,7 +298,6 @@ func (sm *StateManager) ReturnDelegation(stateid *types.Stateid4) error {
 			"kind", delegType)
 	}
 
-	sm.delegationMetrics.RecordReturn(delegType)
 	sm.mu.Unlock()
 
 	return nil
@@ -444,8 +441,6 @@ func (sm *StateManager) CheckDelegationConflict(fileHandle []byte, clientID uint
 		if isConflict {
 			deleg.RecallSent = true
 			deleg.RecallTime = time.Now()
-
-			sm.delegationMetrics.RecordRecall("file", "conflict")
 
 			// Launch async recall (non-blocking per Pitfall 2)
 			go sm.sendRecall(deleg)

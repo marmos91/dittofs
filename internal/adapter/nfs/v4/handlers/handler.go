@@ -67,22 +67,8 @@ type Handler struct {
 	// to opDispatchTable.
 	v41DispatchTable map[uint32]V41OpHandler
 
-	// sequenceMetrics holds Prometheus metrics for SEQUENCE operation tracking.
-	// May be nil; SequenceMetrics methods are nil-safe so callers can invoke
-	// them without additional nil checks.
+	// v41Deps holds shared dependencies for v4.1 operation handlers.
 	v41Deps *v41handlers.Deps
-
-	sequenceMetrics *state.SequenceMetrics
-
-	// connectionMetrics holds Prometheus metrics for connection binding tracking.
-	// May be nil; ConnectionMetrics methods are nil-safe so callers can invoke
-	// them without additional nil checks.
-	connectionMetrics *state.ConnectionMetrics
-
-	// backchannelMetrics holds Prometheus metrics for backchannel callback tracking.
-	// May be nil; BackchannelMetrics methods are nil-safe so callers can invoke
-	// them without additional nil checks.
-	backchannelMetrics *state.BackchannelMetrics
 
 	// minMinorVersion is the minimum accepted NFSv4 minor version (default 0).
 	// Compounds with minorversion < minMinorVersion get NFS4ERR_MINOR_VERS_MISMATCH.
@@ -118,8 +104,7 @@ func NewHandler(registry *runtime.Runtime, pfs *pseudofs.PseudoFS, stateManager 
 
 	// Initialize v4.1 handler dependencies
 	v41d := &v41handlers.Deps{
-		StateManager:    sm,
-		SequenceMetrics: nil, // set later via SetSequenceMetrics
+		StateManager: sm,
 	}
 	h.v41Deps = v41d
 
@@ -386,29 +371,6 @@ func (h *Handler) IsOperationBlocked(opNum uint32) bool {
 	blocked := h.blockedOps[opNum]
 	h.blockedOpsMu.RUnlock()
 	return blocked
-}
-
-// SetSequenceMetrics sets the Prometheus metrics collector for SEQUENCE operations.
-// Must be called before any SEQUENCE operations. Safe to leave nil (no-op metrics).
-func (h *Handler) SetSequenceMetrics(m *state.SequenceMetrics) {
-	if h.v41Deps != nil {
-		h.v41Deps.SequenceMetrics = m
-	}
-	h.sequenceMetrics = m
-}
-
-// SetConnectionMetrics sets the Prometheus metrics collector for connection binding.
-// Must be called before any connection binding operations. Safe to leave nil (no-op metrics).
-func (h *Handler) SetConnectionMetrics(m *state.ConnectionMetrics) {
-	h.connectionMetrics = m
-	h.StateManager.SetConnectionMetrics(m)
-}
-
-// SetBackchannelMetrics sets the Prometheus metrics collector for backchannel callbacks.
-// Must be called before any backchannel operations. Safe to leave nil (no-op metrics).
-func (h *Handler) SetBackchannelMetrics(m *state.BackchannelMetrics) {
-	h.backchannelMetrics = m
-	h.StateManager.SetBackchannelMetrics(m)
 }
 
 // SetMinorVersionRange sets the accepted minor version range for COMPOUND requests.

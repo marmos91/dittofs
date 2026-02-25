@@ -308,7 +308,7 @@ func (h *Handler) Create(
 			}, ctx.Context.Err()
 		}
 
-		traceError(ctx.Context, err, "CREATE failed: repository error", "file", req.Filename, "client", clientIP)
+		logError(ctx.Context, err, "CREATE failed: repository error", "file", req.Filename, "client", clientIP)
 
 		// Map repository errors to NFS status codes
 		nfsStatus := mapMetadataErrorToNFS(err)

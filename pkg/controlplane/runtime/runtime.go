@@ -114,8 +114,7 @@ type Runtime struct {
 	adapterFactory AdapterFactory           // Factory to create adapters from config
 
 	// Auxiliary servers
-	metricsServer AuxiliaryServer
-	apiServer     AuxiliaryServer
+	apiServer AuxiliaryServer
 
 	// Settings hot-reload
 	settingsWatcher *SettingsWatcher
@@ -173,19 +172,6 @@ func (r *Runtime) SetShutdownTimeout(d time.Duration) {
 	r.shutdownTimeout = d
 }
 
-// SetMetricsServer sets the metrics HTTP server for the runtime.
-// This is optional - if not set, metrics collection is disabled.
-// Must be called before Serve().
-func (r *Runtime) SetMetricsServer(server AuxiliaryServer) {
-	if r.served {
-		panic("cannot set metrics server after Serve() has been called")
-	}
-	r.metricsServer = server
-	if server != nil {
-		logger.Info("Metrics server registered", "port", server.Port())
-	}
-}
-
 // SetAPIServer sets the REST API HTTP server for the runtime.
 // This is optional - if not set, API endpoints are not available.
 // Must be called before Serve().
@@ -203,10 +189,9 @@ func (r *Runtime) SetAPIServer(server AuxiliaryServer) {
 //
 // This method orchestrates the lifecycle of the entire DittoFS server:
 //  1. Loads and starts adapters from the store
-//  2. Starts metrics server (if configured)
-//  3. Starts API server (if configured)
-//  4. Waits for context cancellation
-//  5. Gracefully shuts down all components
+//  2. Starts API server (if configured)
+//  3. Waits for context cancellation
+//  4. Gracefully shuts down all components
 //
 // Serve() should only be called once. Calling it multiple times will panic.
 func (r *Runtime) Serve(ctx context.Context) error {
@@ -238,18 +223,7 @@ func (r *Runtime) serve(ctx context.Context) error {
 		return fmt.Errorf("failed to load adapters: %w", err)
 	}
 
-	// 2. Start metrics server if configured
-	metricsErrChan := make(chan error, 1)
-	if r.metricsServer != nil {
-		go func() {
-			if err := r.metricsServer.Start(ctx); err != nil {
-				logger.Error("Metrics server error", "error", err)
-				metricsErrChan <- err
-			}
-		}()
-	}
-
-	// 3. Start API server if configured
+	// 2. Start API server if configured
 	apiErrChan := make(chan error, 1)
 	if r.apiServer != nil {
 		go func() {
@@ -260,16 +234,12 @@ func (r *Runtime) serve(ctx context.Context) error {
 		}()
 	}
 
-	// 4. Wait for shutdown signal or server error
+	// 3. Wait for shutdown signal or server error
 	var shutdownErr error
 	select {
 	case <-ctx.Done():
 		logger.Info("Shutdown signal received", "reason", ctx.Err())
 		shutdownErr = ctx.Err()
-
-	case err := <-metricsErrChan:
-		logger.Error("Metrics server failed - initiating shutdown", "error", err)
-		shutdownErr = fmt.Errorf("metrics server error: %w", err)
 
 	case err := <-apiErrChan:
 		logger.Error("API server failed - initiating shutdown", "error", err)
@@ -313,16 +283,6 @@ func (r *Runtime) shutdown() {
 	// Close metadata stores
 	logger.Info("Closing metadata stores")
 	r.CloseMetadataStores()
-
-	// Stop metrics server
-	if r.metricsServer != nil {
-		logger.Debug("Stopping metrics server")
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := r.metricsServer.Stop(ctx); err != nil {
-			logger.Error("Metrics server shutdown error", "error", err)
-		}
-	}
 
 	// Stop API server
 	if r.apiServer != nil {

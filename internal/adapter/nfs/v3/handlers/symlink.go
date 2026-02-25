@@ -234,7 +234,7 @@ func (h *Handler) Symlink(
 			}, ctx.Context.Err()
 		}
 
-		traceError(ctx.Context, err, "SYMLINK failed: store error", "name", req.Name, "target", req.Target, "client", clientIP)
+		logError(ctx.Context, err, "SYMLINK failed: store error", "name", req.Name, "target", req.Target, "client", clientIP)
 
 		// Get updated directory attributes for WCC data (best effort)
 		var wccAfter *types.NFSFileAttr
@@ -259,7 +259,7 @@ func (h *Handler) Symlink(
 	// Encode the file handle for the symlink
 	symlinkHandle, err := metadata.EncodeFileHandle(createdSymlink)
 	if err != nil {
-		traceError(ctx.Context, err, "SYMLINK: failed to encode symlink handle")
+		logError(ctx.Context, err, "SYMLINK: failed to encode symlink handle")
 		return &SymlinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 

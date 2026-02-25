@@ -165,7 +165,7 @@ func (h *Handler) Access(
 			return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
-		traceError(ctx.Context, err, "ACCESS failed: failed to build auth context",
+		logError(ctx.Context, err, "ACCESS failed: failed to build auth context",
 			"handle", fmt.Sprintf("%x", req.Handle),
 			"client", clientIP)
 		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
@@ -197,7 +197,7 @@ func (h *Handler) Access(
 			return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
-		traceError(ctx.Context, err, "ACCESS failed: permission check error",
+		logError(ctx.Context, err, "ACCESS failed: permission check error",
 			"handle", fmt.Sprintf("%x", req.Handle),
 			"client", clientIP)
 		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil

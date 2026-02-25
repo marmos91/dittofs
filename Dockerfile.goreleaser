@@ -31,9 +31,8 @@ USER 65532:65532
 # Expose ports:
 # - 12049: NFS server (default)
 # - 12445: SMB server (default)
-# - 9090: Prometheus metrics
 # - 8080: REST API (health checks, management)
-EXPOSE 12049/tcp 12445/tcp 9090/tcp 8080/tcp
+EXPOSE 12049/tcp 12445/tcp 8080/tcp
 
 # Volume mounts:
 # - /data/metadata: Metadata store (BadgerDB, etc.)

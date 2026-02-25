@@ -51,11 +51,6 @@ spec:
   controlPlane:
     port: 8080
 
-  # Metrics enabled
-  metrics:
-    enabled: true
-    port: 9090
-
   # NFS server port (non-privileged default)
   nfsPort: 12049
 

@@ -55,11 +55,6 @@ spec:
   controlPlane:
     port: 8080
 
-  # Metrics enabled for S3 monitoring
-  metrics:
-    enabled: true
-    port: 9090
-
   # NFS server port
   nfsPort: 12049
 

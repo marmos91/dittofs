@@ -62,9 +62,8 @@ func TestSMBKerberos(t *testing.T) {
 	nfsPort := framework.FindFreePort(t)
 	smbPort := framework.FindFreePort(t)
 	apiPort := framework.FindFreePort(t)
-	metricsPort := framework.FindFreePort(t)
 
-	configPath := createSMBKerberosConfig(t, kdc, nfsPort, smbPort, apiPort, metricsPort)
+	configPath := createSMBKerberosConfig(t, kdc, nfsPort, smbPort, apiPort)
 
 	// Start server
 	sp := helpers.StartServerProcessWithConfig(t, configPath)
@@ -333,7 +332,7 @@ func checkSMBKerberosPrereqs(t *testing.T) {
 }
 
 // createSMBKerberosConfig creates a server config with Kerberos enabled for both NFS and SMB.
-func createSMBKerberosConfig(t *testing.T, kdc *framework.KDCHelper, nfsPort, smbPort, apiPort, metricsPort int) string {
+func createSMBKerberosConfig(t *testing.T, kdc *framework.KDCHelper, nfsPort, smbPort, apiPort int) string {
 	t.Helper()
 
 	configDir := t.TempDir()
@@ -345,10 +344,6 @@ logging:
   format: text
 
 shutdown_timeout: 30s
-
-metrics:
-  enabled: true
-  port: %d
 
 database:
   type: sqlite
@@ -392,7 +387,6 @@ adapters:
   smb:
     port: %d
 `,
-		metricsPort,
 		configDir,
 		apiPort,
 		configDir,

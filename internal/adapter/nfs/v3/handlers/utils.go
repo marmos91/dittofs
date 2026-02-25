@@ -7,7 +7,6 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/mfsymlink"
-	"github.com/marmos91/dittofs/internal/telemetry"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/payload"
@@ -94,31 +93,22 @@ func buildWccAttr(attr *metadata.FileAttr) *types.WccAttr {
 }
 
 // ============================================================================
-// Trace-Aware Error Logging
+// Error Logging Helpers
 // ============================================================================
-// These helper functions combine logging with OpenTelemetry span error recording.
-// Use these instead of plain logger.ErrorCtx/WarnCtx when the error should also
-// be visible in distributed traces.
 
-// traceError logs an error and records it on the current span.
+// logError logs an error.
 // Use this for actual errors that indicate something went wrong.
-func traceError(ctx context.Context, err error, msg string, args ...any) {
+func logError(ctx context.Context, err error, msg string, args ...any) {
 	if err != nil {
-		telemetry.RecordError(ctx, err)
-		// Only append error to args if err is not nil
 		args = append(args, "error", err)
 	}
 	logger.ErrorCtx(ctx, msg, args...)
 }
 
-// traceWarn logs a warning and optionally records it on the span.
-// Warnings are recorded on spans as events (not errors) when err is not nil.
+// logWarn logs a warning.
 // Use this for expected failures like "file not found" or "permission denied".
-func traceWarn(ctx context.Context, err error, msg string, args ...any) {
+func logWarn(ctx context.Context, err error, msg string, args ...any) {
 	if err != nil {
-		// Add as event, not error - warnings shouldn't mark span as failed
-		telemetry.AddEvent(ctx, msg, telemetry.Error(err))
-		// Only append error to args if err is not nil
 		args = append(args, "error", err)
 	}
 	logger.WarnCtx(ctx, msg, args...)

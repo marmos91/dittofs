@@ -319,7 +319,7 @@ func (h *Handler) Rename(
 			}, ctx.Context.Err()
 		}
 
-		traceError(ctx.Context, err, "RENAME failed: store error", "from", req.FromName, "to", req.ToName, "client", clientIP)
+		logError(ctx.Context, err, "RENAME failed: store error", "from", req.FromName, "to", req.ToName, "client", clientIP)
 
 		// Get updated directory attributes for WCC data
 		var fromDirWccAfter *types.NFSFileAttr

@@ -29,11 +29,6 @@ spec:
     path: /data/cache
     size: "1GB"
 
-  # Metrics (disabled by default)
-  metrics:
-    enabled: false
-    port: 9090
-
   # Control plane REST API
   controlPlane:
     port: 8080

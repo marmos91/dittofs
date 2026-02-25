@@ -202,8 +202,6 @@ func (h *Handler) Lock(ctx *NLMHandlerContext, req *LockRequest) (*LockResponse,
 				"client", ctx.ClientAddr,
 				"owner", ownerID,
 				"lease_state", result.Conflict.Lock.Lease.StateString())
-			// Record cross-protocol conflict metric
-			lock.RecordCrossProtocolConflict(lock.InitiatorNFS, lock.ConflictingSMBLease, lock.ResolutionDenied)
 			return buildDeniedResponseFromSMBLease(req.Cookie, result.Conflict.Lock), nil
 		}
 		// Conflict is with byte-range lock - build response with lock holder info

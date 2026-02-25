@@ -276,7 +276,7 @@ func (h *Handler) SetAttr(
 				return nil, err
 			}
 
-			traceError(ctx.Context, err, "SETATTR failed: size change error",
+			logError(ctx.Context, err, "SETATTR failed: size change error",
 				"handle", fmt.Sprintf("%x", req.Handle),
 				"client", clientIP)
 
@@ -315,7 +315,7 @@ func (h *Handler) SetAttr(
 			return nil, err
 		}
 
-		traceError(ctx.Context, err, "SETATTR failed: store error",
+		logError(ctx.Context, err, "SETATTR failed: store error",
 			"handle", fmt.Sprintf("%x", req.Handle),
 			"client", clientIP)
 

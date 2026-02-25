@@ -30,10 +30,6 @@ type DittoServerSpec struct {
 	// +optional
 	Cache *InfraCacheConfig `json:"cache,omitempty"`
 
-	// Metrics configures Prometheus metrics
-	// +optional
-	Metrics *MetricsConfig `json:"metrics,omitempty"`
-
 	// ControlPlane configures the REST API server
 	// +optional
 	ControlPlane *ControlPlaneAPIConfig `json:"controlPlane,omitempty"`
@@ -139,19 +135,6 @@ type InfraCacheConfig struct {
 	// Size is the maximum cache size (e.g., "1GB", "512MB")
 	// +kubebuilder:default="1GB"
 	Size string `json:"size,omitempty"`
-}
-
-// MetricsConfig configures Prometheus metrics
-type MetricsConfig struct {
-	// Enabled controls whether metrics are exposed
-	// +kubebuilder:default=false
-	Enabled bool `json:"enabled,omitempty"`
-
-	// Port is the metrics HTTP port
-	// +kubebuilder:default=9090
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=65535
-	Port int32 `json:"port,omitempty"`
 }
 
 // ControlPlaneAPIConfig configures the control plane REST API

@@ -21,10 +21,8 @@ import (
 //   - Explicit values are preserved
 func ApplyDefaults(cfg *Config) {
 	applyLoggingDefaults(&cfg.Logging)
-	applyTelemetryDefaults(&cfg.Telemetry)
 	applyShutdownTimeoutDefaults(cfg)
 	applyDatabaseDefaults(&cfg.Database)
-	applyMetricsDefaults(&cfg.Metrics)
 	applyControlPlaneDefaults(&cfg.ControlPlane)
 	applyCacheDefaults(&cfg.Cache)
 	applyAdminDefaults(&cfg.Admin)
@@ -48,48 +46,6 @@ func applyLoggingDefaults(cfg *LoggingConfig) {
 	}
 }
 
-// applyTelemetryDefaults sets OpenTelemetry defaults.
-func applyTelemetryDefaults(cfg *TelemetryConfig) {
-	// Enabled defaults to false (opt-in for telemetry)
-	// No need to set, zero value is false
-
-	// Default endpoint is localhost:4317 (standard OTLP gRPC port)
-	if cfg.Endpoint == "" {
-		cfg.Endpoint = "localhost:4317"
-	}
-
-	// Default sample rate is 1.0 (sample all traces)
-	if cfg.SampleRate == 0 {
-		cfg.SampleRate = 1.0
-	}
-
-	// Apply profiling defaults
-	applyProfilingDefaults(&cfg.Profiling)
-}
-
-// applyProfilingDefaults sets Pyroscope profiling defaults.
-func applyProfilingDefaults(cfg *ProfilingConfig) {
-	// Enabled defaults to false (opt-in for profiling)
-	// No need to set, zero value is false
-
-	// Default endpoint is localhost:4040 (standard Pyroscope port)
-	if cfg.Endpoint == "" {
-		cfg.Endpoint = "http://localhost:4040"
-	}
-
-	// Default profile types include CPU, memory allocation, and goroutines
-	if len(cfg.ProfileTypes) == 0 {
-		cfg.ProfileTypes = []string{
-			"cpu",
-			"alloc_objects",
-			"alloc_space",
-			"inuse_objects",
-			"inuse_space",
-			"goroutines",
-		}
-	}
-}
-
 // applyShutdownTimeoutDefaults sets shutdown timeout defaults.
 func applyShutdownTimeoutDefaults(cfg *Config) {
 	if cfg.ShutdownTimeout == 0 {
@@ -100,15 +56,6 @@ func applyShutdownTimeoutDefaults(cfg *Config) {
 // applyDatabaseDefaults sets control plane database defaults.
 func applyDatabaseDefaults(cfg *store.Config) {
 	cfg.ApplyDefaults()
-}
-
-// applyMetricsDefaults sets metrics defaults.
-func applyMetricsDefaults(cfg *MetricsConfig) {
-	// Enabled defaults to false (opt-in for metrics)
-	// Port defaults to 9090 if metrics are enabled
-	if cfg.Enabled && cfg.Port == 0 {
-		cfg.Port = 9090
-	}
 }
 
 // applyControlPlaneDefaults sets control plane API server defaults.

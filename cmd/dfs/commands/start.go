@@ -8,7 +8,6 @@ import (
 	"syscall"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/internal/telemetry"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
 	"github.com/marmos91/dittofs/pkg/config"
@@ -17,9 +16,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/spf13/cobra"
-
-	// Import prometheus metrics to register init() functions
-	_ "github.com/marmos91/dittofs/pkg/metrics/prometheus"
 )
 
 var (
@@ -80,59 +76,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Initialize OpenTelemetry (if enabled)
-	telemetryCfg := telemetry.Config{
-		Enabled:        cfg.Telemetry.Enabled,
-		ServiceName:    "dittofs",
-		ServiceVersion: Version,
-		Endpoint:       cfg.Telemetry.Endpoint,
-		Insecure:       cfg.Telemetry.Insecure,
-		SampleRate:     cfg.Telemetry.SampleRate,
-	}
-	telemetryShutdown, err := telemetry.Init(ctx, telemetryCfg)
-	if err != nil {
-		return fmt.Errorf("failed to initialize telemetry: %w", err)
-	}
-	defer func() {
-		if err := telemetryShutdown(ctx); err != nil {
-			logger.Error("telemetry shutdown error", "error", err)
-		}
-	}()
-
-	// Initialize Pyroscope profiling (if enabled)
-	profilingCfg := telemetry.ProfilingConfig{
-		Enabled:        cfg.Telemetry.Profiling.Enabled,
-		ServiceName:    "dittofs",
-		ServiceVersion: Version,
-		Endpoint:       cfg.Telemetry.Profiling.Endpoint,
-		ProfileTypes:   cfg.Telemetry.Profiling.ProfileTypes,
-	}
-	profilingShutdown, err := telemetry.InitProfiling(profilingCfg)
-	if err != nil {
-		return fmt.Errorf("failed to initialize profiling: %w", err)
-	}
-	defer func() {
-		if err := profilingShutdown(); err != nil {
-			logger.Error("profiling shutdown error", "error", err)
-		}
-	}()
-
 	fmt.Println("DittoFS - A modular virtual filesystem")
 	logger.Info("Log level", "level", cfg.Logging.Level, "format", cfg.Logging.Format)
 	logger.Info("Configuration loaded", "source", getConfigSource(GetConfigFile()))
-	if telemetry.IsEnabled() {
-		logger.Info("Telemetry enabled", "endpoint", cfg.Telemetry.Endpoint, "sample_rate", cfg.Telemetry.SampleRate)
-	} else {
-		logger.Info("Telemetry disabled")
-	}
-	if telemetry.IsProfilingEnabled() {
-		logger.Info("Profiling enabled", "endpoint", cfg.Telemetry.Profiling.Endpoint, "profile_types", cfg.Telemetry.Profiling.ProfileTypes)
-	} else {
-		logger.Info("Profiling disabled")
-	}
-
-	// Initialize metrics (if enabled)
-	metricsResult := config.InitializeMetrics(cfg)
 
 	// Initialize control plane store for user management
 	cpStore, err := store.New(&cfg.Database)
@@ -201,14 +147,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Configure runtime
 	rt.SetShutdownTimeout(cfg.ShutdownTimeout)
 	rt.SetAdapterFactory(createAdapterFactory(&cfg.Kerberos))
-
-	// Set metrics server if enabled
-	if metricsResult.Server != nil {
-		logger.Info("Metrics enabled", "port", cfg.Metrics.Port)
-		rt.SetMetricsServer(metricsResult.Server)
-	} else {
-		logger.Info("Metrics collection disabled")
-	}
 
 	// Create and set API server
 	apiServer, err := api.NewServer(cfg.ControlPlane, rt, cpStore)

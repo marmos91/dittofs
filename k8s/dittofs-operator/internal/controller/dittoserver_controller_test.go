@@ -261,43 +261,6 @@ func TestReconcileDittoServer(t *testing.T) {
 				},
 			},
 		},
-		{
-			description: "Create DittoServer with metrics enabled",
-			fields: fields{
-				dittoServer: v1alpha1.NewDittoServer(
-					v1alpha1.WithName("metrics-server"),
-					v1alpha1.WithNamespace("default"),
-					v1alpha1.WithSpec(
-						*v1alpha1.NewDittoServerSpec(
-							v1alpha1.WithStorage(
-								v1alpha1.StorageSpec{
-									MetadataSize: "5Gi",
-									CacheSize:    "5Gi",
-								},
-							),
-							v1alpha1.WithMetrics(&v1alpha1.MetricsConfig{
-								Enabled: true,
-								Port:    9090,
-							}),
-							v1alpha1.WithControlPlane(&v1alpha1.ControlPlaneAPIConfig{
-								Port: 8080,
-							}),
-						),
-					),
-				),
-			},
-			expectedStatus: &expectedStatus{
-				phase:           "Pending",
-				conditionReason: "ConditionsNotMet",
-				conditionStatus: metav1.ConditionFalse,
-			},
-			request: ctrl.Request{
-				NamespacedName: types.NamespacedName{
-					Namespace: "default",
-					Name:      "metrics-server",
-				},
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -377,17 +340,6 @@ func verifyService(t *testing.T, ctx context.Context, r *DittoServerReconciler, 
 		}
 	}
 
-	// Verify metrics service exists only if metrics enabled
-	metricsService := &corev1.Service{}
-	metricsEnabled := dittoServer != nil && dittoServer.Spec.Metrics != nil && dittoServer.Spec.Metrics.Enabled
-	err := r.Get(ctx, types.NamespacedName{
-		Namespace: req.Namespace,
-		Name:      req.Name + "-metrics",
-	}, metricsService)
-
-	if metricsEnabled && err != nil {
-		t.Errorf("Failed to get metrics Service when metrics enabled: %v", err)
-	}
 }
 
 func verifyStatefulSet(t *testing.T, ctx context.Context, r *DittoServerReconciler, req ctrl.Request, dittoServer *v1alpha1.DittoServer) {

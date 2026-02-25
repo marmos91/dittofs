@@ -22,11 +22,10 @@ var dittoserverlog = logf.Log.WithName("dittoserver-resource")
 
 // Default port values for validation
 const (
-	defaultAPIPort     = 8080
-	defaultMetricsPort = 9090
-	privilegedPortMax  = 1024
-	minPort            = 1
-	maxPort            = 65535
+	defaultAPIPort    = 8080
+	privilegedPortMax = 1024
+	minPort           = 1
+	maxPort           = 65535
 )
 
 // DittoServerValidator implements webhook.CustomValidator with cluster client access.
@@ -87,13 +86,6 @@ func (r *DittoServer) validateDittoServer() (admission.Warnings, error) {
 		}
 	}
 
-	// Validate metrics port range
-	if r.Spec.Metrics != nil && r.Spec.Metrics.Port != 0 {
-		if r.Spec.Metrics.Port < minPort || r.Spec.Metrics.Port > maxPort {
-			return warnings, fmt.Errorf("metrics.port must be between %d and %d", minPort, maxPort)
-		}
-	}
-
 	// Validate port uniqueness and warn about privileged ports
 	portWarnings, err := r.validatePorts()
 	if err != nil {
@@ -115,17 +107,6 @@ func (r *DittoServer) validatePorts() (admission.Warnings, error) {
 
 	ports := map[int32]string{
 		apiPort: "api",
-	}
-
-	if r.Spec.Metrics != nil && r.Spec.Metrics.Enabled {
-		metricsPort := int32(defaultMetricsPort)
-		if r.Spec.Metrics.Port > 0 {
-			metricsPort = r.Spec.Metrics.Port
-		}
-		if existing, ok := ports[metricsPort]; ok {
-			return nil, fmt.Errorf("port %d is used by both %s and %s", metricsPort, existing, "metrics")
-		}
-		ports[metricsPort] = "metrics"
 	}
 
 	for port, name := range ports {

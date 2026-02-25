@@ -1136,22 +1136,3 @@ func TestCacheCreateSessionResponse_UnknownClient(t *testing.T) {
 	// Should not panic
 	sm.CacheCreateSessionResponse(99999, []byte("test"))
 }
-
-// ============================================================================
-// Session Metrics Tests (Phase 19)
-// ============================================================================
-
-func TestSessionMetrics_NilSafe(t *testing.T) {
-	// Ensure nil metrics don't panic
-	var m *SessionMetrics
-	m.recordCreated()
-	m.recordDestroyed("test", 1.0)
-}
-
-func TestSessionMetrics_NonNil(t *testing.T) {
-	m := NewSessionMetrics(nil)
-	m.recordCreated()
-	m.recordDestroyed("client_request", 10.5)
-	m.recordDestroyed("admin_evict", 5.0)
-	m.recordDestroyed("lease_expired", 100.0)
-}
