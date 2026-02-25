@@ -64,7 +64,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 22: Backchannel Multiplexing** - CB_SEQUENCE over fore-channel, bidirectional I/O, NAT-friendly callbacks (completed 2026-02-21)
 - [x] **Phase 23: Client Lifecycle and Cleanup** - DESTROY_CLIENTID, FREE_STATEID, TEST_STATEID, RECLAIM_COMPLETE, v4.0-only rejections (completed 2026-02-22)
 - [x] **Phase 24: Directory Delegations** - GET_DIR_DELEGATION, CB_NOTIFY, delegation state tracking with recall (completed 2026-02-22)
-- [ ] **Phase 25: v3.0 Integration Testing** - E2E tests for sessions, EOS, backchannel, directory delegations, and coexistence
+- [x] **Phase 25: v3.0 Integration Testing** - E2E tests for sessions, EOS, backchannel, directory delegations, and coexistence (completed 2026-02-23)
 - [ ] **Phase 25.5: Manual Verification v3.0** USER CHECKPOINT - Full NFSv4.1 validation with Linux client
 
 ### v4.0 NFSv4.2 Extensions
@@ -225,7 +225,11 @@ Plans:
   3. Backchannel delegation recall works: CB_RECALL delivered over fore-channel connection to v4.1 client
   4. v4.0 and v4.1 clients coexist: both versions mounted simultaneously with independent state
   5. SMB adapter authenticates via SPNEGO/Kerberos using shared Kerberos layer with correct identity mapping
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 25-01-PLAN.md -- NFSv4.1 mount framework, version-parametrized tests (v3/v4.0/v4.1), store matrix extension, coexistence tests
+- [ ] 25-02-PLAN.md -- SMB Kerberos auth (SPNEGO/Kerberos in SESSION_SETUP), identity mapping, E2E tests, cross-protocol identity verification
+- [ ] 25-03-PLAN.md -- EOS replay verification, backchannel CB_RECALL test, directory delegation CB_NOTIFY tests, disconnect robustness
 
 ---
 
@@ -342,7 +346,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 32
 | 22. Backchannel Multiplexing | 2/2 | Complete    | 2026-02-21 | - |
 | 23. Client Lifecycle and Cleanup | 3/3 | Complete    | 2026-02-22 | - |
 | 24. Directory Delegations | 3/3 | Complete    | 2026-02-22 | - |
-| 25. v3.0 Integration Testing | v3.0 | 0/? | Not started | - |
+| 25. v3.0 Integration Testing | 3/3 | Complete    | 2026-02-23 | - |
 | 26. Server-Side Copy | v4.0 | 0/? | Not started | - |
 | 27. Clone/Reflinks | v4.0 | 0/? | Not started | - |
 | 28. Sparse Files | v4.0 | 0/? | Not started | - |

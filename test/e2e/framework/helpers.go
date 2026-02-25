@@ -289,3 +289,35 @@ func SkipIfNFSv4Unsupported(t *testing.T) {
 		t.Skip("Skipping: NFSv4 mount is unreliable on macOS (Darwin NFSv4 client known issues)")
 	}
 }
+
+// SkipIfNFSv41Unsupported skips the test on platforms where NFSv4.1 mount
+// is not reliable. On macOS (Darwin), NFSv4.1 is not supported by the
+// kernel NFS client. On Linux, NFSv4.1 is supported since kernel 2.6.38.
+// This is separate from SkipIfNFSv4Unsupported to allow v4.0 tests to run
+// on macOS while v4.1 tests skip.
+func SkipIfNFSv41Unsupported(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "darwin" {
+		t.Skip("Skipping: NFSv4.1 not reliably supported on macOS")
+	}
+	// Best-effort check for v4.1 support on Linux. Don't skip if the
+	// check fails -- the mount itself will fail clearly if unsupported.
+	if runtime.GOOS == "linux" {
+		if _, err := os.Stat("/proc/fs/nfsfs"); err != nil {
+			t.Log("Warning: /proc/fs/nfsfs not found, NFSv4.1 support unverified")
+		}
+	}
+}
+
+// SkipIfNFSVersionUnsupported skips the test if the given NFS version is not
+// supported on the current platform. This consolidates the per-version skip
+// logic used across parameterized test loops.
+func SkipIfNFSVersionUnsupported(t *testing.T, version string) {
+	t.Helper()
+	switch version {
+	case "4.0":
+		SkipIfNFSv4Unsupported(t)
+	case "4.1":
+		SkipIfNFSv41Unsupported(t)
+	}
+}

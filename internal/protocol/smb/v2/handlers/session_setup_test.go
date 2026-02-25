@@ -500,7 +500,7 @@ func TestSessionSetup_HandlerState(t *testing.T) {
 
 		// Start multiple handshakes
 		var sessionIDs []uint64
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			ctx := newTestContext(0)
 			ntlm := validNTLMNegotiateMessage()
 			body := buildSessionSetupRequestBody(ntlm)
@@ -531,6 +531,241 @@ func TestSessionSetup_HandlerState(t *testing.T) {
 			if !ok {
 				t.Errorf("Session %d should exist", sessionID)
 			}
+		}
+	})
+}
+
+// =============================================================================
+// Kerberos Authentication Tests
+// =============================================================================
+
+// wrapMechTokenInSPNEGO wraps a mechToken in a SPNEGO NegTokenInit with the
+// given OID. The mechToken doesn't need to be a valid AP-REQ for routing
+// tests -- we just need SPNEGO to parse and detect the OID.
+func wrapMechTokenInSPNEGO(mechToken []byte, oid asn1.ObjectIdentifier) []byte {
+	initToken := gokrbspnego.NegTokenInit{
+		MechTypes:      []asn1.ObjectIdentifier{oid},
+		MechTokenBytes: mechToken,
+	}
+
+	data, err := initToken.Marshal()
+	if err != nil {
+		return mechToken
+	}
+	return data
+}
+
+// wrapKerberosInSPNEGO wraps a Kerberos-like token in a SPNEGO NegTokenInit
+// with the standard Kerberos OID.
+func wrapKerberosInSPNEGO(mechToken []byte) []byte {
+	return wrapMechTokenInSPNEGO(mechToken, authspnego.OIDKerberosV5)
+}
+
+// wrapKerberosMSInSPNEGO wraps a token in SPNEGO with the MS Kerberos OID.
+func wrapKerberosMSInSPNEGO(mechToken []byte) []byte {
+	return wrapMechTokenInSPNEGO(mechToken, authspnego.OIDMSKerberosV5)
+}
+
+func TestKerberosDetection(t *testing.T) {
+	t.Run("DetectsKerberosOIDInSPNEGO", func(t *testing.T) {
+		// A dummy mech token (not a real AP-REQ)
+		dummyToken := []byte{0x30, 0x05, 0x01, 0x02, 0x03, 0x04, 0x05}
+		spnegoBytes := wrapKerberosInSPNEGO(dummyToken)
+
+		parsed, err := authspnego.Parse(spnegoBytes)
+		if err != nil {
+			t.Fatalf("Failed to parse SPNEGO: %v", err)
+		}
+
+		if !parsed.HasKerberos() {
+			t.Error("Should detect Kerberos OID in SPNEGO")
+		}
+
+		if parsed.HasNTLM() {
+			t.Error("Should not detect NTLM in Kerberos-only SPNEGO")
+		}
+	})
+
+	t.Run("DetectsMSKerberosOIDInSPNEGO", func(t *testing.T) {
+		dummyToken := []byte{0x30, 0x05, 0x01, 0x02, 0x03, 0x04, 0x05}
+		spnegoBytes := wrapKerberosMSInSPNEGO(dummyToken)
+
+		parsed, err := authspnego.Parse(spnegoBytes)
+		if err != nil {
+			t.Fatalf("Failed to parse SPNEGO: %v", err)
+		}
+
+		if !parsed.HasKerberos() {
+			t.Error("Should detect MS Kerberos OID in SPNEGO")
+		}
+	})
+
+	t.Run("NTLMStillRouteToNTLMNotKerberos", func(t *testing.T) {
+		// SPNEGO wrapping NTLM should not be treated as Kerberos
+		ntlmMsg := validNTLMNegotiateMessage()
+		spnegoBytes := wrapInSPNEGO(ntlmMsg) // Uses NTLM OID
+
+		parsed, err := authspnego.Parse(spnegoBytes)
+		if err != nil {
+			t.Fatalf("Failed to parse SPNEGO: %v", err)
+		}
+
+		if parsed.HasKerberos() {
+			t.Error("NTLM-only SPNEGO should not be detected as Kerberos")
+		}
+
+		if !parsed.HasNTLM() {
+			t.Error("NTLM-only SPNEGO should be detected as NTLM")
+		}
+	})
+}
+
+func TestKerberosAuthWithoutProvider(t *testing.T) {
+	t.Run("ReturnsLogonFailureWithNoProvider", func(t *testing.T) {
+		h := NewHandler()
+		// KerberosProvider is nil by default
+		ctx := newTestContext(0)
+
+		// Build a SPNEGO token with Kerberos OID and a dummy mech token
+		dummyAPReq := []byte{0x30, 0x05, 0x01, 0x02, 0x03, 0x04, 0x05}
+		spnegoBytes := wrapKerberosInSPNEGO(dummyAPReq)
+		body := buildSessionSetupRequestBody(spnegoBytes)
+
+		result, err := h.SessionSetup(ctx, body)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		// Should return STATUS_LOGON_FAILURE because no Kerberos provider
+		if result.Status != types.StatusLogonFailure {
+			t.Errorf("Status = 0x%x, expected StatusLogonFailure (0x%x)",
+				result.Status, types.StatusLogonFailure)
+		}
+	})
+}
+
+func TestKerberosAuthWithInvalidToken(t *testing.T) {
+	t.Run("ReturnsLogonFailureForGarbageAPReq", func(t *testing.T) {
+		h := NewHandler()
+		ctx := newTestContext(0)
+
+		// The handler has no KerberosProvider, so handleKerberosAuth
+		// should return STATUS_LOGON_FAILURE before even trying to parse the AP-REQ.
+		garbageToken := []byte{0xDE, 0xAD, 0xBE, 0xEF}
+		spnegoBytes := wrapKerberosInSPNEGO(garbageToken)
+		body := buildSessionSetupRequestBody(spnegoBytes)
+
+		result, err := h.SessionSetup(ctx, body)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if result.Status != types.StatusLogonFailure {
+			t.Errorf("Status = 0x%x, expected StatusLogonFailure (0x%x)",
+				result.Status, types.StatusLogonFailure)
+		}
+	})
+}
+
+func TestNTLMRegressionAfterKerberosAddition(t *testing.T) {
+	// This test suite validates that adding the Kerberos path does not
+	// break any existing NTLM authentication flows.
+
+	t.Run("RawNTLMNegotiateStillWorks", func(t *testing.T) {
+		h := NewHandler()
+		ctx := newTestContext(0)
+
+		ntlmMsg := validNTLMNegotiateMessage()
+		body := buildSessionSetupRequestBody(ntlmMsg)
+
+		result, err := h.SessionSetup(ctx, body)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if result.Status != types.StatusMoreProcessingRequired {
+			t.Errorf("Raw NTLM NEGOTIATE should return MORE_PROCESSING_REQUIRED, got 0x%x",
+				result.Status)
+		}
+	})
+
+	t.Run("SPNEGOWrappedNTLMStillWorks", func(t *testing.T) {
+		h := NewHandler()
+		ctx := newTestContext(0)
+
+		ntlmMsg := validNTLMNegotiateMessage()
+		spnegoBytes := wrapInSPNEGO(ntlmMsg)
+		body := buildSessionSetupRequestBody(spnegoBytes)
+
+		result, err := h.SessionSetup(ctx, body)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if result.Status != types.StatusMoreProcessingRequired {
+			t.Errorf("SPNEGO-wrapped NTLM NEGOTIATE should return MORE_PROCESSING_REQUIRED, got 0x%x",
+				result.Status)
+		}
+	})
+
+	t.Run("FullNTLMHandshakeStillWorks", func(t *testing.T) {
+		h := NewHandler()
+
+		// Step 1: NEGOTIATE
+		ctx1 := newTestContext(0)
+		negotiate := validNTLMNegotiateMessage()
+		body1 := buildSessionSetupRequestBody(negotiate)
+
+		result1, err := h.SessionSetup(ctx1, body1)
+		if err != nil {
+			t.Fatalf("NEGOTIATE error: %v", err)
+		}
+		if result1.Status != types.StatusMoreProcessingRequired {
+			t.Fatalf("NEGOTIATE should return STATUS_MORE_PROCESSING_REQUIRED, got 0x%x",
+				result1.Status)
+		}
+
+		sessionID := ctx1.SessionID
+		if sessionID == 0 {
+			t.Fatal("SessionID should be set after NEGOTIATE")
+		}
+
+		// Step 2: AUTHENTICATE
+		ctx2 := newTestContext(sessionID)
+		authenticate := validNTLMAuthenticateMessage()
+		body2 := buildSessionSetupRequestBody(authenticate)
+
+		result2, err := h.SessionSetup(ctx2, body2)
+		if err != nil {
+			t.Fatalf("AUTHENTICATE error: %v", err)
+		}
+		if result2.Status != types.StatusSuccess {
+			t.Errorf("AUTHENTICATE should return STATUS_SUCCESS, got 0x%x", result2.Status)
+		}
+
+		// Session should be created
+		_, ok := h.GetSession(sessionID)
+		if !ok {
+			t.Error("Session should exist after AUTHENTICATE")
+		}
+	})
+
+	t.Run("GuestSessionStillWorksWithNoAuth", func(t *testing.T) {
+		h := NewHandler()
+		ctx := newTestContext(0)
+
+		body := buildSessionSetupRequestBody(nil)
+
+		result, err := h.SessionSetup(ctx, body)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if result.Status != types.StatusSuccess {
+			t.Errorf("No-auth should return STATUS_SUCCESS, got 0x%x", result.Status)
+		}
+		if !ctx.IsGuest {
+			t.Error("Should be guest session")
 		}
 	})
 }

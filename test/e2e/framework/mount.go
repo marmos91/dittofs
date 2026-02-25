@@ -27,7 +27,7 @@ type Mount struct {
 	Path     string
 	Protocol string // "nfs" or "smb"
 	Port     int
-	Version  string // NFS version: "3", "4.0", or "" (unset for SMB)
+	Version  string // NFS version: "3", "4.0", "4.1", or "" (unset for SMB)
 	mounted  bool
 }
 
@@ -66,7 +66,7 @@ func MountNFS(t *testing.T, port int) *Mount {
 	var lastErr error
 	maxRetries := 3
 
-	for i := 0; i < maxRetries; i++ {
+	for i := range maxRetries {
 		cmd := exec.Command("mount", mountArgs...)
 		output, lastErr = cmd.CombinedOutput()
 
@@ -150,9 +150,23 @@ func MountNFSExportWithVersion(t *testing.T, port int, exportPath string, versio
 			_ = os.RemoveAll(mountPath)
 			t.Fatalf("Unsupported platform for NFS: %s", runtime.GOOS)
 		}
+	case "4.1":
+		// NFSv4.1: stateful protocol like v4.0, no mountport needed
+		mountOptions = fmt.Sprintf("vers=4.1,port=%d,actimeo=0", port)
+		switch runtime.GOOS {
+		case "darwin":
+			// macOS does not reliably support NFSv4.1 mounts
+			_ = os.RemoveAll(mountPath)
+			t.Skip("NFSv4.1 not supported on macOS")
+		case "linux":
+			// Linux kernel supports v4.1 since 2.6.38, no additional options needed
+		default:
+			_ = os.RemoveAll(mountPath)
+			t.Fatalf("Unsupported platform for NFSv4.1: %s", runtime.GOOS)
+		}
 	default:
 		_ = os.RemoveAll(mountPath)
-		t.Fatalf("Unsupported NFS version: %q (expected \"3\" or \"4.0\")", version)
+		t.Fatalf("Unsupported NFS version: %q (expected \"3\", \"4.0\", or \"4.1\")", version)
 	}
 
 	mountArgs = []string{"-t", "nfs", "-o", mountOptions, fmt.Sprintf("localhost:%s", exportPath), mountPath}
@@ -162,7 +176,7 @@ func MountNFSExportWithVersion(t *testing.T, port int, exportPath string, versio
 	var lastErr error
 	maxRetries := 3
 
-	for i := 0; i < maxRetries; i++ {
+	for i := range maxRetries {
 		cmd := exec.Command("mount", mountArgs...)
 		output, lastErr = cmd.CombinedOutput()
 
@@ -243,7 +257,7 @@ func MountSMB(t *testing.T, port int, creds SMBCredentials) *Mount {
 	var lastErr error
 	maxRetries := 3
 
-	for i := 0; i < maxRetries; i++ {
+	for i := range maxRetries {
 		output, lastErr = cmd.CombinedOutput()
 
 		if lastErr == nil {
@@ -322,7 +336,7 @@ func MountSMBWithError(t *testing.T, port int, creds SMBCredentials) (*Mount, er
 	var lastErr error
 	maxRetries := 3
 
-	for i := 0; i < maxRetries; i++ {
+	for i := range maxRetries {
 		output, lastErr = cmd.CombinedOutput()
 
 		if lastErr == nil {

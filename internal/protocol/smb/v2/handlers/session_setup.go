@@ -3,8 +3,11 @@ package handlers
 import (
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/jcmturner/gokrb5/v8/messages"
+	"github.com/jcmturner/gokrb5/v8/service"
 	"github.com/marmos91/dittofs/internal/auth/ntlm"
 	"github.com/marmos91/dittofs/internal/auth/spnego"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -146,6 +149,18 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		}
 	}
 
+	// Try SPNEGO parsing to detect Kerberos vs NTLM
+	if len(req.SecurityBuffer) >= 2 &&
+		(req.SecurityBuffer[0] == 0x60 || req.SecurityBuffer[0] == 0xa0 || req.SecurityBuffer[0] == 0xa1) {
+		parsed, err := spnego.Parse(req.SecurityBuffer)
+		if err == nil && parsed.Type == spnego.TokenTypeInit && parsed.HasKerberos() && len(parsed.MechToken) > 0 {
+			// SPNEGO contains a Kerberos token -- route to Kerberos auth
+			logger.Debug("SPNEGO Kerberos token detected, routing to Kerberos auth",
+				"mechTokenLen", len(parsed.MechToken))
+			return h.handleKerberosAuth(ctx, parsed.MechToken)
+		}
+	}
+
 	// Extract NTLM token (unwrap SPNEGO if needed)
 	ntlmToken, isWrapped := extractNTLMToken(req.SecurityBuffer)
 
@@ -198,6 +213,125 @@ func extractNTLMToken(securityBuffer []byte) ([]byte, bool) {
 
 	// Already raw NTLM (or unknown format)
 	return securityBuffer, false
+}
+
+// =============================================================================
+// Kerberos Authentication Handler
+// =============================================================================
+
+// handleKerberosAuth handles Kerberos authentication via SPNEGO.
+//
+// This method validates the AP-REQ from the SPNEGO MechToken using the service
+// keytab (shared with NFS Kerberos layer), extracts the client principal, maps
+// it to a control plane user, and creates an authenticated session.
+//
+// The Kerberos auth path is a single round-trip (unlike NTLM's multi-step
+// handshake): client sends AP-REQ, server validates and responds with success
+// or failure.
+//
+// Parameters:
+//   - ctx: SMB handler context
+//   - mechToken: The Kerberos AP-REQ extracted from the SPNEGO NegTokenInit
+//
+// Returns:
+//   - SUCCESS with SPNEGO accept-complete wrapping the AP-REP on successful auth
+//   - STATUS_LOGON_FAILURE on invalid ticket, expired ticket, or unknown user
+func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte) (*HandlerResult, error) {
+	// Check that Kerberos provider is configured
+	if h.KerberosProvider == nil {
+		logger.Debug("Kerberos auth attempted but no provider configured")
+		return NewErrorResult(types.StatusLogonFailure), nil
+	}
+
+	// Parse the AP-REQ from the mech token
+	var apReq messages.APReq
+	if err := apReq.Unmarshal(mechToken); err != nil {
+		logger.Debug("Failed to unmarshal Kerberos AP-REQ", "error", err)
+		return NewErrorResult(types.StatusLogonFailure), nil
+	}
+
+	// Build gokrb5 service settings using the shared keytab
+	settings := service.NewSettings(
+		h.KerberosProvider.Keytab(),
+		service.MaxClockSkew(h.KerberosProvider.MaxClockSkew()),
+		service.DecodePAC(false),
+		service.KeytabPrincipal(h.KerberosProvider.ServicePrincipal()),
+	)
+
+	// Verify the AP-REQ
+	ok, creds, err := service.VerifyAPREQ(&apReq, settings)
+	if err != nil || !ok {
+		logger.Info("Kerberos AP-REQ verification failed", "error", err, "ok", ok)
+		return NewErrorResult(types.StatusLogonFailure), nil
+	}
+
+	// Extract principal name and realm
+	principalName := creds.CName().PrincipalNameString()
+	realm := creds.Domain()
+
+	logger.Debug("Kerberos authentication succeeded",
+		"principal", principalName,
+		"realm", realm)
+
+	// Map principal to control plane user.
+	// Strip realm suffix (e.g., "alice@REALM" -> "alice") and service prefix
+	// (e.g., "service/host" -> "service"). User principals are typically just
+	// "alice" without "/" but we handle service principals gracefully.
+	username := principalName
+	if idx := strings.LastIndex(username, "@"); idx > 0 {
+		username = username[:idx]
+	}
+	if idx := strings.Index(username, "/"); idx >= 0 {
+		username = username[:idx]
+	}
+
+	// Look up the user in the control plane UserStore
+	userStore := h.Registry.GetUserStore()
+	if userStore == nil {
+		logger.Debug("Kerberos auth: no UserStore configured, creating guest session")
+		return h.createGuestSession(ctx)
+	}
+
+	user, err := userStore.GetUser(ctx.Context, username)
+	if err != nil || user == nil || !user.Enabled {
+		logger.Info("Kerberos auth: user lookup failed",
+			"username", username, "principal", principalName,
+			"found", user != nil, "error", err)
+		return NewErrorResult(types.StatusLogonFailure), nil
+	}
+
+	// Create an authenticated session with the resolved user identity
+	sessionID := h.GenerateSessionID()
+	sess := h.CreateSessionWithUser(sessionID, ctx.ClientAddr, user, realm)
+	ctx.SessionID = sessionID
+	ctx.IsGuest = false
+
+	logger.Debug("Kerberos session created",
+		"sessionID", sess.SessionID,
+		"username", sess.Username,
+		"domain", sess.Domain,
+		"isGuest", sess.IsGuest,
+		"principal", principalName,
+		"realm", realm)
+
+	// Build SPNEGO accept-complete response
+	// For Kerberos, we wrap the success in a NegTokenResp with accept-completed state
+	spnegoResp, err := spnego.BuildAcceptComplete(spnego.OIDKerberosV5, nil)
+	if err != nil {
+		logger.Debug("Failed to build SPNEGO accept response", "error", err)
+		// Auth succeeded but response building failed -- still return success without SPNEGO wrapper
+		return h.buildSessionSetupResponse(
+			types.StatusSuccess,
+			0,
+			nil,
+		), nil
+	}
+
+	return h.buildSessionSetupResponse(
+		types.StatusSuccess,
+		0, // No guest flag - authenticated user
+		spnegoResp,
+	), nil
 }
 
 // =============================================================================

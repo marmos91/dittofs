@@ -9,12 +9,12 @@ See: .planning/PROJECT.md (updated 2026-02-20)
 
 ## Current Position
 
-Phase: 24 of 25 (Directory Delegations)
+Phase: 25 of 25 (v3.0 Integration Testing)
 Plan: 3 of 3 in current phase
 Status: Phase Complete
-Last activity: 2026-02-22 -- Completed 24-03-PLAN.md
+Last activity: 2026-02-23 -- Completed 25-03-PLAN.md
 
-Progress: [########################################] 100% (85/85 plans complete)
+Progress: [########################################] 100% (88/88 plans complete)
 
 ## Completed Milestones
 
@@ -71,6 +71,9 @@ Progress: [########################################] 100% (85/85 plans complete)
 | Phase 24 P01 | 7min | 2 tasks | 8 files |
 | Phase 24 P02 | 12min | 2 tasks | 7 files |
 | Phase 24 P03 | 12min | 2 tasks | 13 files |
+| Phase 25 P01 | 4min | 2 tasks | 5 files |
+| Phase 25 P02 | 12min | 2 tasks | 5 files |
+| Phase 25 P03 | 5min | 2 tasks | 4 files |
 
 ## Quick Tasks Completed
 
@@ -154,6 +157,12 @@ Recent decisions affecting current work:
 - [Phase 24-03]: REMOVE handler does pre-removal lookup to get child handle for directory delegation revocation
 - [Phase 24-02]: GDD4_UNAVAIL is non-fatal per RFC 8881 -- does not fail COMPOUND, just signals no delegation available
 - [Phase 24-02]: Two-phase DELEGRETURN for directory delegations: flush with lock released, re-acquire for removal (avoids backchannel deadlock)
+- [Phase 25-01]: v4.1 mount options mirror v4.0 (vers=4.1,port,actimeo=0); macOS uses t.Skip not t.Fatal; coexistence tests use 500ms cache settle sleep
+- [Phase 25-02]: Kerberos detection placed BEFORE NTLM extraction in SMB SESSION_SETUP; KerberosProvider on Handler struct; principal realm stripping for user lookup
+- [Phase 25-02]: E2E platform strategy: Linux primary (mount.cifs sec=krb5), macOS best-effort skip on failure
+- [Phase 25-03]: EOS replay tests warn (not fail) when no replay detected -- Linux NFS client doesn't trigger replays in normal I/O
+- [Phase 25-03]: Directory delegation tests skip with message when client kernel lacks GET_DIR_DELEGATION support
+- [Phase 25-03]: Disconnect tests use forceUnmount with lazy fallback + checkServerLogs panic/leak detector for post-disconnect health
 
 ### Pending Todos
 
@@ -166,6 +175,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-02-22
-Stopped at: Completed 24-03-PLAN.md (Phase 24 complete)
-Resume file: `/gsd:execute-phase 25`
+Last session: 2026-02-23
+Stopped at: Completed 25-03-PLAN.md (Phase 25 complete, all 88 plans done)
+Resume file: All phases complete

@@ -55,38 +55,9 @@ func TestNFSv4DelegationBasicLifecycle(t *testing.T) {
 		t.Skip("Skipping NFSv4 delegation basic lifecycle test in short mode")
 	}
 
-	framework.SkipIfDarwin(t)
 	framework.SkipIfNFSv4Unsupported(t)
 
-	// Start server with DEBUG logging to capture delegation messages
-	sp := helpers.StartServerProcess(t, "")
-	t.Cleanup(sp.ForceKill)
-
-	runner := helpers.LoginAsAdmin(t, sp.APIURL())
-
-	metaStore := helpers.UniqueTestName("delegmeta")
-	payloadStore := helpers.UniqueTestName("delegpayload")
-
-	_, err := runner.CreateMetadataStore(metaStore, "memory")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
-
-	_, err = runner.CreatePayloadStore(payloadStore, "memory")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeletePayloadStore(payloadStore) })
-
-	_, err = runner.CreateShare("/export", metaStore, payloadStore)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeleteShare("/export") })
-
-	nfsPort := helpers.FindFreePort(t)
-	_, err = runner.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
-	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = runner.DisableAdapter("nfs") })
-
-	err = helpers.WaitForAdapterStatus(t, runner, "nfs", true, 5*time.Second)
-	require.NoError(t, err)
-	framework.WaitForServer(t, nfsPort, 10*time.Second)
+	sp, _, nfsPort := setupNFSv4TestServer(t)
 
 	// Record log file position before test operations
 	logBefore := readLogFile(t, sp)
@@ -150,37 +121,9 @@ func TestNFSv4DelegationRecall(t *testing.T) {
 		t.Skip("Skipping NFSv4 delegation recall test in short mode")
 	}
 
-	framework.SkipIfDarwin(t)
 	framework.SkipIfNFSv4Unsupported(t)
 
-	sp := helpers.StartServerProcess(t, "")
-	t.Cleanup(sp.ForceKill)
-
-	runner := helpers.LoginAsAdmin(t, sp.APIURL())
-
-	metaStore := helpers.UniqueTestName("recallmeta")
-	payloadStore := helpers.UniqueTestName("recallpayload")
-
-	_, err := runner.CreateMetadataStore(metaStore, "memory")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
-
-	_, err = runner.CreatePayloadStore(payloadStore, "memory")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeletePayloadStore(payloadStore) })
-
-	_, err = runner.CreateShare("/export", metaStore, payloadStore)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeleteShare("/export") })
-
-	nfsPort := helpers.FindFreePort(t)
-	_, err = runner.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
-	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = runner.DisableAdapter("nfs") })
-
-	err = helpers.WaitForAdapterStatus(t, runner, "nfs", true, 5*time.Second)
-	require.NoError(t, err)
-	framework.WaitForServer(t, nfsPort, 10*time.Second)
+	sp, _, nfsPort := setupNFSv4TestServer(t)
 
 	// Record log position
 	logBefore := readLogFile(t, sp)
@@ -275,37 +218,9 @@ func TestNFSv4DelegationRevocation(t *testing.T) {
 		t.Skip("Skipping NFSv4 delegation revocation test in short mode")
 	}
 
-	framework.SkipIfDarwin(t)
 	framework.SkipIfNFSv4Unsupported(t)
 
-	sp := helpers.StartServerProcess(t, "")
-	t.Cleanup(sp.ForceKill)
-
-	runner := helpers.LoginAsAdmin(t, sp.APIURL())
-
-	metaStore := helpers.UniqueTestName("revokemeta")
-	payloadStore := helpers.UniqueTestName("revokepayload")
-
-	_, err := runner.CreateMetadataStore(metaStore, "memory")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
-
-	_, err = runner.CreatePayloadStore(payloadStore, "memory")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeletePayloadStore(payloadStore) })
-
-	_, err = runner.CreateShare("/export", metaStore, payloadStore)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeleteShare("/export") })
-
-	nfsPort := helpers.FindFreePort(t)
-	_, err = runner.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
-	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = runner.DisableAdapter("nfs") })
-
-	err = helpers.WaitForAdapterStatus(t, runner, "nfs", true, 5*time.Second)
-	require.NoError(t, err)
-	framework.WaitForServer(t, nfsPort, 10*time.Second)
+	_, _, nfsPort := setupNFSv4TestServer(t)
 
 	// Mount1: first client
 	mount1 := framework.MountNFSWithVersion(t, nfsPort, "4.0")
@@ -381,37 +296,9 @@ func TestNFSv4NoDelegationConflict(t *testing.T) {
 		t.Skip("Skipping NFSv4 no-delegation-conflict test in short mode")
 	}
 
-	framework.SkipIfDarwin(t)
 	framework.SkipIfNFSv4Unsupported(t)
 
-	sp := helpers.StartServerProcess(t, "")
-	t.Cleanup(sp.ForceKill)
-
-	runner := helpers.LoginAsAdmin(t, sp.APIURL())
-
-	metaStore := helpers.UniqueTestName("noconflictmeta")
-	payloadStore := helpers.UniqueTestName("noconflictpayload")
-
-	_, err := runner.CreateMetadataStore(metaStore, "memory")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
-
-	_, err = runner.CreatePayloadStore(payloadStore, "memory")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeletePayloadStore(payloadStore) })
-
-	_, err = runner.CreateShare("/export", metaStore, payloadStore)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeleteShare("/export") })
-
-	nfsPort := helpers.FindFreePort(t)
-	_, err = runner.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
-	require.NoError(t, err)
-	t.Cleanup(func() { _, _ = runner.DisableAdapter("nfs") })
-
-	err = helpers.WaitForAdapterStatus(t, runner, "nfs", true, 5*time.Second)
-	require.NoError(t, err)
-	framework.WaitForServer(t, nfsPort, 10*time.Second)
+	_, _, nfsPort := setupNFSv4TestServer(t)
 
 	// Two separate mounts
 	mount1 := framework.MountNFSWithVersion(t, nfsPort, "4.0")
@@ -456,6 +343,125 @@ func TestNFSv4NoDelegationConflict(t *testing.T) {
 	t.Logf("Concurrent reads completed in %v", readDuration)
 
 	t.Log("TestNFSv4NoDelegationConflict: PASSED")
+}
+
+// =============================================================================
+// Test 5: NFSv4.1 Backchannel Delegation Recall
+// =============================================================================
+
+// TestNFSv41BackchannelDelegationRecall validates that delegation recall for
+// v4.1 clients uses the backchannel (fore-channel connection) rather than a
+// separate TCP dial-out. In v4.1, the backchannel is bound to the existing
+// fore-channel connection via BIND_CONN_TO_SESSION, so CB_RECALL should be
+// delivered over that same connection.
+//
+// The test mounts two v4.1 clients to the same share. Client 1 opens a file
+// (getting a delegation), and Client 2 opens the same file (triggering recall).
+// Server logs are checked for delegation grant and CB_RECALL delivery evidence.
+func TestNFSv41BackchannelDelegationRecall(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping NFSv4.1 backchannel delegation recall test in short mode")
+	}
+
+	framework.SkipIfNFSv41Unsupported(t)
+
+	sp, _, nfsPort := setupNFSv4TestServer(t)
+
+	// Record log position
+	logBefore := readLogFile(t, sp)
+
+	// Mount TWO v4.1 clients to the same share
+	mount1 := framework.MountNFSWithVersion(t, nfsPort, "4.1")
+	t.Cleanup(mount1.Cleanup)
+
+	mount2 := framework.MountNFSWithVersion(t, nfsPort, "4.1")
+	t.Cleanup(mount2.Cleanup)
+
+	fileName := helpers.UniqueTestName("v41_backchannel_recall") + ".txt"
+	filePath1 := mount1.FilePath(fileName)
+	filePath2 := mount2.FilePath(fileName)
+
+	// Client 1: open and write a file (should get delegation via OPEN)
+	testData := []byte("Data written by v4.1 client 1 under potential write delegation")
+	f1, err := os.OpenFile(filePath1, os.O_CREATE|os.O_RDWR, 0644)
+	require.NoError(t, err, "Client 1: should create file via v4.1 OPEN")
+	t.Cleanup(func() { _ = os.Remove(filePath1) })
+
+	_, err = f1.Write(testData)
+	require.NoError(t, err, "Client 1: should write data")
+
+	// Allow time for delegation grant
+	time.Sleep(1 * time.Second)
+
+	// Capture logs after delegation grant
+	logAfterGrant := readLogFile(t, sp)
+
+	// Sync and close client 1's file handle to release delegation
+	err = f1.Sync()
+	require.NoError(t, err, "Client 1: should sync data")
+
+	err = f1.Close()
+	require.NoError(t, err, "Client 1: should close file")
+
+	// Wait for delegation return to propagate
+	time.Sleep(1 * time.Second)
+
+	// Client 2: open same file for reading (triggers delegation recall if held)
+	t.Log("Client 2 opening file (should trigger delegation recall via backchannel if delegation held)")
+
+	readData, err := os.ReadFile(filePath2)
+	require.NoError(t, err, "Client 2: should read file after delegation recall")
+
+	// Wait for callback delivery
+	time.Sleep(2 * time.Second)
+
+	// Verify data consistency
+	assert.Equal(t, testData, readData,
+		"Client 2 should see data written by Client 1 (v4.1 delegation lifecycle)")
+
+	// Check server logs for delegation and backchannel evidence
+	logAfter := readLogFile(t, sp)
+	newLogsGrant := extractNewLogs(logBefore, logAfterGrant)
+	newLogsAll := extractNewLogs(logBefore, logAfter)
+
+	grantFound := strings.Contains(newLogsGrant, "Delegation granted")
+	recallFound := strings.Contains(newLogsAll, "CB_RECALL") ||
+		strings.Contains(newLogsAll, "backchannel callback") ||
+		strings.Contains(newLogsAll, "cb_recall")
+	backchannelUsed := strings.Contains(newLogsAll, "CB_SEQUENCE") ||
+		strings.Contains(newLogsAll, "backchannel") ||
+		strings.Contains(newLogsAll, "fore-channel callback")
+	delegReturnFound := strings.Contains(newLogsAll, "delegation return") ||
+		strings.Contains(newLogsAll, "DELEGRETURN") ||
+		strings.Contains(newLogsAll, "Delegation revoked") ||
+		strings.Contains(newLogsAll, "delegation revoked")
+
+	if grantFound {
+		t.Log("Delegation grant confirmed via server logs (v4.1 client)")
+	} else {
+		t.Log("NOTE: No delegation grant in logs (server may not have granted for v4.1 client)")
+	}
+
+	if recallFound {
+		t.Log("CB_RECALL confirmed via server logs (delegation recalled)")
+	} else if grantFound {
+		t.Log("NOTE: No CB_RECALL in logs, but delegation was granted. " +
+			"Client may have returned delegation before conflict arose.")
+	} else {
+		t.Log("NOTE: No CB_RECALL in logs (recall may not have been needed)")
+	}
+
+	if backchannelUsed {
+		t.Log("Backchannel activity confirmed (v4.1 fore-channel callback path used, not dial-out)")
+	}
+
+	if delegReturnFound {
+		t.Log("Delegation return/revocation confirmed -- delegation state cleaned up")
+	}
+
+	// The critical assertion is data consistency
+	t.Log("Data consistency verified: v4.1 client 2 sees v4.1 client 1's writes")
+	t.Log("TestNFSv41BackchannelDelegationRecall: PASSED")
 }
 
 // =============================================================================

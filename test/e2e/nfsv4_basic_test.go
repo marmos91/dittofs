@@ -73,13 +73,11 @@ func TestNFSv4BasicOperations(t *testing.T) {
 
 	_, _, nfsPort := setupNFSv4TestServer(t)
 
-	versions := []string{"3", "4.0"}
+	versions := []string{"3", "4.0", "4.1"}
 	for _, ver := range versions {
 		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
-			if ver == "4.0" {
-				framework.SkipIfNFSv4Unsupported(t)
-			}
+			framework.SkipIfNFSVersionUnsupported(t, ver)
 
 			mount := framework.MountNFSWithVersion(t, nfsPort, ver)
 			t.Cleanup(mount.Cleanup)
@@ -145,7 +143,7 @@ func TestNFSv4BasicOperations(t *testing.T) {
 				t.Cleanup(func() { _ = os.RemoveAll(dirPath) })
 
 				// Create 3 files + 1 subdir
-				for i := 0; i < 3; i++ {
+				for i := range 3 {
 					framework.WriteFile(t, filepath.Join(dirPath, fmt.Sprintf("file%d.txt", i)), []byte("content"))
 				}
 				framework.CreateDir(t, filepath.Join(dirPath, "subdir"))
@@ -184,13 +182,11 @@ func TestNFSv4AdvancedFileOps(t *testing.T) {
 
 	_, _, nfsPort := setupNFSv4TestServer(t)
 
-	versions := []string{"3", "4.0"}
+	versions := []string{"3", "4.0", "4.1"}
 	for _, ver := range versions {
 		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
-			if ver == "4.0" {
-				framework.SkipIfNFSv4Unsupported(t)
-			}
+			framework.SkipIfNFSVersionUnsupported(t, ver)
 
 			mount := framework.MountNFSWithVersion(t, nfsPort, ver)
 			t.Cleanup(mount.Cleanup)
@@ -568,13 +564,11 @@ func TestNFSv4READDIRPagination(t *testing.T) {
 
 	const fileCount = 100
 
-	versions := []string{"3", "4.0"}
+	versions := []string{"3", "4.0", "4.1"}
 	for _, ver := range versions {
 		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
-			if ver == "4.0" {
-				framework.SkipIfNFSv4Unsupported(t)
-			}
+			framework.SkipIfNFSVersionUnsupported(t, ver)
 
 			mount := framework.MountNFSWithVersion(t, nfsPort, ver)
 			t.Cleanup(mount.Cleanup)
@@ -584,7 +578,7 @@ func TestNFSv4READDIRPagination(t *testing.T) {
 			t.Cleanup(func() { _ = os.RemoveAll(dirPath) })
 
 			// Create ~100 files
-			for i := 0; i < fileCount; i++ {
+			for i := range fileCount {
 				filePath := filepath.Join(dirPath, fmt.Sprintf("file_%03d.txt", i))
 				framework.WriteFile(t, filePath, []byte(fmt.Sprintf("content %d", i)))
 			}
