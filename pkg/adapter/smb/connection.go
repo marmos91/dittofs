@@ -18,9 +18,9 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// SMBConnection handles a single SMB2 client connection.
-type SMBConnection struct {
-	server *SMBAdapter
+// Connection handles a single SMB2 client connection.
+type Connection struct {
+	server *Adapter
 	conn   net.Conn
 
 	// Concurrent request handling
@@ -33,9 +33,9 @@ type SMBConnection struct {
 	sessions   map[uint64]struct{} // Sessions created on this connection
 }
 
-// NewSMBConnection creates a new SMB connection handler.
-func NewSMBConnection(server *SMBAdapter, conn net.Conn) *SMBConnection {
-	return &SMBConnection{
+// NewConnection creates a new SMB connection handler.
+func NewConnection(server *Adapter, conn net.Conn) *Connection {
+	return &Connection{
 		server:     server,
 		conn:       conn,
 		requestSem: make(chan struct{}, server.config.MaxRequestsPerConnection),
@@ -45,7 +45,7 @@ func NewSMBConnection(server *SMBAdapter, conn net.Conn) *SMBConnection {
 
 // TrackSession records a session as belonging to this connection.
 // Called when SESSION_SETUP completes successfully.
-func (c *SMBConnection) TrackSession(sessionID uint64) {
+func (c *Connection) TrackSession(sessionID uint64) {
 	c.sessionsMu.Lock()
 	defer c.sessionsMu.Unlock()
 	c.sessions[sessionID] = struct{}{}
@@ -56,7 +56,7 @@ func (c *SMBConnection) TrackSession(sessionID uint64) {
 
 // UntrackSession removes a session from this connection's tracking.
 // Called when LOGOFF is processed.
-func (c *SMBConnection) UntrackSession(sessionID uint64) {
+func (c *Connection) UntrackSession(sessionID uint64) {
 	c.sessionsMu.Lock()
 	defer c.sessionsMu.Unlock()
 	delete(c.sessions, sessionID)
@@ -76,7 +76,7 @@ func (c *SMBConnection) UntrackSession(sessionID uint64) {
 // - A read or write timeout occurs
 // - An unrecoverable error occurs
 // - The client closes the connection
-func (c *SMBConnection) Serve(ctx context.Context) {
+func (c *Connection) Serve(ctx context.Context) {
 	defer c.handleConnectionClose()
 
 	clientAddr := c.conn.RemoteAddr().String()
@@ -160,7 +160,7 @@ func (c *SMBConnection) Serve(ctx context.Context) {
 // SMB2 messages are framed with a 4-byte NetBIOS session header containing
 // the message length, followed by the SMB2 header (64 bytes) and body.
 // For compound requests, remainingCompound contains the bytes after the first command.
-func (c *SMBConnection) readRequest(ctx context.Context) (*header.SMB2Header, []byte, []byte, error) {
+func (c *Connection) readRequest(ctx context.Context) (*header.SMB2Header, []byte, []byte, error) {
 	// Check context before starting
 	select {
 	case <-ctx.Done():
@@ -186,7 +186,7 @@ func (c *SMBConnection) readRequest(ctx context.Context) (*header.SMB2Header, []
 	// Parse NetBIOS length (24-bit big-endian)
 	msgLen := uint32(nbHeader[1])<<16 | uint32(nbHeader[2])<<8 | uint32(nbHeader[3])
 
-	// Validate message size (configurable via SMBConfig.MaxMessageSize)
+	// Validate message size (configurable via Config.MaxMessageSize)
 	if msgLen > uint32(c.server.config.MaxMessageSize) {
 		return nil, nil, nil, fmt.Errorf("SMB message too large: %d bytes (max %d)", msgLen, c.server.config.MaxMessageSize)
 	}
@@ -380,7 +380,7 @@ func parseCompoundCommand(data []byte) (*header.SMB2Header, []byte, []byte, erro
 // verifyCompoundCommandSignature verifies the signature of a compound sub-command.
 // Per MS-SMB2 3.2.4.1.4, each command in a compound is signed individually.
 // The signature covers only this command's bytes (from its header to NextCommand or end).
-func (c *SMBConnection) verifyCompoundCommandSignature(data []byte, hdr *header.SMB2Header) error {
+func (c *Connection) verifyCompoundCommandSignature(data []byte, hdr *header.SMB2Header) error {
 	if hdr.SessionID == 0 || hdr.Command == types.SMB2Negotiate || hdr.Command == types.SMB2SessionSetup {
 		return nil
 	}
@@ -419,7 +419,7 @@ func (c *SMBConnection) verifyCompoundCommandSignature(data []byte, hdr *header.
 // processCompoundRequest processes all commands in a compound request sequentially.
 // Related operations share FileID from the previous response.
 // compoundData contains the remaining commands after the first one.
-func (c *SMBConnection) processCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header, firstBody []byte, compoundData []byte) {
+func (c *Connection) processCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header, firstBody []byte, compoundData []byte) {
 	// Track the last FileID for related operations
 	var lastFileID [16]byte
 	lastSessionID := firstHeader.SessionID
@@ -500,7 +500,7 @@ func (c *SMBConnection) processCompoundRequest(ctx context.Context, firstHeader 
 }
 
 // processRequestWithFileID processes a request and returns the FileID if applicable (for CREATE).
-func (c *SMBConnection) processRequestWithFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte) (*smb.HandlerResult, [16]byte) {
+func (c *Connection) processRequestWithFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte) (*smb.HandlerResult, [16]byte) {
 	var fileID [16]byte
 
 	clientAddr := c.conn.RemoteAddr().String()
@@ -559,7 +559,7 @@ func (c *SMBConnection) processRequestWithFileID(ctx context.Context, reqHeader 
 }
 
 // processRequestWithInheritedFileID processes a request using an inherited FileID.
-func (c *SMBConnection) processRequestWithInheritedFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte, inheritedFileID [16]byte) *smb.HandlerResult {
+func (c *Connection) processRequestWithInheritedFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte, inheritedFileID [16]byte) *smb.HandlerResult {
 	// For commands that use FileID, inject the inherited FileID into the request body
 	if reqHeader.Command == types.SMB2QueryInfo || reqHeader.Command == types.SMB2Close ||
 		reqHeader.Command == types.SMB2Read || reqHeader.Command == types.SMB2Write ||
@@ -573,7 +573,7 @@ func (c *SMBConnection) processRequestWithInheritedFileID(ctx context.Context, r
 
 // injectFileID injects a FileID into the appropriate position in the request body.
 // Offsets are per [MS-SMB2] specification for each command.
-func (c *SMBConnection) injectFileID(command types.Command, body []byte, fileID [16]byte) []byte {
+func (c *Connection) injectFileID(command types.Command, body []byte, fileID [16]byte) []byte {
 	// FileID offset within the request body, per [MS-SMB2] spec for each command.
 	var offset int
 	switch command {
@@ -621,7 +621,7 @@ func makeErrorBody() []byte {
 }
 
 // processRequest dispatches an SMB2 request to the appropriate handler.
-func (c *SMBConnection) processRequest(ctx context.Context, reqHeader *header.SMB2Header, body []byte) error {
+func (c *Connection) processRequest(ctx context.Context, reqHeader *header.SMB2Header, body []byte) error {
 	// Check context before processing
 	select {
 	case <-ctx.Done():
@@ -698,7 +698,7 @@ func (c *SMBConnection) processRequest(ctx context.Context, reqHeader *header.SM
 
 // trackSessionLifecycle tracks session creation/deletion for connection cleanup.
 // This ensures proper cleanup when connections close ungracefully.
-func (c *SMBConnection) trackSessionLifecycle(command types.Command, reqSessionID, ctxSessionID uint64, status types.Status) {
+func (c *Connection) trackSessionLifecycle(command types.Command, reqSessionID, ctxSessionID uint64, status types.Status) {
 	switch command {
 	case types.SMB2SessionSetup:
 		// Track newly created sessions on successful SESSION_SETUP completion.
@@ -729,7 +729,7 @@ func (c *SMBConnection) trackSessionLifecycle(command types.Command, reqSessionI
 
 // sendResponse sends an SMB2 response.
 // If the result indicates an error status and has no data, a proper error body is added.
-func (c *SMBConnection) sendResponse(reqHeader *header.SMB2Header, ctx *handlers.SMBHandlerContext, result *smb.HandlerResult) error {
+func (c *Connection) sendResponse(reqHeader *header.SMB2Header, ctx *handlers.SMBHandlerContext, result *smb.HandlerResult) error {
 	// Use session manager for adaptive credit grants
 	sessionID := reqHeader.SessionID
 	if ctx.SessionID != 0 {
@@ -766,7 +766,7 @@ func (c *SMBConnection) sendResponse(reqHeader *header.SMB2Header, ctx *handlers
 }
 
 // sendErrorResponse sends an SMB2 error response.
-func (c *SMBConnection) sendErrorResponse(reqHeader *header.SMB2Header, status types.Status) error {
+func (c *Connection) sendErrorResponse(reqHeader *header.SMB2Header, status types.Status) error {
 	// Use session manager for adaptive credit grants
 	credits := c.server.sessionManager.GrantCredits(
 		reqHeader.SessionID,
@@ -781,7 +781,7 @@ func (c *SMBConnection) sendErrorResponse(reqHeader *header.SMB2Header, status t
 
 // sendMessage sends an SMB2 message with NetBIOS framing.
 // If the session has signing enabled, the message is signed before sending.
-func (c *SMBConnection) sendMessage(hdr *header.SMB2Header, body []byte) error {
+func (c *Connection) sendMessage(hdr *header.SMB2Header, body []byte) error {
 	headerBytes := hdr.Encode()
 
 	// Sign the SMB2 payload if session has signing enabled.
@@ -827,7 +827,7 @@ func (c *SMBConnection) sendMessage(hdr *header.SMB2Header, body []byte) error {
 //
 // This ensures proper resource cleanup even when clients disconnect ungracefully
 // (network failure, client crash, etc.) without sending LOGOFF.
-func (c *SMBConnection) handleConnectionClose() {
+func (c *Connection) handleConnectionClose() {
 	clientAddr := c.conn.RemoteAddr().String()
 
 	// Panic recovery
@@ -849,7 +849,7 @@ func (c *SMBConnection) handleConnectionClose() {
 // cleanupSessions cleans up all sessions that were created on this connection.
 // This is called when the connection closes (gracefully or ungracefully) to ensure
 // all resources (open files, locks, tree connections) are properly released.
-func (c *SMBConnection) cleanupSessions() {
+func (c *Connection) cleanupSessions() {
 	// Capture client address early since connection may be closed
 	clientAddr := c.conn.RemoteAddr().String()
 
@@ -889,7 +889,7 @@ func (c *SMBConnection) cleanupSessions() {
 }
 
 // handleRequestPanic handles cleanup and panic recovery for individual requests.
-func (c *SMBConnection) handleRequestPanic(clientAddr string, messageID uint64) {
+func (c *Connection) handleRequestPanic(clientAddr string, messageID uint64) {
 	<-c.requestSem // Release semaphore slot
 	c.wg.Done()
 
@@ -908,7 +908,7 @@ func (c *SMBConnection) handleRequestPanic(clientAddr string, messageID uint64) 
 //
 // This is required because many clients (including macOS Finder) start with
 // SMB1 NEGOTIATE and expect the server to respond with SMB2 if it supports it.
-func (c *SMBConnection) handleSMB1Negotiate(ctx context.Context, message []byte) error {
+func (c *Connection) handleSMB1Negotiate(ctx context.Context, message []byte) error {
 	logger.Debug("Received SMB1 NEGOTIATE, responding with SMB2 upgrade",
 		"address", c.conn.RemoteAddr().String())
 
@@ -997,7 +997,7 @@ func (c *SMBConnection) handleSMB1Negotiate(ctx context.Context, message []byte)
 //   - response: The change notification data
 //
 // Returns an error if the response could not be sent (e.g., connection closed).
-func (c *SMBConnection) SendAsyncChangeNotifyResponse(sessionID, messageID uint64, response *handlers.ChangeNotifyResponse) error {
+func (c *Connection) SendAsyncChangeNotifyResponse(sessionID, messageID uint64, response *handlers.ChangeNotifyResponse) error {
 	// Encode the response body
 	body, err := response.Encode()
 	if err != nil {
@@ -1025,7 +1025,7 @@ func (c *SMBConnection) SendAsyncChangeNotifyResponse(sessionID, messageID uint6
 
 // sendRawMessage sends pre-encoded header and body bytes with NetBIOS framing.
 // Used for SMB1-to-SMB2 upgrade responses where the header is manually constructed.
-func (c *SMBConnection) sendRawMessage(headerBytes, body []byte) error {
+func (c *Connection) sendRawMessage(headerBytes, body []byte) error {
 	payload := make([]byte, len(headerBytes)+len(body))
 	copy(payload, headerBytes)
 	copy(payload[len(headerBytes):], body)
@@ -1038,7 +1038,7 @@ func (c *SMBConnection) sendRawMessage(headerBytes, body []byte) error {
 // handling write timeouts, buffer pooling, and NetBIOS framing.
 //
 // NetBIOS header format: Type (1 byte, 0x00) + Length (3 bytes, big-endian).
-func (c *SMBConnection) writeNetBIOSFrame(smbPayload []byte) error {
+func (c *Connection) writeNetBIOSFrame(smbPayload []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 

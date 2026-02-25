@@ -1,14 +1,14 @@
-// Package ntlm implements NTLM authentication for SMB and other protocols.
+// Package auth provides authentication for SMB protocol adapters.
 //
 // NTLM (NT LAN Manager) is a challenge-response authentication protocol
-// defined in [MS-NLMP]. This package provides:
+// defined in [MS-NLMP]. This file provides:
 //   - NTLM message detection and parsing
 //   - Challenge (Type 2) message building
 //   - Support for guest/anonymous authentication
 //
 // For production use with credential validation, additional implementation
 // of NTLMv2 response verification is required.
-package ntlm
+package auth
 
 import (
 	"bytes"

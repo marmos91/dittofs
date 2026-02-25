@@ -1,3 +1,16 @@
+---
+gsd_state_version: 1.0
+milestone: v4.2
+milestone_name: Adapter + Core Refactoring
+status: unknown
+last_updated: "2026-02-25T20:43:36.592Z"
+progress:
+  total_phases: 27
+  completed_phases: 26
+  total_plans: 95
+  completed_plans: 91
+---
+
 # Project State
 
 ## Project Reference
@@ -9,10 +22,10 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 
 ## Current Position
 
-Phase: 27 - NFS Adapter Restructuring
-Current Plan: 3 of 4 (COMPLETE)
-Status: Executing Phase 27
-Last activity: 2026-02-25 -- Completed 27-03 (Dispatch consolidation and connection split)
+Phase: 28 - SMB Adapter Restructuring
+Current Plan: 1 of 5 (COMPLETE)
+Status: Executing Phase 28
+Last activity: 2026-02-25 -- Completed 28-01 (File and struct renames)
 
 ## Completed Milestones
 
@@ -37,6 +50,7 @@ Last activity: 2026-02-25 -- Completed 27-03 (Dispatch consolidation and connect
 | 26 | 05 | 25min | 3 | 32 |
 | 27 | 01 | 6min | 2 | 614 |
 | 27 | 03 | 35min | 2 | 6 |
+| 28 | 01 | 6min | 2 | 13 |
 
 ## Quick Tasks Completed
 
@@ -78,6 +92,8 @@ Last activity: 2026-02-25 -- Completed 27-03 (Dispatch consolidation and connect
 - [27-03] V4/NLM/NSM/Portmap dispatch uses interfaces instead of direct imports to break circular dependency
 - [27-03] Auth extraction delegates to middleware package but keeps forwarding function for backward compat
 - [27-03] Connection code split keeps NFSConnection struct in pkg/ while sharing RPC framing utilities
+- [Phase 28]: [28-01] Auth packages flattened from ntlm/spnego to single auth package (no naming conflicts)
+- [Phase 28]: [28-01] Test function names updated to match new type names (TestConnection_ instead of TestSMBConnection_)
 
 ### Pending Todos
 
@@ -90,5 +106,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-25
-Stopped at: Completed 27-03-PLAN.md
-Resume file: Continue with 27-04-PLAN.md
+Stopped at: Completed 28-01-PLAN.md
+Resume file: Continue with 28-02-PLAN.md

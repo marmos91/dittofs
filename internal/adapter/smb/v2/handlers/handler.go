@@ -63,7 +63,7 @@ type Handler struct {
 	// nil when Kerberos is not enabled.
 	//
 	// Lifecycle: Not initialized by NewHandler/NewHandlerWithSessionManager.
-	// Must be injected by the adapter layer (e.g., SMBAdapter.SetKerberosProvider)
+	// Must be injected by the adapter layer (e.g., Adapter.SetKerberosProvider)
 	// before Serve() is called. When nil, Kerberos auth requests return
 	// STATUS_LOGON_FAILURE gracefully (NTLM and guest auth still work).
 	KerberosProvider *kerberos.Provider
@@ -134,7 +134,7 @@ func NewHandler() *Handler {
 }
 
 // NewHandlerWithSessionManager creates a new SMB2 handler with an external session metaSvc.
-// This allows sharing the session metaSvc with other components (e.g., SMBAdapter for credits).
+// This allows sharing the session metaSvc with other components (e.g., Adapter for credits).
 func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 	h := &Handler{
 		StartTime:       time.Now(),

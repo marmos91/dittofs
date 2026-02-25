@@ -14,24 +14,24 @@ import (
 // Test Helper Functions
 // =============================================================================
 
-// newTestSMBConnection creates an SMBConnection with a minimal SMBAdapter
+// newTestConnection creates a Connection with a minimal Adapter
 // for unit testing. Uses net.Pipe() for a connected pair of net.Conn.
-func newTestSMBConnection(conn net.Conn) *SMBConnection {
-	adapter := New(SMBConfig{})
+func newTestConnection(conn net.Conn) *Connection {
+	adapter := New(Config{})
 
-	return NewSMBConnection(adapter, conn)
+	return NewConnection(adapter, conn)
 }
 
 // =============================================================================
 // TrackSession / UntrackSession Tests
 // =============================================================================
 
-func TestSMBConnection_TrackUntrackSession(t *testing.T) {
+func TestConnection_TrackUntrackSession(t *testing.T) {
 	server, client := net.Pipe()
 	defer func() { _ = server.Close() }()
 	defer func() { _ = client.Close() }()
 
-	c := newTestSMBConnection(server)
+	c := newTestConnection(server)
 
 	t.Run("TrackSession", func(t *testing.T) {
 		c.TrackSession(100)
@@ -106,13 +106,13 @@ func TestSMBConnection_TrackUntrackSession(t *testing.T) {
 // WriteNetBIOSFrame Tests
 // =============================================================================
 
-func TestSMBConnection_WriteNetBIOSFrame(t *testing.T) {
+func TestConnection_WriteNetBIOSFrame(t *testing.T) {
 	t.Run("WritesCorrectFrameFormat", func(t *testing.T) {
 		server, client := net.Pipe()
 		defer func() { _ = server.Close() }()
 		defer func() { _ = client.Close() }()
 
-		c := newTestSMBConnection(server)
+		c := newTestConnection(server)
 
 		payload := []byte("hello SMB")
 
@@ -157,7 +157,7 @@ func TestSMBConnection_WriteNetBIOSFrame(t *testing.T) {
 		defer func() { _ = server.Close() }()
 		defer func() { _ = client.Close() }()
 
-		c := newTestSMBConnection(server)
+		c := newTestConnection(server)
 
 		errCh := make(chan error, 1)
 		go func() {
@@ -187,7 +187,7 @@ func TestSMBConnection_WriteNetBIOSFrame(t *testing.T) {
 		defer func() { _ = server.Close() }()
 		defer func() { _ = client.Close() }()
 
-		c := newTestSMBConnection(server)
+		c := newTestConnection(server)
 
 		// Create a payload larger than typical small buffers
 		payload := make([]byte, 65536)
@@ -228,12 +228,12 @@ func TestSMBConnection_WriteNetBIOSFrame(t *testing.T) {
 // InjectFileID Tests
 // =============================================================================
 
-func TestSMBConnection_InjectFileID(t *testing.T) {
+func TestConnection_InjectFileID(t *testing.T) {
 	server, client := net.Pipe()
 	defer func() { _ = server.Close() }()
 	defer func() { _ = client.Close() }()
 
-	c := newTestSMBConnection(server)
+	c := newTestConnection(server)
 
 	var testFileID [16]byte
 	for i := range testFileID {
@@ -525,7 +525,7 @@ func TestTrackSessionLifecycle(t *testing.T) {
 		defer func() { _ = server.Close() }()
 		defer func() { _ = client.Close() }()
 
-		c := newTestSMBConnection(server)
+		c := newTestConnection(server)
 
 		c.trackSessionLifecycle(types.SMB2SessionSetup, 0, 42, types.StatusSuccess)
 
@@ -543,7 +543,7 @@ func TestTrackSessionLifecycle(t *testing.T) {
 		defer func() { _ = server.Close() }()
 		defer func() { _ = client.Close() }()
 
-		c := newTestSMBConnection(server)
+		c := newTestConnection(server)
 
 		c.trackSessionLifecycle(types.SMB2SessionSetup, 0, 42, types.StatusMoreProcessingRequired)
 
@@ -561,7 +561,7 @@ func TestTrackSessionLifecycle(t *testing.T) {
 		defer func() { _ = server.Close() }()
 		defer func() { _ = client.Close() }()
 
-		c := newTestSMBConnection(server)
+		c := newTestConnection(server)
 
 		// First track the session
 		c.TrackSession(42)
@@ -583,7 +583,7 @@ func TestTrackSessionLifecycle(t *testing.T) {
 		defer func() { _ = server.Close() }()
 		defer func() { _ = client.Close() }()
 
-		c := newTestSMBConnection(server)
+		c := newTestConnection(server)
 
 		c.TrackSession(100)
 
@@ -604,7 +604,7 @@ func TestTrackSessionLifecycle(t *testing.T) {
 		defer func() { _ = server.Close() }()
 		defer func() { _ = client.Close() }()
 
-		c := newTestSMBConnection(server)
+		c := newTestConnection(server)
 
 		// When ctxSessionID is 0, should fall back to reqSessionID
 		c.trackSessionLifecycle(types.SMB2SessionSetup, 55, 0, types.StatusSuccess)
@@ -623,7 +623,7 @@ func TestTrackSessionLifecycle(t *testing.T) {
 		defer func() { _ = server.Close() }()
 		defer func() { _ = client.Close() }()
 
-		c := newTestSMBConnection(server)
+		c := newTestConnection(server)
 
 		c.trackSessionLifecycle(types.SMB2Create, 0, 42, types.StatusSuccess)
 

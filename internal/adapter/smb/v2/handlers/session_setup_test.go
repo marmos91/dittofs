@@ -7,9 +7,8 @@ import (
 
 	"github.com/jcmturner/gofork/encoding/asn1"
 	gokrbspnego "github.com/jcmturner/gokrb5/v8/spnego"
+	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/internal/auth/ntlm"
-	authspnego "github.com/marmos91/dittofs/internal/auth/spnego"
 )
 
 // =============================================================================
@@ -57,23 +56,23 @@ func buildSessionSetupRequestBody(securityBuffer []byte) []byte {
 // validNTLMNegotiateMessage creates a valid NTLM Type 1 message.
 func validNTLMNegotiateMessage() []byte {
 	msg := make([]byte, 32)
-	copy(msg[0:8], ntlm.Signature)
-	binary.LittleEndian.PutUint32(msg[8:12], uint32(ntlm.Negotiate))
+	copy(msg[0:8], auth.Signature)
+	binary.LittleEndian.PutUint32(msg[8:12], uint32(auth.Negotiate))
 	return msg
 }
 
 // validNTLMAuthenticateMessage creates a valid NTLM Type 3 message.
 func validNTLMAuthenticateMessage() []byte {
 	msg := make([]byte, 88)
-	copy(msg[0:8], ntlm.Signature)
-	binary.LittleEndian.PutUint32(msg[8:12], uint32(ntlm.Authenticate))
+	copy(msg[0:8], auth.Signature)
+	binary.LittleEndian.PutUint32(msg[8:12], uint32(auth.Authenticate))
 	return msg
 }
 
 // wrapInSPNEGO wraps an NTLM token in a proper SPNEGO NegTokenInit structure.
 func wrapInSPNEGO(ntlmToken []byte) []byte {
 	initToken := gokrbspnego.NegTokenInit{
-		MechTypes:      []asn1.ObjectIdentifier{authspnego.OIDNTLMSSP},
+		MechTypes:      []asn1.ObjectIdentifier{auth.OIDNTLMSSP},
 		MechTokenBytes: ntlmToken,
 	}
 
@@ -459,7 +458,7 @@ func TestExtractNTLMToken(t *testing.T) {
 		ntlmMsg := validNTLMNegotiateMessage()
 		result, isWrapped := extractNTLMToken(ntlmMsg)
 
-		if !ntlm.IsValid(result) {
+		if !auth.IsValid(result) {
 			t.Error("Should pass through raw NTLM unchanged")
 		}
 		if isWrapped {
@@ -472,7 +471,7 @@ func TestExtractNTLMToken(t *testing.T) {
 		spnegoMsg := wrapInSPNEGO(ntlmMsg)
 		result, _ := extractNTLMToken(spnegoMsg)
 
-		if !ntlm.IsValid(result) {
+		if !auth.IsValid(result) {
 			t.Error("Should extract NTLM from SPNEGO")
 		}
 	})
@@ -558,12 +557,12 @@ func wrapMechTokenInSPNEGO(mechToken []byte, oid asn1.ObjectIdentifier) []byte {
 // wrapKerberosInSPNEGO wraps a Kerberos-like token in a SPNEGO NegTokenInit
 // with the standard Kerberos OID.
 func wrapKerberosInSPNEGO(mechToken []byte) []byte {
-	return wrapMechTokenInSPNEGO(mechToken, authspnego.OIDKerberosV5)
+	return wrapMechTokenInSPNEGO(mechToken, auth.OIDKerberosV5)
 }
 
 // wrapKerberosMSInSPNEGO wraps a token in SPNEGO with the MS Kerberos OID.
 func wrapKerberosMSInSPNEGO(mechToken []byte) []byte {
-	return wrapMechTokenInSPNEGO(mechToken, authspnego.OIDMSKerberosV5)
+	return wrapMechTokenInSPNEGO(mechToken, auth.OIDMSKerberosV5)
 }
 
 func TestKerberosDetection(t *testing.T) {
@@ -572,7 +571,7 @@ func TestKerberosDetection(t *testing.T) {
 		dummyToken := []byte{0x30, 0x05, 0x01, 0x02, 0x03, 0x04, 0x05}
 		spnegoBytes := wrapKerberosInSPNEGO(dummyToken)
 
-		parsed, err := authspnego.Parse(spnegoBytes)
+		parsed, err := auth.Parse(spnegoBytes)
 		if err != nil {
 			t.Fatalf("Failed to parse SPNEGO: %v", err)
 		}
@@ -590,7 +589,7 @@ func TestKerberosDetection(t *testing.T) {
 		dummyToken := []byte{0x30, 0x05, 0x01, 0x02, 0x03, 0x04, 0x05}
 		spnegoBytes := wrapKerberosMSInSPNEGO(dummyToken)
 
-		parsed, err := authspnego.Parse(spnegoBytes)
+		parsed, err := auth.Parse(spnegoBytes)
 		if err != nil {
 			t.Fatalf("Failed to parse SPNEGO: %v", err)
 		}
@@ -605,7 +604,7 @@ func TestKerberosDetection(t *testing.T) {
 		ntlmMsg := validNTLMNegotiateMessage()
 		spnegoBytes := wrapInSPNEGO(ntlmMsg) // Uses NTLM OID
 
-		parsed, err := authspnego.Parse(spnegoBytes)
+		parsed, err := auth.Parse(spnegoBytes)
 		if err != nil {
 			t.Fatalf("Failed to parse SPNEGO: %v", err)
 		}

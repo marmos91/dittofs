@@ -1,4 +1,4 @@
-package ntlm
+package auth
 
 import (
 	"bytes"

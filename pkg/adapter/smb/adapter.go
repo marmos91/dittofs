@@ -15,7 +15,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
-// SMBAdapter implements the adapter.Adapter interface for SMB2 protocol.
+// Adapter implements the adapter.Adapter interface for SMB2 protocol.
 //
 // This adapter provides an SMB2 server with:
 //   - Graceful shutdown with configurable timeout
@@ -25,8 +25,8 @@ import (
 //   - Thread-safe operation with atomic counters
 //
 // Architecture:
-// SMBAdapter manages the TCP listener and connection lifecycle. Each accepted
-// connection is handled by an SMBConnection instance that manages SMB2 request/response
+// Adapter manages the TCP listener and connection lifecycle. Each accepted
+// connection is handled by a Connection instance that manages SMB2 request/response
 // cycles. The adapter coordinates graceful shutdown across all active connections
 // using context cancellation and wait groups.
 //
@@ -40,9 +40,9 @@ import (
 // Thread safety:
 // All methods are safe for concurrent use. The shutdown mechanism uses sync.Once
 // to ensure idempotent behavior even if Stop() is called multiple times.
-type SMBAdapter struct {
+type Adapter struct {
 	// config holds the server configuration (ports, timeouts, limits)
-	config SMBConfig
+	config Config
 
 	// listener is the TCP listener for accepting SMB connections
 	// Closed during shutdown to stop accepting new connections
@@ -100,7 +100,7 @@ type SMBAdapter struct {
 	sessionManager *session.Manager
 }
 
-// New creates a new SMBAdapter with the specified configuration.
+// New creates a new Adapter with the specified configuration.
 //
 // The adapter is created in a stopped state. Call SetRuntime() to inject
 // the Runtime, then call Serve() to start accepting connections.
@@ -112,10 +112,10 @@ type SMBAdapter struct {
 // Parameters:
 //   - config: Server configuration (ports, timeouts, limits)
 //
-// Returns a configured but not yet started SMBAdapter.
+// Returns a configured but not yet started Adapter.
 //
 // Panics if config validation fails.
-func New(config SMBConfig) *SMBAdapter {
+func New(config Config) *Adapter {
 	// Apply defaults for zero values
 	config.applyDefaults()
 
@@ -157,7 +157,7 @@ func New(config SMBConfig) *SMBAdapter {
 		"enabled", handler.SigningConfig.Enabled,
 		"required", handler.SigningConfig.Required)
 
-	return &SMBAdapter{
+	return &Adapter{
 		config:         config,
 		handler:        handler,
 		shutdown:       make(chan struct{}),
@@ -179,7 +179,7 @@ func New(config SMBConfig) *SMBAdapter {
 //
 // Thread safety:
 // Called exactly once before Serve(), no synchronization needed.
-func (s *SMBAdapter) SetRuntime(rt *runtime.Runtime) {
+func (s *Adapter) SetRuntime(rt *runtime.Runtime) {
 	s.registry = rt
 	s.handler.Registry = rt
 
@@ -199,7 +199,7 @@ func (s *SMBAdapter) SetRuntime(rt *runtime.Runtime) {
 
 // applySMBSettings reads current SMB adapter settings from the runtime's
 // SettingsWatcher and applies them. Called during SetRuntime (startup).
-func (s *SMBAdapter) applySMBSettings(rt *runtime.Runtime) {
+func (s *Adapter) applySMBSettings(rt *runtime.Runtime) {
 	settings := rt.GetSMBSettings()
 	if settings == nil {
 		logger.Debug("SMB adapter: no live settings available, using defaults")
@@ -249,8 +249,8 @@ func (s *SMBAdapter) applySMBSettings(rt *runtime.Runtime) {
 //   - error if listener fails to start or shutdown is not graceful
 //
 // Thread safety:
-// Serve() should only be called once per SMBAdapter instance.
-func (s *SMBAdapter) Serve(ctx context.Context) error {
+// Serve() should only be called once per Adapter instance.
+func (s *Adapter) Serve(ctx context.Context) error {
 	// Create TCP listener
 	listenAddr := fmt.Sprintf("%s:%d", s.config.BindAddress, s.config.Port)
 	listener, err := net.Listen("tcp", listenAddr)
@@ -376,7 +376,7 @@ func (s *SMBAdapter) Serve(ctx context.Context) error {
 //
 // Thread safety:
 // Safe to call multiple times and from multiple goroutines.
-func (s *SMBAdapter) initiateShutdown() {
+func (s *Adapter) initiateShutdown() {
 	s.shutdownOnce.Do(func() {
 		logger.Debug("SMB shutdown initiated")
 
@@ -406,7 +406,7 @@ func (s *SMBAdapter) initiateShutdown() {
 // interruptBlockingReads sets a short deadline on all active connections
 // to interrupt any blocking read operations during shutdown.
 // This allows connections to notice the shutdown signal quickly.
-func (s *SMBAdapter) interruptBlockingReads() {
+func (s *Adapter) interruptBlockingReads() {
 	// Set deadline to 100ms from now - enough time for any in-flight reads to complete
 	// but short enough for quick shutdown
 	deadline := time.Now().Add(100 * time.Millisecond)
@@ -425,7 +425,7 @@ func (s *SMBAdapter) interruptBlockingReads() {
 }
 
 // gracefulShutdown waits for active connections to complete or timeout.
-func (s *SMBAdapter) gracefulShutdown() error {
+func (s *Adapter) gracefulShutdown() error {
 	activeCount := s.connCount.Load()
 	logger.Info("SMB graceful shutdown: waiting for active connections", "active", activeCount, "timeout", s.config.Timeouts.Shutdown)
 
@@ -454,7 +454,7 @@ func (s *SMBAdapter) gracefulShutdown() error {
 }
 
 // forceCloseConnections closes all active TCP connections to accelerate shutdown.
-func (s *SMBAdapter) forceCloseConnections() {
+func (s *Adapter) forceCloseConnections() {
 	logger.Info("Force-closing active SMB connections")
 
 	closedCount := 0
@@ -482,7 +482,7 @@ func (s *SMBAdapter) forceCloseConnections() {
 // Stop initiates graceful shutdown of the SMB server.
 //
 // Stop is safe to call multiple times and safe to call concurrently with Serve().
-func (s *SMBAdapter) Stop(ctx context.Context) error {
+func (s *Adapter) Stop(ctx context.Context) error {
 	// Always initiate shutdown first
 	s.initiateShutdown()
 
@@ -514,12 +514,12 @@ func (s *SMBAdapter) Stop(ctx context.Context) error {
 }
 
 // GetActiveConnections returns the current number of active connections.
-func (s *SMBAdapter) GetActiveConnections() int32 {
+func (s *Adapter) GetActiveConnections() int32 {
 	return s.connCount.Load()
 }
 
 // GetListenerAddr returns the address the server is listening on.
-func (s *SMBAdapter) GetListenerAddr() string {
+func (s *Adapter) GetListenerAddr() string {
 	<-s.listenerReady
 
 	s.listenerMu.RLock()
@@ -532,27 +532,27 @@ func (s *SMBAdapter) GetListenerAddr() string {
 }
 
 // newConn creates a new connection wrapper for a TCP connection.
-func (s *SMBAdapter) newConn(tcpConn net.Conn) *SMBConnection {
-	return NewSMBConnection(s, tcpConn)
+func (s *Adapter) newConn(tcpConn net.Conn) *Connection {
+	return NewConnection(s, tcpConn)
 }
 
 // SetKerberosProvider injects the shared Kerberos provider into the SMB handler.
 // This enables Kerberos authentication via SPNEGO in SESSION_SETUP.
 // Must be called before Serve(). When not called, Kerberos auth is disabled
 // and only NTLM/guest authentication is available.
-func (s *SMBAdapter) SetKerberosProvider(provider *kerberos.Provider) {
+func (s *Adapter) SetKerberosProvider(provider *kerberos.Provider) {
 	s.handler.KerberosProvider = provider
 	logger.Debug("SMB adapter Kerberos provider configured",
 		"principal", provider.ServicePrincipal())
 }
 
 // Port returns the TCP port the SMB server is listening on.
-func (s *SMBAdapter) Port() int {
+func (s *Adapter) Port() int {
 	return s.config.Port
 }
 
 // Protocol returns "SMB" as the protocol identifier.
-func (s *SMBAdapter) Protocol() string {
+func (s *Adapter) Protocol() string {
 	return "SMB"
 }
 
@@ -575,7 +575,7 @@ func (s *SMBAdapter) Protocol() string {
 // Full implementation would enumerate persisted leases for the session and
 // call HandleLeaseReclaim for each one. Currently, the reclaim happens
 // implicitly when the client requests the same lease key during grace period.
-func (s *SMBAdapter) OnReconnect(ctx context.Context, sessionID uint64, clientID string) {
+func (s *Adapter) OnReconnect(ctx context.Context, sessionID uint64, clientID string) {
 	logger.Info("SMB session reconnected",
 		"sessionID", sessionID,
 		"clientID", clientID)

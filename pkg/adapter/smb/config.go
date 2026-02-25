@@ -14,8 +14,8 @@ import (
 // generous for typical operations (most SMB2 messages are < 1MB).
 const DefaultMaxMessageSize = 64 * 1024 * 1024
 
-// SMBTimeoutsConfig groups all timeout-related configuration.
-type SMBTimeoutsConfig struct {
+// TimeoutsConfig groups all timeout-related configuration.
+type TimeoutsConfig struct {
 	// Read is the maximum duration for reading a complete SMB2 request.
 	// This prevents slow or malicious clients from holding connections indefinitely.
 	// 0 means no timeout (not recommended).
@@ -43,7 +43,7 @@ type SMBTimeoutsConfig struct {
 	Shutdown time.Duration `mapstructure:"shutdown" validate:"required,gt=0"`
 }
 
-// SMBConfig holds configuration parameters for the SMB server.
+// Config holds configuration parameters for the SMB server.
 //
 // These values control server behavior including connection limits, timeouts,
 // and resource management.
@@ -59,7 +59,7 @@ type SMBTimeoutsConfig struct {
 // Production recommendations:
 //   - MaxConnections: Set based on expected load (e.g., 1000 for busy servers)
 //   - Use non-standard port (e.g., 12445) for testing without root privileges
-type SMBConfig struct {
+type Config struct {
 	// Enabled controls whether the SMB adapter is active.
 	// When false, the SMB adapter will not be started.
 	Enabled bool `mapstructure:"enabled"`
@@ -88,11 +88,11 @@ type SMBConfig struct {
 	MaxRequestsPerConnection int `mapstructure:"max_requests_per_connection" validate:"min=0"`
 
 	// Timeouts groups all timeout-related configuration
-	Timeouts SMBTimeoutsConfig `mapstructure:"timeouts"`
+	Timeouts TimeoutsConfig `mapstructure:"timeouts"`
 
 	// Credits configures SMB2 credit management behavior.
 	// Credits control flow control and parallelism per client.
-	Credits SMBCreditsConfig `mapstructure:"credits"`
+	Credits CreditsConfig `mapstructure:"credits"`
 
 	// MaxMessageSize is the maximum allowed size for a single SMB2 message.
 	// This provides DoS protection by rejecting oversized messages.
@@ -102,10 +102,10 @@ type SMBConfig struct {
 
 	// Signing configures SMB2 message signing behavior.
 	// Signing provides message integrity protection using HMAC-SHA256.
-	Signing SMBSigningConfig `mapstructure:"signing"`
+	Signing SigningConfig `mapstructure:"signing"`
 }
 
-// SMBSigningConfig configures SMB2 message signing.
+// SigningConfig configures SMB2 message signing.
 //
 // Message signing provides integrity protection using HMAC-SHA256, preventing
 // man-in-the-middle attacks and message tampering. Per MS-SMB2, signing is:
@@ -122,7 +122,7 @@ type SMBConfig struct {
 //
 // Security note: For production, consider setting Required: true via the
 // controlplane API to prevent man-in-the-middle attacks.
-type SMBSigningConfig struct {
+type SigningConfig struct {
 	// Enabled controls whether signing capability is advertised to clients.
 	// When true, SMB2_NEGOTIATE_SIGNING_ENABLED is set in NEGOTIATE response.
 	// Default: true
@@ -136,7 +136,7 @@ type SMBSigningConfig struct {
 }
 
 // applyDefaults fills in nil values with sensible defaults.
-func (c *SMBSigningConfig) applyDefaults() {
+func (c *SigningConfig) applyDefaults() {
 	if c.Enabled == nil {
 		enabled := true
 		c.Enabled = &enabled
@@ -153,14 +153,14 @@ func (c *SMBSigningConfig) applyDefaults() {
 
 // ToSigningConfig converts to the internal signing.SigningConfig type.
 // It assumes applyDefaults has been called to initialize any nil fields.
-func (c *SMBSigningConfig) ToSigningConfig() signing.SigningConfig {
+func (c *SigningConfig) ToSigningConfig() signing.SigningConfig {
 	return signing.SigningConfig{
 		Enabled:  *c.Enabled,
 		Required: c.Required,
 	}
 }
 
-// SMBCreditsConfig configures SMB2 credit management.
+// CreditsConfig configures SMB2 credit management.
 //
 // Credits are flow control tokens that limit how many concurrent operations
 // a client can have outstanding. Proper configuration balances throughput
@@ -177,7 +177,7 @@ func (c *SMBSigningConfig) ToSigningConfig() signing.SigningConfig {
 //   - MaxGrant: 8192
 //   - InitialGrant: 256
 //   - MaxSessionCredits: 65535
-type SMBCreditsConfig struct {
+type CreditsConfig struct {
 	// Strategy is the credit grant strategy.
 	// Valid values: "fixed", "echo", "adaptive" (default: "adaptive")
 	Strategy string `mapstructure:"strategy" validate:"omitempty,oneof=fixed echo adaptive"`
@@ -219,7 +219,7 @@ type SMBCreditsConfig struct {
 }
 
 // applyDefaults fills in zero values with sensible defaults.
-func (c *SMBConfig) applyDefaults() {
+func (c *Config) applyDefaults() {
 	if c.Port <= 0 {
 		c.Port = 12445
 	}
@@ -250,7 +250,7 @@ func (c *SMBConfig) applyDefaults() {
 }
 
 // applyDefaults fills in zero values with sensible defaults.
-func (c *SMBCreditsConfig) applyDefaults() {
+func (c *CreditsConfig) applyDefaults() {
 	if c.Strategy == "" {
 		c.Strategy = "adaptive"
 	}
@@ -278,7 +278,7 @@ func (c *SMBCreditsConfig) applyDefaults() {
 }
 
 // ToSessionConfig converts to the internal session.CreditConfig type.
-func (c *SMBCreditsConfig) ToSessionConfig() session.CreditConfig {
+func (c *CreditsConfig) ToSessionConfig() session.CreditConfig {
 	return session.CreditConfig{
 		MinGrant:                  c.MinGrant,
 		MaxGrant:                  c.MaxGrant,
@@ -291,7 +291,7 @@ func (c *SMBCreditsConfig) ToSessionConfig() session.CreditConfig {
 }
 
 // GetStrategy returns the CreditStrategy enum for the configured strategy.
-func (c *SMBCreditsConfig) GetStrategy() session.CreditStrategy {
+func (c *CreditsConfig) GetStrategy() session.CreditStrategy {
 	switch c.Strategy {
 	case "fixed":
 		return session.StrategyFixed
@@ -305,7 +305,7 @@ func (c *SMBCreditsConfig) GetStrategy() session.CreditStrategy {
 }
 
 // validate checks that the configuration is valid for production use.
-func (c *SMBConfig) validate() error {
+func (c *Config) validate() error {
 	// Port 0 is valid - it means OS-assigned port (useful for testing)
 	if c.Port < 0 || c.Port > 65535 {
 		return fmt.Errorf("invalid port %d: must be 0-65535", c.Port)
