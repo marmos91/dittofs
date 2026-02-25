@@ -29,13 +29,13 @@ import (
 //	// Low-level operations (direct store access)
 //	file, err := metaSvc.GetFile(ctx, handle)
 type MetadataService struct {
-	mu               sync.RWMutex
-	stores           map[string]MetadataStore    // shareName -> store
-	lockManagers     map[string]*LockManager     // shareName -> lock manager (ephemeral, per-share)
-	unifiedViews     map[string]*UnifiedLockView // shareName -> unified lock view (cross-protocol)
-	pendingWrites    *PendingWritesTracker       // deferred metadata commits for performance
-	deferredCommit   bool                        // if true, use deferred commits (default: true)
-	cookies *CookieManager // NFS/SMB cookie ↔ store token translation
+	mu             sync.RWMutex
+	stores         map[string]MetadataStore    // shareName -> store
+	lockManagers   map[string]*LockManager     // shareName -> lock manager (ephemeral, per-share)
+	unifiedViews   map[string]*UnifiedLockView // shareName -> unified lock view (cross-protocol)
+	pendingWrites  *PendingWritesTracker       // deferred metadata commits for performance
+	deferredCommit bool                        // if true, use deferred commits (default: true)
+	cookies        *CookieManager              // NFS/SMB cookie to store token translation
 }
 
 // New creates a new empty MetadataService instance.
@@ -180,12 +180,6 @@ func (s *MetadataService) SetUnifiedLockView(shareName string, view *UnifiedLock
 	s.unifiedViews[shareName] = view
 }
 
-// ============================================================================
-// Low-Level Store Operations
-// ============================================================================
-// These methods provide direct access to store operations without additional
-// business logic. They route to the correct store based on the handle's share.
-
 // GetFile retrieves file metadata by handle.
 // This is a convenience method that calls GetFile from the Base interface.
 // When deferred commits are enabled, it merges pending write state (size, mtime, ctime)
@@ -277,14 +271,6 @@ func (s *MetadataService) GetFilesystemCapabilities(ctx context.Context, handle 
 	}
 	return store.GetFilesystemCapabilities(ctx, handle)
 }
-
-// ============================================================================
-// Locking Operations (for SMB/NLM)
-// ============================================================================
-//
-// File locking is managed by LockManager instances (one per share).
-// Locks are ephemeral (in-memory only) and lost on server restart.
-// Business logic (permission checking, file type validation) is in locks.go.
 
 // CheckLockForIO checks if an I/O operation is blocked by locks.
 //
@@ -492,10 +478,6 @@ func (s *MetadataService) RemoveFileLocks(handle FileHandle) {
 	lm.RemoveFileLocks(handleKey)
 }
 
-// ============================================================================
-// Share Management
-// ============================================================================
-
 // CreateShare creates a new share with its root directory.
 func (s *MetadataService) CreateShare(ctx context.Context, shareName string, share *Share) error {
 	store, err := s.GetStoreForShare(shareName)
@@ -513,8 +495,3 @@ func (s *MetadataService) GetShareOptions(ctx context.Context, shareName string)
 	}
 	return store.GetShareOptions(ctx, shareName)
 }
-
-// NLM lock methods extracted to pkg/adapter/nfs/nlm_service.go (Phase 26 Plan 04).
-// SMB lease methods (OplockChecker, CheckAndBreakLeases*, ReclaimLeaseSMB) removed.
-// Cross-protocol oplock breaks will be handled by centralized LockManager methods
-// (CheckAndBreakOpLocksFor{Write,Read,Delete}) once Plan 03 is complete.

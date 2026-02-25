@@ -10,18 +10,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// ============================================================================
-// File Handle Type
-// ============================================================================
-
 // FileHandle represents an opaque file handle.
 // This is defined here to avoid circular imports with the metadata package.
 // The metadata package also defines FileHandle as []byte.
 type FileHandle string
-
-// ============================================================================
-// Enhanced Lock Types for Multi-Protocol Support
-// ============================================================================
 
 // LockType represents the type of lock (shared or exclusive).
 type LockType int
@@ -193,29 +185,29 @@ func NewUnifiedLock(owner LockOwner, fileHandle FileHandle, offset, length uint6
 }
 
 // IsExclusive returns true if this is an exclusive (write) lock.
-func (el *UnifiedLock) IsExclusive() bool {
-	return el.Type == LockTypeExclusive
+func (ul *UnifiedLock) IsExclusive() bool {
+	return ul.Type == LockTypeExclusive
 }
 
 // IsShared returns true if this is a shared (read) lock.
-func (el *UnifiedLock) IsShared() bool {
-	return el.Type == LockTypeShared
+func (ul *UnifiedLock) IsShared() bool {
+	return ul.Type == LockTypeShared
 }
 
 // End returns the end offset of the lock (exclusive).
 // Returns 0 for unbounded locks (Length=0 means to EOF).
-func (el *UnifiedLock) End() uint64 {
-	if el.Length == 0 {
+func (ul *UnifiedLock) End() uint64 {
+	if ul.Length == 0 {
 		return 0 // Unbounded
 	}
-	return el.Offset + el.Length
+	return ul.Offset + ul.Length
 }
 
 // Contains returns true if this lock fully contains the specified range.
-func (el *UnifiedLock) Contains(offset, length uint64) bool {
+func (ul *UnifiedLock) Contains(offset, length uint64) bool {
 	// Unbounded lock contains everything at or after its offset
-	if el.Length == 0 {
-		return offset >= el.Offset
+	if ul.Length == 0 {
+		return offset >= ul.Offset
 	}
 
 	// Bounded lock
@@ -225,45 +217,38 @@ func (el *UnifiedLock) Contains(offset, length uint64) bool {
 	}
 
 	// Both bounded - check containment
-	return offset >= el.Offset && (offset+length) <= el.End()
+	return offset >= ul.Offset && (offset+length) <= ul.End()
 }
 
 // Overlaps returns true if this lock overlaps with the specified range.
-func (el *UnifiedLock) Overlaps(offset, length uint64) bool {
-	return RangesOverlap(el.Offset, el.Length, offset, length)
+func (ul *UnifiedLock) Overlaps(offset, length uint64) bool {
+	return RangesOverlap(ul.Offset, ul.Length, offset, length)
 }
 
 // Clone creates a deep copy of the lock.
-func (el *UnifiedLock) Clone() *UnifiedLock {
+func (ul *UnifiedLock) Clone() *UnifiedLock {
 	clone := &UnifiedLock{
-		ID:               el.ID,
-		Owner:            el.Owner,
-		FileHandle:       el.FileHandle,
-		Offset:           el.Offset,
-		Length:           el.Length,
-		Type:             el.Type,
-		AccessMode: el.AccessMode,
-		AcquiredAt:       el.AcquiredAt,
-		Blocking:         el.Blocking,
-		Reclaim:          el.Reclaim,
+		ID:         ul.ID,
+		Owner:      ul.Owner,
+		FileHandle: ul.FileHandle,
+		Offset:     ul.Offset,
+		Length:     ul.Length,
+		Type:       ul.Type,
+		AccessMode: ul.AccessMode,
+		AcquiredAt: ul.AcquiredAt,
+		Blocking:   ul.Blocking,
+		Reclaim:    ul.Reclaim,
 	}
-	// Deep copy Lease if present
-	if el.Lease != nil {
-		clone.Lease = el.Lease.Clone()
+	if ul.Lease != nil {
+		clone.Lease = ul.Lease.Clone()
 	}
 	return clone
 }
 
 // IsLease returns true if this is an SMB2/3 lease rather than a byte-range lock.
 // Leases have the Lease field set and are whole-file (Offset=0, Length=0).
-func (el *UnifiedLock) IsLease() bool {
-	return el.Lease != nil
-}
-
-// HasOpLock returns true if this lock has an associated OpLock/lease.
-// Alias for IsLease() for clarity in conflict detection code.
-func (el *UnifiedLock) HasOpLock() bool {
-	return el.Lease != nil
+func (ul *UnifiedLock) IsLease() bool {
+	return ul.Lease != nil
 }
 
 // ConflictsWith checks if this lock conflicts with another lock.
@@ -289,71 +274,33 @@ func (ul *UnifiedLock) ConflictsWith(other *UnifiedLock) bool {
 	}
 
 	// Case 2: OpLock vs OpLock
-	if ul.HasOpLock() && other.HasOpLock() {
+	if ul.IsLease() && other.IsLease() {
 		return OpLocksConflict(ul.Lease, other.Lease)
 	}
 
 	// Case 3: OpLock vs byte-range (one has oplock, other doesn't)
-	if ul.HasOpLock() != other.HasOpLock() {
-		return opLockConflictsWithByteLock2(ul, other)
+	if ul.IsLease() != other.IsLease() {
+		if ul.IsLease() {
+			return opLockConflictsWithByteLock(ul.Lease, ul.Owner.OwnerID, other)
+		}
+		return opLockConflictsWithByteLock(other.Lease, other.Owner.OwnerID, ul)
 	}
 
 	// Case 4: Byte-range vs byte-range
 	if !RangesOverlap(ul.Offset, ul.Length, other.Offset, other.Length) {
 		return false
 	}
-	return !(ul.Type == LockTypeShared && other.Type == LockTypeShared)
+	return ul.Type != LockTypeShared || other.Type != LockTypeShared
 }
 
 // accessModesConflict checks if two access modes (SMB share reservations) conflict.
 //
-// Conflict rules:
-//   - DenyRead blocks AccessRead (and vice versa)
-//   - DenyWrite blocks AccessWrite (and vice versa)
-//   - DenyAll blocks both AccessRead and AccessWrite
-//
-// AccessModeNone never conflicts with anything.
+// AccessModeNone never conflicts with anything. Any deny mode (DenyRead,
+// DenyWrite, DenyAll) conflicts with any non-None mode on the other side.
+// The check is symmetric: if a denies and b is non-None, or vice versa.
 func accessModesConflict(a, b AccessMode) bool {
-	// If both are None, no conflict
-	if a == AccessModeNone && b == AccessModeNone {
-		return false
-	}
-
-	// a denies read and b wants to read (DenyRead or DenyAll blocks read)
-	if (a == AccessModeDenyRead || a == AccessModeDenyAll) && b != AccessModeNone {
-		return true
-	}
-
-	// a denies write and b wants to write (DenyWrite or DenyAll blocks write)
-	if (a == AccessModeDenyWrite || a == AccessModeDenyAll) && b != AccessModeNone {
-		return true
-	}
-
-	// b denies read and a wants to read
-	if (b == AccessModeDenyRead || b == AccessModeDenyAll) && a != AccessModeNone {
-		return true
-	}
-
-	// b denies write and a wants to write
-	if (b == AccessModeDenyWrite || b == AccessModeDenyAll) && a != AccessModeNone {
-		return true
-	}
-
-	return false
+	return a != AccessModeNone && b != AccessModeNone
 }
-
-// opLockConflictsWithByteLock2 checks if one lock with an oplock conflicts
-// with a lock without an oplock. This handles both orderings.
-func opLockConflictsWithByteLock2(a, b *UnifiedLock) bool {
-	if a.HasOpLock() {
-		return opLockConflictsWithByteLock(a.Lease, a.Owner.OwnerID, b)
-	}
-	return opLockConflictsWithByteLock(b.Lease, b.Owner.OwnerID, a)
-}
-
-// ============================================================================
-// Enhanced Lock Conflict Detection
-// ============================================================================
 
 // UnifiedLockConflict describes a conflicting lock for error reporting.
 type UnifiedLockConflict struct {
@@ -364,101 +311,31 @@ type UnifiedLockConflict struct {
 	Reason string
 }
 
-// IsUnifiedLockConflicting checks if two enhanced locks conflict with each other.
+// IsUnifiedLockConflicting checks if two unified locks conflict with each other.
+// It delegates to ConflictsWith which handles all conflict cases.
 //
-// This function handles three cases:
-//  1. Lease vs Lease: Check lease-specific conflict rules
-//  2. Lease vs Byte-Range Lock: Cross-type conflict detection
-//  3. Byte-Range Lock vs Byte-Range Lock: Traditional range overlap + type check
-//
-// Conflict rules for byte-range locks:
-//   - Shared locks don't conflict with other shared locks (multiple readers)
-//   - Exclusive locks conflict with all other locks
-//   - Locks from the same owner don't conflict (allows re-locking same range)
-//   - Ranges must overlap for a conflict to occur
-//
-// Conflict rules for leases:
-//   - Same LeaseKey = no conflict (same caching unit)
-//   - Write leases require exclusive access (conflict with other leases)
-//   - Read leases can coexist
-//
-// Cross-type conflict rules (lease vs byte-range):
-//   - Lease with Write conflicts with exclusive byte-range locks
-//   - Exclusive byte-range lock conflicts with Write leases
-//
-// Note: Owner comparison uses the full OwnerID string, enabling cross-protocol
-// conflict detection. An NLM lock and SMB lock on the same range WILL conflict
-// because they have different OwnerIDs.
+// This standalone function is kept for backward compatibility and convenience
+// in code that operates on two locks without a clear "this vs other" relationship.
 func IsUnifiedLockConflicting(existing, requested *UnifiedLock) bool {
-	// Same owner - no conflict (allows re-locking same range with different type)
-	if existing.Owner.OwnerID == requested.Owner.OwnerID {
-		return false
-	}
-
-	// Handle lease-specific conflict detection
-	existingIsLease := existing.IsLease()
-	requestedIsLease := requested.IsLease()
-
-	// Case 1: Both are leases
-	if existingIsLease && requestedIsLease {
-		return OpLocksConflict(existing.Lease, requested.Lease)
-	}
-
-	// Case 2: One is a lease, one is a byte-range lock
-	if existingIsLease && !requestedIsLease {
-		// Existing is lease, requested is byte-range lock
-		return opLockConflictsWithByteLock(existing.Lease, existing.Owner.OwnerID, requested)
-	}
-	if !existingIsLease && requestedIsLease {
-		// Existing is byte-range lock, requested is lease
-		return opLockConflictsWithByteLock(requested.Lease, requested.Owner.OwnerID, existing)
-	}
-
-	// Case 3: Both are byte-range locks (original logic)
-	// Check range overlap first (common case: no overlap)
-	if !RangesOverlap(existing.Offset, existing.Length, requested.Offset, requested.Length) {
-		return false
-	}
-
-	// Both shared (read) locks - no conflict
-	if existing.Type == LockTypeShared && requested.Type == LockTypeShared {
-		return false
-	}
-
-	// At least one is exclusive and ranges overlap - conflict
-	return true
+	return existing.ConflictsWith(requested)
 }
-
-// ============================================================================
-// Range Helper Functions
-// ============================================================================
 
 // RangesOverlap returns true if two byte ranges overlap.
 // Length of 0 means "to end of file" (unbounded).
 func RangesOverlap(offset1, length1, offset2, length2 uint64) bool {
-	// Calculate end positions
-	// For length=0 (unbounded), we use max uint64 to represent "infinity"
-	var end1, end2 uint64
-
-	if length1 == 0 {
-		end1 = ^uint64(0) // Max uint64 (infinity)
-	} else {
-		end1 = offset1 + length1
-	}
-
-	if length2 == 0 {
-		end2 = ^uint64(0) // Max uint64 (infinity)
-	} else {
-		end2 = offset2 + length2
-	}
-
-	// Ranges overlap if each starts before the other ends
+	end1 := rangeEnd(offset1, length1)
+	end2 := rangeEnd(offset2, length2)
 	return end1 > offset2 && end2 > offset1
 }
 
-// ============================================================================
-// Lock Result
-// ============================================================================
+// rangeEnd returns the exclusive end of a byte range.
+// For unbounded ranges (length=0), returns max uint64 to represent infinity.
+func rangeEnd(offset, length uint64) uint64 {
+	if length == 0 {
+		return ^uint64(0)
+	}
+	return offset + length
+}
 
 // LockResult represents the result of a lock operation.
 type LockResult struct {

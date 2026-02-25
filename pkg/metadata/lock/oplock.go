@@ -14,10 +14,7 @@ import (
 	"time"
 )
 
-// ============================================================================
-// Lease State Constants (MS-SMB2 2.2.13.2.8)
-// ============================================================================
-
+// Lease state constants per MS-SMB2 2.2.13.2.8.
 const (
 	// LeaseStateNone indicates no caching is permitted.
 	LeaseStateNone uint32 = 0x00
@@ -35,10 +32,6 @@ const (
 	// Client can delay close operations until another client needs access.
 	LeaseStateHandle uint32 = 0x04
 )
-
-// ============================================================================
-// Valid Lease State Combinations
-// ============================================================================
 
 // ValidFileLeaseStates contains all valid lease state combinations for files.
 // Per MS-SMB2: Write and Handle alone are not valid; they require Read.
@@ -59,10 +52,6 @@ var ValidDirectoryLeaseStates = []uint32{
 	LeaseStateRead,                    // 0x01 - Read only
 	LeaseStateRead | LeaseStateHandle, // 0x05 - Read + Handle
 }
-
-// ============================================================================
-// Lease Info Type
-// ============================================================================
 
 // OpLock holds SMB2/3 lease-specific state.
 //
@@ -108,10 +97,6 @@ type OpLock struct {
 	// reclaims its previously held lease.
 	Reclaim bool
 }
-
-// ============================================================================
-// Lease State Helper Methods
-// ============================================================================
 
 // HasRead returns true if the lease includes Read caching permission.
 func (l *OpLock) HasRead() bool {
@@ -162,10 +147,6 @@ func LeaseStateToString(state uint32) string {
 	return result
 }
 
-// ============================================================================
-// Lease State Validation
-// ============================================================================
-
 // IsValidFileLeaseState returns true if the state is a valid lease combination for files.
 //
 // Valid file states: None, R, RW, RH, RWH
@@ -182,16 +163,12 @@ func IsValidDirectoryLeaseState(state uint32) bool {
 	return slices.Contains(ValidDirectoryLeaseStates, state)
 }
 
-// ============================================================================
-// Lease Clone
-// ============================================================================
-
 // Clone creates a deep copy of the OpLock.
 func (l *OpLock) Clone() *OpLock {
 	if l == nil {
 		return nil
 	}
-	clone := &OpLock{
+	return &OpLock{
 		LeaseKey:     l.LeaseKey, // Fixed-size array, copied by value
 		LeaseState:   l.LeaseState,
 		BreakToState: l.BreakToState,
@@ -200,12 +177,7 @@ func (l *OpLock) Clone() *OpLock {
 		BreakStarted: l.BreakStarted,
 		Reclaim:      l.Reclaim,
 	}
-	return clone
 }
-
-// ============================================================================
-// Lease Conflict Detection
-// ============================================================================
 
 // OpLocksConflict checks if two leases on the same file conflict.
 //

@@ -15,10 +15,6 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
-// Lease Break Configuration
-// ============================================================================
-
 const (
 	// DefaultOpLockBreakTimeout is the Windows default (35 seconds).
 	// Per MS-SMB2 3.3.6.5: "implementation-specific default value in milliseconds"
@@ -28,10 +24,6 @@ const (
 	OpLockBreakScanInterval = 1 * time.Second
 )
 
-// ============================================================================
-// Lease Break Callback Interface
-// ============================================================================
-
 // OpLockBreakCallback is called when a lease break times out.
 // The callback allows the OplockManager to clean up internal state.
 type OpLockBreakCallback interface {
@@ -39,10 +31,6 @@ type OpLockBreakCallback interface {
 	// The lease has already been force-revoked (deleted from store).
 	OnLeaseBreakTimeout(leaseKey [16]byte)
 }
-
-// ============================================================================
-// Typed Break Callbacks Interface
-// ============================================================================
 
 // BreakCallbacks provides typed callback methods for cross-protocol coordination.
 //
@@ -83,10 +71,6 @@ type BreakCallbacks interface {
 	//   - requestedMode: The access mode that was requested
 	OnAccessConflict(handleKey string, existingLock *UnifiedLock, requestedMode AccessMode)
 }
-
-// ============================================================================
-// Lease Break Scanner
-// ============================================================================
 
 // OpLockBreakScanner monitors breaking leases and force-revokes on timeout.
 //
@@ -201,10 +185,6 @@ func (s *OpLockBreakScanner) GetTimeout() time.Duration {
 	return s.timeout
 }
 
-// ============================================================================
-// Internal Implementation
-// ============================================================================
-
 // scanLoop is the main background loop.
 func (s *OpLockBreakScanner) scanLoop() {
 	defer close(s.stopped)
@@ -247,39 +227,38 @@ func (s *OpLockBreakScanner) scanExpiredBreaks(now time.Time) {
 			continue
 		}
 
-		// Skip non-breaking leases
 		if !pl.Breaking {
 			continue
 		}
 
-		// Check if break has expired
-		// We use AcquiredAt as the break start time (updated when break initiated)
+		// Check if break has expired (AcquiredAt is updated when break initiated)
 		breakDeadline := pl.AcquiredAt.Add(timeout)
-		if now.After(breakDeadline) {
-			var leaseKey [16]byte
-			copy(leaseKey[:], pl.LeaseKey)
+		if !now.After(breakDeadline) {
+			continue
+		}
 
-			logger.Debug("OpLockBreakScanner: break timeout expired",
+		var leaseKey [16]byte
+		copy(leaseKey[:], pl.LeaseKey)
+
+		logger.Debug("OpLockBreakScanner: break timeout expired",
+			"leaseKey", fmt.Sprintf("%x", leaseKey),
+			"breakStarted", pl.AcquiredAt,
+			"deadline", breakDeadline,
+			"timeout", timeout)
+
+		// Force revoke - delete the lease
+		if err := s.lockStore.DeleteLock(ctx, pl.ID); err != nil {
+			logger.Warn("OpLockBreakScanner: failed to delete expired lease",
 				"leaseKey", fmt.Sprintf("%x", leaseKey),
-				"breakStarted", pl.AcquiredAt,
-				"deadline", breakDeadline,
-				"timeout", timeout)
+				"error", err)
+			continue
+		}
 
-			// Force revoke - delete the lease
-			if err := s.lockStore.DeleteLock(ctx, pl.ID); err != nil {
-				logger.Warn("OpLockBreakScanner: failed to delete expired lease",
-					"leaseKey", fmt.Sprintf("%x", leaseKey),
-					"error", err)
-				continue
-			}
+		logger.Debug("OpLockBreakScanner: lease force-revoked",
+			"leaseKey", fmt.Sprintf("%x", leaseKey))
 
-			logger.Debug("OpLockBreakScanner: lease force-revoked",
-				"leaseKey", fmt.Sprintf("%x", leaseKey))
-
-			// Notify callback (allows conflicting operation to proceed)
-			if s.callback != nil {
-				s.callback.OnLeaseBreakTimeout(leaseKey)
-			}
+		if s.callback != nil {
+			s.callback.OnLeaseBreakTimeout(leaseKey)
 		}
 	}
 }

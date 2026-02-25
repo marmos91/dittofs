@@ -9,10 +9,6 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
-// LockManager Interface
-// ============================================================================
-
 // LockManager provides unified lock management for all protocols.
 //
 // This is the single interface that both NFS and SMB adapters use for lock
@@ -145,10 +141,6 @@ type ManagerStats struct {
 
 // Verify Manager satisfies LockManager at compile time.
 var _ LockManager = (*Manager)(nil)
-
-// ============================================================================
-// File Locking Types (SMB/NLM support)
-// ============================================================================
 
 // FileLock represents a byte-range lock on a file.
 //
@@ -290,10 +282,6 @@ func conflictFrom(fl *FileLock) *LockConflict {
 	}
 }
 
-// ============================================================================
-// Lock Manager
-// ============================================================================
-
 // Manager manages byte-range file locks for SMB/NLM protocols.
 //
 // This is a shared, in-memory implementation that can be embedded in any
@@ -307,7 +295,7 @@ func conflictFrom(fl *FileLock) *LockConflict {
 // Manager is safe for concurrent use by multiple goroutines.
 type Manager struct {
 	mu             sync.RWMutex
-	locks          map[string][]FileLock    // handle key -> locks (legacy)
+	locks          map[string][]FileLock     // handle key -> locks (legacy)
 	unifiedLocks   map[string][]*UnifiedLock // handle key -> unified locks
 	breakCallbacks []BreakCallbacks          // registered break callbacks
 	gracePeriod    *GracePeriodManager       // grace period state (may be nil)
@@ -762,9 +750,6 @@ func (lm *Manager) UpgradeLock(handleKey string, owner LockOwner, offset, length
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 
-	// This method works with the enhanced lock storage (if available)
-	// For now, we'll add enhanced lock storage alongside the existing FileLock storage
-
 	unifiedLocks := lm.getUnifiedLocksLocked(handleKey)
 
 	// Step 1: Find existing shared lock owned by this owner covering the range
@@ -815,7 +800,7 @@ func (lm *Manager) UpgradeLock(handleKey string, owner LockOwner, offset, length
 	return unifiedLocks[ownLockIndex].Clone(), nil
 }
 
-// getUnifiedLocksLocked returns enhanced locks for a file (must hold lm.mu).
+// getUnifiedLocksLocked returns unified locks for a file (must hold lm.mu).
 func (lm *Manager) getUnifiedLocksLocked(handleKey string) []*UnifiedLock {
 	return lm.unifiedLocks[handleKey]
 }
@@ -863,7 +848,7 @@ func (lm *Manager) AddUnifiedLock(handleKey string, lock *UnifiedLock) error {
 	return nil
 }
 
-// RemoveUnifiedLock removes an enhanced lock using POSIX splitting semantics.
+// RemoveUnifiedLock removes a unified lock using POSIX splitting semantics.
 func (lm *Manager) RemoveUnifiedLock(handleKey string, owner LockOwner, offset, length uint64) error {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
@@ -910,7 +895,7 @@ func (lm *Manager) RemoveUnifiedLock(handleKey string, owner LockOwner, offset, 
 	return nil
 }
 
-// ListUnifiedLocks returns all enhanced locks on a file.
+// ListUnifiedLocks returns all unified locks on a file.
 func (lm *Manager) ListUnifiedLocks(handleKey string) []*UnifiedLock {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
@@ -953,105 +938,63 @@ func (lm *Manager) GetUnifiedLock(handleKey string, owner LockOwner, offset, len
 	return nil, NewLockNotFoundError("")
 }
 
-// ============================================================================
-// Centralized Break Operations
-// ============================================================================
-
 // CheckAndBreakOpLocksForWrite checks and initiates breaks for oplocks that
 // conflict with a write operation.
 //
-// Write operations require breaking:
-//   - Write oplocks -> None (flush dirty data)
-//   - Read oplocks -> None (invalidate caches)
-//
-// This replaces the global OplockChecker pattern with centralized break logic.
+// Write operations break all oplocks with Read or Write state to None.
 func (lm *Manager) CheckAndBreakOpLocksForWrite(handleKey string, excludeOwner *LockOwner) error {
-	lm.mu.RLock()
-	locks := lm.unifiedLocks[handleKey]
-
-	var toBreak []*UnifiedLock
-	for _, lock := range locks {
-		if lock.Lease == nil {
-			continue // Not an oplock
-		}
-		if excludeOwner != nil && lock.Owner.OwnerID == excludeOwner.OwnerID {
-			continue // Skip excluded owner
-		}
-		// Write breaks all oplocks with Read or Write state
-		if lock.Lease.HasRead() || lock.Lease.HasWrite() {
-			toBreak = append(toBreak, lock)
-		}
-	}
-	lm.mu.RUnlock()
-
-	// Dispatch break callbacks outside of lock
-	for _, lock := range toBreak {
-		lm.dispatchOpLockBreak(handleKey, lock, LeaseStateNone)
-	}
-
-	return nil
+	return lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, func(lease *OpLock) bool {
+		return lease.HasRead() || lease.HasWrite()
+	})
 }
 
 // CheckAndBreakOpLocksForRead checks and initiates breaks for oplocks that
 // conflict with a read operation.
 //
-// Read operations only require breaking Write oplocks:
-//   - Write oplocks -> Read (allow reads while keeping read cache)
-//
-// Read oplocks are not affected by reads.
+// Read operations only break Write oplocks (downgraded to Read).
 func (lm *Manager) CheckAndBreakOpLocksForRead(handleKey string, excludeOwner *LockOwner) error {
-	lm.mu.RLock()
-	locks := lm.unifiedLocks[handleKey]
-
-	var toBreak []*UnifiedLock
-	for _, lock := range locks {
-		if lock.Lease == nil {
-			continue // Not an oplock
-		}
-		if excludeOwner != nil && lock.Owner.OwnerID == excludeOwner.OwnerID {
-			continue // Skip excluded owner
-		}
-		// Read only breaks Write oplocks
-		if lock.Lease.HasWrite() {
-			toBreak = append(toBreak, lock)
-		}
-	}
-	lm.mu.RUnlock()
-
-	// Dispatch break callbacks outside of lock
-	for _, lock := range toBreak {
-		lm.dispatchOpLockBreak(handleKey, lock, LeaseStateRead)
-	}
-
-	return nil
+	return lm.breakOpLocks(handleKey, excludeOwner, LeaseStateRead, func(lease *OpLock) bool {
+		return lease.HasWrite()
+	})
 }
 
 // CheckAndBreakOpLocksForDelete checks and initiates breaks for all oplocks
 // on a file being deleted.
 //
-// Delete operations require breaking all oplocks to None.
+// Delete operations break all non-None oplocks to None.
 func (lm *Manager) CheckAndBreakOpLocksForDelete(handleKey string, excludeOwner *LockOwner) error {
+	return lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, func(lease *OpLock) bool {
+		return lease.LeaseState != LeaseStateNone
+	})
+}
+
+// breakOpLocks collects oplocks matching the predicate and dispatches break
+// notifications to all registered callbacks.
+func (lm *Manager) breakOpLocks(
+	handleKey string,
+	excludeOwner *LockOwner,
+	breakToState uint32,
+	shouldBreak func(lease *OpLock) bool,
+) error {
 	lm.mu.RLock()
 	locks := lm.unifiedLocks[handleKey]
 
 	var toBreak []*UnifiedLock
 	for _, lock := range locks {
 		if lock.Lease == nil {
-			continue // Not an oplock
+			continue
 		}
 		if excludeOwner != nil && lock.Owner.OwnerID == excludeOwner.OwnerID {
-			continue // Skip excluded owner
+			continue
 		}
-		// Delete breaks all oplocks
-		if lock.Lease.LeaseState != LeaseStateNone {
+		if shouldBreak(lock.Lease) {
 			toBreak = append(toBreak, lock)
 		}
 	}
 	lm.mu.RUnlock()
 
-	// Dispatch break callbacks outside of lock
 	for _, lock := range toBreak {
-		lm.dispatchOpLockBreak(handleKey, lock, LeaseStateNone)
+		lm.dispatchOpLockBreak(handleKey, lock, breakToState)
 	}
 
 	return nil

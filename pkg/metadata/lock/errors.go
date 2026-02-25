@@ -4,13 +4,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
-// ============================================================================
-// Lock Error Factory Functions
-//
-// These functions create lock-specific errors using the generic errors package.
-// They provide convenient constructors for common lock error scenarios.
-// ============================================================================
-
 // NewLockedError creates error for lock conflicts (legacy FileLock).
 func NewLockedError(path string, conflict *LockConflict) *errors.StoreError {
 	msg := "resource is locked"
@@ -33,7 +26,7 @@ func NewLockNotFoundError(path string) *errors.StoreError {
 	}
 }
 
-// NewLockConflictError creates error for enhanced lock conflicts.
+// NewLockConflictError creates error for unified lock conflicts.
 func NewLockConflictError(path string, conflict *UnifiedLockConflict) *errors.StoreError {
 	msg := "lock conflict"
 	if conflict != nil && conflict.Reason != "" {

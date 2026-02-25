@@ -38,6 +38,31 @@ func NewNLMService(lockMgr *lock.Manager, fileChecker FileChecker) *NLMService {
 	}
 }
 
+// lockTypeFromExclusive converts an exclusive flag to a LockType.
+func lockTypeFromExclusive(exclusive bool) lock.LockType {
+	if exclusive {
+		return lock.LockTypeExclusive
+	}
+	return lock.LockTypeShared
+}
+
+// checkFileExists verifies a file exists via the file checker.
+// Returns nil on success, or a StoreError with ErrNotFound if the file does not exist.
+func (s *NLMService) checkFileExists(ctx context.Context, handle []byte) error {
+	exists, _, err := s.fileChecker.GetFile(ctx, handle)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return &errors.StoreError{
+			Code:    errors.ErrNotFound,
+			Message: "file not found",
+			Path:    string(handle),
+		}
+	}
+	return nil
+}
+
 // SetUnlockCallback sets a callback invoked after each NLM unlock.
 //
 // The NLM blocking queue uses this to process waiting locks when a lock
@@ -72,55 +97,41 @@ func (s *NLMService) LockFileNLM(
 		return nil, err
 	}
 
-	// Verify file exists
-	exists, _, err := s.fileChecker.GetFile(ctx, handle)
-	if err != nil {
+	if err := s.checkFileExists(ctx, handle); err != nil {
 		return nil, err
 	}
-	if !exists {
-		return nil, &errors.StoreError{
-			Code:    errors.ErrNotFound,
-			Message: "file not found",
-			Path:    string(handle),
-		}
-	}
 
-	// Create unified lock
-	lockType := lock.LockTypeShared
-	if exclusive {
-		lockType = lock.LockTypeExclusive
-	}
-	unifiedLock := lock.NewUnifiedLock(owner, lock.FileHandle(handle), offset, length, lockType)
+	unifiedLock := lock.NewUnifiedLock(owner, lock.FileHandle(handle), offset, length, lockTypeFromExclusive(exclusive))
 	unifiedLock.Reclaim = reclaim
 
-	// Try to acquire
 	handleKey := string(handle)
-	err = s.lockMgr.AddUnifiedLock(handleKey, unifiedLock)
-	if err != nil {
-		// Check if it's a lock conflict error
-		if storeErr, ok := err.(*errors.StoreError); ok && storeErr.Code == errors.ErrLockConflict {
-			// For NLM, find the conflicting lock for the response
-			existing := s.lockMgr.ListUnifiedLocks(handleKey)
-			for _, el := range existing {
-				if lock.IsUnifiedLockConflicting(el, unifiedLock) {
-					return &lock.LockResult{
-						Success:  false,
-						Conflict: &lock.UnifiedLockConflict{Lock: el, Reason: "conflict"},
-					}, nil
-				}
-			}
-			// Conflict but couldn't find specific lock - still return failure
-			return &lock.LockResult{
-				Success: false,
-			}, nil
-		}
+	err := s.lockMgr.AddUnifiedLock(handleKey, unifiedLock)
+	if err == nil {
+		return &lock.LockResult{
+			Success: true,
+			Lock:    unifiedLock,
+		}, nil
+	}
+
+	// Non-conflict errors are system failures
+	storeErr, ok := err.(*errors.StoreError)
+	if !ok || storeErr.Code != errors.ErrLockConflict {
 		return nil, err
 	}
 
-	return &lock.LockResult{
-		Success: true,
-		Lock:    unifiedLock,
-	}, nil
+	// Lock conflict: find the specific conflicting lock for the NLM response
+	existing := s.lockMgr.ListUnifiedLocks(handleKey)
+	for _, el := range existing {
+		if lock.IsUnifiedLockConflicting(el, unifiedLock) {
+			return &lock.LockResult{
+				Success:  false,
+				Conflict: &lock.UnifiedLockConflict{Lock: el, Reason: "conflict"},
+			}, nil
+		}
+	}
+
+	// Conflict detected but specific lock not found (race) - still return failure
+	return &lock.LockResult{Success: false}, nil
 }
 
 // TestLockNLM tests if a lock could be granted without acquiring it.
@@ -143,25 +154,11 @@ func (s *NLMService) TestLockNLM(
 		return false, nil, err
 	}
 
-	// Verify file exists
-	exists, _, err := s.fileChecker.GetFile(ctx, handle)
-	if err != nil {
+	if err := s.checkFileExists(ctx, handle); err != nil {
 		return false, nil, err
 	}
-	if !exists {
-		return false, nil, &errors.StoreError{
-			Code:    errors.ErrNotFound,
-			Message: "file not found",
-			Path:    string(handle),
-		}
-	}
 
-	// Test the lock
-	lockType := lock.LockTypeShared
-	if exclusive {
-		lockType = lock.LockTypeExclusive
-	}
-	testLock := lock.NewUnifiedLock(owner, lock.FileHandle(handle), offset, length, lockType)
+	testLock := lock.NewUnifiedLock(owner, lock.FileHandle(handle), offset, length, lockTypeFromExclusive(exclusive))
 
 	handleKey := string(handle)
 	existing := s.lockMgr.ListUnifiedLocks(handleKey)

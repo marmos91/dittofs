@@ -22,14 +22,14 @@ func TestToPersistedLock_ByteRangeLock(t *testing.T) {
 			ClientID:  "nlm-conn-1",
 			ShareName: "/export",
 		},
-		FileHandle:       FileHandle("file-handle-abc"),
-		Offset:           100,
-		Length:           500,
-		Type:             LockTypeExclusive,
+		FileHandle: FileHandle("file-handle-abc"),
+		Offset:     100,
+		Length:     500,
+		Type:       LockTypeExclusive,
 		AccessMode: AccessModeDenyWrite,
-		AcquiredAt:       time.Date(2026, 2, 5, 12, 0, 0, 0, time.UTC),
-		Blocking:         true,
-		Reclaim:          true,
+		AcquiredAt: time.Date(2026, 2, 5, 12, 0, 0, 0, time.UTC),
+		Blocking:   true,
+		Reclaim:    true,
 		// No Lease field
 	}
 
@@ -106,17 +106,17 @@ func TestFromPersistedLock_ByteRangeLock(t *testing.T) {
 	t.Parallel()
 
 	pl := &PersistedLock{
-		ID:               "lock-789",
-		ShareName:        "/export",
-		FileID:           "file-id-xyz",
-		OwnerID:          "nlm:client2:pid456",
-		ClientID:         "nlm-conn-2",
-		LockType:         0, // Shared
-		Offset:           200,
-		Length:           300,
-		AccessMode: 3, // DenyAll
-		AcquiredAt:       time.Date(2026, 2, 5, 14, 0, 0, 0, time.UTC),
-		ServerEpoch:      10,
+		ID:          "lock-789",
+		ShareName:   "/export",
+		FileID:      "file-id-xyz",
+		OwnerID:     "nlm:client2:pid456",
+		ClientID:    "nlm-conn-2",
+		LockType:    0, // Shared
+		Offset:      200,
+		Length:      300,
+		AccessMode:  3, // DenyAll
+		AcquiredAt:  time.Date(2026, 2, 5, 14, 0, 0, 0, time.UTC),
+		ServerEpoch: 10,
 		// No lease fields
 	}
 
@@ -191,12 +191,12 @@ func TestPersistedLock_RoundTrip_ByteRangeLock(t *testing.T) {
 			ClientID:  "test-client",
 			ShareName: "/test",
 		},
-		FileHandle:       FileHandle("test-file"),
-		Offset:           1000,
-		Length:           2000,
-		Type:             LockTypeExclusive,
+		FileHandle: FileHandle("test-file"),
+		Offset:     1000,
+		Length:     2000,
+		Type:       LockTypeExclusive,
 		AccessMode: AccessModeDenyRead,
-		AcquiredAt:       time.Now().Truncate(time.Millisecond),
+		AcquiredAt: time.Now().Truncate(time.Millisecond),
 	}
 
 	// Convert to persisted and back

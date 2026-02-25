@@ -110,11 +110,27 @@ func (mt *MountTracker) RemoveAll() int {
 // List returns all active mount records across all protocols.
 // The returned slice is a copy; callers may safely modify it.
 func (mt *MountTracker) List() []*MountInfo {
+	return mt.collectMounts(nil)
+}
+
+// ListByProtocol returns mount records for a specific protocol.
+func (mt *MountTracker) ListByProtocol(protocol string) []*MountInfo {
+	return mt.collectMounts(func(m *MountInfo) bool {
+		return m.Protocol == protocol
+	})
+}
+
+// collectMounts returns copies of mount records matching the filter.
+// A nil filter matches all mounts.
+func (mt *MountTracker) collectMounts(filter func(*MountInfo) bool) []*MountInfo {
 	mt.mu.RLock()
 	defer mt.mu.RUnlock()
 
 	mounts := make([]*MountInfo, 0, len(mt.mounts))
 	for _, mount := range mt.mounts {
+		if filter != nil && !filter(mount) {
+			continue
+		}
 		mounts = append(mounts, &MountInfo{
 			ClientAddr:  mount.ClientAddr,
 			Protocol:    mount.Protocol,
@@ -122,26 +138,6 @@ func (mt *MountTracker) List() []*MountInfo {
 			MountedAt:   mount.MountedAt,
 			AdapterData: mount.AdapterData,
 		})
-	}
-	return mounts
-}
-
-// ListByProtocol returns mount records for a specific protocol.
-func (mt *MountTracker) ListByProtocol(protocol string) []*MountInfo {
-	mt.mu.RLock()
-	defer mt.mu.RUnlock()
-
-	mounts := make([]*MountInfo, 0)
-	for _, mount := range mt.mounts {
-		if mount.Protocol == protocol {
-			mounts = append(mounts, &MountInfo{
-				ClientAddr:  mount.ClientAddr,
-				Protocol:    mount.Protocol,
-				ShareName:   mount.ShareName,
-				MountedAt:   mount.MountedAt,
-				AdapterData: mount.AdapterData,
-			})
-		}
 	}
 	return mounts
 }

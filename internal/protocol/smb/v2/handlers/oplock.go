@@ -92,8 +92,8 @@ type OplockManager struct {
 	notify OplockBreakNotifier     // callback for sending break notifications
 
 	// Unified lock manager integration
-	lockStore   lock.LockStore          // For lease persistence
-	leaseNotify LeaseBreakNotifier      // Lease-specific notifications
+	lockStore   lock.LockStore           // For lease persistence
+	leaseNotify LeaseBreakNotifier       // Lease-specific notifications
 	scanner     *lock.OpLockBreakScanner // Lease break timeout scanner
 
 	// Active break tracking (for timeout management)

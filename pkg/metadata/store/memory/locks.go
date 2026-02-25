@@ -188,17 +188,17 @@ func (s *memoryLockStore) IncrementServerEpoch(ctx context.Context) (uint64, err
 // cloneLock creates a deep copy of a PersistedLock.
 func cloneLock(lk *lock.PersistedLock) *lock.PersistedLock {
 	clone := &lock.PersistedLock{
-		ID:               lk.ID,
-		ShareName:        lk.ShareName,
-		FileID:           lk.FileID,
-		OwnerID:          lk.OwnerID,
-		ClientID:         lk.ClientID,
-		LockType:         lk.LockType,
-		Offset:           lk.Offset,
-		Length:           lk.Length,
-		AccessMode: lk.AccessMode,
-		AcquiredAt:       lk.AcquiredAt,
-		ServerEpoch:      lk.ServerEpoch,
+		ID:          lk.ID,
+		ShareName:   lk.ShareName,
+		FileID:      lk.FileID,
+		OwnerID:     lk.OwnerID,
+		ClientID:    lk.ClientID,
+		LockType:    lk.LockType,
+		Offset:      lk.Offset,
+		Length:      lk.Length,
+		AccessMode:  lk.AccessMode,
+		AcquiredAt:  lk.AcquiredAt,
+		ServerEpoch: lk.ServerEpoch,
 		// Lease fields
 		LeaseState:   lk.LeaseState,
 		LeaseEpoch:   lk.LeaseEpoch,

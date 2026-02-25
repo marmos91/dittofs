@@ -14,11 +14,9 @@ func TestManager_ImplementsLockManager(t *testing.T) {
 	t.Parallel()
 
 	// Compile-time check is in manager.go (var _ LockManager = (*Manager)(nil))
-	// Runtime verification:
+	// Runtime verification that NewManager returns a usable LockManager:
 	var lm LockManager = NewManager()
-	if lm == nil {
-		t.Fatal("NewManager should return non-nil LockManager")
-	}
+	_ = lm // interface assignment confirms compliance
 }
 
 // ============================================================================
@@ -948,7 +946,7 @@ func TestManager_GracePeriod_NilManager(t *testing.T) {
 		t.Fatal("Expected all operations allowed without grace period manager")
 	}
 
-	lm.ExitGracePeriod()   // no-op
+	lm.ExitGracePeriod()  // no-op
 	lm.MarkReclaimed("x") // no-op
 }
 

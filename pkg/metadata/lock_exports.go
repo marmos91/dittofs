@@ -234,7 +234,7 @@ var RangesOverlap = lock.RangesOverlap
 // Deprecated: Use lock.IsLockConflicting() directly.
 var IsLockConflicting = lock.IsLockConflicting
 
-// IsUnifiedLockConflicting checks if two enhanced locks conflict.
+// IsUnifiedLockConflicting checks if two unified locks conflict.
 // Deprecated: Use lock.IsUnifiedLockConflicting() directly.
 var IsUnifiedLockConflicting = lock.IsUnifiedLockConflicting
 

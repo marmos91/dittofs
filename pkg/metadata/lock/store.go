@@ -239,17 +239,17 @@ type LockStore interface {
 // LeaseState, Epoch, BreakToState, and Breaking are all preserved.
 func ToPersistedLock(lock *UnifiedLock, epoch uint64) *PersistedLock {
 	pl := &PersistedLock{
-		ID:               lock.ID,
-		ShareName:        lock.Owner.ShareName,
-		FileID:           string(lock.FileHandle),
-		OwnerID:          lock.Owner.OwnerID,
-		ClientID:         lock.Owner.ClientID,
-		LockType:         int(lock.Type),
-		Offset:           lock.Offset,
-		Length:           lock.Length,
-		AccessMode: int(lock.AccessMode),
-		AcquiredAt:       lock.AcquiredAt,
-		ServerEpoch:      epoch,
+		ID:          lock.ID,
+		ShareName:   lock.Owner.ShareName,
+		FileID:      string(lock.FileHandle),
+		OwnerID:     lock.Owner.OwnerID,
+		ClientID:    lock.Owner.ClientID,
+		LockType:    int(lock.Type),
+		Offset:      lock.Offset,
+		Length:      lock.Length,
+		AccessMode:  int(lock.AccessMode),
+		AcquiredAt:  lock.AcquiredAt,
+		ServerEpoch: epoch,
 	}
 
 	// Persist lease fields if this is a lease
@@ -283,12 +283,12 @@ func FromPersistedLock(pl *PersistedLock) *UnifiedLock {
 			ClientID:  pl.ClientID,
 			ShareName: pl.ShareName,
 		},
-		FileHandle:       FileHandle(pl.FileID),
-		Offset:           pl.Offset,
-		Length:           pl.Length,
-		Type:             LockType(pl.LockType),
+		FileHandle: FileHandle(pl.FileID),
+		Offset:     pl.Offset,
+		Length:     pl.Length,
+		Type:       LockType(pl.LockType),
 		AccessMode: AccessMode(pl.AccessMode),
-		AcquiredAt:       pl.AcquiredAt,
+		AcquiredAt: pl.AcquiredAt,
 		// Blocking and Reclaim are runtime-only, not persisted
 	}
 

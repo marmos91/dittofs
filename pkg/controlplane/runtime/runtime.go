@@ -999,40 +999,12 @@ func (r *Runtime) startAdapter(cfg *models.AdapterConfig) error {
 		return fmt.Errorf("adapter factory not set")
 	}
 
-	// Create adapter instance using factory
 	adp, err := r.adapterFactory(cfg)
 	if err != nil {
 		return fmt.Errorf("failed to create adapter: %w", err)
 	}
 
-	// Create per-adapter context
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
-
-	// Inject runtime into adapter if it supports RuntimeSetter
-	if setter, ok := adp.(RuntimeSetter); ok {
-		setter.SetRuntime(r)
-	}
-
-	// Start in goroutine
-	go func() {
-		logger.Info("Starting adapter", "protocol", adp.Protocol(), "port", adp.Port())
-		err := adp.Serve(ctx)
-		if err != nil && err != context.Canceled && ctx.Err() == nil {
-			logger.Error("Adapter failed", "protocol", adp.Protocol(), "error", err)
-		}
-		errCh <- err
-	}()
-
-	r.adapters[cfg.Type] = &adapterEntry{
-		adapter: adp,
-		config:  cfg,
-		ctx:     ctx,
-		cancel:  cancel,
-		errCh:   errCh,
-	}
-
-	logger.Info("Adapter started", "type", cfg.Type, "port", cfg.Port)
+	r.registerAndRunAdapterLocked(adp, cfg)
 	return nil
 }
 
@@ -1146,35 +1118,39 @@ func (r *Runtime) AddAdapter(adapter ProtocolAdapter) error {
 		return fmt.Errorf("adapter %s already running", adapterType)
 	}
 
-	// Create per-adapter context
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
+	cfg := &models.AdapterConfig{Type: adapterType, Port: adapter.Port(), Enabled: true}
+	r.registerAndRunAdapterLocked(adapter, cfg)
+	return nil
+}
 
-	// Inject runtime into adapter if it supports RuntimeSetter
-	if setter, ok := adapter.(RuntimeSetter); ok {
+// registerAndRunAdapterLocked injects the runtime, starts the adapter in a goroutine,
+// and records it in the adapters map. Caller must hold adaptersMu.
+func (r *Runtime) registerAndRunAdapterLocked(adp ProtocolAdapter, cfg *models.AdapterConfig) {
+	if setter, ok := adp.(RuntimeSetter); ok {
 		setter.SetRuntime(r)
 	}
 
-	// Start in goroutine
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+
 	go func() {
-		logger.Info("Starting adapter", "protocol", adapter.Protocol(), "port", adapter.Port())
-		err := adapter.Serve(ctx)
+		logger.Info("Starting adapter", "protocol", adp.Protocol(), "port", adp.Port())
+		err := adp.Serve(ctx)
 		if err != nil && err != context.Canceled && ctx.Err() == nil {
-			logger.Error("Adapter failed", "protocol", adapter.Protocol(), "error", err)
+			logger.Error("Adapter failed", "protocol", adp.Protocol(), "error", err)
 		}
 		errCh <- err
 	}()
 
-	r.adapters[adapterType] = &adapterEntry{
-		adapter: adapter,
-		config:  &models.AdapterConfig{Type: adapterType, Port: adapter.Port(), Enabled: true},
+	r.adapters[cfg.Type] = &adapterEntry{
+		adapter: adp,
+		config:  cfg,
 		ctx:     ctx,
 		cancel:  cancel,
 		errCh:   errCh,
 	}
 
-	logger.Info("Adapter added and started", "type", adapterType, "port", adapter.Port())
-	return nil
+	logger.Info("Adapter started", "type", cfg.Type, "port", cfg.Port)
 }
 
 // ============================================================================
