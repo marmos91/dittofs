@@ -191,7 +191,13 @@ Plans:
   9. Shared handler helpers extracted to `internal/adapter/smb/helpers.go`
   10. `pkg/adapter/smb/connection.go` reduced to ~150 lines (thin read/dispatch/write loop)
   11. Handler documentation added (3-5 lines each)
-**Plans**: TBD
+**Plans**: 5 plans
+Plans:
+- [ ] 28-01-PLAN.md — File renames (drop smb_ prefix), struct renames, auth move, helpers rename
+- [ ] 28-02-PLAN.md — BaseAdapter extraction with shared lifecycle, refactor both NFS+SMB to embed it
+- [ ] 28-03-PLAN.md — Connection slimming: extract framing, dispatch, compound to internal/
+- [ ] 28-04-PLAN.md — Authenticator interface definition, SMB and NFS implementations
+- [ ] 28-05-PLAN.md — Handler documentation (3-5 line Godoc for all SMB2 handlers)
 
 ### Phase 29: Core Layer Decomposition
 **Goal**: Decompose god objects, unify errors, reduce boilerplate
