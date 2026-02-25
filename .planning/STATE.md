@@ -49,7 +49,10 @@ Last activity: 2026-02-25 -- Completed 26-05 (Runtime purge, identity dissolutio
 
 - v3.5 milestone inserted before v4.0: refactor adapter layer and core before adding NFSv4.2 features
 - v3.6 milestone inserted: Windows compatibility (bugs #180/#181/#182 + ACL support + test suite validation)
-- v4.0 phases renumbered from 26-32.5 to 33-39.5
+- v3.7 milestone inserted: benchmarking suite (GitHub #193-#199) — compare DittoFS vs JuiceFS, NFS-Ganesha, RClone, kernel NFS, Samba
+- v3.8 milestone inserted: SMB3 protocol upgrade (from feat/smb3 branch) — 3.0/3.0.2/3.1.1, encryption, leases, Kerberos, durable handles
+- v3.8 Phase 44 added: SMB3 Conformance Testing (Microsoft WPTS + smbtorture + Go integration)
+- v4.0 phases renumbered from 26-32.5 to 45-51.5 (after benchmark, SMB3, and conformance testing)
 - Test suites chosen: smbtorture (GPL) + Microsoft WindowsProtocolTestSuites (MIT)
 - [26-01] Combined Task 1+2 into atomic commit (types and consumers must rename together)
 - [26-01] Kept AccessMode as int enum for backward compat (bitmask conversion deferred)
