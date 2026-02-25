@@ -5,13 +5,13 @@
 See: .planning/PROJECT.md (updated 2026-02-25)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking, Kerberos authentication, and session reliability
-**Current focus:** Planning next milestone
+**Current focus:** v3.5 Adapter + Core Refactoring
 
 ## Current Position
 
-Phase: Between milestones (v3.0 shipped, v4.0 planned)
-Status: Milestone v3.0 complete
-Last activity: 2026-02-25 -- Completed v3.0 milestone archival
+Phase: Starting milestone v3.5 (Phase 26 next)
+Status: Milestone planning complete, ready for /gsd:discuss-phase
+Last activity: 2026-02-25 -- Planned v3.5 and v3.6 milestones
 
 ## Completed Milestones
 
@@ -38,7 +38,10 @@ Last activity: 2026-02-25 -- Completed v3.0 milestone archival
 
 ### Decisions
 
-Decisions are logged in PROJECT.md Key Decisions table.
+- v3.5 milestone inserted before v4.0: refactor adapter layer and core before adding NFSv4.2 features
+- v3.6 milestone inserted: Windows compatibility (bugs #180/#181/#182 + ACL support + test suite validation)
+- v4.0 phases renumbered from 26-32.5 to 33-39.5
+- Test suites chosen: smbtorture (GPL) + Microsoft WindowsProtocolTestSuites (MIT)
 
 ### Pending Todos
 
@@ -51,5 +54,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-25
-Stopped at: Completed v3.0 milestone archival
-Resume file: Ready for next milestone
+Stopped at: Completed milestone planning for v3.5 and v3.6
+Resume file: Ready for /gsd:discuss-phase on Phase 26

@@ -2,14 +2,16 @@
 
 ## Overview
 
-DittoFS evolves from NFSv3 to full NFSv4.2 support across four milestones. v1.0 builds the unified locking foundation (NLM + SMB leases), v2.0 adds NFSv4.0 stateful operations with Kerberos authentication, v3.0 introduces NFSv4.1 sessions for reliability and NAT-friendliness, and v4.0 completes the protocol suite with NFSv4.2 advanced features (server-side copy, sparse files, extended attributes). Each milestone delivers complete, testable functionality.
+DittoFS evolves from NFSv3 to full NFSv4.2 support across six milestones. v1.0 builds the unified locking foundation (NLM + SMB leases), v2.0 adds NFSv4.0 stateful operations with Kerberos authentication, v3.0 introduces NFSv4.1 sessions for reliability and NAT-friendliness, v3.5 refactors the adapter layer and core for clean protocol separation, v3.6 achieves Windows SMB compatibility with proper ACL support, and v4.0 completes the protocol suite with NFSv4.2 advanced features. Each milestone delivers complete, testable functionality.
 
 ## Milestones
 
 - [x] **v1.0 NLM + Unified Lock Manager** - Phases 1-5.5 (shipped 2026-02-07) — [archive](milestones/v1.0-ROADMAP.md)
 - [x] **v2.0 NFSv4.0 + Kerberos** - Phases 6-15.5 (shipped 2026-02-20) — [archive](milestones/v2.0-ROADMAP.md)
 - [x] **v3.0 NFSv4.1 Sessions** - Phases 16-25.5 (shipped 2026-02-25) — [archive](milestones/v3.0-ROADMAP.md)
-- [ ] **v4.0 NFSv4.2 Extensions** - Phases 26-32.5 (planned)
+- [ ] **v3.5 Adapter + Core Refactoring** - Phases 26-29.5 (planned)
+- [ ] **v3.6 Windows Compatibility** - Phases 30-32.5 (planned)
+- [ ] **v4.0 NFSv4.2 Extensions** - Phases 33-39.5 (planned)
 
 **USER CHECKPOINT** phases require your manual testing before proceeding. Use `/gsd:verify-work` to validate.
 
@@ -70,27 +72,167 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 </details>
 
+### v3.5 Adapter + Core Refactoring
+
+- [ ] **Phase 26: Generic Lock Interface & Protocol Leak Purge** - Unify lock model (OpLock/AccessMode/UnifiedLock), purge NFS/SMB types from generic layers
+- [ ] **Phase 27: NFS Adapter Restructuring** - Rename internal/protocol/ to internal/adapter/, consolidate NFS ecosystem, split v4/v4.1
+- [ ] **Phase 28: SMB Adapter Restructuring** - Extract BaseAdapter, move framing/signing/dispatch to internal/, Authenticator interface
+- [ ] **Phase 29: Core Layer Decomposition** - Store interface split, Runtime decomposition, Offloader rename/split, error unification
+- [ ] **Phase 29.5: Manual Verification - Refactoring** USER CHECKPOINT - Verify NFS + SMB functionality preserved
+
+### v3.6 Windows Compatibility
+
+- [ ] **Phase 30: SMB Bug Fixes** - Fix sparse file READ (#180), renamed directory listing (#181)
+- [ ] **Phase 31: Windows ACL Support** - NT Security Descriptors, Unix-to-SID mapping, icacls support (#182)
+- [ ] **Phase 32: Windows Integration Testing** - smbtorture + Microsoft Protocol Test Suite + manual Windows 11 validation
+- [ ] **Phase 32.5: Manual Verification - Windows** USER CHECKPOINT - Full Windows validation
+
 ### v4.0 NFSv4.2 Extensions
 
-- [ ] **Phase 26: Server-Side Copy** - Async COPY with OFFLOAD_STATUS polling
-- [ ] **Phase 27: Clone/Reflinks** - Copy-on-write via content-addressed storage
-- [ ] **Phase 28: Sparse Files** - SEEK, ALLOCATE, DEALLOCATE operations
-- [ ] **Phase 28.5: Manual Verification - Advanced Ops** USER CHECKPOINT - Test copy/clone/sparse
-- [ ] **Phase 29: Extended Attributes** - xattrs in metadata layer, exposed via NFS/SMB
-- [ ] **Phase 30: NFSv4.2 Operations** - IO_ADVISE and optional pNFS operations
-- [ ] **Phase 31: Documentation** - Complete documentation for all new features
-- [ ] **Phase 32: v4.0 Testing** - Final testing and pjdfstest POSIX compliance
-- [ ] **Phase 32.5: Final Manual Verification** USER CHECKPOINT - Complete validation of all features
+- [ ] **Phase 33: Server-Side Copy** - Async COPY with OFFLOAD_STATUS polling
+- [ ] **Phase 34: Clone/Reflinks** - Copy-on-write via content-addressed storage
+- [ ] **Phase 35: Sparse Files** - SEEK, ALLOCATE, DEALLOCATE operations
+- [ ] **Phase 35.5: Manual Verification - Advanced Ops** USER CHECKPOINT - Test copy/clone/sparse
+- [ ] **Phase 36: Extended Attributes** - xattrs in metadata layer, exposed via NFS/SMB
+- [ ] **Phase 37: NFSv4.2 Operations** - IO_ADVISE and optional pNFS operations
+- [ ] **Phase 38: Documentation** - Complete documentation for all new features
+- [ ] **Phase 39: v4.0 Testing** - Final testing and pjdfstest POSIX compliance
+- [ ] **Phase 39.5: Final Manual Verification** USER CHECKPOINT - Complete validation of all features
 
 ## Phase Details
 
 ---
 
+## v3.5 Adapter + Core Refactoring
+
+### Phase 26: Generic Lock Interface & Protocol Leak Purge
+**Goal**: Unify lock types across NFS/SMB and purge protocol-specific code from generic layers
+**Depends on**: Phase 25 (v3.0 complete)
+**Requirements**: REF-01, REF-02
+**Reference**: `docs/GENERIC_LOCK_INTERFACE_PLAN.md`, `docs/CORE_REFACTORING_PLAN.md` Phase 1
+**Success Criteria** (what must be TRUE):
+  1. `EnhancedLock` renamed to `UnifiedLock` with `OpLock` (was `LeaseInfo`) and `AccessMode` (was `ShareReservation`)
+  2. All SMB lock types (ShareReservation, LeaseInfo, lease_break) removed from `pkg/metadata/lock/`
+  3. SMB lease methods removed from MetadataService (CheckAndBreakLeases*, ReclaimLeaseSMB, OplockChecker)
+  4. NLM methods moved from MetadataService to NFS adapter layer
+  5. GracePeriodManager stays generic in `pkg/metadata/lock/` (used by NLM, NFSv4, SMB reconnect)
+  6. Share model cleaned: NFS/SMB-specific fields moved to JSON config blob
+  7. SquashMode, Netgroup, IdentityMapping removed from generic store/runtime interfaces
+  8. NFS-specific API handlers, runtime fields, and `pkg/identity/` moved to NFS adapter
+  9. All existing tests pass with renamed types
+  10. Centralized conflict detection handles all cases (oplock vs oplock, oplock vs byte-range, byte-range vs byte-range, access mode)
+**Plans**: TBD
+
+### Phase 27: NFS Adapter Restructuring
+**Goal**: Restructure NFS adapter for clean directory layout and dispatch consolidation
+**Depends on**: Phase 26
+**Requirements**: REF-03
+**Reference**: `docs/NFS_REFACTORING_PLAN.md` Steps 1-9
+**Success Criteria** (what must be TRUE):
+  1. `internal/protocol/` renamed to `internal/adapter/`
+  2. Generic XDR, NLM, NSM, portmapper consolidated under `internal/adapter/nfs/`
+  3. `internal/auth/` (ntlm+spnego) moved to `internal/adapter/smb/auth/`
+  4. `pkg/adapter/nfs/` files renamed (remove `nfs_` prefix)
+  5. v4/v4.1 split into nested hierarchy (`v4/v4_1/`)
+  6. Dispatch consolidated: single `nfs.Dispatch()` entry point in `internal/adapter/nfs/`
+  7. Connection code split by version concern (connection.go + connection_v4.go)
+  8. Shared handler helpers extracted to `internal/adapter/nfs/helpers.go`
+  9. Handler documentation added (3-5 lines each)
+  10. Version negotiation tests added (v2 reject, v5 reject, minor=2 reject, unknown program)
+**Plans**: TBD
+
+### Phase 28: SMB Adapter Restructuring
+**Goal**: Restructure SMB adapter to mirror NFS pattern, extract shared BaseAdapter
+**Depends on**: Phase 27
+**Requirements**: REF-04
+**Reference**: `docs/SMB_REFACTORING_PLAN.md` Steps 4-11
+**Success Criteria** (what must be TRUE):
+  1. `pkg/adapter/smb/` files renamed (remove `smb_` prefix)
+  2. `BaseAdapter` extracted to `pkg/adapter/base.go` (shared NFS+SMB lifecycle)
+  3. NetBIOS framing moved to `internal/adapter/smb/framing.go`
+  4. Signing verification moved to `internal/adapter/smb/signing.go`
+  5. Dispatch + response logic consolidated in `internal/adapter/smb/dispatch.go`
+  6. Compound request handling in `internal/adapter/smb/compound.go`
+  7. `Authenticator` interface defined, NTLM + Kerberos implementations extracted
+  8. Shared handler helpers extracted to `internal/adapter/smb/helpers.go`
+  9. `pkg/adapter/smb/connection.go` reduced to ~150 lines (thin read/dispatch/write loop)
+  10. Handler documentation added (3-5 lines each)
+**Plans**: TBD
+
+### Phase 29: Core Layer Decomposition
+**Goal**: Decompose god objects, unify errors, reduce boilerplate
+**Depends on**: Phase 26
+**Requirements**: REF-05, REF-06
+**Reference**: `docs/CORE_REFACTORING_PLAN.md` Phases 2-9
+**Success Criteria** (what must be TRUE):
+  1. ControlPlane Store interface decomposed into 9 sub-interfaces (UserStore, GroupStore, etc.)
+  2. API handlers accept narrowest interface needed
+  3. Runtime split: AdapterManager and MetadataStoreManager extracted (~500 lines remaining)
+  4. TransferManager renamed to Offloader, package moved to `pkg/payload/offloader/`
+  5. Offloader split into upload.go, download.go, dedup.go (~400 lines in main file)
+  6. Structured PayloadError type with errors.Is() compatibility
+  7. Generic GORM helpers reduce CRUD boilerplate
+  8. API error mapping centralized
+  9. `pkg/metadata/file.go` (1217 lines) split into file_create.go, file_modify.go, file_remove.go, file_helpers.go
+  10. `pkg/metadata/authentication.go` (796 lines) split into identity.go, permissions.go
+**Plans**: TBD
+
+---
+
+## v3.6 Windows Compatibility
+
+### Phase 30: SMB Bug Fixes
+**Goal**: Fix known SMB bugs found during Windows testing
+**Depends on**: Phase 29 (refactoring complete)
+**Requirements**: WIN-01
+**Reference**: GitHub issues #180, #181
+**Success Criteria** (what must be TRUE):
+  1. Sparse file READ returns zeros for unwritten blocks instead of "block not found" error (#180)
+  2. TransferManager/Offloader downloadBlock() handles ErrBlockNotFound as sparse region
+  3. Renamed directories show as `<DIR>` in parent listing (#181)
+  4. Move operation updates file Path field in metadata
+  5. E2E tests cover both bug scenarios
+**Plans**: TBD
+
+### Phase 31: Windows ACL Support
+**Goal**: Implement NT Security Descriptors for proper Windows ACL display and control
+**Depends on**: Phase 30
+**Requirements**: WIN-02
+**Reference**: GitHub issue #182, MS-DTYP, MS-SMB2 Section 2.2.39
+**Success Criteria** (what must be TRUE):
+  1. QUERY_INFO SecurityInformation returns proper NT Security Descriptor (Owner SID, Group SID, DACL)
+  2. Unix UID/GID mapped to Windows SIDs (well-known SIDs for common accounts, S-1-22-x-y for Unix)
+  3. Unix file permissions (rwx) translated to Windows ACE entries in DACL
+  4. `icacls` on mounted share shows meaningful permissions (not Everyone:(F))
+  5. SET_INFO SecurityInformation accepts permission changes (best-effort mapping back to Unix)
+  6. Directory inheritance flags set correctly (CONTAINER_INHERIT_ACE, OBJECT_INHERIT_ACE)
+  7. SMB and NFSv4 ACLs remain interoperable through shared metadata model
+**Plans**: TBD
+
+### Phase 32: Windows Integration Testing
+**Goal**: Comprehensive Windows compatibility validation using automated test suites and manual testing
+**Depends on**: Phase 31
+**Requirements**: WIN-03
+**Reference**: Microsoft WindowsProtocolTestSuites (MIT), Samba smbtorture (GPL)
+**Success Criteria** (what must be TRUE):
+  1. Samba smbtorture SMB2 basic tests pass (smb2.connect, smb2.read, smb2.write, smb2.lock, smb2.oplock, smb2.lease)
+  2. Samba smbtorture SMB2 ACL tests pass (smb2.acls, smb2.dir)
+  3. Microsoft WindowsProtocolTestSuites File Server BVT suite passes (101 core tests)
+  4. Microsoft WindowsProtocolTestSuites selected feature tests pass (lease, oplock, lock, signing, encryption categories)
+  5. Windows 11 manual validation: Explorer file operations (create, rename, delete, copy, move, drag-and-drop)
+  6. Windows 11 manual validation: cmd.exe operations (dir, type, copy, move, ren, del, mkdir, rmdir, icacls, fsutil)
+  7. Windows 11 manual validation: PowerShell operations (Get-Item, Set-Item, Get-Acl, Set-Acl)
+  8. All issues #180, #181, #182 verified fixed on Windows
+  9. No regressions on Linux/macOS NFS or SMB mounts
+**Plans**: TBD
+
+---
+
 ## v4.0 NFSv4.2 Extensions
 
-### Phase 26: Server-Side Copy
+### Phase 33: Server-Side Copy
 **Goal**: Implement async server-side COPY operation
-**Depends on**: Phase 25 (v3.0 complete)
+**Depends on**: Phase 32 (v3.6 complete)
 **Requirements**: V42-01
 **Success Criteria** (what must be TRUE):
   1. COPY operation copies data without client I/O
@@ -100,9 +242,9 @@ Decimal phases appear between their surrounding integers in numeric order.
   5. Large file copy completes efficiently via block store
 **Plans**: TBD
 
-### Phase 27: Clone/Reflinks
+### Phase 34: Clone/Reflinks
 **Goal**: Implement CLONE operation leveraging content-addressed storage
-**Depends on**: Phase 26
+**Depends on**: Phase 33
 **Requirements**: V42-02
 **Success Criteria** (what must be TRUE):
   1. CLONE creates copy-on-write file instantly
@@ -110,9 +252,9 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Modification triggers copy of affected blocks only
 **Plans**: TBD
 
-### Phase 28: Sparse Files
+### Phase 35: Sparse Files
 **Goal**: Implement sparse file operations (SEEK, ALLOCATE, DEALLOCATE)
-**Depends on**: Phase 26
+**Depends on**: Phase 33
 **Requirements**: V42-03
 **Success Criteria** (what must be TRUE):
   1. SEEK locates DATA or HOLE regions in file
@@ -121,9 +263,9 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Sparse file metadata correctly tracks allocated regions
 **Plans**: TBD
 
-### Phase 29: Extended Attributes
+### Phase 36: Extended Attributes
 **Goal**: Implement xattr storage and NFSv4.2/SMB exposure
-**Depends on**: Phase 26
+**Depends on**: Phase 33
 **Requirements**: V42-04
 **Success Criteria** (what must be TRUE):
   1. GETXATTR retrieves extended attribute value
@@ -133,18 +275,18 @@ Decimal phases appear between their surrounding integers in numeric order.
   5. Xattrs accessible via both NFSv4.2 and SMB
 **Plans**: TBD
 
-### Phase 30: NFSv4.2 Operations
+### Phase 37: NFSv4.2 Operations
 **Goal**: Implement remaining NFSv4.2 operations
-**Depends on**: Phase 28
+**Depends on**: Phase 35
 **Requirements**: V42-05
 **Success Criteria** (what must be TRUE):
   1. IO_ADVISE accepts application I/O hints
   2. LAYOUTERROR and LAYOUTSTATS available if pNFS enabled
 **Plans**: TBD
 
-### Phase 31: Documentation
+### Phase 38: Documentation
 **Goal**: Complete documentation for all new features
-**Depends on**: Phase 29
+**Depends on**: Phase 36
 **Requirements**: (documentation)
 **Success Criteria** (what must be TRUE):
   1. docs/NFS.md updated with NFSv4.1 and NFSv4.2 details
@@ -152,9 +294,9 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. docs/SECURITY.md describes Kerberos security model for NFS and SMB
 **Plans**: TBD
 
-### Phase 32: v4.0 Testing
+### Phase 39: v4.0 Testing
 **Goal**: Final testing including pjdfstest POSIX compliance
-**Depends on**: Phase 26, Phase 27, Phase 28, Phase 29, Phase 30, Phase 31
+**Depends on**: Phase 33, Phase 34, Phase 35, Phase 36, Phase 37, Phase 38
 **Requirements**: V42-06
 **Success Criteria** (what must be TRUE):
   1. Server-side copy E2E tests pass for various file sizes
@@ -170,7 +312,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 32
+Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 39
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
@@ -201,13 +343,20 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 32
 | 24. Directory Delegations | v3.0 | 3/3 | Complete | 2026-02-22 |
 | 25. v3.0 Integration Testing | v3.0 | 3/3 | Complete | 2026-02-23 |
 | 25.5. Manual Verification v3.0 | v3.0 | - | Complete | 2026-02-25 |
-| 26. Server-Side Copy | v4.0 | 0/? | Not started | - |
-| 27. Clone/Reflinks | v4.0 | 0/? | Not started | - |
-| 28. Sparse Files | v4.0 | 0/? | Not started | - |
-| 29. Extended Attributes | v4.0 | 0/? | Not started | - |
-| 30. NFSv4.2 Operations | v4.0 | 0/? | Not started | - |
-| 31. Documentation | v4.0 | 0/? | Not started | - |
-| 32. v4.0 Testing | v4.0 | 0/? | Not started | - |
+| 26. Generic Lock Interface & Protocol Leak Purge | v3.5 | 0/? | Not started | - |
+| 27. NFS Adapter Restructuring | v3.5 | 0/? | Not started | - |
+| 28. SMB Adapter Restructuring | v3.5 | 0/? | Not started | - |
+| 29. Core Layer Decomposition | v3.5 | 0/? | Not started | - |
+| 30. SMB Bug Fixes | v3.6 | 0/? | Not started | - |
+| 31. Windows ACL Support | v3.6 | 0/? | Not started | - |
+| 32. Windows Integration Testing | v3.6 | 0/? | Not started | - |
+| 33. Server-Side Copy | v4.0 | 0/? | Not started | - |
+| 34. Clone/Reflinks | v4.0 | 0/? | Not started | - |
+| 35. Sparse Files | v4.0 | 0/? | Not started | - |
+| 36. Extended Attributes | v4.0 | 0/? | Not started | - |
+| 37. NFSv4.2 Operations | v4.0 | 0/? | Not started | - |
+| 38. Documentation | v4.0 | 0/? | Not started | - |
+| 39. v4.0 Testing | v4.0 | 0/? | Not started | - |
 
 **Total:** 86/? plans complete
 
