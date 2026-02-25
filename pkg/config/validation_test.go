@@ -75,32 +75,6 @@ func TestValidate_MissingCachePath(t *testing.T) {
 	}
 }
 
-func TestValidate_TelemetryEnabledWithoutEndpoint(t *testing.T) {
-	cfg := GetDefaultConfig()
-	cfg.Telemetry.Enabled = true
-	cfg.Telemetry.Endpoint = ""
-
-	err := Validate(cfg)
-	if err == nil {
-		t.Fatal("Expected validation error for telemetry enabled without endpoint")
-	}
-	if !strings.Contains(err.Error(), "telemetry") && !strings.Contains(err.Error(), "endpoint") {
-		t.Errorf("Expected error about telemetry endpoint, got: %v", err)
-	}
-}
-
-func TestValidate_TelemetrySampleRate(t *testing.T) {
-	cfg := GetDefaultConfig()
-	cfg.Telemetry.Enabled = true
-	cfg.Telemetry.Endpoint = "localhost:4317"
-	cfg.Telemetry.SampleRate = 1.5 // Out of range (should be 0.0-1.0)
-
-	err := Validate(cfg)
-	if err == nil {
-		t.Fatal("Expected validation error for sample rate out of range")
-	}
-}
-
 func TestValidate_LogLevelNormalization(t *testing.T) {
 	// Test that validation accepts both uppercase and lowercase log levels
 	testCases := []string{"info", "INFO", "debug", "DEBUG", "warn", "WARN", "error", "ERROR"}

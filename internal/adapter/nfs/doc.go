@@ -54,7 +54,6 @@
 //		WriteTimeout:    30 * time.Second,
 //		IdleTimeout:     5 * time.Minute,
 //		ShutdownTimeout: 30 * time.Second,
-//		MetricsLogInterval: 5 * time.Minute,
 //	}
 //
 //	srv := server.New(config, metadataStore, contentStore)
@@ -103,7 +102,6 @@
 // Development:
 //   - MaxConnections: 0 (unlimited)
 //   - Timeouts: 30s-60s
-//   - MetricsLogInterval: 1m
 //
 // Production (moderate load):
 //   - MaxConnections: 100-500
@@ -111,7 +109,6 @@
 //   - WriteTimeout: 30s
 //   - IdleTimeout: 5m
 //   - ShutdownTimeout: 30s
-//   - MetricsLogInterval: 5m
 //
 // Production (high load):
 //   - MaxConnections: 1000-5000
@@ -119,7 +116,6 @@
 //   - WriteTimeout: 10s
 //   - IdleTimeout: 2m
 //   - ShutdownTimeout: 60s
-//   - MetricsLogInterval: 1m
 //
 // # Error Handling Philosophy
 //

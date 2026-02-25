@@ -70,9 +70,8 @@ func TestCrossProtocolKerberosIdentity(t *testing.T) {
 	nfsPort := framework.FindFreePort(t)
 	smbPort := framework.FindFreePort(t)
 	apiPort := framework.FindFreePort(t)
-	metricsPort := framework.FindFreePort(t)
 
-	configPath := createCrossProtocolKerberosConfig(t, kdc, nfsPort, smbPort, apiPort, metricsPort)
+	configPath := createCrossProtocolKerberosConfig(t, kdc, nfsPort, smbPort, apiPort)
 
 	// Start server
 	sp := helpers.StartServerProcessWithConfig(t, configPath)
@@ -266,7 +265,7 @@ func testCrossProtocolBidirectionalVisibility(t *testing.T, kdc *framework.KDCHe
 // Helper Functions
 // =============================================================================
 
-func createCrossProtocolKerberosConfig(t *testing.T, kdc *framework.KDCHelper, nfsPort, smbPort, apiPort, metricsPort int) string {
+func createCrossProtocolKerberosConfig(t *testing.T, kdc *framework.KDCHelper, nfsPort, smbPort, apiPort int) string {
 	t.Helper()
 
 	configDir := t.TempDir()
@@ -278,10 +277,6 @@ logging:
   format: text
 
 shutdown_timeout: 30s
-
-metrics:
-  enabled: true
-  port: %d
 
 database:
   type: sqlite
@@ -321,7 +316,6 @@ adapters:
   smb:
     port: %d
 `,
-		metricsPort,
 		configDir,
 		apiPort,
 		configDir,

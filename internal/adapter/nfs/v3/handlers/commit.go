@@ -217,7 +217,7 @@ func (h *Handler) Commit(
 	// stable storage. Our WAL cache provides the durability guarantee.
 	_, flushErr := payloadSvc.Flush(ctx.Context, file.PayloadID)
 	if flushErr != nil {
-		traceError(ctx.Context, flushErr, "COMMIT failed: flush error", "handle", fmt.Sprintf("0x%x", req.Handle), "content_id", file.PayloadID, "client", clientIP)
+		logError(ctx.Context, flushErr, "COMMIT failed: flush error", "handle", fmt.Sprintf("0x%x", req.Handle), "content_id", file.PayloadID, "client", clientIP)
 
 		// Try to get updated attributes for error response
 		if updatedFile, getErr := metaSvc.GetFile(ctx.Context, handle); getErr == nil {

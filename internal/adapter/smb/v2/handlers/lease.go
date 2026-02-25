@@ -294,9 +294,6 @@ func (m *OplockManager) RequestLease(
 				"requestedState", lock.LeaseStateToString(requestedState),
 				"nlmLock", formatNLMLockInfo(conflicts[0]))
 
-			// Record cross-protocol conflict metric
-			lock.RecordCrossProtocolConflict(lock.InitiatorSMB, lock.ConflictingNFSLock, lock.ResolutionDenied)
-
 			// Return None - caller will handle STATUS_LOCK_NOT_GRANTED
 			// We return nil error because this is an expected outcome, not a failure
 			return lock.LeaseStateNone, 0, nil

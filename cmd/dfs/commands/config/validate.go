@@ -66,7 +66,6 @@ func runConfigValidate(cmd *cobra.Command, args []string) error {
 	fmt.Printf("\nConfiguration summary:\n")
 	fmt.Printf("  Database type:   %s\n", cfg.Database.Type)
 	fmt.Printf("  API port:        %d\n", cfg.ControlPlane.Port)
-	fmt.Printf("  Metrics enabled: %v\n", cfg.Metrics.Enabled)
 	fmt.Printf("  Log level:       %s\n", cfg.Logging.Level)
 
 	return nil

@@ -15,10 +15,6 @@ import (
 type Deps struct {
 	// StateManager is the central NFSv4 state coordinator.
 	StateManager *state.StateManager
-
-	// SequenceMetrics holds Prometheus metrics for SEQUENCE operation tracking.
-	// May be nil; methods are nil-safe.
-	SequenceMetrics *state.SequenceMetrics
 }
 
 // EncodeStatusOnly XDR-encodes a status-only response (just the nfsstat4).

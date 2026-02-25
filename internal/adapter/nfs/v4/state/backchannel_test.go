@@ -72,7 +72,6 @@ func createTestBackchannelSender(t *testing.T) (*BackchannelSender, *StateManage
 		0x40000000,
 		session.BackChannelSlots,
 		sm,
-		nil, // no metrics for basic test
 	)
 
 	return sender, sm, sessionID
@@ -561,17 +560,6 @@ func TestCallbackRouting_V41VsV40(t *testing.T) {
 
 	// Clean up
 	v41Sender.Stop()
-}
-
-// TestBackchannelMetrics_NilSafe verifies all metric methods can be called on nil receiver.
-func TestBackchannelMetrics_NilSafe(t *testing.T) {
-	var m *BackchannelMetrics
-
-	// None of these should panic
-	m.RecordCallback()
-	m.RecordFailure()
-	m.RecordRetry()
-	m.ObserveDuration(100 * time.Millisecond)
 }
 
 // ============================================================================

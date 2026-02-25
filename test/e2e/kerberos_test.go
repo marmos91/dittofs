@@ -4,7 +4,6 @@ package e2e
 
 import (
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -62,9 +61,8 @@ func TestKerberos(t *testing.T) {
 	// Create server config with Kerberos enabled
 	nfsPort := framework.FindFreePort(t)
 	apiPort := framework.FindFreePort(t)
-	metricsPort := framework.FindFreePort(t)
 
-	configPath := createKerberosConfig(t, kdc, nfsPort, apiPort, metricsPort)
+	configPath := createKerberosConfig(t, kdc, nfsPort, apiPort)
 
 	// Start server
 	sp := helpers.StartServerProcessWithConfig(t, configPath)
@@ -95,13 +93,13 @@ func TestKerberos(t *testing.T) {
 	// Run test matrix for both NFSv3 and NFSv4
 	for _, nfsVersion := range []int{3, 4} {
 		t.Run(fmt.Sprintf("NFSv%d", nfsVersion), func(t *testing.T) {
-			runKerberosTests(t, kdc, nfsPort, metricsPort, nfsVersion)
+			runKerberosTests(t, kdc, nfsPort, nfsVersion)
 		})
 	}
 }
 
 // runKerberosTests runs all Kerberos tests for a specific NFS version.
-func runKerberosTests(t *testing.T, kdc *framework.KDCHelper, nfsPort, metricsPort, nfsVersion int) {
+func runKerberosTests(t *testing.T, kdc *framework.KDCHelper, nfsPort, nfsVersion int) {
 	t.Run("Test1_BasicKrb5Auth", func(t *testing.T) {
 		testBasicKrb5Auth(t, kdc, nfsPort, nfsVersion)
 	})
@@ -126,12 +124,6 @@ func runKerberosTests(t *testing.T, kdc *framework.KDCHelper, nfsPort, metricsPo
 		testConcurrentUsers(t, kdc, nfsPort, nfsVersion)
 	})
 
-	// Test 9 only needs to run once (not per NFS version)
-	if nfsVersion == 3 {
-		t.Run("Test9_PrometheusMetrics", func(t *testing.T) {
-			testPrometheusMetrics(t, metricsPort)
-		})
-	}
 }
 
 // Test 1: Basic Kerberos Authentication (krb5)
@@ -299,28 +291,6 @@ func testConcurrentUsers(t *testing.T, kdc *framework.KDCHelper, nfsPort, nfsVer
 	t.Logf("NFSv%d concurrent users test passed", nfsVersion)
 }
 
-// Test 9: Prometheus Metrics
-func testPrometheusMetrics(t *testing.T, metricsPort int) {
-	// Fetch metrics endpoint
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/metrics", metricsPort))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-
-	// Read body
-	body := make([]byte, 64*1024)
-	n, _ := resp.Body.Read(body)
-	metricsContent := string(body[:n])
-
-	// Check for GSS metrics
-	assert.Contains(t, metricsContent, "dittofs_gss_context_creations_total")
-	assert.Contains(t, metricsContent, "dittofs_gss_active_contexts")
-	assert.Contains(t, metricsContent, "dittofs_gss_data_requests_total")
-
-	t.Log("Prometheus GSS metrics test passed")
-}
-
 // Helper functions
 
 func checkKerberosPrereqs(t *testing.T) {
@@ -337,7 +307,7 @@ func checkKerberosPrereqs(t *testing.T) {
 	}
 }
 
-func createKerberosConfig(t *testing.T, kdc *framework.KDCHelper, nfsPort, apiPort, metricsPort int) string {
+func createKerberosConfig(t *testing.T, kdc *framework.KDCHelper, nfsPort, apiPort int) string {
 	t.Helper()
 
 	configDir := t.TempDir()
@@ -349,10 +319,6 @@ logging:
   format: text
 
 shutdown_timeout: 30s
-
-metrics:
-  enabled: true
-  port: %d
 
 database:
   type: sqlite
@@ -394,7 +360,6 @@ adapters:
   nfs:
     port: %d
 `,
-		metricsPort,
 		configDir,
 		apiPort,
 		configDir,

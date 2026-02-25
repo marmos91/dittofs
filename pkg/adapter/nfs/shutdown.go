@@ -172,10 +172,6 @@ func (s *NFSAdapter) forceCloseConnections() {
 		} else {
 			closedCount++
 			logger.Debug("Force-closed connection", "address", addr)
-			// Record metric for each force-closed connection
-			if s.metrics != nil {
-				s.metrics.RecordConnectionForceClosed()
-			}
 		}
 
 		// Continue iteration

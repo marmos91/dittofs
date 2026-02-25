@@ -301,7 +301,7 @@ func (h *Handler) Mkdir(
 			}, ctx.Context.Err()
 		}
 
-		traceError(ctx.Context, err, "MKDIR failed: store error", "name", req.Name, "client", clientIP)
+		logError(ctx.Context, err, "MKDIR failed: store error", "name", req.Name, "client", clientIP)
 
 		// Get updated parent attributes for WCC data
 		updatedParentFile, _ := metaSvc.GetFile(ctx.Context, parentHandle)
@@ -324,7 +324,7 @@ func (h *Handler) Mkdir(
 	// Encode the file handle for the new directory
 	newHandle, err := metadata.EncodeFileHandle(newDirFile)
 	if err != nil {
-		traceError(ctx.Context, err, "MKDIR: failed to encode directory handle")
+		logError(ctx.Context, err, "MKDIR: failed to encode directory handle")
 		return &MkdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 

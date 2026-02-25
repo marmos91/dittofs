@@ -246,7 +246,7 @@ func (h *Handler) ReadDirPlus(
 			}, nil
 		}
 
-		traceError(ctx.Context, err, "READDIRPLUS failed: failed to build auth context", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
+		logError(ctx.Context, err, "READDIRPLUS failed: failed to build auth context", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
 		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
@@ -278,7 +278,7 @@ func (h *Handler) ReadDirPlus(
 	// Cookie is now properly handled by MetadataService's cookie manager
 	page, err := metaSvc.ReadDirectory(authCtx, dirHandle, req.Cookie, req.DirCount)
 	if err != nil {
-		traceError(ctx.Context, err, "READDIRPLUS failed: error retrieving entries", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
+		logError(ctx.Context, err, "READDIRPLUS failed: error retrieving entries", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
 		// Map store error to NFS status
 		status := mapMetadataErrorToNFS(err)

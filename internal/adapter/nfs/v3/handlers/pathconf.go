@@ -163,7 +163,7 @@ func (h *Handler) PathConf(
 
 	caps, err := metaSvc.GetFilesystemCapabilities(ctx.Context, fileHandle)
 	if err != nil {
-		traceError(ctx.Context, err, "PATHCONF failed: could not get filesystem capabilities", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
+		logError(ctx.Context, err, "PATHCONF failed: could not get filesystem capabilities", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 

@@ -174,9 +174,8 @@ func TestNFSv4KerberosExtended(t *testing.T) {
 	// Create server config with Kerberos enabled
 	nfsPort := framework.FindFreePort(t)
 	apiPort := framework.FindFreePort(t)
-	metricsPort := framework.FindFreePort(t)
 
-	configPath := createKerberosV4Config(t, kdc, nfsPort, apiPort, metricsPort)
+	configPath := createKerberosV4Config(t, kdc, nfsPort, apiPort)
 
 	// Start server
 	sp := helpers.StartServerProcessWithConfig(t, configPath)
@@ -402,7 +401,7 @@ func checkKerberosV4Prereqs(t *testing.T) {
 }
 
 // createKerberosV4Config creates a server config with Kerberos enabled for v4.0 tests.
-func createKerberosV4Config(t *testing.T, kdc *framework.KDCHelper, nfsPort, apiPort, metricsPort int) string {
+func createKerberosV4Config(t *testing.T, kdc *framework.KDCHelper, nfsPort, apiPort int) string {
 	t.Helper()
 
 	configDir := t.TempDir()
@@ -414,10 +413,6 @@ logging:
   format: text
 
 shutdown_timeout: 30s
-
-metrics:
-  enabled: true
-  port: %d
 
 database:
   type: sqlite
@@ -459,7 +454,6 @@ adapters:
   nfs:
     port: %d
 `,
-		metricsPort,
 		configDir,
 		apiPort,
 		configDir,

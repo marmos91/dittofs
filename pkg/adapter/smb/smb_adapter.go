@@ -274,11 +274,6 @@ func (s *SMBAdapter) Serve(ctx context.Context) error {
 		s.initiateShutdown()
 	}()
 
-	// Start metrics logging if enabled
-	if s.config.MetricsLogInterval > 0 {
-		go s.logMetrics(ctx)
-	}
-
 	// Accept connections until shutdown
 	for {
 		// Acquire connection semaphore if connection limiting is enabled
@@ -515,22 +510,6 @@ func (s *SMBAdapter) Stop(ctx context.Context) error {
 		remaining := s.connCount.Load()
 		logger.Warn("SMB shutdown context cancelled", "active", remaining, "error", ctx.Err())
 		return ctx.Err()
-	}
-}
-
-// logMetrics periodically logs server metrics for monitoring.
-func (s *SMBAdapter) logMetrics(ctx context.Context) {
-	ticker := time.NewTicker(s.config.MetricsLogInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			activeConns := s.connCount.Load()
-			logger.Info("SMB metrics", "active_connections", activeConns)
-		}
 	}
 }
 

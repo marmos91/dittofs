@@ -147,10 +147,6 @@ type BackchannelSender struct {
 	nextXID atomic.Uint32
 
 	callbackTimeout time.Duration
-
-	// metrics tracks backchannel callback Prometheus metrics.
-	// May be nil; BackchannelMetrics methods are nil-safe.
-	metrics *BackchannelMetrics
 }
 
 // NewBackchannelSender creates a new BackchannelSender for the given session.
@@ -160,7 +156,6 @@ func NewBackchannelSender(
 	cbProgram uint32,
 	slotTable *SlotTable,
 	sm *StateManager,
-	metrics *BackchannelMetrics,
 ) *BackchannelSender {
 	return &BackchannelSender{
 		sessionID:       sessionID,
@@ -171,7 +166,6 @@ func NewBackchannelSender(
 		slotTable:       slotTable,
 		stopCh:          make(chan struct{}),
 		callbackTimeout: defaultBackchannelTimeout,
-		metrics:         metrics,
 	}
 }
 
@@ -225,8 +219,6 @@ func (bs *BackchannelSender) sendCallbackWithRetry(ctx context.Context, req Call
 
 	for attempt := 0; attempt < backchannelMaxRetries; attempt++ {
 		if attempt > 0 {
-			bs.metrics.RecordRetry()
-
 			delay := backchannelRetryDelays[attempt-1]
 			logger.Debug("BackchannelSender retrying after delay",
 				"session_id", bs.sessionID.String(),
@@ -235,13 +227,11 @@ func (bs *BackchannelSender) sendCallbackWithRetry(ctx context.Context, req Call
 
 			select {
 			case <-ctx.Done():
-				bs.metrics.RecordFailure()
 				if req.ResultCh != nil {
 					req.ResultCh <- ctx.Err()
 				}
 				return
 			case <-bs.stopCh:
-				bs.metrics.RecordFailure()
 				if req.ResultCh != nil {
 					req.ResultCh <- fmt.Errorf("backchannel sender stopped")
 				}
@@ -250,13 +240,7 @@ func (bs *BackchannelSender) sendCallbackWithRetry(ctx context.Context, req Call
 			}
 		}
 
-		bs.metrics.RecordCallback()
-		start := time.Now()
-
 		err := bs.sendCallback(ctx, req)
-
-		bs.metrics.ObserveDuration(time.Since(start))
-
 		if err == nil {
 			if req.ResultCh != nil {
 				req.ResultCh <- nil
@@ -271,7 +255,6 @@ func (bs *BackchannelSender) sendCallbackWithRetry(ctx context.Context, req Call
 	}
 
 	// All retries exhausted
-	bs.metrics.RecordFailure()
 	if req.ResultCh != nil {
 		req.ResultCh <- fmt.Errorf("backchannel callback failed after %d attempts: %w",
 			backchannelMaxRetries, lastErr)

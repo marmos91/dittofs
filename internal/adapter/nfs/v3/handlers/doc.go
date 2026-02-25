@@ -9,7 +9,6 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metrics"
 )
 
 // Handler is the concrete implementation for NFS v3 protocol handlers.
@@ -19,10 +18,6 @@ type Handler struct {
 	// Registry provides access to all stores and shares
 	// Exported to allow injection by the NFS adapter
 	Registry *runtime.Runtime
-
-	// Metrics collects observability data for NFS operations
-	// Optional - may be nil to disable metrics with zero overhead
-	Metrics metrics.NFSMetrics
 
 	// authCache caches auth contexts per (share, UID, GID) to avoid
 	// repeated registry lookups on every WRITE request.
@@ -151,7 +146,7 @@ func (h *Handler) buildAuthContextWithWCCError(
 			return nil, wccAfter, ctx.Context.Err()
 		}
 
-		traceError(ctx.Context, err, operation+" failed: failed to build auth context", "name", filename, "handle", fmt.Sprintf("%x", dirHandleBytes), "client", clientIP)
+		logError(ctx.Context, err, operation+" failed: failed to build auth context", "name", filename, "handle", fmt.Sprintf("%x", dirHandleBytes), "client", clientIP)
 
 		wccAfter := h.convertFileAttrToNFS(handle, fileAttr)
 		return nil, wccAfter, nil

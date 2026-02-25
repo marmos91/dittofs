@@ -149,44 +149,6 @@ var DefaultConnectionTrackerConfig = lock.DefaultConnectionTrackerConfig
 type ClientRegistration = lock.ClientRegistration
 
 // ============================================================================
-// Metrics Types
-// ============================================================================
-
-// LockMetrics is re-exported from the lock package as Metrics.
-// Deprecated: Import Metrics from github.com/marmos91/dittofs/pkg/metadata/lock directly.
-type LockMetrics = lock.Metrics
-
-// NewLockMetrics creates new lock metrics.
-// Deprecated: Use lock.NewMetrics() directly.
-var NewLockMetrics = lock.NewMetrics
-
-// Metrics label constants re-exported for backward compatibility.
-const (
-	LabelShare     = lock.LabelShare
-	LabelType      = lock.LabelType
-	LabelStatus    = lock.LabelStatus
-	LabelReason    = lock.LabelReason
-	LabelAdapter   = lock.LabelAdapter
-	LabelEvent     = lock.LabelEvent
-	LabelLimitType = lock.LabelLimitType
-)
-
-// Status constants re-exported for backward compatibility.
-const (
-	StatusGranted  = lock.StatusGranted
-	StatusDenied   = lock.StatusDenied
-	StatusDeadlock = lock.StatusDeadlock
-)
-
-// Reason constants re-exported for backward compatibility.
-const (
-	ReasonExplicit     = lock.ReasonExplicit
-	ReasonTimeout      = lock.ReasonTimeout
-	ReasonDisconnect   = lock.ReasonDisconnect
-	ReasonGraceExpired = lock.ReasonGraceExpired
-)
-
-// ============================================================================
 // Deadlock Detection Types
 // ============================================================================
 

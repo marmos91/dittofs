@@ -160,13 +160,13 @@ func (h *Handler) FsInfo(
 	// a fast in-memory operation returning static configuration
 	capabilities, err := metaSvc.GetFilesystemCapabilities(ctx.Context, metadata.FileHandle(req.Handle))
 	if err != nil {
-		traceError(ctx.Context, err, "FSINFO failed to retrieve capabilities", "handle", fmt.Sprintf("0x%x", req.Handle), "client", ctx.ClientAddr)
+		logError(ctx.Context, err, "FSINFO failed to retrieve capabilities", "handle", fmt.Sprintf("0x%x", req.Handle), "client", ctx.ClientAddr)
 		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// Defensive check: ensure store returned valid capabilities
 	if capabilities == nil {
-		traceError(ctx.Context, fmt.Errorf("store returned nil capabilities"), "FSINFO failed: store returned nil capabilities", "handle", fmt.Sprintf("0x%x", req.Handle), "client", ctx.ClientAddr)
+		logError(ctx.Context, fmt.Errorf("store returned nil capabilities"), "FSINFO failed: store returned nil capabilities", "handle", fmt.Sprintf("0x%x", req.Handle), "client", ctx.ClientAddr)
 		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 

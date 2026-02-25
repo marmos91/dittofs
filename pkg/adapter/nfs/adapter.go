@@ -20,13 +20,11 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	v4state "github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
-	"github.com/marmos91/dittofs/pkg/metrics"
 )
 
 // NFSAdapter implements the adapter.Adapter interface for NFS protocol.
@@ -88,9 +86,6 @@ type NFSAdapter struct {
 	// nsmNotifier orchestrates SM_NOTIFY callbacks on server restart
 	nsmNotifier *nsm.Notifier
 
-	// nsmMetrics provides NSM-specific Prometheus metrics
-	nsmMetrics *nsm.Metrics
-
 	// gssProcessor handles RPCSEC_GSS context lifecycle (INIT/DATA/DESTROY).
 	// nil when Kerberos is not enabled.
 	gssProcessor *gss.GSSProcessor
@@ -120,10 +115,6 @@ type NFSAdapter struct {
 
 	// registry provides access to all stores and shares
 	registry *runtime.Runtime
-
-	// metrics provides optional Prometheus metrics collection
-	// If nil, no metrics are collected (zero overhead)
-	metrics metrics.NFSMetrics
 
 	// activeConns tracks all currently active connections for graceful shutdown
 	// Each connection calls Add(1) when starting and Done() when complete
@@ -213,7 +204,6 @@ type NFSTimeoutsConfig struct {
 //   - Timeouts.Write: 30s
 //   - Timeouts.Idle: 5m
 //   - Timeouts.Shutdown: 30s
-//   - MetricsLogInterval: 5m (0 disables)
 //
 // Production recommendations:
 //   - MaxConnections: Set based on expected load (e.g., 1000 for busy servers)
@@ -246,12 +236,6 @@ type NFSConfig struct {
 
 	// Timeouts groups all timeout-related configuration
 	Timeouts NFSTimeoutsConfig `mapstructure:"timeouts"`
-
-	// MetricsLogInterval is the interval at which to log server metrics
-	// (active connections, requests/sec, etc.).
-	// 0 disables periodic metrics logging.
-	// Recommended: 5m for production monitoring.
-	MetricsLogInterval time.Duration `mapstructure:"metrics_log_interval" validate:"min=0"`
 
 	// Portmapper configures the embedded portmapper (RFC 1057).
 	// The portmapper allows NFS clients to discover DittoFS services
@@ -304,9 +288,6 @@ func (c *NFSConfig) applyDefaults() {
 	if c.Timeouts.Shutdown == 0 {
 		c.Timeouts.Shutdown = 30 * time.Second
 	}
-	if c.MetricsLogInterval == 0 {
-		c.MetricsLogInterval = 5 * time.Minute
-	}
 	// Portmapper port defaults to 10111 (unprivileged port).
 	// Note: Portmapper.Enabled is NOT set here -- it uses a *bool pointer where
 	// nil means "default to true" and explicit false means "disabled".
@@ -350,14 +331,13 @@ func (c *NFSConfig) validate() error {
 //
 // Parameters:
 //   - config: Server configuration (ports, timeouts, limits)
-//   - nfsMetrics: Optional metrics collector (nil for no metrics)
 //
 // Returns a configured but not yet started NFSAdapter.
 //
 // Panics if config validation fails.
 func New(
 	nfsConfig NFSConfig,
-	nfsMetrics metrics.NFSMetrics,
+	_ any, // unused, kept for API compatibility
 ) *NFSAdapter {
 	// Apply defaults for zero values
 	nfsConfig.applyDefaults()
@@ -379,13 +359,10 @@ func New(
 	// Create shutdown context for request cancellation
 	shutdownCtx, cancelRequests := context.WithCancel(context.Background())
 
-	// nfsMetrics can be nil for zero-overhead disabled metrics
-
 	return &NFSAdapter{
 		config:         nfsConfig,
-		nfsHandler:     &v3.Handler{Metrics: nfsMetrics},
+		nfsHandler:     &v3.Handler{},
 		mountHandler:   &mount.Handler{},
-		metrics:        nfsMetrics,
 		shutdown:       make(chan struct{}),
 		connSemaphore:  connSemaphore,
 		shutdownCtx:    shutdownCtx,
@@ -538,7 +515,6 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 
 	// Start NFSv4.1 session reaper for expired/unconfirmed client cleanup
 	if s.v4Handler != nil && s.v4Handler.StateManager != nil {
-		s.v4Handler.StateManager.SetSessionMetrics(v4state.NewSessionMetrics(prometheus.DefaultRegisterer))
 		s.v4Handler.StateManager.StartSessionReaper(ctx)
 	}
 
@@ -549,11 +525,6 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 		logger.Info("NFS shutdown signal received", "error", ctx.Err())
 		s.initiateShutdown()
 	}()
-
-	// Start metrics logging if enabled
-	if s.config.MetricsLogInterval > 0 {
-		go s.logMetrics(ctx)
-	}
 
 	// Accept connections until shutdown
 	// Note: We don't check s.shutdown at the top of the loop because:
@@ -632,15 +603,8 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 		connAddr := tcpConn.RemoteAddr().String()
 		s.activeConnections.Store(connAddr, tcpConn)
 
-		// Record metrics for connection accepted
-		currentConns := s.connCount.Load()
-		if s.metrics != nil {
-			s.metrics.RecordConnectionAccepted()
-			s.metrics.SetActiveConnections(currentConns)
-		}
-
 		// Log new connection (debug level to avoid log spam under load)
-		logger.Debug("NFS connection accepted", "address", tcpConn.RemoteAddr(), "active", currentConns)
+		logger.Debug("NFS connection accepted", "address", tcpConn.RemoteAddr(), "active", s.connCount.Load())
 
 		// Assign unique connection ID at accept() time
 		connID := s.nextConnID.Add(1)
@@ -666,13 +630,6 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 					<-s.connSemaphore
 				}
 
-				// Record metrics for connection closed
-				if s.metrics != nil {
-					s.metrics.RecordConnectionClosed()
-					currentConns := s.connCount.Load()
-					s.metrics.SetActiveConnections(currentConns)
-				}
-
 				logger.Debug("NFS connection closed", "address", tcp.RemoteAddr(), "active", s.connCount.Load())
 			}()
 
@@ -680,27 +637,6 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 			// Pass shutdownCtx so requests can detect shutdown and abort
 			conn.Serve(s.shutdownCtx)
 		}(connAddr, tcpConn, connID)
-	}
-}
-
-// logMetrics periodically logs server metrics for monitoring.
-//
-// This goroutine logs active connection count at regular intervals
-// (MetricsLogInterval) to help operators monitor server load.
-//
-// The goroutine exits when the context is cancelled.
-func (s *NFSAdapter) logMetrics(ctx context.Context) {
-	ticker := time.NewTicker(s.config.MetricsLogInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			activeConns := s.connCount.Load()
-			logger.Info("NFS metrics", "active_connections", activeConns)
-		}
 	}
 }
 

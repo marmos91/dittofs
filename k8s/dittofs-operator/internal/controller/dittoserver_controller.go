@@ -56,8 +56,6 @@ const (
 	retryBackoffBase = 100 * time.Millisecond
 	// defaultAPIPort is the default control plane API port
 	defaultAPIPort = 8080
-	// defaultMetricsPort is the default Prometheus metrics port
-	defaultMetricsPort = 9090
 	// defaultFSGroup is the default fsGroup for pod security context (nonroot user)
 	defaultFSGroup = 65532
 )
@@ -176,13 +174,6 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "ReconcileFailed",
 			"Failed to reconcile API Service: %v", err)
 		logger.Error(err, "Failed to reconcile API Service")
-		return ctrl.Result{}, err
-	}
-
-	if err := r.reconcileMetricsService(ctx, dittoServer); err != nil {
-		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "ReconcileFailed",
-			"Failed to reconcile metrics Service: %v", err)
-		logger.Error(err, "Failed to reconcile metrics Service")
 		return ctrl.Result{}, err
 	}
 
@@ -741,14 +732,6 @@ func getAPIPort(dittoServer *dittoiov1alpha1.DittoServer) int32 {
 	return defaultAPIPort
 }
 
-// getMetricsPort returns the metrics port.
-func getMetricsPort(dittoServer *dittoiov1alpha1.DittoServer) int32 {
-	if dittoServer.Spec.Metrics != nil && dittoServer.Spec.Metrics.Port > 0 {
-		return dittoServer.Spec.Metrics.Port
-	}
-	return defaultMetricsPort
-}
-
 // createOrUpdateService is a helper that creates or updates a Service with retry logic.
 // It handles owner reference setting and merges service specs to preserve cloud controller fields.
 func (r *DittoServerReconciler) createOrUpdateService(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer, svc *corev1.Service) error {
@@ -799,37 +782,6 @@ func (r *DittoServerReconciler) reconcileAPIService(ctx context.Context, dittoSe
 		WithType(getServiceType(dittoServer)).
 		WithAnnotations(dittoServer.Spec.Service.Annotations).
 		AddTCPPort("api", apiPort).
-		Build()
-
-	return r.createOrUpdateService(ctx, dittoServer, svc)
-}
-
-// reconcileMetricsService creates/updates the Service for Prometheus metrics (if enabled).
-func (r *DittoServerReconciler) reconcileMetricsService(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) error {
-	// Only create metrics service if metrics are enabled
-	if dittoServer.Spec.Metrics == nil || !dittoServer.Spec.Metrics.Enabled {
-		// Delete metrics service if it exists
-		existing := &corev1.Service{}
-		err := r.Get(ctx, client.ObjectKey{
-			Namespace: dittoServer.Namespace,
-			Name:      dittoServer.Name + "-metrics",
-		}, existing)
-		if err == nil {
-			// Service exists, delete it
-			return r.Delete(ctx, existing)
-		}
-		return client.IgnoreNotFound(err)
-	}
-
-	labels := podSelectorLabels(dittoServer.Name)
-	metricsPort := getMetricsPort(dittoServer)
-
-	// Metrics service is always ClusterIP (internal only)
-	svc := resources.NewServiceBuilder(dittoServer.Name+"-metrics", dittoServer.Namespace).
-		WithLabels(labels).
-		WithSelector(labels).
-		WithType(corev1.ServiceTypeClusterIP).
-		AddTCPPort("metrics", metricsPort).
 		Build()
 
 	return r.createOrUpdateService(ctx, dittoServer, svc)
@@ -1103,7 +1055,7 @@ func existingAdapterPorts(sts *appsv1.StatefulSet) []corev1.ContainerPort {
 }
 
 // buildContainerPorts constructs the container ports for the DittoFS server.
-// Emits infrastructure ports (api, metrics) and preserves any existing dynamic
+// Emits infrastructure ports (api) and preserves any existing dynamic
 // adapter ports (prefixed with "adapter-") from the current StatefulSet.
 // Dynamic adapter ports are managed by reconcileContainerPorts in service_reconciler.go.
 func buildContainerPorts(dittoServer *dittoiov1alpha1.DittoServer, existingPorts []corev1.ContainerPort) []corev1.ContainerPort {
@@ -1115,16 +1067,6 @@ func buildContainerPorts(dittoServer *dittoiov1alpha1.DittoServer, existingPorts
 			ContainerPort: apiPort,
 			Protocol:      corev1.ProtocolTCP,
 		},
-	}
-
-	// Add metrics port if enabled
-	if dittoServer.Spec.Metrics != nil && dittoServer.Spec.Metrics.Enabled {
-		metricsPort := getMetricsPort(dittoServer)
-		ports = append(ports, corev1.ContainerPort{
-			Name:          "metrics",
-			ContainerPort: metricsPort,
-			Protocol:      corev1.ProtocolTCP,
-		})
 	}
 
 	// Preserve existing dynamic adapter ports to avoid unnecessary StatefulSet restarts.

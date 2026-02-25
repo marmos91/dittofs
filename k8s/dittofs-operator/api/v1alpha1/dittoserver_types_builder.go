@@ -51,13 +51,6 @@ func WithCache(cache *InfraCacheConfig) func(*DittoServerSpec) {
 	}
 }
 
-// WithMetrics sets the Metrics of a DittoServerSpec
-func WithMetrics(metrics *MetricsConfig) func(*DittoServerSpec) {
-	return func(obj *DittoServerSpec) {
-		obj.Metrics = metrics
-	}
-}
-
 // WithControlPlane sets the ControlPlane of a DittoServerSpec
 func WithControlPlane(controlPlane *ControlPlaneAPIConfig) func(*DittoServerSpec) {
 	return func(obj *DittoServerSpec) {

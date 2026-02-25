@@ -183,7 +183,7 @@ func (h *Handler) Lookup(
 			return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 		}
 
-		traceError(ctx.Context, err, "LOOKUP failed: failed to build auth context",
+		logError(ctx.Context, err, "LOOKUP failed: failed to build auth context",
 			"name", req.Filename,
 			"handle", fmt.Sprintf("%x", req.DirHandle),
 			"client", clientIP)
@@ -251,7 +251,7 @@ func (h *Handler) Lookup(
 	// Encode child file handle
 	childHandle, err := metadata.EncodeFileHandle(childFile)
 	if err != nil {
-		traceError(ctx.Context, err, "LOOKUP failed: cannot encode child handle",
+		logError(ctx.Context, err, "LOOKUP failed: cannot encode child handle",
 			"name", req.Filename,
 			"handle", fmt.Sprintf("%x", req.DirHandle),
 			"client", clientIP)

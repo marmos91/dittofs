@@ -559,17 +559,6 @@ type GSSProcessResult struct {
 // GSSProcessorOption is a functional option for configuring GSSProcessor.
 type GSSProcessorOption func(*GSSProcessor)
 
-// WithMetrics configures Prometheus metrics for the GSS processor.
-//
-// When set, the processor records context creations, destructions, auth failures,
-// data request counts, and operation durations. If nil or not set, no metrics
-// are recorded (zero overhead).
-func WithMetrics(m *GSSMetrics) GSSProcessorOption {
-	return func(p *GSSProcessor) {
-		p.metrics = m
-	}
-}
-
 // GSSProcessor orchestrates RPCSEC_GSS context lifecycle.
 //
 // It is the central component that intercepts auth flavor 6 (RPCSEC_GSS)
@@ -584,7 +573,6 @@ type GSSProcessor struct {
 	contexts *ContextStore
 	verifier Verifier
 	mapper   identity.IdentityMapper
-	metrics  *GSSMetrics
 	mu       sync.RWMutex
 }
 
@@ -644,8 +632,6 @@ func (p *GSSProcessor) Process(ctx context.Context, credBody []byte, verifBody [
 // For CONTINUE_INIT:
 // - Not yet needed for krb5 (single round trip), but handled for completeness
 func (p *GSSProcessor) handleInit(cred *RPCGSSCredV1, requestBody []byte) *GSSProcessResult {
-	initStart := time.Now()
-
 	p.mu.RLock()
 	verifier := p.verifier
 	p.mu.RUnlock()
@@ -667,9 +653,6 @@ func (p *GSSProcessor) handleInit(cred *RPCGSSCredV1, requestBody []byte) *GSSPr
 	gssToken, err := decodeOpaqueToken(requestBody)
 	if err != nil {
 		logger.Debug("GSS INIT failed to decode token", "error", err)
-		p.metrics.RecordContextCreation(false)
-		p.metrics.RecordAuthFailure("credential_problem")
-		p.metrics.RecordInitDuration(time.Since(initStart))
 		return &GSSProcessResult{
 			IsControl: true,
 			Err:       fmt.Errorf("decode GSS init arg: %w", err),
@@ -679,10 +662,6 @@ func (p *GSSProcessor) handleInit(cred *RPCGSSCredV1, requestBody []byte) *GSSPr
 	verified, err := verifier.VerifyToken(gssToken)
 	if err != nil {
 		logger.Debug("GSS INIT verification failed", "error", err)
-
-		p.metrics.RecordContextCreation(false)
-		p.metrics.RecordAuthFailure("credential_problem")
-		p.metrics.RecordInitDuration(time.Since(initStart))
 
 		// Return an error init response per RFC 2203
 		errRes := &RPCGSSInitRes{
@@ -758,9 +737,6 @@ func (p *GSSProcessor) handleInit(cred *RPCGSSCredV1, requestBody []byte) *GSSPr
 		"gss_token_len", len(initRes.GSSToken),
 	)
 
-	p.metrics.RecordContextCreation(true)
-	p.metrics.RecordInitDuration(time.Since(initStart))
-
 	return &GSSProcessResult{
 		GSSReply:          resBytes,
 		IsControl:         true,
@@ -810,8 +786,6 @@ func lastN(b []byte, n int) []byte {
 // 5. Map principal to Unix identity via IdentityMapper
 // 6. Return unwrapped procedure arguments and identity
 func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verifBody []byte, requestBody []byte) *GSSProcessResult {
-	dataStart := time.Now()
-
 	// 1. Look up context by handle
 	gssCtx, found := p.contexts.Lookup(cred.Handle)
 	if !found {
@@ -819,7 +793,6 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 			"cred_service", cred.Service,
 			"handle_len", len(cred.Handle),
 		)
-		p.metrics.RecordAuthFailure("context_problem")
 		return &GSSProcessResult{
 			Err:      fmt.Errorf("RPCSEC_GSS_CREDPROBLEM: context not found"),
 			AuthStat: AuthStatCredProblem,
@@ -848,7 +821,6 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 			"principal", gssCtx.Principal,
 		)
 		p.contexts.Delete(cred.Handle)
-		p.metrics.RecordAuthFailure("context_problem")
 		return &GSSProcessResult{
 			Err:      fmt.Errorf("RPCSEC_GSS_CTXPROBLEM: sequence number exceeds MAXSEQ"),
 			AuthStat: AuthStatCtxProblem,
@@ -862,7 +834,6 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 			"seq_num", cred.SeqNum,
 			"principal", gssCtx.Principal,
 		)
-		p.metrics.RecordAuthFailure("sequence_violation")
 		return &GSSProcessResult{
 			SilentDiscard: true,
 		}
@@ -883,7 +854,6 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 				"cred_service", cred.Service,
 				"error", err,
 			)
-			p.metrics.RecordAuthFailure("integrity_failure")
 			return &GSSProcessResult{
 				Err: fmt.Errorf("integrity unwrap failed: %w", err),
 			}
@@ -898,7 +868,6 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 				"cred_service", cred.Service,
 				"error", err,
 			)
-			p.metrics.RecordAuthFailure("privacy_failure")
 			return &GSSProcessResult{
 				Err: fmt.Errorf("privacy unwrap failed: %w", err),
 			}
@@ -959,8 +928,6 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 		"cred_service", cred.Service,
 	)
 
-	p.metrics.RecordDataRequest(serviceLevelName(cred.Service), time.Since(dataStart))
-
 	return &GSSProcessResult{
 		ProcessedData: processedData,
 		Identity:      ident,
@@ -981,8 +948,6 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 // 2. Delete context from store (if found)
 // 3. Return empty reply with IsControl=true
 func (p *GSSProcessor) handleDestroy(cred *RPCGSSCredV1) *GSSProcessResult {
-	destroyStart := time.Now()
-
 	// Lookup context (may not exist if already expired)
 	_, found := p.contexts.Lookup(cred.Handle)
 	if !found {
@@ -1005,11 +970,6 @@ func (p *GSSProcessor) handleDestroy(cred *RPCGSSCredV1) *GSSProcessResult {
 			Err:       fmt.Errorf("encode GSS destroy response: %w", err),
 		}
 	}
-
-	if found {
-		p.metrics.RecordContextDestruction()
-	}
-	p.metrics.RecordDestroyDuration(time.Since(destroyStart))
 
 	return &GSSProcessResult{
 		GSSReply:  resBytes,

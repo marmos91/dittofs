@@ -39,27 +39,10 @@ func Validate(cfg *Config) error {
 
 // validateCustomRules performs custom validation beyond struct tags.
 func validateCustomRules(cfg *Config) error {
-	// Validate telemetry configuration
-	if err := validateTelemetry(&cfg.Telemetry); err != nil {
-		return err
-	}
-
 	// Validate cache path is set
 	if cfg.Cache.Path == "" {
 		return fmt.Errorf("cache: path is required")
 	}
-
-	return nil
-}
-
-// validateTelemetry validates telemetry configuration.
-func validateTelemetry(cfg *TelemetryConfig) error {
-	// If telemetry is enabled, endpoint must be set
-	if cfg.Enabled && cfg.Endpoint == "" {
-		return fmt.Errorf("telemetry: endpoint is required when telemetry is enabled")
-	}
-
-	// Sample rate validation is handled by struct tags (gte=0,lte=1)
 
 	return nil
 }

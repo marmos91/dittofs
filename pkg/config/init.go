@@ -85,20 +85,6 @@ logging:
   # Log output: stdout, stderr, or file path
   output: "` + cfg.Logging.Output + `"
 
-# OpenTelemetry distributed tracing configuration
-telemetry:
-  # Enable distributed tracing (default: false)
-  enabled: ` + fmt.Sprintf("%t", cfg.Telemetry.Enabled) + `
-  # OTLP collector endpoint (host:port)
-  endpoint: "` + cfg.Telemetry.Endpoint + `"
-  # Use insecure (non-TLS) connection (default: false)
-  insecure: ` + fmt.Sprintf("%t", cfg.Telemetry.Insecure) + `
-  # Trace sampling rate (0.0 to 1.0)
-  sample_rate: ` + fmt.Sprintf("%.1f", cfg.Telemetry.SampleRate) + `
-  profiling:
-    enabled: false
-    endpoint: "http://localhost:4040"
-
 # Maximum time to wait for graceful shutdown
 shutdown_timeout: ` + cfg.ShutdownTimeout.String() + `
 
@@ -112,13 +98,6 @@ database:
     # Path to SQLite database file
     # Default: $XDG_CONFIG_HOME/dittofs/controlplane.db
     path: ""
-
-# Prometheus metrics configuration
-metrics:
-  # Enable Prometheus metrics endpoint
-  enabled: false
-  # Port for metrics HTTP server
-  port: 9090
 
 # Control plane API server configuration (always enabled)
 controlplane:

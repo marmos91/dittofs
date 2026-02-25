@@ -132,11 +132,6 @@ type StateManager struct {
 	// maxSessionsPerClient is the per-client session limit (default 16).
 	maxSessionsPerClient int
 
-	// sessionMetrics holds Prometheus metrics for session lifecycle.
-	// May be nil; SessionMetrics methods are nil-safe so callers can invoke
-	// them without additional nil checks.
-	sessionMetrics *SessionMetrics
-
 	// serverIdentity is the immutable server identity returned in EXCHANGE_ID responses.
 	serverIdentity *ServerIdentity
 
@@ -158,11 +153,6 @@ type StateManager struct {
 	// maxConnsPerSession is the maximum number of connections per session (default 16).
 	maxConnsPerSession int
 
-	// connectionMetrics holds Prometheus metrics for connection binding.
-	// May be nil; ConnectionMetrics methods are nil-safe so callers can invoke
-	// them without additional nil checks.
-	connectionMetrics *ConnectionMetrics
-
 	// ============================================================================
 	// Backchannel State (Phase 22)
 	// ============================================================================
@@ -179,16 +169,6 @@ type StateManager struct {
 	// backchannelFaults tracks per-client backchannel fault state. Set when a
 	// callback send fails, cleared on success. Protected by connMu.
 	backchannelFaults map[uint64]bool
-
-	// backchannelMetrics holds Prometheus metrics for backchannel callbacks.
-	// May be nil; BackchannelMetrics methods are nil-safe so callers can invoke
-	// them without additional nil checks.
-	backchannelMetrics *BackchannelMetrics
-
-	// delegationMetrics holds Prometheus metrics for delegation lifecycle.
-	// May be nil; DelegationMetrics methods are nil-safe so callers can invoke
-	// them without additional nil checks.
-	delegationMetrics *DelegationMetrics
 }
 
 // NewStateManager creates a new StateManager with the given lease duration.
@@ -2097,12 +2077,6 @@ func (sm *StateManager) GetStatusFlags(session *Session) uint32 {
 // NFSv4.1 Session Management (Phase 19)
 // ============================================================================
 
-// SetSessionMetrics sets the Prometheus metrics collector for session lifecycle.
-// Must be called before any session operations. Safe to leave nil (no-op metrics).
-func (sm *StateManager) SetSessionMetrics(m *SessionMetrics) {
-	sm.sessionMetrics = m
-}
-
 // CreateSession implements the CREATE_SESSION algorithm per RFC 8881 Section 18.36.
 //
 // The algorithm uses the client's sequence ID to detect replays:
@@ -2185,9 +2159,6 @@ func (sm *StateManager) CreateSession(
 
 	// Increment sequence ID
 	record.SequenceID++
-
-	// Record metrics
-	sm.sessionMetrics.recordCreated()
 
 	logger.Info("CREATE_SESSION: session created",
 		"client_id", fmt.Sprintf("0x%x", clientID),
@@ -2279,21 +2250,14 @@ func (sm *StateManager) destroySessionLocked(sessionID types.SessionId4, force b
 	sm.connMu.Lock()
 	for _, b := range sm.connBySession[sessionID] {
 		delete(sm.connByID, b.ConnectionID)
-		sm.connectionMetrics.RecordUnbind("session_destroy")
 	}
 	delete(sm.connBySession, sessionID)
-	sm.connectionMetrics.RemoveSessionGauge(sessionID.String())
 	sm.connMu.Unlock()
-
-	// Record metrics
-	duration := time.Since(session.CreatedAt).Seconds()
-	sm.sessionMetrics.recordDestroyed(reason, duration)
 
 	logger.Info("Session destroyed",
 		"session_id", session.SessionID.String(),
 		"client_id", fmt.Sprintf("0x%x", session.ClientID),
-		"reason", reason,
-		"duration_s", fmt.Sprintf("%.1f", duration))
+		"reason", reason)
 
 	return nil
 }
@@ -2372,7 +2336,6 @@ func (sm *StateManager) reapExpiredSessions() {
 			// Destroy all sessions for this client with "lease_expired" reason
 			for _, session := range sm.sessionsByClientID[record.ClientID] {
 				delete(sm.sessionsByID, session.SessionID)
-				sm.sessionMetrics.recordDestroyed("lease_expired", time.Since(session.CreatedAt).Seconds())
 			}
 			delete(sm.sessionsByClientID, record.ClientID)
 
@@ -2440,7 +2403,7 @@ func (sm *StateManager) BindConnToSession(connectionID uint64, sessionID types.S
 
 	// If connection already bound to a different session, silently unbind
 	if existing, ok := sm.connByID[connectionID]; ok && existing.SessionID != sessionID {
-		sm.unbindConnectionLocked(connectionID, "explicit")
+		sm.unbindConnectionLocked(connectionID)
 	}
 
 	// Check connection limit: count bindings for this session, allow rebind
@@ -2497,10 +2460,6 @@ func (sm *StateManager) BindConnToSession(connectionID uint64, sessionID types.S
 	sm.connByID[connectionID] = binding
 	sm.connBySession[sessionID] = append(sm.connBySession[sessionID], binding)
 
-	// Record metrics
-	sm.connectionMetrics.RecordBind(direction.String())
-	sm.connectionMetrics.SetBoundConnections(sessionID.String(), float64(len(sm.connBySession[sessionID])))
-
 	return &BindConnResult{ServerDir: serverDir}, nil
 }
 
@@ -2511,12 +2470,11 @@ func (sm *StateManager) BindConnToSession(connectionID uint64, sessionID types.S
 func (sm *StateManager) UnbindConnection(connectionID uint64) {
 	sm.connMu.Lock()
 	defer sm.connMu.Unlock()
-	sm.unbindConnectionLocked(connectionID, "disconnect")
+	sm.unbindConnectionLocked(connectionID)
 }
 
 // unbindConnectionLocked removes a connection binding. Caller must hold sm.connMu.
-// The reason parameter is recorded in metrics (e.g., "explicit", "disconnect", "session_destroy", "reaper").
-func (sm *StateManager) unbindConnectionLocked(connectionID uint64, reason string) {
+func (sm *StateManager) unbindConnectionLocked(connectionID uint64) {
 	binding, ok := sm.connByID[connectionID]
 	if !ok {
 		return
@@ -2528,10 +2486,6 @@ func (sm *StateManager) unbindConnectionLocked(connectionID uint64, reason strin
 	// Clean up backchannel state for this connection
 	delete(sm.connWriters, connectionID)
 	delete(sm.cbRepliesByConn, connectionID)
-
-	// Record metrics
-	sm.connectionMetrics.RecordUnbind(reason)
-	sm.connectionMetrics.SetBoundConnections(sessionID.String(), float64(len(sm.connBySession[sessionID])))
 }
 
 // removeConnFromSessionLocked removes a connection from the session binding list.
@@ -2561,10 +2515,8 @@ func (sm *StateManager) UnbindAllForSession(sessionID types.SessionId4) {
 	bindings := sm.connBySession[sessionID]
 	for _, b := range bindings {
 		delete(sm.connByID, b.ConnectionID)
-		sm.connectionMetrics.RecordUnbind("session_destroy")
 	}
 	delete(sm.connBySession, sessionID)
-	sm.connectionMetrics.RemoveSessionGauge(sessionID.String())
 }
 
 // GetConnectionBindings returns a copy of all connection bindings for a session.
@@ -2653,24 +2605,6 @@ func (sm *StateManager) SetMaxConnectionsPerSession(max int) {
 	}
 }
 
-// SetConnectionMetrics sets the Prometheus metrics collector for connection binding.
-// Must be called before any connection binding operations. Safe to leave nil (no-op metrics).
-func (sm *StateManager) SetConnectionMetrics(m *ConnectionMetrics) {
-	sm.connectionMetrics = m
-}
-
-// SetBackchannelMetrics sets the Prometheus metrics collector for backchannel callbacks.
-// Must be called before any backchannel operations. Safe to leave nil (no-op metrics).
-func (sm *StateManager) SetBackchannelMetrics(m *BackchannelMetrics) {
-	sm.backchannelMetrics = m
-}
-
-// SetDelegationMetrics sets the Prometheus metrics collector for delegation lifecycle.
-// Must be called before any delegation operations. Safe to leave nil (no-op metrics).
-func (sm *StateManager) SetDelegationMetrics(m *DelegationMetrics) {
-	sm.delegationMetrics = m
-}
-
 // ============================================================================
 // Backchannel Operations (Phase 22)
 // ============================================================================
@@ -2733,7 +2667,6 @@ func (sm *StateManager) StartBackchannelSender(ctx context.Context, sessionID ty
 		session.CbProgram,
 		session.BackChannelSlots,
 		sm,
-		sm.backchannelMetrics,
 	)
 	session.backchannelSender = sender
 

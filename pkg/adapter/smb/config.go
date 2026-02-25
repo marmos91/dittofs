@@ -55,7 +55,6 @@ type SMBTimeoutsConfig struct {
 //   - Timeouts.Write: 30s
 //   - Timeouts.Idle: 5m
 //   - Timeouts.Shutdown: 30s
-//   - MetricsLogInterval: 5m (0 disables)
 //
 // Production recommendations:
 //   - MaxConnections: Set based on expected load (e.g., 1000 for busy servers)
@@ -90,12 +89,6 @@ type SMBConfig struct {
 
 	// Timeouts groups all timeout-related configuration
 	Timeouts SMBTimeoutsConfig `mapstructure:"timeouts"`
-
-	// MetricsLogInterval is the interval at which to log server metrics
-	// (active connections, requests/sec, etc.).
-	// 0 disables periodic metrics logging.
-	// Recommended: 5m for production monitoring.
-	MetricsLogInterval time.Duration `mapstructure:"metrics_log_interval" validate:"min=0"`
 
 	// Credits configures SMB2 credit management behavior.
 	// Credits control flow control and parallelism per client.
@@ -244,9 +237,6 @@ func (c *SMBConfig) applyDefaults() {
 	}
 	if c.Timeouts.Shutdown == 0 {
 		c.Timeouts.Shutdown = 30 * time.Second
-	}
-	if c.MetricsLogInterval == 0 {
-		c.MetricsLogInterval = 5 * time.Minute
 	}
 	if c.MaxMessageSize == 0 {
 		c.MaxMessageSize = DefaultMaxMessageSize

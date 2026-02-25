@@ -113,7 +113,7 @@ func (h *Handler) ReadLink(
 			return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
-		traceError(ctx.Context, err, "READLINK failed: failed to build auth context", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
+		logError(ctx.Context, err, "READLINK failed: failed to build auth context", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
 		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 

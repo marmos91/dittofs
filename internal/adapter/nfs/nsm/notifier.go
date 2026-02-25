@@ -59,9 +59,6 @@ type Notifier struct {
 
 	// onClientCrash is called when a client crash is detected
 	onClientCrash OnClientCrashFunc
-
-	// metrics for observability (may be nil)
-	metrics *Metrics
 }
 
 // NotifierConfig configures the notifier.
@@ -77,10 +74,6 @@ type NotifierConfig struct {
 	// OnClientCrash is called when a client crash is detected (optional).
 	// If nil, crash detection will log but not cleanup locks.
 	OnClientCrash OnClientCrashFunc
-
-	// Metrics for observability (optional).
-	// If nil, no metrics are recorded.
-	Metrics *Metrics
 }
 
 // NewNotifier creates a new SM_NOTIFY notifier.
@@ -101,7 +94,6 @@ func NewNotifier(config NotifierConfig) *Notifier {
 		client:        callback.NewClient(0), // Use default 5s timeout
 		serverName:    config.ServerName,
 		onClientCrash: config.OnClientCrash,
-		metrics:       config.Metrics,
 	}
 }
 
@@ -133,11 +125,6 @@ func (n *Notifier) NotifyAllClients(ctx context.Context) []NotifyResult {
 	logger.Info("NSM: notifying all registered clients",
 		"count", len(clients),
 		"state", n.handler.GetServerState())
-
-	// Record notification attempt
-	if n.metrics != nil {
-		n.metrics.NotificationsTotal.WithLabelValues("started").Add(float64(len(clients)))
-	}
 
 	// Send notifications in parallel
 	var wg sync.WaitGroup
@@ -180,19 +167,10 @@ func (n *Notifier) NotifyAllClients(ctx context.Context) []NotifyResult {
 				"client", result.ClientID,
 				"error", result.Error)
 
-			if n.metrics != nil {
-				n.metrics.NotificationsTotal.WithLabelValues("failed").Inc()
-				n.metrics.CrashesDetected.Inc()
-			}
-
 			// Trigger crash handling (lock cleanup)
 			n.handleClientCrash(ctx, result.ClientID)
 		} else {
 			logger.Debug("NSM: SM_NOTIFY succeeded", "client", result.ClientID)
-
-			if n.metrics != nil {
-				n.metrics.NotificationsTotal.WithLabelValues("success").Inc()
-			}
 		}
 	}
 
@@ -220,11 +198,6 @@ func (n *Notifier) handleClientCrash(ctx context.Context, clientID string) {
 				"error", err)
 		}
 	}
-
-	// Record cleanup
-	if n.metrics != nil {
-		n.metrics.CrashCleanups.Inc()
-	}
 }
 
 // DetectCrash handles notification of a client crash from an external source.
@@ -239,10 +212,6 @@ func (n *Notifier) handleClientCrash(ctx context.Context, clientID string) {
 //   - clientID: The client identifier (hostname from NSM registration)
 func (n *Notifier) DetectCrash(ctx context.Context, clientID string) {
 	logger.Info("NSM: client crash detected", "client", clientID)
-
-	if n.metrics != nil {
-		n.metrics.CrashesDetected.Inc()
-	}
 
 	n.handleClientCrash(ctx, clientID)
 }
@@ -291,10 +260,6 @@ func (n *Notifier) LoadRegistrationsFromStore(ctx context.Context, store lock.Cl
 			Proc:     reg.CallbackProc,
 		}
 		tracker.UpdateNSMInfo(reg.ClientID, reg.MonName, reg.Priv, callbackInfo)
-	}
-
-	if n.metrics != nil {
-		n.metrics.ClientsRegistered.Set(float64(len(registrations)))
 	}
 
 	return nil

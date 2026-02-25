@@ -112,7 +112,7 @@ func baselineNetworkPolicyName(crName string) string {
 }
 
 // baselineIngressPorts returns the ingress ports for the baseline NetworkPolicy.
-// Always includes the API port; includes the metrics port when metrics are enabled.
+// Always includes the API port.
 func baselineIngressPorts(ds *dittoiov1alpha1.DittoServer) []networkingv1.NetworkPolicyPort {
 	tcp := corev1.ProtocolTCP
 	ports := []networkingv1.NetworkPolicyPort{
@@ -121,17 +121,11 @@ func baselineIngressPorts(ds *dittoiov1alpha1.DittoServer) []networkingv1.Networ
 			Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: getAPIPort(ds)},
 		},
 	}
-	if ds.Spec.Metrics != nil && ds.Spec.Metrics.Enabled {
-		ports = append(ports, networkingv1.NetworkPolicyPort{
-			Protocol: &tcp,
-			Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: getMetricsPort(ds)},
-		})
-	}
 	return ports
 }
 
-// ensureBaselineNetworkPolicy ensures a NetworkPolicy exists that allows API and metrics traffic.
-// This prevents adapter NetworkPolicies from blocking operator-to-API and Prometheus scraping.
+// ensureBaselineNetworkPolicy ensures a NetworkPolicy exists that allows API traffic.
+// This prevents adapter NetworkPolicies from blocking operator-to-API communication.
 //
 // This is called from the main Reconcile loop BEFORE auth, and also from reconcileNetworkPolicies.
 // The early call is intentional: the baseline NP must exist before adapter NPs are created,

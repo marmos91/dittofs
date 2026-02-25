@@ -110,8 +110,6 @@ func (sm *StateManager) GrantDirDelegation(clientID uint64, dirFH []byte, notifM
 		"notification_mask", fmt.Sprintf("0x%x", notifMask),
 		"stateid_seqid", stateid.Seqid)
 
-	sm.delegationMetrics.RecordGrant("directory")
-
 	return deleg, nil
 }
 
@@ -198,16 +196,14 @@ func (sm *StateManager) flushDirNotifications(deleg *DelegationState) {
 	// Encode CB_NOTIFY payload
 	encoded := EncodeCBNotifyOp(&deleg.Stateid, deleg.FileHandle, pending, deleg.NotificationMask)
 
-	// Send via backchannel — only record metric on successful enqueue
+	// Send via backchannel
 	sender := sm.getBackchannelSender(deleg.ClientID)
 	if sender != nil {
 		req := CallbackRequest{
 			OpCode:  types.CB_NOTIFY,
 			Payload: encoded,
 		}
-		if sender.Enqueue(req) {
-			sm.delegationMetrics.RecordDirNotification()
-		} else {
+		if !sender.Enqueue(req) {
 			logger.Warn("CB_NOTIFY: backchannel queue full, notifications lost",
 				"client_id", deleg.ClientID,
 				"count", len(pending))
@@ -255,8 +251,6 @@ func (sm *StateManager) resetBatchTimer(deleg *DelegationState, window time.Dura
 //
 // Caller must NOT hold sm.mu (method acquires Lock).
 func (sm *StateManager) RecallDirDelegation(deleg *DelegationState, reason string) {
-	sm.delegationMetrics.RecordRecall("directory", reason)
-
 	// For directory_deleted: revoke immediately (no recall)
 	if reason == "directory_deleted" {
 		sm.mu.Lock()

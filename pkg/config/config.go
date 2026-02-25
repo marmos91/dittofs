@@ -21,8 +21,7 @@ import (
 //
 // This structure captures static configuration aspects of the DittoFS server:
 //   - Logging configuration
-//   - Telemetry/tracing configuration
-//   - Server settings (shutdown timeout, metrics, API)
+//   - Server settings (shutdown timeout, API)
 //   - Database connection (control plane persistence)
 //   - Cache configuration (WAL-backed, mandatory for crash recovery)
 //   - Admin user setup (for initial bootstrap)
@@ -39,18 +38,12 @@ type Config struct {
 	// Logging controls log output behavior
 	Logging LoggingConfig `mapstructure:"logging" yaml:"logging"`
 
-	// Telemetry controls OpenTelemetry distributed tracing
-	Telemetry TelemetryConfig `mapstructure:"telemetry" yaml:"telemetry"`
-
 	// ShutdownTimeout is the maximum time to wait for graceful shutdown
 	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout" validate:"required,gt=0" yaml:"shutdown_timeout"`
 
 	// Database configures the control plane database (SQLite or PostgreSQL).
 	// This is the persistent store for users, groups, shares, and configuration.
 	Database store.Config `mapstructure:"database" yaml:"database"`
-
-	// Metrics contains Prometheus metrics server configuration
-	Metrics MetricsConfig `mapstructure:"metrics" yaml:"metrics"`
 
 	// ControlPlane contains control plane API server configuration
 	ControlPlane api.APIConfig `mapstructure:"controlplane" yaml:"controlplane"`
@@ -125,62 +118,6 @@ type LoggingConfig struct {
 	// Output specifies where logs are written
 	// Valid values: stdout, stderr, or a file path
 	Output string `mapstructure:"output" validate:"required" yaml:"output"`
-}
-
-// TelemetryConfig controls OpenTelemetry distributed tracing.
-// When enabled, trace data is exported to an OTLP-compatible collector
-// (e.g., Jaeger, Tempo, or any OTLP receiver).
-type TelemetryConfig struct {
-	// Enabled controls whether distributed tracing is enabled
-	// Default: false (opt-in for telemetry)
-	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
-
-	// Endpoint is the OTLP collector endpoint (host:port)
-	// Default: "localhost:4317" (standard OTLP gRPC port)
-	Endpoint string `mapstructure:"endpoint" yaml:"endpoint"`
-
-	// Insecure controls whether to use insecure (non-TLS) connection
-	// Default: true (for local development)
-	// Set to false in production with a TLS-enabled collector
-	Insecure bool `mapstructure:"insecure" yaml:"insecure"`
-
-	// SampleRate controls the trace sampling rate (0.0 to 1.0)
-	// 1.0 = sample all traces, 0.5 = sample 50%, 0.0 = no sampling
-	// Default: 1.0 (sample all)
-	SampleRate float64 `mapstructure:"sample_rate" validate:"omitempty,gte=0,lte=1" yaml:"sample_rate"`
-
-	// Profiling contains Pyroscope continuous profiling configuration
-	Profiling ProfilingConfig `mapstructure:"profiling" yaml:"profiling"`
-}
-
-// ProfilingConfig controls Pyroscope continuous profiling.
-// When enabled, CPU and memory profiles are continuously sent to a Pyroscope server
-// for flame graph visualization and performance analysis.
-type ProfilingConfig struct {
-	// Enabled controls whether continuous profiling is enabled
-	// Default: false (opt-in for profiling)
-	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
-
-	// Endpoint is the Pyroscope server endpoint (URL)
-	// Default: "http://localhost:4040" (standard Pyroscope port)
-	Endpoint string `mapstructure:"endpoint" yaml:"endpoint"`
-
-	// ProfileTypes specifies which profile types to collect
-	// Valid values: cpu, alloc_objects, alloc_space, inuse_objects, inuse_space,
-	//               goroutines, mutex_count, mutex_duration, block_count, block_duration
-	// Default: ["cpu", "alloc_objects", "alloc_space", "inuse_objects", "inuse_space", "goroutines"]
-	ProfileTypes []string `mapstructure:"profile_types" yaml:"profile_types"`
-}
-
-// MetricsConfig configures the Prometheus metrics HTTP server.
-// When Enabled is false, no metrics are collected (zero overhead).
-type MetricsConfig struct {
-	// Enabled controls whether metrics collection and HTTP server are enabled
-	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
-
-	// Port is the HTTP port for the metrics endpoint
-	// Default: 9090
-	Port int `mapstructure:"port" validate:"omitempty,min=1,max=65535" yaml:"port"`
 }
 
 // CacheConfig specifies the WAL-backed cache configuration.

@@ -242,7 +242,7 @@ func (h *Handler) Read(
 		}
 
 		// I/O error
-		traceError(ctx.Context, readErr, "READ failed", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "client", clientIP)
+		logError(ctx.Context, readErr, "READ failed", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "client", clientIP)
 		nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 		return &ReadResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},

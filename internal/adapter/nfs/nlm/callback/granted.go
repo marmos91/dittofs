@@ -26,7 +26,6 @@ import (
 //   - ctx: Context for cancellation
 //   - waiter: The pending lock request that was granted
 //   - lm: Lock manager to release the lock if callback fails
-//   - metrics: Optional metrics collector (may be nil)
 //
 // Returns:
 //   - true if callback succeeded
@@ -35,15 +34,11 @@ func ProcessGrantedCallback(
 	ctx context.Context,
 	waiter *blocking.Waiter,
 	lm *lock.Manager,
-	metrics *Metrics,
 ) bool {
 	// Check if cancelled while we were processing
 	if waiter.IsCancelled() {
 		logger.Debug("Skipping callback for cancelled waiter",
 			"owner", waiter.Lock.Owner.OwnerID)
-		if metrics != nil {
-			metrics.RecordCallback("cancelled")
-		}
 		return false
 	}
 
@@ -70,10 +65,6 @@ func ProcessGrantedCallback(
 
 	duration := time.Since(start)
 
-	if metrics != nil {
-		metrics.ObserveCallbackDuration(duration)
-	}
-
 	if err != nil {
 		logger.Warn("NLM_GRANTED callback failed, releasing lock",
 			"error", err,
@@ -86,9 +77,6 @@ func ProcessGrantedCallback(
 		_ = lm.RemoveUnifiedLock(handleKey, waiter.Lock.Owner,
 			waiter.Lock.Offset, waiter.Lock.Length)
 
-		if metrics != nil {
-			metrics.RecordCallback("failed")
-		}
 		return false
 	}
 
@@ -97,40 +85,5 @@ func ProcessGrantedCallback(
 		"owner", waiter.Lock.Owner.OwnerID,
 		"duration", duration)
 
-	if metrics != nil {
-		metrics.RecordCallback("success")
-	}
 	return true
-}
-
-// Metrics interface for callback operations.
-// This is a subset of the full NLM metrics.
-type Metrics struct {
-	recordCallback          func(result string)
-	observeCallbackDuration func(duration time.Duration)
-}
-
-// NewCallbackMetrics creates a Metrics struct with the given functions.
-func NewCallbackMetrics(
-	recordCallback func(result string),
-	observeCallbackDuration func(duration time.Duration),
-) *Metrics {
-	return &Metrics{
-		recordCallback:          recordCallback,
-		observeCallbackDuration: observeCallbackDuration,
-	}
-}
-
-// RecordCallback records a callback result (success/failed/cancelled).
-func (m *Metrics) RecordCallback(result string) {
-	if m != nil && m.recordCallback != nil {
-		m.recordCallback(result)
-	}
-}
-
-// ObserveCallbackDuration records callback duration.
-func (m *Metrics) ObserveCallbackDuration(duration time.Duration) {
-	if m != nil && m.observeCallbackDuration != nil {
-		m.observeCallbackDuration(duration)
-	}
 }

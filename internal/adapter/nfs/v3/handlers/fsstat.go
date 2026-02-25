@@ -162,13 +162,13 @@ func (h *Handler) FsStat(
 
 	stats, err := metaSvc.GetFilesystemStatistics(ctx.Context, metadata.FileHandle(req.Handle))
 	if err != nil {
-		traceError(ctx.Context, err, "FSSTAT failed: error retrieving statistics", "client", ctx.ClientAddr)
+		logError(ctx.Context, err, "FSSTAT failed: error retrieving statistics", "client", ctx.ClientAddr)
 		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
 	// Defensive check: ensure store returned valid statistics
 	if stats == nil {
-		traceError(ctx.Context, fmt.Errorf("store returned nil statistics"), "FSSTAT failed: store returned nil statistics", "client", ctx.ClientAddr)
+		logError(ctx.Context, fmt.Errorf("store returned nil statistics"), "FSSTAT failed: store returned nil statistics", "client", ctx.ClientAddr)
 		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 

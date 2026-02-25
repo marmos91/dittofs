@@ -56,18 +56,6 @@ func TestApplyDefaults_Admin(t *testing.T) {
 	}
 }
 
-func TestApplyDefaults_Telemetry(t *testing.T) {
-	cfg := &Config{}
-	ApplyDefaults(cfg)
-
-	if cfg.Telemetry.Endpoint != "localhost:4317" {
-		t.Errorf("Expected default telemetry endpoint 'localhost:4317', got %q", cfg.Telemetry.Endpoint)
-	}
-	if cfg.Telemetry.SampleRate != 1.0 {
-		t.Errorf("Expected default sample rate 1.0, got %v", cfg.Telemetry.SampleRate)
-	}
-}
-
 func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 	cfg := &Config{
 		Logging: LoggingConfig{

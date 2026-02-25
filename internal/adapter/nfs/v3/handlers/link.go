@@ -142,7 +142,7 @@ func (h *Handler) Link(
 			return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
-		traceError(ctx.Context, err, "LINK failed: failed to build auth context", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "client", clientIP)
+		logError(ctx.Context, err, "LINK failed: failed to build auth context", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "client", clientIP)
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
@@ -258,7 +258,7 @@ func (h *Handler) Link(
 
 	err = metaSvc.CreateHardLink(authCtx, dirHandle, req.Name, fileHandle)
 	if err != nil {
-		traceError(ctx.Context, err, "LINK failed: store error", "name", req.Name, "client", clientIP)
+		logError(ctx.Context, err, "LINK failed: store error", "name", req.Name, "client", clientIP)
 
 		// Get updated directory attributes for WCC
 		updatedDirFile, _ := metaSvc.GetFile(ctx.Context, dirHandle)
@@ -283,7 +283,7 @@ func (h *Handler) Link(
 	// Get updated file attributes (nlink should be incremented)
 	updatedFile, err := metaSvc.GetFile(ctx.Context, fileHandle)
 	if err != nil {
-		traceError(ctx.Context, err, "LINK: failed to get file attributes after link", "file_handle", fmt.Sprintf("%x", req.FileHandle))
+		logError(ctx.Context, err, "LINK: failed to get file attributes after link", "file_handle", fmt.Sprintf("%x", req.FileHandle))
 		// Continue with cached attributes - this shouldn't happen but handle gracefully
 	}
 

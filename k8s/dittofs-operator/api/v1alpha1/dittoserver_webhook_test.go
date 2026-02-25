@@ -90,10 +90,6 @@ func TestDittoServerValidation(t *testing.T) {
 						Path: "/data/cache",
 						Size: "1GB",
 					},
-					Metrics: &MetricsConfig{
-						Enabled: true,
-						Port:    9090,
-					},
 					ControlPlane: &ControlPlaneAPIConfig{
 						Port: 8080,
 					},
@@ -246,37 +242,6 @@ func TestDittoServerValidation(t *testing.T) {
 			},
 			wantErr:     true,
 			errContains: "controlPlane.port must be between 1 and 65535",
-		},
-		{
-			name: "invalid metrics port",
-			dittoServer: &DittoServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: DittoServerSpec{
-					Storage: StorageSpec{
-						MetadataSize: "10Gi",
-						CacheSize:    "5Gi",
-					},
-					Identity: &IdentityConfig{
-						JWT: &JWTConfig{
-							SecretRef: corev1.SecretKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: "jwt-secret",
-								},
-								Key: "secret",
-							},
-						},
-					},
-					Metrics: &MetricsConfig{
-						Enabled: true,
-						Port:    70000, // Invalid port
-					},
-				},
-			},
-			wantErr:     true,
-			errContains: "metrics.port must be between 1 and 65535",
 		},
 	}
 

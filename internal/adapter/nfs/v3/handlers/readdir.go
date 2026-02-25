@@ -197,7 +197,7 @@ func (h *Handler) ReadDir(
 			}, ctx.Context.Err()
 		}
 
-		traceError(ctx.Context, err, "READDIR failed: failed to build auth context", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
+		logError(ctx.Context, err, "READDIR failed: failed to build auth context", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
 		// Include directory attributes for cache consistency
 		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
@@ -249,7 +249,7 @@ func (h *Handler) ReadDir(
 			}, ctx.Context.Err()
 		}
 
-		traceError(ctx.Context, err, "READDIR failed: store error", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
+		logError(ctx.Context, err, "READDIR failed: store error", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
 		// Map store error to NFS status
 		status := mapMetadataErrorToNFS(err)

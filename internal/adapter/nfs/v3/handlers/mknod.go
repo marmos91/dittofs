@@ -301,7 +301,7 @@ func (h *Handler) Mknod(
 			return nil, ctx.Context.Err()
 		}
 
-		traceError(ctx.Context, err, "MKNOD failed: store error", "name", req.Name, "type", req.Type, "client", clientIP)
+		logError(ctx.Context, err, "MKNOD failed: store error", "name", req.Name, "type", req.Type, "client", clientIP)
 
 		// Get updated parent attributes for WCC data
 		updatedParentFile, _ := metaSvc.GetFile(ctx.Context, parentHandle)
@@ -324,7 +324,7 @@ func (h *Handler) Mknod(
 	// Encode the file handle for the new special file
 	newHandle, err := metadata.EncodeFileHandle(newFile)
 	if err != nil {
-		traceError(ctx.Context, err, "MKNOD: failed to encode file handle")
+		logError(ctx.Context, err, "MKNOD: failed to encode file handle")
 		return &MknodResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
