@@ -108,8 +108,16 @@ func (s *routingNLMService) UnlockFileNLM(
 ) error {
 	svc, err := s.serviceForHandle(handle)
 	if err != nil {
-		// No lock manager = no locks = success (NLM spec)
-		return nil
+		// No lock manager for the share = no locks held = success per NLM spec.
+		// But propagate decode/validation errors for malformed handles.
+		shareName, _, decodeErr := metadata.DecodeFileHandle(metadata.FileHandle(handle))
+		if decodeErr != nil {
+			return decodeErr
+		}
+		if s.metaSvc.GetLockManagerForShare(shareName) == nil {
+			return nil
+		}
+		return err
 	}
 	return svc.UnlockFileNLM(ctx, handle, ownerID, offset, length)
 }
