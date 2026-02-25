@@ -2,9 +2,12 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
+
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
@@ -44,8 +47,11 @@ func (s *GORMStore) SetShareAdapterConfig(ctx context.Context, config *models.Sh
 				"updated_at": now,
 			}).Error
 	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err // Propagate real DB errors
+	}
 
-	// Create new record
+	// Create new record (only when not found)
 	config.CreatedAt = now
 	return s.db.WithContext(ctx).Create(config).Error
 }
