@@ -579,22 +579,22 @@ func (s *MetadataService) LockFileNLM(
 	if exclusive {
 		lockType = LockTypeExclusive
 	}
-	enhancedLock := NewEnhancedLock(owner, lock.FileHandle(handle), offset, length, lockType)
+	enhancedLock := NewUnifiedLock(owner, lock.FileHandle(handle), offset, length, lockType)
 	enhancedLock.Reclaim = reclaim
 
 	// Try to acquire
 	handleKey := string(handle)
-	err = lm.AddEnhancedLock(handleKey, enhancedLock)
+	err = lm.AddUnifiedLock(handleKey, enhancedLock)
 	if err != nil {
 		// Check if it's a lock conflict error (StoreError with ErrLockConflict code)
 		if storeErr, ok := err.(*errors.StoreError); ok && storeErr.Code == errors.ErrLockConflict {
 			// For NLM, we need to find the conflicting lock for the response
-			existing := lm.ListEnhancedLocks(handleKey)
+			existing := lm.ListUnifiedLocks(handleKey)
 			for _, el := range existing {
-				if IsEnhancedLockConflicting(el, enhancedLock) {
+				if IsUnifiedLockConflicting(el, enhancedLock) {
 					return &lock.LockResult{
 						Success:  false,
-						Conflict: &EnhancedLockConflict{Lock: el, Reason: "conflict"},
+						Conflict: &UnifiedLockConflict{Lock: el, Reason: "conflict"},
 					}, nil
 				}
 			}
@@ -627,7 +627,7 @@ func (s *MetadataService) LockFileNLM(
 //
 // Returns:
 //   - bool: true if lock would succeed, false if conflict exists
-//   - *EnhancedLockConflict: Information about conflicting lock (nil if granted)
+//   - *UnifiedLockConflict: Information about conflicting lock (nil if granted)
 //   - error: System-level errors only
 func (s *MetadataService) TestLockNLM(
 	ctx context.Context,
@@ -635,7 +635,7 @@ func (s *MetadataService) TestLockNLM(
 	owner LockOwner,
 	offset, length uint64,
 	exclusive bool,
-) (bool, *EnhancedLockConflict, error) {
+) (bool, *UnifiedLockConflict, error) {
 	if err := ctx.Err(); err != nil {
 		return false, nil, err
 	}
@@ -661,13 +661,13 @@ func (s *MetadataService) TestLockNLM(
 	if exclusive {
 		lockType = LockTypeExclusive
 	}
-	testLock := NewEnhancedLock(owner, lock.FileHandle(handle), offset, length, lockType)
+	testLock := NewUnifiedLock(owner, lock.FileHandle(handle), offset, length, lockType)
 
 	handleKey := string(handle)
-	existing := lm.ListEnhancedLocks(handleKey)
+	existing := lm.ListUnifiedLocks(handleKey)
 	for _, el := range existing {
-		if IsEnhancedLockConflicting(el, testLock) {
-			return false, &EnhancedLockConflict{Lock: el, Reason: "conflict"}, nil
+		if IsUnifiedLockConflicting(el, testLock) {
+			return false, &UnifiedLockConflict{Lock: el, Reason: "conflict"}, nil
 		}
 	}
 	return true, nil, nil
@@ -722,7 +722,7 @@ func (s *MetadataService) UnlockFileNLM(
 	}
 
 	handleKey := string(handle)
-	err = lm.RemoveEnhancedLock(handleKey, LockOwner{OwnerID: ownerID}, offset, length)
+	err = lm.RemoveUnifiedLock(handleKey, LockOwner{OwnerID: ownerID}, offset, length)
 	if err != nil {
 		// Per CONTEXT.md: unlock of non-existent lock silently succeeds
 		if storeErr, ok := err.(*errors.StoreError); ok && storeErr.Code == errors.ErrLockNotFound {

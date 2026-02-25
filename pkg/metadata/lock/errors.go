@@ -34,7 +34,7 @@ func NewLockNotFoundError(path string) *errors.StoreError {
 }
 
 // NewLockConflictError creates error for enhanced lock conflicts.
-func NewLockConflictError(path string, conflict *EnhancedLockConflict) *errors.StoreError {
+func NewLockConflictError(path string, conflict *UnifiedLockConflict) *errors.StoreError {
 	msg := "lock conflict"
 	if conflict != nil && conflict.Reason != "" {
 		msg = conflict.Reason

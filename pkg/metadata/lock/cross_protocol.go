@@ -71,7 +71,7 @@ type NLMHolderInfo struct {
 // the semantics defined in CONTEXT.md.
 //
 // Parameters:
-//   - lease: The EnhancedLock representing an SMB lease (must have Lease != nil)
+//   - lease: The UnifiedLock representing an SMB lease (must have Lease != nil)
 //
 // Returns:
 //   - NLMHolderInfo: NLM-compatible holder information
@@ -84,7 +84,7 @@ type NLMHolderInfo struct {
 //	lease := getConflictingLease(...)
 //	holderInfo := TranslateToNLMHolder(lease)
 //	// Use holderInfo fields in NLM4_DENIED response
-func TranslateToNLMHolder(lease *EnhancedLock) NLMHolderInfo {
+func TranslateToNLMHolder(lease *UnifiedLock) NLMHolderInfo {
 	if lease == nil || lease.Lease == nil {
 		panic("TranslateToNLMHolder called with non-lease lock")
 	}
@@ -114,11 +114,11 @@ func TranslateToNLMHolder(lease *EnhancedLock) NLMHolderInfo {
 // lock's range information.
 //
 // Parameters:
-//   - lock: The EnhancedLock representing a byte-range lock (Lease == nil)
+//   - lock: The UnifiedLock representing a byte-range lock (Lease == nil)
 //
 // Returns:
 //   - NLMHolderInfo: NLM-compatible holder information
-func TranslateByteRangeLockToNLMHolder(lock *EnhancedLock) NLMHolderInfo {
+func TranslateByteRangeLockToNLMHolder(lock *UnifiedLock) NLMHolderInfo {
 	if lock == nil {
 		panic("TranslateByteRangeLockToNLMHolder called with nil lock")
 	}
@@ -158,7 +158,7 @@ func TranslateByteRangeLockToNLMHolder(lock *EnhancedLock) NLMHolderInfo {
 //
 //	"NFS client 'host1' holds exclusive lock on bytes 0-1024"
 //	"NFS client 'host1' holds shared lock on entire file"
-func TranslateSMBConflictReason(lock *EnhancedLock) string {
+func TranslateSMBConflictReason(lock *UnifiedLock) string {
 	if lock == nil {
 		return "unknown conflict"
 	}
@@ -201,7 +201,7 @@ func TranslateSMBConflictReason(lock *EnhancedLock) string {
 //
 //	"SMB client 'client1' holds Write lease (RW)"
 //	"SMB client 'client1' holds Handle lease (RH)"
-func TranslateNFSConflictReason(lease *EnhancedLock) string {
+func TranslateNFSConflictReason(lease *UnifiedLock) string {
 	if lease == nil || lease.Lease == nil {
 		return "unknown SMB lease conflict"
 	}

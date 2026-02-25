@@ -7,7 +7,7 @@ import (
 
 func TestTranslateToNLMHolder_WriteLease(t *testing.T) {
 	leaseKey := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
-	lease := &EnhancedLock{
+	lease := &UnifiedLock{
 		ID: "lease1",
 		Owner: LockOwner{
 			OwnerID:   "smb:client123",
@@ -19,7 +19,7 @@ func TestTranslateToNLMHolder_WriteLease(t *testing.T) {
 		Length:     0,
 		Type:       LockTypeExclusive,
 		AcquiredAt: time.Now(),
-		Lease: &LeaseInfo{
+		Lease: &OpLock{
 			LeaseKey:   leaseKey,
 			LeaseState: LeaseStateRead | LeaseStateWrite,
 			Epoch:      1,
@@ -67,7 +67,7 @@ func TestTranslateToNLMHolder_WriteLease(t *testing.T) {
 
 func TestTranslateToNLMHolder_ReadOnlyLease(t *testing.T) {
 	leaseKey := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
-	lease := &EnhancedLock{
+	lease := &UnifiedLock{
 		ID: "lease2",
 		Owner: LockOwner{
 			OwnerID:   "smb:client456",
@@ -79,7 +79,7 @@ func TestTranslateToNLMHolder_ReadOnlyLease(t *testing.T) {
 		Length:     0,
 		Type:       LockTypeShared,
 		AcquiredAt: time.Now(),
-		Lease: &LeaseInfo{
+		Lease: &OpLock{
 			LeaseKey:   leaseKey,
 			LeaseState: LeaseStateRead, // Read-only lease
 			Epoch:      1,
@@ -102,7 +102,7 @@ func TestTranslateToNLMHolder_PanicsOnNonLease(t *testing.T) {
 	}()
 
 	// Create a byte-range lock (not a lease)
-	lock := &EnhancedLock{
+	lock := &UnifiedLock{
 		ID: "lock1",
 		Owner: LockOwner{
 			OwnerID: "nlm:host1:123:abc",
@@ -118,7 +118,7 @@ func TestTranslateToNLMHolder_PanicsOnNonLease(t *testing.T) {
 }
 
 func TestTranslateByteRangeLockToNLMHolder_NLMFormat(t *testing.T) {
-	lock := &EnhancedLock{
+	lock := &UnifiedLock{
 		ID: "lock1",
 		Owner: LockOwner{
 			OwnerID:   "nlm:hostname1:12345:deadbeef",
@@ -170,7 +170,7 @@ func TestTranslateByteRangeLockToNLMHolder_NLMFormat(t *testing.T) {
 }
 
 func TestTranslateByteRangeLockToNLMHolder_SharedLock(t *testing.T) {
-	lock := &EnhancedLock{
+	lock := &UnifiedLock{
 		ID: "lock1",
 		Owner: LockOwner{
 			OwnerID: "nlm:host1:1:00",
@@ -189,7 +189,7 @@ func TestTranslateByteRangeLockToNLMHolder_SharedLock(t *testing.T) {
 }
 
 func TestTranslateSMBConflictReason_ExclusiveLock(t *testing.T) {
-	lock := &EnhancedLock{
+	lock := &UnifiedLock{
 		ID: "lock1",
 		Owner: LockOwner{
 			OwnerID: "nlm:fileserver:123:abc",
@@ -209,7 +209,7 @@ func TestTranslateSMBConflictReason_ExclusiveLock(t *testing.T) {
 }
 
 func TestTranslateSMBConflictReason_SharedLock(t *testing.T) {
-	lock := &EnhancedLock{
+	lock := &UnifiedLock{
 		ID: "lock1",
 		Owner: LockOwner{
 			OwnerID: "nlm:client1:456:def",
@@ -229,7 +229,7 @@ func TestTranslateSMBConflictReason_SharedLock(t *testing.T) {
 }
 
 func TestTranslateSMBConflictReason_WholeFileLock(t *testing.T) {
-	lock := &EnhancedLock{
+	lock := &UnifiedLock{
 		ID: "lock1",
 		Owner: LockOwner{
 			OwnerID: "nlm:host:1:00",
@@ -250,13 +250,13 @@ func TestTranslateSMBConflictReason_WholeFileLock(t *testing.T) {
 
 func TestTranslateNFSConflictReason_WriteLease(t *testing.T) {
 	leaseKey := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
-	lease := &EnhancedLock{
+	lease := &UnifiedLock{
 		ID: "lease1",
 		Owner: LockOwner{
 			OwnerID: "smb:smbclient1",
 		},
 		FileHandle: "file1",
-		Lease: &LeaseInfo{
+		Lease: &OpLock{
 			LeaseKey:   leaseKey,
 			LeaseState: LeaseStateRead | LeaseStateWrite,
 		},
@@ -272,13 +272,13 @@ func TestTranslateNFSConflictReason_WriteLease(t *testing.T) {
 
 func TestTranslateNFSConflictReason_HandleLease(t *testing.T) {
 	leaseKey := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
-	lease := &EnhancedLock{
+	lease := &UnifiedLock{
 		ID: "lease1",
 		Owner: LockOwner{
 			OwnerID: "smb:smbclient2",
 		},
 		FileHandle: "file1",
-		Lease: &LeaseInfo{
+		Lease: &OpLock{
 			LeaseKey:   leaseKey,
 			LeaseState: LeaseStateRead | LeaseStateHandle,
 		},
@@ -294,13 +294,13 @@ func TestTranslateNFSConflictReason_HandleLease(t *testing.T) {
 
 func TestTranslateNFSConflictReason_ReadOnlyLease(t *testing.T) {
 	leaseKey := [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
-	lease := &EnhancedLock{
+	lease := &UnifiedLock{
 		ID: "lease1",
 		Owner: LockOwner{
 			OwnerID: "smb:reader",
 		},
 		FileHandle: "file1",
-		Lease: &LeaseInfo{
+		Lease: &OpLock{
 			LeaseKey:   leaseKey,
 			LeaseState: LeaseStateRead,
 		},

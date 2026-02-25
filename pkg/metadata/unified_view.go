@@ -30,11 +30,11 @@ import (
 type FileLocksInfo struct {
 	// ByteRangeLocks are NLM or SMB byte-range locks on the file.
 	// These have specific Offset/Length ranges and are nil for leases.
-	ByteRangeLocks []*lock.EnhancedLock
+	ByteRangeLocks []*lock.UnifiedLock
 
 	// Leases are SMB2/3 leases on the file.
 	// These are whole-file (Offset=0, Length=0) and have Lease != nil.
-	Leases []*lock.EnhancedLock
+	Leases []*lock.UnifiedLock
 }
 
 // HasAnyLocks returns true if there are any locks or leases on the file.
@@ -116,8 +116,8 @@ func (v *UnifiedLockView) GetAllLocksOnFile(ctx context.Context, fileHandle lock
 
 	// Separate into byte-range locks and leases
 	result := &FileLocksInfo{
-		ByteRangeLocks: make([]*lock.EnhancedLock, 0),
-		Leases:         make([]*lock.EnhancedLock, 0),
+		ByteRangeLocks: make([]*lock.UnifiedLock, 0),
+		Leases:         make([]*lock.UnifiedLock, 0),
 	}
 
 	for _, pl := range locks {
@@ -159,7 +159,7 @@ func (v *UnifiedLockView) HasConflictingLocks(
 	ctx context.Context,
 	fileHandle lock.FileHandle,
 	lockType lock.LockType,
-) (bool, []*lock.EnhancedLock, error) {
+) (bool, []*lock.UnifiedLock, error) {
 	info, err := v.GetAllLocksOnFile(ctx, fileHandle)
 	if err != nil {
 		return false, nil, err
@@ -168,7 +168,7 @@ func (v *UnifiedLockView) HasConflictingLocks(
 	// Create a test lock to check for conflicts
 	// We use a whole-file range (offset=0, length=0) for simplicity
 	// since we're checking for any conflict, not a specific range
-	testLock := &lock.EnhancedLock{
+	testLock := &lock.UnifiedLock{
 		FileHandle: fileHandle,
 		Offset:     0,
 		Length:     0, // Whole file (to EOF)
@@ -178,18 +178,18 @@ func (v *UnifiedLockView) HasConflictingLocks(
 		},
 	}
 
-	var conflicting []*lock.EnhancedLock
+	var conflicting []*lock.UnifiedLock
 
 	// Check byte-range locks
 	for _, existing := range info.ByteRangeLocks {
-		if lock.IsEnhancedLockConflicting(existing, testLock) {
+		if lock.IsUnifiedLockConflicting(existing, testLock) {
 			conflicting = append(conflicting, existing)
 		}
 	}
 
 	// Check leases
 	for _, existing := range info.Leases {
-		if lock.IsEnhancedLockConflicting(existing, testLock) {
+		if lock.IsUnifiedLockConflicting(existing, testLock) {
 			conflicting = append(conflicting, existing)
 		}
 	}
@@ -208,13 +208,13 @@ func (v *UnifiedLockView) HasConflictingLocks(
 //   - leaseKey: The 128-bit lease key to find
 //
 // Returns:
-//   - *lock.EnhancedLock: The lease if found, nil otherwise
+//   - *lock.UnifiedLock: The lease if found, nil otherwise
 //   - error: If the underlying store query fails
 func (v *UnifiedLockView) GetLeaseByKey(
 	ctx context.Context,
 	fileHandle lock.FileHandle,
 	leaseKey [16]byte,
-) (*lock.EnhancedLock, error) {
+) (*lock.UnifiedLock, error) {
 	info, err := v.GetAllLocksOnFile(ctx, fileHandle)
 	if err != nil {
 		return nil, err
@@ -233,14 +233,14 @@ func (v *UnifiedLockView) GetLeaseByKey(
 func (v *UnifiedLockView) filterLeases(
 	ctx context.Context,
 	fileHandle lock.FileHandle,
-	predicate func(*lock.LeaseInfo) bool,
-) ([]*lock.EnhancedLock, error) {
+	predicate func(*lock.OpLock) bool,
+) ([]*lock.UnifiedLock, error) {
 	info, err := v.GetAllLocksOnFile(ctx, fileHandle)
 	if err != nil {
 		return nil, err
 	}
 
-	var result []*lock.EnhancedLock
+	var result []*lock.UnifiedLock
 	for _, lease := range info.Leases {
 		if lease.Lease != nil && predicate(lease.Lease) {
 			result = append(result, lease)
@@ -260,13 +260,13 @@ func (v *UnifiedLockView) filterLeases(
 //   - fileHandle: The file handle to search
 //
 // Returns:
-//   - []*lock.EnhancedLock: Leases with Write permission (may be empty)
+//   - []*lock.UnifiedLock: Leases with Write permission (may be empty)
 //   - error: If the underlying store query fails
 func (v *UnifiedLockView) GetWriteLeases(
 	ctx context.Context,
 	fileHandle lock.FileHandle,
-) ([]*lock.EnhancedLock, error) {
-	return v.filterLeases(ctx, fileHandle, (*lock.LeaseInfo).HasWrite)
+) ([]*lock.UnifiedLock, error) {
+	return v.filterLeases(ctx, fileHandle, (*lock.OpLock).HasWrite)
 }
 
 // GetHandleLeases returns all leases with Handle caching permission on a file.
@@ -279,11 +279,11 @@ func (v *UnifiedLockView) GetWriteLeases(
 //   - fileHandle: The file handle to search
 //
 // Returns:
-//   - []*lock.EnhancedLock: Leases with Handle permission (may be empty)
+//   - []*lock.UnifiedLock: Leases with Handle permission (may be empty)
 //   - error: If the underlying store query fails
 func (v *UnifiedLockView) GetHandleLeases(
 	ctx context.Context,
 	fileHandle lock.FileHandle,
-) ([]*lock.EnhancedLock, error) {
-	return v.filterLeases(ctx, fileHandle, (*lock.LeaseInfo).HasHandle)
+) ([]*lock.UnifiedLock, error) {
+	return v.filterLeases(ctx, fileHandle, (*lock.OpLock).HasHandle)
 }

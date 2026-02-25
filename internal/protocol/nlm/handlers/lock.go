@@ -180,7 +180,7 @@ func (h *Handler) Lock(ctx *NLMHandlerContext, req *LockRequest) (*LockResponse,
 	if req.Block {
 		// Blocking request - queue the waiter
 		waiter := &blocking.Waiter{
-			Lock: &lock.EnhancedLock{
+			Lock: &lock.UnifiedLock{
 				Owner:      owner,
 				FileHandle: lock.FileHandle(handle),
 				Offset:     req.Lock.Offset,

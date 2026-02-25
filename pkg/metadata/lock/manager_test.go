@@ -279,12 +279,12 @@ func TestRangesOverlap(t *testing.T) {
 // Enhanced Lock Tests
 // ============================================================================
 
-func TestManager_AddEnhancedLock(t *testing.T) {
+func TestManager_AddUnifiedLock(t *testing.T) {
 	t.Parallel()
 
 	lm := NewManager()
 
-	lock := &EnhancedLock{
+	lock := &UnifiedLock{
 		ID: "lock1",
 		Owner: LockOwner{
 			OwnerID:   "owner1",
@@ -298,23 +298,23 @@ func TestManager_AddEnhancedLock(t *testing.T) {
 		AcquiredAt: time.Now(),
 	}
 
-	err := lm.AddEnhancedLock("file1", lock)
+	err := lm.AddUnifiedLock("file1", lock)
 	if err != nil {
-		t.Fatalf("AddEnhancedLock failed: %v", err)
+		t.Fatalf("AddUnifiedLock failed: %v", err)
 	}
 
-	locks := lm.ListEnhancedLocks("file1")
+	locks := lm.ListUnifiedLocks("file1")
 	if len(locks) != 1 {
 		t.Fatalf("Expected 1 lock, got %d", len(locks))
 	}
 }
 
-func TestManager_RemoveEnhancedLock(t *testing.T) {
+func TestManager_RemoveUnifiedLock(t *testing.T) {
 	t.Parallel()
 
 	lm := NewManager()
 
-	lock := &EnhancedLock{
+	lock := &UnifiedLock{
 		ID: "lock1",
 		Owner: LockOwner{
 			OwnerID:   "owner1",
@@ -326,14 +326,14 @@ func TestManager_RemoveEnhancedLock(t *testing.T) {
 		Length:     100,
 		Type:       LockTypeExclusive,
 	}
-	_ = lm.AddEnhancedLock("file1", lock)
+	_ = lm.AddUnifiedLock("file1", lock)
 
-	err := lm.RemoveEnhancedLock("file1", lock.Owner, 0, 100)
+	err := lm.RemoveUnifiedLock("file1", lock.Owner, 0, 100)
 	if err != nil {
-		t.Fatalf("RemoveEnhancedLock failed: %v", err)
+		t.Fatalf("RemoveUnifiedLock failed: %v", err)
 	}
 
-	locks := lm.ListEnhancedLocks("file1")
+	locks := lm.ListUnifiedLocks("file1")
 	if len(locks) != 0 {
 		t.Fatalf("Expected 0 locks, got %d", len(locks))
 	}
@@ -351,7 +351,7 @@ func TestManager_UpgradeLock(t *testing.T) {
 	}
 
 	// Add shared lock first
-	sharedLock := &EnhancedLock{
+	sharedLock := &UnifiedLock{
 		ID:         "lock1",
 		Owner:      owner,
 		FileHandle: "file1",
@@ -359,7 +359,7 @@ func TestManager_UpgradeLock(t *testing.T) {
 		Length:     100,
 		Type:       LockTypeShared,
 	}
-	_ = lm.AddEnhancedLock("file1", sharedLock)
+	_ = lm.AddUnifiedLock("file1", sharedLock)
 
 	// Upgrade to exclusive
 	upgraded, err := lm.UpgradeLock("file1", owner, 0, 100)
@@ -381,7 +381,7 @@ func TestManager_UpgradeLock_OtherReader(t *testing.T) {
 	owner2 := LockOwner{OwnerID: "owner2"}
 
 	// Add shared locks from two owners
-	_ = lm.AddEnhancedLock("file1", &EnhancedLock{
+	_ = lm.AddUnifiedLock("file1", &UnifiedLock{
 		ID:         "lock1",
 		Owner:      owner1,
 		FileHandle: "file1",
@@ -389,7 +389,7 @@ func TestManager_UpgradeLock_OtherReader(t *testing.T) {
 		Length:     100,
 		Type:       LockTypeShared,
 	})
-	_ = lm.AddEnhancedLock("file1", &EnhancedLock{
+	_ = lm.AddUnifiedLock("file1", &UnifiedLock{
 		ID:         "lock2",
 		Owner:      owner2,
 		FileHandle: "file1",
@@ -412,7 +412,7 @@ func TestManager_UpgradeLock_OtherReader(t *testing.T) {
 func TestSplitLock_ExactMatch(t *testing.T) {
 	t.Parallel()
 
-	lock := &EnhancedLock{
+	lock := &UnifiedLock{
 		ID:     "lock1",
 		Offset: 0,
 		Length: 100,
@@ -428,7 +428,7 @@ func TestSplitLock_ExactMatch(t *testing.T) {
 func TestSplitLock_UnlockStart(t *testing.T) {
 	t.Parallel()
 
-	lock := &EnhancedLock{
+	lock := &UnifiedLock{
 		ID:     "lock1",
 		Offset: 0,
 		Length: 100,
@@ -447,7 +447,7 @@ func TestSplitLock_UnlockStart(t *testing.T) {
 func TestSplitLock_UnlockEnd(t *testing.T) {
 	t.Parallel()
 
-	lock := &EnhancedLock{
+	lock := &UnifiedLock{
 		ID:     "lock1",
 		Offset: 0,
 		Length: 100,
@@ -466,7 +466,7 @@ func TestSplitLock_UnlockEnd(t *testing.T) {
 func TestSplitLock_UnlockMiddle(t *testing.T) {
 	t.Parallel()
 
-	lock := &EnhancedLock{
+	lock := &UnifiedLock{
 		ID:     "lock1",
 		Offset: 0,
 		Length: 100,
@@ -494,7 +494,7 @@ func TestSplitLock_UnlockMiddle(t *testing.T) {
 func TestMergeLocks_Adjacent(t *testing.T) {
 	t.Parallel()
 
-	locks := []*EnhancedLock{
+	locks := []*UnifiedLock{
 		{Owner: LockOwner{OwnerID: "o1"}, FileHandle: "f1", Offset: 0, Length: 50, Type: LockTypeExclusive},
 		{Owner: LockOwner{OwnerID: "o1"}, FileHandle: "f1", Offset: 50, Length: 50, Type: LockTypeExclusive},
 	}
@@ -511,7 +511,7 @@ func TestMergeLocks_Adjacent(t *testing.T) {
 func TestMergeLocks_Overlapping(t *testing.T) {
 	t.Parallel()
 
-	locks := []*EnhancedLock{
+	locks := []*UnifiedLock{
 		{Owner: LockOwner{OwnerID: "o1"}, FileHandle: "f1", Offset: 0, Length: 60, Type: LockTypeExclusive},
 		{Owner: LockOwner{OwnerID: "o1"}, FileHandle: "f1", Offset: 40, Length: 60, Type: LockTypeExclusive},
 	}
@@ -528,7 +528,7 @@ func TestMergeLocks_Overlapping(t *testing.T) {
 func TestMergeLocks_DifferentOwners(t *testing.T) {
 	t.Parallel()
 
-	locks := []*EnhancedLock{
+	locks := []*UnifiedLock{
 		{Owner: LockOwner{OwnerID: "o1"}, FileHandle: "f1", Offset: 0, Length: 50, Type: LockTypeExclusive},
 		{Owner: LockOwner{OwnerID: "o2"}, FileHandle: "f1", Offset: 50, Length: 50, Type: LockTypeExclusive},
 	}

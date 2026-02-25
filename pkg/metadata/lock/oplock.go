@@ -64,7 +64,7 @@ var ValidDirectoryLeaseStates = []uint32{
 // Lease Info Type
 // ============================================================================
 
-// LeaseInfo holds SMB2/3 lease-specific state.
+// OpLock holds SMB2/3 lease-specific state.
 //
 // A lease provides caching permissions (R/W/H) to SMB clients. Unlike byte-range
 // locks, leases are whole-file and identified by a client-generated 128-bit key.
@@ -78,7 +78,7 @@ var ValidDirectoryLeaseStates = []uint32{
 //  5. Server updates LeaseState to BreakToState, clears Breaking
 //
 // Reference: MS-SMB2 3.3.5.9.11 Processing a Lease-Break Acknowledgment
-type LeaseInfo struct {
+type OpLock struct {
 	// LeaseKey is the 128-bit client-generated key identifying this lease.
 	// Multiple file handles with the same key share the lease.
 	LeaseKey [16]byte
@@ -114,28 +114,28 @@ type LeaseInfo struct {
 // ============================================================================
 
 // HasRead returns true if the lease includes Read caching permission.
-func (l *LeaseInfo) HasRead() bool {
+func (l *OpLock) HasRead() bool {
 	return l.LeaseState&LeaseStateRead != 0
 }
 
 // HasWrite returns true if the lease includes Write caching permission.
-func (l *LeaseInfo) HasWrite() bool {
+func (l *OpLock) HasWrite() bool {
 	return l.LeaseState&LeaseStateWrite != 0
 }
 
 // HasHandle returns true if the lease includes Handle caching permission.
-func (l *LeaseInfo) HasHandle() bool {
+func (l *OpLock) HasHandle() bool {
 	return l.LeaseState&LeaseStateHandle != 0
 }
 
 // IsBreaking returns true if a lease break is in progress.
-func (l *LeaseInfo) IsBreaking() bool {
+func (l *OpLock) IsBreaking() bool {
 	return l.Breaking
 }
 
 // StateString returns a human-readable string representation of the lease state.
 // Examples: "None", "R", "RW", "RH", "RWH"
-func (l *LeaseInfo) StateString() string {
+func (l *OpLock) StateString() string {
 	return LeaseStateToString(l.LeaseState)
 }
 
@@ -186,12 +186,12 @@ func IsValidDirectoryLeaseState(state uint32) bool {
 // Lease Clone
 // ============================================================================
 
-// Clone creates a deep copy of the LeaseInfo.
-func (l *LeaseInfo) Clone() *LeaseInfo {
+// Clone creates a deep copy of the OpLock.
+func (l *OpLock) Clone() *OpLock {
 	if l == nil {
 		return nil
 	}
-	clone := &LeaseInfo{
+	clone := &OpLock{
 		LeaseKey:     l.LeaseKey, // Fixed-size array, copied by value
 		LeaseState:   l.LeaseState,
 		BreakToState: l.BreakToState,
@@ -207,7 +207,7 @@ func (l *LeaseInfo) Clone() *LeaseInfo {
 // Lease Conflict Detection
 // ============================================================================
 
-// LeasesConflict checks if two leases on the same file conflict.
+// OpLocksConflict checks if two leases on the same file conflict.
 //
 // Conflict rules:
 //   - Same LeaseKey = no conflict (same client caching unit)
@@ -217,7 +217,7 @@ func (l *LeaseInfo) Clone() *LeaseInfo {
 //   - Handle lease without Read/Write = no data conflict
 //
 // Returns true if the leases conflict and one must be broken.
-func LeasesConflict(existing, requested *LeaseInfo) bool {
+func OpLocksConflict(existing, requested *OpLock) bool {
 	// Same lease key - no conflict (same caching unit)
 	if existing.LeaseKey == requested.LeaseKey {
 		return false
@@ -249,7 +249,7 @@ func LeasesConflict(existing, requested *LeaseInfo) bool {
 	return false
 }
 
-// LeaseConflictsWithByteRangeLock checks if a lease conflicts with a byte-range lock.
+// opLockConflictsWithByteLock checks if a lease conflicts with a byte-range lock.
 //
 // Conflict rules:
 //   - Lease with Write conflicts with exclusive byte-range locks from other owners
@@ -257,7 +257,7 @@ func LeasesConflict(existing, requested *LeaseInfo) bool {
 //   - Read leases don't conflict with shared byte-range locks
 //
 // The leaseOwnerID and lockOwnerID are used to determine same-owner (no conflict).
-func LeaseConflictsWithByteRangeLock(lease *LeaseInfo, leaseOwnerID string, lock *EnhancedLock) bool {
+func opLockConflictsWithByteLock(lease *OpLock, leaseOwnerID string, lock *UnifiedLock) bool {
 	// Same owner - no conflict (same client)
 	if leaseOwnerID == lock.Owner.OwnerID {
 		return false

@@ -99,7 +99,7 @@ func (m *mockLockStore) IncrementServerEpoch(_ context.Context) (uint64, error) 
 	return m.epoch, nil
 }
 
-func (m *mockLockStore) ReclaimLease(_ context.Context, _ lock.FileHandle, _ [16]byte, _ string) (*lock.EnhancedLock, error) {
+func (m *mockLockStore) ReclaimLease(_ context.Context, _ lock.FileHandle, _ [16]byte, _ string) (*lock.UnifiedLock, error) {
 	// Mock implementation returns not found - reclaim not supported in mock
 	return nil, nil
 }

@@ -10,19 +10,19 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
-// mockLeaseBreakCallback implements LeaseBreakCallback for testing.
-type mockLeaseBreakCallback struct {
+// mockOpLockBreakCallback implements OpLockBreakCallback for testing.
+type mockOpLockBreakCallback struct {
 	mu           sync.Mutex
 	timedOutKeys []string // hex strings of timed-out lease keys
 }
 
-func (m *mockLeaseBreakCallback) OnLeaseBreakTimeout(leaseKey [16]byte) {
+func (m *mockOpLockBreakCallback) OnLeaseBreakTimeout(leaseKey [16]byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.timedOutKeys = append(m.timedOutKeys, string(leaseKey[:]))
 }
 
-func (m *mockLeaseBreakCallback) getTimedOutKeys() []string {
+func (m *mockOpLockBreakCallback) getTimedOutKeys() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	result := make([]string, len(m.timedOutKeys))
@@ -123,7 +123,7 @@ func (s *mockLockStore) IncrementServerEpoch(ctx context.Context) (uint64, error
 	return 2, nil
 }
 
-func (s *mockLockStore) ReclaimLease(_ context.Context, _ FileHandle, _ [16]byte, _ string) (*EnhancedLock, error) {
+func (s *mockLockStore) ReclaimLease(_ context.Context, _ FileHandle, _ [16]byte, _ string) (*UnifiedLock, error) {
 	// Mock implementation returns not found - reclaim not supported in mock
 	return nil, nil
 }
@@ -159,9 +159,9 @@ func createNonBreakingLease(id string, leaseKey [16]byte) *PersistedLock {
 	}
 }
 
-func TestLeaseBreakScanner_StartStop(t *testing.T) {
+func TestOpLockBreakScanner_StartStop(t *testing.T) {
 	store := newMockLockStore()
-	scanner := NewLeaseBreakScanner(store, nil, 100*time.Millisecond)
+	scanner := NewOpLockBreakScanner(store, nil, 100*time.Millisecond)
 
 	// Initially not running
 	if scanner.IsRunning() {
@@ -200,25 +200,25 @@ func TestLeaseBreakScanner_StartStop(t *testing.T) {
 	scanner.Stop()
 }
 
-func TestLeaseBreakScanner_DefaultTimeout(t *testing.T) {
+func TestOpLockBreakScanner_DefaultTimeout(t *testing.T) {
 	store := newMockLockStore()
 
-	// Test default timeout (0 should use DefaultLeaseBreakTimeout)
-	scanner := NewLeaseBreakScanner(store, nil, 0)
-	if scanner.GetTimeout() != DefaultLeaseBreakTimeout {
-		t.Errorf("Expected default timeout %v, got %v", DefaultLeaseBreakTimeout, scanner.GetTimeout())
+	// Test default timeout (0 should use DefaultOpLockBreakTimeout)
+	scanner := NewOpLockBreakScanner(store, nil, 0)
+	if scanner.GetTimeout() != DefaultOpLockBreakTimeout {
+		t.Errorf("Expected default timeout %v, got %v", DefaultOpLockBreakTimeout, scanner.GetTimeout())
 	}
 
 	// Test custom timeout
-	scanner2 := NewLeaseBreakScanner(store, nil, 10*time.Second)
+	scanner2 := NewOpLockBreakScanner(store, nil, 10*time.Second)
 	if scanner2.GetTimeout() != 10*time.Second {
 		t.Errorf("Expected custom timeout 10s, got %v", scanner2.GetTimeout())
 	}
 }
 
-func TestLeaseBreakScanner_SetTimeout(t *testing.T) {
+func TestOpLockBreakScanner_SetTimeout(t *testing.T) {
 	store := newMockLockStore()
-	scanner := NewLeaseBreakScanner(store, nil, 5*time.Second)
+	scanner := NewOpLockBreakScanner(store, nil, 5*time.Second)
 
 	scanner.SetTimeout(10 * time.Second)
 	if scanner.GetTimeout() != 10*time.Second {
@@ -226,12 +226,12 @@ func TestLeaseBreakScanner_SetTimeout(t *testing.T) {
 	}
 }
 
-func TestLeaseBreakScanner_ExpiredBreakTriggersCallback(t *testing.T) {
+func TestOpLockBreakScanner_ExpiredBreakTriggersCallback(t *testing.T) {
 	store := newMockLockStore()
-	callback := &mockLeaseBreakCallback{}
+	callback := &mockOpLockBreakCallback{}
 
 	// Use a short timeout and scan interval for testing
-	scanner := NewLeaseBreakScannerWithInterval(store, callback, 50*time.Millisecond, 10*time.Millisecond)
+	scanner := NewOpLockBreakScannerWithInterval(store, callback, 50*time.Millisecond, 10*time.Millisecond)
 
 	// Create a lease that started breaking 100ms ago (already expired)
 	var leaseKey [16]byte
@@ -263,11 +263,11 @@ func TestLeaseBreakScanner_ExpiredBreakTriggersCallback(t *testing.T) {
 	}
 }
 
-func TestLeaseBreakScanner_NonBreakingLeasesNotAffected(t *testing.T) {
+func TestOpLockBreakScanner_NonBreakingLeasesNotAffected(t *testing.T) {
 	store := newMockLockStore()
-	callback := &mockLeaseBreakCallback{}
+	callback := &mockOpLockBreakCallback{}
 
-	scanner := NewLeaseBreakScannerWithInterval(store, callback, 50*time.Millisecond, 10*time.Millisecond)
+	scanner := NewOpLockBreakScannerWithInterval(store, callback, 50*time.Millisecond, 10*time.Millisecond)
 
 	// Create a non-breaking lease
 	var leaseKey [16]byte
@@ -295,12 +295,12 @@ func TestLeaseBreakScanner_NonBreakingLeasesNotAffected(t *testing.T) {
 	}
 }
 
-func TestLeaseBreakScanner_NotExpiredBreakNotAffected(t *testing.T) {
+func TestOpLockBreakScanner_NotExpiredBreakNotAffected(t *testing.T) {
 	store := newMockLockStore()
-	callback := &mockLeaseBreakCallback{}
+	callback := &mockOpLockBreakCallback{}
 
 	// Long timeout (5 seconds), short scan interval
-	scanner := NewLeaseBreakScannerWithInterval(store, callback, 5*time.Second, 10*time.Millisecond)
+	scanner := NewOpLockBreakScannerWithInterval(store, callback, 5*time.Second, 10*time.Millisecond)
 
 	// Create a breaking lease that just started (not expired)
 	var leaseKey [16]byte
@@ -328,11 +328,11 @@ func TestLeaseBreakScanner_NotExpiredBreakNotAffected(t *testing.T) {
 	}
 }
 
-func TestLeaseBreakScanner_MultipleLeases(t *testing.T) {
+func TestOpLockBreakScanner_MultipleLeases(t *testing.T) {
 	store := newMockLockStore()
-	callback := &mockLeaseBreakCallback{}
+	callback := &mockOpLockBreakCallback{}
 
-	scanner := NewLeaseBreakScannerWithInterval(store, callback, 50*time.Millisecond, 10*time.Millisecond)
+	scanner := NewOpLockBreakScannerWithInterval(store, callback, 50*time.Millisecond, 10*time.Millisecond)
 
 	// Create multiple leases:
 	// 1. Expired breaking lease (should be revoked)
@@ -372,11 +372,11 @@ func TestLeaseBreakScanner_MultipleLeases(t *testing.T) {
 	}
 }
 
-func TestLeaseBreakScanner_NilCallback(t *testing.T) {
+func TestOpLockBreakScanner_NilCallback(t *testing.T) {
 	store := newMockLockStore()
 
 	// Scanner with nil callback should not panic
-	scanner := NewLeaseBreakScannerWithInterval(store, nil, 50*time.Millisecond, 10*time.Millisecond)
+	scanner := NewOpLockBreakScannerWithInterval(store, nil, 50*time.Millisecond, 10*time.Millisecond)
 
 	// Create an expired breaking lease
 	var leaseKey [16]byte
@@ -398,11 +398,11 @@ func TestLeaseBreakScanner_NilCallback(t *testing.T) {
 	}
 }
 
-func TestLeaseBreakScanner_ByteRangeLocksIgnored(t *testing.T) {
+func TestOpLockBreakScanner_ByteRangeLocksIgnored(t *testing.T) {
 	store := newMockLockStore()
-	callback := &mockLeaseBreakCallback{}
+	callback := &mockOpLockBreakCallback{}
 
-	scanner := NewLeaseBreakScannerWithInterval(store, callback, 50*time.Millisecond, 10*time.Millisecond)
+	scanner := NewOpLockBreakScannerWithInterval(store, callback, 50*time.Millisecond, 10*time.Millisecond)
 
 	// Create a byte-range lock (no LeaseKey)
 	byteRangeLock := &PersistedLock{

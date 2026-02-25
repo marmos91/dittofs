@@ -27,7 +27,7 @@ import (
 // accessed concurrently via IsCancelled() and Cancel() methods.
 type Waiter struct {
 	// Lock is the requested lock specification
-	Lock *lock.EnhancedLock
+	Lock *lock.UnifiedLock
 
 	// Cookie is the client's opaque cookie (echoed in callback)
 	Cookie []byte

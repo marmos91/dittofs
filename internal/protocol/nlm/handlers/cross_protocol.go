@@ -38,7 +38,7 @@ const leaseBreakPollInterval = 100 * time.Millisecond
 //
 // Returns:
 //   - *LockResponse: Response with NLM4_DENIED status and holder info
-func buildDeniedResponseFromSMBLease(cookie []byte, lease *lock.EnhancedLock) *LockResponse {
+func buildDeniedResponseFromSMBLease(cookie []byte, lease *lock.UnifiedLock) *LockResponse {
 	// Translate SMB lease to NLM holder format
 	holderInfo := lock.TranslateToNLMHolder(lease)
 
@@ -185,7 +185,7 @@ func checkForSMBLeaseConflicts(ctx context.Context, checker metadata.OplockCheck
 //
 // Returns:
 //   - *LockResponse: Response with NLM4_DENIED status
-func buildDeniedResponseFromByteRangeLock(cookie []byte, conflict *lock.EnhancedLock) *LockResponse {
+func buildDeniedResponseFromByteRangeLock(cookie []byte, conflict *lock.UnifiedLock) *LockResponse {
 	// Translate to NLM holder format for logging
 	holderInfo := lock.TranslateByteRangeLockToNLMHolder(conflict)
 

@@ -55,9 +55,9 @@ const (
 // Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
 type LockConflict = lock.LockConflict
 
-// EnhancedLockConflict is re-exported from the lock package.
+// UnifiedLockConflict is re-exported from the lock package.
 // Deprecated: Import from github.com/marmos91/dittofs/pkg/metadata/lock directly.
-type EnhancedLockConflict = lock.EnhancedLockConflict
+type UnifiedLockConflict = lock.UnifiedLockConflict
 
 // ============================================================================
 // Error Factory Functions (backward compatibility wrappers)
@@ -167,7 +167,7 @@ func NewLockLimitExceededError(limitType string, current, max int) *StoreError {
 
 // NewLockConflictError creates a StoreError for lock conflicts (upgrade, etc.).
 // Deprecated: Use lock.NewLockConflictError directly.
-func NewLockConflictError(path string, conflict *EnhancedLockConflict) *StoreError {
+func NewLockConflictError(path string, conflict *UnifiedLockConflict) *StoreError {
 	return lock.NewLockConflictError(path, conflict)
 }
 

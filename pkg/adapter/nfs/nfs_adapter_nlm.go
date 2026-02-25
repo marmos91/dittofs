@@ -62,7 +62,7 @@ func (s *NFSAdapter) processNLMWaiters(handle metadata.FileHandle) {
 		}
 
 		// Try to add the lock
-		enhancedLock := metadata.NewEnhancedLock(
+		enhancedLock := metadata.NewUnifiedLock(
 			waiter.Lock.Owner,
 			lock.FileHandle(handle),
 			waiter.Lock.Offset,
@@ -70,7 +70,7 @@ func (s *NFSAdapter) processNLMWaiters(handle metadata.FileHandle) {
 			lockType,
 		)
 
-		err := lm.AddEnhancedLock(handleKey, enhancedLock)
+		err := lm.AddUnifiedLock(handleKey, enhancedLock)
 		if err != nil {
 			// Lock still conflicts - try next waiter
 			logger.Debug("NLM waiter still conflicts, skipping",

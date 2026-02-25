@@ -416,12 +416,12 @@ func (s *badgerLockStore) IncrementServerEpoch(ctx context.Context) (uint64, err
 
 // ReclaimLease reclaims an existing lease during grace period.
 // Searches for a persisted lease with matching file handle and lease key.
-func (s *badgerLockStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.EnhancedLock, error) {
+func (s *badgerLockStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.UnifiedLock, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	var result *lock.EnhancedLock
+	var result *lock.UnifiedLock
 	err := s.db.View(func(txn *badgerdb.Txn) error {
 		// Search for leases on this file
 		locks, err := s.listLocksTx(txn, lock.LockQuery{FileID: string(fileHandle)})
@@ -440,7 +440,7 @@ func (s *badgerLockStore) ReclaimLease(ctx context.Context, fileHandle lock.File
 			if storedKey != leaseKey {
 				continue
 			}
-			// Found matching lease - convert to EnhancedLock
+			// Found matching lease - convert to UnifiedLock
 			enhanced := lock.FromPersistedLock(lk)
 			if enhanced.Lease != nil {
 				enhanced.Lease.Reclaim = true
@@ -525,7 +525,7 @@ func (s *BadgerMetadataStore) IncrementServerEpoch(ctx context.Context) (uint64,
 }
 
 // ReclaimLease reclaims an existing lease during grace period.
-func (s *BadgerMetadataStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.EnhancedLock, error) {
+func (s *BadgerMetadataStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.UnifiedLock, error) {
 	s.initLockStore()
 	return s.lockStore.ReclaimLease(ctx, fileHandle, leaseKey, clientID)
 }
@@ -603,7 +603,7 @@ func (tx *badgerTransaction) IncrementServerEpoch(ctx context.Context) (uint64, 
 	return tx.store.lockStore.IncrementServerEpoch(ctx)
 }
 
-func (tx *badgerTransaction) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.EnhancedLock, error) {
+func (tx *badgerTransaction) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.UnifiedLock, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

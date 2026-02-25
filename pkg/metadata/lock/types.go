@@ -46,35 +46,35 @@ func (lt LockType) String() string {
 	}
 }
 
-// ShareReservation represents SMB share mode reservations.
+// AccessMode represents SMB share mode reservations.
 // These control what other clients can do while the file is open.
 // NFS protocols ignore this field.
-type ShareReservation int
+type AccessMode int
 
 const (
-	// ShareReservationNone allows all operations by other clients (default).
-	ShareReservationNone ShareReservation = iota
+	// AccessModeNone allows all operations by other clients (default).
+	AccessModeNone AccessMode = iota
 
-	// ShareReservationDenyRead prevents other clients from reading.
-	ShareReservationDenyRead
+	// AccessModeDenyRead prevents other clients from reading.
+	AccessModeDenyRead
 
-	// ShareReservationDenyWrite prevents other clients from writing.
-	ShareReservationDenyWrite
+	// AccessModeDenyWrite prevents other clients from writing.
+	AccessModeDenyWrite
 
-	// ShareReservationDenyAll prevents other clients from reading or writing.
-	ShareReservationDenyAll
+	// AccessModeDenyAll prevents other clients from reading or writing.
+	AccessModeDenyAll
 )
 
 // String returns a human-readable name for the share reservation.
-func (sr ShareReservation) String() string {
+func (sr AccessMode) String() string {
 	switch sr {
-	case ShareReservationNone:
+	case AccessModeNone:
 		return "none"
-	case ShareReservationDenyRead:
+	case AccessModeDenyRead:
 		return "deny-read"
-	case ShareReservationDenyWrite:
+	case AccessModeDenyWrite:
 		return "deny-write"
-	case ShareReservationDenyAll:
+	case AccessModeDenyAll:
 		return "deny-all"
 	default:
 		return "unknown"
@@ -107,7 +107,7 @@ type LockOwner struct {
 	ShareName string
 }
 
-// EnhancedLock represents a byte-range lock or SMB lease with full protocol support.
+// UnifiedLock represents a byte-range lock or SMB lease with full protocol support.
 //
 // This extends the basic FileLock concept to support:
 //   - Protocol-agnostic ownership (NLM, SMB, NFSv4)
@@ -132,7 +132,7 @@ type LockOwner struct {
 // will conflict with an SMB lock request for the same range, enabling
 // unified locking across protocols. Leases also participate in cross-protocol
 // conflict detection (e.g., NFS write triggers SMB Write lease break).
-type EnhancedLock struct {
+type UnifiedLock struct {
 	// ID is a unique identifier for this lock (UUID).
 	// Used for lock management, debugging, and metrics.
 	ID string
@@ -159,8 +159,8 @@ type EnhancedLock struct {
 	//   - LockTypeExclusive for Write-containing leases
 	Type LockType
 
-	// ShareReservation is the SMB share mode (NFS protocols ignore this).
-	ShareReservation ShareReservation
+	// AccessMode is the SMB share mode (NFS protocols ignore this).
+	AccessMode AccessMode
 
 	// AcquiredAt is when the lock was acquired.
 	AcquiredAt time.Time
@@ -176,12 +176,12 @@ type EnhancedLock struct {
 	// Lease holds lease-specific state for SMB2/3 leases.
 	// Nil for byte-range locks; non-nil for leases.
 	// When non-nil, Offset=0 and Length=0 (whole-file).
-	Lease *LeaseInfo
+	Lease *OpLock
 }
 
-// NewEnhancedLock creates a new EnhancedLock with a generated UUID.
-func NewEnhancedLock(owner LockOwner, fileHandle FileHandle, offset, length uint64, lockType LockType) *EnhancedLock {
-	return &EnhancedLock{
+// NewUnifiedLock creates a new UnifiedLock with a generated UUID.
+func NewUnifiedLock(owner LockOwner, fileHandle FileHandle, offset, length uint64, lockType LockType) *UnifiedLock {
+	return &UnifiedLock{
 		ID:         uuid.New().String(),
 		Owner:      owner,
 		FileHandle: fileHandle,
@@ -193,18 +193,18 @@ func NewEnhancedLock(owner LockOwner, fileHandle FileHandle, offset, length uint
 }
 
 // IsExclusive returns true if this is an exclusive (write) lock.
-func (el *EnhancedLock) IsExclusive() bool {
+func (el *UnifiedLock) IsExclusive() bool {
 	return el.Type == LockTypeExclusive
 }
 
 // IsShared returns true if this is a shared (read) lock.
-func (el *EnhancedLock) IsShared() bool {
+func (el *UnifiedLock) IsShared() bool {
 	return el.Type == LockTypeShared
 }
 
 // End returns the end offset of the lock (exclusive).
 // Returns 0 for unbounded locks (Length=0 means to EOF).
-func (el *EnhancedLock) End() uint64 {
+func (el *UnifiedLock) End() uint64 {
 	if el.Length == 0 {
 		return 0 // Unbounded
 	}
@@ -212,7 +212,7 @@ func (el *EnhancedLock) End() uint64 {
 }
 
 // Contains returns true if this lock fully contains the specified range.
-func (el *EnhancedLock) Contains(offset, length uint64) bool {
+func (el *UnifiedLock) Contains(offset, length uint64) bool {
 	// Unbounded lock contains everything at or after its offset
 	if el.Length == 0 {
 		return offset >= el.Offset
@@ -229,20 +229,20 @@ func (el *EnhancedLock) Contains(offset, length uint64) bool {
 }
 
 // Overlaps returns true if this lock overlaps with the specified range.
-func (el *EnhancedLock) Overlaps(offset, length uint64) bool {
+func (el *UnifiedLock) Overlaps(offset, length uint64) bool {
 	return RangesOverlap(el.Offset, el.Length, offset, length)
 }
 
 // Clone creates a deep copy of the lock.
-func (el *EnhancedLock) Clone() *EnhancedLock {
-	clone := &EnhancedLock{
+func (el *UnifiedLock) Clone() *UnifiedLock {
+	clone := &UnifiedLock{
 		ID:               el.ID,
 		Owner:            el.Owner,
 		FileHandle:       el.FileHandle,
 		Offset:           el.Offset,
 		Length:           el.Length,
 		Type:             el.Type,
-		ShareReservation: el.ShareReservation,
+		AccessMode: el.AccessMode,
 		AcquiredAt:       el.AcquiredAt,
 		Blocking:         el.Blocking,
 		Reclaim:          el.Reclaim,
@@ -256,7 +256,7 @@ func (el *EnhancedLock) Clone() *EnhancedLock {
 
 // IsLease returns true if this is an SMB2/3 lease rather than a byte-range lock.
 // Leases have the Lease field set and are whole-file (Offset=0, Length=0).
-func (el *EnhancedLock) IsLease() bool {
+func (el *UnifiedLock) IsLease() bool {
 	return el.Lease != nil
 }
 
@@ -264,16 +264,16 @@ func (el *EnhancedLock) IsLease() bool {
 // Enhanced Lock Conflict Detection
 // ============================================================================
 
-// EnhancedLockConflict describes a conflicting lock for error reporting.
-type EnhancedLockConflict struct {
+// UnifiedLockConflict describes a conflicting lock for error reporting.
+type UnifiedLockConflict struct {
 	// Lock is the conflicting lock.
-	Lock *EnhancedLock
+	Lock *UnifiedLock
 
 	// Reason describes why the conflict occurred.
 	Reason string
 }
 
-// IsEnhancedLockConflicting checks if two enhanced locks conflict with each other.
+// IsUnifiedLockConflicting checks if two enhanced locks conflict with each other.
 //
 // This function handles three cases:
 //  1. Lease vs Lease: Check lease-specific conflict rules
@@ -298,7 +298,7 @@ type EnhancedLockConflict struct {
 // Note: Owner comparison uses the full OwnerID string, enabling cross-protocol
 // conflict detection. An NLM lock and SMB lock on the same range WILL conflict
 // because they have different OwnerIDs.
-func IsEnhancedLockConflicting(existing, requested *EnhancedLock) bool {
+func IsUnifiedLockConflicting(existing, requested *UnifiedLock) bool {
 	// Same owner - no conflict (allows re-locking same range with different type)
 	if existing.Owner.OwnerID == requested.Owner.OwnerID {
 		return false
@@ -310,17 +310,17 @@ func IsEnhancedLockConflicting(existing, requested *EnhancedLock) bool {
 
 	// Case 1: Both are leases
 	if existingIsLease && requestedIsLease {
-		return LeasesConflict(existing.Lease, requested.Lease)
+		return OpLocksConflict(existing.Lease, requested.Lease)
 	}
 
 	// Case 2: One is a lease, one is a byte-range lock
 	if existingIsLease && !requestedIsLease {
 		// Existing is lease, requested is byte-range lock
-		return LeaseConflictsWithByteRangeLock(existing.Lease, existing.Owner.OwnerID, requested)
+		return opLockConflictsWithByteLock(existing.Lease, existing.Owner.OwnerID, requested)
 	}
 	if !existingIsLease && requestedIsLease {
 		// Existing is byte-range lock, requested is lease
-		return LeaseConflictsWithByteRangeLock(requested.Lease, requested.Owner.OwnerID, existing)
+		return opLockConflictsWithByteLock(requested.Lease, requested.Owner.OwnerID, existing)
 	}
 
 	// Case 3: Both are byte-range locks (original logic)
@@ -375,10 +375,10 @@ type LockResult struct {
 	Success bool
 
 	// Lock is the acquired lock (nil if !Success).
-	Lock *EnhancedLock
+	Lock *UnifiedLock
 
 	// Conflict is the conflicting lock information (nil if Success).
-	Conflict *EnhancedLockConflict
+	Conflict *UnifiedLockConflict
 
 	// ShouldWait indicates whether the caller should wait and retry.
 	// True when a blocking request found a conflict.

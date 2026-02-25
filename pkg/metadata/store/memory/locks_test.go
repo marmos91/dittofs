@@ -21,7 +21,7 @@ func TestMemoryLockStore_PutAndGetLock(t *testing.T) {
 		LockType:         1, // Exclusive
 		Offset:           100,
 		Length:           500,
-		ShareReservation: 0,
+		AccessMode: 0,
 		AcquiredAt:       time.Now().Truncate(time.Millisecond),
 		ServerEpoch:      1,
 	}

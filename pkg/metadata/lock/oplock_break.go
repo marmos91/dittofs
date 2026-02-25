@@ -1,7 +1,7 @@
 // Package lock provides lock management types and operations for the metadata package.
 // This file implements the lease break timeout scanner.
 //
-// The LeaseBreakScanner monitors breaking leases and force-revokes them on timeout.
+// The OpLockBreakScanner monitors breaking leases and force-revokes them on timeout.
 // Per MS-SMB2 and CONTEXT.md: "Force revoke on timeout - don't retry, just revoke
 // and allow conflicting operation"
 package lock
@@ -20,21 +20,21 @@ import (
 // ============================================================================
 
 const (
-	// DefaultLeaseBreakTimeout is the Windows default (35 seconds).
+	// DefaultOpLockBreakTimeout is the Windows default (35 seconds).
 	// Per MS-SMB2 3.3.6.5: "implementation-specific default value in milliseconds"
-	DefaultLeaseBreakTimeout = 35 * time.Second
+	DefaultOpLockBreakTimeout = 35 * time.Second
 
-	// LeaseBreakScanInterval is how often to check for expired breaks.
-	LeaseBreakScanInterval = 1 * time.Second
+	// OpLockBreakScanInterval is how often to check for expired breaks.
+	OpLockBreakScanInterval = 1 * time.Second
 )
 
 // ============================================================================
 // Lease Break Callback Interface
 // ============================================================================
 
-// LeaseBreakCallback is called when a lease break times out.
+// OpLockBreakCallback is called when a lease break times out.
 // The callback allows the OplockManager to clean up internal state.
-type LeaseBreakCallback interface {
+type OpLockBreakCallback interface {
 	// OnLeaseBreakTimeout is called when a lease break times out without acknowledgment.
 	// The lease has already been force-revoked (deleted from store).
 	OnLeaseBreakTimeout(leaseKey [16]byte)
@@ -44,7 +44,7 @@ type LeaseBreakCallback interface {
 // Lease Break Scanner
 // ============================================================================
 
-// LeaseBreakScanner monitors breaking leases and force-revokes on timeout.
+// OpLockBreakScanner monitors breaking leases and force-revokes on timeout.
 //
 // The scanner runs in the background, periodically checking for leases
 // that are in the "breaking" state and have exceeded the timeout.
@@ -53,9 +53,9 @@ type LeaseBreakCallback interface {
 //  1. The lease is deleted from the store (force-revoked)
 //  2. The callback is notified so it can clean up tracking state
 //  3. The conflicting operation can proceed
-type LeaseBreakScanner struct {
+type OpLockBreakScanner struct {
 	lockStore    LockStore
-	callback     LeaseBreakCallback
+	callback     OpLockBreakCallback
 	timeout      time.Duration
 	scanInterval time.Duration
 
@@ -65,35 +65,35 @@ type LeaseBreakScanner struct {
 	running bool
 }
 
-// NewLeaseBreakScanner creates a new lease break scanner.
+// NewOpLockBreakScanner creates a new lease break scanner.
 //
 // Parameters:
 //   - lockStore: The lock store to query for breaking leases
 //   - callback: Called when a break times out (can be nil)
-//   - timeout: Break timeout (0 = DefaultLeaseBreakTimeout)
-func NewLeaseBreakScanner(
+//   - timeout: Break timeout (0 = DefaultOpLockBreakTimeout)
+func NewOpLockBreakScanner(
 	lockStore LockStore,
-	callback LeaseBreakCallback,
+	callback OpLockBreakCallback,
 	timeout time.Duration,
-) *LeaseBreakScanner {
-	return NewLeaseBreakScannerWithInterval(lockStore, callback, timeout, LeaseBreakScanInterval)
+) *OpLockBreakScanner {
+	return NewOpLockBreakScannerWithInterval(lockStore, callback, timeout, OpLockBreakScanInterval)
 }
 
-// NewLeaseBreakScannerWithInterval creates a new lease break scanner with custom scan interval.
+// NewOpLockBreakScannerWithInterval creates a new lease break scanner with custom scan interval.
 // This is primarily useful for testing.
-func NewLeaseBreakScannerWithInterval(
+func NewOpLockBreakScannerWithInterval(
 	lockStore LockStore,
-	callback LeaseBreakCallback,
+	callback OpLockBreakCallback,
 	timeout time.Duration,
 	scanInterval time.Duration,
-) *LeaseBreakScanner {
+) *OpLockBreakScanner {
 	if timeout == 0 {
-		timeout = DefaultLeaseBreakTimeout
+		timeout = DefaultOpLockBreakTimeout
 	}
 	if scanInterval == 0 {
-		scanInterval = LeaseBreakScanInterval
+		scanInterval = OpLockBreakScanInterval
 	}
-	return &LeaseBreakScanner{
+	return &OpLockBreakScanner{
 		lockStore:    lockStore,
 		callback:     callback,
 		timeout:      timeout,
@@ -105,7 +105,7 @@ func NewLeaseBreakScannerWithInterval(
 
 // Start begins the background scan loop.
 // Safe to call multiple times (subsequent calls are no-ops).
-func (s *LeaseBreakScanner) Start() {
+func (s *OpLockBreakScanner) Start() {
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
@@ -122,7 +122,7 @@ func (s *LeaseBreakScanner) Start() {
 // Stop stops the background scan loop.
 // Blocks until the loop has exited.
 // Safe to call multiple times.
-func (s *LeaseBreakScanner) Stop() {
+func (s *OpLockBreakScanner) Stop() {
 	s.mu.Lock()
 	if !s.running {
 		s.mu.Unlock()
@@ -136,7 +136,7 @@ func (s *LeaseBreakScanner) Stop() {
 }
 
 // IsRunning returns true if the scanner is currently running.
-func (s *LeaseBreakScanner) IsRunning() bool {
+func (s *OpLockBreakScanner) IsRunning() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.running
@@ -144,14 +144,14 @@ func (s *LeaseBreakScanner) IsRunning() bool {
 
 // SetTimeout updates the break timeout.
 // This only affects future timeout calculations, not breaks already in progress.
-func (s *LeaseBreakScanner) SetTimeout(timeout time.Duration) {
+func (s *OpLockBreakScanner) SetTimeout(timeout time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.timeout = timeout
 }
 
 // GetTimeout returns the current break timeout.
-func (s *LeaseBreakScanner) GetTimeout() time.Duration {
+func (s *OpLockBreakScanner) GetTimeout() time.Duration {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.timeout
@@ -162,7 +162,7 @@ func (s *LeaseBreakScanner) GetTimeout() time.Duration {
 // ============================================================================
 
 // scanLoop is the main background loop.
-func (s *LeaseBreakScanner) scanLoop() {
+func (s *OpLockBreakScanner) scanLoop() {
 	defer close(s.stopped)
 
 	ticker := time.NewTicker(s.scanInterval)
@@ -179,7 +179,7 @@ func (s *LeaseBreakScanner) scanLoop() {
 }
 
 // scanExpiredBreaks checks for and revokes expired lease breaks.
-func (s *LeaseBreakScanner) scanExpiredBreaks(now time.Time) {
+func (s *OpLockBreakScanner) scanExpiredBreaks(now time.Time) {
 	ctx := context.Background()
 
 	// Get current timeout (under lock)
@@ -193,7 +193,7 @@ func (s *LeaseBreakScanner) scanExpiredBreaks(now time.Time) {
 		IsLease: &isLease,
 	})
 	if err != nil {
-		logger.Warn("LeaseBreakScanner: failed to list locks", "error", err)
+		logger.Warn("OpLockBreakScanner: failed to list locks", "error", err)
 		return
 	}
 
@@ -215,7 +215,7 @@ func (s *LeaseBreakScanner) scanExpiredBreaks(now time.Time) {
 			var leaseKey [16]byte
 			copy(leaseKey[:], pl.LeaseKey)
 
-			logger.Debug("LeaseBreakScanner: break timeout expired",
+			logger.Debug("OpLockBreakScanner: break timeout expired",
 				"leaseKey", fmt.Sprintf("%x", leaseKey),
 				"breakStarted", pl.AcquiredAt,
 				"deadline", breakDeadline,
@@ -223,13 +223,13 @@ func (s *LeaseBreakScanner) scanExpiredBreaks(now time.Time) {
 
 			// Force revoke - delete the lease
 			if err := s.lockStore.DeleteLock(ctx, pl.ID); err != nil {
-				logger.Warn("LeaseBreakScanner: failed to delete expired lease",
+				logger.Warn("OpLockBreakScanner: failed to delete expired lease",
 					"leaseKey", fmt.Sprintf("%x", leaseKey),
 					"error", err)
 				continue
 			}
 
-			logger.Debug("LeaseBreakScanner: lease force-revoked",
+			logger.Debug("OpLockBreakScanner: lease force-revoked",
 				"leaseKey", fmt.Sprintf("%x", leaseKey))
 
 			// Notify callback (allows conflicting operation to proceed)

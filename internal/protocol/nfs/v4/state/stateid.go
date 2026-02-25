@@ -350,9 +350,9 @@ func (sm *StateManager) freeLockStateidLocked(clientID uint64, stateid *types.St
 		ownerID := fmt.Sprintf("nfs4:%d:%s", lockState.LockOwner.ClientID,
 			hex.EncodeToString(lockState.LockOwner.OwnerData))
 		handleKey := string(lockState.FileHandle)
-		for _, l := range sm.lockManager.ListEnhancedLocks(handleKey) {
+		for _, l := range sm.lockManager.ListUnifiedLocks(handleKey) {
 			if l.Owner.OwnerID == ownerID {
-				_ = sm.lockManager.RemoveEnhancedLock(handleKey, l.Owner, l.Offset, l.Length)
+				_ = sm.lockManager.RemoveUnifiedLock(handleKey, l.Owner, l.Offset, l.Length)
 			}
 		}
 	}

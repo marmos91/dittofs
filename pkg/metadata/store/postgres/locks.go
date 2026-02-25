@@ -65,7 +65,7 @@ func (s *postgresLockStore) PutLock(ctx context.Context, lk *lock.PersistedLock)
 		lk.LockType,
 		lk.Offset,
 		lk.Length,
-		lk.ShareReservation,
+		lk.AccessMode,
 		lk.AcquiredAt,
 		lk.ServerEpoch,
 	)
@@ -100,7 +100,7 @@ func (s *postgresLockStore) putLockTx(ctx context.Context, tx pgx.Tx, lk *lock.P
 		lk.LockType,
 		lk.Offset,
 		lk.Length,
-		lk.ShareReservation,
+		lk.AccessMode,
 		lk.AcquiredAt,
 		lk.ServerEpoch,
 	)
@@ -126,7 +126,7 @@ func (s *postgresLockStore) GetLock(ctx context.Context, lockID string) (*lock.P
 		&lk.LockType,
 		&lk.Offset,
 		&lk.Length,
-		&lk.ShareReservation,
+		&lk.AccessMode,
 		&lk.AcquiredAt,
 		&lk.ServerEpoch,
 	)
@@ -163,7 +163,7 @@ func (s *postgresLockStore) getLockTx(ctx context.Context, tx pgx.Tx, lockID str
 		&lk.LockType,
 		&lk.Offset,
 		&lk.Length,
-		&lk.ShareReservation,
+		&lk.AccessMode,
 		&lk.AcquiredAt,
 		&lk.ServerEpoch,
 	)
@@ -270,7 +270,7 @@ func (s *postgresLockStore) ListLocks(ctx context.Context, query lock.LockQuery)
 			&lk.LockType,
 			&lk.Offset,
 			&lk.Length,
-			&lk.ShareReservation,
+			&lk.AccessMode,
 			&lk.AcquiredAt,
 			&lk.ServerEpoch,
 		)
@@ -334,7 +334,7 @@ func (s *postgresLockStore) listLocksTx(ctx context.Context, tx pgx.Tx, query lo
 			&lk.LockType,
 			&lk.Offset,
 			&lk.Length,
-			&lk.ShareReservation,
+			&lk.AccessMode,
 			&lk.AcquiredAt,
 			&lk.ServerEpoch,
 		)
@@ -451,7 +451,7 @@ func (s *postgresLockStore) incrementServerEpochTx(ctx context.Context, tx pgx.T
 
 // ReclaimLease reclaims an existing lease during grace period.
 // Searches for a persisted lease with matching file handle and lease key.
-func (s *postgresLockStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, _ string) (*lock.EnhancedLock, error) {
+func (s *postgresLockStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, _ string) (*lock.UnifiedLock, error) {
 	// Search for leases on this file with matching lease key
 	locks, err := s.ListLocks(ctx, lock.LockQuery{FileID: string(fileHandle)})
 	if err != nil {
@@ -469,7 +469,7 @@ func (s *postgresLockStore) ReclaimLease(ctx context.Context, fileHandle lock.Fi
 		if storedKey != leaseKey {
 			continue
 		}
-		// Found matching lease - convert to EnhancedLock
+		// Found matching lease - convert to UnifiedLock
 		enhanced := lock.FromPersistedLock(lk)
 		if enhanced.Lease != nil {
 			enhanced.Lease.Reclaim = true
@@ -486,7 +486,7 @@ func (s *postgresLockStore) ReclaimLease(ctx context.Context, fileHandle lock.Fi
 }
 
 // reclaimLeaseTx reclaims a lease within an existing transaction.
-func (s *postgresLockStore) reclaimLeaseTx(ctx context.Context, tx pgx.Tx, fileHandle lock.FileHandle, leaseKey [16]byte, _ string) (*lock.EnhancedLock, error) {
+func (s *postgresLockStore) reclaimLeaseTx(ctx context.Context, tx pgx.Tx, fileHandle lock.FileHandle, leaseKey [16]byte, _ string) (*lock.UnifiedLock, error) {
 	// Search for leases on this file with matching lease key
 	locks, err := s.listLocksTx(ctx, tx, lock.LockQuery{FileID: string(fileHandle)})
 	if err != nil {
@@ -504,7 +504,7 @@ func (s *postgresLockStore) reclaimLeaseTx(ctx context.Context, tx pgx.Tx, fileH
 		if storedKey != leaseKey {
 			continue
 		}
-		// Found matching lease - convert to EnhancedLock
+		// Found matching lease - convert to UnifiedLock
 		enhanced := lock.FromPersistedLock(lk)
 		if enhanced.Lease != nil {
 			enhanced.Lease.Reclaim = true
@@ -585,7 +585,7 @@ func (s *PostgresMetadataStore) IncrementServerEpoch(ctx context.Context) (uint6
 }
 
 // ReclaimLease reclaims an existing lease during grace period.
-func (s *PostgresMetadataStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.EnhancedLock, error) {
+func (s *PostgresMetadataStore) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.UnifiedLock, error) {
 	s.initLockStore()
 	return s.lockStore.ReclaimLease(ctx, fileHandle, leaseKey, clientID)
 }
@@ -637,7 +637,7 @@ func (ptx *postgresTransaction) IncrementServerEpoch(ctx context.Context) (uint6
 	return ptx.store.lockStore.incrementServerEpochTx(ctx, ptx.tx)
 }
 
-func (ptx *postgresTransaction) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.EnhancedLock, error) {
+func (ptx *postgresTransaction) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.UnifiedLock, error) {
 	ptx.store.initLockStore()
 	return ptx.store.lockStore.reclaimLeaseTx(ctx, ptx.tx, fileHandle, leaseKey, clientID)
 }
