@@ -7,13 +7,10 @@ import (
 )
 
 // handlePutPubFH implements the PUTPUBFH operation (RFC 7530 Section 16.23).
-//
-// PUTPUBFH sets the current filehandle to the public filehandle.
-// Per locked decision "PUTPUBFH = PUTROOTFH = pseudo-fs root",
-// this behaves identically to PUTROOTFH.
-//
-// Wire format args: none
-// Wire format res:  nfsstat4 (uint32)
+// Sets the current filehandle to the public filehandle (pseudo-fs root).
+// No delegation; reads PseudoFS.GetRootHandle directly (identical to PUTROOTFH).
+// Sets CurrentFH to pseudo-fs root; no store access or state changes.
+// Errors: none (always succeeds).
 func (h *Handler) handlePutPubFH(ctx *types.CompoundContext, _ io.Reader) *types.CompoundResult {
 	rootHandle := h.PseudoFS.GetRootHandle()
 

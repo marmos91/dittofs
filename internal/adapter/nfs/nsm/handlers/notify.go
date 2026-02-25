@@ -6,29 +6,11 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/xdr"
 )
 
-// Notify handles the SM_NOTIFY procedure (procedure 6).
-//
-// SM_NOTIFY is sent by another NSM instance when a host restarts.
-// This notifies our NSM that a remote host has changed state, so we
-// can inform any local clients monitoring that host.
-//
-// The crash recovery flow:
-//  1. Remote server crashes and restarts
-//  2. Remote NSM sends SM_NOTIFY to all registered monitors
-//  3. Our NSM receives SM_NOTIFY (this handler)
-//  4. Our NSM should send callbacks to local clients monitoring that host
-//  5. Local clients reclaim their locks during grace period
-//
-// For now, this handler logs the notification. Full crash recovery
-// with callback dispatch will be implemented in Plan 03-03.
-//
-// Parameters:
-//   - ctx: The NSM handler context
-//   - data: XDR-encoded stat_chge structure (host and new state)
-//
-// Returns:
-//   - *HandlerResult: Empty response (SM_NOTIFY is one-way)
-//   - error: XDR decoding error if input is malformed
+// Notify handles NSM NOTIFY (RFC 1813, SM procedure 6).
+// Receives state-change notification from a remote NSM when a monitored host restarts.
+// No delegation yet; logs the notification (callback dispatch deferred to future plan).
+// No side effects currently; will eventually trigger SM_NOTIFY callbacks to local clients.
+// Errors: none (one-way procedure; decode errors are logged but do not fail).
 func (h *Handler) Notify(ctx *NSMHandlerContext, data []byte) (*HandlerResult, error) {
 	// Decode stat_chge argument
 	r := newBytesReader(data)

@@ -27,48 +27,11 @@ type UmountAllResponse struct {
 	MountResponseBase // Embeds Status and GetStatus()
 }
 
-// UmntAll handles the UMOUNTALL (UMNTALL) procedure, which allows clients
-// to remove all of their mount entries in a single operation.
-//
-// The unmount-all process:
-//  1. Check for context cancellation (early exit if client disconnected)
-//  2. Extract the client IP address from the network context
-//  3. Query the repository for all mounts from this client (for logging)
-//  4. Check for cancellation before the destructive operation
-//  5. Remove all mount records for this client across all shares
-//  6. Log the operation with count of removed mounts
-//  7. Always return success (RFC 1813 specifies void return)
-//
-// Context cancellation:
-//   - Check at the beginning to respect client disconnection
-//   - Check before removing mounts to avoid starting destructive operation
-//   - Once removal starts, let it complete to ensure consistency
-//   - If cancelled during removal, we still return success per RFC
-//
-// Use cases for UMNTALL:
-//   - Client is shutting down and wants to clean up all mounts
-//   - Client encountered an error and wants to reset mount state
-//   - Administrative cleanup of stale mount records
-//   - Client reboot/restart scenarios
-//
-// Important notes:
-//   - UMNTALL always succeeds per RFC 1813, even if no mounts exist
-//   - The actual unmounting happens on the client side
-//   - Server-side tracking is informational only
-//   - No error status codes are defined for UMNTALL in the protocol
-//   - This is more efficient than calling UMNT for each mount individually
-//
-// Parameters:
-//   - ctx: Context with cancellation and client information
-//   - repository: The metadata repository that tracks active shares
-//   - req: Empty request struct (UMNTALL takes no parameters)
-//
-// Returns:
-//   - *UmountAllResponse: Empty response (void)
-//   - error: Returns error only if context was cancelled before cleanup;
-//     otherwise always returns nil per RFC 1813
-//
-// RFC 1813 Appendix I: UMNTALL Procedure
+// UmntAll handles MOUNT UMNTALL (RFC 1813 Appendix I, Mount procedure 4).
+// Removes all mount records for the calling client across all shares.
+// Delegates to Runtime.RemoveAllMounts to clear all mount tracking state.
+// Clears all mount session records; idempotent, more efficient than per-path UMNT.
+// Errors: none (UMNTALL always succeeds per RFC 1813, returns void).
 func (h *Handler) UmntAll(
 	ctx *MountHandlerContext,
 	req *UmountAllRequest,

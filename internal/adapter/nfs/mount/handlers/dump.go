@@ -50,73 +50,11 @@ type DumpEntry struct {
 	Directory string
 }
 
-// Dump handles the DUMP procedure, which returns a list of all filesystems
-// currently mounted by NFS clients.
-//
-// The dump process:
-//  1. Check if the context has been cancelled (early exit if client disconnected)
-//  2. Query the repository for all active mount entries
-//  3. Convert repository mount entries to DUMP response format
-//  4. Log the operation with count of returned mounts
-//  5. Return the list of mounts to the client
-//
-// Context cancellation:
-//   - The handler respects context cancellation at key I/O points
-//   - If the client disconnects or the request times out, the operation aborts
-//   - Cancellation is checked before expensive repository operations
-//
-// Use cases for DUMP:
-//   - Administrative monitoring of active NFS clients
-//   - Audit logging and security monitoring
-//   - Capacity planning (understanding usage patterns)
-//   - Troubleshooting client connectivity issues
-//   - Preparing for server maintenance (knowing which clients to notify)
-//
-// Important notes:
-//   - DUMP returns all mounts across all exports and clients
-//   - The list may be large on busy servers
-//   - Mount tracking is maintained by MOUNT/UMNT/UMNTALL procedures
-//   - Entries may be stale if clients crashed without unmounting
-//   - No authentication/authorization is performed (any client can call DUMP)
-//
-// Security consideration:
-//
-//	In a production environment, you may want to restrict DUMP to:
-//	- Only local/admin connections
-//	- Authenticated clients
-//	- Specific IP ranges
-//	This can be implemented by adding access control in the repository.
-//
-// Parameters:
-//   - ctx: Context with cancellation and timeout information
-//   - repository: The metadata repository that tracks active mounts
-//   - req: Empty request struct (DUMP takes no parameters)
-//
-// Returns:
-//   - *DumpResponse: List of all active mount entries
-//   - error: Returns error for context cancellation or internal server failures
-//     (mount list is always returned, even if empty, unless cancelled)
-//
-// RFC 1813 Appendix I: DUMP Procedure
-//
-// Example:
-//
-//	handler := &Handler{}
-//	ctx := &MountHandlerContext{
-//	    Context:    context.Background(),
-//	    ClientAddr: "192.168.1.100:1234",
-//	    AuthFlavor: 0, // AUTH_NULL
-//	}
-//	req := &DumpRequest{}
-//	resp, err := handler.Dump(ctx, repository, req)
-//	if err != nil {
-//	    if errors.Is(err, context.Canceled) {
-//	        // client disconnected
-//	    } else {
-//	        // internal error
-//	    }
-//	}
-//	fmt.Printf("Active mounts: %d\n", len(resp.Entries))
+// Dump handles MOUNT DUMP (RFC 1813 Appendix I, Mount procedure 2).
+// Returns a list of all active mount entries (client hostname + export path).
+// Delegates to Runtime.ListMounts to enumerate current mount tracking state.
+// No side effects; read-only operation, no authentication required.
+// Errors: context cancellation only (DUMP always succeeds otherwise).
 func (h *Handler) Dump(ctx *MountHandlerContext, req *DumpRequest) (*DumpResponse, error) {
 	// Check for cancellation before starting any work
 	if ctx.isContextCancelled() {

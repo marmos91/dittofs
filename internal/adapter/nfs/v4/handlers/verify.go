@@ -118,25 +118,10 @@ func encodeAttrValsOnly(encodeFn func(buf *bytes.Buffer, responseBitmap []uint32
 }
 
 // handleVerify implements the VERIFY operation (RFC 7530 Section 16.35).
-//
-// VERIFY checks whether the server's current attributes match the
-// client-provided fattr4. If they match, NFS4_OK is returned and
-// the compound continues. If they don't match, NFS4ERR_NOT_SAME is
-// returned and the compound stops (standard stop-on-error behavior).
-//
-// This enables conditional compound sequences like:
-//
-//	VERIFY(size == X) + SETATTR(mode = 0644)
-//
-// The SETATTR only executes if the file's size is still X.
-//
-// Wire format args:
-//
-//	obj_attributes: fattr4 (bitmap4 + opaque attr_vals)
-//
-// Wire format res:
-//
-//	nfsstat4 only (no additional data)
+// Succeeds (NFS4_OK) when server attributes match client-provided fattr4 (compound continues).
+// Delegates to verifyAttributes for byte-exact comparison of encoded attribute data.
+// No side effects; enables conditional compounds (e.g., VERIFY+SETATTR to guard against races).
+// Errors: NFS4ERR_NOT_SAME (attrs differ), NFS4ERR_NOFILEHANDLE, NFS4ERR_BADXDR, NFS4ERR_STALE.
 func (h *Handler) handleVerify(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	match, status := verifyAttributes(h, ctx, reader)
 

@@ -38,64 +38,11 @@ type UmountResponse struct {
 	MountResponseBase // Embeds Status and GetStatus()
 }
 
-// Umnt handles the UMOUNT (UMNT) procedure, which allows clients to indicate
-// they are done using a previously mounted filesystem.
-//
-// The unmount process:
-//  1. Check for context cancellation (early exit if client disconnected)
-//  2. Extract the client IP address from the network context
-//  3. Remove the mount record from the repository's tracking
-//  4. Log the unmount operation for audit purposes
-//  5. Always return success (RFC 1813 specifies void return)
-//
-// Context cancellation:
-//   - Single check at the beginning to respect client disconnection
-//   - No check after RemoveMount to ensure cleanup completes
-//   - If cancelled early, returns immediately with error
-//   - If RemoveMount is in progress when cancelled, we let it complete
-//     to maintain mount tracking consistency
-//
-// Important notes:
-//   - UMNT always succeeds per RFC 1813, even if the mount doesn't exist
-//   - The actual unmounting happens on the client side
-//   - Server-side tracking is informational only (used by DUMP)
-//   - No error status codes are defined for UMNT in the protocol
-//   - RemoveMount failure is logged but doesn't fail the UMNT request
-//
-// The mount tracking serves several purposes:
-//   - Provides data for the DUMP procedure (list active mounts)
-//   - Enables audit logging of mount/unmount operations
-//   - Allows monitoring of active NFS clients
-//   - Can be used for graceful server shutdown (notify mounted clients)
-//
-// Parameters:
-//   - ctx: Context with cancellation and client information
-//   - repository: The metadata repository that tracks active mounts
-//   - req: The unmount request containing the directory path to unmount
-//
-// Returns:
-//   - *UmountResponse: Empty response (void)
-//   - error: Returns error only if context was cancelled before processing;
-//     otherwise always returns nil per RFC 1813
-//
-// RFC 1813 Appendix I: UMNT Procedure
-//
-// Example:
-//
-//	handler := &Handler{}
-//	req := &UmountRequest{DirPath: "/export"}
-//	ctx := &MountHandlerContext{
-//	    Context:    context.Background(),
-//	    ClientAddr: "192.168.1.100:1234",
-//	    AuthFlavor: 0, // AUTH_NULL
-//	}
-//	resp, err := handler.Umnt(ctx, repository, req)
-//	if err != nil {
-//	    if errors.Is(err, context.Canceled) {
-//	        // Client disconnected before unmount could be processed
-//	    }
-//	}
-//	// Response is always success unless cancelled early
+// Umnt handles MOUNT UMNT (RFC 1813 Appendix I, Mount procedure 3).
+// Removes a client's mount record for a previously mounted filesystem.
+// Delegates to Runtime.RemoveMount to clear mount tracking state.
+// Removes mount session record (not the share itself); idempotent.
+// Errors: none (UMNT always succeeds per RFC 1813, returns void).
 func (h *Handler) Umnt(
 	ctx *MountHandlerContext,
 	req *UmountRequest,

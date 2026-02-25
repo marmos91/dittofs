@@ -42,18 +42,11 @@ func EncodeNullResponse(resp *NullResponse) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Null handles the NLM_NULL procedure (procedure 0).
-//
-// NLM_NULL is a ping/health check procedure that takes no arguments
-// and returns success. It is used to verify the NLM service is running.
-//
-// Parameters:
-//   - ctx: The NLM handler context (unused for NULL)
-//   - req: The NULL request (empty)
-//
-// Returns:
-//   - *NullResponse: Always returns NLM4Granted status
-//   - error: Always nil for NULL procedure
+// Null handles NLM NULL (RFC 1813, NLM procedure 0).
+// No-op ping/health check verifying the NLM service is running and reachable.
+// No delegation; returns immediately with NLM4Granted status.
+// No side effects; stateless operation.
+// Errors: none (NULL always succeeds).
 func (h *Handler) Null(ctx *NLMHandlerContext, req *NullRequest) (*NullResponse, error) {
 	return &NullResponse{
 		Status: types.NLM4Granted,

@@ -14,21 +14,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// handleSetAttr implements the SETATTR operation (RFC 7530 Section 16.32).
-//
-// SETATTR modifies file attributes (mode, owner, group, size, timestamps).
-// It requires a stateid for size changes (Phase 9 validates; Phase 8 accepts
-// any special stateid).
-//
-// Wire format args (SETATTR4args):
-//
-//	stateid4    stateid       (state identifier for size changes)
-//	fattr4      obj_attributes (attribute values to set)
-//
-// Wire format res (SETATTR4res):
-//
-//	nfsstat4    status
-//	bitmap4     attrsset      (attributes actually set; empty on error)
+// handleSetAttr implements the SETATTR operation (RFC 7530 Section 16.34).
+// Modifies file attributes (mode, owner, group, size, timestamps) with stateid validation.
+// Delegates to MetadataService.SetFileAttributes; size changes coordinate with content store.
+// Updates file metadata atomically; returns bitmap of attributes actually set.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_PERM, NFS4ERR_ACCES, NFS4ERR_ROFS, NFS4ERR_BADXDR.
 func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// 1. Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {

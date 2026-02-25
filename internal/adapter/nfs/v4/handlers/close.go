@@ -12,22 +12,10 @@ import (
 )
 
 // handleClose implements the CLOSE operation (RFC 7530 Section 16.3).
-//
-// CLOSE releases the open state associated with a stateid via
-// StateManager.CloseFile. The state is removed from all tracking maps
-// and a zeroed stateid is returned.
-//
-// Per RFC 7530, CLOSE does NOT change the current filehandle.
-//
-// Wire format args (CLOSE4args):
-//
-//	uint32    seqid
-//	stateid4  open_stateid
-//
-// Wire format res (success - CLOSE4res):
-//
-//	nfsstat4  status (NFS4_OK)
-//	stateid4  open_stateid (zeroed out)
+// Releases open state for a file, removing the stateid from StateManager tracking.
+// Delegates to StateManager.CloseFile; triggers PayloadService.Flush for dirty data.
+// Removes open/lock state and flushes cached writes; does NOT change the current filehandle.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_BAD_STATEID, NFS4ERR_OLD_STATEID, NFS4ERR_BADXDR.
 func (h *Handler) handleClose(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {

@@ -8,18 +8,11 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 )
 
-// handleRenew implements the RENEW operation (RFC 7530 Section 16.29).
-//
-// RENEW renews the lease associated with a client ID. It validates
-// that the client ID exists and is confirmed via StateManager.RenewLease.
-//
-// Wire format args:
-//
-//	clientid:  uint64
-//
-// Wire format res:
-//
-//	nfsstat4:  uint32
+// handleRenew implements the RENEW operation (RFC 7530 Section 16.30).
+// Renews the lease associated with a client ID to prevent state expiration.
+// Delegates to StateManager.RenewLease for client validation and lease refresh.
+// Extends client lease timer; no file or directory state changes.
+// Errors: NFS4ERR_STALE_CLIENTID, NFS4ERR_EXPIRED, NFS4ERR_BADXDR.
 func (h *Handler) handleRenew(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Read clientid (uint64)
 	clientID, err := xdr.DecodeUint64(reader)

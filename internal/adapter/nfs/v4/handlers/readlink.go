@@ -11,15 +11,10 @@ import (
 )
 
 // handleReadLink implements the READLINK operation (RFC 7530 Section 16.27).
-//
-// READLINK returns the target path of a symbolic link. The current filehandle
-// must reference a symlink; otherwise NFS4ERR_INVAL is returned.
-//
-// For pseudo-fs handles, READLINK always returns NFS4ERR_INVAL since pseudo-fs
-// nodes are directories and cannot be symlinks.
-//
-// Wire format args: none
-// Wire format res:  nfsstat4 (uint32) + linktext (XDR string)
+// Returns the target pathname stored in a symbolic link for client-side path resolution.
+// Delegates to MetadataService.ReadSymlink; pseudo-fs handles always return NFS4ERR_INVAL.
+// No side effects; read-only metadata operation returning the symlink target path.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_INVAL (not a symlink), NFS4ERR_STALE, NFS4ERR_IO.
 func (h *Handler) handleReadLink(ctx *types.CompoundContext, _ io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {

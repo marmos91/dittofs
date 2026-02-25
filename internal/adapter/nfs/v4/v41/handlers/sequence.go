@@ -11,21 +11,11 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 )
 
-// handleSequenceOp implements the SEQUENCE operation (RFC 8881 Section 18.46).
-//
-// SEQUENCE must be the first operation in every non-exempt NFSv4.1 COMPOUND.
-// It establishes slot-based exactly-once semantics by:
-//  1. Looking up the session by ID
-//  2. Validating the slot sequence ID (new request, replay, or misordered)
-//  3. On replay: returning the cached COMPOUND response bytes directly
-//  4. On new: building a V41RequestContext, renewing the client lease, computing status flags
-//
-// Returns:
-//   - sequenceResult: the CompoundResult for the SEQUENCE op itself
-//   - v41ctx: the V41RequestContext for subsequent ops (nil on error/replay)
-//   - session: the Session object (nil on error/replay)
-//   - cachedReply: non-nil on replay (full COMPOUND response bytes to return directly)
-//   - err: non-nil on decode failure
+// HandleSequenceOp implements the SEQUENCE operation (RFC 8881 Section 18.46).
+// Establishes slot-based exactly-once semantics as the first op in every non-exempt v4.1 COMPOUND.
+// Delegates to StateManager for session lookup, slot validation, replay detection, and lease renewal.
+// Validates session/slot/seqid; returns cached reply on replay; builds V41RequestContext for new requests.
+// Errors: NFS4ERR_BADSESSION, NFS4ERR_SEQ_MISORDERED, NFS4ERR_BAD_SLOT, NFS4ERR_BADXDR.
 func HandleSequenceOp(d *Deps, compCtx *types.CompoundContext, reader io.Reader) (
 	sequenceResult *types.CompoundResult,
 	v41ctx *types.V41RequestContext,

@@ -48,98 +48,11 @@ type GetAttrResponse struct {
 // Protocol Handler
 // ============================================================================
 
-// GetAttr returns the attributes for a file system object.
-//
-// This implements the NFS GETATTR procedure as defined in RFC 1813 Section 3.3.1.
-//
-// **Purpose:**
-//
-// GETATTR is the fundamental operation for retrieving file metadata. It's used by:
-//   - Clients to check if cached attributes are still valid
-//   - The 'stat' and 'ls' commands to display file information
-//   - The NFS client to validate file handles before operations
-//   - Cache consistency protocols to detect file changes
-//
-// **Process:**
-//
-//  1. Check for context cancellation (early exit if client disconnected)
-//  2. Validate request parameters (handle format and length)
-//  3. Verify file handle exists via store.GetFile()
-//  4. Generate file attributes with proper file ID
-//  5. Return attributes to client
-//
-// **Context cancellation:**
-//
-//   - Single check at the beginning to respect client disconnection
-//   - Check after GetFile to catch cancellation during lookup
-//   - Minimal overhead to maintain high performance for this frequent operation
-//   - Returns NFS3ErrIO status with context error for cancellation
-//
-// **Design Principles:**
-//
-//   - Protocol layer handles only XDR encoding/decoding and validation
-//   - All business logic (file lookup, attribute generation) is delegated to store
-//   - File handle validation is performed by store.GetFile()
-//   - Comprehensive logging at INFO level for operations, DEBUG for details
-//
-// **Performance Considerations:**
-//
-// GETATTR is one of the most frequently called NFS procedures. Implementations should:
-//   - Cache attributes when possible
-//   - Minimize store access overhead
-//   - Use efficient file ID generation
-//   - Avoid unnecessary data copying
-//   - Minimize context cancellation checks (only 2 checks for performance)
-//
-// **Error Handling:**
-//
-// Protocol-level errors return appropriate NFS status codes.
-// store errors are mapped to NFS status codes:
-//   - File not found → types.NFS3ErrNoEnt
-//   - Stale handle → NFS3ErrStale
-//   - I/O error → types.NFS3ErrIO
-//   - Invalid handle → types.NFS3ErrBadHandle
-//   - Context cancelled → types.NFS3ErrIO with error return
-//
-// **Security Considerations:**
-//
-//   - Handle validation prevents malformed requests
-//   - store layer can enforce access control if needed
-//   - Client context enables audit logging
-//   - No sensitive information leaked in error messages
-//
-// **Parameters:**
-//   - ctx: Context with cancellation, client address and authentication flavor
-//   - metadataStore: The metadata store for file access
-//   - req: The getattr request containing the file handle
-//
-// **Returns:**
-//   - *GetAttrResponse: Response with status and attributes (if successful)
-//   - error: Returns error for context cancellation or catastrophic internal failures;
-//     protocol-level errors are indicated via the response Status field
-//
-// **RFC 1813 Section 3.3.1: GETATTR Procedure**
-//
-// Example:
-//
-//	handler := &DefaultNFSHandler{}
-//	req := &GetAttrRequest{Handle: fileHandle}
-//	ctx := &GetAttrContext{
-//	    Context: context.Background(),
-//	    ClientAddr: "192.168.1.100:1234",
-//	    AuthFlavor: 0, // AUTH_NULL
-//	}
-//	resp, err := handler.GetAttr(ctx, store, req)
-//	if err != nil {
-//	    if errors.Is(err, context.Canceled) {
-//	        // Client disconnected
-//	    } else {
-//	        // Internal server error
-//	    }
-//	}
-//	if resp.Status == types.NFS3OK {
-//	    // Use resp.Attr for file information
-//	}
+// GetAttr handles NFS GETATTR (RFC 1813 Section 3.3.1).
+// Returns file attributes (type, mode, size, timestamps, ownership) for a file handle.
+// Delegates to MetadataService.GetFile for attribute retrieval.
+// No side effects; read-only, high-frequency operation optimized for minimal overhead.
+// Errors: NFS3ErrBadHandle (invalid handle), NFS3ErrStale (not found), NFS3ErrIO.
 func (h *Handler) GetAttr(
 	ctx *NFSHandlerContext,
 	req *GetAttrRequest,

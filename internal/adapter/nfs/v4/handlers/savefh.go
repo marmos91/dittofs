@@ -7,12 +7,10 @@ import (
 )
 
 // handleSaveFH implements the SAVEFH operation (RFC 7530 Section 16.32).
-//
-// SAVEFH saves the current filehandle to the saved filehandle slot.
-// Requires a current filehandle to be set.
-//
-// Wire format args: none
-// Wire format res:  nfsstat4 (uint32)
+// Saves the current filehandle to the saved filehandle slot (copy, not alias).
+// No delegation; copies CompoundContext.CurrentFH directly (no store access).
+// Sets SavedFH from CurrentFH; used before LINK/RENAME to establish the source handle.
+// Errors: NFS4ERR_NOFILEHANDLE (no current FH set).
 func (h *Handler) handleSaveFH(ctx *types.CompoundContext, _ io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {

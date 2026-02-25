@@ -15,26 +15,10 @@ import (
 )
 
 // handleRemove implements the REMOVE operation (RFC 7530 Section 16.25).
-//
-// REMOVE deletes a file or empty directory from its parent directory.
-// The current filehandle must reference the parent directory.
-//
-// For files, REMOVE calls MetadataService.RemoveFile.
-// For directories, if RemoveFile returns "is a directory" error,
-// it falls back to MetadataService.RemoveDirectory.
-//
-// Wire format args:
-//
-//	component4 target (XDR string)
-//
-// Wire format res (success):
-//
-//	nfsstat4 status (NFS4_OK)
-//	change_info4 cinfo
-//
-// Wire format res (error):
-//
-//	nfsstat4 status
+// Deletes a file or empty directory from the current filehandle (parent directory).
+// Delegates to MetadataService.RemoveFile; falls back to RemoveDirectory for directory targets.
+// Removes directory entry and metadata; deletes payload content for files; returns change info.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_NOENT, NFS4ERR_NOTEMPTY, NFS4ERR_ACCES, NFS4ERR_BADXDR.
 func (h *Handler) handleRemove(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle (parent directory)
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {

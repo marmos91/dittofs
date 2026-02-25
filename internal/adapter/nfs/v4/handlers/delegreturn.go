@@ -8,24 +8,10 @@ import (
 )
 
 // handleDelegReturn implements the DELEGRETURN operation (RFC 7530 Section 16.8).
-//
-// DELEGRETURN returns a delegation to the server. The client sends this after
-// receiving a CB_RECALL callback, or proactively when it no longer needs the
-// delegation.
-//
-// Per RFC 7530 Section 16.8:
-//   - The current filehandle must be set
-//   - The delegation stateid is decoded from args
-//   - The delegation is removed from StateManager
-//   - Returns NFS4_OK on success (including idempotent return)
-//
-// Wire format args (DELEGRETURN4args):
-//
-//	stateid4  deleg_stateid
-//
-// Wire format res (DELEGRETURN4res):
-//
-//	nfsstat4  status
+// Returns a delegation to the server after CB_RECALL or when the client no longer needs it.
+// Delegates to StateManager.ReturnDelegation to remove the delegation tracking state.
+// Releases delegation state; idempotent (returning an already-returned delegation succeeds).
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_BAD_STATEID, NFS4ERR_BADXDR.
 func (h *Handler) handleDelegReturn(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {

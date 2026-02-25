@@ -60,42 +60,11 @@ type MountResponse struct {
 	AuthFlavors []int32
 }
 
-// Mount handles the MOUNT (MNT) procedure, which is the primary operation
-// used by NFS clients to obtain a file handle for an exported filesystem.
-//
-// The mount process follows these steps:
-//  1. Check for context cancellation (early exit if client disconnected)
-//  2. Extract client IP address from the network context
-//  3. Extract and log authentication credentials
-//  4. Perform access control checks via the repository (most expensive operation)
-//  5. Validate authentication requirements
-//  6. Retrieve the root file handle for the share
-//  7. Record the mount in the repository for tracking
-//  8. Return the handle with appropriate authentication flavors
-//
-// Context cancellation:
-//   - The handler respects context cancellation at key I/O and computation points
-//   - If the client disconnects or the request times out, the operation aborts
-//   - Returns MountErrServerFault status with context.Canceled error for cancellation
-//   - Cancellation is checked before and after expensive operations
-//
-// Security considerations:
-//   - Validates client IP against share access control lists
-//   - Enforces authentication requirements per share configuration
-//   - Tracks active mounts for audit and the DUMP procedure
-//   - Returns detailed error codes for troubleshooting
-//
-// Parameters:
-//   - ctx: Context information including cancellation, client address, and auth flavor
-//   - repository: The metadata repository containing share configurations
-//   - req: The mount request containing the directory path to mount
-//
-// Returns:
-//   - *MountResponse: The mount response with status and file handle (if successful)
-//   - error: Returns error for context cancellation or internal server failures;
-//     protocol-level errors are indicated via the response Status field
-//
-// RFC 1813 Appendix I: MOUNT Procedure
+// Mount handles MOUNT MNT (RFC 1813 Appendix I, Mount procedure 1).
+// Returns root file handle for an exported share after access control validation.
+// Delegates to Runtime for share lookup, netgroup checks, and root handle retrieval.
+// Records mount in Runtime mount tracker; validates auth policy and netgroup ACL.
+// Errors: MountErrNoEnt (share not found), MountErrAccess (auth/netgroup denied), MountErrServerFault.
 func (h *Handler) Mount(
 	ctx *MountHandlerContext,
 	req *MountRequest,

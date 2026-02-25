@@ -14,29 +14,10 @@ import (
 )
 
 // handleCreate implements the CREATE operation (RFC 7530 Section 16.4).
-//
-// NFSv4 CREATE creates non-regular file objects: directories, symlinks,
-// block/character devices, sockets, and FIFOs. Regular files are created
-// via the OPEN operation with OPEN4_CREATE flag (Plan 07-03).
-//
-// Wire format args:
-//
-//	createtype4 objtype (uint32)
-//	  - For NF4LNK: linkdata (XDR string)
-//	  - For NF4BLK/NF4CHR: specdata1 (uint32), specdata2 (uint32)
-//	  - For NF4DIR/NF4SOCK/NF4FIFO: no type-specific data
-//	component4 objname (XDR string)
-//	fattr4 createattrs (bitmap + opaque attr values)
-//
-// Wire format res (success):
-//
-//	nfsstat4 status (NFS4_OK)
-//	change_info4 cinfo
-//	bitmap4 attrset
-//
-// Wire format res (error):
-//
-//	nfsstat4 status
+// Creates non-regular file objects (directories, symlinks, devices, sockets, FIFOs) in a directory.
+// Delegates to MetadataService.CreateDirectory/CreateSymlink/CreateSpecialFile via auth context.
+// Sets current filehandle to the new object; updates parent directory change info.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_EXIST, NFS4ERR_NOTDIR, NFS4ERR_BADTYPE, NFS4ERR_BADXDR.
 func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle (parent directory)
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {

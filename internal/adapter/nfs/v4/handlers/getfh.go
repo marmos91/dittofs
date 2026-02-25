@@ -9,11 +9,10 @@ import (
 )
 
 // handleGetFH implements the GETFH operation (RFC 7530 Section 16.10).
-//
-// GETFH returns the current filehandle. Requires a current filehandle to be set.
-//
-// Wire format args: none
-// Wire format res:  nfsstat4 (uint32) + nfs_fh4 (opaque filehandle)
+// Returns the current filehandle as an opaque byte sequence for client storage.
+// No delegation; reads CompoundContext.CurrentFH directly (no store access).
+// No side effects; stateless operation returning the current FH as XDR opaque.
+// Errors: NFS4ERR_NOFILEHANDLE (no current FH set).
 func (h *Handler) handleGetFH(ctx *types.CompoundContext, _ io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {

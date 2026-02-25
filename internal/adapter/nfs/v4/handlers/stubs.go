@@ -10,15 +10,10 @@ import (
 )
 
 // handleDelegPurge implements the DELEGPURGE operation (RFC 7530 Section 16.7).
-//
-// DELEGPURGE notifies the server that all delegations for a given client
-// (or "all reclaim complete") should be purged. This is only meaningful for
-// servers that support CLAIM_DELEGATE_PREV; since DittoFS does not support
-// persistent delegation state, DELEGPURGE returns NFS4ERR_NOTSUPP.
-//
-// Wire format args (DELEGPURGE4args):
-//
-//	clientid:  uint64
+// Purges all delegations for a client (only meaningful with CLAIM_DELEGATE_PREV support).
+// No delegation; always returns NFS4ERR_NOTSUPP (DittoFS has no persistent delegation state).
+// No side effects; consumes the clientid arg to prevent XDR desync.
+// Errors: NFS4ERR_NOTSUPP (always).
 func (h *Handler) handleDelegPurge(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Consume the clientid arg to prevent XDR desync
 	_, _ = xdr.DecodeUint64(reader)
@@ -34,15 +29,10 @@ func (h *Handler) handleDelegPurge(ctx *types.CompoundContext, reader io.Reader)
 }
 
 // handleOpenAttr implements the OPENATTR operation (RFC 7530 Section 16.17).
-//
-// OPENATTR opens a named attribute directory for a file. DittoFS does not
-// support named attributes, so this always returns NFS4ERR_NOTSUPP.
-//
-// Wire format args:
-//
-//	createdir:  bool (uint32) -- whether to create the attr dir if absent
-//
-// The createdir arg must be consumed to prevent XDR stream desync.
+// Opens a named attribute directory for a file (named attributes not supported).
+// No delegation; always returns NFS4ERR_NOTSUPP (DittoFS does not support named attributes).
+// No side effects; consumes the createdir arg to prevent XDR desync.
+// Errors: NFS4ERR_NOTSUPP (always).
 func (h *Handler) handleOpenAttr(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Consume the createdir bool to prevent XDR desync
 	_, _ = xdr.DecodeUint32(reader)
@@ -58,22 +48,10 @@ func (h *Handler) handleOpenAttr(ctx *types.CompoundContext, reader io.Reader) *
 }
 
 // handleOpenDowngrade implements the OPEN_DOWNGRADE operation (RFC 7530 Section 16.19).
-//
-// OPEN_DOWNGRADE reduces the share_access and/or share_deny bits for an
-// open file. It delegates to StateManager.DowngradeOpen which verifies
-// that the new bits are a subset of the current bits.
-//
-// Wire format args:
-//
-//	open_stateid:  stateid4 (seqid:uint32 + other:12 bytes = 16 bytes)
-//	seqid:         uint32
-//	share_access:  uint32
-//	share_deny:    uint32
-//
-// Wire format res (success):
-//
-//	nfsstat4  status (NFS4_OK)
-//	stateid4  open_stateid (updated)
+// Reduces share_access and/or share_deny bits for an open file to a subset of current bits.
+// Delegates to StateManager.DowngradeOpen for validation and stateid update.
+// Updates open state share modes; returns updated stateid with incremented seqid.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_BAD_STATEID, NFS4ERR_INVAL (not a subset), NFS4ERR_BADXDR.
 func (h *Handler) handleOpenDowngrade(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {
@@ -157,17 +135,10 @@ func (h *Handler) handleOpenDowngrade(ctx *types.CompoundContext, reader io.Read
 }
 
 // handleReleaseLockOwner implements the RELEASE_LOCKOWNER operation (RFC 7530 Section 16.34).
-//
-// RELEASE_LOCKOWNER releases all state associated with a lock owner.
-// If the lock-owner has active byte-range locks, NFS4ERR_LOCKS_HELD is returned.
-// If the lock-owner has no active locks, all lock state is cleaned up and NFS4_OK is returned.
-// Releasing an unknown lock-owner is a no-op (NFS4_OK).
-//
-// Wire format args:
-//
-//	lock_owner:  lock_owner4
-//	  clientid:  uint64
-//	  owner:     opaque<> (uint32 length + bytes + padding)
+// Releases all state associated with a lock owner (no-op if lock-owner unknown).
+// Delegates to StateManager.ReleaseLockOwner for state cleanup and validation.
+// Removes lock-owner tracking; fails if lock-owner holds active byte-range locks.
+// Errors: NFS4ERR_LOCKS_HELD (active locks exist), NFS4ERR_BADXDR.
 func (h *Handler) handleReleaseLockOwner(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Decode lock_owner4: clientid (uint64) + owner (opaque)
 	clientID, err := xdr.DecodeUint64(reader)

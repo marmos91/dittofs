@@ -80,29 +80,11 @@ func EncodeLockResponse(resp *LockResponse) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Lock handles the NLM_LOCK procedure (procedure 2).
-//
-// NLM_LOCK acquires an advisory lock on a byte range of a file.
-//
-// Behavior:
-//   - Non-blocking (Block=false): Returns NLM4Granted on success, NLM4Denied on conflict
-//   - Blocking (Block=true): Returns NLM4Blocked if conflict exists (actual blocking
-//     handled in Plan 02-03 with blocking queue)
-//   - Reclaim (Reclaim=true): Uses reclaim path during grace period
-//   - During grace period with Reclaim=false: Returns NLM4DeniedGrace
-//
-// Cross-Protocol Behavior:
-//   - Before acquiring, checks for SMB Write leases that need to be broken
-//   - Waits for SMB lease break acknowledgment (configurable timeout, default 35s)
-//   - If conflict is due to SMB lease, returns NLM4_DENIED with SMB holder info
-//
-// Parameters:
-//   - ctx: The NLM handler context with auth and client info
-//   - req: The LOCK request containing lock parameters
-//
-// Returns:
-//   - *LockResponse: Status indicating result
-//   - error: System-level errors only
+// Lock handles NLM LOCK (RFC 1813, NLM procedure 2).
+// Acquires an advisory byte-range lock; supports blocking, non-blocking, and reclaim modes.
+// Delegates to NLMLockService.Lock and checks SMB lease conflicts via cross-protocol handler.
+// Modifies lock state in LockManager; queues blocked requests in BlockingQueue.
+// Errors: NLM4Denied (conflict), NLM4Blocked (queued), NLM4DeniedGrace (grace period).
 func (h *Handler) Lock(ctx *NLMHandlerContext, req *LockRequest) (*LockResponse, error) {
 	// Build owner ID following format: nlm:{caller_name}:{svid}:{oh_hex}
 	ownerID := buildOwnerID(req.Lock.CallerName, req.Lock.Svid, req.Lock.OH)

@@ -24,24 +24,10 @@ func init() {
 }
 
 // handleWrite implements the WRITE operation (RFC 7530 Section 16.36).
-//
-// WRITE stores data via the two-phase pattern (PrepareWrite + PayloadService.WriteAt
-// + CommitWrite) and returns UNSTABLE4 stability with a server boot verifier.
-// Accepts all stateids in Phase 7.
-//
-// Wire format args (WRITE4args):
-//
-//	stateid4  stateid
-//	uint64    offset
-//	uint32    stable     (UNSTABLE4, DATA_SYNC4, or FILE_SYNC4)
-//	opaque    data<>     (XDR variable-length)
-//
-// Wire format res (success - WRITE4resok):
-//
-//	nfsstat4  status     (NFS4_OK)
-//	uint32    count      (bytes written)
-//	uint32    committed  (UNSTABLE4)
-//	opaque    writeverf[NFS4_VERIFIER_SIZE] (8 bytes, fixed-length)
+// Writes data to a file using two-phase PrepareWrite/CommitWrite pattern with cache-backed I/O.
+// Delegates to MetadataService.PrepareWrite+CommitWrite and PayloadService.WriteAt.
+// Updates file size/timestamps via metadata; writes data to cache (flushed on COMMIT); always returns UNSTABLE4.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_ISDIR, NFS4ERR_FBIG, NFS4ERR_NOSPC, NFS4ERR_IO.
 func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {

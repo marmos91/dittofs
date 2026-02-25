@@ -6,21 +6,11 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/xdr"
 )
 
-// Unmon handles the SM_UNMON procedure (procedure 3).
-//
-// SM_UNMON unregisters monitoring for a specific host. The caller will
-// no longer receive SM_NOTIFY callbacks for that host.
-//
-// Important: SM_UNMON only affects NSM registrations, NOT NLM locks.
-// Clients must separately release their locks via NLM_UNLOCK or NLM_CANCEL.
-//
-// Parameters:
-//   - ctx: The NSM handler context
-//   - data: XDR-encoded mon_id structure (monitored host + callback info)
-//
-// Returns:
-//   - *HandlerResult: sm_stat with current state
-//   - error: XDR decoding error if input is malformed
+// Unmon handles NSM UNMON (RFC 1813, SM procedure 3).
+// Unregisters monitoring for a specific host; caller stops receiving SM_NOTIFY callbacks.
+// Delegates to ConnectionTracker.ClearNSMInfo and removes from ClientRegistrationStore.
+// Clears NSM callback info for the client; does NOT release NLM locks.
+// Errors: none (always returns current state; decode errors are logged).
 func (h *Handler) Unmon(ctx *NSMHandlerContext, data []byte) (*HandlerResult, error) {
 	state := h.GetServerState()
 

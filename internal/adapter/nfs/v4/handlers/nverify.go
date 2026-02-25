@@ -8,24 +8,10 @@ import (
 )
 
 // handleNVerify implements the NVERIFY operation (RFC 7530 Section 16.15).
-//
-// NVERIFY is the inverse of VERIFY: it succeeds (NFS4_OK) when the server's
-// attributes do NOT match the client-provided fattr4. If they match,
-// NFS4ERR_SAME is returned and the compound stops.
-//
-// This enables conditional compound sequences like:
-//
-//	NVERIFY(mtime == cached_mtime) + READ
-//
-// The READ only executes if the file has been modified (mtime changed).
-//
-// Wire format args:
-//
-//	obj_attributes: fattr4 (bitmap4 + opaque attr_vals)
-//
-// Wire format res:
-//
-//	nfsstat4 only (no additional data)
+// Succeeds (NFS4_OK) when server attributes do NOT match client-provided fattr4 (inverse of VERIFY).
+// Delegates to verifyAttributes for byte-exact comparison of encoded attribute data.
+// No side effects; enables conditional compounds (e.g., NVERIFY+READ to skip unchanged files).
+// Errors: NFS4ERR_SAME (attrs match), NFS4ERR_NOFILEHANDLE, NFS4ERR_BADXDR, NFS4ERR_STALE.
 func (h *Handler) handleNVerify(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	match, status := verifyAttributes(h, ctx, reader)
 

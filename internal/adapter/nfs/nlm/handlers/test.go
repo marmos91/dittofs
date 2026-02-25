@@ -71,22 +71,11 @@ func EncodeTestResponse(resp *TestResponse) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Test handles the NLM_TEST procedure (procedure 1).
-//
-// NLM_TEST checks if a lock could be granted without actually acquiring it.
-// This is used by clients for F_GETLK fcntl() calls.
-//
-// Per Phase 1 decision: TEST is allowed during grace period (it doesn't
-// acquire locks, just tests).
-//
-// Parameters:
-//   - ctx: The NLM handler context with auth and client info
-//   - req: The TEST request containing lock parameters
-//
-// Returns:
-//   - *TestResponse: NLM4Granted if lock would succeed, NLM4Denied with
-//     holder info if conflict exists
-//   - error: System-level errors only
+// Test handles NLM TEST (RFC 1813, NLM procedure 1).
+// Tests whether a lock could be granted without actually acquiring it (used by F_GETLK).
+// Delegates to NLMLockService.TestLock; read-only, no state modification.
+// No side effects; allowed during grace period since no lock is acquired.
+// Errors: NLM4Granted (lock would succeed), NLM4Denied (conflict, includes holder info).
 func (h *Handler) Test(ctx *NLMHandlerContext, req *TestRequest) (*TestResponse, error) {
 	// Build owner ID for testing
 	ownerID := buildOwnerID(req.Lock.CallerName, req.Lock.Svid, req.Lock.OH)

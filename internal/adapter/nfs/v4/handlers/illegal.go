@@ -6,15 +6,11 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 )
 
-// handleIllegalOp is the standalone handler for the OP_ILLEGAL operation.
-//
-// Per RFC 7530, this is used for truly unknown opcodes. The existing
-// handleIllegal method on Handler is the primary implementation.
-// This file exists for organizational clarity.
-//
-// Note: The actual handleIllegal is defined in handler.go to keep the
-// dispatch table registration close to the handler definition.
-// This file serves as documentation that ILLEGAL is a proper operation.
+// handleIllegalOp is the standalone handler for the OP_ILLEGAL operation (RFC 7530 Section 16.14).
+// Compile-time assertion that handleIllegal exists on Handler with correct OpHandler signature.
+// The actual implementation is in handler.go; this file provides organizational clarity.
+// Returns NFS4ERR_OP_ILLEGAL for unknown opcodes; terminates compound on error.
+// Errors: NFS4ERR_OP_ILLEGAL (always).
 
 // ensureIllegalDefined is a compile-time assertion that handleIllegal exists.
 var _ OpHandler = (*Handler)(nil).handleIllegal

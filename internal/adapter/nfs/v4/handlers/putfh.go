@@ -8,12 +8,10 @@ import (
 )
 
 // handlePutFH implements the PUTFH operation (RFC 7530 Section 16.21).
-//
-// PUTFH sets the current filehandle from a client-provided opaque handle.
-// The handle is typically obtained from a previous GETFH or stored by the client.
-//
-// Wire format args: opaque filehandle (uint32 length + bytes + padding)
-// Wire format res:  nfsstat4 (uint32)
+// Sets the current filehandle from a client-provided opaque handle byte sequence.
+// No delegation; validates handle size (max 128 bytes) and sets CompoundContext.CurrentFH.
+// Sets CurrentFH for subsequent compound operations; no store access or state changes.
+// Errors: NFS4ERR_BADHANDLE (empty or oversized handle), NFS4ERR_BADXDR.
 func (h *Handler) handlePutFH(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Read filehandle as XDR opaque
 	handle, err := xdr.DecodeOpaque(reader)

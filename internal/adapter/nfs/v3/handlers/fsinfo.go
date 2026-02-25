@@ -102,60 +102,11 @@ type FsInfoResponse struct {
 	Properties uint32
 }
 
-// FsInfo handles the FSINFO procedure, which returns static information about
-// the NFS server's capabilities and the filesystem.
-//
-// The FSINFO procedure provides clients with essential information for optimizing
-// their operations:
-//  1. Check for context cancellation early
-//  2. Validate the file handle format and length
-//  3. Verify the file handle exists via store
-//  4. Retrieve filesystem capabilities from the store
-//  5. Retrieve file attributes for cache consistency
-//  6. Return comprehensive filesystem information
-//
-// Design principles:
-//   - Protocol layer handles only XDR encoding/decoding and validation
-//   - All business logic (filesystem limits, capabilities) is delegated to store
-//   - File handle validation is performed by store.GetFile()
-//   - Context cancellation is checked at strategic points
-//   - Comprehensive logging at DEBUG level for troubleshooting
-//
-// Per RFC 1813 Section 3.3.19:
-//
-//	"Procedure FSINFO retrieves non-volatile information about a file system.
-//	On return, obj_attributes contains the attributes for the file system
-//	object specified by fsroot."
-//
-// Parameters:
-//   - ctx: Context information including cancellation, client address and auth flavor
-//   - metadataStore: The metadata store containing filesystem configuration
-//   - req: The FSINFO request containing the file handle
-//
-// Returns:
-//   - *FsInfoResponse: The response with filesystem information (if successful)
-//   - error: Returns error only for internal server failures or context cancellation;
-//     protocol-level errors are indicated via the response Status field
-//
-// RFC 1813 Section 3.3.19: FSINFO Procedure
-//
-// Example:
-//
-//	handler := &DefaultNFSHandler{}
-//	req := &FsInfoRequest{Handle: rootHandle}
-//	ctx := &FsInfoContext{
-//	    Context:    context.Background(),
-//	    ClientAddr: "192.168.1.100:1234",
-//	    AuthFlavor: 1, // AUTH_UNIX
-//	}
-//	resp, err := handler.FsInfo(ctx, store, req)
-//	if err != nil {
-//	    // Internal server error or context cancellation occurred
-//	    return nil, err
-//	}
-//	if resp.Status == types.NFS3OK {
-//	    // Success - use resp.Rtmax, resp.Wtmax, etc. to optimize I/O
-//	}
+// FsInfo handles NFS FSINFO (RFC 1813 Section 3.3.19).
+// Returns static filesystem capabilities: max/preferred I/O sizes, max file size, properties.
+// Delegates to MetadataService.GetFilesystemCapabilities for limit/feature discovery.
+// No side effects; read-only query of non-volatile filesystem configuration.
+// Errors: NFS3ErrBadHandle (invalid handle), NFS3ErrIO (service unavailable).
 func (h *Handler) FsInfo(
 	ctx *NFSHandlerContext,
 	req *FsInfoRequest,

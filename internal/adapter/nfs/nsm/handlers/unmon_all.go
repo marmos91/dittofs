@@ -5,22 +5,11 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/xdr"
 )
 
-// UnmonAll handles the SM_UNMON_ALL procedure (procedure 4).
-//
-// SM_UNMON_ALL unregisters all monitoring for a specific callback address.
-// This is typically called during client shutdown to clean up all
-// monitoring registrations.
-//
-// Important: SM_UNMON_ALL only affects NSM registrations, NOT NLM locks.
-// Clients must separately release their locks via NLM_UNLOCK or NLM_FREE_ALL.
-//
-// Parameters:
-//   - ctx: The NSM handler context
-//   - data: XDR-encoded my_id structure (callback info to unregister)
-//
-// Returns:
-//   - *HandlerResult: sm_stat with current state
-//   - error: XDR decoding error if input is malformed
+// UnmonAll handles NSM UNMON_ALL (RFC 1813, SM procedure 4).
+// Unregisters all monitoring for a callback address; used during client shutdown.
+// Iterates ConnectionTracker.GetNSMClients and clears matching registrations.
+// Removes all NSM callback info for the callback host; does NOT release NLM locks.
+// Errors: none (always returns current state; decode errors are logged).
 func (h *Handler) UnmonAll(ctx *NSMHandlerContext, data []byte) (*HandlerResult, error) {
 	state := h.GetServerState()
 

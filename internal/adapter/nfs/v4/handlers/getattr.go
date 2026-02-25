@@ -14,13 +14,10 @@ import (
 )
 
 // handleGetAttr implements the GETATTR operation (RFC 7530 Section 16.9).
-//
-// GETATTR returns requested attributes for the current filehandle.
-// For pseudo-fs handles, it encodes attributes of the virtual namespace node.
-// Clients specify which attributes they want via a bitmap4 request mask.
-//
-// Wire format args: attr_request (bitmap4)
-// Wire format res:  nfsstat4 (uint32) + obj_attributes (fattr4: bitmap4 + opaque attrvals)
+// Returns requested file attributes for the current filehandle via bitmap4 selection.
+// Delegates to MetadataService.GetFile for real files; encodes pseudo-fs node attrs for virtual handles.
+// No side effects; read-only attribute query returning only the attributes the client requested.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_STALE, NFS4ERR_BADXDR, NFS4ERR_IO.
 func (h *Handler) handleGetAttr(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {

@@ -14,17 +14,11 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 )
 
-// handleBackchannelCtl implements the BACKCHANNEL_CTL operation
-// (RFC 8881 Section 18.33).
-//
-// The client uses BACKCHANNEL_CTL to update the callback program number
-// and security parameters for the backchannel. This allows the client
-// to change these parameters without destroying and recreating the session.
-//
-// Requirements:
-//   - Session must have a backchannel (BackChannelSlots != nil)
-//   - At least one security flavor must be acceptable (AUTH_SYS or AUTH_NONE)
-//   - BACKCHANNEL_CTL requires SEQUENCE (non-exempt per RFC 8881)
+// HandleBackchannelCtl implements the BACKCHANNEL_CTL operation (RFC 8881 Section 18.33).
+// Updates the backchannel callback program number and security parameters without session recreation.
+// Delegates to StateManager.UpdateBackchannel for session validation and parameter update.
+// Modifies backchannel security flavors and program number on the session; requires SEQUENCE.
+// Errors: NFS4ERR_BADSESSION, NFS4ERR_CB_PATH_DOWN (no backchannel), NFS4ERR_BADXDR.
 func HandleBackchannelCtl(
 	d *Deps,
 	ctx *types.CompoundContext,

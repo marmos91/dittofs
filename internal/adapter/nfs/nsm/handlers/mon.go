@@ -10,31 +10,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
-// Mon handles the SM_MON procedure (procedure 2).
-//
-// SM_MON registers the caller to receive notifications when a monitored
-// host's state changes (i.e., when it crashes and restarts).
-//
-// The registration includes:
-//   - MonName: The host being monitored (typically this server)
-//   - MyID: Callback RPC info (where to send SM_NOTIFY)
-//   - Priv: 16-byte private data returned in callbacks
-//
-// On success:
-//   - Registers the client in the ConnectionTracker with NSM callback info
-//   - Persists the registration to ClientRegistrationStore (if configured)
-//   - Returns STAT_SUCC with current server state
-//
-// On failure:
-//   - Returns STAT_FAIL if client limit exceeded or persistence fails
-//
-// Parameters:
-//   - ctx: The NSM handler context
-//   - data: XDR-encoded mon structure
-//
-// Returns:
-//   - *HandlerResult: sm_stat_res with result and current state
-//   - error: XDR decoding error if input is malformed
+// Mon handles NSM MON (RFC 1813, SM procedure 2).
+// Registers caller for SM_NOTIFY callbacks when a monitored host's state changes.
+// Delegates to ConnectionTracker.RegisterClient and persists to ClientRegistrationStore.
+// Adds NSM callback registration; updates tracker and optional persistent store.
+// Errors: STAT_FAIL (client limit exceeded, persistence failure, XDR decode error).
 func (h *Handler) Mon(ctx *NSMHandlerContext, data []byte) (*HandlerResult, error) {
 	state := h.GetServerState()
 

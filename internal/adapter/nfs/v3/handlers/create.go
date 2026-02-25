@@ -77,66 +77,11 @@ type CreateResponse struct {
 // Protocol Handler
 // ============================================================================
 
-// Create handles the CREATE procedure, which creates a new regular file.
-//
-// This implements the NFS CREATE procedure as defined in RFC 1813 Section 3.3.8.
-//
-// **Creation Modes:**
-//
-//  1. UNCHECKED (0): Create or truncate existing file
-//  2. GUARDED (1): Create only if doesn't exist (fail with NFS3ErrExist)
-//  3. EXCLUSIVE (2): Create with verifier for idempotent retry
-//
-// **Process:**
-//
-//  1. Check for context cancellation (early exit if client disconnected)
-//  2. Validate request parameters (filename, mode, handle)
-//  3. Build AuthContext for permission checking
-//  4. Verify parent directory exists and is a directory
-//  5. Capture pre-operation directory state (for WCC)
-//  6. Check for cancellation before existence check
-//  7. Check if file already exists using Lookup
-//  8. Check for cancellation before create/truncate operations
-//  9. Based on mode: create new file or truncate existing
-//  10. Return file handle and attributes
-//
-// **Context cancellation:**
-//
-//   - Checks at the beginning to respect client disconnection
-//   - Checks after parent lookup, before existence check
-//   - Checks before actual create/truncate operations
-//   - Repository operations respect context internally
-//   - Returns NFS3ErrIO status with context error for cancellation
-//
-// **Authentication:**
-//
-// The context contains authentication credentials from the RPC layer.
-// The protocol layer uses these for:
-//   - Building AuthContext for permission checking
-//   - Setting default file ownership (UID/GID)
-//   - Logging and audit trails
-//
-// Access control enforcement is implemented by the repository layer.
-//
-// **Error Handling:**
-//
-// Protocol-level errors return appropriate NFS status codes.
-// Repository errors are mapped to NFS status codes:
-//   - Access denied → NFS3ErrAcces
-//   - Not found → types.NFS3ErrNoEnt
-//   - Already exists → NFS3ErrExist
-//   - I/O error → types.NFS3ErrIO
-//   - Context cancelled → types.NFS3ErrIO with error return
-//
-// **Parameters:**
-//   - ctx: Handler context with cancellation, client address and authentication credentials
-//   - req: Create request with parent handle, filename, mode, attributes
-//
-// **Returns:**
-//   - *CreateResponse: Response with status and file handle (if successful)
-//   - error: Returns error for context cancellation or catastrophic internal failures
-//
-// **RFC 1813 Section 3.3.8: CREATE Procedure**
+// Create handles NFS CREATE (RFC 1813 Section 3.3.8).
+// Creates a new regular file in UNCHECKED, GUARDED, or EXCLUSIVE mode.
+// Delegates to MetadataService.CreateFile (or SetFileAttributes for truncation).
+// Creates file metadata and parent directory entry; pre-warms write caches.
+// Errors: NFS3ErrExist (guarded/exclusive), NFS3ErrNotDir, NFS3ErrAcces, NFS3ErrIO.
 func (h *Handler) Create(
 	ctx *NFSHandlerContext,
 	req *CreateRequest,

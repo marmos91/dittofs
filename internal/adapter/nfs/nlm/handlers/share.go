@@ -81,16 +81,11 @@ func EncodeShareResponse(resp *ShareResponse) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Share handles the NLM_SHARE procedure (procedure 20).
-//
-// NLM_SHARE acquires a DOS-style share mode lock on a file.
-// Windows NFS clients use this to coordinate file sharing access.
-//
-// DittoFS always grants share requests since it doesn't implement
-// share-mode conflict detection. This is safe because:
-//   - NFS advisory locks are not mandatory
-//   - The underlying metadata store handles concurrent access safely
-//   - This matches the behavior of many NFS server implementations
+// Share handles NLM SHARE (RFC 1813, NLM procedure 20).
+// Acquires a DOS-style share mode lock; used by Windows NFS clients for file sharing.
+// No delegation; always grants immediately (share-mode conflict detection not implemented).
+// No side effects; shares are not tracked (safe due to advisory-only NFS locking model).
+// Errors: always NLM4Granted (share requests are unconditionally granted).
 func (h *Handler) Share(ctx *NLMHandlerContext, req *ShareRequest) (*ShareResponse, error) {
 	logger.Debug("NLM SHARE",
 		"client", ctx.ClientAddr,
@@ -106,11 +101,11 @@ func (h *Handler) Share(ctx *NLMHandlerContext, req *ShareRequest) (*ShareRespon
 	}, nil
 }
 
-// Unshare handles the NLM_UNSHARE procedure (procedure 21).
-//
-// NLM_UNSHARE releases a previously acquired share mode lock.
-// Since DittoFS always grants shares without tracking them,
-// unshare always succeeds.
+// Unshare handles NLM UNSHARE (RFC 1813, NLM procedure 21).
+// Releases a previously acquired DOS-style share mode lock.
+// No delegation; always succeeds immediately (shares are not tracked).
+// No side effects; stateless operation (safe due to advisory-only NFS locking model).
+// Errors: always NLM4Granted (unshare requests are unconditionally granted).
 func (h *Handler) Unshare(ctx *NLMHandlerContext, req *ShareRequest) (*ShareResponse, error) {
 	logger.Debug("NLM UNSHARE",
 		"client", ctx.ClientAddr,

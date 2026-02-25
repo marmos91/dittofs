@@ -12,24 +12,10 @@ import (
 )
 
 // handleSetClientID implements the SETCLIENTID operation (RFC 7530 Section 16.33).
-//
-// SETCLIENTID establishes a client's identity with the server using the
-// five-case algorithm from RFC 7530 Section 9.1.1. The state manager
-// handles all case logic; the handler only does XDR decode/encode and
-// error mapping.
-//
-// Wire format args:
-//
-//	client verifier:  opaque[8]
-//	client id:        nfs_client_id4 (verifier opaque[8] + id XDR string)
-//	callback:         cb_client4 (program uint32 + netid XDR string + addr XDR string)
-//	callback_ident:   uint32
-//
-// Wire format res:
-//
-//	nfsstat4:     uint32
-//	clientid:     uint64
-//	setclientid_confirm: opaque[8]
+// Establishes client identity using the five-case algorithm from RFC 7530 Section 9.1.1.
+// Delegates to StateManager.SetClientID for all case logic and client record management.
+// Creates or updates an unconfirmed client record; returns clientid and confirm verifier.
+// Errors: NFS4ERR_CLID_INUSE, NFS4ERR_BADXDR.
 func (h *Handler) handleSetClientID(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Read client verifier (8 bytes raw)
 	var verifier [8]byte
@@ -119,20 +105,11 @@ func (h *Handler) handleSetClientID(ctx *types.CompoundContext, reader io.Reader
 	}
 }
 
-// handleSetClientIDConfirm implements the SETCLIENTID_CONFIRM operation
-// (RFC 7530 Section 16.34).
-//
-// SETCLIENTID_CONFIRM confirms a client ID established by SETCLIENTID.
-// The confirm verifier must match what the server returned from SETCLIENTID.
-//
-// Wire format args:
-//
-//	clientid:                uint64
-//	setclientid_confirm:     opaque[8]
-//
-// Wire format res:
-//
-//	nfsstat4:  uint32
+// handleSetClientIDConfirm implements the SETCLIENTID_CONFIRM operation (RFC 7530 Section 16.34).
+// Confirms a client ID established by SETCLIENTID using the confirm verifier.
+// Delegates to StateManager.ConfirmClientID for verifier matching and state promotion.
+// Promotes unconfirmed client to confirmed; enables lease tracking and open/lock state.
+// Errors: NFS4ERR_STALE_CLIENTID, NFS4ERR_CLID_INUSE, NFS4ERR_BADXDR.
 func (h *Handler) handleSetClientIDConfirm(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Read clientid (uint64)
 	clientID, err := xdr.DecodeUint64(reader)

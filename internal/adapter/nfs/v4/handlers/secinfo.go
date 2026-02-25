@@ -28,30 +28,11 @@ const (
 // RPCSEC_GSS auth flavor value per RFC 2203.
 const authRPCSECGSS uint32 = 6
 
-// handleSecInfo implements the SECINFO operation (RFC 7530 Section 16.31).
-//
-// SECINFO returns the security mechanisms available for a given name in
-// a directory. When Kerberos is enabled, returns RPCSEC_GSS entries for
-// krb5p (privacy), krb5i (integrity), and krb5 (auth only) in addition
-// to AUTH_SYS and AUTH_NONE. When Kerberos is not enabled, returns only
-// AUTH_SYS and AUTH_NONE.
-//
-// Wire format args:
-//
-//	name:  component4 (XDR string -- the filename to query security for)
-//
-// Wire format res:
-//
-//	nfsstat4:       uint32
-//	SECINFO4resok:  array of secinfo4 entries
-//	  each entry:   flavor (uint32) [+ rpcsec_gss_info if flavor == 6]
-//	  rpcsec_gss_info:
-//	    oid:        sec_oid4 (XDR opaque<> -- mechanism OID in DER)
-//	    qop:        uint32 (quality of protection, 0 = default)
-//	    service:    rpc_gss_svc_t (1=none, 2=integrity, 3=privacy)
-//
-// Per RFC 7530 Section 16.31.4: SECINFO consumes the current filehandle.
-// After SECINFO, the current FH is cleared.
+// handleSecInfo implements the SECINFO operation (RFC 7530 Section 16.33).
+// Returns available security mechanisms (AUTH_SYS, AUTH_NONE, optional Kerberos) for a name.
+// No store delegation; checks Handler.KerberosEnabled flag to build the security flavor list.
+// Consumes the current filehandle (CurrentFH cleared after SECINFO per RFC 7530).
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_BADXDR.
 func (h *Handler) handleSecInfo(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {

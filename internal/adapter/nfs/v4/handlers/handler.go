@@ -320,8 +320,11 @@ func v41StubHandler(opCode uint32, decoder func(io.Reader) error) V41OpHandler {
 	}
 }
 
-// handleIllegal handles the OP_ILLEGAL operation.
-// Per RFC 7530, this returns NFS4ERR_OP_ILLEGAL.
+// handleIllegal handles the OP_ILLEGAL operation (RFC 7530 Section 16.14).
+// Returns NFS4ERR_OP_ILLEGAL for unknown opcodes outside valid operation ranges.
+// No delegation; returns error immediately with no store access.
+// No side effects; terminates the compound per stop-on-error semantics.
+// Errors: NFS4ERR_OP_ILLEGAL (always).
 func (h *Handler) handleIllegal(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	return &types.CompoundResult{
 		Status: types.NFS4ERR_OP_ILLEGAL,

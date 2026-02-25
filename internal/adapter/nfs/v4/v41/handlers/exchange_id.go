@@ -8,15 +8,11 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 )
 
-// handleExchangeID implements the EXCHANGE_ID operation (RFC 8881 Section 18.35).
-//
-// EXCHANGE_ID is the first operation a v4.1 client sends to register with the
-// server and receive a client ID for session creation. The state manager handles
-// all multi-case algorithm logic; the handler only does XDR decode/encode,
-// state protection validation, and error mapping.
-//
-// SP4_MACH_CRED and SP4_SSV are rejected with NFS4ERR_ENCR_ALG_UNSUPP
-// (matching Linux nfsd behavior).
+// HandleExchangeID implements the EXCHANGE_ID operation (RFC 8881 Section 18.35).
+// Registers a v4.1 client with the server and returns a client ID for session creation.
+// Delegates to StateManager.ExchangeID for multi-case algorithm logic; rejects SP4_MACH_CRED/SP4_SSV.
+// Creates or updates client record; returns clientid, sequence ID, and server capabilities.
+// Errors: NFS4ERR_CLID_INUSE, NFS4ERR_ENCR_ALG_UNSUPP (non-SP4_NONE), NFS4ERR_BADXDR.
 func HandleExchangeID(d *Deps, ctx *types.CompoundContext, _ *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
 	var args types.ExchangeIdArgs
 	if err := args.Decode(reader); err != nil {

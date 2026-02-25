@@ -53,71 +53,11 @@ type ExportEntry struct {
 	Groups []string
 }
 
-// Export handles the EXPORT procedure, which returns a list of all filesystems
-// currently exported (available for mounting) by the NFS server.
-//
-// The export process:
-//  1. Check if the context has been cancelled (early exit if client disconnected)
-//  2. Query the repository for all configured exports
-//  3. Convert repository export entries to EXPORT response format
-//  4. Optionally include client restrictions as groups
-//  5. Log the operation with count of returned exports
-//  6. Return the list of exports to the client
-//
-// Context cancellation:
-//   - The handler respects context cancellation at key I/O points
-//   - If the client disconnects or the request times out, the operation aborts
-//   - Cancellation is checked before expensive repository operations
-//
-// Use cases for EXPORT:
-//   - Clients discovering available NFS exports before mounting
-//   - Administrative tools listing server capabilities
-//   - Mount helper utilities (like automount) scanning for available shares
-//   - Documentation and audit of server configuration
-//
-// Important notes:
-//   - EXPORT returns all configured exports, regardless of access permissions
-//   - Clients may not have permission to actually mount all listed exports
-//   - The groups field can indicate access restrictions, but is often empty
-//   - No authentication/authorization is performed by EXPORT itself
-//   - Mount access control is enforced later by the MOUNT procedure
-//
-// Security consideration:
-//   - EXPORT reveals server configuration to any client
-//   - In security-sensitive environments, you may want to restrict EXPORT
-//   - Consider implementing access control similar to DUMP if needed
-//   - For now, EXPORT is unrestricted per RFC 1813 convention
-//
-// Parameters:
-//   - ctx: Context with cancellation and timeout information
-//   - repository: The metadata repository containing export configurations
-//   - req: Empty request struct (EXPORT takes no parameters)
-//
-// Returns:
-//   - *ExportResponse: List of all configured exports
-//   - error: Returns error for context cancellation or internal server failures
-//     (export list is always returned, even if empty, unless cancelled)
-//
-// RFC 1813 Appendix I: EXPORT Procedure
-//
-// Example:
-//
-//	handler := &Handler{}
-//	ctx := &MountHandlerContext{
-//	    Context:    context.Background(),
-//	    ClientAddr: "192.168.1.100:1234",
-//	    AuthFlavor: 0, // AUTH_NULL
-//	}
-//	req := &ExportRequest{}
-//	resp, err := handler.Export(ctx, repository, req)
-//	if err != nil {
-//	    if errors.Is(err, context.Canceled) {
-//	        // client disconnected
-//	    } else {
-//	        // internal error
-//	    }
-//	}
-//	fmt.Printf("Available exports: %d\n", len(resp.Entries))
+// Export handles MOUNT EXPORT (RFC 1813 Appendix I, Mount procedure 5).
+// Returns a list of all filesystems currently available for mounting.
+// Delegates to Runtime.ListShares to enumerate configured exports.
+// No side effects; read-only operation, no authentication required.
+// Errors: context cancellation only (EXPORT always succeeds otherwise).
 func (h *Handler) Export(
 	ctx *MountHandlerContext,
 	req *ExportRequest,

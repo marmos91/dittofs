@@ -12,43 +12,10 @@ import (
 )
 
 // handleLock implements the LOCK operation (RFC 7530 Section 16.10).
-//
-// LOCK acquires a byte-range lock on a file. It supports two paths:
-//   - new_lock_owner=true (open_to_lock_owner4): creates a new lock-owner
-//     and lock stateid from an existing open stateid
-//   - new_lock_owner=false (exist_lock_owner4): uses an existing lock stateid
-//     to acquire additional locks
-//
-// The locker4 union discriminant determines which path to take.
-//
-// Wire format args (LOCK4args):
-//
-//	locktype:       uint32 (nfs_lock_type4: READ_LT, WRITE_LT, READW_LT, WRITEW_LT)
-//	reclaim:        uint32 (bool)
-//	offset:         uint64
-//	length:         uint64
-//	locker:         locker4 (union)
-//	  new_lock_owner: uint32 (discriminant)
-//	  if true (open_to_lock_owner4):
-//	    open_seqid:   uint32
-//	    open_stateid: stateid4
-//	    lock_seqid:   uint32
-//	    lock_owner:   lock_owner4
-//	      clientid:   uint64
-//	      owner:      opaque<>
-//	  if false (exist_lock_owner4):
-//	    lock_stateid: stateid4
-//	    lock_seqid:   uint32
-//
-// Wire format res (success - LOCK4res):
-//
-//	nfsstat4  status (NFS4_OK)
-//	stateid4  lock_stateid
-//
-// Wire format res (denied - LOCK4res):
-//
-//	nfsstat4      status (NFS4ERR_DENIED)
-//	LOCK4denied   denied
+// Acquires a byte-range lock on a file via new or existing lock-owner path.
+// Delegates to StateManager.AcquireLock with new_lock_owner or existing lock stateid.
+// Creates lock state in StateManager; returns lock stateid on success or conflict details on denial.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_DENIED, NFS4ERR_GRACE, NFS4ERR_BAD_STATEID, NFS4ERR_BADXDR.
 func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {
@@ -268,27 +235,10 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 }
 
 // handleLockT implements the LOCKT operation (RFC 7530 Section 16.11).
-//
-// LOCKT tests for the existence of a byte-range lock conflict without
-// creating any state. It does NOT create lock-owners or stateids.
-//
-// Wire format args (LOCKT4args):
-//
-//	locktype:   uint32 (nfs_lock_type4)
-//	offset:     uint64
-//	length:     uint64
-//	lock_owner: lock_owner4
-//	  clientid: uint64
-//	  owner:    opaque<>
-//
-// Wire format res (no conflict - LOCKT4res):
-//
-//	nfsstat4  status (NFS4_OK)
-//
-// Wire format res (conflict - LOCKT4res):
-//
-//	nfsstat4      status (NFS4ERR_DENIED)
-//	LOCK4denied   denied
+// Tests for byte-range lock conflicts without creating any state or stateids.
+// Delegates to StateManager.TestLock for conflict detection against existing locks.
+// No side effects; read-only lock probe returning NFS4_OK (no conflict) or conflict details.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_DENIED (conflict found), NFS4ERR_GRACE, NFS4ERR_BADXDR.
 func (h *Handler) handleLockT(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {
@@ -399,26 +349,10 @@ func (h *Handler) handleLockT(ctx *types.CompoundContext, reader io.Reader) *typ
 }
 
 // handleLockU implements the LOCKU operation (RFC 7530 Section 16.12).
-//
-// LOCKU releases a byte-range lock. The lock manager handles POSIX split
-// semantics (partial unlock may result in 0, 1, or 2 remaining locks).
-//
-// Wire format args (LOCKU4args):
-//
-//	locktype:     uint32 (nfs_lock_type4)
-//	seqid:        uint32
-//	lock_stateid: stateid4
-//	offset:       uint64
-//	length:       uint64
-//
-// Wire format res (success - LOCKU4res):
-//
-//	nfsstat4  status (NFS4_OK)
-//	stateid4  lock_stateid (updated)
-//
-// Wire format res (error - LOCKU4res):
-//
-//	nfsstat4  status
+// Releases a byte-range lock with POSIX split semantics (partial unlock may split locks).
+// Delegates to StateManager.ReleaseLock for lock removal and stateid update.
+// Removes or splits lock state; returns updated lock stateid with incremented seqid.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_BAD_STATEID, NFS4ERR_OLD_STATEID, NFS4ERR_BADXDR.
 func (h *Handler) handleLockU(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {

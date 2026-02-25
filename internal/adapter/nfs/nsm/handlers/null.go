@@ -16,18 +16,11 @@ type HandlerResult struct {
 	NSMStatus uint32
 }
 
-// Null handles the SM_NULL procedure (procedure 0).
-//
-// SM_NULL is a ping/health check procedure that takes no arguments
-// and returns an empty response. It is used to verify the NSM service
-// is running and reachable.
-//
-// Parameters:
-//   - ctx: The NSM handler context
-//
-// Returns:
-//   - *HandlerResult: Empty response data with STAT_SUCC status
-//   - error: Always nil for NULL procedure
+// Null handles NSM NULL (RFC 1813, SM procedure 0).
+// No-op ping/health check verifying the NSM service is running and reachable.
+// No delegation; returns immediately with empty response.
+// No side effects; stateless operation.
+// Errors: none (NULL always succeeds).
 func (h *Handler) Null(ctx *NSMHandlerContext) (*HandlerResult, error) {
 	logger.Debug("NSM NULL request",
 		"client", ctx.ClientAddr)
@@ -40,22 +33,11 @@ func (h *Handler) Null(ctx *NSMHandlerContext) (*HandlerResult, error) {
 	}, nil
 }
 
-// Stat handles the SM_STAT procedure (procedure 1).
-//
-// SM_STAT queries the current state of the NSM without establishing
-// monitoring. It returns the server's current state counter.
-//
-// The state counter follows these conventions:
-//   - Odd values: Server is up
-//   - Even values: Server went down
-//
-// Parameters:
-//   - ctx: The NSM handler context
-//   - data: XDR-encoded sm_name (host to query)
-//
-// Returns:
-//   - *HandlerResult: sm_stat_res with current state
-//   - error: XDR decoding error if input is malformed
+// Stat handles NSM STAT (RFC 1813, SM procedure 1).
+// Queries the current NSM state counter without establishing monitoring (read-only).
+// No delegation; reads server state counter directly from Handler.
+// No side effects; does not register any monitoring callback.
+// Errors: STAT_FAIL (XDR decode error or internal failure).
 func (h *Handler) Stat(ctx *NSMHandlerContext, data []byte) (*HandlerResult, error) {
 	// Decode sm_name argument
 	r := newBytesReader(data)

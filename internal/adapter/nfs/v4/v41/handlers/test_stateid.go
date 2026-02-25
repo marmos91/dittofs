@@ -13,14 +13,11 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 )
 
-// handleTestStateid implements the TEST_STATEID operation
-// (RFC 8881 Section 18.48).
-//
-// TEST_STATEID tests each stateid in the array and returns per-stateid
-// status codes (not fail-on-first). The overall operation status is always
-// NFS4_OK; individual stateid validity is reported in the status codes array.
-//
-// Uses RLock only in StateManager -- no lease renewal side effects per RFC 8881.
+// HandleTestStateid implements the TEST_STATEID operation (RFC 8881 Section 18.48).
+// Tests each stateid in an array for validity, returning per-stateid status codes.
+// Delegates to StateManager.TestStateid with RLock only (no lease renewal side effects).
+// No side effects; read-only stateid probe (overall status always NFS4_OK; individual results vary).
+// Errors: NFS4ERR_BADXDR (decode failure); per-stateid: NFS4ERR_BAD_STATEID, NFS4ERR_EXPIRED, etc.
 func HandleTestStateid(
 	d *Deps,
 	ctx *types.CompoundContext,

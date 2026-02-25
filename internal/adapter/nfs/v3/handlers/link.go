@@ -69,107 +69,11 @@ type LinkResponse struct {
 // Protocol Handler
 // ============================================================================
 
-// Link creates a hard link to an existing file.
-//
-// This implements the NFS LINK procedure as defined in RFC 1813 Section 3.3.15.
-//
-// **Purpose:**
-//
-// Hard links create additional directory entries that point to the same file.
-// Unlike symbolic links:
-//   - Hard links reference the same inode/file data
-//   - All links are equivalent (no "original")
-//   - Deleting one link doesn't affect others
-//   - Links must be on the same filesystem
-//   - Cannot link directories (to prevent cycles)
-//
-// **Process:**
-//
-//  1. Check for context cancellation early
-//  2. Validate request parameters (handles, name)
-//  3. Build AuthContext for permission checking
-//  4. Verify source file exists and is a regular file (not a directory)
-//  5. Verify target directory exists and is a directory
-//  6. Capture pre-operation directory state (for WCC)
-//  7. Check that the link name doesn't already exist using Lookup
-//  8. Delegate link creation to store.CreateHardLink()
-//  9. Return file attributes and directory WCC data
-//
-// **Design Principles:**
-//
-//   - Protocol layer handles only XDR encoding/decoding and validation
-//   - All business logic (link creation, validation) is delegated to store
-//   - File handle validation is performed by store.GetFile()
-//   - Context cancellation is checked at strategic points between operations
-//   - Comprehensive logging at INFO level for operations, DEBUG for details
-//
-// **Hard Link Restrictions:**
-//
-// Per RFC 1813 and standard Unix semantics:
-//   - Cannot create hard links to directories (prevents filesystem cycles)
-//   - Cannot create hard links across different filesystems
-//   - Link count (nlink) is incremented for the target file
-//
-// **Authentication:**
-//
-// The context contains authentication credentials from the RPC layer.
-// Access control is enforced by the store layer based on:
-//   - Write permission on the target directory
-//   - Client credentials (UID/GID)
-//
-// **Error Handling:**
-//
-// Protocol-level errors return appropriate NFS status codes.
-// store errors are mapped to NFS status codes:
-//   - Source not found → types.NFS3ErrNoEnt
-//   - Target directory not found → types.NFS3ErrNoEnt
-//   - Name already exists → NFS3ErrExist
-//   - Source is directory → types.NFS3ErrIsDir
-//   - Target not directory → types.NFS3ErrNotDir
-//   - Access denied → NFS3ErrAcces
-//   - I/O error → types.NFS3ErrIO
-//
-// **Security Considerations:**
-//
-//   - Handle validation prevents malformed requests
-//   - store enforces write access to target directory
-//   - Cannot link directories (prevents privilege escalation)
-//   - Client context enables audit logging
-//
-// **Parameters:**
-//   - ctx: Context with cancellation, client address and authentication credentials
-//   - metadataStore: The metadata store for file and link operations
-//   - req: The link request containing file handle, directory, and name
-//
-// **Returns:**
-//   - *LinkResponse: Response with status and attributes (if successful)
-//   - error: Returns error only for catastrophic internal failures or context
-//     cancellation; protocol-level errors are indicated via the response Status field
-//
-// **RFC 1813 Section 3.3.15: LINK Procedure**
-//
-// Example:
-//
-//	handler := &DefaultNFSHandler{}
-//	req := &LinkRequest{
-//	    FileHandle: sourceHandle,
-//	    DirHandle:  targetDirHandle,
-//	    Name:       "hardlink.txt",
-//	}
-//	ctx := &LinkContext{
-//	    Context:    context.Background(),
-//	    ClientAddr: "192.168.1.100:1234",
-//	    AuthFlavor: 1, // AUTH_UNIX
-//	    UID:        &uid,
-//	    GID:        &gid,
-//	}
-//	resp, err := handler.Link(ctx, store, req)
-//	if err != nil {
-//	    // Internal server error or context cancellation
-//	}
-//	if resp.Status == types.NFS3OK {
-//	    // Hard link created successfully
-//	}
+// Link handles NFS LINK (RFC 1813 Section 3.3.15).
+// Creates a hard link to an existing file in a target directory.
+// Delegates to MetadataService.CreateHardLink after cross-share validation.
+// Adds directory entry, increments nlink; returns file attrs and dir WCC data.
+// Errors: NFS3ErrNoEnt, NFS3ErrExist, NFS3ErrIsDir, NFS3ErrNotDir, NFS3ErrAcces.
 func (h *Handler) Link(
 	ctx *NFSHandlerContext,
 	req *LinkRequest,

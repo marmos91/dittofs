@@ -69,24 +69,11 @@ func EncodeFreeAllResponse(_ *FreeAllResponse) ([]byte, error) {
 	return []byte{}, nil
 }
 
-// FreeAll handles the NLM4_FREE_ALL procedure (procedure 23).
-//
-// FREE_ALL releases all locks held by a specific client. This is called
-// by NSM (via rpc.statd) when a client crashes and reboots.
-//
-// ARCHITECTURE NOTE:
-// This handler decodes and logs the FREE_ALL request for auditing. The actual
-// lock cleanup across ALL shares is coordinated by the adapter's OnClientCrash
-// callback, which has access to all shares' lock managers. Each NLM handler
-// instance only serves one share, so comprehensive cleanup must happen at the
-// adapter level.
-//
-// Parameters:
-//   - ctx: The NLM handler context with request data
-//
-// Returns:
-//   - []byte: Empty response (FREE_ALL returns void)
-//   - error: Always nil (best effort, errors are logged)
+// FreeAll handles NLM FREE_ALL (RFC 1813, NLM procedure 23).
+// Releases all locks held by a crashed client, triggered by NSM (rpc.statd) on reboot.
+// Decodes and logs the request; actual lock cleanup is coordinated by adapter OnClientCrash.
+// Best-effort cleanup; each NLM handler instance serves one share, adapter handles cross-share.
+// Errors: none (returns void per NLM specification; decode errors are logged).
 func (h *Handler) FreeAll(ctx *NLMHandlerContext) ([]byte, error) {
 	req, err := DecodeFreeAllRequest(ctx.Data)
 	if err != nil {

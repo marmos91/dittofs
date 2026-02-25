@@ -9,19 +9,11 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 )
 
-// handleBindConnToSession implements the BIND_CONN_TO_SESSION operation
-// (RFC 8881 Section 18.34).
-//
-// BIND_CONN_TO_SESSION associates the current TCP connection with an existing
-// session in a specified channel direction (fore, back, or both). This is a
-// session-exempt operation -- it can appear as the first op in a COMPOUND
-// without a preceding SEQUENCE.
-//
-// Direction negotiation follows the generous policy:
-//   - CDFC4_FORE -> CDFS4_FORE
-//   - CDFC4_BACK -> CDFS4_BACK
-//   - CDFC4_FORE_OR_BOTH -> CDFS4_BOTH
-//   - CDFC4_BACK_OR_BOTH -> CDFS4_BOTH
+// HandleBindConnToSession implements the BIND_CONN_TO_SESSION operation (RFC 8881 Section 18.34).
+// Associates the current TCP connection with a session in a given channel direction (fore/back/both).
+// Delegates to StateManager.BindConnToSession with generous direction negotiation policy.
+// Binds connection to session's channel map; session-exempt (no SEQUENCE required).
+// Errors: NFS4ERR_BADSESSION, NFS4ERR_INVAL (removing sole fore conn), NFS4ERR_RESOURCE, NFS4ERR_BADXDR.
 func HandleBindConnToSession(
 	d *Deps,
 	ctx *types.CompoundContext,

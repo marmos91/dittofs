@@ -7,12 +7,10 @@ import (
 )
 
 // handlePutRootFH implements the PUTROOTFH operation (RFC 7530 Section 16.24).
-//
-// PUTROOTFH sets the current filehandle to the pseudo-filesystem root.
-// This is the entry point for all NFSv4 namespace traversal.
-//
-// Wire format args: none
-// Wire format res:  nfsstat4 (uint32)
+// Sets the current filehandle to the pseudo-filesystem root for namespace traversal.
+// No delegation; reads PseudoFS.GetRootHandle directly (no store access).
+// Sets CurrentFH to pseudo-fs root; entry point for all NFSv4 path resolution.
+// Errors: none (always succeeds).
 func (h *Handler) handlePutRootFH(ctx *types.CompoundContext, _ io.Reader) *types.CompoundResult {
 	rootHandle := h.PseudoFS.GetRootHandle()
 

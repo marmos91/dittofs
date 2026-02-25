@@ -14,30 +14,10 @@ import (
 )
 
 // handleOpen implements the OPEN operation (RFC 7530 Section 16.16).
-//
-// OPEN creates regular files (OPEN4_CREATE + CLAIM_NULL) and opens existing
-// files (OPEN4_NOCREATE + CLAIM_NULL). It creates tracked state via
-// StateManager.OpenFile and returns a real stateid.
-//
-// Delegation handling (Plan 11-03):
-//   - CLAIM_NULL: checks for delegation conflicts (returns NFS4ERR_DELAY if
-//     conflicting delegation from another client), then tries to grant a
-//     delegation if conditions are met (exclusive access, callback path up)
-//   - CLAIM_DELEGATE_CUR: opens file using existing delegation stateid
-//   - CLAIM_DELEGATE_PREV: NFS4ERR_NOTSUPP (requires persistent delegation state)
-//
-// Grace period handling:
-//   - CLAIM_NULL: Blocked with NFS4ERR_GRACE during grace period
-//   - CLAIM_PREVIOUS: Allowed during grace for state reclaim; blocked with
-//     NFS4ERR_NO_GRACE outside grace period
-//
-// Wire format args (OPEN4args):
-//
-//	uint32   seqid          (open-owner sequence number)
-//	uint32   share_access   (OPEN4_SHARE_ACCESS_READ/WRITE/BOTH)
-//	uint32   share_deny     (OPEN4_SHARE_DENY_NONE/READ/WRITE/BOTH)
-//	open_owner4:
-//	  uint64   clientid
+// Creates or opens regular files, establishing tracked open state with a real stateid.
+// Delegates to MetadataService.CreateFile/GetChild and StateManager.OpenFile; handles delegation grants.
+// Creates open/lock state in StateManager; sets CurrentFH to the opened file; may grant delegations.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_EXIST, NFS4ERR_GRACE, NFS4ERR_DELAY, NFS4ERR_SHARE_DENIED.
 //	  opaque   owner<>
 //	openflag4:
 //	  uint32   opentype     (OPEN4_NOCREATE or OPEN4_CREATE)
@@ -517,19 +497,10 @@ func (h *Handler) encodeOpenResult(
 }
 
 // handleOpenConfirm implements the OPEN_CONFIRM operation (RFC 7530 Section 16.20).
-//
-// OPEN_CONFIRM promotes an unconfirmed open-owner to confirmed status via
-// StateManager.ConfirmOpen. The stateid seqid is incremented on success.
-//
-// Wire format args:
-//
-//	stateid4  open_stateid
-//	uint32    seqid
-//
-// Wire format res (success):
-//
-//	nfsstat4  status (NFS4_OK)
-//	stateid4  open_stateid (seqid incremented)
+// Promotes an unconfirmed open-owner to confirmed status after initial OPEN.
+// Delegates to StateManager.ConfirmOpen for open-owner state promotion.
+// Confirms open state; increments stateid seqid; enables lock operations for this owner.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_BAD_STATEID, NFS4ERR_OLD_STATEID, NFS4ERR_BADXDR.
 func (h *Handler) handleOpenConfirm(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {

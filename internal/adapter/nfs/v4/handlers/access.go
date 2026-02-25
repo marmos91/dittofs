@@ -23,13 +23,10 @@ const (
 )
 
 // handleAccess implements the ACCESS operation (RFC 7530 Section 16.1).
-//
-// ACCESS checks the access permissions for the current filehandle.
-// For pseudo-fs handles, all access is granted since pseudo-fs directories
-// are always accessible.
-//
-// Wire format args: access (uint32 bitmask)
-// Wire format res:  nfsstat4 (uint32) + supported (uint32) + access (uint32)
+// Checks access permissions for the current filehandle against a requested bitmask.
+// Delegates to MetadataService.CheckAccess for real files; pseudo-fs grants all access.
+// No side effects; read-only permission probe returning supported and granted bitmasks.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_STALE, NFS4ERR_BADXDR, NFS4ERR_IO.
 func (h *Handler) handleAccess(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {

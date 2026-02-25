@@ -8,11 +8,11 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 )
 
-// handleDestroySession implements the DESTROY_SESSION operation (RFC 8881 Section 18.37).
-//
-// DESTROY_SESSION tears down a session, releases slot table memory, and
-// unbinds connections. If the session has in-flight requests, the operation
-// returns NFS4ERR_DELAY to let the client retry.
+// HandleDestroySession implements the DESTROY_SESSION operation (RFC 8881 Section 18.37).
+// Tears down a session, releases slot table memory, and unbinds all connections.
+// Delegates to StateManager.DestroySession; returns NFS4ERR_DELAY for in-flight requests.
+// Removes session from tracking maps; stops backchannel sender; frees all slot resources.
+// Errors: NFS4ERR_BADSESSION, NFS4ERR_DELAY (in-flight requests), NFS4ERR_BADXDR.
 func HandleDestroySession(d *Deps, ctx *types.CompoundContext, _ *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
 	var args types.DestroySessionArgs
 	if err := args.Decode(reader); err != nil {

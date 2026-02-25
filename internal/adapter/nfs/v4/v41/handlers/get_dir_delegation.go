@@ -14,19 +14,11 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 )
 
-// handleGetDirDelegation implements the GET_DIR_DELEGATION operation
-// (RFC 8881 Section 18.39).
-//
-// GET_DIR_DELEGATION grants a directory delegation with a notification bitmask
-// to clients with a valid lease, enabling the client to cache directory
-// contents and receive change notifications via CB_NOTIFY.
-//
-// Response encoding:
-//   - On success: NFS4_OK + GDD4_OK with stateid, cookie verifier, notification types
-//   - On limit/disabled: NFS4_OK + GDD4_UNAVAIL with will_signal_deleg_avail=false
-//   - On expired lease: NFS4ERR_EXPIRED
-//   - On missing FH: NFS4ERR_NOFILEHANDLE
-//   - On bad session: NFS4ERR_BADSESSION
+// HandleGetDirDelegation implements the GET_DIR_DELEGATION operation (RFC 8881 Section 18.39).
+// Grants a directory delegation with notification bitmask for client-side directory caching.
+// Delegates to StateManager.GrantDirDelegation; returns GDD4_UNAVAIL when limit reached or disabled.
+// Creates dir delegation state with notification types; enables CB_NOTIFY for change notifications.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_EXPIRED, NFS4ERR_BADSESSION, NFS4ERR_BADXDR.
 func HandleGetDirDelegation(
 	d *Deps,
 	ctx *types.CompoundContext,

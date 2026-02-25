@@ -15,14 +15,11 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 )
 
-// handleFreeStateid implements the FREE_STATEID operation
-// (RFC 8881 Section 18.38).
-//
-// FREE_STATEID frees a stateid that the client no longer needs, allowing
-// the server to reclaim associated resources. The stateid must belong to
-// the client identified by the SEQUENCE session.
-//
-// Does NOT trigger a cache flush (locked decision).
+// HandleFreeStateid implements the FREE_STATEID operation (RFC 8881 Section 18.38).
+// Frees a stateid the client no longer needs, allowing server resource reclamation.
+// Delegates to StateManager.FreeStateid; validates stateid belongs to the session's client.
+// Removes stateid tracking state; does NOT trigger a cache flush (locked design decision).
+// Errors: NFS4ERR_BAD_STATEID, NFS4ERR_OLD_STATEID, NFS4ERR_BADXDR.
 func HandleFreeStateid(
 	d *Deps,
 	ctx *types.CompoundContext,

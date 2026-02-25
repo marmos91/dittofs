@@ -12,19 +12,10 @@ import (
 )
 
 // handleCommit implements the COMMIT operation (RFC 7530 Section 16.5).
-//
-// COMMIT flushes unstable writes to stable storage via PayloadService.Flush
-// and returns the same server boot verifier as WRITE.
-//
-// Wire format args (COMMIT4args):
-//
-//	uint64    offset  (starting offset, 0 = all)
-//	uint32    count   (bytes to commit, 0 = all from offset to EOF)
-//
-// Wire format res (success - COMMIT4resok):
-//
-//	nfsstat4  status    (NFS4_OK)
-//	opaque    writeverf[NFS4_VERIFIER_SIZE] (8 bytes, fixed-length)
+// Flushes unstable writes to stable storage and returns a server boot verifier.
+// Delegates to PayloadService.Flush for the file referenced by the current filehandle.
+// Persists cached write data to the backing store; verifier enables server-restart detection.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_ISDIR, NFS4ERR_STALE, NFS4ERR_IO, NFS4ERR_BADXDR.
 func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {

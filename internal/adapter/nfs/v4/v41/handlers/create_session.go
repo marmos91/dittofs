@@ -10,15 +10,11 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 )
 
-// handleCreateSession implements the CREATE_SESSION operation (RFC 8881 Section 18.36).
-//
-// CREATE_SESSION binds a session to a client ID registered via EXCHANGE_ID,
-// negotiates channel attributes for fore and back channels, and returns a
-// session ID that the client uses for subsequent SEQUENCE operations.
-//
-// The state manager handles the multi-case replay detection algorithm;
-// the handler only does XDR decode/encode, callback security validation,
-// response caching, and error mapping.
+// HandleCreateSession implements the CREATE_SESSION operation (RFC 8881 Section 18.36).
+// Binds a session to a client ID, negotiates channel attributes, and returns a session ID.
+// Delegates to StateManager.CreateSession with multi-case replay detection; caches response bytes.
+// Creates session state with slot table; auto-binds originating connection as fore-channel.
+// Errors: NFS4ERR_STALE_CLIENTID, NFS4ERR_SEQ_MISORDERED, NFS4ERR_ENCR_ALG_UNSUPP, NFS4ERR_BADXDR.
 func HandleCreateSession(d *Deps, ctx *types.CompoundContext, _ *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
 	var args types.CreateSessionArgs
 	if err := args.Decode(reader); err != nil {

@@ -12,26 +12,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// handleRename implements the RENAME operation (RFC 7530 Section 16.26).
-//
-// RENAME moves or renames a file or directory. It uses the two-filehandle
-// pattern: SavedFH references the source directory and CurrentFH references
-// the target directory.
-//
-// Wire format args:
-//
-//	component4 oldname (XDR string)
-//	component4 newname (XDR string)
-//
-// Wire format res (success):
-//
-//	nfsstat4 status (NFS4_OK)
-//	change_info4 source_cinfo
-//	change_info4 target_cinfo
-//
-// Wire format res (error):
-//
-//	nfsstat4 status
+// handleRename implements the RENAME operation (RFC 7530 Section 16.29).
+// Moves/renames a file or directory from SavedFH (source dir) to CurrentFH (target dir).
+// Delegates to MetadataService.Move after cross-share and pseudo-fs validation.
+// Updates source and target directory entries and timestamps; returns change info for both dirs.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_RESTOREFH, NFS4ERR_NOENT, NFS4ERR_XDEV, NFS4ERR_BADXDR.
 func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle (target directory)
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {

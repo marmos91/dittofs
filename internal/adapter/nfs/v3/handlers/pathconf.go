@@ -92,108 +92,11 @@ type PathConfResponse struct {
 // Protocol Handler
 // ============================================================================
 
-// PathConf returns POSIX information about a file system object.
-//
-// This implements the NFS PATHCONF procedure as defined in RFC 1813 Section 3.3.20.
-//
-// **Purpose:**
-//
-// PATHCONF provides POSIX-compatible filesystem information that helps clients:
-//   - Understand filename length limits
-//   - Know if operations like chown are restricted
-//   - Determine case sensitivity behavior
-//   - Discover hard link limitations
-//
-// This complements FSINFO by providing properties that may vary per file
-// or filesystem, whereas FSINFO provides server-wide capabilities.
-//
-// **Process:**
-//
-//  1. Check for context cancellation before starting
-//  2. Validate the file handle format and length
-//  3. Verify the file handle exists via store.GetFile()
-//  4. Retrieve filesystem capabilities from store
-//  5. Map FilesystemCapabilities to PATHCONF response
-//  6. Return comprehensive PATHCONF information with file attributes
-//
-// **Design Principles:**
-//
-//   - Protocol layer handles only XDR encoding/decoding and validation
-//   - All business logic (filesystem properties) is delegated to store
-//   - File handle validation is performed by store.GetFile()
-//   - FilesystemCapabilities provides POSIX-compatible properties
-//   - Comprehensive logging at INFO level for operations, DEBUG for details
-//   - Respects context cancellation for graceful shutdown and timeouts
-//
-// **PATHCONF vs FSINFO:**
-//
-// The distinction between PATHCONF and FSINFO:
-//   - FSINFO: Server-wide capabilities (transfer sizes, properties)
-//   - PATHCONF: Filesystem-specific POSIX properties (may vary per mount)
-//
-// Per RFC 1813 Section 3.3.20:
-//
-//	"Procedure PATHCONF retrieves the pathconf information for a file
-//	 or directory. If the FSF_HOMOGENEOUS bit is set in the FSINFO
-//	 response, the pathconf information will be the same for all files
-//	 and directories in the exported file system."
-//
-// **POSIX Semantics:**
-//
-// The returned values match POSIX pathconf() behavior:
-//   - linkmax: _PC_LINK_MAX (from FilesystemCapabilities.MaxLinks)
-//   - name_max: _PC_NAME_MAX (from FilesystemCapabilities.MaxNameLength)
-//   - no_trunc: _PC_NO_TRUNC (from FilesystemCapabilities.NoTrunc)
-//   - chown_restricted: _PC_CHOWN_RESTRICTED (from FilesystemCapabilities.ChownRestricted)
-//   - case_insensitive: (from FilesystemCapabilities.CaseInsensitive)
-//   - case_preserving: (from FilesystemCapabilities.CasePreserving)
-//
-// **Security Considerations:**
-//
-//   - Handle validation prevents malformed requests
-//   - store layer can enforce access control if needed
-//   - Client context enables audit logging
-//   - No sensitive information leaked in error messages
-//
-// **Context Cancellation:**
-//
-// This operation respects context cancellation:
-//   - Checks at operation start before any work
-//   - Checks before store calls (GetFile, GetCapabilities)
-//   - Returns types.NFS3ErrIO on cancellation
-//
-// PATHCONF is typically called infrequently (during mount or filesystem
-// discovery), so cancellation overhead is negligible.
-//
-// **Parameters:**
-//   - ctx: Context with cancellation, client address and auth flavor
-//   - metadataStore: The metadata store containing filesystem configuration
-//   - req: The PATHCONF request containing the file handle
-//
-// **Returns:**
-//   - *PathConfResponse: The response with PATHCONF information (if successful)
-//   - error: Returns error only for internal server failures; protocol-level
-//     errors are indicated via the response Status field
-//
-// **RFC 1813 Section 3.3.20: PATHCONF Procedure**
-//
-// Example:
-//
-//	handler := &DefaultNFSHandler{}
-//	req := &PathConfRequest{Handle: fileHandle}
-//	ctx := &PathConfContext{
-//	    Context:    context.Background(),
-//	    ClientAddr: "192.168.1.100:1234",
-//	    AuthFlavor: 1, // AUTH_UNIX
-//	}
-//	resp, err := handler.PathConf(ctx, store, req)
-//	if err != nil {
-//	    // Internal server error occurred
-//	    return nil, err
-//	}
-//	if resp.Status == types.NFS3OK {
-//	    // Success - use resp.Linkmax, resp.NameMax, etc.
-//	}
+// PathConf handles NFS PATHCONF (RFC 1813 Section 3.3.20).
+// Returns POSIX filesystem properties: max links, name length, case sensitivity, chown restrictions.
+// Delegates to MetadataService.GetFile and GetFilesystemCapabilities for attribute and capability data.
+// No side effects; read-only, low-frequency operation (typically called once at mount time).
+// Errors: NFS3ErrBadHandle (invalid handle), NFS3ErrStale (not found), NFS3ErrIO.
 func (h *Handler) PathConf(
 	ctx *NFSHandlerContext,
 	req *PathConfRequest,

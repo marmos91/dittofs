@@ -11,22 +11,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// handleRead implements the READ operation (RFC 7530 Section 16.23).
-//
-// READ returns file data via PayloadService.ReadAt with proper EOF detection.
-// Accepts all stateids (special and regular) in Phase 7.
-//
-// Wire format args (READ4args):
-//
-//	stateid4  stateid
-//	uint64    offset
-//	uint32    count
-//
-// Wire format res (success - READ4resok):
-//
-//	nfsstat4  status (NFS4_OK)
-//	uint32    eof    (0=false, 1=true)
-//	opaque    data<> (XDR variable-length)
+// handleRead implements the READ operation (RFC 7530 Section 16.25).
+// Reads file data at a given offset, returning bytes and EOF flag.
+// Delegates to PayloadService.ReadAt via pooled buffers; validates stateid for open state.
+// No side effects; read-only data operation using buffer pools to reduce GC pressure.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_ISDIR, NFS4ERR_STALE, NFS4ERR_IO, NFS4ERR_BADXDR.
 func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {

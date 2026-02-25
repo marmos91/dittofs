@@ -65,24 +65,11 @@ func EncodeCancelResponse(resp *CancelResponse) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Cancel handles the NLM_CANCEL procedure (procedure 3).
-//
-// NLM_CANCEL removes a pending (blocked) lock request from the server's wait queue.
-// This is used when a client times out waiting for a lock or wants to abort
-// a blocking lock request.
-//
-// Per NLM specification and CONTEXT.md:
-//   - Returns NLM4Granted if cancellation is processed (whether or not
-//     the lock request existed in the queue)
-//   - The Block and Exclusive flags should match the original LOCK request
-//
-// Parameters:
-//   - ctx: The NLM handler context with auth and client info
-//   - req: The CANCEL request containing lock parameters
-//
-// Returns:
-//   - *CancelResponse: Status indicating result (always NLM4Granted)
-//   - error: System-level errors only
+// Cancel handles NLM CANCEL (RFC 1813, NLM procedure 3).
+// Removes a pending blocked lock request from the server's wait queue.
+// Delegates to BlockingQueue.Cancel to dequeue the matching lock request.
+// Removes queued entry from BlockingQueue; no lock state modified.
+// Errors: always NLM4Granted (cancel succeeds whether or not request was queued).
 func (h *Handler) Cancel(ctx *NLMHandlerContext, req *CancelRequest) (*CancelResponse, error) {
 	// Build owner ID
 	ownerID := buildOwnerID(req.Lock.CallerName, req.Lock.Svid, req.Lock.OH)

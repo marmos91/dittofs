@@ -81,72 +81,11 @@ type FsStatResponse struct {
 // Handler Implementation
 // ============================================================================
 
-// FsStat handles the FSSTAT procedure, which returns dynamic information about
-// the filesystem's current state, including space usage and available inodes.
-//
-// The FSSTAT process follows these steps:
-//  1. Check for context cancellation before starting
-//  2. Validate the file handle format and size
-//  3. Verify the file handle exists via store.GetFile()
-//  4. Retrieve current filesystem statistics from the store
-//  5. Retrieve file attributes for cache consistency
-//  6. Return comprehensive filesystem statistics to the client
-//
-// Design principles:
-//   - Protocol layer handles only XDR encoding/decoding and validation
-//   - All business logic (space calculations, limits) is delegated to store
-//   - File handle validation is performed by store.GetFile()
-//   - Comprehensive logging at INFO level for operations, DEBUG for details
-//   - Respects context cancellation for graceful shutdown and timeouts
-//
-// Security considerations:
-//   - Handle validation prevents malformed requests from causing errors
-//   - store layer enforces access control if needed
-//   - Client context enables auditing and rate limiting
-//   - No sensitive information leaked in error messages
-//
-// Context cancellation:
-//   - Checks at operation start before any work
-//   - Checks before each store call (GetFile, GetFilesystemStatistics)
-//   - Returns types.NFS3ErrIO on cancellation
-//   - Useful for client disconnects, server shutdown, request timeouts
-//
-// Per RFC 1813 Section 3.3.18:
-//
-//	"Procedure FSSTAT retrieves volatile information about a file system.
-//	 The semantics of the size and space related fields are:
-//	 - tbytes: Total size of the file system in bytes
-//	 - fbytes: Free bytes in the file system
-//	 - abytes: Number of free bytes available to non-privileged users"
-//
-// Parameters:
-//   - ctx: Context information including cancellation, client address and auth flavor
-//   - metadataStore: The metadata store containing filesystem statistics
-//   - req: The FSSTAT request containing the file handle
-//
-// Returns:
-//   - *FsStatResponse: The response with filesystem statistics (if successful)
-//   - error: Returns error only for internal server failures; protocol-level
-//     errors are indicated via the response Status field
-//
-// RFC 1813 Section 3.3.18: FSSTAT Procedure
-//
-// Example:
-//
-//	handler := &DefaultNFSHandler{}
-//	req := &FsStatRequest{Handle: rootHandle}
-//	ctx := &FsStatContext{
-//	    Context:    context.Background(),
-//	    ClientAddr: "192.168.1.100:1234",
-//	    AuthFlavor: 1, // AUTH_UNIX
-//	}
-//	resp, err := handler.FsStat(ctx, store, req)
-//	if err != nil {
-//	    // Internal server error
-//	}
-//	if resp.Status == types.NFS3OK {
-//	    // Use resp.Tbytes, resp.Fbytes, etc. for filesystem stats
-//	}
+// FsStat handles NFS FSSTAT (RFC 1813 Section 3.3.18).
+// Returns volatile filesystem statistics: total/free/available bytes and file slots.
+// Delegates to MetadataService.GetFilesystemStatistics for space/inode usage.
+// No side effects; read-only query of current filesystem state.
+// Errors: NFS3ErrBadHandle (invalid handle), NFS3ErrIO (service unavailable).
 func (h *Handler) FsStat(
 	ctx *NFSHandlerContext,
 	req *FsStatRequest,

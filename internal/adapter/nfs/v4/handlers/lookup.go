@@ -11,14 +11,10 @@ import (
 )
 
 // handleLookup implements the LOOKUP operation (RFC 7530 Section 16.15).
-//
-// LOOKUP traverses a directory by name, setting the current filehandle to the
-// child entry. For pseudo-fs handles, it navigates the virtual namespace tree.
-// When a LOOKUP resolves to an export junction point, it crosses into the real
-// share by obtaining the share's root handle from the runtime.
-//
-// Wire format args: component name (XDR string: uint32 length + bytes + padding)
-// Wire format res:  nfsstat4 (uint32)
+// Traverses a directory by name, setting the current filehandle to the resolved child.
+// Delegates to MetadataService.GetChild for real files; navigates pseudo-fs tree for virtual handles.
+// Sets CurrentFH to the child entry; crosses export junctions into real shares transparently.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_NOENT, NFS4ERR_NOTDIR, NFS4ERR_BADXDR, NFS4ERR_STALE.
 func (h *Handler) handleLookup(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {

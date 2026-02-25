@@ -12,24 +12,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// handleLink implements the LINK operation (RFC 7530 Section 16.9).
-//
-// LINK creates a hard link to an existing file. It uses the two-filehandle
-// pattern: SavedFH references the source file (the object to link) and
-// CurrentFH references the target directory (where the new link name is created).
-//
-// Wire format args:
-//
-//	component4 newname (XDR string)
-//
-// Wire format res (success):
-//
-//	nfsstat4 status (NFS4_OK)
-//	change_info4 cinfo
-//
-// Wire format res (error):
-//
-//	nfsstat4 status
+// handleLink implements the LINK operation (RFC 7530 Section 16.11).
+// Creates a hard link from SavedFH (source file) into CurrentFH (target directory).
+// Delegates to MetadataService.Link after cross-share and pseudo-fs validation.
+// Adds a directory entry in the target directory pointing to the source file; returns change info.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_RESTOREFH, NFS4ERR_ISDIR, NFS4ERR_XDEV, NFS4ERR_EXIST.
 func (h *Handler) handleLink(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle (target directory)
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {

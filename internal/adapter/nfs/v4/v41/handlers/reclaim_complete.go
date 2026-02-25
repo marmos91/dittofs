@@ -14,17 +14,11 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 )
 
-// handleReclaimComplete implements the RECLAIM_COMPLETE operation
-// (RFC 8881 Section 18.51).
-//
-// RECLAIM_COMPLETE signals the server that the client has completed
-// its reclaim phase. For single-FS servers like DittoFS, rca_one_fs=true
-// and rca_one_fs=false behave identically.
-//
-// Requirements:
-//   - RECLAIM_COMPLETE requires SEQUENCE (not session-exempt)
-//   - If called twice for the same client, returns NFS4ERR_COMPLETE_ALREADY
-//   - Outside grace period, returns NFS4_OK (not an error per RFC 8881)
+// HandleReclaimComplete implements the RECLAIM_COMPLETE operation (RFC 8881 Section 18.51).
+// Signals the server that the client has finished reclaiming state after a restart.
+// Delegates to StateManager.ReclaimComplete for one-shot tracking per client.
+// Marks client as reclaim-complete; for single-FS servers, rca_one_fs=true/false are equivalent.
+// Errors: NFS4ERR_COMPLETE_ALREADY (called twice), NFS4ERR_BADXDR.
 func HandleReclaimComplete(
 	d *Deps,
 	ctx *types.CompoundContext,

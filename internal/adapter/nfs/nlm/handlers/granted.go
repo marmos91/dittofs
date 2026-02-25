@@ -65,29 +65,11 @@ func EncodeGrantedResponse(resp *GrantedResponse) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Granted handles the NLM_GRANTED procedure (procedure 5).
-//
-// NLM_GRANTED is a callback from server to client. When the server sends
-// NLM_GRANTED to notify a client that a blocked lock is now available,
-// the client responds with NLM_GRANTED or NLM_GRANTED_RES.
-//
-// If we receive this as a server, it means:
-// 1. We sent an NLM_GRANTED callback to a client
-// 2. The client is acknowledging receipt via synchronous response (rare)
-//
-// Most implementations use asynchronous callbacks (NLM_GRANTED_MSG) which
-// don't require a response, but we handle the synchronous case for
-// protocol completeness.
-//
-// Per CONTEXT.md: Simply return NLM4_GRANTED to acknowledge receipt.
-//
-// Parameters:
-//   - ctx: The NLM handler context with auth and client info
-//   - req: The GRANTED request (really a callback response)
-//
-// Returns:
-//   - *GrantedResponse: Always NLM4_GRANTED
-//   - error: System-level errors only
+// Granted handles NLM GRANTED (RFC 1813, NLM procedure 5).
+// Acknowledges receipt of an NLM_GRANTED callback (server-to-client lock grant notification).
+// No delegation; simply returns NLM4_GRANTED for protocol completeness.
+// No side effects; the actual lock was already granted by the blocking queue.
+// Errors: always NLM4_GRANTED (acknowledgment never fails).
 func (h *Handler) Granted(ctx *NLMHandlerContext, req *GrantedRequest) (*GrantedResponse, error) {
 	logger.Debug("NLM GRANTED received (callback ack)",
 		"client", ctx.ClientAddr,

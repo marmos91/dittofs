@@ -9,13 +9,10 @@ import (
 )
 
 // handleLookupP implements the LOOKUPP operation (RFC 7530 Section 16.16).
-//
-// LOOKUPP navigates to the parent directory of the current filehandle.
-// For pseudo-fs handles, it traverses to the parent in the virtual namespace.
-// Root's parent is root itself per the NFSv4 specification.
-//
-// Wire format args: none
-// Wire format res:  nfsstat4 (uint32)
+// Navigates to the parent directory of the current filehandle (root's parent is root itself).
+// Delegates to MetadataService.GetParent for real files; traverses pseudo-fs tree for virtual handles.
+// Sets CurrentFH to the parent directory; crosses from share root back to pseudo-fs at boundaries.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_NOENT, NFS4ERR_STALE, NFS4ERR_IO.
 func (h *Handler) handleLookupP(ctx *types.CompoundContext, _ io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {

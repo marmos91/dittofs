@@ -33,63 +33,11 @@ type NullResponse struct {
 	MountResponseBase // Embeds Status and GetStatus()
 }
 
-// MountNull handles the NULL procedure, which is a no-op used to test connectivity.
-//
-// The NULL procedure is the simplest NFS operation and serves multiple purposes:
-//   - Connectivity testing: Verifies the server is reachable and responding
-//   - RPC validation: Confirms the RPC protocol layer is working correctly
-//   - Keep-alive: Maintains network connections and NAT mappings
-//   - Version verification: Confirms NFSv3 protocol support
-//
-// Per RFC 1813, NULL must always succeed and return immediately, regardless of
-// server state. This makes it ideal for health checks and monitoring.
-//
-// The operation flow:
-//  1. Check for context cancellation (client disconnected before processing)
-//  2. Log the NULL request for monitoring purposes
-//  3. Optionally verify repository health (non-fatal if it fails)
-//  4. Return success (empty response)
-//
-// Context cancellation:
-//   - Single check at the beginning to respect client disconnection
-//   - No additional checks needed - NULL is extremely fast
-//   - If cancelled, returns error immediately (per standard Go patterns)
-//   - Note: Per RFC 1813, NULL should succeed even if backend has issues
-//
-// Important characteristics:
-//   - Must be extremely fast (typically < 1ms)
-//   - Must always succeed per RFC 1813
-//   - No authentication required
-//   - No data validation needed
-//   - Safe to call repeatedly (idempotent)
-//   - Does not modify server state
-//
-// Parameters:
-//   - ctx: Context with cancellation and client information
-//   - repository: The metadata repository (used for optional health check)
-//   - req: Empty request structure (NULL takes no parameters)
-//
-// Returns:
-//   - *NullResponse: Empty response structure (always on success)
-//   - error: Only returns error if context was cancelled before processing
-//
-// RFC 1813 Appendix I: NULL Procedure
-//
-// Example:
-//
-//	handler := &Handler{}
-//	ctx := &NullContext{
-//	    Context: context.Background(),
-//	    ClientAddr: "192.168.1.100:1234",
-//	}
-//	req := &NullRequest{}
-//	resp, err := handler.MountNull(ctx, repository, req)
-//	if err != nil {
-//	    if errors.Is(err, context.Canceled) {
-//	        // Client disconnected before we could respond
-//	    }
-//	}
-//	// resp is always non-nil on success (empty response)
+// MountNull handles MOUNT NULL (RFC 1813 Appendix I, Mount procedure 0).
+// No-op ping/health check verifying the Mount service is running and reachable.
+// No delegation; returns immediately with empty success response.
+// No side effects; stateless operation.
+// Errors: none (NULL always succeeds per RFC 1813).
 func (h *Handler) MountNull(
 	ctx *MountHandlerContext,
 	req *NullRequest,

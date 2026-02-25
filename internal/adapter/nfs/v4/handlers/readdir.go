@@ -12,25 +12,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// handleReadDir implements the READDIR operation (RFC 7530 Section 16.25).
-//
-// READDIR lists children of a directory, returning entry names, cookies,
-// and requested attributes. For pseudo-fs handles, it lists virtual namespace
-// children with their pseudo-fs attributes.
-//
-// Wire format args:
-//
-//	cookie:       uint64   (entry offset, 0 = start from beginning)
-//	cookieverf:   opaque[8] (verifier from previous READDIR, 0 for first call)
-//	dircount:     uint32   (max bytes of entry info, hint for server)
-//	maxcount:     uint32   (max bytes of entire response)
-//	attr_request: bitmap4  (requested attributes per entry)
-//
-// Wire format res:
-//
-//	nfsstat4:     uint32
-//	cookieverf:   opaque[8] (verifier for this listing)
-//	dirlist4:     entries + eof bool
+// handleReadDir implements the READDIR operation (RFC 7530 Section 16.24).
+// Lists directory children with names, cookies, and requested per-entry attributes.
+// Delegates to MetadataService.ReadDirectory for real dirs; lists pseudo-fs children for virtual handles.
+// No side effects; read-only directory scan with cookie-based pagination and verifier staleness check.
+// Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_NOTDIR, NFS4ERR_BAD_COOKIE, NFS4ERR_BADXDR, NFS4ERR_STALE.
 func (h *Handler) handleReadDir(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {

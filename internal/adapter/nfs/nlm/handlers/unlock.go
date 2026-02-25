@@ -58,22 +58,11 @@ func EncodeUnlockResponse(resp *UnlockResponse) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// Unlock handles the NLM_UNLOCK procedure (procedure 4).
-//
-// NLM_UNLOCK releases a previously acquired lock.
-//
-// Per NLM specification and CONTEXT.md:
-//   - Unlock of non-existent lock silently succeeds (returns NLM4Granted)
-//   - This ensures idempotency for retried unlock requests
-//   - The Exclusive flag in the lock is ignored on unlock
-//
-// Parameters:
-//   - ctx: The NLM handler context with auth and client info
-//   - req: The UNLOCK request containing lock parameters
-//
-// Returns:
-//   - *UnlockResponse: Always NLM4Granted unless system error
-//   - error: System-level errors only
+// Unlock handles NLM UNLOCK (RFC 1813, NLM procedure 4).
+// Releases a previously acquired advisory byte-range lock on a file.
+// Delegates to NLMLockService.Unlock; non-existent locks silently succeed (idempotent).
+// Removes lock state from LockManager; may trigger BlockingQueue grant callbacks.
+// Errors: always NLM4Granted (unlock never fails per NLM specification).
 func (h *Handler) Unlock(ctx *NLMHandlerContext, req *UnlockRequest) (*UnlockResponse, error) {
 	// Build owner ID
 	ownerID := buildOwnerID(req.Lock.CallerName, req.Lock.Svid, req.Lock.OH)
