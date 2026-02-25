@@ -95,7 +95,7 @@ func (c *Connection) Serve(ctx context.Context) {
 		case <-ctx.Done():
 			logger.Debug("SMB connection closed due to context cancellation", "address", clientAddr)
 			return
-		case <-c.server.shutdown:
+		case <-c.server.Shutdown:
 			logger.Debug("SMB connection closed due to server shutdown", "address", clientAddr)
 			return
 		default:
@@ -541,7 +541,7 @@ func (c *Connection) processRequestWithFileID(ctx context.Context, reqHeader *he
 		"messageId", reqHeader.MessageID,
 		"client", clientAddr)
 
-	result, err := cmd.Handler(handlerCtx, c.server.handler, c.server.registry, body)
+	result, err := cmd.Handler(handlerCtx, c.server.handler, c.server.Registry, body)
 	if err != nil {
 		logger.Debug("Handler error", "command", cmd.Name, "error", err)
 		return &smb.HandlerResult{Status: types.StatusInternalError, Data: makeErrorBody()}, fileID
@@ -683,7 +683,7 @@ func (c *Connection) processRequest(ctx context.Context, reqHeader *header.SMB2H
 		"client", clientAddr)
 
 	// Execute handler
-	result, err := cmd.Handler(handlerCtx, c.server.handler, c.server.registry, body)
+	result, err := cmd.Handler(handlerCtx, c.server.handler, c.server.Registry, body)
 	if err != nil {
 		logger.Debug("Handler error", "command", cmd.Name, "error", err)
 		return c.sendErrorResponse(reqHeader, types.StatusInternalError)

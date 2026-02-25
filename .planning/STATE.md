@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v4.2
 milestone_name: Adapter + Core Refactoring
 status: unknown
-last_updated: "2026-02-25T20:43:36.592Z"
+last_updated: "2026-02-25T20:55:06.556Z"
 progress:
   total_phases: 27
   completed_phases: 26
   total_plans: 95
-  completed_plans: 91
+  completed_plans: 92
 ---
 
 # Project State
@@ -23,9 +23,9 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 ## Current Position
 
 Phase: 28 - SMB Adapter Restructuring
-Current Plan: 1 of 5 (COMPLETE)
+Current Plan: 2 of 5 (COMPLETE)
 Status: Executing Phase 28
-Last activity: 2026-02-25 -- Completed 28-01 (File and struct renames)
+Last activity: 2026-02-25 -- Completed 28-02 (BaseAdapter extraction)
 
 ## Completed Milestones
 
@@ -51,6 +51,7 @@ Last activity: 2026-02-25 -- Completed 28-01 (File and struct renames)
 | 27 | 01 | 6min | 2 | 614 |
 | 27 | 03 | 35min | 2 | 6 |
 | 28 | 01 | 6min | 2 | 13 |
+| 28 | 02 | 8min | 2 | 9 |
 
 ## Quick Tasks Completed
 
@@ -94,6 +95,7 @@ Last activity: 2026-02-25 -- Completed 28-01 (File and struct renames)
 - [27-03] Connection code split keeps NFSConnection struct in pkg/ while sharing RPC framing utilities
 - [Phase 28]: [28-01] Auth packages flattened from ntlm/spnego to single auth package (no naming conflicts)
 - [Phase 28]: [28-01] Test function names updated to match new type names (TestConnection_ instead of TestSMBConnection_)
+- [Phase 28]: BaseAdapter uses pointer embedding (*adapter.BaseAdapter) to avoid go vet sync primitive copy warnings
 
 ### Pending Todos
 
@@ -106,5 +108,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-25
-Stopped at: Completed 28-01-PLAN.md
-Resume file: Continue with 28-02-PLAN.md
+Stopped at: Completed 28-02-PLAN.md
+Resume file: Continue with 28-03-PLAN.md

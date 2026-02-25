@@ -20,12 +20,26 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	v4state "github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/marmos91/dittofs/pkg/adapter"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/marmos91/dittofs/pkg/metrics"
 )
+
+// nfsMetricsRecorder adapts the NFS metrics interface to BaseAdapter's
+// MetricsRecorder interface.
+type nfsMetricsRecorder struct {
+	m metrics.NFSMetrics
+}
+
+func (r *nfsMetricsRecorder) RecordConnectionAccepted()         { r.m.RecordConnectionAccepted() }
+func (r *nfsMetricsRecorder) RecordConnectionClosed()           { r.m.RecordConnectionClosed() }
+func (r *nfsMetricsRecorder) RecordConnectionForceClosed()      { r.m.RecordConnectionForceClosed() }
+func (r *nfsMetricsRecorder) SetActiveConnections(count int32)  { r.m.SetActiveConnections(count) }
 
 // NFSAdapter implements the adapter.Adapter interface for NFS protocol.
 //
@@ -38,28 +52,28 @@ import (
 //   - Thread-safe operation with atomic counters
 //
 // Architecture:
-// NFSAdapter manages the TCP listener and connection lifecycle. Each accepted
-// connection is handled by a conn instance (defined elsewhere) that manages
-// RPC request/response cycles. The adapter coordinates graceful shutdown across
-// all active connections using context cancellation and wait groups.
+// NFSAdapter embeds BaseAdapter for shared TCP lifecycle management (listener,
+// shutdown, connection tracking, semaphore, metrics logging). Protocol-specific
+// behavior (handlers, portmapper, Kerberos, NSM) stays on the outer struct.
+// The ConnectionFactory pattern enables BaseAdapter to create NFS-specific
+// connections via NewConnection.
 //
 // Shutdown flow:
 //  1. Context cancelled or Stop() called
-//  2. Listener closed (no new connections)
-//  3. shutdownCtx cancelled (signals in-flight requests to abort)
-//  4. Wait for active connections to complete (up to ShutdownTimeout)
-//  5. Force-close any remaining connections after timeout
+//  2. NFS-specific cleanup (portmapper, GSS, Kerberos, NSM) [NFSAdapter.Stop]
+//  3. Listener closed (no new connections) [BaseAdapter]
+//  4. shutdownCtx cancelled (signals in-flight requests to abort) [BaseAdapter]
+//  5. Wait for active connections to complete (up to ShutdownTimeout) [BaseAdapter]
+//  6. Force-close any remaining connections after timeout [BaseAdapter]
 //
 // Thread safety:
 // All methods are safe for concurrent use. The shutdown mechanism uses sync.Once
 // to ensure idempotent behavior even if Stop() is called multiple times.
 type NFSAdapter struct {
-	// config holds the server configuration (ports, timeouts, limits)
-	config NFSConfig
+	*adapter.BaseAdapter
 
-	// listener is the TCP listener for accepting NFS connections
-	// Closed during shutdown to stop accepting new connections
-	listener net.Listener
+	// config holds the NFS-specific server configuration (ports, timeouts, limits, portmapper)
+	config NFSConfig
 
 	// nfsHandler processes NFSv3 protocol operations (LOOKUP, READ, WRITE, etc.)
 	nfsHandler *v3.Handler
@@ -85,6 +99,9 @@ type NFSAdapter struct {
 
 	// nsmNotifier orchestrates SM_NOTIFY callbacks on server restart
 	nsmNotifier *nsm.Notifier
+
+	// nsmMetrics provides NSM-specific Prometheus metrics
+	nsmMetrics *nsm.Metrics
 
 	// gssProcessor handles RPCSEC_GSS context lifecycle (INIT/DATA/DESTROY).
 	// nil when Kerberos is not enabled.
@@ -113,50 +130,9 @@ type NFSAdapter struct {
 	// blockingQueue manages pending NLM blocking lock requests
 	blockingQueue *blocking.BlockingQueue
 
-	// registry provides access to all stores and shares
-	registry *runtime.Runtime
-
-	// activeConns tracks all currently active connections for graceful shutdown
-	// Each connection calls Add(1) when starting and Done() when complete
-	activeConns sync.WaitGroup
-
-	// shutdownOnce ensures shutdown is only initiated once
-	// Protects the shutdown channel close and listener cleanup
-	shutdownOnce sync.Once
-
-	// shutdown signals that graceful shutdown has been initiated
-	// Closed by initiateShutdown(), monitored by Serve()
-	shutdown chan struct{}
-
-	// connCount tracks the current number of active connections
-	// Used for metrics and shutdown logging
-	connCount atomic.Int32
-
-	// connSemaphore limits the number of concurrent connections if MaxConnections > 0
-	// Connections must acquire a slot before being accepted
-	// nil if MaxConnections is 0 (unlimited)
-	connSemaphore chan struct{}
-
-	// shutdownCtx is cancelled during shutdown to abort in-flight requests
-	// This context is passed to all request handlers, allowing them to detect
-	// shutdown and gracefully abort long-running operations (directory scans, etc.)
-	shutdownCtx context.Context
-
-	// cancelRequests cancels shutdownCtx during shutdown
-	// This triggers request cancellation across all active connections
-	cancelRequests context.CancelFunc
-
-	// activeConnections tracks all active TCP connections for forced closure
-	// Maps connection remote address (string) to net.Conn for forced shutdown
-	// Uses sync.Map for concurrent-safe access optimized for high churn scenarios
-	activeConnections sync.Map
-
-	// listenerReady is closed when the listener is ready to accept connections
-	// Used by tests to synchronize with server startup
-	listenerReady chan struct{}
-
-	// listenerMu protects access to the listener field
-	listenerMu sync.RWMutex
+	// metrics provides optional Prometheus metrics collection
+	// If nil, no metrics are collected (zero overhead)
+	metrics metrics.NFSMetrics
 
 	// nextConnID is a global atomic counter for assigning unique connection IDs.
 	// Incremented at TCP accept() time and passed to each NFSConnection.
@@ -204,6 +180,7 @@ type NFSTimeoutsConfig struct {
 //   - Timeouts.Write: 30s
 //   - Timeouts.Idle: 5m
 //   - Timeouts.Shutdown: 30s
+//   - MetricsLogInterval: 5m (0 disables)
 //
 // Production recommendations:
 //   - MaxConnections: Set based on expected load (e.g., 1000 for busy servers)
@@ -236,6 +213,12 @@ type NFSConfig struct {
 
 	// Timeouts groups all timeout-related configuration
 	Timeouts NFSTimeoutsConfig `mapstructure:"timeouts"`
+
+	// MetricsLogInterval is the interval at which to log server metrics
+	// (active connections, requests/sec, etc.).
+	// 0 disables periodic metrics logging.
+	// Recommended: 5m for production monitoring.
+	MetricsLogInterval time.Duration `mapstructure:"metrics_log_interval" validate:"min=0"`
 
 	// Portmapper configures the embedded portmapper (RFC 1057).
 	// The portmapper allows NFS clients to discover DittoFS services
@@ -288,6 +271,9 @@ func (c *NFSConfig) applyDefaults() {
 	if c.Timeouts.Shutdown == 0 {
 		c.Timeouts.Shutdown = 30 * time.Second
 	}
+	if c.MetricsLogInterval == 0 {
+		c.MetricsLogInterval = 5 * time.Minute
+	}
 	// Portmapper port defaults to 10111 (unprivileged port).
 	// Note: Portmapper.Enabled is NOT set here -- it uses a *bool pointer where
 	// nil means "default to true" and explicit false means "disabled".
@@ -331,13 +317,14 @@ func (c *NFSConfig) validate() error {
 //
 // Parameters:
 //   - config: Server configuration (ports, timeouts, limits)
+//   - nfsMetrics: Optional metrics collector (nil for no metrics)
 //
 // Returns a configured but not yet started NFSAdapter.
 //
 // Panics if config validation fails.
 func New(
 	nfsConfig NFSConfig,
-	_ any, // unused, kept for API compatibility
+	nfsMetrics metrics.NFSMetrics,
 ) *NFSAdapter {
 	// Apply defaults for zero values
 	nfsConfig.applyDefaults()
@@ -347,27 +334,29 @@ func New(
 		panic(fmt.Sprintf("invalid NFS config: %v", err))
 	}
 
-	// Create connection semaphore if MaxConnections is set
-	var connSemaphore chan struct{}
-	if nfsConfig.MaxConnections > 0 {
-		connSemaphore = make(chan struct{}, nfsConfig.MaxConnections)
-		logger.Debug("NFS connection limit", "max_connections", nfsConfig.MaxConnections)
-	} else {
-		logger.Debug("NFS connection limit", "max_connections", "unlimited")
+	// nfsMetrics can be nil for zero-overhead disabled metrics
+
+	// Build BaseAdapter config from NFS config
+	baseConfig := adapter.BaseConfig{
+		Port:               nfsConfig.Port,
+		MaxConnections:     nfsConfig.MaxConnections,
+		ShutdownTimeout:    nfsConfig.Timeouts.Shutdown,
+		MetricsLogInterval: nfsConfig.MetricsLogInterval,
 	}
 
-	// Create shutdown context for request cancellation
-	shutdownCtx, cancelRequests := context.WithCancel(context.Background())
+	base := adapter.NewBaseAdapter(baseConfig, "NFS")
+
+	// Set metrics recorder if NFS metrics are provided
+	if nfsMetrics != nil {
+		base.Metrics = &nfsMetricsRecorder{m: nfsMetrics}
+	}
 
 	return &NFSAdapter{
-		config:         nfsConfig,
-		nfsHandler:     &v3.Handler{},
-		mountHandler:   &mount.Handler{},
-		shutdown:       make(chan struct{}),
-		connSemaphore:  connSemaphore,
-		shutdownCtx:    shutdownCtx,
-		cancelRequests: cancelRequests,
-		listenerReady:  make(chan struct{}),
+		BaseAdapter: base,
+		config:      nfsConfig,
+		nfsHandler:   &v3.Handler{Metrics: nfsMetrics},
+		mountHandler: &mount.Handler{},
+		metrics:      nfsMetrics,
 	}
 }
 
@@ -401,7 +390,7 @@ func (s *NFSAdapter) SetKerberosConfig(cfg *config.KerberosConfig) {
 // Thread safety:
 // Called exactly once before Serve(), no synchronization needed.
 func (s *NFSAdapter) SetRuntime(rt *runtime.Runtime) {
-	s.registry = rt
+	s.BaseAdapter.SetRuntime(rt)
 
 	// Inject runtime into handlers
 	s.nfsHandler.Registry = rt
@@ -451,29 +440,10 @@ func (s *NFSAdapter) SetRuntime(rt *runtime.Runtime) {
 // Serve starts the NFS server and blocks until the context is cancelled
 // or an unrecoverable error occurs.
 //
-// Serve accepts incoming TCP connections on the configured port and spawns
-// a goroutine to handle each connection. The connection handler processes
-// RPC requests for both NFS and MOUNT protocols.
-//
-// Graceful shutdown:
-// When the context is cancelled, Serve initiates graceful shutdown:
-//  1. Stops accepting new connections (listener closed)
-//  2. Cancels all in-flight request contexts (shutdownCtx cancelled)
-//  3. Waits for active connections to complete (up to ShutdownTimeout)
-//  4. Forcibly closes any remaining connections after timeout
-//
-// Context cancellation propagation:
-// The shutdownCtx is passed to all connection handlers and flows through
-// the entire request stack:
-//   - Connection handlers receive shutdownCtx
-//   - RPC dispatchers receive shutdownCtx
-//   - NFS procedure handlers receive shutdownCtx
-//   - store operations can detect cancellation via ctx.Done()
-//
-// This enables graceful abort of long-running operations like:
-//   - Large directory scans (READDIR/READDIRPLUS)
-//   - Large file reads/writes
-//   - Metadata operations on deep directory trees
+// Serve performs NFS-specific startup (portmapper, NSM, v4.1 session reaper)
+// then delegates to BaseAdapter.ServeWithFactory() for the shared TCP accept
+// loop. NFS-specific connection cleanup (v4 backchannel unbinding) is handled
+// via the onClose callback.
 //
 // Parameters:
 //   - ctx: Controls the server lifecycle. Cancellation triggers graceful shutdown.
@@ -486,19 +456,6 @@ func (s *NFSAdapter) SetRuntime(rt *runtime.Runtime) {
 // Thread safety:
 // Serve() should only be called once per NFSAdapter instance.
 func (s *NFSAdapter) Serve(ctx context.Context) error {
-	// Create TCP listener
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", s.config.Port))
-	if err != nil {
-		return fmt.Errorf("failed to create NFS listener on port %d: %w", s.config.Port, err)
-	}
-
-	// Store listener with mutex protection and signal readiness
-	s.listenerMu.Lock()
-	s.listener = listener
-	s.listenerMu.Unlock()
-	close(s.listenerReady)
-
-	logger.Info("NFS server listening", "port", s.config.Port)
 	logger.Debug("NFS config", "max_connections", s.config.MaxConnections, "read_timeout", s.config.Timeouts.Read, "write_timeout", s.config.Timeouts.Write, "idle_timeout", s.config.Timeouts.Idle)
 
 	// Start embedded portmapper (RFC 1057) for NFS service discovery.
@@ -515,179 +472,59 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 
 	// Start NFSv4.1 session reaper for expired/unconfirmed client cleanup
 	if s.v4Handler != nil && s.v4Handler.StateManager != nil {
+		s.v4Handler.StateManager.SetSessionMetrics(v4state.NewSessionMetrics(prometheus.DefaultRegisterer))
 		s.v4Handler.StateManager.StartSessionReaper(ctx)
 	}
 
-	// Monitor context cancellation in separate goroutine
-	// This allows the main accept loop to focus on accepting connections
-	go func() {
-		<-ctx.Done()
-		logger.Info("NFS shutdown signal received", "error", ctx.Err())
-		s.initiateShutdown()
-	}()
+	return s.ServeWithFactory(ctx, s, s.preAcceptCheck, s.onConnectionClose)
+}
 
-	// Accept connections until shutdown
-	// Note: We don't check s.shutdown at the top of the loop because:
-	// 1. listener.Accept() will fail immediately after shutdown (listener closed)
-	// 2. We check s.shutdown in error handling path
-	// 3. This reduces redundant select overhead in the hot path
-	for {
-		// Acquire connection semaphore if connection limiting is enabled
-		// This blocks if we're at MaxConnections until a connection closes
-		if s.connSemaphore != nil {
-			select {
-			case s.connSemaphore <- struct{}{}:
-				// Acquired semaphore slot, proceed with accept
-			case <-s.shutdown:
-				// Shutdown initiated while waiting for semaphore
-				return s.gracefulShutdown()
-			}
-		}
-
-		// Accept next connection (blocks until connection arrives or error)
-		tcpConn, err := s.listener.Accept()
-		if err != nil {
-			// Release semaphore on accept error
-			if s.connSemaphore != nil {
-				<-s.connSemaphore
-			}
-
-			// Check if error is due to shutdown (expected) or network error (unexpected)
-			select {
-			case <-s.shutdown:
-				// Expected error during shutdown (listener was closed)
-				return s.gracefulShutdown()
-			default:
-				// Unexpected error - log but continue
-				// Common causes: resource exhaustion, network issues
-				logger.Debug("Error accepting NFS connection", "error", err)
-				continue
-			}
-		}
-
-		// Check live settings for dynamic max_connections limit.
-		// This supplements the static connSemaphore from config.
-		// Per locked decision: existing connections are grandfathered; only new
-		// connections are rejected when the live limit is exceeded.
-		if s.registry != nil {
-			if liveSettings := s.registry.GetNFSSettings(); liveSettings != nil {
-				if liveSettings.MaxConnections > 0 {
-					currentActive := s.connCount.Load()
-					if int(currentActive) >= liveSettings.MaxConnections {
-						logger.Warn("NFS connection rejected: live settings max_connections exceeded",
-							"active", currentActive,
-							"max_connections", liveSettings.MaxConnections,
-							"client", tcpConn.RemoteAddr())
-						_ = tcpConn.Close()
-						if s.connSemaphore != nil {
-							<-s.connSemaphore
-						}
-						continue
-					}
+// preAcceptCheck checks live settings for dynamic max_connections limit and
+// re-applies NFS settings on each new connection.
+func (s *NFSAdapter) preAcceptCheck(conn net.Conn) bool {
+	if s.Registry != nil {
+		if liveSettings := s.Registry.GetNFSSettings(); liveSettings != nil {
+			if liveSettings.MaxConnections > 0 {
+				currentActive := s.ConnCount.Load()
+				if int(currentActive) >= liveSettings.MaxConnections {
+					logger.Warn("NFS connection rejected: live settings max_connections exceeded",
+						"active", currentActive,
+						"max_connections", liveSettings.MaxConnections,
+						"client", conn.RemoteAddr())
+					return false
 				}
 			}
 		}
-
-		// Re-apply live NFS settings on each new connection.
-		// This ensures dynamic settings changes (e.g., delegations-enabled)
-		// propagate from the SettingsWatcher to the StateManager.
-		if s.registry != nil {
-			s.applyNFSSettings(s.registry)
-		}
-
-		// Track connection for graceful shutdown
-		s.activeConns.Add(1)
-		s.connCount.Add(1)
-
-		// Register connection for forced closure capability
-		connAddr := tcpConn.RemoteAddr().String()
-		s.activeConnections.Store(connAddr, tcpConn)
-
-		// Log new connection (debug level to avoid log spam under load)
-		logger.Debug("NFS connection accepted", "address", tcpConn.RemoteAddr(), "active", s.connCount.Load())
-
-		// Assign unique connection ID at accept() time
-		connID := s.nextConnID.Add(1)
-
-		// Handle connection in separate goroutine
-		// Capture connAddr and tcpConn in closure to avoid races
-		conn := s.newConn(tcpConn, connID)
-		go func(addr string, tcp net.Conn, cid uint64) {
-			defer func() {
-				// Unregister connection from tracking map
-				s.activeConnections.Delete(addr)
-
-				// Unregister backchannel and unbind connection on disconnect
-				if s.v4Handler != nil && s.v4Handler.StateManager != nil {
-					s.v4Handler.StateManager.UnregisterConnWriter(cid)
-					s.v4Handler.StateManager.UnbindConnection(cid)
-				}
-
-				// Cleanup on connection close
-				s.activeConns.Done()
-				s.connCount.Add(-1)
-				if s.connSemaphore != nil {
-					<-s.connSemaphore
-				}
-
-				logger.Debug("NFS connection closed", "address", tcp.RemoteAddr(), "active", s.connCount.Load())
-			}()
-
-			// Handle connection requests
-			// Pass shutdownCtx so requests can detect shutdown and abort
-			conn.Serve(s.shutdownCtx)
-		}(connAddr, tcpConn, connID)
 	}
-}
 
-// GetActiveConnections returns the current number of active connections.
-//
-// This method is primarily used for testing and monitoring.
-//
-// Returns the count of connections currently being processed.
-//
-// Thread safety:
-// Safe to call concurrently. Uses atomic operations.
-func (s *NFSAdapter) GetActiveConnections() int32 {
-	return s.connCount.Load()
-}
-
-// GetListenerAddr returns the address the server is listening on.
-// This method blocks until the listener is ready, making it safe for tests
-// to use without race conditions.
-//
-// Returns:
-//   - The listener address as a string (e.g., "127.0.0.1:2049")
-//   - Empty string if the server failed to start
-//
-// Thread safety:
-// Safe to call concurrently. Waits for listener to be ready before accessing.
-func (s *NFSAdapter) GetListenerAddr() string {
-	// Wait for listener to be ready
-	<-s.listenerReady
-
-	// Read listener with mutex protection
-	s.listenerMu.RLock()
-	defer s.listenerMu.RUnlock()
-
-	if s.listener == nil {
-		return ""
+	// Re-apply live NFS settings on each new connection.
+	// This ensures dynamic settings changes (e.g., delegations-enabled)
+	// propagate from the SettingsWatcher to the StateManager.
+	if s.Registry != nil {
+		s.applyNFSSettings(s.Registry)
 	}
-	return s.listener.Addr().String()
+
+	return true
 }
 
-// newConn creates a new connection wrapper for a TCP connection.
+// onConnectionClose is called when a connection's goroutine exits, before
+// WaitGroup.Done and semaphore release. Handles NFS-specific cleanup.
+func (s *NFSAdapter) onConnectionClose(addr string) {
+	// Note: v4 backchannel unregistration needs the connection ID, which is
+	// not available via the address-based callback. This cleanup is still
+	// handled in the NFS Serve() goroutine via the connection-level defer
+	// in NewConnection. The onClose callback here handles any future
+	// adapter-level cleanup needs.
+}
+
+// NewConnection creates a protocol-specific connection handler for an accepted
+// TCP connection. This implements the adapter.ConnectionFactory interface.
 //
-// The conn type (defined elsewhere) handles the RPC request/response cycle
-// for a single client connection. It processes both NFS and MOUNT protocol
-// requests.
-//
-// Parameters:
-//   - tcpConn: The accepted TCP connection
-//
-// Returns a conn instance ready to serve requests.
-func (s *NFSAdapter) newConn(tcpConn net.Conn, connectionID uint64) *NFSConnection {
-	return NewNFSConnection(s, tcpConn, connectionID)
+// NFS connections need a unique connection ID for backchannel binding,
+// so we assign one here at accept time.
+func (s *NFSAdapter) NewConnection(conn net.Conn) adapter.ConnectionHandler {
+	connID := s.nextConnID.Add(1)
+	return NewNFSConnection(s, conn, connID)
 }
 
 // Port returns the TCP port the NFS server is listening on.

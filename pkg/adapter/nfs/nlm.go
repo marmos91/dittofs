@@ -368,7 +368,7 @@ func (s *NFSAdapter) processNLMWaiters(handle metadata.FileHandle) {
 		// Send GRANTED callback
 		// ProcessGrantedCallback releases the lock on failure
 		success := callback.ProcessGrantedCallback(
-			s.shutdownCtx,
+			s.ShutdownCtx,
 			waiter,
 			lm,
 		)
@@ -391,7 +391,7 @@ func (s *NFSAdapter) getLockManagerForHandle(handle metadata.FileHandle) *lock.M
 		return nil
 	}
 
-	return s.registry.GetMetadataService().GetLockManagerForShare(shareName)
+	return s.Registry.GetMetadataService().GetLockManagerForShare(shareName)
 }
 
 // initNSMHandler initializes the NSM handler and notifier for crash recovery.
@@ -485,7 +485,7 @@ func (s *NFSAdapter) handleClientCrash(ctx context.Context, clientID string, met
 		"prefix", clientPrefix)
 
 	// Iterate all shares and release matching locks
-	shares := s.registry.ListShares()
+	shares := s.Registry.ListShares()
 	for _, shareName := range shares {
 		lockMgr := metadataService.GetLockManagerForShare(shareName)
 		if lockMgr == nil {
