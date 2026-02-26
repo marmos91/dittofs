@@ -38,7 +38,7 @@ services:
     volumes:
       - ./ptfconfig-generated:/data/fileserver
     network_mode: "service:dittofs"
-    command: ["${WPTS_FILTER:-TestCategory=BVT}", ""]
+    command: ["${WPTS_FILTER:-TestCategory=BVT}"]
     profiles:
       - test
 
