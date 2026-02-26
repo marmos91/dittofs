@@ -32,6 +32,26 @@ func TestResolveKeytabPath_FallbackToConfig(t *testing.T) {
 	}
 }
 
+func TestResolveKeytabPath_LegacyEnvVar(t *testing.T) {
+	t.Setenv("DITTOFS_KERBEROS_KEYTAB", "")
+	t.Setenv("DITTOFS_KERBEROS_KEYTAB_PATH", "/legacy/path/keytab")
+
+	result := resolveKeytabPath("/config/path/keytab")
+	if result != "/legacy/path/keytab" {
+		t.Fatalf("expected /legacy/path/keytab, got %s", result)
+	}
+}
+
+func TestResolveKeytabPath_PrimaryWinsOverLegacy(t *testing.T) {
+	t.Setenv("DITTOFS_KERBEROS_KEYTAB", "/primary/keytab")
+	t.Setenv("DITTOFS_KERBEROS_KEYTAB_PATH", "/legacy/keytab")
+
+	result := resolveKeytabPath("/config/keytab")
+	if result != "/primary/keytab" {
+		t.Fatalf("expected /primary/keytab, got %s", result)
+	}
+}
+
 func TestResolveKeytabPath_EmptyBoth(t *testing.T) {
 	t.Setenv("DITTOFS_KERBEROS_KEYTAB", "")
 
@@ -54,6 +74,26 @@ func TestResolveServicePrincipal_EnvVarOverride(t *testing.T) {
 	}
 }
 
+func TestResolveServicePrincipal_LegacyEnvVar(t *testing.T) {
+	t.Setenv("DITTOFS_KERBEROS_PRINCIPAL", "")
+	t.Setenv("DITTOFS_KERBEROS_SERVICE_PRINCIPAL", "nfs/legacy.example.com@EXAMPLE.COM")
+
+	result := resolveServicePrincipal("nfs/config.example.com@EXAMPLE.COM")
+	if result != "nfs/legacy.example.com@EXAMPLE.COM" {
+		t.Fatalf("expected nfs/legacy.example.com@EXAMPLE.COM, got %s", result)
+	}
+}
+
+func TestResolveServicePrincipal_PrimaryWinsOverLegacy(t *testing.T) {
+	t.Setenv("DITTOFS_KERBEROS_PRINCIPAL", "nfs/primary.example.com@EXAMPLE.COM")
+	t.Setenv("DITTOFS_KERBEROS_SERVICE_PRINCIPAL", "nfs/legacy.example.com@EXAMPLE.COM")
+
+	result := resolveServicePrincipal("nfs/config.example.com@EXAMPLE.COM")
+	if result != "nfs/primary.example.com@EXAMPLE.COM" {
+		t.Fatalf("expected nfs/primary.example.com@EXAMPLE.COM, got %s", result)
+	}
+}
+
 func TestResolveServicePrincipal_FallbackToConfig(t *testing.T) {
 	t.Setenv("DITTOFS_KERBEROS_PRINCIPAL", "")
 
@@ -64,35 +104,44 @@ func TestResolveServicePrincipal_FallbackToConfig(t *testing.T) {
 }
 
 // ============================================================================
+// resolveKrb5ConfPath tests
+// ============================================================================
+
+func TestResolveKrb5ConfPath_EnvVarOverride(t *testing.T) {
+	t.Setenv("DITTOFS_KERBEROS_KRB5CONF", "/env/override/krb5.conf")
+
+	result := resolveKrb5ConfPath("/config/path/krb5.conf")
+	if result != "/env/override/krb5.conf" {
+		t.Fatalf("expected /env/override/krb5.conf, got %s", result)
+	}
+}
+
+func TestResolveKrb5ConfPath_FallbackToConfig(t *testing.T) {
+	t.Setenv("DITTOFS_KERBEROS_KRB5CONF", "")
+
+	result := resolveKrb5ConfPath("/config/path/krb5.conf")
+	if result != "/config/path/krb5.conf" {
+		t.Fatalf("expected /config/path/krb5.conf, got %s", result)
+	}
+}
+
+func TestResolveKrb5ConfPath_DefaultFallback(t *testing.T) {
+	t.Setenv("DITTOFS_KERBEROS_KRB5CONF", "")
+
+	result := resolveKrb5ConfPath("")
+	if result != "/etc/krb5.conf" {
+		t.Fatalf("expected /etc/krb5.conf, got %s", result)
+	}
+}
+
+// ============================================================================
 // loadKeytab tests
 // ============================================================================
 
-// createTestKeytab creates a minimal valid keytab file for testing.
-//
-// It uses gokrb5 keytab.New() and AddEntry to create a keytab with one entry,
-// marshals it to bytes, and writes to a temp file.
+// createTestKeytab creates a minimal valid keytab file for testing with KVNO 1.
 func createTestKeytab(t *testing.T, dir string) string {
 	t.Helper()
-
-	kt := keytab.New()
-	// AddEntry(principalName, realm, password, timestamp, KVNO, encType)
-	// encType 17 = aes128-cts-hmac-sha1-96
-	err := kt.AddEntry("nfs/server.example.com", "EXAMPLE.COM", "test-password", time.Now(), 1, 17)
-	if err != nil {
-		t.Fatalf("add keytab entry: %v", err)
-	}
-
-	data, err := kt.Marshal()
-	if err != nil {
-		t.Fatalf("marshal test keytab: %v", err)
-	}
-
-	path := filepath.Join(dir, "test.keytab")
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatalf("write test keytab: %v", err)
-	}
-
-	return path
+	return createTestKeytabWithKVNO(t, dir, 1)
 }
 
 // createTestKeytabWithKVNO creates a keytab file with a specific KVNO for testing.

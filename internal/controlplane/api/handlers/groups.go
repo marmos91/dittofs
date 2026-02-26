@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"errors"
 	"net/http"
 	"time"
 
@@ -69,11 +68,7 @@ func (h *GroupHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := h.store.CreateGroup(r.Context(), group); err != nil {
-		if errors.Is(err, models.ErrDuplicateGroup) {
-			Conflict(w, "Group already exists")
-			return
-		}
-		InternalServerError(w, "Failed to create group")
+		HandleStoreError(w, err)
 		return
 	}
 
@@ -108,11 +103,7 @@ func (h *GroupHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 	group, err := h.store.GetGroup(r.Context(), name)
 	if err != nil {
-		if errors.Is(err, models.ErrGroupNotFound) {
-			NotFound(w, "Group not found")
-			return
-		}
-		InternalServerError(w, "Failed to get group")
+		HandleStoreError(w, err)
 		return
 	}
 
@@ -136,11 +127,7 @@ func (h *GroupHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// Fetch existing group
 	group, err := h.store.GetGroup(r.Context(), name)
 	if err != nil {
-		if errors.Is(err, models.ErrGroupNotFound) {
-			NotFound(w, "Group not found")
-			return
-		}
-		InternalServerError(w, "Failed to get group")
+		HandleStoreError(w, err)
 		return
 	}
 
@@ -153,7 +140,7 @@ func (h *GroupHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.UpdateGroup(r.Context(), group); err != nil {
-		InternalServerError(w, "Failed to update group")
+		HandleStoreError(w, err)
 		return
 	}
 
@@ -177,11 +164,7 @@ func (h *GroupHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.DeleteGroup(r.Context(), name); err != nil {
-		if errors.Is(err, models.ErrGroupNotFound) {
-			NotFound(w, "Group not found")
-			return
-		}
-		InternalServerError(w, "Failed to delete group")
+		HandleStoreError(w, err)
 		return
 	}
 
@@ -210,15 +193,7 @@ func (h *GroupHandler) AddMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.AddUserToGroup(r.Context(), req.Username, groupName); err != nil {
-		if errors.Is(err, models.ErrUserNotFound) {
-			NotFound(w, "User not found")
-			return
-		}
-		if errors.Is(err, models.ErrGroupNotFound) {
-			NotFound(w, "Group not found")
-			return
-		}
-		InternalServerError(w, "Failed to add user to group")
+		HandleStoreError(w, err)
 		return
 	}
 
@@ -241,11 +216,7 @@ func (h *GroupHandler) RemoveMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.RemoveUserFromGroup(r.Context(), username, groupName); err != nil {
-		if errors.Is(err, models.ErrUserNotFound) {
-			NotFound(w, "User not found")
-			return
-		}
-		InternalServerError(w, "Failed to remove user from group")
+		HandleStoreError(w, err)
 		return
 	}
 
@@ -263,11 +234,7 @@ func (h *GroupHandler) ListMembers(w http.ResponseWriter, r *http.Request) {
 
 	members, err := h.store.GetGroupMembers(r.Context(), groupName)
 	if err != nil {
-		if errors.Is(err, models.ErrGroupNotFound) {
-			NotFound(w, "Group not found")
-			return
-		}
-		InternalServerError(w, "Failed to list group members")
+		HandleStoreError(w, err)
 		return
 	}
 
@@ -296,12 +263,10 @@ func groupToResponse(g *models.Group) GroupResponse {
 		Description: g.Description,
 		CreatedAt:   g.CreatedAt,
 	}
-	// Copy GID pointer
 	if g.GID != nil {
 		gid := *g.GID
 		resp.GID = &gid
 	}
-	// Populate members from Users
 	if len(g.Users) > 0 {
 		resp.Members = make([]string, len(g.Users))
 		for i, u := range g.Users {

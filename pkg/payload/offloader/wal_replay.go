@@ -222,6 +222,7 @@ func ReconcileMetadata(
 // parseShareName extracts the share name from a payloadID.
 // PayloadID format: "shareName/path/to/file"
 // Returns empty string if format is invalid.
+// Leading slashes are normalized before parsing (e.g., "/export/file" → "export").
 func parseShareName(payloadID string) string {
 	payloadID = strings.TrimPrefix(payloadID, "/")
 	if payloadID == "" {

@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 
+	"github.com/marmos91/dittofs/pkg/auth"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
@@ -96,4 +97,23 @@ type Adapter interface {
 	//
 	// Returns nil if the error cannot be mapped to a protocol-specific error.
 	MapError(err error) ProtocolError
+}
+
+// IdentityMappingAdapter extends Adapter with protocol-specific identity mapping.
+//
+// Adapters that support authentication implement this interface to convert
+// auth.AuthResult values into protocol-specific identities. This allows the
+// runtime to perform identity mapping uniformly while each adapter handles
+// the protocol-specific translation logic.
+//
+//   - NFS: Maps AUTH_UNIX UIDs, AUTH_NULL, RPCSEC_GSS Kerberos principals
+//   - SMB: Maps NTLM sessions, SPNEGO/Kerberos negotiations
+//
+// All adapters embedding BaseAdapter satisfy this interface because BaseAdapter
+// provides a default MapIdentity stub that returns an error. The runtime detects
+// non-supporting adapters by checking for a non-nil error from MapIdentity
+// rather than by type assertion.
+type IdentityMappingAdapter interface {
+	Adapter
+	auth.IdentityMapper
 }
