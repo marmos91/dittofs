@@ -99,11 +99,10 @@ func New(config Config) *Adapter {
 
 	// Build BaseAdapter config from SMB config
 	baseConfig := adapter.BaseConfig{
-		BindAddress:        config.BindAddress,
-		Port:               config.Port,
-		MaxConnections:     config.MaxConnections,
-		ShutdownTimeout:    config.Timeouts.Shutdown,
-		MetricsLogInterval: config.MetricsLogInterval,
+		BindAddress:     config.BindAddress,
+		Port:            config.Port,
+		MaxConnections:  config.MaxConnections,
+		ShutdownTimeout: config.Timeouts.Shutdown,
 	}
 
 	return &Adapter{

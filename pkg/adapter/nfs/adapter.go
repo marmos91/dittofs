@@ -20,26 +20,13 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	v4state "github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/marmos91/dittofs/pkg/adapter"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
-	"github.com/marmos91/dittofs/pkg/metrics"
 )
-
-// nfsMetricsRecorder adapts the NFS metrics interface to BaseAdapter's
-// MetricsRecorder interface.
-type nfsMetricsRecorder struct {
-	m metrics.NFSMetrics
-}
-
-func (r *nfsMetricsRecorder) RecordConnectionAccepted()        { r.m.RecordConnectionAccepted() }
-func (r *nfsMetricsRecorder) RecordConnectionClosed()          { r.m.RecordConnectionClosed() }
-func (r *nfsMetricsRecorder) RecordConnectionForceClosed()     { r.m.RecordConnectionForceClosed() }
-func (r *nfsMetricsRecorder) SetActiveConnections(count int32) { r.m.SetActiveConnections(count) }
 
 // NFSAdapter implements the adapter.Adapter interface for NFS protocol.
 //
@@ -100,9 +87,6 @@ type NFSAdapter struct {
 	// nsmNotifier orchestrates SM_NOTIFY callbacks on server restart
 	nsmNotifier *nsm.Notifier
 
-	// nsmMetrics provides NSM-specific Prometheus metrics
-	nsmMetrics *nsm.Metrics
-
 	// gssProcessor handles RPCSEC_GSS context lifecycle (INIT/DATA/DESTROY).
 	// nil when Kerberos is not enabled.
 	gssProcessor *gss.GSSProcessor
@@ -129,10 +113,6 @@ type NFSAdapter struct {
 
 	// blockingQueue manages pending NLM blocking lock requests
 	blockingQueue *blocking.BlockingQueue
-
-	// metrics provides optional Prometheus metrics collection
-	// If nil, no metrics are collected (zero overhead)
-	metrics metrics.NFSMetrics
 
 	// nextConnID is a global atomic counter for assigning unique connection IDs.
 	// Incremented at TCP accept() time and passed to each NFSConnection.
@@ -180,7 +160,6 @@ type NFSTimeoutsConfig struct {
 //   - Timeouts.Write: 30s
 //   - Timeouts.Idle: 5m
 //   - Timeouts.Shutdown: 30s
-//   - MetricsLogInterval: 5m (0 disables)
 //
 // Production recommendations:
 //   - MaxConnections: Set based on expected load (e.g., 1000 for busy servers)
@@ -213,12 +192,6 @@ type NFSConfig struct {
 
 	// Timeouts groups all timeout-related configuration
 	Timeouts NFSTimeoutsConfig `mapstructure:"timeouts"`
-
-	// MetricsLogInterval is the interval at which to log server metrics
-	// (active connections, requests/sec, etc.).
-	// 0 disables periodic metrics logging.
-	// Recommended: 5m for production monitoring.
-	MetricsLogInterval time.Duration `mapstructure:"metrics_log_interval" validate:"min=0"`
 
 	// Portmapper configures the embedded portmapper (RFC 1057).
 	// The portmapper allows NFS clients to discover DittoFS services
@@ -271,9 +244,6 @@ func (c *NFSConfig) applyDefaults() {
 	if c.Timeouts.Shutdown == 0 {
 		c.Timeouts.Shutdown = 30 * time.Second
 	}
-	if c.MetricsLogInterval == 0 {
-		c.MetricsLogInterval = 5 * time.Minute
-	}
 	// Portmapper port defaults to 10111 (unprivileged port).
 	// Note: Portmapper.Enabled is NOT set here -- it uses a *bool pointer where
 	// nil means "default to true" and explicit false means "disabled".
@@ -317,14 +287,13 @@ func (c *NFSConfig) validate() error {
 //
 // Parameters:
 //   - config: Server configuration (ports, timeouts, limits)
-//   - nfsMetrics: Optional metrics collector (nil for no metrics)
 //
 // Returns a configured but not yet started NFSAdapter.
 //
 // Panics if config validation fails.
 func New(
 	nfsConfig NFSConfig,
-	nfsMetrics metrics.NFSMetrics,
+	_ any, // unused, kept for API compatibility
 ) *NFSAdapter {
 	// Apply defaults for zero values
 	nfsConfig.applyDefaults()
@@ -334,29 +303,20 @@ func New(
 		panic(fmt.Sprintf("invalid NFS config: %v", err))
 	}
 
-	// nfsMetrics can be nil for zero-overhead disabled metrics
-
 	// Build BaseAdapter config from NFS config
 	baseConfig := adapter.BaseConfig{
-		Port:               nfsConfig.Port,
-		MaxConnections:     nfsConfig.MaxConnections,
-		ShutdownTimeout:    nfsConfig.Timeouts.Shutdown,
-		MetricsLogInterval: nfsConfig.MetricsLogInterval,
+		Port:            nfsConfig.Port,
+		MaxConnections:  nfsConfig.MaxConnections,
+		ShutdownTimeout: nfsConfig.Timeouts.Shutdown,
 	}
 
 	base := adapter.NewBaseAdapter(baseConfig, "NFS")
 
-	// Set metrics recorder if NFS metrics are provided
-	if nfsMetrics != nil {
-		base.Metrics = &nfsMetricsRecorder{m: nfsMetrics}
-	}
-
 	return &NFSAdapter{
 		BaseAdapter:  base,
 		config:       nfsConfig,
-		nfsHandler:   &v3.Handler{Metrics: nfsMetrics},
+		nfsHandler:   &v3.Handler{},
 		mountHandler: &mount.Handler{},
-		metrics:      nfsMetrics,
 	}
 }
 
@@ -472,7 +432,6 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 
 	// Start NFSv4.1 session reaper for expired/unconfirmed client cleanup
 	if s.v4Handler != nil && s.v4Handler.StateManager != nil {
-		s.v4Handler.StateManager.SetSessionMetrics(v4state.NewSessionMetrics(prometheus.DefaultRegisterer))
 		s.v4Handler.StateManager.StartSessionReaper(ctx)
 	}
 
