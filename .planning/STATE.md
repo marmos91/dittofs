@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v4.2
 milestone_name: Adapter + Core Refactoring
-status: phase-complete
-last_updated: "2026-02-26T11:14:00.000Z"
+status: unknown
+last_updated: "2026-02-26T16:22:35.885Z"
 progress:
-  total_phases: 29
-  completed_phases: 29
-  total_plans: 102
-  completed_plans: 100
+  total_phases: 31
+  completed_phases: 30
+  total_plans: 105
+  completed_plans: 105
 ---
 
 # Project State
@@ -22,10 +22,10 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 
 ## Current Position
 
-Phase: 29 - Core Layer Decomposition
-Current Plan: 7 of 7 (COMPLETE)
+Phase: 29.4 - Verification Artifacts & Requirements Cleanup
+Current Plan: 1 of 1 (COMPLETE)
 Status: Phase Complete
-Last activity: 2026-02-26 -- Completed 29-07 (Auth Centralization, API Error Mapping, Documentation)
+Last activity: 2026-02-26 -- Completed 29.4-01 (Verification Artifacts & Requirements Cleanup)
 
 ## Completed Milestones
 
@@ -38,7 +38,7 @@ Last activity: 2026-02-26 -- Completed 29-07 (Auth Centralization, API Error Map
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 100 (19 v1.0 + 42 v2.0 + 25 v3.0 + 14 v3.5)
+- Total plans completed: 101 (19 v1.0 + 42 v2.0 + 25 v3.0 + 15 v3.5)
 - 3 milestones in 25 days
 
 | Phase | Plan | Duration | Tasks | Files |
@@ -62,6 +62,7 @@ Last activity: 2026-02-26 -- Completed 29-07 (Auth Centralization, API Error Map
 | 29 | 05 | 9min | 2 | 12 |
 | 29 | 06 | 10min | 2 | 20 |
 | 29 | 07 | 13min | 2 | 11 |
+| 29.4 | 01 | 5min | 3 | 3 |
 
 ## Quick Tasks Completed
 
@@ -136,6 +137,9 @@ Last activity: 2026-02-26 -- Completed 29-07 (Auth Centralization, API Error Map
 - [Phase 29]: [29-07] Kerberos Provider.Authenticate returns Authenticated:false by design (full token validation in protocol-specific layers)
 - [Phase 29]: [29-07] HandleStoreError wraps MapStoreError + WriteProblem for one-line handler error responses
 - [Phase 29]: [29-07] Converted all groups.go handlers as demonstration; other handlers can adopt incrementally
+- [Phase 29.4]: [29.4-01] REF-04.5 signing verification co-located in framing.go (not separate signing.go) -- marked SATISFIED with deviation note
+- [Phase 29.4]: [29.4-01] REF-04.6 dispatch split into dispatch.go + response.go -- marked SATISFIED with deviation note
+- [Phase 29.4]: [29.4-01] REF-06.6 txutil intent satisfied via storetest conformance suite (no standalone txutil package)
 
 ### Pending Todos
 
@@ -148,5 +152,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-26
-Stopped at: Completed 29-07-PLAN.md (Phase 29 complete)
+Stopped at: Completed 29.4-01-PLAN.md (Phase 29.4 complete)
 Resume file: Next phase

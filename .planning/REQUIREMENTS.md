@@ -339,9 +339,9 @@ Industry-standard conformance validation against the official Microsoft test sui
 | REF-01: Generic Lock Interface | 26 | Complete (8/10 satisfied, 2 partial — adapter translations deferred to v3.8) |
 | REF-02: Protocol Leak Purge | 26 | Complete (11/11) |
 | REF-03: NFS Adapter Restructuring | 27 | Complete (11/11) |
-| REF-04: SMB Adapter Restructuring | 28 | Complete (11/11, pending formal verification in 29.4) |
-| REF-05: Core Object Decomposition | 29 | Complete (8/8, pending formal verification in 29.4) |
-| REF-06: Code Quality Improvements | 29 | Complete (9/9, pending formal verification in 29.4) |
+| REF-04: SMB Adapter Restructuring | 28 | Complete (11/11) |
+| REF-05: Core Object Decomposition | 29 | Complete (8/8) |
+| REF-06: Code Quality Improvements | 29 | Complete (9/9) |
 | WIN-01: SMB Bug Fixes | 30 | Not started |
 | WIN-02: Windows ACL Support | 31 | Not started |
 | WIN-03: Windows Integration Testing | 32 | Not started |
@@ -361,4 +361,4 @@ Industry-standard conformance validation against the official Microsoft test sui
 
 ---
 *Requirements created: 2026-02-25*
-*Updated: 2026-02-25 — added v3.7 benchmarking and v3.8 SMB3 requirements*
+*Updated: 2026-02-26 -- formal verification for REF-04, REF-05, REF-06 completed in Phase 29.4*
