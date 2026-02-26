@@ -47,7 +47,13 @@ func (m *Offloader) handleUploadSuccess(ctx context.Context, payloadID string, c
 		dataSize,
 	)
 	objBlock.MarkUploaded()
-	_ = m.objectStore.PutBlock(ctx, objBlock)
+	if err := m.objectStore.PutBlock(ctx, objBlock); err != nil {
+		logger.Error("Failed to register block in ObjectStore for dedup",
+			"payloadID", payloadID,
+			"chunkIdx", chunkIdx,
+			"blockIdx", blockIdx,
+			"error", err)
+	}
 
 	// Track block hash for finalization
 	state := m.getUploadState(payloadID)

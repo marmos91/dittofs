@@ -346,10 +346,10 @@ func (m *Offloader) GetFileSize(ctx context.Context, payloadID string) (uint64, 
 	// Only read the last block to get its size (may be partial)
 	lastBlockKey := FormatBlockKey(payloadID, maxChunkIdx, maxBlockIdx)
 	lastBlockData, err := blockStore.ReadBlock(ctx, lastBlockKey)
-	lastBlockSize := uint64(BlockSize)
-	if err == nil {
-		lastBlockSize = uint64(len(lastBlockData))
+	if err != nil {
+		return 0, fmt.Errorf("read last block %s: %w", lastBlockKey, err)
 	}
+	lastBlockSize := uint64(len(lastBlockData))
 
 	// Total = full chunks + full blocks in last chunk + last block size
 	totalSize := uint64(maxChunkIdx)*uint64(chunk.Size) +
@@ -394,13 +394,19 @@ func (m *Offloader) Truncate(ctx context.Context, payloadID string, newSize uint
 		return fmt.Errorf("no block store configured")
 	}
 
-	// Calculate which chunk/block the new size falls into
-	newChunkIdx := chunk.IndexForOffset(newSize)
-	offsetInChunk := chunk.OffsetInChunk(newSize)
-	newBlockIdx := block.IndexForOffset(offsetInChunk)
-
-	// List and delete blocks beyond the new size
+	// Truncate to zero: delete all blocks
 	prefix := payloadID + "/"
+	if newSize == 0 {
+		return m.blockStore.DeleteByPrefix(ctx, prefix)
+	}
+
+	// Calculate which chunk/block contains the last byte to keep (newSize - 1)
+	lastByteOffset := newSize - 1
+	keepChunkIdx := chunk.IndexForOffset(lastByteOffset)
+	keepOffsetInChunk := chunk.OffsetInChunk(lastByteOffset)
+	keepBlockIdx := block.IndexForOffset(keepOffsetInChunk)
+
+	// List and delete blocks beyond the last kept block
 	blocks, err := m.blockStore.ListByPrefix(ctx, prefix)
 	if err != nil {
 		return fmt.Errorf("list blocks: %w", err)
@@ -411,7 +417,7 @@ func (m *Offloader) Truncate(ctx context.Context, payloadID string, newSize uint
 		if _, err := fmt.Sscanf(bk, payloadID+"/chunk-%d/block-%d", &chunkIdx, &blockIdx); err != nil {
 			continue
 		}
-		if chunkIdx > newChunkIdx || (chunkIdx == newChunkIdx && blockIdx > newBlockIdx) {
+		if chunkIdx > keepChunkIdx || (chunkIdx == keepChunkIdx && blockIdx > keepBlockIdx) {
 			if err := m.blockStore.DeleteBlock(ctx, bk); err != nil {
 				return fmt.Errorf("delete block %s: %w", bk, err)
 			}

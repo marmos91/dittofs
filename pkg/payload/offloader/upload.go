@@ -252,7 +252,11 @@ func (m *Offloader) uploadRemainingBlocks(ctx context.Context, payloadID string)
 			if err != nil {
 				continue
 			}
-			hash = sha256.Sum256(blockData[:dataSize])
+			// Copy data before hashing to avoid race with concurrent writers
+			// (GetBlockData may return a reference to the cache's internal buffer)
+			dataCopy := make([]byte, dataSize)
+			copy(dataCopy, blockData[:dataSize])
+			hash = sha256.Sum256(dataCopy)
 		}
 
 		// Content-addressed deduplication: check if block already exists
