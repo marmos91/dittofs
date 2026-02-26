@@ -11,12 +11,12 @@ import (
 
 // SettingsHandler handles system settings API endpoints.
 type SettingsHandler struct {
-	store store.Store
+	store store.SettingsStore
 }
 
 // NewSettingsHandler creates a new SettingsHandler.
-func NewSettingsHandler(store store.Store) *SettingsHandler {
-	return &SettingsHandler{store: store}
+func NewSettingsHandler(s store.SettingsStore) *SettingsHandler {
+	return &SettingsHandler{store: s}
 }
 
 // SetSettingRequest is the request body for PUT /api/v1/settings/{key}.

@@ -14,14 +14,14 @@ import (
 
 // AuthHandler handles authentication-related API endpoints.
 type AuthHandler struct {
-	store      store.Store
+	store      store.UserStore
 	jwtService *auth.JWTService
 }
 
 // NewAuthHandler creates a new AuthHandler.
-func NewAuthHandler(store store.Store, jwtService *auth.JWTService) *AuthHandler {
+func NewAuthHandler(s store.UserStore, jwtService *auth.JWTService) *AuthHandler {
 	return &AuthHandler{
-		store:      store,
+		store:      s,
 		jwtService: jwtService,
 	}
 }

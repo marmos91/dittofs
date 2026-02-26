@@ -15,7 +15,7 @@ import (
 
 // UserHandler handles user management API endpoints.
 type UserHandler struct {
-	store      store.Store
+	store      store.UserStore
 	jwtService *auth.JWTService
 }
 
@@ -23,11 +23,11 @@ type UserHandler struct {
 // new tokens after password changes to ensure users receive fresh credentials.
 // Returns an error if jwtService is nil, allowing callers to handle the
 // misconfiguration gracefully (e.g., at startup).
-func NewUserHandler(store store.Store, jwtService *auth.JWTService) (*UserHandler, error) {
+func NewUserHandler(s store.UserStore, jwtService *auth.JWTService) (*UserHandler, error) {
 	if jwtService == nil {
 		return nil, errors.New("NewUserHandler: jwtService is required and must not be nil")
 	}
-	return &UserHandler{store: store, jwtService: jwtService}, nil
+	return &UserHandler{store: s, jwtService: jwtService}, nil
 }
 
 // CreateUserRequest is the request body for POST /api/v1/users.

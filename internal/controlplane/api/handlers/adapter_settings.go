@@ -17,13 +17,13 @@ import (
 
 // AdapterSettingsHandler handles adapter settings API endpoints.
 type AdapterSettingsHandler struct {
-	store   store.Store
+	store   store.AdapterStore
 	runtime *runtime.Runtime
 }
 
 // NewAdapterSettingsHandler creates a new AdapterSettingsHandler.
-func NewAdapterSettingsHandler(cpStore store.Store, rt *runtime.Runtime) *AdapterSettingsHandler {
-	return &AdapterSettingsHandler{store: cpStore, runtime: rt}
+func NewAdapterSettingsHandler(s store.AdapterStore, rt *runtime.Runtime) *AdapterSettingsHandler {
+	return &AdapterSettingsHandler{store: s, runtime: rt}
 }
 
 // --- NFS request types ---

@@ -16,13 +16,13 @@ import (
 
 // MetadataStoreHandler handles metadata store configuration API endpoints.
 type MetadataStoreHandler struct {
-	store   store.Store
+	store   store.MetadataStoreConfigStore
 	runtime *runtime.Runtime
 }
 
 // NewMetadataStoreHandler creates a new MetadataStoreHandler.
-func NewMetadataStoreHandler(store store.Store, rt *runtime.Runtime) *MetadataStoreHandler {
-	return &MetadataStoreHandler{store: store, runtime: rt}
+func NewMetadataStoreHandler(s store.MetadataStoreConfigStore, rt *runtime.Runtime) *MetadataStoreHandler {
+	return &MetadataStoreHandler{store: s, runtime: rt}
 }
 
 // CreateMetadataStoreRequest is the request body for POST /api/v1/metadata-stores.
