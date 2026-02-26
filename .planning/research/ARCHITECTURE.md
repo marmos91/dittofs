@@ -1,592 +1,563 @@
-# Architecture Research: NFSv4.1 Session Integration
+# Architecture Patterns: SMB2 Conformance and Windows Compatibility (v3.6)
 
-**Domain:** NFSv4.1 Protocol Server — Session Infrastructure
-**Researched:** 2026-02-20
-**Confidence:** HIGH (RFC 8881 is definitive, existing codebase well-understood)
+**Domain:** SMB2 protocol conformance, NT Security Descriptors, Windows 11 client compatibility
+**Researched:** 2026-02-26
+**Confidence:** HIGH (based on existing codebase analysis, MS-SMB2/MS-DTYP specs, Samba reference implementation)
 
-## Executive Summary
+## Recommended Architecture
 
-NFSv4.1 sessions replace the NFSv4.0 per-owner seqid replay model with a per-session slot table that provides exactly-once semantics (EOS) for all operations. This is not an incremental add — it is a fundamental change to how requests are sequenced, replayed, and associated with connections. The existing StateManager, COMPOUND dispatcher, callback client, and connection model all need significant modifications. However, the existing single-RWMutex StateManager pattern, streaming XDR decoder, and per-connection goroutine model provide a solid foundation.
-
-The core challenge is that NFSv4.1 sessions sit between the connection layer and the operation handlers, mediating every single request. The SEQUENCE operation must be the first operation in every NFSv4.1 COMPOUND (except session-creation operations), and it drives slot-based replay detection, lease renewal, and status flag propagation. This means the COMPOUND dispatcher must be split into v4.0 and v4.1 paths.
-
-## Existing Architecture (v4.0 Baseline)
-
-### What We Have Today
+All v3.6 changes are extensions of existing modules. No new packages, interfaces, or architectural patterns are needed. The changes touch three layers:
 
 ```
-                    NFS Adapter (per-connection goroutine)
-                              |
-                    NFSConnection.handleRPCCall()
-                              |
-                    [GSS Interception if RPCSEC_GSS]
-                              |
-                    dispatch by program/version
-                              |
-              +---------------+---------------+
-              |                               |
-        MOUNT program               NFS4 program
-              |                               |
-        mount handlers         Handler.ProcessCompound()
-                                              |
-                               [minor version check: ==0]
-                                              |
-                               sequential op dispatch loop
-                                              |
-                               opDispatchTable[opCode](ctx, reader)
-                                              |
-                               CompoundContext carries:
-                                 - CurrentFH, SavedFH
-                                 - Auth (UID/GID/GIDs)
-                                 - ClientState (ClientID)
+┌─────────────────────────────────────────────────────────┐
+│                  SMB2 Handler Layer                      │
+│         internal/adapter/smb/v2/handlers/               │
+│                                                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
+│  │ security.go  │  │  read.go     │  │  create.go   │  │
+│  │ SD building  │  │ sparse zero  │  │ context enc  │  │
+│  │ SID mapping  │  │ fill fix     │  │ MxAc/QFid    │  │
+│  │ DACL synth   │  │              │  │              │  │
+│  └──────┬───────┘  └──────┬───────┘  └──────────────┘  │
+│         │                 │                              │
+│  ┌──────┴───────┐  ┌──────┴───────────────────┐        │
+│  │ query_info.go│  │ set_info.go               │        │
+│  │ new info     │  │ SD set, rename fix        │        │
+│  │ classes      │  │                           │        │
+│  └──────┬───────┘  └──────┬───────────────────┘        │
+└─────────┼─────────────────┼─────────────────────────────┘
+          │                 │
+          ▼                 ▼
+┌─────────────────────────────────────────────────────────┐
+│                  Metadata Layer                          │
+│              pkg/metadata/                               │
+│                                                         │
+│  ┌──────────────────────┐  ┌─────────────────────────┐  │
+│  │ file_modify.go       │  │ acl/ package            │  │
+│  │ Move: update child   │  │ types.go: unchanged     │  │
+│  │ paths recursively    │  │ validate.go: unchanged  │  │
+│  └──────────────────────┘  │ inherit.go: may extend  │  │
+│                            └─────────────────────────┘  │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │ store/ implementations (memory, badger, postgres) │   │
+│  │ Rename: must propagate path updates to children   │   │
+│  └──────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
+          │
+          ▼
+┌─────────────────────────────────────────────────────────┐
+│                  Payload Layer                           │
+│              pkg/payload/                                │
+│                                                         │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │ io/read.go                                        │   │
+│  │ ReadAt: handle "block not found" as zero bytes    │   │
+│  │ (not as error) when within file size bounds       │   │
+│  └──────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
 ```
 
-### Key Existing Components and Their Roles
+### Component Boundaries
 
-| Component | Location | Current Role | v4.1 Impact |
-|-----------|----------|-------------|-------------|
-| `StateManager` | `state/manager.go` | Client records, open/lock/deleg state, lease timers | Add session maps, slot tables, EOS cache |
-| `ClientRecord` | `state/client.go` | SETCLIENTID state, callback info, open owners | Add sessions list, EXCHANGE_ID fields |
-| `CompoundContext` | `types/types.go` | Per-COMPOUND mutable state (FH, auth) | Add Session pointer, slot reference |
-| `ProcessCompound()` | `handlers/compound.go` | Sequential op dispatch, minor version check | Branch on minorversion=1, enforce SEQUENCE-first |
-| `OpHandler` | `handlers/handler.go` | `func(ctx, reader) *CompoundResult` | Unchanged signature, new op registrations |
-| `Handler` | `handlers/handler.go` | Dispatch table, Registry, StateManager, PseudoFS | Add session-aware operations |
-| `CallbackInfo` | `state/client.go` | Program, NetID, Addr for v4.0 separate TCP callbacks | Replaced by backchannel on fore-channel connection |
-| `SendCBRecall()` | `state/callback.go` | Dial separate TCP, send CB_COMPOUND | Rewrite to use bound backchannel connection |
-| `NFSConnection` | `nfs_connection.go` | Per-connection goroutine, request read loop | Track bound session(s), support backchannel writes |
-| `types/constants.go` | `types/constants.go` | v4.0 op numbers (3-39, 10044) | Add ops 40-58, CB ops 5-14 |
+| Component | Responsibility | Changes in v3.6 |
+|-----------|---------------|-----------------|
+| `handlers/security.go` | NT Security Descriptor encoding, SID mapping, DACL building | Extend: POSIX-to-DACL synthesis, well-known SIDs, SACL stub, ACE flag translation fix |
+| `handlers/read.go` | SMB2 READ command handling | Fix: zero-fill for sparse file reads |
+| `handlers/create.go` | SMB2 CREATE command handling | Fix: create context wire encoding, MxAc/QFid responses |
+| `handlers/query_info.go` | SMB2 QUERY_INFO dispatch | Extend: FileCompressionInformation, FileAttributeTagInformation, FilePositionInformation |
+| `handlers/set_info.go` | SMB2 SET_INFO dispatch | Existing: setSecurityInfo already works; no changes needed |
+| `pkg/metadata/file_modify.go` | Move/rename operations | Fix: update `srcFile.Path` before PutFile in Move transaction |
+| `pkg/metadata/store/*` | Metadata store implementations | Fix: Rename must update descendant paths |
+| `pkg/payload/io/read.go` | Cache-aware payload reads | Fix: treat missing blocks as zeros when offset < file size |
+| `signing/signing.go` | SMB2 message signing | Validate: ensure signing is active for all authenticated sessions |
 
-## New Components Required
+### Data Flow
 
-### 1. Session Manager (within StateManager)
+#### Security Descriptor Query (QUERY_INFO InfoType=3)
 
-**File:** `state/session.go`
+```
+1. Client sends QUERY_INFO with InfoType=SMB2_0_INFO_SECURITY
+2. Handler extracts AdditionalInfo bitmask (Owner|Group|DACL|SACL)
+3. Handler calls metaSvc.GetFile() to get metadata.File
+4. Handler calls BuildSecurityDescriptor(file, additionalSecInfo)
+5. BuildSecurityDescriptor:
+   a. If file has ACL: translate NFSv4 ACEs to Windows ACEs
+   b. If file has no ACL: synthesize DACL from UID/GID/mode (NEW)
+   c. Build owner SID from UID
+   d. Build group SID from GID
+   e. Assemble self-relative SD binary
+6. Handler returns SD in QueryInfoResponse.Data
+```
 
-The session is the central new abstraction. Each session has:
-- A unique 16-byte session ID
-- A fore-channel slot table (client-to-server request sequencing)
-- A back-channel slot table (server-to-client callback sequencing)
-- A set of bound connections
-- A reference to the owning ClientRecord
-- Channel attributes (max request/response sizes, max ops, max requests)
+#### Sparse File READ (fixed flow)
+
+```
+1. Client sends READ at offset X for length L
+2. Handler validates handle, checks locks
+3. Handler calls payloadSvc.ReadAt(ctx, payloadID, data, offset)
+4. ReadAt iterates over block ranges:
+   a. Try cache -> found: fill buffer
+   b. Try block store via EnsureAvailable -> found: fill buffer
+   c. NOT FOUND (new): zero-fill destination slice for this range (NEW)
+5. Handler returns zero-filled response for unwritten ranges
+```
+
+#### Renamed Directory Path Update (fixed flow)
+
+```
+1. Client sends SET_INFO FileRenameInformation for directory /old -> /new
+2. Handler calls metaSvc.Move(authCtx, parentHandle, "old", parentHandle, "new")
+3. Move implementation:
+   a. Validates permissions, sticky bit, type compatibility
+   b. Updates srcFile.Path = buildPath(dstDir.Path, toName) (NEW)
+   c. Calls tx.PutFile(ctx, srcFile) with updated path
+   d. Updates child index entries
+4. Subsequent QUERY_DIRECTORY on /new returns correct paths
+```
+
+## Detailed Analysis: Bug #180 -- Sparse File READ
+
+**Root Cause:** `pkg/payload/io/read.go` line ~214-228 in `ensureAndReadFromCache()`. When a file has "holes" (regions never written), the block does not exist in either the cache or the block store. `EnsureAvailable()` attempts to download the block, fails because it was never uploaded, and returns an error. This error propagates up as a hard read failure.
+
+**Why this matters for Windows:** Windows 11 Explorer and many Windows applications create files via `CREATE` + `SET_END_OF_FILE` (which sets the file size) and then write data at various offsets. The regions between writes are "sparse holes" that should return zeros per POSIX and MS-FSCC semantics. Windows clients expect reads of these regions to succeed.
+
+**Fix location:** `pkg/payload/io/read.go` in `ensureAndReadFromCache()`:
 
 ```go
-// SessionRecord represents an NFSv4.1 session.
-type SessionRecord struct {
-    SessionID     [16]byte
-    Client        *ClientRecord     // owning client
-    ForeChannel   *ChannelAttrs
-    BackChannel   *ChannelAttrs
-    ForeSlotTable *SlotTable        // request sequencing + replay cache
-    BackSlotTable *SlotTable        // callback sequencing
-    Connections   map[net.Conn]ConnBinding  // bound connections with direction flags
-    CreatedAt     time.Time
-    Flags         uint32            // CREATE_SESSION flags (persist, backchannel, RDMA)
-}
+// In ensureAndReadFromCache, after EnsureAvailable fails:
+func (s *ServiceImpl) ensureAndReadFromCache(ctx context.Context, payloadID string,
+    blockRange chunk.BlockRange, chunkOffset uint32, dest []byte) error {
 
-type ChannelAttrs struct {
-    HeaderPadSize      uint32
-    MaxRequestSize     uint32
-    MaxResponseSize    uint32
-    MaxResponseSizeCached  uint32  // max size of cached reply for EOS
-    MaxOps             uint32      // max operations per COMPOUND
-    MaxRequests        uint32      // = number of slots
-}
-
-type ConnBinding struct {
-    Direction  uint32  // CDFC4_FORE, CDFC4_BACK, CDFC4_FORE_OR_BOTH
-    UseRDMA    bool
-}
-```
-
-**StateManager additions:**
-```go
-// New maps in StateManager
-sessionsByID    map[[16]byte]*SessionRecord
-sessionsByConn  map[net.Conn]*SessionRecord  // fast lookup from connection
-
-// New methods
-func (sm *StateManager) CreateSession(...) (*SessionRecord, error)
-func (sm *StateManager) DestroySession(sessionID [16]byte) error
-func (sm *StateManager) BindConnToSession(sessionID [16]byte, conn net.Conn, dir uint32) error
-func (sm *StateManager) LookupSession(sessionID [16]byte) *SessionRecord
-func (sm *StateManager) GetSessionForConn(conn net.Conn) *SessionRecord
-```
-
-### 2. Slot Table with EOS Replay Cache
-
-**File:** `state/slot.go`
-
-The slot table is the heart of exactly-once semantics. Each slot holds:
-- A sequence ID (incremented per request on that slot)
-- A cached reply (the complete COMPOUND response for replay)
-- An in-use flag (prevents parallel use of the same slot)
-
-```go
-type SlotTable struct {
-    mu    sync.Mutex
-    slots []*Slot
-}
-
-type Slot struct {
-    SequenceID   uint32
-    InUse        bool
-    CachedReply  []byte   // complete COMPOUND4res for replay
-    CachedStatus uint32   // top-level status of cached reply
-}
-
-// ProcessSequence validates and claims a slot for a new request.
-// Returns: (isReplay, cachedReply, error)
-func (st *SlotTable) ProcessSequence(slotID, seqID uint32) (bool, []byte, error)
-
-// CacheReply stores the reply for exactly-once replay.
-func (st *SlotTable) CacheReply(slotID uint32, reply []byte, status uint32)
-
-// ReleaseSlot marks a slot as no longer in use.
-func (st *SlotTable) ReleaseSlot(slotID uint32)
-
-// HighestSlot returns the current highest slot in use (for server flow control).
-func (st *SlotTable) HighestSlot() uint32
-```
-
-**EOS sequence validation rules (from RFC 8881 Section 2.10.6.1):**
-- `sa_sequenceid == slot.SequenceID + 1`: New request, proceed
-- `sa_sequenceid == slot.SequenceID`: Replay, return cached reply
-- Difference >= 2 or less than cached (with wraparound): NFS4ERR_SEQ_MISORDERED
-- `sa_slotid >= len(slots)`: NFS4ERR_BADSLOT
-
-### 3. EXCHANGE_ID Handler
-
-**File:** `handlers/exchangeid.go`
-
-EXCHANGE_ID replaces SETCLIENTID for NFSv4.1. It establishes or confirms a client ID but does NOT create a session — that is a separate step.
-
-Key differences from SETCLIENTID:
-- No callback info (backchannel is established via CREATE_SESSION)
-- Returns server owner info (for trunking detection)
-- Returns implementation ID and capabilities
-- Uses `eir_clientid` (same uint64 as v4.0 ClientID)
-- Supports multiple sessions per client
-
-**Integration:** Reuses existing `ClientRecord` but adds:
-- `OwnerID` field (the client-provided opaque identifier, replaces `ClientIDString`)
-- `ServerOwnerMajorID` / `ServerOwnerMinorID` for trunking
-- `Sessions` list on `ClientRecord`
-
-### 4. CREATE_SESSION / DESTROY_SESSION Handlers
-
-**Files:** `handlers/createsession.go`, `handlers/destroysession.go`
-
-CREATE_SESSION:
-1. Validates the client ID from EXCHANGE_ID
-2. Validates the CREATE_SESSION sequence (separate from slot sequences)
-3. Negotiates channel attributes (fore and back)
-4. Creates the SlotTable with negotiated number of slots
-5. Optionally establishes the backchannel on the calling connection
-6. Returns the session ID
-
-DESTROY_SESSION:
-1. Looks up the session
-2. Drains active slots (waits for in-flight requests)
-3. Removes session from all maps
-4. Unbinds all connections
-
-### 5. SEQUENCE Handler
-
-**File:** `handlers/sequence.go`
-
-SEQUENCE must be the first operation in every NFSv4.1 COMPOUND. It:
-1. Looks up the session by ID
-2. Validates and claims the slot (slot ID + sequence ID)
-3. Detects replays and returns cached replies
-4. Implicitly renews the client's lease
-5. Returns status flags (callback path state, lease time, etc.)
-6. Sets highest slot ID for server-driven flow control
-
-**Critical integration point:** SEQUENCE result includes `sr_status_flags` that communicate server state to the client:
-- `SEQ4_STATUS_CB_PATH_DOWN` — backchannel is down
-- `SEQ4_STATUS_CB_GSS_CONTEXTS_EXPIRING` — GSS contexts need refresh
-- `SEQ4_STATUS_EXPIRED_ALL_STATE_REVOKED` — all state revoked
-- `SEQ4_STATUS_RECALLABLE_STATE_REVOKED` — delegations revoked
-- etc.
-
-### 6. BIND_CONN_TO_SESSION Handler
-
-**File:** `handlers/bindconn.go`
-
-Associates additional TCP connections with an existing session. Critical for:
-- Trunking (multiple connections for throughput)
-- Reconnection after network failure without losing session state
-- Backchannel binding (marking a connection as usable for callbacks)
-
-### 7. Backchannel Multiplexer
-
-**File:** `state/backchannel.go` (replaces parts of `callback.go`)
-
-NFSv4.1 callbacks use the backchannel of an existing connection rather than a separate TCP connection. This is NAT-friendly and container-friendly.
-
-```go
-type BackchannelManager struct {
-    mu       sync.RWMutex
-    sessions map[[16]byte]*BackchannelState
-}
-
-type BackchannelState struct {
-    Session     *SessionRecord
-    SlotTable   *SlotTable       // back-channel slot table
-    Connections []net.Conn       // connections bound for back direction
-    NextXID     uint32
-}
-
-// SendCallback sends a CB_COMPOUND over the backchannel of a session.
-// It uses CB_SEQUENCE as the first operation (v4.1 requirement).
-// Selects an available back-channel connection, acquires a slot,
-// sends the request, and waits for the reply.
-func (bm *BackchannelManager) SendCallback(sessionID [16]byte, ops []byte) error
-```
-
-**Key difference from v4.0:** CB_SEQUENCE must be the first operation in every v4.1 CB_COMPOUND, just like SEQUENCE is first in fore-channel COMPOUNDs. The backchannel has its own slot table.
-
-### 8. Directory Delegation Components
-
-**Files:** `handlers/getdirdeleg.go`, `state/dirdeleg.go`
-
-GET_DIR_DELEGATION is a new operation (op 46) that grants a read-only delegation on a directory. The client can then cache directory listings without server round-trips.
-
-```go
-type DirDelegationState struct {
-    Stateid     types.Stateid4
-    ClientID    uint64
-    DirHandle   []byte
-    Notifications uint32  // bitmask of requested notification types
-    Cookieverf  [8]byte
-}
-```
-
-CB_NOTIFY (callback op 6) sends directory change notifications:
-- Entry added/removed/renamed
-- Attribute changes on directory entries
-- Cookie verifier changes
-
-The notification model allows the client to maintain its cache incrementally rather than recalling the entire delegation.
-
-### 9. DESTROY_CLIENTID Handler
-
-**File:** `handlers/destroyclientid.go`
-
-Graceful client cleanup (op 57). Must destroy all sessions first. Removes the ClientRecord entirely.
-
-## Modified Components
-
-### 1. ProcessCompound() — Bifurcated Dispatch
-
-The COMPOUND dispatcher must branch on `minorversion`:
-
-```go
-func (h *Handler) ProcessCompound(compCtx *types.CompoundContext, data []byte) ([]byte, error) {
-    // ... decode tag, minorversion, numops (same as today) ...
-
-    switch minorVersion {
-    case types.NFS4_MINOR_VERSION_0:
-        return h.processCompoundV40(compCtx, tag, numOps, reader)
-    case types.NFS4_MINOR_VERSION_1:
-        return h.processCompoundV41(compCtx, tag, numOps, reader)
-    default:
-        return encodeCompoundResponse(types.NFS4ERR_MINOR_VERS_MISMATCH, tag, nil)
+    err := s.blockDownloader.EnsureAvailable(ctx, payloadID,
+        blockRange.ChunkIndex, chunkOffset, blockRange.Length)
+    if err != nil {
+        // NEW: Unwritten blocks return zeros (sparse file semantics)
+        if isBlockNotFoundError(err) {
+            clear(dest) // Zero-fill the destination slice
+            return nil
+        }
+        return fmt.Errorf("ensure available for block %d/%d failed: %w",
+            blockRange.ChunkIndex, blockRange.BlockIndex, err)
     }
-}
 
-func (h *Handler) processCompoundV41(compCtx *types.CompoundContext, tag []byte, numOps uint32, reader *bytes.Reader) ([]byte, error) {
-    // First op MUST be SEQUENCE (or session-creation op: EXCHANGE_ID, CREATE_SESSION, etc.)
-    // Process SEQUENCE: validate slot, check replay, set session on compCtx
-    // If replay: return cached COMPOUND response immediately
-    // Continue dispatching remaining ops
-    // After all ops: cache the response in the slot
+    // Read from cache (now populated)
+    found, err := s.cacheReader.ReadAt(ctx, payloadID,
+        blockRange.ChunkIndex, chunkOffset, blockRange.Length, dest)
+    if err != nil || !found {
+        return fmt.Errorf("data not in cache after download for block %d/%d",
+            blockRange.ChunkIndex, blockRange.BlockIndex)
+    }
+    return nil
 }
 ```
 
-**Session-creation operations that do NOT require SEQUENCE first:**
-- EXCHANGE_ID (op 42)
-- CREATE_SESSION (op 43)
-- DESTROY_SESSION (op 44) — allowed without SEQUENCE per RFC
-- DESTROY_CLIENTID (op 57)
-- BIND_CONN_TO_SESSION (op 41)
+**Sentinel error needed:** Add `ErrBlockNotFound` to `pkg/payload/store/store.go` (or equivalent) so that `EnsureAvailable` can wrap its "not found" condition with a distinguishable error. The `isBlockNotFoundError()` helper uses `errors.Is()`.
 
-### 2. CompoundContext — Session Awareness
+**Also needed:** The same zero-fill logic should apply in the COW path (`readFromCOWSource`) when the COW source block also doesn't exist.
+
+**Confidence:** HIGH -- direct codebase analysis of `read.go` lines 214-228 and understanding of the chunk/block storage model.
+
+## Detailed Analysis: Bug #181 -- Renamed Directory Listing
+
+**Root Cause:** `pkg/metadata/file_modify.go` in the `Move()` method (around line 500 of the transaction block). The code updates child index entries and parent references but does NOT update `srcFile.Path` before calling `tx.PutFile(ctx, srcFile)`. The file's `Path` field retains the old value (e.g., `/old`) even though the directory has been moved to `/new`.
+
+**Impact:** After renaming `/old` to `/new`:
+- `ReadDirectory("/new")` returns entries correctly (child index is updated)
+- BUT `GetFile(childHandle)` for any child still shows `Path: "/old/child"` instead of `"/new/child"`
+- Windows Explorer shows stale paths, confusing file operations
+- SMB QUERY_DIRECTORY returns wrong FileNameInformation for deeply nested entries
+
+**Fix location:** `pkg/metadata/file_modify.go` in the Move transaction:
 
 ```go
-type CompoundContext struct {
-    // ... existing fields (CurrentFH, SavedFH, Auth, etc.) ...
-
-    // v4.1 Session Fields
-    Session     *SessionRecord  // nil for v4.0
-    SlotID      uint32          // current slot (set by SEQUENCE)
-    SequenceID  uint32          // current sequence (set by SEQUENCE)
-    HighestSlot uint32          // server's current highest slot
-    StatusFlags uint32          // SEQ4_STATUS_* flags to return
-}
+// Around line 500, before PutFile:
+srcFile.Path = buildPath(dstDir.Path, toName)  // NEW: update path
+srcFile.Ctime = now
+_ = tx.PutFile(ctx.Context, srcFile)
 ```
 
-### 3. ClientRecord — Multiple Sessions
+**Recursive path update:** For directory renames, ALL descendant files also need their Path updated. This is the deeper fix. Two approaches:
+
+1. **Eager update (recommended for v3.6):** Walk all descendants in the transaction and update each Path. This is correct and simple. The tree depth is bounded by MaxPathDepth.
+
+2. **Lazy derivation (future optimization):** Don't store full Path; derive it by walking parent pointers. More complex but avoids the O(n) update cost on rename. Not needed for v3.6.
+
+For the eager approach, add a helper in the store implementation:
 
 ```go
-type ClientRecord struct {
-    // ... existing fields ...
-
-    // v4.1 additions
-    Sessions         map[[16]byte]*SessionRecord  // multiple sessions per client
-    ExchangeIDSeq    uint32          // sequence for EXCHANGE_ID confirm
-    ServerOwnerMajor []byte          // for trunking detection
-    ImplementationID string          // implementation name
-    MinorVersion     uint32          // 0 or 1, set at EXCHANGE_ID/SETCLIENTID
+// In metadata store implementations:
+func (s *Store) updateDescendantPaths(ctx context.Context, tx Transaction,
+    dir *File, oldPrefix, newPrefix string) error {
+    children, _ := tx.ListChildren(ctx, dir.Handle)
+    for _, child := range children {
+        childFile, _ := tx.GetFile(ctx, child.Handle)
+        childFile.Path = strings.Replace(childFile.Path, oldPrefix, newPrefix, 1)
+        tx.PutFile(ctx, childFile)
+        if childFile.Type == FileTypeDirectory {
+            s.updateDescendantPaths(ctx, tx, childFile, oldPrefix, newPrefix)
+        }
+    }
+    return nil
 }
 ```
 
-### 4. NFSConnection — Backchannel Support
+**Confidence:** HIGH -- direct line-level analysis of file_modify.go Move() method confirms the missing Path update.
+
+## Detailed Analysis: #182 -- NT Security Descriptors
+
+The existing `security.go` (626 lines) already provides a substantial implementation. Five areas need enhancement:
+
+### Enhancement 1: Machine SID
+
+**Current:** `makeDittoFSUserSID(uid)` creates `S-1-5-21-0-0-0-{uid}`. The three sub-authority values (0-0-0) are intended to represent the "machine SID" but using all zeros is non-standard and some Windows tools may flag it as suspicious.
+
+**Fix:** Generate a stable machine SID at server startup (hash of server hostname or a configured value) and store it in the Runtime or as a configuration option. Use `S-1-5-21-{hash1}-{hash2}-{hash3}-{uid}`.
 
 ```go
-type NFSConnection struct {
-    // ... existing fields ...
+// Compute once at startup:
+h := sha256.Sum256([]byte(hostname))
+machineSID := SID{
+    Revision: 1,
+    SubAuthority: []uint32{
+        21,
+        binary.LittleEndian.Uint32(h[0:4]),
+        binary.LittleEndian.Uint32(h[4:8]),
+        binary.LittleEndian.Uint32(h[8:12]),
+    },
+}
+// Per-user SID = machineSID + uid as final sub-authority
+```
 
-    // v4.1 additions
-    boundSession *state.SessionRecord  // session bound to this connection
-    bcDirection  uint32                // CDFC4_FORE, CDFC4_BACK, CDFC4_FORE_OR_BOTH
-    bcWriteMu    sync.Mutex            // protects backchannel writes
+### Enhancement 2: SID Mapper Location
+
+**Question from milestone:** "Where should SID mapping logic live?"
+
+**Answer: Keep it in `internal/adapter/smb/v2/handlers/security.go`.**
+
+Rationale:
+- SID mapping is SMB-specific. NFS uses UID/GID directly; there is no SID concept in NFS.
+- The existing `PrincipalToSID()` and `SIDToPrincipal()` already live in security.go and work correctly.
+- Moving to pkg/auth/ or pkg/controlplane/ would create an SMB dependency in shared packages.
+- The control plane `IdentityMappingStore` handles NFS-to-Unix identity mapping, not SID mapping. SIDs are a presentation-layer concern for the SMB protocol.
+
+If the SID mapper grows beyond ~100 lines of mapping logic, extract to `internal/adapter/smb/v2/handlers/sid_mapper.go` as a new file in the same package. Do NOT create a new package or interface.
+
+### Enhancement 3: DACL Canonical Ordering
+
+**Current:** `buildDACL()` translates NFSv4 ACEs to Windows ACEs in the order they appear. This is correct when the NFSv4 ACL already has canonical ordering (which `pkg/metadata/acl/validate.go` enforces).
+
+**Issue:** When synthesizing DACLs from POSIX mode bits (the "no ACL" fallback), the generated ACEs must follow Windows canonical order: explicit deny before explicit allow, then inherited deny before inherited allow (MS-DTYP 2.4.4.1).
+
+**Fix:** The `buildDACLFromMode()` function must emit deny ACEs before allow ACEs. The pattern from Samba's `create_synthetic_acl()`:
+
+```
+1. Deny ACEs for group (what group lacks that owner has)
+2. Deny ACEs for others (what others lack that group has)
+3. Allow ACE for owner
+4. Allow ACE for group
+5. Allow ACE for others (Everyone)
+```
+
+### Enhancement 4: ACE Flag Translation Bug
+
+**Current bug:** In `buildDACL()`, ACE flags are passed through with `uint8(ace.Flag & 0xFF)`. This is incorrect because NFSv4 and Windows use different bit positions for some flags:
+
+| Flag | NFSv4 (RFC 7530) | Windows (MS-DTYP) |
+|------|-------------------|-------------------|
+| FILE_INHERIT_ACE | 0x01 | 0x01 |
+| DIRECTORY_INHERIT_ACE | 0x02 | 0x02 |
+| NO_PROPAGATE_INHERIT_ACE | 0x04 | 0x04 |
+| INHERIT_ONLY_ACE | 0x08 | 0x08 |
+| SUCCESSFUL_ACCESS_ACE_FLAG | 0x10 | 0x40 |
+| FAILED_ACCESS_ACE_FLAG | 0x20 | 0x80 |
+| INHERITED_ACE | 0x80 | 0x10 |
+
+**Critical:** `INHERITED_ACE` is 0x80 in NFSv4 but 0x10 in Windows. The current passthrough `ace.Flag & 0xFF` sends 0x80 to Windows clients, which interprets it as `SUCCESSFUL_ACCESS_ACE_FLAG` instead.
+
+**Fix:** Add an explicit flag translation function:
+
+```go
+func nfsv4FlagsToWindowsFlags(nfsFlags uint32) uint8 {
+    var winFlags uint8
+    if nfsFlags&acl.ACE4_FILE_INHERIT_ACE != 0     { winFlags |= 0x01 }
+    if nfsFlags&acl.ACE4_DIRECTORY_INHERIT_ACE != 0 { winFlags |= 0x02 }
+    if nfsFlags&acl.ACE4_NO_PROPAGATE_INHERIT != 0  { winFlags |= 0x04 }
+    if nfsFlags&acl.ACE4_INHERIT_ONLY_ACE != 0      { winFlags |= 0x08 }
+    if nfsFlags&acl.ACE4_INHERITED_ACE != 0         { winFlags |= 0x10 } // 0x80 -> 0x10
+    return winFlags
 }
 ```
 
-The connection's Serve loop must be modified to:
-1. Support interleaved fore/back channel messages on the same TCP connection
-2. Route incoming messages: RPC CALL = fore channel request, RPC REPLY = backchannel response
-3. Allow the server to write CB_COMPOUND messages on connections bound for backchannel
+### Enhancement 5: Default DACL for Files Without ACLs
 
-### 5. Lease Renewal — Session-Driven
+**Current:** When `file.ACL == nil`, `buildDACL()` creates a single `Everyone: GENERIC_ALL` ACE. This is overly permissive and causes Windows Security tab to show "Everyone has full control" which alarms users and fails conformance tests that verify proper DACL structure.
 
-In v4.0, lease renewal is explicit (RENEW) or implicit (any operation using a stateid). In v4.1, SEQUENCE implicitly renews the lease for the session's client. The RENEW operation is removed in v4.1.
+**Fix:** Synthesize a DACL from POSIX mode bits (Pattern 1 above). This produces a proper deny-before-allow structure that:
+- Maps correctly to the Windows Security tab display
+- Allows Windows clients to understand effective permissions
+- Passes WPTS BVT tests that verify DACL structure
 
-### 6. Open-Owner Seqid — Eliminated in v4.1
+## Conformance Fix Strategy
 
-NFSv4.1 eliminates per-owner seqid validation. The SEQUENCE slot table provides all replay protection. Operations like OPEN, CLOSE, LOCK no longer carry owner seqids. However, the existing v4.0 seqid logic must be preserved for v4.0 clients.
+**Question from milestone:** "What's the right approach to fixing conformance failures -- patch individual handlers vs. create shared infrastructure?"
 
-This means the open-owner `ValidateSeqID()` path is bypassed when `compCtx.Session != nil`.
+**Answer: Patch individual handlers.** Here is the analysis:
 
-### 7. OPEN_CONFIRM — Removed in v4.1
+### Why NOT shared infrastructure
 
-OPEN_CONFIRM is not used in NFSv4.1. New open-owners do not need confirmation because sessions provide the sequencing guarantee. The handler should return NFS4ERR_NOTSUPP for minorversion 1.
+The 56 known BVT failures (from KNOWN_FAILURES.md) fall into these categories:
 
-## Data Flow: NFSv4.1 Request Processing
+| Category | Count | Root Cause | Fix Approach |
+|----------|-------|------------|--------------|
+| Negotiate (SMB 3.x) | 16 | Protocol version not implemented | Phase 39 (SMB3), not v3.6 |
+| Encryption | 7 | SMB 3.1.1 encryption not implemented | Phase 39, not v3.6 |
+| DFS | 7 | DFS referrals not implemented | Future phase |
+| SWN | 6 | Service Witness Protocol not implemented | Future phase |
+| VSS | 4 | Volume Shadow Copy not implemented | Future phase |
+| Negotiate (SMB 2.x) | 4 | Edge cases in negotiate/signing | Individual handler fixes |
+| Signing | 1 | Signing not fully conformant | Individual handler fix |
+| Leasing | 1 | Directory leasing not supported | Future phase |
+| Compression | 2 | SMB 3.1.1 compression not supported | Future phase |
 
-```
-Client sends COMPOUND(minorversion=1):
-  SEQUENCE(sessionID, slotID, seqID, highestSlot, cachethis)
-  PUTFH(fh)
-  READ(stateid, offset, count)
+**Only 5 failures are fixable in v3.6** (the SMB 2.x negotiate edge cases and signing). These are independent handler-level issues, not symptoms of missing infrastructure.
 
-Server processing:
-  1. ProcessCompound() -> minorversion=1 -> processCompoundV41()
-  2. Decode first op (must be SEQUENCE)
-  3. Look up SessionRecord by sessionID
-  4. SlotTable.ProcessSequence(slotID, seqID):
-     a. If seqID == slot.SequenceID: REPLAY -> return slot.CachedReply
-     b. If seqID == slot.SequenceID + 1: NEW -> claim slot, proceed
-     c. Otherwise: NFS4ERR_SEQ_MISORDERED
-  5. Renew client lease (implicit via SEQUENCE)
-  6. Set compCtx.Session, compCtx.SlotID
-  7. Build SEQUENCE result (sr_sessionid, sr_sequenceid, sr_slotid,
-     sr_highest_slotid, sr_target_highest_slotid, sr_status_flags)
-  8. Continue dispatching PUTFH, READ as normal
-  9. Encode full COMPOUND4res
-  10. Cache response in slot: SlotTable.CacheReply(slotID, response)
-  11. Return response to client
-```
+### When shared infrastructure IS warranted
 
-## Data Flow: NFSv4.1 Backchannel Callback
+Two areas do warrant small shared improvements:
 
-```
-Server needs to recall a delegation:
-  1. BackchannelManager.SendCallback(sessionID, cbOps)
-  2. Look up BackchannelState for the session
-  3. Select a connection bound for CDFC4_BACK
-  4. Acquire a slot from the backchannel SlotTable
-  5. Build CB_COMPOUND(minorversion=1):
-     CB_SEQUENCE(sessionID, slotID, seqID, ...)
-     CB_RECALL(stateid, truncate, fh)
-  6. Frame as RPC CALL and write to the connection
-  7. Read RPC REPLY from the connection (requires bidirectional I/O)
-  8. Validate CB_SEQUENCE result and CB_RECALL status
-  9. Release backchannel slot
+1. **Error mapping table:** The converters.go `MetadataErrorToSMBStatus` map should be reviewed for completeness. Missing mappings cause STATUS_INTERNAL_ERROR instead of the correct NT status code. This is a lookup table enhancement, not new infrastructure.
+
+2. **Buffer size validation:** Several QUERY_INFO handlers need to check `OutputBufferLength` and return STATUS_BUFFER_OVERFLOW (with partial data) when the buffer is too small. This is a common pattern that could use a small helper:
+
+```go
+func validateOutputBuffer(requested uint32, available int) (uint32, error) {
+    if int(requested) < available {
+        return requested, ErrBufferOverflow
+    }
+    return uint32(available), nil
+}
 ```
 
-## Trunking Architecture
+### Fix prioritization for v3.6
 
-NFSv4.1 defines two levels of trunking:
+1. **Bug #180 (sparse READ)** -- Fix in payload/io/read.go. Unblocks Windows file operations.
+2. **Bug #181 (rename paths)** -- Fix in metadata/file_modify.go. Unblocks directory operations.
+3. **Bug #182 (Security Descriptors)** -- Enhance security.go. Improves Windows Explorer experience.
+4. **Signing conformance** -- Verify signing logic in negotiation. May move failures from KNOWN to PASS.
+5. **Negotiate edge cases** -- Fix SMB 2.0.2 and 2.1 negotiate responses.
 
-### Client ID Trunking
-Multiple sessions per client. Already naturally supported by the multi-session model. When two connections present different sessions but the same client ID, the server knows they are the same client.
-
-### Session Trunking
-Multiple connections per session. BIND_CONN_TO_SESSION associates additional connections. The server must handle:
-- Any bound connection can carry any slot's request
-- The server returns responses on the same connection that sent the request
-- Backchannel can be bound to any connection
-
-**Server owner identity** determines trunking scope. The server reports `so_major_id` and `so_minor_id` in EXCHANGE_ID results. Two server addresses with the same server owner can be trunked.
-
-For DittoFS (single-instance), all connections have the same server owner. Trunking support is straightforward: just allow BIND_CONN_TO_SESSION to work.
-
-## Component Dependency Graph
+## Build Order and Dependencies
 
 ```
-EXCHANGE_ID ─────────────────────────────────┐
-  (creates/confirms ClientRecord with v4.1   │
-   fields, no session yet)                   │
-                                             ▼
-CREATE_SESSION ──────────────────────> SessionRecord
-  (creates session, slot tables,        │    │
-   binds calling connection)            │    │
-                                        │    ▼
-BIND_CONN_TO_SESSION ──────────> Connection binding
-  (adds connections to session,    (multi-conn per session)
-   enables trunking + backchannel)
-                                        │
-SEQUENCE ◄──────────────────────────────┘
-  (MUST be first in every v4.1 COMPOUND,
-   drives EOS, lease renewal, flow control)
-                                        │
-                                        ▼
-[All existing ops: PUTFH, READ, WRITE, OPEN, CLOSE, LOCK, etc.]
-  (unchanged logic, but skip owner-seqid validation when session present)
-                                        │
-                                        ▼
-GET_DIR_DELEGATION ──────────> DirDelegationState
-  (new op, grants dir deleg)       │
-                                   ▼
-CB_NOTIFY ◄────────────────── BackchannelManager
-  (sends dir changes via backchannel,
-   uses CB_SEQUENCE for sequencing)
+Phase A: Bug Fixes (parallel, no dependencies between them)
+├── #180: Sparse READ (payload/io/read.go)
+└── #181: Rename Paths (metadata/file_modify.go)
 
-DESTROY_SESSION ──────────────> removes SessionRecord
-DESTROY_CLIENTID ─────────────> removes ClientRecord + all sessions
+Phase B: Security Descriptors (depends on nothing from Phase A)
+├── Machine SID generation (security.go)
+├── ACE flag translation fix (security.go)
+├── POSIX-to-DACL synthesis (security.go)
+└── Default DACL improvement (security.go)
+
+Phase C: Conformance Improvements (depends on A and B)
+├── Run WPTS BVT after fixes
+├── Fix newly-revealed failures
+├── Update KNOWN_FAILURES.md
+└── Verify SMB 2.x negotiate edge cases
 ```
 
-## Suggested Build Order
+**Phase A and B can run in parallel.** Phase C depends on both because conformance tests validate all fixes together.
 
-Based on the dependency graph and integration complexity:
+## New Components Summary
 
-### Phase 1: Types and Constants Foundation
-- Add NFSv4.1 operation numbers (40-58) to `types/constants.go`
-- Add callback operation numbers (5-14) to `types/constants.go`
-- Add NFSv4.1 error codes (NFS4ERR_SEQ_MISORDERED, NFS4ERR_BADSLOT, etc.)
-- Add `NFS4_MINOR_VERSION_1 = 1` constant
-- Add session-related XDR structures to types package
-- **No existing code modified, pure additions**
+| What | Where | Type | LOC Estimate |
+|------|-------|------|-------------|
+| `isBlockNotFoundError()` | `pkg/payload/io/read.go` | Helper function | ~10 |
+| `ErrBlockNotFound` | `pkg/payload/store/store.go` | Sentinel error | ~5 |
+| Zero-fill in `ensureAndReadFromCache` | `pkg/payload/io/read.go` | Bug fix | ~15 |
+| Zero-fill in `readFromCOWSource` | `pkg/payload/io/read.go` | Bug fix | ~10 |
+| Path update in `Move()` | `pkg/metadata/file_modify.go` | Bug fix | ~5 |
+| `updateDescendantPaths()` | `pkg/metadata/store/*` | Helper function | ~30 per store |
+| `nfsv4FlagsToWindowsFlags()` | `handlers/security.go` | Translation function | ~15 |
+| `buildDACLFromMode()` | `handlers/security.go` | DACL synthesis | ~60 |
+| `modeToAccessMask()` | `handlers/security.go` | Helper function | ~20 |
+| Machine SID generation | `handlers/security.go` | Startup logic | ~20 |
+| `validateOutputBuffer()` | `handlers/helpers.go` or inline | Shared helper | ~10 |
 
-### Phase 2: Slot Table and Session Data Structures
-- Implement `SlotTable` with sequence validation and replay cache (`state/slot.go`)
-- Implement `SessionRecord` struct (`state/session.go`)
-- Add session maps to `StateManager`
-- Add `ChannelAttrs` negotiation logic
-- **Testable in isolation, no handler changes yet**
+**Total new code estimate: ~200-250 lines across 4-5 files.** This is a targeted fix milestone, not a large feature addition.
 
-### Phase 3: EXCHANGE_ID
-- Implement handler for op 42
-- Extend `ClientRecord` with v4.1 fields
-- Add `MinorVersion` tracking on ClientRecord
-- Register in dispatch table
-- **First v4.1 wire-level operation**
+## Patterns to Follow
 
-### Phase 4: CREATE_SESSION / DESTROY_SESSION
-- Implement handler for op 43 (CREATE_SESSION)
-- Implement handler for op 44 (DESTROY_SESSION)
-- Session creation with slot table allocation
-- Connection binding (initial connection gets fore+back)
-- **Sessions now exist but are not yet used for requests**
+### Pattern 1: POSIX-to-DACL Synthesis
 
-### Phase 5: SEQUENCE and COMPOUND Bifurcation
-- Implement handler for op 53 (SEQUENCE)
-- Split `ProcessCompound()` into v4.0 and v4.1 paths
-- Enforce SEQUENCE-first rule for v4.1 COMPOUNDs
-- Implement EOS: cache replies in slot, detect replays
-- Skip owner-seqid validation when session is present
-- Suppress OPEN_CONFIRM for v4.1
-- **This is the critical integration point — after this, v4.1 sessions work end-to-end**
+**What:** When a file has no explicit ACL, synthesize a Windows DACL from Unix mode bits (rwxrwxrwx).
 
-### Phase 6: BIND_CONN_TO_SESSION
-- Implement handler for op 41
-- Track connections per session in StateManager
-- Support fore/back/both direction binding
-- Handle connection disconnect (unbind from session)
-- **Enables trunking and backchannel binding**
+**When:** `file.ACL == nil` in BuildSecurityDescriptor / buildDACL.
 
-### Phase 7: Backchannel Multiplexing
-- Implement `BackchannelManager` with CB_SEQUENCE support
-- Modify `NFSConnection` for bidirectional I/O (fore + back on same TCP)
-- Rewrite CB_RECALL to use backchannel instead of separate TCP
-- Implement CB_SEQUENCE encoding/decoding
-- **Replaces v4.0 callback path for v4.1 clients**
+**Reference:** Samba's `create_synthetic_acl()` in `smbd/posix_acls.c`.
 
-### Phase 8: Directory Delegations
-- Implement GET_DIR_DELEGATION handler (op 46)
-- Add `DirDelegationState` to StateManager
-- Implement CB_NOTIFY encoding (callback op 6)
-- Hook directory modifications to trigger CB_NOTIFY
-- **Uses backchannel infrastructure from Phase 7**
+**Mapping:**
 
-### Phase 9: DESTROY_CLIENTID and Cleanup
-- Implement DESTROY_CLIENTID handler (op 57)
-- Implement FREE_STATEID handler (op 45)
-- Implement RECLAIM_COMPLETE handler (op 58)
-- Implement TEST_STATEID handler (op 55)
-- Grace period updates for v4.1 reclaim
-- **Completeness operations for production readiness**
+```
+Unix mode  -> Windows ACEs (deny-before-allow order)
+---------     -----------
+Owner rwx  -> ALLOW OWNER_SID: READ|WRITE|EXECUTE|DELETE|READ_ACL|WRITE_ACL
+Group r-x  -> DENY  GROUP_SID: WRITE_DATA|APPEND_DATA|DELETE
+               ALLOW GROUP_SID: READ|EXECUTE|READ_ACL
+Other r--  -> DENY  EVERYONE:  EXECUTE|WRITE_DATA|APPEND_DATA|DELETE
+               ALLOW EVERYONE:  READ|READ_ACL
+```
 
-### Phase 10: E2E Testing and Integration
-- NFSv4.1 mount tests (Linux client with `vers=4.1`)
-- Session establishment and teardown tests
-- EOS replay tests (kill client mid-write, reconnect)
-- Backchannel recall tests
-- Directory delegation tests
-- Trunking tests (nconnect mount option)
+**Example:**
 
-## Scalability Considerations
+```go
+// In security.go, replace the "no ACL" fallback in buildDACL:
+func buildDACLFromMode(buf *bytes.Buffer, file *metadata.File) {
+    mode := file.Mode
+    ownerSID := makeDittoFSUserSID(file.UID)
+    groupSID := makeDittoFSGroupSID(file.GID)
 
-| Concern | 100 Clients | 10K Clients | 1M Clients |
-|---------|-------------|-------------|-------------|
-| Session memory | ~50KB each (slot table) | ~500MB total | Out of scope (single-instance) |
-| Slot table slots | 64 per session (default) | 64K total slots | N/A |
-| Replay cache | ~4KB per slot avg | ~256MB total | N/A |
-| Connection tracking | Map lookup O(1) | Map lookup O(1) | N/A |
-| Lease timers | 100 timers | 10K timers (manageable) | N/A |
+    var aces []windowsACE
 
-The single-RWMutex pattern in StateManager will face contention at scale. At 10K+ clients, consider sharding by client ID or using per-session locks for slot table operations. For the v3.0 milestone (single-instance), the current pattern is sufficient.
+    // Owner permissions
+    ownerAllow := modeToAccessMask((mode >> 6) & 0x7)
+    aces = append(aces, windowsACE{
+        aceType:    accessAllowedACEType,
+        aceFlags:   0,
+        accessMask: ownerAllow | 0x000E0000, // + DELETE|READ_ACL|WRITE_ACL
+        sid:        ownerSID,
+    })
+
+    // Group permissions (deny what group lacks that owner has)
+    groupAllow := modeToAccessMask((mode >> 3) & 0x7)
+    groupDeny := ownerAllow &^ groupAllow
+    if groupDeny != 0 {
+        aces = insertDeny(aces, groupSID, groupDeny)
+    }
+    aces = append(aces, windowsACE{
+        aceType:    accessAllowedACEType,
+        aceFlags:   0,
+        accessMask: groupAllow | ACE4_READ_ACL,
+        sid:        groupSID,
+    })
+
+    // Other permissions
+    otherAllow := modeToAccessMask(mode & 0x7)
+    // ... similar deny + allow pattern with sidEveryone
+}
+```
+
+### Pattern 2: Zero-Fill for Unwritten Blocks
+
+**What:** When ReadAt encounters a block that was never written (not in cache, not in block store), fill the destination buffer with zeros instead of returning an error.
+
+**When:** `EnsureAvailable` returns "not found" for a block index that is within the file's declared size.
+
+**Implementation Strategy:**
+
+```go
+// In pkg/payload/io/read.go, ensureAndReadFromCache:
+func (s *ServiceImpl) ensureAndReadFromCache(ctx context.Context, payloadID string,
+    blockRange chunk.BlockRange, chunkOffset uint32, dest []byte) error {
+
+    err := s.blockDownloader.EnsureAvailable(ctx, payloadID,
+        blockRange.ChunkIndex, chunkOffset, blockRange.Length)
+    if err != nil {
+        // NEW: Unwritten blocks return zeros (sparse file semantics)
+        if isBlockNotFoundError(err) {
+            clear(dest)
+            return nil
+        }
+        return fmt.Errorf("ensure available for block %d/%d failed: %w",
+            blockRange.ChunkIndex, blockRange.BlockIndex, err)
+    }
+
+    found, err := s.cacheReader.ReadAt(ctx, payloadID,
+        blockRange.ChunkIndex, chunkOffset, blockRange.Length, dest)
+    if err != nil || !found {
+        return fmt.Errorf("data not in cache after download for block %d/%d",
+            blockRange.ChunkIndex, blockRange.BlockIndex)
+    }
+    return nil
+}
+```
+
+### Pattern 3: Create Context Chain Encoding
+
+**What:** Properly serialize create contexts (MxAc, QFid, RqLs) in CREATE response wire format.
+
+**When:** CREATE response needs to include one or more create contexts.
+
+**Reference:** MS-SMB2 2.2.14.2 -- create contexts are a linked list of variable-length structures.
+
+```go
+// Each context: NextOffset(4) + NameOffset(2) + NameLength(2) +
+//               Reserved(2) + DataOffset(2) + DataLength(4) +
+//               Name(padded) + Data(padded)
+// NextOffset = 0 for last context, offset to next for others
+// All structures must be 8-byte aligned
+```
 
 ## Anti-Patterns to Avoid
 
-### Anti-Pattern 1: Shared Slot Table Lock with StateManager
-**What:** Using StateManager's single RWMutex for slot table operations
-**Why bad:** SEQUENCE runs on every single request. Contending with lease/delegation/open operations would serialize everything.
-**Instead:** Use a separate `sync.Mutex` per SlotTable. The StateManager lock is only needed for session lookup; once you have the SessionRecord, slot operations use the slot's own lock.
+### Anti-Pattern 1: Implementing SDDL String Format
 
-### Anti-Pattern 2: Caching Only Status in Replay Cache
-**What:** Caching just the NFS status code in slots
-**Why bad:** EOS requires the complete COMPOUND response to be returned on replay. If only the status is cached, the client gets an inconsistent response.
-**Instead:** Cache the entire `COMPOUND4res` byte slice in the slot. This is what Linux nfsd does.
+**What:** Adding SDDL string format conversion (e.g., "O:SYG:SYD:(A;;GA;;;SY)")
 
-### Anti-Pattern 3: Blocking on Backchannel with StateManager Lock
-**What:** Holding StateManager lock while writing to backchannel connection
-**Why bad:** Network I/O can block indefinitely, deadlocking the entire server.
-**Instead:** Look up session/connection under RLock, release lock, then do network I/O. Same pattern as existing `sendRecall()`.
+**Why bad:** No SMB client sends or receives SDDL strings. The wire format is always binary self-relative Security Descriptors. SDDL is a display format used by Windows admin tools locally. Adding it would increase code surface for zero benefit.
 
-### Anti-Pattern 4: Mixed v4.0/v4.1 State on Same Client
-**What:** Allowing a client to use SETCLIENTID (v4.0) and EXCHANGE_ID (v4.1) with the same identity
-**Why bad:** State model incompatibility. v4.0 uses per-owner seqids, v4.1 uses session slots. Mixing them creates impossible replay semantics.
-**Instead:** Each ClientRecord is either v4.0 or v4.1 (tracked by `MinorVersion` field). A "rebooted" client can switch versions via a new EXCHANGE_ID.
+**Instead:** Keep using binary encoding only in security.go.
+
+### Anti-Pattern 2: Global Well-Known SID Lookup Table
+
+**What:** Building a large map of all ~100+ Windows well-known SIDs with their names.
+
+**Why bad:** DittoFS does not implement LSARPC (the protocol Windows uses to resolve SID-to-name). Windows clients resolve SID names themselves using their local security database or domain controller. DittoFS only needs to emit the correct SID binary in the Security Descriptor.
+
+**Instead:** Keep a minimal table of SIDs that appear in synthesized DACLs (Everyone, SYSTEM, CREATOR OWNER, CREATOR GROUP, BUILTIN\Administrators). Do not try to map arbitrary SID strings to names.
+
+### Anti-Pattern 3: Recursive Path Update in Handler Layer
+
+**What:** Updating child paths in the SET_INFO rename handler by walking the directory tree from the SMB handler.
+
+**Why bad:** The SMB handler should call `metaSvc.Move()` and trust that the metadata layer handles path consistency. Having path logic in the handler layer violates separation of concerns and would duplicate the path update logic for NFS rename operations.
+
+**Instead:** Fix the Move operation in `pkg/metadata/file_modify.go` (or in the store implementations) to recursively update child paths. Both NFS RENAME and SMB SET_INFO rename call Move, so the fix benefits both protocols.
+
+### Anti-Pattern 4: Blocking on Block Store for Sparse Reads
+
+**What:** Making ReadAt wait for a block download that will never complete because the block was never written.
+
+**Why bad:** The block store does not have the block. The offloader/download path will retry and eventually timeout or error. This turns a simple sparse read into a multi-second hang.
+
+**Instead:** The EnsureAvailable call should detect "block never written" (distinct from "block exists but not cached") and return quickly with a sentinel error. The caller zero-fills and continues.
+
+### Anti-Pattern 5: Moving SID Mapping to the Control Plane
+
+**What:** Creating SID-to-UID/GID mapping tables in the control plane store, similar to IdentityMappingStore for NFS.
+
+**Why bad:** SIDs are a presentation concern of the SMB protocol adapter. The existing UID/GID are the canonical identifiers in the metadata layer. Adding SID columns to the control plane would couple the shared persistence layer to SMB-specific concepts. NFS, WebDAV, or future protocols have no use for SIDs.
+
+**Instead:** Keep SID generation as a pure function of UID/GID + machine SID in the SMB handler layer. The mapping is deterministic (no table needed) and reversible.
+
+## Scalability Considerations
+
+| Concern | At 100 users | At 10K users | At 1M users |
+|---------|--------------|--------------|-------------|
+| SID generation | Hash-based, negligible cost | Same | Same |
+| SD building | Per-request allocation, ~200 bytes typical | Consider buffer pool for SD encoding | Buffer pool mandatory |
+| Sparse zero-fill | Allocate zero buffer per read | Use shared zero page (read-only) | Use shared zero page |
+| Path updates on rename | Walk children in-memory, fast | Walk children in BadgerDB, indexed | Need async or batched update |
+| ACL validation | Per-SET_INFO, ~128 ACEs max | Same | Same |
 
 ## Sources
 
-- [RFC 8881: NFSv4.1 Protocol (current)](https://www.rfc-editor.org/rfc/rfc8881.html) — HIGH confidence
-- [RFC 5661: NFSv4.1 Protocol (original, obsoleted by 8881)](https://datatracker.ietf.org/doc/rfc5661/) — HIGH confidence
-- [Linux nfsd NFSv4.1 Server Implementation](https://docs.kernel.org/filesystems/nfs/nfs41-server.html) — HIGH confidence
-- [nfs4j: Pure Java NFSv4.2 implementation](https://github.com/dCache/nfs4j) — MEDIUM confidence (reference implementation)
-- [NFSv4.1 Session Trunking and MPTCP](https://www.ietf.org/proceedings/96/slides/slides-96-mptcp-8.pdf) — MEDIUM confidence
-- Existing DittoFS source code: `internal/protocol/nfs/v4/` — verified by direct reading
+- [MS-DTYP 2.4.6 - SECURITY_DESCRIPTOR](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/7d4dac05-9cef-4563-a058-f108abecce1d) -- Self-relative SD layout
+- [MS-DTYP 2.4.4.1 - ACL canonical ordering](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/20233ed8-a6c6-4097-aafa-dd545ed24428) -- Deny before allow ordering
+- [MS-SMB2 2.2.14.2 - CREATE Response Contexts](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/893bff02-5815-4bc1-9693-669ed6e85307) -- Context chain encoding
+- [MS-FSCC - Sparse file semantics](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/6a884fe5-3da1-4abb-84c4-f419d349d878) -- Zero-fill for unallocated ranges
+- [Samba smb2/acls.c](https://github.com/samba-team/samba/blob/master/source4/torture/smb2/acls.c) -- ACL test patterns: creator_sid, generic_bits, owner_bits, inheritance
+- DittoFS codebase: `internal/adapter/smb/v2/handlers/security.go` (626 lines, complete SD implementation)
+- DittoFS codebase: `pkg/metadata/acl/` (validate.go enforces canonical ACE ordering)
+- DittoFS codebase: `pkg/payload/io/read.go` (260 lines, ReadAt with cache/offloader flow)
+- DittoFS codebase: `pkg/metadata/file_modify.go` (548 lines, Move/rename with transaction)
