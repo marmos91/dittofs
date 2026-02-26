@@ -28,7 +28,7 @@ key-files:
     - pkg/auth/doc.go
   modified:
     - pkg/auth/kerberos/provider.go
-    - pkg/auth/kerberos/config.go
+    - pkg/auth/kerberos/doc.go
     - pkg/adapter/adapter.go
     - pkg/adapter/base.go
     - internal/controlplane/api/handlers/helpers.go

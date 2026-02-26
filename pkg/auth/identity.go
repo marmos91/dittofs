@@ -40,8 +40,8 @@ type Identity struct {
 	Attributes map[string]string
 }
 
-// IdentityMapper converts authentication results into protocol-specific
-// identity contexts.
+// IdentityMapper maps protocol-specific authentication state into
+// protocol-neutral Identity values.
 //
 // Each protocol adapter implements IdentityMapper to handle its unique
 // identity mapping requirements:
@@ -51,7 +51,8 @@ type Identity struct {
 //
 // Thread safety: implementations must be safe for concurrent use.
 type IdentityMapper interface {
-	// MapIdentity converts an AuthResult into a protocol-specific Identity.
-	// Returns an error if the identity cannot be mapped (e.g., unknown principal).
+	// MapIdentity converts protocol-specific auth state in AuthResult into a
+	// protocol-neutral Identity. Returns an error if the identity cannot be
+	// mapped (e.g., unknown principal).
 	MapIdentity(ctx context.Context, authResult *AuthResult) (*Identity, error)
 }

@@ -63,10 +63,12 @@ type AuthResult struct {
 //
 // When Authenticate is called, the Authenticator iterates through providers:
 //  1. Calls CanHandle(token) on each provider
-//  2. Calls Authenticate(ctx, token) on the first provider that can handle the token
-//  3. Returns the result from that provider
+//  2. Calls Authenticate(ctx, token) on each provider that can handle the token
+//  3. If a provider returns ErrUnsupportedMechanism, the next provider is tried
+//  4. Otherwise, returns the result from that provider
 //
-// If no provider can handle the token, ErrUnsupportedMechanism is returned.
+// If no provider can handle the token (or all return ErrUnsupportedMechanism),
+// ErrUnsupportedMechanism is returned.
 //
 // Thread safety: safe for concurrent use (providers are read-only after construction).
 type Authenticator struct {
@@ -86,9 +88,19 @@ func NewAuthenticator(providers ...AuthProvider) *Authenticator {
 // Returns ErrUnsupportedMechanism if no provider can handle the token.
 func (a *Authenticator) Authenticate(ctx context.Context, token []byte) (*AuthResult, error) {
 	for _, p := range a.providers {
-		if p.CanHandle(token) {
-			return p.Authenticate(ctx, token)
+		if !p.CanHandle(token) {
+			continue
 		}
+
+		res, err := p.Authenticate(ctx, token)
+		// If the provider indicates that, upon deeper inspection, it does not
+		// support the specific mechanism (e.g., inner mechanism of SPNEGO),
+		// try the next provider in the chain.
+		if errors.Is(err, ErrUnsupportedMechanism) {
+			continue
+		}
+
+		return res, err
 	}
 	return nil, ErrUnsupportedMechanism
 }
@@ -96,7 +108,12 @@ func (a *Authenticator) Authenticate(ctx context.Context, token []byte) (*AuthRe
 // Providers returns the list of registered auth providers.
 // Useful for diagnostics and logging.
 func (a *Authenticator) Providers() []AuthProvider {
-	return a.providers
+	if a == nil || len(a.providers) == 0 {
+		return nil
+	}
+	copied := make([]AuthProvider, len(a.providers))
+	copy(copied, a.providers)
+	return copied
 }
 
 // Standard authentication errors.

@@ -451,7 +451,7 @@ dittofs/
 │   │   └── kerberos/             # Kerberos AuthProvider
 │   │       ├── provider.go       # Provider (implements AuthProvider)
 │   │       ├── keytab.go         # Keytab hot-reload manager
-│   │       └── config.go         # Package doc
+│   │       └── doc.go            # Package doc
 │   │
 │   ├── metadata/                 # Metadata layer
 │   │   ├── service.go            # MetadataService (business logic, routing)

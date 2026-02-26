@@ -109,9 +109,10 @@ type Adapter interface {
 //   - NFS: Maps AUTH_UNIX UIDs, AUTH_NULL, RPCSEC_GSS Kerberos principals
 //   - SMB: Maps NTLM sessions, SPNEGO/Kerberos negotiations
 //
-// Adapters that do not support authentication (or where identity mapping is
-// not applicable) need not implement this interface; the runtime checks via
-// type assertion.
+// All adapters embedding BaseAdapter satisfy this interface because BaseAdapter
+// provides a default MapIdentity stub that returns an error. The runtime detects
+// non-supporting adapters by checking for a non-nil error from MapIdentity
+// rather than by type assertion.
 type IdentityMappingAdapter interface {
 	Adapter
 	auth.IdentityMapper

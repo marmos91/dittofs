@@ -5,8 +5,8 @@ milestone_name: Adapter + Core Refactoring
 status: phase-complete
 last_updated: "2026-02-26T11:14:00.000Z"
 progress:
-  total_phases: 28
-  completed_phases: 28
+  total_phases: 29
+  completed_phases: 29
   total_plans: 102
   completed_plans: 100
 ---
