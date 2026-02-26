@@ -93,3 +93,35 @@
 
 ---
 
+
+## v3.5 Adapter + Core Refactoring (Shipped: 2026-02-26)
+
+**Delivered:** Clean separation of protocol-specific code from generic layers, unified lock model, restructured NFS/SMB adapters with shared infrastructure, and decomposed core objects for maintainability.
+
+**Phases completed:** 26-29.4 (5 phases, 22 plans)
+
+**Key accomplishments:**
+
+- Unified lock model (OpLock/AccessMode/UnifiedLock) shared by NFS, SMB, and NLM with centralized conflict detection
+- Protocol leak purge: removed ~15 protocol-specific types/methods from generic metadata, controlplane, and lock layers
+- NFS adapter restructured: `internal/protocol/` -> `internal/adapter/nfs/`, v4/v4.1 hierarchy split, consolidated dispatch
+- SMB adapter restructured: BaseAdapter shared with NFS, Authenticator interface, framing/signing/dispatch extracted
+- Core decomposed: Store interface split into 9 sub-interfaces, Runtime into 6 sub-services, Offloader renamed and split into 8 files
+- Error and boilerplate reduction: PayloadError type, generic GORM/API helpers, centralized API error mapping, metadata file splits
+
+**Stats:**
+
+- 5 phases, 22 plans
+- 244 files changed, +23,305 / -10,771 lines
+- Feb 25 - Feb 26, 2026 (2 days)
+
+**Known tech debt:**
+
+- REF-01.8/REF-01.9 adapter translation layers deferred to v3.8
+- 4 TODO(plan-03) cross-protocol oplock break markers (requires v3.8)
+- PayloadError defined but not yet wired into production error paths
+
+**Archive:** [v3.5-ROADMAP.md](milestones/v3.5-ROADMAP.md) | [v3.5-REQUIREMENTS.md](milestones/v3.5-REQUIREMENTS.md) | [v3.5-MILESTONE-AUDIT.md](milestones/v3.5-MILESTONE-AUDIT.md)
+
+---
+

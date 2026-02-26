@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v4.2
 milestone_name: Adapter + Core Refactoring
 status: unknown
-last_updated: "2026-02-26T16:22:35.885Z"
+last_updated: "2026-02-26T17:00:58.826Z"
 progress:
   total_phases: 31
   completed_phases: 30
@@ -18,14 +18,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-02-25)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking, Kerberos authentication, and session reliability
-**Current focus:** v3.5 Adapter + Core Refactoring
+**Current focus:** v3.6 Windows Compatibility
 
 ## Current Position
 
-Phase: 29.4 - Verification Artifacts & Requirements Cleanup
-Current Plan: 1 of 1 (COMPLETE)
-Status: Phase Complete
-Last activity: 2026-02-26 -- Completed 29.4-01 (Verification Artifacts & Requirements Cleanup)
+Phase: Planning v3.6
+Current Plan: None (milestone boundary)
+Status: Milestone v3.5 complete, starting v3.6
+Last activity: 2026-02-26 -- Completed v3.5 milestone archival
 
 ## Completed Milestones
 
@@ -34,12 +34,13 @@ Last activity: 2026-02-26 -- Completed 29.4-01 (Verification Artifacts & Require
 | v1.0 NLM + Unified Locking | 1-5 | 19 | Feb 1-7, 2026 | 2026-02-07 |
 | v2.0 NFSv4.0 + Kerberos | 6-15 | 42 | Feb 7-20, 2026 | 2026-02-20 |
 | v3.0 NFSv4.1 Sessions | 16-25 | 25 | Feb 20-25, 2026 | 2026-02-25 |
+| v3.5 Adapter + Core Refactoring | 26-29.4 | 22 | Feb 25-26, 2026 | 2026-02-26 |
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 101 (19 v1.0 + 42 v2.0 + 25 v3.0 + 15 v3.5)
-- 3 milestones in 25 days
+- Total plans completed: 108 (19 v1.0 + 42 v2.0 + 25 v3.0 + 22 v3.5)
+- 4 milestones in 26 days
 
 | Phase | Plan | Duration | Tasks | Files |
 |-------|------|----------|-------|-------|

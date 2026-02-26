@@ -6,19 +6,7 @@ A comprehensive NFS protocol upgrade for DittoFS that adds NFSv4.0/4.1/4.2 suppo
 
 Target: Cloud-native enterprise NAS with feature parity exceeding JuiceFS and Hammerspace, particularly in security (Kerberos), session reliability (EOS), cross-protocol consistency, and Windows SMB compatibility.
 
-## Current Milestone: v3.5 Adapter + Core Refactoring
-
-**Goal:** Clean separation of protocol-specific code from generic layers, unified lock model, restructured NFS/SMB adapters with shared infrastructure, and decomposed core objects.
-
-**Target outcomes:**
-- Generic lock interface (OpLock/AccessMode/UnifiedLock) shared by NFS, SMB, and NLM
-- Protocol-specific code purged from pkg/metadata/, pkg/controlplane/, pkg/blocks/
-- NFS adapter restructured: `internal/adapter/nfs/` with v4/v4.1 split
-- SMB adapter restructured: BaseAdapter shared with NFS, dispatch in `internal/adapter/smb/`
-- Core objects decomposed: Store interface (9 sub-interfaces), Runtime split, Offloader rename/split
-- Protocol-agnostic ClientRecord for unified NFS/SMB session tracking (#157)
-
-## Next Milestone: v3.6 Windows Compatibility
+## Current Milestone: v3.6 Windows Compatibility
 
 **Goal:** Full Windows SMB compatibility with proper ACL support, bug fixes, and comprehensive testing.
 
@@ -105,19 +93,16 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 - ✓ Multiple connections per session (trunking-ready) — v3.0
 - ✓ DESTROY_CLIENTID for graceful cleanup — v3.0
 - ✓ SMB Kerberos via shared RPCSEC_GSS layer — v3.0
+- ✓ Generic lock interface (OpLock/AccessMode/UnifiedLock) unifying NFS+SMB+NLM — v3.5
+- ✓ Protocol leak purge from generic layers — v3.5
+- ✓ NFS adapter restructuring (internal/adapter/, v4/v4.1 split, dispatch consolidation) — v3.5
+- ✓ SMB adapter restructuring (BaseAdapter, framing/signing/dispatch to internal/) — v3.5
+- ✓ Store interface decomposition (60+ methods -> 9 sub-interfaces) — v3.5
+- ✓ Runtime decomposition (AdapterManager, MetadataStoreManager extraction) — v3.5
+- ✓ TransferManager -> Offloader rename and split — v3.5
+- ✓ Error unification and boilerplate reduction — v3.5
 
 ### Active
-
-#### v3.5 — Adapter + Core Refactoring
-- [ ] Generic lock interface (OpLock/AccessMode/UnifiedLock) unifying NFS+SMB+NLM
-- [ ] Protocol leak purge from generic layers (metadata, controlplane, lock)
-- [ ] NFS adapter restructuring (internal/adapter/, v4/v4.1 split, dispatch consolidation)
-- [ ] SMB adapter restructuring (BaseAdapter, framing/signing/dispatch to internal/)
-- [ ] Store interface decomposition (60+ methods -> 9 sub-interfaces)
-- [ ] Runtime decomposition (AdapterManager, MetadataStoreManager extraction)
-- [ ] TransferManager -> Offloader rename and split
-- [ ] Error unification and boilerplate reduction
-- [ ] Protocol-agnostic ClientRecord in metadata layer (#157)
 
 #### v3.6 — Windows Compatibility
 - [ ] Sparse file READ fix (#180) — return zeros for unwritten blocks
@@ -181,9 +166,11 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 
 ## Context
 
-**Current State (post-v3.0):**
-- 256,842 LOC Go across ~1,600 files
+**Current State (post-v3.5):**
+- ~269,000 LOC Go across ~1,600 files (net +12,534 from refactoring)
 - NFSv3 + NFSv4.0 + NFSv4.1 + NLM + SMB fully implemented
+- Clean adapter layer: internal/adapter/nfs/ and internal/adapter/smb/ with shared BaseAdapter
+- Decomposed core: 9 store sub-interfaces, 6 runtime sub-services, Offloader split into 8 files
 - NFSv4.1 sessions with exactly-once semantics, backchannel multiplexing, directory delegations
 - RPCSEC_GSS Kerberos (krb5/krb5i/krb5p) with keytab hot-reload
 - SMB Kerberos via SPNEGO with shared identity mapping
@@ -259,9 +246,9 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 | Backchannel over fore-channel | NAT-friendly callbacks, works in containers | ✓ Good — Phase 22 |
 | Separate NotifMu per delegation | Avoids holding global lock during backchannel sends | ✓ Good — Phase 24 |
 | v4.0/v4.1 coexistence | Minorversion routing, independent state, simultaneous mounts | ✓ Good — Phase 20 |
-| Refactor before NFSv4.2 | Clean architecture enables faster v4.2 implementation | — Pending (v3.5) |
+| Refactor before NFSv4.2 | Clean architecture enables faster v4.2 implementation | ✓ Good — v3.5 |
 | Windows ACLs before NFSv4.2 | SMB is primary Windows use case, validate before adding features | — Pending (v3.6) |
-| OpLock as generic abstraction | Unifies SMB leases and NFSv4 delegations, fix once for all | — Pending (v3.5) |
+| OpLock as generic abstraction | Unifies SMB leases and NFSv4 delegations, fix once for all | ✓ Good — v3.5 |
 | smbtorture + MS Protocol Suite | Open-source conformance testing for SMB compatibility | — Pending (v3.6) |
 | Xattrs in metadata layer | Clean abstraction, expose via NFSv4.2 and SMB | — Pending (v4.0) |
 | Async COPY with polling | Better for large files, standard NFSv4.2 pattern | — Pending (v4.0) |
@@ -274,4 +261,4 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 | Per-adapter connection pools | Isolation between NFS and SMB, simpler limits | ✓ Good — Phase 01 |
 
 ---
-*Last updated: 2026-02-25 — added #157 to v3.5, #188 to v3.7*
+*Last updated: 2026-02-26 after v3.5 milestone*
