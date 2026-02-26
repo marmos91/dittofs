@@ -84,9 +84,10 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 ### v3.6 Windows Compatibility
 
+- [ ] **Phase 29.8: Microsoft Protocol Test Suite CI Integration** INSERTED - Dockerized WPTS FileServer harness running MS-SMB2 BVT tests against DittoFS on custom port in CI
 - [ ] **Phase 30: SMB Bug Fixes** - Fix sparse file READ (#180), renamed directory listing (#181)
 - [ ] **Phase 31: Windows ACL Support** - NT Security Descriptors, Unix-to-SID mapping, icacls support (#182)
-- [ ] **Phase 32: Windows Integration Testing** - smbtorture + Microsoft Protocol Test Suite + manual Windows 11 validation
+- [ ] **Phase 32: Windows Integration Testing** - smbtorture + manual Windows 11 validation (WPTS CI already in Phase 29.8)
 - [ ] **Phase 32.5: Manual Verification - Windows** USER CHECKPOINT - Full Windows validation
 
 ### v3.7 Benchmarking Suite
@@ -220,6 +221,23 @@ Plans:
 ---
 
 ## v3.6 Windows Compatibility
+
+### Phase 29.8: Microsoft Protocol Test Suite CI Integration (INSERTED)
+**Goal**: Integrate Microsoft WindowsProtocolTestSuites FileServer test suite into CI, running MS-SMB2 BVT tests against DittoFS on a custom port
+**Depends on**: Phase 29.5 (refactoring complete, NFS+SMB verified)
+**Requirements**: WIN-00 (test infrastructure)
+**Reference**: [Microsoft WindowsProtocolTestSuites](https://github.com/microsoft/WindowsProtocolTestSuites) (MIT), [FileServer User Guide](https://github.com/Microsoft/WindowsProtocolTestSuites/blob/main/TestSuites/FileServer/docs/FileServerUserGuide.md)
+**Success Criteria** (what must be TRUE):
+  1. Docker Compose setup: DittoFS server container + WPTS FileServer container (`mcr.microsoft.com/windowsprotocoltestsuites:fileserver`) in shared network
+  2. ptfconfig configured for workgroup mode (no domain controller) with `TransportPort=12445`, `SutComputerName` pointing at DittoFS, NTLM auth credentials matching DittoFS control plane users
+  3. DittoFS bootstrap script creates required shares (`SMBBasic`, `SMBEncrypted`) and test users via `dfsctl` before tests run
+  4. MS-SMB2 BVT (Build Verification Tests) category runs and reports results as NUnit XML
+  5. Test runner script (`test/smb-conformance/run.sh`) orchestrates: start DittoFS, wait healthy, bootstrap shares/users, run WPTS container, collect results, exit code reflects pass/fail
+  6. CI job (GitHub Actions) runs the SMB conformance suite on every PR touching `pkg/adapter/smb/` or `internal/adapter/smb/`
+  7. Results summary printed to CI log with pass/fail/skip counts; full NUnit XML archived as artifact
+  8. Known-failing tests documented in `test/smb-conformance/KNOWN_FAILURES.md` with issue references
+  9. Phase 44 (SMB3 Conformance Testing) updated to extend this infrastructure rather than build from scratch
+**Plans**: TBD
 
 ### Phase 30: SMB Bug Fixes
 **Goal**: Fix known SMB bugs found during Windows testing
