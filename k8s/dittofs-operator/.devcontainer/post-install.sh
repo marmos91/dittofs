@@ -1,11 +1,11 @@
 #!/bin/bash
 set -x
 
-curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-$(go env GOARCH)
+curl -Lo ./kind "https://kind.sigs.k8s.io/dl/latest/kind-linux-$(go env GOARCH)"
 chmod +x ./kind
 mv ./kind /usr/local/bin/kind
 
-curl -L -o kubebuilder https://go.kubebuilder.io/dl/latest/linux/$(go env GOARCH)
+curl -L -o kubebuilder "https://go.kubebuilder.io/dl/latest/linux/$(go env GOARCH)"
 chmod +x kubebuilder
 mv kubebuilder /usr/local/bin/
 
