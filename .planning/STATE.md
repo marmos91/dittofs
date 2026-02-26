@@ -22,10 +22,10 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 
 ## Current Position
 
-Phase: Planning v3.6
-Current Plan: None (milestone boundary)
-Status: Milestone v3.5 complete, starting v3.6
-Last activity: 2026-02-26 -- Completed v3.5 milestone archival
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-02-26 — Milestone v3.6 started
 
 ## Completed Milestones
 

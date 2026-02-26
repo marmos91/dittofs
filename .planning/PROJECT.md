@@ -13,6 +13,7 @@ Target: Cloud-native enterprise NAS with feature parity exceeding JuiceFS and Ha
 **Target outcomes:**
 - SMB bugs fixed (#180 sparse file READ, #181 renamed dir listing)
 - NT Security Descriptors with Unix-to-SID mapping and icacls support (#182)
+- Improved SMB compatibility driven by existing smbtorture/WPTS test suite results
 - Validated with smbtorture, Microsoft WindowsProtocolTestSuites, and manual Windows 11 testing
 
 ## Upcoming Milestone: v3.7 Benchmarking Suite
@@ -261,4 +262,4 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 | Per-adapter connection pools | Isolation between NFS and SMB, simpler limits | ✓ Good — Phase 01 |
 
 ---
-*Last updated: 2026-02-26 after v3.5 milestone*
+*Last updated: 2026-02-26 after starting v3.6 milestone*
