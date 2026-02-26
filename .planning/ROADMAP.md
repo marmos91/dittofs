@@ -216,7 +216,15 @@ Plans:
   8. API error mapping centralized
   9. `pkg/metadata/file.go` (1217 lines) split into file_create.go, file_modify.go, file_remove.go, file_helpers.go
   10. `pkg/metadata/authentication.go` (796 lines) split into identity.go, permissions.go
-**Plans**: TBD
+**Plans**: 7 plans
+Plans:
+- [ ] 29-01-PLAN.md — Error types (PayloadError, ProtocolError) + generic GORM/API client helpers
+- [ ] 29-02-PLAN.md — Offloader rename/split (TransferManager → Offloader, file split, GC extraction)
+- [ ] 29-03-PLAN.md — MetadataService file splits (file.go → file/, authentication.go → auth/)
+- [ ] 29-04-PLAN.md — ControlPlane Store interface decomposition + API handler narrowing
+- [ ] 29-05-PLAN.md — PayloadService I/O extraction + metadata store conformance suite
+- [ ] 29-06-PLAN.md — Runtime decomposition into 6 sub-services
+- [ ] 29-07-PLAN.md — Auth centralization, API error mapping, documentation update
 
 ---
 
