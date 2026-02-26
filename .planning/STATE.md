@@ -22,10 +22,10 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: Not started (requirements defined, awaiting roadmap)
 Plan: —
-Status: Defining requirements
-Last activity: 2026-02-26 — Milestone v3.6 started
+Status: Requirements defined (19 reqs), research complete, roadmap creation pending
+Last activity: 2026-02-26 — Requirements defined for v3.6, research complete
 
 ## Completed Milestones
 
