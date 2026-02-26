@@ -23,9 +23,9 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 ## Current Position
 
 Phase: 29 - Core Layer Decomposition
-Current Plan: 5 of 7 (COMPLETE)
+Current Plan: 6 of 7 (COMPLETE)
 Status: In Progress
-Last activity: 2026-02-26 -- Completed 29-05 (PayloadService I/O Extraction + Metadata Store Conformance Suite)
+Last activity: 2026-02-26 -- Completed 29-06 (Runtime Decomposition into 6 Sub-Services)
 
 ## Completed Milestones
 
@@ -60,6 +60,7 @@ Last activity: 2026-02-26 -- Completed 29-05 (PayloadService I/O Extraction + Me
 | 29 | 03 | 12min | 2 | 8 |
 | 29 | 04 | 18min | 2 | 17 |
 | 29 | 05 | 9min | 2 | 12 |
+| 29 | 06 | 10min | 2 | 20 |
 
 ## Quick Tasks Completed
 
@@ -125,6 +126,10 @@ Last activity: 2026-02-26 -- Completed 29-05 (PayloadService I/O Extraction + Me
 - [Phase 29]: [29-05] io sub-package local interfaces (CacheReader, CacheWriter, CacheStateManager, BlockDownloader, BlockUploader) to avoid circular imports
 - [Phase 29]: [29-05] Sentinel error bridging via package-level variables set in parent init() for cross-package error detection
 - [Phase 29]: [29-05] Conformance test StoreFactory pattern: func(t *testing.T) MetadataStore for store-specific setup
+- [Phase 29]: [29-06] Share/ShareConfig types moved to shares/ sub-package with parent type aliases for zero-change consumer migration
+- [Phase 29]: [29-06] Sub-services define narrow local interfaces (ShareProvider, MetadataStoreProvider, etc.) to avoid import cycles
+- [Phase 29]: [29-06] adapters.RuntimeSetter uses any-typed runtime parameter to break import cycle with parent package
+- [Phase 29]: [29-06] Lifecycle.Serve accepts dependency interfaces rather than importing sibling sub-packages
 
 ### Pending Todos
 
@@ -137,5 +142,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-26
-Stopped at: Completed 29-05-PLAN.md
-Resume file: 29-06-PLAN.md
+Stopped at: Completed 29-06-PLAN.md
+Resume file: 29-07-PLAN.md
