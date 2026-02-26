@@ -79,7 +79,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 26: Generic Lock Interface & Protocol Leak Purge** - Unify lock model (OpLock/AccessMode/UnifiedLock), purge NFS/SMB types from generic layers (completed 2026-02-25)
 - [ ] **Phase 27: NFS Adapter Restructuring** - Rename internal/protocol/ to internal/adapter/, consolidate NFS ecosystem, split v4/v4.1
 - [x] **Phase 28: SMB Adapter Restructuring** - Extract BaseAdapter, move framing/signing/dispatch to internal/, Authenticator interface (completed 2026-02-25)
-- [ ] **Phase 29: Core Layer Decomposition** - Store interface split, Runtime decomposition, Offloader rename/split, error unification
+- [x] **Phase 29: Core Layer Decomposition** - Store interface split, Runtime decomposition, Offloader rename/split, error unification (completed 2026-02-26)
 - [ ] **Phase 29.5: Manual Verification - Refactoring** USER CHECKPOINT - Verify NFS + SMB functionality preserved
 
 ### v3.6 Windows Compatibility
@@ -594,7 +594,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 51
 | 26. Generic Lock Interface & Protocol Leak Purge | 5/5 | Complete    | 2026-02-25 | - |
 | 27. NFS Adapter Restructuring | v3.5 | 4/4 | Complete | 2026-02-25 |
 | 28. SMB Adapter Restructuring | 5/5 | Complete   | 2026-02-25 | - |
-| 29. Core Layer Decomposition | 6/7 | In Progress|  | - |
+| 29. Core Layer Decomposition | 7/7 | Complete   | 2026-02-26 | - |
 | 30. SMB Bug Fixes | v3.6 | 0/? | Not started | - |
 | 31. Windows ACL Support | v3.6 | 0/? | Not started | - |
 | 32. Windows Integration Testing | v3.6 | 0/? | Not started | - |
