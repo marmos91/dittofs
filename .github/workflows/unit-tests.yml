@@ -6,7 +6,9 @@ on:
   pull_request:
     branches: [develop, main]
     paths:
-      - '**/*.go'
+      - 'cmd/**/*.go'
+      - 'pkg/**/*.go'
+      - 'internal/**/*.go'
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/unit-tests.yml'

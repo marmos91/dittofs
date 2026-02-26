@@ -16,6 +16,8 @@ on:
   pull_request:
     branches: [develop, main]
     paths:
+      - 'cmd/dfs/**'
+      - 'cmd/dfsctl/**'
       - 'pkg/adapter/nfs/**'
       - 'pkg/adapter/base.go'
       - 'internal/adapter/nfs/**'

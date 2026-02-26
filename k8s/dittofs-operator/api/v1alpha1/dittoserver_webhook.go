@@ -97,7 +97,7 @@ func (r *DittoServer) validateDittoServer() (admission.Warnings, error) {
 }
 
 // validatePorts checks port configuration for conflicts and warns about privileged ports.
-func (r *DittoServer) validatePorts() (admission.Warnings, error) {
+func (r *DittoServer) validatePorts() (admission.Warnings, error) { //nolint:unparam // error kept for future validation rules
 	var warnings admission.Warnings
 
 	apiPort := int32(defaultAPIPort)

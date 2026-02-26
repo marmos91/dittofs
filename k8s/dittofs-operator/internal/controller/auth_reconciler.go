@@ -276,7 +276,7 @@ func (r *DittoServerReconciler) provisionOperatorAccount(ctx context.Context, ds
 }
 
 // refreshOperatorToken refreshes the operator's JWT token using the stored credentials.
-func (r *DittoServerReconciler) refreshOperatorToken(ctx context.Context, ds *dittoiov1alpha1.DittoServer, secret *corev1.Secret, apiURL string) (ctrl.Result, error) {
+func (r *DittoServerReconciler) refreshOperatorToken(ctx context.Context, ds *dittoiov1alpha1.DittoServer, secret *corev1.Secret, apiURL string) (ctrl.Result, error) { //nolint:unparam // ds used for future per-CR token management
 	logger := logf.FromContext(ctx)
 
 	refreshToken := string(secret.Data["refresh-token"])
@@ -324,7 +324,7 @@ func (r *DittoServerReconciler) refreshOperatorToken(ctx context.Context, ds *di
 
 // cleanupOperatorServiceAccount attempts to delete the operator service account as best-effort cleanup.
 // Returns nil even on failure -- this is cleanup during CR deletion and must not block finalizer removal.
-func (r *DittoServerReconciler) cleanupOperatorServiceAccount(ctx context.Context, ds *dittoiov1alpha1.DittoServer) error {
+func (r *DittoServerReconciler) cleanupOperatorServiceAccount(ctx context.Context, ds *dittoiov1alpha1.DittoServer) error { //nolint:unparam // error kept for future error propagation
 	logger := logf.FromContext(ctx)
 
 	// Read admin credentials
