@@ -78,12 +78,12 @@ fi
 
 # If not found or doesn't have tests, search nix store for one that does
 if [[ -z "$PJDFSTEST_BIN" ]]; then
-    for candidate in $(find /nix/store -path "*/bin/pjdfstest" -type f -executable 2>/dev/null); do
+    while IFS= read -r candidate; do
         if has_tests_dir "$candidate"; then
             PJDFSTEST_BIN="$candidate"
             break
         fi
-    done
+    done < <(find /nix/store -path "*/bin/pjdfstest" -type f -executable 2>/dev/null)
 fi
 
 if [[ -z "$PJDFSTEST_BIN" ]]; then
@@ -98,7 +98,7 @@ TESTS_DIR="$(dirname "$PJDFSTEST_BIN")/../share/pjdfstest/tests"
 # Since nix store is read-only and the binary is in bin/ (not a parent of tests/),
 # we need to create a working directory with a symlink to the binary.
 WORK_DIR=$(mktemp -d)
-trap "rm -rf '$WORK_DIR'" EXIT
+trap 'rm -rf "$WORK_DIR"' EXIT
 
 # Create symlink to pjdfstest binary at the working directory root
 ln -s "$PJDFSTEST_BIN" "$WORK_DIR/pjdfstest"
@@ -182,7 +182,7 @@ echo ""
 collect_tests() {
     local search_dir="$1"
     find -L "$search_dir" -name '*.t' -type f 2>/dev/null | sort | while IFS= read -r test_file; do
-        local rel_path="${test_file#$WORK_DIR/tests/}"
+        local rel_path="${test_file#"$WORK_DIR/tests/"}"
         if ! is_excluded "$rel_path"; then
             echo "$test_file"
         fi

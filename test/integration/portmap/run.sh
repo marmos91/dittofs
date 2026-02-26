@@ -156,7 +156,7 @@ sleep 1
 # Get portmapper port from settings (default is 10111)
 SETTINGS_JSON=$(/dfsctl adapter settings nfs show -o json 2>/dev/null)
 echo "Settings JSON: $SETTINGS_JSON"
-PMAP_PORT=$(echo "$SETTINGS_JSON" | grep -oE '"portmapper_port":\s*[0-9]+' | grep -oE '[0-9]+' || echo "10111")
+PMAP_PORT=$(echo "$SETTINGS_JSON" | grep -oE '"portmapper_port":[[:space:]]*[0-9]+' | grep -oE '[0-9]+' || echo "10111")
 echo "Portmapper port: $PMAP_PORT"
 
 echo "=== Testing portmapper connectivity ==="

@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # bootstrap.sh - Configure DittoFS with WPTS-required stores, shares, and users
 #
 # This script provisions a running DittoFS instance for Microsoft
