@@ -39,7 +39,7 @@ esac
 
 DFSCTL="${DFSCTL:-/app/dfsctl}"
 SERVER="${SERVER:-http://localhost:8080}"
-ADMIN_PASSWORD="${DITTOFS_CONTROLPLANE_SECRET:-BenchmarkInfrastructureSecret32ch!}"
+ADMIN_PASSWORD="${DITTOFS_ADMIN_INITIAL_PASSWORD:-benchadmin}"
 
 # S3 configuration (from environment)
 S3_BUCKET="${S3_BUCKET:-bench}"

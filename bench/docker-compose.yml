@@ -78,7 +78,7 @@ services:
       - dittofs-badger-s3
     ports:
       - "12049:12049"
-      - "8080:8080"
+      - "${BENCH_API_PORT:-8080}:8080"
       - "6060:6060"
     depends_on:
       localstack:
@@ -90,6 +90,7 @@ services:
       - ./results:/results
     environment:
       DITTOFS_CONTROLPLANE_SECRET: ${DITTOFS_CONTROLPLANE_SECRET:-BenchmarkInfrastructureSecret32ch!}
+      DITTOFS_ADMIN_INITIAL_PASSWORD: ${DITTOFS_ADMIN_INITIAL_PASSWORD:-benchadmin}
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/health/ready"]
       interval: 5s
@@ -110,7 +111,7 @@ services:
       - dittofs-postgres-s3
     ports:
       - "12049:12049"
-      - "8080:8080"
+      - "${BENCH_API_PORT:-8080}:8080"
       - "6060:6060"
     depends_on:
       localstack:
@@ -124,6 +125,7 @@ services:
       - ./results:/results
     environment:
       DITTOFS_CONTROLPLANE_SECRET: ${DITTOFS_CONTROLPLANE_SECRET:-BenchmarkInfrastructureSecret32ch!}
+      DITTOFS_ADMIN_INITIAL_PASSWORD: ${DITTOFS_ADMIN_INITIAL_PASSWORD:-benchadmin}
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/health/ready"]
       interval: 5s
@@ -144,7 +146,7 @@ services:
       - dittofs-badger-fs
     ports:
       - "12049:12049"
-      - "8080:8080"
+      - "${BENCH_API_PORT:-8080}:8080"
       - "6060:6060"
     volumes:
       - ./configs/dittofs/badger-fs.yaml:/config/config.yaml:ro
@@ -153,6 +155,7 @@ services:
       - ./results:/results
     environment:
       DITTOFS_CONTROLPLANE_SECRET: ${DITTOFS_CONTROLPLANE_SECRET:-BenchmarkInfrastructureSecret32ch!}
+      DITTOFS_ADMIN_INITIAL_PASSWORD: ${DITTOFS_ADMIN_INITIAL_PASSWORD:-benchadmin}
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/health/ready"]
       interval: 5s
@@ -174,7 +177,7 @@ services:
       - dittofs-smb
     ports:
       - "12445:12445"
-      - "8080:8080"
+      - "${BENCH_API_PORT:-8080}:8080"
       - "6060:6060"
     depends_on:
       localstack:
@@ -186,6 +189,7 @@ services:
       - ./results:/results
     environment:
       DITTOFS_CONTROLPLANE_SECRET: ${DITTOFS_CONTROLPLANE_SECRET:-BenchmarkInfrastructureSecret32ch!}
+      DITTOFS_ADMIN_INITIAL_PASSWORD: ${DITTOFS_ADMIN_INITIAL_PASSWORD:-benchadmin}
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/health/ready"]
       interval: 5s

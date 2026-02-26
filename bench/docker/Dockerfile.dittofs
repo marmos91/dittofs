@@ -38,7 +38,7 @@ FROM alpine:3.21
 LABEL org.opencontainers.image.title="DittoFS (Benchmark)" \
       org.opencontainers.image.description="DittoFS with dfs+dfsctl for benchmarking against NFS-Ganesha, RClone, kernel NFS, and Samba"
 
-RUN apk add --no-cache ca-certificates tzdata curl && \
+RUN apk add --no-cache ca-certificates tzdata curl bash && \
     addgroup -g 65532 -S dittofs && \
     adduser -u 65532 -S -G dittofs -h /app dittofs
 

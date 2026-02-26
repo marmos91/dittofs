@@ -17,6 +17,9 @@ database:
   sqlite:
     path: /data/controlplane.db
 
+cache:
+  path: /data/cache
+
 controlplane:
   port: 8080
   jwt:
