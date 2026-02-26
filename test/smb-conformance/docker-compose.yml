@@ -10,7 +10,7 @@
 # Environment variables:
 #   PROFILE              - DittoFS config profile (default: memory)
 #   WPTS_FILTER          - WPTS test filter (default: TestCategory=BVT)
-#   DITTOFS_CONTROLPLANE_SECRET - Admin password (default: TestPassword01!)
+#   DITTOFS_CONTROLPLANE_SECRET - JWT secret / admin password (min 32 chars)
 
 services:
   dittofs:
@@ -26,7 +26,7 @@ services:
       - dittofs-data:/data
     environment:
       - DITTOFS_LOGGING_LEVEL=DEBUG
-      - DITTOFS_CONTROLPLANE_SECRET=${DITTOFS_CONTROLPLANE_SECRET:-TestPassword01!}
+      - DITTOFS_CONTROLPLANE_SECRET=${DITTOFS_CONTROLPLANE_SECRET:-WptsConformanceTesting2026!Secret}
     # Healthcheck is defined in Dockerfile.dittofs
 
   wpts:

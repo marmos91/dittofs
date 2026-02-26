@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # bootstrap.sh - Configure DittoFS with WPTS-required stores, shares, and users
 #
 # This script provisions a running DittoFS instance for Microsoft
@@ -16,7 +16,7 @@ set -euo pipefail
 # Configuration (overridable via environment)
 DFSCTL="${DFSCTL:-dfsctl}"
 API_URL="${API_URL:-http://localhost:8080}"
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-${DITTOFS_CONTROLPLANE_SECRET:-TestPassword01!}}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-${DITTOFS_CONTROLPLANE_SECRET:-WptsConformanceTesting2026!Secret}}"
 TEST_PASSWORD="${TEST_PASSWORD:-TestPassword01!}"
 PROFILE="${PROFILE:-memory}"
 SMB_PORT="${SMB_PORT:-12445}"
@@ -127,6 +127,13 @@ main() {
     # Login as admin
     log_info "Logging in as admin..."
     $DFSCTL login --server "$API_URL" --username admin --password "$ADMIN_PASSWORD"
+
+    # Change password (required for new admin user on first login)
+    log_info "Changing admin password (first login requirement)..."
+    $DFSCTL user change-password --current "$ADMIN_PASSWORD" --new "$TEST_PASSWORD" 2>/dev/null || true
+
+    # Re-login with new password
+    $DFSCTL login --server "$API_URL" --username admin --password "$TEST_PASSWORD"
 
     # Create stores
     create_metadata_store

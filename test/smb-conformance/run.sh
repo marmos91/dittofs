@@ -351,16 +351,28 @@ run_compose() {
     PROFILE="$PROFILE" docker compose up -d dittofs
     wait_until "docker compose exec dittofs wget -q --spider http://localhost:8080/health/ready" 60 "DittoFS"
 
+    # Extract auto-generated admin password from container logs
+    log_step "Extracting admin password from DittoFS logs..."
+    local admin_password=""
+    admin_password=$(docker compose logs dittofs 2>/dev/null | grep -o 'password: [^ ]*' | head -1 | awk '{print $2}' || echo "")
+    if [[ -z "$admin_password" ]]; then
+        log_error "Could not extract admin password from DittoFS logs"
+        return 1
+    fi
+    if $VERBOSE; then
+        log_info "Admin password extracted"
+    fi
+
     # Bootstrap DittoFS
     log_step "Bootstrapping DittoFS (profile: ${PROFILE})..."
     docker compose exec \
         -e DFSCTL="/app/dfsctl" \
         -e API_URL="http://localhost:8080" \
-        -e ADMIN_PASSWORD="${DITTOFS_CONTROLPLANE_SECRET:-TestPassword01!}" \
+        -e ADMIN_PASSWORD="${admin_password}" \
         -e TEST_PASSWORD="${TEST_PASSWORD}" \
         -e PROFILE="${PROFILE}" \
         -e SMB_PORT="${SMB_PORT}" \
-        dittofs bash /app/bootstrap.sh
+        dittofs sh /app/bootstrap.sh
 
     # Run WPTS
     log_step "Running WPTS tests (filter: ${FILTER})..."
@@ -402,11 +414,20 @@ run_local() {
 
     wait_until "curl -sf http://localhost:8080/health/ready" 60 "DittoFS"
 
+    # Extract auto-generated admin password from server log
+    log_step "Extracting admin password from DittoFS logs..."
+    local admin_password=""
+    admin_password=$(grep -o 'password: [^ ]*' "${RESULTS_DIR}/dittofs.log" 2>/dev/null | head -1 | awk '{print $2}' || echo "")
+    if [[ -z "$admin_password" ]]; then
+        log_error "Could not extract admin password from DittoFS log"
+        return 1
+    fi
+
     # Bootstrap
     log_step "Bootstrapping DittoFS (profile: ${PROFILE})..."
     DFSCTL="${SCRIPT_DIR}/dfsctl" \
     API_URL="http://localhost:8080" \
-    ADMIN_PASSWORD="${DITTOFS_CONTROLPLANE_SECRET:-TestPassword01!}" \
+    ADMIN_PASSWORD="${admin_password}" \
     TEST_PASSWORD="${TEST_PASSWORD}" \
     PROFILE="${PROFILE}" \
     SMB_PORT="${SMB_PORT}" \
