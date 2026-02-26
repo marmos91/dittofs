@@ -17,17 +17,17 @@ func TestNew(t *testing.T) {
 		t.Fatal("expected non-nil runtime")
 	}
 
-	if rt.metadata == nil {
-		t.Error("expected metadata map to be initialized")
+	if rt.storesSvc == nil {
+		t.Error("expected stores service to be initialized")
 	}
-	if rt.shares == nil {
-		t.Error("expected shares map to be initialized")
+	if rt.sharesSvc == nil {
+		t.Error("expected shares service to be initialized")
 	}
 	if rt.mountTracker == nil {
 		t.Error("expected mount tracker to be initialized")
 	}
-	if rt.adapters == nil {
-		t.Error("expected adapters map to be initialized")
+	if rt.adaptersSvc == nil {
+		t.Error("expected adapters service to be initialized")
 	}
 	if rt.shutdownTimeout != DefaultShutdownTimeout {
 		t.Errorf("expected shutdown timeout %v, got %v", DefaultShutdownTimeout, rt.shutdownTimeout)
@@ -374,14 +374,12 @@ func TestApplyIdentityMapping(t *testing.T) {
 	// Helper to create a fresh runtime with a share for each test
 	setupRuntime := func(squash models.SquashMode) *Runtime {
 		rt := New(nil)
-		rt.mu.Lock()
-		rt.shares["/export"] = &Share{
+		rt.sharesSvc.InjectShareForTesting(&Share{
 			Name:         "/export",
 			Squash:       squash,
 			AnonymousUID: 65534,
 			AnonymousGID: 65534,
-		}
-		rt.mu.Unlock()
+		})
 		return rt
 	}
 
