@@ -227,6 +227,9 @@ func (s *Adapter) NewConnection(conn net.Conn) adapter.ConnectionHandler {
 // Must be called before Serve(). When not called, Kerberos auth is disabled
 // and only NTLM/guest authentication is available.
 func (s *Adapter) SetKerberosProvider(provider *kerberos.Provider) {
+	if provider == nil {
+		return
+	}
 	s.handler.KerberosProvider = provider
 	logger.Debug("SMB adapter Kerberos provider configured",
 		"principal", provider.ServicePrincipal())

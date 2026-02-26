@@ -108,12 +108,13 @@ func ReadRequest(
 	// SMB1 messages can be smaller than 64 bytes (SMB1 header is 32 bytes)
 	protocolID := binary.LittleEndian.Uint32(message[0:4])
 	if protocolID == types.SMB1ProtocolID {
-		// Handle SMB1 NEGOTIATE by responding with SMB2 NEGOTIATE response
+		// Handle SMB1 NEGOTIATE by responding with SMB2 NEGOTIATE response.
+		// Only allow one SMB1 upgrade per connection to prevent recursive DoS.
 		if err := handleSMB1(ctx, message); err != nil {
 			return nil, nil, nil, fmt.Errorf("handle SMB1 negotiate: %w", err)
 		}
-		// Read the next message which should be SMB2
-		return ReadRequest(ctx, conn, maxMsgSize, readTimeout, verifier, handleSMB1)
+		// Read the next message non-recursively — must be SMB2
+		return readSMB2Message(ctx, conn, maxMsgSize, readTimeout, verifier)
 	}
 
 	// For SMB2, validate that we have at least a full header (64 bytes)
@@ -162,6 +163,80 @@ func ReadRequest(
 		"treeId", hdr.TreeID,
 		"nextCommand", hdr.NextCommand,
 		"flags", fmt.Sprintf("0x%x", hdr.Flags))
+
+	return hdr, body, remainingCompound, nil
+}
+
+// readSMB2Message reads a single SMB2 message (no SMB1 fallback).
+// Used after SMB1 upgrade to avoid recursive ReadRequest calls.
+func readSMB2Message(
+	ctx context.Context,
+	conn net.Conn,
+	maxMsgSize int,
+	readTimeout time.Duration,
+	verifier SigningVerifier,
+) (*header.SMB2Header, []byte, []byte, error) {
+	select {
+	case <-ctx.Done():
+		return nil, nil, nil, ctx.Err()
+	default:
+	}
+
+	if readTimeout > 0 {
+		if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
+			return nil, nil, nil, fmt.Errorf("set read deadline: %w", err)
+		}
+	}
+
+	var nbHeader [4]byte
+	if _, err := io.ReadFull(conn, nbHeader[:]); err != nil {
+		return nil, nil, nil, err
+	}
+
+	msgLen := uint32(nbHeader[1])<<16 | uint32(nbHeader[2])<<8 | uint32(nbHeader[3])
+	if msgLen > uint32(maxMsgSize) {
+		return nil, nil, nil, fmt.Errorf("SMB message too large: %d bytes (max %d)", msgLen, maxMsgSize)
+	}
+	if msgLen < header.HeaderSize {
+		return nil, nil, nil, fmt.Errorf("SMB2 message too small: %d bytes (need %d)", msgLen, header.HeaderSize)
+	}
+
+	message := make([]byte, msgLen)
+	if _, err := io.ReadFull(conn, message); err != nil {
+		return nil, nil, nil, fmt.Errorf("read SMB message: %w", err)
+	}
+
+	// Must be SMB2 after upgrade
+	protocolID := binary.LittleEndian.Uint32(message[0:4])
+	if protocolID != types.SMB2ProtocolID {
+		return nil, nil, nil, fmt.Errorf("expected SMB2 after upgrade, got protocol 0x%x", protocolID)
+	}
+
+	hdr, err := header.Parse(message[:header.HeaderSize])
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("parse SMB2 header: %w", err)
+	}
+
+	if verifier != nil {
+		if err := verifier.VerifyRequest(hdr, message); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+
+	var body []byte
+	var remainingCompound []byte
+	if hdr.NextCommand > 0 {
+		bodyEnd := int(hdr.NextCommand)
+		if bodyEnd > len(message) {
+			bodyEnd = len(message)
+		}
+		body = message[header.HeaderSize:bodyEnd]
+		if int(hdr.NextCommand) < len(message) {
+			remainingCompound = message[hdr.NextCommand:]
+		}
+	} else {
+		body = message[header.HeaderSize:]
+	}
 
 	return hdr, body, remainingCompound, nil
 }
