@@ -7,10 +7,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
-// ============================================
-// HEALTH & LIFECYCLE
-// ============================================
-
 func (s *GORMStore) Healthcheck(ctx context.Context) error {
 	sqlDB, err := s.db.DB()
 	if err != nil {

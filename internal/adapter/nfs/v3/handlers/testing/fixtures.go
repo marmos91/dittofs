@@ -15,8 +15,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/payload"
+	"github.com/marmos91/dittofs/pkg/payload/offloader"
 	storemem "github.com/marmos91/dittofs/pkg/payload/store/memory"
-	"github.com/marmos91/dittofs/pkg/payload/transfer"
 )
 
 // DefaultShareName is the default share name used in test fixtures.
@@ -82,10 +82,10 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 	testCache := cache.New(0) // 0 = unlimited size
 	blockStore := storemem.New()
 	// Use metaStore as ObjectStore - MemoryMetadataStore implements ObjectStore
-	transferMgr := transfer.New(testCache, blockStore, metaStore, transfer.DefaultConfig())
+	offloaderInstance := offloader.New(testCache, blockStore, metaStore, offloader.DefaultConfig())
 
 	// Create PayloadService with cache and transfer manager
-	payloadSvc, err := payload.New(testCache, transferMgr)
+	payloadSvc, err := payload.New(testCache, offloaderInstance)
 	if err != nil {
 		t.Fatalf("Failed to create payload service: %v", err)
 	}

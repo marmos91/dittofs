@@ -5,66 +5,26 @@ import (
 	"errors"
 	"time"
 
-	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
-// ============================================
-// GROUP OPERATIONS
-// ============================================
-
 func (s *GORMStore) GetGroup(ctx context.Context, name string) (*models.Group, error) {
-	var group models.Group
-	err := s.db.WithContext(ctx).
-		Preload("Users").
-		Preload("SharePermissions").
-		Where("name = ?", name).
-		First(&group).Error
-	if err != nil {
-		return nil, convertNotFoundError(err, models.ErrGroupNotFound)
-	}
-	return &group, nil
+	return getByField[models.Group](s.db, ctx, "name", name, models.ErrGroupNotFound, "Users", "SharePermissions")
 }
 
 func (s *GORMStore) GetGroupByID(ctx context.Context, id string) (*models.Group, error) {
-	var group models.Group
-	err := s.db.WithContext(ctx).
-		Preload("Users").
-		Preload("SharePermissions").
-		Where("id = ?", id).
-		First(&group).Error
-	if err != nil {
-		return nil, convertNotFoundError(err, models.ErrGroupNotFound)
-	}
-	return &group, nil
+	return getByField[models.Group](s.db, ctx, "id", id, models.ErrGroupNotFound, "Users", "SharePermissions")
 }
 
 func (s *GORMStore) ListGroups(ctx context.Context) ([]*models.Group, error) {
-	var groups []*models.Group
-	if err := s.db.WithContext(ctx).
-		Preload("Users").
-		Preload("SharePermissions").
-		Find(&groups).Error; err != nil {
-		return nil, err
-	}
-	return groups, nil
+	return listAll[models.Group](s.db, ctx, "Users", "SharePermissions")
 }
 
 func (s *GORMStore) CreateGroup(ctx context.Context, group *models.Group) (string, error) {
-	if group.ID == "" {
-		group.ID = uuid.New().String()
-	}
 	group.CreatedAt = time.Now()
-
-	if err := s.db.WithContext(ctx).Create(group).Error; err != nil {
-		if isUniqueConstraintError(err) {
-			return "", models.ErrDuplicateGroup
-		}
-		return "", err
-	}
-	return group.ID, nil
+	return createWithID(s.db, ctx, group, func(g *models.Group, id string) { g.ID = id }, group.ID, models.ErrDuplicateGroup)
 }
 
 func (s *GORMStore) UpdateGroup(ctx context.Context, group *models.Group) error {
@@ -152,11 +112,7 @@ func (s *GORMStore) RemoveUserFromGroup(ctx context.Context, username, groupName
 			return err
 		}
 
-		// Delete the association - this is idempotent (no error if not exists)
-		if err := tx.Model(&user).Association("Groups").Delete(&group); err != nil {
-			return err
-		}
-		return nil
+		return tx.Model(&user).Association("Groups").Delete(&group)
 	})
 }
 

@@ -13,68 +13,25 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
-// ============================================
-// SHARE OPERATIONS
-// ============================================
-
 func (s *GORMStore) GetShare(ctx context.Context, name string) (*models.Share, error) {
-	var share models.Share
-	err := s.db.WithContext(ctx).
-		Preload("MetadataStore").
-		Preload("PayloadStore").
-		Preload("AccessRules").
-		Preload("UserPermissions").
-		Preload("GroupPermissions").
-		Where("name = ?", name).
-		First(&share).Error
-	if err != nil {
-		return nil, convertNotFoundError(err, models.ErrShareNotFound)
-	}
-	return &share, nil
+	return getByField[models.Share](s.db, ctx, "name", name, models.ErrShareNotFound,
+		"MetadataStore", "PayloadStore", "AccessRules", "UserPermissions", "GroupPermissions")
 }
 
 func (s *GORMStore) GetShareByID(ctx context.Context, id string) (*models.Share, error) {
-	var share models.Share
-	err := s.db.WithContext(ctx).
-		Preload("MetadataStore").
-		Preload("PayloadStore").
-		Preload("AccessRules").
-		Preload("UserPermissions").
-		Preload("GroupPermissions").
-		Where("id = ?", id).
-		First(&share).Error
-	if err != nil {
-		return nil, convertNotFoundError(err, models.ErrShareNotFound)
-	}
-	return &share, nil
+	return getByField[models.Share](s.db, ctx, "id", id, models.ErrShareNotFound,
+		"MetadataStore", "PayloadStore", "AccessRules", "UserPermissions", "GroupPermissions")
 }
 
 func (s *GORMStore) ListShares(ctx context.Context) ([]*models.Share, error) {
-	var shares []*models.Share
-	if err := s.db.WithContext(ctx).
-		Preload("MetadataStore").
-		Preload("PayloadStore").
-		Find(&shares).Error; err != nil {
-		return nil, err
-	}
-	return shares, nil
+	return listAll[models.Share](s.db, ctx, "MetadataStore", "PayloadStore")
 }
 
 func (s *GORMStore) CreateShare(ctx context.Context, share *models.Share) (string, error) {
-	if share.ID == "" {
-		share.ID = uuid.New().String()
-	}
 	now := time.Now()
 	share.CreatedAt = now
 	share.UpdatedAt = now
-
-	if err := s.db.WithContext(ctx).Create(share).Error; err != nil {
-		if isUniqueConstraintError(err) {
-			return "", models.ErrDuplicateShare
-		}
-		return "", err
-	}
-	return share.ID, nil
+	return createWithID(s.db, ctx, share, func(sh *models.Share, id string) { sh.ID = id }, share.ID, models.ErrDuplicateShare)
 }
 
 func (s *GORMStore) UpdateShare(ctx context.Context, share *models.Share) error {
@@ -181,10 +138,6 @@ func (s *GORMStore) GetUserAccessibleShares(ctx context.Context, username string
 	return accessibleShares, nil
 }
 
-// ============================================
-// SHARE ACCESS RULE OPERATIONS
-// ============================================
-
 func (s *GORMStore) GetShareAccessRules(ctx context.Context, shareName string) ([]*models.ShareAccessRule, error) {
 	share, err := s.GetShare(ctx, shareName)
 	if err != nil {
@@ -251,10 +204,6 @@ func (s *GORMStore) RemoveShareAccessRule(ctx context.Context, shareName, ruleID
 		return tx.Where("id = ? AND share_id = ?", ruleID, share.ID).Delete(&models.ShareAccessRule{}).Error
 	})
 }
-
-// ============================================
-// GUEST ACCESS OPERATIONS (per-share)
-// ============================================
 
 func (s *GORMStore) GetGuestUser(ctx context.Context, shareName string) (*models.User, error) {
 	share, err := s.GetShare(ctx, shareName)

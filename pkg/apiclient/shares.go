@@ -52,11 +52,7 @@ type SharePermission struct {
 
 // ListShares returns all shares.
 func (c *Client) ListShares() ([]Share, error) {
-	var shares []Share
-	if err := c.get("/api/v1/shares", &shares); err != nil {
-		return nil, err
-	}
-	return shares, nil
+	return listResources[Share](c, "/api/v1/shares")
 }
 
 // GetShare returns a share by name.
@@ -88,7 +84,7 @@ func (c *Client) UpdateShare(name string, req *UpdateShareRequest) (*Share, erro
 
 // DeleteShare deletes a share.
 func (c *Client) DeleteShare(name string) error {
-	return c.delete(fmt.Sprintf("/api/v1/shares/%s", url.PathEscape(normalizeShareNameForAPI(name))), nil)
+	return deleteResource(c, fmt.Sprintf("/api/v1/shares/%s", url.PathEscape(normalizeShareNameForAPI(name))))
 }
 
 // ListSharePermissions returns permissions for a share.

@@ -2,7 +2,6 @@ package apiclient
 
 import (
 	"encoding/json"
-	"fmt"
 )
 
 // Adapter represents a protocol adapter configuration.
@@ -30,41 +29,25 @@ type UpdateAdapterRequest struct {
 
 // ListAdapters returns all adapters.
 func (c *Client) ListAdapters() ([]Adapter, error) {
-	var adapters []Adapter
-	if err := c.get("/api/v1/adapters", &adapters); err != nil {
-		return nil, err
-	}
-	return adapters, nil
+	return listResources[Adapter](c, "/api/v1/adapters")
 }
 
 // GetAdapter returns an adapter by type.
 func (c *Client) GetAdapter(adapterType string) (*Adapter, error) {
-	var adapter Adapter
-	if err := c.get(fmt.Sprintf("/api/v1/adapters/%s", adapterType), &adapter); err != nil {
-		return nil, err
-	}
-	return &adapter, nil
+	return getResource[Adapter](c, resourcePath("/api/v1/adapters/%s", adapterType))
 }
 
 // CreateAdapter creates a new adapter.
 func (c *Client) CreateAdapter(req *CreateAdapterRequest) (*Adapter, error) {
-	var adapter Adapter
-	if err := c.post("/api/v1/adapters", req, &adapter); err != nil {
-		return nil, err
-	}
-	return &adapter, nil
+	return createResource[Adapter](c, "/api/v1/adapters", req)
 }
 
 // UpdateAdapter updates an existing adapter.
 func (c *Client) UpdateAdapter(adapterType string, req *UpdateAdapterRequest) (*Adapter, error) {
-	var adapter Adapter
-	if err := c.put(fmt.Sprintf("/api/v1/adapters/%s", adapterType), req, &adapter); err != nil {
-		return nil, err
-	}
-	return &adapter, nil
+	return updateResource[Adapter](c, resourcePath("/api/v1/adapters/%s", adapterType), req)
 }
 
 // DeleteAdapter deletes an adapter.
 func (c *Client) DeleteAdapter(adapterType string) error {
-	return c.delete(fmt.Sprintf("/api/v1/adapters/%s", adapterType), nil)
+	return deleteResource(c, resourcePath("/api/v1/adapters/%s", adapterType))
 }

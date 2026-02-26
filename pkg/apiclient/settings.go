@@ -1,9 +1,5 @@
 package apiclient
 
-import (
-	"fmt"
-)
-
 // Setting represents a server setting.
 type Setting struct {
 	Key         string `json:"key"`
@@ -14,33 +10,21 @@ type Setting struct {
 
 // ListSettings returns all settings.
 func (c *Client) ListSettings() ([]Setting, error) {
-	var settings []Setting
-	if err := c.get("/api/v1/settings", &settings); err != nil {
-		return nil, err
-	}
-	return settings, nil
+	return listResources[Setting](c, "/api/v1/settings")
 }
 
 // GetSetting returns a setting by key.
 func (c *Client) GetSetting(key string) (*Setting, error) {
-	var setting Setting
-	if err := c.get(fmt.Sprintf("/api/v1/settings/%s", key), &setting); err != nil {
-		return nil, err
-	}
-	return &setting, nil
+	return getResource[Setting](c, resourcePath("/api/v1/settings/%s", key))
 }
 
 // SetSetting sets a setting value.
 func (c *Client) SetSetting(key, value string) (*Setting, error) {
 	req := map[string]string{"value": value}
-	var setting Setting
-	if err := c.put(fmt.Sprintf("/api/v1/settings/%s", key), req, &setting); err != nil {
-		return nil, err
-	}
-	return &setting, nil
+	return updateResource[Setting](c, resourcePath("/api/v1/settings/%s", key), req)
 }
 
 // DeleteSetting deletes a setting (resets to default).
 func (c *Client) DeleteSetting(key string) error {
-	return c.delete(fmt.Sprintf("/api/v1/settings/%s", key), nil)
+	return deleteResource(c, resourcePath("/api/v1/settings/%s", key))
 }

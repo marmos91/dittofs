@@ -87,4 +87,13 @@ type Adapter interface {
 	//
 	// Returns 0 if the adapter has not yet started or uses dynamic port allocation.
 	Port() int
+
+	// MapError translates a domain error into a protocol-specific ProtocolError.
+	//
+	// Each adapter must implement this method to convert domain errors (e.g.,
+	// metadata.ErrNoEntity, payload.ErrContentNotFound) into the appropriate
+	// wire-format error code for the protocol (NFS status codes, NTSTATUS, etc.).
+	//
+	// Returns nil if the error cannot be mapped to a protocol-specific error.
+	MapError(err error) ProtocolError
 }

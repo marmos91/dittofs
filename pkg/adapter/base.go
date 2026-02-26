@@ -528,3 +528,10 @@ func (b *BaseAdapter) Port() int {
 func (b *BaseAdapter) Protocol() string {
 	return b.protocolName
 }
+
+// MapError is a default stub implementation that returns nil.
+// Protocol-specific adapters should override this method to translate domain
+// errors into protocol-specific ProtocolError values with appropriate status codes.
+func (b *BaseAdapter) MapError(_ error) ProtocolError {
+	return nil
+}

@@ -1,10 +1,6 @@
-package transfer
+package offloader
 
 import "github.com/marmos91/dittofs/pkg/payload/block"
-
-// ============================================================================
-// Constants
-// ============================================================================
 
 // BlockSize is the size of a single block (4MB).
 // Re-exported from block package for convenience.
@@ -19,10 +15,6 @@ const DefaultParallelDownloads = 4
 
 // DefaultPrefetchBlocks is the default number of blocks to prefetch.
 const DefaultPrefetchBlocks = 4
-
-// ============================================================================
-// Transfer Type
-// ============================================================================
 
 // TransferType indicates the type of transfer operation.
 type TransferType int
@@ -50,11 +42,7 @@ func (t TransferType) String() string {
 	}
 }
 
-// ============================================================================
-// Configuration
-// ============================================================================
-
-// Config holds configuration for the TransferManager.
+// Config holds configuration for the Offloader.
 type Config struct {
 	// ParallelUploads is the initial number of concurrent block uploads.
 	// The adaptive congestion control will start from this value.
@@ -85,7 +73,7 @@ type Config struct {
 	SmallFileThreshold int64
 }
 
-// DefaultConfig returns the default transfer manager configuration.
+// DefaultConfig returns the default Offloader configuration.
 func DefaultConfig() Config {
 	return Config{
 		ParallelUploads:    DefaultParallelUploads,
@@ -113,10 +101,6 @@ func DefaultTransferQueueConfig() TransferQueueConfig {
 		Workers:   4,
 	}
 }
-
-// ============================================================================
-// Result Types
-// ============================================================================
 
 // FlushResult indicates the outcome of a flush operation.
 type FlushResult struct {

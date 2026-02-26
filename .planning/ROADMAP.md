@@ -216,7 +216,15 @@ Plans:
   8. API error mapping centralized
   9. `pkg/metadata/file.go` (1217 lines) split into file_create.go, file_modify.go, file_remove.go, file_helpers.go
   10. `pkg/metadata/authentication.go` (796 lines) split into identity.go, permissions.go
-**Plans**: TBD
+**Plans**: 7 plans
+Plans:
+- [ ] 29-01-PLAN.md — Error types (PayloadError, ProtocolError) + generic GORM/API client helpers
+- [ ] 29-02-PLAN.md — Offloader rename/split (TransferManager → Offloader, file split, GC extraction)
+- [x] 29-03-PLAN.md — MetadataService file splits (file.go → file_create/modify/remove/helpers/types, authentication.go → auth_identity/permissions)
+- [ ] 29-04-PLAN.md — ControlPlane Store interface decomposition + API handler narrowing
+- [ ] 29-05-PLAN.md — PayloadService I/O extraction + metadata store conformance suite
+- [ ] 29-06-PLAN.md — Runtime decomposition into 6 sub-services
+- [ ] 29-07-PLAN.md — Auth centralization, API error mapping, documentation update
 
 ---
 
@@ -582,7 +590,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 51
 | 26. Generic Lock Interface & Protocol Leak Purge | 5/5 | Complete    | 2026-02-25 | - |
 | 27. NFS Adapter Restructuring | v3.5 | 4/4 | Complete | 2026-02-25 |
 | 28. SMB Adapter Restructuring | 5/5 | Complete   | 2026-02-25 | - |
-| 29. Core Layer Decomposition | v3.5 | 0/? | Not started | - |
+| 29. Core Layer Decomposition | 2/7 | In Progress|  | - |
 | 30. SMB Bug Fixes | v3.6 | 0/? | Not started | - |
 | 31. Windows ACL Support | v3.6 | 0/? | Not started | - |
 | 32. Windows Integration Testing | v3.6 | 0/? | Not started | - |

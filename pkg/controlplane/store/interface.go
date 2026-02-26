@@ -25,10 +25,6 @@ import (
 //
 // The Store interface supports both SQLite (single-node) and PostgreSQL (HA) backends.
 type Store interface {
-	// ============================================
-	// USER OPERATIONS
-	// ============================================
-
 	// GetUser returns a user by username.
 	// Returns models.ErrUserNotFound if the user doesn't exist.
 	GetUser(ctx context.Context, username string) (*models.User, error)
@@ -74,10 +70,6 @@ type Store interface {
 	// Returns models.ErrInvalidCredentials if the credentials are invalid.
 	// Returns models.ErrUserDisabled if the user account is disabled.
 	ValidateCredentials(ctx context.Context, username, password string) (*models.User, error)
-
-	// ============================================
-	// GROUP OPERATIONS
-	// ============================================
 
 	// GetGroup returns a group by name.
 	// Returns models.ErrGroupNotFound if the group doesn't exist.
@@ -130,10 +122,6 @@ type Store interface {
 	// This should be called during server startup after EnsureAdminUser.
 	EnsureDefaultGroups(ctx context.Context) (created bool, err error)
 
-	// ============================================
-	// METADATA STORE OPERATIONS
-	// ============================================
-
 	// GetMetadataStore returns a metadata store configuration by name.
 	// Returns models.ErrStoreNotFound if the store doesn't exist.
 	GetMetadataStore(ctx context.Context, name string) (*models.MetadataStoreConfig, error)
@@ -163,10 +151,6 @@ type Store interface {
 	// GetSharesByMetadataStore returns all shares using the given metadata store.
 	GetSharesByMetadataStore(ctx context.Context, storeName string) ([]*models.Share, error)
 
-	// ============================================
-	// PAYLOAD STORE OPERATIONS
-	// ============================================
-
 	// GetPayloadStore returns a payload store configuration by name.
 	// Returns models.ErrStoreNotFound if the store doesn't exist.
 	GetPayloadStore(ctx context.Context, name string) (*models.PayloadStoreConfig, error)
@@ -195,10 +179,6 @@ type Store interface {
 
 	// GetSharesByPayloadStore returns all shares using the given payload store.
 	GetSharesByPayloadStore(ctx context.Context, storeName string) ([]*models.Share, error)
-
-	// ============================================
-	// SHARE OPERATIONS
-	// ============================================
 
 	// GetShare returns a share by name.
 	// Returns models.ErrShareNotFound if the share doesn't exist.
@@ -230,10 +210,6 @@ type Store interface {
 	// This includes shares with explicit user permission or via group membership.
 	GetUserAccessibleShares(ctx context.Context, username string) ([]*models.Share, error)
 
-	// ============================================
-	// SHARE ACCESS RULE OPERATIONS
-	// ============================================
-
 	// GetShareAccessRules returns all access rules for a share.
 	GetShareAccessRules(ctx context.Context, shareName string) ([]*models.ShareAccessRule, error)
 
@@ -249,10 +225,6 @@ type Store interface {
 	// Returns models.ErrShareNotFound if the share doesn't exist.
 	// No error if the rule doesn't exist.
 	RemoveShareAccessRule(ctx context.Context, shareName, ruleID string) error
-
-	// ============================================
-	// USER SHARE PERMISSION OPERATIONS
-	// ============================================
 
 	// GetUserSharePermission returns the user's permission for a share.
 	// Returns nil (no error) if no permission is set.
@@ -271,10 +243,6 @@ type Store interface {
 	// GetUserSharePermissions returns all share permissions for a user.
 	GetUserSharePermissions(ctx context.Context, username string) ([]*models.UserSharePermission, error)
 
-	// ============================================
-	// GROUP SHARE PERMISSION OPERATIONS
-	// ============================================
-
 	// GetGroupSharePermission returns the group's permission for a share.
 	// Returns nil (no error) if no permission is set.
 	GetGroupSharePermission(ctx context.Context, groupName, shareName string) (*models.GroupSharePermission, error)
@@ -292,18 +260,10 @@ type Store interface {
 	// GetGroupSharePermissions returns all share permissions for a group.
 	GetGroupSharePermissions(ctx context.Context, groupName string) ([]*models.GroupSharePermission, error)
 
-	// ============================================
-	// PERMISSION RESOLUTION
-	// ============================================
-
 	// ResolveSharePermission returns the effective permission for a user on a share.
 	// Resolution order: user explicit > group permissions (highest wins) > share default
 	// Fetches the share's default permission internally.
 	ResolveSharePermission(ctx context.Context, user *models.User, shareName string) (models.SharePermission, error)
-
-	// ============================================
-	// GUEST ACCESS OPERATIONS (per-share)
-	// ============================================
 
 	// GetGuestUser returns the guest user for a specific share if guest access is enabled.
 	// Returns models.ErrGuestDisabled if guest access is not configured for the share.
@@ -311,10 +271,6 @@ type Store interface {
 
 	// IsGuestEnabled returns whether guest access is enabled for the share.
 	IsGuestEnabled(ctx context.Context, shareName string) bool
-
-	// ============================================
-	// ADAPTER OPERATIONS
-	// ============================================
 
 	// GetAdapter returns an adapter configuration by type.
 	// Returns models.ErrAdapterNotFound if the adapter doesn't exist.
@@ -342,10 +298,6 @@ type Store interface {
 	// This should be called during server startup.
 	EnsureDefaultAdapters(ctx context.Context) (created bool, err error)
 
-	// ============================================
-	// SETTINGS OPERATIONS
-	// ============================================
-
 	// GetSetting returns a setting value by key.
 	// Returns empty string if the setting doesn't exist.
 	GetSetting(ctx context.Context, key string) (string, error)
@@ -360,10 +312,6 @@ type Store interface {
 	// ListSettings returns all settings.
 	ListSettings(ctx context.Context) ([]*models.Setting, error)
 
-	// ============================================
-	// ADMIN INITIALIZATION
-	// ============================================
-
 	// EnsureAdminUser ensures an admin user exists.
 	// If no admin user exists, creates one with a generated password.
 	// Returns the initial password if a new admin was created, empty string otherwise.
@@ -372,10 +320,6 @@ type Store interface {
 
 	// IsAdminInitialized returns whether the admin user has been initialized.
 	IsAdminInitialized(ctx context.Context) (bool, error)
-
-	// ============================================
-	// ADAPTER SETTINGS OPERATIONS
-	// ============================================
 
 	// GetNFSAdapterSettings returns the NFS adapter settings by adapter ID.
 	// Returns models.ErrAdapterNotFound if no settings exist for this adapter.
@@ -409,10 +353,6 @@ type Store interface {
 	// Called during startup and migration to populate settings for existing adapters.
 	EnsureAdapterSettings(ctx context.Context) error
 
-	// ============================================
-	// SHARE ADAPTER CONFIG OPERATIONS
-	// ============================================
-
 	// GetShareAdapterConfig returns the adapter config for a share and adapter type.
 	// Returns nil (no error) if no config exists.
 	GetShareAdapterConfig(ctx context.Context, shareID, adapterType string) (*models.ShareAdapterConfig, error)
@@ -427,10 +367,6 @@ type Store interface {
 
 	// ListShareAdapterConfigs returns all adapter configs for a share.
 	ListShareAdapterConfigs(ctx context.Context, shareID string) ([]models.ShareAdapterConfig, error)
-
-	// ============================================
-	// HEALTH & LIFECYCLE
-	// ============================================
 
 	// Healthcheck verifies the store is operational.
 	// Returns an error if the store is not healthy.

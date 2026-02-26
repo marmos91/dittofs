@@ -10,7 +10,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/payload/chunk"
-	"github.com/marmos91/dittofs/pkg/payload/transfer"
+	"github.com/marmos91/dittofs/pkg/payload/offloader"
 )
 
 // Cache-full retry constants.
@@ -26,13 +26,13 @@ const (
 // PayloadService is the persistence layer for file payload (content) data.
 //
 // It coordinates between the Cache (fast in-memory/mmap storage) and
-// TransferManager (durable block store persistence). Both are required.
+// Offloader (durable block store persistence). Both are required.
 //
 // Architecture:
 //
 //	PayloadService
 //	     ├── Cache: In-memory buffer with mmap backing
-//	     └── TransferManager: Background upload to block store (S3, filesystem)
+//	     └── Offloader: Background upload to block store (S3, filesystem)
 //
 // Key responsibilities:
 //   - Read/write file content using the Chunk/Block model
@@ -41,31 +41,31 @@ const (
 //
 // Usage:
 //
-//	svc := payload.New(cache, transferManager)
+//	svc := payload.New(cache, offloader)
 //	err := svc.WriteAt(ctx, payloadID, data, offset)
 //	n, err := svc.ReadAt(ctx, payloadID, buf, offset)
 //	err := svc.Flush(ctx, payloadID)  // NFS COMMIT / SMB CLOSE
 type PayloadService struct {
-	cache           *cache.Cache
-	transferManager *transfer.TransferManager
+	cache     *cache.Cache
+	offloader *offloader.Offloader
 }
 
-// New creates a new PayloadService with the required cache and transfer manager.
+// New creates a new PayloadService with the required cache and offloader.
 //
 // Both parameters are required:
 //   - cache: In-memory buffer for reads/writes
-//   - transferManager: Handles persistence to block store
-func New(c *cache.Cache, tm *transfer.TransferManager) (*PayloadService, error) {
+//   - offloader: Handles persistence to block store
+func New(c *cache.Cache, tm *offloader.Offloader) (*PayloadService, error) {
 	if c == nil {
 		return nil, fmt.Errorf("cache is required")
 	}
 	if tm == nil {
-		return nil, fmt.Errorf("transfer manager is required")
+		return nil, fmt.Errorf("offloader is required")
 	}
 
 	return &PayloadService{
-		cache:           c,
-		transferManager: tm,
+		cache:     c,
+		offloader: tm,
 	}, nil
 }
 
@@ -162,7 +162,7 @@ func (s *PayloadService) readFromCOWSource(ctx context.Context, payloadID, sourc
 
 	if !sourceFound {
 		// Not in COW source cache - fetch from block store
-		err := s.transferManager.EnsureAvailable(ctx, sourcePayloadID, blockRange.ChunkIndex, chunkOffset, blockRange.Length)
+		err := s.offloader.EnsureAvailable(ctx, sourcePayloadID, blockRange.ChunkIndex, chunkOffset, blockRange.Length)
 		if err != nil {
 			return fmt.Errorf("ensure available for COW source block %d/%d failed: %w", blockRange.ChunkIndex, blockRange.BlockIndex, err)
 		}
@@ -185,7 +185,7 @@ func (s *PayloadService) readFromCOWSource(ctx context.Context, payloadID, sourc
 // ensureAndReadFromCache ensures data is available from block store and reads it.
 func (s *PayloadService) ensureAndReadFromCache(ctx context.Context, payloadID string, blockRange chunk.BlockRange, chunkOffset uint32, dest []byte) error {
 	// Cache miss - ensure data is available (downloads + prefetch)
-	err := s.transferManager.EnsureAvailable(ctx, payloadID, blockRange.ChunkIndex, chunkOffset, blockRange.Length)
+	err := s.offloader.EnsureAvailable(ctx, payloadID, blockRange.ChunkIndex, chunkOffset, blockRange.Length)
 	if err != nil {
 		return fmt.Errorf("ensure available for block %d/%d failed: %w", blockRange.ChunkIndex, blockRange.BlockIndex, err)
 	}
@@ -212,7 +212,7 @@ func (s *PayloadService) GetSize(ctx context.Context, id metadata.PayloadID) (ui
 	}
 
 	// Fall back to block store
-	return s.transferManager.GetFileSize(ctx, payloadID)
+	return s.offloader.GetFileSize(ctx, payloadID)
 }
 
 // Exists checks if payload exists for the file.
@@ -227,7 +227,7 @@ func (s *PayloadService) Exists(ctx context.Context, id metadata.PayloadID) (boo
 	}
 
 	// Fall back to block store
-	return s.transferManager.Exists(ctx, payloadID)
+	return s.offloader.Exists(ctx, payloadID)
 }
 
 // ============================================================================
@@ -269,7 +269,7 @@ func (s *PayloadService) WriteAt(ctx context.Context, id metadata.PayloadID, dat
 		}
 
 		// Trigger eager upload for any complete 4MB blocks (non-blocking)
-		s.transferManager.OnWriteComplete(ctx, payloadID, blockRange.ChunkIndex, chunkOffset, blockRange.Length)
+		s.offloader.OnWriteComplete(ctx, payloadID, blockRange.ChunkIndex, chunkOffset, blockRange.Length)
 	}
 
 	return nil
@@ -341,7 +341,7 @@ func (s *PayloadService) Truncate(ctx context.Context, id metadata.PayloadID, ne
 	}
 
 	// Schedule block store cleanup
-	return s.transferManager.Truncate(ctx, payloadID, newSize)
+	return s.offloader.Truncate(ctx, payloadID, newSize)
 }
 
 // Delete removes payload for a file.
@@ -356,7 +356,7 @@ func (s *PayloadService) Delete(ctx context.Context, id metadata.PayloadID) erro
 	}
 
 	// Schedule block store cleanup
-	return s.transferManager.Delete(ctx, payloadID)
+	return s.offloader.Delete(ctx, payloadID)
 }
 
 // ============================================================================
@@ -374,8 +374,8 @@ func (s *PayloadService) Delete(ctx context.Context, id metadata.PayloadID) erro
 func (s *PayloadService) Flush(ctx context.Context, id metadata.PayloadID) (*FlushResult, error) {
 	payloadID := string(id)
 
-	// Delegate to TransferManager
-	result, err := s.transferManager.Flush(ctx, payloadID)
+	// Delegate to Offloader
+	result, err := s.offloader.Flush(ctx, payloadID)
 	if err != nil {
 		return nil, fmt.Errorf("flush failed: %w", err)
 	}
@@ -400,8 +400,8 @@ func (s *PayloadService) GetStorageStats(_ context.Context) (*StorageStats, erro
 	}, nil
 }
 
-// HealthCheck performs health check on cache and transfer manager.
+// HealthCheck performs health check on cache and offloader.
 func (s *PayloadService) HealthCheck(ctx context.Context) error {
-	// Check transfer manager (which checks block store)
-	return s.transferManager.HealthCheck(ctx)
+	// Check offloader (which checks block store)
+	return s.offloader.HealthCheck(ctx)
 }

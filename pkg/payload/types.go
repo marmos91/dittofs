@@ -1,25 +1,6 @@
 package payload
 
-import "github.com/marmos91/dittofs/pkg/payload/transfer"
-
-// ============================================================================
-// Type Notes
-// ============================================================================
-//
-// Block-related types are organized as follows:
-//
-// Type locations:
-// - cache.BlockState    - block lifecycle states (Pending → Uploading → Uploaded)
-// - cache.PendingBlock  - block ready for upload (includes ChunkIndex, BlockIndex, Data)
-// - cache.Stats         - cache statistics (TotalSize, DirtyBytes, UploadedBytes)
-// - transfer.FlushResult - result of flush operation
-//
-// The cache package owns the canonical type definitions for in-memory state,
-// while the transfer package handles block store persistence.
-
-// ============================================================================
-// Supporting Types
-// ============================================================================
+import "github.com/marmos91/dittofs/pkg/payload/offloader"
 
 // StorageStats contains statistics about block storage.
 //
@@ -42,6 +23,6 @@ type StorageStats struct {
 	AverageSize uint64
 }
 
-// FlushResult is an alias to transfer.FlushResult for API compatibility.
-// The canonical definition is in pkg/payload/transfer/types.go.
-type FlushResult = transfer.FlushResult
+// FlushResult is an alias to offloader.FlushResult for API compatibility.
+// The canonical definition is in pkg/payload/offloader/types.go.
+type FlushResult = offloader.FlushResult

@@ -59,20 +59,12 @@ func serializeConfig(config any) (string, error) {
 
 // ListMetadataStores returns all metadata stores.
 func (c *Client) ListMetadataStores() ([]MetadataStore, error) {
-	var stores []MetadataStore
-	if err := c.get("/api/v1/metadata-stores", &stores); err != nil {
-		return nil, err
-	}
-	return stores, nil
+	return listResources[MetadataStore](c, "/api/v1/metadata-stores")
 }
 
 // GetMetadataStore returns a metadata store by name.
 func (c *Client) GetMetadataStore(name string) (*MetadataStore, error) {
-	var store MetadataStore
-	if err := c.get(fmt.Sprintf("/api/v1/metadata-stores/%s", name), &store); err != nil {
-		return nil, err
-	}
-	return &store, nil
+	return getResource[MetadataStore](c, resourcePath("/api/v1/metadata-stores/%s", name))
 }
 
 // CreateMetadataStore creates a new metadata store.
@@ -108,25 +100,17 @@ func (c *Client) UpdateMetadataStore(name string, req *UpdateStoreRequest) (*Met
 
 // DeleteMetadataStore deletes a metadata store.
 func (c *Client) DeleteMetadataStore(name string) error {
-	return c.delete(fmt.Sprintf("/api/v1/metadata-stores/%s", name), nil)
+	return deleteResource(c, resourcePath("/api/v1/metadata-stores/%s", name))
 }
 
 // ListPayloadStores returns all payload stores.
 func (c *Client) ListPayloadStores() ([]PayloadStore, error) {
-	var stores []PayloadStore
-	if err := c.get("/api/v1/payload-stores", &stores); err != nil {
-		return nil, err
-	}
-	return stores, nil
+	return listResources[PayloadStore](c, "/api/v1/payload-stores")
 }
 
 // GetPayloadStore returns a payload store by name.
 func (c *Client) GetPayloadStore(name string) (*PayloadStore, error) {
-	var store PayloadStore
-	if err := c.get(fmt.Sprintf("/api/v1/payload-stores/%s", name), &store); err != nil {
-		return nil, err
-	}
-	return &store, nil
+	return getResource[PayloadStore](c, resourcePath("/api/v1/payload-stores/%s", name))
 }
 
 // CreatePayloadStore creates a new payload store.
@@ -162,5 +146,5 @@ func (c *Client) UpdatePayloadStore(name string, req *UpdateStoreRequest) (*Payl
 
 // DeletePayloadStore deletes a payload store.
 func (c *Client) DeletePayloadStore(name string) error {
-	return c.delete(fmt.Sprintf("/api/v1/payload-stores/%s", name), nil)
+	return deleteResource(c, resourcePath("/api/v1/payload-stores/%s", name))
 }

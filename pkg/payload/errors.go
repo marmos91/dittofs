@@ -1,15 +1,13 @@
 package payload
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"time"
+)
 
-// ============================================================================
-// Standard Block Service Errors
-// ============================================================================
-
-// These errors provide a consistent way to indicate common failure conditions
-// across block operations. Protocol handlers should check for these errors
+// Standard block service errors. Protocol handlers should check for these errors
 // and map them to appropriate protocol-specific error codes.
-
 var (
 	// ErrContentNotFound indicates the requested content does not exist.
 	//
@@ -120,3 +118,71 @@ var (
 	//   - HTTP: 503 Service Unavailable
 	ErrUnavailable = errors.New("storage unavailable")
 )
+
+// PayloadError wraps sentinel payload errors with structured debugging context.
+//
+// It provides rich operational metadata for diagnosing payload storage issues
+// without losing compatibility with errors.Is() checks on the underlying sentinel.
+// For example:
+//
+//	err := NewPayloadError("upload", "/archive", "abc123", 5, "s3", ErrUnavailable)
+//	errors.Is(err, ErrUnavailable) // true
+//
+// Fields capture the operation type, affected share, payload identifier, block
+// index, backend type, and the wrapped sentinel error. Optional fields (Size,
+// Duration, Retries) can be set after construction for performance debugging.
+type PayloadError struct {
+	// Op describes the operation that failed: "upload", "download", "dedup", or "gc".
+	Op string
+
+	// Share is the share name providing routing context for the error.
+	Share string
+
+	// PayloadID is the content identifier of the affected payload.
+	PayloadID string
+
+	// BlockIdx is the block index within the chunk that failed.
+	BlockIdx uint32
+
+	// Size is the data size involved in the operation (bytes).
+	Size int64
+
+	// Duration is how long the operation ran before failing.
+	Duration time.Duration
+
+	// Retries is the number of retry attempts made before the final failure.
+	Retries int
+
+	// Backend identifies the storage backend type: "s3", "memory", or "filesystem".
+	Backend string
+
+	// Err is the wrapped sentinel error (e.g., ErrContentNotFound, ErrUnavailable).
+	Err error
+}
+
+// Error returns a human-readable description of the payload error including
+// the operation, underlying error, and key context fields.
+func (e *PayloadError) Error() string {
+	return fmt.Sprintf("payload %s: %s (share=%s, payload=%s, block=%d, backend=%s)",
+		e.Op, e.Err, e.Share, e.PayloadID, e.BlockIdx, e.Backend)
+}
+
+// Unwrap returns the underlying sentinel error, enabling errors.Is() and
+// errors.As() to match through PayloadError wrapping.
+func (e *PayloadError) Unwrap() error {
+	return e.Err
+}
+
+// NewPayloadError creates a PayloadError wrapping the given sentinel error
+// with operational context. Optional fields (Size, Duration, Retries) default
+// to zero and can be set on the returned pointer after construction.
+func NewPayloadError(op, share, payloadID string, blockIdx uint32, backend string, err error) *PayloadError {
+	return &PayloadError{
+		Op:        op,
+		Share:     share,
+		PayloadID: payloadID,
+		BlockIdx:  blockIdx,
+		Backend:   backend,
+		Err:       err,
+	}
+}

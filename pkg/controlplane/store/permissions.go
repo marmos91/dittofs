@@ -9,10 +9,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
-// ============================================
-// USER SHARE PERMISSION OPERATIONS
-// ============================================
-
 func (s *GORMStore) GetUserSharePermission(ctx context.Context, username, shareName string) (*models.UserSharePermission, error) {
 	// Get user and share IDs
 	user, err := s.GetUser(ctx, username)
@@ -79,10 +75,6 @@ func (s *GORMStore) GetUserSharePermissions(ctx context.Context, username string
 	return perms, nil
 }
 
-// ============================================
-// GROUP SHARE PERMISSION OPERATIONS
-// ============================================
-
 func (s *GORMStore) GetGroupSharePermission(ctx context.Context, groupName, shareName string) (*models.GroupSharePermission, error) {
 	group, err := s.GetGroup(ctx, groupName)
 	if err != nil {
@@ -146,10 +138,6 @@ func (s *GORMStore) GetGroupSharePermissions(ctx context.Context, groupName stri
 	}
 	return perms, nil
 }
-
-// ============================================
-// PERMISSION RESOLUTION
-// ============================================
 
 func (s *GORMStore) ResolveSharePermission(ctx context.Context, user *models.User, shareName string) (models.SharePermission, error) {
 	share, err := s.GetShare(ctx, shareName)

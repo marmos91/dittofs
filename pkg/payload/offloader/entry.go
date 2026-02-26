@@ -1,18 +1,4 @@
-// Package transfer implements background transfer for cache-to-block-store operations.
-//
-// The transfer package is responsible for:
-//   - Eager upload: Upload 4MB blocks as soon as they're ready (don't wait for COMMIT)
-//   - Download: Fetch blocks from block store on cache miss, with download priority
-//   - Prefetch: Speculatively fetch upcoming blocks for sequential reads
-//   - Flush: Wait for in-flight operations and flush remaining partial blocks on COMMIT/CLOSE
-//
-// Key Design Principles:
-//   - Unified queue: All transfers (upload, download, prefetch) use single worker pool
-//   - Priority scheduling: Downloads > Uploads > Prefetch
-//   - Parallel I/O: Upload/download multiple blocks concurrently
-//   - Protocol agnostic: Works with both NFS COMMIT and SMB CLOSE
-//   - In-flight deduplication: Avoid duplicate downloads for same block
-package transfer
+package offloader
 
 import "fmt"
 

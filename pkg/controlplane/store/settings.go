@@ -10,10 +10,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
-// ============================================
-// SETTINGS OPERATIONS
-// ============================================
-
 func (s *GORMStore) GetSetting(ctx context.Context, key string) (string, error) {
 	var setting models.Setting
 	if err := s.db.WithContext(ctx).Where("key = ?", key).First(&setting).Error; err != nil {
@@ -39,9 +35,5 @@ func (s *GORMStore) DeleteSetting(ctx context.Context, key string) error {
 }
 
 func (s *GORMStore) ListSettings(ctx context.Context) ([]*models.Setting, error) {
-	var settings []*models.Setting
-	if err := s.db.WithContext(ctx).Find(&settings).Error; err != nil {
-		return nil, err
-	}
-	return settings, nil
+	return listAll[models.Setting](s.db, ctx)
 }

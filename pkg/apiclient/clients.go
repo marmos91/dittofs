@@ -21,16 +21,12 @@ type ClientInfo struct {
 
 // ListClients returns all connected NFS clients.
 func (c *Client) ListClients() ([]ClientInfo, error) {
-	var clients []ClientInfo
-	if err := c.get("/api/v1/adapters/nfs/clients", &clients); err != nil {
-		return nil, err
-	}
-	return clients, nil
+	return listResources[ClientInfo](c, "/api/v1/adapters/nfs/clients")
 }
 
 // EvictClient evicts a connected NFS client by hex client ID.
 func (c *Client) EvictClient(clientID string) error {
-	return c.delete(fmt.Sprintf("/api/v1/adapters/nfs/clients/%s", url.PathEscape(clientID)), nil)
+	return deleteResource(c, fmt.Sprintf("/api/v1/adapters/nfs/clients/%s", url.PathEscape(clientID)))
 }
 
 // ConnectionInfo represents a single bound connection in a session.
@@ -66,15 +62,11 @@ type SessionInfo struct {
 
 // ListSessions returns all sessions for a given NFS client.
 func (c *Client) ListSessions(clientID string) ([]SessionInfo, error) {
-	var sessions []SessionInfo
-	if err := c.get(fmt.Sprintf("/api/v1/adapters/nfs/clients/%s/sessions", url.PathEscape(clientID)), &sessions); err != nil {
-		return nil, err
-	}
-	return sessions, nil
+	return listResources[SessionInfo](c, fmt.Sprintf("/api/v1/adapters/nfs/clients/%s/sessions", url.PathEscape(clientID)))
 }
 
 // ForceDestroySession force-destroys a session by client ID and session ID.
 func (c *Client) ForceDestroySession(clientID, sessionID string) error {
-	return c.delete(fmt.Sprintf("/api/v1/adapters/nfs/clients/%s/sessions/%s",
-		url.PathEscape(clientID), url.PathEscape(sessionID)), nil)
+	return deleteResource(c, fmt.Sprintf("/api/v1/adapters/nfs/clients/%s/sessions/%s",
+		url.PathEscape(clientID), url.PathEscape(sessionID)))
 }

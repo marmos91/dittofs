@@ -9,10 +9,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
-// ============================================
-// ADAPTER SETTINGS OPERATIONS
-// ============================================
-
 // checkUpdateResult validates a GORM update result, returning ErrAdapterNotFound
 // if no rows were affected.
 func checkUpdateResult(result *gorm.DB) error {

@@ -4,46 +4,22 @@ import (
 	"context"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
-// ============================================
-// ADAPTER OPERATIONS
-// ============================================
-
 func (s *GORMStore) GetAdapter(ctx context.Context, adapterType string) (*models.AdapterConfig, error) {
-	var adapter models.AdapterConfig
-	if err := s.db.WithContext(ctx).Where("type = ?", adapterType).First(&adapter).Error; err != nil {
-		return nil, convertNotFoundError(err, models.ErrAdapterNotFound)
-	}
-	return &adapter, nil
+	return getByField[models.AdapterConfig](s.db, ctx, "type", adapterType, models.ErrAdapterNotFound)
 }
 
 func (s *GORMStore) ListAdapters(ctx context.Context) ([]*models.AdapterConfig, error) {
-	var adapters []*models.AdapterConfig
-	if err := s.db.WithContext(ctx).Find(&adapters).Error; err != nil {
-		return nil, err
-	}
-	return adapters, nil
+	return listAll[models.AdapterConfig](s.db, ctx)
 }
 
 func (s *GORMStore) CreateAdapter(ctx context.Context, adapter *models.AdapterConfig) (string, error) {
-	if adapter.ID == "" {
-		adapter.ID = uuid.New().String()
-	}
 	now := time.Now()
 	adapter.CreatedAt = now
 	adapter.UpdatedAt = now
-
-	if err := s.db.WithContext(ctx).Create(adapter).Error; err != nil {
-		if isUniqueConstraintError(err) {
-			return "", models.ErrDuplicateAdapter
-		}
-		return "", err
-	}
-	return adapter.ID, nil
+	return createWithID(s.db, ctx, adapter, func(a *models.AdapterConfig, id string) { a.ID = id }, adapter.ID, models.ErrDuplicateAdapter)
 }
 
 func (s *GORMStore) UpdateAdapter(ctx context.Context, adapter *models.AdapterConfig) error {
@@ -69,14 +45,7 @@ func (s *GORMStore) UpdateAdapter(ctx context.Context, adapter *models.AdapterCo
 }
 
 func (s *GORMStore) DeleteAdapter(ctx context.Context, adapterType string) error {
-	result := s.db.WithContext(ctx).Where("type = ?", adapterType).Delete(&models.AdapterConfig{})
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return models.ErrAdapterNotFound
-	}
-	return nil
+	return deleteByField[models.AdapterConfig](s.db, ctx, "type", adapterType, models.ErrAdapterNotFound)
 }
 
 // EnsureDefaultAdapters creates the default NFS and SMB adapters if they don't exist.

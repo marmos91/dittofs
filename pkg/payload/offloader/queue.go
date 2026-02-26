@@ -1,4 +1,4 @@
-package transfer
+package offloader
 
 import (
 	"context"
@@ -18,7 +18,7 @@ import (
 // Workers check channels in priority order, ensuring downloads are always
 // processed first, even when upload/prefetch queues are full.
 type TransferQueue struct {
-	manager *TransferManager
+	manager *Offloader
 
 	// Priority channels - workers check in priority order
 	downloads chan TransferRequest // Highest priority
@@ -44,7 +44,7 @@ type TransferQueue struct {
 }
 
 // NewTransferQueue creates a new transfer queue.
-func NewTransferQueue(m *TransferManager, cfg TransferQueueConfig) *TransferQueue {
+func NewTransferQueue(m *Offloader, cfg TransferQueueConfig) *TransferQueue {
 	if cfg.QueueSize <= 0 {
 		cfg.QueueSize = 1000
 	}
@@ -325,35 +325,7 @@ func (q *TransferQueue) processDownload(ctx context.Context, req TransferRequest
 	if q.manager == nil {
 		return nil
 	}
-
-	// DEBUG: Log download start for large offsets
-	if req.ChunkIdx >= 32 {
-		logger.Debug("processDownload: starting",
-			"payloadID", req.PayloadID,
-			"chunkIdx", req.ChunkIdx,
-			"blockIdx", req.BlockIdx)
-	}
-
-	// Download the block and cache it
-	err := q.manager.downloadBlock(ctx, req.PayloadID, req.ChunkIdx, req.BlockIdx)
-
-	// DEBUG: Log download result for large offsets
-	if req.ChunkIdx >= 32 {
-		if err != nil {
-			logger.Debug("processDownload: failed",
-				"payloadID", req.PayloadID,
-				"chunkIdx", req.ChunkIdx,
-				"blockIdx", req.BlockIdx,
-				"error", err)
-		} else {
-			logger.Debug("processDownload: succeeded",
-				"payloadID", req.PayloadID,
-				"chunkIdx", req.ChunkIdx,
-				"blockIdx", req.BlockIdx)
-		}
-	}
-
-	return err
+	return q.manager.downloadBlock(ctx, req.PayloadID, req.ChunkIdx, req.BlockIdx)
 }
 
 // processUpload handles an upload request.

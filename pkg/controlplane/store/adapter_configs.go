@@ -11,10 +11,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
-// ============================================
-// SHARE ADAPTER CONFIG OPERATIONS
-// ============================================
-
 func (s *GORMStore) GetShareAdapterConfig(ctx context.Context, shareID, adapterType string) (*models.ShareAdapterConfig, error) {
 	var config models.ShareAdapterConfig
 	err := s.db.WithContext(ctx).

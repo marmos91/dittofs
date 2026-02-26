@@ -15,8 +15,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 	memorymeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/payload"
+	"github.com/marmos91/dittofs/pkg/payload/offloader"
 	storemem "github.com/marmos91/dittofs/pkg/payload/store/memory"
-	"github.com/marmos91/dittofs/pkg/payload/transfer"
 )
 
 // ============================================================================
@@ -43,9 +43,9 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 	// Create cache, block store, and transfer manager for payload operations
 	testCache := cache.New(0) // unlimited
 	blockStore := storemem.New()
-	transferMgr := transfer.New(testCache, blockStore, metaStore, transfer.DefaultConfig())
+	offloaderInstance := offloader.New(testCache, blockStore, metaStore, offloader.DefaultConfig())
 
-	payloadSvc, err := payload.New(testCache, transferMgr)
+	payloadSvc, err := payload.New(testCache, offloaderInstance)
 	if err != nil {
 		t.Fatalf("create payload service: %v", err)
 	}
