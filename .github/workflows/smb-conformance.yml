@@ -1,0 +1,130 @@
+# SMB Conformance Tests
+#
+# Runs Microsoft WPTS FileServer BVT tests against DittoFS SMB adapter.
+# Tiered matrix: memory-only on PRs, all profiles on develop push and weekly cron.
+
+name: SMB Conformance Tests
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - 'pkg/adapter/smb/**'
+      - 'internal/adapter/smb/**'
+      - 'test/smb-conformance/**'
+      - 'pkg/adapter/base.go'
+      - '.github/workflows/smb-conformance.yml'
+  pull_request:
+    branches: [develop, main]
+    paths:
+      - 'pkg/adapter/smb/**'
+      - 'internal/adapter/smb/**'
+      - 'test/smb-conformance/**'
+      - 'pkg/adapter/base.go'
+      - '.github/workflows/smb-conformance.yml'
+  schedule:
+    - cron: '0 3 * * 1'  # Weekly Monday 3 AM UTC
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Storage profile to test'
+        required: false
+        default: 'memory'
+        type: choice
+        options:
+          - memory
+          - memory-fs
+          - badger-fs
+          - badger-s3
+          - postgres-s3
+
+concurrency:
+  group: smb-conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smb-conformance:
+    name: WPTS BVT / ${{ matrix.profile }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: >-
+          ${{
+            github.event_name == 'pull_request'
+              && fromJson('["memory"]')
+            || github.event_name == 'workflow_dispatch'
+              && fromJson(format('["{0}"]', inputs.profile))
+            || fromJson('["memory", "memory-fs", "badger-fs", "badger-s3", "postgres-s3"]')
+          }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y xmlstarlet gettext-base
+
+      - name: Run SMB conformance tests
+        run: |
+          cd test/smb-conformance
+          ./run.sh --profile ${{ matrix.profile }} --verbose
+
+      - name: Add step summary
+        if: always()
+        run: |
+          RESULTS_DIR=$(ls -td test/smb-conformance/results/*/ 2>/dev/null | head -1)
+          if [ -z "$RESULTS_DIR" ]; then
+            echo "## SMB Conformance: ${{ matrix.profile }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "No results directory found." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          TRX_FILE=$(find "$RESULTS_DIR" -name "*.trx" -type f 2>/dev/null | head -1)
+          if [ -z "$TRX_FILE" ]; then
+            echo "## SMB Conformance: ${{ matrix.profile }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "No TRX results found." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          NS="http://microsoft.com/schemas/VisualStudio/TeamTest/2010"
+          TOTAL=$(xmlstarlet sel -N t="$NS" -t -v "//t:Counters/@total" "$TRX_FILE" 2>/dev/null || echo "0")
+          PASSED=$(xmlstarlet sel -N t="$NS" -t -v "//t:Counters/@passed" "$TRX_FILE" 2>/dev/null || echo "0")
+          FAILED=$(xmlstarlet sel -N t="$NS" -t -v "//t:Counters/@failed" "$TRX_FILE" 2>/dev/null || echo "0")
+          NOT_EXEC=$(xmlstarlet sel -N t="$NS" -t -v "//t:Counters/@notExecuted" "$TRX_FILE" 2>/dev/null || echo "0")
+
+          {
+            echo "## SMB Conformance: ${{ matrix.profile }}"
+            echo ""
+            echo "| Metric | Count |"
+            echo "|--------|-------|"
+            echo "| Total | ${TOTAL} |"
+            echo "| Passed | ${PASSED} |"
+            echo "| Failed | ${FAILED} |"
+            echo "| Skipped | ${NOT_EXEC} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smb-conformance-${{ matrix.profile }}
+          path: test/smb-conformance/results/
+          retention-days: 30
+
+      - name: Create regression issue (weekly)
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RESULTS_DIR=$(ls -td test/smb-conformance/results/*/ 2>/dev/null | head -1)
+          BODY="SMB conformance tests failed for profile \`${{ matrix.profile }}\` during weekly regression run."
+          if [ -n "$RESULTS_DIR" ]; then
+            BODY="${BODY}\n\nResults: See GitHub Actions artifacts for this run."
+          fi
+          gh issue create \
+            --title "SMB Conformance Regression: ${{ matrix.profile }}" \
+            --body "$BODY" \
+            --label "bug,smb,conformance" || true

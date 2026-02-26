@@ -1,0 +1,81 @@
+# Docker Compose configuration for SMB Conformance Testing
+# Orchestrates DittoFS + Microsoft WindowsProtocolTestSuites (WPTS)
+#
+# Usage:
+#   docker compose up -d dittofs          # Start DittoFS only
+#   docker compose --profile test up      # Start DittoFS + WPTS
+#   docker compose --profile s3 up -d     # Start with Localstack for S3 profiles
+#   docker compose --profile postgres up  # Start with PostgreSQL
+#
+# Environment variables:
+#   PROFILE              - DittoFS config profile (default: memory)
+#   WPTS_FILTER          - WPTS test filter (default: TestCategory=BVT)
+#   DITTOFS_CONTROLPLANE_SECRET - JWT secret / admin password (min 32 chars)
+
+services:
+  dittofs:
+    build:
+      context: ../..
+      dockerfile: test/smb-conformance/Dockerfile.dittofs
+    ports:
+      - "12445:12445"
+      - "8080:8080"
+    volumes:
+      - ./configs/${PROFILE:-memory}.yaml:/config/config.yaml:ro
+      - ./bootstrap.sh:/app/bootstrap.sh:ro
+      - dittofs-data:/data
+    environment:
+      - DITTOFS_LOGGING_LEVEL=DEBUG
+      - DITTOFS_CONTROLPLANE_SECRET=${DITTOFS_CONTROLPLANE_SECRET:-WptsConformanceTesting2026!Secret}
+    # Healthcheck is defined in Dockerfile.dittofs
+
+  wpts:
+    image: mcr.microsoft.com/windowsprotocoltestsuites:fileserver-v8
+    platform: linux/amd64
+    depends_on:
+      dittofs:
+        condition: service_healthy
+    volumes:
+      - ./ptfconfig-generated:/data/fileserver
+    network_mode: "service:dittofs"
+    environment:
+      Usage: RunTestCases
+      Filter: ${WPTS_FILTER:-TestCategory=BVT}
+      DryRun: "false"
+      SutComputerName: localhost
+      SutIPAddress: localhost
+      DomainName: localhost
+      AdminUserName: wpts-admin
+      PasswordForAllUsers: ${TEST_PASSWORD:-TestPassword01!}
+    profiles:
+      - test
+
+  localstack:
+    image: localstack/localstack:4.13.1
+    environment:
+      SERVICES: s3
+      EAGER_SERVICE_LOADING: "1"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    profiles:
+      - s3
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: dittofs
+      POSTGRES_PASSWORD: dittofs
+      POSTGRES_DB: dittofs_test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dittofs -d dittofs_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    profiles:
+      - postgres
+
+volumes:
+  dittofs-data:

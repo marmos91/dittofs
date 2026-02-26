@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v4.2
 milestone_name: Adapter + Core Refactoring
 status: unknown
-last_updated: "2026-02-26T10:36:00.000Z"
+last_updated: "2026-02-26T13:11:58.787Z"
 progress:
   total_phases: 28
-  completed_phases: 27
+  completed_phases: 28
   total_plans: 102
-  completed_plans: 98
+  completed_plans: 102
 ---
 
 # Project State
@@ -22,10 +22,10 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 
 ## Current Position
 
-Phase: 29 - Core Layer Decomposition
-Current Plan: 3 of 7 (COMPLETE)
-Status: In Progress
-Last activity: 2026-02-26 -- Completed 29-03 (MetadataService File Splits)
+Phase: 29.8 - MS Protocol Test Suite CI
+Current Plan: 2 of 2 (COMPLETE)
+Status: Phase Complete
+Last activity: 2026-02-26 -- Completed 29.8-02 (Test Runner, CI Workflow & Documentation)
 
 ## Completed Milestones
 
@@ -38,7 +38,7 @@ Last activity: 2026-02-26 -- Completed 29-03 (MetadataService File Splits)
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 96 (19 v1.0 + 42 v2.0 + 25 v3.0 + 10 v3.5)
+- Total plans completed: 102 (19 v1.0 + 42 v2.0 + 25 v3.0 + 16 v3.5)
 - 3 milestones in 25 days
 
 | Phase | Plan | Duration | Tasks | Files |
@@ -58,6 +58,8 @@ Last activity: 2026-02-26 -- Completed 29-03 (MetadataService File Splits)
 | 29 | 01 | 15min | 2 | 24 |
 | 29 | 02 | 21min | 2 | 28 |
 | 29 | 03 | 12min | 2 | 8 |
+| 29.8 | 01 | 3min | 2 | 11 |
+| 29.8 | 02 | 4min | 2 | 7 |
 
 ## Quick Tasks Completed
 
@@ -116,6 +118,15 @@ Last activity: 2026-02-26 -- Completed 29-03 (MetadataService File Splits)
 - [Phase 29]: [29-02] GC extracted to standalone pkg/payload/gc/ with duplicated parseShareName and MetadataReconciler for zero coupling
 - [Phase 29]: [29-03] Flat file split (same package) instead of sub-packages to avoid Go circular imports
 - [Phase 29]: [29-03] Operation-based naming: file_create.go, file_modify.go, auth_identity.go, auth_permissions.go
+- [Phase 29.8]: [29.8-01] network_mode: service:dittofs for WPTS shared network namespace (localhost ptfconfig resolution)
+- [Phase 29.8]: [29.8-01] Compose profiles (test, s3, postgres) for optional service activation
+- [Phase 29.8]: [29.8-01] envsubst-based ptfconfig template rendering with ${VAR} placeholders
+- [Phase 29.8]: [29.8-01] DITTOFS_CONTROLPLANE_SECRET env var for deterministic admin password
+- [Phase 29.8]: [29.8-01] Config YAML files identical (base settings); profile stores created via bootstrap API calls
+- [Phase 29.8]: [29.8-02] bootstrap.sh mounted into dittofs container as /app/bootstrap.sh:ro for docker compose exec approach
+- [Phase 29.8]: [29.8-02] Tiered CI matrix: memory-only on PRs, full 5-profile matrix on develop push and weekly cron
+- [Phase 29.8]: [29.8-02] parse-results.sh exits with count of new failures (0=green, >0=new unexpected failures)
+- [Phase 29.8]: [29.8-02] KNOWN_FAILURES.md uses pipe-separated markdown table parsed by parse-results.sh
 
 ### Pending Todos
 
@@ -128,5 +139,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-26
-Stopped at: Completed 29-03-PLAN.md
-Resume file: 29-04-PLAN.md
+Stopped at: Completed 29.8-02-PLAN.md (Phase 29.8 complete)
+Resume file: N/A (phase complete)

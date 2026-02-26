@@ -1,0 +1,31 @@
+# DittoFS Configuration for SMB Conformance Testing
+# Profile: memory/memory
+#
+# Bootstrap creates: memory metadata store + memory payload store
+# Stores, shares, and adapters are managed via the API (bootstrap.sh).
+
+logging:
+  level: "DEBUG"
+  format: "text"
+  output: "stdout"
+
+shutdown_timeout: 30s
+
+# Control plane database
+database:
+  type: sqlite
+  sqlite:
+    path: "/data/controlplane.db"
+
+# Control plane API server
+controlplane:
+  port: 8080
+  jwt:
+    secret: "smb-conformance-test-secret-key-32ch"
+    access_token_duration: 15m
+    refresh_token_duration: 168h
+
+# Cache configuration
+cache:
+  path: "/data/cache"
+  size: "256MB"
