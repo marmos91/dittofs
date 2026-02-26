@@ -220,7 +220,7 @@ Plans:
 Plans:
 - [ ] 29-01-PLAN.md — Error types (PayloadError, ProtocolError) + generic GORM/API client helpers
 - [ ] 29-02-PLAN.md — Offloader rename/split (TransferManager → Offloader, file split, GC extraction)
-- [ ] 29-03-PLAN.md — MetadataService file splits (file.go → file/, authentication.go → auth/)
+- [x] 29-03-PLAN.md — MetadataService file splits (file.go → file_create/modify/remove/helpers/types, authentication.go → auth_identity/permissions)
 - [ ] 29-04-PLAN.md — ControlPlane Store interface decomposition + API handler narrowing
 - [ ] 29-05-PLAN.md — PayloadService I/O extraction + metadata store conformance suite
 - [ ] 29-06-PLAN.md — Runtime decomposition into 6 sub-services

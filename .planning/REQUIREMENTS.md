@@ -101,8 +101,8 @@ Error unification, boilerplate reduction, and file organization.
 - [x] REF-06.5: Generic API client helpers (`getResource[T]`, `listResources[T]`)
 - [ ] REF-06.6: Common transaction helpers in `pkg/metadata/store/txutil/`
 - [ ] REF-06.7: Shared transaction test suite in `pkg/metadata/store/storetest/`
-- [ ] REF-06.8: `pkg/metadata/file.go` split into file_create.go, file_modify.go, file_remove.go, file_helpers.go
-- [ ] REF-06.9: `pkg/metadata/authentication.go` split into identity.go, permissions.go
+- [x] REF-06.8: `pkg/metadata/file.go` split into file_create.go, file_modify.go, file_remove.go, file_helpers.go, file_types.go
+- [x] REF-06.9: `pkg/metadata/authentication.go` split into auth_identity.go, auth_permissions.go
 
 ---
 

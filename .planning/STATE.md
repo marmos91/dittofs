@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v4.2
 milestone_name: Adapter + Core Refactoring
 status: unknown
-last_updated: "2026-02-26T10:22:48.523Z"
+last_updated: "2026-02-26T10:36:00.000Z"
 progress:
   total_phases: 28
   completed_phases: 27
   total_plans: 102
-  completed_plans: 97
+  completed_plans: 98
 ---
 
 # Project State
@@ -23,9 +23,9 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 ## Current Position
 
 Phase: 29 - Core Layer Decomposition
-Current Plan: 2 of 7 (COMPLETE)
+Current Plan: 3 of 7 (COMPLETE)
 Status: In Progress
-Last activity: 2026-02-26 -- Completed 29-02 (Offloader Rename/Split)
+Last activity: 2026-02-26 -- Completed 29-03 (MetadataService File Splits)
 
 ## Completed Milestones
 
@@ -38,7 +38,7 @@ Last activity: 2026-02-26 -- Completed 29-02 (Offloader Rename/Split)
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 95 (19 v1.0 + 42 v2.0 + 25 v3.0 + 9 v3.5)
+- Total plans completed: 96 (19 v1.0 + 42 v2.0 + 25 v3.0 + 10 v3.5)
 - 3 milestones in 25 days
 
 | Phase | Plan | Duration | Tasks | Files |
@@ -57,6 +57,7 @@ Last activity: 2026-02-26 -- Completed 29-02 (Offloader Rename/Split)
 | 28 | 05 | 12min | 2 | 7 |
 | 29 | 01 | 15min | 2 | 24 |
 | 29 | 02 | 21min | 2 | 28 |
+| 29 | 03 | 12min | 2 | 8 |
 
 ## Quick Tasks Completed
 
@@ -113,6 +114,8 @@ Last activity: 2026-02-26 -- Completed 29-02 (Offloader Rename/Split)
 - [29-01] API client listResources returns []T (value slice), GORM listAll returns []*T (pointer slice) matching existing patterns
 - [Phase 29]: [29-02] Split 1361-line manager.go into 8 focused files by responsibility (offloader/upload/download/dedup/queue/entry/types/wal_replay)
 - [Phase 29]: [29-02] GC extracted to standalone pkg/payload/gc/ with duplicated parseShareName and MetadataReconciler for zero coupling
+- [Phase 29]: [29-03] Flat file split (same package) instead of sub-packages to avoid Go circular imports
+- [Phase 29]: [29-03] Operation-based naming: file_create.go, file_modify.go, auth_identity.go, auth_permissions.go
 
 ### Pending Todos
 
@@ -125,5 +128,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-26
-Stopped at: Completed 29-02-PLAN.md
-Resume file: 29-03-PLAN.md
+Stopped at: Completed 29-03-PLAN.md
+Resume file: 29-04-PLAN.md
