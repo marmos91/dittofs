@@ -349,8 +349,9 @@ func (s *NFSAdapter) SetKerberosConfig(cfg *config.KerberosConfig) {
 //
 // Thread safety:
 // Called exactly once before Serve(), no synchronization needed.
-func (s *NFSAdapter) SetRuntime(rt *runtime.Runtime) {
-	s.BaseAdapter.SetRuntime(rt)
+func (s *NFSAdapter) SetRuntime(rtAny any) {
+	s.BaseAdapter.SetRuntime(rtAny)
+	rt := rtAny.(*runtime.Runtime)
 
 	// Inject runtime into handlers
 	s.nfsHandler.Registry = rt

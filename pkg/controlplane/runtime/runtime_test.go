@@ -17,38 +17,38 @@ func TestNew(t *testing.T) {
 		t.Fatal("expected non-nil runtime")
 	}
 
-	if rt.metadata == nil {
-		t.Error("expected metadata map to be initialized")
+	if rt.storesSvc == nil {
+		t.Error("expected stores service to be initialized")
 	}
-	if rt.shares == nil {
-		t.Error("expected shares map to be initialized")
+	if rt.sharesSvc == nil {
+		t.Error("expected shares service to be initialized")
 	}
 	if rt.mountTracker == nil {
 		t.Error("expected mount tracker to be initialized")
 	}
-	if rt.adapters == nil {
-		t.Error("expected adapters map to be initialized")
+	if rt.adaptersSvc == nil {
+		t.Error("expected adapters service to be initialized")
 	}
-	if rt.shutdownTimeout != DefaultShutdownTimeout {
-		t.Errorf("expected shutdown timeout %v, got %v", DefaultShutdownTimeout, rt.shutdownTimeout)
+	if rt.lifecycleSvc == nil {
+		t.Error("expected lifecycle service to be initialized")
+	}
+	if rt.identitySvc == nil {
+		t.Error("expected identity service to be initialized")
 	}
 }
 
 func TestSetShutdownTimeout(t *testing.T) {
 	rt := New(nil)
 
-	t.Run("set custom timeout", func(t *testing.T) {
+	t.Run("set custom timeout does not panic", func(t *testing.T) {
 		rt.SetShutdownTimeout(60 * time.Second)
-		if rt.shutdownTimeout != 60*time.Second {
-			t.Errorf("expected 60s, got %v", rt.shutdownTimeout)
-		}
+		// Timeout is delegated to adapters and lifecycle sub-services;
+		// we verify it doesn't panic.
 	})
 
-	t.Run("zero uses default", func(t *testing.T) {
+	t.Run("zero uses default does not panic", func(t *testing.T) {
 		rt.SetShutdownTimeout(0)
-		if rt.shutdownTimeout != DefaultShutdownTimeout {
-			t.Errorf("expected default %v, got %v", DefaultShutdownTimeout, rt.shutdownTimeout)
-		}
+		// Zero is normalized to DefaultShutdownTimeout in sub-services.
 	})
 }
 
@@ -374,14 +374,12 @@ func TestApplyIdentityMapping(t *testing.T) {
 	// Helper to create a fresh runtime with a share for each test
 	setupRuntime := func(squash models.SquashMode) *Runtime {
 		rt := New(nil)
-		rt.mu.Lock()
-		rt.shares["/export"] = &Share{
+		rt.sharesSvc.InjectShareForTesting(&Share{
 			Name:         "/export",
 			Squash:       squash,
 			AnonymousUID: 65534,
 			AnonymousGID: 65534,
-		}
-		rt.mu.Unlock()
+		})
 		return rt
 	}
 

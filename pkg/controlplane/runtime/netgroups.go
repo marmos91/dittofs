@@ -118,11 +118,8 @@ func (c *dnsCache) cleanExpiredLocked(now time.Time) {
 // if DNS lookup fails (does not block).
 func (r *Runtime) CheckNetgroupAccess(ctx context.Context, shareName string, clientIP net.IP) (bool, error) {
 	// 1. Get share from runtime state
-	r.mu.RLock()
-	share, exists := r.shares[shareName]
-	r.mu.RUnlock()
-
-	if !exists {
+	share, err := r.sharesSvc.GetShare(shareName)
+	if err != nil {
 		return false, nil
 	}
 

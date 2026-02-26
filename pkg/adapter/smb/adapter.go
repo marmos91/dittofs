@@ -123,8 +123,9 @@ func New(config Config) *Adapter {
 //
 // Thread safety:
 // Called exactly once before Serve(), no synchronization needed.
-func (s *Adapter) SetRuntime(rt *runtime.Runtime) {
-	s.BaseAdapter.SetRuntime(rt)
+func (s *Adapter) SetRuntime(rtAny any) {
+	s.BaseAdapter.SetRuntime(rtAny)
+	rt := rtAny.(*runtime.Runtime)
 	s.handler.Registry = rt
 
 	// Cross-protocol oplock break registration removed (Phase 26 Plan 04).

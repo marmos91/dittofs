@@ -164,8 +164,16 @@ func NewBaseAdapter(config BaseConfig, protocol string) *BaseAdapter {
 
 // SetRuntime stores the runtime reference. Protocol adapters should call
 // b.BaseAdapter.SetRuntime(rt) first, then perform protocol-specific setup.
-func (b *BaseAdapter) SetRuntime(rt *runtime.Runtime) {
-	b.Registry = rt
+//
+// The parameter is typed as any to satisfy the adapters.RuntimeSetter interface
+// (which cannot import *runtime.Runtime without creating an import cycle).
+// The value must be a *runtime.Runtime; a panic occurs otherwise.
+func (b *BaseAdapter) SetRuntime(rt any) {
+	typed, ok := rt.(*runtime.Runtime)
+	if !ok {
+		panic(fmt.Sprintf("BaseAdapter.SetRuntime: expected *runtime.Runtime, got %T", rt))
+	}
+	b.Registry = typed
 }
 
 // ServeWithFactory runs the shared TCP accept loop, delegating to factory for
