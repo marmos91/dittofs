@@ -1,4 +1,4 @@
-package transfer
+package gc
 
 import (
 	"context"
@@ -6,15 +6,19 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/payload/block"
 	"github.com/marmos91/dittofs/pkg/payload/store"
 )
+
+// BlockSize is the size of a single block (4MB), used for byte estimation.
+const BlockSize = block.Size
 
 // ============================================================================
 // Types
 // ============================================================================
 
-// GCStats holds statistics about the garbage collection run.
-type GCStats struct {
+// Stats holds statistics about the garbage collection run.
+type Stats struct {
 	SharesScanned  int   // Number of shares processed
 	BlocksScanned  int   // Total blocks examined
 	OrphanFiles    int   // Files with orphan blocks (no metadata)
@@ -23,8 +27,8 @@ type GCStats struct {
 	Errors         int   // Non-fatal errors encountered
 }
 
-// GCOptions configures the garbage collection behavior.
-type GCOptions struct {
+// Options configures the garbage collection behavior.
+type Options struct {
 	// SharePrefix limits GC to shares matching this prefix.
 	// Empty string means scan all blocks (no prefix filter).
 	SharePrefix string
@@ -38,7 +42,14 @@ type GCOptions struct {
 
 	// ProgressCallback is called periodically with progress updates.
 	// May be nil.
-	ProgressCallback func(stats GCStats)
+	ProgressCallback func(stats Stats)
+}
+
+// MetadataReconciler provides access to metadata operations for reconciliation.
+// This interface is implemented by the Registry.
+type MetadataReconciler interface {
+	// GetMetadataStoreForShare returns the metadata store for a given share name.
+	GetMetadataStoreForShare(shareName string) (metadata.MetadataStore, error)
 }
 
 // ============================================================================
@@ -55,7 +66,7 @@ type GCOptions struct {
 // The function is safe to run during normal operation because metadata is
 // always created BEFORE blocks are written:
 //
-//	CREATE → PayloadID assigned → PutFile(metadata) → WRITE → blocks uploaded
+//	CREATE -> PayloadID assigned -> PutFile(metadata) -> WRITE -> blocks uploaded
 //
 // Parameters:
 //   - ctx: Context for cancellation
@@ -64,26 +75,17 @@ type GCOptions struct {
 //   - options: GC configuration (nil uses defaults)
 //
 // Returns:
-//   - *GCStats: Summary of GC actions
-//
-// Example:
-//
-//	// Dry run first
-//	dryStats := transfer.CollectGarbage(ctx, blockStore, registry, &transfer.GCOptions{DryRun: true})
-//	logger.Info("Would delete", "orphanBlocks", dryStats.OrphanBlocks)
-//
-//	// Then actually delete
-//	stats := transfer.CollectGarbage(ctx, blockStore, registry, nil)
+//   - *Stats: Summary of GC actions
 func CollectGarbage(
 	ctx context.Context,
 	blockStore store.BlockStore,
 	reconciler MetadataReconciler,
-	options *GCOptions,
-) *GCStats {
-	stats := &GCStats{}
+	options *Options,
+) *Stats {
+	stats := &Stats{}
 
 	if options == nil {
-		options = &GCOptions{}
+		options = &Options{}
 	}
 
 	// List all blocks (with optional prefix filter)
@@ -217,7 +219,7 @@ func CollectGarbage(
 // parsePayloadIDFromBlockKey extracts payloadID from a block key.
 //
 // Block key format: {payloadID}/chunk-{N}/block-{N}
-// Example: "export/documents/report.pdf/chunk-0/block-0" → "export/documents/report.pdf"
+// Example: "export/documents/report.pdf/chunk-0/block-0" -> "export/documents/report.pdf"
 //
 // Returns empty string if format is invalid.
 func parsePayloadIDFromBlockKey(blockKey string) string {
@@ -226,4 +228,28 @@ func parsePayloadIDFromBlockKey(blockKey string) string {
 		return ""
 	}
 	return blockKey[:idx]
+}
+
+// parseShareName extracts the share name from a payloadID.
+// PayloadID format: "shareName/path/to/file"
+// Returns empty string if format is invalid.
+func parseShareName(payloadID string) string {
+	if payloadID == "" {
+		return ""
+	}
+	// Remove leading slash if present
+	payloadID = strings.TrimPrefix(payloadID, "/")
+
+	// Find first path separator
+	idx := strings.Index(payloadID, "/")
+	if idx <= 0 {
+		// No separator or starts with separator - return entire string as share name
+		// This handles cases like "export" (file at root of share)
+		if idx == 0 {
+			return ""
+		}
+		return payloadID
+	}
+
+	return payloadID[:idx]
 }

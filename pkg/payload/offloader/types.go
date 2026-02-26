@@ -1,4 +1,4 @@
-package transfer
+package offloader
 
 import "github.com/marmos91/dittofs/pkg/payload/block"
 
@@ -54,7 +54,7 @@ func (t TransferType) String() string {
 // Configuration
 // ============================================================================
 
-// Config holds configuration for the TransferManager.
+// Config holds configuration for the Offloader.
 type Config struct {
 	// ParallelUploads is the initial number of concurrent block uploads.
 	// The adaptive congestion control will start from this value.
@@ -85,7 +85,7 @@ type Config struct {
 	SmallFileThreshold int64
 }
 
-// DefaultConfig returns the default transfer manager configuration.
+// DefaultConfig returns the default Offloader configuration.
 func DefaultConfig() Config {
 	return Config{
 		ParallelUploads:    DefaultParallelUploads,

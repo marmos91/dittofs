@@ -1,6 +1,6 @@
 package payload
 
-import "github.com/marmos91/dittofs/pkg/payload/transfer"
+import "github.com/marmos91/dittofs/pkg/payload/offloader"
 
 // ============================================================================
 // Type Notes
@@ -42,6 +42,6 @@ type StorageStats struct {
 	AverageSize uint64
 }
 
-// FlushResult is an alias to transfer.FlushResult for API compatibility.
-// The canonical definition is in pkg/payload/transfer/types.go.
-type FlushResult = transfer.FlushResult
+// FlushResult is an alias to offloader.FlushResult for API compatibility.
+// The canonical definition is in pkg/payload/offloader/types.go.
+type FlushResult = offloader.FlushResult

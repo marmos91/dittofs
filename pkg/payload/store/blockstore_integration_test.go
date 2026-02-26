@@ -18,7 +18,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/payload/store"
 	blockmemory "github.com/marmos91/dittofs/pkg/payload/store/memory"
 	blocks3 "github.com/marmos91/dittofs/pkg/payload/store/s3"
-	"github.com/marmos91/dittofs/pkg/payload/transfer"
+	"github.com/marmos91/dittofs/pkg/payload/offloader"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -314,7 +314,7 @@ func TestFlusher_Integration(t *testing.T) {
 	objectStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 
 	// Create flusher
-	f := transfer.New(c, blockStore, objectStore, transfer.Config{
+	f := offloader.New(c, blockStore, objectStore, offloader.Config{
 		ParallelUploads:   4,
 		ParallelDownloads: 4,
 	})
@@ -444,7 +444,7 @@ func TestFlusher_WithMemoryStore(t *testing.T) {
 	objectStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 
 	// Create transfer manager
-	f := transfer.New(c, blockStore, objectStore, transfer.Config{
+	f := offloader.New(c, blockStore, objectStore, offloader.Config{
 		ParallelUploads:   4,
 		ParallelDownloads: 4,
 	})

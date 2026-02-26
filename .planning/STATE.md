@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v4.2
 milestone_name: Adapter + Core Refactoring
 status: unknown
-last_updated: "2026-02-26T09:57:55Z"
+last_updated: "2026-02-26T10:22:48.523Z"
 progress:
-  total_phases: 27
-  completed_phases: 26
-  total_plans: 95
-  completed_plans: 96
+  total_phases: 28
+  completed_phases: 27
+  total_plans: 102
+  completed_plans: 97
 ---
 
 # Project State
@@ -23,9 +23,9 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 ## Current Position
 
 Phase: 29 - Core Layer Decomposition
-Current Plan: 1 of 7 (COMPLETE)
+Current Plan: 2 of 7 (COMPLETE)
 Status: In Progress
-Last activity: 2026-02-26 -- Completed 29-01 (Foundational Error Types and Generic Helpers)
+Last activity: 2026-02-26 -- Completed 29-02 (Offloader Rename/Split)
 
 ## Completed Milestones
 
@@ -56,6 +56,7 @@ Last activity: 2026-02-26 -- Completed 29-01 (Foundational Error Types and Gener
 | 28 | 04 | 6min | 2 | 5 |
 | 28 | 05 | 12min | 2 | 7 |
 | 29 | 01 | 15min | 2 | 24 |
+| 29 | 02 | 21min | 2 | 28 |
 
 ## Quick Tasks Completed
 
@@ -110,6 +111,8 @@ Last activity: 2026-02-26 -- Completed 29-01 (Foundational Error Types and Gener
 - [29-01] MapError stub on BaseAdapter rather than NFS/SMB — both embed BaseAdapter so they inherit the stub
 - [29-01] createWithID accepts currentID and idSetter callback rather than interface constraint on models
 - [29-01] API client listResources returns []T (value slice), GORM listAll returns []*T (pointer slice) matching existing patterns
+- [Phase 29]: [29-02] Split 1361-line manager.go into 8 focused files by responsibility (offloader/upload/download/dedup/queue/entry/types/wal_replay)
+- [Phase 29]: [29-02] GC extracted to standalone pkg/payload/gc/ with duplicated parseShareName and MetadataReconciler for zero coupling
 
 ### Pending Todos
 
@@ -122,5 +125,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-26
-Stopped at: Completed 29-01-PLAN.md
-Resume file: 29-02-PLAN.md
+Stopped at: Completed 29-02-PLAN.md
+Resume file: 29-03-PLAN.md

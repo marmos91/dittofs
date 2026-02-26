@@ -1,4 +1,4 @@
-package transfer
+package offloader
 
 import (
 	"context"
@@ -18,7 +18,7 @@ import (
 // Workers check channels in priority order, ensuring downloads are always
 // processed first, even when upload/prefetch queues are full.
 type TransferQueue struct {
-	manager *TransferManager
+	manager *Offloader
 
 	// Priority channels - workers check in priority order
 	downloads chan TransferRequest // Highest priority
@@ -44,7 +44,7 @@ type TransferQueue struct {
 }
 
 // NewTransferQueue creates a new transfer queue.
-func NewTransferQueue(m *TransferManager, cfg TransferQueueConfig) *TransferQueue {
+func NewTransferQueue(m *Offloader, cfg TransferQueueConfig) *TransferQueue {
 	if cfg.QueueSize <= 0 {
 		cfg.QueueSize = 1000
 	}

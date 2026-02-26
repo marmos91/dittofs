@@ -25,7 +25,7 @@ import (
 	blockfs "github.com/marmos91/dittofs/pkg/payload/store/fs"
 	blockmemory "github.com/marmos91/dittofs/pkg/payload/store/memory"
 	blocks3 "github.com/marmos91/dittofs/pkg/payload/store/s3"
-	"github.com/marmos91/dittofs/pkg/payload/transfer"
+	"github.com/marmos91/dittofs/pkg/payload/offloader"
 )
 
 // InitializeFromStore creates and initializes a runtime from the database.
@@ -235,22 +235,22 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 	// Create object store for deduplication (uses memory store for tracking)
 	objectStore := memory.NewMemoryMetadataStoreWithDefaults()
 
-	// Create transfer manager
-	transferCfg := transfer.Config{
+	// Create offloader
+	offloaderCfg := offloader.Config{
 		ParallelUploads:   16,
 		ParallelDownloads: 4,
 		PrefetchBlocks:    4,
 	}
-	transferMgr := transfer.New(cacheInstance, blockStore, objectStore, transferCfg)
+	offloaderInstance := offloader.New(cacheInstance, blockStore, objectStore, offloaderCfg)
 
 	// Create PayloadService
-	payloadSvc, err := payload.New(cacheInstance, transferMgr)
+	payloadSvc, err := payload.New(cacheInstance, offloaderInstance)
 	if err != nil {
 		return fmt.Errorf("failed to create payload service: %w", err)
 	}
 
-	// Start transfer manager background workers
-	transferMgr.Start(ctx)
+	// Start offloader background workers
+	offloaderInstance.Start(ctx)
 
 	// Set PayloadService on runtime (thread-safe)
 	rt.mu.Lock()
@@ -260,8 +260,8 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 
 	logger.Info("PayloadService initialized",
 		"payload_store", payloadStoreCfg.Name,
-		"parallel_uploads", transferCfg.ParallelUploads,
-		"parallel_downloads", transferCfg.ParallelDownloads)
+		"parallel_uploads", offloaderCfg.ParallelUploads,
+		"parallel_downloads", offloaderCfg.ParallelDownloads)
 
 	return nil
 }

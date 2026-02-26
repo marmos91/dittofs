@@ -1,4 +1,4 @@
-package transfer
+package gc
 
 import (
 	"context"
@@ -325,13 +325,13 @@ func TestCollectGarbage_ProgressCallback(t *testing.T) {
 	reconciler.addShare("/export")
 
 	var progressCalls int
-	progress := func(stats GCStats) {
+	progress := func(stats Stats) {
 		progressCalls++
 		assert.GreaterOrEqual(t, stats.OrphanFiles, 0)
 		assert.LessOrEqual(t, stats.OrphanBlocks, stats.BlocksScanned)
 	}
 
-	CollectGarbage(ctx, blockStore, reconciler, &GCOptions{ProgressCallback: progress})
+	CollectGarbage(ctx, blockStore, reconciler, &Options{ProgressCallback: progress})
 
 	// Progress should have been called once per orphan file
 	assert.Equal(t, 5, progressCalls)
@@ -350,7 +350,7 @@ func TestCollectGarbage_DryRun(t *testing.T) {
 	reconciler.addShare("/export")
 
 	// Run with dry run - should NOT delete
-	stats := CollectGarbage(ctx, blockStore, reconciler, &GCOptions{DryRun: true})
+	stats := CollectGarbage(ctx, blockStore, reconciler, &Options{DryRun: true})
 
 	assert.Equal(t, 1, stats.OrphanBlocks)
 

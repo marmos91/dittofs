@@ -1,4 +1,4 @@
-package transfer
+package offloader
 
 import (
 	"testing"

@@ -1,4 +1,4 @@
-package transfer
+package offloader
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 // The returned RecoveryStats includes RecoveredFileSizes which maps payloadID to actual
 // file size from recovered WAL data. Consumers MUST use this to reconcile metadata:
 //
-//	stats := transferManager.RecoverUnflushedBlocks(ctx)
+//	stats := offloader.RecoverUnflushedBlocks(ctx)
 //	for payloadID, actualSize := range stats.RecoveredFileSizes {
 //	    metadataSize := getMetadataSize(payloadID)
 //	    if metadataSize > actualSize {
@@ -29,7 +29,7 @@ import (
 // This reconciliation is necessary because WAL logs individual block writes.
 // If a crash occurs after metadata update but before WAL persistence,
 // metadata may have been updated with a larger size before crash.
-func (m *TransferManager) RecoverUnflushedBlocks(ctx context.Context) *RecoveryStats {
+func (m *Offloader) RecoverUnflushedBlocks(ctx context.Context) *RecoveryStats {
 	stats := &RecoveryStats{
 		RecoveredFileSizes: make(map[string]uint64),
 	}
@@ -131,8 +131,8 @@ type ReconciliationStats struct {
 //
 // Example:
 //
-//	stats := transferMgr.RecoverUnflushedBlocks(ctx)
-//	reconStats := transfer.ReconcileMetadata(ctx, registry, stats.RecoveredFileSizes)
+//	stats := offloader.RecoverUnflushedBlocks(ctx)
+//	reconStats := offloader.ReconcileMetadata(ctx, registry, stats.RecoveredFileSizes)
 //	logger.Info("Reconciliation complete", "truncated", reconStats.FilesTruncated)
 func ReconcileMetadata(
 	ctx context.Context,

@@ -8,7 +8,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	storemem "github.com/marmos91/dittofs/pkg/payload/store/memory"
-	"github.com/marmos91/dittofs/pkg/payload/transfer"
+	"github.com/marmos91/dittofs/pkg/payload/offloader"
 )
 
 // newTestService creates a PayloadService for testing with in-memory stores.
@@ -18,7 +18,7 @@ func newTestService(t *testing.T) *PayloadService {
 	c := cache.New(10 * 1024 * 1024) // 10MB cache
 	blockStore := storemem.New()
 	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	tm := transfer.New(c, blockStore, metaStore, transfer.DefaultConfig())
+	tm := offloader.New(c, blockStore, metaStore, offloader.DefaultConfig())
 
 	svc, err := New(c, tm)
 	if err != nil {
@@ -31,7 +31,7 @@ func TestPayloadService_New(t *testing.T) {
 	c := cache.New(10 * 1024 * 1024)
 	blockStore := storemem.New()
 	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	tm := transfer.New(c, blockStore, metaStore, transfer.DefaultConfig())
+	tm := offloader.New(c, blockStore, metaStore, offloader.DefaultConfig())
 
 	svc, err := New(c, tm)
 	if err != nil {
@@ -46,7 +46,7 @@ func TestPayloadService_New_NilCache(t *testing.T) {
 	blockStore := storemem.New()
 	c := cache.New(10 * 1024 * 1024)
 	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	tm := transfer.New(c, blockStore, metaStore, transfer.DefaultConfig())
+	tm := offloader.New(c, blockStore, metaStore, offloader.DefaultConfig())
 
 	_, err := New(nil, tm)
 	if err == nil {
