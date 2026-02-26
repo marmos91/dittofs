@@ -187,6 +187,9 @@ func (s *Service) AddShare(
 	if err := metadataSvc.RegisterStoreForShare(config.Name, metadataStore); err != nil {
 		delete(s.registry, config.Name)
 		s.mu.Unlock()
+		// Note: CreateRootDirectory was already called above. This is safe because
+		// CreateRootDirectory is idempotent — the root directory will be reused on
+		// the next AddShare attempt for this share name.
 		return fmt.Errorf("failed to configure metadata for share: %w", err)
 	}
 
