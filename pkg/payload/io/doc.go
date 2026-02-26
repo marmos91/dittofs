@@ -16,7 +16,7 @@
 //
 //	import payloadio "github.com/marmos91/dittofs/pkg/payload/io"
 //
-//	svc := payloadio.New(cache, offloader)
+//	svc := payloadio.New(cacheReader, cacheWriter, cacheState, blockDownloader, blockUploader)
 //	n, err := svc.ReadAt(ctx, payloadID, buf, offset)
 //	err = svc.WriteAt(ctx, payloadID, data, offset)
 package io

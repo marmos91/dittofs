@@ -15,8 +15,10 @@ type CacheReader interface {
 	// Returns (found, error) where found indicates whether data was available.
 	ReadAt(ctx context.Context, payloadID string, chunkIdx uint32, offset, length uint32, dest []byte) (bool, error)
 
-	// GetFileSize returns the cached file size, or 0 if not in cache.
-	GetFileSize(ctx context.Context, payloadID string) uint64
+	// GetFileSize returns the cached file size and whether the file exists in cache.
+	// Returns (0, false) if the file is not in cache.
+	// Returns (0, true) if the file is in cache but has zero length (e.g., after truncation).
+	GetFileSize(ctx context.Context, payloadID string) (uint64, bool)
 }
 
 // CacheWriter abstracts cache write operations to avoid importing the cache package directly.
@@ -231,9 +233,9 @@ func (s *ServiceImpl) ensureAndReadFromCache(ctx context.Context, payloadID stri
 func (s *ServiceImpl) GetSize(ctx context.Context, id metadata.PayloadID) (uint64, error) {
 	payloadID := string(id)
 
-	// Check cache first
-	size := s.cacheReader.GetFileSize(ctx, payloadID)
-	if size > 0 {
+	// Check cache first. The (size, found) return distinguishes
+	// "not in cache" from "zero-length file in cache".
+	if size, found := s.cacheReader.GetFileSize(ctx, payloadID); found {
 		return size, nil
 	}
 
@@ -247,8 +249,9 @@ func (s *ServiceImpl) GetSize(ctx context.Context, id metadata.PayloadID) (uint6
 func (s *ServiceImpl) Exists(ctx context.Context, id metadata.PayloadID) (bool, error) {
 	payloadID := string(id)
 
-	// Check cache first
-	if s.cacheReader.GetFileSize(ctx, payloadID) > 0 {
+	// Check cache first. The (size, found) return correctly handles
+	// zero-length files that are in cache but have size 0.
+	if _, found := s.cacheReader.GetFileSize(ctx, payloadID); found {
 		return true, nil
 	}
 

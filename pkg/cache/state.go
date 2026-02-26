@@ -174,22 +174,32 @@ func (c *Cache) HasDirtyData(ctx context.Context, payloadID string) bool {
 	return false
 }
 
-// GetFileSize returns the maximum byte offset covered by cached blocks.
+// GetFileSize returns the maximum byte offset covered by cached blocks and
+// whether the file exists in cache at all.
 //
 // This represents the size of the file as known to the cache. Note that
 // this may differ from the actual file size if not all data is cached.
 //
-// Returns 0 if the file doesn't exist in cache, cache is closed, or context is cancelled.
-func (c *Cache) GetFileSize(ctx context.Context, payloadID string) uint64 {
+// Returns (0, false) if the file doesn't exist in cache, cache is closed,
+// or context is cancelled. Returns (0, true) for a zero-length cached file
+// (e.g., after Truncate to 0).
+func (c *Cache) GetFileSize(ctx context.Context, payloadID string) (uint64, bool) {
 	if c.checkClosed(ctx) != nil {
-		return 0
+		return 0, false
 	}
 
-	entry := c.getFileEntry(payloadID)
+	c.globalMu.RLock()
+	entry, exists := c.files[payloadID]
+	c.globalMu.RUnlock()
+
+	if !exists {
+		return 0, false
+	}
+
 	entry.mu.RLock()
 	defer entry.mu.RUnlock()
 
-	return getFileSizeUnlocked(entry)
+	return getFileSizeUnlocked(entry), true
 }
 
 // getFileSizeUnlocked returns the maximum byte offset covered by cached blocks.
