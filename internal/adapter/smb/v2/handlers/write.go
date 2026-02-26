@@ -13,37 +13,8 @@ import (
 // ============================================================================
 
 // WriteRequest represents an SMB2 WRITE request from a client [MS-SMB2] 2.2.21.
-//
 // The client specifies a FileID, offset, and data to write to a file.
-// This structure is decoded from little-endian binary data received over the network.
-//
-// **Wire Format (49 bytes minimum):**
-//
-//	Offset  Size  Field                    Description
-//	------  ----  -----------------------  ----------------------------------
-//	0       2     StructureSize            Always 49
-//	2       2     DataOffset               Offset from header to data
-//	4       4     Length                   Number of bytes to write
-//	8       8     Offset                   File offset to start writing
-//	16      16    FileId                   SMB2 file identifier
-//	32      4     Channel                  Channel for RDMA (0 = none)
-//	36      4     RemainingBytes           Bytes remaining in write (hint)
-//	40      2     WriteChannelInfoOffset   Offset to channel info
-//	42      2     WriteChannelInfoLength   Length of channel info
-//	44      4     Flags                    Write flags
-//	48      N     Buffer                   Data to write
-//
-// **Flags:**
-//
-//   - SMB2_WRITEFLAG_WRITE_THROUGH (0x00000001): Write-through to disk
-//   - SMB2_WRITEFLAG_WRITE_UNBUFFERED (0x00000002): Unbuffered write
-//
-// **Use Cases:**
-//
-//   - Sequential file writes (file copies, downloads)
-//   - Random access writes (database files)
-//   - Large file uploads (client handles chunking)
-//   - Creating MFsymlink files (symlinks via SMB)
+// The fixed wire format is exactly 49 bytes, followed by the variable-length data buffer.
 type WriteRequest struct {
 	// DataOffset is the offset from the start of the SMB2 header
 	// to the write data. Typically 64 (header) + 48 (request) = 112.
@@ -80,26 +51,7 @@ type WriteRequest struct {
 }
 
 // WriteResponse represents an SMB2 WRITE response [MS-SMB2] 2.2.22.
-//
-// The response indicates how many bytes were actually written.
-//
-// **Wire Format (17 bytes):**
-//
-//	Offset  Size  Field                   Description
-//	------  ----  ----------------------  ----------------------------------
-//	0       2     StructureSize           Always 17
-//	2       2     Reserved                Must be ignored
-//	4       4     Count                   Number of bytes written
-//	8       4     Remaining               Bytes remaining (0 for success)
-//	12      2     WriteChannelInfoOffset  Offset to channel info (0)
-//	14      2     WriteChannelInfoLength  Length of channel info (0)
-//
-// **Status Codes:**
-//
-//   - StatusSuccess: Data written successfully
-//   - StatusInvalidHandle: The FileID does not refer to a valid open file
-//   - StatusAccessDenied: Write permission denied
-//   - StatusDiskFull: Not enough space on disk
+// The 17-byte response indicates how many bytes were actually written.
 type WriteResponse struct {
 	SMBResponseBase // Embeds Status field and GetStatus() method
 
@@ -117,29 +69,9 @@ type WriteResponse struct {
 // ============================================================================
 
 // DecodeWriteRequest parses an SMB2 WRITE request from wire format [MS-SMB2] 2.2.21.
-//
-// The decoding extracts all fields including the variable-length data buffer.
-// All fields use little-endian byte order per SMB2 specification.
-//
-// The data buffer location is determined by DataOffset (relative to SMB2 header):
-//   - DataOffset - 64 = offset in body
-//   - Typical DataOffset is 112 (64 header + 48 fixed part)
-//
-// **Parameters:**
-//   - body: Raw request bytes (49 bytes minimum)
-//
-// **Returns:**
-//   - *WriteRequest: The decoded request containing offset, length, and data
-//   - error: ErrRequestTooShort if body is less than 49 bytes
-//
-// **Example:**
-//
-//	body := []byte{...} // SMB2 WRITE request from network
-//	req, err := DecodeWriteRequest(body)
-//	if err != nil {
-//	    return NewErrorResult(types.StatusInvalidParameter)
-//	}
-//	// Write req.Data to file at req.Offset
+// It extracts all fields including the variable-length data buffer, whose
+// location is determined by DataOffset (relative to SMB2 header).
+// Returns an error if the body is less than 49 bytes.
 func DecodeWriteRequest(body []byte) (*WriteRequest, error) {
 	if len(body) < 49 {
 		return nil, fmt.Errorf("WRITE request too short: %d bytes", len(body))
@@ -186,33 +118,7 @@ func DecodeWriteRequest(body []byte) (*WriteRequest, error) {
 }
 
 // Encode serializes the WriteResponse to SMB2 wire format [MS-SMB2] 2.2.22.
-//
-// The response indicates the number of bytes successfully written.
-//
-// **Wire Format (17 bytes):**
-//
-//	Offset  Size  Field                   Value
-//	------  ----  ----------------------  ------
-//	0       2     StructureSize           17
-//	2       2     Reserved                0
-//	4       4     Count                   Bytes written
-//	8       4     Remaining               0 (or remaining bytes)
-//	12      2     WriteChannelInfoOffset  0
-//	14      2     WriteChannelInfoLength  0
-//
-// **Returns:**
-//   - []byte: 17-byte encoded response body
-//   - error: Always nil (encoding cannot fail for this structure)
-//
-// **Example:**
-//
-//	resp := &WriteResponse{
-//	    SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
-//	    Count:           65536,
-//	    Remaining:       0,
-//	}
-//	data, _ := resp.Encode()
-//	// Send data as response body after SMB2 header
+// Returns a 17-byte response body.
 func (resp *WriteResponse) Encode() ([]byte, error) {
 	buf := make([]byte, 17)
 	binary.LittleEndian.PutUint16(buf[0:2], 17)              // StructureSize
@@ -231,68 +137,14 @@ func (resp *WriteResponse) Encode() ([]byte, error) {
 
 // Write handles SMB2 WRITE command [MS-SMB2] 2.2.21, 2.2.22.
 //
-// **Purpose:**
-//
 // WRITE allows clients to write data to an open file at a specified offset.
-// SMB2 clients typically write in 32KB chunks (similar to NFS 32KB writes).
+// It uses a two-phase pattern (PrepareWrite/WriteAt/CommitWrite) to maintain
+// consistency between data and metadata. Writes go through the cache layer
+// for async performance and are flushed on FLUSH or CLOSE.
 //
-// **Process:**
-//
-//  1. Validate FileID maps to an open file (not a directory)
-//  2. Get session and tree connection for permission checking
-//  3. Verify write permission at share level
-//  4. Get metadata and content stores for the share
-//  5. Build AuthContext for permission validation
-//  6. PrepareWrite - validate permissions and get PayloadID
-//  7. Write data to cache (async) or content store (sync)
-//  8. CommitWrite - update file metadata (size, timestamps)
-//  9. Return success response with bytes written
-//
-// **Cache Integration:**
-//
-// Write behavior depends on cache configuration:
-//   - With cache (async mode): Writes go to cache first, flushed on FLUSH/CLOSE
-//   - Without cache (sync mode): Writes go directly to content store
-//
-// Async mode is preferred for performance as it allows batching small writes
-// and reduces latency. Clients can call FLUSH when durability is required.
-//
-// **Two-Phase Write Pattern:**
-//
-// DittoFS uses a two-phase write pattern to maintain consistency:
-//   - PrepareWrite: Validates permissions, doesn't modify metadata
-//   - WriteAt: Writes data to cache or content store
-//   - CommitWrite: Updates metadata (size, mtime) after successful write
-//
-// This ensures metadata reflects actual data state and provides rollback
-// capability if the write fails.
-//
-// **Error Handling:**
-//
-// Returns appropriate SMB status codes:
-//   - StatusInvalidHandle: Invalid FileID
-//   - StatusInvalidDeviceRequest: Cannot write to directory
-//   - StatusUserSessionDeleted: Session no longer valid
-//   - StatusAccessDenied: Write permission denied
-//   - StatusBadNetworkName: Share not found
-//   - StatusUnexpectedIOError: Cache or content store write failed
-//   - StatusInternalError: Metadata error
-//
-// **Performance Considerations:**
-//
-// WRITE is frequently called and performance-critical:
-//   - Uses cache for async writes (reduces latency)
-//   - SMB clients typically use 32KB write chunks
-//   - PayloadID caching in OpenFile reduces metadata lookups
-//   - Parallel writes to different files are supported
-//
-// **Example:**
-//
-//	req := &WriteRequest{FileID: fileID, Offset: 0, Data: data}
-//	resp, err := handler.Write(ctx, req)
-//	if resp.GetStatus() == types.StatusSuccess {
-//	    // resp.Count bytes were written
-//	}
+// The handler validates the file handle, checks share-level write permission,
+// verifies no conflicting byte-range locks exist, and returns the number of
+// bytes successfully written.
 func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteResponse, error) {
 	logger.Debug("WRITE request",
 		"fileID", fmt.Sprintf("%x", req.FileID),

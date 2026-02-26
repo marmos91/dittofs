@@ -7,7 +7,10 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
-// SMBHandlerContext carries request context through handlers
+// SMBHandlerContext carries per-request state through all SMB2 handlers.
+// It provides session identity, tree connection info, share-level permissions,
+// and the async notification callback for CHANGE_NOTIFY operations.
+// Created by the dispatch layer for each incoming SMB2 request.
 type SMBHandlerContext struct {
 	// Context for cancellation and deadlines
 	Context context.Context
@@ -48,7 +51,9 @@ type SMBHandlerContext struct {
 	AsyncNotifyCallback AsyncResponseCallback
 }
 
-// NewSMBHandlerContext creates a new context from request parameters
+// NewSMBHandlerContext creates a new handler context from request parameters.
+// The context is populated with identifiers extracted from the SMB2 header.
+// Share-level fields (ShareName, User, Permission) are set later by handlers.
 func NewSMBHandlerContext(ctx context.Context, clientAddr string, sessionID uint64, treeID uint32, messageID uint64) *SMBHandlerContext {
 	return &SMBHandlerContext{
 		Context:    ctx,

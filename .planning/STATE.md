@@ -1,3 +1,16 @@
+---
+gsd_state_version: 1.0
+milestone: v4.2
+milestone_name: Adapter + Core Refactoring
+status: unknown
+last_updated: "2026-02-25T21:09:14.252Z"
+progress:
+  total_phases: 27
+  completed_phases: 26
+  total_plans: 95
+  completed_plans: 95
+---
+
 # Project State
 
 ## Project Reference
@@ -9,10 +22,10 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 
 ## Current Position
 
-Phase: 27 - NFS Adapter Restructuring
-Current Plan: 3 of 4 (COMPLETE)
-Status: Executing Phase 27
-Last activity: 2026-02-25 -- Completed 27-03 (Dispatch consolidation and connection split)
+Phase: 28 - SMB Adapter Restructuring
+Current Plan: 5 of 5 (COMPLETE)
+Status: Phase 28 Complete
+Last activity: 2026-02-25 -- Completed 28-05 (Handler Documentation)
 
 ## Completed Milestones
 
@@ -25,7 +38,7 @@ Last activity: 2026-02-25 -- Completed 27-03 (Dispatch consolidation and connect
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 94 (19 v1.0 + 42 v2.0 + 25 v3.0 + 8 v3.5)
+- Total plans completed: 95 (19 v1.0 + 42 v2.0 + 25 v3.0 + 9 v3.5)
 - 3 milestones in 25 days
 
 | Phase | Plan | Duration | Tasks | Files |
@@ -37,6 +50,11 @@ Last activity: 2026-02-25 -- Completed 27-03 (Dispatch consolidation and connect
 | 26 | 05 | 25min | 3 | 32 |
 | 27 | 01 | 6min | 2 | 614 |
 | 27 | 03 | 35min | 2 | 6 |
+| 28 | 01 | 6min | 2 | 13 |
+| 28 | 02 | 8min | 2 | 9 |
+| 28 | 03 | 35min | 2 | 6 |
+| 28 | 04 | 6min | 2 | 5 |
+| 28 | 05 | 12min | 2 | 7 |
 
 ## Quick Tasks Completed
 
@@ -78,6 +96,16 @@ Last activity: 2026-02-25 -- Completed 27-03 (Dispatch consolidation and connect
 - [27-03] V4/NLM/NSM/Portmap dispatch uses interfaces instead of direct imports to break circular dependency
 - [27-03] Auth extraction delegates to middleware package but keeps forwarding function for backward compat
 - [27-03] Connection code split keeps NFSConnection struct in pkg/ while sharing RPC framing utilities
+- [Phase 28]: [28-01] Auth packages flattened from ntlm/spnego to single auth package (no naming conflicts)
+- [Phase 28]: [28-01] Test function names updated to match new type names (TestConnection_ instead of TestSMBConnection_)
+- [Phase 28]: BaseAdapter uses pointer embedding (*adapter.BaseAdapter) to avoid go vet sync primitive copy warnings
+- [Phase 28]: [28-04] Standalone AUTH_UNIX parser in nfs/auth to avoid RPC package import dependency
+- [Phase 28]: [28-04] SMBAuthenticator uses sync.Map for pending auth state tracking across concurrent sessions
+- [Phase 28]: [28-04] Unknown UIDs produce synthetic users (unix:UID) for NFS backward compat
+- [Phase 28]: [28-03] Created response.go instead of expanding dispatch.go to keep dispatch table separate from response/send logic
+- [Phase 28]: [28-03] ConnInfo struct + SessionTracker interface pattern decouples pkg/ Connection from internal/ dispatch without circular imports
+- [Phase 28]: [28-03] sessionSigningVerifier moved to internal/adapter/smb/framing.go as NewSessionSigningVerifier for co-location with framing logic
+- [Phase 28]: [28-05] Skipped files with adequate existing Godoc, focused edits on under-documented exports (handler types, converter functions, change_notify registry)
 
 ### Pending Todos
 
@@ -90,5 +118,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-25
-Stopped at: Completed 27-03-PLAN.md
-Resume file: Continue with 27-04-PLAN.md
+Stopped at: Completed 28-05-PLAN.md (Phase 28 complete)
+Resume file: Next phase

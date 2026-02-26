@@ -91,7 +91,7 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 		case <-ctx.Done():
 			logger.Debug("Connection closed due to context cancellation", "address", clientAddr)
 			return
-		case <-c.server.shutdown:
+		case <-c.server.Shutdown:
 			logger.Debug("Connection closed due to server shutdown", "address", clientAddr)
 			return
 		default:

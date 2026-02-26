@@ -6,6 +6,7 @@ import (
 	"net"
 	"testing"
 
+	smb "github.com/marmos91/dittofs/internal/adapter/smb"
 	"github.com/marmos91/dittofs/internal/adapter/smb/header"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
@@ -14,24 +15,24 @@ import (
 // Test Helper Functions
 // =============================================================================
 
-// newTestSMBConnection creates an SMBConnection with a minimal SMBAdapter
+// newTestConnection creates a Connection with a minimal Adapter
 // for unit testing. Uses net.Pipe() for a connected pair of net.Conn.
-func newTestSMBConnection(conn net.Conn) *SMBConnection {
-	adapter := New(SMBConfig{})
+func newTestConnection(conn net.Conn) *Connection {
+	adapter := New(Config{})
 
-	return NewSMBConnection(adapter, conn)
+	return NewConnection(adapter, conn)
 }
 
 // =============================================================================
 // TrackSession / UntrackSession Tests
 // =============================================================================
 
-func TestSMBConnection_TrackUntrackSession(t *testing.T) {
+func TestConnection_TrackUntrackSession(t *testing.T) {
 	server, client := net.Pipe()
 	defer func() { _ = server.Close() }()
 	defer func() { _ = client.Close() }()
 
-	c := newTestSMBConnection(server)
+	c := newTestConnection(server)
 
 	t.Run("TrackSession", func(t *testing.T) {
 		c.TrackSession(100)
@@ -103,50 +104,45 @@ func TestSMBConnection_TrackUntrackSession(t *testing.T) {
 }
 
 // =============================================================================
-// WriteNetBIOSFrame Tests
+// WriteNetBIOSFrame Tests (via internal/adapter/smb.WriteNetBIOSFrame)
 // =============================================================================
 
-func TestSMBConnection_WriteNetBIOSFrame(t *testing.T) {
+func TestConnection_WriteNetBIOSFrame(t *testing.T) {
 	t.Run("WritesCorrectFrameFormat", func(t *testing.T) {
 		server, client := net.Pipe()
 		defer func() { _ = server.Close() }()
 		defer func() { _ = client.Close() }()
 
-		c := newTestSMBConnection(server)
+		c := newTestConnection(server)
 
 		payload := []byte("hello SMB")
 
 		// Write in a goroutine since net.Pipe is synchronous
 		errCh := make(chan error, 1)
 		go func() {
-			errCh <- c.writeNetBIOSFrame(payload)
+			errCh <- smb.WriteNetBIOSFrame(c.conn, &c.writeMu, c.server.config.Timeouts.Write, payload)
 		}()
 
 		// Read the frame from the other side
-		// NetBIOS header: 4 bytes (1 type + 3 length) + payload
 		frame := make([]byte, 4+len(payload))
 		_, err := io.ReadFull(client, frame)
 		if err != nil {
 			t.Fatalf("Failed to read frame: %v", err)
 		}
 
-		// Check write completed without error
 		if writeErr := <-errCh; writeErr != nil {
-			t.Fatalf("writeNetBIOSFrame error: %v", writeErr)
+			t.Fatalf("WriteNetBIOSFrame error: %v", writeErr)
 		}
 
-		// Verify NetBIOS header
 		if frame[0] != 0x00 {
 			t.Errorf("NetBIOS type = 0x%02x, expected 0x00 (session message)", frame[0])
 		}
 
-		// Verify length (24-bit big-endian)
 		length := uint32(frame[1])<<16 | uint32(frame[2])<<8 | uint32(frame[3])
 		if length != uint32(len(payload)) {
 			t.Errorf("NetBIOS length = %d, expected %d", length, len(payload))
 		}
 
-		// Verify payload
 		if string(frame[4:]) != "hello SMB" {
 			t.Errorf("Payload = %q, expected %q", string(frame[4:]), "hello SMB")
 		}
@@ -157,14 +153,13 @@ func TestSMBConnection_WriteNetBIOSFrame(t *testing.T) {
 		defer func() { _ = server.Close() }()
 		defer func() { _ = client.Close() }()
 
-		c := newTestSMBConnection(server)
+		c := newTestConnection(server)
 
 		errCh := make(chan error, 1)
 		go func() {
-			errCh <- c.writeNetBIOSFrame([]byte{})
+			errCh <- smb.WriteNetBIOSFrame(c.conn, &c.writeMu, c.server.config.Timeouts.Write, []byte{})
 		}()
 
-		// Read the 4-byte header
 		frame := make([]byte, 4)
 		_, err := io.ReadFull(client, frame)
 		if err != nil {
@@ -172,10 +167,9 @@ func TestSMBConnection_WriteNetBIOSFrame(t *testing.T) {
 		}
 
 		if writeErr := <-errCh; writeErr != nil {
-			t.Fatalf("writeNetBIOSFrame error: %v", writeErr)
+			t.Fatalf("WriteNetBIOSFrame error: %v", writeErr)
 		}
 
-		// Length should be 0
 		length := uint32(frame[1])<<16 | uint32(frame[2])<<8 | uint32(frame[3])
 		if length != 0 {
 			t.Errorf("NetBIOS length = %d, expected 0", length)
@@ -187,9 +181,8 @@ func TestSMBConnection_WriteNetBIOSFrame(t *testing.T) {
 		defer func() { _ = server.Close() }()
 		defer func() { _ = client.Close() }()
 
-		c := newTestSMBConnection(server)
+		c := newTestConnection(server)
 
-		// Create a payload larger than typical small buffers
 		payload := make([]byte, 65536)
 		for i := range payload {
 			payload[i] = byte(i % 256)
@@ -197,10 +190,9 @@ func TestSMBConnection_WriteNetBIOSFrame(t *testing.T) {
 
 		errCh := make(chan error, 1)
 		go func() {
-			errCh <- c.writeNetBIOSFrame(payload)
+			errCh <- smb.WriteNetBIOSFrame(c.conn, &c.writeMu, c.server.config.Timeouts.Write, payload)
 		}()
 
-		// Read the full frame
 		frame := make([]byte, 4+len(payload))
 		_, err := io.ReadFull(client, frame)
 		if err != nil {
@@ -208,16 +200,14 @@ func TestSMBConnection_WriteNetBIOSFrame(t *testing.T) {
 		}
 
 		if writeErr := <-errCh; writeErr != nil {
-			t.Fatalf("writeNetBIOSFrame error: %v", writeErr)
+			t.Fatalf("WriteNetBIOSFrame error: %v", writeErr)
 		}
 
-		// Verify length
 		length := uint32(frame[1])<<16 | uint32(frame[2])<<8 | uint32(frame[3])
 		if length != uint32(len(payload)) {
 			t.Errorf("NetBIOS length = %d, expected %d", length, len(payload))
 		}
 
-		// Spot-check payload content
 		if frame[4] != 0 || frame[5] != 1 {
 			t.Error("Payload content mismatch")
 		}
@@ -225,47 +215,37 @@ func TestSMBConnection_WriteNetBIOSFrame(t *testing.T) {
 }
 
 // =============================================================================
-// InjectFileID Tests
+// InjectFileID Tests (via internal/adapter/smb.InjectFileID)
 // =============================================================================
 
-func TestSMBConnection_InjectFileID(t *testing.T) {
-	server, client := net.Pipe()
-	defer func() { _ = server.Close() }()
-	defer func() { _ = client.Close() }()
-
-	c := newTestSMBConnection(server)
-
+func TestConnection_InjectFileID(t *testing.T) {
 	var testFileID [16]byte
 	for i := range testFileID {
 		testFileID[i] = byte(0xA0 + i)
 	}
 
 	t.Run("InjectForClose", func(t *testing.T) {
-		// CLOSE: FileID at offset 8 [MS-SMB2 2.2.15]
 		body := make([]byte, 24)
-		binary.LittleEndian.PutUint16(body[0:2], 24) // StructureSize
+		binary.LittleEndian.PutUint16(body[0:2], 24)
 
-		result := c.injectFileID(types.SMB2Close, body, testFileID)
+		result := smb.InjectFileID(types.SMB2Close, body, testFileID)
 
-		// Verify FileID was injected at offset 8
 		var injected [16]byte
 		copy(injected[:], result[8:24])
 		if injected != testFileID {
 			t.Errorf("FileID not injected correctly at offset 8 for CLOSE")
 		}
 
-		// Verify original body was not modified
 		if body[8] != 0 {
 			t.Error("Original body should not be modified")
 		}
 	})
 
 	t.Run("InjectForRead", func(t *testing.T) {
-		// READ: FileID at offset 16 [MS-SMB2 2.2.19]
 		body := make([]byte, 49)
 		binary.LittleEndian.PutUint16(body[0:2], 49)
 
-		result := c.injectFileID(types.SMB2Read, body, testFileID)
+		result := smb.InjectFileID(types.SMB2Read, body, testFileID)
 
 		var injected [16]byte
 		copy(injected[:], result[16:32])
@@ -275,11 +255,10 @@ func TestSMBConnection_InjectFileID(t *testing.T) {
 	})
 
 	t.Run("InjectForWrite", func(t *testing.T) {
-		// WRITE: FileID at offset 16 [MS-SMB2 2.2.21]
 		body := make([]byte, 49)
 		binary.LittleEndian.PutUint16(body[0:2], 49)
 
-		result := c.injectFileID(types.SMB2Write, body, testFileID)
+		result := smb.InjectFileID(types.SMB2Write, body, testFileID)
 
 		var injected [16]byte
 		copy(injected[:], result[16:32])
@@ -289,11 +268,10 @@ func TestSMBConnection_InjectFileID(t *testing.T) {
 	})
 
 	t.Run("InjectForQueryInfo", func(t *testing.T) {
-		// QUERY_INFO: FileID at offset 24 [MS-SMB2 2.2.37]
 		body := make([]byte, 41)
 		binary.LittleEndian.PutUint16(body[0:2], 41)
 
-		result := c.injectFileID(types.SMB2QueryInfo, body, testFileID)
+		result := smb.InjectFileID(types.SMB2QueryInfo, body, testFileID)
 
 		var injected [16]byte
 		copy(injected[:], result[24:40])
@@ -303,11 +281,10 @@ func TestSMBConnection_InjectFileID(t *testing.T) {
 	})
 
 	t.Run("InjectForQueryDirectory", func(t *testing.T) {
-		// QUERY_DIRECTORY: FileID at offset 8 [MS-SMB2 2.2.33]
 		body := make([]byte, 33)
 		binary.LittleEndian.PutUint16(body[0:2], 33)
 
-		result := c.injectFileID(types.SMB2QueryDirectory, body, testFileID)
+		result := smb.InjectFileID(types.SMB2QueryDirectory, body, testFileID)
 
 		var injected [16]byte
 		copy(injected[:], result[8:24])
@@ -317,11 +294,10 @@ func TestSMBConnection_InjectFileID(t *testing.T) {
 	})
 
 	t.Run("InjectForSetInfo", func(t *testing.T) {
-		// SET_INFO: FileID at offset 16 [MS-SMB2 2.2.39]
 		body := make([]byte, 33)
 		binary.LittleEndian.PutUint16(body[0:2], 33)
 
-		result := c.injectFileID(types.SMB2SetInfo, body, testFileID)
+		result := smb.InjectFileID(types.SMB2SetInfo, body, testFileID)
 
 		var injected [16]byte
 		copy(injected[:], result[16:32])
@@ -332,23 +308,20 @@ func TestSMBConnection_InjectFileID(t *testing.T) {
 
 	t.Run("NoInjectionForUnsupportedCommand", func(t *testing.T) {
 		body := make([]byte, 40)
-		body[0] = 0xFF // Some data
+		body[0] = 0xFF
 
-		result := c.injectFileID(types.SMB2Negotiate, body, testFileID)
+		result := smb.InjectFileID(types.SMB2Negotiate, body, testFileID)
 
-		// Body should be returned as-is
 		if result[0] != 0xFF {
 			t.Error("Body should be unchanged for unsupported command")
 		}
 	})
 
 	t.Run("BodyTooSmallForInjection", func(t *testing.T) {
-		// CLOSE needs at least 24 bytes (offset 8 + 16 byte FileID)
 		shortBody := make([]byte, 10)
 
-		result := c.injectFileID(types.SMB2Close, shortBody, testFileID)
+		result := smb.InjectFileID(types.SMB2Close, shortBody, testFileID)
 
-		// Should return original body unchanged
 		if len(result) != 10 {
 			t.Errorf("Short body should be returned unchanged, got length %d", len(result))
 		}
@@ -356,14 +329,13 @@ func TestSMBConnection_InjectFileID(t *testing.T) {
 }
 
 // =============================================================================
-// makeErrorBody Tests
+// MakeErrorBody Tests (via internal/adapter/smb.MakeErrorBody)
 // =============================================================================
 
 func TestMakeErrorBody(t *testing.T) {
-	body := makeErrorBody()
+	body := smb.MakeErrorBody()
 
 	t.Run("HasCorrectLength", func(t *testing.T) {
-		// Error body is 9 bytes per MS-SMB2 spec
 		if len(body) != 9 {
 			t.Errorf("Error body length = %d, expected 9", len(body))
 		}
@@ -397,35 +369,29 @@ func TestMakeErrorBody(t *testing.T) {
 }
 
 // =============================================================================
-// parseCompoundCommand Tests
+// ParseCompoundCommand Tests (via internal/adapter/smb.ParseCompoundCommand)
 // =============================================================================
 
 func TestParseCompoundCommand(t *testing.T) {
 	t.Run("RejectsTooSmallData", func(t *testing.T) {
-		data := make([]byte, 30) // Less than 64 bytes
+		data := make([]byte, 30)
 
-		_, _, _, err := parseCompoundCommand(data)
+		_, _, _, err := smb.ParseCompoundCommand(data)
 		if err == nil {
 			t.Error("Expected error for data smaller than header size")
 		}
 	})
 
 	t.Run("ParsesSingleCommand", func(t *testing.T) {
-		// Build a valid 64-byte SMB2 header + some body
 		data := make([]byte, header.HeaderSize+20)
 
-		// Protocol ID
 		binary.LittleEndian.PutUint32(data[0:4], types.SMB2ProtocolID)
-		// Structure Size
 		binary.LittleEndian.PutUint16(data[4:6], header.HeaderSize)
-		// Command: NEGOTIATE
 		binary.LittleEndian.PutUint16(data[12:14], uint16(types.SMB2Negotiate))
-		// NextCommand: 0 (last command)
 		binary.LittleEndian.PutUint32(data[20:24], 0)
-		// MessageID
 		binary.LittleEndian.PutUint64(data[24:32], 42)
 
-		hdr, body, remaining, err := parseCompoundCommand(data)
+		hdr, body, remaining, err := smb.ParseCompoundCommand(data)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -438,39 +404,33 @@ func TestParseCompoundCommand(t *testing.T) {
 			t.Errorf("MessageID = %d, expected 42", hdr.MessageID)
 		}
 
-		// Body should be 20 bytes (everything after header)
 		if len(body) != 20 {
 			t.Errorf("Body length = %d, expected 20", len(body))
 		}
 
-		// No remaining compound data
 		if len(remaining) != 0 {
 			t.Errorf("Remaining should be empty, got %d bytes", len(remaining))
 		}
 	})
 
 	t.Run("ParsesCompoundWithNextCommand", func(t *testing.T) {
-		// Build two SMB2 commands in sequence
-		cmd1Size := header.HeaderSize + 20             // 84 bytes
-		totalSize := cmd1Size + header.HeaderSize + 10 // 84 + 74 = 158 bytes
+		cmd1Size := header.HeaderSize + 20
+		totalSize := cmd1Size + header.HeaderSize + 10
 		data := make([]byte, totalSize)
 
-		// First command header
 		binary.LittleEndian.PutUint32(data[0:4], types.SMB2ProtocolID)
 		binary.LittleEndian.PutUint16(data[4:6], header.HeaderSize)
 		binary.LittleEndian.PutUint16(data[12:14], uint16(types.SMB2Negotiate))
-		binary.LittleEndian.PutUint32(data[20:24], uint32(cmd1Size)) // NextCommand offset
-		binary.LittleEndian.PutUint64(data[24:32], 1)                // MessageID
+		binary.LittleEndian.PutUint32(data[20:24], uint32(cmd1Size))
+		binary.LittleEndian.PutUint64(data[24:32], 1)
 
-		// Second command header (at offset cmd1Size)
 		binary.LittleEndian.PutUint32(data[cmd1Size:cmd1Size+4], types.SMB2ProtocolID)
 		binary.LittleEndian.PutUint16(data[cmd1Size+4:cmd1Size+6], header.HeaderSize)
 		binary.LittleEndian.PutUint16(data[cmd1Size+12:cmd1Size+14], uint16(types.SMB2SessionSetup))
-		binary.LittleEndian.PutUint32(data[cmd1Size+20:cmd1Size+24], 0) // Last command
-		binary.LittleEndian.PutUint64(data[cmd1Size+24:cmd1Size+32], 2) // MessageID
+		binary.LittleEndian.PutUint32(data[cmd1Size+20:cmd1Size+24], 0)
+		binary.LittleEndian.PutUint64(data[cmd1Size+24:cmd1Size+32], 2)
 
-		// Parse first command
-		hdr, body, remaining, err := parseCompoundCommand(data)
+		hdr, body, remaining, err := smb.ParseCompoundCommand(data)
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
@@ -479,18 +439,15 @@ func TestParseCompoundCommand(t *testing.T) {
 			t.Errorf("First command = %d, expected NEGOTIATE", hdr.Command)
 		}
 
-		// Body should be 20 bytes (cmd1Size - headerSize)
 		if len(body) != 20 {
 			t.Errorf("Body length = %d, expected 20", len(body))
 		}
 
-		// Should have remaining data for second command
 		if len(remaining) == 0 {
 			t.Fatal("Expected remaining compound data")
 		}
 
-		// Parse second command from remaining
-		hdr2, body2, remaining2, err := parseCompoundCommand(remaining)
+		hdr2, body2, remaining2, err := smb.ParseCompoundCommand(remaining)
 		if err != nil {
 			t.Fatalf("Error parsing second command: %v", err)
 		}
@@ -503,12 +460,10 @@ func TestParseCompoundCommand(t *testing.T) {
 			t.Errorf("Second MessageID = %d, expected 2", hdr2.MessageID)
 		}
 
-		// Body should be 10 bytes
 		if len(body2) != 10 {
 			t.Errorf("Second body length = %d, expected 10", len(body2))
 		}
 
-		// No more commands
 		if len(remaining2) != 0 {
 			t.Errorf("Should have no remaining data, got %d bytes", len(remaining2))
 		}
@@ -516,7 +471,7 @@ func TestParseCompoundCommand(t *testing.T) {
 }
 
 // =============================================================================
-// trackSessionLifecycle Tests
+// TrackSessionLifecycle Tests (via internal/adapter/smb.TrackSessionLifecycle)
 // =============================================================================
 
 func TestTrackSessionLifecycle(t *testing.T) {
@@ -525,9 +480,9 @@ func TestTrackSessionLifecycle(t *testing.T) {
 		defer func() { _ = server.Close() }()
 		defer func() { _ = client.Close() }()
 
-		c := newTestSMBConnection(server)
+		c := newTestConnection(server)
 
-		c.trackSessionLifecycle(types.SMB2SessionSetup, 0, 42, types.StatusSuccess)
+		smb.TrackSessionLifecycle(types.SMB2SessionSetup, 0, 42, types.StatusSuccess, c)
 
 		c.sessionsMu.Lock()
 		_, exists := c.sessions[42]
@@ -543,9 +498,9 @@ func TestTrackSessionLifecycle(t *testing.T) {
 		defer func() { _ = server.Close() }()
 		defer func() { _ = client.Close() }()
 
-		c := newTestSMBConnection(server)
+		c := newTestConnection(server)
 
-		c.trackSessionLifecycle(types.SMB2SessionSetup, 0, 42, types.StatusMoreProcessingRequired)
+		smb.TrackSessionLifecycle(types.SMB2SessionSetup, 0, 42, types.StatusMoreProcessingRequired, c)
 
 		c.sessionsMu.Lock()
 		_, exists := c.sessions[42]
@@ -561,13 +516,11 @@ func TestTrackSessionLifecycle(t *testing.T) {
 		defer func() { _ = server.Close() }()
 		defer func() { _ = client.Close() }()
 
-		c := newTestSMBConnection(server)
+		c := newTestConnection(server)
 
-		// First track the session
 		c.TrackSession(42)
 
-		// Then logoff
-		c.trackSessionLifecycle(types.SMB2Logoff, 42, 0, types.StatusSuccess)
+		smb.TrackSessionLifecycle(types.SMB2Logoff, 42, 0, types.StatusSuccess, c)
 
 		c.sessionsMu.Lock()
 		_, exists := c.sessions[42]
@@ -583,12 +536,11 @@ func TestTrackSessionLifecycle(t *testing.T) {
 		defer func() { _ = server.Close() }()
 		defer func() { _ = client.Close() }()
 
-		c := newTestSMBConnection(server)
+		c := newTestConnection(server)
 
 		c.TrackSession(100)
 
-		// LOGOFF uses reqSessionID (100), not ctxSessionID (0)
-		c.trackSessionLifecycle(types.SMB2Logoff, 100, 0, types.StatusSuccess)
+		smb.TrackSessionLifecycle(types.SMB2Logoff, 100, 0, types.StatusSuccess, c)
 
 		c.sessionsMu.Lock()
 		_, exists := c.sessions[100]
@@ -604,10 +556,9 @@ func TestTrackSessionLifecycle(t *testing.T) {
 		defer func() { _ = server.Close() }()
 		defer func() { _ = client.Close() }()
 
-		c := newTestSMBConnection(server)
+		c := newTestConnection(server)
 
-		// When ctxSessionID is 0, should fall back to reqSessionID
-		c.trackSessionLifecycle(types.SMB2SessionSetup, 55, 0, types.StatusSuccess)
+		smb.TrackSessionLifecycle(types.SMB2SessionSetup, 55, 0, types.StatusSuccess, c)
 
 		c.sessionsMu.Lock()
 		_, exists := c.sessions[55]
@@ -623,9 +574,9 @@ func TestTrackSessionLifecycle(t *testing.T) {
 		defer func() { _ = server.Close() }()
 		defer func() { _ = client.Close() }()
 
-		c := newTestSMBConnection(server)
+		c := newTestConnection(server)
 
-		c.trackSessionLifecycle(types.SMB2Create, 0, 42, types.StatusSuccess)
+		smb.TrackSessionLifecycle(types.SMB2Create, 0, 42, types.StatusSuccess, c)
 
 		c.sessionsMu.Lock()
 		count := len(c.sessions)

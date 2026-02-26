@@ -1,4 +1,4 @@
-package spnego
+package auth
 
 import (
 	"testing"

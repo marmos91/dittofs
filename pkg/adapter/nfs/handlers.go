@@ -88,7 +88,7 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 	result, err := procedure.Handler(
 		handlerCtx,
 		c.server.nfsHandler,
-		c.server.registry,
+		c.server.Registry,
 		data,
 	)
 
@@ -137,7 +137,7 @@ func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCC
 	result, err := procedure.Handler(
 		handlerCtx,
 		c.server.mountHandler,
-		c.server.registry,
+		c.server.Registry,
 		data,
 	)
 
@@ -203,7 +203,7 @@ func (c *NFSConnection) handleNLMProcedure(ctx context.Context, call *rpc.RPCCal
 	result, err := procedure.Handler(
 		handlerCtx,
 		c.server.nlmHandler,
-		c.server.registry,
+		c.server.Registry,
 		data,
 	)
 
@@ -325,11 +325,11 @@ func (c *NFSConnection) handleNFSv4Procedure(ctx context.Context, call *rpc.RPCC
 // settings. Reads from the runtime's settings watcher for hot-reload support.
 // Used for NFSv3 dispatch; NFSv4 has its own blocked ops mechanism via Handler.SetBlockedOps.
 func (c *NFSConnection) isOperationBlocked(opName string) bool {
-	if c.server.registry == nil {
+	if c.server.Registry == nil {
 		return false
 	}
 
-	settings := c.server.registry.GetNFSSettings()
+	settings := c.server.Registry.GetNFSSettings()
 	if settings == nil {
 		return false
 	}

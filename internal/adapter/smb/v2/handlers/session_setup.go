@@ -9,10 +9,9 @@ import (
 
 	"github.com/jcmturner/gokrb5/v8/messages"
 	"github.com/jcmturner/gokrb5/v8/service"
+	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/internal/auth/ntlm"
-	"github.com/marmos91/dittofs/internal/auth/spnego"
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
@@ -153,8 +152,8 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	// Try SPNEGO parsing to detect Kerberos vs NTLM
 	if len(req.SecurityBuffer) >= 2 &&
 		(req.SecurityBuffer[0] == 0x60 || req.SecurityBuffer[0] == 0xa0 || req.SecurityBuffer[0] == 0xa1) {
-		parsed, err := spnego.Parse(req.SecurityBuffer)
-		if err == nil && parsed.Type == spnego.TokenTypeInit && parsed.HasKerberos() && len(parsed.MechToken) > 0 {
+		parsed, err := auth.Parse(req.SecurityBuffer)
+		if err == nil && parsed.Type == auth.TokenTypeInit && parsed.HasKerberos() && len(parsed.MechToken) > 0 {
 			// SPNEGO contains a Kerberos token -- route to Kerberos auth
 			logger.Debug("SPNEGO Kerberos token detected, routing to Kerberos auth",
 				"mechTokenLen", len(parsed.MechToken))
@@ -166,16 +165,16 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	ntlmToken, isWrapped := extractNTLMToken(req.SecurityBuffer)
 
 	// Process NTLM message
-	if ntlm.IsValid(ntlmToken) {
-		msgType := ntlm.GetMessageType(ntlmToken)
+	if auth.IsValid(ntlmToken) {
+		msgType := auth.GetMessageType(ntlmToken)
 		logger.Debug("NTLM message detected",
 			"type", msgType,
 			"wrapped", isWrapped)
 
 		switch msgType {
-		case ntlm.Negotiate:
+		case auth.Negotiate:
 			return h.handleNTLMNegotiate(ctx, isWrapped)
-		case ntlm.Authenticate:
+		case auth.Authenticate:
 			// Type 3 without pending auth - create guest session
 			return h.createGuestSession(ctx)
 		}
@@ -195,14 +194,14 @@ func extractNTLMToken(securityBuffer []byte) ([]byte, bool) {
 
 	// Check if this might be SPNEGO-wrapped (GSSAPI or NegTokenResp)
 	if len(securityBuffer) >= 2 && (securityBuffer[0] == 0x60 || securityBuffer[0] == 0xa0 || securityBuffer[0] == 0xa1) {
-		parsed, err := spnego.Parse(securityBuffer)
+		parsed, err := auth.Parse(securityBuffer)
 		if err != nil {
 			logger.Debug("SPNEGO parse failed, treating as raw", "error", err)
 			return securityBuffer, false
 		}
 
 		// Check if NTLM is offered
-		if parsed.Type == spnego.TokenTypeInit && !parsed.HasNTLM() {
+		if parsed.Type == auth.TokenTypeInit && !parsed.HasNTLM() {
 			logger.Debug("SPNEGO token does not offer NTLM")
 			return securityBuffer, false
 		}
@@ -328,7 +327,7 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte) (
 	// The mechToken (AP-REP) is nil because SMB2 does not require it: the SPNEGO
 	// accept-completed negState is sufficient to signal success. Windows clients
 	// and Samba both accept a nil responseToken in the final leg.
-	spnegoResp, err := spnego.BuildAcceptComplete(spnego.OIDKerberosV5, nil)
+	spnegoResp, err := auth.BuildAcceptComplete(auth.OIDKerberosV5, nil)
 	if err != nil {
 		logger.Debug("Failed to build SPNEGO accept response", "error", err)
 		// Auth succeeded but response building failed -- still return success without SPNEGO wrapper
@@ -365,7 +364,7 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool) (
 
 	// Build NTLM Type 2 (CHALLENGE) response
 	// This also returns the server challenge for later validation
-	challengeMsg, serverChallenge := ntlm.BuildChallenge()
+	challengeMsg, serverChallenge := auth.BuildChallenge()
 
 	// Store pending auth to track handshake state
 	// Include the server challenge for NTLMv2 validation in completeNTLMAuth
@@ -385,7 +384,7 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool) (
 	// Windows SSPI requires SPNEGO-wrapped responses throughout the handshake.
 	securityBuffer := challengeMsg
 	if usedSPNEGO {
-		spnegoResp, err := spnego.BuildAcceptIncomplete(spnego.OIDNTLMSSP, challengeMsg)
+		spnegoResp, err := auth.BuildAcceptIncomplete(auth.OIDNTLMSSP, challengeMsg)
 		if err != nil {
 			logger.Debug("Failed to build SPNEGO challenge wrapper", "error", err)
 			// Fall back to raw NTLM
@@ -434,7 +433,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 	ntlmToken, _ := extractNTLMToken(securityBuffer)
 
 	// Parse the AUTHENTICATE message to extract username and domain
-	authMsg, err := ntlm.ParseAuthenticate(ntlmToken)
+	authMsg, err := auth.ParseAuthenticate(ntlmToken)
 	if err != nil {
 		logger.Debug("Failed to parse NTLM AUTHENTICATE message", "error", err)
 		// Fall back to guest session
@@ -488,7 +487,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 				var sessionBaseKey [16]byte
 				var validationErr error
 				for _, domain := range domainsToTry {
-					sessionBaseKey, validationErr = ntlm.ValidateNTLMv2Response(
+					sessionBaseKey, validationErr = auth.ValidateNTLMv2Response(
 						ntHash,
 						authMsg.Username,
 						domain,
@@ -518,11 +517,11 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 				// that we need to decrypt to get the actual signing key.
 				logger.Debug("NTLM key derivation",
 					"sessionID", pending.SessionID,
-					"keyExchFlag", (authMsg.NegotiateFlags&ntlm.FlagKeyExch) != 0,
-					"signFlag", (authMsg.NegotiateFlags&ntlm.FlagSign) != 0,
+					"keyExchFlag", (authMsg.NegotiateFlags&auth.FlagKeyExch) != 0,
+					"signFlag", (authMsg.NegotiateFlags&auth.FlagSign) != 0,
 					"encryptedKeyLen", len(authMsg.EncryptedRandomSessionKey))
 
-				signingKey := ntlm.DeriveSigningKey(
+				signingKey := auth.DeriveSigningKey(
 					sessionBaseKey,
 					authMsg.NegotiateFlags,
 					authMsg.EncryptedRandomSessionKey,
@@ -530,7 +529,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 
 				logger.Debug("Derived signing key",
 					"sessionID", pending.SessionID,
-					"usedKeyExch", (authMsg.NegotiateFlags&ntlm.FlagKeyExch) != 0 && len(authMsg.EncryptedRandomSessionKey) == 16)
+					"usedKeyExch", (authMsg.NegotiateFlags&auth.FlagKeyExch) != 0 && len(authMsg.EncryptedRandomSessionKey) == 16)
 
 				// Authentication successful with validated credentials
 				sess := h.CreateSessionWithUser(pending.SessionID, pending.ClientAddr, user, authMsg.Domain)
@@ -733,7 +732,7 @@ func (h *Handler) buildAuthenticatedResponse(usedSPNEGO bool) *HandlerResult {
 	var acceptToken []byte
 	if usedSPNEGO {
 		var err error
-		acceptToken, err = spnego.BuildAcceptComplete(spnego.OIDNTLMSSP, nil)
+		acceptToken, err = auth.BuildAcceptComplete(auth.OIDNTLMSSP, nil)
 		if err != nil {
 			logger.Debug("Failed to build SPNEGO accept token", "error", err)
 		}

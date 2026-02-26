@@ -1,13 +1,14 @@
-// Package spnego provides SPNEGO (Simple and Protected GSSAPI Negotiation Mechanism)
-// parsing and building for authentication in SMB and NFSv4.
+// Package auth provides authentication for SMB protocol adapters.
 //
-// This package wraps github.com/jcmturner/gokrb5/v8/spnego to provide a clean
-// interface for extracting mechanism tokens and building server responses.
+// This file provides SPNEGO (Simple and Protected GSSAPI Negotiation Mechanism)
+// parsing and building. It wraps github.com/jcmturner/gokrb5/v8/spnego to
+// provide a clean interface for extracting mechanism tokens and building
+// server responses.
 //
 // SPNEGO is defined in RFC 4178 and is used by:
 //   - SMB: Wraps NTLM or Kerberos tokens in SESSION_SETUP
 //   - NFSv4: Used with RPCSEC_GSS for Kerberos authentication
-package spnego
+package auth
 
 import (
 	"errors"

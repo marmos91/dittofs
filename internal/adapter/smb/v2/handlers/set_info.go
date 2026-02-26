@@ -1,7 +1,3 @@
-// Package handlers provides SMB2 command handlers and session management.
-//
-// This file implements the SMB2 SET_INFO command handler [MS-SMB2] 2.2.39, 2.2.40.
-// SET_INFO modifies file, filesystem, or security information for an open file.
 package handlers
 
 import (
@@ -21,31 +17,9 @@ import (
 // ============================================================================
 
 // SetInfoRequest represents an SMB2 SET_INFO request from a client [MS-SMB2] 2.2.39.
-//
 // SET_INFO modifies metadata about a file, directory, filesystem, or security
 // descriptor. The type of modification depends on InfoType and FileInfoClass.
-//
-// **Wire format (32 bytes fixed + variable buffer):**
-//
-//	Offset  Size  Field              Description
-//	0       2     StructureSize      Always 33 (includes 1 byte of buffer)
-//	2       1     InfoType           Type of info: file (1), filesystem (2), security (3), quota (4)
-//	3       1     FileInfoClass      Class of info within type
-//	4       4     BufferLength       Length of buffer data
-//	8       2     BufferOffset       Offset from header to buffer
-//	10      2     Reserved           Reserved (must be 0)
-//	12      4     AdditionalInfo     Additional info for security
-//	16      16    FileId             SMB2 file identifier
-//	32+     var   Buffer             Info data to set
-//
-// **Example:**
-//
-//	req := &SetInfoRequest{
-//	    InfoType:      types.SMB2InfoTypeFile,
-//	    FileInfoClass: FileBasicInformation,
-//	    FileID:        fileID,
-//	    Buffer:        basicInfoBytes,
-//	}
+// The fixed wire format is 32 bytes plus a variable-length buffer.
 type SetInfoRequest struct {
 	// InfoType specifies what type of information to set.
 	// Valid values:
@@ -81,29 +55,13 @@ type SetInfoRequest struct {
 }
 
 // SetInfoResponse represents an SMB2 SET_INFO response to a client [MS-SMB2] 2.2.40.
-//
-// SET_INFO response is minimal - just a status code with no additional data.
-//
-// **Wire format (2 bytes):**
-//
-//	Offset  Size  Field              Description
-//	0       2     StructureSize      Always 2
+// The response is minimal -- a 2-byte structure with only a status code.
 type SetInfoResponse struct {
 	SMBResponseBase // Embeds Status field and GetStatus() method
 }
 
 // FileRenameInfo represents FILE_RENAME_INFORMATION [MS-FSCC] 2.4.34.
-//
-// This structure is used to rename or move a file.
-//
-// **Wire format (variable):**
-//
-//	Offset  Size  Field              Description
-//	0       1     ReplaceIfExists    Replace existing file if true
-//	1       7     Reserved           Reserved
-//	8       8     RootDirectory      Root directory handle (usually 0)
-//	16      4     FileNameLength     Length of filename in bytes
-//	20      var   FileName           New filename (UTF-16LE)
+// Used to rename or move a file.
 type FileRenameInfo struct {
 	// ReplaceIfExists indicates whether to replace an existing file.
 	ReplaceIfExists bool
@@ -124,20 +82,7 @@ type FileRenameInfo struct {
 // ============================================================================
 
 // DecodeSetInfoRequest parses an SMB2 SET_INFO request body [MS-SMB2] 2.2.39.
-//
-// **Parameters:**
-//   - body: Request body starting after the SMB2 header (64 bytes)
-//
-// **Returns:**
-//   - *SetInfoRequest: Parsed request structure
-//   - error: Decoding error if body is malformed
-//
-// **Example:**
-//
-//	req, err := DecodeSetInfoRequest(body)
-//	if err != nil {
-//	    return NewErrorResult(types.StatusInvalidParameter), nil
-//	}
+// Returns an error if the body is less than 32 bytes.
 func DecodeSetInfoRequest(body []byte) (*SetInfoRequest, error) {
 	if len(body) < 32 {
 		return nil, fmt.Errorf("SET_INFO request too short: %d bytes", len(body))
@@ -168,10 +113,6 @@ func DecodeSetInfoRequest(body []byte) (*SetInfoRequest, error) {
 }
 
 // Encode serializes the SetInfoResponse into SMB2 wire format [MS-SMB2] 2.2.40.
-//
-// **Returns:**
-//   - []byte: 2-byte response body
-//   - error: Encoding error (currently always nil)
 func (resp *SetInfoResponse) Encode() ([]byte, error) {
 	buf := make([]byte, 2)
 	binary.LittleEndian.PutUint16(buf[0:2], 2) // StructureSize
@@ -179,13 +120,7 @@ func (resp *SetInfoResponse) Encode() ([]byte, error) {
 }
 
 // DecodeFileRenameInfo parses FILE_RENAME_INFORMATION [MS-FSCC] 2.4.34.
-//
-// **Parameters:**
-//   - buffer: Raw buffer containing rename information
-//
-// **Returns:**
-//   - *FileRenameInfo: Parsed rename information
-//   - error: Decoding error if buffer is malformed
+// Returns an error if the buffer is less than 20 bytes.
 func DecodeFileRenameInfo(buffer []byte) (*FileRenameInfo, error) {
 	if len(buffer) < 20 {
 		return nil, fmt.Errorf("buffer too short for FILE_RENAME_INFORMATION: %d bytes", len(buffer))
@@ -227,46 +162,10 @@ func decodeEndOfFileInfo(buffer []byte) (uint64, error) {
 
 // SetInfo handles SMB2 SET_INFO command [MS-SMB2] 2.2.39, 2.2.40.
 //
-// SET_INFO modifies metadata for an open file handle. This includes
-// file timestamps, attributes, size, and rename operations.
-//
-// **Purpose:**
-//
-// The SET_INFO command allows clients to:
-//   - Set file timestamps and attributes (FileBasicInformation)
-//   - Rename or move files (FileRenameInformation)
-//   - Mark files for deletion (FileDispositionInformation)
-//   - Set file size (FileEndOfFileInformation)
-//   - Modify security descriptors
-//
-// **Process:**
-//
-//  1. Decode and validate the request
-//  2. Look up the open file by FileID
-//  3. Get the metadata store for the share
-//  4. Build authentication context
-//  5. Based on InfoType and FileInfoClass:
-//     - Apply the requested modification
-//     - Update open file state if needed
-//  6. Return success/error status
-//
-// **Error Handling:**
-//
-// Returns appropriate SMB status codes:
-//   - StatusInvalidParameter: Malformed request
-//   - StatusInvalidHandle: Invalid FileID
-//   - StatusBadNetworkName: Share not found
-//   - StatusAccessDenied: Permission denied
-//   - StatusObjectPathNotFound: Rename destination not found
-//   - StatusNotSupported: Unsupported info class
-//
-// **Parameters:**
-//   - ctx: SMB handler context with session information
-//   - req: Parsed SET_INFO request
-//
-// **Returns:**
-//   - *SetInfoResponse: Response (status only)
-//   - error: Internal error (rare)
+// SET_INFO modifies metadata for an open file handle including timestamps,
+// attributes, file size, rename/move operations, delete-on-close disposition,
+// and security descriptors. Dispatches to file or security info handlers
+// based on InfoType.
 func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfoResponse, error) {
 	logger.Debug("SET_INFO request",
 		"infoType", req.InfoType,

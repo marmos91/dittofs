@@ -258,7 +258,7 @@ func (c *NFSConnection) extractShareName(ctx context.Context, data []byte) (stri
 	}
 
 	// Resolve share name from handle using registry
-	shareName, err := c.server.registry.GetShareNameForHandle(ctx, handle)
+	shareName, err := c.server.Registry.GetShareNameForHandle(ctx, handle)
 	if err != nil {
 		return "", fmt.Errorf("resolve share from handle: %w", err)
 	}

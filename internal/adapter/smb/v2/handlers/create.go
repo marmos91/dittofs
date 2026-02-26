@@ -1,8 +1,3 @@
-// Package handlers provides SMB2 command handlers and session management.
-//
-// This file implements the SMB2 CREATE command handler [MS-SMB2] 2.2.13, 2.2.14.
-// CREATE is one of the most complex SMB2 commands, used for both opening
-// existing files and creating new files/directories.
 package handlers
 
 import (
@@ -25,42 +20,10 @@ import (
 
 // CreateRequest represents an SMB2 CREATE request from a client [MS-SMB2] 2.2.13.
 //
-// CREATE is the primary mechanism for clients to:
-//   - Open existing files or directories
-//   - Create new files or directories
-//   - Supersede or overwrite existing files
-//
-// The request specifies the desired file/directory path and various options
-// controlling how the operation should be performed.
-//
-// **Wire format (56 bytes fixed part):**
-//
-//	Offset  Size  Field              Description
-//	0       2     StructureSize      Always 57 (includes 1 byte of buffer)
-//	2       1     SecurityFlags      Security flags (reserved)
-//	3       1     RequestedOplockLevel  Requested oplock level
-//	4       4     ImpersonationLevel    Impersonation level
-//	8       8     SmbCreateFlags     SMB create flags (reserved)
-//	16      8     Reserved           Reserved (must be 0)
-//	24      4     DesiredAccess      Requested access mask
-//	28      4     FileAttributes     Initial file attributes
-//	32      4     ShareAccess        Sharing mode
-//	36      4     CreateDisposition  Create action disposition
-//	40      4     CreateOptions      Create options flags
-//	44      2     NameOffset         Offset to filename from header
-//	46      2     NameLength         Length of filename in bytes
-//	48      4     CreateContextsOffset   Offset to create contexts
-//	52      4     CreateContextsLength   Length of create contexts
-//	56+     var   Buffer             Filename (UTF-16LE) and contexts
-//
-// **Example:**
-//
-//	req := &CreateRequest{
-//	    FileName:          "documents\\report.txt",
-//	    CreateDisposition: types.FileOpenIf,
-//	    CreateOptions:     types.FileNonDirectoryFile,
-//	    DesiredAccess:     0x12019F, // Generic read/write
-//	}
+// CREATE is the primary mechanism for clients to open existing files or
+// directories, create new ones, or supersede/overwrite existing files.
+// The request specifies the desired path and various options controlling
+// how the operation should be performed. The fixed wire format is 56 bytes.
 type CreateRequest struct {
 	// OplockLevel is the requested opportunistic lock level.
 	// Valid values: 0x00 (None), 0x01 (Level II), 0x08 (Batch), 0xFF (Lease)
@@ -119,29 +82,9 @@ type CreateContext struct {
 }
 
 // CreateResponse represents an SMB2 CREATE response to a client [MS-SMB2] 2.2.14.
-//
-// The response contains the outcome of the create operation including
-// the file handle (FileID) and file attributes.
-//
-// **Wire format (88 bytes fixed part):**
-//
-//	Offset  Size  Field              Description
-//	0       2     StructureSize      Always 89 (includes 1 byte of buffer)
-//	2       1     OplockLevel        Granted oplock level
-//	3       1     Flags              Response flags
-//	4       4     CreateAction       Action taken (opened, created, etc.)
-//	8       8     CreationTime       File creation time (FILETIME)
-//	16      8     LastAccessTime     Last access time (FILETIME)
-//	24      8     LastWriteTime      Last write time (FILETIME)
-//	32      8     ChangeTime         Change time (FILETIME)
-//	40      8     AllocationSize     Allocated size in bytes
-//	48      8     EndOfFile          Actual file size in bytes
-//	56      4     FileAttributes     File attributes
-//	60      4     Reserved2          Reserved
-//	64      16    FileId             SMB2 file identifier
-//	80      4     CreateContextsOffset   Offset to response contexts
-//	84      4     CreateContextsLength   Length of response contexts
-//	88+     var   Buffer             Response contexts (if any)
+// The response contains the file handle (FileID), file attributes, timestamps,
+// and the action taken (opened, created, overwritten). The fixed wire format
+// is 88 bytes plus optional create context data.
 type CreateResponse struct {
 	SMBResponseBase // Embeds Status field and GetStatus() method
 
@@ -189,24 +132,9 @@ type CreateResponse struct {
 // ============================================================================
 
 // DecodeCreateRequest parses an SMB2 CREATE request body [MS-SMB2] 2.2.13.
-//
-// This function extracts the fixed header fields and the variable-length
-// filename from the request body.
-//
-// **Parameters:**
-//   - body: Request body starting after the SMB2 header (64 bytes)
-//
-// **Returns:**
-//   - *CreateRequest: Parsed request structure
-//   - error: Decoding error if body is malformed
-//
-// **Example:**
-//
-//	req, err := DecodeCreateRequest(body)
-//	if err != nil {
-//	    return NewErrorResult(types.StatusInvalidParameter), nil
-//	}
-//	// Use req.FileName, req.CreateDisposition, etc.
+// It extracts the fixed header fields and the variable-length filename
+// from the request body starting after the SMB2 header (64 bytes).
+// Returns an error if the body is malformed or too short.
 func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 	if len(body) < 56 {
 		return nil, fmt.Errorf("CREATE request too short: %d bytes", len(body))
@@ -250,20 +178,7 @@ func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 }
 
 // Encode serializes the CreateResponse into SMB2 wire format [MS-SMB2] 2.2.14.
-//
-// **Returns:**
-//   - []byte: 89-byte response body (no create contexts)
-//   - error: Encoding error (currently always nil)
-//
-// **Example:**
-//
-//	resp := &CreateResponse{
-//	    CreateAction:   types.FileCreated,
-//	    FileID:         fileID,
-//	    EndOfFile:      1024,
-//	    FileAttributes: types.FileAttributeNormal,
-//	}
-//	data, err := resp.Encode()
+// Returns an 89-byte response body (no create contexts).
 func (resp *CreateResponse) Encode() ([]byte, error) {
 	// Build response (89 bytes)
 	buf := make([]byte, 89)
@@ -293,53 +208,12 @@ func (resp *CreateResponse) Encode() ([]byte, error) {
 // Create handles SMB2 CREATE command [MS-SMB2] 2.2.13, 2.2.14.
 //
 // CREATE is the fundamental operation for accessing files and directories.
-// It handles both opening existing files and creating new ones.
+// It handles opening existing files, creating new ones, and replacing or
+// superseding existing files based on the CreateDisposition. The response
+// includes the file handle (FileID) and current file attributes.
 //
-// **Purpose:**
-//
-// The CREATE command allows clients to:
-//   - Open existing files for reading or writing
-//   - Create new files or directories
-//   - Replace or supersede existing files
-//   - Request opportunistic locks (oplocks)
-//
-// **Process:**
-//
-//  1. Validate tree connection and session
-//  2. Resolve the file path from the share root
-//  3. Check if the target file/directory exists
-//  4. Apply create disposition rules:
-//     - FILE_SUPERSEDE (0): Replace or create
-//     - FILE_OPEN (1): Open only, fail if not exists
-//     - FILE_CREATE (2): Create only, fail if exists
-//     - FILE_OPEN_IF (3): Open or create
-//     - FILE_OVERWRITE (4): Overwrite only, fail if not exists
-//     - FILE_OVERWRITE_IF (5): Overwrite or create
-//  5. Create or open the file as appropriate
-//  6. Store open file handle in handler state
-//  7. Return file handle and attributes
-//
-// **Error Handling:**
-//
-// Returns appropriate SMB status codes:
-//   - StatusInvalidParameter: Malformed request
-//   - StatusInvalidHandle: Invalid tree ID
-//   - StatusUserSessionDeleted: Invalid session ID
-//   - StatusBadNetworkName: Share not found
-//   - StatusAccessDenied: Permission denied
-//   - StatusObjectPathNotFound: Parent directory not found
-//   - StatusObjectNameNotFound: File not found (for FILE_OPEN)
-//   - StatusObjectNameCollision: File exists (for FILE_CREATE)
-//   - StatusNotADirectory: Expected directory, got file
-//   - StatusFileIsADirectory: Expected file, got directory
-//
-// **Parameters:**
-//   - ctx: SMB handler context with session and tree information
-//   - req: Parsed CREATE request
-//
-// **Returns:**
-//   - *CreateResponse: Response with file handle and attributes
-//   - error: Internal error (rare, most errors returned via response status)
+// Oplock and lease requests are processed for regular files. Named pipe
+// operations on IPC$ are delegated to handlePipeCreate.
 func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateResponse, error) {
 	logger.Debug("CREATE request",
 		"filename", req.FileName,

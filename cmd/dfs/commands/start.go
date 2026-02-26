@@ -240,7 +240,7 @@ func createAdapterFactory(kerberosConfig *config.KerberosConfig) runtime.Adapter
 			return adapter, nil
 
 		case "smb":
-			smbCfg := smb.SMBConfig{
+			smbCfg := smb.Config{
 				Enabled: true,
 				Port:    cfg.Port,
 			}
