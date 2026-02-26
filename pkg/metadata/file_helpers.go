@@ -1,10 +1,6 @@
 package metadata
 
-// ============================================================================
-// File Helpers
-//
-// Path construction utilities and device number encoding/decoding functions.
-// ============================================================================
+import "strings"
 
 // buildPath constructs a full path from parent path and child name.
 func buildPath(parentPath, childName string) string {
@@ -16,19 +12,8 @@ func buildPath(parentPath, childName string) string {
 
 // buildPayloadID constructs a content ID from share name and path.
 func buildPayloadID(shareName, path string) string {
-	// Remove leading "/" from path and combine with share name
-	if len(path) > 0 && path[0] == '/' {
-		path = path[1:]
-	}
-	if len(shareName) > 0 && shareName[0] == '/' {
-		shareName = shareName[1:]
-	}
-	return shareName + "/" + path
+	return strings.TrimPrefix(shareName, "/") + "/" + strings.TrimPrefix(path, "/")
 }
-
-// ============================================================================
-// Device Number Helpers
-// ============================================================================
 
 // MakeRdev encodes major and minor device numbers into a single Rdev value.
 func MakeRdev(major, minor uint32) uint64 {

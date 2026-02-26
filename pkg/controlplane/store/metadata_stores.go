@@ -9,10 +9,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
-// ============================================
-// METADATA STORE OPERATIONS
-// ============================================
-
 func (s *GORMStore) GetMetadataStore(ctx context.Context, name string) (*models.MetadataStoreConfig, error) {
 	return getByField[models.MetadataStoreConfig](s.db, ctx, "name", name, models.ErrStoreNotFound)
 }

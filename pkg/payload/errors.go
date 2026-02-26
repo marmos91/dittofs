@@ -6,14 +6,8 @@ import (
 	"time"
 )
 
-// ============================================================================
-// Standard Block Service Errors
-// ============================================================================
-
-// These errors provide a consistent way to indicate common failure conditions
-// across block operations. Protocol handlers should check for these errors
+// Standard block service errors. Protocol handlers should check for these errors
 // and map them to appropriate protocol-specific error codes.
-
 var (
 	// ErrContentNotFound indicates the requested content does not exist.
 	//
@@ -124,10 +118,6 @@ var (
 	//   - HTTP: 503 Service Unavailable
 	ErrUnavailable = errors.New("storage unavailable")
 )
-
-// ============================================================================
-// Structured Payload Error
-// ============================================================================
 
 // PayloadError wraps sentinel payload errors with structured debugging context.
 //

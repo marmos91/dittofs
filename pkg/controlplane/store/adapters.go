@@ -7,10 +7,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
-// ============================================
-// ADAPTER OPERATIONS
-// ============================================
-
 func (s *GORMStore) GetAdapter(ctx context.Context, adapterType string) (*models.AdapterConfig, error) {
 	return getByField[models.AdapterConfig](s.db, ctx, "type", adapterType, models.ErrAdapterNotFound)
 }

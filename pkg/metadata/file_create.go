@@ -6,10 +6,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
-// ============================================================================
-// File Creation Operations (MetadataService methods)
-// ============================================================================
-
 // CreateFile creates a new regular file in a directory.
 func (s *MetadataService) CreateFile(ctx *AuthContext, parentHandle FileHandle, name string, attr *FileAttr) (*File, error) {
 	return s.createEntry(ctx, parentHandle, name, attr, FileTypeRegular, "", 0, 0)
@@ -234,18 +230,13 @@ func (s *MetadataService) createEntry(
 	identity := ctx.Identity
 	isRoot := identity != nil && identity.UID != nil && *identity.UID == 0
 	if !isRoot {
-		// SUID (04000): Only root can set on new files (owner will be the caller anyway)
-		// But we still strip it for non-root to be safe
-		if newAttr.Mode&0o4000 != 0 {
-			newAttr.Mode &= ^uint32(0o4000)
-		}
+		// SUID (04000): Only root can set on new files
+		newAttr.Mode &= ^uint32(0o4000)
 
-		// SGID (02000): For regular files, non-root can only set if member of file's group
-		// For directories, SGID is allowed (inherited above or explicitly requested)
-		if fileType != FileTypeDirectory && newAttr.Mode&0o2000 != 0 {
-			if !identity.HasGID(newAttr.GID) {
-				newAttr.Mode &= ^uint32(0o2000)
-			}
+		// SGID (02000): For regular files, non-root can only set if member of file's group.
+		// For directories, SGID is allowed (inherited above or explicitly requested).
+		if fileType != FileTypeDirectory && newAttr.Mode&0o2000 != 0 && !identity.HasGID(newAttr.GID) {
+			newAttr.Mode &= ^uint32(0o2000)
 		}
 	}
 

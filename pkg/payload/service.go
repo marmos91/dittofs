@@ -46,7 +46,7 @@ const (
 //	n, err := svc.ReadAt(ctx, payloadID, buf, offset)
 //	err := svc.Flush(ctx, payloadID)  // NFS COMMIT / SMB CLOSE
 type PayloadService struct {
-	cache           *cache.Cache
+	cache     *cache.Cache
 	offloader *offloader.Offloader
 }
 
@@ -64,7 +64,7 @@ func New(c *cache.Cache, tm *offloader.Offloader) (*PayloadService, error) {
 	}
 
 	return &PayloadService{
-		cache:           c,
+		cache:     c,
 		offloader: tm,
 	}, nil
 }

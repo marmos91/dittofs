@@ -347,10 +347,6 @@ func TestNFSAdapterSettings_BlockedOperations(t *testing.T) {
 	}
 }
 
-// ============================================
-// NETGROUP STORE TESTS
-// ============================================
-
 func TestCreateNetgroup(t *testing.T) {
 	s := createTestStore(t)
 	ctx := context.Background()

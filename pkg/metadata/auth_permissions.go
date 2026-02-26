@@ -6,10 +6,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
-// ============================================================================
-// Access Control
-// ============================================================================
-
 // AccessDecision contains the result of a share-level access control check.
 //
 // This is returned by CheckShareAccess to inform the protocol handler whether
@@ -146,10 +142,6 @@ func (s *MetadataService) CheckShareAccess(ctx context.Context, shareName, clien
 	return decision, authCtx, nil
 }
 
-// ============================================================================
-// Permission Types
-// ============================================================================
-
 // Permission represents filesystem permission flags.
 //
 // These are generic permission flags that map to different protocol-specific
@@ -183,10 +175,6 @@ const (
 	PermissionChangeOwnership
 )
 
-// ============================================================================
-// Permission Checking
-// ============================================================================
-
 // CalculatePermissionsFromBits converts Unix permission bits (rwx) to Permission flags.
 //
 // Maps the 3-bit Unix permission pattern to the internal Permission type:
@@ -219,10 +207,6 @@ func CheckOtherPermissions(mode uint32, requested Permission) Permission {
 	granted := CalculatePermissionsFromBits(otherBits)
 	return granted & requested
 }
-
-// ============================================================================
-// Permission Checking Methods (MetadataService)
-// ============================================================================
 
 // checkFilePermissions performs Unix-style permission checking on a file.
 //
@@ -429,53 +413,32 @@ func evaluateWithACL(fileACL *acl.ACL, evalCtx *acl.EvaluateContext, requested P
 	return granted & requested
 }
 
-// checkWritePermission checks write permission on a file.
-func (s *MetadataService) checkWritePermission(ctx *AuthContext, handle FileHandle) error {
-	granted, err := s.checkFilePermissions(ctx, handle, PermissionWrite)
+// checkPermission checks a single permission flag on a file.
+func (s *MetadataService) checkPermission(ctx *AuthContext, handle FileHandle, perm Permission, msg string) error {
+	granted, err := s.checkFilePermissions(ctx, handle, perm)
 	if err != nil {
 		return err
 	}
-
-	if granted&PermissionWrite == 0 {
+	if granted&perm == 0 {
 		return &StoreError{
 			Code:    ErrAccessDenied,
-			Message: "write permission denied",
+			Message: msg,
 		}
 	}
-
 	return nil
+}
+
+// checkWritePermission checks write permission on a file.
+func (s *MetadataService) checkWritePermission(ctx *AuthContext, handle FileHandle) error {
+	return s.checkPermission(ctx, handle, PermissionWrite, "write permission denied")
 }
 
 // checkReadPermission checks read permission on a file.
 func (s *MetadataService) checkReadPermission(ctx *AuthContext, handle FileHandle) error {
-	granted, err := s.checkFilePermissions(ctx, handle, PermissionRead)
-	if err != nil {
-		return err
-	}
-
-	if granted&PermissionRead == 0 {
-		return &StoreError{
-			Code:    ErrAccessDenied,
-			Message: "read permission denied",
-		}
-	}
-
-	return nil
+	return s.checkPermission(ctx, handle, PermissionRead, "read permission denied")
 }
 
 // checkExecutePermission checks execute/traverse permission on a file.
 func (s *MetadataService) checkExecutePermission(ctx *AuthContext, handle FileHandle) error {
-	granted, err := s.checkFilePermissions(ctx, handle, PermissionExecute)
-	if err != nil {
-		return err
-	}
-
-	if granted&PermissionExecute == 0 {
-		return &StoreError{
-			Code:    ErrAccessDenied,
-			Message: "execute permission denied",
-		}
-	}
-
-	return nil
+	return s.checkPermission(ctx, handle, PermissionExecute, "execute permission denied")
 }

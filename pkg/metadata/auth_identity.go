@@ -8,10 +8,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
-// ============================================================================
-// Authentication Context
-// ============================================================================
-
 // AuthContext contains authentication information for access control checks.
 //
 // This is passed to all operations that require permission checking. It contains
@@ -48,10 +44,6 @@ type AuthContext struct {
 	// write permission.
 	ShareWritable bool
 }
-
-// ============================================================================
-// Identity Types
-// ============================================================================
 
 // Identity represents a client's identity across different authentication systems.
 //
@@ -171,10 +163,6 @@ type IdentityMapping struct {
 	// Example: "S-1-5-7" (ANONYMOUS LOGON)
 	AnonymousSID *string
 }
-
-// ============================================================================
-// Identity Mapping
-// ============================================================================
 
 // Pre-compiled regular expression for Administrator SID validation.
 var (

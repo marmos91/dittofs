@@ -223,22 +223,14 @@ func ReconcileMetadata(
 // PayloadID format: "shareName/path/to/file"
 // Returns empty string if format is invalid.
 func parseShareName(payloadID string) string {
+	payloadID = strings.TrimPrefix(payloadID, "/")
 	if payloadID == "" {
 		return ""
 	}
-	// Remove leading slash if present
-	payloadID = strings.TrimPrefix(payloadID, "/")
 
-	// Find first path separator
-	idx := strings.Index(payloadID, "/")
-	if idx <= 0 {
-		// No separator or starts with separator - return entire string as share name
-		// This handles cases like "export" (file at root of share)
-		if idx == 0 {
-			return ""
-		}
-		return payloadID
+	share, _, found := strings.Cut(payloadID, "/")
+	if !found {
+		return payloadID // No separator: "export" (file at root of share)
 	}
-
-	return payloadID[:idx]
+	return share
 }

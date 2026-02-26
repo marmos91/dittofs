@@ -11,10 +11,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/cache"
 )
 
-// ============================================================================
-// Eager Upload
-// ============================================================================
-
 // OnWriteComplete is called after a write completes in the cache.
 // It checks if any 4MB blocks are ready for upload and starts async uploads.
 //
@@ -370,14 +366,10 @@ func (m *Offloader) uploadRemainingBlocks(ctx context.Context, payloadID string)
 // uploadBlock uploads a single block from cache to block store.
 // Called by queue workers for block-level upload requests (eager upload).
 func (m *Offloader) uploadBlock(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) error {
-	m.mu.RLock()
-	if m.closed {
-		m.mu.RUnlock()
+	if !m.canProcess(ctx) {
 		return fmt.Errorf("offloader is closed")
 	}
-	m.mu.RUnlock()
 
-	// Read block data from cache
 	blockOffset := blockIdx * BlockSize
 	dataPtr := blockPool.Get().(*[]byte)
 	defer blockPool.Put(dataPtr)

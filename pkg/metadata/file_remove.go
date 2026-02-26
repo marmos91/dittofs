@@ -4,10 +4,6 @@ import (
 	"time"
 )
 
-// ============================================================================
-// File Removal Operations (MetadataService methods)
-// ============================================================================
-
 // RemoveFile removes a file from its parent directory.
 //
 // This handles:

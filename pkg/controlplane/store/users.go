@@ -13,10 +13,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
-// ============================================
-// USER OPERATIONS
-// ============================================
-
 func (s *GORMStore) GetUser(ctx context.Context, username string) (*models.User, error) {
 	return getByField[models.User](s.db, ctx, "username", username, models.ErrUserNotFound, "Groups", "SharePermissions")
 }
@@ -130,10 +126,6 @@ func (s *GORMStore) ValidateCredentials(ctx context.Context, username, password 
 
 	return user, nil
 }
-
-// ============================================
-// ADMIN INITIALIZATION
-// ============================================
 
 func (s *GORMStore) EnsureAdminUser(ctx context.Context) (string, error) {
 	// Check if admin exists

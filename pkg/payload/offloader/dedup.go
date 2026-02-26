@@ -9,10 +9,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// ============================================================================
-// Upload State Management & Deduplication
-// ============================================================================
-
 // getOrCreateUploadState returns the upload state for a file, creating it if needed.
 func (m *Offloader) getOrCreateUploadState(payloadID string) *fileUploadState {
 	m.uploadsMu.Lock()
@@ -102,7 +98,6 @@ func (m *Offloader) getOrderedBlockHashes(payloadID string) [][32]byte {
 }
 
 // invokeFinalizationCallback calls the finalization callback with ordered block hashes.
-// This is a helper to deduplicate code between Flush and flushSmallFileSync.
 func (m *Offloader) invokeFinalizationCallback(ctx context.Context, payloadID string) {
 	m.mu.RLock()
 	callback := m.onFinalized

@@ -15,10 +15,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/marmos91/dittofs/pkg/cache"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+	"github.com/marmos91/dittofs/pkg/payload/offloader"
 	"github.com/marmos91/dittofs/pkg/payload/store"
 	blockmemory "github.com/marmos91/dittofs/pkg/payload/store/memory"
 	blocks3 "github.com/marmos91/dittofs/pkg/payload/store/s3"
-	"github.com/marmos91/dittofs/pkg/payload/offloader"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )

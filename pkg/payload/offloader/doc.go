@@ -19,6 +19,6 @@
 //   - In-flight deduplication: Avoid duplicate downloads for the same block
 //   - Non-blocking: Most operations return immediately; I/O happens in background
 //
-// The Offloader struct (formerly TransferManager) is the main entry point.
+// The Offloader struct is the main entry point.
 // It is created via New() and requires a Cache, BlockStore, and ObjectStore.
 package offloader

@@ -9,10 +9,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
-// ============================================
-// PAYLOAD STORE OPERATIONS
-// ============================================
-
 func (s *GORMStore) GetPayloadStore(ctx context.Context, name string) (*models.PayloadStoreConfig, error) {
 	return getByField[models.PayloadStoreConfig](s.db, ctx, "name", name, models.ErrStoreNotFound)
 }

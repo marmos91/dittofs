@@ -572,29 +572,138 @@ func newFilesystemEnvForBench(b *testing.B) *testEnv {
 	return &testEnv{cache: c, blockStore: bs, objectStore: objStore, offloader: m, cleanup: func() { m.Close(); bs.Close(); os.RemoveAll(tmpDir) }}
 }
 
-func BenchmarkUpload_Memory(b *testing.B)                { env := newMemoryEnvForBench(b); defer env.cleanup(); benchmarkUpload(b, env) }
-func BenchmarkUpload_Filesystem(b *testing.B)            { env := newFilesystemEnvForBench(b); defer env.cleanup(); benchmarkUpload(b, env) }
-func BenchmarkDownload_Memory(b *testing.B)              { env := newMemoryEnvForBench(b); defer env.cleanup(); benchmarkDownload(b, env) }
-func BenchmarkDownload_Filesystem(b *testing.B)          { env := newFilesystemEnvForBench(b); defer env.cleanup(); benchmarkDownload(b, env) }
-func BenchmarkFlush_Memory(b *testing.B)                 { env := newMemoryEnvForBench(b); defer env.cleanup(); benchmarkFlush(b, env) }
-func BenchmarkFlush_Filesystem(b *testing.B)             { env := newFilesystemEnvForBench(b); defer env.cleanup(); benchmarkFlush(b, env) }
-func BenchmarkConcurrentUpload_Memory(b *testing.B)      { env := newMemoryEnvForBench(b); defer env.cleanup(); benchmarkConcurrentUpload(b, env, 4) }
-func BenchmarkConcurrentUpload_Filesystem(b *testing.B)  { env := newFilesystemEnvForBench(b); defer env.cleanup(); benchmarkConcurrentUpload(b, env, 4) }
-func BenchmarkLargeFile_16MB_Memory(b *testing.B)        { env := newMemoryEnvForBench(b); defer env.cleanup(); benchmarkLargeFile(b, env, 16*1024*1024) }
-func BenchmarkLargeFile_64MB_Memory(b *testing.B)        { env := newMemoryEnvForBench(b); defer env.cleanup(); benchmarkLargeFile(b, env, 64*1024*1024) }
-func BenchmarkLargeFile_16MB_Filesystem(b *testing.B)    { env := newFilesystemEnvForBench(b); defer env.cleanup(); benchmarkLargeFile(b, env, 16*1024*1024) }
-func BenchmarkLargeFile_64MB_Filesystem(b *testing.B)    { env := newFilesystemEnvForBench(b); defer env.cleanup(); benchmarkLargeFile(b, env, 64*1024*1024) }
-func BenchmarkSequentialWrite_32KB_Memory(b *testing.B)  { env := newMemoryEnvForBench(b); defer env.cleanup(); benchmarkSequentialWrite(b, env, 32*1024) }
-func BenchmarkSequentialWrite_64KB_Memory(b *testing.B)  { env := newMemoryEnvForBench(b); defer env.cleanup(); benchmarkSequentialWrite(b, env, 64*1024) }
-func BenchmarkSequentialWrite_32KB_Filesystem(b *testing.B) { env := newFilesystemEnvForBench(b); defer env.cleanup(); benchmarkSequentialWrite(b, env, 32*1024) }
+func BenchmarkUpload_Memory(b *testing.B) {
+	env := newMemoryEnvForBench(b)
+	defer env.cleanup()
+	benchmarkUpload(b, env)
+}
+func BenchmarkUpload_Filesystem(b *testing.B) {
+	env := newFilesystemEnvForBench(b)
+	defer env.cleanup()
+	benchmarkUpload(b, env)
+}
+func BenchmarkDownload_Memory(b *testing.B) {
+	env := newMemoryEnvForBench(b)
+	defer env.cleanup()
+	benchmarkDownload(b, env)
+}
+func BenchmarkDownload_Filesystem(b *testing.B) {
+	env := newFilesystemEnvForBench(b)
+	defer env.cleanup()
+	benchmarkDownload(b, env)
+}
+func BenchmarkFlush_Memory(b *testing.B) {
+	env := newMemoryEnvForBench(b)
+	defer env.cleanup()
+	benchmarkFlush(b, env)
+}
+func BenchmarkFlush_Filesystem(b *testing.B) {
+	env := newFilesystemEnvForBench(b)
+	defer env.cleanup()
+	benchmarkFlush(b, env)
+}
+func BenchmarkConcurrentUpload_Memory(b *testing.B) {
+	env := newMemoryEnvForBench(b)
+	defer env.cleanup()
+	benchmarkConcurrentUpload(b, env, 4)
+}
+func BenchmarkConcurrentUpload_Filesystem(b *testing.B) {
+	env := newFilesystemEnvForBench(b)
+	defer env.cleanup()
+	benchmarkConcurrentUpload(b, env, 4)
+}
+func BenchmarkLargeFile_16MB_Memory(b *testing.B) {
+	env := newMemoryEnvForBench(b)
+	defer env.cleanup()
+	benchmarkLargeFile(b, env, 16*1024*1024)
+}
+func BenchmarkLargeFile_64MB_Memory(b *testing.B) {
+	env := newMemoryEnvForBench(b)
+	defer env.cleanup()
+	benchmarkLargeFile(b, env, 64*1024*1024)
+}
+func BenchmarkLargeFile_16MB_Filesystem(b *testing.B) {
+	env := newFilesystemEnvForBench(b)
+	defer env.cleanup()
+	benchmarkLargeFile(b, env, 16*1024*1024)
+}
+func BenchmarkLargeFile_64MB_Filesystem(b *testing.B) {
+	env := newFilesystemEnvForBench(b)
+	defer env.cleanup()
+	benchmarkLargeFile(b, env, 64*1024*1024)
+}
+func BenchmarkSequentialWrite_32KB_Memory(b *testing.B) {
+	env := newMemoryEnvForBench(b)
+	defer env.cleanup()
+	benchmarkSequentialWrite(b, env, 32*1024)
+}
+func BenchmarkSequentialWrite_64KB_Memory(b *testing.B) {
+	env := newMemoryEnvForBench(b)
+	defer env.cleanup()
+	benchmarkSequentialWrite(b, env, 64*1024)
+}
+func BenchmarkSequentialWrite_32KB_Filesystem(b *testing.B) {
+	env := newFilesystemEnvForBench(b)
+	defer env.cleanup()
+	benchmarkSequentialWrite(b, env, 32*1024)
+}
 
-func BenchmarkUpload_S3(b *testing.B)               { env := newS3EnvForBench(b); if env == nil { b.Skip("S3 environment not available") }; defer env.cleanup(); benchmarkUpload(b, env) }
-func BenchmarkDownload_S3(b *testing.B)             { env := newS3EnvForBench(b); if env == nil { b.Skip("S3 environment not available") }; defer env.cleanup(); benchmarkDownload(b, env) }
-func BenchmarkFlush_S3(b *testing.B)                { env := newS3EnvForBench(b); if env == nil { b.Skip("S3 environment not available") }; defer env.cleanup(); benchmarkFlush(b, env) }
-func BenchmarkConcurrentUpload_S3(b *testing.B)     { env := newS3EnvForBench(b); if env == nil { b.Skip("S3 environment not available") }; defer env.cleanup(); benchmarkConcurrentUpload(b, env, 4) }
-func BenchmarkLargeFile_16MB_S3(b *testing.B)       { env := newS3EnvForBench(b); if env == nil { b.Skip("S3 environment not available") }; defer env.cleanup(); benchmarkLargeFile(b, env, 16*1024*1024) }
-func BenchmarkLargeFile_64MB_S3(b *testing.B)       { env := newS3EnvForBench(b); if env == nil { b.Skip("S3 environment not available") }; defer env.cleanup(); benchmarkLargeFile(b, env, 64*1024*1024) }
-func BenchmarkSequentialWrite_32KB_S3(b *testing.B) { env := newS3EnvForBench(b); if env == nil { b.Skip("S3 environment not available") }; defer env.cleanup(); benchmarkSequentialWrite(b, env, 32*1024) }
+func BenchmarkUpload_S3(b *testing.B) {
+	env := newS3EnvForBench(b)
+	if env == nil {
+		b.Skip("S3 environment not available")
+	}
+	defer env.cleanup()
+	benchmarkUpload(b, env)
+}
+func BenchmarkDownload_S3(b *testing.B) {
+	env := newS3EnvForBench(b)
+	if env == nil {
+		b.Skip("S3 environment not available")
+	}
+	defer env.cleanup()
+	benchmarkDownload(b, env)
+}
+func BenchmarkFlush_S3(b *testing.B) {
+	env := newS3EnvForBench(b)
+	if env == nil {
+		b.Skip("S3 environment not available")
+	}
+	defer env.cleanup()
+	benchmarkFlush(b, env)
+}
+func BenchmarkConcurrentUpload_S3(b *testing.B) {
+	env := newS3EnvForBench(b)
+	if env == nil {
+		b.Skip("S3 environment not available")
+	}
+	defer env.cleanup()
+	benchmarkConcurrentUpload(b, env, 4)
+}
+func BenchmarkLargeFile_16MB_S3(b *testing.B) {
+	env := newS3EnvForBench(b)
+	if env == nil {
+		b.Skip("S3 environment not available")
+	}
+	defer env.cleanup()
+	benchmarkLargeFile(b, env, 16*1024*1024)
+}
+func BenchmarkLargeFile_64MB_S3(b *testing.B) {
+	env := newS3EnvForBench(b)
+	if env == nil {
+		b.Skip("S3 environment not available")
+	}
+	defer env.cleanup()
+	benchmarkLargeFile(b, env, 64*1024*1024)
+}
+func BenchmarkSequentialWrite_32KB_S3(b *testing.B) {
+	env := newS3EnvForBench(b)
+	if env == nil {
+		b.Skip("S3 environment not available")
+	}
+	defer env.cleanup()
+	benchmarkSequentialWrite(b, env, 32*1024)
+}
 
 func benchmarkUpload(b *testing.B, env *testEnv) {
 	ctx := context.Background()
@@ -603,9 +712,13 @@ func benchmarkUpload(b *testing.B, env *testEnv) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		payloadID := fmt.Sprintf("export/bench-upload-%d.bin", i)
-		if err := env.cache.WriteAt(ctx, payloadID, 0, data, 0); err != nil { b.Fatalf("Write failed: %v", err) }
+		if err := env.cache.WriteAt(ctx, payloadID, 0, data, 0); err != nil {
+			b.Fatalf("Write failed: %v", err)
+		}
 		env.offloader.OnWriteComplete(ctx, payloadID, 0, 0, uint32(BlockSize))
-		if _, err := env.offloader.Flush(ctx, payloadID); err != nil { b.Fatalf("Flush failed: %v", err) }
+		if _, err := env.offloader.Flush(ctx, payloadID); err != nil {
+			b.Fatalf("Flush failed: %v", err)
+		}
 	}
 }
 
@@ -615,13 +728,17 @@ func benchmarkDownload(b *testing.B, env *testEnv) {
 	for i := 0; i < b.N; i++ {
 		payloadID := fmt.Sprintf("export/bench-download-%d.bin", i)
 		blockKey := FormatBlockKey(payloadID, 0, 0)
-		if err := env.blockStore.WriteBlock(ctx, blockKey, data); err != nil { b.Fatalf("WriteBlock failed: %v", err) }
+		if err := env.blockStore.WriteBlock(ctx, blockKey, data); err != nil {
+			b.Fatalf("WriteBlock failed: %v", err)
+		}
 	}
 	b.SetBytes(int64(BlockSize))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		payloadID := fmt.Sprintf("export/bench-download-%d.bin", i)
-		if err := env.offloader.EnsureAvailable(ctx, payloadID, 0, 0, BlockSize); err != nil { b.Fatalf("EnsureAvailable failed: %v", err) }
+		if err := env.offloader.EnsureAvailable(ctx, payloadID, 0, 0, BlockSize); err != nil {
+			b.Fatalf("EnsureAvailable failed: %v", err)
+		}
 	}
 }
 
@@ -632,8 +749,12 @@ func benchmarkFlush(b *testing.B, env *testEnv) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		payloadID := fmt.Sprintf("export/bench-flush-%d.bin", i)
-		if err := env.cache.WriteAt(ctx, payloadID, 0, data[:BlockSize/2], 0); err != nil { b.Fatalf("Write failed: %v", err) }
-		if _, err := env.offloader.Flush(ctx, payloadID); err != nil { b.Fatalf("Flush failed: %v", err) }
+		if err := env.cache.WriteAt(ctx, payloadID, 0, data[:BlockSize/2], 0); err != nil {
+			b.Fatalf("Write failed: %v", err)
+		}
+		if _, err := env.offloader.Flush(ctx, payloadID); err != nil {
+			b.Fatalf("Flush failed: %v", err)
+		}
 	}
 }
 
@@ -649,7 +770,9 @@ func benchmarkConcurrentUpload(b *testing.B, env *testEnv, parallelism int) {
 			go func(fileIdx int) {
 				defer wg.Done()
 				payloadID := fmt.Sprintf("export/bench-concurrent-%d-%d.bin", i, fileIdx)
-				if err := env.cache.WriteAt(ctx, payloadID, 0, data, 0); err != nil { return }
+				if err := env.cache.WriteAt(ctx, payloadID, 0, data, 0); err != nil {
+					return
+				}
 				env.offloader.OnWriteComplete(ctx, payloadID, 0, 0, uint32(BlockSize))
 				env.offloader.Flush(ctx, payloadID)
 			}(j)
@@ -668,11 +791,17 @@ func benchmarkLargeFile(b *testing.B, env *testEnv, fileSize int) {
 		payloadID := fmt.Sprintf("export/large-file-%d.bin", i)
 		for offset := 0; offset < fileSize; offset += writeChunkSize {
 			end := offset + writeChunkSize
-			if end > fileSize { end = fileSize }
-			if err := env.cache.WriteAt(ctx, payloadID, 0, data[offset:end], uint32(offset)); err != nil { b.Fatalf("Write failed: %v", err) }
+			if end > fileSize {
+				end = fileSize
+			}
+			if err := env.cache.WriteAt(ctx, payloadID, 0, data[offset:end], uint32(offset)); err != nil {
+				b.Fatalf("Write failed: %v", err)
+			}
 			env.offloader.OnWriteComplete(ctx, payloadID, 0, uint32(offset), uint32(end-offset))
 		}
-		if _, err := env.offloader.Flush(ctx, payloadID); err != nil { b.Fatalf("Flush failed: %v", err) }
+		if _, err := env.offloader.Flush(ctx, payloadID); err != nil {
+			b.Fatalf("Flush failed: %v", err)
+		}
 	}
 }
 
@@ -687,7 +816,9 @@ func benchmarkSequentialWrite(b *testing.B, env *testEnv, writeSize int) {
 		fileOffset := uint64(i) * uint64(writeSize)
 		chunkIdx := uint32(fileOffset / uint64(cache.ChunkSize))
 		offsetInChunk := uint32(fileOffset % uint64(cache.ChunkSize))
-		if err := env.cache.WriteAt(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil { b.Fatalf("Write failed: %v", err) }
+		if err := env.cache.WriteAt(ctx, payloadID, chunkIdx, data, offsetInChunk); err != nil {
+			b.Fatalf("Write failed: %v", err)
+		}
 		env.offloader.OnWriteComplete(ctx, payloadID, chunkIdx, offsetInChunk, uint32(writeSize))
 	}
 	b.StopTimer()
@@ -698,33 +829,67 @@ func benchmarkSequentialWrite(b *testing.B, env *testEnv, writeSize int) {
 // Deduplication Tests
 // ============================================================================
 
-func TestOffloader_Deduplication_Memory(t *testing.T)     { env := newMemoryEnv(t); defer env.cleanup(); testDeduplication(t, env) }
-func TestOffloader_Deduplication_Filesystem(t *testing.T) { env := newFilesystemEnv(t); defer env.cleanup(); testDeduplication(t, env) }
+func TestOffloader_Deduplication_Memory(t *testing.T) {
+	env := newMemoryEnv(t)
+	defer env.cleanup()
+	testDeduplication(t, env)
+}
+func TestOffloader_Deduplication_Filesystem(t *testing.T) {
+	env := newFilesystemEnv(t)
+	defer env.cleanup()
+	testDeduplication(t, env)
+}
 
 func testDeduplication(t *testing.T, env *testEnv) {
 	ctx := context.Background()
 	data := make([]byte, BlockSize)
-	for i := range data { data[i] = byte(i % 256) }
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
 	payloadID1 := "export/dedup-file1.bin"
 	payloadID2 := "export/dedup-file2.bin"
-	if err := env.cache.WriteAt(ctx, payloadID1, 0, data, 0); err != nil { t.Fatalf("Write to file1 failed: %v", err) }
+	if err := env.cache.WriteAt(ctx, payloadID1, 0, data, 0); err != nil {
+		t.Fatalf("Write to file1 failed: %v", err)
+	}
 	env.offloader.OnWriteComplete(ctx, payloadID1, 0, 0, uint32(BlockSize))
 	result1, err := env.offloader.Flush(ctx, payloadID1)
-	if err != nil { t.Fatalf("Flush file1 failed: %v", err) }
-	if !result1.Finalized { t.Error("File1 flush should be finalized") }
-	if err := env.offloader.WaitForEagerUploads(ctx, payloadID1); err != nil { t.Fatalf("WaitForEagerUploads file1 failed: %v", err) }
-	if err := env.cache.WriteAt(ctx, payloadID2, 0, data, 0); err != nil { t.Fatalf("Write to file2 failed: %v", err) }
+	if err != nil {
+		t.Fatalf("Flush file1 failed: %v", err)
+	}
+	if !result1.Finalized {
+		t.Error("File1 flush should be finalized")
+	}
+	if err := env.offloader.WaitForEagerUploads(ctx, payloadID1); err != nil {
+		t.Fatalf("WaitForEagerUploads file1 failed: %v", err)
+	}
+	if err := env.cache.WriteAt(ctx, payloadID2, 0, data, 0); err != nil {
+		t.Fatalf("Write to file2 failed: %v", err)
+	}
 	env.offloader.OnWriteComplete(ctx, payloadID2, 0, 0, uint32(BlockSize))
 	result2, err := env.offloader.Flush(ctx, payloadID2)
-	if err != nil { t.Fatalf("Flush file2 failed: %v", err) }
-	if !result2.Finalized { t.Error("File2 flush should be finalized") }
-	if err := env.offloader.WaitForEagerUploads(ctx, payloadID2); err != nil { t.Fatalf("WaitForEagerUploads file2 failed: %v", err) }
+	if err != nil {
+		t.Fatalf("Flush file2 failed: %v", err)
+	}
+	if !result2.Finalized {
+		t.Error("File2 flush should be finalized")
+	}
+	if err := env.offloader.WaitForEagerUploads(ctx, payloadID2); err != nil {
+		t.Fatalf("WaitForEagerUploads file2 failed: %v", err)
+	}
 	exists1, err := env.offloader.Exists(ctx, payloadID1)
-	if err != nil { t.Fatalf("Exists file1 failed: %v", err) }
-	if !exists1 { t.Error("File1 should exist in block store") }
+	if err != nil {
+		t.Fatalf("Exists file1 failed: %v", err)
+	}
+	if !exists1 {
+		t.Error("File1 should exist in block store")
+	}
 	size1, err := env.offloader.GetFileSize(ctx, payloadID1)
-	if err != nil { t.Fatalf("GetFileSize file1 failed: %v", err) }
-	if size1 != uint64(BlockSize) { t.Errorf("File1 size mismatch: got %d, want %d", size1, BlockSize) }
+	if err != nil {
+		t.Fatalf("GetFileSize file1 failed: %v", err)
+	}
+	if size1 != uint64(BlockSize) {
+		t.Errorf("File1 size mismatch: got %d, want %d", size1, BlockSize)
+	}
 	t.Logf("Deduplication test passed: both files written, dedup should have occurred for file2")
 }
 
@@ -738,18 +903,39 @@ func testDedupWithDifferentData(t *testing.T, env *testEnv) {
 	ctx := context.Background()
 	data1 := make([]byte, BlockSize)
 	data2 := make([]byte, BlockSize)
-	for i := range data1 { data1[i] = byte(i % 256); data2[i] = byte((i + 1) % 256) }
+	for i := range data1 {
+		data1[i] = byte(i % 256)
+		data2[i] = byte((i + 1) % 256)
+	}
 	payloadID1 := "export/unique-file1.bin"
 	payloadID2 := "export/unique-file2.bin"
-	if err := env.cache.WriteAt(ctx, payloadID1, 0, data1, 0); err != nil { t.Fatalf("Write to file1 failed: %v", err) }
+	if err := env.cache.WriteAt(ctx, payloadID1, 0, data1, 0); err != nil {
+		t.Fatalf("Write to file1 failed: %v", err)
+	}
 	env.offloader.OnWriteComplete(ctx, payloadID1, 0, 0, uint32(BlockSize))
-	if _, err := env.offloader.Flush(ctx, payloadID1); err != nil { t.Fatalf("Flush file1 failed: %v", err) }
-	if err := env.offloader.WaitForEagerUploads(ctx, payloadID1); err != nil { t.Fatalf("WaitForEagerUploads file1 failed: %v", err) }
-	if err := env.cache.WriteAt(ctx, payloadID2, 0, data2, 0); err != nil { t.Fatalf("Write to file2 failed: %v", err) }
+	if _, err := env.offloader.Flush(ctx, payloadID1); err != nil {
+		t.Fatalf("Flush file1 failed: %v", err)
+	}
+	if err := env.offloader.WaitForEagerUploads(ctx, payloadID1); err != nil {
+		t.Fatalf("WaitForEagerUploads file1 failed: %v", err)
+	}
+	if err := env.cache.WriteAt(ctx, payloadID2, 0, data2, 0); err != nil {
+		t.Fatalf("Write to file2 failed: %v", err)
+	}
 	env.offloader.OnWriteComplete(ctx, payloadID2, 0, 0, uint32(BlockSize))
-	if _, err := env.offloader.Flush(ctx, payloadID2); err != nil { t.Fatalf("Flush file2 failed: %v", err) }
-	if err := env.offloader.WaitForEagerUploads(ctx, payloadID2); err != nil { t.Fatalf("WaitForEagerUploads file2 failed: %v", err) }
-	exists1, _ := env.offloader.Exists(ctx, payloadID1); if !exists1 { t.Error("File1 should exist") }
-	exists2, _ := env.offloader.Exists(ctx, payloadID2); if !exists2 { t.Error("File2 should exist") }
+	if _, err := env.offloader.Flush(ctx, payloadID2); err != nil {
+		t.Fatalf("Flush file2 failed: %v", err)
+	}
+	if err := env.offloader.WaitForEagerUploads(ctx, payloadID2); err != nil {
+		t.Fatalf("WaitForEagerUploads file2 failed: %v", err)
+	}
+	exists1, _ := env.offloader.Exists(ctx, payloadID1)
+	if !exists1 {
+		t.Error("File1 should exist")
+	}
+	exists2, _ := env.offloader.Exists(ctx, payloadID2)
+	if !exists2 {
+		t.Error("File2 should exist")
+	}
 	t.Logf("Different data test passed: both files uploaded separately (no dedup)")
 }

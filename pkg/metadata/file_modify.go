@@ -8,10 +8,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
-// ============================================================================
-// File Modification Operations (MetadataService methods)
-// ============================================================================
-
 // Lookup resolves a name within a directory to a file handle and attributes.
 //
 // This handles:
@@ -192,20 +188,7 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 	if attrs.UID != nil {
 		// Only root can change owner to a different UID
 		// Owner can set UID to their own UID (no-op for chown(file, same_uid, new_gid))
-		logger.Debug("SetFileAttributes: UID change requested",
-			"handle", fmt.Sprintf("%x", handle),
-			"file_id", file.ID,
-			"file_path", file.Path,
-			"old_uid", file.UID,
-			"new_uid", *attrs.UID,
-			"is_root", isRoot)
 		if *attrs.UID != file.UID && !isRoot {
-			logger.Debug("SetFileAttributes: UID change DENIED (not root)",
-				"handle", fmt.Sprintf("%x", handle),
-				"file_id", file.ID,
-				"file_path", file.Path,
-				"old_uid", file.UID,
-				"new_uid", *attrs.UID)
 			return &StoreError{
 				Code:    ErrPermissionDenied,
 				Message: "only root can change owner",
@@ -214,9 +197,7 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		}
 		if *attrs.UID != file.UID {
 			logger.Debug("SetFileAttributes: UID changed",
-				"handle", fmt.Sprintf("%x", handle),
-				"file_id", file.ID,
-				"file_path", file.Path,
+				"path", file.Path,
 				"old_uid", file.UID,
 				"new_uid", *attrs.UID)
 			file.UID = *attrs.UID
@@ -229,15 +210,8 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		// Root can change to any group
 		// Owner can change to their own supplementary groups
 		if !isRoot {
-			// Check if user is member of target group
-			canChangeGID := false
-			if identity.GID != nil && *identity.GID == *attrs.GID {
-				canChangeGID = true
-			}
-			if !canChangeGID && identity.HasGID(*attrs.GID) {
-				canChangeGID = true
-			}
-			if !canChangeGID {
+			isPrimaryGroup := identity.GID != nil && *identity.GID == *attrs.GID
+			if !isPrimaryGroup && !identity.HasGID(*attrs.GID) {
 				return &StoreError{
 					Code:    ErrPermissionDenied,
 					Message: "not a member of target group",
@@ -289,10 +263,6 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 	}
 
 	if attrs.Mtime != nil {
-		logger.Debug("SetFileAttributes: applying mtime change",
-			"old_mtime", file.Mtime.Unix(),
-			"new_mtime", attrs.Mtime.Unix(),
-			"path", file.Path)
 		file.Mtime = *attrs.Mtime
 		modified = true
 	}
@@ -392,23 +362,6 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 	if err != nil {
 		return err
 	}
-
-	// Debug: Log Move parameters before sticky bit check
-	callerUID := "nil"
-	if ctx.Identity != nil && ctx.Identity.UID != nil {
-		callerUID = fmt.Sprintf("%d", *ctx.Identity.UID)
-	}
-	logger.Debug("Move: before sticky bit check",
-		"src_dir_handle", fmt.Sprintf("%x", fromDir),
-		"src_dir_id", srcDir.ID,
-		"src_dir_uid", srcDir.UID,
-		"src_dir_mode", fmt.Sprintf("%04o", srcDir.Mode),
-		"src_file_handle", fmt.Sprintf("%x", srcHandle),
-		"src_file_id", srcFile.ID,
-		"src_file_uid", srcFile.UID,
-		"caller_uid", callerUID,
-		"from_name", fromName,
-		"to_name", toName)
 
 	// Check sticky bit on source directory
 	if err := CheckStickyBitRestriction(ctx, &srcDir.FileAttr, &srcFile.FileAttr); err != nil {

@@ -4,13 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/cache"
 )
-
-// ============================================================================
-// Download Priority
-// ============================================================================
 
 // waitForDownloads blocks until no downloads are pending.
 // Called by upload goroutines to yield to downloads.
@@ -22,12 +17,7 @@ func (m *Offloader) waitForDownloads() {
 	m.ioCond.L.Unlock()
 }
 
-// ============================================================================
-// Block-Level Download (called by queue workers)
-// ============================================================================
-
 // downloadBlock downloads a single block from the block store and caches it.
-// Called by queue workers for download and prefetch requests.
 func (m *Offloader) downloadBlock(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) error {
 	m.mu.RLock()
 	if m.closed {
@@ -38,17 +28,13 @@ func (m *Offloader) downloadBlock(ctx context.Context, payloadID string, chunkId
 
 	blockKeyStr := FormatBlockKey(payloadID, chunkIdx, blockIdx)
 
-	// Download from block store
 	data, err := m.blockStore.ReadBlock(ctx, blockKeyStr)
 	if err != nil {
 		return fmt.Errorf("download block %s: %w", blockKeyStr, err)
 	}
 
-	// Write to cache using WriteDownloaded which:
-	// - Marks block as Uploaded (evictable) since it's already in S3
-	// - Does NOT count against pendingSize
-	// - Does NOT write to WAL
-	// This allows cache to evict downloaded data under pressure
+	// WriteDownloaded marks block as Uploaded (evictable) since it's already in S3,
+	// does not count against pendingSize, and does not write to WAL.
 	blockOffset := blockIdx * BlockSize
 	if err := m.cache.WriteDownloaded(ctx, payloadID, chunkIdx, data, blockOffset); err != nil {
 		return fmt.Errorf("cache downloaded block %s: %w", blockKeyStr, err)
@@ -56,10 +42,6 @@ func (m *Offloader) downloadBlock(ctx context.Context, payloadID string, chunkId
 
 	return nil
 }
-
-// ============================================================================
-// EnsureAvailable
-// ============================================================================
 
 // EnsureAvailable ensures the requested data range is in cache, downloading if needed.
 // Blocks until data is available. Also triggers prefetch for upcoming blocks.
@@ -76,23 +58,12 @@ func (m *Offloader) EnsureAvailable(ctx context.Context, payloadID string, chunk
 		return nil
 	}
 
-	// DEBUG: Log cache miss for large offsets (2GB+ files)
-	if chunkIdx >= 32 {
-		logger.Debug("EnsureAvailable: cache miss, will download",
-			"payloadID", payloadID,
-			"chunkIdx", chunkIdx,
-			"offset", offset,
-			"length", length)
-	}
-
 	// Calculate which blocks we need
 	startBlockIdx := offset / BlockSize
 	endBlockIdx := (offset + length - 1) / BlockSize
 
-	// Enqueue ALL requests at once: downloads + prefetch (parallel)
 	var doneChannels []chan error
 
-	// 1. Enqueue requested blocks (with Done channels to wait on)
 	for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
 		done := m.enqueueDownload(payloadID, chunkIdx, blockIdx)
 		if done != nil {
@@ -100,16 +71,7 @@ func (m *Offloader) EnsureAvailable(ctx context.Context, payloadID string, chunk
 		}
 	}
 
-	// DEBUG: Log number of downloads enqueued
-	if chunkIdx >= 32 && len(doneChannels) > 0 {
-		logger.Debug("EnsureAvailable: downloads enqueued",
-			"payloadID", payloadID,
-			"chunkIdx", chunkIdx,
-			"downloadsCount", len(doneChannels))
-	}
-
-	// 2. Enqueue prefetch blocks (no Done channel, fire-and-forget)
-	//    This happens IN PARALLEL with the downloads above
+	// Enqueue prefetch blocks (fire-and-forget, parallel with downloads)
 	if m.config.PrefetchBlocks > 0 {
 		blocksPerChunk := uint32(cache.ChunkSize / BlockSize)
 		for i := 0; i < m.config.PrefetchBlocks; i++ {
@@ -121,35 +83,11 @@ func (m *Offloader) EnsureAvailable(ctx context.Context, payloadID string, chunk
 		}
 	}
 
-	// 3. Wait for all requested blocks to complete
-	for i, done := range doneChannels {
-		// DEBUG: Log waiting for download
-		if chunkIdx >= 32 {
-			logger.Debug("EnsureAvailable: waiting for download",
-				"payloadID", payloadID,
-				"chunkIdx", chunkIdx,
-				"downloadIndex", i,
-				"totalDownloads", len(doneChannels))
-		}
+	for _, done := range doneChannels {
 		select {
 		case err := <-done:
 			if err != nil {
-				// DEBUG: Log download error
-				if chunkIdx >= 32 {
-					logger.Debug("EnsureAvailable: download error",
-						"payloadID", payloadID,
-						"chunkIdx", chunkIdx,
-						"downloadIndex", i,
-						"error", err)
-				}
 				return err
-			}
-			// DEBUG: Log download complete
-			if chunkIdx >= 32 {
-				logger.Debug("EnsureAvailable: download complete",
-					"payloadID", payloadID,
-					"chunkIdx", chunkIdx,
-					"downloadIndex", i)
 			}
 		case <-ctx.Done():
 			return ctx.Err()

@@ -7,15 +7,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// ============================================================================
-// Generic GORM Helpers
-// ============================================================================
-//
-// These helpers reduce repetitive CRUD boilerplate across store implementation
-// files. They are unexported (package-internal) and operate on the raw *gorm.DB
-// to avoid coupling to GORMStore. Each helper handles standard concerns like
-// context propagation, preloading, not-found error conversion, and unique
-// constraint detection.
+// Generic GORM helpers that reduce repetitive CRUD boilerplate across store
+// implementation files. Unexported and operate on raw *gorm.DB to avoid coupling
+// to GORMStore.
 
 // getByField retrieves a single record of type T by matching field=value.
 // It applies optional GORM Preload clauses and converts gorm.ErrRecordNotFound

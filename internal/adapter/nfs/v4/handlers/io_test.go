@@ -15,8 +15,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 	memorymeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/payload"
-	storemem "github.com/marmos91/dittofs/pkg/payload/store/memory"
 	"github.com/marmos91/dittofs/pkg/payload/offloader"
+	storemem "github.com/marmos91/dittofs/pkg/payload/store/memory"
 )
 
 // ============================================================================

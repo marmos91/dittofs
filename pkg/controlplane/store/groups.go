@@ -10,10 +10,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
-// ============================================
-// GROUP OPERATIONS
-// ============================================
-
 func (s *GORMStore) GetGroup(ctx context.Context, name string) (*models.Group, error) {
 	return getByField[models.Group](s.db, ctx, "name", name, models.ErrGroupNotFound, "Users", "SharePermissions")
 }
@@ -116,11 +112,7 @@ func (s *GORMStore) RemoveUserFromGroup(ctx context.Context, username, groupName
 			return err
 		}
 
-		// Delete the association - this is idempotent (no error if not exists)
-		if err := tx.Model(&user).Association("Groups").Delete(&group); err != nil {
-			return err
-		}
-		return nil
+		return tx.Model(&user).Association("Groups").Delete(&group)
 	})
 }
 

@@ -11,10 +11,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
-// ============================================
-// NETGROUP OPERATIONS
-// ============================================
-
 func (s *GORMStore) GetNetgroup(ctx context.Context, name string) (*models.Netgroup, error) {
 	return getByField[models.Netgroup](s.db, ctx, "name", name, models.ErrNetgroupNotFound, "Members")
 }

@@ -13,10 +13,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
-// ============================================
-// SHARE OPERATIONS
-// ============================================
-
 func (s *GORMStore) GetShare(ctx context.Context, name string) (*models.Share, error) {
 	return getByField[models.Share](s.db, ctx, "name", name, models.ErrShareNotFound,
 		"MetadataStore", "PayloadStore", "AccessRules", "UserPermissions", "GroupPermissions")
@@ -142,10 +138,6 @@ func (s *GORMStore) GetUserAccessibleShares(ctx context.Context, username string
 	return accessibleShares, nil
 }
 
-// ============================================
-// SHARE ACCESS RULE OPERATIONS
-// ============================================
-
 func (s *GORMStore) GetShareAccessRules(ctx context.Context, shareName string) ([]*models.ShareAccessRule, error) {
 	share, err := s.GetShare(ctx, shareName)
 	if err != nil {
@@ -212,10 +204,6 @@ func (s *GORMStore) RemoveShareAccessRule(ctx context.Context, shareName, ruleID
 		return tx.Where("id = ? AND share_id = ?", ruleID, share.ID).Delete(&models.ShareAccessRule{}).Error
 	})
 }
-
-// ============================================
-// GUEST ACCESS OPERATIONS (per-share)
-// ============================================
 
 func (s *GORMStore) GetGuestUser(ctx context.Context, shareName string) (*models.User, error) {
 	share, err := s.GetShare(ctx, shareName)

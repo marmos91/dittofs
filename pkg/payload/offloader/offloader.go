@@ -85,26 +85,19 @@ type Offloader struct {
 	// Finalization callback - called when all blocks for a file are uploaded
 	onFinalized FinalizationCallback
 
-	// Per-file upload tracking
-	uploads   map[string]*fileUploadState // payloadID -> state
+	uploads   map[string]*fileUploadState // payloadID -> per-file upload tracking
 	uploadsMu sync.Mutex
 
-	// Global upload semaphore - limits total concurrent uploads
-	uploadSem chan struct{}
+	uploadSem chan struct{} // Limits total concurrent uploads
 
-	// Transfer queue for non-blocking operations
-	queue *TransferQueue
+	queue *TransferQueue // Transfer queue for non-blocking operations
 
-	// Download priority: uploads pause when downloads are active
-	ioCond           *sync.Cond // Condition variable for upload/download coordination
-	downloadsPending int        // Count of active downloads (protected by ioCond.L)
+	ioCond           *sync.Cond // Upload/download coordination (uploads yield to downloads)
+	downloadsPending int        // Active downloads (protected by ioCond.L)
 
-	// In-flight download tracking: prevents duplicate downloads
-	// Uses downloadResult with broadcast pattern - closing done channel notifies ALL waiters
-	inFlight   map[string]*downloadResult // blockKey -> broadcast result
+	inFlight   map[string]*downloadResult // In-flight download dedup (blockKey -> broadcast)
 	inFlightMu sync.Mutex
 
-	// Shutdown
 	closed bool
 	mu     sync.RWMutex
 }
@@ -127,13 +120,9 @@ func New(c *cache.Cache, blockStore store.BlockStore, objectStore metadata.Objec
 		config.ParallelDownloads = DefaultParallelDownloads
 	}
 
-	// Calculate semaphore size - use MaxParallelUploads if set, otherwise ParallelUploads
 	semSize := config.ParallelUploads
 	if config.MaxParallelUploads > 0 {
 		semSize = config.MaxParallelUploads
-	}
-	if semSize < 1 {
-		semSize = DefaultParallelUploads
 	}
 
 	m := &Offloader{
@@ -147,7 +136,6 @@ func New(c *cache.Cache, blockStore store.BlockStore, objectStore metadata.Objec
 		uploadSem:   make(chan struct{}, semSize),
 	}
 
-	// Initialize transfer queue
 	queueConfig := DefaultTransferQueueConfig()
 	queueConfig.Workers = config.ParallelUploads
 	m.queue = NewTransferQueue(m, queueConfig)
@@ -184,10 +172,6 @@ func blockRange(offset, length uint32) (start, end uint32) {
 	return
 }
 
-// ============================================================================
-// Flush API (Returns FlushResult)
-// ============================================================================
-
 // Flush enqueues remaining dirty data for background upload and returns immediately.
 //
 // This method does NOT wait for S3 uploads to complete because:
@@ -212,18 +196,11 @@ func (m *Offloader) Flush(ctx context.Context, payloadID string) (*FlushResult, 
 	// Get or create upload state for tracking
 	state := m.getOrCreateUploadState(payloadID)
 
-	// Check if this is a small file that should be flushed synchronously.
-	// This prevents pendingSize buildup when creating many small files.
+	// Small files are flushed synchronously to prevent pendingSize buildup.
 	fileSize := m.cache.GetFileSize(ctx, payloadID)
-	isSmallFile := m.config.SmallFileThreshold > 0 &&
-		int64(fileSize) <= m.config.SmallFileThreshold
-
-	if isSmallFile {
+	if m.config.SmallFileThreshold > 0 && int64(fileSize) <= m.config.SmallFileThreshold {
 		return m.flushSmallFileSync(ctx, payloadID, state)
 	}
-
-	// Large file: async flush (existing behavior)
-	state.flush.Add(1)
 
 	// Upload remaining dirty blocks (partial blocks not covered by eager upload)
 	// in background. No blocking - data is safe in mmap cache.
@@ -238,8 +215,7 @@ func (m *Offloader) Flush(ctx context.Context, payloadID string) (*FlushResult, 
 	//
 	// Data durability is guaranteed by the mmap WAL cache - uploads are best-effort
 	// for performance, not required for durability.
-	go func() {
-		defer state.flush.Done()
+	state.flush.Go(func() {
 		bgCtx := context.Background()
 
 		if err := m.uploadRemainingBlocks(bgCtx, payloadID); err != nil {
@@ -253,7 +229,7 @@ func (m *Offloader) Flush(ctx context.Context, payloadID string) (*FlushResult, 
 
 		// Invoke finalization callback
 		m.invokeFinalizationCallback(bgCtx, payloadID)
-	}()
+	})
 
 	return &FlushResult{Finalized: true}, nil
 }
@@ -327,10 +303,6 @@ func (m *Offloader) WaitForAllUploads(ctx context.Context, payloadID string) err
 		return ctx.Err()
 	}
 }
-
-// ============================================================================
-// Block Store Queries
-// ============================================================================
 
 // GetFileSize returns the total size of a file from the block store.
 // This is used as a fallback when the cache doesn't have the file.
@@ -468,10 +440,6 @@ func (m *Offloader) Delete(ctx context.Context, payloadID string) error {
 	return m.blockStore.DeleteByPrefix(ctx, payloadID+"/")
 }
 
-// ============================================================================
-// Lifecycle
-// ============================================================================
-
 // Start begins background upload processing.
 // Must be called after New() to enable async uploads.
 func (m *Offloader) Start(ctx context.Context) {
@@ -516,4 +484,3 @@ func (m *Offloader) HealthCheck(ctx context.Context) error {
 
 	return m.blockStore.HealthCheck(ctx)
 }
-

@@ -21,11 +21,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
 	"github.com/marmos91/dittofs/pkg/payload"
+	"github.com/marmos91/dittofs/pkg/payload/offloader"
 	blockstore "github.com/marmos91/dittofs/pkg/payload/store"
 	blockfs "github.com/marmos91/dittofs/pkg/payload/store/fs"
 	blockmemory "github.com/marmos91/dittofs/pkg/payload/store/memory"
 	blocks3 "github.com/marmos91/dittofs/pkg/payload/store/s3"
-	"github.com/marmos91/dittofs/pkg/payload/offloader"
 )
 
 // InitializeFromStore creates and initializes a runtime from the database.

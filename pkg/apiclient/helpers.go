@@ -2,14 +2,8 @@ package apiclient
 
 import "fmt"
 
-// ============================================================================
-// Generic API Client Helpers
-// ============================================================================
-//
-// These helpers reduce repetitive HTTP boilerplate across API client resource
-// files. Each helper wraps the underlying Client.get/post/put/delete methods
-// with type-safe generics for request/response handling. They are unexported
-// (package-internal).
+// Generic API client helpers that reduce repetitive HTTP boilerplate across
+// resource files. Unexported, type-safe generic wrappers for Client methods.
 
 // getResource performs a GET request to the given path and decodes the response
 // body into a value of type T. Returns a pointer to the decoded value.

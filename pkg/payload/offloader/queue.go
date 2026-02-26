@@ -325,35 +325,7 @@ func (q *TransferQueue) processDownload(ctx context.Context, req TransferRequest
 	if q.manager == nil {
 		return nil
 	}
-
-	// DEBUG: Log download start for large offsets
-	if req.ChunkIdx >= 32 {
-		logger.Debug("processDownload: starting",
-			"payloadID", req.PayloadID,
-			"chunkIdx", req.ChunkIdx,
-			"blockIdx", req.BlockIdx)
-	}
-
-	// Download the block and cache it
-	err := q.manager.downloadBlock(ctx, req.PayloadID, req.ChunkIdx, req.BlockIdx)
-
-	// DEBUG: Log download result for large offsets
-	if req.ChunkIdx >= 32 {
-		if err != nil {
-			logger.Debug("processDownload: failed",
-				"payloadID", req.PayloadID,
-				"chunkIdx", req.ChunkIdx,
-				"blockIdx", req.BlockIdx,
-				"error", err)
-		} else {
-			logger.Debug("processDownload: succeeded",
-				"payloadID", req.PayloadID,
-				"chunkIdx", req.ChunkIdx,
-				"blockIdx", req.BlockIdx)
-		}
-	}
-
-	return err
+	return q.manager.downloadBlock(ctx, req.PayloadID, req.ChunkIdx, req.BlockIdx)
 }
 
 // processUpload handles an upload request.

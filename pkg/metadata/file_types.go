@@ -7,12 +7,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
-// ============================================================================
-// File Types
-//
-// Core file type definitions used throughout the metadata layer.
-// ============================================================================
-
 // File represents a file's complete identity and attributes.
 type File struct {
 	// ID is a unique identifier for this file.
