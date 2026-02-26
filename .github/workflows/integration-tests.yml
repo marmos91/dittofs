@@ -5,6 +5,18 @@ on:
     branches: [develop]
   pull_request:
     branches: [develop, main]
+    paths:
+      - 'cmd/**/*.go'
+      - 'pkg/**/*.go'
+      - 'internal/**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'test/integration/**'
+      - '.github/workflows/integration-tests.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   integration-tests:

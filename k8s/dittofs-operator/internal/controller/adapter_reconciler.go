@@ -71,7 +71,7 @@ func (r *DittoServerReconciler) getAuthenticatedClient(ctx context.Context, ds *
 
 // reconcileAdapters polls the DittoFS API for adapter state and stores results.
 // On any error, it preserves existing adapter state (DISC-03 safety guard).
-func (r *DittoServerReconciler) reconcileAdapters(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) (ctrl.Result, error) {
+func (r *DittoServerReconciler) reconcileAdapters(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) (ctrl.Result, error) { //nolint:unparam // error kept for interface consistency with other reconcilers
 	logger := logf.FromContext(ctx)
 	pollingInterval := getPollingInterval(dittoServer)
 

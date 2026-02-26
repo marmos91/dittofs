@@ -3,6 +3,10 @@
 # Runs pjdfstest (8,789 tests) to validate filesystem behavior against POSIX standards.
 # Tests all metadata store backends: Memory, BadgerDB, PostgreSQL.
 # Tests NFSv3, NFSv4.0, and NFSv4.1 protocol versions.
+#
+# PR: memory store only (3 jobs) — fast feedback on NFS correctness.
+# Push/Cron: full matrix (memory + badger + postgres = 9 jobs).
+# Weekly cron: Sunday 4 AM UTC with auto-issue on regression.
 
 name: POSIX Compliance Tests
 
@@ -11,19 +15,67 @@ on:
     branches: [develop, main]
   pull_request:
     branches: [develop, main]
+    paths:
+      - 'cmd/dfs/**'
+      - 'cmd/dfsctl/**'
+      - 'pkg/adapter/nfs/**'
+      - 'pkg/adapter/base.go'
+      - 'internal/adapter/nfs/**'
+      - 'pkg/metadata/**'
+      - 'pkg/payload/**'
+      - 'pkg/cache/**'
+      - 'pkg/controlplane/**'
+      - 'pkg/config/**'
+      - 'test/posix/**'
+      - '.github/workflows/posix-tests.yml'
+      - 'go.mod'
+      - 'go.sum'
+      - 'flake.nix'
+      - 'flake.lock'
   schedule:
-    # Nightly at 4 AM UTC
-    - cron: '0 4 * * *'
+    # Weekly on Sunday at 4 AM UTC
+    - cron: '0 4 * * 0'
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 env:
   DITTOFS_MOUNT: /tmp/dittofs-test
 
 jobs:
+  # Determine test profile based on trigger event
+  determine-profile:
+    name: Determine Profile
+    runs-on: ubuntu-latest
+    outputs:
+      stores: ${{ steps.profile.outputs.stores }}
+      run_postgres: ${{ steps.profile.outputs.run_postgres }}
+      is_scheduled: ${{ steps.profile.outputs.is_scheduled }}
+    steps:
+      - name: Set profile
+        id: profile
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo 'stores=["memory"]' >> "$GITHUB_OUTPUT"
+            echo 'run_postgres=false' >> "$GITHUB_OUTPUT"
+            echo 'is_scheduled=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'stores=["memory","badger"]' >> "$GITHUB_OUTPUT"
+            echo 'run_postgres=true' >> "$GITHUB_OUTPUT"
+            if [[ "${{ github.event_name }}" == "schedule" ]]; then
+              echo 'is_scheduled=true' >> "$GITHUB_OUTPUT"
+            else
+              echo 'is_scheduled=false' >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
   # Build binaries once and share across test jobs
   build:
     name: Build Binaries
     runs-on: ubuntu-latest
+    needs: determine-profile
     timeout-minutes: 10
 
     steps:
@@ -53,35 +105,16 @@ jobs:
 
   # NFS POSIX tests for memory and badger stores (no external services needed)
   posix-nfs:
-    name: NFS v${{ matrix.nfs_version }} / ${{ matrix.store_label }}
+    name: NFS v${{ matrix.nfs_version }} / ${{ matrix.store == 'badger' && 'BadgerDB' || 'Memory' }}
     runs-on: ubuntu-latest
-    needs: build
+    needs: [determine-profile, build]
     timeout-minutes: 60
 
     strategy:
       fail-fast: false
       matrix:
-        store: [memory, badger]
+        store: ${{ fromJSON(needs.determine-profile.outputs.stores) }}
         nfs_version: ['3', '4', '4.1']
-        include:
-          - store: memory
-            nfs_version: '3'
-            store_label: Memory
-          - store: memory
-            nfs_version: '4'
-            store_label: Memory
-          - store: memory
-            nfs_version: '4.1'
-            store_label: Memory
-          - store: badger
-            nfs_version: '3'
-            store_label: BadgerDB
-          - store: badger
-            nfs_version: '4'
-            store_label: BadgerDB
-          - store: badger
-            nfs_version: '4.1'
-            store_label: BadgerDB
 
     steps:
       - name: Checkout
@@ -144,7 +177,7 @@ jobs:
           sudo env PATH="$PJDFSTEST_DIR/bin:$PATH" prove -rv --timer "$TESTS_DIR" \
             2>&1 | tee "$LOG_FILE" || true
 
-          echo "## NFS v${{ matrix.nfs_version }} / ${{ matrix.store_label }} Results" >> $GITHUB_STEP_SUMMARY
+          echo "## NFS v${{ matrix.nfs_version }} / ${{ matrix.store == 'badger' && 'BadgerDB' || 'Memory' }} Results" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           tail -30 "$LOG_FILE" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
@@ -234,7 +267,8 @@ jobs:
   posix-nfs-postgres:
     name: NFS v${{ matrix.nfs_version }} / PostgreSQL
     runs-on: ubuntu-latest
-    needs: build
+    needs: [determine-profile, build]
+    if: needs.determine-profile.outputs.run_postgres == 'true'
     timeout-minutes: 60
 
     strategy:
@@ -415,7 +449,7 @@ jobs:
   summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [posix-nfs, posix-nfs-postgres]
+    needs: [determine-profile, posix-nfs, posix-nfs-postgres]
     if: always()
 
     steps:
@@ -472,7 +506,7 @@ jobs:
                   echo "| ${store^} | :warning: Unknown (no pass/fail marker) |" >> $GITHUB_STEP_SUMMARY
                 fi
               else
-                echo "| ${store^} | :warning: No results |" >> $GITHUB_STEP_SUMMARY
+                echo "| ${store^} | :grey_question: Skipped |" >> $GITHUB_STEP_SUMMARY
               fi
             done
 
@@ -482,3 +516,51 @@ jobs:
           echo "**Known failures:**" >> $GITHUB_STEP_SUMMARY
           echo "- NFSv3: utimensat/09.t test #5 (32-bit timestamp limit)" >> $GITHUB_STEP_SUMMARY
           echo "- NFSv4.x: unlink/14.t (silly-rename: NFSv4 stateful OPEN causes client to rename instead of remove)" >> $GITHUB_STEP_SUMMARY
+
+  # Create a GitHub issue on weekly schedule regression
+  auto-issue:
+    name: Create Regression Issue
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    needs: [determine-profile, posix-nfs, posix-nfs-postgres]
+    if: >-
+      always() &&
+      needs.determine-profile.outputs.is_scheduled == 'true' &&
+      (needs.posix-nfs.result == 'failure' || needs.posix-nfs-postgres.result == 'failure')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create or update issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NFS_RESULT="${{ needs.posix-nfs.result }}"
+          PG_RESULT="${{ needs.posix-nfs-postgres.result }}"
+
+          BODY="## POSIX Regression Detected
+
+          The weekly POSIX compliance run on \`develop\` found unexpected failures.
+
+          | Job | Result |
+          |-----|--------|
+          | posix-nfs | ${NFS_RESULT} |
+          | posix-nfs-postgres | ${PG_RESULT} |
+
+          **Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          Please investigate and fix before the next release."
+
+          # De-duplicate: if an open issue already exists, comment instead of creating a new one
+          EXISTING=$(gh issue list --label "bug" --label "ci" --state open --search "POSIX regression detected" --json number --jq '.[0].number // empty')
+
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body "$BODY"
+            echo "Updated existing issue #$EXISTING"
+          else
+            gh issue create \
+              --title "POSIX regression detected (weekly run $(date +%Y-%m-%d))" \
+              --body "$BODY" \
+              --label "bug" --label "ci"
+          fi

@@ -117,7 +117,7 @@ func podSelectorLabels(crName string) map[string]string {
 // adapterServiceLabels returns the labels for an adapter Service.
 func adapterServiceLabels(crName, adapterType string) map[string]string {
 	labels := podSelectorLabels(crName)
-	labels[adapterServiceLabel] = "true"
+	labels[adapterServiceLabel] = labelTrue
 	labels[adapterTypeLabel] = sanitizeAdapterType(adapterType)
 	return labels
 }
@@ -215,7 +215,7 @@ func (r *DittoServerReconciler) reconcileAdapterServices(ctx context.Context, ds
 	if err := r.List(ctx, &existingList,
 		client.InNamespace(ds.Namespace),
 		client.MatchingLabels{
-			adapterServiceLabel: "true",
+			adapterServiceLabel: labelTrue,
 			"instance":          ds.Name,
 		},
 	); err != nil {
@@ -449,7 +449,7 @@ func (r *DittoServerReconciler) reconcileContainerPorts(ctx context.Context, ds 
 	}
 
 	// Build desired dynamic adapter ports.
-	var dynamicPorts []corev1.ContainerPort
+	dynamicPorts := make([]corev1.ContainerPort, 0, len(activeAdapters))
 	for adapterType, info := range activeAdapters {
 		dynamicPorts = append(dynamicPorts, corev1.ContainerPort{
 			Name:          adapterPortName(adapterType),

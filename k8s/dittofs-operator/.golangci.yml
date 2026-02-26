@@ -36,6 +36,18 @@ linters:
           - dupl
           - lll
         path: internal/*
+      - linters:
+          - unparam
+        path: _test\.go$
+      - linters:
+          - errcheck
+        path: _test\.go$
+      - linters:
+          - goconst
+        path: _test\.go$
+      - text: "SA1019:.*Requeue"
+        linters:
+          - staticcheck
     paths:
       - third_party$
       - builtin$

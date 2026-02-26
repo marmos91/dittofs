@@ -16,7 +16,29 @@ on:
     branches: [develop, main]
   pull_request:
     branches: [develop, main]
+    paths:
+      - 'cmd/dfs/**'
+      - 'pkg/adapter/nfs/**'
+      - 'pkg/adapter/smb/**'
+      - 'pkg/adapter/base.go'
+      - 'internal/adapter/nfs/**'
+      - 'internal/adapter/smb/**'
+      - 'pkg/metadata/**'
+      - 'pkg/payload/**'
+      - 'pkg/cache/**'
+      - 'pkg/controlplane/**'
+      - 'pkg/config/**'
+      - 'test/e2e/**'
+      - '.github/workflows/e2e-tests.yml'
+      - 'go.mod'
+      - 'go.sum'
+      - 'flake.nix'
+      - 'flake.lock'
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   e2e:
