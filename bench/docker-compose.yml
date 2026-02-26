@@ -12,7 +12,7 @@
 #   ganesha              NFS-Ganesha with FSAL_VFS
 #   kernel-nfs           Linux kernel NFS (baseline)
 #   rclone               RClone NFS over S3
-#   juicefs              JuiceFS (PostgreSQL + S3)
+#   juicefs              JuiceFS FUSE mount (PostgreSQL + S3)
 #   samba                Samba SMB server
 
 services:
@@ -289,30 +289,37 @@ services:
     profiles:
       - juicefs
     privileged: true
-    ports:
-      - "52049:52049"
     volumes:
       - /dev/fuse:/dev/fuse
       - juicefs-cache:/var/jfsCache
+      - type: bind
+        source: /mnt/juicefs
+        target: /mnt/jfs
+        bind:
+          propagation: rshared
     depends_on:
       localstack:
         condition: service_healthy
       postgres:
         condition: service_healthy
-    command: >
-      sh -c "
-        juicefs format
-          --storage s3
-          --bucket http://localstack:4566/$${S3_BUCKET:-bench}
-          --access-key $${AWS_ACCESS_KEY_ID:-test}
-          --secret-key $${AWS_SECRET_ACCESS_KEY:-test}
-          'postgres://$${POSTGRES_USER:-bench}:$${POSTGRES_PASSWORD:-bench}@postgres:5432/$${POSTGRES_DB:-bench}?sslmode=disable'
+    command:
+      - sh
+      - -c
+      - |
+        echo "Creating S3 bucket $${S3_BUCKET}..." &&
+        curl -sf -X PUT "http://localstack:4566/$${S3_BUCKET}" || true &&
+        META_URL="postgres://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@postgres:5432/$${POSTGRES_DB}?sslmode=disable" &&
+        juicefs format \
+          --storage s3 \
+          --bucket "http://localstack:4566/$${S3_BUCKET}" \
+          --access-key "$${AWS_ACCESS_KEY_ID}" \
+          --secret-key "$${AWS_SECRET_ACCESS_KEY}" \
+          "$$META_URL" \
           bench-vol &&
-        juicefs gateway
-          --cache-size $${BENCH_CACHE_SIZE_MB:-256}
-          'postgres://$${POSTGRES_USER:-bench}:$${POSTGRES_PASSWORD:-bench}@postgres:5432/$${POSTGRES_DB:-bench}?sslmode=disable'
-          0.0.0.0:52049
-      "
+        exec juicefs mount \
+          --cache-size "$${BENCH_CACHE_SIZE_MB}" \
+          "$$META_URL" \
+          /mnt/jfs
     environment:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
@@ -322,7 +329,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-bench}
       BENCH_CACHE_SIZE_MB: ${BENCH_CACHE_SIZE_MB:-256}
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:52049/"]
+      test: ["CMD-SHELL", "stat /mnt/jfs/.stats 2>/dev/null || ls /mnt/jfs/ 2>/dev/null"]
       interval: 5s
       timeout: 3s
       retries: 15

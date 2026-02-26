@@ -55,10 +55,21 @@ Prerequisites   Build Image   Start System   Bootstrap   Mount NFS/SMB
 | `ganesha` | NFS | Local filesystem (FSAL_VFS) | 22049 | NFS-Ganesha userspace NFS server |
 | `kernel-nfs` | NFS | Local filesystem | 32049 | Linux kernel NFS server (gold standard) |
 | `rclone` | NFS | S3 via VFS cache | 42049 | RClone NFS serve over S3 |
-| `juicefs` | HTTP (S3 GW) | PostgreSQL + S3 | 52049 | JuiceFS S3 gateway (not NFS-mountable) |
+| `juicefs` | FUSE | PostgreSQL + S3 | - | JuiceFS FUSE mount (host path: `/mnt/juicefs`) |
 | `samba` | SMB | Local filesystem | 22445 | Samba SMB server |
 
 Only one profile should run at a time to avoid resource contention.
+
+### ARM64 Compatibility
+
+Not all competitor images provide native ARM64 builds. On ARM64 hosts (e.g., Apple Silicon Macs, Graviton instances), the following profiles will fail:
+
+| Profile | ARM64 Status | Notes |
+|---------|-------------|-------|
+| `ganesha` | Not available | `apnar/nfs-ganesha` is amd64-only |
+| `kernel-nfs` | Not available | `erichough/nfs-server` is amd64-only |
+
+All DittoFS profiles, `rclone`, `juicefs`, and `samba` work natively on ARM64. While Docker can emulate amd64 via QEMU (`--platform linux/amd64`), this adds significant overhead (5-20x slower) making benchmark results unreliable. Avoid QEMU emulation for performance testing; use it only for functional validation and always flag results accordingly.
 
 ## Directory Structure
 
