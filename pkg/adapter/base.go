@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/auth"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
@@ -542,4 +543,11 @@ func (b *BaseAdapter) Protocol() string {
 // errors into protocol-specific ProtocolError values with appropriate status codes.
 func (b *BaseAdapter) MapError(_ error) ProtocolError {
 	return nil
+}
+
+// MapIdentity is a default stub implementation that returns an error.
+// Protocol-specific adapters should override this method to convert auth results
+// into protocol-specific identities (e.g., NFS AUTH_UNIX, SMB NTLM sessions).
+func (b *BaseAdapter) MapIdentity(_ context.Context, _ *auth.AuthResult) (*auth.Identity, error) {
+	return nil, fmt.Errorf("%s: identity mapping not implemented", b.protocolName)
 }

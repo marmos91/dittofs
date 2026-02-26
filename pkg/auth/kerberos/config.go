@@ -1,13 +1,14 @@
-// Package kerberos provides the shared Kerberos authentication layer for DittoFS.
+// Package kerberos provides the Kerberos AuthProvider implementation for DittoFS.
 //
-// This package wraps the gokrb5 library to provide:
+// The Provider type implements the auth.AuthProvider interface and manages:
 //   - Keytab and krb5.conf loading with environment variable overrides
 //   - Hot-reload capability for keytab rotation
-//   - Identity mapping from Kerberos principals to Unix UID/GID
+//   - SPNEGO/Kerberos token detection for the auth provider chain
 //
-// The package does NOT contain RPCSEC_GSS wire protocol logic (see
-// internal/adapter/nfs/rpc/gss/) or the GSS context state machine
-// (implemented in subsequent plans).
+// This package does NOT contain RPCSEC_GSS wire protocol logic (see
+// internal/adapter/nfs/rpc/gss/) or the GSS context state machine.
+// Protocol-specific code in the NFS and SMB adapters uses the Provider
+// to access keytab state, while handling wire-level authentication directly.
 //
 // Configuration is defined in pkg/config.KerberosConfig to avoid circular imports.
 // This package accepts *config.KerberosConfig as constructor parameter.
