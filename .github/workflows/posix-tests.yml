@@ -553,7 +553,7 @@ jobs:
           Please investigate and fix before the next release."
 
           # De-duplicate: if an open issue already exists, comment instead of creating a new one
-          EXISTING=$(gh issue list --label "bug,ci" --state open --search "POSIX regression detected" --json number --jq '.[0].number // empty')
+          EXISTING=$(gh issue list --label "bug" --label "ci" --state open --search "POSIX regression detected" --json number --jq '.[0].number // empty')
 
           if [ -n "$EXISTING" ]; then
             gh issue comment "$EXISTING" --body "$BODY"
@@ -562,5 +562,5 @@ jobs:
             gh issue create \
               --title "POSIX regression detected (weekly run $(date +%Y-%m-%d))" \
               --body "$BODY" \
-              --label "bug,ci"
+              --label "bug" --label "ci"
           fi

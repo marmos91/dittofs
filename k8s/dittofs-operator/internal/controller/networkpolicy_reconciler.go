@@ -33,6 +33,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+const labelTrue = "true"
+
 const (
 	// adapterNetworkPolicyLabel marks a NetworkPolicy as managed by the adapter NetworkPolicy reconciler.
 	adapterNetworkPolicyLabel = "dittofs.io/adapter-networkpolicy"
@@ -44,7 +46,7 @@ const (
 // networkPolicyLabels returns the labels for an adapter NetworkPolicy.
 func networkPolicyLabels(crName, adapterType string) map[string]string {
 	labels := podSelectorLabels(crName)
-	labels[adapterNetworkPolicyLabel] = "true"
+	labels[adapterNetworkPolicyLabel] = labelTrue
 	labels[adapterTypeLabel] = sanitizeAdapterType(adapterType)
 	return labels
 }
@@ -135,7 +137,7 @@ func (r *DittoServerReconciler) ensureBaselineNetworkPolicy(ctx context.Context,
 	desiredLabels := map[string]string{
 		"app":                      "dittofs-server",
 		"instance":                 ds.Name,
-		baselineNetworkPolicyLabel: "true",
+		baselineNetworkPolicyLabel: labelTrue,
 	}
 	desiredIngress := baselineIngressPorts(ds)
 
@@ -263,7 +265,7 @@ func (r *DittoServerReconciler) reconcileNetworkPolicies(ctx context.Context, ds
 	if err := r.List(ctx, &existingList,
 		client.InNamespace(ds.Namespace),
 		client.MatchingLabels{
-			adapterNetworkPolicyLabel: "true",
+			adapterNetworkPolicyLabel: labelTrue,
 			"instance":                ds.Name,
 		},
 	); err != nil {
