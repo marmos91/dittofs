@@ -53,43 +53,27 @@ type ChangePasswordRequest struct {
 
 // ListUsers returns all users.
 func (c *Client) ListUsers() ([]User, error) {
-	var users []User
-	if err := c.get("/api/v1/users", &users); err != nil {
-		return nil, err
-	}
-	return users, nil
+	return listResources[User](c, "/api/v1/users")
 }
 
 // GetUser returns a user by username.
 func (c *Client) GetUser(username string) (*User, error) {
-	var user User
-	if err := c.get(fmt.Sprintf("/api/v1/users/%s", username), &user); err != nil {
-		return nil, err
-	}
-	return &user, nil
+	return getResource[User](c, resourcePath("/api/v1/users/%s", username))
 }
 
 // CreateUser creates a new user.
 func (c *Client) CreateUser(req *CreateUserRequest) (*User, error) {
-	var user User
-	if err := c.post("/api/v1/users", req, &user); err != nil {
-		return nil, err
-	}
-	return &user, nil
+	return createResource[User](c, "/api/v1/users", req)
 }
 
 // UpdateUser updates an existing user.
 func (c *Client) UpdateUser(username string, req *UpdateUserRequest) (*User, error) {
-	var user User
-	if err := c.put(fmt.Sprintf("/api/v1/users/%s", username), req, &user); err != nil {
-		return nil, err
-	}
-	return &user, nil
+	return updateResource[User](c, resourcePath("/api/v1/users/%s", username), req)
 }
 
 // DeleteUser deletes a user.
 func (c *Client) DeleteUser(username string) error {
-	return c.delete(fmt.Sprintf("/api/v1/users/%s", username), nil)
+	return deleteResource(c, resourcePath("/api/v1/users/%s", username))
 }
 
 // ResetUserPassword resets a user's password (admin operation).
@@ -114,9 +98,5 @@ func (c *Client) ChangeOwnPassword(currentPassword, newPassword string) (*TokenR
 
 // GetCurrentUser returns the currently authenticated user.
 func (c *Client) GetCurrentUser() (*User, error) {
-	var user User
-	if err := c.get("/api/v1/auth/me", &user); err != nil {
-		return nil, err
-	}
-	return &user, nil
+	return getResource[User](c, "/api/v1/auth/me")
 }

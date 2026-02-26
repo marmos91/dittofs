@@ -39,9 +39,5 @@ func (s *GORMStore) DeleteSetting(ctx context.Context, key string) error {
 }
 
 func (s *GORMStore) ListSettings(ctx context.Context) ([]*models.Setting, error) {
-	var settings []*models.Setting
-	if err := s.db.WithContext(ctx).Find(&settings).Error; err != nil {
-		return nil, err
-	}
-	return settings, nil
+	return listAll[models.Setting](s.db, ctx)
 }

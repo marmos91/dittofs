@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v4.2
 milestone_name: Adapter + Core Refactoring
 status: unknown
-last_updated: "2026-02-25T21:09:14.252Z"
+last_updated: "2026-02-26T09:57:55Z"
 progress:
   total_phases: 27
   completed_phases: 26
   total_plans: 95
-  completed_plans: 95
+  completed_plans: 96
 ---
 
 # Project State
@@ -22,10 +22,10 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 
 ## Current Position
 
-Phase: 28 - SMB Adapter Restructuring
-Current Plan: 5 of 5 (COMPLETE)
-Status: Phase 28 Complete
-Last activity: 2026-02-25 -- Completed 28-05 (Handler Documentation)
+Phase: 29 - Core Layer Decomposition
+Current Plan: 1 of 7 (COMPLETE)
+Status: In Progress
+Last activity: 2026-02-26 -- Completed 29-01 (Foundational Error Types and Generic Helpers)
 
 ## Completed Milestones
 
@@ -55,6 +55,7 @@ Last activity: 2026-02-25 -- Completed 28-05 (Handler Documentation)
 | 28 | 03 | 35min | 2 | 6 |
 | 28 | 04 | 6min | 2 | 5 |
 | 28 | 05 | 12min | 2 | 7 |
+| 29 | 01 | 15min | 2 | 24 |
 
 ## Quick Tasks Completed
 
@@ -106,6 +107,9 @@ Last activity: 2026-02-25 -- Completed 28-05 (Handler Documentation)
 - [Phase 28]: [28-03] ConnInfo struct + SessionTracker interface pattern decouples pkg/ Connection from internal/ dispatch without circular imports
 - [Phase 28]: [28-03] sessionSigningVerifier moved to internal/adapter/smb/framing.go as NewSessionSigningVerifier for co-location with framing logic
 - [Phase 28]: [28-05] Skipped files with adequate existing Godoc, focused edits on under-documented exports (handler types, converter functions, change_notify registry)
+- [29-01] MapError stub on BaseAdapter rather than NFS/SMB — both embed BaseAdapter so they inherit the stub
+- [29-01] createWithID accepts currentID and idSetter callback rather than interface constraint on models
+- [29-01] API client listResources returns []T (value slice), GORM listAll returns []*T (pointer slice) matching existing patterns
 
 ### Pending Todos
 
@@ -117,6 +121,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-02-25
-Stopped at: Completed 28-05-PLAN.md (Phase 28 complete)
-Resume file: Next phase
+Last session: 2026-02-26
+Stopped at: Completed 29-01-PLAN.md
+Resume file: 29-02-PLAN.md

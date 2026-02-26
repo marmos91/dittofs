@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -15,42 +14,20 @@ import (
 // ============================================
 
 func (s *GORMStore) GetPayloadStore(ctx context.Context, name string) (*models.PayloadStoreConfig, error) {
-	var store models.PayloadStoreConfig
-	if err := s.db.WithContext(ctx).Where("name = ?", name).First(&store).Error; err != nil {
-		return nil, convertNotFoundError(err, models.ErrStoreNotFound)
-	}
-	return &store, nil
+	return getByField[models.PayloadStoreConfig](s.db, ctx, "name", name, models.ErrStoreNotFound)
 }
 
 func (s *GORMStore) GetPayloadStoreByID(ctx context.Context, id string) (*models.PayloadStoreConfig, error) {
-	var store models.PayloadStoreConfig
-	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&store).Error; err != nil {
-		return nil, convertNotFoundError(err, models.ErrStoreNotFound)
-	}
-	return &store, nil
+	return getByField[models.PayloadStoreConfig](s.db, ctx, "id", id, models.ErrStoreNotFound)
 }
 
 func (s *GORMStore) ListPayloadStores(ctx context.Context) ([]*models.PayloadStoreConfig, error) {
-	var stores []*models.PayloadStoreConfig
-	if err := s.db.WithContext(ctx).Find(&stores).Error; err != nil {
-		return nil, err
-	}
-	return stores, nil
+	return listAll[models.PayloadStoreConfig](s.db, ctx)
 }
 
 func (s *GORMStore) CreatePayloadStore(ctx context.Context, store *models.PayloadStoreConfig) (string, error) {
-	if store.ID == "" {
-		store.ID = uuid.New().String()
-	}
 	store.CreatedAt = time.Now()
-
-	if err := s.db.WithContext(ctx).Create(store).Error; err != nil {
-		if isUniqueConstraintError(err) {
-			return "", models.ErrDuplicateStore
-		}
-		return "", err
-	}
-	return store.ID, nil
+	return createWithID(s.db, ctx, store, func(s *models.PayloadStoreConfig, id string) { s.ID = id }, store.ID, models.ErrDuplicateStore)
 }
 
 func (s *GORMStore) UpdatePayloadStore(ctx context.Context, store *models.PayloadStoreConfig) error {

@@ -7,7 +7,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
@@ -19,68 +18,24 @@ import (
 // ============================================
 
 func (s *GORMStore) GetUser(ctx context.Context, username string) (*models.User, error) {
-	var user models.User
-	err := s.db.WithContext(ctx).
-		Preload("Groups").
-		Preload("SharePermissions").
-		Where("username = ?", username).
-		First(&user).Error
-	if err != nil {
-		return nil, convertNotFoundError(err, models.ErrUserNotFound)
-	}
-	return &user, nil
+	return getByField[models.User](s.db, ctx, "username", username, models.ErrUserNotFound, "Groups", "SharePermissions")
 }
 
 func (s *GORMStore) GetUserByID(ctx context.Context, id string) (*models.User, error) {
-	var user models.User
-	err := s.db.WithContext(ctx).
-		Preload("Groups").
-		Preload("SharePermissions").
-		Where("id = ?", id).
-		First(&user).Error
-	if err != nil {
-		return nil, convertNotFoundError(err, models.ErrUserNotFound)
-	}
-	return &user, nil
+	return getByField[models.User](s.db, ctx, "id", id, models.ErrUserNotFound, "Groups", "SharePermissions")
 }
 
 func (s *GORMStore) GetUserByUID(ctx context.Context, uid uint32) (*models.User, error) {
-	var user models.User
-	err := s.db.WithContext(ctx).
-		Preload("Groups").
-		Preload("SharePermissions").
-		Where("uid = ?", uid).
-		First(&user).Error
-	if err != nil {
-		return nil, convertNotFoundError(err, models.ErrUserNotFound)
-	}
-	return &user, nil
+	return getByField[models.User](s.db, ctx, "uid", uid, models.ErrUserNotFound, "Groups", "SharePermissions")
 }
 
 func (s *GORMStore) ListUsers(ctx context.Context) ([]*models.User, error) {
-	var users []*models.User
-	if err := s.db.WithContext(ctx).
-		Preload("Groups").
-		Preload("SharePermissions").
-		Find(&users).Error; err != nil {
-		return nil, err
-	}
-	return users, nil
+	return listAll[models.User](s.db, ctx, "Groups", "SharePermissions")
 }
 
 func (s *GORMStore) CreateUser(ctx context.Context, user *models.User) (string, error) {
-	if user.ID == "" {
-		user.ID = uuid.New().String()
-	}
 	user.CreatedAt = time.Now()
-
-	if err := s.db.WithContext(ctx).Create(user).Error; err != nil {
-		if isUniqueConstraintError(err) {
-			return "", models.ErrDuplicateUser
-		}
-		return "", err
-	}
-	return user.ID, nil
+	return createWithID(s.db, ctx, user, func(u *models.User, id string) { u.ID = id }, user.ID, models.ErrDuplicateUser)
 }
 
 func (s *GORMStore) UpdateUser(ctx context.Context, user *models.User) error {

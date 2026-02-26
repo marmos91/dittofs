@@ -16,54 +16,22 @@ import (
 // ============================================
 
 func (s *GORMStore) GetNetgroup(ctx context.Context, name string) (*models.Netgroup, error) {
-	var netgroup models.Netgroup
-	err := s.db.WithContext(ctx).
-		Preload("Members").
-		Where("name = ?", name).
-		First(&netgroup).Error
-	if err != nil {
-		return nil, convertNotFoundError(err, models.ErrNetgroupNotFound)
-	}
-	return &netgroup, nil
+	return getByField[models.Netgroup](s.db, ctx, "name", name, models.ErrNetgroupNotFound, "Members")
 }
 
 func (s *GORMStore) GetNetgroupByID(ctx context.Context, id string) (*models.Netgroup, error) {
-	var netgroup models.Netgroup
-	err := s.db.WithContext(ctx).
-		Preload("Members").
-		Where("id = ?", id).
-		First(&netgroup).Error
-	if err != nil {
-		return nil, convertNotFoundError(err, models.ErrNetgroupNotFound)
-	}
-	return &netgroup, nil
+	return getByField[models.Netgroup](s.db, ctx, "id", id, models.ErrNetgroupNotFound, "Members")
 }
 
 func (s *GORMStore) ListNetgroups(ctx context.Context) ([]*models.Netgroup, error) {
-	var netgroups []*models.Netgroup
-	if err := s.db.WithContext(ctx).
-		Preload("Members").
-		Find(&netgroups).Error; err != nil {
-		return nil, err
-	}
-	return netgroups, nil
+	return listAll[models.Netgroup](s.db, ctx, "Members")
 }
 
 func (s *GORMStore) CreateNetgroup(ctx context.Context, netgroup *models.Netgroup) (string, error) {
-	if netgroup.ID == "" {
-		netgroup.ID = uuid.New().String()
-	}
 	now := time.Now()
 	netgroup.CreatedAt = now
 	netgroup.UpdatedAt = now
-
-	if err := s.db.WithContext(ctx).Create(netgroup).Error; err != nil {
-		if isUniqueConstraintError(err) {
-			return "", models.ErrDuplicateNetgroup
-		}
-		return "", err
-	}
-	return netgroup.ID, nil
+	return createWithID(s.db, ctx, netgroup, func(n *models.Netgroup, id string) { n.ID = id }, netgroup.ID, models.ErrDuplicateNetgroup)
 }
 
 func (s *GORMStore) DeleteNetgroup(ctx context.Context, name string) error {

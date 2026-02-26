@@ -94,11 +94,11 @@ Decompose god objects into focused components.
 
 Error unification, boilerplate reduction, and file organization.
 
-- [ ] REF-06.1: Structured `PayloadError` type wrapping sentinels with context
-- [ ] REF-06.2: Shared error-to-status mapping for NFS/SMB
-- [ ] REF-06.3: Generic GORM helpers (`getByField[T]`, `listAll[T]`, `createWithID[T]`)
+- [x] REF-06.1: Structured `PayloadError` type wrapping sentinels with context
+- [x] REF-06.2: Shared error-to-status mapping for NFS/SMB
+- [x] REF-06.3: Generic GORM helpers (`getByField[T]`, `listAll[T]`, `createWithID[T]`)
 - [ ] REF-06.4: Centralized API error mapping helper
-- [ ] REF-06.5: Generic API client helpers (`getResource[T]`, `listResources[T]`)
+- [x] REF-06.5: Generic API client helpers (`getResource[T]`, `listResources[T]`)
 - [ ] REF-06.6: Common transaction helpers in `pkg/metadata/store/txutil/`
 - [ ] REF-06.7: Shared transaction test suite in `pkg/metadata/store/storetest/`
 - [ ] REF-06.8: `pkg/metadata/file.go` split into file_create.go, file_modify.go, file_remove.go, file_helpers.go
@@ -341,7 +341,7 @@ Industry-standard conformance validation against the official Microsoft test sui
 | REF-03: NFS Adapter Restructuring | 27 | In Progress (7,8,9,11 done) |
 | REF-04: SMB Adapter Restructuring | 28 | Not started |
 | REF-05: Core Object Decomposition | 29 | Not started |
-| REF-06: Code Quality Improvements | 29 | Not started |
+| REF-06: Code Quality Improvements | 29 | In progress (4/9 complete) |
 | WIN-01: SMB Bug Fixes | 30 | Not started |
 | WIN-02: Windows ACL Support | 31 | Not started |
 | WIN-03: Windows Integration Testing | 32 | Not started |
