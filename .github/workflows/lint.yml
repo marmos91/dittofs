@@ -57,9 +57,28 @@ jobs:
           version: v2.4.0
           args: --timeout=5m
 
+  shellcheck-changes:
+    name: Detect shell script changes
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.filter.outputs.shell }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for .sh file changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            shell:
+              - '**/*.sh'
+
   shellcheck:
     name: ShellCheck
     runs-on: ubuntu-latest
+    needs: shellcheck-changes
+    if: needs.shellcheck-changes.outputs.has_changes == 'true'
 
     steps:
       - name: Checkout code
