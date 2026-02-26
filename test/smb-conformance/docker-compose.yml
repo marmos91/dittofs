@@ -38,7 +38,15 @@ services:
     volumes:
       - ./ptfconfig-generated:/data/fileserver
     network_mode: "service:dittofs"
-    command: ["${WPTS_FILTER:-TestCategory=BVT}"]
+    environment:
+      Usage: RunTestCases
+      Filter: ${WPTS_FILTER:-TestCategory=BVT}
+      DryRun: "false"
+      SutComputerName: localhost
+      SutIPAddress: localhost
+      DomainName: localhost
+      AdminUserName: wpts-admin
+      PasswordForAllUsers: ${TEST_PASSWORD:-TestPassword01!}
     profiles:
       - test
 

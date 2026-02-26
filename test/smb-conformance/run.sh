@@ -377,7 +377,7 @@ run_compose() {
     # Run WPTS
     log_step "Running WPTS tests (filter: ${FILTER})..."
     local wpts_exit=0
-    WPTS_FILTER="$FILTER" PROFILE="$PROFILE" docker compose "${profiles[@]}" run --rm wpts "${FILTER}" || wpts_exit=$?
+    WPTS_FILTER="$FILTER" PROFILE="$PROFILE" docker compose "${profiles[@]}" run --rm wpts || wpts_exit=$?
 
     if [ "$wpts_exit" -ne 0 ]; then
         log_warn "WPTS exited with code ${wpts_exit}"
@@ -445,9 +445,16 @@ run_local() {
     docker run --rm --name wpts-local \
         --platform linux/amd64 \
         ${docker_network} \
+        -e Usage=RunTestCases \
+        -e "Filter=${FILTER}" \
+        -e DryRun=false \
+        -e SutComputerName="${DITTOFS_HOST}" \
+        -e "SutIPAddress=${DITTOFS_HOST}" \
+        -e "DomainName=${DITTOFS_HOST}" \
+        -e AdminUserName=wpts-admin \
+        -e "PasswordForAllUsers=${TEST_PASSWORD}" \
         -v "${SCRIPT_DIR}/ptfconfig-generated:/data/fileserver" \
-        mcr.microsoft.com/windowsprotocoltestsuites:fileserver-v8 \
-        "${FILTER}" || wpts_exit=$?
+        mcr.microsoft.com/windowsprotocoltestsuites:fileserver-v8 || wpts_exit=$?
 
     if [ "$wpts_exit" -ne 0 ]; then
         log_warn "WPTS exited with code ${wpts_exit}"
