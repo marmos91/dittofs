@@ -23,9 +23,9 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 ## Current Position
 
 Phase: 29 - Core Layer Decomposition
-Current Plan: 4 of 7 (COMPLETE)
+Current Plan: 5 of 7 (COMPLETE)
 Status: In Progress
-Last activity: 2026-02-26 -- Completed 29-04 (Store Sub-Interfaces + Handler Narrowing)
+Last activity: 2026-02-26 -- Completed 29-05 (PayloadService I/O Extraction + Metadata Store Conformance Suite)
 
 ## Completed Milestones
 
@@ -59,6 +59,7 @@ Last activity: 2026-02-26 -- Completed 29-04 (Store Sub-Interfaces + Handler Nar
 | 29 | 02 | 21min | 2 | 28 |
 | 29 | 03 | 12min | 2 | 8 |
 | 29 | 04 | 18min | 2 | 17 |
+| 29 | 05 | 9min | 2 | 12 |
 
 ## Quick Tasks Completed
 
@@ -121,6 +122,9 @@ Last activity: 2026-02-26 -- Completed 29-04 (Store Sub-Interfaces + Handler Nar
 - [Phase 29]: [29-04] ShareHandler gets custom composite ShareHandlerStore (6 sub-interfaces) since it needs cross-entity queries
 - [Phase 29]: [29-04] NetgroupStore and IdentityMappingStore kept outside composite Store (accessed via type assertion)
 - [Phase 29]: [29-04] Router unchanged -- Go implicit interface satisfaction narrows full Store to sub-interfaces automatically
+- [Phase 29]: [29-05] io sub-package local interfaces (CacheReader, CacheWriter, CacheStateManager, BlockDownloader, BlockUploader) to avoid circular imports
+- [Phase 29]: [29-05] Sentinel error bridging via package-level variables set in parent init() for cross-package error detection
+- [Phase 29]: [29-05] Conformance test StoreFactory pattern: func(t *testing.T) MetadataStore for store-specific setup
 
 ### Pending Todos
 
@@ -133,5 +137,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-26
-Stopped at: Completed 29-04-PLAN.md
-Resume file: 29-05-PLAN.md
+Stopped at: Completed 29-05-PLAN.md
+Resume file: 29-06-PLAN.md
