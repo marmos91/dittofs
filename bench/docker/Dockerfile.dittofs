@@ -1,0 +1,60 @@
+# DittoFS Docker image for Benchmark Suite
+# Multi-stage build producing dfs + dfsctl Alpine image.
+# dfsctl is needed by bootstrap scripts to create stores, shares, and users.
+
+# Build stage
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+
+# Build arguments for cross-compilation
+ARG TARGETOS
+ARG TARGETARCH
+
+# Build arguments for version info
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+
+RUN apk add --no-cache git ca-certificates tzdata
+
+WORKDIR /build
+
+# Copy dependency files first for better layer caching
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# Build both binaries in a single layer to share compiler cache
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build \
+    -ldflags="-w -s -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${BUILD_DATE}" \
+    -o dfs cmd/dfs/main.go && \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build \
+    -ldflags="-w -s" \
+    -o dfsctl cmd/dfsctl/main.go
+
+# Runtime stage - Alpine for wget healthcheck and curl (bootstrap scripts)
+FROM alpine:3.21
+
+LABEL org.opencontainers.image.title="DittoFS (Benchmark)" \
+      org.opencontainers.image.description="DittoFS with dfs+dfsctl for benchmarking against NFS-Ganesha, RClone, kernel NFS, and Samba"
+
+RUN apk add --no-cache ca-certificates tzdata curl && \
+    addgroup -g 65532 -S dittofs && \
+    adduser -u 65532 -S -G dittofs -h /app dittofs
+
+WORKDIR /app
+
+COPY --from=builder --chown=65532:65532 /build/dfs /app/dfs
+COPY --from=builder --chown=65532:65532 /build/dfsctl /app/dfsctl
+
+RUN mkdir -p /data/metadata /data/content /data/cache /config && \
+    chown -R 65532:65532 /data /config
+
+USER 65532:65532
+
+EXPOSE 12049/tcp 8080/tcp 6060/tcp
+HEALTHCHECK --interval=2s --timeout=5s --start-period=5s --retries=15 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health/ready || exit 1
+
+ENTRYPOINT ["/app/dfs"]
+CMD ["start", "--foreground", "--config", "/config/config.yaml"]

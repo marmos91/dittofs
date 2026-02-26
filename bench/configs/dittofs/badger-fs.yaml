@@ -1,0 +1,25 @@
+# DittoFS Benchmark Config: BadgerDB metadata + filesystem payload
+#
+# This file configures the control plane only (logging, database, API).
+# Metadata/payload stores, shares, and adapters are provisioned at
+# runtime by bootstrap-dittofs.sh.
+
+logging:
+  level: INFO
+  format: text
+  output: stdout
+
+server:
+  shutdown_timeout: 30s
+
+database:
+  type: sqlite
+  sqlite:
+    path: /data/controlplane.db
+
+controlplane:
+  port: 8080
+  jwt:
+    secret: benchmark-infrastructure-secret-key-32ch
+    access_token_duration: 1h
+    refresh_token_duration: 168h
