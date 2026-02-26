@@ -144,7 +144,7 @@ func resolveKeytabPath(configPath string) string {
 //
 // Resolution order (highest priority first):
 //  1. DITTOFS_KERBEROS_PRINCIPAL env var
-//  2. DITTOFS_KERBEROS_SERVICE_PRINCIPAL env var (legacy compat)
+//  2. DITTOFS_KERBEROS_SERVICE_PRINCIPAL env var (alternative name)
 //  3. configPrincipal from configuration file
 func resolveServicePrincipal(configPrincipal string) string {
 	if envSPN := os.Getenv("DITTOFS_KERBEROS_PRINCIPAL"); envSPN != "" {

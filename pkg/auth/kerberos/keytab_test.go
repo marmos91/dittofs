@@ -32,6 +32,26 @@ func TestResolveKeytabPath_FallbackToConfig(t *testing.T) {
 	}
 }
 
+func TestResolveKeytabPath_LegacyEnvVar(t *testing.T) {
+	t.Setenv("DITTOFS_KERBEROS_KEYTAB", "")
+	t.Setenv("DITTOFS_KERBEROS_KEYTAB_PATH", "/legacy/path/keytab")
+
+	result := resolveKeytabPath("/config/path/keytab")
+	if result != "/legacy/path/keytab" {
+		t.Fatalf("expected /legacy/path/keytab, got %s", result)
+	}
+}
+
+func TestResolveKeytabPath_PrimaryWinsOverLegacy(t *testing.T) {
+	t.Setenv("DITTOFS_KERBEROS_KEYTAB", "/primary/keytab")
+	t.Setenv("DITTOFS_KERBEROS_KEYTAB_PATH", "/legacy/keytab")
+
+	result := resolveKeytabPath("/config/keytab")
+	if result != "/primary/keytab" {
+		t.Fatalf("expected /primary/keytab, got %s", result)
+	}
+}
+
 func TestResolveKeytabPath_EmptyBoth(t *testing.T) {
 	t.Setenv("DITTOFS_KERBEROS_KEYTAB", "")
 
@@ -51,6 +71,26 @@ func TestResolveServicePrincipal_EnvVarOverride(t *testing.T) {
 	result := resolveServicePrincipal("nfs/config.example.com@EXAMPLE.COM")
 	if result != "nfs/env.example.com@EXAMPLE.COM" {
 		t.Fatalf("expected nfs/env.example.com@EXAMPLE.COM, got %s", result)
+	}
+}
+
+func TestResolveServicePrincipal_LegacyEnvVar(t *testing.T) {
+	t.Setenv("DITTOFS_KERBEROS_PRINCIPAL", "")
+	t.Setenv("DITTOFS_KERBEROS_SERVICE_PRINCIPAL", "nfs/legacy.example.com@EXAMPLE.COM")
+
+	result := resolveServicePrincipal("nfs/config.example.com@EXAMPLE.COM")
+	if result != "nfs/legacy.example.com@EXAMPLE.COM" {
+		t.Fatalf("expected nfs/legacy.example.com@EXAMPLE.COM, got %s", result)
+	}
+}
+
+func TestResolveServicePrincipal_PrimaryWinsOverLegacy(t *testing.T) {
+	t.Setenv("DITTOFS_KERBEROS_PRINCIPAL", "nfs/primary.example.com@EXAMPLE.COM")
+	t.Setenv("DITTOFS_KERBEROS_SERVICE_PRINCIPAL", "nfs/legacy.example.com@EXAMPLE.COM")
+
+	result := resolveServicePrincipal("nfs/config.example.com@EXAMPLE.COM")
+	if result != "nfs/primary.example.com@EXAMPLE.COM" {
+		t.Fatalf("expected nfs/primary.example.com@EXAMPLE.COM, got %s", result)
 	}
 }
 
