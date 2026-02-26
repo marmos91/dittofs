@@ -8,16 +8,16 @@
 
 Unify the lock model so all protocols (NFS, SMB, NLM) share the same types with protocol-specific translation at the boundary.
 
-- [ ] REF-01.1: `EnhancedLock` renamed to `UnifiedLock` with cross-protocol semantics
-- [ ] REF-01.2: `LeaseInfo` renamed to `OpLock` with `OpLockState` bitmask (Read/Write/Handle)
-- [ ] REF-01.3: `ShareReservation` renamed to `AccessMode` (DenyNone/DenyRead/DenyWrite/DenyAll)
-- [ ] REF-01.4: `LeaseBreakScanner` renamed to `OpLockBreakScanner`, centralized break/recall
-- [ ] REF-01.5: Centralized `IsConflicting()` handles all conflict cases (oplock vs oplock, oplock vs byte-range, byte-range vs byte-range, access mode)
-- [ ] REF-01.6: `PersistedLock` and `LockStore` updated with new field names (OpLockGroupKey, ReclaimOpLock, IsOpLock)
-- [ ] REF-01.7: Manager API updated (`AddUnifiedLock`, `RemoveUnifiedLock`, `ListUnifiedLocks`)
-- [ ] REF-01.8: SMB adapter has thin translation layer (`ToOpLock`, `ToAccessMode`)
-- [ ] REF-01.9: NFSv4 adapter has thin translation layer (delegation -> OpLock, OPEN4_SHARE_DENY -> AccessMode)
-- [ ] REF-01.10: GracePeriodManager stays generic (used by NLM, NFSv4, SMB reconnect)
+- [x] REF-01.1: `EnhancedLock` renamed to `UnifiedLock` with cross-protocol semantics
+- [x] REF-01.2: `LeaseInfo` renamed to `OpLock` with `OpLockState` bitmask (Read/Write/Handle)
+- [x] REF-01.3: `ShareReservation` renamed to `AccessMode` (DenyNone/DenyRead/DenyWrite/DenyAll)
+- [x] REF-01.4: `LeaseBreakScanner` renamed to `OpLockBreakScanner`, centralized break/recall
+- [x] REF-01.5: Centralized `IsConflicting()` handles all conflict cases (oplock vs oplock, oplock vs byte-range, byte-range vs byte-range, access mode)
+- [x] REF-01.6: `PersistedLock` and `LockStore` updated with new field names (OpLockGroupKey, ReclaimOpLock, IsOpLock)
+- [x] REF-01.7: Manager API updated (`AddUnifiedLock`, `RemoveUnifiedLock`, `ListUnifiedLocks`)
+- [ ] REF-01.8: SMB adapter has thin translation layer (`ToOpLock`, `ToAccessMode`) _(partial — exercised in v3.8)_
+- [ ] REF-01.9: NFSv4 adapter has thin translation layer (delegation -> OpLock, OPEN4_SHARE_DENY -> AccessMode) _(partial — exercised in v3.8)_
+- [x] REF-01.10: GracePeriodManager stays generic (used by NLM, NFSv4, SMB reconnect)
 
 ### REF-02: Protocol Leak Purge
 **Priority**: High
@@ -28,14 +28,14 @@ Remove protocol-specific code from generic layers (metadata, controlplane, lock)
 - [x] REF-02.1: SMB lock types removed from `pkg/metadata/lock/` (ShareReservation, LeaseInfo, lease_break.go moved/renamed)
 - [x] REF-02.2: SMB lease methods removed from MetadataService (CheckAndBreakLeases*, ReclaimLeaseSMB, OplockChecker)
 - [x] REF-02.3: NLM methods moved from MetadataService to NFS adapter (LockFileNLM, TestLockNLM, UnlockFileNLM, CancelBlockingLock)
-- [ ] REF-02.4: Share model cleaned — NFS fields (AllowAuthSys, RequireKerberos, Squash, etc.) to NFSExportOptions JSON config
-- [ ] REF-02.5: Share model cleaned — SMB fields (GuestEnabled, GuestUID, GuestGID) to SMBShareOptions JSON config
-- [ ] REF-02.6: SquashMode moved to NFS adapter
-- [ ] REF-02.7: Netgroup operations (8 methods) removed from generic Store interface
-- [ ] REF-02.8: Identity mapping operations (4 methods) removed from generic Store interface
-- [ ] REF-02.9: NFS-specific runtime fields moved (mounts, dnsCache, nfsClientProvider)
-- [ ] REF-02.10: NFS-specific API handlers moved (clients.go, grace.go)
-- [ ] REF-02.11: `pkg/identity/` moved to NFS adapter internal
+- [x] REF-02.4: Share model cleaned — NFS fields (AllowAuthSys, RequireKerberos, Squash, etc.) to NFSExportOptions JSON config
+- [x] REF-02.5: Share model cleaned — SMB fields (GuestEnabled, GuestUID, GuestGID) to SMBShareOptions JSON config
+- [x] REF-02.6: SquashMode moved to NFS adapter
+- [x] REF-02.7: Netgroup operations (8 methods) removed from generic Store interface
+- [x] REF-02.8: Identity mapping operations (4 methods) removed from generic Store interface
+- [x] REF-02.9: NFS-specific runtime fields moved (mounts, dnsCache, nfsClientProvider)
+- [x] REF-02.10: NFS-specific API handlers moved (clients.go, grace.go)
+- [x] REF-02.11: `pkg/identity/` moved to NFS adapter internal
 
 ### REF-03: NFS Adapter Restructuring
 **Priority**: High
@@ -43,16 +43,16 @@ Remove protocol-specific code from generic layers (metadata, controlplane, lock)
 
 Restructure NFS adapter directory layout and dispatch consolidation.
 
-- [ ] REF-03.1: `internal/protocol/` renamed to `internal/adapter/` (all imports updated)
-- [ ] REF-03.2: Generic XDR moved to `internal/adapter/nfs/xdr/core/`
-- [ ] REF-03.3: NLM, NSM, portmapper consolidated under `internal/adapter/nfs/`
-- [ ] REF-03.4: `internal/auth/` moved to `internal/adapter/smb/auth/`
-- [ ] REF-03.5: `pkg/adapter/nfs/` files renamed (remove `nfs_` prefix, split mixed-concern files)
-- [ ] REF-03.6: v4.1-specific handlers and types moved to `v4/v4_1/` nested hierarchy
+- [x] REF-03.1: `internal/protocol/` renamed to `internal/adapter/` (all imports updated)
+- [x] REF-03.2: Generic XDR moved to `internal/adapter/nfs/xdr/core/`
+- [x] REF-03.3: NLM, NSM, portmapper consolidated under `internal/adapter/nfs/`
+- [x] REF-03.4: `internal/auth/` moved to `internal/adapter/smb/auth/`
+- [x] REF-03.5: `pkg/adapter/nfs/` files renamed (remove `nfs_` prefix, split mixed-concern files)
+- [x] REF-03.6: v4.1-specific handlers and types moved to `v4/v4_1/` nested hierarchy
 - [x] REF-03.7: Dispatch consolidated: single `nfs.Dispatch()` entry point in `internal/adapter/nfs/`
 - [x] REF-03.8: Connection code split by version (connection.go + connection_v4.go)
 - [x] REF-03.9: Shared handler helpers extracted
-- [ ] REF-03.10: Handler documentation added (3-5 lines each, all v3/v4/mount handlers)
+- [x] REF-03.10: Handler documentation added (3-5 lines each, all v3/v4/mount handlers)
 - [x] REF-03.11: Version negotiation tests added
 
 ### REF-04: SMB Adapter Restructuring
@@ -61,17 +61,17 @@ Restructure NFS adapter directory layout and dispatch consolidation.
 
 Restructure SMB adapter to mirror NFS pattern and extract shared infrastructure.
 
-- [ ] REF-04.1: `pkg/adapter/smb/` files renamed (remove `smb_` prefix)
-- [ ] REF-04.2: BaseAdapter extracted to `pkg/adapter/base.go` with shared lifecycle (accept, shutdown, connection tracking)
-- [ ] REF-04.3: Both NFS and SMB adapters embed BaseAdapter
-- [ ] REF-04.4: NetBIOS framing moved to `internal/adapter/smb/framing.go`
-- [ ] REF-04.5: Signing verification moved to `internal/adapter/smb/signing.go`
-- [ ] REF-04.6: Dispatch + response logic consolidated in `internal/adapter/smb/dispatch.go`
-- [ ] REF-04.7: Compound handling moved to `internal/adapter/smb/compound.go`
-- [ ] REF-04.8: `auth.Authenticator` interface defined, NTLM + Kerberos implementations
-- [ ] REF-04.9: Shared handler helpers extracted to `internal/adapter/smb/helpers.go`
-- [ ] REF-04.10: `pkg/adapter/smb/connection.go` reduced to thin read/dispatch/write loop
-- [ ] REF-04.11: Handler documentation added (3-5 lines each, all SMB2 commands)
+- [x] REF-04.1: `pkg/adapter/smb/` files renamed (remove `smb_` prefix)
+- [x] REF-04.2: BaseAdapter extracted to `pkg/adapter/base.go` with shared lifecycle (accept, shutdown, connection tracking)
+- [x] REF-04.3: Both NFS and SMB adapters embed BaseAdapter
+- [x] REF-04.4: NetBIOS framing moved to `internal/adapter/smb/framing.go`
+- [x] REF-04.5: Signing verification moved to `internal/adapter/smb/signing.go`
+- [x] REF-04.6: Dispatch + response logic consolidated in `internal/adapter/smb/dispatch.go`
+- [x] REF-04.7: Compound handling moved to `internal/adapter/smb/compound.go`
+- [x] REF-04.8: `auth.Authenticator` interface defined, NTLM + Kerberos implementations
+- [x] REF-04.9: Shared handler helpers extracted to `internal/adapter/smb/helpers.go`
+- [x] REF-04.10: `pkg/adapter/smb/connection.go` reduced to thin read/dispatch/write loop
+- [x] REF-04.11: Handler documentation added (3-5 lines each, all SMB2 commands)
 
 ### REF-05: Core Object Decomposition
 **Priority**: Medium
@@ -79,14 +79,14 @@ Restructure SMB adapter to mirror NFS pattern and extract shared infrastructure.
 
 Decompose god objects into focused components.
 
-- [ ] REF-05.1: ControlPlane Store interface decomposed into 9 sub-interfaces
-- [ ] REF-05.2: API handlers narrowed to accept specific sub-interfaces
-- [ ] REF-05.3: AdapterManager extracted from Runtime (~300 lines)
-- [ ] REF-05.4: MetadataStoreManager extracted from Runtime (~70 lines)
-- [ ] REF-05.5: TransferManager renamed to Offloader, package to `pkg/payload/offloader/`
-- [ ] REF-05.6: Upload orchestrator extracted to `upload.go` (~450 lines)
-- [ ] REF-05.7: Download coordinator extracted to `download.go` (~250 lines)
-- [ ] REF-05.8: Dedup handler extracted to `dedup.go` (~150 lines)
+- [x] REF-05.1: ControlPlane Store interface decomposed into 9 sub-interfaces
+- [x] REF-05.2: API handlers narrowed to accept specific sub-interfaces
+- [x] REF-05.3: AdapterManager extracted from Runtime (~300 lines)
+- [x] REF-05.4: MetadataStoreManager extracted from Runtime (~70 lines)
+- [x] REF-05.5: TransferManager renamed to Offloader, package to `pkg/payload/offloader/`
+- [x] REF-05.6: Upload orchestrator extracted to `upload.go` (~450 lines)
+- [x] REF-05.7: Download coordinator extracted to `download.go` (~250 lines)
+- [x] REF-05.8: Dedup handler extracted to `dedup.go` (~150 lines)
 
 ### REF-06: Code Quality Improvements
 **Priority**: Medium
@@ -97,10 +97,10 @@ Error unification, boilerplate reduction, and file organization.
 - [x] REF-06.1: Structured `PayloadError` type wrapping sentinels with context
 - [x] REF-06.2: Shared error-to-status mapping for NFS/SMB
 - [x] REF-06.3: Generic GORM helpers (`getByField[T]`, `listAll[T]`, `createWithID[T]`)
-- [ ] REF-06.4: Centralized API error mapping helper
+- [x] REF-06.4: Centralized API error mapping helper
 - [x] REF-06.5: Generic API client helpers (`getResource[T]`, `listResources[T]`)
-- [ ] REF-06.6: Common transaction helpers in `pkg/metadata/store/txutil/`
-- [ ] REF-06.7: Shared transaction test suite in `pkg/metadata/store/storetest/`
+- [x] REF-06.6: Common transaction helpers in `pkg/metadata/store/txutil/`
+- [x] REF-06.7: Shared transaction test suite in `pkg/metadata/store/storetest/`
 - [x] REF-06.8: `pkg/metadata/file.go` split into file_create.go, file_modify.go, file_remove.go, file_helpers.go, file_types.go
 - [x] REF-06.9: `pkg/metadata/authentication.go` split into auth_identity.go, auth_permissions.go
 
@@ -336,12 +336,12 @@ Industry-standard conformance validation against the official Microsoft test sui
 
 | Requirement | Phase(s) | Status |
 |-------------|----------|--------|
-| REF-01: Generic Lock Interface | 26 | Not started |
-| REF-02: Protocol Leak Purge | 26 | In progress (3/11 sub-reqs done) |
-| REF-03: NFS Adapter Restructuring | 27 | In Progress (7,8,9,11 done) |
-| REF-04: SMB Adapter Restructuring | 28 | Not started |
-| REF-05: Core Object Decomposition | 29 | Not started |
-| REF-06: Code Quality Improvements | 29 | In progress (4/9 complete) |
+| REF-01: Generic Lock Interface | 26 | Complete (8/10 satisfied, 2 partial — adapter translations deferred to v3.8) |
+| REF-02: Protocol Leak Purge | 26 | Complete (11/11) |
+| REF-03: NFS Adapter Restructuring | 27 | Complete (11/11) |
+| REF-04: SMB Adapter Restructuring | 28 | Complete (11/11, pending formal verification in 29.4) |
+| REF-05: Core Object Decomposition | 29 | Complete (8/8, pending formal verification in 29.4) |
+| REF-06: Code Quality Improvements | 29 | Complete (9/9, pending formal verification in 29.4) |
 | WIN-01: SMB Bug Fixes | 30 | Not started |
 | WIN-02: Windows ACL Support | 31 | Not started |
 | WIN-03: Windows Integration Testing | 32 | Not started |

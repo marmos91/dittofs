@@ -80,6 +80,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 27: NFS Adapter Restructuring** - Rename internal/protocol/ to internal/adapter/, consolidate NFS ecosystem, split v4/v4.1
 - [x] **Phase 28: SMB Adapter Restructuring** - Extract BaseAdapter, move framing/signing/dispatch to internal/, Authenticator interface (completed 2026-02-25)
 - [x] **Phase 29: Core Layer Decomposition** - Store interface split, Runtime decomposition, Offloader rename/split, error unification (completed 2026-02-26)
+- [ ] **Phase 29.4: Verification Artifacts & Requirements Cleanup** INSERTED - Formal verification for Phases 28/29, REQUIREMENTS.md traceability update (gap closure from audit)
 - [ ] **Phase 29.5: Manual Verification - Refactoring** USER CHECKPOINT - Verify NFS + SMB functionality preserved
 
 ### v3.6 Windows Compatibility
@@ -225,6 +226,21 @@ Plans:
 - [ ] 29-05-PLAN.md — PayloadService I/O extraction + metadata store conformance suite
 - [ ] 29-06-PLAN.md — Runtime decomposition into 6 sub-services
 - [ ] 29-07-PLAN.md — Auth centralization, API error mapping, documentation update
+
+### Phase 29.4: Verification Artifacts & Requirements Cleanup (INSERTED)
+**Goal**: Close audit gaps by creating formal verification for Phases 28/29 and updating REQUIREMENTS.md traceability
+**Depends on**: Phase 29 (all implementation complete)
+**Requirements**: REF-04, REF-05, REF-06 (verification), traceability
+**Gap Closure**: Closes gaps from v3.5 milestone audit
+**Success Criteria** (what must be TRUE):
+  1. Phase 28 VERIFICATION.md created with per-requirement evidence against REF-04 sub-requirements
+  2. Phase 29 VERIFICATION.md created with per-requirement evidence against REF-05 and REF-06 sub-requirements
+  3. REQUIREMENTS.md checkboxes updated for all completed v3.5 requirements
+  4. REQUIREMENTS.md traceability table status reflects current state (Complete for REF-01 through REF-06)
+  5. Coverage count accurate in REQUIREMENTS.md
+**Plans**: 1 plan
+Plans:
+- [ ] 29.4-01-PLAN.md — Phase 28/29 verification artifacts + REQUIREMENTS.md traceability update
 
 ---
 
@@ -595,6 +611,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 51
 | 27. NFS Adapter Restructuring | v3.5 | 4/4 | Complete | 2026-02-25 |
 | 28. SMB Adapter Restructuring | 5/5 | Complete   | 2026-02-25 | - |
 | 29. Core Layer Decomposition | 7/7 | Complete   | 2026-02-26 | - |
+| 29.4 Verification & Requirements Cleanup | v3.5 | 0/1 | Not started | - |
 | 30. SMB Bug Fixes | v3.6 | 0/? | Not started | - |
 | 31. Windows ACL Support | v3.6 | 0/? | Not started | - |
 | 32. Windows Integration Testing | v3.6 | 0/? | Not started | - |
