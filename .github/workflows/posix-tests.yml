@@ -5,7 +5,7 @@
 # Tests NFSv3, NFSv4.0, and NFSv4.1 protocol versions.
 #
 # PR: memory store only (3 jobs) — fast feedback on NFS correctness.
-# Push/Cron: full matrix (memory + badger + postgres = 12 jobs).
+# Push/Cron: full matrix (memory + badger + postgres = 9 jobs).
 # Weekly cron: Sunday 4 AM UTC with auto-issue on regression.
 
 name: POSIX Compliance Tests
@@ -36,7 +36,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -103,7 +103,7 @@ jobs:
 
   # NFS POSIX tests for memory and badger stores (no external services needed)
   posix-nfs:
-    name: NFS v${{ matrix.nfs_version }} / ${{ matrix.store_label }}
+    name: NFS v${{ matrix.nfs_version }} / ${{ matrix.store == 'badger' && 'BadgerDB' || 'Memory' }}
     runs-on: ubuntu-latest
     needs: [determine-profile, build]
     timeout-minutes: 60
@@ -113,11 +113,6 @@ jobs:
       matrix:
         store: ${{ fromJSON(needs.determine-profile.outputs.stores) }}
         nfs_version: ['3', '4', '4.1']
-        include:
-          - store: memory
-            store_label: Memory
-          - store: badger
-            store_label: BadgerDB
 
     steps:
       - name: Checkout
@@ -180,7 +175,7 @@ jobs:
           sudo env PATH="$PJDFSTEST_DIR/bin:$PATH" prove -rv --timer "$TESTS_DIR" \
             2>&1 | tee "$LOG_FILE" || true
 
-          echo "## NFS v${{ matrix.nfs_version }} / ${{ matrix.store_label }} Results" >> $GITHUB_STEP_SUMMARY
+          echo "## NFS v${{ matrix.nfs_version }} / ${{ matrix.store == 'badger' && 'BadgerDB' || 'Memory' }} Results" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           tail -30 "$LOG_FILE" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
@@ -524,6 +519,8 @@ jobs:
   auto-issue:
     name: Create Regression Issue
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
     needs: [determine-profile, posix-nfs, posix-nfs-postgres]
     if: >-
       always() &&
