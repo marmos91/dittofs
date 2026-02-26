@@ -127,8 +127,8 @@ func (km *KeytabManager) checkAndReload() {
 // resolveKeytabPath resolves the keytab path with environment variable override.
 //
 // Resolution order (highest priority first):
-//  1. DITTOFS_KERBEROS_KEYTAB env var
-//  2. DITTOFS_KERBEROS_KEYTAB_PATH env var (legacy compat)
+//  1. DITTOFS_KERBEROS_KEYTAB env var (preferred)
+//  2. DITTOFS_KERBEROS_KEYTAB_PATH env var (alternative name)
 //  3. configPath from configuration file
 func resolveKeytabPath(configPath string) string {
 	if envPath := os.Getenv("DITTOFS_KERBEROS_KEYTAB"); envPath != "" {

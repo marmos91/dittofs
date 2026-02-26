@@ -15,8 +15,8 @@ type mockProvider struct {
 	authErr    error
 }
 
-func (m *mockProvider) CanHandle(token []byte) bool           { return m.canHandle(token) }
-func (m *mockProvider) Name() string                          { return m.name }
+func (m *mockProvider) CanHandle(token []byte) bool { return m.canHandle(token) }
+func (m *mockProvider) Name() string                { return m.name }
 func (m *mockProvider) Authenticate(_ context.Context, _ []byte) (*AuthResult, error) {
 	return m.authResult, m.authErr
 }
