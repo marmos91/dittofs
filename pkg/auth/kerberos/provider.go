@@ -1,6 +1,7 @@
 package kerberos
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -36,65 +37,35 @@ type Provider struct {
 
 // NewProvider creates a new Kerberos provider from configuration.
 //
-// The provider loads the keytab file and krb5.conf at startup, then starts
-// a KeytabManager that polls for keytab file changes every 60 seconds.
+// It loads the keytab file and krb5.conf at startup, then starts a KeytabManager
+// that polls for keytab file changes every 60 seconds.
 //
 // Environment variables take precedence over config file values:
 //   - DITTOFS_KERBEROS_KEYTAB overrides KeytabPath (also DITTOFS_KERBEROS_KEYTAB_PATH for compat)
 //   - DITTOFS_KERBEROS_PRINCIPAL overrides ServicePrincipal (also DITTOFS_KERBEROS_SERVICE_PRINCIPAL)
 //   - DITTOFS_KERBEROS_KRB5CONF overrides Krb5Conf
-//
-// Parameters:
-//   - cfg: Kerberos configuration (from pkg/config)
-//
-// Returns:
-//   - *Provider: Initialized provider with loaded keytab, krb5.conf, and active hot-reload
-//   - error: If keytab or krb5.conf cannot be loaded
 func NewProvider(cfg *dconfig.KerberosConfig) (*Provider, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("kerberos config is nil")
 	}
 
-	// Resolve keytab path (env var takes precedence via resolveKeytabPath)
 	keytabPath := resolveKeytabPath(cfg.KeytabPath)
-	// Also support legacy env var DITTOFS_KERBEROS_KEYTAB_PATH
-	if keytabPath == cfg.KeytabPath {
-		if envPath := os.Getenv("DITTOFS_KERBEROS_KEYTAB_PATH"); envPath != "" {
-			keytabPath = envPath
-		}
-	}
 	if keytabPath == "" {
 		return nil, fmt.Errorf("kerberos keytab path not configured (set keytab_path or DITTOFS_KERBEROS_KEYTAB)")
 	}
 
-	// Resolve service principal (env var takes precedence via resolveServicePrincipal)
 	servicePrincipal := resolveServicePrincipal(cfg.ServicePrincipal)
-	// Also support legacy env var DITTOFS_KERBEROS_SERVICE_PRINCIPAL
-	if servicePrincipal == cfg.ServicePrincipal {
-		if envSPN := os.Getenv("DITTOFS_KERBEROS_SERVICE_PRINCIPAL"); envSPN != "" {
-			servicePrincipal = envSPN
-		}
-	}
 	if servicePrincipal == "" {
 		return nil, fmt.Errorf("kerberos service principal not configured (set service_principal or DITTOFS_KERBEROS_PRINCIPAL)")
 	}
 
-	// Resolve krb5.conf path (env var takes precedence)
-	krb5ConfPath := cfg.Krb5Conf
-	if envConf := os.Getenv("DITTOFS_KERBEROS_KRB5CONF"); envConf != "" {
-		krb5ConfPath = envConf
-	}
-	if krb5ConfPath == "" {
-		krb5ConfPath = "/etc/krb5.conf"
-	}
+	krb5ConfPath := resolveKrb5ConfPath(cfg.Krb5Conf)
 
-	// Load keytab
 	kt, err := loadKeytab(keytabPath)
 	if err != nil {
 		return nil, fmt.Errorf("load keytab %s: %w", keytabPath, err)
 	}
 
-	// Load krb5.conf
 	krbCfg, err := loadKrb5Conf(krb5ConfPath)
 	if err != nil {
 		return nil, fmt.Errorf("load krb5.conf %s: %w", krb5ConfPath, err)
@@ -146,13 +117,8 @@ func (p *Provider) Krb5Config() *krb5config.Config {
 }
 
 // ReloadKeytab re-reads the keytab file and atomically swaps it.
-//
 // This enables keytab rotation without server restart. Active contexts
-// continue using the old keytab for verification; new contexts use the
-// new keytab.
-//
-// Returns:
-//   - error: If the new keytab cannot be loaded (old keytab remains active)
+// continue using the old keytab; new contexts use the new one.
 func (p *Provider) ReloadKeytab() error {
 	kt, err := loadKeytab(p.keytabPath)
 	if err != nil {
@@ -166,9 +132,7 @@ func (p *Provider) ReloadKeytab() error {
 	return nil
 }
 
-// Close releases resources held by the provider.
-//
-// This stops the KeytabManager's polling goroutine. Safe to call multiple times.
+// Close stops the KeytabManager's polling goroutine. Safe to call multiple times.
 func (p *Provider) Close() error {
 	if p.keytabManager != nil {
 		p.keytabManager.Stop()
@@ -178,6 +142,10 @@ func (p *Provider) Close() error {
 
 // Compile-time check that Provider implements auth.AuthProvider.
 var _ auth.AuthProvider = (*Provider)(nil)
+
+// spnegoOID is the ASN.1 encoded OID for SPNEGO (1.3.6.1.5.5.2):
+// OID tag (0x06), length (0x06), then the OID bytes.
+var spnegoOID = []byte{0x06, 0x06, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x02}
 
 // CanHandle returns true if the token is a Kerberos/SPNEGO authentication token.
 //
@@ -192,66 +160,33 @@ func (p *Provider) CanHandle(token []byte) bool {
 		return false
 	}
 
-	// SPNEGO initiation token: starts with ASN.1 Application [0] (0x60)
-	// followed by length and SPNEGO OID 1.3.6.1.5.5.2
-	if token[0] == 0x60 {
-		// Check for SPNEGO OID prefix: 06 06 2b 06 01 05 05 02
-		// (OID tag + length + OID bytes for 1.3.6.1.5.5.2)
-		spnegoOID := []byte{0x06, 0x06, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x02}
-		// The OID appears after the outer length encoding (variable length)
-		for i := 2; i < len(token)-len(spnegoOID); i++ {
-			if token[i] == spnegoOID[0] {
-				match := true
-				for j := 0; j < len(spnegoOID) && i+j < len(token); j++ {
-					if token[i+j] != spnegoOID[j] {
-						match = false
-						break
-					}
-				}
-				if match {
-					return true
-				}
-			}
-		}
-	}
-
-	// Raw Kerberos AP-REQ: ASN.1 Application [14] (0x6E)
-	if token[0] == 0x6E {
+	// SPNEGO initiation token: ASN.1 Application [0] (0x60) containing the SPNEGO OID
+	if token[0] == 0x60 && bytes.Contains(token, spnegoOID) {
 		return true
 	}
 
-	return false
+	// Raw Kerberos AP-REQ: ASN.1 Application [14] (0x6E)
+	return token[0] == 0x6E
 }
 
-// Authenticate processes a Kerberos/SPNEGO token and returns an AuthResult.
+// Authenticate identifies a Kerberos/SPNEGO token and returns a preliminary AuthResult.
 //
-// This is a high-level entry point for the auth.AuthProvider interface.
-// The actual RPCSEC_GSS and SPNEGO processing is handled by protocol-specific
-// code (internal/adapter/nfs/rpc/gss/ for NFS, internal/adapter/smb/auth/ for SMB).
-// This method provides a basic Kerberos token validation using the configured
-// keytab and service principal.
-//
-// For full protocol integration, use the protocol-specific authenticators that
-// wrap this provider.
+// Full token validation (AP-REQ verification, SPNEGO negotiation) is handled by
+// protocol-specific layers (gss.Krb5Verifier for NFS, SMB auth handler). This
+// method only identifies the mechanism; callers should use the protocol-specific
+// authenticators for full authentication.
 func (p *Provider) Authenticate(_ context.Context, token []byte) (*auth.AuthResult, error) {
 	if !p.CanHandle(token) {
 		return nil, auth.ErrUnsupportedMechanism
 	}
 
-	// The Provider itself manages keytab state; full Kerberos token validation
-	// (AP-REQ verification, SPNEGO negotiation) is handled by the protocol-specific
-	// layers that use this provider (e.g., gss.Krb5Verifier for NFS, SMB auth handler).
-	//
-	// Return a basic result indicating Kerberos mechanism was identified.
-	// Protocol-specific code should call the GSS/SPNEGO processors directly
-	// for full authentication with ticket validation.
 	return &auth.AuthResult{
 		Identity: auth.Identity{
 			Attributes: map[string]string{
 				"mechanism": "kerberos",
 			},
 		},
-		Authenticated: false, // Requires protocol-specific processing for full auth
+		Authenticated: false,
 		Provider:      p.Name(),
 	}, nil
 }

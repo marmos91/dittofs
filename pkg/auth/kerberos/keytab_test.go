@@ -64,35 +64,44 @@ func TestResolveServicePrincipal_FallbackToConfig(t *testing.T) {
 }
 
 // ============================================================================
+// resolveKrb5ConfPath tests
+// ============================================================================
+
+func TestResolveKrb5ConfPath_EnvVarOverride(t *testing.T) {
+	t.Setenv("DITTOFS_KERBEROS_KRB5CONF", "/env/override/krb5.conf")
+
+	result := resolveKrb5ConfPath("/config/path/krb5.conf")
+	if result != "/env/override/krb5.conf" {
+		t.Fatalf("expected /env/override/krb5.conf, got %s", result)
+	}
+}
+
+func TestResolveKrb5ConfPath_FallbackToConfig(t *testing.T) {
+	t.Setenv("DITTOFS_KERBEROS_KRB5CONF", "")
+
+	result := resolveKrb5ConfPath("/config/path/krb5.conf")
+	if result != "/config/path/krb5.conf" {
+		t.Fatalf("expected /config/path/krb5.conf, got %s", result)
+	}
+}
+
+func TestResolveKrb5ConfPath_DefaultFallback(t *testing.T) {
+	t.Setenv("DITTOFS_KERBEROS_KRB5CONF", "")
+
+	result := resolveKrb5ConfPath("")
+	if result != "/etc/krb5.conf" {
+		t.Fatalf("expected /etc/krb5.conf, got %s", result)
+	}
+}
+
+// ============================================================================
 // loadKeytab tests
 // ============================================================================
 
-// createTestKeytab creates a minimal valid keytab file for testing.
-//
-// It uses gokrb5 keytab.New() and AddEntry to create a keytab with one entry,
-// marshals it to bytes, and writes to a temp file.
+// createTestKeytab creates a minimal valid keytab file for testing with KVNO 1.
 func createTestKeytab(t *testing.T, dir string) string {
 	t.Helper()
-
-	kt := keytab.New()
-	// AddEntry(principalName, realm, password, timestamp, KVNO, encType)
-	// encType 17 = aes128-cts-hmac-sha1-96
-	err := kt.AddEntry("nfs/server.example.com", "EXAMPLE.COM", "test-password", time.Now(), 1, 17)
-	if err != nil {
-		t.Fatalf("add keytab entry: %v", err)
-	}
-
-	data, err := kt.Marshal()
-	if err != nil {
-		t.Fatalf("marshal test keytab: %v", err)
-	}
-
-	path := filepath.Join(dir, "test.keytab")
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		t.Fatalf("write test keytab: %v", err)
-	}
-
-	return path
+	return createTestKeytabWithKVNO(t, dir, 1)
 }
 
 // createTestKeytabWithKVNO creates a keytab file with a specific KVNO for testing.

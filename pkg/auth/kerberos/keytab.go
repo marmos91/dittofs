@@ -28,14 +28,7 @@ type KeytabManager struct {
 	lastMod  time.Time
 }
 
-// NewKeytabManager creates a new keytab file manager.
-//
-// Parameters:
-//   - path: File path to the keytab file to watch
-//   - provider: Provider to reload keytab into (via ReloadKeytab)
-//
-// Returns:
-//   - *KeytabManager: Initialized manager (not yet started)
+// NewKeytabManager creates a new keytab file manager (not yet started).
 func NewKeytabManager(path string, provider *Provider) *KeytabManager {
 	return &KeytabManager{
 		path:     path,
@@ -45,14 +38,8 @@ func NewKeytabManager(path string, provider *Provider) *KeytabManager {
 }
 
 // Start begins polling the keytab file for changes.
-//
-// It validates the keytab file exists and is readable, records its initial
-// modification time, then starts a background goroutine that polls every
-// 60 seconds. On change, it calls provider.ReloadKeytab() to atomically
-// swap the keytab.
-//
-// Returns:
-//   - error: If the keytab file does not exist or is not readable
+// It validates the file exists, records its initial modification time, then
+// starts a background goroutine that polls every 60 seconds.
 func (km *KeytabManager) Start() error {
 	km.mu.Lock()
 	defer km.mu.Unlock()
@@ -141,15 +128,13 @@ func (km *KeytabManager) checkAndReload() {
 //
 // Resolution order (highest priority first):
 //  1. DITTOFS_KERBEROS_KEYTAB env var
-//  2. configPath from configuration file
-//
-// Parameters:
-//   - configPath: Path from the configuration file
-//
-// Returns:
-//   - string: The resolved keytab path
+//  2. DITTOFS_KERBEROS_KEYTAB_PATH env var (legacy compat)
+//  3. configPath from configuration file
 func resolveKeytabPath(configPath string) string {
 	if envPath := os.Getenv("DITTOFS_KERBEROS_KEYTAB"); envPath != "" {
+		return envPath
+	}
+	if envPath := os.Getenv("DITTOFS_KERBEROS_KEYTAB_PATH"); envPath != "" {
 		return envPath
 	}
 	return configPath
@@ -159,16 +144,30 @@ func resolveKeytabPath(configPath string) string {
 //
 // Resolution order (highest priority first):
 //  1. DITTOFS_KERBEROS_PRINCIPAL env var
-//  2. configPrincipal from configuration file
-//
-// Parameters:
-//   - configPrincipal: Principal from the configuration file
-//
-// Returns:
-//   - string: The resolved service principal
+//  2. DITTOFS_KERBEROS_SERVICE_PRINCIPAL env var (legacy compat)
+//  3. configPrincipal from configuration file
 func resolveServicePrincipal(configPrincipal string) string {
 	if envSPN := os.Getenv("DITTOFS_KERBEROS_PRINCIPAL"); envSPN != "" {
 		return envSPN
 	}
+	if envSPN := os.Getenv("DITTOFS_KERBEROS_SERVICE_PRINCIPAL"); envSPN != "" {
+		return envSPN
+	}
 	return configPrincipal
+}
+
+// resolveKrb5ConfPath resolves the krb5.conf path with environment variable override.
+//
+// Resolution order (highest priority first):
+//  1. DITTOFS_KERBEROS_KRB5CONF env var
+//  2. configPath from configuration file
+//  3. Default: /etc/krb5.conf
+func resolveKrb5ConfPath(configPath string) string {
+	if envPath := os.Getenv("DITTOFS_KERBEROS_KRB5CONF"); envPath != "" {
+		return envPath
+	}
+	if configPath != "" {
+		return configPath
+	}
+	return "/etc/krb5.conf"
 }

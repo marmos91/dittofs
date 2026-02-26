@@ -12,9 +12,6 @@
 // credential parsing, RPCSEC_GSS context negotiation) remain in their respective
 // adapter packages. This package provides the shared abstractions that allow
 // the runtime to manage authentication uniformly across protocols.
-//
-// Sub-packages:
-//   - kerberos/: Kerberos AuthProvider implementation with keytab management
 package auth
 
 import (
@@ -43,10 +40,6 @@ type AuthProvider interface {
 	CanHandle(token []byte) bool
 
 	// Authenticate processes an authentication token and returns the result.
-	//
-	// Returns:
-	//   - (*AuthResult, nil) on successful authentication
-	//   - (nil, error) on failure
 	Authenticate(ctx context.Context, token []byte) (*AuthResult, error)
 
 	// Name returns the provider name for logging and diagnostics.
@@ -54,13 +47,9 @@ type AuthProvider interface {
 	Name() string
 }
 
-// AuthResult contains the outcome of a successful authentication.
-//
-// The Identity field holds the authenticated identity in a protocol-neutral form.
-// The Provider field indicates which AuthProvider handled the authentication,
-// useful for audit logging and debugging.
+// AuthResult contains the outcome of an authentication attempt.
 type AuthResult struct {
-	// Identity is the authenticated identity.
+	// Identity is the authenticated identity in protocol-neutral form.
 	Identity Identity
 
 	// Authenticated indicates whether authentication succeeded.

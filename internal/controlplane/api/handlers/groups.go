@@ -263,12 +263,10 @@ func groupToResponse(g *models.Group) GroupResponse {
 		Description: g.Description,
 		CreatedAt:   g.CreatedAt,
 	}
-	// Copy GID pointer
 	if g.GID != nil {
 		gid := *g.GID
 		resp.GID = &gid
 	}
-	// Populate members from Users
 	if len(g.Users) > 0 {
 		resp.Members = make([]string, len(g.Users))
 		for i, u := range g.Users {

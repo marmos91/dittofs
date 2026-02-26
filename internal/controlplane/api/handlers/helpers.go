@@ -19,22 +19,6 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, v any) bool {
 }
 
 // MapStoreError maps a control plane store error to an HTTP status code and message.
-//
-// This centralizes the error-to-HTTP-status translation that was previously
-// duplicated across handlers. It uses errors.Is() to match sentinel errors
-// from the models package.
-//
-// Returns:
-//   - (status int, message string) suitable for writing an HTTP error response
-//
-// Mapping:
-//   - ErrUserNotFound, ErrGroupNotFound, ErrShareNotFound, ErrStoreNotFound,
-//     ErrAdapterNotFound, ErrSettingNotFound, ErrNetgroupNotFound -> 404
-//   - ErrDuplicateUser, ErrDuplicateGroup, ErrDuplicateShare,
-//     ErrDuplicateStore, ErrDuplicateAdapter, ErrDuplicateNetgroup -> 409
-//   - ErrStoreInUse, ErrNetgroupInUse -> 409
-//   - ErrUserDisabled, ErrGuestDisabled -> 403
-//   - Default -> 500 "Internal server error"
 func MapStoreError(err error) (int, string) {
 	// Not found errors -> 404
 	switch {
@@ -83,14 +67,6 @@ func MapStoreError(err error) (int, string) {
 }
 
 // HandleStoreError maps a store error to an HTTP response and writes it.
-//
-// This is a convenience function that combines MapStoreError with WriteProblem.
-// Handlers can replace their per-error switch blocks with a single call:
-//
-//	if err := h.store.DeleteUser(ctx, username); err != nil {
-//	    HandleStoreError(w, err)
-//	    return
-//	}
 func HandleStoreError(w http.ResponseWriter, err error) {
 	status, msg := MapStoreError(err)
 	WriteProblem(w, status, http.StatusText(status), msg)
