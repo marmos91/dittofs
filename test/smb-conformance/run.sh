@@ -443,6 +443,7 @@ run_local() {
     local wpts_exit=0
     # shellcheck disable=SC2086
     docker run --rm --name wpts-local \
+        --platform linux/amd64 \
         ${docker_network} \
         -v "${SCRIPT_DIR}/ptfconfig-generated:/data/fileserver" \
         mcr.microsoft.com/windowsprotocoltestsuites:fileserver-v8 \
@@ -464,6 +465,9 @@ echo ""
 log_info "Profile: ${PROFILE}"
 log_info "Mode:    ${MODE}"
 log_info "Filter:  ${FILTER}"
+if [[ "$(uname -m)" == "arm64" ]]; then
+    log_warn "ARM64 detected — WPTS image will run under Rosetta/QEMU emulation (linux/amd64)"
+fi
 echo ""
 
 case "$MODE" in

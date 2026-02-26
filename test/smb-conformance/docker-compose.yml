@@ -31,6 +31,7 @@ services:
 
   wpts:
     image: mcr.microsoft.com/windowsprotocoltestsuites:fileserver-v8
+    platform: linux/amd64
     depends_on:
       dittofs:
         condition: service_healthy
