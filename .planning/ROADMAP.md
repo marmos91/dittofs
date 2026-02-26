@@ -84,7 +84,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 ### v3.6 Windows Compatibility
 
-- [ ] **Phase 29.8: Microsoft Protocol Test Suite CI Integration** INSERTED - Dockerized WPTS FileServer harness running MS-SMB2 BVT tests against DittoFS on custom port in CI
+- [x] **Phase 29.8: Microsoft Protocol Test Suite CI Integration** INSERTED - Dockerized WPTS FileServer harness running MS-SMB2 BVT tests against DittoFS on custom port in CI (completed 2026-02-26)
 - [ ] **Phase 30: SMB Bug Fixes** - Fix sparse file READ (#180), renamed directory listing (#181)
 - [ ] **Phase 31: Windows ACL Support** - NT Security Descriptors, Unix-to-SID mapping, icacls support (#182)
 - [ ] **Phase 32: Windows Integration Testing** - smbtorture + manual Windows 11 validation (WPTS CI already in Phase 29.8)
@@ -245,7 +245,10 @@ Plans:
   7. Results summary printed to CI log with pass/fail/skip counts; full NUnit XML archived as artifact
   8. Known-failing tests documented in `test/smb-conformance/KNOWN_FAILURES.md` with issue references
   9. Phase 44 (SMB3 Conformance Testing) updated to extend this infrastructure rather than build from scratch
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 29.8-01-PLAN.md — Docker infrastructure, ptfconfig templates, bootstrap script, DittoFS configs
+- [ ] 29.8-02-PLAN.md — Test runner, TRX parser, known failures, CI workflow, documentation
 
 ### Phase 30: SMB Bug Fixes
 **Goal**: Fix known SMB bugs found during Windows testing
@@ -456,6 +459,7 @@ Plans:
 
 ### Phase 44: SMB3 Conformance Testing
 **Goal**: Validate SMB3 implementation against industry-standard conformance test suites and verify client compatibility
+**Extends**: Phase 29.8 WPTS infrastructure with SMB3-specific test categories, updated ptfconfig capabilities, and smbtorture integration
 **Depends on**: Phase 39, Phase 40, Phase 41, Phase 42, Phase 43
 **Requirements**: SMB3-CONF-01 through SMB3-CONF-05
 **Reference**: [Microsoft WindowsProtocolTestSuites](https://github.com/microsoft/WindowsProtocolTestSuites) (MIT), [Samba smbtorture](https://wiki.samba.org/index.php/Writing_Torture_Tests) (GPLv3)
