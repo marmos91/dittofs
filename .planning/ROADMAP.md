@@ -147,55 +147,73 @@ Decimal phases appear between their surrounding integers in numeric order.
   7. Results summary printed to CI log with pass/fail/skip counts; full NUnit XML archived as artifact
   8. Known-failing tests documented in `test/smb-conformance/KNOWN_FAILURES.md` with issue references
   9. Phase 44 (SMB3 Conformance Testing) updated to extend this infrastructure rather than build from scratch
-**Plans**: 2 plans
+**Plans**: 2 plans (COMPLETED)
 Plans:
-- [ ] 29.8-01-PLAN.md — Docker infrastructure, ptfconfig templates, bootstrap script, DittoFS configs
-- [ ] 29.8-02-PLAN.md — Test runner, TRX parser, known failures, CI workflow, documentation
+- [x] 29.8-01-PLAN.md — Docker infrastructure, ptfconfig templates, bootstrap script, DittoFS configs
+- [x] 29.8-02-PLAN.md — Test runner, TRX parser, known failures, CI workflow, documentation
 
 ### Phase 30: SMB Bug Fixes
-**Goal**: Fix known SMB bugs found during Windows testing
-**Depends on**: Phase 29 (refactoring complete)
-**Requirements**: WIN-01
-**Reference**: GitHub issues #180, #181
+**Goal**: Fix known SMB bugs blocking Windows file operations
+**Depends on**: Phase 29.8 (WPTS CI in place for regression testing)
+**Requirements**: BUG-01, BUG-02
+**Reference**: GitHub issues #180 (sparse READ), #181 (renamed directory listing)
 **Success Criteria** (what must be TRUE):
-  1. Sparse file READ returns zeros for unwritten blocks instead of "block not found" error (#180)
-  2. TransferManager/Offloader downloadBlock() handles ErrBlockNotFound as sparse region
-  3. Renamed directories show as `<DIR>` in parent listing (#181)
-  4. Move operation updates file Path field in metadata
-  5. E2E tests cover both bug scenarios
-**Plans**: TBD
+  1. User can read from sparse file regions in Windows Explorer without errors (zeros returned for unwritten blocks)
+  2. Payload layer treats missing blocks as sparse (zero-fill) when offset is within file size
+  3. User can rename directory and immediately see children listed correctly in parent (no stale paths)
+  4. Metadata Move operation updates Path field before persisting to store
+  5. E2E tests verify both sparse READ and renamed directory scenarios
+  6. WPTS BVT suite shows no regressions from bug fixes
+**Plans**: 2 plans
+Plans:
+- [ ] 30-01-PLAN.md — Sparse file READ zero-fill (payload/io/read.go, handlers/read.go, E2E test)
+- [ ] 30-02-PLAN.md — Renamed directory path update (metadata/file_modify.go, store impls, E2E test)
 
 ### Phase 31: Windows ACL Support
-**Goal**: Implement NT Security Descriptors for proper Windows ACL display and control
-**Depends on**: Phase 30
-**Requirements**: WIN-02
-**Reference**: GitHub issue #182, MS-DTYP, MS-SMB2 Section 2.2.39
+**Goal**: Windows users see meaningful permissions in Explorer and icacls instead of "Everyone: Full Control"
+**Depends on**: Phase 30 (bug fixes complete)
+**Requirements**: SD-01, SD-02, SD-03, SD-04, SD-05, SD-06, SD-07, SD-08
+**Reference**: GitHub issue #182, MS-DTYP (Security Descriptors), MS-SMB2 Section 2.2.39 (QUERY_INFO SecurityInformation)
 **Success Criteria** (what must be TRUE):
-  1. QUERY_INFO SecurityInformation returns proper NT Security Descriptor (Owner SID, Group SID, DACL)
-  2. Unix UID/GID mapped to Windows SIDs (well-known SIDs for common accounts, S-1-22-x-y for Unix)
-  3. Unix file permissions (rwx) translated to Windows ACE entries in DACL
-  4. `icacls` on mounted share shows meaningful permissions (not Everyone:(F))
-  5. SET_INFO SecurityInformation accepts permission changes (best-effort mapping back to Unix)
-  6. Directory inheritance flags set correctly (CONTAINER_INHERIT_ACE, OBJECT_INHERIT_ACE)
-  7. SMB and NFSv4 ACLs remain interoperable through shared metadata model
-**Plans**: TBD
+  1. Windows Explorer Properties → Security tab shows Owner, Group, and Permissions (not blank or Everyone)
+  2. icacls command displays DACL with owner/group/other permissions derived from POSIX mode bits
+  3. ACE entries ordered in Windows canonical order (deny before allow, inherited after explicit)
+  4. Well-known SIDs present in default DACLs (NT AUTHORITY\SYSTEM, BUILTIN\Administrators)
+  5. Directory ACEs have inheritance flags set (CONTAINER_INHERIT_ACE, OBJECT_INHERIT_ACE)
+  6. User UID 1000 and group GID 1000 have distinct SIDs (no collision)
+  7. QUERY_INFO with SACL flag returns valid empty SACL structure (not omitted)
+  8. SET_INFO SecurityInformation accepts permission changes (best-effort mapping to Unix mode)
+  9. NFSv4 ACL queries and SMB Security Descriptor queries remain consistent
+**Plans**: 3 plans
+Plans:
+- [ ] 31-01-PLAN.md — Machine SID generation, SID mapper enhancements (user/group RID separation)
+- [ ] 31-02-PLAN.md — POSIX-to-DACL synthesis, canonical ACE ordering, well-known SIDs, inheritance flags
+- [ ] 31-03-PLAN.md — SD control flags (SE_DACL_AUTO_INHERITED, SE_DACL_PROTECTED), SACL stub, integration tests
 
 ### Phase 32: Windows Integration Testing
-**Goal**: Comprehensive Windows compatibility validation using automated test suites and manual testing
-**Depends on**: Phase 31
-**Requirements**: WIN-03
-**Reference**: Microsoft WindowsProtocolTestSuites (MIT), Samba smbtorture (GPL)
+**Goal**: Comprehensive conformance validation ensures DittoFS works correctly with Windows 11 clients and passes industry-standard test suites
+**Depends on**: Phase 31 (ACL support complete)
+**Requirements**: WIN-01, WIN-02, WIN-03, WIN-04, WIN-05, WIN-06, TEST-01, TEST-02, TEST-03
+**Reference**: Samba smbtorture (GPLv3), Microsoft WindowsProtocolTestSuites (MIT), Windows 11 23H2+
 **Success Criteria** (what must be TRUE):
-  1. Samba smbtorture SMB2 basic tests pass (smb2.connect, smb2.read, smb2.write, smb2.lock, smb2.oplock, smb2.lease)
-  2. Samba smbtorture SMB2 ACL tests pass (smb2.acls, smb2.dir)
-  3. Microsoft WindowsProtocolTestSuites File Server BVT suite passes (101 core tests)
-  4. Microsoft WindowsProtocolTestSuites selected feature tests pass (lease, oplock, lock, signing, encryption categories)
-  5. Windows 11 manual validation: Explorer file operations (create, rename, delete, copy, move, drag-and-drop)
-  6. Windows 11 manual validation: cmd.exe operations (dir, type, copy, move, ren, del, mkdir, rmdir, icacls, fsutil)
-  7. Windows 11 manual validation: PowerShell operations (Get-Item, Set-Item, Get-Acl, Set-Acl)
-  8. All issues #180, #181, #182 verified fixed on Windows
-  9. No regressions on Linux/macOS NFS or SMB mounts
-**Plans**: TBD
+  1. smbtorture SMB2 basic tests pass: smb2.connect, smb2.read, smb2.write, smb2.lock, smb2.oplock, smb2.lease
+  2. smbtorture SMB2 ACL tests pass: smb2.acls, smb2.dir
+  3. WPTS BVT suite (101 tests) passes with <10% failure rate (known failures documented)
+  4. Windows 11 user can: create file/folder in Explorer, rename, delete, copy, move, drag-and-drop
+  5. Windows 11 cmd.exe operations work: dir, type, copy, move, ren, del, mkdir, rmdir, icacls, fsutil
+  6. Windows 11 PowerShell operations work: Get-Item, Set-Item, Get-Acl, Set-Acl
+  7. CREATE response context wire encoding delivers lease/MxAc/QFid responses to clients
+  8. SMB signing enforced for all authenticated sessions (Windows 11 24H2 requirement)
+  9. Missing FileInfoClass handlers added (FileCompressionInformation, FileAttributeTagInformation, FilePositionInformation, FileModeInformation)
+  10. Guest access signing negotiation handled for Windows 11 24H2
+  11. Issues #180, #181, #182 verified fixed on Windows 11
+  12. No regressions on Linux/macOS NFS or SMB mounts
+  13. KNOWN_FAILURES.md updated with current pass/fail status and issue links
+**Plans**: 3 plans
+Plans:
+- [ ] 32-01-PLAN.md — Windows 11 compatibility fixes (CREATE context encoding, MxAc/QFid, signing, FileInfoClass handlers)
+- [ ] 32-02-PLAN.md — smbtorture integration and test execution (Docker setup, test suite run, failure triage)
+- [ ] 32-03-PLAN.md — Manual Windows 11 validation and regression testing (Explorer, cmd, PowerShell, KNOWN_FAILURES.md update)
 
 ---
 
@@ -498,9 +516,10 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 51
 | 28. SMB Adapter Restructuring | v3.5 | 5/5 | Complete | 2026-02-25 |
 | 29. Core Layer Decomposition | v3.5 | 7/7 | Complete | 2026-02-26 |
 | 29.4 Verification & Requirements Cleanup | v3.5 | 1/1 | Complete | 2026-02-26 |
-| 30. SMB Bug Fixes | v3.6 | 0/? | Not started | - |
-| 31. Windows ACL Support | v3.6 | 0/? | Not started | - |
-| 32. Windows Integration Testing | v3.6 | 0/? | Not started | - |
+| 29.8. Microsoft Protocol Test Suite CI | v3.6 | 2/2 | Complete | 2026-02-26 |
+| 30. SMB Bug Fixes | v3.6 | 0/2 | Not started | - |
+| 31. Windows ACL Support | v3.6 | 0/3 | Not started | - |
+| 32. Windows Integration Testing | v3.6 | 0/3 | Not started | - |
 | 33. Benchmark Infrastructure | v3.7 | 0/? | Not started | - |
 | 34. Benchmark Workloads | v3.7 | 0/? | Not started | - |
 | 35. Competitor Setup | v3.7 | 0/? | Not started | - |
@@ -521,7 +540,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 51
 | 50. Documentation | v4.0 | 0/? | Not started | - |
 | 51. v4.0 Testing | v4.0 | 0/? | Not started | - |
 
-**Total:** 108/? plans complete
+**Total:** 110/? plans complete
 
 ---
 *Roadmap created: 2026-02-04*
@@ -529,3 +548,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> ... -> 51
 *v2.0 shipped: 2026-02-20*
 *v3.0 shipped: 2026-02-25*
 *v3.5 shipped: 2026-02-26*
+*v3.6 roadmap refined: 2026-02-26*

@@ -1,31 +1,33 @@
 ---
 gsd_state_version: 1.0
-milestone: v4.2
-milestone_name: Adapter + Core Refactoring
-status: unknown
-last_updated: "2026-02-26T17:00:58.826Z"
+milestone: v3.6
+milestone_name: Windows Compatibility
+status: roadmap_created
+last_updated: "2026-02-26T17:30:00.000Z"
 progress:
-  total_phases: 31
+  total_phases: 33
   completed_phases: 30
-  total_plans: 105
-  completed_plans: 105
+  total_plans: 116
+  completed_plans: 110
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-02-25)
+See: .planning/PROJECT.md (updated 2026-02-26)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking, Kerberos authentication, and session reliability
-**Current focus:** v3.6 Windows Compatibility
+**Current focus:** v3.6 Windows Compatibility — SMB bug fixes, NT Security Descriptors, conformance testing
 
 ## Current Position
 
-Phase: Not started (requirements defined, awaiting roadmap)
-Plan: —
-Status: Requirements defined (19 reqs), research complete, roadmap creation pending
-Last activity: 2026-02-26 — Requirements defined for v3.6, research complete
+Phase: 30 (SMB Bug Fixes)
+Plan: Not started (roadmap refined, awaiting execution)
+Status: Roadmap created with 3 phases, 8 plans total (2+3+3)
+Last activity: 2026-02-26 — v3.6 roadmap refined with requirement mappings and success criteria
+
+**Progress:** ████████████████████████████████░░░░ 30/33 phases (91%)
 
 ## Completed Milestones
 
@@ -39,8 +41,9 @@ Last activity: 2026-02-26 — Requirements defined for v3.6, research complete
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 108 (19 v1.0 + 42 v2.0 + 25 v3.0 + 22 v3.5)
+- Total plans completed: 110 (19 v1.0 + 42 v2.0 + 25 v3.0 + 22 v3.5 + 2 v3.6-inserted)
 - 4 milestones in 26 days
+- Average: ~4.2 plans/day
 
 | Phase | Plan | Duration | Tasks | Files |
 |-------|------|----------|-------|-------|
@@ -83,6 +86,9 @@ Last activity: 2026-02-26 — Requirements defined for v3.6, research complete
 - v3.8 Phase 44 added: SMB3 Conformance Testing (Microsoft WPTS + smbtorture + Go integration)
 - v4.0 phases renumbered from 26-32.5 to 45-51.5 (after benchmark, SMB3, and conformance testing)
 - Test suites chosen: smbtorture (GPL) + Microsoft WindowsProtocolTestSuites (MIT)
+- [v3.6] Phase structure: 30 (Bug Fixes), 31 (Windows ACL Support), 32 (Integration Testing)
+- [v3.6] Plan counts: Phase 30=2 plans, Phase 31=3 plans, Phase 32=3 plans
+- [v3.6] 100% requirement coverage: all 19 requirements mapped to phases 30-32
 - [26-01] Combined Task 1+2 into atomic commit (types and consumers must rename together)
 - [26-01] Kept AccessMode as int enum for backward compat (bitmask conversion deferred)
 - [26-02] SquashMode stays in models/permission.go (shared by NFS adapter and runtime identity mapping)
@@ -153,5 +159,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-26
-Stopped at: Completed 29.4-01-PLAN.md (Phase 29.4 complete)
-Resume file: Next phase
+Stopped at: v3.6 roadmap refinement complete (requirements mapped, success criteria defined, plan counts determined)
+Resume file: `/gsd:plan-phase 30` to create execution plans for Phase 30 (SMB Bug Fixes)

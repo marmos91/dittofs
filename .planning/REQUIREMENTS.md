@@ -64,31 +64,31 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| BUG-01 | TBD | Pending |
-| BUG-02 | TBD | Pending |
-| SD-01 | TBD | Pending |
-| SD-02 | TBD | Pending |
-| SD-03 | TBD | Pending |
-| SD-04 | TBD | Pending |
-| SD-05 | TBD | Pending |
-| SD-06 | TBD | Pending |
-| SD-07 | TBD | Pending |
-| SD-08 | TBD | Pending |
-| WIN-01 | TBD | Pending |
-| WIN-02 | TBD | Pending |
-| WIN-03 | TBD | Pending |
-| WIN-04 | TBD | Pending |
-| WIN-05 | TBD | Pending |
-| WIN-06 | TBD | Pending |
-| TEST-01 | TBD | Pending |
-| TEST-02 | TBD | Pending |
-| TEST-03 | TBD | Pending |
+| BUG-01 | Phase 30 | Pending |
+| BUG-02 | Phase 30 | Pending |
+| SD-01 | Phase 31 | Pending |
+| SD-02 | Phase 31 | Pending |
+| SD-03 | Phase 31 | Pending |
+| SD-04 | Phase 31 | Pending |
+| SD-05 | Phase 31 | Pending |
+| SD-06 | Phase 31 | Pending |
+| SD-07 | Phase 31 | Pending |
+| SD-08 | Phase 31 | Pending |
+| WIN-01 | Phase 32 | Pending |
+| WIN-02 | Phase 32 | Pending |
+| WIN-03 | Phase 32 | Pending |
+| WIN-04 | Phase 32 | Pending |
+| WIN-05 | Phase 32 | Pending |
+| WIN-06 | Phase 32 | Pending |
+| TEST-01 | Phase 32 | Pending |
+| TEST-02 | Phase 32 | Pending |
+| TEST-03 | Phase 32 | Pending |
 
 **Coverage:**
 - v3.6 requirements: 19 total
-- Mapped to phases: 0
-- Unmapped: 19 ⚠️
+- Mapped to phases: 19 ✓
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-02-26*
-*Last updated: 2026-02-26 after initial definition*
+*Last updated: 2026-02-26 after roadmap refinement*
