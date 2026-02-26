@@ -3,6 +3,10 @@
 // This package implements the Store interface for managing control plane data
 // including users, groups, shares, store configurations, and adapters.
 //
+// The Store interface is composed of focused sub-interfaces, each grouping
+// related operations by entity. Consumers should accept the narrowest
+// sub-interface they need for improved testability and explicit dependencies.
+//
 // Two backends are supported:
 //   - SQLite (single-node, default)
 //   - PostgreSQL (HA-capable)
@@ -15,16 +19,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
-// Store provides the control plane persistence interface.
+// UserStore provides user CRUD and credential operations.
 //
-// This interface defines all operations for managing control plane data including
-// users, groups, shares, store configurations, and adapters.
-//
-// Thread Safety: Implementations must be safe for concurrent use from multiple
-// goroutines.
-//
-// The Store interface supports both SQLite (single-node) and PostgreSQL (HA) backends.
-type Store interface {
+// All methods are safe for concurrent use. Username lookups are
+// case-sensitive. UID lookups support NFS AUTH_UNIX reverse mapping.
+type UserStore interface {
 	// GetUser returns a user by username.
 	// Returns models.ErrUserNotFound if the user doesn't exist.
 	GetUser(ctx context.Context, username string) (*models.User, error)
@@ -71,6 +70,19 @@ type Store interface {
 	// Returns models.ErrUserDisabled if the user account is disabled.
 	ValidateCredentials(ctx context.Context, username, password string) (*models.User, error)
 
+	// GetGuestUser returns the guest user for a specific share if guest access is enabled.
+	// Returns models.ErrGuestDisabled if guest access is not configured for the share.
+	GetGuestUser(ctx context.Context, shareName string) (*models.User, error)
+
+	// IsGuestEnabled returns whether guest access is enabled for the share.
+	IsGuestEnabled(ctx context.Context, shareName string) bool
+}
+
+// GroupStore provides group CRUD and membership operations.
+//
+// Groups are used for permission resolution and Unix GID mapping.
+// Default groups (admins, users) are created during server startup.
+type GroupStore interface {
 	// GetGroup returns a group by name.
 	// Returns models.ErrGroupNotFound if the group doesn't exist.
 	GetGroup(ctx context.Context, name string) (*models.Group, error)
@@ -121,65 +133,14 @@ type Store interface {
 	// Returns true if any groups were created.
 	// This should be called during server startup after EnsureAdminUser.
 	EnsureDefaultGroups(ctx context.Context) (created bool, err error)
+}
 
-	// GetMetadataStore returns a metadata store configuration by name.
-	// Returns models.ErrStoreNotFound if the store doesn't exist.
-	GetMetadataStore(ctx context.Context, name string) (*models.MetadataStoreConfig, error)
-
-	// GetMetadataStoreByID returns a metadata store configuration by ID.
-	// Returns models.ErrStoreNotFound if the store doesn't exist.
-	GetMetadataStoreByID(ctx context.Context, id string) (*models.MetadataStoreConfig, error)
-
-	// ListMetadataStores returns all metadata store configurations.
-	ListMetadataStores(ctx context.Context) ([]*models.MetadataStoreConfig, error)
-
-	// CreateMetadataStore creates a new metadata store configuration.
-	// The ID will be generated if empty.
-	// Returns the generated ID.
-	// Returns models.ErrDuplicateStore if a store with the same name exists.
-	CreateMetadataStore(ctx context.Context, store *models.MetadataStoreConfig) (string, error)
-
-	// UpdateMetadataStore updates an existing metadata store configuration.
-	// Returns models.ErrStoreNotFound if the store doesn't exist.
-	UpdateMetadataStore(ctx context.Context, store *models.MetadataStoreConfig) error
-
-	// DeleteMetadataStore deletes a metadata store configuration by name.
-	// Returns models.ErrStoreNotFound if the store doesn't exist.
-	// Returns models.ErrStoreInUse if the store is referenced by any shares.
-	DeleteMetadataStore(ctx context.Context, name string) error
-
-	// GetSharesByMetadataStore returns all shares using the given metadata store.
-	GetSharesByMetadataStore(ctx context.Context, storeName string) ([]*models.Share, error)
-
-	// GetPayloadStore returns a payload store configuration by name.
-	// Returns models.ErrStoreNotFound if the store doesn't exist.
-	GetPayloadStore(ctx context.Context, name string) (*models.PayloadStoreConfig, error)
-
-	// GetPayloadStoreByID returns a payload store configuration by ID.
-	// Returns models.ErrStoreNotFound if the store doesn't exist.
-	GetPayloadStoreByID(ctx context.Context, id string) (*models.PayloadStoreConfig, error)
-
-	// ListPayloadStores returns all payload store configurations.
-	ListPayloadStores(ctx context.Context) ([]*models.PayloadStoreConfig, error)
-
-	// CreatePayloadStore creates a new payload store configuration.
-	// The ID will be generated if empty.
-	// Returns the generated ID.
-	// Returns models.ErrDuplicateStore if a store with the same name exists.
-	CreatePayloadStore(ctx context.Context, store *models.PayloadStoreConfig) (string, error)
-
-	// UpdatePayloadStore updates an existing payload store configuration.
-	// Returns models.ErrStoreNotFound if the store doesn't exist.
-	UpdatePayloadStore(ctx context.Context, store *models.PayloadStoreConfig) error
-
-	// DeletePayloadStore deletes a payload store configuration by name.
-	// Returns models.ErrStoreNotFound if the store doesn't exist.
-	// Returns models.ErrStoreInUse if the store is referenced by any shares.
-	DeletePayloadStore(ctx context.Context, name string) error
-
-	// GetSharesByPayloadStore returns all shares using the given payload store.
-	GetSharesByPayloadStore(ctx context.Context, storeName string) ([]*models.Share, error)
-
+// ShareStore provides share CRUD, access rules, and per-share adapter config operations.
+//
+// Shares define NFS/SMB exports. Each share references a metadata store and
+// payload store by ID. ShareAdapterConfig methods manage per-share,
+// per-protocol configuration (e.g., NFS export options, SMB share options).
+type ShareStore interface {
 	// GetShare returns a share by name.
 	// Returns models.ErrShareNotFound if the share doesn't exist.
 	GetShare(ctx context.Context, name string) (*models.Share, error)
@@ -226,6 +187,28 @@ type Store interface {
 	// No error if the rule doesn't exist.
 	RemoveShareAccessRule(ctx context.Context, shareName, ruleID string) error
 
+	// GetShareAdapterConfig returns the adapter config for a share and adapter type.
+	// Returns nil (no error) if no config exists.
+	GetShareAdapterConfig(ctx context.Context, shareID, adapterType string) (*models.ShareAdapterConfig, error)
+
+	// SetShareAdapterConfig creates or updates an adapter config for a share.
+	// Uses upsert semantics: creates if not found, updates if exists.
+	SetShareAdapterConfig(ctx context.Context, config *models.ShareAdapterConfig) error
+
+	// DeleteShareAdapterConfig deletes an adapter config for a share and adapter type.
+	// No error if the config didn't exist.
+	DeleteShareAdapterConfig(ctx context.Context, shareID, adapterType string) error
+
+	// ListShareAdapterConfigs returns all adapter configs for a share.
+	ListShareAdapterConfigs(ctx context.Context, shareID string) ([]models.ShareAdapterConfig, error)
+}
+
+// PermissionStore provides user and group share permission operations.
+//
+// Permission resolution follows the order: user explicit > group permissions
+// (highest wins) > share default. This interface is separated from ShareStore
+// to allow handlers that only need permission checks to accept a narrow interface.
+type PermissionStore interface {
 	// GetUserSharePermission returns the user's permission for a share.
 	// Returns nil (no error) if no permission is set.
 	GetUserSharePermission(ctx context.Context, username, shareName string) (*models.UserSharePermission, error)
@@ -264,14 +247,86 @@ type Store interface {
 	// Resolution order: user explicit > group permissions (highest wins) > share default
 	// Fetches the share's default permission internally.
 	ResolveSharePermission(ctx context.Context, user *models.User, shareName string) (models.SharePermission, error)
+}
 
-	// GetGuestUser returns the guest user for a specific share if guest access is enabled.
-	// Returns models.ErrGuestDisabled if guest access is not configured for the share.
-	GetGuestUser(ctx context.Context, shareName string) (*models.User, error)
+// MetadataStoreConfigStore provides metadata store configuration CRUD.
+//
+// These operations manage the configuration records for metadata store backends
+// (memory, BadgerDB, PostgreSQL). The actual metadata store instances are
+// created and managed by the Runtime.
+type MetadataStoreConfigStore interface {
+	// GetMetadataStore returns a metadata store configuration by name.
+	// Returns models.ErrStoreNotFound if the store doesn't exist.
+	GetMetadataStore(ctx context.Context, name string) (*models.MetadataStoreConfig, error)
 
-	// IsGuestEnabled returns whether guest access is enabled for the share.
-	IsGuestEnabled(ctx context.Context, shareName string) bool
+	// GetMetadataStoreByID returns a metadata store configuration by ID.
+	// Returns models.ErrStoreNotFound if the store doesn't exist.
+	GetMetadataStoreByID(ctx context.Context, id string) (*models.MetadataStoreConfig, error)
 
+	// ListMetadataStores returns all metadata store configurations.
+	ListMetadataStores(ctx context.Context) ([]*models.MetadataStoreConfig, error)
+
+	// CreateMetadataStore creates a new metadata store configuration.
+	// The ID will be generated if empty.
+	// Returns the generated ID.
+	// Returns models.ErrDuplicateStore if a store with the same name exists.
+	CreateMetadataStore(ctx context.Context, store *models.MetadataStoreConfig) (string, error)
+
+	// UpdateMetadataStore updates an existing metadata store configuration.
+	// Returns models.ErrStoreNotFound if the store doesn't exist.
+	UpdateMetadataStore(ctx context.Context, store *models.MetadataStoreConfig) error
+
+	// DeleteMetadataStore deletes a metadata store configuration by name.
+	// Returns models.ErrStoreNotFound if the store doesn't exist.
+	// Returns models.ErrStoreInUse if the store is referenced by any shares.
+	DeleteMetadataStore(ctx context.Context, name string) error
+
+	// GetSharesByMetadataStore returns all shares using the given metadata store.
+	GetSharesByMetadataStore(ctx context.Context, storeName string) ([]*models.Share, error)
+}
+
+// PayloadStoreConfigStore provides payload store configuration CRUD.
+//
+// These operations manage the configuration records for payload store backends
+// (memory, S3). The actual payload store instances are created and managed
+// by the Runtime.
+type PayloadStoreConfigStore interface {
+	// GetPayloadStore returns a payload store configuration by name.
+	// Returns models.ErrStoreNotFound if the store doesn't exist.
+	GetPayloadStore(ctx context.Context, name string) (*models.PayloadStoreConfig, error)
+
+	// GetPayloadStoreByID returns a payload store configuration by ID.
+	// Returns models.ErrStoreNotFound if the store doesn't exist.
+	GetPayloadStoreByID(ctx context.Context, id string) (*models.PayloadStoreConfig, error)
+
+	// ListPayloadStores returns all payload store configurations.
+	ListPayloadStores(ctx context.Context) ([]*models.PayloadStoreConfig, error)
+
+	// CreatePayloadStore creates a new payload store configuration.
+	// The ID will be generated if empty.
+	// Returns the generated ID.
+	// Returns models.ErrDuplicateStore if a store with the same name exists.
+	CreatePayloadStore(ctx context.Context, store *models.PayloadStoreConfig) (string, error)
+
+	// UpdatePayloadStore updates an existing payload store configuration.
+	// Returns models.ErrStoreNotFound if the store doesn't exist.
+	UpdatePayloadStore(ctx context.Context, store *models.PayloadStoreConfig) error
+
+	// DeletePayloadStore deletes a payload store configuration by name.
+	// Returns models.ErrStoreNotFound if the store doesn't exist.
+	// Returns models.ErrStoreInUse if the store is referenced by any shares.
+	DeletePayloadStore(ctx context.Context, name string) error
+
+	// GetSharesByPayloadStore returns all shares using the given payload store.
+	GetSharesByPayloadStore(ctx context.Context, storeName string) ([]*models.Share, error)
+}
+
+// AdapterStore provides adapter configuration CRUD and protocol-specific settings.
+//
+// Adapter settings (NFS/SMB) are managed alongside adapter CRUD because they
+// are tightly coupled: settings cannot exist without an adapter, and adapter
+// creation automatically provisions default settings.
+type AdapterStore interface {
 	// GetAdapter returns an adapter configuration by type.
 	// Returns models.ErrAdapterNotFound if the adapter doesn't exist.
 	GetAdapter(ctx context.Context, adapterType string) (*models.AdapterConfig, error)
@@ -297,29 +352,6 @@ type Store interface {
 	// Returns true if any adapters were created.
 	// This should be called during server startup.
 	EnsureDefaultAdapters(ctx context.Context) (created bool, err error)
-
-	// GetSetting returns a setting value by key.
-	// Returns empty string if the setting doesn't exist.
-	GetSetting(ctx context.Context, key string) (string, error)
-
-	// SetSetting creates or updates a setting.
-	SetSetting(ctx context.Context, key, value string) error
-
-	// DeleteSetting removes a setting.
-	// No error if the setting didn't exist.
-	DeleteSetting(ctx context.Context, key string) error
-
-	// ListSettings returns all settings.
-	ListSettings(ctx context.Context) ([]*models.Setting, error)
-
-	// EnsureAdminUser ensures an admin user exists.
-	// If no admin user exists, creates one with a generated password.
-	// Returns the initial password if a new admin was created, empty string otherwise.
-	// This should be called during server startup.
-	EnsureAdminUser(ctx context.Context) (initialPassword string, err error)
-
-	// IsAdminInitialized returns whether the admin user has been initialized.
-	IsAdminInitialized(ctx context.Context) (bool, error)
 
 	// GetNFSAdapterSettings returns the NFS adapter settings by adapter ID.
 	// Returns models.ErrAdapterNotFound if no settings exist for this adapter.
@@ -352,22 +384,48 @@ type Store interface {
 	// EnsureAdapterSettings creates default settings records for adapters that lack them.
 	// Called during startup and migration to populate settings for existing adapters.
 	EnsureAdapterSettings(ctx context.Context) error
+}
 
-	// GetShareAdapterConfig returns the adapter config for a share and adapter type.
-	// Returns nil (no error) if no config exists.
-	GetShareAdapterConfig(ctx context.Context, shareID, adapterType string) (*models.ShareAdapterConfig, error)
+// SettingsStore provides generic key-value settings operations.
+//
+// Settings are used for server-wide configuration that can be changed at
+// runtime without restart (e.g., feature flags, tuning parameters).
+type SettingsStore interface {
+	// GetSetting returns a setting value by key.
+	// Returns empty string if the setting doesn't exist.
+	GetSetting(ctx context.Context, key string) (string, error)
 
-	// SetShareAdapterConfig creates or updates an adapter config for a share.
-	// Uses upsert semantics: creates if not found, updates if exists.
-	SetShareAdapterConfig(ctx context.Context, config *models.ShareAdapterConfig) error
+	// SetSetting creates or updates a setting.
+	SetSetting(ctx context.Context, key, value string) error
 
-	// DeleteShareAdapterConfig deletes an adapter config for a share and adapter type.
-	// No error if the config didn't exist.
-	DeleteShareAdapterConfig(ctx context.Context, shareID, adapterType string) error
+	// DeleteSetting removes a setting.
+	// No error if the setting didn't exist.
+	DeleteSetting(ctx context.Context, key string) error
 
-	// ListShareAdapterConfigs returns all adapter configs for a share.
-	ListShareAdapterConfigs(ctx context.Context, shareID string) ([]models.ShareAdapterConfig, error)
+	// ListSettings returns all settings.
+	ListSettings(ctx context.Context) ([]*models.Setting, error)
+}
 
+// AdminStore provides admin user initialization operations.
+//
+// These methods are called during server startup to ensure an admin user
+// exists. They are separated from UserStore because they have different
+// access patterns (startup-only vs request-time).
+type AdminStore interface {
+	// EnsureAdminUser ensures an admin user exists.
+	// If no admin user exists, creates one with a generated password.
+	// Returns the initial password if a new admin was created, empty string otherwise.
+	// This should be called during server startup.
+	EnsureAdminUser(ctx context.Context) (initialPassword string, err error)
+
+	// IsAdminInitialized returns whether the admin user has been initialized.
+	IsAdminInitialized(ctx context.Context) (bool, error)
+}
+
+// HealthStore provides store health check and lifecycle operations.
+//
+// These methods are used by health check endpoints and graceful shutdown.
+type HealthStore interface {
 	// Healthcheck verifies the store is operational.
 	// Returns an error if the store is not healthy.
 	Healthcheck(ctx context.Context) error
@@ -442,9 +500,25 @@ type IdentityMappingStore interface {
 	DeleteIdentityMapping(ctx context.Context, principal string) error
 }
 
-// Compile-time assertions that GORMStore implements all interfaces.
-var (
-	_ Store                = (*GORMStore)(nil)
-	_ NetgroupStore        = (*GORMStore)(nil)
-	_ IdentityMappingStore = (*GORMStore)(nil)
-)
+// Store is the composite control plane persistence interface.
+//
+// It embeds all sub-interfaces to provide the full set of operations.
+// Callers that need everything (Runtime, tests) accept Store; individual
+// handlers and services accept only the narrowest sub-interface they need.
+//
+// Thread Safety: Implementations must be safe for concurrent use from multiple
+// goroutines.
+//
+// The Store interface supports both SQLite (single-node) and PostgreSQL (HA) backends.
+type Store interface {
+	UserStore
+	GroupStore
+	ShareStore
+	PermissionStore
+	MetadataStoreConfigStore
+	PayloadStoreConfigStore
+	AdapterStore
+	SettingsStore
+	AdminStore
+	HealthStore
+}

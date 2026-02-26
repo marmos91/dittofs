@@ -109,7 +109,10 @@ func TestTruncate_ReducesSize(t *testing.T) {
 		t.Fatalf("Truncate failed: %v", err)
 	}
 
-	size := c.GetFileSize(ctx, payloadID)
+	size, found := c.GetFileSize(ctx, payloadID)
+	if !found {
+		t.Fatal("expected file to be found in cache after truncate")
+	}
 	if size != 5*1024 {
 		t.Errorf("expected size 5120, got %d", size)
 	}
@@ -128,7 +131,10 @@ func TestTruncate_ToZero(t *testing.T) {
 		t.Fatalf("Truncate to 0 failed: %v", err)
 	}
 
-	size := c.GetFileSize(ctx, payloadID)
+	size, found := c.GetFileSize(ctx, payloadID)
+	if !found {
+		t.Fatal("expected file to be found in cache after truncate to 0")
+	}
 	if size != 0 {
 		t.Errorf("expected size 0, got %d", size)
 	}
@@ -150,7 +156,10 @@ func TestTruncate_ExtendNoOp(t *testing.T) {
 	}
 
 	// Size should remain 1024 (truncate doesn't extend)
-	size := c.GetFileSize(ctx, payloadID)
+	size, found := c.GetFileSize(ctx, payloadID)
+	if !found {
+		t.Fatal("expected file to be found in cache")
+	}
 	if size != 1024 {
 		t.Errorf("expected size 1024, got %d", size)
 	}
@@ -251,7 +260,11 @@ func TestGetFileSize_Basic(t *testing.T) {
 
 	_ = c.WriteAt(ctx, payloadID, 0, make([]byte, 1024), 0)
 
-	if size := c.GetFileSize(ctx, payloadID); size != 1024 {
+	size, found := c.GetFileSize(ctx, payloadID)
+	if !found {
+		t.Fatal("expected file to be found in cache")
+	}
+	if size != 1024 {
 		t.Errorf("expected size 1024, got %d", size)
 	}
 }
@@ -261,8 +274,32 @@ func TestGetFileSize_NonexistentFile(t *testing.T) {
 	defer func() { _ = c.Close() }()
 
 	ctx := context.Background()
-	if size := c.GetFileSize(ctx, "nonexistent"); size != 0 {
+	size, found := c.GetFileSize(ctx, "nonexistent")
+	if found {
+		t.Error("expected file not to be found in cache")
+	}
+	if size != 0 {
 		t.Errorf("expected size 0 for nonexistent, got %d", size)
+	}
+}
+
+func TestGetFileSize_ZeroLengthFile(t *testing.T) {
+	c := New(0)
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+	payloadID := "test-file"
+
+	// Write some data then truncate to 0
+	_ = c.WriteAt(ctx, payloadID, 0, make([]byte, 1024), 0)
+	_ = c.Truncate(ctx, payloadID, 0)
+
+	size, found := c.GetFileSize(ctx, payloadID)
+	if !found {
+		t.Error("expected zero-length file to be found in cache")
+	}
+	if size != 0 {
+		t.Errorf("expected size 0 for truncated file, got %d", size)
 	}
 }
 
@@ -279,7 +316,11 @@ func TestGetFileSize_MultipleChunks(t *testing.T) {
 
 	// Size should be: chunk_1_offset + 500 = ChunkSize + 500
 	expected := uint64(ChunkSize) + 500
-	if size := c.GetFileSize(ctx, payloadID); size != expected {
+	size, found := c.GetFileSize(ctx, payloadID)
+	if !found {
+		t.Fatal("expected file to be found in cache")
+	}
+	if size != expected {
 		t.Errorf("expected size %d, got %d", expected, size)
 	}
 }
@@ -610,7 +651,7 @@ func BenchmarkGetFileSize(b *testing.B) {
 			b.ReportAllocs()
 
 			for i := 0; i < b.N; i++ {
-				_ = c.GetFileSize(ctx, "test-file")
+				_, _ = c.GetFileSize(ctx, "test-file")
 			}
 
 			b.StopTimer()

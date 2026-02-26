@@ -13,12 +13,12 @@ import (
 
 // PayloadStoreHandler handles payload store configuration API endpoints.
 type PayloadStoreHandler struct {
-	store store.Store
+	store store.PayloadStoreConfigStore
 }
 
 // NewPayloadStoreHandler creates a new PayloadStoreHandler.
-func NewPayloadStoreHandler(store store.Store) *PayloadStoreHandler {
-	return &PayloadStoreHandler{store: store}
+func NewPayloadStoreHandler(s store.PayloadStoreConfigStore) *PayloadStoreHandler {
+	return &PayloadStoreHandler{store: s}
 }
 
 // CreatePayloadStoreRequest is the request body for POST /api/v1/payload-stores.

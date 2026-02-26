@@ -33,15 +33,28 @@ func normalizeShareName(name string) string {
 	return "/" + trimmed
 }
 
+// ShareHandlerStore is the composite interface required by ShareHandler.
+// ShareHandler needs share CRUD, permission management, store config lookups
+// (to validate metadata/payload store references), and user/group lookups
+// (to resolve permission display names).
+type ShareHandlerStore interface {
+	store.ShareStore
+	store.PermissionStore
+	store.MetadataStoreConfigStore
+	store.PayloadStoreConfigStore
+	store.UserStore
+	store.GroupStore
+}
+
 // ShareHandler handles share management API endpoints.
 type ShareHandler struct {
-	store   store.Store
+	store   ShareHandlerStore
 	runtime *runtime.Runtime
 }
 
 // NewShareHandler creates a new ShareHandler.
-func NewShareHandler(store store.Store, rt *runtime.Runtime) *ShareHandler {
-	return &ShareHandler{store: store, runtime: rt}
+func NewShareHandler(s ShareHandlerStore, rt *runtime.Runtime) *ShareHandler {
+	return &ShareHandler{store: s, runtime: rt}
 }
 
 // CreateShareRequest is the request body for POST /api/v1/shares.

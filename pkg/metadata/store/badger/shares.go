@@ -297,6 +297,12 @@ func (s *BadgerMetadataStore) loadExistingRoot(txn *badgerdb.Txn, item *badgerdb
 		return fmt.Errorf("failed to decode existing share data: %w", err)
 	}
 
+	// If share exists but has no root handle yet (e.g., CreateShare was called
+	// separately before CreateRootDirectory), create a new root directory.
+	if len(existingShareData.RootHandle) == 0 {
+		return s.createNewRoot(txn, shareName, attr, rootFile)
+	}
+
 	_, rootID, err := metadata.DecodeFileHandle(existingShareData.RootHandle)
 	if err != nil {
 		return fmt.Errorf("failed to decode existing root handle: %w", err)

@@ -13,12 +13,12 @@ import (
 
 // GroupHandler handles group management API endpoints.
 type GroupHandler struct {
-	store store.Store
+	store store.GroupStore
 }
 
 // NewGroupHandler creates a new GroupHandler.
-func NewGroupHandler(store store.Store) *GroupHandler {
-	return &GroupHandler{store: store}
+func NewGroupHandler(s store.GroupStore) *GroupHandler {
+	return &GroupHandler{store: s}
 }
 
 // CreateGroupRequest is the request body for POST /api/v1/groups.

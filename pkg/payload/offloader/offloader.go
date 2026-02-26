@@ -197,7 +197,7 @@ func (m *Offloader) Flush(ctx context.Context, payloadID string) (*FlushResult, 
 	state := m.getOrCreateUploadState(payloadID)
 
 	// Small files are flushed synchronously to prevent pendingSize buildup.
-	fileSize := m.cache.GetFileSize(ctx, payloadID)
+	fileSize, _ := m.cache.GetFileSize(ctx, payloadID)
 	if m.config.SmallFileThreshold > 0 && int64(fileSize) <= m.config.SmallFileThreshold {
 		return m.flushSmallFileSync(ctx, payloadID, state)
 	}

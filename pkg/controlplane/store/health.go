@@ -23,7 +23,23 @@ func (s *GORMStore) Close() error {
 	return sqlDB.Close()
 }
 
-// Compile-time interface checks
-var _ Store = (*GORMStore)(nil)
-var _ models.UserStore = (*GORMStore)(nil)
-var _ models.IdentityStore = (*GORMStore)(nil)
+// Compile-time assertions that GORMStore satisfies all interfaces.
+var (
+	_ Store                    = (*GORMStore)(nil)
+	_ UserStore                = (*GORMStore)(nil)
+	_ GroupStore               = (*GORMStore)(nil)
+	_ ShareStore               = (*GORMStore)(nil)
+	_ PermissionStore          = (*GORMStore)(nil)
+	_ MetadataStoreConfigStore = (*GORMStore)(nil)
+	_ PayloadStoreConfigStore  = (*GORMStore)(nil)
+	_ AdapterStore             = (*GORMStore)(nil)
+	_ SettingsStore            = (*GORMStore)(nil)
+	_ AdminStore               = (*GORMStore)(nil)
+	_ HealthStore              = (*GORMStore)(nil)
+	_ NetgroupStore            = (*GORMStore)(nil)
+	_ IdentityMappingStore     = (*GORMStore)(nil)
+
+	// Assertions for adapter-facing interfaces defined in models package.
+	_ models.UserStore     = (*GORMStore)(nil)
+	_ models.IdentityStore = (*GORMStore)(nil)
+)

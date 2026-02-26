@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v4.2
 milestone_name: Adapter + Core Refactoring
 status: unknown
-last_updated: "2026-02-26T13:11:58.787Z"
+last_updated: "2026-02-26T10:56:00.000Z"
 progress:
   total_phases: 28
   completed_phases: 28
   total_plans: 102
-  completed_plans: 102
+  completed_plans: 99
 ---
 
 # Project State
@@ -22,10 +22,10 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 
 ## Current Position
 
-Phase: 29.8 - MS Protocol Test Suite CI
-Current Plan: 2 of 2 (COMPLETE)
-Status: Phase Complete
-Last activity: 2026-02-26 -- Completed 29.8-02 (Test Runner, CI Workflow & Documentation)
+Phase: 29 - Core Layer Decomposition
+Current Plan: 5 of 7 (COMPLETE)
+Status: In Progress
+Last activity: 2026-02-26 -- Completed 29-05 (PayloadService I/O Extraction + Metadata Store Conformance Suite)
 
 ## Completed Milestones
 
@@ -58,8 +58,8 @@ Last activity: 2026-02-26 -- Completed 29.8-02 (Test Runner, CI Workflow & Docum
 | 29 | 01 | 15min | 2 | 24 |
 | 29 | 02 | 21min | 2 | 28 |
 | 29 | 03 | 12min | 2 | 8 |
-| 29.8 | 01 | 3min | 2 | 11 |
-| 29.8 | 02 | 4min | 2 | 7 |
+| 29 | 04 | 18min | 2 | 17 |
+| 29 | 05 | 9min | 2 | 12 |
 
 ## Quick Tasks Completed
 
@@ -118,15 +118,13 @@ Last activity: 2026-02-26 -- Completed 29.8-02 (Test Runner, CI Workflow & Docum
 - [Phase 29]: [29-02] GC extracted to standalone pkg/payload/gc/ with duplicated parseShareName and MetadataReconciler for zero coupling
 - [Phase 29]: [29-03] Flat file split (same package) instead of sub-packages to avoid Go circular imports
 - [Phase 29]: [29-03] Operation-based naming: file_create.go, file_modify.go, auth_identity.go, auth_permissions.go
-- [Phase 29.8]: [29.8-01] network_mode: service:dittofs for WPTS shared network namespace (localhost ptfconfig resolution)
-- [Phase 29.8]: [29.8-01] Compose profiles (test, s3, postgres) for optional service activation
-- [Phase 29.8]: [29.8-01] envsubst-based ptfconfig template rendering with ${VAR} placeholders
-- [Phase 29.8]: [29.8-01] DITTOFS_CONTROLPLANE_SECRET env var for deterministic admin password
-- [Phase 29.8]: [29.8-01] Config YAML files identical (base settings); profile stores created via bootstrap API calls
-- [Phase 29.8]: [29.8-02] bootstrap.sh mounted into dittofs container as /app/bootstrap.sh:ro for docker compose exec approach
-- [Phase 29.8]: [29.8-02] Tiered CI matrix: memory-only on PRs, full 5-profile matrix on develop push and weekly cron
-- [Phase 29.8]: [29.8-02] parse-results.sh exits with count of new failures (0=green, >0=new unexpected failures)
-- [Phase 29.8]: [29.8-02] KNOWN_FAILURES.md uses pipe-separated markdown table parsed by parse-results.sh
+- [Phase 29]: [29-04] GuestUser/IsGuestEnabled folded into UserStore (returns *User, per research)
+- [Phase 29]: [29-04] ShareHandler gets custom composite ShareHandlerStore (6 sub-interfaces) since it needs cross-entity queries
+- [Phase 29]: [29-04] NetgroupStore and IdentityMappingStore kept outside composite Store (accessed via type assertion)
+- [Phase 29]: [29-04] Router unchanged -- Go implicit interface satisfaction narrows full Store to sub-interfaces automatically
+- [Phase 29]: [29-05] io sub-package local interfaces (CacheReader, CacheWriter, CacheStateManager, BlockDownloader, BlockUploader) to avoid circular imports
+- [Phase 29]: [29-05] Sentinel error bridging via package-level variables set in parent init() for cross-package error detection
+- [Phase 29]: [29-05] Conformance test StoreFactory pattern: func(t *testing.T) MetadataStore for store-specific setup
 
 ### Pending Todos
 
@@ -139,5 +137,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-26
-Stopped at: Completed 29.8-02-PLAN.md (Phase 29.8 complete)
-Resume file: N/A (phase complete)
+Stopped at: Completed 29-05-PLAN.md
+Resume file: 29-06-PLAN.md
