@@ -126,6 +126,11 @@ func (s *Service) AddShare(
 		return fmt.Errorf("share %q already exists", config.Name)
 	}
 
+	if storeProvider == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("metadata store provider not initialized")
+	}
+
 	metadataStore, err := storeProvider.GetMetadataStore(config.MetadataStore)
 	if err != nil {
 		s.mu.Unlock()

@@ -152,7 +152,7 @@ func (s *Service) shutdown(
 	}
 
 	if metadataFlusher != nil {
-		flushed, err := metadataFlusher.FlushAllPendingWritesForShutdown(10 * time.Second)
+		flushed, err := metadataFlusher.FlushAllPendingWritesForShutdown(s.shutdownTimeout)
 		if err != nil {
 			logger.Warn("Error flushing pending writes", "error", err, "flushed", flushed)
 		} else if flushed > 0 {
@@ -165,7 +165,7 @@ func (s *Service) shutdown(
 	}
 
 	if s.apiServer != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
 		defer cancel()
 		if err := s.apiServer.Stop(ctx); err != nil {
 			logger.Error("API server shutdown error", "error", err)
