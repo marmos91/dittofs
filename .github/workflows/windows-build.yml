@@ -5,6 +5,15 @@ on:
     branches: [develop]
   pull_request:
     branches: [develop, main]
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/windows-build.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-windows:
