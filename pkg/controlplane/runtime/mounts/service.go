@@ -6,35 +6,30 @@ import (
 )
 
 // MountInfo represents an active protocol mount from a client.
-// This is used by all protocol adapters (NFS, SMB) for unified mount tracking.
 type MountInfo struct {
-	ClientAddr  string    // Client IP address
-	Protocol    string    // Protocol name: "nfs" or "smb"
-	ShareName   string    // Name of the mounted share
-	MountedAt   time.Time // When the mount was recorded
-	AdapterData any       // Protocol-specific details (NFS mount path, SMB session ID, etc.)
+	ClientAddr  string
+	Protocol    string // "nfs" or "smb"
+	ShareName   string
+	MountedAt   time.Time
+	AdapterData any // Protocol-specific details (e.g., NFS mount path, SMB session ID)
 }
 
-// Tracker provides thread-safe unified mount tracking across all protocol adapters.
-// Each adapter records its mounts here, and the runtime exposes an aggregate view.
+// Tracker provides thread-safe mount tracking across all protocol adapters.
 type Tracker struct {
 	mu     sync.RWMutex
-	mounts map[string]*MountInfo // key: protocol:client:share
+	mounts map[string]*MountInfo // keyed by protocol:client:share
 }
 
-// NewTracker creates a new Tracker.
 func NewTracker() *Tracker {
 	return &Tracker{
 		mounts: make(map[string]*MountInfo),
 	}
 }
 
-// mountKey generates the map key for a mount entry.
 func mountKey(protocol, clientAddr, shareName string) string {
 	return protocol + ":" + clientAddr + ":" + shareName
 }
 
-// Record registers that a client has mounted a share via a specific protocol.
 func (mt *Tracker) Record(clientAddr, protocol, shareName string, adapterData any) {
 	mt.mu.Lock()
 	defer mt.mu.Unlock()
@@ -49,8 +44,6 @@ func (mt *Tracker) Record(clientAddr, protocol, shareName string, adapterData an
 	}
 }
 
-// Remove removes a mount record for the given client/protocol/share combination.
-// Returns true if the mount was found and removed.
 func (mt *Tracker) Remove(clientAddr, protocol, shareName string) bool {
 	mt.mu.Lock()
 	defer mt.mu.Unlock()
@@ -63,9 +56,7 @@ func (mt *Tracker) Remove(clientAddr, protocol, shareName string) bool {
 	return false
 }
 
-// RemoveByClient removes a mount record by client address only (legacy NFS-style keying).
-// This supports the NFS MOUNT protocol where mounts are keyed by client IP alone.
-// Returns true if any mount was found and removed.
+// RemoveByClient removes all mounts for a client address.
 func (mt *Tracker) RemoveByClient(clientAddr string) bool {
 	mt.mu.Lock()
 	defer mt.mu.Unlock()
@@ -80,8 +71,6 @@ func (mt *Tracker) RemoveByClient(clientAddr string) bool {
 	return found
 }
 
-// RemoveAllByProtocol removes all mount records for a given protocol.
-// Returns the number of mounts removed.
 func (mt *Tracker) RemoveAllByProtocol(protocol string) int {
 	mt.mu.Lock()
 	defer mt.mu.Unlock()
@@ -96,8 +85,6 @@ func (mt *Tracker) RemoveAllByProtocol(protocol string) int {
 	return count
 }
 
-// RemoveAll removes all mount records across all protocols.
-// Returns the number of mounts removed.
 func (mt *Tracker) RemoveAll() int {
 	mt.mu.Lock()
 	defer mt.mu.Unlock()
@@ -107,21 +94,17 @@ func (mt *Tracker) RemoveAll() int {
 	return count
 }
 
-// List returns all active mount records across all protocols.
-// The returned slice is a copy; callers may safely modify it.
+// List returns copies of all active mount records.
 func (mt *Tracker) List() []*MountInfo {
 	return mt.collectMounts(nil)
 }
 
-// ListByProtocol returns mount records for a specific protocol.
 func (mt *Tracker) ListByProtocol(protocol string) []*MountInfo {
 	return mt.collectMounts(func(m *MountInfo) bool {
 		return m.Protocol == protocol
 	})
 }
 
-// collectMounts returns copies of mount records matching the filter.
-// A nil filter matches all mounts.
 func (mt *Tracker) collectMounts(filter func(*MountInfo) bool) []*MountInfo {
 	mt.mu.RLock()
 	defer mt.mu.RUnlock()
@@ -142,7 +125,6 @@ func (mt *Tracker) collectMounts(filter func(*MountInfo) bool) []*MountInfo {
 	return result
 }
 
-// Count returns the total number of active mounts.
 func (mt *Tracker) Count() int {
 	mt.mu.RLock()
 	defer mt.mu.RUnlock()

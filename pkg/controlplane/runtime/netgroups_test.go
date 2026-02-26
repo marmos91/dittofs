@@ -33,15 +33,13 @@ func createTestRuntimeWithStore(t *testing.T) (*Runtime, store.Store, store.Netg
 	return rt, cpStore, cpStore
 }
 
-// addShareDirect injects a share directly into the runtime's shares map
+// addShareDirect injects a share directly into the runtime's shares service
 // without going through AddShare (which requires metadata store setup).
 func addShareDirect(rt *Runtime, name string, netgroupName string) {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	rt.shares[name] = &Share{
+	rt.sharesSvc.InjectShareForTesting(&Share{
 		Name:         name,
 		NetgroupName: netgroupName,
-	}
+	})
 }
 
 // --- CheckNetgroupAccess tests ---

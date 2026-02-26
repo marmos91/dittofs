@@ -12,14 +12,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 )
 
-// Share is a type alias for shares.Share so that existing consumers can
-// continue using runtime.Share without import changes.
-type Share = shares.Share
-
-// ShareConfig is a type alias for shares.ShareConfig so that existing
-// consumers can continue using runtime.ShareConfig without import changes.
-type ShareConfig = shares.ShareConfig
-
-// LegacyMountInfo is a type alias for shares.LegacyMountInfo so that
-// existing consumers can continue using runtime.LegacyMountInfo.
-type LegacyMountInfo = shares.LegacyMountInfo
+// Type aliases re-exported for backward compatibility.
+type (
+	Share           = shares.Share
+	ShareConfig     = shares.ShareConfig
+	LegacyMountInfo = shares.LegacyMountInfo
+)

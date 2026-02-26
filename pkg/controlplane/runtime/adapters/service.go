@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -14,30 +15,22 @@ import (
 // DefaultShutdownTimeout is the default timeout for graceful adapter shutdown.
 const DefaultShutdownTimeout = 30 * time.Second
 
-// ProtocolAdapter is an interface for protocol adapters (NFS, SMB) that can be
-// managed by the adapter service. This interface is defined here to break the
-// import cycle between runtime and adapter packages.
+// ProtocolAdapter is the interface for protocol adapters (NFS, SMB).
 type ProtocolAdapter interface {
-	// Serve starts the protocol server and blocks until the context is cancelled.
 	Serve(ctx context.Context) error
-	// Stop initiates graceful shutdown of the protocol server.
 	Stop(ctx context.Context) error
-	// Protocol returns the protocol name (e.g., "NFS", "SMB").
 	Protocol() string
-	// Port returns the TCP port the adapter is listening on.
 	Port() int
 }
 
 // RuntimeSetter is implemented by adapters that need runtime access.
-// The runtime parameter is typed as any to avoid import cycles with the parent package.
 type RuntimeSetter interface {
 	SetRuntime(rt any)
 }
 
-// AdapterFactory is a function that creates a ProtocolAdapter from configuration.
+// AdapterFactory creates a ProtocolAdapter from configuration.
 type AdapterFactory func(cfg *models.AdapterConfig) (ProtocolAdapter, error)
 
-// adapterEntry holds adapter state for lifecycle management.
 type adapterEntry struct {
 	adapter ProtocolAdapter
 	config  *models.AdapterConfig
@@ -46,23 +39,18 @@ type adapterEntry struct {
 	errCh   chan error
 }
 
-// Service manages protocol adapter lifecycle: creation, startup, shutdown,
-// and configuration persistence.
+// Service manages protocol adapter lifecycle.
 type Service struct {
 	mu      sync.RWMutex
-	entries map[string]*adapterEntry // key: adapter type (nfs, smb)
+	entries map[string]*adapterEntry // keyed by adapter type (nfs, smb)
 	factory AdapterFactory
 
 	store           store.AdapterStore
 	shutdownTimeout time.Duration
-
-	// runtime is stored as any to avoid import cycle with parent package.
-	// It is injected into adapters that implement RuntimeSetter.
-	runtime any
+	runtime         any // injected into adapters implementing RuntimeSetter
 }
 
 // New creates a new adapter management service.
-// The adapterStore parameter may be nil for testing scenarios.
 func New(adapterStore store.AdapterStore, shutdownTimeout time.Duration) *Service {
 	if shutdownTimeout == 0 {
 		shutdownTimeout = DefaultShutdownTimeout
@@ -74,20 +62,15 @@ func New(adapterStore store.AdapterStore, shutdownTimeout time.Duration) *Servic
 	}
 }
 
-// SetRuntime stores the runtime reference for injection into adapters.
-func (s *Service) SetRuntime(rt any) {
-	s.runtime = rt
-}
+func (s *Service) SetRuntime(rt any) { s.runtime = rt }
 
-// SetAdapterFactory sets the factory function for creating adapters.
-// This must be called before CreateAdapter or LoadAdaptersFromStore.
+// SetAdapterFactory must be called before CreateAdapter.
 func (s *Service) SetAdapterFactory(factory AdapterFactory) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.factory = factory
 }
 
-// SetShutdownTimeout sets the maximum time to wait for graceful adapter shutdown.
 func (s *Service) SetShutdownTimeout(d time.Duration) {
 	if d == 0 {
 		d = DefaultShutdownTimeout
@@ -95,28 +78,24 @@ func (s *Service) SetShutdownTimeout(d time.Duration) {
 	s.shutdownTimeout = d
 }
 
-// CreateAdapter saves the adapter config to store AND starts it immediately.
-// This is the method that API handlers should call - it ensures both persistent
-// store and in-memory state are updated together.
+// CreateAdapter saves the adapter config to store and starts it immediately.
 func (s *Service) CreateAdapter(ctx context.Context, cfg *models.AdapterConfig) error {
 	if _, err := s.store.CreateAdapter(ctx, cfg); err != nil {
 		return fmt.Errorf("failed to save adapter config: %w", err)
 	}
 
 	if err := s.startAdapter(cfg); err != nil {
-		// Rollback: delete from store
-		_ = s.store.DeleteAdapter(ctx, cfg.Type)
+		_ = s.store.DeleteAdapter(ctx, cfg.Type) // rollback
 		return fmt.Errorf("failed to start adapter: %w", err)
 	}
 
 	return nil
 }
 
-// DeleteAdapter stops the running adapter (drains connections) AND removes from store.
+// DeleteAdapter stops the running adapter and removes it from store.
 func (s *Service) DeleteAdapter(ctx context.Context, adapterType string) error {
 	if err := s.stopAdapter(adapterType); err != nil {
 		logger.Warn("Adapter stop failed during delete", "type", adapterType, "error", err)
-		// Continue with deletion even if stop fails
 	}
 
 	if err := s.store.DeleteAdapter(ctx, adapterType); err != nil {
@@ -126,28 +105,22 @@ func (s *Service) DeleteAdapter(ctx context.Context, adapterType string) error {
 	return nil
 }
 
-// UpdateAdapter restarts the adapter with new configuration.
-// Updates store first, then restarts the running adapter.
+// UpdateAdapter updates the persisted config, then restarts the adapter.
 func (s *Service) UpdateAdapter(ctx context.Context, cfg *models.AdapterConfig) error {
 	if err := s.store.UpdateAdapter(ctx, cfg); err != nil {
 		return fmt.Errorf("failed to update adapter config: %w", err)
 	}
 
-	// Stop old adapter (if running)
 	_ = s.stopAdapter(cfg.Type)
-
-	// Start with new config if enabled
 	if cfg.Enabled {
 		if err := s.startAdapter(cfg); err != nil {
 			logger.Warn("Failed to restart adapter after update", "type", cfg.Type, "error", err)
-			// Don't fail the update - config was saved successfully
 		}
 	}
 
 	return nil
 }
 
-// EnableAdapter enables an adapter and starts it.
 func (s *Service) EnableAdapter(ctx context.Context, adapterType string) error {
 	cfg, err := s.store.GetAdapter(ctx, adapterType)
 	if err != nil {
@@ -166,17 +139,13 @@ func (s *Service) EnableAdapter(ctx context.Context, adapterType string) error {
 	return nil
 }
 
-// DisableAdapter stops an adapter and disables it.
 func (s *Service) DisableAdapter(ctx context.Context, adapterType string) error {
 	cfg, err := s.store.GetAdapter(ctx, adapterType)
 	if err != nil {
 		return fmt.Errorf("adapter not found: %w", err)
 	}
 
-	// Stop the adapter first
 	_ = s.stopAdapter(adapterType)
-
-	// Update store
 	cfg.Enabled = false
 	if err := s.store.UpdateAdapter(ctx, cfg); err != nil {
 		return fmt.Errorf("failed to disable adapter: %w", err)
@@ -185,7 +154,6 @@ func (s *Service) DisableAdapter(ctx context.Context, adapterType string) error 
 	return nil
 }
 
-// startAdapter creates and starts an adapter from config.
 func (s *Service) startAdapter(cfg *models.AdapterConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -207,7 +175,6 @@ func (s *Service) startAdapter(cfg *models.AdapterConfig) error {
 	return nil
 }
 
-// stopAdapter stops a running adapter with connection draining.
 func (s *Service) stopAdapter(adapterType string) error {
 	s.mu.Lock()
 	entry, exists := s.entries[adapterType]
@@ -218,21 +185,16 @@ func (s *Service) stopAdapter(adapterType string) error {
 	delete(s.entries, adapterType)
 	s.mu.Unlock()
 
-	// Create timeout context for graceful shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
 	defer cancel()
 
 	logger.Info("Stopping adapter", "type", adapterType)
 
-	// Signal adapter to stop (triggers connection draining)
 	if err := entry.adapter.Stop(ctx); err != nil {
 		logger.Warn("Adapter stop error", "type", adapterType, "error", err)
 	}
 
-	// Cancel adapter's context
 	entry.cancel()
-
-	// Wait for adapter goroutine
 	select {
 	case <-entry.errCh:
 		logger.Info("Adapter stopped", "type", adapterType)
@@ -243,7 +205,6 @@ func (s *Service) stopAdapter(adapterType string) error {
 	}
 }
 
-// StopAllAdapters stops all running adapters (for shutdown).
 func (s *Service) StopAllAdapters() error {
 	s.mu.RLock()
 	types := make([]string, 0, len(s.entries))
@@ -262,7 +223,6 @@ func (s *Service) StopAllAdapters() error {
 }
 
 // LoadAdaptersFromStore loads enabled adapters from store and starts them.
-// This is called during server startup.
 func (s *Service) LoadAdaptersFromStore(ctx context.Context) error {
 	adapters, err := s.store.ListAdapters(ctx)
 	if err != nil {
@@ -283,7 +243,6 @@ func (s *Service) LoadAdaptersFromStore(ctx context.Context) error {
 	return nil
 }
 
-// ListRunningAdapters returns information about currently running adapters.
 func (s *Service) ListRunningAdapters() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -295,7 +254,6 @@ func (s *Service) ListRunningAdapters() []string {
 	return types
 }
 
-// IsAdapterRunning checks if an adapter is currently running.
 func (s *Service) IsAdapterRunning(adapterType string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -303,9 +261,7 @@ func (s *Service) IsAdapterRunning(adapterType string) bool {
 	return exists
 }
 
-// AddAdapter adds and starts a pre-created adapter directly.
-// This bypasses the store and is primarily for testing.
-// The adapter will be registered under its Protocol() name.
+// AddAdapter directly starts a pre-created adapter (for testing, bypasses store).
 func (s *Service) AddAdapter(adapter ProtocolAdapter) error {
 	adapterType := adapter.Protocol()
 
@@ -321,8 +277,7 @@ func (s *Service) AddAdapter(adapter ProtocolAdapter) error {
 	return nil
 }
 
-// registerAndRunAdapterLocked injects the runtime, starts the adapter in a goroutine,
-// and records it in the entries map. Caller must hold mu.
+// registerAndRunAdapterLocked starts the adapter in a goroutine. Caller must hold mu.
 func (s *Service) registerAndRunAdapterLocked(adp ProtocolAdapter, cfg *models.AdapterConfig) {
 	if setter, ok := adp.(RuntimeSetter); ok && s.runtime != nil {
 		setter.SetRuntime(s.runtime)
@@ -334,7 +289,7 @@ func (s *Service) registerAndRunAdapterLocked(adp ProtocolAdapter, cfg *models.A
 	go func() {
 		logger.Info("Starting adapter", "protocol", adp.Protocol(), "port", adp.Port())
 		err := adp.Serve(ctx)
-		if err != nil && err != context.Canceled && ctx.Err() == nil {
+		if err != nil && !errors.Is(err, context.Canceled) && ctx.Err() == nil {
 			logger.Error("Adapter failed", "protocol", adp.Protocol(), "error", err)
 		}
 		errCh <- err

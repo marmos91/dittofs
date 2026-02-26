@@ -11,56 +11,47 @@ import (
 )
 
 // Share represents the runtime state of a configured share.
-// This combines persisted configuration with live runtime state.
 type Share struct {
 	Name          string
-	MetadataStore string              // Name of the metadata store
-	RootHandle    metadata.FileHandle // Encoded file handle for the root directory
+	MetadataStore string
+	RootHandle    metadata.FileHandle
 	ReadOnly      bool
 
-	// User-based Access Control
-	// DefaultPermission is the permission for users without explicit permission or unknown UIDs.
-	// Values: "none" (block access), "read", "read-write", "admin"
-	// Default is "read-write" for NFS compatibility.
+	// DefaultPermission for users without explicit permission: "none", "read", "read-write", "admin".
 	DefaultPermission string
 
-	// Identity Mapping (Squashing) - matches Synology NFS options
+	// Identity mapping (Synology-style squash modes)
 	Squash       models.SquashMode
-	AnonymousUID uint32 // UID for anonymous mapping (default: 65534)
-	AnonymousGID uint32 // GID for anonymous mapping (default: 65534)
+	AnonymousUID uint32
+	AnonymousGID uint32
 
 	// NFS-specific options
-	DisableReaddirplus bool // Prevent READDIRPLUS on this share
+	DisableReaddirplus bool
 
-	// Security Policy
-	AllowAuthSys      bool     // Allow AUTH_SYS connections (default: true)
-	RequireKerberos   bool     // Require Kerberos authentication (default: false)
-	MinKerberosLevel  string   // Minimum Kerberos level: krb5, krb5i, krb5p (default: krb5)
-	NetgroupName      string   // Netgroup name for IP-based access control (empty = allow all)
-	BlockedOperations []string // Operations blocked on this share
+	// Security policy
+	AllowAuthSys      bool
+	RequireKerberos   bool
+	MinKerberosLevel  string
+	NetgroupName      string
+	BlockedOperations []string
 }
 
-// ShareConfig contains all configuration needed to create a share in the runtime.
+// ShareConfig contains all configuration needed to create a share.
 type ShareConfig struct {
 	Name          string
 	MetadataStore string
 	ReadOnly      bool
 
-	// User-based Access Control
 	DefaultPermission string
 
-	// Identity Mapping
 	Squash       models.SquashMode
 	AnonymousUID uint32
 	AnonymousGID uint32
 
-	// Root directory attributes
 	RootAttr *metadata.FileAttr
 
-	// NFS-specific options
 	DisableReaddirplus bool
 
-	// Security Policy
 	AllowAuthSys      bool
 	AllowAuthSysSet   bool // true when AllowAuthSys was explicitly set (distinguishes false from unset)
 	RequireKerberos   bool
@@ -69,29 +60,24 @@ type ShareConfig struct {
 	BlockedOperations []string
 }
 
-// LegacyMountInfo represents a legacy NFS mount record.
-// Deprecated: Use MountTracker and MountInfo from mounts package instead.
-// Kept for backward compatibility with existing callers during migration.
+// LegacyMountInfo is the legacy NFS mount record format.
 type LegacyMountInfo struct {
-	ClientAddr string // Client IP address
-	ShareName  string // Name of the mounted share
-	MountTime  int64  // Unix timestamp when mounted
+	ClientAddr string
+	ShareName  string
+	MountTime  int64
 }
 
-// MetadataStoreProvider allows the shares service to look up metadata stores
-// without importing the stores sub-package (avoids circular dependency).
+// MetadataStoreProvider looks up metadata stores by name.
 type MetadataStoreProvider interface {
 	GetMetadataStore(name string) (metadata.MetadataStore, error)
 }
 
-// MetadataServiceRegistrar allows the shares service to register stores
-// with the metadata service without importing the metadata service directly.
+// MetadataServiceRegistrar registers metadata stores for shares.
 type MetadataServiceRegistrar interface {
 	RegisterStoreForShare(shareName string, store metadata.MetadataStore) error
 }
 
-// PayloadServiceEnsurer allows the shares service to trigger lazy
-// initialization of the payload service.
+// PayloadServiceEnsurer triggers lazy payload service initialization.
 type PayloadServiceEnsurer interface {
 	EnsurePayloadService(ctx context.Context) error
 	HasPayloadService() bool
@@ -100,21 +86,17 @@ type PayloadServiceEnsurer interface {
 
 // Service manages share registration, lookup, and configuration.
 type Service struct {
-	mu       sync.RWMutex
-	registry map[string]*Share
-
-	// Share change callbacks for dynamic updates (e.g., pseudo-fs rebuild)
+	mu              sync.RWMutex
+	registry        map[string]*Share
 	changeCallbacks []func(shares []string)
 }
 
-// New creates a new share management service.
 func New() *Service {
 	return &Service{
 		registry: make(map[string]*Share),
 	}
 }
 
-// AddShare creates and registers a new share with the given configuration.
 func (s *Service) AddShare(
 	ctx context.Context,
 	config *ShareConfig,
@@ -126,7 +108,6 @@ func (s *Service) AddShare(
 		return fmt.Errorf("cannot add share with empty name")
 	}
 
-	// Ensure PayloadService is initialized before creating shares
 	if payloadEnsurer != nil && !payloadEnsurer.HasPayloadService() && payloadEnsurer.HasStore() {
 		if err := payloadEnsurer.EnsurePayloadService(ctx); err != nil {
 			return fmt.Errorf("failed to initialize payload service: %w", err)
@@ -135,26 +116,22 @@ func (s *Service) AddShare(
 
 	s.mu.Lock()
 
-	// Validate that metadata service registrar exists
 	if metadataSvc == nil {
 		s.mu.Unlock()
 		return fmt.Errorf("metadata service not initialized")
 	}
 
-	// Check if share already exists
 	if _, exists := s.registry[config.Name]; exists {
 		s.mu.Unlock()
 		return fmt.Errorf("share %q already exists", config.Name)
 	}
 
-	// Validate that metadata store exists
 	metadataStore, err := storeProvider.GetMetadataStore(config.MetadataStore)
 	if err != nil {
 		s.mu.Unlock()
 		return err
 	}
 
-	// Create root directory in metadata store
 	rootAttr := config.RootAttr
 	if rootAttr == nil {
 		rootAttr = &metadata.FileAttr{}
@@ -172,27 +149,23 @@ func (s *Service) AddShare(
 		rootAttr.Ctime = now
 	}
 
-	// Create the root directory
 	rootFile, err := metadataStore.CreateRootDirectory(ctx, config.Name, rootAttr)
 	if err != nil {
 		s.mu.Unlock()
 		return fmt.Errorf("failed to create root directory: %w", err)
 	}
 
-	// Encode the root file handle
 	rootHandle, err := metadata.EncodeFileHandle(rootFile)
 	if err != nil {
 		s.mu.Unlock()
 		return fmt.Errorf("failed to encode root handle: %w", err)
 	}
 
-	// Apply security policy defaults.
 	allowAuthSys := config.AllowAuthSys
 	if !config.AllowAuthSysSet && !allowAuthSys {
 		allowAuthSys = true
 	}
 
-	// Create share struct
 	share := &Share{
 		Name:               config.Name,
 		MetadataStore:      config.MetadataStore,
@@ -211,8 +184,6 @@ func (s *Service) AddShare(
 	}
 
 	s.registry[config.Name] = share
-
-	// Register the metadata store with the MetadataService for this share
 	if err := metadataSvc.RegisterStoreForShare(config.Name, metadataStore); err != nil {
 		delete(s.registry, config.Name)
 		s.mu.Unlock()
@@ -220,35 +191,27 @@ func (s *Service) AddShare(
 	}
 
 	s.mu.Unlock()
-
-	// Notify after releasing lock (callbacks may call ListShares)
 	s.notifyShareChange()
 
 	return nil
 }
 
-// RemoveShare removes a share from the registry.
-// Note: This does NOT close the underlying metadata store.
+// RemoveShare removes a share from the registry (does not close the underlying metadata store).
 func (s *Service) RemoveShare(name string) error {
 	s.mu.Lock()
-
 	_, exists := s.registry[name]
 	if !exists {
 		s.mu.Unlock()
 		return fmt.Errorf("share %q not found", name)
 	}
-
 	delete(s.registry, name)
 	s.mu.Unlock()
 
-	// Notify after releasing lock (callbacks may call ListShares)
 	s.notifyShareChange()
 
 	return nil
 }
 
-// UpdateShare updates a share's configuration.
-// Only updates fields that can be changed without reloading (ReadOnly, DefaultPermission).
 func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -268,7 +231,6 @@ func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *st
 	return nil
 }
 
-// GetShare retrieves a share by name.
 func (s *Service) GetShare(name string) (*Share, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -280,7 +242,6 @@ func (s *Service) GetShare(name string) (*Share, error) {
 	return share, nil
 }
 
-// GetRootHandle retrieves the root file handle for a share.
 func (s *Service) GetRootHandle(shareName string) (metadata.FileHandle, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -292,7 +253,6 @@ func (s *Service) GetRootHandle(shareName string) (metadata.FileHandle, error) {
 	return share.RootHandle, nil
 }
 
-// ListShares returns all registered share names.
 func (s *Service) ListShares() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -304,7 +264,6 @@ func (s *Service) ListShares() []string {
 	return names
 }
 
-// ShareExists checks if a share exists.
 func (s *Service) ShareExists(name string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -312,16 +271,13 @@ func (s *Service) ShareExists(name string) bool {
 	return exists
 }
 
-// OnShareChange registers a callback to be invoked when shares are added,
-// removed, or updated. The callback receives the current list of share names.
 func (s *Service) OnShareChange(callback func(shares []string)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.changeCallbacks = append(s.changeCallbacks, callback)
 }
 
-// notifyShareChange invokes all registered share change callbacks.
-// Must NOT be called while holding s.mu to avoid deadlock.
+// notifyShareChange must NOT be called while holding s.mu.
 func (s *Service) notifyShareChange() {
 	s.mu.RLock()
 	callbacks := s.changeCallbacks
@@ -336,14 +292,12 @@ func (s *Service) notifyShareChange() {
 	}
 }
 
-// GetShareNameForHandle extracts the share name from a file handle.
 func (s *Service) GetShareNameForHandle(ctx context.Context, handle metadata.FileHandle) (string, error) {
 	shareName, _, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
 		return "", fmt.Errorf("failed to decode share handle: %w", err)
 	}
 
-	// Verify share exists
 	s.mu.RLock()
 	_, exists := s.registry[shareName]
 	s.mu.RUnlock()
@@ -355,7 +309,6 @@ func (s *Service) GetShareNameForHandle(ctx context.Context, handle metadata.Fil
 	return shareName, nil
 }
 
-// CountShares returns the number of registered shares.
 func (s *Service) CountShares() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
