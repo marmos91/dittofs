@@ -63,10 +63,10 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 │           │                  │          │
 │           │    ┌─────────────┼────────┐ │
 │           │    │         ┌───▼──────┐ │ │
-│           │    │ Cache   │ Transfer │ │ │
-│           │    │ Layer   │ Manager  │ │ │
-│           │    │ pkg/    │ pkg/     │ │ │
-│           │    │ cache/  │transfer/ │ │ │
+│           │    │ Cache   │Offloader │ │ │
+│           │    │ Layer   │ pkg/     │ │ │
+│           │    │ pkg/    │payload/  │ │ │
+│           │    │ cache/  │offloader/│ │ │
 │           │    │    │    └────┬─────┘ │ │
 │           │    │    │ ┌──────▼──────┐ │ │
 │           │    │    │ │     WAL     │ │ │
@@ -92,9 +92,13 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 **1. Runtime** (`pkg/controlplane/runtime/`)
 - **Single entrypoint for all operations** - both API handlers and internal code
 - Updates both persistent store AND in-memory state together
-- Manages adapter lifecycle (create, start, stop, delete)
-- Owns auxiliary servers (API, Metrics)
-- Coordinates Services (MetadataService, PayloadService)
+- Thin composition layer delegating to 6 focused sub-services:
+  - `adapters/`: Protocol adapter lifecycle management (create, start, stop, delete)
+  - `stores/`: Metadata store registry
+  - `shares/`: Share registration and configuration
+  - `mounts/`: Unified mount tracking across protocols
+  - `lifecycle/`: Server startup/shutdown orchestration
+  - `identity/`: Share-level identity mapping
 - Key methods:
   - `Serve(ctx)`: Starts all adapters and servers, blocks until shutdown
   - `CreateAdapter(ctx, cfg)`: Saves to store AND starts immediately
@@ -103,30 +107,49 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 
 **2. Control Plane Store** (`pkg/controlplane/store/`)
 - Persistent configuration (users, groups, permissions, adapters)
+- Decomposed into 9 sub-interfaces: `UserStore`, `GroupStore`, `ShareStore`, `PermissionStore`, `MetadataStoreConfigStore`, `PayloadStoreConfigStore`, `AdapterStore`, `SettingsStore`, `GuestStore`
+- Composite `Store` interface embeds all sub-interfaces
+- API handlers accept narrowest interface needed
 - SQLite (single-node) or PostgreSQL (distributed)
 
 **3. Adapter Interface** (`pkg/adapter/adapter.go`)
 - Each protocol implements the `Adapter` interface
+- `IdentityMappingAdapter` extends `Adapter` with `auth.IdentityMapper` for protocol-specific identity mapping
 - Adapters receive a Runtime reference to access services
-- Lifecycle: `SetRuntime() → Serve() → Stop()`
+- `BaseAdapter` provides shared TCP lifecycle, default `MapError` and `MapIdentity` stubs
+- Lifecycle: `SetRuntime() -> Serve() -> Stop()`
 - Multiple adapters can share the same runtime
 - Thread-safe, supports graceful shutdown
 
-**3. MetadataService** (`pkg/metadata/service.go`)
+**4. Auth** (`pkg/auth/`)
+- Centralized authentication abstractions shared across all protocols
+- `AuthProvider` interface: `CanHandle(token)` + `Authenticate(ctx, token)`
+- `Authenticator`: Chains multiple providers, tries each in order
+- `Identity`: Protocol-neutral authenticated identity (Unix creds, Kerberos, NTLM, anonymous)
+- `IdentityMapper` interface: Converts `AuthResult` to protocol-specific identity
+- Sub-packages:
+  - `kerberos/`: Kerberos `AuthProvider` with keytab management and hot-reload
+
+**5. MetadataService** (`pkg/metadata/`)
 - **Central service for all metadata operations**
 - Routes operations to the correct store based on share name
 - Owns LockManager per share (for SMB/NLM byte-range locking)
-- Provides high-level operations with business logic
+- Split into focused files:
+  - `file_create.go`, `file_modify.go`, `file_remove.go`, `file_helpers.go`, `file_types.go`: File operations
+  - `auth_identity.go`, `auth_permissions.go`: Identity resolution and permission checks
 - Protocol handlers should use this instead of stores directly
+- `storetest/`: Metadata store conformance test suite (all implementations must pass)
 
-**4. PayloadService** (`pkg/payload/service.go`)
+**6. PayloadService** (`pkg/payload/`)
 - **Central service for all content operations**
 - Routes operations to the correct store based on share name
-- Owns cache coordination (writes to cache, flushed on COMMIT, reads from cache)
-- Provides high-level operations with caching integration
-- Protocol handlers should use this instead of stores directly
+- Coordinates between cache and offloader
+- Sub-packages:
+  - `io/`: Extracted read/write I/O operations
+  - `offloader/`: Async cache-to-store transfer (renamed from TransferManager)
+  - `gc/`: Block garbage collection (extracted from offloader)
 
-**5. Metadata Store** (`pkg/metadata/store.go`)
+**7. Metadata Store** (`pkg/metadata/store.go`)
 - **Simple CRUD interface** for file/directory metadata
 - Stores file structure, attributes, permissions
 - Implementations:
@@ -135,13 +158,7 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
   - `pkg/metadata/store/postgres/`: PostgreSQL (persistent, distributed, UUID-based handles)
 - File handles are opaque identifiers (implementation-specific format)
 
-**6. Payload Service** (`pkg/payload/service.go`)
-- **Central service for all file content operations**
-- Uses Chunk/Slice/Block model for efficient storage
-- Coordinates between cache and transfer manager
-- Provides ReadAt, WriteAt, Flush, Delete operations
-
-**7. Block Store** (`pkg/payload/store/store.go`)
+**8. Block Store** (`pkg/payload/store/store.go`)
 - **Simple CRUD interface** for block data (4MB units)
 - Supports put, get, delete, list operations
 - Implementations:
@@ -149,7 +166,7 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
   - `pkg/payload/store/fs/`: Filesystem storage
   - `pkg/payload/store/s3/`: S3-backed storage (range reads, multipart uploads)
 
-**8. Cache Layer** (`pkg/cache/`)
+**9. Cache Layer** (`pkg/cache/`)
 - Slice-aware caching for the Chunk/Slice/Block storage model
 - Sequential write optimization (merges 16KB-32KB NFS writes into single slices)
 - Newest-wins read merging for overlapping slices
@@ -157,21 +174,21 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 - Uses `wal.Persister` interface for crash recovery
 - See [Cache README](../pkg/cache/README.md) for detailed architecture
 
-**9. WAL Persistence** (`pkg/cache/wal/`)
+**10. WAL Persistence** (`pkg/cache/wal/`)
 - Write-Ahead Log for cache crash recovery
 - `Persister` interface for pluggable implementations
 - `MmapPersister`: Memory-mapped file for high performance
 - `NullPersister`: No-op for in-memory only deployments
 - Enables cache data survival across restarts
 
-**10. Transfer Manager** (`pkg/payload/transfer/`)
-- Async cache-to-block-store transfer orchestration
+**11. Offloader** (`pkg/payload/offloader/`)
+- Async cache-to-block-store transfer orchestration (renamed from TransferManager)
+- Split into focused files: `offloader.go`, `upload.go`, `download.go`, `dedup.go`, `queue.go`, `entry.go`, `types.go`, `wal_replay.go`
 - **Eager upload**: Uploads complete 4MB blocks immediately
 - **Download priority**: Downloads pause uploads for read latency
 - **Prefetch**: Speculatively fetches upcoming blocks
 - **Non-blocking flush**: COMMIT returns immediately (data safe in WAL)
 - Handles crash recovery from WAL on startup
-- See [Payload README](../pkg/payload/README.md) for detailed architecture
 
 ## Adapter Pattern
 
@@ -410,90 +427,146 @@ payloadSvc.RegisterStoreForShare("/archive", s3Store)
 
 ```
 dittofs/
-├── cmd/dfs/              # Main application entry point
-│   └── main.go               # Server startup, config parsing, init
+├── cmd/
+│   ├── dfs/                      # Server CLI binary
+│   │   ├── main.go               # Entry point
+│   │   └── commands/             # Cobra commands (start, stop, config, logs, backup)
+│   └── dfsctl/                   # Client CLI binary
+│       ├── main.go               # Entry point
+│       ├── cmdutil/              # Shared utilities (auth, output, flags)
+│       └── commands/             # Cobra commands (user, group, share, store, adapter)
 │
-├── pkg/                      # Public API (stable interfaces)
-│   ├── adapter/              # Protocol adapter interface
-│   │   ├── adapter.go        # Core Adapter interface
-│   │   ├── nfs/              # NFS adapter implementation
-│   │   └── smb/              # SMB adapter implementation
+├── pkg/                          # Public API (stable interfaces)
+│   ├── adapter/                  # Protocol adapter interface
+│   │   ├── adapter.go            # Adapter + IdentityMappingAdapter interfaces
+│   │   ├── auth.go               # Adapter-level Authenticator interface
+│   │   ├── base.go               # BaseAdapter shared TCP lifecycle
+│   │   ├── errors.go             # ProtocolError interface
+│   │   ├── nfs/                  # NFS adapter implementation
+│   │   └── smb/                  # SMB adapter implementation
 │   │
-│   ├── metadata/             # Metadata layer
-│   │   ├── service.go        # MetadataService (business logic, routing)
-│   │   ├── store.go          # MetadataStore interface (CRUD)
-│   │   ├── cookies.go        # CookieManager (NFS/SMB pagination)
-│   │   ├── types.go          # FileAttr, DirEntry, etc.
-│   │   ├── errors.go         # Metadata-specific errors
-│   │   ├── locking.go        # LockManager for byte-range locks
-│   │   └── store/            # Store implementations
-│   │       ├── memory/       # In-memory (ephemeral)
-│   │       ├── badger/       # BadgerDB (persistent)
-│   │       └── postgres/     # PostgreSQL (distributed)
+│   ├── auth/                     # Centralized authentication abstractions
+│   │   ├── auth.go               # AuthProvider, Authenticator, AuthResult
+│   │   ├── identity.go           # Identity model, IdentityMapper interface
+│   │   └── kerberos/             # Kerberos AuthProvider
+│   │       ├── provider.go       # Provider (implements AuthProvider)
+│   │       ├── keytab.go         # Keytab hot-reload manager
+│   │       └── config.go         # Package doc
 │   │
-│   ├── payload/              # Payload storage layer (Chunk/Slice/Block)
-│   │   ├── service.go        # PayloadService (main entry point)
-│   │   ├── types.go          # PayloadID, FlushResult, etc.
-│   │   ├── errors.go         # Payload-specific errors
-│   │   ├── chunk/            # 64MB chunk calculations
-│   │   │   └── chunk.go
-│   │   ├── block/            # 4MB block calculations
-│   │   │   └── block.go
-│   │   ├── store/            # Block store implementations
-│   │   │   ├── store.go      # BlockStore interface
-│   │   │   ├── memory/       # In-memory (ephemeral)
-│   │   │   ├── fs/           # Filesystem
-│   │   │   └── s3/           # S3-backed (range reads, multipart)
-│   │   └── transfer/         # Transfer orchestration
-│   │       ├── manager.go    # TransferManager (eager upload, download)
-│   │       ├── queue.go      # TransferQueue (priority workers)
-│   │       ├── recovery.go   # WAL crash recovery
-│   │       └── gc.go         # Block garbage collection
+│   ├── metadata/                 # Metadata layer
+│   │   ├── service.go            # MetadataService (business logic, routing)
+│   │   ├── store.go              # MetadataStore interface (CRUD)
+│   │   ├── file_create.go        # File/directory creation operations
+│   │   ├── file_modify.go        # File modification operations
+│   │   ├── file_remove.go        # File removal operations
+│   │   ├── file_helpers.go       # Shared file operation helpers
+│   │   ├── file_types.go         # File-related type definitions
+│   │   ├── auth_identity.go      # Identity resolution
+│   │   ├── auth_permissions.go   # Permission checking
+│   │   ├── cookies.go            # CookieManager (NFS/SMB pagination)
+│   │   ├── types.go              # FileAttr, DirEntry, etc.
+│   │   ├── errors.go             # Metadata-specific errors
+│   │   ├── locking.go            # LockManager for byte-range locks
+│   │   ├── storetest/            # Conformance test suite for store implementations
+│   │   └── store/                # Store implementations
+│   │       ├── memory/           # In-memory (ephemeral)
+│   │       ├── badger/           # BadgerDB (persistent)
+│   │       └── postgres/         # PostgreSQL (distributed)
 │   │
-│   ├── cache/                # Slice-aware cache layer
-│   │   ├── cache.go          # Cache implementation (LRU, dirty tracking)
-│   │   ├── read.go           # Read with newest-wins merge
-│   │   ├── write.go          # Write with sequential optimization
-│   │   ├── flush.go          # Flush coordination
-│   │   ├── eviction.go       # LRU eviction
-│   │   ├── types.go          # Slice, SliceState types
-│   │   └── wal/              # WAL persistence
-│   │       ├── mmap.go       # MmapPersister implementation
-│   │       └── types.go      # SliceEntry, WAL record types
+│   ├── payload/                  # Payload storage layer (Chunk/Slice/Block)
+│   │   ├── service.go            # PayloadService (main entry point)
+│   │   ├── types.go              # PayloadID, FlushResult, etc.
+│   │   ├── errors.go             # PayloadError structured type
+│   │   ├── io/                   # Extracted read/write I/O operations
+│   │   │   ├── reader.go         # Cache-aware read operations
+│   │   │   └── writer.go         # Cache-aware write operations
+│   │   ├── offloader/            # Async cache-to-store transfer (was transfer/)
+│   │   │   ├── offloader.go      # Offloader struct and orchestration
+│   │   │   ├── upload.go         # Upload coordination
+│   │   │   ├── download.go       # Download coordination
+│   │   │   ├── dedup.go          # Deduplication handler
+│   │   │   ├── queue.go          # TransferQueue (priority workers)
+│   │   │   ├── entry.go          # TransferQueueEntry interface
+│   │   │   ├── types.go          # Shared types
+│   │   │   └── wal_replay.go     # WAL crash recovery
+│   │   ├── gc/                   # Block garbage collection
+│   │   │   └── gc.go             # Standalone GC function
+│   │   ├── chunk/                # 64MB chunk calculations
+│   │   ├── block/                # 4MB block calculations
+│   │   └── store/                # Block store implementations
+│   │       ├── store.go          # BlockStore interface
+│   │       ├── memory/           # In-memory (ephemeral)
+│   │       ├── fs/               # Filesystem
+│   │       └── s3/               # S3-backed (range reads, multipart)
 │   │
-│   ├── registry/             # Store registry
-│   │   ├── registry.go       # Central registry (owns services)
-│   │   ├── share.go          # Share configuration
-│   │   └── access.go         # Identity mapping
+│   ├── cache/                    # Slice-aware cache layer
+│   │   ├── cache.go              # Cache implementation (LRU, dirty tracking)
+│   │   ├── read.go               # Read with newest-wins merge
+│   │   ├── write.go              # Write with sequential optimization
+│   │   ├── flush.go              # Flush coordination
+│   │   ├── eviction.go           # LRU eviction
+│   │   ├── types.go              # Slice, SliceState types
+│   │   └── wal/                  # WAL persistence
+│   │       ├── mmap.go           # MmapPersister implementation
+│   │       └── types.go          # SliceEntry, WAL record types
 │   │
-│   ├── config/               # Configuration parsing
-│   │   ├── config.go         # Main config struct
-│   │   ├── stores.go         # Store and transfer manager creation
-│   │   └── registry.go       # Registry initialization
+│   ├── controlplane/             # Control plane (config + runtime)
+│   │   ├── store/                # GORM-based persistent store
+│   │   │   ├── interface.go      # 9 sub-interfaces + composite Store
+│   │   │   ├── gorm.go           # GORMStore implementation
+│   │   │   ├── helpers.go        # Generic GORM helpers
+│   │   │   └── ...               # Per-entity implementations
+│   │   ├── runtime/              # Ephemeral runtime state
+│   │   │   ├── runtime.go        # Composition layer (~500 lines)
+│   │   │   ├── adapters/         # Adapter lifecycle sub-service
+│   │   │   ├── stores/           # Metadata store registry sub-service
+│   │   │   ├── shares/           # Share management sub-service
+│   │   │   ├── mounts/           # Unified mount tracking sub-service
+│   │   │   ├── lifecycle/        # Serve/shutdown orchestration sub-service
+│   │   │   └── identity/         # Identity mapping sub-service
+│   │   ├── api/                  # REST API server
+│   │   │   ├── server.go         # HTTP server with JWT
+│   │   │   └── router.go         # Route definitions
+│   │   └── models/               # Domain models (User, Group, Share)
 │   │
-│   └── server/               # DittoServer orchestration
-│       └── server.go         # Multi-adapter server management
+│   ├── apiclient/                # REST API client library
+│   │   ├── client.go             # HTTP client with token auth
+│   │   ├── helpers.go            # Generic API client helpers
+│   │   └── ...                   # Resource-specific methods
+│   │
+│   └── config/                   # Configuration parsing
+│       ├── config.go             # Main config struct
+│       ├── stores.go             # Store and offloader creation
+│       └── runtime.go            # Runtime initialization
 │
-├── internal/                 # Private implementation details
-│   ├── adapter/nfs/          # NFS protocol implementation
-│   │   ├── dispatch.go       # RPC procedure routing
-│   │   ├── rpc/              # RPC layer (call/reply handling)
-│   │   ├── xdr/              # XDR encoding/decoding
-│   │   ├── types/            # NFS constants and types
-│   │   ├── mount/handlers/   # Mount protocol procedures
-│   │   └── v3/handlers/      # NFSv3 procedures (READ, WRITE, etc.)
-│   ├── adapter/smb/          # SMB protocol implementation
-│   │   └── v2/handlers/      # SMB2 command handlers
-│   └── logger/               # Logging utilities
+├── internal/                     # Private implementation details
+│   ├── adapter/nfs/              # NFS protocol implementation
+│   │   ├── dispatch.go           # RPC procedure routing
+│   │   ├── rpc/                  # RPC layer (call/reply handling)
+│   │   │   └── gss/              # RPCSEC_GSS framework
+│   │   ├── core/                 # Generic XDR codec
+│   │   ├── types/                # NFS constants and types
+│   │   ├── mount/handlers/       # Mount protocol procedures
+│   │   ├── v3/handlers/          # NFSv3 procedures (READ, WRITE, etc.)
+│   │   └── v4/handlers/          # NFSv4.0 and v4.1 procedures
+│   ├── adapter/smb/              # SMB protocol implementation
+│   │   ├── auth/                 # NTLM/SPNEGO authentication
+│   │   ├── framing.go            # NetBIOS framing
+│   │   ├── dispatch.go           # Command dispatch
+│   │   └── v2/handlers/          # SMB2 command handlers
+│   ├── controlplane/api/         # API implementation
+│   │   ├── handlers/             # HTTP handlers with centralized error mapping
+│   │   └── middleware/           # Auth middleware
+│   └── logger/                   # Logging utilities
 │
-├── docs/                     # Documentation
-│   ├── ARCHITECTURE.md       # This file
-│   ├── CONFIGURATION.md      # Configuration guide
+├── docs/                         # Documentation
+│   ├── ARCHITECTURE.md           # This file
+│   ├── CONFIGURATION.md          # Configuration guide
 │   └── ...
 │
-└── test/                     # Test suites
-    ├── integration/          # Integration tests (S3, BadgerDB)
-    └── e2e/                  # End-to-end tests (real NFS mounts)
+└── test/                         # Test suites
+    ├── integration/              # Integration tests (S3, BadgerDB)
+    └── e2e/                      # End-to-end tests (real NFS mounts)
 ```
 
 ## Cache, WAL, and Transfer Architecture
@@ -524,9 +597,9 @@ NFS WRITE Request
          │ NFS COMMIT                              │
          ▼                                         │
 ┌───────────────────┐                              │
-│ TransferManager   │                              │
-│pkg/payload/transfer│                              │
-│                   │                              │
+│    Offloader      │                              │
+│ pkg/payload/      │                              │
+│   offloader/      │                              │
 │ • Flush dirty     │                              │
 │ • Priority queue  │                              │
 │ • Background      │                              │
@@ -599,9 +672,9 @@ persister := wal.NewNullPersister()
 cache, err := cache.NewWithWal(maxSize, persister)
 ```
 
-### Transfer Manager (`pkg/payload/transfer/`)
+### Offloader (`pkg/payload/offloader/`)
 
-Orchestrates async cache-to-block-store transfers:
+Orchestrates async cache-to-block-store transfers (renamed from TransferManager):
 
 ```go
 // TransferQueueEntry - generic transfer operation
@@ -609,21 +682,30 @@ type TransferQueueEntry interface {
     ShareName() string
     FileHandle() []byte
     ContentID() string
-    Execute(ctx context.Context, manager *TransferManager) error
+    Execute(ctx context.Context, offloader *Offloader) error
     Priority() int
 }
 
-// TransferManager - coordinates flush operations
-tm := transfer.New(cache, blockStore, config)
+// Offloader - coordinates flush operations
+o := offloader.New(cache, blockStore, config)
 
 // Flush dirty slices for a file
-result, err := tm.FlushFile(ctx, shareName, fileHandle, contentID)
+result, err := o.FlushFile(ctx, shareName, fileHandle, contentID)
 
 // Background queue for async uploads
-tm.EnqueueTransfer(entry)
+o.EnqueueTransfer(entry)
 
 // Startup recovery from WAL
-recovery.RecoverFromWAL(ctx, persister, cache, tm)
+offloader.RecoverFromWAL(ctx, persister, cache, o)
+```
+
+### Garbage Collection (`pkg/payload/gc/`)
+
+Block garbage collection extracted to standalone package:
+
+```go
+// CollectGarbage reconciles blocks against metadata and removes orphans
+gc.CollectGarbage(ctx, blockStore, metadataStore)
 ```
 
 ## Horizontal Scaling with PostgreSQL
