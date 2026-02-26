@@ -109,12 +109,15 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 
 // ProcessRequestWithFileID processes a request and returns the FileID if applicable (for CREATE).
 // Used in compound request processing where FileID propagation is needed.
-func ProcessRequestWithFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte, connInfo *ConnInfo) (*HandlerResult, [16]byte) {
+// Also returns the handler context so callers (compound processing) can pass
+// handler-populated fields (e.g. SessionID from SESSION_SETUP, TreeID from
+// TREE_CONNECT) through to SendResponse.
+func ProcessRequestWithFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte, connInfo *ConnInfo) (*HandlerResult, [16]byte, *handlers.SMBHandlerContext) {
 	var fileID [16]byte
 
 	cmd, handlerCtx, errStatus := prepareDispatch(ctx, reqHeader, connInfo)
 	if errStatus != 0 {
-		return &HandlerResult{Status: errStatus, Data: MakeErrorBody()}, fileID
+		return &HandlerResult{Status: errStatus, Data: MakeErrorBody()}, fileID, handlerCtx
 	}
 
 	logger.Debug("Dispatching SMB2 command",
@@ -125,7 +128,7 @@ func ProcessRequestWithFileID(ctx context.Context, reqHeader *header.SMB2Header,
 	result, err := cmd.Handler(handlerCtx, connInfo.Handler, connInfo.Handler.Registry, body)
 	if err != nil {
 		logger.Debug("Handler error", "command", cmd.Name, "error", err)
-		return &HandlerResult{Status: types.StatusInternalError, Data: MakeErrorBody()}, fileID
+		return &HandlerResult{Status: types.StatusInternalError, Data: MakeErrorBody()}, fileID, handlerCtx
 	}
 
 	// Track session lifecycle for connection cleanup
@@ -136,22 +139,22 @@ func ProcessRequestWithFileID(ctx context.Context, reqHeader *header.SMB2Header,
 		copy(fileID[:], result.Data[64:80])
 	}
 
-	return result, fileID
+	return result, fileID, handlerCtx
 }
 
 // ProcessRequestWithInheritedFileID processes a request using an inherited FileID.
 // InjectFileID is a no-op for commands that do not use a FileID, so no pre-filtering is needed.
-func ProcessRequestWithInheritedFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte, inheritedFileID [16]byte, connInfo *ConnInfo) *HandlerResult {
+func ProcessRequestWithInheritedFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte, inheritedFileID [16]byte, connInfo *ConnInfo) (*HandlerResult, *handlers.SMBHandlerContext) {
 	body = InjectFileID(reqHeader.Command, body, inheritedFileID)
-	result, _ := ProcessRequestWithFileID(ctx, reqHeader, body, connInfo)
-	return result
+	result, _, handlerCtx := ProcessRequestWithFileID(ctx, reqHeader, body, connInfo)
+	return result, handlerCtx
 }
 
 // SendResponse sends an SMB2 response with credit management and signing.
 func SendResponse(reqHeader *header.SMB2Header, ctx *handlers.SMBHandlerContext, result *HandlerResult, connInfo *ConnInfo) error {
 	// Use session manager for adaptive credit grants
 	sessionID := reqHeader.SessionID
-	if ctx.SessionID != 0 {
+	if ctx != nil && ctx.SessionID != 0 {
 		sessionID = ctx.SessionID
 	}
 
@@ -165,12 +168,12 @@ func SendResponse(reqHeader *header.SMB2Header, ctx *handlers.SMBHandlerContext,
 	respHeader := header.NewResponseHeaderWithCredits(reqHeader, result.Status, credits)
 
 	// Update SessionID in response if it was set by handler (SESSION_SETUP)
-	if ctx.SessionID != 0 && reqHeader.SessionID == 0 {
+	if ctx != nil && ctx.SessionID != 0 && reqHeader.SessionID == 0 {
 		respHeader.SessionID = ctx.SessionID
 	}
 
 	// Update TreeID in response if it was set by handler (TREE_CONNECT)
-	if ctx.TreeID != 0 && reqHeader.TreeID == 0 {
+	if ctx != nil && ctx.TreeID != 0 && reqHeader.TreeID == 0 {
 		respHeader.TreeID = ctx.TreeID
 	}
 

@@ -91,10 +91,10 @@ func (c *Connection) Serve(ctx context.Context) {
 	clientAddr := c.conn.RemoteAddr().String()
 	logger.Debug("New SMB connection", "address", clientAddr)
 
-	// Set initial idle timeout
+	// Set initial idle timeout (read-only so writes are never cut short)
 	if c.server.config.Timeouts.Idle > 0 {
-		if err := c.conn.SetDeadline(time.Now().Add(c.server.config.Timeouts.Idle)); err != nil {
-			logger.Warn("Failed to set deadline", "address", clientAddr, "error", err)
+		if err := c.conn.SetReadDeadline(time.Now().Add(c.server.config.Timeouts.Idle)); err != nil {
+			logger.Warn("Failed to set read deadline", "address", clientAddr, "error", err)
 		}
 	}
 
@@ -159,10 +159,10 @@ func (c *Connection) Serve(ctx context.Context) {
 			}(hdr, body)
 		}
 
-		// Reset idle timeout after reading request
+		// Reset idle timeout after reading request (read-only)
 		if c.server.config.Timeouts.Idle > 0 {
-			if err := c.conn.SetDeadline(time.Now().Add(c.server.config.Timeouts.Idle)); err != nil {
-				logger.Warn("Failed to reset deadline", "address", clientAddr, "error", err)
+			if err := c.conn.SetReadDeadline(time.Now().Add(c.server.config.Timeouts.Idle)); err != nil {
+				logger.Warn("Failed to reset read deadline", "address", clientAddr, "error", err)
 			}
 		}
 	}
@@ -209,7 +209,7 @@ func (c *Connection) cleanupSessions() {
 		"address", clientAddr,
 		"sessionCount", len(sessions))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	for _, sessionID := range sessions {

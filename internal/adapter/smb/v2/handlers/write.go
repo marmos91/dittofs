@@ -14,7 +14,7 @@ import (
 
 // WriteRequest represents an SMB2 WRITE request from a client [MS-SMB2] 2.2.21.
 // The client specifies a FileID, offset, and data to write to a file.
-// The fixed wire format is 49 bytes minimum, followed by the data buffer.
+// The fixed wire format is exactly 49 bytes, followed by the variable-length data buffer.
 type WriteRequest struct {
 	// DataOffset is the offset from the start of the SMB2 header
 	// to the write data. Typically 64 (header) + 48 (request) = 112.

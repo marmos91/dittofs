@@ -31,11 +31,21 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		"command", firstHeader.Command.String(),
 		"messageId", firstHeader.MessageID)
 
-	result, fileID := ProcessRequestWithFileID(ctx, firstHeader, firstBody, connInfo)
+	result, fileID, handlerCtx := ProcessRequestWithFileID(ctx, firstHeader, firstBody, connInfo)
 	if fileID != [16]byte{} {
 		lastFileID = fileID
 	}
-	if err := SendResponse(firstHeader, &handlers.SMBHandlerContext{SessionID: lastSessionID, TreeID: lastTreeID}, result, connInfo); err != nil {
+	// Use handler context for SendResponse so handler-assigned SessionID/TreeID
+	// (e.g. from SESSION_SETUP or TREE_CONNECT) propagate to the response.
+	if handlerCtx != nil {
+		if handlerCtx.SessionID != 0 {
+			lastSessionID = handlerCtx.SessionID
+		}
+		if handlerCtx.TreeID != 0 {
+			lastTreeID = handlerCtx.TreeID
+		}
+	}
+	if err := SendResponse(firstHeader, handlerCtx, result, connInfo); err != nil {
 		logger.Debug("Error sending compound response", "error", err)
 	}
 
@@ -80,21 +90,28 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 
 		// Process with the inherited FileID for related operations
 		var result *HandlerResult
+		var cmdCtx *handlers.SMBHandlerContext
 		if hdr.IsRelated() && lastFileID != [16]byte{} {
-			result = ProcessRequestWithInheritedFileID(ctx, hdr, body, lastFileID, connInfo)
+			result, cmdCtx = ProcessRequestWithInheritedFileID(ctx, hdr, body, lastFileID, connInfo)
 		} else {
 			var fileID [16]byte
-			result, fileID = ProcessRequestWithFileID(ctx, hdr, body, connInfo)
+			result, fileID, cmdCtx = ProcessRequestWithFileID(ctx, hdr, body, connInfo)
 			if fileID != [16]byte{} {
 				lastFileID = fileID
 			}
 		}
 
-		// Update tracking
-		lastSessionID = hdr.SessionID
-		lastTreeID = hdr.TreeID
+		// Update tracking from handler context (preserves handler-assigned IDs)
+		if cmdCtx != nil {
+			if cmdCtx.SessionID != 0 {
+				lastSessionID = cmdCtx.SessionID
+			}
+			if cmdCtx.TreeID != 0 {
+				lastTreeID = cmdCtx.TreeID
+			}
+		}
 
-		if err := SendResponse(hdr, &handlers.SMBHandlerContext{SessionID: lastSessionID, TreeID: lastTreeID}, result, connInfo); err != nil {
+		if err := SendResponse(hdr, cmdCtx, result, connInfo); err != nil {
 			logger.Debug("Error sending compound response", "error", err)
 		}
 	}

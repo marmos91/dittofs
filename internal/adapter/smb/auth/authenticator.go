@@ -14,9 +14,20 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/adapter"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+)
+
+const (
+	// pendingAuthTTL is the maximum lifetime of an incomplete NTLM handshake.
+	// After this, the entry is eligible for eviction.
+	pendingAuthTTL = 60 * time.Second
+
+	// maxPendingAuths caps the number of in-flight NTLM handshakes to prevent
+	// memory exhaustion from abandoned negotiations.
+	maxPendingAuths = 1000
 )
 
 // SMBAuthenticator implements adapter.Authenticator for SMB protocol authentication.
@@ -47,6 +58,7 @@ type SMBAuthenticator struct {
 // pendingNTLMAuth tracks state between NTLM authentication rounds.
 type pendingNTLMAuth struct {
 	serverChallenge [8]byte
+	createdAt       time.Time
 }
 
 // Compile-time interface check.
@@ -141,6 +153,9 @@ func (a *SMBAuthenticator) handleNTLMToken(ctx context.Context, ntlmToken []byte
 // handleNTLMNegotiate processes an NTLM Type 1 (NEGOTIATE) message.
 // Returns a Type 2 (CHALLENGE) message with ErrMoreProcessingRequired.
 func (a *SMBAuthenticator) handleNTLMNegotiate(wrapSPNEGO bool) (*adapter.AuthResult, []byte, error) {
+	// Evict stale pending auths before adding a new one
+	a.evictStalePendingAuths()
+
 	// Build challenge
 	challengeMsg, serverChallenge := BuildChallenge()
 
@@ -148,6 +163,7 @@ func (a *SMBAuthenticator) handleNTLMNegotiate(wrapSPNEGO bool) (*adapter.AuthRe
 	sessionID := a.nextSessionID.Add(1)
 	a.pendingAuths.Store(sessionID, &pendingNTLMAuth{
 		serverChallenge: serverChallenge,
+		createdAt:       time.Now(),
 	})
 
 	// Wrap in SPNEGO if needed
@@ -265,6 +281,32 @@ func (a *SMBAuthenticator) validateAgainstPendingAuths(
 // Only deletes the specific entry to avoid breaking concurrent handshakes.
 func (a *SMBAuthenticator) cleanupPendingAuth(sessionID uint64) {
 	a.pendingAuths.Delete(sessionID)
+}
+
+// evictStalePendingAuths removes expired entries and enforces the max count.
+// Called on each new NEGOTIATE to prevent unbounded growth from abandoned handshakes.
+func (a *SMBAuthenticator) evictStalePendingAuths() {
+	now := time.Now()
+	count := 0
+
+	a.pendingAuths.Range(func(key, value any) bool {
+		pending := value.(*pendingNTLMAuth)
+		if now.Sub(pending.createdAt) > pendingAuthTTL {
+			a.pendingAuths.Delete(key)
+			return true
+		}
+		count++
+		return true
+	})
+
+	// If still over the cap after TTL eviction, remove oldest entries
+	if count > maxPendingAuths {
+		a.pendingAuths.Range(func(key, _ any) bool {
+			a.pendingAuths.Delete(key)
+			count--
+			return count > maxPendingAuths
+		})
+	}
 }
 
 // uniqueStrings returns a deduplicated slice preserving order.

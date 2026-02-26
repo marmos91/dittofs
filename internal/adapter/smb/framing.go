@@ -69,14 +69,33 @@ func ReadRequest(
 	}
 
 	// Read NetBIOS session header (4 bytes)
-	// Format: 1 byte type (0x00 for session message) + 3 bytes length (big-endian)
+	// Format: 1 byte type + 3 bytes length (big-endian)
+	// Type 0x00 = session message, 0x85 = keepalive (skip), others = error.
 	var nbHeader [4]byte
-	if _, err := io.ReadFull(conn, nbHeader[:]); err != nil {
-		return nil, nil, nil, err
-	}
+	var msgLen uint32
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, nil, nil, ctx.Err()
+		default:
+		}
 
-	// Parse NetBIOS length (24-bit big-endian)
-	msgLen := uint32(nbHeader[1])<<16 | uint32(nbHeader[2])<<8 | uint32(nbHeader[3])
+		if _, err := io.ReadFull(conn, nbHeader[:]); err != nil {
+			return nil, nil, nil, err
+		}
+
+		switch nbHeader[0] {
+		case 0x00:
+			// Session message — parse length and proceed
+			msgLen = uint32(nbHeader[1])<<16 | uint32(nbHeader[2])<<8 | uint32(nbHeader[3])
+		case 0x85:
+			// NetBIOS keepalive — no payload, read next frame
+			continue
+		default:
+			return nil, nil, nil, fmt.Errorf("unsupported NetBIOS message type: 0x%02x", nbHeader[0])
+		}
+		break
+	}
 
 	// Validate message size (configurable via maxMsgSize)
 	if msgLen > uint32(maxMsgSize) {
@@ -189,11 +208,29 @@ func readSMB2Message(
 	}
 
 	var nbHeader [4]byte
-	if _, err := io.ReadFull(conn, nbHeader[:]); err != nil {
-		return nil, nil, nil, err
+	var msgLen uint32
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, nil, nil, ctx.Err()
+		default:
+		}
+
+		if _, err := io.ReadFull(conn, nbHeader[:]); err != nil {
+			return nil, nil, nil, err
+		}
+
+		switch nbHeader[0] {
+		case 0x00:
+			msgLen = uint32(nbHeader[1])<<16 | uint32(nbHeader[2])<<8 | uint32(nbHeader[3])
+		case 0x85:
+			continue
+		default:
+			return nil, nil, nil, fmt.Errorf("unsupported NetBIOS message type: 0x%02x", nbHeader[0])
+		}
+		break
 	}
 
-	msgLen := uint32(nbHeader[1])<<16 | uint32(nbHeader[2])<<8 | uint32(nbHeader[3])
 	if msgLen > uint32(maxMsgSize) {
 		return nil, nil, nil, fmt.Errorf("SMB message too large: %d bytes (max %d)", msgLen, maxMsgSize)
 	}
