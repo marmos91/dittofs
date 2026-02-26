@@ -1,0 +1,72 @@
+# Kubernetes Operator Tests for DittoFS
+#
+# Runs envtest-based unit tests for the DittoFS operator (kubebuilder project).
+# Uses controller-runtime's envtest to provide a lightweight K8s API server.
+
+name: Operator Tests
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+    paths:
+      - 'k8s/dittofs-operator/**'
+      - '.github/workflows/operator-tests.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: k8s/dittofs-operator
+
+jobs:
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: k8s/dittofs-operator/go.mod
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests
+        run: make test
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: operator-coverage
+          path: k8s/dittofs-operator/cover.out
+          retention-days: 7
+          if-no-files-found: ignore
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: k8s/dittofs-operator/go.mod
+          cache: true
+
+      - name: Run linter
+        run: make lint
