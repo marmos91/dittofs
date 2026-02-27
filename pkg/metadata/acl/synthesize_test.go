@@ -20,11 +20,11 @@ func TestSynthesizeFromMode_0755_Directory(t *testing.T) {
 		t.Fatal("SynthesizeFromMode returned nil")
 	}
 
-	// Expect: DENY EVERYONE@ write, ALLOW OWNER@ rwx, ALLOW GROUP@ rx,
-	// ALLOW EVERYONE@ rx, ALLOW SYSTEM@ full, ALLOW ADMIN@ full.
+	// Expect: DENY GROUP@ write, DENY EVERYONE@ write, ALLOW OWNER@ rwx,
+	// ALLOW GROUP@ rx, ALLOW EVERYONE@ rx, ALLOW SYSTEM@ full, ALLOW ADMIN@ full.
 	// Owner has rwx(7), group has rx(5), other has rx(5).
-	// group has same as other, so no GROUP@ deny needed.
-	// other is missing write vs owner, so DENY EVERYONE@ write.
+	// Both group and other are missing write vs owner (7 &^ 5 = 2),
+	// so both GROUP@ and EVERYONE@ get deny ACEs for write.
 
 	// Check deny: EVERYONE@ should be denied write bits (owner has w, other doesn't).
 	denyEveryone := findACE(acl.ACEs, ACE4_ACCESS_DENIED_ACE_TYPE, SpecialEveryone)

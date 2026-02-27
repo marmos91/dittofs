@@ -181,10 +181,14 @@ func (m *SIDMapper) PrincipalToSID(who string, fileOwnerUID, fileOwnerGID uint32
 				return m.UserSID(uint32(uid))
 			}
 		}
-		// Fallback: use a hash-based RID
+		// Fallback: use a hash-based RID. Guard against empty principals
+		// and avoid generating UID 0 which maps to Administrators.
 		var rid uint32
 		for _, c := range who {
 			rid = rid*31 + uint32(c)
+		}
+		if rid == 0 {
+			rid = 1
 		}
 		return m.UserSID(rid)
 	}

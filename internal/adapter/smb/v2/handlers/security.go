@@ -372,21 +372,25 @@ func ParseSecurityDescriptor(data []byte) (ownerUID *uint32, ownerGID *uint32, f
 	// offsetSACL := binary.LittleEndian.Uint32(data[12:16])
 	offsetDACL := binary.LittleEndian.Uint32(data[16:20])
 
-	// Parse Owner SID
+	// Parse Owner SID — only set ownerUID if the SID is recognized
 	if offsetOwner > 0 && int(offsetOwner) < len(data) {
 		s, _, err := sid.DecodeSID(data[offsetOwner:])
 		if err == nil {
-			uid := sidToUID(s)
-			ownerUID = &uid
+			if uid, ok := defaultSIDMapper.UIDFromSID(s); ok {
+				ownerUID = &uid
+			}
 		}
 	}
 
-	// Parse Group SID
+	// Parse Group SID — only set ownerGID if the SID is recognized
 	if offsetGroup > 0 && int(offsetGroup) < len(data) {
 		s, _, err := sid.DecodeSID(data[offsetGroup:])
 		if err == nil {
-			gid := sidToGID(s)
-			ownerGID = &gid
+			if gid, ok := defaultSIDMapper.GIDFromSID(s); ok {
+				ownerGID = &gid
+			} else if uid, ok := defaultSIDMapper.UIDFromSID(s); ok {
+				ownerGID = &uid
+			}
 		}
 	}
 
@@ -469,30 +473,6 @@ func parseDACL(data []byte) (*acl.ACL, error) {
 	}, nil
 }
 
-// sidToUID extracts a UID from a SID using the default mapper.
-// For domain user SIDs, returns the mapped UID.
-// For non-domain SIDs, returns 65534 (nobody).
-func sidToUID(s *sid.SID) uint32 {
-	if uid, ok := defaultSIDMapper.UIDFromSID(s); ok {
-		return uid
-	}
-	return 65534 // nobody
-}
-
-// sidToGID extracts a GID from a SID using the default mapper.
-// Checks group SIDs first, then falls back to user SIDs for backward compat
-// (old SIDs used the same format for both user and group).
-// For non-domain SIDs, returns 65534 (nobody).
-func sidToGID(s *sid.SID) uint32 {
-	if gid, ok := defaultSIDMapper.GIDFromSID(s); ok {
-		return gid
-	}
-	// Backward compat: old SIDs used user RID format for groups too
-	if uid, ok := defaultSIDMapper.UIDFromSID(s); ok {
-		return uid
-	}
-	return 65534 // nobody
-}
 
 // ============================================================================
 // Alignment Helpers

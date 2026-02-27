@@ -391,13 +391,16 @@ func (h *LSARPCHandler) buildLookupSidsResponse(
 		appendUint32Buf(&buf, uint32(len(domains)))
 
 		// Fixed-size domain entries: name (NDR string header = 12 bytes) + SID pointer (4 bytes) = 16 bytes each
-		for range domains {
-			// Name: will be written as deferred data
-			appendUint32Buf(&buf, 0)          // Length (placeholder, filled later or in deferred data)
-			appendUint32Buf(&buf, 0)          // MaximumLength (placeholder)
-			appendUint32Buf(&buf, 0x00020008) // pointer to string data
-			// SID pointer
-			appendUint32Buf(&buf, 0x0002000C) // pointer to SID data
+		refID := uint32(0x00020008)
+		for _, d := range domains {
+			nameUTF16Len := uint16(len(encodeUTF16LE(d.name)))
+			byteLen := nameUTF16Len + 2 // include null terminator
+			_ = binary.Write(&buf, binary.LittleEndian, byteLen)  // Length
+			_ = binary.Write(&buf, binary.LittleEndian, byteLen)  // MaximumLength
+			appendUint32Buf(&buf, refID)    // pointer to string data
+			refID += 4
+			appendUint32Buf(&buf, refID) // pointer to SID data
+			refID += 4
 		}
 
 		// Deferred string data for each domain
@@ -432,15 +435,16 @@ func (h *LSARPCHandler) buildLookupSidsResponse(
 		appendUint32Buf(&buf, uint32(len(resolved)))
 
 		// Fixed-size name entries
+		nameRefID := uint32(0x00030000)
 		for _, r := range resolved {
-			// Use type (uint16)
 			_ = binary.Write(&buf, binary.LittleEndian, r.sidType)
-			// Padding to 4-byte align
 			_ = binary.Write(&buf, binary.LittleEndian, uint16(0))
-			// Name: NDR string header
-			appendUint32Buf(&buf, 0)          // Length
-			appendUint32Buf(&buf, 0)          // MaximumLength
-			appendUint32Buf(&buf, 0x00020014) // pointer to string
+			nameUTF16Len := uint16(len(encodeUTF16LE(r.name)))
+			byteLen := nameUTF16Len + 2
+			_ = binary.Write(&buf, binary.LittleEndian, byteLen)    // Length
+			_ = binary.Write(&buf, binary.LittleEndian, byteLen)    // MaximumLength
+			appendUint32Buf(&buf, nameRefID)  // unique pointer
+			nameRefID += 4
 			// Domain index (int32)
 			domIdx := int32(-1) // -1 = no domain
 			if r.domainName != "" {
