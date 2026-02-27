@@ -51,13 +51,20 @@ const (
 	// portmapperContainerPort is the unprivileged container port the portmapper listens on.
 	// K8s Service port mapping (111 → 10111) avoids needing privileged security context.
 	portmapperContainerPort = int32(10111)
-	// portmapperPortName is the Service/container port name for the portmapper.
+	// portmapperPortName is the Service port name for the portmapper (TCP).
 	portmapperPortName = "portmap"
-	// portmapperContainerPortName is the container port name for the portmapper.
+	// portmapperUDPPortName is the Service port name for the portmapper (UDP).
+	// macOS NFS clients query portmapper over UDP to discover NLM/MOUNT ports.
+	portmapperUDPPortName = "portmap-udp"
+	// portmapperContainerPortName is the container port name for the portmapper (TCP).
 	// Namespaced under NFS to avoid collision with dynamic adapter port names
 	// (e.g., adapterPortName("portmap") would also produce "adapter-portmap").
 	// Uses the adapter- prefix so it's managed as a dynamic port and cleaned up with NFS.
 	portmapperContainerPortName = "adapter-nfs-pm"
+	// portmapperUDPContainerPortName is the container port name for the portmapper (UDP).
+	// Must be ≤15 characters per K8s DNS-1123 port name validation and start with
+	// adapterPortPrefix so it's managed as a dynamic port (cleaned up when NFS stops).
+	portmapperUDPContainerPortName = "adapter-pm-udp"
 	// nfsAdapterType is the canonical sanitized type string for the NFS adapter.
 	nfsAdapterType = "nfs"
 )
@@ -128,7 +135,7 @@ func isNFSAdapter(adapterType string) bool {
 }
 
 // buildAdapterServicePorts returns the Service ports for an adapter.
-// NFS adapters get 2 ports (NFS + portmapper 111→10111), all others get 1.
+// NFS adapters get 3 ports (NFS + portmapper TCP/UDP 111→10111), all others get 1.
 func buildAdapterServicePorts(adapterType string, info AdapterInfo) []corev1.ServicePort {
 	portName := adapterPortName(adapterType)
 	ports := []corev1.ServicePort{
@@ -140,12 +147,20 @@ func buildAdapterServicePorts(adapterType string, info AdapterInfo) []corev1.Ser
 		},
 	}
 	if isNFSAdapter(adapterType) {
-		ports = append(ports, corev1.ServicePort{
-			Name:       portmapperPortName,
-			Port:       portmapperServicePort,
-			TargetPort: intstr.FromInt32(portmapperContainerPort),
-			Protocol:   corev1.ProtocolTCP,
-		})
+		ports = append(ports,
+			corev1.ServicePort{
+				Name:       portmapperPortName,
+				Port:       portmapperServicePort,
+				TargetPort: intstr.FromInt32(portmapperContainerPort),
+				Protocol:   corev1.ProtocolTCP,
+			},
+			corev1.ServicePort{
+				Name:       portmapperUDPPortName,
+				Port:       portmapperServicePort,
+				TargetPort: intstr.FromInt32(portmapperContainerPort),
+				Protocol:   corev1.ProtocolUDP,
+			},
+		)
 	}
 	return ports
 }
@@ -276,7 +291,7 @@ func (r *DittoServerReconciler) createAdapterService(ctx context.Context, ds *di
 		WithType(svcType)
 
 	for _, sp := range buildAdapterServicePorts(adapterType, info) {
-		builder.AddTCPPortWithTarget(sp.Name, sp.Port, sp.TargetPort.IntVal)
+		builder.AddPort(sp)
 	}
 
 	if annotations != nil {
@@ -456,13 +471,20 @@ func (r *DittoServerReconciler) reconcileContainerPorts(ctx context.Context, ds 
 			ContainerPort: int32(info.Port),
 			Protocol:      corev1.ProtocolTCP,
 		})
-		// NFS adapter also needs the portmapper container port.
+		// NFS adapter also needs the portmapper container port (TCP + UDP).
 		if isNFSAdapter(adapterType) {
-			dynamicPorts = append(dynamicPorts, corev1.ContainerPort{
-				Name:          portmapperContainerPortName,
-				ContainerPort: portmapperContainerPort,
-				Protocol:      corev1.ProtocolTCP,
-			})
+			dynamicPorts = append(dynamicPorts,
+				corev1.ContainerPort{
+					Name:          portmapperContainerPortName,
+					ContainerPort: portmapperContainerPort,
+					Protocol:      corev1.ProtocolTCP,
+				},
+				corev1.ContainerPort{
+					Name:          portmapperUDPContainerPortName,
+					ContainerPort: portmapperContainerPort,
+					Protocol:      corev1.ProtocolUDP,
+				},
+			)
 		}
 	}
 
