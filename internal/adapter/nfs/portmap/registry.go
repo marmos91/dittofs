@@ -133,11 +133,11 @@ func (r *Registry) Dump() []*xdr.Mapping {
 //
 // Registered services:
 //   - NFS (100003) v3 and v4 on TCP
-//   - MOUNT (100005) v3 on TCP
+//   - MOUNT (100005) v1, v2, and v3 on TCP (v1/v2 for client compatibility)
 //   - NLM (100021) v4 on TCP
 //   - NSM (100024) v1 on TCP
 //
-// This results in 5 mappings total (5 program/version pairs x TCP).
+// This results in 7 mappings total (7 program/version pairs x TCP).
 func (r *Registry) RegisterDittoFSServices(nfsPort int) {
 	port := uint32(nfsPort)
 
@@ -149,6 +149,8 @@ func (r *Registry) RegisterDittoFSServices(nfsPort int) {
 	services := []svc{
 		{100003, 3}, // NFS v3
 		{100003, 4}, // NFS v4
+		{100005, 1}, // MOUNT v1 (client compatibility)
+		{100005, 2}, // MOUNT v2 (client compatibility)
 		{100005, 3}, // MOUNT v3
 		{100021, 4}, // NLM v4
 		{100024, 1}, // NSM v1
