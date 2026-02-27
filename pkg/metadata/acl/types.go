@@ -83,8 +83,18 @@ const (
 	SpecialEveryone = "EVERYONE@"
 )
 
+// Well-known SID special identifiers for Windows interop.
+// The SMB translator converts these to binary SIDs (S-1-5-18 and S-1-5-32-544).
+const (
+	SpecialSystem         = "SYSTEM@"         // NT AUTHORITY\SYSTEM (S-1-5-18)
+	SpecialAdministrators = "ADMINISTRATORS@" // BUILTIN\Administrators (S-1-5-32-544)
+)
+
 // MaxACECount is the maximum number of ACEs per file.
 const MaxACECount = 128
+
+// MaxDACLSize is the maximum DACL size in bytes (64KB Windows default MAX_ACL_SIZE).
+const MaxDACLSize = 65536
 
 // ACE represents a single NFSv4 Access Control Entry.
 type ACE struct {
@@ -94,9 +104,26 @@ type ACE struct {
 	Who        string `json:"who"`         // utf8str_mixed: "user@domain", "OWNER@", etc.
 }
 
+// ACLSource indicates how an ACL was created. The zero value (empty string)
+// means "unknown/legacy" which is backward compatible with existing data.
+type ACLSource string
+
+const (
+	// ACLSourcePOSIXDerived indicates the ACL was synthesized from POSIX mode bits.
+	ACLSourcePOSIXDerived ACLSource = "posix-derived"
+
+	// ACLSourceSMBExplicit indicates the ACL was set explicitly via SMB/CIFS.
+	ACLSourceSMBExplicit ACLSource = "smb-explicit"
+
+	// ACLSourceNFSExplicit indicates the ACL was set explicitly via NFSv4.
+	ACLSourceNFSExplicit ACLSource = "nfs-explicit"
+)
+
 // ACL represents an NFSv4 Access Control List.
 type ACL struct {
-	ACEs []ACE `json:"aces"`
+	ACEs      []ACE     `json:"aces"`
+	Source    ACLSource `json:"source,omitempty"`    // How this ACL was created
+	Protected bool      `json:"protected,omitempty"` // SE_DACL_PROTECTED - blocks inheritance
 }
 
 // IsSpecialWho reports whether who is one of the three special identifiers:
