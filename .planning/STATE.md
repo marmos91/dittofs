@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v4.2
 milestone_name: Windows Compatibility
 status: unknown
-last_updated: "2026-02-27T17:09:01.566Z"
+last_updated: "2026-02-27T17:13:56.404Z"
 progress:
   total_phases: 34
   completed_phases: 32
   total_plans: 114
-  completed_plans: 112
-  percent: 98
+  completed_plans: 113
+  percent: 99
 ---
 
 # Project State
@@ -28,7 +28,7 @@ Plan: 2 of 3 complete
 Status: Executing
 Last activity: 2026-02-27 — Phase 31 Plan 02 complete (POSIX-to-DACL synthesis + ACE flag translation)
 
-**Progress:** [██████████] 98%
+**Progress:** [██████████] 99%
 
 ## Completed Milestones
 
@@ -73,6 +73,7 @@ Last activity: 2026-02-27 — Phase 31 Plan 02 complete (POSIX-to-DACL synthesis
 | 30 | 03 | 6min | 2 | 4 |
 | 30 | 04 | 4min | 2 | 9 |
 | Phase 31 P02 | 3min | 2 tasks | 5 files |
+| Phase 31 P01 | 8min | 2 tasks | 9 files |
 
 ## Quick Tasks Completed
 
@@ -165,6 +166,9 @@ Last activity: 2026-02-27 — Phase 31 Plan 02 complete (POSIX-to-DACL synthesis
 - [Phase 31]: Well-known SIDs use string identifiers (SYSTEM@, ADMINISTRATORS@) that SMB translator converts to binary SIDs
 - [Phase 31]: Owner always gets alwaysGrantedMask (admin rights) even when rwx=0
 - [Phase 31]: Zero-value ACLSource (empty string) means unknown/legacy for backward compat
+- [Phase 31]: Samba-style RID allocation (uid*2+1000, gid*2+1001) prevents user/group SID collisions
+- [Phase 31]: Machine SID persisted in SettingsStore under 'machine_sid' key, initialized in lifecycle before adapters
+- [Phase 31]: Package-level defaultSIDMapper with SetSIDMapper/GetSIDMapper for handler access (no interface changes needed)
 
 ### Pending Todos
 
