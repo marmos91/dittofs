@@ -8,6 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // ============================================================================
@@ -148,11 +149,18 @@ func (h *Handler) Remove(
 	}
 
 	// ========================================================================
-	// Step 3.5: Cross-protocol oplock break before deletion (placeholder)
+	// Step 3.5: Cross-protocol oplock break before deletion
 	// ========================================================================
-	// TODO(plan-03): Wire to LockManager.CheckAndBreakOpLocksForDelete() once
-	// centralized break methods are available (Phase 26 Plan 03).
-	// Previously: metaSvc.CheckAndBreakLeasesForDelete(ctx.Context, childHandle)
+	// Resolve child handle for oplock break. Best-effort: if lookup fails,
+	// proceed with the removal (the store will report the actual error).
+	if breaker := h.getOplockBreaker(); breaker != nil {
+		if childHandle, childErr := metaSvc.GetChild(ctx.Context, dirHandle, req.Filename); childErr == nil {
+			if err := breaker.CheckAndBreakForDelete(ctx.Context, lock.FileHandle(string(childHandle))); err != nil {
+				logger.Debug("NFS REMOVE: oplock break initiated",
+					"handle", childHandle, "result", err)
+			}
+		}
+	}
 
 	// ========================================================================
 	// Step 4: Remove file via store

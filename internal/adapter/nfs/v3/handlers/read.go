@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // ============================================================================
@@ -184,11 +185,15 @@ func (h *Handler) Read(
 	}
 
 	// ========================================================================
-	// Step 3b: Cross-protocol oplock break (placeholder)
+	// Step 3b: Cross-protocol oplock break
 	// ========================================================================
-	// TODO(plan-03): Wire to LockManager.CheckAndBreakOpLocksForRead() once
-	// centralized break methods are available (Phase 26 Plan 03).
-	// Previously: waitForLeaseBreak(ctx.Context, metaSvc, fileHandle, false)
+	// Fire-and-forget: NFS proceeds even if break is pending (per Samba behavior).
+	if breaker := h.getOplockBreaker(); breaker != nil {
+		if err := breaker.CheckAndBreakForRead(ctx.Context, lock.FileHandle(string(fileHandle))); err != nil {
+			logger.Debug("NFS READ: oplock break initiated",
+				"handle", fileHandle, "result", err)
+		}
+	}
 
 	// ========================================================================
 	// Step 3: Check for empty file or invalid offset

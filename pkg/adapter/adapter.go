@@ -5,6 +5,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/auth"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // Adapter represents a protocol-specific server adapter that can be managed by DittoServer.
@@ -97,6 +98,31 @@ type Adapter interface {
 	//
 	// Returns nil if the error cannot be mapped to a protocol-specific error.
 	MapError(err error) ProtocolError
+}
+
+// OplockBreakerProviderKey is the Runtime adapter provider key for the OplockBreaker.
+// Used with Runtime.SetAdapterProvider / GetAdapterProvider to register and retrieve
+// the cross-protocol oplock breaker without import cycles between protocol packages.
+const OplockBreakerProviderKey = "oplock_breaker"
+
+// OplockBreaker provides cross-protocol oplock break coordination.
+// Adapters holding opportunistic locks register an implementation via
+// Runtime.SetAdapterProvider("oplock_breaker", breaker).
+// Other adapters retrieve and call it to trigger breaks before conflicting operations.
+//
+// This generic interface decouples protocol adapters: NFS handlers don't
+// import SMB packages and vice versa. The OplockManager in the SMB adapter
+// satisfies this interface.
+type OplockBreaker interface {
+	// CheckAndBreakForWrite triggers lease break for write-conflicting oplocks.
+	// Returns nil if no break needed, ErrLeaseBreakPending if break initiated.
+	CheckAndBreakForWrite(ctx context.Context, fileHandle lock.FileHandle) error
+
+	// CheckAndBreakForRead triggers lease break for read-conflicting oplocks (Write leases).
+	CheckAndBreakForRead(ctx context.Context, fileHandle lock.FileHandle) error
+
+	// CheckAndBreakForDelete triggers lease break for Handle leases before deletion.
+	CheckAndBreakForDelete(ctx context.Context, fileHandle lock.FileHandle) error
 }
 
 // IdentityMappingAdapter extends Adapter with protocol-specific identity mapping.

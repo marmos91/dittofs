@@ -128,10 +128,15 @@ func (s *Adapter) SetRuntime(rtAny any) {
 	rt := rtAny.(*runtime.Runtime)
 	s.handler.Registry = rt
 
-	// Cross-protocol oplock break registration removed (Phase 26 Plan 04).
-	// TODO(plan-03): Register BreakCallbacks with LockManager once centralized
-	// break methods are available. SMB adapter will implement OnOpLockBreak,
-	// OnByteRangeRevoke, and OnAccessConflict callbacks.
+	// Register OplockManager as the cross-protocol oplock breaker.
+	// This allows NFS handlers to trigger oplock breaks on SMB clients
+	// without importing the SMB handler package.
+	if s.handler != nil && s.handler.OplockManager != nil {
+		rt.SetAdapterProvider(adapter.OplockBreakerProviderKey, s.handler.OplockManager)
+	}
+
+	// Register share change callback for cache invalidation
+	s.handler.RegisterShareChangeCallback()
 
 	logger.Debug("SMB adapter configured with runtime", "shares", rt.CountShares())
 
