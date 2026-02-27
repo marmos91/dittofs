@@ -36,8 +36,11 @@ const (
 
 // Security Descriptor control flags per MS-DTYP Section 2.4.6.
 const (
-	seSelfRelative = 0x8000
-	seDACLPresent  = 0x0004
+	seSelfRelative      = 0x8000
+	seDACLPresent       = 0x0004
+	seSACLPresent       = 0x0010
+	seDACLAutoInherited = 0x0400
+	seDACLProtected     = 0x1000
 )
 
 // ACE type constants for Windows ACEs per MS-DTYP Section 2.4.4.1.
@@ -125,8 +128,12 @@ func GetSIDMapper() *sid.SIDMapper {
 //   - Owner SID from file UID (if OwnerSecurityInformation requested)
 //   - Group SID from file GID (if GroupSecurityInformation requested)
 //   - DACL translated from file ACL (if DACLSecurityInformation requested)
+//   - SACL empty stub (if SACLSecurityInformation requested)
 //
 // If additionalSecInfo is 0, all sections (owner, group, DACL) are included.
+//
+// The binary field ordering follows Windows convention: SACL, DACL, Owner, Group.
+// This matches byte-level comparison expectations in smbtorture and Windows.
 //
 // Parameters:
 //   - file: File metadata containing UID, GID, and ACL
@@ -142,6 +149,7 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 	includeOwner := (additionalSecInfo & OwnerSecurityInformation) != 0
 	includeGroup := (additionalSecInfo & GroupSecurityInformation) != 0
 	includeDACL := (additionalSecInfo & DACLSecurityInformation) != 0
+	includeSACL := (additionalSecInfo & SACLSecurityInformation) != 0
 
 	// Build SIDs using the shared mapper
 	ownerSID := defaultSIDMapper.UserSID(file.UID)
@@ -149,41 +157,66 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 
 	// Build DACL
 	var daclBuf bytes.Buffer
+	var fileACL *acl.ACL
 	if includeDACL {
-		buildDACL(&daclBuf, file)
+		fileACL = buildDACL(&daclBuf, file)
 	}
 
-	// Compute offsets
-	// Header is always 20 bytes
-	var ownerOffset, groupOffset, daclOffset uint32
+	// Build SACL (empty stub if requested)
+	var saclBuf bytes.Buffer
+	if includeSACL {
+		buildEmptySACL(&saclBuf)
+	}
+
+	// Compute SD control flags dynamically
+	control := uint16(seSelfRelative)
+	if includeDACL {
+		control |= seDACLPresent
+	}
+	if includeSACL {
+		control |= seSACLPresent
+	}
+
+	// Check for auto-inherited flag: if any ACE has INHERITED_ACE
+	if fileACL != nil {
+		for _, ace := range fileACL.ACEs {
+			if ace.Flag&acl.ACE4_INHERITED_ACE != 0 {
+				control |= seDACLAutoInherited
+				break
+			}
+		}
+		if fileACL.Protected {
+			control |= seDACLProtected
+		}
+	}
+
+	// Compute offsets following Windows convention: SACL, DACL, Owner, Group
+	var saclOffset, daclOffset, ownerOffset, groupOffset uint32
 	currentOffset := uint32(sdHeaderSize)
+
+	if includeSACL {
+		saclOffset = currentOffset
+		currentOffset += uint32(saclBuf.Len())
+	}
+
+	if includeDACL {
+		daclOffset = currentOffset
+		currentOffset += uint32(daclBuf.Len())
+	}
 
 	if includeOwner {
 		ownerOffset = currentOffset
 		currentOffset += uint32(sid.SIDSize(ownerSID))
-		// Pad to 4-byte boundary
 		currentOffset = alignTo4(currentOffset)
 	}
 
 	if includeGroup {
 		groupOffset = currentOffset
-		currentOffset += uint32(sid.SIDSize(groupSID))
-		currentOffset = alignTo4(currentOffset)
-	}
-
-	if includeDACL {
-		daclOffset = currentOffset
-		// daclBuf already includes the ACL header and all ACEs
+		_ = currentOffset // suppress unused warning
 	}
 
 	// Build the complete Security Descriptor
 	var buf bytes.Buffer
-
-	// Control flags
-	control := uint16(seSelfRelative)
-	if includeDACL {
-		control |= seDACLPresent
-	}
 
 	// Header (20 bytes)
 	buf.WriteByte(1) // Revision
@@ -191,8 +224,20 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 	_ = binary.Write(&buf, binary.LittleEndian, control)
 	_ = binary.Write(&buf, binary.LittleEndian, ownerOffset)
 	_ = binary.Write(&buf, binary.LittleEndian, groupOffset)
-	_ = binary.Write(&buf, binary.LittleEndian, uint32(0)) // OffsetSacl (no SACL)
+	_ = binary.Write(&buf, binary.LittleEndian, saclOffset)
 	_ = binary.Write(&buf, binary.LittleEndian, daclOffset)
+
+	// Body in Windows convention order: SACL, DACL, Owner, Group
+
+	// SACL
+	if includeSACL {
+		buf.Write(saclBuf.Bytes())
+	}
+
+	// DACL
+	if includeDACL {
+		buf.Write(daclBuf.Bytes())
+	}
 
 	// Owner SID
 	if includeOwner {
@@ -206,11 +251,6 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 		padTo4(&buf)
 	}
 
-	// DACL
-	if includeDACL {
-		buf.Write(daclBuf.Bytes())
-	}
-
 	return buf.Bytes(), nil
 }
 
@@ -222,33 +262,53 @@ type windowsACE struct {
 	sid        *sid.SID
 }
 
+// principalToSID maps an NFSv4 ACE principal identifier to a binary SID.
+// Handles special identifiers (OWNER@, GROUP@, EVERYONE@, SYSTEM@,
+// ADMINISTRATORS@) and falls back to SIDMapper.PrincipalToSID for others.
+func principalToSID(who string, fileUID, fileGID uint32) *sid.SID {
+	switch who {
+	case acl.SpecialOwner:
+		return defaultSIDMapper.UserSID(fileUID)
+	case acl.SpecialGroup:
+		return defaultSIDMapper.GroupSID(fileGID)
+	case acl.SpecialEveryone:
+		return sid.WellKnownEveryone
+	case acl.SpecialSystem:
+		return sid.WellKnownSystem
+	case acl.SpecialAdministrators:
+		return sid.WellKnownAdministrators
+	default:
+		return defaultSIDMapper.PrincipalToSID(who, fileUID, fileGID)
+	}
+}
+
 // buildDACL constructs a DACL (Discretionary Access Control List) from the file's ACL.
-// If the file has no ACL, a minimal DACL granting Everyone full access is built.
-func buildDACL(buf *bytes.Buffer, file *metadata.File) {
+// If the file has no ACL, a DACL is synthesized from POSIX mode bits using
+// acl.SynthesizeFromMode. Returns the source ACL used for SD control flag computation.
+func buildDACL(buf *bytes.Buffer, file *metadata.File) *acl.ACL {
 	var aces []windowsACE
+	var fileACL *acl.ACL
 
 	if file.ACL != nil && len(file.ACL.ACEs) > 0 {
-		aces = make([]windowsACE, 0, len(file.ACL.ACEs))
-		for _, ace := range file.ACL.ACEs {
-			aceType, ok := nfsToWindowsACEType(ace.Type)
-			if !ok {
-				continue
-			}
-
-			aces = append(aces, windowsACE{
-				aceType:    aceType,
-				aceFlags:   uint8(ace.Flag & 0xFF),
-				accessMask: ace.AccessMask,
-				sid:        defaultSIDMapper.PrincipalToSID(ace.Who, file.UID, file.GID),
-			})
-		}
+		fileACL = file.ACL
 	} else {
-		// No ACL: build minimal DACL granting Everyone full access
+		// No ACL: synthesize DACL from POSIX mode bits
+		isDir := file.Type == metadata.FileTypeDirectory
+		fileACL = acl.SynthesizeFromMode(file.Mode, file.UID, file.GID, isDir)
+	}
+
+	aces = make([]windowsACE, 0, len(fileACL.ACEs))
+	for _, ace := range fileACL.ACEs {
+		aceType, ok := nfsToWindowsACEType(ace.Type)
+		if !ok {
+			continue
+		}
+
 		aces = append(aces, windowsACE{
-			aceType:    accessAllowedACEType,
-			aceFlags:   0,
-			accessMask: 0x001F01FF, // FILE_ALL_ACCESS
-			sid:        sid.WellKnownEveryone,
+			aceType:    aceType,
+			aceFlags:   acl.NFSv4FlagsToWindowsFlags(ace.Flag),
+			accessMask: ace.AccessMask,
+			sid:        principalToSID(ace.Who, file.UID, file.GID),
 		})
 	}
 
@@ -276,6 +336,18 @@ func buildDACL(buf *bytes.Buffer, file *metadata.File) {
 		_ = binary.Write(buf, binary.LittleEndian, ace.accessMask)
 		sid.EncodeSID(buf, ace.sid)
 	}
+
+	return fileACL
+}
+
+// buildEmptySACL writes a valid empty SACL to buf.
+// The SACL has revision=2, count=0, and total size=8 bytes.
+func buildEmptySACL(buf *bytes.Buffer) {
+	buf.WriteByte(2) // AclRevision
+	buf.WriteByte(0) // Sbz1
+	_ = binary.Write(buf, binary.LittleEndian, uint16(aclHeaderSize)) // AclSize = 8
+	_ = binary.Write(buf, binary.LittleEndian, uint16(0))             // AceCount = 0
+	_ = binary.Write(buf, binary.LittleEndian, uint16(0))             // Sbz2
 }
 
 // ============================================================================
@@ -332,6 +404,7 @@ func ParseSecurityDescriptor(data []byte) (ownerUID *uint32, ownerGID *uint32, f
 }
 
 // parseDACL parses a DACL and returns an NFSv4 ACL.
+// ACLs parsed from SET_INFO are marked with Source: ACLSourceSMBExplicit.
 func parseDACL(data []byte) (*acl.ACL, error) {
 	if len(data) < aclHeaderSize {
 		return nil, fmt.Errorf("DACL too short: %d bytes", len(data))
@@ -383,7 +456,7 @@ func parseDACL(data []byte) (*acl.ACL, error) {
 
 		aces = append(aces, acl.ACE{
 			Type:       nfsACEType,
-			Flag:       uint32(aceFlags),
+			Flag:       acl.WindowsFlagsToNFSv4Flags(aceFlags),
 			AccessMask: accessMask,
 			Who:        who,
 		})
@@ -391,7 +464,10 @@ func parseDACL(data []byte) (*acl.ACL, error) {
 		offset += int(aceSize)
 	}
 
-	return &acl.ACL{ACEs: aces}, nil
+	return &acl.ACL{
+		ACEs:   aces,
+		Source: acl.ACLSourceSMBExplicit,
+	}, nil
 }
 
 // sidToUID extracts a UID from a SID using the default mapper.
