@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v4.2
 milestone_name: Windows Compatibility
 status: unknown
-last_updated: "2026-02-27T17:33:09.426Z"
+last_updated: "2026-02-27T17:38:01.349Z"
 progress:
   total_phases: 34
   completed_phases: 33
