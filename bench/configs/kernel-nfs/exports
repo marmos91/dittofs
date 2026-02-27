@@ -1,0 +1,3 @@
+# Reference only -- the kernel-nfs service uses the NFS_EXPORT_0 environment
+# variable in docker-compose.yml instead of mounting this file.
+/export *(rw,no_subtree_check,no_root_squash,fsid=0)
