@@ -436,8 +436,8 @@ func (h *Handler) buildFileInfoFromStore(file *metadata.File, openFile *OpenFile
 		// FILE_ID_INFORMATION [MS-FSCC] 2.4.46 (24 bytes)
 		// VolumeSerialNumber (8 bytes) + FileId (16 bytes)
 		info := make([]byte, 24)
-		binary.LittleEndian.PutUint64(info[0:8], 0x12345678) // VolumeSerialNumber
-		copy(info[8:24], file.ID[:16])                       // FileId (128-bit)
+		binary.LittleEndian.PutUint64(info[0:8], ntfsVolumeSerialNumber) // VolumeSerialNumber
+		copy(info[8:24], file.ID[:16])                                   // FileId (128-bit)
 		return info, nil
 
 	case types.FileAllInformation:
@@ -503,7 +503,7 @@ func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoC
 		label := encodeUTF16LE("DittoFS")
 		info := make([]byte, 18+len(label))
 		binary.LittleEndian.PutUint64(info[0:8], types.NowFiletime())
-		binary.LittleEndian.PutUint32(info[8:12], 0x12345678) // VolumeSerialNumber
+		binary.LittleEndian.PutUint32(info[8:12], uint32(ntfsVolumeSerialNumber)) // VolumeSerialNumber
 		binary.LittleEndian.PutUint32(info[12:16], uint32(len(label)))
 		// SupportsObjects (1 byte at 16) and Reserved (1 byte at 17) are zero
 		copy(info[18:], label)

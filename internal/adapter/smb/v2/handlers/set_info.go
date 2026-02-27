@@ -262,8 +262,10 @@ func (h *Handler) setFileInfoFromStore(
 			"mtimeFT", fmt.Sprintf("0x%016X", mtimeFT),
 			"ctimeFT", fmt.Sprintf("0x%016X", ctimeFT))
 
-		hasFreezeOrUnfreeze := creationFT == 0xFFFFFFFFFFFFFFFF || creationFT == 0xFFFFFFFFFFFFFFFE ||
-			atimeFT == 0xFFFFFFFFFFFFFFFF || atimeFT == 0xFFFFFFFFFFFFFFFE ||
+		// Note: CreationTime freeze/unfreeze sentinels are detected but not acted upon.
+		// MS-FSA does not require CreationTime auto-update suppression because
+		// CreationTime is never auto-updated by the server after file creation.
+		hasFreezeOrUnfreeze := atimeFT == 0xFFFFFFFFFFFFFFFF || atimeFT == 0xFFFFFFFFFFFFFFFE ||
 			mtimeFT == 0xFFFFFFFFFFFFFFFF || mtimeFT == 0xFFFFFFFFFFFFFFFE ||
 			ctimeFT == 0xFFFFFFFFFFFFFFFF || ctimeFT == 0xFFFFFFFFFFFFFFFE
 

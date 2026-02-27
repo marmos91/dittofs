@@ -538,9 +538,15 @@ func encodeBothDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64) 
 	writeCommonDirFields(entry, 8, f, len(nameBytes))
 	// EaSize (4 bytes at 64)
 	shortNameBytes := generate83ShortName(name)
-	entry[68] = byte(len(shortNameBytes)) // ShortNameLength
+	shortNameLen := len(shortNameBytes)
+	if shortNameLen > 24 {
+		shortNameLen = 24
+	}
+	entry[68] = byte(shortNameLen) // ShortNameLength
 	// Reserved (1 byte at 69)
-	copy(entry[70:94], shortNameBytes) // ShortName (24 bytes max)
+	if shortNameLen > 0 {
+		copy(entry[70:70+shortNameLen], shortNameBytes[:shortNameLen]) // ShortName (24 bytes max)
+	}
 	copy(entry[94:], nameBytes)
 
 	return entry
@@ -581,9 +587,15 @@ func encodeIdBothDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64
 	writeCommonDirFields(entry, 8, f, len(nameBytes))
 	// EaSize (4 bytes at 64)
 	shortNameBytes := generate83ShortName(name)
-	entry[68] = byte(len(shortNameBytes)) // ShortNameLength
+	shortNameLen := len(shortNameBytes)
+	if shortNameLen > 24 {
+		shortNameLen = 24
+	}
+	entry[68] = byte(shortNameLen) // ShortNameLength
 	// Reserved1 (1 byte at 69)
-	copy(entry[70:94], shortNameBytes) // ShortName (24 bytes max)
+	if shortNameLen > 0 {
+		copy(entry[70:70+shortNameLen], shortNameBytes[:shortNameLen]) // ShortName (24 bytes max)
+	}
 	// Reserved2 (2 bytes at 94-95)
 	binary.LittleEndian.PutUint64(entry[96:104], fileID)
 	copy(entry[104:], nameBytes)
@@ -1011,7 +1023,7 @@ func generate83ShortName(name string) []byte {
 
 	// Strip characters invalid in 8.3 names
 	base = strings.Map(func(r rune) rune {
-		if r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' || r == '~' {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '~' {
 			return r
 		}
 		return -1

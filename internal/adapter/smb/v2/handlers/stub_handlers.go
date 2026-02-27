@@ -409,7 +409,7 @@ func (h *Handler) OplockBreak(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 
 // handleGetNtfsVolumeData handles FSCTL_GET_NTFS_VOLUME_DATA [MS-FSCC] 2.3.29.
 // Returns an NTFS_VOLUME_DATA_BUFFER with VolumeSerialNumber matching the value
-// used in FILE_ID_INFORMATION (0x12345678). TotalClusters and BytesPerSector
+// used in FILE_ID_INFORMATION (ntfsVolumeSerialNumber). TotalClusters and BytesPerSector
 // must match FileFsFullSizeInformation values because WPTS tests verify
 // consistency across all three queries.
 func (h *Handler) handleGetNtfsVolumeData(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
@@ -461,7 +461,7 @@ func (h *Handler) handleGetNtfsVolumeData(ctx *SMBHandlerContext, body []byte) (
 	output := make([]byte, ntfsVolumeDataSize)
 
 	// VolumeSerialNumber must match FILE_ID_INFORMATION.VolumeSerialNumber
-	binary.LittleEndian.PutUint64(output[0:8], 0x12345678)
+	binary.LittleEndian.PutUint64(output[0:8], ntfsVolumeSerialNumber)
 	// NumberSectors = TotalClusters * sectorsPerUnit
 	binary.LittleEndian.PutUint64(output[8:16], totalClusters*uint64(sectorsPerUnit))
 	// TotalClusters - MUST match FileFsFullSizeInformation.TotalAllocationUnits
@@ -492,7 +492,7 @@ func (h *Handler) handleGetNtfsVolumeData(ctx *SMBHandlerContext, body []byte) (
 	resp := buildIoctlResponse(FsctlGetNtfsVolumeData, fileID, output)
 
 	logger.Debug("IOCTL FSCTL_GET_NTFS_VOLUME_DATA: success",
-		"volumeSerialNumber", fmt.Sprintf("0x%x", 0x12345678),
+		"volumeSerialNumber", fmt.Sprintf("0x%x", ntfsVolumeSerialNumber),
 		"totalClusters", totalClusters,
 		"bytesPerSector", bps)
 	return NewResult(types.StatusSuccess, resp), nil

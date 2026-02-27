@@ -19,6 +19,11 @@ const (
 	bytesPerSector uint32 = 512
 	sectorsPerUnit uint32 = 8
 	clusterSize           = uint64(sectorsPerUnit) * uint64(bytesPerSector) // 4096
+
+	// ntfsVolumeSerialNumber is the synthetic NTFS volume serial number reported
+	// consistently across FILE_ID_INFORMATION, FSCTL_GET_NTFS_VOLUME_DATA, and
+	// FileFsVolumeInformation responses. WPTS tests verify these values match.
+	ntfsVolumeSerialNumber uint64 = 0x12345678
 )
 
 // calculateAllocationSize returns the size rounded up to the nearest cluster boundary.

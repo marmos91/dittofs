@@ -276,7 +276,8 @@ func CheckIOConflict(existing *FileLock, sessionID uint64, offset, length uint64
 		}
 		// Writes from the same session:
 		// - Exclusive lock holder CAN write to their own locked range
-		// - Shared lock holder CANNOT write (shared = read-only for everyone)
+		// - Non-exclusive (shared) lock holder CANNOT write; shared locks are read-only
+		//   and prevent writes from all sessions, including the holder.
 		return !existing.Exclusive
 	}
 

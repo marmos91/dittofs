@@ -67,7 +67,7 @@ collect_and_parse_results() {
     fi
 
     local trx_file=""
-    trx_file=$(find "${SCRIPT_DIR}/ptfconfig-generated" -name "*.trx" -type f -print0 2>/dev/null | xargs -0 ls -t 2>/dev/null | head -1)
+    trx_file=$(find "${SCRIPT_DIR}/ptfconfig-generated" -name "*.trx" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
 
     if [[ -z "$trx_file" ]]; then
         log_error "No TRX file found in ptfconfig-generated/"
