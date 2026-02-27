@@ -629,25 +629,9 @@ func (h *Handler) handlePipeCreate(ctx *SMBHandlerContext, req *CreateRequest, t
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectNameNotFound}}, nil
 	}
 
-	// Update pipe metaSvc with current shares from registry.
-	// TODO: This is called on every pipe CREATE which is inefficient under high load.
-	// Consider caching the share list and invalidating on share add/remove events.
-	if h.Registry != nil {
-		shareNames := h.Registry.ListShares()
-		shares := make([]rpc.ShareInfo1, 0, len(shareNames))
-		for _, name := range shareNames {
-			// Skip IPC$ virtual share
-			if strings.EqualFold(name, "/ipc$") {
-				continue
-			}
-			// Convert to share info
-			displayName := strings.TrimPrefix(name, "/")
-			shares = append(shares, rpc.ShareInfo1{
-				Name:    displayName,
-				Type:    rpc.STYPE_DISKTREE,
-				Comment: "DittoFS share",
-			})
-		}
+	// Update pipe manager with cached share list.
+	// Cache is invalidated via Runtime.OnShareChange() callback.
+	if shares := h.getCachedShares(); shares != nil {
 		h.PipeManager.SetShares(shares)
 	}
 
@@ -766,7 +750,18 @@ func (h *Handler) walkPath(
 			continue
 		}
 		if part == ".." {
-			// TODO: Handle parent directory navigation
+			// Navigate to parent directory using Lookup which handles ".." natively
+			parentFile, err := metaSvc.Lookup(authCtx, currentHandle, "..")
+			if err != nil {
+				// If parent lookup fails (e.g., at root), stay at current directory
+				logger.Debug("walkPath: parent navigation failed, staying at current",
+					"error", err)
+				continue
+			}
+			currentHandle, err = metadata.EncodeFileHandle(parentFile)
+			if err != nil {
+				return nil, fmt.Errorf("encode parent handle: %w", err)
+			}
 			continue
 		}
 
