@@ -1,14 +1,15 @@
 ---
 gsd_state_version: 1.0
-milestone: v3.6
+milestone: v4.2
 milestone_name: Windows Compatibility
-status: roadmap_created
-last_updated: "2026-02-26T17:30:00.000Z"
+status: unknown
+last_updated: "2026-02-27T13:21:58.766Z"
 progress:
   total_phases: 33
-  completed_phases: 30
-  total_plans: 116
-  completed_plans: 110
+  completed_phases: 32
+  total_plans: 111
+  completed_plans: 111
+  percent: 100
 ---
 
 # Project State
@@ -23,11 +24,11 @@ See: .planning/PROJECT.md (updated 2026-02-26)
 ## Current Position
 
 Phase: 30 (SMB Bug Fixes)
-Plan: Not started (roadmap refined, awaiting execution)
-Status: Roadmap created with 3 phases, 8 plans total (2+3+3)
-Last activity: 2026-02-26 — v3.6 roadmap refined with requirement mappings and success criteria
+Plan: 4 of 4 complete
+Status: Phase 30 complete
+Last activity: 2026-02-27 — Phase 30 Plan 04 complete (cross-protocol oplock break + pipe share cache)
 
-**Progress:** ████████████████████████████████░░░░ 30/33 phases (91%)
+**Progress:** [██████████] 100%
 
 ## Completed Milestones
 
@@ -67,6 +68,10 @@ Last activity: 2026-02-26 — v3.6 roadmap refined with requirement mappings and
 | 29 | 06 | 10min | 2 | 20 |
 | 29 | 07 | 13min | 2 | 11 |
 | 29.4 | 01 | 5min | 3 | 3 |
+| 30 | 01 | 5min | 2 | 4 |
+| 30 | 02 | 6min | 2 | 5 |
+| 30 | 03 | 6min | 2 | 4 |
+| 30 | 04 | 4min | 2 | 9 |
 
 ## Quick Tasks Completed
 
@@ -147,6 +152,15 @@ Last activity: 2026-02-26 — v3.6 roadmap refined with requirement mappings and
 - [Phase 29.4]: [29.4-01] REF-04.5 signing verification co-located in framing.go (not separate signing.go) -- marked SATISFIED with deviation note
 - [Phase 29.4]: [29.4-01] REF-04.6 dispatch split into dispatch.go + response.go -- marked SATISFIED with deviation note
 - [Phase 29.4]: [29.4-01] REF-06.6 txutil intent satisfied via storetest conformance suite (no standalone txutil package)
+- [Phase 30]: [30-01] Zero-fill at downloadBlock level so both NFS and SMB benefit from single sparse fix
+- [Phase 30]: [30-01] Cache miss after successful EnsureAvailable treated as sparse (Go zeroes memory on allocation)
+- [Phase 30]: Memory store must persist File.Path for Move path propagation to work
+- [Phase 30]: Queue-based BFS (iterative) for descendant path updates to avoid stack overflow on deep trees
+- [Phase 30]: [30-03] Used metaSvc.Lookup for '..' resolution (already handles parent via GetParent in store)
+- [Phase 30]: [30-03] Used max() builtin (Go 1.21+) for Nlink minimum-1 fallback
+- [Phase 30]: [30-03] walkPath test uses runtime.New(nil) to avoid payload service initialization overhead
+- [Phase 30]: Fire-and-forget oplock breaks in NFS handlers (per Samba behavior)
+- [Phase 30]: [30-04] Best-effort child handle lookup for oplock break in remove/rename (failure does not block operation)
 
 ### Pending Todos
 
@@ -158,6 +172,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-02-26
-Stopped at: v3.6 roadmap refinement complete (requirements mapped, success criteria defined, plan counts determined)
-Resume file: `/gsd:plan-phase 30` to create execution plans for Phase 30 (SMB Bug Fixes)
+Last session: 2026-02-27
+Stopped at: Completed 30-04-PLAN.md (cross-protocol oplock break + pipe share cache)
+Resume file: Phase 30 complete, continue with Phase 31

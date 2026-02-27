@@ -9,6 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // ============================================================================
@@ -249,12 +250,25 @@ func (h *Handler) Rename(
 	}
 
 	// ========================================================================
-	// Step 4.5: Cross-protocol oplock break on source and destination (placeholder)
+	// Step 4.5: Cross-protocol oplock break on source and destination
 	// ========================================================================
-	// TODO(plan-03): Wire to LockManager.CheckAndBreakOpLocksForDelete() once
-	// centralized break methods are available (Phase 26 Plan 03).
-	// Previously: metaSvc.CheckAndBreakLeasesForDelete(ctx.Context, sourceHandle)
-	//             metaSvc.CheckAndBreakLeasesForDelete(ctx.Context, destHandle)
+	// Break oplocks on source file and (if it exists) destination file.
+	// Best-effort: lookup failures don't block the rename operation.
+	if breaker := h.getOplockBreaker(); breaker != nil {
+		if sourceHandle, srcErr := metaSvc.GetChild(ctx.Context, fromDirHandle, req.FromName); srcErr == nil {
+			if err := breaker.CheckAndBreakForDelete(ctx.Context, lock.FileHandle(string(sourceHandle))); err != nil {
+				logger.Debug("NFS RENAME: oplock break on source initiated",
+					"handle", sourceHandle, "result", err)
+			}
+		}
+		// Also break on destination if it exists (will be replaced)
+		if destHandle, dstErr := metaSvc.GetChild(ctx.Context, toDirHandle, req.ToName); dstErr == nil {
+			if err := breaker.CheckAndBreakForDelete(ctx.Context, lock.FileHandle(string(destHandle))); err != nil {
+				logger.Debug("NFS RENAME: oplock break on destination initiated",
+					"handle", destHandle, "result", err)
+			}
+		}
+	}
 
 	// ========================================================================
 	// Step 5: Perform rename via store

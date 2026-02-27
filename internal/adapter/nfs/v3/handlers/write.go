@@ -8,6 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // ============================================================================
@@ -209,11 +210,16 @@ func (h *Handler) Write(
 	}
 
 	// ========================================================================
-	// Step 5b: Cross-protocol oplock break (placeholder)
+	// Step 5b: Cross-protocol oplock break
 	// ========================================================================
-	// TODO(plan-03): Wire to LockManager.CheckAndBreakOpLocksForWrite() once
-	// centralized break methods are available (Phase 26 Plan 03).
-	// Previously: metaSvc.CheckAndBreakLeasesForWrite(ctx, handle)
+	// Fire-and-forget: per Samba behavior, NFS proceeds even if break is pending.
+	// The break notification is sent to the SMB client asynchronously.
+	if breaker := h.getOplockBreaker(); breaker != nil {
+		if err := breaker.CheckAndBreakForWrite(ctx.Context, lock.FileHandle(string(fileHandle))); err != nil {
+			logger.Debug("NFS WRITE: oplock break initiated",
+				"handle", fileHandle, "result", err)
+		}
+	}
 
 	// ========================================================================
 	// Step 6: Prepare write operation (validate permissions)
@@ -360,7 +366,3 @@ func (h *Handler) buildWriteErrorResponse(
 		AttrAfter:       wccAfter,
 	}
 }
-
-// Cross-protocol oplock break function removed (Phase 26 Plan 04).
-// Will be replaced by LockManager.CheckAndBreakOpLocksFor{Write,Read}()
-// once centralized break methods are available (Phase 26 Plan 03).

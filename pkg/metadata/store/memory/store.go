@@ -27,6 +27,10 @@ type fileData struct {
 	// ShareName tracks which share this file belongs to.
 	// Used to enforce share-level policies (e.g., read-only shares).
 	ShareName string
+
+	// Path stores the full path within the share (e.g., "/documents/report.pdf").
+	// Required for directory rename path propagation.
+	Path string
 }
 
 // deviceNumber stores major and minor device numbers for special files.
@@ -411,7 +415,7 @@ func (store *MemoryMetadataStore) buildFileWithNlink(
 	return &metadata.File{
 		ID:        id,
 		ShareName: shareName,
-		Path:      "", // Memory store doesn't track full paths yet
+		Path:      fileData.Path,
 		FileAttr:  attr,
 	}, nil
 }

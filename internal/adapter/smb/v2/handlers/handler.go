@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"crypto/rand"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -60,6 +61,12 @@ type Handler struct {
 
 	// Signing configuration
 	SigningConfig signing.SigningConfig
+
+	// Cached share list for pipe CREATE operations (IPC$).
+	// Protected by sharesCacheMu. Invalidated via Runtime.OnShareChange().
+	cachedShares     []rpc.ShareInfo1
+	sharesCacheMu    sync.RWMutex
+	sharesCacheValid bool
 
 	// KerberosProvider holds the shared Kerberos keytab/config provider.
 	// When set, the SESSION_SETUP handler supports Kerberos authentication
@@ -559,4 +566,67 @@ func (h *Handler) GetPendingAuth(sessionID uint64) (*PendingAuth, bool) {
 // DeletePendingAuth removes a pending authentication
 func (h *Handler) DeletePendingAuth(sessionID uint64) {
 	h.pendingAuth.Delete(sessionID)
+}
+
+// getCachedShares returns the cached share list, rebuilding if invalidated.
+// Thread-safe via RWMutex (concurrent reads allowed, exclusive write for rebuild).
+func (h *Handler) getCachedShares() []rpc.ShareInfo1 {
+	h.sharesCacheMu.RLock()
+	if h.sharesCacheValid {
+		shares := h.cachedShares
+		h.sharesCacheMu.RUnlock()
+		return shares
+	}
+	h.sharesCacheMu.RUnlock()
+
+	// Rebuild cache under write lock
+	h.sharesCacheMu.Lock()
+	defer h.sharesCacheMu.Unlock()
+
+	// Double-check after acquiring write lock (another goroutine may have rebuilt)
+	if h.sharesCacheValid {
+		return h.cachedShares
+	}
+
+	if h.Registry == nil {
+		return nil
+	}
+
+	shareNames := h.Registry.ListShares()
+	shares := make([]rpc.ShareInfo1, 0, len(shareNames))
+	for _, name := range shareNames {
+		if strings.EqualFold(name, "/ipc$") {
+			continue
+		}
+		displayName := strings.TrimPrefix(name, "/")
+		shares = append(shares, rpc.ShareInfo1{
+			Name:    displayName,
+			Type:    rpc.STYPE_DISKTREE,
+			Comment: "DittoFS share",
+		})
+	}
+
+	h.cachedShares = shares
+	h.sharesCacheValid = true
+
+	return shares
+}
+
+// invalidateShareCache marks the share list cache as stale.
+// Called by the Runtime share change callback.
+func (h *Handler) invalidateShareCache() {
+	h.sharesCacheMu.Lock()
+	h.sharesCacheValid = false
+	h.sharesCacheMu.Unlock()
+}
+
+// RegisterShareChangeCallback subscribes to share change events from the Runtime
+// to invalidate the cached share list used by pipe CREATE operations.
+func (h *Handler) RegisterShareChangeCallback() {
+	if h.Registry == nil {
+		return
+	}
+	h.Registry.OnShareChange(func(_ []string) {
+		h.invalidateShareCache()
+	})
 }

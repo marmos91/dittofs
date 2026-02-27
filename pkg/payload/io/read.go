@@ -197,8 +197,17 @@ func (s *ServiceImpl) readFromCOWSource(ctx context.Context, payloadID, sourcePa
 
 		// Read from source cache (now populated from block store)
 		sourceFound, sourceErr = s.cacheReader.ReadAt(ctx, sourcePayloadID, blockRange.ChunkIndex, chunkOffset, blockRange.Length, dest)
-		if sourceErr != nil || !sourceFound {
-			return fmt.Errorf("COW source data not in cache after download for block %d/%d", blockRange.ChunkIndex, blockRange.BlockIndex)
+		if sourceErr != nil {
+			return fmt.Errorf("COW source read after download for block %d/%d failed: %w", blockRange.ChunkIndex, blockRange.BlockIndex, sourceErr)
+		}
+		if !sourceFound {
+			// Sparse block from COW source - explicitly zero dest since it may
+			// be a sub-slice of the caller's buffer with stale data.
+			clear(dest)
+			logger.Debug("Sparse COW block: returning zeros",
+				"payloadID", sourcePayloadID,
+				"chunk", blockRange.ChunkIndex,
+				"block", blockRange.BlockIndex)
 		}
 	}
 
@@ -220,8 +229,17 @@ func (s *ServiceImpl) ensureAndReadFromCache(ctx context.Context, payloadID stri
 
 	// Now read from cache
 	found, err := s.cacheReader.ReadAt(ctx, payloadID, blockRange.ChunkIndex, chunkOffset, blockRange.Length, dest)
-	if err != nil || !found {
-		return fmt.Errorf("data not in cache after download for block %d/%d", blockRange.ChunkIndex, blockRange.BlockIndex)
+	if err != nil {
+		return fmt.Errorf("read after download for block %d/%d failed: %w", blockRange.ChunkIndex, blockRange.BlockIndex, err)
+	}
+	if !found {
+		// Sparse block: cache did not store the data. Explicitly zero dest
+		// since it may be a sub-slice of the caller's buffer with stale data.
+		clear(dest)
+		logger.Debug("Sparse block: cache miss after download, returning zeros",
+			"payloadID", payloadID,
+			"chunk", blockRange.ChunkIndex,
+			"block", blockRange.BlockIndex)
 	}
 
 	return nil

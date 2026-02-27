@@ -7,6 +7,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/adapter"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -153,6 +154,23 @@ func (h *Handler) buildAuthContextWithWCCError(
 	}
 
 	return authCtx, nil, nil
+}
+
+// getOplockBreaker retrieves the cross-protocol OplockBreaker from the Runtime.
+// Returns nil if no adapter has registered an oplock breaker (e.g., SMB not running).
+func (h *Handler) getOplockBreaker() adapter.OplockBreaker {
+	if h.Registry == nil {
+		return nil
+	}
+	provider := h.Registry.GetAdapterProvider(adapter.OplockBreakerProviderKey)
+	if provider == nil {
+		return nil
+	}
+	breaker, ok := provider.(adapter.OplockBreaker)
+	if !ok {
+		return nil
+	}
+	return breaker
 }
 
 // checkMFsymlinkByHandle checks if a file referenced by handle is an unconverted MFsymlink.

@@ -1,10 +1,15 @@
 package handlers
 
 import (
+	"context"
 	"encoding/binary"
+	"path"
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // =============================================================================
@@ -378,6 +383,196 @@ func TestCreateResponse_Encode(t *testing.T) {
 
 		if data[2] != 0x08 {
 			t.Errorf("OplockLevel = 0x%x, expected 0x08", data[2])
+		}
+	})
+}
+
+// =============================================================================
+// walkPath Tests
+// =============================================================================
+
+// setupWalkPathTest creates a Handler with an in-memory metadata store
+// and a directory hierarchy for walkPath testing.
+// Hierarchy created: root -> a -> b, root -> c
+func setupWalkPathTest(t *testing.T) (*Handler, *metadata.AuthContext, metadata.FileHandle) {
+	t.Helper()
+
+	// Create runtime with nil store (no payload service needed for walkPath tests)
+	rt := runtime.New(nil)
+
+	// Create memory metadata store and register it
+	memStore := memory.NewMemoryMetadataStoreWithDefaults()
+	if err := rt.RegisterMetadataStore("test-meta", memStore); err != nil {
+		t.Fatalf("Failed to register metadata store: %v", err)
+	}
+
+	// Add a share
+	shareName := "/test"
+	shareConfig := &runtime.ShareConfig{
+		Name:          shareName,
+		MetadataStore: "test-meta",
+		RootAttr: &metadata.FileAttr{
+			Type: metadata.FileTypeDirectory,
+			Mode: 0755,
+		},
+	}
+	if err := rt.AddShare(context.Background(), shareConfig); err != nil {
+		t.Fatalf("Failed to add share: %v", err)
+	}
+
+	// Get root handle
+	rootHandle, err := rt.GetRootHandle(shareName)
+	if err != nil {
+		t.Fatalf("Failed to get root handle: %v", err)
+	}
+
+	// Build auth context (root user)
+	uid := uint32(0)
+	gid := uint32(0)
+	authCtx := &metadata.AuthContext{
+		Context: context.Background(),
+		Identity: &metadata.Identity{
+			UID: &uid,
+			GID: &gid,
+		},
+	}
+
+	// Create directory hierarchy: /root/a/b and /root/c
+	metaSvc := rt.GetMetadataService()
+	dirAttr := &metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0755}
+
+	// Create /a
+	dirA, err := metaSvc.CreateDirectory(authCtx, rootHandle, "a", dirAttr)
+	if err != nil {
+		t.Fatalf("Failed to create dir 'a': %v", err)
+	}
+
+	// Create /a/b
+	handleA, err := metadata.EncodeFileHandle(dirA)
+	if err != nil {
+		t.Fatalf("Failed to encode handle for dir 'a': %v", err)
+	}
+	_, err = metaSvc.CreateDirectory(authCtx, handleA, "b", dirAttr)
+	if err != nil {
+		t.Fatalf("Failed to create dir 'b': %v", err)
+	}
+
+	// Create /c
+	_, err = metaSvc.CreateDirectory(authCtx, rootHandle, "c", dirAttr)
+	if err != nil {
+		t.Fatalf("Failed to create dir 'c': %v", err)
+	}
+
+	// Create handler with registry
+	h := NewHandler()
+	h.Registry = rt
+
+	return h, authCtx, rootHandle
+}
+
+func TestWalkPath_ParentNavigation(t *testing.T) {
+	h, authCtx, rootHandle := setupWalkPathTest(t)
+
+	t.Run("resolves a/b/../c to a sibling of a/b", func(t *testing.T) {
+		// Path "a/b/.." should navigate to /a, then the full "a/b/../c" is invalid
+		// because c is at root level, not under a.
+		// But "a/b/../../c" should navigate to /root/c
+		handle, err := h.walkPath(authCtx, rootHandle, "a/b/../../c")
+		if err != nil {
+			t.Fatalf("walkPath('a/b/../../c') failed: %v", err)
+		}
+
+		// Verify we got directory 'c' by looking up a file at that handle
+		metaSvc := h.Registry.GetMetadataService()
+		file, err := metaSvc.GetFile(context.Background(), handle)
+		if err != nil {
+			t.Fatalf("Failed to get file at resolved handle: %v", err)
+		}
+		if path.Base(file.Path) != "c" {
+			t.Errorf("Expected resolved directory name 'c', got %q", path.Base(file.Path))
+		}
+	})
+
+	t.Run("resolves single dotdot at root stays at root", func(t *testing.T) {
+		handle, err := h.walkPath(authCtx, rootHandle, "..")
+		if err != nil {
+			t.Fatalf("walkPath('..') failed: %v", err)
+		}
+
+		// Should return root handle (or equivalent root directory)
+		metaSvc := h.Registry.GetMetadataService()
+		file, err := metaSvc.GetFile(context.Background(), handle)
+		if err != nil {
+			t.Fatalf("Failed to get file at resolved handle: %v", err)
+		}
+		if file.Type != metadata.FileTypeDirectory {
+			t.Error("Expected directory at root")
+		}
+	})
+
+	t.Run("resolves a/../a to directory a", func(t *testing.T) {
+		handle, err := h.walkPath(authCtx, rootHandle, "a/../a")
+		if err != nil {
+			t.Fatalf("walkPath('a/../a') failed: %v", err)
+		}
+
+		metaSvc := h.Registry.GetMetadataService()
+		file, err := metaSvc.GetFile(context.Background(), handle)
+		if err != nil {
+			t.Fatalf("Failed to get file at resolved handle: %v", err)
+		}
+		if path.Base(file.Path) != "a" {
+			t.Errorf("Expected resolved directory name 'a', got %q", path.Base(file.Path))
+		}
+	})
+
+	t.Run("skips dot segments correctly", func(t *testing.T) {
+		handle, err := h.walkPath(authCtx, rootHandle, "a/./b")
+		if err != nil {
+			t.Fatalf("walkPath('a/./b') failed: %v", err)
+		}
+
+		metaSvc := h.Registry.GetMetadataService()
+		file, err := metaSvc.GetFile(context.Background(), handle)
+		if err != nil {
+			t.Fatalf("Failed to get file at resolved handle: %v", err)
+		}
+		if path.Base(file.Path) != "b" {
+			t.Errorf("Expected resolved directory name 'b', got %q", path.Base(file.Path))
+		}
+	})
+
+	t.Run("mixed dot and dotdot segments", func(t *testing.T) {
+		// a/./b/../. should resolve to /a
+		handle, err := h.walkPath(authCtx, rootHandle, "a/./b/../.")
+		if err != nil {
+			t.Fatalf("walkPath('a/./b/../.') failed: %v", err)
+		}
+
+		metaSvc := h.Registry.GetMetadataService()
+		file, err := metaSvc.GetFile(context.Background(), handle)
+		if err != nil {
+			t.Fatalf("Failed to get file at resolved handle: %v", err)
+		}
+		if path.Base(file.Path) != "a" {
+			t.Errorf("Expected resolved directory name 'a', got %q", path.Base(file.Path))
+		}
+	})
+
+	t.Run("multiple dotdot past root stays at root", func(t *testing.T) {
+		handle, err := h.walkPath(authCtx, rootHandle, "../../..")
+		if err != nil {
+			t.Fatalf("walkPath('../../..') failed: %v", err)
+		}
+
+		// Should still be at root
+		metaSvc := h.Registry.GetMetadataService()
+		file, err := metaSvc.GetFile(context.Background(), handle)
+		if err != nil {
+			t.Fatalf("Failed to get file at resolved handle: %v", err)
+		}
+		if file.Type != metadata.FileTypeDirectory {
+			t.Error("Expected directory at root")
 		}
 	})
 }

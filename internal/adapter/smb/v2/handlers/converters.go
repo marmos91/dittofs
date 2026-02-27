@@ -159,7 +159,7 @@ func FileAttrToFileStandardInfo(attr *metadata.FileAttr, isDeletePending bool) *
 	return &FileStandardInfo{
 		AllocationSize: allocationSize,
 		EndOfFile:      size,
-		NumberOfLinks:  1, // TODO: Track actual link count when available
+		NumberOfLinks:  max(attr.Nlink, 1), // Use actual link count, minimum 1 for safety
 		DeletePending:  isDeletePending,
 		Directory:      attr.Type == metadata.FileTypeDirectory,
 	}

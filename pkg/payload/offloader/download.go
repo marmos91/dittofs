@@ -2,9 +2,12 @@ package offloader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/cache"
+	"github.com/marmos91/dittofs/pkg/payload/store"
 )
 
 // waitForDownloads blocks until no downloads are pending.
@@ -30,6 +33,14 @@ func (m *Offloader) downloadBlock(ctx context.Context, payloadID string, chunkId
 
 	data, err := m.blockStore.ReadBlock(ctx, blockKeyStr)
 	if err != nil {
+		if errors.Is(err, store.ErrBlockNotFound) {
+			// Sparse block: block was never written. Return nil without caching
+			// to avoid storing full-size zero blocks in memory. The read path
+			// will zero-fill the caller's dest buffer on cache miss.
+			logger.Debug("Sparse block detected, skipping cache",
+				"block", blockKeyStr)
+			return nil
+		}
 		return fmt.Errorf("download block %s: %w", blockKeyStr, err)
 	}
 

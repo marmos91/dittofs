@@ -7,12 +7,12 @@
 
 ### Bug Fixes
 
-- [ ] **BUG-01**: Sparse file READ returns zeros for unwritten blocks instead of errors (#180)
-- [ ] **BUG-02**: Renamed directory children reflect updated paths in QUERY_DIRECTORY (#181)
-- [ ] **BUG-03**: Multi-component paths with `..` segments navigate to parent directory (#214)
-- [ ] **BUG-04**: NFS v3 operations trigger oplock break for SMB clients holding locks (#213)
-- [ ] **BUG-05**: FileStandardInfo.NumberOfLinks reads actual link count from metadata (#221)
-- [ ] **BUG-06**: Share list cached for pipe CREATE operations, invalidated on change (#223)
+- [x] **BUG-01**: Sparse file READ returns zeros for unwritten blocks instead of errors (#180)
+- [x] **BUG-02**: Renamed directory children reflect updated paths in QUERY_DIRECTORY (#181)
+- [x] **BUG-03**: Multi-component paths with `..` segments navigate to parent directory (#214)
+- [x] **BUG-04**: NFS v3 operations trigger oplock break for SMB clients holding locks (#213)
+- [x] **BUG-05**: FileStandardInfo.NumberOfLinks reads actual link count from metadata (#221)
+- [x] **BUG-06**: Share list cached for pipe CREATE operations, invalidated on change (#223)
 
 ### Security Descriptors
 
@@ -72,12 +72,12 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| BUG-01 | Phase 30 | Pending |
-| BUG-02 | Phase 30 | Pending |
-| BUG-03 | Phase 30 | Pending |
-| BUG-04 | Phase 30 | Pending |
-| BUG-05 | Phase 30 | Pending |
-| BUG-06 | Phase 30 | Pending |
+| BUG-01 | Phase 30 | Complete |
+| BUG-02 | Phase 30 | Complete |
+| BUG-03 | Phase 30 | Complete |
+| BUG-04 | Phase 30 | Complete |
+| BUG-05 | Phase 30 | Complete |
+| BUG-06 | Phase 30 | Complete |
 | SD-01 | Phase 31 | Pending |
 | SD-02 | Phase 31 | Pending |
 | SD-03 | Phase 31 | Pending |
