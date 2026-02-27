@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v4.2
 milestone_name: Windows Compatibility
 status: unknown
-last_updated: "2026-02-27T17:13:56.404Z"
+last_updated: "2026-02-27T17:33:09.426Z"
 progress:
   total_phases: 34
-  completed_phases: 32
+  completed_phases: 33
   total_plans: 114
-  completed_plans: 113
-  percent: 99
+  completed_plans: 114
+  percent: 100
 ---
 
 # Project State
@@ -24,11 +24,11 @@ See: .planning/PROJECT.md (updated 2026-02-26)
 ## Current Position
 
 Phase: 31 (Windows ACL Support)
-Plan: 2 of 3 complete
-Status: Executing
-Last activity: 2026-02-27 — Phase 31 Plan 02 complete (POSIX-to-DACL synthesis + ACE flag translation)
+Plan: 3 of 3 complete
+Status: Complete
+Last activity: 2026-02-27 — Phase 31 Plan 03 complete (SD handlers + lsarpc named pipe)
 
-**Progress:** [██████████] 99%
+**Progress:** [██████████] 100%
 
 ## Completed Milestones
 
@@ -74,6 +74,7 @@ Last activity: 2026-02-27 — Phase 31 Plan 02 complete (POSIX-to-DACL synthesis
 | 30 | 04 | 4min | 2 | 9 |
 | Phase 31 P02 | 3min | 2 tasks | 5 files |
 | Phase 31 P01 | 8min | 2 tasks | 9 files |
+| Phase 31 P03 | 13min | 2 tasks | 5 files |
 
 ## Quick Tasks Completed
 
@@ -169,6 +170,9 @@ Last activity: 2026-02-27 — Phase 31 Plan 02 complete (POSIX-to-DACL synthesis
 - [Phase 31]: Samba-style RID allocation (uid*2+1000, gid*2+1001) prevents user/group SID collisions
 - [Phase 31]: Machine SID persisted in SettingsStore under 'machine_sid' key, initialized in lifecycle before adapters
 - [Phase 31]: Package-level defaultSIDMapper with SetSIDMapper/GetSIDMapper for handler access (no interface changes needed)
+- [Phase 31]: PipeHandler interface with HandleBind/HandleRequest for polymorphic named pipe dispatch
+- [Phase 31]: SD field ordering follows Windows convention (SACL, DACL, Owner, Group) for smbtorture compatibility
+- [Phase 31]: SACL always empty stub (revision=2, count=0) — real SACL requires metadata store changes
 
 ### Pending Todos
 
@@ -181,5 +185,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-27
-Stopped at: Completed 31-02-PLAN.md (POSIX-to-DACL synthesis + ACE flag translation)
-Resume file: Continue with Phase 31 Plan 03
+Stopped at: Completed 31-03-PLAN.md (SD handlers + lsarpc named pipe)
+Resume file: Continue with Phase 32

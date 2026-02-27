@@ -21,9 +21,9 @@
 - [x] **SD-03**: Well-known SIDs included in default DACL (NT AUTHORITY\SYSTEM, BUILTIN\Administrators)
 - [x] **SD-04**: ACE flag translation corrected (NFSv4 INHERITED_ACE 0x80 -> Windows 0x10)
 - [x] **SD-05**: Inheritance flags (CONTAINER_INHERIT, OBJECT_INHERIT) set on directory ACEs
-- [ ] **SD-06**: SE_DACL_AUTO_INHERITED control flag set when ACEs have INHERITED flag
+- [x] **SD-06**: SE_DACL_AUTO_INHERITED control flag set when ACEs have INHERITED flag
 - [x] **SD-07**: SID user/group collision fixed (different RID ranges for users vs groups)
-- [ ] **SD-08**: SACL query returns valid empty SACL structure (not omitted)
+- [x] **SD-08**: SACL query returns valid empty SACL structure (not omitted)
 
 ### Windows 11 Compatibility
 
@@ -83,9 +83,9 @@
 | SD-03 | Phase 31 | Complete |
 | SD-04 | Phase 31 | Complete |
 | SD-05 | Phase 31 | Complete |
-| SD-06 | Phase 31 | Pending |
+| SD-06 | Phase 31 | Complete |
 | SD-07 | Phase 31 | Complete |
-| SD-08 | Phase 31 | Pending |
+| SD-08 | Phase 31 | Complete |
 | WIN-01 | Phase 29.8 | **Complete** |
 | WIN-02 | Phase 32 | Pending |
 | WIN-03 | Phase 32 | Pending |
