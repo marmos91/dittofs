@@ -257,6 +257,7 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 	store.files[key] = &fileData{
 		Attr:      &rootAttrCopy,
 		ShareName: shareName,
+		Path:      "/",
 	}
 
 	// Initialize children map for root directory (empty initially)

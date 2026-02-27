@@ -81,6 +81,7 @@ func (tx *memoryTransaction) PutFile(ctx context.Context, file *metadata.File) e
 	tx.store.files[key] = &fileData{
 		Attr:      &attrCopy,
 		ShareName: file.ShareName,
+		Path:      file.Path,
 	}
 
 	if _, exists := tx.store.linkCounts[key]; !exists {
@@ -531,6 +532,7 @@ func (tx *memoryTransaction) CreateRootDirectory(ctx context.Context, shareName 
 	tx.store.files[key] = &fileData{
 		Attr:      &rootAttrCopy,
 		ShareName: shareName,
+		Path:      "/",
 	}
 
 	// Initialize children map for root directory (empty initially)
