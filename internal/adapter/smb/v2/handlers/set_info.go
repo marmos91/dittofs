@@ -282,7 +282,11 @@ func (h *Handler) setFileInfoFromStore(
 		// value must reflect that auto-updated value, not the pre-change value.
 		var postFile *metadata.File
 		if hasFreezeOrUnfreeze {
-			postFile, _ = metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
+			var err error
+			postFile, err = metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
+			if err != nil {
+				logger.Warn("SET_INFO: failed to read file for freeze/unfreeze", "path", openFile.Path, "error", err)
+			}
 		}
 
 		// Apply freeze/unfreeze state to the open handle

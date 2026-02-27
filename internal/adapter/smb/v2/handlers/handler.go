@@ -137,7 +137,9 @@ type OpenFile struct {
 	// When a client sends SET_INFO with FILETIME -1, the corresponding timestamp
 	// is "frozen" and MUST NOT be auto-updated by subsequent operations (WRITE, etc.).
 	// When a client sends SET_INFO with FILETIME -2, the freeze is lifted.
-	// These flags are per-open-handle state.
+	// Timestamp freeze/unfreeze state per MS-FSA 2.1.5.14.2.
+	// These flags are per-open-handle state and are lost on server restart,
+	// which is correct per the spec (frozen state is tied to the open handle).
 	MtimeFrozen bool       // LastWriteTime frozen (don't auto-update on WRITE)
 	CtimeFrozen bool       // ChangeTime frozen (don't auto-update on WRITE)
 	AtimeFrozen bool       // LastAccessTime frozen (don't auto-update on READ)
@@ -173,7 +175,7 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 		PipeManager:     rpc.NewPipeManager(),
 		OplockManager:   NewOplockManager(),
 		NotifyRegistry:  NewNotifyRegistry(),
-		MaxTransactSize: 1048576, // 1MB
+		MaxTransactSize: 1048576, // 1MB (supports large directory listings; increases per-request memory)
 		MaxReadSize:     1048576, // 1MB
 		MaxWriteSize:    1048576, // 1MB
 		SigningConfig:   signing.DefaultSigningConfig(),

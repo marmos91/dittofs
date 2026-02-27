@@ -543,6 +543,9 @@ func (h *Handler) handleReadFileUsnData(ctx *SMBHandlerContext, body []byte) (*H
 	fileNameBytes := encodeUTF16LE(openFile.FileName)
 	fileAttrs := uint32(FileAttrToSMBAttributes(&file.FileAttr))
 
+	// Note: Usn, TimeStamp, Reason, SourceInfo, SecurityId are stub zeros.
+	// Real NTFS populates these from the USN journal. Sufficient for WPTS conformance
+	// but would need real values if clients rely on USN journal functionality.
 	var output []byte
 	if useV3 {
 		// Build USN_RECORD_V3 [MS-FSCC] 2.4.51.1

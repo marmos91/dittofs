@@ -14,9 +14,9 @@ import (
 // maxDirectoryReadBytes is the maximum number of bytes to request from the
 // metadata store when reading directory entries. This limits memory usage
 // for directories with many entries. 1MB allows listing directories with
-// up to ~5000 entries while preventing excessive memory allocation.
-// The metadata service estimates ~200 bytes per entry, so 1MB handles
-// approximately 5000 entries.
+// approximately 5000 entries (estimated at ~200 bytes per entry average).
+// Actual entry sizes vary with filename length; entries with long filenames
+// will be larger. This is a per-request limit, not a per-connection limit.
 const maxDirectoryReadBytes uint32 = 1048576
 
 // ============================================================================
@@ -844,8 +844,11 @@ func matchDOSWildcard(name, pattern string) bool {
 				}
 				return false
 			}
-			// Try matching at every position up to and INCLUDING the character
-			// after the last dot (consuming the dot itself).
+			// DOS_STAR matches zero or more characters until the last dot, inclusive.
+			// Per MS-FSCC 2.1.4.4: "If the pattern is * (DOS_STAR), consume through
+			// the last dot." We iterate up to dotAbsPos+1 to try the match at each
+			// position from ni through one past the dot (the char after the dot),
+			// which allows the remaining pattern to match the extension.
 			dotAbsPos := ni + lastDot
 			for ni <= dotAbsPos+1 {
 				if matchDOSWildcard(name[ni:], pattern[pi:]) {

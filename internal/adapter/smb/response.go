@@ -63,7 +63,12 @@ func ProcessSingleRequest(
 
 	// Per [MS-SMB2] 3.3.5.16: CANCEL must not send a response.
 	// Handlers return nil result to indicate "no response should be sent".
+	// Only Cancel is expected to return nil; other handlers must always return a result.
 	if result == nil {
+		if reqHeader.Command != types.SMB2Cancel {
+			logger.Warn("Handler returned nil result for non-CANCEL command",
+				"command", cmd.Name, "client", handlerCtx.ClientAddr)
+		}
 		return nil
 	}
 
@@ -312,19 +317,20 @@ func HandleSMB1Negotiate(connInfo *ConnInfo, message []byte) error {
 				break
 			}
 			dialects = dialects[1:]
+			// Find null terminator; if absent the dialect string is malformed so skip it.
 			end := 0
 			for end < len(dialects) && dialects[end] != 0 {
 				end++
 			}
-			if end < len(dialects) {
-				name := string(dialects[:end])
-				if name == "SMB 2.???" {
-					responseDialect = types.SMB2DialectWild
-				}
-				dialects = dialects[end+1:] // skip past null terminator
-			} else {
+			if end >= len(dialects) {
+				// Unterminated dialect string — stop parsing.
 				break
 			}
+			name := string(dialects[:end])
+			if name == "SMB 2.???" {
+				responseDialect = types.SMB2DialectWild
+			}
+			dialects = dialects[end+1:] // skip past null terminator
 		}
 	}
 
