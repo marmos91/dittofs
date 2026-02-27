@@ -62,7 +62,7 @@ func (h *Handler) MountNull(
 		}
 	}
 
-	logger.Info("NULL", "client_ip", clientIP, "auth", ctx.AuthFlavor)
+	logger.Debug("NULL", "client_ip", clientIP, "auth", ctx.AuthFlavor)
 
 	// NULL procedure does nothing - just returns success
 	// Per RFC 1813, this is used for connectivity testing
