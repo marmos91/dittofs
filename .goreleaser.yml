@@ -221,10 +221,10 @@ brews:
   - name: dfs
     ids:
       - dfs-archive
+    directory: Formula
     repository:
       owner: marmos91
       name: homebrew-tap
-      directory: Formula
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     commit_msg_template: "Brew formula update for dfs version {{ .Tag }}"
     commit_author:
@@ -243,10 +243,10 @@ brews:
   - name: dfsctl
     ids:
       - dfsctl-archive
+    directory: Formula
     repository:
       owner: marmos91
       name: homebrew-tap
-      directory: Formula
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     commit_msg_template: "Brew formula update for dfsctl version {{ .Tag }}"
     commit_author:
