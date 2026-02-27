@@ -753,10 +753,7 @@ func (h *Handler) walkPath(
 			// Navigate to parent directory using Lookup which handles ".." natively
 			parentFile, err := metaSvc.Lookup(authCtx, currentHandle, "..")
 			if err != nil {
-				// If parent lookup fails (e.g., at root), stay at current directory
-				logger.Debug("walkPath: parent navigation failed, staying at current",
-					"error", err)
-				continue
+				return nil, fmt.Errorf("walkPath: lookup parent '..': %w", err)
 			}
 			currentHandle, err = metadata.EncodeFileHandle(parentFile)
 			if err != nil {

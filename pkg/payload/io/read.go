@@ -201,7 +201,9 @@ func (s *ServiceImpl) readFromCOWSource(ctx context.Context, payloadID, sourcePa
 			return fmt.Errorf("COW source read after download for block %d/%d failed: %w", blockRange.ChunkIndex, blockRange.BlockIndex, sourceErr)
 		}
 		if !sourceFound {
-			// Sparse block from COW source - zeros already in dest
+			// Sparse block from COW source - explicitly zero dest since it may
+			// be a sub-slice of the caller's buffer with stale data.
+			clear(dest)
 			logger.Debug("Sparse COW block: returning zeros",
 				"payloadID", sourcePayloadID,
 				"chunk", blockRange.ChunkIndex,
@@ -231,8 +233,9 @@ func (s *ServiceImpl) ensureAndReadFromCache(ctx context.Context, payloadID stri
 		return fmt.Errorf("read after download for block %d/%d failed: %w", blockRange.ChunkIndex, blockRange.BlockIndex, err)
 	}
 	if !found {
-		// Sparse block: cache did not store the data. The dest buffer is
-		// already zeroed (Go's make guarantees this), so no explicit fill needed.
+		// Sparse block: cache did not store the data. Explicitly zero dest
+		// since it may be a sub-slice of the caller's buffer with stale data.
+		clear(dest)
 		logger.Debug("Sparse block: cache miss after download, returning zeros",
 			"payloadID", payloadID,
 			"chunk", blockRange.ChunkIndex,

@@ -86,9 +86,10 @@ func newTestOffloader(bs store.BlockStore) (*Offloader, *cache.Cache) {
 // downloadBlock sparse tests
 // ============================================================================
 
-func TestDownloadBlock_SparseBlock_ZeroFills(t *testing.T) {
+func TestDownloadBlock_SparseBlock_SkipsCache(t *testing.T) {
 	// When a block does not exist in the block store (ErrBlockNotFound),
-	// downloadBlock should zero-fill the block and cache it instead of returning an error.
+	// downloadBlock should return nil without caching a zero block,
+	// avoiding unbounded memory growth from sparse file reads.
 	bs := newMockBlockStore()
 	offloader, c := newTestOffloader(bs)
 	defer func() { _ = offloader.Close() }()
@@ -104,21 +105,14 @@ func TestDownloadBlock_SparseBlock_ZeroFills(t *testing.T) {
 		t.Fatalf("downloadBlock should not error on sparse block, got: %v", err)
 	}
 
-	// Verify cached data is zero-filled
+	// Verify sparse block was NOT cached (avoids memory bloat)
 	dest := make([]byte, BlockSize)
 	found, err := c.ReadAt(ctx, payloadID, chunkIdx, 0, BlockSize, dest)
 	if err != nil {
 		t.Fatalf("ReadAt from cache failed: %v", err)
 	}
-	if !found {
-		t.Fatal("Data should be in cache after downloadBlock with sparse block")
-	}
-
-	// Verify all bytes are zero
-	for i := 0; i < len(dest); i++ {
-		if dest[i] != 0 {
-			t.Fatalf("Expected zero at byte %d, got %d", i, dest[i])
-		}
+	if found {
+		t.Fatal("Sparse block should NOT be cached to avoid memory growth")
 	}
 }
 
@@ -251,15 +245,10 @@ func TestEnsureAvailable_SparseBlock_MultipleBlocks(t *testing.T) {
 		t.Fatalf("Block 0 data mismatch: got %d, want %d", dest0[0], 0xAB)
 	}
 
-	// Verify block 1 is zero-filled
+	// Verify block 1 (sparse) was NOT cached
 	dest1 := make([]byte, BlockSize)
 	found, _ = c.ReadAt(ctx, payloadID, 0, BlockSize, BlockSize, dest1)
-	if !found {
-		t.Fatal("Block 1 (sparse) should be in cache as zeros")
-	}
-	for i := 0; i < len(dest1); i++ {
-		if dest1[i] != 0 {
-			t.Fatalf("Block 1 byte %d should be zero, got %d", i, dest1[i])
-		}
+	if found {
+		t.Fatal("Block 1 (sparse) should NOT be cached to avoid memory growth")
 	}
 }

@@ -126,14 +126,18 @@ func TestEnsureAndReadFromCache_SparseBlock_ReturnsNil(t *testing.T) {
 		BufOffset:  0,
 	}
 
-	dest := make([]byte, 1024) // Go zeroes memory on allocation
+	dest := make([]byte, 1024)
+	// Pre-fill with non-zero bytes to verify sparse handling explicitly clears the buffer
+	for i := range dest {
+		dest[i] = 0xFF
+	}
 	err := svc.ensureAndReadFromCache(context.Background(), "test-payload", blockRange, 0, dest)
 	if err != nil {
 		t.Fatalf("ensureAndReadFromCache should not error on sparse block, got: %v", err)
 	}
 
 	// Verify dest is all zeros (sparse data)
-	for i := 0; i < len(dest); i++ {
+	for i := range dest {
 		if dest[i] != 0 {
 			t.Fatalf("Expected zero at byte %d, got %d", i, dest[i])
 		}
@@ -222,6 +226,10 @@ func TestReadAt_SparseBlock_ReturnsZeros(t *testing.T) {
 	svc := New(cr, newMockCacheWriter(), &mockCacheStateManager{}, bd, &mockBlockUploader{})
 
 	data := make([]byte, 1024)
+	// Pre-fill with non-zero bytes to verify sparse handling explicitly clears the buffer
+	for i := range data {
+		data[i] = 0xFF
+	}
 	n, err := svc.ReadAt(context.Background(), metadata.PayloadID("sparse-payload"), data, 0)
 	if err != nil {
 		t.Fatalf("ReadAt should not error on sparse file, got: %v", err)
@@ -231,7 +239,7 @@ func TestReadAt_SparseBlock_ReturnsZeros(t *testing.T) {
 	}
 
 	// Verify all zeros
-	for i := 0; i < len(data); i++ {
+	for i := range data {
 		if data[i] != 0 {
 			t.Fatalf("Expected zero at byte %d, got %d", i, data[i])
 		}
@@ -309,6 +317,10 @@ func TestReadAtWithCOWSource_SparseBlock_ReturnsZeros(t *testing.T) {
 	svc := New(cr, cw, &mockCacheStateManager{}, bd, &mockBlockUploader{})
 
 	data := make([]byte, 1024)
+	// Pre-fill with non-zero bytes to verify sparse handling explicitly clears the buffer
+	for i := range data {
+		data[i] = 0xFF
+	}
 	n, err := svc.ReadAtWithCOWSource(
 		context.Background(),
 		metadata.PayloadID("primary"),
@@ -323,7 +335,7 @@ func TestReadAtWithCOWSource_SparseBlock_ReturnsZeros(t *testing.T) {
 		t.Fatalf("Expected 1024 bytes, got %d", n)
 	}
 
-	for i := 0; i < len(data); i++ {
+	for i := range data {
 		if data[i] != 0 {
 			t.Fatalf("Expected zero at byte %d, got %d", i, data[i])
 		}
