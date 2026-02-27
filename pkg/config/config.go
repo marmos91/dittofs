@@ -383,6 +383,17 @@ func setupViper(v *viper.Viper, configPath string) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 
+	// Explicitly bind env vars for nested struct fields.
+	// Viper's AutomaticEnv + Unmarshal doesn't resolve env vars for nested keys
+	// unless they are explicitly bound or accessed via Get().
+	_ = v.BindEnv("database.postgres.host")
+	_ = v.BindEnv("database.postgres.port")
+	_ = v.BindEnv("database.postgres.database")
+	_ = v.BindEnv("database.postgres.user")
+	_ = v.BindEnv("database.postgres.password")
+	_ = v.BindEnv("database.postgres.sslmode")
+	_ = v.BindEnv("controlplane.secret")
+
 	// Configure config file search
 	if configPath != "" {
 		// Use explicitly specified config file
