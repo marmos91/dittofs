@@ -62,7 +62,7 @@ re_verification: false
 | SD-04       | 31-02       | ACE flag translation corrected (NFSv4 INHERITED_ACE 0x80 -> Windows 0x10)                           | ✓ SATISFIED | `acl.NFSv4FlagsToWindowsFlags()` implements mapping, test `TestBuildSD_FlagTranslation` verifies INHERITED_ACE 0x80 -> 0x10 |
 | SD-05       | 31-02       | Inheritance flags (CONTAINER_INHERIT, OBJECT_INHERIT) set on directory ACEs                          | ✓ SATISFIED | `acl.SynthesizeFromMode()` sets inheritance flags when `isDirectory == true`, tests pass for directory synthesis         |
 | SD-06       | 31-03       | SE_DACL_AUTO_INHERITED control flag set when ACEs have INHERITED flag                                | ✓ SATISFIED | `BuildSecurityDescriptor()` lines 181-187 check for `ACE4_INHERITED_ACE`, test `TestBuildSD_AutoInherited` passes       |
-| SD-07       | 31-01       | SID user/group collision fixed (different RID ranges for users vs groups)                            | ✓ SATISFIED | `SIDMapper.UserSID()` uses RID 1000+uid, `GroupSID()` uses RID 5000000+gid, test `TestSIDMapperNoCollision` passes      |
+| SD-07       | 31-01       | SID user/group collision fixed (different RID ranges for users vs groups)                            | ✓ SATISFIED | `SIDMapper.UserSID()` uses RID uid*2+1000, `GroupSID()` uses RID gid*2+1001 (Samba-style), test `TestSIDMapperNoCollision` passes |
 | SD-08       | 31-03       | SACL query returns valid empty SACL structure (not omitted)                                          | ✓ SATISFIED | `buildEmptySACL()` returns 8-byte structure, test `TestBuildSD_SACL_EmptyStub` verifies revision=2, count=0             |
 
 **All 8 requirements (SD-01 through SD-08) satisfied with implementation evidence.**

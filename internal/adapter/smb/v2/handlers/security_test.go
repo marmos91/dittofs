@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/binary"
+	"os"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/auth/sid"
@@ -14,7 +15,7 @@ func TestMain(m *testing.M) {
 	// Use a fixed machine SID (0,0,0) for deterministic test results.
 	// This matches the default fallback mapper.
 	SetSIDMapper(sid.NewSIDMapper(0, 0, 0))
-	m.Run()
+	os.Exit(m.Run())
 }
 
 func TestBuildSecurityDescriptorWithACL(t *testing.T) {

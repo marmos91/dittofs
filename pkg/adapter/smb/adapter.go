@@ -138,11 +138,15 @@ func (s *Adapter) SetRuntime(rtAny any) {
 	// Register share change callback for cache invalidation
 	s.handler.RegisterShareChangeCallback()
 
-	// Wire the machine SID mapper for security descriptor operations.
-	// The mapper is initialized by the lifecycle service before adapters
-	// are started, so it is guaranteed to be available here.
+	// Wire the machine SID mapper for security descriptor operations and
+	// lsarpc SID-to-name resolution. The mapper is initialized by the
+	// lifecycle service before adapters are started, so it is guaranteed
+	// to be available here.
 	if mapper := rt.SIDMapper(); mapper != nil {
 		handlers.SetSIDMapper(mapper)
+		if s.handler != nil && s.handler.PipeManager != nil {
+			s.handler.PipeManager.SetSIDMapper(mapper)
+		}
 		logger.Debug("SMB adapter: machine SID mapper configured",
 			"sid", mapper.MachineSIDString())
 	}
