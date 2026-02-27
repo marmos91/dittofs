@@ -5,8 +5,22 @@ package rpc
 
 import (
 	"bytes"
+	"strings"
 	"sync"
+
+	"github.com/marmos91/dittofs/pkg/auth/sid"
 )
+
+// =============================================================================
+// Pipe Handler Interface
+// =============================================================================
+
+// PipeHandler is the interface that all named pipe RPC handlers must implement.
+// Both SRVSVCHandler and LSARPCHandler satisfy this interface.
+type PipeHandler interface {
+	HandleBind(req *BindRequest) []byte
+	HandleRequest(req *Request) []byte
+}
 
 // =============================================================================
 // Named Pipe State
@@ -15,14 +29,14 @@ import (
 // PipeState represents the state of a named pipe connection
 type PipeState struct {
 	mu         sync.Mutex
-	Name       string         // Pipe name (e.g., "srvsvc")
-	Bound      bool           // Whether RPC bind has completed
-	Handler    *SRVSVCHandler // RPC handler for this pipe
-	ReadBuffer *bytes.Buffer  // Buffered response data for READ
+	Name       string       // Pipe name (e.g., "srvsvc", "lsarpc")
+	Bound      bool         // Whether RPC bind has completed
+	Handler    PipeHandler  // RPC handler for this pipe
+	ReadBuffer *bytes.Buffer // Buffered response data for READ
 }
 
 // NewPipeState creates a new pipe state
-func NewPipeState(name string, handler *SRVSVCHandler) *PipeState {
+func NewPipeState(name string, handler PipeHandler) *PipeState {
 	return &PipeState{
 		Name:       name,
 		Handler:    handler,
@@ -167,12 +181,13 @@ func (p *PipeState) Transact(inputData []byte, maxOutput int) ([]byte, error) {
 
 // PipeManager manages named pipe instances
 type PipeManager struct {
-	mu     sync.RWMutex
-	pipes  map[[16]byte]*PipeState // Keyed by SMB FileID
-	shares []ShareInfo1            // Available shares for enumeration
+	mu        sync.RWMutex
+	pipes     map[[16]byte]*PipeState // Keyed by SMB FileID
+	shares    []ShareInfo1            // Available shares for enumeration
+	sidMapper *sid.SIDMapper          // For lsarpc SID resolution
 }
 
-// NewPipeManager creates a new pipe metaSvc
+// NewPipeManager creates a new pipe manager
 func NewPipeManager() *PipeManager {
 	return &PipeManager{
 		pipes:  make(map[[16]byte]*PipeState),
@@ -187,18 +202,36 @@ func (pm *PipeManager) SetShares(shares []ShareInfo1) {
 	pm.shares = shares
 }
 
-// CreatePipe creates a new named pipe instance
+// SetSIDMapper sets the SID mapper used by lsarpc pipes for SID resolution.
+func (pm *PipeManager) SetSIDMapper(mapper *sid.SIDMapper) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.sidMapper = mapper
+}
+
+// CreatePipe creates a new named pipe instance.
+// The handler type is determined by the pipe name: "lsarpc" creates an
+// LSARPCHandler, all others create an SRVSVCHandler.
 func (pm *PipeManager) CreatePipe(fileID [16]byte, pipeName string) *PipeState {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
-	// Create a defensive copy of shares to prevent race conditions
-	// if SetShares is called while this handler is active
-	sharesCopy := make([]ShareInfo1, len(pm.shares))
-	copy(sharesCopy, pm.shares)
+	var handler PipeHandler
 
-	// Create handler with copied shares
-	handler := NewSRVSVCHandler(sharesCopy)
+	if isLSARPCPipe(pipeName) {
+		// Create LSA handler for SID-to-name resolution
+		mapper := pm.sidMapper
+		if mapper == nil {
+			mapper = sid.NewSIDMapper(0, 0, 0) // fallback
+		}
+		handler = NewLSARPCHandler(mapper)
+	} else {
+		// Create SRVSVC handler for share enumeration
+		sharesCopy := make([]ShareInfo1, len(pm.shares))
+		copy(sharesCopy, pm.shares)
+		handler = NewSRVSVCHandler(sharesCopy)
+	}
+
 	pipe := NewPipeState(pipeName, handler)
 	pm.pipes[fileID] = pipe
 
@@ -225,7 +258,14 @@ func IsSupportedPipe(name string) bool {
 	switch name {
 	case "srvsvc", "\\srvsvc", "\\pipe\\srvsvc":
 		return true
+	case "lsarpc", "\\lsarpc", "\\pipe\\lsarpc":
+		return true
 	default:
 		return false
 	}
+}
+
+// isLSARPCPipe returns true if the pipe name refers to the lsarpc pipe.
+func isLSARPCPipe(name string) bool {
+	return strings.Contains(name, "lsarpc")
 }
