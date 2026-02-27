@@ -178,11 +178,21 @@ func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 }
 
 // Encode serializes the CreateResponse into SMB2 wire format [MS-SMB2] 2.2.14.
-// Returns an 89-byte response body (no create contexts).
+// The fixed header is 89 bytes. If CreateContexts are present, they are appended
+// and the offset/length fields are set accordingly.
 func (resp *CreateResponse) Encode() ([]byte, error) {
-	// Build response (89 bytes)
-	buf := make([]byte, 89)
-	binary.LittleEndian.PutUint16(buf[0:2], 89)                                          // StructureSize
+	// Encode create contexts if present
+	ctxBuf, _, ctxLength := EncodeCreateContexts(resp.CreateContexts)
+
+	// Pad the fixed header to 8-byte boundary before appending contexts
+	headerSize := 89
+	paddedHeaderSize := headerSize
+	if len(ctxBuf) > 0 {
+		paddedHeaderSize = ((headerSize + 7) / 8) * 8
+	}
+
+	buf := make([]byte, paddedHeaderSize+len(ctxBuf))
+	binary.LittleEndian.PutUint16(buf[0:2], 89)                                          // StructureSize (always 89 per spec)
 	buf[2] = resp.OplockLevel                                                            // OplockLevel
 	buf[3] = resp.Flags                                                                  // Flags
 	binary.LittleEndian.PutUint32(buf[4:8], uint32(resp.CreateAction))                   // CreateAction
@@ -195,8 +205,16 @@ func (resp *CreateResponse) Encode() ([]byte, error) {
 	binary.LittleEndian.PutUint32(buf[56:60], uint32(resp.FileAttributes))               // FileAttributes
 	binary.LittleEndian.PutUint32(buf[60:64], 0)                                         // Reserved2
 	copy(buf[64:80], resp.FileID[:])                                                     // FileId (persistent + volatile)
-	binary.LittleEndian.PutUint32(buf[80:84], 0)                                         // CreateContextsOffset
-	binary.LittleEndian.PutUint32(buf[84:88], 0)                                         // CreateContextsLength
+
+	if len(ctxBuf) > 0 {
+		// Offset from SMB2 header start; override EncodeCreateContexts' fixed assumption
+		binary.LittleEndian.PutUint32(buf[80:84], uint32(64+paddedHeaderSize)) // CreateContextsOffset
+		binary.LittleEndian.PutUint32(buf[84:88], ctxLength)                   // CreateContextsLength
+		copy(buf[paddedHeaderSize:], ctxBuf)
+	} else {
+		binary.LittleEndian.PutUint32(buf[80:84], 0) // CreateContextsOffset
+		binary.LittleEndian.PutUint32(buf[84:88], 0) // CreateContextsLength
+	}
 
 	return buf, nil
 }
@@ -268,6 +286,19 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// Normalize the filename (convert backslashes to forward slashes)
 	filename := strings.ReplaceAll(req.FileName, "\\", "/")
 	filename = strings.TrimPrefix(filename, "/")
+
+	// Strip NTFS stream suffixes. The default data stream (::$DATA) and
+	// directory index (::$INDEX_ALLOCATION) are implicit and should not be
+	// part of the actual filename stored in the metadata store.
+	if idx := strings.Index(filename, ":"); idx >= 0 {
+		streamSuffix := filename[idx:]
+		basePath := filename[:idx]
+		upperSuffix := strings.ToUpper(streamSuffix)
+		if upperSuffix == "::$DATA" || upperSuffix == "::$INDEX_ALLOCATION" {
+			filename = basePath
+		}
+		// Other stream names (alternate data streams) are kept as-is
+	}
 
 	// Get root handle for the share
 	rootHandle, err := h.Registry.GetRootHandle(tree.ShareName)
@@ -499,6 +530,8 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		FileName:     baseName,
 		// Store oplock level
 		OplockLevel: grantedOplock,
+		// Store original create options for FileModeInformation
+		CreateOptions: req.CreateOptions,
 		// Set delete-on-close from create options
 		DeletePending: req.CreateOptions&types.FileDeleteOnClose != 0,
 	}
@@ -538,7 +571,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	creation, access, write, change := FileAttrToSMBTimes(&file.FileAttr)
 	// Use MFsymlink size for symlinks
 	size := getSMBSize(&file.FileAttr)
-	allocationSize := ((size + 4095) / 4096) * 4096
+	allocationSize := calculateAllocationSize(size)
 
 	resp := &CreateResponse{
 		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},

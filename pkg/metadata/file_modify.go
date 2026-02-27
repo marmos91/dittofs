@@ -267,6 +267,16 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		modified = true
 	}
 
+	if attrs.CreationTime != nil {
+		file.CreationTime = *attrs.CreationTime
+		modified = true
+	}
+
+	if attrs.Ctime != nil {
+		file.Ctime = *attrs.Ctime
+		modified = true
+	}
+
 	// Handle ACL setting
 	if attrs.ACL != nil {
 		if err := acl.ValidateACL(attrs.ACL); err != nil {
@@ -280,9 +290,11 @@ func (s *MetadataService) SetFileAttributes(ctx *AuthContext, handle FileHandle,
 		modified = true
 	}
 
-	// Always update ctime when attributes change
+	// Auto-update ctime when attributes change, unless explicitly set
 	if modified {
-		file.Ctime = now
+		if attrs.Ctime == nil {
+			file.Ctime = now
+		}
 		if err := store.PutFile(ctx.Context, file); err != nil {
 			return err
 		}

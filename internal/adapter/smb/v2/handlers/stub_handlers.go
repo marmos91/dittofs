@@ -28,6 +28,8 @@ const (
 	FsctlSrvCopyChunk           uint32 = 0x001440F2 // [MS-SMB2] 2.2.32.1
 	FsctlSrvCopyChunkWrite      uint32 = 0x001480F2 // [MS-SMB2] 2.2.32.1
 	FsctlGetReparsePoint        uint32 = 0x000900A8 // [MS-FSCC] 2.3.30
+	FsctlGetNtfsVolumeData      uint32 = 0x00090064 // [MS-FSCC] 2.3.29 - NTFS volume data
+	FsctlReadFileUsnData        uint32 = 0x000900EB // [MS-FSCC] 2.3.56 - Read file USN data
 )
 
 // Reparse point constants [MS-FSCC] 2.1.2.1
@@ -92,6 +94,18 @@ func (h *Handler) Ioctl(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 		// FSCTL_PIPE_TRANSCEIVE - named pipe transact [MS-FSCC] 2.3.50
 		// Combined write+read for RPC over named pipes
 		return h.handlePipeTransceive(ctx, body)
+
+	case FsctlGetNtfsVolumeData:
+		// FSCTL_GET_NTFS_VOLUME_DATA [MS-FSCC] 2.3.29
+		// Returns NTFS_VOLUME_DATA_BUFFER. Required by WPTS FileIdInformation
+		// tests to verify VolumeSerialNumber matches FILE_ID_INFORMATION.
+		return h.handleGetNtfsVolumeData(ctx, body)
+
+	case FsctlReadFileUsnData:
+		// FSCTL_READ_FILE_USN_DATA [MS-FSCC] 2.3.56
+		// Returns a USN_RECORD_V2 for the file. Required by WPTS FSA tests
+		// as a prerequisite for FileIdInformation and FilePositionInformation queries.
+		return h.handleReadFileUsnData(ctx, body)
 
 	default:
 		logger.Debug("IOCTL unknown control code - not supported",
@@ -391,6 +405,204 @@ func (h *Handler) OplockBreak(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 		"newLevel", req.OplockLevel)
 
 	return NewResult(types.StatusSuccess, respBytes), nil
+}
+
+// handleGetNtfsVolumeData handles FSCTL_GET_NTFS_VOLUME_DATA [MS-FSCC] 2.3.29.
+// Returns an NTFS_VOLUME_DATA_BUFFER with VolumeSerialNumber matching the value
+// used in FILE_ID_INFORMATION (0x12345678). TotalClusters and BytesPerSector
+// must match FileFsFullSizeInformation values because WPTS tests verify
+// consistency across all three queries.
+func (h *Handler) handleGetNtfsVolumeData(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
+	if len(body) < 24 {
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	var fileID [16]byte
+	copy(fileID[:], body[8:24])
+
+	// Get open file to access metadata handle for filesystem stats
+	openFile, ok := h.GetOpenFile(fileID)
+	if !ok {
+		logger.Debug("IOCTL FSCTL_GET_NTFS_VOLUME_DATA: invalid file ID", "fileID", fmt.Sprintf("%x", fileID))
+		return NewErrorResult(types.StatusInvalidHandle), nil
+	}
+
+	// Query filesystem stats so TotalClusters and BytesPerSector match
+	// FileFsFullSizeInformation (WPTS checks consistency between them).
+	metaSvc := h.Registry.GetMetadataService()
+	totalClusters := uint64(1000000)  // fallback matches FileFsFullSizeInformation fallback
+	freeClusters := uint64(500000)    // fallback
+	bps := uint32(bytesPerSector)     // 512 - from converters.go
+	bpc := uint32(clusterSize)        // 4096 - from converters.go
+
+	stats, err := metaSvc.GetFilesystemStatistics(ctx.Context, openFile.MetadataHandle)
+	if err == nil {
+		totalClusters = stats.TotalBytes / clusterSize
+		freeClusters = stats.AvailableBytes / clusterSize
+	}
+
+	// Build NTFS_VOLUME_DATA_BUFFER [MS-FSCC] 2.5.1 (96 bytes)
+	// Layout:
+	//   VolumeSerialNumber          (8 bytes)  offset 0
+	//   NumberSectors               (8 bytes)  offset 8
+	//   TotalClusters               (8 bytes)  offset 16
+	//   FreeClusters                (8 bytes)  offset 24
+	//   TotalReserved               (8 bytes)  offset 32
+	//   BytesPerSector              (4 bytes)  offset 40
+	//   BytesPerCluster             (4 bytes)  offset 44
+	//   BytesPerFileRecordSegment   (4 bytes)  offset 48
+	//   ClustersPerFileRecordSegment(4 bytes)  offset 52
+	//   MftValidDataLength          (8 bytes)  offset 56
+	//   MftStartLcn                 (8 bytes)  offset 64
+	//   Mft2StartLcn                (8 bytes)  offset 72
+	//   MftZoneStart                (8 bytes)  offset 80
+	//   MftZoneEnd                  (8 bytes)  offset 88
+	const ntfsVolumeDataSize = 96
+	output := make([]byte, ntfsVolumeDataSize)
+
+	// VolumeSerialNumber must match FILE_ID_INFORMATION.VolumeSerialNumber
+	binary.LittleEndian.PutUint64(output[0:8], 0x12345678)
+	// NumberSectors = TotalClusters * sectorsPerUnit
+	binary.LittleEndian.PutUint64(output[8:16], totalClusters*uint64(sectorsPerUnit))
+	// TotalClusters - MUST match FileFsFullSizeInformation.TotalAllocationUnits
+	binary.LittleEndian.PutUint64(output[16:24], totalClusters)
+	// FreeClusters
+	binary.LittleEndian.PutUint64(output[24:32], freeClusters)
+	// TotalReserved
+	binary.LittleEndian.PutUint64(output[32:40], 0)
+	// BytesPerSector - MUST match FileFsFullSizeInformation.BytesPerSector
+	binary.LittleEndian.PutUint32(output[40:44], bps)
+	// BytesPerCluster
+	binary.LittleEndian.PutUint32(output[44:48], bpc)
+	// BytesPerFileRecordSegment
+	binary.LittleEndian.PutUint32(output[48:52], 1024)
+	// ClustersPerFileRecordSegment
+	binary.LittleEndian.PutUint32(output[52:56], 0)
+	// MftValidDataLength
+	binary.LittleEndian.PutUint64(output[56:64], 64*1024*1024)
+	// MftStartLcn
+	binary.LittleEndian.PutUint64(output[64:72], 786432)
+	// Mft2StartLcn
+	binary.LittleEndian.PutUint64(output[72:80], 2)
+	// MftZoneStart
+	binary.LittleEndian.PutUint64(output[80:88], 786432)
+	// MftZoneEnd
+	binary.LittleEndian.PutUint64(output[88:96], 819200)
+
+	resp := buildIoctlResponse(FsctlGetNtfsVolumeData, fileID, output)
+
+	logger.Debug("IOCTL FSCTL_GET_NTFS_VOLUME_DATA: success",
+		"volumeSerialNumber", fmt.Sprintf("0x%x", 0x12345678),
+		"totalClusters", totalClusters,
+		"bytesPerSector", bps)
+	return NewResult(types.StatusSuccess, resp), nil
+}
+
+// handleReadFileUsnData handles FSCTL_READ_FILE_USN_DATA [MS-FSCC] 2.3.56.
+// Returns a USN_RECORD for the file. Supports both V2 and V3 formats based on
+// the MaxMajorVersion in the READ_FILE_USN_DATA input buffer.
+// V3 is required by WPTS FSA tests for FileIdInformation validation because
+// only USN_RECORD_V3 contains the 128-bit FILE_ID_128 FileReferenceNumber
+// that matches FILE_ID_INFORMATION's 128-bit FileId.
+func (h *Handler) handleReadFileUsnData(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
+	if len(body) < 24 {
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	var fileID [16]byte
+	copy(fileID[:], body[8:24])
+
+	// Get open file
+	openFile, ok := h.GetOpenFile(fileID)
+	if !ok {
+		logger.Debug("IOCTL READ_FILE_USN_DATA: invalid file ID", "fileID", fmt.Sprintf("%x", fileID))
+		return NewErrorResult(types.StatusInvalidHandle), nil
+	}
+
+	// Get file info for attributes
+	metaSvc := h.Registry.GetMetadataService()
+	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
+	if err != nil {
+		return NewErrorResult(MetadataErrorToSMBStatus(err)), nil
+	}
+
+	// Parse READ_FILE_USN_DATA input to determine requested version.
+	// Input structure [MS-FSCC] 2.3.56:
+	//   MinMajorVersion: WORD (2 bytes)
+	//   MaxMajorVersion: WORD (2 bytes)
+	// The input is in the IOCTL buffer portion (offset 56 from body start).
+	inputCount := binary.LittleEndian.Uint32(body[28:32])
+	maxMajorVersion := uint16(2) // Default to V2
+	if inputCount >= 4 && len(body) >= 60 {
+		// MinMajorVersion at buffer offset 56, MaxMajorVersion at offset 58
+		maxMajorVersion = binary.LittleEndian.Uint16(body[58:60])
+	}
+
+	useV3 := maxMajorVersion >= 3
+
+	fileNameBytes := encodeUTF16LE(openFile.FileName)
+	fileAttrs := uint32(FileAttrToSMBAttributes(&file.FileAttr))
+
+	var output []byte
+	if useV3 {
+		// Build USN_RECORD_V3 [MS-FSCC] 2.4.51.1
+		// V3 uses FILE_ID_128 (16 bytes) for FileReferenceNumber and ParentFileReferenceNumber.
+		// Layout:
+		//   RecordLength (4) + MajorVersion (2) + MinorVersion (2) +
+		//   FileReferenceNumber (16) + ParentFileReferenceNumber (16) +
+		//   Usn (8) + TimeStamp (8) + Reason (4) + SourceInfo (4) +
+		//   SecurityId (4) + FileAttributes (4) + FileNameLength (2) +
+		//   FileNameOffset (2) + FileName (variable) = 76 + FileName
+		const v3FixedSize = 76
+		recordLen := v3FixedSize + len(fileNameBytes)
+		// Pad to 8-byte boundary per MS-FSCC
+		recordLen = (recordLen + 7) &^ 7
+
+		output = make([]byte, recordLen)
+		binary.LittleEndian.PutUint32(output[0:4], uint32(recordLen)) // RecordLength
+		binary.LittleEndian.PutUint16(output[4:6], 3)                // MajorVersion = 3
+		binary.LittleEndian.PutUint16(output[6:8], 0)                // MinorVersion = 0
+		copy(output[8:24], file.ID[:16])                             // FileReferenceNumber (FILE_ID_128)
+		// ParentFileReferenceNumber (FILE_ID_128) at offset 24-39 = zeros
+		// Usn (8 bytes) at offset 40-47 = 0
+		// TimeStamp (8 bytes) at offset 48-55 = 0
+		// Reason (4 bytes) at offset 56-59 = 0
+		// SourceInfo (4 bytes) at offset 60-63 = 0
+		// SecurityId (4 bytes) at offset 64-67 = 0
+		binary.LittleEndian.PutUint32(output[68:72], fileAttrs)                  // FileAttributes
+		binary.LittleEndian.PutUint16(output[72:74], uint16(len(fileNameBytes))) // FileNameLength
+		binary.LittleEndian.PutUint16(output[74:76], v3FixedSize)               // FileNameOffset
+		copy(output[v3FixedSize:], fileNameBytes)
+	} else {
+		// Build USN_RECORD_V2 [MS-FSCC] 2.4.51
+		const v2FixedSize = 60
+		recordLen := v2FixedSize + len(fileNameBytes)
+		// Pad to 8-byte boundary per MS-FSCC
+		recordLen = (recordLen + 7) &^ 7
+
+		output = make([]byte, recordLen)
+		binary.LittleEndian.PutUint32(output[0:4], uint32(recordLen))                        // RecordLength
+		binary.LittleEndian.PutUint16(output[4:6], 2)                                        // MajorVersion = 2
+		binary.LittleEndian.PutUint16(output[6:8], 0)                                        // MinorVersion = 0
+		binary.LittleEndian.PutUint64(output[8:16], binary.LittleEndian.Uint64(file.ID[:8])) // FileReferenceNumber
+		binary.LittleEndian.PutUint64(output[16:24], 0)                                      // ParentFileReferenceNumber
+		binary.LittleEndian.PutUint64(output[24:32], 0)                                      // Usn
+		binary.LittleEndian.PutUint64(output[32:40], 0)                                      // TimeStamp
+		binary.LittleEndian.PutUint32(output[40:44], 0)                                      // Reason
+		binary.LittleEndian.PutUint32(output[44:48], 0)                                      // SourceInfo
+		binary.LittleEndian.PutUint32(output[48:52], 0)                                      // SecurityId
+		binary.LittleEndian.PutUint32(output[52:56], fileAttrs)                               // FileAttributes
+		binary.LittleEndian.PutUint16(output[56:58], uint16(len(fileNameBytes)))              // FileNameLength
+		binary.LittleEndian.PutUint16(output[58:60], v2FixedSize)                             // FileNameOffset
+		copy(output[v2FixedSize:], fileNameBytes)
+	}
+
+	resp := buildIoctlResponse(FsctlReadFileUsnData, fileID, output)
+
+	logger.Debug("IOCTL READ_FILE_USN_DATA: success",
+		"path", openFile.Path,
+		"version", map[bool]int{true: 3, false: 2}[useV3])
+	return NewResult(types.StatusSuccess, resp), nil
 }
 
 // handlePipeTransceive handles FSCTL_PIPE_TRANSCEIVE for RPC over named pipes

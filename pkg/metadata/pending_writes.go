@@ -202,6 +202,26 @@ func (t *PendingWritesTracker) Count() int {
 	return len(t.pending)
 }
 
+// UpdatePendingMtime updates the LastMtime in the pending state for a handle.
+// This is used by frozen timestamp support: when a SET_INFO(-1) freezes Mtime,
+// the pending state's LastMtime must be updated to the frozen value so that
+// MetadataService.GetFile() merge returns the frozen value instead of the
+// original write timestamp.
+// Returns true if the pending state was updated, false if no pending state exists.
+func (t *PendingWritesTracker) UpdatePendingMtime(handle FileHandle, mtime time.Time) bool {
+	key := handleKey(handle)
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	state, exists := t.pending[key]
+	if !exists {
+		return false
+	}
+	state.LastMtime = mtime
+	return true
+}
+
 // InvalidateCache removes the cached file metadata for a handle.
 // This should be called when file attributes change (e.g., via SETATTR)
 // to ensure subsequent writes use fresh attributes from the store.
