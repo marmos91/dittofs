@@ -50,7 +50,7 @@ func checkMountPrivileges(mountPoint, protocol, sharePath string) error {
 	return nil
 }
 
-func mountNFS(sharePath, mountPoint string, adapters []apiclient.Adapter) error {
+func mountNFS(sharePath, mountPoint string, adapters []apiclient.Adapter, serverHost string) error {
 	port := getAdapterPort(adapters, "nfs", defaultNFSPort)
 
 	// The Windows NFS mount command does NOT support specifying a custom port via -o options.
@@ -85,7 +85,7 @@ To enable it:
 Alternatively, install via PowerShell (run as Administrator):
   Enable-WindowsOptionalFeature -FeatureName ServicesForNFS-ClientOnly -Online`)
 
-	source := fmt.Sprintf("\\\\localhost%s", strings.ReplaceAll(sharePath, "/", "\\"))
+	source := fmt.Sprintf("\\\\%s%s", serverHost, strings.ReplaceAll(sharePath, "/", "\\"))
 	cmd := exec.Command("mount",
 		"-o", "mtype=hard,nolock",
 		source,
@@ -101,7 +101,7 @@ Alternatively, install via PowerShell (run as Administrator):
 	return nil
 }
 
-func mountSMB(sharePath, mountPoint string, adapters []apiclient.Adapter) error {
+func mountSMB(sharePath, mountPoint string, adapters []apiclient.Adapter, serverHost string) error {
 	// On Windows, 'net use' requires a drive letter (e.g., Z:) as the local device name.
 	if !(len(mountPoint) == 2 && mountPoint[1] == ':' &&
 		((mountPoint[0] >= 'A' && mountPoint[0] <= 'Z') || (mountPoint[0] >= 'a' && mountPoint[0] <= 'z'))) {
@@ -121,7 +121,7 @@ func mountSMB(sharePath, mountPoint string, adapters []apiclient.Adapter) error 
 	}
 
 	shareName := strings.TrimPrefix(sharePath, "/")
-	uncPath := fmt.Sprintf("\\\\localhost\\%s", shareName)
+	uncPath := fmt.Sprintf("\\\\%s\\%s", serverHost, shareName)
 
 	args := []string{"use", mountPoint, uncPath, fmt.Sprintf("/user:%s", username), password}
 

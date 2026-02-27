@@ -95,7 +95,7 @@ func TestMountNFS_RejectsNonStandardPort(t *testing.T) {
 		{Type: "nfs", Port: 12049, Enabled: true},
 	}
 
-	err := mountNFS("/export", "Z:", adapters)
+	err := mountNFS("/export", "Z:", adapters, "localhost")
 	if err == nil {
 		t.Fatal("mountNFS() expected error for non-standard port, got nil")
 	}
@@ -116,7 +116,7 @@ func TestMountNFS_AcceptsStandardPort(t *testing.T) {
 		{Type: "nfs", Port: 2049, Enabled: true},
 	}
 
-	err := mountNFS("/export", "Z:", adapters)
+	err := mountNFS("/export", "Z:", adapters, "localhost")
 	// The mount will likely fail because there is no NFS server running,
 	// but the error should NOT be about port validation.
 	if err != nil {

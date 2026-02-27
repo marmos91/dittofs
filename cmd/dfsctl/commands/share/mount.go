@@ -2,6 +2,7 @@ package share
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -114,11 +115,14 @@ func runMount(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to list adapters: %w\nHint: Is the DittoFS server running?", err)
 	}
 
+	// Resolve server host from current context
+	serverHost := resolveServerHost()
+
 	switch protocol {
 	case "nfs":
-		return mountNFS(sharePath, mountPoint, adapters)
+		return mountNFS(sharePath, mountPoint, adapters, serverHost)
 	default:
-		return mountSMB(sharePath, mountPoint, adapters)
+		return mountSMB(sharePath, mountPoint, adapters, serverHost)
 	}
 }
 
@@ -162,6 +166,31 @@ func resolveSMBPassword(username string) (string, error) {
 		return "", cmdutil.HandleAbort(err)
 	}
 	return password, nil
+}
+
+// resolveServerHost extracts the hostname from the current context's server URL.
+// Falls back to "localhost" if no context is available.
+func resolveServerHost() string {
+	store, err := credentials.NewStore()
+	if err != nil {
+		return "localhost"
+	}
+
+	ctx, err := store.GetCurrentContext()
+	if err != nil {
+		return "localhost"
+	}
+
+	parsed, err := url.Parse(ctx.ServerURL)
+	if err != nil {
+		return "localhost"
+	}
+
+	if host := parsed.Hostname(); host != "" {
+		return host
+	}
+
+	return "localhost"
 }
 
 func formatMountError(err error, output, protocol string, port int) error {
