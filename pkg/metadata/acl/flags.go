@@ -38,8 +38,8 @@ func NFSv4FlagsToWindowsFlags(nfsFlags uint32) uint8 {
 //
 // Bit mapping:
 //
-//	Windows 0x01 (CI)        -> NFSv4 0x01 (FILE_INHERIT_ACE)
-//	Windows 0x02 (OI)        -> NFSv4 0x02 (DIRECTORY_INHERIT_ACE)
+//	Windows 0x01 (OI)        -> NFSv4 0x01 (FILE_INHERIT_ACE)
+//	Windows 0x02 (CI)        -> NFSv4 0x02 (DIRECTORY_INHERIT_ACE)
 //	Windows 0x04 (NP)        -> NFSv4 0x04 (NO_PROPAGATE_INHERIT_ACE)
 //	Windows 0x08 (IO)        -> NFSv4 0x08 (INHERIT_ONLY_ACE)
 //	Windows 0x10 (INHERITED) -> NFSv4 0x80 (INHERITED_ACE)
