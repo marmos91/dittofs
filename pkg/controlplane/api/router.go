@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -318,11 +319,17 @@ func newGraceHandler(rt *runtime.Runtime) *handlers.GraceHandler {
 	return handlers.NewGraceHandlerFromProvider(rt.NFSClientProvider())
 }
 
+// isHealthPath returns true if the request path is a healthcheck endpoint.
+func isHealthPath(path string) bool {
+	return path == "/health" || strings.HasPrefix(path, "/health/")
+}
+
 // requestLogger is a custom middleware that logs requests using the internal logger.
 //
 // It logs:
 //   - Request start (DEBUG level): method, path, remote addr
 //   - Request completion (INFO level): method, path, status, duration
+//   - Healthcheck requests are logged at DEBUG level to reduce noise
 func requestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -342,13 +349,20 @@ func requestLogger(next http.Handler) http.Handler {
 
 		duration := time.Since(start)
 
-		logger.Info("API request completed",
+		logArgs := []any{
 			"request_id", requestID,
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", ww.Status(),
 			"bytes", ww.BytesWritten(),
 			"duration", duration.String(),
-		)
+		}
+
+		// Log healthcheck requests at DEBUG to avoid polluting logs in k8s
+		if isHealthPath(r.URL.Path) {
+			logger.Debug("API request completed", logArgs...)
+		} else {
+			logger.Info("API request completed", logArgs...)
+		}
 	})
 }
