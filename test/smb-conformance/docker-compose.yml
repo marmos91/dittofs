@@ -18,7 +18,7 @@ services:
       context: ../..
       dockerfile: test/smb-conformance/Dockerfile.dittofs
     ports:
-      - "12445:12445"
+      - "12445:445"
       - "8080:8080"
     volumes:
       - ./configs/${PROFILE:-memory}.yaml:/config/config.yaml:ro

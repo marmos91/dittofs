@@ -67,7 +67,7 @@ collect_and_parse_results() {
     fi
 
     local trx_file=""
-    trx_file=$(find "${SCRIPT_DIR}/ptfconfig-generated" -name "*.trx" -type f 2>/dev/null | head -1)
+    trx_file=$(find "${SCRIPT_DIR}/ptfconfig-generated" -name "*.trx" -type f -print0 2>/dev/null | xargs -0 ls -t 2>/dev/null | head -1)
 
     if [[ -z "$trx_file" ]]; then
         log_error "No TRX file found in ptfconfig-generated/"
@@ -209,7 +209,7 @@ validate_mode
 # ptfconfig template rendering
 # --------------------------------------------------------------------------
 export DITTOFS_HOST="localhost"
-export SMB_PORT="12445"
+export SMB_PORT="445"
 export CLIENT_IP="127.0.0.1"
 export ADMIN_USER="wpts-admin"
 export TEST_USER="nonadmin"
@@ -220,6 +220,9 @@ render_ptfconfig() {
 
     local out_dir="${SCRIPT_DIR}/ptfconfig-generated"
     mkdir -p "$out_dir"
+
+    # Clean stale TRX results from previous runs
+    rm -rf "${out_dir}/TestResults"
 
     for tmpl in "${SCRIPT_DIR}"/ptfconfig/*.template; do
         [[ -f "$tmpl" ]] || continue

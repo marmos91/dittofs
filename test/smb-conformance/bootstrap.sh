@@ -140,9 +140,11 @@ main() {
     create_payload_store
 
     # Create WPTS-required shares
+    # FileShare is the default share name WPTS tests use for TREE_CONNECT
     log_info "Creating WPTS shares..."
-    $DFSCTL share create --name /SMBBasic --metadata default --payload default
-    $DFSCTL share create --name /SMBEncrypted --metadata default --payload default
+    $DFSCTL share create --name /smbbasic --metadata default --payload default
+    $DFSCTL share create --name /smbencrypted --metadata default --payload default
+    $DFSCTL share create --name /fileshare --metadata default --payload default
 
     # Create test users
     log_info "Creating test users..."
@@ -156,7 +158,7 @@ main() {
     # Wait for SMB adapter to start
     wait_for_smb localhost
 
-    log_info "Bootstrap complete: shares=SMBBasic,SMBEncrypted users=wpts-admin,nonadmin adapter=smb:${SMB_PORT}"
+    log_info "Bootstrap complete: shares=smbbasic,smbencrypted,fileshare users=wpts-admin,nonadmin adapter=smb:${SMB_PORT}"
 }
 
 main "$@"

@@ -83,6 +83,9 @@ fi
 # --------------------------------------------------------------------------
 declare -A KNOWN_FAILURES
 declare -A KNOWN_REASONS
+# Workaround: bash set -u treats empty associative arrays as unbound
+KNOWN_FAILURES[_]="" ; unset 'KNOWN_FAILURES[_]'
+KNOWN_REASONS[_]=""  ; unset 'KNOWN_REASONS[_]'
 
 if [[ -f "$KNOWN_FAILURES_FILE" ]]; then
     while IFS= read -r line; do
