@@ -21,7 +21,7 @@
     }:
     let
       # Version configuration - update this for releases
-      version = "0.6.2";
+      version = "0.7.1";
     in
     flake-utils.lib.eachDefaultSystem (
       system:
