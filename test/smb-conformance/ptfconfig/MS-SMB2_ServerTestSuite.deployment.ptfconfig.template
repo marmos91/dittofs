@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <TestSite xmlns="http://schemas.microsoft.com/windows/ProtocolsTest/2007/07/TestConfig"
-          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://schemas.microsoft.com/windows/ProtocolsTest/2007/07/TestConfig http://schemas.microsoft.com/windows/ProtocolsTest/2007/07/TestConfig">
 
   <!-- Include the common test suite configuration -->
   <Include>
@@ -8,31 +9,38 @@
   </Include>
 
   <Properties>
-    <!-- ============================================================== -->
-    <!-- MS-SMB2 Server Test Suite Specific Properties                   -->
-    <!-- These override or extend CommonTestSuite properties as needed.  -->
-    <!-- ============================================================== -->
+    <Group name="SMB2">
+      <!-- ============================================================== -->
+      <!-- MS-SMB2 Server Test Suite Specific Properties                   -->
+      <!-- ============================================================== -->
 
-    <!-- SMB2-specific share configuration -->
-    <Property name="ShareFolder1" value="SMBBasic">
-      <Description>Primary share folder for SMB2 tests.</Description>
-    </Property>
-    <Property name="ShareFolder2" value="SMBEncrypted">
-      <Description>Secondary share folder for SMB2 tests.</Description>
-    </Property>
+      <!-- Share configuration -->
+      <Property name="ShareFolder1" value="SMBBasic">
+        <Description>Primary share folder for SMB2 tests.</Description>
+      </Property>
+      <Property name="ShareFolder2" value="SMBEncrypted">
+        <Description>Secondary share folder for SMB2 tests.</Description>
+      </Property>
+      <Property name="SharePath" value="\\\\${DITTOFS_HOST}\\SMBBasic">
+        <Description>UNC path to the basic share.</Description>
+      </Property>
+      <Property name="SutAlternativeIPAddress" value="">
+        <Description>Alternative IP address of the SUT (empty for single NIC).</Description>
+      </Property>
 
-    <!-- Timeouts for SMB2 operations -->
-    <Property name="WaitTimeoutInMilliseconds" value="10000">
-      <Description>Default timeout for waiting on SMB2 operations.</Description>
-    </Property>
-    <Property name="NegotiateDialectRevisionsTimeout" value="10000">
-      <Description>Timeout for negotiate dialect revision operations.</Description>
-    </Property>
+      <!-- Timeouts for SMB2 operations -->
+      <Property name="WaitTimeoutInMilliseconds" value="10000">
+        <Description>Default timeout for waiting on SMB2 operations.</Description>
+      </Property>
+      <Property name="NegotiateDialectRevisionsTimeout" value="10000">
+        <Description>Timeout for negotiate dialect revision operations.</Description>
+      </Property>
 
-    <!-- SMB2 dialect settings -->
-    <Property name="DialectsToTestAgainst" value="Smb21">
-      <Description>SMB dialects to test against (matches DittoFS capabilities).</Description>
-    </Property>
+      <!-- SMB2 dialect settings -->
+      <Property name="DialectsToTestAgainst" value="Smb21">
+        <Description>SMB dialects to test against (matches DittoFS capabilities).</Description>
+      </Property>
+    </Group>
   </Properties>
 
 </TestSite>
