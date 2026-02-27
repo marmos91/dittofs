@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/auth/sid"
 )
 
 const DefaultShutdownTimeout = 30 * time.Second
@@ -37,12 +38,25 @@ type StoreCloser interface {
 	CloseMetadataStores()
 }
 
+// MachineSIDStore provides access to the SettingsStore for machine SID
+// persistence. The lifecycle service uses this to load or generate the
+// machine SID on first boot, ensuring consistent identity mapping across
+// restarts.
+type MachineSIDStore interface {
+	GetSetting(ctx context.Context, key string) (string, error)
+	SetSetting(ctx context.Context, key, value string) error
+}
+
 // Service orchestrates server startup and graceful shutdown.
 type Service struct {
 	shutdownTimeout time.Duration
 	apiServer       AuxiliaryServer
 	serveOnce       sync.Once
 	served          bool
+
+	// sidMapper is the machine SID mapper, initialized on first Serve().
+	// It is exposed via SIDMapper() for adapters to use.
+	sidMapper *sid.SIDMapper
 }
 
 func New(shutdownTimeout time.Duration) *Service {
@@ -61,6 +75,56 @@ func (s *Service) SetShutdownTimeout(d time.Duration) {
 	s.shutdownTimeout = d
 }
 
+// SIDMapper returns the machine SID mapper initialized during Serve().
+// Returns nil if Serve() has not been called yet.
+func (s *Service) SIDMapper() *sid.SIDMapper {
+	return s.sidMapper
+}
+
+// initMachineSID loads or generates the machine SID from the settings store.
+// On first boot (no stored SID), a new random SID is generated and persisted.
+// On subsequent boots, the stored SID is loaded to ensure consistent mapping.
+// This MUST be called before any adapters are started.
+func (s *Service) initMachineSID(ctx context.Context, store MachineSIDStore) {
+	if store == nil {
+		logger.Warn("No settings store available, generating ephemeral machine SID")
+		s.sidMapper = sid.GenerateMachineSID()
+		logger.Info("Generated ephemeral machine SID", "sid", s.sidMapper.MachineSIDString())
+		return
+	}
+
+	const machineSIDKey = "machine_sid"
+
+	stored, err := store.GetSetting(ctx, machineSIDKey)
+	if err != nil {
+		logger.Warn("Failed to read machine SID from store, generating new one", "error", err)
+		stored = ""
+	}
+
+	if stored != "" {
+		// Load existing machine SID
+		mapper, err := sid.NewSIDMapperFromString(stored)
+		if err != nil {
+			logger.Error("Invalid stored machine SID, generating new one",
+				"stored", stored, "error", err)
+		} else {
+			s.sidMapper = mapper
+			logger.Info("Loaded machine SID from store", "sid", stored)
+			return
+		}
+	}
+
+	// First boot: generate and persist
+	s.sidMapper = sid.GenerateMachineSID()
+	sidStr := s.sidMapper.MachineSIDString()
+
+	if err := store.SetSetting(ctx, machineSIDKey, sidStr); err != nil {
+		logger.Error("Failed to persist machine SID", "sid", sidStr, "error", err)
+	} else {
+		logger.Info("Generated and persisted machine SID", "sid", sidStr)
+	}
+}
+
 // SetAPIServer must be called before Serve().
 func (s *Service) SetAPIServer(server AuxiliaryServer) {
 	if s.served {
@@ -73,18 +137,22 @@ func (s *Service) SetAPIServer(server AuxiliaryServer) {
 }
 
 // Serve starts all components and blocks until shutdown.
+//
+// The machineSIDStore parameter is used to load or generate the machine SID
+// for Windows identity mapping. Pass nil to use an ephemeral SID (testing).
 func (s *Service) Serve(
 	ctx context.Context,
 	settings SettingsInitializer,
 	adapterLoader AdapterLoader,
 	metadataFlusher MetadataFlusher,
 	storeCloser StoreCloser,
+	machineSIDStore MachineSIDStore,
 ) error {
 	var err error
 
 	s.serveOnce.Do(func() {
 		s.served = true
-		err = s.serve(ctx, settings, adapterLoader, metadataFlusher, storeCloser)
+		err = s.serve(ctx, settings, adapterLoader, metadataFlusher, storeCloser, machineSIDStore)
 	})
 
 	return err
@@ -96,8 +164,13 @@ func (s *Service) serve(
 	adapterLoader AdapterLoader,
 	metadataFlusher MetadataFlusher,
 	storeCloser StoreCloser,
+	machineSIDStore MachineSIDStore,
 ) error {
 	logger.Info("Starting DittoFS runtime")
+
+	// Initialize machine SID BEFORE any adapters start.
+	// This ensures consistent identity mapping for all connections.
+	s.initMachineSID(ctx, machineSIDStore)
 
 	if settings != nil {
 		if err := settings.LoadInitial(ctx); err != nil {

@@ -1,129 +1,21 @@
 package handlers
 
 import (
-	"bytes"
 	"encoding/binary"
-	"strings"
+	"os"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/auth/sid"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
-func TestSIDEncodeDecodeRoundTrip(t *testing.T) {
-	tests := []struct {
-		name   string
-		sidStr string
-	}{
-		{"Everyone", "S-1-1-0"},
-		{"CreatorOwner", "S-1-3-0"},
-		{"CreatorGroup", "S-1-3-1"},
-		{"NTAuthority", "S-1-5-18"},
-		{"DittoFSUser1000", "S-1-5-21-0-0-0-1000"},
-		{"DittoFSUser0", "S-1-5-21-0-0-0-0"},
-		{"DittoFSUserMax", "S-1-5-21-0-0-0-4294967295"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Parse string to SID
-			sid, err := ParseSIDString(tt.sidStr)
-			if err != nil {
-				t.Fatalf("ParseSIDString(%q): %v", tt.sidStr, err)
-			}
-
-			// Encode to binary
-			var buf bytes.Buffer
-			EncodeSID(&buf, sid)
-			encoded := buf.Bytes()
-
-			// Decode from binary
-			decoded, consumed, err := DecodeSID(encoded)
-			if err != nil {
-				t.Fatalf("DecodeSID: %v", err)
-			}
-			if consumed != len(encoded) {
-				t.Errorf("DecodeSID consumed %d bytes, expected %d", consumed, len(encoded))
-			}
-
-			// Format back to string
-			result := FormatSID(decoded)
-			if result != tt.sidStr {
-				t.Errorf("Round-trip failed: started %q, got %q", tt.sidStr, result)
-			}
-		})
-	}
-}
-
-func TestSIDSize(t *testing.T) {
-	// Everyone: S-1-1-0 (1 sub-authority) -> 8 + 4*1 = 12
-	sid := parseSIDMust("S-1-1-0")
-	if got := SIDSize(sid); got != 12 {
-		t.Errorf("SIDSize(S-1-1-0) = %d, want 12", got)
-	}
-
-	// DittoFS user: S-1-5-21-0-0-0-1000 (5 sub-authorities) -> 8 + 4*5 = 28
-	sid = parseSIDMust("S-1-5-21-0-0-0-1000")
-	if got := SIDSize(sid); got != 28 {
-		t.Errorf("SIDSize(S-1-5-21-0-0-0-1000) = %d, want 28", got)
-	}
-}
-
-func TestPrincipalToSID(t *testing.T) {
-	tests := []struct {
-		name       string
-		who        string
-		ownerUID   uint32
-		ownerGID   uint32
-		wantSID    string
-		prefixOnly bool // when true, wantSID is treated as a prefix match
-	}{
-		{"OwnerAt", "OWNER@", 1000, 1000, "S-1-5-21-0-0-0-1000", false},
-		{"GroupAt", "GROUP@", 1000, 1001, "S-1-5-21-0-0-0-1001", false},
-		{"EveryoneAt", "EVERYONE@", 0, 0, "S-1-1-0", false},
-		{"NumericUID", "501@localdomain", 0, 0, "S-1-5-21-0-0-0-501", false},
-		{"NamedPrincipal", "alice@EXAMPLE.COM", 0, 0, "S-1-5-21-0-0-0-", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			sid := PrincipalToSID(tt.who, tt.ownerUID, tt.ownerGID)
-			result := FormatSID(sid)
-
-			if tt.prefixOnly {
-				if !strings.HasPrefix(result, tt.wantSID) {
-					t.Errorf("PrincipalToSID(%q) = %q, expected prefix %q", tt.who, result, tt.wantSID)
-				}
-			} else if result != tt.wantSID {
-				t.Errorf("PrincipalToSID(%q) = %q, want %q", tt.who, result, tt.wantSID)
-			}
-		})
-	}
-}
-
-func TestSIDToPrincipal(t *testing.T) {
-	tests := []struct {
-		name      string
-		sidStr    string
-		wantPrinc string
-	}{
-		{"Everyone", "S-1-1-0", "EVERYONE@"},
-		{"CreatorOwner", "S-1-3-0", "OWNER@"},
-		{"CreatorGroup", "S-1-3-1", "GROUP@"},
-		{"DittoFSUser1000", "S-1-5-21-0-0-0-1000", "1000@localdomain"},
-		{"DittoFSUser0", "S-1-5-21-0-0-0-0", "0@localdomain"},
-		{"UnknownSID", "S-1-5-32-544", "S-1-5-32-544"}, // Fallback to string
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			sid := parseSIDMust(tt.sidStr)
-			result := SIDToPrincipal(sid)
-			if result != tt.wantPrinc {
-				t.Errorf("SIDToPrincipal(%q) = %q, want %q", tt.sidStr, result, tt.wantPrinc)
-			}
-		})
-	}
+// TestMain sets up a deterministic SIDMapper for all tests in this package.
+func TestMain(m *testing.M) {
+	// Use a fixed machine SID (0,0,0) for deterministic test results.
+	// This matches the default fallback mapper.
+	SetSIDMapper(sid.NewSIDMapper(0, 0, 0))
+	os.Exit(m.Run())
 }
 
 func TestBuildSecurityDescriptorWithACL(t *testing.T) {
@@ -203,14 +95,21 @@ func TestBuildSecurityDescriptorWithACL(t *testing.T) {
 	if parsedACL.ACEs[0].AccessMask != acl.ACE4_WRITE_DATA|acl.ACE4_APPEND_DATA {
 		t.Errorf("ACE[0].AccessMask = 0x%x, want 0x%x", parsedACL.ACEs[0].AccessMask, acl.ACE4_WRITE_DATA|acl.ACE4_APPEND_DATA)
 	}
+
+	// Verify parsed ACL is marked as SMB explicit (round-trip through parseDACL)
+	if parsedACL.Source != acl.ACLSourceSMBExplicit {
+		t.Errorf("Parsed ACL.Source = %q, want %q", parsedACL.Source, acl.ACLSourceSMBExplicit)
+	}
 }
 
-func TestBuildSecurityDescriptorNilACL(t *testing.T) {
+// TestBuildSD_NilACL_SynthesizesDACL verifies that BuildSecurityDescriptor
+// synthesizes a proper POSIX-derived DACL when the file has no explicit ACL.
+func TestBuildSD_NilACL_SynthesizesDACL(t *testing.T) {
 	file := &metadata.File{
 		FileAttr: metadata.FileAttr{
-			UID:  0,
-			GID:  0,
-			Mode: 0o777,
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
 		},
 	}
 
@@ -219,7 +118,6 @@ func TestBuildSecurityDescriptorNilACL(t *testing.T) {
 		t.Fatalf("BuildSecurityDescriptor: %v", err)
 	}
 
-	// Should contain a minimal DACL granting Everyone full access
 	_, _, parsedACL, err := ParseSecurityDescriptor(data)
 	if err != nil {
 		t.Fatalf("ParseSecurityDescriptor: %v", err)
@@ -227,14 +125,396 @@ func TestBuildSecurityDescriptorNilACL(t *testing.T) {
 	if parsedACL == nil {
 		t.Fatal("Expected DACL, got nil")
 	}
+
+	// Mode 0755 should produce deny+allow ACEs (not just Everyone:Full).
+	// SynthesizeFromMode produces:
+	// 1. DENY EVERYONE@ (owner has rwx, other has r-x, so deny w bits)
+	// 2. ALLOW OWNER@ (rwx + admin)
+	// 3. ALLOW GROUP@ (r-x)
+	// 4. ALLOW EVERYONE@ (r-x)
+	// 5. ALLOW SYSTEM@ (full)
+	// 6. ALLOW ADMINISTRATORS@ (full)
+	// Total: 6 ACEs (deny + 5 allow)
+	if len(parsedACL.ACEs) < 3 {
+		t.Fatalf("Expected multiple ACEs from synthesis, got %d", len(parsedACL.ACEs))
+	}
+
+	// First ACE should be a DENY ACE (group/other has fewer rights than owner)
+	foundDeny := false
+	for _, ace := range parsedACL.ACEs {
+		if ace.Type == acl.ACE4_ACCESS_DENIED_ACE_TYPE {
+			foundDeny = true
+			break
+		}
+	}
+	if !foundDeny {
+		t.Error("Expected at least one DENY ACE in synthesized DACL for mode 0755")
+	}
+
+	// Should NOT be a simple "Everyone: Full Access" single ACE
+	if len(parsedACL.ACEs) == 1 && parsedACL.ACEs[0].AccessMask == 0x001F01FF {
+		t.Error("Got Everyone:Full single ACE -- expected POSIX-derived DACL with deny+allow ACEs")
+	}
+}
+
+// TestBuildSD_ExplicitACL_UsesExisting verifies that an explicit ACL is encoded directly.
+func TestBuildSD_ExplicitACL_UsesExisting(t *testing.T) {
+	explicitACL := &acl.ACL{
+		ACEs: []acl.ACE{
+			{
+				Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       0,
+				AccessMask: acl.ACE4_READ_DATA,
+				Who:        "OWNER@",
+			},
+		},
+	}
+
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  500,
+			GID:  20,
+			Mode: 0o755,
+			ACL:  explicitACL,
+		},
+	}
+
+	data, err := BuildSecurityDescriptor(file, 0)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+
+	_, _, parsedACL, err := ParseSecurityDescriptor(data)
+	if err != nil {
+		t.Fatalf("ParseSecurityDescriptor: %v", err)
+	}
+	if parsedACL == nil {
+		t.Fatal("Expected DACL, got nil")
+	}
+
+	// Should have exactly 1 ACE from the explicit ACL
 	if len(parsedACL.ACEs) != 1 {
-		t.Fatalf("Expected 1 ACE (Everyone full access), got %d", len(parsedACL.ACEs))
+		t.Fatalf("Expected 1 ACE (explicit), got %d", len(parsedACL.ACEs))
 	}
-	if parsedACL.ACEs[0].Who != "EVERYONE@" {
-		t.Errorf("ACE[0].Who = %q, want EVERYONE@", parsedACL.ACEs[0].Who)
+	if parsedACL.ACEs[0].AccessMask != acl.ACE4_READ_DATA {
+		t.Errorf("ACE[0].AccessMask = 0x%x, want 0x%x", parsedACL.ACEs[0].AccessMask, acl.ACE4_READ_DATA)
 	}
-	if parsedACL.ACEs[0].AccessMask != 0x001F01FF {
-		t.Errorf("ACE[0].AccessMask = 0x%x, want 0x001F01FF", parsedACL.ACEs[0].AccessMask)
+}
+
+// TestBuildSD_SACL_EmptyStub verifies that requesting SACL produces a valid
+// 8-byte empty SACL with SE_SACL_PRESENT set.
+func TestBuildSD_SACL_EmptyStub(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+		},
+	}
+
+	secInfo := uint32(OwnerSecurityInformation | GroupSecurityInformation | DACLSecurityInformation | SACLSecurityInformation)
+	data, err := BuildSecurityDescriptor(file, secInfo)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+
+	if len(data) < sdHeaderSize {
+		t.Fatalf("SD too short: %d", len(data))
+	}
+
+	// Check control flags
+	control := binary.LittleEndian.Uint16(data[2:4])
+	if control&seSACLPresent == 0 {
+		t.Error("SE_SACL_PRESENT not set in control flags")
+	}
+
+	// Check SACL offset is non-zero
+	saclOffset := binary.LittleEndian.Uint32(data[12:16])
+	if saclOffset == 0 {
+		t.Fatal("SACL offset is 0 when SACL was requested")
+	}
+
+	// Verify SACL data: 8 bytes (revision=2, sbz1=0, size=8, count=0, sbz2=0)
+	if int(saclOffset)+8 > len(data) {
+		t.Fatalf("SACL extends beyond SD data (offset=%d, len=%d)", saclOffset, len(data))
+	}
+
+	saclData := data[saclOffset:]
+	if saclData[0] != 2 {
+		t.Errorf("SACL revision = %d, want 2", saclData[0])
+	}
+	saclSize := binary.LittleEndian.Uint16(saclData[2:4])
+	if saclSize != 8 {
+		t.Errorf("SACL size = %d, want 8", saclSize)
+	}
+	aceCount := binary.LittleEndian.Uint16(saclData[4:6])
+	if aceCount != 0 {
+		t.Errorf("SACL ace count = %d, want 0", aceCount)
+	}
+}
+
+// TestBuildSD_SACL_NotRequested verifies that SACL offset is 0 and
+// SE_SACL_PRESENT is not set when SACL is not requested.
+func TestBuildSD_SACL_NotRequested(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+		},
+	}
+
+	// Request only owner, group, DACL (no SACL)
+	secInfo := uint32(OwnerSecurityInformation | GroupSecurityInformation | DACLSecurityInformation)
+	data, err := BuildSecurityDescriptor(file, secInfo)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+
+	control := binary.LittleEndian.Uint16(data[2:4])
+	if control&seSACLPresent != 0 {
+		t.Error("SE_SACL_PRESENT should NOT be set when SACL not requested")
+	}
+
+	saclOffset := binary.LittleEndian.Uint32(data[12:16])
+	if saclOffset != 0 {
+		t.Errorf("SACL offset = %d, want 0 when SACL not requested", saclOffset)
+	}
+}
+
+// TestBuildSD_AutoInherited verifies SE_DACL_AUTO_INHERITED is set when
+// ACEs have INHERITED_ACE flag.
+func TestBuildSD_AutoInherited(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+			ACL: &acl.ACL{
+				ACEs: []acl.ACE{
+					{
+						Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+						Flag:       acl.ACE4_INHERITED_ACE, // NFSv4 0x80
+						AccessMask: 0x001F01FF,
+						Who:        "OWNER@",
+					},
+				},
+			},
+		},
+	}
+
+	data, err := BuildSecurityDescriptor(file, 0)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+
+	control := binary.LittleEndian.Uint16(data[2:4])
+	if control&seDACLAutoInherited == 0 {
+		t.Error("SE_DACL_AUTO_INHERITED not set when ACEs have INHERITED_ACE flag")
+	}
+}
+
+// TestBuildSD_Protected verifies SE_DACL_PROTECTED is set when ACL.Protected is true.
+func TestBuildSD_Protected(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+			ACL: &acl.ACL{
+				Protected: true,
+				ACEs: []acl.ACE{
+					{
+						Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+						Flag:       0,
+						AccessMask: 0x001F01FF,
+						Who:        "OWNER@",
+					},
+				},
+			},
+		},
+	}
+
+	data, err := BuildSecurityDescriptor(file, 0)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+
+	control := binary.LittleEndian.Uint16(data[2:4])
+	if control&seDACLProtected == 0 {
+		t.Error("SE_DACL_PROTECTED not set when ACL.Protected is true")
+	}
+}
+
+// TestBuildSD_FlagTranslation verifies ACE flags use explicit translation
+// (INHERITED_ACE NFSv4 0x80 encodes as Windows 0x10 in wire format).
+func TestBuildSD_FlagTranslation(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+			ACL: &acl.ACL{
+				ACEs: []acl.ACE{
+					{
+						Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+						Flag:       acl.ACE4_INHERITED_ACE, // NFSv4 0x80
+						AccessMask: 0x001F01FF,
+						Who:        "EVERYONE@",
+					},
+				},
+			},
+		},
+	}
+
+	data, err := BuildSecurityDescriptor(file, DACLSecurityInformation)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+
+	// Find the DACL offset
+	daclOffset := binary.LittleEndian.Uint32(data[16:20])
+	if daclOffset == 0 {
+		t.Fatal("DACL offset is 0")
+	}
+
+	// Skip ACL header (8 bytes) to get to first ACE
+	aceOffset := int(daclOffset) + aclHeaderSize
+	if aceOffset+2 > len(data) {
+		t.Fatal("ACE extends beyond data")
+	}
+
+	// ACE flags byte is at offset+1
+	wireFlags := data[aceOffset+1]
+	if wireFlags != 0x10 {
+		t.Errorf("Wire ACE flags = 0x%02x, want 0x10 (INHERITED_ACE)", wireFlags)
+	}
+
+	// Round-trip: parse back and verify NFSv4 flag is 0x80
+	_, _, parsedACL, err := ParseSecurityDescriptor(data)
+	if err != nil {
+		t.Fatalf("ParseSecurityDescriptor: %v", err)
+	}
+	if parsedACL == nil || len(parsedACL.ACEs) != 1 {
+		t.Fatalf("Expected 1 ACE, got %v", parsedACL)
+	}
+	if parsedACL.ACEs[0].Flag != acl.ACE4_INHERITED_ACE {
+		t.Errorf("Parsed ACE flag = 0x%x, want 0x%x (INHERITED_ACE)", parsedACL.ACEs[0].Flag, acl.ACE4_INHERITED_ACE)
+	}
+}
+
+// TestParseSD_RoundTrip verifies build+parse produces matching owner/group/ACL.
+func TestParseSD_RoundTrip(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  500,
+			GID:  20,
+			Mode: 0o750,
+			ACL: &acl.ACL{
+				ACEs: []acl.ACE{
+					{
+						Type:       acl.ACE4_ACCESS_DENIED_ACE_TYPE,
+						Flag:       0,
+						AccessMask: acl.ACE4_WRITE_DATA,
+						Who:        "EVERYONE@",
+					},
+					{
+						Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+						Flag:       acl.ACE4_FILE_INHERIT_ACE | acl.ACE4_DIRECTORY_INHERIT_ACE,
+						AccessMask: 0x001F01FF,
+						Who:        "OWNER@",
+					},
+				},
+			},
+		},
+	}
+
+	data, err := BuildSecurityDescriptor(file, 0)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+
+	ownerUID, ownerGID, parsedACL, err := ParseSecurityDescriptor(data)
+	if err != nil {
+		t.Fatalf("ParseSecurityDescriptor: %v", err)
+	}
+
+	if ownerUID == nil || *ownerUID != 500 {
+		t.Errorf("Owner UID = %v, want 500", ownerUID)
+	}
+	if ownerGID == nil || *ownerGID != 20 {
+		t.Errorf("Owner GID = %v, want 20", ownerGID)
+	}
+
+	if parsedACL == nil || len(parsedACL.ACEs) != 2 {
+		t.Fatalf("Expected 2 ACEs, got %v", parsedACL)
+	}
+
+	ace0 := parsedACL.ACEs[0]
+	if ace0.Type != acl.ACE4_ACCESS_DENIED_ACE_TYPE {
+		t.Errorf("ACE[0].Type = %d, want DENY", ace0.Type)
+	}
+	if ace0.Who != "EVERYONE@" {
+		t.Errorf("ACE[0].Who = %q, want EVERYONE@", ace0.Who)
+	}
+
+	ace1 := parsedACL.ACEs[1]
+	if ace1.Type != acl.ACE4_ACCESS_ALLOWED_ACE_TYPE {
+		t.Errorf("ACE[1].Type = %d, want ALLOW", ace1.Type)
+	}
+	if ace1.Flag&acl.ACE4_FILE_INHERIT_ACE == 0 {
+		t.Error("ACE[1] missing FILE_INHERIT flag")
+	}
+	if ace1.Flag&acl.ACE4_DIRECTORY_INHERIT_ACE == 0 {
+		t.Error("ACE[1] missing DIRECTORY_INHERIT flag")
+	}
+}
+
+// TestBuildSD_FieldOrder verifies SACL appears before DACL in binary output.
+func TestBuildSD_FieldOrder(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+			ACL: &acl.ACL{
+				ACEs: []acl.ACE{
+					{
+						Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+						Flag:       0,
+						AccessMask: 0x001F01FF,
+						Who:        "OWNER@",
+					},
+				},
+			},
+		},
+	}
+
+	secInfo := uint32(OwnerSecurityInformation | GroupSecurityInformation | DACLSecurityInformation | SACLSecurityInformation)
+	data, err := BuildSecurityDescriptor(file, secInfo)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+
+	saclOffset := binary.LittleEndian.Uint32(data[12:16])
+	daclOffset := binary.LittleEndian.Uint32(data[16:20])
+	ownerOffset := binary.LittleEndian.Uint32(data[4:8])
+	groupOffset := binary.LittleEndian.Uint32(data[8:12])
+
+	// Verify order: SACL < DACL < Owner < Group
+	if saclOffset == 0 || daclOffset == 0 || ownerOffset == 0 || groupOffset == 0 {
+		t.Fatalf("All offsets should be non-zero: sacl=%d, dacl=%d, owner=%d, group=%d",
+			saclOffset, daclOffset, ownerOffset, groupOffset)
+	}
+
+	if saclOffset >= daclOffset {
+		t.Errorf("SACL offset (%d) should be before DACL offset (%d)", saclOffset, daclOffset)
+	}
+	if daclOffset >= ownerOffset {
+		t.Errorf("DACL offset (%d) should be before Owner offset (%d)", daclOffset, ownerOffset)
+	}
+	if ownerOffset >= groupOffset {
+		t.Errorf("Owner offset (%d) should be before Group offset (%d)", ownerOffset, groupOffset)
 	}
 }
 
@@ -273,78 +553,6 @@ func TestBuildSecurityDescriptorDACLOnly(t *testing.T) {
 	}
 }
 
-func TestParseSecurityDescriptorRoundTrip(t *testing.T) {
-	file := &metadata.File{
-		FileAttr: metadata.FileAttr{
-			UID:  500,
-			GID:  20,
-			Mode: 0o750,
-			ACL: &acl.ACL{
-				ACEs: []acl.ACE{
-					{
-						Type:       acl.ACE4_ACCESS_DENIED_ACE_TYPE,
-						Flag:       0,
-						AccessMask: acl.ACE4_WRITE_DATA,
-						Who:        "EVERYONE@",
-					},
-					{
-						Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
-						Flag:       acl.ACE4_FILE_INHERIT_ACE | acl.ACE4_DIRECTORY_INHERIT_ACE,
-						AccessMask: 0x001F01FF,
-						Who:        "OWNER@",
-					},
-				},
-			},
-		},
-	}
-
-	// Build
-	data, err := BuildSecurityDescriptor(file, 0)
-	if err != nil {
-		t.Fatalf("BuildSecurityDescriptor: %v", err)
-	}
-
-	// Parse
-	ownerUID, ownerGID, parsedACL, err := ParseSecurityDescriptor(data)
-	if err != nil {
-		t.Fatalf("ParseSecurityDescriptor: %v", err)
-	}
-
-	// Verify owner/group
-	if ownerUID == nil || *ownerUID != 500 {
-		t.Errorf("Owner UID = %v, want 500", ownerUID)
-	}
-	if ownerGID == nil || *ownerGID != 20 {
-		t.Errorf("Owner GID = %v, want 20", ownerGID)
-	}
-
-	// Verify ACEs
-	if parsedACL == nil || len(parsedACL.ACEs) != 2 {
-		t.Fatalf("Expected 2 ACEs, got %v", parsedACL)
-	}
-
-	// First ACE: DENY EVERYONE@ WRITE_DATA
-	ace0 := parsedACL.ACEs[0]
-	if ace0.Type != acl.ACE4_ACCESS_DENIED_ACE_TYPE {
-		t.Errorf("ACE[0].Type = %d, want DENY", ace0.Type)
-	}
-	if ace0.Who != "EVERYONE@" {
-		t.Errorf("ACE[0].Who = %q, want EVERYONE@", ace0.Who)
-	}
-
-	// Second ACE: ALLOW OWNER@ with inheritance flags
-	ace1 := parsedACL.ACEs[1]
-	if ace1.Type != acl.ACE4_ACCESS_ALLOWED_ACE_TYPE {
-		t.Errorf("ACE[1].Type = %d, want ALLOW", ace1.Type)
-	}
-	if ace1.Flag&acl.ACE4_FILE_INHERIT_ACE == 0 {
-		t.Error("ACE[1] missing FILE_INHERIT flag")
-	}
-	if ace1.Flag&acl.ACE4_DIRECTORY_INHERIT_ACE == 0 {
-		t.Error("ACE[1] missing DIRECTORY_INHERIT flag")
-	}
-}
-
 func TestFourByteAlignment(t *testing.T) {
 	// Build SD and verify all offsets are 4-byte aligned
 	file := &metadata.File{
@@ -376,6 +584,7 @@ func TestFourByteAlignment(t *testing.T) {
 	}{
 		{"OffsetOwner", 4},
 		{"OffsetGroup", 8},
+		{"OffsetSacl", 12},
 		{"OffsetDacl", 16},
 	}
 
@@ -387,39 +596,125 @@ func TestFourByteAlignment(t *testing.T) {
 	}
 }
 
-func TestParseSIDStringErrors(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-	}{
-		{"NoPrefix", "1-1-0"},
-		{"TooShort", "S-1"},
-		{"BadRevision", "S-abc-5"},
-		{"BadAuthority", "S-1-abc"},
-		{"BadSubAuthority", "S-1-5-abc"},
+func TestSIDMapperIntegration(t *testing.T) {
+	// Verify that SetSIDMapper/GetSIDMapper work
+	original := GetSIDMapper()
+	defer SetSIDMapper(original) // Restore after test
+
+	m := sid.NewSIDMapper(111, 222, 333)
+	SetSIDMapper(m)
+
+	if GetSIDMapper() != m {
+		t.Error("GetSIDMapper should return the mapper set by SetSIDMapper")
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := ParseSIDString(tt.input)
-			if err == nil {
-				t.Errorf("ParseSIDString(%q) should fail", tt.input)
-			}
-		})
+	// Setting nil should keep the current mapper
+	SetSIDMapper(nil)
+	if GetSIDMapper() != m {
+		t.Error("SetSIDMapper(nil) should not change the mapper")
 	}
 }
 
-func TestDecodeSIDErrors(t *testing.T) {
-	// Too short
-	_, _, err := DecodeSID([]byte{1, 2, 3})
-	if err == nil {
-		t.Error("DecodeSID with 3 bytes should fail")
+func TestSDRoundTripWithMapper(t *testing.T) {
+	// Test that build+parse produces consistent UIDs/GIDs with the mapper
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  42,
+			GID:  100,
+			Mode: 0o755,
+			ACL: &acl.ACL{
+				ACEs: []acl.ACE{
+					{
+						Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+						Flag:       0,
+						AccessMask: 0x001F01FF,
+						Who:        "OWNER@",
+					},
+				},
+			},
+		},
 	}
 
-	// SubAuthorityCount says 2 but not enough data
-	data := []byte{1, 2, 0, 0, 0, 0, 0, 5} // 2 sub-auths, but only 8 bytes
-	_, _, err = DecodeSID(data)
-	if err == nil {
-		t.Error("DecodeSID with insufficient sub-authority data should fail")
+	data, err := BuildSecurityDescriptor(file, 0)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+
+	ownerUID, ownerGID, _, err := ParseSecurityDescriptor(data)
+	if err != nil {
+		t.Fatalf("ParseSecurityDescriptor: %v", err)
+	}
+
+	if ownerUID == nil || *ownerUID != 42 {
+		t.Errorf("Round-trip owner UID = %v, want 42", ownerUID)
+	}
+	if ownerGID == nil || *ownerGID != 100 {
+		t.Errorf("Round-trip owner GID = %v, want 100", ownerGID)
+	}
+}
+
+// TestBuildSD_SpecialSIDs verifies that SYSTEM@ and ADMINISTRATORS@ principals
+// are mapped to their correct well-known SIDs.
+func TestBuildSD_SpecialSIDs(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+			ACL: &acl.ACL{
+				ACEs: []acl.ACE{
+					{
+						Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+						Flag:       0,
+						AccessMask: acl.FullAccessMask,
+						Who:        acl.SpecialSystem,
+					},
+					{
+						Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+						Flag:       0,
+						AccessMask: acl.FullAccessMask,
+						Who:        acl.SpecialAdministrators,
+					},
+				},
+			},
+		},
+	}
+
+	data, err := BuildSecurityDescriptor(file, DACLSecurityInformation)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+
+	// Find the DACL
+	daclOffset := binary.LittleEndian.Uint32(data[16:20])
+	if daclOffset == 0 {
+		t.Fatal("DACL offset is 0")
+	}
+
+	// Parse the ACL header to get ACE count
+	aceCount := binary.LittleEndian.Uint16(data[daclOffset+4 : daclOffset+6])
+	if aceCount != 2 {
+		t.Fatalf("Expected 2 ACEs, got %d", aceCount)
+	}
+
+	// Parse first ACE's SID (should be S-1-5-18 for SYSTEM)
+	aceStart := int(daclOffset) + aclHeaderSize
+	aceSID1, _, err := sid.DecodeSID(data[aceStart+aceHeaderSize:])
+	if err != nil {
+		t.Fatalf("Failed to decode first ACE SID: %v", err)
+	}
+	if !aceSID1.Equal(sid.WellKnownSystem) {
+		t.Errorf("First ACE SID = %s, want S-1-5-18 (SYSTEM)", sid.FormatSID(aceSID1))
+	}
+
+	// Parse second ACE's SID (should be S-1-5-32-544 for Administrators)
+	ace1Size := binary.LittleEndian.Uint16(data[aceStart+2 : aceStart+4])
+	ace2Start := aceStart + int(ace1Size)
+	aceSID2, _, err := sid.DecodeSID(data[ace2Start+aceHeaderSize:])
+	if err != nil {
+		t.Fatalf("Failed to decode second ACE SID: %v", err)
+	}
+	if !aceSID2.Equal(sid.WellKnownAdministrators) {
+		t.Errorf("Second ACE SID = %s, want S-1-5-32-544 (Administrators)", sid.FormatSID(aceSID2))
 	}
 }

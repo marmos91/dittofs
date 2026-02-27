@@ -16,14 +16,14 @@
 
 ### Security Descriptors
 
-- [ ] **SD-01**: Default DACL synthesized from POSIX mode bits (owner/group/other) when no ACL exists
-- [ ] **SD-02**: ACEs ordered in canonical Windows order (deny before allow)
-- [ ] **SD-03**: Well-known SIDs included in default DACL (NT AUTHORITY\SYSTEM, BUILTIN\Administrators)
-- [ ] **SD-04**: ACE flag translation corrected (NFSv4 INHERITED_ACE 0x80 -> Windows 0x10)
-- [ ] **SD-05**: Inheritance flags (CONTAINER_INHERIT, OBJECT_INHERIT) set on directory ACEs
-- [ ] **SD-06**: SE_DACL_AUTO_INHERITED control flag set when ACEs have INHERITED flag
-- [ ] **SD-07**: SID user/group collision fixed (different RID ranges for users vs groups)
-- [ ] **SD-08**: SACL query returns valid empty SACL structure (not omitted)
+- [x] **SD-01**: Default DACL synthesized from POSIX mode bits (owner/group/other) when no ACL exists
+- [x] **SD-02**: ACEs ordered in canonical Windows order (deny before allow)
+- [x] **SD-03**: Well-known SIDs included in default DACL (NT AUTHORITY\SYSTEM, BUILTIN\Administrators)
+- [x] **SD-04**: ACE flag translation corrected (NFSv4 INHERITED_ACE 0x80 -> Windows 0x10)
+- [x] **SD-05**: Inheritance flags (CONTAINER_INHERIT, OBJECT_INHERIT) set on directory ACEs
+- [x] **SD-06**: SE_DACL_AUTO_INHERITED control flag set when ACEs have INHERITED flag
+- [x] **SD-07**: SID user/group collision fixed (different RID ranges for users vs groups)
+- [x] **SD-08**: SACL query returns valid empty SACL structure (not omitted)
 
 ### Windows 11 Compatibility
 
@@ -78,14 +78,14 @@
 | BUG-04 | Phase 30 | Complete |
 | BUG-05 | Phase 30 | Complete |
 | BUG-06 | Phase 30 | Complete |
-| SD-01 | Phase 31 | Pending |
-| SD-02 | Phase 31 | Pending |
-| SD-03 | Phase 31 | Pending |
-| SD-04 | Phase 31 | Pending |
-| SD-05 | Phase 31 | Pending |
-| SD-06 | Phase 31 | Pending |
-| SD-07 | Phase 31 | Pending |
-| SD-08 | Phase 31 | Pending |
+| SD-01 | Phase 31 | Complete |
+| SD-02 | Phase 31 | Complete |
+| SD-03 | Phase 31 | Complete |
+| SD-04 | Phase 31 | Complete |
+| SD-05 | Phase 31 | Complete |
+| SD-06 | Phase 31 | Complete |
+| SD-07 | Phase 31 | Complete |
+| SD-08 | Phase 31 | Complete |
 | WIN-01 | Phase 29.8 | **Complete** |
 | WIN-02 | Phase 32 | Pending |
 | WIN-03 | Phase 32 | Pending |

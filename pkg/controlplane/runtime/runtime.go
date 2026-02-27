@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/auth/sid"
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/adapters"
@@ -251,7 +252,7 @@ func (r *Runtime) SetAPIServer(server AuxiliaryServer) {
 }
 
 func (r *Runtime) Serve(ctx context.Context) error {
-	return r.lifecycleSvc.Serve(ctx, r.settingsWatcher, r.adaptersSvc, r.metadataService, r.storesSvc)
+	return r.lifecycleSvc.Serve(ctx, r.settingsWatcher, r.adaptersSvc, r.metadataService, r.storesSvc, r.store)
 }
 
 // --- Identity Mapping (delegated to identity.Service) ---
@@ -301,6 +302,10 @@ func (r *Runtime) ListMounts() []*LegacyMountInfo {
 func (r *Runtime) Store() store.Store                            { return r.store }
 func (r *Runtime) GetMetadataService() *metadata.MetadataService { return r.metadataService }
 func (r *Runtime) GetPayloadService() *payload.PayloadService    { return r.payloadService }
+
+// SIDMapper returns the machine SID mapper for Windows identity mapping.
+// Returns nil if the runtime has not been started yet (Serve not called).
+func (r *Runtime) SIDMapper() *sid.SIDMapper { return r.lifecycleSvc.SIDMapper() }
 
 func (r *Runtime) SetPayloadService(ps *payload.PayloadService) {
 	r.mu.Lock()

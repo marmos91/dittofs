@@ -90,7 +90,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 29.8: Microsoft Protocol Test Suite CI Integration** INSERTED - Dockerized WPTS FileServer harness running MS-SMB2 BVT tests against DittoFS on custom port in CI (completed 2026-02-26)
 - [x] **Phase 30: SMB Bug Fixes** - Fix sparse file READ (#180), renamed directory listing (#181), parent dir navigation (#214), oplock break wiring (#213), hardcoded link count (#221), pipe share list caching (#223) (completed 2026-02-27)
-- [ ] **Phase 31: Windows ACL Support** - NT Security Descriptors, Unix-to-SID mapping, icacls support (#182)
+- [x] **Phase 31: Windows ACL Support** - NT Security Descriptors, Unix-to-SID mapping, icacls support (#182) (completed 2026-02-27)
 - [ ] **Phase 32: Windows Integration Testing** - smbtorture + manual Windows 11 validation, Windows CI (#173), Windows client compat (#172), Unix path fixes (#169), SMB capability flags (#141)
 - [ ] **Phase 32.5: Manual Verification - Windows** USER CHECKPOINT - Full Windows validation
 
@@ -560,7 +560,7 @@ v3.6 (30-32.5) → v3.8 (39-44.5) → v4.0 (45-51.5) → v4.1 (33-38.5)
 | 29.4 Verification & Requirements Cleanup | v3.5 | 1/1 | Complete | 2026-02-26 |
 | 29.8. Microsoft Protocol Test Suite CI | v3.6 | 2/2 | Complete | 2026-02-26 |
 | 30. SMB Bug Fixes | 4/4 | Complete    | 2026-02-27 | - |
-| 31. Windows ACL Support | v3.6 | 0/3 | Not started | - |
+| 31. Windows ACL Support | 3/3 | Complete    | 2026-02-27 | - |
 | 32. Windows Integration Testing | v3.6 | 0/3 | Not started | - |
 | 39. SMB3 Security & Encryption | v3.8 | 0/? | Not started | - |
 | 40. SMB3 Leases & Locking | v3.8 | 0/? | Not started | - |
