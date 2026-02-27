@@ -481,7 +481,7 @@ func (h *LSARPCHandler) buildLookupSidsResponse(
 // writeNDRUnicodeString writes an NDR-conformant+varying unicode string.
 func writeNDRUnicodeString(buf *bytes.Buffer, s string) {
 	utf16 := encodeUTF16LE(s)
-	charCount := uint32(len(s) + 1) // Include null terminator
+	charCount := uint32(len(utf16)/2 + 1) // UTF-16 code units + null terminator
 
 	// Conformant: MaxCount
 	appendUint32Buf(buf, charCount)

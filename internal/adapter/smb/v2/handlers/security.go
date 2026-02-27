@@ -212,7 +212,8 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 
 	if includeGroup {
 		groupOffset = currentOffset
-		_ = currentOffset // suppress unused warning
+		currentOffset += uint32(sid.SIDSize(groupSID))
+		currentOffset = alignTo4(currentOffset)
 	}
 
 	// Build the complete Security Descriptor

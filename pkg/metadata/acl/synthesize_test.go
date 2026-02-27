@@ -37,7 +37,7 @@ func TestSynthesizeFromMode_0755_Directory(t *testing.T) {
 		t.Errorf("DENY EVERYONE@ mask = 0x%08x, want 0x%08x", denyEveryone.AccessMask, writeMask)
 	}
 
-	// No GROUP@ deny (group=5, ownerRWX &^ groupRWX = 7 &^ 5 = 2, so there IS a deny).
+	// GROUP@ deny exists (group=5, ownerRWX &^ groupRWX = 7 &^ 5 = 2, deny write).
 	denyGroup := findACE(acl.ACEs, ACE4_ACCESS_DENIED_ACE_TYPE, SpecialGroup)
 	if denyGroup == nil {
 		t.Fatal("expected DENY GROUP@ ACE for write restriction")

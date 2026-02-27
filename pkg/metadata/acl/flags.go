@@ -16,10 +16,10 @@ package acl
 func NFSv4FlagsToWindowsFlags(nfsFlags uint32) uint8 {
 	var winFlags uint8
 	if nfsFlags&ACE4_FILE_INHERIT_ACE != 0 {
-		winFlags |= 0x01 // CONTAINER_INHERIT_ACE
+		winFlags |= 0x01 // OBJECT_INHERIT_ACE (OI / file inherit)
 	}
 	if nfsFlags&ACE4_DIRECTORY_INHERIT_ACE != 0 {
-		winFlags |= 0x02 // OBJECT_INHERIT_ACE
+		winFlags |= 0x02 // CONTAINER_INHERIT_ACE (CI / directory inherit)
 	}
 	if nfsFlags&ACE4_NO_PROPAGATE_INHERIT_ACE != 0 {
 		winFlags |= 0x04 // NO_PROPAGATE_INHERIT_ACE
