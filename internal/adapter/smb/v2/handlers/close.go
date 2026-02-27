@@ -194,6 +194,12 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			} else if flushed {
 				logger.Debug("CLOSE: metadata flushed", "path", openFile.Path)
 			}
+
+			// Per MS-FSA 2.1.5.14.2: After flushing pending writes (which may overwrite
+			// frozen timestamps), restore any timestamps that were frozen via SET_INFO -1.
+			// The deferred commit flush sets Mtime/Ctime to the WRITE time, but if the
+			// handle has frozen timestamps, those must be preserved.
+			h.restoreFrozenTimestamps(authCtx, openFile)
 		}
 	}
 
@@ -226,8 +232,10 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 		metaSvc := h.Registry.GetMetadataService()
 		file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
 		if err == nil {
+			// Apply frozen timestamp overrides before building response
+			applyFrozenTimestamps(openFile, file)
 			creation, access, write, change := FileAttrToSMBTimes(&file.FileAttr)
-			allocationSize := ((file.Size + 4095) / 4096) * 4096
+			allocationSize := calculateAllocationSize(file.Size)
 
 			resp.CreationTime = creation
 			resp.LastAccessTime = access

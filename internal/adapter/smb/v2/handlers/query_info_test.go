@@ -12,6 +12,9 @@ import (
 func TestBuildFileInfoFromStore_FileStreamInformation(t *testing.T) {
 	h := NewHandler()
 
+	// OpenFile stub used for tests that don't depend on OpenFile fields.
+	openFileStub := &OpenFile{FileName: "test.txt", Path: "test.txt"}
+
 	t.Run("RegularFile", func(t *testing.T) {
 		file := &metadata.File{
 			ID: uuid.New(),
@@ -21,7 +24,7 @@ func TestBuildFileInfoFromStore_FileStreamInformation(t *testing.T) {
 			},
 		}
 
-		info, err := h.buildFileInfoFromStore(file, types.FileStreamInformation)
+		info, err := h.buildFileInfoFromStore(file, openFileStub, types.FileStreamInformation)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -78,7 +81,7 @@ func TestBuildFileInfoFromStore_FileStreamInformation(t *testing.T) {
 			},
 		}
 
-		info, err := h.buildFileInfoFromStore(file, types.FileStreamInformation)
+		info, err := h.buildFileInfoFromStore(file, openFileStub, types.FileStreamInformation)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -107,7 +110,7 @@ func TestBuildFileInfoFromStore_FileStreamInformation(t *testing.T) {
 			},
 		}
 
-		info, err := h.buildFileInfoFromStore(file, types.FileStreamInformation)
+		info, err := h.buildFileInfoFromStore(file, openFileStub, types.FileStreamInformation)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

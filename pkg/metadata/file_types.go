@@ -100,6 +100,7 @@ type SetAttrs struct {
 	AtimeNow     bool
 	MtimeNow     bool
 	CreationTime *time.Time
+	Ctime        *time.Time
 	Hidden       *bool
 
 	// ACL sets the NFSv4 ACL on the file.

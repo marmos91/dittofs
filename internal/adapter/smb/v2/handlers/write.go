@@ -278,6 +278,10 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
 	}
 
+	// Per MS-FSA 2.1.5.14.2: If timestamps are frozen via SET_INFO with -1,
+	// CommitWrite unconditionally updated Mtime/Ctime. Restore frozen values.
+	h.restoreFrozenTimestamps(authCtx, openFile)
+
 	// Update cached PayloadID in OpenFile
 	openFile.PayloadID = writeOp.PayloadID
 

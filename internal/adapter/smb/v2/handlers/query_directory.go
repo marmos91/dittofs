@@ -3,10 +3,8 @@ package handlers
 import (
 	"encoding/binary"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
-	"unicode/utf16"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -15,9 +13,11 @@ import (
 
 // maxDirectoryReadBytes is the maximum number of bytes to request from the
 // metadata store when reading directory entries. This limits memory usage
-// for directories with many entries. 64KB is sufficient for most directory
-// listings while preventing excessive memory allocation.
-const maxDirectoryReadBytes uint32 = 65536
+// for directories with many entries. 1MB allows listing directories with
+// up to ~5000 entries while preventing excessive memory allocation.
+// The metadata service estimates ~200 bytes per entry, so 1MB handles
+// approximately 5000 entries.
+const maxDirectoryReadBytes uint32 = 1048576
 
 // ============================================================================
 // Request and Response Structures
@@ -146,9 +146,7 @@ func DecodeQueryDirectoryRequest(body []byte) (*QueryDirectoryRequest, error) {
 		bodyOffset := int(req.FileNameOffset) - 64
 
 		// Clamp to valid range (filename can't start before the Buffer field at byte 32)
-		if bodyOffset < 32 {
-			bodyOffset = 32
-		}
+		bodyOffset = max(bodyOffset, 32)
 
 		if bodyOffset+int(req.FileNameLength) <= len(body) {
 			req.FileName = decodeUTF16LE(body[bodyOffset : bodyOffset+int(req.FileNameLength)])
@@ -226,102 +224,170 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 		"fileID", fmt.Sprintf("%x", req.FileID),
 		"fileName", req.FileName)
 
-	// ========================================================================
-	// Step 1: Get OpenFile by FileID
-	// ========================================================================
-
+	// Get OpenFile by FileID
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
 		logger.Debug("QUERY_DIRECTORY: invalid file ID", "fileID", fmt.Sprintf("%x", req.FileID))
 		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
 	}
 
-	// Check if it's a directory
 	if !openFile.IsDirectory {
 		logger.Debug("QUERY_DIRECTORY: not a directory", "path", openFile.Path)
 		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 	}
 
-	// ========================================================================
-	// Step 2: Get metadata store
-	// ========================================================================
-
-	metaSvc := h.Registry.GetMetadataService()
-
-	// ========================================================================
-	// Step 3: Build AuthContext
-	// ========================================================================
-
+	// Build AuthContext
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		logger.Warn("QUERY_DIRECTORY: failed to build auth context", "error", err)
 		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
 	}
 
-	// ========================================================================
-	// Step 4: Handle enumeration state
-	// ========================================================================
-
+	// Handle enumeration state
 	flags := types.QueryDirectoryFlags(req.Flags)
 	restartScans := flags&types.SMB2RestartScans != 0
 
-	// If enumeration is already complete and this is not a restart, return no more files
-	if openFile.EnumerationComplete && !restartScans {
-		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNoMoreFiles}}, nil
+	returnSingleEntry := flags&types.SMB2ReturnSingleEntry != 0
+	reopenFlag := flags&types.SMB2Reopen != 0
+
+	if reopenFlag {
+		// SMB2_REOPEN: reset enumeration state
+		openFile.EnumerationComplete = false
+		openFile.EnumerationIndex = 0
+		openFile.EnumerationPattern = ""
 	}
 
-	// Reset enumeration state on restart
-	if restartScans {
+	// Per MS-SMB2 3.3.5.17: If the search pattern has changed since the
+	// last query, the server MUST restart the enumeration from the beginning.
+	// This allows a client to first enumerate with "*" and then query for a
+	// specific file by name without getting NO_MORE_FILES.
+	patternChanged := req.FileName != "" && openFile.EnumerationPattern != "" &&
+		req.FileName != openFile.EnumerationPattern
+	if patternChanged {
+		logger.Debug("QUERY_DIRECTORY: search pattern changed, restarting enumeration",
+			"old", openFile.EnumerationPattern, "new", req.FileName)
 		openFile.EnumerationComplete = false
 		openFile.EnumerationIndex = 0
 	}
 
-	// ========================================================================
-	// Step 5: Read directory entries from metadata store
-	// ========================================================================
+	if openFile.EnumerationComplete && !restartScans && !reopenFlag {
+		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNoMoreFiles}}, nil
+	}
 
+	// Track whether this is a fresh enumeration (first time, restart, or reopen)
+	startingFresh := openFile.EnumerationIndex == 0
+
+	if restartScans {
+		openFile.EnumerationComplete = false
+		openFile.EnumerationIndex = 0
+		openFile.EnumerationPattern = ""
+		startingFresh = true
+	}
+
+	// Store the current search pattern for change detection on subsequent calls
+	if req.FileName != "" {
+		openFile.EnumerationPattern = req.FileName
+	}
+
+	// Read directory entries from metadata store
+	metaSvc := h.Registry.GetMetadataService()
 	page, err := metaSvc.ReadDirectory(authCtx, openFile.MetadataHandle, 0, maxDirectoryReadBytes)
 	if err != nil {
 		logger.Debug("QUERY_DIRECTORY: failed to read directory", "path", openFile.Path, "error", err)
 		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
 	}
 
-	// ========================================================================
-	// Step 6: Filter entries based on filename pattern
-	// ========================================================================
+	// Fetch the directory's own attributes so "." and ".." entries report the
+	// actual directory timestamps instead of NowFiletime(). This prevents
+	// CreationTime drift between consecutive QUERY_DIRECTORY calls.
+	var dirAttr *metadata.FileAttr
+	dirFile, err := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
+	if err == nil && dirFile != nil {
+		dirAttr = &dirFile.FileAttr
+	}
 
+	// Filter entries and build response
 	filteredEntries := filterDirEntries(page.Entries, req.FileName)
 
-	// ========================================================================
-	// Step 7: Build directory entries based on info class
-	// ========================================================================
-
-	// For restart scans (first query), add . and .. ONLY when enumerating all files.
-	// When searching for a specific file pattern (not "*"), don't include special entries.
 	isWildcardSearch := req.FileName == "" || req.FileName == "*" || req.FileName == "*.*"
-	includeSpecial := restartScans && isWildcardSearch
+	// Include "." and ".." when starting a fresh enumeration with a wildcard search
+	includeSpecial := startingFresh && isWildcardSearch
 
-	// Convert entries
-	var entries []byte
-	fileInfoClass := types.FileInfoClass(req.FileInfoClass)
+	// For SMB2_RETURN_SINGLE_ENTRY, skip entries already returned in previous calls
+	// and return only one entry at a time, advancing EnumerationIndex.
+	if returnSingleEntry {
+		// For wildcard searches that started fresh, "." and ".." are the first two
+		// entries in the enumeration. We must consistently account for them across
+		// ALL calls during the same enumeration (not just the first call), because
+		// EnumerationIndex tracks position in the combined (specials + real) list.
+		//
+		// Special entries are included when:
+		// - This is a wildcard search ("*", "*.*", or empty)
+		// - AND the enumeration was started fresh (index was 0 at some point)
+		//
+		// We use isWildcardSearch (not includeSpecial) because includeSpecial
+		// requires startingFresh, which is only true on the very first call.
+		// On subsequent calls with the same wildcard enumeration, we still need
+		// specialCount=2 so that totalEntries and index offsets remain consistent.
+		specialCount := 0
+		if isWildcardSearch {
+			specialCount = 2
+		}
+		totalEntries := specialCount + len(filteredEntries)
+		idx := openFile.EnumerationIndex
 
-	switch fileInfoClass {
-	case types.FileBothDirectoryInformation:
-		entries = h.buildFileBothDirInfoFromStore(filteredEntries, includeSpecial)
-	case types.FileIdBothDirectoryInformation:
-		entries = h.buildFileIdBothDirInfoFromStore(filteredEntries, includeSpecial)
-	case types.FileIdFullDirectoryInformation:
-		entries = h.buildFileIdFullDirInfoFromStore(filteredEntries, includeSpecial)
-	case types.FileFullDirectoryInformation:
-		entries = h.buildFileFullDirInfoFromStore(filteredEntries, includeSpecial)
-	case types.FileDirectoryInformation:
-		entries = h.buildFileDirInfoFromStore(filteredEntries, includeSpecial)
-	case types.FileNamesInformation:
-		entries = h.buildFileNamesInfoFromStore(filteredEntries, includeSpecial)
-	default:
-		// Default to FileBothDirectoryInformation
-		entries = h.buildFileBothDirInfoFromStore(filteredEntries, includeSpecial)
+		if idx >= totalEntries {
+			openFile.EnumerationComplete = true
+			h.StoreOpenFile(openFile)
+			return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNoMoreFiles}}, nil
+		}
+
+		// Build a single entry at the current index
+		fileInfoClass := types.FileInfoClass(req.FileInfoClass)
+		var singleFilteredEntries []metadata.DirEntry
+		singleIncludeSpecial := false
+
+		if idx < specialCount {
+			// Return a "." or ".." entry
+			singleIncludeSpecial = true
+		} else {
+			// Return a regular entry at offset idx-specialCount
+			realIdx := idx - specialCount
+			if realIdx < len(filteredEntries) {
+				singleFilteredEntries = filteredEntries[realIdx : realIdx+1]
+			}
+		}
+
+		var entries []byte
+		if singleIncludeSpecial {
+			// Build both special entries plus nothing else, then truncate to the right one
+			entries = buildDirInfoEntries(fileInfoClass, nil, true, dirAttr)
+			if idx == 0 {
+				entries = truncateToFirstEntry(entries) // "."
+			} else {
+				entries = truncateToNthEntry(entries, 1) // ".."
+			}
+		} else {
+			entries = buildDirInfoEntries(fileInfoClass, singleFilteredEntries, false, dirAttr)
+		}
+
+		if len(entries) == 0 {
+			openFile.EnumerationComplete = true
+			h.StoreOpenFile(openFile)
+			return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNoMoreFiles}}, nil
+		}
+
+		openFile.EnumerationIndex = idx + 1
+		if openFile.EnumerationIndex >= totalEntries {
+			openFile.EnumerationComplete = true
+		}
+		h.StoreOpenFile(openFile)
+
+		return h.buildQueryDirectoryResponse(entries, req.OutputBufferLength, openFile, fileInfoClass)
 	}
+
+	fileInfoClass := types.FileInfoClass(req.FileInfoClass)
+	entries := buildDirInfoEntries(fileInfoClass, filteredEntries, includeSpecial, dirAttr)
 
 	if len(entries) == 0 {
 		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNoMoreFiles}}, nil
@@ -331,505 +397,338 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	openFile.EnumerationComplete = true
 	h.StoreOpenFile(openFile)
 
-	// Truncate if necessary
-	if uint32(len(entries)) > req.OutputBufferLength {
-		entries = entries[:req.OutputBufferLength]
-	}
-
-	logger.Debug("QUERY_DIRECTORY successful",
-		"path", openFile.Path,
-		"pattern", req.FileName,
-		"totalEntries", len(page.Entries),
-		"matchedEntries", len(filteredEntries),
-		"bufferSize", len(entries))
-
-	// ========================================================================
-	// Step 8: Build success response
-	// ========================================================================
-
-	return &QueryDirectoryResponse{
-		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
-		Data:            entries,
-	}, nil
+	return h.buildQueryDirectoryResponse(entries, req.OutputBufferLength, openFile, fileInfoClass)
 }
 
 // ============================================================================
 // Helper Functions - Directory Entry Building
 // ============================================================================
 
-// buildFileBothDirInfoFromStore builds FILE_BOTH_DIR_INFORMATION structures [MS-FSCC] 2.4.8.
-func (h *Handler) buildFileBothDirInfoFromStore(entries []metadata.DirEntry, includeSpecial bool) []byte {
+// dirEntryWireFields holds the pre-computed wire-format fields shared by all
+// FILE_*_INFORMATION directory entry structures. Avoids repeating the
+// attr-to-wire conversion in every per-format encoding function.
+type dirEntryWireFields struct {
+	creationTime   uint64
+	accessTime     uint64
+	writeTime      uint64
+	changeTime     uint64
+	size           uint64
+	allocationSize uint64
+	attrs          types.FileAttributes
+}
+
+// resolveDirEntryFields computes wire-format fields from a FileAttr and name.
+// When attr is nil (e.g. for "." and ".." entries without a resolved attr), uses
+// current time and directory attributes as a fallback. Callers should prefer
+// passing actual attributes via resolveDirEntryFieldsWithFallback.
+func resolveDirEntryFields(attr *metadata.FileAttr, name string) dirEntryWireFields {
+	if attr == nil {
+		now := types.NowFiletime()
+		return dirEntryWireFields{
+			creationTime: now,
+			accessTime:   now,
+			writeTime:    now,
+			changeTime:   now,
+			attrs:        types.FileAttributeDirectory,
+		}
+	}
+
+	creation, access, write, change := FileAttrToSMBTimes(attr)
+	size := getSMBSize(attr)
+	return dirEntryWireFields{
+		creationTime:   types.TimeToFiletime(creation),
+		accessTime:     types.TimeToFiletime(access),
+		writeTime:      types.TimeToFiletime(write),
+		changeTime:     types.TimeToFiletime(change),
+		size:           size,
+		allocationSize: calculateAllocationSize(size),
+		attrs:          FileAttrToSMBAttributesWithName(attr, name),
+	}
+}
+
+// writeCommonDirFields writes the 56-byte timestamp/size/attribute block shared
+// across all directory info structures starting at the given offset:
+//
+//	[0:8]   CreationTime
+//	[8:16]  LastAccessTime
+//	[16:24] LastWriteTime
+//	[24:32] ChangeTime
+//	[32:40] EndOfFile
+//	[40:48] AllocationSize
+//	[48:52] FileAttributes
+//	[52:56] FileNameLength
+func writeCommonDirFields(entry []byte, offset int, f dirEntryWireFields, fileNameLen int) {
+	binary.LittleEndian.PutUint64(entry[offset:], f.creationTime)
+	binary.LittleEndian.PutUint64(entry[offset+8:], f.accessTime)
+	binary.LittleEndian.PutUint64(entry[offset+16:], f.writeTime)
+	binary.LittleEndian.PutUint64(entry[offset+24:], f.changeTime)
+	binary.LittleEndian.PutUint64(entry[offset+32:], f.size)
+	binary.LittleEndian.PutUint64(entry[offset+40:], f.allocationSize)
+	binary.LittleEndian.PutUint32(entry[offset+48:], uint32(f.attrs))
+	binary.LittleEndian.PutUint32(entry[offset+52:], uint32(fileNameLen))
+}
+
+// allocAlignedEntry allocates a zero-filled byte slice of at least baseSize+nameLen
+// bytes, padded to an 8-byte boundary.
+func allocAlignedEntry(baseSize, nameLen int) []byte {
+	return make([]byte, (baseSize+nameLen+7)&^7)
+}
+
+// linkEntry appends entry to result and updates the NextEntryOffset chain.
+// prevNextOffset tracks the byte offset within result where the previous
+// entry's NextEntryOffset field starts.
+func linkEntry(result []byte, prevNextOffset *int, entry []byte) []byte {
+	if len(result) > 0 {
+		binary.LittleEndian.PutUint32(result[*prevNextOffset:], uint32(len(result)-*prevNextOffset))
+	}
+	*prevNextOffset = len(result)
+	return append(result, entry...)
+}
+
+// buildDirInfoEntries dispatches to the appropriate per-format builder based on fileInfoClass.
+// dirAttr is the FileAttr of the directory itself, used for "." and ".." entries so they
+// report the directory's actual timestamps instead of NowFiletime(). May be nil as fallback.
+func buildDirInfoEntries(fileInfoClass types.FileInfoClass, entries []metadata.DirEntry, includeSpecial bool, dirAttr *metadata.FileAttr) []byte {
+	switch fileInfoClass {
+	case types.FileBothDirectoryInformation:
+		return buildFileBothDirInfo(entries, includeSpecial, dirAttr)
+	case types.FileIdBothDirectoryInformation:
+		return buildFileIdBothDirInfo(entries, includeSpecial, dirAttr)
+	case types.FileIdFullDirectoryInformation:
+		return buildFileIdFullDirInfo(entries, includeSpecial, dirAttr)
+	case types.FileFullDirectoryInformation:
+		return buildFileFullDirInfo(entries, includeSpecial, dirAttr)
+	case types.FileDirectoryInformation:
+		return buildFileDirInfo(entries, includeSpecial, dirAttr)
+	case types.FileNamesInformation:
+		return buildFileNamesInfo(entries, includeSpecial)
+	default:
+		return buildFileBothDirInfo(entries, includeSpecial, dirAttr)
+	}
+}
+
+// buildFileBothDirInfo builds FILE_BOTH_DIR_INFORMATION structures [MS-FSCC] 2.4.8.
+func buildFileBothDirInfo(entries []metadata.DirEntry, includeSpecial bool, dirAttr *metadata.FileAttr) []byte {
 	var result []byte
 	var prevNextOffset int
 	var fileIndex uint64 = 1
 
-	// Add special entries first
 	if includeSpecial {
-		result = h.appendBothDirEntryFromAttr(result, &prevNextOffset, ".", nil, fileIndex)
+		result = linkEntry(result, &prevNextOffset, encodeBothDirEntry(".", dirAttr, fileIndex))
 		fileIndex++
-		result = h.appendBothDirEntryFromAttr(result, &prevNextOffset, "..", nil, fileIndex)
+		result = linkEntry(result, &prevNextOffset, encodeBothDirEntry("..", dirAttr, fileIndex))
 		fileIndex++
 	}
 
 	for i := range entries {
-		result = h.appendBothDirEntryFromAttr(result, &prevNextOffset, entries[i].Name, entries[i].Attr, fileIndex)
+		result = linkEntry(result, &prevNextOffset, encodeBothDirEntry(entries[i].Name, entries[i].Attr, fileIndex))
 		fileIndex++
 	}
 
 	return result
 }
 
-// appendBothDirEntryFromAttr appends a FILE_BOTH_DIR_INFORMATION entry from FileAttr.
-func (h *Handler) appendBothDirEntryFromAttr(result []byte, prevNextOffset *int, name string, attr *metadata.FileAttr, fileIndex uint64) []byte {
-	// Encode filename
-	nameUTF16 := utf16.Encode([]rune(name))
-	nameBytes := make([]byte, len(nameUTF16)*2)
-	for i, r := range nameUTF16 {
-		binary.LittleEndian.PutUint16(nameBytes[i*2:], r)
-	}
+// encodeBothDirEntry encodes a single FILE_BOTH_DIR_INFORMATION entry (94-byte base + filename).
+func encodeBothDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64) []byte {
+	nameBytes := encodeUTF16LE(name)
+	f := resolveDirEntryFields(attr, name)
 
-	// FILE_BOTH_DIR_INFORMATION structure (94 bytes base + filename)
-	// Align to 8-byte boundary
-	totalLen := 94 + len(nameBytes)
-	padding := (8 - (totalLen % 8)) % 8
-	totalLen += padding
-
-	entry := make([]byte, totalLen)
-
-	// NextEntryOffset (will update later for previous entry)
-	binary.LittleEndian.PutUint32(entry[0:4], 0)
-	binary.LittleEndian.PutUint32(entry[4:8], uint32(fileIndex)) // FileIndex
-
-	var creationTime, accessTime, writeTime, changeTime uint64
-	var size uint64
-	var attrs types.FileAttributes
-
-	if attr != nil {
-		creation, access, write, change := FileAttrToSMBTimes(attr)
-		creationTime = types.TimeToFiletime(creation)
-		accessTime = types.TimeToFiletime(access)
-		writeTime = types.TimeToFiletime(write)
-		changeTime = types.TimeToFiletime(change)
-		size = getSMBSize(attr) // Use MFsymlink size for symlinks
-		// Use FileAttrToSMBAttributesWithName to include Hidden attribute for dot-prefix files
-		attrs = FileAttrToSMBAttributesWithName(attr, name)
-	} else {
-		// Special entries (. and ..)
-		now := types.NowFiletime()
-		creationTime = now
-		accessTime = now
-		writeTime = now
-		changeTime = now
-		attrs = types.FileAttributeDirectory
-	}
-
-	binary.LittleEndian.PutUint64(entry[8:16], creationTime)            // CreationTime
-	binary.LittleEndian.PutUint64(entry[16:24], accessTime)             // LastAccessTime
-	binary.LittleEndian.PutUint64(entry[24:32], writeTime)              // LastWriteTime
-	binary.LittleEndian.PutUint64(entry[32:40], changeTime)             // ChangeTime
-	binary.LittleEndian.PutUint64(entry[40:48], size)                   // EndOfFile
-	binary.LittleEndian.PutUint64(entry[48:56], size)                   // AllocationSize
-	binary.LittleEndian.PutUint32(entry[56:60], uint32(attrs))          // FileAttributes
-	binary.LittleEndian.PutUint32(entry[60:64], uint32(len(nameBytes))) // FileNameLength
-	binary.LittleEndian.PutUint32(entry[64:68], 0)                      // EaSize
-	entry[68] = 0                                                       // ShortNameLength
-	entry[69] = 0                                                       // Reserved
-	// ShortName (24 bytes) - leave as zeros (positions 70-93)
+	entry := allocAlignedEntry(94, len(nameBytes))
+	binary.LittleEndian.PutUint32(entry[4:8], uint32(fileIndex))
+	writeCommonDirFields(entry, 8, f, len(nameBytes))
+	// EaSize (4 bytes at 64)
+	shortNameBytes := generate83ShortName(name)
+	entry[68] = byte(len(shortNameBytes)) // ShortNameLength
+	// Reserved (1 byte at 69)
+	copy(entry[70:94], shortNameBytes) // ShortName (24 bytes max)
 	copy(entry[94:], nameBytes)
 
-	// Update previous entry's NextEntryOffset to point to this entry
-	if len(result) > 0 {
-		binary.LittleEndian.PutUint32(result[*prevNextOffset:], uint32(len(result)-*prevNextOffset))
-	}
-
-	// Remember this entry's position for the next iteration
-	*prevNextOffset = len(result)
-	return append(result, entry...)
+	return entry
 }
 
-// buildFileIdBothDirInfoFromStore builds FILE_ID_BOTH_DIR_INFORMATION structures [MS-FSCC] 2.4.17.
-func (h *Handler) buildFileIdBothDirInfoFromStore(entries []metadata.DirEntry, includeSpecial bool) []byte {
+// buildFileIdBothDirInfo builds FILE_ID_BOTH_DIR_INFORMATION structures [MS-FSCC] 2.4.17.
+func buildFileIdBothDirInfo(entries []metadata.DirEntry, includeSpecial bool, dirAttr *metadata.FileAttr) []byte {
 	var result []byte
 	var prevNextOffset int
 	var fileIndex uint64 = 1
 
 	if includeSpecial {
-		result = h.appendIdBothDirEntryFromAttr(result, &prevNextOffset, ".", nil, fileIndex, fileIndex)
+		// "." gets a non-zero FileId (the directory's own identifier).
+		// WPTS asserts FileId != 0 for the "." entry.
+		// ".." gets FileId=0 (parent directory reference is unknown/not tracked).
+		// WPTS asserts FileId == 0 for the ".." entry.
+		result = linkEntry(result, &prevNextOffset, encodeIdBothDirEntry(".", dirAttr, fileIndex, fileIndex))
 		fileIndex++
-		result = h.appendIdBothDirEntryFromAttr(result, &prevNextOffset, "..", nil, fileIndex, fileIndex)
+		result = linkEntry(result, &prevNextOffset, encodeIdBothDirEntry("..", dirAttr, fileIndex, 0))
 		fileIndex++
 	}
 
 	for i := range entries {
-		result = h.appendIdBothDirEntryFromAttr(result, &prevNextOffset, entries[i].Name, entries[i].Attr, fileIndex, entries[i].ID)
+		result = linkEntry(result, &prevNextOffset, encodeIdBothDirEntry(entries[i].Name, entries[i].Attr, fileIndex, entries[i].ID))
 		fileIndex++
 	}
 
 	return result
 }
 
-// appendIdBothDirEntryFromAttr appends a FILE_ID_BOTH_DIR_INFORMATION entry from FileAttr.
-func (h *Handler) appendIdBothDirEntryFromAttr(result []byte, prevNextOffset *int, name string, attr *metadata.FileAttr, fileIndex uint64, fileID uint64) []byte {
-	nameUTF16 := utf16.Encode([]rune(name))
-	nameBytes := make([]byte, len(nameUTF16)*2)
-	for i, r := range nameUTF16 {
-		binary.LittleEndian.PutUint16(nameBytes[i*2:], r)
-	}
+// encodeIdBothDirEntry encodes a single FILE_ID_BOTH_DIR_INFORMATION entry (104-byte base + filename).
+func encodeIdBothDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64, fileID uint64) []byte {
+	nameBytes := encodeUTF16LE(name)
+	f := resolveDirEntryFields(attr, name)
 
-	// FILE_ID_BOTH_DIR_INFORMATION structure (104 bytes base + filename)
-	totalLen := 104 + len(nameBytes)
-	padding := (8 - (totalLen % 8)) % 8
-	totalLen += padding
-
-	entry := make([]byte, totalLen)
-
-	binary.LittleEndian.PutUint32(entry[0:4], 0)
-	binary.LittleEndian.PutUint32(entry[4:8], uint32(fileIndex)) // FileIndex
-
-	var creationTime, accessTime, writeTime, changeTime uint64
-	var size uint64
-	var attrs types.FileAttributes
-
-	if attr != nil {
-		creation, access, write, change := FileAttrToSMBTimes(attr)
-		creationTime = types.TimeToFiletime(creation)
-		accessTime = types.TimeToFiletime(access)
-		writeTime = types.TimeToFiletime(write)
-		changeTime = types.TimeToFiletime(change)
-		size = getSMBSize(attr) // Use MFsymlink size for symlinks
-		// Use FileAttrToSMBAttributesWithName to include Hidden attribute for dot-prefix files
-		attrs = FileAttrToSMBAttributesWithName(attr, name)
-	} else {
-		now := types.NowFiletime()
-		creationTime = now
-		accessTime = now
-		writeTime = now
-		changeTime = now
-		attrs = types.FileAttributeDirectory
-	}
-
-	binary.LittleEndian.PutUint64(entry[8:16], creationTime)
-	binary.LittleEndian.PutUint64(entry[16:24], accessTime)
-	binary.LittleEndian.PutUint64(entry[24:32], writeTime)
-	binary.LittleEndian.PutUint64(entry[32:40], changeTime)
-	binary.LittleEndian.PutUint64(entry[40:48], size)
-	binary.LittleEndian.PutUint64(entry[48:56], size)
-	binary.LittleEndian.PutUint32(entry[56:60], uint32(attrs))
-	binary.LittleEndian.PutUint32(entry[60:64], uint32(len(nameBytes)))
-	binary.LittleEndian.PutUint32(entry[64:68], 0) // EaSize
-	entry[68] = 0                                  // ShortNameLength
-	entry[69] = 0                                  // Reserved1
-	// ShortName (24 bytes) - positions 70-93
-	binary.LittleEndian.PutUint16(entry[94:96], 0)       // Reserved2
-	binary.LittleEndian.PutUint64(entry[96:104], fileID) // FileId
+	entry := allocAlignedEntry(104, len(nameBytes))
+	binary.LittleEndian.PutUint32(entry[4:8], uint32(fileIndex))
+	writeCommonDirFields(entry, 8, f, len(nameBytes))
+	// EaSize (4 bytes at 64)
+	shortNameBytes := generate83ShortName(name)
+	entry[68] = byte(len(shortNameBytes)) // ShortNameLength
+	// Reserved1 (1 byte at 69)
+	copy(entry[70:94], shortNameBytes) // ShortName (24 bytes max)
+	// Reserved2 (2 bytes at 94-95)
+	binary.LittleEndian.PutUint64(entry[96:104], fileID)
 	copy(entry[104:], nameBytes)
 
-	// Update previous entry's NextEntryOffset to point to this entry
-	if len(result) > 0 {
-		binary.LittleEndian.PutUint32(result[*prevNextOffset:], uint32(len(result)-*prevNextOffset))
-	}
-
-	// Remember this entry's position for the next iteration
-	*prevNextOffset = len(result)
-	return append(result, entry...)
+	return entry
 }
 
-// buildFileIdFullDirInfoFromStore builds FILE_ID_FULL_DIR_INFORMATION structures [MS-FSCC] 2.4.18.
-func (h *Handler) buildFileIdFullDirInfoFromStore(entries []metadata.DirEntry, includeSpecial bool) []byte {
+// buildFileIdFullDirInfo builds FILE_ID_FULL_DIR_INFORMATION structures [MS-FSCC] 2.4.18.
+func buildFileIdFullDirInfo(entries []metadata.DirEntry, includeSpecial bool, dirAttr *metadata.FileAttr) []byte {
 	var result []byte
 	var prevNextOffset int
 	var fileIndex uint64 = 1
 
 	if includeSpecial {
-		result = h.appendIdFullDirEntryFromAttr(result, &prevNextOffset, ".", nil, fileIndex, fileIndex)
+		// "." gets a non-zero FileId (the directory's own identifier).
+		// ".." gets FileId=0 (parent directory reference is unknown/not tracked).
+		result = linkEntry(result, &prevNextOffset, encodeIdFullDirEntry(".", dirAttr, fileIndex, fileIndex))
 		fileIndex++
-		result = h.appendIdFullDirEntryFromAttr(result, &prevNextOffset, "..", nil, fileIndex, fileIndex)
+		result = linkEntry(result, &prevNextOffset, encodeIdFullDirEntry("..", dirAttr, fileIndex, 0))
 		fileIndex++
 	}
 
 	for i := range entries {
-		result = h.appendIdFullDirEntryFromAttr(result, &prevNextOffset, entries[i].Name, entries[i].Attr, fileIndex, entries[i].ID)
+		result = linkEntry(result, &prevNextOffset, encodeIdFullDirEntry(entries[i].Name, entries[i].Attr, fileIndex, entries[i].ID))
 		fileIndex++
 	}
 
 	return result
 }
 
-// appendIdFullDirEntryFromAttr appends a FILE_ID_FULL_DIR_INFORMATION entry from FileAttr.
-func (h *Handler) appendIdFullDirEntryFromAttr(result []byte, prevNextOffset *int, name string, attr *metadata.FileAttr, fileIndex uint64, fileID uint64) []byte {
-	nameUTF16 := utf16.Encode([]rune(name))
-	nameBytes := make([]byte, len(nameUTF16)*2)
-	for i, r := range nameUTF16 {
-		binary.LittleEndian.PutUint16(nameBytes[i*2:], r)
-	}
+// encodeIdFullDirEntry encodes a single FILE_ID_FULL_DIR_INFORMATION entry (80-byte base + filename).
+func encodeIdFullDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64, fileID uint64) []byte {
+	nameBytes := encodeUTF16LE(name)
+	f := resolveDirEntryFields(attr, name)
 
-	// FILE_ID_FULL_DIR_INFORMATION structure (80 bytes base + filename)
-	// [MS-FSCC] 2.4.18
-	totalLen := 80 + len(nameBytes)
-	padding := (8 - (totalLen % 8)) % 8
-	totalLen += padding
-
-	entry := make([]byte, totalLen)
-
-	binary.LittleEndian.PutUint32(entry[0:4], 0)                 // NextEntryOffset (set later)
-	binary.LittleEndian.PutUint32(entry[4:8], uint32(fileIndex)) // FileIndex
-
-	var creationTime, accessTime, writeTime, changeTime uint64
-	var size uint64
-	var attrs types.FileAttributes
-
-	if attr != nil {
-		creation, access, write, change := FileAttrToSMBTimes(attr)
-		creationTime = types.TimeToFiletime(creation)
-		accessTime = types.TimeToFiletime(access)
-		writeTime = types.TimeToFiletime(write)
-		changeTime = types.TimeToFiletime(change)
-		size = getSMBSize(attr)
-		attrs = FileAttrToSMBAttributesWithName(attr, name)
-	} else {
-		now := types.NowFiletime()
-		creationTime = now
-		accessTime = now
-		writeTime = now
-		changeTime = now
-		attrs = types.FileAttributeDirectory
-	}
-
-	binary.LittleEndian.PutUint64(entry[8:16], creationTime)
-	binary.LittleEndian.PutUint64(entry[16:24], accessTime)
-	binary.LittleEndian.PutUint64(entry[24:32], writeTime)
-	binary.LittleEndian.PutUint64(entry[32:40], changeTime)
-	binary.LittleEndian.PutUint64(entry[40:48], size)                   // EndOfFile
-	binary.LittleEndian.PutUint64(entry[48:56], size)                   // AllocationSize
-	binary.LittleEndian.PutUint32(entry[56:60], uint32(attrs))          // FileAttributes
-	binary.LittleEndian.PutUint32(entry[60:64], uint32(len(nameBytes))) // FileNameLength
-	binary.LittleEndian.PutUint32(entry[64:68], 0)                      // EaSize
-	binary.LittleEndian.PutUint32(entry[68:72], 0)                      // Reserved
-	binary.LittleEndian.PutUint64(entry[72:80], fileID)                 // FileId
-	copy(entry[80:], nameBytes)                                         // FileName
-
-	// Update previous entry's NextEntryOffset to point to this entry
-	if len(result) > 0 {
-		binary.LittleEndian.PutUint32(result[*prevNextOffset:], uint32(len(result)-*prevNextOffset))
-	}
-
-	// Remember this entry's position for the next iteration
-	*prevNextOffset = len(result)
-	return append(result, entry...)
-}
-
-// buildFileFullDirInfoFromStore builds FILE_FULL_DIR_INFORMATION structures [MS-FSCC] 2.4.14.
-func (h *Handler) buildFileFullDirInfoFromStore(entries []metadata.DirEntry, includeSpecial bool) []byte {
-	var result []byte
-	var prevNextOffset int
-	var fileIndex uint64 = 1
-
-	if includeSpecial {
-		result = h.appendFullDirEntryFromAttr(result, &prevNextOffset, ".", nil, fileIndex)
-		fileIndex++
-		result = h.appendFullDirEntryFromAttr(result, &prevNextOffset, "..", nil, fileIndex)
-		fileIndex++
-	}
-
-	for i := range entries {
-		result = h.appendFullDirEntryFromAttr(result, &prevNextOffset, entries[i].Name, entries[i].Attr, fileIndex)
-		fileIndex++
-	}
-
-	return result
-}
-
-// appendFullDirEntryFromAttr appends a FILE_FULL_DIR_INFORMATION entry from FileAttr.
-func (h *Handler) appendFullDirEntryFromAttr(result []byte, prevNextOffset *int, name string, attr *metadata.FileAttr, fileIndex uint64) []byte {
-	nameUTF16 := utf16.Encode([]rune(name))
-	nameBytes := make([]byte, len(nameUTF16)*2)
-	for i, r := range nameUTF16 {
-		binary.LittleEndian.PutUint16(nameBytes[i*2:], r)
-	}
-
-	// FILE_FULL_DIR_INFORMATION structure (68 bytes base + filename)
-	totalLen := 68 + len(nameBytes)
-	padding := (8 - (totalLen % 8)) % 8
-	totalLen += padding
-
-	entry := make([]byte, totalLen)
-
-	binary.LittleEndian.PutUint32(entry[0:4], 0)
+	entry := allocAlignedEntry(80, len(nameBytes))
 	binary.LittleEndian.PutUint32(entry[4:8], uint32(fileIndex))
+	writeCommonDirFields(entry, 8, f, len(nameBytes))
+	// EaSize (4 bytes at 64), Reserved (4 bytes at 68) are left as zero
+	binary.LittleEndian.PutUint64(entry[72:80], fileID)
+	copy(entry[80:], nameBytes)
 
-	var creationTime, accessTime, writeTime, changeTime uint64
-	var size uint64
-	var attrs types.FileAttributes
+	return entry
+}
 
-	if attr != nil {
-		creation, access, write, change := FileAttrToSMBTimes(attr)
-		creationTime = types.TimeToFiletime(creation)
-		accessTime = types.TimeToFiletime(access)
-		writeTime = types.TimeToFiletime(write)
-		changeTime = types.TimeToFiletime(change)
-		size = getSMBSize(attr) // Use MFsymlink size for symlinks
-		// Use FileAttrToSMBAttributesWithName to include Hidden attribute for dot-prefix files
-		attrs = FileAttrToSMBAttributesWithName(attr, name)
-	} else {
-		now := types.NowFiletime()
-		creationTime = now
-		accessTime = now
-		writeTime = now
-		changeTime = now
-		attrs = types.FileAttributeDirectory
+// buildFileFullDirInfo builds FILE_FULL_DIR_INFORMATION structures [MS-FSCC] 2.4.14.
+func buildFileFullDirInfo(entries []metadata.DirEntry, includeSpecial bool, dirAttr *metadata.FileAttr) []byte {
+	var result []byte
+	var prevNextOffset int
+	var fileIndex uint64 = 1
+
+	if includeSpecial {
+		result = linkEntry(result, &prevNextOffset, encodeFullDirEntry(".", dirAttr, fileIndex))
+		fileIndex++
+		result = linkEntry(result, &prevNextOffset, encodeFullDirEntry("..", dirAttr, fileIndex))
+		fileIndex++
 	}
 
-	binary.LittleEndian.PutUint64(entry[8:16], creationTime)
-	binary.LittleEndian.PutUint64(entry[16:24], accessTime)
-	binary.LittleEndian.PutUint64(entry[24:32], writeTime)
-	binary.LittleEndian.PutUint64(entry[32:40], changeTime)
-	binary.LittleEndian.PutUint64(entry[40:48], size)
-	binary.LittleEndian.PutUint64(entry[48:56], size)
-	binary.LittleEndian.PutUint32(entry[56:60], uint32(attrs))
-	binary.LittleEndian.PutUint32(entry[60:64], uint32(len(nameBytes)))
-	binary.LittleEndian.PutUint32(entry[64:68], 0) // EaSize
+	for i := range entries {
+		result = linkEntry(result, &prevNextOffset, encodeFullDirEntry(entries[i].Name, entries[i].Attr, fileIndex))
+		fileIndex++
+	}
+
+	return result
+}
+
+// encodeFullDirEntry encodes a single FILE_FULL_DIR_INFORMATION entry (68-byte base + filename).
+func encodeFullDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64) []byte {
+	nameBytes := encodeUTF16LE(name)
+	f := resolveDirEntryFields(attr, name)
+
+	entry := allocAlignedEntry(68, len(nameBytes))
+	binary.LittleEndian.PutUint32(entry[4:8], uint32(fileIndex))
+	writeCommonDirFields(entry, 8, f, len(nameBytes))
+	// EaSize (4 bytes at 64) is left as zero
 	copy(entry[68:], nameBytes)
 
-	// Update previous entry's NextEntryOffset to point to this entry
-	if len(result) > 0 {
-		binary.LittleEndian.PutUint32(result[*prevNextOffset:], uint32(len(result)-*prevNextOffset))
-	}
-
-	// Remember this entry's position for the next iteration
-	*prevNextOffset = len(result)
-	return append(result, entry...)
+	return entry
 }
 
-// buildFileDirInfoFromStore builds FILE_DIRECTORY_INFORMATION structures [MS-FSCC] 2.4.10.
-func (h *Handler) buildFileDirInfoFromStore(entries []metadata.DirEntry, includeSpecial bool) []byte {
+// buildFileDirInfo builds FILE_DIRECTORY_INFORMATION structures [MS-FSCC] 2.4.10.
+func buildFileDirInfo(entries []metadata.DirEntry, includeSpecial bool, dirAttr *metadata.FileAttr) []byte {
 	var result []byte
 	var prevNextOffset int
 	var fileIndex uint64 = 1
 
 	if includeSpecial {
-		result = h.appendDirEntryFromAttr(result, &prevNextOffset, ".", nil, fileIndex)
+		result = linkEntry(result, &prevNextOffset, encodeDirInfoEntry(".", dirAttr, fileIndex))
 		fileIndex++
-		result = h.appendDirEntryFromAttr(result, &prevNextOffset, "..", nil, fileIndex)
+		result = linkEntry(result, &prevNextOffset, encodeDirInfoEntry("..", dirAttr, fileIndex))
 		fileIndex++
 	}
 
 	for i := range entries {
-		result = h.appendDirEntryFromAttr(result, &prevNextOffset, entries[i].Name, entries[i].Attr, fileIndex)
+		result = linkEntry(result, &prevNextOffset, encodeDirInfoEntry(entries[i].Name, entries[i].Attr, fileIndex))
 		fileIndex++
 	}
 
 	return result
 }
 
-// appendDirEntryFromAttr appends a FILE_DIRECTORY_INFORMATION entry from FileAttr.
-func (h *Handler) appendDirEntryFromAttr(result []byte, prevNextOffset *int, name string, attr *metadata.FileAttr, fileIndex uint64) []byte {
-	nameUTF16 := utf16.Encode([]rune(name))
-	nameBytes := make([]byte, len(nameUTF16)*2)
-	for i, r := range nameUTF16 {
-		binary.LittleEndian.PutUint16(nameBytes[i*2:], r)
-	}
+// encodeDirInfoEntry encodes a single FILE_DIRECTORY_INFORMATION entry (64-byte base + filename).
+func encodeDirInfoEntry(name string, attr *metadata.FileAttr, fileIndex uint64) []byte {
+	nameBytes := encodeUTF16LE(name)
+	f := resolveDirEntryFields(attr, name)
 
-	// FILE_DIRECTORY_INFORMATION structure (64 bytes base + filename)
-	totalLen := 64 + len(nameBytes)
-	padding := (8 - (totalLen % 8)) % 8
-	totalLen += padding
-
-	entry := make([]byte, totalLen)
-
-	binary.LittleEndian.PutUint32(entry[0:4], 0)
+	entry := allocAlignedEntry(64, len(nameBytes))
 	binary.LittleEndian.PutUint32(entry[4:8], uint32(fileIndex))
-
-	var creationTime, accessTime, writeTime, changeTime uint64
-	var size uint64
-	var attrs types.FileAttributes
-
-	if attr != nil {
-		creation, access, write, change := FileAttrToSMBTimes(attr)
-		creationTime = types.TimeToFiletime(creation)
-		accessTime = types.TimeToFiletime(access)
-		writeTime = types.TimeToFiletime(write)
-		changeTime = types.TimeToFiletime(change)
-		size = getSMBSize(attr) // Use MFsymlink size for symlinks
-		// Use FileAttrToSMBAttributesWithName to include Hidden attribute for dot-prefix files
-		attrs = FileAttrToSMBAttributesWithName(attr, name)
-	} else {
-		now := types.NowFiletime()
-		creationTime = now
-		accessTime = now
-		writeTime = now
-		changeTime = now
-		attrs = types.FileAttributeDirectory
-	}
-
-	binary.LittleEndian.PutUint64(entry[8:16], creationTime)
-	binary.LittleEndian.PutUint64(entry[16:24], accessTime)
-	binary.LittleEndian.PutUint64(entry[24:32], writeTime)
-	binary.LittleEndian.PutUint64(entry[32:40], changeTime)
-	binary.LittleEndian.PutUint64(entry[40:48], size)
-	binary.LittleEndian.PutUint64(entry[48:56], size)
-	binary.LittleEndian.PutUint32(entry[56:60], uint32(attrs))
-	binary.LittleEndian.PutUint32(entry[60:64], uint32(len(nameBytes)))
+	writeCommonDirFields(entry, 8, f, len(nameBytes))
 	copy(entry[64:], nameBytes)
 
-	// Update previous entry's NextEntryOffset to point to this entry
-	if len(result) > 0 {
-		binary.LittleEndian.PutUint32(result[*prevNextOffset:], uint32(len(result)-*prevNextOffset))
-	}
-
-	// Remember this entry's position for the next iteration
-	*prevNextOffset = len(result)
-	return append(result, entry...)
+	return entry
 }
 
-// buildFileNamesInfoFromStore builds FILE_NAMES_INFORMATION structures [MS-FSCC] 2.4.26.
-func (h *Handler) buildFileNamesInfoFromStore(entries []metadata.DirEntry, includeSpecial bool) []byte {
+// buildFileNamesInfo builds FILE_NAMES_INFORMATION structures [MS-FSCC] 2.4.26.
+func buildFileNamesInfo(entries []metadata.DirEntry, includeSpecial bool) []byte {
 	var result []byte
 	var prevNextOffset int
 	var fileIndex uint64 = 1
 
 	if includeSpecial {
-		result = h.appendNamesEntryFromStore(result, &prevNextOffset, ".", fileIndex)
+		result = linkEntry(result, &prevNextOffset, encodeNamesEntry(".", fileIndex))
 		fileIndex++
-		result = h.appendNamesEntryFromStore(result, &prevNextOffset, "..", fileIndex)
+		result = linkEntry(result, &prevNextOffset, encodeNamesEntry("..", fileIndex))
 		fileIndex++
 	}
 
 	for i := range entries {
-		result = h.appendNamesEntryFromStore(result, &prevNextOffset, entries[i].Name, fileIndex)
+		result = linkEntry(result, &prevNextOffset, encodeNamesEntry(entries[i].Name, fileIndex))
 		fileIndex++
 	}
 
 	return result
 }
 
-// appendNamesEntryFromStore appends a FILE_NAMES_INFORMATION entry.
-func (h *Handler) appendNamesEntryFromStore(result []byte, prevNextOffset *int, name string, fileIndex uint64) []byte {
-	nameUTF16 := utf16.Encode([]rune(name))
-	nameBytes := make([]byte, len(nameUTF16)*2)
-	for i, r := range nameUTF16 {
-		binary.LittleEndian.PutUint16(nameBytes[i*2:], r)
-	}
+// encodeNamesEntry encodes a single FILE_NAMES_INFORMATION entry (12-byte base + filename).
+func encodeNamesEntry(name string, fileIndex uint64) []byte {
+	nameBytes := encodeUTF16LE(name)
 
-	// FILE_NAMES_INFORMATION structure (12 bytes base + filename)
-	totalLen := 12 + len(nameBytes)
-	padding := (8 - (totalLen % 8)) % 8
-	totalLen += padding
-
-	entry := make([]byte, totalLen)
-
-	binary.LittleEndian.PutUint32(entry[0:4], 0)
-	binary.LittleEndian.PutUint32(entry[4:8], uint32(fileIndex)) // FileIndex
+	entry := allocAlignedEntry(12, len(nameBytes))
+	binary.LittleEndian.PutUint32(entry[4:8], uint32(fileIndex))
 	binary.LittleEndian.PutUint32(entry[8:12], uint32(len(nameBytes)))
 	copy(entry[12:], nameBytes)
 
-	// Update previous entry's NextEntryOffset to point to this entry
-	if len(result) > 0 {
-		binary.LittleEndian.PutUint32(result[*prevNextOffset:], uint32(len(result)-*prevNextOffset))
-	}
-
-	// Remember this entry's position for the next iteration
-	*prevNextOffset = len(result)
-	return append(result, entry...)
+	return entry
 }
 
 // ============================================================================
@@ -848,7 +747,6 @@ func (h *Handler) appendNamesEntryFromStore(result []byte, prevNextOffset *int, 
 func filterDirEntries(entries []metadata.DirEntry, pattern string) []metadata.DirEntry {
 	var filtered []metadata.DirEntry
 
-	// Check if pattern matches all
 	matchAll := pattern == "" || pattern == "*" || pattern == "<" || pattern == "*.*"
 
 	for _, entry := range entries {
@@ -857,7 +755,6 @@ func filterDirEntries(entries []metadata.DirEntry, pattern string) []metadata.Di
 			continue
 		}
 
-		// Include entry if pattern matches all or matches the name
 		if matchAll || matchSMBPattern(entry.Name, pattern) {
 			filtered = append(filtered, entry)
 		}
@@ -865,24 +762,278 @@ func filterDirEntries(entries []metadata.DirEntry, pattern string) []metadata.Di
 	return filtered
 }
 
-// matchSMBPattern matches a filename against an SMB search pattern.
+// matchSMBPattern matches a filename against an SMB/DOS search pattern.
 //
-// SMB uses DOS-style wildcards:
+// Per MS-FSCC 2.1.4.4, SMB uses DOS-style wildcards including:
 //   - * matches zero or more characters
-//   - ? matches exactly one character
+//   - ? matches exactly one character (including dot and end-of-name)
+//   - < (DOS_STAR) matches zero or more characters until the last dot
+//   - > (DOS_QM) matches any single character, or a dot, or end-of-name
+//   - " (DOS_DOT) matches a period or end-of-name
 //
 // Matching is case-insensitive (Windows behavior).
 func matchSMBPattern(name, pattern string) bool {
-	// Case-insensitive comparison (SMB/Windows style)
-	nameLower := strings.ToLower(name)
-	patternLower := strings.ToLower(pattern)
+	return matchDOSWildcard(strings.ToLower(name), strings.ToLower(pattern))
+}
 
-	// Use filepath.Match for basic wildcard support
-	// Note: filepath.Match uses Unix-style patterns, which is close enough for most cases
-	matched, err := filepath.Match(patternLower, nameLower)
-	if err != nil {
-		// Invalid pattern - fall back to exact match
-		return nameLower == patternLower
+// matchDOSWildcard implements MS-FSCC 2.1.4.4 pattern matching with DOS wildcards.
+func matchDOSWildcard(name, pattern string) bool {
+	ni := 0 // name index
+	pi := 0 // pattern index
+
+	for pi < len(pattern) {
+		pc := pattern[pi]
+
+		switch pc {
+		case '*':
+			// '*' matches zero or more characters
+			pi++
+			if pi >= len(pattern) {
+				return true
+			}
+			for ni <= len(name) {
+				if matchDOSWildcard(name[ni:], pattern[pi:]) {
+					return true
+				}
+				if ni < len(name) {
+					ni++
+				} else {
+					break
+				}
+			}
+			return false
+
+		case '?':
+			// '?' matches exactly one character (but not end-of-name)
+			if ni >= len(name) {
+				return false
+			}
+			ni++
+			pi++
+
+		case '<':
+			// DOS_STAR: matches zero or more characters until encountering and
+			// matching the final "." in the name. If no dot exists, behaves like '*'.
+			// Per MS-FSCC 2.1.4.4, this effectively matches the "base name" portion
+			// of a filename before the extension.
+			pi++
+			lastDot := strings.LastIndex(name[ni:], ".")
+			if lastDot == -1 {
+				// No dot in remaining name - behaves like '*'
+				for ni <= len(name) {
+					if matchDOSWildcard(name[ni:], pattern[pi:]) {
+						return true
+					}
+					if ni < len(name) {
+						ni++
+					} else {
+						break
+					}
+				}
+				return false
+			}
+			// Try matching at every position up to and INCLUDING the character
+			// after the last dot (consuming the dot itself).
+			dotAbsPos := ni + lastDot
+			for ni <= dotAbsPos+1 {
+				if matchDOSWildcard(name[ni:], pattern[pi:]) {
+					return true
+				}
+				ni++
+			}
+			return false
+
+		case '>':
+			// DOS_QM: matches any single character, or at period/end-of-name
+			pi++
+			if ni >= len(name) || name[ni] == '.' {
+				for pi < len(pattern) && pattern[pi] == '>' {
+					pi++
+				}
+				continue
+			}
+			ni++
+
+		case '"':
+			// DOS_DOT: matches a period or end-of-name
+			pi++
+			if ni >= len(name) {
+				continue
+			}
+			if name[ni] == '.' {
+				ni++
+			} else {
+				return false
+			}
+
+		default:
+			if ni >= len(name) || name[ni] != pc {
+				return false
+			}
+			ni++
+			pi++
+		}
 	}
-	return matched
+
+	return ni >= len(name)
+}
+
+// truncateToFirstEntry returns only the first directory entry from a linked entry chain.
+// Sets the NextEntryOffset of the first entry to 0 (marking it as the last entry).
+func truncateToFirstEntry(buf []byte) []byte {
+	if len(buf) < 4 {
+		return buf
+	}
+	nextOffset := binary.LittleEndian.Uint32(buf[0:4])
+	if nextOffset == 0 {
+		return buf // already single entry
+	}
+	result := buf[:nextOffset]
+	binary.LittleEndian.PutUint32(result[0:4], 0)
+	return result
+}
+
+// truncateToNthEntry returns only the Nth (0-based) directory entry from a linked entry chain.
+// Sets the NextEntryOffset of the selected entry to 0 (marking it as the last entry).
+func truncateToNthEntry(buf []byte, n int) []byte {
+	offset := 0
+	for i := 0; i < n; i++ {
+		if offset+4 > len(buf) {
+			return nil
+		}
+		nextOffset := binary.LittleEndian.Uint32(buf[offset : offset+4])
+		if nextOffset == 0 {
+			return nil // entry chain shorter than n
+		}
+		offset += int(nextOffset)
+	}
+	if offset >= len(buf) {
+		return nil
+	}
+	nextOffset := binary.LittleEndian.Uint32(buf[offset : offset+4])
+	var entryEnd int
+	if nextOffset == 0 {
+		entryEnd = len(buf)
+	} else {
+		entryEnd = offset + int(nextOffset)
+	}
+	result := make([]byte, entryEnd-offset)
+	copy(result, buf[offset:entryEnd])
+	binary.LittleEndian.PutUint32(result[0:4], 0) // mark as last entry
+	return result
+}
+
+// buildQueryDirectoryResponse creates a QueryDirectoryResponse from pre-built entry
+// data, truncating at entry boundaries if the data exceeds the output buffer length.
+func (h *Handler) buildQueryDirectoryResponse(entries []byte, outputBufferLength uint32, openFile *OpenFile, fileInfoClass types.FileInfoClass) (*QueryDirectoryResponse, error) {
+	// Truncate at entry boundaries if necessary
+	if uint32(len(entries)) > outputBufferLength {
+		entries = truncateAtEntryBoundary(entries, outputBufferLength)
+		if len(entries) == 0 {
+			return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNoMoreFiles}}, nil
+		}
+	}
+
+	logger.Debug("QUERY_DIRECTORY successful",
+		"path", openFile.Path,
+		"bufferSize", len(entries))
+
+	return &QueryDirectoryResponse{
+		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+		Data:            entries,
+	}, nil
+}
+
+// truncateAtEntryBoundary walks the directory entry chain and returns the buffer
+// truncated to the last complete entry that fits within maxBytes.
+// Each entry starts with a uint32 NextEntryOffset; the last entry has offset 0.
+func truncateAtEntryBoundary(buf []byte, maxBytes uint32) []byte {
+	var lastEnd uint32
+	offset := uint32(0)
+
+	for offset+4 <= uint32(len(buf)) {
+		nextOffset := binary.LittleEndian.Uint32(buf[offset : offset+4])
+
+		var entryEnd uint32
+		if nextOffset == 0 {
+			entryEnd = uint32(len(buf))
+		} else {
+			entryEnd = offset + nextOffset
+		}
+
+		if entryEnd > maxBytes {
+			break
+		}
+
+		lastEnd = entryEnd
+		if nextOffset == 0 {
+			break
+		}
+		offset += nextOffset
+	}
+
+	if lastEnd == 0 {
+		return nil
+	}
+
+	result := buf[:lastEnd]
+	// Zero the NextEntryOffset of the last included entry
+	pos := uint32(0)
+	for {
+		next := binary.LittleEndian.Uint32(result[pos : pos+4])
+		if next == 0 || pos+next >= lastEnd {
+			binary.LittleEndian.PutUint32(result[pos:pos+4], 0)
+			break
+		}
+		pos += next
+	}
+
+	return result
+}
+
+// generate83ShortName generates a Windows 8.3 short name in UTF-16LE.
+// For "." and ".." it returns empty (no short name needed).
+// For other names, it uppercases and truncates to 8.3 format.
+func generate83ShortName(name string) []byte {
+	if name == "." || name == ".." || name == "" {
+		return nil
+	}
+
+	upper := strings.ToUpper(name)
+
+	var base, ext string
+	if dot := strings.LastIndex(upper, "."); dot >= 0 {
+		base = upper[:dot]
+		ext = upper[dot+1:]
+	} else {
+		base = upper
+	}
+
+	// Strip characters invalid in 8.3 names
+	base = strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' || r == '~' {
+			return r
+		}
+		return -1
+	}, base)
+
+	if len(base) > 8 {
+		base = base[:6] + "~1"
+	}
+	if len(ext) > 3 {
+		ext = ext[:3]
+	}
+
+	var shortName string
+	if ext != "" {
+		shortName = base + "." + ext
+	} else {
+		shortName = base
+	}
+
+	if shortName == "" {
+		return nil
+	}
+
+	return encodeUTF16LE(shortName)
 }
