@@ -9,6 +9,10 @@
 
 - [ ] **BUG-01**: Sparse file READ returns zeros for unwritten blocks instead of errors (#180)
 - [ ] **BUG-02**: Renamed directory children reflect updated paths in QUERY_DIRECTORY (#181)
+- [ ] **BUG-03**: Multi-component paths with `..` segments navigate to parent directory (#214)
+- [ ] **BUG-04**: NFS v3 operations trigger oplock break for SMB clients holding locks (#213)
+- [ ] **BUG-05**: FileStandardInfo.NumberOfLinks reads actual link count from metadata (#221)
+- [ ] **BUG-06**: Share list cached for pipe CREATE operations, invalidated on change (#223)
 
 ### Security Descriptors
 
@@ -23,12 +27,16 @@
 
 ### Windows 11 Compatibility
 
-- [ ] **WIN-01**: CREATE response context wire encoding fixed (lease responses actually sent)
+- [x] **WIN-01**: CREATE response context wire encoding fixed (lease responses actually sent) *(completed in Phase 29.8)*
 - [ ] **WIN-02**: MxAc (Maximal Access) create context response returned to clients
 - [ ] **WIN-03**: QFid (Query on Disk ID) create context response returned to clients
-- [ ] **WIN-04**: SMB signing validated and enforced for all authenticated sessions
-- [ ] **WIN-05**: Missing FileInfoClass handlers added (FileCompressionInformation, FileAttributeTagInformation, FilePositionInformation, FileModeInformation)
+- [x] **WIN-04**: SMB signing validated and enforced for all authenticated sessions *(completed in Phase 29.8)*
+- [x] **WIN-05**: Missing FileInfoClass handlers added *(partially completed in Phase 29.8: FilePositionInfo, FileModeInfo, FileAlignmentInfo done; FileCompressionInfo, FileAttributeTagInfo still needed)*
 - [ ] **WIN-06**: Guest access signing negotiation handled for Windows 11 24H2
+- [ ] **WIN-07**: FileFsAttributeInformation capability flags reflect supported features (#141)
+- [ ] **WIN-08**: Windows CI build step added to GitHub Actions (#173)
+- [ ] **WIN-09**: NFS and SMB client compatibility validated from Windows (#172)
+- [ ] **WIN-10**: Hardcoded Unix paths fixed for Windows compatibility (#169)
 
 ### Conformance Testing
 
@@ -66,6 +74,10 @@
 |-------------|-------|--------|
 | BUG-01 | Phase 30 | Pending |
 | BUG-02 | Phase 30 | Pending |
+| BUG-03 | Phase 30 | Pending |
+| BUG-04 | Phase 30 | Pending |
+| BUG-05 | Phase 30 | Pending |
+| BUG-06 | Phase 30 | Pending |
 | SD-01 | Phase 31 | Pending |
 | SD-02 | Phase 31 | Pending |
 | SD-03 | Phase 31 | Pending |
@@ -74,19 +86,25 @@
 | SD-06 | Phase 31 | Pending |
 | SD-07 | Phase 31 | Pending |
 | SD-08 | Phase 31 | Pending |
-| WIN-01 | Phase 32 | Pending |
+| WIN-01 | Phase 29.8 | **Complete** |
 | WIN-02 | Phase 32 | Pending |
 | WIN-03 | Phase 32 | Pending |
-| WIN-04 | Phase 32 | Pending |
-| WIN-05 | Phase 32 | Pending |
+| WIN-04 | Phase 29.8 | **Complete** |
+| WIN-05 | Phase 29.8 / 32 | **Partial** (3/5 handlers done) |
 | WIN-06 | Phase 32 | Pending |
+| WIN-07 | Phase 32 | Pending |
+| WIN-08 | Phase 32 | Pending |
+| WIN-09 | Phase 32 | Pending |
+| WIN-10 | Phase 32 | Pending |
 | TEST-01 | Phase 32 | Pending |
 | TEST-02 | Phase 32 | Pending |
 | TEST-03 | Phase 32 | Pending |
 
 **Coverage:**
-- v3.6 requirements: 19 total
-- Mapped to phases: 19 ✓
+- v3.6 requirements: 27 total
+- Complete: 2 (WIN-01, WIN-04)
+- Partial: 1 (WIN-05)
+- Pending: 24
 - Unmapped: 0 ✓
 
 ---
