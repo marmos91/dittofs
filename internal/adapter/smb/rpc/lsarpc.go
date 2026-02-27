@@ -394,10 +394,10 @@ func (h *LSARPCHandler) buildLookupSidsResponse(
 		refID := uint32(0x00020008)
 		for _, d := range domains {
 			nameUTF16Len := uint16(len(encodeUTF16LE(d.name)))
-			byteLen := nameUTF16Len + 2 // include null terminator
-			_ = binary.Write(&buf, binary.LittleEndian, byteLen)  // Length
-			_ = binary.Write(&buf, binary.LittleEndian, byteLen)  // MaximumLength
-			appendUint32Buf(&buf, refID)    // pointer to string data
+			byteLen := nameUTF16Len + 2                          // include null terminator
+			_ = binary.Write(&buf, binary.LittleEndian, byteLen) // Length
+			_ = binary.Write(&buf, binary.LittleEndian, byteLen) // MaximumLength
+			appendUint32Buf(&buf, refID)                         // pointer to string data
 			refID += 4
 			appendUint32Buf(&buf, refID) // pointer to SID data
 			refID += 4
@@ -441,9 +441,9 @@ func (h *LSARPCHandler) buildLookupSidsResponse(
 			_ = binary.Write(&buf, binary.LittleEndian, uint16(0))
 			nameUTF16Len := uint16(len(encodeUTF16LE(r.name)))
 			byteLen := nameUTF16Len + 2
-			_ = binary.Write(&buf, binary.LittleEndian, byteLen)    // Length
-			_ = binary.Write(&buf, binary.LittleEndian, byteLen)    // MaximumLength
-			appendUint32Buf(&buf, nameRefID)  // unique pointer
+			_ = binary.Write(&buf, binary.LittleEndian, byteLen) // Length
+			_ = binary.Write(&buf, binary.LittleEndian, byteLen) // MaximumLength
+			appendUint32Buf(&buf, nameRefID)                     // unique pointer
 			nameRefID += 4
 			// Domain index (int32)
 			domIdx := int32(-1) // -1 = no domain
