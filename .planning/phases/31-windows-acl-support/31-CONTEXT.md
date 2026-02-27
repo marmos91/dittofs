@@ -6,7 +6,21 @@
 <domain>
 ## Phase Boundary
 
-Implement Windows ACL support so Windows users see meaningful permissions in Explorer and icacls instead of "Everyone: Full Control." This includes NT Security Descriptors, Unix-to-SID mapping, POSIX-to-DACL synthesis, and cross-protocol ACL consistency between SMB and NFS. The abstract ACL model is the internal source of truth, with protocol-specific translators for SMB and NFS wire formats.
+Extend existing ACL infrastructure to production-ready Windows support. DittoFS already has foundational ACL code that must be built upon — NOT replaced:
+
+**Existing code (extend, don't rewrite):**
+- `pkg/metadata/acl/` — ACL types, ACE constants, NFSv4 ACE type definitions
+- `internal/adapter/smb/v2/handlers/security.go` — SID struct, encode/decode, SD building/parsing, principal-to-SID mapping, well-known SID table, DACL construction
+- `internal/adapter/smb/v2/handlers/security_test.go` — SID round-trip, principal mapping, SD build/parse tests
+- QUERY_INFO handler already returns security descriptors (query_info.go line 287-288)
+- SET_INFO handler exists for security descriptor updates
+
+**What needs to change:**
+- Current SIDs use fixed `S-1-5-21-0-0-0-{uid}` — need unique machine SID + Samba-style RID separation
+- Current fallback is "Everyone: Full Access" when no ACL — need POSIX-mode-derived DACLs with proper deny/allow ACEs
+- SID/ACL code lives in SMB handlers — needs refactoring to shared packages for cross-protocol use
+- No SACL support, no inheritance flags, no canonical ordering, no SE_DACL_PROTECTED
+- No ACL persistence in metadata stores — currently only in-memory via FileAttr.ACL field
 
 </domain>
 
@@ -89,6 +103,7 @@ Implement Windows ACL support so Windows users see meaningful permissions in Exp
 ## Specific Ideas
 
 - "The abstract permission should cover the most complex scenario, then SMB translate it to ACE and NFS to POSIX" — architecture: abstract ACL model is the canonical representation, protocol adapters translate to/from wire formats
+- This is an EXTENSION of existing work, not a greenfield build. Existing `security.go` (~600 lines) has working SID encoding, SD building, and principal mapping. Refactor into shared packages, don't rewrite.
 - User wants ACLs persisted (not synthesized) for easier manual testing and debugging
 - `dfsctl acl show` command specifically for debugging without needing a mounted client
 - ACL source tracking for debuggability (knowing whether ACL was set via SMB, NFS, or derived from POSIX)
