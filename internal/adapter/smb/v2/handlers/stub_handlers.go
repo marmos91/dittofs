@@ -430,10 +430,10 @@ func (h *Handler) handleGetNtfsVolumeData(ctx *SMBHandlerContext, body []byte) (
 	// Query filesystem stats so TotalClusters and BytesPerSector match
 	// FileFsFullSizeInformation (WPTS checks consistency between them).
 	metaSvc := h.Registry.GetMetadataService()
-	totalClusters := uint64(1000000)  // fallback matches FileFsFullSizeInformation fallback
-	freeClusters := uint64(500000)    // fallback
-	bps := uint32(bytesPerSector)     // 512 - from converters.go
-	bpc := uint32(clusterSize)        // 4096 - from converters.go
+	totalClusters := uint64(1000000) // fallback matches FileFsFullSizeInformation fallback
+	freeClusters := uint64(500000)   // fallback
+	bps := uint32(bytesPerSector)    // 512 - from converters.go
+	bpc := uint32(clusterSize)       // 4096 - from converters.go
 
 	stats, err := metaSvc.GetFilesystemStatistics(ctx.Context, openFile.MetadataHandle)
 	if err == nil {
@@ -560,9 +560,9 @@ func (h *Handler) handleReadFileUsnData(ctx *SMBHandlerContext, body []byte) (*H
 
 		output = make([]byte, recordLen)
 		binary.LittleEndian.PutUint32(output[0:4], uint32(recordLen)) // RecordLength
-		binary.LittleEndian.PutUint16(output[4:6], 3)                // MajorVersion = 3
-		binary.LittleEndian.PutUint16(output[6:8], 0)                // MinorVersion = 0
-		copy(output[8:24], file.ID[:16])                             // FileReferenceNumber (FILE_ID_128)
+		binary.LittleEndian.PutUint16(output[4:6], 3)                 // MajorVersion = 3
+		binary.LittleEndian.PutUint16(output[6:8], 0)                 // MinorVersion = 0
+		copy(output[8:24], file.ID[:16])                              // FileReferenceNumber (FILE_ID_128)
 		// ParentFileReferenceNumber (FILE_ID_128) at offset 24-39 = zeros
 		// Usn (8 bytes) at offset 40-47 = 0
 		// TimeStamp (8 bytes) at offset 48-55 = 0
@@ -571,7 +571,7 @@ func (h *Handler) handleReadFileUsnData(ctx *SMBHandlerContext, body []byte) (*H
 		// SecurityId (4 bytes) at offset 64-67 = 0
 		binary.LittleEndian.PutUint32(output[68:72], fileAttrs)                  // FileAttributes
 		binary.LittleEndian.PutUint16(output[72:74], uint16(len(fileNameBytes))) // FileNameLength
-		binary.LittleEndian.PutUint16(output[74:76], v3FixedSize)               // FileNameOffset
+		binary.LittleEndian.PutUint16(output[74:76], v3FixedSize)                // FileNameOffset
 		copy(output[v3FixedSize:], fileNameBytes)
 	} else {
 		// Build USN_RECORD_V2 [MS-FSCC] 2.4.51
@@ -591,9 +591,9 @@ func (h *Handler) handleReadFileUsnData(ctx *SMBHandlerContext, body []byte) (*H
 		binary.LittleEndian.PutUint32(output[40:44], 0)                                      // Reason
 		binary.LittleEndian.PutUint32(output[44:48], 0)                                      // SourceInfo
 		binary.LittleEndian.PutUint32(output[48:52], 0)                                      // SecurityId
-		binary.LittleEndian.PutUint32(output[52:56], fileAttrs)                               // FileAttributes
-		binary.LittleEndian.PutUint16(output[56:58], uint16(len(fileNameBytes)))              // FileNameLength
-		binary.LittleEndian.PutUint16(output[58:60], v2FixedSize)                             // FileNameOffset
+		binary.LittleEndian.PutUint32(output[52:56], fileAttrs)                              // FileAttributes
+		binary.LittleEndian.PutUint16(output[56:58], uint16(len(fileNameBytes)))             // FileNameLength
+		binary.LittleEndian.PutUint16(output[58:60], v2FixedSize)                            // FileNameOffset
 		copy(output[v2FixedSize:], fileNameBytes)
 	}
 

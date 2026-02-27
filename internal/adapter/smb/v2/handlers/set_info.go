@@ -288,35 +288,38 @@ func (h *Handler) setFileInfoFromStore(
 			needsUpdate := false
 
 			// LastWriteTime (Mtime) - offset 16
-			if mtimeFT == 0xFFFFFFFFFFFFFFFF {
+			switch mtimeFT {
+			case 0xFFFFFFFFFFFFFFFF:
 				openFile.MtimeFrozen = true
 				openFile.FrozenMtime = &postFile.Mtime
 				needsUpdate = true
 				logger.Debug("SET_INFO: froze LastWriteTime", "path", openFile.Path, "value", postFile.Mtime)
-			} else if mtimeFT == 0xFFFFFFFFFFFFFFFE {
+			case 0xFFFFFFFFFFFFFFFE:
 				openFile.MtimeFrozen = false
 				openFile.FrozenMtime = nil
 				needsUpdate = true
 			}
 
 			// ChangeTime (Ctime) - offset 24
-			if ctimeFT == 0xFFFFFFFFFFFFFFFF {
+			switch ctimeFT {
+			case 0xFFFFFFFFFFFFFFFF:
 				openFile.CtimeFrozen = true
 				openFile.FrozenCtime = &postFile.Ctime
 				needsUpdate = true
 				logger.Debug("SET_INFO: froze ChangeTime", "path", openFile.Path, "value", postFile.Ctime)
-			} else if ctimeFT == 0xFFFFFFFFFFFFFFFE {
+			case 0xFFFFFFFFFFFFFFFE:
 				openFile.CtimeFrozen = false
 				openFile.FrozenCtime = nil
 				needsUpdate = true
 			}
 
 			// LastAccessTime (Atime) - offset 8
-			if atimeFT == 0xFFFFFFFFFFFFFFFF {
+			switch atimeFT {
+			case 0xFFFFFFFFFFFFFFFF:
 				openFile.AtimeFrozen = true
 				openFile.FrozenAtime = &postFile.Atime
 				needsUpdate = true
-			} else if atimeFT == 0xFFFFFFFFFFFFFFFE {
+			case 0xFFFFFFFFFFFFFFFE:
 				openFile.AtimeFrozen = false
 				openFile.FrozenAtime = nil
 				needsUpdate = true
