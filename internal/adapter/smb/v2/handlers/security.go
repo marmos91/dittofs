@@ -343,8 +343,8 @@ func buildDACL(buf *bytes.Buffer, file *metadata.File) *acl.ACL {
 // buildEmptySACL writes a valid empty SACL to buf.
 // The SACL has revision=2, count=0, and total size=8 bytes.
 func buildEmptySACL(buf *bytes.Buffer) {
-	buf.WriteByte(2) // AclRevision
-	buf.WriteByte(0) // Sbz1
+	buf.WriteByte(2)                                                  // AclRevision
+	buf.WriteByte(0)                                                  // Sbz1
 	_ = binary.Write(buf, binary.LittleEndian, uint16(aclHeaderSize)) // AclSize = 8
 	_ = binary.Write(buf, binary.LittleEndian, uint16(0))             // AceCount = 0
 	_ = binary.Write(buf, binary.LittleEndian, uint16(0))             // Sbz2

@@ -19,24 +19,24 @@ func buildTestBindRequest(callID uint32) []byte {
 	buf := make([]byte, 72)
 
 	// Header
-	buf[0] = 5  // version major
-	buf[1] = 0  // version minor
+	buf[0] = 5 // version major
+	buf[1] = 0 // version minor
 	buf[2] = PDUBind
 	buf[3] = FlagFirstFrag | FlagLastFrag
-	buf[4] = 0x10 // data rep: little endian
-	binary.LittleEndian.PutUint16(buf[8:10], 72)  // frag length
+	buf[4] = 0x10                                     // data rep: little endian
+	binary.LittleEndian.PutUint16(buf[8:10], 72)      // frag length
 	binary.LittleEndian.PutUint32(buf[12:16], callID) // call ID
 
 	// Bind body
-	binary.LittleEndian.PutUint16(buf[16:18], 4280)  // max xmit frag
-	binary.LittleEndian.PutUint16(buf[18:20], 4280)  // max recv frag
-	binary.LittleEndian.PutUint32(buf[20:24], 0)     // assoc group
-	buf[24] = 1 // num contexts
+	binary.LittleEndian.PutUint16(buf[16:18], 4280) // max xmit frag
+	binary.LittleEndian.PutUint16(buf[18:20], 4280) // max recv frag
+	binary.LittleEndian.PutUint32(buf[20:24], 0)    // assoc group
+	buf[24] = 1                                     // num contexts
 	// padding (3 bytes at 25-27)
 
 	// Context entry
 	binary.LittleEndian.PutUint16(buf[28:30], 0) // context ID
-	buf[30] = 1 // num transfer syntaxes
+	buf[30] = 1                                  // num transfer syntaxes
 	// padding (1 byte at 31)
 
 	// Abstract syntax: LSA UUID

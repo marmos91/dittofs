@@ -29,9 +29,9 @@ type PipeHandler interface {
 // PipeState represents the state of a named pipe connection
 type PipeState struct {
 	mu         sync.Mutex
-	Name       string       // Pipe name (e.g., "srvsvc", "lsarpc")
-	Bound      bool         // Whether RPC bind has completed
-	Handler    PipeHandler  // RPC handler for this pipe
+	Name       string        // Pipe name (e.g., "srvsvc", "lsarpc")
+	Bound      bool          // Whether RPC bind has completed
+	Handler    PipeHandler   // RPC handler for this pipe
 	ReadBuffer *bytes.Buffer // Buffered response data for READ
 }
 

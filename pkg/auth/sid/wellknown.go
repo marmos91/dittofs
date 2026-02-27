@@ -33,12 +33,12 @@ var (
 
 // wellKnownNames maps well-known SID strings to display names.
 var wellKnownNames = map[string]string{
-	"S-1-1-0":     "Everyone",
-	"S-1-3-0":     "CREATOR OWNER",
-	"S-1-3-1":     "CREATOR GROUP",
-	"S-1-5-7":     "NT AUTHORITY\\ANONYMOUS LOGON",
-	"S-1-5-11":    "NT AUTHORITY\\Authenticated Users",
-	"S-1-5-18":    "NT AUTHORITY\\SYSTEM",
+	"S-1-1-0":      "Everyone",
+	"S-1-3-0":      "CREATOR OWNER",
+	"S-1-3-1":      "CREATOR GROUP",
+	"S-1-5-7":      "NT AUTHORITY\\ANONYMOUS LOGON",
+	"S-1-5-11":     "NT AUTHORITY\\Authenticated Users",
+	"S-1-5-18":     "NT AUTHORITY\\SYSTEM",
 	"S-1-5-32-544": "BUILTIN\\Administrators",
 }
 

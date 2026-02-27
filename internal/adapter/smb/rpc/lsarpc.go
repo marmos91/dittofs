@@ -34,10 +34,10 @@ var LSAInterfaceUUID = [16]byte{
 
 // LSA Operation Numbers [MS-LSAT/MS-LSAD]
 const (
-	OpLsarClose        uint16 = 0  // LsarClose
-	OpLsarOpenPolicy2  uint16 = 44 // LsarOpenPolicy2
-	OpLsarLookupSids2  uint16 = 57 // LsarLookupSids2
-	OpLsarLookupSids3  uint16 = 76 // LsarLookupSids3
+	OpLsarClose       uint16 = 0  // LsarClose
+	OpLsarOpenPolicy2 uint16 = 44 // LsarOpenPolicy2
+	OpLsarLookupSids2 uint16 = 57 // LsarLookupSids2
+	OpLsarLookupSids3 uint16 = 76 // LsarLookupSids3
 )
 
 // SID Name Types [MS-LSAT Section 2.2.13]
@@ -537,10 +537,10 @@ func (h *LSARPCHandler) buildFault(callID uint32, status uint32) []byte {
 	copy(buf[0:16], hdr.Encode())
 	binary.LittleEndian.PutUint32(buf[16:20], 0)      // alloc_hint
 	binary.LittleEndian.PutUint16(buf[20:22], 0)      // context_id
-	buf[22] = 0                                        // cancel_count
-	buf[23] = 0                                        // reserved
-	binary.LittleEndian.PutUint32(buf[24:28], status)  // status
-	binary.LittleEndian.PutUint32(buf[28:32], 0)       // reserved
+	buf[22] = 0                                       // cancel_count
+	buf[23] = 0                                       // reserved
+	binary.LittleEndian.PutUint32(buf[24:28], status) // status
+	binary.LittleEndian.PutUint32(buf[28:32], 0)      // reserved
 
 	return buf
 }
