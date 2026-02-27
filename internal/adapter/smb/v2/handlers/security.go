@@ -11,15 +11,17 @@
 // bit positions (by design per RFC 7530), so no mask translation is needed.
 // Only the principal format differs: NFSv4 uses "user@domain" strings
 // while SMB uses binary SIDs.
+//
+// SID types, encoding, and identity mapping are provided by the shared
+// pkg/auth/sid/ package (usable by both SMB and NFS adapters).
 package handlers
 
 import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"strconv"
-	"strings"
 
+	"github.com/marmos91/dittofs/pkg/auth/sid"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
@@ -85,234 +87,31 @@ const aclHeaderSize = 8
 const aceHeaderSize = 8
 
 // ============================================================================
-// SID Types and Helpers
+// SID Mapper (delegates to pkg/auth/sid/)
 // ============================================================================
 
-// SID represents a Windows Security Identifier per MS-DTYP Section 2.4.2.
+// defaultSIDMapper is the package-level SIDMapper used for principal-to-SID
+// mapping in security descriptor operations. It is initialized by
+// SetSIDMapper during server startup (before any connections are accepted).
 //
-// A SID uniquely identifies a security principal (user, group, or computer).
-// The binary encoding is: Revision(1) + SubAuthorityCount(1) +
-// IdentifierAuthority(6, big-endian) + SubAuthorities(4*N, little-endian).
-type SID struct {
-	// Revision is always 1.
-	Revision uint8
+// A fallback mapper with zeroed sub-authorities is used if SetSIDMapper
+// is not called (e.g., in unit tests). This maintains backward compatibility
+// with the old behavior of S-1-5-21-0-0-0-{RID} SIDs.
+var defaultSIDMapper = sid.NewSIDMapper(0, 0, 0)
 
-	// SubAuthorityCount is the number of sub-authority values.
-	SubAuthorityCount uint8
-
-	// IdentifierAuthority is the top-level authority (6 bytes, big-endian).
-	IdentifierAuthority [6]byte
-
-	// SubAuthorities contains the sub-authority values.
-	SubAuthorities []uint32
-}
-
-// SIDSize returns the binary size of a SID in bytes.
-func SIDSize(sid *SID) int {
-	return 8 + 4*int(sid.SubAuthorityCount)
-}
-
-// EncodeSID writes a binary SID to buf per MS-DTYP Section 2.4.2.
-func EncodeSID(buf *bytes.Buffer, sid *SID) {
-	buf.WriteByte(sid.Revision)
-	buf.WriteByte(sid.SubAuthorityCount)
-	buf.Write(sid.IdentifierAuthority[:])
-	for _, sa := range sid.SubAuthorities {
-		_ = binary.Write(buf, binary.LittleEndian, sa)
+// SetSIDMapper sets the package-level SIDMapper used for all security
+// descriptor operations. Must be called before any SMB connections are
+// accepted to avoid race conditions.
+func SetSIDMapper(m *sid.SIDMapper) {
+	if m != nil {
+		defaultSIDMapper = m
 	}
 }
 
-// DecodeSID parses a binary SID from data per MS-DTYP Section 2.4.2.
-// Returns the parsed SID and number of bytes consumed, or an error.
-func DecodeSID(data []byte) (*SID, int, error) {
-	if len(data) < 8 {
-		return nil, 0, fmt.Errorf("SID too short: %d bytes", len(data))
-	}
-
-	sid := &SID{
-		Revision:          data[0],
-		SubAuthorityCount: data[1],
-	}
-	copy(sid.IdentifierAuthority[:], data[2:8])
-
-	size := 8 + 4*int(sid.SubAuthorityCount)
-	if len(data) < size {
-		return nil, 0, fmt.Errorf("SID data too short for %d sub-authorities: have %d, need %d", sid.SubAuthorityCount, len(data), size)
-	}
-
-	sid.SubAuthorities = make([]uint32, sid.SubAuthorityCount)
-	for i := 0; i < int(sid.SubAuthorityCount); i++ {
-		offset := 8 + 4*i
-		sid.SubAuthorities[i] = binary.LittleEndian.Uint32(data[offset : offset+4])
-	}
-
-	return sid, size, nil
-}
-
-// FormatSID formats a SID as a string in "S-1-5-21-..." format.
-func FormatSID(sid *SID) string {
-	// Compute the 48-bit authority value from big-endian 6 bytes
-	var authority uint64
-	for i := range 6 {
-		authority = (authority << 8) | uint64(sid.IdentifierAuthority[i])
-	}
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "S-%d-%d", sid.Revision, authority)
-	for _, sa := range sid.SubAuthorities {
-		fmt.Fprintf(&b, "-%d", sa)
-	}
-	return b.String()
-}
-
-// ParseSIDString parses a SID string in "S-1-5-21-..." format.
-func ParseSIDString(s string) (*SID, error) {
-	if !strings.HasPrefix(s, "S-") {
-		return nil, fmt.Errorf("invalid SID format: must start with S-")
-	}
-
-	parts := strings.Split(s[2:], "-")
-	if len(parts) < 2 {
-		return nil, fmt.Errorf("invalid SID format: need at least revision and authority")
-	}
-
-	revision, err := strconv.ParseUint(parts[0], 10, 8)
-	if err != nil {
-		return nil, fmt.Errorf("invalid SID revision: %w", err)
-	}
-
-	authority, err := strconv.ParseUint(parts[1], 10, 48)
-	if err != nil {
-		return nil, fmt.Errorf("invalid SID authority: %w", err)
-	}
-
-	sid := &SID{
-		Revision:          uint8(revision),
-		SubAuthorityCount: uint8(len(parts) - 2),
-	}
-
-	// Encode authority as big-endian 6 bytes
-	for i := 5; i >= 0; i-- {
-		sid.IdentifierAuthority[i] = byte(authority & 0xFF)
-		authority >>= 8
-	}
-
-	sid.SubAuthorities = make([]uint32, sid.SubAuthorityCount)
-	for i := 0; i < int(sid.SubAuthorityCount); i++ {
-		val, err := strconv.ParseUint(parts[i+2], 10, 32)
-		if err != nil {
-			return nil, fmt.Errorf("invalid SID sub-authority %d: %w", i, err)
-		}
-		sid.SubAuthorities[i] = uint32(val)
-	}
-
-	return sid, nil
-}
-
-// parseSIDMust parses a SID string and panics on error. Used for well-known SIDs.
-func parseSIDMust(s string) *SID {
-	sid, err := ParseSIDString(s)
-	if err != nil {
-		panic(fmt.Sprintf("invalid well-known SID %q: %v", s, err))
-	}
-	return sid
-}
-
-// ============================================================================
-// Well-Known SID Mapping
-// ============================================================================
-
-// Well-known SIDs for NFSv4 special identifiers and common Windows principals.
-var (
-	// sidEveryone is the "Everyone" (World) SID: S-1-1-0
-	sidEveryone = parseSIDMust("S-1-1-0")
-)
-
-// wellKnownSIDToPrincipal maps well-known SID strings to NFSv4 principals.
-var wellKnownSIDToPrincipal = map[string]string{
-	"S-1-1-0": acl.SpecialEveryone, // Everyone
-	"S-1-3-0": acl.SpecialOwner,    // CREATOR OWNER -> OWNER@
-	"S-1-3-1": acl.SpecialGroup,    // CREATOR GROUP -> GROUP@
-}
-
-// makeDittoFSUserSID constructs a local user SID: S-1-5-21-0-0-0-{uid}
-func makeDittoFSUserSID(uid uint32) *SID {
-	return &SID{
-		Revision:            1,
-		SubAuthorityCount:   5,
-		IdentifierAuthority: [6]byte{0, 0, 0, 0, 0, 5}, // SECURITY_NT_AUTHORITY
-		SubAuthorities:      []uint32{21, 0, 0, 0, uid},
-	}
-}
-
-// makeDittoFSGroupSID constructs a local group SID: S-1-5-21-0-0-0-{gid}
-func makeDittoFSGroupSID(gid uint32) *SID {
-	return makeDittoFSUserSID(gid) // Same format, GID used as RID
-}
-
-// PrincipalToSID converts an NFSv4 principal to a Windows SID.
-//
-// Mapping rules:
-//   - "OWNER@": constructs user SID from file owner UID (S-1-5-21-0-0-0-{UID})
-//   - "GROUP@": constructs group SID from file owner GID (S-1-5-21-0-0-0-{GID})
-//   - "EVERYONE@": returns S-1-1-0
-//   - Otherwise: constructs user SID from principal (hash or numeric UID)
-func PrincipalToSID(who string, fileOwnerUID, fileOwnerGID uint32) *SID {
-	switch who {
-	case acl.SpecialOwner:
-		return makeDittoFSUserSID(fileOwnerUID)
-	case acl.SpecialGroup:
-		return makeDittoFSGroupSID(fileOwnerGID)
-	case acl.SpecialEveryone:
-		return sidEveryone
-	default:
-		// Try to extract a numeric UID from "1000@localdomain" format
-		if idx := strings.Index(who, "@"); idx > 0 {
-			if uid, err := strconv.ParseUint(who[:idx], 10, 32); err == nil {
-				return makeDittoFSUserSID(uint32(uid))
-			}
-		}
-		// Fallback: use a hash-based RID
-		var rid uint32
-		for _, c := range who {
-			rid = rid*31 + uint32(c)
-		}
-		return makeDittoFSUserSID(rid)
-	}
-}
-
-// isDittoFSUserSID reports whether the SID matches the DittoFS user SID pattern
-// S-1-5-21-0-0-0-{RID}. If it matches, the RID is returned.
-func isDittoFSUserSID(sid *SID) (rid uint32, ok bool) {
-	if sid.Revision == 1 &&
-		sid.IdentifierAuthority == [6]byte{0, 0, 0, 0, 0, 5} &&
-		sid.SubAuthorityCount >= 5 &&
-		sid.SubAuthorities[0] == 21 &&
-		sid.SubAuthorities[1] == 0 &&
-		sid.SubAuthorities[2] == 0 &&
-		sid.SubAuthorities[3] == 0 {
-		return sid.SubAuthorities[4], true
-	}
-	return 0, false
-}
-
-// SIDToPrincipal converts a Windows SID to an NFSv4 principal.
-//
-// Mapping rules:
-//   - Well-known SIDs are mapped directly (S-1-1-0 -> "EVERYONE@")
-//   - User SIDs (S-1-5-21-...) extract RID as UID and format as "{uid}@localdomain"
-//   - Unknown SIDs return their string representation
-func SIDToPrincipal(sid *SID) string {
-	sidStr := FormatSID(sid)
-	if principal, ok := wellKnownSIDToPrincipal[sidStr]; ok {
-		return principal
-	}
-
-	if rid, ok := isDittoFSUserSID(sid); ok {
-		return fmt.Sprintf("%d@localdomain", rid)
-	}
-
-	return sidStr
+// GetSIDMapper returns the current package-level SIDMapper.
+// Useful for tests that need to inspect the mapper state.
+func GetSIDMapper() *sid.SIDMapper {
+	return defaultSIDMapper
 }
 
 // ============================================================================
@@ -344,9 +143,9 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 	includeGroup := (additionalSecInfo & GroupSecurityInformation) != 0
 	includeDACL := (additionalSecInfo & DACLSecurityInformation) != 0
 
-	// Build SIDs
-	ownerSID := makeDittoFSUserSID(file.UID)
-	groupSID := makeDittoFSGroupSID(file.GID)
+	// Build SIDs using the shared mapper
+	ownerSID := defaultSIDMapper.UserSID(file.UID)
+	groupSID := defaultSIDMapper.GroupSID(file.GID)
 
 	// Build DACL
 	var daclBuf bytes.Buffer
@@ -361,14 +160,14 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 
 	if includeOwner {
 		ownerOffset = currentOffset
-		currentOffset += uint32(SIDSize(ownerSID))
+		currentOffset += uint32(sid.SIDSize(ownerSID))
 		// Pad to 4-byte boundary
 		currentOffset = alignTo4(currentOffset)
 	}
 
 	if includeGroup {
 		groupOffset = currentOffset
-		currentOffset += uint32(SIDSize(groupSID))
+		currentOffset += uint32(sid.SIDSize(groupSID))
 		currentOffset = alignTo4(currentOffset)
 	}
 
@@ -397,13 +196,13 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 
 	// Owner SID
 	if includeOwner {
-		EncodeSID(&buf, ownerSID)
+		sid.EncodeSID(&buf, ownerSID)
 		padTo4(&buf)
 	}
 
 	// Group SID
 	if includeGroup {
-		EncodeSID(&buf, groupSID)
+		sid.EncodeSID(&buf, groupSID)
 		padTo4(&buf)
 	}
 
@@ -420,7 +219,7 @@ type windowsACE struct {
 	aceType    uint8
 	aceFlags   uint8
 	accessMask uint32
-	sid        *SID
+	sid        *sid.SID
 }
 
 // buildDACL constructs a DACL (Discretionary Access Control List) from the file's ACL.
@@ -440,7 +239,7 @@ func buildDACL(buf *bytes.Buffer, file *metadata.File) {
 				aceType:    aceType,
 				aceFlags:   uint8(ace.Flag & 0xFF),
 				accessMask: ace.AccessMask,
-				sid:        PrincipalToSID(ace.Who, file.UID, file.GID),
+				sid:        defaultSIDMapper.PrincipalToSID(ace.Who, file.UID, file.GID),
 			})
 		}
 	} else {
@@ -449,14 +248,14 @@ func buildDACL(buf *bytes.Buffer, file *metadata.File) {
 			aceType:    accessAllowedACEType,
 			aceFlags:   0,
 			accessMask: 0x001F01FF, // FILE_ALL_ACCESS
-			sid:        sidEveryone,
+			sid:        sid.WellKnownEveryone,
 		})
 	}
 
 	// Compute total ACL size
 	totalACLSize := aclHeaderSize
 	for i := range aces {
-		totalACLSize += aceHeaderSize + SIDSize(aces[i].sid)
+		totalACLSize += aceHeaderSize + sid.SIDSize(aces[i].sid)
 	}
 
 	// Write ACL header (8 bytes) per MS-DTYP Section 2.4.5
@@ -469,13 +268,13 @@ func buildDACL(buf *bytes.Buffer, file *metadata.File) {
 	// Write each ACE per MS-DTYP Section 2.4.4.2
 	for i := range aces {
 		ace := &aces[i]
-		aceSize := uint16(aceHeaderSize + SIDSize(ace.sid))
+		aceSize := uint16(aceHeaderSize + sid.SIDSize(ace.sid))
 
 		buf.WriteByte(ace.aceType)  // AceType
 		buf.WriteByte(ace.aceFlags) // AceFlags
 		_ = binary.Write(buf, binary.LittleEndian, aceSize)
 		_ = binary.Write(buf, binary.LittleEndian, ace.accessMask)
-		EncodeSID(buf, ace.sid)
+		sid.EncodeSID(buf, ace.sid)
 	}
 }
 
@@ -504,18 +303,18 @@ func ParseSecurityDescriptor(data []byte) (ownerUID *uint32, ownerGID *uint32, f
 
 	// Parse Owner SID
 	if offsetOwner > 0 && int(offsetOwner) < len(data) {
-		sid, _, err := DecodeSID(data[offsetOwner:])
+		s, _, err := sid.DecodeSID(data[offsetOwner:])
 		if err == nil {
-			uid := sidToUID(sid)
+			uid := sidToUID(s)
 			ownerUID = &uid
 		}
 	}
 
 	// Parse Group SID
 	if offsetGroup > 0 && int(offsetGroup) < len(data) {
-		sid, _, err := DecodeSID(data[offsetGroup:])
+		s, _, err := sid.DecodeSID(data[offsetGroup:])
 		if err == nil {
-			gid := sidToUID(sid) // Same extraction logic for GID
+			gid := sidToGID(s)
 			ownerGID = &gid
 		}
 	}
@@ -567,7 +366,7 @@ func parseDACL(data []byte) (*acl.ACL, error) {
 		}
 
 		// Parse SID from remaining ACE data
-		sid, _, err := DecodeSID(data[offset+aceHeaderSize : offset+int(aceSize)])
+		s, _, err := sid.DecodeSID(data[offset+aceHeaderSize : offset+int(aceSize)])
 		if err != nil {
 			return nil, fmt.Errorf("failed to decode SID in ACE %d: %w", i, err)
 		}
@@ -580,7 +379,7 @@ func parseDACL(data []byte) (*acl.ACL, error) {
 		}
 
 		// Convert SID to NFSv4 principal
-		who := SIDToPrincipal(sid)
+		who := defaultSIDMapper.SIDToPrincipal(s)
 
 		aces = append(aces, acl.ACE{
 			Type:       nfsACEType,
@@ -595,11 +394,27 @@ func parseDACL(data []byte) (*acl.ACL, error) {
 	return &acl.ACL{ACEs: aces}, nil
 }
 
-// sidToUID extracts a UID from a DittoFS user SID (S-1-5-21-0-0-0-{RID}).
-// For non-DittoFS SIDs, returns 65534 (nobody).
-func sidToUID(sid *SID) uint32 {
-	if rid, ok := isDittoFSUserSID(sid); ok {
-		return rid
+// sidToUID extracts a UID from a SID using the default mapper.
+// For domain user SIDs, returns the mapped UID.
+// For non-domain SIDs, returns 65534 (nobody).
+func sidToUID(s *sid.SID) uint32 {
+	if uid, ok := defaultSIDMapper.UIDFromSID(s); ok {
+		return uid
+	}
+	return 65534 // nobody
+}
+
+// sidToGID extracts a GID from a SID using the default mapper.
+// Checks group SIDs first, then falls back to user SIDs for backward compat
+// (old SIDs used the same format for both user and group).
+// For non-domain SIDs, returns 65534 (nobody).
+func sidToGID(s *sid.SID) uint32 {
+	if gid, ok := defaultSIDMapper.GIDFromSID(s); ok {
+		return gid
+	}
+	// Backward compat: old SIDs used user RID format for groups too
+	if uid, ok := defaultSIDMapper.UIDFromSID(s); ok {
+		return uid
 	}
 	return 65534 // nobody
 }
