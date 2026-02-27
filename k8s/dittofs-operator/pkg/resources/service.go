@@ -93,6 +93,13 @@ func (b *ServiceBuilder) AddTCPPortWithTarget(name string, port, targetPort int3
 	return b
 }
 
+// AddPort adds a pre-built ServicePort to the Service.
+// Use this when the port already has the correct protocol set (e.g., UDP).
+func (b *ServiceBuilder) AddPort(sp corev1.ServicePort) *ServiceBuilder {
+	b.ports = append(b.ports, sp)
+	return b
+}
+
 // Build constructs the Service object.
 func (b *ServiceBuilder) Build() *corev1.Service {
 	svc := &corev1.Service{

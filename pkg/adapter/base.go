@@ -259,10 +259,18 @@ func (b *BaseAdapter) ServeWithFactory(
 			}
 		}
 
-		// Enable TCP_NODELAY to disable Nagle's algorithm
+		// Configure TCP socket options
 		if tcp, ok := tcpConn.(*net.TCPConn); ok {
+			// Disable Nagle's algorithm for lower latency
 			if err := tcp.SetNoDelay(true); err != nil {
 				logger.Debug("Failed to set TCP_NODELAY", "error", err)
+			}
+			// Enable TCP keepalive to prevent load balancers and firewalls
+			// from dropping idle connections
+			if err := tcp.SetKeepAlive(true); err != nil {
+				logger.Debug("Failed to enable TCP keepalive", "error", err)
+			} else if err := tcp.SetKeepAlivePeriod(15 * time.Second); err != nil {
+				logger.Debug("Failed to set TCP keepalive period", "error", err)
 			}
 		}
 

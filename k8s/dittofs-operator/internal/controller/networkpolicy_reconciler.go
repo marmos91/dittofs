@@ -56,14 +56,18 @@ func formatIngressPorts(ports []networkingv1.NetworkPolicyPort) string {
 	parts := make([]string, 0, len(ports))
 	for _, p := range ports {
 		if p.Port != nil {
-			parts = append(parts, fmt.Sprintf("%d", p.Port.IntVal))
+			proto := corev1.ProtocolTCP
+			if p.Protocol != nil {
+				proto = *p.Protocol
+			}
+			parts = append(parts, fmt.Sprintf("%d/%s", p.Port.IntVal, proto))
 		}
 	}
 	return fmt.Sprintf("ports %s", strings.Join(parts, ", "))
 }
 
 // buildAdapterIngressPorts returns the NetworkPolicy ingress ports for an adapter.
-// NFS adapters get 2 ports (NFS + portmapper container port), all others get 1.
+// NFS adapters get 3 ports (NFS + portmapper TCP/UDP), all others get 1.
 func buildAdapterIngressPorts(adapterType string, port int32) []networkingv1.NetworkPolicyPort {
 	tcp := corev1.ProtocolTCP
 	ports := []networkingv1.NetworkPolicyPort{
@@ -73,16 +77,23 @@ func buildAdapterIngressPorts(adapterType string, port int32) []networkingv1.Net
 		},
 	}
 	if isNFSAdapter(adapterType) {
-		ports = append(ports, networkingv1.NetworkPolicyPort{
-			Protocol: &tcp,
-			Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: portmapperContainerPort},
-		})
+		udp := corev1.ProtocolUDP
+		ports = append(ports,
+			networkingv1.NetworkPolicyPort{
+				Protocol: &tcp,
+				Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: portmapperContainerPort},
+			},
+			networkingv1.NetworkPolicyPort{
+				Protocol: &udp,
+				Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: portmapperContainerPort},
+			},
+		)
 	}
 	return ports
 }
 
-// buildAdapterNetworkPolicy constructs a NetworkPolicy allowing TCP ingress on adapter port(s).
-// NFS adapters get both the NFS port and the portmapper container port (10111).
+// buildAdapterNetworkPolicy constructs a NetworkPolicy allowing ingress on adapter port(s).
+// NFS adapters get the NFS port (TCP) and the portmapper container port (TCP + UDP).
 // Only ingress is restricted; egress is left unrestricted because DittoFS pods need outbound
 // access to S3, external metadata stores, and other backend services.
 func buildAdapterNetworkPolicy(crName, namespace, adapterType string, port int32) *networkingv1.NetworkPolicy {
@@ -223,6 +234,18 @@ func ingressPortsMatch(existing []networkingv1.NetworkPolicyIngressRule, desired
 			return false
 		}
 		if existingPorts[i].Port.IntVal != desired[i].Port.IntVal {
+			return false
+		}
+		// Compare protocols (nil defaults to TCP).
+		ep := corev1.ProtocolTCP
+		dp := corev1.ProtocolTCP
+		if existingPorts[i].Protocol != nil {
+			ep = *existingPorts[i].Protocol
+		}
+		if desired[i].Protocol != nil {
+			dp = *desired[i].Protocol
+		}
+		if ep != dp {
 			return false
 		}
 	}
