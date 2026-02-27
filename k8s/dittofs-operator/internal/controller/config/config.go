@@ -80,9 +80,16 @@ func buildDatabaseConfig(ds *dittoiov1alpha1.DittoServer) DatabaseConfig {
 	// We check PostgresSecretRef being set as the indicator that Postgres is configured,
 	// regardless of what Type field says. This implements "Postgres takes precedence silently".
 	if ds.Spec.Database.PostgresSecretRef != nil {
-		// PostgreSQL configured - set type only, connection string injected via env var
+		// PostgreSQL configured - include placeholder fields so Viper registers the keys
+		// and can override them with DITTOFS_DATABASE_POSTGRES_* env vars from K8s Secrets.
 		cfg.Type = "postgres"
 		cfg.SQLite = nil
+		cfg.Postgres = &PostgresConfig{
+			Host:     "placeholder",
+			Database: "placeholder",
+			User:     "placeholder",
+			Password: "placeholder",
+		}
 		return cfg
 	}
 

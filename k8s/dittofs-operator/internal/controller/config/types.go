@@ -20,13 +20,25 @@ type LoggingConfig struct {
 
 // DatabaseConfig configures the control plane database
 type DatabaseConfig struct {
-	Type   string        `yaml:"type"`
-	SQLite *SQLiteConfig `yaml:"sqlite,omitempty"`
+	Type     string          `yaml:"type"`
+	SQLite   *SQLiteConfig   `yaml:"sqlite,omitempty"`
+	Postgres *PostgresConfig `yaml:"postgres,omitempty"`
 }
 
 // SQLiteConfig configures SQLite database
 type SQLiteConfig struct {
 	Path string `yaml:"path"`
+}
+
+// PostgresConfig configures PostgreSQL database.
+// Values are placeholders overridden by env vars from Kubernetes Secrets.
+type PostgresConfig struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port,omitempty"`
+	Database string `yaml:"database"`
+	User     string `yaml:"user"`
+	Password string `yaml:"password"`
+	SSLMode  string `yaml:"sslmode,omitempty"`
 }
 
 // ControlPlaneConfig configures the control plane REST API
