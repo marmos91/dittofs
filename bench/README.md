@@ -55,7 +55,7 @@ Prerequisites   Build Image   Start System   Bootstrap   Mount NFS/SMB
 | `ganesha` | NFS | Local filesystem (FSAL_VFS) | 22049 | NFS-Ganesha userspace NFS server |
 | `kernel-nfs` | NFS | Local filesystem | 32049 | Linux kernel NFS server (gold standard) |
 | `rclone` | NFS | S3 via VFS cache | 42049 | RClone NFS serve over S3 |
-| `juicefs` | FUSE | PostgreSQL + S3 | - | JuiceFS FUSE mount (host path: `/mnt/juicefs`) |
+| `juicefs` | FUSE | PostgreSQL + S3 | (bind mount) | JuiceFS FUSE mount (host path: `$JUICEFS_MOUNT`) |
 | `samba` | SMB | Local filesystem | 22445 | Samba SMB server |
 
 Only one profile should run at a time to avoid resource contention.
@@ -116,7 +116,7 @@ Copy `.env.example` to `.env` and adjust as needed.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AWS_ENDPOINT_URL` | `http://localhost:4566` | S3 endpoint |
+| `S3_ENDPOINT` | `http://localhost:4566` | S3 endpoint |
 | `AWS_ACCESS_KEY_ID` | `test` | S3 access key |
 | `AWS_SECRET_ACCESS_KEY` | `test` | S3 secret key |
 | `AWS_DEFAULT_REGION` | `us-east-1` | S3 region |
@@ -136,8 +136,8 @@ Copy `.env.example` to `.env` and adjust as needed.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DITTOFS_CONTROLPLANE_SECRET` | (see .env.example) | DittoFS admin password |
-| `BENCH_WAL_ENABLED` | `true` | Enable write-ahead log |
+| `DITTOFS_CONTROLPLANE_SECRET` | (see .env.example) | DittoFS control-plane JWT signing secret |
+| `DITTOFS_ADMIN_INITIAL_PASSWORD` | (see .env.example) | Initial DittoFS admin password |
 
 #### Resource Limits
 
@@ -161,6 +161,12 @@ Copy `.env.example` to `.env` and adjust as needed.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FIO_ENGINE` | (auto-detected) | fio I/O engine (`libaio` on Linux, `posixaio` on macOS) |
+
+#### JuiceFS
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `JUICEFS_MOUNT` | `/tmp/bench-juicefs` | Host directory for JuiceFS FUSE bind mount (must exist before starting) |
 
 ### Resource Limits
 
@@ -207,6 +213,10 @@ sudo mount -t nfs -o tcp,port=32049,mountport=32049 localhost:/export /mnt/bench
 # RClone NFS
 sudo mount -t nfs -o tcp,port=42049,mountport=42049 localhost:/ /mnt/bench
 
+# JuiceFS (FUSE bind mount - no mount needed, access directly)
+# Data is available at /tmp/bench-juicefs (or $JUICEFS_MOUNT)
+ls /tmp/bench-juicefs
+
 # DittoFS SMB
 sudo mount -t cifs //localhost/export /mnt/bench -o port=12445,username=admin,password=<secret>
 
@@ -225,7 +235,6 @@ sudo mount -t cifs //localhost/export /mnt/bench -o port=22445,username=bench,pa
 | 32049 | Kernel NFS | NFS |
 | 32111 | Kernel NFS (portmapper) | RPC |
 | 42049 | RClone | NFS |
-| 52049 | JuiceFS (S3 gateway) | HTTP |
 | 12445 | DittoFS (SMB) | SMB |
 | 22445 | Samba | SMB |
 
@@ -297,7 +306,7 @@ docker compose --profile <profile> logs <service-name>
 
 Common issues:
 - **kernel-nfs**: Requires `SYS_ADMIN` capability (configured in docker-compose.yml)
-- **juicefs**: Requires `privileged: true` for FUSE (configured in docker-compose.yml)
+- **juicefs**: Requires `privileged: true` for FUSE (configured in docker-compose.yml). The host directory must exist before starting: `mkdir -p /tmp/bench-juicefs` (or set `JUICEFS_MOUNT` in `.env`)
 - **LocalStack**: Must be healthy before S3-dependent services start
 
 ### Bootstrap fails

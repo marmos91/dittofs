@@ -92,11 +92,28 @@ create_metadata_store() {
 }
 
 # ---------------------------------------------------------------------------
+# Ensure S3 bucket exists (LocalStack requires explicit creation)
+# ---------------------------------------------------------------------------
+ensure_s3_bucket() {
+    log_info "Ensuring S3 bucket '${S3_BUCKET}' exists..."
+    local status
+    status=$(curl -s -o /dev/null -w "%{http_code}" "${S3_ENDPOINT}/${S3_BUCKET}" 2>/dev/null || echo "000")
+    if [ "$status" = "404" ] || [ "$status" = "000" ]; then
+        curl -s -X PUT "${S3_ENDPOINT}/${S3_BUCKET}" >/dev/null 2>&1 \
+            && log_info "  Created S3 bucket '${S3_BUCKET}'" \
+            || log_warn "  Could not create S3 bucket (may already exist)"
+    else
+        log_info "  S3 bucket '${S3_BUCKET}' already exists"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Create payload store based on profile
 # ---------------------------------------------------------------------------
 create_payload_store() {
     case "$PROFILE" in
         badger-s3|postgres-s3|smb)
+            ensure_s3_bucket
             log_info "Creating S3 payload store..."
             "$DFSCTL" store payload add --name default --type s3 \
                 --config "{\"bucket\":\"${S3_BUCKET}\",\"region\":\"us-east-1\",\"endpoint\":\"${S3_ENDPOINT}\",\"force_path_style\":true}"

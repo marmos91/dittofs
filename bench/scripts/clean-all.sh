@@ -50,9 +50,9 @@ OS=$(detect_os)
 # ---------------------------------------------------------------------------
 try_unmount() {
     local mp="$1"
-    if umount "$mp" 2>/dev/null; then return 0; fi
-    if umount -f "$mp" 2>/dev/null; then return 0; fi
-    if [ "$OS" = "linux" ] && umount -l "$mp" 2>/dev/null; then return 0; fi
+    if sudo umount "$mp" 2>/dev/null; then return 0; fi
+    if sudo umount -f "$mp" 2>/dev/null; then return 0; fi
+    if [ "$OS" = "linux" ] && sudo umount -l "$mp" 2>/dev/null; then return 0; fi
     log_warn "  Could not unmount $mp (may not be mounted)"
 }
 
@@ -61,7 +61,9 @@ try_unmount() {
 # ---------------------------------------------------------------------------
 log_info "Step 1: Unmounting NFS/SMB benchmark mounts..."
 
-for mount_prefix in /mnt/bench /tmp/bench; do
+JUICEFS_MOUNT="${JUICEFS_MOUNT:-/tmp/bench-juicefs}"
+
+for mount_prefix in /mnt/bench /tmp/bench "${JUICEFS_MOUNT}"; do
     while IFS= read -r mount_point; do
         [ -z "$mount_point" ] && continue
         log_info "  Unmounting: $mount_point"
@@ -79,7 +81,7 @@ log_info "Step 2: Stopping benchmark Docker Compose services..."
 BENCH_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 if [ -f "${BENCH_DIR}/docker-compose.yml" ]; then
-    (cd "$BENCH_DIR" && docker compose --profile '*' down -v --remove-orphans 2>/dev/null) || log_warn "  No running Compose services found."
+    (cd "$BENCH_DIR" && docker compose down -v --remove-orphans 2>/dev/null) || log_warn "  No running Compose services found."
 else
     log_warn "  No docker-compose.yml found in ${BENCH_DIR}, skipping."
 fi

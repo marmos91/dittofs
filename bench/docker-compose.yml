@@ -86,11 +86,15 @@ services:
     volumes:
       - ./configs/dittofs/badger-s3.yaml:/config/config.yaml:ro
       - ./scripts/bootstrap-dittofs.sh:/app/bootstrap.sh:ro
-      - dittofs-data:/data
+      - dittofs-badger-s3-data:/data
       - ./results:/results
     environment:
       DITTOFS_CONTROLPLANE_SECRET: ${DITTOFS_CONTROLPLANE_SECRET:-BenchmarkInfrastructureSecret32ch!}
       DITTOFS_ADMIN_INITIAL_PASSWORD: ${DITTOFS_ADMIN_INITIAL_PASSWORD:-benchadmin}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      S3_BUCKET: ${S3_BUCKET:-bench}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://localstack:4566}
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/health/ready"]
       interval: 5s
@@ -121,11 +125,19 @@ services:
     volumes:
       - ./configs/dittofs/postgres-s3.yaml:/config/config.yaml:ro
       - ./scripts/bootstrap-dittofs.sh:/app/bootstrap.sh:ro
-      - dittofs-data:/data
+      - dittofs-postgres-s3-data:/data
       - ./results:/results
     environment:
       DITTOFS_CONTROLPLANE_SECRET: ${DITTOFS_CONTROLPLANE_SECRET:-BenchmarkInfrastructureSecret32ch!}
       DITTOFS_ADMIN_INITIAL_PASSWORD: ${DITTOFS_ADMIN_INITIAL_PASSWORD:-benchadmin}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      S3_BUCKET: ${S3_BUCKET:-bench}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://localstack:4566}
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-bench}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bench}
+      POSTGRES_DB: ${POSTGRES_DB:-bench}
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/health/ready"]
       interval: 5s
@@ -151,7 +163,7 @@ services:
     volumes:
       - ./configs/dittofs/badger-fs.yaml:/config/config.yaml:ro
       - ./scripts/bootstrap-dittofs.sh:/app/bootstrap.sh:ro
-      - dittofs-data:/data
+      - dittofs-badger-fs-data:/data
       - ./results:/results
     environment:
       DITTOFS_CONTROLPLANE_SECRET: ${DITTOFS_CONTROLPLANE_SECRET:-BenchmarkInfrastructureSecret32ch!}
@@ -185,11 +197,15 @@ services:
     volumes:
       - ./configs/dittofs/badger-s3.yaml:/config/config.yaml:ro
       - ./scripts/bootstrap-dittofs.sh:/app/bootstrap.sh:ro
-      - dittofs-data:/data
+      - dittofs-smb-data:/data
       - ./results:/results
     environment:
       DITTOFS_CONTROLPLANE_SECRET: ${DITTOFS_CONTROLPLANE_SECRET:-BenchmarkInfrastructureSecret32ch!}
       DITTOFS_ADMIN_INITIAL_PASSWORD: ${DITTOFS_ADMIN_INITIAL_PASSWORD:-benchadmin}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      S3_BUCKET: ${S3_BUCKET:-bench}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://localstack:4566}
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/health/ready"]
       interval: 5s
@@ -207,7 +223,7 @@ services:
   # ---------------------------------------------------------------------------
 
   ganesha:
-    image: apnar/nfs-ganesha:latest
+    image: apnar/nfs-ganesha@sha256:8185271b36729777e91317c12cf12abed7d9535b6d6725590a09afe2ea10e1ef  # latest as of 2026-02-27
     profiles:
       - ganesha
     ports:
@@ -264,11 +280,13 @@ services:
       - ./configs/rclone/rclone.conf:/config/rclone/rclone.conf:ro
       - rclone-cache:/tmp/rclone-cache
     command: >
-      serve nfs localstack-s3:
+      serve nfs localstack-s3:${S3_BUCKET:-bench}
       --addr 0.0.0.0:42049
       --vfs-cache-mode full
       --vfs-cache-max-size ${BENCH_CACHE_SIZE:-256M}
       --no-modtime
+    environment:
+      S3_BUCKET: ${S3_BUCKET:-bench}
     depends_on:
       localstack:
         condition: service_healthy
@@ -293,7 +311,7 @@ services:
       - /dev/fuse:/dev/fuse
       - juicefs-cache:/var/jfsCache
       - type: bind
-        source: /mnt/juicefs
+        source: ${JUICEFS_MOUNT:-/tmp/bench-juicefs}
         target: /mnt/jfs
         bind:
           propagation: rshared
@@ -341,12 +359,14 @@ services:
           memory: "${BENCH_MEM_LIMIT:-4g}"
 
   samba:
-    image: dperson/samba:latest
+    image: dperson/samba@sha256:66088b78a19810dd1457a8f39340e95e663c728083efa5fe7dc0d40b2478e869  # latest as of 2026-02-27
     profiles:
       - samba
     ports:
       - "22445:445"
     volumes:
+      # Note: dperson/samba generates its own smb.conf from command-line args below.
+      # This mount is kept as a reference for the expected Samba configuration.
       - ./configs/samba/smb.conf:/etc/samba/smb.conf:ro
       - samba-data:/export
     command: >
@@ -369,7 +389,10 @@ services:
 # Named volumes
 # -----------------------------------------------------------------------------
 volumes:
-  dittofs-data:
+  dittofs-badger-s3-data:
+  dittofs-postgres-s3-data:
+  dittofs-badger-fs-data:
+  dittofs-smb-data:
   postgres-data:
   ganesha-data:
   kernel-nfs-data:
