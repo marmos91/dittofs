@@ -218,7 +218,7 @@ sudo mount -t nfs -o tcp,port=42049,mountport=42049 localhost:/ /mnt/bench
 ls /tmp/bench-juicefs
 
 # DittoFS SMB
-sudo mount -t cifs //localhost/export /mnt/bench -o port=12445,username=admin,password=<secret>
+sudo mount -t cifs //localhost/export /mnt/bench -o port=12445,username=admin,password=benchadmin
 
 # Samba
 sudo mount -t cifs //localhost/export /mnt/bench -o port=22445,username=bench,password=bench

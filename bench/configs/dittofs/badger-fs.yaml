@@ -23,6 +23,6 @@ cache:
 controlplane:
   port: 8080
   jwt:
-    secret: benchmark-infrastructure-secret-key-32ch
+    secret: BenchmarkInfrastructureSecret32ch!
     access_token_duration: 1h
     refresh_token_duration: 168h
