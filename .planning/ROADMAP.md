@@ -216,9 +216,9 @@ Plans:
   17. KNOWN_FAILURES.md updated with current pass/fail status and issue links
 **Plans**: 3 plans
 Plans:
-- [ ] 32-01-PLAN.md — Windows 11 compatibility fixes (MxAc/QFid contexts, remaining FileInfoClass handlers, guest signing, capability flags)
-- [ ] 32-02-PLAN.md — smbtorture integration, Windows CI build step, Unix path fixes (#173, #169, test suite run, failure triage)
-- [ ] 32-03-PLAN.md — Manual Windows 11 validation and regression testing (Explorer, cmd, PowerShell, Windows client compat #172, KNOWN_FAILURES.md update)
+- [ ] 32-01-PLAN.md — Protocol fixes (MxAc/QFid create contexts, FileInfoClass handlers, capability flags, guest signing) + cross-platform path fixes + Windows CI
+- [ ] 32-02-PLAN.md — smbtorture Docker integration (infrastructure, run/parse scripts, CI workflow, KNOWN_FAILURES baseline)
+- [ ] 32-03-PLAN.md — Windows validation checklist + VM setup guide + WPTS KNOWN_FAILURES.md update
 
 ---
 
