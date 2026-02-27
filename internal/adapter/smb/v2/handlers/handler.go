@@ -10,6 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
+	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -119,13 +120,32 @@ type OpenFile struct {
 	PayloadID      metadata.PayloadID  // Content identifier for read/write operations
 
 	// Directory enumeration state
-	EnumerationCookie []byte // Opaque cookie for resuming directory listing
-	EnumerationIndex  int    // Current index in directory listing
+	EnumerationCookie  []byte // Opaque cookie for resuming directory listing
+	EnumerationIndex   int    // Current index in directory listing
+	EnumerationPattern string // Last search pattern used (for detecting pattern changes)
 
 	// Delete on close support (FileDispositionInformation)
 	DeletePending bool                // If true, delete file/directory when handle is closed
 	ParentHandle  metadata.FileHandle // Parent directory handle for deletion
 	FileName      string              // File name within parent for deletion
+
+	// CreateOptions stores the original CreateOptions from the CREATE request,
+	// used to populate FileModeInformation (FILE_WRITE_THROUGH, FILE_SEQUENTIAL_ONLY, etc.)
+	CreateOptions types.CreateOptions
+
+	// Timestamp frozen state (per MS-FSA 2.1.5.14.2)
+	// When a client sends SET_INFO with FILETIME -1, the corresponding timestamp
+	// is "frozen" and MUST NOT be auto-updated by subsequent operations (WRITE, etc.).
+	// When a client sends SET_INFO with FILETIME -2, the freeze is lifted.
+	// Timestamp freeze/unfreeze state per MS-FSA 2.1.5.14.2.
+	// These flags are per-open-handle state and are lost on server restart,
+	// which is correct per the spec (frozen state is tied to the open handle).
+	MtimeFrozen bool       // LastWriteTime frozen (don't auto-update on WRITE)
+	CtimeFrozen bool       // ChangeTime frozen (don't auto-update on WRITE)
+	AtimeFrozen bool       // LastAccessTime frozen (don't auto-update on READ)
+	FrozenMtime *time.Time // Saved Mtime value at freeze time
+	FrozenCtime *time.Time // Saved Ctime value at freeze time
+	FrozenAtime *time.Time // Saved Atime value at freeze time
 
 	// Oplock state
 	// OplockLevel is the current oplock level for this handle.
@@ -155,9 +175,9 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 		PipeManager:     rpc.NewPipeManager(),
 		OplockManager:   NewOplockManager(),
 		NotifyRegistry:  NewNotifyRegistry(),
-		MaxTransactSize: 65536,
-		MaxReadSize:     65536,
-		MaxWriteSize:    65536,
+		MaxTransactSize: 1048576, // 1MB (supports large directory listings; increases per-request memory)
+		MaxReadSize:     1048576, // 1MB
+		MaxWriteSize:    1048576, // 1MB
 		SigningConfig:   signing.DefaultSigningConfig(),
 	}
 

@@ -46,6 +46,7 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 	// Find highest supported dialect
 	// We support SMB 2.0.2 and SMB 2.1 for broader compatibility
 	var selectedDialect types.Dialect
+	hasWildcard := false
 	for _, d := range dialects {
 		dialect := types.Dialect(d)
 		switch dialect {
@@ -54,12 +55,28 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 			if selectedDialect < types.SMB2Dialect0210 {
 				selectedDialect = types.SMB2Dialect0210
 			}
-		case types.SMB2Dialect0202, types.SMB2DialectWild:
-			// SMB 2.0.2 is our baseline; wildcard maps to lowest supported
+		case types.SMB2Dialect0202:
+			if selectedDialect < types.SMB2Dialect0202 {
+				selectedDialect = types.SMB2Dialect0202
+			}
+		case types.SMB2DialectWild:
+			hasWildcard = true
 			if selectedDialect < types.SMB2Dialect0202 {
 				selectedDialect = types.SMB2Dialect0202
 			}
 		}
+	}
+
+	// Per MS-SMB2 §3.3.5.3.2: When the client sends the wildcard dialect
+	// (0x02FF), the server MUST respond with 0x02FF unless an SMB 3.x
+	// dialect was also offered and selected. The wildcard signals that
+	// the client supports multi-protocol negotiate; the server echoes it
+	// back so the client knows to perform a full negotiate.
+	// SMB 2.0.2 alongside wildcard still gets 0x02FF because 2.0.2 is
+	// the baseline that wildcard implies.
+	responseDialect := selectedDialect
+	if hasWildcard && selectedDialect <= types.SMB2Dialect0202 {
+		responseDialect = types.SMB2DialectWild
 	}
 
 	logger.Debug("SMB2 NEGOTIATE dialect selection",
@@ -85,13 +102,21 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 		securityMode |= 0x02 // SMB2_NEGOTIATE_SIGNING_REQUIRED
 	}
 
+	// Set Capabilities based on negotiated dialect [MS-SMB2 2.2.4]
+	// SMB 2.0.2: Capabilities field is reserved, SHOULD be 0.
+	// SMB 2.1+:  Advertise supported capabilities.
+	var capabilities uint32
+	if selectedDialect >= types.SMB2Dialect0210 {
+		capabilities = uint32(types.CapLeasing | types.CapLargeMTU)
+	}
+
 	binary.LittleEndian.PutUint16(resp[0:2], 65)                      // StructureSize
 	resp[2] = securityMode                                            // SecurityMode
 	resp[3] = 0                                                       // Reserved
-	binary.LittleEndian.PutUint16(resp[4:6], uint16(selectedDialect)) // DialectRevision
+	binary.LittleEndian.PutUint16(resp[4:6], uint16(responseDialect)) // DialectRevision
 	binary.LittleEndian.PutUint16(resp[6:8], 0)                       // NegotiateContextCount (SMB 3.1.1 only)
 	copy(resp[8:24], h.ServerGUID[:])                                 // ServerGuid
-	binary.LittleEndian.PutUint32(resp[24:28], 0)                     // Capabilities (none for Phase 1)
+	binary.LittleEndian.PutUint32(resp[24:28], capabilities)          // Capabilities
 	binary.LittleEndian.PutUint32(resp[28:32], h.MaxTransactSize)
 	binary.LittleEndian.PutUint32(resp[32:36], h.MaxReadSize)
 	binary.LittleEndian.PutUint32(resp[36:40], h.MaxWriteSize)

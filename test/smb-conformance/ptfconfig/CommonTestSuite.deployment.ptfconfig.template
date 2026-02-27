@@ -1,104 +1,177 @@
 <?xml version="1.0" encoding="utf-8"?>
 <TestSite xmlns="http://schemas.microsoft.com/windows/ProtocolsTest/2007/07/TestConfig"
-          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://schemas.microsoft.com/windows/ProtocolsTest/2007/07/TestConfig http://schemas.microsoft.com/windows/ProtocolsTest/2007/07/TestConfig">
 
   <Properties>
-    <!-- ============================================================== -->
-    <!-- Network Configuration                                           -->
-    <!-- ============================================================== -->
-    <Property name="SutComputerName" value="${DITTOFS_HOST}">
-      <Description>The computer name of the SUT (System Under Test).</Description>
-    </Property>
-    <Property name="SutIPAddress" value="${DITTOFS_HOST}">
-      <Description>The IP address of the SUT.</Description>
-    </Property>
-    <Property name="TransportPort" value="${SMB_PORT}">
-      <Description>The SMB transport port on the SUT.</Description>
-    </Property>
-    <Property name="ClientNic1IPAddress" value="${CLIENT_IP}">
-      <Description>The IP address of the primary client NIC.</Description>
-    </Property>
-    <Property name="ClientNic2IPAddress" value="">
-      <Description>The IP address of the secondary client NIC (empty for single NIC).</Description>
-    </Property>
+    <Group name="Common">
+      <!-- ============================================================== -->
+      <!-- Network Configuration                                           -->
+      <!-- ============================================================== -->
+      <Property name="SutComputerName" value="${DITTOFS_HOST}">
+        <Description>The computer name of the SUT (System Under Test).</Description>
+      </Property>
+      <Property name="SutIPAddress" value="${DITTOFS_HOST}">
+        <Description>The IP address of the SUT.</Description>
+      </Property>
+      <Property name="SutAlternativeIPAddress" value="">
+        <Description>Alternative IP address of the SUT (empty for single NIC).</Description>
+      </Property>
+      <Property name="TransportPort" value="445">
+        <Description>The SMB transport port on the SUT (must be 445, WPTS hardcodes this).</Description>
+      </Property>
+      <Property name="ClientNic1IPAddress" value="${CLIENT_IP}">
+        <Description>The IP address of the primary client NIC.</Description>
+      </Property>
+      <Property name="ClientNic2IPAddress" value="">
+        <Description>The IP address of the secondary client NIC (empty for single NIC).</Description>
+      </Property>
 
-    <!-- ============================================================== -->
-    <!-- Authentication (Workgroup Mode)                                 -->
-    <!-- ============================================================== -->
-    <Property name="DomainName" value="${DITTOFS_HOST}">
-      <Description>Set to SutComputerName for workgroup mode (no domain).</Description>
-    </Property>
-    <Property name="DCServerComputerName" value="">
-      <Description>Empty for workgroup mode (no domain controller).</Description>
-    </Property>
-    <Property name="AdminUserName" value="${ADMIN_USER}">
-      <Description>Admin user for the SUT.</Description>
-    </Property>
-    <Property name="NonAdminUserName" value="${TEST_USER}">
-      <Description>Non-admin user for the SUT.</Description>
-    </Property>
-    <Property name="GuestUserName" value="">
-      <Description>Guest user (empty if not applicable).</Description>
-    </Property>
-    <Property name="PasswordForAllUsers" value="${TEST_PASSWORD}">
-      <Description>Password used for all test users.</Description>
-    </Property>
-    <Property name="SupportedSecurityPackage" value="Ntlm">
-      <Description>NTLM for workgroup mode (no Kerberos without domain).</Description>
-    </Property>
-    <Property name="UseServerGssToken" value="true">
-      <Description>Use server-initiated SPNEGO token.</Description>
-    </Property>
+      <!-- ============================================================== -->
+      <!-- Authentication (Workgroup Mode)                                 -->
+      <!-- ============================================================== -->
+      <Property name="DomainName" value="${DITTOFS_HOST}">
+        <Description>Set to SutComputerName for workgroup mode (no domain).</Description>
+      </Property>
+      <Property name="DCServerComputerName" value="">
+        <Description>Empty for workgroup mode (no domain controller).</Description>
+      </Property>
+      <Property name="AdminUserName" value="${ADMIN_USER}">
+        <Description>Admin user for the SUT.</Description>
+      </Property>
+      <Property name="NonAdminUserName" value="${TEST_USER}">
+        <Description>Non-admin user for the SUT.</Description>
+      </Property>
+      <Property name="GuestUserName" value="">
+        <Description>Guest user (empty if not applicable).</Description>
+      </Property>
+      <Property name="PasswordForAllUsers" value="${TEST_PASSWORD}">
+        <Description>Password used for all test users.</Description>
+      </Property>
+      <Property name="SupportedSecurityPackage" value="Ntlm">
+        <Description>NTLM for workgroup mode (no Kerberos without domain).</Description>
+      </Property>
+      <Property name="UseServerGssToken" value="true">
+        <Description>Use server-initiated SPNEGO token.</Description>
+      </Property>
 
-    <!-- ============================================================== -->
-    <!-- Shares                                                          -->
-    <!-- ============================================================== -->
-    <Property name="BasicFileShare" value="SMBBasic">
-      <Description>Basic file share for general SMB operations.</Description>
-    </Property>
-    <Property name="EncryptedFileShare" value="SMBEncrypted">
-      <Description>Share requiring encryption (created but encryption not yet supported).</Description>
-    </Property>
+      <!-- ============================================================== -->
+      <!-- Shares                                                          -->
+      <!-- ============================================================== -->
+      <Property name="BasicFileShare" value="SMBBasic">
+        <Description>Basic file share for general SMB operations.</Description>
+      </Property>
+      <Property name="EncryptedFileShare" value="SMBEncrypted">
+        <Description>Share requiring encryption (created but encryption not yet supported).</Description>
+      </Property>
+      <Property name="CompressedFileShare" value="">
+        <Description>Share requiring compression (not supported).</Description>
+      </Property>
+      <Property name="CAShareName" value="">
+        <Description>Continuously available share name (not supported).</Description>
+      </Property>
+      <Property name="CAShareServerName" value="">
+        <Description>CA share server name (not supported).</Description>
+      </Property>
 
-    <!-- ============================================================== -->
-    <!-- Platform and Capabilities                                       -->
-    <!-- ============================================================== -->
-    <Property name="Platform" value="NonWindows">
-      <Description>Platform type of the SUT.</Description>
-    </Property>
-    <Property name="MaxSmbVersionSupported" value="Smb21">
-      <Description>Maximum SMB version supported by DittoFS (currently 2.1).</Description>
-    </Property>
-    <Property name="MaxSmbVersionClientSupported" value="Smb311">
-      <Description>Maximum SMB version supported by the test client.</Description>
-    </Property>
-    <Property name="IsEncryptionSupported" value="false">
-      <Description>SMB3 encryption is not yet implemented (Phase 39).</Description>
-    </Property>
-    <Property name="IsLeasingSupported" value="true">
-      <Description>File leasing (oplocks) is supported.</Description>
-    </Property>
-    <Property name="IsDirectoryLeasingSupported" value="false">
-      <Description>Directory leasing is not supported.</Description>
-    </Property>
-    <Property name="IsPersistentHandlesSupported" value="false">
-      <Description>Persistent handles are not supported (single-node only).</Description>
-    </Property>
-    <Property name="IsMultiChannelCapable" value="false">
-      <Description>Multi-channel is not supported.</Description>
-    </Property>
-    <Property name="IsMultiCreditSupported" value="true">
-      <Description>Multi-credit requests are supported.</Description>
-    </Property>
-    <Property name="IsRequireMessageSigning" value="false">
-      <Description>Message signing is enabled but not required.</Description>
-    </Property>
-    <Property name="SendSignedRequest" value="true">
-      <Description>Send signed requests when signing is negotiated.</Description>
-    </Property>
-    <Property name="DisableVerifySignature" value="true">
-      <Description>Disable signature verification on server responses.</Description>
-    </Property>
+      <!-- ============================================================== -->
+      <!-- Platform and Capabilities                                       -->
+      <!-- ============================================================== -->
+      <Property name="Platform" value="NonWindows">
+        <Description>Platform type of the SUT.</Description>
+      </Property>
+      <Property name="MaxSmbVersionSupported" value="Smb21">
+        <Description>Maximum SMB version supported by DittoFS (currently 2.1).</Description>
+      </Property>
+      <Property name="MaxSmbVersionClientSupported" value="Smb311">
+        <Description>Maximum SMB version supported by the test client.</Description>
+      </Property>
+      <Property name="IsEncryptionSupported" value="false">
+        <Description>SMB3 encryption is not yet implemented.</Description>
+      </Property>
+      <Property name="IsLeasingSupported" value="true">
+        <Description>File leasing (oplocks) is supported.</Description>
+      </Property>
+      <Property name="IsDirectoryLeasingSupported" value="false">
+        <Description>Directory leasing is not supported.</Description>
+      </Property>
+      <Property name="IsPersistentHandlesSupported" value="false">
+        <Description>Persistent handles are not supported (single-node only).</Description>
+      </Property>
+      <Property name="IsMultiChannelCapable" value="false">
+        <Description>Multi-channel is not supported.</Description>
+      </Property>
+      <Property name="IsMultiCreditSupported" value="true">
+        <Description>Multi-credit requests are supported.</Description>
+      </Property>
+      <Property name="IsRequireMessageSigning" value="false">
+        <Description>Message signing is enabled but not required.</Description>
+      </Property>
+      <Property name="SendSignedRequest" value="true">
+        <Description>Send signed requests when signing is negotiated.</Description>
+      </Property>
+      <Property name="DisableVerifySignature" value="true">
+        <Description>Disable signature verification on server responses.</Description>
+      </Property>
+
+      <!-- ============================================================== -->
+      <!-- Timeouts                                                        -->
+      <!-- ============================================================== -->
+      <Property name="Timeout" value="8">
+        <Description>Default timeout in seconds for operations.</Description>
+      </Property>
+      <Property name="LongerTimeout" value="120">
+        <Description>Longer timeout for slow operations.</Description>
+      </Property>
+      <Property name="RetryInterval" value="10">
+        <Description>Retry interval in seconds.</Description>
+      </Property>
+
+      <!-- ============================================================== -->
+      <!-- Transport                                                       -->
+      <!-- ============================================================== -->
+      <Property name="UnderlyingTransport" value="Tcp">
+        <Description>Transport layer to use.</Description>
+      </Property>
+      <Property name="IsSMB1NegotiateEnabled" value="true">
+        <Description>Enable SMB1 negotiate for compatible negotiate tests.</Description>
+      </Property>
+
+      <!-- ============================================================== -->
+      <!-- Unsupported Features                                            -->
+      <!-- ============================================================== -->
+      <Property name="UnsupportedIoCtlCodes" value="FSCTL_LMR_REQUEST_RESILIENCY;FSCTL_QUERY_NETWORK_INTERFACE_INFO;FSCTL_DFS_GET_REFERRALS;FSCTL_DFS_GET_REFERRALS_EX;FSCTL_PIPE_PEEK;FSCTL_PIPE_TRANSCEIVE;FSCTL_PIPE_WAIT;FSCTL_SET_ZERO_DATA;FSCTL_FILE_LEVEL_TRIM;FSCTL_DUPLICATE_EXTENTS_TO_FILE;FSCTL_QUERY_SHARED_VIRTUAL_DISK_SUPPORT;FSCTL_SVHDX_SYNC_TUNNEL_REQUEST;FSCTL_GET_INTEGRITY_INFORMATION;FSCTL_SET_INTEGRITY_INFORMATION;FSCTL_OFFLOAD_READ;FSCTL_OFFLOAD_WRITE">
+        <Description>IOCTL codes not supported by DittoFS.</Description>
+      </Property>
+      <Property name="UnsupportedCreateContexts" value="SMB2_CREATE_APP_INSTANCE_ID;SMB2_CREATE_APP_INSTANCE_VERSION;SMB2_CREATE_DURABLE_HANDLE_REQUEST_V2;SMB2_CREATE_DURABLE_HANDLE_RECONNECT_V2;SVHDX_OPEN_DEVICE_CONTEXT">
+        <Description>Create contexts not supported by DittoFS.</Description>
+      </Property>
+
+      <!-- ============================================================== -->
+      <!-- Encryption / Signing / Compression                              -->
+      <!-- ============================================================== -->
+      <Property name="IsGlobalEncryptDataEnabled" value="false">
+        <Description>Global encryption not enabled.</Description>
+      </Property>
+      <Property name="IsGlobalRejectUnencryptedAccessEnabled" value="false">
+        <Description>Unencrypted access is allowed.</Description>
+      </Property>
+      <Property name="SupportedCompressionAlgorithms" value="">
+        <Description>No compression algorithms supported.</Description>
+      </Property>
+      <Property name="IsChainedCompressionSupported" value="false">
+        <Description>Chained compression not supported.</Description>
+      </Property>
+      <Property name="SupportedSigningAlgorithms" value="HMAC_SHA256">
+        <Description>Supported signing algorithms.</Description>
+      </Property>
+      <Property name="IsRDMATransformSupported" value="false">
+        <Description>RDMA transform not supported.</Description>
+      </Property>
+      <Property name="MaxResiliencyTimeout" value="300000">
+        <Description>Maximum resiliency timeout in milliseconds.</Description>
+      </Property>
+    </Group>
   </Properties>
 
 </TestSite>

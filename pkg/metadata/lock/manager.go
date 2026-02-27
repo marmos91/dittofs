@@ -240,35 +240,53 @@ func IsLockConflicting(existing, requested *FileLock) bool {
 
 // CheckIOConflict checks if an I/O operation conflicts with an existing lock.
 //
-// This is used to verify READ/WRITE operations don't violate locks:
-//   - READ is blocked by another session's exclusive lock
-//   - WRITE is blocked by any other session's lock (shared or exclusive)
+// This implements SMB2 byte-range lock semantics per [MS-SMB2] 3.3.5.15:
+//   - Shared lock: Allows reads from all sessions but blocks writes from ALL
+//     sessions, including the lock holder. This is the key difference from
+//     POSIX advisory locks where a process's own locks never block its own I/O.
+//   - Exclusive lock: Only the lock holder can read or write the range.
+//
+// Conflict rules:
+//   - READ + same session + any lock type = ALLOW
+//   - READ + different session + shared lock = ALLOW
+//   - READ + different session + exclusive lock = BLOCK
+//   - WRITE + same session + exclusive lock = ALLOW (lock holder can write)
+//   - WRITE + same session + shared lock = BLOCK (shared = read-only for everyone)
+//   - WRITE + different session + any lock = BLOCK
 //
 // Parameters:
 //   - existing: The lock to check against
-//   - sessionID: The session performing the I/O (their own locks don't block them)
+//   - sessionID: The session performing the I/O
 //   - offset: Starting byte offset of the I/O
 //   - length: Number of bytes in the I/O
 //   - isWrite: true for write operations, false for reads
 //
 // Returns true if the I/O is blocked by the existing lock.
 func CheckIOConflict(existing *FileLock, sessionID uint64, offset, length uint64, isWrite bool) bool {
-	// Same session - no conflict
-	if existing.SessionID == sessionID {
-		return false
-	}
-
-	// Check range overlap
+	// Check range overlap first (common case: no overlap)
 	if !RangesOverlap(existing.Offset, existing.Length, offset, length) {
 		return false
 	}
 
-	// For writes: any lock blocks (shared or exclusive)
+	// Same session handling
+	if existing.SessionID == sessionID {
+		// Reads from the same session are always allowed regardless of lock type
+		if !isWrite {
+			return false
+		}
+		// Writes from the same session:
+		// - Exclusive lock holder CAN write to their own locked range
+		// - Non-exclusive (shared) lock holder CANNOT write; shared locks are read-only
+		//   and prevent writes from all sessions, including the holder.
+		return !existing.Exclusive
+	}
+
+	// Different session: writes are blocked by any lock (shared or exclusive)
 	if isWrite {
 		return true
 	}
 
-	// For reads: only exclusive locks block
+	// Different session reads: only exclusive locks block
 	return existing.Exclusive
 }
 

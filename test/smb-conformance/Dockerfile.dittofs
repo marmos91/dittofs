@@ -47,12 +47,16 @@ WORKDIR /app
 COPY --from=builder --chown=65532:65532 /build/dfs /app/dfs
 COPY --from=builder --chown=65532:65532 /build/dfsctl /app/dfsctl
 
-RUN mkdir -p /data/metadata /data/content /data/cache /config && \
+RUN apk add --no-cache libcap && \
+    mkdir -p /data/metadata /data/content /data/cache /config && \
     chown -R 65532:65532 /data /config
+
+# Grant CAP_NET_BIND_SERVICE so the non-root user can bind to port 445 (required by WPTS)
+RUN setcap cap_net_bind_service=+ep /app/dfs
 
 USER 65532:65532
 
-EXPOSE 12445/tcp 8080/tcp
+EXPOSE 445/tcp 8080/tcp
 HEALTHCHECK --interval=2s --timeout=5s --start-period=5s --retries=15 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health/ready || exit 1
 

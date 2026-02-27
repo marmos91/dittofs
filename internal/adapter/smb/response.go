@@ -61,6 +61,17 @@ func ProcessSingleRequest(
 		return SendErrorResponse(reqHeader, types.StatusInternalError, connInfo)
 	}
 
+	// Per [MS-SMB2] 3.3.5.16: CANCEL must not send a response.
+	// Handlers return nil result to indicate "no response should be sent".
+	// Only Cancel is expected to return nil; other handlers must always return a result.
+	if result == nil {
+		if reqHeader.Command != types.SMB2Cancel {
+			logger.Warn("Handler returned nil result for non-CANCEL command",
+				"command", cmd.Name, "client", handlerCtx.ClientAddr)
+		}
+		return nil
+	}
+
 	// Track session lifecycle for connection cleanup
 	TrackSessionLifecycle(reqHeader.Command, reqHeader.SessionID, handlerCtx.SessionID, result.Status, connInfo.SessionTracker)
 
@@ -131,6 +142,12 @@ func ProcessRequestWithFileID(ctx context.Context, reqHeader *header.SMB2Header,
 		return &HandlerResult{Status: types.StatusInternalError, Data: MakeErrorBody()}, fileID, handlerCtx
 	}
 
+	// Per [MS-SMB2] 3.3.5.16: CANCEL must not send a response.
+	// Return a nil result to signal "no response" to the caller.
+	if result == nil {
+		return nil, fileID, handlerCtx
+	}
+
 	// Track session lifecycle for connection cleanup
 	TrackSessionLifecycle(reqHeader.Command, reqHeader.SessionID, handlerCtx.SessionID, result.Status, connInfo.SessionTracker)
 
@@ -177,10 +194,19 @@ func SendResponse(reqHeader *header.SMB2Header, ctx *handlers.SMBHandlerContext,
 		respHeader.TreeID = ctx.TreeID
 	}
 
-	// If result has error status but no data, add proper error body
-	// Error responses must include a valid error body per MS-SMB2 spec
+	// Per MS-SMB2 2.2.2: If the Status field indicates an error or warning,
+	// the response MUST use the ERROR Response format (9 bytes), not the
+	// command-specific response body. This applies to both error statuses
+	// (severity 11, 0xC0xxxxxx) and warning statuses (severity 10,
+	// 0x80xxxxxx) like STATUS_NO_MORE_FILES.
+	//
+	// Exceptions where non-success statuses carry meaningful data:
+	//   - StatusMoreProcessingRequired: SPNEGO challenge token in SESSION_SETUP
+	//   - StatusBufferOverflow: truncated data in QUERY_INFO
 	body := result.Data
-	if body == nil && result.Status.IsError() {
+	if (result.Status.IsError() || result.Status.IsWarning()) &&
+		result.Status != types.StatusMoreProcessingRequired &&
+		result.Status != types.StatusBufferOverflow {
 		body = MakeErrorBody()
 	}
 
@@ -272,9 +298,41 @@ func SendAsyncChangeNotifyResponse(sessionID, messageID uint64, response *handle
 //
 // This is required because many clients (including macOS Finder) start with
 // SMB1 NEGOTIATE and expect the server to respond with SMB2 if it supports it.
-func HandleSMB1Negotiate(connInfo *ConnInfo) error {
+//
+// Per MS-SMB2 §3.3.5.3:
+//   - If the client offered "SMB 2.???" → respond with DialectRevision 0x02FF (§3.3.5.3.2)
+//   - If the client offered only "SMB 2.002" → respond with DialectRevision 0x0202 (§3.3.5.3.1)
+func HandleSMB1Negotiate(connInfo *ConnInfo, message []byte) error {
 	logger.Debug("Received SMB1 NEGOTIATE, responding with SMB2 upgrade",
 		"address", connInfo.Conn.RemoteAddr().String())
+
+	// Determine response dialect by parsing SMB1 NEGOTIATE dialect strings.
+	// SMB1 header is 32 bytes, then: WordCount (1) + ByteCount (2) + dialects.
+	// Each dialect: BufferFormat (0x02) + null-terminated ASCII string.
+	responseDialect := types.SMB2Dialect0202 // default: "SMB 2.002" only
+	if len(message) > 35 {
+		dialects := message[35:]
+		for len(dialects) > 1 {
+			if dialects[0] != 0x02 {
+				break
+			}
+			dialects = dialects[1:]
+			// Find null terminator; if absent the dialect string is malformed so skip it.
+			end := 0
+			for end < len(dialects) && dialects[end] != 0 {
+				end++
+			}
+			if end >= len(dialects) {
+				// Unterminated dialect string — stop parsing.
+				break
+			}
+			name := string(dialects[:end])
+			if name == "SMB 2.???" {
+				responseDialect = types.SMB2DialectWild
+			}
+			dialects = dialects[end+1:] // skip past null terminator
+		}
+	}
 
 	// Build SMB2 NEGOTIATE response header.
 	// When responding to SMB1 NEGOTIATE, we use a special SMB2 header format.
@@ -302,8 +360,8 @@ func HandleSMB1Negotiate(connInfo *ConnInfo) error {
 		respBody[2] |= 0x02 // SMB2_NEGOTIATE_SIGNING_REQUIRED
 	}
 
-	binary.LittleEndian.PutUint16(respBody[4:6], uint16(types.SMB2Dialect0202)) // DialectRevision: SMB 2.0.2
-	copy(respBody[8:24], connInfo.Handler.ServerGUID[:])                        // ServerGUID
+	binary.LittleEndian.PutUint16(respBody[4:6], uint16(responseDialect))
+	copy(respBody[8:24], connInfo.Handler.ServerGUID[:]) // ServerGUID
 	binary.LittleEndian.PutUint32(respBody[28:32], connInfo.Handler.MaxTransactSize)
 	binary.LittleEndian.PutUint32(respBody[32:36], connInfo.Handler.MaxReadSize)
 	binary.LittleEndian.PutUint32(respBody[36:40], connInfo.Handler.MaxWriteSize)

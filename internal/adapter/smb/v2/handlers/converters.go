@@ -2,6 +2,7 @@
 package handlers
 
 import (
+	"encoding/binary"
 	"strings"
 	"time"
 
@@ -10,12 +11,20 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// clusterSize is the allocation unit size used for AllocationSize calculations.
-// SMB clients expect AllocationSize to be a multiple of the filesystem cluster size.
-// We use 4096 bytes (4KB) as this is the default allocation unit size on NTFS and
-// most modern filesystems. This is a logical value for SMB reporting purposes only;
-// it does not reflect the actual backing store's block size.
-const clusterSize = 4096
+// Filesystem geometry constants for SMB reporting purposes.
+// NTFS reports SectorsPerAllocationUnit=8, BytesPerSector=512, giving
+// 4096 bytes per cluster (8 * 512 = 4096). These values are used in
+// AllocationSize calculations and FileFsSizeInformation responses.
+const (
+	bytesPerSector uint32 = 512
+	sectorsPerUnit uint32 = 8
+	clusterSize           = uint64(sectorsPerUnit) * uint64(bytesPerSector) // 4096
+
+	// ntfsVolumeSerialNumber is the synthetic NTFS volume serial number reported
+	// consistently across FILE_ID_INFORMATION, FSCTL_GET_NTFS_VOLUME_DATA, and
+	// FileFsVolumeInformation responses. WPTS tests verify these values match.
+	ntfsVolumeSerialNumber uint64 = 0x12345678
+)
 
 // calculateAllocationSize returns the size rounded up to the nearest cluster boundary.
 func calculateAllocationSize(size uint64) uint64 {
@@ -81,15 +90,14 @@ func fileAttrToSMBAttributesInternal(attr *metadata.FileAttr, hidden bool) types
 	case metadata.FileTypeDirectory:
 		attrs |= types.FileAttributeDirectory
 	case metadata.FileTypeRegular:
-		if attr.Size == 0 {
-			attrs |= types.FileAttributeNormal
-		}
+		// Per MS-FSCC, regular files should have ARCHIVE set.
+		// Windows sets this on file creation and modification.
+		attrs |= types.FileAttributeArchive
 	case metadata.FileTypeSymlink:
 		attrs |= types.FileAttributeReparsePoint
 	case metadata.FileTypeFIFO, metadata.FileTypeSocket,
 		metadata.FileTypeBlockDevice, metadata.FileTypeCharDevice:
 		// Special files appear as regular files (though they should be filtered out)
-		attrs |= types.FileAttributeNormal
 	}
 
 	// Set hidden attribute
@@ -97,15 +105,11 @@ func fileAttrToSMBAttributesInternal(attr *metadata.FileAttr, hidden bool) types
 		attrs |= types.FileAttributeHidden
 	}
 
+	// Per MS-FSCC 2.6, FileAttributeNormal MUST NOT be combined with any other
+	// file attributes. Only set it when no other attributes are set.
 	if attrs == 0 {
 		attrs = types.FileAttributeNormal
 	}
-
-	// Note: We intentionally do NOT set FileAttributeReadonly based on Unix mode.
-	// macOS SMB clients interpret FileAttributeReadonly as "share is read-only"
-	// and refuse to create files, even before contacting the server.
-	// Unix permission enforcement happens at file operation time, not via attributes.
-	// See docs/KNOWN_LIMITATIONS.md for details on this macOS compatibility behavior.
 
 	return attrs
 }
@@ -252,39 +256,55 @@ func SMBAttributesToFileType(attrs types.FileAttributes) metadata.FileType {
 	return metadata.FileTypeRegular
 }
 
-// SMBTimesToSetAttrs converts SMB FILE_BASIC_INFORMATION time fields and attributes
-// to a metadata SetAttrs struct for SETATTR operations. Only populates fields whose
-// SMB timestamps are non-zero and not the sentinel -1 value (meaning "don't change").
-// Also handles the Hidden attribute flag from FileAttributes.
-func SMBTimesToSetAttrs(basicInfo *FileBasicInfo) *metadata.SetAttrs {
+// DecodeBasicInfoToSetAttrs decodes FILE_BASIC_INFORMATION from a raw buffer
+// directly into SetAttrs, properly handling all FILETIME sentinel values per
+// [MS-FSCC] 2.4.7 and [MS-FSA] 2.1.5.14.2:
+//   - 0: don't change this timestamp
+//   - 0xFFFFFFFFFFFFFFFF (-1): don't change this timestamp; disable auto-update
+//   - 0xFFFFFFFFFFFFFFFE (-2): don't change this timestamp; enable auto-update
+//
+// All three sentinel values result in no explicit timestamp change. The -1 vs -2
+// distinction controls whether the server auto-updates the timestamp on subsequent
+// operations; since DittoFS does not yet track per-field auto-update state, both
+// are treated identically as "don't change".
+func DecodeBasicInfoToSetAttrs(buffer []byte) *metadata.SetAttrs {
 	attrs := &metadata.SetAttrs{}
 
-	// Only set times that are non-zero (SMB uses 0 or -1 to indicate "don't change")
-	zeroTime := time.Time{}
-	negOneTime := types.FiletimeToTime(0xFFFFFFFFFFFFFFFF)
+	processFiletimeForSet(binary.LittleEndian.Uint64(buffer[0:8]), &attrs.CreationTime)
+	processFiletimeForSet(binary.LittleEndian.Uint64(buffer[8:16]), &attrs.Atime)
+	processFiletimeForSet(binary.LittleEndian.Uint64(buffer[16:24]), &attrs.Mtime)
+	processFiletimeForSet(binary.LittleEndian.Uint64(buffer[24:32]), &attrs.Ctime)
 
-	if basicInfo.CreationTime != zeroTime && basicInfo.CreationTime != negOneTime {
-		t := basicInfo.CreationTime
-		attrs.CreationTime = &t
-	}
-	if basicInfo.LastAccessTime != zeroTime && basicInfo.LastAccessTime != negOneTime {
-		t := basicInfo.LastAccessTime
-		attrs.Atime = &t
-	}
-	if basicInfo.LastWriteTime != zeroTime && basicInfo.LastWriteTime != negOneTime {
-		t := basicInfo.LastWriteTime
-		attrs.Mtime = &t
-	}
-	// Note: ChangeTime (ctime) is typically not settable by clients
-
-	// Handle Hidden attribute from FileAttributes
-	// Only set if FileAttributes is non-zero (0 means "don't change")
-	if basicInfo.FileAttributes != 0 {
-		hidden := basicInfo.FileAttributes&types.FileAttributeHidden != 0
-		attrs.Hidden = &hidden
+	// Handle file attributes (offset 32-36)
+	if len(buffer) >= 36 {
+		fileAttrs := types.FileAttributes(binary.LittleEndian.Uint32(buffer[32:36]))
+		if fileAttrs != 0 {
+			hidden := fileAttrs&types.FileAttributeHidden != 0
+			attrs.Hidden = &hidden
+		}
 	}
 
 	return attrs
+}
+
+// processFiletimeForSet interprets a FILETIME value for SET_INFO operations.
+// Per [MS-FSA] 2.1.5.14.2:
+//   - 0: don't change (server MUST NOT change this attribute)
+//   - -1: don't change; disable auto-update for subsequent operations
+//   - -2: don't change; re-enable auto-update for subsequent operations
+//
+// All three sentinel values leave the timestamp unchanged. Only explicit
+// (non-sentinel, non-zero) FILETIME values cause a timestamp update.
+func processFiletimeForSet(ft uint64, target **time.Time) {
+	switch ft {
+	case 0, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFE:
+		// 0, -1, and -2: don't change this timestamp
+	default:
+		t := types.FiletimeToTime(ft)
+		if !t.IsZero() {
+			*target = &t
+		}
+	}
 }
 
 // MetadataErrorToSMBStatus maps metadata store errors to SMB NT status codes

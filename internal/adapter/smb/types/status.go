@@ -57,6 +57,10 @@ const (
 	// StatusInvalidInfoClass indicates an invalid information class was requested.
 	StatusInvalidInfoClass Status = 0xC0000003
 
+	// StatusInfoLengthMismatch indicates the buffer is smaller than the
+	// minimum size required for the requested information class.
+	StatusInfoLengthMismatch Status = 0xC0000004
+
 	// StatusInvalidHandle indicates the file handle is invalid or closed.
 	StatusInvalidHandle Status = 0xC0000008
 

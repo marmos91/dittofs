@@ -220,24 +220,120 @@ func (h *Handler) setFileInfoFromStore(
 	switch class {
 	case types.FileBasicInformation:
 		// FILE_BASIC_INFORMATION [MS-FSCC] 2.4.7 (40 bytes)
-		if len(buffer) < 36 {
-			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+		// Per MS-FSCC, the structure is exactly 40 bytes. If the buffer is smaller,
+		// the server MUST return STATUS_INFO_LENGTH_MISMATCH.
+		if len(buffer) < 40 {
+			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInfoLengthMismatch}}, nil
 		}
 
-		basicInfo, err := DecodeFileBasicInfo(buffer)
-		if err != nil {
-			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+		// Validate attribute constraints per MS-FSCC 2.4.7:
+		// - FILE_ATTRIBUTE_DIRECTORY on a non-directory file -> INVALID_PARAMETER
+		// - FILE_ATTRIBUTE_TEMPORARY on a directory -> INVALID_PARAMETER
+		fileAttrs := types.FileAttributes(binary.LittleEndian.Uint32(buffer[32:36]))
+		if fileAttrs != 0 {
+			if fileAttrs&types.FileAttributeDirectory != 0 && !openFile.IsDirectory {
+				return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+			}
+			if fileAttrs&types.FileAttributeTemporary != 0 && openFile.IsDirectory {
+				return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+			}
 		}
 
-		// Convert to SetAttrs
-		setAttrs := SMBTimesToSetAttrs(basicInfo)
+		// Decode directly from raw buffer to handle FILETIME sentinels (0, -1, -2)
+		setAttrs := DecodeBasicInfoToSetAttrs(buffer)
 
-		// Apply changes
+		// Per MS-FSA 2.1.5.14.2: Handle timestamp freeze/unfreeze sentinels.
+		// -1 (0xFFFFFFFFFFFFFFFF): Freeze timestamp -- suppress auto-updates on subsequent operations.
+		// -2 (0xFFFFFFFFFFFFFFFE): Unfreeze timestamp -- re-enable auto-updates.
+		// We capture the current timestamp value BEFORE applying changes so the frozen
+		// value reflects the state at freeze time.
 		metaSvc := h.Registry.GetMetadataService()
-		err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
-		if err != nil {
+
+		// Extract sentinel values from raw buffer
+		creationFT := binary.LittleEndian.Uint64(buffer[0:8])
+		atimeFT := binary.LittleEndian.Uint64(buffer[8:16])
+		mtimeFT := binary.LittleEndian.Uint64(buffer[16:24])
+		ctimeFT := binary.LittleEndian.Uint64(buffer[24:32])
+
+		logger.Debug("SET_INFO: FileBasicInformation raw FILETIME values",
+			"path", openFile.Path,
+			"creationFT", fmt.Sprintf("0x%016X", creationFT),
+			"atimeFT", fmt.Sprintf("0x%016X", atimeFT),
+			"mtimeFT", fmt.Sprintf("0x%016X", mtimeFT),
+			"ctimeFT", fmt.Sprintf("0x%016X", ctimeFT))
+
+		// Note: CreationTime freeze/unfreeze sentinels are detected but not acted upon.
+		// MS-FSA does not require CreationTime auto-update suppression because
+		// CreationTime is never auto-updated by the server after file creation.
+		hasFreezeOrUnfreeze := atimeFT == 0xFFFFFFFFFFFFFFFF || atimeFT == 0xFFFFFFFFFFFFFFFE ||
+			mtimeFT == 0xFFFFFFFFFFFFFFFF || mtimeFT == 0xFFFFFFFFFFFFFFFE ||
+			ctimeFT == 0xFFFFFFFFFFFFFFFF || ctimeFT == 0xFFFFFFFFFFFFFFFE
+
+		// Apply changes first (may auto-update Ctime if modified == true)
+		if err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
 			logger.Debug("SET_INFO: failed to set basic info", "path", openFile.Path, "error", err)
 			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+		}
+
+		// Read file state AFTER applying changes to capture the post-SET_INFO values.
+		// Per MS-FSA 2.1.5.14.2, the frozen value is the current value of the timestamp
+		// AFTER any other changes in this SET_INFO call take effect. For example, if
+		// FileAttributes change in the same call, Ctime is auto-updated -- the frozen
+		// value must reflect that auto-updated value, not the pre-change value.
+		var postFile *metadata.File
+		if hasFreezeOrUnfreeze {
+			var err error
+			postFile, err = metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
+			if err != nil {
+				logger.Warn("SET_INFO: failed to read file for freeze/unfreeze", "path", openFile.Path, "error", err)
+			}
+		}
+
+		// Apply freeze/unfreeze state to the open handle
+		if postFile != nil {
+			needsUpdate := false
+
+			// LastWriteTime (Mtime) - offset 16
+			switch mtimeFT {
+			case 0xFFFFFFFFFFFFFFFF:
+				openFile.MtimeFrozen = true
+				openFile.FrozenMtime = &postFile.Mtime
+				needsUpdate = true
+				logger.Debug("SET_INFO: froze LastWriteTime", "path", openFile.Path, "value", postFile.Mtime)
+			case 0xFFFFFFFFFFFFFFFE:
+				openFile.MtimeFrozen = false
+				openFile.FrozenMtime = nil
+				needsUpdate = true
+			}
+
+			// ChangeTime (Ctime) - offset 24
+			switch ctimeFT {
+			case 0xFFFFFFFFFFFFFFFF:
+				openFile.CtimeFrozen = true
+				openFile.FrozenCtime = &postFile.Ctime
+				needsUpdate = true
+				logger.Debug("SET_INFO: froze ChangeTime", "path", openFile.Path, "value", postFile.Ctime)
+			case 0xFFFFFFFFFFFFFFFE:
+				openFile.CtimeFrozen = false
+				openFile.FrozenCtime = nil
+				needsUpdate = true
+			}
+
+			// LastAccessTime (Atime) - offset 8
+			switch atimeFT {
+			case 0xFFFFFFFFFFFFFFFF:
+				openFile.AtimeFrozen = true
+				openFile.FrozenAtime = &postFile.Atime
+				needsUpdate = true
+			case 0xFFFFFFFFFFFFFFFE:
+				openFile.AtimeFrozen = false
+				openFile.FrozenAtime = nil
+				needsUpdate = true
+			}
+
+			if needsUpdate {
+				h.StoreOpenFile(openFile)
+			}
 		}
 
 		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
@@ -410,11 +506,6 @@ func (h *Handler) setFileInfoFromStore(
 
 	case types.FileEndOfFileInformation:
 		// FILE_END_OF_FILE_INFORMATION [MS-FSCC] 2.4.13
-		// Set end of file (truncate/extend)
-		if len(buffer) < 8 {
-			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
-		}
-
 		newSize, err := decodeEndOfFileInfo(buffer)
 		if err != nil {
 			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
@@ -431,9 +522,23 @@ func (h *Handler) setFileInfoFromStore(
 			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
 		}
 
+		// Restore frozen timestamps after truncation (which updates Mtime/Ctime)
+		h.restoreFrozenTimestamps(authCtx, openFile)
+
 		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
 
-	case 19: // FileAllocationInformation [MS-FSCC] 2.4.4
+	case types.FilePositionInformation:
+		// FILE_POSITION_INFORMATION [MS-FSCC] 2.4.32 (8 bytes)
+		// Per MS-FSA 2.1.5.14.23: If InputBufferSize is less than the size of
+		// FILE_POSITION_INFORMATION (8 bytes), return STATUS_INFO_LENGTH_MISMATCH.
+		if len(buffer) < 8 {
+			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInfoLengthMismatch}}, nil
+		}
+		// Server-side position tracking is not required for network filesystems.
+		// Accept and succeed as a no-op (SMB clients manage their own offsets).
+		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
+
+	case types.FileAllocationInformation:
 		// Set allocation size - accept but treat as no-op (allocation handled automatically)
 		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
 
@@ -442,6 +547,63 @@ func (h *Handler) setFileInfoFromStore(
 
 	default:
 		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotSupported}}, nil
+	}
+}
+
+// applyFrozenTimestamps overrides file metadata with frozen timestamp values.
+// Called when reading file metadata for responses (QUERY_INFO, CLOSE POSTQUERY_ATTRIB).
+// This is the read-side complement to restoreFrozenTimestamps (which is write-side).
+// For both files and directories, if a timestamp was frozen via SET_INFO(-1),
+// the frozen value is returned regardless of any subsequent store modifications.
+func applyFrozenTimestamps(openFile *OpenFile, file *metadata.File) {
+	if openFile.MtimeFrozen && openFile.FrozenMtime != nil {
+		file.Mtime = *openFile.FrozenMtime
+	}
+	if openFile.CtimeFrozen && openFile.FrozenCtime != nil {
+		file.Ctime = *openFile.FrozenCtime
+	}
+	if openFile.AtimeFrozen && openFile.FrozenAtime != nil {
+		file.Atime = *openFile.FrozenAtime
+	}
+}
+
+// restoreFrozenTimestamps restores timestamps that are frozen via SET_INFO -1 sentinel.
+// Called after operations that unconditionally update timestamps (WRITE, truncate).
+func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFile *OpenFile) {
+	if !openFile.MtimeFrozen && !openFile.CtimeFrozen {
+		return
+	}
+	restoreAttrs := &metadata.SetAttrs{}
+	needRestore := false
+	if openFile.MtimeFrozen && openFile.FrozenMtime != nil {
+		restoreAttrs.Mtime = openFile.FrozenMtime
+		needRestore = true
+	}
+	if openFile.CtimeFrozen && openFile.FrozenCtime != nil {
+		restoreAttrs.Ctime = openFile.FrozenCtime
+		needRestore = true
+	}
+	if needRestore {
+		logger.Debug("restoreFrozenTimestamps: restoring",
+			"path", openFile.Path,
+			"mtimeFrozen", openFile.MtimeFrozen,
+			"ctimeFrozen", openFile.CtimeFrozen,
+			"frozenMtime", openFile.FrozenMtime,
+			"frozenCtime", openFile.FrozenCtime)
+		metaSvc := h.Registry.GetMetadataService()
+		if err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, restoreAttrs); err != nil {
+			logger.Debug("restoreFrozenTimestamps: failed", "path", openFile.Path, "error", err)
+		} else {
+			// Also update the pending write state's LastMtime to the frozen value.
+			// MetadataService.GetFile() merges pending state with stored state, using
+			// max(pending.LastMtime, store.Mtime). If we only update the store but
+			// leave pending.LastMtime at the original WRITE time, GetFile() will
+			// return the non-frozen value. By updating pending.LastMtime to the frozen
+			// Mtime, the merge produces the correct frozen value.
+			if openFile.MtimeFrozen && openFile.FrozenMtime != nil {
+				metaSvc.UpdatePendingMtime(openFile.MetadataHandle, *openFile.FrozenMtime)
+			}
+		}
 	}
 }
 

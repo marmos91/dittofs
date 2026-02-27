@@ -423,6 +423,14 @@ func (s *MetadataService) GetPendingSize(handle FileHandle) (uint64, bool) {
 	return s.pendingWrites.GetPendingSize(handle)
 }
 
+// UpdatePendingMtime updates the LastMtime in pending write state for a file handle.
+// Used by SMB frozen timestamp support (MS-FSA 2.1.5.14.2): when SET_INFO(-1) freezes
+// Mtime, the pending state's LastMtime must reflect the frozen value so that GetFile()
+// merge returns frozen timestamps correctly.
+func (s *MetadataService) UpdatePendingMtime(handle FileHandle, mtime time.Time) bool {
+	return s.pendingWrites.UpdatePendingMtime(handle, mtime)
+}
+
 // FlushAllPendingWritesForShutdown flushes all pending metadata writes during shutdown.
 // Unlike FlushPendingWrites, this method doesn't require an AuthContext and uses a
 // background context with a timeout. This should be called during graceful shutdown

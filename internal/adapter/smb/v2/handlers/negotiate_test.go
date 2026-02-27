@@ -94,6 +94,13 @@ func TestNegotiate_SMB210(t *testing.T) {
 			responseGUID, h.ServerGUID)
 	}
 
+	// Verify Capabilities: SMB 2.1 should advertise CapLeasing | CapLargeMTU
+	caps := binary.LittleEndian.Uint32(result.Data[24:28])
+	expectedCaps := uint32(types.CapLeasing | types.CapLargeMTU)
+	if caps != expectedCaps {
+		t.Errorf("Capabilities = 0x%08x, expected 0x%08x (CapLeasing|CapLargeMTU)", caps, expectedCaps)
+	}
+
 	// Verify MaxTransactSize
 	maxTransact := binary.LittleEndian.Uint32(result.Data[28:32])
 	if maxTransact != h.MaxTransactSize {
@@ -141,6 +148,12 @@ func TestNegotiate_SMB202(t *testing.T) {
 	dialectRevision := binary.LittleEndian.Uint16(result.Data[4:6])
 	if dialectRevision != 0x0202 {
 		t.Errorf("DialectRevision = 0x%04x, expected 0x0202", dialectRevision)
+	}
+
+	// Verify Capabilities: SMB 2.0.2 should have no capabilities (reserved field)
+	caps := binary.LittleEndian.Uint32(result.Data[24:28])
+	if caps != 0 {
+		t.Errorf("Capabilities = 0x%08x, expected 0x00000000 for SMB 2.0.2", caps)
 	}
 }
 
@@ -248,7 +261,8 @@ func TestNegotiate_WildcardDialect(t *testing.T) {
 	h := NewHandler()
 	ctx := newNegotiateTestContext()
 
-	// Wildcard dialect (0x02FF) should map to lowest supported (0x0202)
+	// Per MS-SMB2 §3.3.5.3.2: wildcard dialect (0x02FF) alone should
+	// respond with 0x02FF to signal multi-protocol negotiate to the client.
 	body := buildNegotiateRequest([]uint16{uint16(types.SMB2DialectWild)})
 
 	result, err := h.Negotiate(ctx, body)
@@ -262,9 +276,9 @@ func TestNegotiate_WildcardDialect(t *testing.T) {
 	}
 
 	dialectRevision := binary.LittleEndian.Uint16(result.Data[4:6])
-	if dialectRevision != 0x0202 {
-		t.Errorf("DialectRevision = 0x%04x, expected 0x0202 (wildcard maps to baseline)",
-			dialectRevision)
+	if dialectRevision != uint16(types.SMB2DialectWild) {
+		t.Errorf("DialectRevision = 0x%04x, expected 0x%04x (wildcard echoed back per MS-SMB2)",
+			dialectRevision, types.SMB2DialectWild)
 	}
 }
 
@@ -526,6 +540,35 @@ func TestNegotiate_SigningDisabled(t *testing.T) {
 	securityMode := result.Data[2]
 	if securityMode != 0 {
 		t.Errorf("SecurityMode = 0x%02x, expected 0x00 (signing disabled)", securityMode)
+	}
+}
+
+func TestNegotiate_WildcardWithSMB202(t *testing.T) {
+	h := NewHandler()
+	ctx := newNegotiateTestContext()
+
+	// Per MS-SMB2 §3.3.5.3.2: wildcard + SMB 2.0.2 should still respond
+	// with 0x02FF. The wildcard signals multi-protocol negotiate; 2.0.2 is
+	// the baseline that wildcard implies. Only SMB 3.x alongside wildcard
+	// would suppress the wildcard echo.
+	body := buildNegotiateRequest([]uint16{
+		uint16(types.SMB2DialectWild),
+		uint16(types.SMB2Dialect0202),
+	})
+
+	result, err := h.Negotiate(ctx, body)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if result.Status != types.StatusSuccess {
+		t.Errorf("Status = 0x%x, expected StatusSuccess", result.Status)
+	}
+
+	dialectRevision := binary.LittleEndian.Uint16(result.Data[4:6])
+	if dialectRevision != uint16(types.SMB2DialectWild) {
+		t.Errorf("DialectRevision = 0x%04x, expected 0x%04x (wildcard echoed back)",
+			dialectRevision, types.SMB2DialectWild)
 	}
 }
 
