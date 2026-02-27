@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v4.2
 milestone_name: Windows Compatibility
 status: unknown
-last_updated: "2026-02-27T13:21:58.766Z"
+last_updated: "2026-02-27T17:09:01.566Z"
 progress:
-  total_phases: 33
+  total_phases: 34
   completed_phases: 32
-  total_plans: 111
-  completed_plans: 111
-  percent: 100
+  total_plans: 114
+  completed_plans: 112
+  percent: 98
 ---
 
 # Project State
@@ -23,12 +23,12 @@ See: .planning/PROJECT.md (updated 2026-02-26)
 
 ## Current Position
 
-Phase: 30 (SMB Bug Fixes)
-Plan: 4 of 4 complete
-Status: Phase 30 complete
-Last activity: 2026-02-27 — Phase 30 Plan 04 complete (cross-protocol oplock break + pipe share cache)
+Phase: 31 (Windows ACL Support)
+Plan: 2 of 3 complete
+Status: Executing
+Last activity: 2026-02-27 — Phase 31 Plan 02 complete (POSIX-to-DACL synthesis + ACE flag translation)
 
-**Progress:** [██████████] 100%
+**Progress:** [██████████] 98%
 
 ## Completed Milestones
 
@@ -72,6 +72,7 @@ Last activity: 2026-02-27 — Phase 30 Plan 04 complete (cross-protocol oplock b
 | 30 | 02 | 6min | 2 | 5 |
 | 30 | 03 | 6min | 2 | 4 |
 | 30 | 04 | 4min | 2 | 9 |
+| Phase 31 P02 | 3min | 2 tasks | 5 files |
 
 ## Quick Tasks Completed
 
@@ -161,6 +162,9 @@ Last activity: 2026-02-27 — Phase 30 Plan 04 complete (cross-protocol oplock b
 - [Phase 30]: [30-03] walkPath test uses runtime.New(nil) to avoid payload service initialization overhead
 - [Phase 30]: Fire-and-forget oplock breaks in NFS handlers (per Samba behavior)
 - [Phase 30]: [30-04] Best-effort child handle lookup for oplock break in remove/rename (failure does not block operation)
+- [Phase 31]: Well-known SIDs use string identifiers (SYSTEM@, ADMINISTRATORS@) that SMB translator converts to binary SIDs
+- [Phase 31]: Owner always gets alwaysGrantedMask (admin rights) even when rwx=0
+- [Phase 31]: Zero-value ACLSource (empty string) means unknown/legacy for backward compat
 
 ### Pending Todos
 
@@ -173,5 +177,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-27
-Stopped at: Completed 30-04-PLAN.md (cross-protocol oplock break + pipe share cache)
-Resume file: Phase 30 complete, continue with Phase 31
+Stopped at: Completed 31-02-PLAN.md (POSIX-to-DACL synthesis + ACE flag translation)
+Resume file: Continue with Phase 31 Plan 03

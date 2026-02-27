@@ -560,7 +560,7 @@ v3.6 (30-32.5) → v3.8 (39-44.5) → v4.0 (45-51.5) → v4.1 (33-38.5)
 | 29.4 Verification & Requirements Cleanup | v3.5 | 1/1 | Complete | 2026-02-26 |
 | 29.8. Microsoft Protocol Test Suite CI | v3.6 | 2/2 | Complete | 2026-02-26 |
 | 30. SMB Bug Fixes | 4/4 | Complete    | 2026-02-27 | - |
-| 31. Windows ACL Support | v3.6 | 0/3 | Not started | - |
+| 31. Windows ACL Support | 1/3 | In Progress|  | - |
 | 32. Windows Integration Testing | v3.6 | 0/3 | Not started | - |
 | 39. SMB3 Security & Encryption | v3.8 | 0/? | Not started | - |
 | 40. SMB3 Leases & Locking | v3.8 | 0/? | Not started | - |
