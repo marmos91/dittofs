@@ -948,7 +948,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 							{
 								Name:            "dittofs",
 								Image:           dittoServer.Spec.Image,
-								Command:         []string{"/app/dittofs"},
+								Command:         []string{"/app/dfs"},
 								Args:            []string{"start", "--foreground", "--config", "/config/config.yaml"},
 								VolumeMounts:    volumeMounts,
 								Resources:       dittoServer.Spec.Resources,
