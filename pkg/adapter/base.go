@@ -269,8 +269,7 @@ func (b *BaseAdapter) ServeWithFactory(
 			// from dropping idle connections
 			if err := tcp.SetKeepAlive(true); err != nil {
 				logger.Debug("Failed to enable TCP keepalive", "error", err)
-			}
-			if err := tcp.SetKeepAlivePeriod(15 * time.Second); err != nil {
+			} else if err := tcp.SetKeepAlivePeriod(15 * time.Second); err != nil {
 				logger.Debug("Failed to set TCP keepalive period", "error", err)
 			}
 		}

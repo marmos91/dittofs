@@ -310,11 +310,11 @@ func TestReconcileAdapterServices_UpdatePortChange(t *testing.T) {
 	if nfsPort, ok := updatedPortMap[adapterPortName("nfs")]; !ok || nfsPort.Port != 2049 || nfsPort.TargetPort.IntVal != 2049 {
 		t.Errorf("Expected NFS port 2049->2049, got %v", updatedPortMap)
 	}
-	if pmPort, ok := updatedPortMap[portmapperPortName]; !ok || pmPort.Port != 111 || pmPort.TargetPort.IntVal != 10111 {
-		t.Errorf("Expected portmapper TCP port 111->10111 preserved, got %v", updatedPortMap)
+	if pmPort, ok := updatedPortMap[portmapperPortName]; !ok || pmPort.Port != 111 || pmPort.TargetPort.IntVal != 10111 || pmPort.Protocol != corev1.ProtocolTCP {
+		t.Errorf("Expected portmapper TCP port 111->10111/TCP preserved, got %v", updatedPortMap)
 	}
-	if pmUDPPort, ok := updatedPortMap[portmapperUDPPortName]; !ok || pmUDPPort.Port != 111 || pmUDPPort.TargetPort.IntVal != 10111 {
-		t.Errorf("Expected portmapper UDP port 111->10111 preserved, got %v", updatedPortMap)
+	if pmUDPPort, ok := updatedPortMap[portmapperUDPPortName]; !ok || pmUDPPort.Port != 111 || pmUDPPort.TargetPort.IntVal != 10111 || pmUDPPort.Protocol != corev1.ProtocolUDP {
+		t.Errorf("Expected portmapper UDP port 111->10111/UDP preserved, got %v", updatedPortMap)
 	}
 }
 
