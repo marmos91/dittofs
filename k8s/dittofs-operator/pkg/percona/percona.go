@@ -101,9 +101,14 @@ func BuildPerconaPGClusterSpec(ds *dittoiov1alpha1.DittoServer) (pgv2.PerconaPGC
 		spec.InstanceSets[0].DataVolumeClaimSpec.StorageClassName = cfg.StorageClassName
 	}
 
-	// Configure backups if enabled
+	// Configure backups: explicitly disable unless configured.
+	// Percona defaults backups to enabled (IsEnabled returns true when Enabled is nil),
+	// so we must set Enabled=false when no backup repos are configured.
 	if cfg.Backup != nil && cfg.Backup.Enabled {
 		spec.Backups = buildBackupsSpec(ds.Name, cfg.Backup)
+	} else {
+		disabled := false
+		spec.Backups = pgv2.Backups{Enabled: &disabled}
 	}
 
 	return spec, nil
