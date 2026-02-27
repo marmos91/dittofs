@@ -2,9 +2,12 @@ package offloader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/cache"
+	"github.com/marmos91/dittofs/pkg/payload/store"
 )
 
 // waitForDownloads blocks until no downloads are pending.
@@ -30,7 +33,15 @@ func (m *Offloader) downloadBlock(ctx context.Context, payloadID string, chunkId
 
 	data, err := m.blockStore.ReadBlock(ctx, blockKeyStr)
 	if err != nil {
-		return fmt.Errorf("download block %s: %w", blockKeyStr, err)
+		if errors.Is(err, store.ErrBlockNotFound) {
+			// Sparse block: block was never written. Zero-fill it so callers
+			// see zeros for unwritten regions within the file size.
+			logger.Debug("Sparse block detected, zero-filling",
+				"block", blockKeyStr)
+			data = make([]byte, BlockSize)
+		} else {
+			return fmt.Errorf("download block %s: %w", blockKeyStr, err)
+		}
 	}
 
 	// WriteDownloaded marks block as Uploaded (evictable) since it's already in S3,
