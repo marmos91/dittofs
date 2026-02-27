@@ -681,9 +681,9 @@ func TestServerUDPDump(t *testing.T) {
 		count++
 	}
 
-	// RegisterDittoFSServices registers 5 entries (TCP-only)
-	if count != 5 {
-		t.Errorf("DUMP entry count: got %d, want 5", count)
+	// RegisterDittoFSServices registers 7 entries (TCP-only, includes MOUNT v1+v2+v3)
+	if count != 7 {
+		t.Errorf("DUMP entry count: got %d, want 7", count)
 	}
 }
 

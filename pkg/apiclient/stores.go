@@ -7,6 +7,7 @@ import (
 
 // MetadataStore represents a metadata store configuration.
 type MetadataStore struct {
+	ID     string          `json:"id"`
 	Name   string          `json:"name"`
 	Type   string          `json:"type"`
 	Config json.RawMessage `json:"config,omitempty"`
@@ -14,6 +15,7 @@ type MetadataStore struct {
 
 // PayloadStore represents a payload/content store configuration.
 type PayloadStore struct {
+	ID     string          `json:"id"`
 	Name   string          `json:"name"`
 	Type   string          `json:"type"`
 	Config json.RawMessage `json:"config,omitempty"`

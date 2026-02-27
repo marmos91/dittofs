@@ -73,7 +73,7 @@ func (h *Handler) Null(
 		}
 	}
 
-	logger.InfoCtx(ctx.Context, "NULL", "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.DebugCtx(ctx.Context, "NULL", "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// ========================================================================
 	// Optional: store health check

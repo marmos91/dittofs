@@ -81,6 +81,7 @@ func init() {
 	rootCmd.AddCommand(netgroupcmd.Cmd)
 	rootCmd.AddCommand(idmapcmd.Cmd)
 	rootCmd.AddCommand(settingscmd.Cmd)
+	rootCmd.AddCommand(switchUserCmd)
 	rootCmd.AddCommand(completionCmd)
 
 	// Hide the default completion command (we provide our own)

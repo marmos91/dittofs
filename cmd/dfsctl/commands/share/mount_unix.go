@@ -88,7 +88,7 @@ func validateMountPoint(mountPoint string) error {
 	return nil
 }
 
-func mountNFS(sharePath, mountPoint string, adapters []apiclient.Adapter) error {
+func mountNFS(sharePath, mountPoint string, adapters []apiclient.Adapter, serverHost string) error {
 	port := getAdapterPort(adapters, "nfs", defaultNFSPort)
 
 	// actimeo=0 disables attribute caching for immediate visibility of changes
@@ -100,7 +100,7 @@ func mountNFS(sharePath, mountPoint string, adapters []apiclient.Adapter) error 
 		mountOptions += ",nolock"
 	}
 
-	source := fmt.Sprintf("localhost:%s", sharePath)
+	source := fmt.Sprintf("%s:%s", serverHost, sharePath)
 	cmd := exec.Command("mount", "-t", "nfs", "-o", mountOptions, source, mountPoint)
 
 	output, err := cmd.CombinedOutput()
@@ -112,7 +112,7 @@ func mountNFS(sharePath, mountPoint string, adapters []apiclient.Adapter) error 
 	return nil
 }
 
-func mountSMB(sharePath, mountPoint string, adapters []apiclient.Adapter) error {
+func mountSMB(sharePath, mountPoint string, adapters []apiclient.Adapter, serverHost string) error {
 	port := getAdapterPort(adapters, "smb", defaultSMBPort)
 
 	username, err := resolveSMBUsername()
@@ -126,12 +126,12 @@ func mountSMB(sharePath, mountPoint string, adapters []apiclient.Adapter) error 
 	}
 
 	if runtime.GOOS == "darwin" {
-		return mountSMBDarwin(sharePath, mountPoint, port, username, password)
+		return mountSMBDarwin(sharePath, mountPoint, port, username, password, serverHost)
 	}
-	return mountSMBLinux(sharePath, mountPoint, port, username, password)
+	return mountSMBLinux(sharePath, mountPoint, port, username, password, serverHost)
 }
 
-func mountSMBLinux(sharePath, mountPoint string, port int, username, password string) error {
+func mountSMBLinux(sharePath, mountPoint string, port int, username, password, serverHost string) error {
 	opts := fmt.Sprintf("vers=2.1,port=%d,username=%s,password=%s", port, username, password)
 
 	// If running as root with SUDO_UID, set uid/gid so files are owned by original user
@@ -151,7 +151,7 @@ func mountSMBLinux(sharePath, mountPoint string, port int, username, password st
 		opts += fmt.Sprintf(",dir_mode=%s", mountDirMode)
 	}
 
-	uncPath := fmt.Sprintf("//localhost%s", sharePath)
+	uncPath := fmt.Sprintf("//%s%s", serverHost, sharePath)
 	cmd := exec.Command("mount", "-t", "cifs", "-o", opts, uncPath, mountPoint)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -161,11 +161,11 @@ func mountSMBLinux(sharePath, mountPoint string, port int, username, password st
 	return nil
 }
 
-func mountSMBDarwin(sharePath, mountPoint string, port int, username, password string) error {
+func mountSMBDarwin(sharePath, mountPoint string, port int, username, password, serverHost string) error {
 	// On macOS, use mount_smbfs with file/dir mode flags.
 	// If running with sudo, use sudo -u to mount as original user
 	// (macOS security restriction: only mount owner can access files).
-	smbURL := fmt.Sprintf("smb://%s:%s@localhost:%d%s", username, password, port, sharePath)
+	smbURL := fmt.Sprintf("smb://%s:%s@%s:%d%s", username, password, serverHost, port, sharePath)
 
 	args := []string{}
 	if mountFileMode != "" {

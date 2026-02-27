@@ -26,8 +26,16 @@ Examples:
 	RunE: runList,
 }
 
+// shareRow holds resolved share info for table display.
+type shareRow struct {
+	Name              string `json:"name"`
+	MetadataStore     string `json:"metadata_store"`
+	PayloadStore      string `json:"payload_store"`
+	DefaultPermission string `json:"default_permission"`
+}
+
 // ShareList is a list of shares for table rendering.
-type ShareList []apiclient.Share
+type ShareList []shareRow
 
 // Headers implements TableRenderer.
 func (sl ShareList) Headers() []string {
@@ -38,9 +46,38 @@ func (sl ShareList) Headers() []string {
 func (sl ShareList) Rows() [][]string {
 	rows := make([][]string, 0, len(sl))
 	for _, s := range sl {
-		rows = append(rows, []string{s.Name, s.MetadataStoreID, s.PayloadStoreID, s.DefaultPermission})
+		rows = append(rows, []string{s.Name, s.MetadataStore, s.PayloadStore, s.DefaultPermission})
 	}
 	return rows
+}
+
+// buildStoreNameMaps fetches metadata and payload stores and builds ID->name lookup maps.
+func buildStoreNameMaps(client *apiclient.Client) (metaMap, payloadMap map[string]string) {
+	metaMap = make(map[string]string)
+	payloadMap = make(map[string]string)
+
+	if metaStores, err := client.ListMetadataStores(); err == nil {
+		for _, s := range metaStores {
+			metaMap[s.ID] = s.Name
+		}
+	}
+
+	if payloadStores, err := client.ListPayloadStores(); err == nil {
+		for _, s := range payloadStores {
+			payloadMap[s.ID] = s.Name
+		}
+	}
+
+	return metaMap, payloadMap
+}
+
+// resolveStoreName returns the human-readable name for a store ID,
+// falling back to the raw ID if not found in the lookup map.
+func resolveStoreName(nameMap map[string]string, id string) string {
+	if name := nameMap[id]; name != "" {
+		return name
+	}
+	return id
 }
 
 func runList(cmd *cobra.Command, args []string) error {
@@ -54,5 +91,17 @@ func runList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to list shares: %w", err)
 	}
 
-	return cmdutil.PrintOutput(os.Stdout, shares, len(shares) == 0, "No shares found.", ShareList(shares))
+	metaNames, payloadNames := buildStoreNameMaps(client)
+
+	rows := make(ShareList, 0, len(shares))
+	for _, s := range shares {
+		rows = append(rows, shareRow{
+			Name:              s.Name,
+			MetadataStore:     resolveStoreName(metaNames, s.MetadataStoreID),
+			PayloadStore:      resolveStoreName(payloadNames, s.PayloadStoreID),
+			DefaultPermission: s.DefaultPermission,
+		})
+	}
+
+	return cmdutil.PrintOutput(os.Stdout, rows, len(rows) == 0, "No shares found.", rows)
 }

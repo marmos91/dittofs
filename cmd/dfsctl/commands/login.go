@@ -12,9 +12,10 @@ import (
 )
 
 var (
-	loginServer   string
-	loginUsername string
-	loginPassword string
+	loginServer      string
+	loginUsername    string
+	loginPassword    string
+	loginContextName string
 )
 
 var loginCmd = &cobra.Command{
@@ -41,6 +42,7 @@ func init() {
 	loginCmd.Flags().StringVar(&loginServer, "server", "http://localhost:8080", "Server URL")
 	loginCmd.Flags().StringVarP(&loginUsername, "username", "u", "", "Username")
 	loginCmd.Flags().StringVarP(&loginPassword, "password", "p", "", "Password")
+	loginCmd.Flags().StringVarP(&loginContextName, "context", "c", "", "Context name (defaults to current or auto-generated)")
 }
 
 func runLogin(cmd *cobra.Command, args []string) error {
@@ -92,7 +94,10 @@ func runLogin(cmd *cobra.Command, args []string) error {
 	}
 
 	// Determine context name
-	contextName := store.GetCurrentContextName()
+	contextName := loginContextName
+	if contextName == "" {
+		contextName = store.GetCurrentContextName()
+	}
 	if contextName == "" {
 		contextName = credentials.GenerateContextName(serverURLStr)
 	}

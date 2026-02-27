@@ -1171,17 +1171,23 @@ func buildSecretEnvVars(dittoServer *dittoiov1alpha1.DittoServer) []corev1.EnvVa
 		))
 	}
 
-	// PostgreSQL connection string (only if Postgres configured and NOT using Percona)
+	// PostgreSQL connection fields (only if Postgres configured and NOT using Percona)
 	// Percona case already injects DATABASE_URL via buildPostgresEnvVars.
+	// Inject individual env vars that Viper maps to database.postgres.* struct fields.
 	if dittoServer.Spec.Database != nil && dittoServer.Spec.Database.PostgresSecretRef != nil &&
 		!isPerconaEnabled(dittoServer) {
 		ref := dittoServer.Spec.Database.PostgresSecretRef
-		envVars = append(envVars, secretEnvVar(
-			"DITTOFS_DATABASE_POSTGRES",
-			ref.Name,
-			ref.Key,
-			false,
-		))
+		envVars = append(envVars,
+			secretEnvVar("DITTOFS_DATABASE_POSTGRES_HOST", ref.Name, "host", false),
+			secretEnvVar("DITTOFS_DATABASE_POSTGRES_DATABASE", ref.Name, "database", false),
+			secretEnvVar("DITTOFS_DATABASE_POSTGRES_USER", ref.Name, "user", false),
+			secretEnvVar("DITTOFS_DATABASE_POSTGRES_PASSWORD", ref.Name, "password", false),
+		)
+		// Optional: port and sslmode (have defaults in DittoFS config)
+		envVars = append(envVars,
+			secretEnvVar("DITTOFS_DATABASE_POSTGRES_PORT", ref.Name, "port", true),
+			secretEnvVar("DITTOFS_DATABASE_POSTGRES_SSLMODE", ref.Name, "sslmode", true),
+		)
 	}
 
 	return envVars
@@ -1376,7 +1382,7 @@ func (r *DittoServerReconciler) collectSecretData(ctx context.Context, dittoServ
 		// Note: Don't error if secret doesn't exist yet - it's created in reconcileAdminCredentials
 	}
 
-	// PostgreSQL connection string secret (if configured)
+	// PostgreSQL credentials secret (if configured)
 	if dittoServer.Spec.Database != nil && dittoServer.Spec.Database.PostgresSecretRef != nil {
 		secret := &corev1.Secret{}
 		if err := r.Get(ctx, client.ObjectKey{
@@ -1385,9 +1391,9 @@ func (r *DittoServerReconciler) collectSecretData(ctx context.Context, dittoServ
 		}, secret); err != nil {
 			return nil, fmt.Errorf("failed to get postgres secret: %w", err)
 		}
-		key := dittoServer.Spec.Database.PostgresSecretRef.Key
-		if data, ok := secret.Data[key]; ok {
-			secrets["postgres:"+key] = data
+		// Hash all keys so any credential change triggers pod restart.
+		for k, v := range secret.Data {
+			secrets["postgres:"+k] = v
 		}
 	}
 

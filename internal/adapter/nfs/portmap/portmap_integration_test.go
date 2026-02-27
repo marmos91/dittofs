@@ -309,8 +309,8 @@ func TestPortmapperFullServiceRegistry(t *testing.T) {
 			count++
 		}
 
-		if count != 5 {
-			t.Errorf("DUMP count: got %d, want 5", count)
+		if count != 7 {
+			t.Errorf("DUMP count: got %d, want 7", count)
 		}
 	})
 }
