@@ -2,21 +2,11 @@
 
 ## What This Is
 
-A comprehensive NFS protocol upgrade for DittoFS that adds NFSv4.0/4.1/4.2 support with Kerberos authentication, unified cross-protocol locking (NFS + SMB), and advanced features like server-side copy, sparse files, and delegations. v1.0 (NLM + unified locking), v2.0 (NFSv4.0 + Kerberos), v3.0 (NFSv4.1 sessions), and v3.5 (adapter/core refactoring) are shipped. Next: Windows compatibility (v3.6), SMB3 protocol upgrade (v3.8), NFSv4.2 features (v4.0), then benchmarking and performance iteration (v4.1).
+A comprehensive NFS protocol upgrade for DittoFS that adds NFSv4.0/4.1/4.2 support with Kerberos authentication, unified cross-protocol locking (NFS + SMB), and advanced features like server-side copy, sparse files, and delegations. v1.0 (NLM + unified locking), v2.0 (NFSv4.0 + Kerberos), v3.0 (NFSv4.1 sessions), v3.5 (adapter/core refactoring), and v3.6 (Windows compatibility) are shipped. Next: SMB3 protocol upgrade (v3.8), NFSv4.2 features (v4.0), then benchmarking and performance iteration (v4.1).
 
 Target: Cloud-native enterprise NAS with feature parity exceeding JuiceFS and Hammerspace, particularly in security (Kerberos), session reliability (EOS), cross-protocol consistency, and Windows SMB compatibility.
 
-## Current Milestone: v3.6 Windows Compatibility
-
-**Goal:** Full Windows SMB compatibility with proper ACL support, bug fixes, and comprehensive testing.
-
-**Target outcomes:**
-- SMB bugs fixed (#180 sparse file READ, #181 renamed dir listing)
-- NT Security Descriptors with Unix-to-SID mapping and icacls support (#182)
-- Improved SMB compatibility driven by existing smbtorture/WPTS test suite results
-- Validated with smbtorture, Microsoft WindowsProtocolTestSuites, and manual Windows 11 testing
-
-## Upcoming Milestone: v3.8 SMB3 Protocol Upgrade
+## Current Milestone: v3.8 SMB3 Protocol Upgrade
 
 **Goal:** Upgrade SMB implementation from SMB2.0.2/2.1 to full SMB3.0/3.0.2/3.1.1 support with enterprise-grade security, leases, Kerberos authentication, durable handles, and cross-protocol integration.
 
@@ -25,7 +15,6 @@ Target: Cloud-native enterprise NAS with feature parity exceeding JuiceFS and Ha
 - AES encryption (128/256-bit CCM/GCM) and signing (CMAC/GMAC)
 - SMB3 leases (Read/Write/Handle + directory) integrated with Unified Lock Manager
 - SPNEGO/Kerberos authentication via shared Kerberos layer + NTLM fallback
-- Windows security descriptors (SID/ACE/DACL) with control plane ACL translation
 - Durable handles v1/v2 for connection resilience
 - Cross-protocol integration (immediate visibility, bidirectional locking, ACL consistency)
 
@@ -102,17 +91,17 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 - ✓ Runtime decomposition (AdapterManager, MetadataStoreManager extraction) — v3.5
 - ✓ TransferManager -> Offloader rename and split — v3.5
 - ✓ Error unification and boilerplate reduction — v3.5
+- ✓ Sparse file READ fix (#180) — zero-fill for unwritten blocks — v3.6
+- ✓ Renamed directory listing fix (#181) — recursive path update on Move — v3.6
+- ✓ NT Security Descriptors (#182) — POSIX-to-DACL synthesis, SID mapping, lsarpc — v3.6
+- ✓ Unix-to-Windows SID mapping with Samba-style RID allocation — v3.6
+- ✓ smbtorture SMB2 conformance testing with Docker-isolated infrastructure — v3.6
+- ✓ Microsoft WindowsProtocolTestSuites BVT (150/335 passing) — v3.6
+- ✓ Windows 11 manual validation (Explorer, cmd, PowerShell, icacls) — v3.6
+- ✓ Cross-protocol oplock break coordination (NFS ops trigger SMB breaks) — v3.6
+- ✓ MxAc/QFid create contexts and FileInfoClass handler completeness — v3.6
 
 ### Active
-
-#### v3.6 — Windows Compatibility
-- [ ] Sparse file READ fix (#180) — return zeros for unwritten blocks
-- [ ] Renamed directory listing fix (#181) — update Path in Move operation
-- [ ] NT Security Descriptors (#182) — Owner SID, Group SID, DACL encoding
-- [ ] Unix-to-Windows SID mapping for icacls support
-- [ ] smbtorture SMB2 conformance testing
-- [ ] Microsoft WindowsProtocolTestSuites BVT and feature tests
-- [ ] Full Windows 11 manual validation (Explorer, cmd, PowerShell)
 
 #### v3.8 — SMB3 Protocol Upgrade
 - [ ] SMB 3.0/3.0.2/3.1.1 dialect negotiation with negotiate contexts
@@ -122,7 +111,6 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 - [ ] SMB3 leases (Read/Write/Handle + directory) with Unified Lock Manager integration
 - [ ] SMB lease <-> NFS delegation cross-protocol coordination
 - [ ] SPNEGO/Kerberos via shared layer, NTLM fallback, guest access
-- [ ] Windows security descriptors (SID/ACE/DACL) with control plane translation
 - [ ] Durable handles v1/v2 for connection resilience
 - [ ] Cross-protocol integration (immediate visibility, bidirectional locking, ACL consistency)
 - [ ] E2E tests for encryption, signing, leases, Kerberos, and cross-protocol scenarios
@@ -167,30 +155,25 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 
 ## Context
 
-**Current State (post-v3.5):**
-- ~269,000 LOC Go across ~1,600 files (net +12,534 from refactoring)
-- NFSv3 + NFSv4.0 + NFSv4.1 + NLM + SMB fully implemented
+**Current State (post-v3.6):**
+- ~262,600 LOC Go
+- NFSv3 + NFSv4.0 + NFSv4.1 + NLM + SMB fully implemented with Windows compatibility
 - Clean adapter layer: internal/adapter/nfs/ and internal/adapter/smb/ with shared BaseAdapter
 - Decomposed core: 9 store sub-interfaces, 6 runtime sub-services, Offloader split into 8 files
+- NT Security Descriptors: POSIX-to-DACL synthesis, Samba-style SID mapping, well-known SIDs
+- Cross-protocol oplock breaks: NFS operations trigger SMB oplock breaks for consistency
+- SMB conformance: WPTS (150/335 BVT), smbtorture integration, Docker-based CI
+- Windows 11 validated: Explorer, cmd, PowerShell, icacls all working
 - NFSv4.1 sessions with exactly-once semantics, backchannel multiplexing, directory delegations
 - RPCSEC_GSS Kerberos (krb5/krb5i/krb5p) with keytab hot-reload
-- SMB Kerberos via SPNEGO with shared identity mapping
-- 33+ NFSv4 operation handlers + 19 v4.1 handlers
-- StateManager with client IDs, sessions, stateids, slot tables, leases
-- Connection management with trunking support (multi-conn per session)
-- Read/write/directory delegations with CB_RECALL and CB_NOTIFY
-- NFSv4 ACLs with identity mapping and SMB Security Descriptor interop
-- Control plane v2.0 with settings watcher, netgroup CRUD
-- 50+ NFSv4 E2E tests + NFSv4.1 session/EOS/backchannel/delegation tests
 - K8s operator with portmapper support
-- Windows build support (cross-compilation)
 
-**Known tech debt (to be addressed in v3.5):**
-- Protocol-specific types leak into generic layers (~15 types/methods)
-- God objects: Runtime (1,258 lines), MetadataService (994 lines), TransferManager (1,361 lines)
-- Monolithic ControlPlane Store interface (60+ methods)
-- SMB connection.go is 1,060-line monolith
-- NFS adapter has `nfs_` prefix redundancy, v4/v4.1 code interleaved
+**Known tech debt:**
+- ACL enforcement in CheckAccess deferred (POSIX permissions enforced instead)
+- Delegation Prometheus metrics not instrumented
+- SACL is empty stub (requires audit logging infrastructure)
+- Short name (8.3) generation deferred
+- CHANGE_NOTIFY cleanup on disconnect deferred
 
 **Target Environment:**
 - Kubernetes-first (containerized)
@@ -213,7 +196,7 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 
 ## Constraints
 
-- **Code Location**: NFSv4 handlers in `internal/protocol/nfs/v4/` (will become `internal/adapter/nfs/v4/` in v3.5)
+- **Code Location**: NFSv4 handlers in `internal/adapter/nfs/v4/`
 - **Lock Manager**: Embedded in metadata service, not separate component
 - **Lock Storage**: Same store as metadata (per-share)
 - **Connection Pool**: Per-adapter (NFS pool, SMB pool), unified stateless/stateful
@@ -248,9 +231,14 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 | Separate NotifMu per delegation | Avoids holding global lock during backchannel sends | ✓ Good — Phase 24 |
 | v4.0/v4.1 coexistence | Minorversion routing, independent state, simultaneous mounts | ✓ Good — Phase 20 |
 | Refactor before NFSv4.2 | Clean architecture enables faster v4.2 implementation | ✓ Good — v3.5 |
-| Windows ACLs before NFSv4.2 | SMB is primary Windows use case, validate before adding features | — Pending (v3.6) |
+| Windows ACLs before NFSv4.2 | SMB is primary Windows use case, validate before adding features | ✓ Good — v3.6 |
 | OpLock as generic abstraction | Unifies SMB leases and NFSv4 delegations, fix once for all | ✓ Good — v3.5 |
-| smbtorture + MS Protocol Suite | Open-source conformance testing for SMB compatibility | — Pending (v3.6) |
+| smbtorture + MS Protocol Suite | Open-source conformance testing for SMB compatibility | ✓ Good — v3.6 |
+| Samba-style RID allocation | uid*2+1000, gid*2+1001 prevents user/group SID collisions | ✓ Good — v3.6 |
+| POSIX-to-DACL synthesis | Generate Windows ACLs from Unix mode bits, no separate ACL store | ✓ Good — v3.6 |
+| Docker-isolated smbtorture | GPL compliance via container boundary, no direct binary contact | ✓ Good — v3.6 |
+| Zero-fill sparse reads at download level | Single fix benefits both NFS and SMB protocol paths | ✓ Good — v3.6 |
+| BFS for descendant path updates | Iterative queue avoids stack overflow on deep directory trees | ✓ Good — v3.6 |
 | Xattrs in metadata layer | Clean abstraction, expose via NFSv4.2 and SMB | — Pending (v4.0) |
 | Async COPY with polling | Better for large files, standard NFSv4.2 pattern | — Pending (v4.0) |
 | CLONE via content-addressed storage | Efficient reflinks using existing dedup infrastructure | — Pending (v4.0) |
@@ -262,4 +250,4 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 | Per-adapter connection pools | Isolation between NFS and SMB, simpler limits | ✓ Good — Phase 01 |
 
 ---
-*Last updated: 2026-02-26 after starting v3.6 milestone*
+*Last updated: 2026-02-28 after v3.6 milestone*

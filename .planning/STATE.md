@@ -1,14 +1,14 @@
 ---
 gsd_state_version: 1.0
-milestone: v3.6
-milestone_name: Windows Compatibility
-status: unknown
-last_updated: "2026-02-28T07:22:47.373Z"
+milestone: v3.8
+milestone_name: SMB3 Protocol Upgrade
+status: not_started
+last_updated: "2026-02-28T16:00:00.000Z"
 progress:
   total_phases: 35
   completed_phases: 34
-  total_plans: 117
-  completed_plans: 117
+  total_plans: 124
+  completed_plans: 124
   percent: 100
 ---
 
@@ -16,10 +16,10 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-02-26)
+See: .planning/PROJECT.md (updated 2026-02-28)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking, Kerberos authentication, and session reliability
-**Current focus:** v3.6 Windows Compatibility — SMB bug fixes, NT Security Descriptors, conformance testing
+**Current focus:** v3.8 SMB3 Protocol Upgrade — dialect negotiation, encryption, leases, Kerberos, durable handles
 
 ## Current Position
 
@@ -197,5 +197,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-28
-Stopped at: Completed 32-03-PLAN.md (Phase 32 complete)
-Resume file: Phase 32.5 manual verification checkpoint
+Stopped at: v3.6 milestone archived, ready for next milestone
+Resume file: None — start with /gsd:new-milestone for v3.8

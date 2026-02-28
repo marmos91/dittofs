@@ -1,5 +1,31 @@
 # Project Milestones: DittoFS NFS Protocol Evolution
 
+## v3.6 Windows Compatibility (Shipped: 2026-02-28)
+
+**Delivered:** Full Windows SMB compatibility with NT Security Descriptors, SMB bug fixes, conformance test infrastructure, and comprehensive Windows 11 validation.
+
+**Phases completed:** 29.8-32 (4 phases, 12 plans, 24 tasks)
+
+**Key accomplishments:**
+
+- SMB conformance test infrastructure: Dockerized WPTS (150/335 BVT) + smbtorture CI with known-failure classification
+- Sparse file READ fix: zero-fill for unwritten blocks, fixing Windows Explorer read failures (#180)
+- Directory rename path propagation: BFS recursive descendant update on Move (#181)
+- NT Security Descriptors: POSIX-to-DACL synthesis, Samba-style SID mapping, well-known SIDs, lsarpc pipe (#182)
+- SMB protocol enhancements: MxAc/QFid create contexts, FileInfoClass handlers, cross-protocol oplock breaks
+- Windows 11 validation: 70+ test items validated, VM setup guide, KNOWN_FAILURES baseline
+
+**Stats:**
+
+- 4 phases, 12 plans, 24 tasks
+- 136 files changed, +9,779 / -980 lines
+- 262,607 LOC Go
+- Feb 26 - Feb 28, 2026 (3 days)
+
+**Archive:** [v3.6-ROADMAP.md](milestones/v3.6-ROADMAP.md) | [v3.6-REQUIREMENTS.md](milestones/v3.6-REQUIREMENTS.md)
+
+---
+
 ## v1.0 NLM + Unified Lock Manager (Shipped: 2026-02-07)
 
 **Delivered:** Unified cross-protocol locking foundation with NLM, NSM, SMB leases, and cross-protocol lock coordination.
