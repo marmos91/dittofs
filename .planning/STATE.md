@@ -1,14 +1,14 @@
 ---
 gsd_state_version: 1.0
-milestone: v4.2
+milestone: v3.6
 milestone_name: Windows Compatibility
 status: unknown
-last_updated: "2026-02-27T17:38:01.349Z"
+last_updated: "2026-02-28T07:22:47.373Z"
 progress:
-  total_phases: 34
-  completed_phases: 33
-  total_plans: 114
-  completed_plans: 114
+  total_phases: 35
+  completed_phases: 34
+  total_plans: 117
+  completed_plans: 117
   percent: 100
 ---
 
@@ -23,10 +23,10 @@ See: .planning/PROJECT.md (updated 2026-02-26)
 
 ## Current Position
 
-Phase: 31 (Windows ACL Support)
+Phase: 32 (Windows Integration Testing)
 Plan: 3 of 3 complete
 Status: Complete
-Last activity: 2026-02-27 — Phase 31 Plan 03 complete (SD handlers + lsarpc named pipe)
+Last activity: 2026-02-28 — Phase 32 complete (all 3 plans delivered)
 
 **Progress:** [██████████] 100%
 
@@ -75,6 +75,9 @@ Last activity: 2026-02-27 — Phase 31 Plan 03 complete (SD handlers + lsarpc na
 | Phase 31 P02 | 3min | 2 tasks | 5 files |
 | Phase 31 P01 | 8min | 2 tasks | 9 files |
 | Phase 31 P03 | 13min | 2 tasks | 5 files |
+| Phase 32 P02 | 5min | 2 tasks | 7 files |
+| Phase 32 P01 | 6min | 2 tasks | 11 files |
+| Phase 32 P03 | 5min | 2 tasks | 2 files |
 
 ## Quick Tasks Completed
 
@@ -173,6 +176,15 @@ Last activity: 2026-02-27 — Phase 31 Plan 03 complete (SD handlers + lsarpc na
 - [Phase 31]: PipeHandler interface with HandleBind/HandleRequest for polymorphic named pipe dispatch
 - [Phase 31]: SD field ordering follows Windows convention (SACL, DACL, Owner, Group) for smbtorture compatibility
 - [Phase 31]: SACL always empty stub (revision=2, count=0) — real SACL requires metadata store changes
+- [Phase 32]: Wildcard known-failure patterns (smb2.durable-open.*) for category-wide expected failures
+- [Phase 32]: S3 profiles excluded from smbtorture matrix (unnecessary Localstack complexity)
+- [Phase 32]: GPL compliance via Docker container boundary (smbtorture binary never touched directly)
+- [Phase 32]: Parse script supports both success:/failure: and subunit-style smbtorture output formats
+- [Phase 32]: computeMaximalAccess: owner=GENERIC_ALL, group/other from POSIX mode bits
+- [Phase 32]: QFid uses ServerGUID as VolumeId (consistent with FileFsObjectIdInformation)
+- [Phase 32]: Store config unit tests in config_test.go (store_test.go has integration build tag)
+- [Phase 32]: Checklist covers both mapped drives and UNC paths per user decision
+- [Phase 32]: KNOWN_FAILURES.md uses Status column without fabricating test names or pass counts
 
 ### Pending Todos
 
@@ -184,6 +196,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-02-27
-Stopped at: Completed 31-03-PLAN.md (SD handlers + lsarpc named pipe)
-Resume file: Continue with Phase 32
+Last session: 2026-02-28
+Stopped at: Completed 32-03-PLAN.md (Phase 32 complete)
+Resume file: Phase 32.5 manual verification checkpoint

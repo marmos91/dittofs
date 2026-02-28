@@ -45,4 +45,13 @@ jobs:
         run: go build -v ./cmd/dfsctl/
 
       - name: Run unit tests
-        run: go test -short -v ./...
+        run: go test -short -race -v ./...
+
+      - name: Build Summary
+        if: always()
+        run: |
+          echo "## Windows Build Results" >> $env:GITHUB_STEP_SUMMARY
+          echo "" >> $env:GITHUB_STEP_SUMMARY
+          echo "- Go version: $(go version)" >> $env:GITHUB_STEP_SUMMARY
+          echo "- Platform: ${{ runner.os }}" >> $env:GITHUB_STEP_SUMMARY
+          echo "- Status: ${{ job.status }}" >> $env:GITHUB_STEP_SUMMARY

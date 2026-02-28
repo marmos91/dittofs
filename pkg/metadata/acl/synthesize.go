@@ -13,9 +13,11 @@ const FullAccessMask = ACE4_READ_DATA | ACE4_WRITE_DATA | ACE4_APPEND_DATA |
 const alwaysGrantedMask = ACE4_READ_ACL | ACE4_WRITE_ACL | ACE4_WRITE_OWNER |
 	ACE4_DELETE | ACE4_SYNCHRONIZE
 
-// SynthesizeFromMode creates a Windows-compatible DACL from POSIX mode bits.
-// The resulting ACL follows canonical Windows ordering (deny before allow) and
-// includes well-known SID ACEs for SYSTEM and Administrators.
+// SynthesizeFromMode creates a Samba-style DACL from POSIX mode bits.
+// The resulting ACL uses Allow-only ACEs (no Deny ACEs), following the Samba
+// convention where absence of an Allow permission means "not granted."
+// This avoids the permission inheritance issues caused by explicit Deny ACEs
+// and produces cleaner Security tab displays in Windows Explorer.
 //
 // For directories, all ACEs include CONTAINER_INHERIT and OBJECT_INHERIT flags.
 //
@@ -41,28 +43,10 @@ func SynthesizeFromMode(mode uint32, ownerUID, ownerGID uint32, isDirectory bool
 
 	var aces []ACE
 
-	// Step 1: DENY ACEs (canonical order: deny before allow).
-	// If group has fewer rights than owner, deny GROUP@ the difference.
-	if groupDiff := ownerRWX &^ groupRWX; groupDiff != 0 {
-		aces = append(aces, ACE{
-			Type:       ACE4_ACCESS_DENIED_ACE_TYPE,
-			Flag:       inheritFlags,
-			AccessMask: rwxToFullMask(groupDiff, isDirectory),
-			Who:        SpecialGroup,
-		})
-	}
+	// Samba-style Allow-only approach: each principal gets an Allow ACE
+	// with exactly the permissions their POSIX mode bits grant.
+	// No Deny ACEs are generated. Absence of Allow means "not granted."
 
-	// If other has fewer rights than owner, deny EVERYONE@ the difference.
-	if otherDiff := ownerRWX &^ otherRWX; otherDiff != 0 {
-		aces = append(aces, ACE{
-			Type:       ACE4_ACCESS_DENIED_ACE_TYPE,
-			Flag:       inheritFlags,
-			AccessMask: rwxToFullMask(otherDiff, isDirectory),
-			Who:        SpecialEveryone,
-		})
-	}
-
-	// Step 2: ALLOW ACEs.
 	// Owner always gets at least admin rights plus their rwx permissions.
 	aces = append(aces, ACE{
 		Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
@@ -91,7 +75,7 @@ func SynthesizeFromMode(mode uint32, ownerUID, ownerGID uint32, isDirectory bool
 		})
 	}
 
-	// Step 3: Well-known SID ACEs (always present in synthesized DACLs).
+	// Well-known SID ACEs (always present in synthesized DACLs).
 	aces = append(aces,
 		ACE{
 			Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,

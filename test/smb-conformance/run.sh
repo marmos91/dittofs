@@ -37,6 +37,20 @@ log_warn()  { echo -e "${YELLOW}[RUN]${NC} $*"; }
 log_error() { echo -e "${RED}[RUN]${NC} $*"; }
 log_step()  { echo -e "${CYAN}[RUN]${NC} ${BOLD}$*${NC}"; }
 
+# find_newest_file DIR PATTERN
+# Finds the most recently modified file matching PATTERN in DIR.
+# Compatible with both BSD (macOS) and GNU (Linux) stat.
+find_newest_file() {
+    local dir="$1" pattern="$2"
+    find "$dir" -name "$pattern" -type f 2>/dev/null \
+        | while IFS= read -r f; do
+            local mtime
+            mtime=$(stat --format='%Y' "$f" 2>/dev/null || stat -f '%m' "$f" 2>/dev/null)
+            echo "$mtime $f"
+        done \
+        | sort -rn | head -1 | cut -d' ' -f2-
+}
+
 # wait_until CMD MAX_ATTEMPTS LABEL
 # Retries CMD every second up to MAX_ATTEMPTS times. Logs LABEL on success/failure.
 wait_until() {
@@ -67,7 +81,7 @@ collect_and_parse_results() {
     fi
 
     local trx_file=""
-    trx_file=$(find "${SCRIPT_DIR}/ptfconfig-generated" -name "*.trx" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+    trx_file=$(find_newest_file "${SCRIPT_DIR}/ptfconfig-generated" "*.trx")
 
     if [[ -z "$trx_file" ]]; then
         log_error "No TRX file found in ptfconfig-generated/"

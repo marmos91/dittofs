@@ -37,3 +37,9 @@ local: ## Run in local mode (DittoFS native, WPTS in Docker)
 
 keep: ## Run tests and keep containers for debugging
 	./run.sh --profile $(PROFILE) --keep
+
+smbtorture: ## Run smbtorture tests
+	cd smbtorture && $(MAKE) test
+
+smbtorture-quick: ## Run smbtorture connect test only
+	cd smbtorture && $(MAKE) test-quick

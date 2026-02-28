@@ -14,34 +14,41 @@ func findACE(aces []ACE, typ uint32, who string) *ACE {
 	return nil
 }
 
+// countACEsByType counts ACEs of the given type.
+func countACEsByType(aces []ACE, typ uint32) int {
+	count := 0
+	for i := range aces {
+		if aces[i].Type == typ {
+			count++
+		}
+	}
+	return count
+}
+
+func TestSynthesizeFromMode_NoDenyACEs(t *testing.T) {
+	// Samba-style: no POSIX mode should produce Deny ACEs.
+	modes := []uint32{0000, 0400, 0644, 0700, 0750, 0755, 0777, 0111, 0666}
+	for _, mode := range modes {
+		for _, isDir := range []bool{true, false} {
+			acl := SynthesizeFromMode(mode, 1000, 1000, isDir)
+			denyCount := countACEsByType(acl.ACEs, ACE4_ACCESS_DENIED_ACE_TYPE)
+			if denyCount != 0 {
+				t.Errorf("mode 0%o isDir=%v: got %d DENY ACEs, want 0 (Samba-style Allow-only)",
+					mode, isDir, denyCount)
+			}
+		}
+	}
+}
+
 func TestSynthesizeFromMode_0755_Directory(t *testing.T) {
 	acl := SynthesizeFromMode(0755, 1000, 1000, true)
 	if acl == nil {
 		t.Fatal("SynthesizeFromMode returned nil")
 	}
 
-	// Expect: DENY GROUP@ write, DENY EVERYONE@ write, ALLOW OWNER@ rwx,
-	// ALLOW GROUP@ rx, ALLOW EVERYONE@ rx, ALLOW SYSTEM@ full, ALLOW ADMIN@ full.
-	// Owner has rwx(7), group has rx(5), other has rx(5).
-	// Both group and other are missing write vs owner (7 &^ 5 = 2),
-	// so both GROUP@ and EVERYONE@ get deny ACEs for write.
-
-	// Check deny: EVERYONE@ should be denied write bits (owner has w, other doesn't).
-	denyEveryone := findACE(acl.ACEs, ACE4_ACCESS_DENIED_ACE_TYPE, SpecialEveryone)
-	if denyEveryone == nil {
-		t.Fatal("expected DENY EVERYONE@ ACE for write restriction")
-	}
-	// ownerRWX=7, otherRWX=5, diff=2 (write). Should deny write-related bits.
-	writeMask := rwxToFullMask(2, true) // write bit for directory
-	if denyEveryone.AccessMask != writeMask {
-		t.Errorf("DENY EVERYONE@ mask = 0x%08x, want 0x%08x", denyEveryone.AccessMask, writeMask)
-	}
-
-	// GROUP@ deny exists (group=5, ownerRWX &^ groupRWX = 7 &^ 5 = 2, deny write).
-	denyGroup := findACE(acl.ACEs, ACE4_ACCESS_DENIED_ACE_TYPE, SpecialGroup)
-	if denyGroup == nil {
-		t.Fatal("expected DENY GROUP@ ACE for write restriction")
-	}
+	// Samba-style Allow-only: ALLOW OWNER@ rwx, ALLOW GROUP@ rx,
+	// ALLOW EVERYONE@ rx, ALLOW SYSTEM@ full, ALLOW ADMIN@ full.
+	// No DENY ACEs at all.
 
 	// Check allow OWNER@.
 	allowOwner := findACE(acl.ACEs, ACE4_ACCESS_ALLOWED_ACE_TYPE, SpecialOwner)
@@ -97,6 +104,11 @@ func TestSynthesizeFromMode_0755_Directory(t *testing.T) {
 			t.Errorf("ACE %d (%s %s): missing CI+OI flags, flag=0x%08x", i, ace.TypeString(), ace.Who, ace.Flag)
 		}
 	}
+
+	// Total: 5 ACEs (owner, group, everyone, system, administrators)
+	if len(acl.ACEs) != 5 {
+		t.Errorf("expected 5 ACEs, got %d", len(acl.ACEs))
+	}
 }
 
 func TestSynthesizeFromMode_0750_Directory(t *testing.T) {
@@ -106,30 +118,8 @@ func TestSynthesizeFromMode_0750_Directory(t *testing.T) {
 	}
 
 	// ownerRWX=7, groupRWX=5, otherRWX=0
-	// DENY GROUP@ write (7 &^ 5 = 2)
-	// DENY EVERYONE@ rwx (7 &^ 0 = 7)
-	// ALLOW OWNER@ rwx
-	// ALLOW GROUP@ rx
-	// No ALLOW EVERYONE@ (otherRWX=0)
-	// ALLOW SYSTEM@, ALLOW ADMINISTRATORS@
-
-	denyGroup := findACE(acl.ACEs, ACE4_ACCESS_DENIED_ACE_TYPE, SpecialGroup)
-	if denyGroup == nil {
-		t.Fatal("expected DENY GROUP@ ACE")
-	}
-	writeMask := rwxToFullMask(2, true)
-	if denyGroup.AccessMask != writeMask {
-		t.Errorf("DENY GROUP@ mask = 0x%08x, want 0x%08x", denyGroup.AccessMask, writeMask)
-	}
-
-	denyEveryone := findACE(acl.ACEs, ACE4_ACCESS_DENIED_ACE_TYPE, SpecialEveryone)
-	if denyEveryone == nil {
-		t.Fatal("expected DENY EVERYONE@ ACE")
-	}
-	rwxMask := rwxToFullMask(7, true)
-	if denyEveryone.AccessMask != rwxMask {
-		t.Errorf("DENY EVERYONE@ mask = 0x%08x, want 0x%08x", denyEveryone.AccessMask, rwxMask)
-	}
+	// Allow-only: ALLOW OWNER@ rwx, ALLOW GROUP@ rx, no ALLOW EVERYONE@ (zero perms),
+	// ALLOW SYSTEM@, ALLOW ADMINISTRATORS@.
 
 	// No ALLOW EVERYONE@ since otherRWX=0.
 	allowEveryone := findACE(acl.ACEs, ACE4_ACCESS_ALLOWED_ACE_TYPE, SpecialEveryone)
@@ -142,6 +132,15 @@ func TestSynthesizeFromMode_0750_Directory(t *testing.T) {
 	if allowGroup == nil {
 		t.Fatal("expected ALLOW GROUP@ ACE")
 	}
+	expectedGroupMask := rwxToFullMask(5, true)
+	if allowGroup.AccessMask != expectedGroupMask {
+		t.Errorf("ALLOW GROUP@ mask = 0x%08x, want 0x%08x", allowGroup.AccessMask, expectedGroupMask)
+	}
+
+	// Total: 4 ACEs (owner, group, system, administrators)
+	if len(acl.ACEs) != 4 {
+		t.Errorf("expected 4 ACEs, got %d", len(acl.ACEs))
+	}
 }
 
 func TestSynthesizeFromMode_0644_File(t *testing.T) {
@@ -151,29 +150,9 @@ func TestSynthesizeFromMode_0644_File(t *testing.T) {
 	}
 
 	// ownerRWX=6, groupRWX=4, otherRWX=4
-	// DENY GROUP@ write (6 &^ 4 = 2)
-	// DENY EVERYONE@ write (6 &^ 4 = 2)
-	// ALLOW OWNER@ rw
-	// ALLOW GROUP@ r
-	// ALLOW EVERYONE@ r
-	// ALLOW SYSTEM@, ALLOW ADMINISTRATORS@
-
-	denyGroup := findACE(acl.ACEs, ACE4_ACCESS_DENIED_ACE_TYPE, SpecialGroup)
-	if denyGroup == nil {
-		t.Fatal("expected DENY GROUP@ ACE")
-	}
-	writeMask := rwxToFullMask(2, false)
-	if denyGroup.AccessMask != writeMask {
-		t.Errorf("DENY GROUP@ mask = 0x%08x, want 0x%08x", denyGroup.AccessMask, writeMask)
-	}
-
-	denyEveryone := findACE(acl.ACEs, ACE4_ACCESS_DENIED_ACE_TYPE, SpecialEveryone)
-	if denyEveryone == nil {
-		t.Fatal("expected DENY EVERYONE@ ACE")
-	}
-	if denyEveryone.AccessMask != writeMask {
-		t.Errorf("DENY EVERYONE@ mask = 0x%08x, want 0x%08x", denyEveryone.AccessMask, writeMask)
-	}
+	// Allow-only: ALLOW OWNER@ rw, ALLOW GROUP@ r, ALLOW EVERYONE@ r,
+	// ALLOW SYSTEM@, ALLOW ADMINISTRATORS@.
+	// No DENY ACEs.
 
 	// File ACEs should NOT have CI+OI flags.
 	for i, ace := range acl.ACEs {
@@ -192,6 +171,29 @@ func TestSynthesizeFromMode_0644_File(t *testing.T) {
 	if allowOwner.AccessMask != expectedOwnerMask {
 		t.Errorf("ALLOW OWNER@ mask = 0x%08x, want 0x%08x", allowOwner.AccessMask, expectedOwnerMask)
 	}
+
+	allowGroup := findACE(acl.ACEs, ACE4_ACCESS_ALLOWED_ACE_TYPE, SpecialGroup)
+	if allowGroup == nil {
+		t.Fatal("expected ALLOW GROUP@ ACE")
+	}
+	expectedGroupMask := rwxToFullMask(4, false)
+	if allowGroup.AccessMask != expectedGroupMask {
+		t.Errorf("ALLOW GROUP@ mask = 0x%08x, want 0x%08x", allowGroup.AccessMask, expectedGroupMask)
+	}
+
+	allowEveryone := findACE(acl.ACEs, ACE4_ACCESS_ALLOWED_ACE_TYPE, SpecialEveryone)
+	if allowEveryone == nil {
+		t.Fatal("expected ALLOW EVERYONE@ ACE")
+	}
+	expectedEveryoneMask := rwxToFullMask(4, false)
+	if allowEveryone.AccessMask != expectedEveryoneMask {
+		t.Errorf("ALLOW EVERYONE@ mask = 0x%08x, want 0x%08x", allowEveryone.AccessMask, expectedEveryoneMask)
+	}
+
+	// Total: 5 ACEs (owner, group, everyone, system, administrators)
+	if len(acl.ACEs) != 5 {
+		t.Errorf("expected 5 ACEs, got %d", len(acl.ACEs))
+	}
 }
 
 func TestSynthesizeFromMode_0000(t *testing.T) {
@@ -201,7 +203,7 @@ func TestSynthesizeFromMode_0000(t *testing.T) {
 	}
 
 	// ownerRWX=0, groupRWX=0, otherRWX=0
-	// No DENY ACEs (no bits to deny: 0 &^ 0 = 0).
+	// No DENY ACEs.
 	// ALLOW OWNER@ with only alwaysGrantedMask (no rwx).
 	// No ALLOW GROUP@ or EVERYONE@ (zero perms).
 	// ALLOW SYSTEM@, ALLOW ADMINISTRATORS@.
@@ -236,6 +238,11 @@ func TestSynthesizeFromMode_0000(t *testing.T) {
 	if findACE(acl.ACEs, ACE4_ACCESS_ALLOWED_ACE_TYPE, SpecialAdministrators) == nil {
 		t.Error("expected ALLOW ADMINISTRATORS@ ACE")
 	}
+
+	// Total: 3 ACEs (owner, system, administrators)
+	if len(acl.ACEs) != 3 {
+		t.Errorf("expected 3 ACEs, got %d", len(acl.ACEs))
+	}
 }
 
 func TestSynthesizeFromMode_0777(t *testing.T) {
@@ -244,7 +251,7 @@ func TestSynthesizeFromMode_0777(t *testing.T) {
 		t.Fatal("SynthesizeFromMode returned nil")
 	}
 
-	// All equal to owner: no DENY ACEs.
+	// All equal: no DENY ACEs (same as before).
 	for _, ace := range acl.ACEs {
 		if ace.Type == ACE4_ACCESS_DENIED_ACE_TYPE {
 			t.Errorf("unexpected DENY ACE for mode 0777: %s", ace.Who)
@@ -285,27 +292,16 @@ func TestSynthesizeFromMode_0700(t *testing.T) {
 	}
 
 	// ownerRWX=7, groupRWX=0, otherRWX=0
-	// DENY GROUP@ rwx (7 &^ 0 = 7)
-	// DENY EVERYONE@ rwx (7 &^ 0 = 7)
-	// ALLOW OWNER@ rwx + admin
-	// No ALLOW GROUP@ or EVERYONE@
-	// ALLOW SYSTEM@, ALLOW ADMINISTRATORS@
+	// Allow-only: ALLOW OWNER@ rwx + admin, no GROUP@ or EVERYONE@,
+	// ALLOW SYSTEM@, ALLOW ADMINISTRATORS@.
 
-	denyGroup := findACE(acl.ACEs, ACE4_ACCESS_DENIED_ACE_TYPE, SpecialGroup)
-	if denyGroup == nil {
-		t.Fatal("expected DENY GROUP@ ACE")
+	allowOwner := findACE(acl.ACEs, ACE4_ACCESS_ALLOWED_ACE_TYPE, SpecialOwner)
+	if allowOwner == nil {
+		t.Fatal("expected ALLOW OWNER@ ACE")
 	}
-	rwxMask := rwxToFullMask(7, false)
-	if denyGroup.AccessMask != rwxMask {
-		t.Errorf("DENY GROUP@ mask = 0x%08x, want 0x%08x", denyGroup.AccessMask, rwxMask)
-	}
-
-	denyEveryone := findACE(acl.ACEs, ACE4_ACCESS_DENIED_ACE_TYPE, SpecialEveryone)
-	if denyEveryone == nil {
-		t.Fatal("expected DENY EVERYONE@ ACE")
-	}
-	if denyEveryone.AccessMask != rwxMask {
-		t.Errorf("DENY EVERYONE@ mask = 0x%08x, want 0x%08x", denyEveryone.AccessMask, rwxMask)
+	expectedOwnerMask := rwxToFullMask(7, false) | alwaysGrantedMask
+	if allowOwner.AccessMask != expectedOwnerMask {
+		t.Errorf("ALLOW OWNER@ mask = 0x%08x, want 0x%08x", allowOwner.AccessMask, expectedOwnerMask)
 	}
 
 	if findACE(acl.ACEs, ACE4_ACCESS_ALLOWED_ACE_TYPE, SpecialGroup) != nil {
@@ -313,6 +309,11 @@ func TestSynthesizeFromMode_0700(t *testing.T) {
 	}
 	if findACE(acl.ACEs, ACE4_ACCESS_ALLOWED_ACE_TYPE, SpecialEveryone) != nil {
 		t.Error("unexpected ALLOW EVERYONE@ for mode 0700")
+	}
+
+	// Total: 3 ACEs (owner, system, administrators)
+	if len(acl.ACEs) != 3 {
+		t.Errorf("expected 3 ACEs, got %d", len(acl.ACEs))
 	}
 }
 

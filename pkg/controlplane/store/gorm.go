@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/glebarez/sqlite"
@@ -76,11 +77,22 @@ func (c *Config) ApplyDefaults() {
 	}
 
 	if c.Type == DatabaseTypeSQLite && c.SQLite.Path == "" {
-		// Use XDG config home or fallback
-		configDir := os.Getenv("XDG_CONFIG_HOME")
-		if configDir == "" {
-			homeDir, _ := os.UserHomeDir()
-			configDir = filepath.Join(homeDir, ".config")
+		// Resolve default config directory based on platform
+		var configDir string
+		if runtime.GOOS == "windows" {
+			// On Windows, use %APPDATA% (matching internal/cli/credentials/store.go pattern)
+			configDir = os.Getenv("APPDATA")
+			if configDir == "" {
+				homeDir, _ := os.UserHomeDir()
+				configDir = filepath.Join(homeDir, "AppData", "Roaming")
+			}
+		} else {
+			// Unix: XDG_CONFIG_HOME or ~/.config
+			configDir = os.Getenv("XDG_CONFIG_HOME")
+			if configDir == "" {
+				homeDir, _ := os.UserHomeDir()
+				configDir = filepath.Join(homeDir, ".config")
+			}
 		}
 		c.SQLite.Path = filepath.Join(configDir, "dittofs", "controlplane.db")
 	}

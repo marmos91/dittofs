@@ -1,11 +1,12 @@
 # Docker Compose configuration for SMB Conformance Testing
-# Orchestrates DittoFS + Microsoft WindowsProtocolTestSuites (WPTS)
+# Orchestrates DittoFS + Microsoft WindowsProtocolTestSuites (WPTS) + smbtorture
 #
 # Usage:
-#   docker compose up -d dittofs          # Start DittoFS only
-#   docker compose --profile test up      # Start DittoFS + WPTS
-#   docker compose --profile s3 up -d     # Start with Localstack for S3 profiles
-#   docker compose --profile postgres up  # Start with PostgreSQL
+#   docker compose up -d dittofs                   # Start DittoFS only
+#   docker compose --profile test up               # Start DittoFS + WPTS
+#   docker compose --profile smbtorture up         # Start DittoFS + smbtorture
+#   docker compose --profile s3 up -d              # Start with Localstack for S3 profiles
+#   docker compose --profile postgres up           # Start with PostgreSQL
 #
 # Environment variables:
 #   PROFILE              - DittoFS config profile (default: memory)
@@ -49,6 +50,24 @@ services:
       PasswordForAllUsers: ${TEST_PASSWORD:-TestPassword01!}
     profiles:
       - test
+
+  smbtorture:
+    image: quay.io/samba.org/samba-toolbox:v0.8
+    platform: linux/amd64
+    depends_on:
+      dittofs:
+        condition: service_healthy
+    network_mode: "service:dittofs"
+    entrypoint: ["smbtorture"]
+    command:
+      - "//localhost/smbbasic"
+      - "-U"
+      - "wpts-admin%TestPassword01!"
+      - "--option=client min protocol=SMB2_02"
+      - "--option=client max protocol=SMB3"
+      - "smb2"
+    profiles:
+      - smbtorture
 
   localstack:
     image: localstack/localstack:4.13.1

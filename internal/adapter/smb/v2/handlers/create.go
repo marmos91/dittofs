@@ -174,7 +174,103 @@ func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 		}
 	}
 
+	// ====================================================================
+	// Parse Create Contexts [MS-SMB2] 2.2.13.2
+	// ====================================================================
+	//
+	// CreateContextsOffset (4 bytes at offset 48) is relative to the start
+	// of the SMB2 header. CreateContextsLength (4 bytes at offset 52) is
+	// the total length of all chained create context structures.
+	//
+	// Windows 11 sends MxAc (Maximal Access), QFid (Query on Disk ID), and
+	// RqLs (Request Lease) create contexts with every CREATE request. The
+	// server MUST parse these to return the corresponding response contexts.
+	// Without MxAc in the response, the Windows SMB redirector cannot
+	// determine access rights and may refuse to open the file.
+
+	if len(body) >= 56 {
+		ctxOffset := binary.LittleEndian.Uint32(body[48:52])
+		ctxLength := binary.LittleEndian.Uint32(body[52:56])
+
+		if ctxOffset > 0 && ctxLength > 0 {
+			// ctxOffset is relative to the start of the SMB2 header (64 bytes)
+			ctxBodyOffset := int(ctxOffset) - 64
+			ctxEnd := ctxBodyOffset + int(ctxLength)
+
+			if ctxBodyOffset >= 0 && ctxEnd <= len(body) {
+				req.CreateContexts = decodeCreateContexts(body[ctxBodyOffset:ctxEnd])
+			}
+		}
+	}
+
 	return req, nil
+}
+
+// decodeCreateContexts parses a chain of SMB2 CREATE context structures
+// [MS-SMB2] 2.2.13.2 from the given buffer.
+//
+// Each create context has the following wire format:
+//
+//	Offset  Size  Field
+//	------  ----  -----------
+//	0       4     Next            Offset to next context (0 if last)
+//	4       2     NameOffset      Offset to Name from start of this context
+//	6       2     NameLength      Length of Name in bytes
+//	8       2     Reserved
+//	10      2     DataOffset      Offset to Data from start of this context
+//	12      4     DataLength      Length of Data in bytes
+//	16      var   Buffer          Name (padded) + Data
+func decodeCreateContexts(buf []byte) []CreateContext {
+	var contexts []CreateContext
+	offset := 0
+
+	for offset < len(buf) {
+		// Need at least 16 bytes for the context header
+		if offset+16 > len(buf) {
+			break
+		}
+
+		ctx := buf[offset:]
+		next := binary.LittleEndian.Uint32(ctx[0:4])
+		nameOff := binary.LittleEndian.Uint16(ctx[4:6])
+		nameLen := binary.LittleEndian.Uint16(ctx[6:8])
+		dataOff := binary.LittleEndian.Uint16(ctx[10:12])
+		dataLen := binary.LittleEndian.Uint32(ctx[12:16])
+
+		// Limit parsing to the current context record to prevent reading
+		// across boundaries into subsequent contexts [MS-SMB2 2.2.13.2]
+		ctxLen := len(ctx)
+		if next > 0 && int(next) < ctxLen {
+			ctxLen = int(next)
+		}
+
+		// Extract the context name (ASCII, e.g. "MxAc", "QFid", "RqLs")
+		var name string
+		if int(nameOff)+int(nameLen) <= ctxLen {
+			name = string(ctx[nameOff : nameOff+nameLen])
+		}
+
+		// Extract the context data (slice into existing buffer to avoid allocation)
+		var data []byte
+		if dataLen > 0 && int(dataOff)+int(dataLen) <= ctxLen {
+			data = ctx[dataOff : int(dataOff)+int(dataLen)]
+		}
+
+		if name != "" {
+			contexts = append(contexts, CreateContext{
+				Name: name,
+				Data: data,
+			})
+		}
+
+		// Move to next context or stop
+		if next == 0 {
+			break
+		}
+		offset += int(next)
+	}
+
+	return contexts
 }
 
 // Encode serializes the CreateResponse into SMB2 wire format [MS-SMB2] 2.2.14.
@@ -603,7 +699,119 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			"epoch", leaseResponse.Epoch)
 	}
 
+	// ========================================================================
+	// Step 10c: Add MxAc (Maximal Access) response context [MS-SMB2] 2.2.14.2.5
+	// ========================================================================
+	//
+	// Windows 11 Explorer sends MxAc create context with every CREATE to learn
+	// the maximum access rights the user has on the file. The response is 8 bytes:
+	//   QueryStatus (uint32) + MaximalAccess (uint32)
+
+	if FindCreateContext(req.CreateContexts, "MxAc") != nil {
+		mxAcResp := make([]byte, 8)
+		// QueryStatus = STATUS_SUCCESS (0x00000000)
+		binary.LittleEndian.PutUint32(mxAcResp[0:4], 0)
+		// MaximalAccess: compute from file permissions and auth context
+		maxAccess := computeMaximalAccess(file, authCtx)
+		binary.LittleEndian.PutUint32(mxAcResp[4:8], maxAccess)
+
+		resp.CreateContexts = append(resp.CreateContexts, CreateContext{
+			Name: "MxAc",
+			Data: mxAcResp,
+		})
+
+		logger.Debug("CREATE: MxAc response added",
+			"maximalAccess", fmt.Sprintf("0x%08x", maxAccess))
+	}
+
+	// ========================================================================
+	// Step 10d: Add QFid (Query on Disk ID) response context [MS-SMB2] 2.2.14.2.9
+	// ========================================================================
+	//
+	// Windows 11 Explorer sends QFid create context to obtain the on-disk file ID.
+	// The response is 32 bytes: DiskFileId (16 bytes) + VolumeId (16 bytes)
+
+	if FindCreateContext(req.CreateContexts, "QFid") != nil {
+		qfidResp := make([]byte, 32)
+		// DiskFileId: use first 16 bytes of file UUID
+		copy(qfidResp[0:16], file.ID[:16])
+		// VolumeId: use ServerGUID as the volume identifier
+		copy(qfidResp[16:32], h.ServerGUID[:])
+
+		resp.CreateContexts = append(resp.CreateContexts, CreateContext{
+			Name: "QFid",
+			Data: qfidResp,
+		})
+
+		logger.Debug("CREATE: QFid response added",
+			"diskFileId", fmt.Sprintf("%x", file.ID[:16]))
+	}
+
 	return resp, nil
+}
+
+// computeMaximalAccess computes the maximal access mask for a file based on
+// POSIX permissions and the requesting user's identity.
+//
+// For the file owner, GENERIC_ALL (0x001F01FF) is granted.
+// For other users, access is computed from the file's mode bits:
+//   - Read permission:    0x00120089 (FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE)
+//   - Write permission:   0x00120116 (FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE)
+//   - Execute permission: 0x001200A0 (FILE_EXECUTE | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE)
+func computeMaximalAccess(file *metadata.File, authCtx *metadata.AuthContext) uint32 {
+	const (
+		genericAll    uint32 = 0x001F01FF
+		readAccess    uint32 = 0x00120089
+		writeAccess   uint32 = 0x00120116
+		executeAccess uint32 = 0x001200A0
+	)
+
+	// Check if the requesting user is the file owner
+	if authCtx.Identity != nil && authCtx.Identity.UID != nil && *authCtx.Identity.UID == file.UID {
+		return genericAll
+	}
+
+	// Compute from POSIX mode bits for non-owner
+	// Use "other" permission bits (lowest 3 bits of mode)
+	mode := file.Mode
+	var access uint32
+
+	// Check group membership for group permissions
+	isGroupMember := authCtx.Identity != nil && authCtx.Identity.GID != nil && *authCtx.Identity.GID == file.GID
+	if !isGroupMember && authCtx.Identity != nil {
+		for _, gid := range authCtx.Identity.GIDs {
+			if gid == file.GID {
+				isGroupMember = true
+				break
+			}
+		}
+	}
+
+	var permBits uint32
+	if isGroupMember {
+		// Use group permission bits (bits 3-5)
+		permBits = uint32((mode >> 3) & 0x7)
+	} else {
+		// Use other permission bits (bits 0-2)
+		permBits = uint32(mode & 0x7)
+	}
+
+	if permBits&0x4 != 0 { // read
+		access |= readAccess
+	}
+	if permBits&0x2 != 0 { // write
+		access |= writeAccess
+	}
+	if permBits&0x1 != 0 { // execute
+		access |= executeAccess
+	}
+
+	// Ensure at minimum READ_CONTROL | SYNCHRONIZE for any authenticated user
+	if access == 0 {
+		access = 0x00100000 | 0x00020000 // SYNCHRONIZE | READ_CONTROL
+	}
+
+	return access
 }
 
 // ============================================================================

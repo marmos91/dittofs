@@ -3,27 +3,31 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 )
 
+// setConfigDirEnv overrides the environment variable that getConfigDir() uses
+// so InitConfig() writes to tmpDir instead of the real config location.
+// On Windows this is APPDATA; on Unix it is XDG_CONFIG_HOME.
+func setConfigDirEnv(t *testing.T, tmpDir string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Setenv("APPDATA", tmpDir)
+	} else {
+		t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	}
+}
+
 func TestInitConfig_Success(t *testing.T) {
 	// Create a temporary directory to act as config dir
 	tmpDir := t.TempDir()
 
-	// Override XDG_CONFIG_HOME so getConfigDir() resolves to our temp directory.
-	// Using HOME doesn't work on Windows where os.UserHomeDir() reads USERPROFILE.
-	oldXDG := os.Getenv("XDG_CONFIG_HOME")
-	_ = os.Setenv("XDG_CONFIG_HOME", tmpDir)
-	defer func() {
-		if oldXDG != "" {
-			_ = os.Setenv("XDG_CONFIG_HOME", oldXDG)
-		} else {
-			_ = os.Unsetenv("XDG_CONFIG_HOME")
-		}
-	}()
+	// Override the config dir env var so getConfigDir() resolves to our temp directory.
+	setConfigDirEnv(t, tmpDir)
 
 	configPath, err := InitConfig(false)
 	if err != nil {
@@ -66,16 +70,7 @@ func TestInitConfig_Success(t *testing.T) {
 
 func TestInitConfig_AlreadyExists(t *testing.T) {
 	tmpDir := t.TempDir()
-
-	oldXDG := os.Getenv("XDG_CONFIG_HOME")
-	_ = os.Setenv("XDG_CONFIG_HOME", tmpDir)
-	defer func() {
-		if oldXDG != "" {
-			_ = os.Setenv("XDG_CONFIG_HOME", oldXDG)
-		} else {
-			_ = os.Unsetenv("XDG_CONFIG_HOME")
-		}
-	}()
+	setConfigDirEnv(t, tmpDir)
 
 	// Create config first time
 	_, err := InitConfig(false)
@@ -95,16 +90,7 @@ func TestInitConfig_AlreadyExists(t *testing.T) {
 
 func TestInitConfig_Force(t *testing.T) {
 	tmpDir := t.TempDir()
-
-	oldXDG := os.Getenv("XDG_CONFIG_HOME")
-	_ = os.Setenv("XDG_CONFIG_HOME", tmpDir)
-	defer func() {
-		if oldXDG != "" {
-			_ = os.Setenv("XDG_CONFIG_HOME", oldXDG)
-		} else {
-			_ = os.Unsetenv("XDG_CONFIG_HOME")
-		}
-	}()
+	setConfigDirEnv(t, tmpDir)
 
 	// Create config first time
 	configPath, err := InitConfig(false)

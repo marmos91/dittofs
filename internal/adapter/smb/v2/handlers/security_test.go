@@ -126,34 +126,28 @@ func TestBuildSD_NilACL_SynthesizesDACL(t *testing.T) {
 		t.Fatal("Expected DACL, got nil")
 	}
 
-	// Mode 0755 should produce deny+allow ACEs (not just Everyone:Full).
+	// Mode 0755 should produce Allow-only ACEs (Samba-style, no Deny ACEs).
 	// SynthesizeFromMode produces:
-	// 1. DENY EVERYONE@ (owner has rwx, other has r-x, so deny w bits)
-	// 2. ALLOW OWNER@ (rwx + admin)
-	// 3. ALLOW GROUP@ (r-x)
-	// 4. ALLOW EVERYONE@ (r-x)
-	// 5. ALLOW SYSTEM@ (full)
-	// 6. ALLOW ADMINISTRATORS@ (full)
-	// Total: 6 ACEs (deny + 5 allow)
-	if len(parsedACL.ACEs) < 3 {
-		t.Fatalf("Expected multiple ACEs from synthesis, got %d", len(parsedACL.ACEs))
+	// 1. ALLOW OWNER@ (rwx + admin)
+	// 2. ALLOW GROUP@ (r-x)
+	// 3. ALLOW EVERYONE@ (r-x)
+	// 4. ALLOW SYSTEM@ (full)
+	// 5. ALLOW ADMINISTRATORS@ (full)
+	// Total: 5 Allow ACEs, 0 Deny ACEs.
+	if len(parsedACL.ACEs) != 5 {
+		t.Fatalf("Expected 5 ACEs from synthesis, got %d", len(parsedACL.ACEs))
 	}
 
-	// First ACE should be a DENY ACE (group/other has fewer rights than owner)
-	foundDeny := false
+	// Samba-style: NO Deny ACEs should be present
 	for _, ace := range parsedACL.ACEs {
 		if ace.Type == acl.ACE4_ACCESS_DENIED_ACE_TYPE {
-			foundDeny = true
-			break
+			t.Errorf("Unexpected DENY ACE in synthesized DACL (Samba-style should be Allow-only): %s", ace.Who)
 		}
-	}
-	if !foundDeny {
-		t.Error("Expected at least one DENY ACE in synthesized DACL for mode 0755")
 	}
 
 	// Should NOT be a simple "Everyone: Full Access" single ACE
 	if len(parsedACL.ACEs) == 1 && parsedACL.ACEs[0].AccessMask == 0x001F01FF {
-		t.Error("Got Everyone:Full single ACE -- expected POSIX-derived DACL with deny+allow ACEs")
+		t.Error("Got Everyone:Full single ACE -- expected POSIX-derived DACL with per-principal Allow ACEs")
 	}
 }
 

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -187,6 +188,56 @@ func TestGetConfigDir(t *testing.T) {
 	// Should contain dittofs
 	if filepath.Base(dir) != "dittofs" {
 		t.Errorf("Expected directory name 'dittofs', got %q", filepath.Base(dir))
+	}
+}
+
+func TestGetConfigDir_PlatformEnvVars(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Run("UsesAPPDATA", func(t *testing.T) {
+			tmpDir := t.TempDir()
+			t.Setenv("APPDATA", tmpDir)
+
+			dir := GetConfigDir()
+			expected := filepath.Join(tmpDir, "dittofs")
+			if dir != expected {
+				t.Errorf("GetConfigDir() = %q, expected %q", dir, expected)
+			}
+		})
+
+		t.Run("FallbackWithoutAPPDATA", func(t *testing.T) {
+			t.Setenv("APPDATA", "")
+
+			dir := GetConfigDir()
+			// Should contain "AppData/Roaming/dittofs" or "dittofs" at minimum
+			if filepath.Base(dir) != "dittofs" {
+				t.Errorf("GetConfigDir() = %q, expected directory name 'dittofs'", dir)
+			}
+		})
+	} else {
+		t.Run("UsesXDGConfigHome", func(t *testing.T) {
+			tmpDir := t.TempDir()
+			t.Setenv("XDG_CONFIG_HOME", tmpDir)
+
+			dir := GetConfigDir()
+			expected := filepath.Join(tmpDir, "dittofs")
+			if dir != expected {
+				t.Errorf("GetConfigDir() = %q, expected %q", dir, expected)
+			}
+		})
+
+		t.Run("FallbackWithoutXDG", func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", "")
+
+			dir := GetConfigDir()
+			// Should end with .config/dittofs
+			if filepath.Base(dir) != "dittofs" {
+				t.Errorf("GetConfigDir() = %q, expected directory name 'dittofs'", dir)
+			}
+			parent := filepath.Base(filepath.Dir(dir))
+			if parent != ".config" {
+				t.Errorf("parent dir = %q, expected '.config'", parent)
+			}
+		})
 	}
 }
 

@@ -406,19 +406,10 @@ func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, ac
 				continue
 			}
 
-			// Calculate the relative path from the watch directory
-			relativePath := fileName
-			if currentPath != parentPath {
-				// For recursive watchers, include the relative directory path
-				// e.g., watching "/" for change in "/subdir/file.txt" -> "subdir/file.txt"
-				relDir := parentPath[len(currentPath):]
-				if len(relDir) > 0 && relDir[0] == '/' {
-					relDir = relDir[1:]
-				}
-				if relDir != "" {
-					relativePath = relDir + "/" + fileName
-				}
-			}
+			// Calculate the relative path from the watch directory.
+			// For recursive watchers, this includes the subdirectory prefix,
+			// e.g., watching "/" for change in "/subdir/file.txt" -> "subdir/file.txt"
+			relativePath := relativePathFromWatch(currentPath, parentPath, fileName)
 
 			toNotify = append(toNotify, matchedWatcher{
 				notify:       w,
@@ -503,6 +494,176 @@ func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, ac
 	}
 }
 
+// NotifyRename records a rename event as a paired FILE_NOTIFY_INFORMATION response.
+//
+// Per [MS-FSCC] 2.4.42 and [MS-SMB2] 3.3.4.4, a rename notification MUST contain
+// two entries in a single response: FILE_ACTION_RENAMED_OLD_NAME followed by
+// FILE_ACTION_RENAMED_NEW_NAME. Sending them as separate one-shot notifications
+// is incorrect because CHANGE_NOTIFY is one-shot -- the first notification
+// unregisters the watcher, causing the second to be silently dropped.
+//
+// Parameters:
+//   - shareName: The share where the rename occurred
+//   - oldParentPath: Share-relative directory path of the old location
+//   - oldFileName: Old filename
+//   - newParentPath: Share-relative directory path of the new location
+//   - newFileName: New filename
+func (r *NotifyRegistry) NotifyRename(shareName, oldParentPath, oldFileName, newParentPath, newFileName string) {
+	// Collect matching watchers while holding read lock.
+	// We match against the OLD parent path as the primary watch target,
+	// since that's where Explorer has its directory watch.
+	r.mu.RLock()
+
+	type matchedWatcher struct {
+		notify          *PendingNotify
+		oldRelativePath string
+		newRelativePath string
+	}
+	var toNotify []matchedWatcher
+
+	// Walk up from the old parent path to find watchers
+	currentPath := oldParentPath
+	for {
+		watchers := r.pending[currentPath]
+
+		for _, w := range watchers {
+			if w.ShareName != shareName {
+				continue
+			}
+
+			if currentPath != oldParentPath && !w.WatchTree {
+				continue
+			}
+
+			// Rename matches FileName and DirName filters
+			if !MatchesFilter(FileActionRenamedOldName, w.CompletionFilter) {
+				continue
+			}
+
+			// Calculate relative paths from the watch directory
+			oldRelativePath := relativePathFromWatch(currentPath, oldParentPath, oldFileName)
+			newRelativePath := relativePathFromWatch(currentPath, newParentPath, newFileName)
+
+			toNotify = append(toNotify, matchedWatcher{
+				notify:          w,
+				oldRelativePath: oldRelativePath,
+				newRelativePath: newRelativePath,
+			})
+		}
+
+		if currentPath == "/" || currentPath == "" {
+			break
+		}
+		currentPath = GetParentPath(currentPath)
+	}
+
+	// Also walk up from the new parent path if different, to catch watchers
+	// on the destination directory that aren't ancestors of the old path.
+	if newParentPath != oldParentPath {
+		// Build a set of already-matched FileIDs for O(1) dedup lookup
+		matchedFileIDs := make(map[[16]byte]struct{}, len(toNotify))
+		for _, m := range toNotify {
+			matchedFileIDs[m.notify.FileID] = struct{}{}
+		}
+
+		currentPath = newParentPath
+		for {
+			watchers := r.pending[currentPath]
+
+			for _, w := range watchers {
+				if w.ShareName != shareName {
+					continue
+				}
+
+				if currentPath != newParentPath && !w.WatchTree {
+					continue
+				}
+
+				if !MatchesFilter(FileActionRenamedNewName, w.CompletionFilter) {
+					continue
+				}
+
+				// Check if already matched via old parent walk
+				if _, alreadyMatched := matchedFileIDs[w.FileID]; alreadyMatched {
+					continue
+				}
+
+				newRelativePath := relativePathFromWatch(currentPath, newParentPath, newFileName)
+
+				toNotify = append(toNotify, matchedWatcher{
+					notify:          w,
+					oldRelativePath: oldFileName,
+					newRelativePath: newRelativePath,
+				})
+			}
+
+			if currentPath == "/" || currentPath == "" {
+				break
+			}
+			currentPath = GetParentPath(currentPath)
+		}
+	}
+
+	r.mu.RUnlock()
+
+	// Send paired rename notifications
+	for _, match := range toNotify {
+		w := match.notify
+
+		if w.AsyncCallback != nil {
+			// Build paired FILE_NOTIFY_INFORMATION with both old and new names
+			changes := []FileNotifyInformation{
+				{
+					Action:   FileActionRenamedOldName,
+					FileName: match.oldRelativePath,
+				},
+				{
+					Action:   FileActionRenamedNewName,
+					FileName: match.newRelativePath,
+				},
+			}
+			buffer := EncodeFileNotifyInformation(changes)
+
+			if uint32(len(buffer)) > w.MaxOutputLength {
+				logger.Warn("CHANGE_NOTIFY: rename notification exceeds MaxOutputLength; skipping",
+					"watchPath", w.WatchPath,
+					"oldName", match.oldRelativePath,
+					"newName", match.newRelativePath,
+					"encodedLength", len(buffer),
+					"maxOutputLength", w.MaxOutputLength)
+				r.Unregister(w.FileID)
+				continue
+			}
+
+			response := &ChangeNotifyResponse{
+				SMBResponseBase:    SMBResponseBase{},
+				OutputBufferLength: uint32(len(buffer)),
+				Buffer:             buffer,
+			}
+
+			logger.Debug("CHANGE_NOTIFY: sending rename notification",
+				"watchPath", w.WatchPath,
+				"oldName", match.oldRelativePath,
+				"newName", match.newRelativePath,
+				"messageID", w.MessageID,
+				"sessionID", w.SessionID)
+
+			if err := w.AsyncCallback(w.SessionID, w.MessageID, response); err != nil {
+				logger.Warn("CHANGE_NOTIFY: failed to send rename notification",
+					"messageID", w.MessageID,
+					"error", err)
+			}
+			r.Unregister(w.FileID)
+		} else {
+			logger.Debug("CHANGE_NOTIFY: would notify rename (no callback)",
+				"watchPath", w.WatchPath,
+				"oldName", match.oldRelativePath,
+				"newName", match.newRelativePath,
+				"messageID", w.MessageID)
+		}
+	}
+}
+
 // actionToString converts an action code to a readable string.
 func actionToString(action uint32) string {
 	switch action {
@@ -519,6 +680,28 @@ func actionToString(action uint32) string {
 	default:
 		return fmt.Sprintf("UNKNOWN(0x%X)", action)
 	}
+}
+
+// relativePathFromWatch computes the relative path of a changed item from the
+// perspective of a watch directory. If the change occurred in the same directory
+// as the watch, it returns fileName unchanged. For changes in subdirectories
+// (recursive watchers), it prepends the relative directory prefix.
+//
+// Examples:
+//   - watchPath="/", parentPath="/subdir", fileName="file.txt" -> "subdir/file.txt"
+//   - watchPath="/subdir", parentPath="/subdir", fileName="file.txt" -> "file.txt"
+func relativePathFromWatch(watchPath, parentPath, fileName string) string {
+	if watchPath == parentPath {
+		return fileName
+	}
+	relDir := parentPath[len(watchPath):]
+	if len(relDir) > 0 && relDir[0] == '/' {
+		relDir = relDir[1:]
+	}
+	if relDir != "" {
+		return relDir + "/" + fileName
+	}
+	return fileName
 }
 
 // GetParentPath returns the parent directory path from a full path.
