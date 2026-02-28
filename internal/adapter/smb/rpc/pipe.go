@@ -44,47 +44,54 @@ func NewPipeState(name string, handler PipeHandler) *PipeState {
 	}
 }
 
+// dispatchRPC parses an RPC PDU and dispatches it to the appropriate handler.
+// Returns the response bytes and any error. Must be called with p.mu held.
+func (p *PipeState) dispatchRPC(data []byte) ([]byte, error) {
+	if len(data) < HeaderSize {
+		return nil, nil
+	}
+
+	hdr, err := ParseHeader(data)
+	if err != nil {
+		return nil, err
+	}
+
+	switch hdr.PacketType {
+	case PDUBind:
+		bindReq, err := ParseBindRequest(data)
+		if err != nil {
+			return nil, err
+		}
+		response := p.Handler.HandleBind(bindReq)
+		p.Bound = true
+		return response, nil
+
+	case PDURequest:
+		if !p.Bound {
+			return nil, nil
+		}
+		rpcReq, err := ParseRequest(data)
+		if err != nil {
+			return nil, err
+		}
+		return p.Handler.HandleRequest(rpcReq), nil
+
+	default:
+		return nil, nil
+	}
+}
+
 // ProcessWrite handles a WRITE to the named pipe (client -> server)
 // Returns data to be made available for subsequent READ
 func (p *PipeState) ProcessWrite(data []byte) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if len(data) < HeaderSize {
-		return nil // Ignore short writes
-	}
-
-	hdr, err := ParseHeader(data)
+	response, err := p.dispatchRPC(data)
 	if err != nil {
 		return err
 	}
 
-	var response []byte
-
-	switch hdr.PacketType {
-	case PDUBind:
-		// Handle RPC bind
-		bindReq, err := ParseBindRequest(data)
-		if err != nil {
-			return err
-		}
-		response = p.Handler.HandleBind(bindReq)
-		p.Bound = true
-
-	case PDURequest:
-		// Handle RPC request
-		if !p.Bound {
-			// Not bound yet, ignore
-			return nil
-		}
-		rpcReq, err := ParseRequest(data)
-		if err != nil {
-			return err
-		}
-		response = p.Handler.HandleRequest(rpcReq)
-	}
-
-	// Buffer response for subsequent READ
 	if len(response) > 0 {
 		p.ReadBuffer.Write(response)
 	}
@@ -132,42 +139,11 @@ func (p *PipeState) Transact(inputData []byte, maxOutput int) ([]byte, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if len(inputData) < HeaderSize {
-		return nil, nil // Ignore short writes
-	}
-
-	hdr, err := ParseHeader(inputData)
+	response, err := p.dispatchRPC(inputData)
 	if err != nil {
 		return nil, err
 	}
 
-	var response []byte
-
-	switch hdr.PacketType {
-	case PDUBind:
-		// Handle RPC bind
-		bindReq, err := ParseBindRequest(inputData)
-		if err != nil {
-			return nil, err
-		}
-
-		response = p.Handler.HandleBind(bindReq)
-		p.Bound = true
-
-	case PDURequest:
-		// Handle RPC request
-		if !p.Bound {
-			// Not bound yet, ignore
-			return nil, nil
-		}
-		rpcReq, err := ParseRequest(inputData)
-		if err != nil {
-			return nil, err
-		}
-		response = p.Handler.HandleRequest(rpcReq)
-	}
-
-	// Limit response to maxOutput
 	if len(response) > maxOutput && maxOutput > 0 {
 		response = response[:maxOutput]
 	}

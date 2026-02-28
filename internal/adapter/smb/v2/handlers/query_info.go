@@ -242,7 +242,18 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	}
 
 	// ========================================================================
-	// Step 2: Get metadata store and file attributes
+	// Step 2: Handle named pipe (IPC$) queries
+	// ========================================================================
+
+	// Named pipes (e.g., srvsvc, lsarpc) have no metadata handle.
+	// Return synthetic attributes so Windows Explorer does not get
+	// STATUS_INTERNAL_ERROR when it queries the IPC$ tree.
+	if openFile.IsPipe {
+		return h.handlePipeQueryInfo(req, openFile)
+	}
+
+	// ========================================================================
+	// Step 3: Get metadata store and file attributes
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
@@ -325,6 +336,147 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+// handlePipeQueryInfo returns synthetic information for named pipe handles.
+// Named pipes on IPC$ have no backing metadata store entry, so we fabricate
+// the minimum attributes that Windows expects. Most info classes return
+// STATUS_NOT_SUPPORTED since pipes have no filesystem semantics.
+func (h *Handler) handlePipeQueryInfo(req *QueryInfoRequest, openFile *OpenFile) (*QueryInfoResponse, error) {
+	logger.Debug("QUERY_INFO on named pipe",
+		"pipeName", openFile.PipeName,
+		"infoType", req.InfoType,
+		"fileInfoClass", req.FileInfoClass)
+
+	switch req.InfoType {
+	case types.SMB2InfoTypeFile:
+		return h.handlePipeFileInfo(req, openFile)
+	default:
+		// Security, filesystem, and quota info are not applicable to named pipes.
+		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotSupported}}, nil
+	}
+}
+
+// handlePipeFileInfo returns synthetic file information for named pipe handles.
+func (h *Handler) handlePipeFileInfo(req *QueryInfoRequest, openFile *OpenFile) (*QueryInfoResponse, error) {
+	now := time.Now()
+	class := types.FileInfoClass(req.FileInfoClass)
+
+	switch class {
+	case types.FileBasicInformation:
+		info := EncodeFileBasicInfo(&FileBasicInfo{
+			CreationTime:   now,
+			LastAccessTime: now,
+			LastWriteTime:  now,
+			ChangeTime:     now,
+			FileAttributes: types.FileAttributeNormal,
+		})
+		return &QueryInfoResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+			Data:            info,
+		}, nil
+
+	case types.FileStandardInformation:
+		info := EncodeFileStandardInfo(&FileStandardInfo{
+			AllocationSize: 0,
+			EndOfFile:      0,
+			NumberOfLinks:  1,
+			DeletePending:  false,
+			Directory:      false,
+		})
+		return &QueryInfoResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+			Data:            info,
+		}, nil
+
+	case types.FileInternalInformation:
+		// 8 bytes, zero index for pipes.
+		return &QueryInfoResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+			Data:            make([]byte, 8),
+		}, nil
+
+	case types.FileEaInformation:
+		// 4 bytes, EaSize = 0.
+		return &QueryInfoResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+			Data:            make([]byte, 4),
+		}, nil
+
+	case types.FileAccessInformation:
+		info := make([]byte, 4)
+		binary.LittleEndian.PutUint32(info[0:4], 0x001F01FF) // Full access
+		return &QueryInfoResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+			Data:            info,
+		}, nil
+
+	case types.FileNameInformation:
+		nameBytes := encodeUTF16LE("\\" + openFile.PipeName)
+		info := make([]byte, 4+len(nameBytes))
+		binary.LittleEndian.PutUint32(info[0:4], uint32(len(nameBytes)))
+		copy(info[4:], nameBytes)
+		return &QueryInfoResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+			Data:            info,
+		}, nil
+
+	case types.FilePositionInformation:
+		return &QueryInfoResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+			Data:            make([]byte, 8),
+		}, nil
+
+	case types.FileModeInformation:
+		return &QueryInfoResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+			Data:            make([]byte, 4),
+		}, nil
+
+	case types.FileAlignmentInformation:
+		return &QueryInfoResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+			Data:            make([]byte, 4),
+		}, nil
+
+	case types.FileAllInformation:
+		// Build a minimal FILE_ALL_INFORMATION for the pipe.
+		nameBytes := encodeUTF16LE("\\" + openFile.PipeName)
+		fixedSize := 100
+		info := make([]byte, fixedSize+len(nameBytes))
+		// BasicInformation (40 bytes)
+		basicBytes := EncodeFileBasicInfo(&FileBasicInfo{
+			CreationTime:   now,
+			LastAccessTime: now,
+			LastWriteTime:  now,
+			ChangeTime:     now,
+			FileAttributes: types.FileAttributeNormal,
+		})
+		copy(info[0:40], basicBytes)
+		// StandardInformation (24 bytes) at offset 40
+		stdBytes := EncodeFileStandardInfo(&FileStandardInfo{
+			NumberOfLinks: 1,
+		})
+		copy(info[40:64], stdBytes)
+		// InternalInformation (8 bytes) at offset 64 - zeros
+		// EaInformation (4 bytes) at offset 72 - zero
+		// AccessInformation (4 bytes) at offset 76
+		binary.LittleEndian.PutUint32(info[76:80], 0x001F01FF)
+		// PositionInformation (8 bytes) at offset 80 - zero
+		// ModeInformation (4 bytes) at offset 88 - zero
+		// AlignmentInformation (4 bytes) at offset 92 - zero
+		// NameInformation: length (4 bytes) at offset 96 + name data
+		binary.LittleEndian.PutUint32(info[96:100], uint32(len(nameBytes)))
+		copy(info[100:], nameBytes)
+
+		return &QueryInfoResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+			Data:            info,
+		}, nil
+
+	default:
+		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotSupported}}, nil
+	}
+}
 
 // buildFileInfoFromStore builds file information based on class using metadata store.
 func (h *Handler) buildFileInfoFromStore(file *metadata.File, openFile *OpenFile, class types.FileInfoClass) ([]byte, error) {
@@ -440,6 +592,25 @@ func (h *Handler) buildFileInfoFromStore(file *metadata.File, openFile *OpenFile
 		copy(info[8:24], file.ID[:16])                                   // FileId (128-bit)
 		return info, nil
 
+	case types.FileCompressionInformation:
+		// FILE_COMPRESSION_INFORMATION [MS-FSCC] 2.4.9 (16 bytes)
+		// CompressedFileSize (8) + CompressionFormat (2) + CompressionUnitShift (1) +
+		// ChunkShift (1) + ClusterShift (1) + Reserved (3)
+		info := make([]byte, 16)
+		size := getSMBSize(&file.FileAttr)
+		binary.LittleEndian.PutUint64(info[0:8], size) // CompressedFileSize = EndOfFile
+		// CompressionFormat(2) + shifts(3) + Reserved(3) all zero = COMPRESSION_FORMAT_NONE
+		return info, nil
+
+	case types.FileAttributeTagInformation:
+		// FILE_ATTRIBUTE_TAG_INFORMATION [MS-FSCC] 2.4.6 (8 bytes)
+		// FileAttributes (4) + ReparseTag (4)
+		info := make([]byte, 8)
+		attrs := FileAttrToSMBAttributes(&file.FileAttr)
+		binary.LittleEndian.PutUint32(info[0:4], uint32(attrs))
+		// ReparseTag = 0 for non-reparse points
+		return info, nil
+
 	case types.FileAllInformation:
 		return h.buildFileAllInformationFromStore(file, openFile), nil
 
@@ -546,7 +717,7 @@ func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoC
 	case 5: // FileFsAttributeInformation [MS-FSCC] 2.5.1
 		fsName := encodeUTF16LE("NTFS")
 		info := make([]byte, 12+len(fsName))
-		binary.LittleEndian.PutUint32(info[0:4], 0x0000008F) // FILE_CASE_SENSITIVE_SEARCH | FILE_CASE_PRESERVED_NAMES | FILE_UNICODE_ON_DISK | FILE_PERSISTENT_ACLS | FILE_SUPPORTS_REPARSE_POINTS
+		binary.LittleEndian.PutUint32(info[0:4], 0x000000CF) // FILE_CASE_SENSITIVE_SEARCH | FILE_CASE_PRESERVED_NAMES | FILE_UNICODE_ON_DISK | FILE_PERSISTENT_ACLS | FILE_SUPPORTS_SPARSE_FILES | FILE_SUPPORTS_REPARSE_POINTS
 		binary.LittleEndian.PutUint32(info[4:8], 255)
 		binary.LittleEndian.PutUint32(info[8:12], uint32(len(fsName)))
 		copy(info[12:], fsName)
@@ -615,8 +786,12 @@ func fileInfoClassMinSize(class types.FileInfoClass) uint32 {
 	case types.FileEaInformation, types.FileAccessInformation,
 		types.FileModeInformation, types.FileAlignmentInformation:
 		return 4
+	case types.FileCompressionInformation:
+		return 16
 	case types.FileNetworkOpenInformation:
 		return 56
+	case types.FileAttributeTagInformation:
+		return 8
 	default:
 		return 0 // Variable-length or unknown; allow truncation
 	}

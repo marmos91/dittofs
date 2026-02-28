@@ -28,21 +28,21 @@
 ### Windows 11 Compatibility
 
 - [x] **WIN-01**: CREATE response context wire encoding fixed (lease responses actually sent) *(completed in Phase 29.8)*
-- [ ] **WIN-02**: MxAc (Maximal Access) create context response returned to clients
-- [ ] **WIN-03**: QFid (Query on Disk ID) create context response returned to clients
+- [x] **WIN-02**: MxAc (Maximal Access) create context response returned to clients
+- [x] **WIN-03**: QFid (Query on Disk ID) create context response returned to clients
 - [x] **WIN-04**: SMB signing validated and enforced for all authenticated sessions *(completed in Phase 29.8)*
 - [x] **WIN-05**: Missing FileInfoClass handlers added *(partially completed in Phase 29.8: FilePositionInfo, FileModeInfo, FileAlignmentInfo done; FileCompressionInfo, FileAttributeTagInfo still needed)*
-- [ ] **WIN-06**: Guest access signing negotiation handled for Windows 11 24H2
-- [ ] **WIN-07**: FileFsAttributeInformation capability flags reflect supported features (#141)
-- [ ] **WIN-08**: Windows CI build step added to GitHub Actions (#173)
-- [ ] **WIN-09**: NFS and SMB client compatibility validated from Windows (#172)
-- [ ] **WIN-10**: Hardcoded Unix paths fixed for Windows compatibility (#169)
+- [x] **WIN-06**: Guest access signing negotiation handled for Windows 11 24H2
+- [x] **WIN-07**: FileFsAttributeInformation capability flags reflect supported features (#141)
+- [x] **WIN-08**: Windows CI build step added to GitHub Actions (#173)
+- [x] **WIN-09**: NFS and SMB client compatibility validated from Windows (#172)
+- [x] **WIN-10**: Hardcoded Unix paths fixed for Windows compatibility (#169)
 
 ### Conformance Testing
 
-- [ ] **TEST-01**: smbtorture SMB2 test suite run against DittoFS, failures triaged
-- [ ] **TEST-02**: Newly-revealed conformance failures fixed iteratively
-- [ ] **TEST-03**: KNOWN_FAILURES.md updated with current pass/fail status
+- [x] **TEST-01**: smbtorture SMB2 test suite run against DittoFS, failures triaged
+- [x] **TEST-02**: Newly-revealed conformance failures fixed iteratively
+- [x] **TEST-03**: KNOWN_FAILURES.md updated with current pass/fail status
 
 ## Future Requirements (v3.7+)
 
@@ -87,18 +87,18 @@
 | SD-07 | Phase 31 | Complete |
 | SD-08 | Phase 31 | Complete |
 | WIN-01 | Phase 29.8 | **Complete** |
-| WIN-02 | Phase 32 | Pending |
-| WIN-03 | Phase 32 | Pending |
+| WIN-02 | Phase 32 | Complete |
+| WIN-03 | Phase 32 | Complete |
 | WIN-04 | Phase 29.8 | **Complete** |
 | WIN-05 | Phase 29.8 / 32 | **Partial** (3/5 handlers done) |
-| WIN-06 | Phase 32 | Pending |
-| WIN-07 | Phase 32 | Pending |
-| WIN-08 | Phase 32 | Pending |
-| WIN-09 | Phase 32 | Pending |
-| WIN-10 | Phase 32 | Pending |
-| TEST-01 | Phase 32 | Pending |
-| TEST-02 | Phase 32 | Pending |
-| TEST-03 | Phase 32 | Pending |
+| WIN-06 | Phase 32 | Complete |
+| WIN-07 | Phase 32 | Complete |
+| WIN-08 | Phase 32 | Complete |
+| WIN-09 | Phase 32 | Complete |
+| WIN-10 | Phase 32 | Complete |
+| TEST-01 | Phase 32 | Complete |
+| TEST-02 | Phase 32 | Complete |
+| TEST-03 | Phase 32 | Complete |
 
 **Coverage:**
 - v3.6 requirements: 27 total

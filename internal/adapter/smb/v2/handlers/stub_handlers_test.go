@@ -315,11 +315,12 @@ func TestHandleValidateNegotiateInfo(t *testing.T) {
 			t.Errorf("Expected StatusSuccess, got %v", result.Status)
 		}
 
-		// Wildcard should select SMB 2.0.2 as baseline
+		// Per MS-SMB2 §3.3.5.15.12: wildcard alone must echo 0x02FF
+		// (same behavior as Negotiate handler per §3.3.5.3.2)
 		respOutput := result.Data[48:]
-		selectedDialect := types.Dialect(binary.LittleEndian.Uint16(respOutput[22:24]))
-		if selectedDialect != types.SMB2Dialect0202 {
-			t.Errorf("Expected dialect SMB 2.0.2 for wildcard, got %v", selectedDialect)
+		respDialect := types.Dialect(binary.LittleEndian.Uint16(respOutput[22:24]))
+		if respDialect != types.SMB2DialectWild {
+			t.Errorf("Expected dialect 0x02FF (wildcard echo), got %v", respDialect)
 		}
 	})
 }

@@ -602,9 +602,13 @@ func (h *Handler) handleReadFileUsnData(ctx *SMBHandlerContext, body []byte) (*H
 
 	resp := buildIoctlResponse(FsctlReadFileUsnData, fileID, output)
 
+	usnVersion := 2
+	if useV3 {
+		usnVersion = 3
+	}
 	logger.Debug("IOCTL READ_FILE_USN_DATA: success",
 		"path", openFile.Path,
-		"version", map[bool]int{true: 3, false: 2}[useV3])
+		"version", usnVersion)
 	return NewResult(types.StatusSuccess, resp), nil
 }
 
@@ -783,21 +787,26 @@ func (h *Handler) handleValidateNegotiateInfo(ctx *SMBHandlerContext, body []byt
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
-	// Parse dialects and re-determine what we would negotiate
-	// This uses the same logic as Negotiate handler
+	// Parse dialects and re-determine what we would negotiate.
+	// This MUST mirror the Negotiate handler logic exactly, including
+	// wildcard dialect echoing, per MS-SMB2 §3.3.5.15.12.
 	var selectedDialect types.Dialect
+	var hasWildcard bool
 	for i := uint16(0); i < dialectCount; i++ {
 		offset := 24 + (int(i) * 2)
 		dialect := types.Dialect(binary.LittleEndian.Uint16(inputData[offset : offset+2]))
 
 		switch dialect {
 		case types.SMB2Dialect0210:
-			// SMB 2.1 is our highest supported dialect
 			if selectedDialect < types.SMB2Dialect0210 {
 				selectedDialect = types.SMB2Dialect0210
 			}
-		case types.SMB2Dialect0202, types.SMB2DialectWild:
-			// SMB 2.0.2 is our baseline
+		case types.SMB2Dialect0202:
+			if selectedDialect < types.SMB2Dialect0202 {
+				selectedDialect = types.SMB2Dialect0202
+			}
+		case types.SMB2DialectWild:
+			hasWildcard = true
 			if selectedDialect < types.SMB2Dialect0202 {
 				selectedDialect = types.SMB2Dialect0202
 			}
@@ -805,9 +814,15 @@ func (h *Handler) handleValidateNegotiateInfo(ctx *SMBHandlerContext, body []byt
 	}
 
 	if selectedDialect == 0 {
-		// No common dialect found - this shouldn't happen if negotiation succeeded
 		logger.Warn("IOCTL VALIDATE_NEGOTIATE_INFO: no common dialect")
 		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	// Mirror the Negotiate handler's wildcard echo: when the client
+	// sent 0x02FF and the best dialect is 2.0.2, respond with 0x02FF.
+	responseDialect := selectedDialect
+	if hasWildcard && selectedDialect <= types.SMB2Dialect0202 {
+		responseDialect = types.SMB2DialectWild
 	}
 
 	// Build SecurityMode based on signing configuration
@@ -821,15 +836,23 @@ func (h *Handler) handleValidateNegotiateInfo(ctx *SMBHandlerContext, body []byt
 		securityMode |= 0x02
 	}
 
+	// Build Capabilities to match NEGOTIATE response [MS-SMB2 2.2.4]
+	// MUST be identical to what was sent in the NEGOTIATE response,
+	// otherwise the client detects a potential downgrade attack.
+	var capabilities uint32
+	if selectedDialect >= types.SMB2Dialect0210 {
+		capabilities = uint32(types.CapLeasing | types.CapLargeMTU)
+	}
+
 	// Build VALIDATE_NEGOTIATE_INFO response (24 bytes)
 	output := make([]byte, 24)
-	binary.LittleEndian.PutUint32(output[0:4], 0) // Capabilities (none)
-	copy(output[4:20], h.ServerGUID[:])           // ServerGuid
+	binary.LittleEndian.PutUint32(output[0:4], capabilities) // Capabilities
+	copy(output[4:20], h.ServerGUID[:])                      // ServerGuid
 	binary.LittleEndian.PutUint16(output[20:22], securityMode)
-	binary.LittleEndian.PutUint16(output[22:24], uint16(selectedDialect))
+	binary.LittleEndian.PutUint16(output[22:24], uint16(responseDialect))
 
 	logger.Debug("IOCTL VALIDATE_NEGOTIATE_INFO: success",
-		"dialect", selectedDialect.String(),
+		"dialect", responseDialect.String(),
 		"securityMode", fmt.Sprintf("0x%02X", securityMode))
 
 	// Build IOCTL response

@@ -586,6 +586,14 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 // createGuestSessionWithID creates a guest session with a specific session ID.
 // Used when completing NTLM authentication as guest.
 // The sessionKey parameter is ignored for guest sessions (signing not supported).
+//
+// Guest sessions set SMB2_SESSION_FLAG_IS_GUEST (0x0001) in the response flags,
+// which tells the client that signing is not required for this session.
+//
+// Windows 11 24H2 note: Insecure guest logons are blocked by default.
+// Users must enable the "AllowInsecureGuestAuth" Group Policy setting
+// (Computer Configuration > Administrative Templates > Network > Lanman Workstation
+// > Enable insecure guest logons) to connect as guest.
 func (h *Handler) createGuestSessionWithID(ctx *SMBHandlerContext, pending *PendingAuth, _ []byte) (*HandlerResult, error) {
 	sess := h.CreateSessionWithID(pending.SessionID, pending.ClientAddr, true, "guest", "")
 	ctx.IsGuest = true
@@ -611,6 +619,14 @@ func (h *Handler) createGuestSessionWithID(ctx *SMBHandlerContext, pending *Pend
 //   - Client sends no authentication token
 //   - Client sends unrecognized authentication mechanism
 //   - Client sends Type 3 without prior Type 1 (graceful handling)
+//
+// Guest sessions set SMB2_SESSION_FLAG_IS_GUEST (0x0001) in the response flags,
+// which tells the client that signing is not required for this session.
+//
+// Windows 11 24H2 note: Insecure guest logons are blocked by default.
+// Users must enable the "AllowInsecureGuestAuth" Group Policy setting
+// (Computer Configuration > Administrative Templates > Network > Lanman Workstation
+// > Enable insecure guest logons) to connect as guest.
 func (h *Handler) createGuestSession(ctx *SMBHandlerContext) (*HandlerResult, error) {
 	// Create session using SessionManager (includes credit tracking)
 	sess := h.CreateSession(ctx.ClientAddr, true, "guest", "")

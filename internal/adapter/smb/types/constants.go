@@ -508,7 +508,9 @@ const (
 	FileEndOfFileInformation       FileInfoClass = 20
 	FileAlternateNameInformation   FileInfoClass = 21
 	FileStreamInformation          FileInfoClass = 22
+	FileCompressionInformation     FileInfoClass = 28
 	FileNetworkOpenInformation     FileInfoClass = 34
+	FileAttributeTagInformation    FileInfoClass = 35
 	FileIdBothDirectoryInformation FileInfoClass = 37
 	FileIdFullDirectoryInformation FileInfoClass = 38
 	FileNormalizedNameInformation  FileInfoClass = 48

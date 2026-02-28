@@ -265,6 +265,11 @@
           # Build tools
           gnumake
           git
+
+          # SMB conformance test dependencies
+          gettext # envsubst for ptfconfig template rendering
+          xmlstarlet # TRX result parsing
+          curl # health checks in bootstrap/local mode
         ];
 
         # Platform-specific inputs

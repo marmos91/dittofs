@@ -58,15 +58,7 @@ func IsSpecialFile(fileType metadata.FileType) bool {
 //   - The filename starts with a dot (Unix convention)
 //   - The Hidden flag is explicitly set in metadata (Windows convention)
 func IsHiddenFile(name string, attr *metadata.FileAttr) bool {
-	// Unix convention: dot-prefix files are hidden
-	if strings.HasPrefix(name, ".") {
-		return true
-	}
-	// Windows convention: explicit Hidden flag
-	if attr != nil && attr.Hidden {
-		return true
-	}
-	return false
+	return strings.HasPrefix(name, ".") || (attr != nil && attr.Hidden)
 }
 
 // FileAttrToSMBAttributes converts metadata FileAttr to SMB file attributes.

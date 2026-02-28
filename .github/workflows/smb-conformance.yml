@@ -128,3 +128,49 @@ jobs:
             --title "SMB Conformance Regression: ${{ matrix.profile }}" \
             --body "$BODY" \
             --label "bug,smb,conformance" || true
+
+  smbtorture:
+    name: smbtorture / ${{ matrix.profile }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: >-
+          ${{
+            github.event_name == 'pull_request'
+              && fromJson('["memory"]')
+            || github.event_name == 'workflow_dispatch'
+              && fromJson(format('["{0}"]', inputs.profile))
+            || fromJson('["memory", "memory-fs", "badger-fs"]')
+          }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run smbtorture tests
+        run: |
+          cd test/smb-conformance/smbtorture
+          ./run.sh --profile ${{ matrix.profile }} --verbose
+
+      - name: Add step summary
+        if: always()
+        run: |
+          RESULTS_DIR=$(ls -td test/smb-conformance/results/smbtorture-*/ 2>/dev/null | head -1)
+          if [ -n "$RESULTS_DIR" ] && [ -f "$RESULTS_DIR/summary.txt" ]; then
+            echo "## smbtorture: ${{ matrix.profile }}" >> "$GITHUB_STEP_SUMMARY"
+            cat "$RESULTS_DIR/summary.txt" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## smbtorture: ${{ matrix.profile }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "No results found." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smbtorture-${{ matrix.profile }}
+          path: test/smb-conformance/results/smbtorture-*/
+          retention-days: 30

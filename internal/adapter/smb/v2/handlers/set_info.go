@@ -422,19 +422,29 @@ func (h *Handler) setFileInfoFromStore(
 			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
 		}
 
-		// Notify watchers about the rename
+		// Per MS-FSA 2.1.5.14.10: On successful completion of a rename,
+		// if the file was marked for delete-on-close, clear that disposition.
+		// This prevents the renamed file from being deleted when the handle closes.
+		if openFile.DeletePending {
+			openFile.DeletePending = false
+			logger.Debug("SET_INFO: cleared delete-on-close after rename",
+				"oldPath", oldPath,
+				"newPath", newPath)
+		}
+
+		// Notify watchers about the rename using paired notification.
+		// Per MS-FSCC 2.4.42, rename notifications MUST contain both
+		// FILE_ACTION_RENAMED_OLD_NAME and FILE_ACTION_RENAMED_NEW_NAME
+		// in a single response. CHANGE_NOTIFY is one-shot, so sending
+		// them separately would cause the second to be silently dropped.
 		if h.NotifyRegistry != nil {
-			// Get tree for share name
 			tree, ok := h.GetTree(openFile.TreeID)
 			if ok {
-				// Notify old location
-				h.NotifyRegistry.NotifyChange(tree.ShareName, oldParentPath, oldFileName, FileActionRenamedOldName)
-				// Notify new location
 				newParentPath := GetParentPath(newPath)
 				if newParentPath == "" || newParentPath == "." {
 					newParentPath = "/"
 				}
-				h.NotifyRegistry.NotifyChange(tree.ShareName, newParentPath, toName, FileActionRenamedNewName)
+				h.NotifyRegistry.NotifyRename(tree.ShareName, oldParentPath, oldFileName, newParentPath, toName)
 			} else {
 				logger.Debug("SET_INFO: rename notifications skipped, tree lookup failed",
 					"treeID", openFile.TreeID,

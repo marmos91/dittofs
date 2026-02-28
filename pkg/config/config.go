@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"time"
 
@@ -496,21 +497,31 @@ func durationDecodeHook() mapstructure.DecodeHookFunc {
 
 // getConfigDir returns the configuration directory path.
 //
-// Uses XDG_CONFIG_HOME if set, otherwise ~/.config, or falls back to current
-// directory (.) if home directory cannot be determined.
+// On Windows, uses %APPDATA%\dittofs (matching internal/cli/credentials/store.go pattern).
+// On Unix, uses XDG_CONFIG_HOME/dittofs or ~/.config/dittofs.
+// Falls back to current directory (.) if home directory cannot be determined.
 func getConfigDir() string {
-	// Check XDG_CONFIG_HOME
-	if xdgConfig := os.Getenv("XDG_CONFIG_HOME"); xdgConfig != "" {
-		return filepath.Join(xdgConfig, "dittofs")
-	}
-
-	// Fall back to ~/.config
-	home, err := os.UserHomeDir()
-	if err != nil {
-		// If we can't get home dir, use current directory as last resort
+	if runtime.GOOS == "windows" {
+		// On Windows, use %APPDATA%\dittofs
+		appData := os.Getenv("APPDATA")
+		if appData != "" {
+			return filepath.Join(appData, "dittofs")
+		}
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return filepath.Join(home, "AppData", "Roaming", "dittofs")
+		}
 		return "."
 	}
 
+	// Unix: XDG_CONFIG_HOME or ~/.config
+	if xdgConfig := os.Getenv("XDG_CONFIG_HOME"); xdgConfig != "" {
+		return filepath.Join(xdgConfig, "dittofs")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "."
+	}
 	return filepath.Join(home, ".config", "dittofs")
 }
 

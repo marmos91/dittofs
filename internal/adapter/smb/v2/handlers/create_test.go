@@ -576,3 +576,331 @@ func TestWalkPath_ParentNavigation(t *testing.T) {
 		}
 	})
 }
+
+// =============================================================================
+// MxAc Create Context Tests
+// =============================================================================
+
+func TestHandleCreate_MxAcContext(t *testing.T) {
+	t.Run("OwnerGetsGenericAll", func(t *testing.T) {
+		uid := uint32(1000)
+		gid := uint32(1000)
+		authCtx := &metadata.AuthContext{
+			Context: context.Background(),
+			Identity: &metadata.Identity{
+				UID: &uid,
+				GID: &gid,
+			},
+		}
+		file := &metadata.File{
+			FileAttr: metadata.FileAttr{
+				UID:  1000,
+				GID:  1000,
+				Mode: 0755,
+			},
+		}
+
+		access := computeMaximalAccess(file, authCtx)
+		if access != 0x001F01FF {
+			t.Errorf("Owner access = 0x%08x, expected 0x001F01FF (GENERIC_ALL)", access)
+		}
+	})
+
+	t.Run("GroupReadAccess", func(t *testing.T) {
+		uid := uint32(2000)
+		gid := uint32(1000)
+		authCtx := &metadata.AuthContext{
+			Context: context.Background(),
+			Identity: &metadata.Identity{
+				UID: &uid,
+				GID: &gid,
+			},
+		}
+		file := &metadata.File{
+			FileAttr: metadata.FileAttr{
+				UID:  1000,
+				GID:  1000,
+				Mode: 0750, // group has r-x
+			},
+		}
+
+		access := computeMaximalAccess(file, authCtx)
+		// Group bits: r-x (5) => read + execute
+		expectedRead := uint32(0x00120089)
+		expectedExec := uint32(0x001200A0)
+		expected := expectedRead | expectedExec
+		if access != expected {
+			t.Errorf("Group access = 0x%08x, expected 0x%08x", access, expected)
+		}
+	})
+
+	t.Run("OtherNoAccess", func(t *testing.T) {
+		uid := uint32(3000)
+		gid := uint32(3000)
+		authCtx := &metadata.AuthContext{
+			Context: context.Background(),
+			Identity: &metadata.Identity{
+				UID: &uid,
+				GID: &gid,
+			},
+		}
+		file := &metadata.File{
+			FileAttr: metadata.FileAttr{
+				UID:  1000,
+				GID:  1000,
+				Mode: 0770, // other has no permissions
+			},
+		}
+
+		access := computeMaximalAccess(file, authCtx)
+		// Other bits: --- (0) => minimum access only
+		expected := uint32(0x00100000 | 0x00020000) // SYNCHRONIZE | READ_CONTROL
+		if access != expected {
+			t.Errorf("Other access = 0x%08x, expected 0x%08x", access, expected)
+		}
+	})
+
+	t.Run("MxAcResponseFormat", func(t *testing.T) {
+		// Verify the MxAc response is exactly 8 bytes with correct layout
+		mxAcResp := make([]byte, 8)
+		binary.LittleEndian.PutUint32(mxAcResp[0:4], 0) // STATUS_SUCCESS
+		binary.LittleEndian.PutUint32(mxAcResp[4:8], 0x001F01FF)
+
+		if len(mxAcResp) != 8 {
+			t.Errorf("MxAc response length = %d, expected 8", len(mxAcResp))
+		}
+
+		status := binary.LittleEndian.Uint32(mxAcResp[0:4])
+		if status != 0 {
+			t.Errorf("QueryStatus = 0x%08x, expected 0 (STATUS_SUCCESS)", status)
+		}
+
+		maxAccess := binary.LittleEndian.Uint32(mxAcResp[4:8])
+		if maxAccess != 0x001F01FF {
+			t.Errorf("MaximalAccess = 0x%08x, expected 0x001F01FF", maxAccess)
+		}
+	})
+}
+
+// =============================================================================
+// DecodeCreateRequest Create Context Tests
+// =============================================================================
+
+// buildCreateRequestBodyWithContexts builds a CREATE request body that includes
+// create contexts, simulating what Windows 11 sends (MxAc, QFid, etc.).
+func buildCreateRequestBodyWithContexts(filename string, disposition types.CreateDisposition, options types.CreateOptions, contexts []CreateContext) []byte {
+	// Encode filename as UTF-16LE
+	nameBytes := encodeUTF16LE(filename)
+
+	// Build create contexts buffer using EncodeCreateContexts
+	ctxBuf, _, _ := EncodeCreateContexts(contexts)
+
+	// Pad name to 8-byte boundary before contexts
+	nameEnd := 56 + len(nameBytes)
+	paddedNameEnd := nameEnd
+	if len(ctxBuf) > 0 {
+		paddedNameEnd = ((nameEnd + 7) / 8) * 8
+	}
+
+	body := make([]byte, paddedNameEnd+len(ctxBuf))
+
+	// StructureSize at offset 0
+	binary.LittleEndian.PutUint16(body[0:2], 57)
+
+	// DesiredAccess at offset 24
+	binary.LittleEndian.PutUint32(body[24:28], 0x12019F)
+
+	// FileAttributes at offset 28
+	binary.LittleEndian.PutUint32(body[28:32], uint32(types.FileAttributeNormal))
+
+	// ShareAccess at offset 32
+	binary.LittleEndian.PutUint32(body[32:36], 0x07)
+
+	// CreateDisposition at offset 36
+	binary.LittleEndian.PutUint32(body[36:40], uint32(disposition))
+
+	// CreateOptions at offset 40
+	binary.LittleEndian.PutUint32(body[40:44], uint32(options))
+
+	// NameOffset at offset 44 (64 header + 56 fixed = 120)
+	binary.LittleEndian.PutUint16(body[44:46], 120)
+
+	// NameLength at offset 46
+	binary.LittleEndian.PutUint16(body[46:48], uint16(len(nameBytes)))
+
+	// CreateContextsOffset at offset 48 (relative to SMB2 header start)
+	if len(ctxBuf) > 0 {
+		binary.LittleEndian.PutUint32(body[48:52], uint32(64+paddedNameEnd))
+	}
+
+	// CreateContextsLength at offset 52
+	if len(ctxBuf) > 0 {
+		binary.LittleEndian.PutUint32(body[52:56], uint32(len(ctxBuf)))
+	}
+
+	// Filename at offset 56
+	if len(nameBytes) > 0 {
+		copy(body[56:], nameBytes)
+	}
+
+	// Create contexts after padded name
+	if len(ctxBuf) > 0 {
+		copy(body[paddedNameEnd:], ctxBuf)
+	}
+
+	return body
+}
+
+func TestDecodeCreateRequest_WithCreateContexts(t *testing.T) {
+	t.Run("ParsesMxAcContext", func(t *testing.T) {
+		contexts := []CreateContext{
+			{Name: "MxAc", Data: nil}, // MxAc request has no data
+		}
+		body := buildCreateRequestBodyWithContexts("test.txt", types.FileOpenIf, 0, contexts)
+
+		req, err := DecodeCreateRequest(body)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if req.FileName != "test.txt" {
+			t.Errorf("FileName = %q, expected %q", req.FileName, "test.txt")
+		}
+
+		mxAc := FindCreateContext(req.CreateContexts, "MxAc")
+		if mxAc == nil {
+			t.Fatal("Expected MxAc create context to be parsed, got nil")
+		}
+	})
+
+	t.Run("ParsesQFidContext", func(t *testing.T) {
+		contexts := []CreateContext{
+			{Name: "QFid", Data: nil}, // QFid request has no data
+		}
+		body := buildCreateRequestBodyWithContexts("test.txt", types.FileOpenIf, 0, contexts)
+
+		req, err := DecodeCreateRequest(body)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		qfid := FindCreateContext(req.CreateContexts, "QFid")
+		if qfid == nil {
+			t.Fatal("Expected QFid create context to be parsed, got nil")
+		}
+	})
+
+	t.Run("ParsesMultipleContexts", func(t *testing.T) {
+		contexts := []CreateContext{
+			{Name: "MxAc", Data: nil},
+			{Name: "QFid", Data: nil},
+		}
+		body := buildCreateRequestBodyWithContexts("test.txt", types.FileOpenIf, 0, contexts)
+
+		req, err := DecodeCreateRequest(body)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if len(req.CreateContexts) != 2 {
+			t.Fatalf("Expected 2 create contexts, got %d", len(req.CreateContexts))
+		}
+
+		mxAc := FindCreateContext(req.CreateContexts, "MxAc")
+		if mxAc == nil {
+			t.Error("Expected MxAc create context")
+		}
+
+		qfid := FindCreateContext(req.CreateContexts, "QFid")
+		if qfid == nil {
+			t.Error("Expected QFid create context")
+		}
+	})
+
+	t.Run("ParsesContextWithData", func(t *testing.T) {
+		// RqLs (lease request) has data: 32 bytes for V1 (LeaseKey + LeaseState + LeaseFlags)
+		leaseData := make([]byte, 32)
+		leaseData[0] = 0xAA                                   // LeaseKey byte 0
+		binary.LittleEndian.PutUint32(leaseData[16:20], 0x07) // Read|Write|Handle
+
+		contexts := []CreateContext{
+			{Name: "RqLs", Data: leaseData},
+		}
+		body := buildCreateRequestBodyWithContexts("test.txt", types.FileOpenIf, 0, contexts)
+
+		req, err := DecodeCreateRequest(body)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		rqls := FindCreateContext(req.CreateContexts, "RqLs")
+		if rqls == nil {
+			t.Fatal("Expected RqLs create context to be parsed, got nil")
+		}
+
+		if len(rqls.Data) != 32 {
+			t.Fatalf("RqLs data length = %d, expected 32", len(rqls.Data))
+		}
+
+		if rqls.Data[0] != 0xAA {
+			t.Errorf("RqLs LeaseKey[0] = 0x%02x, expected 0xAA", rqls.Data[0])
+		}
+
+		leaseState := binary.LittleEndian.Uint32(rqls.Data[16:20])
+		if leaseState != 0x07 {
+			t.Errorf("RqLs LeaseState = 0x%x, expected 0x07", leaseState)
+		}
+	})
+
+	t.Run("NoContextsWhenOffsetZero", func(t *testing.T) {
+		body := buildCreateRequestBody("test.txt", types.FileOpenIf, 0)
+
+		req, err := DecodeCreateRequest(body)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if len(req.CreateContexts) != 0 {
+			t.Errorf("Expected 0 create contexts, got %d", len(req.CreateContexts))
+		}
+	})
+}
+
+// =============================================================================
+// QFid Create Context Tests
+// =============================================================================
+
+func TestHandleCreate_QFidContext(t *testing.T) {
+	t.Run("QFidResponseFormat", func(t *testing.T) {
+		// Verify the QFid response is exactly 32 bytes
+		qfidResp := make([]byte, 32)
+
+		// DiskFileId (16 bytes) - simulate file UUID
+		fileID := [16]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+			0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}
+		copy(qfidResp[0:16], fileID[:])
+
+		// VolumeId (16 bytes) - simulate ServerGUID
+		serverGUID := [16]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22,
+			0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00}
+		copy(qfidResp[16:32], serverGUID[:])
+
+		if len(qfidResp) != 32 {
+			t.Errorf("QFid response length = %d, expected 32", len(qfidResp))
+		}
+
+		// Verify DiskFileId
+		for i := 0; i < 16; i++ {
+			if qfidResp[i] != fileID[i] {
+				t.Errorf("DiskFileId[%d] = 0x%02x, expected 0x%02x", i, qfidResp[i], fileID[i])
+			}
+		}
+
+		// Verify VolumeId
+		for i := 0; i < 16; i++ {
+			if qfidResp[16+i] != serverGUID[i] {
+				t.Errorf("VolumeId[%d] = 0x%02x, expected 0x%02x", i, qfidResp[16+i], serverGUID[i])
+			}
+		}
+	})
+}
