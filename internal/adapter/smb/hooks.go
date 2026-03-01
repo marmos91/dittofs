@@ -90,7 +90,7 @@ func preauthHashAfterHook(connInfo *ConnInfo, _ types.Command, rawMessage []byte
 	}
 	// Only update the hash for 3.1.1 — the handler sets Dialect on CryptoState
 	// after selecting the negotiated dialect.
-	if connInfo.CryptoState.Dialect != types.Dialect0311 {
+	if connInfo.CryptoState.GetDialect() != types.Dialect0311 {
 		return
 	}
 	connInfo.CryptoState.UpdatePreauthHash(rawMessage)

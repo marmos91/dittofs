@@ -48,7 +48,7 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 	}
 
 	// Parse dialect list (starts at offset 36)
-	dialects := make([]types.Dialect, 0, dialectCount)
+	dialects := make([]types.Dialect, 0, int(dialectCount))
 	for range int(dialectCount) {
 		d := r.ReadUint16()
 		if r.Err() != nil {

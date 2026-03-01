@@ -123,7 +123,7 @@ func DecodeLockRequest(body []byte) (*LockRequest, error) {
 			req.LockCount, len(body), expectedSize)
 	}
 
-	req.Locks = make([]LockElement, req.LockCount)
+	req.Locks = make([]LockElement, int(req.LockCount))
 	for i := 0; i < int(req.LockCount); i++ {
 		req.Locks[i] = LockElement{
 			Offset: r.ReadUint64(),

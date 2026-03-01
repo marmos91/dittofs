@@ -97,7 +97,7 @@ func (h *Handler) handleValidateNegotiateInfo(ctx *SMBHandlerContext, body []byt
 	}
 
 	// Read dialects
-	dialects := make([]types.Dialect, dialectCount)
+	dialects := make([]types.Dialect, int(dialectCount))
 	for i := range dialects {
 		dialects[i] = types.Dialect(r.ReadUint16())
 	}
@@ -259,7 +259,7 @@ func (h *Handler) validateLegacy(ctx *SMBHandlerContext, inputData []byte, fileI
 	// Parse dialect list, filtering to pre-3.0 dialects only.
 	// The legacy path is only reached when CryptoState is nil (pre-SMB3
 	// connections), so 3.x dialects are not applicable here.
-	dialects := make([]types.Dialect, 0, dialectCount)
+	dialects := make([]types.Dialect, 0, int(dialectCount))
 	hasWildcard := false
 	for range int(dialectCount) {
 		d := types.Dialect(r.ReadUint16())
