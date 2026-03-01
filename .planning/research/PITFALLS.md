@@ -1,414 +1,468 @@
-# Domain Pitfalls: NT Security Descriptors, SMB2 Conformance, and Windows 11 Compatibility
+# Domain Pitfalls: SMB3 Protocol Upgrade (3.0/3.0.2/3.1.1)
 
-**Domain:** Adding NT Security Descriptors to existing SMB2 server, fixing SMB2 conformance (smbtorture/WPTS), Windows 11 client compatibility
-**Researched:** 2026-02-26
-**Confidence:** HIGH for pitfalls 1-7 (verified against MS-DTYP/MS-SMB2 specs, Samba source, and existing DittoFS code); MEDIUM for pitfalls 8-14 (WebSearch + community reports); LOW for pitfall 15 (Windows 11 25H2 specific, limited public documentation)
+**Domain:** Adding SMB3 features (encryption, signing, leases, Kerberos, durable handles, cross-protocol integration) to existing SMB2.0.2/2.1 implementation
+**Researched:** 2026-02-28
+**Confidence:** HIGH for pitfalls 1-7 (verified against MS-SMB2 spec, Microsoft blog test vectors, and DittoFS source code); MEDIUM for pitfalls 8-12 (WebSearch + Samba bug reports + community experience); MEDIUM for pitfall 13-15 (cross-protocol coordination based on existing DittoFS architecture analysis)
 
 ---
 
 ## Critical Pitfalls
 
-Mistakes that cause Windows clients to refuse to connect, icacls to crash/show garbage, or smbtorture/WPTS tests to fail systematically.
+Mistakes that cause Windows clients to refuse to connect, encryption/signing failures, data corruption, or fundamental protocol violations that block all SMB3 functionality.
 
-### Pitfall 1: Security Descriptor Field Ordering Mismatch (MS-DTYP Section 2.4.6)
+### Pitfall 1: Preauth Integrity Hash Chain Computed Over Wrong Bytes
 
-**What goes wrong:** The self-relative Security Descriptor encodes Owner SID, Group SID, SACL, and DACL in a fixed order (e.g., Owner-Group-DACL), but Windows Server 2003/2008+ actually transmits them in a different order: SACL-DACL-Owner-Group. The offsets are correct, but the byte layout differs from what the spec text implies. A server that always emits Owner-Group-DACL will work for basic queries, but smbtorture tests that perform byte-level comparison against a reference SD will flag mismatches, and some Windows security tools may behave unexpectedly.
+**What goes wrong:** The SMB 3.1.1 preauth integrity hash chain must be computed over the *complete wire bytes* of each NEGOTIATE and SESSION_SETUP message (request and response), including the SMB2 header. A common mistake is hashing only the body, only the first command of a compound, or using the parsed/reconstructed message rather than the exact bytes received on the wire.
 
-**Why it happens:** MS-DTYP Section 2.4.6 says "the order of appearance of pointer target fields is not required to be in any particular order." Developers read the struct definition top-to-bottom and assume Owner comes first. But Windows implementations actually emit SACL before DACL before Owner/Group, and smbtorture's reference comparisons expect the Windows order.
+**Why it happens:** The hash chain feeds into key derivation. Developers often store parsed request structures and reconstruct them for hashing, introducing byte differences (padding, alignment, field ordering). The spec says the hash is over "the full message, starting from the beginning of the SMB2 Header to the end of the message" -- meaning the raw TCP payload *excluding* the 4-byte NetBIOS header but *including* the 64-byte SMB2 header.
 
-**Consequences:** smbtorture `smb2.acls` tests may fail with binary comparison errors even when the parsed SD is logically correct. `smbcacls` may report unexpected layouts. Windows Explorer security tab works (it uses offsets) but conformance tests flag the difference.
-
-**Prevention:** Follow the Windows-observed field ordering: after the 20-byte SD header, emit SACL (if present), then DACL, then Owner SID, then Group SID. Or better: test empirically against Windows by capturing a reference SD from a real Windows server and matching the exact byte layout. The current DittoFS implementation in `security.go` emits Owner-Group-DACL, which is functional but may need reordering for strict conformance.
-
-**Detection:** Run `smbtorture smb2.acls` and check for "SD mismatch" errors. Capture Wireshark traces comparing DittoFS SD bytes against a Windows server's response.
-
-**DittoFS-specific:** Current `BuildSecurityDescriptor()` in `internal/adapter/smb/v2/handlers/security.go` emits Owner, Group, DACL in that order. The offsets are computed correctly, so Windows clients parse it fine. Conformance tests may require reordering to match Windows behavior.
-
----
-
-### Pitfall 2: Missing SE_DACL_AUTO_INHERITED and SE_DACL_PROTECTED Control Flags
-
-**What goes wrong:** The Security Descriptor Control field only sets `SE_SELF_RELATIVE (0x8000)` and `SE_DACL_PRESENT (0x0004)`. Windows clients and tools (icacls, Explorer's Security tab) expect `SE_DACL_AUTO_INHERITED (0x0400)` to indicate that the DACL supports automatic inheritance propagation. Without it, icacls shows all ACEs as "not inherited" even when they have the `INHERITED_ACE` flag, and attempting to modify inheritance via Explorer produces confusing results.
-
-**Why it happens:** The existing code sets the bare minimum control flags. The developer does not realize that SE_DACL_AUTO_INHERITED is separate from the per-ACE INHERITED_ACE flag -- the former is a whole-SD flag that tells Windows "this SD was produced by an inheritance-aware system."
-
-**Consequences:**
-- icacls shows `(I)` inheritance markers incorrectly or not at all
-- Windows Explorer's "Advanced Security Settings" shows inheritance as broken
-- smbtorture `smb2.acls.inheritance` tests fail
-- SET_INFO calls from Windows that modify inheritance (Protected DACL toggle) produce unexpected results because the server does not preserve or update these flags
-
-**Prevention:** When building the Security Descriptor:
-1. Set `SE_DACL_AUTO_INHERITED (0x0400)` if ANY ACE in the DACL has the `INHERITED_ACE` flag
-2. Set `SE_DACL_PROTECTED (0x1000)` if the DACL explicitly blocks inheritance propagation
-3. When parsing SET_INFO security descriptors from clients, preserve these control flags and propagate them to metadata storage
-4. Round-trip these flags: if a client sends SE_DACL_PROTECTED, store it, and return it on subsequent QUERY_INFO
-
-**Detection:** Run `icacls \\server\share\file` on Windows. If all ACEs show as explicitly set (no `(I)` prefix) despite being inherited, this flag is missing.
-
-**DittoFS-specific:** The current `control` variable in `BuildSecurityDescriptor()` only uses `seSelfRelative | seDACLPresent`. Add constants for the auto-inherited and protected flags and set them based on ACE analysis.
-
----
-
-### Pitfall 3: Non-Canonical ACE Ordering in DACL
-
-**What goes wrong:** The DACL emits ACEs in the same order as the NFSv4 ACL (which is user-defined order per RFC 7530). Windows requires a specific "canonical" ordering: explicit deny ACEs first, then explicit allow ACEs, then inherited deny ACEs, then inherited allow ACEs. If the order is wrong, Windows security tools reorder them silently, icacls output looks inconsistent with what was set, and the effective permissions change unexpectedly.
-
-**Why it happens:** NFSv4 ACLs are evaluated in order (first match wins), so the order is significant and user-defined. Windows DACLs are also evaluated in order, but Windows tools expect and enforce canonical ordering. When translating NFSv4 ACLs to Windows DACLs, preserving the NFSv4 order breaks Windows assumptions.
-
-**Consequences:**
-- icacls displays reordered ACEs vs. what the server sent, causing confusion
-- Windows Explorer's Security tab reorders ACEs when saving, triggering unnecessary SET_INFO calls
-- smbtorture tests that check ACE ordering will fail
-- Security-sensitive applications that rely on ACE evaluation order may grant/deny access incorrectly
-
-**Prevention:** When building the DACL from NFSv4 ACEs, sort them into canonical Windows order:
-1. Explicit deny ACEs (no INHERITED_ACE flag, type = ACCESS_DENIED)
-2. Explicit allow ACEs (no INHERITED_ACE flag, type = ACCESS_ALLOWED)
-3. Inherited deny ACEs (INHERITED_ACE flag set, type = ACCESS_DENIED)
-4. Inherited allow ACEs (INHERITED_ACE flag set, type = ACCESS_ALLOWED)
-
-**Important caveat:** This reordering changes NFSv4 ACL semantics. The correct approach is to sort for Windows display/conformance but document that the server uses NFSv4 evaluation order internally. For smbtorture conformance, the DACL returned via QUERY_INFO must be in canonical order.
-
-**Detection:** Set a DACL with a DENY ACE after an ALLOW ACE. Query with icacls. If the order is preserved (ALLOW before DENY), the canonical ordering is not applied.
-
-**DittoFS-specific:** The current `buildDACL()` in `security.go` iterates `file.ACL.ACEs` in order, preserving NFSv4 ordering. Add a sort step before encoding.
-
----
-
-### Pitfall 4: SID Domain Identifier Collision Between Users and Groups
-
-**What goes wrong:** Both `makeDittoFSUserSID()` and `makeDittoFSGroupSID()` produce identical SIDs for the same numeric ID: `S-1-5-21-0-0-0-{id}`. If a user has UID 1000 and a group has GID 1000, they map to the same SID. Windows interprets the Owner SID and Group SID as the same principal, which causes `icacls` to display the group as the owner (or vice versa) and confuses ACL editors.
-
-**Why it happens:** The current code has `makeDittoFSGroupSID` calling `makeDittoFSUserSID` directly -- the comment says "Same format, GID used as RID." This is technically correct for simple cases where UIDs and GIDs don't overlap, but Unix systems commonly reuse numeric IDs across the user/group namespace (e.g., user 1000 and group 1000 are different entities).
-
-**Consequences:**
-- icacls shows the file owner and group as the same account
-- Windows ACL editor cannot distinguish between "User 1000" and "Group 1000"
-- SET_INFO operations that change owner vs. group may have no visible effect
-- smbtorture tests that verify Owner SID != Group SID will fail for files where UID == GID
-
-**Prevention:** Use different SID structures for users and groups:
-- Users: `S-1-5-21-{domain-id-1}-{domain-id-2}-{domain-id-3}-{uid + 1000}` (RID offset for users)
-- Groups: `S-1-5-21-{domain-id-1}-{domain-id-2}-{domain-id-3}-{gid + 10000}` (different RID offset for groups)
-
-Alternatively, use Samba's convention of placing unmapped Unix users in `S-1-22-1-{uid}` and unmapped Unix groups in `S-1-22-2-{gid}`. This is a recognized convention that Windows tools can be taught to display correctly.
-
-**Detection:** Create a file with UID=1000, GID=1000. Run `icacls \\server\share\file`. If Owner and Group show the same SID string, this collision exists.
-
-**DittoFS-specific:** This is present in the current code. `makeDittoFSGroupSID(gid)` is literally `makeDittoFSUserSID(gid)`. Fix requires introducing a distinguishing factor (different domain sub-authority or RID offset).
-
----
-
-### Pitfall 5: Hash-Based SID for Named Principals Is Non-Deterministic Across Restarts
-
-**What goes wrong:** When `PrincipalToSID()` encounters a named principal like "alice@EXAMPLE.COM" that is not a numeric UID, it falls back to a hash-based RID using a simple `rid = rid*31 + uint32(c)` polynomial hash. This hash is deterministic for the same string, but the RID has no stable reverse mapping. If a client caches the SID (as Windows aggressively does in its SID-to-name cache), and the server restarts or the principal format changes slightly, the SID changes, breaking cached permissions.
-
-**Why it happens:** The hash fallback was a reasonable placeholder, but 32-bit polynomial hashes have collision potential, and there is no way for `SIDToPrincipal()` to reverse the hash back to the original principal name -- it falls through to returning the raw SID string.
-
-**Consequences:**
-- Windows client SID caches become stale after server restart or principal name format change
-- ACLs set via icacls reference a SID that cannot be resolved back to the original user
-- Two different principals may hash to the same RID (collision), granting unintended access
-- `SIDToPrincipal()` cannot reverse the mapping, so SET_INFO round-trips lose the principal identity
+**Consequences:** Session keys derived from a wrong preauth integrity hash will be incorrect. All subsequent signing verification fails. Windows clients receive STATUS_ACCESS_DENIED on the first signed request after SESSION_SETUP completes. The failure is silent and hard to diagnose because the session setup itself succeeds -- keys are derived after the final SESSION_SETUP response.
 
 **Prevention:**
-1. Store a persistent `principal <-> RID` mapping table in the control plane database
-2. Allocate RIDs sequentially (e.g., starting at 10000) for named principals
-3. On `PrincipalToSID()`, look up the table; on miss, allocate a new RID and persist it
-4. On `SIDToPrincipal()`, look up the table to get back the original principal string
-5. For the v3.6 scope (not full AD integration), a simple in-memory cache seeded from the control plane's User table may suffice
+1. Store the exact raw bytes of every NEGOTIATE req/resp and SESSION_SETUP req/resp before any parsing
+2. Hash = SHA-512(PreviousHash || MessageBytes) for each message in sequence
+3. For SESSION_SETUP responses with STATUS_MORE_PROCESSING_REQUIRED, the response signature field is zeroed (unsigned) -- hash the bytes as-is including the zero signature
+4. For the final SESSION_SETUP response (STATUS_SUCCESS), hash the bytes *before* computing the signature (the signature itself is computed with the derived signing key)
+5. Write test vectors matching Microsoft's published examples (see Sources) and validate byte-for-byte
 
-**Detection:** Set an ACL via icacls using a user account. Query it back. If the principal shows as a raw SID string (S-1-5-21-...) instead of the username, the reverse mapping is broken.
+**Detection:** Windows client connects, SESSION_SETUP succeeds, but the very first subsequent command (TREE_CONNECT) fails with STATUS_ACCESS_DENIED. The server log shows signature verification failure.
 
-**DittoFS-specific:** The hash fallback in `PrincipalToSID()` at line ~276 in `security.go` is the problematic code path. The control plane already has a User model with IDs -- integrate SID allocation with it.
-
----
-
-### Pitfall 6: STATUS_BUFFER_OVERFLOW Handling for Security Descriptor Queries
-
-**What goes wrong:** When the client requests a security descriptor with `OutputBufferLength` smaller than the actual SD size, the server should return `STATUS_BUFFER_OVERFLOW (0x80000005)` with the truncated data. But the current code returns `STATUS_SUCCESS` with truncated data instead, based on a comment about Linux kernel CIFS treating STATUS_BUFFER_OVERFLOW as an error.
-
-**Why it happens:** An earlier fix for Linux CIFS compatibility changed the behavior for all clients. Linux CIFS clients do treat BUFFER_OVERFLOW as a hard error for some info classes. But Windows clients *expect* BUFFER_OVERFLOW for security descriptor queries -- it is part of the two-phase query pattern where the client first sends a small buffer to learn the required size, then sends a second query with the correct size.
-
-**Consequences:**
-- Windows Explorer's Security tab may show incomplete ACLs without retrying
-- icacls may silently truncate ACEs
-- smbtorture tests checking for STATUS_BUFFER_OVERFLOW will fail
-- WPTS BVT tests for QUERY_INFO security info will fail
-
-**Prevention:** Implement client-aware response logic:
-1. For InfoType=Security (type 3): Always return STATUS_BUFFER_OVERFLOW when truncating, because Windows clients handle it correctly for security queries
-2. For InfoType=File (type 1): Return STATUS_SUCCESS with truncated data for Linux CIFS compatibility
-3. Alternatively, check the negotiated dialect or client fingerprint to determine behavior
-
-**Detection:** Use Wireshark to capture a security descriptor query from Windows Explorer where the initial OutputBufferLength is small (often 0 or 1024). Verify the response status is STATUS_BUFFER_OVERFLOW, not STATUS_SUCCESS.
-
-**DittoFS-specific:** The truncation logic in `QueryInfo()` at line ~276 in `query_info.go` always returns STATUS_SUCCESS. Needs a conditional branch for InfoType=Security.
+**Phase:** Must be implemented and validated in the negotiate/preauth phase (Phase 1 of SMB3 milestone).
 
 ---
 
-### Pitfall 7: Missing SACL_SECURITY_INFORMATION Handling Returns Wrong Error
+### Pitfall 2: Key Derivation Label/Context Strings Differ Between 3.0 and 3.1.1
 
-**What goes wrong:** When a client requests `SACL_SECURITY_INFORMATION (0x08)` in the AdditionalInfo field, the server must either return the SACL or return `STATUS_ACCESS_DENIED` (because SACL access requires `ACCESS_SYSTEM_SECURITY` privilege). Instead, the current code silently ignores the SACL request and returns an SD without it, which makes the client think the file has no SACL rather than that access was denied.
+**What goes wrong:** SMB 3.0/3.0.2 and SMB 3.1.1 use different label strings and context values for the SP800-108 KDF. Using the wrong labels for a given dialect produces incorrect keys. All four key types (SigningKey, EncryptionKey, DecryptionKey, ApplicationKey) have different labels between dialect families.
 
-**Why it happens:** The SACL handling is not implemented, so it is simply not included in the response. The developer treats "not implemented" as "not present."
+**Why it happens:** The spec defines the labels in different sections, and the change between 3.0.x and 3.1.1 is subtle. The label strings are:
 
-**Consequences:**
-- smbtorture `smb2.acls` tests that request SACL information fail
-- Windows audit policy tools receive incorrect information
-- WPTS tests checking SACL access control will report false results
+**SMB 3.0 / 3.0.2:**
+- SigningKey: Label="SMB2AESCMAC\0", Context="SmbSign\0"
+- EncryptionKey: Label="SMB2AESCCM\0", Context="ServerIn \0" (note trailing space)
+- DecryptionKey: Label="SMB2AESCCM\0", Context="ServerOut\0"
+- ApplicationKey: Label="SMB2APP\0", Context="SmbRpc\0"
+
+**SMB 3.1.1:**
+- SigningKey: Label="SMBSigningKey\0", Context=PreauthIntegrityHashValue (64 bytes)
+- EncryptionKey: Label="SMBC2SCipherKey\0", Context=PreauthIntegrityHashValue
+- DecryptionKey: Label="SMBS2CCipherKey\0", Context=PreauthIntegrityHashValue
+- ApplicationKey: Label="SMBAppKey\0", Context=PreauthIntegrityHashValue
+
+**Consequences:** Signing and encryption fail completely for the affected dialect. If the server uses 3.1.1 labels when the negotiated dialect is 3.0, Windows clients disconnect immediately after session setup.
 
 **Prevention:**
-1. If `SACL_SECURITY_INFORMATION` is requested in `additionalSecInfo`, return `STATUS_PRIVILEGE_NOT_HELD (0xC0000061)` or `STATUS_ACCESS_DENIED`
-2. Do NOT silently omit the SACL -- the client must know the request was denied, not that the SACL is empty
-3. For future work: implement SACL with system audit ACEs
+1. Implement a single KDF function that takes label and context as parameters
+2. Select labels/contexts based on `Connection.Dialect` at key derivation time
+3. Null-terminate labels correctly (the `\0` is part of the label, not a C string artifact)
+4. For 3.0.x, context is a fixed string; for 3.1.1, context is the 64-byte SHA-512 hash value
+5. Test with both SMB 3.0 and 3.1.1 clients independently
+6. Validate against Microsoft's published test vectors (SMB 3.0 multichannel and SMB 3.1.1 multichannel examples in the MS blog)
 
-**Detection:** Run `icacls \\server\share\file /t /q` with audit options. If no error is returned but no audit entries appear, SACL handling is missing.
+**Detection:** smbtorture signing tests fail. Windows client shows "Access Denied" after session setup.
+
+**Phase:** Must be correct in the cryptographic key derivation phase. This is the most common cause of "works in testing, breaks with Windows" failures.
+
+---
+
+### Pitfall 3: Encryption Transform Header vs Plain SMB2 Header Confusion
+
+**What goes wrong:** When encryption is active, SMB3 messages are wrapped in an SMB2_TRANSFORM_HEADER (ProtocolId 0xFD534D42 = 0xFD 'S' 'M' 'B') instead of the normal SMB2 header (0xFE 'S' 'M' 'B'). The framing layer must detect the transform header, decrypt the payload, and then dispatch the inner plain SMB2 message. Common mistakes:
+
+1. **Trying to parse the transform header as a regular SMB2 header** -- the first 4 bytes differ (0xFD vs 0xFE)
+2. **Signing the inner message when encryption is active** -- MS-SMB2 explicitly states that if decryption succeeds, signature verification MUST be skipped
+3. **Using wrong nonce size** -- AES-128-CCM uses 11 bytes of the 16-byte Nonce field; AES-128-GCM uses 12 bytes
+4. **Encrypting responses that should be plain** -- NEGOTIATE and the first SESSION_SETUP leg cannot be encrypted (no keys yet)
+
+**Why it happens:** The existing DittoFS framing layer (`internal/adapter/smb/framing.go`) reads the NetBIOS header then checks for `types.SMB2ProtocolID` (0x424D53FE). Adding transform header support requires intercepting before this check. The transform header has a completely different layout: Signature(16) + Nonce(16) + OriginalMessageSize(4) + Reserved(2) + Flags(2) + SessionId(8).
+
+**Consequences:** Encrypted messages are rejected as malformed. Windows clients that require encryption (per-share or per-server) cannot connect. If the server accidentally signs AND encrypts, the client may reject the inner message.
+
+**Prevention:**
+1. In `ReadRequest`, check the first 4 bytes: 0xFE = plain SMB2, 0xFD = transform header, 0xFF = SMB1
+2. For transform headers, read the full transform header (52 bytes), look up the session's decryption key by SessionId, decrypt the payload, then parse the inner SMB2 message
+3. After successful decryption, skip signature verification entirely (per MS-SMB2 3.3.5.2.1.1)
+4. For AES-CCM: nonce is bytes [0:11] of the Nonce field. For AES-GCM: nonce is bytes [0:12]. The remaining bytes must be zero
+5. Never encrypt NEGOTIATE or first SESSION_SETUP (check if session has encryption keys before encrypting)
+6. Set the transform header Flags field: 0x0001 = encrypted (SMB 3.0+)
+
+**Detection:** Windows client with encryption enabled gets "The specified network name is no longer available" error. tcpdump shows transform headers being sent but server responds with STATUS_INVALID_PARAMETER.
+
+**Phase:** Must be implemented alongside the negotiate context phase (encryption capability negotiation) and wired into the framing layer early.
+
+---
+
+### Pitfall 4: AES-256 Key Length Mismatch (SMB 3.1.1 with AES-256-CCM/GCM)
+
+**What goes wrong:** SMB 3.1.1 supports AES-256-CCM and AES-256-GCM in addition to AES-128 variants. When AES-256 is negotiated, the 'L' parameter in the KDF must be 256 (not 128), producing 32-byte keys. Implementations that hardcode L=128 generate 16-byte keys that silently truncate to the wrong length for AES-256 operations.
+
+**Why it happens:** SMB 3.0 only supported AES-128-CCM, so early implementations hardcode key length to 16 bytes. The MS-SMB2 spec states: "If Connection.CipherId is AES-128-CCM or AES-128-GCM, 'L' value is initialized to 128. If Connection.CipherId is AES-256-CCM or AES-256-GCM, 'L' value is initialized to 256."
+
+**Consequences:** AES-256 encryption/decryption produces garbage. The client receives corrupted data and disconnects. This only manifests when connecting to Windows Server 2022+ or other servers that prefer AES-256.
+
+**Prevention:**
+1. Store `Connection.CipherId` after negotiate
+2. Parameterize KDF on cipher ID: L=128 for AES-128-*, L=256 for AES-256-*
+3. EncryptionKey and DecryptionKey buffer size must match: 16 bytes for AES-128, 32 bytes for AES-256
+4. SigningKey remains 16 bytes regardless of cipher (CMAC uses 128-bit keys)
+
+**Detection:** Connections work with AES-128-GCM but fail with AES-256-GCM. smbtorture encryption tests with AES-256 fail.
+
+**Phase:** Key derivation and encryption implementation phase.
+
+---
+
+### Pitfall 5: Signing Algorithm Change -- HMAC-SHA256 vs AES-128-CMAC
+
+**What goes wrong:** The existing DittoFS signing implementation (`internal/adapter/smb/signing/signing.go`) uses HMAC-SHA256 exclusively, which is correct for SMB 2.0.2/2.1. SMB 3.0+ requires AES-128-CMAC for signing. If the server negotiates a 3.x dialect but continues using HMAC-SHA256, every signed message will fail verification on the client.
+
+**Why it happens:** The current `SigningKey.Sign()` method hardcodes `hmac.New(sha256.New, sk.key[:])`. When upgrading to support 3.x dialects, developers may forget to switch the algorithm because the signing key size (16 bytes) and signature size (16 bytes) are identical for both algorithms.
+
+**Consequences:** All commands after SESSION_SETUP fail signature verification. Windows clients disconnect with "The cryptographic signature is invalid."
+
+**Prevention:**
+1. Add a `SigningAlgorithm` field to `SigningKey` or `SessionSigningState` (HMAC-SHA256 for 2.x, AES-128-CMAC for 3.x)
+2. The signing key for 3.x is derived via KDF (not directly from session key as in 2.x)
+3. For 3.x signing: use `crypto/aes` + CMAC implementation (Go stdlib does not include CMAC; use a library or implement per RFC 4493)
+4. Keep backward compatibility: if negotiated dialect is 2.0.2 or 2.1, use existing HMAC-SHA256 path
+5. SMB 3.1.1 additionally supports AES-128-GMAC signing (negotiated via SMB2_SIGNING_CAPABILITIES context) -- implement as a third option
+
+**Detection:** Windows client connects with SMB 3.x, SESSION_SETUP succeeds, first subsequent command fails.
+
+**Phase:** Must be implemented alongside key derivation. The signing module needs refactoring before any 3.x dialect can work.
+
+---
+
+### Pitfall 6: Negotiate Context Ordering and Padding Requirements
+
+**What goes wrong:** SMB 3.1.1 negotiate contexts must appear in a specific order and each context must be 8-byte aligned. Common mistakes:
+1. Missing PREAUTH_INTEGRITY_CAPABILITIES (mandatory) or placing it after ENCRYPTION_CAPABILITIES
+2. Incorrect padding between contexts (each must start at an 8-byte aligned offset relative to the start of the negotiate context list)
+3. Setting HashAlgorithmCount > 1 in the response (must be exactly 1)
+4. Not echoing back contexts that the client sent -- if client sends ENCRYPTION_CAPABILITIES, server MUST respond with ENCRYPTION_CAPABILITIES even if no common cipher exists
+
+**Why it happens:** The existing negotiate handler (`internal/adapter/smb/v2/handlers/negotiate.go`) has no negotiate context parsing at all -- fields like `negotiateContextOffset`, `negotiateContextCount` are commented out. Adding context support requires careful binary layout work.
+
+**Consequences:** Windows 10+ clients that send SMB 3.1.1 in the dialect list either fall back to 2.1 (losing all 3.x features) or fail the connection entirely if the client requires 3.1.1.
+
+**Prevention:**
+1. Parse negotiate contexts from the request (they start at the offset specified in the negotiate request header)
+2. In the response, emit contexts in order: PREAUTH_INTEGRITY first, then ENCRYPTION
+3. Pad each context to 8-byte boundary (add zero bytes after the context data)
+4. PREAUTH_INTEGRITY response: exactly 1 hash algorithm (SHA-512, ID=0x0001), plus a server-generated 32-byte salt
+5. ENCRYPTION response: exactly 1 cipher (the preferred one from the client's list)
+6. Additional optional contexts: SMB2_SIGNING_CAPABILITIES (cipher 0x0001=AES-CMAC, 0x0002=AES-GMAC), SMB2_COMPRESSION_CAPABILITIES, SMB2_RDMA_TRANSFORM_CAPABILITIES
+
+**Detection:** Windows client silently negotiates SMB 2.1 instead of 3.1.1 (check negotiated dialect in server logs).
+
+**Phase:** First phase of SMB3 implementation -- negotiate handling.
+
+---
+
+### Pitfall 7: Session Key Derivation Timing -- Keys Before Signature Verification
+
+**What goes wrong:** In the final SESSION_SETUP exchange, the server must:
+1. Complete GSS authentication (get the session key)
+2. Update the preauth integrity hash with the final SESSION_SETUP request
+3. Derive all cryptographic keys using the preauth hash as context (for 3.1.1)
+4. Sign the SESSION_SETUP response with the newly derived signing key
+5. Send the response
+
+If steps 2-4 happen in the wrong order, the derived keys are wrong. Specifically:
+- The hash MUST be updated with the final request BEFORE key derivation
+- The hash must NOT include the final response (the response is signed, not hashed)
+- For STATUS_MORE_PROCESSING_REQUIRED responses, hash is updated with both request AND response
+
+**Why it happens:** The multi-leg NTLM/SPNEGO exchange involves multiple SESSION_SETUP round-trips. Each leg updates the hash. The asymmetry (hash the final request but not the final response) is easy to get wrong.
+
+**Consequences:** Derived keys are incorrect. The server signs the final SESSION_SETUP response with a wrong key. Windows client verifies the signature, fails, and disconnects.
+
+**Prevention:**
+1. Maintain a `PreauthIntegrityHashValue` per-connection (initialized from negotiate) and per-session (forked at first SESSION_SETUP)
+2. For each SESSION_SETUP round-trip:
+   - Hash the request: `H = SHA-512(H_prev || request_bytes)`
+   - If response status is MORE_PROCESSING_REQUIRED: `H = SHA-512(H || response_bytes)`
+   - If response status is SUCCESS: derive keys using H as context, then sign the response with derived SigningKey
+3. The response to the final leg is NOT included in the hash used for key derivation
+4. Test with both single-leg (Kerberos) and multi-leg (NTLM) authentication
+
+**Detection:** Kerberos auth works (single leg) but NTLM fails (multi-leg), or vice versa.
+
+**Phase:** Authentication and key derivation phase.
 
 ---
 
 ## Moderate Pitfalls
 
-### Pitfall 8: Windows 11 24H2+ Mandatory SMB Signing Breaks Guest/Anonymous Access
+### Pitfall 8: Lease vs Oplock Backward Compatibility During Dialect Transition
 
-**What goes wrong:** Windows 11 24H2 and Windows Server 2025 require SMB signing by default on all connections. SMB signing cannot succeed with guest credentials (null session key). DittoFS's anonymous/guest authentication path negotiates signing-enabled but cannot complete the signing handshake, causing Windows 11 24H2 clients to refuse connection with "The specified network password is not correct" or "System error 53."
+**What goes wrong:** The existing DittoFS implementation supports both traditional oplocks (SMB 2.0.2/2.1) and leases (SMB 2.1+ via the Unified Lock Manager). When a client negotiates SMB 3.0+, it will exclusively use Lease V2 contexts (SMB2_CREATE_REQUEST_LEASE_V2 with 52 bytes including ParentLeaseKey and Epoch). If the server still processes these as Lease V1 (32 bytes), the ParentLeaseKey (used for directory leases) and Epoch (used for break sequencing) are silently lost.
 
-**Why it happens:** Microsoft hardened SMB security in 24H2, making signing mandatory. Guest sessions have no session key to derive signing keys from. The server advertises `SMB2_NEGOTIATE_SIGNING_ENABLED` in the NEGOTIATE response, and Windows 11 24H2 interprets this as "signing will happen" and rejects the connection when signing fails.
-
-**Consequences:**
-- Windows 11 24H2 users cannot connect to DittoFS at all in guest mode
-- Users must modify Group Policy (`AllowInsecureGuestAuth`) to connect, which is a poor experience
-- Manual Windows 11 testing fails immediately
+**Why it happens:** The existing `DecodeLeaseCreateContext` in `lease.go` already handles both V1 and V2 formats based on data length, which is good. However, the risk is in the *response*: SMB 3.0+ clients that sent V2 contexts expect V2 responses. Sending a V1 response (32 bytes) to a V2 request causes the client to ignore the lease context entirely.
 
 **Prevention:**
-1. Ensure that authenticated sessions (NTLM with actual credentials) produce valid signing keys
-2. For guest access: clearly document that Windows 11 24H2+ requires `AllowInsecureGuestAuth` group policy change
-3. Long-term (v3.8): implement SMB 3.x signing (AES-CMAC/GMAC) for proper signing support
-4. Short-term: ensure the NEGOTIATE response security mode matches what the server can actually deliver
-5. Consider not advertising `SMB2_NEGOTIATE_SIGNING_ENABLED` when the server cannot enforce it
+1. Track the lease version negotiated per-connection (V1 for dialect <= 2.1, V2 for dialect >= 3.0)
+2. Always respond with the same version the client requested
+3. For directory leases (new in SMB 3.0+): handle the ParentLeaseKey correctly -- it links a file lease to its parent directory lease for hierarchical break notifications
+4. Epoch must be tracked and incremented correctly for V2 -- the existing implementation increments `lease.Lease.Epoch` which is correct, but must ensure it flows through to the response context
 
-**Detection:** Attempt to connect from a fresh Windows 11 24H2 installation. If connection fails immediately, this is the issue.
+**Detection:** Windows Explorer directory refresh is slow (directory leases not working). File save from Office apps takes extra time (lease upgrade fails).
+
+**Phase:** Lease integration phase.
 
 ---
 
-### Pitfall 9: Compound CREATE+QUERY_INFO+CLOSE Security Descriptor Pattern
+### Pitfall 9: SPNEGO Multi-Leg Kerberos with MIC Requirement
 
-**What goes wrong:** Windows Explorer and icacls use a compound (related) request pattern: CREATE + QUERY_INFO(Security) + CLOSE in a single compound. The QUERY_INFO uses the FileID from the preceding CREATE via the `SMB2_FLAGS_RELATED_OPERATIONS` mechanism. If the compound handler does not correctly propagate the FileID from the CREATE response to the QUERY_INFO request, the server returns STATUS_INVALID_HANDLE.
+**What goes wrong:** The existing SPNEGO/Kerberos implementation in `session_setup.go` handles single-leg Kerberos (AP-REQ -> accept-complete). However, some Kerberos exchanges can be multi-leg (e.g., when mutual authentication is required or when the client requests a MIC). The server must handle:
+1. NegTokenInit with Kerberos AP-REQ -> NegTokenResp with accept-complete + AP-REP (single leg)
+2. NegTokenInit with Kerberos AP-REQ -> NegTokenResp with accept-incomplete + AP-REP -> NegTokenResp with MIC (multi-leg)
 
-**Why it happens:** The compound handler in `compound.go` correctly propagates FileID for operations listed in `InjectFileID()`. But the FileID injection for QUERY_INFO uses offset 24, which must exactly match the CREATE response's FileID field position in the QUERY_INFO request body. If any intermediate operation fails or the response encoding changes the FileID format, propagation breaks.
+Additionally, SPNEGO fallback from Kerberos to NTLM must be handled: if Kerberos fails (wrong SPN, expired ticket), the server should send reject with a hint to try NTLM, not just STATUS_LOGON_FAILURE.
 
-**Consequences:**
-- Windows Explorer's Security tab shows "Unable to display current owner" or "Access denied"
-- icacls returns STATUS_INVALID_HANDLE
-- First manual test on Windows fails, creating panic
+**Why it happens:** The current code (`handleKerberosAuth`) validates AP-REQ and immediately returns accept-complete. It does not build an AP-REP token. While Windows clients accept this for basic scenarios, strict SPNEGO implementations (like MIT Kerberos-based Linux clients) may require the AP-REP for mutual authentication. Samba bug #14106 documents similar SPNEGO fallback issues.
 
 **Prevention:**
-1. Add explicit E2E tests for compound CREATE+QUERY_INFO(Security)+CLOSE
-2. Verify that `InjectFileID` for QUERY_INFO correctly places the 16-byte FileID at offset 24
-3. Test with both related and unrelated compound variants
-4. Verify that the CREATE response FileID extraction in `ProcessRequestWithFileID` correctly returns the FileID for the compound handler to propagate
+1. Build the AP-REP from the service context and include it in the NegTokenResp
+2. Handle NegStateRequestMIC in subsequent SESSION_SETUP legs
+3. When Kerberos fails, respond with NegStateReject but include NTLM as the supported mech, allowing SPNEGO fallback
+4. Track SPNEGO negotiation state per-session (not just NTLM pending auth state)
+5. The preauth integrity hash must be updated for every SESSION_SETUP leg, including Kerberos multi-leg
 
-**Detection:** Mount from Windows, right-click a file, select Properties > Security tab. If it fails, the compound security query is broken. Wireshark shows the compound request pattern clearly.
+**Detection:** Linux `smbclient` with Kerberos fails while Windows client works. MIT Kerberos-based clients report "mutual authentication failed."
 
-**DittoFS-specific:** The `InjectFileID` function in `compound.go` handles QUERY_INFO at offset 24 and SET_INFO at offset 16. Verify these offsets match the actual request body layout including the StructureSize field.
+**Phase:** Authentication phase -- when integrating shared Kerberos layer.
 
 ---
 
-### Pitfall 10: ACE Flag Truncation During NFSv4-to-Windows Translation
+### Pitfall 10: Durable Handle V2 Reconnect Validation Complexity
 
-**What goes wrong:** NFSv4 ACE flags are 32-bit (`uint32`), but Windows ACE flags are 8-bit (`uint8`). The current code truncates with `uint8(ace.Flag & 0xFF)`, which preserves the low byte. However, the NFSv4 `INHERITED_ACE` flag is `0x00000080`, which fits in 8 bits, but `SUCCESSFUL_ACCESS_ACE_FLAG (0x10)` and `FAILED_ACCESS_ACE_FLAG (0x20)` also fit. The problem is that the NFSv4 flag bit positions are intentionally aligned with Windows positions (per RFC 7530), so the truncation is correct for standard flags -- but if DittoFS ever stores non-standard flags in bits 8-31, they will be silently lost.
+**What goes wrong:** Durable Handle V2 reconnect (SMB2_CREATE_DURABLE_HANDLE_RECONNECT_V2) has an extraordinarily long list of validation conditions (per MS-SMB2 section 3.3.5.9.12). Missing any single check creates a security vulnerability or protocol violation. The complete list includes:
 
-**Why it happens:** The truncation is technically correct today, but fragile. Future code that adds custom flags in the upper bits will break silently.
+1. Look up Open by FileId.Persistent in GlobalOpenTable
+2. If not found and persistent flag set, look up by CreateGuid
+3. Validate Open.Lease is not NULL and Open.ClientGuid matches Connection.ClientGuid
+4. Validate Open.CreateGuid matches the request's CreateGuid
+5. Validate Open.IsDurable or Open.IsResilient is TRUE
+6. Validate Open.Session is NULL (previous session was cleaned up)
+7. If Open.Lease is NULL, lease context must NOT be present in request
+8. If Open.Lease is NOT NULL, matching lease context MUST be present
+9. Lease key must match between Open.Lease.LeaseKey and the create context
+10. Lease version must match (V1 context for V1 lease, V2 for V2)
+11. Open.Lease.LeaseState must contain Handle caching for durable reconnect
+12. Open.DurableOwner must match Session.SecurityContext (same user)
+13. File name must match Open.Lease.FileName (if lease is not null and FileDeleteOnClose is false)
+14. Cannot combine with DurableHandleRequest, DurableReconnect V1, or DurableHandleRequest V2
 
-**Consequences:**
-- Currently none (standard flags fit in 8 bits)
-- Future risk: custom ACE flags added for DittoFS-specific purposes will be silently dropped on the Windows side
+**Why it happens:** Durable handles interact with sessions, leases, security contexts, and file state simultaneously. Each condition addresses a specific attack vector or protocol invariant. Samba's implementation had multiple bugs (#13318, #13535, #11897, #11898) related to these checks.
 
 **Prevention:**
-1. Validate that all stored ACE flags fit in 8 bits before truncation
-2. Log a warning if `ace.Flag & 0xFFFFFF00 != 0` (upper bits set but will be lost)
-3. Document the 8-bit flag constraint for future developers
+1. Implement checks as a sequential validation pipeline with early return on first failure
+2. Return STATUS_OBJECT_NAME_NOT_FOUND for most validation failures (as spec requires)
+3. Return STATUS_INVALID_PARAMETER for conflicting create contexts
+4. Return STATUS_ACCESS_DENIED for security context mismatch
+5. Store CreateGuid, LeaseKey, DurableOwner, and FileName with each Open for validation
+6. Write a smbtorture `durable_v2_reconnect` test for each validation condition individually
 
-**Detection:** Unit test: create an ACE with flags > 0xFF, build SD, parse it back, verify the flags were truncated (and that a warning was logged).
+**Detection:** smbtorture durable_v2 tests fail. Windows Excel "recovered unsaved changes" feature does not work after network interruption.
+
+**Phase:** Durable handles phase -- one of the later phases due to dependency on leases and session management.
 
 ---
 
-### Pitfall 11: Missing FILE_PERSISTENT_ACLS in FileFsAttributeInformation
+### Pitfall 11: Durable Handle State Persistence Across Server Restart
 
-**What goes wrong:** The FileFsAttributeInformation response advertises filesystem attributes including `FILE_PERSISTENT_ACLS (0x00000008)`. This flag tells Windows that the filesystem supports ACLs. If this flag is missing, Windows Explorer will not show the Security tab at all, and icacls will return "The command line is too long."
+**What goes wrong:** Durable handles survive connection drops but must also survive server restarts for "persistent handles." The server must persist:
+- Open state (FileId, CreateGuid, DurableOwner)
+- Lease state (LeaseKey, LeaseState, Epoch)
+- File path and metadata handle
 
-**Why it happens:** The developer adds ACL support in QUERY_INFO/SET_INFO but forgets to update the filesystem attributes response. Windows checks the filesystem capabilities before showing ACL-related UI.
+Without persistence, all durable handles are lost on restart, making the feature useless for connection resilience.
 
-**Consequences:**
-- No Security tab in Windows Explorer
-- icacls cannot read or set ACLs
-- All ACL testing on Windows fails immediately
+**Why it happens:** DittoFS already has lock state persistence in the metadata store (per-share), which the existing lease implementation uses. However, durable handle state (the Open object with its FileId, CreateGuid, and DurableOwner) is separate from lease state and must be stored in a new table/structure. The Unified Lock Manager stores lease info but not the full SMB Open state.
 
-**Prevention:** Verify that the `FileFsAttributeInformation` response (case 5 in `buildFilesystemInfo()`) includes `FILE_PERSISTENT_ACLS (0x00000008)` in the capabilities bitmask.
+**Prevention:**
+1. Design a DurableOpenStore interface (like LockStore but for Open objects)
+2. Store: FileId.Persistent, CreateGuid, LeaseKey, DurableOwner (security context), FilePath, CreateOptions, DesiredAccess
+3. On reconnect, validate stored state against the reconnect request
+4. Set a durable handle timeout (default 60 seconds) -- if no reconnect within timeout, clean up
+5. For DittoFS, implement in the control plane store (GORM-based) alongside session/share data
+6. Grace period on restart: allow reconnects within a configurable window (similar to NFS grace period already implemented)
 
-**Detection:** Right-click a file in Windows Explorer, select Properties. If there is no Security tab, check the filesystem attributes.
+**Detection:** Server restart causes all SMB clients to show "network path not found" instead of transparently reconnecting.
 
-**DittoFS-specific:** The current value is `0x0000008F` which includes bits: `FILE_CASE_SENSITIVE_SEARCH (0x01)`, `FILE_CASE_PRESERVED_NAMES (0x02)`, `FILE_UNICODE_ON_DISK (0x04)`, `FILE_PERSISTENT_ACLS (0x08)`, `FILE_SUPPORTS_REPARSE_POINTS (0x80)`. The `FILE_PERSISTENT_ACLS` bit IS already set. Verify this is not accidentally removed during refactoring.
+**Phase:** Durable handles persistence phase.
 
 ---
 
-### Pitfall 12: Sparse File READ Returns Error Instead of Zeros for Unwritten Regions
+### Pitfall 12: Secure Dialect Negotiation (SMB 3.0.x) vs Preauth Integrity (3.1.1)
 
-**What goes wrong:** When reading from an unwritten region of a file (offset beyond what has been written but within the file size), the server returns an error or short read instead of zero-filled data. Windows clients expect sparse file regions to read as zeros.
+**What goes wrong:** SMB 3.0 and 3.0.2 use a post-authentication FSCTL_VALIDATE_NEGOTIATE_INFO IOCTL to verify the negotiate exchange was not tampered with. SMB 3.1.1 replaced this with preauth integrity (hash chain). If the server negotiates 3.0.x but does not implement FSCTL_VALIDATE_NEGOTIATE_INFO, Windows clients will fail the connection after tree connect.
 
-**Why it happens:** The payload store does not have data for unwritten blocks. The read operation either returns an error (block not found) or a short read (fewer bytes than requested). SMB clients interpret errors as I/O failures and short reads as EOF.
-
-**Consequences:**
-- Files created with FILE_OPEN_IF + WRITE at offset 1MB will fail to read at offset 0
-- Applications that create sparse files (common on Windows) will see data corruption
-- This is existing issue #180 in the project tracker
+**Why it happens:** The IOCTL handler (`internal/adapter/smb/v2/handlers/stub_handlers.go`) likely stubs IOCTL. FSCTL_VALIDATE_NEGOTIATE_INFO is a specific IOCTL (CtlCode=0x00140204) that the server must handle by validating the client's negotiate information matches the server's state.
 
 **Prevention:**
-1. When `PayloadService.ReadAt()` encounters an unwritten block/region, return zero-filled bytes
-2. The cache layer should handle this transparently: cache miss for an unwritten region should produce zeros, not an error
-3. Test with: create file, write at offset 1MB, read at offset 0 -- must get zeros
+1. Implement FSCTL_VALIDATE_NEGOTIATE_INFO handler in IOCTL dispatch
+2. Compare: Capabilities, Guid, SecurityMode, Dialects from the request against the values from the original negotiate
+3. If any mismatch, return STATUS_ACCESS_DENIED (potential MITM)
+4. The IOCTL must be signed (per spec requirement)
+5. For 3.1.1, this IOCTL is not needed (preauth integrity supersedes it), but the server should still handle it gracefully if a client sends it
 
-**Detection:** Create a file, write 1 byte at offset 1048576. Read from offset 0. If the read fails or returns non-zero data, this bug is present.
+**Detection:** Windows 8/8.1/Server 2012 clients (which negotiate 3.0/3.0.2) disconnect immediately after tree connect. Windows 10+ clients work fine (negotiate 3.1.1 which does not use FSCTL_VALIDATE_NEGOTIATE_INFO).
 
-**DittoFS-specific:** This is tracked as issue #180. The fix belongs in the payload service's read path, not in the SMB handler.
+**Phase:** Early phase -- must be part of negotiate/IOCTL handling.
 
 ---
 
-### Pitfall 13: Renamed Directory Children Show Stale Path in QUERY_DIRECTORY
+## Cross-Protocol Pitfalls
 
-**What goes wrong:** After renaming a directory via SET_INFO(FileRenameInformation), the children of that directory still report the old path in their metadata. QUERY_DIRECTORY lists the correct filenames (they are stored relative to the parent), but any operation that uses the child's stored `Path` field (like CHANGE_NOTIFY) uses the stale path.
+Mistakes specific to DittoFS's multi-protocol (NFS + SMB) architecture. These are particularly important because DittoFS's competitive advantage includes cross-protocol consistency.
 
-**Why it happens:** The metadata store's `Move()` operation updates the directory entry itself but does not recursively update the `Path` field of all children. The `Path` field is denormalized (stored for convenience) and becomes stale.
+### Pitfall 13: SMB3 Lease Break During NFS Delegation Recall Race
 
-**Consequences:**
-- CHANGE_NOTIFY watchers on renamed directories stop receiving notifications
-- Compound operations that reference the old path fail with STATUS_OBJECT_PATH_NOT_FOUND
-- This is existing issue #181 in the project tracker
+**What goes wrong:** DittoFS already has cross-protocol oplock break coordination (`CheckAndBreakForWrite`, `CheckAndBreakForRead`, `CheckAndBreakForDelete` in `oplock.go`). When upgrading to SMB3 leases (which are more granular than SMB2 oplocks), the break logic must account for:
+
+1. **Directory leases (new in SMB3)**: NFS directory operations (CREATE, REMOVE, RENAME in a directory) must break SMB3 directory leases. The existing cross-protocol code only handles file-level leases.
+2. **Epoch-based sequencing**: SMB3 lease breaks include an epoch counter. NFS-triggered breaks must correctly increment the epoch. Stale epoch values cause clients to ignore the break.
+3. **Simultaneous breaks**: An NFS write can trigger an SMB3 Write lease break while an NFS delegation recall is already in progress for the same file. The Unified Lock Manager must handle concurrent breaks without deadlock.
+
+**Why it happens:** The existing OplockManager uses a single `sync.RWMutex` (`mu`) for all lease operations. When an NFS handler calls `CheckAndBreakForWrite` (which takes `mu`), and the break notification goroutine tries to send the break (which may eventually need `mu` for updating state), there is a potential for contention. The existing code avoids deadlock by sending breaks asynchronously, but the epoch tracking requires careful coordination.
 
 **Prevention:**
-1. When `Move()` renames a directory, recursively update the `Path` field of all descendants
-2. Alternatively, stop storing the full path in `OpenFile` and always derive it from the handle hierarchy
-3. The `StoreOpenFile()` call in SET_INFO rename updates the current file but not any open handles to children
+1. Add directory lease awareness to cross-protocol break methods (new method: `CheckAndBreakForDirectoryChange`)
+2. Ensure epoch is atomically incremented and persisted before the break notification is sent
+3. Test: NFS CREATE in directory while SMB3 directory lease active -> directory lease break + epoch increment
+4. Test: NFS WRITE while SMB3 R+W+H lease active -> break W to R, increment epoch, keep R+H
+5. Add integration test: simultaneous NFS delegation recall + SMB3 lease break on same file
 
-**Detection:** Create directory `/test`, create file `/test/foo.txt`, rename directory to `/renamed`, list `/renamed` -- the files should appear. But CHANGE_NOTIFY on `/renamed` may not fire.
+**Detection:** SMB3 clients show stale directory listings after NFS modifications. Files created via NFS not visible in Windows Explorer until manual refresh.
 
-**DittoFS-specific:** This is tracked as issue #181. The fix is in the metadata service's `Move` operation.
+**Phase:** Cross-protocol integration phase (late in milestone).
+
+---
+
+### Pitfall 14: Cross-Protocol Lock/Lease Semantics Mismatch with Handle Leases
+
+**What goes wrong:** SMB3 Handle (H) leases protect against "surprise deletion" -- the client gets notified before a file is deleted or renamed, allowing it to close gracefully. NFS has no equivalent concept. When an NFS client issues REMOVE or RENAME, DittoFS must break the Handle lease BEFORE completing the operation. The existing `CheckAndBreakForDelete` does this, but:
+
+1. The break is asynchronous (goroutine) -- the NFS handler may complete the delete before the SMB client acknowledges the break
+2. The method returns `ErrLeaseBreakPending` but the NFS handler may not wait for acknowledgment
+3. If the NFS handler proceeds without waiting, the SMB client loses data (cached writes not flushed)
+
+**Why it happens:** The current design returns `ErrLeaseBreakPending` to signal the caller should wait, but NFS v3/v4 handlers may not have retry logic for this error. NFSv4 delegations have a recall mechanism with a timeout, but the NFS handler dispatching is separate from SMB lease break dispatching.
+
+**Prevention:**
+1. NFS handlers that trigger lease breaks MUST block until break is acknowledged or times out (the existing `OpLockBreakScanner` handles timeout)
+2. Implement a `WaitForBreakAcknowledgment(leaseKey, timeout)` method on OplockManager
+3. NFS REMOVE/RENAME flow: `CheckAndBreakForDelete -> if pending, WaitForBreakAcknowledgment(30s) -> complete delete`
+4. If timeout expires, the lease is force-revoked (existing scanner behavior) and the NFS operation proceeds
+5. Test: SMB3 client has R+W+H lease, NFS client removes file -> SMB3 gets break notification, flushes writes, acknowledges, NFS delete completes
+
+**Detection:** NFS delete succeeds but SMB client loses cached (unflushed) writes. Data loss scenario.
+
+**Phase:** Cross-protocol integration phase. This is a data safety issue and must be thoroughly tested.
+
+---
+
+### Pitfall 15: ACL Consistency Between SMB3 Encrypted Sessions and NFS Kerberos
+
+**What goes wrong:** SMB3 encrypted sessions authenticate via SPNEGO/Kerberos or NTLM, producing a Windows security context (SID-based). NFS Kerberos produces a Unix identity (UID/GID-based). The existing DittoFS SID mapping (Samba-style RID allocation: uid*2+1000, gid*2+1001) must produce consistent mappings regardless of access path. When SMB3 encryption is enabled, the security context may carry additional claims or group memberships that differ from the NFS Kerberos path.
+
+**Why it happens:** The SMB session maps Kerberos principal -> control plane user -> SID (via RID allocation). The NFS adapter maps Kerberos principal -> control plane user -> UID/GID. Both should resolve to the same control plane user, but edge cases exist:
+1. Username normalization differs (SMB strips realm, NFS may not)
+2. Group membership queries differ (SMB uses Windows token groups, NFS uses supplementary GIDs from AUTH_SYS or Kerberos principal groups)
+3. The POSIX-to-DACL synthesis produces Security Descriptors from mode bits, but mode bits are computed from the Unix identity. If the Unix identity differs between SMB and NFS paths, the generated DACL differs.
+
+**Prevention:**
+1. Ensure principal-to-username normalization is identical in both `handleKerberosAuth` (SMB) and the NFS RPCSEC_GSS handler
+2. Use the same control plane user lookup for both paths (already done -- both use `userStore.GetUser`)
+3. When generating Security Descriptors, always use the file's stored UID/GID (from metadata), not the accessing user's identity
+4. Test: create file via NFS Kerberos, query Security Descriptor via SMB3 -> Owner SID should match the NFS user's mapped SID
+
+**Detection:** `icacls` shows different owners for files created via NFS vs SMB. Permission denied errors when accessing NFS-created files via SMB or vice versa.
+
+**Phase:** Cross-protocol integration phase.
 
 ---
 
 ## Minor Pitfalls
 
-### Pitfall 14: QUERY_INFO OutputBufferOffset Incorrect for Security Info
+### Pitfall 16: MaxTransactSize / MaxReadSize / MaxWriteSize Negotiation for 3.x
 
-**What goes wrong:** The QUERY_INFO response sets `OutputBufferOffset` to a fixed value (header size + struct size). But for security descriptor responses, some Windows clients use this offset to locate the SD data within the response. If the offset does not match the actual data position (e.g., due to padding differences), the client reads garbage.
+**What goes wrong:** SMB 3.x introduces multi-credit operations where reads/writes can be larger than 64KB. The existing negotiate response sets max sizes but may not coordinate with credit charges. For SMB 3.x, a single operation can use multiple credits (1 credit per 64KB), and the CreditCharge header field indicates how many credits the operation consumes.
 
-**Prevention:** Ensure `OutputBufferOffset` in `QueryInfoResponse.Encode()` correctly points to where the Data field starts. The current formula `64+9 = 73` should be correct for SMB2 header (64) + QUERY_INFO response fixed part (9 bytes before data). Verify with Wireshark.
+**Prevention:** Ensure credit charge validation in the dispatch layer accepts multi-credit operations. The existing credit system tracks outstanding credits per-session but may not validate CreditCharge > 1.
 
-**Detection:** Wireshark packet analysis: check that the OutputBufferOffset field matches the actual position of the security descriptor bytes in the response.
-
----
-
-### Pitfall 15: Windows 11 25H2 SMBv1 Fallback Breaking Discovery
-
-**What goes wrong:** Windows 11 25H2 completely removes SMBv1 support for NetBIOS-based connections. If DittoFS is discovered via NetBIOS name resolution, Windows 11 25H2 clients cannot find the server at all.
-
-**Prevention:** Ensure DittoFS is accessible via DNS name or IP address directly on port 445 (TCP), not relying on NetBIOS for name resolution. Document this requirement for Windows 11 25H2 users.
-
-**Detection:** Test from Windows 11 25H2 using both `\\server-name\share` and `\\ip-address\share`. If name-based access fails but IP-based works, NetBIOS discovery is the issue.
+**Phase:** Negotiate phase.
 
 ---
 
-### Pitfall 16: Negotiate Capabilities Not Advertising Leasing Support
+### Pitfall 17: Connection.ClientGuid Tracking for Durable Handles
 
-**What goes wrong:** The NEGOTIATE response sets Capabilities to 0 (no capabilities). Windows 11 clients may send lease requests via create contexts regardless, but some conformance tests verify that the server advertises leasing support before testing lease behavior.
+**What goes wrong:** SMB 3.x uses ClientGuid (sent in NEGOTIATE) to identify client instances across connections. Durable handle reconnect validates that the reconnecting connection's ClientGuid matches the original. If DittoFS does not track ClientGuid per-connection, durable reconnect validation fails.
 
-**Prevention:** Set `CapLeasing (0x02)` in the NEGOTIATE response Capabilities field since DittoFS already supports leases. This is a minor issue but can cause WPTS test classification problems.
+**Prevention:** Store ClientGuid from the NEGOTIATE request in Connection state. Validate during durable reconnect. This also enables multi-channel detection (same ClientGuid on different connections = same client).
 
-**DittoFS-specific:** The NEGOTIATE handler in `negotiate.go` sets Capabilities to 0. Update to advertise supported capabilities.
-
----
-
-## Integration Pitfalls: Security Descriptors Meeting Existing ACL Model
-
-These pitfalls are specific to how the new NT Security Descriptor code interacts with DittoFS's existing NFSv4 ACL model.
-
-### Integration Pitfall A: ACL Round-Trip Fidelity Loss
-
-**What goes wrong:** A Windows client reads a Security Descriptor (QUERY_INFO), makes no changes, and writes it back (SET_INFO). But the round-trip through NFSv4 ACL format loses information:
-1. Windows ACE types not in NFSv4 (e.g., SYSTEM_MANDATORY_LABEL_ACE) are silently dropped
-2. SID-to-principal-to-SID conversion is lossy for non-DittoFS SIDs
-3. ACE canonical ordering on output differs from stored NFSv4 order
-
-The net effect is that a no-op SET_INFO modifies the stored ACL, which triggers CHANGE_NOTIFY events and confuses clients that compare SDs for equality.
-
-**Prevention:**
-1. Cache the raw SD bytes alongside the NFSv4 ACL. On QUERY_INFO, if the cached SD is present and the ACL has not been modified via NFS, return the cached bytes directly
-2. On SET_INFO, store both the NFSv4 ACL translation AND the raw SD bytes
-3. Invalidate the cached SD when the ACL is modified via NFS or the control plane
-
-**Detection:** Use Wireshark to capture QUERY_INFO Security, then immediately SET_INFO Security with the same bytes. Capture QUERY_INFO Security again. The bytes should be identical.
+**Phase:** Negotiate phase (store) and durable handles phase (validate).
 
 ---
 
-### Integration Pitfall B: NFS and SMB ACL Modification Conflict
+### Pitfall 18: TREE_CONNECT Encryption Flag Per-Share
 
-**What goes wrong:** An NFS client modifies file permissions (via SETATTR mode bits or NFSv4 ACLs). The mode-to-ACL synchronization in `pkg/metadata/acl/mode.go` produces a new ACL. But the cached raw SD bytes (from Integration Pitfall A's fix) are now stale. The next SMB client QUERY_INFO returns the old SD.
+**What goes wrong:** SMB 3.x supports per-share encryption via the SMB2_SHAREFLAG_ENCRYPT_DATA flag in TREE_CONNECT response. If the share has encryption enabled and the client does not support encryption, the server must reject the tree connect. The existing tree connect handler does not check encryption capabilities.
 
-**Prevention:**
-1. When any ACL modification occurs (from any protocol), invalidate the cached SD
-2. Use a version counter on the ACL: increment on every modification, check version on SD cache hit
-3. The metadata service's `SetFileAttributes` already updates timestamps -- add SD cache invalidation at the same point
+**Prevention:** Add encryption configuration per-share in the control plane. In TREE_CONNECT handler, check if share requires encryption and if the session supports it. Return STATUS_ACCESS_DENIED if the client cannot encrypt.
 
-**Detection:** Modify file permissions via NFS (`chmod`), then check permissions from Windows (`icacls`). If the Windows view does not reflect the NFS change, the cache is stale.
-
----
-
-### Integration Pitfall C: Cross-Protocol Owner/Group Identity Mismatch
-
-**What goes wrong:** An SMB client sets the Owner SID to `S-1-5-21-0-0-0-2000` via SET_INFO Security. This maps to UID 2000 via `sidToUID()`. An NFS client then reads the file's owner as UID 2000 via GETATTR. But if DittoFS's identity mapper (used for NFS) maps UID 2000 to "bob@EXAMPLE.COM" while the SMB SID was originally set by "alice" (whose Windows SID happened to map to RID 2000), there is an identity mismatch.
-
-**Prevention:**
-1. Ensure the control plane User model has both UID and SID fields
-2. SID allocation should be derived from the User model, not computed on-the-fly
-3. When SET_INFO changes the owner SID, resolve it through the control plane to get the canonical UID
-4. When GETATTR returns the UID, ensure it was set through the same identity resolution path
-
-**Detection:** Create a file from Windows as user "alice." Check the owner from NFS. If the owner name does not resolve to "alice," the identity mapping is inconsistent.
+**Phase:** Encryption phase.
 
 ---
 
 ## Phase-Specific Warnings
 
 | Phase Topic | Likely Pitfall | Mitigation |
-|-------------|---------------|------------|
-| Security Descriptor encoding | Pitfall 1 (field ordering) | Match Windows byte layout, test with Wireshark |
-| SD control flags | Pitfall 2 (missing auto-inherited) | Set SE_DACL_AUTO_INHERITED when ACEs have INHERITED flag |
-| DACL construction | Pitfall 3 (ACE ordering) | Sort into canonical Windows order before encoding |
-| SID mapping | Pitfall 4 (user/group collision) | Use different RID ranges or S-1-22-1/S-1-22-2 convention |
-| Named principal SIDs | Pitfall 5 (hash instability) | Persistent principal-to-RID mapping table |
-| QUERY_INFO truncation | Pitfall 6 (wrong status code) | Return STATUS_BUFFER_OVERFLOW for security queries |
-| SACL handling | Pitfall 7 (silent omission) | Return STATUS_PRIVILEGE_NOT_HELD |
-| Windows 11 24H2 testing | Pitfall 8 (signing required) | Ensure NTLM produces valid signing keys |
-| Compound requests | Pitfall 9 (FileID propagation) | E2E test compound CREATE+QUERY_INFO(Security)+CLOSE |
-| Filesystem attributes | Pitfall 11 (missing PERSISTENT_ACLS) | Verify bit 0x08 in FileFsAttributeInformation |
-| Sparse file read | Pitfall 12 (zeros not returned) | Fix issue #180 in payload service |
-| Directory rename path | Pitfall 13 (stale paths) | Fix issue #181 in metadata Move |
-| ACL round-trip | Integration A (fidelity loss) | Cache raw SD bytes alongside NFSv4 ACL |
-| Cross-protocol ACL | Integration B (stale cache) | Invalidate SD cache on any ACL modification |
-| Identity mapping | Integration C (owner mismatch) | Derive SIDs from control plane User model |
+|---|---|---|
+| Negotiate Contexts (3.1.1) | Pitfalls 1, 6 - Hash chain and context ordering | Store raw message bytes; parse contexts in order; 8-byte align; validate with test vectors |
+| Key Derivation | Pitfalls 2, 4, 7 - Wrong labels/lengths/timing | Dialect-aware KDF; parameterized L value; correct hash-before-derive ordering |
+| Signing Upgrade | Pitfall 5 - Wrong algorithm | AES-128-CMAC for 3.x; keep HMAC-SHA256 for 2.x; add algorithm field to signing state |
+| Encryption | Pitfalls 3, 4, 18 - Transform header, nonce, per-share | New framing layer for 0xFD; correct nonce sizes; per-share encryption config |
+| Leases | Pitfall 8 - V1 vs V2 response mismatch | Track lease version per-connection; match response to request version |
+| SPNEGO/Kerberos | Pitfall 9 - Multi-leg, AP-REP, fallback | Build AP-REP; handle MIC; NTLM fallback path |
+| Durable Handles | Pitfalls 10, 11, 17 - Validation, persistence, ClientGuid | Implement all 14+ validation checks; persist Open state; track ClientGuid |
+| Secure Dialect (3.0.x) | Pitfall 12 - Missing IOCTL | Implement FSCTL_VALIDATE_NEGOTIATE_INFO for 3.0/3.0.2 clients |
+| Cross-Protocol | Pitfalls 13, 14, 15 - Directory leases, Handle lease blocking, ACL consistency | Directory lease breaks; blocking wait for Handle lease; unified principal normalization |
+
+---
 
 ## Sources
 
-- [MS-DTYP: Security Descriptor (Section 2.4.6)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/7d4dac05-9cef-4563-a058-f108abecce1d) -- HIGH confidence
-- [MS-SMB2: QUERY_INFO Request (Section 2.2.37)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/d623b2f7-a5cd-4639-8cc9-71fa7d9f9ba9) -- HIGH confidence
-- [MS-SMB2: Handling Compounded Related Requests](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/46dd4182-62d3-4e30-9fe5-e2ec124edca1) -- HIGH confidence
-- [Order of ACEs in a DACL (Microsoft)](https://learn.microsoft.com/en-us/windows/win32/secauthz/order-of-aces-in-a-dacl) -- HIGH confidence
-- [Samba SID Mapping Bug Discussion](https://lists.samba.org/archive/samba-technical/2017-January/118369.html) -- MEDIUM confidence
-- [Samba SD Field Ordering Discussion](https://lists.samba.org/archive/cifs-protocol/2009-November/001104.html) -- MEDIUM confidence
-- [Windows 11 24H2 SMB Signing Changes (Microsoft)](https://techcommunity.microsoft.com/blog/filecab/smb-security-hardening-in-windows-server-2025--windows-11/4226591) -- HIGH confidence
-- [Windows 11 24H2 NAS Compatibility (Microsoft)](https://techcommunity.microsoft.com/blog/filecab/accessing-a-third-party-nas-with-smb-in-windows-11-24h2-may-fail/4154300) -- HIGH confidence
-- [Enable Insecure Guest Logons (Microsoft)](https://learn.microsoft.com/en-us/windows-server/storage/file-server/enable-insecure-guest-logons-smb2-and-smb3) -- HIGH confidence
-- [Samba smbtorture Lease Test Failures](https://samba-technical.samba.narkive.com/suMaLLor/broken-smbtorture-lease-cases) -- MEDIUM confidence
-- [Microsoft WindowsProtocolTestSuites (GitHub)](https://github.com/microsoft/WindowsProtocolTestSuites) -- HIGH confidence
-- DittoFS source code: `internal/adapter/smb/v2/handlers/security.go`, `query_info.go`, `set_info.go`, `compound.go`, `negotiate.go`, `converters.go` -- verified by direct reading
+### Microsoft Official Documentation (HIGH confidence)
+- [MS-SMB2: Generating Cryptographic Keys](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/da4e579e-02ce-4e27-bbce-3fc816a3ff92)
+- [MS-SMB2: Handling SMB2_CREATE_DURABLE_HANDLE_RECONNECT_V2](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/62ba68d0-8806-4aef-a229-eefb5827160f)
+- [MS-SMB2: SMB2_PREAUTH_INTEGRITY_CAPABILITIES](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/5a07bd66-4734-4af8-abcf-5a44ff7ee0e5)
+- [MS-SMB2: Receiving an SMB2 NEGOTIATE Request](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/b39f253e-4963-40df-8dff-2f9040ebbeb1)
+- [MS-SMB2: Receiving an SMB2 SESSION_SETUP Request](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/e545352b-9f2b-4c5e-9350-db46e4f6755e)
+- [SMB 2 and SMB 3 Security: Anatomy of Signing and Cryptographic Keys](https://learn.microsoft.com/en-us/archive/blogs/openspecification/smb-2-and-smb-3-security-in-windows-10-the-anatomy-of-signing-and-cryptographic-keys) -- includes complete test vectors for SMB 3.0 and 3.1.1 key derivation
+- [SMB 3.1.1 Pre-authentication Integrity in Windows 10](https://learn.microsoft.com/en-us/archive/blogs/openspecification/smb-3-1-1-pre-authentication-integrity-in-windows-10)
+- [SMB 3.1.1 Encryption in Windows 10](https://learn.microsoft.com/en-us/archive/blogs/openspecification/smb-3-1-1-encryption-in-windows-10)
+- [Encryption in SMB 3.0: A Protocol Perspective](https://learn.microsoft.com/en-us/archive/blogs/openspecification/encryption-in-smb-3-0-a-protocol-perspective)
+
+### Samba Implementation Experience (MEDIUM confidence)
+- [Implementing Persistent Handles in Samba (SNIA SDC 2018)](https://www.snia.org/sites/default/files/SDC/2018/presentations/SMB/Bohme_Ralph_Implementing_Persistent_Handles_Samba.pdf)
+- [Samba Bug #14106: Fix spnego fallback from kerberos to ntlmssp](https://bugzilla.samba.org/show_bug.cgi?id=14106)
+- [Samba Bug #13722: Enabling SMB3 encryption breaks macOS clients](https://www.illumos.org/issues/13722)
+- [Samba's Way Toward SMB 3.0 (USENIX ;login:)](https://www.usenix.org/system/files/login/articles/03adam_016-025_online.pdf)
+
+### Protocol Specification References
+- [SP800-108: Recommendation for Key Derivation Using Pseudorandom Functions](https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-108.pdf)
+- [RFC 4493: The AES-CMAC Algorithm](https://www.ietf.org/rfc/rfc4493.txt)
+- [RFC 4178: SPNEGO](https://datatracker.ietf.org/doc/html/rfc4178)
+
+### DittoFS Codebase Analysis (HIGH confidence)
+- `internal/adapter/smb/signing/signing.go` -- HMAC-SHA256 only, needs AES-CMAC for 3.x
+- `internal/adapter/smb/v2/handlers/negotiate.go` -- Negotiate contexts commented out, max dialect 2.1
+- `internal/adapter/smb/framing.go` -- Only handles 0xFE protocol ID, no transform header (0xFD)
+- `internal/adapter/smb/v2/handlers/session_setup.go` -- Kerberos single-leg only, no AP-REP
+- `internal/adapter/smb/v2/handlers/lease.go` -- V1/V2 decode exists, cross-protocol breaks exist
+- `internal/adapter/smb/v2/handlers/oplock.go` -- Cross-protocol integration exists, needs directory lease support
+- `internal/adapter/smb/session/session.go` -- No preauth hash state, no durable handle tracking
+- `internal/adapter/smb/types/constants.go` -- Dialect constants and capabilities defined for 3.x already
