@@ -17,8 +17,9 @@
 package handlers
 
 import (
-	"encoding/binary"
 	"unicode/utf16"
+
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 )
 
 // ============================================================================
@@ -48,11 +49,11 @@ import (
 func encodeUTF16LE(s string) []byte {
 	runes := []rune(s)
 	encoded := utf16.Encode(runes)
-	result := make([]byte, len(encoded)*2)
-	for i, r := range encoded {
-		binary.LittleEndian.PutUint16(result[i*2:], r)
+	w := smbenc.NewWriter(len(encoded) * 2)
+	for _, r := range encoded {
+		w.WriteUint16(r)
 	}
-	return result
+	return w.Bytes()
 }
 
 // decodeUTF16LE converts UTF-16LE bytes to a Go string.
@@ -83,9 +84,10 @@ func decodeUTF16LE(b []byte) string {
 	if len(b)%2 != 0 {
 		b = b[:len(b)-1] // Truncate odd byte
 	}
+	r := smbenc.NewReader(b)
 	u16s := make([]uint16, len(b)/2)
 	for i := range u16s {
-		u16s[i] = binary.LittleEndian.Uint16(b[i*2:])
+		u16s[i] = r.ReadUint16()
 	}
 	return string(utf16.Decode(u16s))
 }

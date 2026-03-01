@@ -41,6 +41,10 @@ type ConnInfo struct {
 	// SessionTracker allows dispatch functions to track/untrack sessions
 	// on the owning Connection. This is an interface to avoid importing pkg/.
 	SessionTracker SessionTracker
+
+	// CryptoState holds per-connection cryptographic negotiation state
+	// including the preauth integrity hash chain for SMB 3.1.1.
+	CryptoState *ConnectionCryptoState
 }
 
 // SessionTracker provides callbacks for session lifecycle tracking.

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"strings"
@@ -61,6 +62,22 @@ type Handler struct {
 
 	// Signing configuration
 	SigningConfig signing.SigningConfig
+
+	// Dialect range configuration (set by adapter from SMBAdapterSettings).
+	// MinDialect is the minimum dialect the server will negotiate.
+	// MaxDialect is the maximum dialect the server will negotiate.
+	// Defaults: MinDialect=0x0202 (SMB 2.0.2), MaxDialect=0x0210 (SMB 2.1).
+	// Configurable to 0x0311 (SMB 3.1.1) via SMBAdapterSettings when SMB3 is ready.
+	MinDialect types.Dialect
+	MaxDialect types.Dialect
+
+	// EncryptionEnabled controls whether CapEncryption is advertised for SMB 3.0+.
+	// When false, encryption capabilities are not offered during negotiate.
+	EncryptionEnabled bool
+
+	// DirectoryLeasingEnabled controls whether CapDirectoryLeasing is advertised for SMB 3.0+.
+	// Defaults to true.
+	DirectoryLeasingEnabled bool
 
 	// Cached share list for pipe CREATE operations (IPC$).
 	// Protected by sharesCacheMu. Invalidated via Runtime.OnShareChange().
@@ -136,6 +153,11 @@ type OpenFile struct {
 	ParentHandle  metadata.FileHandle // Parent directory handle for deletion
 	FileName      string              // File name within parent for deletion
 
+	// ShareAccess stores the sharing mode from the CREATE request.
+	// Used for share mode conflict checking during rename and other operations.
+	// Bit mask: 0x01 (FILE_SHARE_READ), 0x02 (FILE_SHARE_WRITE), 0x04 (FILE_SHARE_DELETE)
+	ShareAccess uint32
+
 	// CreateOptions stores the original CreateOptions from the CREATE request,
 	// used to populate FileModeInformation (FILE_WRITE_THROUGH, FILE_SEQUENTIAL_ONLY, etc.)
 	CreateOptions types.CreateOptions
@@ -177,15 +199,19 @@ func NewHandler() *Handler {
 // generates a random server GUID, and sets default max sizes (64KB).
 func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 	h := &Handler{
-		StartTime:       time.Now(),
-		SessionManager:  sessionManager,
-		PipeManager:     rpc.NewPipeManager(),
-		OplockManager:   NewOplockManager(),
-		NotifyRegistry:  NewNotifyRegistry(),
-		MaxTransactSize: 1048576, // 1MB (supports large directory listings; increases per-request memory)
-		MaxReadSize:     1048576, // 1MB
-		MaxWriteSize:    1048576, // 1MB
-		SigningConfig:   signing.DefaultSigningConfig(),
+		StartTime:               time.Now(),
+		SessionManager:          sessionManager,
+		PipeManager:             rpc.NewPipeManager(),
+		OplockManager:           NewOplockManager(),
+		NotifyRegistry:          NewNotifyRegistry(),
+		MaxTransactSize:         1048576, // 1MB (supports large directory listings; increases per-request memory)
+		MaxReadSize:             1048576, // 1MB
+		MaxWriteSize:            1048576, // 1MB
+		SigningConfig:           signing.DefaultSigningConfig(),
+		MinDialect:              types.Dialect0202,
+		MaxDialect:              types.Dialect0210, // Default to 2.1 until full SMB3 session/signing is implemented
+		EncryptionEnabled:       false,
+		DirectoryLeasingEnabled: true,
 	}
 
 	// Generate random server GUID
@@ -566,6 +592,123 @@ func (h *Handler) GetPendingAuth(sessionID uint64) (*PendingAuth, bool) {
 // DeletePendingAuth removes a pending authentication
 func (h *Handler) DeletePendingAuth(sessionID uint64) {
 	h.pendingAuth.Delete(sessionID)
+}
+
+// checkShareModeConflict checks if opening a file with the given access and sharing
+// modes would conflict with any existing opens. Per MS-FSA 2.1.5.1.2 (Sharing mode
+// check), the share mode deny table is:
+//
+//   - If an existing open has read access AND the new open doesn't share read -> conflict
+//   - If an existing open has write access AND the new open doesn't share write -> conflict
+//   - If an existing open has delete access AND the new open doesn't share delete -> conflict
+//   - Vice versa: if the new open requests access that the existing open doesn't share
+//
+// Returns true if a conflict exists (CREATE should fail with STATUS_SHARING_VIOLATION).
+func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesiredAccess, newShareAccess uint32) bool {
+	const (
+		fileShareRead   = uint32(0x01)
+		fileShareWrite  = uint32(0x02)
+		fileShareDelete = uint32(0x04)
+
+		// Access mask bits per MS-SMB2
+		fileReadData   = uint32(0x00000001)
+		fileWriteData  = uint32(0x00000002)
+		fileAppendData = uint32(0x00000004)
+		fileExecute    = uint32(0x00000020)
+		deleteAccess   = uint32(0x00010000)
+		genericRead    = uint32(0x80000000)
+		genericWrite   = uint32(0x40000000)
+		genericAll     = uint32(0x10000000)
+		maxAllowed     = uint32(0x02000000)
+	)
+
+	// Helper: does access mask imply read?
+	hasRead := func(access uint32) bool {
+		return access&(fileReadData|fileExecute|genericRead|genericAll|maxAllowed) != 0
+	}
+	// Helper: does access mask imply write?
+	hasWrite := func(access uint32) bool {
+		return access&(fileWriteData|fileAppendData|genericWrite|genericAll) != 0
+	}
+	// Helper: does access mask imply delete?
+	hasDelete := func(access uint32) bool {
+		return access&(deleteAccess|genericAll) != 0
+	}
+
+	conflict := false
+	h.files.Range(func(key, value any) bool {
+		existing := value.(*OpenFile)
+		// Only check handles to the same file
+		if len(existing.MetadataHandle) == 0 || !bytes.Equal(existing.MetadataHandle, fileHandle) {
+			return true
+		}
+		// Skip pipes
+		if existing.IsPipe {
+			return true
+		}
+
+		// Check: existing access vs new sharing
+		if hasRead(existing.DesiredAccess) && newShareAccess&fileShareRead == 0 {
+			conflict = true
+			return false
+		}
+		if hasWrite(existing.DesiredAccess) && newShareAccess&fileShareWrite == 0 {
+			conflict = true
+			return false
+		}
+		if hasDelete(existing.DesiredAccess) && newShareAccess&fileShareDelete == 0 {
+			conflict = true
+			return false
+		}
+
+		// Check: new access vs existing sharing
+		if hasRead(newDesiredAccess) && existing.ShareAccess&fileShareRead == 0 {
+			conflict = true
+			return false
+		}
+		if hasWrite(newDesiredAccess) && existing.ShareAccess&fileShareWrite == 0 {
+			conflict = true
+			return false
+		}
+		if hasDelete(newDesiredAccess) && existing.ShareAccess&fileShareDelete == 0 {
+			conflict = true
+			return false
+		}
+
+		return true
+	})
+	return conflict
+}
+
+// checkShareDeleteConflict checks if any other open handle on the same file
+// lacks FILE_SHARE_DELETE in its ShareAccess. Per MS-FSA 2.1.5.14.10, a rename
+// requires all other opens to permit delete sharing. Returns true if a conflict
+// exists (rename should be blocked with STATUS_SHARING_VIOLATION).
+func (h *Handler) checkShareDeleteConflict(renameFile *OpenFile) bool {
+	const fileShareDelete = uint32(0x04) // FILE_SHARE_DELETE
+
+	conflict := false
+	h.files.Range(func(key, value any) bool {
+		other := value.(*OpenFile)
+		// Skip the handle being renamed
+		if other.FileID == renameFile.FileID {
+			return true
+		}
+		// Only check handles to the same file (same metadata handle)
+		if len(other.MetadataHandle) == 0 || len(renameFile.MetadataHandle) == 0 {
+			return true
+		}
+		if !bytes.Equal(other.MetadataHandle, renameFile.MetadataHandle) {
+			return true
+		}
+		// If this other handle does not allow delete sharing, conflict
+		if other.ShareAccess&fileShareDelete == 0 {
+			conflict = true
+			return false // Stop iterating
+		}
+		return true
+	})
+	return conflict
 }
 
 // getCachedShares returns the cached share list, rebuilding if invalidated.

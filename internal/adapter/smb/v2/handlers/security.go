@@ -18,9 +18,9 @@ package handlers
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/pkg/auth/sid"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
@@ -220,11 +220,11 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 	// Header (20 bytes)
 	buf.WriteByte(1) // Revision
 	buf.WriteByte(0) // Sbz1
-	_ = binary.Write(&buf, binary.LittleEndian, control)
-	_ = binary.Write(&buf, binary.LittleEndian, ownerOffset)
-	_ = binary.Write(&buf, binary.LittleEndian, groupOffset)
-	_ = binary.Write(&buf, binary.LittleEndian, saclOffset)
-	_ = binary.Write(&buf, binary.LittleEndian, daclOffset)
+	writeUint16ToBuf(&buf, control)
+	writeUint32ToBuf(&buf, ownerOffset)
+	writeUint32ToBuf(&buf, groupOffset)
+	writeUint32ToBuf(&buf, saclOffset)
+	writeUint32ToBuf(&buf, daclOffset)
 
 	// Body in Windows convention order: SACL, DACL, Owner, Group
 
@@ -320,9 +320,9 @@ func buildDACL(buf *bytes.Buffer, file *metadata.File) *acl.ACL {
 	// Write ACL header (8 bytes) per MS-DTYP Section 2.4.5
 	buf.WriteByte(2) // AclRevision (2 = standard)
 	buf.WriteByte(0) // Sbz1
-	_ = binary.Write(buf, binary.LittleEndian, uint16(totalACLSize))
-	_ = binary.Write(buf, binary.LittleEndian, uint16(len(aces)))
-	_ = binary.Write(buf, binary.LittleEndian, uint16(0)) // Sbz2
+	writeUint16ToBuf(buf, uint16(totalACLSize))
+	writeUint16ToBuf(buf, uint16(len(aces)))
+	writeUint16ToBuf(buf, 0) // Sbz2
 
 	// Write each ACE per MS-DTYP Section 2.4.4.2
 	for i := range aces {
@@ -331,8 +331,8 @@ func buildDACL(buf *bytes.Buffer, file *metadata.File) *acl.ACL {
 
 		buf.WriteByte(ace.aceType)  // AceType
 		buf.WriteByte(ace.aceFlags) // AceFlags
-		_ = binary.Write(buf, binary.LittleEndian, aceSize)
-		_ = binary.Write(buf, binary.LittleEndian, ace.accessMask)
+		writeUint16ToBuf(buf, aceSize)
+		writeUint32ToBuf(buf, ace.accessMask)
 		sid.EncodeSID(buf, ace.sid)
 	}
 
@@ -342,11 +342,11 @@ func buildDACL(buf *bytes.Buffer, file *metadata.File) *acl.ACL {
 // buildEmptySACL writes a valid empty SACL to buf.
 // The SACL has revision=2, count=0, and total size=8 bytes.
 func buildEmptySACL(buf *bytes.Buffer) {
-	buf.WriteByte(2)                                                  // AclRevision
-	buf.WriteByte(0)                                                  // Sbz1
-	_ = binary.Write(buf, binary.LittleEndian, uint16(aclHeaderSize)) // AclSize = 8
-	_ = binary.Write(buf, binary.LittleEndian, uint16(0))             // AceCount = 0
-	_ = binary.Write(buf, binary.LittleEndian, uint16(0))             // Sbz2
+	buf.WriteByte(2)                     // AclRevision
+	buf.WriteByte(0)                     // Sbz1
+	writeUint16ToBuf(buf, aclHeaderSize) // AclSize = 8
+	writeUint16ToBuf(buf, 0)             // AceCount = 0
+	writeUint16ToBuf(buf, 0)             // Sbz2
 }
 
 // ============================================================================
@@ -364,13 +364,16 @@ func ParseSecurityDescriptor(data []byte) (ownerUID *uint32, ownerGID *uint32, f
 	}
 
 	// Parse header
-	// revision := data[0]
-	// sbz1 := data[1]
-	// control := binary.LittleEndian.Uint16(data[2:4])
-	offsetOwner := binary.LittleEndian.Uint32(data[4:8])
-	offsetGroup := binary.LittleEndian.Uint32(data[8:12])
-	// offsetSACL := binary.LittleEndian.Uint32(data[12:16])
-	offsetDACL := binary.LittleEndian.Uint32(data[16:20])
+	r := smbenc.NewReader(data)
+	r.Skip(2) // Revision(1) + Sbz1(1)
+	r.Skip(2) // Control (not used)
+	offsetOwner := r.ReadUint32()
+	offsetGroup := r.ReadUint32()
+	r.Skip(4) // offsetSACL (not used)
+	offsetDACL := r.ReadUint32()
+	if r.Err() != nil {
+		return nil, nil, nil, fmt.Errorf("failed to parse SD header: %w", r.Err())
+	}
 
 	// Parse Owner SID — only set ownerUID if the SID is recognized
 	if offsetOwner > 0 && int(offsetOwner) < len(data) {
@@ -414,11 +417,11 @@ func parseDACL(data []byte) (*acl.ACL, error) {
 	}
 
 	// Parse ACL header
-	// aclRevision := data[0]
-	// sbz1 := data[1]
-	// aclSize := binary.LittleEndian.Uint16(data[2:4])
-	aceCount := binary.LittleEndian.Uint16(data[4:6])
-	// sbz2 := binary.LittleEndian.Uint16(data[6:8])
+	aclR := smbenc.NewReader(data)
+	aclR.Skip(2) // AclRevision(1) + Sbz1(1)
+	aclR.Skip(2) // AclSize (not used)
+	aceCount := aclR.ReadUint16()
+	// Sbz2 not needed
 
 	if aceCount > acl.MaxACECount {
 		return nil, fmt.Errorf("DACL has %d ACEs, exceeds maximum %d", aceCount, acl.MaxACECount)
@@ -432,10 +435,14 @@ func parseDACL(data []byte) (*acl.ACL, error) {
 			return nil, fmt.Errorf("ACE %d extends beyond DACL data", i)
 		}
 
-		aceType := data[offset]
-		aceFlags := data[offset+1]
-		aceSize := binary.LittleEndian.Uint16(data[offset+2 : offset+4])
-		accessMask := binary.LittleEndian.Uint32(data[offset+4 : offset+8])
+		aceR := smbenc.NewReader(data[offset:])
+		aceType := aceR.ReadUint8()
+		aceFlags := aceR.ReadUint8()
+		aceSize := aceR.ReadUint16()
+		accessMask := aceR.ReadUint32()
+		if aceR.Err() != nil {
+			return nil, fmt.Errorf("ACE %d header parse error: %w", i, aceR.Err())
+		}
 
 		if offset+int(aceSize) > len(data) {
 			return nil, fmt.Errorf("ACE %d size %d extends beyond DACL data", i, aceSize)
@@ -476,6 +483,24 @@ func parseDACL(data []byte) (*acl.ACL, error) {
 // ============================================================================
 // Alignment Helpers
 // ============================================================================
+
+// writeUint16ToBuf writes a little-endian uint16 to a bytes.Buffer.
+func writeUint16ToBuf(buf *bytes.Buffer, v uint16) {
+	var tmp [2]byte
+	tmp[0] = byte(v)
+	tmp[1] = byte(v >> 8)
+	buf.Write(tmp[:])
+}
+
+// writeUint32ToBuf writes a little-endian uint32 to a bytes.Buffer.
+func writeUint32ToBuf(buf *bytes.Buffer, v uint32) {
+	var tmp [4]byte
+	tmp[0] = byte(v)
+	tmp[1] = byte(v >> 8)
+	tmp[2] = byte(v >> 16)
+	tmp[3] = byte(v >> 24)
+	buf.Write(tmp[:])
+}
 
 // alignTo4 rounds up a value to the next 4-byte boundary.
 func alignTo4(n uint32) uint32 {

@@ -2,11 +2,11 @@ package handlers
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"path"
 	"strings"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -88,14 +88,27 @@ func DecodeSetInfoRequest(body []byte) (*SetInfoRequest, error) {
 		return nil, fmt.Errorf("SET_INFO request too short: %d bytes", len(body))
 	}
 
-	req := &SetInfoRequest{
-		InfoType:       body[2],
-		FileInfoClass:  body[3],
-		BufferLength:   binary.LittleEndian.Uint32(body[4:8]),
-		BufferOffset:   binary.LittleEndian.Uint16(body[8:10]),
-		AdditionalInfo: binary.LittleEndian.Uint32(body[12:16]),
+	r := smbenc.NewReader(body)
+	r.Skip(2) // StructureSize
+	infoType := r.ReadUint8()
+	fileInfoClass := r.ReadUint8()
+	bufferLength := r.ReadUint32()
+	bufferOffset := r.ReadUint16()
+	r.Skip(2) // Reserved
+	additionalInfo := r.ReadUint32()
+	fileID := r.ReadBytes(16)
+	if r.Err() != nil {
+		return nil, fmt.Errorf("SET_INFO parse error: %w", r.Err())
 	}
-	copy(req.FileID[:], body[16:32])
+
+	req := &SetInfoRequest{
+		InfoType:       infoType,
+		FileInfoClass:  fileInfoClass,
+		BufferLength:   bufferLength,
+		BufferOffset:   bufferOffset,
+		AdditionalInfo: additionalInfo,
+	}
+	copy(req.FileID[:], fileID)
 
 	// Extract buffer
 	// BufferOffset is relative to the start of SMB2 header (64 bytes)
@@ -114,9 +127,9 @@ func DecodeSetInfoRequest(body []byte) (*SetInfoRequest, error) {
 
 // Encode serializes the SetInfoResponse into SMB2 wire format [MS-SMB2] 2.2.40.
 func (resp *SetInfoResponse) Encode() ([]byte, error) {
-	buf := make([]byte, 2)
-	binary.LittleEndian.PutUint16(buf[0:2], 2) // StructureSize
-	return buf, nil
+	w := smbenc.NewWriter(2)
+	w.WriteUint16(2) // StructureSize
+	return w.Bytes(), w.Err()
 }
 
 // DecodeFileRenameInfo parses FILE_RENAME_INFORMATION [MS-FSCC] 2.4.34.
@@ -134,7 +147,8 @@ func DecodeFileRenameInfo(buffer []byte) (*FileRenameInfo, error) {
 	// RootDirectory (8 bytes at offset 8-15) - extract
 	copy(info.RootDirectory[:], buffer[8:16])
 
-	fileNameLength := binary.LittleEndian.Uint32(buffer[16:20])
+	renameR := smbenc.NewReader(buffer[16:20])
+	fileNameLength := renameR.ReadUint32()
 
 	// FileName starts at offset 20
 	if len(buffer) < 20+int(fileNameLength) {
@@ -153,7 +167,8 @@ func decodeEndOfFileInfo(buffer []byte) (uint64, error) {
 	if len(buffer) < 8 {
 		return 0, fmt.Errorf("buffer too short for FILE_END_OF_FILE_INFORMATION")
 	}
-	return binary.LittleEndian.Uint64(buffer[0:8]), nil
+	r := smbenc.NewReader(buffer)
+	return r.ReadUint64(), r.Err()
 }
 
 // ============================================================================
@@ -178,8 +193,8 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
-		logger.Debug("SET_INFO: invalid file ID", "fileID", fmt.Sprintf("%x", req.FileID))
-		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
+		logger.Debug("SET_INFO: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
+		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileClosed}}, nil
 	}
 
 	// ========================================================================
@@ -229,7 +244,8 @@ func (h *Handler) setFileInfoFromStore(
 		// Validate attribute constraints per MS-FSCC 2.4.7:
 		// - FILE_ATTRIBUTE_DIRECTORY on a non-directory file -> INVALID_PARAMETER
 		// - FILE_ATTRIBUTE_TEMPORARY on a directory -> INVALID_PARAMETER
-		fileAttrs := types.FileAttributes(binary.LittleEndian.Uint32(buffer[32:36]))
+		attrR := smbenc.NewReader(buffer[32:36])
+		fileAttrs := types.FileAttributes(attrR.ReadUint32())
 		if fileAttrs != 0 {
 			if fileAttrs&types.FileAttributeDirectory != 0 && !openFile.IsDirectory {
 				return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
@@ -242,6 +258,14 @@ func (h *Handler) setFileInfoFromStore(
 		// Decode directly from raw buffer to handle FILETIME sentinels (0, -1, -2)
 		setAttrs := DecodeBasicInfoToSetAttrs(buffer)
 
+		// Per MS-FSCC 2.6: Map FILE_ATTRIBUTE_READONLY to Unix mode.
+		// When FileAttributes != 0, the client is explicitly setting attributes.
+		// READONLY removes owner write bits; its absence restores them.
+		if fileAttrs != 0 {
+			mode := SMBModeFromAttrs(fileAttrs, openFile.IsDirectory)
+			setAttrs.Mode = &mode
+		}
+
 		// Per MS-FSA 2.1.5.14.2: Handle timestamp freeze/unfreeze sentinels.
 		// -1 (0xFFFFFFFFFFFFFFFF): Freeze timestamp -- suppress auto-updates on subsequent operations.
 		// -2 (0xFFFFFFFFFFFFFFFE): Unfreeze timestamp -- re-enable auto-updates.
@@ -250,10 +274,11 @@ func (h *Handler) setFileInfoFromStore(
 		metaSvc := h.Registry.GetMetadataService()
 
 		// Extract sentinel values from raw buffer
-		creationFT := binary.LittleEndian.Uint64(buffer[0:8])
-		atimeFT := binary.LittleEndian.Uint64(buffer[8:16])
-		mtimeFT := binary.LittleEndian.Uint64(buffer[16:24])
-		ctimeFT := binary.LittleEndian.Uint64(buffer[24:32])
+		ftR := smbenc.NewReader(buffer)
+		creationFT := ftR.ReadUint64()
+		atimeFT := ftR.ReadUint64()
+		mtimeFT := ftR.ReadUint64()
+		ctimeFT := ftR.ReadUint64()
 
 		logger.Debug("SET_INFO: FileBasicInformation raw FILETIME values",
 			"path", openFile.Path,
@@ -344,6 +369,16 @@ func (h *Handler) setFileInfoFromStore(
 		if err != nil {
 			logger.Debug("SET_INFO: failed to decode rename info", "error", err)
 			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+		}
+
+		// Per MS-FSA 2.1.5.14.10: Before renaming, check that no other open
+		// handle on the same file conflicts with the rename. Specifically,
+		// all other opens must have FILE_SHARE_DELETE (0x04) in ShareAccess.
+		if conflict := h.checkShareDeleteConflict(openFile); conflict {
+			logger.Debug("SET_INFO: rename blocked by sharing violation",
+				"path", openFile.Path,
+				"fileID", fmt.Sprintf("%x", openFile.FileID))
+			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSharingViolation}}, nil
 		}
 
 		// Normalize path separators (Windows uses backslash, we use forward slash)
@@ -489,7 +524,8 @@ func (h *Handler) setFileInfoFromStore(
 			// FileDispositionInformationEx uses a 4-byte Flags field
 			// Bit 0 (FILE_DISPOSITION_DELETE) = delete on close
 			if len(buffer) >= 4 {
-				flags := binary.LittleEndian.Uint32(buffer[0:4])
+				dispR := smbenc.NewReader(buffer)
+				flags := dispR.ReadUint32()
 				deletePending = (flags & 0x01) != 0
 			} else {
 				deletePending = buffer[0] != 0

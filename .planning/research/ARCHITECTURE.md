@@ -1,563 +1,750 @@
-# Architecture Patterns: SMB2 Conformance and Windows Compatibility (v3.6)
+# Architecture Patterns: SMB3 Protocol Upgrade (v3.8)
 
-**Domain:** SMB2 protocol conformance, NT Security Descriptors, Windows 11 client compatibility
-**Researched:** 2026-02-26
-**Confidence:** HIGH (based on existing codebase analysis, MS-SMB2/MS-DTYP specs, Samba reference implementation)
+**Domain:** SMB3 protocol features integrated into existing DittoFS SMB2 adapter
+**Researched:** 2026-02-28
+**Confidence:** HIGH (source code analysis + MS-SMB2 spec + MS-NLMP + SP800-108)
+
+## Executive Summary
+
+The SMB3 upgrade (3.0/3.0.2/3.1.1) maps cleanly onto DittoFS's existing architecture. The key insight is that SMB3's major features -- encryption, upgraded signing, leases, durable handles, and Kerberos -- each have clear integration points in the current codebase. No fundamental architectural changes are needed; the upgrade is additive.
+
+The existing code already has forward-looking infrastructure: dialect constants for 3.0/3.0.2/3.1.1 in `types/constants.go`, Kerberos provider in `pkg/auth/kerberos/`, SPNEGO parsing in `internal/adapter/smb/auth/spnego.go`, lease support in `OplockManager`, and cross-protocol coordination. The task is connecting these pieces and adding the missing cryptographic and protocol layers.
 
 ## Recommended Architecture
 
-All v3.6 changes are extensions of existing modules. No new packages, interfaces, or architectural patterns are needed. The changes touch three layers:
+### Packet Pipeline with SMB3 Encryption
+
+The critical architectural question is where encryption/decryption sits. It MUST sit in the framing layer (`framing.go`), wrapping the existing read/write path, because encrypted SMB3 messages use a **Transform Header** that replaces the NetBIOS framing for the SMB2 payload.
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                  SMB2 Handler Layer                      │
-│         internal/adapter/smb/v2/handlers/               │
-│                                                         │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
-│  │ security.go  │  │  read.go     │  │  create.go   │  │
-│  │ SD building  │  │ sparse zero  │  │ context enc  │  │
-│  │ SID mapping  │  │ fill fix     │  │ MxAc/QFid    │  │
-│  │ DACL synth   │  │              │  │              │  │
-│  └──────┬───────┘  └──────┬───────┘  └──────────────┘  │
-│         │                 │                              │
-│  ┌──────┴───────┐  ┌──────┴───────────────────┐        │
-│  │ query_info.go│  │ set_info.go               │        │
-│  │ new info     │  │ SD set, rename fix        │        │
-│  │ classes      │  │                           │        │
-│  └──────┬───────┘  └──────┬───────────────────┘        │
-└─────────┼─────────────────┼─────────────────────────────┘
-          │                 │
-          ▼                 ▼
-┌─────────────────────────────────────────────────────────┐
-│                  Metadata Layer                          │
-│              pkg/metadata/                               │
-│                                                         │
-│  ┌──────────────────────┐  ┌─────────────────────────┐  │
-│  │ file_modify.go       │  │ acl/ package            │  │
-│  │ Move: update child   │  │ types.go: unchanged     │  │
-│  │ paths recursively    │  │ validate.go: unchanged  │  │
-│  └──────────────────────┘  │ inherit.go: may extend  │  │
-│                            └─────────────────────────┘  │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │ store/ implementations (memory, badger, postgres) │   │
-│  │ Rename: must propagate path updates to children   │   │
-│  └──────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────┘
-          │
-          ▼
-┌─────────────────────────────────────────────────────────┐
-│                  Payload Layer                           │
-│              pkg/payload/                                │
-│                                                         │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │ io/read.go                                        │   │
-│  │ ReadAt: handle "block not found" as zero bytes    │   │
-│  │ (not as error) when within file size bounds       │   │
-│  └──────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────┘
+Client -> TCP -> NetBIOS Frame -> [Transform Header?] -> SMB2 Header + Body -> Handler
+                                   ^                      ^
+                                   |                      |
+                           Decrypt here              Sign/Verify here
+                           (framing.go)              (framing.go + signing/)
+```
+
+**Current pipeline (SMB2):**
+```
+ReadRequest() -> NetBIOS header -> Read message -> Parse SMB2 header -> Verify signature -> Return
+```
+
+**New pipeline (SMB3):**
+```
+ReadRequest() -> NetBIOS header -> Read message -> Check Transform Header?
+  -> YES: Decrypt -> Parse SMB2 header -> (signature embedded in transform) -> Return
+  -> NO:  Parse SMB2 header -> Verify signature (CMAC/GMAC) -> Return
 ```
 
 ### Component Boundaries
 
-| Component | Responsibility | Changes in v3.6 |
-|-----------|---------------|-----------------|
-| `handlers/security.go` | NT Security Descriptor encoding, SID mapping, DACL building | Extend: POSIX-to-DACL synthesis, well-known SIDs, SACL stub, ACE flag translation fix |
-| `handlers/read.go` | SMB2 READ command handling | Fix: zero-fill for sparse file reads |
-| `handlers/create.go` | SMB2 CREATE command handling | Fix: create context wire encoding, MxAc/QFid responses |
-| `handlers/query_info.go` | SMB2 QUERY_INFO dispatch | Extend: FileCompressionInformation, FileAttributeTagInformation, FilePositionInformation |
-| `handlers/set_info.go` | SMB2 SET_INFO dispatch | Existing: setSecurityInfo already works; no changes needed |
-| `pkg/metadata/file_modify.go` | Move/rename operations | Fix: update `srcFile.Path` before PutFile in Move transaction |
-| `pkg/metadata/store/*` | Metadata store implementations | Fix: Rename must update descendant paths |
-| `pkg/payload/io/read.go` | Cache-aware payload reads | Fix: treat missing blocks as zeros when offset < file size |
-| `signing/signing.go` | SMB2 message signing | Validate: ensure signing is active for all authenticated sessions |
+| Component | Responsibility | Status | Communicates With |
+|-----------|---------------|--------|-------------------|
+| `internal/adapter/smb/framing.go` | NetBIOS framing, Transform Header decrypt/encrypt | **MODIFY** | All (entry/exit point) |
+| `internal/adapter/smb/crypto/` | AES-CCM/GCM encrypt/decrypt, key derivation (SP800-108) | **NEW** | framing.go, session |
+| `internal/adapter/smb/signing/signing.go` | HMAC-SHA256 + AES-CMAC + AES-GMAC | **MODIFY** | framing.go, session |
+| `internal/adapter/smb/v2/handlers/negotiate.go` | Dialect selection 3.0/3.0.2/3.1.1, negotiate contexts | **MODIFY** | session, crypto |
+| `internal/adapter/smb/v2/handlers/session_setup.go` | Key derivation, preauth hash, session binding | **MODIFY** | crypto, signing, auth |
+| `internal/adapter/smb/v2/handlers/create.go` | Durable handle v1/v2 create contexts | **MODIFY** | durable store |
+| `internal/adapter/smb/v2/handlers/lease.go` | Already has V2 lease support | **MINOR MODIFY** | OplockManager |
+| `internal/adapter/smb/session/session.go` | Per-session crypto keys (sign/encrypt/decrypt) | **MODIFY** | crypto |
+| `internal/adapter/smb/auth/authenticator.go` | Kerberos delegation to shared provider | **MODIFY** | pkg/auth/kerberos |
+| `internal/adapter/smb/durable/` | Durable handle persistence and reconnect | **NEW** | metadata store, handler |
+| `pkg/adapter/smb/config.go` | Encryption config, cipher selection | **MODIFY** | adapter |
+| `pkg/metadata/lock/oplock.go` | OpLock struct (already has Epoch, LeaseKey) | **NO CHANGE** | lease handlers |
+| `pkg/auth/kerberos/provider.go` | Shared Kerberos keytab/config | **NO CHANGE** | SMB auth, NFS auth |
 
-### Data Flow
-
-#### Security Descriptor Query (QUERY_INFO InfoType=3)
-
-```
-1. Client sends QUERY_INFO with InfoType=SMB2_0_INFO_SECURITY
-2. Handler extracts AdditionalInfo bitmask (Owner|Group|DACL|SACL)
-3. Handler calls metaSvc.GetFile() to get metadata.File
-4. Handler calls BuildSecurityDescriptor(file, additionalSecInfo)
-5. BuildSecurityDescriptor:
-   a. If file has ACL: translate NFSv4 ACEs to Windows ACEs
-   b. If file has no ACL: synthesize DACL from UID/GID/mode (NEW)
-   c. Build owner SID from UID
-   d. Build group SID from GID
-   e. Assemble self-relative SD binary
-6. Handler returns SD in QueryInfoResponse.Data
-```
-
-#### Sparse File READ (fixed flow)
+### Data Flow: Encrypted SMB3 Request
 
 ```
-1. Client sends READ at offset X for length L
-2. Handler validates handle, checks locks
-3. Handler calls payloadSvc.ReadAt(ctx, payloadID, data, offset)
-4. ReadAt iterates over block ranges:
-   a. Try cache -> found: fill buffer
-   b. Try block store via EnsureAvailable -> found: fill buffer
-   c. NOT FOUND (new): zero-fill destination slice for this range (NEW)
-5. Handler returns zero-filled response for unwritten ranges
+1. TCP accept (BaseAdapter)
+2. Connection.Serve() loop:
+   a. ReadRequest() reads NetBIOS header (4 bytes)
+   b. Read message bytes
+   c. Check first 4 bytes: SMB2_TRANSFORM_HEADER_ID (0x424D53FD)?
+      YES -> Parse Transform Header (52 bytes)
+          -> Decrypt payload using session DecryptionKey + AES-CCM/GCM
+          -> message = decrypted plaintext
+      NO  -> message = raw bytes (unencrypted session)
+   d. Parse SMB2 header from message
+   e. Verify signature (if signed and not encrypted)
+      - SMB 2.x: HMAC-SHA256 (existing)
+      - SMB 3.0/3.0.2: AES-128-CMAC (new)
+      - SMB 3.1.1: AES-128-GMAC or AES-256-GMAC (new, only when encryption negotiated)
+   f. Dispatch to handler
+3. Handler processes, returns result
+4. SendMessage():
+   a. Build SMB2 header + body
+   b. Sign if session requires signing (algorithm depends on dialect)
+   c. If session requires encryption:
+      -> Build Transform Header
+      -> Encrypt (header + body) using EncryptionKey + AES-CCM/GCM
+      -> Frame = NetBIOS(TransformHeader + EncryptedPayload)
+   d. Else: Frame = NetBIOS(SignedMessage)
+   e. WriteNetBIOSFrame()
 ```
 
-#### Renamed Directory Path Update (fixed flow)
+## Integration Point 1: Encryption in Framing Layer
+
+### Where It Sits
+
+Encryption wraps the **entire SMB2 message** (header + body) inside a Transform Header. This means the framing layer (`framing.go`) must handle it because:
+
+1. The Transform Header is read **before** the SMB2 header is parsed
+2. Decryption must happen **before** signature verification (signatures are inside the encrypted payload for SMB 3.1.1 GMAC)
+3. Encryption on write must happen **after** signing but **before** NetBIOS framing
+
+### Transform Header Structure (MS-SMB2 2.2.41)
 
 ```
-1. Client sends SET_INFO FileRenameInformation for directory /old -> /new
-2. Handler calls metaSvc.Move(authCtx, parentHandle, "old", parentHandle, "new")
-3. Move implementation:
-   a. Validates permissions, sticky bit, type compatibility
-   b. Updates srcFile.Path = buildPath(dstDir.Path, toName) (NEW)
-   c. Calls tx.PutFile(ctx, srcFile) with updated path
-   d. Updates child index entries
-4. Subsequent QUERY_DIRECTORY on /new returns correct paths
+Offset  Size  Field                Description
+------  ----  ------------------   --------------------------------
+0       4     ProtocolId           0x424D53FD (0xFD 'S' 'M' 'B')
+4       16    Signature            AES-CCM MAC or AES-GCM tag
+20      4     Nonce (first 4)      Unique nonce for this message
+24      12    Nonce (remaining)    (total 16 bytes, but AES-CCM uses 11, AES-GCM uses 12)
+36      4     OriginalMessageSize  Size of unencrypted SMB2 message
+40      2     Reserved             Must be 0
+42      2     Flags                0x0001 = Encrypted
+44      8     SessionId            Session that owns the encryption keys
+52      var   EncryptedData        AES-CCM/GCM ciphertext
 ```
 
-## Detailed Analysis: Bug #180 -- Sparse File READ
+### New Files
 
-**Root Cause:** `pkg/payload/io/read.go` line ~214-228 in `ensureAndReadFromCache()`. When a file has "holes" (regions never written), the block does not exist in either the cache or the block store. `EnsureAvailable()` attempts to download the block, fails because it was never uploaded, and returns an error. This error propagates up as a hard read failure.
+**`internal/adapter/smb/crypto/crypto.go`** -- Core encryption/decryption:
+```go
+package crypto
 
-**Why this matters for Windows:** Windows 11 Explorer and many Windows applications create files via `CREATE` + `SET_END_OF_FILE` (which sets the file size) and then write data at various offsets. The regions between writes are "sparse holes" that should return zeros per POSIX and MS-FSCC semantics. Windows clients expect reads of these regions to succeed.
+// TransformHeader represents an SMB3 Transform Header [MS-SMB2 2.2.41]
+type TransformHeader struct {
+    Signature           [16]byte
+    Nonce               [16]byte
+    OriginalMessageSize uint32
+    Flags               uint16
+    SessionID           uint64
+}
 
-**Fix location:** `pkg/payload/io/read.go` in `ensureAndReadFromCache()`:
+// CipherID identifies the negotiated encryption algorithm
+type CipherID uint16
+
+const (
+    CipherAES128CCM CipherID = 0x0001
+    CipherAES128GCM CipherID = 0x0002
+    CipherAES256CCM CipherID = 0x0003
+    CipherAES256GCM CipherID = 0x0004
+)
+
+// Encryptor handles per-session AES encryption/decryption
+type Encryptor struct {
+    cipher    CipherID
+    encKey    []byte // EncryptionKey (derived via SMB3KDF)
+    decKey    []byte // DecryptionKey (derived via SMB3KDF)
+    nonceGen  NonceGenerator
+}
+
+func (e *Encryptor) Encrypt(plaintext []byte, sessionID uint64) ([]byte, error)
+func (e *Encryptor) Decrypt(header *TransformHeader, ciphertext []byte) ([]byte, error)
+```
+
+**`internal/adapter/smb/crypto/kdf.go`** -- Key derivation:
+```go
+package crypto
+
+// SMB3KDF derives keys per SP800-108 Counter Mode with HMAC-SHA256.
+// Used for SigningKey, EncryptionKey, DecryptionKey, ApplicationKey.
+//
+// For SMB 3.0:   Label/Context are ASCII strings
+// For SMB 3.1.1: Context is PreauthIntegrityHashValue (SHA-512)
+func SMB3KDF(sessionKey []byte, label, context string, keyLen int) []byte
+
+// DeriveSessionKeys derives all session keys from the session base key.
+// Returns SigningKey, EncryptionKey, DecryptionKey, ApplicationKey.
+func DeriveSessionKeys(sessionKey []byte, dialect Dialect, preauthHash []byte) *SessionKeys
+
+type SessionKeys struct {
+    SigningKey    []byte
+    EncryptionKey []byte
+    DecryptionKey []byte
+    ApplicationKey []byte
+}
+```
+
+### Modifications to `framing.go`
+
+The existing `ReadRequest()` function needs a new code path after reading the message bytes:
 
 ```go
-// In ensureAndReadFromCache, after EnsureAvailable fails:
-func (s *ServiceImpl) ensureAndReadFromCache(ctx context.Context, payloadID string,
-    blockRange chunk.BlockRange, chunkOffset uint32, dest []byte) error {
-
-    err := s.blockDownloader.EnsureAvailable(ctx, payloadID,
-        blockRange.ChunkIndex, chunkOffset, blockRange.Length)
+// After reading the message, check for Transform Header
+protocolID := binary.LittleEndian.Uint32(message[0:4])
+if protocolID == TransformProtocolID { // 0x424D53FD
+    // Parse Transform Header, look up session's Encryptor,
+    // decrypt, then proceed with SMB2 header parsing on plaintext
+    message, err = decryptTransformMessage(message, sessionLookup)
     if err != nil {
-        // NEW: Unwritten blocks return zeros (sparse file semantics)
-        if isBlockNotFoundError(err) {
-            clear(dest) // Zero-fill the destination slice
-            return nil
-        }
-        return fmt.Errorf("ensure available for block %d/%d failed: %w",
-            blockRange.ChunkIndex, blockRange.BlockIndex, err)
+        return nil, nil, nil, err
     }
+}
+```
 
-    // Read from cache (now populated)
-    found, err := s.cacheReader.ReadAt(ctx, payloadID,
-        blockRange.ChunkIndex, chunkOffset, blockRange.Length, dest)
-    if err != nil || !found {
-        return fmt.Errorf("data not in cache after download for block %d/%d",
-            blockRange.ChunkIndex, blockRange.BlockIndex)
+The existing `SendMessage()` in `response.go` needs encryption wrapping:
+
+```go
+// After signing (if applicable), check if session requires encryption
+if sess != nil && sess.EncryptionRequired() {
+    smbPayload = sess.Encrypt(smbPayload)
+}
+```
+
+### Connection State
+
+The `ConnInfo` struct needs a session lookup callback for decryption (since the session ID is in the Transform Header, not the SMB2 header):
+
+```go
+type ConnInfo struct {
+    // ... existing fields ...
+
+    // EncryptionLookup resolves session ID to Encryptor for Transform Header decryption.
+    // nil when encryption is not negotiated on this connection.
+    EncryptionLookup func(sessionID uint64) *crypto.Encryptor
+}
+```
+
+## Integration Point 2: Signing Upgrade (HMAC-SHA256 -> CMAC/GMAC)
+
+### Current State
+
+`internal/adapter/smb/signing/signing.go` implements HMAC-SHA256 only. The `SigningKey` struct holds a 16-byte key and uses `crypto/hmac` + `crypto/sha256`.
+
+### Required Changes
+
+The signing package needs to become algorithm-aware. The approach is to introduce a `Signer` interface that the session holds, with implementations for each algorithm:
+
+```go
+// signing/signer.go (NEW)
+type Algorithm int
+
+const (
+    AlgorithmHMACSHA256 Algorithm = iota // SMB 2.0.2 / 2.1
+    AlgorithmAESCMAC                      // SMB 3.0 / 3.0.2
+    AlgorithmAESGMAC                      // SMB 3.1.1 (only when encryption negotiated)
+)
+
+type Signer interface {
+    Sign(message []byte) [SignatureSize]byte
+    Verify(message []byte) bool
+    SignMessage(message []byte) // In-place signing
+    Algorithm() Algorithm
+}
+
+// HMACSigner wraps existing HMAC-SHA256 logic
+type HMACSigner struct { key [KeySize]byte }
+
+// CMACSigner uses AES-128-CMAC (crypto/aes + CMAC construction)
+type CMACSigner struct { key [KeySize]byte }
+
+// GMACSigner uses AES-128-GMAC (crypto/aes/gcm with empty plaintext)
+type GMACSigner struct { key [KeySize]byte }
+```
+
+The existing `SigningKey` type and its methods become the `HMACSigner` implementation. `SessionSigningState` gets a `Signer` field instead of a raw `SigningKey`:
+
+```go
+type SessionSigningState struct {
+    Signer          Signer  // Algorithm-aware signer
+    SigningRequired  bool
+    SigningEnabled   bool
+}
+```
+
+### Key Derivation Differences by Dialect
+
+| Dialect | Signing Key Derivation | Algorithm |
+|---------|----------------------|-----------|
+| 2.0.2 / 2.1 | SessionKey truncated/padded to 16 bytes | HMAC-SHA256 |
+| 3.0 | SMB3KDF(SessionKey, "SMB2AESCMAC\0", "SmbSign\0") | AES-128-CMAC |
+| 3.0.2 | SMB3KDF(SessionKey, "SMB2AESCMAC\0", "SmbSign\0") | AES-128-CMAC |
+| 3.1.1 | SMB3KDF(SessionKey, "SMBSigningKey\0", PreauthHashValue) | AES-128-CMAC (default) or AES-GMAC (if encryption negotiated) |
+
+### Go Standard Library Support
+
+- **AES-CMAC**: Not in stdlib. Use `crypto/aes` + RFC 4493 CMAC construction (straightforward, ~50 lines). Alternatively, `golang.org/x/crypto/cmac` if available by implementation time.
+- **AES-GCM**: `crypto/aes` + `crypto/cipher` GCM mode. For GMAC, use GCM with empty plaintext (tag-only).
+- **AES-CCM**: Not in stdlib. Use `golang.org/x/crypto/ccm` or implement per RFC 3610 (~100 lines). The Samba ksmbd implementation is a good reference.
+
+## Integration Point 3: SMB3 Leases and Unified Lock Manager
+
+### Current State (Already Excellent)
+
+The existing lease infrastructure is comprehensive and maps directly to SMB3 requirements:
+
+- `OplockManager` in `handlers/oplock.go` manages both traditional oplocks AND leases
+- `LeaseCreateContext` in `handlers/lease.go` already supports V1 and V2 formats (including ParentLeaseKey and Epoch)
+- `OpLock` struct in `pkg/metadata/lock/oplock.go` already has `LeaseKey [16]byte`, `LeaseState uint32`, `Epoch uint16`, `Breaking bool`, `BreakToState uint32`
+- Cross-protocol coordination (NFS read/write/delete trigger SMB lease breaks) is fully implemented
+- Lease persistence via `LockStore` is in place
+- Grace period reclaim (`RequestLeaseWithReclaim`) is implemented
+
+### What Needs to Change for SMB3
+
+**Minimal changes.** The existing lease implementation is already SMB3-capable because it was built with LeaseV2 support from the start. Specific additions:
+
+1. **Directory leases**: Already supported in `RequestLease()` via `isDirectory` parameter and `lock.IsValidDirectoryLeaseState()`. Just needs the `SMB2_GLOBAL_CAP_DIRECTORY_LEASING` capability advertised in NEGOTIATE.
+
+2. **Epoch enforcement**: Already tracked in `OpLock.Epoch`. Just needs validation in lease break acknowledgment (epoch must match).
+
+3. **ParentLeaseKey**: Already decoded in `DecodeLeaseCreateContext()`. The `SMB2_LEASE_FLAG_PARENT_LEASE_KEY_SET` flag handling needs to be wired up in the CREATE handler to link directory and file leases.
+
+4. **Lease V2 response in NEGOTIATE**: Advertise `SMB2_GLOBAL_CAP_LEASING` and `SMB2_GLOBAL_CAP_DIRECTORY_LEASING` when dialect >= 3.0.
+
+### Cross-Protocol Integration (Already Done)
+
+The existing cross-protocol lease break coordination in `OplockManager` works correctly for SMB3:
+- `CheckAndBreakForWrite()` -- NFS write triggers SMB Write lease break
+- `CheckAndBreakForRead()` -- NFS read triggers SMB Write lease break (cached writes)
+- `CheckAndBreakForDelete()` -- NFS delete triggers all lease breaks to None
+- NLM lock conflict check in `RequestLease()` -- NFS byte-range locks deny SMB leases
+
+No changes needed for cross-protocol integration.
+
+## Integration Point 4: Durable Handles Persistence
+
+### Architecture Decision: Where to Persist
+
+Durable handles MUST persist in the **control plane store** (GORM-based), not the metadata store. Rationale:
+
+1. Durable handles are session-level state (not file-level metadata)
+2. They must survive server restarts (so not in-memory)
+3. They reference file handles, session IDs, and create GUIDs -- control plane concepts
+4. The control plane store already has `GORMStore` with SQLite/PostgreSQL support
+
+### New Sub-Interface
+
+Add a `DurableHandleStore` sub-interface to `pkg/controlplane/store/`:
+
+```go
+type DurableHandleStore interface {
+    PutDurableHandle(ctx context.Context, handle *DurableHandle) error
+    GetDurableHandle(ctx context.Context, createGUID [16]byte) (*DurableHandle, error)
+    DeleteDurableHandle(ctx context.Context, createGUID [16]byte) error
+    ListDurableHandlesForSession(ctx context.Context, sessionID uint64) ([]*DurableHandle, error)
+    CleanupExpiredHandles(ctx context.Context, olderThan time.Time) (int, error)
+}
+```
+
+### Durable Handle Model
+
+```go
+type DurableHandle struct {
+    CreateGUID      [16]byte   // Unique handle identifier (from client)
+    FileID          [16]byte   // SMB2 FileID
+    MetadataHandle  string     // Underlying metadata file handle
+    PayloadID       string     // Content identifier
+    ShareName       string     // Share the file belongs to
+    Path            string     // File path within share
+    SessionID       uint64     // Owning session (cleared on disconnect)
+    LeaseKey        [16]byte   // Associated lease key (if any)
+    LeaseState      uint32     // Lease state at disconnect
+    DesiredAccess   uint32     // Original access mask
+    CreateOptions   uint32     // Original create options
+    IsPersistent    bool       // Persistent (CA share) vs durable
+    Timeout         time.Duration // Grace period for reconnect
+    DisconnectedAt  time.Time  // When the session disconnected
+    CreatedAt       time.Time
+}
+```
+
+### New Package
+
+**`internal/adapter/smb/durable/`**:
+- `store.go` -- DurableHandleStore GORM implementation
+- `manager.go` -- DurableHandleManager (lifecycle, reconnect, timeout)
+- `context.go` -- Create context parsing (DURABLE_HANDLE_REQUEST_V2, RECONNECT_V2)
+
+### CREATE Handler Integration
+
+In `handlers/create.go`, the durable handle flow:
+
+1. **New open**: If create request includes `SMB2_CREATE_DURABLE_HANDLE_REQUEST_V2` context:
+   - Open the file normally
+   - Persist `DurableHandle` in store
+   - Return `SMB2_CREATE_DURABLE_HANDLE_RESPONSE_V2` in response contexts
+
+2. **Reconnect**: If create request includes `SMB2_CREATE_DURABLE_HANDLE_RECONNECT_V2` context:
+   - Look up `DurableHandle` by CreateGUID
+   - Validate the client (session binding or lease key match)
+   - Restore the `OpenFile` state from persisted data
+   - Delete the disconnect record
+   - Return existing FileID + lease state
+
+3. **Disconnect cleanup**: When a connection drops, `Connection.handleConnectionClose()` should mark durable handles as disconnected rather than closing them:
+   - Files with active durable handles: set `DisconnectedAt`, do NOT delete from `files` sync.Map immediately
+   - Files without durable handles: close normally (existing behavior)
+
+## Integration Point 5: SPNEGO/Kerberos Reuse
+
+### Current State
+
+The Kerberos authentication path is already functional:
+
+1. `pkg/auth/kerberos/Provider` loads keytab, manages hot-reload, implements `AuthProvider`
+2. `internal/adapter/smb/auth/spnego.go` parses SPNEGO tokens, detects NTLM vs Kerberos
+3. `handlers/session_setup.go:handleKerberosAuth()` validates AP-REQ, maps principal to user, creates session
+4. `Adapter.SetKerberosProvider()` injects the shared provider
+
+### SMB3 Kerberos Changes
+
+For SMB3, the Kerberos path needs **session key extraction** for signing/encryption key derivation:
+
+```go
+// In handleKerberosAuth(), after service.VerifyAPREQ():
+sessionKey := creds.SessionKey()
+// Then derive SMB3 keys from sessionKey via SMB3KDF
+keys := crypto.DeriveSessionKeys(sessionKey, negotiatedDialect, preauthHash)
+sess.SetSigningKey(keys.SigningKey)
+sess.SetEncryptionKeys(keys.EncryptionKey, keys.DecryptionKey)
+```
+
+The `gokrb5/v8` library's `service.VerifyAPREQ()` returns credentials that include the session key. Currently, `handleKerberosAuth()` ignores this because SMB2 signing with Kerberos was not needed. For SMB3, this is the key material for all cryptographic operations.
+
+### NTLM Path Changes
+
+The NTLM path in `completeNTLMAuth()` already derives a signing key. For SMB3, the derivation changes:
+
+- **SMB 2.x**: `signingKey = sessionBaseKey` (direct or KEY_EXCH decrypted)
+- **SMB 3.x**: `signingKey = SMB3KDF(sessionBaseKey, label, context)`
+
+The existing `auth.DeriveSigningKey()` returns the SMB2 signing key. For SMB3, this needs to be extended to call `crypto.DeriveSessionKeys()` when the negotiated dialect is 3.0+.
+
+## Integration Point 6: Negotiate Contexts (SMB 3.1.1)
+
+### Current State
+
+`handlers/negotiate.go` currently:
+- Selects highest dialect from {0x0202, 0x0210}
+- Advertises `CapLeasing | CapLargeMTU` for dialect >= 2.1
+- Returns 65-byte response body with zeroed NegotiateContextOffset/Count
+
+### Required Changes
+
+For SMB 3.x dialect negotiation:
+
+```go
+// Extend dialect selection
+case types.SMB2Dialect0311:
+    if selectedDialect < types.SMB2Dialect0311 {
+        selectedDialect = types.SMB2Dialect0311
     }
-    return nil
-}
+case types.SMB2Dialect0302:
+    // ...
+case types.SMB2Dialect0300:
+    // ...
 ```
 
-**Sentinel error needed:** Add `ErrBlockNotFound` to `pkg/payload/store/store.go` (or equivalent) so that `EnsureAvailable` can wrap its "not found" condition with a distinguishable error. The `isBlockNotFoundError()` helper uses `errors.Is()`.
+For SMB 3.1.1, parse and respond to negotiate contexts:
 
-**Also needed:** The same zero-fill logic should apply in the COW path (`readFromCOWSource`) when the COW source block also doesn't exist.
+1. **SMB2_PREAUTH_INTEGRITY_CAPABILITIES** (0x0001):
+   - Parse: Client offers hash algorithms (SHA-512 is the only one)
+   - Respond: Select SHA-512, generate server salt
+   - Start preauth integrity hash chain
 
-**Confidence:** HIGH -- direct codebase analysis of `read.go` lines 214-228 and understanding of the chunk/block storage model.
+2. **SMB2_ENCRYPTION_CAPABILITIES** (0x0002):
+   - Parse: Client offers cipher IDs (AES-128-CCM, AES-128-GCM, AES-256-CCM, AES-256-GCM)
+   - Respond: Select preferred cipher (AES-128-GCM preferred for performance)
+   - Store on connection state
 
-## Detailed Analysis: Bug #181 -- Renamed Directory Listing
+3. **SMB2_SIGNING_CAPABILITIES** (0x0008):
+   - Parse: Client offers signing algorithms (HMAC-SHA256, AES-CMAC, AES-GMAC)
+   - Respond: Select based on dialect and encryption
 
-**Root Cause:** `pkg/metadata/file_modify.go` in the `Move()` method (around line 500 of the transaction block). The code updates child index entries and parent references but does NOT update `srcFile.Path` before calling `tx.PutFile(ctx, srcFile)`. The file's `Path` field retains the old value (e.g., `/old`) even though the directory has been moved to `/new`.
+### Preauth Integrity Hash Chain
 
-**Impact:** After renaming `/old` to `/new`:
-- `ReadDirectory("/new")` returns entries correctly (child index is updated)
-- BUT `GetFile(childHandle)` for any child still shows `Path: "/old/child"` instead of `"/new/child"`
-- Windows Explorer shows stale paths, confusing file operations
-- SMB QUERY_DIRECTORY returns wrong FileNameInformation for deeply nested entries
-
-**Fix location:** `pkg/metadata/file_modify.go` in the Move transaction:
+SMB 3.1.1 requires maintaining a SHA-512 hash chain across NEGOTIATE and SESSION_SETUP:
 
 ```go
-// Around line 500, before PutFile:
-srcFile.Path = buildPath(dstDir.Path, toName)  // NEW: update path
-srcFile.Ctime = now
-_ = tx.PutFile(ctx.Context, srcFile)
+// On Connection:
+type PreauthState struct {
+    HashAlgorithm uint16    // Always SHA-512 (0x0001)
+    HashValue     [64]byte  // Running SHA-512 hash
+}
+
+// Updated after each NEGOTIATE/SESSION_SETUP message:
+// HashValue = SHA-512(HashValue || messageBytes)
 ```
 
-**Recursive path update:** For directory renames, ALL descendant files also need their Path updated. This is the deeper fix. Two approaches:
+This hash becomes the `Context` parameter for SMB3KDF key derivation in SMB 3.1.1.
 
-1. **Eager update (recommended for v3.6):** Walk all descendants in the transaction and update each Path. This is correct and simple. The tree depth is bounded by MaxPathDepth.
+### Capabilities Flags
 
-2. **Lazy derivation (future optimization):** Don't store full Path; derive it by walking parent pointers. More complex but avoids the O(n) update cost on rename. Not needed for v3.6.
-
-For the eager approach, add a helper in the store implementation:
+For dialect >= 3.0, advertise additional capabilities:
 
 ```go
-// In metadata store implementations:
-func (s *Store) updateDescendantPaths(ctx context.Context, tx Transaction,
-    dir *File, oldPrefix, newPrefix string) error {
-    children, _ := tx.ListChildren(ctx, dir.Handle)
-    for _, child := range children {
-        childFile, _ := tx.GetFile(ctx, child.Handle)
-        childFile.Path = strings.Replace(childFile.Path, oldPrefix, newPrefix, 1)
-        tx.PutFile(ctx, childFile)
-        if childFile.Type == FileTypeDirectory {
-            s.updateDescendantPaths(ctx, tx, childFile, oldPrefix, newPrefix)
-        }
-    }
-    return nil
+if selectedDialect >= types.SMB2Dialect0300 {
+    capabilities |= uint32(types.CapDirectoryLeasing | types.CapEncryption)
+    // CapMultiChannel deferred -- single connection per session for now
+    // CapPersistentHandles deferred -- only for CA shares
 }
 ```
-
-**Confidence:** HIGH -- direct line-level analysis of file_modify.go Move() method confirms the missing Path update.
-
-## Detailed Analysis: #182 -- NT Security Descriptors
-
-The existing `security.go` (626 lines) already provides a substantial implementation. Five areas need enhancement:
-
-### Enhancement 1: Machine SID
-
-**Current:** `makeDittoFSUserSID(uid)` creates `S-1-5-21-0-0-0-{uid}`. The three sub-authority values (0-0-0) are intended to represent the "machine SID" but using all zeros is non-standard and some Windows tools may flag it as suspicious.
-
-**Fix:** Generate a stable machine SID at server startup (hash of server hostname or a configured value) and store it in the Runtime or as a configuration option. Use `S-1-5-21-{hash1}-{hash2}-{hash3}-{uid}`.
-
-```go
-// Compute once at startup:
-h := sha256.Sum256([]byte(hostname))
-machineSID := SID{
-    Revision: 1,
-    SubAuthority: []uint32{
-        21,
-        binary.LittleEndian.Uint32(h[0:4]),
-        binary.LittleEndian.Uint32(h[4:8]),
-        binary.LittleEndian.Uint32(h[8:12]),
-    },
-}
-// Per-user SID = machineSID + uid as final sub-authority
-```
-
-### Enhancement 2: SID Mapper Location
-
-**Question from milestone:** "Where should SID mapping logic live?"
-
-**Answer: Keep it in `internal/adapter/smb/v2/handlers/security.go`.**
-
-Rationale:
-- SID mapping is SMB-specific. NFS uses UID/GID directly; there is no SID concept in NFS.
-- The existing `PrincipalToSID()` and `SIDToPrincipal()` already live in security.go and work correctly.
-- Moving to pkg/auth/ or pkg/controlplane/ would create an SMB dependency in shared packages.
-- The control plane `IdentityMappingStore` handles NFS-to-Unix identity mapping, not SID mapping. SIDs are a presentation-layer concern for the SMB protocol.
-
-If the SID mapper grows beyond ~100 lines of mapping logic, extract to `internal/adapter/smb/v2/handlers/sid_mapper.go` as a new file in the same package. Do NOT create a new package or interface.
-
-### Enhancement 3: DACL Canonical Ordering
-
-**Current:** `buildDACL()` translates NFSv4 ACEs to Windows ACEs in the order they appear. This is correct when the NFSv4 ACL already has canonical ordering (which `pkg/metadata/acl/validate.go` enforces).
-
-**Issue:** When synthesizing DACLs from POSIX mode bits (the "no ACL" fallback), the generated ACEs must follow Windows canonical order: explicit deny before explicit allow, then inherited deny before inherited allow (MS-DTYP 2.4.4.1).
-
-**Fix:** The `buildDACLFromMode()` function must emit deny ACEs before allow ACEs. The pattern from Samba's `create_synthetic_acl()`:
-
-```
-1. Deny ACEs for group (what group lacks that owner has)
-2. Deny ACEs for others (what others lack that group has)
-3. Allow ACE for owner
-4. Allow ACE for group
-5. Allow ACE for others (Everyone)
-```
-
-### Enhancement 4: ACE Flag Translation Bug
-
-**Current bug:** In `buildDACL()`, ACE flags are passed through with `uint8(ace.Flag & 0xFF)`. This is incorrect because NFSv4 and Windows use different bit positions for some flags:
-
-| Flag | NFSv4 (RFC 7530) | Windows (MS-DTYP) |
-|------|-------------------|-------------------|
-| FILE_INHERIT_ACE | 0x01 | 0x01 |
-| DIRECTORY_INHERIT_ACE | 0x02 | 0x02 |
-| NO_PROPAGATE_INHERIT_ACE | 0x04 | 0x04 |
-| INHERIT_ONLY_ACE | 0x08 | 0x08 |
-| SUCCESSFUL_ACCESS_ACE_FLAG | 0x10 | 0x40 |
-| FAILED_ACCESS_ACE_FLAG | 0x20 | 0x80 |
-| INHERITED_ACE | 0x80 | 0x10 |
-
-**Critical:** `INHERITED_ACE` is 0x80 in NFSv4 but 0x10 in Windows. The current passthrough `ace.Flag & 0xFF` sends 0x80 to Windows clients, which interprets it as `SUCCESSFUL_ACCESS_ACE_FLAG` instead.
-
-**Fix:** Add an explicit flag translation function:
-
-```go
-func nfsv4FlagsToWindowsFlags(nfsFlags uint32) uint8 {
-    var winFlags uint8
-    if nfsFlags&acl.ACE4_FILE_INHERIT_ACE != 0     { winFlags |= 0x01 }
-    if nfsFlags&acl.ACE4_DIRECTORY_INHERIT_ACE != 0 { winFlags |= 0x02 }
-    if nfsFlags&acl.ACE4_NO_PROPAGATE_INHERIT != 0  { winFlags |= 0x04 }
-    if nfsFlags&acl.ACE4_INHERIT_ONLY_ACE != 0      { winFlags |= 0x08 }
-    if nfsFlags&acl.ACE4_INHERITED_ACE != 0         { winFlags |= 0x10 } // 0x80 -> 0x10
-    return winFlags
-}
-```
-
-### Enhancement 5: Default DACL for Files Without ACLs
-
-**Current:** When `file.ACL == nil`, `buildDACL()` creates a single `Everyone: GENERIC_ALL` ACE. This is overly permissive and causes Windows Security tab to show "Everyone has full control" which alarms users and fails conformance tests that verify proper DACL structure.
-
-**Fix:** Synthesize a DACL from POSIX mode bits (Pattern 1 above). This produces a proper deny-before-allow structure that:
-- Maps correctly to the Windows Security tab display
-- Allows Windows clients to understand effective permissions
-- Passes WPTS BVT tests that verify DACL structure
-
-## Conformance Fix Strategy
-
-**Question from milestone:** "What's the right approach to fixing conformance failures -- patch individual handlers vs. create shared infrastructure?"
-
-**Answer: Patch individual handlers.** Here is the analysis:
-
-### Why NOT shared infrastructure
-
-The 56 known BVT failures (from KNOWN_FAILURES.md) fall into these categories:
-
-| Category | Count | Root Cause | Fix Approach |
-|----------|-------|------------|--------------|
-| Negotiate (SMB 3.x) | 16 | Protocol version not implemented | Phase 39 (SMB3), not v3.6 |
-| Encryption | 7 | SMB 3.1.1 encryption not implemented | Phase 39, not v3.6 |
-| DFS | 7 | DFS referrals not implemented | Future phase |
-| SWN | 6 | Service Witness Protocol not implemented | Future phase |
-| VSS | 4 | Volume Shadow Copy not implemented | Future phase |
-| Negotiate (SMB 2.x) | 4 | Edge cases in negotiate/signing | Individual handler fixes |
-| Signing | 1 | Signing not fully conformant | Individual handler fix |
-| Leasing | 1 | Directory leasing not supported | Future phase |
-| Compression | 2 | SMB 3.1.1 compression not supported | Future phase |
-
-**Only 5 failures are fixable in v3.6** (the SMB 2.x negotiate edge cases and signing). These are independent handler-level issues, not symptoms of missing infrastructure.
-
-### When shared infrastructure IS warranted
-
-Two areas do warrant small shared improvements:
-
-1. **Error mapping table:** The converters.go `MetadataErrorToSMBStatus` map should be reviewed for completeness. Missing mappings cause STATUS_INTERNAL_ERROR instead of the correct NT status code. This is a lookup table enhancement, not new infrastructure.
-
-2. **Buffer size validation:** Several QUERY_INFO handlers need to check `OutputBufferLength` and return STATUS_BUFFER_OVERFLOW (with partial data) when the buffer is too small. This is a common pattern that could use a small helper:
-
-```go
-func validateOutputBuffer(requested uint32, available int) (uint32, error) {
-    if int(requested) < available {
-        return requested, ErrBufferOverflow
-    }
-    return uint32(available), nil
-}
-```
-
-### Fix prioritization for v3.6
-
-1. **Bug #180 (sparse READ)** -- Fix in payload/io/read.go. Unblocks Windows file operations.
-2. **Bug #181 (rename paths)** -- Fix in metadata/file_modify.go. Unblocks directory operations.
-3. **Bug #182 (Security Descriptors)** -- Enhance security.go. Improves Windows Explorer experience.
-4. **Signing conformance** -- Verify signing logic in negotiation. May move failures from KNOWN to PASS.
-5. **Negotiate edge cases** -- Fix SMB 2.0.2 and 2.1 negotiate responses.
-
-## Build Order and Dependencies
-
-```
-Phase A: Bug Fixes (parallel, no dependencies between them)
-├── #180: Sparse READ (payload/io/read.go)
-└── #181: Rename Paths (metadata/file_modify.go)
-
-Phase B: Security Descriptors (depends on nothing from Phase A)
-├── Machine SID generation (security.go)
-├── ACE flag translation fix (security.go)
-├── POSIX-to-DACL synthesis (security.go)
-└── Default DACL improvement (security.go)
-
-Phase C: Conformance Improvements (depends on A and B)
-├── Run WPTS BVT after fixes
-├── Fix newly-revealed failures
-├── Update KNOWN_FAILURES.md
-└── Verify SMB 2.x negotiate edge cases
-```
-
-**Phase A and B can run in parallel.** Phase C depends on both because conformance tests validate all fixes together.
-
-## New Components Summary
-
-| What | Where | Type | LOC Estimate |
-|------|-------|------|-------------|
-| `isBlockNotFoundError()` | `pkg/payload/io/read.go` | Helper function | ~10 |
-| `ErrBlockNotFound` | `pkg/payload/store/store.go` | Sentinel error | ~5 |
-| Zero-fill in `ensureAndReadFromCache` | `pkg/payload/io/read.go` | Bug fix | ~15 |
-| Zero-fill in `readFromCOWSource` | `pkg/payload/io/read.go` | Bug fix | ~10 |
-| Path update in `Move()` | `pkg/metadata/file_modify.go` | Bug fix | ~5 |
-| `updateDescendantPaths()` | `pkg/metadata/store/*` | Helper function | ~30 per store |
-| `nfsv4FlagsToWindowsFlags()` | `handlers/security.go` | Translation function | ~15 |
-| `buildDACLFromMode()` | `handlers/security.go` | DACL synthesis | ~60 |
-| `modeToAccessMask()` | `handlers/security.go` | Helper function | ~20 |
-| Machine SID generation | `handlers/security.go` | Startup logic | ~20 |
-| `validateOutputBuffer()` | `handlers/helpers.go` or inline | Shared helper | ~10 |
-
-**Total new code estimate: ~200-250 lines across 4-5 files.** This is a targeted fix milestone, not a large feature addition.
 
 ## Patterns to Follow
 
-### Pattern 1: POSIX-to-DACL Synthesis
+### Pattern 1: Algorithm Dispatch via Dialect
 
-**What:** When a file has no explicit ACL, synthesize a Windows DACL from Unix mode bits (rwxrwxrwx).
+**What:** Use the negotiated dialect to select cryptographic algorithms at session creation time, then store the concrete `Signer`/`Encryptor` on the session. Never check dialect in hot paths.
 
-**When:** `file.ACL == nil` in BuildSecurityDescriptor / buildDACL.
-
-**Reference:** Samba's `create_synthetic_acl()` in `smbd/posix_acls.c`.
-
-**Mapping:**
-
-```
-Unix mode  -> Windows ACEs (deny-before-allow order)
----------     -----------
-Owner rwx  -> ALLOW OWNER_SID: READ|WRITE|EXECUTE|DELETE|READ_ACL|WRITE_ACL
-Group r-x  -> DENY  GROUP_SID: WRITE_DATA|APPEND_DATA|DELETE
-               ALLOW GROUP_SID: READ|EXECUTE|READ_ACL
-Other r--  -> DENY  EVERYONE:  EXECUTE|WRITE_DATA|APPEND_DATA|DELETE
-               ALLOW EVERYONE:  READ|READ_ACL
-```
+**When:** Signing, encryption, key derivation
 
 **Example:**
-
 ```go
-// In security.go, replace the "no ACL" fallback in buildDACL:
-func buildDACLFromMode(buf *bytes.Buffer, file *metadata.File) {
-    mode := file.Mode
-    ownerSID := makeDittoFSUserSID(file.UID)
-    groupSID := makeDittoFSGroupSID(file.GID)
-
-    var aces []windowsACE
-
-    // Owner permissions
-    ownerAllow := modeToAccessMask((mode >> 6) & 0x7)
-    aces = append(aces, windowsACE{
-        aceType:    accessAllowedACEType,
-        aceFlags:   0,
-        accessMask: ownerAllow | 0x000E0000, // + DELETE|READ_ACL|WRITE_ACL
-        sid:        ownerSID,
-    })
-
-    // Group permissions (deny what group lacks that owner has)
-    groupAllow := modeToAccessMask((mode >> 3) & 0x7)
-    groupDeny := ownerAllow &^ groupAllow
-    if groupDeny != 0 {
-        aces = insertDeny(aces, groupSID, groupDeny)
-    }
-    aces = append(aces, windowsACE{
-        aceType:    accessAllowedACEType,
-        aceFlags:   0,
-        accessMask: groupAllow | ACE4_READ_ACL,
-        sid:        groupSID,
-    })
-
-    // Other permissions
-    otherAllow := modeToAccessMask(mode & 0x7)
-    // ... similar deny + allow pattern with sidEveryone
-}
-```
-
-### Pattern 2: Zero-Fill for Unwritten Blocks
-
-**What:** When ReadAt encounters a block that was never written (not in cache, not in block store), fill the destination buffer with zeros instead of returning an error.
-
-**When:** `EnsureAvailable` returns "not found" for a block index that is within the file's declared size.
-
-**Implementation Strategy:**
-
-```go
-// In pkg/payload/io/read.go, ensureAndReadFromCache:
-func (s *ServiceImpl) ensureAndReadFromCache(ctx context.Context, payloadID string,
-    blockRange chunk.BlockRange, chunkOffset uint32, dest []byte) error {
-
-    err := s.blockDownloader.EnsureAvailable(ctx, payloadID,
-        blockRange.ChunkIndex, chunkOffset, blockRange.Length)
-    if err != nil {
-        // NEW: Unwritten blocks return zeros (sparse file semantics)
-        if isBlockNotFoundError(err) {
-            clear(dest)
-            return nil
+func NewSessionCrypto(dialect types.Dialect, sessionKey []byte, preauthHash []byte) *SessionCrypto {
+    switch {
+    case dialect >= types.Dialect0311:
+        keys := crypto.DeriveSessionKeys(sessionKey, dialect, preauthHash)
+        return &SessionCrypto{
+            Signer:    signing.NewCMACSigner(keys.SigningKey),
+            Encryptor: crypto.NewEncryptor(cipher, keys.EncryptionKey, keys.DecryptionKey),
         }
-        return fmt.Errorf("ensure available for block %d/%d failed: %w",
-            blockRange.ChunkIndex, blockRange.BlockIndex, err)
+    case dialect >= types.Dialect0300:
+        keys := crypto.DeriveSessionKeys(sessionKey, dialect, nil)
+        return &SessionCrypto{
+            Signer: signing.NewCMACSigner(keys.SigningKey),
+            // Encryption optional for 3.0/3.0.2
+        }
+    default:
+        return &SessionCrypto{
+            Signer: signing.NewHMACSigner(sessionKey),
+        }
     }
-
-    found, err := s.cacheReader.ReadAt(ctx, payloadID,
-        blockRange.ChunkIndex, chunkOffset, blockRange.Length, dest)
-    if err != nil || !found {
-        return fmt.Errorf("data not in cache after download for block %d/%d",
-            blockRange.ChunkIndex, blockRange.BlockIndex)
-    }
-    return nil
 }
 ```
 
-### Pattern 3: Create Context Chain Encoding
+### Pattern 2: Connection-Level Negotiated State
 
-**What:** Properly serialize create contexts (MxAc, QFid, RqLs) in CREATE response wire format.
+**What:** Store negotiated dialect, cipher, and preauth state on the Connection (not globally). Different connections can negotiate different dialects.
 
-**When:** CREATE response needs to include one or more create contexts.
+**When:** Multi-version support
 
-**Reference:** MS-SMB2 2.2.14.2 -- create contexts are a linked list of variable-length structures.
-
+**Example:**
 ```go
-// Each context: NextOffset(4) + NameOffset(2) + NameLength(2) +
-//               Reserved(2) + DataOffset(2) + DataLength(4) +
-//               Name(padded) + Data(padded)
-// NextOffset = 0 for last context, offset to next for others
-// All structures must be 8-byte aligned
+// Add to pkg/adapter/smb/connection.go
+type Connection struct {
+    // ... existing fields ...
+
+    // SMB3 negotiated state (per-connection)
+    NegotiatedDialect types.Dialect
+    NegotiatedCipher  crypto.CipherID
+    PreauthState      *PreauthState // nil for dialect < 3.1.1
+    EncryptData       bool          // Global encryption required
+}
+```
+
+### Pattern 3: Durable Handle as CREATE Context Extension
+
+**What:** Parse durable handle create contexts alongside existing create contexts (MxAc, QFid, Lease) in the CREATE handler. Use the same context parsing infrastructure.
+
+**When:** Durable handle create/reconnect
+
+**Example:**
+```go
+// In create.go, extend context parsing:
+case "DHnQ": // SMB2_CREATE_DURABLE_HANDLE_REQUEST_V2
+    durableReq, err = durable.DecodeRequestV2(contextData)
+case "DH2C": // SMB2_CREATE_DURABLE_HANDLE_RECONNECT_V2
+    reconnectReq, err = durable.DecodeReconnectV2(contextData)
+```
+
+### Pattern 4: Preauth Hash as Pipeline State
+
+**What:** Thread the preauth integrity hash value through the NEGOTIATE and SESSION_SETUP pipeline as connection-level state that accumulates. Each message's raw bytes are hashed into the running value.
+
+**When:** SMB 3.1.1 connections
+
+**Example:**
+```go
+// In framing.go, after reading raw message bytes but before parsing:
+if conn.PreauthState != nil {
+    conn.PreauthState.Update(rawMessageBytes)
+}
+// The hash value is then used as KDF context during SESSION_SETUP completion
 ```
 
 ## Anti-Patterns to Avoid
 
-### Anti-Pattern 1: Implementing SDDL String Format
+### Anti-Pattern 1: Encryption in Handler Layer
 
-**What:** Adding SDDL string format conversion (e.g., "O:SYG:SYD:(A;;GA;;;SY)")
+**What:** Implementing encryption/decryption inside individual command handlers.
+**Why bad:** Every handler would need to know about encryption. The transform header wraps the entire message, not individual commands. Compound requests must be encrypted as a unit.
+**Instead:** Handle exclusively in the framing layer (`ReadRequest`/`SendMessage`).
 
-**Why bad:** No SMB client sends or receives SDDL strings. The wire format is always binary self-relative Security Descriptors. SDDL is a display format used by Windows admin tools locally. Adding it would increase code surface for zero benefit.
+### Anti-Pattern 2: Global Dialect State
 
-**Instead:** Keep using binary encoding only in security.go.
+**What:** Storing the negotiated dialect as a server-wide global.
+**Why bad:** Different connections can negotiate different dialects. A Windows 10 client may negotiate 3.1.1 while a macOS client on the same server negotiates 2.1.
+**Instead:** Store negotiated dialect per-connection. Pass dialect through `ConnInfo` or `SMBHandlerContext`.
 
-### Anti-Pattern 2: Global Well-Known SID Lookup Table
+### Anti-Pattern 3: Separate Lock Manager for SMB3 Leases
 
-**What:** Building a large map of all ~100+ Windows well-known SIDs with their names.
+**What:** Creating a new lease management system for SMB3 alongside the existing `OplockManager`.
+**Why bad:** The existing `OplockManager` already supports V2 leases with all SMB3 features (epoch, parent lease key, directory leases, cross-protocol breaks). Creating a parallel system would fragment lease state and break cross-protocol coordination.
+**Instead:** Continue using the existing `OplockManager` and `LockStore`. Just advertise the capability in NEGOTIATE and ensure epoch validation in lease break acknowledgment.
 
-**Why bad:** DittoFS does not implement LSARPC (the protocol Windows uses to resolve SID-to-name). Windows clients resolve SID names themselves using their local security database or domain controller. DittoFS only needs to emit the correct SID binary in the Security Descriptor.
+### Anti-Pattern 4: Storing Durable Handles in Memory
 
-**Instead:** Keep a minimal table of SIDs that appear in synthesized DACLs (Everyone, SYSTEM, CREATOR OWNER, CREATOR GROUP, BUILTIN\Administrators). Do not try to map arbitrary SID strings to names.
+**What:** Keeping durable handle state only in the `Handler.files` sync.Map.
+**Why bad:** Durable handles must survive server restarts. The entire point is connection resilience.
+**Instead:** Persist in the control plane GORM store. Restore on reconnect by querying the store.
 
-### Anti-Pattern 3: Recursive Path Update in Handler Layer
+### Anti-Pattern 5: Implementing All Ciphers Immediately
 
-**What:** Updating child paths in the SET_INFO rename handler by walking the directory tree from the SMB handler.
+**What:** Building AES-128-CCM, AES-128-GCM, AES-256-CCM, and AES-256-GCM all at once.
+**Why bad:** Windows 10/11 prefer AES-128-GCM and always offer it. AES-256 variants are only needed for specific compliance scenarios. Implementing all four ciphers doubles the test matrix for minimal benefit.
+**Instead:** Start with AES-128-GCM (preferred by all modern clients), add AES-128-CCM second (required for compatibility with older Windows). Defer AES-256 variants to a later phase.
 
-**Why bad:** The SMB handler should call `metaSvc.Move()` and trust that the metadata layer handles path consistency. Having path logic in the handler layer violates separation of concerns and would duplicate the path update logic for NFS rename operations.
+## Suggested Build Order
 
-**Instead:** Fix the Move operation in `pkg/metadata/file_modify.go` (or in the store implementations) to recursively update child paths. Both NFS RENAME and SMB SET_INFO rename call Move, so the fix benefits both protocols.
+The build order is driven by **dependency chains**: later features depend on earlier ones.
 
-### Anti-Pattern 4: Blocking on Block Store for Sparse Reads
+### Phase 1: SMB3 Negotiate Foundation
 
-**What:** Making ReadAt wait for a block download that will never complete because the block was never written.
+**What:** Dialect negotiation for 3.0/3.0.2/3.1.1, negotiate contexts (preauth integrity, encryption capabilities, signing capabilities), preauth integrity hash chain.
 
-**Why bad:** The block store does not have the block. The offloader/download path will retry and eventually timeout or error. This turns a simple sparse read into a multi-second hang.
+**Why first:** Everything else depends on successful dialect negotiation. Without this, no SMB3 features can be tested.
 
-**Instead:** The EnsureAvailable call should detect "block never written" (distinct from "block exists but not cached") and return quickly with a sentinel error. The caller zero-fills and continues.
+**Files modified:**
+- `internal/adapter/smb/v2/handlers/negotiate.go` -- Extend dialect selection, parse/respond to negotiate contexts
+- `internal/adapter/smb/types/constants.go` -- SMB3 negotiate context types and IDs
+- `internal/adapter/smb/session/session.go` -- Add NegotiatedDialect, PreauthState fields
+- `pkg/adapter/smb/connection.go` -- Per-connection negotiated state
+- `pkg/adapter/smb/config.go` -- Encryption/signing configuration options
 
-### Anti-Pattern 5: Moving SID Mapping to the Control Plane
+**Dependencies:** None
+**Testable with:** Windows `smbclient` dialect negotiation, Wireshark packet capture
 
-**What:** Creating SID-to-UID/GID mapping tables in the control plane store, similar to IdentityMappingStore for NFS.
+### Phase 2: SMB3 Key Derivation and Signing
 
-**Why bad:** SIDs are a presentation concern of the SMB protocol adapter. The existing UID/GID are the canonical identifiers in the metadata layer. Adding SID columns to the control plane would couple the shared persistence layer to SMB-specific concepts. NFS, WebDAV, or future protocols have no use for SIDs.
+**What:** SP800-108 KDF, AES-CMAC signer, AES-GMAC signer, session key derivation for SMB 3.x, signing algorithm selection.
 
-**Instead:** Keep SID generation as a pure function of UID/GID + machine SID in the SMB handler layer. The mapping is deterministic (no table needed) and reversible.
+**Why second:** Signing is required before encryption can work (encryption key derivation shares the same KDF). Also, NTLM and Kerberos auth both need the new key derivation path.
+
+**Files created:**
+- `internal/adapter/smb/crypto/kdf.go` -- SMB3KDF implementation
+- `internal/adapter/smb/crypto/kdf_test.go` -- KDF test vectors from MS-SMB2 spec
+- `internal/adapter/smb/signing/cmac.go` -- AES-CMAC signer
+- `internal/adapter/smb/signing/gmac.go` -- AES-GMAC signer
+- `internal/adapter/smb/signing/signer.go` -- Signer interface
+
+**Files modified:**
+- `internal/adapter/smb/signing/signing.go` -- Refactor to use Signer interface
+- `internal/adapter/smb/v2/handlers/session_setup.go` -- Use SMB3KDF for key derivation
+- `internal/adapter/smb/session/session.go` -- Hold Signer instead of raw SigningKey
+
+**Dependencies:** Phase 1 (dialect negotiation determines which algorithm to use)
+**Testable with:** smbtorture signing tests, Windows client with signing required
+
+### Phase 3: SMB3 Encryption
+
+**What:** AES-CCM/GCM encrypt/decrypt, Transform Header parsing/building, framing layer integration, per-session and per-share encryption control.
+
+**Why third:** Depends on key derivation (Phase 2) for EncryptionKey/DecryptionKey. Also needs dialect negotiation (Phase 1) for cipher selection.
+
+**Files created:**
+- `internal/adapter/smb/crypto/crypto.go` -- Encryptor, Transform Header
+- `internal/adapter/smb/crypto/crypto_test.go` -- Encryption test vectors
+- `internal/adapter/smb/crypto/ccm.go` -- AES-CCM implementation (if not using x/crypto)
+
+**Files modified:**
+- `internal/adapter/smb/framing.go` -- Transform Header detection, decrypt on read, encrypt on write
+- `internal/adapter/smb/response.go` -- Encrypt outgoing messages in SendMessage
+- `internal/adapter/smb/conn_types.go` -- Add EncryptionLookup to ConnInfo
+- `internal/adapter/smb/session/session.go` -- EncryptionRequired, Encryptor fields
+- `pkg/adapter/smb/config.go` -- Per-share encryption configuration
+
+**Dependencies:** Phase 1 + Phase 2
+**Testable with:** smbtorture encryption tests, Windows client with encryption required, Wireshark verification
+
+### Phase 4: SPNEGO/Kerberos SMB3 Integration
+
+**What:** Extract session key from Kerberos AP-REQ for SMB3 key derivation, session binding for preauth hash, mutual auth support.
+
+**Why fourth:** Depends on key derivation infrastructure (Phase 2). The NTLM path should work first since it is simpler.
+
+**Files modified:**
+- `internal/adapter/smb/v2/handlers/session_setup.go` -- Extract Kerberos session key, derive SMB3 keys
+- `internal/adapter/smb/auth/authenticator.go` -- Return session key in AuthResult
+
+**Dependencies:** Phase 2 (key derivation), Phase 1 (dialect)
+**Testable with:** AD-joined Windows client, kinit + smbclient from Linux
+
+### Phase 5: SMB3 Leases (Directory + Enhanced)
+
+**What:** Advertise directory leasing capability, handle ParentLeaseKey, enforce epoch in break acknowledgment. Wire up to existing OplockManager.
+
+**Why fifth:** Leases are mostly done. This phase is about advertising capabilities and wiring up the remaining SMB3-specific bits.
+
+**Files modified:**
+- `internal/adapter/smb/v2/handlers/negotiate.go` -- Advertise CapDirectoryLeasing
+- `internal/adapter/smb/v2/handlers/create.go` -- Handle ParentLeaseKey in lease context
+- `internal/adapter/smb/v2/handlers/lease.go` -- Epoch validation in AcknowledgeLeaseBreak
+
+**Dependencies:** Phase 1 (dialect >= 3.0 for directory leasing)
+**Testable with:** smbtorture lease tests, Windows Explorer directory caching behavior
+
+### Phase 6: Durable Handles v1/v2
+
+**What:** Durable handle create context parsing, persistence in control plane store, reconnect processing, timeout management.
+
+**Why sixth:** Depends on leases (Phase 5) because durable handles are tightly coupled with leases. Also needs encryption (Phase 3) because persistent handles require encryption.
+
+**Files created:**
+- `internal/adapter/smb/durable/store.go` -- GORM persistence
+- `internal/adapter/smb/durable/manager.go` -- Lifecycle management
+- `internal/adapter/smb/durable/context.go` -- Create context parsing
+- `internal/adapter/smb/durable/store_test.go`
+
+**Files modified:**
+- `internal/adapter/smb/v2/handlers/create.go` -- Parse DHnQ/DH2C contexts
+- `internal/adapter/smb/v2/handlers/handler.go` -- DurableManager field
+- `pkg/adapter/smb/connection.go` -- Mark durable handles on disconnect
+- `pkg/controlplane/store/interface.go` -- Add DurableHandleStore sub-interface
+
+**Dependencies:** Phase 1 + Phase 5 (leases)
+**Testable with:** smbtorture durable_v2 tests, network disconnect/reconnect simulation
+
+### Phase 7: Cross-Protocol Integration and Testing
+
+**What:** Verify SMB3 lease <-> NFS delegation interop, encryption + signing end-to-end, durable handle recovery, Windows/macOS/Linux client compatibility.
+
+**Why last:** Integration testing requires all components to be in place.
+
+**Files created:**
+- E2E test files for encryption, signing, leases, Kerberos
+- smbtorture test configurations for SMB3 features
+- Go integration tests (hirochachacha/go-smb2)
+
+**Dependencies:** All previous phases
 
 ## Scalability Considerations
 
 | Concern | At 100 users | At 10K users | At 1M users |
 |---------|--------------|--------------|-------------|
-| SID generation | Hash-based, negligible cost | Same | Same |
-| SD building | Per-request allocation, ~200 bytes typical | Consider buffer pool for SD encoding | Buffer pool mandatory |
-| Sparse zero-fill | Allocate zero buffer per read | Use shared zero page (read-only) | Use shared zero page |
-| Path updates on rename | Walk children in-memory, fast | Walk children in BadgerDB, indexed | Need async or batched update |
-| ACL validation | Per-SET_INFO, ~128 ACEs max | Same | Same |
+| Encryption overhead | Negligible (AES-NI) | ~5% CPU increase | May need hardware AES offload |
+| Signing overhead | Negligible | ~2% CPU increase | CMAC faster than HMAC-SHA256 |
+| Durable handle storage | In-process SQLite | PostgreSQL recommended | Shard by session |
+| Preauth hash chain | Per-connection SHA-512 | Memory: 64 bytes/conn | 64MB for 1M connections |
+| Lease persistence | LockStore handles it | Same as existing | Same as existing |
 
 ## Sources
 
-- [MS-DTYP 2.4.6 - SECURITY_DESCRIPTOR](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/7d4dac05-9cef-4563-a058-f108abecce1d) -- Self-relative SD layout
-- [MS-DTYP 2.4.4.1 - ACL canonical ordering](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/20233ed8-a6c6-4097-aafa-dd545ed24428) -- Deny before allow ordering
-- [MS-SMB2 2.2.14.2 - CREATE Response Contexts](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/893bff02-5815-4bc1-9693-669ed6e85307) -- Context chain encoding
-- [MS-FSCC - Sparse file semantics](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/6a884fe5-3da1-4abb-84c4-f419d349d878) -- Zero-fill for unallocated ranges
-- [Samba smb2/acls.c](https://github.com/samba-team/samba/blob/master/source4/torture/smb2/acls.c) -- ACL test patterns: creator_sid, generic_bits, owner_bits, inheritance
-- DittoFS codebase: `internal/adapter/smb/v2/handlers/security.go` (626 lines, complete SD implementation)
-- DittoFS codebase: `pkg/metadata/acl/` (validate.go enforces canonical ACE ordering)
-- DittoFS codebase: `pkg/payload/io/read.go` (260 lines, ReadAt with cache/offloader flow)
-- DittoFS codebase: `pkg/metadata/file_modify.go` (548 lines, Move/rename with transaction)
+- [MS-SMB2 Generating Cryptographic Keys](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/da4e579e-02ce-4e27-bbce-3fc816a3ff92) -- SP800-108 KDF, key derivation labels/contexts
+- [MS-SMB2 SMB2_PREAUTH_INTEGRITY_CAPABILITIES](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/5a07bd66-4734-4af8-abcf-5a44ff7ee0e5) -- Preauth integrity context structure
+- [SMB 3.1.1 Pre-authentication integrity](https://learn.microsoft.com/en-us/archive/blogs/openspecification/smb-3-1-1-pre-authentication-integrity-in-windows-10) -- SHA-512 hash chain overview
+- [SMB 3.1.1 Encryption in Windows 10](https://learn.microsoft.com/en-us/archive/blogs/openspecification/smb-3-1-1-encryption-in-windows-10) -- AES-CCM/GCM cipher negotiation
+- [Encryption in SMB 3.0](https://learn.microsoft.com/en-us/archive/blogs/openspecification/encryption-in-smb-3-0-a-protocol-perspective) -- Transform Header format, encryption flow
+- [SMB Security Enhancements](https://learn.microsoft.com/en-us/windows-server/storage/file-server/smb-security) -- AES-CMAC/GMAC signing overview
+- [MS-SMB2 SMB2_CREATE_DURABLE_HANDLE_REQUEST_V2](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/5e361a29-81a7-4774-861d-f290ea53a00e) -- Durable handle v2 create context
+- [MS-SMB2 Re-establishing a Durable Open](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/3309c3d1-3daf-4448-9faa-81d2d6aa3315) -- Reconnect processing
+- [MS-SMB2 Handling DURABLE_HANDLE_RECONNECT_V2](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/62ba68d0-8806-4aef-a229-eefb5827160f) -- Server-side reconnect validation
+- [MS-SMB2 Receiving NEGOTIATE Request](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/b39f253e-4963-40df-8dff-2f9040ebbeb1) -- Negotiate context processing
+- [NIST SP800-108](https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-108.pdf) -- KDF in Counter Mode specification
+- [Implementing Persistent Handles in Samba](https://samba.plus/fileadmin/proposals/Persistent-Handles.pdf) -- Reference implementation details
+- DittoFS source code analysis: `internal/adapter/smb/`, `pkg/adapter/smb/`, `pkg/auth/kerberos/`, `pkg/metadata/lock/`

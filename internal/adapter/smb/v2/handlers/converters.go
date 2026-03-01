@@ -2,10 +2,10 @@
 package handlers
 
 import (
-	"encoding/binary"
 	"strings"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/mfsymlink"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -24,6 +24,16 @@ const (
 	// consistently across FILE_ID_INFORMATION, FSCTL_GET_NTFS_VOLUME_DATA, and
 	// FileFsVolumeInformation responses. WPTS tests verify these values match.
 	ntfsVolumeSerialNumber uint64 = 0x12345678
+
+	// modeDOSExplicit is a high bit in the Unix mode field indicating that DOS
+	// attributes were explicitly set via SET_INFO (FileBasicInformation). When
+	// set, the ARCHIVE attribute is derived from modeDOSArchive instead of being
+	// implicitly added for all regular files.
+	modeDOSExplicit = uint32(0x10000)
+
+	// modeDOSArchive tracks the DOS ARCHIVE bit when DOS attributes have been
+	// explicitly set. Only meaningful when modeDOSExplicit is also set.
+	modeDOSArchive = uint32(0x20000)
 )
 
 // calculateAllocationSize returns the size rounded up to the nearest cluster boundary.
@@ -82,14 +92,28 @@ func fileAttrToSMBAttributesInternal(attr *metadata.FileAttr, hidden bool) types
 	case metadata.FileTypeDirectory:
 		attrs |= types.FileAttributeDirectory
 	case metadata.FileTypeRegular:
-		// Per MS-FSCC, regular files should have ARCHIVE set.
-		// Windows sets this on file creation and modification.
-		attrs |= types.FileAttributeArchive
+		// Per MS-FSCC, ARCHIVE is set by default for regular files. However,
+		// when DOS attributes have been explicitly set via SET_INFO, honour the
+		// stored value instead of unconditionally adding ARCHIVE.
+		if attr.Mode&modeDOSExplicit != 0 {
+			if attr.Mode&modeDOSArchive != 0 {
+				attrs |= types.FileAttributeArchive
+			}
+		} else {
+			attrs |= types.FileAttributeArchive
+		}
 	case metadata.FileTypeSymlink:
 		attrs |= types.FileAttributeReparsePoint
 	case metadata.FileTypeFIFO, metadata.FileTypeSocket,
 		metadata.FileTypeBlockDevice, metadata.FileTypeCharDevice:
 		// Special files appear as regular files (though they should be filtered out)
+	}
+
+	// Per MS-FSCC 2.6: FILE_ATTRIBUTE_READONLY is set when the file's
+	// Unix mode has no owner-write bit (mode & 0200 == 0).
+	// This reflects SET_INFO operations that applied READONLY.
+	if attr.Type == metadata.FileTypeRegular && (attr.Mode&0200) == 0 {
+		attrs |= types.FileAttributeReadonly
 	}
 
 	// Set hidden attribute
@@ -262,15 +286,16 @@ func SMBAttributesToFileType(attrs types.FileAttributes) metadata.FileType {
 func DecodeBasicInfoToSetAttrs(buffer []byte) *metadata.SetAttrs {
 	attrs := &metadata.SetAttrs{}
 
-	processFiletimeForSet(binary.LittleEndian.Uint64(buffer[0:8]), &attrs.CreationTime)
-	processFiletimeForSet(binary.LittleEndian.Uint64(buffer[8:16]), &attrs.Atime)
-	processFiletimeForSet(binary.LittleEndian.Uint64(buffer[16:24]), &attrs.Mtime)
-	processFiletimeForSet(binary.LittleEndian.Uint64(buffer[24:32]), &attrs.Ctime)
+	r := smbenc.NewReader(buffer)
+	processFiletimeForSet(r.ReadUint64(), &attrs.CreationTime)
+	processFiletimeForSet(r.ReadUint64(), &attrs.Atime)
+	processFiletimeForSet(r.ReadUint64(), &attrs.Mtime)
+	processFiletimeForSet(r.ReadUint64(), &attrs.Ctime)
 
 	// Handle file attributes (offset 32-36)
 	if len(buffer) >= 36 {
-		fileAttrs := types.FileAttributes(binary.LittleEndian.Uint32(buffer[32:36]))
-		if fileAttrs != 0 {
+		fileAttrs := types.FileAttributes(r.ReadUint32())
+		if r.Err() == nil && fileAttrs != 0 {
 			hidden := fileAttrs&types.FileAttributeHidden != 0
 			attrs.Hidden = &hidden
 		}
@@ -451,6 +476,14 @@ func SMBModeFromAttrs(attrs types.FileAttributes, isDirectory bool) uint32 {
 	// If read-only attribute is set, remove write permission
 	if attrs&types.FileAttributeReadonly != 0 {
 		mode &= ^uint32(0222) // Remove write bits
+	}
+
+	// Track that DOS attributes were explicitly set, and whether ARCHIVE is included.
+	// This allows fileAttrToSMBAttributesInternal to return exactly the attributes
+	// the client set, rather than unconditionally adding ARCHIVE for regular files.
+	mode |= modeDOSExplicit
+	if attrs&types.FileAttributeArchive != 0 {
+		mode |= modeDOSArchive
 	}
 
 	return mode

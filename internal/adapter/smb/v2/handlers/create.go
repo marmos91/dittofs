@@ -1,13 +1,13 @@
 package handlers
 
 import (
-	"encoding/binary"
 	"fmt"
 	"path"
 	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/rpc"
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -140,18 +140,33 @@ func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 		return nil, fmt.Errorf("CREATE request too short: %d bytes", len(body))
 	}
 
-	req := &CreateRequest{
-		OplockLevel:        body[3],
-		ImpersonationLevel: binary.LittleEndian.Uint32(body[4:8]),
-		DesiredAccess:      binary.LittleEndian.Uint32(body[24:28]),
-		FileAttributes:     types.FileAttributes(binary.LittleEndian.Uint32(body[28:32])),
-		ShareAccess:        binary.LittleEndian.Uint32(body[32:36]),
-		CreateDisposition:  types.CreateDisposition(binary.LittleEndian.Uint32(body[36:40])),
-		CreateOptions:      types.CreateOptions(binary.LittleEndian.Uint32(body[40:44])),
+	r := smbenc.NewReader(body)
+	r.Skip(2)                                                    // StructureSize (2)
+	r.Skip(1)                                                    // SecurityFlags (1)
+	oplockLevel := r.ReadUint8()                                 // OplockLevel (1)
+	impersonationLevel := r.ReadUint32()                         // ImpersonationLevel (4)
+	r.Skip(8)                                                    // SmbCreateFlags (8)
+	r.Skip(8)                                                    // Reserved (8)
+	desiredAccess := r.ReadUint32()                              // DesiredAccess (4)
+	fileAttributes := types.FileAttributes(r.ReadUint32())       // FileAttributes (4)
+	shareAccess := r.ReadUint32()                                // ShareAccess (4)
+	createDisposition := types.CreateDisposition(r.ReadUint32()) // CreateDisposition (4)
+	createOptions := types.CreateOptions(r.ReadUint32())         // CreateOptions (4)
+	nameOffset := r.ReadUint16()                                 // NameOffset (2)
+	nameLength := r.ReadUint16()                                 // NameLength (2)
+	if r.Err() != nil {
+		return nil, fmt.Errorf("CREATE request parse error: %w", r.Err())
 	}
 
-	nameOffset := binary.LittleEndian.Uint16(body[44:46])
-	nameLength := binary.LittleEndian.Uint16(body[46:48])
+	req := &CreateRequest{
+		OplockLevel:        oplockLevel,
+		ImpersonationLevel: impersonationLevel,
+		DesiredAccess:      desiredAccess,
+		FileAttributes:     fileAttributes,
+		ShareAccess:        shareAccess,
+		CreateDisposition:  createDisposition,
+		CreateOptions:      createOptions,
+	}
 
 	// Extract filename (UTF-16LE encoded)
 	// nameOffset is relative to the start of SMB2 header (64 bytes)
@@ -189,8 +204,9 @@ func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 	// determine access rights and may refuse to open the file.
 
 	if len(body) >= 56 {
-		ctxOffset := binary.LittleEndian.Uint32(body[48:52])
-		ctxLength := binary.LittleEndian.Uint32(body[52:56])
+		ctxR := smbenc.NewReader(body[48:56])
+		ctxOffset := ctxR.ReadUint32()
+		ctxLength := ctxR.ReadUint32()
 
 		if ctxOffset > 0 && ctxLength > 0 {
 			// ctxOffset is relative to the start of the SMB2 header (64 bytes)
@@ -231,11 +247,13 @@ func decodeCreateContexts(buf []byte) []CreateContext {
 		}
 
 		ctx := buf[offset:]
-		next := binary.LittleEndian.Uint32(ctx[0:4])
-		nameOff := binary.LittleEndian.Uint16(ctx[4:6])
-		nameLen := binary.LittleEndian.Uint16(ctx[6:8])
-		dataOff := binary.LittleEndian.Uint16(ctx[10:12])
-		dataLen := binary.LittleEndian.Uint32(ctx[12:16])
+		ctxR := smbenc.NewReader(ctx)
+		next := ctxR.ReadUint32()    // Next
+		nameOff := ctxR.ReadUint16() // NameOffset
+		nameLen := ctxR.ReadUint16() // NameLength
+		ctxR.Skip(2)                 // Reserved
+		dataOff := ctxR.ReadUint16() // DataOffset
+		dataLen := ctxR.ReadUint32() // DataLength
 
 		// Limit parsing to the current context record to prevent reading
 		// across boundaries into subsequent contexts [MS-SMB2 2.2.13.2]
@@ -287,29 +305,43 @@ func (resp *CreateResponse) Encode() ([]byte, error) {
 		paddedHeaderSize = ((headerSize + 7) / 8) * 8
 	}
 
-	buf := make([]byte, paddedHeaderSize+len(ctxBuf))
-	binary.LittleEndian.PutUint16(buf[0:2], 89)                                          // StructureSize (always 89 per spec)
-	buf[2] = resp.OplockLevel                                                            // OplockLevel
-	buf[3] = resp.Flags                                                                  // Flags
-	binary.LittleEndian.PutUint32(buf[4:8], uint32(resp.CreateAction))                   // CreateAction
-	binary.LittleEndian.PutUint64(buf[8:16], types.TimeToFiletime(resp.CreationTime))    // CreationTime
-	binary.LittleEndian.PutUint64(buf[16:24], types.TimeToFiletime(resp.LastAccessTime)) // LastAccessTime
-	binary.LittleEndian.PutUint64(buf[24:32], types.TimeToFiletime(resp.LastWriteTime))  // LastWriteTime
-	binary.LittleEndian.PutUint64(buf[32:40], types.TimeToFiletime(resp.ChangeTime))     // ChangeTime
-	binary.LittleEndian.PutUint64(buf[40:48], resp.AllocationSize)                       // AllocationSize
-	binary.LittleEndian.PutUint64(buf[48:56], resp.EndOfFile)                            // EndOfFile
-	binary.LittleEndian.PutUint32(buf[56:60], uint32(resp.FileAttributes))               // FileAttributes
-	binary.LittleEndian.PutUint32(buf[60:64], 0)                                         // Reserved2
-	copy(buf[64:80], resp.FileID[:])                                                     // FileId (persistent + volatile)
+	w := smbenc.NewWriter(paddedHeaderSize + len(ctxBuf))
+	w.WriteUint16(89)                                        // StructureSize (always 89 per spec)
+	w.WriteUint8(resp.OplockLevel)                           // OplockLevel
+	w.WriteUint8(resp.Flags)                                 // Flags
+	w.WriteUint32(uint32(resp.CreateAction))                 // CreateAction
+	w.WriteUint64(types.TimeToFiletime(resp.CreationTime))   // CreationTime
+	w.WriteUint64(types.TimeToFiletime(resp.LastAccessTime)) // LastAccessTime
+	w.WriteUint64(types.TimeToFiletime(resp.LastWriteTime))  // LastWriteTime
+	w.WriteUint64(types.TimeToFiletime(resp.ChangeTime))     // ChangeTime
+	w.WriteUint64(resp.AllocationSize)                       // AllocationSize
+	w.WriteUint64(resp.EndOfFile)                            // EndOfFile
+	w.WriteUint32(uint32(resp.FileAttributes))               // FileAttributes
+	w.WriteUint32(0)                                         // Reserved2
+	w.WriteBytes(resp.FileID[:])                             // FileId (persistent + volatile)
 
 	if len(ctxBuf) > 0 {
 		// Offset from SMB2 header start; override EncodeCreateContexts' fixed assumption
-		binary.LittleEndian.PutUint32(buf[80:84], uint32(64+paddedHeaderSize)) // CreateContextsOffset
-		binary.LittleEndian.PutUint32(buf[84:88], ctxLength)                   // CreateContextsLength
-		copy(buf[paddedHeaderSize:], ctxBuf)
+		w.WriteUint32(uint32(64 + paddedHeaderSize)) // CreateContextsOffset
+		w.WriteUint32(ctxLength)                     // CreateContextsLength
 	} else {
-		binary.LittleEndian.PutUint32(buf[80:84], 0) // CreateContextsOffset
-		binary.LittleEndian.PutUint32(buf[84:88], 0) // CreateContextsLength
+		w.WriteUint32(0) // CreateContextsOffset
+		w.WriteUint32(0) // CreateContextsLength
+	}
+
+	// Pad the 89-byte header to paddedHeaderSize if needed (byte 88 is already written)
+	buf := w.Bytes()
+	if paddedHeaderSize > len(buf) {
+		padded := make([]byte, paddedHeaderSize+len(ctxBuf))
+		copy(padded, buf)
+		if len(ctxBuf) > 0 {
+			copy(padded[paddedHeaderSize:], ctxBuf)
+		}
+		return padded, nil
+	}
+
+	if len(ctxBuf) > 0 {
+		buf = append(buf, ctxBuf...)
 	}
 
 	return buf, nil
@@ -396,6 +428,13 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		// Other stream names (alternate data streams) are kept as-is
 	}
 
+	// Reject paths that traverse above the share root (e.g., "../../..")
+	// Per MS-SMB2: return STATUS_OBJECT_PATH_SYNTAX_BAD for invalid path syntax.
+	cleaned := path.Clean(filename)
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectPathSyntaxBad}}, nil
+	}
+
 	// Get root handle for the share
 	rootHandle, err := h.Registry.GetRootHandle(tree.ShareName)
 	if err != nil {
@@ -444,7 +483,22 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	isDirectoryRequest := req.CreateOptions&types.FileDirectoryFile != 0
 	isNonDirectoryRequest := req.CreateOptions&types.FileNonDirectoryFile != 0
 
-	// Validate directory vs file constraints for existing files
+	// ========================================================================
+	// Step 6: Handle create disposition
+	// ========================================================================
+	//
+	// Per MS-FSA 2.1.5.1.1: Disposition check (e.g., FILE_CREATE failing with
+	// OBJECT_NAME_COLLISION when the name exists) takes priority over type
+	// constraint checks (NOT_A_DIRECTORY / FILE_IS_A_DIRECTORY).
+
+	createAction, dispErr := ResolveCreateDisposition(req.CreateDisposition, fileExists)
+	if dispErr != nil {
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(dispErr)}}, nil
+	}
+
+	// Validate directory vs file constraints for existing files.
+	// Only applies when the disposition opens or overwrites (not FILE_CREATE,
+	// which already failed above if the file existed).
 	if fileExists {
 		if isDirectoryRequest && existingFile.Type != metadata.FileTypeDirectory {
 			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotADirectory}}, nil
@@ -454,13 +508,12 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		}
 	}
 
-	// ========================================================================
-	// Step 6: Handle create disposition
-	// ========================================================================
-
-	createAction, dispErr := ResolveCreateDisposition(req.CreateDisposition, fileExists)
-	if dispErr != nil {
-		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(dispErr)}}, nil
+	// Per MS-SMB2 3.3.5.9: Overwrite/supersede operations are not valid for
+	// directories. If the file exists and is a directory, only open is allowed.
+	if fileExists && existingFile.Type == metadata.FileTypeDirectory {
+		if createAction == types.FileOverwritten || createAction == types.FileSuperseded {
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+		}
 	}
 
 	// ========================================================================
@@ -481,6 +534,27 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			"action", createAction,
 			"permission", ctx.Permission)
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+	}
+
+	// ========================================================================
+	// Step 6c: Check share mode conflicts for existing files
+	// ========================================================================
+	//
+	// Per MS-SMB2 3.3.5.9 and MS-FSA 2.1.5.1.2: When opening an existing file,
+	// the server must check if the requested access and sharing modes are
+	// compatible with all existing opens on the same file.
+
+	if fileExists {
+		existingHandle, handleErr := metadata.EncodeFileHandle(existingFile)
+		if handleErr == nil {
+			if shareConflict := h.checkShareModeConflict(existingHandle, req.DesiredAccess, req.ShareAccess); shareConflict {
+				logger.Debug("CREATE: sharing violation",
+					"path", filename,
+					"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
+					"shareAccess", fmt.Sprintf("0x%x", req.ShareAccess))
+				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSharingViolation}}, nil
+			}
+		}
 	}
 
 	// ========================================================================
@@ -626,6 +700,8 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		FileName:     baseName,
 		// Store oplock level
 		OplockLevel: grantedOplock,
+		// Store share access for share mode conflict checking
+		ShareAccess: req.ShareAccess,
 		// Store original create options for FileModeInformation
 		CreateOptions: req.CreateOptions,
 		// Set delete-on-close from create options
@@ -708,12 +784,12 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	//   QueryStatus (uint32) + MaximalAccess (uint32)
 
 	if FindCreateContext(req.CreateContexts, "MxAc") != nil {
-		mxAcResp := make([]byte, 8)
-		// QueryStatus = STATUS_SUCCESS (0x00000000)
-		binary.LittleEndian.PutUint32(mxAcResp[0:4], 0)
 		// MaximalAccess: compute from file permissions and auth context
 		maxAccess := computeMaximalAccess(file, authCtx)
-		binary.LittleEndian.PutUint32(mxAcResp[4:8], maxAccess)
+		mxW := smbenc.NewWriter(8)
+		mxW.WriteUint32(0)         // QueryStatus = STATUS_SUCCESS
+		mxW.WriteUint32(maxAccess) // MaximalAccess
+		mxAcResp := mxW.Bytes()
 
 		resp.CreateContexts = append(resp.CreateContexts, CreateContext{
 			Name: "MxAc",

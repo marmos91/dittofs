@@ -6,6 +6,7 @@ import (
 	"net"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
+	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/adapter/smb/v2/handlers"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter"
@@ -174,10 +175,29 @@ func (s *Adapter) applySMBSettings(rt *runtime.Runtime) {
 		logger.Info("SMB encryption requested but not yet implemented -- connections will proceed without encryption")
 	}
 
-	// Dialect range: logged at startup for visibility
+	// Dialect range: apply from settings to handler
+	if minD, ok := types.ParseSMBDialect(settings.MinDialect); ok {
+		s.handler.MinDialect = minD
+	} else if settings.MinDialect != "" {
+		logger.Warn("SMB adapter: unrecognized MinDialect, using default",
+			"value", settings.MinDialect)
+	}
+	if maxD, ok := types.ParseSMBDialect(settings.MaxDialect); ok {
+		s.handler.MaxDialect = maxD
+	} else if settings.MaxDialect != "" {
+		logger.Warn("SMB adapter: unrecognized MaxDialect, using default",
+			"value", settings.MaxDialect)
+	}
+
+	// Directory leasing: apply from settings
+	s.handler.DirectoryLeasingEnabled = settings.DirectoryLeasingEnabled
+	s.handler.EncryptionEnabled = settings.EnableEncryption
+
 	logger.Debug("SMB adapter: dialect range from settings",
 		"min_dialect", settings.MinDialect,
-		"max_dialect", settings.MaxDialect)
+		"max_dialect", settings.MaxDialect,
+		"encryption", settings.EnableEncryption,
+		"directory_leasing", settings.DirectoryLeasingEnabled)
 
 	// Operation blocklist: log active blocks. SMB blocklist is a pass-through
 	// that logs unsupported operation names (SMB doesn't have the same per-op

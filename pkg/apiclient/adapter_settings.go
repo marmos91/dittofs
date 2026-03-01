@@ -34,15 +34,16 @@ type NFSAdapterSettingsResponse struct {
 
 // SMBAdapterSettingsResponse is the response for SMB adapter settings.
 type SMBAdapterSettingsResponse struct {
-	MinDialect         string   `json:"min_dialect"`
-	MaxDialect         string   `json:"max_dialect"`
-	SessionTimeout     int      `json:"session_timeout"`
-	OplockBreakTimeout int      `json:"oplock_break_timeout"`
-	MaxConnections     int      `json:"max_connections"`
-	MaxSessions        int      `json:"max_sessions"`
-	EnableEncryption   bool     `json:"enable_encryption"`
-	BlockedOperations  []string `json:"blocked_operations"`
-	Version            int      `json:"version"`
+	MinDialect              string   `json:"min_dialect"`
+	MaxDialect              string   `json:"max_dialect"`
+	SessionTimeout          int      `json:"session_timeout"`
+	OplockBreakTimeout      int      `json:"oplock_break_timeout"`
+	MaxConnections          int      `json:"max_connections"`
+	MaxSessions             int      `json:"max_sessions"`
+	EnableEncryption        bool     `json:"enable_encryption"`
+	DirectoryLeasingEnabled bool     `json:"directory_leasing_enabled"`
+	BlockedOperations       []string `json:"blocked_operations"`
+	Version                 int      `json:"version"`
 }
 
 // SettingRange describes valid range for a setting.
@@ -92,14 +93,15 @@ type PatchNFSSettingsRequest struct {
 
 // PatchSMBSettingsRequest uses pointer fields for partial updates.
 type PatchSMBSettingsRequest struct {
-	MinDialect         *string   `json:"min_dialect,omitempty"`
-	MaxDialect         *string   `json:"max_dialect,omitempty"`
-	SessionTimeout     *int      `json:"session_timeout,omitempty"`
-	OplockBreakTimeout *int      `json:"oplock_break_timeout,omitempty"`
-	MaxConnections     *int      `json:"max_connections,omitempty"`
-	MaxSessions        *int      `json:"max_sessions,omitempty"`
-	EnableEncryption   *bool     `json:"enable_encryption,omitempty"`
-	BlockedOperations  *[]string `json:"blocked_operations,omitempty"`
+	MinDialect              *string   `json:"min_dialect,omitempty"`
+	MaxDialect              *string   `json:"max_dialect,omitempty"`
+	SessionTimeout          *int      `json:"session_timeout,omitempty"`
+	OplockBreakTimeout      *int      `json:"oplock_break_timeout,omitempty"`
+	MaxConnections          *int      `json:"max_connections,omitempty"`
+	MaxSessions             *int      `json:"max_sessions,omitempty"`
+	EnableEncryption        *bool     `json:"enable_encryption,omitempty"`
+	DirectoryLeasingEnabled *bool     `json:"directory_leasing_enabled,omitempty"`
+	BlockedOperations       *[]string `json:"blocked_operations,omitempty"`
 }
 
 // SettingsOption is a functional option for settings API calls.

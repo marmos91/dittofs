@@ -1,9 +1,9 @@
 package handlers
 
 import (
-	"encoding/binary"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/mfsymlink"
@@ -81,34 +81,39 @@ func DecodeReadRequest(body []byte) (*ReadRequest, error) {
 		return nil, fmt.Errorf("READ request too short: %d bytes", len(body))
 	}
 
+	r := smbenc.NewReader(body)
+	r.Skip(2) // StructureSize
 	req := &ReadRequest{
-		Padding:        body[2],
-		Flags:          body[3],
-		Length:         binary.LittleEndian.Uint32(body[4:8]),
-		Offset:         binary.LittleEndian.Uint64(body[8:16]),
-		MinimumCount:   binary.LittleEndian.Uint32(body[32:36]),
-		Channel:        binary.LittleEndian.Uint32(body[36:40]),
-		RemainingBytes: binary.LittleEndian.Uint32(body[40:44]),
+		Padding: r.ReadUint8(),
+		Flags:   r.ReadUint8(),
+		Length:  r.ReadUint32(),
+		Offset:  r.ReadUint64(),
 	}
-	copy(req.FileID[:], body[16:32])
-
+	copy(req.FileID[:], r.ReadBytes(16))
+	req.MinimumCount = r.ReadUint32()
+	req.Channel = r.ReadUint32()
+	req.RemainingBytes = r.ReadUint32()
+	if r.Err() != nil {
+		return nil, fmt.Errorf("READ decode error: %w", r.Err())
+	}
 	return req, nil
 }
 
 // Encode serializes the ReadResponse to SMB2 wire format [MS-SMB2] 2.2.20.
 // The response header is 16 bytes followed by the data buffer.
 func (resp *ReadResponse) Encode() ([]byte, error) {
-	// Response header is 16 bytes, data follows at offset 16
-	buf := make([]byte, 16+len(resp.Data))
-	binary.LittleEndian.PutUint16(buf[0:2], 17)                     // StructureSize (17 per spec)
-	buf[2] = resp.DataOffset                                        // DataOffset (relative to header start)
-	buf[3] = 0                                                      // Reserved
-	binary.LittleEndian.PutUint32(buf[4:8], uint32(len(resp.Data))) // DataLength
-	binary.LittleEndian.PutUint32(buf[8:12], resp.DataRemaining)    // DataRemaining
-	binary.LittleEndian.PutUint32(buf[12:16], 0)                    // Reserved2
-	copy(buf[16:], resp.Data)                                       // Buffer starts at offset 16
-
-	return buf, nil
+	w := smbenc.NewWriter(16 + len(resp.Data))
+	w.WriteUint16(17)                     // StructureSize (17 per spec)
+	w.WriteUint8(resp.DataOffset)         // DataOffset (relative to header start)
+	w.WriteUint8(0)                       // Reserved
+	w.WriteUint32(uint32(len(resp.Data))) // DataLength
+	w.WriteUint32(resp.DataRemaining)     // DataRemaining
+	w.WriteUint32(0)                      // Reserved2
+	w.WriteBytes(resp.Data)               // Buffer starts at offset 16
+	if w.Err() != nil {
+		return nil, w.Err()
+	}
+	return w.Bytes(), nil
 }
 
 // ============================================================================
@@ -135,8 +140,8 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
-		logger.Debug("READ: invalid file ID", "fileID", fmt.Sprintf("%x", req.FileID))
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
+		logger.Debug("READ: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileClosed}}, nil
 	}
 
 	// ========================================================================

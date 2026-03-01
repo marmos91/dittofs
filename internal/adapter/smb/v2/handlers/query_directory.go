@@ -1,11 +1,11 @@
 package handlers
 
 import (
-	"encoding/binary"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -127,15 +127,27 @@ func DecodeQueryDirectoryRequest(body []byte) (*QueryDirectoryRequest, error) {
 		return nil, fmt.Errorf("QUERY_DIRECTORY request too short: %d bytes", len(body))
 	}
 
+	r := smbenc.NewReader(body)
+	_ = r.ReadUint16()                   // StructureSize (always 33)
+	fileInfoClass := r.ReadUint8()       // FileInfoClass
+	flags := r.ReadUint8()               // Flags
+	fileIndex := r.ReadUint32()          // FileIndex
+	fileID := r.ReadBytes(16)            // FileID
+	fileNameOffset := r.ReadUint16()     // FileNameOffset
+	fileNameLength := r.ReadUint16()     // FileNameLength
+	outputBufferLength := r.ReadUint32() // OutputBufferLength
+
 	req := &QueryDirectoryRequest{
-		FileInfoClass:      body[2],
-		Flags:              body[3],
-		FileIndex:          binary.LittleEndian.Uint32(body[4:8]),
-		FileNameOffset:     binary.LittleEndian.Uint16(body[24:26]),
-		FileNameLength:     binary.LittleEndian.Uint16(body[26:28]),
-		OutputBufferLength: binary.LittleEndian.Uint32(body[28:32]),
+		FileInfoClass:      fileInfoClass,
+		Flags:              flags,
+		FileIndex:          fileIndex,
+		FileNameOffset:     fileNameOffset,
+		FileNameLength:     fileNameLength,
+		OutputBufferLength: outputBufferLength,
 	}
-	copy(req.FileID[:], body[8:24])
+	if fileID != nil {
+		copy(req.FileID[:], fileID)
+	}
 
 	// Extract filename pattern (UTF-16LE encoded)
 	// FileNameOffset is relative to the start of SMB2 header (64 bytes)
@@ -159,13 +171,13 @@ func DecodeQueryDirectoryRequest(body []byte) (*QueryDirectoryRequest, error) {
 // Encode serializes the QueryDirectoryResponse into SMB2 wire format [MS-SMB2] 2.2.34.
 func (resp *QueryDirectoryResponse) Encode() ([]byte, error) {
 	// Fixed response header is 8 bytes, data follows immediately
-	buf := make([]byte, 8+len(resp.Data))
-	binary.LittleEndian.PutUint16(buf[0:2], 9)                      // StructureSize (per spec, always 9)
-	binary.LittleEndian.PutUint16(buf[2:4], uint16(64+8))           // OutputBufferOffset (header + 8 byte response)
-	binary.LittleEndian.PutUint32(buf[4:8], uint32(len(resp.Data))) // OutputBufferLength
-	copy(buf[8:], resp.Data)
+	w := smbenc.NewWriter(8 + len(resp.Data))
+	w.WriteUint16(9)                      // StructureSize (per spec, always 9)
+	w.WriteUint16(uint16(64 + 8))         // OutputBufferOffset (header + 8 byte response)
+	w.WriteUint32(uint32(len(resp.Data))) // OutputBufferLength
+	w.WriteBytes(resp.Data)
 
-	return buf, nil
+	return w.Bytes(), nil
 }
 
 // EncodeDirectoryEntry encodes a single directory entry for FILE_ID_BOTH_DIRECTORY_INFORMATION.
@@ -184,26 +196,33 @@ func EncodeDirectoryEntry(entry *DirectoryEntry, nextOffset uint32) []byte {
 	totalSize := 104 + len(fileNameBytes)
 	paddedSize := (totalSize + 7) &^ 7
 
-	buf := make([]byte, paddedSize)
-	binary.LittleEndian.PutUint32(buf[0:4], nextOffset)                                   // NextEntryOffset
-	binary.LittleEndian.PutUint32(buf[4:8], uint32(entry.FileIndex))                      // FileIndex
-	binary.LittleEndian.PutUint64(buf[8:16], types.TimeToFiletime(entry.CreationTime))    // CreationTime
-	binary.LittleEndian.PutUint64(buf[16:24], types.TimeToFiletime(entry.LastAccessTime)) // LastAccessTime
-	binary.LittleEndian.PutUint64(buf[24:32], types.TimeToFiletime(entry.LastWriteTime))  // LastWriteTime
-	binary.LittleEndian.PutUint64(buf[32:40], types.TimeToFiletime(entry.ChangeTime))     // ChangeTime
-	binary.LittleEndian.PutUint64(buf[40:48], entry.EndOfFile)                            // EndOfFile
-	binary.LittleEndian.PutUint64(buf[48:56], entry.AllocationSize)                       // AllocationSize
-	binary.LittleEndian.PutUint32(buf[56:60], uint32(entry.FileAttributes))               // FileAttributes
-	binary.LittleEndian.PutUint32(buf[60:64], uint32(len(fileNameBytes)))                 // FileNameLength
-	binary.LittleEndian.PutUint32(buf[64:68], entry.EaSize)                               // EaSize
-	buf[68] = byte(len(shortNameBytes))                                                   // ShortNameLength
-	buf[69] = 0                                                                           // Reserved1
-	copy(buf[70:94], shortNameBytes)                                                      // ShortName (24 bytes max)
-	binary.LittleEndian.PutUint16(buf[94:96], 0)                                          // Reserved2
-	binary.LittleEndian.PutUint64(buf[96:104], entry.FileID)                              // FileId
-	copy(buf[104:], fileNameBytes)                                                        // FileName
+	w := smbenc.NewWriter(paddedSize)
+	w.WriteUint32(nextOffset)                                 // NextEntryOffset
+	w.WriteUint32(uint32(entry.FileIndex))                    // FileIndex
+	w.WriteUint64(types.TimeToFiletime(entry.CreationTime))   // CreationTime
+	w.WriteUint64(types.TimeToFiletime(entry.LastAccessTime)) // LastAccessTime
+	w.WriteUint64(types.TimeToFiletime(entry.LastWriteTime))  // LastWriteTime
+	w.WriteUint64(types.TimeToFiletime(entry.ChangeTime))     // ChangeTime
+	w.WriteUint64(entry.EndOfFile)                            // EndOfFile
+	w.WriteUint64(entry.AllocationSize)                       // AllocationSize
+	w.WriteUint32(uint32(entry.FileAttributes))               // FileAttributes
+	w.WriteUint32(uint32(len(fileNameBytes)))                 // FileNameLength
+	w.WriteUint32(entry.EaSize)                               // EaSize
+	w.WriteUint8(byte(len(shortNameBytes)))                   // ShortNameLength
+	w.WriteUint8(0)                                           // Reserved1
+	// ShortName: 24-byte fixed field, zero-padded
+	shortPadded := make([]byte, 24)
+	copy(shortPadded, shortNameBytes)
+	w.WriteBytes(shortPadded)   // ShortName (24 bytes max)
+	w.WriteUint16(0)            // Reserved2
+	w.WriteUint64(entry.FileID) // FileId
+	w.WriteBytes(fileNameBytes) // FileName
+	// Pad to 8-byte alignment
+	if paddedSize > w.Len() {
+		w.WriteZeros(paddedSize - w.Len())
+	}
 
-	return buf
+	return w.Bytes()
 }
 
 // ============================================================================
@@ -227,8 +246,8 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	// Get OpenFile by FileID
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
-		logger.Debug("QUERY_DIRECTORY: invalid file ID", "fileID", fmt.Sprintf("%x", req.FileID))
-		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
+		logger.Debug("QUERY_DIRECTORY: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
+		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileClosed}}, nil
 	}
 
 	if !openFile.IsDirectory {
@@ -458,14 +477,16 @@ func resolveDirEntryFields(attr *metadata.FileAttr, name string) dirEntryWireFie
 //	[48:52] FileAttributes
 //	[52:56] FileNameLength
 func writeCommonDirFields(entry []byte, offset int, f dirEntryWireFields, fileNameLen int) {
-	binary.LittleEndian.PutUint64(entry[offset:], f.creationTime)
-	binary.LittleEndian.PutUint64(entry[offset+8:], f.accessTime)
-	binary.LittleEndian.PutUint64(entry[offset+16:], f.writeTime)
-	binary.LittleEndian.PutUint64(entry[offset+24:], f.changeTime)
-	binary.LittleEndian.PutUint64(entry[offset+32:], f.size)
-	binary.LittleEndian.PutUint64(entry[offset+40:], f.allocationSize)
-	binary.LittleEndian.PutUint32(entry[offset+48:], uint32(f.attrs))
-	binary.LittleEndian.PutUint32(entry[offset+52:], uint32(fileNameLen))
+	w := smbenc.NewWriter(56)
+	w.WriteUint64(f.creationTime)
+	w.WriteUint64(f.accessTime)
+	w.WriteUint64(f.writeTime)
+	w.WriteUint64(f.changeTime)
+	w.WriteUint64(f.size)
+	w.WriteUint64(f.allocationSize)
+	w.WriteUint32(uint32(f.attrs))
+	w.WriteUint32(uint32(fileNameLen))
+	copy(entry[offset:], w.Bytes())
 }
 
 // allocAlignedEntry allocates a zero-filled byte slice of at least baseSize+nameLen
@@ -479,7 +500,9 @@ func allocAlignedEntry(baseSize, nameLen int) []byte {
 // entry's NextEntryOffset field starts.
 func linkEntry(result []byte, prevNextOffset *int, entry []byte) []byte {
 	if len(result) > 0 {
-		binary.LittleEndian.PutUint32(result[*prevNextOffset:], uint32(len(result)-*prevNextOffset))
+		w := smbenc.NewWriter(4)
+		w.WriteUint32(uint32(len(result) - *prevNextOffset))
+		copy(result[*prevNextOffset:], w.Bytes())
 	}
 	*prevNextOffset = len(result)
 	return append(result, entry...)
@@ -534,9 +557,12 @@ func encodeBothDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64) 
 	f := resolveDirEntryFields(attr, name)
 
 	entry := allocAlignedEntry(94, len(nameBytes))
-	binary.LittleEndian.PutUint32(entry[4:8], uint32(fileIndex))
+	// NextEntryOffset (4 bytes at 0) left as zero, patched by linkEntry
+	w := smbenc.NewWriter(4)
+	w.WriteUint32(uint32(fileIndex))
+	copy(entry[4:8], w.Bytes()) // FileIndex
 	writeCommonDirFields(entry, 8, f, len(nameBytes))
-	// EaSize (4 bytes at 64)
+	// EaSize (4 bytes at 64) left as zero
 	shortNameBytes := generate83ShortName(name)
 	shortNameLen := len(shortNameBytes)
 	if shortNameLen > 24 {
@@ -583,9 +609,12 @@ func encodeIdBothDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64
 	f := resolveDirEntryFields(attr, name)
 
 	entry := allocAlignedEntry(104, len(nameBytes))
-	binary.LittleEndian.PutUint32(entry[4:8], uint32(fileIndex))
+	// NextEntryOffset (4 bytes at 0) left as zero, patched by linkEntry
+	w := smbenc.NewWriter(4)
+	w.WriteUint32(uint32(fileIndex))
+	copy(entry[4:8], w.Bytes()) // FileIndex
 	writeCommonDirFields(entry, 8, f, len(nameBytes))
-	// EaSize (4 bytes at 64)
+	// EaSize (4 bytes at 64) left as zero
 	shortNameBytes := generate83ShortName(name)
 	shortNameLen := len(shortNameBytes)
 	if shortNameLen > 24 {
@@ -597,7 +626,9 @@ func encodeIdBothDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64
 		copy(entry[70:70+shortNameLen], shortNameBytes[:shortNameLen]) // ShortName (24 bytes max)
 	}
 	// Reserved2 (2 bytes at 94-95)
-	binary.LittleEndian.PutUint64(entry[96:104], fileID)
+	wID := smbenc.NewWriter(8)
+	wID.WriteUint64(fileID)
+	copy(entry[96:104], wID.Bytes()) // FileId
 	copy(entry[104:], nameBytes)
 
 	return entry
@@ -632,10 +663,15 @@ func encodeIdFullDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64
 	f := resolveDirEntryFields(attr, name)
 
 	entry := allocAlignedEntry(80, len(nameBytes))
-	binary.LittleEndian.PutUint32(entry[4:8], uint32(fileIndex))
+	// NextEntryOffset (4 bytes at 0) left as zero, patched by linkEntry
+	w := smbenc.NewWriter(4)
+	w.WriteUint32(uint32(fileIndex))
+	copy(entry[4:8], w.Bytes()) // FileIndex
 	writeCommonDirFields(entry, 8, f, len(nameBytes))
 	// EaSize (4 bytes at 64), Reserved (4 bytes at 68) are left as zero
-	binary.LittleEndian.PutUint64(entry[72:80], fileID)
+	wID := smbenc.NewWriter(8)
+	wID.WriteUint64(fileID)
+	copy(entry[72:80], wID.Bytes()) // FileId
 	copy(entry[80:], nameBytes)
 
 	return entry
@@ -668,7 +704,10 @@ func encodeFullDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64) 
 	f := resolveDirEntryFields(attr, name)
 
 	entry := allocAlignedEntry(68, len(nameBytes))
-	binary.LittleEndian.PutUint32(entry[4:8], uint32(fileIndex))
+	// NextEntryOffset (4 bytes at 0) left as zero, patched by linkEntry
+	w := smbenc.NewWriter(4)
+	w.WriteUint32(uint32(fileIndex))
+	copy(entry[4:8], w.Bytes()) // FileIndex
 	writeCommonDirFields(entry, 8, f, len(nameBytes))
 	// EaSize (4 bytes at 64) is left as zero
 	copy(entry[68:], nameBytes)
@@ -703,7 +742,10 @@ func encodeDirInfoEntry(name string, attr *metadata.FileAttr, fileIndex uint64) 
 	f := resolveDirEntryFields(attr, name)
 
 	entry := allocAlignedEntry(64, len(nameBytes))
-	binary.LittleEndian.PutUint32(entry[4:8], uint32(fileIndex))
+	// NextEntryOffset (4 bytes at 0) left as zero, patched by linkEntry
+	w := smbenc.NewWriter(4)
+	w.WriteUint32(uint32(fileIndex))
+	copy(entry[4:8], w.Bytes()) // FileIndex
 	writeCommonDirFields(entry, 8, f, len(nameBytes))
 	copy(entry[64:], nameBytes)
 
@@ -736,8 +778,11 @@ func encodeNamesEntry(name string, fileIndex uint64) []byte {
 	nameBytes := encodeUTF16LE(name)
 
 	entry := allocAlignedEntry(12, len(nameBytes))
-	binary.LittleEndian.PutUint32(entry[4:8], uint32(fileIndex))
-	binary.LittleEndian.PutUint32(entry[8:12], uint32(len(nameBytes)))
+	// NextEntryOffset (4 bytes at 0) left as zero, patched by linkEntry
+	w := smbenc.NewWriter(8)
+	w.WriteUint32(uint32(fileIndex))      // FileIndex
+	w.WriteUint32(uint32(len(nameBytes))) // FileNameLength
+	copy(entry[4:12], w.Bytes())
 	copy(entry[12:], nameBytes)
 
 	return entry
@@ -899,12 +944,15 @@ func truncateToFirstEntry(buf []byte) []byte {
 	if len(buf) < 4 {
 		return buf
 	}
-	nextOffset := binary.LittleEndian.Uint32(buf[0:4])
+	r := smbenc.NewReader(buf)
+	nextOffset := r.ReadUint32()
 	if nextOffset == 0 {
 		return buf // already single entry
 	}
 	result := buf[:nextOffset]
-	binary.LittleEndian.PutUint32(result[0:4], 0)
+	w := smbenc.NewWriter(4)
+	w.WriteUint32(0)
+	copy(result[0:4], w.Bytes())
 	return result
 }
 
@@ -916,7 +964,8 @@ func truncateToNthEntry(buf []byte, n int) []byte {
 		if offset+4 > len(buf) {
 			return nil
 		}
-		nextOffset := binary.LittleEndian.Uint32(buf[offset : offset+4])
+		r := smbenc.NewReader(buf[offset:])
+		nextOffset := r.ReadUint32()
 		if nextOffset == 0 {
 			return nil // entry chain shorter than n
 		}
@@ -925,7 +974,8 @@ func truncateToNthEntry(buf []byte, n int) []byte {
 	if offset >= len(buf) {
 		return nil
 	}
-	nextOffset := binary.LittleEndian.Uint32(buf[offset : offset+4])
+	r := smbenc.NewReader(buf[offset:])
+	nextOffset := r.ReadUint32()
 	var entryEnd int
 	if nextOffset == 0 {
 		entryEnd = len(buf)
@@ -934,7 +984,9 @@ func truncateToNthEntry(buf []byte, n int) []byte {
 	}
 	result := make([]byte, entryEnd-offset)
 	copy(result, buf[offset:entryEnd])
-	binary.LittleEndian.PutUint32(result[0:4], 0) // mark as last entry
+	w := smbenc.NewWriter(4)
+	w.WriteUint32(0)
+	copy(result[0:4], w.Bytes()) // mark as last entry
 	return result
 }
 
@@ -967,7 +1019,8 @@ func truncateAtEntryBoundary(buf []byte, maxBytes uint32) []byte {
 	offset := uint32(0)
 
 	for offset+4 <= uint32(len(buf)) {
-		nextOffset := binary.LittleEndian.Uint32(buf[offset : offset+4])
+		r := smbenc.NewReader(buf[offset:])
+		nextOffset := r.ReadUint32()
 
 		var entryEnd uint32
 		if nextOffset == 0 {
@@ -995,9 +1048,12 @@ func truncateAtEntryBoundary(buf []byte, maxBytes uint32) []byte {
 	// Zero the NextEntryOffset of the last included entry
 	pos := uint32(0)
 	for {
-		next := binary.LittleEndian.Uint32(result[pos : pos+4])
+		r := smbenc.NewReader(result[pos:])
+		next := r.ReadUint32()
 		if next == 0 || pos+next >= lastEnd {
-			binary.LittleEndian.PutUint32(result[pos:pos+4], 0)
+			w := smbenc.NewWriter(4)
+			w.WriteUint32(0)
+			copy(result[pos:pos+4], w.Bytes())
 			break
 		}
 		pos += next

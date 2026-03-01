@@ -301,6 +301,45 @@ const (
 	SMB2DialectWild = DialectWildcard
 )
 
+// ParseSMBDialect converts a dialect settings string (e.g., "SMB3.0") to a Dialect value.
+// Valid strings are: "SMB2.0", "SMB2.1", "SMB3.0", "SMB3.0.2", "SMB3.1.1".
+// Returns 0 and false for unrecognized strings.
+func ParseSMBDialect(s string) (Dialect, bool) {
+	switch s {
+	case "SMB2.0":
+		return Dialect0202, true
+	case "SMB2.1":
+		return Dialect0210, true
+	case "SMB3.0":
+		return Dialect0300, true
+	case "SMB3.0.2":
+		return Dialect0302, true
+	case "SMB3.1.1":
+		return Dialect0311, true
+	default:
+		return 0, false
+	}
+}
+
+// DialectPriority returns a numeric priority for dialect ordering.
+// Higher values mean higher priority (newer dialect).
+func DialectPriority(d Dialect) int {
+	switch d {
+	case Dialect0202:
+		return 1
+	case Dialect0210:
+		return 2
+	case Dialect0300:
+		return 3
+	case Dialect0302:
+		return 4
+	case Dialect0311:
+		return 5
+	default:
+		return 0
+	}
+}
+
 // =============================================================================
 // Server Capabilities
 // =============================================================================
@@ -645,4 +684,68 @@ type CloseFlags uint16
 
 const (
 	SMB2ClosePostQueryAttrib CloseFlags = 0x0001
+)
+
+// =============================================================================
+// Security Mode
+// =============================================================================
+
+// SecurityMode represents SMB2 security mode flags.
+// [MS-SMB2] Section 2.2.3
+type SecurityMode uint16
+
+const (
+	// NegSigningEnabled indicates the client/server supports signing.
+	NegSigningEnabled SecurityMode = 0x0001
+
+	// NegSigningRequired indicates the client/server requires signing.
+	NegSigningRequired SecurityMode = 0x0002
+)
+
+// =============================================================================
+// Negotiate Context Types (SMB 3.1.1)
+// =============================================================================
+
+// Negotiate context type identifiers.
+// [MS-SMB2] Section 2.2.3.1
+const (
+	// NegCtxPreauthIntegrity identifies SMB2_PREAUTH_INTEGRITY_CAPABILITIES context.
+	NegCtxPreauthIntegrity uint16 = 0x0001
+
+	// NegCtxEncryptionCaps identifies SMB2_ENCRYPTION_CAPABILITIES context.
+	NegCtxEncryptionCaps uint16 = 0x0002
+
+	// NegCtxNetnameContextID identifies SMB2_NETNAME_NEGOTIATE_CONTEXT_ID context.
+	NegCtxNetnameContextID uint16 = 0x0005
+)
+
+// =============================================================================
+// Hash Algorithms (SMB 3.1.1)
+// =============================================================================
+
+// Hash algorithm identifiers for preauth integrity.
+// [MS-SMB2] Section 2.2.3.1.1
+const (
+	// HashAlgSHA512 is the SHA-512 hash algorithm.
+	HashAlgSHA512 uint16 = 0x0001
+)
+
+// =============================================================================
+// Cipher Identifiers (SMB 3.1.1)
+// =============================================================================
+
+// Cipher identifiers for encryption capabilities.
+// [MS-SMB2] Section 2.2.3.1.2
+const (
+	// CipherAES128CCM is AES-128 in CCM mode.
+	CipherAES128CCM uint16 = 0x0001
+
+	// CipherAES128GCM is AES-128 in GCM mode.
+	CipherAES128GCM uint16 = 0x0002
+
+	// CipherAES256CCM is AES-256 in CCM mode.
+	CipherAES256CCM uint16 = 0x0003
+
+	// CipherAES256GCM is AES-256 in GCM mode.
+	CipherAES256GCM uint16 = 0x0004
 )

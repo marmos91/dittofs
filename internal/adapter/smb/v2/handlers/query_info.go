@@ -2,11 +2,11 @@ package handlers
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -129,16 +129,30 @@ func DecodeQueryInfoRequest(body []byte) (*QueryInfoRequest, error) {
 		return nil, fmt.Errorf("QUERY_INFO request too short: %d bytes", len(body))
 	}
 
+	r := smbenc.NewReader(body)
+	_ = r.ReadUint16()                   // StructureSize (always 41)
+	infoType := r.ReadUint8()            // InfoType
+	fileInfoClass := r.ReadUint8()       // FileInfoClass
+	outputBufferLength := r.ReadUint32() // OutputBufferLength
+	inputBufferOffset := r.ReadUint16()  // InputBufferOffset
+	_ = r.ReadUint16()                   // Reserved
+	inputBufferLength := r.ReadUint32()  // InputBufferLength
+	additionalInfo := r.ReadUint32()     // AdditionalInfo
+	flags := r.ReadUint32()              // Flags
+	fileID := r.ReadBytes(16)            // FileID
+
 	req := &QueryInfoRequest{
-		InfoType:           body[2],
-		FileInfoClass:      body[3],
-		OutputBufferLength: binary.LittleEndian.Uint32(body[4:8]),
-		InputBufferOffset:  binary.LittleEndian.Uint16(body[8:10]),
-		InputBufferLength:  binary.LittleEndian.Uint32(body[12:16]),
-		AdditionalInfo:     binary.LittleEndian.Uint32(body[16:20]),
-		Flags:              binary.LittleEndian.Uint32(body[20:24]),
+		InfoType:           infoType,
+		FileInfoClass:      fileInfoClass,
+		OutputBufferLength: outputBufferLength,
+		InputBufferOffset:  inputBufferOffset,
+		InputBufferLength:  inputBufferLength,
+		AdditionalInfo:     additionalInfo,
+		Flags:              flags,
 	}
-	copy(req.FileID[:], body[24:40])
+	if fileID != nil {
+		copy(req.FileID[:], fileID)
+	}
 
 	return req, nil
 }
@@ -149,25 +163,25 @@ func DecodeQueryInfoRequest(body []byte) (*QueryInfoRequest, error) {
 // (StructureSize(2) + OutputBufferOffset(2) + OutputBufferLength(4)). The variable
 // buffer starts at offset 8 from the body, which is 64+8=72 from the header.
 func (resp *QueryInfoResponse) Encode() ([]byte, error) {
-	buf := make([]byte, 8+len(resp.Data))
-	binary.LittleEndian.PutUint16(buf[0:2], 9)                      // StructureSize (per spec, always 9)
-	binary.LittleEndian.PutUint16(buf[2:4], uint16(64+8))           // OutputBufferOffset (header + fixed part)
-	binary.LittleEndian.PutUint32(buf[4:8], uint32(len(resp.Data))) // OutputBufferLength
-	copy(buf[8:], resp.Data)
+	w := smbenc.NewWriter(8 + len(resp.Data))
+	w.WriteUint16(9)                      // StructureSize (per spec, always 9)
+	w.WriteUint16(uint16(64 + 8))         // OutputBufferOffset (header + fixed part)
+	w.WriteUint32(uint32(len(resp.Data))) // OutputBufferLength
+	w.WriteBytes(resp.Data)
 
-	return buf, nil
+	return w.Bytes(), nil
 }
 
 // EncodeFileBasicInfo builds FILE_BASIC_INFORMATION [MS-FSCC] 2.4.7.
 func EncodeFileBasicInfo(info *FileBasicInfo) []byte {
-	buf := make([]byte, 40)
-	binary.LittleEndian.PutUint64(buf[0:8], types.TimeToFiletime(info.CreationTime))
-	binary.LittleEndian.PutUint64(buf[8:16], types.TimeToFiletime(info.LastAccessTime))
-	binary.LittleEndian.PutUint64(buf[16:24], types.TimeToFiletime(info.LastWriteTime))
-	binary.LittleEndian.PutUint64(buf[24:32], types.TimeToFiletime(info.ChangeTime))
-	binary.LittleEndian.PutUint32(buf[32:36], uint32(info.FileAttributes))
-	// Reserved 4 bytes
-	return buf
+	w := smbenc.NewWriter(40)
+	w.WriteUint64(types.TimeToFiletime(info.CreationTime))
+	w.WriteUint64(types.TimeToFiletime(info.LastAccessTime))
+	w.WriteUint64(types.TimeToFiletime(info.LastWriteTime))
+	w.WriteUint64(types.TimeToFiletime(info.ChangeTime))
+	w.WriteUint32(uint32(info.FileAttributes))
+	w.WriteZeros(4) // Reserved
+	return w.Bytes()
 }
 
 // DecodeFileBasicInfo parses FILE_BASIC_INFORMATION [MS-FSCC] 2.4.7.
@@ -176,43 +190,47 @@ func DecodeFileBasicInfo(buf []byte) (*FileBasicInfo, error) {
 		return nil, fmt.Errorf("buffer too short for FILE_BASIC_INFORMATION: %d bytes", len(buf))
 	}
 
+	r := smbenc.NewReader(buf)
 	return &FileBasicInfo{
-		CreationTime:   types.FiletimeToTime(binary.LittleEndian.Uint64(buf[0:8])),
-		LastAccessTime: types.FiletimeToTime(binary.LittleEndian.Uint64(buf[8:16])),
-		LastWriteTime:  types.FiletimeToTime(binary.LittleEndian.Uint64(buf[16:24])),
-		ChangeTime:     types.FiletimeToTime(binary.LittleEndian.Uint64(buf[24:32])),
-		FileAttributes: types.FileAttributes(binary.LittleEndian.Uint32(buf[32:36])),
+		CreationTime:   types.FiletimeToTime(r.ReadUint64()),
+		LastAccessTime: types.FiletimeToTime(r.ReadUint64()),
+		LastWriteTime:  types.FiletimeToTime(r.ReadUint64()),
+		ChangeTime:     types.FiletimeToTime(r.ReadUint64()),
+		FileAttributes: types.FileAttributes(r.ReadUint32()),
 	}, nil
 }
 
 // EncodeFileStandardInfo builds FILE_STANDARD_INFORMATION [MS-FSCC] 2.4.41.
 func EncodeFileStandardInfo(info *FileStandardInfo) []byte {
-	buf := make([]byte, 24)
-	binary.LittleEndian.PutUint64(buf[0:8], info.AllocationSize)
-	binary.LittleEndian.PutUint64(buf[8:16], info.EndOfFile)
-	binary.LittleEndian.PutUint32(buf[16:20], info.NumberOfLinks)
+	w := smbenc.NewWriter(24)
+	w.WriteUint64(info.AllocationSize)
+	w.WriteUint64(info.EndOfFile)
+	w.WriteUint32(info.NumberOfLinks)
+	var deletePending, directory uint8
 	if info.DeletePending {
-		buf[20] = 1
+		deletePending = 1
 	}
 	if info.Directory {
-		buf[21] = 1
+		directory = 1
 	}
-	// Reserved 2 bytes
-	return buf
+	w.WriteUint8(deletePending)
+	w.WriteUint8(directory)
+	w.WriteZeros(2) // Reserved
+	return w.Bytes()
 }
 
 // EncodeFileNetworkOpenInfo builds FILE_NETWORK_OPEN_INFORMATION [MS-FSCC] 2.4.27.
 func EncodeFileNetworkOpenInfo(info *FileNetworkOpenInfo) []byte {
-	buf := make([]byte, 56)
-	binary.LittleEndian.PutUint64(buf[0:8], types.TimeToFiletime(info.CreationTime))
-	binary.LittleEndian.PutUint64(buf[8:16], types.TimeToFiletime(info.LastAccessTime))
-	binary.LittleEndian.PutUint64(buf[16:24], types.TimeToFiletime(info.LastWriteTime))
-	binary.LittleEndian.PutUint64(buf[24:32], types.TimeToFiletime(info.ChangeTime))
-	binary.LittleEndian.PutUint64(buf[32:40], info.AllocationSize)
-	binary.LittleEndian.PutUint64(buf[40:48], info.EndOfFile)
-	binary.LittleEndian.PutUint32(buf[48:52], uint32(info.FileAttributes))
-	// Reserved 4 bytes
-	return buf
+	w := smbenc.NewWriter(56)
+	w.WriteUint64(types.TimeToFiletime(info.CreationTime))
+	w.WriteUint64(types.TimeToFiletime(info.LastAccessTime))
+	w.WriteUint64(types.TimeToFiletime(info.LastWriteTime))
+	w.WriteUint64(types.TimeToFiletime(info.ChangeTime))
+	w.WriteUint64(info.AllocationSize)
+	w.WriteUint64(info.EndOfFile)
+	w.WriteUint32(uint32(info.FileAttributes))
+	w.WriteZeros(4) // Reserved
+	return w.Bytes()
 }
 
 // ============================================================================
@@ -237,8 +255,8 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
-		logger.Debug("QUERY_INFO: invalid file ID", "fileID", fmt.Sprintf("%x", req.FileID))
-		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
+		logger.Debug("QUERY_INFO: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
+		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileClosed}}, nil
 	}
 
 	// ========================================================================
@@ -283,6 +301,12 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 			return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInfoLengthMismatch}}, nil
 		}
 	}
+	if req.InfoType == types.SMB2InfoTypeFilesystem {
+		minSize := fsInfoClassMinSize(types.FileInfoClass(req.FileInfoClass))
+		if minSize > 0 && req.OutputBufferLength < minSize {
+			return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInfoLengthMismatch}}, nil
+		}
+	}
 
 	// ========================================================================
 	// Step 4: Build info based on type and class
@@ -319,7 +343,9 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 			types.FileInfoClass(req.FileInfoClass) == types.FileAllInformation &&
 			len(info) >= 100 {
 			actualNameLen := len(info) - 100
-			binary.LittleEndian.PutUint32(info[96:100], uint32(actualNameLen))
+			wp := smbenc.NewWriter(4)
+			wp.WriteUint32(uint32(actualNameLen))
+			copy(info[96:100], wp.Bytes())
 		}
 	}
 
@@ -403,21 +429,21 @@ func (h *Handler) handlePipeFileInfo(req *QueryInfoRequest, openFile *OpenFile) 
 		}, nil
 
 	case types.FileAccessInformation:
-		info := make([]byte, 4)
-		binary.LittleEndian.PutUint32(info[0:4], 0x001F01FF) // Full access
+		w := smbenc.NewWriter(4)
+		w.WriteUint32(0x001F01FF) // Full access
 		return &QueryInfoResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
-			Data:            info,
+			Data:            w.Bytes(),
 		}, nil
 
 	case types.FileNameInformation:
 		nameBytes := encodeUTF16LE("\\" + openFile.PipeName)
-		info := make([]byte, 4+len(nameBytes))
-		binary.LittleEndian.PutUint32(info[0:4], uint32(len(nameBytes)))
-		copy(info[4:], nameBytes)
+		w := smbenc.NewWriter(4 + len(nameBytes))
+		w.WriteUint32(uint32(len(nameBytes)))
+		w.WriteBytes(nameBytes)
 		return &QueryInfoResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
-			Data:            info,
+			Data:            w.Bytes(),
 		}, nil
 
 	case types.FilePositionInformation:
@@ -460,12 +486,16 @@ func (h *Handler) handlePipeFileInfo(req *QueryInfoRequest, openFile *OpenFile) 
 		// InternalInformation (8 bytes) at offset 64 - zeros
 		// EaInformation (4 bytes) at offset 72 - zero
 		// AccessInformation (4 bytes) at offset 76
-		binary.LittleEndian.PutUint32(info[76:80], 0x001F01FF)
+		wAccess := smbenc.NewWriter(4)
+		wAccess.WriteUint32(0x001F01FF)
+		copy(info[76:80], wAccess.Bytes())
 		// PositionInformation (8 bytes) at offset 80 - zero
 		// ModeInformation (4 bytes) at offset 88 - zero
 		// AlignmentInformation (4 bytes) at offset 92 - zero
 		// NameInformation: length (4 bytes) at offset 96 + name data
-		binary.LittleEndian.PutUint32(info[96:100], uint32(len(nameBytes)))
+		wName := smbenc.NewWriter(4)
+		wName.WriteUint32(uint32(len(nameBytes)))
+		copy(info[96:100], wName.Bytes())
 		copy(info[100:], nameBytes)
 
 		return &QueryInfoResponse{
@@ -491,11 +521,12 @@ func (h *Handler) buildFileInfoFromStore(file *metadata.File, openFile *OpenFile
 
 	case types.FileInternalInformation:
 		// FILE_INTERNAL_INFORMATION [MS-FSCC] 2.4.20 (8 bytes)
-		info := make([]byte, 8)
 		// Convert UUID to uint64 by using first 8 bytes
-		fileIndex := binary.LittleEndian.Uint64(file.ID[:8])
-		binary.LittleEndian.PutUint64(info[0:8], fileIndex) // IndexNumber (unique file ID)
-		return info, nil
+		r := smbenc.NewReader(file.ID[:8])
+		fileIndex := r.ReadUint64()
+		w := smbenc.NewWriter(8)
+		w.WriteUint64(fileIndex) // IndexNumber (unique file ID)
+		return w.Bytes(), nil
 
 	case types.FileEaInformation:
 		// FILE_EA_INFORMATION [MS-FSCC] 2.4.12 (4 bytes)
@@ -503,9 +534,9 @@ func (h *Handler) buildFileInfoFromStore(file *metadata.File, openFile *OpenFile
 
 	case types.FileAccessInformation:
 		// FILE_ACCESS_INFORMATION [MS-FSCC] 2.4.1 (4 bytes)
-		info := make([]byte, 4)
-		binary.LittleEndian.PutUint32(info[0:4], 0x001F01FF) // AccessFlags (full access)
-		return info, nil
+		w := smbenc.NewWriter(4)
+		w.WriteUint32(0x001F01FF) // AccessFlags (full access)
+		return w.Bytes(), nil
 
 	case types.FileStreamInformation:
 		// FileStreamInformation [MS-FSCC] 2.4.44
@@ -513,13 +544,13 @@ func (h *Handler) buildFileInfoFromStore(file *metadata.File, openFile *OpenFile
 		streamName := []byte{':', 0, ':', 0, '$', 0, 'D', 0, 'A', 0, 'T', 0, 'A', 0} // "::$DATA" UTF-16LE
 		size := getSMBSize(&file.FileAttr)
 		alloc := calculateAllocationSize(size)
-		info := make([]byte, 24+len(streamName))
-		binary.LittleEndian.PutUint32(info[0:4], 0)                       // NextEntryOffset (last entry)
-		binary.LittleEndian.PutUint32(info[4:8], uint32(len(streamName))) // StreamNameLength
-		binary.LittleEndian.PutUint64(info[8:16], size)                   // StreamSize
-		binary.LittleEndian.PutUint64(info[16:24], alloc)                 // StreamAllocationSize
-		copy(info[24:], streamName)
-		return info, nil
+		w := smbenc.NewWriter(24 + len(streamName))
+		w.WriteUint32(0)                       // NextEntryOffset (last entry)
+		w.WriteUint32(uint32(len(streamName))) // StreamNameLength
+		w.WriteUint64(size)                    // StreamSize
+		w.WriteUint64(alloc)                   // StreamAllocationSize
+		w.WriteBytes(streamName)
+		return w.Bytes(), nil
 
 	case types.FileNetworkOpenInformation:
 		networkInfo := FileAttrToFileNetworkOpenInfo(&file.FileAttr)
@@ -536,13 +567,13 @@ func (h *Handler) buildFileInfoFromStore(file *metadata.File, openFile *OpenFile
 		//   FILE_WRITE_THROUGH (0x02), FILE_SEQUENTIAL_ONLY (0x04),
 		//   FILE_NO_INTERMEDIATE_BUFFERING (0x08), FILE_SYNCHRONOUS_IO_ALERT (0x10),
 		//   FILE_SYNCHRONOUS_IO_NONALERT (0x20), FILE_DELETE_ON_CLOSE (0x1000)
-		info := make([]byte, 4)
 		modeMask := types.FileWriteThrough | types.FileSequentialOnly |
 			types.FileNoIntermediateBuffering | types.FileSynchronousIoAlert |
 			types.FileSynchronousIoNonalert | types.FileDeleteOnClose
 		mode := openFile.CreateOptions & modeMask
-		binary.LittleEndian.PutUint32(info[0:4], uint32(mode))
-		return info, nil
+		w := smbenc.NewWriter(4)
+		w.WriteUint32(uint32(mode))
+		return w.Bytes(), nil
 
 	case types.FileAlignmentInformation:
 		// FILE_ALIGNMENT_INFORMATION [MS-FSCC] 2.4.3 (4 bytes)
@@ -551,10 +582,10 @@ func (h *Handler) buildFileInfoFromStore(file *metadata.File, openFile *OpenFile
 	case types.FileNameInformation:
 		// FILE_NAME_INFORMATION [MS-FSCC] 2.4.26 (4 bytes + variable)
 		nameBytes := encodeUTF16LE(toSMBPath(openFile.Path))
-		info := make([]byte, 4+len(nameBytes))
-		binary.LittleEndian.PutUint32(info[0:4], uint32(len(nameBytes))) // FileNameLength
-		copy(info[4:], nameBytes)
-		return info, nil
+		w := smbenc.NewWriter(4 + len(nameBytes))
+		w.WriteUint32(uint32(len(nameBytes))) // FileNameLength
+		w.WriteBytes(nameBytes)
+		return w.Bytes(), nil
 
 	case types.FileAlternateNameInformation:
 		// FILE_ALTERNATE_NAME_INFORMATION [MS-FSCC] 2.4.5 (4 bytes + variable)
@@ -564,10 +595,10 @@ func (h *Handler) buildFileInfoFromStore(file *metadata.File, openFile *OpenFile
 			// For root or entries without a short name, use the filename itself
 			shortNameBytes = encodeUTF16LE(openFile.FileName)
 		}
-		info := make([]byte, 4+len(shortNameBytes))
-		binary.LittleEndian.PutUint32(info[0:4], uint32(len(shortNameBytes))) // FileNameLength
-		copy(info[4:], shortNameBytes)
-		return info, nil
+		w := smbenc.NewWriter(4 + len(shortNameBytes))
+		w.WriteUint32(uint32(len(shortNameBytes))) // FileNameLength
+		w.WriteBytes(shortNameBytes)
+		return w.Bytes(), nil
 
 	case types.FileNormalizedNameInformation:
 		// FILE_NORMALIZED_NAME_INFORMATION [MS-FSCC] 2.4.28 (4 bytes + variable)
@@ -579,37 +610,37 @@ func (h *Handler) buildFileInfoFromStore(file *metadata.File, openFile *OpenFile
 			filePath = strings.ReplaceAll(filePath, "/", "\\")
 		}
 		nameBytes := encodeUTF16LE(filePath)
-		info := make([]byte, 4+len(nameBytes))
-		binary.LittleEndian.PutUint32(info[0:4], uint32(len(nameBytes))) // FileNameLength
-		copy(info[4:], nameBytes)
-		return info, nil
+		w := smbenc.NewWriter(4 + len(nameBytes))
+		w.WriteUint32(uint32(len(nameBytes))) // FileNameLength
+		w.WriteBytes(nameBytes)
+		return w.Bytes(), nil
 
 	case types.FileIdInformation:
 		// FILE_ID_INFORMATION [MS-FSCC] 2.4.46 (24 bytes)
 		// VolumeSerialNumber (8 bytes) + FileId (16 bytes)
-		info := make([]byte, 24)
-		binary.LittleEndian.PutUint64(info[0:8], ntfsVolumeSerialNumber) // VolumeSerialNumber
-		copy(info[8:24], file.ID[:16])                                   // FileId (128-bit)
-		return info, nil
+		w := smbenc.NewWriter(24)
+		w.WriteUint64(ntfsVolumeSerialNumber) // VolumeSerialNumber
+		w.WriteBytes(file.ID[:16])            // FileId (128-bit)
+		return w.Bytes(), nil
 
 	case types.FileCompressionInformation:
 		// FILE_COMPRESSION_INFORMATION [MS-FSCC] 2.4.9 (16 bytes)
 		// CompressedFileSize (8) + CompressionFormat (2) + CompressionUnitShift (1) +
 		// ChunkShift (1) + ClusterShift (1) + Reserved (3)
-		info := make([]byte, 16)
 		size := getSMBSize(&file.FileAttr)
-		binary.LittleEndian.PutUint64(info[0:8], size) // CompressedFileSize = EndOfFile
-		// CompressionFormat(2) + shifts(3) + Reserved(3) all zero = COMPRESSION_FORMAT_NONE
-		return info, nil
+		w := smbenc.NewWriter(16)
+		w.WriteUint64(size) // CompressedFileSize = EndOfFile
+		w.WriteZeros(8)     // CompressionFormat(2) + shifts(3) + Reserved(3) all zero = COMPRESSION_FORMAT_NONE
+		return w.Bytes(), nil
 
 	case types.FileAttributeTagInformation:
 		// FILE_ATTRIBUTE_TAG_INFORMATION [MS-FSCC] 2.4.6 (8 bytes)
 		// FileAttributes (4) + ReparseTag (4)
-		info := make([]byte, 8)
 		attrs := FileAttrToSMBAttributes(&file.FileAttr)
-		binary.LittleEndian.PutUint32(info[0:4], uint32(attrs))
-		// ReparseTag = 0 for non-reparse points
-		return info, nil
+		w := smbenc.NewWriter(8)
+		w.WriteUint32(uint32(attrs))
+		w.WriteUint32(0) // ReparseTag = 0 for non-reparse points
+		return w.Bytes(), nil
 
 	case types.FileAllInformation:
 		return h.buildFileAllInformationFromStore(file, openFile), nil
@@ -641,27 +672,20 @@ func (h *Handler) buildFileAllInformationFromStore(file *metadata.File, openFile
 	standardBytes := EncodeFileStandardInfo(standardInfo)
 	copy(info[40:64], standardBytes)
 
-	// InternalInformation (8 bytes) starting at offset 64
-	fileIndex := binary.LittleEndian.Uint64(file.ID[:8])
-	binary.LittleEndian.PutUint64(info[64:72], fileIndex)
+	// Build remaining fields sequentially using smbenc Writer
+	r := smbenc.NewReader(file.ID[:8])
+	fileIndex := r.ReadUint64()
 
-	// EaInformation (4 bytes) starting at offset 72
-	binary.LittleEndian.PutUint32(info[72:76], 0)
+	w := smbenc.NewWriter(36)
+	w.WriteUint64(fileIndex)              // InternalInformation (8 bytes) at offset 64
+	w.WriteUint32(0)                      // EaInformation (4 bytes) at offset 72
+	w.WriteUint32(0x001F01FF)             // AccessInformation (4 bytes) at offset 76
+	w.WriteUint64(0)                      // PositionInformation (8 bytes) at offset 80
+	w.WriteUint32(0)                      // ModeInformation (4 bytes) at offset 88
+	w.WriteUint32(0)                      // AlignmentInformation (4 bytes) at offset 92
+	w.WriteUint32(uint32(len(nameBytes))) // NameInformation length at offset 96
+	copy(info[64:100], w.Bytes())
 
-	// AccessInformation (4 bytes) starting at offset 76
-	binary.LittleEndian.PutUint32(info[76:80], 0x001F01FF)
-
-	// PositionInformation (8 bytes) starting at offset 80
-	binary.LittleEndian.PutUint64(info[80:88], 0)
-
-	// ModeInformation (4 bytes) starting at offset 88
-	binary.LittleEndian.PutUint32(info[88:92], 0)
-
-	// AlignmentInformation (4 bytes) starting at offset 92
-	binary.LittleEndian.PutUint32(info[92:96], 0)
-
-	// NameInformation (4 bytes for length + variable name) starting at offset 96
-	binary.LittleEndian.PutUint32(info[96:100], uint32(len(nameBytes)))
 	copy(info[100:], nameBytes)
 
 	return info
@@ -672,78 +696,79 @@ func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoC
 	switch class {
 	case 1: // FileFsVolumeInformation [MS-FSCC] 2.5.9
 		label := encodeUTF16LE("DittoFS")
-		info := make([]byte, 18+len(label))
-		binary.LittleEndian.PutUint64(info[0:8], types.NowFiletime())
-		binary.LittleEndian.PutUint32(info[8:12], uint32(ntfsVolumeSerialNumber)) // VolumeSerialNumber
-		binary.LittleEndian.PutUint32(info[12:16], uint32(len(label)))
-		// SupportsObjects (1 byte at 16) and Reserved (1 byte at 17) are zero
-		copy(info[18:], label)
-		return info, nil
+		w := smbenc.NewWriter(18 + len(label))
+		w.WriteUint64(types.NowFiletime())
+		w.WriteUint32(uint32(ntfsVolumeSerialNumber)) // VolumeSerialNumber
+		w.WriteUint32(uint32(len(label)))
+		w.WriteUint8(0) // SupportsObjects
+		w.WriteUint8(0) // Reserved
+		w.WriteBytes(label)
+		return w.Bytes(), nil
 
 	case 2: // FileFsLabelInformation [MS-FSCC] 2.5.5
 		label := encodeUTF16LE("DittoFS")
-		info := make([]byte, 4+len(label))
-		binary.LittleEndian.PutUint32(info[0:4], uint32(len(label)))
-		copy(info[4:], label)
-		return info, nil
+		w := smbenc.NewWriter(4 + len(label))
+		w.WriteUint32(uint32(len(label)))
+		w.WriteBytes(label)
+		return w.Bytes(), nil
 
 	case 3: // FileFsSizeInformation [MS-FSCC] 2.5.8
 		stats, err := metaSvc.GetFilesystemStatistics(ctx, handle)
 		if err == nil {
 			totalBlocks := stats.TotalBytes / clusterSize
 			availBlocks := stats.AvailableBytes / clusterSize
-			info := make([]byte, 24)
-			binary.LittleEndian.PutUint64(info[0:8], totalBlocks)
-			binary.LittleEndian.PutUint64(info[8:16], availBlocks)
-			binary.LittleEndian.PutUint32(info[16:20], sectorsPerUnit)
-			binary.LittleEndian.PutUint32(info[20:24], bytesPerSector)
-			return info, nil
+			w := smbenc.NewWriter(24)
+			w.WriteUint64(totalBlocks)
+			w.WriteUint64(availBlocks)
+			w.WriteUint32(sectorsPerUnit)
+			w.WriteUint32(bytesPerSector)
+			return w.Bytes(), nil
 		}
 		// Fallback to hardcoded values
-		info := make([]byte, 24)
-		binary.LittleEndian.PutUint64(info[0:8], 1000000)
-		binary.LittleEndian.PutUint64(info[8:16], 500000)
-		binary.LittleEndian.PutUint32(info[16:20], sectorsPerUnit)
-		binary.LittleEndian.PutUint32(info[20:24], bytesPerSector)
-		return info, nil
+		w := smbenc.NewWriter(24)
+		w.WriteUint64(1000000)
+		w.WriteUint64(500000)
+		w.WriteUint32(sectorsPerUnit)
+		w.WriteUint32(bytesPerSector)
+		return w.Bytes(), nil
 
 	case 4: // FileFsDeviceInformation [MS-FSCC] 2.5.9
 		// DeviceType (4 bytes) + Characteristics (4 bytes) = 8 bytes
-		info := make([]byte, 8)
-		binary.LittleEndian.PutUint32(info[0:4], 0x00000007) // FILE_DEVICE_DISK
-		binary.LittleEndian.PutUint32(info[4:8], 0x00000000) // No special characteristics
-		return info, nil
+		w := smbenc.NewWriter(8)
+		w.WriteUint32(0x00000007) // FILE_DEVICE_DISK
+		w.WriteUint32(0x00000000) // No special characteristics
+		return w.Bytes(), nil
 
 	case 5: // FileFsAttributeInformation [MS-FSCC] 2.5.1
 		fsName := encodeUTF16LE("NTFS")
-		info := make([]byte, 12+len(fsName))
-		binary.LittleEndian.PutUint32(info[0:4], 0x000000CF) // FILE_CASE_SENSITIVE_SEARCH | FILE_CASE_PRESERVED_NAMES | FILE_UNICODE_ON_DISK | FILE_PERSISTENT_ACLS | FILE_SUPPORTS_SPARSE_FILES | FILE_SUPPORTS_REPARSE_POINTS
-		binary.LittleEndian.PutUint32(info[4:8], 255)
-		binary.LittleEndian.PutUint32(info[8:12], uint32(len(fsName)))
-		copy(info[12:], fsName)
-		return info, nil
+		w := smbenc.NewWriter(12 + len(fsName))
+		w.WriteUint32(0x000000CF) // FILE_CASE_SENSITIVE_SEARCH | FILE_CASE_PRESERVED_NAMES | FILE_UNICODE_ON_DISK | FILE_PERSISTENT_ACLS | FILE_SUPPORTS_SPARSE_FILES | FILE_SUPPORTS_REPARSE_POINTS
+		w.WriteUint32(255)
+		w.WriteUint32(uint32(len(fsName)))
+		w.WriteBytes(fsName)
+		return w.Bytes(), nil
 
 	case 7: // FileFsFullSizeInformation [MS-FSCC] 2.5.4
 		stats, err := metaSvc.GetFilesystemStatistics(ctx, handle)
 		if err == nil {
 			totalBlocks := stats.TotalBytes / clusterSize
 			availBlocks := stats.AvailableBytes / clusterSize
-			info := make([]byte, 32)
-			binary.LittleEndian.PutUint64(info[0:8], totalBlocks)
-			binary.LittleEndian.PutUint64(info[8:16], availBlocks)
-			binary.LittleEndian.PutUint64(info[16:24], availBlocks)
-			binary.LittleEndian.PutUint32(info[24:28], sectorsPerUnit)
-			binary.LittleEndian.PutUint32(info[28:32], bytesPerSector)
-			return info, nil
+			w := smbenc.NewWriter(32)
+			w.WriteUint64(totalBlocks)
+			w.WriteUint64(availBlocks)
+			w.WriteUint64(availBlocks)
+			w.WriteUint32(sectorsPerUnit)
+			w.WriteUint32(bytesPerSector)
+			return w.Bytes(), nil
 		}
 		// Fallback
-		info := make([]byte, 32)
-		binary.LittleEndian.PutUint64(info[0:8], 1000000)
-		binary.LittleEndian.PutUint64(info[8:16], 500000)
-		binary.LittleEndian.PutUint64(info[16:24], 500000)
-		binary.LittleEndian.PutUint32(info[24:28], sectorsPerUnit)
-		binary.LittleEndian.PutUint32(info[28:32], bytesPerSector)
-		return info, nil
+		w := smbenc.NewWriter(32)
+		w.WriteUint64(1000000)
+		w.WriteUint64(500000)
+		w.WriteUint64(500000)
+		w.WriteUint32(sectorsPerUnit)
+		w.WriteUint32(bytesPerSector)
+		return w.Bytes(), nil
 
 	case 8: // FileFsObjectIdInformation [MS-FSCC] 2.5.6
 		// Returns the object ID for the file system volume
@@ -756,16 +781,16 @@ func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoC
 
 	case 11: // FileFsSectorSizeInformation [MS-FSCC] 2.5.8
 		// 28 bytes structure (matching Samba's implementation)
-		info := make([]byte, 28)
-		bps := uint32(512)                                     // bytes per sector
-		binary.LittleEndian.PutUint32(info[0:4], bps)          // LogicalBytesPerSector
-		binary.LittleEndian.PutUint32(info[4:8], bps)          // PhysicalBytesPerSectorForAtomicity
-		binary.LittleEndian.PutUint32(info[8:12], bps)         // PhysicalBytesPerSectorForPerformance
-		binary.LittleEndian.PutUint32(info[12:16], bps)        // FileSystemEffectivePhysicalBytesPerSectorForAtomicity
-		binary.LittleEndian.PutUint32(info[16:20], 0x00000003) // Flags: ALIGNED_DEVICE | PARTITION_ALIGNED
-		binary.LittleEndian.PutUint32(info[20:24], 0)          // ByteOffsetForSectorAlignment
-		binary.LittleEndian.PutUint32(info[24:28], 0)          // ByteOffsetForPartitionAlignment
-		return info, nil
+		bps := uint32(512) // bytes per sector
+		w := smbenc.NewWriter(28)
+		w.WriteUint32(bps)        // LogicalBytesPerSector
+		w.WriteUint32(bps)        // PhysicalBytesPerSectorForAtomicity
+		w.WriteUint32(bps)        // PhysicalBytesPerSectorForPerformance
+		w.WriteUint32(bps)        // FileSystemEffectivePhysicalBytesPerSectorForAtomicity
+		w.WriteUint32(0x00000003) // Flags: ALIGNED_DEVICE | PARTITION_ALIGNED
+		w.WriteUint32(0)          // ByteOffsetForSectorAlignment
+		w.WriteUint32(0)          // ByteOffsetForPartitionAlignment
+		return w.Bytes(), nil
 
 	default:
 		return nil, types.ErrNotSupported
@@ -794,6 +819,24 @@ func fileInfoClassMinSize(class types.FileInfoClass) uint32 {
 		return 8
 	default:
 		return 0 // Variable-length or unknown; allow truncation
+	}
+}
+
+// fsInfoClassMinSize returns the minimum output buffer size required for a
+// fixed-size filesystem information class [MS-FSCC] 2.5. Returns 0 for
+// variable-length classes (which may be truncated instead of rejected).
+func fsInfoClassMinSize(class types.FileInfoClass) uint32 {
+	switch class {
+	case 3: // FileFsSizeInformation [MS-FSCC] 2.5.8 (24 bytes)
+		return 24
+	case 4: // FileFsDeviceInformation [MS-FSCC] 2.5.9 (8 bytes)
+		return 8
+	case 7: // FileFsFullSizeInformation [MS-FSCC] 2.5.4 (32 bytes)
+		return 32
+	case 11: // FileFsSectorSizeInformation [MS-FSCC] 2.5.8 (28 bytes)
+		return 28
+	default:
+		return 0 // Variable-length (volume, label, attribute) or unknown
 	}
 }
 

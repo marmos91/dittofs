@@ -19,12 +19,14 @@ import (
 //   - ctx: context for cancellation
 //   - reqHeader: parsed SMB2 request header
 //   - body: request body bytes
+//   - rawMessage: complete raw SMB2 message bytes (header + body) for hooks
 //   - connInfo: connection context for dispatch
 //   - asyncNotifyCallback: optional callback for CHANGE_NOTIFY async responses (nil = no async)
 func ProcessSingleRequest(
 	ctx context.Context,
 	reqHeader *header.SMB2Header,
 	body []byte,
+	rawMessage []byte,
 	connInfo *ConnInfo,
 	asyncNotifyCallback handlers.AsyncResponseCallback,
 ) error {
@@ -38,6 +40,9 @@ func ProcessSingleRequest(
 	// Track request for adaptive credit management
 	connInfo.SessionManager.RequestStarted(reqHeader.SessionID)
 	defer connInfo.SessionManager.RequestCompleted(reqHeader.SessionID)
+
+	// Run before-hooks (e.g., preauth hash update for NEGOTIATE request)
+	RunBeforeHooks(connInfo, reqHeader.Command, rawMessage)
 
 	cmd, handlerCtx, errStatus := prepareDispatch(ctx, reqHeader, connInfo)
 	if errStatus != 0 {
@@ -72,11 +77,19 @@ func ProcessSingleRequest(
 		return nil
 	}
 
+	// DropConnection: close TCP without sending a response.
+	// Used for fatal protocol violations (e.g., VALIDATE_NEGOTIATE failure).
+	if result.DropConnection {
+		logger.Debug("Handler requested connection drop",
+			"command", cmd.Name, "client", handlerCtx.ClientAddr)
+		return connInfo.Conn.Close()
+	}
+
 	// Track session lifecycle for connection cleanup
 	TrackSessionLifecycle(reqHeader.Command, reqHeader.SessionID, handlerCtx.SessionID, result.Status, connInfo.SessionTracker)
 
-	// Send response
-	return SendResponse(reqHeader, handlerCtx, result, connInfo)
+	// Send response and run after-hooks with the response bytes
+	return SendResponseWithHooks(reqHeader, handlerCtx, result, connInfo)
 }
 
 // prepareDispatch looks up the command in the dispatch table, builds the handler context,
@@ -97,6 +110,10 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 		reqHeader.TreeID,
 		reqHeader.MessageID,
 	)
+
+	// Populate CryptoState so handlers (e.g., NEGOTIATE) can store
+	// negotiation parameters on the connection.
+	handlerCtx.ConnCryptoState = connInfo.CryptoState
 
 	if cmd.NeedsSession && reqHeader.SessionID != 0 {
 		sess, ok := connInfo.Handler.GetSession(reqHeader.SessionID)
@@ -167,8 +184,37 @@ func ProcessRequestWithInheritedFileID(ctx context.Context, reqHeader *header.SM
 	return result, handlerCtx
 }
 
+// SendResponseWithHooks sends an SMB2 response and runs after-hooks with the
+// full response bytes. This is used by ProcessSingleRequest where hooks need
+// the raw response bytes (e.g., preauth integrity hash chain).
+func SendResponseWithHooks(reqHeader *header.SMB2Header, ctx *handlers.SMBHandlerContext, result *HandlerResult, connInfo *ConnInfo) error {
+	respHeader, body := buildResponseHeaderAndBody(reqHeader, ctx, result, connInfo)
+
+	if err := SendMessage(respHeader, body, connInfo); err != nil {
+		return err
+	}
+
+	// Build raw response bytes for after-hooks (e.g., preauth integrity hash).
+	headerBytes := respHeader.Encode()
+	rawResponse := make([]byte, len(headerBytes)+len(body))
+	copy(rawResponse, headerBytes)
+	copy(rawResponse[len(headerBytes):], body)
+
+	RunAfterHooks(connInfo, reqHeader.Command, rawResponse)
+	return nil
+}
+
 // SendResponse sends an SMB2 response with credit management and signing.
 func SendResponse(reqHeader *header.SMB2Header, ctx *handlers.SMBHandlerContext, result *HandlerResult, connInfo *ConnInfo) error {
+	respHeader, body := buildResponseHeaderAndBody(reqHeader, ctx, result, connInfo)
+	return SendMessage(respHeader, body, connInfo)
+}
+
+// buildResponseHeaderAndBody constructs the response header and body from a
+// handler result. This consolidates credit granting, session/tree ID
+// propagation, and error body replacement that SendResponse and
+// SendResponseWithHooks both need.
+func buildResponseHeaderAndBody(reqHeader *header.SMB2Header, ctx *handlers.SMBHandlerContext, result *HandlerResult, connInfo *ConnInfo) (*header.SMB2Header, []byte) {
 	// Use session manager for adaptive credit grants
 	sessionID := reqHeader.SessionID
 	if ctx != nil && ctx.SessionID != 0 {
@@ -210,7 +256,7 @@ func SendResponse(reqHeader *header.SMB2Header, ctx *handlers.SMBHandlerContext,
 		body = MakeErrorBody()
 	}
 
-	return SendMessage(respHeader, body, connInfo)
+	return respHeader, body
 }
 
 // SendErrorResponse sends an SMB2 error response.

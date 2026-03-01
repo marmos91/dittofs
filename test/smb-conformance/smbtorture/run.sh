@@ -243,28 +243,9 @@ docker compose exec \
     -e SMB_PORT="445" \
     dittofs sh /app/bootstrap.sh
 
-# Build smbtorture command override (when --filter is provided)
-smbtorture_cmd=()
-if [[ -n "$FILTER" ]]; then
-    smbtorture_cmd=(
-        "//localhost/smbbasic"
-        "-U" "wpts-admin%TestPassword01!"
-        "--option=client min protocol=SMB2_02"
-        "--option=client max protocol=SMB3"
-        "$FILTER"
-    )
-fi
-
-# Run smbtorture
-# When smbtorture_cmd is empty, docker compose uses the default command from
-# docker-compose.yml. When populated (--filter), it overrides the entrypoint args.
-# The ${arr[@]+"${arr[@]}"} pattern safely expands empty arrays under set -u.
-#
-# timeout(1) kills the process after TIMEOUT seconds. Some smbtorture tests
-# (e.g. hold-sharemode) block indefinitely waiting for SIGINT, so a timeout
-# prevents CI from hanging until the job-level timeout cancels the run.
-log_step "Running smbtorture (filter: ${FILTER:-smb2}, timeout: ${TIMEOUT}s)..."
-smbtorture_exit=0
+# --------------------------------------------------------------------------
+# smbtorture execution
+# --------------------------------------------------------------------------
 
 # Use gtimeout on macOS (GNU coreutils), timeout on Linux
 TIMEOUT_CMD="timeout"
@@ -277,15 +258,137 @@ if ! command -v timeout >/dev/null 2>&1; then
     fi
 fi
 
-${TIMEOUT_CMD:+$TIMEOUT_CMD --signal=TERM --kill-after=30 "$TIMEOUT"} \
-    env PROFILE="$PROFILE" docker compose run --rm smbtorture \
-    ${smbtorture_cmd[@]+"${smbtorture_cmd[@]}"} \
-    2>&1 | tee "${RESULTS_DIR}/smbtorture-output.txt" || smbtorture_exit=$?
+# Common smbtorture arguments
+SMBTORTURE_ARGS=(
+    "//localhost/smbbasic"
+    "-U" "wpts-admin%TestPassword01!"
+    "--option=client min protocol=SMB2_02"
+    "--option=client max protocol=SMB3"
+)
 
-if [ "$smbtorture_exit" -eq 124 ]; then
-    log_warn "smbtorture timed out after ${TIMEOUT}s (some hold-tests block indefinitely)"
-elif [ "$smbtorture_exit" -ne 0 ]; then
-    log_warn "smbtorture exited with code ${smbtorture_exit} (expected -- failures are classified)"
+# run_smbtorture FILTER [PER_TEST_TIMEOUT] [SUITE_PREFIX]
+# Runs smbtorture with the given filter, appending output to results file.
+# When SUITE_PREFIX is set, test/success/failure/error lines in the output
+# get the prefix prepended so that KNOWN_FAILURES.md wildcards match correctly.
+# (Running smb2.oplock reports "test: batch1" but known failures expect
+#  "oplock.batch1", so we fix up the output.)
+run_smbtorture() {
+    local filter="$1"
+    local per_timeout="${2:-$TIMEOUT}"
+    local suite_prefix="${3:-}"
+
+    local rc=0
+    if [[ -n "$suite_prefix" ]]; then
+        ${TIMEOUT_CMD:+$TIMEOUT_CMD --signal=TERM --kill-after=30 "$per_timeout"} \
+            env PROFILE="$PROFILE" docker compose run --rm smbtorture \
+            "${SMBTORTURE_ARGS[@]}" "$filter" \
+            2>&1 | sed -E "s/^(test|success|failure|error|skip): /\1: ${suite_prefix}./" \
+            | tee -a "${RESULTS_DIR}/smbtorture-output.txt" || rc=${PIPESTATUS[0]}
+    else
+        ${TIMEOUT_CMD:+$TIMEOUT_CMD --signal=TERM --kill-after=30 "$per_timeout"} \
+            env PROFILE="$PROFILE" docker compose run --rm smbtorture \
+            "${SMBTORTURE_ARGS[@]}" "$filter" \
+            2>&1 | tee -a "${RESULTS_DIR}/smbtorture-output.txt" || rc=${PIPESTATUS[0]}
+    fi
+    # Exit code 124 = timeout, 125+ = docker/infrastructure failure
+    if [[ $rc -ge 125 ]]; then
+        log_warn "smbtorture infrastructure failure (exit code $rc) for filter: $filter"
+    fi
+    return $rc
+}
+
+_smbtorture_exit=0
+
+if [[ -n "$FILTER" ]]; then
+    # Single filter mode: run only the specified filter
+    log_step "Running smbtorture (filter: ${FILTER}, timeout: ${TIMEOUT}s)..."
+    run_smbtorture "$FILTER" || _smbtorture_exit=$?
+else
+    # Full suite mode: run sub-suites individually to avoid hold-oplock and
+    # hold-sharemode tests which block indefinitely (they are interactive
+    # diagnostic tools, not real conformance tests).
+    #
+    # Each sub-suite's output is prefixed with the suite name so that
+    # KNOWN_FAILURES.md wildcard patterns (e.g. smb2.oplock.*) match.
+    log_step "Running smbtorture sub-suites (skipping hold tests, timeout: ${TIMEOUT}s)..."
+
+    # Standalone tests (no prefix needed - these are top-level tests)
+    STANDALONE_TESTS=(
+        smb2.connect smb2.setinfo smb2.stream-inherit-perms
+        smb2.set-sparse-ioctl smb2.zero-data-ioctl smb2.ioctl-on-stream
+        smb2.dosmode smb2.async_dosmode smb2.maxfid
+        smb2.check-sharemode smb2.openattr smb2.winattr smb2.winattr2
+        smb2.sdread smb2.secleak smb2.session-id smb2.tcon smb2.mkdir
+    )
+    for test in "${STANDALONE_TESTS[@]}"; do
+        log_info "  Running: ${test}"
+        run_smbtorture "$test" 60 || _smbtorture_exit=$?
+    done
+
+    # Sub-suites with prefix for test name fixup.
+    # "smb2.oplock" runs tests like "batch1" which need "oplock." prefix
+    # to become "oplock.batch1" matching "smb2.oplock.*" known failures.
+    # Format: "suite:prefix" pairs
+    SUITES=(
+        "smb2.acls:acls"
+        "smb2.acls_non_canonical:acls_non_canonical"
+        "smb2.aio_delay:aio_delay"
+        "smb2.bench:bench"
+        "smb2.change_notify_disabled:change_notify_disabled"
+        "smb2.charset:charset"
+        "smb2.compound:compound"
+        "smb2.compound_async:compound_async"
+        "smb2.compound_find:compound_find"
+        "smb2.create:create"
+        "smb2.create_no_streams:create_no_streams"
+        "smb2.credits:credits"
+        "smb2.delete-on-close-perms:delete-on-close-perms"
+        "smb2.deny:deny"
+        "smb2.dir:dir"
+        "smb2.dirlease:dirlease"
+        "smb2.durable-open:durable-open"
+        "smb2.durable-open-disconnect:durable-open-disconnect"
+        "smb2.durable-v2-open:durable-v2-open"
+        "smb2.durable-v2-delay:durable-v2-delay"
+        "smb2.durable-v2-regressions:durable-v2-regressions"
+        "smb2.ea:ea"
+        "smb2.fileid:fileid"
+        "smb2.getinfo:getinfo"
+        "smb2.ioctl:ioctl"
+        "smb2.kernel-oplocks:kernel-oplocks"
+        "smb2.lease:lease"
+        "smb2.lock:lock"
+        "smb2.maximum_allowed:maximum_allowed"
+        "smb2.multichannel:multichannel"
+        "smb2.name-mangling:name-mangling"
+        "smb2.notify:notify"
+        "smb2.notify-inotify:notify-inotify"
+        "smb2.oplock:oplock"
+        "smb2.read:read"
+        "smb2.rename:rename"
+        "smb2.replay:replay"
+        "smb2.rw:rw"
+        "smb2.samba3misc:samba3misc"
+        "smb2.scan:scan"
+        "smb2.session:session"
+        "smb2.session-require-signing:session-require-signing"
+        "smb2.sharemode:sharemode"
+        "smb2.streams:streams"
+        "smb2.timestamp_resolution:timestamp_resolution"
+        "smb2.timestamps:timestamps"
+        "smb2.twrp:twrp"
+    )
+    for entry in "${SUITES[@]}"; do
+        suite="${entry%%:*}"
+        prefix="${entry##*:}"
+        log_info "  Running: ${suite}"
+        run_smbtorture "$suite" 120 "$prefix" || _smbtorture_exit=$?
+    done
+
+    # NOTE: Skipped interactive hold tests:
+    #   smb2.hold-oplock    - waits 5 min for oplock events (no real test)
+    #   smb2.hold-sharemode - blocks indefinitely waiting for SIGINT
+    log_warn "Skipped: smb2.hold-oplock, smb2.hold-sharemode (interactive hold tests)"
 fi
 
 # Collect DittoFS logs
@@ -304,5 +407,11 @@ VERBOSE="$VERBOSE" "${SCRIPT_DIR}/parse-results.sh" \
 echo ""
 echo -e "${BOLD}Results directory:${NC} ${RESULTS_DIR}"
 echo ""
+
+# Fail on infrastructure errors even if parse-results found no new test failures
+if [[ $_smbtorture_exit -ge 125 ]]; then
+    log_error "smbtorture had infrastructure failures (exit code $_smbtorture_exit)"
+    exit "$_smbtorture_exit"
+fi
 
 exit "$parse_exit"

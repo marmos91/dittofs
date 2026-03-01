@@ -1,8 +1,7 @@
 package handlers
 
 import (
-	"encoding/binary"
-
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 )
@@ -70,9 +69,9 @@ func (h *Handler) TreeDisconnect(ctx *SMBHandlerContext, body []byte) (*HandlerR
 	// Step 4: Build and return success response
 	// ========================================================================
 
-	resp := make([]byte, 4)
-	binary.LittleEndian.PutUint16(resp[0:2], 4) // StructureSize
-	binary.LittleEndian.PutUint16(resp[2:4], 0) // Reserved
+	w := smbenc.NewWriter(4)
+	w.WriteUint16(4) // StructureSize
+	w.WriteUint16(0) // Reserved
 
-	return NewResult(types.StatusSuccess, resp), nil
+	return NewResult(types.StatusSuccess, w.Bytes()), nil
 }

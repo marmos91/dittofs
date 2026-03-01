@@ -8,10 +8,10 @@ package handlers
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
@@ -90,27 +90,47 @@ func DecodeLeaseCreateContext(data []byte) (*LeaseCreateContext, error) {
 		return nil, fmt.Errorf("lease context too short: %d bytes", len(data))
 	}
 
-	ctx := &LeaseCreateContext{
-		LeaseState:    binary.LittleEndian.Uint32(data[16:20]),
-		Flags:         binary.LittleEndian.Uint32(data[20:24]),
-		LeaseDuration: binary.LittleEndian.Uint64(data[24:32]),
-		Epoch:         binary.LittleEndian.Uint16(data[48:50]),
+	r := smbenc.NewReader(data)
+	leaseKey := r.ReadBytes(16)
+	leaseState := r.ReadUint32()
+	flags := r.ReadUint32()
+	leaseDuration := r.ReadUint64()
+	parentLeaseKey := r.ReadBytes(16)
+	epoch := r.ReadUint16()
+	if r.Err() != nil {
+		return nil, fmt.Errorf("failed to parse lease V2 context: %w", r.Err())
 	}
-	copy(ctx.LeaseKey[:], data[0:16])
-	copy(ctx.ParentLeaseKey[:], data[32:48])
+
+	ctx := &LeaseCreateContext{
+		LeaseState:    leaseState,
+		Flags:         flags,
+		LeaseDuration: leaseDuration,
+		Epoch:         epoch,
+	}
+	copy(ctx.LeaseKey[:], leaseKey)
+	copy(ctx.ParentLeaseKey[:], parentLeaseKey)
 
 	return ctx, nil
 }
 
 // decodeLeaseV1Context parses an SMB2_CREATE_REQUEST_LEASE (V1) context.
 func decodeLeaseV1Context(data []byte) (*LeaseCreateContext, error) {
+	r := smbenc.NewReader(data)
+	leaseKey := r.ReadBytes(16)
+	leaseState := r.ReadUint32()
+	flags := r.ReadUint32()
+	leaseDuration := r.ReadUint64()
+	if r.Err() != nil {
+		return nil, fmt.Errorf("failed to parse lease V1 context: %w", r.Err())
+	}
+
 	ctx := &LeaseCreateContext{
-		LeaseState:    binary.LittleEndian.Uint32(data[16:20]),
-		Flags:         binary.LittleEndian.Uint32(data[20:24]),
-		LeaseDuration: binary.LittleEndian.Uint64(data[24:32]),
+		LeaseState:    leaseState,
+		Flags:         flags,
+		LeaseDuration: leaseDuration,
 		Epoch:         0, // V1 has no epoch
 	}
-	copy(ctx.LeaseKey[:], data[0:16])
+	copy(ctx.LeaseKey[:], leaseKey)
 	// V1 has no parent lease key
 
 	return ctx, nil
@@ -118,15 +138,15 @@ func decodeLeaseV1Context(data []byte) (*LeaseCreateContext, error) {
 
 // EncodeLeaseResponseContext encodes an SMB2_CREATE_RESPONSE_LEASE_V2 context.
 func EncodeLeaseResponseContext(leaseKey [16]byte, leaseState uint32, flags uint32, epoch uint16) []byte {
-	buf := make([]byte, LeaseV2ContextSize)
-	copy(buf[0:16], leaseKey[:])
-	binary.LittleEndian.PutUint32(buf[16:20], leaseState)
-	binary.LittleEndian.PutUint32(buf[20:24], flags)
-	// LeaseDuration (8 bytes) = 0
-	// ParentLeaseKey (16 bytes) = 0
-	binary.LittleEndian.PutUint16(buf[48:50], epoch)
-	// Reserved (2 bytes) = 0
-	return buf
+	w := smbenc.NewWriter(LeaseV2ContextSize)
+	w.WriteBytes(leaseKey[:]) // LeaseKey (16 bytes)
+	w.WriteUint32(leaseState) // LeaseState
+	w.WriteUint32(flags)      // Flags
+	w.WriteUint64(0)          // LeaseDuration
+	w.WriteZeros(16)          // ParentLeaseKey (16 bytes)
+	w.WriteUint16(epoch)      // Epoch
+	w.WriteUint16(0)          // Reserved
+	return w.Bytes()
 }
 
 // ============================================================================
@@ -156,15 +176,15 @@ type LeaseBreakNotification struct {
 
 // Encode serializes the LeaseBreakNotification to wire format.
 func (n *LeaseBreakNotification) Encode() []byte {
-	buf := make([]byte, LeaseBreakNotificationSize)
-	binary.LittleEndian.PutUint16(buf[0:2], LeaseBreakNotificationSize) // StructureSize
-	binary.LittleEndian.PutUint16(buf[2:4], n.NewEpoch)
-	binary.LittleEndian.PutUint32(buf[4:8], n.Flags)
-	copy(buf[8:24], n.LeaseKey[:])
-	binary.LittleEndian.PutUint32(buf[24:28], n.CurrentLeaseState)
-	binary.LittleEndian.PutUint32(buf[28:32], n.NewLeaseState)
-	// Reserved bytes 32-44 are already zero
-	return buf
+	w := smbenc.NewWriter(LeaseBreakNotificationSize)
+	w.WriteUint16(LeaseBreakNotificationSize) // StructureSize
+	w.WriteUint16(n.NewEpoch)                 // NewEpoch
+	w.WriteUint32(n.Flags)                    // Flags
+	w.WriteBytes(n.LeaseKey[:])               // LeaseKey (16 bytes)
+	w.WriteUint32(n.CurrentLeaseState)        // CurrentLeaseState
+	w.WriteUint32(n.NewLeaseState)            // NewLeaseState
+	w.WriteZeros(12)                          // Reserved (12 bytes)
+	return w.Bytes()
 }
 
 // ============================================================================
@@ -194,29 +214,37 @@ func DecodeLeaseBreakAcknowledgment(data []byte) (*LeaseBreakAcknowledgment, err
 		return nil, fmt.Errorf("lease break ack too short: %d bytes", len(data))
 	}
 
-	structSize := binary.LittleEndian.Uint16(data[0:2])
+	r := smbenc.NewReader(data)
+	structSize := r.ReadUint16()
 	if structSize != LeaseBreakAckSize {
 		return nil, fmt.Errorf("invalid lease break ack structure size: %d", structSize)
 	}
 
-	ack := &LeaseBreakAcknowledgment{
-		LeaseState: binary.LittleEndian.Uint32(data[24:28]),
+	r.Skip(6) // Reserved(2) + Flags(4)
+	leaseKey := r.ReadBytes(16)
+	leaseState := r.ReadUint32()
+	if r.Err() != nil {
+		return nil, fmt.Errorf("failed to parse lease break ack: %w", r.Err())
 	}
-	copy(ack.LeaseKey[:], data[8:24])
+
+	ack := &LeaseBreakAcknowledgment{
+		LeaseState: leaseState,
+	}
+	copy(ack.LeaseKey[:], leaseKey)
 
 	return ack, nil
 }
 
 // EncodeLeaseBreakResponse encodes an SMB2 Lease Break Response.
 func EncodeLeaseBreakResponse(leaseKey [16]byte, leaseState uint32) []byte {
-	buf := make([]byte, LeaseBreakAckSize)
-	binary.LittleEndian.PutUint16(buf[0:2], LeaseBreakAckSize) // StructureSize
-	// Reserved (2 bytes) = 0
-	// Flags (4 bytes) = 0
-	copy(buf[8:24], leaseKey[:])
-	binary.LittleEndian.PutUint32(buf[24:28], leaseState)
-	// Reserved (8 bytes) = 0
-	return buf
+	w := smbenc.NewWriter(LeaseBreakAckSize)
+	w.WriteUint16(LeaseBreakAckSize) // StructureSize
+	w.WriteUint16(0)                 // Reserved
+	w.WriteUint32(0)                 // Flags
+	w.WriteBytes(leaseKey[:])        // LeaseKey (16 bytes)
+	w.WriteUint32(leaseState)        // LeaseState
+	w.WriteZeros(8)                  // Reserved (8 bytes)
+	return w.Bytes()
 }
 
 // ============================================================================

@@ -2,7 +2,7 @@
 
 ## Overview
 
-DittoFS evolves from NFSv3 to full NFSv4.2 support across eight milestones. v1.0 builds the unified locking foundation (NLM + SMB leases), v2.0 adds NFSv4.0 stateful operations with Kerberos authentication, v3.0 introduces NFSv4.1 sessions for reliability and NAT-friendliness, v3.5 refactors the adapter layer and core for clean protocol separation, v3.6 achieves Windows SMB compatibility with proper ACL support, v3.8 upgrades the SMB implementation to SMB3.0/3.0.2/3.1.1 with encryption, leases, Kerberos, and durable handles, v4.0 completes the protocol suite with NFSv4.2 advanced features, and v4.1 establishes performance baselines via a comprehensive benchmarking suite and iterative optimization. Each milestone delivers complete, testable functionality.
+DittoFS evolves from NFSv3 to full NFSv4.2 support across eight milestones. v1.0 builds the unified locking foundation (NLM + SMB leases), v2.0 adds NFSv4.0 stateful operations with Kerberos authentication, v3.0 introduces NFSv4.1 sessions for reliability and NAT-friendliness, v3.5 refactors the adapter layer and core for clean protocol separation, v3.6 achieves Windows SMB compatibility with proper ACL support, v3.8 upgrades the SMB implementation to SMB3.0/3.0.2/3.1.1 with encryption, signing, leases, Kerberos, and durable handles, v4.0 completes the protocol suite with NFSv4.2 advanced features, and v4.1 establishes performance baselines via a comprehensive benchmarking suite and iterative optimization. Each milestone delivers complete, testable functionality.
 
 ## Milestones
 
@@ -11,9 +11,9 @@ DittoFS evolves from NFSv3 to full NFSv4.2 support across eight milestones. v1.0
 - [x] **v3.0 NFSv4.1 Sessions** - Phases 16-25.5 (shipped 2026-02-25) — [archive](milestones/v3.0-ROADMAP.md)
 - [x] **v3.5 Adapter + Core Refactoring** - Phases 26-29.5 (shipped 2026-02-26) — [archive](milestones/v3.5-ROADMAP.md)
 - [x] **v3.6 Windows Compatibility** - Phases 29.8-32.5 (shipped 2026-02-28) — [archive](milestones/v3.6-ROADMAP.md)
-- [ ] **v3.8 SMB3 Protocol Upgrade** - Phases 39-44.5 (planned)
-- [ ] **v4.0 NFSv4.2 Extensions** - Phases 45-51.5 (planned)
-- [ ] **v4.1 Benchmarking & Performance** - Phases 33-38.5 (infrastructure started, Phase 33 complete)
+- [ ] **v3.8 SMB3 Protocol Upgrade** - Phases 33-40.5 (in progress)
+- [ ] **v4.0 NFSv4.2 Extensions** - Phases 41-47.5 (planned)
+- [ ] **v4.1 Benchmarking & Performance** - Phases 48-53.5 (planned)
 
 **USER CHECKPOINT** phases require your manual testing before proceeding. Use `/gsd:verify-work` to validate.
 
@@ -99,26 +99,36 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 ### v3.8 SMB3 Protocol Upgrade
 
-- [ ] **Phase 39: SMB3 Security & Encryption** - Dialect negotiation (3.0/3.0.2/3.1.1), AES signing, AES encryption, preauth integrity, NTLM encryption (#215)
-- [ ] **Phase 40: SMB3 Leases & Locking** - Read/Write/Handle leases, directory leases, break notifications, Unified Lock Manager integration
-- [ ] **Phase 40.5: SMB2/3 Change Notify** INSERTED - Directory change notifications for Windows Explorer auto-refresh (18 WPTS BVT failures)
-- [ ] **Phase 41: SMB3 Authentication & ACLs** - SPNEGO/Kerberos via shared layer (#124), NTLM fallback, Windows security descriptors, ACL translation, enhanced identity model (#147)
-- [ ] **Phase 42: SMB3 Resilience** - Durable handles v1/v2, handle state tracking, reconnection with restoration
-- [ ] **Phase 43: SMB3 Advanced Features & Cross-Protocol** - Server-side copy FSCTL_SRV_COPYCHUNK (#145), Alternate Data Streams (#146), immediate write visibility, bidirectional lock coordination, cross-protocol ACL consistency
-- [ ] **Phase 44: SMB3 Conformance Testing** - Microsoft WindowsProtocolTestSuites (FileServer), smbtorture SMB3 tests, Go integration tests, client compatibility
-- [ ] **Phase 44.5: Manual Verification - SMB3** USER CHECKPOINT - Verify SMB3 with Windows 10/11, macOS, Linux clients
+- [x] **Phase 33: SMB3 Dialect Negotiation and Preauth Integrity** - 3.0/3.0.2/3.1.1 dialect selection, negotiate contexts, SHA-512 preauth hash chain, secure dialect validation IOCTL (completed 2026-02-28)
+- [ ] **Phase 34: Key Derivation and Signing** - SP800-108 KDF, dialect-aware key derivation (3.0 vs 3.1.1), AES-CMAC/GMAC signing abstraction
+- [ ] **Phase 35: Encryption and Transform Header** - AES-128/256-CCM/GCM encryption, transform header framing, per-session and per-share encryption enforcement
+- [ ] **Phase 36: Kerberos SMB3 Integration** - SPNEGO/Kerberos session setup with session key extraction, AP-REP mutual auth, NTLM fallback, guest sessions
+- [ ] **Phase 37: SMB3 Leases and Directory Leasing** - Lease V2 with ParentLeaseKey/epoch, directory leases, break coordination via metadata service
+- [ ] **Phase 38: Durable Handles** - V1/V2 durable handles with CreateGuid, state persistence, reconnect validation (14+ checks), timeout management
+- [ ] **Phase 39: Cross-Protocol Integration and Documentation** - Bidirectional SMB3 lease/NFS delegation coordination, directory lease breaks on NFS ops, documentation
+- [ ] **Phase 40: SMB3 Conformance Testing** - smbtorture SMB3 suites, WPTS FileServer BVT, Go integration tests, client compatibility matrix
+- [ ] **Phase 40.5: Manual Verification - SMB3** USER CHECKPOINT - Verify SMB3 with Windows 10/11, macOS, Linux clients
 
 ### v4.0 NFSv4.2 Extensions
 
-- [ ] **Phase 45: Server-Side Copy** - Async COPY with OFFLOAD_STATUS polling
-- [ ] **Phase 46: Clone/Reflinks** - Copy-on-write via content-addressed storage
-- [ ] **Phase 47: Sparse Files** - SEEK, ALLOCATE, DEALLOCATE operations
-- [ ] **Phase 47.5: Manual Verification - Advanced Ops** USER CHECKPOINT - Test copy/clone/sparse
-- [ ] **Phase 48: Extended Attributes** - xattrs in metadata layer, exposed via NFS/SMB
-- [ ] **Phase 49: NFSv4.2 Operations** - IO_ADVISE and optional pNFS operations
-- [ ] **Phase 50: Documentation** - Complete documentation for all new features
-- [ ] **Phase 51: v4.0 Testing** - Final testing and pjdfstest POSIX compliance
-- [ ] **Phase 51.5: Final Manual Verification** USER CHECKPOINT - Complete validation of all features
+- [ ] **Phase 41: Server-Side Copy** - Async COPY with OFFLOAD_STATUS polling
+- [ ] **Phase 42: Clone/Reflinks** - Copy-on-write via content-addressed storage
+- [ ] **Phase 43: Sparse Files** - SEEK, ALLOCATE, DEALLOCATE operations
+- [ ] **Phase 43.5: Manual Verification - Advanced Ops** USER CHECKPOINT - Test copy/clone/sparse
+- [ ] **Phase 44: Extended Attributes** - xattrs in metadata layer, exposed via NFS/SMB
+- [ ] **Phase 45: NFSv4.2 Operations** - IO_ADVISE and optional pNFS operations
+- [ ] **Phase 46: Documentation** - Complete documentation for all new features
+- [ ] **Phase 47: v4.0 Testing** - Final testing and pjdfstest POSIX compliance
+- [ ] **Phase 47.5: Final Manual Verification** USER CHECKPOINT - Complete validation of all features
+
+### v4.1 Benchmarking & Performance
+
+- [ ] **Phase 48: Benchmark Infrastructure** - Docker Compose profiles and directory structure (carried from previous Phase 33, already COMPLETE)
+- [ ] **Phase 49: Benchmark Workloads** - fio job files and metadata benchmark scripts
+- [ ] **Phase 50: Competitor Setup** - Configuration for JuiceFS, NFS-Ganesha, RClone, kernel NFS, Samba
+- [ ] **Phase 51: Orchestrator Scripts** - Main benchmark runner with platform variants
+- [ ] **Phase 52: Analysis & Reporting** - Python pipeline for charts and markdown reports
+- [ ] **Phase 53: Profiling Integration** - Prometheus, Pyroscope, pprof for bottleneck identification
 
 ## Phase Details
 
@@ -126,130 +136,114 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 ## v3.8 SMB3 Protocol Upgrade
 
-### Phase 39: SMB3 Security & Encryption
-**Goal**: SMB3 dialect negotiation with encryption and signing, preventing eavesdropping and tampering
+### Phase 33: SMB3 Dialect Negotiation and Preauth Integrity
+**Goal**: Windows 10/11 clients can connect using SMB 3.0/3.0.2/3.1.1 dialects with preauth integrity protection against downgrade attacks
 **Depends on**: Phase 32.5 (v3.6 complete)
-**Requirements**: SEC-01 through SEC-12, SMB3-TEST-01, SMB3-TEST-02
-**Reference**: feat/smb3 branch, MS-SMB2, GitHub #215
+**Requirements**: NEG-01, NEG-02, NEG-03, NEG-04, SDIAL-01, ARCH-02
 **Success Criteria** (what must be TRUE):
-  1. Windows 10/11 client can connect using SMB 3.1.1 dialect with encrypted traffic
-  2. SMB 3.0.2 clients (older Windows, macOS) can connect with AES-CCM encryption
-  3. Downgrade attacks blocked — client specifying 3.1.1 cannot be forced to 2.x
-  4. Per-share encryption settings work (one share encrypted, another unencrypted)
-  5. AES-CMAC signing (3.0+) and AES-GMAC signing (3.1.1) both functional
-  6. Preauth integrity SHA-512 hash chain validated
-  7. NTLM CHALLENGE_MESSAGE encryption flags (Flag128, Flag56) backed by actual session key derivation and encryption (#215)
-  8. E2E tests verify encryption and signing for all cipher suites
+  1. Windows 10/11 client negotiates SMB 3.1.1 dialect (visible in `Get-SmbConnection` output)
+  2. macOS client negotiates SMB 3.0.2 dialect successfully
+  3. Preauth integrity SHA-512 hash chain computed over raw wire bytes and stored on Connection and Session
+  4. FSCTL_VALIDATE_NEGOTIATE_INFO IOCTL succeeds for SMB 3.0/3.0.2 clients, preventing silent downgrade
+  5. SMB internal package contains only protocol encoding/decoding/framing with no business logic
+**Plans**: 3 plans
+Plans:
+- [x] 33-01-PLAN.md — smbenc binary codec, negotiate context types, ConnectionCryptoState (completed 2026-02-28)
+- [x] 33-02-PLAN.md — Negotiate handler 3.x refactor, dispatch hooks, preauth hash chain (completed 2026-02-28)
+- [x] 33-03-PLAN.md — IOCTL dispatch table, VALIDATE_NEGOTIATE_INFO, handler migration to smbenc, ARCH-02 (completed 2026-02-28)
+
+### Phase 34: Key Derivation and Signing
+**Goal**: All SMB3 sessions derive correct cryptographic keys and sign messages using AES-CMAC/GMAC instead of HMAC-SHA256
+**Depends on**: Phase 33
+**Requirements**: KDF-01, KDF-02, KDF-03, SIGN-01, SIGN-02, SIGN-03
+**Success Criteria** (what must be TRUE):
+  1. SMB 3.0/3.0.2 sessions derive keys using SP800-108 KDF with constant label/context strings
+  2. SMB 3.1.1 sessions derive keys using preauth integrity hash as KDF context
+  3. All SMB 3.x signed messages use AES-128-CMAC (replacing HMAC-SHA256)
+  4. SMB 3.1.1 clients can use AES-128-GMAC signing when negotiated via signing capabilities context
+  5. Signing algorithm abstraction dispatches correctly by negotiated dialect (HMAC-SHA256 for 2.x, CMAC for 3.0+, GMAC for 3.1.1)
 **Plans**: TBD
 
-### Phase 40: SMB3 Leases & Locking
-**Goal**: SMB3 lease caching with break notifications, coordinated with NFS delegations via Unified Lock Manager
-**Depends on**: Phase 39
-**Requirements**: LEASE-01 through LEASE-07, SMB3-TEST-03
-**Reference**: feat/smb3 branch
+### Phase 35: Encryption and Transform Header
+**Goal**: SMB3 traffic can be encrypted end-to-end with AES-CCM/GCM, enforced per-session or per-share
+**Depends on**: Phase 34
+**Requirements**: ENC-01, ENC-02, ENC-03, ENC-04, ENC-05, ENC-06
 **Success Criteria** (what must be TRUE):
-  1. SMB3 client can open file with oplock lease and cache reads locally
-  2. Second client opening same file triggers lease break notification to first client
-  3. Directory leases work — client caches directory listing until change notification
-  4. SMB lease and NFS delegation conflict properly (SMB write lease breaks on NFS open)
-  5. E2E tests verify lease acquisition, break, and cross-protocol coordination
+  1. Windows 10/11 client connects with AES-128-GCM encrypted traffic (verified via packet capture showing 0xFD transform headers)
+  2. AES-128-CCM encryption works for SMB 3.0/3.0.2 compatibility
+  3. AES-256-GCM and AES-256-CCM cipher variants functional
+  4. Per-session encryption enforced (Session.EncryptData flag forces encryption on all traffic)
+  5. Per-share encryption enforced (one share encrypted, another unencrypted on same connection)
 **Plans**: TBD
 
-### Phase 40.5: SMB2/3 Change Notify (INSERTED)
-**Goal**: Implement SMB2 CHANGE_NOTIFY for Windows Explorer auto-refresh and file system monitoring
-**Depends on**: Phase 40 (leases in place for coordinated notifications)
-**Requirements**: CN-01 through CN-05
-**Reference**: MS-SMB2 Section 2.2.35 (CHANGE_NOTIFY), MS-FSA Section 2.1.5.10
+### Phase 36: Kerberos SMB3 Integration
+**Goal**: Domain-joined Windows clients authenticate via Kerberos/SPNEGO with proper SMB3 key derivation, with NTLM and guest fallback
+**Depends on**: Phase 34
+**Requirements**: AUTH-01, AUTH-02, AUTH-03, AUTH-04, KDF-04, ARCH-03
 **Success Criteria** (what must be TRUE):
-  1. Windows Explorer auto-refreshes when files are created, renamed, or deleted by another client
-  2. CHANGE_NOTIFY request with FILE_LIST_DIRECTORY access queued as async until change occurs
-  3. Supported completion filters: FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_ATTRIBUTES, FILE_NOTIFY_CHANGE_SIZE, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_LAST_ACCESS, FILE_NOTIFY_CHANGE_CREATION, FILE_NOTIFY_CHANGE_EA, FILE_NOTIFY_CHANGE_SECURITY, FILE_NOTIFY_CHANGE_STREAM_NAME, FILE_NOTIFY_CHANGE_STREAM_SIZE, FILE_NOTIFY_CHANGE_STREAM_WRITE
-  4. WATCH_TREE flag enables recursive subdirectory monitoring
-  5. CANCEL request cancels pending CHANGE_NOTIFY and returns STATUS_CANCELLED
-  6. Pending notifications flushed on CLOSE of directory handle
-  7. FILE_NOTIFY_INFORMATION records returned with correct Action, FileNameLength, FileName fields
-  8. MaxTransactSize honored — overflow returns STATUS_NOTIFY_ENUM_DIR
-  9. All 18 BVT_SMB2Basic_ChangeNotify_* WPTS tests pass
-  10. No regressions on existing WPTS BVT pass count
+  1. Domain-joined Windows client authenticates via SPNEGO/Kerberos without password prompt
+  2. Server extracts Kerberos session key from AP-REQ and derives SMB3 signing/encryption keys via KDF
+  3. Mutual authentication completes (AP-REP token returned in SPNEGO accept-complete)
+  4. Non-domain client falls back from Kerberos to NTLM within SPNEGO negotiation
+  5. Guest sessions function without encryption or signing (no session key available)
 **Plans**: TBD
 
-### Phase 41: SMB3 Authentication & ACLs
-**Goal**: Kerberos/SPNEGO authentication and Windows security descriptor support
-**Depends on**: Phase 39
-**Requirements**: AUTH-01 through AUTH-06, ACL-01 through ACL-04, SMB3-TEST-04
-**Reference**: feat/smb3 branch, MS-DTYP, GitHub #124, #147
+### Phase 37: SMB3 Leases and Directory Leasing
+**Goal**: SMB3 clients can cache file and directory data locally using Lease V2 with epoch tracking, with lease management in the metadata service layer
+**Depends on**: Phase 33
+**Requirements**: LEASE-01, LEASE-02, LEASE-03, LEASE-04, ARCH-01
 **Success Criteria** (what must be TRUE):
-  1. Domain-joined Windows client can access share via Kerberos (no password prompt)
-  2. Non-domain client falls back to NTLM authentication
-  3. Guest/anonymous access works on configured shares
-  4. Windows security properties dialog shows correct permissions (from control plane ACLs)
-  5. Modifying permissions via Windows dialog updates control plane (SET_INFO)
-  6. Cross-protocol ACL consistency maintained (SMB ACL <-> NFSv4 ACL <-> control plane)
-  7. SMB2 adapter processes Kerberos tokens via SPNEGO, not just NTLM (#124)
-  8. Enhanced identity model prevents fidelity loss in cross-protocol ACL scenarios (#147)
+  1. SMB3 client receives Lease V2 with ParentLeaseKey and epoch in CREATE responses
+  2. Directory leases (Read-caching) granted for SMB 3.0+ clients opening directories
+  3. Directory lease broken when another client creates, deletes, or renames a file within the directory
+  4. All lease management logic lives in metadata service layer (not in SMB internal package)
+  5. Lease epoch tracking prevents stale break acknowledgments
 **Plans**: TBD
 
-### Phase 42: SMB3 Resilience
-**Goal**: Durable handles for connection reliability across brief disconnects
-**Depends on**: Phase 40
-**Requirements**: RES-01 through RES-04
-**Reference**: feat/smb3 branch
+### Phase 38: Durable Handles
+**Goal**: SMB3 clients survive brief network interruptions without losing open files, with handle state persisted for reconnection
+**Depends on**: Phase 37
+**Requirements**: DH-01, DH-02, DH-03, DH-04, DH-05
 **Success Criteria** (what must be TRUE):
-  1. Client with durable handle reconnects after 30-second network interruption without losing open file
-  2. Durable handle v2 with create GUID allows proper reconnection identification
-  3. Open files survive client network adapter reset
-  4. Handle state tracking validates reconnection claims
+  1. Client with durable handle V1 reconnects after network interruption and resumes file operations
+  2. Durable handle V2 with CreateGuid enables idempotent reconnection (same CreateGuid = same handle)
+  3. Durable handle state persists in control plane store across client disconnects
+  4. Server validates all 14+ reconnect conditions per MS-SMB2 spec (CreateGuid, lease key, security context, etc.)
+  5. Durable handle management logic lives in metadata service layer, reusing NFSv4 state patterns
 **Plans**: TBD
 
-### Phase 43: SMB3 Advanced Features & Cross-Protocol Integration
-**Goal**: Advanced SMB features and unified behavior across SMB3/NFSv3/NFSv4 — server-side copy, ADS, immediate visibility, bidirectional locking, consistent ACLs
-**Depends on**: Phase 40, Phase 41, Phase 42
-**Requirements**: XPROTO-01 through XPROTO-03, ADV-01, ADV-02, SMB3-TEST-05, SMB3-TEST-06
-**Reference**: feat/smb3 branch, GitHub #145, #146
+### Phase 39: Cross-Protocol Integration and Documentation
+**Goal**: SMB3 leases and NFS delegations coordinate bidirectionally through the metadata service, with comprehensive documentation
+**Depends on**: Phase 37, Phase 38
+**Requirements**: XPROT-01, XPROT-02, XPROT-03, DOC-01
 **Success Criteria** (what must be TRUE):
-  1. Write via SMB3 immediately readable via NFS (no cache delay)
-  2. SMB3 byte-range lock blocks NFS write to same range
-  3. NFS byte-range lock blocks SMB3 write to same range
-  4. ACLs set via SMB3 visible via NFSv4 ACL query (and vice versa)
-  5. FSCTL_SRV_COPYCHUNK server-side copy avoids data round-trip through client (#145)
-  6. Alternate Data Streams (ADS) support for NTFS-compatible named streams (#146)
-  7. Windows 10/11, macOS, and Linux SMB clients all verified
+  1. SMB3 file write triggers NFS delegation recall on the same file
+  2. NFS file open triggers SMB3 lease break on the same file
+  3. NFS directory operations (create/delete/rename) trigger SMB3 directory lease breaks
+  4. All cross-protocol coordination logic lives in metadata service (shared abstract layer)
+  5. docs/ updated with SMB3 protocol documentation covering configuration, capabilities, security, and cross-protocol behavior
 **Plans**: TBD
 
-### Phase 44: SMB3 Conformance Testing
-**Goal**: Validate SMB3 implementation against industry-standard conformance test suites and verify client compatibility
-**Extends**: Phase 29.8 WPTS infrastructure with SMB3-specific test categories, updated ptfconfig capabilities, and smbtorture integration
-**Depends on**: Phase 39, Phase 40, Phase 40.5, Phase 41, Phase 42, Phase 43
-**Requirements**: SMB3-CONF-01 through SMB3-CONF-05
-**Reference**: [Microsoft WindowsProtocolTestSuites](https://github.com/microsoft/WindowsProtocolTestSuites) (MIT), [Samba smbtorture](https://wiki.samba.org/index.php/Writing_Torture_Tests) (GPLv3)
-**Baseline**: 133/240 BVT tests passing as of Phase 29.8 (2026-02-26)
+### Phase 40: SMB3 Conformance Testing
+**Goal**: SMB3 implementation validated against industry conformance suites and real clients across Windows, macOS, and Linux
+**Depends on**: Phase 33, Phase 34, Phase 35, Phase 36, Phase 37, Phase 38, Phase 39
+**Requirements**: TEST-01, TEST-02, TEST-03, TEST-04, TEST-05, TEST-06
 **Success Criteria** (what must be TRUE):
-  1. WPTS BVT suite passes ≥200/240 tests (up from 133 baseline), with remaining failures only in permanently out-of-scope categories
-  2. Microsoft WPTS SMB3-specific feature tests pass: Encryption (AES-128/256-CCM/GCM), Signing, Negotiate (dialect contexts), DurableHandle (v1+v2), Leasing, Replay, SessionMgmt
-  3. Microsoft WPTS dialect-filtered tests pass for Smb30, Smb302, and Smb311 categories
-  4. All 18 BVT_SMB2Basic_ChangeNotify_* tests pass (covered by Phase 40.5)
-  5. BVT_Leasing_FileLeasingV1 and BVT_OpLockBreak tests pass (covered by Phase 40)
-  6. BVT_DurableHandleV1_Reconnect_* tests pass (covered by Phase 42)
-  7. Samba smbtorture SMB3 tests pass: smb2.durable_v2_open, smb2.lease, smb2.dirlease, smb2.replay, smb2.session, smb2.session_req_sign, smb2.compound, smb2.oplocks, smb2.lock, smb2.acls
-  8. Go integration tests (hirochachacha/go-smb2, BSD-2-Clause) verify basic client-server interop with SMB3 dialects
-  9. Client compatibility matrix validated: Windows 10, Windows 11 (SMB 3.1.1), macOS (SMB 3.0.2), Linux cifs.ko (SMB 3.1.1)
-  10. No regressions on SMB2 clients or NFS mounts
-  11. Test infrastructure Dockerized for CI repeatability (WPTS Docker image + smbtorture container)
-**Permanently out-of-scope failure categories** (expected to remain as known failures):
-  - VHD/RSVD (Virtual Hard Disk): Not a filesystem feature
-  - SWN (Service Witness Protocol): Requires clustering
-  - SQoS (Storage QoS): Requires storage virtualization
-  - DFS (Distributed File System): Not implemented
-  - NTFS-FsCtl (Object IDs, integrity streams): NTFS-specific internals
+  1. smbtorture SMB3 tests pass (durable_v2, lease, replay, session, encryption suites)
+  2. Microsoft WPTS FileServer SMB3 BVT tests pass
+  3. Go integration tests (go-smb2) validate native client-server SMB3 interop
+  4. Cross-protocol integration tests validate SMB3 leases vs NFS delegations under concurrent load
+  5. Windows 10/11 (SMB 3.1.1), macOS (SMB 3.0.2), and Linux cifs.ko (SMB 3.1.1) all connect and operate correctly
+  6. E2E tests cover encryption, signing, leases, Kerberos, and durable handle scenarios end-to-end
 **Plans**: TBD
 
 ---
 
 ## v4.0 NFSv4.2 Extensions
 
-### Phase 45: Server-Side Copy
+### Phase 41: Server-Side Copy
 **Goal**: Implement async server-side COPY operation
-**Depends on**: Phase 44 (v3.8 complete)
+**Depends on**: Phase 40 (v3.8 complete)
 **Requirements**: V42-01
 **Success Criteria** (what must be TRUE):
   1. COPY operation copies data without client I/O
@@ -259,9 +253,9 @@ Decimal phases appear between their surrounding integers in numeric order.
   5. Large file copy completes efficiently via block store
 **Plans**: TBD
 
-### Phase 46: Clone/Reflinks
+### Phase 42: Clone/Reflinks
 **Goal**: Implement CLONE operation leveraging content-addressed storage
-**Depends on**: Phase 45
+**Depends on**: Phase 41
 **Requirements**: V42-02
 **Success Criteria** (what must be TRUE):
   1. CLONE creates copy-on-write file instantly
@@ -269,9 +263,9 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Modification triggers copy of affected blocks only
 **Plans**: TBD
 
-### Phase 47: Sparse Files
+### Phase 43: Sparse Files
 **Goal**: Implement sparse file operations (SEEK, ALLOCATE, DEALLOCATE)
-**Depends on**: Phase 45
+**Depends on**: Phase 41
 **Requirements**: V42-03
 **Success Criteria** (what must be TRUE):
   1. SEEK locates DATA or HOLE regions in file
@@ -280,9 +274,9 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Sparse file metadata correctly tracks allocated regions
 **Plans**: TBD
 
-### Phase 48: Extended Attributes
+### Phase 44: Extended Attributes
 **Goal**: Implement xattr storage and NFSv4.2/SMB exposure
-**Depends on**: Phase 45
+**Depends on**: Phase 41
 **Requirements**: V42-04
 **Success Criteria** (what must be TRUE):
   1. GETXATTR retrieves extended attribute value
@@ -292,18 +286,18 @@ Decimal phases appear between their surrounding integers in numeric order.
   5. Xattrs accessible via both NFSv4.2 and SMB
 **Plans**: TBD
 
-### Phase 49: NFSv4.2 Operations
+### Phase 45: NFSv4.2 Operations
 **Goal**: Implement remaining NFSv4.2 operations
-**Depends on**: Phase 47
+**Depends on**: Phase 43
 **Requirements**: V42-05
 **Success Criteria** (what must be TRUE):
   1. IO_ADVISE accepts application I/O hints
   2. LAYOUTERROR and LAYOUTSTATS available if pNFS enabled
 **Plans**: TBD
 
-### Phase 50: Documentation
+### Phase 46: Documentation
 **Goal**: Complete documentation for all new features
-**Depends on**: Phase 48
+**Depends on**: Phase 44
 **Requirements**: (documentation)
 **Success Criteria** (what must be TRUE):
   1. docs/NFS.md updated with NFSv4.1 and NFSv4.2 details
@@ -311,9 +305,9 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. docs/SECURITY.md describes Kerberos security model for NFS and SMB
 **Plans**: TBD
 
-### Phase 51: v4.0 Testing
+### Phase 47: v4.0 Testing
 **Goal**: Final testing including pjdfstest POSIX compliance
-**Depends on**: Phase 45, Phase 46, Phase 47, Phase 48, Phase 49, Phase 50
+**Depends on**: Phase 41, Phase 42, Phase 43, Phase 44, Phase 45, Phase 46
 **Requirements**: V42-06
 **Success Criteria** (what must be TRUE):
   1. Server-side copy E2E tests pass for various file sizes
@@ -328,12 +322,12 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 ## v4.1 Benchmarking & Performance
 
-### Phase 33: Benchmark Infrastructure
+### Phase 48: Benchmark Infrastructure
 **Goal**: Create bench/ directory structure with Docker Compose profiles and configuration files
-**Depends on**: Phase 51 (v4.0 complete)
+**Depends on**: Phase 47 (v4.0 complete)
 **Requirements**: BENCH-01
 **Reference**: GitHub #194
-**Status**: COMPLETE (merged 2026-02-27, PR #224)
+**Status**: COMPLETE (merged 2026-02-27, PR #224 — completed as previous Phase 33)
 **Success Criteria** (what must be TRUE):
   1. `bench/` directory structure created (configs/, workloads/, scripts/, analysis/, results/)
   2. `docker-compose.yml` with profiles: dittofs-badger-s3, dittofs-postgres-s3, dittofs-badger-fs, juicefs, ganesha, rclone, kernel-nfs, samba, dittofs-smb, monitoring
@@ -344,12 +338,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   7. `results/` directory gitignored
 **Plans**: 2/2 (COMPLETED)
 Plans:
-- [x] 33-01-PLAN.md — Docker Compose infrastructure, directory structure, DittoFS configs
-- [x] 33-02-PLAN.md — Prerequisites check, cleanup scripts, shared library, Makefile
+- [x] 48-01-PLAN.md — Docker Compose infrastructure, directory structure, DittoFS configs
+- [x] 48-02-PLAN.md — Prerequisites check, cleanup scripts, shared library, Makefile
 
-### Phase 34: Benchmark Workloads
+### Phase 49: Benchmark Workloads
 **Goal**: Create fio job files for all I/O workloads and a custom metadata benchmark script
-**Depends on**: Phase 33
+**Depends on**: Phase 48
 **Requirements**: BENCH-02
 **Reference**: GitHub #195
 **Success Criteria** (what must be TRUE):
@@ -361,9 +355,9 @@ Plans:
   6. Metadata script outputs JSON with ops/sec and total time
 **Plans**: TBD
 
-### Phase 35: Competitor Setup
+### Phase 50: Competitor Setup
 **Goal**: Create configuration files and setup scripts for each competitor system
-**Depends on**: Phase 33
+**Depends on**: Phase 48
 **Requirements**: BENCH-03
 **Reference**: GitHub #198
 **Success Criteria** (what must be TRUE):
@@ -376,9 +370,9 @@ Plans:
   7. Fairness ensured: matched cache sizes, same S3 endpoints, symmetric Docker overhead
 **Plans**: TBD
 
-### Phase 36: Orchestrator Scripts
+### Phase 51: Orchestrator Scripts
 **Goal**: Create main benchmark orchestrator and all helper scripts with platform variants
-**Depends on**: Phase 34, Phase 35
+**Depends on**: Phase 49, Phase 50
 **Requirements**: BENCH-04
 **Reference**: GitHub #196
 **Success Criteria** (what must be TRUE):
@@ -391,9 +385,9 @@ Plans:
   7. Health check wait before benchmark start
 **Plans**: TBD
 
-### Phase 37: Analysis & Reporting
+### Phase 52: Analysis & Reporting
 **Goal**: Create Python analysis pipeline for parsing results, generating charts, and producing reports
-**Depends on**: Phase 34
+**Depends on**: Phase 49
 **Requirements**: BENCH-05
 **Reference**: GitHub #197
 **Success Criteria** (what must be TRUE):
@@ -405,9 +399,9 @@ Plans:
   6. Results organized in `results/YYYY-MM-DD_HHMMSS/` with raw/, metrics/, charts/, report.md, summary.csv
 **Plans**: TBD
 
-### Phase 38: Profiling Integration
+### Phase 53: Profiling Integration
 **Goal**: Integrate DittoFS observability stack for performance bottleneck identification
-**Depends on**: Phase 36
+**Depends on**: Phase 51
 **Requirements**: BENCH-06
 **Reference**: GitHub #199
 **Success Criteria** (what must be TRUE):
@@ -424,7 +418,7 @@ Plans:
 ## Progress
 
 **Execution Order:**
-v3.8 (39-44.5) → v4.0 (45-51.5) → v4.1 (33-38.5)
+v3.8 (33-40.5) -> v4.0 (41-47.5) -> v4.1 (48-53.5)
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
@@ -464,26 +458,27 @@ v3.8 (39-44.5) → v4.0 (45-51.5) → v4.1 (33-38.5)
 | 30. SMB Bug Fixes | v3.6 | 4/4 | Complete | 2026-02-27 |
 | 31. Windows ACL Support | v3.6 | 3/3 | Complete | 2026-02-27 |
 | 32. Windows Integration Testing | v3.6 | 3/3 | Complete | 2026-02-28 |
-| 39. SMB3 Security & Encryption | v3.8 | 0/? | Not started | - |
-| 40. SMB3 Leases & Locking | v3.8 | 0/? | Not started | - |
-| 40.5 SMB2/3 Change Notify | v3.8 | 0/? | Not started | - |
-| 41. SMB3 Authentication & ACLs | v3.8 | 0/? | Not started | - |
-| 42. SMB3 Resilience | v3.8 | 0/? | Not started | - |
-| 43. SMB3 Advanced Features & Cross-Protocol | v3.8 | 0/? | Not started | - |
-| 44. SMB3 Conformance Testing | v3.8 | 0/? | Not started | - |
-| 45. Server-Side Copy | v4.0 | 0/? | Not started | - |
-| 46. Clone/Reflinks | v4.0 | 0/? | Not started | - |
-| 47. Sparse Files | v4.0 | 0/? | Not started | - |
-| 48. Extended Attributes | v4.0 | 0/? | Not started | - |
-| 49. NFSv4.2 Operations | v4.0 | 0/? | Not started | - |
-| 50. Documentation | v4.0 | 0/? | Not started | - |
-| 51. v4.0 Testing | v4.0 | 0/? | Not started | - |
-| 33. Benchmark Infrastructure | v4.1 | 2/2 | Complete | 2026-02-27 |
-| 34. Benchmark Workloads | v4.1 | 0/? | Not started | - |
-| 35. Competitor Setup | v4.1 | 0/? | Not started | - |
-| 36. Orchestrator Scripts | v4.1 | 0/? | Not started | - |
-| 37. Analysis & Reporting | v4.1 | 0/? | Not started | - |
-| 38. Profiling Integration | v4.1 | 0/? | Not started | - |
+| 33. SMB3 Dialect Negotiation and Preauth Integrity | 2/3 | Complete    | 2026-02-28 | - |
+| 34. Key Derivation and Signing | v3.8 | 0/? | Not started | - |
+| 35. Encryption and Transform Header | v3.8 | 0/? | Not started | - |
+| 36. Kerberos SMB3 Integration | v3.8 | 0/? | Not started | - |
+| 37. SMB3 Leases and Directory Leasing | v3.8 | 0/? | Not started | - |
+| 38. Durable Handles | v3.8 | 0/? | Not started | - |
+| 39. Cross-Protocol Integration and Documentation | v3.8 | 0/? | Not started | - |
+| 40. SMB3 Conformance Testing | v3.8 | 0/? | Not started | - |
+| 41. Server-Side Copy | v4.0 | 0/? | Not started | - |
+| 42. Clone/Reflinks | v4.0 | 0/? | Not started | - |
+| 43. Sparse Files | v4.0 | 0/? | Not started | - |
+| 44. Extended Attributes | v4.0 | 0/? | Not started | - |
+| 45. NFSv4.2 Operations | v4.0 | 0/? | Not started | - |
+| 46. Documentation | v4.0 | 0/? | Not started | - |
+| 47. v4.0 Testing | v4.0 | 0/? | Not started | - |
+| 48. Benchmark Infrastructure | v4.1 | 2/2 | Complete | 2026-02-27 |
+| 49. Benchmark Workloads | v4.1 | 0/? | Not started | - |
+| 50. Competitor Setup | v4.1 | 0/? | Not started | - |
+| 51. Orchestrator Scripts | v4.1 | 0/? | Not started | - |
+| 52. Analysis & Reporting | v4.1 | 0/? | Not started | - |
+| 53. Profiling Integration | v4.1 | 0/? | Not started | - |
 
 **Total:** 124/? plans complete
 
@@ -494,3 +489,4 @@ v3.8 (39-44.5) → v4.0 (45-51.5) → v4.1 (33-38.5)
 *v3.0 shipped: 2026-02-25*
 *v3.5 shipped: 2026-02-26*
 *v3.6 shipped: 2026-02-28*
+*v3.8 roadmap created: 2026-02-28*

@@ -28,15 +28,23 @@ type Connection struct {
 	// Session tracking for cleanup on disconnect
 	sessionsMu sync.Mutex          // Protects sessions map
 	sessions   map[uint64]struct{} // Sessions created on this connection
+
+	// CryptoState holds per-connection cryptographic negotiation state
+	// including the preauth integrity hash chain for SMB 3.1.1.
+	// Created eagerly for all connections.
+	CryptoState *smb.ConnectionCryptoState
 }
 
 // NewConnection creates a new SMB connection handler.
+// CryptoState is created eagerly for all connections to support SMB 3.1.1
+// preauth integrity hash computation from the very first message.
 func NewConnection(server *Adapter, conn net.Conn) *Connection {
 	return &Connection{
-		server:     server,
-		conn:       conn,
-		requestSem: make(chan struct{}, server.config.MaxRequestsPerConnection),
-		sessions:   make(map[uint64]struct{}),
+		server:      server,
+		conn:        conn,
+		requestSem:  make(chan struct{}, server.config.MaxRequestsPerConnection),
+		sessions:    make(map[uint64]struct{}),
+		CryptoState: smb.NewConnectionCryptoState(),
 	}
 }
 
@@ -71,6 +79,7 @@ func (c *Connection) connInfo() *smb.ConnInfo {
 		WriteMu:        &c.writeMu,
 		WriteTimeout:   c.server.config.Timeouts.Write,
 		SessionTracker: c,
+		CryptoState:    c.CryptoState,
 	}
 }
 
@@ -135,6 +144,12 @@ func (c *Connection) Serve(ctx context.Context) {
 			return
 		}
 
+		// Reconstruct raw message (header + body) for dispatch hooks.
+		// The hooks need the original wire bytes for preauth integrity hash computation.
+		rawMessage := make([]byte, header.HeaderSize+len(body))
+		copy(rawMessage, hdr.Encode())
+		copy(rawMessage[header.HeaderSize:], body)
+
 		// Acquire semaphore slot and track the request goroutine
 		c.requestSem <- struct{}{}
 		c.wg.Add(1)
@@ -149,14 +164,14 @@ func (c *Connection) Serve(ctx context.Context) {
 				smb.ProcessCompoundRequest(ctx, reqHeader, reqBody, compoundData, ci)
 			}(hdr, body)
 		} else {
-			go func(reqHeader *header.SMB2Header, reqBody []byte) {
+			go func(reqHeader *header.SMB2Header, reqBody, raw []byte) {
 				defer c.handleRequestPanic(clientAddr, reqHeader.MessageID)
 
 				asyncCallback := c.makeAsyncNotifyCallback(ci)
-				if err := smb.ProcessSingleRequest(ctx, reqHeader, reqBody, ci, asyncCallback); err != nil {
+				if err := smb.ProcessSingleRequest(ctx, reqHeader, reqBody, raw, ci, asyncCallback); err != nil {
 					logger.Debug("Error processing SMB request", "address", clientAddr, "messageId", reqHeader.MessageID, "error", err)
 				}
-			}(hdr, body)
+			}(hdr, body, rawMessage)
 		}
 
 		// Reset idle timeout after reading request (read-only)

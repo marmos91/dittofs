@@ -1,9 +1,9 @@
 package handlers
 
 import (
-	"encoding/binary"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 )
@@ -77,15 +77,21 @@ func DecodeWriteRequest(body []byte) (*WriteRequest, error) {
 		return nil, fmt.Errorf("WRITE request too short: %d bytes", len(body))
 	}
 
+	r := smbenc.NewReader(body)
+	r.Skip(2) // StructureSize
 	req := &WriteRequest{
-		DataOffset:     binary.LittleEndian.Uint16(body[2:4]),
-		Length:         binary.LittleEndian.Uint32(body[4:8]),
-		Offset:         binary.LittleEndian.Uint64(body[8:16]),
-		Channel:        binary.LittleEndian.Uint32(body[32:36]),
-		RemainingBytes: binary.LittleEndian.Uint32(body[36:40]),
-		Flags:          binary.LittleEndian.Uint32(body[44:48]),
+		DataOffset: r.ReadUint16(),
+		Length:     r.ReadUint32(),
+		Offset:     r.ReadUint64(),
 	}
-	copy(req.FileID[:], body[16:32])
+	copy(req.FileID[:], r.ReadBytes(16))
+	req.Channel = r.ReadUint32()
+	req.RemainingBytes = r.ReadUint32()
+	r.Skip(4) // WriteChannelInfoOffset(2) + WriteChannelInfoLength(2)
+	req.Flags = r.ReadUint32()
+	if r.Err() != nil {
+		return nil, fmt.Errorf("WRITE decode error: %w", r.Err())
+	}
 
 	// Extract data
 	// DataOffset is relative to the beginning of the SMB2 header (64 bytes)
@@ -120,15 +126,17 @@ func DecodeWriteRequest(body []byte) (*WriteRequest, error) {
 // Encode serializes the WriteResponse to SMB2 wire format [MS-SMB2] 2.2.22.
 // Returns a 17-byte response body.
 func (resp *WriteResponse) Encode() ([]byte, error) {
-	buf := make([]byte, 17)
-	binary.LittleEndian.PutUint16(buf[0:2], 17)              // StructureSize
-	binary.LittleEndian.PutUint16(buf[2:4], 0)               // Reserved
-	binary.LittleEndian.PutUint32(buf[4:8], resp.Count)      // Count
-	binary.LittleEndian.PutUint32(buf[8:12], resp.Remaining) // Remaining
-	binary.LittleEndian.PutUint16(buf[12:14], 0)             // WriteChannelInfoOffset
-	binary.LittleEndian.PutUint16(buf[14:16], 0)             // WriteChannelInfoLength
-
-	return buf, nil
+	w := smbenc.NewWriter(17)
+	w.WriteUint16(17)             // StructureSize
+	w.WriteUint16(0)              // Reserved
+	w.WriteUint32(resp.Count)     // Count
+	w.WriteUint32(resp.Remaining) // Remaining
+	w.WriteUint16(0)              // WriteChannelInfoOffset
+	w.WriteUint16(0)              // WriteChannelInfoLength
+	if w.Err() != nil {
+		return nil, w.Err()
+	}
+	return w.Bytes(), nil
 }
 
 // ============================================================================
@@ -157,8 +165,8 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
-		logger.Debug("WRITE: invalid file ID", "fileID", fmt.Sprintf("%x", req.FileID))
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
+		logger.Debug("WRITE: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileClosed}}, nil
 	}
 
 	// ========================================================================

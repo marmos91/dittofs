@@ -2,10 +2,10 @@ package handlers
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"unicode/utf16"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -37,102 +37,18 @@ const (
 	IoReparseTagSymlink uint32 = 0xA000000C
 )
 
-// Ioctl handles the SMB2 IOCTL command [MS-SMB2] 2.2.31, 2.2.32.
-// It dispatches filesystem control codes including FSCTL_VALIDATE_NEGOTIATE_INFO
-// (man-in-the-middle protection), FSCTL_GET_REPARSE_POINT (symlink target reads),
-// FSCTL_PIPE_TRANSCEIVE (named pipe RPC), and FSCTL_SRV_ENUMERATE_SNAPSHOTS.
-// Unsupported FSCTLs return StatusNotSupported gracefully.
-func (h *Handler) Ioctl(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
-	// Minimum size to read CtlCode is 8 bytes (StructureSize + Reserved + CtlCode)
-	if len(body) < 8 {
-		logger.Debug("IOCTL request too small", "len", len(body))
-		return NewErrorResult(types.StatusInvalidParameter), nil
-	}
-
-	ctlCode := binary.LittleEndian.Uint32(body[4:8])
-	logger.Debug("IOCTL request",
-		"ctlCode", fmt.Sprintf("0x%08X", ctlCode),
-		"bodyLen", len(body))
-
-	// Handle specific IOCTLs
-	switch ctlCode {
-	case FsctlValidateNegotiateInfo:
-		// Validate negotiation parameters [MS-SMB2] 2.2.31.4
-		// This prevents man-in-the-middle attacks that could downgrade the connection
-		return h.handleValidateNegotiateInfo(ctx, body)
-
-	case FsctlQueryNetworkInterfInfo:
-		// Query network interfaces - not critical, return NOT_SUPPORTED
-		logger.Debug("IOCTL FSCTL_QUERY_NETWORK_INTERFACE_INFO - not supported")
-		return NewErrorResult(types.StatusNotSupported), nil
-
-	case FsctlDfsGetReferrals:
-		// DFS referrals - we don't support DFS
-		logger.Debug("IOCTL FSCTL_DFS_GET_REFERRALS - not supported")
-		return NewErrorResult(types.StatusNotSupported), nil
-
-	case FsctlGetReparsePoint:
-		// FSCTL_GET_REPARSE_POINT - read symlink target [MS-FSCC] 2.3.30
-		return h.handleGetReparsePoint(ctx, body)
-
-	case FsctlSrvEnumerateSnapshots:
-		// FSCTL_SRV_ENUMERATE_SNAPSHOTS [MS-SMB2] 2.2.32.2
-		// Return empty snapshot list so Windows "Previous Versions" tab shows
-		// "no previous versions" instead of an error.
-		logger.Debug("IOCTL FSCTL_SRV_ENUMERATE_SNAPSHOTS: returning empty snapshot list")
-		if len(body) < 24 {
-			return NewErrorResult(types.StatusInvalidParameter), nil
-		}
-		var fileID [16]byte
-		copy(fileID[:], body[8:24])
-		// SRV_SNAPSHOT_ARRAY: NumberOfSnapshots(4) + NumberOfSnapshotsReturned(4) + SnapshotArraySize(4)
-		output := make([]byte, 12)
-		resp := buildIoctlResponse(FsctlSrvEnumerateSnapshots, fileID, output)
-		return NewResult(types.StatusSuccess, resp), nil
-
-	case FsctlPipeTransceive:
-		// FSCTL_PIPE_TRANSCEIVE - named pipe transact [MS-FSCC] 2.3.50
-		// Combined write+read for RPC over named pipes
-		return h.handlePipeTransceive(ctx, body)
-
-	case FsctlGetNtfsVolumeData:
-		// FSCTL_GET_NTFS_VOLUME_DATA [MS-FSCC] 2.3.29
-		// Returns NTFS_VOLUME_DATA_BUFFER. Required by WPTS FileIdInformation
-		// tests to verify VolumeSerialNumber matches FILE_ID_INFORMATION.
-		return h.handleGetNtfsVolumeData(ctx, body)
-
-	case FsctlReadFileUsnData:
-		// FSCTL_READ_FILE_USN_DATA [MS-FSCC] 2.3.56
-		// Returns a USN_RECORD_V2 for the file. Required by WPTS FSA tests
-		// as a prerequisite for FileIdInformation and FilePositionInformation queries.
-		return h.handleReadFileUsnData(ctx, body)
-
-	default:
-		logger.Debug("IOCTL unknown control code - not supported",
-			"ctlCode", fmt.Sprintf("0x%08X", ctlCode))
-		return NewErrorResult(types.StatusNotSupported), nil
-	}
-}
-
 // handleGetReparsePoint handles FSCTL_GET_REPARSE_POINT for readlink
 func (h *Handler) handleGetReparsePoint(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
-	// IOCTL request structure [MS-SMB2] 2.2.31:
-	// - StructureSize (2 bytes)
-	// - Reserved (2 bytes)
-	// - CtlCode (4 bytes)
-	// - FileId (16 bytes at offset 8)
-	if len(body) < 24 {
+	fileID, ok := parseIoctlFileID(body)
+	if !ok {
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
-
-	var fileID [16]byte
-	copy(fileID[:], body[8:24])
 
 	// Get open file
 	openFile, ok := h.GetOpenFile(fileID)
 	if !ok {
-		logger.Debug("IOCTL GET_REPARSE_POINT: invalid file ID", "fileID", fmt.Sprintf("%x", fileID))
-		return NewErrorResult(types.StatusInvalidHandle), nil
+		logger.Debug("IOCTL GET_REPARSE_POINT: file handle not found (closed)", "fileID", fmt.Sprintf("%x", fileID))
+		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
 	// Build auth context
@@ -170,10 +86,11 @@ func (h *Handler) handleGetReparsePoint(ctx *SMBHandlerContext, body []byte) (*H
 func buildSymlinkReparseBuffer(target string) []byte {
 	// Convert target to UTF-16LE
 	targetUTF16 := utf16.Encode([]rune(target))
-	targetBytes := make([]byte, len(targetUTF16)*2)
-	for i, r := range targetUTF16 {
-		binary.LittleEndian.PutUint16(targetBytes[i*2:], r)
+	tw := smbenc.NewWriter(len(targetUTF16) * 2)
+	for _, r := range targetUTF16 {
+		tw.WriteUint16(r)
 	}
+	targetBytes := tw.Bytes()
 
 	// SYMBOLIC_LINK_REPARSE_DATA_BUFFER structure:
 	// - ReparseTag (4 bytes) - IO_REPARSE_TAG_SYMLINK
@@ -190,25 +107,24 @@ func buildSymlinkReparseBuffer(target string) []byte {
 	pathBufferLen := len(targetBytes) * 2 // Both names
 	reparseDataLen := 12 + pathBufferLen  // 12 bytes for offsets/lengths/flags + paths
 
-	buf := make([]byte, 8+reparseDataLen) // 8 byte header + reparse data
-
+	w := smbenc.NewWriter(8 + reparseDataLen)
 	// Header
-	binary.LittleEndian.PutUint32(buf[0:4], IoReparseTagSymlink)    // ReparseTag
-	binary.LittleEndian.PutUint16(buf[4:6], uint16(reparseDataLen)) // ReparseDataLength
-	binary.LittleEndian.PutUint16(buf[6:8], 0)                      // Reserved
+	w.WriteUint32(IoReparseTagSymlink)    // ReparseTag
+	w.WriteUint16(uint16(reparseDataLen)) // ReparseDataLength
+	w.WriteUint16(0)                      // Reserved
 
 	// Symlink data
-	binary.LittleEndian.PutUint16(buf[8:10], 0)                         // SubstituteNameOffset
-	binary.LittleEndian.PutUint16(buf[10:12], uint16(len(targetBytes))) // SubstituteNameLength
-	binary.LittleEndian.PutUint16(buf[12:14], uint16(len(targetBytes))) // PrintNameOffset
-	binary.LittleEndian.PutUint16(buf[14:16], uint16(len(targetBytes))) // PrintNameLength
-	binary.LittleEndian.PutUint32(buf[16:20], 1)                        // Flags (1 = relative path)
+	w.WriteUint16(0)                        // SubstituteNameOffset
+	w.WriteUint16(uint16(len(targetBytes))) // SubstituteNameLength
+	w.WriteUint16(uint16(len(targetBytes))) // PrintNameOffset
+	w.WriteUint16(uint16(len(targetBytes))) // PrintNameLength
+	w.WriteUint32(1)                        // Flags (1 = relative path)
 
 	// PathBuffer - SubstituteName followed by PrintName
-	copy(buf[20:], targetBytes)
-	copy(buf[20+len(targetBytes):], targetBytes)
+	w.WriteBytes(targetBytes)
+	w.WriteBytes(targetBytes)
 
-	return buf
+	return w.Bytes()
 }
 
 // buildIoctlResponse builds SMB2 IOCTL response [MS-SMB2] 2.2.32
@@ -226,21 +142,20 @@ func buildIoctlResponse(ctlCode uint32, fileID [16]byte, output []byte) []byte {
 	// - Reserved2 (4 bytes)
 	// - Buffer (variable)
 
-	buf := make([]byte, 48+len(output))
+	w := smbenc.NewWriter(48 + len(output))
+	w.WriteUint16(49)                  // StructureSize
+	w.WriteUint16(0)                   // Reserved
+	w.WriteUint32(ctlCode)             // CtlCode
+	w.WriteBytes(fileID[:])            // FileId
+	w.WriteUint32(0)                   // InputOffset
+	w.WriteUint32(0)                   // InputCount
+	w.WriteUint32(uint32(64 + 48))     // OutputOffset (header + response header)
+	w.WriteUint32(uint32(len(output))) // OutputCount
+	w.WriteUint32(0)                   // Flags
+	w.WriteUint32(0)                   // Reserved2
+	w.WriteBytes(output)               // Buffer
 
-	binary.LittleEndian.PutUint16(buf[0:2], 49)                    // StructureSize
-	binary.LittleEndian.PutUint16(buf[2:4], 0)                     // Reserved
-	binary.LittleEndian.PutUint32(buf[4:8], ctlCode)               // CtlCode
-	copy(buf[8:24], fileID[:])                                     // FileId
-	binary.LittleEndian.PutUint32(buf[24:28], 0)                   // InputOffset
-	binary.LittleEndian.PutUint32(buf[28:32], 0)                   // InputCount
-	binary.LittleEndian.PutUint32(buf[32:36], uint32(64+48))       // OutputOffset (header + response header)
-	binary.LittleEndian.PutUint32(buf[36:40], uint32(len(output))) // OutputCount
-	binary.LittleEndian.PutUint32(buf[40:44], 0)                   // Flags
-	binary.LittleEndian.PutUint32(buf[44:48], 0)                   // Reserved2
-	copy(buf[48:], output)                                         // Buffer
-
-	return buf
+	return w.Bytes()
 }
 
 // Cancel handles SMB2 CANCEL command [MS-SMB2] 2.2.30.
@@ -289,8 +204,8 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	// Get the open file (must be a directory)
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
-		logger.Debug("CHANGE_NOTIFY: invalid file ID", "fileID", fmt.Sprintf("%x", req.FileID))
-		return NewErrorResult(types.StatusInvalidHandle), nil
+		logger.Debug("CHANGE_NOTIFY: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
+		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
 	// Verify it's a directory
@@ -371,8 +286,8 @@ func (h *Handler) OplockBreak(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 	// Look up the open file
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
-		logger.Debug("OPLOCK_BREAK: invalid file ID", "fileID", fmt.Sprintf("%x", req.FileID))
-		return NewErrorResult(types.StatusInvalidHandle), nil
+		logger.Debug("OPLOCK_BREAK: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
+		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
 	// Build oplock path and acknowledge the break
@@ -413,18 +328,16 @@ func (h *Handler) OplockBreak(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 // must match FileFsFullSizeInformation values because WPTS tests verify
 // consistency across all three queries.
 func (h *Handler) handleGetNtfsVolumeData(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
-	if len(body) < 24 {
+	fileID, ok := parseIoctlFileID(body)
+	if !ok {
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
-
-	var fileID [16]byte
-	copy(fileID[:], body[8:24])
 
 	// Get open file to access metadata handle for filesystem stats
 	openFile, ok := h.GetOpenFile(fileID)
 	if !ok {
-		logger.Debug("IOCTL FSCTL_GET_NTFS_VOLUME_DATA: invalid file ID", "fileID", fmt.Sprintf("%x", fileID))
-		return NewErrorResult(types.StatusInvalidHandle), nil
+		logger.Debug("IOCTL FSCTL_GET_NTFS_VOLUME_DATA: file handle not found (closed)", "fileID", fmt.Sprintf("%x", fileID))
+		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
 	// Query filesystem stats so TotalClusters and BytesPerSector match
@@ -442,54 +355,24 @@ func (h *Handler) handleGetNtfsVolumeData(ctx *SMBHandlerContext, body []byte) (
 	}
 
 	// Build NTFS_VOLUME_DATA_BUFFER [MS-FSCC] 2.5.1 (96 bytes)
-	// Layout:
-	//   VolumeSerialNumber          (8 bytes)  offset 0
-	//   NumberSectors               (8 bytes)  offset 8
-	//   TotalClusters               (8 bytes)  offset 16
-	//   FreeClusters                (8 bytes)  offset 24
-	//   TotalReserved               (8 bytes)  offset 32
-	//   BytesPerSector              (4 bytes)  offset 40
-	//   BytesPerCluster             (4 bytes)  offset 44
-	//   BytesPerFileRecordSegment   (4 bytes)  offset 48
-	//   ClustersPerFileRecordSegment(4 bytes)  offset 52
-	//   MftValidDataLength          (8 bytes)  offset 56
-	//   MftStartLcn                 (8 bytes)  offset 64
-	//   Mft2StartLcn                (8 bytes)  offset 72
-	//   MftZoneStart                (8 bytes)  offset 80
-	//   MftZoneEnd                  (8 bytes)  offset 88
 	const ntfsVolumeDataSize = 96
-	output := make([]byte, ntfsVolumeDataSize)
+	w := smbenc.NewWriter(ntfsVolumeDataSize)
+	w.WriteUint64(ntfsVolumeSerialNumber)                 // VolumeSerialNumber
+	w.WriteUint64(totalClusters * uint64(sectorsPerUnit)) // NumberSectors
+	w.WriteUint64(totalClusters)                          // TotalClusters
+	w.WriteUint64(freeClusters)                           // FreeClusters
+	w.WriteUint64(0)                                      // TotalReserved
+	w.WriteUint32(bps)                                    // BytesPerSector
+	w.WriteUint32(bpc)                                    // BytesPerCluster
+	w.WriteUint32(1024)                                   // BytesPerFileRecordSegment
+	w.WriteUint32(0)                                      // ClustersPerFileRecordSegment
+	w.WriteUint64(64 * 1024 * 1024)                       // MftValidDataLength
+	w.WriteUint64(786432)                                 // MftStartLcn
+	w.WriteUint64(2)                                      // Mft2StartLcn
+	w.WriteUint64(786432)                                 // MftZoneStart
+	w.WriteUint64(819200)                                 // MftZoneEnd
 
-	// VolumeSerialNumber must match FILE_ID_INFORMATION.VolumeSerialNumber
-	binary.LittleEndian.PutUint64(output[0:8], ntfsVolumeSerialNumber)
-	// NumberSectors = TotalClusters * sectorsPerUnit
-	binary.LittleEndian.PutUint64(output[8:16], totalClusters*uint64(sectorsPerUnit))
-	// TotalClusters - MUST match FileFsFullSizeInformation.TotalAllocationUnits
-	binary.LittleEndian.PutUint64(output[16:24], totalClusters)
-	// FreeClusters
-	binary.LittleEndian.PutUint64(output[24:32], freeClusters)
-	// TotalReserved
-	binary.LittleEndian.PutUint64(output[32:40], 0)
-	// BytesPerSector - MUST match FileFsFullSizeInformation.BytesPerSector
-	binary.LittleEndian.PutUint32(output[40:44], bps)
-	// BytesPerCluster
-	binary.LittleEndian.PutUint32(output[44:48], bpc)
-	// BytesPerFileRecordSegment
-	binary.LittleEndian.PutUint32(output[48:52], 1024)
-	// ClustersPerFileRecordSegment
-	binary.LittleEndian.PutUint32(output[52:56], 0)
-	// MftValidDataLength
-	binary.LittleEndian.PutUint64(output[56:64], 64*1024*1024)
-	// MftStartLcn
-	binary.LittleEndian.PutUint64(output[64:72], 786432)
-	// Mft2StartLcn
-	binary.LittleEndian.PutUint64(output[72:80], 2)
-	// MftZoneStart
-	binary.LittleEndian.PutUint64(output[80:88], 786432)
-	// MftZoneEnd
-	binary.LittleEndian.PutUint64(output[88:96], 819200)
-
-	resp := buildIoctlResponse(FsctlGetNtfsVolumeData, fileID, output)
+	resp := buildIoctlResponse(FsctlGetNtfsVolumeData, fileID, w.Bytes())
 
 	logger.Debug("IOCTL FSCTL_GET_NTFS_VOLUME_DATA: success",
 		"volumeSerialNumber", fmt.Sprintf("0x%x", ntfsVolumeSerialNumber),
@@ -505,18 +388,16 @@ func (h *Handler) handleGetNtfsVolumeData(ctx *SMBHandlerContext, body []byte) (
 // only USN_RECORD_V3 contains the 128-bit FILE_ID_128 FileReferenceNumber
 // that matches FILE_ID_INFORMATION's 128-bit FileId.
 func (h *Handler) handleReadFileUsnData(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
-	if len(body) < 24 {
+	fileID, ok := parseIoctlFileID(body)
+	if !ok {
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
-
-	var fileID [16]byte
-	copy(fileID[:], body[8:24])
 
 	// Get open file
 	openFile, ok := h.GetOpenFile(fileID)
 	if !ok {
-		logger.Debug("IOCTL READ_FILE_USN_DATA: invalid file ID", "fileID", fmt.Sprintf("%x", fileID))
-		return NewErrorResult(types.StatusInvalidHandle), nil
+		logger.Debug("IOCTL READ_FILE_USN_DATA: file handle not found (closed)", "fileID", fmt.Sprintf("%x", fileID))
+		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
 	// Get file info for attributes
@@ -531,11 +412,14 @@ func (h *Handler) handleReadFileUsnData(ctx *SMBHandlerContext, body []byte) (*H
 	//   MinMajorVersion: WORD (2 bytes)
 	//   MaxMajorVersion: WORD (2 bytes)
 	// The input is in the IOCTL buffer portion (offset 56 from body start).
-	inputCount := binary.LittleEndian.Uint32(body[28:32])
+	// Use a separate reader at offset 28 for inputCount
+	inputR := smbenc.NewReader(body[28:32])
+	inputCount := inputR.ReadUint32()
 	maxMajorVersion := uint16(2) // Default to V2
 	if inputCount >= 4 && len(body) >= 60 {
 		// MinMajorVersion at buffer offset 56, MaxMajorVersion at offset 58
-		maxMajorVersion = binary.LittleEndian.Uint16(body[58:60])
+		versionR := smbenc.NewReader(body[58:60])
+		maxMajorVersion = versionR.ReadUint16()
 	}
 
 	useV3 := maxMajorVersion >= 3
@@ -549,33 +433,29 @@ func (h *Handler) handleReadFileUsnData(ctx *SMBHandlerContext, body []byte) (*H
 	var output []byte
 	if useV3 {
 		// Build USN_RECORD_V3 [MS-FSCC] 2.4.51.1
-		// V3 uses FILE_ID_128 (16 bytes) for FileReferenceNumber and ParentFileReferenceNumber.
-		// Layout:
-		//   RecordLength (4) + MajorVersion (2) + MinorVersion (2) +
-		//   FileReferenceNumber (16) + ParentFileReferenceNumber (16) +
-		//   Usn (8) + TimeStamp (8) + Reason (4) + SourceInfo (4) +
-		//   SecurityId (4) + FileAttributes (4) + FileNameLength (2) +
-		//   FileNameOffset (2) + FileName (variable) = 76 + FileName
 		const v3FixedSize = 76
 		recordLen := v3FixedSize + len(fileNameBytes)
 		// Pad to 8-byte boundary per MS-FSCC
 		recordLen = (recordLen + 7) &^ 7
 
-		output = make([]byte, recordLen)
-		binary.LittleEndian.PutUint32(output[0:4], uint32(recordLen)) // RecordLength
-		binary.LittleEndian.PutUint16(output[4:6], 3)                 // MajorVersion = 3
-		binary.LittleEndian.PutUint16(output[6:8], 0)                 // MinorVersion = 0
-		copy(output[8:24], file.ID[:16])                              // FileReferenceNumber (FILE_ID_128)
-		// ParentFileReferenceNumber (FILE_ID_128) at offset 24-39 = zeros
-		// Usn (8 bytes) at offset 40-47 = 0
-		// TimeStamp (8 bytes) at offset 48-55 = 0
-		// Reason (4 bytes) at offset 56-59 = 0
-		// SourceInfo (4 bytes) at offset 60-63 = 0
-		// SecurityId (4 bytes) at offset 64-67 = 0
-		binary.LittleEndian.PutUint32(output[68:72], fileAttrs)                  // FileAttributes
-		binary.LittleEndian.PutUint16(output[72:74], uint16(len(fileNameBytes))) // FileNameLength
-		binary.LittleEndian.PutUint16(output[74:76], v3FixedSize)                // FileNameOffset
-		copy(output[v3FixedSize:], fileNameBytes)
+		w := smbenc.NewWriter(recordLen)
+		w.WriteUint32(uint32(recordLen))          // RecordLength
+		w.WriteUint16(3)                          // MajorVersion = 3
+		w.WriteUint16(0)                          // MinorVersion = 0
+		w.WriteBytes(file.ID[:16])                // FileReferenceNumber (FILE_ID_128)
+		w.WriteZeros(16)                          // ParentFileReferenceNumber
+		w.WriteUint64(0)                          // Usn
+		w.WriteUint64(0)                          // TimeStamp
+		w.WriteUint32(0)                          // Reason
+		w.WriteUint32(0)                          // SourceInfo
+		w.WriteUint32(0)                          // SecurityId
+		w.WriteUint32(fileAttrs)                  // FileAttributes
+		w.WriteUint16(uint16(len(fileNameBytes))) // FileNameLength
+		w.WriteUint16(v3FixedSize)                // FileNameOffset
+		w.WriteBytes(fileNameBytes)
+		// Pad to 8-byte boundary
+		w.Pad(8)
+		output = w.Bytes()
 	} else {
 		// Build USN_RECORD_V2 [MS-FSCC] 2.4.51
 		const v2FixedSize = 60
@@ -583,21 +463,25 @@ func (h *Handler) handleReadFileUsnData(ctx *SMBHandlerContext, body []byte) (*H
 		// Pad to 8-byte boundary per MS-FSCC
 		recordLen = (recordLen + 7) &^ 7
 
-		output = make([]byte, recordLen)
-		binary.LittleEndian.PutUint32(output[0:4], uint32(recordLen))                        // RecordLength
-		binary.LittleEndian.PutUint16(output[4:6], 2)                                        // MajorVersion = 2
-		binary.LittleEndian.PutUint16(output[6:8], 0)                                        // MinorVersion = 0
-		binary.LittleEndian.PutUint64(output[8:16], binary.LittleEndian.Uint64(file.ID[:8])) // FileReferenceNumber
-		binary.LittleEndian.PutUint64(output[16:24], 0)                                      // ParentFileReferenceNumber
-		binary.LittleEndian.PutUint64(output[24:32], 0)                                      // Usn
-		binary.LittleEndian.PutUint64(output[32:40], 0)                                      // TimeStamp
-		binary.LittleEndian.PutUint32(output[40:44], 0)                                      // Reason
-		binary.LittleEndian.PutUint32(output[44:48], 0)                                      // SourceInfo
-		binary.LittleEndian.PutUint32(output[48:52], 0)                                      // SecurityId
-		binary.LittleEndian.PutUint32(output[52:56], fileAttrs)                              // FileAttributes
-		binary.LittleEndian.PutUint16(output[56:58], uint16(len(fileNameBytes)))             // FileNameLength
-		binary.LittleEndian.PutUint16(output[58:60], v2FixedSize)                            // FileNameOffset
-		copy(output[v2FixedSize:], fileNameBytes)
+		w := smbenc.NewWriter(recordLen)
+		w.WriteUint32(uint32(recordLen)) // RecordLength
+		w.WriteUint16(2)                 // MajorVersion = 2
+		w.WriteUint16(0)                 // MinorVersion = 0
+		idR := smbenc.NewReader(file.ID[:8])
+		w.WriteUint64(idR.ReadUint64())           // FileReferenceNumber
+		w.WriteUint64(0)                          // ParentFileReferenceNumber
+		w.WriteUint64(0)                          // Usn
+		w.WriteUint64(0)                          // TimeStamp
+		w.WriteUint32(0)                          // Reason
+		w.WriteUint32(0)                          // SourceInfo
+		w.WriteUint32(0)                          // SecurityId
+		w.WriteUint32(fileAttrs)                  // FileAttributes
+		w.WriteUint16(uint16(len(fileNameBytes))) // FileNameLength
+		w.WriteUint16(v2FixedSize)                // FileNameOffset
+		w.WriteBytes(fileNameBytes)
+		// Pad to 8-byte boundary
+		w.Pad(8)
+		output = w.Bytes()
 	}
 
 	resp := buildIoctlResponse(FsctlReadFileUsnData, fileID, output)
@@ -615,31 +499,25 @@ func (h *Handler) handleReadFileUsnData(ctx *SMBHandlerContext, body []byte) (*H
 // handlePipeTransceive handles FSCTL_PIPE_TRANSCEIVE for RPC over named pipes
 // This is a combined write+read operation used by Windows/Linux clients for RPC [MS-FSCC] 2.3.50
 func (h *Handler) handlePipeTransceive(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
-	// IOCTL request structure [MS-SMB2] 2.2.31:
-	// - StructureSize (2 bytes) - offset 0
-	// - Reserved (2 bytes) - offset 2
-	// - CtlCode (4 bytes) - offset 4
-	// - FileId (16 bytes) - offset 8
-	// - InputOffset (4 bytes) - offset 24
-	// - InputCount (4 bytes) - offset 28
-	// - MaxInputResponse (4 bytes) - offset 32
-	// - OutputOffset (4 bytes) - offset 36
-	// - OutputCount (4 bytes) - offset 40
-	// - MaxOutputResponse (4 bytes) - offset 44
-	// - Flags (4 bytes) - offset 48
-	// - Reserved2 (4 bytes) - offset 52
-	// - Buffer (variable) - offset 56
 	if len(body) < 56 {
 		logger.Debug("IOCTL PIPE_TRANSCEIVE: request too small", "len", len(body))
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
+	r := smbenc.NewReader(body)
+	r.Skip(4) // StructureSize(2) + Reserved(2)
+	r.Skip(4) // CtlCode
 	var fileID [16]byte
-	copy(fileID[:], body[8:24])
-
-	inputOffset := binary.LittleEndian.Uint32(body[24:28])
-	inputCount := binary.LittleEndian.Uint32(body[28:32])
-	maxOutputResponse := binary.LittleEndian.Uint32(body[44:48])
+	copy(fileID[:], r.ReadBytes(16))    // FileId
+	inputOffset := r.ReadUint32()       // InputOffset
+	inputCount := r.ReadUint32()        // InputCount
+	r.Skip(4)                           // MaxInputResponse
+	r.Skip(4)                           // OutputOffset
+	r.Skip(4)                           // OutputCount
+	maxOutputResponse := r.ReadUint32() // MaxOutputResponse
+	if r.Err() != nil {
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
 
 	logger.Debug("IOCTL PIPE_TRANSCEIVE",
 		"fileID", fmt.Sprintf("%x", fileID),
@@ -650,8 +528,8 @@ func (h *Handler) handlePipeTransceive(ctx *SMBHandlerContext, body []byte) (*Ha
 	// Get open file to verify it's a pipe
 	openFile, ok := h.GetOpenFile(fileID)
 	if !ok {
-		logger.Debug("IOCTL PIPE_TRANSCEIVE: invalid file ID")
-		return NewErrorResult(types.StatusInvalidHandle), nil
+		logger.Debug("IOCTL PIPE_TRANSCEIVE: file handle not found (closed)")
+		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
 	if !openFile.IsPipe {
@@ -696,167 +574,6 @@ func (h *Handler) handlePipeTransceive(ctx *SMBHandlerContext, body []byte) (*Ha
 
 	// Build IOCTL response
 	resp := buildIoctlResponse(FsctlPipeTransceive, fileID, outputData)
-
-	return NewResult(types.StatusSuccess, resp), nil
-}
-
-// handleValidateNegotiateInfo validates the negotiation parameters [MS-SMB2] 2.2.31.4.
-//
-// This FSCTL is used by SMB 3.x clients to verify that the negotiation wasn't
-// tampered with by a man-in-the-middle attack. The client sends its view of
-// the negotiation parameters, and the server responds with its values.
-// If they don't match, the client will terminate the connection.
-//
-// **Request format (VALIDATE_NEGOTIATE_INFO Request):**
-//
-//	Offset  Size  Field
-//	------  ----  ------------------
-//	0       4     Capabilities
-//	4       16    Guid (ClientGuid)
-//	20      2     SecurityMode
-//	22      2     DialectCount
-//	24      2*N   Dialects
-//
-// **Response format (VALIDATE_NEGOTIATE_INFO Response):**
-//
-//	Offset  Size  Field
-//	------  ----  ------------------
-//	0       4     Capabilities
-//	4       16    Guid (ServerGuid)
-//	20      2     SecurityMode
-//	22      2     Dialect (selected)
-func (h *Handler) handleValidateNegotiateInfo(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
-	// IOCTL request structure [MS-SMB2] 2.2.31:
-	// - StructureSize (2 bytes) - offset 0
-	// - Reserved (2 bytes) - offset 2
-	// - CtlCode (4 bytes) - offset 4
-	// - FileId (16 bytes) - offset 8
-	// - InputOffset (4 bytes) - offset 24
-	// - InputCount (4 bytes) - offset 28
-	// - MaxInputResponse (4 bytes) - offset 32
-	// - OutputOffset (4 bytes) - offset 36
-	// - OutputCount (4 bytes) - offset 40
-	// - MaxOutputResponse (4 bytes) - offset 44
-	// - Flags (4 bytes) - offset 48
-	// - Reserved2 (4 bytes) - offset 52
-	// - Buffer (variable) - offset 56
-	if len(body) < 56 {
-		logger.Debug("IOCTL VALIDATE_NEGOTIATE_INFO: request too small", "len", len(body))
-		return NewErrorResult(types.StatusInvalidParameter), nil
-	}
-
-	var fileID [16]byte
-	copy(fileID[:], body[8:24])
-
-	// Per [MS-SMB2] 2.2.31.4, FSCTL_VALIDATE_NEGOTIATE_INFO MUST use FileId
-	// {0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF} (all 0xFF bytes).
-	if !bytes.Equal(fileID[:], allFFFileID) {
-		logger.Debug("IOCTL VALIDATE_NEGOTIATE_INFO: unexpected FileId (expected all 0xFF)", "fileID", fileID)
-		return NewErrorResult(types.StatusInvalidParameter), nil
-	}
-
-	inputCount := binary.LittleEndian.Uint32(body[28:32])
-
-	// Minimum input size: 24 bytes (Capabilities + Guid + SecurityMode + DialectCount)
-	if inputCount < 24 {
-		logger.Debug("IOCTL VALIDATE_NEGOTIATE_INFO: input too small", "inputCount", inputCount)
-		return NewErrorResult(types.StatusInvalidParameter), nil
-	}
-
-	// Extract input data from buffer portion
-	bufferStart := uint32(56)
-	if uint32(len(body)) < bufferStart+inputCount {
-		logger.Debug("IOCTL VALIDATE_NEGOTIATE_INFO: input data out of bounds",
-			"bodyLen", len(body), "bufferStart", bufferStart, "inputCount", inputCount)
-		return NewErrorResult(types.StatusInvalidParameter), nil
-	}
-
-	inputData := body[bufferStart : bufferStart+inputCount]
-
-	// Parse VALIDATE_NEGOTIATE_INFO request
-	// clientCapabilities := binary.LittleEndian.Uint32(inputData[0:4])
-	// clientGuid := inputData[4:20]
-	// clientSecurityMode := binary.LittleEndian.Uint16(inputData[20:22])
-	dialectCount := binary.LittleEndian.Uint16(inputData[22:24])
-
-	// Validate dialect count
-	expectedSize := 24 + (int(dialectCount) * 2)
-	if int(inputCount) < expectedSize {
-		logger.Debug("IOCTL VALIDATE_NEGOTIATE_INFO: not enough dialects",
-			"dialectCount", dialectCount, "inputCount", inputCount, "expectedSize", expectedSize)
-		return NewErrorResult(types.StatusInvalidParameter), nil
-	}
-
-	// Parse dialects and re-determine what we would negotiate.
-	// This MUST mirror the Negotiate handler logic exactly, including
-	// wildcard dialect echoing, per MS-SMB2 §3.3.5.15.12.
-	var selectedDialect types.Dialect
-	var hasWildcard bool
-	for i := uint16(0); i < dialectCount; i++ {
-		offset := 24 + (int(i) * 2)
-		dialect := types.Dialect(binary.LittleEndian.Uint16(inputData[offset : offset+2]))
-
-		switch dialect {
-		case types.SMB2Dialect0210:
-			if selectedDialect < types.SMB2Dialect0210 {
-				selectedDialect = types.SMB2Dialect0210
-			}
-		case types.SMB2Dialect0202:
-			if selectedDialect < types.SMB2Dialect0202 {
-				selectedDialect = types.SMB2Dialect0202
-			}
-		case types.SMB2DialectWild:
-			hasWildcard = true
-			if selectedDialect < types.SMB2Dialect0202 {
-				selectedDialect = types.SMB2Dialect0202
-			}
-		}
-	}
-
-	if selectedDialect == 0 {
-		logger.Warn("IOCTL VALIDATE_NEGOTIATE_INFO: no common dialect")
-		return NewErrorResult(types.StatusInvalidParameter), nil
-	}
-
-	// Mirror the Negotiate handler's wildcard echo: when the client
-	// sent 0x02FF and the best dialect is 2.0.2, respond with 0x02FF.
-	responseDialect := selectedDialect
-	if hasWildcard && selectedDialect <= types.SMB2Dialect0202 {
-		responseDialect = types.SMB2DialectWild
-	}
-
-	// Build SecurityMode based on signing configuration
-	// Bit 0 (0x01): SMB2_NEGOTIATE_SIGNING_ENABLED
-	// Bit 1 (0x02): SMB2_NEGOTIATE_SIGNING_REQUIRED
-	var securityMode uint16
-	if h.SigningConfig.Enabled {
-		securityMode |= 0x01
-	}
-	if h.SigningConfig.Required {
-		securityMode |= 0x02
-	}
-
-	// Build Capabilities to match NEGOTIATE response [MS-SMB2 2.2.4]
-	// MUST be identical to what was sent in the NEGOTIATE response,
-	// otherwise the client detects a potential downgrade attack.
-	var capabilities uint32
-	if selectedDialect >= types.SMB2Dialect0210 {
-		capabilities = uint32(types.CapLeasing | types.CapLargeMTU)
-	}
-
-	// Build VALIDATE_NEGOTIATE_INFO response (24 bytes)
-	output := make([]byte, 24)
-	binary.LittleEndian.PutUint32(output[0:4], capabilities) // Capabilities
-	copy(output[4:20], h.ServerGUID[:])                      // ServerGuid
-	binary.LittleEndian.PutUint16(output[20:22], securityMode)
-	binary.LittleEndian.PutUint16(output[22:24], uint16(responseDialect))
-
-	logger.Debug("IOCTL VALIDATE_NEGOTIATE_INFO: success",
-		"dialect", responseDialect.String(),
-		"securityMode", fmt.Sprintf("0x%02X", securityMode))
-
-	// Build IOCTL response
-	resp := buildIoctlResponse(FsctlValidateNegotiateInfo, fileID, output)
 
 	return NewResult(types.StatusSuccess, resp), nil
 }

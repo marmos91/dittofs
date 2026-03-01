@@ -134,8 +134,9 @@ func (m *Manager) GenerateSessionID() uint64 {
 // Should be called at the start of each request handler.
 func (m *Manager) RequestStarted(sessionID uint64) {
 	m.activeRequests.Add(1)
-	session := m.GetOrCreateSession(sessionID)
-	session.RequestStarted()
+	if session, ok := m.GetSession(sessionID); ok {
+		session.RequestStarted()
+	}
 }
 
 // RequestCompleted records that a request has finished processing.
@@ -156,7 +157,17 @@ func (m *Manager) RequestCompleted(sessionID uint64) {
 //
 // Returns the number of credits to grant.
 func (m *Manager) GrantCredits(sessionID uint64, requested uint16, creditCharge uint16) uint16 {
-	session := m.GetOrCreateSession(sessionID)
+	session, ok := m.GetSession(sessionID)
+	if !ok {
+		// Session was deleted (e.g., after LOGOFF). Don't re-create it.
+		// Grant a minimal credit so the client can send the next request.
+		// For sessionID 0 (pre-auth), use the anonymous session.
+		if sessionID == 0 {
+			session = m.GetOrCreateSession(0)
+		} else {
+			return 1
+		}
+	}
 	session.credits.LastActivity.Store(time.Now().Unix())
 
 	// Record consumption
