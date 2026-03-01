@@ -65,6 +65,7 @@ services:
       - "wpts-admin%TestPassword01!"
       - "--option=client min protocol=SMB2_02"
       - "--option=client max protocol=SMB3"
+      - "--option=torture:oplocktimeout=5"
       - "smb2"
     profiles:
       - smbtorture
