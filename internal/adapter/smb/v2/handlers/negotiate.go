@@ -5,6 +5,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -400,22 +401,19 @@ func (h *Handler) processNegotiateContexts(
 
 	// Per MS-SMB2: when a 3.1.1 client omits SIGNING_CAPABILITIES, default to AES-128-CMAC
 	if !signingCapsReceived {
-		selectedSigningAlg = signingAlgAESCMAC
+		selectedSigningAlg = signing.SigningAlgAESCMAC
 	}
 
 	return responseContexts, selectedCipher, selectedSigningAlg
 }
 
-// Signing algorithm ID constants (local to avoid importing signing package).
-const (
-	signingAlgHMACSHA256 uint16 = 0x0000
-	signingAlgAESCMAC    uint16 = 0x0001
-	signingAlgAESGMAC    uint16 = 0x0002
-)
-
 // defaultSigningAlgorithmPreference is the server's default signing algorithm
 // preference order, used when SigningAlgorithmPreference is not configured.
-var defaultSigningAlgorithmPreference = []uint16{signingAlgAESGMAC, signingAlgAESCMAC, signingAlgHMACSHA256}
+var defaultSigningAlgorithmPreference = []uint16{
+	signing.SigningAlgAESGMAC,
+	signing.SigningAlgAESCMAC,
+	signing.SigningAlgHMACSHA256,
+}
 
 // selectSigningAlgorithm selects the server's preferred signing algorithm from
 // the client's offered list. Returns AES-128-CMAC if no match is found.
@@ -431,7 +429,7 @@ func (h *Handler) selectSigningAlgorithm(clientAlgorithms []uint16) uint16 {
 		}
 	}
 	// Default to AES-128-CMAC per MS-SMB2 spec
-	return signingAlgAESCMAC
+	return signing.SigningAlgAESCMAC
 }
 
 // selectCipher selects the server's preferred cipher from the client's offered list.

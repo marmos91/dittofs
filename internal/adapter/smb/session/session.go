@@ -228,10 +228,6 @@ type SessionStats struct {
 	HighWaterMark       uint32
 }
 
-// =============================================================================
-// Signing Methods
-// =============================================================================
-
 // SetSigningKey sets the signing key from the session key.
 // This creates a CryptoState with an HMACSigner for SMB 2.x sessions.
 // For 3.x sessions, use SetCryptoState with DeriveAllKeys instead.
@@ -240,12 +236,12 @@ func (s *Session) SetSigningKey(sessionKey []byte) {
 }
 
 // EnableSigning enables message signing for this session.
-// After calling this, all messages should be signed/verified.
 func (s *Session) EnableSigning(required bool) {
-	if s.CryptoState != nil {
-		s.CryptoState.SigningEnabled = true
-		s.CryptoState.SigningRequired = required
+	if s.CryptoState == nil {
+		return
 	}
+	s.CryptoState.SigningEnabled = true
+	s.CryptoState.SigningRequired = required
 }
 
 // SetCryptoState sets the session's cryptographic state directly.
@@ -256,18 +252,18 @@ func (s *Session) SetCryptoState(cs *SessionCryptoState) {
 
 // ShouldSign returns true if outgoing messages should be signed.
 func (s *Session) ShouldSign() bool {
-	return s.CryptoState != nil && s.CryptoState.ShouldSign()
+	return s.CryptoState.ShouldSign()
 }
 
 // ShouldVerify returns true if incoming messages should have signatures verified.
 func (s *Session) ShouldVerify() bool {
-	return s.CryptoState != nil && s.CryptoState.ShouldVerify()
+	return s.CryptoState.ShouldVerify()
 }
 
 // SignMessage signs an SMB2 message in place using the session's signer.
 // This should be called before sending a message if signing is enabled.
 func (s *Session) SignMessage(message []byte) {
-	if s.CryptoState != nil && s.CryptoState.ShouldSign() {
+	if s.CryptoState.ShouldSign() {
 		signing.SignMessage(s.CryptoState.Signer, message)
 	}
 }
@@ -275,8 +271,8 @@ func (s *Session) SignMessage(message []byte) {
 // VerifyMessage verifies the signature of an SMB2 message.
 // Returns true if the signature is valid or if signing is not enabled.
 func (s *Session) VerifyMessage(message []byte) bool {
-	if s.CryptoState == nil || !s.CryptoState.ShouldVerify() || s.CryptoState.Signer == nil {
-		return true // No verification needed
+	if !s.CryptoState.ShouldVerify() {
+		return true
 	}
 	return s.CryptoState.Signer.Verify(message)
 }

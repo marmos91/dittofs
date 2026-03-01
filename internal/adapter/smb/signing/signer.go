@@ -61,12 +61,7 @@ func SignMessage(signer Signer, message []byte) {
 	flags |= 0x00000008
 	binary.LittleEndian.PutUint32(message[16:20], flags)
 
-	// Zero the signature field first
-	for i := SignatureOffset; i < SignatureOffset+SignatureSize; i++ {
-		message[i] = 0
-	}
-
-	// Compute and write signature
+	zeroSignatureField(message)
 	sig := signer.Sign(message)
 	copy(message[SignatureOffset:], sig[:])
 }

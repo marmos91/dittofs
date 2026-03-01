@@ -26,9 +26,7 @@
 package signing
 
 import (
-	"bytes"
-	"crypto/hmac"
-	"crypto/sha256"
+	"crypto/subtle"
 )
 
 const (
@@ -44,87 +42,6 @@ const (
 	// SMB2HeaderSize is the fixed size of SMB2 header.
 	SMB2HeaderSize = 64
 )
-
-// SigningKey represents an SMB2 signing key (legacy type for backward compatibility).
-// The key is always 16 bytes, derived from the session key.
-//
-// Deprecated: Use HMACSigner instead. This type is kept temporarily for
-// existing test compatibility and will be removed in a future cleanup.
-type SigningKey struct {
-	key [KeySize]byte
-}
-
-// NewSigningKey creates a signing key from a session key.
-// The session key is padded or truncated to 16 bytes as required.
-//
-// Returns nil if sessionKey is empty or nil.
-func NewSigningKey(sessionKey []byte) *SigningKey {
-	if len(sessionKey) == 0 {
-		return nil
-	}
-	sk := &SigningKey{}
-	if len(sessionKey) >= KeySize {
-		copy(sk.key[:], sessionKey[:KeySize])
-	} else {
-		copy(sk.key[:], sessionKey)
-	}
-	return sk
-}
-
-// IsValid returns true if the signing key is non-zero.
-func (sk *SigningKey) IsValid() bool {
-	var zero [KeySize]byte
-	return !bytes.Equal(sk.key[:], zero[:])
-}
-
-// Sign computes the HMAC-SHA256 signature for an SMB2 message.
-func (sk *SigningKey) Sign(message []byte) [SignatureSize]byte {
-	var signature [SignatureSize]byte
-	if len(message) < SMB2HeaderSize {
-		return signature
-	}
-
-	msgCopy := make([]byte, len(message))
-	copy(msgCopy, message)
-	for i := SignatureOffset; i < SignatureOffset+SignatureSize; i++ {
-		msgCopy[i] = 0
-	}
-
-	mac := hmac.New(sha256.New, sk.key[:])
-	mac.Write(msgCopy)
-	sum := mac.Sum(nil)
-	copy(signature[:], sum[:SignatureSize])
-	return signature
-}
-
-// Verify checks if the message signature is valid.
-func (sk *SigningKey) Verify(message []byte) bool {
-	if len(message) < SMB2HeaderSize {
-		return false
-	}
-	var providedSig [SignatureSize]byte
-	copy(providedSig[:], message[SignatureOffset:SignatureOffset+SignatureSize])
-	expectedSig := sk.Sign(message)
-	return hmac.Equal(providedSig[:], expectedSig[:])
-}
-
-// SignMessage signs an SMB2 message in place (legacy method).
-func (sk *SigningKey) SignMessage(message []byte) {
-	if len(message) < SMB2HeaderSize {
-		return
-	}
-	flags := uint32(message[16]) | uint32(message[17])<<8 | uint32(message[18])<<16 | uint32(message[19])<<24
-	flags |= 0x00000008
-	message[16] = byte(flags)
-	message[17] = byte(flags >> 8)
-	message[18] = byte(flags >> 16)
-	message[19] = byte(flags >> 24)
-	for i := SignatureOffset; i < SignatureOffset+SignatureSize; i++ {
-		message[i] = 0
-	}
-	sig := sk.Sign(message)
-	copy(message[SignatureOffset:], sig[:])
-}
 
 // SigningConfig holds configuration for SMB2 signing.
 type SigningConfig struct {
@@ -143,5 +60,33 @@ func DefaultSigningConfig() SigningConfig {
 	}
 }
 
-// Note: SessionSigningState has been replaced by session.SessionCryptoState.
-// See internal/adapter/smb/session/crypto_state.go for the new abstraction.
+// copyKey copies up to KeySize bytes from src into a fixed-size key array.
+// Short keys are zero-padded; long keys are truncated. This is the standard
+// SMB2 key normalization used by all signer constructors.
+func copyKey(src []byte) [KeySize]byte {
+	var key [KeySize]byte
+	copy(key[:], src)
+	return key
+}
+
+// zeroSignatureField zeroes the 16-byte signature field in an SMB2 message copy.
+// The caller must ensure msgCopy has at least SMB2HeaderSize bytes.
+func zeroSignatureField(msgCopy []byte) {
+	clear(msgCopy[SignatureOffset : SignatureOffset+SignatureSize])
+}
+
+// verifySig extracts the signature from a message, computes the expected
+// signature using the given Signer, and compares them in constant time.
+// This is the shared verification logic for all signer implementations.
+func verifySig(signer Signer, message []byte) bool {
+	if len(message) < SMB2HeaderSize {
+		return false
+	}
+
+	var providedSig [SignatureSize]byte
+	copy(providedSig[:], message[SignatureOffset:SignatureOffset+SignatureSize])
+
+	expectedSig := signer.Sign(message)
+
+	return subtle.ConstantTimeCompare(providedSig[:], expectedSig[:]) == 1
+}

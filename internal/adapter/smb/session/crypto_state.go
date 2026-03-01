@@ -104,18 +104,10 @@ func (cs *SessionCryptoState) Destroy() {
 	if cs == nil {
 		return
 	}
-	for i := range cs.SigningKey {
-		cs.SigningKey[i] = 0
-	}
-	for i := range cs.EncryptionKey {
-		cs.EncryptionKey[i] = 0
-	}
-	for i := range cs.DecryptionKey {
-		cs.DecryptionKey[i] = 0
-	}
-	for i := range cs.ApplicationKey {
-		cs.ApplicationKey[i] = 0
-	}
+	clear(cs.SigningKey)
+	clear(cs.EncryptionKey)
+	clear(cs.DecryptionKey)
+	clear(cs.ApplicationKey)
 	cs.Signer = nil
 }
 

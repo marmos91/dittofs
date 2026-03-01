@@ -15,10 +15,6 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// =============================================================================
-// SESSION_SETUP Request Parsing
-// =============================================================================
-
 // SESSION_SETUP request structure offsets [MS-SMB2] 2.2.5
 const (
 	sessionSetupStructureSizeOffset     = 0  // 2 bytes: Always 25
@@ -95,10 +91,6 @@ func parseSessionSetupRequest(body []byte) (*SessionSetupRequest, error) {
 
 	return req, nil
 }
-
-// =============================================================================
-// SESSION_SETUP Handler
-// =============================================================================
 
 // SessionSetup handles SMB2 SESSION_SETUP command.
 //
@@ -210,10 +202,6 @@ func extractNTLMToken(securityBuffer []byte) ([]byte, bool) {
 	// Already raw NTLM (or unknown format)
 	return securityBuffer, false
 }
-
-// =============================================================================
-// Kerberos Authentication Handler
-// =============================================================================
 
 // handleKerberosAuth handles Kerberos authentication via SPNEGO.
 //
@@ -340,10 +328,6 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte) (
 		spnegoResp,
 	), nil
 }
-
-// =============================================================================
-// NTLM Authentication Handlers
-// =============================================================================
 
 // handleNTLMNegotiate handles NTLM Type 1 (NEGOTIATE) message.
 //
@@ -642,10 +626,6 @@ func (h *Handler) createGuestSession(ctx *SMBHandlerContext) (*HandlerResult, er
 	), nil
 }
 
-// =============================================================================
-// Signing Configuration
-// =============================================================================
-
 // configureSessionSigningWithKey sets up message signing for a session with
 // a pre-derived session key from NTLMv2 authentication.
 //
@@ -709,10 +689,6 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 		"required", h.SigningConfig.Required,
 		"dialect", dialect.String())
 }
-
-// =============================================================================
-// Response Building
-// =============================================================================
 
 // buildSessionSetupResponse builds the SESSION_SETUP response.
 //
