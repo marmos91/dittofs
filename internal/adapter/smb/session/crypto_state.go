@@ -20,7 +20,8 @@ type SessionCryptoState struct {
 	Signer signing.Signer
 
 	// SigningKey is the raw signing key bytes.
-	// For 2.x: truncated/padded session key. For 3.x: KDF-derived signing key.
+	// For 2.x: copy of the raw session key (signer handles normalization).
+	// For 3.x: KDF-derived 16-byte signing key.
 	SigningKey []byte
 
 	// EncryptionKey is the client-to-server encryption key (Phase 35).
