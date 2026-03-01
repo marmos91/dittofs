@@ -162,7 +162,10 @@ Plans:
   3. All SMB 3.x signed messages use AES-128-CMAC (replacing HMAC-SHA256)
   4. SMB 3.1.1 clients can use AES-128-GMAC signing when negotiated via signing capabilities context
   5. Signing algorithm abstraction dispatches correctly by negotiated dialect (HMAC-SHA256 for 2.x, CMAC for 3.0+, GMAC for 3.1.1)
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 34-01-PLAN.md — SP800-108 KDF package, Signer interface with HMAC/CMAC/GMAC implementations, test vectors
+- [ ] 34-02-PLAN.md — SessionCryptoState, SIGNING_CAPABILITIES negotiate context, session setup KDF integration, framing migration
 
 ### Phase 35: Encryption and Transform Header
 **Goal**: SMB3 traffic can be encrypted end-to-end with AES-CCM/GCM, enforced per-session or per-share
@@ -459,7 +462,7 @@ v3.8 (33-40.5) -> v4.0 (41-47.5) -> v4.1 (48-53.5)
 | 31. Windows ACL Support | v3.6 | 3/3 | Complete | 2026-02-27 |
 | 32. Windows Integration Testing | v3.6 | 3/3 | Complete | 2026-02-28 |
 | 33. SMB3 Dialect Negotiation and Preauth Integrity | 2/3 | Complete    | 2026-02-28 | - |
-| 34. Key Derivation and Signing | v3.8 | 0/? | Not started | - |
+| 34. Key Derivation and Signing | v3.8 | 0/2 | Not started | - |
 | 35. Encryption and Transform Header | v3.8 | 0/? | Not started | - |
 | 36. Kerberos SMB3 Integration | v3.8 | 0/? | Not started | - |
 | 37. SMB3 Leases and Directory Leasing | v3.8 | 0/? | Not started | - |
