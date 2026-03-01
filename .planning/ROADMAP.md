@@ -462,7 +462,7 @@ v3.8 (33-40.5) -> v4.0 (41-47.5) -> v4.1 (48-53.5)
 | 31. Windows ACL Support | v3.6 | 3/3 | Complete | 2026-02-27 |
 | 32. Windows Integration Testing | v3.6 | 3/3 | Complete | 2026-02-28 |
 | 33. SMB3 Dialect Negotiation and Preauth Integrity | 2/3 | Complete    | 2026-02-28 | - |
-| 34. Key Derivation and Signing | v3.8 | 0/2 | Not started | - |
+| 34. Key Derivation and Signing | 1/2 | In Progress|  | - |
 | 35. Encryption and Transform Header | v3.8 | 0/? | Not started | - |
 | 36. Kerberos SMB3 Integration | v3.8 | 0/? | Not started | - |
 | 37. SMB3 Leases and Directory Leasing | v3.8 | 0/? | Not started | - |

@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v3.8
 milestone_name: SMB3 Protocol Upgrade
 status: unknown
-last_updated: "2026-02-28T23:38:08.844Z"
+last_updated: "2026-03-01T20:37:41.715Z"
 progress:
-  total_phases: 36
+  total_phases: 37
   completed_phases: 35
-  total_plans: 120
-  completed_plans: 120
+  total_plans: 122
+  completed_plans: 121
 ---
 
 # Project State
@@ -22,10 +22,10 @@ See: .planning/PROJECT.md (updated 2026-02-28)
 
 ## Current Position
 
-Phase: 34 of 40 (next: SMB3 KDF and Signing)
-Plan: Phase 33 complete (3/3 plans), Phase 34 not yet planned
-Status: Phase 33 complete — ready for Phase 34 planning
-Last activity: 2026-02-28 — Completed 33-03 (IOCTL dispatch, VALIDATE_NEGOTIATE_INFO, full smbenc migration)
+Phase: 34 of 40 (SMB3 KDF and Signing)
+Plan: 1 of 2 complete
+Status: Executing Phase 34 — Plan 01 complete, Plan 02 next
+Last activity: 2026-03-01 — Completed 34-01 (SP800-108 KDF, Signer interface with HMAC/CMAC/GMAC)
 
 Progress: [##░░░░░░░░] 13%
 
@@ -51,6 +51,7 @@ Progress: [##░░░░░░░░] 13%
 | 33    | 01   | 9min     | 2     | 12    |
 | 33    | 02   | 13min    | 2     | 10    |
 | 33    | 03   | 45min    | 2     | 29    |
+| 34    | 01   | 13min    | 2     | 13    |
 
 ## Accumulated Context
 
@@ -74,6 +75,9 @@ Progress: [##░░░░░░░░] 13%
 - 33-03: VALIDATE_NEGOTIATE_INFO reads all 4 fields from CryptoState, never re-computes
 - 33-03: 3.1.1 connections drop TCP on VNEG per MS-SMB2 3.3.5.15.12
 - 33-03: All SMB handler binary encoding goes through smbenc codec (ARCH-02 enforced)
+- [Phase 34]: CMAC in signing/ package (not standalone cmac/) for cohesion with other signers
+- [Phase 34]: SessionSigningState kept temporarily with Signer + legacy SigningKey for minimal blast radius
+- [Phase 34]: Signer interface pattern: Sign([16]byte) + Verify(bool) for polymorphic SMB signing
 
 ### Pending Todos
 
@@ -85,6 +89,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-02-28
-Stopped at: Completed 33-03-PLAN.md (Phase 33 complete)
+Last session: 2026-03-01
+Stopped at: Completed 34-01-PLAN.md (KDF + Signer interface)
 Resume file: None

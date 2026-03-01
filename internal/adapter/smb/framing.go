@@ -366,7 +366,7 @@ func (sv *sessionSigningVerifier) VerifyRequest(hdr *header.SMB2Header, message 
 			"verifyLen", len(verifyBytes),
 			"isCompound", hdr.NextCommand > 0)
 		if !sess.VerifyMessage(verifyBytes) {
-			hasKey := sess.Signing != nil && sess.Signing.SigningKey != nil
+			hasKey := sess.Signing != nil && sess.Signing.Signer != nil
 			logger.Warn("SMB2 message signature verification failed",
 				"command", hdr.Command.String(),
 				"sessionID", hdr.SessionID,
