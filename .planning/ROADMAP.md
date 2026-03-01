@@ -100,7 +100,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 ### v3.8 SMB3 Protocol Upgrade
 
 - [x] **Phase 33: SMB3 Dialect Negotiation and Preauth Integrity** - 3.0/3.0.2/3.1.1 dialect selection, negotiate contexts, SHA-512 preauth hash chain, secure dialect validation IOCTL (completed 2026-02-28)
-- [ ] **Phase 34: Key Derivation and Signing** - SP800-108 KDF, dialect-aware key derivation (3.0 vs 3.1.1), AES-CMAC/GMAC signing abstraction
+- [x] **Phase 34: Key Derivation and Signing** - SP800-108 KDF, dialect-aware key derivation (3.0 vs 3.1.1), AES-CMAC/GMAC signing abstraction (completed 2026-03-01)
 - [ ] **Phase 35: Encryption and Transform Header** - AES-128/256-CCM/GCM encryption, transform header framing, per-session and per-share encryption enforcement
 - [ ] **Phase 36: Kerberos SMB3 Integration** - SPNEGO/Kerberos session setup with session key extraction, AP-REP mutual auth, NTLM fallback, guest sessions
 - [ ] **Phase 37: SMB3 Leases and Directory Leasing** - Lease V2 with ParentLeaseKey/epoch, directory leases, break coordination via metadata service
@@ -462,7 +462,7 @@ v3.8 (33-40.5) -> v4.0 (41-47.5) -> v4.1 (48-53.5)
 | 31. Windows ACL Support | v3.6 | 3/3 | Complete | 2026-02-27 |
 | 32. Windows Integration Testing | v3.6 | 3/3 | Complete | 2026-02-28 |
 | 33. SMB3 Dialect Negotiation and Preauth Integrity | 2/3 | Complete    | 2026-02-28 | - |
-| 34. Key Derivation and Signing | 1/2 | In Progress|  | - |
+| 34. Key Derivation and Signing | 2/2 | Complete   | 2026-03-01 | - |
 | 35. Encryption and Transform Header | v3.8 | 0/? | Not started | - |
 | 36. Kerberos SMB3 Integration | v3.8 | 0/? | Not started | - |
 | 37. SMB3 Leases and Directory Leasing | v3.8 | 0/? | Not started | - |

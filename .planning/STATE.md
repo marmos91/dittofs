@@ -8,7 +8,7 @@ progress:
   total_phases: 37
   completed_phases: 35
   total_plans: 122
-  completed_plans: 121
+  completed_plans: 122
 ---
 
 # Project State
@@ -23,9 +23,9 @@ See: .planning/PROJECT.md (updated 2026-02-28)
 ## Current Position
 
 Phase: 34 of 40 (SMB3 KDF and Signing)
-Plan: 1 of 2 complete
-Status: Executing Phase 34 — Plan 01 complete, Plan 02 next
-Last activity: 2026-03-01 — Completed 34-01 (SP800-108 KDF, Signer interface with HMAC/CMAC/GMAC)
+Plan: 2 of 2 complete
+Status: Phase 34 complete
+Last activity: 2026-03-01 — Completed 34-02 (SessionCryptoState, SIGNING_CAPABILITIES, KDF session integration)
 
 Progress: [##░░░░░░░░] 13%
 
@@ -52,6 +52,7 @@ Progress: [##░░░░░░░░] 13%
 | 33    | 02   | 13min    | 2     | 10    |
 | 33    | 03   | 45min    | 2     | 29    |
 | 34    | 01   | 13min    | 2     | 13    |
+| 34    | 02   | 10min    | 2     | 16    |
 
 ## Accumulated Context
 
@@ -78,6 +79,10 @@ Progress: [##░░░░░░░░] 13%
 - [Phase 34]: CMAC in signing/ package (not standalone cmac/) for cohesion with other signers
 - [Phase 34]: SessionSigningState kept temporarily with Signer + legacy SigningKey for minimal blast radius
 - [Phase 34]: Signer interface pattern: Sign([16]byte) + Verify(bool) for polymorphic SMB signing
+- [Phase 34-02]: SessionCryptoState holds all 4 keys upfront (even encryption/decryption for Phase 35)
+- [Phase 34-02]: DeriveAllKeys dispatches by dialect: <3.0 direct HMAC, >=3.0 full KDF
+- [Phase 34-02]: Default signing preference: GMAC > CMAC > HMAC-SHA256 (configurable via adapter settings)
+- [Phase 34-02]: 3.1.1 clients omitting SIGNING_CAPABILITIES default to AES-128-CMAC per spec
 
 ### Pending Todos
 
@@ -90,5 +95,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-03-01
-Stopped at: Completed 34-01-PLAN.md (KDF + Signer interface)
+Stopped at: Completed 34-02-PLAN.md (SessionCryptoState + KDF integration)
 Resume file: None
