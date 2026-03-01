@@ -208,4 +208,3 @@ func TestSigningKeyAlways128Bit(t *testing.T) {
 		t.Errorf("256-bit encryption key should be 32 bytes, got %d", len(encKey256))
 	}
 }
-

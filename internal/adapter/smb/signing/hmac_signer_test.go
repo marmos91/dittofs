@@ -72,4 +72,3 @@ func TestHMACSigner_LongKey(t *testing.T) {
 		t.Error("Sign() returned zero signature for long key")
 	}
 }
-
