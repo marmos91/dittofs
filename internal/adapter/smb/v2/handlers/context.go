@@ -34,10 +34,16 @@ type CryptoState interface {
 	GetServerSecurityMode() types.SecurityMode
 	// SetClientGUID records the client's GUID.
 	SetClientGUID(guid [16]byte)
+	// GetClientGUID returns the client's GUID.
+	GetClientGUID() [16]byte
 	// SetClientCapabilities records the client's capabilities.
 	SetClientCapabilities(caps types.Capabilities)
+	// GetClientCapabilities returns the client's capabilities.
+	GetClientCapabilities() types.Capabilities
 	// SetClientSecurityMode records the client's security mode.
 	SetClientSecurityMode(mode types.SecurityMode)
+	// GetClientSecurityMode returns the client's security mode.
+	GetClientSecurityMode() types.SecurityMode
 	// SetClientDialects records the client's offered dialects.
 	SetClientDialects(dialects []types.Dialect)
 	// GetClientDialects returns the client's offered dialect list.

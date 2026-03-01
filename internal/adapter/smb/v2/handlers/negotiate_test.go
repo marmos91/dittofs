@@ -123,8 +123,11 @@ func (m *mockCryptoState) SetServerGUID(guid [16]byte)                   { m.ser
 func (m *mockCryptoState) SetServerCapabilities(caps types.Capabilities) { m.serverCapabilities = caps }
 func (m *mockCryptoState) SetServerSecurityMode(mode types.SecurityMode) { m.serverSecurityMode = mode }
 func (m *mockCryptoState) SetClientGUID(guid [16]byte)                   { m.clientGUID = guid }
+func (m *mockCryptoState) GetClientGUID() [16]byte                       { return m.clientGUID }
 func (m *mockCryptoState) SetClientCapabilities(caps types.Capabilities) { m.clientCapabilities = caps }
+func (m *mockCryptoState) GetClientCapabilities() types.Capabilities     { return m.clientCapabilities }
 func (m *mockCryptoState) SetClientSecurityMode(mode types.SecurityMode) { m.clientSecurityMode = mode }
+func (m *mockCryptoState) GetClientSecurityMode() types.SecurityMode     { return m.clientSecurityMode }
 func (m *mockCryptoState) SetClientDialects(dialects []types.Dialect)    { m.clientDialects = dialects }
 func (m *mockCryptoState) GetServerGUID() [16]byte                       { return m.serverGUID }
 func (m *mockCryptoState) GetServerCapabilities() types.Capabilities     { return m.serverCapabilities }

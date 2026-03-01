@@ -144,14 +144,27 @@ func (cs *ConnectionCryptoState) GetServerSecurityMode() types.SecurityMode {
 // SetClientGUID records the client's GUID from the NEGOTIATE request.
 func (cs *ConnectionCryptoState) SetClientGUID(guid [16]byte) { cs.ClientGUID = guid }
 
+// GetClientGUID returns the client's GUID.
+func (cs *ConnectionCryptoState) GetClientGUID() [16]byte { return cs.ClientGUID }
+
 // SetClientCapabilities records the client's capabilities from the NEGOTIATE request.
 func (cs *ConnectionCryptoState) SetClientCapabilities(caps types.Capabilities) {
 	cs.ClientCapabilities = caps
 }
 
+// GetClientCapabilities returns the client's capabilities.
+func (cs *ConnectionCryptoState) GetClientCapabilities() types.Capabilities {
+	return cs.ClientCapabilities
+}
+
 // SetClientSecurityMode records the client's security mode from the NEGOTIATE request.
 func (cs *ConnectionCryptoState) SetClientSecurityMode(mode types.SecurityMode) {
 	cs.ClientSecurityMode = mode
+}
+
+// GetClientSecurityMode returns the client's security mode.
+func (cs *ConnectionCryptoState) GetClientSecurityMode() types.SecurityMode {
+	return cs.ClientSecurityMode
 }
 
 // SetClientDialects records the client's offered dialect list from the NEGOTIATE request.

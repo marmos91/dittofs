@@ -80,11 +80,20 @@ func TestValidateNegotiateInfo_300_Success(t *testing.T) {
 	serverCaps := types.CapLeasing | types.CapLargeMTU
 	serverSecMode := types.NegSigningEnabled
 
+	// Client's original NEGOTIATE values (what the VNEG request echoes back)
+	clientGUID := [16]byte{0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80,
+		0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0, 0xF0, 0x01}
+	clientCaps := types.Capabilities(0x7F) // typical client capabilities
+	clientSecMode := types.NegSigningEnabled
+
 	cs := &mockCryptoState{
 		dialect:            types.Dialect0300,
 		serverGUID:         serverGUID,
 		serverCapabilities: serverCaps,
 		serverSecurityMode: serverSecMode,
+		clientGUID:         clientGUID,
+		clientCapabilities: clientCaps,
+		clientSecurityMode: clientSecMode,
 		clientDialects:     []types.Dialect{types.Dialect0202, types.Dialect0210, types.Dialect0300},
 	}
 	h.MinDialect = types.Dialect0202
@@ -96,11 +105,11 @@ func TestValidateNegotiateInfo_300_Success(t *testing.T) {
 		ConnCryptoState: cs,
 	}
 
-	// Client sends matching parameters
+	// Client sends its own original NEGOTIATE values (NOT server values)
 	body := buildVNEGRequest(
-		uint32(serverCaps),
-		serverGUID,
-		uint16(serverSecMode),
+		uint32(clientCaps),
+		clientGUID,
+		uint16(clientSecMode),
 		[]uint16{uint16(types.Dialect0202), uint16(types.Dialect0210), uint16(types.Dialect0300)},
 	)
 
@@ -153,11 +162,19 @@ func TestValidateNegotiateInfo_302_Success(t *testing.T) {
 	serverCaps := types.CapLeasing | types.CapLargeMTU
 	serverSecMode := types.NegSigningEnabled | types.NegSigningRequired
 
+	// Client's original values
+	clientGUID := [16]byte{0xAA, 0xBB, 0xCC, 0xDD}
+	clientCaps := types.Capabilities(0x3F)
+	clientSecMode := types.NegSigningEnabled
+
 	cs := &mockCryptoState{
 		dialect:            types.Dialect0302,
 		serverGUID:         serverGUID,
 		serverCapabilities: serverCaps,
 		serverSecurityMode: serverSecMode,
+		clientGUID:         clientGUID,
+		clientCapabilities: clientCaps,
+		clientSecurityMode: clientSecMode,
 		clientDialects:     []types.Dialect{types.Dialect0300, types.Dialect0302},
 	}
 	h.MinDialect = types.Dialect0202
@@ -170,9 +187,9 @@ func TestValidateNegotiateInfo_302_Success(t *testing.T) {
 	}
 
 	body := buildVNEGRequest(
-		uint32(serverCaps),
-		serverGUID,
-		uint16(serverSecMode),
+		uint32(clientCaps),
+		clientGUID,
+		uint16(clientSecMode),
 		[]uint16{uint16(types.Dialect0300), uint16(types.Dialect0302)},
 	)
 
@@ -190,11 +207,18 @@ func TestValidateNegotiateInfo_302_Success(t *testing.T) {
 
 func TestValidateNegotiateInfo_MismatchCapabilities_DropConnection(t *testing.T) {
 	h := NewHandler()
+	clientGUID := [16]byte{1, 2, 3, 4}
+	clientCaps := types.Capabilities(0x7F)
+	clientSecMode := types.NegSigningEnabled
+
 	cs := &mockCryptoState{
 		dialect:            types.Dialect0300,
-		serverGUID:         [16]byte{1, 2, 3, 4},
+		serverGUID:         [16]byte{0xAA, 0xBB, 0xCC, 0xDD},
 		serverCapabilities: types.CapLeasing | types.CapLargeMTU,
 		serverSecurityMode: types.NegSigningEnabled,
+		clientGUID:         clientGUID,
+		clientCapabilities: clientCaps,
+		clientSecurityMode: clientSecMode,
 		clientDialects:     []types.Dialect{types.Dialect0300},
 	}
 	h.MinDialect = types.Dialect0202
@@ -206,11 +230,11 @@ func TestValidateNegotiateInfo_MismatchCapabilities_DropConnection(t *testing.T)
 		ConnCryptoState: cs,
 	}
 
-	// Send wrong capabilities (0x0 instead of CapLeasing|CapLargeMTU)
+	// Send wrong capabilities (0x0 instead of stored client caps 0x7F)
 	body := buildVNEGRequest(
-		0x00000000, // WRONG capabilities
-		cs.serverGUID,
-		uint16(cs.serverSecurityMode),
+		0x00000000, // WRONG capabilities (doesn't match stored client 0x7F)
+		clientGUID,
+		uint16(clientSecMode),
 		[]uint16{uint16(types.Dialect0300)},
 	)
 
@@ -225,11 +249,18 @@ func TestValidateNegotiateInfo_MismatchCapabilities_DropConnection(t *testing.T)
 
 func TestValidateNegotiateInfo_MismatchGUID_DropConnection(t *testing.T) {
 	h := NewHandler()
+	clientGUID := [16]byte{1, 2, 3, 4}
+	clientCaps := types.Capabilities(0x7F)
+	clientSecMode := types.NegSigningEnabled
+
 	cs := &mockCryptoState{
 		dialect:            types.Dialect0300,
-		serverGUID:         [16]byte{1, 2, 3, 4},
+		serverGUID:         [16]byte{0xAA, 0xBB, 0xCC, 0xDD},
 		serverCapabilities: types.CapLeasing | types.CapLargeMTU,
 		serverSecurityMode: types.NegSigningEnabled,
+		clientGUID:         clientGUID,
+		clientCapabilities: clientCaps,
+		clientSecurityMode: clientSecMode,
 		clientDialects:     []types.Dialect{types.Dialect0300},
 	}
 	h.MinDialect = types.Dialect0202
@@ -243,9 +274,9 @@ func TestValidateNegotiateInfo_MismatchGUID_DropConnection(t *testing.T) {
 
 	wrongGUID := [16]byte{0xFF, 0xFE, 0xFD, 0xFC}
 	body := buildVNEGRequest(
-		uint32(cs.serverCapabilities),
-		wrongGUID, // WRONG GUID
-		uint16(cs.serverSecurityMode),
+		uint32(clientCaps),
+		wrongGUID, // WRONG GUID (doesn't match stored client GUID)
+		uint16(clientSecMode),
 		[]uint16{uint16(types.Dialect0300)},
 	)
 
@@ -260,11 +291,18 @@ func TestValidateNegotiateInfo_MismatchGUID_DropConnection(t *testing.T) {
 
 func TestValidateNegotiateInfo_MismatchSecurityMode_DropConnection(t *testing.T) {
 	h := NewHandler()
+	clientGUID := [16]byte{1, 2, 3, 4}
+	clientCaps := types.Capabilities(0x7F)
+	clientSecMode := types.NegSigningEnabled
+
 	cs := &mockCryptoState{
 		dialect:            types.Dialect0300,
-		serverGUID:         [16]byte{1, 2, 3, 4},
+		serverGUID:         [16]byte{0xAA, 0xBB, 0xCC, 0xDD},
 		serverCapabilities: types.CapLeasing | types.CapLargeMTU,
 		serverSecurityMode: types.NegSigningEnabled,
+		clientGUID:         clientGUID,
+		clientCapabilities: clientCaps,
+		clientSecurityMode: clientSecMode,
 		clientDialects:     []types.Dialect{types.Dialect0300},
 	}
 	h.MinDialect = types.Dialect0202
@@ -277,9 +315,9 @@ func TestValidateNegotiateInfo_MismatchSecurityMode_DropConnection(t *testing.T)
 	}
 
 	body := buildVNEGRequest(
-		uint32(cs.serverCapabilities),
-		cs.serverGUID,
-		0x0003, // WRONG security mode (signing enabled + required instead of just enabled)
+		uint32(clientCaps),
+		clientGUID,
+		0x0003, // WRONG security mode (doesn't match stored client sec mode)
 		[]uint16{uint16(types.Dialect0300)},
 	)
 
@@ -294,11 +332,18 @@ func TestValidateNegotiateInfo_MismatchSecurityMode_DropConnection(t *testing.T)
 
 func TestValidateNegotiateInfo_MismatchDialect_DropConnection(t *testing.T) {
 	h := NewHandler()
+	clientGUID := [16]byte{1, 2, 3, 4}
+	clientCaps := types.Capabilities(0x7F)
+	clientSecMode := types.NegSigningEnabled
+
 	cs := &mockCryptoState{
 		dialect:            types.Dialect0300,
-		serverGUID:         [16]byte{1, 2, 3, 4},
+		serverGUID:         [16]byte{0xAA, 0xBB, 0xCC, 0xDD},
 		serverCapabilities: types.CapLeasing | types.CapLargeMTU,
 		serverSecurityMode: types.NegSigningEnabled,
+		clientGUID:         clientGUID,
+		clientCapabilities: clientCaps,
+		clientSecurityMode: clientSecMode,
 		// Client originally offered 0300, but now sends only 0202
 		clientDialects: []types.Dialect{types.Dialect0300},
 	}
@@ -314,9 +359,9 @@ func TestValidateNegotiateInfo_MismatchDialect_DropConnection(t *testing.T) {
 	// Send only 0x0202 dialect -- server originally negotiated 0x0300
 	// Re-selection from {0x0202} would yield 0x0202, not 0x0300 -> mismatch
 	body := buildVNEGRequest(
-		uint32(cs.serverCapabilities),
-		cs.serverGUID,
-		uint16(cs.serverSecurityMode),
+		uint32(clientCaps),
+		clientGUID,
+		uint16(clientSecMode),
 		[]uint16{uint16(types.Dialect0202)}, // only 0202, would select 0202 != 0300
 	)
 
@@ -377,11 +422,20 @@ func TestValidateNegotiateInfo_ResponseContainsCryptoStateValues(t *testing.T) {
 	serverCaps := types.CapLeasing | types.CapLargeMTU | types.CapDirectoryLeasing
 	serverSecMode := types.NegSigningEnabled | types.NegSigningRequired
 
+	// Client's original values (different from server values)
+	clientGUID := [16]byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22,
+		0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00}
+	clientCaps := types.Capabilities(0x7F)
+	clientSecMode := types.NegSigningEnabled
+
 	cs := &mockCryptoState{
 		dialect:            types.Dialect0300,
 		serverGUID:         serverGUID,
 		serverCapabilities: serverCaps,
 		serverSecurityMode: serverSecMode,
+		clientGUID:         clientGUID,
+		clientCapabilities: clientCaps,
+		clientSecurityMode: clientSecMode,
 		clientDialects:     []types.Dialect{types.Dialect0202, types.Dialect0210, types.Dialect0300},
 	}
 	h.MinDialect = types.Dialect0202
@@ -393,10 +447,11 @@ func TestValidateNegotiateInfo_ResponseContainsCryptoStateValues(t *testing.T) {
 		ConnCryptoState: cs,
 	}
 
+	// VNEG request sends client's original values
 	body := buildVNEGRequest(
-		uint32(serverCaps),
-		serverGUID,
-		uint16(serverSecMode),
+		uint32(clientCaps),
+		clientGUID,
+		uint16(clientSecMode),
 		[]uint16{uint16(types.Dialect0202), uint16(types.Dialect0210), uint16(types.Dialect0300)},
 	)
 

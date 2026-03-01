@@ -128,6 +128,11 @@ func (h *Handler) handleValidateNegotiateInfo(ctx *SMBHandlerContext, body []byt
 
 // validateFromCryptoState validates VNEG parameters against the stored CryptoState.
 // This is the primary code path for SMB 3.0/3.0.2 connections.
+//
+// Per [MS-SMB2] 3.3.5.15.12, the VALIDATE_NEGOTIATE_INFO request contains the
+// CLIENT's original NEGOTIATE values (Capabilities, Guid, SecurityMode, Dialects).
+// The server validates these against what it REMEMBERS the client sent during
+// the initial NEGOTIATE exchange, then responds with its own server values.
 func (h *Handler) validateFromCryptoState(
 	ctx *SMBHandlerContext,
 	cs CryptoState,
@@ -137,34 +142,35 @@ func (h *Handler) validateFromCryptoState(
 	dialects []types.Dialect,
 	fileID [16]byte,
 ) (*HandlerResult, error) {
-	serverCaps := cs.GetServerCapabilities()
-	serverGUID := cs.GetServerGUID()
-	serverSecMode := cs.GetServerSecurityMode()
+	// Values to validate: compare request fields against stored client values
+	storedClientCaps := cs.GetClientCapabilities()
+	storedClientGUID := cs.GetClientGUID()
+	storedClientSecMode := cs.GetClientSecurityMode()
 
-	// Validate Capabilities
-	if uint32(serverCaps) != clientCapabilities {
+	// Validate Capabilities: request must match what client originally sent
+	if uint32(storedClientCaps) != clientCapabilities {
 		logger.Warn("IOCTL VALIDATE_NEGOTIATE_INFO: capabilities mismatch (possible downgrade)",
 			"client", ctx.ClientAddr,
-			"serverCaps", fmt.Sprintf("0x%08X", uint32(serverCaps)),
-			"clientCaps", fmt.Sprintf("0x%08X", clientCapabilities))
+			"storedCaps", fmt.Sprintf("0x%08X", uint32(storedClientCaps)),
+			"requestCaps", fmt.Sprintf("0x%08X", clientCapabilities))
 		return &HandlerResult{DropConnection: true}, nil
 	}
 
-	// Validate ServerGUID
-	if !bytes.Equal(serverGUID[:], clientGUID) {
+	// Validate ClientGUID: request must match what client originally sent
+	if !bytes.Equal(storedClientGUID[:], clientGUID) {
 		logger.Warn("IOCTL VALIDATE_NEGOTIATE_INFO: GUID mismatch (possible downgrade)",
 			"client", ctx.ClientAddr,
-			"serverGUID", fmt.Sprintf("%x", serverGUID),
-			"clientGUID", fmt.Sprintf("%x", clientGUID))
+			"storedGUID", fmt.Sprintf("%x", storedClientGUID),
+			"requestGUID", fmt.Sprintf("%x", clientGUID))
 		return &HandlerResult{DropConnection: true}, nil
 	}
 
-	// Validate SecurityMode
-	if uint16(serverSecMode) != clientSecurityMode {
+	// Validate SecurityMode: request must match what client originally sent
+	if uint16(storedClientSecMode) != clientSecurityMode {
 		logger.Warn("IOCTL VALIDATE_NEGOTIATE_INFO: security mode mismatch (possible downgrade)",
 			"client", ctx.ClientAddr,
-			"serverSecMode", fmt.Sprintf("0x%04X", uint16(serverSecMode)),
-			"clientSecMode", fmt.Sprintf("0x%04X", clientSecurityMode))
+			"storedSecMode", fmt.Sprintf("0x%04X", uint16(storedClientSecMode)),
+			"requestSecMode", fmt.Sprintf("0x%04X", clientSecurityMode))
 		return &HandlerResult{DropConnection: true}, nil
 	}
 
@@ -185,7 +191,12 @@ func (h *Handler) validateFromCryptoState(
 		return &HandlerResult{DropConnection: true}, nil
 	}
 
-	// All 4 fields match -- build success response using CryptoState values
+	// All 4 fields match -- build success response with SERVER values
+	// Per [MS-SMB2] 2.2.32.6, the response contains the server's values.
+	serverCaps := cs.GetServerCapabilities()
+	serverGUID := cs.GetServerGUID()
+	serverSecMode := cs.GetServerSecurityMode()
+
 	w := smbenc.NewWriter(24)
 	w.WriteUint32(uint32(serverCaps))
 	w.WriteBytes(serverGUID[:])
