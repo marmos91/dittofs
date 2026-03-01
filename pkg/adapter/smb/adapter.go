@@ -178,9 +178,15 @@ func (s *Adapter) applySMBSettings(rt *runtime.Runtime) {
 	// Dialect range: apply from settings to handler
 	if minD, ok := types.ParseSMBDialect(settings.MinDialect); ok {
 		s.handler.MinDialect = minD
+	} else if settings.MinDialect != "" {
+		logger.Warn("SMB adapter: unrecognized MinDialect, using default",
+			"value", settings.MinDialect)
 	}
 	if maxD, ok := types.ParseSMBDialect(settings.MaxDialect); ok {
 		s.handler.MaxDialect = maxD
+	} else if settings.MaxDialect != "" {
+		logger.Warn("SMB adapter: unrecognized MaxDialect, using default",
+			"value", settings.MaxDialect)
 	}
 
 	// Directory leasing: apply from settings
