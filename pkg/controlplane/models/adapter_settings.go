@@ -129,7 +129,7 @@ type SMBAdapterSettings struct {
 
 	// Dialect negotiation
 	MinDialect string `gorm:"default:SMB2.0;size:20" json:"min_dialect"`
-	MaxDialect string `gorm:"default:SMB3.1.1;size:20" json:"max_dialect"`
+	MaxDialect string `gorm:"default:SMB2.1;size:20" json:"max_dialect"`
 
 	// Timeouts (seconds)
 	SessionTimeout     int `gorm:"default:900" json:"session_timeout"`     // 15 minutes
@@ -208,7 +208,7 @@ func NewDefaultSMBSettings(adapterID string) *SMBAdapterSettings {
 		ID:                      uuid.New().String(),
 		AdapterID:               adapterID,
 		MinDialect:              "SMB2.0",
-		MaxDialect:              "SMB3.1.1",
+		MaxDialect:              "SMB2.1",
 		SessionTimeout:          900,
 		OplockBreakTimeout:      35,
 		MaxConnections:          0,
