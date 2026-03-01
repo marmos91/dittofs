@@ -191,36 +191,9 @@ func TestSigningKey_MessageTooShort(t *testing.T) {
 	}
 }
 
-func TestSessionSigningState(t *testing.T) {
-	state := NewSessionSigningState()
-
-	// Initially should not sign or verify
-	if state.ShouldSign() {
-		t.Error("ShouldSign() should be false initially")
-	}
-	if state.ShouldVerify() {
-		t.Error("ShouldVerify() should be false initially")
-	}
-
-	// Set session key
-	state.SetSessionKey(bytes.Repeat([]byte{0x44}, 16))
-
-	// Still should not sign (signing not enabled)
-	if state.ShouldSign() {
-		t.Error("ShouldSign() should be false when signing not enabled")
-	}
-
-	// Enable signing
-	state.SigningEnabled = true
-
-	// Now should sign and verify
-	if !state.ShouldSign() {
-		t.Error("ShouldSign() should be true when enabled with valid key")
-	}
-	if !state.ShouldVerify() {
-		t.Error("ShouldVerify() should be true when enabled with valid key")
-	}
-}
+// Note: SessionSigningState has been replaced by session.SessionCryptoState.
+// The equivalent tests are in internal/adapter/smb/session/crypto_state_test.go.
+// The old TestSessionSigningState test was removed during the Phase 34 migration.
 
 // TestKnownVector tests against a known HMAC-SHA256 vector
 func TestKnownVector(t *testing.T) {

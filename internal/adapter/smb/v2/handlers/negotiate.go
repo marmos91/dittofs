@@ -95,10 +95,11 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 	// Process negotiate contexts (3.1.1 only)
 	var responseContexts []types.NegotiateContext
 	var selectedCipher uint16
+	var selectedSigningAlg uint16
 	is311 := selectedDialect == types.Dialect0311
 
 	if is311 && negotiateContextCount > 0 && negotiateContextOffset > 0 {
-		responseContexts, selectedCipher = h.processNegotiateContexts(
+		responseContexts, selectedCipher, selectedSigningAlg = h.processNegotiateContexts(
 			body, negotiateContextOffset, negotiateContextCount)
 	}
 
@@ -191,6 +192,7 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 		if is311 {
 			ctx.ConnCryptoState.SetCipherId(selectedCipher)
 			ctx.ConnCryptoState.SetPreauthIntegrityHashId(types.HashAlgSHA512)
+			ctx.ConnCryptoState.SetSigningAlgorithmId(selectedSigningAlg)
 		}
 	}
 
@@ -278,12 +280,12 @@ func (h *Handler) buildCapabilities(dialect types.Dialect) types.Capabilities {
 // processNegotiateContexts parses client negotiate contexts and builds response contexts.
 // Only called for SMB 3.1.1 negotiation.
 //
-// Returns the response contexts and the selected cipher ID.
+// Returns the response contexts, the selected cipher ID, and the selected signing algorithm ID.
 func (h *Handler) processNegotiateContexts(
 	body []byte,
 	contextOffset uint32,
 	contextCount uint16,
-) ([]types.NegotiateContext, uint16) {
+) ([]types.NegotiateContext, uint16, uint16) {
 	// Context offset is relative to the start of the SMB2 header (64 bytes before body).
 	// Our body starts at header offset 64, so:
 	//   bodyOffset = contextOffset - 64
@@ -291,17 +293,19 @@ func (h *Handler) processNegotiateContexts(
 	if bodyOffset < 0 || bodyOffset >= len(body) {
 		logger.Debug("Negotiate context offset out of range",
 			"offset", contextOffset, "bodyLen", len(body))
-		return nil, 0
+		return nil, 0, 0
 	}
 
 	clientContexts, err := types.ParseNegotiateContextList(body[bodyOffset:], int(contextCount))
 	if err != nil {
 		logger.Debug("Failed to parse negotiate contexts", "error", err)
-		return nil, 0
+		return nil, 0, 0
 	}
 
 	var responseContexts []types.NegotiateContext
 	var selectedCipher uint16
+	var selectedSigningAlg uint16
+	signingCapsReceived := false
 
 	for _, nc := range clientContexts {
 		switch nc.ContextType {
@@ -355,6 +359,30 @@ func (h *Handler) processNegotiateContexts(
 				Data:        respEnc.Encode(),
 			})
 
+		case types.NegCtxSigningCaps:
+			sigCaps, err := types.DecodeSigningCaps(nc.Data)
+			if err != nil {
+				logger.Debug("Failed to decode signing caps", "error", err)
+				continue
+			}
+			signingCapsReceived = true
+
+			// Select best signing algorithm by intersecting client's list with server preference
+			selectedSigningAlg = h.selectSigningAlgorithm(sigCaps.SigningAlgorithms)
+
+			logger.Debug("SIGNING_CAPABILITIES negotiation",
+				"clientAlgorithms", sigCaps.SigningAlgorithms,
+				"selectedAlgorithm", selectedSigningAlg)
+
+			// Build response with only the selected algorithm
+			respSigning := types.SigningCaps{
+				SigningAlgorithms: []uint16{selectedSigningAlg},
+			}
+			responseContexts = append(responseContexts, types.NegotiateContext{
+				ContextType: types.NegCtxSigningCaps,
+				Data:        respSigning.Encode(),
+			})
+
 		case types.NegCtxNetnameContextID:
 			netname, err := types.DecodeNetnameContext(nc.Data)
 			if err != nil {
@@ -370,7 +398,40 @@ func (h *Handler) processNegotiateContexts(
 		}
 	}
 
-	return responseContexts, selectedCipher
+	// Per MS-SMB2: when a 3.1.1 client omits SIGNING_CAPABILITIES, default to AES-128-CMAC
+	if !signingCapsReceived {
+		selectedSigningAlg = signingAlgAESCMAC
+	}
+
+	return responseContexts, selectedCipher, selectedSigningAlg
+}
+
+// Signing algorithm ID constants (local to avoid importing signing package).
+const (
+	signingAlgHMACSHA256 uint16 = 0x0000
+	signingAlgAESCMAC    uint16 = 0x0001
+	signingAlgAESGMAC    uint16 = 0x0002
+)
+
+// defaultSigningAlgorithmPreference is the server's default signing algorithm
+// preference order, used when SigningAlgorithmPreference is not configured.
+var defaultSigningAlgorithmPreference = []uint16{signingAlgAESGMAC, signingAlgAESCMAC, signingAlgHMACSHA256}
+
+// selectSigningAlgorithm selects the server's preferred signing algorithm from
+// the client's offered list. Returns AES-128-CMAC if no match is found.
+func (h *Handler) selectSigningAlgorithm(clientAlgorithms []uint16) uint16 {
+	preference := h.SigningAlgorithmPreference
+	if len(preference) == 0 {
+		preference = defaultSigningAlgorithmPreference
+	}
+
+	for _, preferred := range preference {
+		if slices.Contains(clientAlgorithms, preferred) {
+			return preferred
+		}
+	}
+	// Default to AES-128-CMAC per MS-SMB2 spec
+	return signingAlgAESCMAC
 }
 
 // selectCipher selects the server's preferred cipher from the client's offered list.

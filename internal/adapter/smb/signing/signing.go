@@ -143,47 +143,5 @@ func DefaultSigningConfig() SigningConfig {
 	}
 }
 
-// SessionSigningState tracks signing state for a session.
-//
-// The Signer field holds a polymorphic signer (HMAC, CMAC, or GMAC) that
-// is created during session setup. For 2.x sessions, SetSessionKey creates
-// an HMACSigner. For 3.x sessions, the Signer is set directly after KDF
-// key derivation.
-type SessionSigningState struct {
-	// Signer is the polymorphic signing implementation for this session.
-	// For 2.x: HMACSigner, for 3.x: CMACSigner or GMACSigner.
-	Signer Signer
-
-	// SigningKey is kept for backward compatibility with code that checks
-	// sess.Signing.SigningKey != nil (e.g., framing.go debug logging).
-	// TODO(plan-02): Remove when SessionCryptoState replaces SessionSigningState.
-	SigningKey *SigningKey
-
-	// SigningRequired indicates if signing is mandatory for this session.
-	SigningRequired bool
-
-	// SigningEnabled indicates if signing is active for this session.
-	SigningEnabled bool
-}
-
-// NewSessionSigningState creates a new signing state for a session.
-func NewSessionSigningState() *SessionSigningState {
-	return &SessionSigningState{}
-}
-
-// SetSessionKey sets the signing key from the session key.
-// Creates an HMACSigner (for 2.x sessions) and keeps the legacy SigningKey.
-func (s *SessionSigningState) SetSessionKey(sessionKey []byte) {
-	s.SigningKey = NewSigningKey(sessionKey)
-	s.Signer = NewHMACSigner(sessionKey)
-}
-
-// ShouldSign returns true if outgoing messages should be signed.
-func (s *SessionSigningState) ShouldSign() bool {
-	return s.SigningEnabled && s.Signer != nil
-}
-
-// ShouldVerify returns true if incoming messages should have signatures verified.
-func (s *SessionSigningState) ShouldVerify() bool {
-	return s.SigningEnabled && s.Signer != nil
-}
+// Note: SessionSigningState has been replaced by session.SessionCryptoState.
+// See internal/adapter/smb/session/crypto_state.go for the new abstraction.

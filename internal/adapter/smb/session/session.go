@@ -43,6 +43,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
+	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
@@ -72,9 +73,10 @@ type Session struct {
 	// for permission checking and share access control.
 	User *models.User
 
-	// Signing state for message integrity
-	// This tracks whether signing is enabled and holds the signing key.
-	Signing *signing.SessionSigningState
+	// CryptoState holds per-session cryptographic state (signing keys, signer,
+	// encryption/decryption keys). Replaces the old Signing field.
+	// For 2.x: HMAC-SHA256 signer. For 3.x: CMAC/GMAC signer + KDF-derived keys.
+	CryptoState *SessionCryptoState
 
 	// Credit tracking
 	credits Credits
@@ -108,14 +110,14 @@ type Credits struct {
 // Called internally by SessionManager.CreateSession.
 func NewSession(sessionID uint64, clientAddr string, isGuest bool, username, domain string) *Session {
 	s := &Session{
-		SessionID:  sessionID,
-		IsGuest:    isGuest,
-		IsNull:     username == "" && !isGuest,
-		CreatedAt:  time.Now(),
-		ClientAddr: clientAddr,
-		Username:   username,
-		Domain:     domain,
-		Signing:    signing.NewSessionSigningState(),
+		SessionID:   sessionID,
+		IsGuest:     isGuest,
+		IsNull:      username == "" && !isGuest,
+		CreatedAt:   time.Now(),
+		ClientAddr:  clientAddr,
+		Username:    username,
+		Domain:      domain,
+		CryptoState: &SessionCryptoState{},
 	}
 	s.credits.LastActivity.Store(time.Now().Unix())
 	return s
@@ -125,15 +127,15 @@ func NewSession(sessionID uint64, clientAddr string, isGuest bool, username, dom
 // Use this when the user has been authenticated against the UserStore.
 func NewSessionWithUser(sessionID uint64, clientAddr string, user *models.User, domain string) *Session {
 	s := &Session{
-		SessionID:  sessionID,
-		IsGuest:    false,
-		IsNull:     false,
-		CreatedAt:  time.Now(),
-		ClientAddr: clientAddr,
-		Username:   user.Username,
-		Domain:     domain,
-		User:       user,
-		Signing:    signing.NewSessionSigningState(),
+		SessionID:   sessionID,
+		IsGuest:     false,
+		IsNull:      false,
+		CreatedAt:   time.Now(),
+		ClientAddr:  clientAddr,
+		Username:    user.Username,
+		Domain:      domain,
+		User:        user,
+		CryptoState: &SessionCryptoState{},
 	}
 	s.credits.LastActivity.Store(time.Now().Unix())
 	return s
@@ -231,46 +233,50 @@ type SessionStats struct {
 // =============================================================================
 
 // SetSigningKey sets the signing key from the session key.
-// This should be called after successful authentication when the session key
-// is derived from the NTLM authentication exchange.
+// This creates a CryptoState with an HMACSigner for SMB 2.x sessions.
+// For 3.x sessions, use SetCryptoState with DeriveAllKeys instead.
 func (s *Session) SetSigningKey(sessionKey []byte) {
-	if s.Signing != nil {
-		s.Signing.SetSessionKey(sessionKey)
-	}
+	s.CryptoState = DeriveAllKeys(sessionKey, types.Dialect0202, [64]byte{}, 0, signing.SigningAlgHMACSHA256)
 }
 
 // EnableSigning enables message signing for this session.
 // After calling this, all messages should be signed/verified.
 func (s *Session) EnableSigning(required bool) {
-	if s.Signing != nil {
-		s.Signing.SigningEnabled = true
-		s.Signing.SigningRequired = required
+	if s.CryptoState != nil {
+		s.CryptoState.SigningEnabled = true
+		s.CryptoState.SigningRequired = required
 	}
+}
+
+// SetCryptoState sets the session's cryptographic state directly.
+// Used by session setup when KDF-derived keys are available (3.x sessions).
+func (s *Session) SetCryptoState(cs *SessionCryptoState) {
+	s.CryptoState = cs
 }
 
 // ShouldSign returns true if outgoing messages should be signed.
 func (s *Session) ShouldSign() bool {
-	return s.Signing != nil && s.Signing.ShouldSign()
+	return s.CryptoState != nil && s.CryptoState.ShouldSign()
 }
 
 // ShouldVerify returns true if incoming messages should have signatures verified.
 func (s *Session) ShouldVerify() bool {
-	return s.Signing != nil && s.Signing.ShouldVerify()
+	return s.CryptoState != nil && s.CryptoState.ShouldVerify()
 }
 
 // SignMessage signs an SMB2 message in place using the session's signer.
 // This should be called before sending a message if signing is enabled.
 func (s *Session) SignMessage(message []byte) {
-	if s.Signing != nil && s.Signing.ShouldSign() && s.Signing.Signer != nil {
-		signing.SignMessage(s.Signing.Signer, message)
+	if s.CryptoState != nil && s.CryptoState.ShouldSign() {
+		signing.SignMessage(s.CryptoState.Signer, message)
 	}
 }
 
 // VerifyMessage verifies the signature of an SMB2 message.
 // Returns true if the signature is valid or if signing is not enabled.
 func (s *Session) VerifyMessage(message []byte) bool {
-	if s.Signing == nil || !s.Signing.ShouldVerify() || s.Signing.Signer == nil {
+	if s.CryptoState == nil || !s.CryptoState.ShouldVerify() || s.CryptoState.Signer == nil {
 		return true // No verification needed
 	}
-	return s.Signing.Signer.Verify(message)
+	return s.CryptoState.Signer.Verify(message)
 }

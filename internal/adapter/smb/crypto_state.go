@@ -122,6 +122,27 @@ func (cs *ConnectionCryptoState) SetCipherId(id uint16) {
 	cs.mu.Unlock()
 }
 
+// GetCipherId returns the selected encryption cipher.
+func (cs *ConnectionCryptoState) GetCipherId() uint16 {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	return cs.CipherId
+}
+
+// SetSigningAlgorithmId records the selected signing algorithm.
+func (cs *ConnectionCryptoState) SetSigningAlgorithmId(id uint16) {
+	cs.mu.Lock()
+	cs.SigningAlgorithmId = id
+	cs.mu.Unlock()
+}
+
+// GetSigningAlgorithmId returns the selected signing algorithm.
+func (cs *ConnectionCryptoState) GetSigningAlgorithmId() uint16 {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	return cs.SigningAlgorithmId
+}
+
 // SetPreauthIntegrityHashId records the selected hash algorithm.
 func (cs *ConnectionCryptoState) SetPreauthIntegrityHashId(id uint16) {
 	cs.mu.Lock()
