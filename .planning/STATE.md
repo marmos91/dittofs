@@ -3,10 +3,10 @@ gsd_state_version: 1.0
 milestone: v3.8
 milestone_name: SMB3 Protocol Upgrade
 status: unknown
-last_updated: "2026-03-01T20:37:41.715Z"
+last_updated: "2026-03-01T21:16:40.144Z"
 progress:
   total_phases: 37
-  completed_phases: 35
+  completed_phases: 36
   total_plans: 122
   completed_plans: 122
 ---
