@@ -5,9 +5,9 @@
 package handlers
 
 import (
-	"encoding/binary"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
 
@@ -80,10 +80,15 @@ func DecodeLogoffRequest(body []byte) (*LogoffRequest, error) {
 		return nil, fmt.Errorf("LOGOFF request too short: %d bytes", len(body))
 	}
 
-	return &LogoffRequest{
-		StructureSize: binary.LittleEndian.Uint16(body[0:2]),
-		Reserved:      binary.LittleEndian.Uint16(body[2:4]),
-	}, nil
+	r := smbenc.NewReader(body)
+	req := &LogoffRequest{
+		StructureSize: r.ReadUint16(),
+		Reserved:      r.ReadUint16(),
+	}
+	if r.Err() != nil {
+		return nil, fmt.Errorf("LOGOFF decode error: %w", r.Err())
+	}
+	return req, nil
 }
 
 // Encode serializes the LogoffResponse into SMB2 wire format [MS-SMB2] 2.2.8.
@@ -92,11 +97,13 @@ func DecodeLogoffRequest(body []byte) (*LogoffRequest, error) {
 //   - []byte: 4-byte response body
 //   - error: Always nil (included for interface consistency)
 func (resp *LogoffResponse) Encode() ([]byte, error) {
-	buf := make([]byte, 4)
-	binary.LittleEndian.PutUint16(buf[0:2], 4) // StructureSize
-	binary.LittleEndian.PutUint16(buf[2:4], 0) // Reserved
-
-	return buf, nil
+	w := smbenc.NewWriter(4)
+	w.WriteUint16(4) // StructureSize
+	w.WriteUint16(0) // Reserved
+	if w.Err() != nil {
+		return nil, w.Err()
+	}
+	return w.Bytes(), nil
 }
 
 // ============================================================================

@@ -9,8 +9,8 @@ package handlers
 
 import (
 	"context"
-	"encoding/binary"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
@@ -209,32 +209,24 @@ func encodeSingleCreateContext(ctx CreateContext, hasNext bool) []byte {
 	// Total size (before padding)
 	totalSize := 16 + len(namePadded) + len(data)
 
-	// Build buffer
-	buf := make([]byte, totalSize)
-
 	// Next offset (0 if last, otherwise padded size)
 	var nextOffset uint32
 	if hasNext {
 		nextOffset = uint32(padSizeTo8(totalSize))
 	}
-	binary.LittleEndian.PutUint32(buf[0:4], nextOffset)
 
-	// Name offset and length
-	binary.LittleEndian.PutUint16(buf[4:6], nameOffset)
-	binary.LittleEndian.PutUint16(buf[6:8], uint16(len(name)))
+	// Build buffer using smbenc Writer
+	w := smbenc.NewWriter(totalSize)
+	w.WriteUint32(nextOffset)        // Next
+	w.WriteUint16(nameOffset)        // NameOffset
+	w.WriteUint16(uint16(len(name))) // NameLength
+	w.WriteUint16(0)                 // Reserved
+	w.WriteUint16(dataOffset)        // DataOffset
+	w.WriteUint32(uint32(len(data))) // DataLength
+	w.WriteBytes(namePadded)         // Name (padded)
+	w.WriteBytes(data)               // Data
 
-	// Reserved
-	binary.LittleEndian.PutUint16(buf[8:10], 0)
-
-	// Data offset and length
-	binary.LittleEndian.PutUint16(buf[10:12], dataOffset)
-	binary.LittleEndian.PutUint32(buf[12:16], uint32(len(data)))
-
-	// Name (padded)
-	copy(buf[16:16+len(namePadded)], namePadded)
-
-	// Data
-	copy(buf[16+len(namePadded):], data)
+	buf := w.Bytes()
 
 	// Pad total context to 8-byte boundary if not last
 	if hasNext {

@@ -2,10 +2,10 @@ package handlers
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -97,16 +97,20 @@ func DecodeLockRequest(body []byte) (*LockRequest, error) {
 		return nil, fmt.Errorf("lock request too small: %d bytes", len(body))
 	}
 
-	structSize := binary.LittleEndian.Uint16(body[0:2])
+	r := smbenc.NewReader(body)
+	structSize := r.ReadUint16()
 	if structSize != 48 {
 		return nil, fmt.Errorf("invalid lock structure size: %d (expected 48)", structSize)
 	}
 
 	req := &LockRequest{
-		LockCount:    binary.LittleEndian.Uint16(body[2:4]),
-		LockSequence: binary.LittleEndian.Uint32(body[4:8]),
+		LockCount:    r.ReadUint16(),
+		LockSequence: r.ReadUint32(),
 	}
-	copy(req.FileID[:], body[8:24])
+	copy(req.FileID[:], r.ReadBytes(16))
+	if r.Err() != nil {
+		return nil, fmt.Errorf("lock decode error: %w", r.Err())
+	}
 
 	// Validate and decode lock elements
 	if req.LockCount == 0 {
@@ -121,12 +125,15 @@ func DecodeLockRequest(body []byte) (*LockRequest, error) {
 
 	req.Locks = make([]LockElement, req.LockCount)
 	for i := 0; i < int(req.LockCount); i++ {
-		offset := 24 + (i * 24)
 		req.Locks[i] = LockElement{
-			Offset: binary.LittleEndian.Uint64(body[offset : offset+8]),
-			Length: binary.LittleEndian.Uint64(body[offset+8 : offset+16]),
-			Flags:  binary.LittleEndian.Uint32(body[offset+16 : offset+20]),
+			Offset: r.ReadUint64(),
+			Length: r.ReadUint64(),
+			Flags:  r.ReadUint32(),
 		}
+		r.Skip(4) // Reserved
+	}
+	if r.Err() != nil {
+		return nil, fmt.Errorf("lock element decode error: %w", r.Err())
 	}
 
 	return req, nil
@@ -134,10 +141,13 @@ func DecodeLockRequest(body []byte) (*LockRequest, error) {
 
 // Encode serializes the LockResponse to binary data.
 func (resp *LockResponse) Encode() ([]byte, error) {
-	buf := make([]byte, 4)
-	binary.LittleEndian.PutUint16(buf[0:2], 4) // StructureSize
-	binary.LittleEndian.PutUint16(buf[2:4], 0) // Reserved
-	return buf, nil
+	w := smbenc.NewWriter(4)
+	w.WriteUint16(4) // StructureSize
+	w.WriteUint16(0) // Reserved
+	if w.Err() != nil {
+		return nil, w.Err()
+	}
+	return w.Bytes(), nil
 }
 
 // ============================================================================

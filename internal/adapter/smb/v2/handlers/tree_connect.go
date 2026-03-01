@@ -1,12 +1,12 @@
 package handlers
 
 import (
-	"encoding/binary"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -40,10 +40,13 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 	}
 
 	// Parse request
-	// structureSize := binary.LittleEndian.Uint16(body[0:2]) // Always 9
-	// flags := binary.LittleEndian.Uint16(body[2:4]) // Reserved for SMB 3.x
-	pathOffset := binary.LittleEndian.Uint16(body[4:6])
-	pathLength := binary.LittleEndian.Uint16(body[6:8])
+	r := smbenc.NewReader(body)
+	r.Skip(4) // StructureSize(2) + Flags(2)
+	pathOffset := r.ReadUint16()
+	pathLength := r.ReadUint16()
+	if r.Err() != nil {
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
 
 	// Path offset is relative to the start of the SMB2 header (64 bytes)
 	// Since we receive body after the header, subtract 64 to get body offset
@@ -131,15 +134,15 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 	maximalAccess := calculateMaximalAccess(permission)
 
 	// Build response (16 bytes)
-	resp := make([]byte, 16)
-	binary.LittleEndian.PutUint16(resp[0:2], 16)              // StructureSize
-	resp[2] = types.SMB2ShareTypeDisk                         // ShareType
-	resp[3] = 0                                               // Reserved
-	binary.LittleEndian.PutUint32(resp[4:8], 0)               // ShareFlags
-	binary.LittleEndian.PutUint32(resp[8:12], 0)              // Capabilities
-	binary.LittleEndian.PutUint32(resp[12:16], maximalAccess) // MaximalAccess
+	w := smbenc.NewWriter(16)
+	w.WriteUint16(16)                     // StructureSize
+	w.WriteUint8(types.SMB2ShareTypeDisk) // ShareType
+	w.WriteUint8(0)                       // Reserved
+	w.WriteUint32(0)                      // ShareFlags
+	w.WriteUint32(0)                      // Capabilities
+	w.WriteUint32(maximalAccess)          // MaximalAccess
 
-	return NewResult(types.StatusSuccess, resp), nil
+	return NewResult(types.StatusSuccess, w.Bytes()), nil
 }
 
 // calculateMaximalAccess returns the SMB2 MaximalAccess mask based on share permission.
@@ -223,15 +226,15 @@ func (h *Handler) handleIPCShare(ctx *SMBHandlerContext) (*HandlerResult, error)
 
 	// Build response with PIPE share type
 	// [MS-SMB2] Section 2.2.10 TREE_CONNECT Response
-	resp := make([]byte, 16)
-	binary.LittleEndian.PutUint16(resp[0:2], 16)                 // StructureSize
-	resp[2] = types.SMB2ShareTypePipe                            // ShareType: Named pipe
-	resp[3] = 0                                                  // Reserved
-	binary.LittleEndian.PutUint32(resp[4:8], 0)                  // ShareFlags: none
-	binary.LittleEndian.PutUint32(resp[8:12], 0)                 // Capabilities: none
-	binary.LittleEndian.PutUint32(resp[12:16], ipcMaximalAccess) // MaximalAccess: basic read/write for IPC
+	w := smbenc.NewWriter(16)
+	w.WriteUint16(16)                     // StructureSize
+	w.WriteUint8(types.SMB2ShareTypePipe) // ShareType: Named pipe
+	w.WriteUint8(0)                       // Reserved
+	w.WriteUint32(0)                      // ShareFlags: none
+	w.WriteUint32(0)                      // Capabilities: none
+	w.WriteUint32(ipcMaximalAccess)       // MaximalAccess: basic read/write for IPC
 
-	return NewResult(types.StatusSuccess, resp), nil
+	return NewResult(types.StatusSuccess, w.Bytes()), nil
 }
 
 // parseSharePath parses \\server\share to /share or just share

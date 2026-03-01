@@ -1,10 +1,10 @@
 package handlers
 
 import (
-	"encoding/binary"
 	"fmt"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/mfsymlink"
@@ -83,11 +83,16 @@ func DecodeCloseRequest(body []byte) (*CloseRequest, error) {
 		return nil, fmt.Errorf("CLOSE request too short: %d bytes", len(body))
 	}
 
+	r := smbenc.NewReader(body)
+	r.Skip(2) // StructureSize
 	req := &CloseRequest{
-		Flags: binary.LittleEndian.Uint16(body[2:4]),
+		Flags: r.ReadUint16(),
 	}
-	copy(req.FileID[:], body[8:24])
-
+	r.Skip(4) // Reserved
+	copy(req.FileID[:], r.ReadBytes(16))
+	if r.Err() != nil {
+		return nil, fmt.Errorf("CLOSE decode error: %w", r.Err())
+	}
 	return req, nil
 }
 
@@ -95,19 +100,21 @@ func DecodeCloseRequest(body []byte) (*CloseRequest, error) {
 // Returns a 60-byte response body with echoed flags and optionally file
 // attributes (if POSTQUERY_ATTRIB was requested).
 func (resp *CloseResponse) Encode() ([]byte, error) {
-	buf := make([]byte, 60)
-	binary.LittleEndian.PutUint16(buf[0:2], 60)                                          // StructureSize
-	binary.LittleEndian.PutUint16(buf[2:4], resp.Flags)                                  // Flags
-	binary.LittleEndian.PutUint32(buf[4:8], 0)                                           // Reserved
-	binary.LittleEndian.PutUint64(buf[8:16], types.TimeToFiletime(resp.CreationTime))    // CreationTime
-	binary.LittleEndian.PutUint64(buf[16:24], types.TimeToFiletime(resp.LastAccessTime)) // LastAccessTime
-	binary.LittleEndian.PutUint64(buf[24:32], types.TimeToFiletime(resp.LastWriteTime))  // LastWriteTime
-	binary.LittleEndian.PutUint64(buf[32:40], types.TimeToFiletime(resp.ChangeTime))     // ChangeTime
-	binary.LittleEndian.PutUint64(buf[40:48], resp.AllocationSize)                       // AllocationSize
-	binary.LittleEndian.PutUint64(buf[48:56], resp.EndOfFile)                            // EndOfFile
-	binary.LittleEndian.PutUint32(buf[56:60], uint32(resp.FileAttributes))               // FileAttributes
-
-	return buf, nil
+	w := smbenc.NewWriter(60)
+	w.WriteUint16(60)                                        // StructureSize
+	w.WriteUint16(resp.Flags)                                // Flags
+	w.WriteUint32(0)                                         // Reserved
+	w.WriteUint64(types.TimeToFiletime(resp.CreationTime))   // CreationTime
+	w.WriteUint64(types.TimeToFiletime(resp.LastAccessTime)) // LastAccessTime
+	w.WriteUint64(types.TimeToFiletime(resp.LastWriteTime))  // LastWriteTime
+	w.WriteUint64(types.TimeToFiletime(resp.ChangeTime))     // ChangeTime
+	w.WriteUint64(resp.AllocationSize)                       // AllocationSize
+	w.WriteUint64(resp.EndOfFile)                            // EndOfFile
+	w.WriteUint32(uint32(resp.FileAttributes))               // FileAttributes
+	if w.Err() != nil {
+		return nil, w.Err()
+	}
+	return w.Bytes(), nil
 }
 
 // ============================================================================

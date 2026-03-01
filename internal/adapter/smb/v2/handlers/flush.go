@@ -1,9 +1,9 @@
 package handlers
 
 import (
-	"encoding/binary"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 )
@@ -92,9 +92,13 @@ func DecodeFlushRequest(body []byte) (*FlushRequest, error) {
 		return nil, fmt.Errorf("FLUSH request too short: %d bytes", len(body))
 	}
 
+	r := smbenc.NewReader(body)
+	r.Skip(8) // StructureSize(2) + Reserved1(2) + Reserved2(4)
 	req := &FlushRequest{}
-	copy(req.FileID[:], body[8:24])
-
+	copy(req.FileID[:], r.ReadBytes(16))
+	if r.Err() != nil {
+		return nil, fmt.Errorf("FLUSH decode error: %w", r.Err())
+	}
 	return req, nil
 }
 
@@ -120,10 +124,13 @@ func DecodeFlushRequest(body []byte) (*FlushRequest, error) {
 //	data, _ := resp.Encode()
 //	// Send data as response body after SMB2 header
 func (resp *FlushResponse) Encode() ([]byte, error) {
-	buf := make([]byte, 4)
-	binary.LittleEndian.PutUint16(buf[0:2], 4) // StructureSize
-	binary.LittleEndian.PutUint16(buf[2:4], 0) // Reserved
-	return buf, nil
+	w := smbenc.NewWriter(4)
+	w.WriteUint16(4) // StructureSize
+	w.WriteUint16(0) // Reserved
+	if w.Err() != nil {
+		return nil, w.Err()
+	}
+	return w.Bytes(), nil
 }
 
 // ============================================================================

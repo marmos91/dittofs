@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/binary"
 	"fmt"
 	"os"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"github.com/jcmturner/gokrb5/v8/service"
 	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 )
@@ -66,28 +66,24 @@ func parseSessionSetupRequest(body []byte) (*SessionSetupRequest, error) {
 			sessionSetupMinSize, len(body))
 	}
 
+	r := smbenc.NewReader(body)
 	req := &SessionSetupRequest{
-		StructureSize: binary.LittleEndian.Uint16(
-			body[sessionSetupStructureSizeOffset : sessionSetupStructureSizeOffset+2]),
-		Flags:        body[sessionSetupFlagsOffset],
-		SecurityMode: body[sessionSetupSecurityModeOffset],
-		Capabilities: binary.LittleEndian.Uint32(
-			body[sessionSetupCapabilitiesOffset : sessionSetupCapabilitiesOffset+4]),
-		Channel: binary.LittleEndian.Uint32(
-			body[sessionSetupChannelOffset : sessionSetupChannelOffset+4]),
-		PreviousSessionID: binary.LittleEndian.Uint64(
-			body[sessionSetupPreviousSessionIDOffset : sessionSetupPreviousSessionIDOffset+8]),
+		StructureSize: r.ReadUint16(), // offset 0
+		Flags:         r.ReadUint8(),  // offset 2
+		SecurityMode:  r.ReadUint8(),  // offset 3
+		Capabilities:  r.ReadUint32(), // offset 4
+		Channel:       r.ReadUint32(), // offset 8
+	}
+	secBufferOffset := r.ReadUint16()      // offset 12
+	secBufferLength := r.ReadUint16()      // offset 14
+	req.PreviousSessionID = r.ReadUint64() // offset 16
+	if r.Err() != nil {
+		return nil, fmt.Errorf("session setup decode error: %w", r.Err())
 	}
 
 	// Extract security buffer
 	// SecurityBufferOffset is relative to the beginning of the SMB2 header
 	// The body we receive starts after the header, so we adjust
-	secBufferOffset := binary.LittleEndian.Uint16(
-		body[sessionSetupSecBufferOffsetOffset : sessionSetupSecBufferOffsetOffset+2])
-	secBufferLength := binary.LittleEndian.Uint16(
-		body[sessionSetupSecBufferLengthOffset : sessionSetupSecBufferLengthOffset+2])
-
-	// Calculate actual offset in body (subtract header size)
 	bufferStart := int(secBufferOffset) - smb2HeaderSize
 	if bufferStart < sessionSetupFixedSize {
 		bufferStart = sessionSetupFixedSize // Buffer starts after fixed fields
@@ -711,34 +707,16 @@ func (h *Handler) buildSessionSetupResponse(
 		securityBufferOffset = smb2HeaderSize + sessionSetupRespFixedSize
 	}
 
-	// Allocate response buffer
-	respLen := sessionSetupRespFixedSize + len(securityBuffer)
-	resp := make([]byte, respLen)
-
-	// Write fixed fields
-	binary.LittleEndian.PutUint16(
-		resp[sessionSetupRespStructureSizeOffset:sessionSetupRespStructureSizeOffset+2],
-		sessionSetupRespStructureSize,
-	)
-	binary.LittleEndian.PutUint16(
-		resp[sessionSetupRespSessionFlagsOffset:sessionSetupRespSessionFlagsOffset+2],
-		sessionFlags,
-	)
-	binary.LittleEndian.PutUint16(
-		resp[sessionSetupRespSecBufferOffsetOffset:sessionSetupRespSecBufferOffsetOffset+2],
-		securityBufferOffset,
-	)
-	binary.LittleEndian.PutUint16(
-		resp[sessionSetupRespSecBufferLengthOffset:sessionSetupRespSecBufferLengthOffset+2],
-		uint16(len(securityBuffer)),
-	)
-
-	// Copy security buffer
+	w := smbenc.NewWriter(sessionSetupRespFixedSize + len(securityBuffer))
+	w.WriteUint16(sessionSetupRespStructureSize) // StructureSize
+	w.WriteUint16(sessionFlags)                  // SessionFlags
+	w.WriteUint16(securityBufferOffset)          // SecurityBufferOffset
+	w.WriteUint16(uint16(len(securityBuffer)))   // SecurityBufferLength
 	if len(securityBuffer) > 0 {
-		copy(resp[sessionSetupRespFixedSize:], securityBuffer)
+		w.WriteBytes(securityBuffer)
 	}
 
-	return NewResult(status, resp)
+	return NewResult(status, w.Bytes())
 }
 
 // buildAuthenticatedResponse builds a SESSION_SETUP success response for an

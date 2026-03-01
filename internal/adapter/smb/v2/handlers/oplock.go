@@ -9,13 +9,13 @@ package handlers
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"path"
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
@@ -418,36 +418,43 @@ func DecodeOplockBreakRequest(body []byte) (*OplockBreakRequest, error) {
 		return nil, fmt.Errorf("OPLOCK_BREAK request too short: %d bytes", len(body))
 	}
 
-	structSize := binary.LittleEndian.Uint16(body[0:2])
+	r := smbenc.NewReader(body)
+	structSize := r.ReadUint16()
 	if structSize != 24 {
 		return nil, fmt.Errorf("invalid OPLOCK_BREAK structure size: %d", structSize)
 	}
 
-	oplockLevel := body[2]
+	oplockLevel := r.ReadUint8()
 	// Per MS-SMB2 2.2.24.1, valid acknowledgment levels are OplockLevelNone (0x00)
 	// and OplockLevelII (0x01). Clients cannot acknowledge with Exclusive/Batch.
 	if oplockLevel != OplockLevelNone && oplockLevel != OplockLevelII {
 		return nil, fmt.Errorf("invalid OPLOCK_BREAK acknowledgment level: 0x%02X", oplockLevel)
 	}
 
+	r.Skip(5) // Reserved(1) + Reserved2(4)
+
 	req := &OplockBreakRequest{
 		OplockLevel: oplockLevel,
 	}
-	copy(req.FileID[:], body[8:24])
+	fileIDBytes := r.ReadBytes(16)
+	if r.Err() != nil {
+		return nil, fmt.Errorf("OPLOCK_BREAK parse error: %w", r.Err())
+	}
+	copy(req.FileID[:], fileIDBytes)
 
 	return req, nil
 }
 
 // Encode serializes the OplockBreakResponse to wire format.
 func (resp *OplockBreakResponse) Encode() ([]byte, error) {
-	buf := make([]byte, 24)
-	binary.LittleEndian.PutUint16(buf[0:2], 24) // StructureSize
-	buf[2] = resp.OplockLevel                   // OplockLevel
-	buf[3] = 0                                  // Reserved
-	binary.LittleEndian.PutUint32(buf[4:8], 0)  // Reserved2
-	copy(buf[8:24], resp.FileID[:])             // FileId
+	w := smbenc.NewWriter(24)
+	w.WriteUint16(24)              // StructureSize
+	w.WriteUint8(resp.OplockLevel) // OplockLevel
+	w.WriteUint8(0)                // Reserved
+	w.WriteUint32(0)               // Reserved2
+	w.WriteBytes(resp.FileID[:])   // FileId
 
-	return buf, nil
+	return w.Bytes(), w.Err()
 }
 
 // ============================================================================
@@ -473,14 +480,14 @@ type OplockBreakNotification struct {
 
 // Encode serializes the OplockBreakNotification to wire format.
 func (n *OplockBreakNotification) Encode() ([]byte, error) {
-	buf := make([]byte, 24)
-	binary.LittleEndian.PutUint16(buf[0:2], 24) // StructureSize
-	buf[2] = n.OplockLevel                      // OplockLevel (break to level)
-	buf[3] = 0                                  // Reserved
-	binary.LittleEndian.PutUint32(buf[4:8], 0)  // Reserved2
-	copy(buf[8:24], n.FileID[:])                // FileId
+	w := smbenc.NewWriter(24)
+	w.WriteUint16(24)           // StructureSize
+	w.WriteUint8(n.OplockLevel) // OplockLevel (break to level)
+	w.WriteUint8(0)             // Reserved
+	w.WriteUint32(0)            // Reserved2
+	w.WriteBytes(n.FileID[:])   // FileId
 
-	return buf, nil
+	return w.Bytes(), w.Err()
 }
 
 // ============================================================================

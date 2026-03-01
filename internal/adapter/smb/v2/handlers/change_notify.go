@@ -1,12 +1,12 @@
 package handlers
 
 import (
-	"encoding/binary"
 	"fmt"
 	"path"
 	"sync"
 	"unicode/utf16"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
@@ -257,40 +257,46 @@ func DecodeChangeNotifyRequest(body []byte) (*ChangeNotifyRequest, error) {
 		return nil, fmt.Errorf("CHANGE_NOTIFY request too short: %d bytes", len(body))
 	}
 
-	structSize := binary.LittleEndian.Uint16(body[0:2])
+	r := smbenc.NewReader(body)
+	structSize := r.ReadUint16()
 	if structSize != 32 {
 		return nil, fmt.Errorf("invalid CHANGE_NOTIFY structure size: %d", structSize)
 	}
 
-	req := &ChangeNotifyRequest{
-		Flags:              binary.LittleEndian.Uint16(body[2:4]),
-		OutputBufferLength: binary.LittleEndian.Uint32(body[4:8]),
-		CompletionFilter:   binary.LittleEndian.Uint32(body[24:28]),
+	flags := r.ReadUint16()
+	outputBufLen := r.ReadUint32()
+	fileID := r.ReadBytes(16)
+	completionFilter := r.ReadUint32()
+	if r.Err() != nil {
+		return nil, fmt.Errorf("CHANGE_NOTIFY parse error: %w", r.Err())
 	}
-	copy(req.FileID[:], body[8:24])
+
+	req := &ChangeNotifyRequest{
+		Flags:              flags,
+		OutputBufferLength: outputBufLen,
+		CompletionFilter:   completionFilter,
+	}
+	copy(req.FileID[:], fileID)
 
 	return req, nil
 }
 
 // Encode serializes the ChangeNotifyResponse to wire format.
 func (resp *ChangeNotifyResponse) Encode() ([]byte, error) {
-	// Calculate total size: 8 bytes fixed + buffer
 	bufLen := len(resp.Buffer)
-	totalLen := 8 + bufLen
-
-	buf := make([]byte, totalLen)
-	binary.LittleEndian.PutUint16(buf[0:2], 9) // StructureSize (always 9)
+	w := smbenc.NewWriter(8 + bufLen)
+	w.WriteUint16(9) // StructureSize (always 9)
 
 	if bufLen > 0 {
-		binary.LittleEndian.PutUint16(buf[2:4], 72) // OutputBufferOffset (after SMB2 header)
-		binary.LittleEndian.PutUint32(buf[4:8], uint32(bufLen))
-		copy(buf[8:], resp.Buffer)
+		w.WriteUint16(72)             // OutputBufferOffset (after SMB2 header)
+		w.WriteUint32(uint32(bufLen)) // OutputBufferLength
+		w.WriteBytes(resp.Buffer)     // Buffer
 	} else {
-		binary.LittleEndian.PutUint16(buf[2:4], 0)
-		binary.LittleEndian.PutUint32(buf[4:8], 0)
+		w.WriteUint16(0) // OutputBufferOffset
+		w.WriteUint32(0) // OutputBufferLength
 	}
 
-	return buf, nil
+	return w.Bytes(), w.Err()
 }
 
 // EncodeFileNotifyInformation encodes a list of change notifications.
@@ -315,43 +321,38 @@ func EncodeFileNotifyInformation(changes []FileNotifyInformation) []byte {
 		totalSize += entrySize
 	}
 
-	buf := make([]byte, totalSize)
-	offset := 0
+	w := smbenc.NewWriter(totalSize)
 
 	for i, c := range changes {
-		entryStart := offset
+		entryStart := w.Len()
 
-		// Skip NextEntryOffset for now (fill in later)
-		offset += 4
+		// Placeholder for NextEntryOffset (backpatched below)
+		w.WriteUint32(0)
 
 		// Action
-		binary.LittleEndian.PutUint32(buf[offset:], c.Action)
-		offset += 4
+		w.WriteUint32(c.Action)
 
 		// FileNameLength (in bytes, UTF-16LE)
 		nameLen := len(encodedNames[i]) * 2
-		binary.LittleEndian.PutUint32(buf[offset:], uint32(nameLen))
-		offset += 4
+		w.WriteUint32(uint32(nameLen))
 
 		// FileName (UTF-16LE) - using pre-encoded UTF-16
 		for _, u := range encodedNames[i] {
-			binary.LittleEndian.PutUint16(buf[offset:], u)
-			offset += 2
+			w.WriteUint16(u)
 		}
 
 		// Align to 4 bytes
-		for offset%4 != 0 {
-			buf[offset] = 0
-			offset++
-		}
+		w.Pad(4)
 
-		// Fill in NextEntryOffset (0 for last entry)
+		// Backpatch NextEntryOffset (0 for last entry)
 		if i < len(changes)-1 {
-			binary.LittleEndian.PutUint32(buf[entryStart:], uint32(offset-entryStart))
+			nextOffsetBytes := smbenc.NewWriter(4)
+			nextOffsetBytes.WriteUint32(uint32(w.Len() - entryStart))
+			w.WriteAt(entryStart, nextOffsetBytes.Bytes())
 		}
 	}
 
-	return buf
+	return w.Bytes()
 }
 
 // ============================================================================

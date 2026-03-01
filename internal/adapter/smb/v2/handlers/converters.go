@@ -2,10 +2,10 @@
 package handlers
 
 import (
-	"encoding/binary"
 	"strings"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/mfsymlink"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -262,15 +262,16 @@ func SMBAttributesToFileType(attrs types.FileAttributes) metadata.FileType {
 func DecodeBasicInfoToSetAttrs(buffer []byte) *metadata.SetAttrs {
 	attrs := &metadata.SetAttrs{}
 
-	processFiletimeForSet(binary.LittleEndian.Uint64(buffer[0:8]), &attrs.CreationTime)
-	processFiletimeForSet(binary.LittleEndian.Uint64(buffer[8:16]), &attrs.Atime)
-	processFiletimeForSet(binary.LittleEndian.Uint64(buffer[16:24]), &attrs.Mtime)
-	processFiletimeForSet(binary.LittleEndian.Uint64(buffer[24:32]), &attrs.Ctime)
+	r := smbenc.NewReader(buffer)
+	processFiletimeForSet(r.ReadUint64(), &attrs.CreationTime)
+	processFiletimeForSet(r.ReadUint64(), &attrs.Atime)
+	processFiletimeForSet(r.ReadUint64(), &attrs.Mtime)
+	processFiletimeForSet(r.ReadUint64(), &attrs.Ctime)
 
 	// Handle file attributes (offset 32-36)
 	if len(buffer) >= 36 {
-		fileAttrs := types.FileAttributes(binary.LittleEndian.Uint32(buffer[32:36]))
-		if fileAttrs != 0 {
+		fileAttrs := types.FileAttributes(r.ReadUint32())
+		if r.Err() == nil && fileAttrs != 0 {
 			hidden := fileAttrs&types.FileAttributeHidden != 0
 			attrs.Hidden = &hidden
 		}
