@@ -717,6 +717,10 @@ const (
 
 	// NegCtxNetnameContextID identifies SMB2_NETNAME_NEGOTIATE_CONTEXT_ID context.
 	NegCtxNetnameContextID uint16 = 0x0005
+
+	// NegCtxSigningCaps identifies SMB2_SIGNING_CAPABILITIES context.
+	// [MS-SMB2] Section 2.2.3.1.7
+	NegCtxSigningCaps uint16 = 0x0008
 )
 
 // =============================================================================

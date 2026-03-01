@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v3.8
 milestone_name: SMB3 Protocol Upgrade
 status: unknown
-last_updated: "2026-02-28T23:38:08.844Z"
+last_updated: "2026-03-01T21:16:40.144Z"
 progress:
-  total_phases: 36
-  completed_phases: 35
-  total_plans: 120
-  completed_plans: 120
+  total_phases: 37
+  completed_phases: 36
+  total_plans: 122
+  completed_plans: 122
 ---
 
 # Project State
@@ -22,10 +22,10 @@ See: .planning/PROJECT.md (updated 2026-02-28)
 
 ## Current Position
 
-Phase: 34 of 40 (next: SMB3 KDF and Signing)
-Plan: Phase 33 complete (3/3 plans), Phase 34 not yet planned
-Status: Phase 33 complete — ready for Phase 34 planning
-Last activity: 2026-02-28 — Completed 33-03 (IOCTL dispatch, VALIDATE_NEGOTIATE_INFO, full smbenc migration)
+Phase: 34 of 40 (SMB3 KDF and Signing)
+Plan: 2 of 2 complete
+Status: Phase 34 complete
+Last activity: 2026-03-01 — Completed 34-02 (SessionCryptoState, SIGNING_CAPABILITIES, KDF session integration)
 
 Progress: [##░░░░░░░░] 13%
 
@@ -51,6 +51,8 @@ Progress: [##░░░░░░░░] 13%
 | 33    | 01   | 9min     | 2     | 12    |
 | 33    | 02   | 13min    | 2     | 10    |
 | 33    | 03   | 45min    | 2     | 29    |
+| 34    | 01   | 13min    | 2     | 13    |
+| 34    | 02   | 10min    | 2     | 16    |
 
 ## Accumulated Context
 
@@ -74,6 +76,13 @@ Progress: [##░░░░░░░░] 13%
 - 33-03: VALIDATE_NEGOTIATE_INFO reads all 4 fields from CryptoState, never re-computes
 - 33-03: 3.1.1 connections drop TCP on VNEG per MS-SMB2 3.3.5.15.12
 - 33-03: All SMB handler binary encoding goes through smbenc codec (ARCH-02 enforced)
+- [Phase 34]: CMAC in signing/ package (not standalone cmac/) for cohesion with other signers
+- [Phase 34]: SessionSigningState kept temporarily with Signer + legacy SigningKey for minimal blast radius
+- [Phase 34]: Signer interface pattern: Sign([16]byte) + Verify(bool) for polymorphic SMB signing
+- [Phase 34-02]: SessionCryptoState holds all 4 keys upfront (even encryption/decryption for Phase 35)
+- [Phase 34-02]: DeriveAllKeys dispatches by dialect: <3.0 direct HMAC, >=3.0 full KDF
+- [Phase 34-02]: Default signing preference: GMAC > CMAC > HMAC-SHA256 (configurable via adapter settings)
+- [Phase 34-02]: 3.1.1 clients omitting SIGNING_CAPABILITIES default to AES-128-CMAC per spec
 
 ### Pending Todos
 
@@ -85,6 +94,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-02-28
-Stopped at: Completed 33-03-PLAN.md (Phase 33 complete)
+Last session: 2026-03-01
+Stopped at: Completed 34-02-PLAN.md (SessionCryptoState + KDF integration)
 Resume file: None

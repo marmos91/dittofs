@@ -154,6 +154,52 @@ func DecodeNetnameContext(data []byte) (NetnameContext, error) {
 	}, nil
 }
 
+// SigningCaps represents SMB2_SIGNING_CAPABILITIES.
+//
+// Specifies supported signing algorithm IDs.
+//
+// [MS-SMB2] Section 2.2.3.1.7
+type SigningCaps struct {
+	// SigningAlgorithms contains the supported signing algorithm IDs.
+	SigningAlgorithms []uint16
+}
+
+// Encode serializes the SigningCaps to wire format.
+//
+// Wire format:
+//
+//	SigningAlgorithmCount (2 bytes)
+//	SigningAlgorithms     (SigningAlgorithmCount * 2 bytes)
+func (s SigningCaps) Encode() []byte {
+	w := smbenc.NewWriter(2 + len(s.SigningAlgorithms)*2)
+	w.WriteUint16(uint16(len(s.SigningAlgorithms)))
+	for _, alg := range s.SigningAlgorithms {
+		w.WriteUint16(alg)
+	}
+	return w.Bytes()
+}
+
+// DecodeSigningCaps parses SMB2_SIGNING_CAPABILITIES from wire data.
+func DecodeSigningCaps(data []byte) (SigningCaps, error) {
+	r := smbenc.NewReader(data)
+	algCount := r.ReadUint16()
+	if r.Err() != nil {
+		return SigningCaps{}, fmt.Errorf("signing caps: %w", r.Err())
+	}
+
+	algs := make([]uint16, algCount)
+	for i := range algs {
+		algs[i] = r.ReadUint16()
+	}
+	if r.Err() != nil {
+		return SigningCaps{}, fmt.Errorf("signing caps: %w", r.Err())
+	}
+
+	return SigningCaps{
+		SigningAlgorithms: algs,
+	}, nil
+}
+
 // ParseNegotiateContextList parses a list of negotiate contexts from wire data.
 // Contexts are 8-byte aligned relative to the start of the context list.
 //
