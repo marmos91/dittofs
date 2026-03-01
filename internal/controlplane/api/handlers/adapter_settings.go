@@ -90,20 +90,22 @@ type PatchSMBSettingsRequest struct {
 	OplockBreakTimeout *int      `json:"oplock_break_timeout,omitempty"`
 	MaxConnections     *int      `json:"max_connections,omitempty"`
 	MaxSessions        *int      `json:"max_sessions,omitempty"`
-	EnableEncryption   *bool     `json:"enable_encryption,omitempty"`
-	BlockedOperations  *[]string `json:"blocked_operations,omitempty"`
+	EnableEncryption          *bool     `json:"enable_encryption,omitempty"`
+	DirectoryLeasingEnabled   *bool     `json:"directory_leasing_enabled,omitempty"`
+	BlockedOperations         *[]string `json:"blocked_operations,omitempty"`
 }
 
 // PutSMBSettingsRequest requires all fields for full replacement.
 type PutSMBSettingsRequest struct {
-	MinDialect         string   `json:"min_dialect"`
-	MaxDialect         string   `json:"max_dialect"`
-	SessionTimeout     int      `json:"session_timeout"`
-	OplockBreakTimeout int      `json:"oplock_break_timeout"`
-	MaxConnections     int      `json:"max_connections"`
-	MaxSessions        int      `json:"max_sessions"`
-	EnableEncryption   bool     `json:"enable_encryption"`
-	BlockedOperations  []string `json:"blocked_operations"`
+	MinDialect                string   `json:"min_dialect"`
+	MaxDialect                string   `json:"max_dialect"`
+	SessionTimeout            int      `json:"session_timeout"`
+	OplockBreakTimeout        int      `json:"oplock_break_timeout"`
+	MaxConnections            int      `json:"max_connections"`
+	MaxSessions               int      `json:"max_sessions"`
+	EnableEncryption          bool     `json:"enable_encryption"`
+	DirectoryLeasingEnabled   bool     `json:"directory_leasing_enabled"`
+	BlockedOperations         []string `json:"blocked_operations"`
 }
 
 // --- Response types ---
@@ -143,9 +145,10 @@ type SMBSettingsResponse struct {
 	OplockBreakTimeout int      `json:"oplock_break_timeout"`
 	MaxConnections     int      `json:"max_connections"`
 	MaxSessions        int      `json:"max_sessions"`
-	EnableEncryption   bool     `json:"enable_encryption"`
-	BlockedOperations  []string `json:"blocked_operations"`
-	Version            int      `json:"version"`
+	EnableEncryption        bool     `json:"enable_encryption"`
+	DirectoryLeasingEnabled bool     `json:"directory_leasing_enabled"`
+	BlockedOperations       []string `json:"blocked_operations"`
+	Version                 int      `json:"version"`
 }
 
 // SettingRange describes the valid range for a setting field.
@@ -394,6 +397,7 @@ func (h *AdapterSettingsHandler) PutSettings(w http.ResponseWriter, r *http.Requ
 		settings.MaxConnections = req.MaxConnections
 		settings.MaxSessions = req.MaxSessions
 		settings.EnableEncryption = req.EnableEncryption
+		settings.DirectoryLeasingEnabled = req.DirectoryLeasingEnabled
 		settings.SetBlockedOperations(req.BlockedOperations)
 
 		if !h.validateAndRespond(w, adapterType, nil, settings, force) {
@@ -578,6 +582,9 @@ func (h *AdapterSettingsHandler) PatchSettings(w http.ResponseWriter, r *http.Re
 		}
 		if req.EnableEncryption != nil {
 			settings.EnableEncryption = *req.EnableEncryption
+		}
+		if req.DirectoryLeasingEnabled != nil {
+			settings.DirectoryLeasingEnabled = *req.DirectoryLeasingEnabled
 		}
 		if req.BlockedOperations != nil {
 			settings.SetBlockedOperations(*req.BlockedOperations)
@@ -968,6 +975,8 @@ func resetSMBSetting(settings, defaults *models.SMBAdapterSettings, name string)
 		settings.MaxSessions = defaults.MaxSessions
 	case "enable_encryption":
 		settings.EnableEncryption = defaults.EnableEncryption
+	case "directory_leasing_enabled":
+		settings.DirectoryLeasingEnabled = defaults.DirectoryLeasingEnabled
 	case "blocked_operations":
 		settings.BlockedOperations = defaults.BlockedOperations
 	default:
@@ -1022,8 +1031,9 @@ func smbSettingsToResponse(s *models.SMBAdapterSettings) SMBSettingsResponse {
 		OplockBreakTimeout: s.OplockBreakTimeout,
 		MaxConnections:     s.MaxConnections,
 		MaxSessions:        s.MaxSessions,
-		EnableEncryption:   s.EnableEncryption,
-		BlockedOperations:  ops,
-		Version:            s.Version,
+		EnableEncryption:        s.EnableEncryption,
+		DirectoryLeasingEnabled: s.DirectoryLeasingEnabled,
+		BlockedOperations:       ops,
+		Version:                 s.Version,
 	}
 }

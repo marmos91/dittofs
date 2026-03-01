@@ -40,9 +40,10 @@ type SMBAdapterSettingsResponse struct {
 	OplockBreakTimeout int      `json:"oplock_break_timeout"`
 	MaxConnections     int      `json:"max_connections"`
 	MaxSessions        int      `json:"max_sessions"`
-	EnableEncryption   bool     `json:"enable_encryption"`
-	BlockedOperations  []string `json:"blocked_operations"`
-	Version            int      `json:"version"`
+	EnableEncryption        bool     `json:"enable_encryption"`
+	DirectoryLeasingEnabled bool     `json:"directory_leasing_enabled"`
+	BlockedOperations       []string `json:"blocked_operations"`
+	Version                 int      `json:"version"`
 }
 
 // SettingRange describes valid range for a setting.
@@ -98,8 +99,9 @@ type PatchSMBSettingsRequest struct {
 	OplockBreakTimeout *int      `json:"oplock_break_timeout,omitempty"`
 	MaxConnections     *int      `json:"max_connections,omitempty"`
 	MaxSessions        *int      `json:"max_sessions,omitempty"`
-	EnableEncryption   *bool     `json:"enable_encryption,omitempty"`
-	BlockedOperations  *[]string `json:"blocked_operations,omitempty"`
+	EnableEncryption        *bool     `json:"enable_encryption,omitempty"`
+	DirectoryLeasingEnabled *bool     `json:"directory_leasing_enabled,omitempty"`
+	BlockedOperations       *[]string `json:"blocked_operations,omitempty"`
 }
 
 // SettingsOption is a functional option for settings API calls.

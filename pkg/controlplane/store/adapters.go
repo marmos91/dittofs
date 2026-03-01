@@ -220,8 +220,9 @@ func (s *GORMStore) UpdateSMBAdapterSettings(ctx context.Context, settings *mode
 			"oplock_break_timeout": settings.OplockBreakTimeout,
 			"max_connections":      settings.MaxConnections,
 			"max_sessions":         settings.MaxSessions,
-			"enable_encryption":    settings.EnableEncryption,
-			"blocked_operations":   settings.BlockedOperations,
+			"enable_encryption":          settings.EnableEncryption,
+			"directory_leasing_enabled":  settings.DirectoryLeasingEnabled,
+			"blocked_operations":         settings.BlockedOperations,
 			"version":              gorm.Expr("version + 1"),
 			"updated_at":           time.Now(),
 		})
@@ -249,8 +250,9 @@ func (s *GORMStore) ResetSMBAdapterSettings(ctx context.Context, adapterID strin
 			"oplock_break_timeout": defaults.OplockBreakTimeout,
 			"max_connections":      defaults.MaxConnections,
 			"max_sessions":         defaults.MaxSessions,
-			"enable_encryption":    defaults.EnableEncryption,
-			"blocked_operations":   "",
+			"enable_encryption":          defaults.EnableEncryption,
+			"directory_leasing_enabled":  defaults.DirectoryLeasingEnabled,
+			"blocked_operations":         "",
 			"version":              gorm.Expr("version + 1"),
 			"updated_at":           time.Now(),
 		})
