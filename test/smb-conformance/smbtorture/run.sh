@@ -294,6 +294,7 @@ run_smbtorture() {
     if [[ $rc -ge 125 ]]; then
         log_warn "smbtorture infrastructure failure (exit code $rc) for filter: $filter"
     fi
+    return $rc
 }
 
 _smbtorture_exit=0
@@ -301,7 +302,7 @@ _smbtorture_exit=0
 if [[ -n "$FILTER" ]]; then
     # Single filter mode: run only the specified filter
     log_step "Running smbtorture (filter: ${FILTER}, timeout: ${TIMEOUT}s)..."
-    run_smbtorture "$FILTER"
+    run_smbtorture "$FILTER" || _smbtorture_exit=$?
 else
     # Full suite mode: run sub-suites individually to avoid hold-oplock and
     # hold-sharemode tests which block indefinitely (they are interactive
@@ -321,7 +322,7 @@ else
     )
     for test in "${STANDALONE_TESTS[@]}"; do
         log_info "  Running: ${test}"
-        run_smbtorture "$test" 60
+        run_smbtorture "$test" 60 || _smbtorture_exit=$?
     done
 
     # Sub-suites with prefix for test name fixup.
@@ -381,7 +382,7 @@ else
         suite="${entry%%:*}"
         prefix="${entry##*:}"
         log_info "  Running: ${suite}"
-        run_smbtorture "$suite" 120 "$prefix"
+        run_smbtorture "$suite" 120 "$prefix" || _smbtorture_exit=$?
     done
 
     # NOTE: Skipped interactive hold tests:
@@ -406,5 +407,11 @@ VERBOSE="$VERBOSE" "${SCRIPT_DIR}/parse-results.sh" \
 echo ""
 echo -e "${BOLD}Results directory:${NC} ${RESULTS_DIR}"
 echo ""
+
+# Fail on infrastructure errors even if parse-results found no new test failures
+if [[ $_smbtorture_exit -ge 125 ]]; then
+    log_error "smbtorture had infrastructure failures (exit code $_smbtorture_exit)"
+    exit "$_smbtorture_exit"
+fi
 
 exit "$parse_exit"
