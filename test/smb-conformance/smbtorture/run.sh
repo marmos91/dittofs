@@ -281,7 +281,7 @@ run_smbtorture() {
         ${TIMEOUT_CMD:+$TIMEOUT_CMD --signal=TERM --kill-after=30 "$per_timeout"} \
             env PROFILE="$PROFILE" docker compose run --rm smbtorture \
             "${SMBTORTURE_ARGS[@]}" "$filter" \
-            2>&1 | sed -E "s/^(test|success|failure|error): /\1: ${suite_prefix}./" \
+            2>&1 | sed -E "s/^(test|success|failure|error|skip): /\1: ${suite_prefix}./" \
             | tee -a "${RESULTS_DIR}/smbtorture-output.txt" || true
     else
         ${TIMEOUT_CMD:+$TIMEOUT_CMD --signal=TERM --kill-after=30 "$per_timeout"} \

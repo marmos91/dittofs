@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"strings"
@@ -638,7 +639,7 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 	h.files.Range(func(key, value any) bool {
 		existing := value.(*OpenFile)
 		// Only check handles to the same file
-		if len(existing.MetadataHandle) == 0 || string(existing.MetadataHandle) != string(fileHandle) {
+		if len(existing.MetadataHandle) == 0 || !bytes.Equal(existing.MetadataHandle, fileHandle) {
 			return true
 		}
 		// Skip pipes
@@ -697,7 +698,7 @@ func (h *Handler) checkShareDeleteConflict(renameFile *OpenFile) bool {
 		if len(other.MetadataHandle) == 0 || len(renameFile.MetadataHandle) == 0 {
 			return true
 		}
-		if string(other.MetadataHandle) != string(renameFile.MetadataHandle) {
+		if !bytes.Equal(other.MetadataHandle, renameFile.MetadataHandle) {
 			return true
 		}
 		// If this other handle does not allow delete sharing, conflict

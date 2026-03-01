@@ -182,7 +182,7 @@ func ParseNegotiateContextList(data []byte, count int) ([]NegotiateContext, erro
 				i, headerEnd, dataLength, len(data)-headerEnd)
 		}
 
-		ctxData := make([]byte, dataLength)
+		ctxData := make([]byte, int(dataLength))
 		copy(ctxData, data[headerEnd:headerEnd+int(dataLength)])
 
 		contexts = append(contexts, NegotiateContext{

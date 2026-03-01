@@ -486,16 +486,20 @@ func parseDACL(data []byte) (*acl.ACL, error) {
 
 // writeUint16ToBuf writes a little-endian uint16 to a bytes.Buffer.
 func writeUint16ToBuf(buf *bytes.Buffer, v uint16) {
-	w := smbenc.NewWriter(2)
-	w.WriteUint16(v)
-	buf.Write(w.Bytes())
+	var tmp [2]byte
+	tmp[0] = byte(v)
+	tmp[1] = byte(v >> 8)
+	buf.Write(tmp[:])
 }
 
 // writeUint32ToBuf writes a little-endian uint32 to a bytes.Buffer.
 func writeUint32ToBuf(buf *bytes.Buffer, v uint32) {
-	w := smbenc.NewWriter(4)
-	w.WriteUint32(v)
-	buf.Write(w.Bytes())
+	var tmp [4]byte
+	tmp[0] = byte(v)
+	tmp[1] = byte(v >> 8)
+	tmp[2] = byte(v >> 16)
+	tmp[3] = byte(v >> 24)
+	buf.Write(tmp[:])
 }
 
 // alignTo4 rounds up a value to the next 4-byte boundary.
