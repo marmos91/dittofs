@@ -65,7 +65,8 @@ type Handler struct {
 	// Dialect range configuration (set by adapter from SMBAdapterSettings).
 	// MinDialect is the minimum dialect the server will negotiate.
 	// MaxDialect is the maximum dialect the server will negotiate.
-	// Defaults: MinDialect=0x0202 (SMB 2.0.2), MaxDialect=0x0311 (SMB 3.1.1).
+	// Defaults: MinDialect=0x0202 (SMB 2.0.2), MaxDialect=0x0210 (SMB 2.1).
+	// Configurable to 0x0311 (SMB 3.1.1) via SMBAdapterSettings when SMB3 is ready.
 	MinDialect types.Dialect
 	MaxDialect types.Dialect
 
@@ -202,7 +203,7 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 		MaxWriteSize:            1048576, // 1MB
 		SigningConfig:           signing.DefaultSigningConfig(),
 		MinDialect:              types.Dialect0202,
-		MaxDialect:              types.Dialect0311,
+		MaxDialect:              types.Dialect0210, // Default to 2.1 until full SMB3 session/signing is implemented
 		EncryptionEnabled:       false,
 		DirectoryLeasingEnabled: true,
 	}

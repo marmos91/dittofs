@@ -557,6 +557,7 @@ func TestNegotiate_ResponseFormat(t *testing.T) {
 
 func TestNegotiate_SMB300(t *testing.T) {
 	h := NewHandler()
+	h.MaxDialect = types.Dialect0311 // Enable SMB3 for this test
 	ctx := newNegotiateTestContext()
 
 	body := buildNegotiateRequest([]uint16{
@@ -589,6 +590,7 @@ func TestNegotiate_SMB300(t *testing.T) {
 
 func TestNegotiate_SMB302(t *testing.T) {
 	h := NewHandler()
+	h.MaxDialect = types.Dialect0311 // Enable SMB3 for this test
 	ctx := newNegotiateTestContext()
 
 	body := buildNegotiateRequest([]uint16{
@@ -619,6 +621,7 @@ func TestNegotiate_SMB302(t *testing.T) {
 
 func TestNegotiate_SMB311_FullDialectList(t *testing.T) {
 	h := NewHandler()
+	h.MaxDialect = types.Dialect0311 // Enable SMB3.1.1 for this test
 	ctx := newNegotiateTestContext()
 
 	salt := make([]byte, 32)
@@ -672,6 +675,7 @@ func TestNegotiate_SMB311_FullDialectList(t *testing.T) {
 
 func TestNegotiate_SMB311_NegotiateContexts(t *testing.T) {
 	h := NewHandler()
+	h.MaxDialect = types.Dialect0311
 	ctx := newNegotiateTestContext()
 
 	salt := make([]byte, 32)
@@ -820,6 +824,7 @@ func TestNegotiate_CapabilityGating(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := NewHandler()
+			h.MaxDialect = types.Dialect0311
 			h.EncryptionEnabled = tt.encryption
 			h.DirectoryLeasingEnabled = tt.dirLeasing
 
@@ -887,6 +892,7 @@ func TestNegotiate_DialectRange(t *testing.T) {
 	t.Run("MinDialect_3.0_SelectsFromRange", func(t *testing.T) {
 		h := NewHandler()
 		h.MinDialect = types.Dialect0300
+		h.MaxDialect = types.Dialect0311
 		ctx := newNegotiateTestContext()
 
 		salt := make([]byte, 32)
@@ -944,6 +950,7 @@ func TestNegotiate_DialectRange(t *testing.T) {
 
 func TestNegotiate_CryptoState_Populated(t *testing.T) {
 	h := NewHandler()
+	h.MaxDialect = types.Dialect0311
 	ctx, cs := newNegotiateTestContextWithCrypto()
 
 	salt := make([]byte, 32)
@@ -1006,6 +1013,7 @@ func TestNegotiate_CryptoState_Populated(t *testing.T) {
 
 func TestNegotiate_WildcardWith3x(t *testing.T) {
 	h := NewHandler()
+	h.MaxDialect = types.Dialect0311
 	ctx := newNegotiateTestContext()
 
 	// Wildcard + 3.0: should select 3.0 (wildcard NOT echoed because 3.x > 2.0.2)
@@ -1043,6 +1051,7 @@ func TestNegotiate_WildcardWith3x(t *testing.T) {
 
 func TestNegotiate_SMB3xOnly(t *testing.T) {
 	h := NewHandler()
+	h.MaxDialect = types.Dialect0311
 	ctx := newNegotiateTestContext()
 
 	body := buildNegotiateRequest([]uint16{
@@ -1067,6 +1076,7 @@ func TestNegotiate_SMB3xOnly(t *testing.T) {
 
 func TestNegotiate_MixedWithSMB3x(t *testing.T) {
 	h := NewHandler()
+	h.MaxDialect = types.Dialect0311
 	ctx := newNegotiateTestContext()
 
 	// Mix of 2.x and 3.x - should select highest = 3.0
