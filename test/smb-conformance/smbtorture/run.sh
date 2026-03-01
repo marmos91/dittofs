@@ -291,7 +291,7 @@ run_smbtorture() {
     fi
 }
 
-smbtorture_exit=0
+_smbtorture_exit=0
 
 if [[ -n "$FILTER" ]]; then
     # Single filter mode: run only the specified filter
