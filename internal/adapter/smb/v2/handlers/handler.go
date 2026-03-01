@@ -71,6 +71,12 @@ type Handler struct {
 	MinDialect types.Dialect
 	MaxDialect types.Dialect
 
+	// SigningAlgorithmPreference is the server's preference order for signing
+	// algorithms, used during SIGNING_CAPABILITIES negotiate context processing.
+	// The first element is the most preferred. If empty, defaults to
+	// [AES-128-GMAC, AES-128-CMAC, HMAC-SHA256].
+	SigningAlgorithmPreference []uint16
+
 	// EncryptionEnabled controls whether CapEncryption is advertised for SMB 3.0+.
 	// When false, encryption capabilities are not offered during negotiate.
 	EncryptionEnabled bool

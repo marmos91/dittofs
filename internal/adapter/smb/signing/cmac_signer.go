@@ -3,7 +3,6 @@ package signing
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/subtle"
 )
 
 // cmacRb is the constant Rb for 128-bit blocks per RFC 4493.
@@ -26,22 +25,13 @@ func NewCMACSigner(key []byte) *CMACSigner {
 		return nil
 	}
 
-	s := &CMACSigner{}
-	if len(key) >= KeySize {
-		copy(s.key[:], key[:KeySize])
-	} else {
-		copy(s.key[:], key)
-	}
-
+	s := &CMACSigner{key: copyKey(key)}
 	block, err := aes.NewCipher(s.key[:])
 	if err != nil {
 		return nil
 	}
 	s.block = block
-
-	// Generate subkeys
 	s.k1, s.k2 = generateSubkeys(block)
-
 	return s
 }
 
@@ -143,36 +133,17 @@ func (s *CMACSigner) cmacMAC(data []byte) [16]byte {
 // Sign computes the AES-CMAC signature for an SMB2 message.
 // The signature field (bytes 48-63) is zeroed before computation.
 func (s *CMACSigner) Sign(message []byte) [SignatureSize]byte {
-	var sig [SignatureSize]byte
-
 	if len(message) < SMB2HeaderSize {
-		return sig
+		return [SignatureSize]byte{}
 	}
 
-	// Create a copy with zeroed signature field
 	msgCopy := make([]byte, len(message))
 	copy(msgCopy, message)
-	for i := SignatureOffset; i < SignatureOffset+SignatureSize; i++ {
-		msgCopy[i] = 0
-	}
-
-	sig = s.cmacMAC(msgCopy)
-	return sig
+	zeroSignatureField(msgCopy)
+	return s.cmacMAC(msgCopy)
 }
 
 // Verify checks if the message signature is valid using constant-time comparison.
 func (s *CMACSigner) Verify(message []byte) bool {
-	if len(message) < SMB2HeaderSize {
-		return false
-	}
-
-	// Extract the provided signature
-	var providedSig [SignatureSize]byte
-	copy(providedSig[:], message[SignatureOffset:SignatureOffset+SignatureSize])
-
-	// Compute expected signature
-	expectedSig := s.Sign(message)
-
-	// Constant-time comparison
-	return subtle.ConstantTimeCompare(providedSig[:], expectedSig[:]) == 1
+	return verifySig(s, message)
 }

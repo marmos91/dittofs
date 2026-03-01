@@ -105,7 +105,9 @@ func newNegotiateTestContext() *SMBHandlerContext {
 type mockCryptoState struct {
 	dialect            types.Dialect
 	cipherId           uint16
+	signingAlgorithmId uint16
 	preauthHashId      uint16
+	preauthHash        [64]byte
 	serverGUID         [16]byte
 	serverCapabilities types.Capabilities
 	serverSecurityMode types.SecurityMode
@@ -118,7 +120,11 @@ type mockCryptoState struct {
 func (m *mockCryptoState) SetDialect(d types.Dialect)                    { m.dialect = d }
 func (m *mockCryptoState) GetDialect() types.Dialect                     { return m.dialect }
 func (m *mockCryptoState) SetCipherId(id uint16)                         { m.cipherId = id }
+func (m *mockCryptoState) GetCipherId() uint16                           { return m.cipherId }
+func (m *mockCryptoState) SetSigningAlgorithmId(id uint16)               { m.signingAlgorithmId = id }
+func (m *mockCryptoState) GetSigningAlgorithmId() uint16                 { return m.signingAlgorithmId }
 func (m *mockCryptoState) SetPreauthIntegrityHashId(id uint16)           { m.preauthHashId = id }
+func (m *mockCryptoState) GetPreauthHash() [64]byte                      { return m.preauthHash }
 func (m *mockCryptoState) SetServerGUID(guid [16]byte)                   { m.serverGUID = guid }
 func (m *mockCryptoState) SetServerCapabilities(caps types.Capabilities) { m.serverCapabilities = caps }
 func (m *mockCryptoState) SetServerSecurityMode(mode types.SecurityMode) { m.serverSecurityMode = mode }
@@ -1100,5 +1106,155 @@ func TestNegotiate_MixedWithSMB3x(t *testing.T) {
 	dialectRevision := binary.LittleEndian.Uint16(result.Data[4:6])
 	if dialectRevision != 0x0300 {
 		t.Errorf("DialectRevision = 0x%04x, expected 0x0300", dialectRevision)
+	}
+}
+
+// =============================================================================
+// SIGNING_CAPABILITIES Tests
+// =============================================================================
+
+// buildSigningCapsContext creates a SIGNING_CAPABILITIES negotiate context.
+func buildSigningCapsContext(algorithms []uint16) types.NegotiateContext {
+	caps := types.SigningCaps{
+		SigningAlgorithms: algorithms,
+	}
+	return types.NegotiateContext{
+		ContextType: types.NegCtxSigningCaps,
+		Data:        caps.Encode(),
+	}
+}
+
+func TestNegotiate_SigningCaps_GMACPreferred(t *testing.T) {
+	h := NewHandler()
+	h.MaxDialect = types.Dialect0311
+	ctx, cs := newNegotiateTestContextWithCrypto()
+
+	salt := make([]byte, 32)
+	_, _ = rand.Read(salt)
+
+	// Client offers GMAC and CMAC; server should select GMAC (default preference)
+	contexts := []types.NegotiateContext{
+		buildPreauthContext([]uint16{types.HashAlgSHA512}, salt),
+		buildEncryptionContext([]uint16{types.CipherAES128GCM}),
+		buildSigningCapsContext([]uint16{0x0002, 0x0001}), // GMAC, CMAC
+	}
+
+	body := buildNegotiateRequestFull(
+		[]uint16{0x0311},
+		uint16(types.NegSigningEnabled), 0, [16]byte{}, contexts,
+	)
+
+	result, err := h.Negotiate(ctx, body)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if result.Status != types.StatusSuccess {
+		t.Fatalf("Status = 0x%x, expected StatusSuccess", result.Status)
+	}
+
+	// CryptoState should have GMAC selected
+	if cs.signingAlgorithmId != 0x0002 {
+		t.Errorf("CryptoState.SigningAlgorithmId = 0x%04x, expected 0x0002 (AES-128-GMAC)",
+			cs.signingAlgorithmId)
+	}
+
+	// Parse response contexts to find SIGNING_CAPABILITIES
+	ctxCount := binary.LittleEndian.Uint16(result.Data[6:8])
+	ctxOffset := binary.LittleEndian.Uint32(result.Data[60:64])
+	if ctxCount == 0 || ctxOffset == 0 {
+		t.Fatalf("No negotiate contexts in response")
+	}
+
+	bodyCtxOffset := int(ctxOffset) - 64
+	respContexts, err := types.ParseNegotiateContextList(result.Data[bodyCtxOffset:], int(ctxCount))
+	if err != nil {
+		t.Fatalf("Failed to parse response contexts: %v", err)
+	}
+
+	var foundSigningCaps bool
+	for _, rc := range respContexts {
+		if rc.ContextType == types.NegCtxSigningCaps {
+			foundSigningCaps = true
+			sigCaps, err := types.DecodeSigningCaps(rc.Data)
+			if err != nil {
+				t.Fatalf("Failed to decode signing caps: %v", err)
+			}
+			if len(sigCaps.SigningAlgorithms) != 1 || sigCaps.SigningAlgorithms[0] != 0x0002 {
+				t.Errorf("Response signing algorithms = %v, expected [0x0002 (GMAC)]",
+					sigCaps.SigningAlgorithms)
+			}
+		}
+	}
+	if !foundSigningCaps {
+		t.Error("Response missing SIGNING_CAPABILITIES context")
+	}
+}
+
+func TestNegotiate_SigningCaps_CMACOnly(t *testing.T) {
+	h := NewHandler()
+	h.MaxDialect = types.Dialect0311
+	ctx, cs := newNegotiateTestContextWithCrypto()
+
+	salt := make([]byte, 32)
+	_, _ = rand.Read(salt)
+
+	// Client only offers CMAC
+	contexts := []types.NegotiateContext{
+		buildPreauthContext([]uint16{types.HashAlgSHA512}, salt),
+		buildEncryptionContext([]uint16{types.CipherAES128GCM}),
+		buildSigningCapsContext([]uint16{0x0001}), // CMAC only
+	}
+
+	body := buildNegotiateRequestFull(
+		[]uint16{0x0311},
+		uint16(types.NegSigningEnabled), 0, [16]byte{}, contexts,
+	)
+
+	result, err := h.Negotiate(ctx, body)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if result.Status != types.StatusSuccess {
+		t.Fatalf("Status = 0x%x, expected StatusSuccess", result.Status)
+	}
+
+	if cs.signingAlgorithmId != 0x0001 {
+		t.Errorf("CryptoState.SigningAlgorithmId = 0x%04x, expected 0x0001 (AES-128-CMAC)",
+			cs.signingAlgorithmId)
+	}
+}
+
+func TestNegotiate_SigningCaps_OmittedDefaultsCMAC(t *testing.T) {
+	h := NewHandler()
+	h.MaxDialect = types.Dialect0311
+	ctx, cs := newNegotiateTestContextWithCrypto()
+
+	salt := make([]byte, 32)
+	_, _ = rand.Read(salt)
+
+	// 3.1.1 client without SIGNING_CAPABILITIES - should default to CMAC
+	contexts := []types.NegotiateContext{
+		buildPreauthContext([]uint16{types.HashAlgSHA512}, salt),
+		buildEncryptionContext([]uint16{types.CipherAES128GCM}),
+		// No buildSigningCapsContext
+	}
+
+	body := buildNegotiateRequestFull(
+		[]uint16{0x0311},
+		uint16(types.NegSigningEnabled), 0, [16]byte{}, contexts,
+	)
+
+	result, err := h.Negotiate(ctx, body)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if result.Status != types.StatusSuccess {
+		t.Fatalf("Status = 0x%x, expected StatusSuccess", result.Status)
+	}
+
+	// When SIGNING_CAPABILITIES is omitted, default to AES-128-CMAC
+	if cs.signingAlgorithmId != 0x0001 {
+		t.Errorf("CryptoState.SigningAlgorithmId = 0x%04x, expected 0x0001 (AES-128-CMAC default)",
+			cs.signingAlgorithmId)
 	}
 }

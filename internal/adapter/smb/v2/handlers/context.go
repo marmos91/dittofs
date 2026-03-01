@@ -48,6 +48,14 @@ type CryptoState interface {
 	SetClientDialects(dialects []types.Dialect)
 	// GetClientDialects returns the client's offered dialect list.
 	GetClientDialects() []types.Dialect
+	// SetSigningAlgorithmId records the selected signing algorithm.
+	SetSigningAlgorithmId(id uint16)
+	// GetSigningAlgorithmId returns the selected signing algorithm.
+	GetSigningAlgorithmId() uint16
+	// GetCipherId returns the selected encryption cipher.
+	GetCipherId() uint16
+	// GetPreauthHash returns a copy of the current preauth integrity hash value.
+	GetPreauthHash() [64]byte
 }
 
 // SMBHandlerContext carries per-request state through all SMB2 handlers.

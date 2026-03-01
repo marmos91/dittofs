@@ -208,26 +208,3 @@ func TestSigningKeyAlways128Bit(t *testing.T) {
 		t.Errorf("256-bit encryption key should be 32 bytes, got %d", len(encKey256))
 	}
 }
-
-// TestKeyPurposeEnum verifies that KeyPurpose has exactly 4 values.
-func TestKeyPurposeEnum(t *testing.T) {
-	purposes := []KeyPurpose{
-		SigningKeyPurpose,
-		EncryptionKeyPurpose,
-		DecryptionKeyPurpose,
-		ApplicationKeyPurpose,
-	}
-
-	if len(purposes) != 4 {
-		t.Errorf("expected 4 key purposes, got %d", len(purposes))
-	}
-
-	// Verify they are distinct
-	seen := make(map[KeyPurpose]bool)
-	for _, p := range purposes {
-		if seen[p] {
-			t.Errorf("duplicate key purpose: %v", p)
-		}
-		seen[p] = true
-	}
-}

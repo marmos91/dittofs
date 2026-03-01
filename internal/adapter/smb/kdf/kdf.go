@@ -54,13 +54,18 @@ func (p KeyPurpose) String() string {
 //   - ki: key derivation key (the session key)
 //   - label: purpose-specific label bytes (including null terminator)
 //   - context: purpose-specific context bytes
-//   - keyLenBits: desired key length in bits (128 or 256)
+//   - keyLenBits: desired key length in bits (must be 128 or 256)
 //
 // Returns the derived key as a byte slice of length keyLenBits/8.
+// Panics if keyLenBits is not 128 or 256.
 //
 // For SMB3, a single iteration (counter=1) with HMAC-SHA256 produces 256 bits,
 // which is sufficient for both 128-bit and 256-bit keys.
 func DeriveKey(ki, label, context []byte, keyLenBits uint32) []byte {
+	if keyLenBits != 128 && keyLenBits != 256 {
+		panic("kdf: keyLenBits must be 128 or 256")
+	}
+
 	h := hmac.New(sha256.New, ki)
 
 	// Counter i = 1 (4 bytes, big-endian)
@@ -82,14 +87,13 @@ func DeriveKey(ki, label, context []byte, keyLenBits uint32) []byte {
 	binary.BigEndian.PutUint32(length[:], keyLenBits)
 	h.Write(length[:])
 
-	result := h.Sum(nil)
-	return result[:keyLenBits/8]
+	return h.Sum(nil)[:keyLenBits/8]
 }
 
-// Label/context constants for SMB 3.0/3.0.2 per [MS-SMB2] Section 3.1.4.2.
+// Label/context constants per [MS-SMB2] Section 3.1.4.2.
 // Each label includes its null terminator as part of the byte literal.
 var (
-	// SMB 3.0/3.0.2 labels and contexts
+	// SMB 3.0/3.0.2
 	label30Signing    = []byte("SMB2AESCMAC\x00")
 	label30Encryption = []byte("SMB2AESCCM\x00")
 	label30Decryption = []byte("SMB2AESCCM\x00")
@@ -100,7 +104,7 @@ var (
 	ctx30Decryption = []byte("ServerOut\x00")
 	ctx30App        = []byte("SmbRpc\x00")
 
-	// SMB 3.1.1 labels (context is always the preauth integrity hash)
+	// SMB 3.1.1 (context is the preauth integrity hash)
 	label311Signing    = []byte("SMBSigningKey\x00")
 	label311Encryption = []byte("SMBC2SCipherKey\x00")
 	label311Decryption = []byte("SMBS2CCipherKey\x00")
@@ -115,7 +119,7 @@ var (
 func LabelAndContext(purpose KeyPurpose, dialect types.Dialect, preauthHash [64]byte) (label, context []byte) {
 	if dialect == types.Dialect0311 {
 		// SMB 3.1.1: preauth integrity hash as context for all purposes
-		ctx := make([]byte, 64)
+		ctx := make([]byte, len(preauthHash))
 		copy(ctx, preauthHash[:])
 
 		switch purpose {

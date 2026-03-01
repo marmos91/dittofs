@@ -148,6 +148,11 @@ type SMBAdapterSettings struct {
 	// Operation blocklist (JSON array stored as text)
 	BlockedOperations string `gorm:"type:text" json:"-"`
 
+	// Signing algorithm preference order (JSON array stored as text).
+	// Valid values: "AES-128-GMAC", "AES-128-CMAC", "HMAC-SHA256".
+	// Default: ["AES-128-GMAC","AES-128-CMAC","HMAC-SHA256"]
+	SigningAlgorithmPreference string `gorm:"type:text" json:"signing_algorithm_preference"`
+
 	// Version counter for change detection (monotonic, starts at 1, incremented on every update)
 	Version int `gorm:"default:1" json:"version"`
 
@@ -168,6 +173,16 @@ func (s *SMBAdapterSettings) GetBlockedOperations() []string {
 // SetBlockedOperations serializes the blocked operations from a string slice.
 func (s *SMBAdapterSettings) SetBlockedOperations(ops []string) {
 	s.BlockedOperations = marshalBlockedOps(ops)
+}
+
+// GetSigningAlgorithmPreference returns the signing algorithm preference as a string slice.
+func (s *SMBAdapterSettings) GetSigningAlgorithmPreference() []string {
+	return parseBlockedOps(s.SigningAlgorithmPreference)
+}
+
+// SetSigningAlgorithmPreference serializes the signing algorithm preference from a string slice.
+func (s *SMBAdapterSettings) SetSigningAlgorithmPreference(prefs []string) {
+	s.SigningAlgorithmPreference = marshalBlockedOps(prefs)
 }
 
 // NewDefaultNFSSettings creates an NFSAdapterSettings with all default values.
@@ -204,7 +219,7 @@ func NewDefaultNFSSettings(adapterID string) *NFSAdapterSettings {
 
 // NewDefaultSMBSettings creates an SMBAdapterSettings with all default values.
 func NewDefaultSMBSettings(adapterID string) *SMBAdapterSettings {
-	return &SMBAdapterSettings{
+	s := &SMBAdapterSettings{
 		ID:                      uuid.New().String(),
 		AdapterID:               adapterID,
 		MinDialect:              "SMB2.0",
@@ -217,6 +232,8 @@ func NewDefaultSMBSettings(adapterID string) *SMBAdapterSettings {
 		DirectoryLeasingEnabled: true,
 		Version:                 1,
 	}
+	s.SetSigningAlgorithmPreference([]string{"AES-128-GMAC", "AES-128-CMAC", "HMAC-SHA256"})
+	return s
 }
 
 // NFSSettingsValidRange defines valid ranges for NFS adapter settings.

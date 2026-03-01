@@ -174,7 +174,7 @@ func VerifyCompoundCommandSignature(data []byte, hdr *header.SMB2Header, connInf
 	}
 
 	isSigned := hdr.Flags.IsSigned()
-	if sess.Signing != nil && sess.Signing.SigningRequired && !isSigned {
+	if sess.CryptoState != nil && sess.CryptoState.SigningRequired && !isSigned {
 		return fmt.Errorf("STATUS_ACCESS_DENIED: compound message not signed")
 	}
 

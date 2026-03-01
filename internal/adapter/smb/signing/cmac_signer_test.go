@@ -18,67 +18,53 @@ func mustDecodeHex(s string) []byte {
 	return b
 }
 
-// TestCMAC_RFC4493_EmptyMessage tests AES-CMAC with an empty message.
-// Expected MAC: bb1d6929e95937287fa37d129b756746
-func TestCMAC_RFC4493_EmptyMessage(t *testing.T) {
+// TestCMAC_RFC4493_Vectors tests AES-CMAC against all RFC 4493 Section 4 test vectors.
+func TestCMAC_RFC4493_Vectors(t *testing.T) {
 	signer := NewCMACSigner(cmacTestKey)
 	if signer == nil {
 		t.Fatal("NewCMACSigner returned nil")
 	}
 
-	// For CMAC raw computation, we need a message at least SMB2HeaderSize.
-	// But RFC 4493 test vectors test raw AES-CMAC, not SMB signing.
-	// We test the raw cmacMAC function directly.
-	mac := signer.cmacMAC([]byte{})
-	expected := mustDecodeHex("bb1d6929e95937287fa37d129b756746")
-
-	if !bytes.Equal(mac[:], expected) {
-		t.Errorf("CMAC empty message:\n  got:  %x\n  want: %x", mac, expected)
+	tests := []struct {
+		name        string
+		messageHex  string
+		expectedHex string
+	}{
+		{
+			name:        "empty message",
+			messageHex:  "",
+			expectedHex: "bb1d6929e95937287fa37d129b756746",
+		},
+		{
+			name:        "16-byte message",
+			messageHex:  "6bc1bee22e409f96e93d7e117393172a",
+			expectedHex: "070a16b46b4d4144f79bdd9dd04a287c",
+		},
+		{
+			name:        "40-byte message",
+			messageHex:  "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411",
+			expectedHex: "dfa66747de9ae63030ca32611497c827",
+		},
+		{
+			name:        "64-byte message",
+			messageHex:  "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710",
+			expectedHex: "51f0bebf7e3b9d92fc49741779363cfe",
+		},
 	}
-}
 
-// TestCMAC_RFC4493_16ByteMessage tests AES-CMAC with a 16-byte message.
-// Message: 6bc1bee22e409f96e93d7e117393172a
-// Expected MAC: 070a16b46b4d4144f79bdd9dd04a287c
-func TestCMAC_RFC4493_16ByteMessage(t *testing.T) {
-	signer := NewCMACSigner(cmacTestKey)
-	msg := mustDecodeHex("6bc1bee22e409f96e93d7e117393172a")
-	expected := mustDecodeHex("070a16b46b4d4144f79bdd9dd04a287c")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var msg []byte
+			if tt.messageHex != "" {
+				msg = mustDecodeHex(tt.messageHex)
+			}
+			expected := mustDecodeHex(tt.expectedHex)
+			mac := signer.cmacMAC(msg)
 
-	mac := signer.cmacMAC(msg)
-
-	if !bytes.Equal(mac[:], expected) {
-		t.Errorf("CMAC 16-byte message:\n  got:  %x\n  want: %x", mac, expected)
-	}
-}
-
-// TestCMAC_RFC4493_40ByteMessage tests AES-CMAC with a 40-byte message.
-// Message: 6bc1bee22e409f96e93d7e117393172a ae2d8a571e03ac9c9eb76fac45af8e51 30c81c46a35ce411
-// Expected MAC: dfa66747de9ae63030ca32611497c827
-func TestCMAC_RFC4493_40ByteMessage(t *testing.T) {
-	signer := NewCMACSigner(cmacTestKey)
-	msg := mustDecodeHex("6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411")
-	expected := mustDecodeHex("dfa66747de9ae63030ca32611497c827")
-
-	mac := signer.cmacMAC(msg)
-
-	if !bytes.Equal(mac[:], expected) {
-		t.Errorf("CMAC 40-byte message:\n  got:  %x\n  want: %x", mac, expected)
-	}
-}
-
-// TestCMAC_RFC4493_64ByteMessage tests AES-CMAC with a 64-byte message.
-// Message: 6bc1bee22e409f96e93d7e117393172a ae2d8a571e03ac9c9eb76fac45af8e51 30c81c46a35ce411 e5fbc1191a0a52ef f69f2445df4f9b17 ad2b417be66c3710
-// Expected MAC: 51f0bebf7e3b9d92fc49741779363cfe
-func TestCMAC_RFC4493_64ByteMessage(t *testing.T) {
-	signer := NewCMACSigner(cmacTestKey)
-	msg := mustDecodeHex("6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710")
-	expected := mustDecodeHex("51f0bebf7e3b9d92fc49741779363cfe")
-
-	mac := signer.cmacMAC(msg)
-
-	if !bytes.Equal(mac[:], expected) {
-		t.Errorf("CMAC 64-byte message:\n  got:  %x\n  want: %x", mac, expected)
+			if !bytes.Equal(mac[:], expected) {
+				t.Errorf("CMAC %s:\n  got:  %x\n  want: %x", tt.name, mac, expected)
+			}
+		})
 	}
 }
 
