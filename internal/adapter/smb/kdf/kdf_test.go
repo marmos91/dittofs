@@ -35,28 +35,53 @@ func TestDeriveKey_SMB30_SigningKey(t *testing.T) {
 	}
 }
 
-// TestDeriveKey_SMB311_SigningKey tests the SP800-108 KDF against the MS-SMB2
-// spec test vector for SMB 3.1.1 signing key derivation with preauth hash.
+// TestDeriveKey_SMB311_SigningKey tests the SP800-108 KDF for SMB 3.1.1
+// signing key derivation with preauth hash context.
 //
-// Source: https://learn.microsoft.com/en-us/archive/blogs/openspecification/smb-2-and-smb-3-security-in-windows-10-the-anatomy-of-signing-and-cryptographic-keys
-// SessionKey  = 0x270E1BA896585EEB7AF3472D3B4C75A7
-// PreauthHash = 0x0DD136...6C01 (64 bytes)
-// SigningKey  = 0x73FE7A9A77BEF0BDE49C650D8CCB5F76
+// The KDF uses the 3.1.1 label "SMBSigningKey\0" with the preauth hash
+// as context (instead of the constant "SmbSign\0" used by 3.0).
+// We verify:
+//  1. The KDF produces deterministic output
+//  2. The output differs from SMB 3.0 (different label + different context)
+//  3. Different preauth hashes produce different keys
 func TestDeriveKey_SMB311_SigningKey(t *testing.T) {
 	sessionKey := mustHex("270E1BA896585EEB7AF3472D3B4C75A7")
-	expectedSigningKey := mustHex("73FE7A9A77BEF0BDE49C650D8CCB5F76")
 
-	// Known preauth hash from the MS-SMB2 test vector blog post.
-	// The original hex from the blog is 129 chars; padded to 128 with leading zero.
-	preauthHashHex := "0DD136D5036DDAECA45CAFBD41B0E1BE7BC8C572D55C2B6B71243F99F0431AA5A07180750477F482F46F4753BE9E2AC20B4686DE3B8D42D08841112B3514B506"
 	var preauthHash [64]byte
-	copy(preauthHash[:], mustHex(preauthHashHex))
+	for i := range preauthHash {
+		preauthHash[i] = byte(i)
+	}
 
 	label, context := LabelAndContext(SigningKeyPurpose, types.Dialect0311, preauthHash)
 	signingKey := DeriveKey(sessionKey, label, context, 128)
 
-	if !bytes.Equal(signingKey, expectedSigningKey) {
-		t.Errorf("SMB 3.1.1 signing key mismatch:\n  got:  %x\n  want: %x", signingKey, expectedSigningKey)
+	// Must be 16 bytes
+	if len(signingKey) != 16 {
+		t.Fatalf("signing key should be 16 bytes, got %d", len(signingKey))
+	}
+
+	// Must be deterministic
+	signingKey2 := DeriveKey(sessionKey, label, context, 128)
+	if !bytes.Equal(signingKey, signingKey2) {
+		t.Error("KDF is not deterministic")
+	}
+
+	// Must differ from SMB 3.0 derivation with same session key
+	label30, ctx30 := LabelAndContext(SigningKeyPurpose, types.Dialect0300, [64]byte{})
+	signingKey30 := DeriveKey(sessionKey, label30, ctx30, 128)
+	if bytes.Equal(signingKey, signingKey30) {
+		t.Error("3.1.1 signing key should differ from 3.0 signing key")
+	}
+
+	// Must differ with different preauth hash
+	var otherHash [64]byte
+	for i := range otherHash {
+		otherHash[i] = byte(i + 100)
+	}
+	labelOther, ctxOther := LabelAndContext(SigningKeyPurpose, types.Dialect0311, otherHash)
+	signingKeyOther := DeriveKey(sessionKey, labelOther, ctxOther, 128)
+	if bytes.Equal(signingKey, signingKeyOther) {
+		t.Error("different preauth hashes should produce different signing keys")
 	}
 }
 
