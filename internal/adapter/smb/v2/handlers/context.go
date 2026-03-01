@@ -4,8 +4,45 @@ package handlers
 import (
 	"context"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
+
+// CryptoState is an interface for per-connection cryptographic state.
+// This abstraction avoids circular imports between handlers/ and smb/ packages.
+// The concrete implementation is ConnectionCryptoState in internal/adapter/smb/.
+type CryptoState interface {
+	// SetDialect records the negotiated dialect.
+	SetDialect(d types.Dialect)
+	// GetDialect returns the negotiated dialect.
+	GetDialect() types.Dialect
+	// SetCipherId records the selected encryption cipher.
+	SetCipherId(id uint16)
+	// SetPreauthIntegrityHashId records the selected hash algorithm.
+	SetPreauthIntegrityHashId(id uint16)
+	// SetServerGUID records the server's GUID.
+	SetServerGUID(guid [16]byte)
+	// GetServerGUID returns the server's GUID.
+	GetServerGUID() [16]byte
+	// SetServerCapabilities records the server's capabilities.
+	SetServerCapabilities(caps types.Capabilities)
+	// GetServerCapabilities returns the server's capabilities.
+	GetServerCapabilities() types.Capabilities
+	// SetServerSecurityMode records the server's security mode.
+	SetServerSecurityMode(mode types.SecurityMode)
+	// GetServerSecurityMode returns the server's security mode.
+	GetServerSecurityMode() types.SecurityMode
+	// SetClientGUID records the client's GUID.
+	SetClientGUID(guid [16]byte)
+	// SetClientCapabilities records the client's capabilities.
+	SetClientCapabilities(caps types.Capabilities)
+	// SetClientSecurityMode records the client's security mode.
+	SetClientSecurityMode(mode types.SecurityMode)
+	// SetClientDialects records the client's offered dialects.
+	SetClientDialects(dialects []types.Dialect)
+	// GetClientDialects returns the client's offered dialect list.
+	GetClientDialects() []types.Dialect
+}
 
 // SMBHandlerContext carries per-request state through all SMB2 handlers.
 // It provides session identity, tree connection info, share-level permissions,
@@ -49,6 +86,13 @@ type SMBHandlerContext struct {
 	// Set by the connection layer to enable async notification delivery.
 	// If nil, notifications are logged but not sent.
 	AsyncNotifyCallback AsyncResponseCallback
+
+	// ConnCryptoState provides access to the per-connection cryptographic state.
+	// Used by the NEGOTIATE handler to store negotiation parameters on the
+	// connection for subsequent VNEG validation and preauth hash computation.
+	// Populated from ConnInfo.CryptoState by prepareDispatch. Nil if no
+	// CryptoState is available (e.g., in tests).
+	ConnCryptoState CryptoState
 }
 
 // NewSMBHandlerContext creates a new handler context from request parameters.

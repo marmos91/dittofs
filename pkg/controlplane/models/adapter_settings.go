@@ -142,6 +142,9 @@ type SMBAdapterSettings struct {
 	// Encryption (stub)
 	EnableEncryption bool `gorm:"default:false" json:"enable_encryption"`
 
+	// Directory leasing capability
+	DirectoryLeasingEnabled bool `gorm:"default:true" json:"directory_leasing_enabled"`
+
 	// Operation blocklist (JSON array stored as text)
 	BlockedOperations string `gorm:"type:text" json:"-"`
 
@@ -202,16 +205,17 @@ func NewDefaultNFSSettings(adapterID string) *NFSAdapterSettings {
 // NewDefaultSMBSettings creates an SMBAdapterSettings with all default values.
 func NewDefaultSMBSettings(adapterID string) *SMBAdapterSettings {
 	return &SMBAdapterSettings{
-		ID:                 uuid.New().String(),
-		AdapterID:          adapterID,
-		MinDialect:         "SMB2.0",
-		MaxDialect:         "SMB3.1.1",
-		SessionTimeout:     900,
-		OplockBreakTimeout: 35,
-		MaxConnections:     0,
-		MaxSessions:        10000,
-		EnableEncryption:   false,
-		Version:            1,
+		ID:                      uuid.New().String(),
+		AdapterID:               adapterID,
+		MinDialect:              "SMB2.0",
+		MaxDialect:              "SMB3.1.1",
+		SessionTimeout:          900,
+		OplockBreakTimeout:      35,
+		MaxConnections:          0,
+		MaxSessions:             10000,
+		EnableEncryption:        false,
+		DirectoryLeasingEnabled: true,
+		Version:                 1,
 	}
 }
 
@@ -303,7 +307,7 @@ func DefaultSMBSettingsValidRange() SMBSettingsValidRange {
 var ValidNFSVersions = []string{"3", "4.0"}
 
 // ValidSMBDialects lists supported SMB dialect strings.
-var ValidSMBDialects = []string{"SMB2.0", "SMB2.1", "SMB3.0", "SMB3.1.1"}
+var ValidSMBDialects = []string{"SMB2.0", "SMB2.1", "SMB3.0", "SMB3.0.2", "SMB3.1.1"}
 
 // ValidKerberosLevels lists valid Kerberos authentication levels.
 var ValidKerberosLevels = []string{"krb5", "krb5i", "krb5p"}

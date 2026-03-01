@@ -66,6 +66,11 @@ type HandlerResult struct {
 	//   - types.StatusAccessDenied: Permission denied
 	//   - types.StatusLogonFailure: Authentication failed
 	Status types.Status
+
+	// DropConnection signals the dispatch layer to close the TCP connection
+	// without sending a response. Used for fatal protocol errors where
+	// continuing is unsafe (e.g., VALIDATE_NEGOTIATE failure per MS-SMB2 3.3.5.15.12).
+	DropConnection bool
 }
 
 // NewResult creates a new handler result with the given status and data.

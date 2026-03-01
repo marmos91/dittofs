@@ -62,6 +62,21 @@ type Handler struct {
 	// Signing configuration
 	SigningConfig signing.SigningConfig
 
+	// Dialect range configuration (set by adapter from SMBAdapterSettings).
+	// MinDialect is the minimum dialect the server will negotiate.
+	// MaxDialect is the maximum dialect the server will negotiate.
+	// Defaults: MinDialect=0x0202 (SMB 2.0.2), MaxDialect=0x0311 (SMB 3.1.1).
+	MinDialect types.Dialect
+	MaxDialect types.Dialect
+
+	// EncryptionEnabled controls whether CapEncryption is advertised for SMB 3.0+.
+	// When false, encryption capabilities are not offered during negotiate.
+	EncryptionEnabled bool
+
+	// DirectoryLeasingEnabled controls whether CapDirectoryLeasing is advertised for SMB 3.0+.
+	// Defaults to true.
+	DirectoryLeasingEnabled bool
+
 	// Cached share list for pipe CREATE operations (IPC$).
 	// Protected by sharesCacheMu. Invalidated via Runtime.OnShareChange().
 	cachedShares     []rpc.ShareInfo1
@@ -177,15 +192,19 @@ func NewHandler() *Handler {
 // generates a random server GUID, and sets default max sizes (64KB).
 func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 	h := &Handler{
-		StartTime:       time.Now(),
-		SessionManager:  sessionManager,
-		PipeManager:     rpc.NewPipeManager(),
-		OplockManager:   NewOplockManager(),
-		NotifyRegistry:  NewNotifyRegistry(),
-		MaxTransactSize: 1048576, // 1MB (supports large directory listings; increases per-request memory)
-		MaxReadSize:     1048576, // 1MB
-		MaxWriteSize:    1048576, // 1MB
-		SigningConfig:   signing.DefaultSigningConfig(),
+		StartTime:               time.Now(),
+		SessionManager:          sessionManager,
+		PipeManager:             rpc.NewPipeManager(),
+		OplockManager:           NewOplockManager(),
+		NotifyRegistry:          NewNotifyRegistry(),
+		MaxTransactSize:         1048576, // 1MB (supports large directory listings; increases per-request memory)
+		MaxReadSize:             1048576, // 1MB
+		MaxWriteSize:            1048576, // 1MB
+		SigningConfig:           signing.DefaultSigningConfig(),
+		MinDialect:              types.Dialect0202,
+		MaxDialect:              types.Dialect0311,
+		EncryptionEnabled:       false,
+		DirectoryLeasingEnabled: true,
 	}
 
 	// Generate random server GUID
