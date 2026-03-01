@@ -532,7 +532,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 				ctx.IsGuest = false
 
 				// Configure signing with derived signing key
-				h.configureSessionSigningWithKey(sess, signingKey[:])
+				h.configureSessionSigningWithKey(sess, signingKey[:], ctx)
 
 				logger.Debug("NTLM authentication complete (validated credentials)",
 					"sessionID", sess.SessionID,
@@ -649,12 +649,15 @@ func (h *Handler) createGuestSession(ctx *SMBHandlerContext) (*HandlerResult, er
 // configureSessionSigningWithKey sets up message signing for a session with
 // a pre-derived session key from NTLMv2 authentication.
 //
-// This is the preferred method for authenticated sessions where the session key
-// has been properly derived from the NTLMv2 exchange (using the user's NT hash,
-// server challenge, and client response).
+// For SMB 2.x sessions: creates an HMACSigner directly from the session key.
+// For SMB 3.x sessions: derives all 4 keys via SP800-108 KDF using the
+// negotiated dialect, preauth integrity hash, cipher ID, and signing algorithm.
+//
+// The ctx parameter provides access to the connection's CryptoState which holds
+// the negotiated dialect and algorithm parameters from NEGOTIATE.
 //
 // [MS-SMB2] Section 3.3.5.5.3 - Session signing is established here
-func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionKey []byte) {
+func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionKey []byte, ctx *SMBHandlerContext) {
 	if !h.SigningConfig.Enabled || len(sessionKey) == 0 {
 		logger.Debug("Session signing NOT configured",
 			"sessionID", sess.SessionID,
@@ -663,21 +666,48 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 		return
 	}
 
-	logger.Debug("Configuring session signing key",
+	// Determine the negotiated dialect from the connection's CryptoState.
+	// If CryptoState is nil (legacy 2.x path or tests), default to 2.0.2.
+	dialect := types.Dialect0202
+	var preauthHash [64]byte
+	var cipherId uint16
+	var signingAlgId uint16
+
+	if ctx != nil && ctx.ConnCryptoState != nil {
+		dialect = ctx.ConnCryptoState.GetDialect()
+		if dialect >= types.Dialect0300 {
+			preauthHash = ctx.ConnCryptoState.GetPreauthHash()
+			cipherId = ctx.ConnCryptoState.GetCipherId()
+			signingAlgId = ctx.ConnCryptoState.GetSigningAlgorithmId()
+		}
+	}
+
+	logger.Debug("Configuring session signing",
 		"sessionID", sess.SessionID,
-		"signingKeyLen", len(sessionKey))
+		"dialect", dialect.String(),
+		"signingKeyLen", len(sessionKey),
+		"signingAlgId", signingAlgId,
+		"cipherId", cipherId,
+		"is3x", dialect >= types.Dialect0300)
 
-	// Set the signing key on the session
-	sess.SetSigningKey(sessionKey)
-
-	// Enable signing
-	sess.EnableSigning(h.SigningConfig.Required)
+	if dialect >= types.Dialect0300 {
+		// SMB 3.x: derive all 4 keys via SP800-108 KDF
+		cryptoState := session.DeriveAllKeys(sessionKey, dialect, preauthHash, cipherId, signingAlgId)
+		cryptoState.SigningEnabled = true
+		cryptoState.SigningRequired = h.SigningConfig.Required
+		sess.SetCryptoState(cryptoState)
+	} else {
+		// SMB 2.x: direct HMAC-SHA256 from session key
+		sess.SetSigningKey(sessionKey)
+		sess.EnableSigning(h.SigningConfig.Required)
+	}
 
 	logger.Debug("Session signing configured",
 		"sessionID", sess.SessionID,
 		"enabled", sess.ShouldSign(),
 		"shouldVerify", sess.ShouldVerify(),
-		"required", h.SigningConfig.Required)
+		"required", h.SigningConfig.Required,
+		"dialect", dialect.String())
 }
 
 // =============================================================================

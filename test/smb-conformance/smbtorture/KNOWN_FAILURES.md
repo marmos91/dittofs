@@ -24,7 +24,8 @@ prefix. Lines starting with `#`, `|---`, empty lines, and the header row
 | smb2.replay.* | Replay detection | Not implemented (v3.8) | - |
 | smb2.lease.* | Leasing | SMB3 leasing not implemented (v3.8 Phase 40) | - |
 | smb2.credits.* | Credit management | SMB3 credit sequences not implemented | - |
-| smb2.session.* | Session management | SMB3 session features not implemented | - |
+| smb2.session.* | Session management | SMB3 session binding/reconnect not implemented | - |
+| smb2.session-require-signing.* | Session signing | Signing enforcement edge cases (SMB3 session binding) | - |
 
 ### Change Notify
 
@@ -162,8 +163,10 @@ prefix. Lines starting with `#`, `|---`, empty lines, and the header row
 ## Notes
 
 - smbtorture image: quay.io/samba.org/samba-toolbox:v0.8
-- DittoFS implements SMB 2.0.2/2.1 (not SMB 3.x yet)
-- Many tests fail due to missing SMB3 features
+- DittoFS implements SMB 2.0.2, 2.1, 3.0, 3.0.2, and 3.1.1 dialects
+- Phase 34 added SMB 3.x key derivation (SP800-108 KDF) and signing
+  (AES-128-CMAC/GMAC via SIGNING_CAPABILITIES negotiate context)
+- Many tests fail due to missing SMB3 features (encryption, durable handles, etc.)
 - Tests requiring multi-client coordination (oplocks, share modes) are expected to fail
 - Tests requiring Windows-specific ACL/security semantics are expected to fail
 - The NT_STATUS_NO_MEMORY errors seen in full-suite runs are a client-side issue
