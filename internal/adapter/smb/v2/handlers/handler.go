@@ -610,15 +610,15 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 		fileShareDelete = uint32(0x04)
 
 		// Access mask bits per MS-SMB2
-		fileReadData    = uint32(0x00000001)
-		fileWriteData   = uint32(0x00000002)
-		fileAppendData  = uint32(0x00000004)
-		fileExecute     = uint32(0x00000020)
-		deleteAccess    = uint32(0x00010000)
-		genericRead     = uint32(0x80000000)
-		genericWrite    = uint32(0x40000000)
-		genericAll      = uint32(0x10000000)
-		maxAllowed      = uint32(0x02000000)
+		fileReadData   = uint32(0x00000001)
+		fileWriteData  = uint32(0x00000002)
+		fileAppendData = uint32(0x00000004)
+		fileExecute    = uint32(0x00000020)
+		deleteAccess   = uint32(0x00010000)
+		genericRead    = uint32(0x80000000)
+		genericWrite   = uint32(0x40000000)
+		genericAll     = uint32(0x10000000)
+		maxAllowed     = uint32(0x02000000)
 	)
 
 	// Helper: does access mask imply read?
