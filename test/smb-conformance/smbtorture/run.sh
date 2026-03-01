@@ -277,17 +277,22 @@ run_smbtorture() {
     local per_timeout="${2:-$TIMEOUT}"
     local suite_prefix="${3:-}"
 
+    local rc=0
     if [[ -n "$suite_prefix" ]]; then
         ${TIMEOUT_CMD:+$TIMEOUT_CMD --signal=TERM --kill-after=30 "$per_timeout"} \
             env PROFILE="$PROFILE" docker compose run --rm smbtorture \
             "${SMBTORTURE_ARGS[@]}" "$filter" \
             2>&1 | sed -E "s/^(test|success|failure|error|skip): /\1: ${suite_prefix}./" \
-            | tee -a "${RESULTS_DIR}/smbtorture-output.txt" || true
+            | tee -a "${RESULTS_DIR}/smbtorture-output.txt" || rc=${PIPESTATUS[0]}
     else
         ${TIMEOUT_CMD:+$TIMEOUT_CMD --signal=TERM --kill-after=30 "$per_timeout"} \
             env PROFILE="$PROFILE" docker compose run --rm smbtorture \
             "${SMBTORTURE_ARGS[@]}" "$filter" \
-            2>&1 | tee -a "${RESULTS_DIR}/smbtorture-output.txt" || true
+            2>&1 | tee -a "${RESULTS_DIR}/smbtorture-output.txt" || rc=${PIPESTATUS[0]}
+    fi
+    # Exit code 124 = timeout, 125+ = docker/infrastructure failure
+    if [[ $rc -ge 125 ]]; then
+        log_warn "smbtorture infrastructure failure (exit code $rc) for filter: $filter"
     fi
 }
 

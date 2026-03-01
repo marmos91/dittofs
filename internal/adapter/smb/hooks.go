@@ -34,20 +34,22 @@ func init() {
 	// Before-hook: always updates the hash with the request bytes.
 	// The dialect is not yet known at request time, so we always hash.
 	// If the negotiated dialect is not 3.1.1, the hash is simply unused.
-	RegisterBeforeHook(types.CommandNegotiate, preauthHashBeforeHook)
+	registerBeforeHook(types.CommandNegotiate, preauthHashBeforeHook)
 
 	// After-hook: updates the hash with the response bytes, but only if
 	// the negotiated dialect is 3.1.1 (checked via CryptoState.Dialect).
-	RegisterAfterHook(types.CommandNegotiate, preauthHashAfterHook)
+	registerAfterHook(types.CommandNegotiate, preauthHashAfterHook)
 }
 
-// RegisterBeforeHook appends a hook to run before handler execution for the given command.
-func RegisterBeforeHook(cmd types.Command, hook DispatchHook) {
+// registerBeforeHook appends a hook to run before handler execution for the given command.
+// Must only be called during init().
+func registerBeforeHook(cmd types.Command, hook DispatchHook) {
 	beforeHooks[cmd] = append(beforeHooks[cmd], hook)
 }
 
-// RegisterAfterHook appends a hook to run after handler execution for the given command.
-func RegisterAfterHook(cmd types.Command, hook DispatchHook) {
+// registerAfterHook appends a hook to run after handler execution for the given command.
+// Must only be called during init().
+func registerAfterHook(cmd types.Command, hook DispatchHook) {
 	afterHooks[cmd] = append(afterHooks[cmd], hook)
 }
 
