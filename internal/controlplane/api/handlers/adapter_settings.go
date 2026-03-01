@@ -84,28 +84,28 @@ type PutNFSSettingsRequest struct {
 
 // PatchSMBSettingsRequest uses pointer fields for partial updates.
 type PatchSMBSettingsRequest struct {
-	MinDialect         *string   `json:"min_dialect,omitempty"`
-	MaxDialect         *string   `json:"max_dialect,omitempty"`
-	SessionTimeout     *int      `json:"session_timeout,omitempty"`
-	OplockBreakTimeout *int      `json:"oplock_break_timeout,omitempty"`
-	MaxConnections     *int      `json:"max_connections,omitempty"`
-	MaxSessions        *int      `json:"max_sessions,omitempty"`
-	EnableEncryption          *bool     `json:"enable_encryption,omitempty"`
-	DirectoryLeasingEnabled   *bool     `json:"directory_leasing_enabled,omitempty"`
-	BlockedOperations         *[]string `json:"blocked_operations,omitempty"`
+	MinDialect              *string   `json:"min_dialect,omitempty"`
+	MaxDialect              *string   `json:"max_dialect,omitempty"`
+	SessionTimeout          *int      `json:"session_timeout,omitempty"`
+	OplockBreakTimeout      *int      `json:"oplock_break_timeout,omitempty"`
+	MaxConnections          *int      `json:"max_connections,omitempty"`
+	MaxSessions             *int      `json:"max_sessions,omitempty"`
+	EnableEncryption        *bool     `json:"enable_encryption,omitempty"`
+	DirectoryLeasingEnabled *bool     `json:"directory_leasing_enabled,omitempty"`
+	BlockedOperations       *[]string `json:"blocked_operations,omitempty"`
 }
 
 // PutSMBSettingsRequest requires all fields for full replacement.
 type PutSMBSettingsRequest struct {
-	MinDialect                string   `json:"min_dialect"`
-	MaxDialect                string   `json:"max_dialect"`
-	SessionTimeout            int      `json:"session_timeout"`
-	OplockBreakTimeout        int      `json:"oplock_break_timeout"`
-	MaxConnections            int      `json:"max_connections"`
-	MaxSessions               int      `json:"max_sessions"`
-	EnableEncryption          bool     `json:"enable_encryption"`
-	DirectoryLeasingEnabled   bool     `json:"directory_leasing_enabled"`
-	BlockedOperations         []string `json:"blocked_operations"`
+	MinDialect              string   `json:"min_dialect"`
+	MaxDialect              string   `json:"max_dialect"`
+	SessionTimeout          int      `json:"session_timeout"`
+	OplockBreakTimeout      int      `json:"oplock_break_timeout"`
+	MaxConnections          int      `json:"max_connections"`
+	MaxSessions             int      `json:"max_sessions"`
+	EnableEncryption        bool     `json:"enable_encryption"`
+	DirectoryLeasingEnabled bool     `json:"directory_leasing_enabled"`
+	BlockedOperations       []string `json:"blocked_operations"`
 }
 
 // --- Response types ---
@@ -139,12 +139,12 @@ type NFSSettingsResponse struct {
 
 // SMBSettingsResponse is the API response for SMB adapter settings.
 type SMBSettingsResponse struct {
-	MinDialect         string   `json:"min_dialect"`
-	MaxDialect         string   `json:"max_dialect"`
-	SessionTimeout     int      `json:"session_timeout"`
-	OplockBreakTimeout int      `json:"oplock_break_timeout"`
-	MaxConnections     int      `json:"max_connections"`
-	MaxSessions        int      `json:"max_sessions"`
+	MinDialect              string   `json:"min_dialect"`
+	MaxDialect              string   `json:"max_dialect"`
+	SessionTimeout          int      `json:"session_timeout"`
+	OplockBreakTimeout      int      `json:"oplock_break_timeout"`
+	MaxConnections          int      `json:"max_connections"`
+	MaxSessions             int      `json:"max_sessions"`
 	EnableEncryption        bool     `json:"enable_encryption"`
 	DirectoryLeasingEnabled bool     `json:"directory_leasing_enabled"`
 	BlockedOperations       []string `json:"blocked_operations"`
@@ -1025,12 +1025,12 @@ func smbSettingsToResponse(s *models.SMBAdapterSettings) SMBSettingsResponse {
 		ops = []string{}
 	}
 	return SMBSettingsResponse{
-		MinDialect:         s.MinDialect,
-		MaxDialect:         s.MaxDialect,
-		SessionTimeout:     s.SessionTimeout,
-		OplockBreakTimeout: s.OplockBreakTimeout,
-		MaxConnections:     s.MaxConnections,
-		MaxSessions:        s.MaxSessions,
+		MinDialect:              s.MinDialect,
+		MaxDialect:              s.MaxDialect,
+		SessionTimeout:          s.SessionTimeout,
+		OplockBreakTimeout:      s.OplockBreakTimeout,
+		MaxConnections:          s.MaxConnections,
+		MaxSessions:             s.MaxSessions,
 		EnableEncryption:        s.EnableEncryption,
 		DirectoryLeasingEnabled: s.DirectoryLeasingEnabled,
 		BlockedOperations:       ops,
