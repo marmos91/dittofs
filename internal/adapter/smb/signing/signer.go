@@ -1,6 +1,8 @@
 package signing
 
 import (
+	"encoding/binary"
+
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
 
@@ -34,12 +36,37 @@ type Signer interface {
 //   - signingAlgorithmId == SigningAlgAESGMAC: GMACSigner
 //   - otherwise (3.0/3.0.2, or 3.1.1 without GMAC): CMACSigner
 func NewSigner(dialect types.Dialect, signingAlgorithmId uint16, key []byte) Signer {
-	// TODO: implement
-	return nil
+	if dialect < types.Dialect0300 {
+		return NewHMACSigner(key)
+	}
+	if signingAlgorithmId == SigningAlgAESGMAC {
+		return NewGMACSigner(key)
+	}
+	return NewCMACSigner(key)
 }
 
 // SignMessage signs an SMB2 message in place using the given Signer.
-// It sets the SMB2_FLAGS_SIGNED flag and writes the computed signature.
+// It sets the SMB2_FLAGS_SIGNED flag (bit 3 of flags at offset 16) and
+// writes the computed signature to bytes 48-63.
+//
+// This replaces the old SigningKey.SignMessage method and decouples the
+// protocol concern (flag setting, signature placement) from the crypto concern.
 func SignMessage(signer Signer, message []byte) {
-	// TODO: implement
+	if signer == nil || len(message) < SMB2HeaderSize {
+		return
+	}
+
+	// Set the signed flag (SMB2_FLAGS_SIGNED = 0x00000008)
+	flags := binary.LittleEndian.Uint32(message[16:20])
+	flags |= 0x00000008
+	binary.LittleEndian.PutUint32(message[16:20], flags)
+
+	// Zero the signature field first
+	for i := SignatureOffset; i < SignatureOffset+SignatureSize; i++ {
+		message[i] = 0
+	}
+
+	// Compute and write signature
+	sig := signer.Sign(message)
+	copy(message[SignatureOffset:], sig[:])
 }

@@ -258,19 +258,19 @@ func (s *Session) ShouldVerify() bool {
 	return s.Signing != nil && s.Signing.ShouldVerify()
 }
 
-// SignMessage signs an SMB2 message in place using the session's signing key.
+// SignMessage signs an SMB2 message in place using the session's signer.
 // This should be called before sending a message if signing is enabled.
 func (s *Session) SignMessage(message []byte) {
-	if s.Signing != nil && s.Signing.ShouldSign() && s.Signing.SigningKey != nil {
-		s.Signing.SigningKey.SignMessage(message)
+	if s.Signing != nil && s.Signing.ShouldSign() && s.Signing.Signer != nil {
+		signing.SignMessage(s.Signing.Signer, message)
 	}
 }
 
 // VerifyMessage verifies the signature of an SMB2 message.
 // Returns true if the signature is valid or if signing is not enabled.
 func (s *Session) VerifyMessage(message []byte) bool {
-	if s.Signing == nil || !s.Signing.ShouldVerify() || s.Signing.SigningKey == nil {
+	if s.Signing == nil || !s.Signing.ShouldVerify() || s.Signing.Signer == nil {
 		return true // No verification needed
 	}
-	return s.Signing.SigningKey.Verify(message)
+	return s.Signing.Signer.Verify(message)
 }
