@@ -179,8 +179,8 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 	// Get open file
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
-		logger.Debug("LOCK: invalid file ID", "fileID", fmt.Sprintf("%x", req.FileID))
-		return NewErrorResult(types.StatusInvalidHandle), nil
+		logger.Debug("LOCK: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
+		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
 	// Pipes don't support locking
@@ -449,7 +449,7 @@ func lockErrorToStatus(err error) types.Status {
 		case metadata.ErrLockNotFound:
 			return types.StatusRangeNotLocked
 		case metadata.ErrNotFound:
-			return types.StatusInvalidHandle
+			return types.StatusFileClosed
 		case metadata.ErrPermissionDenied:
 			return types.StatusAccessDenied
 		case metadata.ErrIsDirectory:

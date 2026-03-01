@@ -140,8 +140,8 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
-		logger.Debug("READ: invalid file ID", "fileID", fmt.Sprintf("%x", req.FileID))
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
+		logger.Debug("READ: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileClosed}}, nil
 	}
 
 	// ========================================================================

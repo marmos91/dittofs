@@ -47,8 +47,8 @@ func (h *Handler) handleGetReparsePoint(ctx *SMBHandlerContext, body []byte) (*H
 	// Get open file
 	openFile, ok := h.GetOpenFile(fileID)
 	if !ok {
-		logger.Debug("IOCTL GET_REPARSE_POINT: invalid file ID", "fileID", fmt.Sprintf("%x", fileID))
-		return NewErrorResult(types.StatusInvalidHandle), nil
+		logger.Debug("IOCTL GET_REPARSE_POINT: file handle not found (closed)", "fileID", fmt.Sprintf("%x", fileID))
+		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
 	// Build auth context
@@ -204,8 +204,8 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	// Get the open file (must be a directory)
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
-		logger.Debug("CHANGE_NOTIFY: invalid file ID", "fileID", fmt.Sprintf("%x", req.FileID))
-		return NewErrorResult(types.StatusInvalidHandle), nil
+		logger.Debug("CHANGE_NOTIFY: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
+		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
 	// Verify it's a directory
@@ -286,8 +286,8 @@ func (h *Handler) OplockBreak(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 	// Look up the open file
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
-		logger.Debug("OPLOCK_BREAK: invalid file ID", "fileID", fmt.Sprintf("%x", req.FileID))
-		return NewErrorResult(types.StatusInvalidHandle), nil
+		logger.Debug("OPLOCK_BREAK: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
+		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
 	// Build oplock path and acknowledge the break
@@ -336,8 +336,8 @@ func (h *Handler) handleGetNtfsVolumeData(ctx *SMBHandlerContext, body []byte) (
 	// Get open file to access metadata handle for filesystem stats
 	openFile, ok := h.GetOpenFile(fileID)
 	if !ok {
-		logger.Debug("IOCTL FSCTL_GET_NTFS_VOLUME_DATA: invalid file ID", "fileID", fmt.Sprintf("%x", fileID))
-		return NewErrorResult(types.StatusInvalidHandle), nil
+		logger.Debug("IOCTL FSCTL_GET_NTFS_VOLUME_DATA: file handle not found (closed)", "fileID", fmt.Sprintf("%x", fileID))
+		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
 	// Query filesystem stats so TotalClusters and BytesPerSector match
@@ -396,8 +396,8 @@ func (h *Handler) handleReadFileUsnData(ctx *SMBHandlerContext, body []byte) (*H
 	// Get open file
 	openFile, ok := h.GetOpenFile(fileID)
 	if !ok {
-		logger.Debug("IOCTL READ_FILE_USN_DATA: invalid file ID", "fileID", fmt.Sprintf("%x", fileID))
-		return NewErrorResult(types.StatusInvalidHandle), nil
+		logger.Debug("IOCTL READ_FILE_USN_DATA: file handle not found (closed)", "fileID", fmt.Sprintf("%x", fileID))
+		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
 	// Get file info for attributes
@@ -528,8 +528,8 @@ func (h *Handler) handlePipeTransceive(ctx *SMBHandlerContext, body []byte) (*Ha
 	// Get open file to verify it's a pipe
 	openFile, ok := h.GetOpenFile(fileID)
 	if !ok {
-		logger.Debug("IOCTL PIPE_TRANSCEIVE: invalid file ID")
-		return NewErrorResult(types.StatusInvalidHandle), nil
+		logger.Debug("IOCTL PIPE_TRANSCEIVE: file handle not found (closed)")
+		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
 	if !openFile.IsPipe {

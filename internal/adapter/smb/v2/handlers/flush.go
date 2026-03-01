@@ -207,8 +207,8 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
-		logger.Debug("FLUSH: invalid file ID", "fileID", fmt.Sprintf("%x", req.FileID))
-		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
+		logger.Debug("FLUSH: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
+		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileClosed}}, nil
 	}
 
 	// ========================================================================
