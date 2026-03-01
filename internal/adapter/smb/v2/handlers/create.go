@@ -428,6 +428,13 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		// Other stream names (alternate data streams) are kept as-is
 	}
 
+	// Reject paths that traverse above the share root (e.g., "../../..")
+	// Per MS-SMB2: return STATUS_OBJECT_PATH_SYNTAX_BAD for invalid path syntax.
+	cleaned := path.Clean(filename)
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectPathSyntaxBad}}, nil
+	}
+
 	// Get root handle for the share
 	rootHandle, err := h.Registry.GetRootHandle(tree.ShareName)
 	if err != nil {
@@ -476,7 +483,22 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	isDirectoryRequest := req.CreateOptions&types.FileDirectoryFile != 0
 	isNonDirectoryRequest := req.CreateOptions&types.FileNonDirectoryFile != 0
 
-	// Validate directory vs file constraints for existing files
+	// ========================================================================
+	// Step 6: Handle create disposition
+	// ========================================================================
+	//
+	// Per MS-FSA 2.1.5.1.1: Disposition check (e.g., FILE_CREATE failing with
+	// OBJECT_NAME_COLLISION when the name exists) takes priority over type
+	// constraint checks (NOT_A_DIRECTORY / FILE_IS_A_DIRECTORY).
+
+	createAction, dispErr := ResolveCreateDisposition(req.CreateDisposition, fileExists)
+	if dispErr != nil {
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(dispErr)}}, nil
+	}
+
+	// Validate directory vs file constraints for existing files.
+	// Only applies when the disposition opens or overwrites (not FILE_CREATE,
+	// which already failed above if the file existed).
 	if fileExists {
 		if isDirectoryRequest && existingFile.Type != metadata.FileTypeDirectory {
 			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotADirectory}}, nil
@@ -486,13 +508,12 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		}
 	}
 
-	// ========================================================================
-	// Step 6: Handle create disposition
-	// ========================================================================
-
-	createAction, dispErr := ResolveCreateDisposition(req.CreateDisposition, fileExists)
-	if dispErr != nil {
-		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(dispErr)}}, nil
+	// Per MS-SMB2 3.3.5.9: Overwrite/supersede operations are not valid for
+	// directories. If the file exists and is a directory, only open is allowed.
+	if fileExists && existingFile.Type == metadata.FileTypeDirectory {
+		if createAction == types.FileOverwritten || createAction == types.FileSuperseded {
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+		}
 	}
 
 	// ========================================================================
@@ -513,6 +534,27 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			"action", createAction,
 			"permission", ctx.Permission)
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+	}
+
+	// ========================================================================
+	// Step 6c: Check share mode conflicts for existing files
+	// ========================================================================
+	//
+	// Per MS-SMB2 3.3.5.9 and MS-FSA 2.1.5.1.2: When opening an existing file,
+	// the server must check if the requested access and sharing modes are
+	// compatible with all existing opens on the same file.
+
+	if fileExists {
+		existingHandle, handleErr := metadata.EncodeFileHandle(existingFile)
+		if handleErr == nil {
+			if shareConflict := h.checkShareModeConflict(existingHandle, req.DesiredAccess, req.ShareAccess); shareConflict {
+				logger.Debug("CREATE: sharing violation",
+					"path", filename,
+					"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
+					"shareAccess", fmt.Sprintf("0x%x", req.ShareAccess))
+				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSharingViolation}}, nil
+			}
+		}
 	}
 
 	// ========================================================================
@@ -658,6 +700,8 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		FileName:     baseName,
 		// Store oplock level
 		OplockLevel: grantedOplock,
+		// Store share access for share mode conflict checking
+		ShareAccess: req.ShareAccess,
 		// Store original create options for FileModeInformation
 		CreateOptions: req.CreateOptions,
 		// Set delete-on-close from create options

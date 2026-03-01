@@ -76,17 +76,16 @@ prefix. Lines starting with `#`, `|---`, empty lines, and the header row
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.sharemode.* | Share modes | Share mode conflict checking not implemented | - |
-| smb2.check-sharemode | Share modes | Share mode checking not implemented | - |
+| smb2.sharemode.* | Share modes | Advanced share mode scenarios not fully implemented | - |
+| smb2.check-sharemode | Share modes | Advanced share mode checking not fully implemented | - |
 | smb2.hold-sharemode | Hold test | Interactive test, blocks indefinitely | - |
-| smb2.deny.* | Deny modes | Access deny mode enforcement not implemented | - |
+| smb2.deny.* | Deny modes | Complex deny mode scenarios may fail | - |
 
 ### Directory Operations
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.dir.* | Directory operations | Advanced directory queries may fail | - |
-| smb2.mkdir | Directory creation | Advanced mkdir semantics | - |
 
 ### CREATE Operations
 
@@ -106,7 +105,7 @@ prefix. Lines starting with `#`, `|---`, empty lines, and the header row
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.getinfo.* | Query Info | Advanced getinfo scenarios (access, security, buffer checks) | - |
-| smb2.setinfo | Set info | Advanced set-info operations not implemented | - |
+| smb2.setinfo | Set Info | change_time not preserved after SET_INFO with explicit timestamps | - |
 | smb2.scan.* | Scan | Info level enumeration/scan tests | - |
 
 ### Timestamps

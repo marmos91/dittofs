@@ -301,6 +301,12 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 			return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInfoLengthMismatch}}, nil
 		}
 	}
+	if req.InfoType == types.SMB2InfoTypeFilesystem {
+		minSize := fsInfoClassMinSize(types.FileInfoClass(req.FileInfoClass))
+		if minSize > 0 && req.OutputBufferLength < minSize {
+			return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInfoLengthMismatch}}, nil
+		}
+	}
 
 	// ========================================================================
 	// Step 4: Build info based on type and class
@@ -813,6 +819,24 @@ func fileInfoClassMinSize(class types.FileInfoClass) uint32 {
 		return 8
 	default:
 		return 0 // Variable-length or unknown; allow truncation
+	}
+}
+
+// fsInfoClassMinSize returns the minimum output buffer size required for a
+// fixed-size filesystem information class [MS-FSCC] 2.5. Returns 0 for
+// variable-length classes (which may be truncated instead of rejected).
+func fsInfoClassMinSize(class types.FileInfoClass) uint32 {
+	switch class {
+	case 3: // FileFsSizeInformation [MS-FSCC] 2.5.8 (24 bytes)
+		return 24
+	case 4: // FileFsDeviceInformation [MS-FSCC] 2.5.9 (8 bytes)
+		return 8
+	case 7: // FileFsFullSizeInformation [MS-FSCC] 2.5.4 (32 bytes)
+		return 32
+	case 11: // FileFsSectorSizeInformation [MS-FSCC] 2.5.8 (28 bytes)
+		return 28
+	default:
+		return 0 // Variable-length (volume, label, attribute) or unknown
 	}
 }
 

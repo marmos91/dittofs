@@ -95,6 +95,9 @@ const (
 	// StatusObjectNameCollision indicates the name already exists.
 	StatusObjectNameCollision Status = 0xC0000035
 
+	// StatusObjectPathSyntaxBad indicates the path has invalid syntax (e.g., ".." traversal).
+	StatusObjectPathSyntaxBad Status = 0xC000003B
+
 	// StatusObjectPathNotFound indicates a path component was not found.
 	StatusObjectPathNotFound Status = 0xC000003A
 

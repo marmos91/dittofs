@@ -258,6 +258,14 @@ func (h *Handler) setFileInfoFromStore(
 		// Decode directly from raw buffer to handle FILETIME sentinels (0, -1, -2)
 		setAttrs := DecodeBasicInfoToSetAttrs(buffer)
 
+		// Per MS-FSCC 2.6: Map FILE_ATTRIBUTE_READONLY to Unix mode.
+		// When FileAttributes != 0, the client is explicitly setting attributes.
+		// READONLY removes owner write bits; its absence restores them.
+		if fileAttrs != 0 {
+			mode := SMBModeFromAttrs(fileAttrs, openFile.IsDirectory)
+			setAttrs.Mode = &mode
+		}
+
 		// Per MS-FSA 2.1.5.14.2: Handle timestamp freeze/unfreeze sentinels.
 		// -1 (0xFFFFFFFFFFFFFFFF): Freeze timestamp -- suppress auto-updates on subsequent operations.
 		// -2 (0xFFFFFFFFFFFFFFFE): Unfreeze timestamp -- re-enable auto-updates.
@@ -361,6 +369,16 @@ func (h *Handler) setFileInfoFromStore(
 		if err != nil {
 			logger.Debug("SET_INFO: failed to decode rename info", "error", err)
 			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+		}
+
+		// Per MS-FSA 2.1.5.14.10: Before renaming, check that no other open
+		// handle on the same file conflicts with the rename. Specifically,
+		// all other opens must have FILE_SHARE_DELETE (0x04) in ShareAccess.
+		if conflict := h.checkShareDeleteConflict(openFile); conflict {
+			logger.Debug("SET_INFO: rename blocked by sharing violation",
+				"path", openFile.Path,
+				"fileID", fmt.Sprintf("%x", openFile.FileID))
+			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSharingViolation}}, nil
 		}
 
 		// Normalize path separators (Windows uses backslash, we use forward slash)
