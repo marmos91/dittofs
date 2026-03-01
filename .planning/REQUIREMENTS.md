@@ -16,16 +16,16 @@ Requirements for SMB3 protocol upgrade. Each maps to roadmap phases.
 
 ### Key Derivation
 
-- [ ] **KDF-01**: Server derives signing/encryption/decryption/application keys via SP800-108 Counter Mode KDF
-- [ ] **KDF-02**: Server uses constant label/context strings for SMB 3.0/3.0.2 key derivation
-- [ ] **KDF-03**: Server uses preauth integrity hash as KDF context for SMB 3.1.1 key derivation
+- [x] **KDF-01**: Server derives signing/encryption/decryption/application keys via SP800-108 Counter Mode KDF
+- [x] **KDF-02**: Server uses constant label/context strings for SMB 3.0/3.0.2 key derivation
+- [x] **KDF-03**: Server uses preauth integrity hash as KDF context for SMB 3.1.1 key derivation
 - [ ] **KDF-04**: Server extracts Kerberos session key from AP-REQ for SMB3 key derivation
 
 ### Signing
 
-- [ ] **SIGN-01**: Server signs messages with AES-128-CMAC for SMB 3.x sessions (replacing HMAC-SHA256)
-- [ ] **SIGN-02**: Server supports AES-128-GMAC signing for SMB 3.1.1 via signing capabilities negotiate context
-- [ ] **SIGN-03**: Signing algorithm abstraction dispatches by negotiated dialect (HMAC-SHA256 for 2.x, CMAC/GMAC for 3.x)
+- [x] **SIGN-01**: Server signs messages with AES-128-CMAC for SMB 3.x sessions (replacing HMAC-SHA256)
+- [x] **SIGN-02**: Server supports AES-128-GMAC signing for SMB 3.1.1 via signing capabilities negotiate context
+- [x] **SIGN-03**: Signing algorithm abstraction dispatches by negotiated dialect (HMAC-SHA256 for 2.x, CMAC/GMAC for 3.x)
 
 ### Encryption
 
@@ -129,13 +129,13 @@ Which phases cover which requirements. Updated during roadmap creation.
 | NEG-02 | Phase 33 | Complete |
 | NEG-03 | Phase 33 | Complete |
 | NEG-04 | Phase 33 | Complete |
-| KDF-01 | Phase 34 | Pending |
-| KDF-02 | Phase 34 | Pending |
-| KDF-03 | Phase 34 | Pending |
+| KDF-01 | Phase 34 | Complete |
+| KDF-02 | Phase 34 | Complete |
+| KDF-03 | Phase 34 | Complete |
 | KDF-04 | Phase 36 | Pending |
-| SIGN-01 | Phase 34 | Pending |
-| SIGN-02 | Phase 34 | Pending |
-| SIGN-03 | Phase 34 | Pending |
+| SIGN-01 | Phase 34 | Complete |
+| SIGN-02 | Phase 34 | Complete |
+| SIGN-03 | Phase 34 | Complete |
 | ENC-01 | Phase 35 | Pending |
 | ENC-02 | Phase 35 | Pending |
 | ENC-03 | Phase 35 | Pending |
