@@ -409,14 +409,20 @@ func (h *Handler) processNegotiateContexts(
 
 // defaultSigningAlgorithmPreference is the server's default signing algorithm
 // preference order, used when SigningAlgorithmPreference is not configured.
+// Only AES algorithms are included because SIGNING_CAPABILITIES is a 3.1.1-only
+// negotiate context, and HMAC-SHA256 is not valid for SMB 3.x sessions.
 var defaultSigningAlgorithmPreference = []uint16{
 	signing.SigningAlgAESGMAC,
 	signing.SigningAlgAESCMAC,
-	signing.SigningAlgHMACSHA256,
 }
 
 // selectSigningAlgorithm selects the server's preferred signing algorithm from
 // the client's offered list. Returns AES-128-CMAC if no match is found.
+//
+// SIGNING_CAPABILITIES is only processed for SMB 3.1.1, so HMAC-SHA256 is
+// excluded from consideration even if present in the configured preference
+// list. HMAC-SHA256 is a 2.x-only algorithm; selecting it for 3.1.1 would
+// cause a mismatch with the KDF-based signing key derivation path.
 func (h *Handler) selectSigningAlgorithm(clientAlgorithms []uint16) uint16 {
 	preference := h.SigningAlgorithmPreference
 	if len(preference) == 0 {
@@ -424,6 +430,10 @@ func (h *Handler) selectSigningAlgorithm(clientAlgorithms []uint16) uint16 {
 	}
 
 	for _, preferred := range preference {
+		// Skip HMAC-SHA256 -- not valid for 3.1.1 SIGNING_CAPABILITIES
+		if preferred == signing.SigningAlgHMACSHA256 {
+			continue
+		}
 		if slices.Contains(clientAlgorithms, preferred) {
 			return preferred
 		}
