@@ -247,7 +247,7 @@ func NewDefaultSMBSettings(adapterID string) *SMBAdapterSettings {
 		MaxSessions:             10000,
 		EnableEncryption:        false,
 		DirectoryLeasingEnabled: true,
-		NtlmEnabled:            true,
+		NtlmEnabled:             true,
 		GuestEnabled:            true,
 		SMBServicePrincipal:     "",
 		Version:                 1,

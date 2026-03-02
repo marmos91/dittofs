@@ -14,10 +14,10 @@ import (
 
 func TestNormalizeSessionKey(t *testing.T) {
 	tests := []struct {
-		name     string
-		keyLen   int
-		wantLen  int
-		checkFn  func(t *testing.T, key, normalized []byte)
+		name    string
+		keyLen  int
+		wantLen int
+		checkFn func(t *testing.T, key, normalized []byte)
 	}{
 		{"AES256_32bytes_Truncated", 32, 16, func(t *testing.T, key, norm []byte) {
 			for i := 0; i < 16; i++ {

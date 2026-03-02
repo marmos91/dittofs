@@ -252,8 +252,8 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 		MaxDialect:              types.Dialect0210, // Default to 2.1 until full SMB3 session/signing is implemented
 		EncryptionEnabled:       false,
 		DirectoryLeasingEnabled: true,
-		NtlmEnabled:            true,
-		GuestEnabled:           true,
+		NtlmEnabled:             true,
+		GuestEnabled:            true,
 	}
 
 	// Generate random server GUID
