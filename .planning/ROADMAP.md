@@ -209,7 +209,11 @@ Plans:
   3. Directory lease broken when another client creates, deletes, or renames a file within the directory
   4. All lease management logic lives in metadata service layer (not in SMB internal package)
   5. Lease epoch tracking prevents stale break acknowledgments
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [x] 37-01-PLAN.md — LockManager lease CRUD, DirChangeNotifier, V2 type extensions, NLM conflict migration
+- [x] 37-02-PLAN.md — SMB LeaseManager wrapper, smbenc V2 encoding, handler migration, OplockManager deletion
+- [x] 37-03-PLAN.md — MetadataService DirChangeNotifier wiring, NFS4 unified notification path refactor
 
 ### Phase 38: Durable Handles
 **Goal**: SMB3 clients survive brief network interruptions without losing open files, with handle state persisted for reconnection
@@ -473,7 +477,7 @@ v3.8 (33-40.5) -> v4.0 (41-47.5) -> v4.1 (48-53.5)
 | 34. Key Derivation and Signing | 2/2 | Complete    | 2026-03-01 | - |
 | 35. Encryption and Transform Header | 3/3 | Complete   | 2026-03-02 | - |
 | 36. Kerberos SMB3 Integration | 3/3 | Complete    | 2026-03-02 | - |
-| 37. SMB3 Leases and Directory Leasing | v3.8 | 0/? | Not started | - |
+| 37. SMB3 Leases and Directory Leasing | 1/3 | In Progress|  | - |
 | 38. Durable Handles | v3.8 | 0/? | Not started | - |
 | 39. Cross-Protocol Integration and Documentation | v3.8 | 0/? | Not started | - |
 | 40. SMB3 Conformance Testing | v3.8 | 0/? | Not started | - |

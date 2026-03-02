@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v3.8
 milestone_name: SMB3 Protocol Upgrade
-status: unknown
-last_updated: "2026-03-02T10:54:38.024Z"
+status: in-progress
+last_updated: "2026-03-02T12:34:00Z"
 progress:
   total_phases: 39
   completed_phases: 38
-  total_plans: 128
-  completed_plans: 128
+  total_plans: 131
+  completed_plans: 131
 ---
 
 # Project State
@@ -18,16 +18,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-02-28)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking, Kerberos authentication, and session reliability
-**Current focus:** v3.8 SMB3 Protocol Upgrade — Phase 36 (Kerberos SMB3 Integration)
+**Current focus:** v3.8 SMB3 Protocol Upgrade — Phase 37 (SMB3 Leases and Directory Leasing)
 
 ## Current Position
 
-Phase: 36 of 40 (Kerberos SMB3 Integration)
+Phase: 37 of 40 (SMB3 Leases and Directory Leasing)
 Plan: 3 of 3 complete
 Status: Phase Complete
-Last activity: 2026-03-02 — Completed 36-03 (NTLM Fallback, Guest Policy, SPNEGO NegHints)
+Last activity: 2026-03-02 — Completed 37-02 (SMB LeaseManager wrapper, OplockManager deletion)
 
-Progress: [######░░░░] 60%
+Progress: [######░░░░] 64%
 
 ## Completed Milestones
 
@@ -42,7 +42,7 @@ Progress: [######░░░░] 60%
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 130 (19 v1.0 + 42 v2.0 + 25 v3.0 + 22 v3.5 + 12 v3.6 + 4 inserted + 6 v3.8)
+- Total plans completed: 133 (19 v1.0 + 42 v2.0 + 25 v3.0 + 22 v3.5 + 12 v3.6 + 4 inserted + 9 v3.8)
 - 5 milestones in 28 days
 - Average: ~4.5 plans/day
 
@@ -59,6 +59,9 @@ Progress: [######░░░░] 60%
 | 36    | 01   | 7min     | 2     | 8     |
 | 36    | 02   | 10min    | 2     | 8     |
 | 36    | 03   | 8min     | 2     | 9     |
+| 37    | 01   | 9min     | 2     | 10    |
+| 37    | 02   | 35min    | 2     | 14    |
+| 37    | 03   | 8min     | 2     | 10    |
 
 ## Accumulated Context
 
@@ -114,6 +117,18 @@ Progress: [######░░░░] 60%
 - [Phase 36-03]: NEGOTIATE SecurityBuffer contains SPNEGO NegTokenInit advertising available auth mechanisms
 - [Phase 36-03]: NTLM disable check early in SessionSetup, before message type dispatch
 - [Phase 36-03]: SetKerberosProvider auto-creates KerberosService and IdentityConfig (strip-realm default)
+- [Phase 37-01]: advanceEpoch helper centralizes all epoch increments for monotonicity
+- [Phase 37-01]: Recently-broken cache uses 5s TTL to prevent directory lease grant-break storms
+- [Phase 37-01]: Cross-key conflicts break to LeaseStateNone (simplest correct behavior per MS-SMB2)
+- [Phase 37-01]: Lease upgrade whitelist: R->RW, R->RH, R->RWH, RH->RWH, RW->RWH
+- [Phase 37-03]: Auto-wire LockManager as DirChangeNotifier in RegisterStoreForShare
+- [Phase 37-03]: ctx.ClientAddr used as originClientID (AuthContext has no Identity.ClientID)
+- [Phase 37-03]: setattr retains direct NotifyDirChange (NFS4-specific, not in DirChangeType enum)
+- [Phase 37-03]: NFS4 delegation recall for removed dirs kept as direct StateManager call (cleanup, not notification)
+- [Phase 37-02]: LockManagerResolver interface pattern for per-share LockManager resolution at request time
+- [Phase 37-02]: metadataServiceResolver bridges MetadataService to lease package (uses DecodeFileHandle)
+- [Phase 37-02]: Surviving oplock wire-format types moved to oplock_constants.go (CREATE response uses OplockLevel)
+- [Phase 37-02]: Traditional oplock code paths fully removed (not just disabled)
 
 ### Pending Todos
 
@@ -126,5 +141,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-03-02
-Stopped at: Completed 36-03-PLAN.md (NTLM Fallback, Guest Policy, SPNEGO NegHints)
+Stopped at: Completed 37-02-PLAN.md (SMB LeaseManager wrapper, OplockManager deletion)
 Resume file: None

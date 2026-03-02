@@ -45,10 +45,10 @@ Requirements for SMB3 protocol upgrade. Each maps to roadmap phases.
 
 ### Leases
 
-- [ ] **LEASE-01**: Server grants Lease V2 with ParentLeaseKey and epoch tracking in CREATE responses
-- [ ] **LEASE-02**: Server grants directory leases (Read-caching) for SMB 3.0+ clients
-- [ ] **LEASE-03**: Server breaks directory leases when directory contents change (file create/delete/rename)
-- [ ] **LEASE-04**: Lease management logic lives in metadata service layer, not SMB internal package
+- [x] **LEASE-01**: Server grants Lease V2 with ParentLeaseKey and epoch tracking in CREATE responses
+- [x] **LEASE-02**: Server grants directory leases (Read-caching) for SMB 3.0+ clients
+- [x] **LEASE-03**: Server breaks directory leases when directory contents change (file create/delete/rename)
+- [x] **LEASE-04**: Lease management logic lives in metadata service layer, not SMB internal package
 
 ### Durable Handles
 
@@ -70,7 +70,7 @@ Requirements for SMB3 protocol upgrade. Each maps to roadmap phases.
 
 ### Architecture
 
-- [ ] **ARCH-01**: Business logic (leases, durable handles, state) lives in metadata service layer following NFS v3/v4 pattern
+- [x] **ARCH-01**: Business logic (leases, durable handles, state) lives in metadata service layer following NFS v3/v4 pattern
 - [x] **ARCH-02**: SMB internal package contains only protocol encoding/decoding/framing — no business logic
 - [x] **ARCH-03**: SMB3 features reuse NFSv4 infrastructure where possible (delegations, state management, Kerberos)
 
@@ -146,10 +146,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | AUTH-02 | Phase 36 | Complete |
 | AUTH-03 | Phase 36 | Complete |
 | AUTH-04 | Phase 36 | Complete |
-| LEASE-01 | Phase 37 | Pending |
-| LEASE-02 | Phase 37 | Pending |
-| LEASE-03 | Phase 37 | Pending |
-| LEASE-04 | Phase 37 | Pending |
+| LEASE-01 | Phase 37 | Complete |
+| LEASE-02 | Phase 37 | Complete |
+| LEASE-03 | Phase 37 | Complete |
+| LEASE-04 | Phase 37 | Complete |
 | DH-01 | Phase 38 | Pending |
 | DH-02 | Phase 38 | Pending |
 | DH-03 | Phase 38 | Pending |
@@ -159,7 +159,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | XPROT-01 | Phase 39 | Pending |
 | XPROT-02 | Phase 39 | Pending |
 | XPROT-03 | Phase 39 | Pending |
-| ARCH-01 | Phase 37 | Pending |
+| ARCH-01 | Phase 37 | Complete |
 | ARCH-02 | Phase 33 | Complete |
 | ARCH-03 | Phase 36 | Complete |
 | DOC-01 | Phase 39 | Pending |
