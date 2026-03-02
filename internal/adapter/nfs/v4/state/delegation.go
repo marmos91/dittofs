@@ -3,12 +3,14 @@ package state
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // RecentlyRecalledTTL is the duration for which a file is considered
@@ -85,6 +87,11 @@ type DelegationState struct {
 	// RecallReason records why this delegation was recalled for metrics/logging.
 	// Values: "conflict", "resource_pressure", "admin", "directory_deleted".
 	RecallReason string
+
+	// LockManagerDelegID is the UUID of the corresponding delegation in the
+	// shared LockManager. Empty if no LockManager delegation was created.
+	// Used for cleanup when the NFS delegation is returned or revoked.
+	LockManagerDelegID string
 }
 
 // DirNotification represents a single directory change notification to be
@@ -133,6 +140,20 @@ func (d *DelegationState) StopRecallTimer() {
 		d.RecallTimer.Stop()
 		d.RecallTimer = nil
 	}
+}
+
+// ============================================================================
+// Delegation Stateid Mapping
+// ============================================================================
+
+// GetStateidForDelegation returns the NFS Stateid4 for a LockManager delegation ID.
+// Used by NFSBreakHandler to look up the NFS stateid when dispatching CB_RECALL.
+func (sm *StateManager) GetStateidForDelegation(delegationID string) (types.Stateid4, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	stateid, found := sm.delegStateidMap[delegationID]
+	return stateid, found
 }
 
 // ============================================================================
@@ -211,6 +232,21 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 	fhKey := string(fileHandle)
 	sm.delegByFile[fhKey] = append(sm.delegByFile[fhKey], deleg)
 
+	if sm.lockManager != nil {
+		lmDelegType := lock.DelegTypeRead
+		if deleg.DelegType == types.OPEN_DELEGATE_WRITE {
+			lmDelegType = lock.DelegTypeWrite
+		}
+		lockDeleg := lock.NewDelegation(lmDelegType, fmt.Sprintf("%d", clientID), "", false)
+		if err := sm.lockManager.GrantDelegation(fhKey, lockDeleg); err != nil {
+			logger.Debug("LockManager delegation grant failed, continuing with local state",
+				"error", err)
+		} else {
+			sm.delegStateidMap[lockDeleg.DelegationID] = stateid
+			deleg.LockManagerDelegID = lockDeleg.DelegationID
+		}
+	}
+
 	logger.Info("Delegation granted",
 		"client_id", clientID,
 		"deleg_type", delegType,
@@ -236,33 +272,25 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 //
 // Caller must NOT hold sm.mu (method acquires it).
 func (sm *StateManager) ReturnDelegation(stateid *types.Stateid4) error {
-	// Phase 1: Look up delegation under lock
 	sm.mu.Lock()
 	deleg, exists := sm.delegByOther[stateid.Other]
 	if !exists {
-		// Not found: check boot epoch for stale vs idempotent success
 		isCurrentEpoch := sm.isCurrentEpoch(stateid.Other)
 		sm.mu.Unlock()
 		if !isCurrentEpoch {
 			return ErrStaleStateid
 		}
 		// Current epoch but not found: already returned (idempotent)
-		// or never existed -- return success per Pitfall 3
 		return nil
 	}
 
-	// Stop the recall timer to prevent revocation of a voluntarily returned delegation
 	deleg.StopRecallTimer()
 
-	// For directory delegations: stop batch timer and flush pending notifications
-	// before removal. We must release sm.mu before flushing because
-	// flushDirNotifications calls getBackchannelSender which needs sm.mu.RLock.
+	// For directory delegations: flush pending notifications before removal.
+	// Must release sm.mu because flushDirNotifications needs RLock for backchannel.
 	if deleg.IsDirectory {
-		// Mark as recalled so NotifyDirChange skips this delegation during
-		// the window between sm.mu.Unlock and the re-acquire below.
 		deleg.RecallSent = true
 
-		// Stop the batch timer under NotifMu (prevents new timer-triggered flushes)
 		deleg.NotifMu.Lock()
 		if deleg.BatchTimer != nil {
 			deleg.BatchTimer.Stop()
@@ -270,22 +298,26 @@ func (sm *StateManager) ReturnDelegation(stateid *types.Stateid4) error {
 		}
 		deleg.NotifMu.Unlock()
 
-		// Release sm.mu before flushing (flushDirNotifications needs RLock for backchannel)
 		sm.mu.Unlock()
 		sm.flushDirNotifications(deleg)
-
-		// Re-acquire for removal
 		sm.mu.Lock()
 	}
 
-	// Phase 2: Remove from both maps (works for both active and revoked delegations)
 	delete(sm.delegByOther, stateid.Other)
 	sm.removeDelegFromFile(deleg)
 
-	delegType := "file"
-	if deleg.IsDirectory {
-		delegType = "directory"
+	lmDelegID := deleg.LockManagerDelegID
+	fhKey := string(deleg.FileHandle)
+	if lmDelegID != "" {
+		delete(sm.delegStateidMap, lmDelegID)
 	}
+
+	delegKind := "file"
+	if deleg.IsDirectory {
+		delegKind = "directory"
+	}
+
+	lockMgr := sm.lockManager
 
 	if deleg.Revoked {
 		logger.Info("Revoked delegation returned by client",
@@ -295,10 +327,15 @@ func (sm *StateManager) ReturnDelegation(stateid *types.Stateid4) error {
 		logger.Info("Delegation returned",
 			"client_id", deleg.ClientID,
 			"deleg_type", deleg.DelegType,
-			"kind", delegType)
+			"kind", delegKind)
 	}
 
 	sm.mu.Unlock()
+
+	// Return delegation to LockManager outside sm.mu to avoid deadlock.
+	if lockMgr != nil && lmDelegID != "" {
+		_ = lockMgr.ReturnDelegation(fhKey, lmDelegID)
+	}
 
 	return nil
 }
@@ -344,7 +381,7 @@ func (sm *StateManager) countOpensOnFile(fileHandle []byte, excludeClientID uint
 }
 
 // ============================================================================
-// Delegation Grant Decision (Plan 11-03)
+// Delegation Grant Decision
 // ============================================================================
 
 // ShouldGrantDelegation determines whether a delegation should be granted
@@ -364,41 +401,32 @@ func (sm *StateManager) ShouldGrantDelegation(clientID uint64, fileHandle []byte
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
-	// Check 0: Delegations must be enabled via adapter settings
 	if !sm.delegationsEnabled {
 		return types.OPEN_DELEGATE_NONE, false
 	}
 
-	// Check 1: Verify client exists and has callback path up
 	client, exists := sm.clientsByID[clientID]
 	if !exists {
 		return types.OPEN_DELEGATE_NONE, false
 	}
-	// CBPathUp replaces the simpler "Callback.Addr != empty" check.
-	// CBPathUp is set to true only after CB_NULL succeeds on SETCLIENTID_CONFIRM.
 	if !client.CBPathUp {
 		return types.OPEN_DELEGATE_NONE, false
 	}
 
-	// Check 2: File must not be recently recalled (anti-storm, Pitfall 7)
 	if sm.isRecentlyRecalled(fileHandle) {
 		return types.OPEN_DELEGATE_NONE, false
 	}
 
-	// Check 3: Count opens on this file by OTHER clients
 	if sm.countOpensOnFile(fileHandle, clientID) > 0 {
 		return types.OPEN_DELEGATE_NONE, false
 	}
 
-	// Check 4: No active delegations on this file (from any client).
-	// Another client's delegation is a conflict; same client's is a double-grant.
 	for _, deleg := range sm.delegByFile[string(fileHandle)] {
 		if !deleg.Revoked {
 			return types.OPEN_DELEGATE_NONE, false
 		}
 	}
 
-	// Check 5: Grant decision based on shareAccess
 	if shareAccess&types.OPEN4_SHARE_ACCESS_WRITE != 0 {
 		return types.OPEN_DELEGATE_WRITE, true
 	}
@@ -406,7 +434,7 @@ func (sm *StateManager) ShouldGrantDelegation(clientID uint64, fileHandle []byte
 }
 
 // ============================================================================
-// Delegation Conflict Detection (Plan 11-03)
+// Delegation Conflict Detection
 // ============================================================================
 
 // CheckDelegationConflict checks whether an OPEN by a client conflicts with
@@ -432,9 +460,6 @@ func (sm *StateManager) CheckDelegationConflict(fileHandle []byte, clientID uint
 			continue
 		}
 
-		// Conflict rules:
-		// - WRITE delegation conflicts with any access from another client
-		// - READ delegation conflicts only with WRITE access from another client
 		isConflict := deleg.DelegType == types.OPEN_DELEGATE_WRITE ||
 			(deleg.DelegType == types.OPEN_DELEGATE_READ && shareAccess&types.OPEN4_SHARE_ACCESS_WRITE != 0)
 
@@ -442,7 +467,6 @@ func (sm *StateManager) CheckDelegationConflict(fileHandle []byte, clientID uint
 			deleg.RecallSent = true
 			deleg.RecallTime = time.Now()
 
-			// Launch async recall (non-blocking per Pitfall 2)
 			go sm.sendRecall(deleg)
 
 			return true, nil
@@ -554,7 +578,7 @@ func (sm *StateManager) sendRecallV40(deleg *DelegationState) {
 }
 
 // ============================================================================
-// EncodeDelegation (Plan 11-03)
+// EncodeDelegation
 // ============================================================================
 
 // EncodeDelegation encodes an open_delegation4 into the given buffer.
@@ -611,7 +635,7 @@ func EncodeDelegation(buf *bytes.Buffer, deleg *DelegationState) {
 }
 
 // ============================================================================
-// ValidateDelegationStateid (Plan 11-03)
+// ValidateDelegationStateid
 // ============================================================================
 
 // ValidateDelegationStateid validates a delegation stateid for CLAIM_DELEGATE_CUR.
@@ -641,7 +665,7 @@ func (sm *StateManager) ValidateDelegationStateid(stateid *types.Stateid4) (*Del
 }
 
 // ============================================================================
-// Recently-Recalled Cache (Plan 11-04)
+// Recently-Recalled Cache
 // ============================================================================
 
 // addRecentlyRecalled adds a file handle to the recently-recalled cache.

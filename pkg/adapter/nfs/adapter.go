@@ -391,6 +391,17 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 
 	logger.Debug("NFS adapter configured with runtime", "shares", rt.CountShares())
 
+	// Register NFSBreakHandler on each share's LockManager (Plan 39-02).
+	// When the shared LockManager recalls a delegation (e.g., due to an SMB
+	// write conflicting with an NFS delegation), the handler translates the
+	// recall into a CB_RECALL sent via the NFS backchannel.
+	breakHandler := v4state.NewNFSBreakHandler(v4StateManager)
+	for _, shareName := range rt.ListShares() {
+		if lockMgr := metadataService.GetLockManagerForShare(shareName); lockMgr != nil {
+			lockMgr.RegisterBreakCallbacks(breakHandler)
+		}
+	}
+
 	// Apply live NFS adapter settings from SettingsWatcher.
 	// The SettingsWatcher polls DB every 10s and provides atomic pointer swap
 	// for thread-safe reads. Settings are consumed here at startup and on

@@ -132,46 +132,68 @@ func (c *recentlyBrokenCache) cleanupLocked() {
 func (lm *Manager) OnDirChange(parentHandle FileHandle, changeType DirChangeType, originClientID string) {
 	handleKey := string(parentHandle)
 
-	// Collect directory leases to break (under write lock to set breaking state)
+	// Collect directory leases AND directory delegations to break
 	lm.mu.Lock()
 	locks := lm.unifiedLocks[handleKey]
 
-	var toBreak []*UnifiedLock
+	var leasesToBreak []*UnifiedLock
+	var delegsToBreak []*UnifiedLock
+
 	for _, lock := range locks {
-		if lock.Lease == nil || !lock.Lease.IsDirectory {
-			continue // Skip non-directory leases
+		// Check directory leases
+		if lock.Lease != nil && lock.Lease.IsDirectory {
+			if lock.Owner.ClientID == originClientID {
+				continue // Skip originator
+			}
+			if lock.Lease.Breaking {
+				continue // Already breaking
+			}
+			lock.Lease.Breaking = true
+			lock.Lease.BreakToState = LeaseStateNone
+			lock.Lease.BreakStarted = time.Now()
+			advanceEpoch(lock.Lease)
+			leasesToBreak = append(leasesToBreak, lock)
 		}
-		if lock.Owner.ClientID == originClientID {
-			continue // Skip originator
+
+		// Check directory delegations
+		if lock.Delegation != nil && lock.Delegation.IsDirectory {
+			if lock.Owner.ClientID == originClientID {
+				continue // Skip originator
+			}
+			if lock.Delegation.Breaking {
+				continue // Already breaking
+			}
+			lock.Delegation.Breaking = true
+			lock.Delegation.BreakStarted = time.Now()
+			lock.Delegation.Recalled = true
+			delegsToBreak = append(delegsToBreak, lock)
 		}
-		if lock.Lease.Breaking {
-			continue // Already breaking
-		}
-		// Mark lease as breaking before dispatching callbacks
-		lock.Lease.Breaking = true
-		lock.Lease.BreakToState = LeaseStateNone
-		lock.Lease.BreakStarted = time.Now()
-		advanceEpoch(lock.Lease)
-		toBreak = append(toBreak, lock)
 	}
 	lm.mu.Unlock()
 
-	if len(toBreak) == 0 {
+	totalBreaks := len(leasesToBreak) + len(delegsToBreak)
+	if totalBreaks == 0 {
 		return
 	}
 
-	logger.Debug("OnDirChange: breaking directory leases",
+	logger.Debug("OnDirChange: breaking directory leases and delegations",
 		"parentHandle", handleKey,
 		"changeType", changeType.String(),
 		"originClient", originClientID,
-		"leaseCount", len(toBreak))
+		"leaseCount", len(leasesToBreak),
+		"delegCount", len(delegsToBreak))
 
-	// Dispatch breaks outside the lock
-	for _, lock := range toBreak {
+	// Dispatch lease breaks outside the lock
+	for _, lock := range leasesToBreak {
 		lm.dispatchOpLockBreak(handleKey, lock, LeaseStateNone)
 	}
 
-	// Mark directory as recently broken
+	// Dispatch delegation recalls outside the lock
+	for _, lock := range delegsToBreak {
+		lm.dispatchDelegationRecall(handleKey, lock)
+	}
+
+	// Mark directory as recently broken (unified anti-storm)
 	if lm.recentlyBroken != nil {
 		lm.recentlyBroken.Mark(handleKey)
 	}

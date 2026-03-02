@@ -65,6 +65,11 @@ type StateManager struct {
 	// Used for conflict detection: "does any client hold a delegation for this file?"
 	delegByFile map[string][]*DelegationState
 
+	// delegStateidMap maps LockManager DelegationID (UUID string) to NFS Stateid4.
+	// This enables NFSBreakHandler to look up the NFS wire-format stateid when
+	// a delegation recall is dispatched by the shared LockManager.
+	delegStateidMap map[string]types.Stateid4
+
 	// recentlyRecalled tracks file handles that were recently involved in
 	// delegation recalls. Prevents grant-recall-grant-recall storms.
 	// Key: string(fileHandle), Value: time of recall.
@@ -197,6 +202,7 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		lockStateByOther:    make(map[[types.NFS4_OTHER_SIZE]byte]*LockState),
 		delegByOther:        make(map[[types.NFS4_OTHER_SIZE]byte]*DelegationState),
 		delegByFile:         make(map[string][]*DelegationState),
+		delegStateidMap:     make(map[string]types.Stateid4),
 		recentlyRecalled:    make(map[string]time.Time),
 		recentlyRecalledTTL: RecentlyRecalledTTL,
 		delegationsEnabled:  true,
@@ -705,10 +711,10 @@ func (sm *StateManager) onLeaseExpired(clientID uint64) {
 // Thread-safe: acquires sm.mu.Lock.
 func (sm *StateManager) RevokeDelegation(delegOther [types.NFS4_OTHER_SIZE]byte) {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
 
 	deleg, exists := sm.delegByOther[delegOther]
 	if !exists || deleg.Revoked {
+		sm.mu.Unlock()
 		return
 	}
 
@@ -716,11 +722,28 @@ func (sm *StateManager) RevokeDelegation(delegOther [types.NFS4_OTHER_SIZE]byte)
 	sm.removeDelegFromFile(deleg)
 	sm.addRecentlyRecalled(deleg.FileHandle)
 
+	// Clean up LockManager delegation and stateid mapping (Plan 39-02)
+	lmDelegID := deleg.LockManagerDelegID
+	fhKey := string(deleg.FileHandle)
+	if lmDelegID != "" {
+		delete(sm.delegStateidMap, lmDelegID)
+	}
+
+	// Capture lockManager reference before releasing mu
+	lockMgr := sm.lockManager
+
 	// Keep in delegByOther for stale stateid detection.
 
 	logger.Warn("Delegation revoked due to recall timeout",
 		"client_id", deleg.ClientID,
 		"deleg_type", deleg.DelegType)
+
+	sm.mu.Unlock()
+
+	// Revoke in LockManager outside sm.mu (avoids deadlock per Pitfall 2)
+	if lockMgr != nil && lmDelegID != "" {
+		_ = lockMgr.RevokeDelegation(fhKey, lmDelegID)
+	}
 }
 
 // Shutdown stops all active lease timers, recall timers, and the grace period

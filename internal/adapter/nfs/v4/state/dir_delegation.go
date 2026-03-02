@@ -19,6 +19,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // maxBatchSize is the maximum number of notifications per delegation before
@@ -104,6 +105,18 @@ func (sm *StateManager) GrantDirDelegation(clientID uint64, dirFH []byte, notifM
 
 	sm.delegByOther[other] = deleg
 	sm.delegByFile[fhKey] = append(sm.delegByFile[fhKey], deleg)
+
+	if sm.lockManager != nil {
+		lockDeleg := lock.NewDelegation(lock.DelegTypeRead, fmt.Sprintf("%d", clientID), "", true)
+		lockDeleg.NotificationMask = notifMask
+		if err := sm.lockManager.GrantDelegation(fhKey, lockDeleg); err != nil {
+			logger.Debug("LockManager directory delegation grant failed, continuing with local state",
+				"error", err)
+		} else {
+			sm.delegStateidMap[lockDeleg.DelegationID] = stateid
+			deleg.LockManagerDelegID = lockDeleg.DelegationID
+		}
+	}
 
 	logger.Info("Directory delegation granted",
 		"client_id", clientID,

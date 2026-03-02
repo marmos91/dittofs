@@ -383,6 +383,10 @@ func (c *crossProtocolBreakCallback) OnAccessConflict(handleKey string, existing
 	// Not used in this test
 }
 
+func (c *crossProtocolBreakCallback) OnDelegationRecall(handleKey string, lock *UnifiedLock) {
+	// Not used in this test
+}
+
 func (c *crossProtocolBreakCallback) getBreaks() []crossBreakEvent {
 	c.mu.Lock()
 	defer c.mu.Unlock()

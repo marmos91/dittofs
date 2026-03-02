@@ -579,6 +579,10 @@ func (m *mockBreakCallbacks) OnAccessConflict(handleKey string, existingLock *Un
 	})
 }
 
+func (m *mockBreakCallbacks) OnDelegationRecall(handleKey string, lock *UnifiedLock) {
+	// No-op for existing manager tests
+}
+
 func (m *mockBreakCallbacks) getOpLockBreaks() []opLockBreakEvent {
 	m.mu.Lock()
 	defer m.mu.Unlock()

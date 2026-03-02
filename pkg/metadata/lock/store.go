@@ -88,6 +88,30 @@ type PersistedLock struct {
 	// IsDirectory indicates this lease is on a directory.
 	// False for byte-range locks and file leases.
 	IsDirectory bool `json:"is_directory,omitempty"`
+
+	// ========================================================================
+	// Delegation Fields (omitempty for non-delegation locks)
+	// ========================================================================
+
+	// DelegationID is the unique identifier for this delegation.
+	// Empty for byte-range locks and leases.
+	DelegationID string `json:"delegation_id,omitempty"`
+
+	// DelegType is the delegation type (0=read, 1=write).
+	// Only meaningful when DelegationID is non-empty.
+	DelegType int `json:"deleg_type,omitempty"`
+
+	// DelegBreaking indicates a delegation recall is in progress.
+	DelegBreaking bool `json:"deleg_breaking,omitempty"`
+
+	// DelegRecalled indicates the delegation recall was sent.
+	DelegRecalled bool `json:"deleg_recalled,omitempty"`
+
+	// DelegRevoked indicates the delegation was force-revoked.
+	DelegRevoked bool `json:"deleg_revoked,omitempty"`
+
+	// DelegNotificationMask is the directory change notification bitmask.
+	DelegNotificationMask uint32 `json:"deleg_notification_mask,omitempty"`
 }
 
 // IsLease returns true if this persisted lock is an SMB lease.
@@ -275,6 +299,17 @@ func ToPersistedLock(lock *UnifiedLock, epoch uint64) *PersistedLock {
 		}
 	}
 
+	// Persist delegation fields if this is a delegation
+	if lock.Delegation != nil {
+		pl.DelegationID = lock.Delegation.DelegationID
+		pl.DelegType = int(lock.Delegation.DelegType)
+		pl.IsDirectory = lock.Delegation.IsDirectory
+		pl.DelegBreaking = lock.Delegation.Breaking
+		pl.DelegRecalled = lock.Delegation.Recalled
+		pl.DelegRevoked = lock.Delegation.Revoked
+		pl.DelegNotificationMask = lock.Delegation.NotificationMask
+	}
+
 	return pl
 }
 
@@ -324,6 +359,22 @@ func FromPersistedLock(pl *PersistedLock) *UnifiedLock {
 			Breaking:       pl.Breaking,
 			ParentLeaseKey: parentLeaseKey,
 			IsDirectory:    pl.IsDirectory,
+			// BreakStarted is runtime-only, not persisted
+		}
+	}
+
+	// Restore delegation fields if this is a delegation (DelegationID present)
+	if pl.DelegationID != "" {
+		el.Delegation = &Delegation{
+			DelegationID:     pl.DelegationID,
+			DelegType:        DelegationType(pl.DelegType),
+			IsDirectory:      pl.IsDirectory,
+			ClientID:         pl.ClientID,
+			ShareName:        pl.ShareName,
+			Breaking:         pl.DelegBreaking,
+			Recalled:         pl.DelegRecalled,
+			Revoked:          pl.DelegRevoked,
+			NotificationMask: pl.DelegNotificationMask,
 			// BreakStarted is runtime-only, not persisted
 		}
 	}

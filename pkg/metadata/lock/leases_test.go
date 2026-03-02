@@ -536,3 +536,7 @@ func (t *testBreakCallbacks) OnAccessConflict(handleKey string, existingLock *Un
 		t.onAccessConflict(handleKey, existingLock, requestedMode)
 	}
 }
+
+func (t *testBreakCallbacks) OnDelegationRecall(handleKey string, lock *UnifiedLock) {
+	// No-op for existing lease tests
+}

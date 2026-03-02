@@ -1,0 +1,84 @@
+// Package state provides NFSv4 break handler for cross-protocol delegation recall.
+//
+// NFSBreakHandler implements lock.BreakCallbacks and translates LockManager
+// delegation recalls into NFS CB_RECALL messages sent via the backchannel.
+package state
+
+import (
+	"time"
+
+	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
+)
+
+// NFSBreakHandler implements lock.BreakCallbacks for NFS delegation recall.
+// When the shared LockManager dispatches a delegation recall, this handler
+// looks up the NFS stateid and sends CB_RECALL via the backchannel.
+// CB_RECALL is sent asynchronously to avoid blocking the callback.
+type NFSBreakHandler struct {
+	stateManager *StateManager
+}
+
+// NewNFSBreakHandler creates a new NFSBreakHandler.
+func NewNFSBreakHandler(sm *StateManager) *NFSBreakHandler {
+	return &NFSBreakHandler{
+		stateManager: sm,
+	}
+}
+
+// OnDelegationRecall looks up the NFS stateid for the delegation and sends
+// CB_RECALL via the backchannel. No-op if no NFS stateid mapping exists.
+func (h *NFSBreakHandler) OnDelegationRecall(handleKey string, ul *lock.UnifiedLock) {
+	if ul == nil || ul.Delegation == nil {
+		return
+	}
+
+	delegID := ul.Delegation.DelegationID
+
+	if _, found := h.stateManager.GetStateidForDelegation(delegID); !found {
+		logger.Debug("NFSBreakHandler: no NFS stateid for delegation, skipping",
+			"delegationID", delegID,
+			"handleKey", handleKey)
+		return
+	}
+
+	h.stateManager.mu.RLock()
+	var deleg *DelegationState
+	for _, d := range h.stateManager.delegByOther {
+		if d.LockManagerDelegID == delegID {
+			deleg = d
+			break
+		}
+	}
+	h.stateManager.mu.RUnlock()
+
+	if deleg == nil {
+		logger.Debug("NFSBreakHandler: delegation state not found",
+			"delegationID", delegID)
+		return
+	}
+
+	logger.Debug("NFSBreakHandler: dispatching CB_RECALL",
+		"delegationID", delegID,
+		"clientID", deleg.ClientID,
+		"handleKey", handleKey)
+
+	h.stateManager.mu.Lock()
+	deleg.RecallSent = true
+	deleg.RecallTime = time.Now()
+	h.stateManager.mu.Unlock()
+
+	go h.stateManager.sendRecall(deleg)
+}
+
+// OnOpLockBreak is a no-op for NFS (no SMB-style leases).
+func (h *NFSBreakHandler) OnOpLockBreak(_ string, _ *lock.UnifiedLock, _ uint32) {}
+
+// OnByteRangeRevoke is a no-op for NFS.
+func (h *NFSBreakHandler) OnByteRangeRevoke(_ string, _ *lock.UnifiedLock, _ string) {}
+
+// OnAccessConflict is a no-op for NFS.
+func (h *NFSBreakHandler) OnAccessConflict(_ string, _ *lock.UnifiedLock, _ lock.AccessMode) {}
+
+// Compile-time verification that NFSBreakHandler implements BreakCallbacks.
+var _ lock.BreakCallbacks = (*NFSBreakHandler)(nil)
