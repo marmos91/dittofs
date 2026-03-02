@@ -559,7 +559,9 @@ func (s *MetadataService) notifyDirChange(shareName string, parentHandle FileHan
 
 	// Fire-and-forget: notifier handles dispatch; recover from panics
 	defer func() {
-		_ = recover()
+		if r := recover(); r != nil {
+			fmt.Printf("notifyDirChange: panic in notifier (share=%s): %v\n", shareName, r)
+		}
 	}()
 	notifier.OnDirChange(lock.FileHandle(parentHandle), changeType, originClient)
 }

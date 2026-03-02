@@ -544,11 +544,10 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 	}
 
 	// Notify directory change after successful move
-	shareName := shareNameForHandle(fromDir)
-	s.notifyDirChange(shareName, fromDir, lock.DirChangeRenameEntry, ctx)
+	s.notifyDirChange(shareNameForHandle(fromDir), fromDir, lock.DirChangeRenameEntry, ctx)
 	if string(fromDir) != string(toDir) {
-		// Cross-directory move: also notify destination directory
-		s.notifyDirChange(shareName, toDir, lock.DirChangeAddEntry, ctx)
+		// Cross-directory move: derive share from toDir in case it differs
+		s.notifyDirChange(shareNameForHandle(toDir), toDir, lock.DirChangeAddEntry, ctx)
 	}
 
 	return nil

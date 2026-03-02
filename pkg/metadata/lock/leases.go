@@ -114,7 +114,6 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 	}
 
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
 
 	locks := lm.unifiedLocks[handleKey]
 
@@ -129,6 +128,7 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 
 		// Same state requested - return current (no-op)
 		if currentState == requestedState {
+			lm.mu.Unlock()
 			return currentState, lock.Lease.Epoch, nil
 		}
 
@@ -150,10 +150,13 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 				_ = lm.lockStore.PutLock(ctx, pl)
 			}
 
-			return requestedState, locks[i].Lease.Epoch, nil
+			epoch := locks[i].Lease.Epoch
+			lm.mu.Unlock()
+			return requestedState, epoch, nil
 		}
 
 		// Invalid transition (downgrade)
+		lm.mu.Unlock()
 		logger.Debug("RequestLease: invalid state transition (downgrade)",
 			"fileHandle", handleKey,
 			"from", LeaseStateToString(currentState),
@@ -197,7 +200,6 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 			// Release lock before dispatching break callbacks
 			lm.mu.Unlock()
 			lm.dispatchOpLockBreak(handleKey, lock, LeaseStateNone)
-			lm.mu.Lock()
 
 			return LeaseStateNone, 0, nil
 		}
@@ -232,6 +234,8 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 		pl := ToPersistedLock(newLock, 0)
 		_ = lm.lockStore.PutLock(ctx, pl)
 	}
+
+	lm.mu.Unlock()
 
 	logger.Debug("RequestLease: granted new lease",
 		"fileHandle", handleKey,
