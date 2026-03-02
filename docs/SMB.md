@@ -219,11 +219,12 @@ diskutil unmount /mnt/smb
 # Using mount.cifs (requires cifs-utils)
 # uid/gid options set the owner of mounted files
 sudo mount -t cifs //localhost/export /mnt/smb \
-    -o port=12445,username=testuser,password=testpass,vers=2.0,uid=$(id -u),gid=$(id -g)
+    -o port=12445,username=testuser,vers=2.0,uid=$(id -u),gid=$(id -g)
+# Password will be prompted interactively
 
 # Mount with SMB3 encryption
 sudo mount -t cifs //localhost/export /mnt/smb \
-    -o port=12445,username=testuser,password=testpass,vers=3.1.1,seal,uid=$(id -u),gid=$(id -g)
+    -o port=12445,username=testuser,vers=3.1.1,seal,uid=$(id -u),gid=$(id -g)
 ```
 
 ### Using smbclient

@@ -395,10 +395,16 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 	// When the shared LockManager recalls a delegation (e.g., due to an SMB
 	// write conflicting with an NFS delegation), the handler translates the
 	// recall into a CB_RECALL sent via the NFS backchannel.
+	// Deduplicate: multiple shares may reference the same LockManager instance.
 	breakHandler := v4state.NewNFSBreakHandler(v4StateManager)
+	registeredLockManagers := make(map[lock.LockManager]struct{})
 	for _, shareName := range rt.ListShares() {
 		if lockMgr := metadataService.GetLockManagerForShare(shareName); lockMgr != nil {
+			if _, already := registeredLockManagers[lockMgr]; already {
+				continue
+			}
 			lockMgr.RegisterBreakCallbacks(breakHandler)
+			registeredLockManagers[lockMgr] = struct{}{}
 		}
 	}
 

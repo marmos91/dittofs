@@ -1429,7 +1429,7 @@ func (lm *Manager) breakDelegations(
 		if shouldBreak(lock.Delegation) {
 			lock.Delegation.Breaking = true
 			lock.Delegation.BreakStarted = time.Now()
-			lock.Delegation.Recalled = true
+			// Recalled is set by the break callback after CB_RECALL is actually sent.
 			toBreak = append(toBreak, lock)
 		}
 	}
