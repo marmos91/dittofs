@@ -148,10 +148,13 @@ func (s *Adapter) SetRuntime(rtAny any) {
 	// at request time.
 	if metaSvc := rt.GetMetadataService(); metaSvc != nil {
 		resolver := &metadataServiceResolver{metaSvc: metaSvc}
-		// TODO: Wire a concrete LeaseBreakNotifier from the SMB session/connection
-		// layer so break notifications are delivered to clients over the wire.
-		// Without this, breaks are initiated in LockManager but never sent,
-		// relying on break timeouts to eventually revoke stale leases.
+		// TODO(lease-breaks): Wire a concrete LeaseBreakNotifier from the SMB
+		// session/connection layer so break notifications are delivered over the
+		// wire. Without this, breaks are initiated in LockManager but never
+		// sent to clients. Server-side lease state is still correct (conflicts
+		// are detected, breaking state is tracked, timeouts will revoke), but
+		// clients won't flush dirty caches proactively. This should be wired
+		// before leases are used in production.
 		leaseMgr := smblease.NewLeaseManager(resolver, nil)
 		s.handler.LeaseManager = leaseMgr
 

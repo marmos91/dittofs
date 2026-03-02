@@ -47,11 +47,11 @@ const (
 //	16      4     LeaseState       Granted R/W/H state
 //	20      4     Flags            Response flags
 //	24      8     LeaseDuration    Reserved (0)
-func EncodeLeaseV1ResponseContext(leaseKey [16]byte, leaseState uint32) []byte {
+func EncodeLeaseV1ResponseContext(leaseKey [16]byte, leaseState uint32, flags uint32) []byte {
 	w := NewWriter(LeaseV1ContextSize)
 	w.WriteBytes(leaseKey[:]) // LeaseKey (16 bytes)
 	w.WriteUint32(leaseState) // LeaseState
-	w.WriteUint32(0)          // Flags
+	w.WriteUint32(flags)      // Flags
 	w.WriteUint64(0)          // LeaseDuration
 	return w.Bytes()
 }
@@ -79,11 +79,11 @@ func EncodeLeaseV1ResponseContext(leaseKey [16]byte, leaseState uint32) []byte {
 func EncodeLeaseV2ResponseContext(
 	leaseKey [16]byte,
 	leaseState uint32,
+	flags uint32,
 	parentLeaseKey [16]byte,
 	hasParent bool,
 	epoch uint16,
 ) []byte {
-	var flags uint32
 	if hasParent {
 		flags |= LeaseResponseFlagParentKeySet
 	}

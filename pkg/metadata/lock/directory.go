@@ -132,8 +132,8 @@ func (c *recentlyBrokenCache) cleanupLocked() {
 func (lm *Manager) OnDirChange(parentHandle FileHandle, changeType DirChangeType, originClientID string) {
 	handleKey := string(parentHandle)
 
-	// Collect directory leases to break (under read lock)
-	lm.mu.RLock()
+	// Collect directory leases to break (under write lock to set breaking state)
+	lm.mu.Lock()
 	locks := lm.unifiedLocks[handleKey]
 
 	var toBreak []*UnifiedLock
@@ -144,9 +144,17 @@ func (lm *Manager) OnDirChange(parentHandle FileHandle, changeType DirChangeType
 		if lock.Owner.ClientID == originClientID {
 			continue // Skip originator
 		}
+		if lock.Lease.Breaking {
+			continue // Already breaking
+		}
+		// Mark lease as breaking before dispatching callbacks
+		lock.Lease.Breaking = true
+		lock.Lease.BreakToState = LeaseStateNone
+		lock.Lease.BreakStarted = time.Now()
+		advanceEpoch(lock.Lease)
 		toBreak = append(toBreak, lock)
 	}
-	lm.mu.RUnlock()
+	lm.mu.Unlock()
 
 	if len(toBreak) == 0 {
 		return

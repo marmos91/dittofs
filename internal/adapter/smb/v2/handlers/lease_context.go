@@ -282,9 +282,9 @@ type LeaseResponseContext struct {
 func (r *LeaseResponseContext) Encode() []byte {
 	if r.HasParent || r.Epoch > 0 {
 		return smbenc.EncodeLeaseV2ResponseContext(
-			r.LeaseKey, r.LeaseState, r.ParentLeaseKey, r.HasParent, r.Epoch)
+			r.LeaseKey, r.LeaseState, r.Flags, r.ParentLeaseKey, r.HasParent, r.Epoch)
 	}
-	return smbenc.EncodeLeaseV1ResponseContext(r.LeaseKey, r.LeaseState)
+	return smbenc.EncodeLeaseV1ResponseContext(r.LeaseKey, r.LeaseState, r.Flags)
 }
 
 // ============================================================================

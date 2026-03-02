@@ -269,9 +269,11 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 		return fmt.Errorf("lease %x is not in breaking state", leaseKey)
 	}
 
-	// Validate epoch if provided (V2 staleness check)
-	if epoch != 0 && lock.Lease.Epoch+1 != epoch {
-		return fmt.Errorf("stale epoch: expected %d, got %d", lock.Lease.Epoch+1, epoch)
+	// Validate epoch if provided (V2 staleness check).
+	// The epoch was already advanced during break initiation, so the client
+	// should echo the current epoch value from the break notification.
+	if epoch != 0 && lock.Lease.Epoch != epoch {
+		return fmt.Errorf("stale epoch: expected %d, got %d", lock.Lease.Epoch, epoch)
 	}
 
 	// Client cannot claim bits not offered (bitwise subset check)

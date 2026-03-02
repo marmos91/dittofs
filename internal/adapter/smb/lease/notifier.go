@@ -69,8 +69,9 @@ func (h *SMBBreakHandler) OnOpLockBreak(handleKey string, ul *lock.UnifiedLock, 
 		}
 	}
 
-	// NewEpoch = Epoch + 1 for V2 break notifications
-	newEpoch := ul.Lease.Epoch + 1
+	// Use the current lease epoch for V2 break notifications. The LockManager
+	// already advanced the epoch when initiating the break.
+	newEpoch := ul.Lease.Epoch
 
 	logger.Debug("SMBBreakHandler: dispatching lease break notification",
 		"leaseKey", fmt.Sprintf("%x", ul.Lease.LeaseKey),
