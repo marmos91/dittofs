@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sort"
 	"time"
 
 	smblease "github.com/marmos91/dittofs/internal/adapter/smb/lease"
@@ -391,13 +392,17 @@ type durableHandleStoreProvider interface {
 
 // findDurableHandleStore searches registered metadata stores for one that
 // implements durableHandleStoreProvider and returns the DurableHandleStore.
+// Iterates stores in sorted order for deterministic selection.
 // Returns nil if no metadata store supports durable handles.
 func (s *Adapter) findDurableHandleStore() lock.DurableHandleStore {
 	if s.Registry == nil {
 		return nil
 	}
 
-	for _, name := range s.Registry.ListMetadataStores() {
+	names := s.Registry.ListMetadataStores()
+	sort.Strings(names)
+
+	for _, name := range names {
 		metaStore, err := s.Registry.GetMetadataStore(name)
 		if err != nil {
 			continue

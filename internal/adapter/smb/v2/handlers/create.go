@@ -482,11 +482,11 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
 			}
 
-			// Reconnect succeeded: register the restored OpenFile
+			// Reconnect succeeded: register the restored OpenFile.
+			// Preserve the original FileID per MS-SMB2 3.3.5.9.7.
 			restored.TreeID = ctx.TreeID
 			restored.SessionID = ctx.SessionID
-			smbFileID := h.GenerateFileID()
-			restored.FileID = smbFileID
+			smbFileID := restored.FileID
 			h.StoreOpenFile(restored)
 
 			// Get current file attributes for the response

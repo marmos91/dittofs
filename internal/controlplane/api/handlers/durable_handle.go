@@ -9,6 +9,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -153,6 +154,16 @@ func (dh *DurableHandleHandler) ForceClose(w http.ResponseWriter, r *http.Reques
 		metaSvc := dh.rt.GetMetadataService()
 		if len(h.MetadataHandle) > 0 && metaSvc != nil {
 			_ = metaSvc.UnlockAllForSession(r.Context(), h.MetadataHandle, 0)
+		}
+
+		// Flush payload cache (consistent with scavenger cleanup)
+		if h.PayloadID != "" {
+			if payloadSvc := dh.rt.GetBlockService(); payloadSvc != nil {
+				if _, flushErr := payloadSvc.Flush(r.Context(), metadata.PayloadID(h.PayloadID)); flushErr != nil {
+					logger.Debug("DurableHandleHandler.ForceClose: flush failed",
+						"id", handleID, "error", flushErr)
+				}
+			}
 		}
 
 		// Delete from store

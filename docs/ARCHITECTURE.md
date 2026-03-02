@@ -838,9 +838,9 @@ OPEN ─[disconnect]─> ORPHANED ─[scavenger timeout]─> EXPIRED ─[cleanup
 
 **Scavenger**: A background goroutine (`DurableHandleScavenger`) runs at 10-second intervals. For each expired handle it performs cleanup: releases byte-range locks, flushes payload caches, then deletes the handle from the store. On server restart, the scavenger adjusts remaining timeouts to account for downtime.
 
-**Reconnect**: A new session sends CREATE with DHnC/DH2C. The server validates 14+ fields (FileID, CreateGuid, username, session key hash, access mask, share mode, oplock level) and restores the `OpenFile` without data loss.
+**Reconnect**: A new session sends CREATE with DHnC/DH2C. The server validates the durable-handle context against stored state (share name, path, username, session key hash, FileID, DesiredAccess, ShareAccess, expiry, and file existence) and restores the `OpenFile` without data loss.
 
-**Conflict**: When a new open targets a file with an orphaned durable handle, the scavenger force-expires the orphaned handle (with optional lease break) to allow the new open to proceed.
+**Conflict**: When a new open targets a file with an orphaned durable handle, the scavenger force-expires the orphaned handle to allow the new open to proceed. Cleanup includes releasing byte-range locks and flushing payload caches.
 
 **App Instance ID**: For Hyper-V failover, a CREATE with a matching `AppInstanceId` triggers force-close of the old handle, allowing the new VM instance to take over.
 

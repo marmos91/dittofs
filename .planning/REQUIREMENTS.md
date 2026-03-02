@@ -29,19 +29,19 @@ Requirements for SMB3 protocol upgrade. Each maps to roadmap phases.
 
 ### Encryption
 
-- [ ] **ENC-01**: Server encrypts/decrypts messages using AES-128-GCM with transform header framing
-- [ ] **ENC-02**: Server encrypts/decrypts messages using AES-128-CCM for 3.0/3.0.2 compatibility
-- [ ] **ENC-03**: Server supports AES-256-GCM and AES-256-CCM cipher variants
-- [ ] **ENC-04**: Server enforces per-session encryption via Session.EncryptData flag
-- [ ] **ENC-05**: Server enforces per-share encryption via Share.EncryptData configuration
-- [ ] **ENC-06**: Framing layer detects transform header (0xFD) and decrypts before dispatch
+- [x] **ENC-01**: Server encrypts/decrypts messages using AES-128-GCM with transform header framing
+- [x] **ENC-02**: Server encrypts/decrypts messages using AES-128-CCM for 3.0/3.0.2 compatibility
+- [x] **ENC-03**: Server supports AES-256-GCM and AES-256-CCM cipher variants
+- [x] **ENC-04**: Server enforces per-session encryption via Session.EncryptData flag
+- [x] **ENC-05**: Server enforces per-share encryption via Share.EncryptData configuration
+- [x] **ENC-06**: Framing layer detects transform header (0xFD) and decrypts before dispatch
 
 ### Authentication
 
-- [ ] **AUTH-01**: Server completes SPNEGO/Kerberos session setup with session key extraction via shared Kerberos layer
-- [ ] **AUTH-02**: Server generates AP-REP token for mutual authentication in SPNEGO accept-complete
-- [ ] **AUTH-03**: Server falls back from Kerberos to NTLM within SPNEGO when Kerberos fails
-- [ ] **AUTH-04**: Guest sessions bypass encryption and signing (no session key)
+- [x] **AUTH-01**: Server completes SPNEGO/Kerberos session setup with session key extraction via shared Kerberos layer
+- [x] **AUTH-02**: Server generates AP-REP token for mutual authentication in SPNEGO accept-complete
+- [x] **AUTH-03**: Server falls back from Kerberos to NTLM within SPNEGO when Kerberos fails
+- [x] **AUTH-04**: Guest sessions bypass encryption and signing (no session key)
 
 ### Leases
 
@@ -70,9 +70,9 @@ Requirements for SMB3 protocol upgrade. Each maps to roadmap phases.
 
 ### Architecture
 
-- [ ] **ARCH-01**: Business logic (leases, durable handles, state) lives in metadata service layer following NFS v3/v4 pattern
+- [x] **ARCH-01**: Business logic (leases, durable handles, state) lives in metadata service layer following NFS v3/v4 pattern
 - [x] **ARCH-02**: SMB internal package contains only protocol encoding/decoding/framing — no business logic
-- [ ] **ARCH-03**: SMB3 features reuse NFSv4 infrastructure where possible (delegations, state management, Kerberos)
+- [x] **ARCH-03**: SMB3 features reuse NFSv4 infrastructure where possible (delegations, state management, Kerberos)
 
 ### Documentation
 
@@ -136,20 +136,20 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SIGN-01 | Phase 34 | Complete |
 | SIGN-02 | Phase 34 | Complete |
 | SIGN-03 | Phase 34 | Complete |
-| ENC-01 | Phase 35 | Pending |
-| ENC-02 | Phase 35 | Pending |
-| ENC-03 | Phase 35 | Pending |
-| ENC-04 | Phase 35 | Pending |
-| ENC-05 | Phase 35 | Pending |
-| ENC-06 | Phase 35 | Pending |
-| AUTH-01 | Phase 36 | Pending |
-| AUTH-02 | Phase 36 | Pending |
-| AUTH-03 | Phase 36 | Pending |
-| AUTH-04 | Phase 36 | Pending |
-| LEASE-01 | Phase 37 | Pending |
-| LEASE-02 | Phase 37 | Pending |
-| LEASE-03 | Phase 37 | Pending |
-| LEASE-04 | Phase 37 | Pending |
+| ENC-01 | Phase 35 | Complete |
+| ENC-02 | Phase 35 | Complete |
+| ENC-03 | Phase 35 | Complete |
+| ENC-04 | Phase 35 | Complete |
+| ENC-05 | Phase 35 | Complete |
+| ENC-06 | Phase 35 | Complete |
+| AUTH-01 | Phase 36 | Complete |
+| AUTH-02 | Phase 36 | Complete |
+| AUTH-03 | Phase 36 | Complete |
+| AUTH-04 | Phase 36 | Complete |
+| LEASE-01 | Phase 37 | Complete |
+| LEASE-02 | Phase 37 | Complete |
+| LEASE-03 | Phase 37 | Complete |
+| LEASE-04 | Phase 37 | Complete |
 | DH-01 | Phase 38 | Complete |
 | DH-02 | Phase 38 | Complete |
 | DH-03 | Phase 38 | Complete |
@@ -159,9 +159,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | XPROT-01 | Phase 39 | Pending |
 | XPROT-02 | Phase 39 | Pending |
 | XPROT-03 | Phase 39 | Pending |
-| ARCH-01 | Phase 37 | Pending |
+| ARCH-01 | Phase 37 | Complete |
 | ARCH-02 | Phase 33 | Complete |
-| ARCH-03 | Phase 36 | Pending |
+| ARCH-03 | Phase 36 | Complete |
 | DOC-01 | Phase 39 | Pending |
 | TEST-01 | Phase 40 | Pending |
 | TEST-02 | Phase 40 | Pending |

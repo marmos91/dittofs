@@ -281,9 +281,9 @@ func processV1Reconnect(
 		return nil, types.StatusObjectNameNotFound, nil
 	}
 
-	// Run shared validation checks
+	// V1 reconnect does not carry DesiredAccess/ShareAccess in the context
 	return validateAndRestore(ctx, durableStore, metaSvc, handle, sessionID, username,
-		sessionKeyHash, shareName, filename)
+		sessionKeyHash, shareName, filename, 0, 0)
 }
 
 // processV2Reconnect handles V2 (DH2C) reconnect validation and restoration.
@@ -300,7 +300,7 @@ func processV2Reconnect(
 	filename string,
 ) (*OpenFile, types.Status, error) {
 	// Parse V2 reconnect context
-	_, createGuid, flags, err := DecodeDH2CReconnect(dh2cCtx.Data)
+	fileID, createGuid, flags, err := DecodeDH2CReconnect(dh2cCtx.Data)
 	if err != nil {
 		logger.Debug("processV2Reconnect: invalid DH2C data", "error", err)
 		return nil, types.StatusInvalidParameter, nil
@@ -330,13 +330,23 @@ func processV2Reconnect(
 		return nil, types.StatusObjectNameNotFound, nil
 	}
 
-	// Run shared validation checks
+	// Validate FileID from DH2C against persisted handle to prevent wrong-handle reconnect
+	if fileID != handle.FileID {
+		logger.Debug("processV2Reconnect: FileID mismatch",
+			"expected", fmt.Sprintf("%x", handle.FileID),
+			"actual", fmt.Sprintf("%x", fileID))
+		return nil, types.StatusInvalidParameter, nil
+	}
+
+	// V2 reconnect does not carry DesiredAccess/ShareAccess in DH2C context either
 	return validateAndRestore(ctx, durableStore, metaSvc, handle, sessionID, username,
-		sessionKeyHash, shareName, filename)
+		sessionKeyHash, shareName, filename, 0, 0)
 }
 
 // validateAndRestore runs the shared reconnect validation checks and restores the OpenFile.
 // These checks apply to both V1 and V2 reconnects.
+// desiredAccess and shareAccess are from the CREATE request; zero means "not provided"
+// (V1 reconnect does not include these in the context).
 func validateAndRestore(
 	ctx context.Context,
 	durableStore lock.DurableHandleStore,
@@ -347,6 +357,8 @@ func validateAndRestore(
 	sessionKeyHash [32]byte,
 	shareName string,
 	filename string,
+	desiredAccess uint32,
+	shareAccess uint32,
 ) (*OpenFile, types.Status, error) {
 	if handle.ShareName != shareName {
 		logger.Debug("validateAndRestore: share name mismatch",
@@ -376,6 +388,21 @@ func validateAndRestore(
 				"handleID", handle.ID)
 		}
 		logger.Debug("validateAndRestore: session key hash mismatch")
+		return nil, types.StatusAccessDenied, nil
+	}
+
+	// Per [MS-SMB2] 3.3.5.9.9: reject reconnect if DesiredAccess or ShareAccess
+	// differs from the persisted values to prevent privilege escalation.
+	if desiredAccess != 0 && handle.DesiredAccess != 0 && desiredAccess != handle.DesiredAccess {
+		logger.Debug("validateAndRestore: desired access mismatch",
+			"persisted", fmt.Sprintf("0x%08x", handle.DesiredAccess),
+			"requested", fmt.Sprintf("0x%08x", desiredAccess))
+		return nil, types.StatusAccessDenied, nil
+	}
+	if shareAccess != 0 && handle.ShareAccess != 0 && shareAccess != handle.ShareAccess {
+		logger.Debug("validateAndRestore: share access mismatch",
+			"persisted", fmt.Sprintf("0x%08x", handle.ShareAccess),
+			"requested", fmt.Sprintf("0x%08x", shareAccess))
 		return nil, types.StatusAccessDenied, nil
 	}
 
@@ -518,6 +545,10 @@ func buildPersistedDurableHandle(
 	sessionKeyHash [32]byte,
 	serverStartTime time.Time,
 ) *lock.PersistedDurableHandle {
+	// Clone MetadataHandle to avoid aliasing the live OpenFile's slice
+	metaHandle := make([]byte, len(openFile.MetadataHandle))
+	copy(metaHandle, openFile.MetadataHandle)
+
 	return &lock.PersistedDurableHandle{
 		ID:              uuid.New().String(),
 		FileID:          openFile.FileID,
@@ -526,7 +557,7 @@ func buildPersistedDurableHandle(
 		DesiredAccess:   openFile.DesiredAccess,
 		ShareAccess:     openFile.ShareAccess,
 		CreateOptions:   uint32(openFile.CreateOptions),
-		MetadataHandle:  openFile.MetadataHandle,
+		MetadataHandle:  metaHandle,
 		PayloadID:       string(openFile.PayloadID),
 		OplockLevel:     openFile.OplockLevel,
 		CreateGuid:      openFile.CreateGuid,

@@ -375,12 +375,14 @@ func (h *Handler) ReleaseAllLocksForSession(ctx context.Context, sessionID uint6
 
 // CloseAllFilesForSession closes all open files for a session.
 // This releases locks, flushes caches, handles delete-on-close, and removes file handles.
+// When isDisconnect is true (transport drop), durable handles are persisted for reconnection.
+// When isDisconnect is false (explicit LOGOFF), durable handles are fully closed.
 // Returns the number of files closed.
-func (h *Handler) CloseAllFilesForSession(ctx context.Context, sessionID uint64) int {
+func (h *Handler) CloseAllFilesForSession(ctx context.Context, sessionID uint64, isDisconnect bool) int {
 	filter := func(f *OpenFile) bool {
 		return f.SessionID == sessionID
 	}
-	return h.closeFilesWithFilter(ctx, sessionID, filter, "CloseAllFilesForSession")
+	return h.closeFilesWithFilter(ctx, sessionID, filter, "CloseAllFilesForSession", isDisconnect)
 }
 
 // CloseAllFilesForTree closes all open files associated with a tree connection.
@@ -392,16 +394,20 @@ func (h *Handler) CloseAllFilesForTree(ctx context.Context, treeID uint32, sessi
 	filter := func(f *OpenFile) bool {
 		return f.TreeID == treeID && f.SessionID == sessionID
 	}
-	return h.closeFilesWithFilter(ctx, sessionID, filter, "CloseAllFilesForTree")
+	// Tree disconnect is not a transport disconnect — fully close durable handles
+	return h.closeFilesWithFilter(ctx, sessionID, filter, "CloseAllFilesForTree", false)
 }
 
 // closeFilesWithFilter closes files matching the filter predicate.
 // This is the shared implementation for CloseAllFilesForSession and CloseAllFilesForTree.
+// When isDisconnect is true, durable handles are persisted for later reconnection.
+// When false (explicit LOGOFF or tree disconnect), durable handles are fully closed.
 func (h *Handler) closeFilesWithFilter(
 	ctx context.Context,
 	sessionID uint64,
 	filter func(*OpenFile) bool,
 	caller string,
+	isDisconnect bool,
 ) int {
 	var closed int
 	var toDelete [][16]byte
@@ -425,10 +431,11 @@ func (h *Handler) closeFilesWithFilter(
 			return true
 		}
 
-		// Durable handle persistence: when IsDurable is set, persist the handle
-		// to the DurableHandleStore instead of closing it. This allows reconnection
-		// from a new session after network interruption.
-		if openFile.IsDurable && h.DurableStore != nil {
+		// Durable handle persistence: when IsDurable is set AND this is a transport
+		// disconnect (not an explicit LOGOFF), persist the handle to the
+		// DurableHandleStore for later reconnection. On explicit LOGOFF the client
+		// is intentionally closing the session, so durable handles are fully closed.
+		if openFile.IsDurable && h.DurableStore != nil && isDisconnect {
 			username := ""
 			var sessionKeyHash [32]byte
 			if sess != nil {
@@ -540,11 +547,13 @@ func (h *Handler) DeleteAllTreesForSession(sessionID uint64) int {
 // CleanupSession performs full cleanup for a session.
 // This closes all files, releases all locks, removes all tree connections,
 // and deletes the session. Called on LOGOFF or connection close.
-func (h *Handler) CleanupSession(ctx context.Context, sessionID uint64) {
-	logger.Debug("CleanupSession: starting cleanup", "sessionID", sessionID)
+// When isDisconnect is true (transport drop), durable handles are preserved.
+// When false (explicit LOGOFF), all handles are fully closed.
+func (h *Handler) CleanupSession(ctx context.Context, sessionID uint64, isDisconnect bool) {
+	logger.Debug("CleanupSession: starting cleanup", "sessionID", sessionID, "isDisconnect", isDisconnect)
 
 	// 1. Close all open files (this also releases locks and flushes caches)
-	filesClosed := h.CloseAllFilesForSession(ctx, sessionID)
+	filesClosed := h.CloseAllFilesForSession(ctx, sessionID, isDisconnect)
 
 	// 2. Delete all tree connections
 	treesDeleted := h.DeleteAllTreesForSession(sessionID)

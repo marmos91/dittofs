@@ -167,7 +167,7 @@ func (h *Handler) Logoff(ctx *SMBHandlerContext, req *LogoffRequest) (*LogoffRes
 	// 3. Clean up pending auth state
 	// 4. Delete the session itself
 
-	h.CleanupSession(ctx.Context, ctx.SessionID)
+	h.CleanupSession(ctx.Context, ctx.SessionID, false /* explicit LOGOFF, not disconnect */)
 
 	// ========================================================================
 	// Step 3: Return success response

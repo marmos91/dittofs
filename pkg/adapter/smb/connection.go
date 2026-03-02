@@ -260,7 +260,7 @@ func (c *Connection) cleanupSessions() {
 	defer cancel()
 
 	for _, sessionID := range sessions {
-		c.server.handler.CleanupSession(ctx, sessionID)
+		c.server.handler.CleanupSession(ctx, sessionID, true /* transport disconnect */)
 	}
 
 	logger.Debug("Session cleanup complete",
