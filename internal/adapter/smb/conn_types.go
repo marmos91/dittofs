@@ -3,8 +3,10 @@ package smb
 import (
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/encryption"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/v2/handlers"
 )
@@ -45,6 +47,15 @@ type ConnInfo struct {
 	// CryptoState holds per-connection cryptographic negotiation state
 	// including the preauth integrity hash chain for SMB 3.1.1.
 	CryptoState *ConnectionCryptoState
+
+	// EncryptionMiddleware handles transparent encrypt/decrypt of SMB3 messages.
+	// Nil when encryption is not configured or not yet negotiated.
+	EncryptionMiddleware encryption.EncryptionMiddleware
+
+	// DecryptFailures tracks consecutive decryption failures for this connection.
+	// After 5 consecutive failures, the connection is dropped per security best practice.
+	// Reset to 0 on each successful decrypt.
+	DecryptFailures *atomic.Int32
 }
 
 // SessionTracker provides callbacks for session lifecycle tracking.
@@ -52,8 +63,6 @@ type ConnInfo struct {
 // dispatch functions can track session creation/deletion without
 // depending on the Connection type.
 type SessionTracker interface {
-	// TrackSession records a session as belonging to the connection.
 	TrackSession(sessionID uint64)
-	// UntrackSession removes a session from the connection's tracking.
 	UntrackSession(sessionID uint64)
 }

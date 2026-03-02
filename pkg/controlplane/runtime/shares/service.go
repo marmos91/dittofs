@@ -25,6 +25,9 @@ type Share struct {
 	AnonymousUID uint32
 	AnonymousGID uint32
 
+	// SMB3 encryption: when true, TREE_CONNECT returns SMB2_SHAREFLAG_ENCRYPT_DATA.
+	EncryptData bool
+
 	// NFS-specific options
 	DisableReaddirplus bool
 
@@ -47,6 +50,8 @@ type ShareConfig struct {
 	Squash       models.SquashMode
 	AnonymousUID uint32
 	AnonymousGID uint32
+
+	EncryptData bool
 
 	RootAttr *metadata.FileAttr
 
@@ -176,6 +181,7 @@ func (s *Service) AddShare(
 		MetadataStore:      config.MetadataStore,
 		RootHandle:         rootHandle,
 		ReadOnly:           config.ReadOnly,
+		EncryptData:        config.EncryptData,
 		DefaultPermission:  config.DefaultPermission,
 		Squash:             config.Squash,
 		AnonymousUID:       config.AnonymousUID,

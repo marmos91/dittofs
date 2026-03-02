@@ -101,7 +101,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 33: SMB3 Dialect Negotiation and Preauth Integrity** - 3.0/3.0.2/3.1.1 dialect selection, negotiate contexts, SHA-512 preauth hash chain, secure dialect validation IOCTL (completed 2026-02-28)
 - [x] **Phase 34: Key Derivation and Signing** - SP800-108 KDF, dialect-aware key derivation (3.0 vs 3.1.1), AES-CMAC/GMAC signing abstraction (completed 2026-03-01)
-- [ ] **Phase 35: Encryption and Transform Header** - AES-128/256-CCM/GCM encryption, transform header framing, per-session and per-share encryption enforcement
+- [x] **Phase 35: Encryption and Transform Header** - AES-128/256-CCM/GCM encryption, transform header framing, per-session and per-share encryption enforcement (completed 2026-03-02)
 - [ ] **Phase 36: Kerberos SMB3 Integration** - SPNEGO/Kerberos session setup with session key extraction, AP-REP mutual auth, NTLM fallback, guest sessions
 - [ ] **Phase 37: SMB3 Leases and Directory Leasing** - Lease V2 with ParentLeaseKey/epoch, directory leases, break coordination via metadata service
 - [ ] **Phase 38: Durable Handles** - V1/V2 durable handles with CreateGuid, state persistence, reconnect validation (14+ checks), timeout management
@@ -177,7 +177,11 @@ Plans:
   3. AES-256-GCM and AES-256-CCM cipher variants functional
   4. Per-session encryption enforced (Session.EncryptData flag forces encryption on all traffic)
   5. Per-share encryption enforced (one share encrypted, another unencrypted on same connection)
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [x] 35-01-PLAN.md — Encryptor interface, GCM/CCM implementations, TransformHeader wire format, encryption config types
+- [x] 35-02-PLAN.md — EncryptionMiddleware, framing layer 0xFD detection, response encryption, cipher preference update
+- [x] 35-03-PLAN.md — SESSION_SETUP encryption enforcement, TREE_CONNECT share encryption, adapter wiring, docs
 
 ### Phase 36: Kerberos SMB3 Integration
 **Goal**: Domain-joined Windows clients authenticate via Kerberos/SPNEGO with proper SMB3 key derivation, with NTLM and guest fallback
@@ -463,7 +467,7 @@ v3.8 (33-40.5) -> v4.0 (41-47.5) -> v4.1 (48-53.5)
 | 32. Windows Integration Testing | v3.6 | 3/3 | Complete | 2026-02-28 |
 | 33. SMB3 Dialect Negotiation and Preauth Integrity | 2/3 | Complete    | 2026-02-28 | - |
 | 34. Key Derivation and Signing | 2/2 | Complete    | 2026-03-01 | - |
-| 35. Encryption and Transform Header | v3.8 | 0/? | Not started | - |
+| 35. Encryption and Transform Header | 3/3 | Complete   | 2026-03-02 | - |
 | 36. Kerberos SMB3 Integration | v3.8 | 0/? | Not started | - |
 | 37. SMB3 Leases and Directory Leasing | v3.8 | 0/? | Not started | - |
 | 38. Durable Handles | v3.8 | 0/? | Not started | - |

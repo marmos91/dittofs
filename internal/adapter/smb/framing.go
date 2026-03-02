@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/pool"
+	"github.com/marmos91/dittofs/internal/adapter/smb/encryption"
 	"github.com/marmos91/dittofs/internal/adapter/smb/header"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/adapter/smb/v2/handlers"
@@ -29,12 +30,17 @@ type SigningVerifier interface {
 // the message length, followed by the SMB2 header (64 bytes) and body.
 // For compound requests, remainingCompound contains the bytes after the first command.
 //
+// When an encrypted message (0xFD protocol ID) is detected, the encMiddleware
+// is used to decrypt the inner SMB2 message transparently. Per MS-SMB2 3.3.5.2.1.1,
+// messages inside transform headers are NOT signed -- AEAD provides integrity.
+//
 // Parameters:
 //   - ctx: context for cancellation
 //   - conn: the TCP connection to read from
 //   - maxMsgSize: maximum allowed message size (DoS protection)
 //   - readTimeout: deadline for reading the request (0 = no timeout)
 //   - verifier: optional signature verifier (nil = skip verification)
+//   - encMiddleware: optional encryption middleware (nil = no encryption support)
 //   - handleSMB1: callback to handle SMB1 NEGOTIATE upgrade (returns error)
 //
 // Returns parsed header, body bytes, remaining compound bytes, and error.
@@ -44,6 +50,7 @@ func ReadRequest(
 	maxMsgSize int,
 	readTimeout time.Duration,
 	verifier SigningVerifier,
+	encMiddleware encryption.EncryptionMiddleware,
 	handleSMB1 func(ctx context.Context, message []byte) error,
 ) (*header.SMB2Header, []byte, []byte, error) {
 	message, err := readNetBIOSPayload(ctx, conn, maxMsgSize, readTimeout, 4)
@@ -51,17 +58,48 @@ func ReadRequest(
 		return nil, nil, nil, err
 	}
 
-	// Check if this is SMB1 (legacy negotiate) - needs upgrade to SMB2
 	protocolID := binary.LittleEndian.Uint32(message[0:4])
-	if protocolID == types.SMB1ProtocolID {
+
+	switch protocolID {
+	case types.SMB1ProtocolID:
+		// Legacy SMB1 negotiate - upgrade to SMB2
 		if err := handleSMB1(ctx, message); err != nil {
 			return nil, nil, nil, fmt.Errorf("handle SMB1 negotiate: %w", err)
 		}
 		// Read the next message non-recursively -- must be SMB2
 		return readSMB2Message(ctx, conn, maxMsgSize, readTimeout, verifier)
-	}
 
-	return parseSMB2Message(message, verifier, true)
+	case header.TransformProtocolID:
+		// Encrypted SMB3 message (0xFD 'S' 'M' 'B')
+		if encMiddleware == nil {
+			return nil, nil, nil, fmt.Errorf("encrypted message received but encryption not configured")
+		}
+		decrypted, transformSessionID, err := encMiddleware.DecryptRequest(message)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("decrypt transform message: %w", err)
+		}
+
+		// Parse the inner SMB2 message. Per MS-SMB2 3.3.5.2.1.1:
+		// encrypted messages are NOT signed -- AEAD provides integrity.
+		// Pass nil verifier to skip signature checks.
+		hdr, body, remaining, err := parseSMB2Message(decrypted, nil, true)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+
+		// Per MS-SMB2 3.3.5.2.1.1: validate that the inner SMB2 header's
+		// SessionID matches the transform header's SessionId. A mismatch
+		// would indicate cross-session request confusion.
+		if hdr != nil && hdr.SessionID != transformSessionID {
+			return nil, nil, nil, fmt.Errorf("session ID mismatch: transform header 0x%x vs inner SMB2 header 0x%x",
+				transformSessionID, hdr.SessionID)
+		}
+		return hdr, body, remaining, nil
+
+	default:
+		// Normal SMB2 message (0xFE 'S' 'M' 'B') or unexpected protocol
+		return parseSMB2Message(message, verifier, true)
+	}
 }
 
 // readSMB2Message reads a single SMB2 message (no SMB1 fallback).
@@ -304,9 +342,5 @@ func (sv *sessionSigningVerifier) VerifyRequest(hdr *header.SMB2Header, message 
 // SendRawMessage sends pre-encoded header and body bytes with NetBIOS framing.
 // Used for SMB1-to-SMB2 upgrade responses where the header is manually constructed.
 func SendRawMessage(conn net.Conn, writeMu *LockedWriter, writeTimeout time.Duration, headerBytes, body []byte) error {
-	payload := make([]byte, len(headerBytes)+len(body))
-	copy(payload, headerBytes)
-	copy(payload[len(headerBytes):], body)
-
-	return WriteNetBIOSFrame(conn, writeMu, writeTimeout, payload)
+	return WriteNetBIOSFrame(conn, writeMu, writeTimeout, append(headerBytes, body...))
 }

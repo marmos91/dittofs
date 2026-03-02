@@ -71,6 +71,10 @@ type Handler struct {
 	MinDialect types.Dialect
 	MaxDialect types.Dialect
 
+	// Encryption configuration for enforcement decisions.
+	// Propagated from the adapter's EncryptionConfig during initialization.
+	EncryptionConfig EncryptionConfig
+
 	// SigningAlgorithmPreference is the server's preference order for signing
 	// algorithms, used during SIGNING_CAPABILITIES negotiate context processing.
 	// The first element is the most preferred. If empty, defaults to
@@ -102,6 +106,19 @@ type Handler struct {
 	// before Serve() is called. When nil, Kerberos auth requests return
 	// STATUS_LOGON_FAILURE gracefully (NTLM and guest auth still work).
 	KerberosProvider *kerberos.Provider
+}
+
+// EncryptionConfig holds encryption policy for the handler.
+// This mirrors the adapter-level EncryptionConfig but lives in the handler's
+// package to avoid circular imports between handlers/ and pkg/adapter/smb/.
+type EncryptionConfig struct {
+	// Mode controls the encryption policy.
+	// Valid values: "disabled", "preferred", "required"
+	Mode string
+
+	// AllowedCiphers is an ordered list of allowed cipher IDs.
+	// The order defines server preference (first = most preferred).
+	AllowedCiphers []uint16
 }
 
 // PendingAuth tracks sessions in the middle of NTLM authentication.

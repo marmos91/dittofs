@@ -38,6 +38,7 @@
 package session
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -248,6 +249,49 @@ func (s *Session) EnableSigning(required bool) {
 // Used by session setup when KDF-derived keys are available (3.x sessions).
 func (s *Session) SetCryptoState(cs *SessionCryptoState) {
 	s.CryptoState = cs
+}
+
+// ShouldEncrypt returns true if outgoing messages should be encrypted.
+func (s *Session) ShouldEncrypt() bool {
+	return s.CryptoState.ShouldEncrypt()
+}
+
+// EncryptWithNonce encrypts plaintext using a pre-generated nonce and AAD.
+// Used by the encryption middleware which needs to control the nonce.
+func (s *Session) EncryptWithNonce(nonce, plaintext, aad []byte) ([]byte, error) {
+	if s.CryptoState == nil || s.CryptoState.Encryptor == nil {
+		return nil, fmt.Errorf("session has no encryptor")
+	}
+	return s.CryptoState.Encryptor.EncryptWithNonce(nonce, plaintext, aad)
+}
+
+// DecryptMessage decrypts ciphertext using the given nonce and AAD.
+func (s *Session) DecryptMessage(nonce, ciphertext, aad []byte) ([]byte, error) {
+	if s.CryptoState == nil || s.CryptoState.Decryptor == nil {
+		return nil, fmt.Errorf("session has no decryptor")
+	}
+	return s.CryptoState.Decryptor.Decrypt(nonce, ciphertext, aad)
+}
+
+func (s *Session) EncryptorNonceSize() int {
+	if s.CryptoState == nil || s.CryptoState.Encryptor == nil {
+		return 0
+	}
+	return s.CryptoState.Encryptor.NonceSize()
+}
+
+func (s *Session) DecryptorNonceSize() int {
+	if s.CryptoState == nil || s.CryptoState.Decryptor == nil {
+		return 0
+	}
+	return s.CryptoState.Decryptor.NonceSize()
+}
+
+func (s *Session) EncryptorOverhead() int {
+	if s.CryptoState == nil || s.CryptoState.Encryptor == nil {
+		return 0
+	}
+	return s.CryptoState.Encryptor.Overhead()
 }
 
 // ShouldSign returns true if outgoing messages should be signed.

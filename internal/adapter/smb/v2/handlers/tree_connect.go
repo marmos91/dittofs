@@ -17,6 +17,12 @@ import (
 // StructureSize(2) + Reserved/Flags(2) + PathOffset(2) + PathLength(2) = 8 bytes
 const treeConnectFixedSize = 8
 
+// SMB2ShareFlagEncryptData indicates that the share requires encryption.
+// When set in the ShareFlags of the TREE_CONNECT response, the client
+// must encrypt all requests to this share.
+// [MS-SMB2] Section 2.2.10
+const SMB2ShareFlagEncryptData uint32 = 0x0008
+
 // ipcMaximalAccess defines the access rights for the IPC$ virtual share.
 // [MS-SMB2] Section 2.2.10 - MaximalAccess is a bitmask of allowed operations.
 // Value 0x1F grants the following SMB2 access rights for named pipe operations:
@@ -115,6 +121,15 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 		}
 	}
 
+	// Encryption enforcement: in required mode, reject unencrypted sessions
+	// connecting to encrypted shares.
+	if shouldRejectUnencryptedTreeConnect(h.EncryptionConfig.Mode, share, sess) {
+		logger.Info("TREE_CONNECT rejected: encrypted share requires encrypted session",
+			"shareName", shareName,
+			"encryptionMode", h.EncryptionConfig.Mode)
+		return NewErrorResult(types.StatusAccessDenied), nil
+	}
+
 	// Create tree connection with permission
 	treeID := h.GenerateTreeID()
 	tree := &TreeConnection{
@@ -133,12 +148,18 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 	// Calculate MaximalAccess based on effective permission
 	maximalAccess := calculateMaximalAccess(permission)
 
+	// Calculate ShareFlags
+	var shareFlags uint32
+	if share.EncryptData {
+		shareFlags |= SMB2ShareFlagEncryptData
+	}
+
 	// Build response (16 bytes)
 	w := smbenc.NewWriter(16)
 	w.WriteUint16(16)                     // StructureSize
 	w.WriteUint8(types.SMB2ShareTypeDisk) // ShareType
 	w.WriteUint8(0)                       // Reserved
-	w.WriteUint32(0)                      // ShareFlags
+	w.WriteUint32(shareFlags)             // ShareFlags
 	w.WriteUint32(0)                      // Capabilities
 	w.WriteUint32(maximalAccess)          // MaximalAccess
 
@@ -235,6 +256,17 @@ func (h *Handler) handleIPCShare(ctx *SMBHandlerContext) (*HandlerResult, error)
 	w.WriteUint32(ipcMaximalAccess)       // MaximalAccess: basic read/write for IPC
 
 	return NewResult(types.StatusSuccess, w.Bytes()), nil
+}
+
+// shouldRejectUnencryptedTreeConnect returns true if a TREE_CONNECT should be
+// rejected because the share requires encryption but the session does not support it.
+// This only applies when encryption_mode is "required" and the share has EncryptData=true.
+// In "preferred" mode, unencrypted sessions are allowed (mixed model).
+func shouldRejectUnencryptedTreeConnect(encryptionMode string, share *runtime.Share, sess *session.Session) bool {
+	if encryptionMode != "required" || share == nil || !share.EncryptData {
+		return false
+	}
+	return sess == nil || !sess.ShouldEncrypt()
 }
 
 // parseSharePath parses \\server\share to /share or just share

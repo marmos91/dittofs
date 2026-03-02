@@ -98,6 +98,15 @@ func New(config Config) *Adapter {
 		"enabled", handler.SigningConfig.Enabled,
 		"required", handler.SigningConfig.Required)
 
+	// Apply encryption configuration to handler
+	handler.EncryptionConfig = handlers.EncryptionConfig{
+		Mode:           config.Encryption.Mode,
+		AllowedCiphers: config.Encryption.AllowedCiphers,
+	}
+	logger.Debug("SMB encryption configuration",
+		"mode", handler.EncryptionConfig.Mode,
+		"allowed_ciphers", handler.EncryptionConfig.AllowedCiphers)
+
 	// Build BaseAdapter config from SMB config
 	baseConfig := adapter.BaseConfig{
 		BindAddress:     config.BindAddress,
@@ -170,9 +179,14 @@ func (s *Adapter) applySMBSettings(rt *runtime.Runtime) {
 		return
 	}
 
-	// Encryption stub: log warning when enabled per locked decision
-	if settings.EnableEncryption {
-		logger.Info("SMB encryption requested but not yet implemented -- connections will proceed without encryption")
+	// Apply encryption setting from live settings.
+	// When EnableEncryption is true, set handler encryption mode to "preferred"
+	// (live settings can enable/disable; the config-level mode takes precedence
+	// if already "required").
+	if settings.EnableEncryption && s.handler.EncryptionConfig.Mode == "disabled" {
+		s.handler.EncryptionConfig.Mode = "preferred"
+		logger.Info("SMB encryption enabled via live settings",
+			"mode", s.handler.EncryptionConfig.Mode)
 	}
 
 	// Dialect range: apply from settings to handler
@@ -191,12 +205,15 @@ func (s *Adapter) applySMBSettings(rt *runtime.Runtime) {
 
 	// Directory leasing: apply from settings
 	s.handler.DirectoryLeasingEnabled = settings.DirectoryLeasingEnabled
-	s.handler.EncryptionEnabled = settings.EnableEncryption
+
+	// Derive EncryptionEnabled from EncryptionConfig.Mode to keep the two in sync.
+	// EncryptionEnabled controls CapEncryption in NEGOTIATE for SMB 3.0/3.0.2.
+	s.handler.EncryptionEnabled = (s.handler.EncryptionConfig.Mode != "disabled")
 
 	logger.Debug("SMB adapter: dialect range from settings",
 		"min_dialect", settings.MinDialect,
 		"max_dialect", settings.MaxDialect,
-		"encryption", settings.EnableEncryption,
+		"encryption_mode", s.handler.EncryptionConfig.Mode,
 		"directory_leasing", settings.DirectoryLeasingEnabled)
 
 	// Operation blocklist: log active blocks. SMB blocklist is a pass-through

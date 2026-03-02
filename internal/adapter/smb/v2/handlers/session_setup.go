@@ -516,16 +516,19 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 				ctx.IsGuest = false
 
 				// Configure signing with derived signing key
-				h.configureSessionSigningWithKey(sess, signingKey[:], ctx)
+				if errResult := h.configureSessionSigningWithKey(sess, signingKey[:], ctx); errResult != nil {
+					return errResult, nil
+				}
 
 				logger.Debug("NTLM authentication complete (validated credentials)",
 					"sessionID", sess.SessionID,
 					"username", sess.Username,
 					"domain", sess.Domain,
 					"isGuest", sess.IsGuest,
-					"signingEnabled", sess.ShouldSign())
+					"signingEnabled", sess.ShouldSign(),
+					"encryptData", sess.ShouldEncrypt())
 
-				return h.buildAuthenticatedResponse(pending.UsedSPNEGO), nil
+				return h.buildAuthenticatedResponse(pending.UsedSPNEGO, sess.ShouldEncrypt()), nil
 			}
 
 			// SECURITY: User exists but no valid NT hash configured.
@@ -547,7 +550,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 				"domain", sess.Domain,
 				"isGuest", sess.IsGuest)
 
-			return h.buildAuthenticatedResponse(pending.UsedSPNEGO), nil
+			return h.buildAuthenticatedResponse(pending.UsedSPNEGO, false), nil
 		}
 
 		// User not found or disabled
@@ -626,24 +629,29 @@ func (h *Handler) createGuestSession(ctx *SMBHandlerContext) (*HandlerResult, er
 	), nil
 }
 
-// configureSessionSigningWithKey sets up message signing for a session with
-// a pre-derived session key from NTLMv2 authentication.
+// configureSessionSigningWithKey sets up message signing and encryption for a
+// session with a pre-derived session key from NTLMv2 authentication.
 //
 // For SMB 2.x sessions: creates an HMACSigner directly from the session key.
+// In encryption required mode, rejects 2.x sessions (they cannot encrypt).
 // For SMB 3.x sessions: derives all 4 keys via SP800-108 KDF using the
 // negotiated dialect, preauth integrity hash, cipher ID, and signing algorithm.
+// Key derivation always occurs for 3.x when encryption is enabled, even if
+// signing itself is disabled.
 //
 // The ctx parameter provides access to the connection's CryptoState which holds
 // the negotiated dialect and algorithm parameters from NEGOTIATE.
 //
-// [MS-SMB2] Section 3.3.5.5.3 - Session signing is established here
-func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionKey []byte, ctx *SMBHandlerContext) {
-	if !h.SigningConfig.Enabled || len(sessionKey) == 0 {
-		logger.Debug("Session signing NOT configured",
-			"sessionID", sess.SessionID,
-			"signingConfigEnabled", h.SigningConfig.Enabled,
-			"sessionKeyLen", len(sessionKey))
-		return
+// Returns a non-nil *HandlerResult only when the session must be rejected
+// (encryption required but 2.x dialect, or encryptor creation fails).
+// On success, returns nil.
+//
+// [MS-SMB2] Section 3.3.5.5.3 - Session signing/encryption is established here
+func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionKey []byte, ctx *SMBHandlerContext) *HandlerResult {
+	if len(sessionKey) == 0 {
+		logger.Debug("Session crypto NOT configured (no session key)",
+			"sessionID", sess.SessionID)
+		return nil
 	}
 
 	// Determine the negotiated dialect from the connection's CryptoState.
@@ -662,32 +670,86 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 		}
 	}
 
-	logger.Debug("Configuring session signing",
+	encryptionEnabled := h.EncryptionConfig.Mode == "preferred" || h.EncryptionConfig.Mode == "required"
+
+	logger.Debug("Configuring session crypto",
 		"sessionID", sess.SessionID,
 		"dialect", dialect.String(),
 		"signingKeyLen", len(sessionKey),
+		"signingEnabled", h.SigningConfig.Enabled,
 		"signingAlgId", signingAlgId,
 		"cipherId", cipherId,
+		"encryptionMode", h.EncryptionConfig.Mode,
 		"is3x", dialect >= types.Dialect0300)
 
 	if dialect >= types.Dialect0300 {
-		// SMB 3.x: derive all 4 keys via SP800-108 KDF
+		// SMB 3.x: always derive keys via SP800-108 KDF when signing or encryption
+		// is enabled. Key derivation must not be skipped when only encryption is
+		// enabled, since encryption keys come from the same KDF derivation.
 		cryptoState := session.DeriveAllKeys(sessionKey, dialect, preauthHash, cipherId, signingAlgId)
-		cryptoState.SigningEnabled = true
-		cryptoState.SigningRequired = h.SigningConfig.Required
+
+		if h.SigningConfig.Enabled {
+			cryptoState.SigningEnabled = true
+			cryptoState.SigningRequired = h.SigningConfig.Required
+		}
+
+		// Encryption: activate encryptors for preferred/required modes on 3.x sessions.
+		// Guest sessions never reach here (no session key), so they are exempt.
+		if encryptionEnabled {
+			// SMB 3.0/3.0.2 don't use negotiate contexts, so cipherId may be 0.
+			// Per MS-SMB2 spec, AES-128-CCM is the mandatory cipher for SMB 3.0.
+			encCipherId := cipherId
+			if encCipherId == 0 && (dialect == types.Dialect0300 || dialect == types.Dialect0302) {
+				encCipherId = types.CipherAES128CCM
+			}
+
+			cryptoState.EncryptData = true
+			if err := cryptoState.CreateEncryptors(encCipherId); err != nil {
+				if h.EncryptionConfig.Mode == "required" {
+					// Required mode: encryption failure is fatal — destroy the session
+					logger.Warn("Failed to create session encryptors in required mode, rejecting session",
+						"sessionID", sess.SessionID, "error", err)
+					h.DeleteSession(sess.SessionID)
+					return NewErrorResult(types.StatusAccessDenied)
+				}
+				// Preferred mode: degrade gracefully
+				logger.Warn("Failed to create session encryptors, disabling encryption",
+					"sessionID", sess.SessionID, "error", err)
+				cryptoState.EncryptData = false
+			} else {
+				logger.Info("SMB3 encryption enabled for session",
+					"sessionID", sess.SessionID,
+					"cipherId", fmt.Sprintf("0x%04x", encCipherId),
+					"dialect", dialect.String())
+			}
+		}
+
 		sess.SetCryptoState(cryptoState)
 	} else {
-		// SMB 2.x: direct HMAC-SHA256 from session key
-		sess.SetSigningKey(sessionKey)
-		sess.EnableSigning(h.SigningConfig.Required)
+		// SMB 2.x: cannot encrypt. Reject in required mode.
+		if h.EncryptionConfig.Mode == "required" {
+			logger.Warn("Rejecting SMB 2.x session: encryption required but 2.x cannot encrypt",
+				"sessionID", sess.SessionID,
+				"dialect", dialect.String())
+			h.DeleteSession(sess.SessionID)
+			return NewErrorResult(types.StatusAccessDenied)
+		}
+
+		// SMB 2.x: direct HMAC-SHA256 from session key (signing only)
+		if h.SigningConfig.Enabled {
+			sess.SetSigningKey(sessionKey)
+			sess.EnableSigning(h.SigningConfig.Required)
+		}
 	}
 
-	logger.Debug("Session signing configured",
+	logger.Debug("Session crypto configured",
 		"sessionID", sess.SessionID,
-		"enabled", sess.ShouldSign(),
+		"signingEnabled", sess.ShouldSign(),
 		"shouldVerify", sess.ShouldVerify(),
-		"required", h.SigningConfig.Required,
+		"encryptData", sess.ShouldEncrypt(),
 		"dialect", dialect.String())
+
+	return nil
 }
 
 // buildSessionSetupResponse builds the SESSION_SETUP response.
@@ -728,7 +790,9 @@ func (h *Handler) buildSessionSetupResponse(
 // buildAuthenticatedResponse builds a SESSION_SETUP success response for an
 // authenticated (non-guest) user. If the client used SPNEGO wrapping, the
 // response includes an accept-completed token to finalize the GSSAPI context.
-func (h *Handler) buildAuthenticatedResponse(usedSPNEGO bool) *HandlerResult {
+// When encryptData is true, SessionFlagEncryptData (0x0004) is set in the
+// response to signal that the session requires encryption (SMB 3.x).
+func (h *Handler) buildAuthenticatedResponse(usedSPNEGO bool, encryptData bool) *HandlerResult {
 	var acceptToken []byte
 	if usedSPNEGO {
 		var err error
@@ -738,9 +802,14 @@ func (h *Handler) buildAuthenticatedResponse(usedSPNEGO bool) *HandlerResult {
 		}
 	}
 
+	var sessionFlags uint16
+	if encryptData {
+		sessionFlags = types.SMB2SessionFlagEncryptData
+	}
+
 	return h.buildSessionSetupResponse(
 		types.StatusSuccess,
-		0, // No guest flag - authenticated user
+		sessionFlags,
 		acceptToken,
 	)
 }

@@ -341,6 +341,7 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			Name:               share.Name,
 			MetadataStore:      metaStoreCfg.Name,
 			ReadOnly:           share.ReadOnly,
+			EncryptData:        share.EncryptData,
 			DefaultPermission:  share.DefaultPermission,
 			Squash:             nfsOpts.GetSquashMode(),
 			AnonymousUID:       nfsOpts.GetAnonymousUID(),

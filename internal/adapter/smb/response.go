@@ -195,11 +195,7 @@ func SendResponseWithHooks(reqHeader *header.SMB2Header, ctx *handlers.SMBHandle
 	}
 
 	// Build raw response bytes for after-hooks (e.g., preauth integrity hash).
-	headerBytes := respHeader.Encode()
-	rawResponse := make([]byte, len(headerBytes)+len(body))
-	copy(rawResponse, headerBytes)
-	copy(rawResponse[len(headerBytes):], body)
-
+	rawResponse := append(respHeader.Encode(), body...)
 	RunAfterHooks(connInfo, reqHeader.Command, rawResponse)
 	return nil
 }
@@ -260,6 +256,8 @@ func buildResponseHeaderAndBody(reqHeader *header.SMB2Header, ctx *handlers.SMBH
 }
 
 // SendErrorResponse sends an SMB2 error response.
+// Per user decision: all responses on encrypted sessions are encrypted,
+// including error responses.
 func SendErrorResponse(reqHeader *header.SMB2Header, status types.Status, connInfo *ConnInfo) error {
 	// Use session manager for adaptive credit grants
 	credits := connInfo.SessionManager.GrantCredits(
@@ -273,22 +271,25 @@ func SendErrorResponse(reqHeader *header.SMB2Header, status types.Status, connIn
 	return SendMessage(respHeader, MakeErrorBody(), connInfo)
 }
 
-// SendMessage sends an SMB2 message with NetBIOS framing and optional signing.
+// SendMessage sends an SMB2 message with NetBIOS framing, optional encryption,
+// and optional signing.
+//
+// Per MS-SMB2 3.3.4.1.1: encrypted sessions use AEAD instead of signing.
 func SendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo) error {
-	headerBytes := hdr.Encode()
-
-	// Sign the SMB2 payload if session has signing enabled.
-	// We build the SMB payload (header + body) first, sign in place, then frame it.
-	//
-	// Per MS-SMB2 3.3.5.5.3: Once a session is established with signing negotiated,
-	// the server MUST sign responses. ShouldSign() checks both that signing is
-	// enabled and that a valid signing key exists.
-	smbPayload := make([]byte, len(headerBytes)+len(body))
-	copy(smbPayload, headerBytes)
-	copy(smbPayload[len(headerBytes):], body)
+	smbPayload := append(hdr.Encode(), body...)
 
 	if hdr.SessionID != 0 {
 		if sess, ok := connInfo.Handler.GetSession(hdr.SessionID); ok {
+			if sess.ShouldEncrypt() && connInfo.EncryptionMiddleware != nil {
+				encrypted, err := connInfo.EncryptionMiddleware.EncryptResponse(hdr.SessionID, smbPayload)
+				if err != nil {
+					return fmt.Errorf("encrypt response: %w", err)
+				}
+				logger.Debug("Encrypted outgoing SMB2 message",
+					"command", hdr.Command.String(),
+					"sessionID", hdr.SessionID)
+				return WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, encrypted)
+			}
 			if sess.ShouldSign() {
 				sess.SignMessage(smbPayload)
 				logger.Debug("Signed outgoing SMB2 message",
@@ -298,17 +299,13 @@ func SendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo) error 
 		}
 	}
 
-	if err := WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, smbPayload); err != nil {
-		return err
-	}
-
 	logger.Debug("Sent SMB2 response",
 		"command", hdr.Command.String(),
 		"status", hdr.Status.String(),
 		"messageId", hdr.MessageID,
 		"bytes", len(smbPayload))
 
-	return nil
+	return WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, smbPayload)
 }
 
 // SendAsyncChangeNotifyResponse sends an asynchronous CHANGE_NOTIFY response.

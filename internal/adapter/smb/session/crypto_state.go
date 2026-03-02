@@ -1,6 +1,10 @@
 package session
 
 import (
+	"errors"
+	"fmt"
+
+	"github.com/marmos91/dittofs/internal/adapter/smb/encryption"
 	"github.com/marmos91/dittofs/internal/adapter/smb/kdf"
 	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -41,6 +45,23 @@ type SessionCryptoState struct {
 
 	// SigningRequired indicates if signing is mandatory for this session.
 	SigningRequired bool
+
+	// EncryptData indicates whether this session requires encryption.
+	// Set to true when the session is established with encryption negotiated.
+	EncryptData bool
+
+	// Encryptor encrypts outgoing messages (server-to-client).
+	// Uses DecryptionKey ("ServerOut") because key names are from CLIENT perspective:
+	//   DecryptionKey = "ServerOut" = server encrypts TO client = server uses for ENCRYPTION
+	Encryptor encryption.Encryptor
+
+	// Decryptor decrypts incoming messages (client-to-server).
+	// Uses EncryptionKey ("ServerIn") because key names are from CLIENT perspective:
+	//   EncryptionKey = "ServerIn" = client encrypts TO server = server uses for DECRYPTION
+	Decryptor encryption.Encryptor
+
+	// CipherId is the negotiated cipher ID for this session.
+	CipherId uint16
 }
 
 // DeriveAllKeys creates a fully constructed SessionCryptoState with all keys
@@ -74,13 +95,10 @@ func DeriveAllKeys(sessionKey []byte, dialect types.Dialect, preauthHash [64]byt
 	}
 
 	// SMB 3.x: derive all 4 keys via SP800-108 KDF
-
-	// Signing key is always 128-bit
 	sigLabel, sigCtx := kdf.LabelAndContext(kdf.SigningKeyPurpose, dialect, preauthHash)
 	cs.SigningKey = kdf.DeriveKey(sessionKey, sigLabel, sigCtx, 128)
 	cs.Signer = signing.NewSigner(dialect, signingAlgId, cs.SigningKey)
 
-	// Encryption key length depends on cipher: 256-bit for AES-256, 128-bit otherwise
 	encKeyBits := uint32(128)
 	if cipherId == types.CipherAES256CCM || cipherId == types.CipherAES256GCM {
 		encKeyBits = 256
@@ -92,11 +110,41 @@ func DeriveAllKeys(sessionKey []byte, dialect types.Dialect, preauthHash [64]byt
 	decLabel, decCtx := kdf.LabelAndContext(kdf.DecryptionKeyPurpose, dialect, preauthHash)
 	cs.DecryptionKey = kdf.DeriveKey(sessionKey, decLabel, decCtx, encKeyBits)
 
-	// Application key is always 128-bit
 	appLabel, appCtx := kdf.LabelAndContext(kdf.ApplicationKeyPurpose, dialect, preauthHash)
 	cs.ApplicationKey = kdf.DeriveKey(sessionKey, appLabel, appCtx, 128)
 
 	return cs
+}
+
+// CreateEncryptors creates Encryptor and Decryptor instances from the derived keys.
+//
+// Key direction (from CLIENT perspective):
+//   - EncryptionKey = "ServerIn" = client-to-server = server uses for DECRYPTION
+//   - DecryptionKey = "ServerOut" = server-to-client = server uses for ENCRYPTION
+//
+// So: Encryptor (outgoing) uses DecryptionKey, Decryptor (incoming) uses EncryptionKey.
+func (cs *SessionCryptoState) CreateEncryptors(cipherId uint16) error {
+	if cs == nil {
+		return errors.New("nil SessionCryptoState")
+	}
+	if len(cs.DecryptionKey) == 0 || len(cs.EncryptionKey) == 0 {
+		return errors.New("encryption/decryption keys not derived")
+	}
+
+	enc, err := encryption.NewEncryptor(cipherId, cs.DecryptionKey)
+	if err != nil {
+		return fmt.Errorf("create encryptor: %w", err)
+	}
+
+	dec, err := encryption.NewEncryptor(cipherId, cs.EncryptionKey)
+	if err != nil {
+		return fmt.Errorf("create decryptor: %w", err)
+	}
+
+	cs.Encryptor = enc
+	cs.Decryptor = dec
+	cs.CipherId = cipherId
+	return nil
 }
 
 // Destroy zeros all key material for defense-in-depth.
@@ -110,14 +158,29 @@ func (cs *SessionCryptoState) Destroy() {
 	clear(cs.DecryptionKey)
 	clear(cs.ApplicationKey)
 	cs.Signer = nil
+	cs.Encryptor = nil
+	cs.Decryptor = nil
+}
+
+// ShouldEncrypt returns true if outgoing messages should be encrypted.
+// True when EncryptData is set and an Encryptor has been created.
+func (cs *SessionCryptoState) ShouldEncrypt() bool {
+	return cs != nil && cs.EncryptData && cs.Encryptor != nil
 }
 
 // ShouldSign returns true if outgoing messages should be signed.
 func (cs *SessionCryptoState) ShouldSign() bool {
-	return cs != nil && cs.SigningEnabled && cs.Signer != nil
+	return cs.signingReady()
 }
 
 // ShouldVerify returns true if incoming messages should have signatures verified.
+// Currently identical to ShouldSign; kept as a separate method for semantic clarity
+// and to allow divergence if verification-only modes are added later.
 func (cs *SessionCryptoState) ShouldVerify() bool {
+	return cs.signingReady()
+}
+
+// signingReady returns true if signing state is initialized and enabled.
+func (cs *SessionCryptoState) signingReady() bool {
 	return cs != nil && cs.SigningEnabled && cs.Signer != nil
 }

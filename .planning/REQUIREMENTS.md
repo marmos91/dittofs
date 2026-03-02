@@ -29,12 +29,12 @@ Requirements for SMB3 protocol upgrade. Each maps to roadmap phases.
 
 ### Encryption
 
-- [ ] **ENC-01**: Server encrypts/decrypts messages using AES-128-GCM with transform header framing
-- [ ] **ENC-02**: Server encrypts/decrypts messages using AES-128-CCM for 3.0/3.0.2 compatibility
-- [ ] **ENC-03**: Server supports AES-256-GCM and AES-256-CCM cipher variants
-- [ ] **ENC-04**: Server enforces per-session encryption via Session.EncryptData flag
-- [ ] **ENC-05**: Server enforces per-share encryption via Share.EncryptData configuration
-- [ ] **ENC-06**: Framing layer detects transform header (0xFD) and decrypts before dispatch
+- [x] **ENC-01**: Server encrypts/decrypts messages using AES-128-GCM with transform header framing
+- [x] **ENC-02**: Server encrypts/decrypts messages using AES-128-CCM for 3.0/3.0.2 compatibility
+- [x] **ENC-03**: Server supports AES-256-GCM and AES-256-CCM cipher variants
+- [x] **ENC-04**: Server enforces per-session encryption via Session.EncryptData flag
+- [x] **ENC-05**: Server enforces per-share encryption via Share.EncryptData configuration
+- [x] **ENC-06**: Framing layer detects transform header (0xFD) and decrypts before dispatch
 
 ### Authentication
 
@@ -136,12 +136,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SIGN-01 | Phase 34 | Complete |
 | SIGN-02 | Phase 34 | Complete |
 | SIGN-03 | Phase 34 | Complete |
-| ENC-01 | Phase 35 | Pending |
-| ENC-02 | Phase 35 | Pending |
-| ENC-03 | Phase 35 | Pending |
-| ENC-04 | Phase 35 | Pending |
-| ENC-05 | Phase 35 | Pending |
-| ENC-06 | Phase 35 | Pending |
+| ENC-01 | Phase 35 | Complete |
+| ENC-02 | Phase 35 | Complete |
+| ENC-03 | Phase 35 | Complete |
+| ENC-04 | Phase 35 | Complete |
+| ENC-05 | Phase 35 | Complete |
+| ENC-06 | Phase 35 | Complete |
 | AUTH-01 | Phase 36 | Pending |
 | AUTH-02 | Phase 36 | Pending |
 | AUTH-03 | Phase 36 | Pending |

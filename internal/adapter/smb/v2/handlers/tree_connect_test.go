@@ -430,6 +430,153 @@ func TestRootHasAdminAccess(t *testing.T) {
 	})
 }
 
+// =============================================================================
+// TREE_CONNECT Encryption Tests
+// =============================================================================
+
+func TestTreeConnect_ShareEncryptDataConstant(t *testing.T) {
+	// SMB2_SHAREFLAG_ENCRYPT_DATA must be 0x0008 per MS-SMB2 2.2.10
+	if SMB2ShareFlagEncryptData != 0x0008 {
+		t.Errorf("SMB2ShareFlagEncryptData = 0x%04x, expected 0x0008", SMB2ShareFlagEncryptData)
+	}
+}
+
+func TestTreeConnect_EncryptedShareFlagsInResponse(t *testing.T) {
+	// Test that building a tree connect response with share flags at offset 4
+	// correctly encodes the ENCRYPT_DATA flag.
+	t.Run("ResponseIncludesShareFlagEncryptData", func(t *testing.T) {
+		// Simulate a response with SHAREFLAG_ENCRYPT_DATA
+		// The tree connect response is 16 bytes:
+		//   [0:2]  StructureSize (16)
+		//   [2]    ShareType
+		//   [3]    Reserved
+		//   [4:8]  ShareFlags
+		//   [8:12] Capabilities
+		//   [12:16] MaximalAccess
+		shareFlags := uint32(SMB2ShareFlagEncryptData)
+		resp := make([]byte, 16)
+		binary.LittleEndian.PutUint16(resp[0:2], 16) // StructureSize
+		resp[2] = types.SMB2ShareTypeDisk
+		binary.LittleEndian.PutUint32(resp[4:8], shareFlags)   // ShareFlags
+		binary.LittleEndian.PutUint32(resp[12:16], 0x001F01FF) // MaximalAccess
+
+		// Verify the ShareFlags at offset 4 contain ENCRYPT_DATA
+		readFlags := binary.LittleEndian.Uint32(resp[4:8])
+		if readFlags&SMB2ShareFlagEncryptData == 0 {
+			t.Errorf("ShareFlags = 0x%08x, expected SMB2_SHAREFLAG_ENCRYPT_DATA (0x0008) set", readFlags)
+		}
+	})
+
+	t.Run("ResponseWithoutEncryptDataFlag", func(t *testing.T) {
+		shareFlags := uint32(0)
+		resp := make([]byte, 16)
+		binary.LittleEndian.PutUint16(resp[0:2], 16)
+		resp[2] = types.SMB2ShareTypeDisk
+		binary.LittleEndian.PutUint32(resp[4:8], shareFlags)
+
+		readFlags := binary.LittleEndian.Uint32(resp[4:8])
+		if readFlags&SMB2ShareFlagEncryptData != 0 {
+			t.Errorf("ShareFlags = 0x%08x, should NOT have ENCRYPT_DATA set", readFlags)
+		}
+	})
+}
+
+func TestTreeConnect_RequiredModeRejectsUnencryptedSession(t *testing.T) {
+	t.Run("UnencryptedSessionToEncryptedShareInRequiredMode", func(t *testing.T) {
+		// When encryption_mode is "required" and share has EncryptData=true,
+		// a session that does NOT support encryption should get STATUS_ACCESS_DENIED.
+		// This is tested by checking that shouldRejectUnencryptedTreeConnect returns true.
+		h := NewHandler()
+		h.EncryptionConfig = EncryptionConfig{
+			Mode: "required",
+		}
+
+		// Create a session without encryption (no crypto state with encryptors)
+		sess := h.CreateSession("127.0.0.1:12345", false, "testuser", "DOMAIN")
+
+		share := &runtime.Share{
+			Name:        "/encrypted",
+			EncryptData: true,
+		}
+
+		if !shouldRejectUnencryptedTreeConnect(h.EncryptionConfig.Mode, share, sess) {
+			t.Error("Should reject unencrypted session to encrypted share in required mode")
+		}
+	})
+
+	t.Run("EncryptedSessionToEncryptedShareInRequiredMode", func(t *testing.T) {
+		h := NewHandler()
+		h.EncryptionConfig = EncryptionConfig{
+			Mode: "required",
+		}
+
+		// Create a session WITH encryption
+		sess := h.CreateSession("127.0.0.1:12345", false, "testuser", "DOMAIN")
+		sess.CryptoState.EncryptData = true
+		sess.CryptoState.Encryptor = &mockEncryptor{}
+
+		share := &runtime.Share{
+			Name:        "/encrypted",
+			EncryptData: true,
+		}
+
+		if shouldRejectUnencryptedTreeConnect(h.EncryptionConfig.Mode, share, sess) {
+			t.Error("Should NOT reject encrypted session to encrypted share in required mode")
+		}
+	})
+
+	t.Run("PreferredModeDoesNotReject", func(t *testing.T) {
+		h := NewHandler()
+		h.EncryptionConfig = EncryptionConfig{
+			Mode: "preferred",
+		}
+
+		sess := h.CreateSession("127.0.0.1:12345", false, "testuser", "DOMAIN")
+
+		share := &runtime.Share{
+			Name:        "/encrypted",
+			EncryptData: true,
+		}
+
+		if shouldRejectUnencryptedTreeConnect(h.EncryptionConfig.Mode, share, sess) {
+			t.Error("Should NOT reject in preferred mode even without encryption")
+		}
+	})
+
+	t.Run("NonEncryptedShareNotRejected", func(t *testing.T) {
+		h := NewHandler()
+		h.EncryptionConfig = EncryptionConfig{
+			Mode: "required",
+		}
+
+		sess := h.CreateSession("127.0.0.1:12345", false, "testuser", "DOMAIN")
+
+		share := &runtime.Share{
+			Name:        "/normal",
+			EncryptData: false,
+		}
+
+		if shouldRejectUnencryptedTreeConnect(h.EncryptionConfig.Mode, share, sess) {
+			t.Error("Should NOT reject session to non-encrypted share even in required mode")
+		}
+	})
+}
+
+// mockEncryptor satisfies the encryption.Encryptor interface for testing.
+type mockEncryptor struct{}
+
+func (m *mockEncryptor) Encrypt(plaintext, aad []byte) ([]byte, []byte, error) {
+	return make([]byte, 12), plaintext, nil
+}
+func (m *mockEncryptor) EncryptWithNonce(nonce, plaintext, aad []byte) ([]byte, error) {
+	return plaintext, nil
+}
+func (m *mockEncryptor) Decrypt(nonce, ciphertext, aad []byte) ([]byte, error) {
+	return ciphertext, nil
+}
+func (m *mockEncryptor) NonceSize() int { return 12 }
+func (m *mockEncryptor) Overhead() int  { return 16 }
+
 func TestResolveSharePermission_RootBypass(t *testing.T) {
 	ctx := NewSMBHandlerContext(context.Background(), "127.0.0.1:12345", 1, 0, 1)
 

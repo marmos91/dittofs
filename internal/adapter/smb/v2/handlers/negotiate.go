@@ -338,15 +338,20 @@ func (h *Handler) processNegotiateContexts(
 			})
 
 		case types.NegCtxEncryptionCaps:
+			// Skip encryption context when encryption is disabled
+			if h.EncryptionConfig.Mode == "disabled" {
+				logger.Debug("Skipping encryption negotiate context (encryption disabled)")
+				continue
+			}
+
 			enc, err := types.DecodeEncryptionCaps(nc.Data)
 			if err != nil {
 				logger.Debug("Failed to decode encryption caps", "error", err)
 				continue
 			}
 
-			// Select preferred cipher from client's list.
-			// Server preference: AES-128-GCM > AES-128-CCM > AES-256-GCM > AES-256-CCM
-			selectedCipher = selectCipher(enc.Ciphers)
+			// Select preferred cipher using server's AllowedCiphers preference order
+			selectedCipher = h.selectCipher(enc.Ciphers)
 			if selectedCipher == 0 {
 				logger.Debug("No mutually supported cipher found")
 				continue
@@ -452,15 +457,26 @@ func (h *Handler) selectSigningAlgorithm(clientAlgorithms []uint16) uint16 {
 	return signing.SigningAlgAESCMAC
 }
 
+// defaultCipherPreference is the default cipher preference order when
+// AllowedCiphers is not configured. 256-bit ciphers are preferred.
+var defaultCipherPreference = []uint16{
+	types.CipherAES256GCM,
+	types.CipherAES256CCM,
+	types.CipherAES128GCM,
+	types.CipherAES128CCM,
+}
+
 // selectCipher selects the server's preferred cipher from the client's offered list.
-// Server preference order: AES-128-GCM > AES-128-CCM > AES-256-GCM > AES-256-CCM
-func selectCipher(clientCiphers []uint16) uint16 {
-	for _, preferred := range []uint16{
-		types.CipherAES128GCM,
-		types.CipherAES128CCM,
-		types.CipherAES256GCM,
-		types.CipherAES256CCM,
-	} {
+// It iterates over AllowedCiphers (server preference order) and picks the first match
+// from the client's list. Falls back to defaultCipherPreference if AllowedCiphers is empty.
+// This mirrors the selectSigningAlgorithm pattern.
+func (h *Handler) selectCipher(clientCiphers []uint16) uint16 {
+	preference := h.EncryptionConfig.AllowedCiphers
+	if len(preference) == 0 {
+		preference = defaultCipherPreference
+	}
+
+	for _, preferred := range preference {
 		if slices.Contains(clientCiphers, preferred) {
 			return preferred
 		}

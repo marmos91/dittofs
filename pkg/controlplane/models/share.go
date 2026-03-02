@@ -21,6 +21,7 @@ type Share struct {
 	MetadataStoreID   string    `gorm:"not null;size:36" json:"metadata_store_id"`
 	PayloadStoreID    string    `gorm:"not null;size:36" json:"payload_store_id"`
 	ReadOnly          bool      `gorm:"default:false" json:"read_only"`
+	EncryptData       bool      `gorm:"default:false" json:"encrypt_data"`                    // SMB3: set SMB2_SHAREFLAG_ENCRYPT_DATA in TREE_CONNECT
 	DefaultPermission string    `gorm:"default:read-write;size:50" json:"default_permission"` // none, read, read-write, admin
 	Config            string    `gorm:"type:text" json:"-"`                                   // JSON blob for additional share config
 	BlockedOperations string    `gorm:"type:text" json:"-"`                                   // JSON array of blocked operations

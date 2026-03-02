@@ -6,6 +6,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
+	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
 
 // DefaultMaxMessageSize is the default maximum allowed size for a single SMB2 message (64MB).
@@ -103,6 +104,10 @@ type Config struct {
 	// Signing configures SMB2 message signing behavior.
 	// Signing provides message integrity protection using HMAC-SHA256.
 	Signing SigningConfig `mapstructure:"signing"`
+
+	// Encryption configures SMB3 message encryption behavior.
+	// Encryption provides confidentiality and integrity for all messages on a session.
+	Encryption EncryptionConfig `mapstructure:"encryption"`
 }
 
 // SigningConfig configures SMB2 message signing.
@@ -158,6 +163,85 @@ func (c *SigningConfig) ToSigningConfig() signing.SigningConfig {
 		Enabled:  *c.Enabled,
 		Required: c.Required,
 	}
+}
+
+// EncryptionConfig configures SMB3 message encryption.
+//
+// Message encryption provides confidentiality and integrity for all messages on a
+// session using AEAD ciphers (AES-GCM or AES-CCM). Per MS-SMB2, encryption is:
+//   - Negotiated during NEGOTIATE (cipher selection for SMB 3.1.1)
+//   - Enforced per-session during SESSION_SETUP based on Mode
+//   - Enforced per-share via Share.EncryptData in TREE_CONNECT
+//
+// Mode values:
+//   - "disabled": No encryption. Sessions and shares are unencrypted.
+//   - "preferred": Encryption is enabled for 3.x sessions that support it, but
+//     unencrypted requests are still accepted (permissive/mixed model).
+//   - "required": Only SMB 3.x clients with encryption can establish sessions.
+//     SMB 2.x clients (which cannot encrypt) are rejected at SESSION_SETUP with
+//     STATUS_ACCESS_DENIED. For 3.x clients, encryptor creation must succeed or
+//     the session is destroyed. Per-share encryption is enforced at TREE_CONNECT.
+//     Unencrypted requests on encrypted sessions return STATUS_ACCESS_DENIED.
+//
+// Default values:
+//   - Mode: "disabled"
+//   - AllowedCiphers: [AES-256-GCM, AES-256-CCM, AES-128-GCM, AES-128-CCM]
+type EncryptionConfig struct {
+	// Mode controls the encryption policy.
+	// Valid values: "disabled", "preferred", "required"
+	// Default: "disabled"
+	Mode string `mapstructure:"encryption_mode"`
+
+	// AllowedCiphers is an ordered list of allowed cipher IDs.
+	// The order defines server preference (first = most preferred).
+	// Empty list means all ciphers are allowed in the default priority order.
+	// Default: [AES-256-GCM, AES-256-CCM, AES-128-GCM, AES-128-CCM]
+	AllowedCiphers []uint16 `mapstructure:"allowed_ciphers"`
+}
+
+// DefaultAllowedCiphers returns the default cipher preference order.
+// 256-bit ciphers are preferred over 128-bit per user configuration decision.
+func DefaultAllowedCiphers() []uint16 {
+	return []uint16{
+		types.CipherAES256GCM,
+		types.CipherAES256CCM,
+		types.CipherAES128GCM,
+		types.CipherAES128CCM,
+	}
+}
+
+// applyDefaults fills in zero values with sensible defaults.
+func (c *EncryptionConfig) applyDefaults() {
+	if c.Mode == "" {
+		c.Mode = "disabled"
+	}
+	if len(c.AllowedCiphers) == 0 {
+		c.AllowedCiphers = DefaultAllowedCiphers()
+	}
+}
+
+// validate checks that the encryption configuration is valid.
+func (c *EncryptionConfig) validate() error {
+	switch c.Mode {
+	case "disabled", "preferred", "required":
+		// valid
+	default:
+		return fmt.Errorf("invalid encryption_mode %q: must be one of disabled, preferred, required", c.Mode)
+	}
+
+	validCiphers := map[uint16]bool{
+		types.CipherAES128CCM: true,
+		types.CipherAES128GCM: true,
+		types.CipherAES256CCM: true,
+		types.CipherAES256GCM: true,
+	}
+	for _, cipher := range c.AllowedCiphers {
+		if !validCiphers[cipher] {
+			return fmt.Errorf("invalid cipher ID 0x%04x in allowed_ciphers", cipher)
+		}
+	}
+
+	return nil
 }
 
 // CreditsConfig configures SMB2 credit management.
@@ -247,6 +331,9 @@ func (c *Config) applyDefaults() {
 
 	// Apply signing defaults
 	c.Signing.applyDefaults()
+
+	// Apply encryption defaults
+	c.Encryption.applyDefaults()
 }
 
 // applyDefaults fills in zero values with sensible defaults.
@@ -325,5 +412,11 @@ func (c *Config) validate() error {
 	if c.Timeouts.Shutdown <= 0 {
 		return fmt.Errorf("invalid timeouts.shutdown %v: must be > 0", c.Timeouts.Shutdown)
 	}
+
+	// Validate encryption config
+	if err := c.Encryption.validate(); err != nil {
+		return fmt.Errorf("encryption config: %w", err)
+	}
+
 	return nil
 }

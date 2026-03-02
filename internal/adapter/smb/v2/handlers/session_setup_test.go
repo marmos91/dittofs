@@ -773,6 +773,213 @@ func TestNTLMRegressionAfterKerberosAddition(t *testing.T) {
 // Constants Tests
 // =============================================================================
 
+// =============================================================================
+// Encryption Enforcement Tests
+// =============================================================================
+
+func TestBuildSessionSetupResponse_EncryptDataFlag(t *testing.T) {
+	h := NewHandler()
+
+	t.Run("IncludesEncryptDataFlag", func(t *testing.T) {
+		result := h.buildSessionSetupResponse(
+			types.StatusSuccess,
+			types.SMB2SessionFlagEncryptData,
+			nil,
+		)
+
+		if result.Status != types.StatusSuccess {
+			t.Errorf("Status = 0x%x, expected StatusSuccess", result.Status)
+		}
+
+		if len(result.Data) < 8 {
+			t.Fatalf("Response body too short: %d bytes", len(result.Data))
+		}
+
+		// SessionFlags at offset 2
+		flags := binary.LittleEndian.Uint16(result.Data[2:4])
+		if flags&types.SMB2SessionFlagEncryptData == 0 {
+			t.Errorf("SessionFlags = 0x%04x, expected SessionFlagEncryptData (0x0004) to be set", flags)
+		}
+	})
+
+	t.Run("CombinesGuestAndEncryptFlags", func(t *testing.T) {
+		combined := types.SMB2SessionFlagIsGuest | types.SMB2SessionFlagEncryptData
+		result := h.buildSessionSetupResponse(
+			types.StatusSuccess,
+			combined,
+			nil,
+		)
+
+		flags := binary.LittleEndian.Uint16(result.Data[2:4])
+		if flags != combined {
+			t.Errorf("SessionFlags = 0x%04x, expected 0x%04x", flags, combined)
+		}
+	})
+}
+
+func TestConfigureSessionSigningWithKey_Encryption(t *testing.T) {
+	t.Run("PreferredModeSetsEncryptDataFor3x", func(t *testing.T) {
+		h := NewHandler()
+		h.EncryptionConfig = EncryptionConfig{
+			Mode:           "preferred",
+			AllowedCiphers: []uint16{types.CipherAES128GCM},
+		}
+
+		// Create a session
+		sess := h.CreateSession("127.0.0.1:12345", false, "testuser", "DOMAIN")
+
+		// Create mock crypto state with 3.1.1 dialect and cipher
+		cs := &mockCryptoState{
+			dialect:  types.Dialect0311,
+			cipherId: types.CipherAES128GCM,
+		}
+
+		ctx := newTestContext(sess.SessionID)
+		ctx.ConnCryptoState = cs
+
+		// Provide a 16-byte session key
+		sessionKey := make([]byte, 16)
+		for i := range sessionKey {
+			sessionKey[i] = byte(i + 1)
+		}
+
+		if errResult := h.configureSessionSigningWithKey(sess, sessionKey, ctx); errResult != nil {
+			t.Fatalf("configureSessionSigningWithKey returned error result: %v", errResult.Status)
+		}
+
+		// Session should have EncryptData set and encryptors created
+		if !sess.ShouldEncrypt() {
+			t.Error("Session should have ShouldEncrypt() = true for preferred mode with 3.x dialect")
+		}
+	})
+
+	t.Run("RequiredModeSetsEncryptDataFor3x", func(t *testing.T) {
+		h := NewHandler()
+		h.EncryptionConfig = EncryptionConfig{
+			Mode:           "required",
+			AllowedCiphers: []uint16{types.CipherAES128GCM},
+		}
+
+		sess := h.CreateSession("127.0.0.1:12345", false, "testuser", "DOMAIN")
+
+		cs := &mockCryptoState{
+			dialect:  types.Dialect0300,
+			cipherId: types.CipherAES128GCM,
+		}
+
+		ctx := newTestContext(sess.SessionID)
+		ctx.ConnCryptoState = cs
+
+		sessionKey := make([]byte, 16)
+		for i := range sessionKey {
+			sessionKey[i] = byte(i + 1)
+		}
+
+		if errResult := h.configureSessionSigningWithKey(sess, sessionKey, ctx); errResult != nil {
+			t.Fatalf("configureSessionSigningWithKey returned error result: %v", errResult.Status)
+		}
+
+		if !sess.ShouldEncrypt() {
+			t.Error("Session should have ShouldEncrypt() = true for required mode with 3.x dialect")
+		}
+	})
+
+	t.Run("DisabledModeDoesNotSetEncryptData", func(t *testing.T) {
+		h := NewHandler()
+		h.EncryptionConfig = EncryptionConfig{
+			Mode:           "disabled",
+			AllowedCiphers: []uint16{types.CipherAES128GCM},
+		}
+
+		sess := h.CreateSession("127.0.0.1:12345", false, "testuser", "DOMAIN")
+
+		cs := &mockCryptoState{
+			dialect:  types.Dialect0311,
+			cipherId: types.CipherAES128GCM,
+		}
+
+		ctx := newTestContext(sess.SessionID)
+		ctx.ConnCryptoState = cs
+
+		sessionKey := make([]byte, 16)
+		for i := range sessionKey {
+			sessionKey[i] = byte(i + 1)
+		}
+
+		if errResult := h.configureSessionSigningWithKey(sess, sessionKey, ctx); errResult != nil {
+			t.Fatalf("configureSessionSigningWithKey returned error result: %v", errResult.Status)
+		}
+
+		if sess.ShouldEncrypt() {
+			t.Error("Session should NOT have ShouldEncrypt() = true for disabled mode")
+		}
+	})
+
+	t.Run("Dialect2xRejectedInRequiredMode", func(t *testing.T) {
+		h := NewHandler()
+		h.EncryptionConfig = EncryptionConfig{
+			Mode:           "required",
+			AllowedCiphers: []uint16{types.CipherAES128GCM},
+		}
+
+		sess := h.CreateSession("127.0.0.1:12345", false, "testuser", "DOMAIN")
+
+		cs := &mockCryptoState{
+			dialect:  types.Dialect0210,
+			cipherId: 0,
+		}
+
+		ctx := newTestContext(sess.SessionID)
+		ctx.ConnCryptoState = cs
+
+		sessionKey := make([]byte, 16)
+		for i := range sessionKey {
+			sessionKey[i] = byte(i + 1)
+		}
+
+		// SMB 2.x cannot encrypt, so required mode must reject the session
+		errResult := h.configureSessionSigningWithKey(sess, sessionKey, ctx)
+		if errResult == nil {
+			t.Fatal("expected error result for 2.x session in encryption required mode")
+		}
+		if errResult.Status != types.StatusAccessDenied {
+			t.Errorf("expected STATUS_ACCESS_DENIED, got %v", errResult.Status)
+		}
+	})
+
+	t.Run("Dialect2xAllowedInPreferredMode", func(t *testing.T) {
+		h := NewHandler()
+		h.EncryptionConfig = EncryptionConfig{
+			Mode:           "preferred",
+			AllowedCiphers: []uint16{types.CipherAES128GCM},
+		}
+
+		sess := h.CreateSession("127.0.0.1:12345", false, "testuser", "DOMAIN")
+
+		cs := &mockCryptoState{
+			dialect:  types.Dialect0210,
+			cipherId: 0,
+		}
+
+		ctx := newTestContext(sess.SessionID)
+		ctx.ConnCryptoState = cs
+
+		sessionKey := make([]byte, 16)
+		for i := range sessionKey {
+			sessionKey[i] = byte(i + 1)
+		}
+
+		// Preferred mode should allow 2.x sessions without encryption
+		if errResult := h.configureSessionSigningWithKey(sess, sessionKey, ctx); errResult != nil {
+			t.Fatalf("configureSessionSigningWithKey returned error result: %v", errResult.Status)
+		}
+
+		if sess.ShouldEncrypt() {
+			t.Error("Session should NOT have ShouldEncrypt() = true for 2.x dialect")
+		}
+	})
+}
+
 func TestSessionSetupConstants(t *testing.T) {
 	t.Run("RequestOffsets", func(t *testing.T) {
 		// Verify offset constants are correct per MS-SMB2 spec

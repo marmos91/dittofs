@@ -7,9 +7,11 @@ import (
 	"net"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	smb "github.com/marmos91/dittofs/internal/adapter/smb"
+	"github.com/marmos91/dittofs/internal/adapter/smb/encryption"
 	"github.com/marmos91/dittofs/internal/adapter/smb/header"
 	"github.com/marmos91/dittofs/internal/adapter/smb/v2/handlers"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -80,6 +82,16 @@ func (c *Connection) connInfo() *smb.ConnInfo {
 		WriteTimeout:   c.server.config.Timeouts.Write,
 		SessionTracker: c,
 		CryptoState:    c.CryptoState,
+		EncryptionMiddleware: encryption.NewEncryptionMiddleware(
+			func(sessionID uint64) (encryption.EncryptableSession, bool) {
+				sess, ok := c.server.handler.GetSession(sessionID)
+				if !ok {
+					return nil, false
+				}
+				return sess, true
+			},
+		),
+		DecryptFailures: &atomic.Int32{},
 	}
 }
 
@@ -125,12 +137,29 @@ func (c *Connection) Serve(ctx context.Context) {
 		default:
 		}
 
-		// Read and process the request via framing layer
+		// Read and process the request via framing layer.
+		// Pass EncryptionMiddleware so 0xFD transform headers are decrypted transparently.
 		hdr, body, remainingCompound, err := smb.ReadRequest(
 			ctx, c.conn, c.server.config.MaxMessageSize,
-			c.server.config.Timeouts.Read, verifier, handleSMB1,
+			c.server.config.Timeouts.Read, verifier, ci.EncryptionMiddleware, handleSMB1,
 		)
 		if err != nil {
+			// Track consecutive decryption failures. After 5, drop the connection
+			// to prevent brute-force attacks on the AEAD authentication.
+			if isDecryptionError(err) {
+				failures := ci.DecryptFailures.Add(1)
+				logger.Warn("Decryption failure on connection",
+					"address", clientAddr,
+					"consecutiveFailures", failures,
+					"error", err)
+				if failures >= 5 {
+					logger.Warn("Dropping connection after 5 consecutive decryption failures",
+						"address", clientAddr)
+					return
+				}
+				continue // Try reading next message
+			}
+
 			switch {
 			case err == io.EOF:
 				logger.Debug("SMB connection closed by client", "address", clientAddr)
@@ -143,6 +172,9 @@ func (c *Connection) Serve(ctx context.Context) {
 			}
 			return
 		}
+
+		// Reset consecutive decryption failure counter on successful read
+		ci.DecryptFailures.Store(0)
 
 		// Reconstruct raw message (header + body) for dispatch hooks.
 		// The hooks need the original wire bytes for preauth integrity hash computation.
@@ -255,4 +287,9 @@ func (c *Connection) handleRequestPanic(clientAddr string, messageID uint64) {
 func isNetTimeout(err error) bool {
 	var netErr net.Error
 	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+// isDecryptionError reports whether err is a transform header decryption failure.
+func isDecryptionError(err error) bool {
+	return errors.Is(err, encryption.ErrDecryptFailed)
 }
