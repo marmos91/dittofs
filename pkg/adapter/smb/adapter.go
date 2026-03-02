@@ -221,8 +221,8 @@ func (s *Adapter) applySMBSettings(rt *runtime.Runtime) {
 	s.handler.NtlmEnabled = settings.NtlmEnabled
 	s.handler.GuestEnabled = settings.GuestEnabled
 
+	s.handler.SMBServicePrincipal = settings.SMBServicePrincipal
 	if settings.SMBServicePrincipal != "" {
-		s.handler.SMBServicePrincipal = settings.SMBServicePrincipal
 		logger.Info("SMB adapter: custom SPN override from settings",
 			"smb_service_principal", settings.SMBServicePrincipal)
 	}

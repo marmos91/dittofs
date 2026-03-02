@@ -86,7 +86,9 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 	// Configure session signing with normalized 16-byte key.
 	// This goes through the same KDF pipeline as NTLM, producing
 	// signing, encryption, and decryption keys for SMB 3.x.
-	h.configureSessionSigningWithKey(sess, sessionKey, ctx)
+	if cfgResult := h.configureSessionSigningWithKey(sess, sessionKey, ctx); cfgResult != nil {
+		return cfgResult, nil
+	}
 
 	logger.Debug("Kerberos session created",
 		"sessionID", sess.SessionID,
@@ -97,7 +99,10 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 		"encryptData", sess.ShouldEncrypt())
 
 	// Build mutual auth AP-REP via shared service for SPNEGO accept-complete response.
-	apRepToken, err := h.KerberosService.BuildMutualAuth(&authResult.APReq, authResult.SessionKey)
+	// Use the ticket session key for AP-REP encryption per RFC 4120 (not the context
+	// key which may be the subkey). Clients decrypt AP-REP with the ticket session key.
+	ticketSessionKey := authResult.APReq.Ticket.DecryptedEncPart.Key
+	apRepToken, err := h.KerberosService.BuildMutualAuth(&authResult.APReq, ticketSessionKey)
 	if err != nil {
 		logger.Debug("Failed to build AP-REP for mutual auth", "error", err)
 		// Fall back to accept-complete without AP-REP (still functional).

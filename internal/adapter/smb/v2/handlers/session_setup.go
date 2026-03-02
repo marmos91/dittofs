@@ -206,7 +206,13 @@ func extractNTLMToken(securityBuffer []byte) ([]byte, bool) {
 	if len(securityBuffer) >= 2 && (securityBuffer[0] == 0x60 || securityBuffer[0] == 0xa0 || securityBuffer[0] == 0xa1) {
 		parsed, err := auth.Parse(securityBuffer)
 		if err != nil {
-			logger.Debug("SPNEGO parse failed, treating as raw", "error", err)
+			logger.Debug("SPNEGO parse failed, scanning for NTLMSSP signature", "error", err)
+			// Fallback: scan for NTLMSSP signature within the SPNEGO blob.
+			// Some clients send NegTokenResp formats that gokrb5 can't parse,
+			// but the NTLM token is still embedded in the ASN.1 structure.
+			if token := findNTLMSSP(securityBuffer); token != nil {
+				return token, true
+			}
 			return securityBuffer, false
 		}
 
@@ -223,6 +229,21 @@ func extractNTLMToken(securityBuffer []byte) ([]byte, bool) {
 
 	// Already raw NTLM (or unknown format)
 	return securityBuffer, false
+}
+
+// ntlmsspSignature is the NTLMSSP signature that starts every NTLM message.
+var ntlmsspSignature = []byte{'N', 'T', 'L', 'M', 'S', 'S', 'P', 0}
+
+// findNTLMSSP scans a buffer for the NTLMSSP signature and returns
+// the NTLM token starting at that offset. This is used as a fallback
+// when SPNEGO parsing fails but the NTLM token is embedded in the blob.
+func findNTLMSSP(data []byte) []byte {
+	for i := 0; i <= len(data)-len(ntlmsspSignature); i++ {
+		if data[i] == 'N' && string(data[i:i+len(ntlmsspSignature)]) == string(ntlmsspSignature) {
+			return data[i:]
+		}
+	}
+	return nil
 }
 
 // handleNTLMNegotiate handles NTLM Type 1 (NEGOTIATE) message.

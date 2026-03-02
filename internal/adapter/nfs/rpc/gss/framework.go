@@ -96,6 +96,9 @@ func (v *Krb5Verifier) VerifyToken(gssToken []byte) (*VerifiedContext, error) {
 	// Delegate AP-REQ verification to shared KerberosService.
 	// This handles: unmarshal, VerifyAPREQ, authenticator decryption,
 	// replay detection, and subkey preference.
+	if v.kerbService == nil || v.kerbService.Provider() == nil {
+		return nil, fmt.Errorf("kerberos service not configured")
+	}
 	provider := v.kerbService.Provider()
 	authResult, err := v.kerbService.Authenticate(apReqBytes, provider.ServicePrincipal())
 	if err != nil {
