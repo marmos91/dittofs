@@ -10,6 +10,7 @@ package lease
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"sync"
 
@@ -185,7 +186,12 @@ func (lm *LeaseManager) ReleaseSessionLeases(ctx context.Context, sessionID uint
 	for keyHex, sid := range lm.sessionMap {
 		if sid == sessionID {
 			var key [16]byte
-			_, _ = fmt.Sscanf(keyHex, "%x", &key)
+			if b, err := hex.DecodeString(keyHex); err == nil && len(b) == 16 {
+				copy(key[:], b)
+			} else {
+				logger.Warn("LeaseManager: invalid lease key hex", "keyHex", keyHex, "error", err)
+				continue
+			}
 			keysToRelease = append(keysToRelease, key)
 		}
 	}

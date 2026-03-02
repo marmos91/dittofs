@@ -553,6 +553,9 @@ func (s *MetadataService) notifyDirChange(shareName string, parentHandle FileHan
 		originClient = ctx.ClientAddr
 	}
 
-	// Fire-and-forget: notifier handles dispatch
+	// Fire-and-forget: notifier handles dispatch; recover from panics
+	defer func() {
+		_ = recover()
+	}()
 	notifier.OnDirChange(lock.FileHandle(parentHandle), changeType, originClient)
 }

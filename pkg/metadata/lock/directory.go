@@ -89,11 +89,18 @@ func newRecentlyBrokenCache(ttl time.Duration) *recentlyBrokenCache {
 // IsRecentlyBroken returns true if the directory was recently broken and
 // should not have new directory leases granted.
 func (c *recentlyBrokenCache) IsRecentlyBroken(handleKey string) bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	ts, ok := c.entries[handleKey]
-	return ok && time.Since(ts) <= c.ttl
+	if !ok {
+		return false
+	}
+	if time.Since(ts) > c.ttl {
+		delete(c.entries, handleKey)
+		return false
+	}
+	return true
 }
 
 // Mark records that a directory lease was broken at the current time.
