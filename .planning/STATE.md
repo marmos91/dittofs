@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v3.8
 milestone_name: SMB3 Protocol Upgrade
 status: in-progress
-last_updated: "2026-03-02T09:25:00Z"
+last_updated: "2026-03-02T10:20:35Z"
 progress:
   total_phases: 37
   completed_phases: 36
-  total_plans: 125
-  completed_plans: 125
+  total_plans: 126
+  completed_plans: 126
 ---
 
 # Project State
@@ -18,14 +18,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-02-28)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking, Kerberos authentication, and session reliability
-**Current focus:** v3.8 SMB3 Protocol Upgrade — Phase 35 (Encryption and Transform Header)
+**Current focus:** v3.8 SMB3 Protocol Upgrade — Phase 36 (Kerberos SMB3 Integration)
 
 ## Current Position
 
-Phase: 35 of 40 (Encryption and Transform Header)
-Plan: 3 of 3 complete
-Status: Phase 35 Complete
-Last activity: 2026-03-02 — Completed 35-03 (Encryption enforcement, share flags, adapter wiring)
+Phase: 36 of 40 (Kerberos SMB3 Integration)
+Plan: 1 of 3 complete
+Status: In Progress
+Last activity: 2026-03-02 — Completed 36-01 (Shared KerberosService and ReplayCache)
 
 Progress: [####░░░░░░] 30%
 
@@ -42,7 +42,7 @@ Progress: [####░░░░░░] 30%
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 129 (19 v1.0 + 42 v2.0 + 25 v3.0 + 22 v3.5 + 12 v3.6 + 4 inserted + 5 v3.8)
+- Total plans completed: 130 (19 v1.0 + 42 v2.0 + 25 v3.0 + 22 v3.5 + 12 v3.6 + 4 inserted + 6 v3.8)
 - 5 milestones in 28 days
 - Average: ~4.5 plans/day
 
@@ -56,6 +56,7 @@ Progress: [####░░░░░░] 30%
 | 35    | 01   | 7min     | 2     | 11    |
 | 35    | 02   | 9min     | 2     | 12    |
 | 35    | 03   | 12min    | 2     | 9     |
+| 36    | 01   | 7min     | 2     | 8     |
 
 ## Accumulated Context
 
@@ -97,6 +98,10 @@ Progress: [####░░░░░░] 30%
 - [Phase 35-03]: shouldRejectUnencryptedTreeConnect only enforces in required mode (preferred allows mixed)
 - [Phase 35-03]: Live SMB settings can upgrade encryption_mode from disabled to preferred at runtime
 - [Phase 35-03]: buildAuthenticatedResponse takes encryptData bool for SessionFlagEncryptData
+- [Phase 36-01]: BuildMutualAuth returns raw AP-REP (APPLICATION 15), not GSS-wrapped; protocol adapters add their own framing
+- [Phase 36-01]: ReplayCache keyed by 4-tuple (principal, ctime, cusec, servicePrincipal) for cross-protocol dedup
+- [Phase 36-01]: HasSubkey exported as package-level function for reuse by NFS GSS and SMB auth
+- [Phase 36-01]: Shared auth service pattern: protocol-agnostic core in internal/auth/, protocol framing in adapter packages
 
 ### Pending Todos
 
@@ -109,5 +114,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-03-02
-Stopped at: Completed 35-03-PLAN.md (Encryption enforcement, share flags, adapter wiring)
+Stopped at: Completed 36-01-PLAN.md (Shared KerberosService and ReplayCache)
 Resume file: None

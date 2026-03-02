@@ -72,7 +72,7 @@ Requirements for SMB3 protocol upgrade. Each maps to roadmap phases.
 
 - [ ] **ARCH-01**: Business logic (leases, durable handles, state) lives in metadata service layer following NFS v3/v4 pattern
 - [x] **ARCH-02**: SMB internal package contains only protocol encoding/decoding/framing — no business logic
-- [ ] **ARCH-03**: SMB3 features reuse NFSv4 infrastructure where possible (delegations, state management, Kerberos)
+- [x] **ARCH-03**: SMB3 features reuse NFSv4 infrastructure where possible (delegations, state management, Kerberos)
 
 ### Documentation
 
@@ -161,7 +161,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | XPROT-03 | Phase 39 | Pending |
 | ARCH-01 | Phase 37 | Pending |
 | ARCH-02 | Phase 33 | Complete |
-| ARCH-03 | Phase 36 | Pending |
+| ARCH-03 | Phase 36 | Complete |
 | DOC-01 | Phase 39 | Pending |
 | TEST-01 | Phase 40 | Pending |
 | TEST-02 | Phase 40 | Pending |

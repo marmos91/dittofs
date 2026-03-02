@@ -8,6 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/callback"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm"
 	nsm_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/nsm/handlers"
+	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
@@ -591,7 +592,8 @@ func (s *NFSAdapter) initGSSProcessor() {
 	s.kerberosProvider = provider
 
 	mapper := config.BuildStaticMapper(&s.kerberosConfig.IdentityMapping)
-	verifier := gss.NewKrb5Verifier(provider)
+	kerbService := kerbauth.NewKerberosService(provider)
+	verifier := gss.NewKrb5Verifier(kerbService)
 
 	// Create the GSS processor
 	s.gssProcessor = gss.NewGSSProcessor(
