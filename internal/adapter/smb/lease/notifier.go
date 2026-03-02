@@ -103,6 +103,15 @@ func (h *SMBBreakHandler) OnAccessConflict(_ string, _ *lock.UnifiedLock, _ lock
 	// No-op: access conflicts are returned as STATUS_SHARING_VIOLATION
 }
 
+// OnDelegationRecall is called when a delegation must be recalled.
+// For SMB, this is a no-op because SMB does not have NFS-style delegations.
+// SMB uses leases (oplocks) instead, which are handled by OnOpLockBreak.
+// Cross-protocol delegation recalls are dispatched to the NFS adapter's
+// NFSBreakHandler, not to SMB.
+func (h *SMBBreakHandler) OnDelegationRecall(_ string, _ *lock.UnifiedLock) {
+	// No-op: SMB has no NFS-style delegations; cross-protocol recalls go to NFSBreakHandler
+}
+
 // SMBOplockBreaker implements the adapter.OplockBreaker interface using
 // the shared LockManager, replacing the old OplockManager-based implementation.
 //

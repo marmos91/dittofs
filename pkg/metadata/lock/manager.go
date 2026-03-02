@@ -3,6 +3,7 @@ package lock
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"slices"
 	"sync"
 	"time"
@@ -128,6 +129,46 @@ type LockManager interface {
 	// GetLeaseState returns the current state and epoch for a lease key.
 	// found=false if no lease exists with that key.
 	GetLeaseState(ctx context.Context, leaseKey [16]byte) (state uint32, epoch uint16, found bool)
+
+	// ========================================================================
+	// Delegation Operations
+	// ========================================================================
+
+	// GrantDelegation grants a delegation on a file.
+	// Returns error if conflicting leases exist.
+	GrantDelegation(handleKey string, delegation *Delegation) error
+
+	// RevokeDelegation force-revokes a delegation, removing it from the lock map.
+	RevokeDelegation(handleKey string, delegationID string) error
+
+	// ReturnDelegation handles a client returning a delegation (idempotent).
+	ReturnDelegation(handleKey string, delegationID string) error
+
+	// GetDelegation retrieves a specific delegation by ID.
+	GetDelegation(handleKey string, delegationID string) *Delegation
+
+	// ListDelegations returns all delegations on a file.
+	ListDelegations(handleKey string) []*Delegation
+
+	// ========================================================================
+	// Unified Caching Break Operations
+	// ========================================================================
+
+	// CheckAndBreakCachingForWrite breaks all leases AND all delegations.
+	// Used for write operations.
+	CheckAndBreakCachingForWrite(handleKey string, excludeOwner *LockOwner) error
+
+	// CheckAndBreakCachingForRead breaks write leases and write delegations.
+	// Read delegations and read leases coexist.
+	CheckAndBreakCachingForRead(handleKey string, excludeOwner *LockOwner) error
+
+	// CheckAndBreakCachingForDelete breaks all leases AND all delegations.
+	// Used for delete operations.
+	CheckAndBreakCachingForDelete(handleKey string, excludeOwner *LockOwner) error
+
+	// WaitForBreakCompletion blocks until all breaking locks on a file resolve
+	// or the context is cancelled.
+	WaitForBreakCompletion(ctx context.Context, handleKey string) error
 
 	// ========================================================================
 	// Break Callbacks
@@ -355,24 +396,48 @@ type Manager struct {
 	handleChecker  HandleChecker             // checks if file handles still exist (for reclaim)
 	lockStore      LockStore                 // persistent lock store (optional)
 	recentlyBroken *recentlyBrokenCache      // prevents directory lease storms
+
+	// Delegation-related fields
+	breakWaitChans          map[string]chan struct{} // per-handleKey channel for break wait
+	DelegationRecallTimeout time.Duration            // default 90s, configurable
 }
+
+// DefaultDelegationRecallTimeout is the default delegation recall timeout.
+// NFS uses a longer timeout than SMB leases (90s vs 35s).
+const DefaultDelegationRecallTimeout = 90 * time.Second
 
 // NewManager creates a new lock manager.
 func NewManager() *Manager {
 	return &Manager{
-		locks:          make(map[string][]FileLock),
-		unifiedLocks:   make(map[string][]*UnifiedLock),
-		recentlyBroken: newRecentlyBrokenCache(defaultRecentlyBrokenTTL),
+		locks:                   make(map[string][]FileLock),
+		unifiedLocks:            make(map[string][]*UnifiedLock),
+		recentlyBroken:          newRecentlyBrokenCache(defaultRecentlyBrokenTTL),
+		breakWaitChans:          make(map[string]chan struct{}),
+		DelegationRecallTimeout: DefaultDelegationRecallTimeout,
+	}
+}
+
+// NewManagerWithTTL creates a new lock manager with a custom recently-broken TTL.
+// Primarily used in tests to avoid waiting for the default 5-second TTL.
+func NewManagerWithTTL(recentlyBrokenTTL time.Duration) *Manager {
+	return &Manager{
+		locks:                   make(map[string][]FileLock),
+		unifiedLocks:            make(map[string][]*UnifiedLock),
+		recentlyBroken:          newRecentlyBrokenCache(recentlyBrokenTTL),
+		breakWaitChans:          make(map[string]chan struct{}),
+		DelegationRecallTimeout: DefaultDelegationRecallTimeout,
 	}
 }
 
 // NewManagerWithGracePeriod creates a new lock manager with a grace period manager.
 func NewManagerWithGracePeriod(gracePeriod *GracePeriodManager) *Manager {
 	return &Manager{
-		locks:          make(map[string][]FileLock),
-		unifiedLocks:   make(map[string][]*UnifiedLock),
-		gracePeriod:    gracePeriod,
-		recentlyBroken: newRecentlyBrokenCache(defaultRecentlyBrokenTTL),
+		locks:                   make(map[string][]FileLock),
+		unifiedLocks:            make(map[string][]*UnifiedLock),
+		gracePeriod:             gracePeriod,
+		recentlyBroken:          newRecentlyBrokenCache(defaultRecentlyBrokenTTL),
+		breakWaitChans:          make(map[string]chan struct{}),
+		DelegationRecallTimeout: DefaultDelegationRecallTimeout,
 	}
 }
 
@@ -582,11 +647,10 @@ func (lm *Manager) SetLockStore(store LockStore) {
 }
 
 // ============================================================================
-// Lease Operations (delegated to leases.go and reclaim.go)
+// Lease Operations (implementations in leases.go and reclaim.go)
 // ============================================================================
 
 // RequestLease requests a new or upgraded lease on a file or directory.
-// See leases.go for full implementation.
 func (lm *Manager) RequestLease(ctx context.Context, fileHandle FileHandle, leaseKey [16]byte,
 	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
 	requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error) {
@@ -594,27 +658,23 @@ func (lm *Manager) RequestLease(ctx context.Context, fileHandle FileHandle, leas
 }
 
 // AcknowledgeLeaseBreak processes a client's lease break acknowledgment.
-// See leases.go for full implementation.
 func (lm *Manager) AcknowledgeLeaseBreak(ctx context.Context, leaseKey [16]byte,
 	acknowledgedState uint32, epoch uint16) error {
 	return lm.acknowledgeLeaseBreakImpl(ctx, leaseKey, acknowledgedState, epoch)
 }
 
 // ReleaseLease releases all lease state for the given lease key.
-// See leases.go for full implementation.
 func (lm *Manager) ReleaseLease(ctx context.Context, leaseKey [16]byte) error {
 	return lm.releaseLeaseImpl(ctx, leaseKey)
 }
 
 // ReclaimLease reclaims a lease during grace period.
-// See reclaim.go for full implementation.
 func (lm *Manager) ReclaimLease(ctx context.Context, leaseKey [16]byte,
 	requestedState uint32, isDirectory bool) (*UnifiedLock, error) {
 	return lm.reclaimLeaseImpl(ctx, leaseKey, requestedState, isDirectory)
 }
 
 // GetLeaseState returns the current state and epoch for a lease key.
-// See leases.go for full implementation.
 func (lm *Manager) GetLeaseState(ctx context.Context, leaseKey [16]byte) (state uint32, epoch uint16, found bool) {
 	return lm.getLeaseStateImpl(ctx, leaseKey)
 }
@@ -1016,11 +1076,13 @@ func (lm *Manager) ListUnifiedLocks(handleKey string) []*UnifiedLock {
 	return result
 }
 
-// RemoveFileUnifiedLocks removes all unified locks for a file.
+// RemoveFileUnifiedLocks removes all unified locks, delegations, and break
+// wait channels for a file.
 func (lm *Manager) RemoveFileUnifiedLocks(handleKey string) {
 	lm.mu.Lock()
-	defer lm.mu.Unlock()
 	delete(lm.unifiedLocks, handleKey)
+	delete(lm.breakWaitChans, handleKey)
+	lm.mu.Unlock()
 }
 
 // GetUnifiedLock retrieves a specific unified lock by owner and range.
@@ -1042,37 +1104,117 @@ func (lm *Manager) GetUnifiedLock(handleKey string, owner LockOwner, offset, len
 }
 
 // CheckAndBreakOpLocksForWrite checks and initiates breaks for oplocks that
-// conflict with a write operation.
-//
-// Write operations break all oplocks with Read or Write state to None.
+// conflict with a write operation. Backward-compatible wrapper for CheckAndBreakCachingForWrite.
 func (lm *Manager) CheckAndBreakOpLocksForWrite(handleKey string, excludeOwner *LockOwner) error {
-	return lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, func(lease *OpLock) bool {
-		return lease.HasRead() || lease.HasWrite()
-	})
+	return lm.CheckAndBreakCachingForWrite(handleKey, excludeOwner)
 }
 
 // CheckAndBreakOpLocksForRead checks and initiates breaks for oplocks that
-// conflict with a read operation.
-//
-// Read operations only break Write oplocks (downgraded to Read).
+// conflict with a read operation. Backward-compatible wrapper for CheckAndBreakCachingForRead.
 func (lm *Manager) CheckAndBreakOpLocksForRead(handleKey string, excludeOwner *LockOwner) error {
-	return lm.breakOpLocks(handleKey, excludeOwner, LeaseStateRead, func(lease *OpLock) bool {
-		return lease.HasWrite()
-	})
+	return lm.CheckAndBreakCachingForRead(handleKey, excludeOwner)
 }
 
 // CheckAndBreakOpLocksForDelete checks and initiates breaks for all oplocks
-// on a file being deleted.
-//
-// Delete operations break all non-None oplocks to None.
+// on a file being deleted. Backward-compatible wrapper for CheckAndBreakCachingForDelete.
 func (lm *Manager) CheckAndBreakOpLocksForDelete(handleKey string, excludeOwner *LockOwner) error {
-	return lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, func(lease *OpLock) bool {
-		return lease.LeaseState != LeaseStateNone
-	})
+	return lm.CheckAndBreakCachingForDelete(handleKey, excludeOwner)
 }
 
-// breakOpLocks collects oplocks matching the predicate and dispatches break
-// notifications to all registered callbacks.
+// ============================================================================
+// Unified Caching Break Operations
+// ============================================================================
+
+// CheckAndBreakCachingForWrite breaks all leases AND all delegations.
+func (lm *Manager) CheckAndBreakCachingForWrite(handleKey string, excludeOwner *LockOwner) error {
+	lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, func(lease *OpLock) bool {
+		return lease.HasRead() || lease.HasWrite()
+	})
+	lm.breakDelegations(handleKey, excludeOwner, func(deleg *Delegation) bool {
+		return true
+	})
+
+	return nil
+}
+
+// CheckAndBreakCachingForRead breaks write leases (to Read) and write delegations.
+// Read delegations and read leases coexist with reads.
+func (lm *Manager) CheckAndBreakCachingForRead(handleKey string, excludeOwner *LockOwner) error {
+	lm.breakOpLocks(handleKey, excludeOwner, LeaseStateRead, func(lease *OpLock) bool {
+		return lease.HasWrite()
+	})
+	lm.breakDelegations(handleKey, excludeOwner, func(deleg *Delegation) bool {
+		return deleg.DelegType == DelegTypeWrite
+	})
+
+	return nil
+}
+
+// CheckAndBreakCachingForDelete breaks all leases AND all delegations.
+func (lm *Manager) CheckAndBreakCachingForDelete(handleKey string, excludeOwner *LockOwner) error {
+	lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, func(lease *OpLock) bool {
+		return lease.LeaseState != LeaseStateNone
+	})
+	lm.breakDelegations(handleKey, excludeOwner, func(deleg *Delegation) bool {
+		return true
+	})
+
+	return nil
+}
+
+// WaitForBreakCompletion blocks until all breaking locks on a file resolve
+// or the context is cancelled.
+func (lm *Manager) WaitForBreakCompletion(ctx context.Context, handleKey string) error {
+	for {
+		lm.mu.RLock()
+		hasBreaking := false
+		for _, lock := range lm.unifiedLocks[handleKey] {
+			if lock.Lease != nil && lock.Lease.Breaking {
+				hasBreaking = true
+				break
+			}
+			if lock.Delegation != nil && lock.Delegation.Breaking {
+				hasBreaking = true
+				break
+			}
+		}
+		lm.mu.RUnlock()
+
+		if !hasBreaking {
+			return nil
+		}
+
+		lm.mu.Lock()
+		ch, ok := lm.breakWaitChans[handleKey]
+		if !ok {
+			ch = make(chan struct{}, 1)
+			lm.breakWaitChans[handleKey] = ch
+		}
+		lm.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ch:
+			continue
+		}
+	}
+}
+
+// signalBreakWait sends a non-blocking signal on the wait channel for a handleKey.
+func (lm *Manager) signalBreakWait(handleKey string) {
+	lm.mu.Lock()
+	if ch, ok := lm.breakWaitChans[handleKey]; ok {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+	lm.mu.Unlock()
+}
+
+// breakOpLocks marks matching oplocks as breaking and dispatches break
+// notifications. Releases mutex before dispatching to avoid deadlock.
 func (lm *Manager) breakOpLocks(
 	handleKey string,
 	excludeOwner *LockOwner,
@@ -1091,10 +1233,9 @@ func (lm *Manager) breakOpLocks(
 			continue
 		}
 		if lock.Lease.Breaking {
-			continue // Already breaking
+			continue
 		}
 		if shouldBreak(lock.Lease) {
-			// Mark lease as breaking before dispatching callbacks
 			lock.Lease.Breaking = true
 			lock.Lease.BreakToState = breakToState
 			lock.Lease.BreakStarted = time.Now()
@@ -1109,6 +1250,201 @@ func (lm *Manager) breakOpLocks(
 	}
 
 	return nil
+}
+
+// ============================================================================
+// Delegation CRUD Operations
+// ============================================================================
+
+// GrantDelegation grants a delegation on a file.
+// Returns error if conflicting leases exist or the file was recently broken.
+func (lm *Manager) GrantDelegation(handleKey string, delegation *Delegation) error {
+	if lm.recentlyBroken != nil && lm.recentlyBroken.IsRecentlyBroken(handleKey) {
+		return fmt.Errorf("delegation denied: file recently had caching broken")
+	}
+
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	locks := lm.unifiedLocks[handleKey]
+
+	for _, lock := range locks {
+		if lock.Lease != nil {
+			if DelegationConflictsWithLease(delegation, lock.Lease) {
+				return fmt.Errorf("delegation conflicts with existing lease (state=%s)",
+					LeaseStateToString(lock.Lease.LeaseState))
+			}
+		}
+	}
+
+	newLock := &UnifiedLock{
+		ID: delegation.DelegationID,
+		Owner: LockOwner{
+			OwnerID:   fmt.Sprintf("deleg:%s", delegation.ClientID),
+			ClientID:  delegation.ClientID,
+			ShareName: delegation.ShareName,
+		},
+		FileHandle: FileHandle(handleKey),
+		Offset:     0,
+		Length:     0, // Whole file
+		Type:       delegationToLockType(delegation.DelegType),
+		AcquiredAt: time.Now(),
+		Delegation: delegation,
+	}
+
+	lm.unifiedLocks[handleKey] = append(locks, newLock)
+	return nil
+}
+
+// delegationToLockType converts a DelegationType to a LockType.
+func delegationToLockType(dt DelegationType) LockType {
+	if dt == DelegTypeWrite {
+		return LockTypeExclusive
+	}
+	return LockTypeShared
+}
+
+// RevokeDelegation force-revokes a delegation, removing it from the lock map.
+func (lm *Manager) RevokeDelegation(handleKey string, delegationID string) error {
+	lm.mu.Lock()
+
+	locks := lm.unifiedLocks[handleKey]
+	found := false
+	var remaining []*UnifiedLock
+	for _, l := range locks {
+		if l.Delegation != nil && l.Delegation.DelegationID == delegationID {
+			found = true
+			l.Delegation.Revoked = true
+			continue
+		}
+		remaining = append(remaining, l)
+	}
+
+	if !found {
+		lm.mu.Unlock()
+		return fmt.Errorf("delegation %s not found on handle %s", delegationID, handleKey)
+	}
+
+	if len(remaining) == 0 {
+		delete(lm.unifiedLocks, handleKey)
+	} else {
+		lm.unifiedLocks[handleKey] = remaining
+	}
+	lm.mu.Unlock()
+
+	lm.signalBreakWait(handleKey)
+	return nil
+}
+
+// ReturnDelegation handles a client returning a delegation. Idempotent:
+// returns nil even if the delegation was not found.
+func (lm *Manager) ReturnDelegation(handleKey string, delegationID string) error {
+	lm.mu.Lock()
+
+	locks := lm.unifiedLocks[handleKey]
+	var remaining []*UnifiedLock
+	for _, l := range locks {
+		if l.Delegation != nil && l.Delegation.DelegationID == delegationID {
+			continue
+		}
+		remaining = append(remaining, l)
+	}
+
+	if len(remaining) == 0 {
+		delete(lm.unifiedLocks, handleKey)
+	} else {
+		lm.unifiedLocks[handleKey] = remaining
+	}
+	lm.mu.Unlock()
+
+	lm.signalBreakWait(handleKey)
+	return nil
+}
+
+// GetDelegation retrieves a specific delegation by ID.
+// Returns nil if not found.
+func (lm *Manager) GetDelegation(handleKey string, delegationID string) *Delegation {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+
+	for _, lock := range lm.unifiedLocks[handleKey] {
+		if lock.Delegation != nil && lock.Delegation.DelegationID == delegationID {
+			return lock.Delegation.Clone()
+		}
+	}
+	return nil
+}
+
+// ListDelegations returns all delegations on a file.
+func (lm *Manager) ListDelegations(handleKey string) []*Delegation {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+
+	var result []*Delegation
+	for _, lock := range lm.unifiedLocks[handleKey] {
+		if lock.Delegation != nil {
+			result = append(result, lock.Delegation.Clone())
+		}
+	}
+	return result
+}
+
+// breakDelegations collects delegations matching the predicate and dispatches
+// recall notifications. Releases mutex before dispatching to avoid deadlock.
+func (lm *Manager) breakDelegations(
+	handleKey string,
+	excludeOwner *LockOwner,
+	shouldBreak func(deleg *Delegation) bool,
+) {
+	lm.mu.Lock()
+	locks := lm.unifiedLocks[handleKey]
+
+	var toBreak []*UnifiedLock
+	for _, lock := range locks {
+		if lock.Delegation == nil {
+			continue
+		}
+		if excludeOwner != nil && lock.Owner.OwnerID == excludeOwner.OwnerID {
+			continue
+		}
+		if lock.Delegation.Breaking {
+			continue
+		}
+		if shouldBreak(lock.Delegation) {
+			lock.Delegation.Breaking = true
+			lock.Delegation.BreakStarted = time.Now()
+			lock.Delegation.Recalled = true
+			toBreak = append(toBreak, lock)
+		}
+	}
+	lm.mu.Unlock()
+
+	if len(toBreak) > 0 && lm.recentlyBroken != nil {
+		lm.recentlyBroken.Mark(handleKey)
+	}
+
+	for _, lock := range toBreak {
+		lm.dispatchDelegationRecall(handleKey, lock)
+	}
+}
+
+// dispatchDelegationRecall notifies all registered break callbacks about a delegation recall.
+func (lm *Manager) dispatchDelegationRecall(handleKey string, lock *UnifiedLock) {
+	lm.mu.RLock()
+	callbacks := make([]BreakCallbacks, len(lm.breakCallbacks))
+	copy(callbacks, lm.breakCallbacks)
+	lm.mu.RUnlock()
+
+	if len(callbacks) == 0 {
+		logger.Debug("delegation recall with no callbacks registered",
+			"handleKey", handleKey,
+			"delegationID", lock.Delegation.DelegationID)
+		return
+	}
+
+	for _, cb := range callbacks {
+		cb.OnDelegationRecall(handleKey, lock)
+	}
 }
 
 // dispatchOpLockBreak notifies all registered break callbacks about an oplock break.
@@ -1194,23 +1530,20 @@ func (lm *Manager) RegisterBreakCallbacks(callbacks BreakCallbacks) {
 // Connection/Cleanup Operations
 // ============================================================================
 
-// RemoveAllLocks removes all locks (both legacy and unified) for a file.
+// RemoveAllLocks removes all locks (legacy, unified, and delegations) for a file.
 func (lm *Manager) RemoveAllLocks(handleKey string) {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 	delete(lm.locks, handleKey)
 	delete(lm.unifiedLocks, handleKey)
+	delete(lm.breakWaitChans, handleKey)
 }
 
-// RemoveClientLocks removes all locks held by a specific client.
-//
-// This iterates all files and removes any unified locks owned by the
-// specified client ID. Also removes legacy locks by scanning all sessions.
+// RemoveClientLocks removes all unified locks held by a specific client.
 func (lm *Manager) RemoveClientLocks(clientID string) {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 
-	// Remove unified locks for this client
 	for handleKey, locks := range lm.unifiedLocks {
 		var remaining []*UnifiedLock
 		for _, lock := range locks {
@@ -1241,7 +1574,6 @@ func (lm *Manager) GetStats() ManagerStats {
 		totalUnified += len(locks)
 	}
 
-	// Count unique files (files that have any locks)
 	fileSet := make(map[string]struct{})
 	for key := range lm.locks {
 		fileSet[key] = struct{}{}

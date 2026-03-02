@@ -169,6 +169,11 @@ type UnifiedLock struct {
 	// Nil for byte-range locks; non-nil for leases.
 	// When non-nil, Offset=0 and Length=0 (whole-file).
 	Lease *OpLock
+
+	// Delegation holds delegation-specific state for cross-protocol caching.
+	// Nil for byte-range locks and leases; non-nil for delegations.
+	// Only one of Lease or Delegation should be non-nil at a time.
+	Delegation *Delegation
 }
 
 // NewUnifiedLock creates a new UnifiedLock with a generated UUID.
@@ -242,6 +247,9 @@ func (ul *UnifiedLock) Clone() *UnifiedLock {
 	if ul.Lease != nil {
 		clone.Lease = ul.Lease.Clone()
 	}
+	if ul.Delegation != nil {
+		clone.Delegation = ul.Delegation.Clone()
+	}
 	return clone
 }
 
@@ -249,6 +257,12 @@ func (ul *UnifiedLock) Clone() *UnifiedLock {
 // Leases have the Lease field set and are whole-file (Offset=0, Length=0).
 func (ul *UnifiedLock) IsLease() bool {
 	return ul.Lease != nil
+}
+
+// IsDelegation returns true if this is a delegation rather than a byte-range lock or lease.
+// Delegations have the Delegation field set.
+func (ul *UnifiedLock) IsDelegation() bool {
+	return ul.Delegation != nil
 }
 
 // ConflictsWith checks if this lock conflicts with another lock.
