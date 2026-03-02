@@ -17,7 +17,7 @@
 
 **A modular virtual filesystem written entirely in Go**
 
-Decouple file interfaces from storage backends. NFSv3/v4/v4.1 and SMB2 server with pluggable metadata and payload stores. Kubernetes-ready with official operator.
+Decouple file interfaces from storage backends. NFSv3/v4/v4.1 and SMB2/3 server with pluggable metadata and payload stores. Kubernetes-ready with official operator.
 
 [Quick Start](#quick-start) • [Documentation](#documentation) • [Features](#features) • [Use Cases](#use-cases) • [Contributing](docs/CONTRIBUTING.md)
 
@@ -96,7 +96,7 @@ graph TD
 ## Features
 
 - ✅ **NFS Support**: NFSv3 (28 procedures), NFSv4.0, and NFSv4.1 with sessions, delegations, and ACLs
-- ✅ **SMB2 Support**: Windows/macOS file sharing with NTLM authentication, byte-range locking, and oplocks
+- ✅ **SMB2/3 Support**: Windows/macOS file sharing with encryption (AES-GCM/CCM), signing (AES-CMAC/GMAC), leases V2, durable handles, and Kerberos authentication (SMB 3.0-3.1.1)
 - ✅ **Kerberos Authentication**: RPCSEC_GSS for NFS and SPNEGO for SMB
 - ✅ **No Special Permissions**: Runs entirely in userspace - no FUSE, no kernel modules
 - ✅ **Pluggable Storage**: Mix protocols with any backend (S3, filesystem, custom)
@@ -499,7 +499,7 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 - **[Architecture](docs/ARCHITECTURE.md)** - Deep dive into design patterns and internal implementation
 - **[Configuration](docs/CONFIGURATION.md)** - Complete configuration guide with examples
 - **[NFS Implementation](docs/NFS.md)** - NFSv3/v4/v4.1 protocol status and client usage
-- **[SMB Implementation](docs/SMB.md)** - SMB2 protocol status, capabilities, and client usage
+- **[SMB Implementation](docs/SMB.md)** - SMB2/3 protocol status, encryption, signing, leases, durable handles, and client usage
 - **[Contributing](docs/CONTRIBUTING.md)** - Development guide and contribution guidelines
 - **[Implementing Stores](docs/IMPLEMENTING_STORES.md)** - Guide for implementing custom metadata and payload stores
 
@@ -528,20 +528,28 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 - Buffer pooling and performance optimizations
 - Read/write caching with background flush
 
-**SMB2 Protocol Adapter**
-- SMB2 dialect 0x0202 negotiation
-- NTLM authentication with SPNEGO
-- Kerberos authentication via SPNEGO
+**SMB2/3 Protocol Adapter**
+- Multi-dialect negotiation (SMB 2.0.2, 3.0, 3.0.2, 3.1.1)
+- SMB3 encryption: AES-128-GCM, AES-128-CCM, AES-256-GCM, AES-256-CCM
+- SMB3 signing: AES-128-CMAC, AES-128-GMAC (plus HMAC-SHA256 for 2.x)
+- Preauth integrity (SHA-512 hash chain) for downgrade protection
+- SP800-108 key derivation for per-session cryptographic keys
+- NTLM and Kerberos authentication via SPNEGO
+- Leases V2 with directory leasing and epoch-based break prevention
+- Durable handles V1/V2 for session resilience
+- Cross-protocol coordination: bidirectional lease/delegation breaks with NFS
 - Session management with adaptive credit flow control
-- Tree connect with share-level permission checking
+- Tree connect with share-level permission checking and per-share encryption
 - File operations: CREATE, READ, WRITE, CLOSE, FLUSH
-- Directory operations: QUERY_DIRECTORY
+- Directory operations: QUERY_DIRECTORY, CHANGE_NOTIFY
 - Metadata operations: QUERY_INFO, SET_INFO
 - Byte-range locking and oplocks
 - Compound request handling (CREATE+QUERY_INFO+CLOSE)
 - Read/write caching (shared with NFS)
 - Parallel request processing
 - macOS Finder and smbclient compatible
+
+See [docs/SMB.md](docs/SMB.md) for complete SMB3 protocol documentation, wire format details, and configuration.
 
 **Storage Backends**
 - In-memory metadata (ephemeral, fast)
@@ -588,11 +596,12 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 ### 🚀 Roadmap
 
 **SMB Advanced Features**
-- [ ] SMBv3 support (encryption, multichannel)
+- [x] SMB3 support (encryption, signing, leases V2, durable handles, dialect 3.0-3.1.1)
 - [x] File locking (oplocks, byte-range locks)
 - [ ] Security descriptors and Windows ACLs
 - [ ] Extended attributes (xattrs) support
 - [x] Kerberos authentication via SPNEGO
+- [ ] Multichannel (multiple TCP connections per session)
 
 **Kubernetes Integration**
 - [x] Kubernetes Operator for deployment
@@ -702,7 +711,7 @@ DittoFS welcomes contributions! See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)
 
 - No security audit performed
 - AUTH_UNIX and Kerberos (RPCSEC_GSS) for NFS; NTLM and Kerberos (SPNEGO) for SMB
-- No built-in encryption (use VPN or network-level encryption)
+- SMB3 encryption (AES-GCM/CCM) for SMB transport; NFS requires VPN or network-level encryption
 
 See [docs/SECURITY.md](docs/SECURITY.md) for details and recommendations.
 

@@ -10,6 +10,14 @@
   - [NFS: AUTH_UNIX](#nfs-auth_unix)
   - [NFS: AUTH_NULL](#nfs-auth_null)
   - [SMB: Kerberos via SPNEGO](#smb-kerberos-via-spnego)
+- [SMB3 Security Model](#smb3-security-model)
+  - [SMB3 Encryption](#smb3-encryption)
+  - [SMB3 Signing](#smb3-signing)
+  - [SPNEGO/Kerberos Authentication](#spnegokerberos-authentication)
+  - [Preauth Integrity (Downgrade Protection)](#preauth-integrity-downgrade-protection)
+  - [Key Derivation](#key-derivation)
+  - [Guest Sessions and NTLM Fallback](#guest-sessions-and-ntlm-fallback)
+  - [Transport Security Comparison](#transport-security-comparison)
 - [Message Integrity](#message-integrity)
   - [SMB Message Signing](#smb-message-signing)
 - [Access Control](#access-control)
@@ -39,7 +47,12 @@
 
 - Kerberos authentication for NFS via RPCSEC_GSS (RFC 2203)
 - Kerberos authentication for SMB via SPNEGO
-- SMB message signing with HMAC-SHA256
+- SMB3 encryption with AES-128-GCM, AES-128-CCM, AES-256-GCM, AES-256-CCM
+- SMB3 signing with AES-128-CMAC and AES-128-GMAC
+- SMB2 message signing with HMAC-SHA256
+- SMB 3.1.1 preauth integrity (SHA-512 hash chain) for downgrade protection
+- SP800-108 key derivation for per-session cryptographic keys
+- VALIDATE_NEGOTIATE_INFO for SMB 3.0/3.0.2 downgrade detection
 - NFSv4 ACL-based access control
 - POSIX file permission enforcement (owner/group/other)
 - Export-level IP-based access restrictions
@@ -88,6 +101,131 @@ The SMB adapter supports Kerberos authentication through the SPNEGO (Simple and 
 When Kerberos is not configured, the SMB adapter falls back to NTLM or guest authentication.
 
 See [Kerberos Configuration](#kerberos-configuration) for shared Kerberos setup that applies to both NFS and SMB.
+
+## SMB3 Security Model
+
+SMB3 (dialects 3.0, 3.0.2, and 3.1.1) introduces significant security improvements over SMB2, including encryption, stronger signing algorithms, preauth integrity for downgrade protection, and enhanced key derivation. This section covers the SMB3 security features implemented in DittoFS.
+
+See [docs/SMB.md](SMB.md) for complete wire format details and configuration examples.
+
+### SMB3 Encryption
+
+SMB3 provides encryption using AEAD (Authenticated Encryption with Associated Data) ciphers, delivering both confidentiality and integrity for all messages on an encrypted session.
+
+**Supported cipher suites:**
+
+| Cipher | Dialect | Key Size | Performance |
+|--------|---------|----------|-------------|
+| AES-128-GCM | 3.1.1 (default) | 128-bit | Fastest (AES-NI + CLMUL hardware acceleration) |
+| AES-128-CCM | 3.0/3.0.2 (default) | 128-bit | Good (AES-NI acceleration) |
+| AES-256-GCM | 3.1.1 | 256-bit | Fast (higher security, slightly slower than 128) |
+| AES-256-CCM | 3.0+ | 256-bit | Good (highest security AES-CCM variant) |
+
+**Encryption modes:**
+
+- **`disabled`**: No encryption. Suitable for testing only.
+- **`preferred`**: SMB 3.x sessions are encrypted; unencrypted SMB 2.x sessions are still accepted. Recommended for mixed environments.
+- **`required`**: Only encrypted SMB 3.x clients can connect. SMB 2.x clients are rejected at NEGOTIATE. **Recommended for production** with sensitive data.
+
+**Per-session vs per-share encryption:**
+
+- **Per-session**: When encryption is `preferred` or `required`, all traffic on an SMB 3.x session is encrypted after SESSION_SETUP completes.
+- **Per-share**: Individual shares can require encryption via the `encrypt_data` flag. Unencrypted sessions accessing an encrypted share receive `STATUS_ACCESS_DENIED`.
+
+**Security recommendation:** Set `encryption_mode: required` for environments handling sensitive data. This eliminates unencrypted traffic and rejects legacy clients that cannot encrypt.
+
+### SMB3 Signing
+
+SMB3 introduces stronger signing algorithms based on AES, replacing the HMAC-SHA256 signing used in SMB 2.x.
+
+**Signing algorithms:**
+
+| Algorithm | Dialect | Strength | Notes |
+|-----------|---------|----------|-------|
+| HMAC-SHA256 | SMB 2.x | 128-bit equivalent | Legacy, uses session key directly |
+| AES-128-CMAC | SMB 3.0+ | 128-bit | Uses SP800-108 derived signing key |
+| AES-128-GMAC | SMB 3.1.1 | 128-bit | Preferred; leverages GCM hardware acceleration |
+
+**Algorithm negotiation (3.1.1):** During NEGOTIATE, the SMB2_SIGNING_CAPABILITIES context allows client and server to agree on a signing algorithm. DittoFS prefers GMAC > CMAC. Clients omitting the signing capability context default to AES-128-CMAC.
+
+**When signing is active:** After SESSION_SETUP completes successfully (non-guest sessions), all messages are signed. Signing is redundant when encryption is active (AEAD provides integrity), but DittoFS signs encrypted messages to match Windows Server behavior and ensure compatibility.
+
+**Security recommendation:** Set `signing.required: true` for all production deployments. This prevents message tampering even when encryption is not used.
+
+### SPNEGO/Kerberos Authentication
+
+SMB3 Kerberos authentication follows the SPNEGO protocol during SESSION_SETUP:
+
+1. **Server advertises** both Kerberos (OID 1.2.840.113554.1.2.2) and NTLM mechanism OIDs
+2. **Client with valid TGT** sends AP-REQ inside SPNEGO InitToken
+3. **Server validates** AP-REQ against its keytab (shared with NFS adapter)
+4. **Mutual authentication**: Server sends AP-REP proving its identity
+5. **Session key** from Kerberos ticket is used as input to SP800-108 KDF
+
+**Mutual authentication** is a critical security property: the AP-REP proves the server possesses the keytab, preventing impersonation. NTLM does not provide mutual authentication.
+
+**Principal mapping**: The client Kerberos principal (without realm) is mapped to a DittoFS control plane user. The SMB adapter automatically derives the `cifs/` service principal from the configured `nfs/` principal.
+
+### Preauth Integrity (Downgrade Protection)
+
+SMB 3.1.1 introduces preauth integrity -- a running SHA-512 hash computed over the raw bytes of NEGOTIATE and SESSION_SETUP messages:
+
+```
+PreauthHash = SHA-512(Salt || NEG_REQ || NEG_RESP || SESS_SETUP_REQ || ...)
+```
+
+This hash serves as the **KDF context** for key derivation. Any man-in-the-middle modification of negotiate messages (e.g., stripping encryption capability) produces different derived keys, causing SESSION_SETUP to fail.
+
+For SMB 3.0/3.0.2 (which lack preauth integrity), **FSCTL_VALIDATE_NEGOTIATE_INFO** provides downgrade detection. The client sends its original negotiate parameters; if the server's stored state doesn't match, the connection is dropped.
+
+### Key Derivation
+
+SMB3 derives per-purpose cryptographic keys from the session key using NIST SP800-108 Counter Mode KDF with HMAC-SHA256:
+
+| Key | Purpose |
+|-----|---------|
+| SigningKey | AES-CMAC/GMAC message signing |
+| EncryptionKey | Server-to-client AES-GCM/CCM encryption |
+| DecryptionKey | Client-to-server AES-GCM/CCM decryption |
+| ApplicationKey | Application-level cryptographic operations |
+
+**Dialect-specific contexts:**
+- **SMB 3.0/3.0.2**: Fixed label/context strings (e.g., `"SmbSign\0"`, `"ServerIn \0"`)
+- **SMB 3.1.1**: Preauth integrity hash as context (binds keys to exact negotiate exchange)
+
+### Guest Sessions and NTLM Fallback
+
+**Guest sessions** have significant security limitations:
+- No session key is available, so **no signing** and **no encryption** are possible
+- Guest sessions should be restricted to read-only access on public shares
+- DittoFS never encrypts guest sessions, even in `required` mode (the connection is rejected instead)
+
+**NTLM fallback** occurs when:
+- Kerberos keytab is not configured
+- Client has no valid Kerberos TGT
+- DNS resolution prevents Kerberos service ticket acquisition
+
+**NTLM security tradeoffs:**
+- No mutual authentication (client cannot verify server identity)
+- Vulnerable to relay attacks without channel binding
+- Session key derived from password hash (weaker than Kerberos session key)
+- Signing uses HMAC-SHA256 (weaker than AES-CMAC/GMAC)
+
+**Security recommendation:** Configure Kerberos for all production deployments. Use NTLM only as a transition mechanism.
+
+### Transport Security Comparison
+
+| Property | SMB3 Encryption | NFS Kerberos (krb5p) |
+|----------|-----------------|---------------------|
+| Confidentiality | AES-128-GCM / AES-128-CCM | AES-256 wrap (per RFC 3962) |
+| Integrity | AEAD tag (built into cipher) | Kerberos checksum |
+| Key derivation | SP800-108 from session key | Kerberos sub-session key |
+| Per-message overhead | 52 bytes (transform header) | ~28 bytes (GSS wrap token) |
+| Downgrade protection | Preauth integrity hash (3.1.1) | GSS-API mechanism negotiation |
+| Mutual auth | Via Kerberos AP-REP | Built into RPCSEC_GSS |
+| Hardware acceleration | AES-NI + CLMUL (GCM) | Depends on krb5 library |
+
+Both protocols provide strong transport security when properly configured. SMB3 encryption has the advantage of being built into the protocol (no external VPN needed), while NFS krb5p requires a functioning Kerberos infrastructure.
 
 ## Message Integrity
 
@@ -387,7 +525,8 @@ smbclient -k //server.example.com/export
 ## Planned Security Features
 
 ### Encryption
-- [ ] Built-in TLS support for RPC transport
+- [x] SMB3 encryption (AES-GCM/CCM) for SMB transport
+- [ ] Built-in TLS support for NFS RPC transport
 - [ ] Encryption at rest for content stores
 - [ ] Encrypted metadata storage
 
@@ -407,8 +546,9 @@ smbclient -k //server.example.com/export
 ### Deployment Checklist
 
 - [ ] Enable Kerberos authentication for NFS and SMB
+- [ ] Enable SMB3 encryption with `encryption_mode: required` for sensitive data
 - [ ] Enable SMB message signing with `required: true`
-- [ ] Deploy behind VPN or use network-level encryption for data confidentiality
+- [ ] Deploy behind VPN or use network-level encryption for NFS data confidentiality
 - [ ] Use read-only exports where appropriate
 - [ ] Enable monitoring and alerting
 - [ ] Restrict export access by IP address
@@ -469,7 +609,12 @@ adapters:
     signing:
       enabled: true
       required: true
+    encryption:
+      encryption_mode: required      # Reject unencrypted clients
+      allowed_ciphers: []            # All ciphers, default preference order
 ```
+
+See [docs/CONFIGURATION.md](CONFIGURATION.md) for complete SMB3 adapter configuration options.
 
 ## Security Best Practices
 
@@ -511,8 +656,9 @@ adapters:
 
 Do not rely on a single security measure:
 - Kerberos authentication
-- SMB message signing
-- Network encryption (VPN/IPsec)
+- SMB3 encryption (AES-GCM/CCM)
+- SMB message signing (AES-CMAC/GMAC)
+- Network encryption for NFS (VPN/IPsec)
 - IP-based access control
 - NFSv4 ACLs and POSIX permissions
 - Identity mapping (root squash)

@@ -10,6 +10,7 @@ This guide covers common issues and their solutions when working with DittoFS.
 - [Permission Issues](#permission-issues)
 - [File Handle Issues](#file-handle-issues)
 - [Performance Issues](#performance-issues)
+- [Cross-Protocol Issues](#cross-protocol-issues)
 - [Logging and Debugging](#logging-and-debugging)
 
 ## Connection Issues
@@ -414,6 +415,163 @@ curl http://localhost:9090/metrics
 # Check configuration
 DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start 2>&1 | grep -i "config"
 ```
+
+## Cross-Protocol Issues
+
+When running both NFS and SMB adapters simultaneously, the shared LockManager coordinates caching state between protocols. This section covers common cross-protocol issues and their resolution.
+
+### File Locked by Another Protocol
+
+**Symptoms:**
+```
+NFS: NFS4ERR_SHARE_DENIED or NFS4ERR_LOCKED
+SMB: STATUS_SHARING_VIOLATION or STATUS_LOCK_NOT_GRANTED
+```
+
+**Cause:** An SMB client holds an exclusive lease (RWH) or byte-range lock on a file that an NFS client is trying to access, or vice versa.
+
+**Diagnosis:**
+```bash
+# Check active locks and leases via debug logging
+DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+# Look for log entries containing:
+#   "cross_protocol_break" - Break initiated across protocols
+#   "lease_break" - SMB lease being broken
+#   "delegation_recall" - NFS delegation being recalled
+```
+
+**Resolution:**
+1. Wait for the lease/delegation break to complete (the LockManager automatically initiates breaks)
+2. If the break times out (35s for SMB leases, 90s for NFS delegations), the server force-revokes and the operation proceeds
+3. Check if the client holding the lock is still connected
+
+### Delegation Recall Timeouts
+
+**Symptoms:**
+```
+[WARN] delegation recall timeout: delegID=abc123 client=nfs-client elapsed=90s
+```
+
+**Cause:** An NFS client did not respond to a CB_RECALL (callback recall) within the configured timeout (default 90 seconds). This happens when:
+- The NFS client is unresponsive or has network issues
+- The NFS client's backchannel is broken
+- The CB_RECALL message was lost
+
+**Resolution:**
+1. After timeout, the delegation is **force-revoked** and the conflicting operation proceeds
+2. Check NFS client connectivity and backchannel health
+3. Adjust timeout if needed:
+   ```yaml
+   adapters:
+     smb:
+       cross_protocol:
+         delegation_recall_timeout: 120s  # Increase from 90s default
+   ```
+4. Enable debug logging to see the recall flow:
+   ```bash
+   DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start 2>&1 | grep "delegation"
+   ```
+
+### Lease Break Storms
+
+**Symptoms:**
+```
+[INFO] cross_protocol_break: file=/export/data.bin protocol=smb->nfs type=lease_break count=47 period=60s
+```
+Rapid grant-break-grant-break cycles visible in logs.
+
+**Cause:** Two clients (one NFS, one SMB) are alternately opening the same file with conflicting access modes, causing the LockManager to repeatedly break and re-grant caching state.
+
+**Resolution:**
+1. DittoFS has a built-in **anti-storm cache** (default 30-second TTL) that prevents re-grants after a break
+2. If storms persist, increase the anti-storm TTL:
+   ```yaml
+   adapters:
+     smb:
+       cross_protocol:
+         anti_storm_ttl: 60s  # Increase from 30s default
+   ```
+3. Consider configuring the conflicting clients to use the same protocol for the shared file
+4. Read-only access from both protocols does not cause storms (NFS read delegation + SMB Read lease coexist)
+
+### SMB Client Cannot Write to NFS-Delegated File
+
+**Symptoms:**
+- SMB WRITE or CREATE (write access) hangs for several seconds before succeeding
+- Or fails with STATUS_SHARING_VIOLATION
+
+**Cause:** An NFS client holds a write delegation on the file. The LockManager must recall the delegation via CB_RECALL and wait for the NFS client to return it before the SMB write can proceed.
+
+**Expected behavior:** This is correct cross-protocol coordination. The delay is the delegation recall round-trip time (typically under 1 second for responsive NFS clients, up to 90 seconds for the timeout).
+
+**Resolution:**
+1. This is normal behavior -- the SMB write will succeed once the NFS delegation is returned
+2. If the delay is unacceptable, disable delegations for the share (reduces NFS performance)
+3. Monitor recall latency in debug logs
+
+### NFS Client Sees Stale Data After SMB Write
+
+**Symptoms:**
+- NFS client reads file and gets old content after an SMB client has written new content
+
+**Cause:** The NFS client cached the file data under a read delegation, and the delegation recall + cache invalidation has not completed yet.
+
+**Resolution:**
+1. DittoFS automatically sends CB_RECALL to NFS clients when an SMB client modifies a file
+2. After the recall, the NFS client invalidates its cache and re-reads from the server
+3. If the NFS client is not responding to recalls:
+   - Check NFS client backchannel connectivity
+   - After delegation recall timeout (90s), the delegation is force-revoked
+   - NFS client's next request will fail with EXPIRED or ADMIN_REVOKED, forcing a refresh
+4. Force a cache refresh on the NFS client:
+   ```bash
+   # Remount with noac to disable attribute caching
+   sudo mount -t nfs4 -o noac server:/export /mnt/nfs
+   ```
+
+### Directory Listing Inconsistency Across Protocols
+
+**Symptoms:**
+- Creating a file via SMB, but NFS `ls` does not show it (or vice versa)
+
+**Cause:** Directory change notifications have not yet broken the other protocol's directory lease/delegation.
+
+**Resolution:**
+1. DittoFS automatically breaks directory leases and delegations when `CreateFile`, `RemoveFile`, or `Rename` modifies a directory
+2. The break is processed through the LockManager and dispatched to both protocols
+3. If inconsistency persists:
+   - Verify directory leases are enabled: check `leases.directory_leases: true`
+   - Check for notification queue overflow (1024 events/directory capacity)
+   - Force a directory re-read: `ls -la /mnt/nfs/dir/` or refresh the SMB directory listing
+
+### Diagnostic Commands
+
+```bash
+# Enable cross-protocol debug logging
+DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
+
+# Key log patterns to search for:
+# "cross_protocol_break" - Break initiated between protocols
+# "delegation_recall" - NFS delegation being recalled
+# "lease_break" - SMB lease being broken
+# "anti_storm" - Grant suppressed by anti-storm cache
+# "dir_change_notify" - Directory change notification dispatched
+# "break_timeout" - Break acknowledgment timed out
+```
+
+### Log Messages Reference
+
+| Log Message | Level | Meaning |
+|-------------|-------|---------|
+| `cross_protocol_break` | INFO | A caching break was initiated across protocols |
+| `delegation_recall` | DEBUG | CB_RECALL sent to NFS client |
+| `delegation_returned` | DEBUG | NFS client returned delegation voluntarily |
+| `delegation_force_revoked` | WARN | Delegation revoked after timeout |
+| `lease_break` | DEBUG | Lease break notification sent to SMB client |
+| `lease_break_ack` | DEBUG | SMB client acknowledged lease break |
+| `anti_storm_suppressed` | DEBUG | Grant suppressed by anti-storm cache |
+| `dir_change_notify` | DEBUG | Directory change event queued |
+| `notification_overflow` | WARN | Directory notification queue overflowed |
 
 ## Common Error Messages
 

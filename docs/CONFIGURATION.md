@@ -781,6 +781,190 @@ dfsctl share create --name /secure --metadata default --encrypt-data
 
 > **Security Note**: For production environments handling sensitive data, set `encryption_mode: required` and enable `encrypt_data` on shares that hold confidential information.
 
+### SMB3 Signing Configuration
+
+SMB3 signing provides message integrity using AES-CMAC (3.0+) or AES-GMAC (3.1.1), replacing the HMAC-SHA256 used in SMB 2.x. Signing keys are derived from the session key using SP800-108 KDF.
+
+```yaml
+adapters:
+  smb:
+    signing:
+      enabled: true       # Advertise signing capability (default: true)
+      required: false      # Require all clients to sign (default: false)
+      # Signing algorithm preference for 3.1.1 (SIGNING_CAPABILITIES context)
+      # Default: [AES-128-GMAC, AES-128-CMAC]
+      # AES-128-GMAC is fastest on hardware with AES-NI + CLMUL
+      preferred_algorithms: []
+```
+
+**Signing Configuration Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `true` | Advertise signing capability in NEGOTIATE |
+| `required` | `false` | Reject unsigned messages from established sessions |
+| `preferred_algorithms` | `[GMAC, CMAC]` | Algorithm preference for 3.1.1 negotiate context |
+
+### SMB3 Dialect Configuration
+
+Control which SMB dialects the server accepts:
+
+```yaml
+adapters:
+  smb:
+    # Minimum dialect the server will accept
+    # Set to "3.0" to reject legacy SMB2 clients
+    min_dialect: "2.0.2"     # "2.0.2" | "3.0" | "3.0.2" | "3.1.1"
+
+    # Maximum dialect the server will negotiate
+    max_dialect: "3.1.1"     # Default: highest supported
+```
+
+### SMB3 Lease Configuration
+
+Leases V2 and directory leasing configuration:
+
+```yaml
+adapters:
+  smb:
+    leases:
+      enabled: true              # Enable lease support (default: true)
+      directory_leases: true     # Enable directory leasing (default: true)
+      lease_break_timeout: 35s   # Time to wait for break acknowledgment (default: 35s)
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `true` | Enable SMB lease support |
+| `directory_leases` | `true` | Enable directory Read leasing |
+| `lease_break_timeout` | `35s` | Maximum wait for lease break acknowledgment |
+
+### SMB3 Durable Handle Configuration
+
+Durable handle settings for session resilience:
+
+```yaml
+adapters:
+  smb:
+    durable_handles:
+      enabled: true                  # Enable durable handle support (default: true)
+      default_timeout: 60s           # Handle preservation timeout (default: 60s)
+      scavenger_interval: 30s        # Expired handle scan interval (default: 30s)
+      max_handles_per_session: 1000  # Maximum durable handles per session
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `true` | Enable durable handle V1/V2 support |
+| `default_timeout` | `60s` | How long to preserve disconnected handles |
+| `scavenger_interval` | `30s` | Background scan interval for expired handles |
+| `max_handles_per_session` | `1000` | Limit durable handles per session |
+
+### Cross-Protocol Configuration
+
+Settings that affect NFS/SMB cross-protocol coordination:
+
+```yaml
+adapters:
+  smb:
+    cross_protocol:
+      delegation_recall_timeout: 90s   # Timeout for NFS delegation recall (default: 90s)
+      anti_storm_ttl: 30s              # Anti-storm cache TTL (default: 30s)
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `delegation_recall_timeout` | `90s` | Maximum wait for NFS client to return delegation after CB_RECALL |
+| `anti_storm_ttl` | `30s` | Duration to suppress re-grants after a lease/delegation break |
+
+### Complete SMB3 Adapter Configuration Example
+
+```yaml
+adapters:
+  smb:
+    enabled: true
+    port: 12445
+    max_connections: 0          # 0 = unlimited
+    max_requests_per_connection: 100
+
+    # Dialect range
+    min_dialect: "3.0"          # Reject SMB2 clients
+    max_dialect: "3.1.1"
+
+    # Timeouts
+    timeouts:
+      read: 5m
+      write: 30s
+      idle: 5m
+      shutdown: 30s
+
+    # Credits
+    credits:
+      strategy: adaptive
+      min_grant: 16
+      max_grant: 8192
+      initial_grant: 256
+      max_session_credits: 65535
+
+    # Signing
+    signing:
+      enabled: true
+      required: true
+      preferred_algorithms: []  # Default: [GMAC, CMAC]
+
+    # Encryption
+    encryption:
+      encryption_mode: required
+      allowed_ciphers: []       # Default: all in preference order
+
+    # Leases
+    leases:
+      enabled: true
+      directory_leases: true
+      lease_break_timeout: 35s
+
+    # Durable Handles
+    durable_handles:
+      enabled: true
+      default_timeout: 60s
+      scavenger_interval: 30s
+      max_handles_per_session: 1000
+
+    # Cross-Protocol
+    cross_protocol:
+      delegation_recall_timeout: 90s
+      anti_storm_ttl: 30s
+```
+
+### SMB3 Environment Variable Overrides
+
+All SMB3 settings can be overridden with environment variables:
+
+```bash
+# Encryption
+export DITTOFS_ADAPTERS_SMB_ENCRYPTION_ENCRYPTION_MODE=required
+
+# Signing
+export DITTOFS_ADAPTERS_SMB_SIGNING_ENABLED=true
+export DITTOFS_ADAPTERS_SMB_SIGNING_REQUIRED=true
+
+# Dialect
+export DITTOFS_ADAPTERS_SMB_MIN_DIALECT=3.0
+
+# Leases
+export DITTOFS_ADAPTERS_SMB_LEASES_ENABLED=true
+export DITTOFS_ADAPTERS_SMB_LEASES_DIRECTORY_LEASES=true
+export DITTOFS_ADAPTERS_SMB_LEASES_LEASE_BREAK_TIMEOUT=35s
+
+# Durable Handles
+export DITTOFS_ADAPTERS_SMB_DURABLE_HANDLES_ENABLED=true
+export DITTOFS_ADAPTERS_SMB_DURABLE_HANDLES_DEFAULT_TIMEOUT=60s
+
+# Cross-Protocol
+export DITTOFS_ADAPTERS_SMB_CROSS_PROTOCOL_DELEGATION_RECALL_TIMEOUT=90s
+export DITTOFS_ADAPTERS_SMB_CROSS_PROTOCOL_ANTI_STORM_TTL=30s
+```
+
 ### 12. NFSv4 Configuration
 
 ```yaml
