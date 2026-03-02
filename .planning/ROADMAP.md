@@ -105,7 +105,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 36: Kerberos SMB3 Integration** - SPNEGO/Kerberos session setup with session key extraction, AP-REP mutual auth, NTLM fallback, guest sessions (completed 2026-03-01)
 - [x] **Phase 37: SMB3 Leases and Directory Leasing** - Lease V2 with ParentLeaseKey/epoch, directory leases, break coordination via metadata service (completed 2026-03-02)
 - [x] **Phase 38: Durable Handles** - V1/V2 durable handles with CreateGuid, state persistence, reconnect validation (14+ checks), timeout management (completed 2026-03-02)
-- [ ] **Phase 39: Cross-Protocol Integration and Documentation** - Bidirectional SMB3 lease/NFS delegation coordination, directory lease breaks on NFS ops, documentation
+- [x] **Phase 39: Cross-Protocol Integration and Documentation** - Bidirectional SMB3 lease/NFS delegation coordination, directory lease breaks on NFS ops, documentation (completed 2026-03-02)
 - [ ] **Phase 40: SMB3 Conformance Testing** - smbtorture SMB3 suites, WPTS FileServer BVT, Go integration tests, client compatibility matrix
 - [ ] **Phase 40.5: Manual Verification - SMB3** USER CHECKPOINT - Verify SMB3 with Windows 10/11, macOS, Linux clients
 
@@ -241,7 +241,11 @@ Plans:
   3. NFS directory operations (create/delete/rename) trigger SMB3 directory lease breaks
   4. All cross-protocol coordination logic lives in metadata service (shared abstract layer)
   5. docs/ updated with SMB3 protocol documentation covering configuration, capabilities, security, and cross-protocol behavior
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 39-01-PLAN.md — Delegation struct, UnifiedLock extension, BreakCallbacks, notification queue, unified break methods
+- [ ] 39-02-PLAN.md — NFS StateManager refactoring, SMB adapter callbacks, cross-protocol break coordination, unit tests
+- [ ] 39-03-PLAN.md — Comprehensive SMB3 documentation (SMB.md, SECURITY.md, CONFIGURATION.md, TROUBLESHOOTING.md, README.md)
 
 ### Phase 40: SMB3 Conformance Testing
 **Goal**: SMB3 implementation validated against industry conformance suites and real clients across Windows, macOS, and Linux
@@ -483,7 +487,7 @@ v3.8 (33-40.5) -> v4.0 (41-47.5) -> v4.1 (48-53.5)
 | 36. Kerberos SMB3 Integration | v3.8 | Complete | Complete | 2026-03-01 |
 | 37. SMB3 Leases and Directory Leasing | v3.8 | Complete | Complete | 2026-03-02 |
 | 38. Durable Handles | v3.8 | 3/3 | Complete | 2026-03-02 |
-| 39. Cross-Protocol Integration and Documentation | v3.8 | 0/? | Not started | - |
+| 39. Cross-Protocol Integration and Documentation | v3.8 | 3/3 | Complete   | 2026-03-02 | - |
 | 40. SMB3 Conformance Testing | v3.8 | 0/? | Not started | - |
 | 41. Server-Side Copy | v4.0 | 0/? | Not started | - |
 | 42. Clone/Reflinks | v4.0 | 0/? | Not started | - |

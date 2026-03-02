@@ -64,9 +64,9 @@ Requirements for SMB3 protocol upgrade. Each maps to roadmap phases.
 
 ### Cross-Protocol
 
-- [ ] **XPROT-01**: SMB3 lease breaks coordinate bidirectionally with NFS delegations via Unified Lock Manager
-- [ ] **XPROT-02**: NFS directory operations trigger SMB3 directory lease breaks
-- [ ] **XPROT-03**: Cross-protocol coordination logic lives in metadata service (shared abstract layer)
+- [x] **XPROT-01**: SMB3 lease breaks coordinate bidirectionally with NFS delegations via Unified Lock Manager
+- [x] **XPROT-02**: NFS directory operations trigger SMB3 directory lease breaks
+- [x] **XPROT-03**: Cross-protocol coordination logic lives in metadata service (shared abstract layer)
 
 ### Architecture
 
@@ -76,7 +76,7 @@ Requirements for SMB3 protocol upgrade. Each maps to roadmap phases.
 
 ### Documentation
 
-- [ ] **DOC-01**: Update docs/ with comprehensive SMB3 protocol documentation (configuration, capabilities, security)
+- [x] **DOC-01**: Update docs/ with comprehensive SMB3 protocol documentation (configuration, capabilities, security)
 
 ### Testing
 
@@ -156,13 +156,13 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DH-04 | Phase 38 | Complete |
 | DH-05 | Phase 38 | Complete |
 | SDIAL-01 | Phase 33 | Complete |
-| XPROT-01 | Phase 39 | Pending |
-| XPROT-02 | Phase 39 | Pending |
-| XPROT-03 | Phase 39 | Pending |
+| XPROT-01 | Phase 39 | Complete |
+| XPROT-02 | Phase 39 | Complete |
+| XPROT-03 | Phase 39 | Complete |
 | ARCH-01 | Phase 37 | Complete |
 | ARCH-02 | Phase 33 | Complete |
 | ARCH-03 | Phase 36 | Complete |
-| DOC-01 | Phase 39 | Pending |
+| DOC-01 | Phase 39 | Complete |
 | TEST-01 | Phase 40 | Pending |
 | TEST-02 | Phase 40 | Pending |
 | TEST-03 | Phase 40 | Pending |

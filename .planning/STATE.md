@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v3.8
 milestone_name: SMB3 Protocol Upgrade
 status: phase-complete
-last_updated: "2026-03-02T14:42:17.761Z"
+last_updated: "2026-03-02T16:19:28.813Z"
 progress:
-  total_phases: 39
-  completed_phases: 39
-  total_plans: 134
-  completed_plans: 134
+  total_phases: 42
+  completed_phases: 40
+  total_plans: 137
+  completed_plans: 136
 ---
 
 # Project State
@@ -18,14 +18,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-02-28)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking, Kerberos authentication, and session reliability
-**Current focus:** v3.8 SMB3 Protocol Upgrade — Phase 38 (Durable Handles)
+**Current focus:** v3.8 SMB3 Protocol Upgrade — Phase 39 (Cross-Protocol Integration)
 
 ## Current Position
 
-Phase: 38 of 40 (Durable Handles)
+Phase: 39 of 40 (Cross-Protocol Integration and Documentation)
 Plan: 3 of 3 complete
-Status: Phase 38 Complete
-Last activity: 2026-03-02 — Completed 38-02 (Durable handle CREATE context processing)
+Status: Phase Complete
+Last activity: 2026-03-02 — Completed 39-03 (SMB3 Documentation)
 
 Progress: [##########] 100%
 
@@ -65,6 +65,9 @@ Progress: [##########] 100%
 | 38    | 01   | 7min     | 2     | 11    |
 | 38    | 02   | 16min    | 1     | 4     |
 | 38    | 03   | 10min    | 2     | 6     |
+| 39    | 01   | 12min    | 2     | 16    |
+| 39    | 02   | 9min     | 2     | 9     |
+| 39    | 03   | 11min    | 2     | 5     |
 
 ## Accumulated Context
 
@@ -146,6 +149,15 @@ Progress: [##########] 100%
 - [Phase 38-03]: Scavenger iterates all handles client-side (not bulk delete) to perform cleanup before deletion
 - [Phase 38-03]: Local durableHandleStoreProvider interface avoids importing storetest from production code
 - [Phase 38-03]: Scavenger lifecycle tied to Serve context -- stops automatically on adapter shutdown
+- [Phase 39]: Delegation struct has zero NFS-specific types (no Stateid4, no *time.Timer) - NFS adapter maps between its own types and shared Delegation
+- [Phase 39]: Read delegation + Read-only lease coexist; Write delegation conflicts with any lease
+- [Phase 39]: Old CheckAndBreakOpLocksFor* methods delegate to new CheckAndBreakCachingFor* for backward compatibility
+- [Phase 39]: DelegationRecallTimeout defaults to 90s (longer than SMB 35s, matching NFS conventions)
+- [Phase 39-02]: NFSBreakHandler registered per-share (same pattern as SMBBreakHandler), not on single global LockManager
+- [Phase 39-02]: delegStateidMap bridges LockManager DelegationID (UUID) to NFS Stateid4 for wire-format lookup
+- [Phase 39-02]: breakDelegations marks recentlyBroken cache for unified anti-storm across protocols
+- [Phase 39-02]: Mutex release before LockManager calls: capture refs under lock, release, then call LockManager (Pitfall 2)
+- [Phase 39-03]: docs/SMB.md expanded in-place (1487 lines) covering all v3.8 features with both operational and wire-format details
 
 ### Pending Todos
 
@@ -158,5 +170,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-03-02
-Stopped at: Completed 38-02-PLAN.md (Durable handle CREATE context processing — Phase 38 complete)
+Stopped at: Completed 39-03-PLAN.md (SMB3 Documentation — Phase 39 complete, 3/3 plans done)
 Resume file: None
