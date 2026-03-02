@@ -32,11 +32,11 @@ type LockManagerResolver interface {
 //
 // Thread-safe: all mutable state is protected by mu.
 type LeaseManager struct {
-	resolver    LockManagerResolver
-	notifier    LeaseBreakNotifier
-	sessionMap  map[string]uint64  // hex(leaseKey) -> sessionID
-	leaseShare  map[string]string  // hex(leaseKey) -> shareName (for resolution)
-	mu          sync.RWMutex
+	resolver   LockManagerResolver
+	notifier   LeaseBreakNotifier
+	sessionMap map[string]uint64 // hex(leaseKey) -> sessionID
+	leaseShare map[string]string // hex(leaseKey) -> shareName (for resolution)
+	mu         sync.RWMutex
 }
 
 // NewLeaseManager creates a new SMB LeaseManager.

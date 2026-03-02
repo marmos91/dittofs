@@ -285,7 +285,7 @@ func CheckNLMLocksForLeaseConflict(lockStore LockStore, ctx context.Context, han
 		}
 
 		// Handle-only lease (no R or W) does not conflict with NLM locks
-		if !wantsWrite && !(wantsRead && el.IsExclusive()) {
+		if !wantsWrite && (!wantsRead || !el.IsExclusive()) {
 			continue
 		}
 

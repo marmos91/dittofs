@@ -817,4 +817,3 @@ func (h *Handler) RegisterShareChangeCallback() {
 		h.invalidateShareCache()
 	})
 }
-

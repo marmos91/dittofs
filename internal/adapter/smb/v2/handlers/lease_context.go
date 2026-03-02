@@ -272,7 +272,7 @@ type LeaseResponseContext struct {
 	LeaseState     uint32
 	Flags          uint32 // SMB2_LEASE_FLAG_BREAK_IN_PROGRESS if breaking
 	ParentLeaseKey [16]byte
-	HasParent      bool   // True if ParentLeaseKey is valid (V2)
+	HasParent      bool // True if ParentLeaseKey is valid (V2)
 	Epoch          uint16
 }
 

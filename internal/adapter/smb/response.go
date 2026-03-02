@@ -56,7 +56,7 @@ func ProcessSingleRequest(
 
 	logger.Debug("Dispatching SMB2 command",
 		"command", cmd.Name,
-		"messageId", reqHeader.MessageID,
+		"messageID", reqHeader.MessageID,
 		"client", handlerCtx.ClientAddr)
 
 	// Execute handler
@@ -150,7 +150,7 @@ func ProcessRequestWithFileID(ctx context.Context, reqHeader *header.SMB2Header,
 
 	logger.Debug("Dispatching SMB2 command",
 		"command", cmd.Name,
-		"messageId", reqHeader.MessageID,
+		"messageID", reqHeader.MessageID,
 		"client", handlerCtx.ClientAddr)
 
 	result, err := cmd.Handler(handlerCtx, connInfo.Handler, connInfo.Handler.Registry, body)
@@ -302,7 +302,7 @@ func SendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo) error 
 	logger.Debug("Sent SMB2 response",
 		"command", hdr.Command.String(),
 		"status", hdr.Status.String(),
-		"messageId", hdr.MessageID,
+		"messageID", hdr.MessageID,
 		"bytes", len(smbPayload))
 
 	return WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, smbPayload)

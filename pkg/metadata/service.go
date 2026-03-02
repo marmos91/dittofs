@@ -32,13 +32,13 @@ import (
 //	file, err := metaSvc.GetFile(ctx, handle)
 type MetadataService struct {
 	mu                 sync.RWMutex
-	stores             map[string]MetadataStore            // shareName -> store
-	lockManagers       map[string]*LockManager             // shareName -> lock manager (ephemeral, per-share)
-	unifiedViews       map[string]*UnifiedLockView         // shareName -> unified lock view (cross-protocol)
-	dirChangeNotifiers map[string]lock.DirChangeNotifier   // shareName -> notifier for directory changes
-	pendingWrites      *PendingWritesTracker               // deferred metadata commits for performance
-	deferredCommit     bool                                // if true, use deferred commits (default: true)
-	cookies            *CookieManager                      // NFS/SMB cookie to store token translation
+	stores             map[string]MetadataStore          // shareName -> store
+	lockManagers       map[string]*LockManager           // shareName -> lock manager (ephemeral, per-share)
+	unifiedViews       map[string]*UnifiedLockView       // shareName -> unified lock view (cross-protocol)
+	dirChangeNotifiers map[string]lock.DirChangeNotifier // shareName -> notifier for directory changes
+	pendingWrites      *PendingWritesTracker             // deferred metadata commits for performance
+	deferredCommit     bool                              // if true, use deferred commits (default: true)
+	cookies            *CookieManager                    // NFS/SMB cookie to store token translation
 }
 
 // New creates a new empty MetadataService instance.

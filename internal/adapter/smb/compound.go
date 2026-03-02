@@ -29,7 +29,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 	// Process first command
 	logger.Debug("Processing compound request - first command",
 		"command", firstHeader.Command.String(),
-		"messageId", firstHeader.MessageID)
+		"messageID", firstHeader.MessageID)
 
 	result, fileID, handlerCtx := ProcessRequestWithFileID(ctx, firstHeader, firstBody, connInfo)
 	if fileID != [16]byte{} {
@@ -84,7 +84,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 
 		logger.Debug("Processing compound request - command",
 			"command", hdr.Command.String(),
-			"messageId", hdr.MessageID,
+			"messageID", hdr.MessageID,
 			"isRelated", hdr.IsRelated(),
 			"usingFileID", lastFileID != [16]byte{})
 
@@ -150,9 +150,9 @@ func ParseCompoundCommand(data []byte) (*header.SMB2Header, []byte, []byte, erro
 
 	logger.Debug("SMB2 compound request",
 		"command", hdr.Command.String(),
-		"messageId", hdr.MessageID,
-		"sessionId", fmt.Sprintf("0x%x", hdr.SessionID),
-		"treeId", hdr.TreeID,
+		"messageID", hdr.MessageID,
+		"sessionID", fmt.Sprintf("0x%x", hdr.SessionID),
+		"treeID", hdr.TreeID,
 		"nextCommand", hdr.NextCommand,
 		"flags", fmt.Sprintf("0x%x", hdr.Flags),
 		"isRelated", hdr.IsRelated())

@@ -216,9 +216,9 @@ func parseSMB2Message(message []byte, verifier SigningVerifier, logRequest bool)
 	if logRequest {
 		logger.Debug("SMB2 request",
 			"command", hdr.Command.String(),
-			"messageId", hdr.MessageID,
-			"sessionId", fmt.Sprintf("0x%x", hdr.SessionID),
-			"treeId", hdr.TreeID,
+			"messageID", hdr.MessageID,
+			"sessionID", fmt.Sprintf("0x%x", hdr.SessionID),
+			"treeID", hdr.TreeID,
 			"nextCommand", hdr.NextCommand,
 			"flags", fmt.Sprintf("0x%x", hdr.Flags))
 		if len(remainingCompound) > 0 {

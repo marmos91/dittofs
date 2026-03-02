@@ -181,7 +181,7 @@ func (l *OpLock) Clone() *OpLock {
 		return nil
 	}
 	return &OpLock{
-		LeaseKey:       l.LeaseKey,       // Fixed-size array, copied by value
+		LeaseKey:       l.LeaseKey, // Fixed-size array, copied by value
 		LeaseState:     l.LeaseState,
 		BreakToState:   l.BreakToState,
 		Breaking:       l.Breaking,
