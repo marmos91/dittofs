@@ -13,6 +13,7 @@ package auth
 import (
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/jcmturner/gofork/encoding/asn1"
 	"github.com/jcmturner/gokrb5/v8/gssapi"
@@ -414,6 +415,7 @@ func marshalMechTypes(mechTypes []asn1.ObjectIdentifier) []byte {
 	// Marshal as ASN.1 SEQUENCE OF OID
 	data, err := asn1.Marshal(mechTypes)
 	if err != nil {
+		log.Printf("[WARN] SPNEGO: failed to marshal mechTypes for MIC computation: %v", err)
 		return nil
 	}
 

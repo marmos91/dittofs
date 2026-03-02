@@ -37,7 +37,7 @@ func TestResolvePrincipal(t *testing.T) {
 		}
 	})
 
-	t.Run("ExplicitMappingCaseInsensitiveRealm", func(t *testing.T) {
+	t.Run("ExplicitMappingMatchesRealm", func(t *testing.T) {
 		// Mapping key uses uppercase realm; principal comes in as-is
 		cfg := &IdentityConfig{
 			StripRealm: true,
