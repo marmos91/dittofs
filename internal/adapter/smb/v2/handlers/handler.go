@@ -13,6 +13,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	authkerberos "github.com/marmos91/dittofs/internal/auth/kerberos"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -106,6 +107,24 @@ type Handler struct {
 	// before Serve() is called. When nil, Kerberos auth requests return
 	// STATUS_LOGON_FAILURE gracefully (NTLM and guest auth still work).
 	KerberosProvider *kerberos.Provider
+
+	// KerberosService is the shared Kerberos authentication service used for
+	// AP-REQ verification, replay detection, and AP-REP construction.
+	// Created from KerberosProvider. When nil, Kerberos auth returns
+	// STATUS_LOGON_FAILURE. This replaces inline gokrb5 service.VerifyAPREQ
+	// calls with the shared protocol-agnostic service.
+	KerberosService *authkerberos.KerberosService
+
+	// IdentityConfig configures how Kerberos principals are mapped to DittoFS
+	// usernames. Default: strip realm ("alice@REALM" -> "alice").
+	// Set by the adapter from configuration.
+	IdentityConfig *kerberos.IdentityConfig
+
+	// SMBServicePrincipal is an optional override for the CIFS service principal.
+	// When empty, the SPN is auto-derived from the NFS principal
+	// (e.g., "nfs/host@REALM" -> "cifs/host@REALM").
+	// Set from control plane settings if a custom SPN is configured.
+	SMBServicePrincipal string
 }
 
 // EncryptionConfig holds encryption policy for the handler.

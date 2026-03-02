@@ -19,7 +19,7 @@ Requirements for SMB3 protocol upgrade. Each maps to roadmap phases.
 - [x] **KDF-01**: Server derives signing/encryption/decryption/application keys via SP800-108 Counter Mode KDF
 - [x] **KDF-02**: Server uses constant label/context strings for SMB 3.0/3.0.2 key derivation
 - [x] **KDF-03**: Server uses preauth integrity hash as KDF context for SMB 3.1.1 key derivation
-- [ ] **KDF-04**: Server extracts Kerberos session key from AP-REQ for SMB3 key derivation
+- [x] **KDF-04**: Server extracts Kerberos session key from AP-REQ for SMB3 key derivation
 
 ### Signing
 
@@ -38,8 +38,8 @@ Requirements for SMB3 protocol upgrade. Each maps to roadmap phases.
 
 ### Authentication
 
-- [ ] **AUTH-01**: Server completes SPNEGO/Kerberos session setup with session key extraction via shared Kerberos layer
-- [ ] **AUTH-02**: Server generates AP-REP token for mutual authentication in SPNEGO accept-complete
+- [x] **AUTH-01**: Server completes SPNEGO/Kerberos session setup with session key extraction via shared Kerberos layer
+- [x] **AUTH-02**: Server generates AP-REP token for mutual authentication in SPNEGO accept-complete
 - [ ] **AUTH-03**: Server falls back from Kerberos to NTLM within SPNEGO when Kerberos fails
 - [ ] **AUTH-04**: Guest sessions bypass encryption and signing (no session key)
 
@@ -132,7 +132,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | KDF-01 | Phase 34 | Complete |
 | KDF-02 | Phase 34 | Complete |
 | KDF-03 | Phase 34 | Complete |
-| KDF-04 | Phase 36 | Pending |
+| KDF-04 | Phase 36 | Complete |
 | SIGN-01 | Phase 34 | Complete |
 | SIGN-02 | Phase 34 | Complete |
 | SIGN-03 | Phase 34 | Complete |
@@ -142,8 +142,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ENC-04 | Phase 35 | Complete |
 | ENC-05 | Phase 35 | Complete |
 | ENC-06 | Phase 35 | Complete |
-| AUTH-01 | Phase 36 | Pending |
-| AUTH-02 | Phase 36 | Pending |
+| AUTH-01 | Phase 36 | Complete |
+| AUTH-02 | Phase 36 | Complete |
 | AUTH-03 | Phase 36 | Pending |
 | AUTH-04 | Phase 36 | Pending |
 | LEASE-01 | Phase 37 | Pending |

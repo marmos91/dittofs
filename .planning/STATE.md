@@ -23,11 +23,11 @@ See: .planning/PROJECT.md (updated 2026-02-28)
 ## Current Position
 
 Phase: 36 of 40 (Kerberos SMB3 Integration)
-Plan: 1 of 3 complete
+Plan: 2 of 3 complete
 Status: In Progress
-Last activity: 2026-03-02 — Completed 36-01 (Shared KerberosService and ReplayCache)
+Last activity: 2026-03-02 — Completed 36-02 (SMB Kerberos Auth Handler)
 
-Progress: [####░░░░░░] 30%
+Progress: [######░░░░] 60%
 
 ## Completed Milestones
 
@@ -57,6 +57,7 @@ Progress: [####░░░░░░] 30%
 | 35    | 02   | 9min     | 2     | 12    |
 | 35    | 03   | 12min    | 2     | 9     |
 | 36    | 01   | 7min     | 2     | 8     |
+| 36    | 02   | 10min    | 2     | 8     |
 
 ## Accumulated Context
 
@@ -102,6 +103,11 @@ Progress: [####░░░░░░] 30%
 - [Phase 36-01]: ReplayCache keyed by 4-tuple (principal, ctime, cusec, servicePrincipal) for cross-protocol dedup
 - [Phase 36-01]: HasSubkey exported as package-level function for reuse by NFS GSS and SMB auth
 - [Phase 36-01]: Shared auth service pattern: protocol-agnostic core in internal/auth/, protocol framing in adapter packages
+- [Phase 36-02]: Session key normalized to 16 bytes via copy() (truncate >16, zero-pad <16) per MS-SMB2 3.3.5.5.3
+- [Phase 36-02]: MIC computation uses key usage 23 (acceptor sign); verification uses 25 (initiator sign) per RFC 4121
+- [Phase 36-02]: Client Kerberos OID echoed in SPNEGO response (MS OID preferred for Windows SSPI)
+- [Phase 36-02]: Valid Kerberos ticket from unknown principal = hard failure (not guest), security decision
+- [Phase 36-02]: Server mechListMIC uses full session key (not normalized 16-byte key) per RFC 4178
 
 ### Pending Todos
 
@@ -114,5 +120,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-03-02
-Stopped at: Completed 36-01-PLAN.md (Shared KerberosService and ReplayCache)
+Stopped at: Completed 36-02-PLAN.md (SMB Kerberos Auth Handler)
 Resume file: None
