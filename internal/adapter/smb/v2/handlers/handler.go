@@ -125,6 +125,16 @@ type Handler struct {
 	// (e.g., "nfs/host@REALM" -> "cifs/host@REALM").
 	// Set from control plane settings if a custom SPN is configured.
 	SMBServicePrincipal string
+
+	// NtlmEnabled controls whether NTLM authentication is allowed.
+	// When false, NTLM tokens in SESSION_SETUP are rejected with STATUS_LOGON_FAILURE.
+	// Default: true.
+	NtlmEnabled bool
+
+	// GuestEnabled controls whether guest/anonymous sessions are allowed.
+	// When false, guest session requests are rejected with STATUS_LOGON_FAILURE.
+	// Default: true.
+	GuestEnabled bool
 }
 
 // EncryptionConfig holds encryption policy for the handler.
@@ -254,6 +264,8 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 		MaxDialect:              types.Dialect0210, // Default to 2.1 until full SMB3 session/signing is implemented
 		EncryptionEnabled:       false,
 		DirectoryLeasingEnabled: true,
+		NtlmEnabled:            true,
+		GuestEnabled:           true,
 	}
 
 	// Generate random server GUID

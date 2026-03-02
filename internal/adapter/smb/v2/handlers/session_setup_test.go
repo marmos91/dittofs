@@ -770,6 +770,236 @@ func TestNTLMRegressionAfterKerberosAddition(t *testing.T) {
 }
 
 // =============================================================================
+// NTLM Disable Policy Tests
+// =============================================================================
+
+func TestNTLMDisabledReject(t *testing.T) {
+	t.Run("RejectsNTLMWhenDisabled", func(t *testing.T) {
+		h := NewHandler()
+		h.NtlmEnabled = false
+		ctx := newTestContext(0)
+
+		ntlm := validNTLMNegotiateMessage()
+		body := buildSessionSetupRequestBody(ntlm)
+
+		result, err := h.SessionSetup(ctx, body)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if result.Status != types.StatusLogonFailure {
+			t.Errorf("Status = 0x%x, expected StatusLogonFailure (0x%x)",
+				result.Status, types.StatusLogonFailure)
+		}
+	})
+
+	t.Run("RejectsSPNEGOWrappedNTLMWhenDisabled", func(t *testing.T) {
+		h := NewHandler()
+		h.NtlmEnabled = false
+		ctx := newTestContext(0)
+
+		ntlm := validNTLMNegotiateMessage()
+		spnego := wrapInSPNEGO(ntlm)
+		body := buildSessionSetupRequestBody(spnego)
+
+		result, err := h.SessionSetup(ctx, body)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if result.Status != types.StatusLogonFailure {
+			t.Errorf("Status = 0x%x, expected StatusLogonFailure (0x%x)",
+				result.Status, types.StatusLogonFailure)
+		}
+	})
+
+	t.Run("AllowsNTLMWhenEnabled", func(t *testing.T) {
+		h := NewHandler()
+		h.NtlmEnabled = true
+		ctx := newTestContext(0)
+
+		ntlm := validNTLMNegotiateMessage()
+		body := buildSessionSetupRequestBody(ntlm)
+
+		result, err := h.SessionSetup(ctx, body)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if result.Status != types.StatusMoreProcessingRequired {
+			t.Errorf("Status = 0x%x, expected StatusMoreProcessingRequired (0x%x)",
+				result.Status, types.StatusMoreProcessingRequired)
+		}
+	})
+}
+
+// =============================================================================
+// Guest Session Policy Tests
+// =============================================================================
+
+func TestGuestDisabledReject(t *testing.T) {
+	t.Run("RejectsGuestWhenDisabled", func(t *testing.T) {
+		h := NewHandler()
+		h.GuestEnabled = false
+		ctx := newTestContext(0)
+
+		body := buildSessionSetupRequestBody(nil) // No security buffer -> guest
+
+		result, err := h.SessionSetup(ctx, body)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if result.Status != types.StatusLogonFailure {
+			t.Errorf("Status = 0x%x, expected StatusLogonFailure (0x%x)",
+				result.Status, types.StatusLogonFailure)
+		}
+	})
+
+	t.Run("AllowsGuestWhenEnabled", func(t *testing.T) {
+		h := NewHandler()
+		h.GuestEnabled = true
+		ctx := newTestContext(0)
+
+		body := buildSessionSetupRequestBody(nil)
+
+		result, err := h.SessionSetup(ctx, body)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if result.Status != types.StatusSuccess {
+			t.Errorf("Status = 0x%x, expected StatusSuccess (0x%x)",
+				result.Status, types.StatusSuccess)
+		}
+	})
+}
+
+func TestGuestSigningRequiredReject(t *testing.T) {
+	t.Run("RejectsGuestWhenSigningRequired", func(t *testing.T) {
+		h := NewHandler()
+		h.GuestEnabled = true
+		h.SigningConfig.Required = true
+		ctx := newTestContext(0)
+
+		body := buildSessionSetupRequestBody(nil) // No security buffer -> guest
+
+		result, err := h.SessionSetup(ctx, body)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if result.Status != types.StatusLogonFailure {
+			t.Errorf("Status = 0x%x, expected StatusLogonFailure (0x%x)",
+				result.Status, types.StatusLogonFailure)
+		}
+	})
+}
+
+func TestGuestSessionFlags(t *testing.T) {
+	t.Run("GuestSessionSetsIsGuestFlag", func(t *testing.T) {
+		h := NewHandler()
+		h.GuestEnabled = true
+		ctx := newTestContext(0)
+
+		body := buildSessionSetupRequestBody(nil)
+
+		result, err := h.SessionSetup(ctx, body)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if result.Status != types.StatusSuccess {
+			t.Fatalf("Expected StatusSuccess, got 0x%x", result.Status)
+		}
+
+		// Parse session flags from response
+		if len(result.Data) < 4 {
+			t.Fatalf("Response body too short: %d bytes", len(result.Data))
+		}
+
+		flags := binary.LittleEndian.Uint16(result.Data[2:4])
+		if flags&types.SMB2SessionFlagIsGuest == 0 {
+			t.Errorf("SessionFlags = 0x%04x, expected IS_GUEST (0x0001) to be set", flags)
+		}
+	})
+}
+
+func TestGuestNoSigning(t *testing.T) {
+	t.Run("GuestSessionDoesNotHaveSigningConfigured", func(t *testing.T) {
+		h := NewHandler()
+		h.GuestEnabled = true
+		ctx := newTestContext(0)
+
+		body := buildSessionSetupRequestBody(nil)
+
+		result, err := h.SessionSetup(ctx, body)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if result.Status != types.StatusSuccess {
+			t.Fatalf("Expected StatusSuccess, got 0x%x", result.Status)
+		}
+
+		// Guest session should NOT have signing
+		sess, ok := h.GetSession(ctx.SessionID)
+		if !ok {
+			t.Fatal("Session should exist after guest login")
+		}
+
+		if sess.ShouldSign() {
+			t.Error("Guest session should NOT have signing enabled")
+		}
+	})
+}
+
+// =============================================================================
+// Kerberos Failure SPNEGO Reject Tests
+// =============================================================================
+
+func TestKerberosFailureSPNEGOReject(t *testing.T) {
+	t.Run("KerberosFailureReturnsSPNEGOReject", func(t *testing.T) {
+		h := NewHandler()
+		// No KerberosService configured -> handleKerberosAuth returns logon failure
+		ctx := newTestContext(0)
+
+		dummyAPReq := []byte{0x30, 0x05, 0x01, 0x02, 0x03, 0x04, 0x05}
+		spnegoBytes := wrapKerberosInSPNEGO(dummyAPReq)
+		body := buildSessionSetupRequestBody(spnegoBytes)
+
+		result, err := h.SessionSetup(ctx, body)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		// Should return STATUS_LOGON_FAILURE (not MORE_PROCESSING_REQUIRED)
+		if result.Status != types.StatusLogonFailure {
+			t.Errorf("Status = 0x%x, expected StatusLogonFailure (0x%x)",
+				result.Status, types.StatusLogonFailure)
+		}
+
+		// Response should contain SPNEGO reject token in security buffer
+		// Parse the response body to extract security buffer
+		if len(result.Data) >= 8 {
+			secBufLen := binary.LittleEndian.Uint16(result.Data[6:8])
+			if secBufLen > 0 {
+				// Security buffer should be a SPNEGO reject
+				secBuf := result.Data[8 : 8+secBufLen]
+				parsed, err := auth.Parse(secBuf)
+				if err != nil {
+					t.Fatalf("Failed to parse SPNEGO reject: %v", err)
+				}
+				if parsed.NegState != auth.NegStateReject {
+					t.Errorf("SPNEGO NegState = %d, expected NegStateReject (%d)",
+						parsed.NegState, auth.NegStateReject)
+				}
+			}
+		}
+	})
+}
+
+// =============================================================================
 // Constants Tests
 // =============================================================================
 

@@ -102,7 +102,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 33: SMB3 Dialect Negotiation and Preauth Integrity** - 3.0/3.0.2/3.1.1 dialect selection, negotiate contexts, SHA-512 preauth hash chain, secure dialect validation IOCTL (completed 2026-02-28)
 - [x] **Phase 34: Key Derivation and Signing** - SP800-108 KDF, dialect-aware key derivation (3.0 vs 3.1.1), AES-CMAC/GMAC signing abstraction (completed 2026-03-01)
 - [x] **Phase 35: Encryption and Transform Header** - AES-128/256-CCM/GCM encryption, transform header framing, per-session and per-share encryption enforcement (completed 2026-03-02)
-- [ ] **Phase 36: Kerberos SMB3 Integration** - Shared Kerberos service layer, SPNEGO/Kerberos session setup with session key extraction, AP-REP mutual auth, NTLM fallback, guest sessions
+- [x] **Phase 36: Kerberos SMB3 Integration** - Shared Kerberos service layer, SPNEGO/Kerberos session setup with session key extraction, AP-REP mutual auth, NTLM fallback, guest sessions (completed 2026-03-02)
 - [ ] **Phase 37: SMB3 Leases and Directory Leasing** - Lease V2 with ParentLeaseKey/epoch, directory leases, break coordination via metadata service
 - [ ] **Phase 38: Durable Handles** - V1/V2 durable handles with CreateGuid, state persistence, reconnect validation (14+ checks), timeout management
 - [ ] **Phase 39: Cross-Protocol Integration and Documentation** - Bidirectional SMB3 lease/NFS delegation coordination, directory lease breaks on NFS ops, documentation
@@ -472,7 +472,7 @@ v3.8 (33-40.5) -> v4.0 (41-47.5) -> v4.1 (48-53.5)
 | 33. SMB3 Dialect Negotiation and Preauth Integrity | 2/3 | Complete    | 2026-02-28 | - |
 | 34. Key Derivation and Signing | 2/2 | Complete    | 2026-03-01 | - |
 | 35. Encryption and Transform Header | 3/3 | Complete   | 2026-03-02 | - |
-| 36. Kerberos SMB3 Integration | 2/3 | In Progress|  | - |
+| 36. Kerberos SMB3 Integration | 3/3 | Complete   | 2026-03-02 | - |
 | 37. SMB3 Leases and Directory Leasing | v3.8 | 0/? | Not started | - |
 | 38. Durable Handles | v3.8 | 0/? | Not started | - |
 | 39. Cross-Protocol Integration and Documentation | v3.8 | 0/? | Not started | - |

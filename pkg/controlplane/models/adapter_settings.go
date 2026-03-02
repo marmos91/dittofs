@@ -153,6 +153,23 @@ type SMBAdapterSettings struct {
 	// Default: ["AES-128-GMAC","AES-128-CMAC","HMAC-SHA256"]
 	SigningAlgorithmPreference string `gorm:"type:text" json:"signing_algorithm_preference"`
 
+	// Authentication settings
+
+	// NtlmEnabled controls whether NTLM authentication is allowed.
+	// When false, NTLM tokens are rejected with STATUS_LOGON_FAILURE.
+	// Default: true.
+	NtlmEnabled bool `gorm:"default:true" json:"ntlm_enabled"`
+
+	// GuestEnabled controls whether guest/anonymous sessions are allowed.
+	// When false, guest session requests are rejected with STATUS_LOGON_FAILURE.
+	// Default: true.
+	GuestEnabled bool `gorm:"default:true" json:"guest_enabled"`
+
+	// SMBServicePrincipal is an optional override for the CIFS service principal.
+	// When empty, the SPN is auto-derived from the NFS principal
+	// (e.g., "nfs/host@REALM" -> "cifs/host@REALM").
+	SMBServicePrincipal string `gorm:"size:256" json:"smb_service_principal"`
+
 	// Version counter for change detection (monotonic, starts at 1, incremented on every update)
 	Version int `gorm:"default:1" json:"version"`
 
@@ -230,6 +247,9 @@ func NewDefaultSMBSettings(adapterID string) *SMBAdapterSettings {
 		MaxSessions:             10000,
 		EnableEncryption:        false,
 		DirectoryLeasingEnabled: true,
+		NtlmEnabled:            true,
+		GuestEnabled:            true,
+		SMBServicePrincipal:     "",
 		Version:                 1,
 	}
 	s.SetSigningAlgorithmPreference([]string{"AES-128-GMAC", "AES-128-CMAC", "HMAC-SHA256"})

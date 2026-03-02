@@ -8,6 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/adapter/smb/v2/handlers"
+	authkerberos "github.com/marmos91/dittofs/internal/auth/kerberos"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
@@ -216,6 +217,21 @@ func (s *Adapter) applySMBSettings(rt *runtime.Runtime) {
 		"encryption_mode", s.handler.EncryptionConfig.Mode,
 		"directory_leasing", settings.DirectoryLeasingEnabled)
 
+	// Authentication settings: NtlmEnabled, GuestEnabled, SMBServicePrincipal
+	s.handler.NtlmEnabled = settings.NtlmEnabled
+	s.handler.GuestEnabled = settings.GuestEnabled
+
+	if settings.SMBServicePrincipal != "" {
+		s.handler.SMBServicePrincipal = settings.SMBServicePrincipal
+		logger.Info("SMB adapter: custom SPN override from settings",
+			"smb_service_principal", settings.SMBServicePrincipal)
+	}
+
+	logger.Debug("SMB adapter: authentication settings from live config",
+		"ntlm_enabled", settings.NtlmEnabled,
+		"guest_enabled", settings.GuestEnabled,
+		"smb_service_principal", settings.SMBServicePrincipal)
+
 	// Operation blocklist: log active blocks. SMB blocklist is a pass-through
 	// that logs unsupported operation names (SMB doesn't have the same per-op
 	// granularity as NFS COMPOUND).
@@ -280,6 +296,8 @@ func (s *Adapter) NewConnection(conn net.Conn) adapter.ConnectionHandler {
 
 // SetKerberosProvider injects the shared Kerberos provider into the SMB handler.
 // This enables Kerberos authentication via SPNEGO in SESSION_SETUP.
+// Also creates the KerberosService for AP-REQ verification and sets the
+// default IdentityConfig (strip realm).
 // Must be called before Serve(). When not called, Kerberos auth is disabled
 // and only NTLM/guest authentication is available.
 func (s *Adapter) SetKerberosProvider(provider *kerberos.Provider) {
@@ -287,8 +305,22 @@ func (s *Adapter) SetKerberosProvider(provider *kerberos.Provider) {
 		return
 	}
 	s.handler.KerberosProvider = provider
+
+	// Create KerberosService from the provider for AP-REQ verification,
+	// replay detection, and mutual auth token construction.
+	s.handler.KerberosService = authkerberos.NewKerberosService(provider)
+
+	// Set default IdentityConfig: strip realm ("alice@REALM" -> "alice").
+	if s.handler.IdentityConfig == nil {
+		s.handler.IdentityConfig = &kerberos.IdentityConfig{
+			StripRealm: true,
+		}
+	}
+
 	logger.Debug("SMB adapter Kerberos provider configured",
-		"principal", provider.ServicePrincipal())
+		"principal", provider.ServicePrincipal(),
+		"kerberosServiceCreated", s.handler.KerberosService != nil,
+		"identityConfig", s.handler.IdentityConfig)
 }
 
 // ============================================================================

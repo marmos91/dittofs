@@ -285,6 +285,34 @@ func VerifyMechListMIC(sessionKey types.EncryptionKey, mechListBytes []byte, mic
 	return nil
 }
 
+// BuildNegHints creates a SPNEGO NegTokenInit2 (NegHints) for the NEGOTIATE SecurityBuffer.
+// This tells clients which authentication mechanisms the server supports.
+// Per MS-SMB2 Section 2.2.4, the SecurityBuffer in a NEGOTIATE response contains
+// a SPNEGO NegTokenInit with the list of supported mechanisms.
+//
+// Parameters:
+//   - kerberosEnabled: true when KerberosProvider is configured (keytab available)
+//   - ntlmEnabled: true when NTLM is allowed (adapter setting)
+//
+// Returns the ASN.1 DER-encoded NegTokenInit suitable for the NEGOTIATE SecurityBuffer.
+func BuildNegHints(kerberosEnabled, ntlmEnabled bool) ([]byte, error) {
+	var mechTypes []asn1.ObjectIdentifier
+	if kerberosEnabled {
+		mechTypes = append(mechTypes, OIDMSKerberosV5, OIDKerberosV5)
+	}
+	if ntlmEnabled {
+		mechTypes = append(mechTypes, OIDNTLMSSP)
+	}
+	if len(mechTypes) == 0 {
+		return nil, fmt.Errorf("no authentication mechanisms enabled")
+	}
+
+	// Build NegTokenInit with just mechTypes (no token, no MIC).
+	// This is a "hints" token per MS-SMB2 2.2.4.
+	init := spnego.NegTokenInit{MechTypes: mechTypes}
+	return init.Marshal()
+}
+
 // marshalMechTypes DER-encodes a list of OIDs into a SEQUENCE OF ObjectIdentifier.
 // This produces the raw bytes needed for mechListMIC computation per RFC 4178.
 func marshalMechTypes(mechTypes []asn1.ObjectIdentifier) []byte {

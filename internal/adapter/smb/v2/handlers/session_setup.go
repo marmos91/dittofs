@@ -143,7 +143,25 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 			// SPNEGO contains a Kerberos token -- route to Kerberos auth
 			logger.Debug("SPNEGO Kerberos token detected, routing to Kerberos auth",
 				"mechTokenLen", len(parsed.MechToken))
-			return h.handleKerberosAuth(ctx, parsed.MechToken, parsed)
+			result, kerberosErr := h.handleKerberosAuth(ctx, parsed.MechToken, parsed)
+			if kerberosErr != nil {
+				return result, kerberosErr
+			}
+
+			// If Kerberos auth failed, return SPNEGO reject so client can retry with NTLM.
+			// Per user decision: clean SPNEGO reject, client retries with fresh SessionId=0.
+			if result.Status == types.StatusLogonFailure {
+				rejectToken, buildErr := auth.BuildReject()
+				if buildErr == nil {
+					logger.Info("Kerberos authentication failed, returning SPNEGO reject for NTLM fallback")
+					return h.buildSessionSetupResponse(
+						types.StatusLogonFailure,
+						0,
+						rejectToken,
+					), nil
+				}
+			}
+			return result, nil
 		}
 	}
 
@@ -152,6 +170,12 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 
 	// Process NTLM message
 	if auth.IsValid(ntlmToken) {
+		// Check NTLM disable policy
+		if !h.NtlmEnabled {
+			logger.Info("NTLM authentication disabled by policy")
+			return NewErrorResult(types.StatusLogonFailure), nil
+		}
+
 		msgType := auth.GetMessageType(ntlmToken)
 		logger.Debug("NTLM message detected",
 			"type", msgType,
@@ -445,18 +469,36 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 // Guest sessions set SMB2_SESSION_FLAG_IS_GUEST (0x0001) in the response flags,
 // which tells the client that signing is not required for this session.
 //
+// Policy enforcement:
+//   - GuestEnabled must be true; otherwise STATUS_LOGON_FAILURE
+//   - SigningConfig.Required must be false; guest sessions have no session key
+//
 // Windows 11 24H2 note: Insecure guest logons are blocked by default.
 // Users must enable the "AllowInsecureGuestAuth" Group Policy setting
 // (Computer Configuration > Administrative Templates > Network > Lanman Workstation
 // > Enable insecure guest logons) to connect as guest.
 func (h *Handler) createGuestSessionWithID(ctx *SMBHandlerContext, pending *PendingAuth, _ []byte) (*HandlerResult, error) {
+	// Check guest policy
+	if !h.GuestEnabled {
+		logger.Info("Guest session rejected: guest access disabled by policy")
+		return NewErrorResult(types.StatusLogonFailure), nil
+	}
+
+	// Check signing policy: guest sessions cannot sign (no session key)
+	if h.SigningConfig.Required {
+		logger.Info("Guest session rejected: server requires signing but guest has no session key")
+		return NewErrorResult(types.StatusLogonFailure), nil
+	}
+
 	sess := h.CreateSessionWithID(pending.SessionID, pending.ClientAddr, true, "guest", "")
 	ctx.IsGuest = true
 
-	// Note: Signing is not configured for guest sessions because there's no
+	// Note: Signing is NOT configured for guest sessions because there's no
 	// valid session key derivation possible without proper credentials.
+	// Do NOT call configureSessionSigningWithKey (no key material).
+	// Do NOT call sess.SetCryptoState (no encryption for guest).
 
-	logger.Debug("NTLM authentication complete (guest)",
+	logger.Info("Guest session created. Note: Windows 11 24H2 blocks insecure guest logons by default (LanmanWorkstation AllowInsecureGuestAuth)",
 		"sessionID", sess.SessionID,
 		"username", sess.Username,
 		"isGuest", sess.IsGuest)
@@ -478,21 +520,41 @@ func (h *Handler) createGuestSessionWithID(ctx *SMBHandlerContext, pending *Pend
 // Guest sessions set SMB2_SESSION_FLAG_IS_GUEST (0x0001) in the response flags,
 // which tells the client that signing is not required for this session.
 //
+// Policy enforcement:
+//   - GuestEnabled must be true; otherwise STATUS_LOGON_FAILURE
+//   - SigningConfig.Required must be false; guest sessions have no session key
+//     and cannot sign messages
+//
 // Windows 11 24H2 note: Insecure guest logons are blocked by default.
 // Users must enable the "AllowInsecureGuestAuth" Group Policy setting
 // (Computer Configuration > Administrative Templates > Network > Lanman Workstation
 // > Enable insecure guest logons) to connect as guest.
 func (h *Handler) createGuestSession(ctx *SMBHandlerContext) (*HandlerResult, error) {
+	// Check guest policy
+	if !h.GuestEnabled {
+		logger.Info("Guest session rejected: guest access disabled by policy")
+		return NewErrorResult(types.StatusLogonFailure), nil
+	}
+
+	// Check signing policy: guest sessions cannot sign (no session key)
+	if h.SigningConfig.Required {
+		logger.Info("Guest session rejected: server requires signing but guest has no session key")
+		return NewErrorResult(types.StatusLogonFailure), nil
+	}
+
 	// Create session using SessionManager (includes credit tracking)
 	sess := h.CreateSession(ctx.ClientAddr, true, "guest", "")
 
 	ctx.SessionID = sess.SessionID
 	ctx.IsGuest = true
 
-	// Note: Signing is not configured for guest sessions because there's no
+	// Note: Signing is NOT configured for guest sessions because there's no
 	// valid session key derivation possible without proper credentials.
+	// Do NOT call configureSessionSigningWithKey (no key material).
+	// Do NOT call sess.SetCryptoState (no encryption for guest).
 
-	logger.Debug("Created guest session", "sessionID", sess.SessionID)
+	logger.Info("Guest session created. Note: Windows 11 24H2 blocks insecure guest logons by default (LanmanWorkstation AllowInsecureGuestAuth)",
+		"sessionID", sess.SessionID)
 
 	return h.buildSessionSetupResponse(
 		types.StatusSuccess,

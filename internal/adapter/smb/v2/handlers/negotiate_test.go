@@ -499,9 +499,19 @@ func TestNegotiate_ResponseFormat(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Unexpected error: %v", err)
 		}
-		// Response should be exactly 65 bytes for non-3.1.1 dialects
-		if len(result.Data) != 65 {
-			t.Errorf("Response length = %d, expected 65", len(result.Data))
+		// Response should be at least 65 bytes (fixed body) plus SPNEGO NegHints.
+		// The NegHints contain the NTLM OID (since Kerberos is not configured by
+		// default). Exact length depends on ASN.1 encoding of the NegTokenInit.
+		if len(result.Data) < 65 {
+			t.Errorf("Response length = %d, expected >= 65", len(result.Data))
+		}
+
+		// SecurityBuffer length should be non-zero (SPNEGO NegHints present)
+		secBufferLen := binary.LittleEndian.Uint16(result.Data[58:60])
+		expectedLen := 64 + int(secBufferLen)
+		if len(result.Data) != expectedLen {
+			t.Errorf("Response length = %d, expected %d (64 fixed + %d security buffer)",
+				len(result.Data), expectedLen, secBufferLen)
 		}
 	})
 
@@ -517,9 +527,10 @@ func TestNegotiate_ResponseFormat(t *testing.T) {
 		if secBufferOffset != 128 {
 			t.Errorf("SecurityBufferOffset = %d, expected 128", secBufferOffset)
 		}
+		// SecurityBufferLength should be non-zero (contains SPNEGO NegHints)
 		secBufferLen := binary.LittleEndian.Uint16(result.Data[58:60])
-		if secBufferLen != 0 {
-			t.Errorf("SecurityBufferLength = %d, expected 0", secBufferLen)
+		if secBufferLen == 0 {
+			t.Error("SecurityBufferLength should be non-zero (SPNEGO NegHints)")
 		}
 	})
 

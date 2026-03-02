@@ -40,8 +40,8 @@ Requirements for SMB3 protocol upgrade. Each maps to roadmap phases.
 
 - [x] **AUTH-01**: Server completes SPNEGO/Kerberos session setup with session key extraction via shared Kerberos layer
 - [x] **AUTH-02**: Server generates AP-REP token for mutual authentication in SPNEGO accept-complete
-- [ ] **AUTH-03**: Server falls back from Kerberos to NTLM within SPNEGO when Kerberos fails
-- [ ] **AUTH-04**: Guest sessions bypass encryption and signing (no session key)
+- [x] **AUTH-03**: Server falls back from Kerberos to NTLM within SPNEGO when Kerberos fails
+- [x] **AUTH-04**: Guest sessions bypass encryption and signing (no session key)
 
 ### Leases
 
@@ -144,8 +144,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ENC-06 | Phase 35 | Complete |
 | AUTH-01 | Phase 36 | Complete |
 | AUTH-02 | Phase 36 | Complete |
-| AUTH-03 | Phase 36 | Pending |
-| AUTH-04 | Phase 36 | Pending |
+| AUTH-03 | Phase 36 | Complete |
+| AUTH-04 | Phase 36 | Complete |
 | LEASE-01 | Phase 37 | Pending |
 | LEASE-02 | Phase 37 | Pending |
 | LEASE-03 | Phase 37 | Pending |

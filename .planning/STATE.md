@@ -23,9 +23,9 @@ See: .planning/PROJECT.md (updated 2026-02-28)
 ## Current Position
 
 Phase: 36 of 40 (Kerberos SMB3 Integration)
-Plan: 2 of 3 complete
-Status: In Progress
-Last activity: 2026-03-02 — Completed 36-02 (SMB Kerberos Auth Handler)
+Plan: 3 of 3 complete
+Status: Phase Complete
+Last activity: 2026-03-02 — Completed 36-03 (NTLM Fallback, Guest Policy, SPNEGO NegHints)
 
 Progress: [######░░░░] 60%
 
@@ -58,6 +58,7 @@ Progress: [######░░░░] 60%
 | 35    | 03   | 12min    | 2     | 9     |
 | 36    | 01   | 7min     | 2     | 8     |
 | 36    | 02   | 10min    | 2     | 8     |
+| 36    | 03   | 8min     | 2     | 9     |
 
 ## Accumulated Context
 
@@ -108,6 +109,11 @@ Progress: [######░░░░] 60%
 - [Phase 36-02]: Client Kerberos OID echoed in SPNEGO response (MS OID preferred for Windows SSPI)
 - [Phase 36-02]: Valid Kerberos ticket from unknown principal = hard failure (not guest), security decision
 - [Phase 36-02]: Server mechListMIC uses full session key (not normalized 16-byte key) per RFC 4178
+- [Phase 36-03]: Kerberos failure returns SPNEGO reject (NegState=reject) so client retries with fresh SessionId=0 for NTLM
+- [Phase 36-03]: Guest sessions gated by GuestEnabled AND signing.required (no session key = no signing)
+- [Phase 36-03]: NEGOTIATE SecurityBuffer contains SPNEGO NegTokenInit advertising available auth mechanisms
+- [Phase 36-03]: NTLM disable check early in SessionSetup, before message type dispatch
+- [Phase 36-03]: SetKerberosProvider auto-creates KerberosService and IdentityConfig (strip-realm default)
 
 ### Pending Todos
 
@@ -120,5 +126,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-03-02
-Stopped at: Completed 36-02-PLAN.md (SMB Kerberos Auth Handler)
+Stopped at: Completed 36-03-PLAN.md (NTLM Fallback, Guest Policy, SPNEGO NegHints)
 Resume file: None
