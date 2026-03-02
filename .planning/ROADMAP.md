@@ -472,7 +472,7 @@ v3.8 (33-40.5) -> v4.0 (41-47.5) -> v4.1 (48-53.5)
 | 33. SMB3 Dialect Negotiation and Preauth Integrity | 2/3 | Complete    | 2026-02-28 | - |
 | 34. Key Derivation and Signing | 2/2 | Complete    | 2026-03-01 | - |
 | 35. Encryption and Transform Header | 3/3 | Complete   | 2026-03-02 | - |
-| 36. Kerberos SMB3 Integration | 3/3 | Complete   | 2026-03-02 | - |
+| 36. Kerberos SMB3 Integration | 3/3 | Complete    | 2026-03-02 | - |
 | 37. SMB3 Leases and Directory Leasing | v3.8 | 0/? | Not started | - |
 | 38. Durable Handles | v3.8 | 0/? | Not started | - |
 | 39. Cross-Protocol Integration and Documentation | v3.8 | 0/? | Not started | - |
