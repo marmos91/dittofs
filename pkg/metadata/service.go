@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sync"
+
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // MetadataService provides all metadata operations for the filesystem.
@@ -29,13 +31,14 @@ import (
 //	// Low-level operations (direct store access)
 //	file, err := metaSvc.GetFile(ctx, handle)
 type MetadataService struct {
-	mu             sync.RWMutex
-	stores         map[string]MetadataStore    // shareName -> store
-	lockManagers   map[string]*LockManager     // shareName -> lock manager (ephemeral, per-share)
-	unifiedViews   map[string]*UnifiedLockView // shareName -> unified lock view (cross-protocol)
-	pendingWrites  *PendingWritesTracker       // deferred metadata commits for performance
-	deferredCommit bool                        // if true, use deferred commits (default: true)
-	cookies        *CookieManager              // NFS/SMB cookie to store token translation
+	mu                 sync.RWMutex
+	stores             map[string]MetadataStore            // shareName -> store
+	lockManagers       map[string]*LockManager             // shareName -> lock manager (ephemeral, per-share)
+	unifiedViews       map[string]*UnifiedLockView         // shareName -> unified lock view (cross-protocol)
+	dirChangeNotifiers map[string]lock.DirChangeNotifier   // shareName -> notifier for directory changes
+	pendingWrites      *PendingWritesTracker               // deferred metadata commits for performance
+	deferredCommit     bool                                // if true, use deferred commits (default: true)
+	cookies            *CookieManager                      // NFS/SMB cookie to store token translation
 }
 
 // New creates a new empty MetadataService instance.
@@ -43,12 +46,13 @@ type MetadataService struct {
 // By default, deferred commits are enabled for better write performance.
 func New() *MetadataService {
 	return &MetadataService{
-		stores:         make(map[string]MetadataStore),
-		lockManagers:   make(map[string]*LockManager),
-		unifiedViews:   make(map[string]*UnifiedLockView),
-		pendingWrites:  NewPendingWritesTracker(),
-		deferredCommit: true, // Enable deferred commits by default
-		cookies:        NewCookieManager(),
+		stores:             make(map[string]MetadataStore),
+		lockManagers:       make(map[string]*LockManager),
+		unifiedViews:       make(map[string]*UnifiedLockView),
+		dirChangeNotifiers: make(map[string]lock.DirChangeNotifier),
+		pendingWrites:      NewPendingWritesTracker(),
+		deferredCommit:     true, // Enable deferred commits by default
+		cookies:            NewCookieManager(),
 	}
 }
 
@@ -67,6 +71,9 @@ func (s *MetadataService) SetDeferredCommit(enabled bool) {
 //
 // This also creates a LockManager for the share if one doesn't exist.
 // Lock managers are ephemeral and not replaced when re-registering a store.
+//
+// The LockManager is automatically registered as the DirChangeNotifier for the
+// share, enabling unified directory change notifications across protocols.
 func (s *MetadataService) RegisterStoreForShare(shareName string, store MetadataStore) error {
 	if store == nil {
 		return fmt.Errorf("cannot register nil store for share %q", shareName)
@@ -82,7 +89,11 @@ func (s *MetadataService) RegisterStoreForShare(shareName string, store Metadata
 
 	// Create a lock manager for this share if it doesn't exist
 	if _, exists := s.lockManagers[shareName]; !exists {
-		s.lockManagers[shareName] = NewLockManager()
+		lm := NewLockManager()
+		s.lockManagers[shareName] = lm
+		// Wire LockManager as DirChangeNotifier: mutations on this share
+		// will dispatch directory lease breaks via the lock manager.
+		s.dirChangeNotifiers[shareName] = lm
 	}
 
 	return nil
@@ -111,6 +122,16 @@ func (s *MetadataService) storeForHandle(handle FileHandle) (MetadataStore, erro
 	}
 
 	return s.GetStoreForShare(shareName)
+}
+
+// shareNameForHandle extracts the share name from a file handle.
+// Returns empty string if the handle is invalid.
+func shareNameForHandle(handle FileHandle) string {
+	shareName, _, err := DecodeFileHandle(handle)
+	if err != nil {
+		return ""
+	}
+	return shareName
 }
 
 // lockManagerForHandle returns the lock manager for the share that owns the handle.
@@ -494,4 +515,44 @@ func (s *MetadataService) GetShareOptions(ctx context.Context, shareName string)
 		return nil, err
 	}
 	return store.GetShareOptions(ctx, shareName)
+}
+
+// SetDirChangeNotifier registers a DirChangeNotifier for a share.
+//
+// When directory mutations occur on this share (create, remove, rename),
+// the notifier will be called to dispatch directory lease breaks.
+// Typically the LockManager is used as the notifier since it implements
+// lock.DirChangeNotifier.
+//
+// Thread safety: Safe to call concurrently.
+func (s *MetadataService) SetDirChangeNotifier(shareName string, n lock.DirChangeNotifier) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dirChangeNotifiers[shareName] = n
+}
+
+// notifyDirChange dispatches a directory change notification for a share.
+//
+// This is fire-and-forget: notifications do NOT affect the success/failure
+// of the mutation that triggered them. If the notifier is nil or not
+// registered for the share, the call is silently ignored.
+//
+// The originClientID is extracted from the AuthContext's ClientAddr field
+// to identify the originating client (so their own leases aren't broken).
+func (s *MetadataService) notifyDirChange(shareName string, parentHandle FileHandle, changeType lock.DirChangeType, ctx *AuthContext) {
+	s.mu.RLock()
+	notifier, ok := s.dirChangeNotifiers[shareName]
+	s.mu.RUnlock()
+
+	if !ok || notifier == nil {
+		return
+	}
+
+	originClient := ""
+	if ctx != nil {
+		originClient = ctx.ClientAddr
+	}
+
+	// Fire-and-forget: notifier handles dispatch
+	notifier.OnDirChange(lock.FileHandle(parentHandle), changeType, originClient)
 }

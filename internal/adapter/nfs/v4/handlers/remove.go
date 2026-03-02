@@ -6,7 +6,6 @@ import (
 	"io"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -146,25 +145,16 @@ func (h *Handler) handleRemove(ctx *types.CompoundContext, reader io.Reader) *ty
 		"target", target,
 		"client", ctx.ClientAddr)
 
-	// Notify directory delegation holders about the removed entry
-	if h.StateManager != nil {
-		var originClientID uint64
-		if ctx.ClientState != nil {
-			originClientID = ctx.ClientState.ClientID
-		}
-		h.StateManager.NotifyDirChange([]byte(parentHandle), state.DirNotification{
-			Type:           types.NOTIFY4_REMOVE_ENTRY,
-			EntryName:      target,
-			OriginClientID: originClientID,
-		})
+	// Directory change notifications are now handled by MetadataService via
+	// DirChangeNotifier -> LockManager -> BreakCallbacks (unified path).
 
-		// If the removed entry was a directory, revoke any directory delegations on it
-		if childFH != nil {
-			delegs := h.StateManager.GetDelegationsForFile([]byte(childFH))
-			for _, deleg := range delegs {
-				if deleg.IsDirectory {
-					h.StateManager.RecallDirDelegation(deleg, "directory_deleted")
-				}
+	// If the removed entry was a directory, revoke any NFS4 directory delegations on it.
+	// This is NFS4-specific cleanup (not a directory change notification).
+	if h.StateManager != nil && childFH != nil {
+		delegs := h.StateManager.GetDelegationsForFile([]byte(childFH))
+		for _, deleg := range delegs {
+			if deleg.IsDirectory {
+				h.StateManager.RecallDirDelegation(deleg, "directory_deleted")
 			}
 		}
 	}

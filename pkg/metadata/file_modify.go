@@ -8,6 +8,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // Lookup resolves a name within a directory to a file handle and attributes.
@@ -452,7 +453,7 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 	}
 
 	// Execute all write operations in a single transaction for better performance.
-	return store.WithTransaction(ctx.Context, func(tx Transaction) error {
+	txErr := store.WithTransaction(ctx.Context, func(tx Transaction) error {
 		// Handle destination removal if it exists
 		if dstFile != nil {
 			// Remove destination
@@ -537,6 +538,20 @@ func (s *MetadataService) Move(ctx *AuthContext, fromDir FileHandle, fromName st
 
 		return nil
 	})
+
+	if txErr != nil {
+		return txErr
+	}
+
+	// Notify directory change after successful move
+	shareName := shareNameForHandle(fromDir)
+	s.notifyDirChange(shareName, fromDir, lock.DirChangeRenameEntry, ctx)
+	if string(fromDir) != string(toDir) {
+		// Cross-directory move: also notify destination directory
+		s.notifyDirChange(shareName, toDir, lock.DirChangeAddEntry, ctx)
+	}
+
+	return nil
 }
 
 // updateDescendantPaths recursively updates the Path field of all descendants

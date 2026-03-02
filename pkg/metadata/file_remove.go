@@ -2,6 +2,8 @@ package metadata
 
 import (
 	"time"
+
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // RemoveFile removes a file from its parent directory.
@@ -147,5 +149,6 @@ func (s *MetadataService) RemoveFile(ctx *AuthContext, parentHandle FileHandle, 
 		return nil, err
 	}
 
+	s.notifyDirChange(shareNameForHandle(parentHandle), parentHandle, lock.DirChangeRemoveEntry, ctx)
 	return returnFile, nil
 }

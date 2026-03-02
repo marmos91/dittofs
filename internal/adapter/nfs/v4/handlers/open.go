@@ -365,14 +365,8 @@ func (h *Handler) handleOpenClaimNull(
 		deleg = h.StateManager.GrantDelegation(clientID, []byte(fileHandle), delegType)
 	}
 
-	// Notify directory delegation holders when a new file is created via OPEN
-	if h.StateManager != nil && openType == types.OPEN4_CREATE && created {
-		h.StateManager.NotifyDirChange([]byte(parentHandle), state.DirNotification{
-			Type:           types.NOTIFY4_ADD_ENTRY,
-			EntryName:      filename,
-			OriginClientID: clientID,
-		})
-	}
+	// Directory change notifications for OPEN+CREATE are now handled by
+	// MetadataService.CreateFile via DirChangeNotifier -> LockManager -> BreakCallbacks.
 
 	logger.Debug("NFSv4 OPEN successful",
 		"file", filename,

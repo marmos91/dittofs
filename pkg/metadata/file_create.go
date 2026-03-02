@@ -4,11 +4,17 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // CreateFile creates a new regular file in a directory.
 func (s *MetadataService) CreateFile(ctx *AuthContext, parentHandle FileHandle, name string, attr *FileAttr) (*File, error) {
-	return s.createEntry(ctx, parentHandle, name, attr, FileTypeRegular, "", 0, 0)
+	file, err := s.createEntry(ctx, parentHandle, name, attr, FileTypeRegular, "", 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	s.notifyDirChange(shareNameForHandle(parentHandle), parentHandle, lock.DirChangeAddEntry, ctx)
+	return file, nil
 }
 
 // CreateSymlink creates a new symbolic link in a directory.
@@ -18,7 +24,12 @@ func (s *MetadataService) CreateSymlink(ctx *AuthContext, parentHandle FileHandl
 		return nil, err
 	}
 
-	return s.createEntry(ctx, parentHandle, name, attr, FileTypeSymlink, target, 0, 0)
+	file, err := s.createEntry(ctx, parentHandle, name, attr, FileTypeSymlink, target, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	s.notifyDirChange(shareNameForHandle(parentHandle), parentHandle, lock.DirChangeAddEntry, ctx)
+	return file, nil
 }
 
 // CreateSpecialFile creates a special file (device, socket, or FIFO).
@@ -35,7 +46,12 @@ func (s *MetadataService) CreateSpecialFile(ctx *AuthContext, parentHandle FileH
 		}
 	}
 
-	return s.createEntry(ctx, parentHandle, name, attr, fileType, "", deviceMajor, deviceMinor)
+	file, err := s.createEntry(ctx, parentHandle, name, attr, fileType, "", deviceMajor, deviceMinor)
+	if err != nil {
+		return nil, err
+	}
+	s.notifyDirChange(shareNameForHandle(parentHandle), parentHandle, lock.DirChangeAddEntry, ctx)
+	return file, nil
 }
 
 // CreateHardLink creates a hard link to an existing file.
@@ -101,7 +117,7 @@ func (s *MetadataService) CreateHardLink(ctx *AuthContext, dirHandle FileHandle,
 	}
 
 	// Execute all write operations in a single transaction for better performance.
-	return store.WithTransaction(ctx.Context, func(tx Transaction) error {
+	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
 		// Add to directory's children
 		if err := tx.SetChild(ctx.Context, dirHandle, name, targetHandle); err != nil {
 			return err
@@ -124,6 +140,12 @@ func (s *MetadataService) CreateHardLink(ctx *AuthContext, dirHandle FileHandle,
 		dir.Ctime = now
 		return tx.PutFile(ctx.Context, dir)
 	})
+	if err != nil {
+		return err
+	}
+
+	s.notifyDirChange(shareNameForHandle(dirHandle), dirHandle, lock.DirChangeAddEntry, ctx)
+	return nil
 }
 
 // createEntry is the internal implementation for creating files, directories, symlinks, and special files.

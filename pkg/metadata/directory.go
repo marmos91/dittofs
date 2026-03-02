@@ -2,6 +2,8 @@ package metadata
 
 import (
 	"time"
+
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // ReadDirPage represents one page of directory entries returned by ReadDirectory.
@@ -74,10 +76,7 @@ func (s *MetadataService) ReadDirectory(ctx *AuthContext, dirHandle FileHandle, 
 	// Estimate max entries from maxBytes (rough estimate: ~200 bytes per entry)
 	limit := 1000
 	if maxBytes > 0 {
-		limit = int(maxBytes / 200)
-		if limit < 10 {
-			limit = 10
-		}
+		limit = max(int(maxBytes/200), 10)
 	}
 
 	// Convert cookie to store token using cookie manager
@@ -176,7 +175,7 @@ func (s *MetadataService) RemoveDirectory(ctx *AuthContext, parentHandle FileHan
 	}
 
 	// Execute all write operations in a single transaction for better performance.
-	return store.WithTransaction(ctx.Context, func(tx Transaction) error {
+	txErr := store.WithTransaction(ctx.Context, func(tx Transaction) error {
 		// Remove directory entry
 		if err := tx.DeleteFile(ctx.Context, dirHandle); err != nil {
 			return err
@@ -201,9 +200,21 @@ func (s *MetadataService) RemoveDirectory(ctx *AuthContext, parentHandle FileHan
 		parent.Ctime = now
 		return tx.PutFile(ctx.Context, parent)
 	})
+
+	if txErr != nil {
+		return txErr
+	}
+
+	s.notifyDirChange(shareNameForHandle(parentHandle), parentHandle, lock.DirChangeRemoveEntry, ctx)
+	return nil
 }
 
 // CreateDirectory creates a new directory in a parent directory.
 func (s *MetadataService) CreateDirectory(ctx *AuthContext, parentHandle FileHandle, name string, attr *FileAttr) (*File, error) {
-	return s.createEntry(ctx, parentHandle, name, attr, FileTypeDirectory, "", 0, 0)
+	file, err := s.createEntry(ctx, parentHandle, name, attr, FileTypeDirectory, "", 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	s.notifyDirChange(shareNameForHandle(parentHandle), parentHandle, lock.DirChangeAddEntry, ctx)
+	return file, nil
 }
