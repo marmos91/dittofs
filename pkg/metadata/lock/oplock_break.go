@@ -201,7 +201,10 @@ func (s *OpLockBreakScanner) GetTimeout() time.Duration {
 func (s *OpLockBreakScanner) SetLockManager(lm *Manager) {
 	// Read delegation timeout before acquiring s.mu to avoid nested lock
 	// ordering (s.mu -> lm.mu). DelegationRecallTimeout acquires lm.mu.RLock.
-	delegTimeout := lm.DelegationRecallTimeout()
+	var delegTimeout time.Duration
+	if lm != nil {
+		delegTimeout = lm.DelegationRecallTimeout()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lockManager = lm

@@ -160,10 +160,6 @@ func EncodeLeaseResponseContext(leaseKey [16]byte, leaseState uint32, flags uint
 	return w.Bytes()
 }
 
-// ParseLeaseCreateContext is an alias for DecodeLeaseCreateContext for consistency
-// with the plan naming convention.
-var ParseLeaseCreateContext = DecodeLeaseCreateContext
-
 // ============================================================================
 // Lease Break Notification [MS-SMB2] 2.2.23.2
 // ============================================================================

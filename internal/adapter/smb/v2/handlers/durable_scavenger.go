@@ -16,7 +16,7 @@ import (
 // Lifecycle: Created by the SMB adapter during Serve(), runs in a background
 // goroutine, and stops when the serve context is cancelled.
 //
-// On first run it adjusts timeouts for handles persisted across a server restart.
+// On first run it expires handles whose timeout elapsed during server downtime.
 type DurableHandleScavenger struct {
 	store     lock.DurableHandleStore
 	handler   *Handler      // for cleanup operations (may be nil in tests)
@@ -138,7 +138,7 @@ func (s *DurableHandleScavenger) cleanupAndDelete(ctx context.Context, h *lock.P
 		metaSvc := s.handler.Registry.GetMetadataService()
 
 		// Release byte-range locks
-		if len(h.MetadataHandle) > 0 {
+		if metaSvc != nil && len(h.MetadataHandle) > 0 {
 			// Use session ID 0 to indicate scavenger cleanup (not tied to a session)
 			if err := metaSvc.UnlockAllForSession(ctx, h.MetadataHandle, 0); err != nil {
 				logger.Debug("DurableHandleScavenger: failed to release locks",

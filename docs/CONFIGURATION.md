@@ -849,7 +849,7 @@ adapters:
     durable_handles:
       enabled: true                  # Enable durable handle support (default: true)
       default_timeout: 60s           # Handle preservation timeout (default: 60s)
-      scavenger_interval: 30s        # Expired handle scan interval (default: 30s)
+      scavenger_interval: 10s        # Expired handle scan interval (default: 10s)
       max_handles_per_session: 1000  # Maximum durable handles per session
 ```
 
@@ -857,7 +857,7 @@ adapters:
 |--------|---------|-------------|
 | `enabled` | `true` | Enable durable handle V1/V2 support |
 | `default_timeout` | `60s` | How long to preserve disconnected handles |
-| `scavenger_interval` | `30s` | Background scan interval for expired handles |
+| `scavenger_interval` | `10s` | Background scan interval for expired handles |
 | `max_handles_per_session` | `1000` | Limit durable handles per session |
 
 ### Cross-Protocol Coordination

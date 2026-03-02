@@ -2,7 +2,9 @@
 //
 // The NotificationQueue collects directory change notifications for clients
 // holding directory delegations. When the queue reaches its capacity, it
-// collapses all events into a single "overflow/rescan needed" signal.
+// discards all queued events, sets an overflow flag, and drops all subsequent
+// pushes. Callers detect overflow via the boolean returned by Drain() and
+// should perform a full directory rescan when overflow is true.
 //
 // This is used by directory delegation holders to receive fine-grained
 // change notifications (add, remove, rename) or, on overflow, a signal
@@ -87,13 +89,22 @@ func (q *NotificationQueue) Push(notification DirNotification) {
 		// Overflow: discard all events and set flag
 		q.events = q.events[:0]
 		q.overflow = true
+		// Signal so consumers waiting on FlushCh detect overflow via Drain()
+		select {
+		case q.flushCh <- struct{}{}:
+		default:
+		}
 		return
 	}
 
 	q.events = append(q.events, notification)
 
-	// Signal flush channel at threshold
-	if len(q.events) == notificationFlushThreshold {
+	// Signal flush channel at threshold (capped at capacity for small queues)
+	threshold := notificationFlushThreshold
+	if q.capacity < threshold {
+		threshold = q.capacity
+	}
+	if len(q.events) == threshold {
 		select {
 		case q.flushCh <- struct{}{}:
 		default:

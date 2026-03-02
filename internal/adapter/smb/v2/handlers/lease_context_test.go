@@ -325,22 +325,3 @@ func TestLeaseResponseContextEncode(t *testing.T) {
 		}
 	}
 }
-
-// TestParseLeaseCreateContextAlias tests that ParseLeaseCreateContext works as alias.
-func TestParseLeaseCreateContextAlias(t *testing.T) {
-	data := make([]byte, 52)
-	for i := 0; i < 16; i++ {
-		data[i] = byte(i)
-	}
-	binary.LittleEndian.PutUint32(data[16:20], lock.LeaseStateRead)
-
-	// ParseLeaseCreateContext is an alias for DecodeLeaseCreateContext
-	ctx, err := ParseLeaseCreateContext(data)
-	if err != nil {
-		t.Fatalf("ParseLeaseCreateContext error: %v", err)
-	}
-
-	if ctx.LeaseState != lock.LeaseStateRead {
-		t.Errorf("LeaseState = 0x%x, want 0x%x", ctx.LeaseState, lock.LeaseStateRead)
-	}
-}
