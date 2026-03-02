@@ -9,8 +9,25 @@ import (
 	"github.com/jcmturner/gokrb5/v8/messages"
 	"github.com/jcmturner/gokrb5/v8/service"
 	"github.com/jcmturner/gokrb5/v8/types"
+
 	"github.com/marmos91/dittofs/internal/logger"
-	kerberos "github.com/marmos91/dittofs/pkg/auth/kerberos"
+	pkgkerberos "github.com/marmos91/dittofs/pkg/auth/kerberos"
+)
+
+// Kerberos protocol constants for AP-REP construction (RFC 4120).
+const (
+	// krbPVNO is the Kerberos protocol version number.
+	krbPVNO = 5
+
+	// krbAPRep is the message type for AP-REP (APPLICATION 15).
+	krbAPRep = 15
+
+	// appTagEncAPRepPart is the ASN.1 APPLICATION tag for EncAPRepPart.
+	appTagEncAPRepPart = 27
+
+	// keyUsageAPRepEncPart is the key usage number for encrypting the
+	// EncAPRepPart, per RFC 4120 Section 7.5.1.
+	keyUsageAPRepEncPart = 12
 )
 
 // AuthResult contains the result of a successful Kerberos AP-REQ verification.
@@ -45,13 +62,13 @@ type AuthResult struct {
 //
 // Thread Safety: All methods are safe for concurrent use.
 type KerberosService struct {
-	provider    *kerberos.Provider
+	provider    *pkgkerberos.Provider
 	replayCache *ReplayCache
 }
 
 // NewKerberosService creates a new KerberosService.
 // provider may be nil for testing (Authenticate will fail, but BuildMutualAuth works).
-func NewKerberosService(provider *kerberos.Provider) *KerberosService {
+func NewKerberosService(provider *pkgkerberos.Provider) *KerberosService {
 	return &KerberosService{
 		provider:    provider,
 		replayCache: NewReplayCache(DefaultReplayCacheTTL),
@@ -59,7 +76,7 @@ func NewKerberosService(provider *kerberos.Provider) *KerberosService {
 }
 
 // Provider returns the underlying Kerberos provider.
-func (s *KerberosService) Provider() *kerberos.Provider {
+func (s *KerberosService) Provider() *pkgkerberos.Provider {
 	return s.provider
 }
 
@@ -184,19 +201,19 @@ func (s *KerberosService) BuildMutualAuth(apReq *messages.APReq, sessionKey type
 		return nil, fmt.Errorf("marshal EncAPRepPart inner: %w", err)
 	}
 
-	// Add APPLICATION 27 tag using gokrb5's asn1tools
-	encAPRepPartBytes := asn1tools.AddASNAppTag(encAPRepPartInner, 27)
+	// Add APPLICATION 27 (EncAPRepPart) tag using gokrb5's asn1tools
+	encAPRepPartBytes := asn1tools.AddASNAppTag(encAPRepPartInner, appTagEncAPRepPart)
 
-	// Encrypt with session key, key usage 12 (AP-REP encrypted part)
-	encryptedData, err := crypto.GetEncryptedData(encAPRepPartBytes, sessionKey, 12, 0)
+	// Encrypt with session key using key usage 12 (AP-REP encrypted part)
+	encryptedData, err := crypto.GetEncryptedData(encAPRepPartBytes, sessionKey, keyUsageAPRepEncPart, 0)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt EncAPRepPart: %w", err)
 	}
 
 	// Build the AP-REP message
 	apRep := messages.APRep{
-		PVNO:    5,
-		MsgType: 15, // KRB_AP_REP
+		PVNO:    krbPVNO,
+		MsgType: krbAPRep,
 		EncPart: encryptedData,
 	}
 
@@ -206,11 +223,11 @@ func (s *KerberosService) BuildMutualAuth(apReq *messages.APReq, sessionKey type
 		return nil, fmt.Errorf("marshal AP-REP inner: %w", err)
 	}
 
-	// Add APPLICATION 15 tag -- this is the raw AP-REP, NOT GSS-wrapped.
+	// Add APPLICATION 15 (AP-REP) tag. This is the raw AP-REP, NOT GSS-wrapped.
 	// Protocol adapters handle their own framing:
 	// - NFS adds GSS-API wrapper (0x60 + OID + 0x0200)
 	// - SMB passes raw to SPNEGO
-	apRepBytes := asn1tools.AddASNAppTag(apRepInner, 15)
+	apRepBytes := asn1tools.AddASNAppTag(apRepInner, krbAPRep)
 
 	return apRepBytes, nil
 }

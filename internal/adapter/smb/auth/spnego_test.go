@@ -548,85 +548,45 @@ func computeInitiatorMechListMIC(sessionKey types.EncryptionKey, mechListBytes [
 // BuildNegHints Tests
 // =============================================================================
 
-func TestBuildNegHintsKerberosAndNTLM(t *testing.T) {
-	data, err := BuildNegHints(true, true)
-	if err != nil {
-		t.Fatalf("BuildNegHints failed: %v", err)
+func TestBuildNegHints(t *testing.T) {
+	tests := []struct {
+		name         string
+		kerberos     bool
+		ntlm         bool
+		wantMechLen  int
+		wantKerberos bool
+		wantNTLM     bool
+	}{
+		{"KerberosAndNTLM", true, true, 3, true, true},
+		{"NTLMOnly", false, true, 1, false, true},
+		{"KerberosOnly", true, false, 2, true, false},
 	}
 
-	if len(data) == 0 {
-		t.Fatal("BuildNegHints should produce non-empty output")
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := BuildNegHints(tt.kerberos, tt.ntlm)
+			if err != nil {
+				t.Fatalf("BuildNegHints failed: %v", err)
+			}
 
-	// Parse back to verify the mechanisms listed
-	parsed, err := Parse(data)
-	if err != nil {
-		t.Fatalf("Failed to parse NegHints: %v", err)
-	}
+			parsed, err := Parse(data)
+			if err != nil {
+				t.Fatalf("Failed to parse NegHints: %v", err)
+			}
 
-	if parsed.Type != TokenTypeInit {
-		t.Errorf("Type = %v, expected TokenTypeInit", parsed.Type)
-	}
-
-	// Should contain 3 mechanisms: MSKerberos, Kerberos, NTLMSSP
-	if len(parsed.MechTypes) != 3 {
-		t.Errorf("MechTypes length = %d, expected 3", len(parsed.MechTypes))
-	}
-
-	if !parsed.HasKerberos() {
-		t.Error("NegHints should offer Kerberos when kerberosEnabled=true")
-	}
-
-	if !parsed.HasNTLM() {
-		t.Error("NegHints should offer NTLM when ntlmEnabled=true")
-	}
-}
-
-func TestBuildNegHintsNTLMOnly(t *testing.T) {
-	data, err := BuildNegHints(false, true)
-	if err != nil {
-		t.Fatalf("BuildNegHints failed: %v", err)
-	}
-
-	parsed, err := Parse(data)
-	if err != nil {
-		t.Fatalf("Failed to parse NegHints: %v", err)
-	}
-
-	if len(parsed.MechTypes) != 1 {
-		t.Errorf("MechTypes length = %d, expected 1", len(parsed.MechTypes))
-	}
-
-	if parsed.HasKerberos() {
-		t.Error("NegHints should NOT offer Kerberos when kerberosEnabled=false")
-	}
-
-	if !parsed.HasNTLM() {
-		t.Error("NegHints should offer NTLM when ntlmEnabled=true")
-	}
-}
-
-func TestBuildNegHintsKerberosOnly(t *testing.T) {
-	data, err := BuildNegHints(true, false)
-	if err != nil {
-		t.Fatalf("BuildNegHints failed: %v", err)
-	}
-
-	parsed, err := Parse(data)
-	if err != nil {
-		t.Fatalf("Failed to parse NegHints: %v", err)
-	}
-
-	if len(parsed.MechTypes) != 2 {
-		t.Errorf("MechTypes length = %d, expected 2 (MS + standard Kerberos OIDs)", len(parsed.MechTypes))
-	}
-
-	if !parsed.HasKerberos() {
-		t.Error("NegHints should offer Kerberos when kerberosEnabled=true")
-	}
-
-	if parsed.HasNTLM() {
-		t.Error("NegHints should NOT offer NTLM when ntlmEnabled=false")
+			if parsed.Type != TokenTypeInit {
+				t.Errorf("Type = %v, expected TokenTypeInit", parsed.Type)
+			}
+			if len(parsed.MechTypes) != tt.wantMechLen {
+				t.Errorf("MechTypes length = %d, expected %d", len(parsed.MechTypes), tt.wantMechLen)
+			}
+			if parsed.HasKerberos() != tt.wantKerberos {
+				t.Errorf("HasKerberos() = %v, want %v", parsed.HasKerberos(), tt.wantKerberos)
+			}
+			if parsed.HasNTLM() != tt.wantNTLM {
+				t.Errorf("HasNTLM() = %v, want %v", parsed.HasNTLM(), tt.wantNTLM)
+			}
+		})
 	}
 }
 

@@ -313,7 +313,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 	if err != nil {
 		logger.Debug("Failed to parse NTLM AUTHENTICATE message", "error", err)
 		// Fall back to guest session
-		return h.createGuestSessionWithID(ctx, pending, nil)
+		return h.createGuestSessionWithID(ctx, pending)
 	}
 
 	logger.Debug("NTLM AUTHENTICATE message parsed",
@@ -327,7 +327,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 
 	// If anonymous authentication requested, create guest session
 	if authMsg.IsAnonymous || authMsg.Username == "" {
-		return h.createGuestSessionWithID(ctx, pending, nil)
+		return h.createGuestSessionWithID(ctx, pending)
 	}
 
 	// Try to authenticate against UserStore
@@ -459,49 +459,22 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 	}
 
 	// Fall back to guest session
-	return h.createGuestSessionWithID(ctx, pending, nil)
+	return h.createGuestSessionWithID(ctx, pending)
 }
 
 // createGuestSessionWithID creates a guest session with a specific session ID.
 // Used when completing NTLM authentication as guest.
-// The sessionKey parameter is ignored for guest sessions (signing not supported).
-//
-// Guest sessions set SMB2_SESSION_FLAG_IS_GUEST (0x0001) in the response flags,
-// which tells the client that signing is not required for this session.
-//
-// Policy enforcement:
-//   - GuestEnabled must be true; otherwise STATUS_LOGON_FAILURE
-//   - SigningConfig.Required must be false; guest sessions have no session key
-//
-// Windows 11 24H2 note: Insecure guest logons are blocked by default.
-// Users must enable the "AllowInsecureGuestAuth" Group Policy setting
-// (Computer Configuration > Administrative Templates > Network > Lanman Workstation
-// > Enable insecure guest logons) to connect as guest.
-func (h *Handler) createGuestSessionWithID(ctx *SMBHandlerContext, pending *PendingAuth, _ []byte) (*HandlerResult, error) {
-	// Check guest policy
-	if !h.GuestEnabled {
-		logger.Info("Guest session rejected: guest access disabled by policy")
-		return NewErrorResult(types.StatusLogonFailure), nil
-	}
-
-	// Check signing policy: guest sessions cannot sign (no session key)
-	if h.SigningConfig.Required {
-		logger.Info("Guest session rejected: server requires signing but guest has no session key")
-		return NewErrorResult(types.StatusLogonFailure), nil
+func (h *Handler) createGuestSessionWithID(ctx *SMBHandlerContext, pending *PendingAuth) (*HandlerResult, error) {
+	if result := h.checkGuestPolicy(); result != nil {
+		return result, nil
 	}
 
 	sess := h.CreateSessionWithID(pending.SessionID, pending.ClientAddr, true, "guest", "")
 	ctx.IsGuest = true
 
-	// Note: Signing is NOT configured for guest sessions because there's no
-	// valid session key derivation possible without proper credentials.
-	// Do NOT call configureSessionSigningWithKey (no key material).
-	// Do NOT call sess.SetCryptoState (no encryption for guest).
-
-	logger.Info("Guest session created. Note: Windows 11 24H2 blocks insecure guest logons by default (LanmanWorkstation AllowInsecureGuestAuth)",
+	logger.Info("Guest session created",
 		"sessionID", sess.SessionID,
-		"username", sess.Username,
-		"isGuest", sess.IsGuest)
+		"username", sess.Username)
 
 	return h.buildSessionSetupResponse(
 		types.StatusSuccess,
@@ -511,50 +484,19 @@ func (h *Handler) createGuestSessionWithID(ctx *SMBHandlerContext, pending *Pend
 }
 
 // createGuestSession creates a guest session without NTLM handshake.
-//
-// This is used when:
-//   - Client sends no authentication token
-//   - Client sends unrecognized authentication mechanism
-//   - Client sends Type 3 without prior Type 1 (graceful handling)
-//
-// Guest sessions set SMB2_SESSION_FLAG_IS_GUEST (0x0001) in the response flags,
-// which tells the client that signing is not required for this session.
-//
-// Policy enforcement:
-//   - GuestEnabled must be true; otherwise STATUS_LOGON_FAILURE
-//   - SigningConfig.Required must be false; guest sessions have no session key
-//     and cannot sign messages
-//
-// Windows 11 24H2 note: Insecure guest logons are blocked by default.
-// Users must enable the "AllowInsecureGuestAuth" Group Policy setting
-// (Computer Configuration > Administrative Templates > Network > Lanman Workstation
-// > Enable insecure guest logons) to connect as guest.
+// Used when the client sends no auth token, an unrecognized mechanism,
+// or Type 3 without prior Type 1.
 func (h *Handler) createGuestSession(ctx *SMBHandlerContext) (*HandlerResult, error) {
-	// Check guest policy
-	if !h.GuestEnabled {
-		logger.Info("Guest session rejected: guest access disabled by policy")
-		return NewErrorResult(types.StatusLogonFailure), nil
+	if result := h.checkGuestPolicy(); result != nil {
+		return result, nil
 	}
 
-	// Check signing policy: guest sessions cannot sign (no session key)
-	if h.SigningConfig.Required {
-		logger.Info("Guest session rejected: server requires signing but guest has no session key")
-		return NewErrorResult(types.StatusLogonFailure), nil
-	}
-
-	// Create session using SessionManager (includes credit tracking)
 	sess := h.CreateSession(ctx.ClientAddr, true, "guest", "")
 
 	ctx.SessionID = sess.SessionID
 	ctx.IsGuest = true
 
-	// Note: Signing is NOT configured for guest sessions because there's no
-	// valid session key derivation possible without proper credentials.
-	// Do NOT call configureSessionSigningWithKey (no key material).
-	// Do NOT call sess.SetCryptoState (no encryption for guest).
-
-	logger.Info("Guest session created. Note: Windows 11 24H2 blocks insecure guest logons by default (LanmanWorkstation AllowInsecureGuestAuth)",
-		"sessionID", sess.SessionID)
+	logger.Info("Guest session created", "sessionID", sess.SessionID)
 
 	return h.buildSessionSetupResponse(
 		types.StatusSuccess,
@@ -746,6 +688,20 @@ func (h *Handler) buildAuthenticatedResponse(usedSPNEGO bool, encryptData bool) 
 		sessionFlags,
 		acceptToken,
 	)
+}
+
+// checkGuestPolicy enforces guest session prerequisites.
+// Returns an error result if guest sessions are not allowed, nil otherwise.
+func (h *Handler) checkGuestPolicy() *HandlerResult {
+	if !h.GuestEnabled {
+		logger.Info("Guest session rejected: guest access disabled by policy")
+		return NewErrorResult(types.StatusLogonFailure)
+	}
+	if h.SigningConfig.Required {
+		logger.Info("Guest session rejected: server requires signing but guest has no session key")
+		return NewErrorResult(types.StatusLogonFailure)
+	}
+	return nil
 }
 
 // uniqueStrings returns a deduplicated slice preserving order.

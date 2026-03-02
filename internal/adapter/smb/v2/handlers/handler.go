@@ -79,7 +79,8 @@ type Handler struct {
 	// SigningAlgorithmPreference is the server's preference order for signing
 	// algorithms, used during SIGNING_CAPABILITIES negotiate context processing.
 	// The first element is the most preferred. If empty, defaults to
-	// [AES-128-GMAC, AES-128-CMAC, HMAC-SHA256].
+	// [AES-128-GMAC, AES-128-CMAC]. HMAC-SHA256 is excluded because
+	// SIGNING_CAPABILITIES is a 3.1.1-only context.
 	SigningAlgorithmPreference []uint16
 
 	// EncryptionEnabled controls whether CapEncryption is advertised for SMB 3.0+.
@@ -97,33 +98,20 @@ type Handler struct {
 	sharesCacheValid bool
 
 	// KerberosProvider holds the shared Kerberos keytab/config provider.
-	// When set, the SESSION_SETUP handler supports Kerberos authentication
-	// via SPNEGO in addition to NTLM. The same provider is used by the NFS
-	// adapter, ensuring a shared Kerberos infrastructure across protocols.
-	// nil when Kerberos is not enabled.
-	//
-	// Lifecycle: Not initialized by NewHandler/NewHandlerWithSessionManager.
-	// Must be injected by the adapter layer (e.g., Adapter.SetKerberosProvider)
-	// before Serve() is called. When nil, Kerberos auth requests return
-	// STATUS_LOGON_FAILURE gracefully (NTLM and guest auth still work).
+	// Injected by the adapter layer before Serve(). When nil, Kerberos
+	// auth returns STATUS_LOGON_FAILURE gracefully.
 	KerberosProvider *kerberos.Provider
 
-	// KerberosService is the shared Kerberos authentication service used for
-	// AP-REQ verification, replay detection, and AP-REP construction.
-	// Created from KerberosProvider. When nil, Kerberos auth returns
-	// STATUS_LOGON_FAILURE. This replaces inline gokrb5 service.VerifyAPREQ
-	// calls with the shared protocol-agnostic service.
+	// KerberosService handles AP-REQ verification, replay detection, and
+	// AP-REP construction. Created from KerberosProvider.
 	KerberosService *authkerberos.KerberosService
 
-	// IdentityConfig configures how Kerberos principals are mapped to DittoFS
-	// usernames. Default: strip realm ("alice@REALM" -> "alice").
-	// Set by the adapter from configuration.
+	// IdentityConfig controls Kerberos principal-to-username mapping.
+	// Default: strip realm ("alice@REALM" -> "alice").
 	IdentityConfig *kerberos.IdentityConfig
 
-	// SMBServicePrincipal is an optional override for the CIFS service principal.
-	// When empty, the SPN is auto-derived from the NFS principal
-	// (e.g., "nfs/host@REALM" -> "cifs/host@REALM").
-	// Set from control plane settings if a custom SPN is configured.
+	// SMBServicePrincipal overrides the auto-derived CIFS service principal.
+	// When empty, derived from the NFS principal ("nfs/host@REALM" -> "cifs/host@REALM").
 	SMBServicePrincipal string
 
 	// NtlmEnabled controls whether NTLM authentication is allowed.

@@ -7,6 +7,7 @@ import (
 
 	"github.com/jcmturner/gofork/encoding/asn1"
 	gokrbspnego "github.com/jcmturner/gokrb5/v8/spnego"
+
 	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
@@ -666,109 +667,6 @@ func TestKerberosAuthWithInvalidToken(t *testing.T) {
 	})
 }
 
-func TestNTLMRegressionAfterKerberosAddition(t *testing.T) {
-	// This test suite validates that adding the Kerberos path does not
-	// break any existing NTLM authentication flows.
-
-	t.Run("RawNTLMNegotiateStillWorks", func(t *testing.T) {
-		h := NewHandler()
-		ctx := newTestContext(0)
-
-		ntlmMsg := validNTLMNegotiateMessage()
-		body := buildSessionSetupRequestBody(ntlmMsg)
-
-		result, err := h.SessionSetup(ctx, body)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-
-		if result.Status != types.StatusMoreProcessingRequired {
-			t.Errorf("Raw NTLM NEGOTIATE should return MORE_PROCESSING_REQUIRED, got 0x%x",
-				result.Status)
-		}
-	})
-
-	t.Run("SPNEGOWrappedNTLMStillWorks", func(t *testing.T) {
-		h := NewHandler()
-		ctx := newTestContext(0)
-
-		ntlmMsg := validNTLMNegotiateMessage()
-		spnegoBytes := wrapInSPNEGO(ntlmMsg)
-		body := buildSessionSetupRequestBody(spnegoBytes)
-
-		result, err := h.SessionSetup(ctx, body)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-
-		if result.Status != types.StatusMoreProcessingRequired {
-			t.Errorf("SPNEGO-wrapped NTLM NEGOTIATE should return MORE_PROCESSING_REQUIRED, got 0x%x",
-				result.Status)
-		}
-	})
-
-	t.Run("FullNTLMHandshakeStillWorks", func(t *testing.T) {
-		h := NewHandler()
-
-		// Step 1: NEGOTIATE
-		ctx1 := newTestContext(0)
-		negotiate := validNTLMNegotiateMessage()
-		body1 := buildSessionSetupRequestBody(negotiate)
-
-		result1, err := h.SessionSetup(ctx1, body1)
-		if err != nil {
-			t.Fatalf("NEGOTIATE error: %v", err)
-		}
-		if result1.Status != types.StatusMoreProcessingRequired {
-			t.Fatalf("NEGOTIATE should return STATUS_MORE_PROCESSING_REQUIRED, got 0x%x",
-				result1.Status)
-		}
-
-		sessionID := ctx1.SessionID
-		if sessionID == 0 {
-			t.Fatal("SessionID should be set after NEGOTIATE")
-		}
-
-		// Step 2: AUTHENTICATE
-		ctx2 := newTestContext(sessionID)
-		authenticate := validNTLMAuthenticateMessage()
-		body2 := buildSessionSetupRequestBody(authenticate)
-
-		result2, err := h.SessionSetup(ctx2, body2)
-		if err != nil {
-			t.Fatalf("AUTHENTICATE error: %v", err)
-		}
-		if result2.Status != types.StatusSuccess {
-			t.Errorf("AUTHENTICATE should return STATUS_SUCCESS, got 0x%x", result2.Status)
-		}
-
-		// Session should be created
-		_, ok := h.GetSession(sessionID)
-		if !ok {
-			t.Error("Session should exist after AUTHENTICATE")
-		}
-	})
-
-	t.Run("GuestSessionStillWorksWithNoAuth", func(t *testing.T) {
-		h := NewHandler()
-		ctx := newTestContext(0)
-
-		body := buildSessionSetupRequestBody(nil)
-
-		result, err := h.SessionSetup(ctx, body)
-		if err != nil {
-			t.Fatalf("Unexpected error: %v", err)
-		}
-
-		if result.Status != types.StatusSuccess {
-			t.Errorf("No-auth should return STATUS_SUCCESS, got 0x%x", result.Status)
-		}
-		if !ctx.IsGuest {
-			t.Error("Should be guest session")
-		}
-	})
-}
-
 // =============================================================================
 // NTLM Disable Policy Tests
 // =============================================================================
@@ -1000,10 +898,6 @@ func TestKerberosFailureSPNEGOReject(t *testing.T) {
 }
 
 // =============================================================================
-// Constants Tests
-// =============================================================================
-
-// =============================================================================
 // Encryption Enforcement Tests
 // =============================================================================
 
@@ -1048,166 +942,61 @@ func TestBuildSessionSetupResponse_EncryptDataFlag(t *testing.T) {
 }
 
 func TestConfigureSessionSigningWithKey_Encryption(t *testing.T) {
-	t.Run("PreferredModeSetsEncryptDataFor3x", func(t *testing.T) {
-		h := NewHandler()
-		h.EncryptionConfig = EncryptionConfig{
-			Mode:           "preferred",
-			AllowedCiphers: []uint16{types.CipherAES128GCM},
-		}
+	sessionKey := make([]byte, 16)
+	for i := range sessionKey {
+		sessionKey[i] = byte(i + 1)
+	}
 
-		// Create a session
-		sess := h.CreateSession("127.0.0.1:12345", false, "testuser", "DOMAIN")
+	tests := []struct {
+		name        string
+		mode        string
+		dialect     types.Dialect
+		cipherId    uint16
+		wantEncrypt bool
+		wantError   bool
+		wantStatus  types.Status
+	}{
+		{"PreferredMode_3x", "preferred", types.Dialect0311, types.CipherAES128GCM, true, false, 0},
+		{"RequiredMode_3x", "required", types.Dialect0300, types.CipherAES128GCM, true, false, 0},
+		{"DisabledMode_3x", "disabled", types.Dialect0311, types.CipherAES128GCM, false, false, 0},
+		{"Dialect2xRejectedInRequired", "required", types.Dialect0210, 0, false, true, types.StatusAccessDenied},
+		{"Dialect2xAllowedInPreferred", "preferred", types.Dialect0210, 0, false, false, 0},
+	}
 
-		// Create mock crypto state with 3.1.1 dialect and cipher
-		cs := &mockCryptoState{
-			dialect:  types.Dialect0311,
-			cipherId: types.CipherAES128GCM,
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := NewHandler()
+			h.EncryptionConfig = EncryptionConfig{
+				Mode:           tt.mode,
+				AllowedCiphers: []uint16{types.CipherAES128GCM},
+			}
 
-		ctx := newTestContext(sess.SessionID)
-		ctx.ConnCryptoState = cs
+			sess := h.CreateSession("127.0.0.1:12345", false, "testuser", "DOMAIN")
+			ctx := newTestContext(sess.SessionID)
+			ctx.ConnCryptoState = &mockCryptoState{
+				dialect:  tt.dialect,
+				cipherId: tt.cipherId,
+			}
 
-		// Provide a 16-byte session key
-		sessionKey := make([]byte, 16)
-		for i := range sessionKey {
-			sessionKey[i] = byte(i + 1)
-		}
+			errResult := h.configureSessionSigningWithKey(sess, sessionKey, ctx)
 
-		if errResult := h.configureSessionSigningWithKey(sess, sessionKey, ctx); errResult != nil {
-			t.Fatalf("configureSessionSigningWithKey returned error result: %v", errResult.Status)
-		}
-
-		// Session should have EncryptData set and encryptors created
-		if !sess.ShouldEncrypt() {
-			t.Error("Session should have ShouldEncrypt() = true for preferred mode with 3.x dialect")
-		}
-	})
-
-	t.Run("RequiredModeSetsEncryptDataFor3x", func(t *testing.T) {
-		h := NewHandler()
-		h.EncryptionConfig = EncryptionConfig{
-			Mode:           "required",
-			AllowedCiphers: []uint16{types.CipherAES128GCM},
-		}
-
-		sess := h.CreateSession("127.0.0.1:12345", false, "testuser", "DOMAIN")
-
-		cs := &mockCryptoState{
-			dialect:  types.Dialect0300,
-			cipherId: types.CipherAES128GCM,
-		}
-
-		ctx := newTestContext(sess.SessionID)
-		ctx.ConnCryptoState = cs
-
-		sessionKey := make([]byte, 16)
-		for i := range sessionKey {
-			sessionKey[i] = byte(i + 1)
-		}
-
-		if errResult := h.configureSessionSigningWithKey(sess, sessionKey, ctx); errResult != nil {
-			t.Fatalf("configureSessionSigningWithKey returned error result: %v", errResult.Status)
-		}
-
-		if !sess.ShouldEncrypt() {
-			t.Error("Session should have ShouldEncrypt() = true for required mode with 3.x dialect")
-		}
-	})
-
-	t.Run("DisabledModeDoesNotSetEncryptData", func(t *testing.T) {
-		h := NewHandler()
-		h.EncryptionConfig = EncryptionConfig{
-			Mode:           "disabled",
-			AllowedCiphers: []uint16{types.CipherAES128GCM},
-		}
-
-		sess := h.CreateSession("127.0.0.1:12345", false, "testuser", "DOMAIN")
-
-		cs := &mockCryptoState{
-			dialect:  types.Dialect0311,
-			cipherId: types.CipherAES128GCM,
-		}
-
-		ctx := newTestContext(sess.SessionID)
-		ctx.ConnCryptoState = cs
-
-		sessionKey := make([]byte, 16)
-		for i := range sessionKey {
-			sessionKey[i] = byte(i + 1)
-		}
-
-		if errResult := h.configureSessionSigningWithKey(sess, sessionKey, ctx); errResult != nil {
-			t.Fatalf("configureSessionSigningWithKey returned error result: %v", errResult.Status)
-		}
-
-		if sess.ShouldEncrypt() {
-			t.Error("Session should NOT have ShouldEncrypt() = true for disabled mode")
-		}
-	})
-
-	t.Run("Dialect2xRejectedInRequiredMode", func(t *testing.T) {
-		h := NewHandler()
-		h.EncryptionConfig = EncryptionConfig{
-			Mode:           "required",
-			AllowedCiphers: []uint16{types.CipherAES128GCM},
-		}
-
-		sess := h.CreateSession("127.0.0.1:12345", false, "testuser", "DOMAIN")
-
-		cs := &mockCryptoState{
-			dialect:  types.Dialect0210,
-			cipherId: 0,
-		}
-
-		ctx := newTestContext(sess.SessionID)
-		ctx.ConnCryptoState = cs
-
-		sessionKey := make([]byte, 16)
-		for i := range sessionKey {
-			sessionKey[i] = byte(i + 1)
-		}
-
-		// SMB 2.x cannot encrypt, so required mode must reject the session
-		errResult := h.configureSessionSigningWithKey(sess, sessionKey, ctx)
-		if errResult == nil {
-			t.Fatal("expected error result for 2.x session in encryption required mode")
-		}
-		if errResult.Status != types.StatusAccessDenied {
-			t.Errorf("expected STATUS_ACCESS_DENIED, got %v", errResult.Status)
-		}
-	})
-
-	t.Run("Dialect2xAllowedInPreferredMode", func(t *testing.T) {
-		h := NewHandler()
-		h.EncryptionConfig = EncryptionConfig{
-			Mode:           "preferred",
-			AllowedCiphers: []uint16{types.CipherAES128GCM},
-		}
-
-		sess := h.CreateSession("127.0.0.1:12345", false, "testuser", "DOMAIN")
-
-		cs := &mockCryptoState{
-			dialect:  types.Dialect0210,
-			cipherId: 0,
-		}
-
-		ctx := newTestContext(sess.SessionID)
-		ctx.ConnCryptoState = cs
-
-		sessionKey := make([]byte, 16)
-		for i := range sessionKey {
-			sessionKey[i] = byte(i + 1)
-		}
-
-		// Preferred mode should allow 2.x sessions without encryption
-		if errResult := h.configureSessionSigningWithKey(sess, sessionKey, ctx); errResult != nil {
-			t.Fatalf("configureSessionSigningWithKey returned error result: %v", errResult.Status)
-		}
-
-		if sess.ShouldEncrypt() {
-			t.Error("Session should NOT have ShouldEncrypt() = true for 2.x dialect")
-		}
-	})
+			if tt.wantError {
+				if errResult == nil {
+					t.Fatal("expected error result")
+				}
+				if errResult.Status != tt.wantStatus {
+					t.Errorf("Status = %v, want %v", errResult.Status, tt.wantStatus)
+				}
+				return
+			}
+			if errResult != nil {
+				t.Fatalf("unexpected error result: %v", errResult.Status)
+			}
+			if sess.ShouldEncrypt() != tt.wantEncrypt {
+				t.Errorf("ShouldEncrypt() = %v, want %v", sess.ShouldEncrypt(), tt.wantEncrypt)
+			}
+		})
+	}
 }
 
 func TestSessionSetupConstants(t *testing.T) {

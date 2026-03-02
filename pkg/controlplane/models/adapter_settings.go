@@ -7,9 +7,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// parseBlockedOps deserializes a JSON-encoded blocked operations string into a string slice.
+// parseStringSlice deserializes a JSON-encoded string slice.
 // Returns nil for empty, "null", or invalid JSON.
-func parseBlockedOps(raw string) []string {
+func parseStringSlice(raw string) []string {
 	if raw == "" || raw == "null" {
 		return nil
 	}
@@ -20,9 +20,9 @@ func parseBlockedOps(raw string) []string {
 	return ops
 }
 
-// marshalBlockedOps serializes a string slice into a JSON string for storage.
+// marshalStringSlice serializes a string slice into a JSON string for storage.
 // Returns an empty string for nil or empty slices.
-func marshalBlockedOps(ops []string) string {
+func marshalStringSlice(ops []string) string {
 	if len(ops) == 0 {
 		return ""
 	}
@@ -95,12 +95,12 @@ func (NFSAdapterSettings) TableName() string {
 
 // GetBlockedOperations returns the blocked operations as a string slice.
 func (s *NFSAdapterSettings) GetBlockedOperations() []string {
-	return parseBlockedOps(s.BlockedOperations)
+	return parseStringSlice(s.BlockedOperations)
 }
 
 // SetBlockedOperations serializes the blocked operations from a string slice.
 func (s *NFSAdapterSettings) SetBlockedOperations(ops []string) {
-	s.BlockedOperations = marshalBlockedOps(ops)
+	s.BlockedOperations = marshalStringSlice(ops)
 }
 
 // GetV4MinMinorVersion returns the minimum NFSv4 minor version as uint32.
@@ -184,22 +184,22 @@ func (SMBAdapterSettings) TableName() string {
 
 // GetBlockedOperations returns the blocked operations as a string slice.
 func (s *SMBAdapterSettings) GetBlockedOperations() []string {
-	return parseBlockedOps(s.BlockedOperations)
+	return parseStringSlice(s.BlockedOperations)
 }
 
 // SetBlockedOperations serializes the blocked operations from a string slice.
 func (s *SMBAdapterSettings) SetBlockedOperations(ops []string) {
-	s.BlockedOperations = marshalBlockedOps(ops)
+	s.BlockedOperations = marshalStringSlice(ops)
 }
 
 // GetSigningAlgorithmPreference returns the signing algorithm preference as a string slice.
 func (s *SMBAdapterSettings) GetSigningAlgorithmPreference() []string {
-	return parseBlockedOps(s.SigningAlgorithmPreference)
+	return parseStringSlice(s.SigningAlgorithmPreference)
 }
 
 // SetSigningAlgorithmPreference serializes the signing algorithm preference from a string slice.
 func (s *SMBAdapterSettings) SetSigningAlgorithmPreference(prefs []string) {
-	s.SigningAlgorithmPreference = marshalBlockedOps(prefs)
+	s.SigningAlgorithmPreference = marshalStringSlice(prefs)
 }
 
 // NewDefaultNFSSettings creates an NFSAdapterSettings with all default values.

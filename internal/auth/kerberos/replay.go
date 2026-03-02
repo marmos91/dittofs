@@ -15,7 +15,6 @@ const DefaultReplayCacheTTL = 5 * time.Minute
 // Cleanup is triggered lazily every N Check calls.
 const cleanupInterval = 100
 
-// replayCacheEntry stores the timestamp when an authenticator was first seen.
 type replayCacheEntry struct {
 	seenAt time.Time
 }

@@ -33,42 +33,34 @@ func TestReplayCache_DuplicateDetected(t *testing.T) {
 	}
 }
 
-func TestReplayCache_DifferentPrincipalNotReplay(t *testing.T) {
-	rc := NewReplayCache(5 * time.Minute)
-
+func TestReplayCache_DifferentTupleFieldNotReplay(t *testing.T) {
 	now := time.Now()
-	rc.Check("alice@EXAMPLE.COM", now, 123, "nfs/server.example.com")
+	base := struct {
+		principal string
+		cusec     int
+		service   string
+	}{"alice@EXAMPLE.COM", 123, "nfs/server.example.com"}
 
-	// Same ctime/cusec/service but different principal
-	isReplay := rc.Check("bob@EXAMPLE.COM", now, 123, "nfs/server.example.com")
-	if isReplay {
-		t.Fatal("expected different principal to not be a replay")
+	tests := []struct {
+		name      string
+		principal string
+		cusec     int
+		service   string
+	}{
+		{"DifferentPrincipal", "bob@EXAMPLE.COM", base.cusec, base.service},
+		{"DifferentCusec", base.principal, 456, base.service},
+		{"DifferentService", base.principal, base.cusec, "cifs/server.example.com"},
 	}
-}
 
-func TestReplayCache_DifferentCusecNotReplay(t *testing.T) {
-	rc := NewReplayCache(5 * time.Minute)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rc := NewReplayCache(5 * time.Minute)
+			rc.Check(base.principal, now, base.cusec, base.service)
 
-	now := time.Now()
-	rc.Check("alice@EXAMPLE.COM", now, 123, "nfs/server.example.com")
-
-	// Same principal/ctime/service but different cusec
-	isReplay := rc.Check("alice@EXAMPLE.COM", now, 456, "nfs/server.example.com")
-	if isReplay {
-		t.Fatal("expected different cusec to not be a replay")
-	}
-}
-
-func TestReplayCache_DifferentServiceNotReplay(t *testing.T) {
-	rc := NewReplayCache(5 * time.Minute)
-
-	now := time.Now()
-	rc.Check("alice@EXAMPLE.COM", now, 123, "nfs/server.example.com")
-
-	// Same principal/ctime/cusec but different service
-	isReplay := rc.Check("alice@EXAMPLE.COM", now, 123, "cifs/server.example.com")
-	if isReplay {
-		t.Fatal("expected different service principal to not be a replay")
+			if rc.Check(tt.principal, now, tt.cusec, tt.service) {
+				t.Fatalf("expected different %s to not be a replay", tt.name)
+			}
+		})
 	}
 }
 

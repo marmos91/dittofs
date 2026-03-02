@@ -8,11 +8,23 @@ import (
 	"time"
 
 	"github.com/jcmturner/gokrb5/v8/types"
+
 	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// GSS-API krb5 mechanism token IDs per RFC 1964 Section 1.1.
+const (
+	gssTokenIDAPReq uint16 = 0x0100 // AP-REQ (context establishment)
+	gssTokenIDAPRep uint16 = 0x0200 // AP-REP (mutual authentication reply)
+)
+
+// apOptionsMutualRequired is the bit mask for mutual authentication in AP-Options.
+// Per RFC 4120, AP-Options bit 2 is MUTUAL-REQUIRED. In ASN.1 BIT STRING encoding
+// (MSB first), bit 2 maps to 0x20 in the first byte.
+const apOptionsMutualRequired byte = 0x20
 
 // VerifiedContext contains the result of a successful GSS token verification.
 // It provides the information needed to create a GSSContext.
@@ -91,10 +103,8 @@ func (v *Krb5Verifier) VerifyToken(gssToken []byte) (*VerifiedContext, error) {
 	}
 
 	// Check if mutual authentication is required (AP-Options bit 2)
-	mutualRequired := false
-	if len(authResult.APReq.APOptions.Bytes) > 0 {
-		mutualRequired = (authResult.APReq.APOptions.Bytes[0] & 0x20) != 0
-	}
+	mutualRequired := len(authResult.APReq.APOptions.Bytes) > 0 &&
+		(authResult.APReq.APOptions.Bytes[0]&apOptionsMutualRequired) != 0
 
 	logger.Debug("AP-REQ verified via shared KerberosService",
 		"principal", authResult.Principal,
@@ -118,7 +128,7 @@ func (v *Krb5Verifier) VerifyToken(gssToken []byte) (*VerifiedContext, error) {
 			logger.Debug("Failed to build AP-REP (non-fatal)", "error", buildErr)
 		} else {
 			// NFS-specific: wrap raw AP-REP in GSS-API token (0x60 + OID + 0x0200)
-			apRepToken = wrapGSSToken(rawAPRep, 0x0200)
+			apRepToken = wrapGSSToken(rawAPRep, gssTokenIDAPRep)
 			logger.Debug("Built GSS-wrapped AP-REP token (mutual auth required)",
 				"raw_len", len(rawAPRep),
 				"wrapped_len", len(apRepToken),
@@ -205,13 +215,8 @@ func extractAPReq(token []byte) ([]byte, error) {
 	}
 
 	tokenID := (uint16(token[offset]) << 8) | uint16(token[offset+1])
-	if tokenID != 0x0100 {
-		// Not an AP-REQ token ID. This could be:
-		// - 0x0200: AP-REP
-		// - 0x0300: Wrap (integrity)
-		// - 0x0400: Wrap (privacy)
-		// For INIT, we expect AP-REQ.
-		return nil, fmt.Errorf("unexpected krb5 token ID: 0x%04x (expected 0x0100 for AP-REQ)", tokenID)
+	if tokenID != gssTokenIDAPReq {
+		return nil, fmt.Errorf("unexpected krb5 token ID: 0x%04x (expected 0x%04x for AP-REQ)", tokenID, gssTokenIDAPReq)
 	}
 	offset += 2
 
@@ -513,7 +518,7 @@ func (p *GSSProcessor) handleInit(cred *RPCGSSCredV1, requestBody []byte) *GSSPr
 		return &GSSProcessResult{
 			GSSReply:  errResBytes,
 			IsControl: true,
-			Err:       fmt.Errorf("GSS INIT failed: %w", err),
+			Err:       fmt.Errorf("verify GSS INIT token: %w", err),
 		}
 	}
 
@@ -683,7 +688,7 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 				"error", err,
 			)
 			return &GSSProcessResult{
-				Err: fmt.Errorf("integrity unwrap failed: %w", err),
+				Err: fmt.Errorf("unwrap integrity: %w", err),
 			}
 		}
 		processedData = args
@@ -697,7 +702,7 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 				"error", err,
 			)
 			return &GSSProcessResult{
-				Err: fmt.Errorf("privacy unwrap failed: %w", err),
+				Err: fmt.Errorf("unwrap privacy: %w", err),
 			}
 		}
 		processedData = args
@@ -724,7 +729,7 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 				"error", err,
 			)
 			return &GSSProcessResult{
-				Err: fmt.Errorf("identity mapping failed for %s@%s: %w", gssCtx.Principal, gssCtx.Realm, err),
+				Err: fmt.Errorf("map identity for %s@%s: %w", gssCtx.Principal, gssCtx.Realm, err),
 			}
 		}
 		if resolved == nil {
@@ -737,8 +742,7 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 				"principal", gssCtx.Principal,
 				"realm", gssCtx.Realm,
 			)
-			nobody := identity.NobodyIdentity()
-			resolved = nobody
+			resolved = identity.NobodyIdentity()
 		}
 		ident = &metadata.Identity{
 			UID:      &resolved.UID,

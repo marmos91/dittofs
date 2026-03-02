@@ -312,15 +312,12 @@ func (s *Adapter) SetKerberosProvider(provider *kerberos.Provider) {
 
 	// Set default IdentityConfig: strip realm ("alice@REALM" -> "alice").
 	if s.handler.IdentityConfig == nil {
-		s.handler.IdentityConfig = &kerberos.IdentityConfig{
-			StripRealm: true,
-		}
+		s.handler.IdentityConfig = kerberos.DefaultIdentityConfig()
 	}
 
 	logger.Debug("SMB adapter Kerberos provider configured",
 		"principal", provider.ServicePrincipal(),
-		"kerberosServiceCreated", s.handler.KerberosService != nil,
-		"identityConfig", s.handler.IdentityConfig)
+		"stripRealm", s.handler.IdentityConfig.StripRealm)
 }
 
 // ============================================================================

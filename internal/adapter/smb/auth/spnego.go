@@ -231,13 +231,11 @@ func BuildReject() ([]byte, error) {
 	return BuildResponse(NegStateReject, nil, nil)
 }
 
-// KeyUsageAcceptorSign is the Kerberos key usage for acceptor (server) MIC tokens.
-// RFC 4121 Section 2: KG-USAGE-ACCEPTOR-SIGN = 23.
-const KeyUsageAcceptorSign uint32 = 23
-
-// KeyUsageInitiatorSign is the Kerberos key usage for initiator (client) MIC tokens.
-// RFC 4121 Section 2: KG-USAGE-INITIATOR-SIGN = 25.
-const KeyUsageInitiatorSign uint32 = 25
+// Kerberos key usage numbers for GSS-API MIC tokens (RFC 4121 Section 2).
+const (
+	KeyUsageAcceptorSign  uint32 = 23 // KG-USAGE-ACCEPTOR-SIGN (server MIC)
+	KeyUsageInitiatorSign uint32 = 25 // KG-USAGE-INITIATOR-SIGN (client MIC)
+)
 
 // ComputeMechListMIC computes a GSS-API MIC over the SPNEGO mechList for downgrade protection.
 // Per RFC 4178, the MIC protects the DER-encoded SEQUENCE OF OIDs from the original NegTokenInit.
@@ -279,7 +277,7 @@ func VerifyMechListMIC(sessionKey types.EncryptionKey, mechListBytes []byte, mic
 		return fmt.Errorf("verify mechListMIC: %w", err)
 	}
 	if !ok {
-		return fmt.Errorf("mechListMIC verification failed")
+		return fmt.Errorf("verify mechListMIC: checksum mismatch")
 	}
 
 	return nil

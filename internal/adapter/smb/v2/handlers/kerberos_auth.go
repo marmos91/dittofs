@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/jcmturner/gofork/encoding/asn1"
+
 	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -11,26 +12,9 @@ import (
 )
 
 // handleKerberosAuth handles Kerberos authentication via SPNEGO.
-//
-// This method validates the AP-REQ from the SPNEGO MechToken using the shared
-// KerberosService, extracts the session key (with authenticator subkey preference),
-// normalizes it to 16 bytes for SMB3 KDF, resolves the principal to a DittoFS
-// username, and creates an authenticated session with signing/encryption keys.
-//
-// The Kerberos auth path is a single round-trip (unlike NTLM's multi-step
-// handshake): client sends AP-REQ, server validates and responds with AP-REP
-// in a SPNEGO accept-complete token.
-//
-// Parameters:
-//   - ctx: SMB handler context
-//   - mechToken: The Kerberos AP-REQ extracted from the SPNEGO NegTokenInit
-//   - parsedToken: The parsed SPNEGO token (for OID matching and MIC verification)
-//
-// Returns:
-//   - SUCCESS with SPNEGO accept-complete wrapping the AP-REP on successful auth
-//   - STATUS_LOGON_FAILURE on invalid ticket, expired ticket, or unknown user
-//
-// [MS-SMB2] Section 3.3.5.5.3 - Handling GSS-API Authentication
+// Validates the AP-REQ, normalizes the session key to 16 bytes for SMB3 KDF,
+// resolves the principal to a DittoFS username, and creates an authenticated session.
+// [MS-SMB2] Section 3.3.5.5.3
 func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, parsedToken *auth.ParsedToken) (*HandlerResult, error) {
 	// Check that KerberosService is configured (not just the provider).
 	// KerberosService encapsulates AP-REQ verification, replay detection,
@@ -112,10 +96,7 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 		"signingEnabled", sess.ShouldSign(),
 		"encryptData", sess.ShouldEncrypt())
 
-	// Build SPNEGO accept-complete response with real AP-REP token.
-
-	// Build mutual auth token (AP-REP) via shared service.
-	// The raw AP-REP is used as the SPNEGO mechToken (responseToken).
+	// Build mutual auth AP-REP via shared service for SPNEGO accept-complete response.
 	apRepToken, err := h.KerberosService.BuildMutualAuth(&authResult.APReq, authResult.SessionKey)
 	if err != nil {
 		logger.Debug("Failed to build AP-REP for mutual auth", "error", err)
@@ -167,14 +148,18 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 	), nil
 }
 
+// smbSessionKeyLen is the fixed session key size for SMB3 key derivation.
+// Per MS-SMB2 Section 3.3.5.5.3, session keys are normalized to 16 bytes.
+const smbSessionKeyLen = 16
+
 // normalizeSessionKey normalizes a Kerberos session key to exactly 16 bytes
 // for use in SMB3 key derivation (KDF). Per MS-SMB2 Section 3.3.5.5.3:
 //   - Keys longer than 16 bytes are truncated (e.g., AES-256 -> 16 bytes)
 //   - Keys shorter than 16 bytes are zero-padded (e.g., DES 8 bytes -> 16 bytes)
 //   - Keys exactly 16 bytes pass through unchanged
 func normalizeSessionKey(key []byte) []byte {
-	normalized := make([]byte, 16)
-	copy(normalized, key) // truncates if >16, zero-pads if <16
+	normalized := make([]byte, smbSessionKeyLen)
+	copy(normalized, key) // truncates if longer, zero-pads if shorter
 	return normalized
 }
 
