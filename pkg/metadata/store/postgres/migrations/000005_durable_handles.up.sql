@@ -7,14 +7,14 @@ CREATE TABLE durable_handles (
     file_id           BYTEA NOT NULL,
     path              TEXT NOT NULL,
     share_name        TEXT NOT NULL,
-    desired_access    INTEGER NOT NULL,
-    share_access      INTEGER NOT NULL,
-    create_options    INTEGER NOT NULL,
+    desired_access    BIGINT NOT NULL,
+    share_access      BIGINT NOT NULL,
+    create_options    BIGINT NOT NULL,
     metadata_handle   BYTEA NOT NULL,
     payload_id        TEXT,
     oplock_level      SMALLINT NOT NULL DEFAULT 0,
     lease_key         BYTEA,
-    lease_state       INTEGER NOT NULL DEFAULT 0,
+    lease_state       BIGINT NOT NULL DEFAULT 0,
     create_guid       BYTEA,
     app_instance_id   BYTEA,
     username          TEXT NOT NULL,
@@ -29,14 +29,14 @@ CREATE TABLE durable_handles (
     CONSTRAINT valid_session_key_hash CHECK (length(session_key_hash) = 32)
 );
 
--- Index for V2 reconnect: lookup by CreateGuid
-CREATE INDEX idx_durable_handles_create_guid ON durable_handles(create_guid) WHERE create_guid IS NOT NULL;
+-- Unique index for V2 reconnect: lookup by CreateGuid (only one handle per CreateGuid)
+CREATE UNIQUE INDEX idx_durable_handles_create_guid ON durable_handles(create_guid) WHERE create_guid IS NOT NULL;
 
 -- Index for Hyper-V failover: lookup by AppInstanceId
 CREATE INDEX idx_durable_handles_app_instance_id ON durable_handles(app_instance_id) WHERE app_instance_id IS NOT NULL;
 
--- Index for V1 reconnect: lookup by FileID
-CREATE INDEX idx_durable_handles_file_id ON durable_handles(file_id);
+-- Unique index for V1 reconnect: lookup by FileID (only one durable handle per FileID)
+CREATE UNIQUE INDEX idx_durable_handles_file_id ON durable_handles(file_id);
 
 -- Index for share-level management
 CREATE INDEX idx_durable_handles_share_name ON durable_handles(share_name);

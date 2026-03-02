@@ -174,3 +174,40 @@ jobs:
           name: smbtorture-${{ matrix.profile }}
           path: test/smb-conformance/results/smbtorture-*/
           retention-days: 30
+
+  smbtorture-kerberos:
+    name: smbtorture Kerberos
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run smbtorture with Kerberos
+        run: |
+          cd test/smb-conformance/smbtorture
+          ./run.sh --profile memory --verbose
+        env:
+          SMBTORTURE_AUTH: kerberos
+
+      - name: Add step summary
+        if: always()
+        run: |
+          RESULTS_DIR=$(ls -td test/smb-conformance/results/smbtorture-*/ 2>/dev/null | head -1)
+          if [ -n "$RESULTS_DIR" ] && [ -f "$RESULTS_DIR/summary.txt" ]; then
+            echo "## smbtorture Kerberos" >> "$GITHUB_STEP_SUMMARY"
+            cat "$RESULTS_DIR/summary.txt" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## smbtorture Kerberos" >> "$GITHUB_STEP_SUMMARY"
+            echo "No results found." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smbtorture-kerberos
+          path: test/smb-conformance/results/smbtorture-*/
+          retention-days: 30

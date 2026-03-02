@@ -192,6 +192,7 @@ func RunSMBClient(t *testing.T, port int, user, pass, share, command string) (st
 		shareUNC,
 		"-A", authFile,
 		"-p", fmt.Sprintf("%d", port),
+		"--max-protocol=SMB3",
 		"-c", command,
 	}
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"sort"
 	"time"
 
 	smblease "github.com/marmos91/dittofs/internal/adapter/smb/lease"
@@ -390,26 +389,38 @@ type durableHandleStoreProvider interface {
 	DurableHandleStore() lock.DurableHandleStore
 }
 
-// findDurableHandleStore searches registered metadata stores for one that
-// implements durableHandleStoreProvider and returns the DurableHandleStore.
-// Iterates stores in sorted order for deterministic selection.
-// Returns nil if no metadata store supports durable handles.
+// findDurableHandleStore returns the DurableHandleStore from the single
+// registered metadata store that implements durableHandleStoreProvider.
+// To avoid persisting durable handles into the wrong store, this helper
+// only resolves a store when exactly one metadata store is registered.
+// Returns nil if no suitable metadata store exists or if multiple stores
+// are registered (ambiguous).
 func (s *Adapter) findDurableHandleStore() lock.DurableHandleStore {
 	if s.Registry == nil {
 		return nil
 	}
 
 	names := s.Registry.ListMetadataStores()
-	sort.Strings(names)
+	if len(names) == 0 {
+		return nil
+	}
 
-	for _, name := range names {
-		metaStore, err := s.Registry.GetMetadataStore(name)
-		if err != nil {
-			continue
-		}
-		if provider, ok := metaStore.(durableHandleStoreProvider); ok {
-			return provider.DurableHandleStore()
-		}
+	// When multiple metadata stores exist, we cannot safely pick one because
+	// durable handles for different shares could end up in the wrong store.
+	// TODO: resolve DurableHandleStore per-share for multi-store topologies.
+	if len(names) > 1 {
+		logger.Warn("findDurableHandleStore: multiple metadata stores registered, "+
+			"durable handles disabled to avoid cross-store mixing",
+			"stores", len(names))
+		return nil
+	}
+
+	metaStore, err := s.Registry.GetMetadataStore(names[0])
+	if err != nil {
+		return nil
+	}
+	if provider, ok := metaStore.(durableHandleStoreProvider); ok {
+		return provider.DurableHandleStore()
 	}
 
 	return nil

@@ -107,6 +107,7 @@ func (sm *StateManager) GrantDirDelegation(clientID uint64, dirFH []byte, notifM
 	sm.delegByFile[fhKey] = append(sm.delegByFile[fhKey], deleg)
 
 	if sm.lockManager != nil {
+		// See GrantDelegation comment: NFS delegations lack share context at this layer.
 		lockDeleg := lock.NewDelegation(lock.DelegTypeRead, fmt.Sprintf("%d", clientID), "", true)
 		lockDeleg.NotificationMask = notifMask
 		if err := sm.lockManager.GrantDelegation(fhKey, lockDeleg); err != nil {

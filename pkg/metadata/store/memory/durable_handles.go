@@ -56,6 +56,11 @@ func (s *memoryDurableStore) GetDurableHandleByFileID(ctx context.Context, fileI
 		return nil, err
 	}
 
+	// Zero FileID would match all handles without a real FileID — reject early
+	if fileID == ([16]byte{}) {
+		return nil, nil
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

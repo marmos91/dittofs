@@ -45,11 +45,11 @@ func NewDurableHandleScavenger(
 
 // Run starts the scavenger loop. It blocks until ctx is cancelled.
 //
-// On first run, it adjusts timeouts for handles that survived a server restart.
+// On first run, it expires handles whose timeout elapsed during server downtime.
 // Then it enters a ticker loop, calling expireHandles on each tick.
 func (s *DurableHandleScavenger) Run(ctx context.Context) {
-	// Adjust timeouts for handles from a previous server instance
-	s.adjustTimeoutsForRestart(ctx)
+	// Expire handles from a previous server instance whose timeout elapsed during downtime
+	s.expireHandlesFromPreviousInstance(ctx)
 
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
@@ -64,9 +64,9 @@ func (s *DurableHandleScavenger) Run(ctx context.Context) {
 	}
 }
 
-// adjustTimeoutsForRestart checks persisted handles from a previous server
-// instance and expires those whose timeout has already elapsed during downtime.
-func (s *DurableHandleScavenger) adjustTimeoutsForRestart(ctx context.Context) {
+// expireHandlesFromPreviousInstance expires persisted handles from a previous
+// server instance whose timeout elapsed during downtime. No timeout fields are mutated.
+func (s *DurableHandleScavenger) expireHandlesFromPreviousInstance(ctx context.Context) {
 	handles, err := s.store.ListDurableHandles(ctx)
 	if err != nil {
 		logger.Warn("DurableHandleScavenger: failed to list handles for restart adjustment",

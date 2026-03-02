@@ -115,29 +115,27 @@ func TestSMB3_SmbClient_DialectNegotiation(t *testing.T) {
 
 	t.Logf("smbclient debug output:\n%s", output)
 
-	// Check for SMB2/3 protocol indicators in the debug output.
-	// Different versions of smbclient produce different output formats.
-	// Common patterns:
-	//   "using session key" (SMB2/3 established)
-	//   "selected_protocol" or "Protocol negotiated:" (protocol version)
-	//   "0x0300" (SMB 3.0.0), "0x0302" (SMB 3.0.2), "0x0311" (SMB 3.1.1)
-	//   "SMB2_", "SMB3_" in various log lines
-	hasSMBIndicator := strings.Contains(output, "SMB2") ||
-		strings.Contains(output, "SMB3") ||
-		strings.Contains(output, "smb2") ||
-		strings.Contains(output, "smb3") ||
-		strings.Contains(output, "0x03") ||
-		strings.Contains(output, "negotiate")
+	// Assert that SMB2/3 protocol was actually negotiated by checking for
+	// concrete dialect indicators in the debug output. smbclient at debug level 1+
+	// logs protocol negotiation details containing dialect hex codes or protocol names.
+	hasSMB3Dialect := strings.Contains(output, "0x0300") || // SMB 3.0.0
+		strings.Contains(output, "0x0302") || // SMB 3.0.2
+		strings.Contains(output, "0x0311") // SMB 3.1.1
 
-	// Log what we found for diagnostic purposes
-	if hasSMBIndicator {
-		t.Log("SMB2/3 protocol indicators found in smbclient output")
-	} else {
-		t.Log("No explicit SMB2/3 protocol indicator found (smbclient debug format may vary)")
+	hasSMBIndicator := hasSMB3Dialect ||
+		strings.Contains(output, "SMB3") ||
+		strings.Contains(output, "smb3") ||
+		strings.Contains(output, "SMB2") ||
+		strings.Contains(output, "smb2")
+
+	assert.True(t, hasSMBIndicator,
+		"Expected SMB2/3 protocol indicator in smbclient debug output, got:\n%s", output)
+
+	if hasSMB3Dialect {
+		t.Log("SMB3 dialect confirmed in negotiation output")
 	}
 
-	// The key assertion: the connection succeeded (no fatal NT_STATUS error)
-	// which means protocol negotiation completed successfully
+	// Verify no fatal errors occurred during negotiation
 	assert.NotContains(t, output, "NT_STATUS_NOT_SUPPORTED",
 		"Server should support the negotiated protocol")
 	assert.NotContains(t, output, "NT_STATUS_LOGON_FAILURE",

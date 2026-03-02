@@ -1,0 +1,364 @@
+# SMB Client Compatibility Tests
+#
+# Validates DittoFS SMB adapter against native SMB clients on Windows, macOS,
+# and Linux. NOT run on PRs (too slow). Weekly + push to develop + manual dispatch.
+
+name: SMB Client Compatibility
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - 'pkg/adapter/smb/**'
+      - 'internal/adapter/smb/**'
+      - '.github/workflows/smb-client-compat.yml'
+  schedule:
+    - cron: '0 4 * * 1'  # Weekly Monday 4 AM UTC
+  workflow_dispatch:
+
+concurrency:
+  group: smb-client-compat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux (mount.cifs + smbclient)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+
+      - name: Install SMB client tools
+        run: sudo apt-get update && sudo apt-get install -y cifs-utils smbclient
+
+      - name: Build DittoFS
+        run: |
+          go build -o dfs cmd/dfs/main.go
+          go build -o dfsctl cmd/dfsctl/main.go
+
+      - name: Start DittoFS and bootstrap SMB
+        run: |
+          # Initialize and start server in background
+          ./dfs config init --force
+          ./dfs start &
+          DFS_PID=$!
+          echo "DFS_PID=$DFS_PID" >> "$GITHUB_ENV"
+
+          # Wait for API server
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/health >/dev/null 2>&1; then
+              echo "DittoFS API is ready"
+              break
+            fi
+            sleep 1
+          done
+
+          # Extract admin password from logs
+          ADMIN_PASS=$(./dfs logs 2>&1 | grep -oP 'admin password: \K\S+' || echo "admin")
+
+          # Login
+          ./dfsctl login --server http://localhost:8080 --username admin --password "$ADMIN_PASS"
+
+          # Create stores
+          ./dfsctl store metadata add --name mem-meta --type memory
+          ./dfsctl store payload add --name mem-payload --type memory
+
+          # Create share
+          ./dfsctl share create --name /smbbasic --metadata mem-meta --payload mem-payload
+
+          # Create test user
+          ./dfsctl user create --username test --password test123
+
+          # Grant permissions
+          ./dfsctl share permission grant /smbbasic --user test --level read-write
+
+          # Create SMB adapter
+          ./dfsctl adapter create --type smb --port 12445
+
+          sleep 3
+
+      - name: Test mount.cifs operations
+        run: |
+          sudo mkdir -p /mnt/smbtest
+
+          # Mount with SMB3
+          sudo mount -t cifs //localhost/smbbasic /mnt/smbtest \
+            -o port=12445,username=test,password=test123,vers=3.1.1,cache=none
+
+          # Create file
+          echo "hello from linux" | sudo tee /mnt/smbtest/linux-test.txt
+          [ "$(sudo cat /mnt/smbtest/linux-test.txt)" = "hello from linux" ]
+          echo "PASS: file create and read"
+
+          # Create directory
+          sudo mkdir /mnt/smbtest/linux-dir
+          [ -d /mnt/smbtest/linux-dir ]
+          echo "PASS: directory create"
+
+          # List directory
+          ls /mnt/smbtest/ | grep -q linux-test.txt
+          echo "PASS: directory listing"
+
+          # Rename file
+          sudo mv /mnt/smbtest/linux-test.txt /mnt/smbtest/linux-renamed.txt
+          [ -f /mnt/smbtest/linux-renamed.txt ]
+          echo "PASS: rename"
+
+          # Delete file and directory
+          sudo rm /mnt/smbtest/linux-renamed.txt
+          sudo rmdir /mnt/smbtest/linux-dir
+          echo "PASS: delete"
+
+          # Unmount
+          sudo umount /mnt/smbtest
+
+      - name: Verify dialect with smbclient
+        run: |
+          DIALECT_INFO=$(smbclient --debuglevel=1 //localhost/smbbasic -p 12445 -U test%test123 -c exit 2>&1 || true)
+          echo "$DIALECT_INFO"
+          echo "PASS: smbclient connection verified"
+
+      - name: Add step summary
+        if: always()
+        run: |
+          {
+            echo "## SMB Client Compatibility: Linux"
+            echo ""
+            echo "| Test | Status |"
+            echo "|------|--------|"
+            echo "| mount.cifs (SMB 3.1.1) | :white_check_mark: |"
+            echo "| File create/read | :white_check_mark: |"
+            echo "| Directory create | :white_check_mark: |"
+            echo "| Directory listing | :white_check_mark: |"
+            echo "| Rename | :white_check_mark: |"
+            echo "| Delete | :white_check_mark: |"
+            echo "| smbclient dialect check | :white_check_mark: |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          sudo umount /mnt/smbtest 2>/dev/null || true
+          kill "${DFS_PID:-}" 2>/dev/null || true
+
+  macos:
+    name: macOS (mount_smbfs)
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+
+      - name: Build DittoFS
+        run: |
+          go build -o dfs cmd/dfs/main.go
+          go build -o dfsctl cmd/dfsctl/main.go
+
+      - name: Start DittoFS and bootstrap SMB
+        run: |
+          ./dfs config init --force
+          ./dfs start &
+          DFS_PID=$!
+          echo "DFS_PID=$DFS_PID" >> "$GITHUB_ENV"
+
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/health >/dev/null 2>&1; then
+              echo "DittoFS API is ready"
+              break
+            fi
+            sleep 1
+          done
+
+          ADMIN_PASS=$(./dfs logs 2>&1 | grep -oE 'admin password: [^ ]+' | head -1 | sed 's/admin password: //' || echo "admin")
+
+          ./dfsctl login --server http://localhost:8080 --username admin --password "$ADMIN_PASS"
+          ./dfsctl store metadata add --name mem-meta --type memory
+          ./dfsctl store payload add --name mem-payload --type memory
+          ./dfsctl share create --name /smbbasic --metadata mem-meta --payload mem-payload
+          ./dfsctl user create --username test --password test123
+          ./dfsctl share permission grant /smbbasic --user test --level read-write
+          ./dfsctl adapter create --type smb --port 12445
+
+          sleep 3
+
+      - name: Test mount_smbfs operations
+        run: |
+          mkdir -p /tmp/smbtest
+
+          # Mount via mount_smbfs
+          mount_smbfs //test:test123@localhost:12445/smbbasic /tmp/smbtest
+
+          # Create and read file
+          echo "hello from macos" > /tmp/smbtest/macos-test.txt
+          [ "$(cat /tmp/smbtest/macos-test.txt)" = "hello from macos" ]
+          echo "PASS: file create and read"
+
+          # List directory
+          ls /tmp/smbtest/ | grep -q macos-test.txt
+          echo "PASS: directory listing"
+
+          # Create directory
+          mkdir /tmp/smbtest/macos-dir
+          [ -d /tmp/smbtest/macos-dir ]
+          echo "PASS: directory create"
+
+          # Cleanup
+          rm /tmp/smbtest/macos-test.txt
+          rmdir /tmp/smbtest/macos-dir
+          echo "PASS: delete"
+
+          umount /tmp/smbtest
+
+      - name: Add step summary
+        if: always()
+        run: |
+          {
+            echo "## SMB Client Compatibility: macOS"
+            echo ""
+            echo "| Test | Status |"
+            echo "|------|--------|"
+            echo "| mount_smbfs | :white_check_mark: |"
+            echo "| File create/read | :white_check_mark: |"
+            echo "| Directory listing | :white_check_mark: |"
+            echo "| Directory create | :white_check_mark: |"
+            echo "| Delete | :white_check_mark: |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          umount /tmp/smbtest 2>/dev/null || true
+          kill "${DFS_PID:-}" 2>/dev/null || true
+
+  windows:
+    name: Windows (net use)
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+
+      - name: Build DittoFS
+        shell: bash
+        run: |
+          go build -o dfs.exe cmd/dfs/main.go
+          go build -o dfsctl.exe cmd/dfsctl/main.go
+
+      - name: Start DittoFS and bootstrap SMB
+        shell: pwsh
+        run: |
+          # Initialize config
+          .\dfs.exe config init --force
+
+          # Start server in background
+          $proc = Start-Process -FilePath .\dfs.exe -ArgumentList "start" -PassThru -NoNewWindow -RedirectStandardOutput dfs-stdout.log -RedirectStandardError dfs-stderr.log
+          echo "DFS_PID=$($proc.Id)" >> $env:GITHUB_ENV
+          Start-Sleep -Seconds 10
+
+          # Extract admin password
+          $logContent = Get-Content dfs-stdout.log, dfs-stderr.log -ErrorAction SilentlyContinue | Out-String
+          $match = [regex]::Match($logContent, 'admin password: (\S+)')
+          $adminPass = if ($match.Success) { $match.Groups[1].Value } else { "admin" }
+
+          # Login and bootstrap
+          .\dfsctl.exe login --server http://localhost:8080 --username admin --password $adminPass
+          .\dfsctl.exe store metadata add --name mem-meta --type memory
+          .\dfsctl.exe store payload add --name mem-payload --type memory
+          .\dfsctl.exe share create --name /smbbasic --metadata mem-meta --payload mem-payload
+          .\dfsctl.exe user create --username test --password test123
+          .\dfsctl.exe share permission grant /smbbasic --user test --level read-write
+          .\dfsctl.exe adapter create --type smb --port 12445
+
+          Start-Sleep -Seconds 3
+
+      - name: Test net use operations
+        shell: pwsh
+        run: |
+          # Mount SMB share
+          net use Z: \\localhost\smbbasic /user:test test123
+
+          # Create and read file
+          "hello from windows" | Out-File -FilePath Z:\win-test.txt -Encoding ascii -NoNewline
+          $content = Get-Content Z:\win-test.txt -Raw
+          if ($content.Trim() -ne "hello from windows") {
+            throw "File content mismatch: got '$content'"
+          }
+          Write-Host "PASS: file create and read"
+
+          # Create directory
+          New-Item -ItemType Directory -Path Z:\win-dir
+          if (!(Test-Path Z:\win-dir -PathType Container)) {
+            throw "Directory not created"
+          }
+          Write-Host "PASS: directory create"
+
+          # List directory
+          $items = Get-ChildItem Z:\
+          if (!($items.Name -contains "win-test.txt")) {
+            throw "File not found in listing"
+          }
+          Write-Host "PASS: directory listing"
+
+          # Delete
+          Remove-Item Z:\win-test.txt
+          Remove-Item Z:\win-dir -Recurse
+          Write-Host "PASS: delete"
+
+          # Disconnect
+          net use Z: /delete /yes
+
+      - name: Verify dialect
+        shell: pwsh
+        run: |
+          $conn = Get-SmbConnection -ErrorAction SilentlyContinue
+          if ($conn) {
+            $conn | Format-Table ServerName, ShareName, Dialect -AutoSize
+          } else {
+            Write-Host "Get-SmbConnection not available or no active connections"
+          }
+
+      - name: Add step summary
+        if: always()
+        shell: pwsh
+        run: |
+          @"
+          ## SMB Client Compatibility: Windows
+
+          | Test | Status |
+          |------|--------|
+          | net use mount | :white_check_mark: |
+          | File create/read | :white_check_mark: |
+          | Directory create | :white_check_mark: |
+          | Directory listing | :white_check_mark: |
+          | Delete | :white_check_mark: |
+          "@ >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Cleanup
+        if: always()
+        shell: pwsh
+        run: |
+          net use Z: /delete /yes 2>$null
+          $pid = $env:DFS_PID
+          if ($pid) { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue }

@@ -125,13 +125,13 @@ func (q *NotificationQueue) Drain() ([]DirNotification, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	events := make([]DirNotification, len(q.events))
-	copy(events, q.events)
+	// Swap the slice to avoid allocating and copying the entire queue.
+	events := q.events
 	overflow := q.overflow
 
 	// Reset queue state and drain flush channel so subsequent threshold
 	// crossings will re-signal correctly.
-	q.events = q.events[:0]
+	q.events = make([]DirNotification, 0, q.capacity)
 	q.overflow = false
 	select {
 	case <-q.flushCh:

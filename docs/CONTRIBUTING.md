@@ -410,6 +410,117 @@ Log appropriately:
 - `logger.Debug()`: Expected/normal errors (permission denied, file not found)
 - `logger.Error()`: Unexpected errors (I/O errors, invariant violations)
 
+## CI Workflows
+
+DittoFS uses GitHub Actions with a tiered CI strategy: fast checks on PRs, comprehensive validation on push, and full matrix testing weekly.
+
+### Workflow Overview
+
+| Workflow | Trigger | Purpose | Duration |
+|----------|---------|---------|----------|
+| `lint.yml` | PR, push | Go lint + vet | ~2 min |
+| `unit-tests.yml` | PR, push | Unit tests with race detection | ~3 min |
+| `windows-build.yml` | PR, push | Windows build + unit tests | ~5 min |
+| `integration-tests.yml` | push, weekly | Integration tests (S3, BadgerDB) | ~10 min |
+| `e2e-tests.yml` | PR, push | E2E tests (NFS, SMB, cross-protocol, Kerberos) | ~15 min |
+| `smb-conformance.yml` | PR (memory), push (all), weekly | WPTS BVT + smbtorture + Kerberos | ~20 min |
+| `smb-client-compat.yml` | push, weekly | Windows/macOS/Linux SMB client testing | ~10 min |
+| `posix-tests.yml` | push, weekly | POSIX compliance (pjdfstest) | ~15 min |
+| `operator-tests.yml` | push, weekly | Operational scenario tests | ~10 min |
+
+### What Runs on PR (Fast, Must-Pass Before Merge)
+
+These workflows gate pull request merges and should complete in under 5 minutes:
+
+- **lint.yml** -- Go formatting, vetting, and linting
+- **unit-tests.yml** -- All unit tests with race detection
+- **windows-build.yml** -- Windows cross-compilation verification
+- **smb-conformance.yml** -- Memory-only WPTS BVT + memory-only smbtorture (fast feedback)
+- **e2e-tests.yml** -- Full E2E suite including SMB3, cross-protocol, and Kerberos tests
+
+### What Runs on Push to Develop (Comprehensive)
+
+These run after merging to develop and should complete in under 30 minutes:
+
+- Everything from PR checks
+- **smb-conformance.yml** -- All storage profiles (memory, memory-fs, badger-fs, badger-s3, postgres-s3)
+- **smb-client-compat.yml** -- Multi-OS client compatibility (Linux, macOS, Windows)
+- **integration-tests.yml** -- Backend-specific integration tests
+- **posix-tests.yml** -- POSIX compliance validation
+
+### What Runs Weekly (Full Matrix)
+
+The weekly cron runs the complete test matrix (Monday mornings UTC):
+
+- Everything from push checks
+- **smb-conformance.yml** -- Kerberos smbtorture (runs only on push/weekly, not PRs)
+- **operator-tests.yml** -- Operational scenarios
+- Auto-creates GitHub issues for regressions
+
+### How to Manually Trigger Workflows
+
+All workflows support `workflow_dispatch` for manual triggering:
+
+```bash
+# Trigger via GitHub CLI
+gh workflow run smb-conformance.yml
+gh workflow run smb-conformance.yml -f profile=badger-fs
+gh workflow run smb-client-compat.yml
+gh workflow run e2e-tests.yml
+```
+
+Or use the GitHub Actions UI: navigate to the workflow, click "Run workflow", and select options.
+
+### Interpreting Conformance Test Results
+
+When a conformance test fails in CI:
+
+1. **Check the step summary** -- GitHub Actions provides a table with pass/fail/known counts
+2. **Download artifacts** -- TRX files (WPTS) and log files (smbtorture) are uploaded as artifacts
+3. **Check KNOWN_FAILURES.md** -- If the failing test is in the known failures list, it was expected
+4. **For new failures:**
+   - If the failure is in a genuinely unimplemented feature, add it to `KNOWN_FAILURES.md`
+   - If the failure is in an implemented feature, it is a regression and needs fixing
+   - Use `--keep` flag locally to leave containers running for debugging
+
+### How to Add New CI Jobs
+
+Follow this template pattern for new workflow jobs:
+
+```yaml
+  new-job:
+    name: Descriptive Job Name
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: >-
+          ${{
+            github.event_name == 'pull_request'
+              && fromJson('["memory"]')
+            || fromJson('["memory", "memory-fs", "badger-fs"]')
+          }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: ./your-test-script.sh --profile ${{ matrix.profile }}
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ matrix.profile }}
+          path: results/
+          retention-days: 30
+```
+
+Key guidelines:
+- Use matrix strategy with tiered profiles (memory-only on PR, all on push/weekly)
+- Always set `timeout-minutes` to prevent runaway jobs
+- Use `fail-fast: false` so one profile failure does not cancel others
+- Upload artifacts with `if: always()` so results are available even on failure
+- Add concurrency groups to prevent duplicate runs
+
 ## Submitting Changes
 
 1. Fork the repository

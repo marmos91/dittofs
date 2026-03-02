@@ -3,9 +3,10 @@
 # Tests aspects NOT covered by pjdfstest POSIX compliance:
 # - Scalability (large files, many files)
 # - Store interoperability (all 8 configurations)
-# - Protocol interoperability (NFS↔SMB)
+# - Protocol interoperability (NFS and SMB cross-protocol)
 # - Cache behavior
 # - Server configurations
+# - SMB3 client tests (go-smb2, smbclient, Kerberos)
 #
 # See test/e2e/README.md for test philosophy and structure.
 
@@ -131,7 +132,7 @@ jobs:
           echo "### Test Suites" >> $GITHUB_STEP_SUMMARY
           echo "| Suite | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-          for suite in Server Users Groups Shares Permissions MetadataStores PayloadStores Adapters Portmapper Backup Context FileOperations CrossProtocol StoreMatrix Kerberos; do
+          for suite in Server Users Groups Shares Permissions MetadataStores PayloadStores Adapters Portmapper Backup Context FileOperations CrossProtocol StoreMatrix Kerberos SMB3 SMB3_Kerberos; do
             if grep -q "Test${suite}.*PASS" "$GITHUB_WORKSPACE/e2e.log"; then
               echo "| ${suite} | :white_check_mark: |" >> $GITHUB_STEP_SUMMARY
             elif grep -q "Test${suite}.*FAIL" "$GITHUB_WORKSPACE/e2e.log"; then

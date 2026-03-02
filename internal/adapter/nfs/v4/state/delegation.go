@@ -237,6 +237,11 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 		if deleg.DelegType == types.OPEN_DELEGATE_WRITE {
 			lmDelegType = lock.DelegTypeWrite
 		}
+		// NFS delegations are not share-scoped (the StateManager operates at the
+		// stateid level without share context). ShareName is left empty here.
+		// This reduces observability in LockManager logs but does not affect
+		// correctness. To add share context, GrantDelegation would need to
+		// accept a shareName parameter threaded from the OPEN handler.
 		lockDeleg := lock.NewDelegation(lmDelegType, fmt.Sprintf("%d", clientID), "", false)
 		if err := sm.lockManager.GrantDelegation(fhKey, lockDeleg); err != nil {
 			logger.Debug("LockManager delegation grant failed, continuing with local state",

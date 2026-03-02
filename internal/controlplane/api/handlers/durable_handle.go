@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/hex"
 	"net/http"
 	"time"
@@ -148,23 +149,11 @@ func (dh *DurableHandleHandler) ForceClose(w http.ResponseWriter, r *http.Reques
 			continue
 		}
 
-		// Found the handle -- perform cleanup and delete
-
-		// Release byte-range locks
-		metaSvc := dh.rt.GetMetadataService()
-		if len(h.MetadataHandle) > 0 && metaSvc != nil {
-			_ = metaSvc.UnlockAllForSession(r.Context(), h.MetadataHandle, 0)
-		}
-
-		// Flush payload cache (consistent with scavenger cleanup)
-		if h.PayloadID != "" {
-			if payloadSvc := dh.rt.GetBlockService(); payloadSvc != nil {
-				if _, flushErr := payloadSvc.Flush(r.Context(), metadata.PayloadID(h.PayloadID)); flushErr != nil {
-					logger.Debug("DurableHandleHandler.ForceClose: flush failed",
-						"id", handleID, "error", flushErr)
-				}
-			}
-		}
+		// Found the handle -- perform cleanup and delete.
+		// SYNC: These cleanup steps must match DurableHandleScavenger.cleanupAndDelete()
+		// in internal/adapter/smb/v2/handlers/durable_scavenger.go.
+		// If you add a cleanup step here, add it there too (and vice versa).
+		cleanupDurableHandle(r.Context(), h, dh.rt, handleID)
 
 		// Delete from store
 		if err := ds.DeleteDurableHandle(r.Context(), handleID); err != nil {
@@ -180,4 +169,29 @@ func (dh *DurableHandleHandler) ForceClose(w http.ResponseWriter, r *http.Reques
 	}
 
 	NotFound(w, "Durable handle not found")
+}
+
+// cleanupDurableHandle releases locks and flushes caches for a durable handle.
+// Does NOT delete the handle from the store (caller is responsible for that).
+//
+// SYNC: These cleanup steps must match DurableHandleScavenger.cleanupAndDelete()
+// in internal/adapter/smb/v2/handlers/durable_scavenger.go.
+func cleanupDurableHandle(ctx context.Context, h *lock.PersistedDurableHandle, rt *runtime.Runtime, handleID string) {
+	// Step 1: Release byte-range locks
+	if metaSvc := rt.GetMetadataService(); metaSvc != nil && len(h.MetadataHandle) > 0 {
+		if err := metaSvc.UnlockAllForSession(ctx, h.MetadataHandle, 0); err != nil {
+			logger.Debug("cleanupDurableHandle: failed to release locks",
+				"id", handleID, "error", err)
+		}
+	}
+
+	// Step 2: Flush payload cache
+	if h.PayloadID != "" {
+		if payloadSvc := rt.GetBlockService(); payloadSvc != nil {
+			if _, err := payloadSvc.Flush(ctx, metadata.PayloadID(h.PayloadID)); err != nil {
+				logger.Debug("cleanupDurableHandle: flush failed",
+					"id", handleID, "error", err)
+			}
+		}
+	}
 }

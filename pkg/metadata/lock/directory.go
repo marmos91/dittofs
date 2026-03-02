@@ -158,7 +158,7 @@ func (lm *Manager) OnDirChange(parentHandle FileHandle, changeType DirChangeType
 		if lock.Delegation != nil && lock.Delegation.IsDirectory && !lock.Delegation.Breaking {
 			lock.Delegation.Breaking = true
 			lock.Delegation.BreakStarted = time.Now()
-			// Recalled is set by the break callback after CB_RECALL is actually sent.
+			lock.Delegation.Recalled = true // Set under lm.mu to avoid data race
 			delegsToBreak = append(delegsToBreak, lock)
 		}
 	}
@@ -181,7 +181,7 @@ func (lm *Manager) OnDirChange(parentHandle FileHandle, changeType DirChangeType
 		lm.dispatchOpLockBreak(handleKey, lock, LeaseStateNone)
 	}
 
-	// Dispatch delegation recalls outside the lock
+	// Dispatch delegation recalls outside the lock (Recalled already set under lm.mu)
 	for _, lock := range delegsToBreak {
 		lm.dispatchDelegationRecall(handleKey, lock)
 	}

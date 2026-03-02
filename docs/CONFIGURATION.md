@@ -923,7 +923,7 @@ adapters:
     durable_handles:
       enabled: true
       default_timeout: 60s
-      scavenger_interval: 30s
+      scavenger_interval: 10s
       max_handles_per_session: 1000
 ```
 
