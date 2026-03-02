@@ -516,9 +516,10 @@ func ProcessAppInstanceId(
 			handler.flushFileCache(ctx, cleanupFile)
 
 			// Release locks if metadata handle is valid
-			if len(h.MetadataHandle) > 0 {
-				metaSvc := handler.Registry.GetMetadataService()
-				_ = metaSvc.UnlockAllForSession(ctx, h.MetadataHandle, 0)
+			if len(h.MetadataHandle) > 0 && handler.Registry != nil {
+				if metaSvc := handler.Registry.GetMetadataService(); metaSvc != nil {
+					_ = metaSvc.UnlockAllForSession(ctx, h.MetadataHandle, 0)
+				}
 			}
 		}
 
