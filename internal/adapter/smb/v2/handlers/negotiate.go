@@ -5,6 +5,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
 	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -104,7 +105,27 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 			body, negotiateContextOffset, negotiateContextCount)
 	}
 
-	// Build response body (65 bytes fixed + optional negotiate contexts).
+	// Build SPNEGO NegHints for the SecurityBuffer.
+	// This tells clients which authentication mechanisms the server supports.
+	kerberosEnabled := h.KerberosProvider != nil
+	ntlmEnabled := h.NtlmEnabled
+	var securityBuffer []byte
+	if negHints, err := auth.BuildNegHints(kerberosEnabled, ntlmEnabled); err == nil {
+		securityBuffer = negHints
+	} else {
+		logger.Debug("Failed to build SPNEGO NegHints", "error", err)
+	}
+	securityBufferLen := uint16(len(securityBuffer))
+
+	// SecurityBufferOffset is relative to SMB2 header start.
+	// SMB2 header = 64 bytes, fixed response body = 64 bytes (offset 0..63),
+	// SecurityBuffer starts at header + 64 = 128.
+	var securityBufferOffset uint16
+	if securityBufferLen > 0 {
+		securityBufferOffset = 128
+	}
+
+	// Build response body (65 bytes fixed + security buffer + optional negotiate contexts).
 	//
 	// [MS-SMB2] 2.2.4 NEGOTIATE Response:
 	//   Offset 0:  StructureSize (2) = 65
@@ -121,9 +142,9 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 	//   Offset 56: SecurityBufferOffset (2)
 	//   Offset 58: SecurityBufferLength (2)
 	//   Offset 60: NegotiateContextOffset/Reserved2 (4)
-	//   Offset 64: SecurityBuffer (variable) -- we send 0 bytes
+	//   Offset 64: SecurityBuffer (variable)
 	//   Total fixed: 65 bytes (StructureSize includes the 1-byte variable portion)
-	w := smbenc.NewWriter(65)
+	w := smbenc.NewWriter(65 + len(securityBuffer))
 	w.WriteUint16(65)                      // StructureSize
 	w.WriteUint16(uint16(securityMode))    // SecurityMode
 	w.WriteUint16(uint16(responseDialect)) // DialectRevision
@@ -141,12 +162,15 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 	w.WriteUint32(h.MaxWriteSize)                    // MaxWriteSize
 	w.WriteUint64(types.TimeToFiletime(time.Now()))  // SystemTime
 	w.WriteUint64(types.TimeToFiletime(h.StartTime)) // ServerStartTime
-	w.WriteUint16(128)                               // SecurityBufferOffset
-	w.WriteUint16(0)                                 // SecurityBufferLength
+	w.WriteUint16(securityBufferOffset)              // SecurityBufferOffset
+	w.WriteUint16(securityBufferLen)                 // SecurityBufferLength
 	w.WriteUint32(0)                                 // NegotiateContextOffset/Reserved2 (placeholder)
-	// Offset 64: SecurityBuffer (0 bytes -- omitted)
-	// Total = 65 bytes (the 1-byte variable portion is the empty security buffer)
-	w.WriteUint8(0) // 1-byte variable portion for StructureSize=65
+	// Offset 64: SecurityBuffer (variable length)
+	if len(securityBuffer) > 0 {
+		w.WriteBytes(securityBuffer)
+	} else {
+		w.WriteUint8(0) // 1-byte variable portion for StructureSize=65
+	}
 
 	resp := w.Bytes()
 

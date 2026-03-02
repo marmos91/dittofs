@@ -91,10 +91,10 @@ func (ShareAccessRule) TableName() string {
 
 // GetBlockedOps returns the blocked operations for this share as a string slice.
 func (s *Share) GetBlockedOps() []string {
-	return parseBlockedOps(s.BlockedOperations)
+	return parseStringSlice(s.BlockedOperations)
 }
 
 // SetBlockedOps serializes the blocked operations from a string slice.
 func (s *Share) SetBlockedOps(ops []string) {
-	s.BlockedOperations = marshalBlockedOps(ops)
+	s.BlockedOperations = marshalStringSlice(ops)
 }

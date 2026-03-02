@@ -13,6 +13,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	authkerberos "github.com/marmos91/dittofs/internal/auth/kerberos"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -78,7 +79,8 @@ type Handler struct {
 	// SigningAlgorithmPreference is the server's preference order for signing
 	// algorithms, used during SIGNING_CAPABILITIES negotiate context processing.
 	// The first element is the most preferred. If empty, defaults to
-	// [AES-128-GMAC, AES-128-CMAC, HMAC-SHA256].
+	// [AES-128-GMAC, AES-128-CMAC]. HMAC-SHA256 is excluded because
+	// SIGNING_CAPABILITIES is a 3.1.1-only context.
 	SigningAlgorithmPreference []uint16
 
 	// EncryptionEnabled controls whether CapEncryption is advertised for SMB 3.0+.
@@ -96,16 +98,31 @@ type Handler struct {
 	sharesCacheValid bool
 
 	// KerberosProvider holds the shared Kerberos keytab/config provider.
-	// When set, the SESSION_SETUP handler supports Kerberos authentication
-	// via SPNEGO in addition to NTLM. The same provider is used by the NFS
-	// adapter, ensuring a shared Kerberos infrastructure across protocols.
-	// nil when Kerberos is not enabled.
-	//
-	// Lifecycle: Not initialized by NewHandler/NewHandlerWithSessionManager.
-	// Must be injected by the adapter layer (e.g., Adapter.SetKerberosProvider)
-	// before Serve() is called. When nil, Kerberos auth requests return
-	// STATUS_LOGON_FAILURE gracefully (NTLM and guest auth still work).
+	// Injected by the adapter layer before Serve(). When nil, Kerberos
+	// auth returns STATUS_LOGON_FAILURE gracefully.
 	KerberosProvider *kerberos.Provider
+
+	// KerberosService handles AP-REQ verification, replay detection, and
+	// AP-REP construction. Created from KerberosProvider.
+	KerberosService *authkerberos.KerberosService
+
+	// IdentityConfig controls Kerberos principal-to-username mapping.
+	// Default: strip realm ("alice@REALM" -> "alice").
+	IdentityConfig *kerberos.IdentityConfig
+
+	// SMBServicePrincipal overrides the auto-derived CIFS service principal.
+	// When empty, derived from the NFS principal ("nfs/host@REALM" -> "cifs/host@REALM").
+	SMBServicePrincipal string
+
+	// NtlmEnabled controls whether NTLM authentication is allowed.
+	// When false, NTLM tokens in SESSION_SETUP are rejected with STATUS_LOGON_FAILURE.
+	// Default: true.
+	NtlmEnabled bool
+
+	// GuestEnabled controls whether guest/anonymous sessions are allowed.
+	// When false, guest session requests are rejected with STATUS_LOGON_FAILURE.
+	// Default: true.
+	GuestEnabled bool
 }
 
 // EncryptionConfig holds encryption policy for the handler.
@@ -235,6 +252,8 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 		MaxDialect:              types.Dialect0210, // Default to 2.1 until full SMB3 session/signing is implemented
 		EncryptionEnabled:       false,
 		DirectoryLeasingEnabled: true,
+		NtlmEnabled:             true,
+		GuestEnabled:            true,
 	}
 
 	// Generate random server GUID

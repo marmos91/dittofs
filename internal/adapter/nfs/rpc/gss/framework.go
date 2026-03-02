@@ -2,22 +2,29 @@ package gss
 
 import (
 	"context"
-	"encoding/asn1"
 	"encoding/binary"
 	"fmt"
 	"sync"
 	"time"
 
-	"github.com/jcmturner/gokrb5/v8/asn1tools"
-	"github.com/jcmturner/gokrb5/v8/crypto"
-	"github.com/jcmturner/gokrb5/v8/messages"
-	"github.com/jcmturner/gokrb5/v8/service"
 	"github.com/jcmturner/gokrb5/v8/types"
+
+	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
-	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// GSS-API krb5 mechanism token IDs per RFC 1964 Section 1.1.
+const (
+	gssTokenIDAPReq uint16 = 0x0100 // AP-REQ (context establishment)
+	gssTokenIDAPRep uint16 = 0x0200 // AP-REP (mutual authentication reply)
+)
+
+// apOptionsMutualRequired is the bit mask for mutual authentication in AP-Options.
+// Per RFC 4120, AP-Options bit 2 is MUTUAL-REQUIRED. In ASN.1 BIT STRING encoding
+// (MSB first), bit 2 maps to 0x20 in the first byte.
+const apOptionsMutualRequired byte = 0x20
 
 // VerifiedContext contains the result of a successful GSS token verification.
 // It provides the information needed to create a GSSContext.
@@ -60,155 +67,88 @@ type Verifier interface {
 	VerifyToken(gssToken []byte) (*VerifiedContext, error)
 }
 
-// Krb5Verifier implements Verifier using gokrb5 AP-REQ verification.
+// Krb5Verifier implements Verifier using the shared KerberosService for AP-REQ
+// verification and AP-REP construction. NFS-specific concerns (GSS-API token
+// wrapping/unwrapping) remain in this package.
 type Krb5Verifier struct {
-	provider *kerberos.Provider
+	kerbService *kerbauth.KerberosService
 }
 
-// NewKrb5Verifier creates a new production verifier.
-func NewKrb5Verifier(provider *kerberos.Provider) *Krb5Verifier {
-	return &Krb5Verifier{provider: provider}
+// NewKrb5Verifier creates a new production verifier that delegates to the
+// shared KerberosService for AP-REQ verification and AP-REP construction.
+func NewKrb5Verifier(kerbService *kerbauth.KerberosService) *Krb5Verifier {
+	return &Krb5Verifier{kerbService: kerbService}
 }
 
-// VerifyToken verifies a GSS-API token using gokrb5.
+// VerifyToken verifies a GSS-API token using the shared KerberosService.
 //
 // The token may be wrapped in a GSS-API initial context token
 // (0x60 application tag with KRB5 OID) or be a raw AP-REQ.
-// We try to strip the GSS wrapper first, then fall back to raw AP-REQ.
+// We strip the NFS-specific GSS wrapper first, then delegate to KerberosService.
 func (v *Krb5Verifier) VerifyToken(gssToken []byte) (*VerifiedContext, error) {
-	// Try to extract the AP-REQ from the GSS-API token.
-	// GSS initial context tokens have format:
-	//   0x60 [length] OID AP-REQ
-	// We need to strip the wrapper to get the raw AP-REQ for gokrb5.
+	// NFS-specific: extract raw AP-REQ from GSS-API token wrapper.
+	// GSS initial context tokens have format: 0x60 [length] OID AP-REQ
 	apReqBytes, err := extractAPReq(gssToken)
 	if err != nil {
 		return nil, fmt.Errorf("extract AP-REQ from GSS token: %w", err)
 	}
 
-	// Parse the AP-REQ
-	var apReq messages.APReq
-	if err := apReq.Unmarshal(apReqBytes); err != nil {
-		return nil, fmt.Errorf("unmarshal AP-REQ: %w", err)
+	// Delegate AP-REQ verification to shared KerberosService.
+	// This handles: unmarshal, VerifyAPREQ, authenticator decryption,
+	// replay detection, and subkey preference.
+	if v.kerbService == nil || v.kerbService.Provider() == nil {
+		return nil, fmt.Errorf("kerberos service not configured")
 	}
-
-	// Build gokrb5 service settings
-	settings := service.NewSettings(
-		v.provider.Keytab(),
-		service.MaxClockSkew(v.provider.MaxClockSkew()),
-		service.DecodePAC(false),
-		service.KeytabPrincipal(v.provider.ServicePrincipal()),
-	)
-
-	// Verify the AP-REQ
-	ok, creds, err := service.VerifyAPREQ(&apReq, settings)
+	provider := v.kerbService.Provider()
+	authResult, err := v.kerbService.Authenticate(apReqBytes, provider.ServicePrincipal())
 	if err != nil {
-		return nil, fmt.Errorf("verify AP-REQ: %w", err)
-	}
-	if !ok {
-		return nil, fmt.Errorf("AP-REQ verification failed")
+		return nil, fmt.Errorf("kerberos authenticate: %w", err)
 	}
 
-	// Debug: log what VerifyAPREQ returned
-	// AP-Options: bit 1 = use-session-key, bit 2 = mutual-required (RFC 4120)
-	mutualRequired := false
-	if len(apReq.APOptions.Bytes) > 0 {
-		// Bit 2 is in the first byte (MSB bit numbering)
-		mutualRequired = (apReq.APOptions.Bytes[0] & 0x20) != 0 // 0x20 = bit 2 from MSB
-	}
-	logger.Debug("AP-REQ verification result",
-		"cname", creds.CName().PrincipalNameString(),
-		"realm", creds.Domain(),
-		"ticket_cname", apReq.Ticket.DecryptedEncPart.CName.PrincipalNameString(),
-		"ticket_crealm", apReq.Ticket.DecryptedEncPart.CRealm,
-		"ticket_sname", apReq.Ticket.SName.PrincipalNameString(),
-		"ticket_srealm", apReq.Ticket.Realm,
-		"ap_options_hex", fmt.Sprintf("%x", apReq.APOptions.Bytes),
+	// Check if mutual authentication is required (AP-Options bit 2)
+	mutualRequired := len(authResult.APReq.APOptions.Bytes) > 0 &&
+		(authResult.APReq.APOptions.Bytes[0]&apOptionsMutualRequired) != 0
+
+	logger.Debug("AP-REQ verified via shared KerberosService",
+		"principal", authResult.Principal,
+		"realm", authResult.Realm,
 		"mutual_required", mutualRequired,
+		"has_subkey", kerbauth.HasSubkey(&authResult.APReq),
 	)
 
-	// Extract session key from the decrypted ticket
-	sessionKey := apReq.Ticket.DecryptedEncPart.Key
-
-	// Decrypt the authenticator to get ctime/cusec for AP-REP
-	if err := apReq.DecryptAuthenticator(sessionKey); err != nil {
-		return nil, fmt.Errorf("decrypt authenticator: %w", err)
-	}
-
-	logger.Debug("Authenticator decrypted",
-		"ctime", apReq.Authenticator.CTime.Format("20060102150405Z"),
-		"cusec", apReq.Authenticator.Cusec,
-		"cname", apReq.Authenticator.CName.PrincipalNameString(),
-		"has_subkey", apReq.Authenticator.SubKey.KeyType != 0,
-		"subkey_etype", apReq.Authenticator.SubKey.KeyType,
-	)
-
-	// Per RFC 4120, if the client provides a subkey in the authenticator,
-	// subsequent protection operations (including MIC for verifier) should
-	// use the subkey instead of the session key from the ticket.
-	// The subkey becomes the "accepted key" for the GSS context.
-	contextKey := sessionKey
-	if hasSubkey(apReq) {
-		contextKey = apReq.Authenticator.SubKey
-		logger.Debug("Using authenticator subkey for context",
-			"subkey_etype", contextKey.KeyType,
-			"subkey_len", len(contextKey.KeyValue),
-			"subkey_first8", fmt.Sprintf("%x", contextKey.KeyValue[:min(8, len(contextKey.KeyValue))]),
-			"session_key_first8", fmt.Sprintf("%x", sessionKey.KeyValue[:min(8, len(sessionKey.KeyValue))]),
-		)
-	}
-
-	// The client principal is in the decrypted ticket's CName, not the authenticator.
-	// creds.CName() might return the service principal in some implementations.
-	clientPrincipal := apReq.Ticket.DecryptedEncPart.CName.PrincipalNameString()
-	clientRealm := apReq.Ticket.DecryptedEncPart.CRealm
-
-	// Build AP-REP for mutual authentication.
-	// Per RFC 2203 Section 5.2.3.1: "The gss_token field contains the token
-	// returned by the gss_accept_sec_context routine. This token may be empty."
-	//
-	// CRITICAL: Only send AP-REP when mutual authentication is REQUIRED.
-	// Per MIT krb5 source (init_sec_context.c):
-	// - If GSS_C_MUTUAL_FLAG is NOT set, gss_init_sec_context() returns GSS_S_COMPLETE
-	//   on the first call and the context is immediately established.
-	// - The client expects NO AP-REP in this case.
-	// - If we send an AP-REP when not expected, the client treats it as an error:
-	//   "if (gr.gr_token.length != 0 && maj_stat != GSS_S_CONTINUE_NEEDED) break;"
-	//
-	// When mutual auth IS required:
-	// - Client's first gss_init_sec_context() returns GSS_S_CONTINUE_NEEDED
-	// - Client sends AP-REQ, expects AP-REP in response
-	// - Client calls gss_init_sec_context() again with AP-REP to complete context
+	// Build AP-REP for mutual authentication if required.
+	// The shared service returns raw AP-REP; we add the NFS GSS-API wrapper.
 	var apRepToken []byte
 	var hasAcceptorSubkey bool
 
 	if mutualRequired {
-		apRepToken, err = buildAPRep(apReq, sessionKey)
-		if err != nil {
-			logger.Debug("Failed to build AP-REP (non-fatal)", "error", err)
-			// Continue without mutual auth token - client may fail
+		// Get the ticket session key for AP-REP encryption (not the context key which
+		// may be the subkey). AP-REP is encrypted with the ticket session key per RFC 4120.
+		ticketSessionKey := authResult.APReq.Ticket.DecryptedEncPart.Key
+
+		rawAPRep, buildErr := v.kerbService.BuildMutualAuth(&authResult.APReq, ticketSessionKey)
+		if buildErr != nil {
+			logger.Debug("Failed to build AP-REP (non-fatal)", "error", buildErr)
 		} else {
-			logger.Debug("Built AP-REP token (mutual auth required)",
-				"len", len(apRepToken),
-				"first_bytes", fmt.Sprintf("%x", firstN(apRepToken, 32)),
+			// NFS-specific: wrap raw AP-REP in GSS-API token (0x60 + OID + 0x0200)
+			apRepToken = wrapGSSToken(rawAPRep, gssTokenIDAPRep)
+			logger.Debug("Built GSS-wrapped AP-REP token (mutual auth required)",
+				"raw_len", len(rawAPRep),
+				"wrapped_len", len(apRepToken),
 			)
-			// When we send AP-REP with subkey, client will use it as acceptor subkey
-			hasAcceptorSubkey = hasSubkey(apReq)
+			hasAcceptorSubkey = kerbauth.HasSubkey(&authResult.APReq)
 		}
 	} else {
-		// No mutual auth - don't send AP-REP
-		// Client will use initiator subkey (from authenticator) for MIC
 		logger.Debug("Mutual auth not required, not sending AP-REP")
 	}
 
-	vc := &VerifiedContext{
-		Principal:         clientPrincipal,
-		Realm:             clientRealm,
-		SessionKey:        contextKey,
+	return &VerifiedContext{
+		Principal:         authResult.Principal,
+		Realm:             authResult.Realm,
+		SessionKey:        authResult.SessionKey,
 		APRepToken:        apRepToken,
 		HasAcceptorSubkey: hasAcceptorSubkey,
-	}
-
-	return vc, nil
+	}, nil
 }
 
 // extractAPReq strips the GSS-API initial context token wrapper if present.
@@ -278,109 +218,13 @@ func extractAPReq(token []byte) ([]byte, error) {
 	}
 
 	tokenID := (uint16(token[offset]) << 8) | uint16(token[offset+1])
-	if tokenID != 0x0100 {
-		// Not an AP-REQ token ID. This could be:
-		// - 0x0200: AP-REP
-		// - 0x0300: Wrap (integrity)
-		// - 0x0400: Wrap (privacy)
-		// For INIT, we expect AP-REQ.
-		return nil, fmt.Errorf("unexpected krb5 token ID: 0x%04x (expected 0x0100 for AP-REQ)", tokenID)
+	if tokenID != gssTokenIDAPReq {
+		return nil, fmt.Errorf("unexpected krb5 token ID: 0x%04x (expected 0x%04x for AP-REQ)", tokenID, gssTokenIDAPReq)
 	}
 	offset += 2
 
 	// Everything after the token ID is the raw AP-REQ (ASN.1 APPLICATION 14)
 	return token[offset:], nil
-}
-
-// buildAPRep constructs an AP-REP token for mutual authentication.
-//
-// Per RFC 4120 Section 5.5.2, the AP-REP contains:
-//   - pvno: 5 (Kerberos version)
-//   - msg-type: 15 (KRB_AP_REP)
-//   - enc-part: EncAPRepPart encrypted with the session key
-//
-// The EncAPRepPart contains ctime and cusec copied from the authenticator,
-// which proves to the client that we successfully decrypted the ticket.
-//
-// The returned token is wrapped in a GSS-API MechToken with token ID 0x02 0x00
-// (AP-REP per RFC 1964).
-func buildAPRep(apReq messages.APReq, sessionKey types.EncryptionKey) ([]byte, error) {
-	// Build the EncAPRepPart with values from the authenticator
-	// Per RFC 4120 Section 5.5.2, EncAPRepPart is APPLICATION 27 SEQUENCE containing:
-	//   - ctime [0]: copied from authenticator (proves we decrypted it)
-	//   - cusec [1]: copied from authenticator
-	//   - subkey [2]: OPTIONAL - if client sent subkey, echo it back
-	//   - seq-number [3]: OPTIONAL - sequence number for further exchanges
-	//
-	// CRITICAL: If the client sent a subkey in the authenticator, we MUST include
-	// it in the EncAPRepPart. This tells the client we've accepted the subkey
-	// and will use it for subsequent operations (MIC computation, wrap/unwrap).
-	// Without this, the client won't know which key to use for gss_verify_mic().
-	encAPRepPart := messages.EncAPRepPart{
-		CTime: apReq.Authenticator.CTime,
-		Cusec: apReq.Authenticator.Cusec,
-	}
-
-	// If client sent a subkey, include it in the AP-REP
-	if hasSubkey(apReq) {
-		encAPRepPart.Subkey = apReq.Authenticator.SubKey
-		logger.Debug("Including subkey in EncAPRepPart",
-			"etype", apReq.Authenticator.SubKey.KeyType,
-			"key_len", len(apReq.Authenticator.SubKey.KeyValue),
-		)
-	}
-
-	// Marshal the EncAPRepPart inner SEQUENCE first (without APPLICATION tag)
-	encAPRepPartInner, err := asn1.Marshal(encAPRepPart)
-	if err != nil {
-		return nil, fmt.Errorf("marshal EncAPRepPart inner: %w", err)
-	}
-
-	// Add APPLICATION 27 tag using gokrb5's asn1tools
-	// This produces: APPLICATION 27 { SEQUENCE { ... } }
-	encAPRepPartBytes := asn1tools.AddASNAppTag(encAPRepPartInner, 27)
-
-	logger.Debug("EncAPRepPart marshaled",
-		"len", len(encAPRepPartBytes),
-		"first_bytes", fmt.Sprintf("%x", firstN(encAPRepPartBytes, 32)),
-		"ctime", encAPRepPart.CTime.Format("20060102150405Z"),
-		"cusec", encAPRepPart.Cusec,
-		"has_subkey", hasSubkey(apReq),
-		"session_key_etype", sessionKey.KeyType,
-	)
-
-	// Encrypt the EncAPRepPart using the session key
-	// Key usage 12 is for AP-REP encrypted part (RFC 4120 Section 7.5.1)
-	encryptedData, err := crypto.GetEncryptedData(encAPRepPartBytes, sessionKey, 12, 0)
-	if err != nil {
-		return nil, fmt.Errorf("encrypt EncAPRepPart: %w", err)
-	}
-
-	// Build the AP-REP message
-	apRep := messages.APRep{
-		PVNO:    5,
-		MsgType: 15, // KRB_AP_REP
-		EncPart: encryptedData,
-	}
-
-	// Marshal the AP-REP inner SEQUENCE first (without APPLICATION tag)
-	apRepInner, err := asn1.Marshal(apRep)
-	if err != nil {
-		return nil, fmt.Errorf("marshal AP-REP inner: %w", err)
-	}
-
-	// Add APPLICATION 15 tag using gokrb5's asn1tools
-	// This produces: APPLICATION 15 { SEQUENCE { ... } }
-	apRepBytes := asn1tools.AddASNAppTag(apRepInner, 15)
-
-	logger.Debug("AP-REP marshaled",
-		"len", len(apRepBytes),
-		"first_bytes", fmt.Sprintf("%x", firstN(apRepBytes, 32)),
-	)
-
-	// Wrap in GSS-API MechToken format per RFC 1964:
-	// 0x60 [length] OID 0x02 0x00 AP-REP
-	return wrapGSSToken(apRepBytes, 0x0200), nil // 0x0200 = AP-REP token ID
 }
 
 // wrapGSSToken wraps a Kerberos message in a GSS-API MechToken.
@@ -677,7 +521,7 @@ func (p *GSSProcessor) handleInit(cred *RPCGSSCredV1, requestBody []byte) *GSSPr
 		return &GSSProcessResult{
 			GSSReply:  errResBytes,
 			IsControl: true,
-			Err:       fmt.Errorf("GSS INIT failed: %w", err),
+			Err:       fmt.Errorf("verify GSS INIT token: %w", err),
 		}
 	}
 
@@ -751,14 +595,6 @@ func (p *GSSProcessor) handleInit(cred *RPCGSSCredV1, requestBody []byte) *GSSPr
 // Exported so that the NFS connection handler can reference the same value
 // when computing the INIT reply verifier.
 const DefaultSeqWindowSize = 128
-
-// hasSubkey returns true if the authenticator contains a valid subkey.
-// This check is used during AP-REQ verification, AP-REP construction,
-// and acceptor subkey detection.
-func hasSubkey(apReq messages.APReq) bool {
-	return apReq.Authenticator.SubKey.KeyType != 0 &&
-		len(apReq.Authenticator.SubKey.KeyValue) > 0
-}
 
 // firstN returns the first n bytes of a slice, or the whole slice if shorter.
 func firstN(b []byte, n int) []byte {
@@ -855,7 +691,7 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 				"error", err,
 			)
 			return &GSSProcessResult{
-				Err: fmt.Errorf("integrity unwrap failed: %w", err),
+				Err: fmt.Errorf("unwrap integrity: %w", err),
 			}
 		}
 		processedData = args
@@ -869,7 +705,7 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 				"error", err,
 			)
 			return &GSSProcessResult{
-				Err: fmt.Errorf("privacy unwrap failed: %w", err),
+				Err: fmt.Errorf("unwrap privacy: %w", err),
 			}
 		}
 		processedData = args
@@ -896,7 +732,7 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 				"error", err,
 			)
 			return &GSSProcessResult{
-				Err: fmt.Errorf("identity mapping failed for %s@%s: %w", gssCtx.Principal, gssCtx.Realm, err),
+				Err: fmt.Errorf("map identity for %s@%s: %w", gssCtx.Principal, gssCtx.Realm, err),
 			}
 		}
 		if resolved == nil {
@@ -909,8 +745,7 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 				"principal", gssCtx.Principal,
 				"realm", gssCtx.Realm,
 			)
-			nobody := identity.NobodyIdentity()
-			resolved = nobody
+			resolved = identity.NobodyIdentity()
 		}
 		ident = &metadata.Identity{
 			UID:      &resolved.UID,

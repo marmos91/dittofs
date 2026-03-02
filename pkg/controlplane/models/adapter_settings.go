@@ -7,9 +7,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// parseBlockedOps deserializes a JSON-encoded blocked operations string into a string slice.
+// parseStringSlice deserializes a JSON-encoded string slice.
 // Returns nil for empty, "null", or invalid JSON.
-func parseBlockedOps(raw string) []string {
+func parseStringSlice(raw string) []string {
 	if raw == "" || raw == "null" {
 		return nil
 	}
@@ -20,9 +20,9 @@ func parseBlockedOps(raw string) []string {
 	return ops
 }
 
-// marshalBlockedOps serializes a string slice into a JSON string for storage.
+// marshalStringSlice serializes a string slice into a JSON string for storage.
 // Returns an empty string for nil or empty slices.
-func marshalBlockedOps(ops []string) string {
+func marshalStringSlice(ops []string) string {
 	if len(ops) == 0 {
 		return ""
 	}
@@ -95,12 +95,12 @@ func (NFSAdapterSettings) TableName() string {
 
 // GetBlockedOperations returns the blocked operations as a string slice.
 func (s *NFSAdapterSettings) GetBlockedOperations() []string {
-	return parseBlockedOps(s.BlockedOperations)
+	return parseStringSlice(s.BlockedOperations)
 }
 
 // SetBlockedOperations serializes the blocked operations from a string slice.
 func (s *NFSAdapterSettings) SetBlockedOperations(ops []string) {
-	s.BlockedOperations = marshalBlockedOps(ops)
+	s.BlockedOperations = marshalStringSlice(ops)
 }
 
 // GetV4MinMinorVersion returns the minimum NFSv4 minor version as uint32.
@@ -153,6 +153,23 @@ type SMBAdapterSettings struct {
 	// Default: ["AES-128-GMAC","AES-128-CMAC","HMAC-SHA256"]
 	SigningAlgorithmPreference string `gorm:"type:text" json:"signing_algorithm_preference"`
 
+	// Authentication settings
+
+	// NtlmEnabled controls whether NTLM authentication is allowed.
+	// When false, NTLM tokens are rejected with STATUS_LOGON_FAILURE.
+	// Default: true.
+	NtlmEnabled bool `gorm:"default:true" json:"ntlm_enabled"`
+
+	// GuestEnabled controls whether guest/anonymous sessions are allowed.
+	// When false, guest session requests are rejected with STATUS_LOGON_FAILURE.
+	// Default: true.
+	GuestEnabled bool `gorm:"default:true" json:"guest_enabled"`
+
+	// SMBServicePrincipal is an optional override for the CIFS service principal.
+	// When empty, the SPN is auto-derived from the NFS principal
+	// (e.g., "nfs/host@REALM" -> "cifs/host@REALM").
+	SMBServicePrincipal string `gorm:"size:256" json:"smb_service_principal"`
+
 	// Version counter for change detection (monotonic, starts at 1, incremented on every update)
 	Version int `gorm:"default:1" json:"version"`
 
@@ -167,22 +184,22 @@ func (SMBAdapterSettings) TableName() string {
 
 // GetBlockedOperations returns the blocked operations as a string slice.
 func (s *SMBAdapterSettings) GetBlockedOperations() []string {
-	return parseBlockedOps(s.BlockedOperations)
+	return parseStringSlice(s.BlockedOperations)
 }
 
 // SetBlockedOperations serializes the blocked operations from a string slice.
 func (s *SMBAdapterSettings) SetBlockedOperations(ops []string) {
-	s.BlockedOperations = marshalBlockedOps(ops)
+	s.BlockedOperations = marshalStringSlice(ops)
 }
 
 // GetSigningAlgorithmPreference returns the signing algorithm preference as a string slice.
 func (s *SMBAdapterSettings) GetSigningAlgorithmPreference() []string {
-	return parseBlockedOps(s.SigningAlgorithmPreference)
+	return parseStringSlice(s.SigningAlgorithmPreference)
 }
 
 // SetSigningAlgorithmPreference serializes the signing algorithm preference from a string slice.
 func (s *SMBAdapterSettings) SetSigningAlgorithmPreference(prefs []string) {
-	s.SigningAlgorithmPreference = marshalBlockedOps(prefs)
+	s.SigningAlgorithmPreference = marshalStringSlice(prefs)
 }
 
 // NewDefaultNFSSettings creates an NFSAdapterSettings with all default values.
@@ -230,6 +247,9 @@ func NewDefaultSMBSettings(adapterID string) *SMBAdapterSettings {
 		MaxSessions:             10000,
 		EnableEncryption:        false,
 		DirectoryLeasingEnabled: true,
+		NtlmEnabled:             true,
+		GuestEnabled:            true,
+		SMBServicePrincipal:     "",
 		Version:                 1,
 	}
 	s.SetSigningAlgorithmPreference([]string{"AES-128-GMAC", "AES-128-CMAC", "HMAC-SHA256"})

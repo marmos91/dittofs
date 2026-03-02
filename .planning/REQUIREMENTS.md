@@ -19,7 +19,7 @@ Requirements for SMB3 protocol upgrade. Each maps to roadmap phases.
 - [x] **KDF-01**: Server derives signing/encryption/decryption/application keys via SP800-108 Counter Mode KDF
 - [x] **KDF-02**: Server uses constant label/context strings for SMB 3.0/3.0.2 key derivation
 - [x] **KDF-03**: Server uses preauth integrity hash as KDF context for SMB 3.1.1 key derivation
-- [ ] **KDF-04**: Server extracts Kerberos session key from AP-REQ for SMB3 key derivation
+- [x] **KDF-04**: Server extracts Kerberos session key from AP-REQ for SMB3 key derivation
 
 ### Signing
 
@@ -38,10 +38,10 @@ Requirements for SMB3 protocol upgrade. Each maps to roadmap phases.
 
 ### Authentication
 
-- [ ] **AUTH-01**: Server completes SPNEGO/Kerberos session setup with session key extraction via shared Kerberos layer
-- [ ] **AUTH-02**: Server generates AP-REP token for mutual authentication in SPNEGO accept-complete
-- [ ] **AUTH-03**: Server falls back from Kerberos to NTLM within SPNEGO when Kerberos fails
-- [ ] **AUTH-04**: Guest sessions bypass encryption and signing (no session key)
+- [x] **AUTH-01**: Server completes SPNEGO/Kerberos session setup with session key extraction via shared Kerberos layer
+- [x] **AUTH-02**: Server generates AP-REP token for mutual authentication in SPNEGO accept-complete
+- [x] **AUTH-03**: Server falls back from Kerberos to NTLM within SPNEGO when Kerberos fails
+- [x] **AUTH-04**: Guest sessions bypass encryption and signing (no session key)
 
 ### Leases
 
@@ -72,7 +72,7 @@ Requirements for SMB3 protocol upgrade. Each maps to roadmap phases.
 
 - [ ] **ARCH-01**: Business logic (leases, durable handles, state) lives in metadata service layer following NFS v3/v4 pattern
 - [x] **ARCH-02**: SMB internal package contains only protocol encoding/decoding/framing — no business logic
-- [ ] **ARCH-03**: SMB3 features reuse NFSv4 infrastructure where possible (delegations, state management, Kerberos)
+- [x] **ARCH-03**: SMB3 features reuse NFSv4 infrastructure where possible (delegations, state management, Kerberos)
 
 ### Documentation
 
@@ -132,7 +132,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | KDF-01 | Phase 34 | Complete |
 | KDF-02 | Phase 34 | Complete |
 | KDF-03 | Phase 34 | Complete |
-| KDF-04 | Phase 36 | Pending |
+| KDF-04 | Phase 36 | Complete |
 | SIGN-01 | Phase 34 | Complete |
 | SIGN-02 | Phase 34 | Complete |
 | SIGN-03 | Phase 34 | Complete |
@@ -142,10 +142,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ENC-04 | Phase 35 | Complete |
 | ENC-05 | Phase 35 | Complete |
 | ENC-06 | Phase 35 | Complete |
-| AUTH-01 | Phase 36 | Pending |
-| AUTH-02 | Phase 36 | Pending |
-| AUTH-03 | Phase 36 | Pending |
-| AUTH-04 | Phase 36 | Pending |
+| AUTH-01 | Phase 36 | Complete |
+| AUTH-02 | Phase 36 | Complete |
+| AUTH-03 | Phase 36 | Complete |
+| AUTH-04 | Phase 36 | Complete |
 | LEASE-01 | Phase 37 | Pending |
 | LEASE-02 | Phase 37 | Pending |
 | LEASE-03 | Phase 37 | Pending |
@@ -161,7 +161,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | XPROT-03 | Phase 39 | Pending |
 | ARCH-01 | Phase 37 | Pending |
 | ARCH-02 | Phase 33 | Complete |
-| ARCH-03 | Phase 36 | Pending |
+| ARCH-03 | Phase 36 | Complete |
 | DOC-01 | Phase 39 | Pending |
 | TEST-01 | Phase 40 | Pending |
 | TEST-02 | Phase 40 | Pending |

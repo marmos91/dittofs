@@ -4,7 +4,10 @@ import (
 	"testing"
 
 	"github.com/jcmturner/gofork/encoding/asn1"
-	gokrbspnego "github.com/jcmturner/gokrb5/v8/spnego"
+	"github.com/jcmturner/gokrb5/v8/crypto"
+	"github.com/jcmturner/gokrb5/v8/gssapi"
+	"github.com/jcmturner/gokrb5/v8/spnego"
+	"github.com/jcmturner/gokrb5/v8/types"
 )
 
 // =============================================================================
@@ -75,7 +78,7 @@ func TestParse(t *testing.T) {
 	t.Run("ParsesNegTokenInit", func(t *testing.T) {
 		// Create a valid NegTokenInit using gokrb5
 		ntlmToken := []byte("NTLMSSP\x00test-payload")
-		initToken := gokrbspnego.NegTokenInit{
+		initToken := spnego.NegTokenInit{
 			MechTypes:      []asn1.ObjectIdentifier{OIDNTLMSSP},
 			MechTokenBytes: ntlmToken,
 		}
@@ -110,7 +113,7 @@ func TestParse(t *testing.T) {
 	t.Run("ParsesNegTokenResp", func(t *testing.T) {
 		// Create a valid NegTokenResp using gokrb5
 		responseToken := []byte("response-data")
-		respToken := gokrbspnego.NegTokenResp{
+		respToken := spnego.NegTokenResp{
 			NegState:      asn1.Enumerated(NegStateAcceptIncomplete),
 			SupportedMech: OIDNTLMSSP,
 			ResponseToken: responseToken,
@@ -318,6 +321,272 @@ func TestBuildReject(t *testing.T) {
 
 	if parsed.NegState != NegStateReject {
 		t.Errorf("NegState = %v, expected NegStateReject", parsed.NegState)
+	}
+}
+
+// =============================================================================
+// BuildAcceptCompleteWithMIC Tests
+// =============================================================================
+
+func TestBuildAcceptCompleteWithMIC(t *testing.T) {
+	t.Run("BuildsWithMICField", func(t *testing.T) {
+		mechToken := []byte("ap-rep-token")
+		mic := []byte("mic-data")
+
+		data, err := BuildAcceptCompleteWithMIC(OIDKerberosV5, mechToken, mic)
+		if err != nil {
+			t.Fatalf("BuildAcceptCompleteWithMIC failed: %v", err)
+		}
+
+		// Should be parseable as a NegTokenResp
+		parsed, err := Parse(data)
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+
+		if parsed.Type != TokenTypeResp {
+			t.Errorf("Type = %v, expected TokenTypeResp", parsed.Type)
+		}
+
+		if parsed.NegState != NegStateAcceptCompleted {
+			t.Errorf("NegState = %v, expected NegStateAcceptCompleted", parsed.NegState)
+		}
+
+		// Verify MechListMIC is present
+		if len(parsed.MechListMIC) == 0 {
+			t.Error("MechListMIC should be present in response")
+		}
+
+		if string(parsed.MechListMIC) != string(mic) {
+			t.Errorf("MechListMIC = %x, want %x", parsed.MechListMIC, mic)
+		}
+	})
+
+	t.Run("BuildsWithNilMIC", func(t *testing.T) {
+		mechToken := []byte("ap-rep-token")
+
+		data, err := BuildAcceptCompleteWithMIC(OIDKerberosV5, mechToken, nil)
+		if err != nil {
+			t.Fatalf("BuildAcceptCompleteWithMIC failed: %v", err)
+		}
+
+		parsed, err := Parse(data)
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+
+		if parsed.NegState != NegStateAcceptCompleted {
+			t.Errorf("NegState = %v, expected NegStateAcceptCompleted", parsed.NegState)
+		}
+	})
+}
+
+// =============================================================================
+// MechListBytes Tests
+// =============================================================================
+
+func TestParsedToken_MechListBytes(t *testing.T) {
+	t.Run("CapturesMechListBytesFromInit", func(t *testing.T) {
+		ntlmToken := []byte("NTLMSSP\x00test-payload")
+		initToken := spnego.NegTokenInit{
+			MechTypes:      []asn1.ObjectIdentifier{OIDKerberosV5, OIDNTLMSSP},
+			MechTokenBytes: ntlmToken,
+		}
+
+		data, err := initToken.Marshal()
+		if err != nil {
+			t.Fatalf("Failed to marshal test token: %v", err)
+		}
+
+		parsed, err := Parse(data)
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+
+		if len(parsed.MechListBytes) == 0 {
+			t.Error("MechListBytes should be populated from NegTokenInit")
+		}
+	})
+}
+
+// =============================================================================
+// ComputeMechListMIC / VerifyMechListMIC Tests
+// =============================================================================
+
+func TestComputeMechListMIC(t *testing.T) {
+	// Use AES-256 key for test (etype 18)
+	keyValue := make([]byte, 32)
+	for i := range keyValue {
+		keyValue[i] = byte(i + 1)
+	}
+	sessionKey := types.EncryptionKey{
+		KeyType:  crypto.Aes256CtsHmacSha96{}.GetETypeID(),
+		KeyValue: keyValue,
+	}
+
+	mechListBytes := []byte{0x30, 0x0c, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x02, 0x0a}
+
+	t.Run("ComputeProducesNonEmptyMIC", func(t *testing.T) {
+		mic, err := ComputeMechListMIC(sessionKey, mechListBytes)
+		if err != nil {
+			t.Fatalf("ComputeMechListMIC failed: %v", err)
+		}
+		if len(mic) == 0 {
+			t.Error("MIC should be non-empty")
+		}
+	})
+
+	t.Run("ComputeIsDeterministic", func(t *testing.T) {
+		mic1, err := ComputeMechListMIC(sessionKey, mechListBytes)
+		if err != nil {
+			t.Fatalf("ComputeMechListMIC failed: %v", err)
+		}
+
+		mic2, err := ComputeMechListMIC(sessionKey, mechListBytes)
+		if err != nil {
+			t.Fatalf("ComputeMechListMIC failed: %v", err)
+		}
+
+		if string(mic1) != string(mic2) {
+			t.Error("ComputeMechListMIC should be deterministic for same inputs")
+		}
+	})
+
+	t.Run("DifferentPayloadProducesDifferentMIC", func(t *testing.T) {
+		mic1, err := ComputeMechListMIC(sessionKey, mechListBytes)
+		if err != nil {
+			t.Fatalf("ComputeMechListMIC failed: %v", err)
+		}
+
+		differentPayload := []byte{0x30, 0x06, 0x06, 0x04, 0x2b, 0x06, 0x01, 0x05}
+		mic2, err := ComputeMechListMIC(sessionKey, differentPayload)
+		if err != nil {
+			t.Fatalf("ComputeMechListMIC failed: %v", err)
+		}
+
+		if string(mic1) == string(mic2) {
+			t.Error("Different payloads should produce different MICs")
+		}
+	})
+}
+
+func TestVerifyMechListMIC(t *testing.T) {
+	// Use AES-256 key for test (etype 18)
+	keyValue := make([]byte, 32)
+	for i := range keyValue {
+		keyValue[i] = byte(i + 1)
+	}
+	sessionKey := types.EncryptionKey{
+		KeyType:  crypto.Aes256CtsHmacSha96{}.GetETypeID(),
+		KeyValue: keyValue,
+	}
+
+	mechListBytes := []byte{0x30, 0x0c, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x02, 0x0a}
+
+	t.Run("VerifyAcceptsValidInitiatorMIC", func(t *testing.T) {
+		// Simulate a client-computed MIC (initiator perspective)
+		mic, err := computeInitiatorMechListMIC(sessionKey, mechListBytes)
+		if err != nil {
+			t.Fatalf("computeInitiatorMechListMIC failed: %v", err)
+		}
+
+		err = VerifyMechListMIC(sessionKey, mechListBytes, mic)
+		if err != nil {
+			t.Errorf("VerifyMechListMIC failed for valid initiator MIC: %v", err)
+		}
+	})
+
+	t.Run("VerifyRejectsTamperedMIC", func(t *testing.T) {
+		mic, err := computeInitiatorMechListMIC(sessionKey, mechListBytes)
+		if err != nil {
+			t.Fatalf("computeInitiatorMechListMIC failed: %v", err)
+		}
+
+		// Tamper with the MIC
+		if len(mic) > 5 {
+			mic[5] ^= 0xFF
+		}
+
+		err = VerifyMechListMIC(sessionKey, mechListBytes, mic)
+		if err == nil {
+			t.Error("VerifyMechListMIC should reject tampered MIC")
+		}
+	})
+
+	t.Run("VerifyRejectsDifferentPayload", func(t *testing.T) {
+		mic, err := computeInitiatorMechListMIC(sessionKey, mechListBytes)
+		if err != nil {
+			t.Fatalf("computeInitiatorMechListMIC failed: %v", err)
+		}
+
+		differentPayload := []byte{0x30, 0x06, 0x06, 0x04, 0x2b, 0x06, 0x01, 0x05}
+		err = VerifyMechListMIC(sessionKey, differentPayload, mic)
+		if err == nil {
+			t.Error("VerifyMechListMIC should reject MIC for different payload")
+		}
+	})
+}
+
+// computeInitiatorMechListMIC is a test helper that computes a MIC from the
+// client (initiator) perspective, using key usage 25 (initiator sign) and
+// without the SentByAcceptor flag. This simulates what a Windows client sends.
+func computeInitiatorMechListMIC(sessionKey types.EncryptionKey, mechListBytes []byte) ([]byte, error) {
+	micToken := gssapi.MICToken{
+		Flags:     0, // No SentByAcceptor flag (initiator)
+		SndSeqNum: 0,
+		Payload:   mechListBytes,
+	}
+
+	if err := micToken.SetChecksum(sessionKey, KeyUsageInitiatorSign); err != nil {
+		return nil, err
+	}
+
+	return micToken.Marshal()
+}
+
+// =============================================================================
+// BuildNegHints Tests
+// =============================================================================
+
+func TestBuildNegHints(t *testing.T) {
+	tests := []struct {
+		name         string
+		kerberos     bool
+		ntlm         bool
+		wantMechLen  int
+		wantKerberos bool
+		wantNTLM     bool
+	}{
+		{"KerberosAndNTLM", true, true, 3, true, true},
+		{"NTLMOnly", false, true, 1, false, true},
+		{"KerberosOnly", true, false, 2, true, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := BuildNegHints(tt.kerberos, tt.ntlm)
+			if err != nil {
+				t.Fatalf("BuildNegHints failed: %v", err)
+			}
+
+			parsed, err := Parse(data)
+			if err != nil {
+				t.Fatalf("Failed to parse NegHints: %v", err)
+			}
+
+			if parsed.Type != TokenTypeInit {
+				t.Errorf("Type = %v, expected TokenTypeInit", parsed.Type)
+			}
+			if len(parsed.MechTypes) != tt.wantMechLen {
+				t.Errorf("MechTypes length = %d, expected %d", len(parsed.MechTypes), tt.wantMechLen)
+			}
+			if parsed.HasKerberos() != tt.wantKerberos {
+				t.Errorf("HasKerberos() = %v, want %v", parsed.HasKerberos(), tt.wantKerberos)
+			}
+			if parsed.HasNTLM() != tt.wantNTLM {
+				t.Errorf("HasNTLM() = %v, want %v", parsed.HasNTLM(), tt.wantNTLM)
+			}
+		})
 	}
 }
 

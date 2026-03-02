@@ -1,13 +1,12 @@
 package handlers
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/jcmturner/gokrb5/v8/messages"
-	"github.com/jcmturner/gokrb5/v8/service"
 	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
@@ -145,7 +144,25 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 			// SPNEGO contains a Kerberos token -- route to Kerberos auth
 			logger.Debug("SPNEGO Kerberos token detected, routing to Kerberos auth",
 				"mechTokenLen", len(parsed.MechToken))
-			return h.handleKerberosAuth(ctx, parsed.MechToken)
+			result, kerberosErr := h.handleKerberosAuth(ctx, parsed.MechToken, parsed)
+			if kerberosErr != nil {
+				return result, kerberosErr
+			}
+
+			// If Kerberos auth failed, return SPNEGO reject so client can retry with NTLM.
+			// Per user decision: clean SPNEGO reject, client retries with fresh SessionId=0.
+			if result.Status == types.StatusLogonFailure {
+				rejectToken, buildErr := auth.BuildReject()
+				if buildErr == nil {
+					logger.Info("Kerberos authentication failed, returning SPNEGO reject for NTLM fallback")
+					return h.buildSessionSetupResponse(
+						types.StatusLogonFailure,
+						0,
+						rejectToken,
+					), nil
+				}
+			}
+			return result, nil
 		}
 	}
 
@@ -154,6 +171,12 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 
 	// Process NTLM message
 	if auth.IsValid(ntlmToken) {
+		// Check NTLM disable policy
+		if !h.NtlmEnabled {
+			logger.Info("NTLM authentication disabled by policy")
+			return NewErrorResult(types.StatusLogonFailure), nil
+		}
+
 		msgType := auth.GetMessageType(ntlmToken)
 		logger.Debug("NTLM message detected",
 			"type", msgType,
@@ -184,7 +207,13 @@ func extractNTLMToken(securityBuffer []byte) ([]byte, bool) {
 	if len(securityBuffer) >= 2 && (securityBuffer[0] == 0x60 || securityBuffer[0] == 0xa0 || securityBuffer[0] == 0xa1) {
 		parsed, err := auth.Parse(securityBuffer)
 		if err != nil {
-			logger.Debug("SPNEGO parse failed, treating as raw", "error", err)
+			logger.Debug("SPNEGO parse failed, scanning for NTLMSSP signature", "error", err)
+			// Fallback: scan for NTLMSSP signature within the SPNEGO blob.
+			// Some clients send NegTokenResp formats that gokrb5 can't parse,
+			// but the NTLM token is still embedded in the ASN.1 structure.
+			if token := findNTLMSSP(securityBuffer); token != nil {
+				return token, true
+			}
 			return securityBuffer, false
 		}
 
@@ -203,130 +232,17 @@ func extractNTLMToken(securityBuffer []byte) ([]byte, bool) {
 	return securityBuffer, false
 }
 
-// handleKerberosAuth handles Kerberos authentication via SPNEGO.
-//
-// This method validates the AP-REQ from the SPNEGO MechToken using the service
-// keytab (shared with NFS Kerberos layer), extracts the client principal, maps
-// it to a control plane user, and creates an authenticated session.
-//
-// The Kerberos auth path is a single round-trip (unlike NTLM's multi-step
-// handshake): client sends AP-REQ, server validates and responds with success
-// or failure.
-//
-// Parameters:
-//   - ctx: SMB handler context
-//   - mechToken: The Kerberos AP-REQ extracted from the SPNEGO NegTokenInit
-//
-// Returns:
-//   - SUCCESS with SPNEGO accept-complete wrapping the AP-REP on successful auth
-//   - STATUS_LOGON_FAILURE on invalid ticket, expired ticket, or unknown user
-func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte) (*HandlerResult, error) {
-	// Check that Kerberos provider is configured
-	if h.KerberosProvider == nil {
-		logger.Debug("Kerberos auth attempted but no provider configured")
-		return NewErrorResult(types.StatusLogonFailure), nil
+// ntlmsspSignature is the NTLMSSP signature that starts every NTLM message.
+var ntlmsspSignature = []byte{'N', 'T', 'L', 'M', 'S', 'S', 'P', 0}
+
+// findNTLMSSP scans a buffer for the NTLMSSP signature and returns
+// the NTLM token starting at that offset. This is used as a fallback
+// when SPNEGO parsing fails but the NTLM token is embedded in the blob.
+func findNTLMSSP(data []byte) []byte {
+	if i := bytes.Index(data, ntlmsspSignature); i >= 0 {
+		return data[i:]
 	}
-
-	// Parse the AP-REQ from the mech token
-	var apReq messages.APReq
-	if err := apReq.Unmarshal(mechToken); err != nil {
-		logger.Debug("Failed to unmarshal Kerberos AP-REQ", "error", err)
-		return NewErrorResult(types.StatusLogonFailure), nil
-	}
-
-	// Derive the SMB (CIFS) service principal from the configured NFS principal.
-	// The shared Kerberos provider is configured with the NFS SPN (nfs/host@REALM),
-	// but SMB clients present tickets for the CIFS SPN (cifs/host@REALM).
-	smbPrincipal := h.KerberosProvider.ServicePrincipal()
-	if strings.HasPrefix(smbPrincipal, "nfs/") {
-		smbPrincipal = "cifs/" + strings.TrimPrefix(smbPrincipal, "nfs/")
-	}
-
-	// Build gokrb5 service settings using the shared keytab
-	settings := service.NewSettings(
-		h.KerberosProvider.Keytab(),
-		service.MaxClockSkew(h.KerberosProvider.MaxClockSkew()),
-		service.DecodePAC(false),
-		service.KeytabPrincipal(smbPrincipal),
-	)
-
-	// Verify the AP-REQ
-	ok, creds, err := service.VerifyAPREQ(&apReq, settings)
-	if err != nil || !ok {
-		logger.Info("Kerberos AP-REQ verification failed", "error", err, "ok", ok)
-		return NewErrorResult(types.StatusLogonFailure), nil
-	}
-
-	// Extract principal name and realm
-	principalName := creds.CName().PrincipalNameString()
-	realm := creds.Domain()
-
-	logger.Debug("Kerberos authentication succeeded",
-		"principal", principalName,
-		"realm", realm)
-
-	// Map principal to control plane user.
-	// Strip realm suffix (e.g., "alice@REALM" -> "alice") and service prefix
-	// (e.g., "service/host" -> "service"). User principals are typically just
-	// "alice" without "/" but we handle service principals gracefully.
-	username := principalName
-	if idx := strings.LastIndex(username, "@"); idx > 0 {
-		username = username[:idx]
-	}
-	if idx := strings.Index(username, "/"); idx >= 0 {
-		username = username[:idx]
-	}
-
-	// Look up the user in the control plane UserStore
-	userStore := h.Registry.GetUserStore()
-	if userStore == nil {
-		logger.Debug("Kerberos auth: no UserStore configured, creating guest session")
-		return h.createGuestSession(ctx)
-	}
-
-	user, err := userStore.GetUser(ctx.Context, username)
-	if err != nil || user == nil || !user.Enabled {
-		logger.Info("Kerberos auth: user lookup failed",
-			"username", username, "principal", principalName,
-			"found", user != nil, "error", err)
-		return NewErrorResult(types.StatusLogonFailure), nil
-	}
-
-	// Create an authenticated session with the resolved user identity
-	sessionID := h.GenerateSessionID()
-	sess := h.CreateSessionWithUser(sessionID, ctx.ClientAddr, user, realm)
-	ctx.SessionID = sessionID
-	ctx.IsGuest = false
-
-	logger.Debug("Kerberos session created",
-		"sessionID", sess.SessionID,
-		"username", sess.Username,
-		"domain", sess.Domain,
-		"isGuest", sess.IsGuest,
-		"principal", principalName,
-		"realm", realm)
-
-	// Build SPNEGO accept-complete response.
-	// For Kerberos, we wrap the success in a NegTokenResp with accept-completed state.
-	// The mechToken (AP-REP) is nil because SMB2 does not require it: the SPNEGO
-	// accept-completed negState is sufficient to signal success. Windows clients
-	// and Samba both accept a nil responseToken in the final leg.
-	spnegoResp, err := auth.BuildAcceptComplete(auth.OIDKerberosV5, nil)
-	if err != nil {
-		logger.Debug("Failed to build SPNEGO accept response", "error", err)
-		// Auth succeeded but response building failed -- still return success without SPNEGO wrapper
-		return h.buildSessionSetupResponse(
-			types.StatusSuccess,
-			0,
-			nil,
-		), nil
-	}
-
-	return h.buildSessionSetupResponse(
-		types.StatusSuccess,
-		0, // No guest flag - authenticated user
-		spnegoResp,
-	), nil
+	return nil
 }
 
 // handleNTLMNegotiate handles NTLM Type 1 (NEGOTIATE) message.
@@ -417,7 +333,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 	if err != nil {
 		logger.Debug("Failed to parse NTLM AUTHENTICATE message", "error", err)
 		// Fall back to guest session
-		return h.createGuestSessionWithID(ctx, pending, nil)
+		return h.createGuestSessionWithID(ctx, pending)
 	}
 
 	logger.Debug("NTLM AUTHENTICATE message parsed",
@@ -431,7 +347,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 
 	// If anonymous authentication requested, create guest session
 	if authMsg.IsAnonymous || authMsg.Username == "" {
-		return h.createGuestSessionWithID(ctx, pending, nil)
+		return h.createGuestSessionWithID(ctx, pending)
 	}
 
 	// Try to authenticate against UserStore
@@ -563,31 +479,22 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 	}
 
 	// Fall back to guest session
-	return h.createGuestSessionWithID(ctx, pending, nil)
+	return h.createGuestSessionWithID(ctx, pending)
 }
 
 // createGuestSessionWithID creates a guest session with a specific session ID.
 // Used when completing NTLM authentication as guest.
-// The sessionKey parameter is ignored for guest sessions (signing not supported).
-//
-// Guest sessions set SMB2_SESSION_FLAG_IS_GUEST (0x0001) in the response flags,
-// which tells the client that signing is not required for this session.
-//
-// Windows 11 24H2 note: Insecure guest logons are blocked by default.
-// Users must enable the "AllowInsecureGuestAuth" Group Policy setting
-// (Computer Configuration > Administrative Templates > Network > Lanman Workstation
-// > Enable insecure guest logons) to connect as guest.
-func (h *Handler) createGuestSessionWithID(ctx *SMBHandlerContext, pending *PendingAuth, _ []byte) (*HandlerResult, error) {
+func (h *Handler) createGuestSessionWithID(ctx *SMBHandlerContext, pending *PendingAuth) (*HandlerResult, error) {
+	if result := h.checkGuestPolicy(); result != nil {
+		return result, nil
+	}
+
 	sess := h.CreateSessionWithID(pending.SessionID, pending.ClientAddr, true, "guest", "")
 	ctx.IsGuest = true
 
-	// Note: Signing is not configured for guest sessions because there's no
-	// valid session key derivation possible without proper credentials.
-
-	logger.Debug("NTLM authentication complete (guest)",
+	logger.Info("Guest session created",
 		"sessionID", sess.SessionID,
-		"username", sess.Username,
-		"isGuest", sess.IsGuest)
+		"username", sess.Username)
 
 	return h.buildSessionSetupResponse(
 		types.StatusSuccess,
@@ -597,30 +504,19 @@ func (h *Handler) createGuestSessionWithID(ctx *SMBHandlerContext, pending *Pend
 }
 
 // createGuestSession creates a guest session without NTLM handshake.
-//
-// This is used when:
-//   - Client sends no authentication token
-//   - Client sends unrecognized authentication mechanism
-//   - Client sends Type 3 without prior Type 1 (graceful handling)
-//
-// Guest sessions set SMB2_SESSION_FLAG_IS_GUEST (0x0001) in the response flags,
-// which tells the client that signing is not required for this session.
-//
-// Windows 11 24H2 note: Insecure guest logons are blocked by default.
-// Users must enable the "AllowInsecureGuestAuth" Group Policy setting
-// (Computer Configuration > Administrative Templates > Network > Lanman Workstation
-// > Enable insecure guest logons) to connect as guest.
+// Used when the client sends no auth token, an unrecognized mechanism,
+// or Type 3 without prior Type 1.
 func (h *Handler) createGuestSession(ctx *SMBHandlerContext) (*HandlerResult, error) {
-	// Create session using SessionManager (includes credit tracking)
+	if result := h.checkGuestPolicy(); result != nil {
+		return result, nil
+	}
+
 	sess := h.CreateSession(ctx.ClientAddr, true, "guest", "")
 
 	ctx.SessionID = sess.SessionID
 	ctx.IsGuest = true
 
-	// Note: Signing is not configured for guest sessions because there's no
-	// valid session key derivation possible without proper credentials.
-
-	logger.Debug("Created guest session", "sessionID", sess.SessionID)
+	logger.Info("Guest session created", "sessionID", sess.SessionID)
 
 	return h.buildSessionSetupResponse(
 		types.StatusSuccess,
@@ -812,6 +708,20 @@ func (h *Handler) buildAuthenticatedResponse(usedSPNEGO bool, encryptData bool) 
 		sessionFlags,
 		acceptToken,
 	)
+}
+
+// checkGuestPolicy enforces guest session prerequisites.
+// Returns an error result if guest sessions are not allowed, nil otherwise.
+func (h *Handler) checkGuestPolicy() *HandlerResult {
+	if !h.GuestEnabled {
+		logger.Info("Guest session rejected: guest access disabled by policy")
+		return NewErrorResult(types.StatusLogonFailure)
+	}
+	if h.SigningConfig.Required {
+		logger.Info("Guest session rejected: server requires signing but guest has no session key")
+		return NewErrorResult(types.StatusLogonFailure)
+	}
+	return nil
 }
 
 // uniqueStrings returns a deduplicated slice preserving order.

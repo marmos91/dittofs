@@ -32,6 +32,7 @@ import (
 	"github.com/jcmturner/gokrb5/v8/types"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
+	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	dconfig "github.com/marmos91/dittofs/pkg/config"
@@ -308,7 +309,8 @@ func TestRealKDC(t *testing.T) {
 		}
 		defer provider.Close()
 
-		verifier := gss.NewKrb5Verifier(provider)
+		kerbService := kerbauth.NewKerberosService(provider)
+		verifier := gss.NewKrb5Verifier(kerbService)
 		mapper := identity.NewStaticMapper(&identity.StaticMapperConfig{
 			DefaultUID: 65534,
 			DefaultGID: 65534,
@@ -580,7 +582,8 @@ func createGSSStack(t *testing.T, keytabPath, krb5ConfPath string) (*kerberos.Pr
 		t.Fatalf("create provider: %v", err)
 	}
 
-	verifier := gss.NewKrb5Verifier(provider)
+	kerbService := kerbauth.NewKerberosService(provider)
+	verifier := gss.NewKrb5Verifier(kerbService)
 	mapper := dconfig.BuildStaticMapper(&cfg.IdentityMapping)
 	proc := gss.NewGSSProcessor(verifier, mapper, cfg.MaxContexts, cfg.ContextTTL)
 
