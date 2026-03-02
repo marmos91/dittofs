@@ -117,6 +117,16 @@ func Parse(data []byte) (*ParsedToken, error) {
 		return nil, ErrInvalidToken
 	}
 
+	// If GSS-API wrapped (APPLICATION 0 = 0x60), unwrap to get the inner
+	// NegotiateToken. gokrb5's UnmarshalNegToken strips the APPLICATION tag
+	// but not the mechanism OID, so we handle it here.
+	if data[0] == 0x60 {
+		data = stripGSSAPIWrapper(data)
+		if data == nil {
+			return nil, fmt.Errorf("%w: malformed GSS-API wrapper", ErrInvalidToken)
+		}
+	}
+
 	isInit, token, err := spnego.UnmarshalNegToken(data)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidToken, err)
@@ -292,7 +302,8 @@ func VerifyMechListMIC(sessionKey types.EncryptionKey, mechListBytes []byte, mic
 //   - kerberosEnabled: true when KerberosProvider is configured (keytab available)
 //   - ntlmEnabled: true when NTLM is allowed (adapter setting)
 //
-// Returns the ASN.1 DER-encoded NegTokenInit suitable for the NEGOTIATE SecurityBuffer.
+// Returns the GSS-API InitialContextToken wrapping a SPNEGO NegTokenInit,
+// suitable for the NEGOTIATE SecurityBuffer per MS-SMB2 2.2.4 and MS-SPNG 2.2.1.
 func BuildNegHints(kerberosEnabled, ntlmEnabled bool) ([]byte, error) {
 	var mechTypes []asn1.ObjectIdentifier
 	if kerberosEnabled {
@@ -308,7 +319,79 @@ func BuildNegHints(kerberosEnabled, ntlmEnabled bool) ([]byte, error) {
 	// Build NegTokenInit with just mechTypes (no token, no MIC).
 	// This is a "hints" token per MS-SMB2 2.2.4.
 	init := spnego.NegTokenInit{MechTypes: mechTypes}
-	return init.Marshal()
+	negTokenInit, err := init.Marshal()
+	if err != nil {
+		return nil, err
+	}
+
+	// Wrap in GSS-API InitialContextToken per RFC 2743 Section 3.1:
+	//   0x60 [length] 0x06 0x06 [SPNEGO-OID-value] [NegTokenInit]
+	// The NEGOTIATE SecurityBuffer must use this format (MS-SPNG 2.2.1).
+	spnegoOIDValue := []byte{0x2b, 0x06, 0x01, 0x05, 0x05, 0x02} // 1.3.6.1.5.5.2
+	innerLen := 1 + 1 + len(spnegoOIDValue) + len(negTokenInit)  // OID tag + OID len + OID + NegTokenInit
+
+	buf := make([]byte, 0, 2+innerLen)
+	buf = append(buf, 0x60) // APPLICATION 0 tag
+	buf = appendASN1Length(buf, innerLen)
+	buf = append(buf, 0x06)                      // OBJECT IDENTIFIER tag
+	buf = append(buf, byte(len(spnegoOIDValue))) // OID length
+	buf = append(buf, spnegoOIDValue...)         // SPNEGO OID value
+	buf = append(buf, negTokenInit...)           // NegTokenInit
+
+	return buf, nil
+}
+
+// appendASN1Length appends a DER length encoding to buf.
+func appendASN1Length(buf []byte, length int) []byte {
+	if length < 128 {
+		return append(buf, byte(length))
+	}
+	if length < 256 {
+		return append(buf, 0x81, byte(length))
+	}
+	return append(buf, 0x82, byte(length>>8), byte(length))
+}
+
+// stripGSSAPIWrapper removes the GSS-API InitialContextToken wrapper
+// (APPLICATION 0 tag + mechanism OID) and returns the inner token.
+// Returns nil if the wrapper is malformed.
+func stripGSSAPIWrapper(data []byte) []byte {
+	if len(data) < 2 || data[0] != 0x60 {
+		return nil
+	}
+	// Skip APPLICATION 0 tag
+	pos := 1
+	// Read length
+	if pos >= len(data) {
+		return nil
+	}
+	if data[pos] < 128 {
+		pos++
+	} else if data[pos] == 0x81 {
+		pos += 2
+	} else if data[pos] == 0x82 {
+		pos += 3
+	} else {
+		return nil
+	}
+	if pos >= len(data) {
+		return nil
+	}
+	// Skip mechanism OID (tag 0x06 + length + value)
+	if data[pos] != 0x06 {
+		return nil
+	}
+	pos++
+	if pos >= len(data) {
+		return nil
+	}
+	oidLen := int(data[pos])
+	pos++
+	pos += oidLen
+	if pos > len(data) {
+		return nil
+	}
+	return data[pos:]
 }
 
 // marshalMechTypes DER-encodes a list of OIDs into a SEQUENCE OF ObjectIdentifier.
