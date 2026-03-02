@@ -10,6 +10,7 @@ This document provides a deep dive into DittoFS's architecture, design patterns,
 - [Repository Interfaces](#repository-interfaces)
 - [Built-In and Custom Backends](#built-in-and-custom-backends)
 - [Directory Structure](#directory-structure)
+- [Durable Handle State Flow](#durable-handle-state-flow)
 
 ## Core Abstraction Layers
 
@@ -818,6 +819,32 @@ Example: 3 DittoFS instances × 15 conns = 45 total connections needed from Post
 3. **Monitor Connections**: Watch PostgreSQL connection count and utilization
 4. **Scale Horizontally**: Add DittoFS replicas, not connection pool size
 5. **Separate Read Replicas**: For read-heavy workloads, consider PostgreSQL read replicas
+
+## Durable Handle State Flow
+
+SMB3 durable handles allow open file state to survive client disconnects and (with persistent backends) server restarts. The lifecycle is:
+
+```
+OPEN ─[disconnect]─> ORPHANED ─[scavenger timeout]─> EXPIRED ─[cleanup]─> CLOSED
+                         │                                        │
+                         ├─[reconnect]──> RESTORED ──> OPEN       │
+                         │                                        │
+                         └─[conflict/app-instance]──> FORCE_EXPIRED ──> CLOSED
+```
+
+**Grant**: CREATE with DHnQ/DH2Q context triggers durability check. If the oplock level and share mode allow it, the server grants a durable handle with a configurable timeout (default 60s).
+
+**Disconnect**: On connection loss, `closeFilesWithFilter` checks `IsDurable`. Durable files are persisted to `DurableHandleStore` (locks and leases preserved) rather than closed.
+
+**Scavenger**: A background goroutine (`DurableHandleScavenger`) runs at 10-second intervals. For each expired handle it performs cleanup: releases byte-range locks, flushes payload caches, then deletes the handle from the store. On server restart, the scavenger adjusts remaining timeouts to account for downtime.
+
+**Reconnect**: A new session sends CREATE with DHnC/DH2C. The server validates 14+ fields (FileID, CreateGuid, username, session key hash, access mask, share mode, oplock level) and restores the `OpenFile` without data loss.
+
+**Conflict**: When a new open targets a file with an orphaned durable handle, the scavenger force-expires the orphaned handle (with optional lease break) to allow the new open to proceed.
+
+**App Instance ID**: For Hyper-V failover, a CREATE with a matching `AppInstanceId` triggers force-close of the old handle, allowing the new VM instance to take over.
+
+**Admin API**: `GET /api/v1/durable-handles` lists all active handles with remaining timeout. `DELETE /api/v1/durable-handles/{id}` force-closes a specific handle.
 
 ## Performance Characteristics
 

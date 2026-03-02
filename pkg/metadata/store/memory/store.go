@@ -214,6 +214,10 @@ type MemoryMetadataStore struct {
 	// clientStore holds NSM client registrations for crash recovery.
 	// Initialized lazily on first use.
 	clientStore *memoryClientStore
+
+	// durableStore holds SMB3 durable handle state for reconnection.
+	// Initialized lazily on first use.
+	durableStore *memoryDurableStore
 }
 
 // MemoryMetadataStoreConfig contains configuration for creating a memory metadata store.

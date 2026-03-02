@@ -44,6 +44,11 @@ type PostgresMetadataStore struct {
 	// Initialized lazily via getClientStore().
 	clientStore   *postgresClientStore
 	clientStoreMu sync.Mutex
+
+	// durableStore holds SMB3 durable handle persistence.
+	// Initialized lazily via getDurableStore().
+	durableStore   *postgresDurableStore
+	durableStoreMu sync.Mutex
 }
 
 // statsCache holds cached filesystem statistics

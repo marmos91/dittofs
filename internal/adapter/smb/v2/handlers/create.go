@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"path"
 	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/rpc"
+	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -447,6 +449,91 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		return h.handleOpenRootCreate(ctx, req, authCtx, rootHandle, tree)
 	}
 
+	// ========================================================================
+	// Step 4b: Durable handle reconnect (DHnC/DH2C) [MS-SMB2] 3.3.5.9.7/12
+	// ========================================================================
+	//
+	// If the CREATE request contains a reconnect context (V1 DHnC or V2 DH2C),
+	// the client is attempting to reconnect a previously durable handle after a
+	// network interruption. This path skips normal file creation and restores
+	// the persisted handle state instead.
+
+	if h.DurableStore != nil {
+		hasDHnC := FindCreateContext(req.CreateContexts, DurableHandleV1ReconnectTag) != nil
+		hasDH2C := FindCreateContext(req.CreateContexts, DurableHandleV2ReconnectTag) != nil
+
+		if hasDHnC || hasDH2C {
+			// Compute session key hash for security validation
+			sessionKeyHash := computeSessionKeyHash(sess)
+
+			metaSvc := h.Registry.GetMetadataService()
+			restored, status, reconnErr := ProcessDurableReconnectContext(
+				authCtx.Context, h.DurableStore, metaSvc, req.CreateContexts,
+				ctx.SessionID, sess.Username, sessionKeyHash,
+				tree.ShareName, filename,
+			)
+			if reconnErr != nil {
+				logger.Warn("CREATE: durable reconnect error", "error", reconnErr)
+				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
+			}
+			if status != types.StatusSuccess {
+				logger.Debug("CREATE: durable reconnect failed",
+					"status", status, "filename", filename)
+				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
+			}
+
+			// Reconnect succeeded: register the restored OpenFile
+			restored.TreeID = ctx.TreeID
+			restored.SessionID = ctx.SessionID
+			smbFileID := h.GenerateFileID()
+			restored.FileID = smbFileID
+			h.StoreOpenFile(restored)
+
+			// Get current file attributes for the response
+			var respFile *metadata.File
+			if len(restored.MetadataHandle) > 0 {
+				respFile, _ = metaSvc.GetFile(authCtx.Context, restored.MetadataHandle)
+			}
+
+			logger.Debug("CREATE: durable reconnect successful",
+				"fileID", fmt.Sprintf("%x", smbFileID),
+				"filename", filename,
+				"oplock", oplockLevelName(restored.OplockLevel))
+
+			if respFile != nil {
+				creation, access, write, change := FileAttrToSMBTimes(&respFile.FileAttr)
+				size := getSMBSize(&respFile.FileAttr)
+				return &CreateResponse{
+					SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+					OplockLevel:     restored.OplockLevel,
+					CreateAction:    types.FileOpened,
+					CreationTime:    creation,
+					LastAccessTime:  access,
+					LastWriteTime:   write,
+					ChangeTime:      change,
+					AllocationSize:  calculateAllocationSize(size),
+					EndOfFile:       size,
+					FileAttributes:  FileAttrToSMBAttributes(&respFile.FileAttr),
+					FileID:          smbFileID,
+				}, nil
+			}
+
+			// Fallback if we can't get file attributes (shouldn't happen)
+			now := time.Now()
+			return &CreateResponse{
+				SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+				OplockLevel:     restored.OplockLevel,
+				CreateAction:    types.FileOpened,
+				CreationTime:    now,
+				LastAccessTime:  now,
+				LastWriteTime:   now,
+				ChangeTime:      now,
+				FileAttributes:  types.FileAttributeNormal,
+				FileID:          smbFileID,
+			}, nil
+		}
+	}
+
 	// Split path into directory and name components
 	dirPath := path.Dir(filename)
 	baseName := path.Base(filename)
@@ -651,6 +738,24 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// after OplockManager deletion. All caching is via SMB2.1+ leases through
 	// the LeaseManager. Non-lease oplock requests get OplockLevelNone.
 
+	// ========================================================================
+	// Step 8c: Process App Instance ID and durable handle grant [MS-SMB2] 3.3.5.9
+	// ========================================================================
+	//
+	// 1. Process AppInstanceId: force-close existing handles with same ID
+	// 2. Process DHnQ/DH2Q: potentially grant durability to this new handle
+	// 3. Store AppInstanceId on openFile if durability was granted
+
+	var durableResponseCtx *CreateContext
+	var appInstanceId [16]byte
+
+	if h.DurableStore != nil {
+		// Step 1: Process App Instance ID collisions (Hyper-V failover)
+		appInstanceId = ProcessAppInstanceId(
+			authCtx.Context, h.DurableStore, h, req.CreateContexts,
+		)
+	}
+
 	openFile := &OpenFile{
 		FileID:         smbFileID,
 		TreeID:         ctx.TreeID,
@@ -678,6 +783,21 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// Store lease key on the open so CLOSE can release when last handle closes
 	if leaseResponse != nil && leaseResponse.LeaseState != lock.LeaseStateNone {
 		openFile.LeaseKey = leaseResponse.LeaseKey
+	}
+
+	// Step 2: Process durable handle grant (DHnQ/DH2Q)
+	// This mutates openFile.IsDurable, openFile.CreateGuid, openFile.DurableTimeoutMs
+	if h.DurableStore != nil {
+		if respCtx := ProcessDurableHandleContext(
+			req.CreateContexts, openFile, h.DurableTimeoutMs,
+		); respCtx != nil {
+			durableResponseCtx = respCtx
+		}
+
+		// Step 3: Store AppInstanceId if durability was granted
+		if openFile.IsDurable && appInstanceId != ([16]byte{}) {
+			openFile.AppInstanceId = appInstanceId
+		}
 	}
 
 	h.StoreOpenFile(openFile)
@@ -746,6 +866,19 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			"leaseKey", fmt.Sprintf("%x", leaseResponse.LeaseKey),
 			"grantedState", lock.LeaseStateToString(leaseResponse.LeaseState),
 			"epoch", leaseResponse.Epoch)
+	}
+
+	// ========================================================================
+	// Step 10b2: Add durable handle response context if durability was granted
+	// ========================================================================
+
+	if durableResponseCtx != nil {
+		resp.CreateContexts = append(resp.CreateContexts, *durableResponseCtx)
+
+		logger.Debug("CREATE: durable handle granted in response",
+			"isDurable", openFile.IsDurable,
+			"createGuid", fmt.Sprintf("%x", openFile.CreateGuid),
+			"timeoutMs", openFile.DurableTimeoutMs)
 	}
 
 	// ========================================================================
@@ -1120,4 +1253,14 @@ func (h *Handler) overwriteFile(
 	}
 
 	return updatedFile, fileHandle, nil
+}
+
+// computeSessionKeyHash computes the SHA-256 hash of the session's signing key.
+// This is used for durable handle security validation during reconnect.
+// Returns zero hash if the session has no crypto state or signing key.
+func computeSessionKeyHash(sess *session.Session) [32]byte {
+	if sess == nil || sess.CryptoState == nil || len(sess.CryptoState.SigningKey) == 0 {
+		return [32]byte{}
+	}
+	return sha256.Sum256(sess.CryptoState.SigningKey)
 }

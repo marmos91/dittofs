@@ -49,6 +49,8 @@ import (
 //   - /api/v1/adapters/{type}/mounts - Protocol-specific mount listing (admin only)
 //   - /api/v1/settings/* - System settings management (admin only)
 //   - /api/v1/mounts - Unified mount listing (admin only)
+//   - GET /api/v1/durable-handles - List active durable handles (admin only)
+//   - DELETE /api/v1/durable-handles/{id} - Force-close a durable handle (admin only)
 func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.Store) http.Handler {
 	r := chi.NewRouter()
 
@@ -296,6 +298,14 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Use(apiMiddleware.RequireAdmin())
 				mountHandler := handlers.NewMountHandler(rt)
 				r.Get("/", mountHandler.List)
+			})
+
+			// Durable handle management (admin only)
+			r.Route("/durable-handles", func(r chi.Router) {
+				r.Use(apiMiddleware.RequireAdmin())
+				durableHandler := handlers.NewDurableHandleHandler(rt)
+				r.Get("/", durableHandler.List)
+				r.Delete("/{id}", durableHandler.ForceClose)
 			})
 		})
 	})

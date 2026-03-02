@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // Handler manages SMB2 protocol handling including session management,
@@ -124,6 +126,16 @@ type Handler struct {
 	// When false, guest session requests are rejected with STATUS_LOGON_FAILURE.
 	// Default: true.
 	GuestEnabled bool
+
+	// DurableStore holds the durable handle persistence layer.
+	// When set, durable handles are persisted on disconnect and can be
+	// reconnected from a new session. Set during adapter initialization.
+	// nil when durable handles are not configured (pre-SMB3 or testing).
+	DurableStore lock.DurableHandleStore
+
+	// DurableTimeoutMs is the server's configured maximum durable handle timeout.
+	// Defaults to 60000 (60 seconds). Configurable via SMBAdapterSettings.
+	DurableTimeoutMs uint32
 }
 
 // EncryptionConfig holds encryption policy for the handler.
@@ -228,6 +240,24 @@ type OpenFile struct {
 	// LeaseKey is the 128-bit lease key for this handle (when OplockLevel == OplockLevelLease).
 	// Used to release the lease when the last handle sharing the key is closed.
 	LeaseKey [16]byte
+
+	// Durable handle state (Phase 38: SMB3 durable handles)
+	// IsDurable indicates this handle has been granted durability.
+	// When true, the handle will be persisted to DurableHandleStore on disconnect
+	// instead of being closed immediately.
+	IsDurable bool
+
+	// CreateGuid is the V2 client-generated GUID for idempotent reconnection.
+	// Zero value for V1 durable handles or non-durable handles.
+	CreateGuid [16]byte
+
+	// AppInstanceId is the application instance ID for Hyper-V failover.
+	// Zero value if not set.
+	AppInstanceId [16]byte
+
+	// DurableTimeoutMs is the granted durable handle timeout in milliseconds.
+	// The handle expires this many milliseconds after client disconnects.
+	DurableTimeoutMs uint32
 }
 
 // NewHandler creates a new SMB2 handler with a default session manager.
@@ -260,6 +290,7 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 		DirectoryLeasingEnabled: true,
 		NtlmEnabled:             true,
 		GuestEnabled:            true,
+		DurableTimeoutMs:        60000, // 60 seconds default durable handle timeout
 	}
 
 	// Generate random server GUID
@@ -392,6 +423,36 @@ func (h *Handler) closeFilesWithFilter(
 			toDelete = append(toDelete, openFile.FileID)
 			closed++
 			return true
+		}
+
+		// Durable handle persistence: when IsDurable is set, persist the handle
+		// to the DurableHandleStore instead of closing it. This allows reconnection
+		// from a new session after network interruption.
+		if openFile.IsDurable && h.DurableStore != nil {
+			username := ""
+			var sessionKeyHash [32]byte
+			if sess != nil {
+				username = sess.Username
+				sessionKeyHash = computeSessionKeyHash(sess)
+			}
+
+			persisted := buildPersistedDurableHandle(openFile, username, sessionKeyHash, h.StartTime)
+			if err := h.DurableStore.PutDurableHandle(ctx, persisted); err != nil {
+				logger.Warn(caller+": failed to persist durable handle",
+					"path", openFile.Path,
+					"error", err)
+				// Fall through to normal close on persistence failure
+			} else {
+				logger.Debug(caller+": durable handle persisted for reconnect",
+					"path", openFile.Path,
+					"fileID", fmt.Sprintf("%x", openFile.FileID),
+					"timeout", openFile.DurableTimeoutMs)
+				// Do NOT release locks, flush caches, or execute delete-on-close
+				// The handle lives on in the DurableHandleStore
+				toDelete = append(toDelete, openFile.FileID)
+				closed++
+				return true
+			}
 		}
 
 		// Release locks for this file

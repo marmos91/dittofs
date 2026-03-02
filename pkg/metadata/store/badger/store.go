@@ -86,6 +86,10 @@ type BadgerMetadataStore struct {
 	// clientStore provides NSM client registration persistence
 	clientStore   *badgerClientStore
 	clientStoreMu sync.Mutex
+
+	// durableStore provides SMB3 durable handle persistence
+	durableStore   *badgerDurableStore
+	durableStoreMu sync.Mutex
 }
 
 // BadgerMetadataStoreConfig contains configuration for creating a BadgerDB metadata store.

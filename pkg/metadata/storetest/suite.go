@@ -32,6 +32,10 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 	t.Run("Permissions", func(t *testing.T) {
 		runPermissionsTests(t, factory)
 	})
+
+	t.Run("DurableHandles", func(t *testing.T) {
+		RunDurableHandleStoreTests(t, factory)
+	})
 }
 
 // createTestShare is a helper that creates a share and root directory for testing.

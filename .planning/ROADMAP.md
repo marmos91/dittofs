@@ -101,10 +101,10 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 33: SMB3 Dialect Negotiation and Preauth Integrity** - 3.0/3.0.2/3.1.1 dialect selection, negotiate contexts, SHA-512 preauth hash chain, secure dialect validation IOCTL (completed 2026-02-28)
 - [x] **Phase 34: Key Derivation and Signing** - SP800-108 KDF, dialect-aware key derivation (3.0 vs 3.1.1), AES-CMAC/GMAC signing abstraction (completed 2026-03-01)
-- [x] **Phase 35: Encryption and Transform Header** - AES-128/256-CCM/GCM encryption, transform header framing, per-session and per-share encryption enforcement (completed 2026-03-02)
-- [x] **Phase 36: Kerberos SMB3 Integration** - Shared Kerberos service layer, SPNEGO/Kerberos session setup with session key extraction, AP-REP mutual auth, NTLM fallback, guest sessions (completed 2026-03-02)
-- [ ] **Phase 37: SMB3 Leases and Directory Leasing** - Lease V2 with ParentLeaseKey/epoch, directory leases, break coordination via metadata service
-- [ ] **Phase 38: Durable Handles** - V1/V2 durable handles with CreateGuid, state persistence, reconnect validation (14+ checks), timeout management
+- [x] **Phase 35: Encryption and Transform Header** - AES-128/256-CCM/GCM encryption, transform header framing, per-session and per-share encryption enforcement (completed 2026-03-01)
+- [x] **Phase 36: Kerberos SMB3 Integration** - SPNEGO/Kerberos session setup with session key extraction, AP-REP mutual auth, NTLM fallback, guest sessions (completed 2026-03-01)
+- [x] **Phase 37: SMB3 Leases and Directory Leasing** - Lease V2 with ParentLeaseKey/epoch, directory leases, break coordination via metadata service (completed 2026-03-02)
+- [x] **Phase 38: Durable Handles** - V1/V2 durable handles with CreateGuid, state persistence, reconnect validation (14+ checks), timeout management (completed 2026-03-02)
 - [ ] **Phase 39: Cross-Protocol Integration and Documentation** - Bidirectional SMB3 lease/NFS delegation coordination, directory lease breaks on NFS ops, documentation
 - [ ] **Phase 40: SMB3 Conformance Testing** - smbtorture SMB3 suites, WPTS FileServer BVT, Go integration tests, client compatibility matrix
 - [ ] **Phase 40.5: Manual Verification - SMB3** USER CHECKPOINT - Verify SMB3 with Windows 10/11, macOS, Linux clients
@@ -177,11 +177,7 @@ Plans:
   3. AES-256-GCM and AES-256-CCM cipher variants functional
   4. Per-session encryption enforced (Session.EncryptData flag forces encryption on all traffic)
   5. Per-share encryption enforced (one share encrypted, another unencrypted on same connection)
-**Plans**: 3 plans
-Plans:
-- [x] 35-01-PLAN.md — Encryptor interface, GCM/CCM implementations, TransformHeader wire format, encryption config types
-- [x] 35-02-PLAN.md — EncryptionMiddleware, framing layer 0xFD detection, response encryption, cipher preference update
-- [x] 35-03-PLAN.md — SESSION_SETUP encryption enforcement, TREE_CONNECT share encryption, adapter wiring, docs
+**Plans**: TBD
 
 ### Phase 36: Kerberos SMB3 Integration
 **Goal**: Domain-joined Windows clients authenticate via Kerberos/SPNEGO with proper SMB3 key derivation, with NTLM and guest fallback
@@ -193,11 +189,7 @@ Plans:
   3. Mutual authentication completes (AP-REP token returned in SPNEGO accept-complete)
   4. Non-domain client falls back from Kerberos to NTLM within SPNEGO negotiation
   5. Guest sessions function without encryption or signing (no session key available)
-**Plans**: 3 plans
-Plans:
-- [ ] 36-01-PLAN.md — Shared KerberosService layer with replay cache, NFS GSS refactoring (ARCH-03)
-- [ ] 36-02-PLAN.md — SMB Kerberos auth handler with session key extraction, AP-REP mutual auth, SPNEGO MIC (AUTH-01, AUTH-02, KDF-04)
-- [ ] 36-03-PLAN.md — NTLM fallback, guest session policy, NEGOTIATE NegHints, control plane settings (AUTH-03, AUTH-04)
+**Plans**: TBD
 
 ### Phase 37: SMB3 Leases and Directory Leasing
 **Goal**: SMB3 clients can cache file and directory data locally using Lease V2 with epoch tracking, with lease management in the metadata service layer
@@ -209,11 +201,7 @@ Plans:
   3. Directory lease broken when another client creates, deletes, or renames a file within the directory
   4. All lease management logic lives in metadata service layer (not in SMB internal package)
   5. Lease epoch tracking prevents stale break acknowledgments
-**Plans**: 3 plans
-Plans:
-- [x] 37-01-PLAN.md — LockManager lease CRUD, DirChangeNotifier, V2 type extensions, NLM conflict migration
-- [x] 37-02-PLAN.md — SMB LeaseManager wrapper, smbenc V2 encoding, handler migration, OplockManager deletion
-- [x] 37-03-PLAN.md — MetadataService DirChangeNotifier wiring, NFS4 unified notification path refactor
+**Plans**: TBD
 
 ### Phase 38: Durable Handles
 **Goal**: SMB3 clients survive brief network interruptions without losing open files, with handle state persisted for reconnection
@@ -225,7 +213,11 @@ Plans:
   3. Durable handle state persists in control plane store across client disconnects
   4. Server validates all 14+ reconnect conditions per MS-SMB2 spec (CreateGuid, lease key, security context, etc.)
   5. Durable handle management logic lives in metadata service layer, reusing NFSv4 state patterns
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 38-01-PLAN.md — DurableHandleStore interface, memory/badger/postgres implementations, conformance tests
+- [ ] 38-02-PLAN.md — CREATE context processing (DHnQ/DH2Q grant, DHnC/DH2C reconnect, App Instance ID, handler integration)
+- [ ] 38-03-PLAN.md — Scavenger goroutine, adapter lifecycle, REST API endpoints, ARCHITECTURE.md docs
 
 ### Phase 39: Cross-Protocol Integration and Documentation
 **Goal**: SMB3 leases and NFS delegations coordinate bidirectionally through the metadata service, with comprehensive documentation
@@ -475,10 +467,10 @@ v3.8 (33-40.5) -> v4.0 (41-47.5) -> v4.1 (48-53.5)
 | 32. Windows Integration Testing | v3.6 | 3/3 | Complete | 2026-02-28 |
 | 33. SMB3 Dialect Negotiation and Preauth Integrity | 2/3 | Complete    | 2026-02-28 | - |
 | 34. Key Derivation and Signing | 2/2 | Complete    | 2026-03-01 | - |
-| 35. Encryption and Transform Header | 3/3 | Complete   | 2026-03-02 | - |
-| 36. Kerberos SMB3 Integration | 3/3 | Complete    | 2026-03-02 | - |
-| 37. SMB3 Leases and Directory Leasing | 1/3 | In Progress|  | - |
-| 38. Durable Handles | v3.8 | 0/? | Not started | - |
+| 35. Encryption and Transform Header | v3.8 | 0/? | Not started | - |
+| 36. Kerberos SMB3 Integration | v3.8 | 0/? | Not started | - |
+| 37. SMB3 Leases and Directory Leasing | v3.8 | 0/? | Not started | - |
+| 38. Durable Handles | 3/3 | Complete    | 2026-03-02 | - |
 | 39. Cross-Protocol Integration and Documentation | v3.8 | 0/? | Not started | - |
 | 40. SMB3 Conformance Testing | v3.8 | 0/? | Not started | - |
 | 41. Server-Side Copy | v4.0 | 0/? | Not started | - |
