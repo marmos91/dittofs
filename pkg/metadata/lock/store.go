@@ -85,8 +85,10 @@ type PersistedLock struct {
 	// Empty for byte-range locks and V1 leases.
 	ParentLeaseKey []byte `json:"parent_lease_key,omitempty"`
 
-	// IsDirectory indicates this lease is on a directory.
-	// False for byte-range locks and file leases.
+	// IsDirectory indicates this lock is on a directory.
+	// Shared by both leases and delegations: only one of Lease or Delegation
+	// should be non-nil per UnifiedLock, so this field is unambiguous.
+	// False for byte-range locks and file leases/delegations.
 	IsDirectory bool `json:"is_directory,omitempty"`
 
 	// ========================================================================

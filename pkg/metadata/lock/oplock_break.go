@@ -202,7 +202,7 @@ func (s *OpLockBreakScanner) SetLockManager(lm *Manager) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lockManager = lm
-	s.delegationTimeout = lm.DelegationRecallTimeout
+	s.delegationTimeout = lm.DelegationRecallTimeout()
 }
 
 // SetDelegationTimeout updates the delegation recall timeout.

@@ -128,7 +128,8 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 					"fileHandle", handleKey,
 					"delegationType", lock.Delegation.DelegType.String(),
 					"requestedState", LeaseStateToString(requestedState))
-				return LeaseStateNone, 0, nil
+				return LeaseStateNone, 0, fmt.Errorf("lease denied: conflicts with %s delegation on file",
+					lock.Delegation.DelegType.String())
 			}
 		}
 	}

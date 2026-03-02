@@ -399,7 +399,7 @@ type Manager struct {
 
 	// Delegation-related fields
 	breakWaitChans          map[string]chan struct{} // per-handleKey channel for break wait
-	DelegationRecallTimeout time.Duration            // default 90s, configurable
+	delegationRecallTimeout time.Duration            // default 90s, configurable
 }
 
 // DefaultDelegationRecallTimeout is the default delegation recall timeout.
@@ -413,7 +413,7 @@ func NewManager() *Manager {
 		unifiedLocks:            make(map[string][]*UnifiedLock),
 		recentlyBroken:          newRecentlyBrokenCache(defaultRecentlyBrokenTTL),
 		breakWaitChans:          make(map[string]chan struct{}),
-		DelegationRecallTimeout: DefaultDelegationRecallTimeout,
+		delegationRecallTimeout: DefaultDelegationRecallTimeout,
 	}
 }
 
@@ -425,7 +425,7 @@ func NewManagerWithTTL(recentlyBrokenTTL time.Duration) *Manager {
 		unifiedLocks:            make(map[string][]*UnifiedLock),
 		recentlyBroken:          newRecentlyBrokenCache(recentlyBrokenTTL),
 		breakWaitChans:          make(map[string]chan struct{}),
-		DelegationRecallTimeout: DefaultDelegationRecallTimeout,
+		delegationRecallTimeout: DefaultDelegationRecallTimeout,
 	}
 }
 
@@ -437,7 +437,7 @@ func NewManagerWithGracePeriod(gracePeriod *GracePeriodManager) *Manager {
 		gracePeriod:             gracePeriod,
 		recentlyBroken:          newRecentlyBrokenCache(defaultRecentlyBrokenTTL),
 		breakWaitChans:          make(map[string]chan struct{}),
-		DelegationRecallTimeout: DefaultDelegationRecallTimeout,
+		delegationRecallTimeout: DefaultDelegationRecallTimeout,
 	}
 }
 
@@ -630,6 +630,20 @@ func (lm *Manager) RemoveFileLocks(handleKey string) {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 	delete(lm.locks, handleKey)
+}
+
+// SetDelegationRecallTimeout sets the delegation recall timeout (thread-safe).
+func (lm *Manager) SetDelegationRecallTimeout(d time.Duration) {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	lm.delegationRecallTimeout = d
+}
+
+// DelegationRecallTimeout returns the current delegation recall timeout (thread-safe).
+func (lm *Manager) DelegationRecallTimeout() time.Duration {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	return lm.delegationRecallTimeout
 }
 
 // SetHandleChecker sets the handle checker used for lease reclaim validation.
@@ -1166,7 +1180,7 @@ func (lm *Manager) CheckAndBreakCachingForDelete(handleKey string, excludeOwner 
 // or the context is cancelled.
 func (lm *Manager) WaitForBreakCompletion(ctx context.Context, handleKey string) error {
 	for {
-		lm.mu.RLock()
+		lm.mu.Lock()
 		hasBreaking := false
 		for _, lock := range lm.unifiedLocks[handleKey] {
 			if lock.Lease != nil && lock.Lease.Breaking {
@@ -1178,13 +1192,14 @@ func (lm *Manager) WaitForBreakCompletion(ctx context.Context, handleKey string)
 				break
 			}
 		}
-		lm.mu.RUnlock()
 
 		if !hasBreaking {
+			lm.mu.Unlock()
 			return nil
 		}
 
-		lm.mu.Lock()
+		// Get or create the wait channel while still holding the lock,
+		// so no signal from signalBreakWait can be missed.
 		ch, ok := lm.breakWaitChans[handleKey]
 		if !ok {
 			ch = make(chan struct{}, 1)
@@ -1280,7 +1295,7 @@ func (lm *Manager) GrantDelegation(handleKey string, delegation *Delegation) err
 	newLock := &UnifiedLock{
 		ID: delegation.DelegationID,
 		Owner: LockOwner{
-			OwnerID:   fmt.Sprintf("deleg:%s", delegation.ClientID),
+			OwnerID:   fmt.Sprintf("deleg:%s:%s", delegation.ClientID, delegation.DelegationID),
 			ClientID:  delegation.ClientID,
 			ShareName: delegation.ShareName,
 		},

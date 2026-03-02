@@ -35,38 +35,35 @@ func (h *NFSBreakHandler) OnDelegationRecall(handleKey string, ul *lock.UnifiedL
 
 	delegID := ul.Delegation.DelegationID
 
-	if _, found := h.stateManager.GetStateidForDelegation(delegID); !found {
+	// Single lock section: look up stateid via O(1) map, find DelegationState,
+	// and mark RecallSent atomically to avoid races with concurrent returns.
+	h.stateManager.mu.Lock()
+	stateid, found := h.stateManager.delegStateidMap[delegID]
+	if !found {
+		h.stateManager.mu.Unlock()
 		logger.Debug("NFSBreakHandler: no NFS stateid for delegation, skipping",
 			"delegationID", delegID,
 			"handleKey", handleKey)
 		return
 	}
 
-	h.stateManager.mu.RLock()
-	var deleg *DelegationState
-	for _, d := range h.stateManager.delegByOther {
-		if d.LockManagerDelegID == delegID {
-			deleg = d
-			break
-		}
-	}
-	h.stateManager.mu.RUnlock()
-
-	if deleg == nil {
+	// Use the stateid.Other to look up the DelegationState in O(1).
+	deleg, exists := h.stateManager.delegByOther[stateid.Other]
+	if !exists || deleg.LockManagerDelegID != delegID {
+		h.stateManager.mu.Unlock()
 		logger.Debug("NFSBreakHandler: delegation state not found",
 			"delegationID", delegID)
 		return
 	}
 
+	deleg.RecallSent = true
+	deleg.RecallTime = time.Now()
+	h.stateManager.mu.Unlock()
+
 	logger.Debug("NFSBreakHandler: dispatching CB_RECALL",
 		"delegationID", delegID,
 		"clientID", deleg.ClientID,
 		"handleKey", handleKey)
-
-	h.stateManager.mu.Lock()
-	deleg.RecallSent = true
-	deleg.RecallTime = time.Now()
-	h.stateManager.mu.Unlock()
 
 	go h.stateManager.sendRecall(deleg)
 }

@@ -132,12 +132,14 @@ func (q *NotificationQueue) Len() int {
 	return len(q.events)
 }
 
-// FlushCh returns a channel that is signaled when the flush threshold
-// (100 events) is reached. This allows consumers to proactively drain
-// the queue before it overflows.
+// FlushCh returns a channel that is signaled when the queue length first
+// reaches the flush threshold (100 events). This allows consumers to
+// proactively drain the queue before it overflows.
 //
 // The channel is buffered with capacity 1, so at most one signal is pending.
-// Reading from the channel resets it for the next threshold crossing.
+// The signal fires exactly once per crossing from below to exactly the
+// threshold. After a Drain() resets the count to zero, the next batch of
+// pushes will signal again when the threshold is reached.
 func (q *NotificationQueue) FlushCh() <-chan struct{} {
 	return q.flushCh
 }
