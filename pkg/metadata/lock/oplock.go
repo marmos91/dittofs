@@ -96,6 +96,18 @@ type OpLock struct {
 	// Set when SMB client reconnects after server restart and successfully
 	// reclaims its previously held lease.
 	Reclaim bool
+
+	// ParentLeaseKey is the V2 parent lease key for cache tree correlation.
+	// Used by SMB2.1+ Lease V2 to associate directory and file leases into
+	// a hierarchical caching tree, enabling directory lease breaks when
+	// child entries change.
+	// Reference: MS-SMB2 2.2.13.2.10
+	ParentLeaseKey [16]byte
+
+	// IsDirectory indicates this lease is on a directory.
+	// When true, valid lease states are restricted to ValidDirectoryLeaseStates
+	// (None, R, RH). Write leases are not permitted on directories.
+	IsDirectory bool
 }
 
 // HasRead returns true if the lease includes Read caching permission.
@@ -169,13 +181,15 @@ func (l *OpLock) Clone() *OpLock {
 		return nil
 	}
 	return &OpLock{
-		LeaseKey:     l.LeaseKey, // Fixed-size array, copied by value
-		LeaseState:   l.LeaseState,
-		BreakToState: l.BreakToState,
-		Breaking:     l.Breaking,
-		Epoch:        l.Epoch,
-		BreakStarted: l.BreakStarted,
-		Reclaim:      l.Reclaim,
+		LeaseKey:       l.LeaseKey,       // Fixed-size array, copied by value
+		LeaseState:     l.LeaseState,
+		BreakToState:   l.BreakToState,
+		Breaking:       l.Breaking,
+		Epoch:          l.Epoch,
+		BreakStarted:   l.BreakStarted,
+		Reclaim:        l.Reclaim,
+		ParentLeaseKey: l.ParentLeaseKey, // Fixed-size array, copied by value
+		IsDirectory:    l.IsDirectory,
 	}
 }
 

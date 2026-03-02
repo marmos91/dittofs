@@ -10,9 +10,12 @@
 package lock
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"strings"
+
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // ============================================================================
@@ -224,6 +227,82 @@ func TranslateNFSConflictReason(lease *UnifiedLock) string {
 }
 
 // ============================================================================
+// NLM Lock Conflict Detection for Leases (shared package)
+// ============================================================================
+
+// CheckNLMLocksForLeaseConflict queries the lock store for NLM byte-range locks
+// that would conflict with a requested SMB lease.
+//
+// This is the shared implementation used by LockManager.RequestLease to check
+// cross-protocol conflicts before granting a lease.
+//
+// Per CONTEXT.md:
+//   - NFS lock vs SMB Write lease: Deny SMB immediately
+//   - NFS byte-range locks are explicit and win over opportunistic SMB leases
+//
+// Conflict Rules:
+//   - Write lease requested: ANY NLM lock conflicts (exclusive access required)
+//   - Read lease requested: ONLY exclusive NLM locks conflict
+//   - Handle lease (alone): No conflict with NLM locks (H is about delete notification)
+//
+// Parameters:
+//   - lockStore: The lock store to query (may be nil, returns false)
+//   - ctx: Context for cancellation
+//   - handleKey: The file handle key to check
+//   - requestedState: The requested lease state (R/W/H flags)
+//   - clientID: The requesting client ID (for logging)
+//
+// Returns:
+//   - bool: true if NLM locks conflict with the requested lease state
+func CheckNLMLocksForLeaseConflict(lockStore LockStore, ctx context.Context, handleKey string, requestedState uint32, clientID string) bool {
+	if lockStore == nil {
+		return false
+	}
+
+	// Query byte-range locks only (not leases)
+	isLease := false
+	locks, err := lockStore.ListLocks(ctx, LockQuery{
+		FileID:  handleKey,
+		IsLease: &isLease,
+	})
+	if err != nil {
+		logger.Warn("CheckNLMLocksForLeaseConflict: failed to query NLM locks",
+			"handleKey", handleKey,
+			"error", err)
+		return false
+	}
+
+	// Determine what conflicts based on requested lease state
+	wantsWrite := requestedState&LeaseStateWrite != 0
+	wantsRead := requestedState&LeaseStateRead != 0
+
+	for _, pl := range locks {
+		el := FromPersistedLock(pl)
+
+		// Skip if this is somehow a lease
+		if el.IsLease() {
+			continue
+		}
+
+		// Handle-only lease (no R or W) does not conflict with NLM locks
+		if !wantsWrite && !(wantsRead && el.IsExclusive()) {
+			continue
+		}
+
+		logger.Debug("CheckNLMLocksForLeaseConflict: NLM lock conflicts with lease",
+			"handleKey", handleKey,
+			"nlmOwner", el.Owner.OwnerID,
+			"clientID", clientID,
+			"wantsWrite", wantsWrite,
+			"wantsRead", wantsRead,
+			"nlmExclusive", el.IsExclusive())
+		return true
+	}
+
+	return false
+}
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
@@ -283,9 +362,7 @@ func parseNLMOwnerID(ownerID string) (callerName string, svid int32, oh []byte) 
 	callerName = parts[1]
 
 	// Parse svid
-	var svidVal int64
-	_, _ = fmt.Sscanf(parts[2], "%d", &svidVal)
-	svid = int32(svidVal)
+	_, _ = fmt.Sscanf(parts[2], "%d", &svid)
 
 	// Parse oh (hex encoded)
 	oh, _ = hex.DecodeString(parts[3])

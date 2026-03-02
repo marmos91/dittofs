@@ -2,6 +2,7 @@ package lock
 
 import (
 	"cmp"
+	"context"
 	"slices"
 	"sync"
 	"time"
@@ -101,6 +102,34 @@ type LockManager interface {
 	IsInGracePeriod() bool
 
 	// ========================================================================
+	// Lease Operations
+	// ========================================================================
+
+	// RequestLease requests a new or upgraded lease on a file or directory.
+	// Returns the granted state (may be less than requested), epoch, and error.
+	// isDirectory=true restricts to ValidDirectoryLeaseStates.
+	RequestLease(ctx context.Context, fileHandle FileHandle, leaseKey [16]byte,
+		parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
+		requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error)
+
+	// AcknowledgeLeaseBreak processes a client's lease break acknowledgment.
+	// acknowledgedState is the state the client accepts (must be <= breakToState).
+	AcknowledgeLeaseBreak(ctx context.Context, leaseKey [16]byte,
+		acknowledgedState uint32, epoch uint16) error
+
+	// ReleaseLease releases all lease state for the given lease key.
+	ReleaseLease(ctx context.Context, leaseKey [16]byte) error
+
+	// ReclaimLease reclaims a lease during grace period (both SMB and NFS).
+	// Returns the reclaimed lock or error if lease doesn't exist or directory deleted.
+	ReclaimLease(ctx context.Context, leaseKey [16]byte,
+		requestedState uint32, isDirectory bool) (*UnifiedLock, error)
+
+	// GetLeaseState returns the current state and epoch for a lease key.
+	// found=false if no lease exists with that key.
+	GetLeaseState(ctx context.Context, leaseKey [16]byte) (state uint32, epoch uint16, found bool)
+
+	// ========================================================================
 	// Break Callbacks
 	// ========================================================================
 
@@ -137,6 +166,12 @@ type ManagerStats struct {
 
 	// GracePeriodActive indicates if grace period is active.
 	GracePeriodActive bool
+}
+
+// HandleChecker checks if a file handle still exists in the metadata store.
+// Used for lease reclaim validation (reject reclaim on deleted directories).
+type HandleChecker interface {
+	HandleExists(handle FileHandle) bool
 }
 
 // Verify Manager satisfies LockManager at compile time.
@@ -317,22 +352,27 @@ type Manager struct {
 	unifiedLocks   map[string][]*UnifiedLock // handle key -> unified locks
 	breakCallbacks []BreakCallbacks          // registered break callbacks
 	gracePeriod    *GracePeriodManager       // grace period state (may be nil)
+	handleChecker  HandleChecker             // checks if file handles still exist (for reclaim)
+	lockStore      LockStore                 // persistent lock store (optional)
+	recentlyBroken *recentlyBrokenCache      // prevents directory lease storms
 }
 
 // NewManager creates a new lock manager.
 func NewManager() *Manager {
 	return &Manager{
-		locks:        make(map[string][]FileLock),
-		unifiedLocks: make(map[string][]*UnifiedLock),
+		locks:          make(map[string][]FileLock),
+		unifiedLocks:   make(map[string][]*UnifiedLock),
+		recentlyBroken: newRecentlyBrokenCache(defaultRecentlyBrokenTTL),
 	}
 }
 
 // NewManagerWithGracePeriod creates a new lock manager with a grace period manager.
 func NewManagerWithGracePeriod(gracePeriod *GracePeriodManager) *Manager {
 	return &Manager{
-		locks:        make(map[string][]FileLock),
-		unifiedLocks: make(map[string][]*UnifiedLock),
-		gracePeriod:  gracePeriod,
+		locks:          make(map[string][]FileLock),
+		unifiedLocks:   make(map[string][]*UnifiedLock),
+		gracePeriod:    gracePeriod,
+		recentlyBroken: newRecentlyBrokenCache(defaultRecentlyBrokenTTL),
 	}
 }
 
@@ -527,6 +567,58 @@ func (lm *Manager) RemoveFileLocks(handleKey string) {
 	delete(lm.locks, handleKey)
 }
 
+// SetHandleChecker sets the handle checker used for lease reclaim validation.
+func (lm *Manager) SetHandleChecker(hc HandleChecker) {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	lm.handleChecker = hc
+}
+
+// SetLockStore sets the persistent lock store for lease persistence.
+func (lm *Manager) SetLockStore(store LockStore) {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	lm.lockStore = store
+}
+
+// ============================================================================
+// Lease Operations (delegated to leases.go and reclaim.go)
+// ============================================================================
+
+// RequestLease requests a new or upgraded lease on a file or directory.
+// See leases.go for full implementation.
+func (lm *Manager) RequestLease(ctx context.Context, fileHandle FileHandle, leaseKey [16]byte,
+	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
+	requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error) {
+	return lm.requestLeaseImpl(ctx, fileHandle, leaseKey, parentLeaseKey, ownerID, clientID, shareName, requestedState, isDirectory)
+}
+
+// AcknowledgeLeaseBreak processes a client's lease break acknowledgment.
+// See leases.go for full implementation.
+func (lm *Manager) AcknowledgeLeaseBreak(ctx context.Context, leaseKey [16]byte,
+	acknowledgedState uint32, epoch uint16) error {
+	return lm.acknowledgeLeaseBreakImpl(ctx, leaseKey, acknowledgedState, epoch)
+}
+
+// ReleaseLease releases all lease state for the given lease key.
+// See leases.go for full implementation.
+func (lm *Manager) ReleaseLease(ctx context.Context, leaseKey [16]byte) error {
+	return lm.releaseLeaseImpl(ctx, leaseKey)
+}
+
+// ReclaimLease reclaims a lease during grace period.
+// See reclaim.go for full implementation.
+func (lm *Manager) ReclaimLease(ctx context.Context, leaseKey [16]byte,
+	requestedState uint32, isDirectory bool) (*UnifiedLock, error) {
+	return lm.reclaimLeaseImpl(ctx, leaseKey, requestedState, isDirectory)
+}
+
+// GetLeaseState returns the current state and epoch for a lease key.
+// See leases.go for full implementation.
+func (lm *Manager) GetLeaseState(ctx context.Context, leaseKey [16]byte) (state uint32, epoch uint16, found bool) {
+	return lm.getLeaseStateImpl(ctx, leaseKey)
+}
+
 // ============================================================================
 // POSIX Lock Splitting
 // ============================================================================
@@ -718,9 +810,7 @@ func mergeTwoLocks(a, b *UnifiedLock) *UnifiedLock {
 	result := a.Clone()
 
 	// Start is the minimum offset
-	if b.Offset < result.Offset {
-		result.Offset = b.Offset
-	}
+	result.Offset = min(a.Offset, b.Offset)
 
 	// Handle unbounded locks
 	if a.Length == 0 || b.Length == 0 {
@@ -729,12 +819,7 @@ func mergeTwoLocks(a, b *UnifiedLock) *UnifiedLock {
 	}
 
 	// Both bounded - end is the maximum
-	aEnd := a.End()
-	bEnd := b.End()
-	maxEnd := aEnd
-	if bEnd > maxEnd {
-		maxEnd = bEnd
-	}
+	maxEnd := max(a.End(), b.End())
 
 	result.Length = maxEnd - result.Offset
 	return result

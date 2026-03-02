@@ -111,8 +111,8 @@ const OplockBreakerProviderKey = "oplock_breaker"
 // Other adapters retrieve and call it to trigger breaks before conflicting operations.
 //
 // This generic interface decouples protocol adapters: NFS handlers don't
-// import SMB packages and vice versa. The OplockManager in the SMB adapter
-// satisfies this interface.
+// import SMB packages and vice versa. The SMBOplockBreaker in the SMB lease
+// package satisfies this interface via the shared LockManager.
 type OplockBreaker interface {
 	// CheckAndBreakForWrite triggers lease break for write-conflicting oplocks.
 	// Returns nil if no break needed, ErrLeaseBreakPending if break initiated.
