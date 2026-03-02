@@ -201,7 +201,7 @@ func (c *Connection) Serve(ctx context.Context) {
 
 				asyncCallback := c.makeAsyncNotifyCallback(ci)
 				if err := smb.ProcessSingleRequest(ctx, reqHeader, reqBody, raw, ci, asyncCallback); err != nil {
-					logger.Debug("Error processing SMB request", "address", clientAddr, "messageId", reqHeader.MessageID, "error", err)
+					logger.Debug("Error processing SMB request", "address", clientAddr, "messageID", reqHeader.MessageID, "error", err)
 				}
 			}(hdr, body, rawMessage)
 		}
@@ -277,7 +277,7 @@ func (c *Connection) handleRequestPanic(clientAddr string, messageID uint64) {
 		stack := string(debug.Stack())
 		logger.Error("Panic in SMB request handler",
 			"address", clientAddr,
-			"messageId", messageID,
+			"messageID", messageID,
 			"error", r,
 			"stack", stack)
 	}

@@ -1,18 +1,47 @@
 // Package handlers provides SMB2 command handlers and session management.
 //
-// This file provides SMB2 CREATE context integration for lease support.
-// The actual lease encoding/decoding is in lease.go; this file provides
-// the CREATE-specific helpers for processing lease contexts in CREATE requests.
+// This file provides SMB2 lease wire-format types, encoding/decoding, and
+// CREATE context integration for lease support. It contains the lease constants,
+// request/response structures, break notification types, and the CREATE-specific
+// helpers for processing lease contexts in CREATE requests.
 //
 // Reference: MS-SMB2 2.2.13.2 SMB2_CREATE_CONTEXT
+// Reference: MS-SMB2 2.2.13.2.8 SMB2_CREATE_REQUEST_LEASE_V2
+// Reference: MS-SMB2 2.2.23.2, 2.2.24.2 Lease Break Notification/Acknowledgment
 package handlers
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
+)
+
+// ============================================================================
+// SMB2 Lease Constants [MS-SMB2] 2.2.13.2.8
+// ============================================================================
+
+const (
+	// LeaseV1ContextSize is the size of the SMB2_CREATE_REQUEST_LEASE context
+	LeaseV1ContextSize = 32
+
+	// LeaseV2ContextSize is the size of the SMB2_CREATE_REQUEST_LEASE_V2 context
+	LeaseV2ContextSize = 52
+
+	// LeaseBreakNotificationSize is the size of a lease break notification [MS-SMB2] 2.2.23.2
+	LeaseBreakNotificationSize = 44
+
+	// LeaseBreakAckSize is the size of a lease break acknowledgment [MS-SMB2] 2.2.24.2
+	LeaseBreakAckSize = 36
+)
+
+// Lease break notification flags
+const (
+	// LeaseBreakFlagAckRequired indicates the client must acknowledge the break
+	LeaseBreakFlagAckRequired uint32 = 0x01
 )
 
 // ============================================================================
@@ -37,6 +66,203 @@ const (
 )
 
 // ============================================================================
+// Lease Request/Response Types [MS-SMB2] 2.2.13.2.8
+// ============================================================================
+
+// LeaseCreateContext represents an SMB2_CREATE_REQUEST_LEASE_V2 context.
+//
+// **Wire Format (52 bytes):**
+//
+//	Offset  Size  Field            Description
+//	------  ----  ---------------  ----------------------------------
+//	0       16    LeaseKey         Client-generated 128-bit key
+//	16      4     LeaseState       Requested R/W/H state
+//	20      4     Flags            Reserved (0)
+//	24      8     LeaseDuration    Reserved (0)
+//	32      16    ParentLeaseKey   Parent directory lease key (SMB3)
+//	48      2     Epoch            State change counter
+//	50      2     Reserved         Reserved (0)
+type LeaseCreateContext struct {
+	LeaseKey       [16]byte
+	LeaseState     uint32
+	Flags          uint32
+	LeaseDuration  uint64
+	ParentLeaseKey [16]byte
+	Epoch          uint16
+}
+
+// DecodeLeaseCreateContext parses an SMB2_CREATE_REQUEST_LEASE_V2 context.
+func DecodeLeaseCreateContext(data []byte) (*LeaseCreateContext, error) {
+	if len(data) < LeaseV2ContextSize {
+		if len(data) >= LeaseV1ContextSize {
+			// V1 format (32 bytes) - no parent key or epoch
+			return decodeLeaseV1Context(data)
+		}
+		return nil, fmt.Errorf("lease context too short: %d bytes", len(data))
+	}
+
+	r := smbenc.NewReader(data)
+	leaseKey := r.ReadBytes(16)
+	leaseState := r.ReadUint32()
+	flags := r.ReadUint32()
+	leaseDuration := r.ReadUint64()
+	parentLeaseKey := r.ReadBytes(16)
+	epoch := r.ReadUint16()
+	if r.Err() != nil {
+		return nil, fmt.Errorf("failed to parse lease V2 context: %w", r.Err())
+	}
+
+	ctx := &LeaseCreateContext{
+		LeaseState:    leaseState,
+		Flags:         flags,
+		LeaseDuration: leaseDuration,
+		Epoch:         epoch,
+	}
+	copy(ctx.LeaseKey[:], leaseKey)
+	copy(ctx.ParentLeaseKey[:], parentLeaseKey)
+
+	return ctx, nil
+}
+
+// decodeLeaseV1Context parses an SMB2_CREATE_REQUEST_LEASE (V1) context.
+func decodeLeaseV1Context(data []byte) (*LeaseCreateContext, error) {
+	r := smbenc.NewReader(data)
+	leaseKey := r.ReadBytes(16)
+	leaseState := r.ReadUint32()
+	flags := r.ReadUint32()
+	leaseDuration := r.ReadUint64()
+	if r.Err() != nil {
+		return nil, fmt.Errorf("failed to parse lease V1 context: %w", r.Err())
+	}
+
+	ctx := &LeaseCreateContext{
+		LeaseState:    leaseState,
+		Flags:         flags,
+		LeaseDuration: leaseDuration,
+		Epoch:         0, // V1 has no epoch
+	}
+	copy(ctx.LeaseKey[:], leaseKey)
+	// V1 has no parent lease key
+
+	return ctx, nil
+}
+
+// EncodeLeaseResponseContext encodes an SMB2_CREATE_RESPONSE_LEASE_V2 context.
+func EncodeLeaseResponseContext(leaseKey [16]byte, leaseState uint32, flags uint32, epoch uint16) []byte {
+	w := smbenc.NewWriter(LeaseV2ContextSize)
+	w.WriteBytes(leaseKey[:]) // LeaseKey (16 bytes)
+	w.WriteUint32(leaseState) // LeaseState
+	w.WriteUint32(flags)      // Flags
+	w.WriteUint64(0)          // LeaseDuration
+	w.WriteZeros(16)          // ParentLeaseKey (16 bytes)
+	w.WriteUint16(epoch)      // Epoch
+	w.WriteUint16(0)          // Reserved
+	return w.Bytes()
+}
+
+// ParseLeaseCreateContext is an alias for DecodeLeaseCreateContext for consistency
+// with the plan naming convention.
+var ParseLeaseCreateContext = DecodeLeaseCreateContext
+
+// ============================================================================
+// Lease Break Notification [MS-SMB2] 2.2.23.2
+// ============================================================================
+
+// LeaseBreakNotification represents an SMB2 Lease Break Notification.
+//
+// **Wire Format (44 bytes):**
+//
+//	Offset  Size  Field              Description
+//	------  ----  -----------------  ----------------------------------
+//	0       2     StructureSize      Always 44
+//	2       2     NewEpoch           New epoch value
+//	4       4     Flags              ACK_REQUIRED flag
+//	8       16    LeaseKey           Lease identifier
+//	24      4     CurrentLeaseState  What client currently has
+//	28      4     NewLeaseState      What client should break to
+//	32      12    Reserved           Reserved (0)
+type LeaseBreakNotification struct {
+	NewEpoch          uint16
+	Flags             uint32
+	LeaseKey          [16]byte
+	CurrentLeaseState uint32
+	NewLeaseState     uint32
+}
+
+// Encode serializes the LeaseBreakNotification to wire format.
+func (n *LeaseBreakNotification) Encode() []byte {
+	w := smbenc.NewWriter(LeaseBreakNotificationSize)
+	w.WriteUint16(LeaseBreakNotificationSize) // StructureSize
+	w.WriteUint16(n.NewEpoch)                 // NewEpoch
+	w.WriteUint32(n.Flags)                    // Flags
+	w.WriteBytes(n.LeaseKey[:])               // LeaseKey (16 bytes)
+	w.WriteUint32(n.CurrentLeaseState)        // CurrentLeaseState
+	w.WriteUint32(n.NewLeaseState)            // NewLeaseState
+	w.WriteZeros(12)                          // Reserved (12 bytes)
+	return w.Bytes()
+}
+
+// ============================================================================
+// Lease Break Acknowledgment [MS-SMB2] 2.2.24.2
+// ============================================================================
+
+// LeaseBreakAcknowledgment represents an SMB2 Lease Break Acknowledgment.
+//
+// **Wire Format (36 bytes):**
+//
+//	Offset  Size  Field          Description
+//	------  ----  -------------  ----------------------------------
+//	0       2     StructureSize  Always 36
+//	2       2     Reserved       Reserved (0)
+//	4       4     Flags          Reserved (0)
+//	8       16    LeaseKey       Lease identifier
+//	24      4     LeaseState     State client is acknowledging
+//	28      8     Reserved       Reserved (0)
+type LeaseBreakAcknowledgment struct {
+	LeaseKey   [16]byte
+	LeaseState uint32
+}
+
+// DecodeLeaseBreakAcknowledgment parses an SMB2 Lease Break Acknowledgment.
+func DecodeLeaseBreakAcknowledgment(data []byte) (*LeaseBreakAcknowledgment, error) {
+	if len(data) < LeaseBreakAckSize {
+		return nil, fmt.Errorf("lease break ack too short: %d bytes", len(data))
+	}
+
+	r := smbenc.NewReader(data)
+	structSize := r.ReadUint16()
+	if structSize != LeaseBreakAckSize {
+		return nil, fmt.Errorf("invalid lease break ack structure size: %d", structSize)
+	}
+
+	r.Skip(6) // Reserved(2) + Flags(4)
+	leaseKey := r.ReadBytes(16)
+	leaseState := r.ReadUint32()
+	if r.Err() != nil {
+		return nil, fmt.Errorf("failed to parse lease break ack: %w", r.Err())
+	}
+
+	ack := &LeaseBreakAcknowledgment{
+		LeaseState: leaseState,
+	}
+	copy(ack.LeaseKey[:], leaseKey)
+
+	return ack, nil
+}
+
+// EncodeLeaseBreakResponse encodes an SMB2 Lease Break Response.
+func EncodeLeaseBreakResponse(leaseKey [16]byte, leaseState uint32) []byte {
+	w := smbenc.NewWriter(LeaseBreakAckSize)
+	w.WriteUint16(LeaseBreakAckSize) // StructureSize
+	w.WriteUint16(0)                 // Reserved
+	w.WriteUint32(0)                 // Flags
+	w.WriteBytes(leaseKey[:])        // LeaseKey (16 bytes)
+	w.WriteUint32(leaseState)        // LeaseState
+	w.WriteZeros(8)                  // Reserved (8 bytes)
+	return w.Bytes()
+}
+
+// ============================================================================
 // Lease Response Context Builder
 // ============================================================================
 
@@ -46,12 +272,19 @@ type LeaseResponseContext struct {
 	LeaseState     uint32
 	Flags          uint32 // SMB2_LEASE_FLAG_BREAK_IN_PROGRESS if breaking
 	ParentLeaseKey [16]byte
+	HasParent      bool   // True if ParentLeaseKey is valid (V2)
 	Epoch          uint16
 }
 
 // Encode serializes the LeaseResponseContext to wire format.
+// Uses V2 encoding (52 bytes) when HasParent is true or Epoch > 0,
+// otherwise falls back to V1 encoding (32 bytes) for backward compatibility.
 func (r *LeaseResponseContext) Encode() []byte {
-	return EncodeLeaseResponseContext(r.LeaseKey, r.LeaseState, r.Flags, r.Epoch)
+	if r.HasParent || r.Epoch > 0 {
+		return smbenc.EncodeLeaseV2ResponseContext(
+			r.LeaseKey, r.LeaseState, r.ParentLeaseKey, r.HasParent, r.Epoch)
+	}
+	return smbenc.EncodeLeaseV1ResponseContext(r.LeaseKey, r.LeaseState)
 }
 
 // ============================================================================
@@ -73,11 +306,11 @@ func FindCreateContext(contexts []CreateContext, name string) *CreateContext {
 //
 // This function:
 // 1. Parses the RqLs create context
-// 2. Requests the lease through OplockManager
+// 2. Requests the lease through LeaseManager (which delegates to shared LockManager)
 // 3. Returns a LeaseResponseContext to include in the CREATE response
 //
 // Parameters:
-//   - oplockMgr: The oplock manager for requesting leases
+//   - leaseMgr: The lease manager for requesting leases
 //   - ctxData: The raw create context data (RqLs payload)
 //   - fileHandle: The file handle for the opened file
 //   - sessionID: The SMB session ID
@@ -89,7 +322,7 @@ func FindCreateContext(contexts []CreateContext, name string) *CreateContext {
 //   - *LeaseResponseContext: Response context to add to CREATE response (nil if not processing)
 //   - error: Parsing or lease request error
 func ProcessLeaseCreateContext(
-	oplockMgr *OplockManager,
+	leaseMgr *lease.LeaseManager,
 	ctxData []byte,
 	fileHandle lock.FileHandle,
 	sessionID uint64,
@@ -97,8 +330,8 @@ func ProcessLeaseCreateContext(
 	shareName string,
 	isDirectory bool,
 ) (*LeaseResponseContext, error) {
-	if oplockMgr == nil || oplockMgr.lockStore == nil {
-		logger.Debug("ProcessLeaseCreateContext: no oplock manager or lock store")
+	if leaseMgr == nil {
+		logger.Debug("ProcessLeaseCreateContext: no lease manager")
 		return nil, nil
 	}
 
@@ -114,12 +347,17 @@ func ProcessLeaseCreateContext(
 		"requestedState", lock.LeaseStateToString(leaseReq.LeaseState),
 		"isDirectory", isDirectory)
 
-	// Request the lease through OplockManager
-	grantedState, epoch, err := oplockMgr.RequestLease(
+	// Build owner ID for cross-protocol visibility
+	ownerID := fmt.Sprintf("smb:lease:%x", leaseReq.LeaseKey)
+
+	// Request the lease through LeaseManager (delegates to shared LockManager)
+	grantedState, epoch, err := leaseMgr.RequestLease(
 		context.TODO(), // lease operations are quick
 		fileHandle,
 		leaseReq.LeaseKey,
+		leaseReq.ParentLeaseKey,
 		sessionID,
+		ownerID,
 		clientID,
 		shareName,
 		leaseReq.LeaseState,
@@ -134,7 +372,7 @@ func ProcessLeaseCreateContext(
 	// Build response context
 	var flags uint32
 	// Check if break is in progress for this key
-	state, _, found := oplockMgr.GetLeaseState(context.TODO(), leaseReq.LeaseKey)
+	state, _, found := leaseMgr.GetLeaseState(context.TODO(), leaseReq.LeaseKey)
 	if found {
 		// Check for break in progress by comparing to granted
 		if state != grantedState {
@@ -142,11 +380,15 @@ func ProcessLeaseCreateContext(
 		}
 	}
 
+	// Determine if parent lease key is valid (non-zero)
+	hasParent := leaseReq.ParentLeaseKey != [16]byte{}
+
 	return &LeaseResponseContext{
 		LeaseKey:       leaseReq.LeaseKey,
 		LeaseState:     grantedState,
 		Flags:          flags,
 		ParentLeaseKey: leaseReq.ParentLeaseKey,
+		HasParent:      hasParent,
 		Epoch:          epoch,
 	}, nil
 }
@@ -256,11 +498,3 @@ func padSizeTo8(size int) int {
 	}
 	return size + (8 - size%8)
 }
-
-// ============================================================================
-// Tests helper: ParseLeaseCreateContext is exported via DecodeLeaseCreateContext
-// ============================================================================
-
-// ParseLeaseCreateContext is an alias for DecodeLeaseCreateContext for consistency
-// with the plan naming convention.
-var ParseLeaseCreateContext = DecodeLeaseCreateContext

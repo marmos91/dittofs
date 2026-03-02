@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 
+	smblease "github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/adapter/smb/v2/handlers"
@@ -13,6 +14,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/adapter"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // Adapter implements the adapter.Adapter interface for SMB2 protocol.
@@ -139,11 +142,30 @@ func (s *Adapter) SetRuntime(rtAny any) {
 	rt := rtAny.(*runtime.Runtime)
 	s.handler.Registry = rt
 
-	// Register OplockManager as the cross-protocol oplock breaker.
-	// This allows NFS handlers to trigger oplock breaks on SMB clients
-	// without importing the SMB handler package.
-	if s.handler != nil && s.handler.OplockManager != nil {
-		rt.SetAdapterProvider(adapter.OplockBreakerProviderKey, s.handler.OplockManager)
+	// Wire LeaseManager: create a thin wrapper over the shared LockManagers.
+	// The LockManagers are per-share, obtained from MetadataService. The
+	// LeaseManager uses a resolver pattern to find the correct LockManager
+	// at request time.
+	if metaSvc := rt.GetMetadataService(); metaSvc != nil {
+		resolver := &metadataServiceResolver{metaSvc: metaSvc}
+		leaseMgr := smblease.NewLeaseManager(resolver, nil)
+		s.handler.LeaseManager = leaseMgr
+
+		// Register SMBOplockBreaker as the cross-protocol oplock breaker.
+		// This allows NFS handlers to trigger lease breaks on SMB clients
+		// without importing the SMB handler package.
+		oplockBreaker := smblease.NewSMBOplockBreaker(resolver)
+		rt.SetAdapterProvider(adapter.OplockBreakerProviderKey, oplockBreaker)
+
+		// Register SMBBreakHandler as BreakCallbacks on each share's LockManager.
+		breakHandler := smblease.NewSMBBreakHandler(leaseMgr, nil)
+		for _, shareName := range rt.ListShares() {
+			if lockMgr := metaSvc.GetLockManagerForShare(shareName); lockMgr != nil {
+				lockMgr.RegisterBreakCallbacks(breakHandler)
+			}
+		}
+
+		logger.Debug("SMB adapter: LeaseManager wired with per-share LockManagers")
 	}
 
 	// Register share change callback for cache invalidation
@@ -354,4 +376,43 @@ func (s *Adapter) OnReconnect(ctx context.Context, sessionID uint64, clientID st
 	// 3. Notify client of available leases to reclaim
 	//
 	// For this gap closure, we rely on implicit reclaim in RequestLeaseWithReclaim.
+}
+
+// ============================================================================
+// LockManager Resolver for per-share routing
+// ============================================================================
+
+// metadataServiceResolver implements smblease.LockManagerResolver by wrapping
+// the MetadataService's per-share LockManagers. This adapter bridges the gap
+// between the MetadataService (which owns per-share LockManagers) and the
+// lease package (which needs to resolve them by share name).
+type metadataServiceResolver struct {
+	metaSvc *metadata.MetadataService
+}
+
+// GetLockManagerForShare returns the LockManager for the given share.
+// Returns nil if no LockManager exists for the share.
+func (r *metadataServiceResolver) GetLockManagerForShare(shareName string) lock.LockManager {
+	if r.metaSvc == nil {
+		return nil
+	}
+	return r.metaSvc.GetLockManagerForShare(shareName)
+}
+
+// GetLockManagerForHandle attempts to resolve the LockManager from a file handle.
+// File handles in DittoFS encode the share name as a prefix ("shareName:uuid"),
+// so we decode the handle to extract the share and delegate to GetLockManagerForShare.
+//
+// This implements smblease.AllSharesResolver for cross-protocol oplock breaking.
+func (r *metadataServiceResolver) GetLockManagerForHandle(handleKey string) lock.LockManager {
+	if r.metaSvc == nil {
+		return nil
+	}
+	// File handles are formatted as "shareName:uuid". Use DecodeFileHandle
+	// to extract the share name for LockManager routing.
+	shareName, _, err := metadata.DecodeFileHandle(metadata.FileHandle(handleKey))
+	if err != nil || shareName == "" {
+		return nil
+	}
+	return r.metaSvc.GetLockManagerForShare(shareName)
 }

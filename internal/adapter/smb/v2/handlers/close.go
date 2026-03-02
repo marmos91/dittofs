@@ -298,12 +298,18 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	}
 
 	// ========================================================================
-	// Step 9: Release oplock if held
+	// Step 9: Release oplock/lease if held
 	// ========================================================================
 
-	if openFile.OplockLevel != OplockLevelNone {
-		oplockPath := BuildOplockPath(openFile.ShareName, openFile.Path)
-		h.OplockManager.ReleaseOplock(oplockPath, req.FileID)
+	if openFile.OplockLevel == OplockLevelLease && h.LeaseManager != nil {
+		// Lease release is keyed by LeaseKey, not FileID.
+		// The lease key is not stored on OpenFile because multiple opens
+		// can share a lease key. ReleaseLease is called explicitly when
+		// all opens sharing a lease key are closed. For now, this is
+		// handled at session cleanup via ReleaseSessionLeases.
+		// Individual close does not release a shared lease.
+		logger.Debug("CLOSE: lease handle closed (lease released at session cleanup)",
+			"path", openFile.Path)
 	}
 
 	// ========================================================================

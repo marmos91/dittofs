@@ -9,6 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // allFFFileID is the sentinel FileID (all 0xFF bytes) required by
@@ -262,62 +263,65 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 
 // OplockBreak handles SMB2 OPLOCK_BREAK acknowledgment [MS-SMB2] 2.2.24.
 //
-// This is called when a client acknowledges an oplock break that was initiated
-// by the server due to a conflicting open by another client.
+// After OplockManager deletion, only lease break acks (36 bytes) are supported.
+// Traditional oplock break acks (24 bytes) are rejected since no traditional
+// oplocks can be in flight.
 //
 // **Process:**
 //
-//  1. Decode the break acknowledgment request
-//  2. Look up the open file by FileID
-//  3. Build the oplock path and acknowledge the break
-//  4. Return success response
+//  1. Read StructureSize to determine oplock vs lease break
+//  2. For lease (36 bytes): decode lease key + state, delegate to LeaseManager
+//  3. For traditional (24 bytes): reject (no OplockManager)
 func (h *Handler) OplockBreak(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
-	// Decode the request
-	req, err := DecodeOplockBreakRequest(body)
-	if err != nil {
-		logger.Debug("OPLOCK_BREAK: decode error", "error", err)
+	if len(body) < 2 {
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
-	logger.Debug("OPLOCK_BREAK acknowledgment",
-		"fileID", fmt.Sprintf("%x", req.FileID),
-		"newLevel", req.OplockLevel)
+	// Read StructureSize to determine oplock vs lease break ack
+	structSize := uint16(body[0]) | uint16(body[1])<<8
 
-	// Look up the open file
-	openFile, ok := h.GetOpenFile(req.FileID)
-	if !ok {
-		logger.Debug("OPLOCK_BREAK: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
-		return NewErrorResult(types.StatusFileClosed), nil
+	if structSize == LeaseBreakAckSize {
+		return h.handleLeaseBreakAck(ctx, body)
 	}
 
-	// Build oplock path and acknowledge the break
-	oplockPath := BuildOplockPath(openFile.ShareName, openFile.Path)
-	if err := h.OplockManager.AcknowledgeBreak(oplockPath, req.FileID, req.OplockLevel); err != nil {
-		logger.Warn("OPLOCK_BREAK: acknowledgment failed",
-			"path", openFile.Path,
+	// Traditional oplock break ack (StructureSize=24)
+	// No traditional oplocks are granted after OplockManager removal.
+	// Return STATUS_INVALID_PARAMETER per MS-SMB2 3.3.4.6.
+	logger.Debug("OPLOCK_BREAK: traditional oplock ack rejected (no OplockManager)",
+		"structureSize", structSize)
+	return NewErrorResult(types.StatusInvalidParameter), nil
+}
+
+// handleLeaseBreakAck handles an SMB2 Lease Break Acknowledgment [MS-SMB2] 2.2.24.2.
+func (h *Handler) handleLeaseBreakAck(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
+	ack, err := DecodeLeaseBreakAcknowledgment(body)
+	if err != nil {
+		logger.Debug("LEASE_BREAK_ACK: decode error", "error", err)
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	logger.Debug("LEASE_BREAK_ACK acknowledgment",
+		"leaseKey", fmt.Sprintf("%x", ack.LeaseKey),
+		"acknowledgedState", lock.LeaseStateToString(ack.LeaseState))
+
+	if h.LeaseManager == nil {
+		logger.Warn("LEASE_BREAK_ACK: no lease manager")
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	if err := h.LeaseManager.AcknowledgeLeaseBreak(ctx.Context, ack.LeaseKey, ack.LeaseState, 0); err != nil {
+		logger.Warn("LEASE_BREAK_ACK: acknowledgment failed",
+			"leaseKey", fmt.Sprintf("%x", ack.LeaseKey),
 			"error", err)
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
-	// Update the open file's oplock level
-	openFile.OplockLevel = req.OplockLevel
+	// Build lease break response
+	respBytes := EncodeLeaseBreakResponse(ack.LeaseKey, ack.LeaseState)
 
-	// Build success response
-	resp := &OplockBreakResponse{
-		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
-		OplockLevel:     req.OplockLevel,
-		FileID:          req.FileID,
-	}
-
-	respBytes, err := resp.Encode()
-	if err != nil {
-		logger.Error("OPLOCK_BREAK: encode error", "error", err)
-		return NewErrorResult(types.StatusInternalError), nil
-	}
-
-	logger.Debug("OPLOCK_BREAK: acknowledged",
-		"path", openFile.Path,
-		"newLevel", req.OplockLevel)
+	logger.Debug("LEASE_BREAK_ACK: acknowledged",
+		"leaseKey", fmt.Sprintf("%x", ack.LeaseKey),
+		"newState", lock.LeaseStateToString(ack.LeaseState))
 
 	return NewResult(types.StatusSuccess, respBytes), nil
 }

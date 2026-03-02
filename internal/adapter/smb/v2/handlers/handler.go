@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
 	"github.com/marmos91/dittofs/internal/adapter/smb/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
@@ -50,8 +51,8 @@ type Handler struct {
 	// Named pipe management (for IPC$ RPC)
 	PipeManager *rpc.PipeManager
 
-	// Oplock management
-	OplockManager *OplockManager
+	// Lease management (thin wrapper over shared LockManager)
+	LeaseManager *lease.LeaseManager
 
 	// Change notification management
 	NotifyRegistry *NotifyRegistry
@@ -226,23 +227,24 @@ type OpenFile struct {
 }
 
 // NewHandler creates a new SMB2 handler with a default session manager.
-// It initializes the pipe manager, oplock manager, notify registry,
-// and generates a random server GUID. For custom session management
-// (e.g., shared across adapters), use NewHandlerWithSessionManager.
+// It initializes the pipe manager, notify registry, and generates a random
+// server GUID. For custom session management (e.g., shared across adapters),
+// use NewHandlerWithSessionManager. LeaseManager is wired by the adapter
+// layer when the runtime is available.
 func NewHandler() *Handler {
 	return NewHandlerWithSessionManager(session.NewDefaultManager())
 }
 
 // NewHandlerWithSessionManager creates a new SMB2 handler with an external session manager.
 // This allows sharing the session manager with other components (e.g., the Adapter
-// for credit tracking). Initializes pipe manager, oplock manager, notify registry,
-// generates a random server GUID, and sets default max sizes (64KB).
+// for credit tracking). Initializes pipe manager, notify registry, generates a
+// random server GUID, and sets default max sizes. LeaseManager is wired by the
+// adapter layer when the runtime and LockManager are available.
 func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 	h := &Handler{
 		StartTime:               time.Now(),
 		SessionManager:          sessionManager,
 		PipeManager:             rpc.NewPipeManager(),
-		OplockManager:           NewOplockManager(),
 		NotifyRegistry:          NewNotifyRegistry(),
 		MaxTransactSize:         1048576, // 1MB (supports large directory listings; increases per-request memory)
 		MaxReadSize:             1048576, // 1MB
@@ -815,3 +817,4 @@ func (h *Handler) RegisterShareChangeCallback() {
 		h.invalidateShareCache()
 	})
 }
+
