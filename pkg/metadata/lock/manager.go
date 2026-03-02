@@ -1274,12 +1274,13 @@ func (lm *Manager) breakOpLocks(
 // GrantDelegation grants a delegation on a file.
 // Returns error if conflicting leases exist or the file was recently broken.
 func (lm *Manager) GrantDelegation(handleKey string, delegation *Delegation) error {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	// Check anti-storm cache inside the lock to be atomic with lease conflict check.
 	if lm.recentlyBroken != nil && lm.recentlyBroken.IsRecentlyBroken(handleKey) {
 		return fmt.Errorf("delegation denied: file recently had caching broken")
 	}
-
-	lm.mu.Lock()
-	defer lm.mu.Unlock()
 
 	locks := lm.unifiedLocks[handleKey]
 

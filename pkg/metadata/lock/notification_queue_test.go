@@ -59,9 +59,10 @@ func TestNotificationQueue_OverflowCollapse(t *testing.T) {
 	q.Push(DirNotification{ChangeType: DirChangeAddEntry, EntryName: "extra"})
 
 	events, overflow := q.Drain()
-	assert.True(t, overflow, "should report overflow")
-	// Overflow collapses to a single "rescan needed" event
-	assert.Len(t, events, 0, "overflow should collapse all events")
+	assert.True(t, overflow, "overflow flag should indicate rescan needed")
+	// When overflow is true, callers must perform a full directory rescan
+	// rather than processing individual events.
+	assert.Empty(t, events, "events should be empty when overflow is set")
 }
 
 func TestNotificationQueue_Len(t *testing.T) {
