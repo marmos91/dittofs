@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v3.8
 milestone_name: SMB3 Protocol Upgrade
-status: phase-complete
-last_updated: "2026-03-02T16:19:28.813Z"
+status: in-progress
+last_updated: "2026-03-02T19:19:05Z"
 progress:
   total_phases: 42
   completed_phases: 40
   total_plans: 137
-  completed_plans: 136
+  completed_plans: 138
 ---
 
 # Project State
@@ -18,14 +18,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-02-28)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking, Kerberos authentication, and session reliability
-**Current focus:** v3.8 SMB3 Protocol Upgrade — Phase 39 (Cross-Protocol Integration)
+**Current focus:** v3.8 SMB3 Protocol Upgrade — Phase 40 (SMB3 Conformance Testing)
 
 ## Current Position
 
-Phase: 39 of 40 (Cross-Protocol Integration and Documentation)
-Plan: 3 of 3 complete
-Status: Phase Complete
-Last activity: 2026-03-02 — Completed 39-03 (SMB3 Documentation)
+Phase: 40 of 42 (SMB3 Conformance Testing)
+Plan: 1 of 6 complete
+Status: In Progress
+Last activity: 2026-03-02 -- Completed 40-01 (smbtorture Baseline and Known Failures Enumeration)
 
 Progress: [##########] 100%
 
@@ -68,6 +68,10 @@ Progress: [##########] 100%
 | 39    | 01   | 12min    | 2     | 16    |
 | 39    | 02   | 9min     | 2     | 9     |
 | 39    | 03   | 11min    | 2     | 5     |
+| 40    | 02   | 5min     | 2     | 3     |
+| 40    | 03   | 5min     | 2     | 5     |
+| 40    | 04   | 5min     | 2     | 2     |
+| 40    | 01   | 32min    | 2     | 2     |
 
 ## Accumulated Context
 
@@ -158,6 +162,17 @@ Progress: [##########] 100%
 - [Phase 39-02]: breakDelegations marks recentlyBroken cache for unified anti-storm across protocols
 - [Phase 39-02]: Mutex release before LockManager calls: capture refs under lock, release, then call LockManager (Pitfall 2)
 - [Phase 39-03]: docs/SMB.md expanded in-place (1487 lines) covering all v3.8 features with both operational and wire-format details
+- [Phase 40-02]: Tests for implemented features removed from KNOWN_FAILURES, tracked as fix candidates in baseline-results.md
+- [Phase 40-02]: Removed entries use bullet-list format (not table) to prevent parse-results.sh from masking failures
+- [Phase 40-02]: Baseline measurement deferred to x86_64 Linux CI (WPTS container is linux/amd64 only)
+- [Phase 40-03]: CLIRunner in SMB3TestEnv (not apiclient.Client) to match existing E2E helper conventions
+- [Phase 40-03]: go-smb2 encryption/signing tested via data integrity verification (library handles crypto transparently)
+- [Phase 40-04]: Mount-based file ops for lease tests (mount.cifs handles lease negotiation transparently at kernel level)
+- [Phase 40-04]: 10 goroutines (5 NFS + 5 SMB) with 3 iterations for concurrent conflict testing
+- [Phase 40-04]: Kerberos tests skip gracefully on platforms without mount.cifs or KDC support
+- [Phase 40-01]: 119 fix candidate failures excluded from KNOWN_FAILURES (implemented features that still fail)
+- [Phase 40-01]: 252 individual test entries replace all wildcard patterns in KNOWN_FAILURES
+- [Phase 40-01]: Directory leases (dirlease) categorized as unimplemented, separate from file leases (Phase 37)
 
 ### Pending Todos
 
@@ -170,5 +185,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-03-02
-Stopped at: Completed 39-03-PLAN.md (SMB3 Documentation — Phase 39 complete, 3/3 plans done)
+Stopped at: Completed 40-01-PLAN.md (smbtorture Baseline and Known Failures Enumeration -- Phase 40 in progress, 1/6 plans done)
 Resume file: None

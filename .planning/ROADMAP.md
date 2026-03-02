@@ -495,7 +495,7 @@ v3.8 (33-40.5) -> v4.0 (41-47.5) -> v4.1 (48-53.5)
 | 37. SMB3 Leases and Directory Leasing | v3.8 | Complete | Complete | 2026-03-02 |
 | 38. Durable Handles | v3.8 | 3/3 | Complete | 2026-03-02 |
 | 39. Cross-Protocol Integration and Documentation | v3.8 | 3/3 | Complete   | 2026-03-02 | - |
-| 40. SMB3 Conformance Testing | v3.8 | 0/? | Not started | - |
+| 40. SMB3 Conformance Testing | 4/6 | In Progress|  | - |
 | 41. Server-Side Copy | v4.0 | 0/? | Not started | - |
 | 42. Clone/Reflinks | v4.0 | 0/? | Not started | - |
 | 43. Sparse Files | v4.0 | 0/? | Not started | - |
