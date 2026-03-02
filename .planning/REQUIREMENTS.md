@@ -19,7 +19,7 @@ Requirements for SMB3 protocol upgrade. Each maps to roadmap phases.
 - [x] **KDF-01**: Server derives signing/encryption/decryption/application keys via SP800-108 Counter Mode KDF
 - [x] **KDF-02**: Server uses constant label/context strings for SMB 3.0/3.0.2 key derivation
 - [x] **KDF-03**: Server uses preauth integrity hash as KDF context for SMB 3.1.1 key derivation
-- [ ] **KDF-04**: Server extracts Kerberos session key from AP-REQ for SMB3 key derivation
+- [x] **KDF-04**: Server extracts Kerberos session key from AP-REQ for SMB3 key derivation
 
 ### Signing
 
@@ -132,7 +132,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | KDF-01 | Phase 34 | Complete |
 | KDF-02 | Phase 34 | Complete |
 | KDF-03 | Phase 34 | Complete |
-| KDF-04 | Phase 36 | Pending |
+| KDF-04 | Phase 36 | Complete |
 | SIGN-01 | Phase 34 | Complete |
 | SIGN-02 | Phase 34 | Complete |
 | SIGN-03 | Phase 34 | Complete |

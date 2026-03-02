@@ -177,7 +177,11 @@ Plans:
   3. AES-256-GCM and AES-256-CCM cipher variants functional
   4. Per-session encryption enforced (Session.EncryptData flag forces encryption on all traffic)
   5. Per-share encryption enforced (one share encrypted, another unencrypted on same connection)
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [x] 35-01-PLAN.md — Encryptor interface, GCM/CCM implementations, TransformHeader wire format, encryption config types
+- [x] 35-02-PLAN.md — EncryptionMiddleware, framing layer 0xFD detection, response encryption, cipher preference update
+- [x] 35-03-PLAN.md — SESSION_SETUP encryption enforcement, TREE_CONNECT share encryption, adapter wiring, docs
 
 ### Phase 36: Kerberos SMB3 Integration
 **Goal**: Domain-joined Windows clients authenticate via Kerberos/SPNEGO with proper SMB3 key derivation, with NTLM and guest fallback
@@ -189,7 +193,11 @@ Plans:
   3. Mutual authentication completes (AP-REP token returned in SPNEGO accept-complete)
   4. Non-domain client falls back from Kerberos to NTLM within SPNEGO negotiation
   5. Guest sessions function without encryption or signing (no session key available)
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [x] 36-01-PLAN.md — Shared KerberosService layer with replay cache, NFS GSS refactoring (ARCH-03)
+- [x] 36-02-PLAN.md — SMB Kerberos auth handler with session key extraction, AP-REP mutual auth, SPNEGO MIC (AUTH-01, AUTH-02, KDF-04)
+- [x] 36-03-PLAN.md — NTLM fallback, guest session policy, NEGOTIATE NegHints, control plane settings (AUTH-03, AUTH-04)
 
 ### Phase 37: SMB3 Leases and Directory Leasing
 **Goal**: SMB3 clients can cache file and directory data locally using Lease V2 with epoch tracking, with lease management in the metadata service layer
@@ -201,7 +209,11 @@ Plans:
   3. Directory lease broken when another client creates, deletes, or renames a file within the directory
   4. All lease management logic lives in metadata service layer (not in SMB internal package)
   5. Lease epoch tracking prevents stale break acknowledgments
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [x] 37-01-PLAN.md — LockManager lease CRUD, DirChangeNotifier, V2 type extensions, NLM conflict migration
+- [x] 37-02-PLAN.md — SMB LeaseManager wrapper, smbenc V2 encoding, handler migration, OplockManager deletion
+- [x] 37-03-PLAN.md — MetadataService DirChangeNotifier wiring, NFS4 unified notification path refactor
 
 ### Phase 38: Durable Handles
 **Goal**: SMB3 clients survive brief network interruptions without losing open files, with handle state persisted for reconnection
