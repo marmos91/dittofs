@@ -147,7 +147,9 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 			// Persist if store available
 			if lm.lockStore != nil {
 				pl := ToPersistedLock(locks[i], 0)
-				_ = lm.lockStore.PutLock(ctx, pl)
+				if err := lm.lockStore.PutLock(ctx, pl); err != nil {
+					logger.Error("RequestLease: failed to persist lease upgrade", "fileHandle", handleKey, "error", err)
+				}
 			}
 
 			epoch := locks[i].Lease.Epoch
@@ -194,7 +196,9 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 			// Persist the breaking state
 			if lm.lockStore != nil {
 				pl := ToPersistedLock(lock, 0)
-				_ = lm.lockStore.PutLock(ctx, pl)
+				if err := lm.lockStore.PutLock(ctx, pl); err != nil {
+					logger.Error("RequestLease: failed to persist breaking state", "fileHandle", handleKey, "error", err)
+				}
 			}
 
 			// Release lock before dispatching break callbacks
@@ -232,7 +236,9 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 	// Persist if store available
 	if lm.lockStore != nil {
 		pl := ToPersistedLock(newLock, 0)
-		_ = lm.lockStore.PutLock(ctx, pl)
+		if err := lm.lockStore.PutLock(ctx, pl); err != nil {
+			logger.Error("RequestLease: failed to persist new lease", "fileHandle", handleKey, "error", err)
+		}
 	}
 
 	lm.mu.Unlock()

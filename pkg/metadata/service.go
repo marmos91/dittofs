@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -560,7 +561,7 @@ func (s *MetadataService) notifyDirChange(shareName string, parentHandle FileHan
 	// Fire-and-forget: notifier handles dispatch; recover from panics
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Printf("notifyDirChange: panic in notifier (share=%s): %v\n", shareName, r)
+			logger.Error("notifyDirChange: panic in notifier", "share", shareName, "error", r)
 		}
 	}()
 	notifier.OnDirChange(lock.FileHandle(parentHandle), changeType, originClient)
