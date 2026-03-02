@@ -258,7 +258,14 @@ Plans:
   4. Cross-protocol integration tests validate SMB3 leases vs NFS delegations under concurrent load
   5. Windows 10/11 (SMB 3.1.1), macOS (SMB 3.0.2), and Linux cifs.ko (SMB 3.1.1) all connect and operate correctly
   6. E2E tests cover encryption, signing, leases, Kerberos, and durable handle scenarios end-to-end
-**Plans**: TBD
+**Plans**: 6 plans
+Plans:
+- [ ] 40-01-PLAN.md — smbtorture baseline re-measurement and wildcard-to-individual known failures cleanup
+- [ ] 40-02-PLAN.md — WPTS BVT baseline re-measurement, test filtering, known failures verification
+- [ ] 40-03-PLAN.md — go-smb2 E2E tests and smbclient tests for SMB3 feature matrix
+- [ ] 40-04-PLAN.md — Cross-protocol lease/delegation tests and Kerberos SMB3 feature matrix tests
+- [ ] 40-05-PLAN.md — Conformance fix iterations (cascade impact), Kerberos smbtorture, all-profile gate
+- [ ] 40-06-PLAN.md — Multi-OS CI workflows, CI refactoring, testing documentation
 
 ---
 
