@@ -56,8 +56,13 @@ func (lm *Manager) reclaimLeaseImpl(ctx context.Context, leaseKey [16]byte,
 			}
 
 			// Found matching persisted lease
+			// Validate isDirectory matches persisted record
+			if isDirectory != pl.IsDirectory {
+				return nil, fmt.Errorf("isDirectory mismatch: request=%v, persisted=%v", isDirectory, pl.IsDirectory)
+			}
+
 			// Step 3: For directories, check handle still exists
-			if isDirectory && lm.handleChecker != nil {
+			if pl.IsDirectory && lm.handleChecker != nil {
 				if !lm.handleChecker.HandleExists(FileHandle(pl.FileID)) {
 					return nil, fmt.Errorf("directory handle no longer exists, cannot reclaim lease")
 				}
@@ -73,7 +78,6 @@ func (lm *Manager) reclaimLeaseImpl(ctx context.Context, leaseKey [16]byte,
 			// Step 5: Restore in memory
 			lock := FromPersistedLock(pl)
 			lock.Lease.LeaseState = requestedState
-			lock.Lease.IsDirectory = isDirectory
 			lock.Reclaim = true
 
 			lm.mu.Lock()

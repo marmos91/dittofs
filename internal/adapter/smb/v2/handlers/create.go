@@ -674,6 +674,12 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		// Set delete-on-close from create options
 		DeletePending: req.CreateOptions&types.FileDeleteOnClose != 0,
 	}
+
+	// Store lease key on the open so CLOSE can release when last handle closes
+	if leaseResponse != nil && leaseResponse.LeaseState != lock.LeaseStateNone {
+		openFile.LeaseKey = leaseResponse.LeaseKey
+	}
+
 	h.StoreOpenFile(openFile)
 
 	logger.Debug("CREATE successful",

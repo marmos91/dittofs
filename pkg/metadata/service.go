@@ -537,8 +537,9 @@ func (s *MetadataService) SetDirChangeNotifier(shareName string, n lock.DirChang
 // of the mutation that triggered them. If the notifier is nil or not
 // registered for the share, the call is silently ignored.
 //
-// The originClientID is extracted from the AuthContext's ClientAddr field
-// to identify the originating client (so their own leases aren't broken).
+// The originClientID is extracted from the AuthContext's LockClientID field
+// (falling back to ClientAddr) to identify the originating client so their
+// own leases aren't broken.
 func (s *MetadataService) notifyDirChange(shareName string, parentHandle FileHandle, changeType lock.DirChangeType, ctx *AuthContext) {
 	s.mu.RLock()
 	notifier, ok := s.dirChangeNotifiers[shareName]
@@ -550,7 +551,10 @@ func (s *MetadataService) notifyDirChange(shareName string, parentHandle FileHan
 
 	originClient := ""
 	if ctx != nil {
-		originClient = ctx.ClientAddr
+		originClient = ctx.LockClientID
+		if originClient == "" {
+			originClient = ctx.ClientAddr
+		}
 	}
 
 	// Fire-and-forget: notifier handles dispatch; recover from panics

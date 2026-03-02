@@ -43,6 +43,12 @@ type AuthContext struct {
 	// This is similar to how root bypass works, but applies to any user with share
 	// write permission.
 	ShareWritable bool
+
+	// LockClientID is the lock-layer client identifier used for lease exclusion.
+	// This must match the LockOwner.ClientID format used when acquiring leases.
+	// For SMB: "smb:<sessionID>", for NFS: the NFS client identifier.
+	// If empty, ClientAddr is used as fallback.
+	LockClientID string
 }
 
 // Identity represents a client's identity across different authentication systems.

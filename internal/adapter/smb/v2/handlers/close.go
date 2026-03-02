@@ -302,14 +302,38 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// ========================================================================
 
 	if openFile.OplockLevel == OplockLevelLease && h.LeaseManager != nil {
-		// Lease release is keyed by LeaseKey, not FileID.
-		// The lease key is not stored on OpenFile because multiple opens
-		// can share a lease key. ReleaseLease is called explicitly when
-		// all opens sharing a lease key are closed. For now, this is
-		// handled at session cleanup via ReleaseSessionLeases.
-		// Individual close does not release a shared lease.
-		logger.Debug("CLOSE: lease handle closed (lease released at session cleanup)",
-			"path", openFile.Path)
+		leaseKey := openFile.LeaseKey
+		zeroKey := [16]byte{}
+
+		if leaseKey != zeroKey {
+			// Check if any other open shares this lease key
+			hasOtherOpen := false
+			h.files.Range(func(key, value any) bool {
+				other := value.(*OpenFile)
+				if other.FileID != openFile.FileID && other.LeaseKey == leaseKey {
+					hasOtherOpen = true
+					return false // stop iteration
+				}
+				return true
+			})
+
+			if !hasOtherOpen {
+				// Last handle with this lease key - release the lease
+				if err := h.LeaseManager.ReleaseLease(ctx.Context, leaseKey); err != nil {
+					logger.Debug("CLOSE: failed to release lease",
+						"path", openFile.Path,
+						"leaseKey", fmt.Sprintf("%x", leaseKey),
+						"error", err)
+				} else {
+					logger.Debug("CLOSE: released lease (last handle closed)",
+						"path", openFile.Path,
+						"leaseKey", fmt.Sprintf("%x", leaseKey))
+				}
+			} else {
+				logger.Debug("CLOSE: lease handle closed (other opens share lease key)",
+					"path", openFile.Path)
+			}
+		}
 	}
 
 	// ========================================================================

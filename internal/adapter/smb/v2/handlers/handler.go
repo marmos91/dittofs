@@ -224,6 +224,10 @@ type OpenFile struct {
 	// specific and OPLOCK_BREAK targets a specific FileID, concurrent access is not
 	// expected. If this changes, consider using atomic operations.
 	OplockLevel uint8
+
+	// LeaseKey is the 128-bit lease key for this handle (when OplockLevel == OplockLevelLease).
+	// Used to release the lease when the last handle sharing the key is closed.
+	LeaseKey [16]byte
 }
 
 // NewHandler creates a new SMB2 handler with a default session manager.

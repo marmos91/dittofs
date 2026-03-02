@@ -148,6 +148,10 @@ func (s *Adapter) SetRuntime(rtAny any) {
 	// at request time.
 	if metaSvc := rt.GetMetadataService(); metaSvc != nil {
 		resolver := &metadataServiceResolver{metaSvc: metaSvc}
+		// TODO: Wire a concrete LeaseBreakNotifier from the SMB session/connection
+		// layer so break notifications are delivered to clients over the wire.
+		// Without this, breaks are initiated in LockManager but never sent,
+		// relying on break timeouts to eventually revoke stale leases.
 		leaseMgr := smblease.NewLeaseManager(resolver, nil)
 		s.handler.LeaseManager = leaseMgr
 
@@ -158,6 +162,7 @@ func (s *Adapter) SetRuntime(rtAny any) {
 		rt.SetAdapterProvider(adapter.OplockBreakerProviderKey, oplockBreaker)
 
 		// Register SMBBreakHandler as BreakCallbacks on each share's LockManager.
+		// The notifier is nil until the transport layer is wired (see TODO above).
 		breakHandler := smblease.NewSMBBreakHandler(leaseMgr, nil)
 		for _, shareName := range rt.ListShares() {
 			if lockMgr := metaSvc.GetLockManagerForShare(shareName); lockMgr != nil {
