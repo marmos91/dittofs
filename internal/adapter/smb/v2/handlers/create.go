@@ -723,7 +723,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			// Set oplock level to lease if lease was granted.
 			// When LeaseState=None the CREATE still succeeds (file is opened),
 			// but without a lease. The response includes LeaseState=0 in the
-			// RsLs context so the client can retry or proceed without caching.
+			// RqLs context so the client can retry or proceed without caching.
 			if leaseResponse != nil && leaseResponse.LeaseState != lock.LeaseStateNone {
 				grantedOplock = OplockLevelLease
 			} else if leaseResponse != nil {

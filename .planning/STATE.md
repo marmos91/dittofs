@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v3.8
 milestone_name: SMB3 Protocol Upgrade
-status: in-progress
-last_updated: "2026-03-02T19:19:05Z"
+status: unknown
+last_updated: "2026-03-02T21:03:26.400Z"
 progress:
-  total_phases: 42
-  completed_phases: 40
-  total_plans: 137
-  completed_plans: 138
+  total_phases: 43
+  completed_phases: 42
+  total_plans: 143
+  completed_plans: 143
 ---
 
 # Project State
@@ -23,9 +23,9 @@ See: .planning/PROJECT.md (updated 2026-02-28)
 ## Current Position
 
 Phase: 40 of 42 (SMB3 Conformance Testing)
-Plan: 4 of 6 (Cross-Protocol Lease and Kerberos SMB3 Feature Matrix Tests)
-Status: In Progress
-Last activity: 2026-03-02 — Completed 40-04 (Cross-Protocol Lease and Kerberos Tests)
+Plan: 6 of 6 complete
+Status: Phase Complete
+Last activity: 2026-03-02 -- Completed 40-06 (Multi-OS CI, Workflow Updates, and Testing Documentation)
 
 Progress: [##########] 100%
 
@@ -71,6 +71,9 @@ Progress: [##########] 100%
 | 40    | 02   | 5min     | 2     | 3     |
 | 40    | 03   | 5min     | 2     | 5     |
 | 40    | 04   | 5min     | 2     | 2     |
+| 40    | 01   | 32min    | 2     | 2     |
+| 40    | 06   | 6min     | 2     | 5     |
+| 40    | 05   | 45min    | 2     | 3     |
 
 ## Accumulated Context
 
@@ -169,6 +172,14 @@ Progress: [##########] 100%
 - [Phase 40-04]: Mount-based file ops for lease tests (mount.cifs handles lease negotiation transparently at kernel level)
 - [Phase 40-04]: 10 goroutines (5 NFS + 5 SMB) with 3 iterations for concurrent conflict testing
 - [Phase 40-04]: Kerberos tests skip gracefully on platforms without mount.cifs or KDC support
+- [Phase 40-01]: 119 fix candidate failures excluded from KNOWN_FAILURES (implemented features that still fail)
+- [Phase 40-01]: 252 individual test entries replace all wildcard patterns in KNOWN_FAILURES
+- [Phase 40-01]: Directory leases (dirlease) categorized as unimplemented, separate from file leases (Phase 37)
+- [Phase 40-06]: Multi-OS client compat CI NOT on PRs (too slow); weekly + push + manual dispatch only
+- [Phase 40-06]: smbtorture Kerberos uses SMBTORTURE_AUTH env var or --kerberos flag (added in 40-05)
+- [Phase 40-06]: CI tiered: PR (<5min) < push (<30min) < weekly (<60min full matrix)
+- [Phase 40]: Lease response context tag must be RqLs (not RsLs) per MS-SMB2 2.2.14.2.10
+- [Phase 40]: V1/V2 lease encoding determined by request data length (< 52 bytes = V1), not epoch value
 
 ### Pending Todos
 
@@ -181,5 +192,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-03-02
-Stopped at: Completed 40-04-PLAN.md (Cross-Protocol Lease and Kerberos Tests -- Phase 40 in progress, 4/6 plans done)
+Stopped at: Completed 40-06-PLAN.md (Multi-OS CI, Workflow Updates, and Testing Documentation -- Phase 40 complete, 6/6 plans done)
 Resume file: None

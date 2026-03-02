@@ -106,7 +106,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 37: SMB3 Leases and Directory Leasing** - Lease V2 with ParentLeaseKey/epoch, directory leases, break coordination via metadata service (completed 2026-03-02)
 - [x] **Phase 38: Durable Handles** - V1/V2 durable handles with CreateGuid, state persistence, reconnect validation (14+ checks), timeout management (completed 2026-03-02)
 - [x] **Phase 39: Cross-Protocol Integration and Documentation** - Bidirectional SMB3 lease/NFS delegation coordination, directory lease breaks on NFS ops, documentation (completed 2026-03-02)
-- [ ] **Phase 40: SMB3 Conformance Testing** - smbtorture SMB3 suites, WPTS FileServer BVT, Go integration tests, client compatibility matrix
+- [x] **Phase 40: SMB3 Conformance Testing** - smbtorture SMB3 suites, WPTS FileServer BVT, Go integration tests, client compatibility matrix
 - [ ] **Phase 40.5: Manual Verification - SMB3** USER CHECKPOINT - Verify SMB3 with Windows 10/11, macOS, Linux clients
 
 ### v4.0 NFSv4.2 Extensions
@@ -260,12 +260,12 @@ Plans:
   6. E2E tests cover encryption, signing, leases, Kerberos, and durable handle scenarios end-to-end
 **Plans**: 6 plans
 Plans:
-- [ ] 40-01-PLAN.md — smbtorture baseline re-measurement and wildcard-to-individual known failures cleanup
-- [ ] 40-02-PLAN.md — WPTS BVT baseline re-measurement, test filtering, known failures verification
-- [ ] 40-03-PLAN.md — go-smb2 E2E tests and smbclient tests for SMB3 feature matrix
-- [ ] 40-04-PLAN.md — Cross-protocol lease/delegation tests and Kerberos SMB3 feature matrix tests
-- [ ] 40-05-PLAN.md — Conformance fix iterations (cascade impact), Kerberos smbtorture, all-profile gate
-- [ ] 40-06-PLAN.md — Multi-OS CI workflows, CI refactoring, testing documentation
+- [x] 40-01-PLAN.md — smbtorture baseline re-measurement and wildcard-to-individual known failures cleanup
+- [x] 40-02-PLAN.md — WPTS BVT baseline re-measurement, test filtering, known failures verification
+- [x] 40-03-PLAN.md — go-smb2 E2E tests and smbclient tests for SMB3 feature matrix
+- [x] 40-04-PLAN.md — Cross-protocol lease/delegation tests and Kerberos SMB3 feature matrix tests
+- [x] 40-05-PLAN.md — Conformance fix iterations (cascade impact), Kerberos smbtorture, all-profile gate
+- [x] 40-06-PLAN.md — Multi-OS CI workflows, CI refactoring, testing documentation
 
 ---
 
@@ -495,7 +495,7 @@ v3.8 (33-40.5) -> v4.0 (41-47.5) -> v4.1 (48-53.5)
 | 37. SMB3 Leases and Directory Leasing | v3.8 | Complete | Complete | 2026-03-02 |
 | 38. Durable Handles | v3.8 | 3/3 | Complete | 2026-03-02 |
 | 39. Cross-Protocol Integration and Documentation | v3.8 | 3/3 | Complete   | 2026-03-02 | - |
-| 40. SMB3 Conformance Testing | 3/6 | In Progress|  | - |
+| 40. SMB3 Conformance Testing | 6/6 | Complete   | 2026-03-02 | - |
 | 41. Server-Side Copy | v4.0 | 0/? | Not started | - |
 | 42. Clone/Reflinks | v4.0 | 0/? | Not started | - |
 | 43. Sparse Files | v4.0 | 0/? | Not started | - |

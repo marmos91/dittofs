@@ -59,6 +59,7 @@ FILTER=""
 KEEP=false
 DRY_RUN=false
 VERBOSE=false
+KERBEROS=false
 TIMEOUT="${SMBTORTURE_TIMEOUT:-1200}"  # Default 20 minutes
 
 # --------------------------------------------------------------------------
@@ -76,6 +77,10 @@ Options:
                       Valid: ${VALID_PROFILES[*]}
   --filter FILTER     smbtorture test filter (e.g., smb2.connect, smb2.lock)
                       Default: full smb2 suite
+  --kerberos          Run smbtorture with Kerberos (SPNEGO) authentication.
+                      Requires KDC infrastructure. Sets --use-kerberos=required
+                      and configures Kerberos realm for the test environment.
+                      Also settable via SMBTORTURE_AUTH=kerberos env var.
   --timeout SECONDS   Kill smbtorture after SECONDS (default: 1200 = 20 min)
                       Also settable via SMBTORTURE_TIMEOUT env var
   --keep              Leave containers running after tests
@@ -92,6 +97,7 @@ Examples:
   $(basename "$0")                              # Full smb2 suite with memory
   $(basename "$0") --filter smb2.connect        # Run only smb2.connect tests
   $(basename "$0") --profile badger-fs          # Test with persistent backend
+  $(basename "$0") --kerberos --filter smb2.session  # Kerberos session tests
   $(basename "$0") --keep --verbose             # Debug a failure
   $(basename "$0") --timeout 600               # 10 minute timeout
 EOF
@@ -119,6 +125,10 @@ while [[ $# -gt 0 ]]; do
         --timeout)
             TIMEOUT="${2:?--timeout requires a value}"
             shift 2
+            ;;
+        --kerberos)
+            KERBEROS=true
+            shift
             ;;
         --verbose)
             VERBOSE=true
@@ -163,6 +173,7 @@ if $DRY_RUN; then
     echo ""
     echo "  Profile:     ${PROFILE}"
     echo "  Filter:      ${FILTER:-smb2 (full suite)}"
+    echo "  Kerberos:    ${KERBEROS}"
     echo "  Timeout:     ${TIMEOUT}s"
     echo "  Keep:        ${KEEP}"
     echo "  Verbose:     ${VERBOSE}"
@@ -265,6 +276,15 @@ SMBTORTURE_ARGS=(
     "--option=client min protocol=SMB2_02"
     "--option=client max protocol=SMB3"
 )
+
+# Kerberos mode: add --use-kerberos=required when --kerberos flag or
+# SMBTORTURE_AUTH=kerberos env var is set. This requires a KDC to be
+# configured and the smbtorture container to have Kerberos client libs.
+if $KERBEROS || [[ "${SMBTORTURE_AUTH:-}" == "kerberos" ]]; then
+    SMBTORTURE_ARGS+=("--use-kerberos=required")
+    log_info "Kerberos mode: --use-kerberos=required added to smbtorture args"
+    log_warn "Kerberos requires KDC infrastructure (docker-compose kdc service or external KDC)"
+fi
 
 # run_smbtorture FILTER [PER_TEST_TIMEOUT] [SUITE_PREFIX]
 # Runs smbtorture with the given filter, appending output to results file.

@@ -54,8 +54,10 @@ const (
 	LeaseContextTagRequest = "RqLs"
 
 	// LeaseContextTagResponse is the create context name for returning granted lease.
-	// "RsLs" - SMB2_CREATE_RESPONSE_LEASE or SMB2_CREATE_RESPONSE_LEASE_V2
-	LeaseContextTagResponse = "RsLs"
+	// Per MS-SMB2 2.2.14.2.10: "The Buffer field of the SMB2_CREATE_CONTEXT
+	// structure MUST contain the name 'RqLs'" -- both request and response use
+	// the same tag name.
+	LeaseContextTagResponse = "RqLs"
 
 	// Other common create context tags (for reference):
 	// "MxAc" - SMB2_CREATE_QUERY_MAXIMAL_ACCESS_REQUEST
@@ -270,17 +272,19 @@ type LeaseResponseContext struct {
 	ParentLeaseKey [16]byte
 	HasParent      bool // True if ParentLeaseKey is valid (V2)
 	Epoch          uint16
+	IsV1           bool // True when the client sent a V1 (32-byte) lease request
 }
 
 // Encode serializes the LeaseResponseContext to wire format.
-// Uses V2 encoding (52 bytes) when HasParent is true or Epoch > 0,
-// otherwise falls back to V1 encoding (32 bytes) for backward compatibility.
+// Uses V1 encoding (32 bytes) when the original request was V1 (SMB 2.1 clients).
+// Uses V2 encoding (52 bytes) for V2 requests (SMB 3.x clients with
+// ParentLeaseKey or Epoch).
 func (r *LeaseResponseContext) Encode() []byte {
-	if r.HasParent || r.Epoch > 0 {
-		return smbenc.EncodeLeaseV2ResponseContext(
-			r.LeaseKey, r.LeaseState, r.Flags, r.ParentLeaseKey, r.HasParent, r.Epoch)
+	if r.IsV1 {
+		return smbenc.EncodeLeaseV1ResponseContext(r.LeaseKey, r.LeaseState, r.Flags)
 	}
-	return smbenc.EncodeLeaseV1ResponseContext(r.LeaseKey, r.LeaseState, r.Flags)
+	return smbenc.EncodeLeaseV2ResponseContext(
+		r.LeaseKey, r.LeaseState, r.Flags, r.ParentLeaseKey, r.HasParent, r.Epoch)
 }
 
 // ============================================================================
@@ -331,7 +335,9 @@ func ProcessLeaseCreateContext(
 		return nil, nil
 	}
 
-	// Parse the lease create context
+	// Parse the lease create context. Track whether V1 (32-byte) or V2 (52-byte)
+	// so the response uses matching format -- SMB 2.1 clients expect V1 responses.
+	isV1 := len(ctxData) < LeaseV2ContextSize
 	leaseReq, err := DecodeLeaseCreateContext(ctxData)
 	if err != nil {
 		logger.Debug("ProcessLeaseCreateContext: invalid lease context", "error", err)
@@ -386,6 +392,7 @@ func ProcessLeaseCreateContext(
 		ParentLeaseKey: leaseReq.ParentLeaseKey,
 		HasParent:      hasParent,
 		Epoch:          epoch,
+		IsV1:           isV1,
 	}, nil
 }
 
