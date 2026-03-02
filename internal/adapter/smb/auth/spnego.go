@@ -342,14 +342,20 @@ func BuildNegHints(kerberosEnabled, ntlmEnabled bool) ([]byte, error) {
 }
 
 // appendASN1Length appends a DER length encoding to buf.
+// Supports lengths up to 4 bytes (> 16 MB) to handle large Kerberos PAC tokens.
 func appendASN1Length(buf []byte, length int) []byte {
-	if length < 128 {
+	switch {
+	case length < 128:
 		return append(buf, byte(length))
-	}
-	if length < 256 {
+	case length < 256:
 		return append(buf, 0x81, byte(length))
+	case length < 65536:
+		return append(buf, 0x82, byte(length>>8), byte(length))
+	case length < 1<<24:
+		return append(buf, 0x83, byte(length>>16), byte(length>>8), byte(length))
+	default:
+		return append(buf, 0x84, byte(length>>24), byte(length>>16), byte(length>>8), byte(length))
 	}
-	return append(buf, 0x82, byte(length>>8), byte(length))
 }
 
 // stripGSSAPIWrapper removes the GSS-API InitialContextToken wrapper
@@ -371,6 +377,10 @@ func stripGSSAPIWrapper(data []byte) []byte {
 		pos += 2
 	} else if data[pos] == 0x82 {
 		pos += 3
+	} else if data[pos] == 0x83 {
+		pos += 4
+	} else if data[pos] == 0x84 {
+		pos += 5
 	} else {
 		return nil
 	}

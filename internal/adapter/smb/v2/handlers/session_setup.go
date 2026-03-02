@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"strings"
@@ -238,10 +239,8 @@ var ntlmsspSignature = []byte{'N', 'T', 'L', 'M', 'S', 'S', 'P', 0}
 // the NTLM token starting at that offset. This is used as a fallback
 // when SPNEGO parsing fails but the NTLM token is embedded in the blob.
 func findNTLMSSP(data []byte) []byte {
-	for i := 0; i <= len(data)-len(ntlmsspSignature); i++ {
-		if data[i] == 'N' && string(data[i:i+len(ntlmsspSignature)]) == string(ntlmsspSignature) {
-			return data[i:]
-		}
+	if i := bytes.Index(data, ntlmsspSignature); i >= 0 {
+		return data[i:]
 	}
 	return nil
 }
