@@ -132,8 +132,14 @@ Options:
                       Valid: ${VALID_PROFILES[*]}
   --mode MODE         Execution mode (default: compose)
                       Valid: compose, local
-  --filter FILTER     WPTS test filter (default: TestCategory=BVT)
-  --category CAT      Alias for --filter "TestCategory=CAT"
+  --filter FILTER     WPTS test filter expression (default: TestCategory=BVT)
+                      Supports dotnet test --filter syntax. Examples:
+                        --filter "TestCategory=BVT"
+                        --filter "FullyQualifiedName~Encryption"
+                        --filter "FullyQualifiedName~AlternateDataStream"
+                        --filter "TestCategory=BVT&FullyQualifiedName~Lease"
+  --category CAT      Shorthand for --filter "TestCategory=CAT"
+                      Known categories: BVT, Model, Auth
   --keep              Leave containers running after tests
   --dry-run           Show configuration and exit
   --verbose           Enable verbose output
@@ -151,6 +157,8 @@ Examples:
   $(basename "$0") --profile badger-s3          # Test with S3 backend
   $(basename "$0") --keep --verbose             # Debug a failure
   $(basename "$0") --category Model             # Run Model category tests
+  $(basename "$0") --filter "FullyQualifiedName~Encryption"  # Filter by test name
+  $(basename "$0") --filter "TestCategory=BVT&FullyQualifiedName~Lease"  # Combined filter
   $(basename "$0") --mode local --profile memory  # Native DittoFS + Docker WPTS
 EOF
     exit 0

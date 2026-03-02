@@ -1,6 +1,6 @@
 # Known Failures - SMB Conformance (WPTS BVT)
 
-Last updated: 2026-02-28 (Phase 32 v3.6 update)
+Last updated: 2026-03-02 (Phase 40 v3.8 update)
 
 Tests listed here are expected to fail. CI will pass (exit 0) as long as
 all failures are in this list. New failures not listed here will cause CI to fail.
@@ -12,35 +12,79 @@ row (`Test Name`) are ignored.
 ## Baseline Status
 
 - **Initial baseline (Phase 29.8):** 133/240 BVT tests passing
-- **Current baseline:** Re-measure required after Phases 30-32 fixes (see [Phase 30-32 Improvements](#phase-30-32-improvements))
-- **Target:** Maintain >= 150 BVT tests passing
+- **Current baseline:** Re-measure required on x86_64 Linux after Phases 30-39
+- **Target:** All BVT tests pass except genuinely unimplemented features
 
 ## Phase 30-32 Improvements
 
-The following fixes from Phases 30-32 may have improved the WPTS BVT pass rate.
-Re-run the full suite to establish the updated baseline.
+The following fixes from Phases 30-32 improved protocol compliance:
 
 ### Phase 30: Bug Fixes
-- **BUG-01 (Sparse file READ):** Zero-fill for unwritten blocks at download level. May fix tests that read from sparse file regions.
-- **BUG-02 (Renamed directory listing):** Path field updated before persistence on Move. May fix QueryDirectory tests after rename operations.
-- **BUG-03 (Parent dir navigation):** Multi-component `..` path resolution. May fix path traversal tests.
-- **BUG-04 (Oplock break wiring):** NFS operations trigger oplock break for SMB clients. Unlikely to directly affect WPTS (single-protocol tests).
-- **BUG-05 (NumberOfLinks):** FileStandardInfo.NumberOfLinks reads actual link count. May fix FileStandardInformation tests.
-- **BUG-06 (Pipe share list caching):** Share list cached for pipe CREATE. May fix named pipe connection tests.
+- **BUG-01 (Sparse file READ):** Zero-fill for unwritten blocks at download level.
+- **BUG-02 (Renamed directory listing):** Path field updated before persistence on Move.
+- **BUG-03 (Parent dir navigation):** Multi-component `..` path resolution.
+- **BUG-04 (Oplock break wiring):** NFS operations trigger oplock break for SMB clients.
+- **BUG-05 (NumberOfLinks):** FileStandardInfo.NumberOfLinks reads actual link count.
+- **BUG-06 (Pipe share list caching):** Share list cached for pipe CREATE.
 
 ### Phase 31: Windows ACL Support
-- **SD-01 through SD-08 (Security Descriptors):** Full DACL synthesis from POSIX mode bits with owner, group, well-known SIDs, canonical ACE ordering, inheritance flags, and SACL stub. May fix ACL-related tests including:
-  - Tests querying OWNER_SECURITY_INFORMATION
-  - Tests querying DACL_SECURITY_INFORMATION
-  - Tests querying SACL_SECURITY_INFORMATION (previously returned empty/error)
-  - Tests setting SECURITY_INFORMATION via SET_INFO
+- **SD-01 through SD-08 (Security Descriptors):** Full DACL synthesis from POSIX mode bits with owner, group, well-known SIDs, canonical ACE ordering, inheritance flags, and SACL stub.
 
 ### Phase 32 Plan 01: Protocol Compatibility
-- **MxAc create context:** Returns maximal access mask computed from POSIX permissions. May fix tests expecting maximal access in CREATE response.
-- **QFid create context:** Returns on-disk file ID with volume ID. May fix tests expecting file identity information.
-- **FileCompressionInformation (class 28):** Returns valid fixed-size buffer. May fix FileCompressionInformation queries.
-- **FileAttributeTagInformation (class 35):** Returns valid fixed-size buffer. May fix FileAttributeTagInformation queries.
-- **Updated capability flags:** FileFsAttributeInformation flags now include FILE_SUPPORTS_SPARSE_FILES (0xCF). May fix FileFsAttributeInformation tests checking for sparse file support.
+- **MxAc create context:** Returns maximal access mask computed from POSIX permissions.
+- **QFid create context:** Returns on-disk file ID with volume ID.
+- **FileCompressionInformation (class 28):** Returns valid fixed-size buffer.
+- **FileAttributeTagInformation (class 35):** Returns valid fixed-size buffer.
+- **Updated capability flags:** FileFsAttributeInformation flags now include FILE_SUPPORTS_SPARSE_FILES.
+
+## Phase 33-39 Improvements
+
+The following SMB3 features were implemented in Phases 33-39. Tests related to
+these features have been removed from the expected failures list and are now
+tracked as **fix candidates** in `baseline-results.md` (they should pass, and if
+they do not, they need investigation and fixing -- not suppression).
+
+### Phase 33: SMB3 Encryption
+- AES-128-CCM, AES-128-GCM, AES-256-CCM, AES-256-GCM ciphers.
+- Full transform header encoding/decoding with preauth integrity hash.
+- SMB2_ENCRYPTION_CAPABILITIES negotiate context.
+- VALIDATE_NEGOTIATE_INFO IOCTL.
+
+### Phase 34: SMB3 Signing
+- AES-128-CMAC (3.0+), AES-128-GMAC (3.1.1), HMAC-SHA256 (2.x).
+- SP800-108 KDF-based session key derivation.
+- SIGNING_CAPABILITIES negotiate context.
+
+### Phase 35-37: Leases, Sessions, Kerberos
+- Lease V2 with parent key and epoch tracking.
+- Session binding, reconnect, re-authentication.
+- Kerberos authentication via SPNEGO/GSSAPI.
+
+### Phase 38: Durable Handles
+- Durable handle V1 (DHnQ/DHnC) and V2 (DH2Q/DH2C).
+- Reconnect with session key verification.
+- Handle scavenger for expired handles.
+
+### Phase 39: Cross-Protocol Integration
+- Unified caching model (SMB leases + NFS delegations).
+- Bidirectional break/recall across protocols.
+
+### Tests Removed from Known Failures (now fix candidates)
+
+The following tests were previously in this list but have been removed because
+the underlying features are now implemented. They are tracked as fix candidates
+in `baseline-results.md`. **If any of these still fail after re-measurement,
+they must be investigated and fixed -- not re-added to this list.**
+
+<!-- NOTE: These are NOT in table format intentionally, so parse-results.sh
+     does not match them as known failures. They must be treated as
+     unexpected failures if they still fail. -->
+
+- `BVT_DurableHandleV1_Reconnect_WithBatchOplock` (DurableHandle) -- Durable handle reconnect now implemented (Phase 38)
+- `BVT_DurableHandleV1_Reconnect_WithLeaseV1` (DurableHandle) -- Durable handle reconnect with lease now implemented (Phase 38)
+- `BVT_Leasing_FileLeasingV1` (Leasing) -- File lease V2 now implemented (Phase 35-37)
+- `BVT_OpLockBreak` (OpLock) -- Oplock break wiring fixed (Phase 30 BUG-04)
+- `FsInfo_Query_FileFsAttributeInformation_File_IsEncryptionSupported` (FsInfo) -- Encryption now implemented (Phase 33)
 
 ## Expected Failures
 
@@ -63,8 +107,6 @@ Re-run the full suite to establish the updated baseline.
 | BVT_ChangeTracking | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
 | BVT_Convert_VHDFile_to_VHDSetFile | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
 | BVT_Create_Delete_Checkpoint | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
-| BVT_DurableHandleV1_Reconnect_WithBatchOplock | DurableHandle | Durable handle reconnect not implemented | Expected | v3.8 Phase 42 |
-| BVT_DurableHandleV1_Reconnect_WithLeaseV1 | DurableHandle | Durable handle reconnect not implemented | Expected | v3.8 Phase 42 |
 | BVT_Extract_VHDSet | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
 | BVT_FileAccess_OpenNamedPipe | NamedPipe | Named pipe validation not implemented | Expected | - |
 | BVT_FileAccess_OpenNamedPipe_InvalidPathName | NamedPipe | Named pipe validation not implemented | Expected | - |
@@ -75,8 +117,6 @@ Re-run the full suite to establish the updated baseline.
 | BVT_FsCtl_MarkHandle_File_IsSupported | NTFS-FsCtl | FSCTL_MARK_HANDLE not supported | Permanent | - |
 | BVT_FsCtl_Query_File_Regions | NTFS-FsCtl | FSCTL_QUERY_FILE_REGIONS not supported | Permanent | - |
 | BVT_FsCtl_Query_File_Regions_WithInputData | NTFS-FsCtl | FSCTL_QUERY_FILE_REGIONS not supported | Permanent | - |
-| BVT_Leasing_FileLeasingV1 | Leasing | File leasing break notification not implemented | Expected | v3.8 Phase 40 |
-| BVT_OpLockBreak | OpLock | Oplock break notification not fully wired | Potentially fixed | Phase 30 BUG-04 |
 | BVT_OpenCloseSharedVHD_V1 | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
 | BVT_OpenCloseSharedVHD_V2 | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
 | BVT_OpenSharedVHDSetByTargetSpecifier | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
@@ -134,7 +174,6 @@ Re-run the full suite to establish the updated baseline.
 | FsCtl_Set_IntegrityInformation_Dir_IsIntegritySupported | NTFS-FsCtl | NTFS integrity streams not supported | Permanent | - |
 | FsCtl_Set_IntegrityInformation_File_IsIntegritySupported | NTFS-FsCtl | NTFS integrity streams not supported | Permanent | - |
 | FsInfo_Query_FileFsAttributeInformation_File_IsCompressionSupported | FsInfo | Compression not supported | Permanent | - |
-| FsInfo_Query_FileFsAttributeInformation_File_IsEncryptionSupported | FsInfo | Encryption not supported | Permanent | v3.8 Phase 39 |
 | FsInfo_Query_FileFsAttributeInformation_File_IsObjectIDsSupported | FsInfo | Object IDs not supported | Permanent | - |
 
 ## Status Legend
@@ -143,7 +182,6 @@ Re-run the full suite to establish the updated baseline.
 |--------|---------|
 | **Expected** | Known failure, fix planned in a future phase |
 | **Permanent** | Feature intentionally not implemented (out of scope) |
-| **Potentially fixed** | May pass after Phase 30-32 fixes; re-run suite to confirm |
 
 ## Permanently Out-of-Scope Categories
 
@@ -156,9 +194,27 @@ These test categories will remain as known failures indefinitely:
 | SQoS | 3 | Storage QoS: requires storage virtualization |
 | DFS | 2 | Distributed File System: not implemented |
 | NTFS-FsCtl | 11 | NTFS-specific internals (object IDs, integrity, regions) |
-| FsInfo | 3 | Compression, encryption, object ID capability flags |
+| FsInfo | 2 | Compression and object ID capability flags |
 
-**Total permanently out-of-scope:** 48 tests
+**Total permanently out-of-scope:** 47 tests
+
+## Remaining Expected Failure Categories
+
+Tests that fail for features not yet implemented:
+
+| Category | Count | Status |
+|----------|-------|--------|
+| ChangeNotify | 17 | Not implemented (planned Phase 40.5) |
+| ADS | 9 | Not implemented (planned Phase 43) |
+| Timestamp | 7 | Auto-update algorithms not implemented |
+| NamedPipe | 2 | Named pipe validation not implemented |
+
+**Total expected failures (fixable):** 35 tests
+
+**Grand total known failures:** 82 tests (47 permanent + 35 expected)
+Previous count (Phase 32): 90 entries -- reduced by 5 tests now tracked as fix candidates,
+3 fewer due to reclassification (encryption flag moved from permanent to fix candidate,
+durable handles and leasing removed from expected).
 
 ## How to Add New Entries
 
@@ -166,10 +222,11 @@ After running the test suite, `parse-results.sh` will report new failures not
 in this table. To add them:
 
 1. Copy the exact test name from the output
-2. Determine the failure category and reason
-3. Add a row to the table above
-4. Set status to `Expected` (fixable) or `Permanent` (out of scope)
-5. Reference the relevant GitHub issue or future phase
+2. **Investigate the failure** -- determine if the feature is implemented
+3. If the feature IS implemented: fix the bug, do NOT add to this list
+4. If the feature is NOT implemented: add a row to the table above
+5. Set status to `Expected` (fixable) or `Permanent` (out of scope)
+6. Reference the relevant GitHub issue or future phase
 
 Format:
 ```
@@ -178,5 +235,6 @@ Format:
 
 ## Changelog
 
+- **v3.8 Phase 40 (2026-03-02):** Post-SMB3 update. Removed 5 tests whose features are now implemented (durable handles V1, leasing V1, oplock break, encryption capability flag). Added Phase 33-39 improvements section. Updated permanently out-of-scope count (47, down from 48 -- encryption flag removed). Updated expected failure count (35, down from 42). Removed "Potentially fixed" status -- all entries are now either Expected or Permanent.
 - **v3.6 Phase 32 (2026-02-28):** Updated baseline after bug fixes (sparse READ, directory listing, parent dir, oplock break, link count), ACL support (SD synthesis, DACL/SACL, SID mapping), and protocol enhancements (MxAc, QFid, FileCompressionInfo, FileAttributeTagInfo, capability flags). Added status column, Phase 30-32 improvement notes, permanently out-of-scope categories section.
 - **v3.6 Phase 29.8 (2026-02-26):** Initial baseline (133/240 BVT tests passing). Created expected failure list with 90 entries across 14 categories.

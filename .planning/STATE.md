@@ -23,9 +23,9 @@ See: .planning/PROJECT.md (updated 2026-02-28)
 ## Current Position
 
 Phase: 40 of 42 (SMB3 Conformance Testing)
-Plan: 1 of 6 complete
+Plan: 4 of 6 (Cross-Protocol Lease and Kerberos SMB3 Feature Matrix Tests)
 Status: In Progress
-Last activity: 2026-03-02 -- Completed 40-01 (smbtorture Baseline and Known Failures Enumeration)
+Last activity: 2026-03-02 — Completed 40-04 (Cross-Protocol Lease and Kerberos Tests)
 
 Progress: [##########] 100%
 
@@ -71,7 +71,6 @@ Progress: [##########] 100%
 | 40    | 02   | 5min     | 2     | 3     |
 | 40    | 03   | 5min     | 2     | 5     |
 | 40    | 04   | 5min     | 2     | 2     |
-| 40    | 01   | 32min    | 2     | 2     |
 
 ## Accumulated Context
 
@@ -170,9 +169,6 @@ Progress: [##########] 100%
 - [Phase 40-04]: Mount-based file ops for lease tests (mount.cifs handles lease negotiation transparently at kernel level)
 - [Phase 40-04]: 10 goroutines (5 NFS + 5 SMB) with 3 iterations for concurrent conflict testing
 - [Phase 40-04]: Kerberos tests skip gracefully on platforms without mount.cifs or KDC support
-- [Phase 40-01]: 119 fix candidate failures excluded from KNOWN_FAILURES (implemented features that still fail)
-- [Phase 40-01]: 252 individual test entries replace all wildcard patterns in KNOWN_FAILURES
-- [Phase 40-01]: Directory leases (dirlease) categorized as unimplemented, separate from file leases (Phase 37)
 
 ### Pending Todos
 
@@ -185,5 +181,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-03-02
-Stopped at: Completed 40-01-PLAN.md (smbtorture Baseline and Known Failures Enumeration -- Phase 40 in progress, 1/6 plans done)
+Stopped at: Completed 40-04-PLAN.md (Cross-Protocol Lease and Kerberos Tests -- Phase 40 in progress, 4/6 plans done)
 Resume file: None

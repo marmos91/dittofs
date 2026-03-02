@@ -80,7 +80,7 @@ Requirements for SMB3 protocol upgrade. Each maps to roadmap phases.
 
 ### Testing
 
-- [x] **TEST-01**: smbtorture SMB3 tests pass (durable_v2, lease, replay, session, encryption suites)
+- [ ] **TEST-01**: smbtorture SMB3 tests pass (durable_v2, lease, replay, session, encryption suites)
 - [x] **TEST-02**: Microsoft WPTS FileServer SMB3 BVT tests pass
 - [x] **TEST-03**: Go integration tests (go-smb2) validate native client-server SMB3 interop
 - [x] **TEST-04**: Cross-protocol integration tests validate SMB3 leases vs NFS delegations
@@ -163,7 +163,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | ARCH-02 | Phase 33 | Complete |
 | ARCH-03 | Phase 36 | Complete |
 | DOC-01 | Phase 39 | Complete |
-| TEST-01 | Phase 40 | Complete |
+| TEST-01 | Phase 40 | Pending |
 | TEST-02 | Phase 40 | Complete |
 | TEST-03 | Phase 40 | Complete |
 | TEST-04 | Phase 40 | Complete |
