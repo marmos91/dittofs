@@ -267,10 +267,7 @@ func TestAcknowledgeLeaseBreak_CompletesBreak(t *testing.T) {
 	mgr.RegisterBreakCallbacks(&testBreakCallbacks{
 		onOpLockBreak: func(handleKey string, lock *UnifiedLock, breakToState uint32) {
 			breakCalled = true
-			// Simulate: set the lock to breaking state
-			lock.Lease.Breaking = true
-			lock.Lease.BreakToState = breakToState
-			lock.Lease.BreakStarted = time.Now()
+			// Manager already set Breaking=true before dispatching
 		},
 	})
 
@@ -357,9 +354,7 @@ func TestAcknowledgeLeaseBreak_AckToNone_RemovesLease(t *testing.T) {
 
 	mgr.RegisterBreakCallbacks(&testBreakCallbacks{
 		onOpLockBreak: func(handleKey string, lock *UnifiedLock, breakToState uint32) {
-			lock.Lease.Breaking = true
-			lock.Lease.BreakToState = breakToState
-			lock.Lease.BreakStarted = time.Now()
+			// Manager already set Breaking=true before dispatching
 		},
 	})
 

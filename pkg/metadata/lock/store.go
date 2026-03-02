@@ -267,8 +267,12 @@ func ToPersistedLock(lock *UnifiedLock, epoch uint64) *PersistedLock {
 		pl.LeaseEpoch = lock.Lease.Epoch
 		pl.BreakToState = lock.Lease.BreakToState
 		pl.Breaking = lock.Lease.Breaking
-		pl.ParentLeaseKey = lock.Lease.ParentLeaseKey[:]
 		pl.IsDirectory = lock.Lease.IsDirectory
+
+		// Only set ParentLeaseKey when non-zero so omitempty works for V1 leases
+		if lock.Lease.ParentLeaseKey != [16]byte{} {
+			pl.ParentLeaseKey = lock.Lease.ParentLeaseKey[:]
+		}
 	}
 
 	return pl

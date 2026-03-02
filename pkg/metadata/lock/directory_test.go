@@ -37,10 +37,7 @@ func TestOnDirChange_BreaksDirectoryLeases(t *testing.T) {
 			breakCalled = true
 			breakHandleKey = handleKey
 			breakToState = bts
-			// Mark as breaking
-			lock.Lease.Breaking = true
-			lock.Lease.BreakToState = bts
-			lock.Lease.BreakStarted = time.Now()
+			// Manager already set Breaking=true before dispatching
 		},
 	})
 
@@ -122,9 +119,7 @@ func TestRecentlyBrokenCache_BlocksDirectoryLease(t *testing.T) {
 
 	mgr.RegisterBreakCallbacks(&testBreakCallbacks{
 		onOpLockBreak: func(handleKey string, lock *UnifiedLock, bts uint32) {
-			lock.Lease.Breaking = true
-			lock.Lease.BreakToState = bts
-			lock.Lease.BreakStarted = time.Now()
+			// Manager already set Breaking=true before dispatching
 		},
 	})
 

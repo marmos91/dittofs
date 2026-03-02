@@ -1079,7 +1079,7 @@ func (lm *Manager) breakOpLocks(
 	breakToState uint32,
 	shouldBreak func(lease *OpLock) bool,
 ) error {
-	lm.mu.RLock()
+	lm.mu.Lock()
 	locks := lm.unifiedLocks[handleKey]
 
 	var toBreak []*UnifiedLock
@@ -1090,11 +1090,19 @@ func (lm *Manager) breakOpLocks(
 		if excludeOwner != nil && lock.Owner.OwnerID == excludeOwner.OwnerID {
 			continue
 		}
+		if lock.Lease.Breaking {
+			continue // Already breaking
+		}
 		if shouldBreak(lock.Lease) {
+			// Mark lease as breaking before dispatching callbacks
+			lock.Lease.Breaking = true
+			lock.Lease.BreakToState = breakToState
+			lock.Lease.BreakStarted = time.Now()
+			advanceEpoch(lock.Lease)
 			toBreak = append(toBreak, lock)
 		}
 	}
-	lm.mu.RUnlock()
+	lm.mu.Unlock()
 
 	for _, lock := range toBreak {
 		lm.dispatchOpLockBreak(handleKey, lock, breakToState)

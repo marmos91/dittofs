@@ -182,6 +182,18 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 				"existingState", LeaseStateToString(lock.Lease.LeaseState),
 				"requestedState", LeaseStateToString(requestedState))
 
+			// Mark lease as breaking before dispatching callbacks
+			lock.Lease.Breaking = true
+			lock.Lease.BreakToState = LeaseStateNone
+			lock.Lease.BreakStarted = time.Now()
+			advanceEpoch(lock.Lease)
+
+			// Persist the breaking state
+			if lm.lockStore != nil {
+				pl := ToPersistedLock(lock, 0)
+				_ = lm.lockStore.PutLock(ctx, pl)
+			}
+
 			// Release lock before dispatching break callbacks
 			lm.mu.Unlock()
 			lm.dispatchOpLockBreak(handleKey, lock, LeaseStateNone)
@@ -262,8 +274,8 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 		return fmt.Errorf("stale epoch: expected %d, got %d", lock.Lease.Epoch+1, epoch)
 	}
 
-	// Client cannot claim more than offered
-	if acknowledgedState > lock.Lease.BreakToState {
+	// Client cannot claim bits not offered (bitwise subset check)
+	if acknowledgedState & ^lock.Lease.BreakToState != 0 {
 		return fmt.Errorf("acknowledged state %s exceeds break-to state %s",
 			LeaseStateToString(acknowledgedState),
 			LeaseStateToString(lock.Lease.BreakToState))
