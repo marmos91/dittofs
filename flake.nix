@@ -21,7 +21,7 @@
     }:
     let
       # Version configuration - update this for releases
-      version = "0.8.0";
+      version = "0.8.1";
     in
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -382,7 +382,7 @@
               src = ./.;
 
               # To update: set to "", run `nix build`, copy hash from error
-              vendorHash = "sha256-nEbpeEH1cDv0bLYdjI3ewMGQDokq7WF0C172PPZHSH8=";
+              vendorHash = "sha256-IbW/a0aI3/qnTT44eX3mIAnLfQmyFcHs3cebiBHrQ38=";
 
               ldflags = [
                 "-s"
