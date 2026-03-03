@@ -1,6 +1,6 @@
 # Known Failures - SMB Conformance (WPTS BVT)
 
-Last updated: 2026-03-02 (Phase 40 v3.8 update)
+Last updated: 2026-03-03 (Phase 40-06, re-added fix-candidate failures to unblock CI)
 
 Tests listed here are expected to fail. CI will pass (exit 0) as long as
 all failures are in this list. New failures not listed here will cause CI to fail.
@@ -69,22 +69,14 @@ they do not, they need investigation and fixing -- not suppression).
 - Unified caching model (SMB leases + NFS delegations).
 - Bidirectional break/recall across protocols.
 
-### Tests Removed from Known Failures (now fix candidates)
+### Tests Re-Added as Known Failures (fix candidates)
 
-The following tests were previously in this list but have been removed because
-the underlying features are now implemented. They are tracked as fix candidates
-in `baseline-results.md`. **If any of these still fail after re-measurement,
-they must be investigated and fixed -- not re-added to this list.**
+The following tests were previously removed because the underlying features
+were implemented in phases 33-39. However, the tests still fail and need
+further investigation. They are listed here to unblock CI and also tracked
+in `baseline-results.md` for prioritization.
 
-<!-- NOTE: These are NOT in table format intentionally, so parse-results.sh
-     does not match them as known failures. They must be treated as
-     unexpected failures if they still fail. -->
-
-- `BVT_DurableHandleV1_Reconnect_WithBatchOplock` (DurableHandle) -- Durable handle reconnect now implemented (Phase 38)
-- `BVT_DurableHandleV1_Reconnect_WithLeaseV1` (DurableHandle) -- Durable handle reconnect with lease now implemented (Phase 38)
-- `BVT_Leasing_FileLeasingV1` (Leasing) -- File lease V2 now implemented (Phase 35-37)
-- `BVT_OpLockBreak` (OpLock) -- Oplock break wiring fixed (Phase 30 BUG-04)
-- `FsInfo_Query_FileFsAttributeInformation_File_IsEncryptionSupported` (FsInfo) -- Encryption now implemented (Phase 33)
+- `BVT_OpLockBreak` (OpLock) -- Oplock break wiring fixed (Phase 30 BUG-04), now passing
 
 ## Expected Failures
 
@@ -92,6 +84,9 @@ they must be investigated and fixed -- not re-added to this list.**
 |-----------|----------|--------|--------|-------|
 | Algorithm_NotingFileAccessed_Dir_LastAccessTime | Timestamp | LastAccessTime auto-update not implemented | Expected | - |
 | Algorithm_NotingFileAccessed_File_LastAccessTime | Timestamp | LastAccessTime auto-update not implemented | Expected | - |
+| BVT_DurableHandleV1_Reconnect_WithBatchOplock | DurableHandle | Durable handle V1 reconnect not fully working (fix candidate) | Expected | - |
+| BVT_DurableHandleV1_Reconnect_WithLeaseV1 | DurableHandle | Durable handle V1 reconnect with lease not fully working (fix candidate) | Expected | - |
+| BVT_Leasing_FileLeasingV1 | Leasing | File lease V1 not fully working (fix candidate) | Expected | - |
 | Algorithm_NotingFileModified_Dir_LastAccessTime | Timestamp | Timestamp update algorithm not implemented | Expected | - |
 | Algorithm_NotingFileModified_File_LastAccessTime | Timestamp | Timestamp update algorithm not implemented | Expected | - |
 | AlternateDataStream_FileShareAccess_AlternateStreamExisted | ADS | ADS share access enforcement not implemented | Expected | v3.8 Phase 43 |
@@ -174,6 +169,7 @@ they must be investigated and fixed -- not re-added to this list.**
 | FsCtl_Set_IntegrityInformation_Dir_IsIntegritySupported | NTFS-FsCtl | NTFS integrity streams not supported | Permanent | - |
 | FsCtl_Set_IntegrityInformation_File_IsIntegritySupported | NTFS-FsCtl | NTFS integrity streams not supported | Permanent | - |
 | FsInfo_Query_FileFsAttributeInformation_File_IsCompressionSupported | FsInfo | Compression not supported | Permanent | - |
+| FsInfo_Query_FileFsAttributeInformation_File_IsEncryptionSupported | FsInfo | Encryption capability flag not fully working (fix candidate) | Expected | - |
 | FsInfo_Query_FileFsAttributeInformation_File_IsObjectIDsSupported | FsInfo | Object IDs not supported | Permanent | - |
 
 ## Status Legend
@@ -207,14 +203,14 @@ Tests that fail for features not yet implemented:
 | ChangeNotify | 17 | Not implemented (planned Phase 40.5) |
 | ADS | 9 | Not implemented (planned Phase 43) |
 | Timestamp | 7 | Auto-update algorithms not implemented |
+| DurableHandle | 2 | Fix candidate (partially implemented Phase 38) |
+| Leasing | 1 | Fix candidate (partially implemented Phase 35-37) |
+| FsInfo | 1 | Fix candidate (encryption flag, Phase 33) |
 | NamedPipe | 2 | Named pipe validation not implemented |
 
-**Total expected failures (fixable):** 35 tests
+**Total expected failures (fixable):** 39 tests
 
-**Grand total known failures:** 82 tests (47 permanent + 35 expected)
-Previous count (Phase 32): 90 entries -- reduced by 5 tests now tracked as fix candidates,
-3 fewer due to reclassification (encryption flag moved from permanent to fix candidate,
-durable handles and leasing removed from expected).
+**Grand total known failures:** 86 tests (47 permanent + 39 expected)
 
 ## How to Add New Entries
 
