@@ -1141,9 +1141,11 @@ func (lm *Manager) CheckAndBreakOpLocksForDelete(handleKey string, excludeOwner 
 
 // CheckAndBreakCachingForWrite breaks all leases AND all delegations.
 func (lm *Manager) CheckAndBreakCachingForWrite(handleKey string, excludeOwner *LockOwner) error {
-	lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, func(lease *OpLock) bool {
+	if err := lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, func(lease *OpLock) bool {
 		return lease.HasRead() || lease.HasWrite()
-	})
+	}); err != nil {
+		return err
+	}
 	lm.breakDelegations(handleKey, excludeOwner, func(deleg *Delegation) bool {
 		return true
 	})
@@ -1154,9 +1156,11 @@ func (lm *Manager) CheckAndBreakCachingForWrite(handleKey string, excludeOwner *
 // CheckAndBreakCachingForRead breaks write leases (to Read) and write delegations.
 // Read delegations and read leases coexist with reads.
 func (lm *Manager) CheckAndBreakCachingForRead(handleKey string, excludeOwner *LockOwner) error {
-	lm.breakOpLocks(handleKey, excludeOwner, LeaseStateRead, func(lease *OpLock) bool {
+	if err := lm.breakOpLocks(handleKey, excludeOwner, LeaseStateRead, func(lease *OpLock) bool {
 		return lease.HasWrite()
-	})
+	}); err != nil {
+		return err
+	}
 	lm.breakDelegations(handleKey, excludeOwner, func(deleg *Delegation) bool {
 		return deleg.DelegType == DelegTypeWrite
 	})
@@ -1166,9 +1170,11 @@ func (lm *Manager) CheckAndBreakCachingForRead(handleKey string, excludeOwner *L
 
 // CheckAndBreakCachingForDelete breaks all leases AND all delegations.
 func (lm *Manager) CheckAndBreakCachingForDelete(handleKey string, excludeOwner *LockOwner) error {
-	lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, func(lease *OpLock) bool {
+	if err := lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, func(lease *OpLock) bool {
 		return lease.LeaseState != LeaseStateNone
-	})
+	}); err != nil {
+		return err
+	}
 	lm.breakDelegations(handleKey, excludeOwner, func(deleg *Delegation) bool {
 		return true
 	})

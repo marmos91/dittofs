@@ -446,11 +446,11 @@ func TestCountBreakableState(t *testing.T) {
 	locks := []*UnifiedLock{
 		{Lease: &OpLock{LeaseState: LeaseStateRead}},
 		{Lease: &OpLock{LeaseState: LeaseStateRead | LeaseStateWrite}},
-		{Lease: &OpLock{LeaseState: LeaseStateNone}},                   // not countable (None)
-		{Lease: &OpLock{LeaseState: LeaseStateRead, Breaking: true}},   // not countable (breaking)
-		{Delegation: &Delegation{DelegType: DelegTypeRead}},            // countable
-		{Delegation: &Delegation{DelegType: DelegTypeWrite}},           // countable
-		{Delegation: &Delegation{DelegType: DelegTypeRead, Revoked: true}}, // not countable (revoked)
+		{Lease: &OpLock{LeaseState: LeaseStateNone}},                        // not countable (None)
+		{Lease: &OpLock{LeaseState: LeaseStateRead, Breaking: true}},        // not countable (breaking)
+		{Delegation: &Delegation{DelegType: DelegTypeRead}},                 // countable
+		{Delegation: &Delegation{DelegType: DelegTypeWrite}},                // countable
+		{Delegation: &Delegation{DelegType: DelegTypeRead, Revoked: true}},  // not countable (revoked)
 		{Delegation: &Delegation{DelegType: DelegTypeRead, Breaking: true}}, // not countable (breaking)
 	}
 

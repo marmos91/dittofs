@@ -92,12 +92,12 @@ type BreakCallbacks interface {
 //  2. The callback is notified so it can clean up tracking state
 //  3. The conflicting operation can proceed
 type OpLockBreakScanner struct {
-	lockStore              LockStore
-	callback               OpLockBreakCallback
-	timeout                time.Duration
-	delegationTimeout      time.Duration
-	scanInterval           time.Duration
-	lockManager            *Manager // for delegation force-revoke
+	lockStore         LockStore
+	callback          OpLockBreakCallback
+	timeout           time.Duration
+	delegationTimeout time.Duration
+	scanInterval      time.Duration
+	lockManager       *Manager // for delegation force-revoke
 
 	stop    chan struct{}
 	stopped chan struct{}
