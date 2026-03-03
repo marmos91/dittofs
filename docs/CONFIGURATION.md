@@ -860,22 +860,18 @@ adapters:
 | `scavenger_interval` | `30s` | Background scan interval for expired handles |
 | `max_handles_per_session` | `1000` | Limit durable handles per session |
 
-### Cross-Protocol Configuration
+### Cross-Protocol Coordination
 
-Settings that affect NFS/SMB cross-protocol coordination:
+NFS/SMB cross-protocol coordination uses built-in defaults that are not
+currently configurable via YAML. The defaults are:
 
-```yaml
-adapters:
-  smb:
-    cross_protocol:
-      delegation_recall_timeout: 90s   # Timeout for NFS delegation recall (default: 90s)
-      anti_storm_ttl: 30s              # Anti-storm cache TTL (default: 30s)
-```
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Delegation recall timeout | `90s` | Maximum wait for NFS client to return delegation after CB_RECALL |
+| Anti-storm TTL | `30s` | Duration to suppress re-grants after a lease/delegation break |
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `delegation_recall_timeout` | `90s` | Maximum wait for NFS client to return delegation after CB_RECALL |
-| `anti_storm_ttl` | `30s` | Duration to suppress re-grants after a lease/delegation break |
+These are set programmatically via `Manager.SetDelegationRecallTimeout()` and
+`NewManagerWithTTL()` respectively.
 
 ### Complete SMB3 Adapter Configuration Example
 
@@ -929,11 +925,6 @@ adapters:
       default_timeout: 60s
       scavenger_interval: 30s
       max_handles_per_session: 1000
-
-    # Cross-Protocol
-    cross_protocol:
-      delegation_recall_timeout: 90s
-      anti_storm_ttl: 30s
 ```
 
 ### SMB3 Environment Variable Overrides

@@ -1183,7 +1183,8 @@ func (lm *Manager) CheckAndBreakCachingForDelete(handleKey string, excludeOwner 
 }
 
 // WaitForBreakCompletion blocks until all breaking locks on a file resolve
-// or the context is cancelled.
+// or the context is cancelled. Multiple goroutines may wait concurrently;
+// signalBreakWait uses close() to broadcast to all waiters.
 func (lm *Manager) WaitForBreakCompletion(ctx context.Context, handleKey string) error {
 	for {
 		lm.mu.Lock()
@@ -1208,7 +1209,7 @@ func (lm *Manager) WaitForBreakCompletion(ctx context.Context, handleKey string)
 		// so no signal from signalBreakWait can be missed.
 		ch, ok := lm.breakWaitChans[handleKey]
 		if !ok {
-			ch = make(chan struct{}, 1)
+			ch = make(chan struct{})
 			lm.breakWaitChans[handleKey] = ch
 		}
 		lm.mu.Unlock()
@@ -1222,14 +1223,14 @@ func (lm *Manager) WaitForBreakCompletion(ctx context.Context, handleKey string)
 	}
 }
 
-// signalBreakWait sends a non-blocking signal on the wait channel for a handleKey.
+// signalBreakWait broadcasts to all waiters by closing the wait channel and
+// removing it from the map. The next WaitForBreakCompletion call will create
+// a fresh channel if needed.
 func (lm *Manager) signalBreakWait(handleKey string) {
 	lm.mu.Lock()
 	if ch, ok := lm.breakWaitChans[handleKey]; ok {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
+		close(ch)
+		delete(lm.breakWaitChans, handleKey)
 	}
 	lm.mu.Unlock()
 }
@@ -1442,6 +1443,11 @@ func (lm *Manager) CollectExpiredDelegationRecalls(now time.Time, timeout time.D
 
 // breakDelegations collects delegations matching the predicate and dispatches
 // recall notifications. Releases mutex before dispatching to avoid deadlock.
+//
+// excludeOwner skips delegations whose Owner.OwnerID matches. Delegation
+// OwnerIDs use the format "deleg:{clientID}:{delegationID}". Callers that
+// want to exclude by client identity should match on Owner.ClientID instead,
+// or construct the OwnerID in the same format.
 func (lm *Manager) breakDelegations(
 	handleKey string,
 	excludeOwner *LockOwner,
@@ -1455,7 +1461,9 @@ func (lm *Manager) breakDelegations(
 		if lock.Delegation == nil {
 			continue
 		}
-		if excludeOwner != nil && lock.Owner.OwnerID == excludeOwner.OwnerID {
+		if excludeOwner != nil &&
+			(lock.Owner.OwnerID == excludeOwner.OwnerID ||
+				(excludeOwner.ClientID != "" && lock.Owner.ClientID == excludeOwner.ClientID)) {
 			continue
 		}
 		if lock.Delegation.Breaking {

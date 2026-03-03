@@ -118,9 +118,14 @@ func (q *NotificationQueue) Drain() ([]DirNotification, bool) {
 	copy(events, q.events)
 	overflow := q.overflow
 
-	// Reset
+	// Reset queue state and drain flush channel so subsequent threshold
+	// crossings will re-signal correctly.
 	q.events = q.events[:0]
 	q.overflow = false
+	select {
+	case <-q.flushCh:
+	default:
+	}
 
 	return events, overflow
 }
