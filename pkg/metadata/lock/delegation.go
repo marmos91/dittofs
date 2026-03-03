@@ -138,9 +138,9 @@ func DelegationConflictsWithLease(deleg *Delegation, lease *OpLock) bool {
 		return false
 	}
 
-	// Write delegation conflicts with any lease
+	// Write delegation conflicts with any active lease (not LeaseStateNone)
 	if deleg.DelegType == DelegTypeWrite {
-		return true
+		return lease.LeaseState != LeaseStateNone
 	}
 
 	// Any delegation conflicts with write lease

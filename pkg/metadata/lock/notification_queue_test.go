@@ -90,8 +90,8 @@ func TestNotificationQueue_FlushCh_Signaled(t *testing.T) {
 	ch := q.FlushCh()
 	require.NotNil(t, ch)
 
-	// Push 100 events to reach threshold
-	for i := 0; i < 100; i++ {
+	// Push events to reach flush threshold
+	for i := 0; i < notificationFlushThreshold; i++ {
 		q.Push(DirNotification{ChangeType: DirChangeAddEntry, EntryName: "file"})
 	}
 
@@ -111,8 +111,8 @@ func TestNotificationQueue_FlushCh_NotSignaledBelowThreshold(t *testing.T) {
 
 	ch := q.FlushCh()
 
-	// Push fewer than 100 events
-	for i := 0; i < 50; i++ {
+	// Push fewer than flush threshold events
+	for i := 0; i < notificationFlushThreshold/2; i++ {
 		q.Push(DirNotification{ChangeType: DirChangeAddEntry, EntryName: "file"})
 	}
 

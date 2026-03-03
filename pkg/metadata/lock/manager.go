@@ -1336,8 +1336,7 @@ func (lm *Manager) RevokeDelegation(handleKey string, delegationID string) error
 	for _, l := range locks {
 		if l.Delegation != nil && l.Delegation.DelegationID == delegationID {
 			found = true
-			l.Delegation.Revoked = true
-			continue
+			continue // Drop from remaining (removed from map)
 		}
 		remaining = append(remaining, l)
 	}
@@ -1409,6 +1408,36 @@ func (lm *Manager) ListDelegations(handleKey string) []*Delegation {
 		}
 	}
 	return result
+}
+
+// ExpiredDelegation holds info about a delegation whose recall has timed out.
+type ExpiredDelegation struct {
+	HandleKey    string
+	DelegationID string
+}
+
+// CollectExpiredDelegationRecalls returns delegations that are in the breaking
+// state and have exceeded the given timeout. This allows external scanners to
+// query for expired recalls without accessing internal fields.
+func (lm *Manager) CollectExpiredDelegationRecalls(now time.Time, timeout time.Duration) []ExpiredDelegation {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+
+	var expired []ExpiredDelegation
+	for handleKey, locks := range lm.unifiedLocks {
+		for _, lock := range locks {
+			if lock.Delegation == nil || !lock.Delegation.Breaking {
+				continue
+			}
+			if now.After(lock.Delegation.BreakStarted.Add(timeout)) {
+				expired = append(expired, ExpiredDelegation{
+					HandleKey:    handleKey,
+					DelegationID: lock.Delegation.DelegationID,
+				})
+			}
+		}
+	}
+	return expired
 }
 
 // breakDelegations collects delegations matching the predicate and dispatches

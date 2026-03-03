@@ -165,7 +165,7 @@ func (lm *Manager) OnDirChange(parentHandle FileHandle, changeType DirChangeType
 			}
 			lock.Delegation.Breaking = true
 			lock.Delegation.BreakStarted = time.Now()
-			lock.Delegation.Recalled = true
+			// Recalled is set by the break callback after CB_RECALL is actually sent.
 			delegsToBreak = append(delegsToBreak, lock)
 		}
 	}

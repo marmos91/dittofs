@@ -309,40 +309,19 @@ func (s *OpLockBreakScanner) scanExpiredDelegationRecalls(now time.Time) {
 		return
 	}
 
-	// Collect expired delegations under read lock
-	lm.mu.RLock()
-	type expiredDeleg struct {
-		handleKey    string
-		delegationID string
-	}
-	var expired []expiredDeleg
-
-	for handleKey, locks := range lm.unifiedLocks {
-		for _, lock := range locks {
-			if lock.Delegation == nil || !lock.Delegation.Breaking {
-				continue
-			}
-			deadline := lock.Delegation.BreakStarted.Add(delegTimeout)
-			if now.After(deadline) {
-				expired = append(expired, expiredDeleg{
-					handleKey:    handleKey,
-					delegationID: lock.Delegation.DelegationID,
-				})
-			}
-		}
-	}
-	lm.mu.RUnlock()
+	// Collect expired delegations via public API (avoids accessing internal fields).
+	expired := lm.CollectExpiredDelegationRecalls(now, delegTimeout)
 
 	// Force-revoke expired delegations
 	for _, e := range expired {
 		logger.Debug("OpLockBreakScanner: delegation recall timeout expired",
-			"handleKey", e.handleKey,
-			"delegationID", e.delegationID,
+			"handleKey", e.HandleKey,
+			"delegationID", e.DelegationID,
 			"timeout", delegTimeout)
 
-		if err := lm.RevokeDelegation(e.handleKey, e.delegationID); err != nil {
+		if err := lm.RevokeDelegation(e.HandleKey, e.DelegationID); err != nil {
 			logger.Warn("OpLockBreakScanner: failed to revoke expired delegation",
-				"delegationID", e.delegationID,
+				"delegationID", e.DelegationID,
 				"error", err)
 		}
 	}
