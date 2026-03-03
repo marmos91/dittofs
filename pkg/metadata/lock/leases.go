@@ -325,6 +325,7 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 
 		logger.Debug("AcknowledgeLeaseBreak: lease fully released",
 			"leaseKey", fmt.Sprintf("%x", leaseKey))
+		lm.signalBreakWaitLocked(handleKey)
 		return nil
 	}
 
@@ -349,6 +350,7 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 		"newState", LeaseStateToString(acknowledgedState),
 		"epoch", lock.Lease.Epoch)
 
+	lm.signalBreakWaitLocked(handleKey)
 	return nil
 }
 

@@ -56,13 +56,18 @@ func (h *NFSBreakHandler) OnDelegationRecall(handleKey string, ul *lock.UnifiedL
 		return
 	}
 
+	// Mark recall under lock. The fields read by sendRecall (ClientID,
+	// Stateid, FileHandle) are immutable after creation, so passing the
+	// pointer to the goroutine is safe. RecallSent/RecallTime are only
+	// written here under sm.mu and read elsewhere under sm.mu.RLock().
 	deleg.RecallSent = true
 	deleg.RecallTime = time.Now()
+	clientID := deleg.ClientID
 	h.stateManager.mu.Unlock()
 
 	logger.Debug("NFSBreakHandler: dispatching CB_RECALL",
 		"delegationID", delegID,
-		"clientID", deleg.ClientID,
+		"clientID", clientID,
 		"handleKey", handleKey)
 
 	go h.stateManager.sendRecall(deleg)

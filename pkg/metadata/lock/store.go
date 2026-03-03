@@ -3,6 +3,8 @@ package lock
 import (
 	"context"
 	"time"
+
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // ============================================================================
@@ -272,6 +274,13 @@ type LockStore interface {
 // For leases, the Lease field must be non-nil. The 128-bit LeaseKey,
 // LeaseState, Epoch, BreakToState, and Breaking are all preserved.
 func ToPersistedLock(lock *UnifiedLock, epoch uint64) *PersistedLock {
+	// Guard invariant: at most one of Lease or Delegation should be non-nil.
+	// Both being set would cause IsDirectory to be overwritten ambiguously.
+	if lock.Lease != nil && lock.Delegation != nil {
+		logger.Error("ToPersistedLock: invariant violation - lock has both Lease and Delegation",
+			"lockID", lock.ID)
+	}
+
 	pl := &PersistedLock{
 		ID:          lock.ID,
 		ShareName:   lock.Owner.ShareName,

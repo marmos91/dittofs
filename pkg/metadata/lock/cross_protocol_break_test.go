@@ -265,20 +265,9 @@ func TestCrossProtocolBreak_ExcludeOwner(t *testing.T) {
 	err := lm.GrantDelegation("shared-file", deleg)
 	require.NoError(t, err)
 
-	// Same NFS client writes -- should NOT break its own delegation
-	// The owner ID in the delegation is set from the lock when added
-	lm.mu.RLock()
-	locks := lm.unifiedLocks["shared-file"]
-	var delegOwnerID string
-	for _, l := range locks {
-		if l.Delegation != nil && l.Delegation.DelegationID == deleg.DelegationID {
-			delegOwnerID = l.Owner.OwnerID
-			break
-		}
-	}
-	lm.mu.RUnlock()
-
-	sameOwner := &LockOwner{OwnerID: delegOwnerID}
+	// Same NFS client writes -- should NOT break its own delegation.
+	// Use the public DelegationOwnerID helper to construct the expected owner.
+	sameOwner := &LockOwner{OwnerID: DelegationOwnerID(deleg.ClientID, deleg.DelegationID)}
 	err = lm.CheckAndBreakCachingForWrite("shared-file", sameOwner)
 	require.NoError(t, err)
 

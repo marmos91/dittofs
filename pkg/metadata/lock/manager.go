@@ -1225,14 +1225,20 @@ func (lm *Manager) WaitForBreakCompletion(ctx context.Context, handleKey string)
 
 // signalBreakWait broadcasts to all waiters by closing the wait channel and
 // removing it from the map. The next WaitForBreakCompletion call will create
-// a fresh channel if needed.
+// a fresh channel if needed. Acquires lm.mu internally.
 func (lm *Manager) signalBreakWait(handleKey string) {
 	lm.mu.Lock()
+	lm.signalBreakWaitLocked(handleKey)
+	lm.mu.Unlock()
+}
+
+// signalBreakWaitLocked is the lock-held variant of signalBreakWait.
+// Caller must hold lm.mu.
+func (lm *Manager) signalBreakWaitLocked(handleKey string) {
 	if ch, ok := lm.breakWaitChans[handleKey]; ok {
 		close(ch)
 		delete(lm.breakWaitChans, handleKey)
 	}
-	lm.mu.Unlock()
 }
 
 // breakOpLocks marks matching oplocks as breaking and dispatches break
@@ -1291,6 +1297,9 @@ func (lm *Manager) GrantDelegation(handleKey string, delegation *Delegation) err
 
 	locks := lm.unifiedLocks[handleKey]
 
+	// Check lease conflicts. Delegation-vs-delegation conflicts (e.g., at most
+	// one write delegation per file) are enforced by the protocol layer (NFS
+	// state manager, SMB handler) before calling GrantDelegation.
 	for _, lock := range locks {
 		if lock.Lease != nil {
 			if DelegationConflictsWithLease(delegation, lock.Lease) {
@@ -1303,7 +1312,7 @@ func (lm *Manager) GrantDelegation(handleKey string, delegation *Delegation) err
 	newLock := &UnifiedLock{
 		ID: delegation.DelegationID,
 		Owner: LockOwner{
-			OwnerID:   fmt.Sprintf("deleg:%s:%s", delegation.ClientID, delegation.DelegationID),
+			OwnerID:   DelegationOwnerID(delegation.ClientID, delegation.DelegationID),
 			ClientID:  delegation.ClientID,
 			ShareName: delegation.ShareName,
 		},
@@ -1317,6 +1326,13 @@ func (lm *Manager) GrantDelegation(handleKey string, delegation *Delegation) err
 
 	lm.unifiedLocks[handleKey] = append(locks, newLock)
 	return nil
+}
+
+// DelegationOwnerID returns the OwnerID that GrantDelegation assigns to a
+// delegation. This is useful for constructing an excludeOwner that matches
+// the delegation's LockOwner.
+func DelegationOwnerID(clientID, delegationID string) string {
+	return fmt.Sprintf("deleg:%s:%s", clientID, delegationID)
 }
 
 // delegationToLockType converts a DelegationType to a LockType.
