@@ -279,6 +279,8 @@ func ToPersistedLock(lock *UnifiedLock, epoch uint64) *PersistedLock {
 	if lock.Lease != nil && lock.Delegation != nil {
 		logger.Error("ToPersistedLock: invariant violation - lock has both Lease and Delegation",
 			"lockID", lock.ID)
+		// Persist only the lease path; delegation fields are skipped to avoid
+		// ambiguous IsDirectory. Callers should fix the root cause.
 	}
 
 	pl := &PersistedLock{

@@ -199,10 +199,13 @@ func (s *OpLockBreakScanner) GetTimeout() time.Duration {
 
 // SetLockManager sets the lock manager for delegation force-revoke operations.
 func (s *OpLockBreakScanner) SetLockManager(lm *Manager) {
+	// Read delegation timeout before acquiring s.mu to avoid nested lock
+	// ordering (s.mu -> lm.mu). DelegationRecallTimeout acquires lm.mu.RLock.
+	delegTimeout := lm.DelegationRecallTimeout()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lockManager = lm
-	s.delegationTimeout = lm.DelegationRecallTimeout()
+	s.delegationTimeout = delegTimeout
 }
 
 // SetDelegationTimeout updates the delegation recall timeout.

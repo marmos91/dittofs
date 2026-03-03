@@ -140,14 +140,13 @@ func (lm *Manager) OnDirChange(parentHandle FileHandle, changeType DirChangeType
 	var delegsToBreak []*UnifiedLock
 
 	for _, lock := range locks {
+		// Skip originator for the entire lock entry (covers both lease and delegation).
+		if lock.Owner.ClientID == originClientID {
+			continue
+		}
+
 		// Check directory leases
-		if lock.Lease != nil && lock.Lease.IsDirectory {
-			if lock.Owner.ClientID == originClientID {
-				continue // Skip originator
-			}
-			if lock.Lease.Breaking {
-				continue // Already breaking
-			}
+		if lock.Lease != nil && lock.Lease.IsDirectory && !lock.Lease.Breaking {
 			lock.Lease.Breaking = true
 			lock.Lease.BreakToState = LeaseStateNone
 			lock.Lease.BreakStarted = time.Now()
@@ -156,13 +155,7 @@ func (lm *Manager) OnDirChange(parentHandle FileHandle, changeType DirChangeType
 		}
 
 		// Check directory delegations
-		if lock.Delegation != nil && lock.Delegation.IsDirectory {
-			if lock.Owner.ClientID == originClientID {
-				continue // Skip originator
-			}
-			if lock.Delegation.Breaking {
-				continue // Already breaking
-			}
+		if lock.Delegation != nil && lock.Delegation.IsDirectory && !lock.Delegation.Breaking {
 			lock.Delegation.Breaking = true
 			lock.Delegation.BreakStarted = time.Now()
 			// Recalled is set by the break callback after CB_RECALL is actually sent.
