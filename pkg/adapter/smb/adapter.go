@@ -170,22 +170,22 @@ func (s *Adapter) SetRuntime(rtAny any) {
 		// Register SMBBreakHandler as BreakCallbacks on each share's LockManager.
 		// The notifier is nil until the transport layer is wired (see TODO above).
 		breakHandler := smblease.NewSMBBreakHandler(leaseMgr, nil)
-		registeredBreakLMs := make(map[lock.LockManager]struct{})
+		registeredLockManagers := make(map[lock.LockManager]struct{})
 		var breakRegMu sync.Mutex
 
 		// registerBreakCallbacks registers break callbacks for any shares whose
-		// LockManagers have not been seen yet. Deduplicates across shares that
-		// reference the same LockManager instance.
+		// LockManagers have not been seen yet. Multiple shares may reference the
+		// same LockManager instance, so we deduplicate.
 		registerBreakCallbacks := func(shares []string) {
 			breakRegMu.Lock()
 			defer breakRegMu.Unlock()
 			for _, shareName := range shares {
 				if lockMgr := metaSvc.GetLockManagerForShare(shareName); lockMgr != nil {
-					if _, already := registeredBreakLMs[lockMgr]; already {
+					if _, already := registeredLockManagers[lockMgr]; already {
 						continue
 					}
 					lockMgr.RegisterBreakCallbacks(breakHandler)
-					registeredBreakLMs[lockMgr] = struct{}{}
+					registeredLockManagers[lockMgr] = struct{}{}
 				}
 			}
 		}
