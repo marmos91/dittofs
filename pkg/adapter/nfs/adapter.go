@@ -395,22 +395,14 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 	// When the shared LockManager recalls a delegation (e.g., due to an SMB
 	// write conflicting with an NFS delegation), the handler translates the
 	// recall into a CB_RECALL sent via the NFS backchannel.
-	// Deduplicate: multiple shares may reference the same LockManager instance.
 	breakHandler := v4state.NewNFSBreakHandler(v4StateManager)
 	registeredLockManagers := make(map[lock.LockManager]struct{})
-	for _, shareName := range rt.ListShares() {
-		if lockMgr := metadataService.GetLockManagerForShare(shareName); lockMgr != nil {
-			if _, already := registeredLockManagers[lockMgr]; already {
-				continue
-			}
-			lockMgr.RegisterBreakCallbacks(breakHandler)
-			registeredLockManagers[lockMgr] = struct{}{}
-		}
-	}
-
-	// Register break callbacks for shares added dynamically after startup.
 	var breakRegMu sync.Mutex
-	rt.OnShareChange(func(shares []string) {
+
+	// registerBreakCallbacks registers break callbacks for any shares whose
+	// LockManagers have not been seen yet. Multiple shares may reference the
+	// same LockManager instance, so we deduplicate.
+	registerBreakCallbacks := func(shares []string) {
 		breakRegMu.Lock()
 		defer breakRegMu.Unlock()
 		for _, shareName := range shares {
@@ -422,7 +414,13 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 				registeredLockManagers[lockMgr] = struct{}{}
 			}
 		}
-	})
+	}
+
+	// Register for existing shares at startup.
+	registerBreakCallbacks(rt.ListShares())
+
+	// Register for shares added dynamically after startup.
+	rt.OnShareChange(registerBreakCallbacks)
 
 	// Apply live NFS adapter settings from SettingsWatcher.
 	// The SettingsWatcher polls DB every 10s and provides atomic pointer swap

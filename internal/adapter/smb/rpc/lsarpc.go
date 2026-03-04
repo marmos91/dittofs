@@ -177,40 +177,51 @@ type resolvedSID struct {
 	domainSID  *sid.SID
 }
 
+// resolveNameOrFallback attempts to resolve a name via the lookup function.
+// If the resolver is nil or the lookup misses, the fallback is returned.
+func resolveNameOrFallback(fallback string, resolver IdentityResolver, lookup func(IdentityResolver) (string, bool)) string {
+	if resolver == nil {
+		return fallback
+	}
+	if resolved, ok := lookup(resolver); ok {
+		return resolved
+	}
+	return fallback
+}
+
 // resolveSID resolves a single SID to a display name and type.
 func (h *LSARPCHandler) resolveSID(s *sid.SID) resolvedSID {
 	// Check well-known SIDs
 	if name, ok := sid.WellKnownName(s); ok {
-		// Determine SID type and domain from well-known name
 		sidType := SidTypeWellKnownGroup
-		var domainName string
-		var domainSID *sid.SID
 
 		if strings.HasPrefix(name, "NT AUTHORITY\\") {
-			domainName = "NT AUTHORITY"
-			domainSID = sid.ParseSIDMust("S-1-5")
-			localName := strings.TrimPrefix(name, "NT AUTHORITY\\")
-			return resolvedSID{name: localName, sidType: sidType, domainName: domainName, domainSID: domainSID}
-		}
-		if strings.HasPrefix(name, "BUILTIN\\") {
-			domainName = "BUILTIN"
-			domainSID = sid.ParseSIDMust("S-1-5-32")
-			sidType = SidTypeAlias
-			localName := strings.TrimPrefix(name, "BUILTIN\\")
-			return resolvedSID{name: localName, sidType: sidType, domainName: domainName, domainSID: domainSID}
-		}
-		// No domain prefix (e.g., "Everyone")
-		return resolvedSID{name: name, sidType: sidType, domainName: "", domainSID: nil}
-	}
-
-	// Check machine domain SIDs
-	if uid, ok := h.sidMapper.UIDFromSID(s); ok {
-		name := fmt.Sprintf("unix_user:%d", uid)
-		if h.resolver != nil {
-			if realName, found := h.resolver.LookupUsernameByUID(uid); found {
-				name = realName
+			return resolvedSID{
+				name:       strings.TrimPrefix(name, "NT AUTHORITY\\"),
+				sidType:    sidType,
+				domainName: "NT AUTHORITY",
+				domainSID:  sid.ParseSIDMust("S-1-5"),
 			}
 		}
+		if strings.HasPrefix(name, "BUILTIN\\") {
+			return resolvedSID{
+				name:       strings.TrimPrefix(name, "BUILTIN\\"),
+				sidType:    SidTypeAlias,
+				domainName: "BUILTIN",
+				domainSID:  sid.ParseSIDMust("S-1-5-32"),
+			}
+		}
+		// No domain prefix (e.g., "Everyone")
+		return resolvedSID{name: name, sidType: sidType}
+	}
+
+	// Check machine domain SIDs (user)
+	if uid, ok := h.sidMapper.UIDFromSID(s); ok {
+		name := resolveNameOrFallback(
+			fmt.Sprintf("unix_user:%d", uid),
+			h.resolver,
+			func(r IdentityResolver) (string, bool) { return r.LookupUsernameByUID(uid) },
+		)
 		return resolvedSID{
 			name:       name,
 			sidType:    SidTypeUser,
@@ -219,13 +230,13 @@ func (h *LSARPCHandler) resolveSID(s *sid.SID) resolvedSID {
 		}
 	}
 
+	// Check machine domain SIDs (group)
 	if gid, ok := h.sidMapper.GIDFromSID(s); ok {
-		name := fmt.Sprintf("unix_group:%d", gid)
-		if h.resolver != nil {
-			if realName, found := h.resolver.LookupGroupNameByGID(gid); found {
-				name = realName
-			}
-		}
+		name := resolveNameOrFallback(
+			fmt.Sprintf("unix_group:%d", gid),
+			h.resolver,
+			func(r IdentityResolver) (string, bool) { return r.LookupGroupNameByGID(gid) },
+		)
 		return resolvedSID{
 			name:       name,
 			sidType:    SidTypeGroup,

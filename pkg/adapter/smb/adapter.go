@@ -171,16 +171,12 @@ func (s *Adapter) SetRuntime(rtAny any) {
 		// The notifier is nil until the transport layer is wired (see TODO above).
 		breakHandler := smblease.NewSMBBreakHandler(leaseMgr, nil)
 		registeredBreakLMs := make(map[lock.LockManager]struct{})
-		for _, shareName := range rt.ListShares() {
-			if lockMgr := metaSvc.GetLockManagerForShare(shareName); lockMgr != nil {
-				lockMgr.RegisterBreakCallbacks(breakHandler)
-				registeredBreakLMs[lockMgr] = struct{}{}
-			}
-		}
-
-		// Register break callbacks for shares added dynamically after startup.
 		var breakRegMu sync.Mutex
-		rt.OnShareChange(func(shares []string) {
+
+		// registerBreakCallbacks registers break callbacks for any shares whose
+		// LockManagers have not been seen yet. Deduplicates across shares that
+		// reference the same LockManager instance.
+		registerBreakCallbacks := func(shares []string) {
 			breakRegMu.Lock()
 			defer breakRegMu.Unlock()
 			for _, shareName := range shares {
@@ -192,7 +188,13 @@ func (s *Adapter) SetRuntime(rtAny any) {
 					registeredBreakLMs[lockMgr] = struct{}{}
 				}
 			}
-		})
+		}
+
+		// Register for existing shares at startup.
+		registerBreakCallbacks(rt.ListShares())
+
+		// Register for shares added dynamically after startup.
+		rt.OnShareChange(registerBreakCallbacks)
 
 		logger.Debug("SMB adapter: LeaseManager wired with per-share LockManagers")
 	}
@@ -206,18 +208,17 @@ func (s *Adapter) SetRuntime(rtAny any) {
 	// to be available here.
 	if mapper := rt.SIDMapper(); mapper != nil {
 		handlers.SetSIDMapper(mapper)
-		if s.handler != nil && s.handler.PipeManager != nil {
+		if s.handler.PipeManager != nil {
 			s.handler.PipeManager.SetSIDMapper(mapper)
 		}
 		logger.Debug("SMB adapter: machine SID mapper configured",
 			"sid", mapper.MachineSIDString())
 	}
 
-	// Wire identity resolver for LSARPC real name resolution.
-	// This allows SID-to-name lookups to return actual usernames/group names
-	// from the control plane store instead of generic "unix_user:{uid}" names.
-	if cpStore := rt.Store(); cpStore != nil {
-		resolver := &smbrpc.StoreIdentityResolver{
+	// Wire identity resolver for LSARPC real name resolution so SID-to-name
+	// lookups return actual usernames/group names from the control plane store.
+	if cpStore := rt.Store(); cpStore != nil && s.handler.PipeManager != nil {
+		s.handler.PipeManager.SetIdentityResolver(&smbrpc.StoreIdentityResolver{
 			LookupUser: func(uid uint32) (string, bool) {
 				user, err := cpStore.GetUserByUID(context.Background(), uid)
 				if err != nil {
@@ -232,10 +233,7 @@ func (s *Adapter) SetRuntime(rtAny any) {
 				}
 				return group.Name, true
 			},
-		}
-		if s.handler != nil && s.handler.PipeManager != nil {
-			s.handler.PipeManager.SetIdentityResolver(resolver)
-		}
+		})
 		logger.Debug("SMB adapter: identity resolver configured for LSARPC")
 	}
 
