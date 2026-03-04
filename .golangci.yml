@@ -12,3 +12,7 @@ linters:
     - ineffassign
   disable:
     - intrange  # Disable "range over int" modernization suggestions
+
+issues:
+  exclude-dirs:
+    - test/manual
