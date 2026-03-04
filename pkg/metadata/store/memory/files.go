@@ -204,10 +204,18 @@ func (store *MemoryMetadataStore) ListChildren(ctx context.Context, dirHandle me
 			Handle: childHandle,
 		}
 
-		// Try to get attributes
+		// Try to get attributes with correct nlink
 		childKey := handleToKey(childHandle)
 		if fileData, exists := store.files[childKey]; exists {
-			entry.Attr = fileData.Attr
+			attr := *fileData.Attr
+			if nlink, ok := store.linkCounts[childKey]; ok {
+				attr.Nlink = nlink
+			} else if attr.Type == metadata.FileTypeDirectory {
+				attr.Nlink = 2
+			} else {
+				attr.Nlink = 1
+			}
+			entry.Attr = &attr
 		}
 
 		entries = append(entries, entry)
