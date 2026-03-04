@@ -195,17 +195,17 @@ func (h *LSARPCHandler) resolveSID(s *sid.SID) resolvedSID {
 	if name, ok := sid.WellKnownName(s); ok {
 		sidType := SidTypeWellKnownGroup
 
-		if strings.HasPrefix(name, "NT AUTHORITY\\") {
+		if localName, ok := strings.CutPrefix(name, "NT AUTHORITY\\"); ok {
 			return resolvedSID{
-				name:       strings.TrimPrefix(name, "NT AUTHORITY\\"),
+				name:       localName,
 				sidType:    sidType,
 				domainName: "NT AUTHORITY",
 				domainSID:  sid.ParseSIDMust("S-1-5"),
 			}
 		}
-		if strings.HasPrefix(name, "BUILTIN\\") {
+		if localName, ok := strings.CutPrefix(name, "BUILTIN\\"); ok {
 			return resolvedSID{
-				name:       strings.TrimPrefix(name, "BUILTIN\\"),
+				name:       localName,
 				sidType:    SidTypeAlias,
 				domainName: "BUILTIN",
 				domainSID:  sid.ParseSIDMust("S-1-5-32"),
