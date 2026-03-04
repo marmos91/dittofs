@@ -333,16 +333,22 @@ func (h *Handler) ReadDirPlus(
 		}
 
 		// Get attributes for the entry
-		// TODO: Use entry.Attr if populated to avoid this GetFile() call
-		entryFile, err := metaSvc.GetFile(ctx.Context, entryHandle)
-		if err != nil {
-			logger.WarnCtx(ctx.Context, "READDIRPLUS: failed to get attributes", "name", entry.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "entry_handle", fmt.Sprintf("%x", entryHandle), "error", err)
-			// Skip this entry on error - file may have been deleted during iteration
-			continue
+		// Use entry.Attr if already populated by ListChildren to avoid per-entry GetFile() calls
+		var entryAttr *metadata.FileAttr
+		if entry.Attr != nil {
+			entryAttr = entry.Attr
+		} else {
+			entryFile, err := metaSvc.GetFile(ctx.Context, entryHandle)
+			if err != nil {
+				logger.WarnCtx(ctx.Context, "READDIRPLUS: failed to get attributes", "name", entry.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "entry_handle", fmt.Sprintf("%x", entryHandle), "error", err)
+				// Skip this entry on error - file may have been deleted during iteration
+				continue
+			}
+			entryAttr = &entryFile.FileAttr
 		}
 
 		// Convert attributes to NFS format
-		nfsEntryAttr := h.convertFileAttrToNFS(entryHandle, &entryFile.FileAttr)
+		nfsEntryAttr := h.convertFileAttrToNFS(entryHandle, entryAttr)
 
 		// Use cookie from entry (set by MetadataService.ReadDirectory)
 		plusEntry := &DirPlusEntry{
