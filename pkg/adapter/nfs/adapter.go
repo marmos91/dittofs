@@ -408,6 +408,22 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 		}
 	}
 
+	// Register break callbacks for shares added dynamically after startup.
+	var breakRegMu sync.Mutex
+	rt.OnShareChange(func(shares []string) {
+		breakRegMu.Lock()
+		defer breakRegMu.Unlock()
+		for _, shareName := range shares {
+			if lockMgr := metadataService.GetLockManagerForShare(shareName); lockMgr != nil {
+				if _, already := registeredLockManagers[lockMgr]; already {
+					continue
+				}
+				lockMgr.RegisterBreakCallbacks(breakHandler)
+				registeredLockManagers[lockMgr] = struct{}{}
+			}
+		}
+	})
+
 	// Apply live NFS adapter settings from SettingsWatcher.
 	// The SettingsWatcher polls DB every 10s and provides atomic pointer swap
 	// for thread-safe reads. Settings are consumed here at startup and on
