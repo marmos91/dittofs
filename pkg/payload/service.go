@@ -102,7 +102,6 @@ func (s *PayloadService) Flush(ctx context.Context, id metadata.PayloadID) (*Flu
 // ============================================================================
 
 // GetStorageStats returns storage statistics.
-//
 func (s *PayloadService) GetStorageStats(_ context.Context) (*StorageStats, error) {
 	stats := s.cache.Stats()
 	return &StorageStats{
