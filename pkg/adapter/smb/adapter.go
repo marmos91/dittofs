@@ -58,6 +58,10 @@ type Adapter struct {
 
 	// sessionManager provides unified session and credit management
 	sessionManager *session.Manager
+
+	// shareUnsubscribers holds unsubscribe functions returned by rt.OnShareChange.
+	// Called during Stop to prevent stale callbacks from accumulating across restarts.
+	shareUnsubscribers []func()
 }
 
 // New creates a new Adapter with the specified configuration.
@@ -190,11 +194,13 @@ func (s *Adapter) SetRuntime(rtAny any) {
 			}
 		}
 
+		// Register for shares added dynamically after startup. Done before the
+		// initial loop so no share created between the two is missed.
+		unsubBreak := rt.OnShareChange(registerBreakCallbacks)
+		s.shareUnsubscribers = append(s.shareUnsubscribers, unsubBreak)
+
 		// Register for existing shares at startup.
 		registerBreakCallbacks(rt.ListShares())
-
-		// Register for shares added dynamically after startup.
-		rt.OnShareChange(registerBreakCallbacks)
 
 		logger.Debug("SMB adapter: LeaseManager wired with per-share LockManagers")
 	}
@@ -218,16 +224,21 @@ func (s *Adapter) SetRuntime(rtAny any) {
 	// Wire identity resolver for LSARPC real name resolution so SID-to-name
 	// lookups return actual usernames/group names from the control plane store.
 	if cpStore := rt.Store(); cpStore != nil && s.handler.PipeManager != nil {
+		const lsarpcTimeout = 5 * time.Second
 		s.handler.PipeManager.SetIdentityResolver(&smbrpc.StoreIdentityResolver{
 			LookupUser: func(uid uint32) (string, bool) {
-				user, err := cpStore.GetUserByUID(context.Background(), uid)
+				ctx, cancel := context.WithTimeout(context.Background(), lsarpcTimeout)
+				defer cancel()
+				user, err := cpStore.GetUserByUID(ctx, uid)
 				if err != nil {
 					return "", false
 				}
 				return user.Username, true
 			},
 			LookupGroup: func(gid uint32) (string, bool) {
-				group, err := cpStore.GetGroupByGID(context.Background(), gid)
+				ctx, cancel := context.WithTimeout(context.Background(), lsarpcTimeout)
+				defer cancel()
+				group, err := cpStore.GetGroupByGID(ctx, gid)
 				if err != nil {
 					return "", false
 				}
@@ -500,6 +511,21 @@ func (s *Adapter) OnReconnect(ctx context.Context, sessionID uint64, clientID st
 	// 3. Notify client of available leases to reclaim
 	//
 	// For this gap closure, we rely on implicit reclaim in RequestLeaseWithReclaim.
+}
+
+// Stop initiates graceful shutdown of the SMB server.
+//
+// Stop unsubscribes from share change notifications first, then delegates to
+// BaseAdapter.Stop() for the shared shutdown sequence.
+func (s *Adapter) Stop(ctx context.Context) error {
+	// Unsubscribe from share change notifications to prevent stale callbacks
+	// from accumulating across adapter restarts.
+	for _, unsub := range s.shareUnsubscribers {
+		unsub()
+	}
+	s.shareUnsubscribers = nil
+
+	return s.BaseAdapter.Stop(ctx)
 }
 
 // ============================================================================

@@ -279,6 +279,30 @@ func TestGroupOperations(t *testing.T) {
 		}
 	})
 
+	t.Run("get group by GID", func(t *testing.T) {
+		gid := uint32(5000)
+		grp := &models.Group{Name: "gid-group", GID: &gid, Description: "GID lookup test"}
+		_, err := store.CreateGroup(ctx, grp)
+		if err != nil {
+			t.Fatalf("failed to create group with GID: %v", err)
+		}
+
+		found, err := store.GetGroupByGID(ctx, gid)
+		if err != nil {
+			t.Fatalf("failed to get group by GID: %v", err)
+		}
+		if found.Name != "gid-group" {
+			t.Errorf("expected name 'gid-group', got %q", found.Name)
+		}
+	})
+
+	t.Run("get group by GID not found", func(t *testing.T) {
+		_, err := store.GetGroupByGID(ctx, 99999)
+		if !errors.Is(err, models.ErrGroupNotFound) {
+			t.Errorf("expected ErrGroupNotFound, got %v", err)
+		}
+	})
+
 	t.Run("list groups", func(t *testing.T) {
 		groups, err := store.ListGroups(ctx)
 		if err != nil {

@@ -233,8 +233,8 @@ func (r *Runtime) ShareExists(name string) bool {
 	return r.sharesSvc.ShareExists(name)
 }
 
-func (r *Runtime) OnShareChange(callback func(shares []string)) {
-	r.sharesSvc.OnShareChange(callback)
+func (r *Runtime) OnShareChange(callback func(shares []string)) func() {
+	return r.sharesSvc.OnShareChange(callback)
 }
 
 func (r *Runtime) GetShareNameForHandle(ctx context.Context, handle metadata.FileHandle) (string, error) {

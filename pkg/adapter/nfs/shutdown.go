@@ -23,6 +23,13 @@ import (
 // Thread safety:
 // Safe to call concurrently from multiple goroutines.
 func (s *NFSAdapter) Stop(ctx context.Context) error {
+	// Unsubscribe from share change notifications to prevent stale callbacks
+	// from accumulating across adapter restarts.
+	for _, unsub := range s.shareUnsubscribers {
+		unsub()
+	}
+	s.shareUnsubscribers = nil
+
 	// Stop portmapper first (stops accepting new queries before NFS stops)
 	s.stopPortmapper()
 

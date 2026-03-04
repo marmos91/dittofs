@@ -19,7 +19,11 @@ func (s *GORMStore) GetGroupByID(ctx context.Context, id string) (*models.Group,
 }
 
 func (s *GORMStore) GetGroupByGID(ctx context.Context, gid uint32) (*models.Group, error) {
-	return getByField[models.Group](s.db, ctx, "gid", gid, models.ErrGroupNotFound, "Users", "SharePermissions")
+	var group models.Group
+	if err := s.db.WithContext(ctx).Where("g_id = ?", gid).First(&group).Error; err != nil {
+		return nil, convertNotFoundError(err, models.ErrGroupNotFound)
+	}
+	return &group, nil
 }
 
 func (s *GORMStore) ListGroups(ctx context.Context) ([]*models.Group, error) {

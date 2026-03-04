@@ -93,12 +93,14 @@ type PayloadServiceEnsurer interface {
 type Service struct {
 	mu              sync.RWMutex
 	registry        map[string]*Share
-	changeCallbacks []func(shares []string)
+	nextCallbackID  int
+	changeCallbacks map[int]func(shares []string)
 }
 
 func New() *Service {
 	return &Service{
-		registry: make(map[string]*Share),
+		registry:        make(map[string]*Share),
+		changeCallbacks: make(map[int]func(shares []string)),
 	}
 }
 
@@ -285,16 +287,31 @@ func (s *Service) ShareExists(name string) bool {
 	return exists
 }
 
-func (s *Service) OnShareChange(callback func(shares []string)) {
+// OnShareChange registers a callback that is invoked whenever shares are added
+// or removed. It returns an unsubscribe function that removes the callback.
+// Callers should call the returned function when they no longer need
+// notifications (e.g., in their Stop method) to prevent stale callbacks from
+// accumulating across adapter restarts.
+func (s *Service) OnShareChange(callback func(shares []string)) func() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.changeCallbacks = append(s.changeCallbacks, callback)
+	id := s.nextCallbackID
+	s.nextCallbackID++
+	s.changeCallbacks[id] = callback
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		delete(s.changeCallbacks, id)
+	}
 }
 
 // notifyShareChange must NOT be called while holding s.mu.
 func (s *Service) notifyShareChange() {
 	s.mu.RLock()
-	callbacks := s.changeCallbacks
+	callbacks := make([]func(shares []string), 0, len(s.changeCallbacks))
+	for _, cb := range s.changeCallbacks {
+		callbacks = append(callbacks, cb)
+	}
 	shareNames := make([]string, 0, len(s.registry))
 	for name := range s.registry {
 		shareNames = append(shareNames, name)

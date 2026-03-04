@@ -117,6 +117,10 @@ type NFSAdapter struct {
 	// nextConnID is a global atomic counter for assigning unique connection IDs.
 	// Incremented at TCP accept() time and passed to each NFSConnection.
 	nextConnID atomic.Uint64
+
+	// shareUnsubscribers holds unsubscribe functions returned by rt.OnShareChange.
+	// Called during Stop to prevent stale callbacks from accumulating across restarts.
+	shareUnsubscribers []func()
 }
 
 // NFSTimeoutsConfig groups all timeout-related configuration.
@@ -368,11 +372,14 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 	// Expose StateManager to REST API via runtime (for /clients endpoint and /health server info)
 	rt.SetNFSClientProvider(v4StateManager)
 
-	// Register callback to rebuild pseudo-fs when shares change (add/remove)
-	rt.OnShareChange(func(shares []string) {
+	// Register callback to rebuild pseudo-fs when shares change (add/remove).
+	// Registered before the initial share loop so no share created between the
+	// loop and subscription is missed.
+	unsubPseudoFS := rt.OnShareChange(func(shares []string) {
 		s.pseudoFS.Rebuild(shares)
 		logger.Info("NFSv4 pseudo-fs rebuilt", "shares", len(shares))
 	})
+	s.shareUnsubscribers = append(s.shareUnsubscribers, unsubPseudoFS)
 
 	// Create blocking queue for NLM lock operations
 	s.blockingQueue = blocking.NewBlockingQueue(nlm_handlers.DefaultBlockingQueueSize)
@@ -416,11 +423,13 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 		}
 	}
 
+	// Register for shares added dynamically after startup. Done before the
+	// initial loop so no share created between the two is missed.
+	unsubBreak := rt.OnShareChange(registerBreakCallbacks)
+	s.shareUnsubscribers = append(s.shareUnsubscribers, unsubBreak)
+
 	// Register for existing shares at startup.
 	registerBreakCallbacks(rt.ListShares())
-
-	// Register for shares added dynamically after startup.
-	rt.OnShareChange(registerBreakCallbacks)
 
 	// Apply live NFS adapter settings from SettingsWatcher.
 	// The SettingsWatcher polls DB every 10s and provides atomic pointer swap
