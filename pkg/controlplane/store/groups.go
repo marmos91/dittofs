@@ -18,6 +18,10 @@ func (s *GORMStore) GetGroupByID(ctx context.Context, id string) (*models.Group,
 	return getByField[models.Group](s.db, ctx, "id", id, models.ErrGroupNotFound, "Users", "SharePermissions")
 }
 
+func (s *GORMStore) GetGroupByGID(ctx context.Context, gid uint32) (*models.Group, error) {
+	return getByField[models.Group](s.db, ctx, "gid", gid, models.ErrGroupNotFound, "Users", "SharePermissions")
+}
+
 func (s *GORMStore) ListGroups(ctx context.Context) ([]*models.Group, error) {
 	return listAll[models.Group](s.db, ctx, "Users", "SharePermissions")
 }

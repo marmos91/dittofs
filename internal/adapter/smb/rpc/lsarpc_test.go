@@ -8,9 +8,25 @@ import (
 	"github.com/marmos91/dittofs/pkg/auth/sid"
 )
 
-// newTestLSAHandler creates an LSARPCHandler with a deterministic mapper.
+// mockResolver is a test IdentityResolver that returns preset names.
+type mockResolver struct {
+	users  map[uint32]string
+	groups map[uint32]string
+}
+
+func (m *mockResolver) LookupUsernameByUID(uid uint32) (string, bool) {
+	name, ok := m.users[uid]
+	return name, ok
+}
+
+func (m *mockResolver) LookupGroupNameByGID(gid uint32) (string, bool) {
+	name, ok := m.groups[gid]
+	return name, ok
+}
+
+// newTestLSAHandler creates an LSARPCHandler with a deterministic mapper and no resolver.
 func newTestLSAHandler() *LSARPCHandler {
-	return NewLSARPCHandler(sid.NewSIDMapper(0, 0, 0))
+	return NewLSARPCHandler(sid.NewSIDMapper(0, 0, 0), nil)
 }
 
 // buildTestBindRequest creates a bind request for the LSA interface.
@@ -248,7 +264,7 @@ func TestLSARPC_LookupSids2_WellKnown(t *testing.T) {
 
 func TestLSARPC_LookupSids2_DomainUser(t *testing.T) {
 	mapper := sid.NewSIDMapper(0, 0, 0)
-	h := NewLSARPCHandler(mapper)
+	h := NewLSARPCHandler(mapper, nil)
 
 	// Look up domain user SID for UID 1000
 	userSID := mapper.UserSID(1000)
@@ -433,9 +449,9 @@ func TestResolveSID_WellKnown(t *testing.T) {
 	}
 }
 
-func TestResolveSID_DomainUser(t *testing.T) {
+func TestResolveSID_DomainUser_NoResolver(t *testing.T) {
 	mapper := sid.NewSIDMapper(0, 0, 0)
-	h := NewLSARPCHandler(mapper)
+	h := NewLSARPCHandler(mapper, nil)
 
 	userSID := mapper.UserSID(42)
 	r := h.resolveSID(userSID)
@@ -446,11 +462,35 @@ func TestResolveSID_DomainUser(t *testing.T) {
 	if r.sidType != SidTypeUser {
 		t.Errorf("resolveSID(user 42).sidType = %d, want %d (User)", r.sidType, SidTypeUser)
 	}
+	if r.domainName != "DITTOFS" {
+		t.Errorf("resolveSID(user 42).domainName = %q, want DITTOFS", r.domainName)
+	}
 }
 
-func TestResolveSID_DomainGroup(t *testing.T) {
+func TestResolveSID_DomainUser_WithResolver(t *testing.T) {
 	mapper := sid.NewSIDMapper(0, 0, 0)
-	h := NewLSARPCHandler(mapper)
+	resolver := &mockResolver{
+		users: map[uint32]string{42: "alice"},
+	}
+	h := NewLSARPCHandler(mapper, resolver)
+
+	userSID := mapper.UserSID(42)
+	r := h.resolveSID(userSID)
+
+	if r.name != "alice" {
+		t.Errorf("resolveSID(user 42).name = %q, want alice", r.name)
+	}
+	if r.sidType != SidTypeUser {
+		t.Errorf("resolveSID(user 42).sidType = %d, want %d (User)", r.sidType, SidTypeUser)
+	}
+	if r.domainName != "DITTOFS" {
+		t.Errorf("resolveSID(user 42).domainName = %q, want DITTOFS", r.domainName)
+	}
+}
+
+func TestResolveSID_DomainGroup_NoResolver(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	h := NewLSARPCHandler(mapper, nil)
 
 	groupSID := mapper.GroupSID(100)
 	r := h.resolveSID(groupSID)
@@ -460,6 +500,46 @@ func TestResolveSID_DomainGroup(t *testing.T) {
 	}
 	if r.sidType != SidTypeGroup {
 		t.Errorf("resolveSID(group 100).sidType = %d, want %d (Group)", r.sidType, SidTypeGroup)
+	}
+	if r.domainName != "DITTOFS" {
+		t.Errorf("resolveSID(group 100).domainName = %q, want DITTOFS", r.domainName)
+	}
+}
+
+func TestResolveSID_DomainGroup_WithResolver(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	resolver := &mockResolver{
+		groups: map[uint32]string{100: "editors"},
+	}
+	h := NewLSARPCHandler(mapper, resolver)
+
+	groupSID := mapper.GroupSID(100)
+	r := h.resolveSID(groupSID)
+
+	if r.name != "editors" {
+		t.Errorf("resolveSID(group 100).name = %q, want editors", r.name)
+	}
+	if r.sidType != SidTypeGroup {
+		t.Errorf("resolveSID(group 100).sidType = %d, want %d (Group)", r.sidType, SidTypeGroup)
+	}
+	if r.domainName != "DITTOFS" {
+		t.Errorf("resolveSID(group 100).domainName = %q, want DITTOFS", r.domainName)
+	}
+}
+
+func TestResolveSID_DomainUser_ResolverMiss(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	// Resolver has no entry for UID 42 — should fallback to generic name
+	resolver := &mockResolver{
+		users: map[uint32]string{999: "bob"},
+	}
+	h := NewLSARPCHandler(mapper, resolver)
+
+	userSID := mapper.UserSID(42)
+	r := h.resolveSID(userSID)
+
+	if r.name != "unix_user:42" {
+		t.Errorf("resolveSID(user 42).name = %q, want unix_user:42", r.name)
 	}
 }
 
@@ -475,5 +555,81 @@ func TestResolveSID_Unknown(t *testing.T) {
 	// Name should be the SID string for unknown SIDs
 	if r.name != "S-1-99-42" {
 		t.Errorf("resolveSID(unknown).name = %q, want S-1-99-42", r.name)
+	}
+}
+
+func TestPipeManager_IdentityResolver(t *testing.T) {
+	pm := NewPipeManager()
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	pm.SetSIDMapper(mapper)
+
+	resolver := &mockResolver{
+		users:  map[uint32]string{1000: "alice"},
+		groups: map[uint32]string{1000: "users"},
+	}
+	pm.SetIdentityResolver(resolver)
+
+	fileID := [16]byte{10, 11, 12}
+	pipe := pm.CreatePipe(fileID, "lsarpc")
+	if pipe == nil {
+		t.Fatal("CreatePipe returned nil")
+	}
+
+	lsaHandler, ok := pipe.Handler.(*LSARPCHandler)
+	if !ok {
+		t.Fatalf("pipe.Handler type = %T, want *LSARPCHandler", pipe.Handler)
+	}
+
+	// Verify resolver is wired through
+	if lsaHandler.resolver == nil {
+		t.Fatal("LSARPCHandler.resolver is nil, expected resolver to be set")
+	}
+
+	// Verify resolver works end-to-end
+	userSID := mapper.UserSID(1000)
+	r := lsaHandler.resolveSID(userSID)
+	if r.name != "alice" {
+		t.Errorf("resolveSID(user 1000).name = %q, want alice", r.name)
+	}
+}
+
+func TestStoreIdentityResolver(t *testing.T) {
+	r := &StoreIdentityResolver{
+		LookupUser: func(uid uint32) (string, bool) {
+			if uid == 1000 {
+				return "alice", true
+			}
+			return "", false
+		},
+		LookupGroup: func(gid uint32) (string, bool) {
+			if gid == 1000 {
+				return "users", true
+			}
+			return "", false
+		},
+	}
+
+	if name, ok := r.LookupUsernameByUID(1000); !ok || name != "alice" {
+		t.Errorf("LookupUsernameByUID(1000) = (%q, %v), want (alice, true)", name, ok)
+	}
+	if _, ok := r.LookupUsernameByUID(9999); ok {
+		t.Error("LookupUsernameByUID(9999) should return false")
+	}
+	if name, ok := r.LookupGroupNameByGID(1000); !ok || name != "users" {
+		t.Errorf("LookupGroupNameByGID(1000) = (%q, %v), want (users, true)", name, ok)
+	}
+	if _, ok := r.LookupGroupNameByGID(9999); ok {
+		t.Error("LookupGroupNameByGID(9999) should return false")
+	}
+}
+
+func TestStoreIdentityResolver_NilFuncs(t *testing.T) {
+	r := &StoreIdentityResolver{}
+
+	if _, ok := r.LookupUsernameByUID(1000); ok {
+		t.Error("LookupUsernameByUID should return false when LookupUser is nil")
+	}
+	if _, ok := r.LookupGroupNameByGID(1000); ok {
+		t.Error("LookupGroupNameByGID should return false when LookupGroup is nil")
 	}
 }

@@ -91,6 +91,11 @@ type GroupStore interface {
 	// Returns models.ErrGroupNotFound if no group has this ID.
 	GetGroupByID(ctx context.Context, id string) (*models.Group, error)
 
+	// GetGroupByGID returns a group by its Unix GID.
+	// Used for LSARPC SID-to-name resolution.
+	// Returns models.ErrGroupNotFound if no group has this GID.
+	GetGroupByGID(ctx context.Context, gid uint32) (*models.Group, error)
+
 	// ListGroups returns all groups.
 	ListGroups(ctx context.Context) ([]*models.Group, error)
 

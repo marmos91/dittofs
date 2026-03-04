@@ -58,17 +58,31 @@ const (
 )
 
 // =============================================================================
+// Identity Resolution
+// =============================================================================
+
+// IdentityResolver resolves Unix UIDs/GIDs to human-readable names
+// from the control plane store. When nil, the handler falls back to
+// generic "unix_user:{uid}" / "unix_group:{gid}" names.
+type IdentityResolver interface {
+	LookupUsernameByUID(uid uint32) (string, bool)
+	LookupGroupNameByGID(gid uint32) (string, bool)
+}
+
+// =============================================================================
 // LSA Handler
 // =============================================================================
 
 // LSARPCHandler handles LSA RPC calls for SID-to-name resolution.
 type LSARPCHandler struct {
 	sidMapper *sid.SIDMapper
+	resolver  IdentityResolver
 }
 
-// NewLSARPCHandler creates a new LSA RPC handler with the given SID mapper.
-func NewLSARPCHandler(sidMapper *sid.SIDMapper) *LSARPCHandler {
-	return &LSARPCHandler{sidMapper: sidMapper}
+// NewLSARPCHandler creates a new LSA RPC handler with the given SID mapper
+// and optional identity resolver for real name resolution.
+func NewLSARPCHandler(sidMapper *sid.SIDMapper, resolver IdentityResolver) *LSARPCHandler {
+	return &LSARPCHandler{sidMapper: sidMapper, resolver: resolver}
 }
 
 // HandleBind processes a BIND request and returns a BIND_ACK for the LSA interface.
@@ -192,20 +206,30 @@ func (h *LSARPCHandler) resolveSID(s *sid.SID) resolvedSID {
 	// Check machine domain SIDs
 	if uid, ok := h.sidMapper.UIDFromSID(s); ok {
 		name := fmt.Sprintf("unix_user:%d", uid)
+		if h.resolver != nil {
+			if realName, found := h.resolver.LookupUsernameByUID(uid); found {
+				name = realName
+			}
+		}
 		return resolvedSID{
 			name:       name,
 			sidType:    SidTypeUser,
-			domainName: "UNIX",
+			domainName: "DITTOFS",
 			domainSID:  h.machineDomainSID(),
 		}
 	}
 
 	if gid, ok := h.sidMapper.GIDFromSID(s); ok {
 		name := fmt.Sprintf("unix_group:%d", gid)
+		if h.resolver != nil {
+			if realName, found := h.resolver.LookupGroupNameByGID(gid); found {
+				name = realName
+			}
+		}
 		return resolvedSID{
 			name:       name,
 			sidType:    SidTypeGroup,
-			domainName: "UNIX",
+			domainName: "DITTOFS",
 			domainSID:  h.machineDomainSID(),
 		}
 	}

@@ -157,10 +157,11 @@ func (p *PipeState) Transact(inputData []byte, maxOutput int) ([]byte, error) {
 
 // PipeManager manages named pipe instances
 type PipeManager struct {
-	mu        sync.RWMutex
-	pipes     map[[16]byte]*PipeState // Keyed by SMB FileID
-	shares    []ShareInfo1            // Available shares for enumeration
-	sidMapper *sid.SIDMapper          // For lsarpc SID resolution
+	mu               sync.RWMutex
+	pipes            map[[16]byte]*PipeState // Keyed by SMB FileID
+	shares           []ShareInfo1            // Available shares for enumeration
+	sidMapper        *sid.SIDMapper          // For lsarpc SID resolution
+	identityResolver IdentityResolver        // For lsarpc real name resolution
 }
 
 // NewPipeManager creates a new pipe manager
@@ -185,6 +186,13 @@ func (pm *PipeManager) SetSIDMapper(mapper *sid.SIDMapper) {
 	pm.sidMapper = mapper
 }
 
+// SetIdentityResolver sets the resolver for real username/group name lookup.
+func (pm *PipeManager) SetIdentityResolver(resolver IdentityResolver) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.identityResolver = resolver
+}
+
 // CreatePipe creates a new named pipe instance.
 // The handler type is determined by the pipe name: "lsarpc" creates an
 // LSARPCHandler, all others create an SRVSVCHandler.
@@ -200,7 +208,7 @@ func (pm *PipeManager) CreatePipe(fileID [16]byte, pipeName string) *PipeState {
 		if mapper == nil {
 			mapper = sid.NewSIDMapper(0, 0, 0) // fallback
 		}
-		handler = NewLSARPCHandler(mapper)
+		handler = NewLSARPCHandler(mapper, pm.identityResolver)
 	} else {
 		// Create SRVSVC handler for share enumeration
 		sharesCopy := make([]ShareInfo1, len(pm.shares))
