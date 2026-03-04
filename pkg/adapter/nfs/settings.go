@@ -49,6 +49,15 @@ func (s *NFSAdapter) applyNFSSettings(rt *runtime.Runtime) {
 		)
 	}
 
+	// NFSv4.1 session limits
+	if settings.V4MaxSessionSlots > 0 {
+		s.v4Handler.StateManager.SetMaxSessionSlots(settings.V4MaxSessionSlots)
+	}
+	if settings.V4MaxSessionsPerClient > 0 {
+		s.v4Handler.StateManager.SetMaxSessionsPerClient(settings.V4MaxSessionsPerClient)
+	}
+	s.v4Handler.StateManager.SetMaxConnectionsPerSession(settings.V4MaxConnectionsPerSession)
+
 	// Operation blocklist -> v4 Handler
 	blockedOps := settings.GetBlockedOperations()
 	s.v4Handler.SetBlockedOps(blockedOps)

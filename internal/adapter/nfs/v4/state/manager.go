@@ -137,6 +137,10 @@ type StateManager struct {
 	// maxSessionsPerClient is the per-client session limit (default 16).
 	maxSessionsPerClient int
 
+	// foreMaxSlots is the server-imposed maximum fore channel slots per session.
+	// Defaults to 64; updated via SetMaxSessionSlots from adapter settings.
+	foreMaxSlots uint32
+
 	// serverIdentity is the immutable server identity returned in EXCHANGE_ID responses.
 	serverIdentity *ServerIdentity
 
@@ -215,6 +219,7 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		sessionsByID:         make(map[types.SessionId4]*Session),
 		sessionsByClientID:   make(map[uint64][]*Session),
 		maxSessionsPerClient: 16,
+		foreMaxSlots:         64,
 		serverIdentity:       newServerIdentity(epoch),
 		// Connection binding state (Phase 21)
 		connByID:           make(map[uint64]*BoundConnection),
@@ -2152,7 +2157,9 @@ func (sm *StateManager) CreateSession(
 	}
 
 	// Negotiate channel attributes
-	negotiatedFore := negotiateChannelAttrs(foreAttrs, DefaultForeLimits())
+	foreLimits := DefaultForeLimits()
+	foreLimits.MaxSlots = sm.foreMaxSlots
+	negotiatedFore := negotiateChannelAttrs(foreAttrs, foreLimits)
 	negotiatedBack := negotiateChannelAttrs(backAttrs, DefaultBackLimits())
 
 	// Compute response flags: clear PERSIST, set CONN_BACK_CHAN if requested
@@ -2625,6 +2632,26 @@ func (sm *StateManager) SetMaxConnectionsPerSession(max int) {
 	defer sm.connMu.Unlock()
 	if max >= 0 {
 		sm.maxConnsPerSession = max
+	}
+}
+
+// SetMaxSessionSlots sets the maximum fore channel slots per session.
+// Only positive values are accepted; zero or negative values are ignored.
+func (sm *StateManager) SetMaxSessionSlots(n int) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if n > 0 {
+		sm.foreMaxSlots = uint32(n)
+	}
+}
+
+// SetMaxSessionsPerClient sets the maximum number of sessions per client.
+// Only positive values are accepted; zero or negative values are ignored.
+func (sm *StateManager) SetMaxSessionsPerClient(n int) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if n > 0 {
+		sm.maxSessionsPerClient = n
 	}
 }
 
