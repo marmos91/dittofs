@@ -2637,12 +2637,18 @@ func (sm *StateManager) SetMaxConnectionsPerSession(max int) {
 
 // SetMaxSessionSlots sets the maximum fore channel slots per session.
 // Only positive values are accepted; zero or negative values are ignored.
+// Values exceeding DefaultMaxSlots are clamped to prevent advertising more
+// slots than NewSlotTable allocates (which would cause NFS4ERR_BADSLOT).
 func (sm *StateManager) SetMaxSessionSlots(n int) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	if n > 0 {
-		sm.foreMaxSlots = uint32(n)
+	if n <= 0 {
+		return
 	}
+	if n > int(DefaultMaxSlots) {
+		n = int(DefaultMaxSlots)
+	}
+	sm.foreMaxSlots = uint32(n)
 }
 
 // SetMaxSessionsPerClient sets the maximum number of sessions per client.

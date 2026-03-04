@@ -1178,6 +1178,35 @@ func TestCreateSession_CustomMaxSlots(t *testing.T) {
 	}
 }
 
+func TestCreateSession_MaxSlotsClamped(t *testing.T) {
+	sm := NewStateManager(DefaultLeaseDuration)
+	// Setting above DefaultMaxSlots (64) should be clamped
+	sm.SetMaxSessionSlots(200)
+
+	clientID, seqID := registerV41Client(t, sm)
+
+	foreAttrs := types.ChannelAttrs{
+		MaxRequestSize:        1048576,
+		MaxResponseSize:       1048576,
+		MaxResponseSizeCached: 65536,
+		MaxRequests:           200,
+	}
+
+	result, _, err := sm.CreateSession(
+		clientID, seqID, 0,
+		foreAttrs, defaultBackAttrs(), 0, nil,
+	)
+	if err != nil {
+		t.Fatalf("CreateSession error: %v", err)
+	}
+
+	// Should be clamped to DefaultMaxSlots (64), not 200
+	if result.ForeChannelAttrs.MaxRequests != DefaultMaxSlots {
+		t.Errorf("ForeChannelAttrs.MaxRequests = %d, want %d (DefaultMaxSlots)",
+			result.ForeChannelAttrs.MaxRequests, DefaultMaxSlots)
+	}
+}
+
 func TestCreateSession_CustomMaxSessionsPerClient(t *testing.T) {
 	sm := NewStateManager(DefaultLeaseDuration)
 	sm.SetMaxSessionsPerClient(2)
