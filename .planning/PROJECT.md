@@ -2,36 +2,25 @@
 
 ## What This Is
 
-A comprehensive NFS protocol upgrade for DittoFS that adds NFSv4.0/4.1/4.2 support with Kerberos authentication, unified cross-protocol locking (NFS + SMB), and advanced features like server-side copy, sparse files, and delegations. v1.0 (NLM + unified locking), v2.0 (NFSv4.0 + Kerberos), v3.0 (NFSv4.1 sessions), v3.5 (adapter/core refactoring), and v3.6 (Windows compatibility) are shipped. Next: SMB3 protocol upgrade (v3.8), NFSv4.2 features (v4.0), then benchmarking and performance iteration (v4.1).
+A comprehensive multi-protocol virtual filesystem with NFSv3/NFSv4.0/NFSv4.1 and SMB3.1.1 support, Kerberos authentication, unified cross-protocol locking, and advanced features like delegations, leases, durable handles, and encryption. v1.0 (NLM + unified locking), v2.0 (NFSv4.0 + Kerberos), v3.0 (NFSv4.1 sessions), v3.5 (adapter/core refactoring), v3.6 (Windows compatibility), and v3.8 (SMB3 protocol upgrade) are shipped. Next: NFSv4.2 features (v4.0), then benchmarking and performance iteration (v4.1).
 
-Target: Cloud-native enterprise NAS with feature parity exceeding JuiceFS and Hammerspace, particularly in security (Kerberos), session reliability (EOS), cross-protocol consistency, and Windows SMB compatibility.
+Target: Cloud-native enterprise NAS with feature parity exceeding JuiceFS and Hammerspace, particularly in security (Kerberos + AES encryption), session reliability (EOS), cross-protocol consistency, and Windows SMB3.1.1 compatibility.
 
-## Current Milestone: v3.8 SMB3 Protocol Upgrade
+## Current Milestone: v4.0 NFSv4.2 Extensions
 
-**Goal:** Upgrade SMB implementation from SMB2.0.2/2.1 to full SMB3.0/3.0.2/3.1.1 support with enterprise-grade security, leases, Kerberos authentication, durable handles, and cross-protocol integration.
+**Goal:** Complete the NFS protocol suite with NFSv4.2 advanced features: server-side copy, clone/reflinks, sparse files, extended attributes, and I/O hints.
 
 **Target outcomes:**
-- SMB3 dialect negotiation (3.0, 3.0.2, 3.1.1) with preauth integrity
-- AES encryption (128/256-bit CCM/GCM) and signing (CMAC/GMAC)
-- SMB3 leases (Read/Write/Handle + directory) integrated with Unified Lock Manager
-- SPNEGO/Kerberos authentication via shared Kerberos layer + NTLM fallback
-- Durable handles v1/v2 for connection resilience
-- Cross-protocol integration (immediate visibility, bidirectional locking, ACL consistency)
-
-**Source:** feat/smb3 branch planning
+- Server-side COPY with async OFFLOAD_STATUS polling
+- CLONE/reflinks via content-addressed storage
+- Sparse files: SEEK (data/hole), ALLOCATE, DEALLOCATE
+- Extended attributes in metadata layer, exposed via NFS and SMB
+- Application I/O hints (IO_ADVISE)
+- pjdfstest POSIX compliance
 
 ## Upcoming Milestone: v4.1 Benchmarking & Performance
 
 **Goal:** Comprehensive benchmarking suite comparing DittoFS against competitors (JuiceFS, NFS-Ganesha, RClone, kernel NFS, Samba) to prove performance advantage of pure-Go, FUSE-less architecture, followed by iterative performance optimization.
-
-**Target outcomes:**
-- Docker Compose infrastructure with profiles for each system under test (#194) - Phase 33 COMPLETE
-- fio workloads (sequential, random, mixed) and metadata benchmark scripts (#195)
-- Orchestrator scripts with platform variants (Linux, macOS, Windows SMB) (#196)
-- Python analysis pipeline with charts and markdown report generation (#197)
-- Competitor configuration and setup scripts for fair comparison (#198)
-- DittoFS profiling integration (Prometheus, Pyroscope, pprof) for bottleneck identification (#199)
-- `dfs bench` CLI command for user-facing performance evaluation (#188)
 
 **Tracking:** [GitHub #193](https://github.com/marmos91/dittofs/issues/193)
 
@@ -100,24 +89,21 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 - ✓ Windows 11 manual validation (Explorer, cmd, PowerShell, icacls) — v3.6
 - ✓ Cross-protocol oplock break coordination (NFS ops trigger SMB breaks) — v3.6
 - ✓ MxAc/QFid create contexts and FileInfoClass handler completeness — v3.6
+- ✓ SMB 3.0/3.0.2/3.1.1 dialect negotiation with negotiate contexts — v3.8
+- ✓ Preauth integrity (SHA-512 hash chain) and secure dialect negotiation — v3.8
+- ✓ AES encryption (128/256-bit CCM/GCM) configurable per share — v3.8
+- ✓ AES signing (CMAC for 3.0+, GMAC for 3.1.1) — v3.8
+- ✓ SMB3 leases (Read/Write/Handle + directory) with Unified Lock Manager integration — v3.8
+- ✓ SMB lease <-> NFS delegation cross-protocol coordination — v3.8
+- ✓ SPNEGO/Kerberos via shared layer, NTLM fallback, guest access — v3.8
+- ✓ Durable handles v1/v2 for connection resilience — v3.8
+- ✓ Cross-protocol integration (immediate visibility, bidirectional locking, ACL consistency) — v3.8
+- ✓ E2E tests for encryption, signing, leases, Kerberos, and cross-protocol scenarios — v3.8
+- ✓ Client compatibility: Windows 11 verified, multi-OS CI — v3.8
+- ✓ Microsoft WindowsProtocolTestSuites FileServer conformance (BVT + SMB3 infrastructure) — v3.8
+- ✓ Go integration tests (hirochachacha/go-smb2) for native client-server interop — v3.8
 
 ### Active
-
-#### v3.8 — SMB3 Protocol Upgrade
-- [ ] SMB 3.0/3.0.2/3.1.1 dialect negotiation with negotiate contexts
-- [ ] Preauth integrity (SHA-512 hash chain) and secure dialect negotiation
-- [ ] AES encryption (128/256-bit CCM/GCM) configurable per share
-- [ ] AES signing (CMAC for 3.0+, GMAC for 3.1.1)
-- [ ] SMB3 leases (Read/Write/Handle + directory) with Unified Lock Manager integration
-- [ ] SMB lease <-> NFS delegation cross-protocol coordination
-- [ ] SPNEGO/Kerberos via shared layer, NTLM fallback, guest access
-- [ ] Durable handles v1/v2 for connection resilience
-- [ ] Cross-protocol integration (immediate visibility, bidirectional locking, ACL consistency)
-- [ ] E2E tests for encryption, signing, leases, Kerberos, and cross-protocol scenarios
-- [ ] Client compatibility: Windows 10/11, macOS, Linux
-- [ ] Microsoft WindowsProtocolTestSuites FileServer conformance (BVT + SMB3 feature tests)
-- [ ] Samba smbtorture SMB3 protocol torture tests (durable_v2, lease, replay, session)
-- [ ] Go integration tests (hirochachacha/go-smb2) for native client-server interop
 
 #### v4.0 — NFSv4.2
 - [ ] Server-side COPY (async with OFFLOAD_STATUS polling)
@@ -155,17 +141,15 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 
 ## Context
 
-**Current State (post-v3.6):**
-- ~262,600 LOC Go
-- NFSv3 + NFSv4.0 + NFSv4.1 + NLM + SMB fully implemented with Windows compatibility
-- Clean adapter layer: internal/adapter/nfs/ and internal/adapter/smb/ with shared BaseAdapter
-- Decomposed core: 9 store sub-interfaces, 6 runtime sub-services, Offloader split into 8 files
-- NT Security Descriptors: POSIX-to-DACL synthesis, Samba-style SID mapping, well-known SIDs
-- Cross-protocol oplock breaks: NFS operations trigger SMB oplock breaks for consistency
-- SMB conformance: WPTS (150/335 BVT), smbtorture integration, Docker-based CI
-- Windows 11 validated: Explorer, cmd, PowerShell, icacls all working
-- NFSv4.1 sessions with exactly-once semantics, backchannel multiplexing, directory delegations
-- RPCSEC_GSS Kerberos (krb5/krb5i/krb5p) with keytab hot-reload
+**Current State (post-v3.8):**
+- ~307,000 LOC Go (+44,956 lines in v3.8)
+- NFSv3 + NFSv4.0 + NFSv4.1 + NLM + SMB3.1.1 fully implemented
+- SMB3 security: AES encryption (128/256 GCM/CCM), AES signing (CMAC/GMAC), preauth integrity
+- SMB3 features: Lease V2 with directory leasing, durable handles V1/V2, VALIDATE_NEGOTIATE_INFO
+- SPNEGO/Kerberos authentication with automatic NTLM fallback and guest session support
+- Cross-protocol coordination: SMB3 leases <-> NFS delegations bidirectional breaks
+- Conformance testing: smbtorture baselines, WPTS BVT, go-smb2 E2E, multi-OS CI
+- Windows 11 ARM64 verified: 10/10 manual verification tests passed over SMB 3.1.1
 - K8s operator with portmapper support
 
 **Known tech debt:**
@@ -174,6 +158,7 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 - SACL is empty stub (requires audit logging infrastructure)
 - Short name (8.3) generation deferred
 - CHANGE_NOTIFY cleanup on disconnect deferred
+- smbtorture full pass rate (infrastructure built, iterative improvement ongoing)
 
 **Target Environment:**
 - Kubernetes-first (containerized)
@@ -244,10 +229,16 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 | CLONE via content-addressed storage | Efficient reflinks using existing dedup infrastructure | — Pending (v4.0) |
 | Benchmark after NFSv4.2 | Complete protocol implementation before performance iteration | — Pending (v4.1) |
 | Docker Compose per-system profiles | Fair comparison: one system at a time, symmetric overhead | — Pending (v4.1) |
-| SMB3 before NFSv4.2 | Complete SMB protocol upgrade, validate cross-protocol before adding NFS features | — Pending (v3.8) |
-| Shared Kerberos layer for SMB3 | Reuse existing RPCSEC_GSS infrastructure from NFSv4 | — Pending (v3.8) |
+| SMB3 before NFSv4.2 | Complete SMB protocol upgrade, validate cross-protocol before adding NFS features | ✓ Good — v3.8 |
+| Shared Kerberos layer for SMB3 | Reuse existing RPCSEC_GSS infrastructure from NFSv4 | ✓ Good — Phase 36 |
+| Buffer-based smbenc codec | Error accumulation, not streaming, for SMB3 wire encoding | ✓ Good — Phase 33 |
+| Dispatch hooks for cross-cutting concerns | Before/after hooks per command for preauth hash, signing, encryption | ✓ Good — Phase 33 |
+| SP800-108 KDF with dialect-aware context | Preauth hash for 3.1.1, constant strings for 3.0/3.0.2 | ✓ Good — Phase 34 |
+| Vendored CCM from pion/dtls | Avoid 50+ transitive dependencies for AES-CCM | ✓ Good — Phase 35 |
+| Business logic in metadata service | Leases, durable handles, state in shared layer, not SMB internal | ✓ Good — Phase 37-38 |
+| Recently-broken cache for anti-storm | 5s TTL prevents lease grant-break storms | ✓ Good — Phase 37 |
 | Auto-register with system rpcbind | NFS clients discover NLM via portmapper | ✓ Good — Embedded portmapper |
 | Per-adapter connection pools | Isolation between NFS and SMB, simpler limits | ✓ Good — Phase 01 |
 
 ---
-*Last updated: 2026-02-28 after v3.6 milestone*
+*Last updated: 2026-03-04 after v3.8 milestone*

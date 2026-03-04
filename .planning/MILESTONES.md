@@ -151,3 +151,35 @@
 
 ---
 
+
+## v3.8 SMB3 Protocol Upgrade (Shipped: 2026-03-04)
+
+**Delivered:** Full SMB3.0/3.0.2/3.1.1 protocol support with enterprise security (AES encryption, signing, Kerberos), leases, durable handles, cross-protocol integration, and conformance testing.
+
+**Phases completed:** 33-40.5 (8 phases, 26 plans)
+
+**Key accomplishments:**
+
+- SMB3 dialect negotiation (3.0/3.0.2/3.1.1) with preauth integrity hash chain and VALIDATE_NEGOTIATE_INFO
+- AES encryption (128/256-bit GCM/CCM) with transform header framing, per-session and per-share enforcement
+- SP800-108 KDF key derivation with AES-CMAC/GMAC signing replacing legacy HMAC-SHA256
+- SPNEGO/Kerberos authentication via shared Kerberos layer with automatic NTLM fallback
+- SMB3 Lease V2 with directory leasing, epoch tracking, and cross-protocol coordination with NFS delegations
+- Durable handles V1/V2 with 14+ reconnect checks, persistent state store, and scavenger lifecycle
+- Cross-protocol integration: bidirectional SMB lease/NFS delegation breaks, unified lock manager coordination
+- Conformance testing: smbtorture baselines, WPTS BVT, go-smb2 E2E, multi-OS CI, Windows 11 verification
+
+**Stats:**
+
+- 8 phases, 26 plans
+- 262 files changed, +44,956 / -5,352 lines
+- Mar 1 - Mar 4, 2026 (4 days)
+
+**Known gaps:**
+
+- TEST-01: smbtorture full pass rate — infrastructure built, iterative improvement ongoing
+
+**Archive:** [v3.8-ROADMAP.md](milestones/v3.8-ROADMAP.md) | [v3.8-REQUIREMENTS.md](milestones/v3.8-REQUIREMENTS.md)
+
+---
+
