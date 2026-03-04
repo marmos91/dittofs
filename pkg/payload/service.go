@@ -106,10 +106,13 @@ func (s *PayloadService) Flush(ctx context.Context, id metadata.PayloadID) (*Flu
 // Note: This is inefficient as it lists all files. Consider caching this
 // information in the metadata store for production use.
 func (s *PayloadService) GetStorageStats(_ context.Context) (*StorageStats, error) {
-	// Count files in cache
-	files := s.cache.ListFiles()
+	files := s.cache.ListFilesWithSizes()
+	var usedSize uint64
+	for _, size := range files {
+		usedSize += size
+	}
 	return &StorageStats{
-		UsedSize:     0, // TODO: Implement proper stats tracking
+		UsedSize:     usedSize,
 		ContentCount: uint64(len(files)),
 	}, nil
 }
