@@ -251,7 +251,7 @@ func buildFakeNTLMAuthenticate(t *testing.T, username, password string, challeng
 	// Generate random session key and encrypt with RC4(sessionBaseKey)
 	sessionBaseKey := computeSessionBaseKey(ntlmv2Hash, ntProofStr)
 	exportedSessionKey := make([]byte, 16)
-	rand.Read(exportedSessionKey)
+	_, _ = rand.Read(exportedSessionKey)
 	encryptedKey := rc4EncryptBytes(sessionBaseKey, exportedSessionKey)
 
 	binary.LittleEndian.PutUint16(msg[52:54], 16)
