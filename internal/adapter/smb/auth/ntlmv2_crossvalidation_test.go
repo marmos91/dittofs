@@ -253,7 +253,7 @@ func buildGoSMB2ClientBlob(serverTargetInfo []byte) []byte {
 	}
 
 	// Random client challenge
-	rand.Read(blob[16:24])
+	_, _ = rand.Read(blob[16:24])
 
 	// Copy modified AvPairs
 	copy(blob[28:], modifiedInfo)
