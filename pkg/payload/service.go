@@ -103,17 +103,11 @@ func (s *PayloadService) Flush(ctx context.Context, id metadata.PayloadID) (*Flu
 
 // GetStorageStats returns storage statistics.
 //
-// Note: This is inefficient as it lists all files. Consider caching this
-// information in the metadata store for production use.
 func (s *PayloadService) GetStorageStats(_ context.Context) (*StorageStats, error) {
-	files := s.cache.ListFilesWithSizes()
-	var usedSize uint64
-	for _, size := range files {
-		usedSize += size
-	}
+	stats := s.cache.Stats()
 	return &StorageStats{
-		UsedSize:     usedSize,
-		ContentCount: uint64(len(files)),
+		UsedSize:     stats.DirtyBytes + stats.UploadedBytes,
+		ContentCount: uint64(stats.FileCount),
 	}, nil
 }
 
