@@ -144,8 +144,13 @@ func (c *Cache) MarkBlockUploaded(ctx context.Context, payloadID string, chunkId
 		blk.state = BlockStateUploaded
 		// Clear upload cancel func since upload is complete
 		blk.uploadCancel = nil
-		// Decrement pending size - block is no longer pending
+		// Decrement pending size and wake writers blocked on backpressure.
+		// Must hold pendingCond.L around the state change + Broadcast to prevent
+		// lost wakeups (writer could enter Wait between our subtract and Broadcast).
+		c.pendingCond.L.Lock()
 		atomicSubtract(&c.pendingSize, BlockSize)
+		c.pendingCond.Broadcast()
+		c.pendingCond.L.Unlock()
 
 		// If buffer was detached (nil), also decrement totalSize since memory is released
 		if blk.data == nil {

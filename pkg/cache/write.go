@@ -2,10 +2,63 @@ package cache
 
 import (
 	"context"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/cache/wal"
 	"github.com/marmos91/dittofs/pkg/payload/block"
 )
+
+// WaitForPendingDrain blocks until pendingSize decreases or the deadline expires.
+// Returns true if a drain occurred (pendingSize decreased), false on timeout or context cancellation.
+func (c *Cache) WaitForPendingDrain(ctx context.Context, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+
+	// Early exit if already expired or cancelled.
+	if ctx.Err() != nil || !time.Now().Before(deadline) {
+		return false
+	}
+
+	done := make(chan struct{})
+
+	// Bridge context cancellation to Cond.Broadcast so Wait unblocks.
+	go func() {
+		select {
+		case <-ctx.Done():
+			c.pendingCond.L.Lock()
+			c.pendingCond.Broadcast()
+			c.pendingCond.L.Unlock()
+		case <-done:
+		}
+	}()
+
+	c.pendingCond.L.Lock()
+
+	// Snapshot pending size so we can detect when it actually decreases.
+	initialPending := c.pendingSize.Load()
+
+	timer := time.AfterFunc(time.Until(deadline), func() {
+		c.pendingCond.L.Lock()
+		c.pendingCond.Broadcast()
+		c.pendingCond.L.Unlock()
+	})
+
+	// Loop to handle spurious wakeups — only exit when pending size decreases
+	// or we hit the deadline / context cancellation.
+	for ctx.Err() == nil && time.Now().Before(deadline) && c.pendingSize.Load() >= initialPending {
+		c.pendingCond.Wait()
+	}
+
+	drained := c.pendingSize.Load() < initialPending
+	c.pendingCond.L.Unlock()
+
+	timer.Stop()
+	close(done)
+
+	return drained && ctx.Err() == nil && time.Now().Before(deadline)
+}
 
 // ============================================================================
 // Write Operations

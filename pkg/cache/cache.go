@@ -73,6 +73,10 @@ type Cache struct {
 	pendingSize    atomic.Uint64
 	maxPendingSize uint64 // 0 = use default (512MB, see DefaultMaxPendingSize)
 
+	// pendingCond is broadcast when pendingSize decreases (block uploaded).
+	// Writers blocked on backpressure wait here instead of polling with timers.
+	pendingCond *sync.Cond
+
 	// WAL persistence (nil = disabled)
 	persister *wal.MmapPersister
 }
@@ -82,10 +86,13 @@ type Cache struct {
 // Parameters:
 //   - maxSize: Maximum total cache size in bytes. Use 0 for unlimited.
 func New(maxSize uint64) *Cache {
-	return &Cache{
-		files:   make(map[string]*fileEntry),
-		maxSize: maxSize,
+	c := &Cache{
+		files:          make(map[string]*fileEntry),
+		maxSize:        maxSize,
+		maxPendingSize: scalePendingSize(maxSize),
+		pendingCond:    sync.NewCond(&sync.Mutex{}),
 	}
+	return c
 }
 
 // NewWithWal creates a new cache with WAL persistence for crash recovery.
@@ -106,9 +113,11 @@ func New(maxSize uint64) *Cache {
 //   - persister: MmapPersister for crash recovery
 func NewWithWal(maxSize uint64, persister *wal.MmapPersister) (*Cache, error) {
 	c := &Cache{
-		files:     make(map[string]*fileEntry),
-		maxSize:   maxSize,
-		persister: persister,
+		files:          make(map[string]*fileEntry),
+		maxSize:        maxSize,
+		maxPendingSize: scalePendingSize(maxSize),
+		pendingCond:    sync.NewCond(&sync.Mutex{}),
+		persister:      persister,
 	}
 
 	// Recover existing data
@@ -280,6 +289,20 @@ func getBlockUnlocked(entry *fileEntry, chunkIdx, blockIdx uint32) *blockBuffer 
 		return nil
 	}
 	return chunk.blocks[blockIdx]
+}
+
+// scalePendingSize computes the maxPendingSize based on cache maxSize.
+// Returns 75% of maxSize, floored at DefaultMaxPendingSize.
+// If maxSize is 0 (unlimited), returns 0 (use DefaultMaxPendingSize at check time).
+func scalePendingSize(maxSize uint64) uint64 {
+	if maxSize == 0 {
+		return 0
+	}
+	scaled := maxSize * 75 / 100
+	if scaled < DefaultMaxPendingSize {
+		return DefaultMaxPendingSize
+	}
+	return scaled
 }
 
 // checkClosed checks if the context is cancelled or the cache is closed.
