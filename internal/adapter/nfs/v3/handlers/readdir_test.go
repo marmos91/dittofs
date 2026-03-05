@@ -374,7 +374,7 @@ func TestReadDir_StaleVerifierContinues(t *testing.T) {
 	fx.CreateFile("stale/file2.txt", []byte("2"))
 	dirHandle := fx.MustGetHandle("stale")
 
-	// First read: get the cookie verifier
+	// First read: get the cookie verifier and a real resume cookie
 	resp1, err := fx.Handler.ReadDir(fx.Context(), &handlers.ReadDirRequest{
 		DirHandle:  dirHandle,
 		Cookie:     0,
@@ -383,15 +383,17 @@ func TestReadDir_StaleVerifierContinues(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.EqualValues(t, types.NFS3OK, resp1.Status)
+	require.NotEmpty(t, resp1.Entries, "expected at least one directory entry to obtain a resume cookie")
+	resumeCookie := resp1.Entries[len(resp1.Entries)-1].Cookie
 	savedVerifier := resp1.CookieVerf
 
 	// Modify the directory (changes mtime, invalidates verifier)
 	fx.CreateFile("stale/file3.txt", []byte("3"))
 
-	// Second read with old verifier and non-zero cookie — should succeed, not BAD_COOKIE
+	// Second read with old verifier and a real non-zero cookie — should succeed, not BAD_COOKIE
 	resp2, err := fx.Handler.ReadDir(fx.Context(), &handlers.ReadDirRequest{
 		DirHandle:  dirHandle,
-		Cookie:     1, // non-zero cookie
+		Cookie:     resumeCookie,
 		CookieVerf: savedVerifier,
 		Count:      8192,
 	})
