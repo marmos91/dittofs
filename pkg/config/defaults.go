@@ -42,7 +42,18 @@ func applyLoggingDefaults(cfg *LoggingConfig) {
 		cfg.Format = "text"
 	}
 	if cfg.Output == "" {
-		cfg.Output = "stdout"
+		cfg.Output = GetDefaultLogPath()
+	}
+
+	// Log rotation defaults (only meaningful when output is a file path)
+	if cfg.Rotation.MaxSize == 0 {
+		cfg.Rotation.MaxSize = 100 // 100 MB
+	}
+	if cfg.Rotation.MaxBackups == 0 {
+		cfg.Rotation.MaxBackups = 5
+	}
+	if cfg.Rotation.MaxAge == 0 {
+		cfg.Rotation.MaxAge = 30 // 30 days
 	}
 }
 

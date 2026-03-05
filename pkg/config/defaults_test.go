@@ -15,8 +15,8 @@ func TestApplyDefaults_Logging(t *testing.T) {
 	if cfg.Logging.Format != "text" {
 		t.Errorf("Expected default log format 'text', got %q", cfg.Logging.Format)
 	}
-	if cfg.Logging.Output != "stdout" {
-		t.Errorf("Expected default log output 'stdout', got %q", cfg.Logging.Output)
+	if cfg.Logging.Output != GetDefaultLogPath() {
+		t.Errorf("Expected default log output %q, got %q", GetDefaultLogPath(), cfg.Logging.Output)
 	}
 }
 

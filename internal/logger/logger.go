@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 // Level represents log levels
@@ -24,9 +26,13 @@ const (
 
 // Config holds logger configuration
 type Config struct {
-	Level  string // DEBUG, INFO, WARN, ERROR
-	Format string // text, json
-	Output string // stdout, stderr, or file path
+	Level      string // DEBUG, INFO, WARN, ERROR
+	Format     string // text, json
+	Output     string // stdout, stderr, or file path
+	MaxSize    int    // max log file size in MB before rotation (0 = no rotation)
+	MaxBackups int    // max rotated files to keep
+	MaxAge     int    // max days to retain old files
+	Compress   bool   // gzip rotated files
 }
 
 var (
@@ -126,12 +132,22 @@ func Init(cfg Config) error {
 			newUseColor = isTerminal(os.Stderr.Fd())
 		default:
 			// Assume it's a file path
-			f, err := os.OpenFile(cfg.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-			if err != nil {
-				mu.Unlock()
-				return fmt.Errorf("failed to open log file %q: %w", cfg.Output, err)
+			if cfg.MaxSize > 0 {
+				newOutput = &lumberjack.Logger{
+					Filename:   cfg.Output,
+					MaxSize:    cfg.MaxSize,
+					MaxBackups: cfg.MaxBackups,
+					MaxAge:     cfg.MaxAge,
+					Compress:   cfg.Compress,
+				}
+			} else {
+				f, err := os.OpenFile(cfg.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+				if err != nil {
+					mu.Unlock()
+					return fmt.Errorf("failed to open log file %q: %w", cfg.Output, err)
+				}
+				newOutput = f
 			}
-			newOutput = f
 			newUseColor = false // Files don't support color
 		}
 

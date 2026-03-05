@@ -13,9 +13,13 @@ import (
 // InitLogger initializes the structured logger from configuration.
 func InitLogger(cfg *config.Config) error {
 	loggerCfg := logger.Config{
-		Level:  cfg.Logging.Level,
-		Format: cfg.Logging.Format,
-		Output: cfg.Logging.Output,
+		Level:      cfg.Logging.Level,
+		Format:     cfg.Logging.Format,
+		Output:     cfg.Logging.Output,
+		MaxSize:    cfg.Logging.Rotation.MaxSize,
+		MaxBackups: cfg.Logging.Rotation.MaxBackups,
+		MaxAge:     cfg.Logging.Rotation.MaxAge,
+		Compress:   cfg.Logging.Rotation.Compress,
 	}
 	if err := logger.Init(loggerCfg); err != nil {
 		return fmt.Errorf("failed to initialize logger: %w", err)

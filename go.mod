@@ -91,6 +91,7 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.32.0 // indirect
 	golang.org/x/sync v0.18.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	modernc.org/libc v1.22.5 // indirect
 	modernc.org/mathutil v1.5.0 // indirect
 	modernc.org/memory v1.5.0 // indirect
