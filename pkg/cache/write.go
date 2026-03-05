@@ -2,10 +2,45 @@ package cache
 
 import (
 	"context"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/cache/wal"
 	"github.com/marmos91/dittofs/pkg/payload/block"
 )
+
+// WaitForPendingDrain blocks until pendingSize decreases or the deadline expires.
+// Returns true if woken by a broadcast (space may be available), false on timeout or context cancellation.
+func (c *Cache) WaitForPendingDrain(ctx context.Context, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+
+	done := make(chan struct{})
+
+	// Bridge context cancellation to Cond.Broadcast so Wait unblocks.
+	go func() {
+		select {
+		case <-ctx.Done():
+			c.pendingCond.Broadcast()
+		case <-done:
+		}
+	}()
+
+	c.pendingCond.L.Lock()
+
+	timer := time.AfterFunc(time.Until(deadline), func() {
+		c.pendingCond.Broadcast()
+	})
+
+	c.pendingCond.Wait()
+	c.pendingCond.L.Unlock()
+
+	timer.Stop()
+	close(done)
+
+	return ctx.Err() == nil && time.Now().Before(deadline)
+}
 
 // ============================================================================
 // Write Operations

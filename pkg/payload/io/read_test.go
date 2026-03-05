@@ -3,6 +3,7 @@ package io
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/payload/chunk"
@@ -101,6 +102,13 @@ func (m *mockBlockUploader) Delete(ctx context.Context, payloadID string) error 
 	return nil
 }
 
+// mockBackpressureWaiter implements BackpressureWaiter for testing.
+type mockBackpressureWaiter struct{}
+
+func (m *mockBackpressureWaiter) WaitForPendingDrain(ctx context.Context, timeout time.Duration) bool {
+	return true
+}
+
 // ============================================================================
 // ensureAndReadFromCache sparse tests
 // ============================================================================
@@ -116,7 +124,7 @@ func TestEnsureAndReadFromCache_SparseBlock_ReturnsNil(t *testing.T) {
 
 	bd := &mockBlockDownloader{}
 
-	svc := New(cr, newMockCacheWriter(), &mockCacheStateManager{}, bd, &mockBlockUploader{})
+	svc := New(cr, newMockCacheWriter(), &mockCacheStateManager{}, bd, &mockBlockUploader{}, &mockBackpressureWaiter{})
 
 	blockRange := chunk.BlockRange{
 		ChunkIndex: 0,
@@ -156,7 +164,7 @@ func TestEnsureAndReadFromCache_NormalBlock_ReturnsData(t *testing.T) {
 	}
 
 	bd := &mockBlockDownloader{}
-	svc := New(cr, newMockCacheWriter(), &mockCacheStateManager{}, bd, &mockBlockUploader{})
+	svc := New(cr, newMockCacheWriter(), &mockCacheStateManager{}, bd, &mockBlockUploader{}, &mockBackpressureWaiter{})
 
 	blockRange := chunk.BlockRange{
 		ChunkIndex: 0,
@@ -185,7 +193,7 @@ func TestEnsureAndReadFromCache_CacheError_Propagates(t *testing.T) {
 	}
 
 	bd := &mockBlockDownloader{}
-	svc := New(cr, newMockCacheWriter(), &mockCacheStateManager{}, bd, &mockBlockUploader{})
+	svc := New(cr, newMockCacheWriter(), &mockCacheStateManager{}, bd, &mockBlockUploader{}, &mockBackpressureWaiter{})
 
 	blockRange := chunk.BlockRange{
 		ChunkIndex: 0,
@@ -223,7 +231,7 @@ func TestReadAt_SparseBlock_ReturnsZeros(t *testing.T) {
 		},
 	}
 
-	svc := New(cr, newMockCacheWriter(), &mockCacheStateManager{}, bd, &mockBlockUploader{})
+	svc := New(cr, newMockCacheWriter(), &mockCacheStateManager{}, bd, &mockBlockUploader{}, &mockBackpressureWaiter{})
 
 	data := make([]byte, 1024)
 	// Pre-fill with non-zero bytes to verify sparse handling explicitly clears the buffer
@@ -264,7 +272,7 @@ func TestReadAt_NormalBlock_CacheHit(t *testing.T) {
 		},
 	}
 
-	svc := New(cr, newMockCacheWriter(), &mockCacheStateManager{}, bd, &mockBlockUploader{})
+	svc := New(cr, newMockCacheWriter(), &mockCacheStateManager{}, bd, &mockBlockUploader{}, &mockBackpressureWaiter{})
 
 	data := make([]byte, 512)
 	n, err := svc.ReadAt(context.Background(), metadata.PayloadID("cached-payload"), data, 0)
@@ -284,7 +292,7 @@ func TestReadAt_NormalBlock_CacheHit(t *testing.T) {
 
 func TestReadAt_EmptyBuffer_ReturnsZero(t *testing.T) {
 	// ReadAt with empty buffer should return 0 bytes immediately.
-	svc := New(newMockCacheReader(), newMockCacheWriter(), &mockCacheStateManager{}, &mockBlockDownloader{}, &mockBlockUploader{})
+	svc := New(newMockCacheReader(), newMockCacheWriter(), &mockCacheStateManager{}, &mockBlockDownloader{}, &mockBlockUploader{}, &mockBackpressureWaiter{})
 
 	data := make([]byte, 0)
 	n, err := svc.ReadAt(context.Background(), metadata.PayloadID("any"), data, 0)
@@ -314,7 +322,7 @@ func TestReadAtWithCOWSource_SparseBlock_ReturnsZeros(t *testing.T) {
 	}
 
 	cw := newMockCacheWriter()
-	svc := New(cr, cw, &mockCacheStateManager{}, bd, &mockBlockUploader{})
+	svc := New(cr, cw, &mockCacheStateManager{}, bd, &mockBlockUploader{}, &mockBackpressureWaiter{})
 
 	data := make([]byte, 1024)
 	// Pre-fill with non-zero bytes to verify sparse handling explicitly clears the buffer

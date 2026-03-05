@@ -62,9 +62,9 @@ func New(c *cache.Cache, tm *offloader.Offloader) (*PayloadService, error) {
 	}
 
 	// Create the I/O sub-service with cache and offloader satisfying the local interfaces.
-	// *cache.Cache satisfies CacheReader, CacheWriter, and CacheStateManager.
+	// *cache.Cache satisfies CacheReader, CacheWriter, CacheStateManager, and BackpressureWaiter.
 	// *offloader.Offloader satisfies BlockDownloader and BlockUploader.
-	ioSvc := payloadio.New(c, c, c, tm, tm)
+	ioSvc := payloadio.New(c, c, c, tm, tm, c)
 
 	return &PayloadService{
 		ServiceImpl: ioSvc,

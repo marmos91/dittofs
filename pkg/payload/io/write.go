@@ -12,13 +12,11 @@ import (
 )
 
 // Cache-full retry constants.
-// When the cache is full of pending data, we retry with exponential backoff
-// to allow background uploads to drain pending blocks before failing.
+// When the cache is full of pending data, we wait on a condition variable
+// for the offloader to drain blocks, rather than polling with timers.
 const (
-	cacheFullMaxRetries    = 10
-	cacheFullInitialDelay  = 5 * time.Millisecond
-	cacheFullMaxDelay      = 100 * time.Millisecond
-	cacheFullBackoffFactor = 2
+	cacheFullMaxRetries = 10
+	cacheFullWaitTimeout = 5 * time.Second // per-wait timeout; wakes immediately on drain
 )
 
 // WriteAt writes data at the specified offset.
@@ -62,16 +60,19 @@ func (s *ServiceImpl) WriteAt(ctx context.Context, id metadata.PayloadID, data [
 	return nil
 }
 
-// writeBlockWithRetry writes a block range to cache, retrying with exponential
-// backoff when the cache is full of pending data (ErrCacheFull).
+// writeBlockWithRetry writes a block range to cache, blocking on a condition
+// variable when the cache is full of pending data (ErrCacheFull).
 //
 // This implements backpressure: instead of failing immediately when the cache
-// is temporarily full, we wait for background uploads to drain pending blocks.
-// This is critical for large sequential writes (e.g., 100MB file copy) where
-// write throughput can temporarily exceed the eager upload drain rate.
+// is temporarily full, we wait for the offloader to drain pending blocks via
+// a sync.Cond broadcast (signalled by MarkBlockUploaded). Each wait is up to
+// cacheFullWaitTimeout (5s) but typically wakes in milliseconds when a 4MB
+// block finishes uploading.
+//
+// This is critical for large sequential writes (e.g., 2.7GB folder copy via
+// Finder) where write throughput can exceed the S3 upload drain rate for
+// extended periods.
 func (s *ServiceImpl) writeBlockWithRetry(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32, data []byte, chunkOffset uint32) error {
-	delay := cacheFullInitialDelay
-
 	for attempt := 0; attempt <= cacheFullMaxRetries; attempt++ {
 		err := s.cacheWriter.WriteAt(ctx, payloadID, chunkIdx, data, chunkOffset)
 		if err == nil {
@@ -98,18 +99,18 @@ func (s *ServiceImpl) writeBlockWithRetry(ctx context.Context, payloadID string,
 			"chunkIdx", chunkIdx,
 			"blockIdx", blockIdx,
 			"attempt", attempt+1,
-			"delay", delay)
+			"timeout", cacheFullWaitTimeout)
 
-		select {
-		case <-time.After(delay):
-		case <-ctx.Done():
-			return fmt.Errorf("write block %d/%d: context cancelled during backpressure: %w", chunkIdx, blockIdx, ctx.Err())
-		}
-
-		// Exponential backoff with cap
-		delay *= time.Duration(cacheFullBackoffFactor)
-		if delay > cacheFullMaxDelay {
-			delay = cacheFullMaxDelay
+		// Block until offloader drains a block (or timeout/context cancel)
+		if s.backpressureWaiter != nil {
+			s.backpressureWaiter.WaitForPendingDrain(ctx, cacheFullWaitTimeout)
+		} else {
+			// Fallback for tests without a backpressure waiter
+			select {
+			case <-time.After(cacheFullWaitTimeout):
+			case <-ctx.Done():
+				return fmt.Errorf("write block %d/%d: context cancelled during backpressure: %w", chunkIdx, blockIdx, ctx.Err())
+			}
 		}
 	}
 

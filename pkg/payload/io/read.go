@@ -3,6 +3,7 @@ package io
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -62,6 +63,14 @@ type BlockUploader interface {
 	Delete(ctx context.Context, payloadID string) error
 }
 
+// BackpressureWaiter abstracts the cache's ability to block until pending data drains.
+// This avoids a direct import of the cache package from the io package.
+type BackpressureWaiter interface {
+	// WaitForPendingDrain blocks until pending cache size decreases or the deadline expires.
+	// Returns true if woken (space may be available), false on timeout/cancellation.
+	WaitForPendingDrain(ctx context.Context, timeout time.Duration) bool
+}
+
 // CacheFileNotFoundError is used to detect cache miss errors without importing the cache package.
 // Must be set by the caller before using the io package (typically in an init function
 // or during service construction). Defaults to nil, which means cache miss errors are not
@@ -79,11 +88,12 @@ var CacheFullError error
 // It coordinates between the cache (fast in-memory/mmap storage) and the
 // offloader (durable block store persistence) for data access.
 type ServiceImpl struct {
-	cacheReader     CacheReader
-	cacheWriter     CacheWriter
-	cacheState      CacheStateManager
-	blockDownloader BlockDownloader
-	blockUploader   BlockUploader
+	cacheReader         CacheReader
+	cacheWriter         CacheWriter
+	cacheState          CacheStateManager
+	blockDownloader     BlockDownloader
+	blockUploader       BlockUploader
+	backpressureWaiter  BackpressureWaiter
 }
 
 // New creates a new ServiceImpl with the required cache and offloader dependencies.
@@ -91,13 +101,14 @@ type ServiceImpl struct {
 // The cache and offloader parameters satisfy separate read/write/state interfaces.
 // In practice, the same concrete object (e.g., *cache.Cache) implements CacheReader,
 // CacheWriter, and CacheStateManager.
-func New(cr CacheReader, cw CacheWriter, cs CacheStateManager, bd BlockDownloader, bu BlockUploader) *ServiceImpl {
+func New(cr CacheReader, cw CacheWriter, cs CacheStateManager, bd BlockDownloader, bu BlockUploader, bw BackpressureWaiter) *ServiceImpl {
 	return &ServiceImpl{
-		cacheReader:     cr,
-		cacheWriter:     cw,
-		cacheState:      cs,
-		blockDownloader: bd,
-		blockUploader:   bu,
+		cacheReader:        cr,
+		cacheWriter:        cw,
+		cacheState:         cs,
+		blockDownloader:    bd,
+		blockUploader:      bu,
+		backpressureWaiter: bw,
 	}
 }
 
