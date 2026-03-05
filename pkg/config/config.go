@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/bytesize"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
 	"github.com/marmos91/dittofs/pkg/controlplane/api"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
@@ -119,6 +120,32 @@ type LoggingConfig struct {
 	// Output specifies where logs are written
 	// Valid values: stdout, stderr, or a file path
 	Output string `mapstructure:"output" validate:"required" yaml:"output"`
+
+	// Rotation configures log file rotation (only active when Output is a file path)
+	Rotation LogRotationConfig `mapstructure:"rotation" yaml:"rotation"`
+}
+
+// LogRotationConfig controls log file rotation via lumberjack.
+// Rotation is only active when logging output is a file path (not stdout/stderr).
+type LogRotationConfig struct {
+	// MaxSize is the maximum size in megabytes of the log file before it gets rotated.
+	// If MaxSize is 0, size-based rotation is disabled; if greater than 0, rotation
+	// occurs when the file exceeds this size. The defaults layer sets this to 100 MB.
+	MaxSize int `mapstructure:"max_size" yaml:"max_size"`
+
+	// MaxBackups is the maximum number of old log files to retain.
+	// 0 means keep all old log files.
+	// The generated config template sets this to 5.
+	MaxBackups int `mapstructure:"max_backups" yaml:"max_backups"`
+
+	// MaxAge is the maximum number of days to retain old log files.
+	// 0 means no age limit (keep forever).
+	// The generated config template sets this to 30.
+	MaxAge int `mapstructure:"max_age" yaml:"max_age"`
+
+	// Compress determines whether rotated log files are gzip compressed.
+	// Default: false
+	Compress bool `mapstructure:"compress" yaml:"compress"`
 }
 
 // CacheConfig specifies the WAL-backed cache configuration.
@@ -540,4 +567,57 @@ func DefaultConfigExists() bool {
 // GetConfigDir returns the configuration directory path (exposed for init command).
 func GetConfigDir() string {
 	return getConfigDir()
+}
+
+// GetStateDir returns the state directory path for runtime data (logs, PID files).
+//
+// On Windows, uses %LOCALAPPDATA%\dittofs.
+// On Unix, uses XDG_STATE_HOME/dittofs or ~/.local/state/dittofs.
+func GetStateDir() string {
+	if runtime.GOOS == "windows" {
+		localAppData := os.Getenv("LOCALAPPDATA")
+		if localAppData != "" {
+			return filepath.Join(localAppData, "dittofs")
+		}
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return filepath.Join(home, "AppData", "Local", "dittofs")
+		}
+		return filepath.Join(os.TempDir(), "dittofs")
+	}
+
+	stateDir := os.Getenv("XDG_STATE_HOME")
+	if stateDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return filepath.Join(os.TempDir(), "dittofs")
+		}
+		stateDir = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(stateDir, "dittofs")
+}
+
+// GetDefaultLogPath returns the default log file path.
+func GetDefaultLogPath() string {
+	return filepath.Join(GetStateDir(), "dittofs.log")
+}
+
+// InitLogger initializes the structured logger from a LoggingConfig,
+// including rotation settings. This is the canonical way to initialize
+// the logger from configuration — prefer this over constructing
+// logger.Config manually to ensure rotation settings are plumbed through.
+func InitLogger(cfg *Config) error {
+	loggerCfg := logger.Config{
+		Level:      cfg.Logging.Level,
+		Format:     cfg.Logging.Format,
+		Output:     cfg.Logging.Output,
+		MaxSize:    cfg.Logging.Rotation.MaxSize,
+		MaxBackups: cfg.Logging.Rotation.MaxBackups,
+		MaxAge:     cfg.Logging.Rotation.MaxAge,
+		Compress:   cfg.Logging.Rotation.Compress,
+	}
+	if err := logger.Init(loggerCfg); err != nil {
+		return fmt.Errorf("failed to initialize logger: %w", err)
+	}
+	return nil
 }

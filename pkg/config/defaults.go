@@ -42,7 +42,16 @@ func applyLoggingDefaults(cfg *LoggingConfig) {
 		cfg.Format = "text"
 	}
 	if cfg.Output == "" {
-		cfg.Output = "stdout"
+		cfg.Output = GetDefaultLogPath()
+	}
+
+	// Log rotation defaults (only meaningful when output is a file path).
+	// Only MaxSize is defaulted here; MaxBackups and MaxAge are left at 0
+	// (meaning "keep all" and "no age limit" respectively in lumberjack)
+	// so that users can explicitly set them to 0 without being overridden.
+	// The generated config template (dfs init) provides sensible starting values.
+	if cfg.Rotation.MaxSize == 0 {
+		cfg.Rotation.MaxSize = 100 // 100 MB
 	}
 }
 
@@ -155,7 +164,12 @@ func applyKerberosDefaults(cfg *KerberosConfig) {
 //   - Documentation
 func GetDefaultConfig() *Config {
 	cfg := &Config{
-		Logging: LoggingConfig{},
+		Logging: LoggingConfig{
+			Rotation: LogRotationConfig{
+				MaxBackups: 5,
+				MaxAge:     30,
+			},
+		},
 		Database: store.Config{
 			Type: store.DatabaseTypeSQLite, // Default to SQLite for single-node
 		},
