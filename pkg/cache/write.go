@@ -9,11 +9,16 @@ import (
 )
 
 // WaitForPendingDrain blocks until pendingSize decreases or the deadline expires.
-// Returns true if woken by a broadcast (space may be available), false on timeout or context cancellation.
+// Returns true if a drain occurred (pendingSize decreased), false on timeout or context cancellation.
 func (c *Cache) WaitForPendingDrain(ctx context.Context, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
+	}
+
+	// Early exit if already expired or cancelled.
+	if ctx.Err() != nil || !time.Now().Before(deadline) {
+		return false
 	}
 
 	done := make(chan struct{})
@@ -22,24 +27,43 @@ func (c *Cache) WaitForPendingDrain(ctx context.Context, timeout time.Duration) 
 	go func() {
 		select {
 		case <-ctx.Done():
+			c.pendingCond.L.Lock()
 			c.pendingCond.Broadcast()
+			c.pendingCond.L.Unlock()
 		case <-done:
 		}
 	}()
 
 	c.pendingCond.L.Lock()
 
+	// Snapshot pending size so we can detect when it actually decreases.
+	initialPending := c.pendingSize.Load()
+
 	timer := time.AfterFunc(time.Until(deadline), func() {
+		c.pendingCond.L.Lock()
 		c.pendingCond.Broadcast()
+		c.pendingCond.L.Unlock()
 	})
 
-	c.pendingCond.Wait()
+	// Loop to handle spurious wakeups — only exit when pending size decreases
+	// or we hit the deadline / context cancellation.
+	for {
+		if ctx.Err() != nil || !time.Now().Before(deadline) {
+			break
+		}
+		if c.pendingSize.Load() < initialPending {
+			break
+		}
+		c.pendingCond.Wait()
+	}
+
+	drained := c.pendingSize.Load() < initialPending
 	c.pendingCond.L.Unlock()
 
 	timer.Stop()
 	close(done)
 
-	return ctx.Err() == nil && time.Now().Before(deadline)
+	return drained && ctx.Err() == nil && time.Now().Before(deadline)
 }
 
 // ============================================================================
