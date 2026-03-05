@@ -45,6 +45,7 @@ var (
 	slogger  *slog.Logger
 	output   io.Writer = os.Stdout
 	useColor bool      = true
+	closer   io.Closer // tracks closable output (file or lumberjack); nil for stdout/stderr
 )
 
 func init() {
@@ -123,6 +124,7 @@ func Init(cfg Config) error {
 		mu.Lock()
 		var newOutput io.Writer
 		var newUseColor bool
+		var newCloser io.Closer
 
 		switch strings.ToLower(cfg.Output) {
 		case "stdout", "":
@@ -138,13 +140,15 @@ func Init(cfg Config) error {
 				return fmt.Errorf("failed to create log directory for %q: %w", cfg.Output, err)
 			}
 			if cfg.MaxSize > 0 {
-				newOutput = &lumberjack.Logger{
+				lj := &lumberjack.Logger{
 					Filename:   cfg.Output,
 					MaxSize:    cfg.MaxSize,
 					MaxBackups: cfg.MaxBackups,
 					MaxAge:     cfg.MaxAge,
 					Compress:   cfg.Compress,
 				}
+				newOutput = lj
+				newCloser = lj
 			} else {
 				f, err := os.OpenFile(cfg.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 				if err != nil {
@@ -152,13 +156,21 @@ func Init(cfg Config) error {
 					return fmt.Errorf("failed to open log file %q: %w", cfg.Output, err)
 				}
 				newOutput = f
+				newCloser = f
 			}
 			newUseColor = false // Files don't support color
 		}
 
+		// Close previous file/lumberjack writer to avoid leaking file descriptors
+		prevCloser := closer
 		output = newOutput
 		useColor = newUseColor
+		closer = newCloser
 		mu.Unlock()
+
+		if prevCloser != nil {
+			_ = prevCloser.Close()
+		}
 	}
 
 	if cfg.Level != "" {

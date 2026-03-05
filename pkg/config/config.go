@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/bytesize"
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
 	"github.com/marmos91/dittofs/pkg/controlplane/api"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
@@ -128,7 +129,8 @@ type LoggingConfig struct {
 // Rotation is only active when logging output is a file path (not stdout/stderr).
 type LogRotationConfig struct {
 	// MaxSize is the maximum size in megabytes of the log file before it gets rotated.
-	// Default: 100. Setting to 0 uses the default (100 MB).
+	// If MaxSize is 0, size-based rotation is disabled; if greater than 0, rotation
+	// occurs when the file exceeds this size. The defaults layer sets this to 100 MB.
 	MaxSize int `mapstructure:"max_size" yaml:"max_size"`
 
 	// MaxBackups is the maximum number of old log files to retain.
@@ -567,11 +569,11 @@ func GetConfigDir() string {
 	return getConfigDir()
 }
 
-// getStateDir returns the state directory path for runtime data (logs, PID files).
+// GetStateDir returns the state directory path for runtime data (logs, PID files).
 //
 // On Windows, uses %LOCALAPPDATA%\dittofs.
 // On Unix, uses XDG_STATE_HOME/dittofs or ~/.local/state/dittofs.
-func getStateDir() string {
+func GetStateDir() string {
 	if runtime.GOOS == "windows" {
 		localAppData := os.Getenv("LOCALAPPDATA")
 		if localAppData != "" {
@@ -597,5 +599,25 @@ func getStateDir() string {
 
 // GetDefaultLogPath returns the default log file path.
 func GetDefaultLogPath() string {
-	return filepath.Join(getStateDir(), "dittofs.log")
+	return filepath.Join(GetStateDir(), "dittofs.log")
+}
+
+// InitLogger initializes the structured logger from a LoggingConfig,
+// including rotation settings. This is the canonical way to initialize
+// the logger from configuration — prefer this over constructing
+// logger.Config manually to ensure rotation settings are plumbed through.
+func InitLogger(cfg *Config) error {
+	loggerCfg := logger.Config{
+		Level:      cfg.Logging.Level,
+		Format:     cfg.Logging.Format,
+		Output:     cfg.Logging.Output,
+		MaxSize:    cfg.Logging.Rotation.MaxSize,
+		MaxBackups: cfg.Logging.Rotation.MaxBackups,
+		MaxAge:     cfg.Logging.Rotation.MaxAge,
+		Compress:   cfg.Logging.Rotation.Compress,
+	}
+	if err := logger.Init(loggerCfg); err != nil {
+		return fmt.Errorf("failed to initialize logger: %w", err)
+	}
+	return nil
 }

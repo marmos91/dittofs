@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/cmd/dfs/commands/backup"
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
@@ -72,14 +71,9 @@ func runControlplaneRestore(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Initialize the structured logger
-	loggerCfg := logger.Config{
-		Level:  cfg.Logging.Level,
-		Format: cfg.Logging.Format,
-		Output: cfg.Logging.Output,
-	}
-	if err := logger.Init(loggerCfg); err != nil {
-		return fmt.Errorf("failed to initialize logger: %w", err)
+	// Initialize the structured logger (includes rotation settings)
+	if err := config.InitLogger(cfg); err != nil {
+		return err
 	}
 
 	// Apply defaults to database config
