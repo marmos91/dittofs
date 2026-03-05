@@ -399,6 +399,15 @@ func TestReadDir_StaleVerifierContinues(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.EqualValues(t, types.NFS3OK, resp2.Status, "Stale verifier should not return BAD_COOKIE")
+
+	// Verify that we continue from the cookie position:
+	// - the new file3.txt appears after resuming
+	// - previously returned entries (file1.txt, file2.txt) are not re-returned
+	require.NotEmpty(t, resp2.Entries, "expected entries when resuming directory read after modification")
+	names2 := extractEntryNames(resp2.Entries)
+	assert.Contains(t, names2, "file3.txt", "resumed READDIR should include newly created file3.txt")
+	assert.NotContains(t, names2, "file1.txt", "resumed READDIR should not re-return file1.txt")
+	assert.NotContains(t, names2, "file2.txt", "resumed READDIR should not re-return file2.txt")
 }
 
 // extractEntryNames extracts the names from directory entries.

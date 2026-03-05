@@ -123,4 +123,14 @@ func TestReadDirPlus_StaleVerifierContinues(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.EqualValues(t, types.NFS3OK, resp2.Status, "Stale verifier should not return BAD_COOKIE")
+
+	// Ensure pagination semantics are preserved: the second page should not repeat earlier entries
+	// and should include the newly created file3.txt.
+	names := make([]string, len(resp2.Entries))
+	for i, entry := range resp2.Entries {
+		names[i] = entry.Name
+	}
+	assert.Contains(t, names, "file3.txt", "second page should include newly created file")
+	assert.NotContains(t, names, "file1.txt", "second page should not repeat earlier entries")
+	assert.NotContains(t, names, "file2.txt", "second page should not repeat earlier entries")
 }
