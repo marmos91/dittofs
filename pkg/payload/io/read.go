@@ -88,12 +88,12 @@ var CacheFullError error
 // It coordinates between the cache (fast in-memory/mmap storage) and the
 // offloader (durable block store persistence) for data access.
 type ServiceImpl struct {
-	cacheReader         CacheReader
-	cacheWriter         CacheWriter
-	cacheState          CacheStateManager
-	blockDownloader     BlockDownloader
-	blockUploader       BlockUploader
-	backpressureWaiter  BackpressureWaiter
+	cacheReader        CacheReader
+	cacheWriter        CacheWriter
+	cacheState         CacheStateManager
+	blockDownloader    BlockDownloader
+	blockUploader      BlockUploader
+	backpressureWaiter BackpressureWaiter
 }
 
 // New creates a new ServiceImpl with the required cache and offloader dependencies.

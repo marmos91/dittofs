@@ -15,7 +15,7 @@ import (
 // When the cache is full of pending data, we wait on a condition variable
 // for the offloader to drain blocks, rather than polling with timers.
 const (
-	cacheFullMaxRetries = 10
+	cacheFullMaxRetries  = 10
 	cacheFullWaitTimeout = 5 * time.Second // per-wait timeout; wakes immediately on drain
 )
 

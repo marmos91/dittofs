@@ -47,13 +47,7 @@ func (c *Cache) WaitForPendingDrain(ctx context.Context, timeout time.Duration) 
 
 	// Loop to handle spurious wakeups — only exit when pending size decreases
 	// or we hit the deadline / context cancellation.
-	for {
-		if ctx.Err() != nil || !time.Now().Before(deadline) {
-			break
-		}
-		if c.pendingSize.Load() < initialPending {
-			break
-		}
+	for ctx.Err() == nil && time.Now().Before(deadline) && c.pendingSize.Load() >= initialPending {
 		c.pendingCond.Wait()
 	}
 
