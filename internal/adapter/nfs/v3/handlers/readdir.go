@@ -164,18 +164,17 @@ func (h *Handler) ReadDir(
 
 	// Validate cookie verifier for non-initial requests
 	// Initial request (cookie=0) or clients that don't use verifiers (verifier=0) bypass this check
+	// Note: We intentionally do NOT return NFS3ErrBadCookie on verifier mismatch.
+	// The RFC 1813 verifier is meant to detect server restarts, not in-flight
+	// directory modifications. Returning BAD_COOKIE during concurrent writes
+	// (e.g., macOS Finder copy) causes clients to fail with error -8062.
+	// Linux knfsd also serves entries on verifier mismatch rather than erroring.
 	if req.Cookie != 0 && req.CookieVerf != 0 && req.CookieVerf != currentVerifier {
-		logger.WarnCtx(ctx.Context, "READDIR: directory modified since last read",
+		logger.DebugCtx(ctx.Context, "READDIR: directory modified since last read, continuing with current entries",
 			"handle", fmt.Sprintf("%x", req.DirHandle),
 			"expected_verf", fmt.Sprintf("0x%016x", req.CookieVerf),
 			"current_verf", fmt.Sprintf("0x%016x", currentVerifier),
 			"client", clientIP)
-
-		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
-		return &ReadDirResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadCookie},
-			DirAttr:         nfsDirAttr,
-		}, nil
 	}
 
 	// ========================================================================
