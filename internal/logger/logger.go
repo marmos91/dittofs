@@ -6,10 +6,13 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 // Level represents log levels
@@ -24,9 +27,13 @@ const (
 
 // Config holds logger configuration
 type Config struct {
-	Level  string // DEBUG, INFO, WARN, ERROR
-	Format string // text, json
-	Output string // stdout, stderr, or file path
+	Level      string // DEBUG, INFO, WARN, ERROR
+	Format     string // text, json
+	Output     string // stdout, stderr, or file path
+	MaxSize    int    // max log file size in MB before rotation (0 = no rotation)
+	MaxBackups int    // max rotated files to keep
+	MaxAge     int    // max days to retain old files
+	Compress   bool   // gzip rotated files
 }
 
 var (
@@ -38,6 +45,7 @@ var (
 	slogger  *slog.Logger
 	output   io.Writer = os.Stdout
 	useColor bool      = true
+	closer   io.Closer // tracks closable output (file or lumberjack); nil for stdout/stderr
 )
 
 func init() {
@@ -116,6 +124,7 @@ func Init(cfg Config) error {
 		mu.Lock()
 		var newOutput io.Writer
 		var newUseColor bool
+		var newCloser io.Closer
 
 		switch strings.ToLower(cfg.Output) {
 		case "stdout", "":
@@ -125,19 +134,43 @@ func Init(cfg Config) error {
 			newOutput = os.Stderr
 			newUseColor = isTerminal(os.Stderr.Fd())
 		default:
-			// Assume it's a file path
-			f, err := os.OpenFile(cfg.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-			if err != nil {
+			// Assume it's a file path — ensure parent directory exists
+			if err := os.MkdirAll(filepath.Dir(cfg.Output), 0755); err != nil {
 				mu.Unlock()
-				return fmt.Errorf("failed to open log file %q: %w", cfg.Output, err)
+				return fmt.Errorf("failed to create log directory for %q: %w", cfg.Output, err)
 			}
-			newOutput = f
+			if cfg.MaxSize > 0 {
+				lj := &lumberjack.Logger{
+					Filename:   cfg.Output,
+					MaxSize:    cfg.MaxSize,
+					MaxBackups: cfg.MaxBackups,
+					MaxAge:     cfg.MaxAge,
+					Compress:   cfg.Compress,
+				}
+				newOutput = lj
+				newCloser = lj
+			} else {
+				f, err := os.OpenFile(cfg.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+				if err != nil {
+					mu.Unlock()
+					return fmt.Errorf("failed to open log file %q: %w", cfg.Output, err)
+				}
+				newOutput = f
+				newCloser = f
+			}
 			newUseColor = false // Files don't support color
 		}
 
+		// Close previous file/lumberjack writer to avoid leaking file descriptors
+		prevCloser := closer
 		output = newOutput
 		useColor = newUseColor
+		closer = newCloser
 		mu.Unlock()
+
+		if prevCloser != nil {
+			_ = prevCloser.Close()
+		}
 	}
 
 	if cfg.Level != "" {

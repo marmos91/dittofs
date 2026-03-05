@@ -83,7 +83,19 @@ logging:
   # Log format: text, json
   format: "` + cfg.Logging.Format + `"
   # Log output: stdout, stderr, or file path
-  output: "` + cfg.Logging.Output + `"
+  # When set to a file path, logs are written to the file with rotation enabled.
+  # Use "stdout" or "stderr" for console output (rotation is not applied).
+  output: "` + yamlSafePath(cfg.Logging.Output) + `"
+  # Log rotation settings (only active when output is a file path)
+  rotation:
+    # Maximum log file size in MB before rotation
+    max_size: ` + fmt.Sprint(cfg.Logging.Rotation.MaxSize) + `
+    # Maximum number of rotated log files to retain (0 = keep all)
+    max_backups: ` + fmt.Sprint(cfg.Logging.Rotation.MaxBackups) + `
+    # Maximum number of days to retain old log files (0 = no age limit)
+    max_age: ` + fmt.Sprint(cfg.Logging.Rotation.MaxAge) + `
+    # Whether to gzip compress rotated log files
+    compress: ` + fmt.Sprint(cfg.Logging.Rotation.Compress) + `
 
 # Maximum time to wait for graceful shutdown
 shutdown_timeout: ` + cfg.ShutdownTimeout.String() + `
