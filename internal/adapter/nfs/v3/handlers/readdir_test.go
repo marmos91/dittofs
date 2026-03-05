@@ -363,6 +363,42 @@ func TestReadDir_NestedDirectory(t *testing.T) {
 	assert.Contains(t, names, "file.txt")
 }
 
+// TestReadDir_StaleVerifierContinues tests that READDIR continues serving entries
+// when the cookie verifier is stale (directory modified between paginated reads).
+// This prevents macOS Finder error -8062 during concurrent directory operations.
+func TestReadDir_StaleVerifierContinues(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	// Setup: Create a directory with files
+	fx.CreateFile("stale/file1.txt", []byte("1"))
+	fx.CreateFile("stale/file2.txt", []byte("2"))
+	dirHandle := fx.MustGetHandle("stale")
+
+	// First read: get the cookie verifier
+	resp1, err := fx.Handler.ReadDir(fx.Context(), &handlers.ReadDirRequest{
+		DirHandle:  dirHandle,
+		Cookie:     0,
+		CookieVerf: 0,
+		Count:      8192,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, types.NFS3OK, resp1.Status)
+	savedVerifier := resp1.CookieVerf
+
+	// Modify the directory (changes mtime, invalidates verifier)
+	fx.CreateFile("stale/file3.txt", []byte("3"))
+
+	// Second read with old verifier and non-zero cookie — should succeed, not BAD_COOKIE
+	resp2, err := fx.Handler.ReadDir(fx.Context(), &handlers.ReadDirRequest{
+		DirHandle:  dirHandle,
+		Cookie:     1, // non-zero cookie
+		CookieVerf: savedVerifier,
+		Count:      8192,
+	})
+	require.NoError(t, err)
+	assert.EqualValues(t, types.NFS3OK, resp2.Status, "Stale verifier should not return BAD_COOKIE")
+}
+
 // extractEntryNames extracts the names from directory entries.
 func extractEntryNames(entries []*types.DirEntry) []string {
 	names := make([]string, len(entries))

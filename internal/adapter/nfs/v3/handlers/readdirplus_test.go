@@ -84,3 +84,41 @@ func TestReadDirPlus_InvalidHandle(t *testing.T) {
 	assert.NotEqualValues(t, types.NFS3OK, resp.Status,
 		"Invalid handle should not return NFS3OK")
 }
+
+// TestReadDirPlus_StaleVerifierContinues tests that READDIRPLUS continues serving entries
+// when the cookie verifier is stale (directory modified between paginated reads).
+// This prevents macOS Finder error -8062 during concurrent directory operations.
+func TestReadDirPlus_StaleVerifierContinues(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	// Setup: Create a directory with files
+	fx.CreateFile("stale/file1.txt", []byte("1"))
+	fx.CreateFile("stale/file2.txt", []byte("2"))
+	dirHandle := fx.MustGetHandle("stale")
+
+	// First read: get the cookie verifier
+	resp1, err := fx.Handler.ReadDirPlus(fx.Context(), &handlers.ReadDirPlusRequest{
+		DirHandle:  dirHandle,
+		Cookie:     0,
+		CookieVerf: 0,
+		DirCount:   8192,
+		MaxCount:   65536,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, types.NFS3OK, resp1.Status)
+	savedVerifier := resp1.CookieVerf
+
+	// Modify the directory (changes mtime, invalidates verifier)
+	fx.CreateFile("stale/file3.txt", []byte("3"))
+
+	// Second read with old verifier and non-zero cookie — should succeed, not BAD_COOKIE
+	resp2, err := fx.Handler.ReadDirPlus(fx.Context(), &handlers.ReadDirPlusRequest{
+		DirHandle:  dirHandle,
+		Cookie:     1, // non-zero cookie
+		CookieVerf: savedVerifier,
+		DirCount:   8192,
+		MaxCount:   65536,
+	})
+	require.NoError(t, err)
+	assert.EqualValues(t, types.NFS3OK, resp2.Status, "Stale verifier should not return BAD_COOKIE")
+}
