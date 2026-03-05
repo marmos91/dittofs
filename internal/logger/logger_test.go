@@ -772,10 +772,15 @@ func TestInit(t *testing.T) {
 		_, statErr := os.Stat(logPath)
 		assert.NoError(t, statErr, "log file should exist")
 
-		// Cleanup
+		// Cleanup: close file handle before TempDir cleanup (required on Windows)
 		mu.Lock()
+		c := closer
+		closer = nil
 		output = os.Stdout
 		mu.Unlock()
+		if c != nil {
+			_ = c.Close()
+		}
 		reconfigure()
 	})
 
@@ -795,10 +800,15 @@ func TestInit(t *testing.T) {
 		_, statErr := os.Stat(logPath)
 		assert.NoError(t, statErr, "log file should exist in nested dir")
 
-		// Cleanup
+		// Cleanup: close file handle before TempDir cleanup (required on Windows)
 		mu.Lock()
+		c := closer
+		closer = nil
 		output = os.Stdout
 		mu.Unlock()
+		if c != nil {
+			_ = c.Close()
+		}
 		reconfigure()
 	})
 
@@ -823,10 +833,15 @@ func TestInit(t *testing.T) {
 		_, statErr := os.Stat(logPath)
 		assert.NoError(t, statErr, "rotated log file should exist")
 
-		// Cleanup
+		// Cleanup: close lumberjack writer before TempDir cleanup (required on Windows)
 		mu.Lock()
+		c := closer
+		closer = nil
 		output = os.Stdout
 		mu.Unlock()
+		if c != nil {
+			_ = c.Close()
+		}
 		reconfigure()
 	})
 
@@ -847,10 +862,15 @@ func TestInit(t *testing.T) {
 		_, statErr := os.Stat(logPath)
 		assert.NoError(t, statErr, "rotated log file should exist in nested dir")
 
-		// Cleanup
+		// Cleanup: close lumberjack writer before TempDir cleanup (required on Windows)
 		mu.Lock()
+		c := closer
+		closer = nil
 		output = os.Stdout
 		mu.Unlock()
+		if c != nil {
+			_ = c.Close()
+		}
 		reconfigure()
 	})
 }
