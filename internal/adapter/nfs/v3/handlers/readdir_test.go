@@ -386,6 +386,8 @@ func TestReadDir_StaleVerifierContinues(t *testing.T) {
 	require.NotEmpty(t, resp1.Entries, "expected at least one directory entry to obtain a resume cookie")
 	resumeCookie := resp1.Entries[len(resp1.Entries)-1].Cookie
 	savedVerifier := resp1.CookieVerf
+	require.NotZero(t, resumeCookie, "resume cookie must be non-zero to exercise the verifier check path")
+	require.NotZero(t, savedVerifier, "saved verifier must be non-zero to exercise the verifier check path")
 
 	// Modify the directory (changes mtime, invalidates verifier)
 	fx.CreateFile("stale/file3.txt", []byte("3"))
