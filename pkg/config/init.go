@@ -89,13 +89,13 @@ logging:
   # Log rotation settings (only active when output is a file path)
   rotation:
     # Maximum log file size in MB before rotation
-    max_size: 100
+    max_size: ` + fmt.Sprint(cfg.Logging.Rotation.MaxSize) + `
     # Maximum number of rotated log files to retain (0 = keep all)
-    max_backups: 5
+    max_backups: ` + fmt.Sprint(cfg.Logging.Rotation.MaxBackups) + `
     # Maximum number of days to retain old log files (0 = no age limit)
-    max_age: 30
+    max_age: ` + fmt.Sprint(cfg.Logging.Rotation.MaxAge) + `
     # Whether to gzip compress rotated log files
-    compress: true
+    compress: ` + fmt.Sprint(cfg.Logging.Rotation.Compress) + `
 
 # Maximum time to wait for graceful shutdown
 shutdown_timeout: ` + cfg.ShutdownTimeout.String() + `

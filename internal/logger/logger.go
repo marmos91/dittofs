@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -131,7 +132,11 @@ func Init(cfg Config) error {
 			newOutput = os.Stderr
 			newUseColor = isTerminal(os.Stderr.Fd())
 		default:
-			// Assume it's a file path
+			// Assume it's a file path — ensure parent directory exists
+			if err := os.MkdirAll(filepath.Dir(cfg.Output), 0755); err != nil {
+				mu.Unlock()
+				return fmt.Errorf("failed to create log directory for %q: %w", cfg.Output, err)
+			}
 			if cfg.MaxSize > 0 {
 				newOutput = &lumberjack.Logger{
 					Filename:   cfg.Output,

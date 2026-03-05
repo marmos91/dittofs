@@ -754,6 +754,105 @@ func TestInit(t *testing.T) {
 		err := Init(Config{})
 		require.NoError(t, err)
 	})
+
+	t.Run("InitWithFilePath", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		logPath := tmpDir + "/test.log"
+
+		err := Init(Config{
+			Level:  "INFO",
+			Format: "text",
+			Output: logPath,
+		})
+		require.NoError(t, err)
+
+		// Log a message and verify file was created
+		Info("file output test")
+
+		_, statErr := os.Stat(logPath)
+		assert.NoError(t, statErr, "log file should exist")
+
+		// Cleanup
+		mu.Lock()
+		output = os.Stdout
+		mu.Unlock()
+		reconfigure()
+	})
+
+	t.Run("InitWithFilePathCreatesParentDir", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		logPath := tmpDir + "/nested/deep/dir/test.log"
+
+		err := Init(Config{
+			Level:  "INFO",
+			Format: "text",
+			Output: logPath,
+		})
+		require.NoError(t, err, "Init should create parent directories")
+
+		Info("nested dir test")
+
+		_, statErr := os.Stat(logPath)
+		assert.NoError(t, statErr, "log file should exist in nested dir")
+
+		// Cleanup
+		mu.Lock()
+		output = os.Stdout
+		mu.Unlock()
+		reconfigure()
+	})
+
+	t.Run("InitWithRotation", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		logPath := tmpDir + "/rotated.log"
+
+		err := Init(Config{
+			Level:      "INFO",
+			Format:     "text",
+			Output:     logPath,
+			MaxSize:    1, // 1 MB
+			MaxBackups: 3,
+			MaxAge:     7,
+			Compress:   false,
+		})
+		require.NoError(t, err)
+
+		// Write a message — lumberjack creates the file on first write
+		Info("rotation test message")
+
+		_, statErr := os.Stat(logPath)
+		assert.NoError(t, statErr, "rotated log file should exist")
+
+		// Cleanup
+		mu.Lock()
+		output = os.Stdout
+		mu.Unlock()
+		reconfigure()
+	})
+
+	t.Run("InitWithRotationCreatesParentDir", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		logPath := tmpDir + "/nested/rotated.log"
+
+		err := Init(Config{
+			Level:   "INFO",
+			Format:  "text",
+			Output:  logPath,
+			MaxSize: 10,
+		})
+		require.NoError(t, err, "Init with rotation should create parent directories")
+
+		Info("nested rotation test")
+
+		_, statErr := os.Stat(logPath)
+		assert.NoError(t, statErr, "rotated log file should exist in nested dir")
+
+		// Cleanup
+		mu.Lock()
+		output = os.Stdout
+		mu.Unlock()
+		reconfigure()
+	})
 }
 
 // ============================================================================

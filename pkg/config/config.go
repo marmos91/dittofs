@@ -128,15 +128,17 @@ type LoggingConfig struct {
 // Rotation is only active when logging output is a file path (not stdout/stderr).
 type LogRotationConfig struct {
 	// MaxSize is the maximum size in megabytes of the log file before it gets rotated.
-	// Default: 100
+	// Default: 100. Setting to 0 uses the default (100 MB).
 	MaxSize int `mapstructure:"max_size" yaml:"max_size"`
 
 	// MaxBackups is the maximum number of old log files to retain.
-	// Default: 5, 0 = keep all
+	// 0 means keep all old log files.
+	// The generated config template sets this to 5.
 	MaxBackups int `mapstructure:"max_backups" yaml:"max_backups"`
 
 	// MaxAge is the maximum number of days to retain old log files.
-	// Default: 30, 0 = no age limit
+	// 0 means no age limit (keep forever).
+	// The generated config template sets this to 30.
 	MaxAge int `mapstructure:"max_age" yaml:"max_age"`
 
 	// Compress determines whether rotated log files are gzip compressed.
