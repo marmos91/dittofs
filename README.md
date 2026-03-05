@@ -618,23 +618,36 @@ cache:
   size: "1Gi"               # supports: "512MB", "2Gi", "4GB", etc.
 ```
 
-### Block Store Architecture
+### Cache
 
-DittoFS uses a **two-tier block store** model. Each share gets its own `BlockStore` instance composed of a local store (required) and an optional remote store with an async syncer.
+DittoFS uses a **mandatory write-through cache** backed by a WAL (Write-Ahead Log) for crash recovery. All file writes pass through the cache before being flushed asynchronously to the configured payload store (S3, filesystem, etc.).
 
 **How it works:**
-1. **Write**: Data is written to the local block store (filesystem or memory)
-2. **Sync**: If a remote store is configured, the syncer asynchronously uploads local blocks
-3. **Read**: Reads check the in-memory read cache (L1), then local store (L2), then remote store (L3)
-4. **Evict**: Local blocks can be evicted after syncing to remote (only with remote store configured)
+1. **Write**: Data is written to in-memory 4MB block buffers and journaled to the WAL on disk
+2. **Flush**: Blocks are uploaded asynchronously to the payload store in the background
+3. **Evict**: After a successful upload, cache blocks become evictable under memory pressure (LRU)
+4. **Recovery**: On crash/restart, the WAL replays uncommitted writes automatically
 
 **Key points:**
-- Each share gets an isolated local storage directory
-- Remote stores are shared across shares via ref counting
-- Eviction without a remote store is refused to prevent data loss
-- Cache stats and eviction are managed via `dfsctl cache stats` and `dfsctl cache evict`
+- The `path` is **required** - the cache creates a `cache.dat` WAL file in this directory
+- Default `path` is `$TMPDIR/dittofs-cache` (e.g., `/tmp/dittofs-cache`) - fine for development, but use a persistent path for production
+- Default `size` is `1Gi` - increase for workloads with large files or many concurrent writers
+- All shares use the same global cache
+- Dirty (unflushed) blocks cannot be evicted, providing backpressure when the payload store is slower than the write rate
 
-See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#6-block-store-configuration) for full details.
+**Sizing guidance:**
+- **Development/testing**: `512Mi` to `1Gi` (default)
+- **General use**: `2Gi` to `4Gi`
+- **Heavy write workloads** (large files, S3 backend): `4Gi` to `16Gi`
+
+```yaml
+# Production example
+cache:
+  path: /var/lib/dfs/cache   # Use a persistent directory (not /tmp)
+  size: "4Gi"
+```
+
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#6-cache-configuration) for full details.
 
 ### Runtime Management (CLI)
 
