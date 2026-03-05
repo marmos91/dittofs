@@ -363,6 +363,55 @@ func TestReadDir_NestedDirectory(t *testing.T) {
 	assert.Contains(t, names, "file.txt")
 }
 
+// TestReadDir_StaleVerifierContinues tests that READDIR continues serving entries
+// when the cookie verifier is stale (directory modified between paginated reads).
+// This prevents macOS Finder error -8062 during concurrent directory operations.
+func TestReadDir_StaleVerifierContinues(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	// Setup: Create a directory with files
+	fx.CreateFile("stale/file1.txt", []byte("1"))
+	fx.CreateFile("stale/file2.txt", []byte("2"))
+	dirHandle := fx.MustGetHandle("stale")
+
+	// First read: get the cookie verifier and a real resume cookie
+	resp1, err := fx.Handler.ReadDir(fx.Context(), &handlers.ReadDirRequest{
+		DirHandle:  dirHandle,
+		Cookie:     0,
+		CookieVerf: 0,
+		Count:      8192,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, types.NFS3OK, resp1.Status)
+	require.NotEmpty(t, resp1.Entries, "expected at least one directory entry to obtain a resume cookie")
+	resumeCookie := resp1.Entries[len(resp1.Entries)-1].Cookie
+	savedVerifier := resp1.CookieVerf
+	require.NotZero(t, resumeCookie, "resume cookie must be non-zero to exercise the verifier check path")
+	require.NotZero(t, savedVerifier, "saved verifier must be non-zero to exercise the verifier check path")
+
+	// Modify the directory (changes mtime, invalidates verifier)
+	fx.CreateFile("stale/file3.txt", []byte("3"))
+
+	// Second read with old verifier and a real non-zero cookie — should succeed, not BAD_COOKIE
+	resp2, err := fx.Handler.ReadDir(fx.Context(), &handlers.ReadDirRequest{
+		DirHandle:  dirHandle,
+		Cookie:     resumeCookie,
+		CookieVerf: savedVerifier,
+		Count:      8192,
+	})
+	require.NoError(t, err)
+	assert.EqualValues(t, types.NFS3OK, resp2.Status, "Stale verifier should not return BAD_COOKIE")
+
+	// Verify that we continue from the cookie position:
+	// - the new file3.txt appears after resuming
+	// - previously returned entries (file1.txt, file2.txt) are not re-returned
+	require.NotEmpty(t, resp2.Entries, "expected entries when resuming directory read after modification")
+	names2 := extractEntryNames(resp2.Entries)
+	assert.Contains(t, names2, "file3.txt", "resumed READDIR should include newly created file3.txt")
+	assert.NotContains(t, names2, "file1.txt", "resumed READDIR should not re-return file1.txt")
+	assert.NotContains(t, names2, "file2.txt", "resumed READDIR should not re-return file2.txt")
+}
+
 // extractEntryNames extracts the names from directory entries.
 func extractEntryNames(entries []*types.DirEntry) []string {
 	names := make([]string, len(entries))
