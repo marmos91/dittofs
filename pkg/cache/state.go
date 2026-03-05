@@ -46,7 +46,10 @@ func (c *Cache) Remove(ctx context.Context, payloadID string) error {
 		atomicSubtract(&c.totalSize, size)
 	}
 	if pendingSize > 0 {
+		c.pendingCond.L.Lock()
 		atomicSubtract(&c.pendingSize, pendingSize)
+		c.pendingCond.Broadcast()
+		c.pendingCond.L.Unlock()
 	}
 
 	// Persist removal to WAL if enabled

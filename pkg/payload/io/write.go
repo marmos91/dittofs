@@ -29,9 +29,10 @@ const (
 // Flush() and improves SMB CLOSE latency.
 //
 // Backpressure: If the cache is full of pending data (ErrCacheFull), the write
-// retries with exponential backoff to allow background uploads to drain pending
-// blocks. This prevents data loss during large sequential writes where the write
-// rate temporarily exceeds the upload drain rate.
+// blocks on a condition variable until the offloader drains pending blocks. Each
+// wait is bounded by cacheFullWaitTimeout but typically wakes in milliseconds
+// when a block upload completes. This prevents data loss during large sequential
+// writes where the write rate temporarily exceeds the upload drain rate.
 func (s *ServiceImpl) WriteAt(ctx context.Context, id metadata.PayloadID, data []byte, offset uint64) error {
 	if len(data) == 0 {
 		return nil
