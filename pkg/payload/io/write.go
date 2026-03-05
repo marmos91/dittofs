@@ -104,6 +104,11 @@ func (s *ServiceImpl) writeBlockWithRetry(ctx context.Context, payloadID string,
 		// Block until offloader drains a block (or timeout/context cancel)
 		if s.backpressureWaiter != nil {
 			s.backpressureWaiter.WaitForPendingDrain(ctx, cacheFullWaitTimeout)
+			// Check context after waiting — if cancelled, return early with
+			// a specific error rather than retrying and getting a generic failure.
+			if ctx.Err() != nil {
+				return fmt.Errorf("write block %d/%d: context cancelled during backpressure: %w", chunkIdx, blockIdx, ctx.Err())
+			}
 		} else {
 			// Fallback for tests without a backpressure waiter
 			select {

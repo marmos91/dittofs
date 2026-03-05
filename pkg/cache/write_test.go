@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 )
 
 func TestWrite_Basic(t *testing.T) {
@@ -150,6 +151,100 @@ func TestWrite_MultipleChunks(t *testing.T) {
 		if blk.ChunkIndex != uint32(i) {
 			t.Errorf("block[%d].ChunkIndex = %d, want %d", i, blk.ChunkIndex, i)
 		}
+	}
+}
+
+// ============================================================================
+// WaitForPendingDrain Tests
+// ============================================================================
+
+func TestWaitForPendingDrain_UnblocksOnDrain(t *testing.T) {
+	c := New(0)
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+
+	// Write a block to create pending data
+	data := make([]byte, BlockSize)
+	if err := c.WriteAt(ctx, "file", 0, data, 0); err != nil {
+		t.Fatalf("WriteAt failed: %v", err)
+	}
+	if c.pendingSize.Load() == 0 {
+		t.Fatal("expected non-zero pendingSize after write")
+	}
+
+	// Simulate an upload completing in a background goroutine
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		c.MarkBlockUploaded(ctx, "file", 0, 0)
+	}()
+
+	// Should unblock promptly when pendingSize decreases
+	drained := c.WaitForPendingDrain(ctx, 5*time.Second)
+	if !drained {
+		t.Error("expected WaitForPendingDrain to return true after drain")
+	}
+}
+
+func TestWaitForPendingDrain_TimeoutReturnsFalse(t *testing.T) {
+	c := New(0)
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+
+	// Write a block — nobody will upload it, so pending never decreases
+	data := make([]byte, BlockSize)
+	if err := c.WriteAt(ctx, "file", 0, data, 0); err != nil {
+		t.Fatalf("WriteAt failed: %v", err)
+	}
+
+	start := time.Now()
+	drained := c.WaitForPendingDrain(ctx, 100*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if drained {
+		t.Error("expected WaitForPendingDrain to return false on timeout")
+	}
+	if elapsed < 90*time.Millisecond {
+		t.Errorf("returned too quickly (%v), expected ~100ms timeout", elapsed)
+	}
+}
+
+func TestWaitForPendingDrain_ContextCancelReturnsFalse(t *testing.T) {
+	c := New(0)
+	defer func() { _ = c.Close() }()
+
+	// Write a block to create pending data
+	bgCtx := context.Background()
+	data := make([]byte, BlockSize)
+	if err := c.WriteAt(bgCtx, "file", 0, data, 0); err != nil {
+		t.Fatalf("WriteAt failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Cancel after a short delay
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	drained := c.WaitForPendingDrain(ctx, 5*time.Second)
+	if drained {
+		t.Error("expected WaitForPendingDrain to return false on context cancel")
+	}
+}
+
+func TestWaitForPendingDrain_AlreadyCancelledContext(t *testing.T) {
+	c := New(0)
+	defer func() { _ = c.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	drained := c.WaitForPendingDrain(ctx, 5*time.Second)
+	if drained {
+		t.Error("expected false for already-cancelled context")
 	}
 }
 
