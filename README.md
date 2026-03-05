@@ -145,19 +145,45 @@ go build -o dfs cmd/dfs/main.go
 # Initialize configuration (creates ~/.config/dfs/config.yaml)
 ./dfs init
 
-# Start server (note the admin password printed on first start)
+# Start server (see "First Run & Admin Password" section below)
 ./dfs start
 ```
+
+### First Run & Admin Password
+
+On first start, DittoFS creates an `admin` user automatically. The password is handled in one of two ways:
+
+**Option 1: Auto-generated password (default)**
+
+```bash
+./dfs start
+# Output:
+# *** IMPORTANT: Admin user created with password: aBcDeFgHiJkLmNoPqRsTuVwX ***
+# Please save this password. It will not be shown again.
+```
+
+The generated password is printed **only once**. If you lose it, you'll need to delete the database and restart.
+The admin account is created with `MustChangePassword` enabled, so you'll be prompted to set a new password on first login via `dfsctl`.
+
+**Option 2: Pre-set password via environment variable**
+
+Set `DITTOFS_ADMIN_INITIAL_PASSWORD` before the first start to choose your own admin password:
+
+```bash
+DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password ./dfs start
+```
+
+When using the environment variable, `MustChangePassword` is **not** enabled, so the password is ready to use as-is. This is especially useful for Docker, Kubernetes, and CI/CD environments where you can't read interactive output.
 
 ### NFS Quickstart
 
 Get an NFS share running in under a minute:
 
 ```bash
-# 1. Start the server (first run prints admin password)
+# 1. Start the server (see "First Run & Admin Password" above)
 ./dfs start
 
-# 2. Login and change admin password
+# 2. Login (use the password from first start output or DITTOFS_ADMIN_INITIAL_PASSWORD)
 ./dfsctl login --server http://localhost:8080 --username admin
 ./dfsctl user change-password
 
@@ -339,13 +365,14 @@ docker pull marmos91c/dittofs:latest
 mkdir -p ~/.config/dittofs
 docker run --rm -v ~/.config/dittofs:/config marmos91c/dittofs:latest init --config /config/config.yaml
 
-# Run DittoFS
+# Run DittoFS (set admin password via env var for Docker)
 docker run -d \
   --name dittofs \
   -p 12049:12049 \
   -p 12445:12445 \
   -p 8080:8080 \
   -p 9090:9090 \
+  -e DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password \
   -v ~/.config/dittofs/config.yaml:/config/config.yaml:ro \
   -v dittofs-metadata:/data/metadata \
   -v dittofs-content:/data/content \
@@ -355,8 +382,8 @@ docker run -d \
 # Check health
 curl http://localhost:8080/health
 
-# View logs
-docker logs -f dittofs
+# View logs (if no DITTOFS_ADMIN_INITIAL_PASSWORD was set, the auto-generated password appears here)
+docker logs dittofs | head -20
 ```
 
 **Available Tags:**
@@ -640,8 +667,39 @@ controlplane:
 
 cache:
   path: /var/lib/dfs/cache
-  size: "1Gi"
+  size: "1Gi"               # supports: "512MB", "2Gi", "4GB", etc.
 ```
+
+### Cache
+
+DittoFS uses a **mandatory write-through cache** backed by a WAL (Write-Ahead Log) for crash recovery. All file writes pass through the cache before being flushed asynchronously to the configured payload store (S3, filesystem, etc.).
+
+**How it works:**
+1. **Write**: Data is written to in-memory 4MB block buffers and journaled to the WAL on disk
+2. **Flush**: Blocks are uploaded asynchronously to the payload store in the background
+3. **Evict**: After a successful upload, cache blocks become evictable under memory pressure (LRU)
+4. **Recovery**: On crash/restart, the WAL replays uncommitted writes automatically
+
+**Key points:**
+- The `path` is **required** - the cache creates a `cache.dat` WAL file in this directory
+- Default `path` is `$TMPDIR/dittofs-cache` (e.g., `/tmp/dittofs-cache`) - fine for development, but use a persistent path for production
+- Default `size` is `1Gi` - increase for workloads with large files or many concurrent writers
+- All shares use the same global cache
+- Dirty (unflushed) blocks cannot be evicted, providing backpressure when the payload store is slower than the write rate
+
+**Sizing guidance:**
+- **Development/testing**: `512Mi` to `1Gi` (default)
+- **General use**: `2Gi` to `4Gi`
+- **Heavy write workloads** (large files, S3 backend): `4Gi` to `16Gi`
+
+```yaml
+# Production example
+cache:
+  path: /var/lib/dfs/cache   # Use a persistent directory (not /tmp)
+  size: "4Gi"
+```
+
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#6-cache-configuration) for full details.
 
 ### Runtime Management (CLI)
 
