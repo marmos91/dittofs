@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"errors"
+
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -83,11 +85,20 @@ func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx
 		return fmt.Errorf("write cache file: %w", err)
 	}
 
+	if err := f.Sync(); err != nil {
+		f.Close()
+		mb.mu.Unlock()
+		return fmt.Errorf("sync cache file: %w", err)
+	}
 	dropPageCache(f)
 	f.Close()
 
 	fb, err := bc.lookupFileBlock(ctx, blockID)
 	if err != nil {
+		if !errors.Is(err, metadata.ErrFileBlockNotFound) {
+			mb.mu.Unlock()
+			return fmt.Errorf("lookup file block: %w", err)
+		}
 		fb = metadata.NewFileBlock(blockID, path)
 	}
 	fb.CachePath = path

@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"errors"
+
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -35,8 +37,13 @@ func (bc *BlockCache) Recover(ctx context.Context) error {
 
 		fb, err := bc.blockStore.GetFileBlock(ctx, blockID)
 		if err != nil {
-			os.Remove(path)
-			orphansDeleted++
+			var storeErr *metadata.StoreError
+			if errors.As(err, &storeErr) && errors.Is(err, metadata.ErrFileBlockNotFound) {
+				os.Remove(path)
+				orphansDeleted++
+			} else {
+				logger.Warn("cache: recovery skipping block due to transient error", "blockID", blockID, "error", err)
+			}
 			return nil
 		}
 
