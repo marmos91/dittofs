@@ -54,8 +54,8 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		Threads:   4,
-		FileSize:  1 << 30,        // 1 GiB
-		BlockSize: 4 << 10,        // 4 KiB
+		FileSize:  1 << 30, // 1 GiB
+		BlockSize: 4 << 10, // 4 KiB
 		Duration:  60 * time.Second,
 		MetaFiles: 1000,
 	}

@@ -76,7 +76,7 @@ func TestParseSize_InvalidInputs(t *testing.T) {
 	bad := []string{
 		"",
 		"abc",
-		"GiB",   // no number
+		"GiB",    // no number
 		"--1KB",  // bad number format
 		"hello5", // number not at start
 	}
@@ -234,7 +234,7 @@ func TestValidate_FileNotDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	r := NewRunner(Config{Path: f.Name()}, nil)
 	if err := r.Validate(); err == nil {
@@ -253,7 +253,7 @@ func TestValidate_ReadOnlyDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Ensure cleanup can remove it.
-	t.Cleanup(func() { os.Chmod(roDir, 0o755) })
+	t.Cleanup(func() { _ = os.Chmod(roDir, 0o755) })
 
 	r := NewRunner(Config{Path: roDir}, nil)
 	if err := r.Validate(); err == nil {
@@ -294,8 +294,8 @@ func TestRun_AllWorkloads(t *testing.T) {
 	cfg := Config{
 		Path:      dir,
 		Threads:   1,
-		FileSize:  64 << 10,  // 64 KiB
-		BlockSize: 4 << 10,   // 4 KiB
+		FileSize:  64 << 10, // 64 KiB
+		BlockSize: 4 << 10,  // 4 KiB
 		Duration:  1 * time.Second,
 		MetaFiles: 10,
 		System:    "test-system",

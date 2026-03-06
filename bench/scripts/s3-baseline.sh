@@ -204,7 +204,7 @@ test_metadata() {
     log "TEST: Metadata ops — ${iterations} iterations..."
 
     # HEAD (stat) latency — use rclone lsf on a known single file
-    local head_start head_end head_total_ms
+    local head_total_ms
     head_total_ms=0
     for i in $(seq 1 "$iterations"); do
         local start end
@@ -216,7 +216,7 @@ test_metadata() {
     local head_avg_ms=$(( head_total_ms / iterations ))
 
     # LIST latency — list the multi/ prefix
-    local list_start list_end list_total_ms
+    local list_total_ms
     list_total_ms=0
     for i in $(seq 1 "$iterations"); do
         local start end

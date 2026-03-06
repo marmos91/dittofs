@@ -38,8 +38,8 @@ func (r *Runner) Validate() error {
 	if err != nil {
 		return fmt.Errorf("path %q is not writable: %w", r.cfg.Path, err)
 	}
-	f.Close()
-	os.Remove(probe)
+	_ = f.Close()
+	_ = os.Remove(probe)
 
 	return nil
 }
@@ -55,7 +55,7 @@ func (r *Runner) Run(ctx context.Context) (*Result, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create bench dir: %w", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	result := &Result{
 		Timestamp: time.Now().UTC(),

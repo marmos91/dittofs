@@ -99,9 +99,9 @@ type Runtime struct {
 	identitySvc  *identity.Service
 	mountTracker *MountTracker
 
-	cacheConfig      *CacheConfig
-	offloaderConfig  *OffloaderConfig
-	settingsWatcher  *SettingsWatcher
+	cacheConfig     *CacheConfig
+	offloaderConfig *OffloaderConfig
+	settingsWatcher *SettingsWatcher
 
 	adapterProviders   map[string]any
 	adapterProvidersMu sync.RWMutex

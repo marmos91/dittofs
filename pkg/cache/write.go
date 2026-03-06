@@ -199,8 +199,6 @@ func (c *Cache) writeAtInternal(ctx context.Context, payloadID string, chunkIdx 
 
 			// Re-acquire file entry lock after waking up
 			entry.mu.Lock()
-			// Recalculate newMemory since blocks may have been created while we waited
-			newMemory = c.countNewBlockMemory(entry, chunkIdx, startBlock, endBlock)
 		}
 	}
 

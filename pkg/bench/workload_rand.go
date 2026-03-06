@@ -21,7 +21,7 @@ func runRandWrite(ctx context.Context, cfg Config, dir string, progress Progress
 			return nil, fmt.Errorf("create %s: %w", fname, err)
 		}
 		if err := f.Truncate(cfg.FileSize); err != nil {
-			f.Close()
+			_ = f.Close()
 			return nil, fmt.Errorf("truncate %s: %w", fname, err)
 		}
 		files[t] = f
