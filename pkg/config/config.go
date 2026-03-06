@@ -58,6 +58,9 @@ type Config struct {
 	// This is used by 'dittofs init' to set up the first admin user
 	Admin AdminConfig `mapstructure:"admin" yaml:"admin"`
 
+	// Offloader configures background data transfer to backend storage (S3, filesystem)
+	Offloader OffloaderConfig `mapstructure:"offloader" yaml:"offloader"`
+
 	// Lock contains lock manager configuration
 	// Controls lock limits, timeouts, and behavior
 	Lock LockConfig `mapstructure:"lock" yaml:"lock"`
@@ -161,6 +164,41 @@ type CacheConfig struct {
 	// Supports human-readable formats: "1GB", "512MB", "10Gi"
 	// Default: 1GB
 	Size bytesize.ByteSize `mapstructure:"size" yaml:"size,omitempty"`
+
+	// MaxPendingSize is the maximum amount of dirty (not yet uploaded) data
+	// allowed in the cache. When this limit is reached, writes block until
+	// the offloader drains data to the backend store. This provides
+	// backpressure for slow backends like S3.
+	// Supports human-readable formats: "512MB", "1GB", "2Gi"
+	// Default: 1GB
+	MaxPendingSize bytesize.ByteSize `mapstructure:"max_pending_size" yaml:"max_pending_size,omitempty"`
+}
+
+// OffloaderConfig configures the background offloader that transfers cached
+// data to the backend store (S3, filesystem, etc.).
+// These defaults are tuned for good S3 performance out of the box.
+type OffloaderConfig struct {
+	// ParallelUploads is the number of concurrent block uploads to the backend.
+	// Higher values increase throughput for high-latency backends (S3).
+	// Default: 16 (yields ~64 MB/s with 4MB blocks to S3)
+	ParallelUploads int `mapstructure:"parallel_uploads" yaml:"parallel_uploads,omitempty"`
+
+	// ParallelDownloads is the number of concurrent block downloads per file.
+	// Default: 4
+	ParallelDownloads int `mapstructure:"parallel_downloads" yaml:"parallel_downloads,omitempty"`
+
+	// PrefetchBlocks is the number of blocks to prefetch ahead of reads.
+	// Set to 0 to disable prefetching.
+	// Default: 4 (16MB ahead at 4MB block size)
+	PrefetchBlocks int `mapstructure:"prefetch_blocks" yaml:"prefetch_blocks,omitempty"`
+
+	// SmallFileThreshold is the file size below which files are flushed
+	// synchronously (blocking) instead of asynchronously. This prevents
+	// pendingSize buildup when creating many small files.
+	// Supports human-readable formats: "4MB", "1MB"
+	// Set to 0 to disable (all files use async flush).
+	// Default: 4MB (1 block)
+	SmallFileThreshold bytesize.ByteSize `mapstructure:"small_file_threshold" yaml:"small_file_threshold,omitempty"`
 }
 
 // AdminConfig contains initial admin user configuration for bootstrap.

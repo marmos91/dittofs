@@ -30,8 +30,10 @@ const (
 
 // Backpressure constants.
 // MaxPendingSize limits pending (dirty) data to prevent OOM even when cache is unlimited.
+// The 2GB default matches typical cache sizes and provides headroom for async flushes
+// on S3 backends, while memory backends drain instantly so the limit is never reached.
 const (
-	DefaultMaxPendingSize = 512 * 1024 * 1024 // 512MB default limit for pending data
+	DefaultMaxPendingSize = 2 * 1024 * 1024 * 1024 // 2GB default limit for pending data
 )
 
 // ============================================================================

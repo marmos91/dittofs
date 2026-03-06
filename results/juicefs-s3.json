@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-03-03T10:45:50.682100814Z",
+  "system": "juicefs-s3",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 4,
+    "file_size": 67108864,
+    "block_size": 4096,
+    "duration": 30000000000,
+    "meta_files": 200
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 9.703439520118673,
+      "latency_p50_us": 6549,
+      "latency_p95_us": 579391,
+      "latency_p99_us": 1047660,
+      "latency_avg_us": 103040.57,
+      "total_ops": 600,
+      "total_bytes": 6600,
+      "errors": 0,
+      "duration": 61833744494
+    },
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 156836.44762672193,
+      "latency_p50_us": 1,
+      "latency_p95_us": 2,
+      "latency_p99_us": 13,
+      "latency_avg_us": 4.963088728939316,
+      "total_ops": 4705094,
+      "total_bytes": 19272065024,
+      "errors": 0,
+      "duration": 30000003642
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 4455.51147578217,
+      "latency_p50_us": 4,
+      "latency_p95_us": 844,
+      "latency_p99_us": 2845,
+      "latency_avg_us": 221.57226220579653,
+      "total_ops": 133666,
+      "total_bytes": 547495936,
+      "errors": 0,
+      "duration": 30000147172
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 142.40410755213964,
+      "latency_p50_us": 1751,
+      "latency_p95_us": 34259,
+      "latency_p99_us": 117175,
+      "latency_avg_us": 6797.41796875,
+      "total_ops": 256,
+      "total_bytes": 268435456,
+      "errors": 0,
+      "duration": 1797700954
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 23.933625796275855,
+      "latency_p50_us": 761,
+      "latency_p95_us": 1294,
+      "latency_p99_us": 1612,
+      "latency_avg_us": 851.60546875,
+      "total_ops": 256,
+      "total_bytes": 268435456,
+      "errors": 0,
+      "duration": 10696248123
+    }
+  },
+  "total_duration": 228517641366
+}

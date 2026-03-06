@@ -391,6 +391,9 @@ func (c *Cache) Close() error {
 	c.files = nil
 	c.totalSize.Store(0)
 
+	// Wake any writers blocked on backpressure so they can see the closed state
+	c.pendingCond.Broadcast()
+
 	// Close persister if enabled
 	if c.persister != nil {
 		if err := c.persister.Close(); err != nil {

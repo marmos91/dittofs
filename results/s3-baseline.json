@@ -1,0 +1,51 @@
+{
+  "timestamp": "2026-03-03T11:00:00Z",
+  "test": "s3-baseline",
+  "provider": "Scaleway Object Storage",
+  "region": "fr-par",
+  "bucket": "dittofs-bench",
+  "vm": "DEV1-S (2 vCPU, 2GB RAM)",
+  "notes": "Raw S3 throughput from server VM, no filesystem layer. Using rclone as S3 client.",
+  "results": {
+    "multi_file_put": {
+      "description": "Upload 50 x 4MB files",
+      "parallelism_sweep": {
+        "4_transfers": {"elapsed_ms": 7808, "throughput_mbps": 25.64},
+        "8_transfers": {"elapsed_ms": 4301, "throughput_mbps": 46.51},
+        "16_transfers": {"elapsed_ms": 6922, "throughput_mbps": 28.90}
+      },
+      "best_throughput_mbps": 46.51,
+      "best_parallelism": 8
+    },
+    "multi_file_get": {
+      "description": "Download 50 x 4MB files",
+      "parallelism_sweep": {
+        "4_transfers": {"elapsed_ms": 766, "throughput_mbps": 263.15},
+        "8_transfers": {"elapsed_ms": 1699, "throughput_mbps": 118.34},
+        "16_transfers": {"elapsed_ms": 772, "throughput_mbps": 259.74}
+      },
+      "best_throughput_mbps": 263.15,
+      "best_parallelism": 4
+    },
+    "large_file_put": {
+      "description": "Upload 1 x 256MB file",
+      "chunk_sweep": {
+        "default": {"elapsed_ms": 13999, "throughput_mbps": 18.29},
+        "16M_chunk_8_concurrency": {"elapsed_ms": 10357, "throughput_mbps": 24.73},
+        "64M_chunk_8_concurrency": {"elapsed_ms": 5498, "throughput_mbps": 46.63}
+      },
+      "best_throughput_mbps": 46.63,
+      "best_config": "64M chunks, 8 concurrency"
+    },
+    "large_file_get": {
+      "description": "Download 1 x 256MB file",
+      "elapsed_ms": 7207,
+      "throughput_mbps": 35.55
+    },
+    "metadata": {
+      "head_avg_ms": 201,
+      "list_avg_ms": 159,
+      "iterations": 50
+    }
+  }
+}

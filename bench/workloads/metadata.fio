@@ -1,0 +1,14 @@
+[metadata]
+description=Metadata-heavy small file operations
+rw=write
+bs=4k
+nrfiles=1000
+filesize=4k
+create_on_open=1
+openfiles=1
+ioengine=${FIO_ENGINE:-posixaio}
+numjobs=${BENCH_THREADS:-4}
+runtime=${BENCH_RUNTIME:-60}
+time_based
+directory=/mnt/bench
+group_reporting

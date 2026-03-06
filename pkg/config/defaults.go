@@ -25,6 +25,7 @@ func ApplyDefaults(cfg *Config) {
 	applyDatabaseDefaults(&cfg.Database)
 	applyControlPlaneDefaults(&cfg.ControlPlane)
 	applyCacheDefaults(&cfg.Cache)
+	applyOffloaderDefaults(&cfg.Offloader)
 	applyAdminDefaults(&cfg.Admin)
 	applyLockDefaults(&cfg.Lock)
 	applyKerberosDefaults(&cfg.Kerberos)
@@ -92,6 +93,22 @@ func applyCacheDefaults(cfg *CacheConfig) {
 		cfg.Size = bytesize.ByteSize(bytesize.GiB) // 1 GiB
 	}
 	// Path has no default - it's required and must be configured by user
+}
+
+// applyOffloaderDefaults sets offloader defaults for good S3 performance out of the box.
+func applyOffloaderDefaults(cfg *OffloaderConfig) {
+	if cfg.ParallelUploads == 0 {
+		cfg.ParallelUploads = 16
+	}
+	if cfg.ParallelDownloads == 0 {
+		cfg.ParallelDownloads = 8
+	}
+	if cfg.PrefetchBlocks == 0 {
+		cfg.PrefetchBlocks = 16
+	}
+	// SmallFileThreshold defaults to 0 (disabled) - all flushes are async.
+	// WAL-backed cache ensures durability. Set to e.g. "4MiB" to re-enable
+	// synchronous flush for small files if needed.
 }
 
 // applyAdminDefaults sets admin user defaults.

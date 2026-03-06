@@ -1078,6 +1078,61 @@ func TestMetadataService_CommitWrite(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, uint32(0o0755), file.Mode) // setuid cleared
 	})
+
+	t.Run("mtime frozen across write session", func(t *testing.T) {
+		t.Parallel()
+		fx := newTestFixture(t)
+
+		// Create file
+		_, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "frozen.txt", &metadata.FileAttr{
+			Mode: 0644,
+		})
+		require.NoError(t, err)
+
+		handle, err := fx.store.GetChild(context.Background(), fx.rootHandle, "frozen.txt")
+		require.NoError(t, err)
+
+		// First write — establishes the frozen mtime
+		intent1, err := fx.service.PrepareWrite(fx.rootContext(), handle, 1024)
+		require.NoError(t, err)
+		file1, err := fx.service.CommitWrite(fx.rootContext(), intent1)
+		require.NoError(t, err)
+		frozenMtime := file1.Mtime
+
+		// Second write — mtime must be identical (frozen)
+		intent2, err := fx.service.PrepareWrite(fx.rootContext(), handle, 2048)
+		require.NoError(t, err)
+		assert.Equal(t, frozenMtime, intent2.NewMtime, "PrepareWrite should reuse frozen mtime")
+
+		file2, err := fx.service.CommitWrite(fx.rootContext(), intent2)
+		require.NoError(t, err)
+		assert.Equal(t, frozenMtime, file2.Mtime, "CommitWrite should return frozen mtime")
+
+		// Third write — still frozen
+		intent3, err := fx.service.PrepareWrite(fx.rootContext(), handle, 4096)
+		require.NoError(t, err)
+		file3, err := fx.service.CommitWrite(fx.rootContext(), intent3)
+		require.NoError(t, err)
+		assert.Equal(t, frozenMtime, file3.Mtime, "mtime must stay frozen across all writes in session")
+
+		// GetFile should also return the frozen mtime (pending writes merge)
+		fileGet, err := fx.service.GetFile(context.Background(), handle)
+		require.NoError(t, err)
+		assert.Equal(t, frozenMtime, fileGet.Mtime, "GetFile must return frozen mtime")
+		assert.Equal(t, frozenMtime, fileGet.Ctime, "GetFile ctime must match frozen mtime")
+
+		// Flush pending writes (simulates COMMIT)
+		flushed, err := fx.service.FlushPendingWriteForFile(fx.rootContext(), handle)
+		require.NoError(t, err)
+		assert.True(t, flushed)
+
+		// After flush, GetFile reads from store — mtime must still match
+		filePostFlush, err := fx.service.GetFile(context.Background(), handle)
+		require.NoError(t, err)
+		assert.Equal(t, frozenMtime, filePostFlush.Mtime, "mtime must survive flush to store")
+		assert.Equal(t, frozenMtime, filePostFlush.Ctime, "ctime must survive flush to store")
+		assert.Equal(t, uint64(4096), filePostFlush.Size, "size must reflect max of all writes")
+	})
 }
 
 func TestMetadataService_PrepareRead(t *testing.T) {
