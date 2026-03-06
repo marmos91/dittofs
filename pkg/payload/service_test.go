@@ -15,25 +15,39 @@ import (
 func newTestService(t *testing.T) *PayloadService {
 	t.Helper()
 
-	c := cache.New(10 * 1024 * 1024) // 10MB cache
-	blockStore := storemem.New()
+	tmpDir := t.TempDir()
 	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	tm := offloader.New(c, blockStore, metaStore, offloader.DefaultConfig())
+	bc, err := cache.New(tmpDir, 0, 0, metaStore)
+	if err != nil {
+		t.Fatalf("cache.New() error = %v", err)
+	}
+	blockStore := storemem.New()
+	tm := offloader.New(bc, blockStore, metaStore, offloader.DefaultConfig())
 
-	svc, err := New(c, tm)
+	svc, err := New(bc, tm)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+
+	t.Cleanup(func() {
+		tm.Close()
+		bc.Close()
+	})
+
 	return svc
 }
 
 func TestPayloadService_New(t *testing.T) {
-	c := cache.New(10 * 1024 * 1024)
-	blockStore := storemem.New()
+	tmpDir := t.TempDir()
 	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	tm := offloader.New(c, blockStore, metaStore, offloader.DefaultConfig())
+	bc, err := cache.New(tmpDir, 0, 0, metaStore)
+	if err != nil {
+		t.Fatalf("cache.New() error = %v", err)
+	}
+	blockStore := storemem.New()
+	tm := offloader.New(bc, blockStore, metaStore, offloader.DefaultConfig())
 
-	svc, err := New(c, tm)
+	svc, err := New(bc, tm)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -43,21 +57,30 @@ func TestPayloadService_New(t *testing.T) {
 }
 
 func TestPayloadService_New_NilCache(t *testing.T) {
-	blockStore := storemem.New()
-	c := cache.New(10 * 1024 * 1024)
+	tmpDir := t.TempDir()
 	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	tm := offloader.New(c, blockStore, metaStore, offloader.DefaultConfig())
+	bc, err := cache.New(tmpDir, 0, 0, metaStore)
+	if err != nil {
+		t.Fatalf("cache.New() error = %v", err)
+	}
+	blockStore := storemem.New()
+	tm := offloader.New(bc, blockStore, metaStore, offloader.DefaultConfig())
 
-	_, err := New(nil, tm)
+	_, err = New(nil, tm)
 	if err == nil {
 		t.Error("New(nil, tm) should return error")
 	}
 }
 
 func TestPayloadService_New_NilTransferManager(t *testing.T) {
-	c := cache.New(10 * 1024 * 1024)
+	tmpDir := t.TempDir()
+	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	bc, err := cache.New(tmpDir, 0, 0, metaStore)
+	if err != nil {
+		t.Fatalf("cache.New() error = %v", err)
+	}
 
-	_, err := New(c, nil)
+	_, err = New(bc, nil)
 	if err == nil {
 		t.Error("New(c, nil) should return error")
 	}
@@ -242,5 +265,115 @@ func TestPayloadService_HealthCheck(t *testing.T) {
 	ctx := context.Background()
 	if err := svc.HealthCheck(ctx); err != nil {
 		t.Errorf("HealthCheck() error = %v", err)
+	}
+}
+
+func TestPayloadService_ReadAt_SparseReturnsZeros(t *testing.T) {
+	svc := newTestService(t)
+
+	ctx := context.Background()
+	payloadID := metadata.PayloadID("sparse-file")
+
+	// Write at offset 1024, leaving 0..1023 sparse
+	_ = svc.WriteAt(ctx, payloadID, []byte("data at offset"), 1024)
+
+	// Read from the sparse region (offset 0)
+	buf := make([]byte, 16)
+	for i := range buf {
+		buf[i] = 0xFF // pre-fill to verify zeroing
+	}
+	n, err := svc.ReadAt(ctx, payloadID, buf, 0)
+	if err != nil {
+		t.Fatalf("ReadAt() sparse region error = %v", err)
+	}
+	if n != 16 {
+		t.Errorf("ReadAt() n = %d, want 16", n)
+	}
+	for i, b := range buf {
+		if b != 0 {
+			t.Fatalf("Expected zero at byte %d, got %d", i, b)
+		}
+	}
+}
+
+func TestPayloadService_ReadAtWithCOWSource(t *testing.T) {
+	svc := newTestService(t)
+
+	ctx := context.Background()
+	cowSource := metadata.PayloadID("cow-source")
+	primary := metadata.PayloadID("primary")
+
+	// Write data only to the COW source
+	data := []byte("cow data here!")
+	_ = svc.WriteAt(ctx, cowSource, data, 0)
+
+	// Read from primary with COW fallback
+	buf := make([]byte, len(data))
+	n, err := svc.ReadAtWithCOWSource(ctx, primary, cowSource, buf, 0)
+	if err != nil {
+		t.Fatalf("ReadAtWithCOWSource() error = %v", err)
+	}
+	if n != len(data) {
+		t.Errorf("ReadAtWithCOWSource() n = %d, want %d", n, len(data))
+	}
+	if string(buf) != string(data) {
+		t.Errorf("ReadAtWithCOWSource() = %q, want %q", buf, data)
+	}
+
+	// Subsequent read from primary should hit cache (COW copied it)
+	buf2 := make([]byte, len(data))
+	n, err = svc.ReadAt(ctx, primary, buf2, 0)
+	if err != nil {
+		t.Fatalf("ReadAt() after COW error = %v", err)
+	}
+	if string(buf2) != string(data) {
+		t.Errorf("ReadAt() after COW = %q, want %q", buf2, data)
+	}
+}
+
+func TestPayloadService_Truncate(t *testing.T) {
+	svc := newTestService(t)
+
+	ctx := context.Background()
+	payloadID := metadata.PayloadID("truncate-file")
+
+	// Write data
+	_ = svc.WriteAt(ctx, payloadID, []byte("hello world"), 0)
+
+	// Truncate to 5 bytes
+	if err := svc.Truncate(ctx, payloadID, 5); err != nil {
+		t.Fatalf("Truncate() error = %v", err)
+	}
+
+	size, err := svc.GetSize(ctx, payloadID)
+	if err != nil {
+		t.Fatalf("GetSize() after truncate error = %v", err)
+	}
+	if size != 5 {
+		t.Errorf("GetSize() = %d, want 5", size)
+	}
+}
+
+func TestPayloadService_Delete(t *testing.T) {
+	svc := newTestService(t)
+
+	ctx := context.Background()
+	payloadID := metadata.PayloadID("delete-file")
+
+	// Write data
+	_ = svc.WriteAt(ctx, payloadID, []byte("hello"), 0)
+
+	// Delete
+	if err := svc.Delete(ctx, payloadID); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+
+	// Should no longer exist in cache
+	exists, err := svc.Exists(ctx, payloadID)
+	if err != nil {
+		t.Fatalf("Exists() after delete error = %v", err)
+	}
+	if exists {
+		t.Error("Exists() = true after delete, want false")
 	}
 }

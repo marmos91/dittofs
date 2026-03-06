@@ -1,20 +1,26 @@
 package offloader
 
-import "github.com/marmos91/dittofs/pkg/payload/block"
+import (
+	"time"
 
-// BlockSize is the size of a single block (4MB).
-// Re-exported from block package for convenience.
-const BlockSize = block.Size
+	"github.com/marmos91/dittofs/pkg/cache"
+)
+
+// BlockSize is the size of a single block (8MB).
+// Re-exported from cache package for convenience.
+const BlockSize = cache.BlockSize
 
 // DefaultParallelUploads is the default number of concurrent uploads.
-// At ~4 MB/s per S3 connection, 16 connections yields ~64 MB/s upload bandwidth.
+// At ~8 MB/s per S3 connection, 16 connections yields ~128 MB/s upload bandwidth.
 const DefaultParallelUploads = 16
 
 // DefaultParallelDownloads is the default number of concurrent downloads per file.
-const DefaultParallelDownloads = 8
+// With 200-connection S3 pool and 8MB blocks, 32 workers can saturate the pool.
+const DefaultParallelDownloads = 32
 
 // DefaultPrefetchBlocks is the default number of blocks to prefetch.
-const DefaultPrefetchBlocks = 16
+// 64 blocks = 512MB lookahead at 8MB block size.
+const DefaultPrefetchBlocks = 64
 
 // TransferType indicates the type of transfer operation.
 type TransferType int
@@ -44,96 +50,48 @@ func (t TransferType) String() string {
 
 // Config holds configuration for the Offloader.
 type Config struct {
-	// ParallelUploads is the initial number of concurrent block uploads.
-	// The adaptive congestion control will start from this value.
-	// Default: 4
-	ParallelUploads int
-
-	// MaxParallelUploads caps the maximum concurrent uploads.
-	// Use this to limit bandwidth consumption.
-	// Set to 0 for unlimited (congestion control will find optimal).
-	// Default: 0 (unlimited, auto-tuned)
-	MaxParallelUploads int
-
-	// ParallelDownloads is the number of concurrent block downloads per file.
-	// Default: 4
-	ParallelDownloads int
-
-	// PrefetchBlocks is the number of blocks to prefetch ahead of reads.
-	// Set to 0 to disable prefetching.
-	// Default: 4 (16MB ahead at 4MB block size)
-	PrefetchBlocks int
-
-	// SmallFileThreshold is the file size threshold for synchronous flush.
-	// Files smaller than this size are uploaded synchronously during Flush()
-	// to immediately free their block buffers and prevent pendingSize buildup
-	// when creating many small files.
-	// Set to 0 to disable (all files use async flush).
-	// Default: 0 (disabled)
-	SmallFileThreshold int64
+	ParallelUploads    int           // Concurrent block uploads (default: 16)
+	MaxParallelUploads int           // Max concurrent uploads; 0 = unlimited
+	ParallelDownloads  int           // Concurrent block downloads per file (default: 32)
+	PrefetchBlocks     int           // Blocks to prefetch ahead of reads; 0 = disabled (default: 64)
+	SmallFileThreshold int64         // Files below this are flushed synchronously; 0 = disabled
+	UploadInterval     time.Duration // Periodic uploader scan interval (default: 2s)
+	UploadDelay        time.Duration // Min block age before periodic upload; Flush ignores this (default: 10s)
 }
 
-// DefaultConfig returns the default Offloader configuration.
-// These defaults are tuned for good S3 performance out of the box:
-//   - 16 parallel uploads for high throughput (~64 MB/s with 4MB blocks)
-//   - SmallFileThreshold = 0: all flushes are async, data safety via WAL-backed cache
-//   - 16 prefetch blocks (64MB lookahead) for sequential read throughput
-//   - 8 parallel downloads per file for S3 bandwidth utilization
+// DefaultConfig returns the default Offloader configuration tuned for S3 performance.
 func DefaultConfig() Config {
 	return Config{
 		ParallelUploads:    DefaultParallelUploads,
-		MaxParallelUploads: 0, // Unlimited, auto-tuned
+		MaxParallelUploads: 0,
 		ParallelDownloads:  DefaultParallelDownloads,
 		PrefetchBlocks:     DefaultPrefetchBlocks,
-		SmallFileThreshold: 0, // Disabled - all flushes async, WAL ensures durability
+		SmallFileThreshold: 0,
+		UploadInterval:     2 * time.Second,
+		UploadDelay:        10 * time.Second,
 	}
 }
 
 // TransferQueueConfig holds configuration for the transfer queue.
 type TransferQueueConfig struct {
-	// QueueSize is the maximum number of pending transfer requests per channel.
-	// Default: 1000
-	QueueSize int
-
-	// Workers is the number of concurrent worker goroutines.
-	// Default: 4
-	Workers int
+	QueueSize       int // Max pending requests per channel (default: 1000)
+	Workers         int // Upload worker goroutines (default: 4)
+	DownloadWorkers int // Download+prefetch worker goroutines (default: ParallelDownloads)
 }
 
 // DefaultTransferQueueConfig returns sensible defaults.
 func DefaultTransferQueueConfig() TransferQueueConfig {
 	return TransferQueueConfig{
-		QueueSize: 1000,
-		Workers:   4,
+		QueueSize:       1000,
+		Workers:         4,
+		DownloadWorkers: DefaultParallelDownloads,
 	}
 }
 
 // FlushResult indicates the outcome of a flush operation.
 type FlushResult struct {
-	// BytesFlushed is the number of bytes written.
-	BytesFlushed uint64
-
-	// AlreadyFlushed indicates all data was already flushed (no-op).
-	AlreadyFlushed bool
-
-	// Finalized indicates the data is durable in block store.
-	Finalized bool
+	BytesFlushed   uint64 // Bytes written
+	AlreadyFlushed bool   // All data was already flushed (no-op)
+	Finalized      bool   // Data is durable in block store
 }
 
-// RecoveryStats holds statistics about the recovery scan.
-// Note: Uploads happen asynchronously after scan completes.
-type RecoveryStats struct {
-	FilesScanned int   // Number of files in cache
-	BlocksFound  int   // Number of dirty blocks found
-	BytesPending int64 // Bytes of dirty data to upload
-
-	// RecoveredFileSizes maps payloadID to the actual file size recovered from WAL.
-	// This allows consumers to reconcile metadata with actual cached data.
-	// File size is calculated as max(blockBase + dataSize) across all recovered blocks.
-	//
-	// Key insight: WAL logs individual block writes. On crash recovery, the metadata
-	// may have a larger file size from CommitWrite if crash occurred after metadata
-	// update but before WAL persistence. Use this map to truncate metadata to match
-	// actual recovered data.
-	RecoveredFileSizes map[string]uint64
-}

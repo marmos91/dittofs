@@ -35,9 +35,9 @@ func TestConformance(t *testing.T) {
 
 		caps := metadata.FilesystemCapabilities{
 			MaxReadSize:         1048576,
-			PreferredReadSize:   65536,
+			PreferredReadSize:   1048576,
 			MaxWriteSize:        1048576,
-			PreferredWriteSize:  65536,
+			PreferredWriteSize:  1048576,
 			MaxFileSize:         9223372036854775807,
 			MaxFilenameLen:      255,
 			MaxPathLen:          4096,

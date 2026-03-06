@@ -5,13 +5,12 @@ import (
 	"encoding/base64"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/payload/block"
-	"github.com/marmos91/dittofs/pkg/payload/chunk"
 	"github.com/marmos91/dittofs/pkg/payload/store"
 )
 
@@ -24,14 +23,8 @@ func hashB64(h [32]byte) string {
 // to finish processing during graceful shutdown.
 const defaultShutdownTimeout = 30 * time.Second
 
-// blockPool reuses 4MB buffers for block uploads to reduce GC pressure.
-// Uses *[]byte to satisfy staticcheck SA6002 (sync.Pool prefers pointer types).
-var blockPool = sync.Pool{
-	New: func() any {
-		buf := make([]byte, BlockSize)
-		return &buf
-	},
-}
+// blockKey uniquely identifies a block within a file (flat index).
+type blockKey = uint64
 
 // fileUploadState tracks in-flight uploads for a single file.
 type fileUploadState struct {
@@ -40,16 +33,10 @@ type fileUploadState struct {
 	errors   []error           // Accumulated errors
 	errorsMu sync.Mutex        // Protects errors
 	blocksMu sync.Mutex        // Protects uploadedBlocks and blockHashes
-	uploaded map[blockKey]bool // Tracks which blocks have been uploaded
+	uploaded map[blockKey]bool  // Tracks which blocks have been uploaded
 
-	// Block hashes for finalization (sorted by chunk/block index)
+	// Block hashes for finalization (sorted by block index)
 	blockHashes map[blockKey][32]byte
-}
-
-// blockKey uniquely identifies a block within a file.
-type blockKey struct {
-	chunkIdx uint32
-	blockIdx uint32
 }
 
 // downloadResult is a broadcast-capable result for in-flight download deduplication.
@@ -65,21 +52,12 @@ type downloadResult struct {
 // It receives the payloadID and a list of block hashes for computing the final object hash.
 type FinalizationCallback func(ctx context.Context, payloadID string, blockHashes [][32]byte)
 
-// Offloader handles eager upload and parallel download for cache-to-block-store integration.
-//
-// Key features:
-//   - Eager upload: Uploads complete 4MB blocks immediately in background goroutines
-//   - Download priority: Downloads pause uploads to minimize read latency
-//   - Prefetch: Speculatively fetches upcoming blocks for sequential reads
-//   - Configurable parallelism: Set max concurrent uploads via config
-//   - In-flight deduplication: Avoids duplicate downloads for the same block
-//   - Content-addressed deduplication: Skip upload if block with same hash exists (optional)
-//   - Non-blocking: All operations return immediately, I/O happens in background
-//   - Finalization callback: Notifies when all blocks are uploaded for a file
+// Offloader handles async cache-to-block-store transfers with eager upload,
+// parallel download, prefetch, in-flight dedup, and content-addressed dedup.
 type Offloader struct {
-	cache       *cache.Cache
+	cache       *cache.BlockCache
 	blockStore  store.BlockStore
-	objectStore metadata.ObjectStore // Required: enables content-addressed deduplication
+	fileBlockStore metadata.FileBlockStore // Required: enables content-addressed deduplication
 	config      Config
 
 	// Finalization callback - called when all blocks for a file are uploaded
@@ -98,20 +76,17 @@ type Offloader struct {
 	inFlight   map[string]*downloadResult // In-flight download dedup (blockKey -> broadcast)
 	inFlightMu sync.Mutex
 
+	stopCh chan struct{} // Signals periodic uploader to stop
 	closed bool
 	mu     sync.RWMutex
+
+	uploading atomic.Bool // Guards against overlapping periodic upload ticks
 }
 
-// New creates a new Offloader.
-//
-// Parameters:
-//   - c: The cache to transfer from/to
-//   - blockStore: The block store to transfer to
-//   - objectStore: Required ObjectStore for content-addressed deduplication
-//   - config: Offloader configuration
-func New(c *cache.Cache, blockStore store.BlockStore, objectStore metadata.ObjectStore, config Config) *Offloader {
-	if objectStore == nil {
-		panic("objectStore is required for Offloader")
+// New creates a new Offloader. The fileBlockStore is required for content-addressed dedup.
+func New(c *cache.BlockCache, blockStore store.BlockStore, fileBlockStore metadata.FileBlockStore, config Config) *Offloader {
+	if fileBlockStore == nil {
+		panic("fileBlockStore is required for Offloader")
 	}
 	if config.ParallelUploads <= 0 {
 		config.ParallelUploads = DefaultParallelUploads
@@ -128,27 +103,24 @@ func New(c *cache.Cache, blockStore store.BlockStore, objectStore metadata.Objec
 	m := &Offloader{
 		cache:       c,
 		blockStore:  blockStore,
-		objectStore: objectStore,
+		fileBlockStore: fileBlockStore,
 		config:      config,
 		uploads:     make(map[string]*fileUploadState),
 		ioCond:      sync.NewCond(&sync.Mutex{}),
 		inFlight:    make(map[string]*downloadResult),
 		uploadSem:   make(chan struct{}, semSize),
+		stopCh:      make(chan struct{}),
 	}
 
 	queueConfig := DefaultTransferQueueConfig()
 	queueConfig.Workers = config.ParallelUploads
+	queueConfig.DownloadWorkers = config.ParallelDownloads
 	m.queue = NewTransferQueue(m, queueConfig)
 
 	return m
 }
 
-// SetFinalizationCallback sets the callback function that is invoked when
-// all blocks for a file have been uploaded. The callback receives the payloadID
-// and an ordered list of block hashes for computing the final object hash.
-//
-// This is used by the metadata layer to compute the Object/Chunk/Block hierarchy
-// and update FileAttr.ObjectID after all uploads complete.
+// SetFinalizationCallback sets the callback invoked when all blocks for a file are uploaded.
 func (m *Offloader) SetFinalizationCallback(fn FinalizationCallback) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -165,99 +137,51 @@ func (m *Offloader) canProcess(ctx context.Context) bool {
 	return !m.closed
 }
 
-// blockRange returns the range of block indices that overlap with [offset, offset+length).
-func blockRange(offset, length uint32) (start, end uint32) {
-	start = offset / BlockSize
-	end = (offset + length - 1) / BlockSize
-	return
+// flushAndFinalize uploads remaining blocks, waits for in-flight uploads,
+// and invokes the finalization callback. Shared by sync and async flush paths.
+func (m *Offloader) flushAndFinalize(ctx context.Context, payloadID string, state *fileUploadState) error {
+	if err := m.uploadRemainingBlocks(ctx, payloadID); err != nil {
+		return err
+	}
+	state.inFlight.Wait()
+	m.invokeFinalizationCallback(ctx, payloadID)
+	return nil
 }
 
 // Flush enqueues remaining dirty data for background upload and returns immediately.
-//
-// This method does NOT wait for S3 uploads to complete because:
-// 1. Data is already safe in WAL-backed mmap cache (crash-safe via OS page cache)
-// 2. Eager upload handles complete 4MB blocks asynchronously
-// 3. Remaining partial blocks are enqueued for background upload
-//
-// Both NFS COMMIT and SMB CLOSE use this method. NFS/SMB semantics only require
-// data to be durable on stable storage - the mmap WAL provides this guarantee.
-//
-// Deduplication: Blocks already uploaded by eager upload are tracked in state.uploaded
-// and skipped by uploadRemainingBlocks. No need to wait for eager uploads to complete.
-//
-// Small file optimization: If SmallFileThreshold > 0 and the file is smaller than
-// the threshold, the upload is done SYNCHRONOUSLY. This immediately frees the 4MB
-// block buffer, preventing pendingSize buildup when creating many small files.
+// Data is safe in the on-disk cache; S3 uploads happen asynchronously.
+// Small files (below SmallFileThreshold) are uploaded synchronously to free buffers.
 func (m *Offloader) Flush(ctx context.Context, payloadID string) (*FlushResult, error) {
 	if !m.canProcess(ctx) {
 		return nil, fmt.Errorf("offloader is closed")
 	}
 
-	// Get or create upload state for tracking
 	state := m.getOrCreateUploadState(payloadID)
 
-	// Small files are flushed synchronously to prevent pendingSize buildup.
 	fileSize, _ := m.cache.GetFileSize(ctx, payloadID)
 	if m.config.SmallFileThreshold > 0 && int64(fileSize) <= m.config.SmallFileThreshold {
-		return m.flushSmallFileSync(ctx, payloadID, state)
+		logger.Debug("Small file sync flush",
+			"payloadID", payloadID, "threshold", m.config.SmallFileThreshold)
+		if err := m.flushAndFinalize(ctx, payloadID, state); err != nil {
+			return nil, fmt.Errorf("sync flush failed: %w", err)
+		}
+		return &FlushResult{Finalized: true}, nil
 	}
 
-	// Upload remaining dirty blocks (partial blocks not covered by eager upload)
-	// in background. No blocking - data is safe in mmap cache.
-	//
-	// IMPORTANT: We use context.Background() here because the request context is
-	// cancelled when COMMIT returns. The background upload should continue regardless.
-	//
-	// Server shutdown is handled separately by Offloader.Close() which:
-	// 1. Stops accepting new work via canProcess() check
-	// 2. Drains the transfer queue with a timeout
-	// 3. uploadRemainingBlocks checks canProcess() before each block upload
-	//
-	// Data durability is guaranteed by the mmap WAL cache - uploads are best-effort
-	// for performance, not required for durability.
+	// Background upload: use context.Background() because the request context
+	// is cancelled when COMMIT returns, but uploads should continue.
 	state.flush.Go(func() {
 		bgCtx := context.Background()
-
-		if err := m.uploadRemainingBlocks(bgCtx, payloadID); err != nil {
+		if err := m.flushAndFinalize(bgCtx, payloadID, state); err != nil {
 			logger.Warn("Failed to upload remaining blocks",
-				"payloadID", payloadID,
-				"error", err)
+				"payloadID", payloadID, "error", err)
 		}
-
-		// Wait for any in-flight eager uploads to complete
-		state.inFlight.Wait()
-
-		// Invoke finalization callback
-		m.invokeFinalizationCallback(bgCtx, payloadID)
 	})
 
 	return &FlushResult{Finalized: true}, nil
 }
 
-// flushSmallFileSync uploads a small file synchronously during Flush().
-// This ensures the 4MB block buffer is freed immediately, preventing
-// pendingSize buildup when creating many small files.
-func (m *Offloader) flushSmallFileSync(ctx context.Context, payloadID string, state *fileUploadState) (*FlushResult, error) {
-	logger.Debug("Small file sync flush",
-		"payloadID", payloadID,
-		"threshold", m.config.SmallFileThreshold)
-
-	// Upload remaining blocks synchronously (blocks until complete)
-	if err := m.uploadRemainingBlocks(ctx, payloadID); err != nil {
-		return nil, fmt.Errorf("sync flush failed: %w", err)
-	}
-
-	// Wait for any in-flight eager uploads to complete
-	state.inFlight.Wait()
-
-	// Invoke finalization callback
-	m.invokeFinalizationCallback(ctx, payloadID)
-
-	return &FlushResult{Finalized: true}, nil
-}
-
-// WaitForEagerUploads waits for in-flight eager uploads to complete.
-// This is useful in tests to ensure uploads complete before checking results.
+// WaitForEagerUploads waits for in-flight eager uploads to complete (for testing).
 func (m *Offloader) WaitForEagerUploads(ctx context.Context, payloadID string) error {
 	state := m.getUploadState(payloadID)
 	if state == nil {
@@ -278,11 +202,8 @@ func (m *Offloader) WaitForEagerUploads(ctx context.Context, payloadID string) e
 	}
 }
 
-// WaitForAllUploads waits for both eager uploads AND flush operations to complete.
-// FOR TESTING ONLY - this method is used in integration tests to verify data was uploaded
-// before checking block store contents. Production code should NOT call this method;
-// production uses non-blocking Flush() which returns immediately (data safety is
-// guaranteed by the WAL-backed mmap cache).
+// WaitForAllUploads waits for both eager uploads and flush operations to complete.
+// FOR TESTING ONLY -- production code should use non-blocking Flush().
 func (m *Offloader) WaitForAllUploads(ctx context.Context, payloadID string) error {
 	state := m.getUploadState(payloadID)
 	if state == nil {
@@ -305,7 +226,6 @@ func (m *Offloader) WaitForAllUploads(ctx context.Context, payloadID string) err
 }
 
 // GetFileSize returns the total size of a file from the block store.
-// This is used as a fallback when the cache doesn't have the file.
 func (m *Offloader) GetFileSize(ctx context.Context, payloadID string) (uint64, error) {
 	m.mu.RLock()
 	if m.closed {
@@ -319,44 +239,33 @@ func (m *Offloader) GetFileSize(ctx context.Context, payloadID string) (uint64, 
 		return 0, fmt.Errorf("no block store configured")
 	}
 
-	// List all blocks to find the highest chunk/block indices
 	prefix := payloadID + "/"
 	blocks, err := blockStore.ListByPrefix(ctx, prefix)
 	if err != nil {
 		return 0, fmt.Errorf("list blocks: %w", err)
 	}
-
 	if len(blocks) == 0 {
 		return 0, nil
 	}
 
-	// Find the last block (highest chunk/block indices)
-	var maxChunkIdx, maxBlockIdx uint32
+	var maxBlockIdx uint64
 	for _, bk := range blocks {
-		var chunkIdx, blockIdx uint32
-		if _, err := fmt.Sscanf(bk, payloadID+"/chunk-%d/block-%d", &chunkIdx, &blockIdx); err != nil {
+		var blockIdx uint64
+		if _, err := fmt.Sscanf(bk, payloadID+"/block-%d", &blockIdx); err != nil {
 			continue
 		}
-		if chunkIdx > maxChunkIdx || (chunkIdx == maxChunkIdx && blockIdx > maxBlockIdx) {
-			maxChunkIdx = chunkIdx
+		if blockIdx > maxBlockIdx {
 			maxBlockIdx = blockIdx
 		}
 	}
 
-	// Only read the last block to get its size (may be partial)
-	lastBlockKey := FormatBlockKey(payloadID, maxChunkIdx, maxBlockIdx)
+	lastBlockKey := cache.FormatStoreKey(payloadID, maxBlockIdx)
 	lastBlockData, err := blockStore.ReadBlock(ctx, lastBlockKey)
 	if err != nil {
 		return 0, fmt.Errorf("read last block %s: %w", lastBlockKey, err)
 	}
-	lastBlockSize := uint64(len(lastBlockData))
 
-	// Total = full chunks + full blocks in last chunk + last block size
-	totalSize := uint64(maxChunkIdx)*uint64(chunk.Size) +
-		uint64(maxBlockIdx)*uint64(BlockSize) +
-		lastBlockSize
-
-	return totalSize, nil
+	return maxBlockIdx*uint64(BlockSize) + uint64(len(lastBlockData)), nil
 }
 
 // Exists checks if any blocks exist for a file in the block store.
@@ -364,13 +273,11 @@ func (m *Offloader) Exists(ctx context.Context, payloadID string) (bool, error) 
 	if !m.canProcess(ctx) {
 		return false, fmt.Errorf("offloader is closed")
 	}
-
 	if m.blockStore == nil {
 		return false, fmt.Errorf("no block store configured")
 	}
 
-	// Check if the first block exists (fast path)
-	firstBlockKey := FormatBlockKey(payloadID, 0, 0)
+	firstBlockKey := cache.FormatStoreKey(payloadID, 0)
 	_, err := m.blockStore.ReadBlock(ctx, firstBlockKey)
 	if err == nil {
 		return true, nil
@@ -382,42 +289,32 @@ func (m *Offloader) Exists(ctx context.Context, payloadID string) (bool, error) 
 }
 
 // Truncate removes blocks beyond the new size from the block store.
-// Note: This deletes whole blocks only. Partial block truncation (e.g., truncating
-// to middle of a block) is not supported - the last block retains its original size.
-// Future optimization: Add TruncateBlock to BlockStore interface using S3 CopyObjectWithRange.
 func (m *Offloader) Truncate(ctx context.Context, payloadID string, newSize uint64) error {
 	if !m.canProcess(ctx) {
 		return fmt.Errorf("offloader is closed")
 	}
-
 	if m.blockStore == nil {
 		return fmt.Errorf("no block store configured")
 	}
 
-	// Truncate to zero: delete all blocks
 	prefix := payloadID + "/"
 	if newSize == 0 {
 		return m.blockStore.DeleteByPrefix(ctx, prefix)
 	}
 
-	// Calculate which chunk/block contains the last byte to keep (newSize - 1)
-	lastByteOffset := newSize - 1
-	keepChunkIdx := chunk.IndexForOffset(lastByteOffset)
-	keepOffsetInChunk := chunk.OffsetInChunk(lastByteOffset)
-	keepBlockIdx := block.IndexForOffset(keepOffsetInChunk)
+	keepBlockIdx := (newSize - 1) / uint64(BlockSize)
 
-	// List and delete blocks beyond the last kept block
 	blocks, err := m.blockStore.ListByPrefix(ctx, prefix)
 	if err != nil {
 		return fmt.Errorf("list blocks: %w", err)
 	}
 
 	for _, bk := range blocks {
-		var chunkIdx, blockIdx uint32
-		if _, err := fmt.Sscanf(bk, payloadID+"/chunk-%d/block-%d", &chunkIdx, &blockIdx); err != nil {
+		var blockIdx uint64
+		if _, err := fmt.Sscanf(bk, payloadID+"/block-%d", &blockIdx); err != nil {
 			continue
 		}
-		if chunkIdx > keepChunkIdx || (chunkIdx == keepChunkIdx && blockIdx > keepBlockIdx) {
+		if blockIdx > keepBlockIdx {
 			if err := m.blockStore.DeleteBlock(ctx, bk); err != nil {
 				return fmt.Errorf("delete block %s: %w", bk, err)
 			}
@@ -428,17 +325,14 @@ func (m *Offloader) Truncate(ctx context.Context, payloadID string, newSize uint
 }
 
 // Delete removes all blocks for a file from the block store.
-// Use this for unfinalized files (no ObjectID).
 func (m *Offloader) Delete(ctx context.Context, payloadID string) error {
 	if !m.canProcess(ctx) {
 		return fmt.Errorf("offloader is closed")
 	}
-
 	if m.blockStore == nil {
 		return fmt.Errorf("no block store configured")
 	}
 
-	// Clean up upload state for this file
 	m.uploadsMu.Lock()
 	delete(m.uploads, payloadID)
 	m.uploadsMu.Unlock()
@@ -446,7 +340,7 @@ func (m *Offloader) Delete(ctx context.Context, payloadID string) error {
 	return m.blockStore.DeleteByPrefix(ctx, payloadID+"/")
 }
 
-// Start begins background upload processing.
+// Start begins background upload processing and periodic uploader.
 // Must be called after New() to enable async uploads.
 func (m *Offloader) Start(ctx context.Context) {
 	m.mu.Lock()
@@ -454,6 +348,48 @@ func (m *Offloader) Start(ctx context.Context) {
 
 	if m.queue != nil {
 		m.queue.Start(ctx)
+	}
+
+	interval := m.config.UploadInterval
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	go m.periodicUploader(ctx, interval)
+}
+
+// periodicUploader runs every interval, scanning for blocks to upload.
+// Uses an atomic guard to prevent overlapping ticks: if the previous upload
+// batch is still running when the ticker fires, the tick is skipped. This
+// prevents unbounded memory growth when uploads take longer than the interval
+// (e.g., 8 blocks x 2-3s S3 upload = 16-24s, but interval is only 2s).
+func (m *Offloader) periodicUploader(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	logger.Info("Periodic uploader started", "interval", interval, "upload_delay", m.config.UploadDelay)
+
+	for {
+		select {
+		case <-ticker.C:
+			if !m.canProcess(ctx) {
+				logger.Info("Periodic uploader: canProcess=false, exiting")
+				return
+			}
+			// Skip this tick if the previous upload batch is still running.
+			// This prevents overlapping ticks from multiplying memory usage.
+			if !m.uploading.CompareAndSwap(false, true) {
+				logger.Debug("Periodic uploader: previous tick still running, skipping")
+				continue
+			}
+			m.uploadPendingBlocks(ctx)
+			m.uploading.Store(false)
+		case <-m.stopCh:
+			logger.Info("Periodic uploader: stopCh received, exiting")
+			return
+		case <-ctx.Done():
+			logger.Info("Periodic uploader: context cancelled, exiting")
+			return
+		}
 	}
 }
 
@@ -467,7 +403,7 @@ func (m *Offloader) Close() error {
 	m.closed = true
 	m.mu.Unlock()
 
-	// Stop transfer queue with graceful shutdown timeout
+	close(m.stopCh)
 	if m.queue != nil {
 		m.queue.Stop(defaultShutdownTimeout)
 	}

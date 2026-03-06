@@ -151,9 +151,9 @@ type LogRotationConfig struct {
 	Compress bool `mapstructure:"compress" yaml:"compress"`
 }
 
-// CacheConfig specifies the WAL-backed cache configuration.
-// Cache is mandatory for crash recovery - all writes go through the WAL cache.
-// The WAL (Write-Ahead Log) ensures data durability via mmap.
+// CacheConfig specifies the file-backed cache configuration.
+// Cache is mandatory - all writes go through the file cache before upload.
+// Each block is stored as a separate file for crash recovery and LRU eviction.
 type CacheConfig struct {
 	// Path is the directory for the cache WAL file (required)
 	// The cache will create a cache.dat file in this directory
@@ -180,16 +180,16 @@ type CacheConfig struct {
 type OffloaderConfig struct {
 	// ParallelUploads is the number of concurrent block uploads to the backend.
 	// Higher values increase throughput for high-latency backends (S3).
-	// Default: 16 (yields ~64 MB/s with 4MB blocks to S3)
+	// Default: 16 (yields ~128 MB/s with 8MB blocks to S3)
 	ParallelUploads int `mapstructure:"parallel_uploads" yaml:"parallel_uploads,omitempty"`
 
 	// ParallelDownloads is the number of concurrent block downloads per file.
-	// Default: 4
+	// Default: 32
 	ParallelDownloads int `mapstructure:"parallel_downloads" yaml:"parallel_downloads,omitempty"`
 
 	// PrefetchBlocks is the number of blocks to prefetch ahead of reads.
 	// Set to 0 to disable prefetching.
-	// Default: 4 (16MB ahead at 4MB block size)
+	// Default: 64 (512MB ahead at 8MB block size)
 	PrefetchBlocks int `mapstructure:"prefetch_blocks" yaml:"prefetch_blocks,omitempty"`
 
 	// SmallFileThreshold is the file size below which files are flushed
@@ -197,8 +197,18 @@ type OffloaderConfig struct {
 	// pendingSize buildup when creating many small files.
 	// Supports human-readable formats: "4MB", "1MB"
 	// Set to 0 to disable (all files use async flush).
-	// Default: 4MB (1 block)
+	// Default: 0 (disabled)
 	SmallFileThreshold bytesize.ByteSize `mapstructure:"small_file_threshold" yaml:"small_file_threshold,omitempty"`
+
+	// UploadInterval is how often the periodic uploader scans for pending blocks.
+	// Default: 2s
+	UploadInterval time.Duration `mapstructure:"upload_interval" yaml:"upload_interval,omitempty"`
+
+	// UploadDelay is the minimum age before a cached block is uploaded.
+	// Blocks younger than this are skipped by the periodic uploader.
+	// Flush() ignores this delay and uploads immediately.
+	// Default: 10s
+	UploadDelay time.Duration `mapstructure:"upload_delay" yaml:"upload_delay,omitempty"`
 }
 
 // AdminConfig contains initial admin user configuration for bootstrap.
@@ -459,6 +469,7 @@ func setupViper(v *viper.Viper, configPath string) {
 	_ = v.BindEnv("database.postgres.password")
 	_ = v.BindEnv("database.postgres.sslmode")
 	_ = v.BindEnv("controlplane.secret")
+	_ = v.BindEnv("controlplane.pprof")
 
 	// Configure config file search
 	if configPath != "" {

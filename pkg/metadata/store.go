@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"context"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
@@ -207,114 +208,48 @@ type ServerConfig interface {
 }
 
 // ============================================================================
-// ObjectStore Interface (Content-Addressed Deduplication)
+// FileBlockStore Interface (Content-Addressed Block Management)
 // ============================================================================
 
-// ObjectStore defines operations for content-addressed object management.
+// FileBlockStore defines operations for content-addressed file block management.
 //
-// This interface enables deduplication by tracking objects, chunks, and blocks
-// using content hashes. When deduplication is enabled:
-//   - Objects are identified by their content hash (SHA-256)
-//   - Identical files share the same Object (via RefCount)
-//   - Chunks and blocks can be shared across objects
-//
-// Note: ObjectStore operations are optional. Stores may return ErrNotSupported
-// if deduplication is not enabled or supported.
-type ObjectStore interface {
-	// ========================================================================
-	// Object Operations
-	// ========================================================================
+// FileBlock is the single block entity in DittoFS. Each block is content-addressed
+// by its SHA-256 hash and reference-counted for dedup and GC.
+type FileBlockStore interface {
+	// GetFileBlock retrieves a file block by its ID.
+	// Returns ErrFileBlockNotFound if not found.
+	GetFileBlock(ctx context.Context, id string) (*FileBlock, error)
 
-	// GetObject retrieves an object by its content hash.
-	// Returns ErrObjectNotFound if not found.
-	GetObject(ctx context.Context, id ContentHash) (*Object, error)
+	// PutFileBlock stores or updates a file block.
+	PutFileBlock(ctx context.Context, block *FileBlock) error
 
-	// PutObject stores or updates an object.
-	// If an object with the same ID exists, it updates the metadata.
-	PutObject(ctx context.Context, obj *Object) error
+	// DeleteFileBlock removes a file block by its ID.
+	// Returns ErrFileBlockNotFound if not found.
+	DeleteFileBlock(ctx context.Context, id string) error
 
-	// DeleteObject removes an object by its content hash.
-	// Returns ErrObjectNotFound if not found.
-	// WARNING: Only call when RefCount is 0. Does NOT cascade delete chunks/blocks.
-	DeleteObject(ctx context.Context, id ContentHash) error
+	// IncrementRefCount atomically increments a block's RefCount.
+	IncrementRefCount(ctx context.Context, id string) error
 
-	// IncrementObjectRefCount atomically increments an object's RefCount.
-	// Returns the new RefCount, or ErrObjectNotFound if not found.
-	IncrementObjectRefCount(ctx context.Context, id ContentHash) (uint32, error)
+	// DecrementRefCount atomically decrements a block's RefCount.
+	// Returns the new count. When 0, the block is a GC candidate.
+	DecrementRefCount(ctx context.Context, id string) (uint32, error)
 
-	// DecrementObjectRefCount atomically decrements an object's RefCount.
-	// Returns the new RefCount, or ErrObjectNotFound if not found.
-	// Returns 0 when the object can be garbage collected.
-	DecrementObjectRefCount(ctx context.Context, id ContentHash) (uint32, error)
+	// FindFileBlockByHash looks up a finalized block by its content hash.
+	// Returns nil without error if not found (used for dedup checks).
+	FindFileBlockByHash(ctx context.Context, hash ContentHash) (*FileBlock, error)
 
-	// ========================================================================
-	// Chunk Operations
-	// ========================================================================
+	// ListPendingUpload returns blocks that are finalized (hash set) but not
+	// yet uploaded (BlockStoreKey empty) and older than the given duration.
+	// If limit > 0, at most limit blocks are returned. If limit <= 0, all are returned.
+	ListPendingUpload(ctx context.Context, olderThan time.Duration, limit int) ([]*FileBlock, error)
 
-	// GetChunk retrieves a chunk by its content hash.
-	// Returns ErrChunkNotFound if not found.
-	GetChunk(ctx context.Context, hash ContentHash) (*ObjectChunk, error)
+	// ListEvictable returns blocks that are both cached and uploaded,
+	// ordered by LRU (oldest LastAccess first), up to limit.
+	ListEvictable(ctx context.Context, limit int) ([]*FileBlock, error)
 
-	// GetChunksByObject retrieves all chunks for an object.
-	// Returns chunks ordered by Index (0, 1, 2, ...).
-	GetChunksByObject(ctx context.Context, objectID ContentHash) ([]*ObjectChunk, error)
-
-	// PutChunk stores or updates a chunk.
-	// If a chunk with the same Hash exists, it updates the metadata.
-	PutChunk(ctx context.Context, chunk *ObjectChunk) error
-
-	// DeleteChunk removes a chunk by its content hash.
-	// Returns ErrChunkNotFound if not found.
-	// WARNING: Only call when RefCount is 0. Does NOT cascade delete blocks.
-	DeleteChunk(ctx context.Context, hash ContentHash) error
-
-	// IncrementChunkRefCount atomically increments a chunk's RefCount.
-	// Returns the new RefCount, or ErrChunkNotFound if not found.
-	IncrementChunkRefCount(ctx context.Context, hash ContentHash) (uint32, error)
-
-	// DecrementChunkRefCount atomically decrements a chunk's RefCount.
-	// Returns the new RefCount, or ErrChunkNotFound if not found.
-	// Returns 0 when the chunk can be garbage collected.
-	DecrementChunkRefCount(ctx context.Context, hash ContentHash) (uint32, error)
-
-	// ========================================================================
-	// Block Operations
-	// ========================================================================
-
-	// GetBlock retrieves a block by its content hash.
-	// Returns ErrBlockNotFound if not found.
-	GetBlock(ctx context.Context, hash ContentHash) (*ObjectBlock, error)
-
-	// GetBlocksByChunk retrieves all blocks for a chunk.
-	// Returns blocks ordered by Index (0, 1, 2, ...).
-	GetBlocksByChunk(ctx context.Context, chunkHash ContentHash) ([]*ObjectBlock, error)
-
-	// PutBlock stores or updates a block.
-	// If a block with the same Hash exists, it updates the metadata (including RefCount).
-	PutBlock(ctx context.Context, block *ObjectBlock) error
-
-	// DeleteBlock removes a block by its content hash.
-	// Returns ErrBlockNotFound if not found.
-	// WARNING: Only call when RefCount is 0.
-	DeleteBlock(ctx context.Context, hash ContentHash) error
-
-	// FindBlockByHash looks up a block by its content hash.
-	// Returns the block if found, nil if not found (no error for not found).
-	// This is used for deduplication: check if block already exists before upload.
-	FindBlockByHash(ctx context.Context, hash ContentHash) (*ObjectBlock, error)
-
-	// IncrementBlockRefCount atomically increments a block's RefCount.
-	// Returns the new RefCount, or ErrBlockNotFound if not found.
-	IncrementBlockRefCount(ctx context.Context, hash ContentHash) (uint32, error)
-
-	// DecrementBlockRefCount atomically decrements a block's RefCount.
-	// Returns the new RefCount, or ErrBlockNotFound if not found.
-	// Returns 0 when the block can be garbage collected (safe to delete from block store).
-	DecrementBlockRefCount(ctx context.Context, hash ContentHash) (uint32, error)
-
-	// MarkBlockUploaded marks a block as uploaded to the block store.
-	// Sets UploadedAt to current time. Returns ErrBlockNotFound if not found.
-	MarkBlockUploaded(ctx context.Context, hash ContentHash) error
+	// ListUnreferenced returns blocks with RefCount=0, up to limit.
+	// These are candidates for garbage collection.
+	ListUnreferenced(ctx context.Context, limit int) ([]*FileBlock, error)
 }
 
 // ============================================================================
@@ -323,13 +258,13 @@ type ObjectStore interface {
 
 // Transaction provides all operations available within a transactional context.
 //
-// This interface combines Files, Shares, ServerConfig, ObjectStore, and LockStore
+// This interface combines Files, Shares, ServerConfig, FileBlockStore, and LockStore
 // interfaces to enable atomic operations across all metadata domains.
 type Transaction interface {
 	Files          // File CRUD operations
 	Shares         // Share management
 	ServerConfig   // Server configuration
-	ObjectStore    // Content-addressed deduplication (optional)
+	FileBlockStore // Content-addressed block management
 	lock.LockStore // Lock persistence for NLM/SMB
 }
 
@@ -397,7 +332,7 @@ type FilesystemMeta struct {
 //   - Shares: Share lifecycle and handle management
 //   - ServerConfig: Server configuration, capabilities, and health
 //   - Transactor: Transaction support for atomic operations
-//   - ObjectStore: Content-addressed deduplication (optional)
+//   - FileBlockStore: Content-addressed block management
 //
 // Note: File locking (SMB/NLM) is handled separately by LockManager at the
 // service level, not by individual stores. Locks are ephemeral (in-memory)
@@ -416,7 +351,7 @@ type MetadataStore interface {
 	Shares       // Share lifecycle and handle management
 	ServerConfig // Server configuration and capabilities
 	Transactor   // Transaction support for atomic operations
-	ObjectStore  // Content-addressed deduplication (optional)
+	FileBlockStore // Content-addressed block management
 
 	// ========================================================================
 	// Store Lifecycle (not transactional)

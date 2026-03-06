@@ -72,13 +72,18 @@ func NewServer(config APIConfig, rt *runtime.Runtime, cpStore store.Store) (*Ser
 	}
 
 	// cpStore implements both IdentityStore and Store
-	router := NewRouter(rt, jwtService, cpStore)
+	router := NewRouter(rt, jwtService, cpStore, config.Pprof)
+
+	writeTimeout := config.WriteTimeout
+	if config.Pprof && writeTimeout < 120*time.Second {
+		writeTimeout = 120 * time.Second
+	}
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", config.Port),
 		Handler:      router,
 		ReadTimeout:  config.ReadTimeout,
-		WriteTimeout: config.WriteTimeout,
+		WriteTimeout: writeTimeout,
 		IdleTimeout:  config.IdleTimeout,
 	}
 

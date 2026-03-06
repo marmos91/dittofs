@@ -101,14 +101,15 @@ func applyOffloaderDefaults(cfg *OffloaderConfig) {
 		cfg.ParallelUploads = 16
 	}
 	if cfg.ParallelDownloads == 0 {
-		cfg.ParallelDownloads = 8
+		cfg.ParallelDownloads = 32
 	}
 	if cfg.PrefetchBlocks == 0 {
-		cfg.PrefetchBlocks = 16
+		cfg.PrefetchBlocks = 64
 	}
 	// SmallFileThreshold defaults to 0 (disabled) - all flushes are async.
-	// WAL-backed cache ensures durability. Set to e.g. "4MiB" to re-enable
+	// FileCache on disk ensures durability. Set to e.g. "4MiB" to re-enable
 	// synchronous flush for small files if needed.
+	// UploadInterval and UploadDelay default to 0 (uses offloader defaults: 2s and 10s).
 }
 
 // applyAdminDefaults sets admin user defaults.

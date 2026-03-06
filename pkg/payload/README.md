@@ -340,9 +340,9 @@ type BlockStore interface {
 ### Block Key Format
 
 ```
-{payloadID}/chunk-{chunkIdx}/block-{blockIdx}
+{payloadID}/block-{blockIdx}
 
-Example: export/documents/report.pdf/chunk-0/block-5
+Example: export/documents/report.pdf/block-5
 ```
 
 ### S3 Store

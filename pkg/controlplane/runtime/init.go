@@ -7,13 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/cache"
-	"github.com/marmos91/dittofs/pkg/cache/wal"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -176,27 +171,34 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 		return fmt.Errorf("no payload stores configured - add a payload store first")
 	}
 
-	cacheFile := filepath.Join(cacheConfig.Path, "cache.dat")
-	if err := os.MkdirAll(cacheConfig.Path, 0755); err != nil {
+	cacheDir := filepath.Join(cacheConfig.Path, "blocks")
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return fmt.Errorf("failed to create cache directory: %w", err)
 	}
 
-	persister, err := wal.NewMmapPersister(cacheFile)
+	// Use the first metadata store as FileBlockStore (it embeds the interface).
+	metaStoreNames := rt.ListMetadataStores()
+	if len(metaStoreNames) == 0 {
+		return fmt.Errorf("no metadata stores registered - add a metadata store first")
+	}
+	fileBlockStore, err := rt.GetMetadataStore(metaStoreNames[0])
 	if err != nil {
-		return fmt.Errorf("failed to create WAL persister: %w", err)
+		return fmt.Errorf("failed to get metadata store for file blocks: %w", err)
 	}
 
-	cacheInstance, err := cache.NewWithWal(cacheConfig.Size, persister)
+	bc, err := cache.New(cacheDir, int64(cacheConfig.Size), 0, fileBlockStore)
 	if err != nil {
-		return fmt.Errorf("failed to create cache: %w", err)
+		return fmt.Errorf("failed to create block cache: %w", err)
 	}
 
-	// Configure max pending size for backpressure (0 = use default 512MB)
-	if cacheConfig.MaxPendingSize > 0 {
-		cacheInstance.SetMaxPendingSize(uint64(cacheConfig.MaxPendingSize))
+	if err := bc.Recover(ctx); err != nil {
+		logger.Warn("Cache recovery encountered errors", "error", err)
 	}
 
-	logger.Info("Cache initialized", "path", cacheFile, "max_size", cacheConfig.Size, "max_pending_size", cacheConfig.MaxPendingSize)
+	// Start background goroutine that batches FileBlock metadata writes to BadgerDB.
+	bc.Start(context.Background())
+
+	logger.Info("BlockCache initialized", "path", cacheDir, "max_size", cacheConfig.Size)
 
 	payloadStoreCfg := payloadStores[0]
 	blockStore, err := CreateBlockStoreFromConfig(ctx, payloadStoreCfg.Type, payloadStoreCfg)
@@ -206,10 +208,7 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 
 	logger.Info("Loaded payload store", "name", payloadStoreCfg.Name, "type", payloadStoreCfg.Type)
 
-	objectStore := memory.NewMemoryMetadataStoreWithDefaults()
 	offloaderCfg := offloader.DefaultConfig()
-
-	// Apply user-provided offloader config if set
 	rt.mu.RLock()
 	oCfg := rt.offloaderConfig
 	rt.mu.RUnlock()
@@ -226,20 +225,26 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 		if oCfg.SmallFileThreshold != 0 {
 			offloaderCfg.SmallFileThreshold = oCfg.SmallFileThreshold
 		}
+		if oCfg.UploadInterval > 0 {
+			offloaderCfg.UploadInterval = oCfg.UploadInterval
+		}
+		if oCfg.UploadDelay > 0 {
+			offloaderCfg.UploadDelay = oCfg.UploadDelay
+		}
 	}
 
-	offloaderInstance := offloader.New(cacheInstance, blockStore, objectStore, offloaderCfg)
+	offloaderInstance := offloader.New(bc, blockStore, fileBlockStore, offloaderCfg)
 
-	payloadSvc, err := payload.New(cacheInstance, offloaderInstance)
+	payloadSvc, err := payload.New(bc, offloaderInstance)
 	if err != nil {
 		return fmt.Errorf("failed to create payload service: %w", err)
 	}
 
-	offloaderInstance.Start(ctx)
+	// Use background context so the periodic uploader outlives the calling request context.
+	offloaderInstance.Start(context.Background())
 
 	rt.mu.Lock()
 	rt.payloadService = payloadSvc
-	rt.cacheInstance = cacheInstance
 	rt.mu.Unlock()
 
 	logger.Info("PayloadService initialized",
@@ -282,37 +287,21 @@ func CreateBlockStoreFromConfig(ctx context.Context, storeType string, cfg inter
 			region = r
 		}
 
-		var s3Opts []func(*awsconfig.LoadOptions) error
-		s3Opts = append(s3Opts, awsconfig.WithRegion(region))
-
 		endpoint, _ := config["endpoint"].(string)
-		accessKey, _ := config["access_key_id"].(string)
-		secretKey, _ := config["secret_access_key"].(string)
-		if accessKey != "" && secretKey != "" {
-			s3Opts = append(s3Opts, awsconfig.WithCredentialsProvider(
-				credentials.NewStaticCredentialsProvider(accessKey, secretKey, ""),
-			))
-		}
+		prefix, _ := config["prefix"].(string)
+		forcePathStyle, _ := config["force_path_style"].(bool)
 
-		awsCfg, err := awsconfig.LoadDefaultConfig(ctx, s3Opts...)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load AWS config: %w", err)
-		}
-
-		var s3Client *s3.Client
-		if endpoint != "" {
-			s3Client = s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-				o.BaseEndpoint = aws.String(endpoint)
-				o.UsePathStyle = true // Required for localstack/MinIO
-			})
-		} else {
-			s3Client = s3.NewFromConfig(awsCfg)
-		}
-
-		return blocks3.New(s3Client, blocks3.Config{
-			Bucket: bucket,
-			Region: region,
-		}), nil
+		// Use NewFromConfig to get the optimized HTTP transport (HTTP/1.1 forced,
+		// high connection limits, large buffers) instead of default AWS HTTP client.
+		// The default client uses HTTP/2 which multiplexes all requests over a single
+		// connection, causing 10x slower throughput for large block downloads.
+		return blocks3.NewFromConfig(ctx, blocks3.Config{
+			Bucket:         bucket,
+			Region:         region,
+			Endpoint:       endpoint,
+			KeyPrefix:      prefix,
+			ForcePathStyle: forcePathStyle,
+		})
 
 	default:
 		return nil, fmt.Errorf("unsupported payload store type: %s", storeType)

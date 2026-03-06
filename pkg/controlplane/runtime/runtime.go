@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/auth/sid"
-	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/adapters"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/identity"
@@ -30,21 +29,22 @@ type (
 	AuxiliaryServer = lifecycle.AuxiliaryServer
 )
 
-// CacheConfig holds cache WAL path and size limit.
+// CacheConfig holds file cache path and size limit.
 // Kept here (instead of pkg/config) to avoid import cycles.
 type CacheConfig struct {
-	Path           string // Directory for the cache WAL file
-	Size           uint64 // Maximum cache size in bytes
-	MaxPendingSize uint64 // Maximum pending (dirty) data size (0 = default 1GB)
+	Path string // Directory for the cache block files
+	Size uint64 // Maximum cache size in bytes (0 = unlimited)
 }
 
 // OffloaderConfig holds offloader settings for background data transfer.
 // Kept here (instead of pkg/config) to avoid import cycles.
 type OffloaderConfig struct {
-	ParallelUploads    int   // Concurrent block uploads (0 = default 16)
-	ParallelDownloads  int   // Concurrent block downloads per file (0 = default 4)
-	PrefetchBlocks     int   // Blocks to prefetch ahead (0 = default 4)
-	SmallFileThreshold int64 // Sync flush threshold in bytes (0 = default 4MB)
+	ParallelUploads    int           // Concurrent block uploads (0 = default 16)
+	ParallelDownloads  int           // Concurrent block downloads per file (0 = default 32)
+	PrefetchBlocks     int           // Blocks to prefetch ahead (0 = default 64)
+	SmallFileThreshold int64         // Sync flush threshold in bytes (0 = disabled)
+	UploadInterval     time.Duration // Periodic upload scan interval (0 = default 2s)
+	UploadDelay        time.Duration // Min age before upload (0 = default 10s)
 }
 
 type payloadServiceHelper struct {
@@ -90,7 +90,6 @@ type Runtime struct {
 
 	metadataService *metadata.MetadataService
 	payloadService  *payload.PayloadService
-	cacheInstance   *cache.Cache
 
 	adaptersSvc  *adapters.Service
 	storesSvc    *stores.Service
@@ -340,18 +339,6 @@ func (r *Runtime) SetOffloaderConfig(cfg *OffloaderConfig) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.offloaderConfig = cfg
-}
-
-func (r *Runtime) SetCache(c *cache.Cache) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.cacheInstance = c
-}
-
-func (r *Runtime) GetCache() *cache.Cache {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.cacheInstance
 }
 
 func (r *Runtime) GetUserStore() models.UserStore         { return r.store }

@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/http/pprof"
 	"strings"
 	"time"
 
@@ -51,7 +52,7 @@ import (
 //   - /api/v1/mounts - Unified mount listing (admin only)
 //   - GET /api/v1/durable-handles - List active durable handles (admin only)
 //   - DELETE /api/v1/durable-handles/{id} - Force-close a durable handle (admin only)
-func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.Store) http.Handler {
+func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.Store, pprofEnabled bool) http.Handler {
 	r := chi.NewRouter()
 
 	// Middleware stack - order matters
@@ -59,7 +60,33 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 	r.Use(middleware.RealIP)
 	r.Use(requestLogger)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(30 * time.Second))
+
+	// When pprof is enabled, extend the request timeout to accommodate
+	// CPU profiles (default 30s) and execution traces.
+	if pprofEnabled {
+		r.Use(middleware.Timeout(120 * time.Second))
+	} else {
+		r.Use(middleware.Timeout(30 * time.Second))
+	}
+
+	// pprof profiling endpoints (unauthenticated, gated by config)
+	if pprofEnabled {
+		r.Route("/debug/pprof", func(r chi.Router) {
+			r.Get("/", pprof.Index)
+			r.Get("/cmdline", pprof.Cmdline)
+			r.Get("/profile", pprof.Profile)
+			r.Get("/symbol", pprof.Symbol)
+			r.Post("/symbol", pprof.Symbol)
+			r.Get("/trace", pprof.Trace)
+			r.Handle("/allocs", pprof.Handler("allocs"))
+			r.Handle("/block", pprof.Handler("block"))
+			r.Handle("/goroutine", pprof.Handler("goroutine"))
+			r.Handle("/heap", pprof.Handler("heap"))
+			r.Handle("/mutex", pprof.Handler("mutex"))
+			r.Handle("/threadcreate", pprof.Handler("threadcreate"))
+		})
+		logger.Info("pprof profiling enabled at /debug/pprof/")
+	}
 
 	// Health check handlers
 	healthHandler := handlers.NewHealthHandler(rt)

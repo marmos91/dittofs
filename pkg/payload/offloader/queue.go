@@ -8,29 +8,26 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// TransferQueue handles asynchronous transfers with priority scheduling.
+// TransferQueue handles asynchronous transfers with dedicated worker pools.
 //
-// Priority order (highest to lowest):
-//  1. Downloads - User is waiting for data
-//  2. Uploads - Data durability
-//  3. Prefetch - Speculative optimization
-//
-// Workers check channels in priority order, ensuring downloads are always
-// processed first, even when upload/prefetch queues are full.
+// Download workers process only downloads and prefetch (never uploads).
+// Upload workers process only uploads (never downloads).
+// This isolation prevents upload bursts from starving latency-sensitive downloads.
 type TransferQueue struct {
 	manager *Offloader
 
-	// Priority channels - workers check in priority order
-	downloads chan TransferRequest // Highest priority
-	uploads   chan TransferRequest // Medium priority
-	prefetch  chan TransferRequest // Lowest priority
+	// Priority channels
+	downloads chan TransferRequest // Processed by download workers
+	uploads   chan TransferRequest // Processed by upload workers
+	prefetch  chan TransferRequest // Processed by download workers when idle
 
 	// Worker management
-	workers   int
-	wg        sync.WaitGroup
-	stopCh    chan struct{}
-	stoppedCh chan struct{}
-	started   bool // tracks whether Start() was called
+	uploadWorkers   int // Number of upload-only workers
+	downloadWorkers int // Number of download+prefetch workers
+	wg              sync.WaitGroup
+	stopCh          chan struct{}
+	stoppedCh       chan struct{}
+	started         bool // tracks whether Start() was called
 
 	// Metrics
 	mu              sync.Mutex
@@ -43,7 +40,7 @@ type TransferQueue struct {
 	lastErrorAt     time.Time
 }
 
-// NewTransferQueue creates a new transfer queue.
+// NewTransferQueue creates a new transfer queue with dedicated worker pools.
 func NewTransferQueue(m *Offloader, cfg TransferQueueConfig) *TransferQueue {
 	if cfg.QueueSize <= 0 {
 		cfg.QueueSize = 1000
@@ -51,19 +48,23 @@ func NewTransferQueue(m *Offloader, cfg TransferQueueConfig) *TransferQueue {
 	if cfg.Workers <= 0 {
 		cfg.Workers = 4
 	}
+	if cfg.DownloadWorkers <= 0 {
+		cfg.DownloadWorkers = DefaultParallelDownloads
+	}
 
 	return &TransferQueue{
-		manager:   m,
-		downloads: make(chan TransferRequest, cfg.QueueSize),
-		uploads:   make(chan TransferRequest, cfg.QueueSize),
-		prefetch:  make(chan TransferRequest, cfg.QueueSize),
-		workers:   cfg.Workers,
-		stopCh:    make(chan struct{}),
-		stoppedCh: make(chan struct{}),
+		manager:         m,
+		downloads:       make(chan TransferRequest, cfg.QueueSize),
+		uploads:         make(chan TransferRequest, cfg.QueueSize),
+		prefetch:        make(chan TransferRequest, cfg.QueueSize),
+		uploadWorkers:   cfg.Workers,
+		downloadWorkers: cfg.DownloadWorkers,
+		stopCh:          make(chan struct{}),
+		stoppedCh:       make(chan struct{}),
 	}
 }
 
-// Start begins processing transfer requests.
+// Start begins processing transfer requests with dedicated worker pools.
 func (q *TransferQueue) Start(ctx context.Context) {
 	q.mu.Lock()
 	if q.started {
@@ -73,14 +74,18 @@ func (q *TransferQueue) Start(ctx context.Context) {
 	q.started = true
 	q.mu.Unlock()
 
-	logger.Info("Starting transfer queue", "workers", q.workers)
+	logger.Info("Starting transfer queue",
+		"download_workers", q.downloadWorkers, "upload_workers", q.uploadWorkers)
 
-	for i := 0; i < q.workers; i++ {
+	for i := 0; i < q.downloadWorkers; i++ {
 		q.wg.Add(1)
-		go q.worker(ctx, i)
+		go q.downloadWorker(ctx, i)
+	}
+	for i := 0; i < q.uploadWorkers; i++ {
+		q.wg.Add(1)
+		go q.uploadWorker(ctx, i)
 	}
 
-	// Monitor goroutine to close stoppedCh when all workers exit
 	go func() {
 		q.wg.Wait()
 		close(q.stoppedCh)
@@ -93,17 +98,13 @@ func (q *TransferQueue) Stop(timeout time.Duration) {
 	q.mu.Lock()
 	if !q.started {
 		q.mu.Unlock()
-		// Never started - nothing to stop
 		return
 	}
 	q.mu.Unlock()
 
 	logger.Info("Stopping transfer queue", "pending", q.Pending())
-
-	// Signal workers to stop
 	close(q.stopCh)
 
-	// Wait with timeout
 	select {
 	case <-q.stoppedCh:
 		logger.Info("Transfer queue stopped gracefully")
@@ -164,7 +165,6 @@ func (q *TransferQueue) EnqueuePrefetch(req TransferRequest) bool {
 		q.mu.Unlock()
 		return true
 	default:
-		// Prefetch is best-effort, silently drop if full
 		return false
 	}
 }
@@ -198,23 +198,13 @@ func (q *TransferQueue) LastError() (time.Time, error) {
 	return q.lastErrorAt, q.lastError
 }
 
-// worker processes transfer requests from the queue with priority ordering.
-// Priority: downloads > uploads > prefetch
-//
-// The worker uses a two-phase select to ensure downloads are processed first
-// without busy-waiting (CPU spin) when queues are empty.
-//
-// IMPORTANT: Workers ignore the passed context for lifecycle management and only
-// exit when stopCh is closed. This prevents workers from exiting early if the
-// initialization context is short-lived or cancelled. Each request gets its own
-// fresh context with timeout in processRequest().
-func (q *TransferQueue) worker(_ context.Context, id int) {
+// downloadWorker processes download and prefetch requests, exiting on stopCh close.
+func (q *TransferQueue) downloadWorker(_ context.Context, id int) {
 	defer q.wg.Done()
 
-	logger.Debug("Transfer queue worker started", "workerID", id)
+	logger.Debug("Download worker started", "workerID", id)
 
 	for {
-		// Phase 1: Check for high-priority downloads (non-blocking)
 		select {
 		case req := <-q.downloads:
 			q.processRequest(req)
@@ -222,29 +212,42 @@ func (q *TransferQueue) worker(_ context.Context, id int) {
 		default:
 		}
 
-		// Phase 2: Wait for any work (blocking - no CPU spin)
 		select {
 		case req := <-q.downloads:
-			q.processRequest(req)
-		case req := <-q.uploads:
 			q.processRequest(req)
 		case req := <-q.prefetch:
 			q.processRequest(req)
 		case <-q.stopCh:
-			q.drainQueue()
-			logger.Debug("Transfer queue worker stopped", "workerID", id)
+			q.drainDownloads()
+			logger.Debug("Download worker stopped", "workerID", id)
 			return
 		}
 	}
 }
 
-// drainQueue processes remaining items in all queues during shutdown.
-func (q *TransferQueue) drainQueue() {
+// uploadWorker processes upload requests, exiting on stopCh close.
+func (q *TransferQueue) uploadWorker(_ context.Context, id int) {
+	defer q.wg.Done()
+
+	logger.Debug("Upload worker started", "workerID", id)
+
+	for {
+		select {
+		case req := <-q.uploads:
+			q.processRequest(req)
+		case <-q.stopCh:
+			q.drainUploads()
+			logger.Debug("Upload worker stopped", "workerID", id)
+			return
+		}
+	}
+}
+
+// drainDownloads processes remaining downloads and prefetch during shutdown.
+func (q *TransferQueue) drainDownloads() {
 	for {
 		select {
 		case req := <-q.downloads:
-			q.processRequest(req)
-		case req := <-q.uploads:
 			q.processRequest(req)
 		case req := <-q.prefetch:
 			q.processRequest(req)
@@ -254,11 +257,20 @@ func (q *TransferQueue) drainQueue() {
 	}
 }
 
-// processRequest handles a single transfer request.
-// Each request gets a fresh context with timeout - worker contexts are not used
-// to ensure workers don't exit early if the initialization context is cancelled.
+// drainUploads processes remaining uploads during shutdown.
+func (q *TransferQueue) drainUploads() {
+	for {
+		select {
+		case req := <-q.uploads:
+			q.processRequest(req)
+		default:
+			return
+		}
+	}
+}
+
+// processRequest handles a single transfer request with a fresh context.
 func (q *TransferQueue) processRequest(req TransferRequest) {
-	// Use a fresh context with timeout for block store operations
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -320,12 +332,14 @@ func (q *TransferQueue) signalDone(done chan error, err error) {
 	}
 }
 
-// processDownload handles a download request.
+// processDownload handles a download or prefetch request via the worker pool.
 func (q *TransferQueue) processDownload(ctx context.Context, req TransferRequest) error {
 	if q.manager == nil {
 		return nil
 	}
-	return q.manager.downloadBlock(ctx, req.PayloadID, req.ChunkIdx, req.BlockIdx)
+
+	_, err := q.manager.downloadBlock(ctx, req.PayloadID, req.BlockIdx)
+	return err
 }
 
 // processUpload handles an upload request.
@@ -333,7 +347,5 @@ func (q *TransferQueue) processUpload(ctx context.Context, req TransferRequest) 
 	if q.manager == nil {
 		return nil
 	}
-
-	// All uploads are block-level (eager upload)
-	return q.manager.uploadBlock(ctx, req.PayloadID, req.ChunkIdx, req.BlockIdx)
+	return q.manager.uploadBlock(ctx, req.PayloadID, req.BlockIdx)
 }

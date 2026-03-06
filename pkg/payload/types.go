@@ -2,27 +2,14 @@ package payload
 
 import "github.com/marmos91/dittofs/pkg/payload/offloader"
 
-// StorageStats contains statistics about block storage.
-//
-// This provides information about storage capacity, usage, and health.
+// StorageStats contains statistics about block storage capacity and usage.
 type StorageStats struct {
-	// TotalSize is the total storage capacity in bytes.
-	// For cache-only mode, this may be the configured cache limit.
-	TotalSize uint64
-
-	// UsedSize is the actual space consumed by content in bytes.
-	UsedSize uint64
-
-	// AvailableSize is the remaining available space in bytes.
-	AvailableSize uint64
-
-	// ContentCount is the total number of content items (slices).
-	ContentCount uint64
-
-	// AverageSize is the average size of content items in bytes.
-	AverageSize uint64
+	TotalSize     uint64 // Total storage capacity in bytes
+	UsedSize      uint64 // Space consumed by content in bytes
+	AvailableSize uint64 // Remaining available space in bytes
+	ContentCount  uint64 // Total number of content items
+	AverageSize   uint64 // Average size of content items in bytes
 }
 
-// FlushResult is an alias to offloader.FlushResult for API compatibility.
-// The canonical definition is in pkg/payload/offloader/types.go.
+// FlushResult is an alias to offloader.FlushResult.
 type FlushResult = offloader.FlushResult

@@ -26,22 +26,22 @@ func TestParsePayloadIDFromBlockKey(t *testing.T) {
 	}{
 		{
 			name:     "standard block key",
-			blockKey: "export/file.txt/chunk-0/block-0",
+			blockKey: "export/file.txt/block-0",
 			expected: "export/file.txt",
 		},
 		{
 			name:     "nested path",
-			blockKey: "export/deep/nested/path/document.pdf/chunk-2/block-5",
+			blockKey: "export/deep/nested/path/document.pdf/block-5",
 			expected: "export/deep/nested/path/document.pdf",
 		},
 		{
 			name:     "file at root of share",
-			blockKey: "myshare/readme.txt/chunk-0/block-0",
+			blockKey: "myshare/readme.txt/block-0",
 			expected: "myshare/readme.txt",
 		},
 		{
-			name:     "multiple chunks",
-			blockKey: "export/large-file.bin/chunk-100/block-3",
+			name:     "high block index",
+			blockKey: "export/large-file.bin/block-3",
 			expected: "export/large-file.bin",
 		},
 		{
@@ -50,23 +50,23 @@ func TestParsePayloadIDFromBlockKey(t *testing.T) {
 			expected: "",
 		},
 		{
-			name:     "no chunk marker",
+			name:     "no block marker",
 			blockKey: "export/file.txt",
 			expected: "",
 		},
 		{
-			name:     "chunk at start",
-			blockKey: "/chunk-0/block-0",
+			name:     "block at start",
+			blockKey: "/block-0",
 			expected: "",
 		},
 		{
-			name:     "only chunk marker",
-			blockKey: "chunk-0/block-0",
+			name:     "only block marker",
+			blockKey: "block-0",
 			expected: "",
 		},
 		{
 			name:     "path with hyphen",
-			blockKey: "export/my-file/chunk-0/block-0",
+			blockKey: "export/my-file/block-0",
 			expected: "export/my-file",
 		},
 	}
@@ -212,7 +212,7 @@ func TestCollectGarbage_NoOrphans(t *testing.T) {
 	defer func() { _ = blockStore.Close() }()
 
 	// Add a block to the store
-	blockKey := "export/test-file.txt/chunk-0/block-0"
+	blockKey := "export/test-file.txt/block-0"
 	require.NoError(t, blockStore.WriteBlock(ctx, blockKey, []byte("test data")))
 
 	// Create reconciler with a share and file that owns this block
@@ -238,7 +238,7 @@ func TestCollectGarbage_DeletesOrphans(t *testing.T) {
 	defer func() { _ = blockStore.Close() }()
 
 	// Add an orphan block (no file references it)
-	blockKey := "export/deleted-file.txt/chunk-0/block-0"
+	blockKey := "export/deleted-file.txt/block-0"
 	require.NoError(t, blockStore.WriteBlock(ctx, blockKey, []byte("orphan data")))
 
 	// Create reconciler with share but no file for this payload
@@ -262,11 +262,11 @@ func TestCollectGarbage_MixedOrphansAndValid(t *testing.T) {
 	defer func() { _ = blockStore.Close() }()
 
 	// Add a valid block
-	validKey := "export/valid-file.txt/chunk-0/block-0"
+	validKey := "export/valid-file.txt/block-0"
 	require.NoError(t, blockStore.WriteBlock(ctx, validKey, []byte("valid")))
 
 	// Add an orphan block
-	orphanKey := "export/orphan-file.txt/chunk-0/block-0"
+	orphanKey := "export/orphan-file.txt/block-0"
 	require.NoError(t, blockStore.WriteBlock(ctx, orphanKey, []byte("orphan")))
 
 	// Create reconciler with share and only the valid file
@@ -296,7 +296,7 @@ func TestCollectGarbage_UnknownShare(t *testing.T) {
 	defer func() { _ = blockStore.Close() }()
 
 	// Add a block for an unknown share
-	blockKey := "unknown-share/file.txt/chunk-0/block-0"
+	blockKey := "unknown-share/file.txt/block-0"
 	require.NoError(t, blockStore.WriteBlock(ctx, blockKey, []byte("data")))
 
 	// Create reconciler with a different share
@@ -317,7 +317,7 @@ func TestCollectGarbage_ProgressCallback(t *testing.T) {
 
 	// Add some orphan blocks (one per "file" to trigger callback per file)
 	for i := 0; i < 5; i++ {
-		blockKey := fmt.Sprintf("export/file%d.txt/chunk-0/block-0", i)
+		blockKey := fmt.Sprintf("export/file%d.txt/block-0", i)
 		require.NoError(t, blockStore.WriteBlock(ctx, blockKey, []byte("data")))
 	}
 
@@ -343,7 +343,7 @@ func TestCollectGarbage_DryRun(t *testing.T) {
 	defer func() { _ = blockStore.Close() }()
 
 	// Add an orphan block
-	blockKey := "export/orphan.txt/chunk-0/block-0"
+	blockKey := "export/orphan.txt/block-0"
 	require.NoError(t, blockStore.WriteBlock(ctx, blockKey, []byte("orphan data")))
 
 	reconciler := newGCTestReconciler()

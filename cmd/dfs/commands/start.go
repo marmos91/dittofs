@@ -124,17 +124,18 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// Store cache config BEFORE loading shares (AddShare needs it for PayloadService)
 	rt.SetCacheConfig(&runtime.CacheConfig{
-		Path:           cfg.Cache.Path,
-		Size:           uint64(cfg.Cache.Size),
-		MaxPendingSize: uint64(cfg.Cache.MaxPendingSize),
+		Path: cfg.Cache.Path,
+		Size: uint64(cfg.Cache.Size),
 	})
 	rt.SetOffloaderConfig(&runtime.OffloaderConfig{
 		ParallelUploads:    cfg.Offloader.ParallelUploads,
 		ParallelDownloads:  cfg.Offloader.ParallelDownloads,
 		PrefetchBlocks:     cfg.Offloader.PrefetchBlocks,
 		SmallFileThreshold: int64(cfg.Offloader.SmallFileThreshold),
+		UploadInterval:     cfg.Offloader.UploadInterval,
+		UploadDelay:        cfg.Offloader.UploadDelay,
 	})
-	logger.Info("Cache configuration stored", "path", cfg.Cache.Path, "size", cfg.Cache.Size, "max_pending_size", cfg.Cache.MaxPendingSize)
+	logger.Info("Cache configuration stored", "path", cfg.Cache.Path, "size", cfg.Cache.Size)
 
 	// Now load shares (they need cache config to initialize PayloadService)
 	if err := runtime.LoadSharesFromStore(ctx, rt, cpStore); err != nil {

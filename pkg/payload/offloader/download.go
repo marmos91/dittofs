@@ -20,77 +20,249 @@ func (m *Offloader) waitForDownloads() {
 	m.ioCond.L.Unlock()
 }
 
+// resolveStoreKey returns the S3 key for downloading a block.
+// Returns "" if no FileBlock exists (sparse) or if the block is not yet uploaded.
+func (m *Offloader) resolveStoreKey(ctx context.Context, payloadID string, blockIdx uint64) string {
+	blockID := fmt.Sprintf("%s/%d", payloadID, blockIdx)
+	fb, err := m.fileBlockStore.GetFileBlock(ctx, blockID)
+	if err != nil {
+		return ""
+	}
+	return fb.BlockStoreKey
+}
+
 // downloadBlock downloads a single block from the block store and caches it.
-func (m *Offloader) downloadBlock(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) error {
+// Returns nil data for sparse blocks (no FileBlock entry or missing S3 object).
+func (m *Offloader) downloadBlock(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, error) {
 	m.mu.RLock()
 	if m.closed {
 		m.mu.RUnlock()
-		return fmt.Errorf("offloader is closed")
+		return nil, fmt.Errorf("offloader is closed")
 	}
 	m.mu.RUnlock()
 
-	blockKeyStr := FormatBlockKey(payloadID, chunkIdx, blockIdx)
+	storeKey := m.resolveStoreKey(ctx, payloadID, blockIdx)
+	if storeKey == "" {
+		return nil, nil
+	}
 
-	data, err := m.blockStore.ReadBlock(ctx, blockKeyStr)
+	data, err := m.blockStore.ReadBlock(ctx, storeKey)
 	if err != nil {
 		if errors.Is(err, store.ErrBlockNotFound) {
-			// Sparse block: block was never written. Return nil without caching
-			// to avoid storing full-size zero blocks in memory. The read path
-			// will zero-fill the caller's dest buffer on cache miss.
-			logger.Debug("Sparse block detected, skipping cache",
-				"block", blockKeyStr)
-			return nil
+			return nil, nil
 		}
-		return fmt.Errorf("download block %s: %w", blockKeyStr, err)
+		return nil, fmt.Errorf("download block %s: %w", storeKey, err)
 	}
 
-	// WriteDownloaded marks block as Uploaded (evictable) since it's already in S3,
-	// does not count against pendingSize, and does not write to WAL.
-	blockOffset := blockIdx * BlockSize
-	if err := m.cache.WriteDownloaded(ctx, payloadID, chunkIdx, data, blockOffset); err != nil {
-		return fmt.Errorf("cache downloaded block %s: %w", blockKeyStr, err)
+	offset := blockIdx * uint64(BlockSize)
+	if err := m.cache.WriteDownloaded(ctx, payloadID, data, offset); err != nil {
+		return nil, fmt.Errorf("cache downloaded block %s: %w", storeKey, err)
 	}
 
-	return nil
+	return data, nil
+}
+
+// EnsureAvailableAndRead downloads blocks and copies data directly to dest, avoiding
+// a second cache ReadAt. Demanded blocks are downloaded inline in the caller's goroutine;
+// prefetch uses the worker pool. Returns (filled, error).
+func (m *Offloader) EnsureAvailableAndRead(ctx context.Context, payloadID string, offset uint64, length uint32, dest []byte) (bool, error) {
+	if !m.canProcess(ctx) {
+		return false, fmt.Errorf("offloader is closed")
+	}
+
+	startBlockIdx := offset / uint64(BlockSize)
+	endBlockIdx := (offset + uint64(length) - 1) / uint64(BlockSize)
+
+	allCached := true
+	for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
+		if !m.cache.IsBlockCached(ctx, payloadID, blockIdx) {
+			allCached = false
+			break
+		}
+	}
+	if allCached {
+		return false, nil
+	}
+
+	filled := false
+	anyNeedCache := false
+
+	for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
+		if m.cache.IsBlockCached(ctx, payloadID, blockIdx) {
+			anyNeedCache = true
+			continue
+		}
+
+		data, downloaded, err := m.inlineDownloadOrWait(ctx, payloadID, blockIdx)
+		if err != nil {
+			return false, err
+		}
+
+		if !downloaded {
+			anyNeedCache = true
+			continue
+		}
+
+		if data == nil {
+			zeroBlockRegion(dest, blockIdx, offset, uint64(length))
+			filled = true
+			continue
+		}
+
+		if copyBlockToDest(dest, data, blockIdx, offset, uint64(length)) {
+			filled = true
+		}
+	}
+
+	if m.config.PrefetchBlocks > 0 {
+		for i := 0; i < m.config.PrefetchBlocks; i++ {
+			prefetchBlockIdx := endBlockIdx + 1 + uint64(i)
+			m.enqueuePrefetch(payloadID, prefetchBlockIdx)
+		}
+	}
+
+	if anyNeedCache {
+		return false, nil // Some blocks were in cache -- caller should use cache ReadAt
+	}
+	return filled, nil
+}
+
+// inlineDownloadOrWait downloads a block inline or waits for an in-flight download.
+// Returns (data, true, nil) for inline download, (nil, false, nil) if piggybacked on existing.
+func (m *Offloader) inlineDownloadOrWait(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, bool, error) {
+	key := cache.FormatStoreKey(payloadID, blockIdx)
+
+	m.inFlightMu.Lock()
+	if existing, ok := m.inFlight[key]; ok {
+		m.inFlightMu.Unlock()
+		select {
+		case <-existing.done:
+			existing.mu.Lock()
+			err := existing.err
+			existing.mu.Unlock()
+			return nil, false, err
+		case <-ctx.Done():
+			return nil, false, ctx.Err()
+		}
+	}
+
+	result := &downloadResult{done: make(chan struct{})}
+	m.inFlight[key] = result
+	m.inFlightMu.Unlock()
+
+	storeKey := m.resolveStoreKey(ctx, payloadID, blockIdx)
+	if storeKey == "" {
+		m.completeInFlight(key, result, nil)
+		return nil, true, nil
+	}
+
+	data, err := m.blockStore.ReadBlock(ctx, storeKey)
+	if err != nil {
+		if errors.Is(err, store.ErrBlockNotFound) {
+			m.completeInFlight(key, result, nil)
+			return nil, true, nil
+		}
+		m.completeInFlight(key, result, err)
+		return nil, false, fmt.Errorf("download block %s: %w", storeKey, err)
+	}
+
+	// Cache write in background; piggybacked waiters are signaled after completion.
+	blockOffset := blockIdx * uint64(BlockSize)
+	go func() {
+		bgCtx := context.Background()
+		if cacheErr := m.cache.WriteDownloaded(bgCtx, payloadID, data, blockOffset); cacheErr != nil {
+			logger.Warn("inline download: cache write failed",
+				"block", key, "error", cacheErr)
+		}
+		m.completeInFlight(key, result, nil)
+	}()
+
+	return data, true, nil
+}
+
+// completeInFlight signals completion to all waiters and cleans up tracking.
+func (m *Offloader) completeInFlight(key string, result *downloadResult, err error) {
+	result.mu.Lock()
+	result.err = err
+	result.mu.Unlock()
+	close(result.done)
+
+	m.inFlightMu.Lock()
+	delete(m.inFlight, key)
+	m.inFlightMu.Unlock()
+}
+
+// blockRegion computes the source offset within a block and destination offset within
+// the read buffer for a given block, read offset, and read length.
+// Returns (srcOffset, destOffset, copyLen). copyLen=0 means no overlap.
+func blockRegion(blockIdx, readOffset, readLength, blockDataLen uint64) (srcOff, destOff, copyLen uint64) {
+	blockStart := blockIdx * uint64(BlockSize)
+	if readOffset > blockStart {
+		srcOff = readOffset - blockStart
+	}
+	if blockStart > readOffset {
+		destOff = blockStart - readOffset
+	}
+	available := blockDataLen - srcOff
+	remaining := readLength - destOff
+	copyLen = available
+	if remaining < copyLen {
+		copyLen = remaining
+	}
+	return srcOff, destOff, copyLen
+}
+
+// zeroBlockRegion zeroes the portion of dest that corresponds to a sparse block.
+func zeroBlockRegion(dest []byte, blockIdx, offset, length uint64) {
+	_, destOff, n := blockRegion(blockIdx, offset, length, uint64(BlockSize))
+	if n > 0 && int(destOff+n) <= len(dest) {
+		clear(dest[destOff : destOff+n])
+	}
+}
+
+// copyBlockToDest copies the relevant portion of block data into dest.
+func copyBlockToDest(dest, data []byte, blockIdx, offset, length uint64) bool {
+	srcOff, destOff, n := blockRegion(blockIdx, offset, length, uint64(len(data)))
+	if n > 0 && int(destOff+n) <= len(dest) && int(srcOff+n) <= len(data) {
+		copy(dest[destOff:destOff+n], data[srcOff:srcOff+n])
+		return true
+	}
+	return false
 }
 
 // EnsureAvailable ensures the requested data range is in cache, downloading if needed.
-// Blocks until data is available. Also triggers prefetch for upcoming blocks.
-//
-// This is the preferred method for handling cache misses - it uses the queue
-// for downloads with proper priority scheduling and prefetch support.
-func (m *Offloader) EnsureAvailable(ctx context.Context, payloadID string, chunkIdx uint32, offset, length uint32) error {
+// Blocks until data is available and triggers prefetch for upcoming blocks.
+func (m *Offloader) EnsureAvailable(ctx context.Context, payloadID string, offset uint64, length uint32) error {
 	if !m.canProcess(ctx) {
 		return fmt.Errorf("offloader is closed")
 	}
 
-	// Check if range is already in cache
-	if m.isRangeInCache(ctx, payloadID, chunkIdx, offset, length) {
+	startBlockIdx := offset / uint64(BlockSize)
+	endBlockIdx := (offset + uint64(length) - 1) / uint64(BlockSize)
+
+	allCached := true
+	for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
+		if !m.cache.IsBlockCached(ctx, payloadID, blockIdx) {
+			allCached = false
+			break
+		}
+	}
+	if allCached {
 		return nil
 	}
-
-	// Calculate which blocks we need
-	startBlockIdx := offset / BlockSize
-	endBlockIdx := (offset + length - 1) / BlockSize
 
 	var doneChannels []chan error
 
 	for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
-		done := m.enqueueDownload(payloadID, chunkIdx, blockIdx)
+		done := m.enqueueDownload(payloadID, blockIdx)
 		if done != nil {
 			doneChannels = append(doneChannels, done)
 		}
 	}
 
-	// Enqueue prefetch blocks (fire-and-forget, parallel with downloads)
 	if m.config.PrefetchBlocks > 0 {
-		blocksPerChunk := uint32(cache.ChunkSize / BlockSize)
 		for i := 0; i < m.config.PrefetchBlocks; i++ {
-			prefetchBlockIdx := endBlockIdx + 1 + uint32(i)
-			// Calculate actual chunk/block for blocks that span chunk boundaries
-			actualChunk := chunkIdx + prefetchBlockIdx/blocksPerChunk
-			actualBlock := prefetchBlockIdx % blocksPerChunk
-			m.enqueuePrefetch(payloadID, actualChunk, actualBlock)
+			m.enqueuePrefetch(payloadID, endBlockIdx+1+uint64(i))
 		}
 	}
 
@@ -108,29 +280,21 @@ func (m *Offloader) EnsureAvailable(ctx context.Context, payloadID string, chunk
 	return nil
 }
 
-// enqueueDownload enqueues a download, handling in-flight deduplication.
-// Returns channel to wait on, or nil if already in cache.
-//
-// Uses a broadcast pattern: multiple callers requesting the same block will all
-// wait on the same downloadResult. When the download completes, the done channel
-// is CLOSED (not written to), which notifies ALL waiters simultaneously.
-func (m *Offloader) enqueueDownload(payloadID string, chunkIdx, blockIdx uint32) chan error {
-	// Check cache first (fast path)
-	if m.isBlockInCache(payloadID, chunkIdx, blockIdx) {
+// enqueueDownload enqueues a download with in-flight dedup (broadcast pattern).
+// Returns a channel to wait on, or nil if already cached.
+func (m *Offloader) enqueueDownload(payloadID string, blockIdx uint64) chan error {
+	if m.cache.IsBlockCached(context.Background(), payloadID, blockIdx) {
 		return nil
 	}
 
-	key := FormatBlockKey(payloadID, chunkIdx, blockIdx)
+	key := cache.FormatStoreKey(payloadID, blockIdx)
 
 	m.inFlightMu.Lock()
-
-	// Check if already in-flight - use broadcast pattern to notify ALL waiters
 	if existing, ok := m.inFlight[key]; ok {
 		m.inFlightMu.Unlock()
-		// Create waiter that receives broadcast from existing download
 		waiter := make(chan error, 1)
 		go func() {
-			<-existing.done // Wait for broadcast (channel close)
+			<-existing.done
 			existing.mu.Lock()
 			err := existing.err
 			existing.mu.Unlock()
@@ -139,42 +303,21 @@ func (m *Offloader) enqueueDownload(payloadID string, chunkIdx, blockIdx uint32)
 		return waiter
 	}
 
-	// Create new broadcast result and enqueue
-	result := &downloadResult{
-		done: make(chan struct{}),
-	}
+	result := &downloadResult{done: make(chan struct{})}
 	m.inFlight[key] = result
 	m.inFlightMu.Unlock()
 
-	// Create completion channel for this caller
 	callerDone := make(chan error, 1)
-
-	// Create the request with a Done channel that broadcasts to all waiters
-	req := NewDownloadRequest(payloadID, chunkIdx, blockIdx, nil)
+	req := NewDownloadRequest(payloadID, blockIdx, nil)
 	req.Done = make(chan error, 1)
 
-	// Goroutine to handle completion: broadcast to all waiters
 	go func() {
-		err := <-req.Done // Wait for worker to signal completion
-
-		// Set result and broadcast to ALL waiters by closing the done channel
-		result.mu.Lock()
-		result.err = err
-		result.mu.Unlock()
-		close(result.done) // Broadcast: closing notifies ALL receivers
-
-		// Cleanup in-flight tracking
-		m.inFlightMu.Lock()
-		delete(m.inFlight, key)
-		m.inFlightMu.Unlock()
-
-		// Signal the original caller
+		err := <-req.Done
+		m.completeInFlight(key, result, err)
 		callerDone <- err
 	}()
 
-	// Enqueue the download - if queue is full, signal error immediately
 	if !m.queue.EnqueueDownload(req) {
-		// Queue is full - signal error on req.Done to trigger the broadcast
 		req.Done <- fmt.Errorf("download queue full, cannot enqueue block %s", key)
 	}
 
@@ -182,34 +325,18 @@ func (m *Offloader) enqueueDownload(payloadID string, chunkIdx, blockIdx uint32)
 }
 
 // enqueuePrefetch enqueues a prefetch request (non-blocking, best effort).
-func (m *Offloader) enqueuePrefetch(payloadID string, chunkIdx, blockIdx uint32) {
-	// Skip if in cache
-	if m.isBlockInCache(payloadID, chunkIdx, blockIdx) {
+func (m *Offloader) enqueuePrefetch(payloadID string, blockIdx uint64) {
+	if m.cache.IsBlockCached(context.Background(), payloadID, blockIdx) {
 		return
 	}
 
-	// Skip if already in-flight
-	key := FormatBlockKey(payloadID, chunkIdx, blockIdx)
+	key := cache.FormatStoreKey(payloadID, blockIdx)
 	m.inFlightMu.Lock()
-	if _, ok := m.inFlight[key]; ok {
-		m.inFlightMu.Unlock()
+	_, inFlight := m.inFlight[key]
+	m.inFlightMu.Unlock()
+	if inFlight {
 		return
 	}
-	m.inFlightMu.Unlock()
 
-	// Non-blocking enqueue (drop if full - prefetch is best effort)
-	m.queue.EnqueuePrefetch(NewPrefetchRequest(payloadID, chunkIdx, blockIdx))
-}
-
-// isBlockInCache checks if a block is fully in cache.
-func (m *Offloader) isBlockInCache(payloadID string, chunkIdx, blockIdx uint32) bool {
-	blockOffset := blockIdx * BlockSize
-	covered, err := m.cache.IsRangeCovered(context.Background(), payloadID, chunkIdx, blockOffset, BlockSize)
-	return err == nil && covered
-}
-
-// isRangeInCache checks if a range is fully in cache.
-func (m *Offloader) isRangeInCache(ctx context.Context, payloadID string, chunkIdx uint32, offset, length uint32) bool {
-	covered, err := m.cache.IsRangeCovered(ctx, payloadID, chunkIdx, offset, length)
-	return err == nil && covered
+	m.queue.EnqueuePrefetch(NewPrefetchRequest(payloadID, blockIdx))
 }

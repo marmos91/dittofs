@@ -11,469 +11,313 @@ import (
 )
 
 // ============================================================================
-// ObjectStore Implementation for PostgreSQL Store
+// FileBlockStore Implementation for PostgreSQL Store
 // ============================================================================
 //
-// This file implements the ObjectStore interface for the PostgreSQL metadata store.
-// It provides content-addressed object, chunk, and block tracking for deduplication.
+// This file implements the FileBlockStore interface for the PostgreSQL metadata store.
+// It provides content-addressed file block tracking for deduplication and caching.
 //
-// Tables:
-//   - objects: Object data with content hash as primary key
-//   - object_chunks: Chunk data with content hash as primary key
-//   - object_blocks: Block data with content hash as primary key
+// Table:
+//   - file_blocks: File block data with UUID as primary key and hash index
 //
 // Thread Safety: All operations use PostgreSQL transactions for ACID guarantees.
 //
 // ============================================================================
 
-// Ensure PostgresMetadataStore implements ObjectStore
-var _ metadata.ObjectStore = (*PostgresMetadataStore)(nil)
+// Ensure PostgresMetadataStore implements FileBlockStore
+var _ metadata.FileBlockStore = (*PostgresMetadataStore)(nil)
 
 // ============================================================================
-// Object Operations
+// FileBlock Operations
 // ============================================================================
 
-// GetObject retrieves an object by its content hash.
-func (s *PostgresMetadataStore) GetObject(ctx context.Context, id metadata.ContentHash) (*metadata.Object, error) {
-	query := `SELECT id, size, ref_count, chunk_count, created_at, finalized FROM objects WHERE id = $1`
-	row := s.queryRow(ctx, query, id.String())
+// GetFileBlock retrieves a file block by its ID.
+func (s *PostgresMetadataStore) GetFileBlock(ctx context.Context, id string) (*metadata.FileBlock, error) {
+	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state
+		FROM file_blocks WHERE id = $1`
+	row := s.queryRow(ctx, query, id)
 
-	var obj metadata.Object
-	var idStr string
-	err := row.Scan(&idStr, &obj.Size, &obj.RefCount, &obj.ChunkCount, &obj.CreatedAt, &obj.Finalized)
+	block, err := scanFileBlock(row)
 	if err == pgx.ErrNoRows {
-		return nil, metadata.ErrObjectNotFound
+		return nil, metadata.ErrFileBlockNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("get object: %w", err)
+		return nil, fmt.Errorf("get file block: %w", err)
 	}
-
-	obj.ID, _ = metadata.ParseContentHash(idStr)
-	return &obj, nil
+	return block, nil
 }
 
-// PutObject stores or updates an object.
-func (s *PostgresMetadataStore) PutObject(ctx context.Context, obj *metadata.Object) error {
+// PutFileBlock stores or updates a file block.
+func (s *PostgresMetadataStore) PutFileBlock(ctx context.Context, block *metadata.FileBlock) error {
+	var hashStr *string
+	if block.IsFinalized() {
+		h := block.Hash.String()
+		hashStr = &h
+	}
+	var blockStoreKey *string
+	if block.BlockStoreKey != "" {
+		blockStoreKey = &block.BlockStoreKey
+	}
+	var cachePath *string
+	if block.CachePath != "" {
+		cachePath = &block.CachePath
+	}
+
 	query := `
-		INSERT INTO objects (id, size, ref_count, chunk_count, created_at, finalized)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO file_blocks (id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (id) DO UPDATE SET
-			size = EXCLUDED.size,
+			hash = EXCLUDED.hash,
+			data_size = EXCLUDED.data_size,
+			cache_path = EXCLUDED.cache_path,
+			block_store_key = EXCLUDED.block_store_key,
 			ref_count = EXCLUDED.ref_count,
-			chunk_count = EXCLUDED.chunk_count,
-			finalized = EXCLUDED.finalized`
+			last_access = EXCLUDED.last_access,
+			state = EXCLUDED.state`
 	_, err := s.exec(ctx, query,
-		obj.ID.String(), obj.Size, obj.RefCount, obj.ChunkCount, obj.CreatedAt, obj.Finalized)
+		block.ID, hashStr, block.DataSize, cachePath, blockStoreKey,
+		block.RefCount, block.LastAccess, block.CreatedAt, block.State)
 	if err != nil {
-		return fmt.Errorf("put object: %w", err)
+		return fmt.Errorf("put file block: %w", err)
 	}
 	return nil
 }
 
-// DeleteObject removes an object by its content hash.
-func (s *PostgresMetadataStore) DeleteObject(ctx context.Context, id metadata.ContentHash) error {
-	result, err := s.exec(ctx, `DELETE FROM objects WHERE id = $1`, id.String())
+// DeleteFileBlock removes a file block by its ID.
+func (s *PostgresMetadataStore) DeleteFileBlock(ctx context.Context, id string) error {
+	result, err := s.exec(ctx, `DELETE FROM file_blocks WHERE id = $1`, id)
 	if err != nil {
-		return fmt.Errorf("delete object: %w", err)
+		return fmt.Errorf("delete file block: %w", err)
 	}
 	rows := result.RowsAffected()
 	if rows == 0 {
-		return metadata.ErrObjectNotFound
+		return metadata.ErrFileBlockNotFound
 	}
 	return nil
 }
 
-// IncrementObjectRefCount atomically increments an object's RefCount.
-func (s *PostgresMetadataStore) IncrementObjectRefCount(ctx context.Context, id metadata.ContentHash) (uint32, error) {
-	query := `UPDATE objects SET ref_count = ref_count + 1 WHERE id = $1 RETURNING ref_count`
+// IncrementRefCount atomically increments a block's RefCount.
+func (s *PostgresMetadataStore) IncrementRefCount(ctx context.Context, id string) error {
+	result, err := s.exec(ctx,
+		`UPDATE file_blocks SET ref_count = ref_count + 1 WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("increment ref count: %w", err)
+	}
+	rows := result.RowsAffected()
+	if rows == 0 {
+		return metadata.ErrFileBlockNotFound
+	}
+	return nil
+}
+
+// DecrementRefCount atomically decrements a block's RefCount.
+func (s *PostgresMetadataStore) DecrementRefCount(ctx context.Context, id string) (uint32, error) {
+	query := `UPDATE file_blocks SET ref_count = GREATEST(ref_count - 1, 0) WHERE id = $1 RETURNING ref_count`
 	var newCount uint32
-	err := s.queryRow(ctx, query, id.String()).Scan(&newCount)
+	err := s.queryRow(ctx, query, id).Scan(&newCount)
 	if err == pgx.ErrNoRows {
-		return 0, metadata.ErrObjectNotFound
+		return 0, metadata.ErrFileBlockNotFound
 	}
 	if err != nil {
-		return 0, fmt.Errorf("increment object ref count: %w", err)
+		return 0, fmt.Errorf("decrement ref count: %w", err)
 	}
 	return newCount, nil
 }
 
-// DecrementObjectRefCount atomically decrements an object's RefCount.
-func (s *PostgresMetadataStore) DecrementObjectRefCount(ctx context.Context, id metadata.ContentHash) (uint32, error) {
-	query := `UPDATE objects SET ref_count = GREATEST(ref_count - 1, 0) WHERE id = $1 RETURNING ref_count`
-	var newCount uint32
-	err := s.queryRow(ctx, query, id.String()).Scan(&newCount)
-	if err == pgx.ErrNoRows {
-		return 0, metadata.ErrObjectNotFound
-	}
-	if err != nil {
-		return 0, fmt.Errorf("decrement object ref count: %w", err)
-	}
-	return newCount, nil
-}
-
-// ============================================================================
-// Chunk Operations
-// ============================================================================
-
-// GetChunk retrieves a chunk by its content hash.
-func (s *PostgresMetadataStore) GetChunk(ctx context.Context, hash metadata.ContentHash) (*metadata.ObjectChunk, error) {
-	query := `SELECT object_id, idx, hash, size, block_count, ref_count FROM object_chunks WHERE hash = $1`
+// FindFileBlockByHash looks up a finalized block by its content hash.
+// Returns nil without error if not found.
+func (s *PostgresMetadataStore) FindFileBlockByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
+	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state
+		FROM file_blocks WHERE hash = $1 AND state = 3`
 	row := s.queryRow(ctx, query, hash.String())
 
-	var chunk metadata.ObjectChunk
-	var objectIDStr, hashStr string
-	err := row.Scan(&objectIDStr, &chunk.Index, &hashStr, &chunk.Size, &chunk.BlockCount, &chunk.RefCount)
+	block, err := scanFileBlock(row)
 	if err == pgx.ErrNoRows {
-		return nil, metadata.ErrChunkNotFound
+		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("get chunk: %w", err)
+		return nil, fmt.Errorf("find file block by hash: %w", err)
 	}
-
-	chunk.ObjectID, _ = metadata.ParseContentHash(objectIDStr)
-	chunk.Hash, _ = metadata.ParseContentHash(hashStr)
-	return &chunk, nil
+	return block, nil
 }
 
-// GetChunksByObject retrieves all chunks for an object, ordered by Index.
-func (s *PostgresMetadataStore) GetChunksByObject(ctx context.Context, objectID metadata.ContentHash) ([]*metadata.ObjectChunk, error) {
-	query := `SELECT object_id, idx, hash, size, block_count, ref_count FROM object_chunks WHERE object_id = $1 ORDER BY idx`
-	rows, err := s.query(ctx, query, objectID.String())
+// ListPendingUpload returns blocks that are cached but not yet uploaded
+// and older than the given duration. If limit > 0, at most limit blocks are returned.
+func (s *PostgresMetadataStore) ListPendingUpload(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
+	cutoff := time.Now().Add(-olderThan)
+	var query string
+	var rows pgx.Rows
+	var err error
+	if limit > 0 {
+		query = `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state
+			FROM file_blocks
+			WHERE state = 1 AND cache_path IS NOT NULL AND created_at < $1
+			ORDER BY created_at ASC
+			LIMIT $2`
+		rows, err = s.query(ctx, query, cutoff, limit)
+	} else {
+		query = `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state
+			FROM file_blocks
+			WHERE state = 1 AND cache_path IS NOT NULL AND created_at < $1
+			ORDER BY created_at ASC`
+		rows, err = s.query(ctx, query, cutoff)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("get chunks by object: %w", err)
+		return nil, fmt.Errorf("list pending upload: %w", err)
 	}
 	defer rows.Close()
-
-	var chunks []*metadata.ObjectChunk
-	for rows.Next() {
-		var chunk metadata.ObjectChunk
-		var objectIDStr, hashStr string
-		if err := rows.Scan(&objectIDStr, &chunk.Index, &hashStr, &chunk.Size, &chunk.BlockCount, &chunk.RefCount); err != nil {
-			return nil, fmt.Errorf("scan chunk: %w", err)
-		}
-		chunk.ObjectID, _ = metadata.ParseContentHash(objectIDStr)
-		chunk.Hash, _ = metadata.ParseContentHash(hashStr)
-		chunks = append(chunks, &chunk)
-	}
-	return chunks, rows.Err()
+	return scanFileBlockRows(rows)
 }
 
-// PutChunk stores or updates a chunk.
-func (s *PostgresMetadataStore) PutChunk(ctx context.Context, chunk *metadata.ObjectChunk) error {
-	query := `
-		INSERT INTO object_chunks (object_id, idx, hash, size, block_count, ref_count)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (hash) DO UPDATE SET
-			ref_count = EXCLUDED.ref_count`
-	_, err := s.exec(ctx, query,
-		chunk.ObjectID.String(), chunk.Index, chunk.Hash.String(), chunk.Size, chunk.BlockCount, chunk.RefCount)
+// ListEvictable returns blocks that are both cached and uploaded,
+// ordered by LRU (oldest LastAccess first), up to limit.
+func (s *PostgresMetadataStore) ListEvictable(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
+	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state
+		FROM file_blocks
+		WHERE state = 3 AND cache_path IS NOT NULL
+		ORDER BY last_access ASC
+		LIMIT $1`
+	rows, err := s.query(ctx, query, limit)
 	if err != nil {
-		return fmt.Errorf("put chunk: %w", err)
+		return nil, fmt.Errorf("list evictable: %w", err)
 	}
-	return nil
+	defer rows.Close()
+	return scanFileBlockRows(rows)
 }
 
-// DeleteChunk removes a chunk by its content hash.
-func (s *PostgresMetadataStore) DeleteChunk(ctx context.Context, hash metadata.ContentHash) error {
-	result, err := s.exec(ctx, `DELETE FROM object_chunks WHERE hash = $1`, hash.String())
+// ListUnreferenced returns blocks with RefCount=0, up to limit.
+func (s *PostgresMetadataStore) ListUnreferenced(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
+	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state
+		FROM file_blocks
+		WHERE ref_count = 0
+		LIMIT $1`
+	rows, err := s.query(ctx, query, limit)
 	if err != nil {
-		return fmt.Errorf("delete chunk: %w", err)
+		return nil, fmt.Errorf("list unreferenced: %w", err)
 	}
-	rows := result.RowsAffected()
-	if rows == 0 {
-		return metadata.ErrChunkNotFound
-	}
-	return nil
-}
-
-// IncrementChunkRefCount atomically increments a chunk's RefCount.
-func (s *PostgresMetadataStore) IncrementChunkRefCount(ctx context.Context, hash metadata.ContentHash) (uint32, error) {
-	query := `UPDATE object_chunks SET ref_count = ref_count + 1 WHERE hash = $1 RETURNING ref_count`
-	var newCount uint32
-	err := s.queryRow(ctx, query, hash.String()).Scan(&newCount)
-	if err == pgx.ErrNoRows {
-		return 0, metadata.ErrChunkNotFound
-	}
-	if err != nil {
-		return 0, fmt.Errorf("increment chunk ref count: %w", err)
-	}
-	return newCount, nil
-}
-
-// DecrementChunkRefCount atomically decrements a chunk's RefCount.
-func (s *PostgresMetadataStore) DecrementChunkRefCount(ctx context.Context, hash metadata.ContentHash) (uint32, error) {
-	query := `UPDATE object_chunks SET ref_count = GREATEST(ref_count - 1, 0) WHERE hash = $1 RETURNING ref_count`
-	var newCount uint32
-	err := s.queryRow(ctx, query, hash.String()).Scan(&newCount)
-	if err == pgx.ErrNoRows {
-		return 0, metadata.ErrChunkNotFound
-	}
-	if err != nil {
-		return 0, fmt.Errorf("decrement chunk ref count: %w", err)
-	}
-	return newCount, nil
+	defer rows.Close()
+	return scanFileBlockRows(rows)
 }
 
 // ============================================================================
-// Block Operations
+// Scan Helpers
 // ============================================================================
 
-// GetBlock retrieves a block by its content hash.
-func (s *PostgresMetadataStore) GetBlock(ctx context.Context, hash metadata.ContentHash) (*metadata.ObjectBlock, error) {
-	query := `SELECT chunk_hash, idx, hash, size, ref_count, uploaded_at FROM object_blocks WHERE hash = $1`
-	row := s.queryRow(ctx, query, hash.String())
+// scanFileBlock scans a single row into a FileBlock.
+func scanFileBlock(row pgx.Row) (*metadata.FileBlock, error) {
+	var block metadata.FileBlock
+	var hashStr sql.NullString
+	var cachePath sql.NullString
+	var blockStoreKey sql.NullString
 
-	var block metadata.ObjectBlock
-	var chunkHashStr, hashStr string
-	var uploadedAt sql.NullTime
-	err := row.Scan(&chunkHashStr, &block.Index, &hashStr, &block.Size, &block.RefCount, &uploadedAt)
-	if err == pgx.ErrNoRows {
-		return nil, metadata.ErrBlockNotFound
-	}
+	err := row.Scan(&block.ID, &hashStr, &block.DataSize, &cachePath, &blockStoreKey,
+		&block.RefCount, &block.LastAccess, &block.CreatedAt, &block.State)
 	if err != nil {
-		return nil, fmt.Errorf("get block: %w", err)
+		return nil, err
 	}
 
-	block.ChunkHash, _ = metadata.ParseContentHash(chunkHashStr)
-	block.Hash, _ = metadata.ParseContentHash(hashStr)
-	if uploadedAt.Valid {
-		block.UploadedAt = uploadedAt.Time
+	if hashStr.Valid {
+		block.Hash, _ = metadata.ParseContentHash(hashStr.String)
+	}
+	if cachePath.Valid {
+		block.CachePath = cachePath.String
+	}
+	if blockStoreKey.Valid {
+		block.BlockStoreKey = blockStoreKey.String
 	}
 	return &block, nil
 }
 
-// GetBlocksByChunk retrieves all blocks for a chunk, ordered by Index.
-func (s *PostgresMetadataStore) GetBlocksByChunk(ctx context.Context, chunkHash metadata.ContentHash) ([]*metadata.ObjectBlock, error) {
-	query := `SELECT chunk_hash, idx, hash, size, ref_count, uploaded_at FROM object_blocks WHERE chunk_hash = $1 ORDER BY idx`
-	rows, err := s.query(ctx, query, chunkHash.String())
-	if err != nil {
-		return nil, fmt.Errorf("get blocks by chunk: %w", err)
-	}
-	defer rows.Close()
-
-	var blocks []*metadata.ObjectBlock
+// scanFileBlockRows scans multiple rows into FileBlock slices.
+func scanFileBlockRows(rows pgx.Rows) ([]*metadata.FileBlock, error) {
+	var result []*metadata.FileBlock
 	for rows.Next() {
-		var block metadata.ObjectBlock
-		var chunkHashStr, hashStr string
-		var uploadedAt sql.NullTime
-		if err := rows.Scan(&chunkHashStr, &block.Index, &hashStr, &block.Size, &block.RefCount, &uploadedAt); err != nil {
-			return nil, fmt.Errorf("scan block: %w", err)
+		var block metadata.FileBlock
+		var hashStr sql.NullString
+		var cachePath sql.NullString
+		var blockStoreKey sql.NullString
+
+		if err := rows.Scan(&block.ID, &hashStr, &block.DataSize, &cachePath, &blockStoreKey,
+			&block.RefCount, &block.LastAccess, &block.CreatedAt, &block.State); err != nil {
+			return nil, fmt.Errorf("scan file block: %w", err)
 		}
-		block.ChunkHash, _ = metadata.ParseContentHash(chunkHashStr)
-		block.Hash, _ = metadata.ParseContentHash(hashStr)
-		if uploadedAt.Valid {
-			block.UploadedAt = uploadedAt.Time
+
+		if hashStr.Valid {
+			block.Hash, _ = metadata.ParseContentHash(hashStr.String)
 		}
-		blocks = append(blocks, &block)
+		if cachePath.Valid {
+			block.CachePath = cachePath.String
+		}
+		if blockStoreKey.Valid {
+			block.BlockStoreKey = blockStoreKey.String
+		}
+		result = append(result, &block)
 	}
-	return blocks, rows.Err()
-}
-
-// PutBlock stores or updates a block.
-func (s *PostgresMetadataStore) PutBlock(ctx context.Context, block *metadata.ObjectBlock) error {
-	var uploadedAt interface{} = nil
-	if !block.UploadedAt.IsZero() {
-		uploadedAt = block.UploadedAt
-	}
-	query := `
-		INSERT INTO object_blocks (chunk_hash, idx, hash, size, ref_count, uploaded_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (hash) DO UPDATE SET
-			ref_count = EXCLUDED.ref_count,
-			uploaded_at = COALESCE(EXCLUDED.uploaded_at, object_blocks.uploaded_at)`
-	_, err := s.exec(ctx, query,
-		block.ChunkHash.String(), block.Index, block.Hash.String(), block.Size, block.RefCount, uploadedAt)
-	if err != nil {
-		return fmt.Errorf("put block: %w", err)
-	}
-	return nil
-}
-
-// DeleteBlock removes a block by its content hash.
-func (s *PostgresMetadataStore) DeleteBlock(ctx context.Context, hash metadata.ContentHash) error {
-	result, err := s.exec(ctx, `DELETE FROM object_blocks WHERE hash = $1`, hash.String())
-	if err != nil {
-		return fmt.Errorf("delete block: %w", err)
-	}
-	rows := result.RowsAffected()
-	if rows == 0 {
-		return metadata.ErrBlockNotFound
-	}
-	return nil
-}
-
-// FindBlockByHash looks up a block by its content hash.
-// Returns nil without error if not found.
-func (s *PostgresMetadataStore) FindBlockByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.ObjectBlock, error) {
-	block, err := s.GetBlock(ctx, hash)
-	if err == metadata.ErrBlockNotFound {
-		return nil, nil
-	}
-	return block, err
-}
-
-// IncrementBlockRefCount atomically increments a block's RefCount.
-func (s *PostgresMetadataStore) IncrementBlockRefCount(ctx context.Context, hash metadata.ContentHash) (uint32, error) {
-	query := `UPDATE object_blocks SET ref_count = ref_count + 1 WHERE hash = $1 RETURNING ref_count`
-	var newCount uint32
-	err := s.queryRow(ctx, query, hash.String()).Scan(&newCount)
-	if err == pgx.ErrNoRows {
-		return 0, metadata.ErrBlockNotFound
-	}
-	if err != nil {
-		return 0, fmt.Errorf("increment block ref count: %w", err)
-	}
-	return newCount, nil
-}
-
-// DecrementBlockRefCount atomically decrements a block's RefCount.
-func (s *PostgresMetadataStore) DecrementBlockRefCount(ctx context.Context, hash metadata.ContentHash) (uint32, error) {
-	query := `UPDATE object_blocks SET ref_count = GREATEST(ref_count - 1, 0) WHERE hash = $1 RETURNING ref_count`
-	var newCount uint32
-	err := s.queryRow(ctx, query, hash.String()).Scan(&newCount)
-	if err == pgx.ErrNoRows {
-		return 0, metadata.ErrBlockNotFound
-	}
-	if err != nil {
-		return 0, fmt.Errorf("decrement block ref count: %w", err)
-	}
-	return newCount, nil
-}
-
-// MarkBlockUploaded marks a block as uploaded to the block store.
-func (s *PostgresMetadataStore) MarkBlockUploaded(ctx context.Context, hash metadata.ContentHash) error {
-	result, err := s.exec(ctx,
-		`UPDATE object_blocks SET uploaded_at = $1 WHERE hash = $2`,
-		time.Now(), hash.String())
-	if err != nil {
-		return fmt.Errorf("mark block uploaded: %w", err)
-	}
-	rows := result.RowsAffected()
-	if rows == 0 {
-		return metadata.ErrBlockNotFound
-	}
-	return nil
+	return result, rows.Err()
 }
 
 // ============================================================================
 // Transaction Support
 // ============================================================================
 
-// Ensure postgresTransaction implements ObjectStore
-var _ metadata.ObjectStore = (*postgresTransaction)(nil)
+// Ensure postgresTransaction implements FileBlockStore
+var _ metadata.FileBlockStore = (*postgresTransaction)(nil)
 
-// Transaction wrapper methods delegate to store with transaction context
-
-func (tx *postgresTransaction) GetObject(ctx context.Context, id metadata.ContentHash) (*metadata.Object, error) {
-	return tx.store.GetObject(ctx, id)
+func (tx *postgresTransaction) GetFileBlock(ctx context.Context, id string) (*metadata.FileBlock, error) {
+	return tx.store.GetFileBlock(ctx, id)
 }
 
-func (tx *postgresTransaction) PutObject(ctx context.Context, obj *metadata.Object) error {
-	return tx.store.PutObject(ctx, obj)
+func (tx *postgresTransaction) PutFileBlock(ctx context.Context, block *metadata.FileBlock) error {
+	return tx.store.PutFileBlock(ctx, block)
 }
 
-func (tx *postgresTransaction) DeleteObject(ctx context.Context, id metadata.ContentHash) error {
-	return tx.store.DeleteObject(ctx, id)
+func (tx *postgresTransaction) DeleteFileBlock(ctx context.Context, id string) error {
+	return tx.store.DeleteFileBlock(ctx, id)
 }
 
-func (tx *postgresTransaction) IncrementObjectRefCount(ctx context.Context, id metadata.ContentHash) (uint32, error) {
-	return tx.store.IncrementObjectRefCount(ctx, id)
+func (tx *postgresTransaction) IncrementRefCount(ctx context.Context, id string) error {
+	return tx.store.IncrementRefCount(ctx, id)
 }
 
-func (tx *postgresTransaction) DecrementObjectRefCount(ctx context.Context, id metadata.ContentHash) (uint32, error) {
-	return tx.store.DecrementObjectRefCount(ctx, id)
+func (tx *postgresTransaction) DecrementRefCount(ctx context.Context, id string) (uint32, error) {
+	return tx.store.DecrementRefCount(ctx, id)
 }
 
-func (tx *postgresTransaction) GetChunk(ctx context.Context, hash metadata.ContentHash) (*metadata.ObjectChunk, error) {
-	return tx.store.GetChunk(ctx, hash)
+func (tx *postgresTransaction) FindFileBlockByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
+	return tx.store.FindFileBlockByHash(ctx, hash)
 }
 
-func (tx *postgresTransaction) GetChunksByObject(ctx context.Context, objectID metadata.ContentHash) ([]*metadata.ObjectChunk, error) {
-	return tx.store.GetChunksByObject(ctx, objectID)
+func (tx *postgresTransaction) ListPendingUpload(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
+	return tx.store.ListPendingUpload(ctx, olderThan, limit)
 }
 
-func (tx *postgresTransaction) PutChunk(ctx context.Context, chunk *metadata.ObjectChunk) error {
-	return tx.store.PutChunk(ctx, chunk)
+func (tx *postgresTransaction) ListEvictable(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
+	return tx.store.ListEvictable(ctx, limit)
 }
 
-func (tx *postgresTransaction) DeleteChunk(ctx context.Context, hash metadata.ContentHash) error {
-	return tx.store.DeleteChunk(ctx, hash)
+func (tx *postgresTransaction) ListUnreferenced(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
+	return tx.store.ListUnreferenced(ctx, limit)
 }
 
-func (tx *postgresTransaction) IncrementChunkRefCount(ctx context.Context, hash metadata.ContentHash) (uint32, error) {
-	return tx.store.IncrementChunkRefCount(ctx, hash)
-}
-
-func (tx *postgresTransaction) DecrementChunkRefCount(ctx context.Context, hash metadata.ContentHash) (uint32, error) {
-	return tx.store.DecrementChunkRefCount(ctx, hash)
-}
-
-func (tx *postgresTransaction) GetBlock(ctx context.Context, hash metadata.ContentHash) (*metadata.ObjectBlock, error) {
-	return tx.store.GetBlock(ctx, hash)
-}
-
-func (tx *postgresTransaction) GetBlocksByChunk(ctx context.Context, chunkHash metadata.ContentHash) ([]*metadata.ObjectBlock, error) {
-	return tx.store.GetBlocksByChunk(ctx, chunkHash)
-}
-
-func (tx *postgresTransaction) PutBlock(ctx context.Context, block *metadata.ObjectBlock) error {
-	return tx.store.PutBlock(ctx, block)
-}
-
-func (tx *postgresTransaction) DeleteBlock(ctx context.Context, hash metadata.ContentHash) error {
-	return tx.store.DeleteBlock(ctx, hash)
-}
-
-func (tx *postgresTransaction) FindBlockByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.ObjectBlock, error) {
-	return tx.store.FindBlockByHash(ctx, hash)
-}
-
-func (tx *postgresTransaction) IncrementBlockRefCount(ctx context.Context, hash metadata.ContentHash) (uint32, error) {
-	return tx.store.IncrementBlockRefCount(ctx, hash)
-}
-
-func (tx *postgresTransaction) DecrementBlockRefCount(ctx context.Context, hash metadata.ContentHash) (uint32, error) {
-	return tx.store.DecrementBlockRefCount(ctx, hash)
-}
-
-func (tx *postgresTransaction) MarkBlockUploaded(ctx context.Context, hash metadata.ContentHash) error {
-	return tx.store.MarkBlockUploaded(ctx, hash)
-}
-
-// PostgreSQL migration for object tables
-const objectTablesMigration = `
--- Objects table
-CREATE TABLE IF NOT EXISTS objects (
-    id VARCHAR(64) PRIMARY KEY,
-    size BIGINT NOT NULL DEFAULT 0,
+// PostgreSQL migration for file_blocks table
+const fileBlocksTableMigration = `
+-- File blocks table (replaces objects, object_chunks, object_blocks)
+CREATE TABLE IF NOT EXISTS file_blocks (
+    id VARCHAR(36) PRIMARY KEY,
+    hash VARCHAR(64),
+    data_size INTEGER NOT NULL DEFAULT 0,
+    cache_path TEXT,
+    block_store_key TEXT,
     ref_count INTEGER NOT NULL DEFAULT 1,
-    chunk_count INTEGER NOT NULL DEFAULT 0,
+    last_access TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    finalized BOOLEAN NOT NULL DEFAULT FALSE
+    state SMALLINT NOT NULL DEFAULT 0
 );
-
--- Object chunks table
-CREATE TABLE IF NOT EXISTS object_chunks (
-    hash VARCHAR(64) PRIMARY KEY,
-    object_id VARCHAR(64) NOT NULL REFERENCES objects(id) ON DELETE CASCADE,
-    idx INTEGER NOT NULL,
-    size INTEGER NOT NULL DEFAULT 0,
-    block_count INTEGER NOT NULL DEFAULT 0,
-    ref_count INTEGER NOT NULL DEFAULT 1
-);
-CREATE INDEX IF NOT EXISTS idx_object_chunks_object_id ON object_chunks(object_id, idx);
-
--- Object blocks table
-CREATE TABLE IF NOT EXISTS object_blocks (
-    hash VARCHAR(64) PRIMARY KEY,
-    chunk_hash VARCHAR(64) NOT NULL REFERENCES object_chunks(hash) ON DELETE CASCADE,
-    idx INTEGER NOT NULL,
-    size INTEGER NOT NULL DEFAULT 0,
-    ref_count INTEGER NOT NULL DEFAULT 1,
-    uploaded_at TIMESTAMP WITH TIME ZONE
-);
-CREATE INDEX IF NOT EXISTS idx_object_blocks_chunk_hash ON object_blocks(chunk_hash, idx);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_file_blocks_hash ON file_blocks(hash) WHERE hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_file_blocks_pending ON file_blocks(created_at) WHERE state = 1 AND cache_path IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_file_blocks_evictable ON file_blocks(last_access) WHERE state = 3 AND cache_path IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_file_blocks_unreferenced ON file_blocks(id) WHERE ref_count = 0;
 `
 
 // Unused variable to document the migration SQL
-var _ = objectTablesMigration
+var _ = fileBlocksTableMigration
