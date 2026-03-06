@@ -71,7 +71,7 @@ func runSeqWrite(ctx context.Context, cfg Config, dir string, progress ProgressF
 		if err := f.Sync(); err != nil {
 			errors++
 		}
-		f.Close()
+		_ = f.Close()
 	}
 
 	elapsed := time.Since(start)
@@ -148,7 +148,7 @@ func runSeqRead(ctx context.Context, cfg Config, dir string, progress ProgressFu
 			}
 		}
 
-		f.Close()
+		_ = f.Close()
 	}
 
 	elapsed := time.Since(start)

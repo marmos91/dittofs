@@ -29,7 +29,7 @@ func runRandWrite(ctx context.Context, cfg Config, dir string, progress Progress
 	defer func() {
 		for _, f := range files {
 			if f != nil {
-				f.Close()
+				_ = f.Close()
 			}
 		}
 	}()
@@ -113,7 +113,7 @@ func runRandRead(ctx context.Context, cfg Config, dir string, progress ProgressF
 	defer func() {
 		for _, f := range files {
 			if f != nil {
-				f.Close()
+				_ = f.Close()
 			}
 		}
 	}()
