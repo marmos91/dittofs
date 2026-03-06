@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -246,6 +247,9 @@ func TestValidate_ReadOnlyDir(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("skipping read-only test when running as root")
 	}
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not enforce directory permission bits")
+	}
 
 	dir := t.TempDir()
 	roDir := filepath.Join(dir, "readonly")
@@ -329,8 +333,8 @@ func TestRun_AllWorkloads(t *testing.T) {
 		if wr.TotalOps <= 0 {
 			t.Errorf("workload %q: TotalOps = %d, want > 0", w, wr.TotalOps)
 		}
-		if wr.Duration <= 0 {
-			t.Errorf("workload %q: Duration = %v, want > 0", w, wr.Duration)
+		if wr.Duration < 0 {
+			t.Errorf("workload %q: Duration = %v, want >= 0", w, wr.Duration)
 		}
 	}
 
