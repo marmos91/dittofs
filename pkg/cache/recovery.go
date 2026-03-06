@@ -33,13 +33,29 @@ func (bc *BlockCache) Recover(ctx context.Context) error {
 		}
 
 		filesFound++
-		blockID := strings.TrimSuffix(d.Name(), ".blk")
+
+		// Extract blockID from the full path, reversing blockPath's sharding.
+		// blockPath creates: <baseDir>/<shard>/<blockID>.blk where shard = blockID[:2].
+		rel, relErr := filepath.Rel(bc.baseDir, path)
+		if relErr != nil {
+			logger.Warn("cache: recovery skipping file", "path", path, "error", relErr)
+			return nil
+		}
+		rel = strings.TrimSuffix(rel, ".blk")
+		// Remove the 2-char shard directory prefix.
+		var blockID string
+		if parts := strings.SplitN(rel, string(filepath.Separator), 2); len(parts) == 2 {
+			blockID = parts[1]
+		} else {
+			blockID = rel
+		}
 
 		fb, err := bc.blockStore.GetFileBlock(ctx, blockID)
 		if err != nil {
-			var storeErr *metadata.StoreError
-			if errors.As(err, &storeErr) && errors.Is(err, metadata.ErrFileBlockNotFound) {
-				os.Remove(path)
+			if errors.Is(err, metadata.ErrFileBlockNotFound) {
+				if rmErr := os.Remove(path); rmErr != nil {
+					logger.Warn("cache: recovery failed to remove orphan", "path", path, "error", rmErr)
+				}
 				orphansDeleted++
 			} else {
 				logger.Warn("cache: recovery skipping block due to transient error", "blockID", blockID, "error", err)
@@ -69,7 +85,9 @@ func (bc *BlockCache) Recover(ctx context.Context) error {
 		}
 
 		if needsUpdate {
-			_ = bc.blockStore.PutFileBlock(ctx, fb)
+			if putErr := bc.blockStore.PutFileBlock(ctx, fb); putErr != nil {
+				logger.Warn("cache: recovery failed to update block metadata", "blockID", blockID, "error", putErr)
+			}
 		}
 
 		payloadID, blockIdx := parseBlockID(blockID)

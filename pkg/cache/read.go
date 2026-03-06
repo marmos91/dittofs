@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -80,7 +81,7 @@ func (bc *BlockCache) readFromDisk(ctx context.Context, payloadID string, blockI
 
 	fb, err := bc.lookupFileBlock(ctx, blockID)
 	if err != nil {
-		if err == metadata.ErrFileBlockNotFound {
+		if errors.Is(err, metadata.ErrFileBlockNotFound) {
 			return false, nil
 		}
 		return false, fmt.Errorf("get block metadata: %w", err)

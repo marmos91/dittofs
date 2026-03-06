@@ -14,7 +14,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Configuration (override via environment)
 # ---------------------------------------------------------------------------
-GO_VERSION="${GO_VERSION:-1.24.1}"
+GO_VERSION="${GO_VERSION:-1.25.0}"
 EXPORT_DIR="${EXPORT_DIR:-/export}"
 DATA_DIR="${DATA_DIR:-/data}"
 BENCH_MOUNT="${BENCH_MOUNT:-/mnt/bench}"
