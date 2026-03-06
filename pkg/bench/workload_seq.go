@@ -63,7 +63,7 @@ func runSeqWrite(ctx context.Context, cfg Config, dir string, progress ProgressF
 			}
 
 			if progress != nil {
-				done := int64(t*chunks+c+1) * int64(cfg.Threads)
+				done := int64(t*chunks + c + 1)
 				progress(SeqWrite, float64(done)/float64(totalOps))
 			}
 		}
@@ -143,7 +143,7 @@ func runSeqRead(ctx context.Context, cfg Config, dir string, progress ProgressFu
 			}
 
 			if progress != nil {
-				done := int64(t*chunks+c+1) * int64(cfg.Threads)
+				done := int64(t*chunks + c + 1)
 				progress(SeqRead, float64(done)/float64(totalOps))
 			}
 		}
