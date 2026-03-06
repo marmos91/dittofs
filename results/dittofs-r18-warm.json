@@ -1,0 +1,39 @@
+{
+  "timestamp": "2026-03-04T16:15:39.483251885Z",
+  "system": "dittofs-r18-warm",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 1,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000
+  },
+  "workloads": {
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 66.83097240492577,
+      "latency_p50_us": 2277,
+      "latency_p95_us": 48487,
+      "latency_p99_us": 225288,
+      "latency_avg_us": 14767.173828125,
+      "total_ops": 1024,
+      "total_bytes": 1073741824,
+      "errors": 0,
+      "duration": 15322237028
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 65.68560478938177,
+      "latency_p50_us": 617,
+      "latency_p95_us": 915,
+      "latency_p99_us": 1261,
+      "latency_avg_us": 662.326171875,
+      "total_ops": 1024,
+      "total_bytes": 1073741824,
+      "errors": 0,
+      "duration": 15589412677
+    }
+  },
+  "total_duration": 30912911889
+}
