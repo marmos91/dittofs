@@ -36,12 +36,13 @@ type BlockCache struct {
 	maxMemory  int64
 	blockStore metadata.FileBlockStore
 
-	// blocksMu guards the memBlocks map. Uses RWMutex for concurrent reads
-	// (the common case: checking if a block is already buffered).
+	// blocksMu guards the memBlocks and fileBlocks maps. Uses RWMutex for
+	// concurrent reads (the common case: checking if a block is already buffered).
 	// RWMutex outperforms sync.Map for write-heavy workloads with high key
 	// churn (random writes that create/flush/recreate blocks frequently).
-	blocksMu  sync.RWMutex
-	memBlocks map[blockKey]*memBlock
+	blocksMu   sync.RWMutex
+	memBlocks  map[blockKey]*memBlock
+	fileBlocks map[string]map[uint64]*memBlock // payloadID → blockIdx → mb
 
 	// filesMu guards the files map separately from block operations.
 	filesMu sync.RWMutex
@@ -56,6 +57,10 @@ type BlockCache struct {
 	// Keyed by blockID (string) -> *metadata.FileBlock.
 	// Drained every 200ms by SyncFileBlocks, and on Close/Flush.
 	pendingFBs sync.Map
+
+	// fdCache caches open file descriptors for .blk files to avoid
+	// open+close syscalls on every 4KB random write in tryDirectDiskWrite.
+	fdCache *fdCache
 }
 
 // New creates a new BlockCache.
@@ -80,7 +85,9 @@ func New(baseDir string, maxDisk int64, maxMemory int64, blockStore metadata.Fil
 		maxMemory:  maxMemory,
 		blockStore: blockStore,
 		memBlocks:  make(map[blockKey]*memBlock),
+		fileBlocks: make(map[string]map[uint64]*memBlock),
 		files:      make(map[string]*fileInfo),
+		fdCache:    newFDCache(defaultFDCacheSize),
 	}, nil
 }
 
@@ -89,6 +96,7 @@ func New(baseDir string, maxDisk int64, maxMemory int64, blockStore metadata.Fil
 func (bc *BlockCache) Close() error {
 	bc.closedFlag.Store(true)
 	bc.SyncFileBlocks(context.Background())
+	bc.fdCache.CloseAll()
 	return nil
 }
 
@@ -123,6 +131,23 @@ func (bc *BlockCache) Start(ctx context.Context) {
 // to ensure the FileBlockStore is up-to-date for ListPendingUpload queries.
 func (bc *BlockCache) SyncFileBlocks(ctx context.Context) {
 	bc.pendingFBs.Range(func(key, value any) bool {
+		fb := value.(*metadata.FileBlock)
+		if err := bc.blockStore.PutFileBlock(ctx, fb); err == nil {
+			bc.pendingFBs.Delete(key)
+		}
+		return true
+	})
+}
+
+// SyncFileBlocksForFile persists queued FileBlock metadata only for blocks
+// belonging to the given payloadID. Much cheaper than SyncFileBlocks during
+// random writes to many files, since it skips unrelated blocks.
+func (bc *BlockCache) SyncFileBlocksForFile(ctx context.Context, payloadID string) {
+	bc.pendingFBs.Range(func(key, value any) bool {
+		blockID := key.(string)
+		if !belongsToFile(blockID, payloadID) {
+			return true
+		}
 		fb := value.(*metadata.FileBlock)
 		if err := bc.blockStore.PutFileBlock(ctx, fb); err == nil {
 			bc.pendingFBs.Delete(key)
@@ -193,6 +218,13 @@ func (bc *BlockCache) getOrCreateMemBlock(key blockKey) *memBlock {
 			data: getBlockBuf(),
 		}
 		bc.memBlocks[key] = mb
+		// Maintain per-file secondary index
+		fm := bc.fileBlocks[key.payloadID]
+		if fm == nil {
+			fm = make(map[uint64]*memBlock)
+			bc.fileBlocks[key.payloadID] = fm
+		}
+		fm[key.blockIdx] = mb
 		bc.memUsed.Add(int64(BlockSize))
 	}
 	bc.blocksMu.Unlock()
@@ -259,18 +291,26 @@ func makeBlockID(key blockKey) string {
 // Releases the 8MB buffer and decrements memUsed for each removed block.
 func (bc *BlockCache) purgeMemBlocks(payloadID string, shouldRemove func(blockIdx uint64) bool) {
 	bc.blocksMu.Lock()
-	for key, mb := range bc.memBlocks {
-		if key.payloadID != payloadID || !shouldRemove(key.blockIdx) {
-			continue
+	fm := bc.fileBlocks[payloadID]
+	if fm != nil {
+		for blockIdx, mb := range fm {
+			if !shouldRemove(blockIdx) {
+				continue
+			}
+			mb.mu.Lock()
+			if mb.data != nil {
+				bc.memUsed.Add(-int64(BlockSize))
+				putBlockBuf(mb.data)
+				mb.data = nil
+			}
+			mb.mu.Unlock()
+			key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
+			delete(bc.memBlocks, key)
+			delete(fm, blockIdx)
 		}
-		mb.mu.Lock()
-		if mb.data != nil {
-			bc.memUsed.Add(-int64(BlockSize))
-			putBlockBuf(mb.data)
-			mb.data = nil
+		if len(fm) == 0 {
+			delete(bc.fileBlocks, payloadID)
 		}
-		mb.mu.Unlock()
-		delete(bc.memBlocks, key)
 	}
 	bc.blocksMu.Unlock()
 }
@@ -363,8 +403,8 @@ func (bc *BlockCache) GetDirtyBlocks(ctx context.Context, payloadID string) ([]P
 		return nil, err
 	}
 
-	// Persist queued metadata so ListPendingUpload sees all sealed blocks.
-	bc.SyncFileBlocks(ctx)
+	// Persist queued metadata for this file so ListPendingUpload sees sealed blocks.
+	bc.SyncFileBlocksForFile(ctx, payloadID)
 
 	pending, err := bc.blockStore.ListPendingUpload(ctx, 0, 0)
 	if err != nil {

@@ -39,13 +39,38 @@ type PendingWriteState struct {
 type PendingWritesTracker struct {
 	mu      sync.RWMutex
 	pending map[string]*PendingWriteState // handleKey -> state
+
+	// flushMu serializes FlushPendingWriteForFile per file handle.
+	// With concurrent NFS dispatch, multiple COMMITs for the same file
+	// may arrive simultaneously. Without this, they'd all hit BadgerDB
+	// concurrently causing conflict retries. With this, only one COMMIT
+	// flushes at a time per file; others find no pending state and skip.
+	flushMu   sync.Mutex
+	flushLocks map[string]*sync.Mutex // handleKey -> per-file mutex
 }
 
 // NewPendingWritesTracker creates a new tracker.
 func NewPendingWritesTracker() *PendingWritesTracker {
 	return &PendingWritesTracker{
-		pending: make(map[string]*PendingWriteState),
+		pending:    make(map[string]*PendingWriteState),
+		flushLocks: make(map[string]*sync.Mutex),
 	}
+}
+
+// GetFlushLock returns a per-file mutex for serializing flush operations.
+// This prevents concurrent COMMITs for the same file from causing BadgerDB
+// transaction conflicts and expensive retries.
+func (t *PendingWritesTracker) GetFlushLock(handle FileHandle) *sync.Mutex {
+	key := handleKey(handle)
+
+	t.flushMu.Lock()
+	mu, exists := t.flushLocks[key]
+	if !exists {
+		mu = &sync.Mutex{}
+		t.flushLocks[key] = mu
+	}
+	t.flushMu.Unlock()
+	return mu
 }
 
 // handleKey converts a FileHandle to a map key.

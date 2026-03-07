@@ -135,35 +135,59 @@ func (bc *BlockCache) tryDirectDiskWrite(ctx context.Context, payloadID string, 
 	blockID := makeBlockID(key)
 	path := bc.blockPath(blockID)
 
-	// Try to open the existing cache file for pwrite.
-	f, err := os.OpenFile(path, os.O_WRONLY, 0644)
-	if err != nil {
-		// File doesn't exist. For large writes (>= threshold), create it eagerly
-		// so all subsequent writes to this block use the fast pwrite path.
-		// Small writes fall through to the memory buffer for batching.
-		if len(data) < directDiskWriteThreshold {
-			return false
-		}
-		f, err = bc.createBlockFile(path)
+	// Try cached fd first, then open from disk.
+	f := bc.fdCache.Get(blockID)
+	if f == nil {
+		var err error
+		f, err = os.OpenFile(path, os.O_WRONLY, 0644)
 		if err != nil {
-			return false
+			// File doesn't exist. For large writes (>= threshold), create it eagerly
+			// so all subsequent writes to this block use the fast pwrite path.
+			// Small writes fall through to the memory buffer for batching.
+			if len(data) < directDiskWriteThreshold {
+				return false
+			}
+			f, err = bc.createBlockFile(path)
+			if err != nil {
+				return false
+			}
 		}
+		bc.fdCache.Put(blockID, f)
 	}
 
-	_, err = f.WriteAt(data, int64(blockOffset))
-	f.Close()
-	if err != nil {
+	if _, err := f.WriteAt(data, int64(blockOffset)); err != nil {
+		// Fd may be stale (file was truncated/recreated). Evict and fall through.
+		bc.fdCache.Evict(blockID)
 		return false
 	}
 
 	// File write succeeded. Update metadata.
+	// Fast path: if we already have a pending FileBlock update, mutate it
+	// in-place instead of doing a full lookupFileBlock (which hits BadgerDB).
+	end := blockOffset + uint32(len(data))
+	now := time.Now()
+
+	if v, ok := bc.pendingFBs.Load(blockID); ok {
+		fb := v.(*metadata.FileBlock)
+		fb.CachePath = path
+		if end > fb.DataSize {
+			fb.DataSize = end
+		}
+		if fb.State == metadata.BlockStateUploaded || fb.State == 0 {
+			fb.State = metadata.BlockStateSealed
+		}
+		fb.LastAccess = now
+		bc.pendingFBs.Store(blockID, fb)
+		return true
+	}
+
+	// Slow path: lookup from store or create new
 	fb, err := bc.lookupFileBlock(ctx, blockID)
 	if err != nil {
 		fb = metadata.NewFileBlock(blockID, path)
 	}
 	fb.CachePath = path
 
-	end := blockOffset + uint32(len(data))
 	if end > fb.DataSize {
 		fb.DataSize = end
 	}
@@ -172,7 +196,7 @@ func (bc *BlockCache) tryDirectDiskWrite(ctx context.Context, payloadID string, 
 	if fb.State == metadata.BlockStateUploaded || fb.State == 0 {
 		fb.State = metadata.BlockStateSealed
 	}
-	fb.LastAccess = time.Now()
+	fb.LastAccess = now
 	bc.queueFileBlockUpdate(fb)
 
 	return true

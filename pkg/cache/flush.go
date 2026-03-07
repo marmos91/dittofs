@@ -25,12 +25,13 @@ func (bc *BlockCache) Flush(ctx context.Context, payloadID string) error {
 		return ErrCacheClosed
 	}
 
-	// Collect keys for this payloadID under RLock.
+	// Collect keys for this payloadID via secondary index (O(1) lookup).
 	bc.blocksMu.RLock()
 	var keys []blockKey
-	for key := range bc.memBlocks {
-		if key.payloadID == payloadID {
-			keys = append(keys, key)
+	if fm := bc.fileBlocks[payloadID]; fm != nil {
+		keys = make([]blockKey, 0, len(fm))
+		for blockIdx := range fm {
+			keys = append(keys, blockKey{payloadID: payloadID, blockIdx: blockIdx})
 		}
 	}
 	bc.blocksMu.RUnlock()
@@ -94,6 +95,9 @@ func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx
 	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
 	blockID := makeBlockID(key)
 	path := bc.blockPath(blockID)
+
+	// Evict fd from cache before truncating the file (O_TRUNC invalidates it)
+	bc.fdCache.Evict(blockID)
 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		mb.mu.Unlock()

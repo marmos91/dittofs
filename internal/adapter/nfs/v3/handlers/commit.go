@@ -131,7 +131,7 @@ func (h *Handler) Commit(
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	file, err := metaSvc.GetFile(ctx.Context, handle)
+	file, err := metaSvc.GetFileCached(ctx.Context, handle)
 	if err != nil {
 		logger.WarnCtx(ctx.Context, "COMMIT failed: file not found", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP, "error", err)
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrNoEnt}}, nil
@@ -236,6 +236,7 @@ func (h *Handler) Commit(
 	// ========================================================================
 
 	// Build auth context for metadata flush
+	var metadataFlushed bool
 	authCtx, authErr := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
 	if authErr == nil {
 		// Flush pending metadata for this specific file
@@ -244,16 +245,20 @@ func (h *Handler) Commit(
 			logger.WarnCtx(ctx.Context, "COMMIT: metadata flush failed", "handle", fmt.Sprintf("0x%x", req.Handle), "error", metaErr)
 			// Continue - content is flushed, metadata will be fixed eventually
 		} else if flushed {
+			metadataFlushed = true
 			logger.DebugCtx(ctx.Context, "COMMIT: flushed pending metadata", "handle", fmt.Sprintf("0x%x", req.Handle))
 		}
 	}
 
-	// Get updated file attributes for WCC data (file may have changed after flush)
-	if updatedFile, getErr := metaSvc.GetFile(ctx.Context, handle); getErr == nil {
-		wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
-		logger.DebugCtx(ctx.Context, "COMMIT details", "file_size", updatedFile.Size, "file_type", wccAfter.Type)
-	} else {
-		logger.WarnCtx(ctx.Context, "COMMIT: successful but cannot get updated file attributes", "handle", fmt.Sprintf("0x%x", req.Handle), "error", getErr)
+	// Only re-read file attributes if metadata was actually flushed
+	// (otherwise wccAfter from the pre-flush GetFile is still correct)
+	if metadataFlushed {
+		if updatedFile, getErr := metaSvc.GetFile(ctx.Context, handle); getErr == nil {
+			wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
+			logger.DebugCtx(ctx.Context, "COMMIT details", "file_size", updatedFile.Size, "file_type", wccAfter.Type)
+		} else {
+			logger.WarnCtx(ctx.Context, "COMMIT: successful but cannot get updated file attributes", "handle", fmt.Sprintf("0x%x", req.Handle), "error", getErr)
+		}
 	}
 
 	logger.InfoCtx(ctx.Context, "COMMIT successful", "file", file.PayloadID, "offset", req.Offset, "count", req.Count, "client", clientIP)

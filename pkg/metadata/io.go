@@ -388,7 +388,14 @@ func (s *MetadataService) FlushPendingWrites(ctx *AuthContext) (int, error) {
 
 // FlushPendingWriteForFile commits pending metadata for a specific file.
 // Returns true if there was pending data to flush.
+// Uses a per-file mutex to prevent concurrent flushes from causing BadgerDB
+// transaction conflicts (which trigger expensive retry loops with backoff).
 func (s *MetadataService) FlushPendingWriteForFile(ctx *AuthContext, handle FileHandle) (bool, error) {
+	// Serialize flushes per file to avoid BadgerDB conflict retries
+	mu := s.pendingWrites.GetFlushLock(handle)
+	mu.Lock()
+	defer mu.Unlock()
+
 	state, exists := s.pendingWrites.PopPending(handle)
 	if !exists {
 		return false, nil
