@@ -5,6 +5,29 @@ import (
 	"time"
 )
 
+// blockBufPool reuses 8MB buffers across memBlock lifecycles.
+// This avoids the 8MB memclrNoHeapPointers cost (~16% CPU in pprof) that
+// occurs on every make([]byte, BlockSize). Buffers may contain stale data
+// but that's safe — dataSize tracks the valid extent and all writes overwrite
+// the relevant range before reading it.
+var blockBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, BlockSize)
+		return &buf
+	},
+}
+
+func getBlockBuf() []byte {
+	return *blockBufPool.Get().(*[]byte)
+}
+
+func putBlockBuf(buf []byte) {
+	if cap(buf) >= BlockSize {
+		b := buf[:BlockSize]
+		blockBufPool.Put(&b)
+	}
+}
+
 // blockKey uniquely identifies a cached block by the file it belongs to
 // (payloadID, from metadata) and its position within the file
 // (blockIdx = fileOffset / BlockSize).

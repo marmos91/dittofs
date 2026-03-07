@@ -23,17 +23,24 @@ import (
 // (BadgerDB) with async batching — writes are queued in pendingFBs and flushed
 // every 200ms by the background goroutine started via Start().
 //
-// Thread safety: operations on different blocks are fully concurrent.
-// Operations on the same block are serialized via memBlock.mu.
+// Thread safety: memBlocks uses sync.Map for lock-free concurrent access.
+// Operations on different blocks are fully concurrent. Operations on the same
+// block are serialized via memBlock.mu. The files map uses a separate filesMu
+// to avoid contention with block operations.
 type BlockCache struct {
 	baseDir    string
 	maxDisk    int64
 	maxMemory  int64
 	blockStore metadata.FileBlockStore
 
-	mu        sync.RWMutex
-	memBlocks map[blockKey]*memBlock
-	files     map[string]*fileInfo
+	// memBlocks stores blockKey → *memBlock using sync.Map for lock-free reads.
+	// This eliminates the global RWMutex that previously serialized all block
+	// lookups and flushes across all payloadIDs.
+	memBlocks sync.Map
+
+	// filesMu guards the files map separately from block operations.
+	filesMu sync.RWMutex
+	files   map[string]*fileInfo
 
 	closedFlag atomic.Bool
 
@@ -67,7 +74,6 @@ func New(baseDir string, maxDisk int64, maxMemory int64, blockStore metadata.Fil
 		maxDisk:    maxDisk,
 		maxMemory:  maxMemory,
 		blockStore: blockStore,
-		memBlocks:  make(map[blockKey]*memBlock),
 		files:      make(map[string]*fileInfo),
 	}, nil
 }
@@ -136,10 +142,15 @@ func (bc *BlockCache) lookupFileBlock(ctx context.Context, blockID string) (*met
 
 // Stats returns a snapshot of current cache statistics.
 func (bc *BlockCache) Stats() Stats {
-	bc.mu.RLock()
+	bc.filesMu.RLock()
 	fileCount := len(bc.files)
-	memBlockCount := len(bc.memBlocks)
-	bc.mu.RUnlock()
+	bc.filesMu.RUnlock()
+
+	var memBlockCount int
+	bc.memBlocks.Range(func(_, _ any) bool {
+		memBlockCount++
+		return true
+	})
 
 	return Stats{
 		DiskUsed:      bc.diskUsed.Load(),
@@ -155,50 +166,48 @@ func (bc *BlockCache) Stats() Stats {
 // a pre-allocated 8MB buffer if it doesn't exist. The pre-allocation avoids
 // allocation jitter on the write hot path.
 //
-// Uses double-checked locking: RLock fast path for existing blocks, Lock for creation.
+// Uses sync.Map.LoadOrStore for atomic load-or-create without external locking.
 func (bc *BlockCache) getOrCreateMemBlock(key blockKey) *memBlock {
-	bc.mu.RLock()
-	mb, exists := bc.memBlocks[key]
-	bc.mu.RUnlock()
-	if exists {
-		return mb
+	if v, ok := bc.memBlocks.Load(key); ok {
+		return v.(*memBlock)
 	}
 
-	bc.mu.Lock()
-	defer bc.mu.Unlock()
-	mb, exists = bc.memBlocks[key]
-	if !exists {
-		mb = &memBlock{
-			data: make([]byte, BlockSize),
-		}
-		bc.memUsed.Add(int64(BlockSize))
-		bc.memBlocks[key] = mb
+	mb := &memBlock{
+		data: getBlockBuf(),
 	}
+	if actual, loaded := bc.memBlocks.LoadOrStore(key, mb); loaded {
+		// Another goroutine created it first — return our buffer to the pool.
+		putBlockBuf(mb.data)
+		return actual.(*memBlock)
+	}
+	// We won the race — account for the new allocation.
+	bc.memUsed.Add(int64(BlockSize))
 	return mb
 }
 
 // getMemBlock returns the memBlock for the given key, or nil if not in memory.
 func (bc *BlockCache) getMemBlock(key blockKey) *memBlock {
-	bc.mu.RLock()
-	defer bc.mu.RUnlock()
-	return bc.memBlocks[key]
+	if v, ok := bc.memBlocks.Load(key); ok {
+		return v.(*memBlock)
+	}
+	return nil
 }
 
 // updateFileSize updates the tracked file size if the new end offset is larger.
 // Uses double-checked locking: RLock fast path for existing files, Lock for creation.
 func (bc *BlockCache) updateFileSize(payloadID string, end uint64) {
-	bc.mu.RLock()
+	bc.filesMu.RLock()
 	fi, exists := bc.files[payloadID]
-	bc.mu.RUnlock()
+	bc.filesMu.RUnlock()
 
 	if !exists {
-		bc.mu.Lock()
+		bc.filesMu.Lock()
 		fi, exists = bc.files[payloadID]
 		if !exists {
 			fi = &fileInfo{}
 			bc.files[payloadID] = fi
 		}
-		bc.mu.Unlock()
+		bc.filesMu.Unlock()
 	}
 
 	fi.mu.Lock()
@@ -211,9 +220,9 @@ func (bc *BlockCache) updateFileSize(payloadID string, end uint64) {
 // GetFileSize returns the cached file size and whether the file is tracked.
 // This is a fast in-memory lookup — no disk or store access.
 func (bc *BlockCache) GetFileSize(_ context.Context, payloadID string) (uint64, bool) {
-	bc.mu.RLock()
+	bc.filesMu.RLock()
 	fi, exists := bc.files[payloadID]
-	bc.mu.RUnlock()
+	bc.filesMu.RUnlock()
 
 	if !exists {
 		return 0, false
@@ -234,53 +243,60 @@ func makeBlockID(key blockKey) string {
 
 // purgeMemBlocks removes all in-memory blocks for payloadID where shouldRemove returns true.
 // Releases the 8MB buffer and decrements memUsed for each removed block.
-// Caller must hold bc.mu (write lock).
 func (bc *BlockCache) purgeMemBlocks(payloadID string, shouldRemove func(blockIdx uint64) bool) {
-	for key := range bc.memBlocks {
+	bc.memBlocks.Range(func(k, v any) bool {
+		key := k.(blockKey)
 		if key.payloadID != payloadID || !shouldRemove(key.blockIdx) {
-			continue
+			return true
 		}
-		mb := bc.memBlocks[key]
+		mb := v.(*memBlock)
 		mb.mu.Lock()
 		if mb.data != nil {
 			bc.memUsed.Add(-int64(BlockSize))
+			putBlockBuf(mb.data)
 			mb.data = nil
 		}
 		mb.mu.Unlock()
-		delete(bc.memBlocks, key)
-	}
+		bc.memBlocks.Delete(key)
+		return true
+	})
 }
 
 // Remove removes all cached data (memory and disk tracking) for a file.
 // Does not delete .blk files from disk — that is handled by eviction.
 func (bc *BlockCache) Remove(_ context.Context, payloadID string) error {
-	bc.mu.Lock()
 	bc.purgeMemBlocks(payloadID, func(uint64) bool { return true })
+
+	bc.filesMu.Lock()
 	delete(bc.files, payloadID)
-	bc.mu.Unlock()
+	bc.filesMu.Unlock()
+
 	return nil
 }
 
 // Truncate discards cached blocks beyond newSize and updates the tracked file size.
 // Blocks whose start offset (blockIdx * BlockSize) >= newSize are purged from memory.
 func (bc *BlockCache) Truncate(_ context.Context, payloadID string, newSize uint64) error {
-	bc.mu.Lock()
-	if fi, ok := bc.files[payloadID]; ok {
+	bc.filesMu.RLock()
+	fi, ok := bc.files[payloadID]
+	bc.filesMu.RUnlock()
+
+	if ok {
 		fi.mu.Lock()
 		fi.fileSize = newSize
 		fi.mu.Unlock()
 	}
+
 	bc.purgeMemBlocks(payloadID, func(blockIdx uint64) bool {
 		return blockIdx*BlockSize >= newSize
 	})
-	bc.mu.Unlock()
 	return nil
 }
 
 // ListFiles returns the payloadIDs of all files currently tracked in the cache.
 func (bc *BlockCache) ListFiles() []string {
-	bc.mu.RLock()
-	defer bc.mu.RUnlock()
+	bc.filesMu.RLock()
+	defer bc.filesMu.RUnlock()
 	result := make([]string, 0, len(bc.files))
 	for payloadID := range bc.files {
 		result = append(result, payloadID)

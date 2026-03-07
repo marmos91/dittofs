@@ -2,11 +2,24 @@ package cache
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// directDiskWriteThreshold is the minimum write size for eager .blk file creation.
+// Writes at or above this size go directly to disk (bypassing the 8MB memory buffer)
+// even when no .blk file exists yet. This eliminates the first-run penalty where
+// new files must go through the slow buffer-then-flush path.
+//
+// 64KiB is chosen because:
+//   - NFS wsize=1MiB sequential writes (the bottleneck case) are well above this
+//   - 4KiB random writes (which benefit from memory batching) are well below this
+//   - A single 64KiB pwrite to disk is cheap (~0.1ms on NVMe)
+const directDiskWriteThreshold = 64 * 1024
 
 // WriteAt writes data to the cache at the specified file offset.
 //
@@ -35,10 +48,7 @@ func (bc *BlockCache) WriteAt(ctx context.Context, payloadID string, data []byte
 		blockOffset := uint32(currentOffset % BlockSize)
 
 		spaceInBlock := BlockSize - blockOffset
-		writeLen := uint32(len(remaining))
-		if writeLen > spaceInBlock {
-			writeLen = spaceInBlock
-		}
+		writeLen := min(uint32(len(remaining)), spaceInBlock)
 
 		if writeLen < BlockSize {
 			if bc.tryDirectDiskWrite(ctx, payloadID, blockIdx, blockOffset, remaining[:writeLen]) {
@@ -74,7 +84,7 @@ func (bc *BlockCache) WriteAt(ctx context.Context, payloadID string, data []byte
 		mb.mu.Unlock()
 
 		if isFull {
-			if err := bc.flushBlock(ctx, payloadID, blockIdx, mb); err != nil {
+			if _, err := bc.flushBlock(ctx, payloadID, blockIdx, mb); err != nil {
 				return err
 			}
 		}
@@ -91,9 +101,15 @@ func (bc *BlockCache) WriteAt(ctx context.Context, payloadID string, data []byte
 	return nil
 }
 
-// tryDirectDiskWrite does a pwrite() directly to an existing .blk cache file,
-// bypassing the memory buffer. This eliminates the 8MB allocation + flush cycle
-// for small random writes to blocks that already have on-disk cache files.
+// tryDirectDiskWrite does a pwrite() directly to a .blk cache file, bypassing
+// the 8MB memory buffer. For writes >= directDiskWriteThreshold, it creates the
+// .blk file eagerly if it doesn't exist yet. This eliminates the "first-run
+// penalty" where new files had to go through the slow buffer-then-flush path
+// (16.6 MB/s) while subsequent runs with existing .blk files used fast pwrite
+// (51 MB/s).
+//
+// For writes below the threshold (e.g., 4KB random I/O), falls through to the
+// memory buffer path which batches many small writes into one 8MB disk write.
 //
 // Returns true if the write was handled, false to fall through to the memory path.
 func (bc *BlockCache) tryDirectDiskWrite(ctx context.Context, payloadID string, blockIdx uint64, blockOffset uint32, data []byte) bool {
@@ -103,40 +119,57 @@ func (bc *BlockCache) tryDirectDiskWrite(ctx context.Context, payloadID string, 
 		return false
 	}
 
-	// Try to open the cache file directly. This avoids a BadgerDB metadata lookup
-	// for blocks that have never been cached — os.OpenFile on a non-existent path
-	// hits the kernel dentry cache and returns ENOENT in ~1us.
 	blockID := makeBlockID(key)
 	path := bc.blockPath(blockID)
 
+	// Try to open the existing cache file for pwrite.
 	f, err := os.OpenFile(path, os.O_WRONLY, 0644)
 	if err != nil {
-		return false // No existing cache file — use memory path.
+		// File doesn't exist. For large writes (>= threshold), create it eagerly
+		// so all subsequent writes to this block use the fast pwrite path.
+		// Small writes fall through to the memory buffer for batching.
+		if len(data) < directDiskWriteThreshold {
+			return false
+		}
+		f, err = bc.createBlockFile(path)
+		if err != nil {
+			return false
+		}
 	}
+
 	_, err = f.WriteAt(data, int64(blockOffset))
 	f.Close()
 	if err != nil {
 		return false
 	}
 
-	// File write succeeded. Update metadata (lookup is cheap now since we know
-	// the block exists — it will hit the fileBlockQueue or BadgerDB).
+	// File write succeeded. Update metadata.
 	fb, err := bc.lookupFileBlock(ctx, blockID)
 	if err != nil {
 		fb = metadata.NewFileBlock(blockID, path)
 	}
+	fb.CachePath = path
 
 	end := blockOffset + uint32(len(data))
 	if end > fb.DataSize {
 		fb.DataSize = end
 	}
 
-	// Dirty the block so the offloader re-uploads it.
-	if fb.State == metadata.BlockStateUploaded {
+	// Mark as Sealed (dirty on disk) so the offloader uploads it.
+	if fb.State == metadata.BlockStateUploaded || fb.State == 0 {
 		fb.State = metadata.BlockStateSealed
 	}
 	fb.LastAccess = time.Now()
 	bc.queueFileBlockUpdate(fb)
 
 	return true
+}
+
+// createBlockFile creates a new .blk cache file, including any parent
+// directories. Used by tryDirectDiskWrite for eager file creation.
+func (bc *BlockCache) createBlockFile(path string) (*os.File, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return nil, fmt.Errorf("create block dir: %w", err)
+	}
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0644)
 }

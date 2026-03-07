@@ -27,8 +27,9 @@ import (
 // ============================================================================
 
 const (
-	fileBlockPrefix     = "fb:"
-	fileBlockHashPrefix = "fb-hash:"
+	fileBlockPrefix       = "fb:"
+	fileBlockHashPrefix   = "fb-hash:"
+	fileBlockSealedPrefix = "fb-sealed:"
 )
 
 // Ensure BadgerMetadataStore implements FileBlockStore
@@ -72,6 +73,17 @@ func (s *BadgerMetadataStore) PutFileBlock(ctx context.Context, block *metadata.
 			return err
 		}
 
+		// Maintain sealed index: add when Sealed, remove otherwise.
+		// This allows ListPendingUpload to iterate O(sealed) instead of O(all).
+		sealedKey := []byte(fileBlockSealedPrefix + block.ID)
+		if block.State == metadata.BlockStateSealed {
+			if err := txn.Set(sealedKey, nil); err != nil {
+				return err
+			}
+		} else {
+			_ = txn.Delete(sealedKey) // Ignore ErrKeyNotFound
+		}
+
 		// Update hash index for finalized blocks
 		if block.IsFinalized() {
 			hashKey := []byte(fileBlockHashPrefix + block.Hash.String())
@@ -106,6 +118,9 @@ func (s *BadgerMetadataStore) DeleteFileBlock(ctx context.Context, id string) er
 		if err := txn.Delete(key); err != nil {
 			return err
 		}
+
+		// Remove sealed index
+		_ = txn.Delete([]byte(fileBlockSealedPrefix + id))
 
 		// Remove hash index
 		if block.IsFinalized() {
@@ -224,27 +239,41 @@ func (s *BadgerMetadataStore) FindFileBlockByHash(ctx context.Context, hash meta
 	return &block, nil
 }
 
-// ListPendingUpload returns blocks that are finalized but not yet uploaded
+// ListPendingUpload returns blocks that are sealed but not yet uploaded
 // and older than the given duration. If limit > 0, at most limit blocks are returned.
+//
+// Uses the fb-sealed: secondary index for O(sealed) iteration instead of
+// scanning all fb: entries. This eliminates the BadgerDB full-table scan
+// that was the root cause of sequential write throughput degradation.
 func (s *BadgerMetadataStore) ListPendingUpload(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
 	cutoff := time.Now().Add(-olderThan)
 	var result []*metadata.FileBlock
 	err := s.db.View(func(txn *badger.Txn) error {
-		prefix := []byte(fileBlockPrefix)
+		prefix := []byte(fileBlockSealedPrefix)
 		opts := badger.DefaultIteratorOptions
 		opts.Prefix = prefix
+		opts.PrefetchValues = false // Keys only — values are empty
 		it := txn.NewIterator(opts)
 		defer it.Close()
 
 		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
+			// Extract block ID from key: "fb-sealed:{id}" → "{id}"
+			id := string(it.Item().Key()[len(prefix):])
+
+			// Look up the actual FileBlock
+			fbItem, err := txn.Get([]byte(fileBlockPrefix + id))
+			if err != nil {
+				continue // Index stale, block deleted
+			}
+
 			var block metadata.FileBlock
-			if err := item.Value(func(val []byte) error {
+			if err := fbItem.Value(func(val []byte) error {
 				return json.Unmarshal(val, &block)
 			}); err != nil {
 				continue
 			}
-			if block.State == metadata.BlockStateSealed && block.IsCached() && block.CreatedAt.Before(cutoff) {
+
+			if block.IsCached() && block.CreatedAt.Before(cutoff) {
 				result = append(result, &block)
 				if limit > 0 && len(result) >= limit {
 					break
