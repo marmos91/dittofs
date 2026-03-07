@@ -20,23 +20,28 @@ import (
 // page cache bloat that caused OOM on earlier versions.
 //
 // Block metadata (cache path, upload state, etc.) is tracked via FileBlockStore
-// (BadgerDB) with async batching — writes are queued in pendingFBs and flushed
+// (BadgerDB) with async batching -- writes are queued in pendingFBs and flushed
 // every 200ms by the background goroutine started via Start().
 //
-// Thread safety: memBlocks uses sync.Map for lock-free concurrent access.
-// Operations on different blocks are fully concurrent. Operations on the same
-// block are serialized via memBlock.mu. The files map uses a separate filesMu
-// to avoid contention with block operations.
+// Thread safety: memBlocks uses a dedicated RWMutex (blocksMu) separate from
+// the files map (filesMu). Operations on different blocks are fully concurrent
+// for reads (RLock). Operations on the same block are serialized via memBlock.mu.
+//
+// Lock ordering: blocksMu -> mb.mu (never the reverse).
+// In flushBlock, the map entry is deleted while holding mb.mu to prevent a race
+// where a concurrent writer gets a stale memBlock with nil data.
 type BlockCache struct {
 	baseDir    string
 	maxDisk    int64
 	maxMemory  int64
 	blockStore metadata.FileBlockStore
 
-	// memBlocks stores blockKey → *memBlock using sync.Map for lock-free reads.
-	// This eliminates the global RWMutex that previously serialized all block
-	// lookups and flushes across all payloadIDs.
-	memBlocks sync.Map
+	// blocksMu guards the memBlocks map. Uses RWMutex for concurrent reads
+	// (the common case: checking if a block is already buffered).
+	// RWMutex outperforms sync.Map for write-heavy workloads with high key
+	// churn (random writes that create/flush/recreate blocks frequently).
+	blocksMu  sync.RWMutex
+	memBlocks map[blockKey]*memBlock
 
 	// filesMu guards the files map separately from block operations.
 	filesMu sync.RWMutex
@@ -48,7 +53,7 @@ type BlockCache struct {
 	diskUsed atomic.Int64
 
 	// pendingFBs queues FileBlock metadata updates for async persistence.
-	// Keyed by blockID (string) → *metadata.FileBlock.
+	// Keyed by blockID (string) -> *metadata.FileBlock.
 	// Drained every 200ms by SyncFileBlocks, and on Close/Flush.
 	pendingFBs sync.Map
 }
@@ -74,6 +79,7 @@ func New(baseDir string, maxDisk int64, maxMemory int64, blockStore metadata.Fil
 		maxDisk:    maxDisk,
 		maxMemory:  maxMemory,
 		blockStore: blockStore,
+		memBlocks:  make(map[blockKey]*memBlock),
 		files:      make(map[string]*fileInfo),
 	}, nil
 }
@@ -147,10 +153,15 @@ func (bc *BlockCache) Stats() Stats {
 	bc.filesMu.RUnlock()
 
 	var memBlockCount int
-	bc.memBlocks.Range(func(_, _ any) bool {
-		memBlockCount++
-		return true
-	})
+	bc.blocksMu.RLock()
+	for _, mb := range bc.memBlocks {
+		mb.mu.RLock()
+		if mb.data != nil {
+			memBlockCount++
+		}
+		mb.mu.RUnlock()
+	}
+	bc.blocksMu.RUnlock()
 
 	return Stats{
 		DiskUsed:      bc.diskUsed.Load(),
@@ -166,31 +177,34 @@ func (bc *BlockCache) Stats() Stats {
 // a pre-allocated 8MB buffer if it doesn't exist. The pre-allocation avoids
 // allocation jitter on the write hot path.
 //
-// Uses sync.Map.LoadOrStore for atomic load-or-create without external locking.
+// Uses double-checked locking: RLock fast path for existing blocks, Lock for creation.
 func (bc *BlockCache) getOrCreateMemBlock(key blockKey) *memBlock {
-	if v, ok := bc.memBlocks.Load(key); ok {
-		return v.(*memBlock)
+	bc.blocksMu.RLock()
+	mb, exists := bc.memBlocks[key]
+	bc.blocksMu.RUnlock()
+	if exists {
+		return mb
 	}
 
-	mb := &memBlock{
-		data: getBlockBuf(),
+	bc.blocksMu.Lock()
+	mb, exists = bc.memBlocks[key]
+	if !exists {
+		mb = &memBlock{
+			data: getBlockBuf(),
+		}
+		bc.memBlocks[key] = mb
+		bc.memUsed.Add(int64(BlockSize))
 	}
-	if actual, loaded := bc.memBlocks.LoadOrStore(key, mb); loaded {
-		// Another goroutine created it first — return our buffer to the pool.
-		putBlockBuf(mb.data)
-		return actual.(*memBlock)
-	}
-	// We won the race — account for the new allocation.
-	bc.memUsed.Add(int64(BlockSize))
+	bc.blocksMu.Unlock()
 	return mb
 }
 
 // getMemBlock returns the memBlock for the given key, or nil if not in memory.
 func (bc *BlockCache) getMemBlock(key blockKey) *memBlock {
-	if v, ok := bc.memBlocks.Load(key); ok {
-		return v.(*memBlock)
-	}
-	return nil
+	bc.blocksMu.RLock()
+	mb := bc.memBlocks[key]
+	bc.blocksMu.RUnlock()
+	return mb
 }
 
 // updateFileSize updates the tracked file size if the new end offset is larger.
@@ -244,12 +258,11 @@ func makeBlockID(key blockKey) string {
 // purgeMemBlocks removes all in-memory blocks for payloadID where shouldRemove returns true.
 // Releases the 8MB buffer and decrements memUsed for each removed block.
 func (bc *BlockCache) purgeMemBlocks(payloadID string, shouldRemove func(blockIdx uint64) bool) {
-	bc.memBlocks.Range(func(k, v any) bool {
-		key := k.(blockKey)
+	bc.blocksMu.Lock()
+	for key, mb := range bc.memBlocks {
 		if key.payloadID != payloadID || !shouldRemove(key.blockIdx) {
-			return true
+			continue
 		}
-		mb := v.(*memBlock)
 		mb.mu.Lock()
 		if mb.data != nil {
 			bc.memUsed.Add(-int64(BlockSize))
@@ -257,9 +270,9 @@ func (bc *BlockCache) purgeMemBlocks(payloadID string, shouldRemove func(blockId
 			mb.data = nil
 		}
 		mb.mu.Unlock()
-		bc.memBlocks.Delete(key)
-		return true
-	})
+		delete(bc.memBlocks, key)
+	}
+	bc.blocksMu.Unlock()
 }
 
 // Remove removes all cached data (memory and disk tracking) for a file.

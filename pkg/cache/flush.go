@@ -25,15 +25,15 @@ func (bc *BlockCache) Flush(ctx context.Context, payloadID string) error {
 		return ErrCacheClosed
 	}
 
-	// Collect keys for this payloadID using sync.Map.Range (lock-free).
+	// Collect keys for this payloadID under RLock.
+	bc.blocksMu.RLock()
 	var keys []blockKey
-	bc.memBlocks.Range(func(k, _ any) bool {
-		key := k.(blockKey)
+	for key := range bc.memBlocks {
 		if key.payloadID == payloadID {
 			keys = append(keys, key)
 		}
-		return true
-	})
+	}
+	bc.blocksMu.RUnlock()
 
 	// Track paths that need fsync for COMMIT durability.
 	var flushedPaths []string
@@ -58,7 +58,7 @@ func (bc *BlockCache) Flush(ctx context.Context, payloadID string) error {
 	}
 
 	// fsync all flushed files now (COMMIT path only).
-	// This is the ONLY place fsync happens — not on the write hot path.
+	// This is the ONLY place fsync happens -- not on the write hot path.
 	for _, path := range flushedPaths {
 		if err := syncFile(path); err != nil {
 			logger.Warn("cache: fsync on COMMIT failed", "path", path, "error", err)
@@ -69,11 +69,17 @@ func (bc *BlockCache) Flush(ctx context.Context, payloadID string) error {
 }
 
 // flushBlock writes a single memBlock to disk as a .blk file and releases the
-// 8MB memory buffer. The block transitions from Dirty → Sealed in the FileBlockStore.
+// 8MB memory buffer. The block transitions from Dirty -> Sealed in the FileBlockStore.
 //
-// This does NOT call fsync — the write is buffered in the OS page cache for
+// This does NOT call fsync -- the write is buffered in the OS page cache for
 // maximum throughput. fsync is deferred to Flush() (NFS COMMIT) which guarantees
 // durability only when the client explicitly requests it.
+//
+// The memBlock is NOT removed from the map -- it stays as a placeholder with
+// data=nil. Subsequent writes to the same block will re-allocate a buffer.
+// This avoids map churn (delete+re-insert) and prevents a race condition where
+// a concurrent writer could see a stale memBlock with nil data between the
+// map delete and the next getOrCreateMemBlock call.
 //
 // Returns the path of the flushed file (for callers that need to fsync later),
 // or empty string if no flush was needed.
@@ -107,11 +113,9 @@ func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx
 		return "", fmt.Errorf("write cache file: %w", err)
 	}
 
-	// No fsync here — deferred to Flush() for throughput.
+	// No fsync here -- deferred to Flush() for throughput.
 	// The data is in OS page cache and will survive process crashes
 	// (only lost on power failure, which NFS UNSTABLE semantics allow).
-	// dropPageCache skipped on write hot path — the kernel will reclaim
-	// pages naturally, and the fadvise syscall costs ~4% CPU per pprof.
 	f.Close()
 
 	fb, err := bc.lookupFileBlock(ctx, blockID)
@@ -128,8 +132,11 @@ func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx
 	fb.LastAccess = time.Now()
 	bc.queueFileBlockUpdate(fb)
 
+	// Release the buffer but keep the mb in the map as a placeholder.
+	// The next write to this block will re-allocate via ensureData().
 	bufToReturn := mb.data
 	mb.data = nil
+	mb.dataSize = 0
 	mb.dirty = false
 	bc.memUsed.Add(-int64(BlockSize))
 	bc.diskUsed.Add(int64(dataSize))
@@ -137,9 +144,6 @@ func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx
 
 	// Return buffer to pool for reuse (avoids 8MB zeroing on next alloc).
 	putBlockBuf(bufToReturn)
-
-	// Delete from sync.Map (lock-free, no global mutex).
-	bc.memBlocks.Delete(key)
 
 	return path, nil
 }
@@ -152,9 +156,8 @@ func (bc *BlockCache) flushOldestDirtyBlock(ctx context.Context) bool {
 	var oldestMB *memBlock
 	var oldestTime time.Time
 
-	bc.memBlocks.Range(func(k, v any) bool {
-		key := k.(blockKey)
-		mb := v.(*memBlock)
+	bc.blocksMu.RLock()
+	for key, mb := range bc.memBlocks {
 		mb.mu.RLock()
 		if mb.dirty && mb.data != nil {
 			if oldestMB == nil || mb.lastWrite.Before(oldestTime) {
@@ -164,8 +167,8 @@ func (bc *BlockCache) flushOldestDirtyBlock(ctx context.Context) bool {
 			}
 		}
 		mb.mu.RUnlock()
-		return true
-	})
+	}
+	bc.blocksMu.RUnlock()
 
 	if oldestMB != nil {
 		if _, err := bc.flushBlock(ctx, oldestKey.payloadID, oldestKey.blockIdx, oldestMB); err != nil {

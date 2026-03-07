@@ -71,6 +71,12 @@ func (bc *BlockCache) WriteAt(ctx context.Context, payloadID string, data []byte
 		mb := bc.getOrCreateMemBlock(key)
 
 		mb.mu.Lock()
+		// Re-allocate buffer if this memBlock was previously flushed to disk.
+		// Flushed memBlocks stay in the map with data=nil to avoid churn.
+		if mb.data == nil {
+			mb.data = getBlockBuf()
+			bc.memUsed.Add(int64(BlockSize))
+		}
 		copy(mb.data[blockOffset:blockOffset+writeLen], remaining[:writeLen])
 
 		end := blockOffset + writeLen
@@ -113,10 +119,17 @@ func (bc *BlockCache) WriteAt(ctx context.Context, payloadID string, data []byte
 //
 // Returns true if the write was handled, false to fall through to the memory path.
 func (bc *BlockCache) tryDirectDiskWrite(ctx context.Context, payloadID string, blockIdx uint64, blockOffset uint32, data []byte) bool {
-	// Skip if there's a live memBlock — writes must go through memory for consistency.
+	// Skip if there's a live memBlock with data -- writes must go through memory
+	// for consistency. Flushed memBlocks (data=nil) are fine to skip; they indicate
+	// a .blk file exists on disk that we can pwrite to directly.
 	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
 	if mb := bc.getMemBlock(key); mb != nil {
-		return false
+		mb.mu.RLock()
+		hasData := mb.data != nil
+		mb.mu.RUnlock()
+		if hasData {
+			return false
+		}
 	}
 
 	blockID := makeBlockID(key)
