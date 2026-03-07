@@ -61,6 +61,16 @@ type BlockCache struct {
 	// fdCache caches open file descriptors for .blk files to avoid
 	// open+close syscalls on every 4KB random write in tryDirectDiskWrite.
 	fdCache *fdCache
+
+	// readFDCache caches open file descriptors (O_RDONLY) for .blk files
+	// to avoid open+close syscalls on every 4KB random read in readFromDisk.
+	readFDCache *fdCache
+
+	// directWritePath, when set, returns the payload store filesystem path
+	// for a given payloadID and blockIdx. This enables direct pwrite to the
+	// payload store, eliminating the double-write through cache .blk files.
+	// Used when the payload store is a filesystem backend.
+	directWritePath func(payloadID string, blockIdx uint64) string
 }
 
 // New creates a new BlockCache.
@@ -84,11 +94,26 @@ func New(baseDir string, maxDisk int64, maxMemory int64, blockStore metadata.Fil
 		maxDisk:    maxDisk,
 		maxMemory:  maxMemory,
 		blockStore: blockStore,
-		memBlocks:  make(map[blockKey]*memBlock),
-		fileBlocks: make(map[string]map[uint64]*memBlock),
-		files:      make(map[string]*fileInfo),
-		fdCache:    newFDCache(defaultFDCacheSize),
+		memBlocks:   make(map[blockKey]*memBlock),
+		fileBlocks:  make(map[string]map[uint64]*memBlock),
+		files:       make(map[string]*fileInfo),
+		fdCache:     newFDCache(defaultFDCacheSize),
+		readFDCache: newFDCache(defaultFDCacheSize),
 	}, nil
+}
+
+// SetDirectWritePath enables direct pwrite to the payload store for filesystem
+// backends. When set, writes go directly to the payload store path instead of
+// cache .blk files, eliminating double-write amplification. Blocks are marked
+// as Uploaded immediately (no offloader upload needed).
+func (bc *BlockCache) SetDirectWritePath(fn func(payloadID string, blockIdx uint64) string) {
+	bc.directWritePath = fn
+}
+
+// IsDirectWrite returns true when direct-write mode is enabled (filesystem backend).
+// In this mode all blocks go straight to Uploaded — no sealed blocks exist.
+func (bc *BlockCache) IsDirectWrite() bool {
+	return bc.directWritePath != nil
 }
 
 // Close flushes pending FileBlock metadata and marks the cache as closed.
@@ -97,6 +122,7 @@ func (bc *BlockCache) Close() error {
 	bc.closedFlag.Store(true)
 	bc.SyncFileBlocks(context.Background())
 	bc.fdCache.CloseAll()
+	bc.readFDCache.CloseAll()
 	return nil
 }
 
@@ -399,6 +425,13 @@ func (bc *BlockCache) WriteDownloaded(ctx context.Context, payloadID string, dat
 // all blocks in Sealed state (written to disk but not yet uploaded to S3).
 // Used by the offloader to find blocks that need uploading.
 func (bc *BlockCache) GetDirtyBlocks(ctx context.Context, payloadID string) ([]PendingBlock, error) {
+	// Direct-write mode: all blocks go straight to Uploaded in the payload store.
+	// No dirty memBlocks, no sealed blocks, no pending uploads — skip everything.
+	// FileBlock metadata updates drain asynchronously via the background ticker.
+	if bc.directWritePath != nil {
+		return nil, nil
+	}
+
 	if err := bc.Flush(ctx, payloadID); err != nil {
 		return nil, err
 	}

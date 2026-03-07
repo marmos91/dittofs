@@ -48,6 +48,17 @@ type BlockStore interface {
 	HealthCheck(ctx context.Context) error
 }
 
+// DirectWriteStore is implemented by block stores that support direct filesystem
+// writes. When available, the cache can pwrite directly to the payload store
+// path, eliminating the double-write through the cache layer. This is a
+// significant optimization for filesystem backends where the cache and payload
+// store are both on disk.
+type DirectWriteStore interface {
+	// BlockFilePath returns the filesystem path for a block key and ensures
+	// the parent directory exists. Used by the cache for direct pwrite.
+	BlockFilePath(blockKey string) (string, error)
+}
+
 // BlockRef references a single block in storage.
 type BlockRef struct {
 	// Key is the full block key in storage.

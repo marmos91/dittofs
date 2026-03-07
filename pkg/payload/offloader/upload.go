@@ -29,6 +29,12 @@ const maxUploadBatch = 4
 // The periodic uploader guards against overlapping ticks, so at most one
 // instance of this function runs at a time.
 func (m *Offloader) uploadPendingBlocks(ctx context.Context) {
+	// Direct-write mode: all blocks go straight to Uploaded in the payload store.
+	// No sealed blocks exist, so skip the expensive ListPendingUpload scan.
+	if m.cache.IsDirectWrite() {
+		return
+	}
+
 	pending, err := m.fileBlockStore.ListPendingUpload(ctx, m.config.UploadDelay, maxUploadBatch)
 	if err != nil {
 		logger.Warn("Periodic upload: failed to list pending blocks", "error", err)

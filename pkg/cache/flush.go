@@ -94,10 +94,23 @@ func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx
 
 	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
 	blockID := makeBlockID(key)
-	path := bc.blockPath(blockID)
 
-	// Evict fd from cache before truncating the file (O_TRUNC invalidates it)
+	// Use direct payload store path if available (filesystem backend optimization).
+	var path string
+	var isDirect bool
+	if bc.directWritePath != nil {
+		if p := bc.directWritePath(payloadID, blockIdx); p != "" {
+			path = p
+			isDirect = true
+		}
+	}
+	if path == "" {
+		path = bc.blockPath(blockID)
+	}
+
+	// Evict fds from cache before truncating the file (O_TRUNC invalidates them)
 	bc.fdCache.Evict(blockID)
+	bc.readFDCache.Evict(blockID)
 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		mb.mu.Unlock()
@@ -139,7 +152,13 @@ func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx
 	}
 	fb.CachePath = path
 	fb.DataSize = dataSize
-	fb.State = metadata.BlockStateSealed
+	if isDirect {
+		// Direct write: data is already in payload store, mark Uploaded.
+		fb.State = metadata.BlockStateUploaded
+		fb.BlockStoreKey = FormatStoreKey(payloadID, blockIdx)
+	} else {
+		fb.State = metadata.BlockStateSealed
+	}
 	fb.LastAccess = time.Now()
 	bc.queueFileBlockUpdate(fb)
 
@@ -150,7 +169,9 @@ func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx
 	mb.dataSize = 0
 	mb.dirty = false
 	bc.memUsed.Add(-int64(BlockSize))
-	bc.diskUsed.Add(int64(dataSize) - prevDiskSize)
+	if !isDirect {
+		bc.diskUsed.Add(int64(dataSize) - prevDiskSize)
+	}
 	mb.mu.Unlock()
 
 	// Return buffer to pool for reuse (avoids 8MB zeroing on next alloc).

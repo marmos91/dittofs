@@ -360,5 +360,18 @@ func (s *Store) BasePath() string {
 	return s.basePath
 }
 
-// Ensure Store implements store.BlockStore.
+// BlockFilePath returns the filesystem path for a block key, creating the
+// parent directory if needed. This enables the cache to pwrite directly to
+// the payload store, eliminating double-write amplification.
+func (s *Store) BlockFilePath(blockKey string) (string, error) {
+	path := s.blockPath(blockKey)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// Ensure Store implements store.BlockStore and store.DirectWriteStore.
 var _ store.BlockStore = (*Store)(nil)
+var _ store.DirectWriteStore = (*Store)(nil)

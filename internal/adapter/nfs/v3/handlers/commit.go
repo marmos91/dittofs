@@ -250,16 +250,10 @@ func (h *Handler) Commit(
 		}
 	}
 
-	// Only re-read file attributes if metadata was actually flushed
-	// (otherwise wccAfter from the pre-flush GetFile is still correct)
-	if metadataFlushed {
-		if updatedFile, getErr := metaSvc.GetFile(ctx.Context, handle); getErr == nil {
-			wccAfter = h.convertFileAttrToNFS(handle, &updatedFile.FileAttr)
-			logger.DebugCtx(ctx.Context, "COMMIT details", "file_size", updatedFile.Size, "file_type", wccAfter.Type)
-		} else {
-			logger.WarnCtx(ctx.Context, "COMMIT: successful but cannot get updated file attributes", "handle", fmt.Sprintf("0x%x", req.Handle), "error", getErr)
-		}
-	}
+	// wccAfter is already correct: GetFileCached returned the file with pending
+	// writes merged (size, mtime applied). FlushPendingWriteForFile persists those
+	// same values to BadgerDB — no need to read them back.
+	_ = metadataFlushed
 
 	logger.InfoCtx(ctx.Context, "COMMIT successful", "file", file.PayloadID, "offset", req.Offset, "count", req.Count, "client", clientIP)
 	return &CommitResponse{

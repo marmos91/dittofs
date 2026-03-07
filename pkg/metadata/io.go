@@ -401,7 +401,18 @@ func (s *MetadataService) FlushPendingWriteForFile(ctx *AuthContext, handle File
 		return false, nil
 	}
 
-	return true, s.flushPendingWrite(ctx, handle, state)
+	if err := s.flushPendingWrite(ctx, handle, state); err != nil {
+		return true, err
+	}
+
+	// Re-cache the flushed file so the next PrepareWrite/GetFileCached avoids
+	// a BadgerDB read. The CachedFile was cleared by PopPending; reconstruct
+	// it from the state we just flushed.
+	if state.CachedFile != nil {
+		s.pendingWrites.SetCachedFile(handle, state.CachedFile)
+	}
+
+	return true, nil
 }
 
 // flushPendingWrite applies a single pending write to the store.

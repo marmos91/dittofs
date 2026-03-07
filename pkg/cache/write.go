@@ -133,7 +133,21 @@ func (bc *BlockCache) tryDirectDiskWrite(ctx context.Context, payloadID string, 
 	}
 
 	blockID := makeBlockID(key)
-	path := bc.blockPath(blockID)
+
+	// Use direct payload store path if available (filesystem backend optimization).
+	// This eliminates double-write: data goes straight to the payload store,
+	// skipping cache .blk files entirely. Blocks are marked Uploaded immediately.
+	var path string
+	var isDirect bool
+	if bc.directWritePath != nil {
+		if p := bc.directWritePath(payloadID, blockIdx); p != "" {
+			path = p
+			isDirect = true
+		}
+	}
+	if path == "" {
+		path = bc.blockPath(blockID)
+	}
 
 	// Try cached fd first, then open from disk.
 	f := bc.fdCache.Get(blockID)
@@ -173,7 +187,11 @@ func (bc *BlockCache) tryDirectDiskWrite(ctx context.Context, payloadID string, 
 		if end > fb.DataSize {
 			fb.DataSize = end
 		}
-		if fb.State == metadata.BlockStateUploaded || fb.State == 0 {
+		if isDirect {
+			// Direct write: data is already in payload store, mark Uploaded.
+			fb.State = metadata.BlockStateUploaded
+			fb.BlockStoreKey = FormatStoreKey(payloadID, blockIdx)
+		} else if fb.State == metadata.BlockStateUploaded || fb.State == 0 {
 			fb.State = metadata.BlockStateSealed
 		}
 		fb.LastAccess = now
@@ -192,8 +210,12 @@ func (bc *BlockCache) tryDirectDiskWrite(ctx context.Context, payloadID string, 
 		fb.DataSize = end
 	}
 
-	// Mark as Sealed (dirty on disk) so the offloader uploads it.
-	if fb.State == metadata.BlockStateUploaded || fb.State == 0 {
+	if isDirect {
+		// Direct write: data is already in payload store, mark Uploaded.
+		fb.State = metadata.BlockStateUploaded
+		fb.BlockStoreKey = FormatStoreKey(payloadID, blockIdx)
+	} else if fb.State == metadata.BlockStateUploaded || fb.State == 0 {
+		// Cache write: mark as Sealed so the offloader uploads it.
 		fb.State = metadata.BlockStateSealed
 	}
 	fb.LastAccess = now

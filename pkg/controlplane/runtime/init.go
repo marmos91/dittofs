@@ -208,6 +208,22 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 
 	logger.Info("Loaded payload store", "name", payloadStoreCfg.Name, "type", payloadStoreCfg.Type)
 
+	// Enable direct-write optimization for filesystem payload backends.
+	// When the payload store is on the local filesystem, the cache can pwrite
+	// directly to the payload store path, eliminating double-write amplification
+	// (cache .blk → payload store). Blocks are marked Uploaded immediately.
+	if dws, ok := blockStore.(blockstore.DirectWriteStore); ok {
+		bc.SetDirectWritePath(func(payloadID string, blockIdx uint64) string {
+			storeKey := cache.FormatStoreKey(payloadID, blockIdx)
+			path, err := dws.BlockFilePath(storeKey)
+			if err != nil {
+				return "" // Fall back to cache path
+			}
+			return path
+		})
+		logger.Info("Direct-write optimization enabled for filesystem payload backend")
+	}
+
 	offloaderCfg := offloader.DefaultConfig()
 	rt.mu.RLock()
 	oCfg := rt.offloaderConfig

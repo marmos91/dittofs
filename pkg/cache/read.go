@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -75,51 +74,70 @@ func (bc *BlockCache) ReadAt(ctx context.Context, payloadID string, dest []byte,
 
 // readFromDisk reads block data from a .blk file on disk.
 // Returns (true, nil) on success, (false, nil) for cache miss.
+//
+// Optimized for random read throughput:
+//   - Uses read fd cache to avoid open+close syscalls per read
+//   - Resolves path directly for filesystem backends (no BadgerDB lookup)
+//   - Skips dropPageCache (OS page cache benefits random reads)
+//   - Skips LastAccess update (avoids write amplification on read path)
 func (bc *BlockCache) readFromDisk(ctx context.Context, payloadID string, blockIdx uint64, offset, length uint32, dest []byte) (bool, error) {
 	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
 	blockID := makeBlockID(key)
 
-	fb, err := bc.lookupFileBlock(ctx, blockID)
-	if err != nil {
-		if errors.Is(err, metadata.ErrFileBlockNotFound) {
+	// Fast path: try cached read fd first (no metadata lookup needed).
+	if f := bc.readFDCache.Get(blockID); f != nil {
+		_, err := f.ReadAt(dest[:length], int64(offset))
+		if err == nil {
+			return true, nil
+		}
+		// Fd may be stale — evict and fall through to slow path.
+		bc.readFDCache.Evict(blockID)
+	}
+
+	// Resolve the file path. For direct-write (filesystem backend), derive it
+	// directly without a BadgerDB lookup. Otherwise, use lookupFileBlock.
+	var path string
+	if bc.directWritePath != nil {
+		if p := bc.directWritePath(payloadID, blockIdx); p != "" {
+			path = p
+		}
+	}
+	if path == "" {
+		fb, err := bc.lookupFileBlock(ctx, blockID)
+		if err != nil {
+			if errors.Is(err, metadata.ErrFileBlockNotFound) {
+				return false, nil
+			}
+			return false, fmt.Errorf("get block metadata: %w", err)
+		}
+		if fb.CachePath == "" {
 			return false, nil
 		}
-		return false, fmt.Errorf("get block metadata: %w", err)
+		if fb.DataSize > 0 && offset+length > fb.DataSize {
+			return false, nil
+		}
+		path = fb.CachePath
 	}
 
-	if fb.CachePath == "" {
-		return false, nil
-	}
-
-	if fb.DataSize > 0 && offset+length > fb.DataSize {
-		return false, nil
-	}
-
-	f, err := os.Open(fb.CachePath)
+	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			fb.CachePath = ""
-			bc.queueFileBlockUpdate(fb)
 			return false, nil
 		}
 		return false, fmt.Errorf("open cache file: %w", err)
 	}
-	defer f.Close()
 
 	_, err = f.ReadAt(dest[:length], int64(offset))
 	if err != nil {
+		f.Close()
 		if err == io.EOF {
-			fb.CachePath = ""
-			bc.queueFileBlockUpdate(fb)
 			return false, nil
 		}
 		return false, fmt.Errorf("pread: %w", err)
 	}
 
-	dropPageCache(f)
-
-	fb.LastAccess = time.Now()
-	bc.queueFileBlockUpdate(fb)
+	// Cache the fd for subsequent reads to this block.
+	bc.readFDCache.Put(blockID, f)
 
 	return true, nil
 }

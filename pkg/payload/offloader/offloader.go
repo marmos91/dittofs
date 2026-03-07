@@ -156,6 +156,12 @@ func (m *Offloader) Flush(ctx context.Context, payloadID string) (*FlushResult, 
 		return nil, fmt.Errorf("offloader is closed")
 	}
 
+	// Direct-write mode: data is already in the payload store via pwrite.
+	// No cache flush, upload, or finalization needed.
+	if m.cache.IsDirectWrite() {
+		return &FlushResult{Finalized: true}, nil
+	}
+
 	state := m.getOrCreateUploadState(payloadID)
 
 	fileSize, _ := m.cache.GetFileSize(ctx, payloadID)
