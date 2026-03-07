@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-03-07T08:14:02.367365827Z",
+  "system": "dittofs-fs",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 759.4651938253526,
+      "latency_p50_us": 930,
+      "latency_p95_us": 4225,
+      "latency_p99_us": 6091,
+      "latency_avg_us": 1315.141,
+      "total_ops": 3000,
+      "total_bytes": 33000,
+      "errors": 0,
+      "duration": 3950148110
+    },
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 657.7653176119258,
+      "latency_p50_us": 1147,
+      "latency_p95_us": 1532,
+      "latency_p99_us": 3559,
+      "latency_avg_us": 1515.7848021081438,
+      "total_ops": 39466,
+      "total_bytes": 161652736,
+      "errors": 0,
+      "duration": 60000123058
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 339.8934380965926,
+      "latency_p50_us": 1783,
+      "latency_p95_us": 2474,
+      "latency_p99_us": 7137,
+      "latency_avg_us": 2936.870746297931,
+      "total_ops": 20394,
+      "total_bytes": 83533824,
+      "errors": 0,
+      "duration": 60001158346
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 63.940293540969726,
+      "latency_p50_us": 15034,
+      "latency_p95_us": 20338,
+      "latency_p99_us": 215154,
+      "latency_avg_us": 15471.95166015625,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 64059762212
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 50.92193811218028,
+      "latency_p50_us": 630,
+      "latency_p95_us": 820,
+      "latency_p99_us": 1062,
+      "latency_avg_us": 658.730224609375,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 80436844155
+    }
+  },
+  "total_duration": 268898800225
+}
