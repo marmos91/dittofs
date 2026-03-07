@@ -100,6 +100,13 @@ func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx
 		return "", fmt.Errorf("create block dir: %w", err)
 	}
 
+	// Track previous file size to compute diskUsed delta (not always +dataSize).
+	// Without this, re-flushing the same block drifts diskUsed upward.
+	var prevDiskSize int64
+	if fi, statErr := os.Stat(path); statErr == nil {
+		prevDiskSize = fi.Size()
+	}
+
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		mb.mu.Unlock()
@@ -139,7 +146,7 @@ func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx
 	mb.dataSize = 0
 	mb.dirty = false
 	bc.memUsed.Add(-int64(BlockSize))
-	bc.diskUsed.Add(int64(dataSize))
+	bc.diskUsed.Add(int64(dataSize) - prevDiskSize)
 	mb.mu.Unlock()
 
 	// Return buffer to pool for reuse (avoids 8MB zeroing on next alloc).

@@ -1,0 +1,88 @@
+{
+  "timestamp": "2026-03-06T13:00:31.968939605Z",
+  "system": "ganesha",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000,
+    "small_file_count": 10000
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 611.5039206877589,
+      "latency_p50_us": 530,
+      "latency_p95_us": 4544,
+      "latency_p99_us": 6650,
+      "latency_avg_us": 1633.4683333333332,
+      "total_ops": 3000,
+      "total_bytes": 33000,
+      "errors": 0,
+      "duration": 4905937474
+    },
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 2049.103053245622,
+      "latency_p50_us": 453,
+      "latency_p95_us": 945,
+      "latency_p99_us": 1090,
+      "latency_avg_us": 484.07023351525453,
+      "total_ops": 122947,
+      "total_bytes": 503590912,
+      "errors": 0,
+      "duration": 60000398616
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 1198.938233580211,
+      "latency_p50_us": 819,
+      "latency_p95_us": 969,
+      "latency_p99_us": 1089,
+      "latency_avg_us": 829.9523471926825,
+      "total_ops": 71937,
+      "total_bytes": 294653952,
+      "errors": 0,
+      "duration": 60000588842
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 63.91182628677599,
+      "latency_p50_us": 16017,
+      "latency_p95_us": 20940,
+      "latency_p99_us": 214596,
+      "latency_avg_us": 15475.597412109375,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 64088295359
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 49.18307446864686,
+      "latency_p50_us": 639,
+      "latency_p95_us": 949,
+      "latency_p99_us": 1316,
+      "latency_avg_us": 682.090087890625,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 83280682313
+    },
+    "small-files": {
+      "workload": "small-files",
+      "ops_per_sec": 1069.7851022212346,
+      "latency_p50_us": 3652,
+      "latency_p95_us": 8153,
+      "latency_p99_us": 11335,
+      "latency_avg_us": 3696.64205,
+      "total_ops": 40000,
+      "total_bytes": 122894977,
+      "errors": 0,
+      "duration": 37390687080
+    }
+  },
+  "total_duration": 317272730617
+}
