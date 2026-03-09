@@ -27,9 +27,15 @@ func (m *Offloader) resolveStoreKey(ctx context.Context, payloadID string, block
 
 // downloadBlock downloads a single block from the block store and caches it.
 // Returns nil data for sparse blocks (no FileBlock entry or missing S3 object).
+// Returns nil data when blockStore is nil (local-only mode — no remote data exists).
 func (m *Offloader) downloadBlock(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, error) {
 	if !m.canProcess(ctx) {
 		return nil, fmt.Errorf("offloader is closed")
+	}
+
+	if m.blockStore == nil {
+		logger.Debug("offloader: skipping downloadBlock, no remote store")
+		return nil, nil // No remote data exists
 	}
 
 	storeKey, err := m.resolveStoreKey(ctx, payloadID, blockIdx)
@@ -65,6 +71,9 @@ func (m *Offloader) EnsureAvailableAndRead(ctx context.Context, payloadID string
 	}
 	if !m.canProcess(ctx) {
 		return false, fmt.Errorf("offloader is closed")
+	}
+	if m.blockStore == nil {
+		return false, nil // Local-only: all data must be in cache, no downloads possible
 	}
 
 	startBlockIdx := offset / uint64(BlockSize)
@@ -157,6 +166,11 @@ func (m *Offloader) inlineDownloadOrWait(ctx context.Context, payloadID string, 
 		return nil, true, nil
 	}
 
+	if m.blockStore == nil {
+		m.completeInFlight(key, result, nil)
+		return nil, true, nil // No remote store — treat as sparse
+	}
+
 	data, err := m.blockStore.ReadBlock(ctx, storeKey)
 	if err != nil {
 		if errors.Is(err, store.ErrBlockNotFound) {
@@ -242,6 +256,9 @@ func (m *Offloader) EnsureAvailable(ctx context.Context, payloadID string, offse
 	}
 	if !m.canProcess(ctx) {
 		return fmt.Errorf("offloader is closed")
+	}
+	if m.blockStore == nil {
+		return nil // Local-only: all data must be in cache, no downloads possible
 	}
 
 	startBlockIdx := offset / uint64(BlockSize)

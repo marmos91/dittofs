@@ -205,7 +205,8 @@ func (m *Offloader) GetFileSize(ctx context.Context, payloadID string) (uint64, 
 	}
 
 	if m.blockStore == nil {
-		return 0, fmt.Errorf("no block store configured")
+		logger.Debug("offloader: skipping GetFileSize, no remote store")
+		return 0, nil
 	}
 
 	prefix := payloadID + "/"
@@ -243,7 +244,8 @@ func (m *Offloader) Exists(ctx context.Context, payloadID string) (bool, error) 
 		return false, fmt.Errorf("offloader is closed")
 	}
 	if m.blockStore == nil {
-		return false, fmt.Errorf("no block store configured")
+		logger.Debug("offloader: skipping Exists, no remote store")
+		return false, nil
 	}
 
 	firstBlockKey := cache.FormatStoreKey(payloadID, 0)
@@ -263,7 +265,8 @@ func (m *Offloader) Truncate(ctx context.Context, payloadID string, newSize uint
 		return fmt.Errorf("offloader is closed")
 	}
 	if m.blockStore == nil {
-		return fmt.Errorf("no block store configured")
+		logger.Debug("offloader: skipping Truncate, no remote store")
+		return nil
 	}
 
 	prefix := payloadID + "/"
@@ -298,25 +301,34 @@ func (m *Offloader) Delete(ctx context.Context, payloadID string) error {
 	if !m.canProcess(ctx) {
 		return fmt.Errorf("offloader is closed")
 	}
-	if m.blockStore == nil {
-		return fmt.Errorf("no block store configured")
-	}
 
+	// Always clean up upload tracking even with nil blockStore.
 	m.uploadsMu.Lock()
 	delete(m.uploads, payloadID)
 	m.uploadsMu.Unlock()
+
+	if m.blockStore == nil {
+		logger.Debug("offloader: skipping Delete, no remote store")
+		return nil
+	}
 
 	return m.blockStore.DeleteByPrefix(ctx, payloadID+"/")
 }
 
 // Start begins background upload processing and periodic uploader.
 // Must be called after New() to enable async uploads.
+// When blockStore is nil (local-only mode), the periodic syncer is skipped.
 func (m *Offloader) Start(ctx context.Context) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.queue != nil {
 		m.queue.Start(ctx)
+	}
+
+	if m.blockStore == nil {
+		logger.Info("Offloader started in local-only mode (no remote store)")
+		return
 	}
 
 	interval := m.config.UploadInterval
@@ -408,6 +420,7 @@ func (m *Offloader) Close() error {
 }
 
 // HealthCheck verifies the block store is accessible.
+// Returns nil (healthy) when blockStore is nil — local-only mode is valid.
 func (m *Offloader) HealthCheck(ctx context.Context) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -417,8 +430,38 @@ func (m *Offloader) HealthCheck(ctx context.Context) error {
 	}
 
 	if m.blockStore == nil {
-		return fmt.Errorf("no block store configured")
+		return nil // Local-only mode is healthy
 	}
 
 	return m.blockStore.HealthCheck(ctx)
+}
+
+// SetRemoteStore transitions the offloader from local-only mode to remote-backed mode.
+// This is a one-shot operation — calling it again returns an error.
+// It sets the blockStore, enables cache eviction, and starts the periodic syncer.
+func (m *Offloader) SetRemoteStore(ctx context.Context, blockStore store.BlockStore) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.closed {
+		return fmt.Errorf("offloader is closed")
+	}
+	if m.blockStore != nil {
+		return fmt.Errorf("remote store already set")
+	}
+	if blockStore == nil {
+		return fmt.Errorf("blockStore must not be nil")
+	}
+
+	m.blockStore = blockStore
+	m.cache.SetEvictionEnabled(true)
+
+	interval := m.config.UploadInterval
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	go m.periodicUploader(ctx, interval)
+
+	logger.Info("Remote store attached, periodic syncer started", "interval", interval)
+	return nil
 }

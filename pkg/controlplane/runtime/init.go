@@ -166,10 +166,6 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 		return fmt.Errorf("failed to list payload stores: %w", err)
 	}
 
-	if len(payloadStores) == 0 {
-		return fmt.Errorf("no payload stores configured - add a payload store first")
-	}
-
 	cacheDir := filepath.Join(cacheConfig.Path, "blocks")
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return fmt.Errorf("failed to create cache directory: %w", err)
@@ -199,19 +195,28 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 
 	logger.Info("BlockCache initialized", "path", cacheDir, "max_size", cacheConfig.Size)
 
-	payloadStoreCfg := payloadStores[0]
-	blockStore, err := CreateBlockStoreFromConfig(ctx, payloadStoreCfg.Type, payloadStoreCfg)
-	if err != nil {
-		return fmt.Errorf("failed to create block store: %w", err)
+	// Create block store from config if payload stores are configured.
+	// When no payload stores exist, blockStore stays nil (local-only mode).
+	var blockStore blockstore.BlockStore // nil for local-only mode
+	if len(payloadStores) > 0 {
+		payloadStoreCfg := payloadStores[0]
+		blockStore, err = CreateBlockStoreFromConfig(ctx, payloadStoreCfg.Type, payloadStoreCfg)
+		if err != nil {
+			return fmt.Errorf("failed to create block store: %w", err)
+		}
+		logger.Info("Loaded payload store", "name", payloadStoreCfg.Name, "type", payloadStoreCfg.Type)
 	}
 
-	logger.Info("Loaded payload store", "name", payloadStoreCfg.Name, "type", payloadStoreCfg.Type)
+	// When a remote store is configured, skip fsync — data durability comes from
+	// remote sync (e.g. S3), not local disk. The cache .blk files are staging
+	// buffers; losing them on power failure means re-downloading, not data loss.
+	// When local-only (no remote store), disk IS the final store, so fsync matters.
+	bc.SetSkipFsync(blockStore != nil)
 
-	// Skip fsync on COMMIT path. The cache .blk files are staging buffers for the
-	// backend block store. For S3, durability comes from remote sync, and losing
-	// cache files on power failure means re-downloading, not data loss. For memory
-	// stores, data is inherently ephemeral so fsync provides no benefit either.
-	bc.SetSkipFsync(true)
+	// When local-only, disable eviction since blocks cannot be re-fetched from remote.
+	if blockStore == nil {
+		bc.SetEvictionEnabled(false)
+	}
 
 	offloaderCfg := offloader.DefaultConfig()
 	rt.mu.RLock()
@@ -252,11 +257,16 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 	rt.payloadService = payloadSvc
 	rt.mu.Unlock()
 
-	logger.Info("PayloadService initialized",
-		"payload_store", payloadStoreCfg.Name,
-		"parallel_uploads", offloaderCfg.ParallelUploads,
-		"parallel_downloads", offloaderCfg.ParallelDownloads,
-		"small_file_threshold", offloaderCfg.SmallFileThreshold)
+	if blockStore == nil {
+		logger.Info("PayloadService initialized in local-only mode (no remote store)",
+			"parallel_uploads", offloaderCfg.ParallelUploads,
+			"parallel_downloads", offloaderCfg.ParallelDownloads)
+	} else {
+		logger.Info("PayloadService initialized",
+			"parallel_uploads", offloaderCfg.ParallelUploads,
+			"parallel_downloads", offloaderCfg.ParallelDownloads,
+			"small_file_threshold", offloaderCfg.SmallFileThreshold)
+	}
 
 	return nil
 }

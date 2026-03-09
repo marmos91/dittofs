@@ -26,6 +26,10 @@ const maxUploadBatch = 4
 // The periodic syncer guards against overlapping ticks, so at most one
 // instance of this function runs at a time.
 func (m *Offloader) uploadPendingBlocks(ctx context.Context) {
+	if m.blockStore == nil {
+		return
+	}
+
 	pending, err := m.fileBlockStore.ListLocalBlocks(ctx, m.config.UploadDelay, maxUploadBatch)
 	if err != nil {
 		logger.Warn("Periodic sync: failed to list local blocks", "error", err)
@@ -118,6 +122,9 @@ func (m *Offloader) uploadFileBlock(ctx context.Context, fb *metadata.FileBlock)
 func (m *Offloader) uploadBlock(ctx context.Context, payloadID string, blockIdx uint64) error {
 	if !m.canProcess(ctx) {
 		return fmt.Errorf("offloader is closed")
+	}
+	if m.blockStore == nil {
+		return fmt.Errorf("no remote store configured")
 	}
 
 	data, _, err := m.cache.GetBlockData(ctx, payloadID, blockIdx)
