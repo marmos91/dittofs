@@ -11,10 +11,10 @@ const BlockSize = block.Size
 const DefaultParallelUploads = 16
 
 // DefaultParallelDownloads is the default number of concurrent downloads per file.
-const DefaultParallelDownloads = 4
+const DefaultParallelDownloads = 8
 
 // DefaultPrefetchBlocks is the default number of blocks to prefetch.
-const DefaultPrefetchBlocks = 4
+const DefaultPrefetchBlocks = 16
 
 // TransferType indicates the type of transfer operation.
 type TransferType int
@@ -74,12 +74,18 @@ type Config struct {
 }
 
 // DefaultConfig returns the default Offloader configuration.
+// These defaults are tuned for good S3 performance out of the box:
+//   - 16 parallel uploads for high throughput (~64 MB/s with 4MB blocks)
+//   - SmallFileThreshold = 0: all flushes are async, data safety via WAL-backed cache
+//   - 16 prefetch blocks (64MB lookahead) for sequential read throughput
+//   - 8 parallel downloads per file for S3 bandwidth utilization
 func DefaultConfig() Config {
 	return Config{
 		ParallelUploads:    DefaultParallelUploads,
 		MaxParallelUploads: 0, // Unlimited, auto-tuned
 		ParallelDownloads:  DefaultParallelDownloads,
 		PrefetchBlocks:     DefaultPrefetchBlocks,
+		SmallFileThreshold: 0, // Disabled - all flushes async, WAL ensures durability
 	}
 }
 

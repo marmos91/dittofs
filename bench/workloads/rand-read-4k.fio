@@ -1,0 +1,13 @@
+[rand-read-4k]
+description=Random 4K read IOPS
+rw=randread
+bs=4k
+direct=1
+iodepth=32
+ioengine=${FIO_ENGINE:-posixaio}
+numjobs=${BENCH_THREADS:-4}
+runtime=${BENCH_RUNTIME:-60}
+time_based
+size=1g
+directory=/mnt/bench
+group_reporting

@@ -191,7 +191,12 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 		return fmt.Errorf("failed to create cache: %w", err)
 	}
 
-	logger.Info("Cache initialized", "path", cacheFile, "max_size", cacheConfig.Size)
+	// Configure max pending size for backpressure (0 = use default 512MB)
+	if cacheConfig.MaxPendingSize > 0 {
+		cacheInstance.SetMaxPendingSize(uint64(cacheConfig.MaxPendingSize))
+	}
+
+	logger.Info("Cache initialized", "path", cacheFile, "max_size", cacheConfig.Size, "max_pending_size", cacheConfig.MaxPendingSize)
 
 	payloadStoreCfg := payloadStores[0]
 	blockStore, err := CreateBlockStoreFromConfig(ctx, payloadStoreCfg.Type, payloadStoreCfg)
@@ -202,11 +207,27 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 	logger.Info("Loaded payload store", "name", payloadStoreCfg.Name, "type", payloadStoreCfg.Type)
 
 	objectStore := memory.NewMemoryMetadataStoreWithDefaults()
-	offloaderCfg := offloader.Config{
-		ParallelUploads:   16,
-		ParallelDownloads: 4,
-		PrefetchBlocks:    4,
+	offloaderCfg := offloader.DefaultConfig()
+
+	// Apply user-provided offloader config if set
+	rt.mu.RLock()
+	oCfg := rt.offloaderConfig
+	rt.mu.RUnlock()
+	if oCfg != nil {
+		if oCfg.ParallelUploads > 0 {
+			offloaderCfg.ParallelUploads = oCfg.ParallelUploads
+		}
+		if oCfg.ParallelDownloads > 0 {
+			offloaderCfg.ParallelDownloads = oCfg.ParallelDownloads
+		}
+		if oCfg.PrefetchBlocks > 0 {
+			offloaderCfg.PrefetchBlocks = oCfg.PrefetchBlocks
+		}
+		if oCfg.SmallFileThreshold != 0 {
+			offloaderCfg.SmallFileThreshold = oCfg.SmallFileThreshold
+		}
 	}
+
 	offloaderInstance := offloader.New(cacheInstance, blockStore, objectStore, offloaderCfg)
 
 	payloadSvc, err := payload.New(cacheInstance, offloaderInstance)
@@ -224,7 +245,8 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 	logger.Info("PayloadService initialized",
 		"payload_store", payloadStoreCfg.Name,
 		"parallel_uploads", offloaderCfg.ParallelUploads,
-		"parallel_downloads", offloaderCfg.ParallelDownloads)
+		"parallel_downloads", offloaderCfg.ParallelDownloads,
+		"small_file_threshold", offloaderCfg.SmallFileThreshold)
 
 	return nil
 }

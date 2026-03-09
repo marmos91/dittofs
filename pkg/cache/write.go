@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/cache/wal"
 	"github.com/marmos91/dittofs/pkg/payload/block"
 )
@@ -179,14 +180,25 @@ func (c *Cache) writeAtInternal(ctx context.Context, payloadID string, chunkIdx 
 	// Backpressure on pending data (applies even when maxSize=0).
 	// This prevents OOM when uploads can't keep up with writes.
 	// Skip for downloaded data - it's already in block store, not pending.
+	//
+	// When pending data exceeds the limit, the write BLOCKS until the offloader
+	// drains enough data (signaled via pendingCond). This provides proper
+	// backpressure for slow backends like S3, instead of returning ErrCacheFull.
 	if !opts.isDownloaded {
 		maxPending := c.maxPendingSize
 		if maxPending == 0 {
 			maxPending = DefaultMaxPendingSize
 		}
 		if newMemory > 0 && c.pendingSize.Load()+newMemory > maxPending {
+			// Release file entry lock before blocking - other files can proceed
 			entry.mu.Unlock()
-			return ErrCacheFull
+
+			if err := c.waitForPendingDrain(ctx, newMemory, maxPending); err != nil {
+				return err
+			}
+
+			// Re-acquire file entry lock after waking up
+			entry.mu.Lock()
 		}
 	}
 
@@ -203,6 +215,77 @@ func (c *Cache) writeAtInternal(ctx context.Context, payloadID string, chunkIdx 
 	}
 
 	return nil
+}
+
+// waitForPendingDrain blocks until pendingSize drops below the threshold or
+// the context/cache is cancelled. This is the core backpressure mechanism
+// that prevents ErrCacheFull by waiting for the offloader to drain data.
+//
+// The method uses sync.Cond for efficient signaling: writers sleep here and
+// are woken up by MarkBlockUploaded when pending data decreases.
+//
+// Returns nil when there is room to write, or an error if:
+//   - BackpressureTimeout is exceeded (returns ErrCacheFull)
+//   - Context is cancelled (returns context error)
+//   - Cache is closed (returns ErrCacheClosed)
+func (c *Cache) waitForPendingDrain(ctx context.Context, newMemory, maxPending uint64) error {
+	deadline := time.Now().Add(BackpressureTimeout)
+	logged := false
+
+	c.pendingCond.L.Lock()
+	defer c.pendingCond.L.Unlock()
+
+	for {
+		// Check if there's room now
+		if c.pendingSize.Load()+newMemory <= maxPending {
+			return nil
+		}
+
+		// Check context cancellation
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		// Check if cache is closed
+		if err := c.checkClosed(ctx); err != nil {
+			return err
+		}
+
+		// Check timeout
+		if time.Now().After(deadline) {
+			logger.Error("Backpressure timeout exceeded, cache still full",
+				"pendingSize", c.pendingSize.Load(),
+				"maxPending", maxPending,
+				"timeout", BackpressureTimeout)
+			return ErrCacheFull
+		}
+
+		if !logged {
+			logger.Warn("Write blocked by cache backpressure, waiting for offloader to drain",
+				"pendingSize", c.pendingSize.Load(),
+				"maxPending", maxPending,
+				"newMemory", newMemory)
+			logged = true
+		}
+
+		// Wait with a periodic wake-up to check context/timeout.
+		// We use a goroutine to wake us up after 500ms so we can re-check
+		// conditions even if no signal arrives. This prevents indefinite
+		// blocking when the offloader is making slow progress.
+		waitDone := make(chan struct{})
+		go func() {
+			timer := time.NewTimer(500 * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+				c.pendingCond.Broadcast()
+			case <-waitDone:
+			}
+		}()
+
+		c.pendingCond.Wait()
+		close(waitDone)
+	}
 }
 
 // countNewBlockMemory calculates memory needed for new blocks in the given range.

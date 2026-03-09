@@ -149,11 +149,22 @@ func (s *MetadataService) PrepareWrite(ctx *AuthContext, handle FileHandle, newS
 	// ensure other hard links continue to see the original content.
 	needsCOW := file.Nlink > 1 && !file.ObjectID.IsZero()
 
+	// Determine mtime: reuse the frozen mtime from existing write session
+	// (if any) to ensure all WRITE responses return identical timestamps.
+	// This prevents NFS client page cache invalidation — the Linux NFS client
+	// keys its cache on (mtime, ctime, size) and invalidates it if mtime changes.
+	var newMtime time.Time
+	if pending, ok := s.pendingWrites.GetPending(handle); ok && !pending.LastMtime.IsZero() {
+		newMtime = pending.LastMtime
+	} else {
+		newMtime = time.Now()
+	}
+
 	// Create write operation
 	writeOp := &WriteOperation{
 		Handle:       handle,
 		NewSize:      newSize,
-		NewMtime:     time.Now(),
+		NewMtime:     newMtime,
 		PayloadID:    file.PayloadID,
 		PreWriteAttr: preWriteAttr,
 	}

@@ -152,6 +152,10 @@ func (c *Cache) MarkBlockUploaded(ctx context.Context, payloadID string, chunkId
 		c.pendingCond.Broadcast()
 		c.pendingCond.L.Unlock()
 
+		// Signal writers blocked on backpressure that pending space has been freed.
+		// This wakes up any goroutines waiting in waitForPendingDrain().
+		c.pendingCond.Broadcast()
+
 		// If buffer was detached (nil), also decrement totalSize since memory is released
 		if blk.data == nil {
 			atomicSubtract(&c.totalSize, BlockSize)

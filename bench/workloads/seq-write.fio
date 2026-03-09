@@ -1,0 +1,13 @@
+[seq-write]
+description=Sequential write throughput
+rw=write
+bs=1m
+direct=1
+fsync_on_close=1
+ioengine=${FIO_ENGINE:-posixaio}
+numjobs=${BENCH_THREADS:-4}
+runtime=${BENCH_RUNTIME:-60}
+time_based
+size=1g
+directory=/mnt/bench
+group_reporting

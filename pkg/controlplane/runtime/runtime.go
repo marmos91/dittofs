@@ -33,8 +33,18 @@ type (
 // CacheConfig holds cache WAL path and size limit.
 // Kept here (instead of pkg/config) to avoid import cycles.
 type CacheConfig struct {
-	Path string // Directory for the cache WAL file
-	Size uint64 // Maximum cache size in bytes
+	Path           string // Directory for the cache WAL file
+	Size           uint64 // Maximum cache size in bytes
+	MaxPendingSize uint64 // Maximum pending (dirty) data size (0 = default 1GB)
+}
+
+// OffloaderConfig holds offloader settings for background data transfer.
+// Kept here (instead of pkg/config) to avoid import cycles.
+type OffloaderConfig struct {
+	ParallelUploads    int   // Concurrent block uploads (0 = default 16)
+	ParallelDownloads  int   // Concurrent block downloads per file (0 = default 4)
+	PrefetchBlocks     int   // Blocks to prefetch ahead (0 = default 4)
+	SmallFileThreshold int64 // Sync flush threshold in bytes (0 = default 4MB)
 }
 
 type payloadServiceHelper struct {
@@ -90,6 +100,7 @@ type Runtime struct {
 	mountTracker *MountTracker
 
 	cacheConfig     *CacheConfig
+	offloaderConfig *OffloaderConfig
 	settingsWatcher *SettingsWatcher
 
 	adapterProviders   map[string]any
@@ -323,6 +334,12 @@ func (r *Runtime) GetCacheConfig() *CacheConfig {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.cacheConfig
+}
+
+func (r *Runtime) SetOffloaderConfig(cfg *OffloaderConfig) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.offloaderConfig = cfg
 }
 
 func (r *Runtime) SetCache(c *cache.Cache) {

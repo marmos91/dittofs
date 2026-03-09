@@ -79,7 +79,15 @@ func (t *PendingWritesTracker) RecordWrite(handle FileHandle, intent *WriteOpera
 		if intent.NewSize > state.MaxSize {
 			state.MaxSize = intent.NewSize
 		}
-		state.LastMtime = intent.NewMtime
+		// Set LastMtime only on the first actual write (state may have been
+		// created by SetCachedFile with zero mtime). Once set, freeze it —
+		// this ensures all WRITE responses return the same mtime, which is
+		// critical for NFS client page cache stability. The Linux NFS client
+		// keys its cache on (mtime, ctime, size) and invalidates it if mtime
+		// changes between WRITEs.
+		if state.LastMtime.IsZero() {
+			state.LastMtime = intent.NewMtime
+		}
 		if clearSetuid {
 			state.ClearSetuidSetgid = true
 		}

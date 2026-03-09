@@ -50,6 +50,11 @@ type fileEntry struct {
 // Cache Implementation
 // ============================================================================
 
+// BackpressureTimeout is the maximum time a write will block waiting for
+// the offloader to drain pending data. After this timeout, ErrCacheFull
+// is returned.
+const BackpressureTimeout = 5 * time.Minute
+
 // Cache is the mandatory cache layer for all content operations.
 //
 // It uses 4MB block buffers as first-class citizens, storing data directly
@@ -229,6 +234,13 @@ func (c *Cache) getFileEntry(payloadID string) *fileEntry {
 	}
 	c.files[payloadID] = entry
 	return entry
+}
+
+// SetMaxPendingSize sets the maximum pending (dirty) data size in bytes.
+// When pending data exceeds this limit, writes block until the offloader
+// drains enough data. Use 0 to revert to the default (512MB).
+func (c *Cache) SetMaxPendingSize(size uint64) {
+	c.maxPendingSize = size
 }
 
 // touchFile updates the last access time for LRU tracking.

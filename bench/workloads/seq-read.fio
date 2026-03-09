@@ -1,0 +1,12 @@
+[seq-read]
+description=Sequential read throughput
+rw=read
+bs=1m
+direct=1
+ioengine=${FIO_ENGINE:-posixaio}
+numjobs=${BENCH_THREADS:-4}
+runtime=${BENCH_RUNTIME:-60}
+time_based
+size=1g
+directory=/mnt/bench
+group_reporting
