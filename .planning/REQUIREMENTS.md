@@ -25,10 +25,10 @@
 
 ### Local-Only Mode
 
-- [ ] **LOCAL-01**: pkg/cache/manage.go provides DeleteBlockFile, DeleteAllBlockFiles, TruncateBlockFiles, GetStoredFileSize, ExistsOnDisk, SetEvictionEnabled
-- [ ] **LOCAL-02**: Offloader accepts nil blockStore and operates in local-only mode
-- [ ] **LOCAL-03**: Local-only flush marks blocks BlockStateLocal (no upload)
-- [ ] **LOCAL-04**: init.go wires local-only mode when no remote store configured
+- [x] **LOCAL-01**: pkg/cache/manage.go provides DeleteBlockFile, DeleteAllBlockFiles, TruncateBlockFiles, GetStoredFileSize, ExistsOnDisk, SetEvictionEnabled
+- [x] **LOCAL-02**: Offloader accepts nil blockStore and operates in local-only mode
+- [x] **LOCAL-03**: Local-only flush marks blocks BlockStateLocal (no upload)
+- [x] **LOCAL-04**: init.go wires local-only mode when no remote store configured
 
 ### Data Model
 
@@ -130,10 +130,10 @@
 | CLEAN-04 | Phase 42 | Complete |
 | CLEAN-05 | Phase 42 | Complete |
 | CLEAN-06 | Phase 42 | Complete |
-| LOCAL-01 | Phase 43 | Pending |
-| LOCAL-02 | Phase 43 | Pending |
-| LOCAL-03 | Phase 43 | Pending |
-| LOCAL-04 | Phase 43 | Pending |
+| LOCAL-01 | Phase 43 | Complete |
+| LOCAL-02 | Phase 43 | Complete |
+| LOCAL-03 | Phase 43 | Complete |
+| LOCAL-04 | Phase 43 | Complete |
 | MODEL-01 | Phase 44 | Pending |
 | MODEL-02 | Phase 44 | Pending |
 | MODEL-03 | Phase 44 | Pending |

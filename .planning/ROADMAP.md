@@ -117,7 +117,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 41: Block State Enum and ListFileBlocks** - Rename states (Sealed→Local, Uploaded→Remote), update ListPendingUpload→ListLocalBlocks, add ListFileBlocks method (completed 2026-03-09)
 - [x] **Phase 42: Legacy Cleanup** - Remove DirectWriteStore interface and filesystem payload store (completed 2026-03-09)
-- [ ] **Phase 43: Local-Only Block Management** - Block management operations on cache, local-only offloader mode without remote store
+- [x] **Phase 43: Local-Only Block Management** - Block management operations on cache, local-only offloader mode without remote store (completed 2026-03-09)
 - [ ] **Phase 44: Data Model and API/CLI** - BlockStoreConfig DB model, REST endpoints, dfsctl block store commands
 - [ ] **Phase 45: Package Restructure** - Create pkg/blockstore/ hierarchy absorbing cache, payload, offloader, gc
 - [ ] **Phase 46: Per-Share Block Store Wiring** - Runtime manages per-share BlockStore instances replacing global PayloadService
@@ -176,7 +176,7 @@ Full phase details archived to [milestones/v3.8-ROADMAP.md](milestones/v3.8-ROAD
 **Plans**: 2 plans
 Plans:
 - [x] 41-01-PLAN.md — Rename state enum, query methods, update all consumers in cache/offloader
-- [ ] 41-02-PLAN.md — Add ListFileBlocks method, conformance tests for FileBlockStore
+- [x] 41-02-PLAN.md — Add ListFileBlocks method, conformance tests for FileBlockStore
 
 ### Phase 42: Legacy Cleanup
 **Goal**: Remove DirectWriteStore interface and filesystem payload store dead code
@@ -190,7 +190,9 @@ Plans:
   5. init.go removed blockfs import and DirectWriteStore detection logic
   6. All direct-write conditional branches removed from cache operations
 **Verification**: `go build ./...` && `go test ./...`
-**Plans**: TBD
+**Plans**: 1 plan
+Plans:
+- [x] 42-01-PLAN.md — Remove DirectWriteStore, filesystem store, and all direct-write code paths
 
 ### Phase 43: Local-Only Block Management
 **Goal**: Add block management operations to cache and support offloader without remote store
@@ -203,7 +205,10 @@ Plans:
   4. Local-only flush marks blocks BlockStateLocal without upload attempt
   5. Runtime wiring creates local-only BlockStore when no remote store configured
 **Verification**: `go build ./...` && `go test ./...`
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 43-01-PLAN.md — Cache manage.go methods, EvictMemory rename, SetEvictionEnabled
+- [ ] 43-02-PLAN.md — Offloader nil-blockStore support, SetRemoteStore, init.go local-only wiring
 
 ### Phase 44: Data Model and API/CLI
 **Goal**: Create BlockStoreConfig model and REST/CLI endpoints for local and remote block stores
@@ -541,7 +546,7 @@ v3.8 (33-40.5) -> v4.0 (41-49) -> v4.1 (50-56) -> v4.2 (57-62)
 | 40. SMB3 Conformance Testing | v3.8 | 6/6 | Complete | 2026-03-02 |
 | 41. Block State Enum and ListFileBlocks | 2/2 | Complete    | 2026-03-09 | - |
 | 42. Legacy Cleanup | 1/1 | Complete    | 2026-03-09 | - |
-| 43. Local-Only Block Management | v4.0 | 0/? | Not started | - |
+| 43. Local-Only Block Management | 2/2 | Complete    | 2026-03-09 | - |
 | 44. Data Model and API/CLI | v4.0 | 0/? | Not started | - |
 | 45. Package Restructure | v4.0 | 0/? | Not started | - |
 | 46. Per-Share Block Store Wiring | v4.0 | 0/? | Not started | - |

@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: BlockStore Unification Refactor
 status: completed
-stopped_at: Completed 42-01-PLAN.md
-last_updated: "2026-03-09T13:54:55.864Z"
-last_activity: 2026-03-09 — Phase 42 complete (Legacy cleanup)
+stopped_at: Completed 43-02-PLAN.md
+last_updated: "2026-03-09T15:42:17.637Z"
+last_activity: 2026-03-09 — Phase 43 Plan 02 complete (Nil-safe offloader with local-only init)
 progress:
   total_phases: 22
-  completed_phases: 3
-  total_plans: 5
-  completed_plans: 5
-  percent: 67
+  completed_phases: 4
+  total_plans: 7
+  completed_plans: 7
+  percent: 68
 ---
 
 # Project State
@@ -21,17 +21,17 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-09)
 
 **Core value:** Replace confusing layered storage architecture with clean two-tier block store model (Local + Remote) for per-share isolation and maintainability
-**Current focus:** Phase 42 - Legacy Cleanup
+**Current focus:** Phase 43 - Local-Only Block Management
 
 ## Current Position
 
-Phase: 42 of 49 (Legacy Cleanup)
+Phase: 43 of 49 (Local-Only Block Management)
 Milestone: v4.0 BlockStore Unification Refactor
-Plan: 1 of 1 in current phase (COMPLETE)
-Status: Phase 42 Complete
-Last activity: 2026-03-09 — Phase 42 complete (Legacy cleanup)
+Plan: 2 of 2 in current phase (COMPLETE)
+Status: Phase 43 Complete
+Last activity: 2026-03-09 — Phase 43 Plan 02 complete (Nil-safe offloader with local-only init)
 
-Progress: [████████████████████████████████████████░░░░░░░░░░░░] 67% (124/186+ total plans across all milestones)
+Progress: [████████████████████████████████████████░░░░░░░░░░░░] 68% (125/186+ total plans across all milestones)
 
 ## Completed Milestones
 
@@ -54,7 +54,7 @@ Progress: [███████████████████████
 **v4.0 Current Milestone:**
 - 9 phases defined (41-49)
 - 55 requirements mapped
-- 3 plans completed (41-01, 41-02, 42-01) -- Phase 41, 42 complete
+- 5 plans completed (41-01, 41-02, 42-01, 43-01, 43-02) -- Phases 41, 42, 43 complete
 
 ## Accumulated Context
 
@@ -72,6 +72,10 @@ Recent decisions affecting v4.0 work:
 - **BadgerDB fb-file: index always maintained**: On every PutFileBlock regardless of state (Phase 41, Plan 02)
 - **Keep filesystem case in init.go returning explicit v4.0 removal error**: For upgrade guidance (Phase 42, Plan 01)
 - **Convert gc_integration_test.go filesystem tests to memory**: Rather than deleting them (Phase 42, Plan 01)
+- **Direct blockStore.DeleteFileBlock for deletes**: Not async pendingFBs, ensures immediate consistency (Phase 43, Plan 01)
+- **pendingFBs.Delete as cleanup-only**: Prevents zombie re-creation of deleted FileBlocks (Phase 43, Plan 01)
+- **Local-only mode: eviction disabled, fsync enabled**: Disk is final store, not staging buffer (Phase 43, Plan 02)
+- **SetRemoteStore one-shot**: Prevents re-entrant race from multiple callers (Phase 43, Plan 02)
 
 ### Pending Todos
 
@@ -83,7 +87,7 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-09T13:49:40.344Z
-Stopped at: Completed 42-01-PLAN.md
-Resume file: None
-Next action: Begin Phase 43 (Local-Only Block Management)
+Last session: 2026-03-09T15:35:35Z
+Stopped at: Completed 43-02-PLAN.md
+Resume file: .planning/phases/43-local-only-block-management/43-02-SUMMARY.md
+Next action: Execute next phase
