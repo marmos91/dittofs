@@ -25,14 +25,14 @@ func NewMetadataStoreHandler(s store.MetadataStoreConfigStore, rt *runtime.Runti
 	return &MetadataStoreHandler{store: s, runtime: rt}
 }
 
-// CreateMetadataStoreRequest is the request body for POST /api/v1/metadata-stores.
+// CreateMetadataStoreRequest is the request body for POST /api/v1/store/metadata.
 type CreateMetadataStoreRequest struct {
 	Name   string `json:"name"`
 	Type   string `json:"type"`
 	Config string `json:"config,omitempty"` // JSON string for type-specific config
 }
 
-// UpdateMetadataStoreRequest is the request body for PUT /api/v1/metadata-stores/{name}.
+// UpdateMetadataStoreRequest is the request body for PUT /api/v1/store/metadata/{name}.
 type UpdateMetadataStoreRequest struct {
 	Type   *string `json:"type,omitempty"`
 	Config *string `json:"config,omitempty"`
@@ -47,7 +47,7 @@ type MetadataStoreResponse struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// Create handles POST /api/v1/metadata-stores.
+// Create handles POST /api/v1/store/metadata.
 // Creates a new metadata store configuration (admin only).
 // Also creates the actual metadata store instance and registers it with the runtime.
 func (h *MetadataStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -112,7 +112,7 @@ func (h *MetadataStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
 	WriteJSONCreated(w, metadataStoreToResponse(storeCfg))
 }
 
-// List handles GET /api/v1/metadata-stores.
+// List handles GET /api/v1/store/metadata.
 // Lists all metadata store configurations (admin only).
 func (h *MetadataStoreHandler) List(w http.ResponseWriter, r *http.Request) {
 	stores, err := h.store.ListMetadataStores(r.Context())
@@ -129,7 +129,7 @@ func (h *MetadataStoreHandler) List(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, response)
 }
 
-// Get handles GET /api/v1/metadata-stores/{name}.
+// Get handles GET /api/v1/store/metadata/{name}.
 // Gets a metadata store configuration by name (admin only).
 func (h *MetadataStoreHandler) Get(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
@@ -151,7 +151,7 @@ func (h *MetadataStoreHandler) Get(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, metadataStoreToResponse(store))
 }
 
-// Update handles PUT /api/v1/metadata-stores/{name}.
+// Update handles PUT /api/v1/store/metadata/{name}.
 // Updates a metadata store configuration (admin only).
 func (h *MetadataStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
@@ -192,7 +192,7 @@ func (h *MetadataStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, metadataStoreToResponse(store))
 }
 
-// Delete handles DELETE /api/v1/metadata-stores/{name}.
+// Delete handles DELETE /api/v1/store/metadata/{name}.
 // Deletes a metadata store configuration (admin only).
 func (h *MetadataStoreHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")

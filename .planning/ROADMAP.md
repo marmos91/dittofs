@@ -551,7 +551,7 @@ v3.8 (33-40.5) -> v4.0 (41-49) -> v4.1 (50-56) -> v4.2 (57-62)
 | 41. Block State Enum and ListFileBlocks | 2/2 | Complete    | 2026-03-09 | - |
 | 42. Legacy Cleanup | 1/1 | Complete    | 2026-03-09 | - |
 | 43. Local-Only Block Management | 2/2 | Complete    | 2026-03-09 | - |
-| 44. Data Model and API/CLI | 1/3 | In Progress|  | - |
+| 44. Data Model and API/CLI | 2/3 | In Progress|  | - |
 | 45. Package Restructure | v4.0 | 0/? | Not started | - |
 | 46. Per-Share Block Store Wiring | v4.0 | 0/? | Not started | - |
 | 47. L1 Read Cache and Prefetch | v4.0 | 0/? | Not started | - |

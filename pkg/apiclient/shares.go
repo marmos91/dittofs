@@ -27,22 +27,24 @@ type Share struct {
 
 // CreateShareRequest is the request to create a share.
 type CreateShareRequest struct {
-	Name               string    `json:"name"`
-	MetadataStoreID    string    `json:"metadata_store_id"`
-	LocalBlockStoreID  string    `json:"local_block_store_id"`
-	RemoteBlockStoreID *string   `json:"remote_block_store_id,omitempty"`
-	ReadOnly           bool      `json:"read_only,omitempty"`
-	DefaultPermission  string    `json:"default_permission,omitempty"`
-	Description        string    `json:"description,omitempty"`
-	BlockedOperations  *[]string `json:"blocked_operations,omitempty"`
+	Name              string    `json:"name"`
+	MetadataStoreID   string    `json:"metadata_store_id"`
+	LocalBlockStore   string    `json:"local_block_store"`
+	RemoteBlockStore  *string   `json:"remote_block_store,omitempty"`
+	ReadOnly          bool      `json:"read_only,omitempty"`
+	DefaultPermission string    `json:"default_permission,omitempty"`
+	Description       string    `json:"description,omitempty"`
+	BlockedOperations *[]string `json:"blocked_operations,omitempty"`
 }
 
 // UpdateShareRequest is the request to update a share.
 type UpdateShareRequest struct {
-	ReadOnly          *bool     `json:"read_only,omitempty"`
-	DefaultPermission *string   `json:"default_permission,omitempty"`
-	Description       *string   `json:"description,omitempty"`
-	BlockedOperations *[]string `json:"blocked_operations,omitempty"`
+	LocalBlockStoreID  *string   `json:"local_block_store_id,omitempty"`
+	RemoteBlockStoreID *string   `json:"remote_block_store_id,omitempty"`
+	ReadOnly           *bool     `json:"read_only,omitempty"`
+	DefaultPermission  *string   `json:"default_permission,omitempty"`
+	Description        *string   `json:"description,omitempty"`
+	BlockedOperations  *[]string `json:"blocked_operations,omitempty"`
 }
 
 // SharePermission represents a permission on a share.

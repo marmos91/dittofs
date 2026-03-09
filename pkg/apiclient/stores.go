@@ -62,12 +62,12 @@ func serializeConfig(config any) (string, error) {
 
 // ListMetadataStores returns all metadata stores.
 func (c *Client) ListMetadataStores() ([]MetadataStore, error) {
-	return listResources[MetadataStore](c, "/api/v1/metadata-stores")
+	return listResources[MetadataStore](c, "/api/v1/store/metadata")
 }
 
 // GetMetadataStore returns a metadata store by name.
 func (c *Client) GetMetadataStore(name string) (*MetadataStore, error) {
-	return getResource[MetadataStore](c, resourcePath("/api/v1/metadata-stores/%s", name))
+	return getResource[MetadataStore](c, fmt.Sprintf("/api/v1/store/metadata/%s", name))
 }
 
 // CreateMetadataStore creates a new metadata store.
@@ -78,7 +78,7 @@ func (c *Client) CreateMetadataStore(req *CreateStoreRequest) (*MetadataStore, e
 	}
 	apiReq := createStoreAPIRequest{Name: req.Name, Type: req.Type, Config: configStr}
 	var store MetadataStore
-	if err := c.post("/api/v1/metadata-stores", apiReq, &store); err != nil {
+	if err := c.post("/api/v1/store/metadata", apiReq, &store); err != nil {
 		return nil, err
 	}
 	return &store, nil
@@ -95,7 +95,7 @@ func (c *Client) UpdateMetadataStore(name string, req *UpdateStoreRequest) (*Met
 		apiReq.Config = &configStr
 	}
 	var store MetadataStore
-	if err := c.put(fmt.Sprintf("/api/v1/metadata-stores/%s", name), apiReq, &store); err != nil {
+	if err := c.put(fmt.Sprintf("/api/v1/store/metadata/%s", name), apiReq, &store); err != nil {
 		return nil, err
 	}
 	return &store, nil
@@ -103,7 +103,7 @@ func (c *Client) UpdateMetadataStore(name string, req *UpdateStoreRequest) (*Met
 
 // DeleteMetadataStore deletes a metadata store.
 func (c *Client) DeleteMetadataStore(name string) error {
-	return deleteResource(c, resourcePath("/api/v1/metadata-stores/%s", name))
+	return deleteResource(c, fmt.Sprintf("/api/v1/store/metadata/%s", name))
 }
 
 // ListBlockStores returns all block stores of a given kind.

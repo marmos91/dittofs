@@ -40,13 +40,13 @@
 
 ### API & CLI
 
-- [ ] **API-01**: REST endpoints for local block store CRUD (/api/v1/block-stores/local)
-- [ ] **API-02**: REST endpoints for remote block store CRUD (/api/v1/block-stores/remote)
-- [ ] **API-03**: Share endpoints accept --local (required) and --remote (optional)
+- [x] **API-01**: REST endpoints for local block store CRUD (/api/v1/block-stores/local)
+- [x] **API-02**: REST endpoints for remote block store CRUD (/api/v1/block-stores/remote)
+- [x] **API-03**: Share endpoints accept --local (required) and --remote (optional)
 - [ ] **CLI-01**: `dfsctl store block local add/list/edit/remove` commands
 - [ ] **CLI-02**: `dfsctl store block remote add/list/edit/remove` commands
 - [ ] **CLI-03**: `dfsctl share create --local X --remote Y` replacing --payload
-- [ ] **CLI-04**: API client methods for block store operations replacing payload store methods
+- [x] **CLI-04**: API client methods for block store operations replacing payload store methods
 
 ### Package Architecture
 
@@ -139,13 +139,13 @@
 | MODEL-03 | Phase 44 | Complete |
 | MODEL-04 | Phase 44 | Complete |
 | MODEL-05 | Phase 44 | Complete |
-| API-01 | Phase 44 | Pending |
-| API-02 | Phase 44 | Pending |
-| API-03 | Phase 44 | Pending |
+| API-01 | Phase 44 | Complete |
+| API-02 | Phase 44 | Complete |
+| API-03 | Phase 44 | Complete |
 | CLI-01 | Phase 44 | Pending |
 | CLI-02 | Phase 44 | Pending |
 | CLI-03 | Phase 44 | Pending |
-| CLI-04 | Phase 44 | Pending |
+| CLI-04 | Phase 44 | Complete |
 | PKG-01 | Phase 45 | Pending |
 | PKG-02 | Phase 45 | Pending |
 | PKG-03 | Phase 45 | Pending |

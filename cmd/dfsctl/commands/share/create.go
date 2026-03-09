@@ -103,13 +103,13 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	req := &apiclient.CreateShareRequest{
 		Name:              name,
 		MetadataStoreID:   metadata,
-		LocalBlockStoreID: local,
+		LocalBlockStore: local,
 		ReadOnly:          createReadOnly,
 		DefaultPermission: defaultPerm,
 		Description:       createDescription,
 	}
 	if remote != "" {
-		req.RemoteBlockStoreID = &remote
+		req.RemoteBlockStore = &remote
 	}
 
 	share, err := client.CreateShare(req)

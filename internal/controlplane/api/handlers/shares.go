@@ -59,13 +59,13 @@ func NewShareHandler(s ShareHandlerStore, rt *runtime.Runtime) *ShareHandler {
 
 // CreateShareRequest is the request body for POST /api/v1/shares.
 type CreateShareRequest struct {
-	Name               string    `json:"name"`
-	MetadataStoreID    string    `json:"metadata_store_id"`
-	LocalBlockStoreID  string    `json:"local_block_store_id"`
-	RemoteBlockStoreID *string   `json:"remote_block_store_id,omitempty"`
-	ReadOnly           bool      `json:"read_only,omitempty"`
-	DefaultPermission  string    `json:"default_permission,omitempty"`
-	BlockedOperations  *[]string `json:"blocked_operations,omitempty"`
+	Name              string    `json:"name"`
+	MetadataStoreID   string    `json:"metadata_store_id"`
+	LocalBlockStore   string    `json:"local_block_store"`
+	RemoteBlockStore  *string   `json:"remote_block_store,omitempty"`
+	ReadOnly          bool      `json:"read_only,omitempty"`
+	DefaultPermission string    `json:"default_permission,omitempty"`
+	BlockedOperations *[]string `json:"blocked_operations,omitempty"`
 }
 
 // UpdateShareRequest is the request body for PUT /api/v1/shares/{name}.
@@ -111,8 +111,8 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		BadRequest(w, "Metadata store ID is required")
 		return
 	}
-	if req.LocalBlockStoreID == "" {
-		BadRequest(w, "Local block store ID is required")
+	if req.LocalBlockStore == "" {
+		BadRequest(w, "Local block store is required")
 		return
 	}
 
@@ -127,24 +127,24 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate that local block store exists (try by name first, then by ID)
-	localBlockStore, err := h.store.GetBlockStore(r.Context(), req.LocalBlockStoreID, models.BlockStoreKindLocal)
+	localBlockStore, err := h.store.GetBlockStore(r.Context(), req.LocalBlockStore, models.BlockStoreKindLocal)
 	if err != nil {
-		localBlockStore, err = h.store.GetBlockStoreByID(r.Context(), req.LocalBlockStoreID)
+		localBlockStore, err = h.store.GetBlockStoreByID(r.Context(), req.LocalBlockStore)
 	}
 	if err != nil {
-		BadRequest(w, "Local block store not found: "+req.LocalBlockStoreID)
+		BadRequest(w, "Local block store not found: "+req.LocalBlockStore)
 		return
 	}
 
 	// Validate optional remote block store
 	var remoteBlockStoreID *string
-	if req.RemoteBlockStoreID != nil && *req.RemoteBlockStoreID != "" {
-		remoteStore, remoteErr := h.store.GetBlockStore(r.Context(), *req.RemoteBlockStoreID, models.BlockStoreKindRemote)
+	if req.RemoteBlockStore != nil && *req.RemoteBlockStore != "" {
+		remoteStore, remoteErr := h.store.GetBlockStore(r.Context(), *req.RemoteBlockStore, models.BlockStoreKindRemote)
 		if remoteErr != nil {
-			remoteStore, remoteErr = h.store.GetBlockStoreByID(r.Context(), *req.RemoteBlockStoreID)
+			remoteStore, remoteErr = h.store.GetBlockStoreByID(r.Context(), *req.RemoteBlockStore)
 		}
 		if remoteErr != nil {
-			BadRequest(w, "Remote block store not found: "+*req.RemoteBlockStoreID)
+			BadRequest(w, "Remote block store not found: "+*req.RemoteBlockStore)
 			return
 		}
 		remoteBlockStoreID = &remoteStore.ID

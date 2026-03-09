@@ -58,6 +58,20 @@ func extractKind(r *http.Request) (models.BlockStoreKind, bool) {
 	}
 }
 
+// validateBlockStoreType checks that a store type is valid for the given kind.
+// Local block stores accept: fs, memory.
+// Remote block stores accept: s3, memory.
+func validateBlockStoreType(kind models.BlockStoreKind, storeType string) bool {
+	switch kind {
+	case models.BlockStoreKindLocal:
+		return storeType == "fs" || storeType == "memory"
+	case models.BlockStoreKindRemote:
+		return storeType == "s3" || storeType == "memory"
+	default:
+		return false
+	}
+}
+
 // Create handles POST /api/v1/store/block/{kind}.
 // Creates a new block store configuration (admin only).
 func (h *BlockStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -78,6 +92,11 @@ func (h *BlockStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Type == "" {
 		BadRequest(w, "Store type is required")
+		return
+	}
+
+	if !validateBlockStoreType(kind, req.Type) {
+		BadRequest(w, "Store type '"+req.Type+"' is not valid for kind '"+string(kind)+"'")
 		return
 	}
 
