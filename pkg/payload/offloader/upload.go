@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -55,11 +54,8 @@ func (m *Offloader) uploadPendingBlocks(ctx context.Context) {
 		m.uploadFileBlock(ctx, fb)
 	}
 
-	// Hint the GC to reclaim upload buffers. After a write storm, the periodic
-	// uploader is the primary allocator but allocation rate is low (one 8MB
-	// buffer every 2-3s), so Go's pacer may not trigger GC frequently enough.
-	// This prevents upload buffers from accumulating between infrequent GC cycles.
-	runtime.GC()
+	// Note: runtime.GC() was previously called here but removed — Go's GC pacer
+	// handles 8MB upload buffers fine, and forced GC caused periodic latency spikes.
 }
 
 // uploadFileBlock reads a sealed block from cache, dedup-checks, and uploads to block store.

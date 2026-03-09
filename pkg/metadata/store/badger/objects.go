@@ -273,7 +273,7 @@ func (s *BadgerMetadataStore) ListPendingUpload(ctx context.Context, olderThan t
 				continue
 			}
 
-			if block.IsCached() && block.CreatedAt.Before(cutoff) {
+			if block.IsCached() && block.LastAccess.Before(cutoff) {
 				result = append(result, &block)
 				if limit > 0 && len(result) >= limit {
 					break

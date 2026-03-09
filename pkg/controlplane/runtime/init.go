@@ -222,6 +222,12 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 			return path
 		})
 		logger.Info("Direct-write optimization enabled for filesystem payload backend")
+	} else {
+		// S3 backend: skip fsync on COMMIT path. Data durability comes from S3
+		// upload, not local disk. The cache .blk files are staging buffers —
+		// losing them on power failure means re-downloading from S3, not data loss.
+		bc.SetSkipFsync(true)
+		logger.Info("S3 cache optimization: fsync skipped (durability via S3)")
 	}
 
 	offloaderCfg := offloader.DefaultConfig()

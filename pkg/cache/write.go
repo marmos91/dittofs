@@ -90,7 +90,7 @@ func (bc *BlockCache) WriteAt(ctx context.Context, payloadID string, data []byte
 		mb.mu.Unlock()
 
 		if isFull {
-			if _, err := bc.flushBlock(ctx, payloadID, blockIdx, mb); err != nil {
+			if _, _, err := bc.flushBlock(ctx, payloadID, blockIdx, mb); err != nil {
 				return err
 			}
 		}
@@ -188,12 +188,16 @@ func (bc *BlockCache) tryDirectDiskWrite(ctx context.Context, payloadID string, 
 			fb.DataSize = end
 		}
 		if isDirect {
-			// Direct write: data is already in payload store, mark Uploaded.
 			fb.State = metadata.BlockStateUploaded
 			fb.BlockStoreKey = FormatStoreKey(payloadID, blockIdx)
-		} else if fb.State == metadata.BlockStateUploaded || fb.State == 0 {
+		} else if fb.State == 0 {
+			// New block, never uploaded — seal so the uploader picks it up.
 			fb.State = metadata.BlockStateSealed
 		}
+		// If Uploaded: leave as-is. The on-disk cache has newer data than S3,
+		// but re-sealing on every 4KB pwrite would cause a storm of 8MB
+		// re-uploads via the periodic uploader. Re-upload happens on explicit
+		// Flush (GetDirtyBlocks) when the file is finalized.
 		fb.LastAccess = now
 		bc.pendingFBs.Store(blockID, fb)
 		return true
@@ -211,13 +215,14 @@ func (bc *BlockCache) tryDirectDiskWrite(ctx context.Context, payloadID string, 
 	}
 
 	if isDirect {
-		// Direct write: data is already in payload store, mark Uploaded.
 		fb.State = metadata.BlockStateUploaded
 		fb.BlockStoreKey = FormatStoreKey(payloadID, blockIdx)
-	} else if fb.State == metadata.BlockStateUploaded || fb.State == 0 {
-		// Cache write: mark as Sealed so the offloader uploads it.
+	} else if fb.State == 0 {
+		// New block — seal for initial upload.
 		fb.State = metadata.BlockStateSealed
 	}
+	// Uploaded blocks: don't re-seal on pwrite. Avoids triggering 8MB
+	// re-uploads on every 4KB random write. Re-upload on explicit Flush.
 	fb.LastAccess = now
 	bc.queueFileBlockUpdate(fb)
 

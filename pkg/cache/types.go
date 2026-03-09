@@ -32,6 +32,14 @@ type PendingBlock struct {
 	Hash       [32]byte // SHA-256 content hash; zero means not yet computed
 }
 
+// FlushedBlock records info about a block that was just flushed from memory to disk.
+// Used by GetDirtyBlocks to avoid a BadgerDB round-trip (write then read back).
+type FlushedBlock struct {
+	BlockIndex uint64
+	CachePath  string
+	DataSize   uint32
+}
+
 // Stats contains cache statistics for observability.
 type Stats struct {
 	DiskUsed      int64 // Current total size of on-disk cached data in bytes

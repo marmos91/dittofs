@@ -18,11 +18,15 @@ import (
 // to the client. Each flushed block transitions to BlockStateSealed, meaning
 // it is on disk and ready for the offloader to upload to S3.
 //
-// Unlike the hot-path flushBlock (which skips fsync for throughput), Flush
-// calls fsync on each block file to guarantee durability for NFS COMMIT.
-func (bc *BlockCache) Flush(ctx context.Context, payloadID string) error {
+// Returns the list of blocks that were flushed, so GetDirtyBlocks can use them
+// directly without a BadgerDB round-trip (SyncFileBlocksForFile + ListPendingUpload).
+//
+// For FS backends (directWritePath set), fsync guarantees durability.
+// For S3 backends (skipFsync set), fsync is skipped — data durability comes
+// from S3 upload, not local disk. The cache is just a staging buffer.
+func (bc *BlockCache) Flush(ctx context.Context, payloadID string) ([]FlushedBlock, error) {
 	if bc.isClosed() {
-		return ErrCacheClosed
+		return nil, ErrCacheClosed
 	}
 
 	// Collect keys for this payloadID via secondary index (O(1) lookup).
@@ -36,8 +40,8 @@ func (bc *BlockCache) Flush(ctx context.Context, payloadID string) error {
 	}
 	bc.blocksMu.RUnlock()
 
-	// Track paths that need fsync for COMMIT durability.
-	var flushedPaths []string
+	// Track flushed blocks for callers (GetDirtyBlocks) and fsync.
+	var flushed []FlushedBlock
 
 	for _, key := range keys {
 		mb := bc.getMemBlock(key)
@@ -48,25 +52,31 @@ func (bc *BlockCache) Flush(ctx context.Context, payloadID string) error {
 		isDirty := mb.dirty
 		mb.mu.RUnlock()
 		if isDirty {
-			path, err := bc.flushBlock(ctx, key.payloadID, key.blockIdx, mb)
+			path, dataSize, err := bc.flushBlock(ctx, key.payloadID, key.blockIdx, mb)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if path != "" {
-				flushedPaths = append(flushedPaths, path)
+				flushed = append(flushed, FlushedBlock{
+					BlockIndex: key.blockIdx,
+					CachePath:  path,
+					DataSize:   dataSize,
+				})
 			}
 		}
 	}
 
 	// fsync all flushed files now (COMMIT path only).
-	// This is the ONLY place fsync happens -- not on the write hot path.
-	for _, path := range flushedPaths {
-		if err := syncFile(path); err != nil {
-			logger.Warn("cache: fsync on COMMIT failed", "path", path, "error", err)
+	// Skipped for S3 backends where cache is a staging buffer, not durable store.
+	if !bc.skipFsync {
+		for _, fb := range flushed {
+			if err := syncFile(fb.CachePath); err != nil {
+				logger.Warn("cache: fsync on COMMIT failed", "path", fb.CachePath, "error", err)
+			}
 		}
 	}
 
-	return nil
+	return flushed, nil
 }
 
 // flushBlock writes a single memBlock to disk as a .blk file and releases the
@@ -82,14 +92,13 @@ func (bc *BlockCache) Flush(ctx context.Context, payloadID string) error {
 // a concurrent writer could see a stale memBlock with nil data between the
 // map delete and the next getOrCreateMemBlock call.
 //
-// Returns the path of the flushed file (for callers that need to fsync later),
-// or empty string if no flush was needed.
-func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx uint64, mb *memBlock) (string, error) {
+// Returns the path and dataSize of the flushed file, or empty string if no flush was needed.
+func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx uint64, mb *memBlock) (string, uint32, error) {
 	mb.mu.Lock()
 
 	if !mb.dirty || mb.data == nil {
 		mb.mu.Unlock()
-		return "", nil
+		return "", 0, nil
 	}
 
 	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
@@ -114,7 +123,7 @@ func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx
 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		mb.mu.Unlock()
-		return "", fmt.Errorf("create block dir: %w", err)
+		return "", 0, fmt.Errorf("create block dir: %w", err)
 	}
 
 	// Track previous file size to compute diskUsed delta (not always +dataSize).
@@ -127,14 +136,14 @@ func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		mb.mu.Unlock()
-		return "", fmt.Errorf("create cache file: %w", err)
+		return "", 0, fmt.Errorf("create cache file: %w", err)
 	}
 
 	dataSize := mb.dataSize
 	if _, err := f.Write(mb.data[:dataSize]); err != nil {
 		f.Close()
 		mb.mu.Unlock()
-		return "", fmt.Errorf("write cache file: %w", err)
+		return "", 0, fmt.Errorf("write cache file: %w", err)
 	}
 
 	// No fsync here -- deferred to Flush() for throughput.
@@ -146,7 +155,7 @@ func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx
 	if err != nil {
 		if !errors.Is(err, metadata.ErrFileBlockNotFound) {
 			mb.mu.Unlock()
-			return "", fmt.Errorf("lookup file block: %w", err)
+			return "", 0, fmt.Errorf("lookup file block: %w", err)
 		}
 		fb = metadata.NewFileBlock(blockID, path)
 	}
@@ -177,7 +186,7 @@ func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx
 	// Return buffer to pool for reuse (avoids 8MB zeroing on next alloc).
 	putBlockBuf(bufToReturn)
 
-	return path, nil
+	return path, dataSize, nil
 }
 
 // flushOldestDirtyBlock finds the in-memory block with the oldest lastWrite
@@ -203,7 +212,7 @@ func (bc *BlockCache) flushOldestDirtyBlock(ctx context.Context) bool {
 	bc.blocksMu.RUnlock()
 
 	if oldestMB != nil {
-		if _, err := bc.flushBlock(ctx, oldestKey.payloadID, oldestKey.blockIdx, oldestMB); err != nil {
+		if _, _, err := bc.flushBlock(ctx, oldestKey.payloadID, oldestKey.blockIdx, oldestMB); err != nil {
 			logger.Warn("cache: failed to flush oldest block", "error", err)
 			return false
 		}

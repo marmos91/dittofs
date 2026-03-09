@@ -119,13 +119,16 @@ func isNetTimeout(err error) bool {
 	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
-// dispatchRequest processes an RPC call synchronously. Requests are handled
-// one at a time per connection. Use nconnect mount option for parallelism.
+// dispatchRequest launches an RPC call handler in a goroutine for concurrent
+// processing. Bounded by requestSem to limit memory usage. NFS clients use XIDs
+// for request/response matching, so out-of-order replies are safe. Replies are
+// serialized on the wire by writeMu. This mirrors kernel nfsd's thread pool model
+// and allows WRITE+COMMIT to overlap on the same TCP connection.
 func (c *NFSConnection) dispatchRequest(ctx context.Context, clientAddr string, call *rpc.RPCCallMessage, rawMessage []byte) {
 	c.requestSem <- struct{}{}
 	c.wg.Add(1)
 
-	func(call *rpc.RPCCallMessage, rawMessage []byte) {
+	go func(call *rpc.RPCCallMessage, rawMessage []byte) {
 		defer c.handleRequestPanic(clientAddr, call.XID)
 		defer pool.Put(rawMessage)
 

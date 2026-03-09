@@ -148,9 +148,16 @@ func (m *Offloader) flushAndFinalize(ctx context.Context, payloadID string, stat
 	return nil
 }
 
-// Flush enqueues remaining dirty data for background upload and returns immediately.
-// Data is safe in the on-disk cache; S3 uploads happen asynchronously.
-// Small files (below SmallFileThreshold) are uploaded synchronously to free buffers.
+// Flush writes dirty in-memory blocks to disk cache and returns immediately.
+//
+// For FS backends (direct-write): data is already in the payload store via pwrite,
+// so this is a no-op.
+//
+// For S3 backends: memBlocks are flushed to .blk files on disk (stable storage).
+// The periodic uploader handles all S3 uploads asynchronously in its background
+// worker pool. This decouples the NFS COMMIT latency from S3 upload latency —
+// with a sufficiently large cache, S3 write performance equals FS performance.
+// S3 latency only matters when backpressure kicks in (cache full) or on cold reads.
 func (m *Offloader) Flush(ctx context.Context, payloadID string) (*FlushResult, error) {
 	if !m.canProcess(ctx) {
 		return nil, fmt.Errorf("offloader is closed")
@@ -162,29 +169,16 @@ func (m *Offloader) Flush(ctx context.Context, payloadID string) (*FlushResult, 
 		return &FlushResult{Finalized: true}, nil
 	}
 
-	state := m.getOrCreateUploadState(payloadID)
-
-	fileSize, _ := m.cache.GetFileSize(ctx, payloadID)
-	if m.config.SmallFileThreshold > 0 && int64(fileSize) <= m.config.SmallFileThreshold {
-		logger.Debug("Small file sync flush",
-			"payloadID", payloadID, "threshold", m.config.SmallFileThreshold)
-		if err := m.flushAndFinalize(ctx, payloadID, state); err != nil {
-			return nil, fmt.Errorf("sync flush failed: %w", err)
-		}
-		return &FlushResult{Finalized: true}, nil
+	// S3 mode: flush memBlocks to disk cache only.
+	// The data is safe on disk after this call. S3 uploads happen asynchronously
+	// via the periodic uploader — sealed blocks are picked up after UploadDelay
+	// (resettable on new writes), allowing sparse blocks to accumulate more data
+	// before upload.
+	if _, err := m.cache.Flush(ctx, payloadID); err != nil {
+		return nil, fmt.Errorf("cache flush failed: %w", err)
 	}
 
-	// Background upload: use context.Background() because the request context
-	// is cancelled when COMMIT returns, but uploads should continue.
-	state.flush.Go(func() {
-		bgCtx := context.Background()
-		if err := m.flushAndFinalize(bgCtx, payloadID, state); err != nil {
-			logger.Warn("Failed to upload remaining blocks",
-				"payloadID", payloadID, "error", err)
-		}
-	})
-
-	return &FlushResult{Finalized: true}, nil
+	return &FlushResult{Finalized: false}, nil
 }
 
 // WaitForEagerUploads waits for in-flight eager uploads to complete (for testing).

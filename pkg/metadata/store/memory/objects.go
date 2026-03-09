@@ -265,7 +265,7 @@ func (s *MemoryMetadataStore) listPendingUploadLocked(_ context.Context, olderTh
 	cutoff := time.Now().Add(-olderThan)
 	var result []*metadata.FileBlock
 	for _, block := range s.fileBlockData.blocks {
-		if block.State == metadata.BlockStateSealed && block.IsCached() && block.CreatedAt.Before(cutoff) {
+		if block.State == metadata.BlockStateSealed && block.IsCached() && block.LastAccess.Before(cutoff) {
 			b := *block
 			result = append(result, &b)
 			if limit > 0 && len(result) >= limit {

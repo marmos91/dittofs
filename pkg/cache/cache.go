@@ -71,6 +71,12 @@ type BlockCache struct {
 	// payload store, eliminating the double-write through cache .blk files.
 	// Used when the payload store is a filesystem backend.
 	directWritePath func(payloadID string, blockIdx uint64) string
+
+	// skipFsync skips fsync in Flush() for S3 backends where data durability
+	// comes from S3 upload, not local disk. The cache .blk files are just
+	// staging buffers — losing them on power failure means re-downloading
+	// from S3, not data loss. Saves ~0.5-2ms per COMMIT.
+	skipFsync bool
 }
 
 // New creates a new BlockCache.
@@ -114,6 +120,13 @@ func (bc *BlockCache) SetDirectWritePath(fn func(payloadID string, blockIdx uint
 // In this mode all blocks go straight to Uploaded — no sealed blocks exist.
 func (bc *BlockCache) IsDirectWrite() bool {
 	return bc.directWritePath != nil
+}
+
+// SetSkipFsync disables fsync in Flush() for S3 backends.
+// Data durability comes from S3 upload, not local disk — the cache .blk files
+// are staging buffers, not the final store. Saves ~0.5-2ms per COMMIT.
+func (bc *BlockCache) SetSkipFsync(skip bool) {
+	bc.skipFsync = skip
 }
 
 // Close flushes pending FileBlock metadata and marks the cache as closed.
@@ -424,6 +437,12 @@ func (bc *BlockCache) WriteDownloaded(ctx context.Context, payloadID string, dat
 // GetDirtyBlocks flushes all in-memory blocks for a file to disk, then returns
 // all blocks in Sealed state (written to disk but not yet uploaded to S3).
 // Used by the offloader to find blocks that need uploading.
+//
+// Optimization: uses the flushed block list from Flush() directly to read data,
+// avoiding the expensive SyncFileBlocksForFile + ListPendingUpload round-trip
+// (write to BadgerDB then immediately read back). The pending FileBlock metadata
+// is persisted asynchronously by the background ticker — the uploader doesn't
+// need it to be in BadgerDB since it gets data from cache files.
 func (bc *BlockCache) GetDirtyBlocks(ctx context.Context, payloadID string) ([]PendingBlock, error) {
 	// Direct-write mode: all blocks go straight to Uploaded in the payload store.
 	// No dirty memBlocks, no sealed blocks, no pending uploads — skip everything.
@@ -432,40 +451,30 @@ func (bc *BlockCache) GetDirtyBlocks(ctx context.Context, payloadID string) ([]P
 		return nil, nil
 	}
 
-	if err := bc.Flush(ctx, payloadID); err != nil {
-		return nil, err
-	}
-
-	// Persist queued metadata for this file so ListPendingUpload sees sealed blocks.
-	bc.SyncFileBlocksForFile(ctx, payloadID)
-
-	pending, err := bc.blockStore.ListPendingUpload(ctx, 0, 0)
+	flushed, err := bc.Flush(ctx, payloadID)
 	if err != nil {
 		return nil, err
 	}
 
-	var result []PendingBlock
-	for _, fb := range pending {
-		if fb.State != metadata.BlockStateSealed || fb.CachePath == "" {
-			continue
-		}
-		if !belongsToFile(fb.ID, payloadID) {
-			continue
-		}
+	if len(flushed) == 0 {
+		return nil, nil
+	}
 
+	// Read data from cache files for each freshly-flushed block.
+	// No BadgerDB round-trip needed — Flush() already told us which blocks
+	// were written and where. The FileBlock metadata (with state=Sealed)
+	// is queued in pendingFBs and will be persisted by the background ticker.
+	var result []PendingBlock
+	for _, fb := range flushed {
 		data, err := readFile(fb.CachePath, fb.DataSize)
 		if err != nil {
 			continue
 		}
 
-		var blockIdx uint64
-		fmt.Sscanf(fb.ID[len(payloadID)+1:], "%d", &blockIdx)
-
 		result = append(result, PendingBlock{
-			BlockIndex: blockIdx,
+			BlockIndex: fb.BlockIndex,
 			Data:       data,
 			DataSize:   fb.DataSize,
-			Hash:       fb.Hash,
 		})
 	}
 

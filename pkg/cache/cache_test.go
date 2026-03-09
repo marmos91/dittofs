@@ -141,7 +141,7 @@ func TestFlushCallsFsync(t *testing.T) {
 	}
 
 	// Flush (NFS COMMIT path)
-	if err := bc.Flush(ctx, "file1"); err != nil {
+	if _, err := bc.Flush(ctx, "file1"); err != nil {
 		t.Fatalf("Flush failed: %v", err)
 	}
 
@@ -425,10 +425,10 @@ func TestStats(t *testing.T) {
 	}
 
 	// After flushing, memBlocks should be 0
-	if err := bc.Flush(ctx, "f1"); err != nil {
+	if _, err := bc.Flush(ctx, "f1"); err != nil {
 		t.Fatalf("Flush failed: %v", err)
 	}
-	if err := bc.Flush(ctx, "f2"); err != nil {
+	if _, err := bc.Flush(ctx, "f2"); err != nil {
 		t.Fatalf("Flush failed: %v", err)
 	}
 
@@ -460,7 +460,7 @@ func TestConcurrentFlushAndWrite(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 20; i++ {
-			if err := bc.Flush(ctx, "file1"); err != nil {
+			if _, err := bc.Flush(ctx, "file1"); err != nil {
 				t.Errorf("flush %d failed: %v", i, err)
 				return
 			}
