@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-03-07T12:14:15.99973637Z",
+  "system": "dittofs-s3",
+  "path": "/mnt/bench-s3",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 598.8622605172901,
+      "latency_p50_us": 1146,
+      "latency_p95_us": 3466,
+      "latency_p99_us": 17781,
+      "latency_avg_us": 1668.046,
+      "total_ops": 3000,
+      "total_bytes": 33000,
+      "errors": 0,
+      "duration": 5009499175
+    },
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 1839.104915613853,
+      "latency_p50_us": 564,
+      "latency_p95_us": 679,
+      "latency_p99_us": 762,
+      "latency_avg_us": 539.7137665727206,
+      "total_ops": 110347,
+      "total_bytes": 451981312,
+      "errors": 0,
+      "duration": 60000383373
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 689.7219122511791,
+      "latency_p50_us": 1171,
+      "latency_p95_us": 1932,
+      "latency_p99_us": 2198,
+      "latency_avg_us": 1445.5426734970038,
+      "total_ops": 41384,
+      "total_bytes": 169508864,
+      "errors": 0,
+      "duration": 60000993538
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 63.88234563518548,
+      "latency_p50_us": 16254,
+      "latency_p95_us": 20461,
+      "latency_p99_us": 213305,
+      "latency_avg_us": 15487.83740234375,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 64117871053
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 50.949532572341894,
+      "latency_p50_us": 609,
+      "latency_p95_us": 788,
+      "latency_p99_us": 1062,
+      "latency_avg_us": 635.937255859375,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 80393279255
+    }
+  },
+  "total_duration": 271381006376
+}

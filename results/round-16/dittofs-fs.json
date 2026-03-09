@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-03-07T10:08:11.488606296Z",
+  "system": "dittofs-fs",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 649.8125774824334,
+      "latency_p50_us": 984,
+      "latency_p95_us": 4934,
+      "latency_p99_us": 6685,
+      "latency_avg_us": 1537.21,
+      "total_ops": 3000,
+      "total_bytes": 33000,
+      "errors": 0,
+      "duration": 4616715810
+    },
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 647.3162565270866,
+      "latency_p50_us": 1242,
+      "latency_p95_us": 1654,
+      "latency_p99_us": 3537,
+      "latency_avg_us": 1540.092252632663,
+      "total_ops": 38839,
+      "total_bytes": 159084544,
+      "errors": 0,
+      "duration": 60000038016
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 248.82622852752942,
+      "latency_p50_us": 2203,
+      "latency_p95_us": 4357,
+      "latency_p99_us": 24580,
+      "latency_avg_us": 4013.3268586738113,
+      "total_ops": 14930,
+      "total_bytes": 61153280,
+      "errors": 0,
+      "duration": 60001713197
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 63.94078776936036,
+      "latency_p50_us": 15482,
+      "latency_p95_us": 20929,
+      "latency_p99_us": 213609,
+      "latency_avg_us": 15472.892333984375,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 64059267064
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 50.86658563994202,
+      "latency_p50_us": 618,
+      "latency_p95_us": 822,
+      "latency_p99_us": 1059,
+      "latency_avg_us": 650.214111328125,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 80524374665
+    }
+  },
+  "total_duration": 269511379380
+}

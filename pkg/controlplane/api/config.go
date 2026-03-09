@@ -37,6 +37,11 @@ type APIConfig struct {
 
 	// JWT configures JWT authentication for API endpoints.
 	JWT JWTConfig `mapstructure:"jwt" yaml:"jwt"`
+
+	// Pprof enables Go pprof profiling endpoints at /debug/pprof/*.
+	// Useful for CPU, memory, and goroutine profiling during benchmarks.
+	// Default: false
+	Pprof bool `mapstructure:"pprof" yaml:"pprof"`
 }
 
 // JWTConfig configures JWT token generation and validation.

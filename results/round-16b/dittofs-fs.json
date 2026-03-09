@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-03-07T10:18:57.641180902Z",
+  "system": "dittofs-fs",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 645.9047411256578,
+      "latency_p50_us": 912,
+      "latency_p95_us": 5359,
+      "latency_p99_us": 7115,
+      "latency_avg_us": 1546.481,
+      "total_ops": 3000,
+      "total_bytes": 33000,
+      "errors": 0,
+      "duration": 4644647746
+    },
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 705.7787919408817,
+      "latency_p50_us": 1152,
+      "latency_p95_us": 1571,
+      "latency_p99_us": 3358,
+      "latency_avg_us": 1412.1838619028504,
+      "total_ops": 42347,
+      "total_bytes": 173453312,
+      "errors": 0,
+      "duration": 60000386075
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 267.4462793675953,
+      "latency_p50_us": 2028,
+      "latency_p95_us": 4048,
+      "latency_p99_us": 16127,
+      "latency_avg_us": 3734.138281298685,
+      "total_ops": 16047,
+      "total_bytes": 65728512,
+      "errors": 0,
+      "duration": 60000834702
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 63.82483500809645,
+      "latency_p50_us": 15012,
+      "latency_p95_us": 20819,
+      "latency_p99_us": 211145,
+      "latency_avg_us": 15498.14111328125,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 64175645726
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 51.00333106424781,
+      "latency_p50_us": 620,
+      "latency_p95_us": 801,
+      "latency_p99_us": 1014,
+      "latency_avg_us": 644.998291015625,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 80308480143
+    }
+  },
+  "total_duration": 269740252141
+}

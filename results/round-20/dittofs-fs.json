@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-03-07T12:23:11.93951177Z",
+  "system": "dittofs-fs",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 610.3367712208019,
+      "latency_p50_us": 1173,
+      "latency_p95_us": 3408,
+      "latency_p99_us": 17108,
+      "latency_avg_us": 1636.7343333333333,
+      "total_ops": 3000,
+      "total_bytes": 33000,
+      "errors": 0,
+      "duration": 4915319118
+    },
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 1841.2993039888631,
+      "latency_p50_us": 563,
+      "latency_p95_us": 678,
+      "latency_p99_us": 759,
+      "latency_avg_us": 538.9579644816163,
+      "total_ops": 110478,
+      "total_bytes": 452517888,
+      "errors": 0,
+      "duration": 60000022680
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 657.4482508260562,
+      "latency_p50_us": 1228,
+      "latency_p95_us": 1954,
+      "latency_p99_us": 2190,
+      "latency_avg_us": 1516.4952214363577,
+      "total_ops": 39447,
+      "total_bytes": 161574912,
+      "errors": 0,
+      "duration": 60000159633
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 63.85399511141717,
+      "latency_p50_us": 16439,
+      "latency_p95_us": 20505,
+      "latency_p99_us": 25218,
+      "latency_avg_us": 15486.966796875,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 64146338735
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 50.93340769042165,
+      "latency_p50_us": 610,
+      "latency_p95_us": 807,
+      "latency_p99_us": 1006,
+      "latency_avg_us": 636.368896484375,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 80418730765
+    }
+  },
+  "total_duration": 271091896038
+}
