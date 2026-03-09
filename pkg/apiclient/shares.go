@@ -13,6 +13,16 @@ func normalizeShareNameForAPI(name string) string {
 	return strings.TrimLeft(name, "/")
 }
 
+// shareAPIPath builds an API path for a share resource, encoding the share name.
+func shareAPIPath(name string, subpath ...string) string {
+	escaped := url.PathEscape(normalizeShareNameForAPI(name))
+	base := fmt.Sprintf("/api/v1/shares/%s", escaped)
+	if len(subpath) > 0 {
+		return base + subpath[0]
+	}
+	return base
+}
+
 // Share represents a share in the system.
 type Share struct {
 	Name               string   `json:"name"`
@@ -61,63 +71,47 @@ func (c *Client) ListShares() ([]Share, error) {
 
 // GetShare returns a share by name.
 func (c *Client) GetShare(name string) (*Share, error) {
-	var share Share
-	if err := c.get(fmt.Sprintf("/api/v1/shares/%s", url.PathEscape(normalizeShareNameForAPI(name))), &share); err != nil {
-		return nil, err
-	}
-	return &share, nil
+	return getResource[Share](c, shareAPIPath(name))
 }
 
 // CreateShare creates a new share.
 func (c *Client) CreateShare(req *CreateShareRequest) (*Share, error) {
-	var share Share
-	if err := c.post("/api/v1/shares", req, &share); err != nil {
-		return nil, err
-	}
-	return &share, nil
+	return createResource[Share](c, "/api/v1/shares", req)
 }
 
 // UpdateShare updates an existing share.
 func (c *Client) UpdateShare(name string, req *UpdateShareRequest) (*Share, error) {
-	var share Share
-	if err := c.put(fmt.Sprintf("/api/v1/shares/%s", url.PathEscape(normalizeShareNameForAPI(name))), req, &share); err != nil {
-		return nil, err
-	}
-	return &share, nil
+	return updateResource[Share](c, shareAPIPath(name), req)
 }
 
 // DeleteShare deletes a share.
 func (c *Client) DeleteShare(name string) error {
-	return deleteResource(c, fmt.Sprintf("/api/v1/shares/%s", url.PathEscape(normalizeShareNameForAPI(name))))
+	return deleteResource(c, shareAPIPath(name))
 }
 
 // ListSharePermissions returns permissions for a share.
 func (c *Client) ListSharePermissions(shareName string) ([]SharePermission, error) {
-	var perms []SharePermission
-	if err := c.get(fmt.Sprintf("/api/v1/shares/%s/permissions", url.PathEscape(normalizeShareNameForAPI(shareName))), &perms); err != nil {
-		return nil, err
-	}
-	return perms, nil
+	return listResources[SharePermission](c, shareAPIPath(shareName, "/permissions"))
 }
 
 // SetUserSharePermission sets a user's permission on a share.
 func (c *Client) SetUserSharePermission(shareName, username, level string) error {
 	req := map[string]string{"level": level}
-	return c.put(fmt.Sprintf("/api/v1/shares/%s/permissions/users/%s", url.PathEscape(normalizeShareNameForAPI(shareName)), username), req, nil)
+	return c.put(shareAPIPath(shareName, "/permissions/users/"+username), req, nil)
 }
 
 // RemoveUserSharePermission removes a user's permission from a share.
 func (c *Client) RemoveUserSharePermission(shareName, username string) error {
-	return c.delete(fmt.Sprintf("/api/v1/shares/%s/permissions/users/%s", url.PathEscape(normalizeShareNameForAPI(shareName)), username), nil)
+	return c.delete(shareAPIPath(shareName, "/permissions/users/"+username), nil)
 }
 
 // SetGroupSharePermission sets a group's permission on a share.
 func (c *Client) SetGroupSharePermission(shareName, groupName, level string) error {
 	req := map[string]string{"level": level}
-	return c.put(fmt.Sprintf("/api/v1/shares/%s/permissions/groups/%s", url.PathEscape(normalizeShareNameForAPI(shareName)), groupName), req, nil)
+	return c.put(shareAPIPath(shareName, "/permissions/groups/"+groupName), req, nil)
 }
 
 // RemoveGroupSharePermission removes a group's permission from a share.
 func (c *Client) RemoveGroupSharePermission(shareName, groupName string) error {
-	return c.delete(fmt.Sprintf("/api/v1/shares/%s/permissions/groups/%s", url.PathEscape(normalizeShareNameForAPI(shareName)), groupName), nil)
+	return c.delete(shareAPIPath(shareName, "/permissions/groups/"+groupName), nil)
 }

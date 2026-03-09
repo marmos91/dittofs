@@ -2,6 +2,7 @@
 package cmdutil
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -242,6 +243,19 @@ func EmptyOr(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+// ParseConfigMap deserializes a JSON config (e.g., from apiclient.BlockStore.Config)
+// into a map. Returns an empty map (never nil) if the input is empty or invalid.
+func ParseConfigMap(raw []byte) map[string]any {
+	var m map[string]any
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &m)
+	}
+	if m == nil {
+		m = make(map[string]any)
+	}
+	return m
 }
 
 // GetConfigString extracts a string value from a config map with a default fallback.

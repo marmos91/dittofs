@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/url"
@@ -33,9 +34,20 @@ func normalizeShareName(name string) string {
 	return "/" + trimmed
 }
 
+// extractShareName extracts and validates the share name from the URL.
+// Returns false and writes an error response if the name is empty/root.
+func extractShareName(w http.ResponseWriter, r *http.Request) (string, bool) {
+	name := normalizeShareName(chi.URLParam(r, "name"))
+	if name == "/" {
+		BadRequest(w, "Share name is required")
+		return "", false
+	}
+	return name, true
+}
+
 // ShareHandlerStore is the composite interface required by ShareHandler.
 // ShareHandler needs share CRUD, permission management, store config lookups
-// (to validate metadata/payload store references), and user/group lookups
+// (to validate metadata/block store references), and user/group lookups
 // (to resolve permission display names).
 type ShareHandlerStore interface {
 	store.ShareStore
@@ -107,6 +119,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	// Normalize share name to always have leading slash
 	req.Name = normalizeShareName(req.Name)
+
 	if req.MetadataStoreID == "" {
 		BadRequest(w, "Metadata store ID is required")
 		return
@@ -116,33 +129,22 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate that metadata store exists (try by name first, then by ID)
-	metaStore, err := h.store.GetMetadataStore(r.Context(), req.MetadataStoreID)
-	if err != nil {
-		metaStore, err = h.store.GetMetadataStoreByID(r.Context(), req.MetadataStoreID)
-	}
+	// Validate that referenced stores exist (resolve by name or ID)
+	metaStore, err := resolveMetadataStore(r.Context(), h.store, req.MetadataStoreID)
 	if err != nil {
 		BadRequest(w, "Metadata store not found: "+req.MetadataStoreID)
 		return
 	}
 
-	// Validate that local block store exists (try by name first, then by ID)
-	localBlockStore, err := h.store.GetBlockStore(r.Context(), req.LocalBlockStore, models.BlockStoreKindLocal)
-	if err != nil {
-		localBlockStore, err = h.store.GetBlockStoreByID(r.Context(), req.LocalBlockStore)
-	}
+	localBlockStore, err := resolveBlockStore(r.Context(), h.store, req.LocalBlockStore, models.BlockStoreKindLocal)
 	if err != nil {
 		BadRequest(w, "Local block store not found: "+req.LocalBlockStore)
 		return
 	}
 
-	// Validate optional remote block store
 	var remoteBlockStoreID *string
 	if req.RemoteBlockStore != nil && *req.RemoteBlockStore != "" {
-		remoteStore, remoteErr := h.store.GetBlockStore(r.Context(), *req.RemoteBlockStore, models.BlockStoreKindRemote)
-		if remoteErr != nil {
-			remoteStore, remoteErr = h.store.GetBlockStoreByID(r.Context(), *req.RemoteBlockStore)
-		}
+		remoteStore, remoteErr := resolveBlockStore(r.Context(), h.store, *req.RemoteBlockStore, models.BlockStoreKindRemote)
 		if remoteErr != nil {
 			BadRequest(w, "Remote block store not found: "+*req.RemoteBlockStore)
 			return
@@ -173,9 +175,9 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	share := &models.Share{
 		ID:                 uuid.New().String(),
 		Name:               req.Name,
-		MetadataStoreID:    metaStore.ID,       // Use actual store ID (UUID), not name
-		LocalBlockStoreID:  localBlockStore.ID,  // Use actual store ID (UUID), not name
-		RemoteBlockStoreID: remoteBlockStoreID,  // Nullable
+		MetadataStoreID:    metaStore.ID,
+		LocalBlockStoreID:  localBlockStore.ID,
+		RemoteBlockStoreID: remoteBlockStoreID,
 		ReadOnly:           req.ReadOnly,
 		DefaultPermission:  defaultPerm,
 		CreatedAt:          now,
@@ -257,9 +259,8 @@ func (h *ShareHandler) List(w http.ResponseWriter, r *http.Request) {
 // Get handles GET /api/v1/shares/{name}.
 // Gets a share by name (admin only).
 func (h *ShareHandler) Get(w http.ResponseWriter, r *http.Request) {
-	name := normalizeShareName(chi.URLParam(r, "name"))
-	if name == "/" {
-		BadRequest(w, "Share name is required")
+	name, ok := extractShareName(w, r)
+	if !ok {
 		return
 	}
 
@@ -279,9 +280,8 @@ func (h *ShareHandler) Get(w http.ResponseWriter, r *http.Request) {
 // Update handles PUT /api/v1/shares/{name}.
 // Updates a share (admin only).
 func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
-	name := normalizeShareName(chi.URLParam(r, "name"))
-	if name == "/" {
-		BadRequest(w, "Share name is required")
+	name, ok := extractShareName(w, r)
+	if !ok {
 		return
 	}
 
@@ -349,9 +349,8 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 // Delete handles DELETE /api/v1/shares/{name}.
 // Deletes a share (admin only).
 func (h *ShareHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	name := normalizeShareName(chi.URLParam(r, "name"))
-	if name == "/" {
-		BadRequest(w, "Share name is required")
+	name, ok := extractShareName(w, r)
+	if !ok {
 		return
 	}
 
@@ -375,13 +374,11 @@ func (h *ShareHandler) Delete(w http.ResponseWriter, r *http.Request) {
 // SetUserPermission handles PUT /api/v1/shares/{name}/users/{username}.
 // Sets a user's permission for a share (admin only).
 func (h *ShareHandler) SetUserPermission(w http.ResponseWriter, r *http.Request) {
-	shareName := normalizeShareName(chi.URLParam(r, "name"))
-	username := chi.URLParam(r, "username")
-
-	if shareName == "/" {
-		BadRequest(w, "Share name is required")
+	shareName, ok := extractShareName(w, r)
+	if !ok {
 		return
 	}
+	username := chi.URLParam(r, "username")
 	if username == "" {
 		BadRequest(w, "Username is required")
 		return
@@ -438,13 +435,11 @@ func (h *ShareHandler) SetUserPermission(w http.ResponseWriter, r *http.Request)
 // DeleteUserPermission handles DELETE /api/v1/shares/{name}/permissions/users/{username}.
 // Removes a user's permission for a share (admin only).
 func (h *ShareHandler) DeleteUserPermission(w http.ResponseWriter, r *http.Request) {
-	shareName := normalizeShareName(chi.URLParam(r, "name"))
-	username := chi.URLParam(r, "username")
-
-	if shareName == "/" {
-		BadRequest(w, "Share name is required")
+	shareName, ok := extractShareName(w, r)
+	if !ok {
 		return
 	}
+	username := chi.URLParam(r, "username")
 	if username == "" {
 		BadRequest(w, "Username is required")
 		return
@@ -461,13 +456,11 @@ func (h *ShareHandler) DeleteUserPermission(w http.ResponseWriter, r *http.Reque
 // SetGroupPermission handles PUT /api/v1/shares/{name}/groups/{groupname}.
 // Sets a group's permission for a share (admin only).
 func (h *ShareHandler) SetGroupPermission(w http.ResponseWriter, r *http.Request) {
-	shareName := normalizeShareName(chi.URLParam(r, "name"))
-	groupName := chi.URLParam(r, "groupname")
-
-	if shareName == "/" {
-		BadRequest(w, "Share name is required")
+	shareName, ok := extractShareName(w, r)
+	if !ok {
 		return
 	}
+	groupName := chi.URLParam(r, "groupname")
 	if groupName == "" {
 		BadRequest(w, "Group name is required")
 		return
@@ -524,13 +517,11 @@ func (h *ShareHandler) SetGroupPermission(w http.ResponseWriter, r *http.Request
 // DeleteGroupPermission handles DELETE /api/v1/shares/{name}/permissions/groups/{groupname}.
 // Removes a group's permission for a share (admin only).
 func (h *ShareHandler) DeleteGroupPermission(w http.ResponseWriter, r *http.Request) {
-	shareName := normalizeShareName(chi.URLParam(r, "name"))
-	groupName := chi.URLParam(r, "groupname")
-
-	if shareName == "/" {
-		BadRequest(w, "Share name is required")
+	shareName, ok := extractShareName(w, r)
+	if !ok {
 		return
 	}
+	groupName := chi.URLParam(r, "groupname")
 	if groupName == "" {
 		BadRequest(w, "Group name is required")
 		return
@@ -554,9 +545,8 @@ type PermissionResponse struct {
 // ListPermissions handles GET /api/v1/shares/{name}/permissions.
 // Returns all permissions configured for a share (admin only).
 func (h *ShareHandler) ListPermissions(w http.ResponseWriter, r *http.Request) {
-	shareName := normalizeShareName(chi.URLParam(r, "name"))
-	if shareName == "/" {
-		BadRequest(w, "Share name is required")
+	shareName, ok := extractShareName(w, r)
+	if !ok {
 		return
 	}
 
@@ -626,4 +616,22 @@ func shareToResponse(s *models.Share) ShareResponse {
 // isValidBlockedOperation checks if a blocked operation name is valid for any protocol.
 func isValidBlockedOperation(op string) bool {
 	return isValidNFSOperation(op) || isValidSMBOperation(op)
+}
+
+// resolveMetadataStore resolves a metadata store by name or ID.
+func resolveMetadataStore(ctx context.Context, s ShareHandlerStore, nameOrID string) (*models.MetadataStoreConfig, error) {
+	store, err := s.GetMetadataStore(ctx, nameOrID)
+	if err != nil {
+		store, err = s.GetMetadataStoreByID(ctx, nameOrID)
+	}
+	return store, err
+}
+
+// resolveBlockStore resolves a block store by name (with kind) or by ID.
+func resolveBlockStore(ctx context.Context, s ShareHandlerStore, nameOrID string, kind models.BlockStoreKind) (*models.BlockStoreConfig, error) {
+	store, err := s.GetBlockStore(ctx, nameOrID, kind)
+	if err != nil {
+		store, err = s.GetBlockStoreByID(ctx, nameOrID)
+	}
+	return store, err
 }

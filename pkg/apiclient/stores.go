@@ -22,7 +22,7 @@ type BlockStore struct {
 	Config json.RawMessage `json:"config,omitempty"`
 }
 
-// CreateStoreRequest is the request to create a metadata or payload store.
+// CreateStoreRequest is the request to create a metadata or block store.
 type CreateStoreRequest struct {
 	Name   string `json:"name"`
 	Type   string `json:"type"`
@@ -60,6 +60,31 @@ func serializeConfig(config any) (string, error) {
 	return string(configBytes), nil
 }
 
+// createStore creates a store resource (metadata or block) via POST.
+// Handles the config serialization from CreateStoreRequest to the wire format.
+func createStore[T any](c *Client, path string, req *CreateStoreRequest) (*T, error) {
+	configStr, err := serializeConfig(req.Config)
+	if err != nil {
+		return nil, err
+	}
+	apiReq := createStoreAPIRequest{Name: req.Name, Type: req.Type, Config: configStr}
+	return createResource[T](c, path, apiReq)
+}
+
+// updateStore updates a store resource (metadata or block) via PUT.
+// Handles the config serialization from UpdateStoreRequest to the wire format.
+func updateStore[T any](c *Client, path string, req *UpdateStoreRequest) (*T, error) {
+	apiReq := updateStoreAPIRequest{Type: req.Type}
+	if req.Config != nil {
+		configStr, err := serializeConfig(req.Config)
+		if err != nil {
+			return nil, err
+		}
+		apiReq.Config = &configStr
+	}
+	return updateResource[T](c, path, apiReq)
+}
+
 // ListMetadataStores returns all metadata stores.
 func (c *Client) ListMetadataStores() ([]MetadataStore, error) {
 	return listResources[MetadataStore](c, "/api/v1/store/metadata")
@@ -67,87 +92,45 @@ func (c *Client) ListMetadataStores() ([]MetadataStore, error) {
 
 // GetMetadataStore returns a metadata store by name.
 func (c *Client) GetMetadataStore(name string) (*MetadataStore, error) {
-	return getResource[MetadataStore](c, fmt.Sprintf("/api/v1/store/metadata/%s", name))
+	return getResource[MetadataStore](c, resourcePath("/api/v1/store/metadata/%s", name))
 }
 
 // CreateMetadataStore creates a new metadata store.
 func (c *Client) CreateMetadataStore(req *CreateStoreRequest) (*MetadataStore, error) {
-	configStr, err := serializeConfig(req.Config)
-	if err != nil {
-		return nil, err
-	}
-	apiReq := createStoreAPIRequest{Name: req.Name, Type: req.Type, Config: configStr}
-	var store MetadataStore
-	if err := c.post("/api/v1/store/metadata", apiReq, &store); err != nil {
-		return nil, err
-	}
-	return &store, nil
+	return createStore[MetadataStore](c, "/api/v1/store/metadata", req)
 }
 
 // UpdateMetadataStore updates an existing metadata store.
 func (c *Client) UpdateMetadataStore(name string, req *UpdateStoreRequest) (*MetadataStore, error) {
-	apiReq := updateStoreAPIRequest{Type: req.Type}
-	if req.Config != nil {
-		configStr, err := serializeConfig(req.Config)
-		if err != nil {
-			return nil, err
-		}
-		apiReq.Config = &configStr
-	}
-	var store MetadataStore
-	if err := c.put(fmt.Sprintf("/api/v1/store/metadata/%s", name), apiReq, &store); err != nil {
-		return nil, err
-	}
-	return &store, nil
+	return updateStore[MetadataStore](c, resourcePath("/api/v1/store/metadata/%s", name), req)
 }
 
 // DeleteMetadataStore deletes a metadata store.
 func (c *Client) DeleteMetadataStore(name string) error {
-	return deleteResource(c, fmt.Sprintf("/api/v1/store/metadata/%s", name))
+	return deleteResource(c, resourcePath("/api/v1/store/metadata/%s", name))
 }
 
 // ListBlockStores returns all block stores of a given kind.
 func (c *Client) ListBlockStores(kind string) ([]BlockStore, error) {
-	return listResources[BlockStore](c, fmt.Sprintf("/api/v1/store/block/%s", kind))
+	return listResources[BlockStore](c, resourcePath("/api/v1/store/block/%s", kind))
 }
 
 // GetBlockStore returns a block store by name and kind.
 func (c *Client) GetBlockStore(kind, name string) (*BlockStore, error) {
-	return getResource[BlockStore](c, fmt.Sprintf("/api/v1/store/block/%s/%s", kind, name))
+	return getResource[BlockStore](c, resourcePath("/api/v1/store/block/%s/%s", kind, name))
 }
 
 // CreateBlockStore creates a new block store.
 func (c *Client) CreateBlockStore(kind string, req *CreateStoreRequest) (*BlockStore, error) {
-	configStr, err := serializeConfig(req.Config)
-	if err != nil {
-		return nil, err
-	}
-	apiReq := createStoreAPIRequest{Name: req.Name, Type: req.Type, Config: configStr}
-	var store BlockStore
-	if err := c.post(fmt.Sprintf("/api/v1/store/block/%s", kind), apiReq, &store); err != nil {
-		return nil, err
-	}
-	return &store, nil
+	return createStore[BlockStore](c, resourcePath("/api/v1/store/block/%s", kind), req)
 }
 
 // UpdateBlockStore updates an existing block store.
 func (c *Client) UpdateBlockStore(kind, name string, req *UpdateStoreRequest) (*BlockStore, error) {
-	apiReq := updateStoreAPIRequest{Type: req.Type}
-	if req.Config != nil {
-		configStr, err := serializeConfig(req.Config)
-		if err != nil {
-			return nil, err
-		}
-		apiReq.Config = &configStr
-	}
-	var store BlockStore
-	if err := c.put(fmt.Sprintf("/api/v1/store/block/%s/%s", kind, name), apiReq, &store); err != nil {
-		return nil, err
-	}
-	return &store, nil
+	return updateStore[BlockStore](c, resourcePath("/api/v1/store/block/%s/%s", kind, name), req)
 }
 
 // DeleteBlockStore deletes a block store.
 func (c *Client) DeleteBlockStore(kind, name string) error {
-	return deleteResource(c, fmt.Sprintf("/api/v1/store/block/%s/%s", kind, name))
+	return deleteResource(c, resourcePath("/api/v1/store/block/%s/%s", kind, name))
 }

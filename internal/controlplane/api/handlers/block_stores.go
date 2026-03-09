@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -37,18 +38,17 @@ type UpdateBlockStoreRequest struct {
 
 // BlockStoreResponse is the response body for block store endpoints.
 type BlockStoreResponse struct {
-	ID        string              `json:"id"`
-	Name      string              `json:"name"`
+	ID        string                `json:"id"`
+	Name      string                `json:"name"`
 	Kind      models.BlockStoreKind `json:"kind"`
-	Type      string              `json:"type"`
-	Config    string              `json:"config,omitempty"`
-	CreatedAt time.Time           `json:"created_at"`
+	Type      string                `json:"type"`
+	Config    string                `json:"config,omitempty"`
+	CreatedAt time.Time             `json:"created_at"`
 }
 
 // extractKind extracts the block store kind from the URL path parameter.
 func extractKind(r *http.Request) (models.BlockStoreKind, bool) {
-	kindStr := chi.URLParam(r, "kind")
-	switch kindStr {
+	switch chi.URLParam(r, "kind") {
 	case "local":
 		return models.BlockStoreKindLocal, true
 	case "remote":
@@ -56,6 +56,22 @@ func extractKind(r *http.Request) (models.BlockStoreKind, bool) {
 	default:
 		return "", false
 	}
+}
+
+// extractKindAndName extracts and validates both kind and name from URL parameters.
+// Returns false and writes an error response if either is invalid.
+func extractKindAndName(w http.ResponseWriter, r *http.Request) (models.BlockStoreKind, string, bool) {
+	kind, ok := extractKind(r)
+	if !ok {
+		BadRequest(w, "Invalid block store kind: must be 'local' or 'remote'")
+		return "", "", false
+	}
+	name := chi.URLParam(r, "name")
+	if name == "" {
+		BadRequest(w, "Store name is required")
+		return "", "", false
+	}
+	return kind, name, true
 }
 
 // validateBlockStoreType checks that a store type is valid for the given kind.
@@ -96,7 +112,7 @@ func (h *BlockStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !validateBlockStoreType(kind, req.Type) {
-		BadRequest(w, "Store type '"+req.Type+"' is not valid for kind '"+string(kind)+"'")
+		BadRequest(w, fmt.Sprintf("Store type %q is not valid for kind %q", req.Type, kind))
 		return
 	}
 
@@ -147,15 +163,8 @@ func (h *BlockStoreHandler) List(w http.ResponseWriter, r *http.Request) {
 // Get handles GET /api/v1/store/block/{kind}/{name}.
 // Gets a block store configuration by name (admin only).
 func (h *BlockStoreHandler) Get(w http.ResponseWriter, r *http.Request) {
-	kind, ok := extractKind(r)
+	kind, name, ok := extractKindAndName(w, r)
 	if !ok {
-		BadRequest(w, "Invalid block store kind: must be 'local' or 'remote'")
-		return
-	}
-
-	name := chi.URLParam(r, "name")
-	if name == "" {
-		BadRequest(w, "Store name is required")
 		return
 	}
 
@@ -175,15 +184,8 @@ func (h *BlockStoreHandler) Get(w http.ResponseWriter, r *http.Request) {
 // Update handles PUT /api/v1/store/block/{kind}/{name}.
 // Updates a block store configuration (admin only).
 func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
-	kind, ok := extractKind(r)
+	kind, name, ok := extractKindAndName(w, r)
 	if !ok {
-		BadRequest(w, "Invalid block store kind: must be 'local' or 'remote'")
-		return
-	}
-
-	name := chi.URLParam(r, "name")
-	if name == "" {
-		BadRequest(w, "Store name is required")
 		return
 	}
 
@@ -220,15 +222,8 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 // Delete handles DELETE /api/v1/store/block/{kind}/{name}.
 // Deletes a block store configuration (admin only).
 func (h *BlockStoreHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	kind, ok := extractKind(r)
+	kind, name, ok := extractKindAndName(w, r)
 	if !ok {
-		BadRequest(w, "Invalid block store kind: must be 'local' or 'remote'")
-		return
-	}
-
-	name := chi.URLParam(r, "name")
-	if name == "" {
-		BadRequest(w, "Store name is required")
 		return
 	}
 

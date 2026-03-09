@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: BlockStore Unification Refactor
 status: completed
-stopped_at: Phase 44 context gathered
-last_updated: "2026-03-09T17:25:31Z"
-last_activity: 2026-03-09 — Phase 44 Plan 02 complete (REST API + client for block stores)
+stopped_at: Completed 44-03-PLAN.md
+last_updated: "2026-03-09T17:34:49Z"
+last_activity: 2026-03-09 — Phase 44 Plan 03 complete (CLI commands for block stores and shares)
 progress:
   total_phases: 22
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 10
-  completed_plans: 9
-  percent: 70
+  completed_plans: 10
+  percent: 75
 ---
 
 # Project State
@@ -25,11 +25,11 @@ See: .planning/PROJECT.md (updated 2026-03-09)
 
 ## Current Position
 
-Phase: 44 of 49 (Data Model and API/CLI)
+Phase: 44 of 49 (Data Model and API/CLI) -- COMPLETE
 Milestone: v4.0 BlockStore Unification Refactor
-Plan: 2 of 3 in current phase (COMPLETE)
-Status: Executing Phase 44
-Last activity: 2026-03-09 — Phase 44 Plan 02 complete (REST API + client for block stores)
+Plan: 3 of 3 in current phase (COMPLETE)
+Status: Phase 44 complete
+Last activity: 2026-03-09 — Phase 44 Plan 03 complete (CLI commands for block stores and shares)
 
 Progress: [██████████] 98% (125/186+ total plans across all milestones)
 
@@ -55,7 +55,7 @@ Progress: [██████████] 98% (125/186+ total plans across all 
 - 9 phases defined (41-49)
 - 55 requirements mapped
 - 2 plans completed (41-01, 41-02) -- Phase 41 complete
-- 2 plans completed (44-01, 44-02) -- Phase 44 in progress
+- 3 plans completed (44-01, 44-02, 44-03) -- Phase 44 complete
 
 ## Accumulated Context
 
@@ -78,6 +78,9 @@ Recent decisions affecting v4.0 work:
 - **Type/kind validation on block store create**: Local accepts fs,memory; remote accepts s3,memory (Phase 44, Plan 02)
 - **Unified /api/v1/store/ route prefix**: Metadata at /store/metadata, blocks at /store/block/{kind} (Phase 44, Plan 02)
 - **Share create uses name-based fields**: local_block_store/remote_block_store accept names, resolved to IDs server-side (Phase 44, Plan 02)
+- **Local block store defaults to fs type**: Most common use case for local storage (Phase 44, Plan 03)
+- **Share create --local required via cobra**: MarkFlagRequired enforces local block store at CLI level (Phase 44, Plan 03)
+- **Share edit supports --local/--remote flags**: Enables store migration via share update (Phase 44, Plan 03)
 
 ### Pending Todos
 
@@ -89,7 +92,7 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-09T17:25:31Z
-Stopped at: Completed 44-02-PLAN.md
-Resume file: .planning/phases/44-data-model-and-api-cli/44-02-SUMMARY.md
-Next action: Execute Phase 44 Plan 03
+Last session: 2026-03-09T17:34:49Z
+Stopped at: Completed 44-03-PLAN.md (Phase 44 complete)
+Resume file: .planning/phases/44-data-model-and-api-cli/44-03-SUMMARY.md
+Next action: Begin Phase 45 planning

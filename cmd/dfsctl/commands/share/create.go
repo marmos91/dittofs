@@ -25,18 +25,24 @@ var createCmd = &cobra.Command{
 	Short: "Create a new share",
 	Long: `Create a new share on the DittoFS server.
 
+A share requires a metadata store and a local block store. A remote block store
+is optional and enables tiered storage (local cache + remote durable storage).
+
 Examples:
-  # Create a share with required stores
-  dfsctl share create --name /archive --metadata default --payload s3-store
+  # Create a share with local block store only
+  dfsctl share create --name /data --metadata default --local fs-cache
+
+  # Create a share with local and remote block stores
+  dfsctl share create --name /archive --metadata default --local fs-cache --remote s3-store
 
   # Create a read-only share
-  dfsctl share create --name /readonly --metadata default --payload fs-store --read-only
+  dfsctl share create --name /readonly --metadata default --local fs-cache --read-only
 
   # Create with default permission allowing all users read-write access
-  dfsctl share create --name /shared --metadata default --payload s3-store --default-permission read-write
+  dfsctl share create --name /shared --metadata default --local fs-cache --remote s3-store --default-permission read-write
 
   # Create with description
-  dfsctl share create --name /docs --metadata default --payload s3-store --description "Documentation files"`,
+  dfsctl share create --name /docs --metadata default --local fs-cache --description "Documentation files"`,
 	RunE: runCreate,
 }
 
@@ -48,6 +54,7 @@ func init() {
 	createCmd.Flags().BoolVar(&createReadOnly, "read-only", false, "Make share read-only")
 	createCmd.Flags().StringVar(&createDefaultPermission, "default-permission", "read-write", "Default permission (none|read|read-write|admin)")
 	createCmd.Flags().StringVar(&createDescription, "description", "", "Share description")
+	_ = createCmd.MarkFlagRequired("local")
 }
 
 func runCreate(cmd *cobra.Command, args []string) error {
