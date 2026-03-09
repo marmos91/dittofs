@@ -609,7 +609,7 @@ func readFile(path string, size uint32) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err := f.Read(data); err != nil {
 		return nil, err
 	}

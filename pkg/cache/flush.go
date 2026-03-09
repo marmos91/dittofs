@@ -140,7 +140,7 @@ func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx
 
 	dataSize := mb.dataSize
 	if _, err := f.Write(mb.data[:dataSize]); err != nil {
-		f.Close()
+		_ = f.Close()
 		mb.mu.Unlock()
 		return "", 0, fmt.Errorf("write cache file: %w", err)
 	}
@@ -148,7 +148,7 @@ func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx
 	// No fsync here -- deferred to Flush() for throughput.
 	// The data is in OS page cache and will survive process crashes
 	// (only lost on power failure, which NFS UNSTABLE semantics allow).
-	f.Close()
+	_ = f.Close()
 
 	fb, err := bc.lookupFileBlock(ctx, blockID)
 	if err != nil {
@@ -228,7 +228,7 @@ func syncFile(path string) error {
 		return err
 	}
 	err = f.Sync()
-	f.Close()
+	_ = f.Close()
 	return err
 }
 

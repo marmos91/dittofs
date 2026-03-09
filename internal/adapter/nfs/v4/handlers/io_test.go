@@ -46,7 +46,7 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 	if err != nil {
 		t.Fatalf("create block cache: %v", err)
 	}
-	t.Cleanup(func() { bc.Close() })
+	t.Cleanup(func() { _ = bc.Close() })
 	blockStore := storemem.New()
 	offloaderInstance := offloader.New(bc, blockStore, metaStore, offloader.DefaultConfig())
 

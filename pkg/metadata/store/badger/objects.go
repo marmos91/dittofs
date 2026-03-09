@@ -28,10 +28,10 @@ import (
 // ============================================================================
 
 const (
-	fileBlockPrefix       = "fb:"
-	fileBlockHashPrefix   = "fb-hash:"
-	fileBlockLocalPrefix  = "fb-local:"
-	fileBlockFilePrefix   = "fb-file:"
+	fileBlockPrefix      = "fb:"
+	fileBlockHashPrefix  = "fb-hash:"
+	fileBlockLocalPrefix = "fb-local:"
+	fileBlockFilePrefix  = "fb-file:"
 )
 
 // Ensure BadgerMetadataStore implements FileBlockStore

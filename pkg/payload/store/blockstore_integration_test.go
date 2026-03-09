@@ -378,8 +378,8 @@ func TestFlusher_Integration(t *testing.T) {
 			t.Fatalf("ListByPrefix failed: %v", err)
 		}
 
-		if len(keys) != 3 {
-			t.Errorf("Expected 3 blocks, got %d: %v", len(keys), keys)
+		if len(keys) != 2 {
+			t.Errorf("Expected 2 blocks (8MB block size), got %d: %v", len(keys), keys)
 		}
 	})
 
