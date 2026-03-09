@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,8 +20,12 @@ import (
 // Store key format: "{payloadID}/block-{blockIdx}".
 // Returns (blockIdx, true) on success, (0, false) if parsing fails.
 func parseStoreKeyBlockIdx(storeKey, payloadID string) (uint64, bool) {
-	var blockIdx uint64
-	if _, err := fmt.Sscanf(storeKey, payloadID+"/block-%d", &blockIdx); err != nil {
+	prefix := payloadID + "/block-"
+	if !strings.HasPrefix(storeKey, prefix) || len(storeKey) <= len(prefix) {
+		return 0, false
+	}
+	blockIdx, err := strconv.ParseUint(storeKey[len(prefix):], 10, 64)
+	if err != nil {
 		return 0, false
 	}
 	return blockIdx, true
@@ -88,7 +94,8 @@ type Offloader struct {
 	closed bool
 	mu     sync.RWMutex
 
-	uploading atomic.Bool // Guards against overlapping periodic upload ticks
+	periodicStarted bool        // true once periodicUploader goroutine is launched
+	uploading       atomic.Bool // Guards against overlapping periodic upload ticks
 }
 
 // New creates a new Offloader. The fileBlockStore is required for content-addressed dedup.
@@ -131,14 +138,23 @@ func (m *Offloader) SetFinalizationCallback(fn FinalizationCallback) {
 	m.onFinalized = fn
 }
 
-// canProcess returns false if the offloader is closed or context is cancelled.
-func (m *Offloader) canProcess(ctx context.Context) bool {
-	if ctx.Err() != nil {
-		return false
+// checkReady returns nil if the offloader can process requests.
+// Returns ctx.Err() if the context is cancelled, or ErrClosed if the offloader is closed.
+func (m *Offloader) checkReady(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return !m.closed
+	if m.closed {
+		return ErrClosed
+	}
+	return nil
+}
+
+// canProcess returns false if the offloader is closed or context is cancelled.
+func (m *Offloader) canProcess(ctx context.Context) bool {
+	return m.checkReady(ctx) == nil
 }
 
 // Flush writes dirty in-memory blocks to disk cache (.blk files).
@@ -148,8 +164,8 @@ func (m *Offloader) canProcess(ctx context.Context) bool {
 // performance equals local performance. Remote latency only matters when
 // backpressure kicks in (cache full) or on cold reads.
 func (m *Offloader) Flush(ctx context.Context, payloadID string) (*FlushResult, error) {
-	if !m.canProcess(ctx) {
-		return nil, ErrClosed
+	if err := m.checkReady(ctx); err != nil {
+		return nil, err
 	}
 
 	// Flush memBlocks to disk cache only.
@@ -212,8 +228,8 @@ func (m *Offloader) WaitForAllUploads(ctx context.Context, payloadID string) err
 
 // GetFileSize returns the total size of a file from the block store.
 func (m *Offloader) GetFileSize(ctx context.Context, payloadID string) (uint64, error) {
-	if !m.canProcess(ctx) {
-		return 0, ErrClosed
+	if err := m.checkReady(ctx); err != nil {
+		return 0, err
 	}
 
 	if m.blockStore == nil {
@@ -252,8 +268,8 @@ func (m *Offloader) GetFileSize(ctx context.Context, payloadID string) (uint64, 
 
 // Exists checks if any blocks exist for a file in the block store.
 func (m *Offloader) Exists(ctx context.Context, payloadID string) (bool, error) {
-	if !m.canProcess(ctx) {
-		return false, ErrClosed
+	if err := m.checkReady(ctx); err != nil {
+		return false, err
 	}
 	if m.blockStore == nil {
 		logger.Debug("offloader: skipping Exists, no remote store")
@@ -273,8 +289,8 @@ func (m *Offloader) Exists(ctx context.Context, payloadID string) (bool, error) 
 
 // Truncate removes blocks beyond the new size from the block store.
 func (m *Offloader) Truncate(ctx context.Context, payloadID string, newSize uint64) error {
-	if !m.canProcess(ctx) {
-		return ErrClosed
+	if err := m.checkReady(ctx); err != nil {
+		return err
 	}
 	if m.blockStore == nil {
 		logger.Debug("offloader: skipping Truncate, no remote store")
@@ -310,8 +326,8 @@ func (m *Offloader) Truncate(ctx context.Context, payloadID string, newSize uint
 
 // Delete removes all blocks for a file from the block store.
 func (m *Offloader) Delete(ctx context.Context, payloadID string) error {
-	if !m.canProcess(ctx) {
-		return ErrClosed
+	if err := m.checkReady(ctx); err != nil {
+		return err
 	}
 
 	// Always clean up upload tracking even with nil blockStore.
@@ -342,6 +358,11 @@ func (m *Offloader) Start(ctx context.Context) {
 		logger.Info("Offloader started in local-only mode (no remote store)")
 		return
 	}
+
+	if m.periodicStarted {
+		return // Already started (e.g., via SetRemoteStore before Start)
+	}
+	m.periodicStarted = true
 
 	interval := m.config.UploadInterval
 	if interval <= 0 {
@@ -468,12 +489,15 @@ func (m *Offloader) SetRemoteStore(ctx context.Context, blockStore store.BlockSt
 	m.blockStore = blockStore
 	m.cache.SetEvictionEnabled(true)
 
-	interval := m.config.UploadInterval
-	if interval <= 0 {
-		interval = 2 * time.Second
+	if !m.periodicStarted {
+		m.periodicStarted = true
+		interval := m.config.UploadInterval
+		if interval <= 0 {
+			interval = 2 * time.Second
+		}
+		go m.periodicUploader(ctx, interval)
 	}
-	go m.periodicUploader(ctx, interval)
 
-	logger.Info("Remote store attached, periodic syncer started", "interval", interval)
+	logger.Info("Remote store attached, periodic syncer started")
 	return nil
 }
