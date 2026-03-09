@@ -46,6 +46,16 @@ func computePercentiles(samples []time.Duration) latencyStats {
 	}
 }
 
+// applyLatencyStats computes percentiles from samples and populates the result's
+// latency fields. This avoids repeating the same four assignments in every workload.
+func applyLatencyStats(wr *WorkloadResult, samples []time.Duration) {
+	stats := computePercentiles(samples)
+	wr.LatencyP50Us = stats.P50
+	wr.LatencyP95Us = stats.P95
+	wr.LatencyP99Us = stats.P99
+	wr.LatencyAvgUs = stats.Avg
+}
+
 // FormatSize converts bytes to a human-readable string (e.g., "1.0 GiB").
 func FormatSize(bytes int64) string {
 	const (
