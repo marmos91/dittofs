@@ -309,6 +309,13 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				})
 			})
 
+			// System operations (admin only)
+			r.Route("/system", func(r chi.Router) {
+				r.Use(apiMiddleware.RequireAdmin())
+				systemHandler := handlers.NewSystemHandler(rt)
+				r.Post("/drain-uploads", systemHandler.DrainUploads)
+			})
+
 			// System settings (admin only)
 			r.Route("/settings", func(r chi.Router) {
 				r.Use(apiMiddleware.RequireAdmin())

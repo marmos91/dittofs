@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: BlockStore Unification Refactor
-status: planning
+status: ready_to_plan
 last_updated: "2026-03-09T00:00:00Z"
 progress:
-  total_phases: 0
+  total_phases: 9
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -17,15 +17,18 @@ progress:
 
 See: .planning/PROJECT.md (updated 2026-03-09)
 
-**Core value:** Enterprise-grade multi-protocol file access with unified locking, Kerberos authentication, and session reliability
-**Current focus:** v4.0 BlockStore Unification Refactor
+**Core value:** Replace confusing layered storage architecture with clean two-tier block store model (Local + Remote) for per-share isolation and maintainability
+**Current focus:** Phase 41 - Block State Enum and ListFileBlocks
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-03-09 — Milestone v4.0 BlockStore Unification started
+Phase: 41 of 49 (Block State Enum and ListFileBlocks)
+Milestone: v4.0 BlockStore Unification Refactor
+Plan: 0 of ? in current phase
+Status: Ready to plan
+Last activity: 2026-03-09 — v4.0 roadmap created with 9 phases (41-49)
+
+Progress: [████████████████████████████████████████░░░░░░░░░░░░] 67% (124/186+ total plans across all milestones)
 
 ## Completed Milestones
 
@@ -41,15 +44,25 @@ Last activity: 2026-03-09 — Milestone v4.0 BlockStore Unification started
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 146 (19 v1.0 + 42 v2.0 + 25 v3.0 + 22 v3.5 + 12 v3.6 + 4 inserted + 12 v3.8 + 10 v3.8-extra)
-- 6 milestones in 32 days
+- Total plans completed: 146 (across 6 shipped milestones)
 - Average: ~4.6 plans/day
+- Trend: Stable velocity maintained
+
+**v4.0 Current Milestone:**
+- 9 phases defined (41-49)
+- 55 requirements mapped
+- 0 plans created yet
 
 ## Accumulated Context
 
 ### Decisions
 
-v3.8 decisions archived to PROJECT.md Key Decisions table and milestones/v3.8-ROADMAP.md.
+Decisions are logged in PROJECT.md Key Decisions table.
+Recent decisions affecting v4.0 work:
+
+- **Two-tier block store model**: Clean Local+Remote replaces confusing PayloadService/Cache/DirectWrite layers (Pending v4.0)
+- **Per-share block stores**: Different local paths and remote backends per share, replaces global PayloadService (Pending v4.0)
+- **BlockStore refactor before NFSv4.2**: Clean storage architecture enables easier feature development (Pending v4.0)
 
 ### Pending Todos
 
@@ -57,10 +70,11 @@ None.
 
 ### Blockers/Concerns
 
-- Benchmarking (v4.2) may already be partially implemented on feat/cache-rewrite branch — verify status.
+None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-09
-Stopped at: Defining v4.0 BlockStore Unification requirements and roadmap.
+Last session: 2026-03-09 (roadmap creation)
+Stopped at: v4.0 ROADMAP.md created with 9 phases mapping 55 requirements
 Resume file: None
+Next action: `/gsd:plan-phase 41` to begin Phase 41 planning

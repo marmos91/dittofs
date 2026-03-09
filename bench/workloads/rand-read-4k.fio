@@ -4,7 +4,7 @@ rw=randread
 bs=4k
 direct=1
 iodepth=32
-ioengine=${FIO_ENGINE:-posixaio}
+ioengine=${FIO_ENGINE:-libaio}
 numjobs=${BENCH_THREADS:-4}
 runtime=${BENCH_RUNTIME:-60}
 time_based

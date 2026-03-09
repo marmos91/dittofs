@@ -10,9 +10,9 @@ import (
 //  1. VPC + private network
 //  2. Persistent client VM with public IP (stays alive across all competitor tests)
 func deployBase(ctx *pulumi.Context) error {
-	cfg := loadConfig(config.New(ctx, "dittofs-bench")).withDefaults()
+	cfg := loadConfig(config.New(ctx, "dittofs-bench"))
 
-	net, err := createNetwork(ctx, cfg)
+	net, err := createNetwork(ctx)
 	if err != nil {
 		return err
 	}

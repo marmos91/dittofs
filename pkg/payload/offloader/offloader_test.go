@@ -458,6 +458,9 @@ func testWriteAndFlush(t *testing.T, env *testEnv) {
 	if !result.Finalized {
 		t.Error("Flush should be finalized")
 	}
+	if err := env.offloader.WaitForAllUploads(ctx, payloadID); err != nil {
+		t.Fatalf("WaitForAllUploads failed: %v", err)
+	}
 	exists, err := env.offloader.Exists(ctx, payloadID)
 	if err != nil {
 		t.Fatalf("Exists failed: %v", err)
@@ -546,8 +549,8 @@ func testConcurrentOperations(t *testing.T, env *testEnv) {
 				errors <- fmt.Errorf("file %d: Flush failed: %w", fileIdx, err)
 				return
 			}
-			if err := env.offloader.WaitForEagerUploads(ctx, payloadID); err != nil {
-				errors <- fmt.Errorf("file %d: WaitForEagerUploads failed: %w", fileIdx, err)
+			if err := env.offloader.WaitForAllUploads(ctx, payloadID); err != nil {
+				errors <- fmt.Errorf("file %d: WaitForAllUploads failed: %w", fileIdx, err)
 				return
 			}
 			exists, err := env.offloader.Exists(ctx, payloadID)
@@ -901,8 +904,8 @@ func testDeduplication(t *testing.T, env *testEnv) {
 	if !result1.Finalized {
 		t.Error("File1 flush should be finalized")
 	}
-	if err := env.offloader.WaitForEagerUploads(ctx, payloadID1); err != nil {
-		t.Fatalf("WaitForEagerUploads file1 failed: %v", err)
+	if err := env.offloader.WaitForAllUploads(ctx, payloadID1); err != nil {
+		t.Fatalf("WaitForAllUploads file1 failed: %v", err)
 	}
 	if err := env.cache.WriteAt(ctx, payloadID2, data, 0); err != nil {
 		t.Fatalf("Write to file2 failed: %v", err)
@@ -915,8 +918,8 @@ func testDeduplication(t *testing.T, env *testEnv) {
 	if !result2.Finalized {
 		t.Error("File2 flush should be finalized")
 	}
-	if err := env.offloader.WaitForEagerUploads(ctx, payloadID2); err != nil {
-		t.Fatalf("WaitForEagerUploads file2 failed: %v", err)
+	if err := env.offloader.WaitForAllUploads(ctx, payloadID2); err != nil {
+		t.Fatalf("WaitForAllUploads file2 failed: %v", err)
 	}
 	exists1, err := env.offloader.Exists(ctx, payloadID1)
 	if err != nil {
@@ -958,8 +961,8 @@ func testDedupWithDifferentData(t *testing.T, env *testEnv) {
 	if _, err := env.offloader.Flush(ctx, payloadID1); err != nil {
 		t.Fatalf("Flush file1 failed: %v", err)
 	}
-	if err := env.offloader.WaitForEagerUploads(ctx, payloadID1); err != nil {
-		t.Fatalf("WaitForEagerUploads file1 failed: %v", err)
+	if err := env.offloader.WaitForAllUploads(ctx, payloadID1); err != nil {
+		t.Fatalf("WaitForAllUploads file1 failed: %v", err)
 	}
 	if err := env.cache.WriteAt(ctx, payloadID2, data2, 0); err != nil {
 		t.Fatalf("Write to file2 failed: %v", err)
@@ -968,8 +971,8 @@ func testDedupWithDifferentData(t *testing.T, env *testEnv) {
 	if _, err := env.offloader.Flush(ctx, payloadID2); err != nil {
 		t.Fatalf("Flush file2 failed: %v", err)
 	}
-	if err := env.offloader.WaitForEagerUploads(ctx, payloadID2); err != nil {
-		t.Fatalf("WaitForEagerUploads file2 failed: %v", err)
+	if err := env.offloader.WaitForAllUploads(ctx, payloadID2); err != nil {
+		t.Fatalf("WaitForAllUploads file2 failed: %v", err)
 	}
 	exists1, _ := env.offloader.Exists(ctx, payloadID1)
 	if !exists1 {

@@ -2,7 +2,7 @@
 
 ## Overview
 
-DittoFS evolves from NFSv3 to full NFSv4.2 support across eight milestones. v1.0 builds the unified locking foundation (NLM + SMB leases), v2.0 adds NFSv4.0 stateful operations with Kerberos authentication, v3.0 introduces NFSv4.1 sessions for reliability and NAT-friendliness, v3.5 refactors the adapter layer and core for clean protocol separation, v3.6 achieves Windows SMB compatibility with proper ACL support, v3.8 upgrades the SMB implementation to SMB3.0/3.0.2/3.1.1 with encryption, signing, leases, Kerberos, and durable handles, v4.0 completes the protocol suite with NFSv4.2 advanced features, and v4.1 establishes performance baselines via a comprehensive benchmarking suite and iterative optimization. Each milestone delivers complete, testable functionality.
+DittoFS evolves from NFSv3 to full NFSv4.2 support across eight milestones. v1.0 builds the unified locking foundation (NLM + SMB leases), v2.0 adds NFSv4.0 stateful operations with Kerberos authentication, v3.0 introduces NFSv4.1 sessions for reliability and NAT-friendliness, v3.5 refactors the adapter layer and core for clean protocol separation, v3.6 achieves Windows SMB compatibility with proper ACL support, v3.8 upgrades the SMB implementation to SMB3.0/3.0.2/3.1.1 with encryption, signing, leases, Kerberos, and durable handles, v4.0 refactors the storage layer into a clean two-tier block store model (Local + Remote), and v4.1 completes the protocol suite with NFSv4.2 advanced features. Each milestone delivers complete, testable functionality.
 
 ## Milestones
 
@@ -12,8 +12,9 @@ DittoFS evolves from NFSv3 to full NFSv4.2 support across eight milestones. v1.0
 - [x] **v3.5 Adapter + Core Refactoring** - Phases 26-29.5 (shipped 2026-02-26) — [archive](milestones/v3.5-ROADMAP.md)
 - [x] **v3.6 Windows Compatibility** - Phases 29.8-32.5 (shipped 2026-02-28) — [archive](milestones/v3.6-ROADMAP.md)
 - [x] **v3.8 SMB3 Protocol Upgrade** - Phases 33-40.5 (shipped 2026-03-04) — [archive](milestones/v3.8-ROADMAP.md)
-- [ ] **v4.0 NFSv4.2 Extensions** - Phases 41-47.5 (planned)
-- [ ] **v4.1 Benchmarking & Performance** - Phases 48-53.5 (planned)
+- [ ] **v4.0 BlockStore Unification Refactor** - Phases 41-49 (planned)
+- [ ] **v4.1 NFSv4.2 Extensions** - Phases 50-56 (planned)
+- [ ] **v4.2 Benchmarking & Performance** - Phases 57-62 (planned)
 
 **USER CHECKPOINT** phases require your manual testing before proceeding. Use `/gsd:verify-work` to validate.
 
@@ -112,26 +113,36 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 </details>
 
-### v4.0 NFSv4.2 Extensions
+### v4.0 BlockStore Unification Refactor
 
-- [ ] **Phase 41: Server-Side Copy** - Async COPY with OFFLOAD_STATUS polling
-- [ ] **Phase 42: Clone/Reflinks** - Copy-on-write via content-addressed storage
-- [ ] **Phase 43: Sparse Files** - SEEK, ALLOCATE, DEALLOCATE operations
-- [ ] **Phase 43.5: Manual Verification - Advanced Ops** USER CHECKPOINT - Test copy/clone/sparse
-- [ ] **Phase 44: Extended Attributes** - xattrs in metadata layer, exposed via NFS/SMB
-- [ ] **Phase 45: NFSv4.2 Operations** - IO_ADVISE and optional pNFS operations
-- [ ] **Phase 46: Documentation** - Complete documentation for all new features
-- [ ] **Phase 47: v4.0 Testing** - Final testing and pjdfstest POSIX compliance
-- [ ] **Phase 47.5: Final Manual Verification** USER CHECKPOINT - Complete validation of all features
+- [ ] **Phase 41: Block State Enum and ListFileBlocks** - Rename states (Sealed→Local, Uploaded→Remote), update ListPendingUpload→ListLocalBlocks, add ListFileBlocks method
+- [ ] **Phase 42: Legacy Cleanup** - Remove DirectWriteStore interface and filesystem payload store
+- [ ] **Phase 43: Local-Only Block Management** - Block management operations on cache, local-only offloader mode without remote store
+- [ ] **Phase 44: Data Model and API/CLI** - BlockStoreConfig DB model, REST endpoints, dfsctl block store commands
+- [ ] **Phase 45: Package Restructure** - Create pkg/blockstore/ hierarchy absorbing cache, payload, offloader, gc
+- [ ] **Phase 46: Per-Share Block Store Wiring** - Runtime manages per-share BlockStore instances replacing global PayloadService
+- [ ] **Phase 47: L1 Read Cache and Prefetch** - Read-through LRU cache with sequential prefetch for hot blocks
+- [ ] **Phase 48: Auto-Deduced Configuration** - Derive buffer/cache sizes and concurrency from CPU/memory
+- [ ] **Phase 49: Testing and Documentation** - E2E tests for new CLI, multi-share isolation, updated documentation
 
-### v4.1 Benchmarking & Performance
+### v4.1 NFSv4.2 Extensions
 
-- [ ] **Phase 48: Benchmark Infrastructure** - Docker Compose profiles and directory structure (carried from previous Phase 33, already COMPLETE)
-- [ ] **Phase 49: Benchmark Workloads** - fio job files and metadata benchmark scripts
-- [ ] **Phase 50: Competitor Setup** - Configuration for JuiceFS, NFS-Ganesha, RClone, kernel NFS, Samba
-- [ ] **Phase 51: Orchestrator Scripts** - Main benchmark runner with platform variants
-- [ ] **Phase 52: Analysis & Reporting** - Python pipeline for charts and markdown reports
-- [ ] **Phase 53: Profiling Integration** - Prometheus, Pyroscope, pprof for bottleneck identification
+- [ ] **Phase 50: Server-Side Copy** - Async COPY with OFFLOAD_STATUS polling
+- [ ] **Phase 51: Clone/Reflinks** - Copy-on-write via content-addressed storage
+- [ ] **Phase 52: Sparse Files** - SEEK, ALLOCATE, DEALLOCATE operations
+- [ ] **Phase 53: Extended Attributes** - xattrs in metadata layer, exposed via NFS/SMB
+- [ ] **Phase 54: NFSv4.2 Operations** - IO_ADVISE and optional pNFS operations
+- [ ] **Phase 55: Documentation** - Complete documentation for all new features
+- [ ] **Phase 56: v4.1 Testing** - Final testing and pjdfstest POSIX compliance
+
+### v4.2 Benchmarking & Performance
+
+- [ ] **Phase 57: Benchmark Infrastructure** - Docker Compose profiles and directory structure (carried from previous Phase 33, already COMPLETE)
+- [ ] **Phase 58: Benchmark Workloads** - fio job files and metadata benchmark scripts
+- [ ] **Phase 59: Competitor Setup** - Configuration for JuiceFS, NFS-Ganesha, RClone, kernel NFS, Samba
+- [ ] **Phase 60: Orchestrator Scripts** - Main benchmark runner with platform variants
+- [ ] **Phase 61: Analysis & Reporting** - Python pipeline for charts and markdown reports
+- [ ] **Phase 62: Profiling Integration** - Prometheus, Pyroscope, pprof for bottleneck identification
 
 ## Phase Details
 
@@ -148,76 +159,219 @@ Full phase details archived to [milestones/v3.8-ROADMAP.md](milestones/v3.8-ROAD
 
 ---
 
-## v4.0 NFSv4.2 Extensions
+## v4.0 BlockStore Unification Refactor
 
-### Phase 41: Server-Side Copy
+### Phase 41: Block State Enum and ListFileBlocks
+**Goal**: Rename block state enum values and update query methods to reflect new terminology
+**Depends on**: Phase 40.5 (v3.8 complete)
+**Requirements**: STATE-01, STATE-02, STATE-03, STATE-04, STATE-05, STATE-06
+**Success Criteria** (what must be TRUE):
+  1. Block state constants use new names: Dirty(0), Local(1), Uploading(2), Remote(3)
+  2. All code referencing Sealed or Uploaded updated to Local and Remote
+  3. ListLocalBlocks method replaces ListPendingUpload across all implementations
+  4. ListRemoteBlocks method replaces ListEvictable across all implementations
+  5. ListFileBlocks(payloadID) method exists and returns all blocks for a file
+  6. BadgerDB secondary index uses fb-local: prefix instead of fb-sealed:
+**Verification**: `go build ./...` && `go test ./...`
+**Plans**: TBD
+
+### Phase 42: Legacy Cleanup
+**Goal**: Remove DirectWriteStore interface and filesystem payload store dead code
+**Depends on**: Phase 41
+**Requirements**: CLEAN-01, CLEAN-02, CLEAN-03, CLEAN-04, CLEAN-05, CLEAN-06
+**Success Criteria** (what must be TRUE):
+  1. DirectWriteStore interface removed from pkg/payload/store/store.go
+  2. pkg/payload/store/fs/ directory deleted entirely
+  3. Cache methods directWritePath, SetDirectWritePath, IsDirectWrite removed
+  4. Offloader no longer checks IsDirectWrite or handles direct-write paths
+  5. init.go removed blockfs import and DirectWriteStore detection logic
+  6. All direct-write conditional branches removed from cache operations
+**Verification**: `go build ./...` && `go test ./...`
+**Plans**: TBD
+
+### Phase 43: Local-Only Block Management
+**Goal**: Add block management operations to cache and support offloader without remote store
+**Depends on**: Phase 42
+**Requirements**: LOCAL-01, LOCAL-02, LOCAL-03, LOCAL-04
+**Success Criteria** (what must be TRUE):
+  1. Cache provides DeleteBlockFile, DeleteAllBlockFiles, TruncateBlockFiles, GetStoredFileSize, ExistsOnDisk methods
+  2. SetEvictionEnabled method exists to control local block retention
+  3. Offloader accepts nil blockStore and operates in local-only mode
+  4. Local-only flush marks blocks BlockStateLocal without upload attempt
+  5. Runtime wiring creates local-only BlockStore when no remote store configured
+**Verification**: `go build ./...` && `go test ./...`
+**Plans**: TBD
+
+### Phase 44: Data Model and API/CLI
+**Goal**: Create BlockStoreConfig model and REST/CLI endpoints for local and remote block stores
+**Depends on**: Phase 43
+**Requirements**: MODEL-01, MODEL-02, MODEL-03, MODEL-04, MODEL-05, API-01, API-02, API-03, CLI-01, CLI-02, CLI-03, CLI-04
+**Success Criteria** (what must be TRUE):
+  1. BlockStoreConfig model exists with ID, Name, Kind (local/remote), Type, Config, CreatedAt fields
+  2. Share model has LocalBlockStoreID (mandatory) and RemoteBlockStoreID (nullable)
+  3. Database migration renames payload_store_configs to block_store_configs with kind column
+  4. Database migration splits Share.PayloadStoreID into LocalBlockStoreID + RemoteBlockStoreID
+  5. BlockStoreConfigStore interface with CRUD methods filtered by kind replaces PayloadStoreConfigStore
+  6. REST endpoints /api/v1/block-stores/local and /api/v1/block-stores/remote exist for CRUD
+  7. Share endpoints accept --local (required) and --remote (optional) parameters
+  8. dfsctl store block local add/list/edit/remove commands work
+  9. dfsctl store block remote add/list/edit/remove commands work
+  10. dfsctl share create --local X --remote Y replaces --payload flag
+  11. API client methods for block store operations replace payload store methods
+**Verification**: `go build ./...` && `go test ./pkg/controlplane/...` && manual CLI test
+**Plans**: TBD
+
+### Phase 45: Package Restructure
+**Goal**: Reorganize storage code into clean pkg/blockstore/ hierarchy
+**Depends on**: Phase 44
+**Requirements**: PKG-01, PKG-02, PKG-03, PKG-04, PKG-05, PKG-06, PKG-07, PKG-08, PKG-09, PKG-10, PKG-11
+**Success Criteria** (what must be TRUE):
+  1. pkg/blockstore/local/local.go defines LocalStore interface
+  2. pkg/blockstore/remote/remote.go defines RemoteStore interface
+  3. pkg/cache/ code moved to pkg/blockstore/local/fs/
+  4. pkg/blockstore/local/memory/ created for test MemoryLocalStore
+  5. pkg/payload/store/s3/ moved to pkg/blockstore/remote/s3/
+  6. pkg/payload/store/memory/ moved to pkg/blockstore/remote/memory/
+  7. pkg/payload/offloader/ moved to pkg/blockstore/offloader/
+  8. pkg/payload/gc/ moved to pkg/blockstore/gc/
+  9. pkg/blockstore/blockstore.go orchestrator absorbs PayloadService responsibilities
+  10. All consumer imports updated (NFS handlers, SMB handlers, runtime, shares)
+  11. pkg/cache/ and pkg/payload/ directories deleted
+**Verification**: `go build ./...` && `go test ./...`
+**Plans**: TBD
+
+### Phase 46: Per-Share Block Store Wiring
+**Goal**: Replace global PayloadService with per-share BlockStore instances
+**Depends on**: Phase 45
+**Requirements**: SHARE-01, SHARE-02, SHARE-03, SHARE-04
+**Success Criteria** (what must be TRUE):
+  1. Runtime manages map[shareID]*BlockStore instead of single PayloadService
+  2. EnsureBlockStore(share) creates BlockStore with share's local + remote configs
+  3. NFS/SMB handlers resolve BlockStore per share handle via getBlockStore(shareHandle)
+  4. Multiple shares with different local paths operate in isolation
+  5. Share deletion cleans up associated BlockStore
+**Verification**: `go build ./...` && `go test ./pkg/controlplane/...` && multi-share E2E test
+**Plans**: TBD
+
+### Phase 47: L1 Read Cache and Prefetch
+**Goal**: Add read-through LRU cache with sequential prefetch for hot blocks
+**Depends on**: Phase 46
+**Requirements**: PERF-01, PERF-02, PERF-03, PERF-04
+**Success Criteria** (what must be TRUE):
+  1. L1 read-through LRU cache (readcache.go) caches hot blocks in memory
+  2. Cache invalidation on WriteAt removes stale entries
+  3. Sequential prefetch (prefetch.go) triggered after 2+ sequential reads
+  4. Prefetch worker pool bounded, non-blocking, avoids cache pollution
+  5. Sequential read benchmark shows improved throughput with L1 cache
+**Verification**: `go test ./pkg/blockstore/...` && sequential read benchmark
+**Plans**: TBD
+
+### Phase 48: Auto-Deduced Configuration
+**Goal**: Derive buffer/cache sizes and concurrency from system resources
+**Depends on**: Phase 47
+**Requirements**: AUTO-01, AUTO-02, AUTO-03, AUTO-04, AUTO-05
+**Success Criteria** (what must be TRUE):
+  1. WriteBufferMemory defaults to 25% of available memory if not configured
+  2. ReadCacheMemory defaults to 12.5% of available memory if not configured
+  3. ParallelUploads defaults to max(4, runtime.NumCPU()) if not configured
+  4. ParallelDownloads defaults to max(8, runtime.NumCPU()*2) if not configured
+  5. User-provided config values override auto-deduced defaults
+**Verification**: `go test ./pkg/config/...` && config validation test
+**Plans**: TBD
+
+### Phase 49: Testing and Documentation
+**Goal**: Update E2E tests and documentation for new block store architecture
+**Depends on**: Phase 48
+**Requirements**: TEST-01, TEST-02, TEST-03, DOCS-01, DOCS-02, DOCS-03, DOCS-04
+**Success Criteria** (what must be TRUE):
+  1. E2E test matrix updated for new CLI (dfsctl store block local/remote)
+  2. Multi-share E2E test validates isolation with different local paths
+  3. Sequential read benchmark validates L1 cache performance improvement
+  4. docs/ARCHITECTURE.md updated to describe two-tier block store model
+  5. docs/CONFIGURATION.md updated for new block store CLI and config schema
+  6. docs/CLAUDE.md updated to reflect pkg/blockstore/ structure
+  7. --payload flag shows deprecation warning but still works for backward compatibility
+**Verification**: `go test -tags=e2e ./test/e2e/...` && documentation review
+**Plans**: TBD
+
+---
+
+## v4.1 NFSv4.2 Extensions
+
+### Phase 50: Server-Side Copy
 **Goal**: Implement async server-side COPY operation
-**Depends on**: Phase 40 (v3.8 complete)
-**Requirements**: V42-01
+**Depends on**: Phase 49 (v4.0 complete)
+**Requirements**: NFS42-01
 **Success Criteria** (what must be TRUE):
   1. COPY operation copies data without client I/O
   2. Async COPY returns immediately with stateid for tracking
   3. OFFLOAD_STATUS reports copy progress
   4. OFFLOAD_CANCEL terminates in-progress copy
   5. Large file copy completes efficiently via block store
+**Verification**: `go build ./...` && `go test ./...`
 **Plans**: TBD
 
-### Phase 42: Clone/Reflinks
+### Phase 51: Clone/Reflinks
 **Goal**: Implement CLONE operation leveraging content-addressed storage
-**Depends on**: Phase 41
-**Requirements**: V42-02
+**Depends on**: Phase 50
+**Requirements**: NFS42-02
 **Success Criteria** (what must be TRUE):
   1. CLONE creates copy-on-write file instantly
   2. Cloned files share blocks until modification
   3. Modification triggers copy of affected blocks only
+**Verification**: `go build ./...` && `go test ./...`
 **Plans**: TBD
 
-### Phase 43: Sparse Files
+### Phase 52: Sparse Files
 **Goal**: Implement sparse file operations (SEEK, ALLOCATE, DEALLOCATE)
-**Depends on**: Phase 41
-**Requirements**: V42-03
+**Depends on**: Phase 50
+**Requirements**: NFS42-03
 **Success Criteria** (what must be TRUE):
   1. SEEK locates DATA or HOLE regions in file
   2. ALLOCATE pre-allocates file space
   3. DEALLOCATE punches holes in file
   4. Sparse file metadata correctly tracks allocated regions
+**Verification**: `go build ./...` && `go test ./...`
 **Plans**: TBD
 
-### Phase 44: Extended Attributes
+### Phase 53: Extended Attributes
 **Goal**: Implement xattr storage and NFSv4.2/SMB exposure
-**Depends on**: Phase 41
-**Requirements**: V42-04
+**Depends on**: Phase 50
+**Requirements**: NFS42-04
 **Success Criteria** (what must be TRUE):
   1. GETXATTR retrieves extended attribute value
   2. SETXATTR stores extended attribute
   3. LISTXATTRS enumerates all xattr names
   4. REMOVEXATTR deletes extended attribute
   5. Xattrs accessible via both NFSv4.2 and SMB
+**Verification**: `go build ./...` && `go test ./...`
 **Plans**: TBD
 
-### Phase 45: NFSv4.2 Operations
+### Phase 54: NFSv4.2 Operations
 **Goal**: Implement remaining NFSv4.2 operations
-**Depends on**: Phase 43
-**Requirements**: V42-05
+**Depends on**: Phase 52
+**Requirements**: NFS42-05
 **Success Criteria** (what must be TRUE):
   1. IO_ADVISE accepts application I/O hints
   2. LAYOUTERROR and LAYOUTSTATS available if pNFS enabled
+**Verification**: `go build ./...` && `go test ./...`
 **Plans**: TBD
 
-### Phase 46: Documentation
+### Phase 55: Documentation
 **Goal**: Complete documentation for all new features
-**Depends on**: Phase 44
+**Depends on**: Phase 53
 **Requirements**: (documentation)
 **Success Criteria** (what must be TRUE):
   1. docs/NFS.md updated with NFSv4.1 and NFSv4.2 details
   2. docs/CONFIGURATION.md covers all new session and v4.2 options
   3. docs/SECURITY.md describes Kerberos security model for NFS and SMB
+**Verification**: Documentation review
 **Plans**: TBD
 
-### Phase 47: v4.0 Testing
+### Phase 56: v4.1 Testing
 **Goal**: Final testing including pjdfstest POSIX compliance
-**Depends on**: Phase 41, Phase 42, Phase 43, Phase 44, Phase 45, Phase 46
-**Requirements**: V42-06
+**Depends on**: Phase 50, Phase 51, Phase 52, Phase 53, Phase 54, Phase 55
+**Requirements**: (testing)
 **Success Criteria** (what must be TRUE):
   1. Server-side copy E2E tests pass for various file sizes
   2. Clone/reflinks E2E tests verify block sharing
@@ -225,15 +379,16 @@ Full phase details archived to [milestones/v3.8-ROADMAP.md](milestones/v3.8-ROAD
   4. Xattr E2E tests verify cross-protocol access
   5. pjdfstest POSIX compliance passes for NFSv3 and NFSv4
   6. Performance benchmarks establish baseline
+**Verification**: `go test -tags=e2e ./test/e2e/...` && pjdfstest
 **Plans**: TBD
 
 ---
 
-## v4.1 Benchmarking & Performance
+## v4.2 Benchmarking & Performance
 
-### Phase 48: Benchmark Infrastructure
+### Phase 57: Benchmark Infrastructure
 **Goal**: Create bench/ directory structure with Docker Compose profiles and configuration files
-**Depends on**: Phase 47 (v4.0 complete)
+**Depends on**: Phase 56 (v4.1 complete)
 **Requirements**: BENCH-01
 **Reference**: GitHub #194
 **Status**: COMPLETE (merged 2026-02-27, PR #224 — completed as previous Phase 33)
@@ -245,14 +400,15 @@ Full phase details archived to [milestones/v3.8-ROADMAP.md](milestones/v3.8-ROAD
   5. `scripts/check-prerequisites.sh` validates fio, nfs-common, cifs-utils, python3, docker, jq, bc
   6. Only one profile active at a time (no resource contention)
   7. `results/` directory gitignored
+**Verification**: Docker Compose validation
 **Plans**: 2/2 (COMPLETED)
 Plans:
 - [x] 48-01-PLAN.md — Docker Compose infrastructure, directory structure, DittoFS configs
 - [x] 48-02-PLAN.md — Prerequisites check, cleanup scripts, shared library, Makefile
 
-### Phase 49: Benchmark Workloads
+### Phase 58: Benchmark Workloads
 **Goal**: Create fio job files for all I/O workloads and a custom metadata benchmark script
-**Depends on**: Phase 48
+**Depends on**: Phase 57
 **Requirements**: BENCH-02
 **Reference**: GitHub #195
 **Success Criteria** (what must be TRUE):
@@ -262,11 +418,12 @@ Plans:
   4. `scripts/metadata-bench.sh` measuring create/stat/readdir/delete ops for 1K/10K files
   5. Deep tree benchmark (depth=5, fan=10) with create and walk
   6. Metadata script outputs JSON with ops/sec and total time
+**Verification**: fio job validation
 **Plans**: TBD
 
-### Phase 50: Competitor Setup
+### Phase 59: Competitor Setup
 **Goal**: Create configuration files and setup scripts for each competitor system
-**Depends on**: Phase 48
+**Depends on**: Phase 57
 **Requirements**: BENCH-03
 **Reference**: GitHub #198
 **Success Criteria** (what must be TRUE):
@@ -277,11 +434,12 @@ Plans:
   5. Samba config: smb.conf for SMB benchmarking (VFS backend)
   6. DittoFS setup script: automated store/share/adapter creation via dfsctl
   7. Fairness ensured: matched cache sizes, same S3 endpoints, symmetric Docker overhead
+**Verification**: Configuration validation
 **Plans**: TBD
 
-### Phase 51: Orchestrator Scripts
+### Phase 60: Orchestrator Scripts
 **Goal**: Create main benchmark orchestrator and all helper scripts with platform variants
-**Depends on**: Phase 49, Phase 50
+**Depends on**: Phase 58, Phase 59
 **Requirements**: BENCH-04
 **Reference**: GitHub #196
 **Success Criteria** (what must be TRUE):
@@ -292,11 +450,12 @@ Plans:
   5. `run-bench-smb.sh` for Linux SMB testing (mount -t cifs)
   6. `run-bench-smb.ps1` for Windows SMB testing (PowerShell + diskspd)
   7. Health check wait before benchmark start
+**Verification**: Script validation
 **Plans**: TBD
 
-### Phase 52: Analysis & Reporting
+### Phase 61: Analysis & Reporting
 **Goal**: Create Python analysis pipeline for parsing results, generating charts, and producing reports
-**Depends on**: Phase 49
+**Depends on**: Phase 58
 **Requirements**: BENCH-05
 **Reference**: GitHub #197
 **Success Criteria** (what must be TRUE):
@@ -306,11 +465,12 @@ Plans:
   4. `generate_report.py` with Jinja2 template producing markdown report with environment details, summary tables, per-tier details, methodology section
   5. `requirements.txt` with pandas, matplotlib, seaborn, jinja2
   6. Results organized in `results/YYYY-MM-DD_HHMMSS/` with raw/, metrics/, charts/, report.md, summary.csv
+**Verification**: Python script validation
 **Plans**: TBD
 
-### Phase 53: Profiling Integration
+### Phase 62: Profiling Integration
 **Goal**: Integrate DittoFS observability stack for performance bottleneck identification
-**Depends on**: Phase 51
+**Depends on**: Phase 60
 **Requirements**: BENCH-06
 **Reference**: GitHub #199
 **Success Criteria** (what must be TRUE):
@@ -320,6 +480,7 @@ Plans:
   4. Analysis identifies bottlenecks: CPU flame graphs, S3 vs metadata latency, GC pauses, mutex contention, cache effectiveness
   5. Benchmark-specific Grafana dashboard for before/during/after metrics
   6. Results in `results/YYYY-MM-DD/metrics/` with prometheus/, pprof/, summary.json
+**Verification**: Profiling validation
 **Plans**: TBD
 
 ---
@@ -327,7 +488,7 @@ Plans:
 ## Progress
 
 **Execution Order:**
-v3.8 (33-40.5) -> v4.0 (41-47.5) -> v4.1 (48-53.5)
+v3.8 (33-40.5) -> v4.0 (41-49) -> v4.1 (50-56) -> v4.2 (57-62)
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
@@ -373,21 +534,30 @@ v3.8 (33-40.5) -> v4.0 (41-47.5) -> v4.1 (48-53.5)
 | 36. Kerberos SMB3 Integration | v3.8 | Complete | Complete | 2026-03-01 |
 | 37. SMB3 Leases and Directory Leasing | v3.8 | Complete | Complete | 2026-03-02 |
 | 38. Durable Handles | v3.8 | 3/3 | Complete | 2026-03-02 |
-| 39. Cross-Protocol Integration and Documentation | v3.8 | 3/3 | Complete   | 2026-03-02 | - |
-| 40. SMB3 Conformance Testing | v3.8 | 6/6 | Complete    | 2026-03-02 | - |
-| 41. Server-Side Copy | v4.0 | 0/? | Not started | - |
-| 42. Clone/Reflinks | v4.0 | 0/? | Not started | - |
-| 43. Sparse Files | v4.0 | 0/? | Not started | - |
-| 44. Extended Attributes | v4.0 | 0/? | Not started | - |
-| 45. NFSv4.2 Operations | v4.0 | 0/? | Not started | - |
-| 46. Documentation | v4.0 | 0/? | Not started | - |
-| 47. v4.0 Testing | v4.0 | 0/? | Not started | - |
-| 48. Benchmark Infrastructure | v4.1 | 2/2 | Complete | 2026-02-27 |
-| 49. Benchmark Workloads | v4.1 | 0/? | Not started | - |
-| 50. Competitor Setup | v4.1 | 0/? | Not started | - |
-| 51. Orchestrator Scripts | v4.1 | 0/? | Not started | - |
-| 52. Analysis & Reporting | v4.1 | 0/? | Not started | - |
-| 53. Profiling Integration | v4.1 | 0/? | Not started | - |
+| 39. Cross-Protocol Integration and Documentation | v3.8 | 3/3 | Complete | 2026-03-02 |
+| 40. SMB3 Conformance Testing | v3.8 | 6/6 | Complete | 2026-03-02 |
+| 41. Block State Enum and ListFileBlocks | v4.0 | 0/? | Not started | - |
+| 42. Legacy Cleanup | v4.0 | 0/? | Not started | - |
+| 43. Local-Only Block Management | v4.0 | 0/? | Not started | - |
+| 44. Data Model and API/CLI | v4.0 | 0/? | Not started | - |
+| 45. Package Restructure | v4.0 | 0/? | Not started | - |
+| 46. Per-Share Block Store Wiring | v4.0 | 0/? | Not started | - |
+| 47. L1 Read Cache and Prefetch | v4.0 | 0/? | Not started | - |
+| 48. Auto-Deduced Configuration | v4.0 | 0/? | Not started | - |
+| 49. Testing and Documentation | v4.0 | 0/? | Not started | - |
+| 50. Server-Side Copy | v4.1 | 0/? | Not started | - |
+| 51. Clone/Reflinks | v4.1 | 0/? | Not started | - |
+| 52. Sparse Files | v4.1 | 0/? | Not started | - |
+| 53. Extended Attributes | v4.1 | 0/? | Not started | - |
+| 54. NFSv4.2 Operations | v4.1 | 0/? | Not started | - |
+| 55. Documentation | v4.1 | 0/? | Not started | - |
+| 56. v4.1 Testing | v4.1 | 0/? | Not started | - |
+| 57. Benchmark Infrastructure | v4.2 | 2/2 | Complete | 2026-02-27 |
+| 58. Benchmark Workloads | v4.2 | 0/? | Not started | - |
+| 59. Competitor Setup | v4.2 | 0/? | Not started | - |
+| 60. Orchestrator Scripts | v4.2 | 0/? | Not started | - |
+| 61. Analysis & Reporting | v4.2 | 0/? | Not started | - |
+| 62. Profiling Integration | v4.2 | 0/? | Not started | - |
 
 **Total:** 124/? plans complete
 
@@ -398,4 +568,5 @@ v3.8 (33-40.5) -> v4.0 (41-47.5) -> v4.1 (48-53.5)
 *v3.0 shipped: 2026-02-25*
 *v3.5 shipped: 2026-02-26*
 *v3.6 shipped: 2026-02-28*
-*v3.8 roadmap created: 2026-02-28*
+*v3.8 shipped: 2026-03-04*
+*v4.0 roadmap created: 2026-03-09*

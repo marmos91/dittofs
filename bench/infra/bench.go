@@ -8,13 +8,13 @@ import (
 	scaleway "github.com/pulumiverse/pulumi-scaleway/sdk/go/scaleway"
 )
 
-// deployBench provisions an ephemeral server VM from the standard image
-// and installs a single competitor system. The orchestrator calls
+// deployBench provisions an ephemeral server VM and exports its install
+// script and connection details. The orchestrator calls
 // `pulumi up --stack bench` once per competitor, then `pulumi destroy`
 // before moving to the next.
 func deployBench(ctx *pulumi.Context) error {
-	cfg := loadConfig(config.New(ctx, "dittofs-bench")).withDefaults()
 	stackCfg := config.New(ctx, "dittofs-bench")
+	cfg := loadConfig(stackCfg)
 
 	// Which competitor to install (e.g., "kernel-nfs", "dittofs-badger-s3").
 	systemName := stackCfg.Require("system")

@@ -130,6 +130,43 @@ func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 	}
 }
 
+func TestApplyDefaults_OffloaderSentinels(t *testing.T) {
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+
+	// Offloader values should remain 0 (sentinel for auto-scaling)
+	if cfg.Offloader.ParallelUploads != 0 {
+		t.Errorf("Expected ParallelUploads 0 (auto-scale sentinel), got %d", cfg.Offloader.ParallelUploads)
+	}
+	if cfg.Offloader.ParallelDownloads != 0 {
+		t.Errorf("Expected ParallelDownloads 0 (auto-scale sentinel), got %d", cfg.Offloader.ParallelDownloads)
+	}
+	if cfg.Offloader.PrefetchBlocks != 0 {
+		t.Errorf("Expected PrefetchBlocks 0 (auto-scale sentinel), got %d", cfg.Offloader.PrefetchBlocks)
+	}
+}
+
+func TestApplyDefaults_OffloaderPreservesExplicit(t *testing.T) {
+	cfg := &Config{
+		Offloader: OffloaderConfig{
+			ParallelUploads:   32,
+			ParallelDownloads: 16,
+			PrefetchBlocks:    8,
+		},
+	}
+	ApplyDefaults(cfg)
+
+	if cfg.Offloader.ParallelUploads != 32 {
+		t.Errorf("Expected explicit ParallelUploads 32 preserved, got %d", cfg.Offloader.ParallelUploads)
+	}
+	if cfg.Offloader.ParallelDownloads != 16 {
+		t.Errorf("Expected explicit ParallelDownloads 16 preserved, got %d", cfg.Offloader.ParallelDownloads)
+	}
+	if cfg.Offloader.PrefetchBlocks != 8 {
+		t.Errorf("Expected explicit PrefetchBlocks 8 preserved, got %d", cfg.Offloader.PrefetchBlocks)
+	}
+}
+
 func TestGetDefaultConfig_IsValid(t *testing.T) {
 	cfg := GetDefaultConfig()
 

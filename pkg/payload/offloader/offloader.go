@@ -19,6 +19,23 @@ func hashB64(h [32]byte) string {
 	return base64.StdEncoding.EncodeToString(h[:])
 }
 
+// waitWithContext runs fn in a goroutine and waits for it to finish or the
+// context to be cancelled. Returns nil on completion, or ctx.Err() on timeout.
+func waitWithContext(ctx context.Context, fn func()) error {
+	done := make(chan struct{})
+	go func() {
+		fn()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // defaultShutdownTimeout is the maximum time to wait for the transfer queue
 // to finish processing during graceful shutdown.
 const defaultShutdownTimeout = 30 * time.Second
@@ -93,6 +110,9 @@ func New(c *cache.BlockCache, blockStore store.BlockStore, fileBlockStore metada
 	}
 	if config.ParallelDownloads <= 0 {
 		config.ParallelDownloads = DefaultParallelDownloads
+	}
+	if config.PrefetchBlocks <= 0 {
+		config.PrefetchBlocks = DefaultPrefetchBlocks
 	}
 
 	semSize := config.ParallelUploads
@@ -181,25 +201,37 @@ func (m *Offloader) Flush(ctx context.Context, payloadID string) (*FlushResult, 
 	return &FlushResult{Finalized: false}, nil
 }
 
+// DrainAllUploads waits for all in-flight uploads across all files to complete.
+// This includes both eager uploads (inFlight) and flush operations (flush) for
+// every tracked file.
+//
+// Useful for benchmarking and testing to ensure clean boundaries between workloads,
+// and exposed via the REST API for the benchmark runner to call between test phases.
+//
+// Returns nil when all uploads complete, or ctx.Err() if the context is cancelled.
+func (m *Offloader) DrainAllUploads(ctx context.Context) error {
+	m.uploadsMu.Lock()
+	states := make([]*fileUploadState, 0, len(m.uploads))
+	for _, state := range m.uploads {
+		states = append(states, state)
+	}
+	m.uploadsMu.Unlock()
+
+	return waitWithContext(ctx, func() {
+		for _, state := range states {
+			state.inFlight.Wait()
+			state.flush.Wait()
+		}
+	})
+}
+
 // WaitForEagerUploads waits for in-flight eager uploads to complete (for testing).
 func (m *Offloader) WaitForEagerUploads(ctx context.Context, payloadID string) error {
 	state := m.getUploadState(payloadID)
 	if state == nil {
 		return nil
 	}
-
-	done := make(chan struct{})
-	go func() {
-		state.inFlight.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return waitWithContext(ctx, state.inFlight.Wait)
 }
 
 // WaitForAllUploads waits for both eager uploads and flush operations to complete.
@@ -209,38 +241,24 @@ func (m *Offloader) WaitForAllUploads(ctx context.Context, payloadID string) err
 	if state == nil {
 		return nil
 	}
-
-	done := make(chan struct{})
-	go func() {
-		state.inFlight.Wait() // Wait for eager uploads
-		state.flush.Wait()    // Wait for flush operations
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return waitWithContext(ctx, func() {
+		state.inFlight.Wait()
+		state.flush.Wait()
+	})
 }
 
 // GetFileSize returns the total size of a file from the block store.
 func (m *Offloader) GetFileSize(ctx context.Context, payloadID string) (uint64, error) {
-	m.mu.RLock()
-	if m.closed {
-		m.mu.RUnlock()
+	if !m.canProcess(ctx) {
 		return 0, fmt.Errorf("offloader is closed")
 	}
-	blockStore := m.blockStore
-	m.mu.RUnlock()
 
-	if blockStore == nil {
+	if m.blockStore == nil {
 		return 0, fmt.Errorf("no block store configured")
 	}
 
 	prefix := payloadID + "/"
-	blocks, err := blockStore.ListByPrefix(ctx, prefix)
+	blocks, err := m.blockStore.ListByPrefix(ctx, prefix)
 	if err != nil {
 		return 0, fmt.Errorf("list blocks: %w", err)
 	}
@@ -260,7 +278,7 @@ func (m *Offloader) GetFileSize(ctx context.Context, payloadID string) (uint64, 
 	}
 
 	lastBlockKey := cache.FormatStoreKey(payloadID, maxBlockIdx)
-	lastBlockData, err := blockStore.ReadBlock(ctx, lastBlockKey)
+	lastBlockData, err := m.blockStore.ReadBlock(ctx, lastBlockKey)
 	if err != nil {
 		return 0, fmt.Errorf("read last block %s: %w", lastBlockKey, err)
 	}
@@ -404,6 +422,15 @@ func (m *Offloader) Close() error {
 	m.mu.Unlock()
 
 	close(m.stopCh)
+
+	// Wait for in-flight uploads and flushes to complete before closing.
+	// This prevents "store is closed" races when the block store is closed
+	// immediately after the offloader.
+	ctx, cancel := context.WithTimeout(context.Background(), defaultShutdownTimeout)
+	defer cancel()
+	_ = m.DrainAllUploads(ctx)
+
+	// Stop transfer queue with graceful shutdown timeout
 	if m.queue != nil {
 		m.queue.Stop(defaultShutdownTimeout)
 	}

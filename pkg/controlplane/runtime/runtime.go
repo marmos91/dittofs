@@ -32,8 +32,9 @@ type (
 // CacheConfig holds file cache path and size limit.
 // Kept here (instead of pkg/config) to avoid import cycles.
 type CacheConfig struct {
-	Path string // Directory for the cache block files
-	Size uint64 // Maximum cache size in bytes (0 = unlimited)
+	Path           string // Directory for the cache block files
+	Size           uint64 // Maximum cache size in bytes (0 = unlimited)
+	MaxPendingSize uint64 // Maximum pending (dirty) data size (0 = default 2GB)
 }
 
 // OffloaderConfig holds offloader settings for background data transfer.
@@ -339,6 +340,18 @@ func (r *Runtime) SetOffloaderConfig(cfg *OffloaderConfig) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.offloaderConfig = cfg
+}
+
+// DrainAllUploads waits for all in-flight uploads across all files to complete.
+// Returns nil if no payload service is configured or all uploads drained successfully.
+func (r *Runtime) DrainAllUploads(ctx context.Context) error {
+	r.mu.RLock()
+	ps := r.payloadService
+	r.mu.RUnlock()
+	if ps == nil {
+		return nil
+	}
+	return ps.DrainAllUploads(ctx)
 }
 
 func (r *Runtime) GetUserStore() models.UserStore         { return r.store }

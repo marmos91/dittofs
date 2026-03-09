@@ -195,6 +195,17 @@ func (s *PayloadService) Flush(ctx context.Context, id metadata.PayloadID) (*Flu
 	return result, nil
 }
 
+// DrainAllUploads waits for all in-flight uploads across all files to complete.
+// Useful for benchmarking and testing to ensure clean boundaries between workloads.
+func (s *PayloadService) DrainAllUploads(ctx context.Context) error {
+	return s.offloader.DrainAllUploads(ctx)
+}
+
+// ============================================================================
+// Statistics and Health
+// ============================================================================
+
+
 // GetStorageStats returns storage statistics.
 func (s *PayloadService) GetStorageStats(_ context.Context) (*StorageStats, error) {
 	files := s.cache.ListFiles()

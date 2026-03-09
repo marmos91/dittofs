@@ -6,7 +6,7 @@ nrfiles=1000
 filesize=4k
 create_on_open=1
 openfiles=1
-ioengine=${FIO_ENGINE:-posixaio}
+ioengine=${FIO_ENGINE:-libaio}
 numjobs=${BENCH_THREADS:-4}
 runtime=${BENCH_RUNTIME:-60}
 time_based
