@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -160,6 +161,16 @@ func NewFromConfig(ctx context.Context, config Config) (*Store, error) {
 	return New(client, config), nil
 }
 
+// checkClosed returns ErrStoreClosed if the store has been closed.
+func (s *Store) checkClosed() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return blockstore.ErrStoreClosed
+	}
+	return nil
+}
+
 // fullKey returns the full S3 key for a block key.
 func (s *Store) fullKey(blockKey string) string {
 	return s.keyPrefix + blockKey
@@ -167,12 +178,9 @@ func (s *Store) fullKey(blockKey string) string {
 
 // WriteBlock writes a single block to S3.
 func (s *Store) WriteBlock(ctx context.Context, blockKey string, data []byte) error {
-	s.mu.RLock()
-	if s.closed {
-		s.mu.RUnlock()
-		return blockstore.ErrStoreClosed
+	if err := s.checkClosed(); err != nil {
+		return err
 	}
-	s.mu.RUnlock()
 
 	key := s.fullKey(blockKey)
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
@@ -189,12 +197,9 @@ func (s *Store) WriteBlock(ctx context.Context, blockKey string, data []byte) er
 
 // ReadBlock reads a complete block from S3.
 func (s *Store) ReadBlock(ctx context.Context, blockKey string) ([]byte, error) {
-	s.mu.RLock()
-	if s.closed {
-		s.mu.RUnlock()
-		return nil, blockstore.ErrStoreClosed
+	if err := s.checkClosed(); err != nil {
+		return nil, err
 	}
-	s.mu.RUnlock()
 
 	key := s.fullKey(blockKey)
 	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
@@ -209,30 +214,14 @@ func (s *Store) ReadBlock(ctx context.Context, blockKey string) ([]byte, error) 
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	var data []byte
-	if resp.ContentLength != nil && *resp.ContentLength > 0 {
-		data = make([]byte, *resp.ContentLength)
-		_, err = io.ReadFull(resp.Body, data)
-	} else {
-		buf := bytes.NewBuffer(make([]byte, 0, maxBlockReadSize))
-		_, err = buf.ReadFrom(resp.Body)
-		data = buf.Bytes()
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read s3 object body: %w", err)
-	}
-
-	return data, nil
+	return readResponseBody(resp.Body, resp.ContentLength, maxBlockReadSize)
 }
 
 // ReadBlockRange reads a byte range from a block using S3 range requests.
 func (s *Store) ReadBlockRange(ctx context.Context, blockKey string, offset, length int64) ([]byte, error) {
-	s.mu.RLock()
-	if s.closed {
-		s.mu.RUnlock()
-		return nil, blockstore.ErrStoreClosed
+	if err := s.checkClosed(); err != nil {
+		return nil, err
 	}
-	s.mu.RUnlock()
 
 	key := s.fullKey(blockKey)
 	rangeHeader := fmt.Sprintf("bytes=%d-%d", offset, offset+length-1)
@@ -250,30 +239,34 @@ func (s *Store) ReadBlockRange(ctx context.Context, blockKey string, offset, len
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	var data []byte
-	if resp.ContentLength != nil && *resp.ContentLength > 0 {
-		data = make([]byte, *resp.ContentLength)
-		_, err = io.ReadFull(resp.Body, data)
-	} else {
-		buf := bytes.NewBuffer(make([]byte, 0, length))
-		_, err = buf.ReadFrom(resp.Body)
-		data = buf.Bytes()
+	return readResponseBody(resp.Body, resp.ContentLength, length)
+}
+
+// readResponseBody reads the full body from an S3 response.
+// When contentLength is known, pre-allocates exactly; otherwise uses fallbackSize.
+func readResponseBody(body io.ReadCloser, contentLength *int64, fallbackSize int64) ([]byte, error) {
+	if contentLength != nil && *contentLength > 0 {
+		data := make([]byte, *contentLength)
+		_, err := io.ReadFull(body, data)
+		if err != nil {
+			return nil, fmt.Errorf("read s3 object body: %w", err)
+		}
+		return data, nil
 	}
+
+	buf := bytes.NewBuffer(make([]byte, 0, fallbackSize))
+	_, err := buf.ReadFrom(body)
 	if err != nil {
 		return nil, fmt.Errorf("read s3 object body: %w", err)
 	}
-
-	return data, nil
+	return buf.Bytes(), nil
 }
 
 // CopyBlock copies a block from source to destination key using S3 server-side copy.
 func (s *Store) CopyBlock(ctx context.Context, srcKey, dstKey string) error {
-	s.mu.RLock()
-	if s.closed {
-		s.mu.RUnlock()
-		return blockstore.ErrStoreClosed
+	if err := s.checkClosed(); err != nil {
+		return err
 	}
-	s.mu.RUnlock()
 
 	fullSrcKey := s.fullKey(srcKey)
 	fullDstKey := s.fullKey(dstKey)
@@ -297,12 +290,9 @@ func (s *Store) CopyBlock(ctx context.Context, srcKey, dstKey string) error {
 
 // DeleteBlock removes a single block from S3.
 func (s *Store) DeleteBlock(ctx context.Context, blockKey string) error {
-	s.mu.RLock()
-	if s.closed {
-		s.mu.RUnlock()
-		return blockstore.ErrStoreClosed
+	if err := s.checkClosed(); err != nil {
+		return err
 	}
-	s.mu.RUnlock()
 
 	key := s.fullKey(blockKey)
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
@@ -318,12 +308,9 @@ func (s *Store) DeleteBlock(ctx context.Context, blockKey string) error {
 
 // DeleteByPrefix removes all blocks with a given prefix using batch delete.
 func (s *Store) DeleteByPrefix(ctx context.Context, prefix string) error {
-	s.mu.RLock()
-	if s.closed {
-		s.mu.RUnlock()
-		return blockstore.ErrStoreClosed
+	if err := s.checkClosed(); err != nil {
+		return err
 	}
-	s.mu.RUnlock()
 
 	fullPrefix := s.fullKey(prefix)
 
@@ -361,12 +348,9 @@ func (s *Store) DeleteByPrefix(ctx context.Context, prefix string) error {
 
 // ListByPrefix lists all block keys with a given prefix.
 func (s *Store) ListByPrefix(ctx context.Context, prefix string) ([]string, error) {
-	s.mu.RLock()
-	if s.closed {
-		s.mu.RUnlock()
-		return nil, blockstore.ErrStoreClosed
+	if err := s.checkClosed(); err != nil {
+		return nil, err
 	}
-	s.mu.RUnlock()
 
 	fullPrefix := s.fullKey(prefix)
 	var keys []string
@@ -405,12 +389,9 @@ func (s *Store) Close() error {
 
 // HealthCheck verifies the S3 bucket is accessible.
 func (s *Store) HealthCheck(ctx context.Context) error {
-	s.mu.RLock()
-	if s.closed {
-		s.mu.RUnlock()
-		return blockstore.ErrStoreClosed
+	if err := s.checkClosed(); err != nil {
+		return err
 	}
-	s.mu.RUnlock()
 
 	_, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{
 		Bucket: aws.String(s.bucket),
@@ -423,11 +404,20 @@ func (s *Store) HealthCheck(ctx context.Context) error {
 }
 
 // isNotFoundError checks if an error is an S3 not found error.
+// Uses proper AWS SDK error types first, falls back to string matching
+// for non-standard S3-compatible services (e.g., MinIO, Localstack).
 func isNotFoundError(err error) bool {
 	if err == nil {
 		return false
 	}
 
+	// Check for the typed AWS SDK error first.
+	var noSuchKey *types.NoSuchKey
+	if errors.As(err, &noSuchKey) {
+		return true
+	}
+
+	// Fallback: some S3-compatible services return non-standard errors.
 	errStr := err.Error()
 	return strings.Contains(errStr, "NoSuchKey") ||
 		strings.Contains(errStr, "NotFound") ||

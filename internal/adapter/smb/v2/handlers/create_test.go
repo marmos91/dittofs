@@ -397,7 +397,7 @@ func TestCreateResponse_Encode(t *testing.T) {
 func setupWalkPathTest(t *testing.T) (*Handler, *metadata.AuthContext, metadata.FileHandle) {
 	t.Helper()
 
-	// Create runtime with nil store (no payload service needed for walkPath tests)
+	// Create runtime with nil store (no block store needed for walkPath tests)
 	rt := runtime.New(nil)
 
 	// Create memory metadata store and register it

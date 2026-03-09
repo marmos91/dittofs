@@ -120,7 +120,7 @@ type WriteResponse struct {
 
 // Write handles NFS WRITE (RFC 1813 Section 3.3.7).
 // Writes data to a regular file at a given offset using two-phase PrepareWrite/CommitWrite pattern.
-// Delegates to MetadataService.PrepareWrite+CommitWrite and PayloadService.WriteAt (cache-backed).
+// Delegates to MetadataService.PrepareWrite+CommitWrite and BlockStore.WriteAt (cache-backed).
 // Updates file size/timestamps via metadata; writes data to cache (flushed on COMMIT); returns WCC data.
 // Errors: NFS3ErrNoEnt, NFS3ErrAcces, NFS3ErrFBig (offset overflow), NFS3ErrNoSpc, NFS3ErrIO.
 func (h *Handler) Write(
@@ -142,10 +142,10 @@ func (h *Handler) Write(
 	}
 
 	// ========================================================================
-	// Step 2: Get metadata and content services from registry
+	// Step 2: Get metadata service and block store from registry
 	// ========================================================================
 
-	metaSvc, payloadSvc, err := getServices(h.Registry)
+	metaSvc, blockStore, err := getServices(h.Registry)
 	if err != nil {
 		logger.ErrorCtx(ctx.Context, "WRITE failed: service not initialized", "client", clientIP, "error", err)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
@@ -252,7 +252,7 @@ func (h *Handler) Write(
 	nfsWccAttr := buildWccAttr(writeIntent.PreWriteAttr)
 
 	// ========================================================================
-	// Step 6: Write data to ContentService (uses Cache internally)
+	// Step 6: Write data to BlockStore (uses local cache internally)
 	// ========================================================================
 
 	// Check context before write operation
@@ -261,8 +261,8 @@ func (h *Handler) Write(
 		return h.buildWriteErrorResponse(types.NFS3ErrIO, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}
 
-	// Write to ContentService (uses Cache, will be flushed on COMMIT)
-	err = payloadSvc.WriteAt(ctx.Context, string(writeIntent.PayloadID), req.Data, req.Offset)
+	// Write to BlockStore (uses local cache, will be flushed on COMMIT)
+	err = blockStore.WriteAt(ctx.Context, string(writeIntent.PayloadID), req.Data, req.Offset)
 	if err != nil {
 		logError(ctx.Context, err, "WRITE failed: content write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "content_id", writeIntent.PayloadID, "client", clientIP)
 		status := xdr.MapContentErrorToNFSStatus(err)
@@ -325,11 +325,10 @@ func (h *Handler) Write(
 		AttrBefore:      nfsWccAttr,
 		AttrAfter:       nfsAttr,
 		// Count: RFC 1813 specifies this as "The number of bytes of data written".
-		// We currently assume that the configured content store implementations
-		// perform WriteAt in an all-or-nothing fashion: they either write all
-		// bytes or fail entirely. Under that assumption, len(req.Data) equals
-		// the actual bytes written on success.
-		// NOTE: If a future content store allows partial writes, this code must
+		// We currently assume that the block store WriteAt is all-or-nothing:
+		// it either writes all bytes or fails entirely. Under that assumption,
+		// len(req.Data) equals the actual bytes written on success.
+		// NOTE: If a future block store allows partial writes, this code must
 		// be updated to report the actual number of bytes written instead of
 		// len(req.Data), and the WriteAt contract should document that behavior.
 		Count:     uint32(len(req.Data)),

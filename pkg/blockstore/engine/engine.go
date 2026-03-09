@@ -108,10 +108,6 @@ func (bs *BlockStore) Close() error {
 	return errors.Join(errs...)
 }
 
-// ============================================================================
-// Reader interface
-// ============================================================================
-
 // ReadAt reads data from storage at the given offset into dest.
 // Checks local cache first, falling back to remote download on miss.
 func (bs *BlockStore) ReadAt(ctx context.Context, payloadID string, data []byte, offset uint64) (int, error) {
@@ -142,10 +138,6 @@ func (bs *BlockStore) Exists(ctx context.Context, payloadID string) (bool, error
 	return bs.syncer.Exists(ctx, payloadID)
 }
 
-// ============================================================================
-// Writer interface
-// ============================================================================
-
 // WriteAt writes data to storage at the given offset.
 // Writes go directly to local cache; the syncer handles background upload.
 func (bs *BlockStore) WriteAt(ctx context.Context, payloadID string, data []byte, offset uint64) error {
@@ -171,27 +163,15 @@ func (bs *BlockStore) Delete(ctx context.Context, payloadID string) error {
 	return bs.syncer.Delete(ctx, payloadID)
 }
 
-// ============================================================================
-// Flusher interface
-// ============================================================================
-
 // Flush ensures all dirty data for a payload is persisted.
 func (bs *BlockStore) Flush(ctx context.Context, payloadID string) (*blockstore.FlushResult, error) {
-	result, err := bs.syncer.Flush(ctx, payloadID)
-	if err != nil {
-		return nil, err
-	}
-	return &blockstore.FlushResult{Finalized: result.Finalized}, nil
+	return bs.syncer.Flush(ctx, payloadID)
 }
 
 // DrainAllUploads waits for all pending uploads to complete.
 func (bs *BlockStore) DrainAllUploads(ctx context.Context) error {
 	return bs.syncer.DrainAllUploads(ctx)
 }
-
-// ============================================================================
-// Stats and Health
-// ============================================================================
 
 // Stats returns storage statistics from the local cache.
 func (bs *BlockStore) Stats() (*blockstore.Stats, error) {
@@ -210,22 +190,14 @@ func (bs *BlockStore) HealthCheck(ctx context.Context) error {
 	return bs.syncer.HealthCheck(ctx)
 }
 
-// ============================================================================
-// Accessors (for runtime/config wiring)
-// ============================================================================
-
 // Local returns the local store.
 func (bs *BlockStore) Local() local.LocalStore { return bs.local }
 
 // Remote returns the remote store (may be nil in local-only mode).
 func (bs *BlockStore) Remote() remote.RemoteStore { return bs.remote }
 
-// SyncerInstance returns the syncer.
-func (bs *BlockStore) SyncerInstance() *blocksync.Syncer { return bs.syncer }
-
-// ============================================================================
-// Internal read logic
-// ============================================================================
+// Syncer returns the syncer.
+func (bs *BlockStore) Syncer() *blocksync.Syncer { return bs.syncer }
 
 // readAtInternal reads from primary payloadID, falling back to cowSource on miss.
 func (bs *BlockStore) readAtInternal(ctx context.Context, payloadID, cowSource string, data []byte, offset uint64) (int, error) {

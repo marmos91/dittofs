@@ -245,7 +245,6 @@ func (rt *Runtime) EnsureBlockStore(ctx context.Context) error {
 	return nil
 }
 
-
 // CreateRemoteStoreFromConfig creates a remote store from type and dynamic config.
 func CreateRemoteStoreFromConfig(ctx context.Context, storeType string, cfg interface {
 	GetConfig() (map[string]any, error)
@@ -260,12 +259,12 @@ func CreateRemoteStoreFromConfig(ctx context.Context, storeType string, cfg inte
 		return remotememory.New(), nil
 
 	case "filesystem":
-		return nil, errors.New("payload store type 'filesystem' removed in v4.0 -- use 'memory' or 's3'")
+		return nil, errors.New("remote store type 'filesystem' removed in v4.0 -- use 'memory' or 's3'")
 
 	case "s3":
 		bucket, ok := config["bucket"].(string)
 		if !ok || bucket == "" {
-			return nil, errors.New("s3 payload store requires bucket")
+			return nil, errors.New("s3 remote store requires bucket")
 		}
 
 		region := "us-east-1"
@@ -290,14 +289,6 @@ func CreateRemoteStoreFromConfig(ctx context.Context, storeType string, cfg inte
 	default:
 		return nil, fmt.Errorf("unsupported remote store type: %s", storeType)
 	}
-}
-
-// CreateBlockStoreFromConfig is a deprecated alias for CreateRemoteStoreFromConfig.
-// It returns the old interface type for backward compatibility with existing callers.
-func CreateBlockStoreFromConfig(ctx context.Context, storeType string, cfg interface {
-	GetConfig() (map[string]any, error)
-}) (remote.RemoteStore, error) {
-	return CreateRemoteStoreFromConfig(ctx, storeType, cfg)
 }
 
 // buildSyncerConfig merges user-supplied overrides into the default syncer config.

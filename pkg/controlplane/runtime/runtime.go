@@ -314,7 +314,6 @@ func (r *Runtime) Store() store.Store                            { return r.stor
 func (r *Runtime) GetMetadataService() *metadata.MetadataService { return r.metadataService }
 func (r *Runtime) GetBlockStore() *engine.BlockStore             { return r.blockStore }
 
-
 // SIDMapper returns the machine SID mapper for Windows identity mapping.
 // Returns nil if the runtime has not been started yet (Serve not called).
 func (r *Runtime) SIDMapper() *sid.SIDMapper { return r.lifecycleSvc.SIDMapper() }
@@ -343,7 +342,6 @@ func (r *Runtime) SetSyncerConfig(cfg *SyncerConfig) {
 	r.syncerConfig = cfg
 }
 
-
 // DrainAllUploads waits for all in-flight uploads across all files to complete.
 // Returns nil if no block store is configured or all uploads drained successfully.
 func (r *Runtime) DrainAllUploads(ctx context.Context) error {
@@ -358,7 +356,6 @@ func (r *Runtime) DrainAllUploads(ctx context.Context) error {
 
 func (r *Runtime) GetUserStore() models.UserStore         { return r.store }
 func (r *Runtime) GetIdentityStore() models.IdentityStore { return r.store }
-
 
 // --- Settings Access ---
 

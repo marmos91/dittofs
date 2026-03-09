@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
-	"strings"
 	gosync "sync"
 	"sync/atomic"
 	"time"
@@ -16,16 +14,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
 )
 
-// parseStoreKeyBlockIdx extracts the block index from a store key.
-// Store key format: "{payloadID}/block-{blockIdx}".
-// Returns (blockIdx, true) on success, (0, false) if parsing fails.
+// parseStoreKeyBlockIdx extracts the block index from a store key for a known payloadID.
+// Delegates to blockstore.ParseStoreKey, verifying the key belongs to the expected file.
 func parseStoreKeyBlockIdx(storeKey, payloadID string) (uint64, bool) {
-	prefix := payloadID + "/block-"
-	if !strings.HasPrefix(storeKey, prefix) || len(storeKey) <= len(prefix) {
-		return 0, false
-	}
-	blockIdx, err := strconv.ParseUint(storeKey[len(prefix):], 10, 64)
-	if err != nil {
+	pid, blockIdx, ok := blockstore.ParseStoreKey(storeKey)
+	if !ok || pid != payloadID {
 		return 0, false
 	}
 	return blockIdx, true
@@ -163,7 +156,7 @@ func (m *Syncer) canProcess(ctx context.Context) bool {
 // from remote upload latency -- with a sufficiently large cache, remote write
 // performance equals local performance. Remote latency only matters when
 // backpressure kicks in (cache full) or on cold reads.
-func (m *Syncer) Flush(ctx context.Context, payloadID string) (*FlushResult, error) {
+func (m *Syncer) Flush(ctx context.Context, payloadID string) (*blockstore.FlushResult, error) {
 	if err := m.checkReady(ctx); err != nil {
 		return nil, err
 	}
@@ -177,7 +170,7 @@ func (m *Syncer) Flush(ctx context.Context, payloadID string) (*FlushResult, err
 		return nil, fmt.Errorf("cache flush failed: %w", err)
 	}
 
-	return &FlushResult{Finalized: false}, nil
+	return &blockstore.FlushResult{Finalized: false}, nil
 }
 
 // DrainAllUploads waits for all in-flight uploads across all files to complete.
@@ -281,7 +274,7 @@ func (m *Syncer) Exists(ctx context.Context, payloadID string) (bool, error) {
 	if err == nil {
 		return true, nil
 	}
-	if err == blockstore.ErrBlockNotFound {
+	if errors.Is(err, blockstore.ErrBlockNotFound) {
 		return false, nil
 	}
 	return false, fmt.Errorf("check block: %w", err)

@@ -6,10 +6,6 @@ import (
 	"time"
 )
 
-// ============================================================================
-// Sentinel Errors
-// ============================================================================
-
 // Standard block store errors. Protocol handlers should check for these errors
 // and map them to appropriate protocol-specific error codes.
 var (
@@ -135,10 +131,6 @@ var (
 	// ErrFileBlockNotFound is returned when a file block is not found.
 	ErrFileBlockNotFound = errors.New("file block not found")
 )
-
-// ============================================================================
-// BlockStoreError
-// ============================================================================
 
 // BlockStoreError wraps sentinel block store errors with structured debugging context.
 //

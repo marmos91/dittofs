@@ -89,8 +89,3 @@ func DefaultSyncQueueConfig() SyncQueueConfig {
 		DownloadWorkers: DefaultParallelDownloads,
 	}
 }
-
-// FlushResult indicates the outcome of a flush operation.
-type FlushResult struct {
-	Finalized bool // All blocks have been synced to the backend store
-}

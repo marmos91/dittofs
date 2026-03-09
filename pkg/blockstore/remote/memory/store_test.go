@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
@@ -35,7 +36,7 @@ func TestStore_ReadBlockNotFound(t *testing.T) {
 	defer func() { _ = s.Close() }()
 
 	_, err := s.ReadBlock(ctx, "nonexistent")
-	if err != blockstore.ErrBlockNotFound {
+	if !errors.Is(err, blockstore.ErrBlockNotFound) {
 		t.Errorf("ReadBlock returned error %v, want %v", err, blockstore.ErrBlockNotFound)
 	}
 }
@@ -125,7 +126,7 @@ func TestStore_DeleteByPrefix(t *testing.T) {
 	for key := range blocks {
 		_, err := s.ReadBlock(ctx, key)
 		if key[:17] == "share1/content123" {
-			if err != blockstore.ErrBlockNotFound {
+			if !errors.Is(err, blockstore.ErrBlockNotFound) {
 				t.Errorf("ReadBlock(%s) after delete returned error %v, want %v", key, err, blockstore.ErrBlockNotFound)
 			}
 		} else {
@@ -179,19 +180,19 @@ func TestStore_ClosedOperations(t *testing.T) {
 		t.Fatalf("Close failed: %v", err)
 	}
 
-	if _, err := s.ReadBlock(ctx, "key"); err != blockstore.ErrStoreClosed {
+	if _, err := s.ReadBlock(ctx, "key"); !errors.Is(err, blockstore.ErrStoreClosed) {
 		t.Errorf("ReadBlock on closed store returned %v, want %v", err, blockstore.ErrStoreClosed)
 	}
 
-	if err := s.WriteBlock(ctx, "key", []byte("data")); err != blockstore.ErrStoreClosed {
+	if err := s.WriteBlock(ctx, "key", []byte("data")); !errors.Is(err, blockstore.ErrStoreClosed) {
 		t.Errorf("WriteBlock on closed store returned %v, want %v", err, blockstore.ErrStoreClosed)
 	}
 
-	if err := s.DeleteBlock(ctx, "key"); err != blockstore.ErrStoreClosed {
+	if err := s.DeleteBlock(ctx, "key"); !errors.Is(err, blockstore.ErrStoreClosed) {
 		t.Errorf("DeleteBlock on closed store returned %v, want %v", err, blockstore.ErrStoreClosed)
 	}
 
-	if _, err := s.ListByPrefix(ctx, ""); err != blockstore.ErrStoreClosed {
+	if _, err := s.ListByPrefix(ctx, ""); !errors.Is(err, blockstore.ErrStoreClosed) {
 		t.Errorf("ListByPrefix on closed store returned %v, want %v", err, blockstore.ErrStoreClosed)
 	}
 }

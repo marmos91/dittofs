@@ -1,6 +1,6 @@
 // Package sync implements cache-to-store transfer orchestration.
 //
-// The syncer is responsible for moving data between the local block cache
+// The syncer is responsible for moving data between the local store
 // and the remote block store (S3 or memory). It handles:
 //
 //   - Periodic sync: Scan for local blocks and upload them in the background

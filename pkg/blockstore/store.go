@@ -5,10 +5,6 @@ import (
 	"time"
 )
 
-// ============================================================================
-// FileBlockStore Interface (Content-Addressed Block Management)
-// ============================================================================
-
 // FileBlockStore defines operations for content-addressed file block management.
 //
 // FileBlock is the single block entity in DittoFS. Each block is content-addressed
@@ -55,10 +51,6 @@ type FileBlockStore interface {
 	// Returns empty slice (not nil) if no blocks found.
 	ListFileBlocks(ctx context.Context, payloadID string) ([]*FileBlock, error)
 }
-
-// ============================================================================
-// Store Interface (Orchestrator)
-// ============================================================================
 
 // Reader defines read operations on the block store.
 type Reader interface {
@@ -115,10 +107,6 @@ type Store interface {
 	// Close releases resources held by the store.
 	Close() error
 }
-
-// ============================================================================
-// Store Types
-// ============================================================================
 
 // FlushResult indicates the outcome of a flush operation.
 type FlushResult struct {

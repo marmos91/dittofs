@@ -13,7 +13,7 @@ import (
 
 // handleCommit implements the COMMIT operation (RFC 7530 Section 16.5).
 // Flushes unstable writes to stable storage and returns a server boot verifier.
-// Delegates to PayloadService.Flush for the file referenced by the current filehandle.
+// Delegates to BlockStore.Flush for the file referenced by the current filehandle.
 // Persists cached write data to the backing store; verifier enables server-restart detection.
 // Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_ISDIR, NFS4ERR_STALE, NFS4ERR_IO, NFS4ERR_BADXDR.
 func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
@@ -97,8 +97,8 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 		return encodeCommit4resok()
 	}
 
-	// Get payload service and flush
-	payloadSvc, err := getBlockStoreForCtx(h)
+	// Get block store and flush
+	blockStore, err := getBlockStoreForCtx(h)
 	if err != nil {
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
@@ -107,7 +107,7 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 		}
 	}
 
-	_, flushErr := payloadSvc.Flush(authCtx.Context, string(file.PayloadID))
+	_, flushErr := blockStore.Flush(authCtx.Context, string(file.PayloadID))
 	if flushErr != nil {
 		logger.Debug("NFSv4 COMMIT flush failed",
 			"error", flushErr,

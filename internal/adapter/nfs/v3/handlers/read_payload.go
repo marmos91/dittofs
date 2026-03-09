@@ -13,11 +13,11 @@ import (
 )
 
 // ============================================================================
-// Payload Read Operations
+// Block Store Read Operations
 // ============================================================================
 
-// payloadReadResult holds the result of reading from the payload service.
-type payloadReadResult struct {
+// blockReadResult holds the result of reading from the block store.
+type blockReadResult struct {
 	data      []byte
 	bytesRead int
 	eof       bool
@@ -26,7 +26,7 @@ type payloadReadResult struct {
 
 // Release returns the data buffer to the pool if it was pooled.
 // Must be called after the data is no longer needed (e.g., after encoding).
-func (r *payloadReadResult) Release() {
+func (r *blockReadResult) Release() {
 	if r.pooled && r.data != nil {
 		pool.Put(r.data)
 		r.data = nil
@@ -34,15 +34,15 @@ func (r *payloadReadResult) Release() {
 	}
 }
 
-// readFromPayloadService reads data using the PayloadService ReadAt method.
-// The Cache always supports efficient random-access reads.
+// readFromBlockStore reads data using the BlockStore ReadAt method.
+// The local cache always supports efficient random-access reads.
 //
 // The returned result uses a pooled buffer. The caller MUST call result.Release()
 // after the data is no longer needed (typically after encoding the response).
 //
 // Parameters:
 //   - ctx: Handler context with cancellation support
-//   - payloadSvc: Content service for reading (backed by Cache)
+//   - blockStore: Block store engine for reading (backed by local cache)
 //   - payloadID: Content identifier to read
 //   - cowSource: COW source PayloadID for lazy copy (empty if not a COW file)
 //   - offset: Byte offset to read from
@@ -51,9 +51,9 @@ func (r *payloadReadResult) Release() {
 //   - handle: File handle for logging
 //
 // Returns:
-//   - payloadReadResult: Result with data (caller must call Release())
+//   - blockReadResult: Result with data (caller must call Release())
 //   - error: Error if read failed
-func readFromPayloadService(
+func readFromBlockStore(
 	ctx *NFSHandlerContext,
 	blockStore *engine.BlockStore,
 	payloadID metadata.PayloadID,
@@ -62,7 +62,7 @@ func readFromPayloadService(
 	count uint32,
 	clientIP string,
 	handle []byte,
-) (payloadReadResult, error) {
+) (blockReadResult, error) {
 	logger.DebugCtx(ctx.Context, "READ: reading from BlockStore", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "count", count, "content_id", payloadID, "cow_source", cowSource)
 
 	// Get a pooled buffer for the read
@@ -80,7 +80,7 @@ func readFromPayloadService(
 
 	// Handle ReadAt results
 	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
-		return payloadReadResult{
+		return blockReadResult{
 			data:      data[:n],
 			bytesRead: n,
 			eof:       true,
@@ -92,16 +92,16 @@ func readFromPayloadService(
 		// Return buffer to pool on error
 		pool.Put(data)
 		logger.DebugCtx(ctx.Context, "READ: request cancelled during ReadAt", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "read", n, "client", clientIP)
-		return payloadReadResult{}, readErr
+		return blockReadResult{}, readErr
 	}
 
 	if readErr != nil {
 		// Return buffer to pool on error
 		pool.Put(data)
-		return payloadReadResult{}, fmt.Errorf("ReadAt error: %w", readErr)
+		return blockReadResult{}, fmt.Errorf("ReadAt error: %w", readErr)
 	}
 
-	return payloadReadResult{
+	return blockReadResult{
 		data:      data,
 		bytesRead: n,
 		eof:       false,

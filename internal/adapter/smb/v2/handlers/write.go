@@ -218,11 +218,11 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	}
 
 	// ========================================================================
-	// Step 6: Get metadata and content services
+	// Step 6: Get metadata service and block store
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-	payloadSvc := h.Registry.GetBlockStore()
+	blockStore := h.Registry.GetBlockStore()
 
 	// ========================================================================
 	// Step 7: Build AuthContext
@@ -263,12 +263,12 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	}
 
 	// ========================================================================
-	// Step 10: Write data to ContentService (uses Cache internally)
+	// Step 10: Write data to BlockStore (uses local cache internally)
 	// ========================================================================
 
 	bytesWritten := len(req.Data)
 
-	err = payloadSvc.WriteAt(authCtx.Context, string(writeOp.PayloadID), req.Data, req.Offset)
+	err = blockStore.WriteAt(authCtx.Context, string(writeOp.PayloadID), req.Data, req.Offset)
 	if err != nil {
 		logger.Warn("WRITE: content write failed", "path", openFile.Path, "error", err)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil

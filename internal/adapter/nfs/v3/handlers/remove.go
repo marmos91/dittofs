@@ -66,8 +66,8 @@ type RemoveResponse struct {
 
 // Remove handles NFS REMOVE (RFC 1813 Section 3.3.12).
 // Deletes a non-directory file from a parent directory (symlinks and special files included).
-// Delegates to MetadataService.RemoveFile then PayloadService.Delete for content cleanup.
-// Removes directory entry and file metadata; deletes payload content; returns parent WCC data.
+// Delegates to MetadataService.RemoveFile then BlockStore.Delete for content cleanup.
+// Removes directory entry and file metadata; deletes block data; returns parent WCC data.
 // Errors: NFS3ErrNoEnt, NFS3ErrIsDir (use RMDIR), NFS3ErrAcces, NFS3ErrIO.
 func (h *Handler) Remove(
 	ctx *NFSHandlerContext,
@@ -95,10 +95,10 @@ func (h *Handler) Remove(
 	}
 
 	// ========================================================================
-	// Step 2: Get metadata and content services from registry
+	// Step 2: Get metadata service and block store from registry
 	// ========================================================================
 
-	metaSvc, payloadSvc, err := getServices(h.Registry)
+	metaSvc, blockStore, err := getServices(h.Registry)
 	if err != nil {
 		logger.ErrorCtx(ctx.Context, "REMOVE failed: service not initialized", "client", clientIP, "error", err)
 		return &RemoveResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
@@ -221,11 +221,11 @@ func (h *Handler) Remove(
 	// orphaned but the file is still properly deleted from the client's view.
 	//
 	// Note: With async write mode, cached writes are flushed during COMMIT.
-	// REMOVE should only delete what's already in the content store.
+	// REMOVE should only delete what's already in the block store.
 	// Any unflushed cache data will be cleaned up by cache eviction.
 
 	if removedFileAttr.PayloadID != "" {
-		if err := payloadSvc.Delete(ctx.Context, string(removedFileAttr.PayloadID)); err != nil {
+		if err := blockStore.Delete(ctx.Context, string(removedFileAttr.PayloadID)); err != nil {
 			// Log but don't fail the operation - metadata is already removed
 			logger.WarnCtx(ctx.Context, "REMOVE: failed to delete content", "name", req.Filename, "content_id", removedFileAttr.PayloadID, "error", err)
 			// This is non-fatal - the file is successfully removed from metadata

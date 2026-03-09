@@ -3,21 +3,15 @@ package blockstore
 import (
 	"encoding/hex"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 )
-
-// ============================================================================
-// Block Size
-// ============================================================================
 
 // BlockSize is the size of a single block (8MB). This is the single source of
 // truth -- all packages should reference this constant instead of defining
 // their own copies.
 const BlockSize = 8 * 1024 * 1024
-
-// ============================================================================
-// Content-Addressed Types
-// ============================================================================
 
 // HashSize is the size of content hashes (SHA-256 = 32 bytes).
 const HashSize = 32
@@ -53,10 +47,6 @@ func ParseContentHash(s string) (ContentHash, error) {
 	copy(h[:], b)
 	return h, nil
 }
-
-// ============================================================================
-// BlockState
-// ============================================================================
 
 // BlockState represents the lifecycle state of a FileBlock.
 //
@@ -94,10 +84,6 @@ func (s BlockState) String() string {
 		return "Unknown"
 	}
 }
-
-// ============================================================================
-// FileBlock
-// ============================================================================
 
 // FileBlock is the single block entity in DittoFS.
 // Content-addressed: blocks with the same hash are shared across files for dedup.
@@ -183,10 +169,6 @@ func (b *FileBlock) IsLocal() bool {
 	return b.State == BlockStateLocal
 }
 
-// ============================================================================
-// BlockRef
-// ============================================================================
-
 // BlockRef references a single block in storage.
 type BlockRef struct {
 	// Key is the full block key in storage.
@@ -197,12 +179,45 @@ type BlockRef struct {
 	Size uint32
 }
 
-// ============================================================================
-// Utility Functions
-// ============================================================================
-
 // FormatStoreKey returns the block store key (S3 object key) for a block.
 // Format: "{payloadID}/block-{blockIdx}".
 func FormatStoreKey(payloadID string, blockIdx uint64) string {
 	return fmt.Sprintf("%s/block-%d", payloadID, blockIdx)
+}
+
+// ParseStoreKey extracts the payloadID and block index from a store key.
+// Store key format: "{payloadID}/block-{blockIdx}".
+// Returns ("", 0, false) if the key format is invalid.
+func ParseStoreKey(storeKey string) (payloadID string, blockIdx uint64, ok bool) {
+	idx := strings.LastIndex(storeKey, "/block-")
+	if idx < 0 || idx == 0 {
+		return "", 0, false
+	}
+	payloadID = storeKey[:idx]
+	blockIdx, err := strconv.ParseUint(storeKey[idx+len("/block-"):], 10, 64)
+	if err != nil {
+		return "", 0, false
+	}
+	return payloadID, blockIdx, true
+}
+
+// KeyBelongsToFile checks if a store key belongs to the given payloadID.
+// Store key format: "{payloadID}/block-{blockIdx}".
+func KeyBelongsToFile(key, payloadID string) bool {
+	prefix := payloadID + "/block-"
+	return len(key) > len(prefix) && key[:len(prefix)] == prefix
+}
+
+// ParseBlockIdx extracts the block index from a store key for a known payloadID.
+// Returns 0 if the key format is invalid.
+func ParseBlockIdx(key, payloadID string) uint64 {
+	prefix := payloadID + "/block-"
+	if len(key) <= len(prefix) || key[:len(prefix)] != prefix {
+		return 0
+	}
+	idx, err := strconv.ParseUint(key[len(prefix):], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return idx
 }

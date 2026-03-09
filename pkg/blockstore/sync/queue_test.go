@@ -6,16 +6,15 @@ import (
 	"time"
 )
 
-func TestSyncQueue_Enqueue(t *testing.T) {
+func TestSyncQueue_EnqueueUpload(t *testing.T) {
 	cfg := DefaultSyncQueueConfig()
 	cfg.QueueSize = 10
 	q := NewSyncQueue(nil, cfg)
 
-	// Enqueue requests
 	for i := 0; i < 5; i++ {
 		req := NewBlockUploadRequest("test-content", uint64(i))
-		if !q.Enqueue(req) {
-			t.Errorf("Enqueue(%d) returned false", i)
+		if !q.EnqueueUpload(req) {
+			t.Errorf("EnqueueUpload(%d) returned false", i)
 		}
 	}
 
@@ -36,14 +35,14 @@ func TestSyncQueue_QueueFull(t *testing.T) {
 	req2 := NewBlockUploadRequest("c2", 0)
 	req3 := NewBlockUploadRequest("c3", 0)
 
-	if !q.Enqueue(req1) {
-		t.Error("Enqueue(1) should succeed")
+	if !q.EnqueueUpload(req1) {
+		t.Error("EnqueueUpload(1) should succeed")
 	}
-	if !q.Enqueue(req2) {
-		t.Error("Enqueue(2) should succeed")
+	if !q.EnqueueUpload(req2) {
+		t.Error("EnqueueUpload(2) should succeed")
 	}
-	if q.Enqueue(req3) {
-		t.Error("Enqueue(3) should fail (queue full)")
+	if q.EnqueueUpload(req3) {
+		t.Error("EnqueueUpload(3) should fail (queue full)")
 	}
 
 	if q.Pending() != 2 {
@@ -120,9 +119,8 @@ func TestSyncQueue_Stats(t *testing.T) {
 		t.Errorf("Stats() = (%d, %d, %d), want (0, 0, 0)", pending, completed, failed)
 	}
 
-	// Enqueue some requests
-	q.Enqueue(NewBlockUploadRequest("c1", 0))
-	q.Enqueue(NewBlockUploadRequest("c2", 1))
+	q.EnqueueUpload(NewBlockUploadRequest("c1", 0))
+	q.EnqueueUpload(NewBlockUploadRequest("c2", 1))
 
 	pending, _, _ = q.Stats()
 	if pending != 2 {

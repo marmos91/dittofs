@@ -125,7 +125,7 @@ func (resp *ReadResponse) Encode() ([]byte, error) {
 // READ allows clients to read data from an open file at a specified offset.
 // It validates the file handle and permissions, handles symlink reads
 // (generating MFsymlink content on-the-fly), checks for conflicting
-// byte-range locks, and reads data from the content service (which uses
+// byte-range locks, and reads data from the block store (which uses
 // the cache layer internally). Returns StatusEndOfFile when the offset
 // is at or beyond EOF.
 func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse, error) {
@@ -184,11 +184,11 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	ctx.Permission = tree.Permission
 
 	// ========================================================================
-	// Step 5: Get metadata and content services
+	// Step 5: Get metadata service and block store
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-	payloadSvc := h.Registry.GetBlockStore()
+	blockStore := h.Registry.GetBlockStore()
 
 	// ========================================================================
 	// Step 6: Build AuthContext and validate permissions
@@ -271,11 +271,11 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	actualLength := uint32(readEnd - req.Offset)
 
 	// ========================================================================
-	// Step 11: Read data from ContentService (uses Cache internally)
+	// Step 11: Read data from BlockStore (uses local cache internally)
 	// ========================================================================
 
 	data := make([]byte, actualLength)
-	n, err := payloadSvc.ReadAt(authCtx.Context, string(readMeta.Attr.PayloadID), data, req.Offset)
+	n, err := blockStore.ReadAt(authCtx.Context, string(readMeta.Attr.PayloadID), data, req.Offset)
 	if err != nil {
 		logger.Warn("READ: content read failed", "path", openFile.Path, "error", err)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil

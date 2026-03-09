@@ -113,11 +113,6 @@ func (q *SyncQueue) Stop(timeout time.Duration) {
 	}
 }
 
-// Enqueue is a convenience alias for EnqueueUpload.
-func (q *SyncQueue) Enqueue(req TransferRequest) bool {
-	return q.EnqueueUpload(req)
-}
-
 // EnqueueDownload adds a download request (highest priority).
 // Returns false if the queue is full (non-blocking).
 func (q *SyncQueue) EnqueueDownload(req TransferRequest) bool {

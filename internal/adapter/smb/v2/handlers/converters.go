@@ -367,8 +367,8 @@ func MetadataErrorToSMBStatus(err error) types.Status {
 	return types.StatusInternalError
 }
 
-// ContentErrorToSMBStatus maps payload/content store errors to SMB NT status codes.
-// Currently maps all non-nil errors to StatusUnexpectedIOError since payload store
+// ContentErrorToSMBStatus maps block store errors to SMB NT status codes.
+// Currently maps all non-nil errors to StatusUnexpectedIOError since block store
 // errors are typically I/O-related (S3 failures, disk errors). Nil returns StatusSuccess.
 func ContentErrorToSMBStatus(err error) types.Status {
 	if err == nil {
@@ -376,7 +376,7 @@ func ContentErrorToSMBStatus(err error) types.Status {
 	}
 
 	// For now, use generic I/O error mapping
-	// This could be expanded to handle specific content store errors
+	// This could be expanded to handle specific block store errors
 	return types.StatusUnexpectedIOError
 }
 

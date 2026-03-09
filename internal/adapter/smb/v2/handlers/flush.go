@@ -154,7 +154,7 @@ func (resp *FlushResponse) Encode() ([]byte, error) {
 //
 //  1. Validate FileID maps to an open file
 //  2. Get metadata store and verify file exists
-//  3. Flush cache to payload service using shared flush logic
+//  3. Flush cache to block store using shared flush logic
 //  4. Flush pending metadata writes (deferred commit optimization)
 //  5. Return success response
 //
@@ -170,7 +170,7 @@ func (resp *FlushResponse) Encode() ([]byte, error) {
 // Returns appropriate SMB status codes:
 //   - StatusInvalidHandle: Invalid FileID
 //   - StatusBadNetworkName: Share not found
-//   - StatusInternalError: Payload service unavailable
+//   - StatusInternalError: Block store unavailable
 //   - StatusUnexpectedIOError: Flush operation failed
 //   - StatusSuccess: Flush completed (or no-op if no cache)
 //
@@ -182,7 +182,7 @@ func (resp *FlushResponse) Encode() ([]byte, error) {
 //
 // **Shared Logic:**
 //
-// Uses the PayloadService.Flush() method which is shared with NFS COMMIT handler
+// Uses the BlockStore.Flush() method which is shared with NFS COMMIT handler
 // to ensure consistent flush behavior across protocols.
 //
 // **Example:**
@@ -210,7 +210,7 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-	payloadSvc := h.Registry.GetBlockStore()
+	blockStore := h.Registry.GetBlockStore()
 
 	// Verify file exists
 	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
@@ -226,10 +226,10 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	}
 
 	// ========================================================================
-	// Step 3: Flush data using PayloadService (same as NFS COMMIT)
+	// Step 3: Flush data using BlockStore (same as NFS COMMIT)
 	// ========================================================================
 
-	_, flushErr := payloadSvc.Flush(ctx.Context, string(file.PayloadID))
+	_, flushErr := blockStore.Flush(ctx.Context, string(file.PayloadID))
 	if flushErr != nil {
 		logger.Warn("FLUSH: failed", "path", openFile.Path, "error", flushErr)
 		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUnexpectedIOError}}, nil

@@ -79,7 +79,7 @@ type CommitResponse struct {
 
 // Commit handles NFS COMMIT (RFC 1813 Section 3.3.21).
 // Flushes cached unstable writes to stable storage for a file byte range.
-// Delegates to PayloadService.Flush and MetadataService.FlushPendingWriteForFile.
+// Delegates to BlockStore.Flush and MetadataService.FlushPendingWriteForFile.
 // Triggers cache-to-store transfer; returns WCC data and server boot-time write verifier.
 // Errors: NFS3ErrNoEnt (file not found), NFS3ErrIsDir (directory handle), NFS3ErrIO (flush failure).
 func (h *Handler) Commit(
@@ -154,7 +154,7 @@ func (h *Handler) Commit(
 	}
 
 	// ========================================================================
-	// Step 4: Perform commit operation - flush write cache to content store
+	// Step 4: Perform commit operation - flush write cache to block store
 	// ========================================================================
 
 	// Check context before potentially long flush operation
@@ -190,7 +190,7 @@ func (h *Handler) Commit(
 	}
 
 	// ========================================================================
-	// Step 5: Flush data to ContentService (uses Cache internally)
+	// Step 5: Flush data to BlockStore (uses local cache internally)
 	// ========================================================================
 
 	logger.InfoCtx(ctx.Context, "COMMIT: flushing data", "share", ctx.Share)
@@ -205,7 +205,7 @@ func (h *Handler) Commit(
 		}, nil
 	}
 
-	// Flush cache to content store using ContentService (non-blocking)
+	// Flush cache to block store (non-blocking)
 	//
 	// NOTE: Flush is non-blocking because:
 	//   - Data is already safe in WAL-backed cache (crash-safe)
@@ -236,7 +236,6 @@ func (h *Handler) Commit(
 	// ========================================================================
 
 	// Build auth context for metadata flush
-	var metadataFlushed bool
 	authCtx, authErr := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
 	if authErr == nil {
 		// Flush pending metadata for this specific file
@@ -245,15 +244,13 @@ func (h *Handler) Commit(
 			logger.WarnCtx(ctx.Context, "COMMIT: metadata flush failed", "handle", fmt.Sprintf("0x%x", req.Handle), "error", metaErr)
 			// Continue - content is flushed, metadata will be fixed eventually
 		} else if flushed {
-			metadataFlushed = true
 			logger.DebugCtx(ctx.Context, "COMMIT: flushed pending metadata", "handle", fmt.Sprintf("0x%x", req.Handle))
 		}
 	}
 
 	// wccAfter is already correct: GetFileCached returned the file with pending
 	// writes merged (size, mtime applied). FlushPendingWriteForFile persists those
-	// same values to BadgerDB — no need to read them back.
-	_ = metadataFlushed
+	// same values to BadgerDB -- no need to read them back.
 
 	logger.InfoCtx(ctx.Context, "COMMIT successful", "file", file.PayloadID, "offset", req.Offset, "count", req.Count, "client", clientIP)
 	return &CommitResponse{

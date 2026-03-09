@@ -16,7 +16,7 @@ import (
 
 // handleSetAttr implements the SETATTR operation (RFC 7530 Section 16.34).
 // Modifies file attributes (mode, owner, group, size, timestamps) with stateid validation.
-// Delegates to MetadataService.SetFileAttributes; size changes coordinate with content store.
+// Delegates to MetadataService.SetFileAttributes; size changes coordinate with block store.
 // Updates file metadata atomically; returns bitmap of attributes actually set.
 // Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_PERM, NFS4ERR_ACCES, NFS4ERR_ROFS, NFS4ERR_BADXDR.
 func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {

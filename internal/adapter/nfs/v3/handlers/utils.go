@@ -146,8 +146,8 @@ type MFsymlinkResult struct {
 //
 // Parameters:
 //   - ctx: Context for cancellation and logging
-//   - reg: Registry to get content store
-//   - share: Share name to get content store
+//   - reg: Registry to get block store
+//   - share: Share name (unused, reserved for future routing)
 //   - file: File metadata to check
 //
 // Returns MFsymlinkResult with detection result and modified attributes.
@@ -167,7 +167,7 @@ func checkMFsymlink(
 	}
 
 	// File has correct size - need to check content
-	// First try cache, then content store
+	// Read content from block store (checks local cache first)
 	content, err := readMFsymlinkContentForNFS(ctx, reg, share, file.PayloadID)
 	if err != nil {
 		logger.Debug("checkMFsymlink: failed to read content",
@@ -208,7 +208,7 @@ func checkMFsymlink(
 	}
 }
 
-// readMFsymlinkContentForNFS reads content from ContentService (uses Cache internally).
+// readMFsymlinkContentForNFS reads content from the block store (uses local cache internally).
 func readMFsymlinkContentForNFS(
 	ctx context.Context,
 	reg *runtime.Runtime,

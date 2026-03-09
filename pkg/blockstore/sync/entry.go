@@ -1,6 +1,6 @@
 package sync
 
-import "fmt"
+import "github.com/marmos91/dittofs/pkg/blockstore"
 
 // TransferRequest holds data for a pending transfer operation (download, upload, or prefetch).
 type TransferRequest struct {
@@ -40,11 +40,5 @@ func NewBlockUploadRequest(payloadID string, blockIdx uint64) TransferRequest {
 
 // BlockKey returns a unique string key for this block.
 func (r TransferRequest) BlockKey() string {
-	return fmt.Sprintf("%s/block-%d", r.PayloadID, r.BlockIdx)
-}
-
-// WithPriority returns a copy of the request with the specified type (for priority).
-func (r TransferRequest) WithPriority(t TransferType) TransferRequest {
-	r.Type = t
-	return r
+	return blockstore.FormatStoreKey(r.PayloadID, r.BlockIdx)
 }

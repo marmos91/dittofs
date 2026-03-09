@@ -19,20 +19,20 @@ import (
 )
 
 // ============================================================================
-// I/O Test Fixture (includes PayloadService for READ/WRITE/COMMIT)
+// I/O Test Fixture (includes BlockStore for READ/WRITE/COMMIT)
 // ============================================================================
 
 // ioTestFixture extends realFSTestFixture with block store support.
 type ioTestFixture struct {
 	handler    *Handler
 	metaSvc    *metadata.MetadataService
-	payloadSvc *engine.BlockStore
+	blockStore *engine.BlockStore
 	store      metadata.MetadataStore
 	rootHandle metadata.FileHandle
 	shareName  string
 }
 
-// newIOTestFixture creates a test fixture with metadata + payload services.
+// newIOTestFixture creates a test fixture with metadata service and block store.
 func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 	t.Helper()
 
@@ -96,7 +96,7 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 	return &ioTestFixture{
 		handler:    handler,
 		metaSvc:    metaSvc,
-		payloadSvc: blockSvc,
+		blockStore: blockSvc,
 		store:      metaStore,
 		rootHandle: share.RootHandle,
 		shareName:  shareName,
@@ -145,8 +145,8 @@ func (fx *ioTestFixture) writeContent(t *testing.T, fileHandle metadata.FileHand
 		t.Fatalf("get file for write: %v", err)
 	}
 
-	// Write via payload service
-	if err := fx.payloadSvc.WriteAt(ctx, string(file.PayloadID), data, 0); err != nil {
+	// Write via block store
+	if err := fx.blockStore.WriteAt(ctx, string(file.PayloadID), data, 0); err != nil {
 		t.Fatalf("write payload: %v", err)
 	}
 
@@ -986,7 +986,7 @@ func TestWrite_Success(t *testing.T) {
 	}
 
 	readBuf := make([]byte, len(content))
-	n2, err := fx.payloadSvc.ReadAt(context.Background(), string(file.PayloadID), readBuf, 0)
+	n2, err := fx.blockStore.ReadAt(context.Background(), string(file.PayloadID), readBuf, 0)
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}

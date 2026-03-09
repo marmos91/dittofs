@@ -1,15 +1,10 @@
 package local
 
-import "context"
+import (
+	"context"
 
-// hashSize is the size of content hashes (SHA-256 = 32 bytes).
-// Defined locally to avoid importing the parent blockstore package (which would
-// create an import cycle since blockstore imports local).
-const hashSize = 32
-
-// ============================================================================
-// Local Block Types
-// ============================================================================
+	"github.com/marmos91/dittofs/pkg/blockstore"
+)
 
 // PendingBlock represents a block ready for upload to the remote block store.
 type PendingBlock struct {
@@ -23,7 +18,7 @@ type PendingBlock struct {
 	DataSize uint32
 
 	// Hash is the SHA-256 content hash; zero means not yet computed.
-	Hash [hashSize]byte
+	Hash blockstore.ContentHash
 }
 
 // FlushedBlock records info about a block that was just flushed from memory to disk.
@@ -48,10 +43,6 @@ type Stats struct {
 	FileCount     int   // Number of files with cached data
 	MemBlockCount int   // Number of in-memory dirty blocks
 }
-
-// ============================================================================
-// LocalStore Sub-Interfaces
-// ============================================================================
 
 // LocalReader defines cache-aware read operations.
 // Reads check memory first (for unflushed writes) then disk.
@@ -152,10 +143,6 @@ type LocalManager interface {
 	// ExistsOnDisk checks if a specific block is present on disk.
 	ExistsOnDisk(ctx context.Context, payloadID string, blockIdx uint64) (bool, error)
 }
-
-// ============================================================================
-// LocalStore Interface
-// ============================================================================
 
 // LocalStore is the composed interface for on-node block caching.
 // It combines all four sub-interfaces for complete local block management.

@@ -79,7 +79,7 @@ type SetAttrResponse struct {
 // SetAttr handles NFS SETATTR (RFC 1813 Section 3.3.2).
 // Modifies file attributes (mode, uid, gid, size, atime, mtime) with optional ctime guard.
 // Delegates to MetadataService.SetFileAttributes; splits size and other attrs per RFC 5661.
-// Updates file metadata atomically; size changes coordinate with content store; returns WCC data.
+// Updates file metadata atomically; size changes coordinate with block store; returns WCC data.
 // Errors: NFS3ErrNotSync (guard fail), NFS3ErrAcces, NFS3ErrPerm, NFS3ErrRoFs, NFS3ErrIO.
 func (h *Handler) SetAttr(
 	ctx *NFSHandlerContext,
@@ -241,7 +241,7 @@ func (h *Handler) SetAttr(
 	// - Checking ownership (for chown/chmod)
 	// - Checking write permission (for size/time changes)
 	// - Validating attribute values (e.g., invalid size)
-	// - Coordinating with content store for size changes
+	// - Coordinating with block store for size changes
 	// - Updating ctime automatically
 	// - Ensuring atomicity of updates
 	// - Respecting context cancellation (especially for size changes)

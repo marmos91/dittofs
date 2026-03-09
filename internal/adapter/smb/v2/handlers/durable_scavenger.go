@@ -145,10 +145,10 @@ func (s *DurableHandleScavenger) cleanupAndDelete(ctx context.Context, h *lock.P
 			}
 		}
 
-		// Flush payload cache
+		// Flush block cache
 		if h.PayloadID != "" {
-			if payloadSvc := s.handler.Registry.GetBlockStore(); payloadSvc != nil {
-				if _, err := payloadSvc.Flush(ctx, h.PayloadID); err != nil {
+			if blockStore := s.handler.Registry.GetBlockStore(); blockStore != nil {
+				if _, err := blockStore.Flush(ctx, h.PayloadID); err != nil {
 					logger.Debug("DurableHandleScavenger: failed to flush cache",
 						"id", h.ID, "path", h.Path, "error", err)
 				}

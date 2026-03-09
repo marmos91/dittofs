@@ -13,7 +13,7 @@ import (
 
 // handleRead implements the READ operation (RFC 7530 Section 16.25).
 // Reads file data at a given offset, returning bytes and EOF flag.
-// Delegates to PayloadService.ReadAt via pooled buffers; validates stateid for open state.
+// Delegates to BlockStore.ReadAt via pooled buffers; validates stateid for open state.
 // No side effects; read-only data operation using buffer pools to reduce GC pressure.
 // Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_ISDIR, NFS4ERR_STALE, NFS4ERR_IO, NFS4ERR_BADXDR.
 func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
@@ -144,8 +144,8 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 		actualLen = file.Size - offset
 	}
 
-	// Get payload service and read data
-	payloadSvc, err := getBlockStoreForCtx(h)
+	// Get block store and read data
+	blockStore, err := getBlockStoreForCtx(h)
 	if err != nil {
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
@@ -159,9 +159,9 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 
 	// Check for COW source
 	if file.COWSourcePayloadID != "" {
-		n, err = payloadSvc.ReadAtWithCOWSource(ctx.Context, string(file.PayloadID), string(file.COWSourcePayloadID), data, offset)
+		n, err = blockStore.ReadAtWithCOWSource(ctx.Context, string(file.PayloadID), string(file.COWSourcePayloadID), data, offset)
 	} else {
-		n, err = payloadSvc.ReadAt(ctx.Context, string(file.PayloadID), data, offset)
+		n, err = blockStore.ReadAt(ctx.Context, string(file.PayloadID), data, offset)
 	}
 
 	if err != nil {

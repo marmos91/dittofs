@@ -31,7 +31,7 @@ const DefaultGID = uint32(1000)
 //
 // It sets up:
 //   - A real memory metadata store (owned by MetadataService)
-//   - A Cache for content (via ContentService)
+//   - A BlockStore for content operations
 //   - A registry with a configured share
 //   - A Handler instance ready for testing
 //
@@ -49,8 +49,8 @@ type HandlerTestFixture struct {
 	// It owns the memory-backed metadata store.
 	MetadataService *metadata.MetadataService
 
-	// ContentService provides block store for content operations.
-	ContentService *engine.BlockStore
+	// BlockStore provides block storage for content operations.
+	BlockStore *engine.BlockStore
 
 	// ShareName is the name of the test share.
 	ShareName string
@@ -63,7 +63,7 @@ type HandlerTestFixture struct {
 //
 // The fixture includes:
 //   - Memory metadata store with default capabilities
-//   - Cache for content (auto-created by registry)
+//   - BlockStore for content operations
 //   - A share named "/export"
 //   - Handler with the registry configured
 //
@@ -131,7 +131,7 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 		Handler:         handler,
 		Registry:        reg,
 		MetadataService: reg.GetMetadataService(),
-		ContentService:  reg.GetBlockStore(),
+		BlockStore:  reg.GetBlockStore(),
 		ShareName:       DefaultShareName,
 		RootHandle:      share.RootHandle,
 	}
@@ -274,9 +274,9 @@ func (f *HandlerTestFixture) CreateFile(path string, content []byte) metadata.Fi
 		f.t.Fatalf("Failed to create file %q: %v", path, err)
 	}
 
-	// Write content if provided (using ContentService with Cache)
+	// Write content if provided (using BlockStore with local cache)
 	if len(content) > 0 {
-		if err := f.ContentService.WriteAt(ctx, string(file.PayloadID), content, 0); err != nil {
+		if err := f.BlockStore.WriteAt(ctx, string(file.PayloadID), content, 0); err != nil {
 			f.t.Fatalf("Failed to write content to file %q: %v", path, err)
 		}
 
@@ -395,14 +395,14 @@ func (f *HandlerTestFixture) ReadContent(path string) []byte {
 	ctx := context.Background()
 
 	// Get content size
-	size, err := f.ContentService.GetSize(ctx, string(file.PayloadID))
+	size, err := f.BlockStore.GetSize(ctx, string(file.PayloadID))
 	if err != nil {
 		f.t.Fatalf("Failed to get content size for %q: %v", path, err)
 	}
 
 	// Read content using BlockStore
 	content := make([]byte, size)
-	n, err := f.ContentService.ReadAt(ctx, string(file.PayloadID), content, 0)
+	n, err := f.BlockStore.ReadAt(ctx, string(file.PayloadID), content, 0)
 	if err != nil {
 		f.t.Fatalf("Failed to read content from %q: %v", path, err)
 	}

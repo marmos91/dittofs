@@ -38,7 +38,7 @@ type NFSHandlerContext struct {
 
 	// Share is the name of the share being accessed (e.g., "/export").
 	// Extracted at the connection layer from the file handle.
-	// Used for routing operations to the correct metadata and content stores.
+	// Used for routing operations to the correct metadata store.
 	Share string
 
 	// AuthFlavor indicates the RPC authentication method.

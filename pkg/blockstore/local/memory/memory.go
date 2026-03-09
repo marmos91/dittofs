@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"errors"
 	"sync"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
@@ -12,8 +11,8 @@ import (
 // Compile-time interface satisfaction check.
 var _ local.LocalStore = (*MemoryStore)(nil)
 
-// ErrStoreClosed is returned when operations are attempted on a closed store.
-var ErrStoreClosed = errors.New("memory local store: closed")
+// ErrStoreClosed is an alias for blockstore.ErrStoreClosed for backward compatibility.
+var ErrStoreClosed = blockstore.ErrStoreClosed
 
 // memBlock holds data for a single block in memory.
 type memBlock struct {
@@ -53,10 +52,6 @@ func New() *MemoryStore {
 func blockKey(payloadID string, blockIdx uint64) string {
 	return blockstore.FormatStoreKey(payloadID, blockIdx)
 }
-
-// ============================================================================
-// LocalReader
-// ============================================================================
 
 // ReadAt reads data from the in-memory store at the specified offset into dest.
 func (s *MemoryStore) ReadAt(_ context.Context, payloadID string, dest []byte, offset uint64) (bool, error) {
@@ -137,10 +132,6 @@ func (s *MemoryStore) GetBlockData(_ context.Context, payloadID string, blockIdx
 	copy(data, mb.data[:mb.dataSize])
 	return data, mb.dataSize, nil
 }
-
-// ============================================================================
-// LocalWriter
-// ============================================================================
 
 // WriteAt writes data to the in-memory store at the specified offset.
 func (s *MemoryStore) WriteAt(_ context.Context, payloadID string, data []byte, offset uint64) error {
@@ -225,10 +216,6 @@ func (s *MemoryStore) WriteFromRemote(_ context.Context, payloadID string, data 
 	return nil
 }
 
-// ============================================================================
-// LocalFlusher
-// ============================================================================
-
 // Flush marks all dirty blocks for a file as Local (flushed).
 // In the memory store, there is no disk to flush to -- this just transitions state.
 func (s *MemoryStore) Flush(_ context.Context, payloadID string) ([]local.FlushedBlock, error) {
@@ -242,7 +229,7 @@ func (s *MemoryStore) Flush(_ context.Context, payloadID string) ([]local.Flushe
 	var flushed []local.FlushedBlock
 
 	for key, mb := range s.blocks {
-		if !s.blockBelongsToFile(key, payloadID) {
+		if !blockstore.KeyBelongsToFile(key, payloadID) {
 			continue
 		}
 		if mb.dirty {
@@ -250,7 +237,7 @@ func (s *MemoryStore) Flush(_ context.Context, payloadID string) ([]local.Flushe
 			if mb.state == blockstore.BlockStateDirty {
 				mb.state = blockstore.BlockStateLocal
 			}
-			blockIdx := s.extractBlockIdx(key, payloadID)
+			blockIdx := blockstore.ParseBlockIdx(key, payloadID)
 			flushed = append(flushed, local.FlushedBlock{
 				BlockIndex: blockIdx,
 				CachePath:  key, // Use key as path in memory store
@@ -276,13 +263,13 @@ func (s *MemoryStore) GetDirtyBlocks(ctx context.Context, payloadID string) ([]l
 	var result []local.PendingBlock
 
 	for key, mb := range s.blocks {
-		if !s.blockBelongsToFile(key, payloadID) {
+		if !blockstore.KeyBelongsToFile(key, payloadID) {
 			continue
 		}
 		if mb.state == blockstore.BlockStateLocal && mb.data != nil && mb.dataSize > 0 {
 			data := make([]byte, mb.dataSize)
 			copy(data, mb.data[:mb.dataSize])
-			blockIdx := s.extractBlockIdx(key, payloadID)
+			blockIdx := blockstore.ParseBlockIdx(key, payloadID)
 			result = append(result, local.PendingBlock{
 				BlockIndex: blockIdx,
 				Data:       data,
@@ -299,10 +286,6 @@ func (s *MemoryStore) SyncFileBlocks(_ context.Context) {}
 
 // SyncFileBlocksForFile is a no-op in the memory store.
 func (s *MemoryStore) SyncFileBlocksForFile(_ context.Context, _ string) {}
-
-// ============================================================================
-// LocalManager
-// ============================================================================
 
 // Start is a no-op in the memory store (no background goroutines needed).
 func (s *MemoryStore) Start(_ context.Context) {}
@@ -326,10 +309,10 @@ func (s *MemoryStore) Truncate(_ context.Context, payloadID string, newSize uint
 
 	// Remove blocks beyond newSize
 	for key := range s.blocks {
-		if !s.blockBelongsToFile(key, payloadID) {
+		if !blockstore.KeyBelongsToFile(key, payloadID) {
 			continue
 		}
-		blockIdx := s.extractBlockIdx(key, payloadID)
+		blockIdx := blockstore.ParseBlockIdx(key, payloadID)
 		if blockIdx*blockstore.BlockSize >= newSize {
 			delete(s.blocks, key)
 		}
@@ -345,7 +328,7 @@ func (s *MemoryStore) EvictMemory(_ context.Context, payloadID string) error {
 	defer s.mu.Unlock()
 
 	for key := range s.blocks {
-		if s.blockBelongsToFile(key, payloadID) {
+		if blockstore.KeyBelongsToFile(key, payloadID) {
 			delete(s.blocks, key)
 		}
 	}
@@ -369,7 +352,7 @@ func (s *MemoryStore) DeleteAllBlockFiles(_ context.Context, payloadID string) e
 	defer s.mu.Unlock()
 
 	for key := range s.blocks {
-		if s.blockBelongsToFile(key, payloadID) {
+		if blockstore.KeyBelongsToFile(key, payloadID) {
 			delete(s.blocks, key)
 		}
 	}
@@ -383,10 +366,10 @@ func (s *MemoryStore) TruncateBlockFiles(_ context.Context, payloadID string, ne
 	defer s.mu.Unlock()
 
 	for key := range s.blocks {
-		if !s.blockBelongsToFile(key, payloadID) {
+		if !blockstore.KeyBelongsToFile(key, payloadID) {
 			continue
 		}
-		blockIdx := s.extractBlockIdx(key, payloadID)
+		blockIdx := blockstore.ParseBlockIdx(key, payloadID)
 		if blockIdx*blockstore.BlockSize >= newSize {
 			delete(s.blocks, key)
 		}
@@ -490,7 +473,7 @@ func (s *MemoryStore) GetStoredFileSize(_ context.Context, payloadID string) (ui
 
 	var total uint64
 	for key, mb := range s.blocks {
-		if s.blockBelongsToFile(key, payloadID) {
+		if blockstore.KeyBelongsToFile(key, payloadID) {
 			total += uint64(mb.dataSize)
 		}
 	}
@@ -502,31 +485,3 @@ func (s *MemoryStore) ExistsOnDisk(_ context.Context, _ string, _ uint64) (bool,
 	return false, nil
 }
 
-// ============================================================================
-// Internal helpers
-// ============================================================================
-
-// blockBelongsToFile checks if a block key belongs to the given payloadID.
-// Block keys have format: "{payloadID}/block-{blockIdx}" (from FormatStoreKey).
-func (s *MemoryStore) blockBelongsToFile(key, payloadID string) bool {
-	prefix := payloadID + "/block-"
-	return len(key) > len(prefix) && key[:len(prefix)] == prefix
-}
-
-// extractBlockIdx extracts the block index from a block key.
-// Block key format: "{payloadID}/block-{blockIdx}" (from FormatStoreKey).
-func (s *MemoryStore) extractBlockIdx(key, payloadID string) uint64 {
-	prefix := payloadID + "/block-"
-	if len(key) <= len(prefix) {
-		return 0
-	}
-	suffix := key[len(prefix):]
-	var idx uint64
-	for _, c := range suffix {
-		if c < '0' || c > '9' {
-			break
-		}
-		idx = idx*10 + uint64(c-'0')
-	}
-	return idx
-}

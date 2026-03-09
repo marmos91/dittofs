@@ -111,7 +111,7 @@ func (h *Handler) Create(
 	// Step 2: Get services from registry
 	// ========================================================================
 
-	metaSvc, payloadSvc, err := getServices(h.Registry)
+	metaSvc, blockStore, err := getServices(h.Registry)
 	if err != nil {
 		logger.ErrorCtx(ctx.Context, "CREATE failed: service not initialized", "client", clientIP, "error", err)
 		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
@@ -272,7 +272,7 @@ func (h *Handler) Create(
 			// Truncate existing file
 			existingHandle, _ := metadata.EncodeFileHandle(existingFile)
 			fileHandle = existingHandle
-			fileAttr, err = truncateExistingFile(authCtx, payloadSvc, metaSvc, existingFile, req)
+			fileAttr, err = truncateExistingFile(authCtx, blockStore, metaSvc, existingFile, req)
 		} else {
 			// Create new file
 			fileHandle, fileAttr, err = createNewFile(authCtx, metaSvc, parentHandle, req)
@@ -485,11 +485,11 @@ func createNewFile(
 // For UNCHECKED mode when file exists, this:
 //  1. Determines target size (from Attr.Size or 0)
 //  2. Updates file metadata using SetFileAttributes
-//  3. Truncates content (if content store is available)
+//  3. Truncates content (if block store is available)
 //
 // Parameters:
 //   - authCtx: Authentication context for permission checking
-//   - payloadSvc: Content service for truncation
+//   - blockStore: Block store engine for truncation
 //   - metaSvc: Metadata service for file operations
 //   - existingFile: Existing file to truncate
 //   - req: Create request with attributes
@@ -498,7 +498,7 @@ func createNewFile(
 //   - Updated file attributes and error
 func truncateExistingFile(
 	authCtx *metadata.AuthContext,
-	payloadSvc *engine.BlockStore,
+	blockStore *engine.BlockStore,
 	metaSvc *metadata.MetadataService,
 	existingFile *metadata.File,
 	req *CreateRequest,
@@ -541,7 +541,7 @@ func truncateExistingFile(
 
 	// Truncate content if file has content
 	if existingFile.PayloadID != "" {
-		if err := payloadSvc.Truncate(authCtx.Context, string(existingFile.PayloadID), targetSize); err != nil {
+		if err := blockStore.Truncate(authCtx.Context, string(existingFile.PayloadID), targetSize); err != nil {
 			logger.Warn("Failed to truncate content", "size", targetSize, "error", err)
 			// Non-fatal: metadata is already updated
 		}

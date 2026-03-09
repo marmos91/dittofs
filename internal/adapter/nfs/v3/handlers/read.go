@@ -102,7 +102,7 @@ func (r *ReadResponse) Release() {
 
 // Read handles NFS READ (RFC 1813 Section 3.3.6).
 // Reads data from a regular file at a given offset, returning bytes and EOF flag.
-// Delegates to PayloadService.ReadAt via pooled buffers; MetadataService validates file existence.
+// Delegates to BlockStore.ReadAt via pooled buffers; MetadataService validates file existence.
 // No side effects; read-only, high-frequency data operation using buffer pools to reduce GC.
 // Errors: NFS3ErrStale (bad handle), NFS3ErrIsDir (not regular file), NFS3ErrIO.
 func (h *Handler) Read(
@@ -140,10 +140,10 @@ func (h *Handler) Read(
 	}
 
 	// ========================================================================
-	// Step 2: Get content service from registry
+	// Step 2: Get block store from registry
 	// ========================================================================
 
-	payloadSvc, err := getBlockStore(h.Registry)
+	blockStore, err := getBlockStore(h.Registry)
 	if err != nil {
 		logger.ErrorCtx(ctx.Context, "READ failed: block store not initialized", "client", clientIP, "error", err)
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
@@ -234,12 +234,11 @@ func (h *Handler) Read(
 	actualLength := uint32(readEnd - req.Offset)
 
 	// ========================================================================
-	// Step 4: Read content data from Cache
+	// Step 4: Read data from BlockStore
 	// ========================================================================
-	// All reads go through ContentService.ReadAt which reads from Cache.
-	// Cache handles slice merging (newest-wins semantics).
+	// All reads go through BlockStore.ReadAt which reads from local cache.
 
-	readResult, readErr := readFromPayloadService(ctx, payloadSvc, file.PayloadID, file.COWSourcePayloadID, req.Offset, actualLength, clientIP, req.Handle)
+	readResult, readErr := readFromBlockStore(ctx, blockStore, file.PayloadID, file.COWSourcePayloadID, req.Offset, actualLength, clientIP, req.Handle)
 	if readErr != nil {
 		// Check if cancellation error
 		if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {

@@ -24,29 +24,6 @@ func TestNewBlockUploadRequest(t *testing.T) {
 	}
 }
 
-func TestTransferRequest_WithPriority(t *testing.T) {
-	req := NewBlockUploadRequest("content-id", 0)
-	downloadReq := req.WithPriority(TransferDownload)
-
-	// Original should be unchanged (value receiver returns copy)
-	if req.Type != TransferUpload {
-		t.Errorf("original Type = %v, want TransferUpload", req.Type)
-	}
-
-	// New request should have priority
-	if downloadReq.Type != TransferDownload {
-		t.Errorf("downloadReq.Type = %v, want TransferDownload", downloadReq.Type)
-	}
-
-	// Other fields should be copied
-	if downloadReq.PayloadID != req.PayloadID {
-		t.Errorf("PayloadID mismatch after WithPriority")
-	}
-	if downloadReq.BlockIdx != req.BlockIdx {
-		t.Errorf("BlockIdx mismatch after WithPriority")
-	}
-}
-
 func TestNewDownloadRequest(t *testing.T) {
 	done := make(chan error, 1)
 	req := NewDownloadRequest("payload-id", 2, done)
