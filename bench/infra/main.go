@@ -2,11 +2,11 @@
 //
 // Two stacks are used:
 //
-//   - "base": Creates VPC, persistent client VM, base server VM, and a snapshot.
+//   - "base": Creates VPC, persistent client VM, and server VM.
 //     Run once before any benchmark session.
 //
-//   - "bench": Creates an ephemeral server VM from the base snapshot, installs
-//     a single competitor, and outputs the server IP for the orchestrator.
+//   - "bench": Creates an ephemeral server VM, provisions it with the selected
+//     competitor's install script, and exports connection details.
 //     Run once per competitor, destroyed between tests for clean isolation.
 //
 // # Authentication

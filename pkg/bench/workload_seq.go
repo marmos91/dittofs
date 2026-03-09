@@ -3,6 +3,7 @@ package bench
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -11,12 +12,12 @@ import (
 const seqChunkSize = 1 << 20 // 1 MiB per write/read operation
 
 // seqChunkCount returns the number of seqChunkSize chunks needed for fileSize.
+// Uses ceiling division so non-multiple sizes are fully covered.
 func seqChunkCount(fileSize int64) int {
-	chunks := int(fileSize / seqChunkSize)
-	if chunks == 0 {
+	if fileSize <= 0 {
 		return 1
 	}
-	return chunks
+	return int((fileSize + seqChunkSize - 1) / seqChunkSize)
 }
 
 // chunkBytes returns the byte count for chunk c of a file with the given total size.
@@ -144,7 +145,7 @@ func runSeqRead(ctx context.Context, cfg Config, dir string, progress ProgressFu
 			readSize := chunkBytes(c, cfg.FileSize)
 
 			opStart := time.Now()
-			n, err := f.Read(buf[:readSize])
+			n, err := io.ReadFull(f, buf[:readSize])
 			lat := time.Since(opStart)
 
 			latencies = append(latencies, lat)

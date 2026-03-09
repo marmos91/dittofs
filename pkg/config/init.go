@@ -119,18 +119,18 @@ cache:
 
 # Background offloader configuration
 # Controls how cached data is transferred to backend storage (S3, filesystem)
-# These defaults are tuned for good S3 performance out of the box.
+# Values of 0 enable auto-scaling based on CPU count and cache size.
 offloader:
   # Number of concurrent block uploads to backend storage
   # Higher values increase throughput for high-latency backends (S3)
-  # Default: 16
-  parallel_uploads: 16
+  # Default: 0 (auto-scaled based on CPU count)
+  # parallel_uploads: 0
   # Number of concurrent block downloads per file
-  # Default: 8
-  parallel_downloads: 8
+  # Default: 0 (auto-scaled based on CPU count)
+  # parallel_downloads: 0
   # Number of blocks to prefetch ahead of sequential reads
-  # Default: 16 (64MB lookahead at 4MB block size)
-  prefetch_blocks: 16
+  # Default: 0 (auto-scaled based on cache size)
+  # prefetch_blocks: 0
   # Files smaller than this are flushed synchronously during Flush().
   # Set to 0 to disable (all files use async flush, WAL ensures durability).
   # Default: 0 (disabled)

@@ -232,7 +232,7 @@ func (c *Cache) MaxSize() uint64 {
 
 // SetMaxPendingSize sets the maximum pending (dirty) data size in bytes.
 // When pending data exceeds this limit, writes block until the offloader
-// drains enough data. Use 0 to revert to the default (512MB).
+// drains enough data. Use 0 to revert to the default (2GB).
 func (c *Cache) SetMaxPendingSize(size uint64) {
 	c.maxPendingSize = size
 }

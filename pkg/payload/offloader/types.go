@@ -89,7 +89,7 @@ func (t TransferType) String() string {
 type Config struct {
 	// ParallelUploads is the initial number of concurrent block uploads.
 	// The adaptive congestion control will start from this value.
-	// Default: 4
+	// Default: 0 (auto-scaled based on CPU count)
 	ParallelUploads int
 
 	// MaxParallelUploads caps the maximum concurrent uploads.
@@ -99,12 +99,12 @@ type Config struct {
 	MaxParallelUploads int
 
 	// ParallelDownloads is the number of concurrent block downloads per file.
-	// Default: 4
+	// Default: 0 (auto-scaled based on CPU count)
 	ParallelDownloads int
 
 	// PrefetchBlocks is the number of blocks to prefetch ahead of reads.
 	// Set to 0 to disable prefetching.
-	// Default: 4 (16MB ahead at 4MB block size)
+	// Default: 0 (auto-scaled based on cache size)
 	PrefetchBlocks int
 
 	// SmallFileThreshold is the file size threshold for synchronous flush.
