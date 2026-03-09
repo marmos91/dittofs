@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-03-03 (Phase 40-06, added fix-candidate failures to unblock CI)
+Last updated: 2026-03-09 (Phase 42, added failures newly reachable after GMAC signing fix)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -25,6 +25,8 @@ session, which DittoFS does not implement.
 |-----------|----------|--------|-------|
 | smb2.multichannel.bugs.bug_15346 | Multi-channel | Multi-channel not implemented | - |
 | smb2.multichannel.generic.num_channels | Multi-channel | Multi-channel not implemented | - |
+| smb2.multichannel.leases.test2 | Multi-channel | Multi-channel lease coordination not implemented | - |
+| smb2.multichannel.oplocks.test2 | Multi-channel | Multi-channel oplock coordination not implemented | - |
 
 ### ACLs and Security Descriptors (Not Implemented)
 
@@ -85,6 +87,8 @@ sparse_file_attr query work.
 | smb2.ioctl.copy_chunk_write_access | IOCTL | Server-side copy not implemented | - |
 | smb2.ioctl.copy_chunk_zero_length | IOCTL | Server-side copy not implemented | - |
 | smb2.ioctl.copy-chunk | IOCTL | Server-side copy not implemented | - |
+| smb2.ioctl.dup_extents_sparse_dest | IOCTL | Duplicate extents not implemented | - |
+| smb2.ioctl.bug14788.NETWORK_INTERFACE | IOCTL | Network interface enumeration not implemented | - |
 | smb2.ioctl.req_resume_key | IOCTL | Resume key for server-side copy not implemented | - |
 | smb2.ioctl.req_two_resume_keys | IOCTL | Resume key for server-side copy not implemented | - |
 | smb2.ioctl.sparse_copy_chunk | IOCTL | Sparse + server-side copy not implemented | - |
@@ -286,6 +290,7 @@ attributes are not fully implemented.
 | smb2.async_dosmode | DOS attributes | Async DOS mode not implemented | - |
 | smb2.openattr | File attributes | Open with attribute validation not implemented | - |
 | smb2.winattr | Windows attributes | Windows-specific attributes not implemented | - |
+| smb2.scan.getinfo | Scan | Getinfo scan enumeration not implemented | - |
 
 ### Create Contexts (Advanced Semantics Not Implemented)
 
@@ -312,13 +317,8 @@ edge cases.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.read.access | Read | Read access enforcement not fully implemented | - |
-| smb2.read.bug14607 | Read | Read edge case (bug 14607) not implemented | - |
-| smb2.read.eof | Read | EOF handling semantics not implemented | - |
+| smb2.read.access | Read | Read access enforcement not fully implemented (needs DesiredAccess from CREATE) | - |
 | smb2.read.position | Read | Read position tracking not implemented | - |
-| smb2.rw.invalid | Read/Write | Invalid R/W request handling not implemented | - |
-| smb2.rw.rw1 | Read/Write | Read/write interop test not implemented | - |
-| smb2.rw.rw2 | Read/Write | Read/write interop test not implemented | - |
 
 ### Query/Set Info (Advanced Scenarios)
 
@@ -590,6 +590,18 @@ incomplete break notification delivery and multi-client coordination.
 | smb2.lease.initial_delete_disconnect | Leases | Lease + delete on disconnect not fully working | - |
 | smb2.lease.rename_dir_openfile | Leases | Lease + directory rename with open file not fully working | - |
 | smb2.lease.lease-epoch | Leases | Lease epoch tracking not fully working | - |
+| smb2.lease.break_twice | Leases | Double lease break not fully working | - |
+| smb2.lease.v2_breaking3 | Leases V2 | Lease V2 breaking state handling not fully working | - |
+| smb2.lease.v2_flags_breaking | Leases V2 | Lease V2 flags during break not fully working | - |
+| smb2.lease.v2_flags_parentkey | Leases V2 | Lease V2 parent key flags not fully working | - |
+| smb2.lease.v2_epoch1 | Leases V2 | Lease V2 epoch tracking not fully working | - |
+| smb2.lease.v2_epoch2 | Leases V2 | Lease V2 epoch tracking not fully working | - |
+| smb2.lease.v2_epoch3 | Leases V2 | Lease V2 epoch tracking not fully working | - |
+| smb2.lease.v2_complex1 | Leases V2 | Lease V2 complex scenario not fully working | - |
+| smb2.lease.v2_complex2 | Leases V2 | Lease V2 complex scenario not fully working | - |
+| smb2.lease.v2_rename | Leases V2 | Lease V2 rename interaction not fully working | - |
+| smb2.lease.v2_bug15148 | Leases V2 | Lease V2 edge case not fully working | - |
+| smb2.lease.v2_rename_target_overwrite | Leases V2 | Lease V2 rename target overwrite not fully working | - |
 
 ### Byte-Range Locks (Fix Candidate)
 
@@ -613,6 +625,7 @@ fail due to incomplete lock contention and async lock handling.
 | smb2.lock.overlap | Locks | Overlapping locks not fully working | - |
 | smb2.lock.truncate | Locks | Lock + truncate interaction not fully working | - |
 | smb2.lock.replay_broken_windows | Locks | Lock replay not fully working | - |
+| smb2.lock.replay_smb3_specification_durable | Locks | Lock replay with durable handles not fully working | - |
 
 ### Rename (Fix Candidate)
 
@@ -627,6 +640,7 @@ share mode enforcement during rename.
 | smb2.rename.no_share_delete_but_delete_access | Rename | Rename share mode enforcement not working | - |
 | smb2.rename.no_share_delete_no_delete_access | Rename | Rename share mode enforcement not working | - |
 | smb2.rename.rename_dir_openfile | Rename | Rename directory with open file not working | - |
+| smb2.rename.rename-open | Rename | Rename with open handle not working | - |
 
 ### Sessions (Fix Candidate)
 
@@ -646,6 +660,128 @@ session reconnect and re-authentication logic.
 | smb2.session.bind_negative_smb202 | Sessions | Session binding validation not fully working | - |
 | smb2.session.bind_negative_smb210s | Sessions | Session binding validation not fully working | - |
 | smb2.session.bind_negative_smb210d | Sessions | Session binding validation not fully working | - |
+
+### Session Binding (Multi-Channel, Not Implemented)
+
+Session binding tests require multi-channel support to bind a session across
+TCP connections with different SMB dialect and signing/encryption combinations.
+
+| Test Name | Category | Reason | Issue |
+|-----------|----------|--------|-------|
+| smb2.session.bind_negative_smb2to3s | Session binding | Multi-channel session binding not implemented | - |
+| smb2.session.bind_negative_smb2to3d | Session binding | Multi-channel session binding not implemented | - |
+| smb2.session.bind_negative_smb3to2s | Session binding | Multi-channel session binding not implemented | - |
+| smb2.session.bind_negative_smb3to2d | Session binding | Multi-channel session binding not implemented | - |
+| smb2.session.bind_negative_smb3to3s | Session binding | Multi-channel session binding not implemented | - |
+| smb2.session.bind_negative_smb3to3d | Session binding | Multi-channel session binding not implemented | - |
+| smb2.session.bind_negative_smb3encGtoCs | Session binding | Multi-channel encryption binding not implemented | - |
+| smb2.session.bind_negative_smb3encGtoCd | Session binding | Multi-channel encryption binding not implemented | - |
+| smb2.session.bind_negative_smb3signCtoHs | Session binding | Multi-channel signing binding not implemented | - |
+| smb2.session.bind_negative_smb3signCtoHd | Session binding | Multi-channel signing binding not implemented | - |
+| smb2.session.bind_negative_smb3signCtoGs | Session binding | Multi-channel signing binding not implemented | - |
+| smb2.session.bind_negative_smb3signCtoGd | Session binding | Multi-channel signing binding not implemented | - |
+| smb2.session.bind_negative_smb3signHtoCs | Session binding | Multi-channel signing binding not implemented | - |
+| smb2.session.bind_negative_smb3signHtoCd | Session binding | Multi-channel signing binding not implemented | - |
+| smb2.session.bind_negative_smb3signHtoGs | Session binding | Multi-channel signing binding not implemented | - |
+| smb2.session.bind_negative_smb3signHtoGd | Session binding | Multi-channel signing binding not implemented | - |
+| smb2.session.bind_negative_smb3signGtoCs | Session binding | Multi-channel signing binding not implemented | - |
+| smb2.session.bind_negative_smb3signGtoCd | Session binding | Multi-channel signing binding not implemented | - |
+| smb2.session.bind_negative_smb3signGtoHs | Session binding | Multi-channel signing binding not implemented | - |
+| smb2.session.bind_negative_smb3signGtoHd | Session binding | Multi-channel signing binding not implemented | - |
+| smb2.session.bind_negative_smb3sneGtoCs | Session binding | Multi-channel signing+encryption binding not implemented | - |
+| smb2.session.bind_negative_smb3sneGtoCd | Session binding | Multi-channel signing+encryption binding not implemented | - |
+| smb2.session.bind_negative_smb3sneGtoHs | Session binding | Multi-channel signing+encryption binding not implemented | - |
+| smb2.session.bind_negative_smb3sneGtoHd | Session binding | Multi-channel signing+encryption binding not implemented | - |
+| smb2.session.bind_negative_smb3sneCtoGs | Session binding | Multi-channel signing+encryption binding not implemented | - |
+| smb2.session.bind_negative_smb3sneCtoGd | Session binding | Multi-channel signing+encryption binding not implemented | - |
+| smb2.session.bind_negative_smb3sneHtoGs | Session binding | Multi-channel signing+encryption binding not implemented | - |
+| smb2.session.bind_negative_smb3sneHtoGd | Session binding | Multi-channel signing+encryption binding not implemented | - |
+| smb2.session.bind_negative_smb3signC30toGs | Session binding | Multi-channel signing binding (3.0 to GMAC) not implemented | - |
+| smb2.session.bind_negative_smb3signC30toGd | Session binding | Multi-channel signing binding (3.0 to GMAC) not implemented | - |
+| smb2.session.bind_negative_smb3signH2XtoGs | Session binding | Multi-channel signing binding (HMAC to GMAC) not implemented | - |
+| smb2.session.bind_negative_smb3signH2XtoGd | Session binding | Multi-channel signing binding (HMAC to GMAC) not implemented | - |
+| smb2.session.bind_negative_smb3signGtoC30s | Session binding | Multi-channel signing binding (GMAC to 3.0) not implemented | - |
+| smb2.session.bind_negative_smb3signGtoC30d | Session binding | Multi-channel signing binding (GMAC to 3.0) not implemented | - |
+| smb2.session.bind_negative_smb3signGtoH2Xs | Session binding | Multi-channel signing binding (GMAC to HMAC) not implemented | - |
+| smb2.session.bind_negative_smb3signGtoH2Xd | Session binding | Multi-channel signing binding (GMAC to HMAC) not implemented | - |
+
+### Session Signing Variants (Algorithm-Specific Tests)
+
+Algorithm-specific signing tests that validate signing with each algorithm
+in isolation. Newly reachable after GMAC signing fix.
+
+| Test Name | Category | Reason | Issue |
+|-----------|----------|--------|-------|
+| smb2.session.signing-hmac-sha-256 | Session signing | HMAC-SHA-256 signing test not fully passing | - |
+| smb2.session.signing-aes-128-cmac | Session signing | AES-128-CMAC signing test not fully passing | - |
+| smb2.session.signing-aes-128-gmac | Session signing | AES-128-GMAC signing test not fully passing | - |
+
+### Session Encryption Variants (Algorithm-Specific Tests)
+
+Algorithm-specific encryption tests that validate encryption with each cipher.
+Newly reachable after GMAC signing fix.
+
+| Test Name | Category | Reason | Issue |
+|-----------|----------|--------|-------|
+| smb2.session.encryption-aes-128-ccm | Session encryption | AES-128-CCM encryption test not fully passing | - |
+| smb2.session.encryption-aes-128-gcm | Session encryption | AES-128-GCM encryption test not fully passing | - |
+| smb2.session.encryption-aes-256-ccm | Session encryption | AES-256-CCM encryption test not fully passing | - |
+| smb2.session.encryption-aes-256-gcm | Session encryption | AES-256-GCM encryption test not fully passing | - |
+
+### Anonymous Session (Signing/Encryption Tests)
+
+Anonymous session tests for signing and encryption edge cases.
+Newly reachable after GMAC signing fix.
+
+| Test Name | Category | Reason | Issue |
+|-----------|----------|--------|-------|
+| smb2.session.anon-encryption1 | Anonymous session | Anonymous session encryption not fully passing | - |
+| smb2.session.anon-encryption2 | Anonymous session | Anonymous session encryption not fully passing | - |
+| smb2.session.anon-encryption3 | Anonymous session | Anonymous session encryption not fully passing | - |
+| smb2.session.anon-signing1 | Anonymous session | Anonymous session signing not fully passing | - |
+| smb2.session.anon-signing2 | Anonymous session | Anonymous session signing not fully passing | - |
+
+### Replay Protection (Not Implemented)
+
+Replay protection requires tracking channel sequences and detecting replayed
+requests with durable handles. Newly reachable after GMAC signing fix.
+
+| Test Name | Category | Reason | Issue |
+|-----------|----------|--------|-------|
+| smb2.replay.replay-commands | Replay | Replay detection not implemented | - |
+| smb2.replay.replay-dhv2-oplock1 | Replay | Replay with durable handles not implemented | - |
+| smb2.replay.replay-dhv2-oplock2 | Replay | Replay with durable handles not implemented | - |
+| smb2.replay.replay-dhv2-oplock3 | Replay | Replay with durable handles not implemented | - |
+| smb2.replay.replay-dhv2-oplock-lease | Replay | Replay with durable handles not implemented | - |
+| smb2.replay.replay-dhv2-lease1 | Replay | Replay with durable handles not implemented | - |
+| smb2.replay.replay-dhv2-lease2 | Replay | Replay with durable handles not implemented | - |
+| smb2.replay.replay-dhv2-lease3 | Replay | Replay with durable handles not implemented | - |
+| smb2.replay.replay-dhv2-lease-oplock | Replay | Replay with durable handles not implemented | - |
+| smb2.replay.dhv2-pending1n-vs-violation-lease-close-sane | Replay | Replay pending violation handling not implemented | - |
+| smb2.replay.dhv2-pending1n-vs-violation-lease-ack-sane | Replay | Replay pending violation handling not implemented | - |
+| smb2.replay.dhv2-pending1n-vs-violation-lease-close-windows | Replay | Replay pending violation handling not implemented | - |
+| smb2.replay.dhv2-pending1n-vs-violation-lease-ack-windows | Replay | Replay pending violation handling not implemented | - |
+| smb2.replay.dhv2-pending1n-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
+| smb2.replay.dhv2-pending1n-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
+| smb2.replay.dhv2-pending1n-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
+| smb2.replay.dhv2-pending1n-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
+| smb2.replay.dhv2-pending1l-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
+| smb2.replay.dhv2-pending1l-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
+| smb2.replay.dhv2-pending1l-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
+| smb2.replay.dhv2-pending1l-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
+| smb2.replay.dhv2-pending1o-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
+| smb2.replay.dhv2-pending1o-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
+| smb2.replay.dhv2-pending1o-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
+| smb2.replay.dhv2-pending1o-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
+| smb2.replay.dhv2-pending2n-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
+| smb2.replay.dhv2-pending2n-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
+| smb2.replay.dhv2-pending2n-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
+| smb2.replay.dhv2-pending2l-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
+| smb2.replay.dhv2-pending3n-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
+| smb2.replay.dhv2-pending3l-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
+| smb2.replay.channel-sequence | Replay | Channel sequence tracking not implemented | - |
+| smb2.replay.replay6 | Replay | Replay detection not implemented | - |
+| smb2.replay.replay7 | Replay | Replay detection not implemented | - |
 
 ### Timestamps (Fix Candidate)
 
