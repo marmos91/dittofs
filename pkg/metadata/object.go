@@ -52,9 +52,6 @@ func ParseContentHash(s string) (ContentHash, error) {
 // It's the ContentHash stored as a fixed-size array for embedding in FileAttr.
 type ObjectID = ContentHash
 
-// ZeroObjectID is an empty/unset ObjectID.
-var ZeroObjectID = ObjectID{}
-
 // ============================================================================
 // BlockState
 // ============================================================================
@@ -194,38 +191,8 @@ var ErrInvalidHash = &StoreError{
 	Message: "invalid content hash format",
 }
 
-// ErrObjectNotFound is returned when an object is not found.
-var ErrObjectNotFound = &StoreError{
-	Code:    ErrNotFound,
-	Message: "object not found",
-}
-
-// ErrChunkNotFound is returned when a chunk is not found.
-var ErrChunkNotFound = &StoreError{
-	Code:    ErrNotFound,
-	Message: "chunk not found",
-}
-
-// ErrBlockNotFound is returned when a block is not found.
-var ErrBlockNotFound = &StoreError{
-	Code:    ErrNotFound,
-	Message: "block not found",
-}
-
 // ErrFileBlockNotFound is returned when a file block is not found.
 var ErrFileBlockNotFound = &StoreError{
 	Code:    ErrNotFound,
 	Message: "file block not found",
-}
-
-// ErrObjectNotFinalized is returned when trying to read an unfinalized object.
-var ErrObjectNotFinalized = &StoreError{
-	Code:    ErrInvalidArgument,
-	Message: "object not finalized",
-}
-
-// ErrDuplicateObject is returned when trying to create an object that already exists.
-var ErrDuplicateObject = &StoreError{
-	Code:    ErrAlreadyExists,
-	Message: "object already exists",
 }

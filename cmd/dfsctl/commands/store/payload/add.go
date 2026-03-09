@@ -15,8 +15,6 @@ var (
 	addName   string
 	addType   string
 	addConfig string
-	// Filesystem specific
-	addPath string
 	// S3 specific
 	addBucket    string
 	addRegion    string
@@ -32,13 +30,9 @@ var addCmd = &cobra.Command{
 
 Supported types:
   - memory: In-memory store (fast, ephemeral)
-  - filesystem: Local filesystem store
   - s3: AWS S3 or S3-compatible store
 
 Type-specific options:
-  filesystem:
-    --path: Path to storage directory (or prompted interactively)
-
   s3:
     --bucket: S3 bucket name (or prompted interactively)
     --region: AWS region (default: us-east-1)
@@ -49,12 +43,6 @@ Type-specific options:
 Examples:
   # Add a memory store
   dfsctl store payload add --name fast-content --type memory
-
-  # Add a filesystem store with flags
-  dfsctl store payload add --name local-store --type filesystem --path /data/content
-
-  # Add a filesystem store interactively
-  dfsctl store payload add --name local-store --type filesystem
 
   # Add an S3 store with flags
   dfsctl store payload add --name s3-store --type s3 --bucket my-bucket --region us-west-2
@@ -69,10 +57,8 @@ Examples:
 
 func init() {
 	addCmd.Flags().StringVar(&addName, "name", "", "Store name (required)")
-	addCmd.Flags().StringVar(&addType, "type", "", "Store type: memory, filesystem, s3 (required)")
+	addCmd.Flags().StringVar(&addType, "type", "", "Store type: memory, s3 (required)")
 	addCmd.Flags().StringVar(&addConfig, "config", "", "Store configuration as JSON (for advanced config)")
-	// Filesystem flags
-	addCmd.Flags().StringVar(&addPath, "path", "", "Storage path (required for filesystem)")
 	// S3 flags
 	addCmd.Flags().StringVar(&addBucket, "bucket", "", "S3 bucket name (required for s3)")
 	addCmd.Flags().StringVar(&addRegion, "region", "us-east-1", "AWS region (for s3)")
@@ -90,7 +76,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	// Build config based on type and flags
-	config, err := buildPayloadConfig(addType, addConfig, addPath, addBucket, addRegion, addEndpoint, addAccessKey, addSecretKey)
+	config, err := buildPayloadConfig(addType, addConfig, addBucket, addRegion, addEndpoint, addAccessKey, addSecretKey)
 	if err != nil {
 		return cmdutil.HandleAbort(err)
 	}
@@ -109,7 +95,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	return cmdutil.PrintResourceWithSuccess(os.Stdout, store, fmt.Sprintf("Payload store '%s' (type: %s) created successfully", store.Name, store.Type))
 }
 
-func buildPayloadConfig(storeType, jsonConfig, path, bucket, region, endpoint, accessKey, secretKey string) (any, error) {
+func buildPayloadConfig(storeType, jsonConfig, bucket, region, endpoint, accessKey, secretKey string) (any, error) {
 	// If JSON config is provided, use it directly
 	if jsonConfig != "" {
 		var config any
@@ -123,17 +109,6 @@ func buildPayloadConfig(storeType, jsonConfig, path, bucket, region, endpoint, a
 	switch storeType {
 	case "memory":
 		return nil, nil
-
-	case "filesystem":
-		storagePath := path
-		if storagePath == "" {
-			var err error
-			storagePath, err = prompt.InputRequired("Storage path")
-			if err != nil {
-				return nil, err
-			}
-		}
-		return map[string]any{"path": storagePath}, nil
 
 	case "s3":
 		s3Bucket := bucket
@@ -193,6 +168,6 @@ func buildPayloadConfig(storeType, jsonConfig, path, bucket, region, endpoint, a
 		return config, nil
 
 	default:
-		return nil, fmt.Errorf("unknown store type: %s (supported: memory, filesystem, s3)", storeType)
+		return nil, fmt.Errorf("unknown store type: %s (supported: memory, s3)", storeType)
 	}
 }

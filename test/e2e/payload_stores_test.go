@@ -3,7 +3,6 @@
 package e2e
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -47,26 +46,7 @@ func TestPayloadStoresCRUD(t *testing.T) {
 		assert.Equal(t, "memory", store.Type, "Store type should be memory")
 	})
 
-	// PLS-02: Create filesystem payload store
-	t.Run("create filesystem store", func(t *testing.T) {
-		t.Parallel()
-
-		storeName := helpers.UniqueTestName("payload_fs")
-		storagePath := filepath.Join(t.TempDir(), "content")
-
-		t.Cleanup(func() {
-			_ = cli.DeletePayloadStore(storeName)
-		})
-
-		store, err := cli.CreatePayloadStore(storeName, "filesystem",
-			helpers.WithPayloadPath(storagePath))
-		require.NoError(t, err, "Should create filesystem payload store")
-
-		assert.Equal(t, storeName, store.Name, "Store name should match")
-		assert.Equal(t, "filesystem", store.Type, "Store type should be filesystem")
-	})
-
-	// PLS-03: Create S3 payload store
+	// PLS-02: Create S3 payload store
 	t.Run("create s3 store", func(t *testing.T) {
 		t.Parallel()
 
@@ -125,33 +105,7 @@ func TestPayloadStoresCRUD(t *testing.T) {
 		assert.True(t, found2, "Should find second store in list")
 	})
 
-	// PLS-05: Edit filesystem store path
-	t.Run("edit filesystem store path", func(t *testing.T) {
-		t.Parallel()
-
-		storeName := helpers.UniqueTestName("payload_edit")
-		originalPath := filepath.Join(t.TempDir(), "original")
-		newPath := filepath.Join(t.TempDir(), "updated")
-
-		t.Cleanup(func() {
-			_ = cli.DeletePayloadStore(storeName)
-		})
-
-		// Create filesystem store
-		_, err := cli.CreatePayloadStore(storeName, "filesystem",
-			helpers.WithPayloadPath(originalPath))
-		require.NoError(t, err, "Should create filesystem store")
-
-		// Edit with new path
-		updated, err := cli.EditPayloadStore(storeName,
-			helpers.WithPayloadPath(newPath))
-		require.NoError(t, err, "Should edit payload store path")
-
-		assert.Equal(t, storeName, updated.Name, "Store name should remain unchanged")
-		assert.Equal(t, "filesystem", updated.Type, "Store type should remain filesystem")
-	})
-
-	// PLS-06: Delete store
+	// PLS-03: Delete store
 	t.Run("delete store", func(t *testing.T) {
 		// Not parallel - write operations can cause SQLite lock contention
 		storeName := helpers.UniqueTestName("payload_del")

@@ -51,7 +51,6 @@ func (t TransferType) String() string {
 // Config holds configuration for the Offloader.
 type Config struct {
 	ParallelUploads    int           // Concurrent block uploads (default: 16)
-	MaxParallelUploads int           // Max concurrent uploads; 0 = unlimited
 	ParallelDownloads  int           // Concurrent block downloads per file (default: 32)
 	PrefetchBlocks     int           // Blocks to prefetch ahead of reads; 0 = disabled (default: 64)
 	SmallFileThreshold int64         // Files below this are flushed synchronously; 0 = disabled
@@ -63,7 +62,6 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		ParallelUploads:    DefaultParallelUploads,
-		MaxParallelUploads: 0,
 		ParallelDownloads:  DefaultParallelDownloads,
 		PrefetchBlocks:     DefaultPrefetchBlocks,
 		SmallFileThreshold: 0,
@@ -90,7 +88,5 @@ func DefaultTransferQueueConfig() TransferQueueConfig {
 
 // FlushResult indicates the outcome of a flush operation.
 type FlushResult struct {
-	BytesFlushed   uint64 // Bytes written
-	AlreadyFlushed bool   // All data was already flushed (no-op)
-	Finalized      bool   // Data is durable in block store
+	Finalized bool // Data is durable in block store
 }

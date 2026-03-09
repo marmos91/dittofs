@@ -168,8 +168,6 @@ type PayloadStore struct {
 type PayloadStoreOption func(*payloadStoreOptions)
 
 type payloadStoreOptions struct {
-	// Filesystem specific
-	path string
 	// S3 specific
 	bucket    string
 	region    string
@@ -178,13 +176,6 @@ type payloadStoreOptions struct {
 	secretKey string
 	// Generic JSON config
 	rawConfig string
-}
-
-// WithPayloadPath sets the filesystem storage path.
-func WithPayloadPath(path string) PayloadStoreOption {
-	return func(o *payloadStoreOptions) {
-		o.path = path
-	}
 }
 
 // WithPayloadS3Config sets S3 configuration.
@@ -210,7 +201,7 @@ func WithPayloadRawConfig(config string) PayloadStoreOption {
 // =============================================================================
 
 // CreatePayloadStore creates a new payload store via the CLI.
-// Supports memory, filesystem, and s3 store types.
+// Supports memory and s3 store types.
 func (r *CLIRunner) CreatePayloadStore(name, storeType string, opts ...PayloadStoreOption) (*PayloadStore, error) {
 	options := &payloadStoreOptions{}
 	for _, opt := range opts {
@@ -222,8 +213,6 @@ func (r *CLIRunner) CreatePayloadStore(name, storeType string, opts ...PayloadSt
 	// Add type-specific options
 	if options.rawConfig != "" {
 		args = append(args, "--config", options.rawConfig)
-	} else if options.path != "" {
-		args = append(args, "--path", options.path)
 	} else if options.bucket != "" {
 		// S3 config
 		args = append(args, "--bucket", options.bucket)
@@ -299,9 +288,6 @@ func (r *CLIRunner) EditPayloadStore(name string, opts ...PayloadStoreOption) (*
 	// Add type-specific options
 	if options.rawConfig != "" {
 		args = append(args, "--config", options.rawConfig)
-		hasUpdate = true
-	} else if options.path != "" {
-		args = append(args, "--path", options.path)
 		hasUpdate = true
 	} else if options.bucket != "" || options.region != "" || options.endpoint != "" || options.accessKey != "" || options.secretKey != "" {
 		// S3 config - at least one field was set

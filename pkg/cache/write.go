@@ -134,20 +134,7 @@ func (bc *BlockCache) tryDirectDiskWrite(ctx context.Context, payloadID string, 
 
 	blockID := makeBlockID(key)
 
-	// Use direct payload store path if available (filesystem backend optimization).
-	// This eliminates double-write: data goes straight to the payload store,
-	// skipping cache .blk files entirely. Blocks are marked Remote immediately.
-	var path string
-	var isDirect bool
-	if bc.directWritePath != nil {
-		if p := bc.directWritePath(payloadID, blockIdx); p != "" {
-			path = p
-			isDirect = true
-		}
-	}
-	if path == "" {
-		path = bc.blockPath(blockID)
-	}
+	path := bc.blockPath(blockID)
 
 	// Try cached fd first, then open from disk.
 	f := bc.fdCache.Get(blockID)
@@ -197,10 +184,7 @@ func (bc *BlockCache) tryDirectDiskWrite(ctx context.Context, payloadID string, 
 	if end > fb.DataSize {
 		fb.DataSize = end
 	}
-	if isDirect {
-		fb.State = metadata.BlockStateRemote
-		fb.BlockStoreKey = FormatStoreKey(payloadID, blockIdx)
-	} else if fb.State == 0 {
+	if fb.State == 0 {
 		// New block, never synced -- mark Local so the syncer picks it up.
 		fb.State = metadata.BlockStateLocal
 	}

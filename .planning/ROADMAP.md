@@ -116,7 +116,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 ### v4.0 BlockStore Unification Refactor
 
 - [x] **Phase 41: Block State Enum and ListFileBlocks** - Rename states (Sealed→Local, Uploaded→Remote), update ListPendingUpload→ListLocalBlocks, add ListFileBlocks method (completed 2026-03-09)
-- [ ] **Phase 42: Legacy Cleanup** - Remove DirectWriteStore interface and filesystem payload store
+- [x] **Phase 42: Legacy Cleanup** - Remove DirectWriteStore interface and filesystem payload store (completed 2026-03-09)
 - [ ] **Phase 43: Local-Only Block Management** - Block management operations on cache, local-only offloader mode without remote store
 - [ ] **Phase 44: Data Model and API/CLI** - BlockStoreConfig DB model, REST endpoints, dfsctl block store commands
 - [ ] **Phase 45: Package Restructure** - Create pkg/blockstore/ hierarchy absorbing cache, payload, offloader, gc
@@ -540,7 +540,7 @@ v3.8 (33-40.5) -> v4.0 (41-49) -> v4.1 (50-56) -> v4.2 (57-62)
 | 39. Cross-Protocol Integration and Documentation | v3.8 | 3/3 | Complete | 2026-03-02 |
 | 40. SMB3 Conformance Testing | v3.8 | 6/6 | Complete | 2026-03-02 |
 | 41. Block State Enum and ListFileBlocks | 2/2 | Complete    | 2026-03-09 | - |
-| 42. Legacy Cleanup | v4.0 | 0/? | Not started | - |
+| 42. Legacy Cleanup | 1/1 | Complete    | 2026-03-09 | - |
 | 43. Local-Only Block Management | v4.0 | 0/? | Not started | - |
 | 44. Data Model and API/CLI | v4.0 | 0/? | Not started | - |
 | 45. Package Restructure | v4.0 | 0/? | Not started | - |

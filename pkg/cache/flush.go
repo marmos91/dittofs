@@ -20,9 +20,8 @@ import (
 // Returns the list of blocks that were flushed, so GetDirtyBlocks can use them
 // directly without a BadgerDB round-trip (SyncFileBlocksForFile + ListLocalBlocks).
 //
-// For FS backends (directWritePath set), fsync guarantees durability.
-// For S3 backends (skipFsync set), fsync is skipped — data durability comes
-// from remote sync, not local disk. The cache is just a staging buffer.
+// When skipFsync is set (e.g. S3 backends), fsync is skipped — data durability
+// comes from remote sync, not local disk. The cache is just a staging buffer.
 func (bc *BlockCache) Flush(ctx context.Context, payloadID string) ([]FlushedBlock, error) {
 	if bc.isClosed() {
 		return nil, ErrCacheClosed
@@ -103,18 +102,7 @@ func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx
 	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
 	blockID := makeBlockID(key)
 
-	// Use direct payload store path if available (filesystem backend optimization).
-	var path string
-	var isDirect bool
-	if bc.directWritePath != nil {
-		if p := bc.directWritePath(payloadID, blockIdx); p != "" {
-			path = p
-			isDirect = true
-		}
-	}
-	if path == "" {
-		path = bc.blockPath(blockID)
-	}
+	path := bc.blockPath(blockID)
 
 	// Evict fds from cache before truncating the file (O_TRUNC invalidates them)
 	bc.fdCache.Evict(blockID)
@@ -160,13 +148,7 @@ func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx
 	}
 	fb.CachePath = path
 	fb.DataSize = dataSize
-	if isDirect {
-		// Direct write: data is already in payload store, mark Remote.
-		fb.State = metadata.BlockStateRemote
-		fb.BlockStoreKey = FormatStoreKey(payloadID, blockIdx)
-	} else {
-		fb.State = metadata.BlockStateLocal
-	}
+	fb.State = metadata.BlockStateLocal
 	fb.LastAccess = time.Now()
 	bc.queueFileBlockUpdate(fb)
 
@@ -177,9 +159,7 @@ func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx
 	mb.dataSize = 0
 	mb.dirty = false
 	bc.memUsed.Add(-int64(BlockSize))
-	if !isDirect {
-		bc.diskUsed.Add(int64(dataSize) - prevDiskSize)
-	}
+	bc.diskUsed.Add(int64(dataSize) - prevDiskSize)
 	mb.mu.Unlock()
 
 	// Return buffer to pool for reuse (avoids 8MB zeroing on next alloc).

@@ -26,12 +26,6 @@ const maxUploadBatch = 4
 // The periodic syncer guards against overlapping ticks, so at most one
 // instance of this function runs at a time.
 func (m *Offloader) uploadPendingBlocks(ctx context.Context) {
-	// Direct-write mode: all blocks go straight to Remote in the payload store.
-	// No local blocks exist, so skip the expensive ListLocalBlocks scan.
-	if m.cache.IsDirectWrite() {
-		return
-	}
-
 	pending, err := m.fileBlockStore.ListLocalBlocks(ctx, m.config.UploadDelay, maxUploadBatch)
 	if err != nil {
 		logger.Warn("Periodic sync: failed to list local blocks", "error", err)

@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: BlockStore Unification Refactor
 status: completed
-stopped_at: Completed 41-02-PLAN.md (Phase 41 complete)
-last_updated: "2026-03-09T12:36:09.172Z"
-last_activity: 2026-03-09 — Phase 41 Plan 02 complete (ListFileBlocks + conformance tests)
+stopped_at: Completed 42-01-PLAN.md
+last_updated: "2026-03-09T13:54:55.864Z"
+last_activity: 2026-03-09 — Phase 42 complete (Legacy cleanup)
 progress:
   total_phases: 22
-  completed_phases: 2
-  total_plans: 4
-  completed_plans: 4
+  completed_phases: 3
+  total_plans: 5
+  completed_plans: 5
   percent: 67
 ---
 
@@ -21,15 +21,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-09)
 
 **Core value:** Replace confusing layered storage architecture with clean two-tier block store model (Local + Remote) for per-share isolation and maintainability
-**Current focus:** Phase 41 - Block State Enum and ListFileBlocks
+**Current focus:** Phase 42 - Legacy Cleanup
 
 ## Current Position
 
-Phase: 41 of 49 (Block State Enum and ListFileBlocks)
+Phase: 42 of 49 (Legacy Cleanup)
 Milestone: v4.0 BlockStore Unification Refactor
-Plan: 2 of 2 in current phase (COMPLETE)
-Status: Phase 41 Complete
-Last activity: 2026-03-09 — Phase 41 Plan 02 complete (ListFileBlocks + conformance tests)
+Plan: 1 of 1 in current phase (COMPLETE)
+Status: Phase 42 Complete
+Last activity: 2026-03-09 — Phase 42 complete (Legacy cleanup)
 
 Progress: [████████████████████████████████████████░░░░░░░░░░░░] 67% (124/186+ total plans across all milestones)
 
@@ -54,7 +54,7 @@ Progress: [███████████████████████
 **v4.0 Current Milestone:**
 - 9 phases defined (41-49)
 - 55 requirements mapped
-- 2 plans completed (41-01, 41-02) -- Phase 41 complete
+- 3 plans completed (41-01, 41-02, 42-01) -- Phase 41, 42 complete
 
 ## Accumulated Context
 
@@ -70,6 +70,8 @@ Recent decisions affecting v4.0 work:
 - **Log messages updated to sync terminology now**: Method/file renames deferred to Phase 45 (Phase 41, Plan 01)
 - **Block index sorting in Go**: Numeric sort after DB fetch for correct multi-digit ordering (Phase 41, Plan 02)
 - **BadgerDB fb-file: index always maintained**: On every PutFileBlock regardless of state (Phase 41, Plan 02)
+- **Keep filesystem case in init.go returning explicit v4.0 removal error**: For upgrade guidance (Phase 42, Plan 01)
+- **Convert gc_integration_test.go filesystem tests to memory**: Rather than deleting them (Phase 42, Plan 01)
 
 ### Pending Todos
 
@@ -81,7 +83,7 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-09T12:30:23Z
-Stopped at: Completed 41-02-PLAN.md (Phase 41 complete)
-Resume file: .planning/phases/41-block-state-enum-and-listfileblocks/41-02-SUMMARY.md
-Next action: Execute Phase 42 (BlockStore interface definition)
+Last session: 2026-03-09T13:49:40.344Z
+Stopped at: Completed 42-01-PLAN.md
+Resume file: None
+Next action: Begin Phase 43 (Local-Only Block Management)

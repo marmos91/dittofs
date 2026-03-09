@@ -146,7 +146,7 @@ cache:
   # max_pending_size: 2Gi
 
 # Background offloader configuration
-# Controls how cached data is transferred to backend storage (S3, filesystem)
+# Controls how cached data is transferred to backend storage (S3)
 # These defaults are tuned for good S3 performance out of the box.
 offloader:
   # Number of concurrent block uploads to backend storage

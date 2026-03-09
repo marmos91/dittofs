@@ -22,14 +22,14 @@ import (
 )
 
 // =============================================================================
-// Test 1: Version-Parameterized Store Matrix (v3 + v4 x all 9 backends)
+// Test 1: Version-Parameterized Store Matrix (v3 + v4 x all 6 backends)
 // =============================================================================
 
-// TestStoreMatrixV4 validates that all 9 combinations of metadata stores
-// (memory, badger, postgres) and payload stores (memory, filesystem, s3) work
+// TestStoreMatrixV4 validates that all 6 combinations of metadata stores
+// (memory, badger, postgres) and payload stores (memory, s3) work
 // correctly with file operations across BOTH NFSv3 and NFSv4.0 mounts.
 //
-// This produces 18 subtests: 2 versions x 9 backend combinations.
+// This produces 12 subtests: 2 versions x 6 backend combinations.
 // Extends the existing store_matrix_test.go pattern to the version dimension.
 func TestStoreMatrixV4(t *testing.T) {
 	if testing.Short() {
@@ -131,10 +131,6 @@ func runStoreMatrixVersionTest(t *testing.T, version string, sc storeConfig, pgH
 	switch sc.payloadType {
 	case "memory":
 		// No options needed
-	case "filesystem":
-		fsPath := filepath.Join(t.TempDir(), "payload")
-		require.NoError(t, os.MkdirAll(fsPath, 0755), "Should create payload directory")
-		payloadOpts = append(payloadOpts, helpers.WithPayloadPath(fsPath))
 	case "s3":
 		if lsHelper == nil {
 			t.Fatal("Localstack helper not available")

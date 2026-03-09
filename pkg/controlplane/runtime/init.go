@@ -18,7 +18,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/payload"
 	"github.com/marmos91/dittofs/pkg/payload/offloader"
 	blockstore "github.com/marmos91/dittofs/pkg/payload/store"
-	blockfs "github.com/marmos91/dittofs/pkg/payload/store/fs"
 	blockmemory "github.com/marmos91/dittofs/pkg/payload/store/memory"
 	blocks3 "github.com/marmos91/dittofs/pkg/payload/store/s3"
 )
@@ -208,27 +207,10 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 
 	logger.Info("Loaded payload store", "name", payloadStoreCfg.Name, "type", payloadStoreCfg.Type)
 
-	// Enable direct-write optimization for filesystem payload backends.
-	// When the payload store is on the local filesystem, the cache can pwrite
-	// directly to the payload store path, eliminating double-write amplification
-	// (cache .blk → payload store). Blocks are marked Uploaded immediately.
-	if dws, ok := blockStore.(blockstore.DirectWriteStore); ok {
-		bc.SetDirectWritePath(func(payloadID string, blockIdx uint64) string {
-			storeKey := cache.FormatStoreKey(payloadID, blockIdx)
-			path, err := dws.BlockFilePath(storeKey)
-			if err != nil {
-				return "" // Fall back to cache path
-			}
-			return path
-		})
-		logger.Info("Direct-write optimization enabled for filesystem payload backend")
-	} else {
-		// S3 backend: skip fsync on COMMIT path. Data durability comes from S3
-		// upload, not local disk. The cache .blk files are staging buffers —
-		// losing them on power failure means re-downloading from S3, not data loss.
-		bc.SetSkipFsync(true)
-		logger.Info("S3 cache optimization: fsync skipped (durability via S3)")
-	}
+	// Skip fsync on COMMIT path. Data durability comes from remote sync (e.g. S3),
+	// not local disk. The cache .blk files are staging buffers — losing them on
+	// power failure means re-downloading from the remote store, not data loss.
+	bc.SetSkipFsync(true)
 
 	offloaderCfg := offloader.DefaultConfig()
 	rt.mu.RLock()
@@ -292,11 +274,7 @@ func CreateBlockStoreFromConfig(ctx context.Context, storeType string, cfg inter
 		return blockmemory.New(), nil
 
 	case "filesystem":
-		path, ok := config["path"].(string)
-		if !ok || path == "" {
-			return nil, fmt.Errorf("filesystem payload store requires path")
-		}
-		return blockfs.New(blockfs.Config{BasePath: path})
+		return nil, fmt.Errorf("payload store type 'filesystem' removed in v4.0 -- use 'memory' or 's3'")
 
 	case "s3":
 		bucket, ok := config["bucket"].(string)

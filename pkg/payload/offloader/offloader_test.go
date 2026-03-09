@@ -21,7 +21,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/payload/store"
-	"github.com/marmos91/dittofs/pkg/payload/store/fs"
 	"github.com/marmos91/dittofs/pkg/payload/store/memory"
 	s3store "github.com/marmos91/dittofs/pkg/payload/store/s3"
 	"github.com/testcontainers/testcontainers-go"
@@ -76,43 +75,6 @@ func newMemoryEnv(t *testing.T) *testEnv {
 		cleanup: func() {
 			m.Close()
 			bs.Close()
-		},
-	}
-}
-
-// newFilesystemEnv creates a test environment with filesystem block store.
-func newFilesystemEnv(t *testing.T) *testEnv {
-	t.Helper()
-	cacheTmpDir := t.TempDir()
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bc, err := cache.New(cacheTmpDir, 0, 0, ms)
-	if err != nil {
-		t.Fatalf("cache.New() error = %v", err)
-	}
-
-	tmpDir, err := os.MkdirTemp("", "offloader-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-
-	bs, err := fs.NewWithPath(tmpDir)
-	if err != nil {
-		os.RemoveAll(tmpDir)
-		t.Fatalf("failed to create fs store: %v", err)
-	}
-
-	m := New(bc, bs, ms, DefaultConfig())
-	m.Start(context.Background())
-
-	return &testEnv{
-		cache:          bc,
-		blockStore:     bs,
-		fileBlockStore: ms,
-		offloader:      m,
-		cleanup: func() {
-			m.Close()
-			bs.Close()
-			os.RemoveAll(tmpDir)
 		},
 	}
 }
@@ -422,12 +384,6 @@ func TestOffloader_WriteAndFlush_Memory(t *testing.T) {
 	testWriteAndFlush(t, env)
 }
 
-func TestOffloader_WriteAndFlush_Filesystem(t *testing.T) {
-	env := newFilesystemEnv(t)
-	defer env.cleanup()
-	testWriteAndFlush(t, env)
-}
-
 func TestOffloader_WriteAndFlush_S3(t *testing.T) {
 	env := newS3Env(t, sharedHelper)
 	defer env.cleanup()
@@ -448,7 +404,6 @@ func testWriteAndFlush(t *testing.T, env *testEnv) {
 		if err := env.cache.WriteAt(ctx, payloadID, chunk, uint64(offset)); err != nil {
 			t.Fatalf("Write failed: %v", err)
 		}
-		// OnWriteComplete removed - periodic uploader handles uploads
 	}
 	time.Sleep(100 * time.Millisecond)
 	_, err := env.offloader.Flush(ctx, payloadID)
@@ -475,12 +430,6 @@ func testWriteAndFlush(t *testing.T, env *testEnv) {
 
 func TestOffloader_DownloadOnCacheMiss_Memory(t *testing.T) {
 	env := newMemoryEnv(t)
-	defer env.cleanup()
-	testDownloadOnCacheMiss(t, env)
-}
-
-func TestOffloader_DownloadOnCacheMiss_Filesystem(t *testing.T) {
-	env := newFilesystemEnv(t)
 	defer env.cleanup()
 	testDownloadOnCacheMiss(t, env)
 }
@@ -549,7 +498,6 @@ func testConcurrentOperations(t *testing.T, env *testEnv) {
 				errors <- fmt.Errorf("file %d: Write failed: %w", fileIdx, err)
 				return
 			}
-			// OnWriteComplete removed - periodic uploader handles uploads
 			if _, err := env.offloader.Flush(ctx, payloadID); err != nil {
 				errors <- fmt.Errorf("file %d: Flush failed: %w", fileIdx, err)
 				return
@@ -594,40 +542,8 @@ func newMemoryEnvForBench(b *testing.B) *testEnv {
 	return &testEnv{cache: bc, blockStore: bs, fileBlockStore: ms, offloader: m, cleanup: func() { m.Close(); bs.Close(); os.RemoveAll(tmpDir) }}
 }
 
-func newFilesystemEnvForBench(b *testing.B) *testEnv {
-	b.Helper()
-	cacheTmpDir, err := os.MkdirTemp("", "offloader-bench-cache-*")
-	if err != nil {
-		b.Fatalf("failed to create cache temp dir: %v", err)
-	}
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bc, err := cache.New(cacheTmpDir, 0, 0, ms)
-	if err != nil {
-		os.RemoveAll(cacheTmpDir)
-		b.Fatalf("cache.New() error = %v", err)
-	}
-	tmpDir, err := os.MkdirTemp("", "offloader-bench-*")
-	if err != nil {
-		b.Fatalf("failed to create temp dir: %v", err)
-	}
-	bs, err := fs.NewWithPath(tmpDir)
-	if err != nil {
-		os.RemoveAll(tmpDir)
-		os.RemoveAll(cacheTmpDir)
-		b.Fatalf("failed to create fs store: %v", err)
-	}
-	m := New(bc, bs, ms, DefaultConfig())
-	m.Start(context.Background())
-	return &testEnv{cache: bc, blockStore: bs, fileBlockStore: ms, offloader: m, cleanup: func() { m.Close(); bs.Close(); os.RemoveAll(tmpDir); os.RemoveAll(cacheTmpDir) }}
-}
-
 func BenchmarkUpload_Memory(b *testing.B) {
 	env := newMemoryEnvForBench(b)
-	defer env.cleanup()
-	benchmarkUpload(b, env)
-}
-func BenchmarkUpload_Filesystem(b *testing.B) {
-	env := newFilesystemEnvForBench(b)
 	defer env.cleanup()
 	benchmarkUpload(b, env)
 }
@@ -636,28 +552,13 @@ func BenchmarkDownload_Memory(b *testing.B) {
 	defer env.cleanup()
 	benchmarkDownload(b, env)
 }
-func BenchmarkDownload_Filesystem(b *testing.B) {
-	env := newFilesystemEnvForBench(b)
-	defer env.cleanup()
-	benchmarkDownload(b, env)
-}
 func BenchmarkFlush_Memory(b *testing.B) {
 	env := newMemoryEnvForBench(b)
 	defer env.cleanup()
 	benchmarkFlush(b, env)
 }
-func BenchmarkFlush_Filesystem(b *testing.B) {
-	env := newFilesystemEnvForBench(b)
-	defer env.cleanup()
-	benchmarkFlush(b, env)
-}
 func BenchmarkConcurrentUpload_Memory(b *testing.B) {
 	env := newMemoryEnvForBench(b)
-	defer env.cleanup()
-	benchmarkConcurrentUpload(b, env, 4)
-}
-func BenchmarkConcurrentUpload_Filesystem(b *testing.B) {
-	env := newFilesystemEnvForBench(b)
 	defer env.cleanup()
 	benchmarkConcurrentUpload(b, env, 4)
 }
@@ -671,16 +572,6 @@ func BenchmarkLargeFile_64MB_Memory(b *testing.B) {
 	defer env.cleanup()
 	benchmarkLargeFile(b, env, 64*1024*1024)
 }
-func BenchmarkLargeFile_16MB_Filesystem(b *testing.B) {
-	env := newFilesystemEnvForBench(b)
-	defer env.cleanup()
-	benchmarkLargeFile(b, env, 16*1024*1024)
-}
-func BenchmarkLargeFile_64MB_Filesystem(b *testing.B) {
-	env := newFilesystemEnvForBench(b)
-	defer env.cleanup()
-	benchmarkLargeFile(b, env, 64*1024*1024)
-}
 func BenchmarkSequentialWrite_32KB_Memory(b *testing.B) {
 	env := newMemoryEnvForBench(b)
 	defer env.cleanup()
@@ -691,12 +582,6 @@ func BenchmarkSequentialWrite_64KB_Memory(b *testing.B) {
 	defer env.cleanup()
 	benchmarkSequentialWrite(b, env, 64*1024)
 }
-func BenchmarkSequentialWrite_32KB_Filesystem(b *testing.B) {
-	env := newFilesystemEnvForBench(b)
-	defer env.cleanup()
-	benchmarkSequentialWrite(b, env, 32*1024)
-}
-
 func BenchmarkUpload_S3(b *testing.B) {
 	env := newS3EnvForBench(b)
 	if env == nil {
@@ -764,7 +649,7 @@ func benchmarkUpload(b *testing.B, env *testEnv) {
 		if err := env.cache.WriteAt(ctx, payloadID, data, 0); err != nil {
 			b.Fatalf("Write failed: %v", err)
 		}
-		// OnWriteComplete removed - periodic uploader handles uploads
+
 		if _, err := env.offloader.Flush(ctx, payloadID); err != nil {
 			b.Fatalf("Flush failed: %v", err)
 		}
@@ -822,7 +707,6 @@ func benchmarkConcurrentUpload(b *testing.B, env *testEnv, parallelism int) {
 				if err := env.cache.WriteAt(ctx, payloadID, data, 0); err != nil {
 					return
 				}
-				// OnWriteComplete removed - periodic uploader handles uploads
 				env.offloader.Flush(ctx, payloadID)
 			}(j)
 		}
@@ -846,7 +730,6 @@ func benchmarkLargeFile(b *testing.B, env *testEnv, fileSize int) {
 			if err := env.cache.WriteAt(ctx, payloadID, data[offset:end], uint64(offset)); err != nil {
 				b.Fatalf("Write failed: %v", err)
 			}
-			// OnWriteComplete removed - periodic uploader handles uploads
 		}
 		if _, err := env.offloader.Flush(ctx, payloadID); err != nil {
 			b.Fatalf("Flush failed: %v", err)
@@ -866,7 +749,6 @@ func benchmarkSequentialWrite(b *testing.B, env *testEnv, writeSize int) {
 		if err := env.cache.WriteAt(ctx, payloadID, data, fileOffset); err != nil {
 			b.Fatalf("Write failed: %v", err)
 		}
-		// OnWriteComplete removed - periodic uploader handles uploads
 	}
 	b.StopTimer()
 	b.ReportMetric(float64(totalBytes)/(float64(b.Elapsed().Nanoseconds())/1e9)/1024/1024, "MB/s")
@@ -881,12 +763,6 @@ func TestOffloader_Deduplication_Memory(t *testing.T) {
 	defer env.cleanup()
 	testDeduplication(t, env)
 }
-func TestOffloader_Deduplication_Filesystem(t *testing.T) {
-	env := newFilesystemEnv(t)
-	defer env.cleanup()
-	testDeduplication(t, env)
-}
-
 func testDeduplication(t *testing.T, env *testEnv) {
 	ctx := context.Background()
 	data := make([]byte, BlockSize)
@@ -898,7 +774,7 @@ func testDeduplication(t *testing.T, env *testEnv) {
 	if err := env.cache.WriteAt(ctx, payloadID1, data, 0); err != nil {
 		t.Fatalf("Write to file1 failed: %v", err)
 	}
-	// OnWriteComplete removed - periodic uploader handles uploads
+
 	if _, err := env.offloader.Flush(ctx, payloadID1); err != nil {
 		t.Fatalf("Flush file1 failed: %v", err)
 	}
@@ -906,7 +782,7 @@ func testDeduplication(t *testing.T, env *testEnv) {
 	if err := env.cache.WriteAt(ctx, payloadID2, data, 0); err != nil {
 		t.Fatalf("Write to file2 failed: %v", err)
 	}
-	// OnWriteComplete removed - periodic uploader handles uploads
+
 	if _, err := env.offloader.Flush(ctx, payloadID2); err != nil {
 		t.Fatalf("Flush file2 failed: %v", err)
 	}
@@ -947,7 +823,7 @@ func testDedupWithDifferentData(t *testing.T, env *testEnv) {
 	if err := env.cache.WriteAt(ctx, payloadID1, data1, 0); err != nil {
 		t.Fatalf("Write to file1 failed: %v", err)
 	}
-	// OnWriteComplete removed - periodic uploader handles uploads
+
 	if _, err := env.offloader.Flush(ctx, payloadID1); err != nil {
 		t.Fatalf("Flush file1 failed: %v", err)
 	}
@@ -955,7 +831,7 @@ func testDedupWithDifferentData(t *testing.T, env *testEnv) {
 	if err := env.cache.WriteAt(ctx, payloadID2, data2, 0); err != nil {
 		t.Fatalf("Write to file2 failed: %v", err)
 	}
-	// OnWriteComplete removed - periodic uploader handles uploads
+
 	if _, err := env.offloader.Flush(ctx, payloadID2); err != nil {
 		t.Fatalf("Flush file2 failed: %v", err)
 	}

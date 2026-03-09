@@ -16,12 +16,12 @@
 
 ### Legacy Cleanup
 
-- [ ] **CLEAN-01**: DirectWriteStore interface removed from pkg/payload/store/store.go
-- [ ] **CLEAN-02**: pkg/payload/store/fs/ entirely deleted
-- [ ] **CLEAN-03**: directWritePath, SetDirectWritePath, IsDirectWrite removed from cache
-- [ ] **CLEAN-04**: IsDirectWrite checks removed from offloader
-- [ ] **CLEAN-05**: blockfs import and DirectWriteStore detection removed from init.go
-- [ ] **CLEAN-06**: All direct-write branches removed from cache write.go, read.go, flush.go
+- [x] **CLEAN-01**: DirectWriteStore interface removed from pkg/payload/store/store.go
+- [x] **CLEAN-02**: pkg/payload/store/fs/ entirely deleted
+- [x] **CLEAN-03**: directWritePath, SetDirectWritePath, IsDirectWrite removed from cache
+- [x] **CLEAN-04**: IsDirectWrite checks removed from offloader
+- [x] **CLEAN-05**: blockfs import and DirectWriteStore detection removed from init.go
+- [x] **CLEAN-06**: All direct-write branches removed from cache write.go, read.go, flush.go
 
 ### Local-Only Mode
 
@@ -124,12 +124,12 @@
 | STATE-04 | Phase 41 | Complete |
 | STATE-05 | Phase 41 | Complete |
 | STATE-06 | Phase 41 | Complete |
-| CLEAN-01 | Phase 42 | Pending |
-| CLEAN-02 | Phase 42 | Pending |
-| CLEAN-03 | Phase 42 | Pending |
-| CLEAN-04 | Phase 42 | Pending |
-| CLEAN-05 | Phase 42 | Pending |
-| CLEAN-06 | Phase 42 | Pending |
+| CLEAN-01 | Phase 42 | Complete |
+| CLEAN-02 | Phase 42 | Complete |
+| CLEAN-03 | Phase 42 | Complete |
+| CLEAN-04 | Phase 42 | Complete |
+| CLEAN-05 | Phase 42 | Complete |
+| CLEAN-06 | Phase 42 | Complete |
 | LOCAL-01 | Phase 43 | Pending |
 | LOCAL-02 | Phase 43 | Pending |
 | LOCAL-03 | Phase 43 | Pending |

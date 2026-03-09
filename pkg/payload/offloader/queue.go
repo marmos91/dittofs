@@ -113,9 +113,7 @@ func (q *TransferQueue) Stop(timeout time.Duration) {
 	}
 }
 
-// Enqueue adds an upload transfer request to the queue.
-// Returns false if the queue is full (non-blocking).
-// For backward compatibility - routes to upload channel.
+// Enqueue is a convenience alias for EnqueueUpload.
 func (q *TransferQueue) Enqueue(req TransferRequest) bool {
 	return q.EnqueueUpload(req)
 }

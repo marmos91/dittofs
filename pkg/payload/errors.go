@@ -153,7 +153,7 @@ type PayloadError struct {
 	// Retries is the number of retry attempts made before the final failure.
 	Retries int
 
-	// Backend identifies the storage backend type: "s3", "memory", or "filesystem".
+	// Backend identifies the storage backend type: "s3" or "memory".
 	Backend string
 
 	// Err is the wrapped sentinel error (e.g., ErrContentNotFound, ErrUnavailable).

@@ -23,36 +23,30 @@ import (
 // storeConfig defines a combination of metadata and payload store types.
 type storeConfig struct {
 	metadataType string // "memory", "badger", "postgres"
-	payloadType  string // "memory", "filesystem", "s3"
+	payloadType  string // "memory", "s3"
 }
 
-// storeMatrix defines all 9 store combinations to test (MTX-01 through MTX-09).
+// storeMatrix defines all 6 store combinations to test (MTX-01 through MTX-06).
 var storeMatrix = []storeConfig{
-	{"memory", "memory"},       // MTX-01
-	{"memory", "filesystem"},   // MTX-02
-	{"memory", "s3"},           // MTX-03
-	{"badger", "memory"},       // MTX-04
-	{"badger", "filesystem"},   // MTX-05
-	{"badger", "s3"},           // MTX-06
-	{"postgres", "memory"},     // MTX-07
-	{"postgres", "filesystem"}, // MTX-08
-	{"postgres", "s3"},         // MTX-09
+	{"memory", "memory"},   // MTX-01
+	{"memory", "s3"},       // MTX-02
+	{"badger", "memory"},   // MTX-03
+	{"badger", "s3"},       // MTX-04
+	{"postgres", "memory"}, // MTX-05
+	{"postgres", "s3"},     // MTX-06
 }
 
-// TestStoreMatrixOperations validates that all 9 combinations of metadata stores
-// (memory, badger, postgres) and payload stores (memory, filesystem, s3) work
+// TestStoreMatrixOperations validates that all 6 combinations of metadata stores
+// (memory, badger, postgres) and payload stores (memory, s3) work
 // correctly with file operations.
 //
 // Requirements covered:
 //   - MTX-01: memory/memory
-//   - MTX-02: memory/filesystem
-//   - MTX-03: memory/s3
-//   - MTX-04: badger/memory
-//   - MTX-05: badger/filesystem
-//   - MTX-06: badger/s3
-//   - MTX-07: postgres/memory
-//   - MTX-08: postgres/filesystem
-//   - MTX-09: postgres/s3
+//   - MTX-02: memory/s3
+//   - MTX-03: badger/memory
+//   - MTX-04: badger/s3
+//   - MTX-05: postgres/memory
+//   - MTX-06: postgres/s3
 func TestStoreMatrixOperations(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping store matrix tests in short mode")
@@ -146,10 +140,6 @@ func runStoreMatrixTest(t *testing.T, sc storeConfig, pgHelper *framework.Postgr
 	switch sc.payloadType {
 	case "memory":
 		// No options needed
-	case "filesystem":
-		fsPath := filepath.Join(t.TempDir(), "payload")
-		require.NoError(t, os.MkdirAll(fsPath, 0755), "Should create payload directory")
-		payloadOpts = append(payloadOpts, helpers.WithPayloadPath(fsPath))
 	case "s3":
 		if lsHelper == nil {
 			t.Fatal("Localstack helper not available")

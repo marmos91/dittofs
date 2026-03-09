@@ -14,8 +14,6 @@ import (
 var (
 	editType   string
 	editConfig string
-	// Filesystem specific
-	editPath string
 	// S3 specific
 	editBucket    string
 	editRegion    string
@@ -37,10 +35,7 @@ Examples:
   dfsctl store payload edit default
 
   # Update config with JSON
-  dfsctl store payload edit default --config '{"path":"/new/path"}'
-
-  # Update filesystem path
-  dfsctl store payload edit default --path /new/path
+  dfsctl store payload edit default --config '{"bucket":"new-bucket"}'
 
   # Update S3 settings
   dfsctl store payload edit default --bucket new-bucket --region us-west-2`,
@@ -49,9 +44,8 @@ Examples:
 }
 
 func init() {
-	editCmd.Flags().StringVar(&editType, "type", "", "Store type: memory, filesystem, s3")
+	editCmd.Flags().StringVar(&editType, "type", "", "Store type: memory, s3")
 	editCmd.Flags().StringVar(&editConfig, "config", "", "Store configuration as JSON")
-	editCmd.Flags().StringVar(&editPath, "path", "", "Storage path (for filesystem)")
 	editCmd.Flags().StringVar(&editBucket, "bucket", "", "S3 bucket name (for s3)")
 	editCmd.Flags().StringVar(&editRegion, "region", "", "AWS region (for s3)")
 	editCmd.Flags().StringVar(&editEndpoint, "endpoint", "", "Custom S3 endpoint")
@@ -74,7 +68,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check if any flags were provided
-	hasFlags := cmd.Flags().Changed("type") || cmd.Flags().Changed("config") || cmd.Flags().Changed("path") ||
+	hasFlags := cmd.Flags().Changed("type") || cmd.Flags().Changed("config") ||
 		cmd.Flags().Changed("bucket") || cmd.Flags().Changed("region") || cmd.Flags().Changed("endpoint") ||
 		cmd.Flags().Changed("access-key") || cmd.Flags().Changed("secret-key")
 
@@ -93,9 +87,6 @@ func runEdit(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("invalid JSON config: %w", err)
 		}
 		req.Config = config
-		hasUpdate = true
-	} else if editPath != "" {
-		req.Config = map[string]any{"path": editPath}
 		hasUpdate = true
 	} else if editBucket != "" || editRegion != "" || editEndpoint != "" || editAccessKey != "" || editSecretKey != "" {
 		// Parse current config to preserve existing values
@@ -132,7 +123,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 
 	if !hasUpdate {
-		return fmt.Errorf("no update fields specified. Use --type, --config, --path, --bucket, --region, --endpoint, --access-key, or --secret-key")
+		return fmt.Errorf("no update fields specified. Use --type, --config, --bucket, --region, --endpoint, --access-key, or --secret-key")
 	}
 
 	store, err := client.UpdatePayloadStore(name, req)
@@ -159,18 +150,6 @@ func runEditInteractive(client *apiclient.Client, name string, current *apiclien
 
 	// Based on store type, prompt for relevant fields
 	switch current.Type {
-	case "filesystem":
-		currentPath := cmdutil.GetConfigString(currentConfig, "path", "")
-
-		newPath, err := prompt.Input("Storage path", currentPath)
-		if err != nil {
-			return cmdutil.HandleAbort(err)
-		}
-		if newPath != currentPath {
-			req.Config = map[string]any{"path": newPath}
-			hasUpdate = true
-		}
-
 	case "s3":
 		bucket := cmdutil.GetConfigString(currentConfig, "bucket", "")
 		region := cmdutil.GetConfigString(currentConfig, "region", "us-east-1")

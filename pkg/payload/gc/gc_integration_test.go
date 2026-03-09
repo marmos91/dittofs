@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -15,7 +14,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/marmos91/dittofs/pkg/payload/store/fs"
+	blockmemory "github.com/marmos91/dittofs/pkg/payload/store/memory"
 	s3store "github.com/marmos91/dittofs/pkg/payload/store/s3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -133,23 +132,14 @@ func TestMain(m *testing.M) {
 }
 
 // ============================================================================
-// Filesystem GC Integration Tests
+// Memory GC Integration Tests
 // ============================================================================
 
-func TestCollectGarbage_Filesystem(t *testing.T) {
+func TestCollectGarbage_Memory(t *testing.T) {
 	ctx := context.Background()
 
-	// Create temp directory for filesystem store
-	tmpDir, err := os.MkdirTemp("", "gc-fs-test-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	// Create filesystem block store
-	blockStore, err := fs.New(fs.Config{
-		BasePath:  tmpDir,
-		CreateDir: true,
-	})
-	require.NoError(t, err)
+	// Create memory block store
+	blockStore := blockmemory.New()
 	defer blockStore.Close()
 
 	// Create blocks for two files
@@ -177,32 +167,18 @@ func TestCollectGarbage_Filesystem(t *testing.T) {
 
 	// Verify orphan blocks were deleted
 	keys, _ := blockStore.ListByPrefix(ctx, orphanPayloadID)
-	assert.Empty(t, keys, "orphan blocks should be deleted from filesystem")
+	assert.Empty(t, keys, "orphan blocks should be deleted")
 
 	// Verify valid blocks still exist
 	keys, _ = blockStore.ListByPrefix(ctx, validPayloadID)
-	assert.Len(t, keys, 1, "valid blocks should remain on filesystem")
-
-	// Verify directory was cleaned up
-	orphanDir := filepath.Join(tmpDir, orphanPayloadID)
-	_, err = os.Stat(orphanDir)
-	assert.True(t, os.IsNotExist(err), "orphan directory should be removed")
+	assert.Len(t, keys, 1, "valid blocks should remain")
 }
 
-func TestCollectGarbage_Filesystem_LargeScale(t *testing.T) {
+func TestCollectGarbage_Memory_LargeScale(t *testing.T) {
 	ctx := context.Background()
 
-	// Create temp directory
-	tmpDir, err := os.MkdirTemp("", "gc-fs-large-*")
-	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
-
-	// Create filesystem block store
-	blockStore, err := fs.New(fs.Config{
-		BasePath:  tmpDir,
-		CreateDir: true,
-	})
-	require.NoError(t, err)
+	// Create memory block store
+	blockStore := blockmemory.New()
 	defer blockStore.Close()
 
 	// Create 100 files, 50% orphans
@@ -276,23 +252,14 @@ func TestCollectGarbage_S3(t *testing.T) {
 }
 
 // ============================================================================
-// S3 Benchmarks
+// Memory Benchmarks
 // ============================================================================
 
-func BenchmarkCollectGarbage_Filesystem(b *testing.B) {
+func BenchmarkCollectGarbage_Memory(b *testing.B) {
 	ctx := context.Background()
 
-	// Create temp directory
-	tmpDir, err := os.MkdirTemp("", "gc-bench-*")
-	require.NoError(b, err)
-	defer os.RemoveAll(tmpDir)
-
-	// Create filesystem block store
-	blockStore, err := fs.New(fs.Config{
-		BasePath:  tmpDir,
-		CreateDir: true,
-	})
-	require.NoError(b, err)
+	// Create memory block store
+	blockStore := blockmemory.New()
 	defer blockStore.Close()
 
 	// Set up reconciler with 50% orphans

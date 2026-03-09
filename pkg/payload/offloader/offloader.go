@@ -69,7 +69,7 @@ type Offloader struct {
 
 	queue *TransferQueue // Transfer queue for non-blocking operations
 
-	inFlight   map[string]*downloadResult // In-flight download dedup (blockKey -> broadcast)
+	inFlight   map[string]*downloadResult // In-flight download dedup (store key -> broadcast)
 	inFlightMu sync.Mutex
 
 	stopCh chan struct{} // Signals periodic uploader to stop

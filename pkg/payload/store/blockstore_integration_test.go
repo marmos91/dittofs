@@ -464,9 +464,6 @@ func TestFlusher_WithMemoryStore(t *testing.T) {
 			t.Fatalf("Write failed: %v", err)
 		}
 
-		// Notify transfer manager of write completion
-		// OnWriteComplete removed - periodic uploader handles uploads
-
 		// Flush
 		_, err = f.Flush(ctx, payloadID)
 		if err != nil {

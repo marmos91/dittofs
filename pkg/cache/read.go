@@ -77,7 +77,6 @@ func (bc *BlockCache) ReadAt(ctx context.Context, payloadID string, dest []byte,
 //
 // Optimized for random read throughput:
 //   - Uses read fd cache to avoid open+close syscalls per read
-//   - Resolves path directly for filesystem backends (no BadgerDB lookup)
 //   - Skips dropPageCache (OS page cache benefits random reads)
 //   - Skips LastAccess update (avoids write amplification on read path)
 func (bc *BlockCache) readFromDisk(ctx context.Context, payloadID string, blockIdx uint64, offset, length uint32, dest []byte) (bool, error) {
@@ -94,30 +93,20 @@ func (bc *BlockCache) readFromDisk(ctx context.Context, payloadID string, blockI
 		bc.readFDCache.Evict(blockID)
 	}
 
-	// Resolve the file path. For direct-write (filesystem backend), derive it
-	// directly without a BadgerDB lookup. Otherwise, use lookupFileBlock.
-	var path string
-	if bc.directWritePath != nil {
-		if p := bc.directWritePath(payloadID, blockIdx); p != "" {
-			path = p
-		}
-	}
-	if path == "" {
-		fb, err := bc.lookupFileBlock(ctx, blockID)
-		if err != nil {
-			if errors.Is(err, metadata.ErrFileBlockNotFound) {
-				return false, nil
-			}
-			return false, fmt.Errorf("get block metadata: %w", err)
-		}
-		if fb.CachePath == "" {
+	fb, err := bc.lookupFileBlock(ctx, blockID)
+	if err != nil {
+		if errors.Is(err, metadata.ErrFileBlockNotFound) {
 			return false, nil
 		}
-		if fb.DataSize > 0 && offset+length > fb.DataSize {
-			return false, nil
-		}
-		path = fb.CachePath
+		return false, fmt.Errorf("get block metadata: %w", err)
 	}
+	if fb.CachePath == "" {
+		return false, nil
+	}
+	if fb.DataSize > 0 && offset+length > fb.DataSize {
+		return false, nil
+	}
+	path := fb.CachePath
 
 	f, err := os.Open(path)
 	if err != nil {

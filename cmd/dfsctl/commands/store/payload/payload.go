@@ -12,7 +12,7 @@ var Cmd = &cobra.Command{
 	Long: `Manage payload stores on the DittoFS server.
 
 Payload stores hold actual file content data.
-Supported types: memory, filesystem, s3
+Supported types: memory, s3
 
 Examples:
   # List payload stores

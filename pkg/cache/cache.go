@@ -66,12 +66,6 @@ type BlockCache struct {
 	// to avoid open+close syscalls on every 4KB random read in readFromDisk.
 	readFDCache *fdCache
 
-	// directWritePath, when set, returns the payload store filesystem path
-	// for a given payloadID and blockIdx. This enables direct pwrite to the
-	// payload store, eliminating the double-write through cache .blk files.
-	// Used when the payload store is a filesystem backend.
-	directWritePath func(payloadID string, blockIdx uint64) string
-
 	// skipFsync skips fsync in Flush() for S3 backends where data durability
 	// comes from S3 upload, not local disk. The cache .blk files are just
 	// staging buffers — losing them on power failure means re-downloading
@@ -106,20 +100,6 @@ func New(baseDir string, maxDisk int64, maxMemory int64, blockStore metadata.Fil
 		fdCache:     newFDCache(defaultFDCacheSize),
 		readFDCache: newFDCache(defaultFDCacheSize),
 	}, nil
-}
-
-// SetDirectWritePath enables direct pwrite to the payload store for filesystem
-// backends. When set, writes go directly to the payload store path instead of
-// cache .blk files, eliminating double-write amplification. Blocks are marked
-// as Remote immediately (no offloader sync needed).
-func (bc *BlockCache) SetDirectWritePath(fn func(payloadID string, blockIdx uint64) string) {
-	bc.directWritePath = fn
-}
-
-// IsDirectWrite returns true when direct-write mode is enabled (filesystem backend).
-// In this mode all blocks go straight to Remote — no local blocks exist.
-func (bc *BlockCache) IsDirectWrite() bool {
-	return bc.directWritePath != nil
 }
 
 // SetSkipFsync disables fsync in Flush() for S3 backends.
@@ -444,13 +424,6 @@ func (bc *BlockCache) WriteFromRemote(ctx context.Context, payloadID string, dat
 // is persisted asynchronously by the background ticker — the syncer doesn't
 // need it to be in BadgerDB since it gets data from cache files.
 func (bc *BlockCache) GetDirtyBlocks(ctx context.Context, payloadID string) ([]PendingBlock, error) {
-	// Direct-write mode: all blocks go straight to Remote in the payload store.
-	// No dirty memBlocks, no local blocks, no pending syncs — skip everything.
-	// FileBlock metadata updates drain asynchronously via the background ticker.
-	if bc.directWritePath != nil {
-		return nil, nil
-	}
-
 	flushed, err := bc.Flush(ctx, payloadID)
 	if err != nil {
 		return nil, err

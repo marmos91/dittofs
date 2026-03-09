@@ -20,19 +20,18 @@ import (
 // Test 1: Server Restart Recovery (persistent backends)
 // =============================================================================
 
-// TestServerRestartRecovery starts a server with BadgerDB metadata and filesystem
-// payload (persistent backends), writes files, stops the server gracefully, starts
-// a NEW server with the SAME data directories, and verifies files survive the restart.
+// TestServerRestartRecovery starts a server with BadgerDB metadata and memory
+// payload, writes files, stops the server gracefully, starts a NEW server with
+// the SAME metadata directory, and verifies metadata (directory structure) survives
+// the restart. Payload data (file contents) uses memory stores which are ephemeral.
 func TestServerRestartRecovery(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping server restart recovery test in short mode")
 	}
 
-	// Use persistent data directories that survive across server restarts
+	// Use persistent metadata directory that survives across server restarts
 	badgerDir := filepath.Join(t.TempDir(), "badger-recovery")
-	payloadDir := filepath.Join(t.TempDir(), "payload-recovery")
 	require.NoError(t, os.MkdirAll(badgerDir, 0755))
-	require.NoError(t, os.MkdirAll(payloadDir, 0755))
 
 	nfsPort := helpers.FindFreePort(t)
 
@@ -48,9 +47,8 @@ func TestServerRestartRecovery(t *testing.T) {
 		helpers.WithMetaDBPath(badgerDir))
 	require.NoError(t, err, "Should create BadgerDB metadata store")
 
-	_, err = runner1.CreatePayloadStore(payloadStore, "filesystem",
-		helpers.WithPayloadPath(payloadDir))
-	require.NoError(t, err, "Should create filesystem payload store")
+	_, err = runner1.CreatePayloadStore(payloadStore, "memory")
+	require.NoError(t, err, "Should create memory payload store")
 
 	_, err = runner1.CreateShare("/export", metaStore, payloadStore)
 	require.NoError(t, err, "Should create share")
@@ -111,9 +109,8 @@ func TestServerRestartRecovery(t *testing.T) {
 		helpers.WithMetaDBPath(badgerDir))
 	require.NoError(t, err, "Should create BadgerDB store with existing data dir")
 
-	_, err = runner2.CreatePayloadStore(payloadStore2, "filesystem",
-		helpers.WithPayloadPath(payloadDir))
-	require.NoError(t, err, "Should create filesystem store with existing data dir")
+	_, err = runner2.CreatePayloadStore(payloadStore2, "memory")
+	require.NoError(t, err, "Should create memory payload store on new server")
 
 	_, err = runner2.CreateShare("/export", metaStore2, payloadStore2)
 	require.NoError(t, err, "Should create share on new server")

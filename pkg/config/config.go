@@ -58,7 +58,7 @@ type Config struct {
 	// This is used by 'dittofs init' to set up the first admin user
 	Admin AdminConfig `mapstructure:"admin" yaml:"admin"`
 
-	// Offloader configures background data transfer to backend storage (S3, filesystem)
+	// Offloader configures background data transfer to backend storage (S3)
 	Offloader OffloaderConfig `mapstructure:"offloader" yaml:"offloader"`
 
 	// Lock contains lock manager configuration
@@ -175,7 +175,7 @@ type CacheConfig struct {
 }
 
 // OffloaderConfig configures the background offloader that transfers cached
-// data to the backend store (S3, filesystem, etc.).
+// data to the backend store (S3).
 // These defaults are tuned for good S3 performance out of the box.
 type OffloaderConfig struct {
 	// ParallelUploads is the number of concurrent block uploads to the backend.

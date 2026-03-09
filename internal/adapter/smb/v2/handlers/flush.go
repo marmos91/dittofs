@@ -154,41 +154,35 @@ func (resp *FlushResponse) Encode() ([]byte, error) {
 //
 //  1. Validate FileID maps to an open file
 //  2. Get metadata store and verify file exists
-//  3. Flush cache to content store using shared flush logic
+//  3. Flush cache to payload service using shared flush logic
 //  4. Flush pending metadata writes (deferred commit optimization)
 //  5. Return success response
 //
 // **Cache Integration:**
 //
-// The flush strategy depends on the cache and content store configuration:
-//   - With cache + IncrementalWriteStore (S3): Uses FlushIncremental for
-//     streaming multipart uploads with parallel part uploads
-//   - With cache + WriteAt stores (filesystem, memory): Writes only new bytes
-//     since the last flush, using flushed offset tracking
-//   - No cache: Immediate success since writes are synchronous
-//
-// After flushing, the cache state transitions to StateUploading so the
-// background flusher can finalize the upload when the file becomes idle.
+// The flush writes dirty in-memory blocks to disk cache (.blk files).
+// Remote uploads to the block store (S3) happen asynchronously via
+// the periodic uploader. No cache means immediate success since writes
+// are synchronous.
 //
 // **Error Handling:**
 //
 // Returns appropriate SMB status codes:
 //   - StatusInvalidHandle: Invalid FileID
 //   - StatusBadNetworkName: Share not found
-//   - StatusInternalError: Content store unavailable
+//   - StatusInternalError: Payload service unavailable
 //   - StatusUnexpectedIOError: Flush operation failed
 //   - StatusSuccess: Flush completed (or no-op if no cache)
 //
 // **Performance Considerations:**
 //
-// FLUSH can be expensive (triggers I/O and potential network operations):
+// FLUSH can be expensive (triggers disk I/O for cache flushes):
 //   - Clients should batch flushes when possible
-//   - For S3 backends, uses incremental multipart uploads to minimize latency
-//   - For filesystem backends, only flushes new data since last flush
+//   - Remote uploads (S3) happen asynchronously after the flush returns
 //
 // **Shared Logic:**
 //
-// Uses cache.FlushCacheToContentStore() which is shared with NFS COMMIT handler
+// Uses the PayloadService.Flush() method which is shared with NFS COMMIT handler
 // to ensure consistent flush behavior across protocols.
 //
 // **Example:**
@@ -232,7 +226,7 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	}
 
 	// ========================================================================
-	// Step 3: Flush data using ContentService (same as NFS COMMIT)
+	// Step 3: Flush data using PayloadService (same as NFS COMMIT)
 	// ========================================================================
 
 	_, flushErr := payloadSvc.Flush(ctx.Context, file.PayloadID)
