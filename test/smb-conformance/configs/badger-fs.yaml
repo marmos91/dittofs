@@ -1,7 +1,7 @@
 # DittoFS Configuration for SMB Conformance Testing
-# Profile: badger/filesystem
+# Profile: badger-fs (legacy name, filesystem payload store removed in Phase 42)
 #
-# Bootstrap creates: BadgerDB metadata store + filesystem payload store
+# Bootstrap creates: BadgerDB metadata store + memory payload store
 # Stores, shares, and adapters are managed via the API (bootstrap.sh).
 
 logging:

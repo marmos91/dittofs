@@ -103,8 +103,8 @@ create_payload_store() {
             $DFSCTL store payload add --name default --type memory
             ;;
         *-s3-legacy|*-fs)
-            # Legacy profiles: filesystem payload store was removed in Phase 42,
-            # these profiles now use memory as a fallback
+            # Legacy profile names kept for CI compatibility.
+            # Filesystem payload store was removed in Phase 42; these use memory.
             $DFSCTL store payload add --name default --type memory
             ;;
         *-s3)

@@ -28,7 +28,7 @@ re_verification: false
 | 6 | Only 'memory' and 's3' are valid payload store types | ✓ VERIFIED | storeMatrix has 6 entries (memory/s3 combinations only), CLI commands updated |
 | 7 | No trace of 'direct write', 'directwrite', 'filesystem backend', or 'fs store' in comments | ✓ VERIFIED | grep returns 0 results for all legacy terminology |
 | 8 | go build ./... succeeds | ✓ VERIFIED | Compilation successful with no errors |
-| 9 | go test ./... passes | ✓ VERIFIED | All unit/integration tests pass |
+| 9 | go test ./... -short passes | ✓ VERIFIED | All unit/integration tests pass (short mode) |
 
 **Score:** 9/9 truths verified
 
