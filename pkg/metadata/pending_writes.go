@@ -202,6 +202,12 @@ func (t *PendingWritesTracker) PopPending(handle FileHandle) (*PendingWriteState
 		return nil, false
 	}
 	delete(t.pending, key)
+
+	// Clean up per-file flush lock to prevent unbounded growth
+	t.flushMu.Lock()
+	delete(t.flushLocks, key)
+	t.flushMu.Unlock()
+
 	return state, true
 }
 

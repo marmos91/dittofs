@@ -7,18 +7,22 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/cache"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/payload/store"
 )
 
 // resolveStoreKey returns the remote store key for downloading a block.
 // Returns "" if no FileBlock exists (sparse) or if the block is not yet remote.
-func (m *Offloader) resolveStoreKey(ctx context.Context, payloadID string, blockIdx uint64) string {
+func (m *Offloader) resolveStoreKey(ctx context.Context, payloadID string, blockIdx uint64) (string, error) {
 	blockID := fmt.Sprintf("%s/%d", payloadID, blockIdx)
 	fb, err := m.fileBlockStore.GetFileBlock(ctx, blockID)
 	if err != nil {
-		return ""
+		if errors.Is(err, metadata.ErrFileBlockNotFound) {
+			return "", nil // Sparse block, not uploaded yet
+		}
+		return "", fmt.Errorf("resolve store key %s: %w", blockID, err)
 	}
-	return fb.BlockStoreKey
+	return fb.BlockStoreKey, nil
 }
 
 // downloadBlock downloads a single block from the block store and caches it.
@@ -28,7 +32,10 @@ func (m *Offloader) downloadBlock(ctx context.Context, payloadID string, blockId
 		return nil, fmt.Errorf("offloader is closed")
 	}
 
-	storeKey := m.resolveStoreKey(ctx, payloadID, blockIdx)
+	storeKey, err := m.resolveStoreKey(ctx, payloadID, blockIdx)
+	if err != nil {
+		return nil, err
+	}
 	if storeKey == "" {
 		return nil, nil
 	}
@@ -53,6 +60,9 @@ func (m *Offloader) downloadBlock(ctx context.Context, payloadID string, blockId
 // a second cache ReadAt. Demanded blocks are downloaded inline in the caller's goroutine;
 // prefetch uses the worker pool. Returns (filled, error).
 func (m *Offloader) EnsureAvailableAndRead(ctx context.Context, payloadID string, offset uint64, length uint32, dest []byte) (bool, error) {
+	if length == 0 {
+		return false, nil
+	}
 	if !m.canProcess(ctx) {
 		return false, fmt.Errorf("offloader is closed")
 	}
@@ -137,7 +147,11 @@ func (m *Offloader) inlineDownloadOrWait(ctx context.Context, payloadID string, 
 	m.inFlight[key] = result
 	m.inFlightMu.Unlock()
 
-	storeKey := m.resolveStoreKey(ctx, payloadID, blockIdx)
+	storeKey, err := m.resolveStoreKey(ctx, payloadID, blockIdx)
+	if err != nil {
+		m.completeInFlight(key, result, err)
+		return nil, false, err
+	}
 	if storeKey == "" {
 		m.completeInFlight(key, result, nil)
 		return nil, true, nil
@@ -190,6 +204,9 @@ func blockRegion(blockIdx, readOffset, readLength, blockDataLen uint64) (srcOff,
 	if blockStart > readOffset {
 		destOff = blockStart - readOffset
 	}
+	if srcOff >= blockDataLen || destOff >= readLength {
+		return 0, 0, 0
+	}
 	available := blockDataLen - srcOff
 	remaining := readLength - destOff
 	copyLen = available
@@ -220,6 +237,9 @@ func copyBlockToDest(dest, data []byte, blockIdx, offset, length uint64) bool {
 // EnsureAvailable ensures the requested data range is in cache, downloading if needed.
 // Blocks until data is available and triggers prefetch for upcoming blocks.
 func (m *Offloader) EnsureAvailable(ctx context.Context, payloadID string, offset uint64, length uint32) error {
+	if length == 0 {
+		return nil
+	}
 	if !m.canProcess(ctx) {
 		return fmt.Errorf("offloader is closed")
 	}
