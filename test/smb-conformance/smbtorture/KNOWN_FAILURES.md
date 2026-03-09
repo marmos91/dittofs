@@ -831,11 +831,15 @@ incomplete delayed-write and timestamp freeze/unfreeze logic.
 
 ### Scan (Full Operation Enumeration)
 
-The full scan test enumerates all supported operations and fails on unimplemented ones.
+The scan tests enumerate all supported operations and fail on unimplemented ones.
+smb2.scan.setinfo iterates all SET_INFO information classes; smb2.scan.find
+iterates all QUERY_DIRECTORY information classes. Both hit unimplemented classes.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
+| smb2.scan.find | Scan | QUERY_DIRECTORY scan hits unimplemented info classes | - |
 | smb2.scan.scan | Scan | Full operation scan hits unimplemented features | - |
+| smb2.scan.setinfo | Scan | SET_INFO scan hits unimplemented info classes | - |
 
 ## Notes
 

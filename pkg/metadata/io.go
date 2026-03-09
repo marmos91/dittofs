@@ -401,6 +401,19 @@ func (s *MetadataService) FlushPendingWriteForFile(ctx *AuthContext, handle File
 		return false, nil
 	}
 
+	// Skip flushing if this is a cache-only state with no real write data.
+	// SetCachedFile creates PendingWriteState entries with only CachedFile set
+	// (MaxSize=0, LastMtime=zero) for fast-path PrepareWrite. Flushing these
+	// would be a no-op at best, or could overwrite valid timestamps at worst.
+	hasWriteData := state.MaxSize > 0 || !state.LastMtime.IsZero() || state.ClearSetuidSetgid || state.IsCOW
+	if !hasWriteData {
+		// Re-cache without flushing
+		if state.CachedFile != nil {
+			s.pendingWrites.SetCachedFile(handle, state.CachedFile)
+		}
+		return false, nil
+	}
+
 	if err := s.flushPendingWrite(ctx, handle, state); err != nil {
 		return true, err
 	}
@@ -436,8 +449,14 @@ func (s *MetadataService) flushPendingWrite(ctx *AuthContext, handle FileHandle,
 		if state.MaxSize > file.Size {
 			file.Size = state.MaxSize
 		}
-		file.Mtime = state.LastMtime
-		file.Ctime = state.LastMtime
+		// Only update timestamps if a real write recorded a non-zero mtime.
+		// A zero LastMtime means this state was created by SetCachedFile for
+		// fast-path caching (no actual write data to commit). Writing zero
+		// would overwrite valid timestamps stored by a previous flush.
+		if !state.LastMtime.IsZero() {
+			file.Mtime = state.LastMtime
+			file.Ctime = state.LastMtime
+		}
 		if state.ClearSetuidSetgid {
 			file.Mode &= ^uint32(0o6000)
 		}

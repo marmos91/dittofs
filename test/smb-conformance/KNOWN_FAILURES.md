@@ -1,6 +1,6 @@
 # Known Failures - SMB Conformance (WPTS BVT)
 
-Last updated: 2026-03-03 (Phase 40-06, re-added fix-candidate failures to unblock CI)
+Last updated: 2026-03-09 (Phase 42, added BVT_DirectoryLeasing newly exposed by ptfconfig update)
 
 Tests listed here are expected to fail. CI will pass (exit 0) as long as
 all failures are in this list. New failures not listed here will cause CI to fail.
@@ -84,6 +84,7 @@ in `baseline-results.md` for prioritization.
 |-----------|----------|--------|--------|-------|
 | Algorithm_NotingFileAccessed_Dir_LastAccessTime | Timestamp | LastAccessTime auto-update not implemented | Expected | - |
 | Algorithm_NotingFileAccessed_File_LastAccessTime | Timestamp | LastAccessTime auto-update not implemented | Expected | - |
+| BVT_DirectoryLeasing_LeaseBreakOnMultiClients | DirectoryLeasing | Multi-client lease break framing issue (fix candidate) | Expected | - |
 | BVT_DurableHandleV1_Reconnect_WithBatchOplock | DurableHandle | Durable handle V1 reconnect not fully working (fix candidate) | Expected | - |
 | BVT_DurableHandleV1_Reconnect_WithLeaseV1 | DurableHandle | Durable handle V1 reconnect with lease not fully working (fix candidate) | Expected | - |
 | BVT_Leasing_FileLeasingV1 | Leasing | File lease V1 not fully working (fix candidate) | Expected | - |
@@ -204,13 +205,14 @@ Tests that fail for features not yet implemented:
 | ADS | 9 | Not implemented (planned Phase 43) |
 | Timestamp | 7 | Auto-update algorithms not implemented |
 | DurableHandle | 2 | Fix candidate (partially implemented Phase 38) |
+| DirectoryLeasing | 1 | Fix candidate (multi-client lease break, Phase 37) |
 | Leasing | 1 | Fix candidate (partially implemented Phase 35-37) |
 | FsInfo | 1 | Fix candidate (encryption flag, Phase 33) |
 | NamedPipe | 2 | Named pipe validation not implemented |
 
-**Total expected failures (fixable):** 39 tests
+**Total expected failures (fixable):** 40 tests
 
-**Grand total known failures:** 86 tests (47 permanent + 39 expected)
+**Grand total known failures:** 87 tests (47 permanent + 40 expected)
 
 ## How to Add New Entries
 
@@ -231,6 +233,7 @@ Format:
 
 ## Changelog
 
+- **v3.8 Phase 42 (2026-03-09):** Added BVT_DirectoryLeasing_LeaseBreakOnMultiClients (newly exposed by ptfconfig update to IsDirectoryLeasingSupported=true). Total: 87 (47 permanent + 40 expected).
 - **v3.8 Phase 40 (2026-03-02):** Post-SMB3 update. Removed 5 tests whose features are now implemented (durable handles V1, leasing V1, oplock break, encryption capability flag). Added Phase 33-39 improvements section. Updated permanently out-of-scope count (47, down from 48 -- encryption flag removed). Updated expected failure count (35, down from 42). Removed "Potentially fixed" status -- all entries are now either Expected or Permanent.
 - **v3.6 Phase 32 (2026-02-28):** Updated baseline after bug fixes (sparse READ, directory listing, parent dir, oplock break, link count), ACL support (SD synthesis, DACL/SACL, SID mapping), and protocol enhancements (MxAc, QFid, FileCompressionInfo, FileAttributeTagInfo, capability flags). Added status column, Phase 30-32 improvement notes, permanently out-of-scope categories section.
 - **v3.6 Phase 29.8 (2026-02-26):** Initial baseline (133/240 BVT tests passing). Created expected failure list with 90 entries across 14 categories.

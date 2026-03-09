@@ -38,7 +38,9 @@
 
       <!-- SMB2 dialect settings -->
       <Property name="DialectsToTestAgainst" value="Smb21">
-        <Description>SMB dialects to test against (matches DittoFS capabilities).</Description>
+        <Description>SMB dialects to test against for BVT tests. Kept at SMB 2.1 for
+          stability; negotiate-specific BVT tests exercise higher dialects separately
+          based on MaxSmbVersionSupported.</Description>
       </Property>
     </Group>
   </Properties>
