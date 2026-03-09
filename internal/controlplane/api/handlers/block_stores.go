@@ -205,6 +205,10 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Type != nil {
+		if !validateBlockStoreType(bs.Kind, *req.Type) {
+			BadRequest(w, fmt.Sprintf("Store type %q is not valid for kind %q", *req.Type, bs.Kind))
+			return
+		}
 		bs.Type = *req.Type
 	}
 	if req.Config != nil {

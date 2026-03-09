@@ -301,15 +301,35 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Apply updates
+	// Apply updates — resolve store names/IDs just like Create does
 	if req.MetadataStoreID != nil {
-		share.MetadataStoreID = *req.MetadataStoreID
+		metaStore, err := resolveMetadataStore(r.Context(), h.store, *req.MetadataStoreID)
+		if err != nil {
+			BadRequest(w, "Metadata store not found: "+*req.MetadataStoreID)
+			return
+		}
+		share.MetadataStoreID = metaStore.ID
 	}
 	if req.LocalBlockStoreID != nil {
-		share.LocalBlockStoreID = *req.LocalBlockStoreID
+		localStore, err := resolveBlockStore(r.Context(), h.store, *req.LocalBlockStoreID, models.BlockStoreKindLocal)
+		if err != nil {
+			BadRequest(w, "Local block store not found: "+*req.LocalBlockStoreID)
+			return
+		}
+		share.LocalBlockStoreID = localStore.ID
 	}
 	if req.RemoteBlockStoreID != nil {
-		share.RemoteBlockStoreID = req.RemoteBlockStoreID
+		if *req.RemoteBlockStoreID == "" {
+			// Allow clearing the remote block store
+			share.RemoteBlockStoreID = nil
+		} else {
+			remoteStore, err := resolveBlockStore(r.Context(), h.store, *req.RemoteBlockStoreID, models.BlockStoreKindRemote)
+			if err != nil {
+				BadRequest(w, "Remote block store not found: "+*req.RemoteBlockStoreID)
+				return
+			}
+			share.RemoteBlockStoreID = &remoteStore.ID
+		}
 	}
 	if req.ReadOnly != nil {
 		share.ReadOnly = *req.ReadOnly

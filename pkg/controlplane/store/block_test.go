@@ -294,7 +294,7 @@ func TestShareBlockStore(t *testing.T) {
 	})
 
 	t.Run("get shares by block store", func(t *testing.T) {
-		shares, err := store.GetSharesByBlockStore(ctx, "share-local")
+		shares, err := store.GetSharesByBlockStore(ctx, "share-local", models.BlockStoreKindLocal)
 		if err != nil {
 			t.Fatalf("failed to get shares by block store: %v", err)
 		}
@@ -304,7 +304,7 @@ func TestShareBlockStore(t *testing.T) {
 	})
 
 	t.Run("get shares by remote block store", func(t *testing.T) {
-		shares, err := store.GetSharesByBlockStore(ctx, "share-remote")
+		shares, err := store.GetSharesByBlockStore(ctx, "share-remote", models.BlockStoreKindRemote)
 		if err != nil {
 			t.Fatalf("failed to get shares by block store: %v", err)
 		}
