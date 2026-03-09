@@ -41,11 +41,16 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
 
 	// Create cache, block store, and transfer manager for payload operations
-	testCache := cache.New(0) // unlimited
+	tmpDir := t.TempDir()
+	bc, err := cache.New(tmpDir, 0, 0, metaStore)
+	if err != nil {
+		t.Fatalf("create block cache: %v", err)
+	}
+	t.Cleanup(func() { bc.Close() })
 	blockStore := storemem.New()
-	offloaderInstance := offloader.New(testCache, blockStore, metaStore, offloader.DefaultConfig())
+	offloaderInstance := offloader.New(bc, blockStore, metaStore, offloader.DefaultConfig())
 
-	payloadSvc, err := payload.New(testCache, offloaderInstance)
+	payloadSvc, err := payload.New(bc, offloaderInstance)
 	if err != nil {
 		t.Fatalf("create payload service: %v", err)
 	}

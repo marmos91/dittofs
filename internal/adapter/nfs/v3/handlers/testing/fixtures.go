@@ -79,13 +79,18 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 
 	// Create cache, block store, and transfer manager for content operations
-	testCache := cache.New(0) // 0 = unlimited size
+	tmpDir := t.TempDir()
+	bc, err := cache.New(tmpDir, 0, 0, metaStore)
+	if err != nil {
+		t.Fatalf("Failed to create block cache: %v", err)
+	}
+	t.Cleanup(func() { _ = bc.Close() })
 	blockStore := storemem.New()
-	// Use metaStore as ObjectStore - MemoryMetadataStore implements ObjectStore
-	offloaderInstance := offloader.New(testCache, blockStore, metaStore, offloader.DefaultConfig())
+	// Use metaStore as FileBlockStore - MemoryMetadataStore implements FileBlockStore
+	offloaderInstance := offloader.New(bc, blockStore, metaStore, offloader.DefaultConfig())
 
 	// Create PayloadService with cache and transfer manager
-	payloadSvc, err := payload.New(testCache, offloaderInstance)
+	payloadSvc, err := payload.New(bc, offloaderInstance)
 	if err != nil {
 		t.Fatalf("Failed to create payload service: %v", err)
 	}
