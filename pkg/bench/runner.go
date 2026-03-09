@@ -96,6 +96,8 @@ func (r *Runner) Run(ctx context.Context) (*Result, error) {
 			wr, err = runRandRead(ctx, r.cfg, dir, r.progress)
 		case Metadata:
 			wr, err = runMetadata(ctx, r.cfg, dir, r.progress)
+		case SmallFiles:
+			wr, err = runSmallFiles(ctx, r.cfg, dir, r.progress)
 		default:
 			return nil, fmt.Errorf("unknown workload %q", w)
 		}
