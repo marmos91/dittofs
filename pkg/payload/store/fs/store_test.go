@@ -37,7 +37,7 @@ func TestStore_WriteAndRead(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	blockKey := "share1/content123/chunk-0/block-0"
+	blockKey := "share1/content123/block-0"
 	data := []byte("hello world")
 
 	// Write block
@@ -56,7 +56,7 @@ func TestStore_WriteAndRead(t *testing.T) {
 	}
 
 	// Verify file exists on disk
-	path := filepath.Join(s.BasePath(), "share1", "content123", "chunk-0", "block-0")
+	path := filepath.Join(s.BasePath(), "share1", "content123", "block-0")
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		t.Errorf("Block file not found at %s", path)
 	}
@@ -76,7 +76,7 @@ func TestStore_ReadBlockRange(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	blockKey := "share1/content123/chunk-0/block-0"
+	blockKey := "share1/content123/block-0"
 	data := []byte("hello world")
 
 	if err := s.WriteBlock(ctx, blockKey, data); err != nil {
@@ -118,7 +118,7 @@ func TestStore_DeleteBlock(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	blockKey := "share1/content123/chunk-0/block-0"
+	blockKey := "share1/content123/block-0"
 	data := []byte("hello world")
 
 	if err := s.WriteBlock(ctx, blockKey, data); err != nil {
@@ -137,9 +137,9 @@ func TestStore_DeleteBlock(t *testing.T) {
 	}
 
 	// Verify empty directories were cleaned up
-	chunkDir := filepath.Join(s.BasePath(), "share1", "content123", "chunk-0")
-	if _, err := os.Stat(chunkDir); !os.IsNotExist(err) {
-		t.Errorf("Empty chunk directory should be removed: %s", chunkDir)
+	contentDir := filepath.Join(s.BasePath(), "share1", "content123")
+	if _, err := os.Stat(contentDir); !os.IsNotExist(err) {
+		t.Errorf("Empty content directory should be removed: %s", contentDir)
 	}
 }
 
@@ -149,10 +149,10 @@ func TestStore_DeleteByPrefix(t *testing.T) {
 
 	// Write multiple blocks
 	blocks := map[string][]byte{
-		"share1/content123/chunk-0/block-0": []byte("data0"),
-		"share1/content123/chunk-0/block-1": []byte("data1"),
-		"share1/content123/chunk-1/block-0": []byte("data2"),
-		"share2/content456/chunk-0/block-0": []byte("data3"),
+		"share1/content123/block-0": []byte("data0"),
+		"share1/content123/block-1": []byte("data1"),
+		"share1/content123/block-2": []byte("data2"),
+		"share2/content456/block-0": []byte("data3"),
 	}
 
 	for key, data := range blocks {
@@ -181,7 +181,7 @@ func TestStore_DeleteByPrefix(t *testing.T) {
 	}
 
 	// Verify share2 is untouched
-	read, err := s.ReadBlock(ctx, "share2/content456/chunk-0/block-0")
+	read, err := s.ReadBlock(ctx, "share2/content456/block-0")
 	if err != nil {
 		t.Fatalf("ReadBlock failed: %v", err)
 	}
@@ -196,10 +196,10 @@ func TestStore_ListByPrefix(t *testing.T) {
 
 	// Write multiple blocks
 	blocks := map[string][]byte{
-		"share1/content123/chunk-0/block-0": []byte("data0"),
-		"share1/content123/chunk-0/block-1": []byte("data1"),
-		"share1/content123/chunk-1/block-0": []byte("data2"),
-		"share2/content456/chunk-0/block-0": []byte("data3"),
+		"share1/content123/block-0": []byte("data0"),
+		"share1/content123/block-1": []byte("data1"),
+		"share1/content123/block-2": []byte("data2"),
+		"share2/content456/block-0": []byte("data3"),
 	}
 
 	for key, data := range blocks {
@@ -299,7 +299,7 @@ func TestStore_OverwriteBlock(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	blockKey := "share1/content123/chunk-0/block-0"
+	blockKey := "share1/content123/block-0"
 
 	// Write initial data
 	if err := s.WriteBlock(ctx, blockKey, []byte("initial")); err != nil {
@@ -326,7 +326,7 @@ func TestStore_LargeBlock(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	blockKey := "share1/content123/chunk-0/block-0"
+	blockKey := "share1/content123/block-0"
 
 	// Write 4MB block (BlockSize)
 	data := make([]byte, store.BlockSize)
@@ -447,7 +447,7 @@ func BenchmarkWriteBlock(b *testing.B) {
 			b.ResetTimer()
 
 			for i := 0; i < b.N; i++ {
-				blockKey := filepath.Join("bench", "chunk-0", "block-"+string(rune('0'+i%10)))
+				blockKey := filepath.Join("bench", "block-"+string(rune('0'+i%10)))
 				if err := s.WriteBlock(ctx, blockKey, data); err != nil {
 					b.Fatalf("WriteBlock failed: %v", err)
 				}
@@ -472,7 +472,7 @@ func BenchmarkReadBlock(b *testing.B) {
 			ctx := context.Background()
 			s := newBenchStore(b)
 			data := make([]byte, sz.size)
-			blockKey := "bench/chunk-0/block-0"
+			blockKey := "bench/block-0"
 
 			// Pre-write the block
 			if err := s.WriteBlock(ctx, blockKey, data); err != nil {
@@ -496,7 +496,7 @@ func BenchmarkReadBlockRange(b *testing.B) {
 	s := newBenchStore(b)
 
 	// Write a 4MB block
-	blockKey := "bench/chunk-0/block-0"
+	blockKey := "bench/block-0"
 	data := make([]byte, 4*1024*1024)
 	if err := s.WriteBlock(ctx, blockKey, data); err != nil {
 		b.Fatalf("WriteBlock failed: %v", err)
@@ -538,7 +538,7 @@ func BenchmarkWriteBlock_Parallel(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			blockKey := filepath.Join("bench", "parallel", "block-"+string(rune('0'+i%100)))
+			blockKey := filepath.Join("bench", "block-"+string(rune('0'+i%100)))
 			if err := s.WriteBlock(ctx, blockKey, data); err != nil {
 				b.Fatalf("WriteBlock failed: %v", err)
 			}

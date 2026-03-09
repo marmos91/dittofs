@@ -6,31 +6,13 @@ import (
 )
 
 // ============================================================================
-// Content-Addressed Object Types
-// ============================================================================
-//
-// DittoFS uses a three-level hierarchy for content-addressed storage:
-//
-//   FileAttr (ObjectID) → Object → ObjectChunk → ObjectBlock
-//
-// This enables:
-//   - File-level deduplication (identical files share same Object)
-//   - Chunk-level deduplication (64MB chunks can be shared)
-//   - Block-level deduplication (4MB blocks can be shared)
-//   - Hard links naturally share Objects
-//   - Integrity verification via content hashes
-//
-// Note: These types are separate from the existing ChunkInfo/SliceInfo/BlockRef
-// types in chunks.go, which are used for the slice-based write model. The
-// content-addressed types here are for deduplication and integrity verification.
-//
+// Content-Addressed Types
 // ============================================================================
 
 // HashSize is the size of content hashes (SHA-256 = 32 bytes).
 const HashSize = 32
 
 // ContentHash represents a SHA-256 hash of content.
-// Used as content-addressed identifier for Objects, Chunks, and Blocks.
 type ContentHash [HashSize]byte
 
 // String returns the hex-encoded hash string.
@@ -63,175 +45,6 @@ func ParseContentHash(s string) (ContentHash, error) {
 }
 
 // ============================================================================
-// Object
-// ============================================================================
-
-// Object represents a content-addressed file object.
-//
-// An Object is identified by its content hash (SHA-256 of the entire file content
-// or a Merkle root of chunk hashes). Multiple FileAttrs can reference the same
-// Object (hard links), enabling automatic deduplication.
-//
-// Object lifecycle:
-//  1. Created when file content is first written
-//  2. RefCount incremented for each FileAttr referencing it
-//  3. RefCount decremented when FileAttr is removed
-//  4. Deleted (along with chunks/blocks) when RefCount reaches 0
-type Object struct {
-	// ID is the content hash of the object.
-	// Computed as SHA-256 of the complete file content, or as a Merkle root
-	// of chunk hashes for large files.
-	ID ContentHash
-
-	// Size is the total size of the object in bytes.
-	Size uint64
-
-	// RefCount is the number of FileAttrs referencing this Object.
-	// When RefCount reaches 0, the Object and its chunks/blocks can be deleted.
-	RefCount uint32
-
-	// ChunkCount is the number of chunks in this object.
-	// ChunkCount = ceil(Size / ChunkSize)
-	ChunkCount uint32
-
-	// CreatedAt is when the object was first created.
-	CreatedAt time.Time
-
-	// Finalized indicates whether the object's hash has been computed.
-	// During active writes, the object is not finalized.
-	// On file close/commit, the final hash is computed and Finalized is set to true.
-	Finalized bool
-}
-
-// NewObject creates a new Object with the given hash and size.
-func NewObject(id ContentHash, size uint64) *Object {
-	return &Object{
-		ID:         id,
-		Size:       size,
-		RefCount:   1,
-		ChunkCount: uint32((size + ChunkSize - 1) / ChunkSize),
-		CreatedAt:  time.Now(),
-		Finalized:  true,
-	}
-}
-
-// NewPendingObject creates a new unfinalized Object for active writes.
-// The hash will be computed when the object is finalized.
-func NewPendingObject() *Object {
-	return &Object{
-		RefCount:  1,
-		CreatedAt: time.Now(),
-		Finalized: false,
-	}
-}
-
-// ============================================================================
-// ObjectChunk
-// ============================================================================
-
-// ObjectChunk represents a content-addressed chunk within an Object.
-//
-// Chunks are 64MB segments of a file. Each chunk has its own content hash
-// (computed from its blocks or directly from content), enabling chunk-level
-// deduplication.
-//
-// Note: This is separate from ChunkInfo in chunks.go, which tracks slices
-// for the write model. ObjectChunk is for content-addressed deduplication.
-type ObjectChunk struct {
-	// ObjectID is the parent object's content hash.
-	ObjectID ContentHash
-
-	// Index is the chunk index within the object (0, 1, 2, ...).
-	Index uint32
-
-	// Hash is the content hash of this chunk.
-	// Computed as SHA-256 of chunk content or Merkle root of block hashes.
-	Hash ContentHash
-
-	// Size is the actual size of this chunk in bytes.
-	// May be less than ChunkSize for the last chunk.
-	Size uint32
-
-	// BlockCount is the number of blocks in this chunk.
-	// BlockCount = ceil(Size / DefaultBlockSize)
-	BlockCount uint32
-
-	// RefCount is the number of Objects referencing this chunk.
-	// Enables chunk-level deduplication when different objects share chunks.
-	RefCount uint32
-}
-
-// NewObjectChunk creates a new ObjectChunk.
-func NewObjectChunk(objectID ContentHash, index uint32, hash ContentHash, size uint32) *ObjectChunk {
-	return &ObjectChunk{
-		ObjectID:   objectID,
-		Index:      index,
-		Hash:       hash,
-		Size:       size,
-		BlockCount: uint32((uint64(size) + DefaultBlockSize - 1) / DefaultBlockSize),
-		RefCount:   1,
-	}
-}
-
-// ============================================================================
-// ObjectBlock
-// ============================================================================
-
-// ObjectBlock represents a content-addressed block within a Chunk.
-//
-// Blocks are 4MB segments that are the unit of:
-//   - Storage in the block store (S3, filesystem, etc.)
-//   - Deduplication (blocks with same hash are stored once)
-//   - Transfer (uploads and downloads operate on blocks)
-//
-// Note: This is separate from BlockRef in chunks.go, which references blocks
-// by ID for the slice model. ObjectBlock is content-addressed with hashes.
-type ObjectBlock struct {
-	// ChunkHash is the parent chunk's content hash.
-	// Used for lookup and association.
-	ChunkHash ContentHash
-
-	// Index is the block index within the chunk (0, 1, 2, ...).
-	Index uint32
-
-	// Hash is the content hash of this block (SHA-256 of block data).
-	Hash ContentHash
-
-	// Size is the actual size of this block in bytes.
-	// May be less than DefaultBlockSize for the last block.
-	Size uint32
-
-	// RefCount is the number of Chunks referencing this block.
-	// Enables block-level deduplication across different chunks/files.
-	RefCount uint32
-
-	// UploadedAt is when the block was uploaded to the block store.
-	// Zero value indicates the block hasn't been uploaded yet.
-	UploadedAt time.Time
-}
-
-// NewObjectBlock creates a new ObjectBlock.
-func NewObjectBlock(chunkHash ContentHash, index uint32, hash ContentHash, size uint32) *ObjectBlock {
-	return &ObjectBlock{
-		ChunkHash: chunkHash,
-		Index:     index,
-		Hash:      hash,
-		Size:      size,
-		RefCount:  1,
-	}
-}
-
-// IsUploaded returns true if the block has been uploaded to the block store.
-func (b *ObjectBlock) IsUploaded() bool {
-	return !b.UploadedAt.IsZero()
-}
-
-// MarkUploaded marks the block as uploaded.
-func (b *ObjectBlock) MarkUploaded() {
-	b.UploadedAt = time.Now()
-}
-
-// ============================================================================
 // ObjectID Type for FileAttr
 // ============================================================================
 
@@ -241,6 +54,135 @@ type ObjectID = ContentHash
 
 // ZeroObjectID is an empty/unset ObjectID.
 var ZeroObjectID = ObjectID{}
+
+// ============================================================================
+// BlockState
+// ============================================================================
+
+// BlockState represents the lifecycle state of a FileBlock.
+//
+// State machine: Dirty → Local → Syncing → Remote
+//
+//   - Dirty (0):   Receiving writes, NOT syncable. Zero value is safe default
+//     for legacy blocks deserialized without this field.
+//   - Local (1):   Complete block on local disk, eligible for sync to remote.
+//     Set when the next block starts receiving writes, or when DataSize == BlockSize.
+//   - Syncing (2): Sync to remote store in progress. Reverts to Local on failure.
+//   - Remote (3):  Confirmed in remote block store. Eligible for cache eviction.
+//
+// Write-after-sync resets: Remote → Dirty (clears Hash + BlockStoreKey).
+type BlockState uint8
+
+const (
+	BlockStateDirty   BlockState = 0 // Receiving writes, NOT syncable
+	BlockStateLocal   BlockState = 1 // Complete, on disk, eligible for sync to remote
+	BlockStateSyncing BlockState = 2 // Sync to remote in progress
+	BlockStateRemote  BlockState = 3 // Confirmed in remote block store
+)
+
+// String returns the string representation of BlockState.
+func (s BlockState) String() string {
+	switch s {
+	case BlockStateDirty:
+		return "Dirty"
+	case BlockStateLocal:
+		return "Local"
+	case BlockStateSyncing:
+		return "Syncing"
+	case BlockStateRemote:
+		return "Remote"
+	default:
+		return "Unknown"
+	}
+}
+
+// ============================================================================
+// FileBlock
+// ============================================================================
+
+// FileBlock is the single block entity in DittoFS.
+// Content-addressed: blocks with the same hash are shared across files for dedup.
+//
+// Lifecycle:
+//  1. Created on write: ID=uuid, CachePath=path, State=Dirty
+//  2. Local: block is complete (next block started or DataSize==BlockSize)
+//  3. Syncing: sync to remote store in progress
+//  4. Remote: BlockStoreKey set after background sync to remote store
+//  5. Remote + cached: both CachePath and BlockStoreKey set, State=Remote
+//  6. Evicted: CachePath cleared, data only in remote store
+type FileBlock struct {
+	// ID is a stable UUID for this block.
+	ID string
+
+	// Hash is the SHA-256 of block data. Zero value means pending/incomplete.
+	Hash ContentHash
+
+	// DataSize is the actual bytes written in this block.
+	DataSize uint32
+
+	// CachePath is the local cache file path. Empty means not cached.
+	CachePath string
+
+	// BlockStoreKey is the opaque key in the remote block store (S3 key, FS path, etc.).
+	// Empty means not synced to remote.
+	BlockStoreKey string
+
+	// RefCount is the number of files referencing this block.
+	RefCount uint32
+
+	// LastAccess is used for LRU eviction.
+	LastAccess time.Time
+
+	// CreatedAt is when the block was created.
+	CreatedAt time.Time
+
+	// State is the block lifecycle state (Dirty → Local → Syncing → Remote).
+	// Zero value (Dirty) is the safe default for legacy blocks.
+	State BlockState `json:"state"`
+}
+
+// NewFileBlock creates a new pending FileBlock with the given ID and cache path.
+func NewFileBlock(id string, cachePath string) *FileBlock {
+	now := time.Now()
+	return &FileBlock{
+		ID:         id,
+		CachePath:  cachePath,
+		RefCount:   1,
+		LastAccess: now,
+		CreatedAt:  now,
+	}
+}
+
+// IsRemote returns true if the block has been synced to the remote block store.
+// Migration fallback: legacy blocks (State==0/Dirty) with BlockStoreKey set
+// are treated as Remote — they were created before the state machine existed.
+func (b *FileBlock) IsRemote() bool {
+	if b.State == BlockStateRemote {
+		return true
+	}
+	// Migration fallback for legacy blocks without State field
+	return b.State == BlockStateDirty && b.BlockStoreKey != ""
+}
+
+// IsCached returns true if the block exists in the local cache.
+func (b *FileBlock) IsCached() bool {
+	return b.CachePath != ""
+}
+
+// IsFinalized returns true if the block's hash has been computed.
+func (b *FileBlock) IsFinalized() bool {
+	return !b.Hash.IsZero()
+}
+
+// IsDirty returns true if the block is receiving writes and not yet complete.
+func (b *FileBlock) IsDirty() bool {
+	return b.State == BlockStateDirty
+}
+
+// IsLocal returns true if the block is complete and eligible for sync to remote.
+func (b *FileBlock) IsLocal() bool {
+	return b.State == BlockStateLocal
+}
 
 // ============================================================================
 // Errors
@@ -268,6 +210,12 @@ var ErrChunkNotFound = &StoreError{
 var ErrBlockNotFound = &StoreError{
 	Code:    ErrNotFound,
 	Message: "block not found",
+}
+
+// ErrFileBlockNotFound is returned when a file block is not found.
+var ErrFileBlockNotFound = &StoreError{
+	Code:    ErrNotFound,
+	Message: "file block not found",
 }
 
 // ErrObjectNotFinalized is returned when trying to read an unfinalized object.

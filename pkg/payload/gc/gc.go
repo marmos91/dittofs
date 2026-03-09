@@ -2,16 +2,16 @@ package gc
 
 import (
 	"context"
+	"os"
 	"strings"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/payload/block"
 	"github.com/marmos91/dittofs/pkg/payload/store"
 )
 
-// BlockSize is the size of a single block (4MB), used for byte estimation.
-const BlockSize = block.Size
+// BlockSize is the size of a single block (8MB), used for byte estimation.
+const BlockSize = 8 * 1024 * 1024
 
 // Stats holds statistics about the garbage collection run.
 type Stats struct {
@@ -115,15 +115,12 @@ func CollectGarbage(
 	// Track shares we've seen for stats
 	sharesSeen := make(map[string]bool)
 
-	// Check each payloadID for metadata existence
 	for payloadID, blockKeys := range blocksByPayload {
-		// Check for context cancellation
 		if ctx.Err() != nil {
 			logger.Info("GC: cancelled", "processed", stats.OrphanFiles)
 			return stats
 		}
 
-		// Extract share name for metadata lookup
 		shareName := "/" + parseShareName(payloadID)
 		if shareName == "/" {
 			logger.Warn("GC: invalid payloadID format", "payloadID", payloadID)
@@ -136,25 +133,19 @@ func CollectGarbage(
 			stats.SharesScanned++
 		}
 
-		// Get metadata store for this share
 		metaStore, err := reconciler.GetMetadataStoreForShare(shareName)
 		if err != nil {
-			// Share might not exist (blocks from deleted share)
 			logger.Debug("GC: share not found, treating as orphan",
 				"shareName", shareName,
 				"payloadID", payloadID)
 			// Fall through to delete blocks
 		} else {
-			// Check if file exists in metadata
 			_, err = metaStore.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
 			if err == nil {
-				// File exists, blocks are valid
 				continue
 			}
-			// File not found - blocks are orphans
 		}
 
-		// Found orphan blocks
 		stats.OrphanFiles++
 		stats.OrphanBlocks += len(blockKeys)
 		stats.BytesReclaimed += int64(len(blockKeys)) * int64(BlockSize)
@@ -164,9 +155,7 @@ func CollectGarbage(
 			"blockCount", len(blockKeys),
 			"dryRun", options.DryRun)
 
-		// Delete orphan blocks (unless dry run)
 		if !options.DryRun {
-			// Use DeleteByPrefix for efficient batch deletion
 			prefix := payloadID + "/"
 			if err := blockStore.DeleteByPrefix(ctx, prefix); err != nil {
 				logger.Error("GC: failed to delete orphan blocks",
@@ -180,13 +169,11 @@ func CollectGarbage(
 			}
 		}
 
-		// Check max orphans limit
 		if options.MaxOrphansPerShare > 0 && stats.OrphanFiles >= options.MaxOrphansPerShare {
 			logger.Info("GC: reached max orphans limit", "limit", options.MaxOrphansPerShare)
 			break
 		}
 
-		// Progress callback
 		if options.ProgressCallback != nil {
 			options.ProgressCallback(*stats)
 		}
@@ -204,14 +191,92 @@ func CollectGarbage(
 	return stats
 }
 
+// CollectUnreferenced removes FileBlocks with RefCount=0 and their associated
+// block store objects and cache files. This is the FileBlock-based GC that
+// complements the block-store-scan-based CollectGarbage.
+//
+// Unreferenced blocks occur when:
+//   - A file is deleted but its blocks are shared with other files (RefCount decremented)
+//   - Dedup replaces a pending block with an existing one (old block drops to RefCount=0)
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - fileBlockStore: FileBlockStore to query for unreferenced blocks
+//   - blockStore: Block store for deleting uploaded objects (may be nil to skip)
+//   - batchSize: Max blocks to process per invocation (0 = 100)
+//   - dryRun: If true, only count without deleting
+//
+// Returns the number of blocks cleaned up and any error.
+func CollectUnreferenced(
+	ctx context.Context,
+	fileBlockStore metadata.FileBlockStore,
+	blockStore store.BlockStore,
+	batchSize int,
+	dryRun bool,
+) (int, error) {
+	if batchSize <= 0 {
+		batchSize = 100
+	}
+
+	unreferenced, err := fileBlockStore.ListUnreferenced(ctx, batchSize)
+	if err != nil {
+		return 0, err
+	}
+
+	if len(unreferenced) == 0 {
+		return 0, nil
+	}
+
+	logger.Info("GC: found unreferenced blocks", "count", len(unreferenced), "dryRun", dryRun)
+
+	cleaned := 0
+	for _, fb := range unreferenced {
+		if ctx.Err() != nil {
+			break
+		}
+
+		if dryRun {
+			cleaned++
+			continue
+		}
+
+		if fb.BlockStoreKey != "" && blockStore != nil {
+			if err := blockStore.DeleteBlock(ctx, fb.BlockStoreKey); err != nil {
+				logger.Warn("GC: failed to delete block from store",
+					"blockID", fb.ID, "key", fb.BlockStoreKey, "error", err)
+			}
+		}
+
+		if fb.CachePath != "" {
+			if err := os.Remove(fb.CachePath); err != nil && !os.IsNotExist(err) {
+				logger.Warn("GC: failed to delete cache file",
+					"blockID", fb.ID, "path", fb.CachePath, "error", err)
+			}
+		}
+
+		if err := fileBlockStore.DeleteFileBlock(ctx, fb.ID); err != nil {
+			logger.Warn("GC: failed to delete file block",
+				"blockID", fb.ID, "error", err)
+			continue
+		}
+
+		cleaned++
+	}
+
+	logger.Info("GC: unreferenced cleanup complete",
+		"cleaned", cleaned, "dryRun", dryRun)
+
+	return cleaned, nil
+}
+
 // parsePayloadIDFromBlockKey extracts payloadID from a block key.
 //
-// Block key format: {payloadID}/chunk-{N}/block-{N}
-// Example: "export/documents/report.pdf/chunk-0/block-0" -> "export/documents/report.pdf"
+// Block key format: {payloadID}/block-{N}
+// Example: "export/documents/report.pdf/block-0" -> "export/documents/report.pdf"
 //
 // Returns empty string if format is invalid.
 func parsePayloadIDFromBlockKey(blockKey string) string {
-	idx := strings.Index(blockKey, "/chunk-")
+	idx := strings.Index(blockKey, "/block-")
 	if idx <= 0 {
 		return ""
 	}

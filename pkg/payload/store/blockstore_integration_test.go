@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/marmos91/dittofs/pkg/cache"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/payload/offloader"
 	"github.com/marmos91/dittofs/pkg/payload/store"
@@ -173,7 +174,7 @@ func TestS3BlockStore_Integration(t *testing.T) {
 	defer blockStore.Close()
 
 	t.Run("WriteAndReadBlock", func(t *testing.T) {
-		blockKey := "share1/content123/chunk-0/block-0"
+		blockKey := "share1/content123/block-0"
 		data := []byte("hello world from block store")
 
 		// Write block
@@ -194,7 +195,7 @@ func TestS3BlockStore_Integration(t *testing.T) {
 	})
 
 	t.Run("ReadBlockRange", func(t *testing.T) {
-		blockKey := "share1/content456/chunk-0/block-0"
+		blockKey := "share1/content456/block-0"
 		data := []byte("0123456789abcdefghij")
 
 		// Write block
@@ -216,7 +217,7 @@ func TestS3BlockStore_Integration(t *testing.T) {
 	})
 
 	t.Run("DeleteBlock", func(t *testing.T) {
-		blockKey := "share1/content789/chunk-0/block-0"
+		blockKey := "share1/content789/block-0"
 		data := []byte("to be deleted")
 
 		// Write block
@@ -243,7 +244,7 @@ func TestS3BlockStore_Integration(t *testing.T) {
 
 		// Write multiple blocks
 		for i := 0; i < 3; i++ {
-			blockKey := fmt.Sprintf("%schunk-0/block-%d", prefix, i)
+			blockKey := fmt.Sprintf("%sblock-%d", prefix, i)
 			err := blockStore.WriteBlock(ctx, blockKey, []byte(fmt.Sprintf("block %d", i)))
 			if err != nil {
 				t.Fatalf("WriteBlock failed: %v", err)
@@ -266,7 +267,7 @@ func TestS3BlockStore_Integration(t *testing.T) {
 
 		// Write multiple blocks
 		for i := 0; i < 3; i++ {
-			blockKey := fmt.Sprintf("%schunk-0/block-%d", prefix, i)
+			blockKey := fmt.Sprintf("%sblock-%d", prefix, i)
 			err := blockStore.WriteBlock(ctx, blockKey, []byte(fmt.Sprintf("block %d", i)))
 			if err != nil {
 				t.Fatalf("WriteBlock failed: %v", err)
@@ -306,15 +307,19 @@ func TestFlusher_Integration(t *testing.T) {
 	})
 	defer blockStore.Close()
 
-	// Create cache
-	c := cache.New(0)
-	defer c.Close()
+	// Create file block store for deduplication
+	fileBlockStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 
-	// Create object store for deduplication
-	objectStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	// Create cache
+	cacheTmpDir := t.TempDir()
+	bc, err := cache.New(cacheTmpDir, 0, 0, fileBlockStore)
+	if err != nil {
+		t.Fatalf("cache.New() error = %v", err)
+	}
+	defer bc.Close()
 
 	// Create flusher
-	f := offloader.New(c, blockStore, objectStore, offloader.Config{
+	f := offloader.New(bc, blockStore, fileBlockStore, offloader.Config{
 		ParallelUploads:   4,
 		ParallelDownloads: 4,
 	})
@@ -325,27 +330,19 @@ func TestFlusher_Integration(t *testing.T) {
 		payloadID := "share1/content-small"
 		data := []byte("hello world from flusher test")
 
-		// Write data to cache
-		err := c.WriteAt(ctx, payloadID, 0, data, 0)
+		err := bc.WriteAt(ctx, payloadID, data, 0)
 		if err != nil {
 			t.Fatalf("Write failed: %v", err)
 		}
 
-		// Notify transfer manager of write completion
-		f.OnWriteComplete(ctx, payloadID, 0, 0, uint32(len(data)))
-
-		// Flush remaining data
 		_, err = f.Flush(ctx, payloadID)
 		if err != nil {
 			t.Fatalf("Flush failed: %v", err)
 		}
 
-		// Wait for eager uploads to complete
-		if err := f.WaitForAllUploads(ctx, payloadID); err != nil {
-			t.Fatalf("WaitForAllUploads failed: %v", err)
-		}
+		// Flush is decoupled from upload — trigger immediate sync
+		f.SyncNow(ctx)
 
-		// Verify data is in S3
 		keys, err := blockStore.ListByPrefix(ctx, payloadID+"/")
 		if err != nil {
 			t.Fatalf("ListByPrefix failed: %v", err)
@@ -359,32 +356,23 @@ func TestFlusher_Integration(t *testing.T) {
 	t.Run("FlushLargeFile", func(t *testing.T) {
 		payloadID := "share1/content-large"
 
-		// Write 10MB of data (will create 3 blocks: 4MB + 4MB + 2MB)
 		data := make([]byte, 10*1024*1024)
 		for i := range data {
 			data[i] = byte(i % 256)
 		}
 
-		err := c.WriteAt(ctx, payloadID, 0, data, 0)
+		err := bc.WriteAt(ctx, payloadID, data, 0)
 		if err != nil {
 			t.Fatalf("Write failed: %v", err)
 		}
 
-		// Notify transfer manager of write completion
-		f.OnWriteComplete(ctx, payloadID, 0, 0, uint32(len(data)))
-
-		// Flush remaining data
 		_, err = f.Flush(ctx, payloadID)
 		if err != nil {
 			t.Fatalf("Flush failed: %v", err)
 		}
 
-		// Wait for eager uploads to complete
-		if err := f.WaitForAllUploads(ctx, payloadID); err != nil {
-			t.Fatalf("WaitForAllUploads failed: %v", err)
-		}
+		f.SyncNow(ctx)
 
-		// Verify blocks are in S3
 		keys, err := blockStore.ListByPrefix(ctx, payloadID+"/")
 		if err != nil {
 			t.Fatalf("ListByPrefix failed: %v", err)
@@ -399,22 +387,33 @@ func TestFlusher_Integration(t *testing.T) {
 		payloadID := "share1/content-read"
 
 		// Pre-populate S3 with a block
-		blockKey := payloadID + "/chunk-0/block-0"
+		blockKey := payloadID + "/block-0"
 		originalData := []byte("data from S3 for read test")
 		err := blockStore.WriteBlock(ctx, blockKey, originalData)
 		if err != nil {
 			t.Fatalf("WriteBlock failed: %v", err)
 		}
 
+		// Register FileBlock so resolveStoreKey can find it
+		err = fileBlockStore.PutFileBlock(ctx, &metadata.FileBlock{
+			ID:            payloadID + "/0",
+			State:         metadata.BlockStateRemote,
+			BlockStoreKey: blockKey,
+			DataSize:      uint32(len(originalData)),
+		})
+		if err != nil {
+			t.Fatalf("PutFileBlock failed: %v", err)
+		}
+
 		// Ensure data is available (cache miss -> S3 fetch -> cache)
-		err = f.EnsureAvailable(ctx, payloadID, 0, 0, uint32(len(originalData)))
+		err = f.EnsureAvailable(ctx, payloadID, 0, uint32(len(originalData)))
 		if err != nil {
 			t.Fatalf("EnsureAvailable failed: %v", err)
 		}
 
 		// Read from cache
 		readData := make([]byte, len(originalData))
-		found, err := c.ReadAt(ctx, payloadID, 0, 0, uint32(len(originalData)), readData)
+		found, err := bc.ReadAt(ctx, payloadID, readData, 0)
 		if err != nil {
 			t.Fatalf("Read failed: %v", err)
 		}
@@ -436,15 +435,19 @@ func TestFlusher_WithMemoryStore(t *testing.T) {
 	blockStore := blockmemory.New()
 	defer blockStore.Close()
 
-	// Create cache
-	c := cache.New(0)
-	defer c.Close()
+	// Create file block store for deduplication
+	fileBlockStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 
-	// Create object store for deduplication
-	objectStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	// Create cache
+	cacheTmpDir := t.TempDir()
+	bc, err := cache.New(cacheTmpDir, 0, 0, fileBlockStore)
+	if err != nil {
+		t.Fatalf("cache.New() error = %v", err)
+	}
+	defer bc.Close()
 
 	// Create transfer manager
-	f := offloader.New(c, blockStore, objectStore, offloader.Config{
+	f := offloader.New(bc, blockStore, fileBlockStore, offloader.Config{
 		ParallelUploads:   4,
 		ParallelDownloads: 4,
 	})
@@ -456,13 +459,13 @@ func TestFlusher_WithMemoryStore(t *testing.T) {
 		data := []byte("test data for memory store")
 
 		// Write to cache
-		err := c.WriteAt(ctx, payloadID, 0, data, 0)
+		err := bc.WriteAt(ctx, payloadID, data, 0)
 		if err != nil {
 			t.Fatalf("Write failed: %v", err)
 		}
 
 		// Notify transfer manager of write completion
-		f.OnWriteComplete(ctx, payloadID, 0, 0, uint32(len(data)))
+		// OnWriteComplete removed - periodic uploader handles uploads
 
 		// Flush
 		_, err = f.Flush(ctx, payloadID)
@@ -470,23 +473,21 @@ func TestFlusher_WithMemoryStore(t *testing.T) {
 			t.Fatalf("Flush failed: %v", err)
 		}
 
-		// Wait for eager uploads to complete
-		if err := f.WaitForAllUploads(ctx, payloadID); err != nil {
-			t.Fatalf("WaitForAllUploads failed: %v", err)
-		}
+		// Flush is decoupled from upload — trigger immediate sync
+		f.SyncNow(ctx)
 
 		// Clear cache to force block store read
-		c.Remove(ctx, payloadID)
+		bc.Remove(ctx, payloadID)
 
 		// Ensure data is available (cache miss -> block store fetch -> cache)
-		err = f.EnsureAvailable(ctx, payloadID, 0, 0, uint32(len(data)))
+		err = f.EnsureAvailable(ctx, payloadID, 0, uint32(len(data)))
 		if err != nil {
 			t.Fatalf("EnsureAvailable failed: %v", err)
 		}
 
 		// Read from cache
 		readData := make([]byte, len(data))
-		found, err := c.ReadAt(ctx, payloadID, 0, 0, uint32(len(data)), readData)
+		found, err := bc.ReadAt(ctx, payloadID, readData, 0)
 		if err != nil {
 			t.Fatalf("Read failed: %v", err)
 		}

@@ -158,9 +158,9 @@ func TestCollectGarbage_Filesystem(t *testing.T) {
 
 	// Write blocks
 	data := make([]byte, 1024)
-	require.NoError(t, blockStore.WriteBlock(ctx, validPayloadID+"/chunk-0/block-0", data))
-	require.NoError(t, blockStore.WriteBlock(ctx, orphanPayloadID+"/chunk-0/block-0", data))
-	require.NoError(t, blockStore.WriteBlock(ctx, orphanPayloadID+"/chunk-0/block-1", data))
+	require.NoError(t, blockStore.WriteBlock(ctx, validPayloadID+"/block-0", data))
+	require.NoError(t, blockStore.WriteBlock(ctx, orphanPayloadID+"/block-0", data))
+	require.NoError(t, blockStore.WriteBlock(ctx, orphanPayloadID+"/block-1", data))
 
 	// Set up reconciler with only valid file
 	reconciler := newGCTestReconciler()
@@ -212,7 +212,7 @@ func TestCollectGarbage_Filesystem_LargeScale(t *testing.T) {
 	data := make([]byte, 1024)
 	for i := 0; i < 100; i++ {
 		payloadID := fmt.Sprintf("export/file-%d.txt", i)
-		require.NoError(t, blockStore.WriteBlock(ctx, payloadID+"/chunk-0/block-0", data))
+		require.NoError(t, blockStore.WriteBlock(ctx, payloadID+"/block-0", data))
 
 		if i%2 == 0 {
 			createFileWithPayloadID(ctx, t, store, "/export", payloadID) // 50 valid files
@@ -249,9 +249,9 @@ func TestCollectGarbage_S3(t *testing.T) {
 	orphanPayloadID := "export/orphan-file.txt"
 
 	data := make([]byte, 1024)
-	require.NoError(t, blockStore.WriteBlock(ctx, validPayloadID+"/chunk-0/block-0", data))
-	require.NoError(t, blockStore.WriteBlock(ctx, orphanPayloadID+"/chunk-0/block-0", data))
-	require.NoError(t, blockStore.WriteBlock(ctx, orphanPayloadID+"/chunk-0/block-1", data))
+	require.NoError(t, blockStore.WriteBlock(ctx, validPayloadID+"/block-0", data))
+	require.NoError(t, blockStore.WriteBlock(ctx, orphanPayloadID+"/block-0", data))
+	require.NoError(t, blockStore.WriteBlock(ctx, orphanPayloadID+"/block-1", data))
 
 	// Set up reconciler with only valid file
 	reconciler := newGCTestReconciler()
@@ -302,7 +302,7 @@ func BenchmarkCollectGarbage_Filesystem(b *testing.B) {
 	data := make([]byte, 1024)
 	for i := 0; i < 100; i++ {
 		payloadID := fmt.Sprintf("export/file-%d.txt", i)
-		blockStore.WriteBlock(ctx, payloadID+"/chunk-0/block-0", data)
+		blockStore.WriteBlock(ctx, payloadID+"/block-0", data)
 
 		if i%2 == 0 {
 			createFileWithPayloadID(ctx, b, store, "/export", payloadID)

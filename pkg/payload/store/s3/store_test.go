@@ -164,7 +164,7 @@ func TestStore_WriteAndRead(t *testing.T) {
 	s := newTestStore(t, sharedHelper)
 	defer s.Close()
 
-	blockKey := "share1/content123/chunk-0/block-0"
+	blockKey := "share1/content123/block-0"
 	data := []byte("hello world")
 
 	// Write block
@@ -199,7 +199,7 @@ func TestStore_ReadBlockRange(t *testing.T) {
 	s := newTestStore(t, sharedHelper)
 	defer s.Close()
 
-	blockKey := "share1/content123/chunk-0/block-0"
+	blockKey := "share1/content123/block-0"
 	data := []byte("hello world")
 
 	if err := s.WriteBlock(ctx, blockKey, data); err != nil {
@@ -243,7 +243,7 @@ func TestStore_DeleteBlock(t *testing.T) {
 	s := newTestStore(t, sharedHelper)
 	defer s.Close()
 
-	blockKey := "share1/content123/chunk-0/block-0"
+	blockKey := "share1/content123/block-0"
 	data := []byte("hello world")
 
 	if err := s.WriteBlock(ctx, blockKey, data); err != nil {
@@ -269,10 +269,10 @@ func TestStore_DeleteByPrefix(t *testing.T) {
 
 	// Write multiple blocks
 	blocks := map[string][]byte{
-		"share1/content123/chunk-0/block-0": []byte("data0"),
-		"share1/content123/chunk-0/block-1": []byte("data1"),
-		"share1/content123/chunk-1/block-0": []byte("data2"),
-		"share2/content456/chunk-0/block-0": []byte("data3"),
+		"share1/content123/block-0": []byte("data0"),
+		"share1/content123/block-1": []byte("data1"),
+		"share1/content123/block-2": []byte("data2"),
+		"share2/content456/block-0": []byte("data3"),
 	}
 
 	for key, data := range blocks {
@@ -301,7 +301,7 @@ func TestStore_DeleteByPrefix(t *testing.T) {
 	}
 
 	// Verify share2 is untouched
-	read, err := s.ReadBlock(ctx, "share2/content456/chunk-0/block-0")
+	read, err := s.ReadBlock(ctx, "share2/content456/block-0")
 	if err != nil {
 		t.Fatalf("ReadBlock failed: %v", err)
 	}
@@ -317,10 +317,10 @@ func TestStore_ListByPrefix(t *testing.T) {
 
 	// Write multiple blocks
 	blocks := map[string][]byte{
-		"share1/content123/chunk-0/block-0": []byte("data0"),
-		"share1/content123/chunk-0/block-1": []byte("data1"),
-		"share1/content123/chunk-1/block-0": []byte("data2"),
-		"share2/content456/chunk-0/block-0": []byte("data3"),
+		"share1/content123/block-0": []byte("data0"),
+		"share1/content123/block-1": []byte("data1"),
+		"share1/content123/block-2": []byte("data2"),
+		"share2/content456/block-0": []byte("data3"),
 	}
 
 	for key, data := range blocks {
@@ -423,7 +423,7 @@ func TestStore_OverwriteBlock(t *testing.T) {
 	s := newTestStore(t, sharedHelper)
 	defer s.Close()
 
-	blockKey := "share1/content123/chunk-0/block-0"
+	blockKey := "share1/content123/block-0"
 
 	// Write initial data
 	if err := s.WriteBlock(ctx, blockKey, []byte("initial")); err != nil {
@@ -451,7 +451,7 @@ func TestStore_LargeBlock(t *testing.T) {
 	s := newTestStore(t, sharedHelper)
 	defer s.Close()
 
-	blockKey := "share1/content123/chunk-0/block-0"
+	blockKey := "share1/content123/block-0"
 
 	// Write 4MB block (BlockSize)
 	data := make([]byte, store.BlockSize)
@@ -681,7 +681,7 @@ func BenchmarkWriteBlock(b *testing.B) {
 			b.ResetTimer()
 
 			for i := 0; i < b.N; i++ {
-				blockKey := fmt.Sprintf("bench/chunk-0/block-%d", i)
+				blockKey := fmt.Sprintf("bench/block-%d", i)
 				if err := bh.store.WriteBlock(ctx, blockKey, data); err != nil {
 					b.Fatalf("WriteBlock failed: %v", err)
 				}
@@ -706,7 +706,7 @@ func BenchmarkReadBlock(b *testing.B) {
 			bh := newBenchmarkHelper(b)
 			ctx := context.Background()
 			data := make([]byte, sz.size)
-			blockKey := "bench/chunk-0/block-0"
+			blockKey := "bench/block-0"
 
 			// Pre-write the block
 			if err := bh.store.WriteBlock(ctx, blockKey, data); err != nil {
@@ -730,7 +730,7 @@ func BenchmarkReadBlockRange(b *testing.B) {
 	ctx := context.Background()
 
 	// Write a 4MB block
-	blockKey := "bench/chunk-0/block-0"
+	blockKey := "bench/block-0"
 	data := make([]byte, 4*1024*1024)
 	if err := bh.store.WriteBlock(ctx, blockKey, data); err != nil {
 		b.Fatalf("WriteBlock failed: %v", err)

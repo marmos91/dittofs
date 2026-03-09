@@ -2,174 +2,142 @@ package cache
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
 
-	"github.com/marmos91/dittofs/pkg/payload/block"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// ============================================================================
-// Read Operations
-// ============================================================================
-
-// ReadAt reads data from the cache into the provided buffer.
+// ReadAt reads data from the cache at the specified file offset into dest.
 //
-// This is the primary read path. Data is read from block buffers, with
-// uncovered regions (sparse file holes) zero-filled in the destination buffer.
+// Two-tier lookup per block:
+//  1. Memory — checks for an unflushed memBlock (dirty write data)
+//  2. Disk — reads from .blk file via FileBlockStore metadata lookup
 //
-// The data is written directly into the dest buffer to avoid allocations.
-// The buffer must be at least 'length' bytes.
-//
-// Parameters:
-//   - payloadID: Unique identifier for the file content
-//   - chunkIdx: Which 64MB chunk to read from
-//   - offset: Byte offset within the chunk to start reading
-//   - length: Number of bytes to read
-//   - dest: Buffer to write data into (must be >= length bytes)
-//
-// Returns:
-//   - found: true if any data was found for this file/chunk
-//   - error: context errors or ErrCacheClosed
-//
-// Note: Uncovered portions of dest will contain zeros (sparse file behavior).
-// Use IsRangeCovered to check full coverage.
-func (c *Cache) ReadAt(ctx context.Context, payloadID string, chunkIdx uint32, offset, length uint32, dest []byte) (bool, error) {
-	if err := c.checkClosed(ctx); err != nil {
-		return false, err
+// Returns (true, nil) if all requested bytes were found in cache,
+// (false, nil) on cache miss for any block in the range.
+// The caller (I/O layer) handles cache misses by downloading from S3.
+func (bc *BlockCache) ReadAt(ctx context.Context, payloadID string, dest []byte, offset uint64) (bool, error) {
+	if bc.isClosed() {
+		return false, ErrCacheClosed
 	}
 
-	entry := c.getFileEntry(payloadID)
-	entry.mu.RLock()
-	defer entry.mu.RUnlock()
-
-	chunk, exists := entry.chunks[chunkIdx]
-	if !exists || len(chunk.blocks) == 0 {
-		return false, nil
+	if len(dest) == 0 {
+		return true, nil
 	}
 
-	// Calculate which blocks this read spans
-	startBlock := block.IndexForOffset(offset)
-	endBlock := block.IndexForOffset(offset + length - 1)
+	remaining := dest
+	currentOffset := offset
 
-	foundAny := false
+	for len(remaining) > 0 {
+		blockIdx := currentOffset / BlockSize
+		blockOffset := uint32(currentOffset % BlockSize)
 
-	// Read from each block buffer
-	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
-		blk, exists := chunk.blocks[blockIdx]
-		if !exists || blk.data == nil {
-			continue
+		readLen := uint32(len(remaining))
+		spaceInBlock := BlockSize - blockOffset
+		if readLen > spaceInBlock {
+			readLen = spaceInBlock
 		}
 
-		foundAny = true
+		key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
 
-		// Calculate offsets
-		blockStart := blockIdx * BlockSize
-		blockEnd := blockStart + BlockSize
-
-		// Calculate overlap with read range
-		readStart := max(offset, blockStart)
-		readEnd := min(offset+length, blockEnd)
-
-		// Calculate positions
-		offsetInBlock := readStart - blockStart
-		destStart := readStart - offset
-		readLen := readEnd - readStart
-
-		// Copy data from block buffer to dest
-		copy(dest[destStart:], blk.data[offsetInBlock:offsetInBlock+readLen])
-	}
-
-	return foundAny, nil
-}
-
-// IsRangeCovered checks if a byte range is fully covered by cached data.
-//
-// This is used by the TransferManager to determine if a block can be uploaded.
-// A block is ready for upload when all its bytes are present in the cache.
-//
-// Parameters:
-//   - payloadID: Unique identifier for the file content
-//   - chunkIdx: Which 64MB chunk to check
-//   - offset: Start of range within chunk
-//   - length: Size of range to check
-//
-// Returns:
-//   - covered: true if every byte in [offset, offset+length) is covered
-//   - error: context errors or ErrCacheClosed
-func (c *Cache) IsRangeCovered(ctx context.Context, payloadID string, chunkIdx uint32, offset, length uint32) (bool, error) {
-	if err := c.checkClosed(ctx); err != nil {
-		return false, err
-	}
-
-	entry := c.getFileEntry(payloadID)
-	entry.mu.RLock()
-	defer entry.mu.RUnlock()
-
-	chunk, exists := entry.chunks[chunkIdx]
-	if !exists || len(chunk.blocks) == 0 {
-		return false, nil
-	}
-
-	// Calculate which blocks this range spans
-	startBlock := block.IndexForOffset(offset)
-	endBlock := block.IndexForOffset(offset + length - 1)
-
-	// Check each block
-	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
-		blk, exists := chunk.blocks[blockIdx]
-		if !exists || blk.data == nil {
-			return false, nil
+		// 1. Check memory (dirty block)
+		if mb := bc.getMemBlock(key); mb != nil {
+			mb.mu.RLock()
+			if mb.data != nil && blockOffset+readLen <= mb.dataSize {
+				copy(remaining[:readLen], mb.data[blockOffset:blockOffset+readLen])
+				mb.mu.RUnlock()
+				remaining = remaining[readLen:]
+				currentOffset += uint64(readLen)
+				continue
+			}
+			mb.mu.RUnlock()
 		}
 
-		// Calculate overlap with check range
-		blockStart := blockIdx * BlockSize
-		blockEnd := blockStart + BlockSize
-
-		checkStart := max(offset, blockStart)
-		checkEnd := min(offset+length, blockEnd)
-
-		// Calculate positions within block
-		offsetInBlock := checkStart - blockStart
-		checkLen := checkEnd - checkStart
-
-		// Check coverage bitmap
-		if !isRangeCovered(blk.coverage, offsetInBlock, checkLen) {
-			return false, nil
+		// 2. Check disk (.blk file via FileBlockStore)
+		found, err := bc.readFromDisk(ctx, payloadID, blockIdx, blockOffset, readLen, remaining[:readLen])
+		if err != nil {
+			return false, err
 		}
+		if !found {
+			return false, nil // Cache miss
+		}
+
+		remaining = remaining[readLen:]
+		currentOffset += uint64(readLen)
 	}
 
 	return true, nil
 }
 
-// IsBlockFullyCovered checks if an entire 4MB block is fully covered.
+// readFromDisk reads block data from a .blk file on disk.
+// Returns (true, nil) on success, (false, nil) for cache miss.
 //
-// This is used by the TransferManager to determine if a block can be uploaded
-// for eager upload (before NFS COMMIT).
-//
-// Parameters:
-//   - payloadID: Unique identifier for the file content
-//   - chunkIdx: Which 64MB chunk to check
-//   - blockIdx: Which 4MB block within the chunk
-//
-// Returns:
-//   - covered: true if all 4MB of the block are covered
-//   - error: context errors or ErrCacheClosed
-func (c *Cache) IsBlockFullyCovered(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) (bool, error) {
-	if err := c.checkClosed(ctx); err != nil {
-		return false, err
+// Optimized for random read throughput:
+//   - Uses read fd cache to avoid open+close syscalls per read
+//   - Resolves path directly for filesystem backends (no BadgerDB lookup)
+//   - Skips dropPageCache (OS page cache benefits random reads)
+//   - Skips LastAccess update (avoids write amplification on read path)
+func (bc *BlockCache) readFromDisk(ctx context.Context, payloadID string, blockIdx uint64, offset, length uint32, dest []byte) (bool, error) {
+	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
+	blockID := makeBlockID(key)
+
+	// Fast path: try cached read fd first (no metadata lookup needed).
+	if f := bc.readFDCache.Get(blockID); f != nil {
+		_, err := f.ReadAt(dest[:length], int64(offset))
+		if err == nil {
+			return true, nil
+		}
+		// Fd may be stale — evict and fall through to slow path.
+		bc.readFDCache.Evict(blockID)
 	}
 
-	entry := c.getFileEntry(payloadID)
-	entry.mu.RLock()
-	defer entry.mu.RUnlock()
-
-	chunk, exists := entry.chunks[chunkIdx]
-	if !exists {
-		return false, nil
+	// Resolve the file path. For direct-write (filesystem backend), derive it
+	// directly without a BadgerDB lookup. Otherwise, use lookupFileBlock.
+	var path string
+	if bc.directWritePath != nil {
+		if p := bc.directWritePath(payloadID, blockIdx); p != "" {
+			path = p
+		}
+	}
+	if path == "" {
+		fb, err := bc.lookupFileBlock(ctx, blockID)
+		if err != nil {
+			if errors.Is(err, metadata.ErrFileBlockNotFound) {
+				return false, nil
+			}
+			return false, fmt.Errorf("get block metadata: %w", err)
+		}
+		if fb.CachePath == "" {
+			return false, nil
+		}
+		if fb.DataSize > 0 && offset+length > fb.DataSize {
+			return false, nil
+		}
+		path = fb.CachePath
 	}
 
-	blk, exists := chunk.blocks[blockIdx]
-	if !exists || blk.data == nil {
-		return false, nil
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("open cache file: %w", err)
 	}
 
-	return isFullyCovered(blk.coverage), nil
+	_, err = f.ReadAt(dest[:length], int64(offset))
+	if err != nil {
+		f.Close()
+		if err == io.EOF {
+			return false, nil
+		}
+		return false, fmt.Errorf("pread: %w", err)
+	}
+
+	// Cache the fd for subsequent reads to this block.
+	bc.readFDCache.Put(blockID, f)
+
+	return true, nil
 }

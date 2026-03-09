@@ -87,6 +87,10 @@ type FileAttr struct {
 
 	// IdempotencyToken for detecting duplicate creation requests.
 	IdempotencyToken uint64 `json:"idempotency_token,omitempty"`
+
+	// Blocks is an ordered list of FileBlock IDs by position (index = blockIdx).
+	// Used by the new file-backed cache to map file offsets to blocks.
+	Blocks []string `json:"blocks,omitempty"`
 }
 
 // SetAttrs specifies which attributes to update in a SetFileAttributes call.

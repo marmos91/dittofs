@@ -14,12 +14,17 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/marmos91/dittofs/pkg/payload/store"
 )
+
+// maxBlockReadSize is the fallback pre-allocation size for ReadBlock when
+// ContentLength is absent (e.g., chunked transfer). Matches block.Size (8 MB).
+const maxBlockReadSize = 8 * 1024 * 1024
 
 // Config holds configuration for the S3 block store.
 type Config struct {
@@ -115,6 +120,14 @@ func NewFromConfig(ctx context.Context, config Config) (*Store, error) {
 		TLSHandshakeTimeout: 10 * time.Second,
 		TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
+			// Force HTTP/1.1 via ALPN negotiation. Without this, the TLS layer
+			// offers "h2" and S3 endpoints negotiate HTTP/2, which multiplexes
+			// all requests over a single TCP connection. For large block downloads
+			// (8MB), HTTP/1.1 with 200 parallel connections provides ~10x better
+			// throughput than HTTP/2 frame parsing + flow control.
+			// Profiling showed 28% CPU in http2Framer.ReadFrame and 26% in
+			// memmove from io.ReadAll (ContentLength missing over HTTP/2).
+			NextProtos: []string{"http/1.1"},
 		},
 
 		// Buffer sizes for better throughput
@@ -133,6 +146,24 @@ func NewFromConfig(ctx context.Context, config Config) (*Store, error) {
 		Timeout:   0, // No timeout - let context handle it
 	}
 	opts = append(opts, awsconfig.WithHTTPClient(httpClient))
+
+	// Configure retry strategy with exponential backoff for throttling (429) errors.
+	// Scaleway S3 returns HTTP 429 which is not in the AWS SDK default retryable
+	// status codes (only 500-504). We add 429 explicitly.
+	maxAttempts := config.MaxRetries
+	if maxAttempts <= 0 {
+		maxAttempts = 10 // Default: 10 attempts with backoff handles S3 rate limiting
+	}
+	opts = append(opts, awsconfig.WithRetryer(func() aws.Retryer {
+		return retry.NewStandard(func(o *retry.StandardOptions) {
+			o.MaxAttempts = maxAttempts
+			o.MaxBackoff = 30 * time.Second
+			// Add HTTP 429 to retryable status codes (not in SDK defaults)
+			o.Retryables = append(o.Retryables, retry.RetryableHTTPStatusCode{
+				Codes: map[int]struct{}{429: {}},
+			})
+		})
+	}))
 
 	// Load AWS configuration
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
@@ -210,7 +241,20 @@ func (s *Store) ReadBlock(ctx context.Context, blockKey string) ([]byte, error) 
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	data, err := io.ReadAll(resp.Body)
+	// Pre-allocate buffer to avoid repeated growslice/memmove.
+	// Profiling showed io.ReadAll consuming 36% CPU (26% in memmove alone)
+	// because it starts at 512 bytes and doubles repeatedly for 8MB blocks.
+	// With HTTP/2 (now fixed to HTTP/1.1), ContentLength was often nil.
+	var data []byte
+	if resp.ContentLength != nil && *resp.ContentLength > 0 {
+		data = make([]byte, *resp.ContentLength)
+		_, err = io.ReadFull(resp.Body, data)
+	} else {
+		// Fallback: pre-allocate to max block size to avoid growslice.
+		buf := bytes.NewBuffer(make([]byte, 0, maxBlockReadSize))
+		_, err = buf.ReadFrom(resp.Body)
+		data = buf.Bytes()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read s3 object body: %w", err)
 	}
@@ -243,7 +287,16 @@ func (s *Store) ReadBlockRange(ctx context.Context, blockKey string, offset, len
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	data, err := io.ReadAll(resp.Body)
+	// Pre-allocate buffer using ContentLength from the range response.
+	var data []byte
+	if resp.ContentLength != nil && *resp.ContentLength > 0 {
+		data = make([]byte, *resp.ContentLength)
+		_, err = io.ReadFull(resp.Body, data)
+	} else {
+		buf := bytes.NewBuffer(make([]byte, 0, length))
+		_, err = buf.ReadFrom(resp.Body)
+		data = buf.Bytes()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read s3 object body: %w", err)
 	}

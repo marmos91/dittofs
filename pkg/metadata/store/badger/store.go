@@ -244,9 +244,9 @@ func NewBadgerMetadataStoreWithDefaults(ctx context.Context, dbPath string) (*Ba
 		Capabilities: metadata.FilesystemCapabilities{
 			// Transfer Sizes
 			MaxReadSize:        1048576, // 1MB
-			PreferredReadSize:  65536,   // 64KB
+			PreferredReadSize:  1048576, // 1MB — matches Linux knfsd default; reduces NFS round-trips per block
 			MaxWriteSize:       1048576, // 1MB
-			PreferredWriteSize: 65536,   // 64KB
+			PreferredWriteSize: 1048576, // 1MB
 
 			// Limits
 			MaxFileSize:      9223372036854775807, // 2^63-1 (practically unlimited)
