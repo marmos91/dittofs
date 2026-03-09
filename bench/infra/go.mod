@@ -1,6 +1,6 @@
 module github.com/marmos91/dittofs/bench/infra
 
-go 1.25.5
+go 1.25
 
 require (
 	github.com/pulumi/pulumi/sdk/v3 v3.224.0

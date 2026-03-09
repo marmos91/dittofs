@@ -207,9 +207,10 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 
 	logger.Info("Loaded payload store", "name", payloadStoreCfg.Name, "type", payloadStoreCfg.Type)
 
-	// Skip fsync on COMMIT path. Data durability comes from remote sync (e.g. S3),
-	// not local disk. The cache .blk files are staging buffers — losing them on
-	// power failure means re-downloading from the remote store, not data loss.
+	// Skip fsync on COMMIT path. The cache .blk files are staging buffers for the
+	// backend block store. For S3, durability comes from remote sync, and losing
+	// cache files on power failure means re-downloading, not data loss. For memory
+	// stores, data is inherently ephemeral so fsync provides no benefit either.
 	bc.SetSkipFsync(true)
 
 	offloaderCfg := offloader.DefaultConfig()

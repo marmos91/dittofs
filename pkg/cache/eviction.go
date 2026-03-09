@@ -21,6 +21,8 @@ func (bc *BlockCache) ensureSpace(ctx context.Context, needed int64) error {
 	const maxWait = 30 * time.Second
 	deadline := time.Now().Add(maxWait)
 	recalculated := false
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
 
 	for bc.diskUsed.Load()+needed > bc.maxDisk {
 		evictable, err := bc.blockStore.ListRemoteBlocks(ctx, 1)
@@ -38,7 +40,7 @@ func (bc *BlockCache) ensureSpace(ctx context.Context, needed int64) error {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(100 * time.Millisecond):
+			case <-ticker.C:
 				continue
 			}
 		}
@@ -67,13 +69,18 @@ func (bc *BlockCache) evictBlock(ctx context.Context, fb *metadata.FileBlock) er
 	}
 
 	cachePath := fb.CachePath
+
+	// Remove cache file first, then update metadata. If file removal succeeds
+	// but metadata update fails, the block will be re-downloaded on next access.
+	// The reverse order would leave an orphaned file if metadata update succeeds
+	// but removal fails.
+	if err := os.Remove(cachePath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove cache file: %w", err)
+	}
+
 	fb.CachePath = ""
 	if err := bc.blockStore.PutFileBlock(ctx, fb); err != nil {
 		return fmt.Errorf("update block metadata: %w", err)
-	}
-
-	if err := os.Remove(cachePath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove cache file: %w", err)
 	}
 
 	if fileSize > 0 {

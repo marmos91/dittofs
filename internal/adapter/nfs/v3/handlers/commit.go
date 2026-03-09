@@ -236,24 +236,19 @@ func (h *Handler) Commit(
 	// ========================================================================
 
 	// Build auth context for metadata flush
-	var metadataFlushed bool
 	authCtx, authErr := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
 	if authErr == nil {
-		// Flush pending metadata for this specific file
+		// Flush pending metadata for this specific file.
+		// wccAfter is already correct: GetFileCached returned the file with pending
+		// writes merged (size, mtime applied). FlushPendingWriteForFile persists those
+		// same values to the store — no need to read them back.
 		flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, handle)
 		if metaErr != nil {
 			logger.WarnCtx(ctx.Context, "COMMIT: metadata flush failed", "handle", fmt.Sprintf("0x%x", req.Handle), "error", metaErr)
-			// Continue - content is flushed, metadata will be fixed eventually
 		} else if flushed {
-			metadataFlushed = true
 			logger.DebugCtx(ctx.Context, "COMMIT: flushed pending metadata", "handle", fmt.Sprintf("0x%x", req.Handle))
 		}
 	}
-
-	// wccAfter is already correct: GetFileCached returned the file with pending
-	// writes merged (size, mtime applied). FlushPendingWriteForFile persists those
-	// same values to BadgerDB — no need to read them back.
-	_ = metadataFlushed
 
 	logger.InfoCtx(ctx.Context, "COMMIT successful", "file", file.PayloadID, "offset", req.Offset, "count", req.Count, "client", clientIP)
 	return &CommitResponse{
