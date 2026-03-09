@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -592,7 +593,7 @@ func readFile(path string, size uint32) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
-	if _, err := f.Read(data); err != nil {
+	if _, err := io.ReadFull(f, data); err != nil {
 		return nil, err
 	}
 	dropPageCache(f)

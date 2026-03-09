@@ -2,7 +2,6 @@ package offloader
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/marmos91/dittofs/internal/logger"
 )
@@ -18,7 +17,7 @@ func (m *Offloader) getUploadState(payloadID string) *fileUploadState {
 // DeleteWithRefCount decrements RefCount for each block and deletes blocks that reach zero.
 func (m *Offloader) DeleteWithRefCount(ctx context.Context, payloadID string, blockIDs []string) error {
 	if !m.canProcess(ctx) {
-		return fmt.Errorf("offloader is closed")
+		return ErrClosed
 	}
 
 	m.uploadsMu.Lock()

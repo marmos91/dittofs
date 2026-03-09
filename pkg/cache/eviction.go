@@ -69,14 +69,7 @@ func (bc *BlockCache) evictBlock(ctx context.Context, fb *metadata.FileBlock) er
 		return nil
 	}
 
-	info, err := os.Stat(fb.CachePath)
-	var fileSize int64
-	if err == nil {
-		fileSize = info.Size()
-	} else {
-		fileSize = int64(fb.DataSize)
-	}
-
+	fileSize := fileOrFallbackSize(fb.CachePath, int64(fb.DataSize))
 	cachePath := fb.CachePath
 
 	// Remove cache file first, then update metadata. If file removal succeeds
@@ -99,6 +92,15 @@ func (bc *BlockCache) evictBlock(ctx context.Context, fb *metadata.FileBlock) er
 	}
 
 	return nil
+}
+
+// fileOrFallbackSize returns the file's actual size on disk, falling back to
+// fallback if os.Stat fails (e.g., file already deleted).
+func fileOrFallbackSize(path string, fallback int64) int64 {
+	if info, err := os.Stat(path); err == nil {
+		return info.Size()
+	}
+	return fallback
 }
 
 // recalcDiskUsed walks the cache directory and recalculates diskUsed.

@@ -1,10 +1,14 @@
 package offloader
 
 import (
+	"errors"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/cache"
 )
+
+// ErrClosed is returned when an operation is attempted on a closed Offloader.
+var ErrClosed = errors.New("offloader is closed")
 
 // BlockSize is the size of a single block (8MB).
 // Re-exported from cache package for convenience.

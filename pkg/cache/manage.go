@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -57,20 +58,14 @@ func (bc *BlockCache) DeleteBlockFile(ctx context.Context, payloadID string, blo
 		return err
 	}
 
-	// 4. Delete .blk file from disk
+	// 4-5. Delete .blk file from disk and decrement diskUsed
 	if fb.CachePath != "" {
-		var fileSize int64
-		if info, statErr := os.Stat(fb.CachePath); statErr == nil {
-			fileSize = info.Size()
-		} else {
-			fileSize = int64(fb.DataSize)
-		}
+		fileSize := fileOrFallbackSize(fb.CachePath, int64(fb.DataSize))
 
 		if rmErr := os.Remove(fb.CachePath); rmErr != nil && !os.IsNotExist(rmErr) {
 			logger.Warn("cache: failed to remove block file", "path", fb.CachePath, "error", rmErr)
 		}
 
-		// 5. Decrement diskUsed
 		if fileSize > 0 {
 			bc.diskUsed.Add(-fileSize)
 		}
@@ -175,8 +170,7 @@ func (bc *BlockCache) GetStoredFileSize(ctx context.Context, payloadID string) (
 //
 // Returns false for stale metadata (CachePath set but file deleted from disk).
 func (bc *BlockCache) ExistsOnDisk(ctx context.Context, payloadID string, blockIdx uint64) (bool, error) {
-	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
-	blockID := makeBlockID(key)
+	blockID := makeBlockID(blockKey{payloadID: payloadID, blockIdx: blockIdx})
 
 	fb, err := bc.lookupFileBlock(ctx, blockID)
 	if err != nil {
@@ -191,22 +185,13 @@ func (bc *BlockCache) ExistsOnDisk(ctx context.Context, payloadID string, blockI
 	}
 
 	_, statErr := os.Stat(fb.CachePath)
-	if statErr != nil {
-		return false, nil
-	}
-
-	return true, nil
+	return statErr == nil, nil
 }
 
 // extractBlockIdx extracts the block index from a blockID string.
 // blockID format: "{payloadID}/{blockIdx}"
 func extractBlockIdx(blockID, payloadID string) uint64 {
 	suffix := blockID[len(payloadID)+1:] // skip "payloadID/"
-	var idx uint64
-	for _, c := range suffix {
-		if c >= '0' && c <= '9' {
-			idx = idx*10 + uint64(c-'0')
-		}
-	}
+	idx, _ := strconv.ParseUint(suffix, 10, 64)
 	return idx
 }

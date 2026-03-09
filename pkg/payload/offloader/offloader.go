@@ -2,6 +2,7 @@ package offloader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -12,6 +13,17 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/payload/store"
 )
+
+// parseStoreKeyBlockIdx extracts the block index from a store key.
+// Store key format: "{payloadID}/block-{blockIdx}".
+// Returns (blockIdx, true) on success, (0, false) if parsing fails.
+func parseStoreKeyBlockIdx(storeKey, payloadID string) (uint64, bool) {
+	var blockIdx uint64
+	if _, err := fmt.Sscanf(storeKey, payloadID+"/block-%d", &blockIdx); err != nil {
+		return 0, false
+	}
+	return blockIdx, true
+}
 
 // waitWithContext runs fn in a goroutine and waits for it to finish or the
 // context to be cancelled. Returns nil on completion, or ctx.Err() on timeout.
@@ -137,7 +149,7 @@ func (m *Offloader) canProcess(ctx context.Context) bool {
 // backpressure kicks in (cache full) or on cold reads.
 func (m *Offloader) Flush(ctx context.Context, payloadID string) (*FlushResult, error) {
 	if !m.canProcess(ctx) {
-		return nil, fmt.Errorf("offloader is closed")
+		return nil, ErrClosed
 	}
 
 	// Flush memBlocks to disk cache only.
@@ -201,7 +213,7 @@ func (m *Offloader) WaitForAllUploads(ctx context.Context, payloadID string) err
 // GetFileSize returns the total size of a file from the block store.
 func (m *Offloader) GetFileSize(ctx context.Context, payloadID string) (uint64, error) {
 	if !m.canProcess(ctx) {
-		return 0, fmt.Errorf("offloader is closed")
+		return 0, ErrClosed
 	}
 
 	if m.blockStore == nil {
@@ -220,8 +232,8 @@ func (m *Offloader) GetFileSize(ctx context.Context, payloadID string) (uint64, 
 
 	var maxBlockIdx uint64
 	for _, bk := range blocks {
-		var blockIdx uint64
-		if _, err := fmt.Sscanf(bk, payloadID+"/block-%d", &blockIdx); err != nil {
+		blockIdx, ok := parseStoreKeyBlockIdx(bk, payloadID)
+		if !ok {
 			continue
 		}
 		if blockIdx > maxBlockIdx {
@@ -241,7 +253,7 @@ func (m *Offloader) GetFileSize(ctx context.Context, payloadID string) (uint64, 
 // Exists checks if any blocks exist for a file in the block store.
 func (m *Offloader) Exists(ctx context.Context, payloadID string) (bool, error) {
 	if !m.canProcess(ctx) {
-		return false, fmt.Errorf("offloader is closed")
+		return false, ErrClosed
 	}
 	if m.blockStore == nil {
 		logger.Debug("offloader: skipping Exists, no remote store")
@@ -262,7 +274,7 @@ func (m *Offloader) Exists(ctx context.Context, payloadID string) (bool, error) 
 // Truncate removes blocks beyond the new size from the block store.
 func (m *Offloader) Truncate(ctx context.Context, payloadID string, newSize uint64) error {
 	if !m.canProcess(ctx) {
-		return fmt.Errorf("offloader is closed")
+		return ErrClosed
 	}
 	if m.blockStore == nil {
 		logger.Debug("offloader: skipping Truncate, no remote store")
@@ -282,8 +294,8 @@ func (m *Offloader) Truncate(ctx context.Context, payloadID string, newSize uint
 	}
 
 	for _, bk := range blocks {
-		var blockIdx uint64
-		if _, err := fmt.Sscanf(bk, payloadID+"/block-%d", &blockIdx); err != nil {
+		blockIdx, ok := parseStoreKeyBlockIdx(bk, payloadID)
+		if !ok {
 			continue
 		}
 		if blockIdx > keepBlockIdx {
@@ -299,7 +311,7 @@ func (m *Offloader) Truncate(ctx context.Context, payloadID string, newSize uint
 // Delete removes all blocks for a file from the block store.
 func (m *Offloader) Delete(ctx context.Context, payloadID string) error {
 	if !m.canProcess(ctx) {
-		return fmt.Errorf("offloader is closed")
+		return ErrClosed
 	}
 
 	// Always clean up upload tracking even with nil blockStore.
@@ -426,7 +438,7 @@ func (m *Offloader) HealthCheck(ctx context.Context) error {
 	defer m.mu.RUnlock()
 
 	if m.closed {
-		return fmt.Errorf("offloader is closed")
+		return ErrClosed
 	}
 
 	if m.blockStore == nil {
@@ -444,13 +456,13 @@ func (m *Offloader) SetRemoteStore(ctx context.Context, blockStore store.BlockSt
 	defer m.mu.Unlock()
 
 	if m.closed {
-		return fmt.Errorf("offloader is closed")
+		return ErrClosed
 	}
 	if m.blockStore != nil {
-		return fmt.Errorf("remote store already set")
+		return errors.New("remote store already set")
 	}
 	if blockStore == nil {
-		return fmt.Errorf("blockStore must not be nil")
+		return errors.New("blockStore must not be nil")
 	}
 
 	m.blockStore = blockStore
