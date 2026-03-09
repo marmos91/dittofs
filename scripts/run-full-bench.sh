@@ -134,7 +134,7 @@ start_dittofs() {
         rm -rf /root/.config/dittofs/controlplane.db /data/cache/* /data/metadata/* /data/payload/* /export/*; \
         DITTOFS_CONTROLPLANE_SECRET='$DITTOFS_SECRET' \
         DITTOFS_ADMIN_INITIAL_PASSWORD='$DITTOFS_ADMIN_PASSWORD' \
-        nohup /usr/local/bin/dfs start --foreground > /tmp/dfs.log 2>&1 &"
+        nohup /usr/local/bin/dfs start --foreground --config /etc/dfs/config.yaml > /tmp/dfs.log 2>&1 &"
     sleep 6
     # Verify DFS is responding before continuing
     wait_for_port $SERVER 8080 30
