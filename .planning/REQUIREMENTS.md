@@ -11,7 +11,7 @@
 - [x] **STATE-02**: All consumers updated for renamed states (Sealed->Local, Uploaded->Remote)
 - [x] **STATE-03**: ListPendingUpload renamed to ListLocalBlocks across interface and implementations
 - [x] **STATE-04**: ListEvictable renamed to ListRemoteBlocks across interface and implementations
-- [ ] **STATE-05**: ListFileBlocks(ctx, payloadID) method added to FileBlockStore interface and all implementations
+- [x] **STATE-05**: ListFileBlocks(ctx, payloadID) method added to FileBlockStore interface and all implementations
 - [x] **STATE-06**: BadgerDB secondary index updated from fb-sealed: to fb-local: prefix
 
 ### Legacy Cleanup
@@ -122,7 +122,7 @@
 | STATE-02 | Phase 41 | Complete |
 | STATE-03 | Phase 41 | Complete |
 | STATE-04 | Phase 41 | Complete |
-| STATE-05 | Phase 41 | Pending |
+| STATE-05 | Phase 41 | Complete |
 | STATE-06 | Phase 41 | Complete |
 | CLEAN-01 | Phase 42 | Pending |
 | CLEAN-02 | Phase 42 | Pending |
