@@ -250,6 +250,12 @@ type FileBlockStore interface {
 	// ListUnreferenced returns blocks with RefCount=0, up to limit.
 	// These are candidates for garbage collection.
 	ListUnreferenced(ctx context.Context, limit int) ([]*FileBlock, error)
+
+	// ListFileBlocks returns all blocks belonging to a file, ordered by block index.
+	// Block IDs follow the format "{payloadID}/{blockIdx}", so this method returns
+	// all blocks whose ID starts with "{payloadID}/".
+	// Returns empty slice (not nil) if no blocks found.
+	ListFileBlocks(ctx context.Context, payloadID string) ([]*FileBlock, error)
 }
 
 // ============================================================================

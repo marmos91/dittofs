@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -200,6 +202,44 @@ func (s *PostgresMetadataStore) ListUnreferenced(ctx context.Context, limit int)
 	return scanFileBlockRows(rows)
 }
 
+// ListFileBlocks returns all blocks belonging to a file, ordered by block index.
+// Uses LIKE query on block ID prefix, then sorts in Go for correct numeric ordering.
+func (s *PostgresMetadataStore) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
+	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state
+		FROM file_blocks
+		WHERE id LIKE $1
+		ORDER BY id ASC`
+	rows, err := s.query(ctx, query, payloadID+"/%")
+	if err != nil {
+		return nil, fmt.Errorf("list file blocks: %w", err)
+	}
+	defer rows.Close()
+	result, err := scanFileBlockRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	// SQL ORDER BY id ASC gives lexicographic order which is wrong for multi-digit
+	// block indices (e.g., "10" < "2"). Sort by parsed numeric index.
+	sort.Slice(result, func(i, j int) bool {
+		return pgParseBlockIdx(result[i].ID) < pgParseBlockIdx(result[j].ID)
+	})
+	if result == nil {
+		return []*metadata.FileBlock{}, nil
+	}
+	return result, nil
+}
+
+// pgParseBlockIdx extracts the numeric block index from a block ID ("{payloadID}/{blockIdx}").
+func pgParseBlockIdx(id string) int {
+	if idx := strings.LastIndex(id, "/"); idx >= 0 {
+		var v int
+		if _, err := fmt.Sscanf(id[idx+1:], "%d", &v); err == nil {
+			return v
+		}
+	}
+	return 0
+}
+
 // ============================================================================
 // Scan Helpers
 // ============================================================================
@@ -298,6 +338,10 @@ func (tx *postgresTransaction) ListRemoteBlocks(ctx context.Context, limit int) 
 
 func (tx *postgresTransaction) ListUnreferenced(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
 	return tx.store.ListUnreferenced(ctx, limit)
+}
+
+func (tx *postgresTransaction) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
+	return tx.store.ListFileBlocks(ctx, payloadID)
 }
 
 // PostgreSQL migration for file_blocks table

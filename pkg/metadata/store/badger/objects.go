@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
@@ -29,7 +30,8 @@ import (
 const (
 	fileBlockPrefix       = "fb:"
 	fileBlockHashPrefix   = "fb-hash:"
-	fileBlockLocalPrefix = "fb-local:"
+	fileBlockLocalPrefix  = "fb-local:"
+	fileBlockFilePrefix   = "fb-file:"
 )
 
 // Ensure BadgerMetadataStore implements FileBlockStore
@@ -84,6 +86,15 @@ func (s *BadgerMetadataStore) PutFileBlock(ctx context.Context, block *metadata.
 			_ = txn.Delete(localKey) // Ignore ErrKeyNotFound
 		}
 
+		// Maintain file index: fb-file:{payloadID}:{blockIdx} -> block.ID
+		// This allows ListFileBlocks to iterate O(file_blocks) via prefix scan.
+		if parts := strings.SplitN(block.ID, "/", 2); len(parts) == 2 {
+			fileKey := []byte(fileBlockFilePrefix + parts[0] + ":" + parts[1])
+			if err := txn.Set(fileKey, []byte(block.ID)); err != nil {
+				return err
+			}
+		}
+
 		// Update hash index for finalized blocks
 		if block.IsFinalized() {
 			hashKey := []byte(fileBlockHashPrefix + block.Hash.String())
@@ -121,6 +132,11 @@ func (s *BadgerMetadataStore) DeleteFileBlock(ctx context.Context, id string) er
 
 		// Remove local index
 		_ = txn.Delete([]byte(fileBlockLocalPrefix + id))
+
+		// Remove file index
+		if parts := strings.SplitN(id, "/", 2); len(parts) == 2 {
+			_ = txn.Delete([]byte(fileBlockFilePrefix + parts[0] + ":" + parts[1]))
+		}
 
 		// Remove hash index
 		if block.IsFinalized() {
@@ -356,6 +372,69 @@ func (s *BadgerMetadataStore) ListUnreferenced(ctx context.Context, limit int) (
 	return result, err
 }
 
+// ListFileBlocks returns all blocks belonging to a file, ordered by block index.
+// Uses the fb-file:{payloadID}: secondary index for efficient O(file_blocks) queries.
+func (s *BadgerMetadataStore) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
+	var result []*metadata.FileBlock
+	err := s.db.View(func(txn *badger.Txn) error {
+		prefix := []byte(fileBlockFilePrefix + payloadID + ":")
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		opts.PrefetchValues = true
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			// Value is the block ID
+			var blockID string
+			if err := it.Item().Value(func(val []byte) error {
+				blockID = string(val)
+				return nil
+			}); err != nil {
+				continue
+			}
+
+			// Fetch the actual FileBlock
+			fbItem, err := txn.Get([]byte(fileBlockPrefix + blockID))
+			if err != nil {
+				continue // Index stale, block deleted
+			}
+
+			var block metadata.FileBlock
+			if err := fbItem.Value(func(val []byte) error {
+				return json.Unmarshal(val, &block)
+			}); err != nil {
+				continue
+			}
+			result = append(result, &block)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	// Keys are lexicographically sorted (fb-file:{payloadID}:0, :1, :10, :2...)
+	// which gives wrong numeric order for multi-digit indices. Sort by parsed index.
+	sort.Slice(result, func(i, j int) bool {
+		return parseBlockIdx(result[i].ID) < parseBlockIdx(result[j].ID)
+	})
+	if result == nil {
+		return []*metadata.FileBlock{}, nil
+	}
+	return result, nil
+}
+
+// parseBlockIdx extracts the numeric block index from a block ID ("{payloadID}/{blockIdx}").
+func parseBlockIdx(id string) int {
+	if idx := strings.LastIndex(id, "/"); idx >= 0 {
+		var v int
+		if _, err := fmt.Sscanf(id[idx+1:], "%d", &v); err == nil {
+			return v
+		}
+	}
+	return 0
+}
+
 // ============================================================================
 // Transaction Support
 // ============================================================================
@@ -397,4 +476,8 @@ func (tx *badgerTransaction) ListRemoteBlocks(ctx context.Context, limit int) ([
 
 func (tx *badgerTransaction) ListUnreferenced(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
 	return tx.store.ListUnreferenced(ctx, limit)
+}
+
+func (tx *badgerTransaction) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
+	return tx.store.ListFileBlocks(ctx, payloadID)
 }

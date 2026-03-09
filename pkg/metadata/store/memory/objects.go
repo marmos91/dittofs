@@ -3,6 +3,8 @@ package memory
 import (
 	"context"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -110,6 +112,13 @@ func (s *MemoryMetadataStore) ListUnreferenced(ctx context.Context, limit int) (
 	return s.listUnreferencedLocked(ctx, limit)
 }
 
+// ListFileBlocks returns all blocks belonging to a file, ordered by block index.
+func (s *MemoryMetadataStore) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.listFileBlocksLocked(ctx, payloadID)
+}
+
 // ============================================================================
 // Helper Methods
 // ============================================================================
@@ -163,6 +172,10 @@ func (tx *memoryTransaction) ListRemoteBlocks(ctx context.Context, limit int) ([
 
 func (tx *memoryTransaction) ListUnreferenced(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
 	return tx.store.listUnreferencedLocked(ctx, limit)
+}
+
+func (tx *memoryTransaction) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
+	return tx.store.listFileBlocksLocked(ctx, payloadID)
 }
 
 // ============================================================================
@@ -315,6 +328,38 @@ func (s *MemoryMetadataStore) listUnreferencedLocked(_ context.Context, limit in
 				break
 			}
 		}
+	}
+	return result, nil
+}
+
+func (s *MemoryMetadataStore) listFileBlocksLocked(_ context.Context, payloadID string) ([]*metadata.FileBlock, error) {
+	if s.fileBlockData == nil {
+		return []*metadata.FileBlock{}, nil
+	}
+	prefix := payloadID + "/"
+	type indexedBlock struct {
+		block *metadata.FileBlock
+		idx   int
+	}
+	var candidates []indexedBlock
+	for id, block := range s.fileBlockData.blocks {
+		if strings.HasPrefix(id, prefix) {
+			suffix := id[len(prefix):]
+			blockIdx, err := strconv.Atoi(suffix)
+			if err != nil {
+				continue // Skip entries with non-numeric suffix
+			}
+			b := *block
+			candidates = append(candidates, indexedBlock{block: &b, idx: blockIdx})
+		}
+	}
+	// Sort by block index ascending
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].idx < candidates[j].idx
+	})
+	result := make([]*metadata.FileBlock, len(candidates))
+	for i, c := range candidates {
+		result[i] = c.block
 	}
 	return result, nil
 }
