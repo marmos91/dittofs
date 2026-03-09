@@ -1,20 +1,73 @@
 package offloader
 
-import "github.com/marmos91/dittofs/pkg/payload/block"
+import (
+	"runtime"
+
+	"github.com/marmos91/dittofs/pkg/payload/block"
+)
 
 // BlockSize is the size of a single block (4MB).
 // Re-exported from block package for convenience.
 const BlockSize = block.Size
 
-// DefaultParallelUploads is the default number of concurrent uploads.
-// At ~4 MB/s per S3 connection, 16 connections yields ~64 MB/s upload bandwidth.
-const DefaultParallelUploads = 16
+// DefaultParallelUploads is the sentinel value indicating auto-scaling.
+// When ParallelUploads is 0 (or unset), AutoScaleParallelUploads() computes
+// the actual value based on runtime.NumCPU().
+const DefaultParallelUploads = 0
 
-// DefaultParallelDownloads is the default number of concurrent downloads per file.
-const DefaultParallelDownloads = 8
+// DefaultParallelDownloads is the sentinel value indicating auto-scaling.
+// When ParallelDownloads is 0 (or unset), AutoScaleParallelDownloads() computes
+// the actual value based on runtime.NumCPU().
+const DefaultParallelDownloads = 0
 
-// DefaultPrefetchBlocks is the default number of blocks to prefetch.
-const DefaultPrefetchBlocks = 16
+// DefaultPrefetchBlocks is the sentinel value indicating auto-scaling.
+// When PrefetchBlocks is 0 (or unset), AutoScalePrefetchBlocks() computes
+// the actual value based on cache size.
+const DefaultPrefetchBlocks = 0
+
+// AutoScaleParallelUploads computes the number of parallel uploads based on
+// available CPUs. Uses NumCPU*4 with a floor of 16 and cap of 128.
+// This scales with VM size: 4-core → 16, 8-core → 32, 16-core → 64.
+func AutoScaleParallelUploads() int {
+	n := runtime.NumCPU() * 4
+	if n < 16 {
+		n = 16
+	}
+	if n > 128 {
+		n = 128
+	}
+	return n
+}
+
+// AutoScaleParallelDownloads computes the number of parallel downloads per file
+// based on available CPUs. Uses NumCPU*2 with a floor of 4 and cap of 32.
+func AutoScaleParallelDownloads() int {
+	n := runtime.NumCPU() * 2
+	if n < 4 {
+		n = 4
+	}
+	if n > 32 {
+		n = 32
+	}
+	return n
+}
+
+// AutoScalePrefetchBlocks computes the number of prefetch blocks based on
+// cache size. Uses cacheSize/BlockSize/4 with a floor of 8 and cap of 64.
+// If cacheSizeBytes is 0 (unlimited), returns the floor (8).
+func AutoScalePrefetchBlocks(cacheSizeBytes uint64) int {
+	if cacheSizeBytes == 0 {
+		return 8
+	}
+	n := int(cacheSizeBytes / BlockSize / 4)
+	if n < 8 {
+		n = 8
+	}
+	if n > 64 {
+		n = 64
+	}
+	return n
+}
 
 // TransferType indicates the type of transfer operation.
 type TransferType int
@@ -75,10 +128,10 @@ type Config struct {
 
 // DefaultConfig returns the default Offloader configuration.
 // These defaults are tuned for good S3 performance out of the box:
-//   - 16 parallel uploads for high throughput (~64 MB/s with 4MB blocks)
+//   - ParallelUploads = 0: auto-scaled based on CPU count (NumCPU*4, floor=16, cap=128)
+//   - ParallelDownloads = 0: auto-scaled based on CPU count (NumCPU*2, floor=4, cap=32)
+//   - PrefetchBlocks = 0: auto-scaled based on cache size (cacheSize/BlockSize/4, floor=8, cap=64)
 //   - SmallFileThreshold = 0: all flushes are async, data safety via WAL-backed cache
-//   - 16 prefetch blocks (64MB lookahead) for sequential read throughput
-//   - 8 parallel downloads per file for S3 bandwidth utilization
 func DefaultConfig() Config {
 	return Config{
 		ParallelUploads:    DefaultParallelUploads,

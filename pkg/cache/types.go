@@ -4,6 +4,7 @@ package cache
 import (
 	"errors"
 	"sync/atomic"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/payload/block"
 	"github.com/marmos91/dittofs/pkg/payload/chunk"
@@ -157,6 +158,12 @@ type blockBuffer struct {
 	// at start and verify it at completion to detect stale uploads that raced
 	// with new writes.
 	uploadGeneration uint64
+
+	// lastDirtied records when this block last transitioned to Pending state.
+	// Used by the offloader's coalescing delay to skip eager uploads on blocks
+	// that are being rapidly re-dirtied (e.g., random write bursts), avoiding
+	// wasted S3 uploads that will be immediately invalidated.
+	lastDirtied time.Time
 }
 
 // PendingBlock represents a block ready for upload.
@@ -187,6 +194,11 @@ type PendingBlock struct {
 	// Generation is the upload generation counter at the time the block was read.
 	// Used by the offloader to detect stale uploads that raced with new writes.
 	Generation uint64
+
+	// LastDirtied is when this block last transitioned to Pending state.
+	// Used by the offloader's coalescing delay to avoid uploading blocks
+	// that are being rapidly re-dirtied.
+	LastDirtied time.Time
 }
 
 // ============================================================================

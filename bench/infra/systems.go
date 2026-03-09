@@ -96,9 +96,10 @@ func AllSystems() []System {
 
 // FindSystem returns the system with the given name, or nil if not found.
 func FindSystem(name string) *System {
-	for _, s := range AllSystems() {
-		if s.Name == name {
-			return &s
+	systems := AllSystems()
+	for i := range systems {
+		if systems[i].Name == name {
+			return &systems[i]
 		}
 	}
 	return nil

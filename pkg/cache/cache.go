@@ -236,6 +236,12 @@ func (c *Cache) getFileEntry(payloadID string) *fileEntry {
 	return entry
 }
 
+// MaxSize returns the configured maximum cache size in bytes.
+// Returns 0 if the cache is unlimited.
+func (c *Cache) MaxSize() uint64 {
+	return c.maxSize
+}
+
 // SetMaxPendingSize sets the maximum pending (dirty) data size in bytes.
 // When pending data exceeds this limit, writes block until the offloader
 // drains enough data. Use 0 to revert to the default (512MB).
@@ -301,6 +307,25 @@ func getBlockUnlocked(entry *fileEntry, chunkIdx, blockIdx uint32) *blockBuffer 
 		return nil
 	}
 	return chunk.blocks[blockIdx]
+}
+
+// GetBlockLastDirtied returns the time a block last transitioned to Pending state.
+// Returns the zero time if the block doesn't exist.
+// Used by the offloader's coalescing delay to skip eager uploads on recently-dirtied blocks.
+func (c *Cache) GetBlockLastDirtied(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) time.Time {
+	if c.checkClosed(ctx) != nil {
+		return time.Time{}
+	}
+
+	entry := c.getFileEntry(payloadID)
+	entry.mu.RLock()
+	defer entry.mu.RUnlock()
+
+	blk := getBlockUnlocked(entry, chunkIdx, blockIdx)
+	if blk == nil {
+		return time.Time{}
+	}
+	return blk.lastDirtied
 }
 
 // scalePendingSize computes the maxPendingSize based on cache maxSize.

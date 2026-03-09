@@ -191,7 +191,7 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 		return fmt.Errorf("failed to create cache: %w", err)
 	}
 
-	// Configure max pending size for backpressure (0 = use default 512MB)
+	// Configure max pending size for backpressure (0 = use default 2GB)
 	if cacheConfig.MaxPendingSize > 0 {
 		cacheInstance.SetMaxPendingSize(uint64(cacheConfig.MaxPendingSize))
 	}

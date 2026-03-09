@@ -98,9 +98,6 @@ cache:
   max_pending_size: "2GB"
 
 offloader:
-  parallel_uploads: 16
-  parallel_downloads: 8
-  prefetch_blocks: 16
   small_file_threshold: "0"
 YAML
 

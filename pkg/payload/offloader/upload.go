@@ -30,6 +30,11 @@ func (m *Offloader) OnWriteComplete(ctx context.Context, payloadID string, chunk
 	}
 }
 
+// eagerUploadCooldown is the minimum time after a block is dirtied before it is
+// eligible for eager upload. This lets random writes coalesce within the same block
+// before starting an S3 upload that would be immediately invalidated.
+const eagerUploadCooldown = 500 * time.Millisecond
+
 // tryEagerUpload checks if a block is complete and starts an async upload if ready.
 // Only complete 4MB blocks are uploaded; partial blocks are flushed during Flush().
 //
@@ -48,6 +53,15 @@ func (m *Offloader) tryEagerUpload(ctx context.Context, payloadID string, chunkI
 	// Check if fully covered (no zero-filled gaps) - fast bitmap check
 	covered, err := m.cache.IsRangeCovered(ctx, payloadID, chunkIdx, blockStart, BlockSize)
 	if err != nil || !covered {
+		return
+	}
+
+	// Coalescing delay: skip blocks dirtied less than 500ms ago.
+	// Random writes re-dirty blocks faster than S3 can drain them.
+	// Letting writes coalesce avoids wasted uploads that are immediately
+	// invalidated by new writes to the same block.
+	lastDirtied := m.cache.GetBlockLastDirtied(ctx, payloadID, chunkIdx, blockIdx)
+	if !lastDirtied.IsZero() && time.Since(lastDirtied) < eagerUploadCooldown {
 		return
 	}
 
@@ -220,7 +234,7 @@ func (m *Offloader) uploadRemainingBlocks(ctx context.Context, payloadID string)
 	// Get upload state for deduplication
 	state := m.getUploadState(payloadID)
 
-	// Filter out blocks already uploaded by eager upload
+	// Filter out blocks already uploaded by eager upload.
 	var blocksToUpload []cache.PendingBlock
 	for _, blk := range pending {
 		// Check if already uploaded by eager upload

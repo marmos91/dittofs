@@ -12,7 +12,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Configuration (override via environment)
 # ---------------------------------------------------------------------------
-GO_VERSION="${GO_VERSION:-1.24.1}"
+GO_VERSION="${GO_VERSION:-1.25.0}"
 BENCH_MOUNT="${BENCH_MOUNT:-/mnt/bench}"
 DITTOFS_REPO="${DITTOFS_REPO:-https://github.com/marmos91/dittofs.git}"
 DITTOFS_BRANCH="${DITTOFS_BRANCH:-main}"

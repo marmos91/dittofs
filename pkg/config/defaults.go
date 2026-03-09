@@ -96,16 +96,12 @@ func applyCacheDefaults(cfg *CacheConfig) {
 }
 
 // applyOffloaderDefaults sets offloader defaults for good S3 performance out of the box.
+// ParallelUploads, ParallelDownloads, and PrefetchBlocks default to 0 (sentinel),
+// which tells offloader.New() to auto-scale based on CPU count and cache size.
 func applyOffloaderDefaults(cfg *OffloaderConfig) {
-	if cfg.ParallelUploads == 0 {
-		cfg.ParallelUploads = 16
-	}
-	if cfg.ParallelDownloads == 0 {
-		cfg.ParallelDownloads = 8
-	}
-	if cfg.PrefetchBlocks == 0 {
-		cfg.PrefetchBlocks = 16
-	}
+	// ParallelUploads: 0 = auto-scale (NumCPU*4, floor=16, cap=128)
+	// ParallelDownloads: 0 = auto-scale (NumCPU*2, floor=4, cap=32)
+	// PrefetchBlocks: 0 = auto-scale (cacheSize/BlockSize/4, floor=8, cap=64)
 	// SmallFileThreshold defaults to 0 (disabled) - all flushes are async.
 	// WAL-backed cache ensures durability. Set to e.g. "4MiB" to re-enable
 	// synchronous flush for small files if needed.

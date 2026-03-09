@@ -3,7 +3,7 @@ description=Sequential read throughput
 rw=read
 bs=1m
 direct=1
-ioengine=${FIO_ENGINE:-posixaio}
+ioengine=${FIO_ENGINE:-libaio}
 numjobs=${BENCH_THREADS:-4}
 runtime=${BENCH_RUNTIME:-60}
 time_based

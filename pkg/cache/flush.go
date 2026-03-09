@@ -58,14 +58,15 @@ func (c *Cache) getBlocksFiltered(ctx context.Context, payloadID string, filter 
 			}
 
 			result = append(result, PendingBlock{
-				ChunkIndex: chunkIdx,
-				BlockIndex: blockIdx,
-				Data:       blk.data,
-				Coverage:   blk.coverage,
-				DataSize:   blk.dataSize,
-				Hash:       blk.hash,
-				State:      blk.state,
-				Generation: blk.uploadGeneration,
+				ChunkIndex:  chunkIdx,
+				BlockIndex:  blockIdx,
+				Data:        blk.data,
+				Coverage:    blk.coverage,
+				DataSize:    blk.dataSize,
+				Hash:        blk.hash,
+				State:       blk.state,
+				Generation:  blk.uploadGeneration,
+				LastDirtied: blk.lastDirtied,
 			})
 		}
 	}

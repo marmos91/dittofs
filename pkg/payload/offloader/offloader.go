@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"runtime"
 	"sync"
 	"time"
 
@@ -114,10 +115,22 @@ func New(c *cache.Cache, blockStore store.BlockStore, objectStore metadata.Objec
 		panic("objectStore is required for Offloader")
 	}
 	if config.ParallelUploads <= 0 {
-		config.ParallelUploads = DefaultParallelUploads
+		config.ParallelUploads = AutoScaleParallelUploads()
+		logger.Info("Auto-scaled parallel uploads",
+			"parallelUploads", config.ParallelUploads,
+			"numCPU", runtime.NumCPU())
 	}
 	if config.ParallelDownloads <= 0 {
-		config.ParallelDownloads = DefaultParallelDownloads
+		config.ParallelDownloads = AutoScaleParallelDownloads()
+		logger.Info("Auto-scaled parallel downloads",
+			"parallelDownloads", config.ParallelDownloads,
+			"numCPU", runtime.NumCPU())
+	}
+	if config.PrefetchBlocks <= 0 {
+		config.PrefetchBlocks = AutoScalePrefetchBlocks(c.MaxSize())
+		logger.Info("Auto-scaled prefetch blocks",
+			"prefetchBlocks", config.PrefetchBlocks,
+			"cacheMaxSize", c.MaxSize())
 	}
 
 	semSize := config.ParallelUploads
@@ -499,6 +512,13 @@ func (m *Offloader) Close() error {
 	}
 	m.closed = true
 	m.mu.Unlock()
+
+	// Wait for in-flight uploads and flushes to complete before closing.
+	// This prevents "store is closed" races when the block store is closed
+	// immediately after the offloader.
+	ctx, cancel := context.WithTimeout(context.Background(), defaultShutdownTimeout)
+	defer cancel()
+	_ = m.DrainAllUploads(ctx)
 
 	// Stop transfer queue with graceful shutdown timeout
 	if m.queue != nil {

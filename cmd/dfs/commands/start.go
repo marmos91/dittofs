@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
 	"syscall"
@@ -132,7 +133,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		ParallelUploads:    cfg.Offloader.ParallelUploads,
 		ParallelDownloads:  cfg.Offloader.ParallelDownloads,
 		PrefetchBlocks:     cfg.Offloader.PrefetchBlocks,
-		SmallFileThreshold: int64(cfg.Offloader.SmallFileThreshold),
+		SmallFileThreshold: int64(min(uint64(cfg.Offloader.SmallFileThreshold), uint64(math.MaxInt64))),
 	})
 	logger.Info("Cache configuration stored", "path", cfg.Cache.Path, "size", cfg.Cache.Size, "max_pending_size", cfg.Cache.MaxPendingSize)
 

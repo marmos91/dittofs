@@ -53,14 +53,19 @@ func runSeqWrite(ctx context.Context, cfg Config, dir string, progress ProgressF
 			}
 
 			opStart := time.Now()
-			n, err := f.Write(buf[:writeSize])
+			written := 0
+			for written < writeSize {
+				n, err := f.Write(buf[written:writeSize])
+				written += n
+				if err != nil {
+					errors++
+					break
+				}
+			}
 			lat := time.Since(opStart)
 
 			latencies = append(latencies, lat)
-			totalBytes += int64(n)
-			if err != nil {
-				errors++
-			}
+			totalBytes += int64(written)
 
 			if progress != nil {
 				done := int64(t*chunks+c+1) * int64(cfg.Threads)

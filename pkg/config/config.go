@@ -170,7 +170,7 @@ type CacheConfig struct {
 	// the offloader drains data to the backend store. This provides
 	// backpressure for slow backends like S3.
 	// Supports human-readable formats: "512MB", "1GB", "2Gi"
-	// Default: 1GB
+	// Default: 2GB (see cache.DefaultMaxPendingSize)
 	MaxPendingSize bytesize.ByteSize `mapstructure:"max_pending_size" yaml:"max_pending_size,omitempty"`
 }
 
@@ -184,12 +184,11 @@ type OffloaderConfig struct {
 	ParallelUploads int `mapstructure:"parallel_uploads" yaml:"parallel_uploads,omitempty"`
 
 	// ParallelDownloads is the number of concurrent block downloads per file.
-	// Default: 4
+	// Default: 0 (auto-scaled based on CPU count)
 	ParallelDownloads int `mapstructure:"parallel_downloads" yaml:"parallel_downloads,omitempty"`
 
 	// PrefetchBlocks is the number of blocks to prefetch ahead of reads.
-	// Set to 0 to disable prefetching.
-	// Default: 4 (16MB ahead at 4MB block size)
+	// Default: 0 (auto-scaled based on cache size)
 	PrefetchBlocks int `mapstructure:"prefetch_blocks" yaml:"prefetch_blocks,omitempty"`
 
 	// SmallFileThreshold is the file size below which files are flushed
@@ -197,7 +196,7 @@ type OffloaderConfig struct {
 	// pendingSize buildup when creating many small files.
 	// Supports human-readable formats: "4MB", "1MB"
 	// Set to 0 to disable (all files use async flush).
-	// Default: 4MB (1 block)
+	// Default: 0 (disabled)
 	SmallFileThreshold bytesize.ByteSize `mapstructure:"small_file_threshold" yaml:"small_file_threshold,omitempty"`
 }
 

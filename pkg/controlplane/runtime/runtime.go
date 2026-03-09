@@ -35,16 +35,16 @@ type (
 type CacheConfig struct {
 	Path           string // Directory for the cache WAL file
 	Size           uint64 // Maximum cache size in bytes
-	MaxPendingSize uint64 // Maximum pending (dirty) data size (0 = default 1GB)
+	MaxPendingSize uint64 // Maximum pending (dirty) data size (0 = default 2GB)
 }
 
 // OffloaderConfig holds offloader settings for background data transfer.
 // Kept here (instead of pkg/config) to avoid import cycles.
 type OffloaderConfig struct {
-	ParallelUploads    int   // Concurrent block uploads (0 = default 16)
-	ParallelDownloads  int   // Concurrent block downloads per file (0 = default 4)
-	PrefetchBlocks     int   // Blocks to prefetch ahead (0 = default 4)
-	SmallFileThreshold int64 // Sync flush threshold in bytes (0 = default 4MB)
+	ParallelUploads    int   // Concurrent block uploads (0 = auto-scaled based on CPU count)
+	ParallelDownloads  int   // Concurrent block downloads per file (0 = auto-scaled based on CPU count)
+	PrefetchBlocks     int   // Blocks to prefetch ahead (0 = auto-scaled based on cache size)
+	SmallFileThreshold int64 // Sync flush threshold in bytes (0 = disabled)
 }
 
 type payloadServiceHelper struct {
