@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -85,20 +86,21 @@ func (s *MemoryMetadataStore) FindFileBlockByHash(ctx context.Context, hash meta
 	return s.findFileBlockByHashLocked(ctx, hash)
 }
 
-// ListPendingUpload returns blocks that are finalized but not yet uploaded
-// and older than the given duration. If limit > 0, at most limit blocks are returned.
-func (s *MemoryMetadataStore) ListPendingUpload(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
+// ListLocalBlocks returns blocks in Local state (complete, on disk, not yet
+// synced to remote) older than the given duration.
+// If limit > 0, at most limit blocks are returned.
+func (s *MemoryMetadataStore) ListLocalBlocks(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.listPendingUploadLocked(ctx, olderThan, limit)
+	return s.listLocalBlocksLocked(ctx, olderThan, limit)
 }
 
-// ListEvictable returns blocks that are both cached and uploaded,
-// ordered by LRU (oldest LastAccess first), up to limit.
-func (s *MemoryMetadataStore) ListEvictable(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
+// ListRemoteBlocks returns blocks that are both cached locally and confirmed
+// in remote store, ordered by LRU (oldest LastAccess first), up to limit.
+func (s *MemoryMetadataStore) ListRemoteBlocks(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.listEvictableLocked(ctx, limit)
+	return s.listRemoteBlocksLocked(ctx, limit)
 }
 
 // ListUnreferenced returns blocks with RefCount=0, up to limit.
@@ -151,12 +153,12 @@ func (tx *memoryTransaction) FindFileBlockByHash(ctx context.Context, hash metad
 	return tx.store.findFileBlockByHashLocked(ctx, hash)
 }
 
-func (tx *memoryTransaction) ListPendingUpload(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
-	return tx.store.listPendingUploadLocked(ctx, olderThan, limit)
+func (tx *memoryTransaction) ListLocalBlocks(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
+	return tx.store.listLocalBlocksLocked(ctx, olderThan, limit)
 }
 
-func (tx *memoryTransaction) ListEvictable(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
-	return tx.store.listEvictableLocked(ctx, limit)
+func (tx *memoryTransaction) ListRemoteBlocks(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
+	return tx.store.listRemoteBlocksLocked(ctx, limit)
 }
 
 func (tx *memoryTransaction) ListUnreferenced(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
@@ -249,23 +251,23 @@ func (s *MemoryMetadataStore) findFileBlockByHashLocked(_ context.Context, hash 
 	if !ok {
 		return nil, nil
 	}
-	// Only return uploaded blocks for dedup safety — prevents matching against
-	// blocks that are dirty, being re-written, or mid-upload.
-	if !block.IsUploaded() {
+	// Only return remote blocks for dedup safety — prevents matching against
+	// blocks that are dirty, being re-written, or mid-sync.
+	if !block.IsRemote() {
 		return nil, nil
 	}
 	result := *block
 	return &result, nil
 }
 
-func (s *MemoryMetadataStore) listPendingUploadLocked(_ context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
+func (s *MemoryMetadataStore) listLocalBlocksLocked(_ context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
 	if s.fileBlockData == nil {
 		return nil, nil
 	}
 	cutoff := time.Now().Add(-olderThan)
 	var result []*metadata.FileBlock
 	for _, block := range s.fileBlockData.blocks {
-		if block.State == metadata.BlockStateSealed && block.IsCached() && block.LastAccess.Before(cutoff) {
+		if block.State == metadata.BlockStateLocal && block.IsCached() && block.LastAccess.Before(cutoff) {
 			b := *block
 			result = append(result, &b)
 			if limit > 0 && len(result) >= limit {
@@ -276,27 +278,23 @@ func (s *MemoryMetadataStore) listPendingUploadLocked(_ context.Context, olderTh
 	return result, nil
 }
 
-func (s *MemoryMetadataStore) listEvictableLocked(_ context.Context, limit int) ([]*metadata.FileBlock, error) {
+func (s *MemoryMetadataStore) listRemoteBlocksLocked(_ context.Context, limit int) ([]*metadata.FileBlock, error) {
 	if s.fileBlockData == nil {
 		return nil, nil
 	}
-	// Collect all evictable blocks (cached + confirmed uploaded)
+	// Collect all remote blocks (cached + confirmed in remote store)
 	var candidates []*metadata.FileBlock
 	for _, block := range s.fileBlockData.blocks {
-		if block.IsCached() && block.State == metadata.BlockStateUploaded {
+		if block.IsCached() && block.State == metadata.BlockStateRemote {
 			b := *block
 			candidates = append(candidates, &b)
 		}
 	}
 
 	// Sort by LastAccess (oldest first) for LRU
-	for i := 0; i < len(candidates); i++ {
-		for j := i + 1; j < len(candidates); j++ {
-			if candidates[j].LastAccess.Before(candidates[i].LastAccess) {
-				candidates[i], candidates[j] = candidates[j], candidates[i]
-			}
-		}
-	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].LastAccess.Before(candidates[j].LastAccess)
+	})
 
 	if limit > 0 && len(candidates) > limit {
 		candidates = candidates[:limit]

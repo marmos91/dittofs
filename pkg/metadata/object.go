@@ -61,23 +61,23 @@ var ZeroObjectID = ObjectID{}
 
 // BlockState represents the lifecycle state of a FileBlock.
 //
-// State machine: Dirty → Sealed → Uploading → Uploaded
+// State machine: Dirty → Local → Syncing → Remote
 //
-//   - Dirty (0):     Receiving writes, NOT uploadable. Zero value is safe default
+//   - Dirty (0):   Receiving writes, NOT syncable. Zero value is safe default
 //     for legacy blocks deserialized without this field.
-//   - Sealed (1):    Complete block, eligible for upload. Set when the next block
-//     starts receiving writes, or when DataSize == BlockSize.
-//   - Uploading (2): Upload in progress. Reverts to Sealed on failure.
-//   - Uploaded (3):  Confirmed in block store (S3). Eligible for cache eviction.
+//   - Local (1):   Complete block on local disk, eligible for sync to remote.
+//     Set when the next block starts receiving writes, or when DataSize == BlockSize.
+//   - Syncing (2): Sync to remote store in progress. Reverts to Local on failure.
+//   - Remote (3):  Confirmed in remote block store. Eligible for cache eviction.
 //
-// Write-after-upload resets: Uploaded → Dirty (clears Hash + BlockStoreKey).
+// Write-after-sync resets: Remote → Dirty (clears Hash + BlockStoreKey).
 type BlockState uint8
 
 const (
-	BlockStateDirty     BlockState = 0 // Receiving writes, NOT uploadable
-	BlockStateSealed    BlockState = 1 // Complete, eligible for upload
-	BlockStateUploading BlockState = 2 // Upload in progress
-	BlockStateUploaded  BlockState = 3 // Confirmed in block store
+	BlockStateDirty   BlockState = 0 // Receiving writes, NOT syncable
+	BlockStateLocal   BlockState = 1 // Complete, on disk, eligible for sync to remote
+	BlockStateSyncing BlockState = 2 // Sync to remote in progress
+	BlockStateRemote  BlockState = 3 // Confirmed in remote block store
 )
 
 // String returns the string representation of BlockState.
@@ -85,12 +85,12 @@ func (s BlockState) String() string {
 	switch s {
 	case BlockStateDirty:
 		return "Dirty"
-	case BlockStateSealed:
-		return "Sealed"
-	case BlockStateUploading:
-		return "Uploading"
-	case BlockStateUploaded:
-		return "Uploaded"
+	case BlockStateLocal:
+		return "Local"
+	case BlockStateSyncing:
+		return "Syncing"
+	case BlockStateRemote:
+		return "Remote"
 	default:
 		return "Unknown"
 	}
@@ -105,11 +105,11 @@ func (s BlockState) String() string {
 //
 // Lifecycle:
 //  1. Created on write: ID=uuid, CachePath=path, State=Dirty
-//  2. Sealed: block is complete (next block started or DataSize==BlockSize)
-//  3. Uploading: upload in progress
-//  4. Uploaded: BlockStoreKey set after background upload to S3/etc
-//  5. Evictable: both CachePath and BlockStoreKey set, State=Uploaded
-//  6. Evicted: CachePath cleared, data only in block store
+//  2. Local: block is complete (next block started or DataSize==BlockSize)
+//  3. Syncing: sync to remote store in progress
+//  4. Remote: BlockStoreKey set after background sync to remote store
+//  5. Remote + cached: both CachePath and BlockStoreKey set, State=Remote
+//  6. Evicted: CachePath cleared, data only in remote store
 type FileBlock struct {
 	// ID is a stable UUID for this block.
 	ID string
@@ -123,8 +123,8 @@ type FileBlock struct {
 	// CachePath is the local cache file path. Empty means not cached.
 	CachePath string
 
-	// BlockStoreKey is the opaque key in the block store (S3 key, FS path, etc.).
-	// Empty means not uploaded.
+	// BlockStoreKey is the opaque key in the remote block store (S3 key, FS path, etc.).
+	// Empty means not synced to remote.
 	BlockStoreKey string
 
 	// RefCount is the number of files referencing this block.
@@ -136,7 +136,7 @@ type FileBlock struct {
 	// CreatedAt is when the block was created.
 	CreatedAt time.Time
 
-	// State is the block lifecycle state (Dirty → Sealed → Uploading → Uploaded).
+	// State is the block lifecycle state (Dirty → Local → Syncing → Remote).
 	// Zero value (Dirty) is the safe default for legacy blocks.
 	State BlockState `json:"state"`
 }
@@ -153,11 +153,11 @@ func NewFileBlock(id string, cachePath string) *FileBlock {
 	}
 }
 
-// IsUploaded returns true if the block has been uploaded to the block store.
+// IsRemote returns true if the block has been synced to the remote block store.
 // Migration fallback: legacy blocks (State==0/Dirty) with BlockStoreKey set
-// are treated as Uploaded — they were created before the state machine existed.
-func (b *FileBlock) IsUploaded() bool {
-	if b.State == BlockStateUploaded {
+// are treated as Remote — they were created before the state machine existed.
+func (b *FileBlock) IsRemote() bool {
+	if b.State == BlockStateRemote {
 		return true
 	}
 	// Migration fallback for legacy blocks without State field
@@ -174,14 +174,14 @@ func (b *FileBlock) IsFinalized() bool {
 	return !b.Hash.IsZero()
 }
 
-// IsDirty returns true if the block is receiving writes and not yet sealed.
+// IsDirty returns true if the block is receiving writes and not yet complete.
 func (b *FileBlock) IsDirty() bool {
 	return b.State == BlockStateDirty
 }
 
-// IsSealed returns true if the block is complete and eligible for upload.
-func (b *FileBlock) IsSealed() bool {
-	return b.State == BlockStateSealed
+// IsLocal returns true if the block is complete and eligible for sync to remote.
+func (b *FileBlock) IsLocal() bool {
+	return b.State == BlockStateLocal
 }
 
 // ============================================================================

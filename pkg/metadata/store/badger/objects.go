@@ -29,7 +29,7 @@ import (
 const (
 	fileBlockPrefix       = "fb:"
 	fileBlockHashPrefix   = "fb-hash:"
-	fileBlockSealedPrefix = "fb-sealed:"
+	fileBlockLocalPrefix = "fb-local:"
 )
 
 // Ensure BadgerMetadataStore implements FileBlockStore
@@ -73,15 +73,15 @@ func (s *BadgerMetadataStore) PutFileBlock(ctx context.Context, block *metadata.
 			return err
 		}
 
-		// Maintain sealed index: add when Sealed, remove otherwise.
-		// This allows ListPendingUpload to iterate O(sealed) instead of O(all).
-		sealedKey := []byte(fileBlockSealedPrefix + block.ID)
-		if block.State == metadata.BlockStateSealed {
-			if err := txn.Set(sealedKey, nil); err != nil {
+		// Maintain local index: add when Local, remove otherwise.
+		// This allows ListLocalBlocks to iterate O(local) instead of O(all).
+		localKey := []byte(fileBlockLocalPrefix + block.ID)
+		if block.State == metadata.BlockStateLocal {
+			if err := txn.Set(localKey, nil); err != nil {
 				return err
 			}
 		} else {
-			_ = txn.Delete(sealedKey) // Ignore ErrKeyNotFound
+			_ = txn.Delete(localKey) // Ignore ErrKeyNotFound
 		}
 
 		// Update hash index for finalized blocks
@@ -119,8 +119,8 @@ func (s *BadgerMetadataStore) DeleteFileBlock(ctx context.Context, id string) er
 			return err
 		}
 
-		// Remove sealed index
-		_ = txn.Delete([]byte(fileBlockSealedPrefix + id))
+		// Remove local index
+		_ = txn.Delete([]byte(fileBlockLocalPrefix + id))
 
 		// Remove hash index
 		if block.IsFinalized() {
@@ -232,24 +232,25 @@ func (s *BadgerMetadataStore) FindFileBlockByHash(ctx context.Context, hash meta
 	if !found {
 		return nil, nil
 	}
-	// Only return uploaded blocks for dedup safety
-	if !block.IsUploaded() {
+	// Only return remote blocks for dedup safety
+	if !block.IsRemote() {
 		return nil, nil
 	}
 	return &block, nil
 }
 
-// ListPendingUpload returns blocks that are sealed but not yet uploaded
-// and older than the given duration. If limit > 0, at most limit blocks are returned.
+// ListLocalBlocks returns blocks in Local state (complete, on disk, not yet
+// synced to remote) older than the given duration.
+// If limit > 0, at most limit blocks are returned.
 //
-// Uses the fb-sealed: secondary index for O(sealed) iteration instead of
+// Uses the fb-local: secondary index for O(local) iteration instead of
 // scanning all fb: entries. This eliminates the BadgerDB full-table scan
 // that was the root cause of sequential write throughput degradation.
-func (s *BadgerMetadataStore) ListPendingUpload(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
+func (s *BadgerMetadataStore) ListLocalBlocks(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
 	cutoff := time.Now().Add(-olderThan)
 	var result []*metadata.FileBlock
 	err := s.db.View(func(txn *badger.Txn) error {
-		prefix := []byte(fileBlockSealedPrefix)
+		prefix := []byte(fileBlockLocalPrefix)
 		opts := badger.DefaultIteratorOptions
 		opts.Prefix = prefix
 		opts.PrefetchValues = false // Keys only — values are empty
@@ -257,7 +258,7 @@ func (s *BadgerMetadataStore) ListPendingUpload(ctx context.Context, olderThan t
 		defer it.Close()
 
 		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			// Extract block ID from key: "fb-sealed:{id}" → "{id}"
+			// Extract block ID from key: "fb-local:{id}" → "{id}"
 			id := string(it.Item().Key()[len(prefix):])
 
 			// Look up the actual FileBlock
@@ -285,9 +286,9 @@ func (s *BadgerMetadataStore) ListPendingUpload(ctx context.Context, olderThan t
 	return result, err
 }
 
-// ListEvictable returns blocks that are both cached and uploaded,
-// ordered by LRU (oldest LastAccess first), up to limit.
-func (s *BadgerMetadataStore) ListEvictable(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
+// ListRemoteBlocks returns blocks that are both cached locally and confirmed
+// in remote store, ordered by LRU (oldest LastAccess first), up to limit.
+func (s *BadgerMetadataStore) ListRemoteBlocks(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
 	var candidates []*metadata.FileBlock
 	err := s.db.View(func(txn *badger.Txn) error {
 		prefix := []byte(fileBlockPrefix)
@@ -304,7 +305,7 @@ func (s *BadgerMetadataStore) ListEvictable(ctx context.Context, limit int) ([]*
 			}); err != nil {
 				continue
 			}
-			if block.IsCached() && block.State == metadata.BlockStateUploaded {
+			if block.IsCached() && block.State == metadata.BlockStateRemote {
 				candidates = append(candidates, &block)
 			}
 		}
@@ -386,12 +387,12 @@ func (tx *badgerTransaction) FindFileBlockByHash(ctx context.Context, hash metad
 	return tx.store.FindFileBlockByHash(ctx, hash)
 }
 
-func (tx *badgerTransaction) ListPendingUpload(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
-	return tx.store.ListPendingUpload(ctx, olderThan, limit)
+func (tx *badgerTransaction) ListLocalBlocks(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
+	return tx.store.ListLocalBlocks(ctx, olderThan, limit)
 }
 
-func (tx *badgerTransaction) ListEvictable(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
-	return tx.store.ListEvictable(ctx, limit)
+func (tx *badgerTransaction) ListRemoteBlocks(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
+	return tx.store.ListRemoteBlocks(ctx, limit)
 }
 
 func (tx *badgerTransaction) ListUnreferenced(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {

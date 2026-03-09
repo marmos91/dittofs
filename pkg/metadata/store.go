@@ -238,14 +238,14 @@ type FileBlockStore interface {
 	// Returns nil without error if not found (used for dedup checks).
 	FindFileBlockByHash(ctx context.Context, hash ContentHash) (*FileBlock, error)
 
-	// ListPendingUpload returns blocks that are finalized (hash set) but not
-	// yet uploaded (BlockStoreKey empty) and older than the given duration.
+	// ListLocalBlocks returns blocks that are in Local state (complete, on disk,
+	// not yet synced to remote) and older than the given duration.
 	// If limit > 0, at most limit blocks are returned. If limit <= 0, all are returned.
-	ListPendingUpload(ctx context.Context, olderThan time.Duration, limit int) ([]*FileBlock, error)
+	ListLocalBlocks(ctx context.Context, olderThan time.Duration, limit int) ([]*FileBlock, error)
 
-	// ListEvictable returns blocks that are both cached and uploaded,
-	// ordered by LRU (oldest LastAccess first), up to limit.
-	ListEvictable(ctx context.Context, limit int) ([]*FileBlock, error)
+	// ListRemoteBlocks returns blocks that are both cached locally and confirmed
+	// in remote store, ordered by LRU (oldest LastAccess first), up to limit.
+	ListRemoteBlocks(ctx context.Context, limit int) ([]*FileBlock, error)
 
 	// ListUnreferenced returns blocks with RefCount=0, up to limit.
 	// These are candidates for garbage collection.

@@ -128,7 +128,7 @@ func (s *PostgresMetadataStore) DecrementRefCount(ctx context.Context, id string
 // Returns nil without error if not found.
 func (s *PostgresMetadataStore) FindFileBlockByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
 	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state
-		FROM file_blocks WHERE hash = $1 AND state = 3`
+		FROM file_blocks WHERE hash = $1 AND state = 3 /* Remote */`
 	row := s.queryRow(ctx, query, hash.String())
 
 	block, err := scanFileBlock(row)
@@ -141,9 +141,10 @@ func (s *PostgresMetadataStore) FindFileBlockByHash(ctx context.Context, hash me
 	return block, nil
 }
 
-// ListPendingUpload returns blocks that are cached but not yet uploaded
-// and older than the given duration. If limit > 0, at most limit blocks are returned.
-func (s *PostgresMetadataStore) ListPendingUpload(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
+// ListLocalBlocks returns blocks in Local state (complete, on disk, not yet
+// synced to remote) older than the given duration.
+// If limit > 0, at most limit blocks are returned.
+func (s *PostgresMetadataStore) ListLocalBlocks(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
 	cutoff := time.Now().Add(-olderThan)
 	var query string
 	var rows pgx.Rows
@@ -151,35 +152,35 @@ func (s *PostgresMetadataStore) ListPendingUpload(ctx context.Context, olderThan
 	if limit > 0 {
 		query = `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state
 			FROM file_blocks
-			WHERE state = 1 AND cache_path IS NOT NULL AND created_at < $1
+			WHERE state = 1 /* Local */ AND cache_path IS NOT NULL AND created_at < $1
 			ORDER BY created_at ASC
 			LIMIT $2`
 		rows, err = s.query(ctx, query, cutoff, limit)
 	} else {
 		query = `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state
 			FROM file_blocks
-			WHERE state = 1 AND cache_path IS NOT NULL AND created_at < $1
+			WHERE state = 1 /* Local */ AND cache_path IS NOT NULL AND created_at < $1
 			ORDER BY created_at ASC`
 		rows, err = s.query(ctx, query, cutoff)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("list pending upload: %w", err)
+		return nil, fmt.Errorf("list local blocks: %w", err)
 	}
 	defer rows.Close()
 	return scanFileBlockRows(rows)
 }
 
-// ListEvictable returns blocks that are both cached and uploaded,
-// ordered by LRU (oldest LastAccess first), up to limit.
-func (s *PostgresMetadataStore) ListEvictable(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
+// ListRemoteBlocks returns blocks that are both cached locally and confirmed
+// in remote store, ordered by LRU (oldest LastAccess first), up to limit.
+func (s *PostgresMetadataStore) ListRemoteBlocks(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
 	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state
 		FROM file_blocks
-		WHERE state = 3 AND cache_path IS NOT NULL
+		WHERE state = 3 /* Remote */ AND cache_path IS NOT NULL
 		ORDER BY last_access ASC
 		LIMIT $1`
 	rows, err := s.query(ctx, query, limit)
 	if err != nil {
-		return nil, fmt.Errorf("list evictable: %w", err)
+		return nil, fmt.Errorf("list remote blocks: %w", err)
 	}
 	defer rows.Close()
 	return scanFileBlockRows(rows)
@@ -287,12 +288,12 @@ func (tx *postgresTransaction) FindFileBlockByHash(ctx context.Context, hash met
 	return tx.store.FindFileBlockByHash(ctx, hash)
 }
 
-func (tx *postgresTransaction) ListPendingUpload(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
-	return tx.store.ListPendingUpload(ctx, olderThan, limit)
+func (tx *postgresTransaction) ListLocalBlocks(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
+	return tx.store.ListLocalBlocks(ctx, olderThan, limit)
 }
 
-func (tx *postgresTransaction) ListEvictable(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
-	return tx.store.ListEvictable(ctx, limit)
+func (tx *postgresTransaction) ListRemoteBlocks(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
+	return tx.store.ListRemoteBlocks(ctx, limit)
 }
 
 func (tx *postgresTransaction) ListUnreferenced(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
@@ -300,6 +301,7 @@ func (tx *postgresTransaction) ListUnreferenced(ctx context.Context, limit int) 
 }
 
 // PostgreSQL migration for file_blocks table
+// State values: 0=Dirty, 1=Local (was Sealed), 2=Syncing (was Uploading), 3=Remote (was Uploaded)
 const fileBlocksTableMigration = `
 -- File blocks table (replaces objects, object_chunks, object_blocks)
 CREATE TABLE IF NOT EXISTS file_blocks (
@@ -311,11 +313,11 @@ CREATE TABLE IF NOT EXISTS file_blocks (
     ref_count INTEGER NOT NULL DEFAULT 1,
     last_access TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    state SMALLINT NOT NULL DEFAULT 0
+    state SMALLINT NOT NULL DEFAULT 0  -- 0=Dirty, 1=Local, 2=Syncing, 3=Remote
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_file_blocks_hash ON file_blocks(hash) WHERE hash IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_file_blocks_pending ON file_blocks(created_at) WHERE state = 1 AND cache_path IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_file_blocks_evictable ON file_blocks(last_access) WHERE state = 3 AND cache_path IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_file_blocks_local ON file_blocks(created_at) WHERE state = 1 AND cache_path IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_file_blocks_remote ON file_blocks(last_access) WHERE state = 3 AND cache_path IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_file_blocks_unreferenced ON file_blocks(id) WHERE ref_count = 0;
 `
 
