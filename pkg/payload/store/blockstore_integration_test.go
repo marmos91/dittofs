@@ -474,7 +474,7 @@ func TestFlusher_WithMemoryStore(t *testing.T) {
 		f.SyncNow(ctx)
 
 		// Clear cache to force block store read
-		bc.Remove(ctx, payloadID)
+		bc.EvictMemory(ctx, payloadID)
 
 		// Ensure data is available (cache miss -> block store fetch -> cache)
 		err = f.EnsureAvailable(ctx, payloadID, 0, uint32(len(data)))

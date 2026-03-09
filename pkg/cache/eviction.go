@@ -13,8 +13,17 @@ import (
 
 // ensureSpace makes room for the given number of bytes by evicting remote blocks.
 // Uses backpressure: waits up to 30s for syncs to make blocks evictable.
+// When evictionEnabled is false, returns ErrDiskFull immediately if over limit
+// instead of attempting eviction (used by local-only mode with no remote store).
 func (bc *BlockCache) ensureSpace(ctx context.Context, needed int64) error {
 	if bc.maxDisk <= 0 {
+		return nil
+	}
+
+	if !bc.evictionEnabled.Load() {
+		if bc.diskUsed.Load()+needed > bc.maxDisk {
+			return ErrDiskFull
+		}
 		return nil
 	}
 

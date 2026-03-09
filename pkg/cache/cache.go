@@ -71,6 +71,12 @@ type BlockCache struct {
 	// staging buffers — losing them on power failure means re-downloading
 	// from S3, not data loss. Saves ~0.5-2ms per COMMIT.
 	skipFsync bool
+
+	// evictionEnabled controls whether ensureSpace can evict blocks.
+	// When false, ensureSpace returns ErrDiskFull if over limit instead of
+	// evicting remote blocks. Used by local-only mode where there is no
+	// remote store to re-fetch evicted blocks from.
+	evictionEnabled atomic.Bool
 }
 
 // New creates a new BlockCache.
@@ -89,7 +95,7 @@ func New(baseDir string, maxDisk int64, maxMemory int64, blockStore metadata.Fil
 		maxMemory = 256 * 1024 * 1024 // 256MB default
 	}
 
-	return &BlockCache{
+	bc := &BlockCache{
 		baseDir:     baseDir,
 		maxDisk:     maxDisk,
 		maxMemory:   maxMemory,
@@ -99,7 +105,9 @@ func New(baseDir string, maxDisk int64, maxMemory int64, blockStore metadata.Fil
 		files:       make(map[string]*fileInfo),
 		fdCache:     newFDCache(defaultFDCacheSize),
 		readFDCache: newFDCache(defaultFDCacheSize),
-	}, nil
+	}
+	bc.evictionEnabled.Store(true)
+	return bc, nil
 }
 
 // SetSkipFsync disables fsync in Flush() for S3 backends.
@@ -334,9 +342,10 @@ func (bc *BlockCache) purgeMemBlocks(payloadID string, shouldRemove func(blockId
 	bc.blocksMu.Unlock()
 }
 
-// Remove removes all cached data (memory and disk tracking) for a file.
-// Does not delete .blk files from disk — that is handled by eviction.
-func (bc *BlockCache) Remove(_ context.Context, payloadID string) error {
+// EvictMemory removes all cached data (memory and disk tracking) for a file.
+// Does not delete .blk files from disk — that is handled by eviction or
+// explicit deletion via DeleteAllBlockFiles.
+func (bc *BlockCache) EvictMemory(_ context.Context, payloadID string) error {
 	bc.purgeMemBlocks(payloadID, func(uint64) bool { return true })
 
 	bc.filesMu.Lock()

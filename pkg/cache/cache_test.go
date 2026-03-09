@@ -300,8 +300,8 @@ func TestRemove(t *testing.T) {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
-	if err := bc.Remove(ctx, "file1"); err != nil {
-		t.Fatalf("Remove failed: %v", err)
+	if err := bc.EvictMemory(ctx, "file1"); err != nil {
+		t.Fatalf("EvictMemory failed: %v", err)
 	}
 
 	_, ok := bc.GetFileSize(ctx, "file1")

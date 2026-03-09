@@ -161,8 +161,8 @@ func (s *PayloadService) Truncate(ctx context.Context, id metadata.PayloadID, ne
 // Delete removes payload from both cache and block store.
 func (s *PayloadService) Delete(ctx context.Context, id metadata.PayloadID) error {
 	payloadID := string(id)
-	if err := s.cache.Remove(ctx, payloadID); err != nil {
-		return fmt.Errorf("cache remove failed: %w", err)
+	if err := s.cache.EvictMemory(ctx, payloadID); err != nil {
+		return fmt.Errorf("cache evict memory failed: %w", err)
 	}
 	return s.offloader.Delete(ctx, payloadID)
 }
