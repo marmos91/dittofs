@@ -505,13 +505,13 @@ func TestNoFsyncOnBlockFill(t *testing.T) {
 	}
 }
 
-func TestWriteDownloaded(t *testing.T) {
+func TestWriteFromRemote(t *testing.T) {
 	bc := newTestCache(t, 256*1024*1024)
 	ctx := context.Background()
 
 	data := bytes.Repeat([]byte{0xCC}, 4096)
-	if err := bc.WriteDownloaded(ctx, "file1", data, 0); err != nil {
-		t.Fatalf("WriteDownloaded failed: %v", err)
+	if err := bc.WriteFromRemote(ctx, "file1", data, 0); err != nil {
+		t.Fatalf("WriteFromRemote failed: %v", err)
 	}
 
 	dest := make([]byte, len(data))
