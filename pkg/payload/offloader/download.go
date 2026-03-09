@@ -10,18 +10,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/payload/store"
 )
 
-// waitForDownloads blocks until no downloads are pending.
-// Called by upload goroutines to yield to downloads.
-func (m *Offloader) waitForDownloads() {
-	m.ioCond.L.Lock()
-	for m.downloadsPending > 0 {
-		m.ioCond.Wait()
-	}
-	m.ioCond.L.Unlock()
-}
-
-// resolveStoreKey returns the S3 key for downloading a block.
-// Returns "" if no FileBlock exists (sparse) or if the block is not yet uploaded.
+// resolveStoreKey returns the remote store key for downloading a block.
+// Returns "" if no FileBlock exists (sparse) or if the block is not yet remote.
 func (m *Offloader) resolveStoreKey(ctx context.Context, payloadID string, blockIdx uint64) string {
 	blockID := fmt.Sprintf("%s/%d", payloadID, blockIdx)
 	fb, err := m.fileBlockStore.GetFileBlock(ctx, blockID)
@@ -34,12 +24,9 @@ func (m *Offloader) resolveStoreKey(ctx context.Context, payloadID string, block
 // downloadBlock downloads a single block from the block store and caches it.
 // Returns nil data for sparse blocks (no FileBlock entry or missing S3 object).
 func (m *Offloader) downloadBlock(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, error) {
-	m.mu.RLock()
-	if m.closed {
-		m.mu.RUnlock()
+	if !m.canProcess(ctx) {
 		return nil, fmt.Errorf("offloader is closed")
 	}
-	m.mu.RUnlock()
 
 	storeKey := m.resolveStoreKey(ctx, payloadID, blockIdx)
 	if storeKey == "" {
@@ -55,7 +42,7 @@ func (m *Offloader) downloadBlock(ctx context.Context, payloadID string, blockId
 	}
 
 	offset := blockIdx * uint64(BlockSize)
-	if err := m.cache.WriteDownloaded(ctx, payloadID, data, offset); err != nil {
+	if err := m.cache.WriteFromRemote(ctx, payloadID, data, offset); err != nil {
 		return nil, fmt.Errorf("cache downloaded block %s: %w", storeKey, err)
 	}
 
@@ -170,7 +157,7 @@ func (m *Offloader) inlineDownloadOrWait(ctx context.Context, payloadID string, 
 	blockOffset := blockIdx * uint64(BlockSize)
 	go func() {
 		bgCtx := context.Background()
-		if cacheErr := m.cache.WriteDownloaded(bgCtx, payloadID, data, blockOffset); cacheErr != nil {
+		if cacheErr := m.cache.WriteFromRemote(bgCtx, payloadID, data, blockOffset); cacheErr != nil {
 			logger.Warn("inline download: cache write failed",
 				"block", key, "error", cacheErr)
 		}

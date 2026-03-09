@@ -11,8 +11,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// ensureSpace makes room for the given number of bytes by evicting uploaded blocks.
-// Uses backpressure: waits up to 30s for uploads to make blocks evictable.
+// ensureSpace makes room for the given number of bytes by evicting remote blocks.
+// Uses backpressure: waits up to 30s for syncs to make blocks evictable.
 func (bc *BlockCache) ensureSpace(ctx context.Context, needed int64) error {
 	if bc.maxDisk <= 0 {
 		return nil
@@ -23,7 +23,7 @@ func (bc *BlockCache) ensureSpace(ctx context.Context, needed int64) error {
 	recalculated := false
 
 	for bc.diskUsed.Load()+needed > bc.maxDisk {
-		evictable, err := bc.blockStore.ListEvictable(ctx, 1)
+		evictable, err := bc.blockStore.ListRemoteBlocks(ctx, 1)
 		if err != nil || len(evictable) == 0 {
 			if !recalculated {
 				recalculated = true
@@ -86,11 +86,13 @@ func (bc *BlockCache) evictBlock(ctx context.Context, fb *metadata.FileBlock) er
 // recalcDiskUsed walks the cache directory and recalculates diskUsed.
 func (bc *BlockCache) recalcDiskUsed() {
 	var actual int64
-	_ = filepath.Walk(bc.baseDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+	_ = filepath.WalkDir(bc.baseDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
 			return nil
 		}
-		actual += info.Size()
+		if info, infoErr := d.Info(); infoErr == nil {
+			actual += info.Size()
+		}
 		return nil
 	})
 	bc.diskUsed.Store(actual)

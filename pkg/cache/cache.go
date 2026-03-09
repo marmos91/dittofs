@@ -111,13 +111,13 @@ func New(baseDir string, maxDisk int64, maxMemory int64, blockStore metadata.Fil
 // SetDirectWritePath enables direct pwrite to the payload store for filesystem
 // backends. When set, writes go directly to the payload store path instead of
 // cache .blk files, eliminating double-write amplification. Blocks are marked
-// as Uploaded immediately (no offloader upload needed).
+// as Remote immediately (no offloader sync needed).
 func (bc *BlockCache) SetDirectWritePath(fn func(payloadID string, blockIdx uint64) string) {
 	bc.directWritePath = fn
 }
 
 // IsDirectWrite returns true when direct-write mode is enabled (filesystem backend).
-// In this mode all blocks go straight to Uploaded — no sealed blocks exist.
+// In this mode all blocks go straight to Remote — no local blocks exist.
 func (bc *BlockCache) IsDirectWrite() bool {
 	return bc.directWritePath != nil
 }
@@ -167,7 +167,7 @@ func (bc *BlockCache) Start(ctx context.Context) {
 
 // SyncFileBlocks persists all queued FileBlock metadata updates to the store.
 // Called periodically by Start(), on Close(), and before GetDirtyBlocks()
-// to ensure the FileBlockStore is up-to-date for ListPendingUpload queries.
+// to ensure the FileBlockStore is up-to-date for ListLocalBlocks queries.
 func (bc *BlockCache) SyncFileBlocks(ctx context.Context) {
 	bc.pendingFBs.Range(func(key, value any) bool {
 		fb := value.(*metadata.FileBlock)
@@ -396,11 +396,11 @@ func (bc *BlockCache) ListFiles() []string {
 	return result
 }
 
-// WriteDownloaded caches data that was downloaded from the block store (S3).
-// Unlike WriteAt (which creates Dirty blocks), the block is marked Uploaded
+// WriteFromRemote caches data that was fetched from the remote block store.
+// Unlike WriteAt (which creates Dirty blocks), the block is marked Remote
 // since it already exists remotely — making it immediately evictable by the
-// disk space manager without needing a re-upload.
-func (bc *BlockCache) WriteDownloaded(ctx context.Context, payloadID string, data []byte, offset uint64) error {
+// disk space manager without needing a re-sync.
+func (bc *BlockCache) WriteFromRemote(ctx context.Context, payloadID string, data []byte, offset uint64) error {
 	blockIdx := offset / BlockSize
 	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
 	blockID := makeBlockID(key)
@@ -410,7 +410,7 @@ func (bc *BlockCache) WriteDownloaded(ctx context.Context, payloadID string, dat
 		fb = metadata.NewFileBlock(blockID, "")
 	}
 	fb.BlockStoreKey = FormatStoreKey(payloadID, blockIdx)
-	fb.State = metadata.BlockStateUploaded
+	fb.State = metadata.BlockStateRemote
 
 	path := bc.blockPath(blockID)
 	if err := bc.ensureSpace(ctx, int64(len(data))); err != nil {
@@ -435,17 +435,17 @@ func (bc *BlockCache) WriteDownloaded(ctx context.Context, payloadID string, dat
 }
 
 // GetDirtyBlocks flushes all in-memory blocks for a file to disk, then returns
-// all blocks in Sealed state (written to disk but not yet uploaded to S3).
-// Used by the offloader to find blocks that need uploading.
+// all blocks in Local state (written to disk but not yet synced to remote).
+// Used by the offloader to find blocks that need syncing.
 //
 // Optimization: uses the flushed block list from Flush() directly to read data,
-// avoiding the expensive SyncFileBlocksForFile + ListPendingUpload round-trip
+// avoiding the expensive SyncFileBlocksForFile + ListLocalBlocks round-trip
 // (write to BadgerDB then immediately read back). The pending FileBlock metadata
-// is persisted asynchronously by the background ticker — the uploader doesn't
+// is persisted asynchronously by the background ticker — the syncer doesn't
 // need it to be in BadgerDB since it gets data from cache files.
 func (bc *BlockCache) GetDirtyBlocks(ctx context.Context, payloadID string) ([]PendingBlock, error) {
-	// Direct-write mode: all blocks go straight to Uploaded in the payload store.
-	// No dirty memBlocks, no sealed blocks, no pending uploads — skip everything.
+	// Direct-write mode: all blocks go straight to Remote in the payload store.
+	// No dirty memBlocks, no local blocks, no pending syncs — skip everything.
 	// FileBlock metadata updates drain asynchronously via the background ticker.
 	if bc.directWritePath != nil {
 		return nil, nil
@@ -462,7 +462,7 @@ func (bc *BlockCache) GetDirtyBlocks(ctx context.Context, payloadID string) ([]P
 
 	// Read data from cache files for each freshly-flushed block.
 	// No BadgerDB round-trip needed — Flush() already told us which blocks
-	// were written and where. The FileBlock metadata (with state=Sealed)
+	// were written and where. The FileBlock metadata (with state=Local)
 	// is queued in pendingFBs and will be persisted by the background ticker.
 	var result []PendingBlock
 	for _, fb := range flushed {
@@ -531,22 +531,22 @@ func (bc *BlockCache) transitionBlockState(ctx context.Context, payloadID string
 	return true
 }
 
-// MarkBlockUploaded marks a block as successfully uploaded to the block store (S3).
-// Uploaded blocks are eligible for disk eviction since they can be re-downloaded.
-func (bc *BlockCache) MarkBlockUploaded(ctx context.Context, payloadID string, blockIdx uint64) bool {
-	return bc.transitionBlockState(ctx, payloadID, blockIdx, 0, metadata.BlockStateUploaded)
+// MarkBlockRemote marks a block as confirmed in the remote block store.
+// Remote blocks are eligible for disk eviction since they can be re-fetched.
+func (bc *BlockCache) MarkBlockRemote(ctx context.Context, payloadID string, blockIdx uint64) bool {
+	return bc.transitionBlockState(ctx, payloadID, blockIdx, 0, metadata.BlockStateRemote)
 }
 
-// MarkBlockUploading claims a block for upload (Sealed → Uploading).
-// Only succeeds if the block is currently Sealed, preventing duplicate uploads.
-func (bc *BlockCache) MarkBlockUploading(ctx context.Context, payloadID string, blockIdx uint64) bool {
-	return bc.transitionBlockState(ctx, payloadID, blockIdx, metadata.BlockStateSealed, metadata.BlockStateUploading)
+// MarkBlockSyncing claims a block for sync to remote (Local → Syncing).
+// Only succeeds if the block is currently Local, preventing duplicate syncs.
+func (bc *BlockCache) MarkBlockSyncing(ctx context.Context, payloadID string, blockIdx uint64) bool {
+	return bc.transitionBlockState(ctx, payloadID, blockIdx, metadata.BlockStateLocal, metadata.BlockStateSyncing)
 }
 
-// MarkBlockPending reverts a block to Sealed state after a failed upload attempt,
-// so the offloader will retry it on the next upload cycle.
-func (bc *BlockCache) MarkBlockPending(ctx context.Context, payloadID string, blockIdx uint64) bool {
-	return bc.transitionBlockState(ctx, payloadID, blockIdx, 0, metadata.BlockStateSealed)
+// MarkBlockLocal reverts a block to Local state after a failed sync attempt,
+// so the offloader will retry it on the next sync cycle.
+func (bc *BlockCache) MarkBlockLocal(ctx context.Context, payloadID string, blockIdx uint64) bool {
+	return bc.transitionBlockState(ctx, payloadID, blockIdx, 0, metadata.BlockStateLocal)
 }
 
 // FormatStoreKey returns the block store key (S3 object key) for a block.
@@ -586,7 +586,9 @@ func belongsToFile(blockID, payloadID string) bool {
 // writeFile atomically writes data to path, creating parent directories as needed.
 // Calls FADV_DONTNEED after writing to avoid polluting the OS page cache.
 func writeFile(path string, data []byte) error {
-	_ = os.MkdirAll(filepath.Dir(path), 0755)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("create parent dir: %w", err)
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return fmt.Errorf("create cache file: %w", err)

@@ -30,11 +30,12 @@ func (m *Offloader) getOrCreateUploadState(payloadID string) *fileUploadState {
 // getUploadState returns the upload state for a file, or nil if not found.
 func (m *Offloader) getUploadState(payloadID string) *fileUploadState {
 	m.uploadsMu.Lock()
-	defer m.uploadsMu.Unlock()
-	return m.uploads[payloadID]
+	state := m.uploads[payloadID]
+	m.uploadsMu.Unlock()
+	return state
 }
 
-// handleUploadSuccess registers the block for dedup, tracks its hash, and marks it uploaded.
+// handleUploadSuccess registers the block for dedup, tracks its hash, and marks it remote.
 func (m *Offloader) handleUploadSuccess(ctx context.Context, payloadID string, blockIdx uint64, hash [32]byte, dataSize uint32) {
 	blockID := fmt.Sprintf("%s/%d", payloadID, blockIdx)
 	fb, err := m.fileBlockStore.GetFileBlock(ctx, blockID)
@@ -47,14 +48,14 @@ func (m *Offloader) handleUploadSuccess(ctx context.Context, payloadID string, b
 	fb.Hash = hash
 	fb.DataSize = dataSize
 	fb.BlockStoreKey = cache.FormatStoreKey(payloadID, blockIdx)
-	fb.State = metadata.BlockStateUploaded
+	fb.State = metadata.BlockStateRemote
 	if err := m.fileBlockStore.PutFileBlock(ctx, fb); err != nil {
 		logger.Error("Failed to register block in FileBlockStore",
 			"payloadID", payloadID, "blockIdx", blockIdx, "error", err)
 	}
 
 	m.trackBlockHash(payloadID, blockIdx, hash)
-	m.cache.MarkBlockUploaded(ctx, payloadID, blockIdx)
+	m.cache.MarkBlockRemote(ctx, payloadID, blockIdx)
 }
 
 // getOrderedBlockHashes returns block hashes in order (sorted by block index).

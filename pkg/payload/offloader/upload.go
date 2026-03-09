@@ -16,27 +16,26 @@ import (
 
 // maxUploadBatch limits how many blocks are uploaded per periodic tick.
 // Each block read from disk is ~8MB. Sequential processing ensures only
-// 1 block (~8MB) is in heap at a time. After the batch, we hint GC to
-// reclaim the upload buffers promptly.
+// 1 block (~8MB) is in heap at a time.
 const maxUploadBatch = 4
 
-// uploadPendingBlocks scans FileBlockStore for blocks in cache but not yet
-// uploaded, and uploads them sequentially. Called by the periodic uploader.
+// uploadPendingBlocks scans FileBlockStore for local blocks not yet synced
+// to remote, and uploads them sequentially. Called by the periodic syncer.
 //
-// Memory safety: ListPendingUpload is called with limit=maxUploadBatch to
+// Memory safety: ListLocalBlocks is called with limit=maxUploadBatch to
 // avoid scanning and deserializing thousands of FileBlock entries from BadgerDB.
-// The periodic uploader guards against overlapping ticks, so at most one
+// The periodic syncer guards against overlapping ticks, so at most one
 // instance of this function runs at a time.
 func (m *Offloader) uploadPendingBlocks(ctx context.Context) {
-	// Direct-write mode: all blocks go straight to Uploaded in the payload store.
-	// No sealed blocks exist, so skip the expensive ListPendingUpload scan.
+	// Direct-write mode: all blocks go straight to Remote in the payload store.
+	// No local blocks exist, so skip the expensive ListLocalBlocks scan.
 	if m.cache.IsDirectWrite() {
 		return
 	}
 
-	pending, err := m.fileBlockStore.ListPendingUpload(ctx, m.config.UploadDelay, maxUploadBatch)
+	pending, err := m.fileBlockStore.ListLocalBlocks(ctx, m.config.UploadDelay, maxUploadBatch)
 	if err != nil {
-		logger.Warn("Periodic upload: failed to list pending blocks", "error", err)
+		logger.Warn("Periodic sync: failed to list local blocks", "error", err)
 		return
 	}
 
@@ -44,7 +43,7 @@ func (m *Offloader) uploadPendingBlocks(ctx context.Context) {
 		return
 	}
 
-	logger.Info("Periodic upload: found pending blocks", "count", len(pending))
+	logger.Info("Periodic sync: found local blocks", "count", len(pending))
 
 	// Upload sequentially to minimize memory: only 1 block (~8MB) in memory at a time.
 	for _, fb := range pending {
@@ -53,18 +52,15 @@ func (m *Offloader) uploadPendingBlocks(ctx context.Context) {
 		}
 		m.uploadFileBlock(ctx, fb)
 	}
-
-	// Note: runtime.GC() was previously called here but removed — Go's GC pacer
-	// handles 8MB upload buffers fine, and forced GC caused periodic latency spikes.
 }
 
-// uploadFileBlock reads a sealed block from cache, dedup-checks, and uploads to block store.
+// uploadFileBlock reads a local block from cache, dedup-checks, and syncs to remote store.
 func (m *Offloader) uploadFileBlock(ctx context.Context, fb *metadata.FileBlock) {
-	if fb.State != metadata.BlockStateSealed {
+	if fb.State != metadata.BlockStateLocal {
 		return
 	}
 
-	fb.State = metadata.BlockStateUploading
+	fb.State = metadata.BlockStateSyncing
 	if err := m.fileBlockStore.PutFileBlock(ctx, fb); err != nil {
 		return
 	}
@@ -73,10 +69,10 @@ func (m *Offloader) uploadFileBlock(ctx context.Context, fb *metadata.FileBlock)
 
 	data, err := os.ReadFile(fb.CachePath)
 	if err != nil {
-		logger.Warn("Upload: failed to read cache file",
+		logger.Warn("Sync: failed to read cache file",
 			"blockID", fb.ID, "cachePath", fb.CachePath, "error", err)
-		// Revert to Sealed so it can be retried
-		fb.State = metadata.BlockStateSealed
+		// Revert to Local so it can be retried
+		fb.State = metadata.BlockStateLocal
 		_ = m.fileBlockStore.PutFileBlock(ctx, fb)
 		return
 	}
@@ -84,14 +80,14 @@ func (m *Offloader) uploadFileBlock(ctx context.Context, fb *metadata.FileBlock)
 	hash := sha256.Sum256(data)
 
 	existing, err := m.fileBlockStore.FindFileBlockByHash(ctx, hash)
-	if err == nil && existing != nil && existing.IsUploaded() {
+	if err == nil && existing != nil && existing.IsRemote() {
 		_ = m.fileBlockStore.IncrementRefCount(ctx, existing.ID)
 		fb.Hash = metadata.ContentHash(hash)
 		fb.DataSize = uint32(len(data))
 		fb.BlockStoreKey = existing.BlockStoreKey
-		fb.State = metadata.BlockStateUploaded
+		fb.State = metadata.BlockStateRemote
 		_ = m.fileBlockStore.PutFileBlock(ctx, fb)
-		logger.Debug("Upload dedup: block already exists", "blockID", fb.ID)
+		logger.Debug("Sync dedup: block already exists", "blockID", fb.ID)
 		return
 	}
 
@@ -102,9 +98,9 @@ func (m *Offloader) uploadFileBlock(ctx context.Context, fb *metadata.FileBlock)
 	storeKey := cache.FormatStoreKey(payloadID, blockIdx)
 
 	if err := m.blockStore.WriteBlock(ctx, storeKey, data); err != nil {
-		logger.Error("Upload: failed", "blockID", fb.ID, "error", err)
-		// Revert to Sealed so it can be retried
-		fb.State = metadata.BlockStateSealed
+		logger.Error("Sync: upload to remote failed", "blockID", fb.ID, "error", err)
+		// Revert to Local so it can be retried
+		fb.State = metadata.BlockStateLocal
 		_ = m.fileBlockStore.PutFileBlock(ctx, fb)
 		return
 	}
@@ -112,10 +108,10 @@ func (m *Offloader) uploadFileBlock(ctx context.Context, fb *metadata.FileBlock)
 	fb.Hash = metadata.ContentHash(hash)
 	fb.DataSize = uint32(len(data))
 	fb.BlockStoreKey = storeKey
-	fb.State = metadata.BlockStateUploaded
+	fb.State = metadata.BlockStateRemote
 	_ = m.fileBlockStore.PutFileBlock(ctx, fb)
 
-	logger.Info("Upload complete",
+	logger.Info("Sync complete",
 		"blockID", fb.ID, "size", len(data), "duration", time.Since(startTime))
 }
 
@@ -124,14 +120,14 @@ func (m *Offloader) uploadFileBlock(ctx context.Context, fb *metadata.FileBlock)
 func (m *Offloader) uploadRemainingBlocks(ctx context.Context, payloadID string) error {
 	pending, err := m.cache.GetDirtyBlocks(ctx, payloadID)
 	if err != nil {
-		return nil // No data to flush
+		return fmt.Errorf("get dirty blocks: %w", err)
 	}
 
 	if len(pending) == 0 {
 		return nil
 	}
 
-	logger.Info("Flush: uploading remaining blocks",
+	logger.Info("Flush: syncing remaining blocks",
 		"payloadID", payloadID, "blocks", len(pending))
 
 	var wg sync.WaitGroup
@@ -144,14 +140,14 @@ func (m *Offloader) uploadRemainingBlocks(ctx context.Context, payloadID string)
 		}
 
 		existing, findErr := m.fileBlockStore.FindFileBlockByHash(ctx, metadata.ContentHash(hash))
-		if findErr == nil && existing != nil && existing.IsUploaded() {
+		if findErr == nil && existing != nil && existing.IsRemote() {
 			_ = m.fileBlockStore.IncrementRefCount(ctx, existing.ID)
-			m.cache.MarkBlockUploaded(ctx, payloadID, blockIdx)
+			m.cache.MarkBlockRemote(ctx, payloadID, blockIdx)
 			m.trackBlockHash(payloadID, blockIdx, hash)
 			continue
 		}
 
-		if !m.cache.MarkBlockUploading(ctx, payloadID, blockIdx) {
+		if !m.cache.MarkBlockSyncing(ctx, payloadID, blockIdx) {
 			continue
 		}
 
@@ -169,9 +165,9 @@ func (m *Offloader) uploadRemainingBlocks(ctx context.Context, payloadID string)
 
 			storeKey := cache.FormatStoreKey(payloadID, bi)
 			if err := m.blockStore.WriteBlock(ctx, storeKey, data); err != nil {
-				logger.Error("Flush upload failed",
+				logger.Error("Flush sync failed",
 					"payloadID", payloadID, "storeKey", storeKey, "error", err)
-				m.cache.MarkBlockPending(ctx, payloadID, bi)
+				m.cache.MarkBlockLocal(ctx, payloadID, bi)
 				return
 			}
 

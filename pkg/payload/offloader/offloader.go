@@ -2,7 +2,6 @@ package offloader
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -13,11 +12,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/payload/store"
 )
-
-// hashB64 returns a base64-encoded representation of a hash for readable logging.
-func hashB64(h [32]byte) string {
-	return base64.StdEncoding.EncodeToString(h[:])
-}
 
 // waitWithContext runs fn in a goroutine and waits for it to finish or the
 // context to be cancelled. Returns nil on completion, or ctx.Err() on timeout.
@@ -191,9 +185,9 @@ func (m *Offloader) Flush(ctx context.Context, payloadID string) (*FlushResult, 
 
 	// S3 mode: flush memBlocks to disk cache only.
 	// The data is safe on disk after this call. S3 uploads happen asynchronously
-	// via the periodic uploader — sealed blocks are picked up after UploadDelay
+	// via the periodic syncer — Local blocks are picked up after UploadDelay
 	// (resettable on new writes), allowing sparse blocks to accumulate more data
-	// before upload.
+	// before sync.
 	if _, err := m.cache.Flush(ctx, payloadID); err != nil {
 		return nil, fmt.Errorf("cache flush failed: %w", err)
 	}
@@ -384,28 +378,28 @@ func (m *Offloader) periodicUploader(ctx context.Context, interval time.Duration
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	logger.Info("Periodic uploader started", "interval", interval, "upload_delay", m.config.UploadDelay)
+	logger.Info("Periodic syncer started", "interval", interval, "upload_delay", m.config.UploadDelay)
 
 	for {
 		select {
 		case <-ticker.C:
 			if !m.canProcess(ctx) {
-				logger.Info("Periodic uploader: canProcess=false, exiting")
+				logger.Info("Periodic syncer: canProcess=false, exiting")
 				return
 			}
 			// Skip this tick if the previous upload batch is still running.
 			// This prevents overlapping ticks from multiplying memory usage.
 			if !m.uploading.CompareAndSwap(false, true) {
-				logger.Debug("Periodic uploader: previous tick still running, skipping")
+				logger.Debug("Periodic syncer: previous tick still running, skipping")
 				continue
 			}
 			m.uploadPendingBlocks(ctx)
 			m.uploading.Store(false)
 		case <-m.stopCh:
-			logger.Info("Periodic uploader: stopCh received, exiting")
+			logger.Info("Periodic syncer: stopCh received, exiting")
 			return
 		case <-ctx.Done():
-			logger.Info("Periodic uploader: context cancelled, exiting")
+			logger.Info("Periodic syncer: context cancelled, exiting")
 			return
 		}
 	}

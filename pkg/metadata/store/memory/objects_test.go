@@ -142,7 +142,7 @@ func TestFileBlockStore_FindByHash_Found(t *testing.T) {
 	assert.Equal(t, id, found.ID)
 	assert.Equal(t, metadata.ContentHash(hash), found.Hash)
 	assert.Equal(t, uint32(2048), found.DataSize)
-	assert.True(t, found.IsUploaded())
+	assert.True(t, found.IsRemote())
 }
 
 func TestFileBlockStore_FindByHash_NotFound(t *testing.T) {
@@ -181,7 +181,7 @@ func TestFileBlockStore_DedupFlow(t *testing.T) {
 	existing, err := store.FindFileBlockByHash(ctx, hash)
 	require.NoError(t, err)
 	require.NotNil(t, existing, "Block should be found for dedup")
-	assert.True(t, existing.IsUploaded(), "Block should be uploaded for dedup to skip upload")
+	assert.True(t, existing.IsRemote(), "Block should be remote for dedup to skip upload")
 
 	// Dedup: increment RefCount instead of uploading
 	err = store.IncrementRefCount(ctx, existing.ID)

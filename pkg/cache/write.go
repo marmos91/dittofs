@@ -136,7 +136,7 @@ func (bc *BlockCache) tryDirectDiskWrite(ctx context.Context, payloadID string, 
 
 	// Use direct payload store path if available (filesystem backend optimization).
 	// This eliminates double-write: data goes straight to the payload store,
-	// skipping cache .blk files entirely. Blocks are marked Uploaded immediately.
+	// skipping cache .blk files entirely. Blocks are marked Remote immediately.
 	var path string
 	var isDirect bool
 	if bc.directWritePath != nil {
@@ -181,48 +181,31 @@ func (bc *BlockCache) tryDirectDiskWrite(ctx context.Context, payloadID string, 
 	end := blockOffset + uint32(len(data))
 	now := time.Now()
 
+	var fb *metadata.FileBlock
 	if v, ok := bc.pendingFBs.Load(blockID); ok {
-		fb := v.(*metadata.FileBlock)
-		fb.CachePath = path
-		if end > fb.DataSize {
-			fb.DataSize = end
+		fb = v.(*metadata.FileBlock)
+	} else {
+		// Slow path: lookup from store or create new
+		var err error
+		fb, err = bc.lookupFileBlock(ctx, blockID)
+		if err != nil {
+			fb = metadata.NewFileBlock(blockID, path)
 		}
-		if isDirect {
-			fb.State = metadata.BlockStateUploaded
-			fb.BlockStoreKey = FormatStoreKey(payloadID, blockIdx)
-		} else if fb.State == 0 {
-			// New block, never uploaded — seal so the uploader picks it up.
-			fb.State = metadata.BlockStateSealed
-		}
-		// If Uploaded: leave as-is. The on-disk cache has newer data than S3,
-		// but re-sealing on every 4KB pwrite would cause a storm of 8MB
-		// re-uploads via the periodic uploader. Re-upload happens on explicit
-		// Flush (GetDirtyBlocks) when the file is finalized.
-		fb.LastAccess = now
-		bc.pendingFBs.Store(blockID, fb)
-		return true
 	}
 
-	// Slow path: lookup from store or create new
-	fb, err := bc.lookupFileBlock(ctx, blockID)
-	if err != nil {
-		fb = metadata.NewFileBlock(blockID, path)
-	}
 	fb.CachePath = path
-
 	if end > fb.DataSize {
 		fb.DataSize = end
 	}
-
 	if isDirect {
-		fb.State = metadata.BlockStateUploaded
+		fb.State = metadata.BlockStateRemote
 		fb.BlockStoreKey = FormatStoreKey(payloadID, blockIdx)
 	} else if fb.State == 0 {
-		// New block — seal for initial upload.
-		fb.State = metadata.BlockStateSealed
+		// New block, never synced -- mark Local so the syncer picks it up.
+		fb.State = metadata.BlockStateLocal
 	}
-	// Uploaded blocks: don't re-seal on pwrite. Avoids triggering 8MB
-	// re-uploads on every 4KB random write. Re-upload on explicit Flush.
+	// Remote blocks: don't revert to Local on pwrite. Avoids triggering 8MB
+	// re-syncs on every 4KB random write. Re-sync on explicit Flush.
 	fb.LastAccess = now
 	bc.queueFileBlockUpdate(fb)
 

@@ -131,7 +131,7 @@ func (q *TransferQueue) EnqueueDownload(req TransferRequest) bool {
 		q.mu.Unlock()
 		return true
 	default:
-		logger.Warn("Download queue full, dropping request",
+		logger.Warn("Fetch queue full, dropping request",
 			"payloadID", req.PayloadID)
 		return false
 	}
@@ -148,7 +148,7 @@ func (q *TransferQueue) EnqueueUpload(req TransferRequest) bool {
 		q.mu.Unlock()
 		return true
 	default:
-		logger.Warn("Upload queue full, dropping request",
+		logger.Warn("Sync queue full, dropping request",
 			"payloadID", req.PayloadID)
 		return false
 	}
@@ -202,7 +202,7 @@ func (q *TransferQueue) LastError() (time.Time, error) {
 func (q *TransferQueue) downloadWorker(_ context.Context, id int) {
 	defer q.wg.Done()
 
-	logger.Debug("Download worker started", "workerID", id)
+	logger.Debug("Fetch worker started", "workerID", id)
 
 	for {
 		select {
@@ -219,7 +219,7 @@ func (q *TransferQueue) downloadWorker(_ context.Context, id int) {
 			q.processRequest(req)
 		case <-q.stopCh:
 			q.drainDownloads()
-			logger.Debug("Download worker stopped", "workerID", id)
+			logger.Debug("Fetch worker stopped", "workerID", id)
 			return
 		}
 	}
@@ -229,7 +229,7 @@ func (q *TransferQueue) downloadWorker(_ context.Context, id int) {
 func (q *TransferQueue) uploadWorker(_ context.Context, id int) {
 	defer q.wg.Done()
 
-	logger.Debug("Upload worker started", "workerID", id)
+	logger.Debug("Sync worker started", "workerID", id)
 
 	for {
 		select {
@@ -237,7 +237,7 @@ func (q *TransferQueue) uploadWorker(_ context.Context, id int) {
 			q.processRequest(req)
 		case <-q.stopCh:
 			q.drainUploads()
-			logger.Debug("Upload worker stopped", "workerID", id)
+			logger.Debug("Sync worker stopped", "workerID", id)
 			return
 		}
 	}

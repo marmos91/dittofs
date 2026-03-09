@@ -20,12 +20,12 @@ import (
 //   - Rebuilds the in-memory files map (payloadID → fileSize) from disk
 //   - Deletes orphan .blk files that have no FileBlock metadata
 //   - Fixes stale CachePaths (e.g., cache directory was moved)
-//   - Reverts interrupted uploads (Uploading → Sealed) for retry
+//   - Reverts interrupted syncs (Syncing → Local) for retry
 func (bc *BlockCache) Recover(ctx context.Context) error {
 	logger.Info("cache: starting recovery", "dir", bc.baseDir)
 
 	var totalSize int64
-	var filesFound, orphansDeleted, uploadsReverted int
+	var filesFound, orphansDeleted, syncsReverted int
 
 	err := filepath.WalkDir(bc.baseDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".blk") {
@@ -71,17 +71,17 @@ func (bc *BlockCache) Recover(ctx context.Context) error {
 			needsUpdate = true
 		}
 
-		// Blocks with a BlockStoreKey but still Dirty → already uploaded
+		// Blocks with a BlockStoreKey but still Dirty → already synced to remote
 		if fb.BlockStoreKey != "" && fb.State == metadata.BlockStateDirty {
-			fb.State = metadata.BlockStateUploaded
+			fb.State = metadata.BlockStateRemote
 			needsUpdate = true
 		}
 
-		// Revert interrupted uploads so they get retried
-		if fb.State == metadata.BlockStateUploading {
-			fb.State = metadata.BlockStateSealed
+		// Revert interrupted syncs so they get retried
+		if fb.State == metadata.BlockStateSyncing {
+			fb.State = metadata.BlockStateLocal
 			needsUpdate = true
-			uploadsReverted++
+			syncsReverted++
 		}
 
 		if needsUpdate {
@@ -114,7 +114,7 @@ func (bc *BlockCache) Recover(ctx context.Context) error {
 	logger.Info("cache: recovery complete",
 		"filesFound", filesFound,
 		"orphansDeleted", orphansDeleted,
-		"uploadsReverted", uploadsReverted,
+		"syncsReverted", syncsReverted,
 		"totalSize", totalSize)
 
 	return nil

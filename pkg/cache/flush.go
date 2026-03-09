@@ -2,12 +2,11 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
-
-	"errors"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -15,15 +14,15 @@ import (
 
 // Flush writes all dirty in-memory blocks for a file to disk as .blk files.
 // Called on NFS COMMIT to ensure data reaches stable storage before responding
-// to the client. Each flushed block transitions to BlockStateSealed, meaning
-// it is on disk and ready for the offloader to upload to S3.
+// to the client. Each flushed block transitions to BlockStateLocal, meaning
+// it is on disk and ready for the offloader to sync to remote.
 //
 // Returns the list of blocks that were flushed, so GetDirtyBlocks can use them
-// directly without a BadgerDB round-trip (SyncFileBlocksForFile + ListPendingUpload).
+// directly without a BadgerDB round-trip (SyncFileBlocksForFile + ListLocalBlocks).
 //
 // For FS backends (directWritePath set), fsync guarantees durability.
 // For S3 backends (skipFsync set), fsync is skipped — data durability comes
-// from S3 upload, not local disk. The cache is just a staging buffer.
+// from remote sync, not local disk. The cache is just a staging buffer.
 func (bc *BlockCache) Flush(ctx context.Context, payloadID string) ([]FlushedBlock, error) {
 	if bc.isClosed() {
 		return nil, ErrCacheClosed
@@ -80,7 +79,7 @@ func (bc *BlockCache) Flush(ctx context.Context, payloadID string) ([]FlushedBlo
 }
 
 // flushBlock writes a single memBlock to disk as a .blk file and releases the
-// 8MB memory buffer. The block transitions from Dirty -> Sealed in the FileBlockStore.
+// 8MB memory buffer. The block transitions from Dirty -> Local in the FileBlockStore.
 //
 // This does NOT call fsync -- the write is buffered in the OS page cache for
 // maximum throughput. fsync is deferred to Flush() (NFS COMMIT) which guarantees
@@ -162,11 +161,11 @@ func (bc *BlockCache) flushBlock(ctx context.Context, payloadID string, blockIdx
 	fb.CachePath = path
 	fb.DataSize = dataSize
 	if isDirect {
-		// Direct write: data is already in payload store, mark Uploaded.
-		fb.State = metadata.BlockStateUploaded
+		// Direct write: data is already in payload store, mark Remote.
+		fb.State = metadata.BlockStateRemote
 		fb.BlockStoreKey = FormatStoreKey(payloadID, blockIdx)
 	} else {
-		fb.State = metadata.BlockStateSealed
+		fb.State = metadata.BlockStateLocal
 	}
 	fb.LastAccess = time.Now()
 	bc.queueFileBlockUpdate(fb)
