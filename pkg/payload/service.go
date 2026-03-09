@@ -4,56 +4,21 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/cache"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/payload/offloader"
-
-	payloadio "github.com/marmos91/dittofs/pkg/payload/io"
 )
 
-func init() {
-	// Wire cache sentinel errors into the io sub-package so it can detect
-	// cache-miss and cache-full conditions without importing the cache package.
-	payloadio.CacheFileNotFoundError = cache.ErrFileNotInCache
-	payloadio.CacheFullError = cache.ErrCacheFull
-}
-
-// PayloadService is the persistence layer for file payload (content) data.
-//
-// It composes the I/O sub-service (read/write operations coordinated between
-// cache and offloader) with orchestration operations (flush, stats, health).
-//
-// Architecture:
-//
-//	PayloadService
-//	     ├── io.ServiceImpl: Read/write operations (cache + offloader coordination)
-//	     ├── Cache: In-memory buffer with mmap backing
-//	     └── Offloader: Background upload to block store (S3, filesystem)
-//
-// Key responsibilities:
-//   - Read/write file content using the Chunk/Block model (via io.ServiceImpl)
-//   - Coordinate cache and block store for durability
-//   - Handle flush, stats, and health check operations
-//
-// Usage:
-//
-//	svc := payload.New(cache, offloader)
-//	err := svc.WriteAt(ctx, payloadID, data, offset)
-//	n, err := svc.ReadAt(ctx, payloadID, buf, offset)
-//	err := svc.Flush(ctx, payloadID)  // NFS COMMIT / SMB CLOSE
+// PayloadService coordinates read/write I/O between cache and offloader,
+// plus flush, stats, and health operations.
 type PayloadService struct {
-	*payloadio.ServiceImpl // Embedded I/O sub-service for read/write operations
-
-	cache     *cache.Cache
+	cache     *cache.BlockCache
 	offloader *offloader.Offloader
 }
 
-// New creates a new PayloadService with the required cache and offloader.
-//
-// Both parameters are required:
-//   - cache: In-memory buffer for reads/writes
-//   - offloader: Handles persistence to block store
-func New(c *cache.Cache, tm *offloader.Offloader) (*PayloadService, error) {
+// New creates a new PayloadService. Both cache and offloader are required.
+func New(c *cache.BlockCache, tm *offloader.Offloader) (*PayloadService, error) {
 	if c == nil {
 		return nil, fmt.Errorf("cache is required")
 	}
@@ -61,35 +26,168 @@ func New(c *cache.Cache, tm *offloader.Offloader) (*PayloadService, error) {
 		return nil, fmt.Errorf("offloader is required")
 	}
 
-	// Create the I/O sub-service with cache and offloader satisfying the local interfaces.
-	// *cache.Cache satisfies CacheReader, CacheWriter, CacheStateManager, and BackpressureWaiter.
-	// *offloader.Offloader satisfies BlockDownloader and BlockUploader.
-	ioSvc := payloadio.New(c, c, c, tm, tm, c)
-
 	return &PayloadService{
-		ServiceImpl: ioSvc,
-		cache:       c,
-		offloader:   tm,
+		cache:     c,
+		offloader: tm,
 	}, nil
 }
 
-// ============================================================================
-// Flush Operations
-// ============================================================================
+// ReadAt reads data at the specified offset.
+// Data is read from cache first, falling back to block store on cache miss.
+func (s *PayloadService) ReadAt(ctx context.Context, id metadata.PayloadID, data []byte, offset uint64) (int, error) {
+	return s.readAtInternal(ctx, id, "", data, offset)
+}
 
-// Flush enqueues remaining dirty data for background upload and returns immediately.
-//
-// Used by both NFS COMMIT and SMB CLOSE:
-//   - Enqueues remaining data for background block store upload
-//   - Returns immediately (non-blocking)
-//   - Data is safe in mmap cache (crash-safe via OS page cache)
-//
-// Returns FlushResult indicating the operation status.
-func (s *PayloadService) Flush(ctx context.Context, id metadata.PayloadID) (*FlushResult, error) {
+// ReadAtWithCOWSource reads data using a COW source for lazy copy.
+// If data is not found in the primary payloadID, it falls back to cowSource.
+func (s *PayloadService) ReadAtWithCOWSource(ctx context.Context, id metadata.PayloadID, cowSource metadata.PayloadID, data []byte, offset uint64) (int, error) {
+	return s.readAtInternal(ctx, id, cowSource, data, offset)
+}
+
+// readAtInternal reads from primary payloadID, falling back to cowSource on miss.
+func (s *PayloadService) readAtInternal(ctx context.Context, id metadata.PayloadID, cowSource metadata.PayloadID, data []byte, offset uint64) (int, error) {
+	if len(data) == 0 {
+		return 0, nil
+	}
+
 	payloadID := string(id)
+	hasCOWSource := cowSource != ""
 
-	// Delegate to Offloader
-	result, err := s.offloader.Flush(ctx, payloadID)
+	// Try primary cache first
+	found, err := s.cache.ReadAt(ctx, payloadID, data, offset)
+	if err != nil {
+		return 0, fmt.Errorf("cache read failed: %w", err)
+	}
+	if found {
+		return len(data), nil
+	}
+
+	if hasCOWSource {
+		if err := s.readFromCOWSource(ctx, payloadID, string(cowSource), data, offset); err != nil {
+			return 0, err
+		}
+	} else {
+		if err := s.ensureAndReadFromCache(ctx, payloadID, data, offset); err != nil {
+			return 0, err
+		}
+	}
+
+	return len(data), nil
+}
+
+// readFromCOWSource reads from the COW source and copies data to primary cache.
+func (s *PayloadService) readFromCOWSource(ctx context.Context, payloadID, sourcePayloadID string, dest []byte, offset uint64) error {
+	sourceFound, sourceErr := s.cache.ReadAt(ctx, sourcePayloadID, dest, offset)
+	if sourceErr != nil {
+		return fmt.Errorf("COW source read failed: %w", sourceErr)
+	}
+
+	if !sourceFound {
+		err := s.offloader.EnsureAvailable(ctx, sourcePayloadID, offset, uint32(len(dest)))
+		if err != nil {
+			return fmt.Errorf("ensure available for COW source failed: %w", err)
+		}
+
+		sourceFound, sourceErr = s.cache.ReadAt(ctx, sourcePayloadID, dest, offset)
+		if sourceErr != nil {
+			return fmt.Errorf("COW source read after download failed: %w", sourceErr)
+		}
+		if !sourceFound {
+			clear(dest)
+			logger.Debug("Sparse COW block: returning zeros",
+				"payloadID", sourcePayloadID)
+		}
+	}
+
+	// Copy to primary cache for future reads (non-fatal if fails)
+	if err := s.cache.WriteAt(ctx, payloadID, dest, offset); err != nil {
+		logger.Debug("COW cache write failed (non-fatal)", "payloadID", payloadID, "error", err)
+	}
+
+	return nil
+}
+
+// ensureAndReadFromCache downloads blocks from the store if needed and reads from cache.
+func (s *PayloadService) ensureAndReadFromCache(ctx context.Context, payloadID string, dest []byte, offset uint64) error {
+	length := uint32(len(dest))
+
+	// Fast path: direct-serve copies S3 data directly to dest, skipping a second ReadAt.
+	filled, err := s.offloader.EnsureAvailableAndRead(ctx, payloadID, offset, length, dest)
+	if err != nil {
+		return fmt.Errorf("direct download failed: %w", err)
+	}
+	if filled {
+		return nil
+	}
+
+	found, err := s.cache.ReadAt(ctx, payloadID, dest, offset)
+	if err != nil {
+		return fmt.Errorf("read after download failed: %w", err)
+	}
+	if !found {
+		// Sparse block: cache did not store the data. Explicitly zero dest
+		// since it may be a sub-slice of the caller's buffer with stale data.
+		clear(dest)
+		logger.Debug("Sparse block: cache miss after download, returning zeros",
+			"payloadID", payloadID)
+	}
+
+	return nil
+}
+
+// WriteAt writes data at the specified offset.
+// Writes go directly to cache. The periodic uploader handles background upload.
+func (s *PayloadService) WriteAt(ctx context.Context, id metadata.PayloadID, data []byte, offset uint64) error {
+	if len(data) == 0 {
+		return nil
+	}
+
+	if err := s.cache.WriteAt(ctx, string(id), data, offset); err != nil {
+		return fmt.Errorf("cache write failed: %w", err)
+	}
+
+	return nil
+}
+
+// Truncate truncates payload to the specified size in both cache and block store.
+func (s *PayloadService) Truncate(ctx context.Context, id metadata.PayloadID, newSize uint64) error {
+	payloadID := string(id)
+	if err := s.cache.Truncate(ctx, payloadID, newSize); err != nil {
+		return fmt.Errorf("cache truncate failed: %w", err)
+	}
+	return s.offloader.Truncate(ctx, payloadID, newSize)
+}
+
+// Delete removes payload from both cache and block store.
+func (s *PayloadService) Delete(ctx context.Context, id metadata.PayloadID) error {
+	payloadID := string(id)
+	if err := s.cache.Remove(ctx, payloadID); err != nil {
+		return fmt.Errorf("cache remove failed: %w", err)
+	}
+	return s.offloader.Delete(ctx, payloadID)
+}
+
+// GetSize returns the size of payload, checking cache first then block store.
+func (s *PayloadService) GetSize(ctx context.Context, id metadata.PayloadID) (uint64, error) {
+	payloadID := string(id)
+	if size, found := s.cache.GetFileSize(ctx, payloadID); found {
+		return size, nil
+	}
+	return s.offloader.GetFileSize(ctx, payloadID)
+}
+
+// Exists checks if payload exists, checking cache first then block store.
+func (s *PayloadService) Exists(ctx context.Context, id metadata.PayloadID) (bool, error) {
+	payloadID := string(id)
+	if _, found := s.cache.GetFileSize(ctx, payloadID); found {
+		return true, nil
+	}
+	return s.offloader.Exists(ctx, payloadID)
+}
+
+// Flush enqueues remaining dirty data for background upload (non-blocking).
+func (s *PayloadService) Flush(ctx context.Context, id metadata.PayloadID) (*FlushResult, error) {
+	result, err := s.offloader.Flush(ctx, string(id))
 	if err != nil {
 		return nil, fmt.Errorf("flush failed: %w", err)
 	}
@@ -108,20 +206,15 @@ func (s *PayloadService) DrainAllUploads(ctx context.Context) error {
 // ============================================================================
 
 // GetStorageStats returns storage statistics.
-//
-// UsedSize reflects data currently held in cache (DirtyBytes + UploadedBytes).
-// Blocks that have been evicted from the cache are not counted, so UsedSize
-// may underreport total stored data under sustained cache pressure.
 func (s *PayloadService) GetStorageStats(_ context.Context) (*StorageStats, error) {
-	stats := s.cache.Stats()
+	files := s.cache.ListFiles()
 	return &StorageStats{
-		UsedSize:     stats.DirtyBytes + stats.UploadedBytes,
-		ContentCount: uint64(stats.FileCount),
+		UsedSize:     0, // TODO: Implement proper stats tracking
+		ContentCount: uint64(len(files)),
 	}, nil
 }
 
-// HealthCheck performs health check on cache and offloader.
+// HealthCheck verifies the block store is accessible.
 func (s *PayloadService) HealthCheck(ctx context.Context) error {
-	// Check offloader (which checks block store)
 	return s.offloader.HealthCheck(ctx)
 }

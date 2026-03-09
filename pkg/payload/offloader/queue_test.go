@@ -13,7 +13,7 @@ func TestTransferQueue_Enqueue(t *testing.T) {
 
 	// Enqueue requests
 	for i := 0; i < 5; i++ {
-		req := NewBlockUploadRequest("test-content", 0, uint32(i))
+		req := NewBlockUploadRequest("test-content", uint64(i))
 		if !q.Enqueue(req) {
 			t.Errorf("Enqueue(%d) returned false", i)
 		}
@@ -32,9 +32,9 @@ func TestTransferQueue_QueueFull(t *testing.T) {
 	q := NewTransferQueue(nil, cfg)
 	// Don't start workers - queue will fill up
 
-	req1 := NewBlockUploadRequest("c1", 0, 0)
-	req2 := NewBlockUploadRequest("c2", 0, 0)
-	req3 := NewBlockUploadRequest("c3", 0, 0)
+	req1 := NewBlockUploadRequest("c1", 0)
+	req2 := NewBlockUploadRequest("c2", 0)
+	req3 := NewBlockUploadRequest("c3", 0)
 
 	if !q.Enqueue(req1) {
 		t.Error("Enqueue(1) should succeed")
@@ -79,6 +79,9 @@ func TestTransferQueueConfig_Defaults(t *testing.T) {
 	if cfg.Workers != 4 {
 		t.Errorf("default Workers = %d, want 4", cfg.Workers)
 	}
+	if cfg.DownloadWorkers != DefaultParallelDownloads {
+		t.Errorf("default DownloadWorkers = %d, want %d", cfg.DownloadWorkers, DefaultParallelDownloads)
+	}
 }
 
 func TestNewTransferQueue_InvalidConfig(t *testing.T) {
@@ -100,8 +103,11 @@ func TestNewTransferQueue_InvalidConfig(t *testing.T) {
 	if cap(q.prefetch) != 1000 {
 		t.Errorf("prefetch queue capacity = %d, want 1000", cap(q.prefetch))
 	}
-	if q.workers != 4 {
-		t.Errorf("workers = %d, want 4", q.workers)
+	if q.uploadWorkers != 4 {
+		t.Errorf("uploadWorkers = %d, want 4", q.uploadWorkers)
+	}
+	if q.downloadWorkers != DefaultParallelDownloads {
+		t.Errorf("downloadWorkers = %d, want %d", q.downloadWorkers, DefaultParallelDownloads)
 	}
 }
 
@@ -115,8 +121,8 @@ func TestTransferQueue_Stats(t *testing.T) {
 	}
 
 	// Enqueue some requests
-	q.Enqueue(NewBlockUploadRequest("c1", 0, 0))
-	q.Enqueue(NewBlockUploadRequest("c2", 0, 1))
+	q.Enqueue(NewBlockUploadRequest("c1", 0))
+	q.Enqueue(NewBlockUploadRequest("c2", 1))
 
 	pending, _, _ = q.Stats()
 	if pending != 2 {
@@ -145,17 +151,17 @@ func TestTransferQueue_EnqueueByType(t *testing.T) {
 	q := NewTransferQueue(nil, cfg)
 
 	// Test download enqueue
-	if !q.EnqueueDownload(NewDownloadRequest("payload", 0, 0, nil)) {
+	if !q.EnqueueDownload(NewDownloadRequest("payload", 0, nil)) {
 		t.Error("EnqueueDownload should succeed")
 	}
 
 	// Test upload enqueue
-	if !q.EnqueueUpload(NewBlockUploadRequest("payload", 0, 0)) {
+	if !q.EnqueueUpload(NewBlockUploadRequest("payload", 0)) {
 		t.Error("EnqueueUpload should succeed")
 	}
 
 	// Test prefetch enqueue
-	if !q.EnqueuePrefetch(NewPrefetchRequest("payload", 0, 1)) {
+	if !q.EnqueuePrefetch(NewPrefetchRequest("payload", 1)) {
 		t.Error("EnqueuePrefetch should succeed")
 	}
 
@@ -186,13 +192,13 @@ func TestTransferQueue_PrefetchDropWhenFull(t *testing.T) {
 	// Don't start workers - queue will fill up
 
 	// First prefetch should succeed
-	if !q.EnqueuePrefetch(NewPrefetchRequest("payload", 0, 0)) {
+	if !q.EnqueuePrefetch(NewPrefetchRequest("payload", 0)) {
 		t.Error("First prefetch should succeed")
 	}
 
 	// Second prefetch should be dropped silently (queue full)
 	// This should NOT return false but simply drop - check pending count
-	q.EnqueuePrefetch(NewPrefetchRequest("payload", 0, 1))
+	q.EnqueuePrefetch(NewPrefetchRequest("payload", 1))
 
 	// Only 1 should be pending (second was dropped)
 	_, _, prefetch := q.PendingByType()

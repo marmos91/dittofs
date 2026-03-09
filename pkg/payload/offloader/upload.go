@@ -4,397 +4,136 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"sync"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/cache"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// OnWriteComplete is called after a write completes in the cache.
-// It checks if any 4MB blocks are ready for upload and starts async uploads.
+// maxUploadBatch limits how many blocks are uploaded per periodic tick.
+// Each block read from disk is ~8MB. Sequential processing ensures only
+// 1 block (~8MB) is in heap at a time.
+const maxUploadBatch = 4
+
+// uploadPendingBlocks scans FileBlockStore for local blocks not yet synced
+// to remote, and uploads them sequentially. Called by the periodic syncer.
 //
-// Parameters:
-//   - payloadID: The content ID (used for cache key and block key generation)
-//   - chunkIdx: The chunk index that was written to
-//   - offset: The offset within the chunk
-//   - length: The length of data written
-func (m *Offloader) OnWriteComplete(ctx context.Context, payloadID string, chunkIdx uint32, offset, length uint32) {
-	if !m.canProcess(ctx) {
+// Memory safety: ListLocalBlocks is called with limit=maxUploadBatch to
+// avoid scanning and deserializing thousands of FileBlock entries from BadgerDB.
+// The periodic syncer guards against overlapping ticks, so at most one
+// instance of this function runs at a time.
+func (m *Offloader) uploadPendingBlocks(ctx context.Context) {
+	// Direct-write mode: all blocks go straight to Remote in the payload store.
+	// No local blocks exist, so skip the expensive ListLocalBlocks scan.
+	if m.cache.IsDirectWrite() {
 		return
 	}
 
-	startBlock, endBlock := blockRange(offset, length)
-	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
-		m.tryEagerUpload(ctx, payloadID, chunkIdx, blockIdx)
-	}
-}
-
-// eagerUploadCooldown is the minimum time after a block is dirtied before it is
-// eligible for eager upload. This lets random writes coalesce within the same block
-// before starting an S3 upload that would be immediately invalidated.
-const eagerUploadCooldown = 500 * time.Millisecond
-
-// tryEagerUpload checks if a block is complete and starts an async upload if ready.
-// Only complete 4MB blocks are uploaded; partial blocks are flushed during Flush().
-//
-// PERFORMANCE: This function is called in the NFS WRITE path. It must return quickly
-// to avoid blocking writes. Hash computation and dedup checks are done asynchronously
-// in the upload goroutine to minimize write latency.
-func (m *Offloader) tryEagerUpload(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) {
-	blockStart := blockIdx * BlockSize
-	blockEnd := blockStart + BlockSize
-
-	// Skip blocks that extend beyond chunk boundary
-	if blockEnd > cache.ChunkSize {
-		return
-	}
-
-	// Check if fully covered (no zero-filled gaps) - fast bitmap check
-	covered, err := m.cache.IsRangeCovered(ctx, payloadID, chunkIdx, blockStart, BlockSize)
-	if err != nil || !covered {
-		return
-	}
-
-	// Coalescing delay: skip blocks dirtied less than 500ms ago.
-	// Random writes re-dirty blocks faster than S3 can drain them.
-	// Letting writes coalesce avoids wasted uploads that are immediately
-	// invalidated by new writes to the same block.
-	lastDirtied := m.cache.GetBlockLastDirtied(ctx, payloadID, chunkIdx, blockIdx)
-	if !lastDirtied.IsZero() && time.Since(lastDirtied) < eagerUploadCooldown {
-		return
-	}
-
-	logger.Debug("Eager upload triggered",
-		"payloadID", payloadID,
-		"chunkIdx", chunkIdx,
-		"blockIdx", blockIdx)
-
-	// Read block data from cache into pooled buffer
-	dataPtr := blockPool.Get().(*[]byte)
-	data := *dataPtr
-	found, err := m.cache.ReadAt(ctx, payloadID, chunkIdx, blockStart, BlockSize, data)
-	if err != nil || !found {
-		blockPool.Put(dataPtr)
-		return
-	}
-
-	// Start async upload (takes ownership of data buffer pointer)
-	// Hash computation and dedup checks happen in the background goroutine
-	// to avoid blocking the NFS WRITE path
-	m.startBlockUpload(ctx, payloadID, chunkIdx, blockIdx, dataPtr)
-}
-
-// startBlockUpload uploads a block asynchronously with bounded parallelism.
-//
-// The dataPtr buffer pointer is owned by this function and will be returned to blockPool
-// after the upload completes or fails.
-//
-// Upload goroutines yield to downloads (download priority) before performing I/O.
-//
-// PERFORMANCE: Hash computation and dedup checks happen inside the goroutine
-// to avoid blocking the NFS WRITE path. This moves ~15ms of SHA-256 computation
-// off the critical path for each 4MB block.
-//
-// If ObjectStore is configured, content-addressed deduplication is performed:
-// 1. Compute SHA-256 hash of block data (async)
-// 2. Check if block with same hash already exists
-// 3. If exists: increment RefCount, skip upload
-// 4. If not: upload and register block
-func (m *Offloader) startBlockUpload(ctx context.Context,
-	payloadID string, chunkIdx, blockIdx uint32, dataPtr *[]byte) {
-	state := m.getOrCreateUploadState(payloadID)
-
-	// Check if already uploaded (deduplication)
-	key := blockKey{chunkIdx: chunkIdx, blockIdx: blockIdx}
-	if !state.markInProgress(key) {
-		blockPool.Put(dataPtr)
-		return
-	}
-
-	// Try to acquire semaphore slot (non-blocking).
-	// If all slots are taken, skip eager upload -- block will be uploaded during Flush.
-	select {
-	case m.uploadSem <- struct{}{}:
-	default:
-		state.revertUploaded(key)
-		blockPool.Put(dataPtr)
-		return
-	}
-	state.inFlight.Add(1)
-
-	data := *dataPtr
-	go func() {
-		defer func() {
-			blockPool.Put(dataPtr) // Return buffer to pool
-			<-m.uploadSem          // Release semaphore slot
-			state.inFlight.Done()
-		}()
-
-		// Yield to any pending downloads (download priority)
-		m.waitForDownloads()
-
-		blockKeyStr := FormatBlockKey(payloadID, chunkIdx, blockIdx)
-		startTime := time.Now()
-
-		// Compute hash for deduplication (done in background to not block writes)
-		hash := sha256.Sum256(data)
-
-		// Content-addressed deduplication: check if block already exists
-		if m.objectStore != nil {
-			existing, err := m.objectStore.FindBlockByHash(ctx, hash)
-			if err == nil && existing != nil && existing.IsUploaded() {
-				// Block already exists and is uploaded - increment RefCount and skip upload
-				_, _ = m.objectStore.IncrementBlockRefCount(ctx, hash)
-				gen, ok := m.cache.MarkBlockReadyForUpload(ctx, payloadID, chunkIdx, blockIdx, hash, nil)
-				if ok {
-					m.cache.MarkBlockUploaded(ctx, payloadID, chunkIdx, blockIdx, gen)
-				}
-
-				logger.Debug("Dedup: block already exists, skipping upload",
-					"payloadID", payloadID,
-					"chunkIdx", chunkIdx,
-					"blockIdx", blockIdx,
-					"hash", hashB64(hash))
-				return
-			}
-		}
-
-		// Mark block as ReadyForUpload and capture generation for staleness detection
-		gen, ok := m.cache.MarkBlockReadyForUpload(ctx, payloadID, chunkIdx, blockIdx, hash, nil)
-		if !ok {
-			// Block was evicted or state changed since we read it
-			logger.Debug("Eager upload: block no longer pending, skipping",
-				"payloadID", payloadID,
-				"chunkIdx", chunkIdx,
-				"blockIdx", blockIdx)
-			return
-		}
-
-		logger.Debug("Eager upload starting",
-			"payloadID", payloadID,
-			"blockKey", blockKeyStr,
-			"activeUploads", len(m.uploadSem),
-			"maxUploads", cap(m.uploadSem))
-
-		if err := m.blockStore.WriteBlock(ctx, blockKeyStr, data); err != nil {
-			logger.Error("Eager upload failed",
-				"payloadID", payloadID,
-				"blockKey", blockKeyStr,
-				"duration", time.Since(startTime),
-				"error", err)
-
-			state.errorsMu.Lock()
-			state.errors = append(state.errors, fmt.Errorf("upload block %s: %w", blockKeyStr, err))
-			state.errorsMu.Unlock()
-
-			// Mark as not uploaded so it can be retried
-			state.revertUploaded(key)
-			return
-		}
-
-		// Handle successful upload (ObjectStore, hash tracking, cache marking)
-		m.handleUploadSuccess(ctx, payloadID, chunkIdx, blockIdx, hash, uint32(len(data)), gen)
-
-		logger.Debug("Eager upload complete",
-			"payloadID", payloadID,
-			"blockKey", blockKeyStr,
-			"hash", hashB64(hash),
-			"duration", time.Since(startTime),
-			"size", len(data))
-	}()
-}
-
-// uploadRemainingBlocks uploads dirty blocks to the block store in parallel.
-// This handles blocks that weren't eagerly uploaded (partial blocks or when semaphore was full).
-func (m *Offloader) uploadRemainingBlocks(ctx context.Context, payloadID string) error {
-	// Get all pending blocks that need uploading
-	pending, err := m.cache.GetDirtyBlocks(ctx, payloadID)
+	pending, err := m.fileBlockStore.ListLocalBlocks(ctx, m.config.UploadDelay, maxUploadBatch)
 	if err != nil {
-		if err == cache.ErrFileNotInCache {
-			return nil // No data to flush
-		}
-		return err
+		logger.Warn("Periodic sync: failed to list local blocks", "error", err)
+		return
 	}
 
 	if len(pending) == 0 {
-		return nil
+		return
 	}
 
-	// Get upload state for deduplication
-	state := m.getUploadState(payloadID)
+	logger.Info("Periodic sync: found local blocks", "count", len(pending))
 
-	// Filter out blocks already uploaded by eager upload.
-	var blocksToUpload []cache.PendingBlock
-	for _, blk := range pending {
-		if state != nil && state.isUploaded(blockKey{chunkIdx: blk.ChunkIndex, blockIdx: blk.BlockIndex}) {
-			// Mark as uploaded in cache since eager upload succeeded.
-			m.cache.MarkBlockUploaded(ctx, payloadID, blk.ChunkIndex, blk.BlockIndex, blk.Generation)
+	// Upload sequentially to minimize memory: only 1 block (~8MB) in memory at a time.
+	for _, fb := range pending {
+		if fb.CachePath == "" {
 			continue
 		}
-		blocksToUpload = append(blocksToUpload, blk)
+		m.uploadFileBlock(ctx, fb)
+	}
+}
+
+// uploadFileBlock reads a local block from cache, dedup-checks, and syncs to remote store.
+func (m *Offloader) uploadFileBlock(ctx context.Context, fb *metadata.FileBlock) {
+	if fb.State != metadata.BlockStateLocal {
+		return
 	}
 
-	if len(blocksToUpload) == 0 {
-		logger.Info("Flush: all blocks already uploaded",
-			"payloadID", payloadID,
-			"blocks", len(pending))
-		return nil
+	fb.State = metadata.BlockStateSyncing
+	if err := m.fileBlockStore.PutFileBlock(ctx, fb); err != nil {
+		return
 	}
 
-	logger.Info("Flush: uploading remaining blocks",
-		"payloadID", payloadID,
-		"blocksToUpload", len(blocksToUpload),
-		"activeUploads", len(m.uploadSem),
-		"maxUploads", cap(m.uploadSem))
+	startTime := time.Now()
 
-	// Upload all blocks in parallel using semaphore
-	var wg sync.WaitGroup
-
-	for _, blk := range blocksToUpload {
-		chunkIdx := blk.ChunkIndex
-		blockIdx := blk.BlockIndex
-
-		// Use existing hash from ReadyForUpload state, or compute it
-		hash := blk.Hash
-		if hash == [32]byte{} {
-			blockData, dataSize, err := m.cache.GetBlockData(ctx, payloadID, chunkIdx, blockIdx)
-			if err != nil {
-				continue
-			}
-			// Copy data before hashing to avoid race with concurrent writers
-			// (GetBlockData may return a reference to the cache's internal buffer)
-			dataCopy := make([]byte, dataSize)
-			copy(dataCopy, blockData[:dataSize])
-			hash = sha256.Sum256(dataCopy)
-		}
-
-		// Content-addressed deduplication: check if block already exists
-		if m.objectStore != nil {
-			existing, err := m.objectStore.FindBlockByHash(ctx, hash)
-			if err == nil && existing != nil && existing.IsUploaded() {
-				// Block already exists - increment RefCount and skip upload.
-				// Use generation from the pending block snapshot.
-				_, _ = m.objectStore.IncrementBlockRefCount(ctx, hash)
-				m.cache.MarkBlockUploaded(ctx, payloadID, chunkIdx, blockIdx, blk.Generation)
-
-				logger.Debug("Flush dedup: block already exists, skipping upload",
-					"payloadID", payloadID,
-					"chunkIdx", chunkIdx,
-					"blockIdx", blockIdx,
-					"hash", hashB64(hash))
-				continue
-			}
-		}
-
-		// Mark the block as Uploading to prevent eviction during upload.
-		// Unlike DetachBlockForUpload, we keep the data in cache so concurrent
-		// reads can still access it. We copy the data for the upload goroutine.
-		//
-		// DetachBlockForUpload was previously used here for zero-copy performance,
-		// but it caused data corruption: when Flush runs during active writes
-		// (e.g., COMMIT during a 100MB write), detaching partial blocks removes
-		// data from cache. Subsequent writes re-allocate the block buffer with
-		// a fresh coverage bitmap, losing the previously-written data. Reads then
-		// return zeros for the lost region instead of the actual data.
-		uploadGen, ok := m.cache.MarkBlockUploading(ctx, payloadID, chunkIdx, blockIdx)
-		if !ok {
-			logger.Debug("Flush: block already being uploaded or not found, skipping",
-				"payloadID", payloadID,
-				"chunkIdx", chunkIdx,
-				"blockIdx", blockIdx)
-			continue
-		}
-
-		// Copy block data for upload (data stays in cache for concurrent reads)
-		blockData, dataSize, err := m.cache.GetBlockData(ctx, payloadID, chunkIdx, blockIdx)
-		if err != nil {
-			// Revert to Pending if we can't get the data
-			m.cache.MarkBlockPending(ctx, payloadID, chunkIdx, blockIdx)
-			continue
-		}
-		uploadData := make([]byte, dataSize)
-		copy(uploadData, blockData[:dataSize])
-
-		// Also mark in state.uploaded to prevent future flushes from trying
-		if state != nil {
-			state.markUploaded(blockKey{chunkIdx: chunkIdx, blockIdx: blockIdx})
-		}
-
-		wg.Add(1)
-
-		// Acquire semaphore slot (blocking for flush)
-		m.uploadSem <- struct{}{}
-
-		go func(uploadData []byte, dataSize, chunkIdx, blockIdx uint32, hash [32]byte, gen uint64) {
-			defer func() {
-				<-m.uploadSem // Release semaphore slot
-				wg.Done()
-			}()
-
-			blockKeyStr := FormatBlockKey(payloadID, chunkIdx, blockIdx)
-			startTime := time.Now()
-
-			logger.Debug("Flush upload starting",
-				"payloadID", payloadID,
-				"blockKey", blockKeyStr,
-				"size", dataSize,
-				"activeUploads", len(m.uploadSem),
-				"maxUploads", cap(m.uploadSem))
-
-			if err := m.blockStore.WriteBlock(ctx, blockKeyStr, uploadData); err != nil {
-				logger.Error("Flush upload failed",
-					"payloadID", payloadID,
-					"blockKey", blockKeyStr,
-					"duration", time.Since(startTime),
-					"error", err)
-				// Revert block to Pending so it can be retried
-				m.cache.MarkBlockPending(ctx, payloadID, chunkIdx, blockIdx)
-				if state != nil {
-					state.revertUploaded(blockKey{chunkIdx: chunkIdx, blockIdx: blockIdx})
-				}
-				return
-			}
-
-			// Handle successful upload (ObjectStore, hash tracking, cache marking).
-			// Data stays in cache for reads, evictable by LRU when marked Uploaded.
-			// If generation is stale, handleUploadSuccess reverts state.uploaded.
-			m.handleUploadSuccess(ctx, payloadID, chunkIdx, blockIdx, hash, dataSize, gen)
-
-			logger.Info("Flush upload complete",
-				"payloadID", payloadID,
-				"blockKey", blockKeyStr,
-				"hash", hashB64(hash),
-				"duration", time.Since(startTime),
-				"size", dataSize)
-		}(uploadData, dataSize, chunkIdx, blockIdx, hash, uploadGen)
+	data, err := os.ReadFile(fb.CachePath)
+	if err != nil {
+		logger.Warn("Sync: failed to read cache file",
+			"blockID", fb.ID, "cachePath", fb.CachePath, "error", err)
+		// Revert to Local so it can be retried
+		fb.State = metadata.BlockStateLocal
+		_ = m.fileBlockStore.PutFileBlock(ctx, fb)
+		return
 	}
 
-	wg.Wait()
-	return nil
+	hash := sha256.Sum256(data)
+
+	existing, err := m.fileBlockStore.FindFileBlockByHash(ctx, hash)
+	if err == nil && existing != nil && existing.IsRemote() {
+		_ = m.fileBlockStore.IncrementRefCount(ctx, existing.ID)
+		fb.Hash = metadata.ContentHash(hash)
+		fb.DataSize = uint32(len(data))
+		fb.BlockStoreKey = existing.BlockStoreKey
+		fb.State = metadata.BlockStateRemote
+		_ = m.fileBlockStore.PutFileBlock(ctx, fb)
+		logger.Debug("Sync dedup: block already exists", "blockID", fb.ID)
+		return
+	}
+
+	lastSlash := strings.LastIndex(fb.ID, "/")
+	payloadID := fb.ID[:lastSlash]
+	var blockIdx uint64
+	if _, err := fmt.Sscanf(fb.ID[lastSlash+1:], "%d", &blockIdx); err != nil {
+		logger.Warn("Sync: failed to parse block index", "blockID", fb.ID, "error", err)
+		fb.State = metadata.BlockStateLocal
+		_ = m.fileBlockStore.PutFileBlock(ctx, fb)
+		return
+	}
+	storeKey := cache.FormatStoreKey(payloadID, blockIdx)
+
+	if err := m.blockStore.WriteBlock(ctx, storeKey, data); err != nil {
+		logger.Error("Sync: upload to remote failed", "blockID", fb.ID, "error", err)
+		// Revert to Local so it can be retried
+		fb.State = metadata.BlockStateLocal
+		_ = m.fileBlockStore.PutFileBlock(ctx, fb)
+		return
+	}
+
+	fb.Hash = metadata.ContentHash(hash)
+	fb.DataSize = uint32(len(data))
+	fb.BlockStoreKey = storeKey
+	fb.State = metadata.BlockStateRemote
+	_ = m.fileBlockStore.PutFileBlock(ctx, fb)
+
+	logger.Info("Sync complete",
+		"blockID", fb.ID, "size", len(data), "duration", time.Since(startTime))
 }
 
 // uploadBlock uploads a single block from cache to block store.
-// Called by queue workers for block-level upload requests (eager upload).
-func (m *Offloader) uploadBlock(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) error {
+// Called by queue workers for block-level upload requests.
+func (m *Offloader) uploadBlock(ctx context.Context, payloadID string, blockIdx uint64) error {
 	if !m.canProcess(ctx) {
 		return fmt.Errorf("offloader is closed")
 	}
 
-	blockOffset := blockIdx * BlockSize
-	dataPtr := blockPool.Get().(*[]byte)
-	defer blockPool.Put(dataPtr)
-	data := *dataPtr
-
-	found, err := m.cache.ReadAt(ctx, payloadID, chunkIdx, blockOffset, BlockSize, data)
-	if err != nil || !found {
-		return fmt.Errorf("block not in cache: chunk=%d block=%d", chunkIdx, blockIdx)
+	data, _, err := m.cache.GetBlockData(ctx, payloadID, blockIdx)
+	if err != nil {
+		return fmt.Errorf("block not in cache: blockIdx=%d", blockIdx)
 	}
 
-	// Upload to block store
-	blockKeyStr := FormatBlockKey(payloadID, chunkIdx, blockIdx)
-	if err := m.blockStore.WriteBlock(ctx, blockKeyStr, data); err != nil {
-		return fmt.Errorf("upload block %s: %w", blockKeyStr, err)
+	storeKey := cache.FormatStoreKey(payloadID, blockIdx)
+	if err := m.blockStore.WriteBlock(ctx, storeKey, data); err != nil {
+		return fmt.Errorf("upload block %s: %w", storeKey, err)
 	}
 
 	return nil

@@ -20,5 +20,5 @@
 //   - Non-blocking: Most operations return immediately; I/O happens in background
 //
 // The Offloader struct is the main entry point.
-// It is created via New() and requires a Cache, BlockStore, and ObjectStore.
+// It is created via New() and requires a Cache, BlockStore, and FileBlockStore.
 package offloader

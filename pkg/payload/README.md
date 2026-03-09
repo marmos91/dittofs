@@ -339,10 +339,13 @@ type BlockStore interface {
 
 ### Block Key Format
 
-```
-{payloadID}/chunk-{chunkIdx}/block-{blockIdx}
+Block keys use flat addressing where `blockIdx = fileOffset / BlockSize` (integer division,
+`BlockSize` = 8 MiB). Each block maps to a contiguous 8 MiB region of the file.
 
-Example: export/documents/report.pdf/chunk-0/block-5
+```
+{payloadID}/{blockIdx}
+
+Example: export/documents/report.pdf/5
 ```
 
 ### S3 Store

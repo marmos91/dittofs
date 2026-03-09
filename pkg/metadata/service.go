@@ -236,6 +236,30 @@ func (s *MetadataService) GetFile(ctx context.Context, handle FileHandle) (*File
 	return file, nil
 }
 
+// GetFileCached returns file metadata, trying the pending-writes cache first
+// to avoid a BadgerDB read. Used on the COMMIT path where WRITE has already
+// validated and cached the file. Falls back to the full GetFile path if there
+// is no cached entry (e.g., COMMIT without prior WRITE, or cache evicted).
+func (s *MetadataService) GetFileCached(ctx context.Context, handle FileHandle) (*File, error) {
+	if cached := s.pendingWrites.GetCachedFile(handle); cached != nil {
+		// Merge pending state into the cached copy (same logic as GetFile)
+		if pending, ok := s.pendingWrites.GetPending(handle); ok {
+			if pending.MaxSize > cached.Size {
+				cached.Size = pending.MaxSize
+			}
+			if pending.LastMtime.After(cached.Mtime) {
+				cached.Mtime = pending.LastMtime
+				cached.Ctime = pending.LastMtime
+			}
+			if pending.ClearSetuidSetgid {
+				cached.Mode &= ^uint32(0o6000)
+			}
+		}
+		return cached, nil
+	}
+	return s.GetFile(ctx, handle)
+}
+
 // CheckPermissions performs file-level permission checking.
 // Returns granted permissions (subset of requested).
 //

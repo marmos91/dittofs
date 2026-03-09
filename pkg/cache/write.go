@@ -2,391 +2,221 @@ package cache
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/cache/wal"
-	"github.com/marmos91/dittofs/pkg/payload/block"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// WaitForPendingDrain blocks until pendingSize decreases or the deadline expires.
-// Returns true if a drain occurred (pendingSize decreased), false on timeout or context cancellation.
-func (c *Cache) WaitForPendingDrain(ctx context.Context, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
-		deadline = d
+// directDiskWriteThreshold is the minimum write size for eager .blk file creation.
+// Writes at or above this size go directly to disk (bypassing the 8MB memory buffer)
+// even when no .blk file exists yet. This eliminates the first-run penalty where
+// new files must go through the slow buffer-then-flush path.
+//
+// 64KiB is chosen because:
+//   - NFS wsize=1MiB sequential writes (the bottleneck case) are well above this
+//   - 4KiB random writes (which benefit from memory batching) are well below this
+//   - A single 64KiB pwrite to disk is cheap (~0.1ms on NVMe)
+const directDiskWriteThreshold = 64 * 1024
+
+// WriteAt writes data to the cache at the specified file offset.
+//
+// Write path (per block):
+//  1. If the block already has a .blk file on disk and no memBlock in memory,
+//     pwrite() directly to the file (tryDirectDiskWrite — avoids 8MB alloc).
+//  2. Otherwise, copy into the pre-allocated 8MB memBlock buffer.
+//  3. If the memBlock is full (8MB), flush it to disk immediately.
+//  4. If memory budget is exceeded, flush the oldest dirty block (backpressure).
+//
+// No disk I/O for partial block writes that go through the memory path.
+func (bc *BlockCache) WriteAt(ctx context.Context, payloadID string, data []byte, offset uint64) error {
+	if bc.isClosed() {
+		return ErrCacheClosed
 	}
 
-	// Early exit if already expired or cancelled.
-	if ctx.Err() != nil || !time.Now().Before(deadline) {
-		return false
-	}
-
-	done := make(chan struct{})
-
-	// Bridge context cancellation to Cond.Broadcast so Wait unblocks.
-	go func() {
-		select {
-		case <-ctx.Done():
-			c.pendingCond.L.Lock()
-			c.pendingCond.Broadcast()
-			c.pendingCond.L.Unlock()
-		case <-done:
-		}
-	}()
-
-	c.pendingCond.L.Lock()
-
-	// Snapshot pending size so we can detect when it actually decreases.
-	initialPending := c.pendingSize.Load()
-
-	timer := time.AfterFunc(time.Until(deadline), func() {
-		c.pendingCond.L.Lock()
-		c.pendingCond.Broadcast()
-		c.pendingCond.L.Unlock()
-	})
-
-	// Loop to handle spurious wakeups — only exit when pending size decreases
-	// or we hit the deadline / context cancellation.
-	for ctx.Err() == nil && time.Now().Before(deadline) && c.pendingSize.Load() >= initialPending {
-		c.pendingCond.Wait()
-	}
-
-	drained := c.pendingSize.Load() < initialPending
-	c.pendingCond.L.Unlock()
-
-	timer.Stop()
-	close(done)
-
-	return drained && ctx.Err() == nil && time.Now().Before(deadline)
-}
-
-// ============================================================================
-// Write Operations
-// ============================================================================
-
-// writeOptions controls the behavior of writeAtInternal.
-type writeOptions struct {
-	// isDownloaded indicates data is from block store (already persisted).
-	// When true:
-	//   - Skip pending size backpressure check
-	//   - New blocks start as Uploaded (evictable)
-	//   - Skip WAL write (data already safe in block store)
-	//   - Preserve existing block state (don't re-dirty)
-	isDownloaded bool
-}
-
-// WriteAt writes data to the cache at the specified chunk and offset.
-//
-// This is the primary write path for all file data. Data is written directly
-// into 4MB block buffers at the correct position. The coverage bitmap tracks
-// which bytes have been written for sparse file support.
-//
-// Block Buffer Model:
-// Data is written directly to the target position in the block buffer.
-// Overlapping writes simply overwrite previous data (newest-wins semantics).
-//
-// Memory Tracking:
-// The cache tracks actual memory allocation (BlockSize per block buffer), not
-// just bytes written. This ensures accurate backpressure for OOM prevention.
-//
-// Parameters:
-//   - payloadID: Unique identifier for the file content
-//   - chunkIdx: Which 64MB chunk this write belongs to
-//   - data: The bytes to write (copied into cache, safe to modify after call)
-//   - offset: Byte offset within the chunk (0 to ChunkSize-1)
-//
-// Errors:
-//   - ErrInvalidOffset: offset + len(data) exceeds ChunkSize
-//   - ErrCacheClosed: cache has been closed
-//   - ErrCacheFull: cache is full of pending data that cannot be evicted
-//   - context.Canceled/DeadlineExceeded: context was cancelled
-func (c *Cache) WriteAt(ctx context.Context, payloadID string, chunkIdx uint32, data []byte, offset uint32) error {
-	return c.writeAtInternal(ctx, payloadID, chunkIdx, data, offset, writeOptions{isDownloaded: false})
-}
-
-// WriteDownloaded writes data that was downloaded from the block store.
-//
-// Unlike WriteAt(), this method:
-//   - Marks blocks as Uploaded (evictable), not Pending
-//   - Does NOT count against pendingSize (it's not dirty data)
-//   - Does NOT write to WAL (data is already safe in block store)
-//   - CAN evict other uploaded blocks to make room (downloaded data is evictable)
-//
-// This is used by the TransferManager when downloading blocks from S3 on cache miss.
-// Downloaded data is already persisted in the block store, so it can be evicted
-// immediately if cache pressure requires it.
-//
-// Parameters:
-//   - payloadID: Unique identifier for the file content
-//   - chunkIdx: Which 64MB chunk this write belongs to
-//   - data: The bytes to write (copied into cache, safe to modify after call)
-//   - offset: Byte offset within the chunk (0 to ChunkSize-1)
-//
-// Errors:
-//   - ErrInvalidOffset: offset + len(data) exceeds ChunkSize
-//   - ErrCacheClosed: cache has been closed
-//   - ErrCacheFull: cache is completely full even after eviction
-//   - context.Canceled/DeadlineExceeded: context was cancelled
-func (c *Cache) WriteDownloaded(ctx context.Context, payloadID string, chunkIdx uint32, data []byte, offset uint32) error {
-	return c.writeAtInternal(ctx, payloadID, chunkIdx, data, offset, writeOptions{isDownloaded: true})
-}
-
-// writeAtInternal is the shared implementation for WriteAt and WriteDownloaded.
-func (c *Cache) writeAtInternal(ctx context.Context, payloadID string, chunkIdx uint32, data []byte, offset uint32, opts writeOptions) error {
-	if err := c.checkClosed(ctx); err != nil {
-		return err
-	}
-
-	// Fast path: nothing to write
 	if len(data) == 0 {
 		return nil
 	}
 
-	// Validate parameters
-	if offset+uint32(len(data)) > ChunkSize {
-		return ErrInvalidOffset
-	}
+	remaining := data
+	currentOffset := offset
 
-	// Calculate which blocks this write spans
-	startBlock := block.IndexForOffset(offset)
-	endBlock := block.IndexForOffset(offset + uint32(len(data)) - 1)
+	for len(remaining) > 0 {
+		blockIdx := currentOffset / BlockSize
+		blockOffset := uint32(currentOffset % BlockSize)
 
-	entry := c.getFileEntry(payloadID)
-	entry.mu.Lock()
+		spaceInBlock := BlockSize - blockOffset
+		writeLen := min(uint32(len(remaining)), spaceInBlock)
 
-	// Calculate how many NEW blocks will be created (for memory tracking).
-	newMemory := c.countNewBlockMemory(entry, chunkIdx, startBlock, endBlock)
-
-	// Enforce maxSize by evicting LRU uploaded blocks if needed.
-	if c.maxSize > 0 && newMemory > 0 {
-		if c.totalSize.Load()+newMemory > c.maxSize {
-			// Release lock to evict (eviction needs to lock other entries)
-			entry.mu.Unlock()
-			c.evictLRUUntilFits(ctx, newMemory)
-			entry.mu.Lock()
-
-			// Re-check after eviction (someone else might have created the blocks)
-			newMemory = c.countNewBlockMemory(entry, chunkIdx, startBlock, endBlock)
-
-			// Check if we have enough space after eviction.
-			if c.totalSize.Load()+newMemory > c.maxSize {
-				entry.mu.Unlock()
-				return ErrCacheFull
+		if writeLen < BlockSize {
+			if bc.tryDirectDiskWrite(ctx, payloadID, blockIdx, blockOffset, remaining[:writeLen]) {
+				remaining = remaining[writeLen:]
+				currentOffset += uint64(writeLen)
+				continue
 			}
 		}
-	}
 
-	// Backpressure on pending data (applies even when maxSize=0).
-	// This prevents OOM when uploads can't keep up with writes.
-	// Skip for downloaded data - it's already in block store, not pending.
-	//
-	// When pending data exceeds the limit, the write BLOCKS until the offloader
-	// drains enough data (signaled via pendingCond). This provides proper
-	// backpressure for slow backends like S3, instead of returning ErrCacheFull.
-	if !opts.isDownloaded && newMemory > 0 {
-		if err := c.checkPendingBackpressure(ctx, entry, newMemory); err != nil {
-			return err
+		// Hard backpressure: if memory far exceeds budget, flush blocks
+		// synchronously before allocating more. Prevents OOM during write
+		// storms where NFS clients send hundreds of concurrent writes.
+		for bc.memUsed.Load() > bc.maxMemory*2 {
+			if !bc.flushOldestDirtyBlock(ctx) {
+				break // No flushable blocks available
+			}
 		}
-	}
 
-	defer entry.mu.Unlock()
+		key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
+		mb := bc.getOrCreateMemBlock(key)
 
-	// Update LRU access time
-	c.touchFile(entry)
-
-	// Write data to each block buffer it spans
-	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
-		if err := c.writeToBlock(ctx, entry, payloadID, chunkIdx, blockIdx, data, offset, opts); err != nil {
-			return err
+		mb.mu.Lock()
+		// Re-allocate buffer if this memBlock was previously flushed to disk.
+		// Flushed memBlocks stay in the map with data=nil to avoid churn.
+		if mb.data == nil {
+			mb.data = getBlockBuf()
+			bc.memUsed.Add(int64(BlockSize))
 		}
+		copy(mb.data[blockOffset:blockOffset+writeLen], remaining[:writeLen])
+
+		end := blockOffset + writeLen
+		if end > mb.dataSize {
+			mb.dataSize = end
+		}
+		mb.dirty = true
+		mb.lastWrite = time.Now()
+
+		isFull := mb.dataSize >= BlockSize
+		mb.mu.Unlock()
+
+		if isFull {
+			if _, _, err := bc.flushBlock(ctx, payloadID, blockIdx, mb); err != nil {
+				return err
+			}
+		}
+
+		if bc.memUsed.Load() > bc.maxMemory {
+			bc.flushOldestDirtyBlock(ctx)
+		}
+
+		remaining = remaining[writeLen:]
+		currentOffset += uint64(writeLen)
 	}
 
+	bc.updateFileSize(payloadID, offset+uint64(len(data)))
 	return nil
 }
 
-// checkPendingBackpressure checks if pendingSize exceeds the limit and blocks
-// until it drains. Caller must hold entry.mu; this method releases and re-acquires
-// it around the wait. The addedSize parameter is the bytes just added to pendingSize.
-func (c *Cache) checkPendingBackpressure(ctx context.Context, entry *fileEntry, addedSize uint64) error {
-	maxPending := c.maxPendingSize
-	if maxPending == 0 {
-		maxPending = DefaultMaxPendingSize
-	}
-	if c.pendingSize.Load() > maxPending {
-		entry.mu.Unlock()
-		if err := c.waitForPendingDrain(ctx, addedSize, maxPending); err != nil {
-			entry.mu.Lock() // Re-acquire before returning
-			return err
-		}
-		entry.mu.Lock()
-	}
-	return nil
-}
-
-// waitForPendingDrain blocks until pendingSize drops below the threshold or
-// the context/cache is cancelled. This is the core backpressure mechanism
-// that prevents ErrCacheFull by waiting for the offloader to drain data.
+// tryDirectDiskWrite does a pwrite() directly to a .blk cache file, bypassing
+// the 8MB memory buffer. For writes >= directDiskWriteThreshold, it creates the
+// .blk file eagerly if it doesn't exist yet. This eliminates the "first-run
+// penalty" where new files had to go through the slow buffer-then-flush path
+// (16.6 MB/s) while subsequent runs with existing .blk files used fast pwrite
+// (51 MB/s).
 //
-// The method uses sync.Cond for efficient signaling: writers sleep here and
-// are woken up by MarkBlockUploaded when pending data decreases.
+// For writes below the threshold (e.g., 4KB random I/O), falls through to the
+// memory buffer path which batches many small writes into one 8MB disk write.
 //
-// Returns nil when there is room to write, or an error if:
-//   - BackpressureTimeout is exceeded (returns ErrCacheFull)
-//   - Context is cancelled (returns context error)
-//   - Cache is closed (returns ErrCacheClosed)
-func (c *Cache) waitForPendingDrain(ctx context.Context, newMemory, maxPending uint64) error {
-	deadline := time.Now().Add(BackpressureTimeout)
-	logged := false
-
-	c.pendingCond.L.Lock()
-	defer c.pendingCond.L.Unlock()
-
-	for {
-		// Check if there's room now
-		if c.pendingSize.Load()+newMemory <= maxPending {
-			return nil
-		}
-
-		// Check context cancellation
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		// Check if cache is closed
-		if err := c.checkClosed(ctx); err != nil {
-			return err
-		}
-
-		// Check timeout
-		if time.Now().After(deadline) {
-			logger.Error("Backpressure timeout exceeded, cache still full",
-				"pendingSize", c.pendingSize.Load(),
-				"maxPending", maxPending,
-				"timeout", BackpressureTimeout)
-			return ErrCacheFull
-		}
-
-		if !logged {
-			logger.Warn("Write blocked by cache backpressure, waiting for offloader to drain",
-				"pendingSize", c.pendingSize.Load(),
-				"maxPending", maxPending,
-				"newMemory", newMemory)
-			logged = true
-		}
-
-		// Wait with a periodic wake-up to check context/timeout.
-		// time.AfterFunc avoids spawning a goroutine per iteration — the timer
-		// fires once and broadcasts to wake us so we can re-check conditions.
-		timer := time.AfterFunc(500*time.Millisecond, func() {
-			c.pendingCond.Broadcast()
-		})
-
-		c.pendingCond.Wait()
-		timer.Stop()
-	}
-}
-
-// countNewBlockMemory calculates memory needed for new blocks in the given range.
-func (c *Cache) countNewBlockMemory(entry *fileEntry, chunkIdx, startBlock, endBlock uint32) uint64 {
-	var newBlockCount uint64
-	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
-		if !c.blockExists(entry, chunkIdx, blockIdx) {
-			newBlockCount++
-		}
-	}
-	return newBlockCount * BlockSize
-}
-
-// writeToBlock writes data to a single block buffer.
-// Caller must hold entry.mu.Lock().
-func (c *Cache) writeToBlock(ctx context.Context, entry *fileEntry, payloadID string, chunkIdx, blockIdx uint32, data []byte, offset uint32, opts writeOptions) error {
-	// Get or create block buffer
-	blk, isNew := c.getOrCreateBlock(entry, chunkIdx, blockIdx)
-
-	// For normal writes (not downloaded), handle state transitions.
-	// Both Uploading and ReadyForUpload revert to Pending so the block
-	// will be picked up by the next flush cycle.
-	if !opts.isDownloaded && !isNew && (blk.state == BlockStateUploading || blk.state == BlockStateReadyForUpload) {
-		if blk.state == BlockStateReadyForUpload && blk.uploadCancel != nil {
-			blk.uploadCancel()
-			blk.uploadCancel = nil
-		}
-		blk.state = BlockStatePending
-		blk.hash = [32]byte{}
-		blk.uploadGeneration++
-		blk.lastDirtied = time.Now()
-	}
-
-	// Track memory and set initial state for new block buffers
-	if isNew {
-		c.totalSize.Add(BlockSize)
-		if opts.isDownloaded {
-			// Downloaded blocks start as Uploaded (evictable)
-			blk.state = BlockStateUploaded
-		} else {
-			// Normal writes start as Pending
-			c.pendingSize.Add(BlockSize)
-			blk.lastDirtied = time.Now()
+// Returns true if the write was handled, false to fall through to the memory path.
+func (bc *BlockCache) tryDirectDiskWrite(ctx context.Context, payloadID string, blockIdx uint64, blockOffset uint32, data []byte) bool {
+	// Skip if there's a live memBlock with data -- writes must go through memory
+	// for consistency. Flushed memBlocks (data=nil) are fine to skip; they indicate
+	// a .blk file exists on disk that we can pwrite to directly.
+	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
+	if mb := bc.getMemBlock(key); mb != nil {
+		mb.mu.RLock()
+		hasData := mb.data != nil
+		mb.mu.RUnlock()
+		if hasData {
+			return false
 		}
 	}
 
-	// Calculate offsets within this block
-	blockStart := blockIdx * BlockSize
-	blockEnd := blockStart + BlockSize
+	blockID := makeBlockID(key)
 
-	// Calculate overlap with write range
-	writeStart := max(offset, blockStart)
-	writeEnd := min(offset+uint32(len(data)), blockEnd)
-
-	// Calculate positions
-	offsetInBlock := writeStart - blockStart
-	dataStart := writeStart - offset
-	dataEnd := writeEnd - offset
-	writeLen := dataEnd - dataStart
-
-	// Copy data directly to block buffer
-	copy(blk.data[offsetInBlock:], data[dataStart:dataEnd])
-
-	// Update coverage bitmap
-	markCoverage(blk.coverage, offsetInBlock, writeLen)
-
-	// Update block data size
-	if end := offsetInBlock + writeLen; end > blk.dataSize {
-		blk.dataSize = end
-	}
-
-	// For normal writes, mark block as dirty if it was uploaded (re-dirty)
-	if !opts.isDownloaded && blk.state == BlockStateUploaded {
-		blk.state = BlockStatePending
-		blk.uploadGeneration++       // Bump generation for re-dirtied block
-		blk.lastDirtied = time.Now() // Coalescing delay: track when block was re-dirtied
-		c.pendingSize.Add(BlockSize) // Re-dirtied block becomes pending again
-
-		// Spread backpressure evenly: re-dirtied blocks also check pending limit
-		// instead of concentrating the stall on new-block writes only.
-		if err := c.checkPendingBackpressure(ctx, entry, BlockSize); err != nil {
-			return err
+	// Use direct payload store path if available (filesystem backend optimization).
+	// This eliminates double-write: data goes straight to the payload store,
+	// skipping cache .blk files entirely. Blocks are marked Remote immediately.
+	var path string
+	var isDirect bool
+	if bc.directWritePath != nil {
+		if p := bc.directWritePath(payloadID, blockIdx); p != "" {
+			path = p
+			isDirect = true
 		}
 	}
+	if path == "" {
+		path = bc.blockPath(blockID)
+	}
 
-	// Persist to WAL if enabled (only for normal writes)
-	if !opts.isDownloaded && c.persister != nil {
-		walEntry := &wal.BlockWriteEntry{
-			PayloadID:     payloadID,
-			ChunkIdx:      chunkIdx,
-			BlockIdx:      blockIdx,
-			OffsetInBlock: offsetInBlock,
-			Data:          data[dataStart:dataEnd],
-		}
-		// Release lock during WAL write to avoid deadlock
-		entry.mu.Unlock()
-		err := c.persister.AppendBlockWrite(walEntry)
-		entry.mu.Lock()
+	// Try cached fd first, then open from disk.
+	f := bc.fdCache.Get(blockID)
+	if f == nil {
+		var err error
+		f, err = os.OpenFile(path, os.O_WRONLY, 0644)
 		if err != nil {
-			return err
+			// File doesn't exist. For large writes (>= threshold), create it eagerly
+			// so all subsequent writes to this block use the fast pwrite path.
+			// Small writes fall through to the memory buffer for batching.
+			if len(data) < directDiskWriteThreshold {
+				return false
+			}
+			f, err = bc.createBlockFile(path)
+			if err != nil {
+				return false
+			}
+		}
+		bc.fdCache.Put(blockID, f)
+	}
+
+	if _, err := f.WriteAt(data, int64(blockOffset)); err != nil {
+		// Fd may be stale (file was truncated/recreated). Evict and fall through.
+		bc.fdCache.Evict(blockID)
+		return false
+	}
+
+	// File write succeeded. Update metadata.
+	// Fast path: if we already have a pending FileBlock update, mutate it
+	// in-place instead of doing a full lookupFileBlock (which hits BadgerDB).
+	end := blockOffset + uint32(len(data))
+	now := time.Now()
+
+	var fb *metadata.FileBlock
+	if v, ok := bc.pendingFBs.Load(blockID); ok {
+		fb = v.(*metadata.FileBlock)
+	} else {
+		// Slow path: lookup from store or create new
+		var err error
+		fb, err = bc.lookupFileBlock(ctx, blockID)
+		if err != nil {
+			fb = metadata.NewFileBlock(blockID, path)
 		}
 	}
 
-	return nil
+	fb.CachePath = path
+	if end > fb.DataSize {
+		fb.DataSize = end
+	}
+	if isDirect {
+		fb.State = metadata.BlockStateRemote
+		fb.BlockStoreKey = FormatStoreKey(payloadID, blockIdx)
+	} else if fb.State == 0 {
+		// New block, never synced -- mark Local so the syncer picks it up.
+		fb.State = metadata.BlockStateLocal
+	}
+	// Remote blocks: don't revert to Local on pwrite. Avoids triggering 8MB
+	// re-syncs on every 4KB random write. Re-sync on explicit Flush.
+	fb.LastAccess = now
+	bc.queueFileBlockUpdate(fb)
+
+	return true
+}
+
+// createBlockFile creates a new .blk cache file, including any parent
+// directories. Used by tryDirectDiskWrite for eager file creation.
+func (bc *BlockCache) createBlockFile(path string) (*os.File, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return nil, fmt.Errorf("create block dir: %w", err)
+	}
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0644)
 }

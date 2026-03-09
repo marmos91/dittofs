@@ -12,7 +12,7 @@ func TestStore_WriteAndRead(t *testing.T) {
 	s := New()
 	defer func() { _ = s.Close() }()
 
-	blockKey := "share1/content123/chunk-0/block-0"
+	blockKey := "share1/content123/block-0"
 	data := []byte("hello world")
 
 	// Write block
@@ -47,7 +47,7 @@ func TestStore_ReadBlockRange(t *testing.T) {
 	s := New()
 	defer func() { _ = s.Close() }()
 
-	blockKey := "share1/content123/chunk-0/block-0"
+	blockKey := "share1/content123/block-0"
 	data := []byte("hello world")
 
 	if err := s.WriteBlock(ctx, blockKey, data); err != nil {
@@ -90,7 +90,7 @@ func TestStore_DeleteBlock(t *testing.T) {
 	s := New()
 	defer func() { _ = s.Close() }()
 
-	blockKey := "share1/content123/chunk-0/block-0"
+	blockKey := "share1/content123/block-0"
 	data := []byte("hello world")
 
 	if err := s.WriteBlock(ctx, blockKey, data); err != nil {
@@ -116,10 +116,10 @@ func TestStore_DeleteByPrefix(t *testing.T) {
 
 	// Write multiple blocks
 	blocks := map[string][]byte{
-		"share1/content123/chunk-0/block-0": []byte("data0"),
-		"share1/content123/chunk-0/block-1": []byte("data1"),
-		"share1/content123/chunk-1/block-0": []byte("data2"),
-		"share2/content456/chunk-0/block-0": []byte("data3"),
+		"share1/content123/block-0": []byte("data0"),
+		"share1/content123/block-1": []byte("data1"),
+		"share1/content123/block-2": []byte("data2"),
+		"share2/content456/block-0": []byte("data3"),
 	}
 
 	for key, data := range blocks {
@@ -155,10 +155,10 @@ func TestStore_ListByPrefix(t *testing.T) {
 
 	// Write multiple blocks
 	blocks := map[string][]byte{
-		"share1/content123/chunk-0/block-0": []byte("data0"),
-		"share1/content123/chunk-0/block-1": []byte("data1"),
-		"share1/content123/chunk-1/block-0": []byte("data2"),
-		"share2/content456/chunk-0/block-0": []byte("data3"),
+		"share1/content123/block-0": []byte("data0"),
+		"share1/content123/block-1": []byte("data1"),
+		"share1/content123/block-2": []byte("data2"),
+		"share2/content456/block-0": []byte("data3"),
 	}
 
 	for key, data := range blocks {
@@ -230,7 +230,7 @@ func TestStore_DataIsolation(t *testing.T) {
 	s := New()
 	defer func() { _ = s.Close() }()
 
-	blockKey := "share1/content123/chunk-0/block-0"
+	blockKey := "share1/content123/block-0"
 	data := []byte("hello world")
 
 	// Write block
@@ -335,7 +335,7 @@ func BenchmarkWriteBlock(b *testing.B) {
 			b.ResetTimer()
 
 			for i := 0; i < b.N; i++ {
-				blockKey := "bench/chunk-0/block-0"
+				blockKey := "bench/block-0"
 				if err := s.WriteBlock(ctx, blockKey, data); err != nil {
 					b.Fatalf("WriteBlock failed: %v", err)
 				}
@@ -361,7 +361,7 @@ func BenchmarkReadBlock(b *testing.B) {
 			s := New()
 			defer func() { _ = s.Close() }()
 			data := make([]byte, sz.size)
-			blockKey := "bench/chunk-0/block-0"
+			blockKey := "bench/block-0"
 
 			// Pre-write the block
 			if err := s.WriteBlock(ctx, blockKey, data); err != nil {
@@ -386,7 +386,7 @@ func BenchmarkReadBlockRange(b *testing.B) {
 	defer func() { _ = s.Close() }()
 
 	// Write a 4MB block
-	blockKey := "bench/chunk-0/block-0"
+	blockKey := "bench/block-0"
 	data := make([]byte, 4*1024*1024)
 	if err := s.WriteBlock(ctx, blockKey, data); err != nil {
 		b.Fatalf("WriteBlock failed: %v", err)

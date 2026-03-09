@@ -202,10 +202,9 @@ type MemoryMetadataStore struct {
 	// Note: Cache is lazy-populated on first read and cleared on modifications
 	sortedDirCache map[string][]string
 
-	// objectData holds content-addressed object tracking data for deduplication.
-	// This tracks Objects, Chunks, and Blocks with their content hashes and ref counts.
+	// fileBlockData holds content-addressed file block tracking data.
 	// Initialized lazily on first use.
-	objectData *objectStoreData
+	fileBlockData *fileBlockStoreData
 
 	// lockStore holds persisted lock data for NLM/SMB lock persistence.
 	// Initialized lazily on first use.
@@ -326,9 +325,9 @@ func NewMemoryMetadataStoreWithDefaults() *MemoryMetadataStore {
 		Capabilities: metadata.FilesystemCapabilities{
 			// Transfer Sizes
 			MaxReadSize:        1048576, // 1MB
-			PreferredReadSize:  65536,   // 64KB
+			PreferredReadSize:  1048576, // 1MB — matches Linux knfsd default; reduces NFS round-trips per block
 			MaxWriteSize:       1048576, // 1MB
-			PreferredWriteSize: 65536,   // 64KB
+			PreferredWriteSize: 1048576, // 1MB
 
 			// Limits
 			MaxFileSize:      9223372036854775807, // 2^63-1 (practically unlimited)

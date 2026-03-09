@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
@@ -11,389 +13,42 @@ import (
 )
 
 // ============================================================================
-// ObjectStore Implementation for BadgerDB Store
+// FileBlockStore Implementation for BadgerDB Store
 // ============================================================================
 //
-// This file implements the ObjectStore interface for the BadgerDB metadata store.
-// It provides content-addressed object, chunk, and block tracking for deduplication.
+// This file implements the FileBlockStore interface for the BadgerDB metadata store.
+// It provides content-addressed file block tracking for deduplication and caching.
 //
 // Key Prefixes:
-//   - obj:{hash}         - Object data
-//   - chunk:{hash}       - Chunk data
-//   - block:{hash}       - Block data
-//   - obj-chunks:{hash}  - Index: object ID -> chunk hashes
-//   - chunk-blocks:{hash} - Index: chunk hash -> block hashes
+//   - fb:{id}          - FileBlock data (keyed by UUID)
+//   - fb-hash:{hash}   - Hash index: content hash -> block ID
 //
 // Thread Safety: All operations use BadgerDB transactions for ACID guarantees.
 //
 // ============================================================================
 
 const (
-	objectPrefix      = "obj:"
-	chunkPrefix       = "chunk:"
-	blockPrefix       = "block:"
-	objChunksPrefix   = "obj-chunks:"
-	chunkBlocksPrefix = "chunk-blocks:"
+	fileBlockPrefix       = "fb:"
+	fileBlockHashPrefix   = "fb-hash:"
+	fileBlockLocalPrefix  = "fb-local:"
+	fileBlockFilePrefix   = "fb-file:"
 )
 
-// Ensure BadgerMetadataStore implements ObjectStore
-var _ metadata.ObjectStore = (*BadgerMetadataStore)(nil)
+// Ensure BadgerMetadataStore implements FileBlockStore
+var _ metadata.FileBlockStore = (*BadgerMetadataStore)(nil)
 
 // ============================================================================
-// Object Operations
+// FileBlock Operations
 // ============================================================================
 
-// GetObject retrieves an object by its content hash.
-func (s *BadgerMetadataStore) GetObject(ctx context.Context, id metadata.ContentHash) (*metadata.Object, error) {
-	var obj metadata.Object
+// GetFileBlock retrieves a file block by its ID.
+func (s *BadgerMetadataStore) GetFileBlock(ctx context.Context, id string) (*metadata.FileBlock, error) {
+	var block metadata.FileBlock
 	err := s.db.View(func(txn *badger.Txn) error {
-		key := []byte(objectPrefix + id.String())
+		key := []byte(fileBlockPrefix + id)
 		item, err := txn.Get(key)
 		if err == badger.ErrKeyNotFound {
-			return metadata.ErrObjectNotFound
-		}
-		if err != nil {
-			return err
-		}
-		return item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &obj)
-		})
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &obj, nil
-}
-
-// PutObject stores or updates an object.
-func (s *BadgerMetadataStore) PutObject(ctx context.Context, obj *metadata.Object) error {
-	return s.db.Update(func(txn *badger.Txn) error {
-		key := []byte(objectPrefix + obj.ID.String())
-		val, err := json.Marshal(obj)
-		if err != nil {
-			return fmt.Errorf("marshal object: %w", err)
-		}
-		return txn.Set(key, val)
-	})
-}
-
-// DeleteObject removes an object by its content hash.
-func (s *BadgerMetadataStore) DeleteObject(ctx context.Context, id metadata.ContentHash) error {
-	return s.db.Update(func(txn *badger.Txn) error {
-		key := []byte(objectPrefix + id.String())
-		// Check if exists first
-		_, err := txn.Get(key)
-		if err == badger.ErrKeyNotFound {
-			return metadata.ErrObjectNotFound
-		}
-		if err != nil {
-			return err
-		}
-		// Delete object and its chunk index
-		if err := txn.Delete(key); err != nil {
-			return err
-		}
-		indexKey := []byte(objChunksPrefix + id.String())
-		_ = txn.Delete(indexKey) // Ignore error if index doesn't exist
-		return nil
-	})
-}
-
-// IncrementObjectRefCount atomically increments an object's RefCount.
-func (s *BadgerMetadataStore) IncrementObjectRefCount(ctx context.Context, id metadata.ContentHash) (uint32, error) {
-	var newCount uint32
-	err := s.db.Update(func(txn *badger.Txn) error {
-		key := []byte(objectPrefix + id.String())
-		item, err := txn.Get(key)
-		if err == badger.ErrKeyNotFound {
-			return metadata.ErrObjectNotFound
-		}
-		if err != nil {
-			return err
-		}
-		var obj metadata.Object
-		if err := item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &obj)
-		}); err != nil {
-			return err
-		}
-		obj.RefCount++
-		newCount = obj.RefCount
-		val, err := json.Marshal(&obj)
-		if err != nil {
-			return err
-		}
-		return txn.Set(key, val)
-	})
-	return newCount, err
-}
-
-// DecrementObjectRefCount atomically decrements an object's RefCount.
-func (s *BadgerMetadataStore) DecrementObjectRefCount(ctx context.Context, id metadata.ContentHash) (uint32, error) {
-	var newCount uint32
-	err := s.db.Update(func(txn *badger.Txn) error {
-		key := []byte(objectPrefix + id.String())
-		item, err := txn.Get(key)
-		if err == badger.ErrKeyNotFound {
-			return metadata.ErrObjectNotFound
-		}
-		if err != nil {
-			return err
-		}
-		var obj metadata.Object
-		if err := item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &obj)
-		}); err != nil {
-			return err
-		}
-		if obj.RefCount > 0 {
-			obj.RefCount--
-		}
-		newCount = obj.RefCount
-		val, err := json.Marshal(&obj)
-		if err != nil {
-			return err
-		}
-		return txn.Set(key, val)
-	})
-	return newCount, err
-}
-
-// ============================================================================
-// Chunk Operations
-// ============================================================================
-
-// GetChunk retrieves a chunk by its content hash.
-func (s *BadgerMetadataStore) GetChunk(ctx context.Context, hash metadata.ContentHash) (*metadata.ObjectChunk, error) {
-	var chunk metadata.ObjectChunk
-	err := s.db.View(func(txn *badger.Txn) error {
-		key := []byte(chunkPrefix + hash.String())
-		item, err := txn.Get(key)
-		if err == badger.ErrKeyNotFound {
-			return metadata.ErrChunkNotFound
-		}
-		if err != nil {
-			return err
-		}
-		return item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &chunk)
-		})
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &chunk, nil
-}
-
-// GetChunksByObject retrieves all chunks for an object, ordered by Index.
-func (s *BadgerMetadataStore) GetChunksByObject(ctx context.Context, objectID metadata.ContentHash) ([]*metadata.ObjectChunk, error) {
-	var chunks []*metadata.ObjectChunk
-	err := s.db.View(func(txn *badger.Txn) error {
-		// Get the index
-		indexKey := []byte(objChunksPrefix + objectID.String())
-		item, err := txn.Get(indexKey)
-		if err == badger.ErrKeyNotFound {
-			return nil // No chunks for this object
-		}
-		if err != nil {
-			return err
-		}
-
-		var hashes []string
-		if err := item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &hashes)
-		}); err != nil {
-			return err
-		}
-
-		// Fetch each chunk
-		for _, hashStr := range hashes {
-			chunkKey := []byte(chunkPrefix + hashStr)
-			chunkItem, err := txn.Get(chunkKey)
-			if err != nil {
-				continue // Skip missing chunks
-			}
-			var chunk metadata.ObjectChunk
-			if err := chunkItem.Value(func(val []byte) error {
-				return json.Unmarshal(val, &chunk)
-			}); err != nil {
-				continue
-			}
-			chunks = append(chunks, &chunk)
-		}
-		return nil
-	})
-	return chunks, err
-}
-
-// PutChunk stores or updates a chunk.
-func (s *BadgerMetadataStore) PutChunk(ctx context.Context, chunk *metadata.ObjectChunk) error {
-	return s.db.Update(func(txn *badger.Txn) error {
-		key := []byte(chunkPrefix + chunk.Hash.String())
-
-		// Check if new
-		_, err := txn.Get(key)
-		isNew := err == badger.ErrKeyNotFound
-
-		// Store chunk
-		val, err := json.Marshal(chunk)
-		if err != nil {
-			return fmt.Errorf("marshal chunk: %w", err)
-		}
-		if err := txn.Set(key, val); err != nil {
-			return err
-		}
-
-		// Update index if new
-		if isNew {
-			indexKey := []byte(objChunksPrefix + chunk.ObjectID.String())
-			var hashes []string
-			item, err := txn.Get(indexKey)
-			if err == nil {
-				_ = item.Value(func(val []byte) error {
-					return json.Unmarshal(val, &hashes)
-				})
-			}
-			hashes = append(hashes, chunk.Hash.String())
-			indexVal, _ := json.Marshal(hashes)
-			if err := txn.Set(indexKey, indexVal); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-// DeleteChunk removes a chunk by its content hash.
-func (s *BadgerMetadataStore) DeleteChunk(ctx context.Context, hash metadata.ContentHash) error {
-	return s.db.Update(func(txn *badger.Txn) error {
-		key := []byte(chunkPrefix + hash.String())
-
-		// Get chunk to find object ID
-		item, err := txn.Get(key)
-		if err == badger.ErrKeyNotFound {
-			return metadata.ErrChunkNotFound
-		}
-		if err != nil {
-			return err
-		}
-
-		var chunk metadata.ObjectChunk
-		if err := item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &chunk)
-		}); err != nil {
-			return err
-		}
-
-		// Delete chunk
-		if err := txn.Delete(key); err != nil {
-			return err
-		}
-
-		// Update index
-		indexKey := []byte(objChunksPrefix + chunk.ObjectID.String())
-		indexItem, err := txn.Get(indexKey)
-		if err == nil {
-			var hashes []string
-			_ = indexItem.Value(func(val []byte) error {
-				return json.Unmarshal(val, &hashes)
-			})
-			// Remove hash from list
-			hashStr := hash.String()
-			for i, h := range hashes {
-				if h == hashStr {
-					hashes = append(hashes[:i], hashes[i+1:]...)
-					break
-				}
-			}
-			if len(hashes) == 0 {
-				_ = txn.Delete(indexKey)
-			} else {
-				indexVal, _ := json.Marshal(hashes)
-				_ = txn.Set(indexKey, indexVal)
-			}
-		}
-
-		// Delete block index
-		blockIndexKey := []byte(chunkBlocksPrefix + hash.String())
-		_ = txn.Delete(blockIndexKey)
-
-		return nil
-	})
-}
-
-// IncrementChunkRefCount atomically increments a chunk's RefCount.
-func (s *BadgerMetadataStore) IncrementChunkRefCount(ctx context.Context, hash metadata.ContentHash) (uint32, error) {
-	var newCount uint32
-	err := s.db.Update(func(txn *badger.Txn) error {
-		key := []byte(chunkPrefix + hash.String())
-		item, err := txn.Get(key)
-		if err == badger.ErrKeyNotFound {
-			return metadata.ErrChunkNotFound
-		}
-		if err != nil {
-			return err
-		}
-		var chunk metadata.ObjectChunk
-		if err := item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &chunk)
-		}); err != nil {
-			return err
-		}
-		chunk.RefCount++
-		newCount = chunk.RefCount
-		val, err := json.Marshal(&chunk)
-		if err != nil {
-			return err
-		}
-		return txn.Set(key, val)
-	})
-	return newCount, err
-}
-
-// DecrementChunkRefCount atomically decrements a chunk's RefCount.
-func (s *BadgerMetadataStore) DecrementChunkRefCount(ctx context.Context, hash metadata.ContentHash) (uint32, error) {
-	var newCount uint32
-	err := s.db.Update(func(txn *badger.Txn) error {
-		key := []byte(chunkPrefix + hash.String())
-		item, err := txn.Get(key)
-		if err == badger.ErrKeyNotFound {
-			return metadata.ErrChunkNotFound
-		}
-		if err != nil {
-			return err
-		}
-		var chunk metadata.ObjectChunk
-		if err := item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &chunk)
-		}); err != nil {
-			return err
-		}
-		if chunk.RefCount > 0 {
-			chunk.RefCount--
-		}
-		newCount = chunk.RefCount
-		val, err := json.Marshal(&chunk)
-		if err != nil {
-			return err
-		}
-		return txn.Set(key, val)
-	})
-	return newCount, err
-}
-
-// ============================================================================
-// Block Operations
-// ============================================================================
-
-// GetBlock retrieves a block by its content hash.
-func (s *BadgerMetadataStore) GetBlock(ctx context.Context, hash metadata.ContentHash) (*metadata.ObjectBlock, error) {
-	var block metadata.ObjectBlock
-	err := s.db.View(func(txn *badger.Txn) error {
-		key := []byte(blockPrefix + hash.String())
-		item, err := txn.Get(key)
-		if err == badger.ErrKeyNotFound {
-			return metadata.ErrBlockNotFound
+			return metadata.ErrFileBlockNotFound
 		}
 		if err != nil {
 			return err
@@ -408,100 +63,62 @@ func (s *BadgerMetadataStore) GetBlock(ctx context.Context, hash metadata.Conten
 	return &block, nil
 }
 
-// GetBlocksByChunk retrieves all blocks for a chunk, ordered by Index.
-func (s *BadgerMetadataStore) GetBlocksByChunk(ctx context.Context, chunkHash metadata.ContentHash) ([]*metadata.ObjectBlock, error) {
-	var blocks []*metadata.ObjectBlock
-	err := s.db.View(func(txn *badger.Txn) error {
-		// Get the index
-		indexKey := []byte(chunkBlocksPrefix + chunkHash.String())
-		item, err := txn.Get(indexKey)
-		if err == badger.ErrKeyNotFound {
-			return nil // No blocks for this chunk
-		}
-		if err != nil {
-			return err
-		}
-
-		var hashes []string
-		if err := item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &hashes)
-		}); err != nil {
-			return err
-		}
-
-		// Fetch each block
-		for _, hashStr := range hashes {
-			blockKey := []byte(blockPrefix + hashStr)
-			blockItem, err := txn.Get(blockKey)
-			if err != nil {
-				continue // Skip missing blocks
-			}
-			var block metadata.ObjectBlock
-			if err := blockItem.Value(func(val []byte) error {
-				return json.Unmarshal(val, &block)
-			}); err != nil {
-				continue
-			}
-			blocks = append(blocks, &block)
-		}
-		return nil
-	})
-	return blocks, err
-}
-
-// PutBlock stores or updates a block.
-func (s *BadgerMetadataStore) PutBlock(ctx context.Context, block *metadata.ObjectBlock) error {
+// PutFileBlock stores or updates a file block.
+func (s *BadgerMetadataStore) PutFileBlock(ctx context.Context, block *metadata.FileBlock) error {
 	return s.db.Update(func(txn *badger.Txn) error {
-		key := []byte(blockPrefix + block.Hash.String())
-
-		// Check if new
-		_, err := txn.Get(key)
-		isNew := err == badger.ErrKeyNotFound
-
-		// Store block
+		key := []byte(fileBlockPrefix + block.ID)
 		val, err := json.Marshal(block)
 		if err != nil {
-			return fmt.Errorf("marshal block: %w", err)
+			return fmt.Errorf("marshal file block: %w", err)
 		}
 		if err := txn.Set(key, val); err != nil {
 			return err
 		}
 
-		// Update index if new
-		if isNew {
-			indexKey := []byte(chunkBlocksPrefix + block.ChunkHash.String())
-			var hashes []string
-			item, err := txn.Get(indexKey)
-			if err == nil {
-				_ = item.Value(func(val []byte) error {
-					return json.Unmarshal(val, &hashes)
-				})
-			}
-			hashes = append(hashes, block.Hash.String())
-			indexVal, _ := json.Marshal(hashes)
-			if err := txn.Set(indexKey, indexVal); err != nil {
+		// Maintain local index: add when Local, remove otherwise.
+		// This allows ListLocalBlocks to iterate O(local) instead of O(all).
+		localKey := []byte(fileBlockLocalPrefix + block.ID)
+		if block.State == metadata.BlockStateLocal {
+			if err := txn.Set(localKey, nil); err != nil {
 				return err
 			}
+		} else {
+			_ = txn.Delete(localKey) // Ignore ErrKeyNotFound
+		}
+
+		// Maintain file index: fb-file:{payloadID}:{blockIdx} -> block.ID
+		// This allows ListFileBlocks to iterate O(file_blocks) via prefix scan.
+		if parts := strings.SplitN(block.ID, "/", 2); len(parts) == 2 {
+			fileKey := []byte(fileBlockFilePrefix + parts[0] + ":" + parts[1])
+			if err := txn.Set(fileKey, []byte(block.ID)); err != nil {
+				return err
+			}
+		}
+
+		// Update hash index for finalized blocks
+		if block.IsFinalized() {
+			hashKey := []byte(fileBlockHashPrefix + block.Hash.String())
+			return txn.Set(hashKey, []byte(block.ID))
 		}
 		return nil
 	})
 }
 
-// DeleteBlock removes a block by its content hash.
-func (s *BadgerMetadataStore) DeleteBlock(ctx context.Context, hash metadata.ContentHash) error {
+// DeleteFileBlock removes a file block by its ID.
+func (s *BadgerMetadataStore) DeleteFileBlock(ctx context.Context, id string) error {
 	return s.db.Update(func(txn *badger.Txn) error {
-		key := []byte(blockPrefix + hash.String())
+		key := []byte(fileBlockPrefix + id)
 
-		// Get block to find chunk hash
+		// Get block to find hash for index cleanup
 		item, err := txn.Get(key)
 		if err == badger.ErrKeyNotFound {
-			return metadata.ErrBlockNotFound
+			return metadata.ErrFileBlockNotFound
 		}
 		if err != nil {
 			return err
 		}
 
-		var block metadata.ObjectBlock
+		var block metadata.FileBlock
 		if err := item.Value(func(val []byte) error {
 			return json.Unmarshal(val, &block)
 		}); err != nil {
@@ -513,102 +130,62 @@ func (s *BadgerMetadataStore) DeleteBlock(ctx context.Context, hash metadata.Con
 			return err
 		}
 
-		// Update index
-		indexKey := []byte(chunkBlocksPrefix + block.ChunkHash.String())
-		indexItem, err := txn.Get(indexKey)
-		if err == nil {
-			var hashes []string
-			_ = indexItem.Value(func(val []byte) error {
-				return json.Unmarshal(val, &hashes)
-			})
-			// Remove hash from list
-			hashStr := hash.String()
-			for i, h := range hashes {
-				if h == hashStr {
-					hashes = append(hashes[:i], hashes[i+1:]...)
-					break
-				}
-			}
-			if len(hashes) == 0 {
-				_ = txn.Delete(indexKey)
-			} else {
-				indexVal, _ := json.Marshal(hashes)
-				_ = txn.Set(indexKey, indexVal)
-			}
+		// Remove local index
+		_ = txn.Delete([]byte(fileBlockLocalPrefix + id))
+
+		// Remove file index
+		if parts := strings.SplitN(id, "/", 2); len(parts) == 2 {
+			_ = txn.Delete([]byte(fileBlockFilePrefix + parts[0] + ":" + parts[1]))
 		}
 
+		// Remove hash index
+		if block.IsFinalized() {
+			hashKey := []byte(fileBlockHashPrefix + block.Hash.String())
+			_ = txn.Delete(hashKey) // Ignore if not exists
+		}
 		return nil
 	})
 }
 
-// FindBlockByHash looks up a block by its content hash.
-// Returns nil without error if not found.
-func (s *BadgerMetadataStore) FindBlockByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.ObjectBlock, error) {
-	var block metadata.ObjectBlock
-	err := s.db.View(func(txn *badger.Txn) error {
-		key := []byte(blockPrefix + hash.String())
+// IncrementRefCount atomically increments a block's RefCount.
+func (s *BadgerMetadataStore) IncrementRefCount(ctx context.Context, id string) error {
+	return s.db.Update(func(txn *badger.Txn) error {
+		key := []byte(fileBlockPrefix + id)
 		item, err := txn.Get(key)
 		if err == badger.ErrKeyNotFound {
-			return nil // Not found, but not an error
+			return metadata.ErrFileBlockNotFound
 		}
 		if err != nil {
 			return err
 		}
-		return item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &block)
-		})
-	})
-	if err != nil {
-		return nil, err
-	}
-	if block.Hash.IsZero() {
-		return nil, nil // Not found
-	}
-	return &block, nil
-}
-
-// IncrementBlockRefCount atomically increments a block's RefCount.
-func (s *BadgerMetadataStore) IncrementBlockRefCount(ctx context.Context, hash metadata.ContentHash) (uint32, error) {
-	var newCount uint32
-	err := s.db.Update(func(txn *badger.Txn) error {
-		key := []byte(blockPrefix + hash.String())
-		item, err := txn.Get(key)
-		if err == badger.ErrKeyNotFound {
-			return metadata.ErrBlockNotFound
-		}
-		if err != nil {
-			return err
-		}
-		var block metadata.ObjectBlock
+		var block metadata.FileBlock
 		if err := item.Value(func(val []byte) error {
 			return json.Unmarshal(val, &block)
 		}); err != nil {
 			return err
 		}
 		block.RefCount++
-		newCount = block.RefCount
 		val, err := json.Marshal(&block)
 		if err != nil {
 			return err
 		}
 		return txn.Set(key, val)
 	})
-	return newCount, err
 }
 
-// DecrementBlockRefCount atomically decrements a block's RefCount.
-func (s *BadgerMetadataStore) DecrementBlockRefCount(ctx context.Context, hash metadata.ContentHash) (uint32, error) {
+// DecrementRefCount atomically decrements a block's RefCount.
+func (s *BadgerMetadataStore) DecrementRefCount(ctx context.Context, id string) (uint32, error) {
 	var newCount uint32
 	err := s.db.Update(func(txn *badger.Txn) error {
-		key := []byte(blockPrefix + hash.String())
+		key := []byte(fileBlockPrefix + id)
 		item, err := txn.Get(key)
 		if err == badger.ErrKeyNotFound {
-			return metadata.ErrBlockNotFound
+			return metadata.ErrFileBlockNotFound
 		}
 		if err != nil {
 			return err
 		}
-		var block metadata.ObjectBlock
+		var block metadata.FileBlock
 		if err := item.Value(func(val []byte) error {
 			return json.Unmarshal(val, &block)
 		}); err != nil {
@@ -627,113 +204,280 @@ func (s *BadgerMetadataStore) DecrementBlockRefCount(ctx context.Context, hash m
 	return newCount, err
 }
 
-// MarkBlockUploaded marks a block as uploaded to the block store.
-func (s *BadgerMetadataStore) MarkBlockUploaded(ctx context.Context, hash metadata.ContentHash) error {
-	return s.db.Update(func(txn *badger.Txn) error {
-		key := []byte(blockPrefix + hash.String())
-		item, err := txn.Get(key)
+// FindFileBlockByHash looks up a finalized block by its content hash.
+// Returns nil without error if not found.
+func (s *BadgerMetadataStore) FindFileBlockByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
+	var block metadata.FileBlock
+	var found bool
+	err := s.db.View(func(txn *badger.Txn) error {
+		// Look up ID via hash index
+		hashKey := []byte(fileBlockHashPrefix + hash.String())
+		hashItem, err := txn.Get(hashKey)
 		if err == badger.ErrKeyNotFound {
-			return metadata.ErrBlockNotFound
+			return nil // Not found
 		}
 		if err != nil {
 			return err
 		}
-		var block metadata.ObjectBlock
-		if err := item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &block)
+
+		var id string
+		if err := hashItem.Value(func(val []byte) error {
+			id = string(val)
+			return nil
 		}); err != nil {
 			return err
 		}
-		block.UploadedAt = time.Now()
-		val, err := json.Marshal(&block)
+
+		// Fetch the block
+		key := []byte(fileBlockPrefix + id)
+		item, err := txn.Get(key)
+		if err == badger.ErrKeyNotFound {
+			return nil // Index stale, block deleted
+		}
 		if err != nil {
 			return err
 		}
-		return txn.Set(key, val)
+		found = true
+		return item.Value(func(val []byte) error {
+			return json.Unmarshal(val, &block)
+		})
 	})
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, nil
+	}
+	// Only return remote blocks for dedup safety
+	if !block.IsRemote() {
+		return nil, nil
+	}
+	return &block, nil
+}
+
+// ListLocalBlocks returns blocks in Local state (complete, on disk, not yet
+// synced to remote) older than the given duration.
+// If limit > 0, at most limit blocks are returned.
+//
+// Uses the fb-local: secondary index for O(local) iteration instead of
+// scanning all fb: entries. This eliminates the BadgerDB full-table scan
+// that was the root cause of sequential write throughput degradation.
+func (s *BadgerMetadataStore) ListLocalBlocks(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
+	cutoff := time.Now().Add(-olderThan)
+	var result []*metadata.FileBlock
+	err := s.db.View(func(txn *badger.Txn) error {
+		prefix := []byte(fileBlockLocalPrefix)
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		opts.PrefetchValues = false // Keys only — values are empty
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			// Extract block ID from key: "fb-local:{id}" → "{id}"
+			id := string(it.Item().Key()[len(prefix):])
+
+			// Look up the actual FileBlock
+			fbItem, err := txn.Get([]byte(fileBlockPrefix + id))
+			if err != nil {
+				continue // Index stale, block deleted
+			}
+
+			var block metadata.FileBlock
+			if err := fbItem.Value(func(val []byte) error {
+				return json.Unmarshal(val, &block)
+			}); err != nil {
+				continue
+			}
+
+			if block.IsCached() && block.LastAccess.Before(cutoff) {
+				result = append(result, &block)
+				if limit > 0 && len(result) >= limit {
+					break
+				}
+			}
+		}
+		return nil
+	})
+	return result, err
+}
+
+// ListRemoteBlocks returns blocks that are both cached locally and confirmed
+// in remote store, ordered by LRU (oldest LastAccess first), up to limit.
+func (s *BadgerMetadataStore) ListRemoteBlocks(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
+	var candidates []*metadata.FileBlock
+	err := s.db.View(func(txn *badger.Txn) error {
+		prefix := []byte(fileBlockPrefix)
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			var block metadata.FileBlock
+			if err := item.Value(func(val []byte) error {
+				return json.Unmarshal(val, &block)
+			}); err != nil {
+				continue
+			}
+			if block.IsCached() && block.State == metadata.BlockStateRemote {
+				candidates = append(candidates, &block)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Sort by LastAccess (oldest first)
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].LastAccess.Before(candidates[j].LastAccess)
+	})
+
+	if limit > 0 && len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return candidates, nil
+}
+
+// ListUnreferenced returns blocks with RefCount=0, up to limit.
+func (s *BadgerMetadataStore) ListUnreferenced(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
+	var result []*metadata.FileBlock
+	err := s.db.View(func(txn *badger.Txn) error {
+		prefix := []byte(fileBlockPrefix)
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			var block metadata.FileBlock
+			if err := item.Value(func(val []byte) error {
+				return json.Unmarshal(val, &block)
+			}); err != nil {
+				continue
+			}
+			if block.RefCount == 0 {
+				result = append(result, &block)
+				if limit > 0 && len(result) >= limit {
+					break
+				}
+			}
+		}
+		return nil
+	})
+	return result, err
+}
+
+// ListFileBlocks returns all blocks belonging to a file, ordered by block index.
+// Uses the fb-file:{payloadID}: secondary index for efficient O(file_blocks) queries.
+func (s *BadgerMetadataStore) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
+	var result []*metadata.FileBlock
+	err := s.db.View(func(txn *badger.Txn) error {
+		prefix := []byte(fileBlockFilePrefix + payloadID + ":")
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		opts.PrefetchValues = true
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			// Value is the block ID
+			var blockID string
+			if err := it.Item().Value(func(val []byte) error {
+				blockID = string(val)
+				return nil
+			}); err != nil {
+				continue
+			}
+
+			// Fetch the actual FileBlock
+			fbItem, err := txn.Get([]byte(fileBlockPrefix + blockID))
+			if err != nil {
+				continue // Index stale, block deleted
+			}
+
+			var block metadata.FileBlock
+			if err := fbItem.Value(func(val []byte) error {
+				return json.Unmarshal(val, &block)
+			}); err != nil {
+				continue
+			}
+			result = append(result, &block)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	// Keys are lexicographically sorted (fb-file:{payloadID}:0, :1, :10, :2...)
+	// which gives wrong numeric order for multi-digit indices. Sort by parsed index.
+	sort.Slice(result, func(i, j int) bool {
+		return parseBlockIdx(result[i].ID) < parseBlockIdx(result[j].ID)
+	})
+	if result == nil {
+		return []*metadata.FileBlock{}, nil
+	}
+	return result, nil
+}
+
+// parseBlockIdx extracts the numeric block index from a block ID ("{payloadID}/{blockIdx}").
+func parseBlockIdx(id string) int {
+	if idx := strings.LastIndex(id, "/"); idx >= 0 {
+		var v int
+		if _, err := fmt.Sscanf(id[idx+1:], "%d", &v); err == nil {
+			return v
+		}
+	}
+	return 0
 }
 
 // ============================================================================
 // Transaction Support
 // ============================================================================
 
-// Ensure badgerTransaction implements ObjectStore
-var _ metadata.ObjectStore = (*badgerTransaction)(nil)
+// Ensure badgerTransaction implements FileBlockStore
+var _ metadata.FileBlockStore = (*badgerTransaction)(nil)
 
-// Transaction wrapper methods delegate to store with transaction context
-
-func (tx *badgerTransaction) GetObject(ctx context.Context, id metadata.ContentHash) (*metadata.Object, error) {
-	return tx.store.GetObject(ctx, id)
+func (tx *badgerTransaction) GetFileBlock(ctx context.Context, id string) (*metadata.FileBlock, error) {
+	return tx.store.GetFileBlock(ctx, id)
 }
 
-func (tx *badgerTransaction) PutObject(ctx context.Context, obj *metadata.Object) error {
-	return tx.store.PutObject(ctx, obj)
+func (tx *badgerTransaction) PutFileBlock(ctx context.Context, block *metadata.FileBlock) error {
+	return tx.store.PutFileBlock(ctx, block)
 }
 
-func (tx *badgerTransaction) DeleteObject(ctx context.Context, id metadata.ContentHash) error {
-	return tx.store.DeleteObject(ctx, id)
+func (tx *badgerTransaction) DeleteFileBlock(ctx context.Context, id string) error {
+	return tx.store.DeleteFileBlock(ctx, id)
 }
 
-func (tx *badgerTransaction) IncrementObjectRefCount(ctx context.Context, id metadata.ContentHash) (uint32, error) {
-	return tx.store.IncrementObjectRefCount(ctx, id)
+func (tx *badgerTransaction) IncrementRefCount(ctx context.Context, id string) error {
+	return tx.store.IncrementRefCount(ctx, id)
 }
 
-func (tx *badgerTransaction) DecrementObjectRefCount(ctx context.Context, id metadata.ContentHash) (uint32, error) {
-	return tx.store.DecrementObjectRefCount(ctx, id)
+func (tx *badgerTransaction) DecrementRefCount(ctx context.Context, id string) (uint32, error) {
+	return tx.store.DecrementRefCount(ctx, id)
 }
 
-func (tx *badgerTransaction) GetChunk(ctx context.Context, hash metadata.ContentHash) (*metadata.ObjectChunk, error) {
-	return tx.store.GetChunk(ctx, hash)
+func (tx *badgerTransaction) FindFileBlockByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
+	return tx.store.FindFileBlockByHash(ctx, hash)
 }
 
-func (tx *badgerTransaction) GetChunksByObject(ctx context.Context, objectID metadata.ContentHash) ([]*metadata.ObjectChunk, error) {
-	return tx.store.GetChunksByObject(ctx, objectID)
+func (tx *badgerTransaction) ListLocalBlocks(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
+	return tx.store.ListLocalBlocks(ctx, olderThan, limit)
 }
 
-func (tx *badgerTransaction) PutChunk(ctx context.Context, chunk *metadata.ObjectChunk) error {
-	return tx.store.PutChunk(ctx, chunk)
+func (tx *badgerTransaction) ListRemoteBlocks(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
+	return tx.store.ListRemoteBlocks(ctx, limit)
 }
 
-func (tx *badgerTransaction) DeleteChunk(ctx context.Context, hash metadata.ContentHash) error {
-	return tx.store.DeleteChunk(ctx, hash)
+func (tx *badgerTransaction) ListUnreferenced(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
+	return tx.store.ListUnreferenced(ctx, limit)
 }
 
-func (tx *badgerTransaction) IncrementChunkRefCount(ctx context.Context, hash metadata.ContentHash) (uint32, error) {
-	return tx.store.IncrementChunkRefCount(ctx, hash)
-}
-
-func (tx *badgerTransaction) DecrementChunkRefCount(ctx context.Context, hash metadata.ContentHash) (uint32, error) {
-	return tx.store.DecrementChunkRefCount(ctx, hash)
-}
-
-func (tx *badgerTransaction) GetBlock(ctx context.Context, hash metadata.ContentHash) (*metadata.ObjectBlock, error) {
-	return tx.store.GetBlock(ctx, hash)
-}
-
-func (tx *badgerTransaction) GetBlocksByChunk(ctx context.Context, chunkHash metadata.ContentHash) ([]*metadata.ObjectBlock, error) {
-	return tx.store.GetBlocksByChunk(ctx, chunkHash)
-}
-
-func (tx *badgerTransaction) PutBlock(ctx context.Context, block *metadata.ObjectBlock) error {
-	return tx.store.PutBlock(ctx, block)
-}
-
-func (tx *badgerTransaction) DeleteBlock(ctx context.Context, hash metadata.ContentHash) error {
-	return tx.store.DeleteBlock(ctx, hash)
-}
-
-func (tx *badgerTransaction) FindBlockByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.ObjectBlock, error) {
-	return tx.store.FindBlockByHash(ctx, hash)
-}
-
-func (tx *badgerTransaction) IncrementBlockRefCount(ctx context.Context, hash metadata.ContentHash) (uint32, error) {
-	return tx.store.IncrementBlockRefCount(ctx, hash)
-}
-
-func (tx *badgerTransaction) DecrementBlockRefCount(ctx context.Context, hash metadata.ContentHash) (uint32, error) {
-	return tx.store.DecrementBlockRefCount(ctx, hash)
-}
-
-func (tx *badgerTransaction) MarkBlockUploaded(ctx context.Context, hash metadata.ContentHash) error {
-	return tx.store.MarkBlockUploaded(ctx, hash)
+func (tx *badgerTransaction) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
+	return tx.store.ListFileBlocks(ctx, payloadID)
 }
