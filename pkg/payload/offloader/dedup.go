@@ -16,8 +16,8 @@ func (m *Offloader) getUploadState(payloadID string) *fileUploadState {
 
 // DeleteWithRefCount decrements RefCount for each block and deletes blocks that reach zero.
 func (m *Offloader) DeleteWithRefCount(ctx context.Context, payloadID string, blockIDs []string) error {
-	if !m.canProcess(ctx) {
-		return ErrClosed
+	if err := m.checkReady(ctx); err != nil {
+		return err
 	}
 
 	m.uploadsMu.Lock()

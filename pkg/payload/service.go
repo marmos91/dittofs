@@ -141,7 +141,10 @@ func (s *PayloadService) WriteAt(ctx context.Context, id metadata.PayloadID, dat
 	if len(data) == 0 {
 		return nil
 	}
-	return s.cache.WriteAt(ctx, string(id), data, offset)
+	if err := s.cache.WriteAt(ctx, string(id), data, offset); err != nil {
+		return fmt.Errorf("cache write failed: %w", err)
+	}
+	return nil
 }
 
 // Truncate truncates payload to the specified size in both cache and block store.
@@ -153,11 +156,11 @@ func (s *PayloadService) Truncate(ctx context.Context, id metadata.PayloadID, ne
 	return s.offloader.Truncate(ctx, payloadID, newSize)
 }
 
-// Delete removes payload from both cache and block store.
+// Delete removes payload from cache (memory + disk) and block store.
 func (s *PayloadService) Delete(ctx context.Context, id metadata.PayloadID) error {
 	payloadID := string(id)
-	if err := s.cache.EvictMemory(ctx, payloadID); err != nil {
-		return fmt.Errorf("cache evict memory failed: %w", err)
+	if err := s.cache.DeleteAllBlockFiles(ctx, payloadID); err != nil {
+		return fmt.Errorf("cache delete failed: %w", err)
 	}
 	return s.offloader.Delete(ctx, payloadID)
 }

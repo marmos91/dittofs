@@ -29,8 +29,8 @@ func (m *Offloader) resolveStoreKey(ctx context.Context, payloadID string, block
 // Returns nil data for sparse blocks (no FileBlock entry or missing S3 object).
 // Returns nil data when blockStore is nil (local-only mode — no remote data exists).
 func (m *Offloader) downloadBlock(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, error) {
-	if !m.canProcess(ctx) {
-		return nil, ErrClosed
+	if err := m.checkReady(ctx); err != nil {
+		return nil, err
 	}
 
 	if m.blockStore == nil {
@@ -84,8 +84,8 @@ func (m *Offloader) EnsureAvailableAndRead(ctx context.Context, payloadID string
 	if length == 0 {
 		return false, nil
 	}
-	if !m.canProcess(ctx) {
-		return false, ErrClosed
+	if err := m.checkReady(ctx); err != nil {
+		return false, err
 	}
 	if m.blockStore == nil {
 		return false, nil // Local-only: all data must be in cache, no downloads possible
@@ -260,8 +260,8 @@ func (m *Offloader) EnsureAvailable(ctx context.Context, payloadID string, offse
 	if length == 0 {
 		return nil
 	}
-	if !m.canProcess(ctx) {
-		return ErrClosed
+	if err := m.checkReady(ctx); err != nil {
+		return err
 	}
 	if m.blockStore == nil {
 		return nil // Local-only: all data must be in cache, no downloads possible

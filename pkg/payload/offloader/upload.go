@@ -23,7 +23,10 @@ const maxUploadBatch = 4
 // revertToLocal reverts a FileBlock to Local state so the periodic syncer retries it.
 func (m *Offloader) revertToLocal(ctx context.Context, fb *metadata.FileBlock) {
 	fb.State = metadata.BlockStateLocal
-	_ = m.fileBlockStore.PutFileBlock(ctx, fb)
+	if err := m.fileBlockStore.PutFileBlock(ctx, fb); err != nil {
+		logger.Error("revertToLocal: failed to revert block state, block may be stuck in Syncing",
+			"blockID", fb.ID, "error", err)
+	}
 }
 
 // uploadPendingBlocks scans FileBlockStore for local blocks not yet synced
@@ -123,8 +126,8 @@ func (m *Offloader) uploadFileBlock(ctx context.Context, fb *metadata.FileBlock)
 // uploadBlock uploads a single block from cache to block store.
 // Called by queue workers for block-level upload requests.
 func (m *Offloader) uploadBlock(ctx context.Context, payloadID string, blockIdx uint64) error {
-	if !m.canProcess(ctx) {
-		return ErrClosed
+	if err := m.checkReady(ctx); err != nil {
+		return err
 	}
 	if m.blockStore == nil {
 		return errors.New("no remote store configured")
