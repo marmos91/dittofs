@@ -193,10 +193,10 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 
 	// Per MS-SMB2: offsets with the high bit set (>= 2^63) are invalid.
 	// offset + length exceeding INT64_MAX is also invalid.
-	// Additionally, writes at or beyond MAXFILESIZE (0xFFFFFF0000 = 16TB - 64KB,
+	// Additionally, writes at or beyond MAXFILESIZE (0xFFFFFFF0000 = 16TiB - 64KiB,
 	// the NTFS maximum file size) are rejected.
 	// Windows returns STATUS_INVALID_PARAMETER.
-	const int64Max = uint64(1<<63 - 1)      // 0x7FFFFFFFFFFFFFFF
+	const int64Max = uint64(1<<63 - 1)        // 0x7FFFFFFFFFFFFFFF
 	const maxFileSize = uint64(0xFFFFFFF0000) // NTFS max file size (~16TB)
 	if req.Offset > int64Max {
 		logger.Debug("WRITE: invalid offset (high bit set)", "path", openFile.Path, "offset", req.Offset)
