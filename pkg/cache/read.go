@@ -129,7 +129,7 @@ func (bc *BlockCache) readFromDisk(ctx context.Context, payloadID string, blockI
 
 	_, err = f.ReadAt(dest[:length], int64(offset))
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		if err == io.EOF {
 			return false, nil
 		}

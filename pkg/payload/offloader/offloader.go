@@ -34,9 +34,6 @@ func waitWithContext(ctx context.Context, fn func()) error {
 // to finish processing during graceful shutdown.
 const defaultShutdownTimeout = 30 * time.Second
 
-// blockKey uniquely identifies a block within a file (flat index).
-type blockKey = uint64
-
 // fileUploadState tracks in-flight uploads for a single file.
 type fileUploadState struct {
 	inFlight sync.WaitGroup // Tracks in-flight eager uploads
@@ -343,6 +340,8 @@ func (m *Offloader) Start(ctx context.Context) {
 // bypassing the UploadDelay. Blocks until all eligible blocks are uploaded.
 // Intended for testing — production code uses the periodic uploader.
 func (m *Offloader) SyncNow(ctx context.Context) {
+	// Flush queued FileBlock metadata to the store so ListLocalBlocks can find them.
+	m.cache.SyncFileBlocks(ctx)
 	pending, err := m.fileBlockStore.ListLocalBlocks(ctx, 0, 0)
 	if err != nil {
 		return

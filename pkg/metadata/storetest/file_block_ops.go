@@ -165,7 +165,7 @@ func testListLocalBlocksEmptyStore(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("ListLocalBlocks(empty) error: %v", err)
 	}
-	if result != nil && len(result) != 0 {
+	if len(result) != 0 {
 		t.Errorf("ListLocalBlocks(empty) returned %d blocks, want 0", len(result))
 	}
 }
@@ -182,7 +182,7 @@ func testListRemoteBlocks(t *testing.T, factory StoreFactory) {
 	blocks := []*metadata.FileBlock{
 		{ID: "file-a/0", State: metadata.BlockStateRemote, CachePath: "/cache/a0", BlockStoreKey: "s3://a0", DataSize: 100, RefCount: 1, LastAccess: time.Now().Add(-2 * time.Hour), CreatedAt: time.Now()},
 		{ID: "file-a/1", State: metadata.BlockStateRemote, CachePath: "/cache/a1", BlockStoreKey: "s3://a1", DataSize: 200, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now()},
-		{ID: "file-b/0", State: metadata.BlockStateRemote, CachePath: "", BlockStoreKey: "s3://b0", DataSize: 300, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},          // Not cached
+		{ID: "file-b/0", State: metadata.BlockStateRemote, CachePath: "", BlockStoreKey: "s3://b0", DataSize: 300, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},               // Not cached
 		{ID: "file-c/0", State: metadata.BlockStateLocal, CachePath: "/cache/c0", DataSize: 400, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)}, // Local, not Remote
 		{ID: "file-d/0", State: metadata.BlockStateDirty, CachePath: "/cache/d0", DataSize: 500, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)}, // Dirty
 	}
@@ -241,7 +241,7 @@ func testListRemoteBlocksEmptyStore(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("ListRemoteBlocks(empty) error: %v", err)
 	}
-	if result != nil && len(result) != 0 {
+	if len(result) != 0 {
 		t.Errorf("ListRemoteBlocks(empty) returned %d blocks, want 0", len(result))
 	}
 }

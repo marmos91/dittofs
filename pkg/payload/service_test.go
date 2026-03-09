@@ -259,49 +259,6 @@ func TestPayloadService_GetStorageStats(t *testing.T) {
 	}
 }
 
-func TestPayloadService_GetStorageStats(t *testing.T) {
-	svc := newTestService(t)
-	ctx := context.Background()
-
-	// Empty cache: no data written yet.
-	stats, err := svc.GetStorageStats(ctx)
-	if err != nil {
-		t.Fatalf("GetStorageStats() error = %v", err)
-	}
-	if stats.UsedSize != 0 {
-		t.Errorf("GetStorageStats() UsedSize = %d, want 0", stats.UsedSize)
-	}
-	if stats.ContentCount != 0 {
-		t.Errorf("GetStorageStats() ContentCount = %d, want 0", stats.ContentCount)
-	}
-
-	// Write data to two separate files.
-	file1 := metadata.PayloadID("file-1")
-	data1 := []byte("hello world")
-	if err := svc.WriteAt(ctx, file1, data1, 0); err != nil {
-		t.Fatalf("WriteAt(file1) error = %v", err)
-	}
-
-	file2 := metadata.PayloadID("file-2")
-	data2 := []byte("goodbye")
-	if err := svc.WriteAt(ctx, file2, data2, 0); err != nil {
-		t.Fatalf("WriteAt(file2) error = %v", err)
-	}
-
-	stats, err = svc.GetStorageStats(ctx)
-	if err != nil {
-		t.Fatalf("GetStorageStats() error = %v", err)
-	}
-
-	wantSize := uint64(len(data1) + len(data2))
-	if stats.UsedSize != wantSize {
-		t.Errorf("GetStorageStats() UsedSize = %d, want %d", stats.UsedSize, wantSize)
-	}
-	if stats.ContentCount != 2 {
-		t.Errorf("GetStorageStats() ContentCount = %d, want 2", stats.ContentCount)
-	}
-}
-
 func TestPayloadService_HealthCheck(t *testing.T) {
 	svc := newTestService(t)
 
