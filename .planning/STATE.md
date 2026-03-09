@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: BlockStore Unification Refactor
-status: planning
-stopped_at: Phase 41 context gathered
-last_updated: "2026-03-09T11:54:57.856Z"
-last_activity: 2026-03-09 — v4.0 roadmap created with 9 phases (41-49)
+status: executing
+stopped_at: Completed 41-01-PLAN.md
+last_updated: "2026-03-09T12:22:13Z"
+last_activity: 2026-03-09 — Phase 41 Plan 01 complete (block state rename)
 progress:
   total_phases: 22
   completed_phases: 1
@@ -27,9 +27,9 @@ See: .planning/PROJECT.md (updated 2026-03-09)
 
 Phase: 41 of 49 (Block State Enum and ListFileBlocks)
 Milestone: v4.0 BlockStore Unification Refactor
-Plan: 0 of ? in current phase
-Status: Ready to plan
-Last activity: 2026-03-09 — v4.0 roadmap created with 9 phases (41-49)
+Plan: 1 of 2 in current phase
+Status: Executing
+Last activity: 2026-03-09 — Phase 41 Plan 01 complete (block state rename)
 
 Progress: [████████████████████████████████████████░░░░░░░░░░░░] 67% (124/186+ total plans across all milestones)
 
@@ -54,7 +54,7 @@ Progress: [███████████████████████
 **v4.0 Current Milestone:**
 - 9 phases defined (41-49)
 - 55 requirements mapped
-- 0 plans created yet
+- 1 plan completed (41-01)
 
 ## Accumulated Context
 
@@ -66,6 +66,8 @@ Recent decisions affecting v4.0 work:
 - **Two-tier block store model**: Clean Local+Remote replaces confusing PayloadService/Cache/DirectWrite layers (Pending v4.0)
 - **Per-share block stores**: Different local paths and remote backends per share, replaces global PayloadService (Pending v4.0)
 - **BlockStore refactor before NFSv4.2**: Clean storage architecture enables easier feature development (Pending v4.0)
+- **Kept numeric values unchanged (0-3)**: Avoids data migration for persisted FileBlock data (Phase 41, Plan 01)
+- **Log messages updated to sync terminology now**: Method/file renames deferred to Phase 45 (Phase 41, Plan 01)
 
 ### Pending Todos
 
@@ -77,7 +79,7 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-09T11:54:57.853Z
-Stopped at: Phase 41 context gathered
-Resume file: .planning/phases/41-block-state-enum-and-listfileblocks/41-CONTEXT.md
-Next action: `/gsd:plan-phase 41` to begin Phase 41 planning
+Last session: 2026-03-09T12:22:13Z
+Stopped at: Completed 41-01-PLAN.md
+Resume file: .planning/phases/41-block-state-enum-and-listfileblocks/41-01-SUMMARY.md
+Next action: Execute 41-02-PLAN.md (ListFileBlocks method and conformance tests)

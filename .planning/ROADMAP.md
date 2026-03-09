@@ -175,7 +175,7 @@ Full phase details archived to [milestones/v3.8-ROADMAP.md](milestones/v3.8-ROAD
 **Verification**: `go build ./...` && `go test ./...`
 **Plans**: 2 plans
 Plans:
-- [ ] 41-01-PLAN.md — Rename state enum, query methods, update all consumers in cache/offloader
+- [x] 41-01-PLAN.md — Rename state enum, query methods, update all consumers in cache/offloader
 - [ ] 41-02-PLAN.md — Add ListFileBlocks method, conformance tests for FileBlockStore
 
 ### Phase 42: Legacy Cleanup
@@ -539,7 +539,7 @@ v3.8 (33-40.5) -> v4.0 (41-49) -> v4.1 (50-56) -> v4.2 (57-62)
 | 38. Durable Handles | v3.8 | 3/3 | Complete | 2026-03-02 |
 | 39. Cross-Protocol Integration and Documentation | v3.8 | 3/3 | Complete | 2026-03-02 |
 | 40. SMB3 Conformance Testing | v3.8 | 6/6 | Complete | 2026-03-02 |
-| 41. Block State Enum and ListFileBlocks | v4.0 | 0/2 | Not started | - |
+| 41. Block State Enum and ListFileBlocks | v4.0 | 1/2 | In progress | - |
 | 42. Legacy Cleanup | v4.0 | 0/? | Not started | - |
 | 43. Local-Only Block Management | v4.0 | 0/? | Not started | - |
 | 44. Data Model and API/CLI | v4.0 | 0/? | Not started | - |
