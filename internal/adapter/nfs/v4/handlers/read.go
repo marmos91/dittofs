@@ -145,7 +145,7 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 	}
 
 	// Get payload service and read data
-	payloadSvc, err := getPayloadServiceForCtx(h)
+	payloadSvc, err := getBlockStoreForCtx(h)
 	if err != nil {
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
@@ -159,9 +159,9 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 
 	// Check for COW source
 	if file.COWSourcePayloadID != "" {
-		n, err = payloadSvc.ReadAtWithCOWSource(ctx.Context, file.PayloadID, file.COWSourcePayloadID, data, offset)
+		n, err = payloadSvc.ReadAtWithCOWSource(ctx.Context, string(file.PayloadID), string(file.COWSourcePayloadID), data, offset)
 	} else {
-		n, err = payloadSvc.ReadAt(ctx.Context, file.PayloadID, data, offset)
+		n, err = payloadSvc.ReadAt(ctx.Context, string(file.PayloadID), data, offset)
 	}
 
 	if err != nil {

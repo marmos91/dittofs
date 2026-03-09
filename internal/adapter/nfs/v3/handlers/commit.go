@@ -195,9 +195,9 @@ func (h *Handler) Commit(
 
 	logger.InfoCtx(ctx.Context, "COMMIT: flushing data", "share", ctx.Share)
 
-	payloadSvc, err := getPayloadService(h.Registry)
+	blockStore, err := getBlockStore(h.Registry)
 	if err != nil {
-		logger.ErrorCtx(ctx.Context, "COMMIT failed: payload service not initialized", "client", clientIP, "error", err)
+		logger.ErrorCtx(ctx.Context, "COMMIT failed: block store not initialized", "client", clientIP, "error", err)
 		return &CommitResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
 			AttrBefore:      wccBefore,
@@ -215,7 +215,7 @@ func (h *Handler) Commit(
 	//
 	// Per RFC 1813 Section 3.3.21, the server MAY choose when data reaches
 	// stable storage. Our WAL cache provides the durability guarantee.
-	_, flushErr := payloadSvc.Flush(ctx.Context, file.PayloadID)
+	_, flushErr := blockStore.Flush(ctx.Context, string(file.PayloadID))
 	if flushErr != nil {
 		logError(ctx.Context, flushErr, "COMMIT failed: flush error", "handle", fmt.Sprintf("0x%x", req.Handle), "content_id", file.PayloadID, "client", clientIP)
 
@@ -236,19 +236,24 @@ func (h *Handler) Commit(
 	// ========================================================================
 
 	// Build auth context for metadata flush
+	var metadataFlushed bool
 	authCtx, authErr := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
 	if authErr == nil {
-		// Flush pending metadata for this specific file.
-		// wccAfter is already correct: GetFileCached returned the file with pending
-		// writes merged (size, mtime applied). FlushPendingWriteForFile persists those
-		// same values to the store — no need to read them back.
+		// Flush pending metadata for this specific file
 		flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, handle)
 		if metaErr != nil {
 			logger.WarnCtx(ctx.Context, "COMMIT: metadata flush failed", "handle", fmt.Sprintf("0x%x", req.Handle), "error", metaErr)
+			// Continue - content is flushed, metadata will be fixed eventually
 		} else if flushed {
+			metadataFlushed = true
 			logger.DebugCtx(ctx.Context, "COMMIT: flushed pending metadata", "handle", fmt.Sprintf("0x%x", req.Handle))
 		}
 	}
+
+	// wccAfter is already correct: GetFileCached returned the file with pending
+	// writes merged (size, mtime applied). FlushPendingWriteForFile persists those
+	// same values to BadgerDB — no need to read them back.
+	_ = metadataFlushed
 
 	logger.InfoCtx(ctx.Context, "COMMIT successful", "file", file.PayloadID, "offset", req.Offset, "count", req.Count, "client", clientIP)
 	return &CommitResponse{

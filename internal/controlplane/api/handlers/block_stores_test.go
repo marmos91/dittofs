@@ -247,8 +247,20 @@ func TestBlockStoreHandler_Delete_NotFound(t *testing.T) {
 
 func setupShareBlockStoreTest(t *testing.T) (store.Store, *ShareHandler) {
 	t.Helper()
-	cpStore, _ := setupBlockStoreTest(t)
-	return cpStore, NewShareHandler(cpStore, nil)
+
+	dbConfig := store.Config{
+		Type: "sqlite",
+		SQLite: store.SQLiteConfig{
+			Path: ":memory:",
+		},
+	}
+	cpStore, err := store.New(&dbConfig)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+
+	handler := NewShareHandler(cpStore, nil)
+	return cpStore, handler
 }
 
 func TestShareBlockStore_CreateWithLocal(t *testing.T) {

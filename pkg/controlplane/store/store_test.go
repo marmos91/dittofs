@@ -5,7 +5,6 @@ package store
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -929,13 +928,29 @@ func TestPostgresDSN(t *testing.T) {
 		t.Error("expected non-empty DSN")
 	}
 	// Check that all parts are present
-	if !strings.Contains(dsn, "host=localhost") {
+	if !contains(dsn, "host=localhost") {
 		t.Error("DSN should contain host")
 	}
-	if !strings.Contains(dsn, "port=5432") {
+	if !contains(dsn, "port=5432") {
 		t.Error("DSN should contain port")
 	}
-	if !strings.Contains(dsn, "sslmode=require") {
+	if !contains(dsn, "sslmode=require") {
 		t.Error("DSN should contain sslmode")
 	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr ||
+		len(s) > len(substr) && (s[:len(substr)] == substr ||
+			s[len(s)-len(substr):] == substr ||
+			containsMiddle(s, substr)))
+}
+
+func containsMiddle(s, substr string) bool {
+	for i := 1; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

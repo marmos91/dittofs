@@ -82,10 +82,10 @@ type MetadataServiceRegistrar interface {
 	RegisterStoreForShare(shareName string, store metadata.MetadataStore) error
 }
 
-// PayloadServiceEnsurer triggers lazy payload service initialization.
-type PayloadServiceEnsurer interface {
-	EnsurePayloadService(ctx context.Context) error
-	HasPayloadService() bool
+// BlockStoreEnsurer triggers lazy block store initialization.
+type BlockStoreEnsurer interface {
+	EnsureBlockStore(ctx context.Context) error
+	HasBlockStore() bool
 	HasStore() bool
 }
 
@@ -109,15 +109,15 @@ func (s *Service) AddShare(
 	config *ShareConfig,
 	storeProvider MetadataStoreProvider,
 	metadataSvc MetadataServiceRegistrar,
-	payloadEnsurer PayloadServiceEnsurer,
+	blockStoreEnsurer BlockStoreEnsurer,
 ) error {
 	if config.Name == "" {
 		return fmt.Errorf("cannot add share with empty name")
 	}
 
-	if payloadEnsurer != nil && !payloadEnsurer.HasPayloadService() && payloadEnsurer.HasStore() {
-		if err := payloadEnsurer.EnsurePayloadService(ctx); err != nil {
-			return fmt.Errorf("failed to initialize payload service: %w", err)
+	if blockStoreEnsurer != nil && !blockStoreEnsurer.HasBlockStore() && blockStoreEnsurer.HasStore() {
+		if err := blockStoreEnsurer.EnsureBlockStore(ctx); err != nil {
+			return fmt.Errorf("failed to initialize block store: %w", err)
 		}
 	}
 

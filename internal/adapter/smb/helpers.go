@@ -112,10 +112,7 @@ func handleRequest[Req smbRequest, Resp smbResponse](
 		if encErr != nil {
 			return &HandlerResult{Data: nil, Status: errorStatus}, encErr
 		}
-		// Return nil error: decode failures are expected protocol errors (e.g.,
-		// short body for zero-length writes). The caller (ProcessRequestWithFileID)
-		// overrides status with StatusInternalError when err != nil.
-		return &HandlerResult{Data: encoded, Status: errorStatus}, nil
+		return &HandlerResult{Data: encoded, Status: errorStatus}, err
 	}
 
 	// ========================================================================
@@ -130,10 +127,7 @@ func handleRequest[Req smbRequest, Resp smbResponse](
 		if encErr != nil {
 			return &HandlerResult{Data: nil, Status: errorStatus}, encErr
 		}
-		// Return nil error: handler errors are expected protocol errors.
-		// The caller (ProcessRequestWithFileID) overrides status with
-		// StatusInternalError when err != nil.
-		return &HandlerResult{Data: encoded, Status: errorStatus}, nil
+		return &HandlerResult{Data: encoded, Status: errorStatus}, err
 	}
 
 	// ========================================================================

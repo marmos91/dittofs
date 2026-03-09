@@ -98,7 +98,7 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 	}
 
 	// Get payload service and flush
-	payloadSvc, err := getPayloadServiceForCtx(h)
+	payloadSvc, err := getBlockStoreForCtx(h)
 	if err != nil {
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
@@ -107,7 +107,7 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 		}
 	}
 
-	_, flushErr := payloadSvc.Flush(authCtx.Context, file.PayloadID)
+	_, flushErr := payloadSvc.Flush(authCtx.Context, string(file.PayloadID))
 	if flushErr != nil {
 		logger.Debug("NFSv4 COMMIT flush failed",
 			"error", flushErr,

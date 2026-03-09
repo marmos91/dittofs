@@ -71,10 +71,9 @@ type WriteResponse struct {
 // DecodeWriteRequest parses an SMB2 WRITE request from wire format [MS-SMB2] 2.2.21.
 // It extracts all fields including the variable-length data buffer, whose
 // location is determined by DataOffset (relative to SMB2 header).
-// The fixed structure is 48 bytes. StructureSize is 49 per spec (includes 1 byte
-// of Buffer), but zero-length writes may omit the Buffer byte.
+// Returns an error if the body is less than 49 bytes.
 func DecodeWriteRequest(body []byte) (*WriteRequest, error) {
-	if len(body) < 48 {
+	if len(body) < 49 {
 		return nil, fmt.Errorf("WRITE request too short: %d bytes", len(body))
 	}
 
@@ -115,8 +114,9 @@ func DecodeWriteRequest(body []byte) (*WriteRequest, error) {
 		} else if len(body) > 48 && int(req.Length) <= len(body)-48 {
 			// Fallback: data might be right after the 48-byte fixed structure
 			req.Data = body[48 : 48+int(req.Length)]
-		} else {
-			return nil, fmt.Errorf("WRITE request body too short for Length=%d: have %d bytes after fixed structure", req.Length, len(body)-48)
+		} else if len(body) > 49 {
+			// Last resort: take whatever data is available after fixed part
+			req.Data = body[48:]
 		}
 	}
 
@@ -187,41 +187,6 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	}
 
 	// ========================================================================
-	// Step 3b: Validate offset range
-	// ========================================================================
-
-	// Per MS-SMB2: offsets with the high bit set (>= 2^63) are invalid.
-	// offset + length exceeding INT64_MAX is also invalid.
-	// Additionally, writes at or beyond MAXFILESIZE (0xFFFFFFF0000 = 16TiB - 64KiB,
-	// the NTFS maximum file size) are rejected.
-	// Windows returns STATUS_INVALID_PARAMETER.
-	const int64Max = uint64(1<<63 - 1)        // 0x7FFFFFFFFFFFFFFF
-	const maxFileSize = uint64(0xFFFFFFF0000) // NTFS max file size (~16TB)
-	if req.Offset > int64Max {
-		logger.Debug("WRITE: invalid offset (high bit set)", "path", openFile.Path, "offset", req.Offset)
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
-	}
-	if len(req.Data) > 0 && req.Offset > int64Max-uint64(len(req.Data)) {
-		logger.Debug("WRITE: offset+length exceeds INT64_MAX", "path", openFile.Path,
-			"offset", req.Offset, "length", len(req.Data))
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
-	}
-	if len(req.Data) > 0 {
-		writeEnd := req.Offset + uint64(len(req.Data))
-		if writeEnd > maxFileSize {
-			logger.Debug("WRITE: offset+length exceeds MAXFILESIZE", "path", openFile.Path,
-				"offset", req.Offset, "length", len(req.Data), "maxFileSize", maxFileSize)
-			return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
-		}
-		if writeEnd == maxFileSize {
-			// Writing right up to MAXFILESIZE boundary: Windows returns DISK_FULL
-			logger.Debug("WRITE: at MAXFILESIZE boundary", "path", openFile.Path,
-				"offset", req.Offset, "length", len(req.Data))
-			return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusDiskFull}}, nil
-		}
-	}
-
-	// ========================================================================
 	// Step 4: Get session and tree connection
 	// ========================================================================
 
@@ -253,26 +218,11 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	}
 
 	// ========================================================================
-	// Step 5b: Handle zero-length writes
-	// ========================================================================
-
-	// Per MS-SMB2: zero-length writes are valid no-ops that return success
-	// with 0 bytes written. Skip the prepare/write/commit cycle.
-	if len(req.Data) == 0 {
-		logger.Debug("WRITE: zero-length write (no-op)", "path", openFile.Path, "offset", req.Offset)
-		return &WriteResponse{
-			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
-			Count:           0,
-			Remaining:       0,
-		}, nil
-	}
-
-	// ========================================================================
 	// Step 6: Get metadata and content services
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-	payloadSvc := h.Registry.GetBlockService()
+	payloadSvc := h.Registry.GetBlockStore()
 
 	// ========================================================================
 	// Step 7: Build AuthContext
@@ -318,7 +268,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 
 	bytesWritten := len(req.Data)
 
-	err = payloadSvc.WriteAt(authCtx.Context, writeOp.PayloadID, req.Data, req.Offset)
+	err = payloadSvc.WriteAt(authCtx.Context, string(writeOp.PayloadID), req.Data, req.Offset)
 	if err != nil {
 		logger.Warn("WRITE: content write failed", "path", openFile.Path, "error", err)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil
@@ -334,13 +284,6 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		// Data was written but metadata not updated - this is an inconsistent state
 		// but we still report the error
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
-	}
-
-	// SMB requires immediate metadata visibility across sessions (unlike NFS
-	// which has explicit COMMIT). Flush deferred metadata so that other sessions
-	// reading the same file see updated size/timestamps without a FLUSH command.
-	if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle); flushErr != nil {
-		logger.Debug("WRITE: deferred metadata flush failed (non-fatal)", "path", openFile.Path, "error", flushErr)
 	}
 
 	// Per MS-FSA 2.1.5.14.2: If timestamps are frozen via SET_INFO with -1,

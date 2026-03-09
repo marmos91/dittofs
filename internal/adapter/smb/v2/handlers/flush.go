@@ -210,7 +210,7 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-	payloadSvc := h.Registry.GetBlockService()
+	payloadSvc := h.Registry.GetBlockStore()
 
 	// Verify file exists
 	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
@@ -229,7 +229,7 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	// Step 3: Flush data using PayloadService (same as NFS COMMIT)
 	// ========================================================================
 
-	_, flushErr := payloadSvc.Flush(ctx.Context, file.PayloadID)
+	_, flushErr := payloadSvc.Flush(ctx.Context, string(file.PayloadID))
 	if flushErr != nil {
 		logger.Warn("FLUSH: failed", "path", openFile.Path, "error", flushErr)
 		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUnexpectedIOError}}, nil

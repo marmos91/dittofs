@@ -23,9 +23,7 @@ import (
 // TestServerRestartRecovery starts a server with BadgerDB metadata and memory
 // payload, writes files, stops the server gracefully, starts a NEW server with
 // the SAME metadata directory, and verifies metadata (directory structure) survives
-// the restart. Payload data uses memory stores (ephemeral), so after restart only
-// metadata persistence is verified (file existence and directory structure).
-// File content is NOT expected to survive since the memory payload store is lost.
+// the restart. Payload data uses memory stores, so only metadata persistence is tested.
 func TestServerRestartRecovery(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping server restart recovery test in short mode")
@@ -135,15 +133,16 @@ func TestServerRestartRecovery(t *testing.T) {
 			mount := framework.MountNFSExportWithVersion(t, nfsPort, "/export", ver)
 			t.Cleanup(mount.Cleanup)
 
-			// Check that the file written before restart still exists (metadata survived)
+			// Check that the file written before restart still exists
 			filePath := mount.FilePath(fmt.Sprintf("recovery_v%s.txt", ver))
+			expectedContent := []byte(fmt.Sprintf("Recovery test content via v%s", ver))
 
 			assert.True(t, framework.FileExists(filePath),
-				"File should still exist after server restart (v%s) -- metadata persisted in BadgerDB", ver)
+				"File should still exist after server restart (v%s)", ver)
 
-			// Content verification: memory payload store is ephemeral, so content
-			// is lost on restart. We only verify metadata persistence (file exists).
-			// Reading content would return zeros or error depending on implementation.
+			readContent := framework.ReadFile(t, filePath)
+			assert.Equal(t, expectedContent, readContent,
+				"File content should be preserved after restart (v%s)", ver)
 
 			// Write a new file after restart to verify write capability
 			newFilePath := mount.FilePath(fmt.Sprintf("post_restart_v%s.txt", ver))

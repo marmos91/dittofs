@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/auth/sid"
+	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/adapters"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/identity"
@@ -15,7 +16,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/stores"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/payload"
 )
 
 // DefaultShutdownTimeout is the default timeout for graceful shutdown.
@@ -37,9 +37,9 @@ type CacheConfig struct {
 	MaxPendingSize uint64 // Maximum pending (dirty) data size (0 = default 2GB)
 }
 
-// OffloaderConfig holds offloader settings for background data transfer.
+// SyncerConfig holds syncer settings for background data transfer.
 // Kept here (instead of pkg/config) to avoid import cycles.
-type OffloaderConfig struct {
+type SyncerConfig struct {
 	ParallelUploads    int           // Concurrent block uploads (0 = default 16)
 	ParallelDownloads  int           // Concurrent block downloads per file (0 = default 32)
 	PrefetchBlocks     int           // Blocks to prefetch ahead (0 = default 64)
@@ -48,21 +48,21 @@ type OffloaderConfig struct {
 	UploadDelay        time.Duration // Min age before upload (0 = default 10s)
 }
 
-type payloadServiceHelper struct {
+type blockStoreHelper struct {
 	rt *Runtime
 }
 
-func (h *payloadServiceHelper) EnsurePayloadService(ctx context.Context) error {
-	return h.rt.EnsurePayloadService(ctx)
+func (h *blockStoreHelper) EnsureBlockStore(ctx context.Context) error {
+	return h.rt.EnsureBlockStore(ctx)
 }
 
-func (h *payloadServiceHelper) HasPayloadService() bool {
+func (h *blockStoreHelper) HasBlockStore() bool {
 	h.rt.mu.RLock()
 	defer h.rt.mu.RUnlock()
-	return h.rt.payloadService != nil
+	return h.rt.blockStore != nil
 }
 
-func (h *payloadServiceHelper) HasStore() bool {
+func (h *blockStoreHelper) HasStore() bool {
 	return h.rt.store != nil
 }
 
@@ -90,7 +90,7 @@ type Runtime struct {
 	store store.Store
 
 	metadataService *metadata.MetadataService
-	payloadService  *payload.PayloadService
+	blockStore      *engine.BlockStore
 
 	adaptersSvc  *adapters.Service
 	storesSvc    *stores.Service
@@ -100,7 +100,7 @@ type Runtime struct {
 	mountTracker *MountTracker
 
 	cacheConfig     *CacheConfig
-	offloaderConfig *OffloaderConfig
+	syncerConfig    *SyncerConfig
 	settingsWatcher *SettingsWatcher
 
 	adapterProviders   map[string]any
@@ -217,7 +217,7 @@ func (r *Runtime) CloseMetadataStores() {
 // --- Share Management (delegated to shares.Service) ---
 
 func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
-	return r.sharesSvc.AddShare(ctx, config, r.storesSvc, r.metadataService, &payloadServiceHelper{rt: r})
+	return r.sharesSvc.AddShare(ctx, config, r.storesSvc, r.metadataService, &blockStoreHelper{rt: r})
 }
 
 func (r *Runtime) RemoveShare(name string) error {
@@ -312,16 +312,17 @@ func (r *Runtime) ListMounts() []*LegacyMountInfo {
 
 func (r *Runtime) Store() store.Store                            { return r.store }
 func (r *Runtime) GetMetadataService() *metadata.MetadataService { return r.metadataService }
-func (r *Runtime) GetPayloadService() *payload.PayloadService    { return r.payloadService }
+func (r *Runtime) GetBlockStore() *engine.BlockStore             { return r.blockStore }
+
 
 // SIDMapper returns the machine SID mapper for Windows identity mapping.
 // Returns nil if the runtime has not been started yet (Serve not called).
 func (r *Runtime) SIDMapper() *sid.SIDMapper { return r.lifecycleSvc.SIDMapper() }
 
-func (r *Runtime) SetPayloadService(ps *payload.PayloadService) {
+func (r *Runtime) SetBlockStore(bs *engine.BlockStore) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.payloadService = ps
+	r.blockStore = bs
 }
 
 func (r *Runtime) SetCacheConfig(cfg *CacheConfig) {
@@ -336,29 +337,28 @@ func (r *Runtime) GetCacheConfig() *CacheConfig {
 	return r.cacheConfig
 }
 
-func (r *Runtime) SetOffloaderConfig(cfg *OffloaderConfig) {
+func (r *Runtime) SetSyncerConfig(cfg *SyncerConfig) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.offloaderConfig = cfg
+	r.syncerConfig = cfg
 }
 
+
 // DrainAllUploads waits for all in-flight uploads across all files to complete.
-// Returns nil if no payload service is configured or all uploads drained successfully.
+// Returns nil if no block store is configured or all uploads drained successfully.
 func (r *Runtime) DrainAllUploads(ctx context.Context) error {
 	r.mu.RLock()
-	ps := r.payloadService
+	bs := r.blockStore
 	r.mu.RUnlock()
-	if ps == nil {
+	if bs == nil {
 		return nil
 	}
-	return ps.DrainAllUploads(ctx)
+	return bs.DrainAllUploads(ctx)
 }
 
 func (r *Runtime) GetUserStore() models.UserStore         { return r.store }
 func (r *Runtime) GetIdentityStore() models.IdentityStore { return r.store }
 
-// GetBlockService is deprecated; use GetPayloadService.
-func (r *Runtime) GetBlockService() *payload.PayloadService { return r.payloadService }
 
 // --- Settings Access ---
 

@@ -1,0 +1,286 @@
+//go:build integration
+
+package gc
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
+	remotes3 "github.com/marmos91/dittofs/pkg/blockstore/remote/s3"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/wait"
+)
+
+// sharedHelper is a package-level Localstack container shared across all tests.
+var sharedHelper *localstackHelper
+
+// localstackHelper manages Localstack container for S3 tests.
+type localstackHelper struct {
+	container testcontainers.Container
+	endpoint  string
+	client    *s3.Client
+}
+
+// startSharedLocalstack starts a single Localstack container for the entire
+// test package. Returns a cleanup function.
+func startSharedLocalstack() func() {
+	ctx := context.Background()
+
+	// Check for external Localstack
+	if endpoint := os.Getenv("LOCALSTACK_ENDPOINT"); endpoint != "" {
+		helper := &localstackHelper{endpoint: endpoint}
+		helper.initClient()
+		sharedHelper = helper
+		return func() {}
+	}
+
+	// Start Localstack container
+	req := testcontainers.ContainerRequest{
+		Image:        "localstack/localstack:3.0",
+		ExposedPorts: []string{"4566/tcp"},
+		Env: map[string]string{
+			"SERVICES":              "s3",
+			"DEFAULT_REGION":        "us-east-1",
+			"EAGER_SERVICE_LOADING": "1",
+		},
+		WaitingFor: wait.ForAll(
+			wait.ForListeningPort("4566/tcp"),
+			wait.ForHTTP("/_localstack/health").
+				WithPort("4566/tcp").
+				WithStartupTimeout(60*time.Second),
+		),
+	}
+
+	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: req,
+		Started:          true,
+	})
+	if err != nil {
+		log.Fatalf("failed to start localstack: %v", err)
+	}
+
+	host, err := container.Host(ctx)
+	if err != nil {
+		container.Terminate(ctx)
+		log.Fatalf("failed to get host: %v", err)
+	}
+
+	port, err := container.MappedPort(ctx, "4566")
+	if err != nil {
+		container.Terminate(ctx)
+		log.Fatalf("failed to get port: %v", err)
+	}
+
+	helper := &localstackHelper{
+		container: container,
+		endpoint:  fmt.Sprintf("http://%s:%s", host, port.Port()),
+	}
+	helper.initClient()
+	sharedHelper = helper
+
+	return func() {
+		_ = container.Terminate(ctx)
+	}
+}
+
+// initClient creates an S3 client configured for Localstack.
+func (h *localstackHelper) initClient() {
+	ctx := context.Background()
+
+	cfg, err := awsconfig.LoadDefaultConfig(ctx,
+		awsconfig.WithRegion("us-east-1"),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "")),
+	)
+	if err != nil {
+		log.Fatalf("failed to load AWS config: %v", err)
+	}
+
+	h.client = s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(h.endpoint)
+		o.UsePathStyle = true
+	})
+}
+
+func (h *localstackHelper) createBucket(t *testing.T, bucket string) {
+	t.Helper()
+	ctx := context.Background()
+
+	_, err := h.client.CreateBucket(ctx, &s3.CreateBucketInput{
+		Bucket: aws.String(bucket),
+	})
+	if err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+}
+
+func TestMain(m *testing.M) {
+	cleanup := startSharedLocalstack()
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
+}
+
+// ============================================================================
+// Memory GC Integration Tests
+// ============================================================================
+
+func TestCollectGarbage_Memory(t *testing.T) {
+	ctx := context.Background()
+
+	// Create memory remote store
+	remoteStore := remotememory.New()
+	defer remoteStore.Close()
+
+	// Create blocks for two files
+	validPayloadID := "export/valid-file.txt"
+	orphanPayloadID := "export/orphan-file.txt"
+
+	// Write blocks
+	data := make([]byte, 1024)
+	require.NoError(t, remoteStore.WriteBlock(ctx, validPayloadID+"/block-0", data))
+	require.NoError(t, remoteStore.WriteBlock(ctx, orphanPayloadID+"/block-0", data))
+	require.NoError(t, remoteStore.WriteBlock(ctx, orphanPayloadID+"/block-1", data))
+
+	// Set up reconciler with only valid file
+	reconciler := newGCTestReconciler()
+	store := reconciler.addShare("/export")
+	createFileWithPayloadID(ctx, t, store, "/export", validPayloadID)
+
+	// Run GC
+	stats := CollectGarbage(ctx, remoteStore, reconciler, nil)
+
+	assert.Equal(t, 3, stats.BlocksScanned)
+	assert.Equal(t, 1, stats.OrphanFiles)
+	assert.Equal(t, 2, stats.OrphanBlocks)
+	assert.Equal(t, 0, stats.Errors)
+
+	// Verify orphan blocks were deleted
+	keys, _ := remoteStore.ListByPrefix(ctx, orphanPayloadID)
+	assert.Empty(t, keys, "orphan blocks should be deleted")
+
+	// Verify valid blocks still exist
+	keys, _ = remoteStore.ListByPrefix(ctx, validPayloadID)
+	assert.Len(t, keys, 1, "valid blocks should remain")
+}
+
+func TestCollectGarbage_Memory_LargeScale(t *testing.T) {
+	ctx := context.Background()
+
+	// Create memory remote store
+	remoteStore := remotememory.New()
+	defer remoteStore.Close()
+
+	// Create 100 files, 50% orphans
+	reconciler := newGCTestReconciler()
+	store := reconciler.addShare("/export")
+
+	data := make([]byte, 1024)
+	for i := 0; i < 100; i++ {
+		payloadID := fmt.Sprintf("export/file-%d.txt", i)
+		require.NoError(t, remoteStore.WriteBlock(ctx, payloadID+"/block-0", data))
+
+		if i%2 == 0 {
+			createFileWithPayloadID(ctx, t, store, "/export", payloadID) // 50 valid files
+		}
+	}
+
+	// Run GC
+	stats := CollectGarbage(ctx, remoteStore, reconciler, nil)
+
+	assert.Equal(t, 100, stats.BlocksScanned)
+	assert.Equal(t, 50, stats.OrphanFiles)
+	assert.Equal(t, 50, stats.OrphanBlocks)
+}
+
+// ============================================================================
+// S3 GC Integration Tests
+// ============================================================================
+
+func TestCollectGarbage_S3(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a dedicated bucket for GC testing with unique name to avoid flakiness.
+	bucketName := fmt.Sprintf("gc-test-%d", time.Now().UnixNano())
+	sharedHelper.createBucket(t, bucketName)
+
+	// Create S3 remote store using the shared helper's client.
+	remoteStore := remotes3.New(sharedHelper.client, remotes3.Config{
+		Bucket:    bucketName,
+		KeyPrefix: "blocks/",
+	})
+
+	// Create blocks for two files
+	validPayloadID := "export/valid-file.txt"
+	orphanPayloadID := "export/orphan-file.txt"
+
+	data := make([]byte, 1024)
+	require.NoError(t, remoteStore.WriteBlock(ctx, validPayloadID+"/block-0", data))
+	require.NoError(t, remoteStore.WriteBlock(ctx, orphanPayloadID+"/block-0", data))
+	require.NoError(t, remoteStore.WriteBlock(ctx, orphanPayloadID+"/block-1", data))
+
+	// Set up reconciler with only valid file
+	reconciler := newGCTestReconciler()
+	store := reconciler.addShare("/export")
+	createFileWithPayloadID(ctx, t, store, "/export", validPayloadID)
+
+	// Run GC
+	stats := CollectGarbage(ctx, remoteStore, reconciler, nil)
+
+	assert.Equal(t, 3, stats.BlocksScanned)
+	assert.Equal(t, 1, stats.OrphanFiles)
+	assert.Equal(t, 2, stats.OrphanBlocks)
+	assert.Equal(t, 0, stats.Errors)
+
+	// Verify orphan blocks were deleted from S3
+	keys, _ := remoteStore.ListByPrefix(ctx, orphanPayloadID)
+	assert.Empty(t, keys, "orphan blocks should be deleted from S3")
+
+	// Verify valid blocks still exist in S3
+	keys, _ = remoteStore.ListByPrefix(ctx, validPayloadID)
+	assert.Len(t, keys, 1, "valid blocks should remain in S3")
+}
+
+// ============================================================================
+// Memory Benchmarks
+// ============================================================================
+
+func BenchmarkCollectGarbage_Memory(b *testing.B) {
+	ctx := context.Background()
+
+	// Create memory remote store
+	remoteStore := remotememory.New()
+	defer remoteStore.Close()
+
+	// Set up reconciler with 50% orphans
+	reconciler := newGCTestReconciler()
+	store := reconciler.addShare("/export")
+
+	data := make([]byte, 1024)
+	for i := 0; i < 100; i++ {
+		payloadID := fmt.Sprintf("export/file-%d.txt", i)
+		remoteStore.WriteBlock(ctx, payloadID+"/block-0", data)
+
+		if i%2 == 0 {
+			createFileWithPayloadID(ctx, b, store, "/export", payloadID)
+		}
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		// Use dry run to avoid modifying the store
+		CollectGarbage(ctx, remoteStore, reconciler, &Options{DryRun: true})
+	}
+}

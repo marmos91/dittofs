@@ -8,8 +8,8 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/pool"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/payload"
 )
 
 // ============================================================================
@@ -55,7 +55,7 @@ func (r *payloadReadResult) Release() {
 //   - error: Error if read failed
 func readFromPayloadService(
 	ctx *NFSHandlerContext,
-	payloadSvc *payload.PayloadService,
+	blockStore *engine.BlockStore,
 	payloadID metadata.PayloadID,
 	cowSource metadata.PayloadID,
 	offset uint64,
@@ -63,7 +63,7 @@ func readFromPayloadService(
 	clientIP string,
 	handle []byte,
 ) (payloadReadResult, error) {
-	logger.DebugCtx(ctx.Context, "READ: reading from Payload Service", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "count", count, "content_id", payloadID, "cow_source", cowSource)
+	logger.DebugCtx(ctx.Context, "READ: reading from BlockStore", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "count", count, "content_id", payloadID, "cow_source", cowSource)
 
 	// Get a pooled buffer for the read
 	data := pool.Get(int(count))
@@ -72,10 +72,10 @@ func readFromPayloadService(
 	var readErr error
 	if cowSource != "" {
 		// Use COW-aware read that handles lazy copy from source
-		n, readErr = payloadSvc.ReadAtWithCOWSource(ctx.Context, payloadID, cowSource, data, offset)
+		n, readErr = blockStore.ReadAtWithCOWSource(ctx.Context, string(payloadID), string(cowSource), data, offset)
 	} else {
 		// Standard read
-		n, readErr = payloadSvc.ReadAt(ctx.Context, payloadID, data, offset)
+		n, readErr = blockStore.ReadAt(ctx.Context, string(payloadID), data, offset)
 	}
 
 	// Handle ReadAt results

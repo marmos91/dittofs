@@ -84,10 +84,10 @@ func (s *GORMStore) DeleteBlockStore(ctx context.Context, name string, kind mode
 	})
 }
 
-func (s *GORMStore) GetSharesByBlockStore(ctx context.Context, storeName string, kind models.BlockStoreKind) ([]*models.Share, error) {
-	// Find block store by name and kind
+func (s *GORMStore) GetSharesByBlockStore(ctx context.Context, storeName string) ([]*models.Share, error) {
+	// Find block store by name (could be local or remote)
 	var store models.BlockStoreConfig
-	if err := s.db.WithContext(ctx).Where("name = ? AND kind = ?", storeName, kind).First(&store).Error; err != nil {
+	if err := s.db.WithContext(ctx).Where("name = ?", storeName).First(&store).Error; err != nil {
 		return nil, convertNotFoundError(err, models.ErrStoreNotFound)
 	}
 

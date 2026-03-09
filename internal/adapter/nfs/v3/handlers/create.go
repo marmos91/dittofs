@@ -8,8 +8,8 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/payload"
 )
 
 // ============================================================================
@@ -498,7 +498,7 @@ func createNewFile(
 //   - Updated file attributes and error
 func truncateExistingFile(
 	authCtx *metadata.AuthContext,
-	payloadSvc *payload.PayloadService,
+	payloadSvc *engine.BlockStore,
 	metaSvc *metadata.MetadataService,
 	existingFile *metadata.File,
 	req *CreateRequest,
@@ -541,7 +541,7 @@ func truncateExistingFile(
 
 	// Truncate content if file has content
 	if existingFile.PayloadID != "" {
-		if err := payloadSvc.Truncate(authCtx.Context, existingFile.PayloadID, targetSize); err != nil {
+		if err := payloadSvc.Truncate(authCtx.Context, string(existingFile.PayloadID), targetSize); err != nil {
 			logger.Warn("Failed to truncate content", "size", targetSize, "error", err)
 			// Non-fatal: metadata is already updated
 		}

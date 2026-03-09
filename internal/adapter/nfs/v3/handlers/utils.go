@@ -7,9 +7,9 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/mfsymlink"
+	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/payload"
 )
 
 // validationError represents a request validation error with an NFS status code.
@@ -26,23 +26,23 @@ func (e *validationError) Error() string {
 // ErrMetadataServiceNotInitialized is returned when the metadata service is not available.
 var ErrMetadataServiceNotInitialized = errors.New("metadata service not initialized")
 
-// ErrPayloadServiceNotInitialized is returned when the payload service is not available.
-var ErrPayloadServiceNotInitialized = errors.New("payload service not initialized")
+// ErrBlockStoreNotInitialized is returned when the block store is not available.
+var ErrBlockStoreNotInitialized = errors.New("block store not initialized")
 
-// getServices returns both the metadata and payload services from the runtime.
+// getServices returns both the metadata and block store services from the runtime.
 // Returns an error if either service is not initialized.
-func getServices(reg *runtime.Runtime) (*metadata.MetadataService, *payload.PayloadService, error) {
+func getServices(reg *runtime.Runtime) (*metadata.MetadataService, *engine.BlockStore, error) {
 	metaSvc := reg.GetMetadataService()
 	if metaSvc == nil {
 		return nil, nil, ErrMetadataServiceNotInitialized
 	}
 
-	payloadSvc := reg.GetPayloadService()
-	if payloadSvc == nil {
-		return nil, nil, ErrPayloadServiceNotInitialized
+	blockStore := reg.GetBlockStore()
+	if blockStore == nil {
+		return nil, nil, ErrBlockStoreNotInitialized
 	}
 
-	return metaSvc, payloadSvc, nil
+	return metaSvc, blockStore, nil
 }
 
 // getMetadataService returns the metadata service from the runtime.
@@ -55,14 +55,14 @@ func getMetadataService(reg *runtime.Runtime) (*metadata.MetadataService, error)
 	return metaSvc, nil
 }
 
-// getPayloadService returns the payload service from the runtime.
-// Returns an error if the service is not initialized.
-func getPayloadService(reg *runtime.Runtime) (*payload.PayloadService, error) {
-	payloadSvc := reg.GetPayloadService()
-	if payloadSvc == nil {
-		return nil, ErrPayloadServiceNotInitialized
+// getBlockStore returns the block store from the runtime.
+// Returns an error if the block store is not initialized.
+func getBlockStore(reg *runtime.Runtime) (*engine.BlockStore, error) {
+	blockStore := reg.GetBlockStore()
+	if blockStore == nil {
+		return nil, ErrBlockStoreNotInitialized
 	}
-	return payloadSvc, nil
+	return blockStore, nil
 }
 
 // safeAdd performs checked addition of two uint64 values.
@@ -219,14 +219,14 @@ func readMFsymlinkContentForNFS(
 		return nil, nil
 	}
 
-	// Use ContentService.ReadAt (Cache handles caching automatically)
-	payloadSvc, err := getPayloadService(reg)
+	// Use BlockStore.ReadAt (Cache handles caching automatically)
+	blockStore, err := getBlockStore(reg)
 	if err != nil {
 		return nil, err
 	}
 
 	data := make([]byte, mfsymlink.Size)
-	n, err := payloadSvc.ReadAt(ctx, payloadID, data, 0)
+	n, err := blockStore.ReadAt(ctx, string(payloadID), data, 0)
 	if err != nil {
 		return nil, err
 	}

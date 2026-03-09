@@ -8,8 +8,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-func TestEnsurePayloadServiceLocalOnly(t *testing.T) {
-	// Create a real store with SQLite in-memory (no payload stores configured).
+func TestEnsureBlockStoreLocalOnly(t *testing.T) {
+	// Create a real store with SQLite in-memory (no remote block stores configured).
 	s, err := cpstore.New(&cpstore.Config{
 		Type:   cpstore.DatabaseTypeSQLite,
 		SQLite: cpstore.SQLiteConfig{Path: ":memory:"},
@@ -21,27 +21,27 @@ func TestEnsurePayloadServiceLocalOnly(t *testing.T) {
 	rt := New(s)
 	ctx := context.Background()
 
-	// Register a metadata store (required by EnsurePayloadService).
+	// Register a metadata store (required by EnsureBlockStore).
 	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
 	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
 		t.Fatalf("failed to register metadata store: %v", err)
 	}
 
-	// Set cache config (required by EnsurePayloadService).
+	// Set cache config (required by EnsureBlockStore).
 	rt.SetCacheConfig(&CacheConfig{
 		Path: t.TempDir(),
 		Size: 0, // unlimited
 	})
 
-	// No payload stores are configured in the database.
-	// EnsurePayloadService should succeed in local-only mode.
-	if err := rt.EnsurePayloadService(ctx); err != nil {
-		t.Fatalf("EnsurePayloadService should succeed with no payload stores (local-only), got: %v", err)
+	// No remote block stores are configured in the database.
+	// EnsureBlockStore should succeed in local-only mode.
+	if err := rt.EnsureBlockStore(ctx); err != nil {
+		t.Fatalf("EnsureBlockStore should succeed with no remote stores (local-only), got: %v", err)
 	}
 
-	// Verify PayloadService was created.
-	ps := rt.GetPayloadService()
-	if ps == nil {
-		t.Fatal("expected non-nil PayloadService after local-only init")
+	// Verify BlockStore was created.
+	bs := rt.GetBlockStore()
+	if bs == nil {
+		t.Fatal("expected non-nil BlockStore after local-only init")
 	}
 }

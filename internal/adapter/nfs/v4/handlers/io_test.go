@@ -10,24 +10,23 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
-	"github.com/marmos91/dittofs/pkg/cache"
+	"github.com/marmos91/dittofs/pkg/blockstore/engine"
+	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
+	blocksync "github.com/marmos91/dittofs/pkg/blockstore/sync"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	memorymeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
-	"github.com/marmos91/dittofs/pkg/payload"
-	"github.com/marmos91/dittofs/pkg/payload/offloader"
-	storemem "github.com/marmos91/dittofs/pkg/payload/store/memory"
 )
 
 // ============================================================================
 // I/O Test Fixture (includes PayloadService for READ/WRITE/COMMIT)
 // ============================================================================
 
-// ioTestFixture extends realFSTestFixture with payload service support.
+// ioTestFixture extends realFSTestFixture with block store support.
 type ioTestFixture struct {
 	handler    *Handler
 	metaSvc    *metadata.MetadataService
-	payloadSvc *payload.PayloadService
+	payloadSvc *engine.BlockStore
 	store      metadata.MetadataStore
 	rootHandle metadata.FileHandle
 	shareName  string
@@ -40,24 +39,30 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 	// Create in-memory metadata store
 	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
 
-	// Create cache, block store, and transfer manager for payload operations
+	// Create local store, syncer, and block store engine
 	tmpDir := t.TempDir()
-	bc, err := cache.New(tmpDir, 0, 0, metaStore)
+	localStore, err := fs.New(tmpDir, 0, 0, metaStore)
 	if err != nil {
-		t.Fatalf("create block cache: %v", err)
+		t.Fatalf("create local store: %v", err)
 	}
-	t.Cleanup(func() { _ = bc.Close() })
-	blockStore := storemem.New()
-	offloaderInstance := offloader.New(bc, blockStore, metaStore, offloader.DefaultConfig())
+	t.Cleanup(func() { _ = localStore.Close() })
+	syncer := blocksync.New(localStore, nil, metaStore, blocksync.DefaultConfig())
 
-	payloadSvc, err := payload.New(bc, offloaderInstance)
+	blockSvc, err := engine.New(engine.Config{
+		Local:  localStore,
+		Syncer: syncer,
+	})
 	if err != nil {
-		t.Fatalf("create payload service: %v", err)
+		t.Fatalf("create block store: %v", err)
 	}
+	if err := blockSvc.Start(context.Background()); err != nil {
+		t.Fatalf("start block store: %v", err)
+	}
+	t.Cleanup(func() { _ = blockSvc.Close() })
 
-	// Create runtime with payload service
+	// Create runtime with block store
 	rt := runtime.New(nil)
-	rt.SetPayloadService(payloadSvc)
+	rt.SetBlockStore(blockSvc)
 	metaSvc := rt.GetMetadataService()
 	metaSvc.SetDeferredCommit(false)
 
@@ -91,7 +96,7 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 	return &ioTestFixture{
 		handler:    handler,
 		metaSvc:    metaSvc,
-		payloadSvc: payloadSvc,
+		payloadSvc: blockSvc,
 		store:      metaStore,
 		rootHandle: share.RootHandle,
 		shareName:  shareName,
@@ -141,7 +146,7 @@ func (fx *ioTestFixture) writeContent(t *testing.T, fileHandle metadata.FileHand
 	}
 
 	// Write via payload service
-	if err := fx.payloadSvc.WriteAt(ctx, file.PayloadID, data, 0); err != nil {
+	if err := fx.payloadSvc.WriteAt(ctx, string(file.PayloadID), data, 0); err != nil {
 		t.Fatalf("write payload: %v", err)
 	}
 
@@ -981,7 +986,7 @@ func TestWrite_Success(t *testing.T) {
 	}
 
 	readBuf := make([]byte, len(content))
-	n2, err := fx.payloadSvc.ReadAt(context.Background(), file.PayloadID, readBuf, 0)
+	n2, err := fx.payloadSvc.ReadAt(context.Background(), string(file.PayloadID), readBuf, 0)
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}

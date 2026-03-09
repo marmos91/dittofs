@@ -401,19 +401,6 @@ func (s *MetadataService) FlushPendingWriteForFile(ctx *AuthContext, handle File
 		return false, nil
 	}
 
-	// Skip flushing if this is a cache-only state with no real write data.
-	// SetCachedFile creates PendingWriteState entries with only CachedFile set
-	// (MaxSize=0, LastMtime=zero) for fast-path PrepareWrite. Flushing these
-	// would be a no-op at best, or could overwrite valid timestamps at worst.
-	hasWriteData := state.MaxSize > 0 || !state.LastMtime.IsZero() || state.ClearSetuidSetgid || state.IsCOW
-	if !hasWriteData {
-		// Re-cache without flushing
-		if state.CachedFile != nil {
-			s.pendingWrites.SetCachedFile(handle, state.CachedFile)
-		}
-		return false, nil
-	}
-
 	if err := s.flushPendingWrite(ctx, handle, state); err != nil {
 		return true, err
 	}
@@ -449,14 +436,8 @@ func (s *MetadataService) flushPendingWrite(ctx *AuthContext, handle FileHandle,
 		if state.MaxSize > file.Size {
 			file.Size = state.MaxSize
 		}
-		// Only update timestamps if a real write recorded a non-zero mtime.
-		// A zero LastMtime means this state was created by SetCachedFile for
-		// fast-path caching (no actual write data to commit). Writing zero
-		// would overwrite valid timestamps stored by a previous flush.
-		if !state.LastMtime.IsZero() {
-			file.Mtime = state.LastMtime
-			file.Ctime = state.LastMtime
-		}
+		file.Mtime = state.LastMtime
+		file.Ctime = state.LastMtime
 		if state.ClearSetuidSetgid {
 			file.Mode &= ^uint32(0o6000)
 		}
@@ -533,14 +514,18 @@ func (s *MetadataService) PrewarmWriteCache(handle FileHandle, file *File) {
 // The method does NOT perform actual data reading. The protocol handler
 // coordinates between metadata and content stores.
 func (s *MetadataService) PrepareRead(ctx *AuthContext, handle FileHandle) (*ReadMetadata, error) {
+	store, err := s.storeForHandle(handle)
+	if err != nil {
+		return nil, err
+	}
+
 	// Check context
 	if err := ctx.Context.Err(); err != nil {
 		return nil, err
 	}
 
-	// Get file entry via MetadataService.GetFile which merges pending write
-	// state (size, mtime, PayloadID) for same-handle deferred commits.
-	file, err := s.GetFile(ctx.Context, handle)
+	// Get file entry
+	file, err := store.GetFile(ctx.Context, handle)
 	if err != nil {
 		return nil, err
 	}

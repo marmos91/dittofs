@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -148,8 +147,8 @@ func (s *DurableHandleScavenger) cleanupAndDelete(ctx context.Context, h *lock.P
 
 		// Flush payload cache
 		if h.PayloadID != "" {
-			if payloadSvc := s.handler.Registry.GetBlockService(); payloadSvc != nil {
-				if _, err := payloadSvc.Flush(ctx, metadata.PayloadID(h.PayloadID)); err != nil {
+			if payloadSvc := s.handler.Registry.GetBlockStore(); payloadSvc != nil {
+				if _, err := payloadSvc.Flush(ctx, h.PayloadID); err != nil {
 					logger.Debug("DurableHandleScavenger: failed to flush cache",
 						"id", h.ID, "path", h.Path, "error", err)
 				}

@@ -3,7 +3,7 @@ package adapter
 // ProtocolError represents a protocol-specific error with a numeric status code.
 //
 // Each protocol adapter implements MapError to translate domain errors (e.g.,
-// metadata.ErrNoEntity, payload.ErrContentNotFound) into wire-format error codes
+// metadata.ErrNoEntity, blockstore.ErrContentNotFound) into wire-format error codes
 // appropriate for the protocol:
 //
 //   - NFS: NFS3ERR_NOENT (2), NFS3ERR_ACCES (13), etc.

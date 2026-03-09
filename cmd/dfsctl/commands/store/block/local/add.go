@@ -93,14 +93,17 @@ func buildLocalConfig(storeType, jsonConfig, path string) (any, error) {
 		return nil, nil
 
 	case "fs":
-		if path == "" {
+		fsPath := path
+		if fsPath == "" {
 			var err error
-			path, err = prompt.InputRequired("Block directory path")
+			fsPath, err = prompt.InputRequired("Block directory path")
 			if err != nil {
 				return nil, err
 			}
 		}
-		return map[string]any{"path": path}, nil
+		return map[string]any{
+			"path": fsPath,
+		}, nil
 
 	default:
 		return nil, fmt.Errorf("unknown store type: %s (supported: fs, memory)", storeType)

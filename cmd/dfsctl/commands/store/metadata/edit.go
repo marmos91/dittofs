@@ -108,7 +108,11 @@ func runEditInteractive(client *apiclient.Client, name string, current *apiclien
 	fmt.Println("Press Ctrl+C to abort.")
 	fmt.Println()
 
-	currentConfig := cmdutil.ParseConfigMap(current.Config)
+	// Parse current config
+	var currentConfig map[string]any
+	if len(current.Config) > 0 {
+		_ = json.Unmarshal(current.Config, &currentConfig)
+	}
 
 	req := &apiclient.UpdateStoreRequest{}
 	hasUpdate := false
@@ -116,7 +120,12 @@ func runEditInteractive(client *apiclient.Client, name string, current *apiclien
 	// Based on store type, prompt for relevant fields
 	switch current.Type {
 	case "badger":
-		currentPath := cmdutil.GetConfigString(currentConfig, "path", "")
+		currentPath := ""
+		if currentConfig != nil {
+			if p, ok := currentConfig["path"].(string); ok {
+				currentPath = p
+			}
+		}
 
 		newPath, err := prompt.Input("Database path", currentPath)
 		if err != nil {

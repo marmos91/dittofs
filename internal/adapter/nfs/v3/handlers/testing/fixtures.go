@@ -10,13 +10,12 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
-	"github.com/marmos91/dittofs/pkg/cache"
+	"github.com/marmos91/dittofs/pkg/blockstore/engine"
+	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
+	blocksync "github.com/marmos91/dittofs/pkg/blockstore/sync"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
-	"github.com/marmos91/dittofs/pkg/payload"
-	"github.com/marmos91/dittofs/pkg/payload/offloader"
-	storemem "github.com/marmos91/dittofs/pkg/payload/store/memory"
 )
 
 // DefaultShareName is the default share name used in test fixtures.
@@ -50,9 +49,8 @@ type HandlerTestFixture struct {
 	// It owns the memory-backed metadata store.
 	MetadataService *metadata.MetadataService
 
-	// ContentService provides high-level content operations.
-	// It uses Cache for content storage.
-	ContentService *payload.PayloadService
+	// ContentService provides block store for content operations.
+	ContentService *engine.BlockStore
 
 	// ShareName is the name of the test share.
 	ShareName string
@@ -78,26 +76,30 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 	// Create stores
 	metaStore := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 
-	// Create cache, block store, and transfer manager for content operations
+	// Create local store, syncer, and block store engine
 	tmpDir := t.TempDir()
-	bc, err := cache.New(tmpDir, 0, 0, metaStore)
+	localStore, err := fs.New(tmpDir, 0, 0, metaStore)
 	if err != nil {
-		t.Fatalf("Failed to create block cache: %v", err)
+		t.Fatalf("Failed to create local store: %v", err)
 	}
-	t.Cleanup(func() { _ = bc.Close() })
-	blockStore := storemem.New()
-	// Use metaStore as FileBlockStore - MemoryMetadataStore implements FileBlockStore
-	offloaderInstance := offloader.New(bc, blockStore, metaStore, offloader.DefaultConfig())
+	t.Cleanup(func() { _ = localStore.Close() })
+	syncer := blocksync.New(localStore, nil, metaStore, blocksync.DefaultConfig())
 
-	// Create PayloadService with cache and transfer manager
-	payloadSvc, err := payload.New(bc, offloaderInstance)
+	blockSvc, err := engine.New(engine.Config{
+		Local:  localStore,
+		Syncer: syncer,
+	})
 	if err != nil {
-		t.Fatalf("Failed to create payload service: %v", err)
+		t.Fatalf("Failed to create block store: %v", err)
 	}
+	if err := blockSvc.Start(context.Background()); err != nil {
+		t.Fatalf("Failed to start block store: %v", err)
+	}
+	t.Cleanup(func() { _ = blockSvc.Close() })
 
-	// Create registry and set up payload service
+	// Create registry and set up block store
 	reg := runtime.New(nil)
-	reg.SetPayloadService(payloadSvc)
+	reg.SetBlockStore(blockSvc)
 
 	if err := reg.RegisterMetadataStore("test-metaSvc", metaStore); err != nil {
 		t.Fatalf("Failed to register metadata store: %v", err)
@@ -129,7 +131,7 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 		Handler:         handler,
 		Registry:        reg,
 		MetadataService: reg.GetMetadataService(),
-		ContentService:  reg.GetBlockService(),
+		ContentService:  reg.GetBlockStore(),
 		ShareName:       DefaultShareName,
 		RootHandle:      share.RootHandle,
 	}
@@ -274,7 +276,7 @@ func (f *HandlerTestFixture) CreateFile(path string, content []byte) metadata.Fi
 
 	// Write content if provided (using ContentService with Cache)
 	if len(content) > 0 {
-		if err := f.ContentService.WriteAt(ctx, file.PayloadID, content, 0); err != nil {
+		if err := f.ContentService.WriteAt(ctx, string(file.PayloadID), content, 0); err != nil {
 			f.t.Fatalf("Failed to write content to file %q: %v", path, err)
 		}
 
@@ -393,14 +395,14 @@ func (f *HandlerTestFixture) ReadContent(path string) []byte {
 	ctx := context.Background()
 
 	// Get content size
-	size, err := f.ContentService.GetSize(ctx, file.PayloadID)
+	size, err := f.ContentService.GetSize(ctx, string(file.PayloadID))
 	if err != nil {
 		f.t.Fatalf("Failed to get content size for %q: %v", path, err)
 	}
 
-	// Read content using ContentService (backed by Cache)
+	// Read content using BlockStore
 	content := make([]byte, size)
-	n, err := f.ContentService.ReadAt(ctx, file.PayloadID, content, 0)
+	n, err := f.ContentService.ReadAt(ctx, string(file.PayloadID), content, 0)
 	if err != nil {
 		f.t.Fatalf("Failed to read content from %q: %v", path, err)
 	}

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -39,7 +40,7 @@ func newFileBlockStoreData() *fileBlockStoreData {
 }
 
 // Ensure Store implements FileBlockStore
-var _ metadata.FileBlockStore = (*MemoryMetadataStore)(nil)
+var _ blockstore.FileBlockStore = (*MemoryMetadataStore)(nil)
 
 // ============================================================================
 // FileBlock Operations
@@ -136,7 +137,7 @@ func (s *MemoryMetadataStore) initFileBlockData() {
 // ============================================================================
 
 // Ensure memoryTransaction implements FileBlockStore
-var _ metadata.FileBlockStore = (*memoryTransaction)(nil)
+var _ blockstore.FileBlockStore = (*memoryTransaction)(nil)
 
 func (tx *memoryTransaction) GetFileBlock(ctx context.Context, id string) (*metadata.FileBlock, error) {
 	return tx.store.getFileBlockLocked(ctx, id)

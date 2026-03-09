@@ -2,8 +2,8 @@ package metadata
 
 import (
 	"context"
-	"time"
 
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -212,51 +212,8 @@ type ServerConfig interface {
 // ============================================================================
 
 // FileBlockStore defines operations for content-addressed file block management.
-//
-// FileBlock is the single block entity in DittoFS. Each block is content-addressed
-// by its SHA-256 hash and reference-counted for dedup and GC.
-type FileBlockStore interface {
-	// GetFileBlock retrieves a file block by its ID.
-	// Returns ErrFileBlockNotFound if not found.
-	GetFileBlock(ctx context.Context, id string) (*FileBlock, error)
-
-	// PutFileBlock stores or updates a file block.
-	PutFileBlock(ctx context.Context, block *FileBlock) error
-
-	// DeleteFileBlock removes a file block by its ID.
-	// Returns ErrFileBlockNotFound if not found.
-	DeleteFileBlock(ctx context.Context, id string) error
-
-	// IncrementRefCount atomically increments a block's RefCount.
-	IncrementRefCount(ctx context.Context, id string) error
-
-	// DecrementRefCount atomically decrements a block's RefCount.
-	// Returns the new count. When 0, the block is a GC candidate.
-	DecrementRefCount(ctx context.Context, id string) (uint32, error)
-
-	// FindFileBlockByHash looks up a finalized block by its content hash.
-	// Returns nil without error if not found (used for dedup checks).
-	FindFileBlockByHash(ctx context.Context, hash ContentHash) (*FileBlock, error)
-
-	// ListLocalBlocks returns blocks that are in Local state (complete, on disk,
-	// not yet synced to remote) and older than the given duration.
-	// If limit > 0, at most limit blocks are returned. If limit <= 0, all are returned.
-	ListLocalBlocks(ctx context.Context, olderThan time.Duration, limit int) ([]*FileBlock, error)
-
-	// ListRemoteBlocks returns blocks that are both cached locally and confirmed
-	// in remote store, ordered by LRU (oldest LastAccess first), up to limit.
-	ListRemoteBlocks(ctx context.Context, limit int) ([]*FileBlock, error)
-
-	// ListUnreferenced returns blocks with RefCount=0, up to limit.
-	// These are candidates for garbage collection.
-	ListUnreferenced(ctx context.Context, limit int) ([]*FileBlock, error)
-
-	// ListFileBlocks returns all blocks belonging to a file, ordered by block index.
-	// Block IDs follow the format "{payloadID}/{blockIdx}", so this method returns
-	// all blocks whose ID starts with "{payloadID}/".
-	// Returns empty slice (not nil) if no blocks found.
-	ListFileBlocks(ctx context.Context, payloadID string) ([]*FileBlock, error)
-}
+// Type alias to blockstore.FileBlockStore -- all definitions live in pkg/blockstore.
+type FileBlockStore = blockstore.FileBlockStore
 
 // ============================================================================
 // Transaction Interface

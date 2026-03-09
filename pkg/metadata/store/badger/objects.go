@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -35,7 +36,7 @@ const (
 )
 
 // Ensure BadgerMetadataStore implements FileBlockStore
-var _ metadata.FileBlockStore = (*BadgerMetadataStore)(nil)
+var _ blockstore.FileBlockStore = (*BadgerMetadataStore)(nil)
 
 // ============================================================================
 // FileBlock Operations
@@ -440,7 +441,7 @@ func parseBlockIdx(id string) int {
 // ============================================================================
 
 // Ensure badgerTransaction implements FileBlockStore
-var _ metadata.FileBlockStore = (*badgerTransaction)(nil)
+var _ blockstore.FileBlockStore = (*badgerTransaction)(nil)
 
 func (tx *badgerTransaction) GetFileBlock(ctx context.Context, id string) (*metadata.FileBlock, error) {
 	return tx.store.GetFileBlock(ctx, id)

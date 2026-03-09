@@ -515,18 +515,17 @@ func TestGetServices(t *testing.T) {
 		}
 	})
 
-	t.Run("get payload service (nil when not set)", func(t *testing.T) {
-		svc := rt.GetPayloadService()
+	t.Run("get block store (nil when not set)", func(t *testing.T) {
+		svc := rt.GetBlockStore()
 		if svc != nil {
-			t.Error("expected nil payload service when not set")
+			t.Error("expected nil block store when not set")
 		}
 	})
 
-	t.Run("get block service returns payload service", func(t *testing.T) {
-		// GetBlockService is deprecated but should return same as GetPayloadService
-		svc := rt.GetBlockService()
-		if svc != rt.GetPayloadService() {
-			t.Error("GetBlockService should return same as GetPayloadService")
+	t.Run("get block store returns nil when not set", func(t *testing.T) {
+		svc := rt.GetBlockStore()
+		if svc != nil {
+			t.Error("expected nil block store when not initialized")
 		}
 	})
 }

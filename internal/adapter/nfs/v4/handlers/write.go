@@ -145,7 +145,7 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 		}
 	}
 
-	payloadSvc, err := getPayloadServiceForCtx(h)
+	payloadSvc, err := getBlockStoreForCtx(h)
 	if err != nil {
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
@@ -197,7 +197,7 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 	}
 
 	// Phase 2: Write actual data via PayloadService
-	err = payloadSvc.WriteAt(ctx.Context, intent.PayloadID, data, offset)
+	err = payloadSvc.WriteAt(ctx.Context, string(intent.PayloadID), data, offset)
 	if err != nil {
 		logger.Debug("NFSv4 WRITE payload error",
 			"error", err,

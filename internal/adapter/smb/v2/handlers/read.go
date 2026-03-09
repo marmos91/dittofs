@@ -162,24 +162,6 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	}
 
 	// ========================================================================
-	// Step 3b: Validate offset range
-	// ========================================================================
-
-	// Per MS-SMB2: offsets with the high bit set (>= 2^63) or offset+length
-	// exceeding INT64_MAX are invalid. Windows returns STATUS_INVALID_PARAMETER.
-	const int64Max = uint64(1<<63 - 1) // 0x7FFFFFFFFFFFFFFF
-	if req.Offset > int64Max {
-		logger.Debug("READ: invalid offset (high bit set)", "path", openFile.Path, "offset", req.Offset)
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
-	}
-	if req.Length > 0 && req.Offset > int64Max-uint64(req.Length) {
-		// offset + length would exceed INT64_MAX
-		logger.Debug("READ: offset+length exceeds INT64_MAX", "path", openFile.Path,
-			"offset", req.Offset, "length", req.Length)
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
-	}
-
-	// ========================================================================
 	// Step 4: Get session and tree connection
 	// ========================================================================
 
@@ -206,7 +188,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-	payloadSvc := h.Registry.GetBlockService()
+	payloadSvc := h.Registry.GetBlockStore()
 
 	// ========================================================================
 	// Step 6: Build AuthContext and validate permissions
@@ -258,31 +240,23 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	}
 
 	// ========================================================================
-	// Step 9: Handle zero-length reads and EOF conditions
+	// Step 9: Handle empty file or offset beyond EOF
 	// ========================================================================
 
 	fileSize := readMeta.Attr.Size
 
-	// Per MS-SMB2 and Windows behavior (confirmed by smbtorture smb2.read.eof):
-	//   - Zero-length read with MinimumCount == 0: always STATUS_OK (even past EOF)
-	//   - Zero-length read with MinimumCount > 0 at/past EOF: STATUS_END_OF_FILE
-	//   - Non-zero length read at/past EOF: STATUS_END_OF_FILE
-	//   - Non-zero length read on empty file (no payload): STATUS_END_OF_FILE
-	if req.Length == 0 && req.MinimumCount == 0 {
-		logger.Debug("READ: zero-length read (success)", "path", openFile.Path,
-			"offset", req.Offset, "size", fileSize)
+	if readMeta.Attr.PayloadID == "" || fileSize == 0 {
+		logger.Debug("READ: empty file", "path", openFile.Path)
 		return &ReadResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
-			DataOffset:      0x50,
+			DataOffset:      0x50, // Standard offset
 			Data:            []byte{},
 			DataRemaining:   0,
 		}, nil
 	}
 
-	if readMeta.Attr.PayloadID == "" || fileSize == 0 || req.Offset >= fileSize {
-		logger.Debug("READ: at or beyond EOF", "path", openFile.Path,
-			"offset", req.Offset, "size", fileSize,
-			"hasPayload", readMeta.Attr.PayloadID != "")
+	if req.Offset >= fileSize {
+		logger.Debug("READ: offset beyond EOF", "path", openFile.Path, "offset", req.Offset, "size", fileSize)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusEndOfFile}}, nil
 	}
 
@@ -296,20 +270,12 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	}
 	actualLength := uint32(readEnd - req.Offset)
 
-	// Per MS-SMB2: if actual bytes available < MinimumCount, return EOF.
-	// This handles cases where min_count exceeds what's readable from the file.
-	if req.MinimumCount > 0 && actualLength < req.MinimumCount {
-		logger.Debug("READ: available bytes less than MinimumCount", "path", openFile.Path,
-			"available", actualLength, "minCount", req.MinimumCount)
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusEndOfFile}}, nil
-	}
-
 	// ========================================================================
 	// Step 11: Read data from ContentService (uses Cache internally)
 	// ========================================================================
 
 	data := make([]byte, actualLength)
-	n, err := payloadSvc.ReadAt(authCtx.Context, readMeta.Attr.PayloadID, data, req.Offset)
+	n, err := payloadSvc.ReadAt(authCtx.Context, string(readMeta.Attr.PayloadID), data, req.Offset)
 	if err != nil {
 		logger.Warn("READ: content read failed", "path", openFile.Path, "error", err)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil

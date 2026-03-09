@@ -110,69 +110,72 @@ func buildRemoteConfig(storeType, jsonConfig, bucket, region, endpoint, prefix, 
 		return nil, nil
 
 	case "s3":
-		return buildS3Config(bucket, region, endpoint, prefix, accessKey, secretKey)
+		s3Bucket := bucket
+		s3Region := region
+		s3Endpoint := endpoint
+		s3Prefix := prefix
+		s3AccessKey := accessKey
+		s3SecretKey := secretKey
+
+		if s3Bucket == "" {
+			var err error
+			s3Bucket, err = prompt.InputRequired("S3 bucket name")
+			if err != nil {
+				return nil, err
+			}
+
+			s3Region, err = prompt.Input("AWS region", "us-east-1")
+			if err != nil {
+				return nil, err
+			}
+
+			s3Prefix, err = prompt.InputOptional("Key prefix")
+			if err != nil {
+				return nil, err
+			}
+
+			s3Endpoint, err = prompt.InputOptional("Custom endpoint (for S3-compatible stores)")
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		// Prompt for credentials if not provided
+		if s3AccessKey == "" {
+			var err error
+			s3AccessKey, err = prompt.InputOptional("Access key ID (leave empty for instance profile/env vars)")
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		if s3AccessKey != "" && s3SecretKey == "" {
+			var err error
+			s3SecretKey, err = prompt.Password("Secret access key")
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		config := map[string]any{
+			"bucket": s3Bucket,
+			"region": s3Region,
+		}
+		if s3Endpoint != "" {
+			config["endpoint"] = s3Endpoint
+		}
+		if s3Prefix != "" {
+			config["prefix"] = s3Prefix
+		}
+		if s3AccessKey != "" {
+			config["access_key_id"] = s3AccessKey
+		}
+		if s3SecretKey != "" {
+			config["secret_access_key"] = s3SecretKey
+		}
+		return config, nil
 
 	default:
 		return nil, fmt.Errorf("unknown store type: %s (supported: s3, memory)", storeType)
 	}
-}
-
-// buildS3Config builds or prompts for S3 configuration parameters.
-func buildS3Config(bucket, region, endpoint, prefix, accessKey, secretKey string) (map[string]any, error) {
-	if bucket == "" {
-		var err error
-		bucket, err = prompt.InputRequired("S3 bucket name")
-		if err != nil {
-			return nil, err
-		}
-
-		region, err = prompt.Input("AWS region", "us-east-1")
-		if err != nil {
-			return nil, err
-		}
-
-		prefix, err = prompt.InputOptional("Key prefix")
-		if err != nil {
-			return nil, err
-		}
-
-		endpoint, err = prompt.InputOptional("Custom endpoint (for S3-compatible stores)")
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	if accessKey == "" {
-		var err error
-		accessKey, err = prompt.InputOptional("Access key ID (leave empty for instance profile/env vars)")
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	if accessKey != "" && secretKey == "" {
-		var err error
-		secretKey, err = prompt.Password("Secret access key")
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	config := map[string]any{
-		"bucket": bucket,
-		"region": region,
-	}
-	if endpoint != "" {
-		config["endpoint"] = endpoint
-	}
-	if prefix != "" {
-		config["prefix"] = prefix
-	}
-	if accessKey != "" {
-		config["access_key_id"] = accessKey
-	}
-	if secretKey != "" {
-		config["secret_access_key"] = secretKey
-	}
-	return config, nil
 }

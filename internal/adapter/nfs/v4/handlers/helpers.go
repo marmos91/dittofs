@@ -8,8 +8,8 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/payload"
 )
 
 // buildV4AuthContext creates an AuthContext for NFSv4 real-FS operations.
@@ -96,13 +96,13 @@ func getMetadataServiceForCtx(h *Handler) (*metadata.MetadataService, error) {
 	return h.Registry.GetMetadataService(), nil
 }
 
-// getPayloadServiceForCtx returns the PayloadService from the handler's registry.
+// getBlockStoreForCtx returns the BlockStore from the handler's registry.
 // Returns an error if the registry is nil.
-func getPayloadServiceForCtx(h *Handler) (*payload.PayloadService, error) {
+func getBlockStoreForCtx(h *Handler) (*engine.BlockStore, error) {
 	if h.Registry == nil {
 		return nil, fmt.Errorf("no registry configured")
 	}
-	return h.Registry.GetPayloadService(), nil
+	return h.Registry.GetBlockStore(), nil
 }
 
 // encodeChangeInfo4 encodes a change_info4 structure into the buffer.

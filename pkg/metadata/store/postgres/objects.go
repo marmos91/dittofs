@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -27,7 +28,7 @@ import (
 // ============================================================================
 
 // Ensure PostgresMetadataStore implements FileBlockStore
-var _ metadata.FileBlockStore = (*PostgresMetadataStore)(nil)
+var _ blockstore.FileBlockStore = (*PostgresMetadataStore)(nil)
 
 // ============================================================================
 // FileBlock Operations
@@ -302,7 +303,7 @@ func scanFileBlockRows(rows pgx.Rows) ([]*metadata.FileBlock, error) {
 // ============================================================================
 
 // Ensure postgresTransaction implements FileBlockStore
-var _ metadata.FileBlockStore = (*postgresTransaction)(nil)
+var _ blockstore.FileBlockStore = (*postgresTransaction)(nil)
 
 func (tx *postgresTransaction) GetFileBlock(ctx context.Context, id string) (*metadata.FileBlock, error) {
 	return tx.store.GetFileBlock(ctx, id)

@@ -123,13 +123,13 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to initialize runtime: %w", err)
 	}
 
-	// Store cache config BEFORE loading shares (AddShare needs it for PayloadService)
+	// Store cache config BEFORE loading shares (AddShare needs it for BlockStore)
 	rt.SetCacheConfig(&runtime.CacheConfig{
 		Path:           cfg.Cache.Path,
 		Size:           uint64(cfg.Cache.Size),
 		MaxPendingSize: uint64(cfg.Cache.MaxPendingSize),
 	})
-	rt.SetOffloaderConfig(&runtime.OffloaderConfig{
+	rt.SetSyncerConfig(&runtime.SyncerConfig{
 		ParallelUploads:    cfg.Offloader.ParallelUploads,
 		ParallelDownloads:  cfg.Offloader.ParallelDownloads,
 		PrefetchBlocks:     cfg.Offloader.PrefetchBlocks,
@@ -139,7 +139,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	})
 	logger.Info("Cache configuration stored", "path", cfg.Cache.Path, "size", cfg.Cache.Size, "max_pending_size", cfg.Cache.MaxPendingSize)
 
-	// Now load shares (they need cache config to initialize PayloadService)
+	// Now load shares (they need cache config to initialize BlockStore)
 	if err := runtime.LoadSharesFromStore(ctx, rt, cpStore); err != nil {
 		logger.Warn("Failed to load some shares", "error", err)
 	}
@@ -148,10 +148,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 		"metadata_stores", rt.CountMetadataStores(),
 		"shares", rt.CountShares())
 
-	// If payload stores already exist in DB, create the PayloadService now
-	if err := rt.EnsurePayloadService(ctx); err != nil {
-		// Don't fail if no payload stores configured - it will be created when first one is added
-		logger.Info("PayloadService not initialized (will be created when first payload store is added)", "reason", err)
+	// If block stores already exist in DB, create the BlockStore now
+	if err := rt.EnsureBlockStore(ctx); err != nil {
+		// Don't fail if no block stores configured - it will be created when first one is added
+		logger.Info("BlockStore not initialized (will be created when first block store is added)", "reason", err)
 	}
 
 	// Configure runtime

@@ -85,7 +85,13 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		req.Config = config
 		hasUpdate = true
 	} else if editBucket != "" || editRegion != "" || editEndpoint != "" || editAccessKey != "" || editSecretKey != "" {
-		currentConfig := cmdutil.ParseConfigMap(current.Config)
+		var currentConfig map[string]any
+		if len(current.Config) > 0 {
+			_ = json.Unmarshal(current.Config, &currentConfig)
+		}
+		if currentConfig == nil {
+			currentConfig = make(map[string]any)
+		}
 
 		if editBucket != "" {
 			currentConfig["bucket"] = editBucket
@@ -128,7 +134,10 @@ func runEditInteractive(client *apiclient.Client, name string, current *apiclien
 	fmt.Println("Press Ctrl+C to abort.")
 	fmt.Println()
 
-	currentConfig := cmdutil.ParseConfigMap(current.Config)
+	var currentConfig map[string]any
+	if len(current.Config) > 0 {
+		_ = json.Unmarshal(current.Config, &currentConfig)
+	}
 
 	req := &apiclient.UpdateStoreRequest{}
 	hasUpdate := false

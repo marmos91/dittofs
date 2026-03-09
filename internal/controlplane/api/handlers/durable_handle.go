@@ -10,7 +10,6 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
-	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -187,8 +186,8 @@ func cleanupDurableHandle(ctx context.Context, h *lock.PersistedDurableHandle, r
 
 	// Step 2: Flush payload cache
 	if h.PayloadID != "" {
-		if payloadSvc := rt.GetBlockService(); payloadSvc != nil {
-			if _, err := payloadSvc.Flush(ctx, metadata.PayloadID(h.PayloadID)); err != nil {
+		if blockStore := rt.GetBlockStore(); blockStore != nil {
+			if _, err := blockStore.Flush(ctx, h.PayloadID); err != nil {
 				logger.Debug("cleanupDurableHandle: flush failed",
 					"id", handleID, "error", err)
 			}

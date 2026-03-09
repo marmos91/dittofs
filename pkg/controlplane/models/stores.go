@@ -65,8 +65,8 @@ const (
 // to distinguish local (disk-backed) from remote (S3, etc.) block stores.
 type BlockStoreConfig struct {
 	ID        string         `gorm:"primaryKey;size:36" json:"id"`
-	Name      string         `gorm:"uniqueIndex:idx_block_store_name_kind;not null;size:255" json:"name"`
-	Kind      BlockStoreKind `gorm:"uniqueIndex:idx_block_store_name_kind;not null;size:10;index" json:"kind"`
+	Name      string         `gorm:"uniqueIndex;not null;size:255" json:"name"`
+	Kind      BlockStoreKind `gorm:"not null;size:10;index" json:"kind"`
 	Type      string         `gorm:"not null;size:50" json:"type"` // fs, memory, s3
 	Config    string         `gorm:"type:text" json:"-"`           // JSON blob for type-specific config
 	CreatedAt time.Time      `gorm:"autoCreateTime" json:"created_at"`
