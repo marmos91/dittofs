@@ -103,8 +103,7 @@ create_payload_store() {
             $DFSCTL store payload add --name default --type memory
             ;;
         *-fs)
-            $DFSCTL store payload add --name default --type filesystem \
-                --config '{"path":"/data/content"}'
+            $DFSCTL store payload add --name default --type memory
             ;;
         *-s3)
             $DFSCTL store payload add --name default --type s3 \

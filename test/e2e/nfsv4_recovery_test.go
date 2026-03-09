@@ -23,7 +23,7 @@ import (
 // TestServerRestartRecovery starts a server with BadgerDB metadata and memory
 // payload, writes files, stops the server gracefully, starts a NEW server with
 // the SAME metadata directory, and verifies metadata (directory structure) survives
-// the restart. Payload data (file contents) uses memory stores which are ephemeral.
+// the restart. Payload data uses memory stores, so only metadata persistence is tested.
 func TestServerRestartRecovery(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping server restart recovery test in short mode")

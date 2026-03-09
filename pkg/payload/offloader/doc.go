@@ -1,7 +1,7 @@
 // Package offloader implements cache-to-store transfer orchestration.
 //
 // The offloader is responsible for moving data between the in-memory/disk cache
-// and the durable block store (S3, memory). It handles:
+// and the backend block store (S3 or memory). It handles:
 //
 //   - Periodic upload: Scan for local blocks and upload them in the background
 //   - Download: Fetch blocks from block store on cache miss, with download priority

@@ -263,11 +263,8 @@ configure_via_api() {
                 --config '{"bucket":"dittofs-posix-test","region":"us-east-1","endpoint":"http://localhost:4566","force_path_style":true}'
             ;;
         *)
-            # Default: filesystem payload store
-            local content_path="${DATA_DIR}/content"
-            mkdir -p "$content_path"
-            "$DITTOFSCTL_BIN" store payload add --name default --type filesystem \
-                --config "{\"path\":\"$content_path\"}"
+            # Default: memory payload store
+            "$DITTOFSCTL_BIN" store payload add --name default --type memory
             ;;
     esac
 

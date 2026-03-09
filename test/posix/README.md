@@ -64,8 +64,7 @@ ADMIN_PASSWORD="<from-server-output>"
 
 # Create stores
 ./dfsctl store metadata add --name default --type memory
-./dfsctl store payload add --name default --type filesystem \
-  --config '{"path":"/tmp/dfs-content"}'
+./dfsctl store payload add --name default --type memory
 
 # Create share
 ./dfsctl share create --name /export --metadata default --payload default
