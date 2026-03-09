@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-03-07T13:03:31.377811085Z",
+  "system": "dittofs-fs",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 574.5449578892932,
+      "latency_p50_us": 1238,
+      "latency_p95_us": 3607,
+      "latency_p99_us": 10082,
+      "latency_avg_us": 1738.811,
+      "total_ops": 3000,
+      "total_bytes": 33000,
+      "errors": 0,
+      "duration": 5221523501
+    },
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 1503.8147747802614,
+      "latency_p50_us": 677,
+      "latency_p95_us": 820,
+      "latency_p99_us": 910,
+      "latency_avg_us": 660.7239720713732,
+      "total_ops": 90230,
+      "total_bytes": 369582080,
+      "errors": 0,
+      "duration": 60000740459
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 653.7142064459364,
+      "latency_p50_us": 1264,
+      "latency_p95_us": 1859,
+      "latency_p99_us": 2074,
+      "latency_avg_us": 1525.0677663615736,
+      "total_ops": 39223,
+      "total_bytes": 160657408,
+      "errors": 0,
+      "duration": 60000225807
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 63.90810606795542,
+      "latency_p50_us": 15992,
+      "latency_p95_us": 20847,
+      "latency_p99_us": 212286,
+      "latency_avg_us": 15476.167724609375,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 64092026067
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 50.827833577578275,
+      "latency_p50_us": 617,
+      "latency_p95_us": 815,
+      "latency_p99_us": 1053,
+      "latency_avg_us": 647.080810546875,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 80585767909
+    }
+  },
+  "total_duration": 272338956902
+}

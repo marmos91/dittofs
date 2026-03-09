@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-03-07T13:13:39.845272591Z",
+  "system": "dittofs-fs",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 616.4461628639235,
+      "latency_p50_us": 1164,
+      "latency_p95_us": 3417,
+      "latency_p99_us": 6020,
+      "latency_avg_us": 1620.65,
+      "total_ops": 3000,
+      "total_bytes": 33000,
+      "errors": 0,
+      "duration": 4866605035
+    },
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 1839.6054324415716,
+      "latency_p50_us": 562,
+      "latency_p95_us": 677,
+      "latency_p99_us": 767,
+      "latency_avg_us": 539.564275166022,
+      "total_ops": 110377,
+      "total_bytes": 452104192,
+      "errors": 0,
+      "duration": 60000366412
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 794.471413693337,
+      "latency_p50_us": 1083,
+      "latency_p95_us": 1783,
+      "latency_p99_us": 2335,
+      "latency_avg_us": 1254.0750592628333,
+      "total_ops": 47669,
+      "total_bytes": 195252224,
+      "errors": 0,
+      "duration": 60000900194
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 63.89466273388267,
+      "latency_p50_us": 16118,
+      "latency_p95_us": 20266,
+      "latency_p99_us": 215098,
+      "latency_avg_us": 15482.25439453125,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 64105510926
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 50.967431810935935,
+      "latency_p50_us": 610,
+      "latency_p95_us": 825,
+      "latency_p99_us": 1021,
+      "latency_avg_us": 642.623046875,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 80365045961
+    }
+  },
+  "total_duration": 270930195605
+}

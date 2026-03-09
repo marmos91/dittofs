@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-03-07T10:47:10.376743424Z",
+  "system": "dittofs-s3",
+  "path": "/mnt/bench-s3",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 412.75488383864894,
+      "latency_p50_us": 1185,
+      "latency_p95_us": 10632,
+      "latency_p99_us": 14426,
+      "latency_avg_us": 2420.79,
+      "total_ops": 3000,
+      "total_bytes": 33000,
+      "errors": 0,
+      "duration": 7268236228
+    },
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 784.7927610454124,
+      "latency_p50_us": 1279,
+      "latency_p95_us": 1559,
+      "latency_p99_us": 1916,
+      "latency_avg_us": 1269.4957526333674,
+      "total_ops": 47088,
+      "total_bytes": 192872448,
+      "errors": 0,
+      "duration": 60000553442
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 383.075647744074,
+      "latency_p50_us": 1933,
+      "latency_p95_us": 2635,
+      "latency_p99_us": 7083,
+      "latency_avg_us": 2605.3225146834893,
+      "total_ops": 22985,
+      "total_bytes": 94146560,
+      "errors": 0,
+      "duration": 60001203771
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 63.94838536470043,
+      "latency_p50_us": 15037,
+      "latency_p95_us": 20149,
+      "latency_p99_us": 213205,
+      "latency_avg_us": 15471.716796875,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 64051656295
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 50.89581639076457,
+      "latency_p50_us": 636,
+      "latency_p95_us": 855,
+      "latency_p99_us": 1327,
+      "latency_avg_us": 671.711669921875,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 80478127486
+    }
+  },
+  "total_duration": 272504013394
+}

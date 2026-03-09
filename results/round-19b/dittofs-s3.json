@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-03-07T12:02:21.731940583Z",
+  "system": "dittofs-s3",
+  "path": "/mnt/bench-s3",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 702.3983385181249,
+      "latency_p50_us": 1165,
+      "latency_p95_us": 3200,
+      "latency_p99_us": 3408,
+      "latency_avg_us": 1422.066,
+      "total_ops": 3000,
+      "total_bytes": 33000,
+      "errors": 0,
+      "duration": 4271080718
+    },
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 1680.5517602565808,
+      "latency_p50_us": 611,
+      "latency_p95_us": 740,
+      "latency_p99_us": 826,
+      "latency_avg_us": 590.9139278417994,
+      "total_ops": 100834,
+      "total_bytes": 413016064,
+      "errors": 0,
+      "duration": 60000532197
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 782.6596828116963,
+      "latency_p50_us": 1095,
+      "latency_p95_us": 1780,
+      "latency_p99_us": 2284,
+      "latency_avg_us": 1273.177129471891,
+      "total_ops": 46960,
+      "total_bytes": 192348160,
+      "errors": 0,
+      "duration": 60000535394
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 63.89481173154874,
+      "latency_p50_us": 16048,
+      "latency_p95_us": 20900,
+      "latency_p99_us": 211291,
+      "latency_avg_us": 15486.2470703125,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 64105361437
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 50.835502297244474,
+      "latency_p50_us": 621,
+      "latency_p95_us": 843,
+      "latency_p99_us": 1041,
+      "latency_avg_us": 654.026123046875,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 80573611254
+    }
+  },
+  "total_duration": 270759509929
+}

@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-03-07T12:27:45.91219934Z",
+  "system": "dittofs-s3",
+  "path": "/mnt/bench-s3",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 625.6267973711768,
+      "latency_p50_us": 1140,
+      "latency_p95_us": 3399,
+      "latency_p99_us": 4291,
+      "latency_avg_us": 1596.7713333333334,
+      "total_ops": 3000,
+      "total_bytes": 33000,
+      "errors": 0,
+      "duration": 4795191019
+    },
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 1825.5203468249886,
+      "latency_p50_us": 566,
+      "latency_p95_us": 686,
+      "latency_p99_us": 779,
+      "latency_avg_us": 543.6842383960851,
+      "total_ops": 109532,
+      "total_bytes": 448643072,
+      "errors": 0,
+      "duration": 60000426832
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 819.644571767216,
+      "latency_p50_us": 1093,
+      "latency_p95_us": 1750,
+      "latency_p99_us": 2062,
+      "latency_avg_us": 1215.4547469448341,
+      "total_ops": 49179,
+      "total_bytes": 201437184,
+      "errors": 0,
+      "duration": 60000397360
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 63.86100403015789,
+      "latency_p50_us": 16259,
+      "latency_p95_us": 20431,
+      "latency_p99_us": 212722,
+      "latency_avg_us": 15487.489501953125,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 64139298500
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 50.94296238195209,
+      "latency_p50_us": 619,
+      "latency_p95_us": 850,
+      "latency_p99_us": 1037,
+      "latency_avg_us": 648.367431640625,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 80403647697
+    }
+  },
+  "total_duration": 271654943327
+}

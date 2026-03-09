@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-03-07T10:12:43.494347189Z",
+  "system": "dittofs-s3",
+  "path": "/mnt/bench-s3",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 461.68690950619396,
+      "latency_p50_us": 969,
+      "latency_p95_us": 7897,
+      "latency_p99_us": 11149,
+      "latency_avg_us": 2164.0623333333333,
+      "total_ops": 3000,
+      "total_bytes": 33000,
+      "errors": 0,
+      "duration": 6497910030
+    },
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 658.1057351355425,
+      "latency_p50_us": 1269,
+      "latency_p95_us": 1690,
+      "latency_p99_us": 3343,
+      "latency_avg_us": 1514.500975004432,
+      "total_ops": 39487,
+      "total_bytes": 161738752,
+      "errors": 0,
+      "duration": 60000996636
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 261.9142156690712,
+      "latency_p50_us": 2218,
+      "latency_p95_us": 4504,
+      "latency_p99_us": 33679,
+      "latency_avg_us": 3812.638052815781,
+      "total_ops": 15715,
+      "total_bytes": 64368640,
+      "errors": 0,
+      "duration": 60000561481
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 63.929435688783045,
+      "latency_p50_us": 15630,
+      "latency_p95_us": 20752,
+      "latency_p99_us": 213205,
+      "latency_avg_us": 15473.558837890625,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 64070642199
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 50.82532107793132,
+      "latency_p50_us": 615,
+      "latency_p95_us": 824,
+      "latency_p99_us": 1025,
+      "latency_avg_us": 645.20654296875,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 80589751587
+    }
+  },
+  "total_duration": 271552841142
+}

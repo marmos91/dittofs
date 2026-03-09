@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-03-07T10:42:39.397349965Z",
+  "system": "dittofs-fs",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 688.442653186525,
+      "latency_p50_us": 1123,
+      "latency_p95_us": 4505,
+      "latency_p99_us": 5812,
+      "latency_avg_us": 1450.872,
+      "total_ops": 3000,
+      "total_bytes": 33000,
+      "errors": 0,
+      "duration": 4357661435
+    },
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 765.2510257774759,
+      "latency_p50_us": 1294,
+      "latency_p95_us": 1593,
+      "latency_p99_us": 1954,
+      "latency_avg_us": 1301.4043035107588,
+      "total_ops": 45916,
+      "total_bytes": 188071936,
+      "errors": 0,
+      "duration": 60001226334
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 381.3580602860136,
+      "latency_p50_us": 1885,
+      "latency_p95_us": 2740,
+      "latency_p99_us": 7038,
+      "latency_avg_us": 2616.927191679049,
+      "total_ops": 22882,
+      "total_bytes": 93724672,
+      "errors": 0,
+      "duration": 60001354063
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 63.805008060089214,
+      "latency_p50_us": 14882,
+      "latency_p95_us": 20502,
+      "latency_p99_us": 214857,
+      "latency_avg_us": 15505.78759765625,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 64195587847
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 50.98540956439642,
+      "latency_p50_us": 621,
+      "latency_p95_us": 842,
+      "latency_p99_us": 991,
+      "latency_avg_us": 647.181884765625,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 80336708776
+    }
+  },
+  "total_duration": 269684262080
+}
