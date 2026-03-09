@@ -7,12 +7,12 @@
 
 ### Block State Model
 
-- [ ] **STATE-01**: Block state enum uses new names: Dirty(0), Local(1), Uploading(2), Remote(3)
-- [ ] **STATE-02**: All consumers updated for renamed states (Sealed->Local, Uploaded->Remote)
-- [ ] **STATE-03**: ListPendingUpload renamed to ListLocalBlocks across interface and implementations
-- [ ] **STATE-04**: ListEvictable renamed to ListRemoteBlocks across interface and implementations
+- [x] **STATE-01**: Block state enum uses new names: Dirty(0), Local(1), Uploading(2), Remote(3)
+- [x] **STATE-02**: All consumers updated for renamed states (Sealed->Local, Uploaded->Remote)
+- [x] **STATE-03**: ListPendingUpload renamed to ListLocalBlocks across interface and implementations
+- [x] **STATE-04**: ListEvictable renamed to ListRemoteBlocks across interface and implementations
 - [ ] **STATE-05**: ListFileBlocks(ctx, payloadID) method added to FileBlockStore interface and all implementations
-- [ ] **STATE-06**: BadgerDB secondary index updated from fb-sealed: to fb-local: prefix
+- [x] **STATE-06**: BadgerDB secondary index updated from fb-sealed: to fb-local: prefix
 
 ### Legacy Cleanup
 
@@ -118,12 +118,12 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| STATE-01 | Phase 41 | Pending |
-| STATE-02 | Phase 41 | Pending |
-| STATE-03 | Phase 41 | Pending |
-| STATE-04 | Phase 41 | Pending |
+| STATE-01 | Phase 41 | Complete |
+| STATE-02 | Phase 41 | Complete |
+| STATE-03 | Phase 41 | Complete |
+| STATE-04 | Phase 41 | Complete |
 | STATE-05 | Phase 41 | Pending |
-| STATE-06 | Phase 41 | Pending |
+| STATE-06 | Phase 41 | Complete |
 | CLEAN-01 | Phase 42 | Pending |
 | CLEAN-02 | Phase 42 | Pending |
 | CLEAN-03 | Phase 42 | Pending |
