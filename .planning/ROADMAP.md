@@ -166,14 +166,17 @@ Full phase details archived to [milestones/v3.8-ROADMAP.md](milestones/v3.8-ROAD
 **Depends on**: Phase 40.5 (v3.8 complete)
 **Requirements**: STATE-01, STATE-02, STATE-03, STATE-04, STATE-05, STATE-06
 **Success Criteria** (what must be TRUE):
-  1. Block state constants use new names: Dirty(0), Local(1), Uploading(2), Remote(3)
+  1. Block state constants use new names: Dirty(0), Local(1), Syncing(2), Remote(3)
   2. All code referencing Sealed or Uploaded updated to Local and Remote
   3. ListLocalBlocks method replaces ListPendingUpload across all implementations
   4. ListRemoteBlocks method replaces ListEvictable across all implementations
   5. ListFileBlocks(payloadID) method exists and returns all blocks for a file
   6. BadgerDB secondary index uses fb-local: prefix instead of fb-sealed:
 **Verification**: `go build ./...` && `go test ./...`
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 41-01-PLAN.md — Rename state enum, query methods, update all consumers in cache/offloader
+- [ ] 41-02-PLAN.md — Add ListFileBlocks method, conformance tests for FileBlockStore
 
 ### Phase 42: Legacy Cleanup
 **Goal**: Remove DirectWriteStore interface and filesystem payload store dead code
@@ -536,7 +539,7 @@ v3.8 (33-40.5) -> v4.0 (41-49) -> v4.1 (50-56) -> v4.2 (57-62)
 | 38. Durable Handles | v3.8 | 3/3 | Complete | 2026-03-02 |
 | 39. Cross-Protocol Integration and Documentation | v3.8 | 3/3 | Complete | 2026-03-02 |
 | 40. SMB3 Conformance Testing | v3.8 | 6/6 | Complete | 2026-03-02 |
-| 41. Block State Enum and ListFileBlocks | v4.0 | 0/? | Not started | - |
+| 41. Block State Enum and ListFileBlocks | v4.0 | 0/2 | Not started | - |
 | 42. Legacy Cleanup | v4.0 | 0/? | Not started | - |
 | 43. Local-Only Block Management | v4.0 | 0/? | Not started | - |
 | 44. Data Model and API/CLI | v4.0 | 0/? | Not started | - |
