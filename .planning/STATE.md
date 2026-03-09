@@ -1,9 +1,9 @@
 ---
 gsd_state_version: 1.0
 milestone: v4.0
-milestone_name: NFSv4.2 Extensions
+milestone_name: BlockStore Unification Refactor
 status: planning
-last_updated: "2026-03-04T00:00:00Z"
+last_updated: "2026-03-09T00:00:00Z"
 progress:
   total_phases: 0
   completed_phases: 0
@@ -15,15 +15,17 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-04)
+See: .planning/PROJECT.md (updated 2026-03-09)
 
 **Core value:** Enterprise-grade multi-protocol file access with unified locking, Kerberos authentication, and session reliability
-**Current focus:** Planning next milestone (v4.0 NFSv4.2 Extensions)
+**Current focus:** v4.0 BlockStore Unification Refactor
 
 ## Current Position
 
-Status: Between milestones (v3.8 shipped, v4.0 planning)
-Last activity: 2026-03-04 -- v3.8 SMB3 Protocol Upgrade shipped and archived
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-03-09 — Milestone v4.0 BlockStore Unification started
 
 ## Completed Milestones
 
@@ -39,38 +41,9 @@ Last activity: 2026-03-04 -- v3.8 SMB3 Protocol Upgrade shipped and archived
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 136 (19 v1.0 + 42 v2.0 + 25 v3.0 + 22 v3.5 + 12 v3.6 + 4 inserted + 12 v3.8)
-- 5 milestones in 29 days
-- Average: ~4.7 plans/day
-
-| Phase | Plan | Duration | Tasks | Files |
-|-------|------|----------|-------|-------|
-| 33    | 01   | 9min     | 2     | 12    |
-| 33    | 02   | 13min    | 2     | 10    |
-| 33    | 03   | 45min    | 2     | 29    |
-| 34    | 01   | 13min    | 2     | 13    |
-| 34    | 02   | 10min    | 2     | 16    |
-| 35    | 01   | 7min     | 2     | 11    |
-| 35    | 02   | 9min     | 2     | 12    |
-| 35    | 03   | 12min    | 2     | 9     |
-| 36    | 01   | 7min     | 2     | 8     |
-| 36    | 02   | 10min    | 2     | 8     |
-| 36    | 03   | 8min     | 2     | 7     |
-| 37    | 01   | 9min     | 2     | 10    |
-| 37    | 02   | 11min    | 2     | 9     |
-| 37    | 03   | 8min     | 2     | 7     |
-| 38    | 01   | 7min     | 2     | 11    |
-| 38    | 02   | 16min    | 1     | 4     |
-| 38    | 03   | 10min    | 2     | 6     |
-| 39    | 01   | 12min    | 2     | 16    |
-| 39    | 02   | 9min     | 2     | 9     |
-| 39    | 03   | 11min    | 2     | 5     |
-| 40    | 02   | 5min     | 2     | 3     |
-| 40    | 03   | 5min     | 2     | 5     |
-| 40    | 04   | 5min     | 2     | 2     |
-| 40    | 01   | 32min    | 2     | 2     |
-| 40    | 06   | 6min     | 2     | 5     |
-| 40    | 05   | 45min    | 2     | 3     |
+- Total plans completed: 146 (19 v1.0 + 42 v2.0 + 25 v3.0 + 22 v3.5 + 12 v3.6 + 4 inserted + 12 v3.8 + 10 v3.8-extra)
+- 6 milestones in 32 days
+- Average: ~4.6 plans/day
 
 ## Accumulated Context
 
@@ -84,10 +57,10 @@ None.
 
 ### Blockers/Concerns
 
-None.
+- Benchmarking (v4.2) may already be partially implemented on feat/cache-rewrite branch — verify status.
 
 ## Session Continuity
 
-Last session: 2026-03-04
-Stopped at: v3.8 milestone archived. Ready for /gsd:new-milestone to start v4.0.
+Last session: 2026-03-09
+Stopped at: Defining v4.0 BlockStore Unification requirements and roadmap.
 Resume file: None
