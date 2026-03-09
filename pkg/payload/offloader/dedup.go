@@ -35,10 +35,17 @@ func (m *Offloader) getUploadState(payloadID string) *fileUploadState {
 // handleUploadSuccess performs common post-upload tasks:
 // 1. Registers block in ObjectStore for deduplication
 // 2. Tracks block hash for finalization
-// 3. Marks block as uploaded in cache
+// 3. Marks block as uploaded in cache (with generation check)
+//
+// The generation parameter is the upload generation captured when the upload started.
+// If the block was re-dirtied during upload, MarkBlockUploaded will reject the stale
+// completion and the block will be retried on the next flush.
+//
+// Returns true if the block was successfully marked as uploaded, false if the generation
+// was stale (block was re-dirtied during upload).
 //
 // This consolidates the success handling from both startBlockUpload and uploadRemainingBlocks.
-func (m *Offloader) handleUploadSuccess(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32, hash [32]byte, dataSize uint32) {
+func (m *Offloader) handleUploadSuccess(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32, hash [32]byte, dataSize uint32, generation uint64) bool {
 	// Register block in ObjectStore for deduplication
 	objBlock := metadata.NewObjectBlock(
 		metadata.ContentHash{}, // ChunkHash - will be set during finalization
@@ -64,8 +71,28 @@ func (m *Offloader) handleUploadSuccess(ctx context.Context, payloadID string, c
 		state.blocksMu.Unlock()
 	}
 
-	// Mark block as uploaded so it can be evicted
-	m.cache.MarkBlockUploaded(ctx, payloadID, chunkIdx, blockIdx)
+	// Mark block as uploaded so it can be evicted.
+	// If the generation doesn't match (block was re-dirtied during upload),
+	// MarkBlockUploaded returns false and we need to revert state.uploaded
+	// so the block will be retried on next flush.
+	if !m.cache.MarkBlockUploaded(ctx, payloadID, chunkIdx, blockIdx, generation) {
+		logger.Warn("Stale upload detected: block was re-dirtied during upload",
+			"payloadID", payloadID,
+			"chunkIdx", chunkIdx,
+			"blockIdx", blockIdx,
+			"generation", generation)
+
+		// Revert uploaded tracking so next flush retries this block
+		if state != nil {
+			key := blockKey{chunkIdx: chunkIdx, blockIdx: blockIdx}
+			state.blocksMu.Lock()
+			state.uploaded[key] = false
+			delete(state.blockHashes, key)
+			state.blocksMu.Unlock()
+		}
+		return false
+	}
+	return true
 }
 
 // getOrderedBlockHashes returns block hashes in order (sorted by chunk/block index).

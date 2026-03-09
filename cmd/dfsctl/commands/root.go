@@ -16,6 +16,7 @@ import (
 	settingscmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/settings"
 	sharecmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/share"
 	storecmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/store"
+	systemcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/system"
 	usercmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/user"
 	"github.com/spf13/cobra"
 )
@@ -83,6 +84,7 @@ func init() {
 	rootCmd.AddCommand(idmapcmd.Cmd)
 	rootCmd.AddCommand(settingscmd.Cmd)
 	rootCmd.AddCommand(switchUserCmd)
+	rootCmd.AddCommand(systemcmd.Cmd)
 	rootCmd.AddCommand(benchcmd.Cmd)
 	rootCmd.AddCommand(completionCmd)
 

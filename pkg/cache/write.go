@@ -314,7 +314,8 @@ func (c *Cache) writeToBlock(ctx context.Context, entry *fileEntry, payloadID st
 		// We revert to Pending so the block will be picked up by the next flush.
 		if !isNew && blk.state == BlockStateUploading {
 			blk.state = BlockStatePending
-			blk.hash = [32]byte{} // Invalidate hash - data has changed
+			blk.hash = [32]byte{}          // Invalidate hash - data has changed
+			blk.uploadGeneration++         // Bump generation so in-flight upload detects staleness
 		}
 
 		// Handle write to ReadyForUpload block - cancel pending upload and revert to Pending.
@@ -324,7 +325,8 @@ func (c *Cache) writeToBlock(ctx context.Context, entry *fileEntry, payloadID st
 				blk.uploadCancel = nil
 			}
 			blk.state = BlockStatePending
-			blk.hash = [32]byte{} // Invalidate hash - will be recomputed on completion
+			blk.hash = [32]byte{}          // Invalidate hash - will be recomputed on completion
+			blk.uploadGeneration++         // Bump generation so queued upload detects staleness
 		}
 	}
 
@@ -368,6 +370,7 @@ func (c *Cache) writeToBlock(ctx context.Context, entry *fileEntry, payloadID st
 	// For normal writes, mark block as dirty if it was uploaded (re-dirty)
 	if !opts.isDownloaded && blk.state == BlockStateUploaded {
 		blk.state = BlockStatePending
+		blk.uploadGeneration++      // Bump generation for re-dirtied block
 		c.pendingSize.Add(BlockSize) // Re-dirtied block becomes pending again
 	}
 

@@ -151,6 +151,12 @@ type blockBuffer struct {
 	// uploadCancel cancels a pending upload when new writes arrive.
 	// Set when transitioning to ReadyForUpload, called if write arrives before upload starts.
 	uploadCancel func()
+
+	// uploadGeneration is bumped on every dirty transition (Uploading→Pending,
+	// ReadyForUpload→Pending, Uploaded→Pending). Uploads capture the generation
+	// at start and verify it at completion to detect stale uploads that raced
+	// with new writes.
+	uploadGeneration uint64
 }
 
 // PendingBlock represents a block ready for upload.
@@ -177,6 +183,10 @@ type PendingBlock struct {
 
 	// State is the current block state.
 	State BlockState
+
+	// Generation is the upload generation counter at the time the block was read.
+	// Used by the offloader to detect stale uploads that raced with new writes.
+	Generation uint64
 }
 
 // ============================================================================

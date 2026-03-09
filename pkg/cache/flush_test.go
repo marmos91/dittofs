@@ -238,7 +238,7 @@ func TestGetDirtyBlocks_OnlyReturnsPending(t *testing.T) {
 	_ = c.WriteAt(ctx, payloadID, 0, []byte("block1"), BlockSize)
 
 	// Mark second block as uploaded
-	c.MarkBlockUploaded(ctx, payloadID, 0, 1)
+	c.MarkBlockUploaded(ctx, payloadID, 0, 1, 0)
 
 	// Get dirty again - should only have the pending one
 	blocks, err := c.GetDirtyBlocks(ctx, payloadID)
@@ -298,7 +298,7 @@ func TestMarkBlockUploaded_Success(t *testing.T) {
 	}
 
 	// Mark as uploaded
-	marked := c.MarkBlockUploaded(ctx, payloadID, 0, 0)
+	marked := c.MarkBlockUploaded(ctx, payloadID, 0, 0, 0)
 	if !marked {
 		t.Error("MarkBlockUploaded should return true")
 	}
@@ -320,7 +320,7 @@ func TestMarkBlockUploaded_NotFound(t *testing.T) {
 	_ = c.WriteAt(ctx, payloadID, 0, []byte("data"), 0)
 
 	// Try to mark a nonexistent block
-	marked := c.MarkBlockUploaded(ctx, payloadID, 99, 99)
+	marked := c.MarkBlockUploaded(ctx, payloadID, 99, 99, 0)
 	if marked {
 		t.Error("MarkBlockUploaded should return false for nonexistent block")
 	}
@@ -336,8 +336,8 @@ func TestMarkBlockUploaded_AlreadyUploaded(t *testing.T) {
 	_ = c.WriteAt(ctx, payloadID, 0, []byte("data"), 0)
 
 	// Mark as uploaded twice
-	c.MarkBlockUploaded(ctx, payloadID, 0, 0)
-	marked := c.MarkBlockUploaded(ctx, payloadID, 0, 0)
+	c.MarkBlockUploaded(ctx, payloadID, 0, 0, 0)
+	marked := c.MarkBlockUploaded(ctx, payloadID, 0, 0, 0)
 
 	// Second call should return false (already uploaded)
 	if marked {
@@ -354,7 +354,7 @@ func TestMarkBlockUploaded_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	marked := c.MarkBlockUploaded(ctx, "test", 0, 0)
+	marked := c.MarkBlockUploaded(ctx, "test", 0, 0, 0)
 	if marked {
 		t.Error("MarkBlockUploaded should return false for cancelled context")
 	}
@@ -365,7 +365,7 @@ func TestMarkBlockUploaded_CacheClosed(t *testing.T) {
 	_ = c.WriteAt(context.Background(), "test", 0, []byte("data"), 0)
 	_ = c.Close()
 
-	marked := c.MarkBlockUploaded(context.Background(), "test", 0, 0)
+	marked := c.MarkBlockUploaded(context.Background(), "test", 0, 0, 0)
 	if marked {
 		t.Error("MarkBlockUploaded should return false for closed cache")
 	}
@@ -385,7 +385,7 @@ func TestMarkBlockUploading_Success(t *testing.T) {
 	_ = c.WriteAt(ctx, payloadID, 0, []byte("data"), 0)
 
 	// Mark as uploading
-	marked := c.MarkBlockUploading(ctx, payloadID, 0, 0)
+	_, marked := c.MarkBlockUploading(ctx, payloadID, 0, 0)
 	if !marked {
 		t.Error("MarkBlockUploading should return true")
 	}
@@ -408,7 +408,7 @@ func TestMarkBlockUploading_NotFound(t *testing.T) {
 	_ = c.WriteAt(ctx, payloadID, 0, []byte("data"), 0)
 
 	// Try to mark a nonexistent block
-	marked := c.MarkBlockUploading(ctx, payloadID, 99, 99)
+	_, marked := c.MarkBlockUploading(ctx, payloadID, 99, 99)
 	if marked {
 		t.Error("MarkBlockUploading should return false for nonexistent block")
 	}
@@ -424,8 +424,8 @@ func TestMarkBlockUploading_AlreadyUploading(t *testing.T) {
 	_ = c.WriteAt(ctx, payloadID, 0, []byte("data"), 0)
 
 	// Mark as uploading twice
-	c.MarkBlockUploading(ctx, payloadID, 0, 0)
-	marked := c.MarkBlockUploading(ctx, payloadID, 0, 0)
+	_, _ = c.MarkBlockUploading(ctx, payloadID, 0, 0)
+	_, marked := c.MarkBlockUploading(ctx, payloadID, 0, 0)
 
 	// Second call should return false (not pending anymore)
 	if marked {
@@ -547,12 +547,67 @@ func TestWrite_CacheFull_SucceedsAfterUpload(t *testing.T) {
 	_ = c.WriteAt(ctx, payloadID, 0, make([]byte, 1024), 0)
 
 	// Mark block as uploaded so it can be evicted
-	c.MarkBlockUploaded(ctx, payloadID, 0, 0)
+	c.MarkBlockUploaded(ctx, payloadID, 0, 0, 0)
 
 	// Now write should succeed because eviction can free space
 	err := c.WriteAt(ctx, payloadID, 0, make([]byte, 1024), BlockSize)
 	if err != nil {
 		t.Errorf("write should succeed after upload (eviction possible), got %v", err)
+	}
+}
+
+// ============================================================================
+// Generation Counter Tests
+// ============================================================================
+
+func TestMarkBlockUploaded_StaleGeneration(t *testing.T) {
+	c := New(0)
+	defer func() { _ = c.Close() }()
+
+	ctx := context.Background()
+	payloadID := "test-file"
+
+	// Write initial data and complete a full upload cycle to advance generation past 0.
+	// Generation 0 is the sentinel value that skips the staleness check.
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("initial data"), 0)
+	_, ok := c.MarkBlockUploading(ctx, payloadID, 0, 0) // gen=0
+	if !ok {
+		t.Fatal("first MarkBlockUploading should succeed")
+	}
+	// Write while uploading bumps generation to 1, reverts to Pending
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("second write"), 0)
+
+	// Now mark uploading again -- captures gen=1 (non-zero, will be checked)
+	gen, ok := c.MarkBlockUploading(ctx, payloadID, 0, 0)
+	if !ok {
+		t.Fatal("second MarkBlockUploading should succeed")
+	}
+	if gen == 0 {
+		t.Fatal("expected non-zero generation after re-dirty cycle")
+	}
+
+	// Write again while uploading -- bumps generation to 2, reverts to Pending
+	_ = c.WriteAt(ctx, payloadID, 0, []byte("third write"), 0)
+
+	// Try to mark uploaded with stale generation (gen=1, current=2)
+	marked := c.MarkBlockUploaded(ctx, payloadID, 0, 0, gen)
+	if marked {
+		t.Error("MarkBlockUploaded should return false for stale generation")
+	}
+
+	// Block should still be dirty (Pending) since the stale upload was rejected
+	blocks, _ := c.GetDirtyBlocks(ctx, payloadID)
+	if len(blocks) != 1 {
+		t.Errorf("expected 1 dirty block (still pending), got %d", len(blocks))
+	}
+	if blocks[0].State != BlockStatePending {
+		t.Errorf("expected block state Pending, got %v", blocks[0].State)
+	}
+
+	// gen=0 should always succeed (skip check sentinel)
+	marked = c.MarkBlockUploaded(ctx, payloadID, 0, 0, 0)
+	if !marked {
+		t.Error("MarkBlockUploaded with gen=0 should succeed (skip check)")
 	}
 }
 
@@ -612,6 +667,6 @@ func BenchmarkMarkBlockUploaded(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		payloadID := fmt.Sprintf("file-%d", i%maxBlocks)
-		c.MarkBlockUploaded(ctx, payloadID, 0, 0)
+		c.MarkBlockUploaded(ctx, payloadID, 0, 0, 0)
 	}
 }

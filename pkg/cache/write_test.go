@@ -176,7 +176,7 @@ func TestWaitForPendingDrain_UnblocksOnDrain(t *testing.T) {
 	// Simulate an upload completing in a background goroutine
 	go func() {
 		time.Sleep(50 * time.Millisecond)
-		c.MarkBlockUploaded(ctx, "file", 0, 0)
+		c.MarkBlockUploaded(ctx, "file", 0, 0, 0)
 	}()
 
 	// Should unblock promptly when pendingSize decreases

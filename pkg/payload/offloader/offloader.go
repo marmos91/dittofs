@@ -256,6 +256,39 @@ func (m *Offloader) flushSmallFileSync(ctx context.Context, payloadID string, st
 	return &FlushResult{Finalized: true}, nil
 }
 
+// DrainAllUploads waits for all in-flight uploads across all files to complete.
+// This includes both eager uploads (inFlight) and flush operations (flush) for
+// every tracked file.
+//
+// Useful for benchmarking and testing to ensure clean boundaries between workloads,
+// and exposed via the REST API for the benchmark runner to call between test phases.
+//
+// Returns nil when all uploads complete, or ctx.Err() if the context is cancelled.
+func (m *Offloader) DrainAllUploads(ctx context.Context) error {
+	m.uploadsMu.Lock()
+	states := make([]*fileUploadState, 0, len(m.uploads))
+	for _, state := range m.uploads {
+		states = append(states, state)
+	}
+	m.uploadsMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		for _, state := range states {
+			state.inFlight.Wait()
+			state.flush.Wait()
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // WaitForEagerUploads waits for in-flight eager uploads to complete.
 // This is useful in tests to ensure uploads complete before checking results.
 func (m *Offloader) WaitForEagerUploads(ctx context.Context, payloadID string) error {

@@ -239,7 +239,7 @@ func TestHasDirtyData_FalseAfterUpload(t *testing.T) {
 
 	blocks, _ := c.GetDirtyBlocks(ctx, payloadID)
 	for _, blk := range blocks {
-		c.MarkBlockUploaded(ctx, payloadID, blk.ChunkIndex, blk.BlockIndex)
+		c.MarkBlockUploaded(ctx, payloadID, blk.ChunkIndex, blk.BlockIndex, 0)
 	}
 
 	if c.HasDirtyData(ctx, payloadID) {
@@ -491,7 +491,7 @@ func TestStats_Basic(t *testing.T) {
 	}
 	blocks, _ := c.GetDirtyBlocks(ctx, "file2")
 	for _, blk := range blocks {
-		c.MarkBlockUploaded(ctx, "file2", blk.ChunkIndex, blk.BlockIndex)
+		c.MarkBlockUploaded(ctx, "file2", blk.ChunkIndex, blk.BlockIndex, 0)
 	}
 
 	stats := c.Stats()

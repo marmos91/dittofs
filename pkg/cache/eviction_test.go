@@ -21,7 +21,7 @@ func TestEvict_FlushedData(t *testing.T) {
 	// Mark blocks as uploaded
 	blocks, _ := c.GetDirtyBlocks(ctx, payloadID)
 	for _, blk := range blocks {
-		c.MarkBlockUploaded(ctx, payloadID, blk.ChunkIndex, blk.BlockIndex)
+		c.MarkBlockUploaded(ctx, payloadID, blk.ChunkIndex, blk.BlockIndex, 0)
 	}
 
 	// Evict
@@ -79,7 +79,7 @@ func TestEvictAll(t *testing.T) {
 
 		blocks, _ := c.GetDirtyBlocks(ctx, file)
 		for _, blk := range blocks {
-			c.MarkBlockUploaded(ctx, file, blk.ChunkIndex, blk.BlockIndex)
+			c.MarkBlockUploaded(ctx, file, blk.ChunkIndex, blk.BlockIndex, 0)
 		}
 	}
 
@@ -108,7 +108,7 @@ func TestEvictLRU(t *testing.T) {
 
 		blocks, _ := c.GetDirtyBlocks(ctx, file)
 		for _, blk := range blocks {
-			c.MarkBlockUploaded(ctx, file, blk.ChunkIndex, blk.BlockIndex)
+			c.MarkBlockUploaded(ctx, file, blk.ChunkIndex, blk.BlockIndex, 0)
 		}
 	}
 
@@ -149,7 +149,7 @@ func TestLRUEviction_OnlyEvictsFlushed(t *testing.T) {
 	}
 	blocks, _ := c.GetDirtyBlocks(ctx, file2)
 	for _, blk := range blocks {
-		c.MarkBlockUploaded(ctx, file2, blk.ChunkIndex, blk.BlockIndex)
+		c.MarkBlockUploaded(ctx, file2, blk.ChunkIndex, blk.BlockIndex, 0)
 	}
 
 	// Evict
@@ -181,7 +181,7 @@ func TestLRUEviction_EvictsOldestFirst(t *testing.T) {
 		}
 		blocks, _ := c.GetDirtyBlocks(ctx, file)
 		for _, blk := range blocks {
-			c.MarkBlockUploaded(ctx, file, blk.ChunkIndex, blk.BlockIndex)
+			c.MarkBlockUploaded(ctx, file, blk.ChunkIndex, blk.BlockIndex, 0)
 		}
 	}
 
@@ -264,7 +264,7 @@ func BenchmarkEvictLRU(b *testing.B) {
 		// Mark as uploaded so it can be evicted
 		blocks, _ := c.GetDirtyBlocks(ctx, payloadID)
 		for _, blk := range blocks {
-			c.MarkBlockUploaded(ctx, payloadID, blk.ChunkIndex, blk.BlockIndex)
+			c.MarkBlockUploaded(ctx, payloadID, blk.ChunkIndex, blk.BlockIndex, 0)
 		}
 	}
 

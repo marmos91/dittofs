@@ -65,6 +65,7 @@ func (c *Cache) getBlocksFiltered(ctx context.Context, payloadID string, filter 
 				DataSize:   blk.dataSize,
 				Hash:       blk.hash,
 				State:      blk.state,
+				Generation: blk.uploadGeneration,
 			})
 		}
 	}
@@ -89,10 +90,12 @@ func (c *Cache) getBlocksFiltered(ctx context.Context, payloadID string, filter 
 //   - hash: The SHA-256 hash of the block's data
 //   - cancelFunc: Optional function to call if a write arrives before upload starts
 //
-// Returns true if the block was found and marked.
-func (c *Cache) MarkBlockReadyForUpload(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32, hash [32]byte, cancelFunc func()) bool {
+// Returns the current upload generation and true if the block was found and marked.
+// The caller should capture the generation and pass it to MarkBlockUploaded to
+// detect stale uploads that raced with new writes.
+func (c *Cache) MarkBlockReadyForUpload(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32, hash [32]byte, cancelFunc func()) (uint64, bool) {
 	if c.checkClosed(ctx) != nil {
-		return false
+		return 0, false
 	}
 
 	entry := c.getFileEntry(payloadID)
@@ -101,14 +104,14 @@ func (c *Cache) MarkBlockReadyForUpload(ctx context.Context, payloadID string, c
 
 	blk := getBlockUnlocked(entry, chunkIdx, blockIdx)
 	if blk == nil || blk.state != BlockStatePending {
-		return false
+		return 0, false
 	}
 
 	blk.state = BlockStateReadyForUpload
 	blk.hash = hash
 	blk.uploadCancel = cancelFunc
 
-	return true
+	return blk.uploadGeneration, true
 }
 
 // MarkBlockUploaded marks a block as successfully uploaded to the block store.
@@ -117,6 +120,11 @@ func (c *Cache) MarkBlockReadyForUpload(ctx context.Context, payloadID string, c
 // The block transitions from Pending/ReadyForUpload/Uploading to BlockStateUploaded,
 // making it eligible for LRU eviction when cache pressure requires freeing memory.
 //
+// The expectedGen parameter prevents stale uploads from incorrectly marking a block
+// as Uploaded after new data has been written. If the block's uploadGeneration has
+// changed since the upload started (meaning new writes arrived), this method returns
+// false and the block remains in its current state so it will be re-uploaded.
+//
 // If WAL persistence is enabled, the uploaded state is recorded to the WAL so that
 // on recovery, the block won't be re-uploaded unnecessarily.
 //
@@ -124,9 +132,11 @@ func (c *Cache) MarkBlockReadyForUpload(ctx context.Context, payloadID string, c
 //   - payloadID: Unique identifier for the file content
 //   - chunkIdx: The chunk index containing the block
 //   - blockIdx: The block index within the chunk
+//   - expectedGen: The upload generation captured when the upload started.
+//     Pass 0 to skip generation check (for WAL recovery and downloaded blocks).
 //
 // Returns true if the block was found and marked.
-func (c *Cache) MarkBlockUploaded(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) bool {
+func (c *Cache) MarkBlockUploaded(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32, expectedGen uint64) bool {
 	if c.checkClosed(ctx) != nil {
 		return false
 	}
@@ -137,6 +147,13 @@ func (c *Cache) MarkBlockUploaded(ctx context.Context, payloadID string, chunkId
 
 	blk := getBlockUnlocked(entry, chunkIdx, blockIdx)
 	if blk == nil {
+		return false
+	}
+
+	// Generation check: if expectedGen > 0, verify the block hasn't been re-dirtied
+	// since the upload started. A mismatch means new data was written while the
+	// upload was in flight — marking as Uploaded would lose the new data.
+	if expectedGen > 0 && blk.uploadGeneration != expectedGen {
 		return false
 	}
 
@@ -220,11 +237,13 @@ func (c *Cache) MarkBlockPending(ctx context.Context, payloadID string, chunkIdx
 //   - chunkIdx: The chunk index containing the block
 //   - blockIdx: The block index within the chunk
 //
-// Returns true if the block was found and marked (state was Pending).
-// Returns false if the block doesn't exist or is already Uploading/Uploaded.
-func (c *Cache) MarkBlockUploading(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) bool {
+// Returns the current upload generation and true if the block was found and marked
+// (state was Pending/ReadyForUpload).
+// Returns (0, false) if the block doesn't exist or is already Uploading/Uploaded.
+// The caller should capture the generation and pass it to MarkBlockUploaded.
+func (c *Cache) MarkBlockUploading(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) (uint64, bool) {
 	if c.checkClosed(ctx) != nil {
-		return false
+		return 0, false
 	}
 
 	entry := c.getFileEntry(payloadID)
@@ -233,15 +252,15 @@ func (c *Cache) MarkBlockUploading(ctx context.Context, payloadID string, chunkI
 
 	blk := getBlockUnlocked(entry, chunkIdx, blockIdx)
 	if blk == nil {
-		return false
+		return 0, false
 	}
 
 	if blk.state == BlockStatePending || blk.state == BlockStateReadyForUpload {
 		blk.state = BlockStateUploading
-		return true
+		return blk.uploadGeneration, true
 	}
 
-	return false
+	return 0, false
 }
 
 // GetBlockData returns the data for a specific block.

@@ -354,6 +354,18 @@ func (r *Runtime) GetCache() *cache.Cache {
 	return r.cacheInstance
 }
 
+// DrainAllUploads waits for all in-flight uploads across all files to complete.
+// Returns nil if no payload service is configured or all uploads drained successfully.
+func (r *Runtime) DrainAllUploads(ctx context.Context) error {
+	r.mu.RLock()
+	ps := r.payloadService
+	r.mu.RUnlock()
+	if ps == nil {
+		return nil
+	}
+	return ps.DrainAllUploads(ctx)
+}
+
 func (r *Runtime) GetUserStore() models.UserStore         { return r.store }
 func (r *Runtime) GetIdentityStore() models.IdentityStore { return r.store }
 
