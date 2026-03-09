@@ -129,29 +129,19 @@ func (m *Offloader) canProcess(ctx context.Context) bool {
 	return !m.closed
 }
 
-// Flush writes dirty in-memory blocks to disk cache and returns immediately.
-//
-// For FS backends (direct-write): data is already in the payload store via pwrite,
-// so this is a no-op.
-//
-// For S3 backends: memBlocks are flushed to .blk files on disk (stable storage).
-// The periodic uploader handles all S3 uploads asynchronously in its background
-// worker pool. This decouples the NFS COMMIT latency from S3 upload latency —
-// with a sufficiently large cache, S3 write performance equals FS performance.
-// S3 latency only matters when backpressure kicks in (cache full) or on cold reads.
+// Flush writes dirty in-memory blocks to disk cache (.blk files).
+// Remote uploads happen asynchronously via the periodic uploader, so this
+// returns without waiting for remote sync. This decouples NFS COMMIT latency
+// from remote upload latency — with a sufficiently large cache, remote write
+// performance equals local performance. Remote latency only matters when
+// backpressure kicks in (cache full) or on cold reads.
 func (m *Offloader) Flush(ctx context.Context, payloadID string) (*FlushResult, error) {
 	if !m.canProcess(ctx) {
 		return nil, fmt.Errorf("offloader is closed")
 	}
 
-	// Direct-write mode: data is already in the payload store via pwrite.
-	// No cache flush, upload, or finalization needed.
-	if m.cache.IsDirectWrite() {
-		return &FlushResult{Finalized: true}, nil
-	}
-
-	// S3 mode: flush memBlocks to disk cache only.
-	// The data is safe on disk after this call. S3 uploads happen asynchronously
+	// Flush memBlocks to disk cache only.
+	// The data is safe on disk after this call. Remote uploads happen asynchronously
 	// via the periodic syncer — Local blocks are picked up after UploadDelay
 	// (resettable on new writes), allowing sparse blocks to accumulate more data
 	// before sync.
