@@ -116,7 +116,7 @@ func DecodeWriteRequest(body []byte) (*WriteRequest, error) {
 			// Fallback: data might be right after the 48-byte fixed structure
 			req.Data = body[48 : 48+int(req.Length)]
 		} else {
-			return nil, fmt.Errorf("WRITE request body too short for Length=%d: have %d bytes after header", req.Length, len(body)-48)
+			return nil, fmt.Errorf("WRITE request body too short for Length=%d: have %d bytes after fixed structure", req.Length, len(body)-48)
 		}
 	}
 

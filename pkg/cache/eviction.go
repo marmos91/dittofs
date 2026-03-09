@@ -78,13 +78,15 @@ func (bc *BlockCache) evictBlock(ctx context.Context, fb *metadata.FileBlock) er
 		return fmt.Errorf("remove cache file: %w", err)
 	}
 
+	// Decrement disk usage immediately after successful file removal, regardless
+	// of whether the metadata update succeeds. The file is already gone from disk.
+	if fileSize > 0 {
+		bc.diskUsed.Add(-fileSize)
+	}
+
 	fb.CachePath = ""
 	if err := bc.blockStore.PutFileBlock(ctx, fb); err != nil {
 		return fmt.Errorf("update block metadata: %w", err)
-	}
-
-	if fileSize > 0 {
-		bc.diskUsed.Add(-fileSize)
 	}
 
 	return nil

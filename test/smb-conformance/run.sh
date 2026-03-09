@@ -147,8 +147,8 @@ Options:
 
 Profiles:
   memory        Memory metadata + memory payload (fastest)
-  memory-fs     Memory metadata + filesystem payload
-  badger-fs     BadgerDB metadata + filesystem payload
+  memory-fs     Memory metadata + memory payload (legacy name, same as memory)
+  badger-fs     BadgerDB metadata + memory payload (legacy name)
   badger-s3     BadgerDB metadata + S3 payload (requires Localstack)
   postgres-s3   PostgreSQL metadata + S3 payload (requires Localstack + PostgreSQL)
 

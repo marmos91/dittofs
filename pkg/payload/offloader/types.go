@@ -88,5 +88,5 @@ func DefaultTransferQueueConfig() TransferQueueConfig {
 
 // FlushResult indicates the outcome of a flush operation.
 type FlushResult struct {
-	Finalized bool // All blocks have been synced to the backend block store
+	Finalized bool // All blocks have been synced to the backend block store (durability depends on store type)
 }

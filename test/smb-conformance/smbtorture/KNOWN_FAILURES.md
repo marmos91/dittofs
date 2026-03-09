@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-03-09 (Phase 42, full smbtorture run — 13 more newly reachable failures added)
+Last updated: 2026-03-09 (Phase 42 — added 2 concurrent create race failures)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -320,7 +320,9 @@ files, create blobs) are not implemented. Basic create operations pass.
 | smb2.create.gentest | Create | Generic create test (impersonation) not implemented | - |
 | smb2.create.impersonation | Create | Impersonation levels not implemented | - |
 | smb2.create.leading-slash | Create | Leading slash path handling not implemented | - |
+| smb2.create.mkdir-dup | Create | Concurrent mkdir atomicity race (TOCTOU in createEntry) | - |
 | smb2.create.mkdir-visible | Create | Mkdir visibility semantics not implemented | - |
+| smb2.create.multi | Create | Concurrent file create atomicity race (TOCTOU in createEntry) | - |
 | smb2.create.nulldacl | Create | Null DACL create not implemented | - |
 | smb2.create.quota-fake-file | Create | Quota fake file not implemented | - |
 

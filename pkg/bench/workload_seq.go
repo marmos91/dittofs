@@ -43,7 +43,7 @@ func runSeqWrite(ctx context.Context, cfg Config, dir string, progress ProgressF
 	}
 
 	var (
-		latencies  = make([]time.Duration, 0, totalOps)
+		latencies  = make([]time.Duration, 0, chunks*cfg.Threads)
 		totalBytes int64
 		errors     int64
 	)
@@ -119,7 +119,7 @@ func runSeqRead(ctx context.Context, cfg Config, dir string, progress ProgressFu
 	buf := make([]byte, seqChunkSize)
 
 	var (
-		latencies  = make([]time.Duration, 0, totalOps)
+		latencies  = make([]time.Duration, 0, chunks*cfg.Threads)
 		totalBytes int64
 		errors     int64
 	)
