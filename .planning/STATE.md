@@ -1,29 +1,37 @@
 ---
 gsd_state_version: 1.0
 milestone: v4.0
-milestone_name: NFSv4.2 Extensions
-status: planning
-last_updated: "2026-03-04T00:00:00Z"
+milestone_name: BlockStore Unification Refactor
+status: completed
+stopped_at: Completed 41-02-PLAN.md (Phase 41 complete)
+last_updated: "2026-03-09T12:36:09.172Z"
+last_activity: 2026-03-09 — Phase 41 Plan 02 complete (ListFileBlocks + conformance tests)
 progress:
-  total_phases: 0
-  completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
+  total_phases: 22
+  completed_phases: 2
+  total_plans: 4
+  completed_plans: 4
+  percent: 67
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-04)
+See: .planning/PROJECT.md (updated 2026-03-09)
 
-**Core value:** Enterprise-grade multi-protocol file access with unified locking, Kerberos authentication, and session reliability
-**Current focus:** Planning next milestone (v4.0 NFSv4.2 Extensions)
+**Core value:** Replace confusing layered storage architecture with clean two-tier block store model (Local + Remote) for per-share isolation and maintainability
+**Current focus:** Phase 41 - Block State Enum and ListFileBlocks
 
 ## Current Position
 
-Status: Between milestones (v3.8 shipped, v4.0 planning)
-Last activity: 2026-03-04 -- v3.8 SMB3 Protocol Upgrade shipped and archived
+Phase: 41 of 49 (Block State Enum and ListFileBlocks)
+Milestone: v4.0 BlockStore Unification Refactor
+Plan: 2 of 2 in current phase (COMPLETE)
+Status: Phase 41 Complete
+Last activity: 2026-03-09 — Phase 41 Plan 02 complete (ListFileBlocks + conformance tests)
+
+Progress: [████████████████████████████████████████░░░░░░░░░░░░] 67% (124/186+ total plans across all milestones)
 
 ## Completed Milestones
 
@@ -39,44 +47,29 @@ Last activity: 2026-03-04 -- v3.8 SMB3 Protocol Upgrade shipped and archived
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 136 (19 v1.0 + 42 v2.0 + 25 v3.0 + 22 v3.5 + 12 v3.6 + 4 inserted + 12 v3.8)
-- 5 milestones in 29 days
-- Average: ~4.7 plans/day
+- Total plans completed: 146 (across 6 shipped milestones)
+- Average: ~4.6 plans/day
+- Trend: Stable velocity maintained
 
-| Phase | Plan | Duration | Tasks | Files |
-|-------|------|----------|-------|-------|
-| 33    | 01   | 9min     | 2     | 12    |
-| 33    | 02   | 13min    | 2     | 10    |
-| 33    | 03   | 45min    | 2     | 29    |
-| 34    | 01   | 13min    | 2     | 13    |
-| 34    | 02   | 10min    | 2     | 16    |
-| 35    | 01   | 7min     | 2     | 11    |
-| 35    | 02   | 9min     | 2     | 12    |
-| 35    | 03   | 12min    | 2     | 9     |
-| 36    | 01   | 7min     | 2     | 8     |
-| 36    | 02   | 10min    | 2     | 8     |
-| 36    | 03   | 8min     | 2     | 7     |
-| 37    | 01   | 9min     | 2     | 10    |
-| 37    | 02   | 11min    | 2     | 9     |
-| 37    | 03   | 8min     | 2     | 7     |
-| 38    | 01   | 7min     | 2     | 11    |
-| 38    | 02   | 16min    | 1     | 4     |
-| 38    | 03   | 10min    | 2     | 6     |
-| 39    | 01   | 12min    | 2     | 16    |
-| 39    | 02   | 9min     | 2     | 9     |
-| 39    | 03   | 11min    | 2     | 5     |
-| 40    | 02   | 5min     | 2     | 3     |
-| 40    | 03   | 5min     | 2     | 5     |
-| 40    | 04   | 5min     | 2     | 2     |
-| 40    | 01   | 32min    | 2     | 2     |
-| 40    | 06   | 6min     | 2     | 5     |
-| 40    | 05   | 45min    | 2     | 3     |
+**v4.0 Current Milestone:**
+- 9 phases defined (41-49)
+- 55 requirements mapped
+- 2 plans completed (41-01, 41-02) -- Phase 41 complete
 
 ## Accumulated Context
 
 ### Decisions
 
-v3.8 decisions archived to PROJECT.md Key Decisions table and milestones/v3.8-ROADMAP.md.
+Decisions are logged in PROJECT.md Key Decisions table.
+Recent decisions affecting v4.0 work:
+
+- **Two-tier block store model**: Clean Local+Remote replaces confusing PayloadService/Cache/DirectWrite layers (Pending v4.0)
+- **Per-share block stores**: Different local paths and remote backends per share, replaces global PayloadService (Pending v4.0)
+- **BlockStore refactor before NFSv4.2**: Clean storage architecture enables easier feature development (Pending v4.0)
+- **Kept numeric values unchanged (0-3)**: Avoids data migration for persisted FileBlock data (Phase 41, Plan 01)
+- **Log messages updated to sync terminology now**: Method/file renames deferred to Phase 45 (Phase 41, Plan 01)
+- **Block index sorting in Go**: Numeric sort after DB fetch for correct multi-digit ordering (Phase 41, Plan 02)
+- **BadgerDB fb-file: index always maintained**: On every PutFileBlock regardless of state (Phase 41, Plan 02)
 
 ### Pending Todos
 
@@ -84,10 +77,11 @@ None.
 
 ### Blockers/Concerns
 
-None.
+None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-04
-Stopped at: v3.8 milestone archived. Ready for /gsd:new-milestone to start v4.0.
-Resume file: None
+Last session: 2026-03-09T12:30:23Z
+Stopped at: Completed 41-02-PLAN.md (Phase 41 complete)
+Resume file: .planning/phases/41-block-state-enum-and-listfileblocks/41-02-SUMMARY.md
+Next action: Execute Phase 42 (BlockStore interface definition)

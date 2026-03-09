@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-03-07T09:01:13.385452678Z",
+  "system": "dittofs-s3",
+  "path": "/mnt/bench-s3",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 486.3142188487114,
+      "latency_p50_us": 978,
+      "latency_p95_us": 7389,
+      "latency_p99_us": 12201,
+      "latency_avg_us": 2054.4566666666665,
+      "total_ops": 3000,
+      "total_bytes": 33000,
+      "errors": 0,
+      "duration": 6168851092
+    },
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 594.0425590251729,
+      "latency_p50_us": 1254,
+      "latency_p95_us": 1725,
+      "latency_p99_us": 5198,
+      "latency_avg_us": 1678.6133482894,
+      "total_ops": 35660,
+      "total_bytes": 146063360,
+      "errors": 0,
+      "duration": 60029369038
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 307.83224307874747,
+      "latency_p50_us": 1762,
+      "latency_p95_us": 2160,
+      "latency_p99_us": 8739,
+      "latency_avg_us": 3243.6559285327558,
+      "total_ops": 18470,
+      "total_bytes": 75653120,
+      "errors": 0,
+      "duration": 60000212503
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 63.960874401576056,
+      "latency_p50_us": 14641,
+      "latency_p95_us": 20350,
+      "latency_p99_us": 215175,
+      "latency_avg_us": 15469.989501953125,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 64039149532
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 50.91678866379575,
+      "latency_p50_us": 612,
+      "latency_p95_us": 805,
+      "latency_p99_us": 1138,
+      "latency_avg_us": 640.770751953125,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 80444979102
+    }
+  },
+  "total_duration": 270899045133
+}

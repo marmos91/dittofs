@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-03-04T08:40:43.874759421Z",
+  "system": "s3ql-r8",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 657.9114056623945,
+      "latency_p50_us": 704,
+      "latency_p95_us": 6103,
+      "latency_p99_us": 7907,
+      "latency_avg_us": 1518.3036666666667,
+      "total_ops": 3000,
+      "total_bytes": 33000,
+      "errors": 0,
+      "duration": 4559884468
+    },
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 46.228128313437914,
+      "latency_p50_us": 2414,
+      "latency_p95_us": 69265,
+      "latency_p99_us": 223949,
+      "latency_avg_us": 21622.793439077144,
+      "total_ops": 2774,
+      "total_bytes": 11362304,
+      "errors": 0,
+      "duration": 60006755653
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 434.4504730807346,
+      "latency_p50_us": 905,
+      "latency_p95_us": 1162,
+      "latency_p99_us": 1442,
+      "latency_avg_us": 2297.4051824647313,
+      "total_ops": 34308,
+      "total_bytes": 140525568,
+      "errors": 0,
+      "duration": 78968725150
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 51.387329977394884,
+      "latency_p50_us": 1521,
+      "latency_p95_us": 212676,
+      "latency_p99_us": 250235,
+      "latency_avg_us": 19273.5888671875,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 79708363945
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 51.0619169153955,
+      "latency_p50_us": 686,
+      "latency_p95_us": 911,
+      "latency_p99_us": 1290,
+      "latency_avg_us": 721.565185546875,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 80216338270
+    }
+  },
+  "total_duration": 308359993857
+}

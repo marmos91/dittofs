@@ -1,0 +1,40 @@
+{
+  "timestamp": "2026-03-04T22:03:03.727711005Z",
+  "system": "ganesha-nfs4",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000,
+    "small_file_count": 10000
+  },
+  "workloads": {
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 2325.254201637714,
+      "latency_p50_us": 371,
+      "latency_p95_us": 941,
+      "latency_p99_us": 1083,
+      "latency_avg_us": 426.24757733879983,
+      "total_ops": 139516,
+      "total_bytes": 571457536,
+      "errors": 0,
+      "duration": 60000321643
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 51.34096561539248,
+      "latency_p50_us": 1781,
+      "latency_p95_us": 211897,
+      "latency_p99_us": 251739,
+      "latency_avg_us": 19301.582763671875,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 79780345985
+    }
+  },
+  "total_duration": 140001643122
+}

@@ -1,0 +1,40 @@
+{
+  "timestamp": "2026-03-04T18:02:07.948791091Z",
+  "system": "dittofs-badger-fs-nfs3",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000,
+    "small_file_count": 10000
+  },
+  "workloads": {
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 197.81315358971068,
+      "latency_p50_us": 1860,
+      "latency_p95_us": 7605,
+      "latency_p99_us": 45401,
+      "latency_avg_us": 5048.77409587889,
+      "total_ops": 11890,
+      "total_bytes": 48701440,
+      "errors": 0,
+      "duration": 60107226361
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 38.41455591724031,
+      "latency_p50_us": 3801,
+      "latency_p95_us": 195262,
+      "latency_p99_us": 508826,
+      "latency_avg_us": 26009.673828125,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 106626248884
+    }
+  },
+  "total_duration": 166743671266
+}

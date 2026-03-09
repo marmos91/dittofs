@@ -1,0 +1,40 @@
+{
+  "timestamp": "2026-03-05T07:24:04.393263834Z",
+  "system": "samba-smb2",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000,
+    "small_file_count": 10000
+  },
+  "workloads": {
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 2036.743684499129,
+      "latency_p50_us": 396,
+      "latency_p95_us": 1004,
+      "latency_p99_us": 1217,
+      "latency_avg_us": 487.3420400147293,
+      "total_ops": 122205,
+      "total_bytes": 500551680,
+      "errors": 0,
+      "duration": 60000186047
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 51.418180859225444,
+      "latency_p50_us": 1636,
+      "latency_p95_us": 214371,
+      "latency_p99_us": 255031,
+      "latency_avg_us": 19429.501953125,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 79660538968
+    }
+  },
+  "total_duration": 139673832902
+}

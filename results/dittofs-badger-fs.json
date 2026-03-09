@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-03-02T16:50:16.088972765Z",
+  "system": "dittofs-badger-fs",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 4,
+    "file_size": 268435456,
+    "block_size": 4096,
+    "duration": 30000000000,
+    "meta_files": 1000
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 942.9949079469432,
+      "latency_p50_us": 608,
+      "latency_p95_us": 2899,
+      "latency_p99_us": 3447,
+      "latency_avg_us": 1058.5856666666666,
+      "total_ops": 3000,
+      "total_bytes": 33000,
+      "errors": 0,
+      "duration": 3181353340
+    },
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 449.9591680671336,
+      "latency_p50_us": 2114,
+      "latency_p95_us": 5260,
+      "latency_p99_us": 9247,
+      "latency_avg_us": 2215.681902363138,
+      "total_ops": 13499,
+      "total_bytes": 55291904,
+      "errors": 0,
+      "duration": 30000499952
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 1388.2228535927375,
+      "latency_p50_us": 779,
+      "latency_p95_us": 1028,
+      "latency_p99_us": 1235,
+      "latency_avg_us": 715.7036281124691,
+      "total_ops": 41647,
+      "total_bytes": 170586112,
+      "errors": 0,
+      "duration": 30000226471
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 67.58314867359394,
+      "latency_p50_us": 3727,
+      "latency_p95_us": 27652,
+      "latency_p99_us": 218798,
+      "latency_avg_us": 14770.6025390625,
+      "total_ops": 1024,
+      "total_bytes": 1073741824,
+      "errors": 0,
+      "duration": 15151706011
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 66.48344080990863,
+      "latency_p50_us": 646,
+      "latency_p95_us": 893,
+      "latency_p99_us": 1013,
+      "latency_avg_us": 685.423828125,
+      "total_ops": 1024,
+      "total_bytes": 1073741824,
+      "errors": 0,
+      "duration": 15402331581
+    }
+  },
+  "total_duration": 95771371710
+}

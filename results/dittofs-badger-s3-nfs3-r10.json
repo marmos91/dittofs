@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-03-04T09:07:52.442875098Z",
+  "system": "dittofs-badger-s3-nfs3-r10",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 287.60854331924605,
+      "latency_p50_us": 1853,
+      "latency_p95_us": 10735,
+      "latency_p99_us": 25326,
+      "latency_avg_us": 3475.0606666666667,
+      "total_ops": 3000,
+      "total_bytes": 33000,
+      "errors": 0,
+      "duration": 10430844527
+    },
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 190.35747021491702,
+      "latency_p50_us": 4653,
+      "latency_p95_us": 8332,
+      "latency_p99_us": 15962,
+      "latency_avg_us": 5245.983803186832,
+      "total_ops": 11422,
+      "total_bytes": 172032,
+      "errors": 11380,
+      "duration": 60002898689
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 387.9055209773324,
+      "latency_p50_us": 2295,
+      "latency_p95_us": 4186,
+      "latency_p99_us": 6606,
+      "latency_avg_us": 2572.687218045113,
+      "total_ops": 23275,
+      "total_bytes": 262144,
+      "errors": 23211,
+      "duration": 60001723980
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 5.248178474733204,
+      "latency_p50_us": 2292,
+      "latency_p95_us": 77884,
+      "latency_p99_us": 159843,
+      "latency_avg_us": 13219.765625,
+      "total_ops": 4096,
+      "total_bytes": 302120960,
+      "errors": 3807,
+      "duration": 54900000331
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 50.943058303252265,
+      "latency_p50_us": 672,
+      "latency_p95_us": 1013,
+      "latency_p99_us": 1329,
+      "latency_avg_us": 717.200927734375,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 80403496304
+    }
+  },
+  "total_duration": 265794166993
+}
