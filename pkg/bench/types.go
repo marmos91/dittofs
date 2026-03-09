@@ -11,16 +11,17 @@ import "time"
 type WorkloadType string
 
 const (
-	SeqWrite  WorkloadType = "seq-write"
-	SeqRead   WorkloadType = "seq-read"
-	RandWrite WorkloadType = "rand-write"
-	RandRead  WorkloadType = "rand-read"
-	Metadata  WorkloadType = "metadata"
+	SeqWrite   WorkloadType = "seq-write"
+	SeqRead    WorkloadType = "seq-read"
+	RandWrite  WorkloadType = "rand-write"
+	RandRead   WorkloadType = "rand-read"
+	Metadata   WorkloadType = "metadata"
+	SmallFiles WorkloadType = "small-files"
 )
 
 // AllWorkloads returns every supported workload type in execution order.
 func AllWorkloads() []WorkloadType {
-	return []WorkloadType{SeqWrite, SeqRead, RandWrite, RandRead, Metadata}
+	return []WorkloadType{SeqWrite, SeqRead, RandWrite, RandRead, Metadata, SmallFiles}
 }
 
 // Config controls benchmark execution.
@@ -43,6 +44,9 @@ type Config struct {
 	// MetaFiles is the number of small files for metadata workloads (default 1000).
 	MetaFiles int `json:"meta_files"`
 
+	// SmallFileCount is the number of files for small-files workload (default 10000).
+	SmallFileCount int `json:"small_file_count,omitempty"`
+
 	// Workloads is the list of workloads to run. Nil means all.
 	Workloads []WorkloadType `json:"workloads,omitempty"`
 
@@ -53,11 +57,12 @@ type Config struct {
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		Threads:   4,
-		FileSize:  1 << 30, // 1 GiB
-		BlockSize: 4 << 10, // 4 KiB
-		Duration:  60 * time.Second,
-		MetaFiles: 1000,
+		Threads:        4,
+		FileSize:       1 << 30, // 1 GiB
+		BlockSize:      4 << 10, // 4 KiB
+		Duration:       60 * time.Second,
+		MetaFiles:      1000,
+		SmallFileCount: 10000,
 	}
 }
 

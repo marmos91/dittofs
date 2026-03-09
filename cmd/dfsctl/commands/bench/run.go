@@ -18,7 +18,8 @@ var (
 	runWorkloads string
 	runSystem    string
 	runSave      string
-	runMetaFiles int
+	runMetaFiles     int
+	runSmallFileCount int
 )
 
 var runCmd = &cobra.Command{
@@ -50,6 +51,7 @@ func init() {
 	runCmd.Flags().StringVar(&runSystem, "system", "", "Label identifying the system under test")
 	runCmd.Flags().StringVar(&runSave, "save", "", "Save results to JSON file")
 	runCmd.Flags().IntVar(&runMetaFiles, "meta-files", 1000, "Number of files for metadata workload")
+	runCmd.Flags().IntVar(&runSmallFileCount, "small-file-count", 10000, "Number of files for small-files workload")
 }
 
 func runBench(cmd *cobra.Command, args []string) error {
@@ -74,8 +76,9 @@ func runBench(cmd *cobra.Command, args []string) error {
 		FileSize:  fileSize,
 		BlockSize: blockSize,
 		Duration:  dur,
-		MetaFiles: runMetaFiles,
-		System:    runSystem,
+		MetaFiles:      runMetaFiles,
+		SmallFileCount: runSmallFileCount,
+		System:         runSystem,
 	}
 
 	if runWorkloads != "" {
