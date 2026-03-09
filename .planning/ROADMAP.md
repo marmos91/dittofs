@@ -190,9 +190,7 @@ Plans:
   5. init.go removed blockfs import and DirectWriteStore detection logic
   6. All direct-write conditional branches removed from cache operations
 **Verification**: `go build ./...` && `go test ./...`
-**Plans**: 1 plan
-Plans:
-- [ ] 42-01-PLAN.md — Remove DirectWriteStore, filesystem store, direct-write code, E2E/CLI cleanup
+**Plans**: TBD
 
 ### Phase 43: Local-Only Block Management
 **Goal**: Add block management operations to cache and support offloader without remote store
@@ -542,7 +540,7 @@ v3.8 (33-40.5) -> v4.0 (41-49) -> v4.1 (50-56) -> v4.2 (57-62)
 | 39. Cross-Protocol Integration and Documentation | v3.8 | 3/3 | Complete | 2026-03-02 |
 | 40. SMB3 Conformance Testing | v3.8 | 6/6 | Complete | 2026-03-02 |
 | 41. Block State Enum and ListFileBlocks | 2/2 | Complete    | 2026-03-09 | - |
-| 42. Legacy Cleanup | v4.0 | 0/1 | Not started | - |
+| 42. Legacy Cleanup | v4.0 | 0/? | Not started | - |
 | 43. Local-Only Block Management | v4.0 | 0/? | Not started | - |
 | 44. Data Model and API/CLI | v4.0 | 0/? | Not started | - |
 | 45. Package Restructure | v4.0 | 0/? | Not started | - |
