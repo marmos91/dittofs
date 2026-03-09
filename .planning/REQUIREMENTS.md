@@ -94,10 +94,39 @@
 - [ ] **DOCS-03**: CLAUDE.md updated for new package structure
 - [ ] **DOCS-04**: --payload flag backward compat with deprecation warning
 
+## v4.6 Requirements -- Production Hardening
+
+### Protocol Correctness
+
+- [ ] **PROTO-01**: SMB 3.1.1 signing works on macOS -- preauth integrity hash chain produces matching signing keys so macOS mount_smbfs accepts sessions (#252)
+- [ ] **PROTO-02**: NTLM CHALLENGE_MESSAGE only advertises encryption flags (Flag128/Flag56) when encryption is actually implemented, or flags are removed to prevent interop issues with strict clients (#215)
+
+### Runtime Robustness
+
+- [ ] **RUNTIME-01**: Shares created via `dfsctl share create` after adapter startup are immediately visible to all protocol adapters (NFS and SMB) without requiring a server restart (#235)
+
+### Observability
+
+- [ ] **OBS-01**: `PayloadService.GetStorageStats()` returns actual UsedSize by aggregating block sizes from cache and underlying stores, enabling capacity planning (#216)
+- [ ] **OBS-02**: Per-share quota configuration (`dfsctl share create --quota 10GB`, `dfsctl share update --quota 50GB`) with enforcement on writes and accurate FSSTAT/FSINFO/SMB filesystem size reporting (#232)
+
+### Operational Features
+
+- [ ] **OPS-01**: Protocol-agnostic `ClientRecord` in control plane tracking all active NFS and SMB connections, with REST API endpoint and `dfsctl client list [-o json|table]` command (#157)
+- [ ] **OPS-02**: Trash/soft-delete where deleted files move to `.trash/{date}/` per share, with configurable retention period (default 7 days) and background cleanup goroutine (#190)
+
 ## Future Requirements
 
-### v4.1 — NFSv4.2
+### v4.3 -- Protocol Gap Fixes
+- **GAP-01**: NFSv4 READDIR proper cookie verifier (#254)
+- **GAP-02**: READDIRPLUS skip redundant GetFile() (#222)
+- **GAP-03**: LSA named pipe for SID-to-name resolution (#236)
 
+### v4.5 -- BlockStore Security
+- **SEC-01**: Block-level LZ4/Zstd compression (#185)
+- **SEC-02**: Client-side AES-256-GCM encryption (#186)
+
+### v5.0 -- NFSv4.2
 - **NFS42-01**: Server-side COPY with async OFFLOAD_STATUS polling
 - **NFS42-02**: CLONE/reflinks via content-addressed storage
 - **NFS42-03**: Sparse files: SEEK, ALLOCATE, DEALLOCATE
@@ -113,6 +142,11 @@
 | Block dedup across shares | Current dedup is per-share, cross-share dedup adds complexity |
 | Custom block sizes per share | 8MB block size is fixed, tuning deferred |
 | Tiered storage policies | Auto-eviction by LRU is sufficient for v4.0 |
+| Cross-protocol oplock wiring (#213) | Already implemented in Phase 30 (v3.6) |
+| Embedded portmapper (#119) | Already implemented |
+| NFSv4.1 session limits wiring (#217) | Already implemented in settings.go |
+| Per-user quotas | Future extension of per-share quotas |
+| Webhook system (#117) | Deferred to future milestone |
 
 ## Traceability
 
@@ -177,12 +211,18 @@
 | DOCS-02 | Phase 49 | Pending |
 | DOCS-03 | Phase 49 | Pending |
 | DOCS-04 | Phase 49 | Pending |
+| PROTO-01 | Phase 63 | Pending |
+| PROTO-02 | Phase 64 | Pending |
+| RUNTIME-01 | Phase 64 | Pending |
+| OBS-01 | Phase 65 | Pending |
+| OBS-02 | Phase 65 | Pending |
+| OPS-01 | Phase 66 | Pending |
+| OPS-02 | Phase 67 | Pending |
 
 **Coverage:**
-- v4.0 requirements: 55 total
-- Mapped to phases: 55
-- Unmapped: 0 ✓
+- v4.0 requirements: 55 total -> Mapped: 55 -> Unmapped: 0
+- v4.6 requirements: 7 total -> Mapped: 7 -> Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-09*
-*Last updated: 2026-03-09 after initial definition*
+*Last updated: 2026-03-09 after v4.6 roadmap created*
