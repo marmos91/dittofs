@@ -50,17 +50,17 @@
 
 ### Package Architecture
 
-- [ ] **PKG-01**: pkg/blockstore/local/local.go defines LocalStore interface
-- [ ] **PKG-02**: pkg/blockstore/remote/remote.go defines RemoteStore interface
-- [ ] **PKG-03**: pkg/cache/ moved to pkg/blockstore/local/fs/
-- [ ] **PKG-04**: pkg/blockstore/local/memory/ created for test MemoryLocalStore
-- [ ] **PKG-05**: pkg/payload/store/s3/ moved to pkg/blockstore/remote/s3/
-- [ ] **PKG-06**: pkg/payload/store/memory/ moved to pkg/blockstore/remote/memory/
-- [ ] **PKG-07**: pkg/payload/offloader/ moved to pkg/blockstore/offloader/
-- [ ] **PKG-08**: pkg/payload/gc/ moved to pkg/blockstore/gc/
-- [ ] **PKG-09**: pkg/blockstore/blockstore.go (BlockStore orchestrator) absorbs PayloadService
-- [ ] **PKG-10**: All consumer imports updated (~18 files: NFS handlers, SMB handlers, runtime, shares)
-- [ ] **PKG-11**: pkg/cache/ and pkg/payload/ deleted after migration
+- [x] **PKG-01**: pkg/blockstore/local/local.go defines LocalStore interface
+- [x] **PKG-02**: pkg/blockstore/remote/remote.go defines RemoteStore interface
+- [x] **PKG-03**: pkg/cache/ moved to pkg/blockstore/local/fs/
+- [x] **PKG-04**: pkg/blockstore/local/memory/ created for test MemoryLocalStore
+- [x] **PKG-05**: pkg/payload/store/s3/ moved to pkg/blockstore/remote/s3/
+- [x] **PKG-06**: pkg/payload/store/memory/ moved to pkg/blockstore/remote/memory/
+- [x] **PKG-07**: pkg/payload/offloader/ moved to pkg/blockstore/offloader/
+- [x] **PKG-08**: pkg/payload/gc/ moved to pkg/blockstore/gc/
+- [x] **PKG-09**: pkg/blockstore/blockstore.go (BlockStore orchestrator) absorbs PayloadService
+- [x] **PKG-10**: All consumer imports updated (~18 files: NFS handlers, SMB handlers, runtime, shares)
+- [x] **PKG-11**: pkg/cache/ and pkg/payload/ deleted after migration
 
 ### Per-Share Isolation
 
@@ -146,17 +146,17 @@
 | CLI-02 | Phase 44 | Complete |
 | CLI-03 | Phase 44 | Complete |
 | CLI-04 | Phase 44 | Complete |
-| PKG-01 | Phase 45 | Pending |
-| PKG-02 | Phase 45 | Pending |
-| PKG-03 | Phase 45 | Pending |
-| PKG-04 | Phase 45 | Pending |
-| PKG-05 | Phase 45 | Pending |
-| PKG-06 | Phase 45 | Pending |
-| PKG-07 | Phase 45 | Pending |
-| PKG-08 | Phase 45 | Pending |
-| PKG-09 | Phase 45 | Pending |
-| PKG-10 | Phase 45 | Pending |
-| PKG-11 | Phase 45 | Pending |
+| PKG-01 | Phase 45 | Complete |
+| PKG-02 | Phase 45 | Complete |
+| PKG-03 | Phase 45 | Complete |
+| PKG-04 | Phase 45 | Complete |
+| PKG-05 | Phase 45 | Complete |
+| PKG-06 | Phase 45 | Complete |
+| PKG-07 | Phase 45 | Complete |
+| PKG-08 | Phase 45 | Complete |
+| PKG-09 | Phase 45 | Complete |
+| PKG-10 | Phase 45 | Complete |
+| PKG-11 | Phase 45 | Complete |
 | SHARE-01 | Phase 46 | Pending |
 | SHARE-02 | Phase 46 | Pending |
 | SHARE-03 | Phase 46 | Pending |

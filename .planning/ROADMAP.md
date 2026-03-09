@@ -119,7 +119,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 42: Legacy Cleanup** - Remove DirectWriteStore interface and filesystem payload store (completed 2026-03-09)
 - [x] **Phase 43: Local-Only Block Management** - Block management operations on cache, local-only offloader mode without remote store (completed 2026-03-09)
 - [x] **Phase 44: Data Model and API/CLI** - BlockStoreConfig DB model, REST endpoints, dfsctl block store commands (completed 2026-03-09)
-- [ ] **Phase 45: Package Restructure** - Create pkg/blockstore/ hierarchy absorbing cache, payload, offloader, gc
+- [x] **Phase 45: Package Restructure** - Create pkg/blockstore/ hierarchy absorbing cache, payload, offloader, gc (completed 2026-03-09)
 - [ ] **Phase 46: Per-Share Block Store Wiring** - Runtime manages per-share BlockStore instances replacing global PayloadService
 - [ ] **Phase 47: L1 Read Cache and Prefetch** - Read-through LRU cache with sequential prefetch for hot blocks
 - [ ] **Phase 48: Auto-Deduced Configuration** - Derive buffer/cache sizes and concurrency from CPU/memory
@@ -229,9 +229,9 @@ Plans:
 **Verification**: `go build ./...` && `go test ./pkg/controlplane/...` && manual CLI test
 **Plans**: 3 plans
 Plans:
-- [ ] 44-01-PLAN.md — BlockStoreConfig model, Share model update, BlockStoreConfigStore interface, GORM migration
-- [ ] 44-02-PLAN.md — BlockStoreHandler, router refactoring to /api/v1/store/, share handler updates, API client
-- [ ] 44-03-PLAN.md — dfsctl store block local/remote CLI commands, share create --local/--remote
+- [x] 44-01-PLAN.md — BlockStoreConfig model, Share model update, BlockStoreConfigStore interface, GORM migration
+- [x] 44-02-PLAN.md — BlockStoreHandler, router refactoring to /api/v1/store/, share handler updates, API client
+- [x] 44-03-PLAN.md — dfsctl store block local/remote CLI commands, share create --local/--remote
 
 ### Phase 45: Package Restructure
 **Goal**: Reorganize storage code into clean pkg/blockstore/ hierarchy
@@ -244,13 +244,18 @@ Plans:
   4. pkg/blockstore/local/memory/ created for test MemoryLocalStore
   5. pkg/payload/store/s3/ moved to pkg/blockstore/remote/s3/
   6. pkg/payload/store/memory/ moved to pkg/blockstore/remote/memory/
-  7. pkg/payload/offloader/ moved to pkg/blockstore/offloader/
+  7. pkg/payload/offloader/ moved to pkg/blockstore/sync/
   8. pkg/payload/gc/ moved to pkg/blockstore/gc/
   9. pkg/blockstore/blockstore.go orchestrator absorbs PayloadService responsibilities
   10. All consumer imports updated (NFS handlers, SMB handlers, runtime, shares)
   11. pkg/cache/ and pkg/payload/ directories deleted
 **Verification**: `go build ./...` && `go test ./...`
-**Plans**: TBD
+**Plans**: 4 plans
+Plans:
+- [ ] 45-01-PLAN.md — Types, interfaces, errors in pkg/blockstore/ root + local/remote interfaces + metadata aliasing
+- [ ] 45-02-PLAN.md — Move implementations: local/fs, local/memory, remote/s3, remote/memory, sync, gc + conformance suites
+- [ ] 45-03-PLAN.md — BlockStore orchestrator + io/ package + runtime/config wiring
+- [ ] 45-04-PLAN.md — Consumer import updates (NFS/SMB handlers) + old package deletion
 
 ### Phase 46: Per-Share Block Store Wiring
 **Goal**: Replace global PayloadService with per-share BlockStore instances
@@ -548,11 +553,11 @@ v3.8 (33-40.5) -> v4.0 (41-49) -> v4.1 (50-56) -> v4.2 (57-62)
 | 38. Durable Handles | v3.8 | 3/3 | Complete | 2026-03-02 |
 | 39. Cross-Protocol Integration and Documentation | v3.8 | 3/3 | Complete | 2026-03-02 |
 | 40. SMB3 Conformance Testing | v3.8 | 6/6 | Complete | 2026-03-02 |
-| 41. Block State Enum and ListFileBlocks | 2/2 | Complete    | 2026-03-09 | - |
-| 42. Legacy Cleanup | 1/1 | Complete    | 2026-03-09 | - |
-| 43. Local-Only Block Management | 2/2 | Complete    | 2026-03-09 | - |
-| 44. Data Model and API/CLI | 3/3 | Complete   | 2026-03-09 | - |
-| 45. Package Restructure | v4.0 | 0/? | Not started | - |
+| 41. Block State Enum and ListFileBlocks | v4.0 | 2/2 | Complete | 2026-03-09 |
+| 42. Legacy Cleanup | v4.0 | 1/1 | Complete | 2026-03-09 |
+| 43. Local-Only Block Management | v4.0 | 2/2 | Complete | 2026-03-09 |
+| 44. Data Model and API/CLI | v4.0 | 3/3 | Complete | 2026-03-09 |
+| 45. Package Restructure | 4/4 | Complete    | 2026-03-09 | - |
 | 46. Per-Share Block Store Wiring | v4.0 | 0/? | Not started | - |
 | 47. L1 Read Cache and Prefetch | v4.0 | 0/? | Not started | - |
 | 48. Auto-Deduced Configuration | v4.0 | 0/? | Not started | - |

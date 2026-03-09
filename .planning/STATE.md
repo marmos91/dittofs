@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: BlockStore Unification Refactor
 status: completed
-stopped_at: Completed 44-03-PLAN.md
-last_updated: "2026-03-09T17:34:49Z"
-last_activity: 2026-03-09 — Phase 44 Plan 03 complete (CLI commands for block stores and shares)
+stopped_at: Completed 45-04-PLAN.md (Phase 45 complete)
+last_updated: "2026-03-09T20:15:37.183Z"
+last_activity: 2026-03-09 — Phase 45 Plan 04 complete
 progress:
   total_phases: 22
-  completed_phases: 5
-  total_plans: 10
-  completed_plans: 10
-  percent: 75
+  completed_phases: 6
+  total_plans: 14
+  completed_plans: 14
+  percent: 99
 ---
 
 # Project State
@@ -21,17 +21,17 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-09)
 
 **Core value:** Replace confusing layered storage architecture with clean two-tier block store model (Local + Remote) for per-share isolation and maintainability
-**Current focus:** Phase 44 - Data Model and API/CLI
+**Current focus:** Phase 45 - Package Restructure
 
 ## Current Position
 
-Phase: 44 of 49 (Data Model and API/CLI) -- COMPLETE
+Phase: 45 of 49 (Package Restructure)
 Milestone: v4.0 BlockStore Unification Refactor
-Plan: 3 of 3 in current phase (COMPLETE)
-Status: Phase 44 complete
-Last activity: 2026-03-09 — Phase 44 Plan 03 complete (CLI commands for block stores and shares)
+Plan: 4 of 4 complete
+Status: Phase 45 Complete
+Last activity: 2026-03-09 — Phase 45 Plan 04 complete
 
-Progress: [██████████] 98% (125/186+ total plans across all milestones)
+Progress: [██████████] 99% (127/186+ total plans across all milestones)
 
 ## Completed Milestones
 
@@ -54,8 +54,8 @@ Progress: [██████████] 98% (125/186+ total plans across all 
 **v4.0 Current Milestone:**
 - 9 phases defined (41-49)
 - 55 requirements mapped
-- 2 plans completed (41-01, 41-02) -- Phase 41 complete
-- 3 plans completed (44-01, 44-02, 44-03) -- Phase 44 complete
+- Phases 41-44 complete
+- 14 plans completed (41-01, 41-02, 42-01, 42-02, 43-01, 43-02, 43-03, 44-01, 44-02, 44-03, 45-01, 45-02, 45-03, 45-04)
 
 ## Accumulated Context
 
@@ -81,6 +81,18 @@ Recent decisions affecting v4.0 work:
 - **Local block store defaults to fs type**: Most common use case for local storage (Phase 44, Plan 03)
 - **Share create --local required via cobra**: MarkFlagRequired enforces local block store at CLI level (Phase 44, Plan 03)
 - **Share edit supports --local/--remote flags**: Enables store migration via share update (Phase 44, Plan 03)
+- **Type aliases for backward-compatible extraction**: metadata/object.go uses Go type aliases (type X = Y) to re-export blockstore types without breaking consumers (Phase 45, Plan 01)
+- **blockstore as leaf dependency**: pkg/blockstore has zero imports from pkg/metadata, preventing circular dependencies (Phase 45, Plan 01)
+- **Conformance suite delegation**: metadata/storetest delegates FileBlockOps to blockstore/storetest via factory adapter (Phase 45, Plan 01)
+- **gosync alias for sync package**: Go's standard sync must be aliased as gosync in pkg/blockstore/sync/ due to package name collision (Phase 45, Plan 02)
+- **Tests use fs.FSStore not cache.BlockCache**: Old cache.BlockCache doesn't implement new local.LocalStore interface -- test helpers use fs.New() (Phase 45, Plan 02)
+- **testEnv.cache uses interface type**: local.LocalStore interface type for test portability between fs and memory implementations (Phase 45, Plan 02)
+- **engine sub-package for BlockStore orchestrator**: Import cycles prevent placing orchestrator in blockstore root; engine/ sub-package breaks the cycle (Phase 45, Plan 03)
+- **string() conversion at adapter boundaries**: BlockStore methods use plain string; adapters convert metadata.PayloadID at call sites (Phase 45, Plan 03)
+- **Deprecated aliases for backward compat**: OffloaderConfig=SyncerConfig, GetPayloadService/GetBlockService/EnsurePayloadService kept as wrappers (Phase 45, Plan 03)
+- **Removed all deprecated payload aliases**: GetPayloadService, GetBlockService, EnsurePayloadService, SetOffloaderConfig, OffloaderConfig all removed (Phase 45, Plan 04)
+- **PayloadServiceEnsurer renamed to BlockStoreEnsurer**: Interface and all method signatures updated to blockstore terminology (Phase 45, Plan 04)
+- **pkg/cache and pkg/payload deleted**: 42 files (10,715 lines) of dead code removed after full consumer migration (Phase 45, Plan 04)
 
 ### Pending Todos
 
@@ -92,7 +104,7 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-09T17:34:49Z
-Stopped at: Completed 44-03-PLAN.md (Phase 44 complete)
-Resume file: .planning/phases/44-data-model-and-api-cli/44-03-SUMMARY.md
-Next action: Begin Phase 45 planning
+Last session: 2026-03-09T20:09:04Z
+Stopped at: Completed 45-04-PLAN.md (Phase 45 complete)
+Resume file: .planning/phases/45-package-restructure/45-04-SUMMARY.md
+Next action: Begin Phase 46
