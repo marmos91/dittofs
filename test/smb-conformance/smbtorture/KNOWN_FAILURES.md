@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-03-09 (Phase 42, full smbtorture run — 17 newly reachable failures added)
+Last updated: 2026-03-09 (Phase 42, full smbtorture run — 13 more newly reachable failures added)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -28,6 +28,8 @@ session, which DittoFS does not implement.
 | smb2.multichannel.leases.test2 | Multi-channel | Multi-channel lease coordination not implemented | - |
 | smb2.multichannel.oplocks.test1 | Multi-channel | Multi-channel oplock coordination not implemented | - |
 | smb2.multichannel.oplocks.test2 | Multi-channel | Multi-channel oplock coordination not implemented | - |
+| smb2.multichannel.oplocks.test3_specification | Multi-channel | Multi-channel oplock coordination not implemented | - |
+| smb2.multichannel.leases.test1 | Multi-channel | Multi-channel lease coordination not implemented | - |
 
 ### ACLs and Security Descriptors (Not Implemented)
 
@@ -63,6 +65,7 @@ sparse_file_attr query work.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.ioctl.bug14769 | IOCTL | IOCTL edge case not implemented | - |
+| smb2.ioctl.compress_create_with_attr | IOCTL | Compression not implemented | - |
 | smb2.ioctl.compress_notsup_get | IOCTL | Compression not implemented | - |
 | smb2.ioctl.compress_notsup_set | IOCTL | Compression not implemented | - |
 | smb2.ioctl.copy_chunk_across_shares | IOCTL | Server-side copy not implemented | - |
@@ -89,6 +92,9 @@ sparse_file_attr query work.
 | smb2.ioctl.copy_chunk_zero_length | IOCTL | Server-side copy not implemented | - |
 | smb2.ioctl.copy-chunk | IOCTL | Server-side copy not implemented | - |
 | smb2.ioctl.dup_extents_simple | IOCTL | Duplicate extents not implemented | - |
+| smb2.ioctl.dup_extents_len_beyond_dest | IOCTL | Duplicate extents not implemented | - |
+| smb2.ioctl.dup_extents_len_zero | IOCTL | Duplicate extents not implemented | - |
+| smb2.ioctl.dup_extents_compressed_src | IOCTL | Duplicate extents not implemented | - |
 | smb2.ioctl.dup_extents_sparse_dest | IOCTL | Duplicate extents not implemented | - |
 | smb2.ioctl.dup_extents_sparse_src | IOCTL | Duplicate extents not implemented | - |
 | smb2.ioctl.bug14788.NETWORK_INTERFACE | IOCTL | Network interface enumeration not implemented | - |
@@ -261,6 +267,9 @@ fully implemented. DittoFS grants a fixed credit count.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.credits.1conn_ipc_max_async_credits | Credits | IPC async credit management not implemented | - |
+| smb2.credits.2conn_ipc_max_async_credits | Credits | Multi-connection IPC async credit management not implemented | - |
+| smb2.credits.multichannel_ipc_max_async_credits | Credits | Multi-channel IPC async credit management not implemented | - |
+| smb2.credits.1conn_notify_max_async_credits | Credits | Change notification async credit management not implemented | - |
 | smb2.credits.ipc_max_data_zero | Credits | IPC credit management not implemented | - |
 | smb2.credits.session_setup_credits_granted | Credits | Dynamic credit granting not implemented | - |
 | smb2.credits.single_req_credits_granted | Credits | Dynamic credit granting not implemented | - |
@@ -383,6 +392,7 @@ Advanced delete-on-close permission checks and edge cases. Basic DOC works
 | smb2.delete-on-close-perms.CREATE | Delete on close | DOC permission check not implemented | - |
 | smb2.delete-on-close-perms.CREATE_IF | Delete on close | DOC permission check not implemented | - |
 | smb2.delete-on-close-perms.READONLY | Delete on close | DOC on read-only files not implemented | - |
+| smb2.delete-on-close-perms.BUG14427 | Delete on close | DOC edge case (Samba bug 14427) not handled | - |
 
 ### File IDs (Different Handle Scheme)
 
@@ -653,6 +663,7 @@ share mode enforcement during rename.
 | smb2.rename.no_share_delete_no_delete_access | Rename | Rename share mode enforcement not working | - |
 | smb2.rename.rename_dir_openfile | Rename | Rename directory with open file not working | - |
 | smb2.rename.rename-open | Rename | Rename with open handle not working | - |
+| smb2.rename.close-full-information | Rename | Close with full information rename not implemented | - |
 | smb2.rename.msword | Rename | MS Word rename pattern (secondary connection) not working | - |
 
 ### Sessions (Fix Candidate)
@@ -811,11 +822,20 @@ incomplete delayed-write and timestamp freeze/unfreeze logic.
 | smb2.timestamps.delayed-write-vs-flush | Timestamps | Delayed write vs flush timestamp not working | - |
 | smb2.timestamps.delayed-write-vs-setbasic | Timestamps | Delayed write vs setbasic timestamp not working | - |
 | smb2.timestamps.delayed-write-vs-seteof | Timestamps | Delayed write vs seteof timestamp not working | - |
+| smb2.timestamps.time_t_0 | Timestamps | Zero timestamp (epoch) handling not working | - |
 | smb2.timestamps.time_t_-1 | Timestamps | Negative timestamp handling not working | - |
 | smb2.timestamps.time_t_-2 | Timestamps | Negative timestamp handling not working | - |
 | smb2.timestamps.time_t_10000000000 | Timestamps | Large timestamp handling not working | - |
 | smb2.timestamps.time_t_15032385535 | Timestamps | Large timestamp handling not working | - |
 | smb2.timestamps.time_t_1968 | Timestamps | Pre-epoch timestamp handling not working | - |
+
+### Scan (Full Operation Enumeration)
+
+The full scan test enumerates all supported operations and fails on unimplemented ones.
+
+| Test Name | Category | Reason | Issue |
+|-----------|----------|--------|-------|
+| smb2.scan.scan | Scan | Full operation scan hits unimplemented features | - |
 
 ## Notes
 
