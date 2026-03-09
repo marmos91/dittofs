@@ -48,11 +48,11 @@ func TestMain(m *testing.M) {
 
 // testEnv holds the test environment with cache and block store.
 type testEnv struct {
-	cache       *cache.BlockCache
-	blockStore  store.BlockStore
+	cache          *cache.BlockCache
+	blockStore     store.BlockStore
 	fileBlockStore metadata.FileBlockStore
-	offloader   *Offloader
-	cleanup     func()
+	offloader      *Offloader
+	cleanup        func()
 }
 
 // newMemoryEnv creates a test environment with memory block store.

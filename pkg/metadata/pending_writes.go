@@ -45,7 +45,7 @@ type PendingWritesTracker struct {
 	// may arrive simultaneously. Without this, they'd all hit BadgerDB
 	// concurrently causing conflict retries. With this, only one COMMIT
 	// flushes at a time per file; others find no pending state and skip.
-	flushMu   sync.Mutex
+	flushMu    sync.Mutex
 	flushLocks map[string]*sync.Mutex // handleKey -> per-file mutex
 }
 

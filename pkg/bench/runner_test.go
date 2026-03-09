@@ -199,7 +199,7 @@ func TestComputePercentiles_DoesNotMutateInput(t *testing.T) {
 func TestAllWorkloads(t *testing.T) {
 	all := AllWorkloads()
 
-	expected := []WorkloadType{SeqWrite, SeqRead, RandWrite, RandRead, Metadata}
+	expected := []WorkloadType{SeqWrite, SeqRead, RandWrite, RandRead, Metadata, SmallFiles}
 	if len(all) != len(expected) {
 		t.Fatalf("AllWorkloads() returned %d items, want %d", len(all), len(expected))
 	}

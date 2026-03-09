@@ -94,4 +94,3 @@ type FlushResult struct {
 	AlreadyFlushed bool   // All data was already flushed (no-op)
 	Finalized      bool   // Data is durable in block store
 }
-

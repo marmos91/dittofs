@@ -11,14 +11,14 @@ import (
 )
 
 var (
-	runThreads   int
-	runFileSize  string
-	runBlockSize string
-	runDuration  string
-	runWorkloads string
-	runSystem    string
-	runSave      string
-	runMetaFiles     int
+	runThreads        int
+	runFileSize       string
+	runBlockSize      string
+	runDuration       string
+	runWorkloads      string
+	runSystem         string
+	runSave           string
+	runMetaFiles      int
 	runSmallFileCount int
 )
 
@@ -71,11 +71,11 @@ func runBench(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg := bench.Config{
-		Path:      args[0],
-		Threads:   runThreads,
-		FileSize:  fileSize,
-		BlockSize: blockSize,
-		Duration:  dur,
+		Path:           args[0],
+		Threads:        runThreads,
+		FileSize:       fileSize,
+		BlockSize:      blockSize,
+		Duration:       dur,
 		MetaFiles:      runMetaFiles,
 		SmallFileCount: runSmallFileCount,
 		System:         runSystem,

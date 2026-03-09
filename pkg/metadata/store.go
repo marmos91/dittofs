@@ -347,10 +347,10 @@ type FilesystemMeta struct {
 // Thread Safety:
 // Implementations must be safe for concurrent use by multiple goroutines.
 type MetadataStore interface {
-	Files        // File CRUD operations (non-transactional calls)
-	Shares       // Share lifecycle and handle management
-	ServerConfig // Server configuration and capabilities
-	Transactor   // Transaction support for atomic operations
+	Files          // File CRUD operations (non-transactional calls)
+	Shares         // Share lifecycle and handle management
+	ServerConfig   // Server configuration and capabilities
+	Transactor     // Transaction support for atomic operations
 	FileBlockStore // Content-addressed block management
 
 	// ========================================================================

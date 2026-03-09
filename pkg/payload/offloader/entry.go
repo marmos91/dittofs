@@ -7,7 +7,7 @@ type TransferRequest struct {
 	Type      TransferType // Transfer type and priority
 	PayloadID string       // Content ID
 	BlockIdx  uint64       // Flat block index (fileOffset / BlockSize)
-	Done      chan error    // Completion channel; nil for async (fire-and-forget)
+	Done      chan error   // Completion channel; nil for async (fire-and-forget)
 }
 
 // NewDownloadRequest creates a download request for a specific block.

@@ -205,7 +205,6 @@ func (s *PayloadService) DrainAllUploads(ctx context.Context) error {
 // Statistics and Health
 // ============================================================================
 
-
 // GetStorageStats returns storage statistics.
 func (s *PayloadService) GetStorageStats(_ context.Context) (*StorageStats, error) {
 	files := s.cache.ListFiles()

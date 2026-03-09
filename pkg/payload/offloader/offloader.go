@@ -50,7 +50,7 @@ type fileUploadState struct {
 	errors   []error           // Accumulated errors
 	errorsMu sync.Mutex        // Protects errors
 	blocksMu sync.Mutex        // Protects uploadedBlocks and blockHashes
-	uploaded map[blockKey]bool  // Tracks which blocks have been uploaded
+	uploaded map[blockKey]bool // Tracks which blocks have been uploaded
 
 	// Block hashes for finalization (sorted by block index)
 	blockHashes map[blockKey][32]byte
@@ -72,10 +72,10 @@ type FinalizationCallback func(ctx context.Context, payloadID string, blockHashe
 // Offloader handles async cache-to-block-store transfers with eager upload,
 // parallel download, prefetch, in-flight dedup, and content-addressed dedup.
 type Offloader struct {
-	cache       *cache.BlockCache
-	blockStore  store.BlockStore
+	cache          *cache.BlockCache
+	blockStore     store.BlockStore
 	fileBlockStore metadata.FileBlockStore // Required: enables content-addressed deduplication
-	config      Config
+	config         Config
 
 	// Finalization callback - called when all blocks for a file are uploaded
 	onFinalized FinalizationCallback
@@ -121,15 +121,15 @@ func New(c *cache.BlockCache, blockStore store.BlockStore, fileBlockStore metada
 	}
 
 	m := &Offloader{
-		cache:       c,
-		blockStore:  blockStore,
+		cache:          c,
+		blockStore:     blockStore,
 		fileBlockStore: fileBlockStore,
-		config:      config,
-		uploads:     make(map[string]*fileUploadState),
-		ioCond:      sync.NewCond(&sync.Mutex{}),
-		inFlight:    make(map[string]*downloadResult),
-		uploadSem:   make(chan struct{}, semSize),
-		stopCh:      make(chan struct{}),
+		config:         config,
+		uploads:        make(map[string]*fileUploadState),
+		ioCond:         sync.NewCond(&sync.Mutex{}),
+		inFlight:       make(map[string]*downloadResult),
+		uploadSem:      make(chan struct{}, semSize),
+		stopCh:         make(chan struct{}),
 	}
 
 	queueConfig := DefaultTransferQueueConfig()

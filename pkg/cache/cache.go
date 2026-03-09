@@ -96,10 +96,10 @@ func New(baseDir string, maxDisk int64, maxMemory int64, blockStore metadata.Fil
 	}
 
 	return &BlockCache{
-		baseDir:    baseDir,
-		maxDisk:    maxDisk,
-		maxMemory:  maxMemory,
-		blockStore: blockStore,
+		baseDir:     baseDir,
+		maxDisk:     maxDisk,
+		maxMemory:   maxMemory,
+		blockStore:  blockStore,
 		memBlocks:   make(map[blockKey]*memBlock),
 		fileBlocks:  make(map[string]map[uint64]*memBlock),
 		files:       make(map[string]*fileInfo),
