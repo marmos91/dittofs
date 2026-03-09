@@ -2,23 +2,30 @@
 
 ## What This Is
 
-A comprehensive multi-protocol virtual filesystem with NFSv3/NFSv4.0/NFSv4.1 and SMB3.1.1 support, Kerberos authentication, unified cross-protocol locking, and advanced features like delegations, leases, durable handles, and encryption. v1.0 (NLM + unified locking), v2.0 (NFSv4.0 + Kerberos), v3.0 (NFSv4.1 sessions), v3.5 (adapter/core refactoring), v3.6 (Windows compatibility), and v3.8 (SMB3 protocol upgrade) are shipped. Next: NFSv4.2 features (v4.0), then benchmarking and performance iteration (v4.1).
+A comprehensive multi-protocol virtual filesystem with NFSv3/NFSv4.0/NFSv4.1 and SMB3.1.1 support, Kerberos authentication, unified cross-protocol locking, and advanced features like delegations, leases, durable handles, and encryption. v1.0 (NLM + unified locking), v2.0 (NFSv4.0 + Kerberos), v3.0 (NFSv4.1 sessions), v3.5 (adapter/core refactoring), v3.6 (Windows compatibility), and v3.8 (SMB3 protocol upgrade) are shipped. Next: BlockStore unification refactor (v4.0), then NFSv4.2 features (v4.1), then benchmarking (v4.2).
 
 Target: Cloud-native enterprise NAS with feature parity exceeding JuiceFS and Hammerspace, particularly in security (Kerberos + AES encryption), session reliability (EOS), cross-protocol consistency, and Windows SMB3.1.1 compatibility.
 
-## Current Milestone: v4.0 NFSv4.2 Extensions
+## Current Milestone: v4.0 BlockStore Unification Refactor
+
+**Goal:** Replace the confusing layered storage architecture (pkg/cache, pkg/payload, pkg/payload/store, pkg/payload/offloader) with a clean two-tier block store model: Local (mandatory, per-share) and Remote (optional, per-share).
+
+**Target outcomes:**
+- Clean two-tier model: Local block store (FS/memory, mandatory) + Remote block store (S3/memory, optional)
+- Per-share block store isolation (different local paths and remote backends per share)
+- Block state machine: Dirty -> Local -> Uploading -> Remote
+- Remove DirectWriteStore hack and FS payload store dead code
+- New CLI: `dfsctl store block local/remote` replacing `dfsctl store payload`
+- New DB model: BlockStoreConfig with kind discriminator replacing PayloadStoreConfig
+- Package restructure: pkg/blockstore/ absorbing pkg/cache, pkg/payload, pkg/payload/store
+- L1 read cache with sequential prefetch
+- Auto-deduced defaults from CPU/memory
+
+## Upcoming Milestone: v4.1 NFSv4.2 Extensions
 
 **Goal:** Complete the NFS protocol suite with NFSv4.2 advanced features: server-side copy, clone/reflinks, sparse files, extended attributes, and I/O hints.
 
-**Target outcomes:**
-- Server-side COPY with async OFFLOAD_STATUS polling
-- CLONE/reflinks via content-addressed storage
-- Sparse files: SEEK (data/hole), ALLOCATE, DEALLOCATE
-- Extended attributes in metadata layer, exposed via NFS and SMB
-- Application I/O hints (IO_ADVISE)
-- pjdfstest POSIX compliance
-
-## Upcoming Milestone: v4.1 Benchmarking & Performance
+## Upcoming Milestone: v4.2 Benchmarking & Performance
 
 **Goal:** Comprehensive benchmarking suite comparing DittoFS against competitors (JuiceFS, NFS-Ganesha, RClone, kernel NFS, Samba) to prove performance advantage of pure-Go, FUSE-less architecture, followed by iterative performance optimization.
 
@@ -105,7 +112,22 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 
 ### Active
 
-#### v4.0 — NFSv4.2
+#### v4.0 — BlockStore Unification Refactor
+- [ ] Block state enum rename: Sealed->Local, Uploaded->Remote
+- [ ] ListPendingUpload->ListLocalBlocks, ListEvictable->ListRemoteBlocks, add ListFileBlocks
+- [ ] Remove DirectWriteStore and FS payload store (pkg/payload/store/fs/)
+- [ ] Block management ops on cache (manage.go) + local-only offloader mode
+- [ ] DB model: BlockStoreConfig (kind=local/remote) replacing PayloadStoreConfig
+- [ ] API endpoints for block stores (local + remote CRUD)
+- [ ] CLI: `dfsctl store block local/remote` replacing `dfsctl store payload`
+- [ ] Share model: LocalBlockStoreID (mandatory) + RemoteBlockStoreID (optional)
+- [ ] Package restructure: pkg/blockstore/ absorbing cache + payload + offloader + gc
+- [ ] Per-share block store wiring (replace single PayloadService)
+- [ ] L1 read cache (read-through LRU) + sequential prefetch
+- [ ] Auto-deduced defaults from runtime.NumCPU() + available memory
+- [ ] E2E tests updated for new store CLI + documentation updates
+
+#### v4.1 — NFSv4.2
 - [ ] Server-side COPY (async with OFFLOAD_STATUS polling)
 - [ ] OFFLOAD_CANCEL for in-progress copies
 - [ ] CLONE/reflinks (leverage content-addressed storage)
@@ -118,7 +140,7 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 - [ ] pjdfstest POSIX compliance (NFSv3 and NFSv4)
 - [ ] Full documentation updates in docs/
 
-#### v4.1 — Benchmarking & Performance
+#### v4.2 — Benchmarking & Performance
 - [x] Docker Compose infrastructure with per-system profiles and shared services (#194) — Phase 33 COMPLETE
 - [ ] fio workload files (seq read/write, random 4K, mixed rw) and metadata benchmark script (#195)
 - [ ] Orchestrator scripts (run-bench.sh) with platform variants for Linux, macOS, Windows (#196)
@@ -224,11 +246,14 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 | Docker-isolated smbtorture | GPL compliance via container boundary, no direct binary contact | ✓ Good — v3.6 |
 | Zero-fill sparse reads at download level | Single fix benefits both NFS and SMB protocol paths | ✓ Good — v3.6 |
 | BFS for descendant path updates | Iterative queue avoids stack overflow on deep directory trees | ✓ Good — v3.6 |
-| Xattrs in metadata layer | Clean abstraction, expose via NFSv4.2 and SMB | — Pending (v4.0) |
-| Async COPY with polling | Better for large files, standard NFSv4.2 pattern | — Pending (v4.0) |
-| CLONE via content-addressed storage | Efficient reflinks using existing dedup infrastructure | — Pending (v4.0) |
-| Benchmark after NFSv4.2 | Complete protocol implementation before performance iteration | — Pending (v4.1) |
-| Docker Compose per-system profiles | Fair comparison: one system at a time, symmetric overhead | — Pending (v4.1) |
+| Two-tier block store model | Clean Local+Remote replaces confusing PayloadService/Cache/DirectWrite layers | — Pending (v4.0) |
+| Per-share block stores | Different local paths and remote backends per share, replaces global PayloadService | — Pending (v4.0) |
+| BlockStore refactor before NFSv4.2 | Clean storage architecture enables easier feature development | — Pending (v4.0) |
+| Xattrs in metadata layer | Clean abstraction, expose via NFSv4.2 and SMB | — Pending (v4.1) |
+| Async COPY with polling | Better for large files, standard NFSv4.2 pattern | — Pending (v4.1) |
+| CLONE via content-addressed storage | Efficient reflinks using existing dedup infrastructure | — Pending (v4.1) |
+| Benchmark after NFSv4.2 | Complete protocol implementation before performance iteration | — Pending (v4.2) |
+| Docker Compose per-system profiles | Fair comparison: one system at a time, symmetric overhead | — Pending (v4.2) |
 | SMB3 before NFSv4.2 | Complete SMB protocol upgrade, validate cross-protocol before adding NFS features | ✓ Good — v3.8 |
 | Shared Kerberos layer for SMB3 | Reuse existing RPCSEC_GSS infrastructure from NFSv4 | ✓ Good — Phase 36 |
 | Buffer-based smbenc codec | Error accumulation, not streaming, for SMB3 wire encoding | ✓ Good — Phase 33 |
@@ -241,4 +266,4 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 | Per-adapter connection pools | Isolation between NFS and SMB, simpler limits | ✓ Good — Phase 01 |
 
 ---
-*Last updated: 2026-03-04 after v3.8 milestone*
+*Last updated: 2026-03-09 after v4.0 BlockStore Unification milestone start*

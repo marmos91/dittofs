@@ -1,0 +1,40 @@
+{
+  "timestamp": "2026-03-04T22:16:46.731907401Z",
+  "system": "rclone-nfs3",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000,
+    "small_file_count": 10000
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 811.8760909838684,
+      "latency_p50_us": 500,
+      "latency_p95_us": 3085,
+      "latency_p99_us": 3597,
+      "latency_avg_us": 1230.308,
+      "total_ops": 3000,
+      "total_bytes": 33000,
+      "errors": 0,
+      "duration": 3695145150
+    },
+    "small-files": {
+      "workload": "small-files",
+      "ops_per_sec": 341.68534471166765,
+      "latency_p50_us": 8548,
+      "latency_p95_us": 23250,
+      "latency_p99_us": 30600,
+      "latency_avg_us": 11675.7272,
+      "total_ops": 40000,
+      "total_bytes": 122895106,
+      "errors": 0,
+      "duration": 117066770990
+    }
+  },
+  "total_duration": 120771440170
+}

@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-03-02T17:57:43.332824063Z",
+  "system": "dittofs-badger-fs-nfs3",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 4,
+    "file_size": 268435456,
+    "block_size": 4096,
+    "duration": 30000000000,
+    "meta_files": 1000
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 1018.2812763924718,
+      "latency_p50_us": 554,
+      "latency_p95_us": 2599,
+      "latency_p99_us": 3066,
+      "latency_avg_us": 980.1856666666666,
+      "total_ops": 3000,
+      "total_bytes": 33000,
+      "errors": 0,
+      "duration": 2946140786
+    },
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 473.10804894102245,
+      "latency_p50_us": 1854,
+      "latency_p95_us": 4071,
+      "latency_p99_us": 6807,
+      "latency_avg_us": 2107.2908975623504,
+      "total_ops": 14194,
+      "total_bytes": 58138624,
+      "errors": 0,
+      "duration": 30001603295
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 1464.079395913056,
+      "latency_p50_us": 745,
+      "latency_p95_us": 982,
+      "latency_p99_us": 1162,
+      "latency_avg_us": 678.4012704050269,
+      "total_ops": 43923,
+      "total_bytes": 179908608,
+      "errors": 0,
+      "duration": 30000422192
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 67.67159600894935,
+      "latency_p50_us": 3514,
+      "latency_p95_us": 23552,
+      "latency_p99_us": 225765,
+      "latency_avg_us": 14591.34765625,
+      "total_ops": 1024,
+      "total_bytes": 1073741824,
+      "errors": 0,
+      "duration": 15131902606
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 67.02384853705652,
+      "latency_p50_us": 673,
+      "latency_p95_us": 983,
+      "latency_p99_us": 1508,
+      "latency_avg_us": 727.90625,
+      "total_ops": 1024,
+      "total_bytes": 1073741824,
+      "errors": 0,
+      "duration": 15278143860
+    }
+  },
+  "total_duration": 97897599455
+}

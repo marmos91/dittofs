@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/marmos91/dittofs/pkg/bench"
@@ -12,14 +11,15 @@ import (
 )
 
 var (
-	runThreads   int
-	runFileSize  string
-	runBlockSize string
-	runDuration  string
-	runWorkloads string
-	runSystem    string
-	runSave      string
-	runMetaFiles int
+	runThreads        int
+	runFileSize       string
+	runBlockSize      string
+	runDuration       string
+	runWorkloads      string
+	runSystem         string
+	runSave           string
+	runMetaFiles      int
+	runSmallFileCount int
 )
 
 var runCmd = &cobra.Command{
@@ -51,6 +51,7 @@ func init() {
 	runCmd.Flags().StringVar(&runSystem, "system", "", "Label identifying the system under test")
 	runCmd.Flags().StringVar(&runSave, "save", "", "Save results to JSON file")
 	runCmd.Flags().IntVar(&runMetaFiles, "meta-files", 1000, "Number of files for metadata workload")
+	runCmd.Flags().IntVar(&runSmallFileCount, "small-file-count", 10000, "Number of files for small-files workload")
 }
 
 func runBench(cmd *cobra.Command, args []string) error {
@@ -64,19 +65,20 @@ func runBench(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid --block-size: %w", err)
 	}
 
-	dur, err := time.ParseDuration(runDuration)
+	dur, err := parseGoDuration(runDuration)
 	if err != nil {
-		return fmt.Errorf("invalid --duration %q (e.g., 60s, 5m, 1h): %w", runDuration, err)
+		return fmt.Errorf("invalid --duration: %w", err)
 	}
 
 	cfg := bench.Config{
-		Path:      args[0],
-		Threads:   runThreads,
-		FileSize:  fileSize,
-		BlockSize: blockSize,
-		Duration:  dur,
-		MetaFiles: runMetaFiles,
-		System:    runSystem,
+		Path:           args[0],
+		Threads:        runThreads,
+		FileSize:       fileSize,
+		BlockSize:      blockSize,
+		Duration:       dur,
+		MetaFiles:      runMetaFiles,
+		SmallFileCount: runSmallFileCount,
+		System:         runSystem,
 	}
 
 	if runWorkloads != "" {

@@ -151,9 +151,9 @@ type LogRotationConfig struct {
 	Compress bool `mapstructure:"compress" yaml:"compress"`
 }
 
-// CacheConfig specifies the WAL-backed cache configuration.
-// Cache is mandatory for crash recovery - all writes go through the WAL cache.
-// The WAL (Write-Ahead Log) ensures data durability via mmap.
+// CacheConfig specifies the file-backed cache configuration.
+// Cache is mandatory - all writes go through the file cache before upload.
+// Each block is stored as a separate file for crash recovery and LRU eviction.
 type CacheConfig struct {
 	// Path is the directory for the cache WAL file (required)
 	// The cache will create a cache.dat file in this directory
@@ -170,7 +170,7 @@ type CacheConfig struct {
 	// the offloader drains data to the backend store. This provides
 	// backpressure for slow backends like S3.
 	// Supports human-readable formats: "512MB", "1GB", "2Gi"
-	// Default: 2GB (see cache.DefaultMaxPendingSize)
+	// Default: 1GB
 	MaxPendingSize bytesize.ByteSize `mapstructure:"max_pending_size" yaml:"max_pending_size,omitempty"`
 }
 
@@ -180,15 +180,16 @@ type CacheConfig struct {
 type OffloaderConfig struct {
 	// ParallelUploads is the number of concurrent block uploads to the backend.
 	// Higher values increase throughput for high-latency backends (S3).
-	// Default: 16 (yields ~64 MB/s with 4MB blocks to S3)
+	// Default: 16 (yields ~128 MB/s with 8MB blocks to S3)
 	ParallelUploads int `mapstructure:"parallel_uploads" yaml:"parallel_uploads,omitempty"`
 
 	// ParallelDownloads is the number of concurrent block downloads per file.
-	// Default: 0 (auto-scaled based on CPU count)
+	// Default: 32
 	ParallelDownloads int `mapstructure:"parallel_downloads" yaml:"parallel_downloads,omitempty"`
 
 	// PrefetchBlocks is the number of blocks to prefetch ahead of reads.
-	// Default: 0 (auto-scaled based on cache size)
+	// Set to 0 to disable prefetching.
+	// Default: 64 (512MB ahead at 8MB block size)
 	PrefetchBlocks int `mapstructure:"prefetch_blocks" yaml:"prefetch_blocks,omitempty"`
 
 	// SmallFileThreshold is the file size below which files are flushed
@@ -198,6 +199,16 @@ type OffloaderConfig struct {
 	// Set to 0 to disable (all files use async flush).
 	// Default: 0 (disabled)
 	SmallFileThreshold bytesize.ByteSize `mapstructure:"small_file_threshold" yaml:"small_file_threshold,omitempty"`
+
+	// UploadInterval is how often the periodic uploader scans for pending blocks.
+	// Default: 2s
+	UploadInterval time.Duration `mapstructure:"upload_interval" yaml:"upload_interval,omitempty"`
+
+	// UploadDelay is the minimum age before a cached block is uploaded.
+	// Blocks younger than this are skipped by the periodic uploader.
+	// Flush() ignores this delay and uploads immediately.
+	// Default: 10s
+	UploadDelay time.Duration `mapstructure:"upload_delay" yaml:"upload_delay,omitempty"`
 }
 
 // AdminConfig contains initial admin user configuration for bootstrap.
@@ -310,10 +321,15 @@ func BuildStaticMapper(idCfg *IdentityMappingConfig) *identity.StaticMapper {
 
 	staticMap := make(map[string]identity.StaticIdentity, len(idCfg.StaticMap))
 	for k, v := range idCfg.StaticMap {
+		var gidsCopy []uint32
+		if v.GIDs != nil {
+			gidsCopy = make([]uint32, len(v.GIDs))
+			copy(gidsCopy, v.GIDs)
+		}
 		staticMap[k] = identity.StaticIdentity{
 			UID:  v.UID,
 			GID:  v.GID,
-			GIDs: append([]uint32(nil), v.GIDs...),
+			GIDs: gidsCopy,
 		}
 	}
 	return identity.NewStaticMapper(&identity.StaticMapperConfig{
@@ -348,17 +364,22 @@ func Load(configPath string) (*Config, error) {
 		return nil, err
 	}
 
+	// If no config file was found, use defaults
 	if !configFileFound {
-		return GetDefaultConfig(), nil
+		cfg := GetDefaultConfig()
+		return cfg, nil
 	}
 
+	// Unmarshal into config struct with custom decode hooks
 	var cfg Config
 	if err := v.Unmarshal(&cfg, viper.DecodeHook(configDecodeHooks())); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
+	// Apply defaults for any missing values
 	ApplyDefaults(&cfg)
 
+	// Validate configuration
 	if err := Validate(&cfg); err != nil {
 		return nil, fmt.Errorf("configuration validation failed: %w", err)
 	}
@@ -376,23 +397,27 @@ func Load(configPath string) (*Config, error) {
 //   - *Config: Loaded and validated configuration
 //   - error: User-friendly error with instructions if config not found
 func MustLoad(configPath string) (*Config, error) {
+	// Determine config path
 	if configPath == "" {
-		configPath = GetDefaultConfigPath()
 		if !DefaultConfigExists() {
 			return nil, fmt.Errorf("no configuration file found at default location: %s\n\n"+
 				"Please initialize a configuration file first:\n"+
 				"  dittofs init\n\n"+
 				"Or specify a custom config file:\n"+
 				"  dittofs <command> --config /path/to/config.yaml",
-				configPath)
+				GetDefaultConfigPath())
 		}
-	} else if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("configuration file not found: %s\n\n"+
-			"Please create the configuration file:\n"+
-			"  dittofs init --config %s",
-			configPath, configPath)
+		configPath = GetDefaultConfigPath()
+	} else {
+		if _, err := os.Stat(configPath); os.IsNotExist(err) {
+			return nil, fmt.Errorf("configuration file not found: %s\n\n"+
+				"Please create the configuration file:\n"+
+				"  dittofs init --config %s",
+				configPath, configPath)
+		}
 	}
 
+	// Load configuration
 	cfg, err := Load(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load configuration: %w", err)
@@ -401,19 +426,23 @@ func MustLoad(configPath string) (*Config, error) {
 	return cfg, nil
 }
 
-// SaveConfig saves the configuration to the specified file path in YAML format.
-// The file is written with restricted permissions (0600) since config may
-// contain sensitive data like password hashes.
+// SaveConfig saves the configuration to the specified file path.
+// The configuration is saved in YAML format using proper yaml tags.
 func SaveConfig(cfg *Config, path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	// Create parent directory if it doesn't exist
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
+	// Use yaml.Marshal directly to respect yaml tags
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
+	// Write to file with restricted permissions (0600 = owner read/write only).
+	// This is important because config files may contain sensitive data like password hashes.
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
@@ -421,13 +450,16 @@ func SaveConfig(cfg *Config, path string) error {
 	return nil
 }
 
-// setupViper configures viper with environment variables (DITTOFS_* prefix)
-// and config file settings.
+// setupViper configures viper with environment variables and config file settings.
 func setupViper(v *viper.Viper, configPath string) {
+	// Set up environment variable support
+	// Environment variables use DITTOFS_ prefix and underscores
+	// Example: DITTOFS_LOGGING_LEVEL=DEBUG
 	v.SetEnvPrefix("DITTOFS")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 
+	// Explicitly bind env vars for nested struct fields.
 	// Viper's AutomaticEnv + Unmarshal doesn't resolve env vars for nested keys
 	// unless they are explicitly bound or accessed via Get().
 	_ = v.BindEnv("database.postgres.host")
@@ -437,38 +469,44 @@ func setupViper(v *viper.Viper, configPath string) {
 	_ = v.BindEnv("database.postgres.password")
 	_ = v.BindEnv("database.postgres.sslmode")
 	_ = v.BindEnv("controlplane.secret")
+	_ = v.BindEnv("controlplane.pprof")
 
+	// Configure config file search
 	if configPath != "" {
+		// Use explicitly specified config file
 		v.SetConfigFile(configPath)
 	} else {
-		v.AddConfigPath(getConfigDir())
+		// Use default location: $XDG_CONFIG_HOME/dittofs/config.{yaml,toml}
+		configDir := getConfigDir()
+		v.AddConfigPath(configDir)
 		v.SetConfigName("config")
-		v.SetConfigType("yaml")
+		v.SetConfigType("yaml") // Primary format
 	}
 }
 
 // readConfigFile reads the configuration file if it exists.
 // Returns (fileFound, error) where fileFound indicates if a config file was found.
 func readConfigFile(v *viper.Viper) (bool, error) {
-	err := v.ReadInConfig()
-	if err == nil {
-		return true, nil
+	if err := v.ReadInConfig(); err != nil {
+		// Check if error is "config file not found"
+		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
+			// Config file not found is acceptable - use defaults
+			return false, nil
+		}
+		// Also check for os.PathError when explicit config file doesn't exist
+		if os.IsNotExist(err) {
+			// Config file not found is acceptable - use defaults
+			return false, nil
+		}
+		// Other errors are problems
+		return false, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// Config file not found is acceptable - caller will use defaults.
-	// Viper returns ConfigFileNotFoundError for search-based discovery
-	// and os.PathError for explicit file paths.
-	if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-		return false, nil
-	}
-	if os.IsNotExist(err) {
-		return false, nil
-	}
-
-	return false, fmt.Errorf("failed to read config file: %w", err)
+	return true, nil
 }
 
-// configDecodeHooks returns decode hooks for ByteSize ("1Gi") and Duration ("30s") parsing.
+// configDecodeHooks returns a combined decode hook for all custom types.
+// This includes ByteSize and time.Duration parsing.
 func configDecodeHooks() mapstructure.DecodeHookFunc {
 	return mapstructure.ComposeDecodeHookFunc(
 		byteSizeDecodeHook(),
@@ -476,14 +514,19 @@ func configDecodeHooks() mapstructure.DecodeHookFunc {
 	)
 }
 
-// byteSizeDecodeHook converts strings ("1Gi", "500Mi") and numbers to bytesize.ByteSize.
+// byteSizeDecodeHook returns a mapstructure decode hook that converts strings
+// and integers to bytesize.ByteSize. This enables config files to use human-readable
+// sizes like "1Gi", "500Mi", "100MB", or plain numbers.
 func byteSizeDecodeHook() mapstructure.DecodeHookFunc {
 	return func(from reflect.Type, to reflect.Type, data interface{}) (interface{}, error) {
+		// Only handle conversion to ByteSize
 		if to != reflect.TypeOf(bytesize.ByteSize(0)) {
 			return data, nil
 		}
+
 		switch v := data.(type) {
 		case string:
+			// Parse human-readable string like "1Gi", "500Mi", "100MB"
 			return bytesize.ParseByteSize(v)
 		case int:
 			return bytesize.ByteSize(v), nil
@@ -492,6 +535,7 @@ func byteSizeDecodeHook() mapstructure.DecodeHookFunc {
 		case uint64:
 			return bytesize.ByteSize(v), nil
 		case float64:
+			// YAML often deserializes numbers as float64
 			return bytesize.ByteSize(v), nil
 		default:
 			return data, nil
@@ -499,20 +543,27 @@ func byteSizeDecodeHook() mapstructure.DecodeHookFunc {
 	}
 }
 
-// durationDecodeHook converts strings ("30s", "5m", "1h") and numbers to time.Duration.
+// durationDecodeHook returns a mapstructure decode hook that converts strings
+// to time.Duration. This enables config files to use human-readable durations
+// like "30s", "5m", "1h".
 func durationDecodeHook() mapstructure.DecodeHookFunc {
 	return func(from reflect.Type, to reflect.Type, data interface{}) (interface{}, error) {
+		// Only handle conversion to time.Duration
 		if to != reflect.TypeOf(time.Duration(0)) {
 			return data, nil
 		}
+
 		switch v := data.(type) {
 		case string:
+			// Parse duration string like "30s", "5m", "1h"
 			return time.ParseDuration(v)
 		case int:
+			// Assume nanoseconds for raw integers
 			return time.Duration(v), nil
 		case int64:
 			return time.Duration(v), nil
 		case float64:
+			// YAML often deserializes numbers as float64
 			return time.Duration(v), nil
 		default:
 			return data, nil
@@ -521,26 +572,33 @@ func durationDecodeHook() mapstructure.DecodeHookFunc {
 }
 
 // getConfigDir returns the configuration directory path.
-// Windows: %APPDATA%\dittofs. Unix: $XDG_CONFIG_HOME/dittofs or ~/.config/dittofs.
-// Falls back to "." if the home directory cannot be determined.
+//
+// On Windows, uses %APPDATA%\dittofs (matching internal/cli/credentials/store.go pattern).
+// On Unix, uses XDG_CONFIG_HOME/dittofs or ~/.config/dittofs.
+// Falls back to current directory (.) if home directory cannot be determined.
 func getConfigDir() string {
 	if runtime.GOOS == "windows" {
-		if appData := os.Getenv("APPDATA"); appData != "" {
+		// On Windows, use %APPDATA%\dittofs
+		appData := os.Getenv("APPDATA")
+		if appData != "" {
 			return filepath.Join(appData, "dittofs")
 		}
-		if home, err := os.UserHomeDir(); err == nil {
+		home, err := os.UserHomeDir()
+		if err == nil {
 			return filepath.Join(home, "AppData", "Roaming", "dittofs")
 		}
 		return "."
 	}
 
+	// Unix: XDG_CONFIG_HOME or ~/.config
 	if xdgConfig := os.Getenv("XDG_CONFIG_HOME"); xdgConfig != "" {
 		return filepath.Join(xdgConfig, "dittofs")
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".config", "dittofs")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "."
 	}
-	return "."
+	return filepath.Join(home, ".config", "dittofs")
 }
 
 // GetDefaultConfigPath returns the default configuration file path.
@@ -561,13 +619,17 @@ func GetConfigDir() string {
 }
 
 // GetStateDir returns the state directory path for runtime data (logs, PID files).
-// Windows: %LOCALAPPDATA%\dittofs. Unix: $XDG_STATE_HOME/dittofs or ~/.local/state/dittofs.
+//
+// On Windows, uses %LOCALAPPDATA%\dittofs.
+// On Unix, uses XDG_STATE_HOME/dittofs or ~/.local/state/dittofs.
 func GetStateDir() string {
 	if runtime.GOOS == "windows" {
-		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+		localAppData := os.Getenv("LOCALAPPDATA")
+		if localAppData != "" {
 			return filepath.Join(localAppData, "dittofs")
 		}
-		if home, err := os.UserHomeDir(); err == nil {
+		home, err := os.UserHomeDir()
+		if err == nil {
 			return filepath.Join(home, "AppData", "Local", "dittofs")
 		}
 		return filepath.Join(os.TempDir(), "dittofs")

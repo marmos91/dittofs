@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-03-07T08:56:28.485807406Z",
+  "system": "dittofs-fs",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 596.9880188558164,
+      "latency_p50_us": 987,
+      "latency_p95_us": 5415,
+      "latency_p99_us": 8066,
+      "latency_avg_us": 1673.3293333333334,
+      "total_ops": 3000,
+      "total_bytes": 33000,
+      "errors": 0,
+      "duration": 5025226479
+    },
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 654.7295363166847,
+      "latency_p50_us": 1219,
+      "latency_p95_us": 1693,
+      "latency_p99_us": 3896,
+      "latency_avg_us": 1522.527110273903,
+      "total_ops": 39284,
+      "total_bytes": 160907264,
+      "errors": 0,
+      "duration": 60000347962
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 281.0600584059951,
+      "latency_p50_us": 1986,
+      "latency_p95_us": 4622,
+      "latency_p99_us": 23492,
+      "latency_avg_us": 3552.8397770398483,
+      "total_ops": 16864,
+      "total_bytes": 69074944,
+      "errors": 0,
+      "duration": 60001410715
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 63.91948432393855,
+      "latency_p50_us": 13236,
+      "latency_p95_us": 20361,
+      "latency_p99_us": 216266,
+      "latency_avg_us": 15476.0869140625,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 64080617097
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 50.88064100156583,
+      "latency_p50_us": 620,
+      "latency_p95_us": 797,
+      "latency_p99_us": 953,
+      "latency_avg_us": 645.8076171875,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 80502130464
+    }
+  },
+  "total_duration": 270443582606
+}

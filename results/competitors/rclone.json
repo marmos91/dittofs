@@ -1,0 +1,75 @@
+{
+  "timestamp": "2026-03-02T19:21:07.662097942Z",
+  "system": "rclone",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 4,
+    "file_size": 268435456,
+    "block_size": 4096,
+    "duration": 30000000000,
+    "meta_files": 1000
+  },
+  "workloads": {
+    "metadata": {
+      "workload": "metadata",
+      "ops_per_sec": 848.3771982620787,
+      "latency_p50_us": 483,
+      "latency_p95_us": 2906,
+      "latency_p99_us": 3574,
+      "latency_avg_us": 1177.0326666666667,
+      "total_ops": 3000,
+      "total_bytes": 33000,
+      "errors": 0,
+      "duration": 3536162931
+    },
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 581.5235049658077,
+      "latency_p50_us": 1013,
+      "latency_p95_us": 3812,
+      "latency_p99_us": 14429,
+      "latency_avg_us": 1714.5362260690129,
+      "total_ops": 17446,
+      "total_bytes": 71458816,
+      "errors": 0,
+      "duration": 30000507032
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 751.964063943583,
+      "latency_p50_us": 1389,
+      "latency_p95_us": 1736,
+      "latency_p99_us": 2079,
+      "latency_avg_us": 1325.0919810275277,
+      "total_ops": 22559,
+      "total_bytes": 92401664,
+      "errors": 0,
+      "duration": 30000103837
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 67.66401161232534,
+      "latency_p50_us": 2647,
+      "latency_p95_us": 40232,
+      "latency_p99_us": 220384,
+      "latency_avg_us": 14586.9033203125,
+      "total_ops": 1024,
+      "total_bytes": 1073741824,
+      "errors": 0,
+      "duration": 15133598727
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 66.50571819574763,
+      "latency_p50_us": 655,
+      "latency_p95_us": 870,
+      "latency_p99_us": 947,
+      "latency_avg_us": 689.732421875,
+      "total_ops": 1024,
+      "total_bytes": 1073741824,
+      "errors": 0,
+      "duration": 15397172270
+    }
+  },
+  "total_duration": 106537345844
+}

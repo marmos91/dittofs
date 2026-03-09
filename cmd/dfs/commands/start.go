@@ -134,6 +134,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 		ParallelDownloads:  cfg.Offloader.ParallelDownloads,
 		PrefetchBlocks:     cfg.Offloader.PrefetchBlocks,
 		SmallFileThreshold: int64(min(uint64(cfg.Offloader.SmallFileThreshold), uint64(math.MaxInt64))),
+		UploadInterval:     cfg.Offloader.UploadInterval,
+		UploadDelay:        cfg.Offloader.UploadDelay,
 	})
 	logger.Info("Cache configuration stored", "path", cfg.Cache.Path, "size", cfg.Cache.Size, "max_pending_size", cfg.Cache.MaxPendingSize)
 

@@ -5,6 +5,10 @@
 **S3 Provider**: Scaleway Object Storage (fr-par), bucket `dittofs-bench`
 **Benchmark Config**: 64 MiB files, 4 KiB blocks, 30s duration, 4 threads, 200 metadata files
 
+> **Note**: This round used inconsistent cache sizes across systems (rclone: unlimited,
+> s3ql: autodetect ~10GB, juicefs: 1GB). See Round 3 for results with all systems
+> aligned to a uniform 2GB cache.
+
 ## Raw S3 Baseline
 
 Direct S3 PUT/GET from the server VM (no filesystem layer), using rclone as client:

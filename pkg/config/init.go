@@ -10,6 +10,11 @@ import (
 
 // InitConfig creates a sample configuration file at the default location.
 //
+// This function:
+//  1. Creates the config directory if it doesn't exist
+//  2. Generates a config file with defaults and helpful comments
+//  3. Returns an error if the file already exists (won't overwrite)
+//
 // Parameters:
 //   - force: If true, overwrite existing config file
 //
@@ -18,9 +23,32 @@ import (
 //   - error: File creation error or file already exists
 func InitConfig(force bool) (string, error) {
 	configPath := GetDefaultConfigPath()
-	if err := InitConfigToPath(configPath, force); err != nil {
-		return "", err
+	configDir := filepath.Dir(configPath)
+
+	// Create config directory if it doesn't exist
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create config directory: %w", err)
 	}
+
+	// Check if config already exists
+	if !force && DefaultConfigExists() {
+		return "", fmt.Errorf("config file already exists at %s (use --force to overwrite)", configPath)
+	}
+
+	// Generate sample config
+	cfg := GetDefaultConfig()
+
+	// Marshal to YAML with comments
+	yamlData, err := generateYAMLWithComments(cfg)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate YAML: %w", err)
+	}
+
+	// Write to file
+	if err := os.WriteFile(configPath, []byte(yamlData), 0600); err != nil {
+		return "", fmt.Errorf("failed to write config file: %w", err)
+	}
+
 	return configPath, nil
 }
 
@@ -119,18 +147,18 @@ cache:
 
 # Background offloader configuration
 # Controls how cached data is transferred to backend storage (S3, filesystem)
-# Values of 0 enable auto-scaling based on CPU count and cache size.
+# These defaults are tuned for good S3 performance out of the box.
 offloader:
   # Number of concurrent block uploads to backend storage
   # Higher values increase throughput for high-latency backends (S3)
-  # Default: 0 (auto-scaled based on CPU count)
-  # parallel_uploads: 0
+  # Default: 16
+  parallel_uploads: 16
   # Number of concurrent block downloads per file
-  # Default: 0 (auto-scaled based on CPU count)
-  # parallel_downloads: 0
+  # Default: 8
+  parallel_downloads: 8
   # Number of blocks to prefetch ahead of sequential reads
-  # Default: 0 (auto-scaled based on cache size)
-  # prefetch_blocks: 0
+  # Default: 16 (64MB lookahead at 4MB block size)
+  prefetch_blocks: 16
   # Files smaller than this are flushed synchronously during Flush().
   # Set to 0 to disable (all files use async flush, WAL ensures durability).
   # Default: 0 (disabled)
@@ -154,6 +182,8 @@ admin:
 
 // InitConfigToPath creates a sample configuration file at the specified path.
 //
+// Similar to InitConfig but allows specifying a custom path.
+//
 // Parameters:
 //   - path: Full path to the config file to create
 //   - force: If true, overwrite existing config file
@@ -161,21 +191,30 @@ admin:
 // Returns:
 //   - error: File creation error or file already exists
 func InitConfigToPath(path string, force bool) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	configDir := filepath.Dir(path)
+
+	// Create config directory if it doesn't exist
+	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
+	// Check if config already exists
 	if !force {
 		if _, err := os.Stat(path); err == nil {
 			return fmt.Errorf("config file already exists at %s (use --force to overwrite)", path)
 		}
 	}
 
-	yamlData, err := generateYAMLWithComments(GetDefaultConfig())
+	// Generate sample config with comments
+	cfg := GetDefaultConfig()
+
+	// Generate YAML with helpful comments
+	yamlData, err := generateYAMLWithComments(cfg)
 	if err != nil {
 		return fmt.Errorf("failed to generate config: %w", err)
 	}
 
+	// Write to file
 	if err := os.WriteFile(path, []byte(yamlData), 0600); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}

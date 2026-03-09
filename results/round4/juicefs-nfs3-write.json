@@ -1,0 +1,64 @@
+{
+  "timestamp": "2026-03-05T07:30:26.192589274Z",
+  "system": "juicefs-nfs3",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000,
+    "small_file_count": 10000
+  },
+  "workloads": {
+    "rand-read": {
+      "workload": "rand-read",
+      "iops": 443.51010959145145,
+      "latency_p50_us": 961,
+      "latency_p95_us": 1659,
+      "latency_p99_us": 23517,
+      "latency_avg_us": 2249.9749727556273,
+      "total_ops": 26611,
+      "total_bytes": 108998656,
+      "errors": 0,
+      "duration": 60000887070
+    },
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 237.6425772895883,
+      "latency_p50_us": 1881,
+      "latency_p95_us": 3502,
+      "latency_p99_us": 4394,
+      "latency_avg_us": 4202.711262282691,
+      "total_ops": 14553,
+      "total_bytes": 59609088,
+      "errors": 0,
+      "duration": 61239026129
+    },
+    "seq-read": {
+      "workload": "seq-read",
+      "throughput_mbps": 51.24581077681229,
+      "latency_p50_us": 2141,
+      "latency_p95_us": 212074,
+      "latency_p99_us": 250163,
+      "latency_avg_us": 19338.37109375,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 79928484649
+    },
+    "seq-write": {
+      "workload": "seq-write",
+      "throughput_mbps": 49.77599544222773,
+      "latency_p50_us": 644,
+      "latency_p95_us": 869,
+      "latency_p99_us": 1051,
+      "latency_avg_us": 669.92529296875,
+      "total_ops": 4096,
+      "total_bytes": 4294967296,
+      "errors": 0,
+      "duration": 82288660701
+    }
+  },
+  "total_duration": 383797461096
+}

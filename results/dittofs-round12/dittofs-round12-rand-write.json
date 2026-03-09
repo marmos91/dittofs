@@ -1,0 +1,28 @@
+{
+  "timestamp": "2026-03-06T10:17:33.542453903Z",
+  "system": "dittofs-round12",
+  "path": "/mnt/bench",
+  "config": {
+    "threads": 4,
+    "file_size": 1073741824,
+    "block_size": 4096,
+    "duration": 60000000000,
+    "meta_files": 1000,
+    "small_file_count": 10000
+  },
+  "workloads": {
+    "rand-write": {
+      "workload": "rand-write",
+      "iops": 314.47387143824824,
+      "latency_p50_us": 2053,
+      "latency_p95_us": 3166,
+      "latency_p99_us": 35438,
+      "latency_avg_us": 3174.660819333298,
+      "total_ops": 18869,
+      "total_bytes": 77287424,
+      "errors": 0,
+      "duration": 60001805281
+    }
+  },
+  "total_duration": 60834861880
+}
