@@ -133,7 +133,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		ParallelUploads:    cfg.Offloader.ParallelUploads,
 		ParallelDownloads:  cfg.Offloader.ParallelDownloads,
 		PrefetchBlocks:     cfg.Offloader.PrefetchBlocks,
-		SmallFileThreshold: int64(min(uint64(cfg.Offloader.SmallFileThreshold), uint64(math.MaxInt64))),
+		SmallFileThreshold: min(int64(cfg.Offloader.SmallFileThreshold), math.MaxInt64),
 	})
 	logger.Info("Cache configuration stored", "path", cfg.Cache.Path, "size", cfg.Cache.Size, "max_pending_size", cfg.Cache.MaxPendingSize)
 
@@ -225,56 +225,56 @@ func getConfigSource(configFile string) string {
 // dynamically when loading from store or when created via API.
 func createAdapterFactory(kerberosConfig *config.KerberosConfig) runtime.AdapterFactory {
 	return func(cfg *models.AdapterConfig) (runtime.ProtocolAdapter, error) {
-		// Parse the JSON config if present
-		parsedConfig, err := cfg.GetConfig()
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse adapter config: %w", err)
-		}
-
 		switch cfg.Type {
 		case "nfs":
-			nfsCfg := nfs.NFSConfig{
-				Enabled: true,
-				Port:    cfg.Port,
-			}
-			if nfsCfg.Port == 0 {
-				nfsCfg.Port = 12049 // Default NFS port
-			}
-			adapter := nfs.New(nfsCfg, nil)
-			// Configure Kerberos if enabled
-			if kerberosConfig != nil && kerberosConfig.Enabled {
-				adapter.SetKerberosConfig(kerberosConfig)
-			}
-			return adapter, nil
-
+			return createNFSAdapter(cfg, kerberosConfig)
 		case "smb":
-			smbCfg := smb.Config{
-				Enabled: true,
-				Port:    cfg.Port,
-			}
-			if smbCfg.Port == 0 {
-				smbCfg.Port = 12445 // Default SMB port
-			}
-
-			// Apply parsed config for SMB-specific settings
-			if parsedConfig != nil {
-				if bindAddr, ok := parsedConfig["bind_address"].(string); ok {
-					smbCfg.BindAddress = bindAddr
-				}
-				if signingCfg, ok := parsedConfig["signing"].(map[string]any); ok {
-					if enabled, ok := signingCfg["enabled"].(bool); ok {
-						smbCfg.Signing.Enabled = &enabled
-					}
-					if required, ok := signingCfg["required"].(bool); ok {
-						smbCfg.Signing.Required = required
-					}
-				}
-			}
-
-			return smb.New(smbCfg), nil
-
+			return createSMBAdapter(cfg)
 		default:
 			return nil, fmt.Errorf("unknown adapter type: %s", cfg.Type)
 		}
 	}
+}
+
+func createNFSAdapter(cfg *models.AdapterConfig, kerberosConfig *config.KerberosConfig) (runtime.ProtocolAdapter, error) {
+	port := cfg.Port
+	if port == 0 {
+		port = 12049
+	}
+
+	adapter := nfs.New(nfs.NFSConfig{Enabled: true, Port: port}, nil)
+	if kerberosConfig != nil && kerberosConfig.Enabled {
+		adapter.SetKerberosConfig(kerberosConfig)
+	}
+	return adapter, nil
+}
+
+func createSMBAdapter(cfg *models.AdapterConfig) (runtime.ProtocolAdapter, error) {
+	port := cfg.Port
+	if port == 0 {
+		port = 12445
+	}
+
+	smbCfg := smb.Config{Enabled: true, Port: port}
+
+	parsedConfig, err := cfg.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse adapter config: %w", err)
+	}
+
+	if parsedConfig != nil {
+		if bindAddr, ok := parsedConfig["bind_address"].(string); ok {
+			smbCfg.BindAddress = bindAddr
+		}
+		if signingCfg, ok := parsedConfig["signing"].(map[string]any); ok {
+			if enabled, ok := signingCfg["enabled"].(bool); ok {
+				smbCfg.Signing.Enabled = &enabled
+			}
+			if required, ok := signingCfg["required"].(bool); ok {
+				smbCfg.Signing.Required = required
+			}
+		}
+	}
+
+	return smb.New(smbCfg), nil
 }

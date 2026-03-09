@@ -25,31 +25,28 @@ const DefaultParallelDownloads = 0
 // the actual value based on cache size.
 const DefaultPrefetchBlocks = 0
 
-// AutoScaleParallelUploads computes the number of parallel uploads based on
-// available CPUs. Uses NumCPU*4 with a floor of 16 and cap of 128.
-// This scales with VM size: 4-core → 16, 8-core → 32, 16-core → 64.
-func AutoScaleParallelUploads() int {
-	n := runtime.NumCPU() * 4
-	if n < 16 {
-		n = 16
+// clamp restricts n to the range [lo, hi].
+func clamp(n, lo, hi int) int {
+	if n < lo {
+		return lo
 	}
-	if n > 128 {
-		n = 128
+	if n > hi {
+		return hi
 	}
 	return n
+}
+
+// AutoScaleParallelUploads computes the number of parallel uploads based on
+// available CPUs. Uses NumCPU*4 with a floor of 16 and cap of 128.
+// This scales with VM size: 4-core -> 16, 8-core -> 32, 16-core -> 64.
+func AutoScaleParallelUploads() int {
+	return clamp(runtime.NumCPU()*4, 16, 128)
 }
 
 // AutoScaleParallelDownloads computes the number of parallel downloads per file
 // based on available CPUs. Uses NumCPU*2 with a floor of 4 and cap of 32.
 func AutoScaleParallelDownloads() int {
-	n := runtime.NumCPU() * 2
-	if n < 4 {
-		n = 4
-	}
-	if n > 32 {
-		n = 32
-	}
-	return n
+	return clamp(runtime.NumCPU()*2, 4, 32)
 }
 
 // AutoScalePrefetchBlocks computes the number of prefetch blocks based on
@@ -59,14 +56,7 @@ func AutoScalePrefetchBlocks(cacheSizeBytes uint64) int {
 	if cacheSizeBytes == 0 {
 		return 8
 	}
-	n := int(cacheSizeBytes / BlockSize / 4)
-	if n < 8 {
-		n = 8
-	}
-	if n > 64 {
-		n = 64
-	}
-	return n
+	return clamp(int(cacheSizeBytes/BlockSize/4), 8, 64)
 }
 
 // TransferType indicates the type of transfer operation.

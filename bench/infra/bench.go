@@ -13,8 +13,8 @@ import (
 // `pulumi up --stack bench` once per competitor, then `pulumi destroy`
 // before moving to the next.
 func deployBench(ctx *pulumi.Context) error {
-	cfg := loadConfig(config.New(ctx, "dittofs-bench")).withDefaults()
 	stackCfg := config.New(ctx, "dittofs-bench")
+	cfg := loadConfig(stackCfg)
 
 	// Which competitor to install (e.g., "kernel-nfs", "dittofs-badger-s3").
 	systemName := stackCfg.Require("system")

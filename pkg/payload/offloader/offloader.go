@@ -21,6 +21,23 @@ func hashB64(h [32]byte) string {
 	return base64.StdEncoding.EncodeToString(h[:])
 }
 
+// waitWithContext runs fn in a goroutine and waits for it to finish or the
+// context to be cancelled. Returns nil on completion, or ctx.Err() on timeout.
+func waitWithContext(ctx context.Context, fn func()) error {
+	done := make(chan struct{})
+	go func() {
+		fn()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // defaultShutdownTimeout is the maximum time to wait for the transfer queue
 // to finish processing during graceful shutdown.
 const defaultShutdownTimeout = 30 * time.Second
@@ -285,21 +302,12 @@ func (m *Offloader) DrainAllUploads(ctx context.Context) error {
 	}
 	m.uploadsMu.Unlock()
 
-	done := make(chan struct{})
-	go func() {
+	return waitWithContext(ctx, func() {
 		for _, state := range states {
 			state.inFlight.Wait()
 			state.flush.Wait()
 		}
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	})
 }
 
 // WaitForEagerUploads waits for in-flight eager uploads to complete.
@@ -309,19 +317,7 @@ func (m *Offloader) WaitForEagerUploads(ctx context.Context, payloadID string) e
 	if state == nil {
 		return nil
 	}
-
-	done := make(chan struct{})
-	go func() {
-		state.inFlight.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return waitWithContext(ctx, state.inFlight.Wait)
 }
 
 // WaitForAllUploads waits for both eager uploads AND flush operations to complete.
@@ -334,40 +330,26 @@ func (m *Offloader) WaitForAllUploads(ctx context.Context, payloadID string) err
 	if state == nil {
 		return nil
 	}
-
-	done := make(chan struct{})
-	go func() {
-		state.inFlight.Wait() // Wait for eager uploads
-		state.flush.Wait()    // Wait for flush operations
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return waitWithContext(ctx, func() {
+		state.inFlight.Wait()
+		state.flush.Wait()
+	})
 }
 
 // GetFileSize returns the total size of a file from the block store.
 // This is used as a fallback when the cache doesn't have the file.
 func (m *Offloader) GetFileSize(ctx context.Context, payloadID string) (uint64, error) {
-	m.mu.RLock()
-	if m.closed {
-		m.mu.RUnlock()
+	if !m.canProcess(ctx) {
 		return 0, fmt.Errorf("offloader is closed")
 	}
-	blockStore := m.blockStore
-	m.mu.RUnlock()
 
-	if blockStore == nil {
+	if m.blockStore == nil {
 		return 0, fmt.Errorf("no block store configured")
 	}
 
 	// List all blocks to find the highest chunk/block indices
 	prefix := payloadID + "/"
-	blocks, err := blockStore.ListByPrefix(ctx, prefix)
+	blocks, err := m.blockStore.ListByPrefix(ctx, prefix)
 	if err != nil {
 		return 0, fmt.Errorf("list blocks: %w", err)
 	}
@@ -391,7 +373,7 @@ func (m *Offloader) GetFileSize(ctx context.Context, payloadID string) (uint64, 
 
 	// Only read the last block to get its size (may be partial)
 	lastBlockKey := FormatBlockKey(payloadID, maxChunkIdx, maxBlockIdx)
-	lastBlockData, err := blockStore.ReadBlock(ctx, lastBlockKey)
+	lastBlockData, err := m.blockStore.ReadBlock(ctx, lastBlockKey)
 	if err != nil {
 		return 0, fmt.Errorf("read last block %s: %w", lastBlockKey, err)
 	}

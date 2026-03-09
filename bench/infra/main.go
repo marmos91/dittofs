@@ -27,11 +27,7 @@ import (
 
 func main() {
 	pulumi.Run(func(ctx *pulumi.Context) error {
-		stack := ctx.Stack()
-
-		switch stack {
-		case "base":
-			return deployBase(ctx)
+		switch ctx.Stack() {
 		case "bench":
 			return deployBench(ctx)
 		default:

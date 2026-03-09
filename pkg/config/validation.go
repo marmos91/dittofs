@@ -15,31 +15,14 @@ func init() {
 
 // Validate validates the configuration using struct tags and custom rules.
 //
-// This function uses go-playground/validator for declarative validation
-// via struct tags, with additional custom validation for complex rules
-// that cannot be expressed in tags.
-//
-// Note: Log level normalization is handled in ApplyDefaults, not here.
-// Validation accepts both uppercase and lowercase log levels.
-//
-// Returns an error describing validation failures.
+// Uses go-playground/validator for declarative validation via struct tags,
+// with additional custom rules that cannot be expressed in tags.
+// Log level normalization is handled in ApplyDefaults, not here.
 func Validate(cfg *Config) error {
-	// Run struct tag validation
 	if err := validate.Struct(cfg); err != nil {
 		return formatValidationError(err)
 	}
 
-	// Custom validation rules that can't be expressed in tags
-	if err := validateCustomRules(cfg); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// validateCustomRules performs custom validation beyond struct tags.
-func validateCustomRules(cfg *Config) error {
-	// Validate cache path is set
 	if cfg.Cache.Path == "" {
 		return fmt.Errorf("cache: path is required")
 	}

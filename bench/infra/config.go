@@ -10,26 +10,20 @@ type infraConfig struct {
 	SSHKeyID string
 }
 
-// loadConfig reads Pulumi stack configuration.
-func loadConfig(ctx *config.Config) infraConfig {
+// loadConfig reads Pulumi stack configuration and applies defaults for unset fields.
+func loadConfig(cfg *config.Config) infraConfig {
 	return infraConfig{
-		Zone:     ctx.Get("zone"),
-		VMType:   ctx.Get("vmType"),
-		Image:    ctx.Get("image"),
-		SSHKeyID: ctx.Get("sshKeyId"),
+		Zone:     getOrDefault(cfg, "zone", "fr-par-1"),
+		VMType:   getOrDefault(cfg, "vmType", "PLAY2-MICRO"),
+		Image:    getOrDefault(cfg, "image", "ubuntu_noble"),
+		SSHKeyID: cfg.Get("sshKeyId"),
 	}
 }
 
-// withDefaults fills in default values for any unset config fields.
-func (c infraConfig) withDefaults() infraConfig {
-	if c.Zone == "" {
-		c.Zone = "fr-par-1"
+// getOrDefault returns the config value for key, or fallback if unset.
+func getOrDefault(cfg *config.Config, key, fallback string) string {
+	if v := cfg.Get(key); v != "" {
+		return v
 	}
-	if c.VMType == "" {
-		c.VMType = "PLAY2-MICRO"
-	}
-	if c.Image == "" {
-		c.Image = "ubuntu_noble"
-	}
-	return c
+	return fallback
 }

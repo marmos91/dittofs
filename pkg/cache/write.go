@@ -304,31 +304,18 @@ func (c *Cache) writeToBlock(ctx context.Context, entry *fileEntry, payloadID st
 	// Get or create block buffer
 	blk, isNew := c.getOrCreateBlock(entry, chunkIdx, blockIdx)
 
-	// For normal writes (not downloaded), handle state transitions
-	if !opts.isDownloaded {
-		// Write to a block that is currently being uploaded.
-		// Since flush upload uses a copy of the data (not detach), it's safe to
-		// write new data here. The in-flight upload will complete with the old data,
-		// and this block will need to be re-uploaded with the new data.
-		// We revert to Pending so the block will be picked up by the next flush.
-		if !isNew && blk.state == BlockStateUploading {
-			blk.state = BlockStatePending
-			blk.hash = [32]byte{}        // Invalidate hash - data has changed
-			blk.uploadGeneration++       // Bump generation so in-flight upload detects staleness
-			blk.lastDirtied = time.Now() // Coalescing delay: track when block was re-dirtied
+	// For normal writes (not downloaded), handle state transitions.
+	// Both Uploading and ReadyForUpload revert to Pending so the block
+	// will be picked up by the next flush cycle.
+	if !opts.isDownloaded && !isNew && (blk.state == BlockStateUploading || blk.state == BlockStateReadyForUpload) {
+		if blk.state == BlockStateReadyForUpload && blk.uploadCancel != nil {
+			blk.uploadCancel()
+			blk.uploadCancel = nil
 		}
-
-		// Handle write to ReadyForUpload block - cancel pending upload and revert to Pending.
-		if !isNew && blk.state == BlockStateReadyForUpload {
-			if blk.uploadCancel != nil {
-				blk.uploadCancel()
-				blk.uploadCancel = nil
-			}
-			blk.state = BlockStatePending
-			blk.hash = [32]byte{}        // Invalidate hash - will be recomputed on completion
-			blk.uploadGeneration++       // Bump generation so queued upload detects staleness
-			blk.lastDirtied = time.Now() // Coalescing delay: track when block was re-dirtied
-		}
+		blk.state = BlockStatePending
+		blk.hash = [32]byte{}
+		blk.uploadGeneration++
+		blk.lastDirtied = time.Now()
 	}
 
 	// Track memory and set initial state for new block buffers

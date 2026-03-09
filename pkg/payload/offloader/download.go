@@ -22,12 +22,9 @@ func (m *Offloader) waitForDownloads() {
 
 // downloadBlock downloads a single block from the block store and caches it.
 func (m *Offloader) downloadBlock(ctx context.Context, payloadID string, chunkIdx, blockIdx uint32) error {
-	m.mu.RLock()
-	if m.closed {
-		m.mu.RUnlock()
+	if !m.canProcess(ctx) {
 		return fmt.Errorf("offloader is closed")
 	}
-	m.mu.RUnlock()
 
 	blockKeyStr := FormatBlockKey(payloadID, chunkIdx, blockIdx)
 

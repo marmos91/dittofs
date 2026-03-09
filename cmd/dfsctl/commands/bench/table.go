@@ -29,8 +29,8 @@ func (t ResultTable) Rows() [][]string {
 		rows = append(rows, []string{
 			string(wr.Workload),
 			formatThroughput(wr.ThroughputMBps),
-			formatIOPS(wr.IOPS),
-			formatOps(wr.OpsPerSec),
+			formatCount(wr.IOPS),
+			formatCount(wr.OpsPerSec),
 			formatLatency(wr.LatencyP50Us),
 			formatLatency(wr.LatencyP95Us),
 			formatLatency(wr.LatencyP99Us),
@@ -68,8 +68,8 @@ func (t CompareTable) Rows() [][]string {
 			fn   func(*bench.WorkloadResult) string
 		}{
 			{"throughput", func(wr *bench.WorkloadResult) string { return formatThroughput(wr.ThroughputMBps) }},
-			{"iops", func(wr *bench.WorkloadResult) string { return formatIOPS(wr.IOPS) }},
-			{"ops/sec", func(wr *bench.WorkloadResult) string { return formatOps(wr.OpsPerSec) }},
+			{"iops", func(wr *bench.WorkloadResult) string { return formatCount(wr.IOPS) }},
+			{"ops/sec", func(wr *bench.WorkloadResult) string { return formatCount(wr.OpsPerSec) }},
 			{"p50", func(wr *bench.WorkloadResult) string { return formatLatency(wr.LatencyP50Us) }},
 			{"p99", func(wr *bench.WorkloadResult) string { return formatLatency(wr.LatencyP99Us) }},
 		}
@@ -107,14 +107,7 @@ func formatThroughput(v float64) string {
 	return fmt.Sprintf("%.1f MB/s", v)
 }
 
-func formatIOPS(v float64) string {
-	if v == 0 {
-		return "-"
-	}
-	return fmt.Sprintf("%.0f", v)
-}
-
-func formatOps(v float64) string {
+func formatCount(v float64) string {
 	if v == 0 {
 		return "-"
 	}

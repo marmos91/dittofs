@@ -83,51 +83,10 @@ func CreateMetadataStoreFromConfig(ctx context.Context, storeType string, cfg in
 		return badger.NewBadgerMetadataStoreWithDefaults(ctx, dbPath)
 
 	case "postgres":
-		pgCfg := &postgres.PostgresMetadataStoreConfig{}
-
-		if host, ok := config["host"].(string); ok {
-			pgCfg.Host = host
-		} else {
-			return nil, fmt.Errorf("postgres metadata store requires host")
+		pgCfg, err := parsePostgresConfig(config)
+		if err != nil {
+			return nil, err
 		}
-		if port, ok := config["port"].(float64); ok {
-			pgCfg.Port = int(port)
-		} else if portInt, ok := config["port"].(int); ok {
-			pgCfg.Port = portInt
-		} else {
-			pgCfg.Port = 5432 // default
-		}
-		if database, ok := config["database"].(string); ok {
-			pgCfg.Database = database
-		} else if dbname, ok := config["dbname"].(string); ok {
-			pgCfg.Database = dbname
-		} else {
-			return nil, fmt.Errorf("postgres metadata store requires database")
-		}
-		if user, ok := config["user"].(string); ok {
-			pgCfg.User = user
-		} else {
-			return nil, fmt.Errorf("postgres metadata store requires user")
-		}
-		if password, ok := config["password"].(string); ok {
-			pgCfg.Password = password
-		} else {
-			return nil, fmt.Errorf("postgres metadata store requires password")
-		}
-		if sslmode, ok := config["sslmode"].(string); ok {
-			pgCfg.SSLMode = sslmode
-		} else {
-			pgCfg.SSLMode = "disable" // default for local dev
-		}
-
-		if maxConns, ok := config["max_conns"].(float64); ok {
-			pgCfg.MaxConns = int32(maxConns)
-		}
-		if minConns, ok := config["min_conns"].(float64); ok {
-			pgCfg.MinConns = int32(minConns)
-		}
-
-		pgCfg.AutoMigrate = true
 
 		capabilities := metadata.FilesystemCapabilities{
 			MaxReadSize:         1024 * 1024,
@@ -151,6 +110,75 @@ func CreateMetadataStoreFromConfig(ctx context.Context, storeType string, cfg in
 	default:
 		return nil, fmt.Errorf("unsupported metadata store type: %s", storeType)
 	}
+}
+
+// requireString extracts a required string field from a config map.
+func requireString(config map[string]any, keys ...string) (string, error) {
+	for _, key := range keys {
+		if v, ok := config[key].(string); ok && v != "" {
+			return v, nil
+		}
+	}
+	return "", fmt.Errorf("postgres metadata store requires %s", keys[0])
+}
+
+// stringOrDefault extracts an optional string field from a config map, returning fallback if absent.
+func stringOrDefault(config map[string]any, key, fallback string) string {
+	if v, ok := config[key].(string); ok && v != "" {
+		return v
+	}
+	return fallback
+}
+
+// intFromConfig extracts a numeric value from a config map, accepting both float64 (JSON) and int.
+func intFromConfig(config map[string]any, key string, fallback int) int {
+	switch v := config[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	default:
+		return fallback
+	}
+}
+
+// parsePostgresConfig extracts and validates postgres connection parameters from a config map.
+func parsePostgresConfig(config map[string]any) (*postgres.PostgresMetadataStoreConfig, error) {
+	host, err := requireString(config, "host")
+	if err != nil {
+		return nil, err
+	}
+	database, err := requireString(config, "database", "dbname")
+	if err != nil {
+		return nil, err
+	}
+	user, err := requireString(config, "user")
+	if err != nil {
+		return nil, err
+	}
+	password, err := requireString(config, "password")
+	if err != nil {
+		return nil, err
+	}
+
+	pgCfg := &postgres.PostgresMetadataStoreConfig{
+		Host:        host,
+		Port:        intFromConfig(config, "port", 5432),
+		Database:    database,
+		User:        user,
+		Password:    password,
+		SSLMode:     stringOrDefault(config, "sslmode", "disable"),
+		AutoMigrate: true,
+	}
+
+	if v, ok := config["max_conns"].(float64); ok {
+		pgCfg.MaxConns = int32(v)
+	}
+	if v, ok := config["min_conns"].(float64); ok {
+		pgCfg.MinConns = int32(v)
+	}
+
+	return pgCfg, nil
 }
 
 // EnsurePayloadService lazily creates the cache and PayloadService.
@@ -207,26 +235,7 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 	logger.Info("Loaded payload store", "name", payloadStoreCfg.Name, "type", payloadStoreCfg.Type)
 
 	objectStore := memory.NewMemoryMetadataStoreWithDefaults()
-	offloaderCfg := offloader.DefaultConfig()
-
-	// Apply user-provided offloader config if set
-	rt.mu.RLock()
-	oCfg := rt.offloaderConfig
-	rt.mu.RUnlock()
-	if oCfg != nil {
-		if oCfg.ParallelUploads > 0 {
-			offloaderCfg.ParallelUploads = oCfg.ParallelUploads
-		}
-		if oCfg.ParallelDownloads > 0 {
-			offloaderCfg.ParallelDownloads = oCfg.ParallelDownloads
-		}
-		if oCfg.PrefetchBlocks > 0 {
-			offloaderCfg.PrefetchBlocks = oCfg.PrefetchBlocks
-		}
-		if oCfg.SmallFileThreshold != 0 {
-			offloaderCfg.SmallFileThreshold = oCfg.SmallFileThreshold
-		}
-	}
+	offloaderCfg := rt.buildOffloaderConfig()
 
 	offloaderInstance := offloader.New(cacheInstance, blockStore, objectStore, offloaderCfg)
 
@@ -251,6 +260,32 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 	return nil
 }
 
+// buildOffloaderConfig returns an offloader config with user overrides applied.
+func (rt *Runtime) buildOffloaderConfig() offloader.Config {
+	cfg := offloader.DefaultConfig()
+
+	rt.mu.RLock()
+	oCfg := rt.offloaderConfig
+	rt.mu.RUnlock()
+
+	if oCfg == nil {
+		return cfg
+	}
+	if oCfg.ParallelUploads > 0 {
+		cfg.ParallelUploads = oCfg.ParallelUploads
+	}
+	if oCfg.ParallelDownloads > 0 {
+		cfg.ParallelDownloads = oCfg.ParallelDownloads
+	}
+	if oCfg.PrefetchBlocks > 0 {
+		cfg.PrefetchBlocks = oCfg.PrefetchBlocks
+	}
+	if oCfg.SmallFileThreshold != 0 {
+		cfg.SmallFileThreshold = oCfg.SmallFileThreshold
+	}
+	return cfg
+}
+
 // CreateBlockStoreFromConfig creates a block store from type and dynamic config.
 func CreateBlockStoreFromConfig(ctx context.Context, storeType string, cfg interface {
 	GetConfig() (map[string]any, error)
@@ -272,51 +307,53 @@ func CreateBlockStoreFromConfig(ctx context.Context, storeType string, cfg inter
 		return blockfs.New(blockfs.Config{BasePath: path})
 
 	case "s3":
-		bucket, ok := config["bucket"].(string)
-		if !ok || bucket == "" {
-			return nil, fmt.Errorf("s3 payload store requires bucket")
-		}
-
-		region := "us-east-1"
-		if r, ok := config["region"].(string); ok && r != "" {
-			region = r
-		}
-
-		var s3Opts []func(*awsconfig.LoadOptions) error
-		s3Opts = append(s3Opts, awsconfig.WithRegion(region))
-
-		endpoint, _ := config["endpoint"].(string)
-		accessKey, _ := config["access_key_id"].(string)
-		secretKey, _ := config["secret_access_key"].(string)
-		if accessKey != "" && secretKey != "" {
-			s3Opts = append(s3Opts, awsconfig.WithCredentialsProvider(
-				credentials.NewStaticCredentialsProvider(accessKey, secretKey, ""),
-			))
-		}
-
-		awsCfg, err := awsconfig.LoadDefaultConfig(ctx, s3Opts...)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load AWS config: %w", err)
-		}
-
-		var s3Client *s3.Client
-		if endpoint != "" {
-			s3Client = s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-				o.BaseEndpoint = aws.String(endpoint)
-				o.UsePathStyle = true // Required for localstack/MinIO
-			})
-		} else {
-			s3Client = s3.NewFromConfig(awsCfg)
-		}
-
-		return blocks3.New(s3Client, blocks3.Config{
-			Bucket: bucket,
-			Region: region,
-		}), nil
+		return createS3BlockStore(ctx, config)
 
 	default:
 		return nil, fmt.Errorf("unsupported payload store type: %s", storeType)
 	}
+}
+
+// createS3BlockStore creates an S3-backed block store from a config map.
+func createS3BlockStore(ctx context.Context, config map[string]any) (blockstore.BlockStore, error) {
+	bucket, ok := config["bucket"].(string)
+	if !ok || bucket == "" {
+		return nil, fmt.Errorf("s3 payload store requires bucket")
+	}
+
+	region := stringOrDefault(config, "region", "us-east-1")
+
+	s3Opts := []func(*awsconfig.LoadOptions) error{
+		awsconfig.WithRegion(region),
+	}
+
+	endpoint, _ := config["endpoint"].(string)
+	accessKey, _ := config["access_key_id"].(string)
+	secretKey, _ := config["secret_access_key"].(string)
+	if accessKey != "" && secretKey != "" {
+		s3Opts = append(s3Opts, awsconfig.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(accessKey, secretKey, ""),
+		))
+	}
+
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, s3Opts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load AWS config: %w", err)
+	}
+
+	var clientOpts []func(*s3.Options)
+	if endpoint != "" {
+		clientOpts = append(clientOpts, func(o *s3.Options) {
+			o.BaseEndpoint = aws.String(endpoint)
+			o.UsePathStyle = true // Required for localstack/MinIO
+		})
+	}
+
+	s3Client := s3.NewFromConfig(awsCfg, clientOpts...)
+	return blocks3.New(s3Client, blocks3.Config{
+		Bucket: bucket,
+		Region: region,
+	}), nil
 }
 
 // LoadSharesFromStore loads shares from the database into the runtime.

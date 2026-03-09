@@ -107,25 +107,17 @@ func (m *Offloader) startBlockUpload(ctx context.Context,
 
 	// Check if already uploaded (deduplication)
 	key := blockKey{chunkIdx: chunkIdx, blockIdx: blockIdx}
-	state.blocksMu.Lock()
-	if state.uploaded[key] {
-		state.blocksMu.Unlock()
-		blockPool.Put(dataPtr) // Return unused buffer
+	if !state.markInProgress(key) {
+		blockPool.Put(dataPtr)
 		return
 	}
-	state.uploaded[key] = true // Mark as in-progress
-	state.blocksMu.Unlock()
 
-	// Try to acquire semaphore slot (non-blocking)
-	// If all slots are taken, skip eager upload - block will be uploaded during Flush
+	// Try to acquire semaphore slot (non-blocking).
+	// If all slots are taken, skip eager upload -- block will be uploaded during Flush.
 	select {
 	case m.uploadSem <- struct{}{}:
-		// Got slot, proceed with upload
 	default:
-		// All slots taken, skip eager upload
-		state.blocksMu.Lock()
-		state.uploaded[key] = false // Unmark so Flush will upload it
-		state.blocksMu.Unlock()
+		state.revertUploaded(key)
 		blockPool.Put(dataPtr)
 		return
 	}
@@ -197,9 +189,7 @@ func (m *Offloader) startBlockUpload(ctx context.Context,
 			state.errorsMu.Unlock()
 
 			// Mark as not uploaded so it can be retried
-			state.blocksMu.Lock()
-			state.uploaded[key] = false
-			state.blocksMu.Unlock()
+			state.revertUploaded(key)
 			return
 		}
 
@@ -237,18 +227,10 @@ func (m *Offloader) uploadRemainingBlocks(ctx context.Context, payloadID string)
 	// Filter out blocks already uploaded by eager upload.
 	var blocksToUpload []cache.PendingBlock
 	for _, blk := range pending {
-		// Check if already uploaded by eager upload
-		if state != nil {
-			key := blockKey{chunkIdx: blk.ChunkIndex, blockIdx: blk.BlockIndex}
-			state.blocksMu.Lock()
-			alreadyUploaded := state.uploaded[key]
-			state.blocksMu.Unlock()
-			if alreadyUploaded {
-				// Mark as uploaded in cache since eager upload succeeded.
-				// Use generation from the pending block snapshot.
-				m.cache.MarkBlockUploaded(ctx, payloadID, blk.ChunkIndex, blk.BlockIndex, blk.Generation)
-				continue
-			}
+		if state != nil && state.isUploaded(blockKey{chunkIdx: blk.ChunkIndex, blockIdx: blk.BlockIndex}) {
+			// Mark as uploaded in cache since eager upload succeeded.
+			m.cache.MarkBlockUploaded(ctx, payloadID, blk.ChunkIndex, blk.BlockIndex, blk.Generation)
+			continue
 		}
 		blocksToUpload = append(blocksToUpload, blk)
 	}
@@ -336,10 +318,7 @@ func (m *Offloader) uploadRemainingBlocks(ctx context.Context, payloadID string)
 
 		// Also mark in state.uploaded to prevent future flushes from trying
 		if state != nil {
-			key := blockKey{chunkIdx: chunkIdx, blockIdx: blockIdx}
-			state.blocksMu.Lock()
-			state.uploaded[key] = true
-			state.blocksMu.Unlock()
+			state.markUploaded(blockKey{chunkIdx: chunkIdx, blockIdx: blockIdx})
 		}
 
 		wg.Add(1)
@@ -372,10 +351,7 @@ func (m *Offloader) uploadRemainingBlocks(ctx context.Context, payloadID string)
 				// Revert block to Pending so it can be retried
 				m.cache.MarkBlockPending(ctx, payloadID, chunkIdx, blockIdx)
 				if state != nil {
-					key := blockKey{chunkIdx: chunkIdx, blockIdx: blockIdx}
-					state.blocksMu.Lock()
-					state.uploaded[key] = false
-					state.blocksMu.Unlock()
+					state.revertUploaded(blockKey{chunkIdx: chunkIdx, blockIdx: blockIdx})
 				}
 				return
 			}

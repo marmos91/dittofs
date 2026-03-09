@@ -32,6 +32,55 @@ func (m *Offloader) getUploadState(payloadID string) *fileUploadState {
 	return m.uploads[payloadID]
 }
 
+// isUploaded returns true if the block has been uploaded.
+func (s *fileUploadState) isUploaded(key blockKey) bool {
+	s.blocksMu.Lock()
+	defer s.blocksMu.Unlock()
+	return s.uploaded[key]
+}
+
+// markInProgress atomically checks and marks a block as in-progress.
+// Returns false if the block was already marked (skip duplicate work).
+func (s *fileUploadState) markInProgress(key blockKey) bool {
+	s.blocksMu.Lock()
+	defer s.blocksMu.Unlock()
+	if s.uploaded[key] {
+		return false
+	}
+	s.uploaded[key] = true
+	return true
+}
+
+// markUploaded marks a block as uploaded (without recording a hash).
+func (s *fileUploadState) markUploaded(key blockKey) {
+	s.blocksMu.Lock()
+	s.uploaded[key] = true
+	s.blocksMu.Unlock()
+}
+
+// revertUploaded marks a block as not uploaded (without touching hashes).
+func (s *fileUploadState) revertUploaded(key blockKey) {
+	s.blocksMu.Lock()
+	s.uploaded[key] = false
+	s.blocksMu.Unlock()
+}
+
+// setBlockUploaded marks a block as uploaded and records its hash.
+func (s *fileUploadState) setBlockUploaded(key blockKey, hash [32]byte) {
+	s.blocksMu.Lock()
+	s.uploaded[key] = true
+	s.blockHashes[key] = hash
+	s.blocksMu.Unlock()
+}
+
+// revertBlock marks a block as not uploaded and removes its hash.
+func (s *fileUploadState) revertBlock(key blockKey) {
+	s.blocksMu.Lock()
+	s.uploaded[key] = false
+	delete(s.blockHashes, key)
+	s.blocksMu.Unlock()
+}
+
 // handleUploadSuccess performs common post-upload tasks:
 // 1. Registers block in ObjectStore for deduplication
 // 2. Tracks block hash for finalization
@@ -62,13 +111,12 @@ func (m *Offloader) handleUploadSuccess(ctx context.Context, payloadID string, c
 			"error", err)
 	}
 
-	// Track block hash for finalization
+	key := blockKey{chunkIdx: chunkIdx, blockIdx: blockIdx}
 	state := m.getUploadState(payloadID)
+
+	// Track block hash for finalization
 	if state != nil {
-		key := blockKey{chunkIdx: chunkIdx, blockIdx: blockIdx}
-		state.blocksMu.Lock()
-		state.blockHashes[key] = hash
-		state.blocksMu.Unlock()
+		state.setBlockUploaded(key, hash)
 	}
 
 	// Mark block as uploaded so it can be evicted.
@@ -82,13 +130,8 @@ func (m *Offloader) handleUploadSuccess(ctx context.Context, payloadID string, c
 			"blockIdx", blockIdx,
 			"generation", generation)
 
-		// Revert uploaded tracking so next flush retries this block
 		if state != nil {
-			key := blockKey{chunkIdx: chunkIdx, blockIdx: blockIdx}
-			state.blocksMu.Lock()
-			state.uploaded[key] = false
-			delete(state.blockHashes, key)
-			state.blocksMu.Unlock()
+			state.revertBlock(key)
 		}
 		return false
 	}
@@ -136,11 +179,13 @@ func (m *Offloader) invokeFinalizationCallback(ctx context.Context, payloadID st
 	callback := m.onFinalized
 	m.mu.RUnlock()
 
-	if callback != nil {
-		hashes := m.getOrderedBlockHashes(payloadID)
-		if len(hashes) > 0 {
-			callback(ctx, payloadID, hashes)
-		}
+	if callback == nil {
+		return
+	}
+
+	hashes := m.getOrderedBlockHashes(payloadID)
+	if len(hashes) > 0 {
+		callback(ctx, payloadID, hashes)
 	}
 }
 

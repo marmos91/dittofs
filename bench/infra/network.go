@@ -12,7 +12,7 @@ type networkResources struct {
 }
 
 // createNetwork provisions the VPC and private network.
-func createNetwork(ctx *pulumi.Context, _ infraConfig) (*networkResources, error) {
+func createNetwork(ctx *pulumi.Context) (*networkResources, error) {
 	vpc, err := network.NewVpc(ctx, "bench-vpc", &network.VpcArgs{
 		Name: pulumi.String("dittofs-bench"),
 		Tags: pulumi.StringArray{pulumi.String("dittofs-bench")},

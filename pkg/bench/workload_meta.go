@@ -25,10 +25,9 @@ func runMetadata(ctx context.Context, cfg Config, dir string, progress ProgressF
 		names[i] = filepath.Join(metaDir, fmt.Sprintf("file_%06d", i))
 	}
 
-	totalPhases := 3
+	const totalPhases = 3
 	var (
 		latencies  = make([]time.Duration, 0, cfg.MetaFiles*totalPhases)
-		totalOps   int64
 		totalBytes int64
 		errors     int64
 	)
@@ -48,7 +47,6 @@ func runMetadata(ctx context.Context, cfg Config, dir string, progress ProgressF
 		lat := time.Since(opStart)
 
 		latencies = append(latencies, lat)
-		totalOps++
 		totalBytes += int64(len(data))
 		if err != nil {
 			errors++
@@ -72,7 +70,6 @@ func runMetadata(ctx context.Context, cfg Config, dir string, progress ProgressF
 		lat := time.Since(opStart)
 
 		latencies = append(latencies, lat)
-		totalOps++
 		if err != nil {
 			errors++
 		}
@@ -96,7 +93,6 @@ func runMetadata(ctx context.Context, cfg Config, dir string, progress ProgressF
 		lat := time.Since(opStart)
 
 		latencies = append(latencies, lat)
-		totalOps++
 		if err != nil {
 			errors++
 		}
@@ -107,22 +103,20 @@ func runMetadata(ctx context.Context, cfg Config, dir string, progress ProgressF
 		}
 	}
 
-	// Clean up the metadata directory.
-	os.Remove(metaDir) //nolint:errcheck
+	_ = os.Remove(metaDir)
 
 	elapsed := time.Since(start)
-	stats := computePercentiles(latencies)
+	totalOps := int64(len(latencies))
 
-	return &WorkloadResult{
-		Workload:     Metadata,
-		OpsPerSec:    float64(totalOps) / elapsed.Seconds(),
-		LatencyP50Us: stats.P50,
-		LatencyP95Us: stats.P95,
-		LatencyP99Us: stats.P99,
-		LatencyAvgUs: stats.Avg,
-		TotalOps:     totalOps,
-		TotalBytes:   totalBytes,
-		Errors:       errors,
-		Duration:     elapsed,
-	}, nil
+	wr := &WorkloadResult{
+		Workload:   Metadata,
+		OpsPerSec:  float64(totalOps) / elapsed.Seconds(),
+		TotalOps:   totalOps,
+		TotalBytes: totalBytes,
+		Errors:     errors,
+		Duration:   elapsed,
+	}
+	applyLatencyStats(wr, latencies)
+
+	return wr, nil
 }

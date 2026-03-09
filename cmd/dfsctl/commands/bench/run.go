@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/marmos91/dittofs/pkg/bench"
@@ -63,9 +64,9 @@ func runBench(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid --block-size: %w", err)
 	}
 
-	dur, err := parseGoDuration(runDuration)
+	dur, err := time.ParseDuration(runDuration)
 	if err != nil {
-		return fmt.Errorf("invalid --duration: %w", err)
+		return fmt.Errorf("invalid --duration %q (e.g., 60s, 5m, 1h): %w", runDuration, err)
 	}
 
 	cfg := bench.Config{

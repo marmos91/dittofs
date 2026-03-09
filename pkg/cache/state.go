@@ -137,12 +137,23 @@ func clearCoverageBeyond(coverage []uint64, offset uint32) {
 	}
 
 	startBit := offset / CoverageGranularity
-	for bit := startBit; bit < uint32(len(coverage))*CoverageBitsPerWord; bit++ {
-		wordIdx := bit / CoverageBitsPerWord
-		bitInWord := bit % CoverageBitsPerWord
-		if wordIdx < uint32(len(coverage)) {
-			coverage[wordIdx] &^= 1 << bitInWord
-		}
+	firstWord := startBit / CoverageBitsPerWord
+	bitInWord := startBit % CoverageBitsPerWord
+
+	if firstWord >= uint32(len(coverage)) {
+		return
+	}
+
+	// Clear remaining bits in the first partial word
+	if bitInWord > 0 {
+		mask := (uint64(1) << bitInWord) - 1 // keep bits below startBit
+		coverage[firstWord] &= mask
+		firstWord++
+	}
+
+	// Zero all subsequent words
+	for i := firstWord; i < uint32(len(coverage)); i++ {
+		coverage[i] = 0
 	}
 }
 
@@ -267,13 +278,13 @@ func entryPendingSize(entry *fileEntry) uint64 {
 // Use this for debugging, cache inspection, or iterating over cached files.
 // The returned order is not guaranteed.
 //
-// Returns empty slice if cache is closed.
+// Returns nil if cache is closed.
 func (c *Cache) ListFiles() []string {
 	c.globalMu.RLock()
 	defer c.globalMu.RUnlock()
 
 	if c.closed {
-		return []string{}
+		return nil
 	}
 
 	result := make([]string, 0, len(c.files))
@@ -290,13 +301,13 @@ func (c *Cache) ListFiles() []string {
 // covered by any block. This is used during crash recovery to reconcile
 // metadata with actual recovered data.
 //
-// Returns empty map if cache is closed.
+// Returns nil if cache is closed.
 func (c *Cache) ListFilesWithSizes() map[string]uint64 {
 	c.globalMu.RLock()
 	defer c.globalMu.RUnlock()
 
 	if c.closed {
-		return map[string]uint64{}
+		return nil
 	}
 
 	result := make(map[string]uint64, len(c.files))

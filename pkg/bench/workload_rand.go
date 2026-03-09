@@ -9,6 +9,15 @@ import (
 	"time"
 )
 
+// closeFiles closes all non-nil files, ignoring errors. Intended for use with defer.
+func closeFiles(files []*os.File) {
+	for _, f := range files {
+		if f != nil {
+			_ = f.Close()
+		}
+	}
+}
+
 // runRandWrite performs random writes of BlockSize bytes for Duration.
 // Pre-creates one file per thread, then seeks randomly and writes.
 func runRandWrite(ctx context.Context, cfg Config, dir string, progress ProgressFunc) (*WorkloadResult, error) {
@@ -26,13 +35,7 @@ func runRandWrite(ctx context.Context, cfg Config, dir string, progress Progress
 		}
 		files[t] = f
 	}
-	defer func() {
-		for _, f := range files {
-			if f != nil {
-				_ = f.Close()
-			}
-		}
-	}()
+	defer closeFiles(files)
 
 	buf := make([]byte, cfg.BlockSize)
 	for i := range buf {
@@ -81,20 +84,18 @@ func runRandWrite(ctx context.Context, cfg Config, dir string, progress Progress
 	}
 
 	elapsed := time.Since(start)
-	stats := computePercentiles(latencies)
 
-	return &WorkloadResult{
-		Workload:     RandWrite,
-		IOPS:         float64(len(latencies)) / elapsed.Seconds(),
-		LatencyP50Us: stats.P50,
-		LatencyP95Us: stats.P95,
-		LatencyP99Us: stats.P99,
-		LatencyAvgUs: stats.Avg,
-		TotalOps:     int64(len(latencies)),
-		TotalBytes:   totalBytes,
-		Errors:       errors,
-		Duration:     elapsed,
-	}, nil
+	wr := &WorkloadResult{
+		Workload:   RandWrite,
+		IOPS:       float64(len(latencies)) / elapsed.Seconds(),
+		TotalOps:   int64(len(latencies)),
+		TotalBytes: totalBytes,
+		Errors:     errors,
+		Duration:   elapsed,
+	}
+	applyLatencyStats(wr, latencies)
+
+	return wr, nil
 }
 
 // runRandRead performs random reads of BlockSize bytes for Duration.
@@ -110,13 +111,7 @@ func runRandRead(ctx context.Context, cfg Config, dir string, progress ProgressF
 		disableCache(f)
 		files[t] = f
 	}
-	defer func() {
-		for _, f := range files {
-			if f != nil {
-				_ = f.Close()
-			}
-		}
-	}()
+	defer closeFiles(files)
 
 	buf := make([]byte, cfg.BlockSize)
 	maxOffset := max(cfg.FileSize-cfg.BlockSize, 0)
@@ -161,18 +156,16 @@ func runRandRead(ctx context.Context, cfg Config, dir string, progress ProgressF
 	}
 
 	elapsed := time.Since(start)
-	stats := computePercentiles(latencies)
 
-	return &WorkloadResult{
-		Workload:     RandRead,
-		IOPS:         float64(len(latencies)) / elapsed.Seconds(),
-		LatencyP50Us: stats.P50,
-		LatencyP95Us: stats.P95,
-		LatencyP99Us: stats.P99,
-		LatencyAvgUs: stats.Avg,
-		TotalOps:     int64(len(latencies)),
-		TotalBytes:   totalBytes,
-		Errors:       errors,
-		Duration:     elapsed,
-	}, nil
+	wr := &WorkloadResult{
+		Workload:   RandRead,
+		IOPS:       float64(len(latencies)) / elapsed.Seconds(),
+		TotalOps:   int64(len(latencies)),
+		TotalBytes: totalBytes,
+		Errors:     errors,
+		Duration:   elapsed,
+	}
+	applyLatencyStats(wr, latencies)
+
+	return wr, nil
 }

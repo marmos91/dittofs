@@ -89,28 +89,15 @@ func (c *Cache) evictUploadedBlocks(entry *fileEntry) uint64 {
 
 	for chunkIdx, chunk := range entry.chunks {
 		for blockIdx, blk := range chunk.blocks {
-			if blk.state != BlockStateUploaded {
+			if blk.state != BlockStateUploaded || blk.data == nil {
 				continue
 			}
 
-			if blk.data == nil {
-				continue
-			}
-
-			// Evict by clearing the data buffer.
-			// Subtract BlockSize since that's what we track for memory allocation.
 			evicted += BlockSize
 			atomicSubtract(&c.totalSize, BlockSize)
-
-			blk.data = nil
-			blk.coverage = nil
-			blk.dataSize = 0
-
-			// Remove the block entry entirely
 			delete(chunk.blocks, blockIdx)
 		}
 
-		// Clean up empty chunks
 		if len(chunk.blocks) == 0 {
 			delete(entry.chunks, chunkIdx)
 		}

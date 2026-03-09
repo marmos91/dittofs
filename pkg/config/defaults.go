@@ -86,44 +86,29 @@ func applyControlPlaneDefaults(cfg *api.APIConfig) {
 }
 
 // applyCacheDefaults sets cache defaults.
-// Cache path is required (WAL is mandatory for crash recovery).
+// Cache path has no default and is validated as required.
 func applyCacheDefaults(cfg *CacheConfig) {
-	// Default size to 1GB
 	if cfg.Size == 0 {
-		cfg.Size = bytesize.ByteSize(bytesize.GiB) // 1 GiB
+		cfg.Size = bytesize.ByteSize(bytesize.GiB)
 	}
-	// Path has no default - it's required and must be configured by user
 }
 
-// applyOffloaderDefaults sets offloader defaults for good S3 performance out of the box.
-// ParallelUploads, ParallelDownloads, and PrefetchBlocks default to 0 (sentinel),
-// which tells offloader.New() to auto-scale based on CPU count and cache size.
-func applyOffloaderDefaults(cfg *OffloaderConfig) {
-	// ParallelUploads: 0 = auto-scale (NumCPU*4, floor=16, cap=128)
-	// ParallelDownloads: 0 = auto-scale (NumCPU*2, floor=4, cap=32)
-	// PrefetchBlocks: 0 = auto-scale (cacheSize/BlockSize/4, floor=8, cap=64)
-	// SmallFileThreshold defaults to 0 (disabled) - all flushes are async.
-	// WAL-backed cache ensures durability. Set to e.g. "4MiB" to re-enable
-	// synchronous flush for small files if needed.
-}
+// applyOffloaderDefaults is intentionally a no-op. All offloader fields default
+// to 0 (sentinel), which tells offloader.New() to auto-scale based on CPU count
+// and cache size. Kept for consistency with the other apply*Defaults functions.
+func applyOffloaderDefaults(_ *OffloaderConfig) {}
 
 // applyAdminDefaults sets admin user defaults.
 func applyAdminDefaults(cfg *AdminConfig) {
-	// Default username is "admin"
 	if cfg.Username == "" {
 		cfg.Username = "admin"
 	}
-	// Email and PasswordHash have no defaults - they're optional or set during init
 }
 
 // applyLockDefaults sets lock manager defaults.
 func applyLockDefaults(cfg *LockConfig) {
-	// LeaseBreakTimeout defaults to 35 seconds (SMB2 spec maximum, MS-SMB2 2.2.23)
-	// This is the Windows default and provides maximum time for SMB clients
-	// to acknowledge lease breaks and flush cached data.
-	// For CI tests, set DITTOFS_LOCK_LEASE_BREAK_TIMEOUT=5s for faster execution.
 	if cfg.LeaseBreakTimeout == 0 {
-		cfg.LeaseBreakTimeout = 35 * time.Second
+		cfg.LeaseBreakTimeout = 35 * time.Second // SMB2 spec maximum (MS-SMB2 2.2.23)
 	}
 }
 
@@ -134,30 +119,18 @@ func applyLockDefaults(cfg *LockConfig) {
 //   - DITTOFS_KERBEROS_KEYTAB overrides KeytabPath (DITTOFS_KERBEROS_KEYTAB_PATH for compat)
 //   - DITTOFS_KERBEROS_PRINCIPAL overrides ServicePrincipal (DITTOFS_KERBEROS_SERVICE_PRINCIPAL for compat)
 func applyKerberosDefaults(cfg *KerberosConfig) {
-	// Enabled defaults to false (opt-in for Kerberos)
-	// No need to set, zero value is false
-
-	// Default krb5.conf path
 	if cfg.Krb5Conf == "" {
 		cfg.Krb5Conf = "/etc/krb5.conf"
 	}
-
-	// Default max clock skew: 5 minutes (standard Kerberos default)
 	if cfg.MaxClockSkew == 0 {
 		cfg.MaxClockSkew = 5 * time.Minute
 	}
-
-	// Default context TTL: 8 hours (typical workday)
 	if cfg.ContextTTL == 0 {
 		cfg.ContextTTL = 8 * time.Hour
 	}
-
-	// Default max concurrent contexts
 	if cfg.MaxContexts == 0 {
 		cfg.MaxContexts = 10000
 	}
-
-	// Identity mapping defaults
 	if cfg.IdentityMapping.Strategy == "" {
 		cfg.IdentityMapping.Strategy = "static"
 	}

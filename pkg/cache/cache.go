@@ -91,13 +91,12 @@ type Cache struct {
 // Parameters:
 //   - maxSize: Maximum total cache size in bytes. Use 0 for unlimited.
 func New(maxSize uint64) *Cache {
-	c := &Cache{
+	return &Cache{
 		files:          make(map[string]*fileEntry),
 		maxSize:        maxSize,
 		maxPendingSize: scalePendingSize(maxSize),
 		pendingCond:    sync.NewCond(&sync.Mutex{}),
 	}
-	return c
 }
 
 // NewWithWal creates a new cache with WAL persistence for crash recovery.
@@ -147,59 +146,48 @@ func (c *Cache) recoverFromWal() error {
 		return err
 	}
 
-	for _, entry := range result.Entries {
-		fileEntry := c.getFileEntry(entry.PayloadID)
-		fileEntry.mu.Lock()
+	for _, walEntry := range result.Entries {
+		fe := c.getFileEntry(walEntry.PayloadID)
+		fe.mu.Lock()
 
-		chunk, exists := fileEntry.chunks[entry.ChunkIdx]
+		chunk, exists := fe.chunks[walEntry.ChunkIdx]
 		if !exists {
-			chunk = &chunkEntry{
-				blocks: make(map[uint32]*blockBuffer),
+			chunk = &chunkEntry{blocks: make(map[uint32]*blockBuffer)}
+			fe.chunks[walEntry.ChunkIdx] = chunk
+		}
+
+		wasUploaded := result.UploadedBlocks[wal.BlockKey{
+			PayloadID: walEntry.PayloadID,
+			ChunkIdx:  walEntry.ChunkIdx,
+			BlockIdx:  walEntry.BlockIdx,
+		}]
+
+		blk, exists := chunk.blocks[walEntry.BlockIdx]
+		if !exists {
+			initialState := BlockStatePending
+			if wasUploaded {
+				initialState = BlockStateUploaded
 			}
-			fileEntry.chunks[entry.ChunkIdx] = chunk
-		}
-
-		// Check if this block was already uploaded to S3
-		blockKey := wal.BlockKey{
-			PayloadID: entry.PayloadID,
-			ChunkIdx:  entry.ChunkIdx,
-			BlockIdx:  entry.BlockIdx,
-		}
-		wasUploaded := result.UploadedBlocks[blockKey]
-
-		// Determine initial state: Uploaded if already in S3, Pending otherwise
-		initialState := BlockStatePending
-		if wasUploaded {
-			initialState = BlockStateUploaded
-		}
-
-		// Get or create block buffer
-		block, exists := chunk.blocks[entry.BlockIdx]
-		if !exists {
-			block = &blockBuffer{
+			blk = &blockBuffer{
 				data:     make([]byte, BlockSize),
 				coverage: newCoverageBitmap(),
 				state:    initialState,
 			}
-			chunk.blocks[entry.BlockIdx] = block
-			// Track BlockSize for new block buffers (memory allocation tracking)
+			chunk.blocks[walEntry.BlockIdx] = blk
 			c.totalSize.Add(BlockSize)
-			// Only count against pendingSize if block is Pending (needs upload)
 			if initialState == BlockStatePending {
 				c.pendingSize.Add(BlockSize)
 			}
 		}
 
-		// Copy data to block buffer at correct offset
-		copy(block.data[entry.OffsetInBlock:], entry.Data)
-		markCoverage(block.coverage, entry.OffsetInBlock, uint32(len(entry.Data)))
+		copy(blk.data[walEntry.OffsetInBlock:], walEntry.Data)
+		markCoverage(blk.coverage, walEntry.OffsetInBlock, uint32(len(walEntry.Data)))
 
-		// Update data size
-		if end := entry.OffsetInBlock + uint32(len(entry.Data)); end > block.dataSize {
-			block.dataSize = end
+		if end := walEntry.OffsetInBlock + uint32(len(walEntry.Data)); end > blk.dataSize {
+			blk.dataSize = end
 		}
 
-		fileEntry.mu.Unlock()
+		fe.mu.Unlock()
 	}
 
 	return nil

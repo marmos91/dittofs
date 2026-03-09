@@ -158,45 +158,38 @@ func (c *Cache) MarkBlockUploaded(ctx context.Context, payloadID string, chunkId
 		return false
 	}
 
-	if blk.state == BlockStatePending || blk.state == BlockStateReadyForUpload || blk.state == BlockStateUploading {
-		blk.state = BlockStateUploaded
-		// Clear upload cancel func since upload is complete
-		blk.uploadCancel = nil
-		// Decrement pending size and wake writers blocked on backpressure.
-		// Must hold pendingCond.L around the state change + Broadcast to prevent
-		// lost wakeups (writer could enter Wait between our subtract and Broadcast).
-		c.pendingCond.L.Lock()
-		atomicSubtract(&c.pendingSize, BlockSize)
-		c.pendingCond.Broadcast()
-		c.pendingCond.L.Unlock()
-
-		// Signal writers blocked on backpressure that pending space has been freed.
-		// This wakes up any goroutines waiting in waitForPendingDrain().
-		c.pendingCond.Broadcast()
-
-		// If buffer was detached (nil), also decrement totalSize since memory is released
-		if blk.data == nil {
-			atomicSubtract(&c.totalSize, BlockSize)
-		}
-
-		// Record uploaded state in WAL for crash recovery.
-		// On recovery, blocks with this marker won't be re-uploaded.
-		//
-		// Safety: We release the lock during WAL write to avoid holding it during I/O.
-		// This is safe because:
-		// 1. The state transition to Uploaded is already complete
-		// 2. The WAL append is idempotent (duplicate markers are harmless)
-		// 3. We don't access block state after re-acquiring the lock
-		if c.persister != nil {
-			entry.mu.Unlock()
-			_ = c.persister.AppendBlockUploaded(payloadID, chunkIdx, blockIdx)
-			entry.mu.Lock()
-		}
-
-		return true
+	if blk.state != BlockStatePending && blk.state != BlockStateReadyForUpload && blk.state != BlockStateUploading {
+		return false
 	}
 
-	return false
+	blk.state = BlockStateUploaded
+	blk.uploadCancel = nil
+
+	// Decrement pending size and wake writers blocked on backpressure.
+	// Must hold pendingCond.L around the subtract + Broadcast to prevent
+	// lost wakeups (writer could enter Wait between our subtract and Broadcast).
+	c.pendingCond.L.Lock()
+	atomicSubtract(&c.pendingSize, BlockSize)
+	c.pendingCond.Broadcast()
+	c.pendingCond.L.Unlock()
+
+	// If buffer was detached (nil), also decrement totalSize since memory is released
+	if blk.data == nil {
+		atomicSubtract(&c.totalSize, BlockSize)
+	}
+
+	// Record uploaded state in WAL for crash recovery.
+	// On recovery, blocks with this marker won't be re-uploaded.
+	// We release the lock during WAL write to avoid holding it during I/O.
+	// This is safe because the state transition is already complete and
+	// the WAL append is idempotent.
+	if c.persister != nil {
+		entry.mu.Unlock()
+		_ = c.persister.AppendBlockUploaded(payloadID, chunkIdx, blockIdx)
+		entry.mu.Lock()
+	}
+
+	return true
 }
 
 // MarkBlockPending reverts a block from Uploading state back to Pending.
