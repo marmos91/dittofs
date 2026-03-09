@@ -162,9 +162,9 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 		return errors.New("cache configuration not set - call SetCacheConfig first")
 	}
 
-	payloadStores, err := rt.store.ListPayloadStores(ctx)
+	remoteBlockStores, err := rt.store.ListBlockStores(ctx, models.BlockStoreKindRemote)
 	if err != nil {
-		return fmt.Errorf("failed to list payload stores: %w", err)
+		return fmt.Errorf("failed to list remote block stores: %w", err)
 	}
 
 	cacheDir := filepath.Join(cacheConfig.Path, "blocks")
@@ -196,16 +196,16 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 
 	logger.Info("BlockCache initialized", "path", cacheDir, "max_size", cacheConfig.Size)
 
-	// Create block store from config if payload stores are configured.
-	// When no payload stores exist, blockStore stays nil (local-only mode).
+	// Create block store from config if remote block stores are configured.
+	// When no remote block stores exist, blockStore stays nil (local-only mode).
 	var blockStore blockstore.BlockStore // nil for local-only mode
-	if len(payloadStores) > 0 {
-		payloadStoreCfg := payloadStores[0]
-		blockStore, err = CreateBlockStoreFromConfig(ctx, payloadStoreCfg.Type, payloadStoreCfg)
+	if len(remoteBlockStores) > 0 {
+		remoteStoreCfg := remoteBlockStores[0]
+		blockStore, err = CreateBlockStoreFromConfig(ctx, remoteStoreCfg.Type, remoteStoreCfg)
 		if err != nil {
 			return fmt.Errorf("failed to create block store: %w", err)
 		}
-		logger.Info("Loaded payload store", "name", payloadStoreCfg.Name, "type", payloadStoreCfg.Type)
+		logger.Info("Loaded remote block store", "name", remoteStoreCfg.Name, "type", remoteStoreCfg.Type)
 	}
 
 	localOnly := blockStore == nil

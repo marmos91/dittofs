@@ -267,7 +267,7 @@ type ControlPlaneBackup struct {
 	Groups         []GroupBackup                 `json:"groups"`
 	Shares         []ShareBackup                 `json:"shares"`
 	MetadataStores []*models.MetadataStoreConfig `json:"metadata_stores"`
-	PayloadStores  []*models.PayloadStoreConfig  `json:"payload_stores"`
+	BlockStores    []*models.BlockStoreConfig    `json:"block_stores"`
 	Adapters       []*models.AdapterConfig       `json:"adapters"`
 	Settings       []*models.Setting             `json:"settings"`
 }
@@ -391,11 +391,16 @@ func exportControlPlane(ctx context.Context, cpStore store.Store) (*ControlPlane
 		return nil, fmt.Errorf("failed to list metadata stores: %w", err)
 	}
 
-	// Export payload stores
-	backup.PayloadStores, err = cpStore.ListPayloadStores(ctx)
+	// Export block stores (local + remote)
+	localBlockStores, err := cpStore.ListBlockStores(ctx, models.BlockStoreKindLocal)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list payload stores: %w", err)
+		return nil, fmt.Errorf("failed to list local block stores: %w", err)
 	}
+	remoteBlockStores, err := cpStore.ListBlockStores(ctx, models.BlockStoreKindRemote)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list remote block stores: %w", err)
+	}
+	backup.BlockStores = append(localBlockStores, remoteBlockStores...)
 
 	// Export adapters
 	backup.Adapters, err = cpStore.ListAdapters(ctx)

@@ -41,7 +41,7 @@ type ShareHandlerStore interface {
 	store.ShareStore
 	store.PermissionStore
 	store.MetadataStoreConfigStore
-	store.PayloadStoreConfigStore
+	store.BlockStoreConfigStore
 	store.UserStore
 	store.GroupStore
 }
@@ -59,34 +59,37 @@ func NewShareHandler(s ShareHandlerStore, rt *runtime.Runtime) *ShareHandler {
 
 // CreateShareRequest is the request body for POST /api/v1/shares.
 type CreateShareRequest struct {
-	Name              string    `json:"name"`
-	MetadataStoreID   string    `json:"metadata_store_id"`
-	PayloadStoreID    string    `json:"payload_store_id"`
-	ReadOnly          bool      `json:"read_only,omitempty"`
-	DefaultPermission string    `json:"default_permission,omitempty"`
-	BlockedOperations *[]string `json:"blocked_operations,omitempty"`
+	Name               string    `json:"name"`
+	MetadataStoreID    string    `json:"metadata_store_id"`
+	LocalBlockStoreID  string    `json:"local_block_store_id"`
+	RemoteBlockStoreID *string   `json:"remote_block_store_id,omitempty"`
+	ReadOnly           bool      `json:"read_only,omitempty"`
+	DefaultPermission  string    `json:"default_permission,omitempty"`
+	BlockedOperations  *[]string `json:"blocked_operations,omitempty"`
 }
 
 // UpdateShareRequest is the request body for PUT /api/v1/shares/{name}.
 type UpdateShareRequest struct {
-	MetadataStoreID   *string   `json:"metadata_store_id,omitempty"`
-	PayloadStoreID    *string   `json:"payload_store_id,omitempty"`
-	ReadOnly          *bool     `json:"read_only,omitempty"`
-	DefaultPermission *string   `json:"default_permission,omitempty"`
-	BlockedOperations *[]string `json:"blocked_operations,omitempty"`
+	MetadataStoreID    *string   `json:"metadata_store_id,omitempty"`
+	LocalBlockStoreID  *string   `json:"local_block_store_id,omitempty"`
+	RemoteBlockStoreID *string   `json:"remote_block_store_id,omitempty"`
+	ReadOnly           *bool     `json:"read_only,omitempty"`
+	DefaultPermission  *string   `json:"default_permission,omitempty"`
+	BlockedOperations  *[]string `json:"blocked_operations,omitempty"`
 }
 
 // ShareResponse is the response body for share endpoints.
 type ShareResponse struct {
-	ID                string    `json:"id"`
-	Name              string    `json:"name"`
-	MetadataStoreID   string    `json:"metadata_store_id"`
-	PayloadStoreID    string    `json:"payload_store_id"`
-	ReadOnly          bool      `json:"read_only"`
-	DefaultPermission string    `json:"default_permission"`
-	BlockedOperations []string  `json:"blocked_operations,omitempty"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ID                 string    `json:"id"`
+	Name               string    `json:"name"`
+	MetadataStoreID    string    `json:"metadata_store_id"`
+	LocalBlockStoreID  string    `json:"local_block_store_id"`
+	RemoteBlockStoreID *string   `json:"remote_block_store_id"`
+	ReadOnly           bool      `json:"read_only"`
+	DefaultPermission  string    `json:"default_permission"`
+	BlockedOperations  []string  `json:"blocked_operations,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 // Create handles POST /api/v1/shares.
@@ -108,8 +111,8 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		BadRequest(w, "Metadata store ID is required")
 		return
 	}
-	if req.PayloadStoreID == "" {
-		BadRequest(w, "Payload store ID is required")
+	if req.LocalBlockStoreID == "" {
+		BadRequest(w, "Local block store ID is required")
 		return
 	}
 
@@ -123,14 +126,28 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate that payload store exists (try by name first, then by ID)
-	payloadStore, err := h.store.GetPayloadStore(r.Context(), req.PayloadStoreID)
+	// Validate that local block store exists (try by name first, then by ID)
+	localBlockStore, err := h.store.GetBlockStore(r.Context(), req.LocalBlockStoreID, models.BlockStoreKindLocal)
 	if err != nil {
-		payloadStore, err = h.store.GetPayloadStoreByID(r.Context(), req.PayloadStoreID)
+		localBlockStore, err = h.store.GetBlockStoreByID(r.Context(), req.LocalBlockStoreID)
 	}
 	if err != nil {
-		BadRequest(w, "Payload store not found: "+req.PayloadStoreID)
+		BadRequest(w, "Local block store not found: "+req.LocalBlockStoreID)
 		return
+	}
+
+	// Validate optional remote block store
+	var remoteBlockStoreID *string
+	if req.RemoteBlockStoreID != nil && *req.RemoteBlockStoreID != "" {
+		remoteStore, remoteErr := h.store.GetBlockStore(r.Context(), *req.RemoteBlockStoreID, models.BlockStoreKindRemote)
+		if remoteErr != nil {
+			remoteStore, remoteErr = h.store.GetBlockStoreByID(r.Context(), *req.RemoteBlockStoreID)
+		}
+		if remoteErr != nil {
+			BadRequest(w, "Remote block store not found: "+*req.RemoteBlockStoreID)
+			return
+		}
+		remoteBlockStoreID = &remoteStore.ID
 	}
 
 	// Set default permission if not provided
@@ -154,14 +171,15 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 	share := &models.Share{
-		ID:                uuid.New().String(),
-		Name:              req.Name,
-		MetadataStoreID:   metaStore.ID,    // Use actual store ID (UUID), not name
-		PayloadStoreID:    payloadStore.ID, // Use actual store ID (UUID), not name
-		ReadOnly:          req.ReadOnly,
-		DefaultPermission: defaultPerm,
-		CreatedAt:         now,
-		UpdatedAt:         now,
+		ID:                 uuid.New().String(),
+		Name:               req.Name,
+		MetadataStoreID:    metaStore.ID,       // Use actual store ID (UUID), not name
+		LocalBlockStoreID:  localBlockStore.ID,  // Use actual store ID (UUID), not name
+		RemoteBlockStoreID: remoteBlockStoreID,  // Nullable
+		ReadOnly:           req.ReadOnly,
+		DefaultPermission:  defaultPerm,
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 
 	// Set blocked operations
@@ -287,8 +305,11 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.MetadataStoreID != nil {
 		share.MetadataStoreID = *req.MetadataStoreID
 	}
-	if req.PayloadStoreID != nil {
-		share.PayloadStoreID = *req.PayloadStoreID
+	if req.LocalBlockStoreID != nil {
+		share.LocalBlockStoreID = *req.LocalBlockStoreID
+	}
+	if req.RemoteBlockStoreID != nil {
+		share.RemoteBlockStoreID = req.RemoteBlockStoreID
 	}
 	if req.ReadOnly != nil {
 		share.ReadOnly = *req.ReadOnly
@@ -589,15 +610,16 @@ func (h *ShareHandler) ListPermissions(w http.ResponseWriter, r *http.Request) {
 // shareToResponse converts a models.Share to ShareResponse.
 func shareToResponse(s *models.Share) ShareResponse {
 	return ShareResponse{
-		ID:                s.ID,
-		Name:              s.Name,
-		MetadataStoreID:   s.MetadataStoreID,
-		PayloadStoreID:    s.PayloadStoreID,
-		ReadOnly:          s.ReadOnly,
-		DefaultPermission: s.DefaultPermission,
-		BlockedOperations: s.GetBlockedOps(),
-		CreatedAt:         s.CreatedAt,
-		UpdatedAt:         s.UpdatedAt,
+		ID:                 s.ID,
+		Name:               s.Name,
+		MetadataStoreID:    s.MetadataStoreID,
+		LocalBlockStoreID:  s.LocalBlockStoreID,
+		RemoteBlockStoreID: s.RemoteBlockStoreID,
+		ReadOnly:           s.ReadOnly,
+		DefaultPermission:  s.DefaultPermission,
+		BlockedOperations:  s.GetBlockedOps(),
+		CreatedAt:          s.CreatedAt,
+		UpdatedAt:          s.UpdatedAt,
 	}
 }
 

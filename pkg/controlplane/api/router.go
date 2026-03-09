@@ -208,16 +208,16 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Delete("/{name}", metadataStoreHandler.Delete)
 			})
 
-			// Payload store management (admin only)
-			r.Route("/payload-stores", func(r chi.Router) {
+			// Block store management (admin only)
+			r.Route("/store/block/{kind}", func(r chi.Router) {
 				r.Use(apiMiddleware.RequireAdmin())
 
-				payloadStoreHandler := handlers.NewPayloadStoreHandler(cpStore)
-				r.Post("/", payloadStoreHandler.Create)
-				r.Get("/", payloadStoreHandler.List)
-				r.Get("/{name}", payloadStoreHandler.Get)
-				r.Put("/{name}", payloadStoreHandler.Update)
-				r.Delete("/{name}", payloadStoreHandler.Delete)
+				blockStoreHandler := handlers.NewBlockStoreHandler(cpStore)
+				r.Post("/", blockStoreHandler.Create)
+				r.Get("/", blockStoreHandler.List)
+				r.Get("/{name}", blockStoreHandler.Get)
+				r.Put("/{name}", blockStoreHandler.Update)
+				r.Delete("/{name}", blockStoreHandler.Delete)
 			})
 
 			// Adapter configuration - split read/write access

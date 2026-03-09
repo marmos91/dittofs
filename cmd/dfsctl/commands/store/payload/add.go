@@ -87,12 +87,12 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		Config: config,
 	}
 
-	store, err := client.CreatePayloadStore(req)
+	store, err := client.CreateBlockStore("remote", req)
 	if err != nil {
-		return fmt.Errorf("failed to create payload store: %w", err)
+		return fmt.Errorf("failed to create block store: %w", err)
 	}
 
-	return cmdutil.PrintResourceWithSuccess(os.Stdout, store, fmt.Sprintf("Payload store '%s' (type: %s) created successfully", store.Name, store.Type))
+	return cmdutil.PrintResourceWithSuccess(os.Stdout, store, fmt.Sprintf("Block store '%s' (type: %s) created successfully", store.Name, store.Type))
 }
 
 func buildPayloadConfig(storeType, jsonConfig, bucket, region, endpoint, accessKey, secretKey string) (any, error) {

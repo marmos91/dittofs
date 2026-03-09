@@ -13,7 +13,8 @@ import (
 var (
 	createName              string
 	createMetadata          string
-	createPayload           string
+	createLocal             string
+	createRemote            string
 	createReadOnly          bool
 	createDefaultPermission string
 	createDescription       string
@@ -42,7 +43,8 @@ Examples:
 func init() {
 	createCmd.Flags().StringVar(&createName, "name", "", "Share name/path (required)")
 	createCmd.Flags().StringVar(&createMetadata, "metadata", "", "Metadata store name (required)")
-	createCmd.Flags().StringVar(&createPayload, "payload", "", "Payload store name (required)")
+	createCmd.Flags().StringVar(&createLocal, "local", "", "Local block store name (required)")
+	createCmd.Flags().StringVar(&createRemote, "remote", "", "Remote block store name (optional)")
 	createCmd.Flags().BoolVar(&createReadOnly, "read-only", false, "Make share read-only")
 	createCmd.Flags().StringVar(&createDefaultPermission, "default-permission", "read-write", "Default permission (none|read|read-write|admin)")
 	createCmd.Flags().StringVar(&createDescription, "description", "", "Share description")
@@ -70,9 +72,18 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	payload := createPayload
-	if payload == "" {
-		payload, err = prompt.InputRequired("Payload store name")
+	local := createLocal
+	if local == "" {
+		local, err = prompt.InputRequired("Local block store name")
+		if err != nil {
+			return cmdutil.HandleAbort(err)
+		}
+	}
+
+	remote := createRemote
+	if remote == "" && createName == "" {
+		// Interactive mode - ask for optional remote store
+		remote, err = prompt.InputOptional("Remote block store name (optional, Enter to skip)")
 		if err != nil {
 			return cmdutil.HandleAbort(err)
 		}
@@ -92,10 +103,13 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	req := &apiclient.CreateShareRequest{
 		Name:              name,
 		MetadataStoreID:   metadata,
-		PayloadStoreID:    payload,
+		LocalBlockStoreID: local,
 		ReadOnly:          createReadOnly,
 		DefaultPermission: defaultPerm,
 		Description:       createDescription,
+	}
+	if remote != "" {
+		req.RemoteBlockStoreID = &remote
 	}
 
 	share, err := client.CreateShare(req)

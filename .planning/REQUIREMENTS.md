@@ -32,11 +32,11 @@
 
 ### Data Model
 
-- [ ] **MODEL-01**: BlockStoreConfig model with ID, Name, Kind (local/remote), Type, Config, CreatedAt
-- [ ] **MODEL-02**: Share model updated with LocalBlockStoreID (mandatory) + RemoteBlockStoreID (nullable)
-- [ ] **MODEL-03**: Migration renames payload_store_configs -> block_store_configs with kind column
-- [ ] **MODEL-04**: Migration splits Share.PayloadStoreID into LocalBlockStoreID + RemoteBlockStoreID
-- [ ] **MODEL-05**: BlockStoreConfigStore interface with CRUD filtered by kind replaces PayloadStoreConfigStore
+- [x] **MODEL-01**: BlockStoreConfig model with ID, Name, Kind (local/remote), Type, Config, CreatedAt
+- [x] **MODEL-02**: Share model updated with LocalBlockStoreID (mandatory) + RemoteBlockStoreID (nullable)
+- [x] **MODEL-03**: Migration renames payload_store_configs -> block_store_configs with kind column
+- [x] **MODEL-04**: Migration splits Share.PayloadStoreID into LocalBlockStoreID + RemoteBlockStoreID
+- [x] **MODEL-05**: BlockStoreConfigStore interface with CRUD filtered by kind replaces PayloadStoreConfigStore
 
 ### API & CLI
 
@@ -134,11 +134,11 @@
 | LOCAL-02 | Phase 43 | Complete |
 | LOCAL-03 | Phase 43 | Complete |
 | LOCAL-04 | Phase 43 | Complete |
-| MODEL-01 | Phase 44 | Pending |
-| MODEL-02 | Phase 44 | Pending |
-| MODEL-03 | Phase 44 | Pending |
-| MODEL-04 | Phase 44 | Pending |
-| MODEL-05 | Phase 44 | Pending |
+| MODEL-01 | Phase 44 | Complete |
+| MODEL-02 | Phase 44 | Complete |
+| MODEL-03 | Phase 44 | Complete |
+| MODEL-04 | Phase 44 | Complete |
+| MODEL-05 | Phase 44 | Complete |
 | API-01 | Phase 44 | Pending |
 | API-02 | Phase 44 | Pending |
 | API-03 | Phase 44 | Pending |

@@ -13,10 +13,11 @@ type MetadataStore struct {
 	Config json.RawMessage `json:"config,omitempty"`
 }
 
-// PayloadStore represents a payload/content store configuration.
-type PayloadStore struct {
+// BlockStore represents a block store configuration.
+type BlockStore struct {
 	ID     string          `json:"id"`
 	Name   string          `json:"name"`
+	Kind   string          `json:"kind"`
 	Type   string          `json:"type"`
 	Config json.RawMessage `json:"config,omitempty"`
 }
@@ -105,32 +106,32 @@ func (c *Client) DeleteMetadataStore(name string) error {
 	return deleteResource(c, resourcePath("/api/v1/metadata-stores/%s", name))
 }
 
-// ListPayloadStores returns all payload stores.
-func (c *Client) ListPayloadStores() ([]PayloadStore, error) {
-	return listResources[PayloadStore](c, "/api/v1/payload-stores")
+// ListBlockStores returns all block stores of a given kind.
+func (c *Client) ListBlockStores(kind string) ([]BlockStore, error) {
+	return listResources[BlockStore](c, fmt.Sprintf("/api/v1/store/block/%s", kind))
 }
 
-// GetPayloadStore returns a payload store by name.
-func (c *Client) GetPayloadStore(name string) (*PayloadStore, error) {
-	return getResource[PayloadStore](c, resourcePath("/api/v1/payload-stores/%s", name))
+// GetBlockStore returns a block store by name and kind.
+func (c *Client) GetBlockStore(kind, name string) (*BlockStore, error) {
+	return getResource[BlockStore](c, fmt.Sprintf("/api/v1/store/block/%s/%s", kind, name))
 }
 
-// CreatePayloadStore creates a new payload store.
-func (c *Client) CreatePayloadStore(req *CreateStoreRequest) (*PayloadStore, error) {
+// CreateBlockStore creates a new block store.
+func (c *Client) CreateBlockStore(kind string, req *CreateStoreRequest) (*BlockStore, error) {
 	configStr, err := serializeConfig(req.Config)
 	if err != nil {
 		return nil, err
 	}
 	apiReq := createStoreAPIRequest{Name: req.Name, Type: req.Type, Config: configStr}
-	var store PayloadStore
-	if err := c.post("/api/v1/payload-stores", apiReq, &store); err != nil {
+	var store BlockStore
+	if err := c.post(fmt.Sprintf("/api/v1/store/block/%s", kind), apiReq, &store); err != nil {
 		return nil, err
 	}
 	return &store, nil
 }
 
-// UpdatePayloadStore updates an existing payload store.
-func (c *Client) UpdatePayloadStore(name string, req *UpdateStoreRequest) (*PayloadStore, error) {
+// UpdateBlockStore updates an existing block store.
+func (c *Client) UpdateBlockStore(kind, name string, req *UpdateStoreRequest) (*BlockStore, error) {
 	apiReq := updateStoreAPIRequest{Type: req.Type}
 	if req.Config != nil {
 		configStr, err := serializeConfig(req.Config)
@@ -139,14 +140,14 @@ func (c *Client) UpdatePayloadStore(name string, req *UpdateStoreRequest) (*Payl
 		}
 		apiReq.Config = &configStr
 	}
-	var store PayloadStore
-	if err := c.put(fmt.Sprintf("/api/v1/payload-stores/%s", name), apiReq, &store); err != nil {
+	var store BlockStore
+	if err := c.put(fmt.Sprintf("/api/v1/store/block/%s/%s", kind, name), apiReq, &store); err != nil {
 		return nil, err
 	}
 	return &store, nil
 }
 
-// DeletePayloadStore deletes a payload store.
-func (c *Client) DeletePayloadStore(name string) error {
-	return deleteResource(c, resourcePath("/api/v1/payload-stores/%s", name))
+// DeleteBlockStore deletes a block store.
+func (c *Client) DeleteBlockStore(kind, name string) error {
+	return deleteResource(c, fmt.Sprintf("/api/v1/store/block/%s/%s", kind, name))
 }

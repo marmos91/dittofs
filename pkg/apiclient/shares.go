@@ -15,24 +15,26 @@ func normalizeShareNameForAPI(name string) string {
 
 // Share represents a share in the system.
 type Share struct {
-	Name              string   `json:"name"`
-	MetadataStoreID   string   `json:"metadata_store_id"`
-	PayloadStoreID    string   `json:"payload_store_id"`
-	ReadOnly          bool     `json:"read_only,omitempty"`
-	DefaultPermission string   `json:"default_permission,omitempty"`
-	Description       string   `json:"description,omitempty"`
-	BlockedOperations []string `json:"blocked_operations,omitempty"`
+	Name               string   `json:"name"`
+	MetadataStoreID    string   `json:"metadata_store_id"`
+	LocalBlockStoreID  string   `json:"local_block_store_id"`
+	RemoteBlockStoreID *string  `json:"remote_block_store_id"`
+	ReadOnly           bool     `json:"read_only,omitempty"`
+	DefaultPermission  string   `json:"default_permission,omitempty"`
+	Description        string   `json:"description,omitempty"`
+	BlockedOperations  []string `json:"blocked_operations,omitempty"`
 }
 
 // CreateShareRequest is the request to create a share.
 type CreateShareRequest struct {
-	Name              string    `json:"name"`
-	MetadataStoreID   string    `json:"metadata_store_id"`
-	PayloadStoreID    string    `json:"payload_store_id"`
-	ReadOnly          bool      `json:"read_only,omitempty"`
-	DefaultPermission string    `json:"default_permission,omitempty"`
-	Description       string    `json:"description,omitempty"`
-	BlockedOperations *[]string `json:"blocked_operations,omitempty"`
+	Name               string    `json:"name"`
+	MetadataStoreID    string    `json:"metadata_store_id"`
+	LocalBlockStoreID  string    `json:"local_block_store_id"`
+	RemoteBlockStoreID *string   `json:"remote_block_store_id,omitempty"`
+	ReadOnly           bool      `json:"read_only,omitempty"`
+	DefaultPermission  string    `json:"default_permission,omitempty"`
+	Description        string    `json:"description,omitempty"`
+	BlockedOperations  *[]string `json:"blocked_operations,omitempty"`
 }
 
 // UpdateShareRequest is the request to update a share.

@@ -39,8 +39,8 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	}
 
 	return cmdutil.RunDeleteWithConfirmation("Payload store", name, removeForce, func() error {
-		if err := client.DeletePayloadStore(name); err != nil {
-			return fmt.Errorf("failed to remove payload store: %w", err)
+		if err := client.DeleteBlockStore("remote", name); err != nil {
+			return fmt.Errorf("failed to remove block store: %w", err)
 		}
 		return nil
 	})

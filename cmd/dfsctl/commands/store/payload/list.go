@@ -11,8 +11,10 @@ import (
 
 var listCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List payload stores",
-	Long: `List all payload stores on the DittoFS server.
+	Short: "List block stores (remote)",
+	Long: `List all remote block stores on the DittoFS server.
+
+Note: This command is deprecated. Use 'dfsctl store block remote list' instead.
 
 Examples:
   # List as table
@@ -23,19 +25,19 @@ Examples:
 	RunE: runList,
 }
 
-// StoreList is a list of payload stores for table rendering.
-type StoreList []apiclient.PayloadStore
+// StoreList is a list of block stores for table rendering.
+type StoreList []apiclient.BlockStore
 
 // Headers implements TableRenderer.
 func (sl StoreList) Headers() []string {
-	return []string{"NAME", "TYPE"}
+	return []string{"NAME", "KIND", "TYPE"}
 }
 
 // Rows implements TableRenderer.
 func (sl StoreList) Rows() [][]string {
 	rows := make([][]string, 0, len(sl))
 	for _, s := range sl {
-		rows = append(rows, []string{s.Name, s.Type})
+		rows = append(rows, []string{s.Name, s.Kind, s.Type})
 	}
 	return rows
 }
@@ -46,10 +48,10 @@ func runList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	stores, err := client.ListPayloadStores()
+	stores, err := client.ListBlockStores("remote")
 	if err != nil {
-		return fmt.Errorf("failed to list payload stores: %w", err)
+		return fmt.Errorf("failed to list block stores: %w", err)
 	}
 
-	return cmdutil.PrintOutput(os.Stdout, stores, len(stores) == 0, "No payload stores found.", StoreList(stores))
+	return cmdutil.PrintOutput(os.Stdout, stores, len(stores) == 0, "No block stores found.", StoreList(stores))
 }

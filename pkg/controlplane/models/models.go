@@ -6,7 +6,7 @@ func AllModels() []any {
 		&User{},
 		&Group{},
 		&MetadataStoreConfig{},
-		&PayloadStoreConfig{},
+		&BlockStoreConfig{},
 		&Share{},
 		&ShareAccessRule{},
 		&ShareAdapterConfig{},

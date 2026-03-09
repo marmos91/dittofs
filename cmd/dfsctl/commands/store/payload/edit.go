@@ -62,7 +62,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Get current store to show existing values
-	current, err := client.GetPayloadStore(name)
+	current, err := client.GetBlockStore("remote", name)
 	if err != nil {
 		return fmt.Errorf("failed to get payload store: %w", err)
 	}
@@ -126,7 +126,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no update fields specified. Use --type, --config, --bucket, --region, --endpoint, --access-key, or --secret-key")
 	}
 
-	store, err := client.UpdatePayloadStore(name, req)
+	store, err := client.UpdateBlockStore("remote", name, req)
 	if err != nil {
 		return fmt.Errorf("failed to update payload store: %w", err)
 	}
@@ -134,7 +134,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	return cmdutil.PrintResourceWithSuccess(os.Stdout, store, fmt.Sprintf("Payload store '%s' updated successfully", store.Name))
 }
 
-func runEditInteractive(client *apiclient.Client, name string, current *apiclient.PayloadStore) error {
+func runEditInteractive(client *apiclient.Client, name string, current *apiclient.BlockStore) error {
 	fmt.Printf("Editing payload store: %s (type: %s)\n", current.Name, current.Type)
 	fmt.Println("Press Ctrl+C to abort.")
 	fmt.Println()
@@ -222,7 +222,7 @@ func runEditInteractive(client *apiclient.Client, name string, current *apiclien
 		return nil
 	}
 
-	store, err := client.UpdatePayloadStore(name, req)
+	store, err := client.UpdateBlockStore("remote", name, req)
 	if err != nil {
 		return fmt.Errorf("failed to update payload store: %w", err)
 	}
