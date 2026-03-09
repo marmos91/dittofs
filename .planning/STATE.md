@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: BlockStore Unification Refactor
 status: executing
-stopped_at: Completed 41-01-PLAN.md
-last_updated: "2026-03-09T12:22:13Z"
-last_activity: 2026-03-09 — Phase 41 Plan 01 complete (block state rename)
+stopped_at: Completed 41-02-PLAN.md (Phase 41 complete)
+last_updated: "2026-03-09T12:30:23Z"
+last_activity: 2026-03-09 — Phase 41 Plan 02 complete (ListFileBlocks + conformance tests)
 progress:
   total_phases: 22
   completed_phases: 1
@@ -27,9 +27,9 @@ See: .planning/PROJECT.md (updated 2026-03-09)
 
 Phase: 41 of 49 (Block State Enum and ListFileBlocks)
 Milestone: v4.0 BlockStore Unification Refactor
-Plan: 1 of 2 in current phase
-Status: Executing
-Last activity: 2026-03-09 — Phase 41 Plan 01 complete (block state rename)
+Plan: 2 of 2 in current phase (COMPLETE)
+Status: Phase 41 Complete
+Last activity: 2026-03-09 — Phase 41 Plan 02 complete (ListFileBlocks + conformance tests)
 
 Progress: [████████████████████████████████████████░░░░░░░░░░░░] 67% (124/186+ total plans across all milestones)
 
@@ -54,7 +54,7 @@ Progress: [███████████████████████
 **v4.0 Current Milestone:**
 - 9 phases defined (41-49)
 - 55 requirements mapped
-- 1 plan completed (41-01)
+- 2 plans completed (41-01, 41-02) -- Phase 41 complete
 
 ## Accumulated Context
 
@@ -68,6 +68,8 @@ Recent decisions affecting v4.0 work:
 - **BlockStore refactor before NFSv4.2**: Clean storage architecture enables easier feature development (Pending v4.0)
 - **Kept numeric values unchanged (0-3)**: Avoids data migration for persisted FileBlock data (Phase 41, Plan 01)
 - **Log messages updated to sync terminology now**: Method/file renames deferred to Phase 45 (Phase 41, Plan 01)
+- **Block index sorting in Go**: Numeric sort after DB fetch for correct multi-digit ordering (Phase 41, Plan 02)
+- **BadgerDB fb-file: index always maintained**: On every PutFileBlock regardless of state (Phase 41, Plan 02)
 
 ### Pending Todos
 
@@ -79,7 +81,7 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-09T12:22:13Z
-Stopped at: Completed 41-01-PLAN.md
-Resume file: .planning/phases/41-block-state-enum-and-listfileblocks/41-01-SUMMARY.md
-Next action: Execute 41-02-PLAN.md (ListFileBlocks method and conformance tests)
+Last session: 2026-03-09T12:30:23Z
+Stopped at: Completed 41-02-PLAN.md (Phase 41 complete)
+Resume file: .planning/phases/41-block-state-enum-and-listfileblocks/41-02-SUMMARY.md
+Next action: Execute Phase 42 (BlockStore interface definition)
