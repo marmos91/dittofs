@@ -22,7 +22,7 @@ func newNilBlockStoreEnv(t *testing.T) (*Offloader, *cache.BlockCache, func()) {
 	// nil blockStore = local-only mode
 	m := New(bc, nil, ms, DefaultConfig())
 	return m, bc, func() {
-		m.Close()
+		_ = m.Close()
 	}
 }
 
@@ -136,7 +136,7 @@ func TestSetRemoteStoreSuccess(t *testing.T) {
 	m.Start(ctx)
 
 	bs := memory.New()
-	defer bs.Close()
+	defer func() { _ = bs.Close() }()
 
 	err := m.SetRemoteStore(ctx, bs)
 	if err != nil {
@@ -160,14 +160,14 @@ func TestSetRemoteStoreOneShot(t *testing.T) {
 	m.Start(ctx)
 
 	bs := memory.New()
-	defer bs.Close()
+	defer func() { _ = bs.Close() }()
 
 	if err := m.SetRemoteStore(ctx, bs); err != nil {
 		t.Fatalf("first SetRemoteStore should succeed, got: %v", err)
 	}
 
 	bs2 := memory.New()
-	defer bs2.Close()
+	defer func() { _ = bs2.Close() }()
 
 	err := m.SetRemoteStore(ctx, bs2)
 	if err == nil {
@@ -184,7 +184,7 @@ func TestSetRemoteStoreOnClosed(t *testing.T) {
 	cleanup()
 
 	bs := memory.New()
-	defer bs.Close()
+	defer func() { _ = bs.Close() }()
 
 	err := m.SetRemoteStore(ctx, bs)
 	if err == nil {
