@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-03-09 (Phase 42, added failures newly reachable after GMAC signing fix)
+Last updated: 2026-03-09 (Phase 42, full smbtorture run — 17 newly reachable failures added)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -26,6 +26,7 @@ session, which DittoFS does not implement.
 | smb2.multichannel.bugs.bug_15346 | Multi-channel | Multi-channel not implemented | - |
 | smb2.multichannel.generic.num_channels | Multi-channel | Multi-channel not implemented | - |
 | smb2.multichannel.leases.test2 | Multi-channel | Multi-channel lease coordination not implemented | - |
+| smb2.multichannel.oplocks.test1 | Multi-channel | Multi-channel oplock coordination not implemented | - |
 | smb2.multichannel.oplocks.test2 | Multi-channel | Multi-channel oplock coordination not implemented | - |
 
 ### ACLs and Security Descriptors (Not Implemented)
@@ -87,10 +88,13 @@ sparse_file_attr query work.
 | smb2.ioctl.copy_chunk_write_access | IOCTL | Server-side copy not implemented | - |
 | smb2.ioctl.copy_chunk_zero_length | IOCTL | Server-side copy not implemented | - |
 | smb2.ioctl.copy-chunk | IOCTL | Server-side copy not implemented | - |
+| smb2.ioctl.dup_extents_simple | IOCTL | Duplicate extents not implemented | - |
 | smb2.ioctl.dup_extents_sparse_dest | IOCTL | Duplicate extents not implemented | - |
+| smb2.ioctl.dup_extents_sparse_src | IOCTL | Duplicate extents not implemented | - |
 | smb2.ioctl.bug14788.NETWORK_INTERFACE | IOCTL | Network interface enumeration not implemented | - |
 | smb2.ioctl.req_resume_key | IOCTL | Resume key for server-side copy not implemented | - |
 | smb2.ioctl.req_two_resume_keys | IOCTL | Resume key for server-side copy not implemented | - |
+| smb2.ioctl.sparse_compressed | IOCTL | Sparse + compression not implemented | - |
 | smb2.ioctl.sparse_copy_chunk | IOCTL | Sparse + server-side copy not implemented | - |
 | smb2.ioctl.sparse_dir_flag | IOCTL | Sparse file semantics not implemented | - |
 | smb2.ioctl.sparse_file_flag | IOCTL | Sparse file semantics not implemented | - |
@@ -302,6 +306,7 @@ files, create blobs) are not implemented. Basic create operations pass.
 | smb2.create.acldir | Create | ACL-based directory create not implemented | - |
 | smb2.create.aclfile | Create | ACL-based file create not implemented | - |
 | smb2.create.bench-path-contention-shared | Create | Path contention benchmark not implemented | - |
+| smb2.create.dosattr_tmp_dir | Create | DOS attribute temp directory semantics not implemented | - |
 | smb2.create.blob | Create | Create context blobs not fully implemented | - |
 | smb2.create.gentest | Create | Generic create test (impersonation) not implemented | - |
 | smb2.create.impersonation | Create | Impersonation levels not implemented | - |
@@ -417,6 +422,7 @@ feature not applicable to DittoFS.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
+| smb2.twrp.openroot | Previous versions | Time-warp not implemented | - |
 | smb2.twrp.listdir | Previous versions | Time-warp not implemented | - |
 
 ### Benchmarks (Multi-Client Coordination)
@@ -563,6 +569,7 @@ incomplete break notification delivery and multi-client coordination.
 | smb2.lease.request | Leases | Lease request handling not fully working | - |
 | smb2.lease.nobreakself | Leases | Lease self-break suppression not fully working | - |
 | smb2.lease.statopen | Leases | Lease + stat open interaction not fully working | - |
+| smb2.lease.statopen3 | Leases | Lease + stat open interaction not fully working | - |
 | smb2.lease.statopen4 | Leases | Lease + stat open interaction not fully working | - |
 | smb2.lease.upgrade | Leases | Lease upgrade not fully working | - |
 | smb2.lease.upgrade2 | Leases | Lease upgrade not fully working | - |
@@ -626,6 +633,11 @@ fail due to incomplete lock contention and async lock handling.
 | smb2.lock.truncate | Locks | Lock + truncate interaction not fully working | - |
 | smb2.lock.replay_broken_windows | Locks | Lock replay not fully working | - |
 | smb2.lock.replay_smb3_specification_durable | Locks | Lock replay with durable handles not fully working | - |
+| smb2.lock.replay_smb3_specification_multi | Locks | Lock replay with multi-channel not fully working | - |
+| smb2.lock.cancel-logoff | Locks | Lock cancel on logoff not fully working | - |
+| smb2.lock.zerobyteread | Locks | Zero-byte read with locks not fully working | - |
+| smb2.lock.context | Locks | Lock context tracking not fully working | - |
+| smb2.lock.open-brlock-deadlock | Locks | Open + byte-range lock deadlock detection not working | - |
 
 ### Rename (Fix Candidate)
 
@@ -641,6 +653,7 @@ share mode enforcement during rename.
 | smb2.rename.no_share_delete_no_delete_access | Rename | Rename share mode enforcement not working | - |
 | smb2.rename.rename_dir_openfile | Rename | Rename directory with open file not working | - |
 | smb2.rename.rename-open | Rename | Rename with open handle not working | - |
+| smb2.rename.msword | Rename | MS Word rename pattern (secondary connection) not working | - |
 
 ### Sessions (Fix Candidate)
 
@@ -668,6 +681,8 @@ TCP connections with different SMB dialect and signing/encryption combinations.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
+| smb2.session.bind2 | Session binding | Session binding not implemented | - |
+| smb2.session.bind_invalid_auth | Session binding | Session binding auth validation not implemented | - |
 | smb2.session.bind_negative_smb2to3s | Session binding | Multi-channel session binding not implemented | - |
 | smb2.session.bind_negative_smb2to3d | Session binding | Multi-channel session binding not implemented | - |
 | smb2.session.bind_negative_smb3to2s | Session binding | Multi-channel session binding not implemented | - |
@@ -790,6 +805,8 @@ incomplete delayed-write and timestamp freeze/unfreeze logic.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
+| smb2.timestamps.freeze-thaw | Timestamps | Timestamp freeze/thaw semantics not fully working | - |
+| smb2.timestamps.delayed-1write | Timestamps | Delayed single-write timestamp update not working | - |
 | smb2.timestamps.delayed-2write | Timestamps | Delayed write timestamp update not working | - |
 | smb2.timestamps.delayed-write-vs-flush | Timestamps | Delayed write vs flush timestamp not working | - |
 | smb2.timestamps.delayed-write-vs-setbasic | Timestamps | Delayed write vs setbasic timestamp not working | - |
