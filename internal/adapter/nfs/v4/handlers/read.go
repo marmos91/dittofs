@@ -145,7 +145,7 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 	}
 
 	// Get per-share block store and read data
-	blockStore, err := getBlockStoreForHandle(h, ctx.CurrentFH)
+	blockStore, err := getBlockStoreForHandle(h, ctx.Context, ctx.CurrentFH)
 	if err != nil {
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,

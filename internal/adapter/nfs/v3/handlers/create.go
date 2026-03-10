@@ -113,7 +113,7 @@ func (h *Handler) Create(
 
 	parentHandle := metadata.FileHandle(req.DirHandle)
 
-	metaSvc, blockStore, err := getServicesForHandle(h.Registry, parentHandle)
+	metaSvc, blockStore, err := getServicesForHandle(h.Registry, ctx.Context, parentHandle)
 	if err != nil {
 		logger.ErrorCtx(ctx.Context, "CREATE failed: service not available", "client", clientIP, "error", err)
 		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil

@@ -137,7 +137,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		UploadInterval:     cfg.Offloader.UploadInterval,
 		UploadDelay:        cfg.Offloader.UploadDelay,
 	})
-	logger.Info("Cache configuration stored", "path", cfg.Cache.Path, "size", cfg.Cache.Size, "max_pending_size", cfg.Cache.MaxPendingSize)
+	logger.Info("Per-share BlockStore defaults configured", "max_size", cfg.Cache.Size, "max_pending_size", cfg.Cache.MaxPendingSize)
 
 	// Load shares (per-share BlockStores are created during AddShare).
 	if err := runtime.LoadSharesFromStore(ctx, rt, cpStore); err != nil {

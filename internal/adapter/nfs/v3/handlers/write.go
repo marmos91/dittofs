@@ -160,7 +160,7 @@ func (h *Handler) Write(
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
-	metaSvc, blockStore, err := getServicesForHandle(h.Registry, fileHandle)
+	metaSvc, blockStore, err := getServicesForHandle(h.Registry, ctx.Context, fileHandle)
 	if err != nil {
 		logger.ErrorCtx(ctx.Context, "WRITE failed: service not available", "client", clientIP, "error", err)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil

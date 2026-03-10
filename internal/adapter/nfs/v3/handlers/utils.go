@@ -29,13 +29,13 @@ var ErrMetadataServiceNotInitialized = errors.New("metadata service not initiali
 // getServicesForHandle returns both the metadata service and the per-share block store
 // resolved from the given file handle.
 // Returns an error if either service is not initialized or handle resolution fails.
-func getServicesForHandle(reg *runtime.Runtime, handle metadata.FileHandle) (*metadata.MetadataService, *engine.BlockStore, error) {
+func getServicesForHandle(reg *runtime.Runtime, ctx context.Context, handle metadata.FileHandle) (*metadata.MetadataService, *engine.BlockStore, error) {
 	metaSvc := reg.GetMetadataService()
 	if metaSvc == nil {
 		return nil, nil, ErrMetadataServiceNotInitialized
 	}
 
-	blockStore, err := getBlockStoreForHandle(reg, handle)
+	blockStore, err := getBlockStoreForHandle(reg, ctx, handle)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -55,8 +55,8 @@ func getMetadataService(reg *runtime.Runtime) (*metadata.MetadataService, error)
 
 // getBlockStoreForHandle returns the per-share block store resolved from the given file handle.
 // The handle encodes the share name, which is used to look up the share's block store.
-func getBlockStoreForHandle(reg *runtime.Runtime, handle metadata.FileHandle) (*engine.BlockStore, error) {
-	return reg.GetBlockStoreForHandle(context.Background(), handle)
+func getBlockStoreForHandle(reg *runtime.Runtime, ctx context.Context, handle metadata.FileHandle) (*engine.BlockStore, error) {
+	return reg.GetBlockStoreForHandle(ctx, handle)
 }
 
 // safeAdd performs checked addition of two uint64 values.
@@ -202,7 +202,7 @@ func readMFsymlinkContentForNFS(
 		return nil, nil
 	}
 
-	blockStore, err := getBlockStoreForHandle(reg, handle)
+	blockStore, err := getBlockStoreForHandle(reg, ctx, handle)
 	if err != nil {
 		return nil, err
 	}

@@ -99,11 +99,11 @@ func getMetadataServiceForCtx(h *Handler) (*metadata.MetadataService, error) {
 
 // getBlockStoreForHandle returns the per-share BlockStore resolved from the given file handle.
 // The handle encodes the share name, which is used to look up the share's block store.
-func getBlockStoreForHandle(h *Handler, handle []byte) (*engine.BlockStore, error) {
+func getBlockStoreForHandle(h *Handler, ctx context.Context, handle []byte) (*engine.BlockStore, error) {
 	if h.Registry == nil {
 		return nil, fmt.Errorf("no registry configured")
 	}
-	return h.Registry.GetBlockStoreForHandle(context.Background(), metadata.FileHandle(handle))
+	return h.Registry.GetBlockStoreForHandle(ctx, metadata.FileHandle(handle))
 }
 
 // encodeChangeInfo4 encodes a change_info4 structure into the buffer.

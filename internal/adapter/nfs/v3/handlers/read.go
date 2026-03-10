@@ -145,7 +145,7 @@ func (h *Handler) Read(
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
-	blockStore, err := getBlockStoreForHandle(h.Registry, fileHandle)
+	blockStore, err := getBlockStoreForHandle(h.Registry, ctx.Context, fileHandle)
 	if err != nil {
 		logger.ErrorCtx(ctx.Context, "READ failed: block store not available", "client", clientIP, "error", err)
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil

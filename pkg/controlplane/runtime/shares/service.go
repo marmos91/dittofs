@@ -215,6 +215,10 @@ func (s *Service) AddShare(
 		return fmt.Errorf("block store provider is required when LocalBlockStoreID is set for share %q", config.Name)
 	}
 
+	if metadataSvc == nil {
+		return fmt.Errorf("metadata service registrar is required for share %q", config.Name)
+	}
+
 	share, metadataStore, err := s.registerShare(ctx, config, storeProvider)
 	if err != nil {
 		return err
@@ -234,18 +238,18 @@ func (s *Service) AddShare(
 	// Register metadata store only after BlockStore is successfully created
 	// to avoid leaving stale state in MetadataService on failure.
 	if err := metadataSvc.RegisterStoreForShare(config.Name, metadataStore); err != nil {
-		// Roll back: close BlockStore and remove from registry
+		// Capture state under lock, then close outside to avoid deadlock.
 		s.mu.Lock()
-		if share.BlockStore != nil {
-			_ = share.BlockStore.Close()
+		bs := share.BlockStore
+		remoteConfigID := share.remoteConfigID
+		delete(s.registry, config.Name)
+		s.mu.Unlock()
+
+		if bs != nil {
+			_ = bs.Close()
 		}
-		if share.remoteConfigID != "" {
-			delete(s.registry, config.Name)
-			s.mu.Unlock()
-			s.releaseRemoteStore(share.remoteConfigID)
-		} else {
-			delete(s.registry, config.Name)
-			s.mu.Unlock()
+		if remoteConfigID != "" {
+			s.releaseRemoteStore(remoteConfigID)
 		}
 		return fmt.Errorf("failed to configure metadata for share: %w", err)
 	}
@@ -349,6 +353,9 @@ func (s *Service) createBlockStoreForShare(
 	if err != nil {
 		return fmt.Errorf("failed to resolve local block store config %q: %w", config.LocalBlockStoreID, err)
 	}
+	if localCfg.Kind != models.BlockStoreKindLocal {
+		return fmt.Errorf("block store config %q has kind %q, expected %q", config.LocalBlockStoreID, localCfg.Kind, models.BlockStoreKindLocal)
+	}
 
 	// Create local store.
 	localStore, err := CreateLocalStoreFromConfig(ctx, localCfg.Type, localCfg, config.Name, localStoreDefaults, fileBlockStore)
@@ -360,8 +367,18 @@ func (s *Service) createBlockStoreForShare(
 	var remoteStore remote.RemoteStore
 	var remoteConfigID string
 	if config.RemoteBlockStoreID != "" {
+		remoteCfg, resolveErr := blockStoreProvider.GetBlockStoreByID(ctx, config.RemoteBlockStoreID)
+		if resolveErr != nil {
+			_ = localStore.Close()
+			return fmt.Errorf("failed to resolve remote block store config %q: %w", config.RemoteBlockStoreID, resolveErr)
+		}
+		if remoteCfg.Kind != models.BlockStoreKindRemote {
+			_ = localStore.Close()
+			return fmt.Errorf("block store config %q has kind %q, expected %q", config.RemoteBlockStoreID, remoteCfg.Kind, models.BlockStoreKindRemote)
+		}
 		remoteStore, remoteConfigID, err = s.acquireRemoteStore(ctx, config.RemoteBlockStoreID, blockStoreProvider)
 		if err != nil {
+			_ = localStore.Close()
 			return fmt.Errorf("failed to create remote store: %w", err)
 		}
 	}
@@ -384,6 +401,15 @@ func (s *Service) createBlockStoreForShare(
 
 	syncer := blocksync.New(localStore, engineRemote, fileBlockStore, syncerCfg)
 
+	// cleanup closes all resources created so far on failure.
+	cleanup := func() {
+		_ = syncer.Close()
+		_ = localStore.Close()
+		if remoteConfigID != "" {
+			s.releaseRemoteStore(remoteConfigID)
+		}
+	}
+
 	// Create BlockStore.
 	bs, err := engine.New(engine.Config{
 		Local:  localStore,
@@ -391,17 +417,13 @@ func (s *Service) createBlockStoreForShare(
 		Syncer: syncer,
 	})
 	if err != nil {
-		if remoteConfigID != "" {
-			s.releaseRemoteStore(remoteConfigID)
-		}
+		cleanup()
 		return fmt.Errorf("failed to create BlockStore: %w", err)
 	}
 
 	// Start BlockStore (recovery + background goroutines).
 	if err := bs.Start(ctx); err != nil {
-		if remoteConfigID != "" {
-			s.releaseRemoteStore(remoteConfigID)
-		}
+		cleanup()
 		return fmt.Errorf("failed to start BlockStore: %w", err)
 	}
 

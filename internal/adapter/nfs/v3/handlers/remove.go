@@ -100,7 +100,7 @@ func (h *Handler) Remove(
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
 
-	metaSvc, blockStore, err := getServicesForHandle(h.Registry, dirHandle)
+	metaSvc, blockStore, err := getServicesForHandle(h.Registry, ctx.Context, dirHandle)
 	if err != nil {
 		logger.ErrorCtx(ctx.Context, "REMOVE failed: service not available", "client", clientIP, "error", err)
 		return &RemoveResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil

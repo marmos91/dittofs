@@ -42,6 +42,13 @@ func setupTestRuntime(t *testing.T) (*Runtime, cpstore.Store) {
 		MaxSize: 0, // unlimited
 	})
 
+	// Clean up all shares (and their BlockStores) when the test finishes.
+	t.Cleanup(func() {
+		for _, name := range rt.ListShares() {
+			_ = rt.RemoveShare(name)
+		}
+	})
+
 	return rt, s
 }
 

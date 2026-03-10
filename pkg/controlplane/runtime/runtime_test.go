@@ -550,6 +550,10 @@ func TestGetBlockStoreForHandle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create BlockStore: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = bs.Close()
+		_ = localStore.Close()
+	})
 	share.BlockStore = bs
 
 	// Get a file handle for this share.
