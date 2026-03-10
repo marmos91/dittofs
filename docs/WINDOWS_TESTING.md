@@ -119,10 +119,10 @@ go build -o dfsctl cmd/dfsctl/main.go
 
 # 4. Create test stores
 ./dfsctl store metadata add --name test-meta --type memory
-./dfsctl store payload add --name test-payload --type memory
+./dfsctl store block add --kind local --name test-blocks --type memory
 
 # 5. Create test shares
-./dfsctl share create --name /smbbasic --metadata test-meta --payload test-payload
+./dfsctl share create --name /smbbasic --metadata test-meta --local test-blocks
 
 # 6. Create test users
 ./dfsctl user create --username testuser    # Enter password when prompted

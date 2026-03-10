@@ -257,7 +257,7 @@ func HandleMyProc(ctx context.Context, call *rpc.Call, metadata metadata.Store) 
 
 ### Adding a New Store Backend
 
-DittoFS uses a Service-oriented architecture where **stores are simple CRUD interfaces**. Business logic (permission checking, caching, locking) lives in the Service layer (`MetadataService`, `PayloadService`).
+DittoFS uses a Service-oriented architecture where **stores are simple CRUD interfaces**. Business logic (permission checking, caching, locking) lives in the Service layer (`MetadataService`) and the per-share `BlockStore` engine.
 
 **Metadata Store:**
 
@@ -268,32 +268,33 @@ DittoFS uses a Service-oriented architecture where **stores are simple CRUD inte
 5. Consider persistence strategy for handles
 6. **Note**: Permission checking is handled by `MetadataService`, not stores
 
-**Content Store:**
+**Block Store (Local):**
 
-1. Implement `pkg/payload/PayloadStore` interface (simple CRUD operations)
-2. Support random-access reads/writes (`ReadAt`/`WriteAt`)
-3. Handle sparse files and truncation
-4. Consider implementing optional interfaces for efficiency (`IncrementalWriteStore`)
-5. **Note**: Caching is handled by `PayloadService`, not stores
-6. Test with the integration test suite in `test/integration/`
+1. Implement `pkg/blockstore/local.LocalStore` interface (ReadAt, WriteAt, Delete, Exists, Flush, List, Close)
+2. Support random-access reads/writes
+3. Each share gets an isolated local storage directory
+4. Test with conformance suite in `pkg/blockstore/local/localtest/`
+
+**Block Store (Remote):**
+
+1. Implement `pkg/blockstore/remote.RemoteStore` interface (ReadBlock, WriteBlock, DeleteBlock, HealthCheck, Close)
+2. Remote stores are shared across shares via ref counting
+3. Test with conformance suite in `pkg/blockstore/remote/remotetest/`
 
 Example:
 ```go
-// pkg/payload/store/mybackend/store.go
-type MyPayloadStore struct {
-    // Your implementation - just CRUD, no business logic
+// pkg/blockstore/local/mybackend/store.go
+type MyLocalStore struct {
+    basePath string
 }
 
-func (s *MyPayloadStore) ReadAt(ctx context.Context, id content.ContentID, offset int64, size int64) ([]byte, error) {
-    // Simple read from your backend
+func (s *MyLocalStore) ReadAt(ctx context.Context, blockID string, p []byte, offset int64) (int, error) {
+    // Read block data from your backend
 }
 
-func (s *MyPayloadStore) WriteAt(ctx context.Context, id content.ContentID, data []byte, offset int64) error {
-    // Simple write to your backend
+func (s *MyLocalStore) WriteAt(ctx context.Context, blockID string, data []byte, offset int64) (int, error) {
+    // Write block data to your backend
 }
-
-// Register with PayloadService (which handles caching, routing)
-payloadSvc.RegisterStoreForShare("/myshare", myPayloadStore)
 ```
 
 See [IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md) for detailed implementation guide.
@@ -309,7 +310,7 @@ Adapters receive a runtime reference and **interact with services, not stores di
    - `SetRuntime()`: Receive runtime reference (provides access to services)
    - `Protocol()`: Return name
    - `Port()`: Return listen port
-3. Use `runtime.GetMetadataService()` and `runtime.GetPayloadService()` for operations
+3. Use `runtime.GetBlockStoreForHandle()` for per-share block store access
 4. Register in `cmd/dfs/main.go`
 5. Update README with usage instructions
 
@@ -325,9 +326,12 @@ func (a *SMBAdapter) SetRuntime(rt *runtime.Runtime) {
     a.runtime = rt
 }
 
-func (a *SMBAdapter) handleRead(ctx context.Context, shareName string, contentID content.ContentID) ([]byte, error) {
-    // Use PayloadService (handles caching automatically)
-    return a.runtime.GetPayloadService().ReadAt(ctx, shareName, contentID, 0, size)
+func (a *SMBAdapter) handleRead(ctx context.Context, handle []byte, blockID string) ([]byte, error) {
+    // Resolve per-share block store from file handle
+    blockStore, _ := a.runtime.GetBlockStoreForHandle(ctx, handle)
+    buf := make([]byte, size)
+    blockStore.ReadAt(ctx, blockID, buf, 0)
+    return buf, nil
 }
 
 func (a *SMBAdapter) Serve(ctx context.Context) error {
