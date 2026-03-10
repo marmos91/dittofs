@@ -131,13 +131,13 @@ type ShareSecurityPolicy struct {
 
 // CreateShareWithPolicy creates a share with the given security policy via the API client.
 // Returns the created share.
-func CreateShareWithPolicy(t *testing.T, client *apiclient.Client, name, metadataStore, payloadStore string, policy *ShareSecurityPolicy) *apiclient.Share {
+func CreateShareWithPolicy(t *testing.T, client *apiclient.Client, name, metadataStore, localBlockStore string, policy *ShareSecurityPolicy) *apiclient.Share {
 	t.Helper()
 
 	req := &apiclient.CreateShareRequest{
 		Name:            name,
 		MetadataStoreID: metadataStore,
-		PayloadStoreID:  payloadStore,
+		LocalBlockStore: localBlockStore,
 	}
 
 	if policy != nil {
