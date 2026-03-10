@@ -23,10 +23,6 @@ func Validate(cfg *Config) error {
 		return formatValidationError(err)
 	}
 
-	if cfg.Cache.Path == "" {
-		return fmt.Errorf("cache: path is required")
-	}
-
 	return nil
 }
 

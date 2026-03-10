@@ -78,11 +78,11 @@
 
 ### Auto-Configuration
 
-- [ ] **AUTO-01**: WriteBufferMemory derived from 25% of available memory
-- [ ] **AUTO-02**: ReadCacheMemory derived from 12.5% of available memory
-- [ ] **AUTO-03**: ParallelUploads derived from max(4, cpus)
-- [ ] **AUTO-04**: ParallelDownloads derived from max(8, cpus*2)
-- [ ] **AUTO-05**: User config overrides auto-deduced defaults
+- [x] **AUTO-01**: WriteBufferMemory derived from 25% of available memory
+- [x] **AUTO-02**: ReadCacheMemory derived from 12.5% of available memory
+- [x] **AUTO-03**: ParallelUploads derived from max(4, cpus)
+- [x] **AUTO-04**: ParallelDownloads derived from max(8, cpus*2)
+- [x] **AUTO-05**: User config overrides auto-deduced defaults
 
 ### Testing & Documentation
 
@@ -165,11 +165,11 @@
 | PERF-02 | Phase 47 | Complete |
 | PERF-03 | Phase 47 | Complete |
 | PERF-04 | Phase 47 | Complete |
-| AUTO-01 | Phase 48 | Pending |
-| AUTO-02 | Phase 48 | Pending |
-| AUTO-03 | Phase 48 | Pending |
-| AUTO-04 | Phase 48 | Pending |
-| AUTO-05 | Phase 48 | Pending |
+| AUTO-01 | Phase 48 | Complete |
+| AUTO-02 | Phase 48 | Complete |
+| AUTO-03 | Phase 48 | Complete |
+| AUTO-04 | Phase 48 | Complete |
+| AUTO-05 | Phase 48 | Complete |
 | TEST-01 | Phase 49 | Pending |
 | TEST-02 | Phase 49 | Pending |
 | TEST-03 | Phase 49 | Pending |

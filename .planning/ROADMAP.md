@@ -122,7 +122,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 45: Package Restructure** - Create pkg/blockstore/ hierarchy absorbing cache, payload, offloader, gc (completed 2026-03-09)
 - [x] **Phase 46: Per-Share Block Store Wiring** - Runtime manages per-share BlockStore instances replacing global PayloadService (completed 2026-03-10)
 - [x] **Phase 47: L1 Read Cache and Prefetch** - Read-through LRU cache with sequential prefetch for hot blocks (completed 2026-03-10)
-- [ ] **Phase 48: Auto-Deduced Configuration** - Derive buffer/cache sizes and concurrency from CPU/memory
+- [x] **Phase 48: Auto-Deduced Configuration** - Derive buffer/cache sizes and concurrency from CPU/memory (completed 2026-03-10)
 - [ ] **Phase 49: Testing and Documentation** - E2E tests for new CLI, multi-share isolation, updated documentation
 
 ### v4.1 NFSv4.2 Extensions
@@ -570,7 +570,7 @@ v3.8 (33-40.5) -> v4.0 (41-49) -> v4.1 (50-56) -> v4.2 (57-62)
 | 45. Package Restructure | v4.0 | 4/4 | Complete | 2026-03-09 |
 | 46. Per-Share Block Store Wiring | v4.0 | 3/3 | Complete | 2026-03-10 |
 | 47. L1 Read Cache and Prefetch | v4.0 | 2/2 | Complete | 2026-03-10 |
-| 48. Auto-Deduced Configuration | v4.0 | 0/2 | Not started | - |
+| 48. Auto-Deduced Configuration | 2/2 | Complete    | 2026-03-10 | - |
 | 49. Testing and Documentation | v4.0 | 0/? | Not started | - |
 | 50. Server-Side Copy | v4.1 | 0/? | Not started | - |
 | 51. Clone/Reflinks | v4.1 | 0/? | Not started | - |

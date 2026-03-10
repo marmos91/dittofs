@@ -47,11 +47,6 @@ func runConfigValidate(cmd *cobra.Command, args []string) error {
 		warnings = append(warnings, "JWT secret not configured - API authentication will fail")
 	}
 
-	// Check cache path is set
-	if cfg.Cache.Path == "" {
-		warnings = append(warnings, "Cache path not configured")
-	}
-
 	// Print results
 	fmt.Printf("Configuration file: %s\n", displayPath)
 	fmt.Println("Validation: OK")

@@ -3,8 +3,6 @@ package config
 import (
 	"testing"
 	"time"
-
-	"github.com/marmos91/dittofs/internal/bytesize"
 )
 
 func TestApplyDefaults_Logging(t *testing.T) {
@@ -132,97 +130,6 @@ func TestApplyDefaults_PreservesExplicitValues(t *testing.T) {
 	}
 }
 
-func TestApplyDefaults_OffloaderDefaults(t *testing.T) {
-	cfg := &Config{}
-	ApplyDefaults(cfg)
-
-	// Offloader values should be set to explicit defaults
-	if cfg.Offloader.ParallelUploads != 16 {
-		t.Errorf("Expected ParallelUploads 16, got %d", cfg.Offloader.ParallelUploads)
-	}
-	if cfg.Offloader.ParallelDownloads != 32 {
-		t.Errorf("Expected ParallelDownloads 32, got %d", cfg.Offloader.ParallelDownloads)
-	}
-	if cfg.Offloader.PrefetchBlocks != 64 {
-		t.Errorf("Expected PrefetchBlocks 64, got %d", cfg.Offloader.PrefetchBlocks)
-	}
-}
-
-func TestApplyDefaults_OffloaderPreservesExplicit(t *testing.T) {
-	cfg := &Config{
-		Offloader: OffloaderConfig{
-			ParallelUploads:   32,
-			ParallelDownloads: 16,
-			PrefetchBlocks:    8,
-		},
-	}
-	ApplyDefaults(cfg)
-
-	if cfg.Offloader.ParallelUploads != 32 {
-		t.Errorf("Expected explicit ParallelUploads 32 preserved, got %d", cfg.Offloader.ParallelUploads)
-	}
-	if cfg.Offloader.ParallelDownloads != 16 {
-		t.Errorf("Expected explicit ParallelDownloads 16 preserved, got %d", cfg.Offloader.ParallelDownloads)
-	}
-	if cfg.Offloader.PrefetchBlocks != 8 {
-		t.Errorf("Expected explicit PrefetchBlocks 8 preserved, got %d", cfg.Offloader.PrefetchBlocks)
-	}
-}
-
-func TestApplyDefaults_ReadCacheSizeNilGetsDefault(t *testing.T) {
-	cfg := &Config{}
-	ApplyDefaults(cfg)
-
-	if cfg.Cache.ReadCacheSize == nil {
-		t.Fatal("ReadCacheSize should be set to default when nil")
-	}
-	if *cfg.Cache.ReadCacheSize != bytesize.ByteSize(128*bytesize.MiB) {
-		t.Errorf("Expected ReadCacheSize 128MiB, got %v", *cfg.Cache.ReadCacheSize)
-	}
-}
-
-func TestApplyDefaults_ReadCacheSizeZeroPreserved(t *testing.T) {
-	zero := bytesize.ByteSize(0)
-	cfg := &Config{
-		Cache: CacheConfig{ReadCacheSize: &zero},
-	}
-	ApplyDefaults(cfg)
-
-	if cfg.Cache.ReadCacheSize == nil {
-		t.Fatal("ReadCacheSize should not be nil when explicitly set to 0")
-	}
-	if *cfg.Cache.ReadCacheSize != 0 {
-		t.Errorf("Expected ReadCacheSize 0 (disabled), got %v", *cfg.Cache.ReadCacheSize)
-	}
-}
-
-func TestApplyDefaults_PrefetchWorkersNilGetsDefault(t *testing.T) {
-	cfg := &Config{}
-	ApplyDefaults(cfg)
-
-	if cfg.Offloader.PrefetchWorkers == nil {
-		t.Fatal("PrefetchWorkers should be set to default when nil")
-	}
-	if *cfg.Offloader.PrefetchWorkers != 4 {
-		t.Errorf("Expected PrefetchWorkers 4, got %d", *cfg.Offloader.PrefetchWorkers)
-	}
-}
-
-func TestApplyDefaults_PrefetchWorkersZeroPreserved(t *testing.T) {
-	zero := 0
-	cfg := &Config{
-		Offloader: OffloaderConfig{PrefetchWorkers: &zero},
-	}
-	ApplyDefaults(cfg)
-
-	if cfg.Offloader.PrefetchWorkers == nil {
-		t.Fatal("PrefetchWorkers should not be nil when explicitly set to 0")
-	}
-	if *cfg.Offloader.PrefetchWorkers != 0 {
-		t.Errorf("Expected PrefetchWorkers 0 (disabled), got %d", *cfg.Offloader.PrefetchWorkers)
-	}
-}
-
 func TestGetDefaultConfig_IsValid(t *testing.T) {
 	cfg := GetDefaultConfig()
 
@@ -245,8 +152,5 @@ func TestGetDefaultConfig_HasRequiredFields(t *testing.T) {
 	}
 	if cfg.Admin.Username == "" {
 		t.Error("Default config missing admin username")
-	}
-	if cfg.Cache.Path == "" {
-		t.Error("Default config missing cache path")
 	}
 }

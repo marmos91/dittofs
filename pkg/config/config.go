@@ -25,8 +25,10 @@ import (
 //   - Logging configuration
 //   - Server settings (shutdown timeout, API)
 //   - Database connection (control plane persistence)
-//   - Cache configuration (WAL-backed, mandatory for crash recovery)
 //   - Admin user setup (for initial bootstrap)
+//
+// Block store sizing (cache, syncer) is auto-deduced from system resources
+// at startup. Per-share overrides can be configured via dfsctl.
 //
 // Dynamic configuration (users, groups, shares, stores, adapters) is managed
 // through the REST API and stored in the control plane database.
@@ -50,16 +52,9 @@ type Config struct {
 	// ControlPlane contains control plane API server configuration
 	ControlPlane api.APIConfig `mapstructure:"controlplane" yaml:"controlplane"`
 
-	// Cache specifies the WAL-backed cache configuration
-	// Cache is mandatory for crash recovery - all writes go through cache
-	Cache CacheConfig `mapstructure:"cache" yaml:"cache"`
-
 	// Admin contains initial admin user configuration for bootstrap
 	// This is used by 'dittofs init' to set up the first admin user
 	Admin AdminConfig `mapstructure:"admin" yaml:"admin"`
-
-	// Offloader configures background data transfer to the backend block store
-	Offloader OffloaderConfig `mapstructure:"offloader" yaml:"offloader"`
 
 	// Lock contains lock manager configuration
 	// Controls lock limits, timeouts, and behavior
@@ -149,81 +144,6 @@ type LogRotationConfig struct {
 	// Compress determines whether rotated log files are gzip compressed.
 	// Default: false
 	Compress bool `mapstructure:"compress" yaml:"compress"`
-}
-
-// CacheConfig specifies the file-backed cache configuration.
-// Cache is mandatory - all writes go through the file cache before upload.
-// Each block is stored as a separate file for crash recovery and LRU eviction.
-type CacheConfig struct {
-	// Path is the directory for the cache WAL file (required)
-	// The cache will create a cache.dat file in this directory
-	// Example: /var/lib/dittofs/cache or /tmp/dittofs-cache
-	Path string `mapstructure:"path" validate:"required" yaml:"path"`
-
-	// Size is the maximum cache size
-	// Supports human-readable formats: "1GB", "512MB", "10Gi"
-	// Default: 1GB
-	Size bytesize.ByteSize `mapstructure:"size" yaml:"size,omitempty"`
-
-	// MaxPendingSize is the maximum amount of dirty (not yet uploaded) data
-	// allowed in the cache. When this limit is reached, writes block until
-	// the offloader drains data to the backend store. This provides
-	// backpressure for slow backends like S3.
-	// Supports human-readable formats: "512MB", "1GB", "2Gi"
-	// Default: 1GB
-	MaxPendingSize bytesize.ByteSize `mapstructure:"max_pending_size" yaml:"max_pending_size,omitempty"`
-
-	// ReadCacheSize is the per-share L1 read cache memory budget.
-	// Caches hot blocks in memory to avoid disk I/O on repeated reads.
-	// Set to 0 to disable L1 caching. Omit (or leave unset) for the default.
-	// Supports human-readable formats: "128MB", "256Mi"
-	// Default: 128MB
-	// Pointer type distinguishes "unset" (nil → apply default) from "explicitly 0" (disable).
-	ReadCacheSize *bytesize.ByteSize `mapstructure:"read_cache_size" yaml:"read_cache_size,omitempty"`
-}
-
-// OffloaderConfig configures the background offloader that transfers cached
-// data to the backend block store.
-// These defaults are tuned for good S3 performance out of the box.
-type OffloaderConfig struct {
-	// ParallelUploads is the number of concurrent block uploads to the backend.
-	// Higher values increase throughput for high-latency backends (S3).
-	// Default: 16 (yields ~128 MB/s with 8MB blocks to S3)
-	ParallelUploads int `mapstructure:"parallel_uploads" yaml:"parallel_uploads,omitempty"`
-
-	// ParallelDownloads is the number of concurrent block downloads per file.
-	// Default: 32
-	ParallelDownloads int `mapstructure:"parallel_downloads" yaml:"parallel_downloads,omitempty"`
-
-	// PrefetchBlocks is the number of blocks to prefetch ahead of reads.
-	// Set to 0 to disable prefetching.
-	// Default: 64 (512MB ahead at 8MB block size)
-	PrefetchBlocks int `mapstructure:"prefetch_blocks" yaml:"prefetch_blocks,omitempty"`
-
-	// SmallFileThreshold is the file size below which files are flushed
-	// synchronously (blocking) instead of asynchronously. This prevents
-	// pendingSize buildup when creating many small files.
-	// Supports human-readable formats: "4MB", "1MB"
-	// Set to 0 to disable (all files use async flush).
-	// Default: 0 (disabled)
-	SmallFileThreshold bytesize.ByteSize `mapstructure:"small_file_threshold" yaml:"small_file_threshold,omitempty"`
-
-	// UploadInterval is how often the periodic uploader scans for pending blocks.
-	// Default: 2s
-	UploadInterval time.Duration `mapstructure:"upload_interval" yaml:"upload_interval,omitempty"`
-
-	// UploadDelay is the minimum age before a cached block is uploaded.
-	// Blocks younger than this are skipped by the periodic uploader.
-	// Flush() ignores this delay and uploads immediately.
-	// Default: 10s
-	UploadDelay time.Duration `mapstructure:"upload_delay" yaml:"upload_delay,omitempty"`
-
-	// PrefetchWorkers is the number of background workers for sequential prefetch.
-	// Prefetch detects sequential reads and pre-loads upcoming blocks into L1 cache.
-	// Set to 0 to disable prefetching. Omit (or leave unset) for the default.
-	// Default: 4
-	// Pointer type distinguishes "unset" (nil → apply default) from "explicitly 0" (disable).
-	PrefetchWorkers *int `mapstructure:"prefetch_workers" yaml:"prefetch_workers,omitempty"`
 }
 
 // AdminConfig contains initial admin user configuration for bootstrap.
@@ -381,8 +301,7 @@ func Load(configPath string) (*Config, error) {
 
 	// If no config file was found, use defaults
 	if !configFileFound {
-		cfg := GetDefaultConfig()
-		return cfg, nil
+		return GetDefaultConfig(), nil
 	}
 
 	// Unmarshal into config struct with custom decode hooks

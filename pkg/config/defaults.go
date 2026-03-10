@@ -1,12 +1,9 @@
 package config
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/pkg/controlplane/api"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
@@ -24,8 +21,6 @@ func ApplyDefaults(cfg *Config) {
 	applyShutdownTimeoutDefaults(cfg)
 	applyDatabaseDefaults(&cfg.Database)
 	applyControlPlaneDefaults(&cfg.ControlPlane)
-	applyCacheDefaults(&cfg.Cache)
-	applyOffloaderDefaults(&cfg.Offloader)
 	applyAdminDefaults(&cfg.Admin)
 	applyLockDefaults(&cfg.Lock)
 	applyKerberosDefaults(&cfg.Kerberos)
@@ -82,44 +77,6 @@ func applyControlPlaneDefaults(cfg *api.APIConfig) {
 	}
 	if cfg.IdleTimeout == 0 {
 		cfg.IdleTimeout = 60 * time.Second
-	}
-}
-
-// applyCacheDefaults sets cache defaults.
-// Cache path is required (WAL is mandatory for crash recovery).
-func applyCacheDefaults(cfg *CacheConfig) {
-	// Default size to 1GB
-	if cfg.Size == 0 {
-		cfg.Size = bytesize.ByteSize(bytesize.GiB) // 1 GiB
-	}
-	// Default L1 read cache to 128MB per share (nil = unset, explicit 0 = disabled)
-	if cfg.ReadCacheSize == nil {
-		v := bytesize.ByteSize(128 * bytesize.MiB)
-		cfg.ReadCacheSize = &v
-	}
-	// Path has no default - it's required and must be configured by user
-}
-
-// applyOffloaderDefaults sets offloader defaults for good S3 performance out of the box.
-func applyOffloaderDefaults(cfg *OffloaderConfig) {
-	if cfg.ParallelUploads == 0 {
-		cfg.ParallelUploads = 16
-	}
-	if cfg.ParallelDownloads == 0 {
-		cfg.ParallelDownloads = 32
-	}
-	if cfg.PrefetchBlocks == 0 {
-		cfg.PrefetchBlocks = 64
-	}
-	// SmallFileThreshold defaults to 0 (disabled) - all flushes are async.
-	// FileCache on disk ensures durability. Set to e.g. "4MiB" to re-enable
-	// synchronous flush for small files if needed.
-	// UploadInterval and UploadDelay default to 0 (uses offloader defaults: 2s and 10s).
-
-	// Default prefetch workers to 4 (nil = unset, explicit 0 = disabled).
-	if cfg.PrefetchWorkers == nil {
-		v := 4
-		cfg.PrefetchWorkers = &v
 	}
 }
 
@@ -201,10 +158,6 @@ func GetDefaultConfig() *Config {
 		},
 		Database: store.Config{
 			Type: store.DatabaseTypeSQLite, // Default to SQLite for single-node
-		},
-		Cache: CacheConfig{
-			Path: filepath.Join(os.TempDir(), "dittofs-cache"),
-			Size: bytesize.ByteSize(bytesize.GiB), // 1 GiB
 		},
 		Admin: AdminConfig{
 			Username: "admin",

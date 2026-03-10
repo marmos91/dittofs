@@ -60,21 +60,6 @@ func TestValidate_NegativePort(t *testing.T) {
 	}
 }
 
-func TestValidate_MissingCachePath(t *testing.T) {
-	cfg := GetDefaultConfig()
-	cfg.Cache.Path = ""
-
-	err := Validate(cfg)
-	if err == nil {
-		t.Fatal("Expected validation error for missing cache path")
-	}
-	// The error should mention Cache.Path or cache path in some form
-	errStr := strings.ToLower(err.Error())
-	if !strings.Contains(errStr, "cache") || !strings.Contains(errStr, "path") {
-		t.Errorf("Expected error about cache path, got: %v", err)
-	}
-}
-
 func TestValidate_LogLevelNormalization(t *testing.T) {
 	// Test that validation accepts both uppercase and lowercase log levels
 	testCases := []string{"info", "INFO", "debug", "DEBUG", "warn", "WARN", "error", "ERROR"}

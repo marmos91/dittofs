@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: BlockStore Unification Refactor
 status: completed
-stopped_at: Phase 48 context gathered
-last_updated: "2026-03-10T13:03:55.416Z"
-last_activity: 2026-03-10 — Phase 47 complete, starting Phase 48 6bf7fd09 (docs(state): record phase 48 context session)
+stopped_at: Completed 48-02-PLAN.md
+last_updated: "2026-03-10T15:31:11.071Z"
+last_activity: 2026-03-10 — Phase 48 Plan 02 complete
 progress:
   total_phases: 22
-  completed_phases: 8
-  total_plans: 19
-  completed_plans: 19
-  percent: 99
+  completed_phases: 9
+  total_plans: 21
+  completed_plans: 21
+  percent: 100
 ---
 
 # Project State
@@ -21,17 +21,17 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-09)
 
 **Core value:** Replace confusing layered storage architecture with clean two-tier block store model (Local + Remote) for per-share isolation and maintainability
-**Current focus:** Phase 47 - L1 Read Cache and Prefetch
+**Current focus:** Phase 48 - Auto-Deduced Configuration
 
 ## Current Position
 
-Phase: 47 of 49 (L1 Read Cache and Prefetch)
+Phase: 48 of 49 (Auto-Deduced Configuration)
 Milestone: v4.0 BlockStore Unification Refactor
-Plan: 2 of 2 complete (47-01 and 47-02 done)
-Status: Phase 47 Plan 02 complete
-Last activity: 2026-03-10 — Phase 47 Plan 02 complete
+Plan: 2 of 2 complete (48-02 done)
+Status: Phase 48 complete
+Last activity: 2026-03-10 — Phase 48 Plan 02 complete
 
-Progress: [██████████] 99% (134/135 total plans across all milestones)
+Progress: [██████████] 100% (136/136 total plans across all milestones)
 
 ## Completed Milestones
 
@@ -55,7 +55,7 @@ Progress: [██████████] 99% (134/135 total plans across all m
 - 9 phases defined (41-49)
 - 55 requirements mapped
 - Phases 41-46 complete
-- 19 plans completed (41-01, 41-02, 42-01, 42-02, 43-01, 43-02, 43-03, 44-01, 44-02, 44-03, 45-01, 45-02, 45-03, 45-04, 46-01, 46-02, 46-03, 47-01, 47-02)
+- 21 plans completed (41-01, 41-02, 42-01, 42-02, 43-01, 43-02, 43-03, 44-01, 44-02, 44-03, 45-01, 45-02, 45-03, 45-04, 46-01, 46-02, 46-03, 47-01, 47-02, 48-01, 48-02)
 
 ## Accumulated Context
 
@@ -109,6 +109,13 @@ Recent decisions affecting v4.0 work:
 - [Phase 47-02]: Auto-promote reads from local store after flush (OS page cache makes this free I/O)
 - [Phase 47-02]: ReadCacheBytes in LocalStoreDefaults, PrefetchWorkers in SyncerDefaults (follows existing pattern)
 - [Phase 47-02]: Default ReadCacheSize=128MB, PrefetchWorkers=4 for good out-of-box performance
+- [Phase 48-01]: SystemDetector interface in pkg/blockstore mirrors sysinfo.Detector to avoid internal/ import from pkg/
+- [Phase 48-01]: PrefetchWorkers fixed at 4, not CPU-scaled, per research recommendation
+- [Phase 48-01]: formatBytes helper local to each package (sysinfo and blockstore) to avoid cross-package dependencies
+- [Phase 48]: SystemDetector interface in pkg/blockstore mirrors sysinfo.Detector to avoid internal/ import from pkg/
+- [Phase 48-02]: CacheConfig/OffloaderConfig removed as breaking change (acceptable for experimental project)
+- [Phase 48-02]: SyncerDefaults zero-value fields use buildSyncerConfigFromDefaults internal defaults
+- [Phase 48-02]: Config template replaced cache/offloader with auto-deduction comment block
 
 ### Pending Todos
 
@@ -120,7 +127,7 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-10T13:03:55Z
-Stopped at: Phase 48 context gathered
-Resume file: .planning/phases/48-auto-deduced-configuration/48-CONTEXT.md
-Next action: Plan and execute Phase 48 6bf7fd09 (docs(state): record phase 48 context session)
+Last session: 2026-03-10T14:40:19Z
+Stopped at: Completed 48-02-PLAN.md
+Resume file: None
+Next action: Phase 48 complete

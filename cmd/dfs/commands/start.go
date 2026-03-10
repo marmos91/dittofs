@@ -3,15 +3,15 @@ package commands
 import (
 	"context"
 	"fmt"
-	"math"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/sysinfo"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/api"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -125,22 +125,33 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to initialize runtime: %w", err)
 	}
 
+	// Auto-deduce block store defaults from system resources
+	detector := sysinfo.NewDetector()
+	deduced := blockstore.DeduceDefaults(detector)
+
+	logger.Info("Auto-deduced block store defaults",
+		"local_store_size", blockstore.FormatBytes(deduced.LocalStoreSize),
+		"l1_cache_size", blockstore.FormatBytes(uint64(deduced.L1CacheSize)),
+		"max_pending_size", blockstore.FormatBytes(deduced.MaxPendingSize),
+		"parallel_syncs", deduced.ParallelSyncs,
+		"parallel_fetches", deduced.ParallelFetches,
+		"prefetch_workers", deduced.PrefetchWorkers,
+		"system_memory", blockstore.FormatBytes(detector.AvailableMemory()),
+		"memory_source", detector.MemorySource(),
+		"system_cpus", detector.AvailableCPUs(),
+	)
+
 	// Set per-share defaults BEFORE loading shares (AddShare creates BlockStores).
 	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{
-		MaxSize:        uint64(cfg.Cache.Size),
-		ReadCacheBytes: derefByteSizeToInt64(cfg.Cache.ReadCacheSize),
+		MaxSize:        deduced.LocalStoreSize,
+		MaxMemory:      int64(deduced.MaxPendingSize),
+		ReadCacheBytes: deduced.L1CacheSize,
 	})
 	rt.SetSyncerDefaults(&shares.SyncerDefaults{
-		ParallelUploads:    cfg.Offloader.ParallelUploads,
-		ParallelDownloads:  cfg.Offloader.ParallelDownloads,
-		PrefetchBlocks:     cfg.Offloader.PrefetchBlocks,
-		SmallFileThreshold: clampToInt64(uint64(cfg.Offloader.SmallFileThreshold)),
-		UploadInterval:     cfg.Offloader.UploadInterval,
-		UploadDelay:        cfg.Offloader.UploadDelay,
-		PrefetchWorkers:    derefIntOrZero(cfg.Offloader.PrefetchWorkers),
+		ParallelUploads:   deduced.ParallelSyncs,
+		ParallelDownloads: deduced.ParallelFetches,
+		PrefetchWorkers:   deduced.PrefetchWorkers,
 	})
-	logger.Info("Per-share BlockStore defaults configured", "max_size", cfg.Cache.Size)
-	logger.Info("L1 read cache configuration", "read_cache_size", derefByteSizeToInt64(cfg.Cache.ReadCacheSize), "prefetch_workers", derefIntOrZero(cfg.Offloader.PrefetchWorkers))
 
 	// Load shares (per-share BlockStores are created during AddShare).
 	if err := runtime.LoadSharesFromStore(ctx, rt, cpStore); err != nil {
@@ -277,33 +288,4 @@ func createSMBAdapter(cfg *models.AdapterConfig) (runtime.ProtocolAdapter, error
 	}
 
 	return smb.New(smbCfg), nil
-}
-
-// clampToInt64 safely converts a uint64 to int64, clamping at math.MaxInt64.
-func clampToInt64(v uint64) int64 {
-	if v > uint64(math.MaxInt64) {
-		return math.MaxInt64
-	}
-	return int64(v)
-}
-
-// derefByteSizeToInt64 dereferences a *bytesize.ByteSize to int64, clamping at math.MaxInt64.
-// Returns 0 when the pointer is nil (unset/disabled).
-// ApplyDefaults sets a non-nil default for unset pointers, so a nil value here
-// would only occur if user code explicitly sets it to nil after defaults.
-// In normal config flow, an explicit 0 in the config file produces a non-nil
-// pointer to 0, which correctly disables the feature.
-func derefByteSizeToInt64(v *bytesize.ByteSize) int64 {
-	if v == nil {
-		return 0
-	}
-	return clampToInt64(uint64(*v))
-}
-
-// derefIntOrZero dereferences a *int, returning 0 when nil.
-func derefIntOrZero(v *int) int {
-	if v == nil {
-		return 0
-	}
-	return *v
 }

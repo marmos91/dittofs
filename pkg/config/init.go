@@ -132,37 +132,20 @@ controlplane:
     # Refresh token lifetime
     refresh_token_duration: 168h  # 7 days
 
-# Cache configuration (WAL-backed, mandatory for crash recovery)
-# All writes go through the WAL cache for durability
-cache:
-  # Directory path for the cache WAL file (required)
-  path: "` + yamlSafePath(cfg.Cache.Path) + `"
-  # Maximum cache size (supports human-readable formats: "1GB", "512MB", "10Gi")
-  size: 1Gi
-  # Maximum pending (dirty, not yet uploaded) data size.
-  # When exceeded, writes block until the offloader drains data to backend storage.
-  # Increase for slow backends (S3) or high write throughput.
-  # Default: 2GB
-  # max_pending_size: 2Gi
-
-# Background offloader configuration
-# Controls how cached data is transferred to the backend block store
-# These defaults are tuned for good S3 performance out of the box.
-offloader:
-  # Number of concurrent block uploads to backend storage
-  # Higher values increase throughput for high-latency backends (S3)
-  # Default: 16
-  parallel_uploads: 16
-  # Number of concurrent block downloads per file
-  # Default: 8
-  parallel_downloads: 8
-  # Number of blocks to prefetch ahead of sequential reads
-  # Default: 16 (64MB lookahead at 4MB block size)
-  prefetch_blocks: 16
-  # Files smaller than this are flushed synchronously during Flush().
-  # Set to 0 to disable (all files use async flush, WAL ensures durability).
-  # Default: 0 (disabled)
-  small_file_threshold: 0
+# Block Store Defaults
+# DittoFS auto-detects system resources (memory, CPU) at startup and
+# derives optimal block store settings per share:
+#   - LocalStoreSize: 25% of available memory (per share)
+#   - L1CacheSize: 12.5% of available memory (per share)
+#   - ParallelSyncs: max(4, CPU count)
+#   - ParallelFetches: max(8, CPU count * 2)
+#
+# Override per-share via dfsctl:
+#   dfsctl share create --name /data --metadata my-meta --local my-local \
+#     --local-store-size 4Gi --l1-cache-size 512Mi
+#
+# View current deduced values:
+#   dfs config show --deduced
 
 # Initial admin user configuration
 # This is used to bootstrap the first admin user

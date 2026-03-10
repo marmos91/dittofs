@@ -18,10 +18,6 @@ func TestLoad_DefaultConfig(t *testing.T) {
 logging:
   level: "INFO"
 
-cache:
-  path: "` + yamlSafePath(tmpDir) + `/cache"
-  size: 100Mi
-
 database:
   type: sqlite
 
@@ -106,10 +102,6 @@ func TestLoad_TOML(t *testing.T) {
 [logging]
 level = "WARN"
 format = "json"
-
-[cache]
-path = "` + yamlSafePath(tmpDir) + `/cache"
-size = "100Mi"
 
 [database]
 type = "sqlite"
@@ -257,10 +249,6 @@ func TestLoad_EnvironmentVariables(t *testing.T) {
 	configContent := `
 logging:
   level: "INFO"
-
-cache:
-  path: "` + yamlSafePath(tmpDir) + `/cache"
-  size: 100Mi
 
 database:
   type: sqlite
