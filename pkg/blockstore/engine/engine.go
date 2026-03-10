@@ -56,8 +56,9 @@ type BlockStore struct {
 	remote remote.RemoteStore
 	syncer *blocksync.Syncer
 
-	readCache  *readcache.ReadCache  // nil when disabled (ReadCacheBytes=0)
-	prefetcher *readcache.Prefetcher // nil when disabled (PrefetchWorkers=0 or readCache nil)
+	readCache      *readcache.ReadCache  // nil when disabled (ReadCacheBytes=0)
+	readCacheBytes int64                 // L1 budget; used to cap flush promotion
+	prefetcher     *readcache.Prefetcher // nil when disabled (PrefetchWorkers=0 or readCache nil)
 
 	prefetchWorkers int // stored from config, used in Start()
 }
@@ -77,6 +78,7 @@ func New(cfg Config) (*BlockStore, error) {
 		remote:          cfg.Remote,
 		syncer:          cfg.Syncer,
 		readCache:       readcache.New(cfg.ReadCacheBytes),
+		readCacheBytes:  cfg.ReadCacheBytes,
 		prefetchWorkers: cfg.PrefetchWorkers,
 	}, nil
 }
@@ -231,7 +233,8 @@ func (bs *BlockStore) Delete(ctx context.Context, payloadID string) error {
 }
 
 // Flush ensures all dirty data for a payload is persisted.
-// After flush, auto-promotes flushed block data into the L1 cache.
+// After flush, auto-promotes flushed block data into the L1 cache if the file
+// fits within the L1 budget. Large files are skipped to avoid thrashing.
 // The data is in the OS page cache after flush, so the promotion read is essentially free.
 func (bs *BlockStore) Flush(ctx context.Context, payloadID string) (*blockstore.FlushResult, error) {
 	result, err := bs.syncer.Flush(ctx, payloadID)
@@ -243,7 +246,7 @@ func (bs *BlockStore) Flush(ctx context.Context, payloadID string) (*blockstore.
 	// Skip for files larger than L1 budget to avoid thrashing the cache and GC pressure.
 	if bs.readCache != nil {
 		size, found := bs.local.GetFileSize(ctx, payloadID)
-		if found && size > 0 && int64(size) <= bs.readCache.MaxBytes() {
+		if found && size > 0 && bs.readCacheBytes > 0 && int64(size) <= bs.readCacheBytes {
 			bs.fillL1FromRead(ctx, payloadID, 0, size)
 		}
 	}

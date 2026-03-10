@@ -92,7 +92,9 @@ func TestRegisterMetadataStore(t *testing.T) {
 func TestGetMetadataStore(t *testing.T) {
 	rt := New(nil)
 	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
-	_ = rt.RegisterMetadataStore("test-store", metaStore)
+	if err := rt.RegisterMetadataStore("test-store", metaStore); err != nil {
+		t.Fatalf("RegisterMetadataStore failed: %v", err)
+	}
 
 	t.Run("existing store", func(t *testing.T) {
 		store, err := rt.GetMetadataStore("test-store")
@@ -123,8 +125,12 @@ func TestListMetadataStores(t *testing.T) {
 	})
 
 	t.Run("with registered stores", func(t *testing.T) {
-		_ = rt.RegisterMetadataStore("store1", memory.NewMemoryMetadataStoreWithDefaults())
-		_ = rt.RegisterMetadataStore("store2", memory.NewMemoryMetadataStoreWithDefaults())
+		if err := rt.RegisterMetadataStore("store1", memory.NewMemoryMetadataStoreWithDefaults()); err != nil {
+			t.Fatalf("RegisterMetadataStore failed: %v", err)
+		}
+		if err := rt.RegisterMetadataStore("store2", memory.NewMemoryMetadataStoreWithDefaults()); err != nil {
+			t.Fatalf("RegisterMetadataStore failed: %v", err)
+		}
 
 		names := rt.ListMetadataStores()
 		if len(names) != 2 {
@@ -140,7 +146,9 @@ func TestCountMetadataStores(t *testing.T) {
 		t.Errorf("expected 0, got %d", rt.CountMetadataStores())
 	}
 
-	_ = rt.RegisterMetadataStore("store1", memory.NewMemoryMetadataStoreWithDefaults())
+	if err := rt.RegisterMetadataStore("store1", memory.NewMemoryMetadataStoreWithDefaults()); err != nil {
+		t.Fatalf("RegisterMetadataStore failed: %v", err)
+	}
 	if rt.CountMetadataStores() != 1 {
 		t.Errorf("expected 1, got %d", rt.CountMetadataStores())
 	}
@@ -229,7 +237,9 @@ func TestShareOperations(t *testing.T) {
 	rt := New(nil)
 	ctx := context.Background()
 	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
-	_ = rt.RegisterMetadataStore("test-meta", metaStore)
+	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
+		t.Fatalf("RegisterMetadataStore failed: %v", err)
+	}
 
 	t.Run("add share", func(t *testing.T) {
 		config := &ShareConfig{
@@ -483,13 +493,17 @@ func TestGetMetadataStoreForShare(t *testing.T) {
 	rt := New(nil)
 	ctx := context.Background()
 	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
-	_ = rt.RegisterMetadataStore("test-meta", metaStore)
+	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
+		t.Fatalf("RegisterMetadataStore failed: %v", err)
+	}
 
 	config := &ShareConfig{
 		Name:          "/export",
 		MetadataStore: "test-meta",
 	}
-	_ = rt.AddShare(ctx, config)
+	if err := rt.AddShare(ctx, config); err != nil {
+		t.Fatalf("AddShare failed: %v", err)
+	}
 
 	t.Run("existing share", func(t *testing.T) {
 		store, err := rt.GetMetadataStoreForShare("/export")
@@ -627,7 +641,9 @@ func TestCloseMetadataStores(t *testing.T) {
 
 	// Register a memory store (which implements io.Closer via its Close method if any)
 	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
-	_ = rt.RegisterMetadataStore("test-store", metaStore)
+	if err := rt.RegisterMetadataStore("test-store", metaStore); err != nil {
+		t.Fatalf("RegisterMetadataStore failed: %v", err)
+	}
 
 	// CloseMetadataStores should not panic and should handle stores gracefully
 	rt.CloseMetadataStores()

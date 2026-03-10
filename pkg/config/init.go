@@ -155,7 +155,7 @@ admin:
   # Admin email (optional)
   email: ""
   # Admin password hash (bcrypt)
-  # Set during 'dittofs init --admin' or leave empty for auto-generated password on first start
+  # Set during 'dfs init --admin' or leave empty for auto-generated password on first start
   # To generate manually: htpasswd -nbB "" "your-password" | cut -d: -f2
   password_hash: ""
 `
