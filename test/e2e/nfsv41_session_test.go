@@ -473,15 +473,15 @@ func TestNFSv41SessionRecoveryAfterRestart(t *testing.T) {
 	runner1 := helpers.LoginAsAdmin(t, sp1.APIURL())
 
 	metaStore := helpers.UniqueTestName("recoverymeta")
-	payloadStore := helpers.UniqueTestName("recoverypayload")
+	localStore := helpers.UniqueTestName("recoverypayload")
 
 	_, err := runner1.CreateMetadataStore(metaStore, "memory")
 	require.NoError(t, err)
 
-	_, err = runner1.CreatePayloadStore(payloadStore, "memory")
+	_, err = runner1.CreateLocalBlockStore(localStore, "memory")
 	require.NoError(t, err)
 
-	_, err = runner1.CreateShare("/export", metaStore, payloadStore)
+	_, err = runner1.CreateShare("/export", metaStore, localStore)
 	require.NoError(t, err)
 
 	nfsPort := helpers.FindFreePort(t)
@@ -509,17 +509,17 @@ func TestNFSv41SessionRecoveryAfterRestart(t *testing.T) {
 	runner2 := helpers.LoginAsAdmin(t, sp2.APIURL())
 
 	metaStore2 := helpers.UniqueTestName("recoverymeta2")
-	payloadStore2 := helpers.UniqueTestName("recoverypayload2")
+	localStore2 := helpers.UniqueTestName("recoverypayload2")
 
 	_, err = runner2.CreateMetadataStore(metaStore2, "memory")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner2.DeleteMetadataStore(metaStore2) })
 
-	_, err = runner2.CreatePayloadStore(payloadStore2, "memory")
+	_, err = runner2.CreateLocalBlockStore(localStore2, "memory")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner2.DeletePayloadStore(payloadStore2) })
+	t.Cleanup(func() { _ = runner2.DeleteLocalBlockStore(localStore2) })
 
-	_, err = runner2.CreateShare("/export", metaStore2, payloadStore2)
+	_, err = runner2.CreateShare("/export", metaStore2, localStore2)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner2.DeleteShare("/export") })
 

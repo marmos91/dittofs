@@ -11,14 +11,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestPayloadStoresCRUD validates payload store management operations via the dfsctl CLI.
-// These tests verify creation, listing, editing, and deletion of payload stores,
+// TestBlockStoresCRUD validates block store management operations via the dfsctl CLI.
+// These tests verify creation, listing, editing, and deletion of local block stores,
 // including proper error handling for stores in use by shares.
-//
-// Covers requirements PLS-01 through PLS-07 from the E2E test plan.
-func TestPayloadStoresCRUD(t *testing.T) {
+func TestBlockStoresCRUD(t *testing.T) {
 	if testing.Short() {
-		t.Skip("Skipping payload stores tests in short mode")
+		t.Skip("Skipping block stores tests in short mode")
 	}
 
 	// Start server with automatic cleanup on test completion
@@ -30,65 +28,64 @@ func TestPayloadStoresCRUD(t *testing.T) {
 	// Login as admin and get CLI runner
 	cli := helpers.LoginAsAdmin(t, serverURL)
 
-	// PLS-01: Create memory payload store
+	// Create memory block store
 	t.Run("create memory store", func(t *testing.T) {
 		t.Parallel()
 
-		storeName := helpers.UniqueTestName("payload_mem")
+		storeName := helpers.UniqueTestName("block_mem")
 		t.Cleanup(func() {
-			_ = cli.DeletePayloadStore(storeName)
+			_ = cli.DeleteLocalBlockStore(storeName)
 		})
 
-		store, err := cli.CreatePayloadStore(storeName, "memory")
-		require.NoError(t, err, "Should create memory payload store")
+		store, err := cli.CreateLocalBlockStore(storeName, "memory")
+		require.NoError(t, err, "Should create memory block store")
 
 		assert.Equal(t, storeName, store.Name, "Store name should match")
 		assert.Equal(t, "memory", store.Type, "Store type should be memory")
 	})
 
-	// PLS-02: Create S3 payload store
+	// Create S3 block store (remote)
 	t.Run("create s3 store", func(t *testing.T) {
 		t.Parallel()
 
-		storeName := helpers.UniqueTestName("payload_s3")
+		storeName := helpers.UniqueTestName("block_s3")
 
 		t.Cleanup(func() {
-			_ = cli.DeletePayloadStore(storeName)
+			_ = cli.DeleteLocalBlockStore(storeName)
 		})
 
 		// Use raw config to test S3 store creation without actual S3 connectivity
-		// This tests CLI acceptance, not S3 connectivity
 		s3Config := `{"bucket":"test-bucket","region":"us-east-1"}`
-		store, err := cli.CreatePayloadStore(storeName, "s3",
-			helpers.WithPayloadRawConfig(s3Config))
-		require.NoError(t, err, "Should create S3 payload store")
+		store, err := cli.CreateLocalBlockStore(storeName, "s3",
+			helpers.WithBlockRawConfig(s3Config))
+		require.NoError(t, err, "Should create S3 block store")
 
 		assert.Equal(t, storeName, store.Name, "Store name should match")
 		assert.Equal(t, "s3", store.Type, "Store type should be s3")
 	})
 
-	// PLS-04: List payload stores
+	// List block stores
 	t.Run("list stores", func(t *testing.T) {
 		t.Parallel()
 
-		store1Name := helpers.UniqueTestName("payload_list1")
-		store2Name := helpers.UniqueTestName("payload_list2")
+		store1Name := helpers.UniqueTestName("block_list1")
+		store2Name := helpers.UniqueTestName("block_list2")
 
 		t.Cleanup(func() {
-			_ = cli.DeletePayloadStore(store1Name)
-			_ = cli.DeletePayloadStore(store2Name)
+			_ = cli.DeleteLocalBlockStore(store1Name)
+			_ = cli.DeleteLocalBlockStore(store2Name)
 		})
 
 		// Create two stores
-		_, err := cli.CreatePayloadStore(store1Name, "memory")
+		_, err := cli.CreateLocalBlockStore(store1Name, "memory")
 		require.NoError(t, err, "Should create first store")
 
-		_, err = cli.CreatePayloadStore(store2Name, "memory")
+		_, err = cli.CreateLocalBlockStore(store2Name, "memory")
 		require.NoError(t, err, "Should create second store")
 
 		// List all stores
-		stores, err := cli.ListPayloadStores()
-		require.NoError(t, err, "Should list payload stores")
+		stores, err := cli.ListLocalBlockStores()
+		require.NoError(t, err, "Should list block stores")
 
 		// Find our created stores
 		var found1, found2 bool
@@ -105,21 +102,20 @@ func TestPayloadStoresCRUD(t *testing.T) {
 		assert.True(t, found2, "Should find second store in list")
 	})
 
-	// PLS-03: Delete store
+	// Delete store
 	t.Run("delete store", func(t *testing.T) {
-		// Not parallel - write operations can cause SQLite lock contention
-		storeName := helpers.UniqueTestName("payload_del")
+		storeName := helpers.UniqueTestName("block_del")
 
 		// Create store
-		_, err := cli.CreatePayloadStore(storeName, "memory")
+		_, err := cli.CreateLocalBlockStore(storeName, "memory")
 		require.NoError(t, err, "Should create store")
 
 		// Delete store
-		err = cli.DeletePayloadStore(storeName)
+		err = cli.DeleteLocalBlockStore(storeName)
 		require.NoError(t, err, "Should delete store")
 
 		// Verify store no longer exists
-		_, err = cli.GetPayloadStore(storeName)
+		_, err = cli.GetLocalBlockStore(storeName)
 		assert.Error(t, err, "Should fail to get deleted store")
 		assert.Contains(t, err.Error(), "not found", "Error should indicate store not found")
 	})
@@ -128,18 +124,18 @@ func TestPayloadStoresCRUD(t *testing.T) {
 	t.Run("duplicate name rejected", func(t *testing.T) {
 		t.Parallel()
 
-		storeName := helpers.UniqueTestName("payload_dup")
+		storeName := helpers.UniqueTestName("block_dup")
 
 		t.Cleanup(func() {
-			_ = cli.DeletePayloadStore(storeName)
+			_ = cli.DeleteLocalBlockStore(storeName)
 		})
 
 		// Create first store
-		_, err := cli.CreatePayloadStore(storeName, "memory")
+		_, err := cli.CreateLocalBlockStore(storeName, "memory")
 		require.NoError(t, err, "Should create first store")
 
 		// Try to create with same name
-		_, err = cli.CreatePayloadStore(storeName, "memory")
+		_, err = cli.CreateLocalBlockStore(storeName, "memory")
 		require.Error(t, err, "Should reject duplicate store name")
 
 		// Error should indicate conflict/already exists
@@ -151,17 +147,15 @@ func TestPayloadStoresCRUD(t *testing.T) {
 			"Error should indicate store already exists: %s", err.Error())
 	})
 
-	// PLS-07: Cannot delete store in use by share
-	// This test is NOT parallel because it creates and deletes a share
+	// Cannot delete store in use by share
 	t.Run("cannot delete store in use", func(t *testing.T) {
 		metaStoreName := helpers.UniqueTestName("meta_inuse")
-		payloadStoreName := helpers.UniqueTestName("payload_inuse")
+		localStoreName := helpers.UniqueTestName("block_inuse")
 		shareName := "/" + helpers.UniqueTestName("share_inuse")
 
 		t.Cleanup(func() {
-			// Cleanup in reverse dependency order
 			_ = cli.DeleteShare(shareName)
-			_ = cli.DeletePayloadStore(payloadStoreName)
+			_ = cli.DeleteLocalBlockStore(localStoreName)
 			_ = cli.DeleteMetadataStore(metaStoreName)
 		})
 
@@ -169,17 +163,17 @@ func TestPayloadStoresCRUD(t *testing.T) {
 		_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 		require.NoError(t, err, "Should create metadata store")
 
-		// Create payload store
-		_, err = cli.CreatePayloadStore(payloadStoreName, "memory")
-		require.NoError(t, err, "Should create payload store")
+		// Create local block store
+		_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
+		require.NoError(t, err, "Should create block store")
 
 		// Create share referencing both stores
-		_, err = cli.CreateShare(shareName, metaStoreName, payloadStoreName)
+		_, err = cli.CreateShare(shareName, metaStoreName, localStoreName)
 		require.NoError(t, err, "Should create share")
 
-		// Try to delete payload store - should fail because share is using it
-		err = cli.DeletePayloadStore(payloadStoreName)
-		require.Error(t, err, "Should reject deletion of payload store in use")
+		// Try to delete block store - should fail because share is using it
+		err = cli.DeleteLocalBlockStore(localStoreName)
+		require.Error(t, err, "Should reject deletion of block store in use")
 
 		// Error should indicate store is in use
 		errStr := strings.ToLower(err.Error())
@@ -194,26 +188,26 @@ func TestPayloadStoresCRUD(t *testing.T) {
 		require.NoError(t, err, "Should delete share")
 
 		// Now deletion should succeed
-		err = cli.DeletePayloadStore(payloadStoreName)
-		require.NoError(t, err, "Should delete payload store after share deletion")
+		err = cli.DeleteLocalBlockStore(localStoreName)
+		require.NoError(t, err, "Should delete block store after share deletion")
 	})
 
-	// Additional test: Get store by name
+	// Get store by name
 	t.Run("get store by name", func(t *testing.T) {
 		t.Parallel()
 
-		storeName := helpers.UniqueTestName("payload_get")
+		storeName := helpers.UniqueTestName("block_get")
 
 		t.Cleanup(func() {
-			_ = cli.DeletePayloadStore(storeName)
+			_ = cli.DeleteLocalBlockStore(storeName)
 		})
 
 		// Create store
-		created, err := cli.CreatePayloadStore(storeName, "memory")
+		created, err := cli.CreateLocalBlockStore(storeName, "memory")
 		require.NoError(t, err, "Should create store")
 
 		// Get store by name
-		fetched, err := cli.GetPayloadStore(storeName)
+		fetched, err := cli.GetLocalBlockStore(storeName)
 		require.NoError(t, err, "Should get store by name")
 
 		assert.Equal(t, created.Name, fetched.Name, "Names should match")

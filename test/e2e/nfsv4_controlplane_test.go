@@ -174,15 +174,15 @@ func TestNFSv4ControlPlaneNetgroup(t *testing.T) {
 
 			// Create stores
 			metaStore := helpers.UniqueTestName("meta")
-			payloadStore := helpers.UniqueTestName("payload")
+			localStore := helpers.UniqueTestName("local")
 
 			_, err := runner.CreateMetadataStore(metaStore, "memory")
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
 
-			_, err = runner.CreatePayloadStore(payloadStore, "memory")
+			_, err = runner.CreateLocalBlockStore(localStore, "memory")
 			require.NoError(t, err)
-			t.Cleanup(func() { _ = runner.DeletePayloadStore(payloadStore) })
+			t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localStore) })
 
 			// Step 1: Create netgroup with localhost (127.0.0.1)
 			ngName := helpers.UniqueTestName("ng-localhost")
@@ -195,7 +195,7 @@ func TestNFSv4ControlPlaneNetgroup(t *testing.T) {
 
 			// Step 2: Create share (netgroup association now via adapter config)
 			shareName := "/export"
-			share := helpers.CreateShareWithPolicy(t, client, shareName, metaStore, payloadStore, nil)
+			share := helpers.CreateShareWithPolicy(t, client, shareName, metaStore, localStore, nil)
 			t.Cleanup(func() { helpers.CleanupShare(client, shareName) })
 			assert.Equal(t, shareName, share.Name)
 			t.Log("Step 2: Share created")

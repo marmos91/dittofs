@@ -26,7 +26,7 @@ import (
 // =============================================================================
 
 // TestStoreMatrixV4 validates that all 6 combinations of metadata stores
-// (memory, badger, postgres) and payload stores (memory, s3) work
+// (memory, badger, postgres) and block stores (memory, s3) work
 // correctly with file operations across BOTH NFSv3 and NFSv4.0 mounts.
 //
 // This produces 12 subtests: 2 versions x 6 backend combinations.
@@ -93,7 +93,7 @@ func runStoreMatrixVersionTest(t *testing.T, version string, sc storeConfig, pgH
 
 	// Create unique store names for this test
 	metaStoreName := helpers.UniqueTestName("meta")
-	payloadStoreName := helpers.UniqueTestName("payload")
+	localStoreName := helpers.UniqueTestName("local")
 	shareName := "/export-v4matrix"
 
 	// Create metadata store based on type
@@ -126,8 +126,8 @@ func runStoreMatrixVersionTest(t *testing.T, version string, sc storeConfig, pgH
 		_ = runner.DeleteMetadataStore(metaStoreName)
 	})
 
-	// Create payload store based on type
-	var payloadOpts []helpers.PayloadStoreOption
+	// Create block store based on type
+	var payloadOpts []helpers.BlockStoreOption
 	switch sc.payloadType {
 	case "memory":
 		// No options needed
@@ -142,7 +142,7 @@ func runStoreMatrixVersionTest(t *testing.T, version string, sc storeConfig, pgH
 			lsHelper.CleanupBucket(context.Background(), bucketName)
 		})
 
-		payloadOpts = append(payloadOpts, helpers.WithPayloadS3Config(
+		payloadOpts = append(payloadOpts, helpers.WithBlockS3Config(
 			bucketName,
 			"us-east-1",
 			lsHelper.Endpoint,
@@ -151,14 +151,14 @@ func runStoreMatrixVersionTest(t *testing.T, version string, sc storeConfig, pgH
 		))
 	}
 
-	_, err = runner.CreatePayloadStore(payloadStoreName, sc.payloadType, payloadOpts...)
-	require.NoError(t, err, "Should create payload store (%s)", sc.payloadType)
+	_, err = runner.CreateLocalBlockStore(localStoreName, sc.payloadType, payloadOpts...)
+	require.NoError(t, err, "Should create block store (%s)", sc.payloadType)
 	t.Cleanup(func() {
-		_ = runner.DeletePayloadStore(payloadStoreName)
+		_ = runner.DeleteLocalBlockStore(localStoreName)
 	})
 
 	// Create the share using the stores
-	_, err = runner.CreateShare(shareName, metaStoreName, payloadStoreName)
+	_, err = runner.CreateShare(shareName, metaStoreName, localStoreName)
 	require.NoError(t, err, "Should create share")
 	t.Cleanup(func() {
 		_ = runner.DeleteShare(shareName)
@@ -316,32 +316,32 @@ func TestMultiShareConcurrent(t *testing.T) {
 
 	// Create stores for share alpha
 	metaAlpha := helpers.UniqueTestName("meta-alpha")
-	payloadAlpha := helpers.UniqueTestName("payload-alpha")
+	localAlpha := helpers.UniqueTestName("local-alpha")
 	_, err := runner.CreateMetadataStore(metaAlpha, "memory")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaAlpha) })
 
-	_, err = runner.CreatePayloadStore(payloadAlpha, "memory")
+	_, err = runner.CreateLocalBlockStore(localAlpha, "memory")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeletePayloadStore(payloadAlpha) })
+	t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localAlpha) })
 
 	// Create stores for share beta
 	metaBeta := helpers.UniqueTestName("meta-beta")
-	payloadBeta := helpers.UniqueTestName("payload-beta")
+	localBeta := helpers.UniqueTestName("local-beta")
 	_, err = runner.CreateMetadataStore(metaBeta, "memory")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaBeta) })
 
-	_, err = runner.CreatePayloadStore(payloadBeta, "memory")
+	_, err = runner.CreateLocalBlockStore(localBeta, "memory")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeletePayloadStore(payloadBeta) })
+	t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localBeta) })
 
 	// Create two shares
-	_, err = runner.CreateShare("/share-alpha", metaAlpha, payloadAlpha)
+	_, err = runner.CreateShare("/share-alpha", metaAlpha, localAlpha)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteShare("/share-alpha") })
 
-	_, err = runner.CreateShare("/share-beta", metaBeta, payloadBeta)
+	_, err = runner.CreateShare("/share-beta", metaBeta, localBeta)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteShare("/share-beta") })
 

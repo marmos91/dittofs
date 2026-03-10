@@ -653,7 +653,7 @@ spec:
                 type: object
               s3:
                 description: |-
-                  S3 configures S3-compatible payload store credentials
+                  S3 configures S3-compatible block store credentials
                   Credentials are injected as environment variables for the AWS SDK
                 properties:
                   bucket:

@@ -355,7 +355,7 @@ Plans:
 **Verification**: `go build ./...` && `go test -tags=e2e ./test/e2e/...` && documentation review
 **Plans**: 5 plans
 Plans:
-- [ ] 49-01-PLAN.md — Cache CLI/API and backward compatibility clean break
+- [x] 49-01-PLAN.md — Cache CLI/API and backward compatibility clean break
 - [ ] 49-02-PLAN.md — Full legacy payload store cleanup across repository
 - [ ] 49-03-PLAN.md — 18-combo E2E store matrix and multi-share isolation tests
 - [ ] 49-04-PLAN.md — Cache-tiers benchmark workload
@@ -764,7 +764,7 @@ v3.8 (33-40.5) -> v4.2 (57-62) -> v4.0 (41-49) -> v4.6 (63-67) -> v4.7 (68-71) -
 | 46. Per-Share Block Store Wiring | v4.0 | 0/? | Not started | - |
 | 47. L1 Read Cache, Disk Tier, Prefetch | v4.0 | 0/? | Not started | - |
 | 48. Auto-Deduced Config + Memory Safety | v4.0 | 0/? | Not started | - |
-| 49. Testing and Documentation | v4.0 | 0/5 | Not started | - |
+| 49. Testing and Documentation | 2/5 | In Progress|  | - |
 | 63. SMB3 Signing Fix | v4.6 | 0/? | Not started | - |
 | 64. Protocol Correctness and Hot-Reload | v4.6 | 0/? | Not started | - |
 | 65. Storage Observability and Quotas | v4.6 | 0/? | Not started | - |

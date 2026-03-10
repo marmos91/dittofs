@@ -14,8 +14,8 @@
 #   memory         - Memory metadata store (default)
 #   badger         - BadgerDB metadata store
 #   postgres       - PostgreSQL metadata store (requires running postgres)
-#   memory-content - Memory metadata + memory payload store
-#   cache-s3       - Memory metadata + S3 payload store (requires localstack)
+#   memory-content - Memory metadata + memory block store
+#   cache-s3       - Memory metadata + S3 block store (requires localstack)
 #
 # NFS versions:
 #   3   - NFSv3 (default, backward compatible)

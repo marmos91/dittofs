@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v4.6
 milestone_name: Production Hardening
-status: ready_to_plan
-stopped_at: Roadmap created, ready to plan Phase 63
-last_updated: "2026-03-09"
-last_activity: 2026-03-09 — v4.6 roadmap created (phases 63-67)
+status: executing
+stopped_at: Completed 49-02-PLAN.md (payload store rename)
+last_updated: "2026-03-10"
+last_activity: 2026-03-10 — Completed Phase 49 Plan 02 (payload store rename)
 progress:
   total_phases: 5
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  total_plans: 5
+  completed_plans: 2
+  percent: 40
 ---
 
 # Project State
@@ -21,17 +21,17 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-09)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** v4.6 Production Hardening — ready to plan Phase 63
+**Current focus:** Phase 49 Testing & Documentation — executing Plan 03
 
 ## Current Position
 
-Phase: 63 (SMB3 Signing Fix) — first of 5 phases (63-67)
+Phase: 49 (Testing & Documentation)
 Milestone: v4.6 Production Hardening
-Plan: —
-Status: Ready to plan
-Last activity: 2026-03-09 — v4.6 roadmap created
+Plan: 3 of 5
+Status: Executing
+Last activity: 2026-03-10 — Completed Plan 02 (payload store rename)
 
-Progress: [..........] 0%
+Progress: [####......] 40%
 
 ## Completed Milestones
 
@@ -48,8 +48,13 @@ Progress: [..........] 0%
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 146+ (across 7 shipped milestones)
+- Total plans completed: 147+ (across 7 shipped milestones + Phase 49)
 - Average: ~4.6 plans/day
+
+| Phase | Plan | Duration | Tasks | Files |
+|-------|------|----------|-------|-------|
+| 49    | 01   | 8min     | 2     | 13    |
+| 49    | 02   | 12min    | 2     | 47    |
 
 **v4.6 Current Milestone:**
 - 5 phases (63-67), 7 requirements
@@ -59,6 +64,11 @@ Progress: [..........] 0%
 
 ### Decisions
 
+- **49-02 migration SQL preserved**: gorm.go migration code keeps old payload_stores table references since it migrates FROM those names
+- **49-02 legacy aliases**: Used type aliases (PayloadStore = BlockStore) for safe incremental migration
+- **49-02 config validator**: Added legacy payload key detection to warn users about deprecated YAML keys
+- **49-01 cache types**: Cache response types defined at each layer (engine, shares, apiclient) following existing pattern rather than shared package
+- **49-01 eviction safety**: Refuse local block eviction without remote store to prevent data loss
 - **v4.6 phase grouping**: SMB signing (#252) standalone due to crypto complexity; NTLM flags (#215) paired with share hot-reload (#235) as both are protocol correctness; payload stats (#216) paired with quotas (#232) as stats feeds into quota reporting; client tracking (#157) and trash (#190) each standalone
 - **Three issues already implemented**: #213 (oplock break), #119 (portmapper), #217 (session limits) — found done during v4.6 scoping
 - Previous decisions in PROJECT.md Key Decisions table
@@ -73,6 +83,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-09
-Stopped at: v4.6 roadmap created with 5 phases (63-67)
-Next action: `/gsd:plan-phase 63` to plan SMB3 Signing Fix
+Last session: 2026-03-10
+Stopped at: Completed 49-02-PLAN.md (payload store rename)
+Next action: Execute 49-03-PLAN.md

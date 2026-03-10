@@ -49,7 +49,7 @@ type DittoServerSpec struct {
 	// Service configures the Kubernetes Service
 	Service ServiceSpec `json:"service,omitempty"`
 
-	// S3 configures S3-compatible payload store credentials
+	// S3 configures S3-compatible block store credentials
 	// Credentials are injected as environment variables for the AWS SDK
 	// +optional
 	S3 *S3StoreConfig `json:"s3,omitempty"`
@@ -311,7 +311,7 @@ type S3CredentialsSecretRef struct {
 	EndpointKey string `json:"endpointKey,omitempty"`
 }
 
-// S3StoreConfig configures S3-compatible payload store credentials
+// S3StoreConfig configures S3-compatible block store credentials
 // Note: Actual store creation is done via REST API; this enables
 // the operator to inject S3 credentials as environment variables.
 type S3StoreConfig struct {

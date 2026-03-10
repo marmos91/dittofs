@@ -39,7 +39,7 @@ sudo ./test/posix/teardown-posix.sh
 
 The setup script supports different storage backend combinations:
 
-| Store Type | Metadata Store | Payload Store | Requirements |
+| Store Type | Metadata Store | Block Store | Requirements |
 |------------|----------------|---------------|--------------|
 | `memory` | In-memory | Filesystem | None (default) |
 | `badger` | BadgerDB | Filesystem | None |

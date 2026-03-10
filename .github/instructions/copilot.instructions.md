@@ -1,21 +1,21 @@
 # DittoFS Copilot Reviewer Instructions
 
-You are reviewing pull requests for **DittoFS**, a modular virtual filesystem written in Go that implements NFSv3, NFSv4, and SMB2 protocols with pluggable metadata and payload stores.
+You are reviewing pull requests for **DittoFS**, a modular virtual filesystem written in Go that implements NFSv3, NFSv4, and SMB2 protocols with pluggable metadata and block stores.
 
 ## Project Context
 
 **Architecture Overview:**
 - **Protocol Adapters** (NFS, SMB): Handle protocol-specific operations
-- **Store Registry**: Manages named, reusable metadata and payload stores
+- **Store Registry**: Manages named, reusable metadata and block stores
 - **Metadata Stores**: Manage file structure, attributes, permissions (memory, BadgerDB, PostgreSQL)
-- **Payload Stores**: Manage file data (memory, filesystem, S3)
+- **Block Stores**: Manage file data via local (memory) and remote (S3) backends
 - **Cache Layer**: Unified read/write caching per share
 
 **Key Principles:**
 - **Separation of Concerns**: Protocol handlers only handle protocol logic; business logic belongs in stores
 - **Stateless NFS vs Stateful SMB**: Different connection models
 - **Path-based file handles**: Deterministic, recoverable handles
-- **Two-phase write protocol**: PrepareWrite → PayloadStore.WriteAt → CommitWrite
+- **Two-phase write protocol**: PrepareWrite → BlockStore.WriteAt → CommitWrite
 
 ## Review Focus Areas
 
@@ -51,19 +51,19 @@ You are reviewing pull requests for **DittoFS**, a modular virtual filesystem wr
 **Protocol Handlers (internal/protocol/{nfs,smb}/):**
 - ❌ Protocol handlers should NOT implement business logic (permission checks, file creation, etc.)
 - ✅ Handlers should only: parse requests, extract auth context, call store methods, encode responses
-- ✅ Check handlers delegate to metadata/payload stores correctly
+- ✅ Check handlers delegate to metadata/block stores correctly
 - ❌ Handlers should NOT directly manipulate file attributes or perform authorization
 - ✅ NFS auxiliary protocols (NLM, NSM, Portmap) in internal/protocol/{nlm,nsm,portmap}/
 
-**Store Layer (pkg/metadata/, pkg/payload/):**
+**Store Layer (pkg/metadata/, pkg/blockstore/):**
 - ✅ Metadata stores handle: permissions, file structure, attributes (pkg/metadata/store/{memory,badger,postgres}/)
-- ✅ Payload stores handle: file data read/write operations only (pkg/payload/store/{memory,fs,s3}/)
-- ✅ Verify two-phase write pattern: PrepareWrite → PayloadStore.WriteAt → CommitWrite
+- ✅ Block stores handle: file data read/write operations via local + remote backends (pkg/blockstore/)
+- ✅ Verify two-phase write pattern: PrepareWrite → BlockStore.WriteAt → CommitWrite
 - ✅ Check thread safety (mutexes, atomic operations)
 - ✅ Validate context cancellation is respected
 
 **Cache Layer (pkg/cache/):**
-- ✅ Cache should be payload-store agnostic (no S3/filesystem-specific code)
+- ✅ Cache should be block-store agnostic (no S3/filesystem-specific code)
 - ✅ Verify dirty entry protection (Buffering/Uploading states cannot be evicted)
 - ✅ Check read cache coherency (mtime/size validation)
 - ✅ Ensure background flusher respects inactivity timeout
@@ -91,7 +91,7 @@ You are reviewing pull requests for **DittoFS**, a modular virtual filesystem wr
 - ✅ Use `metadata.EncodeShareHandle()` / `metadata.DecodeFileHandle()` consistently
 - ✅ Use shared helper functions from `pkg/metadata/types.go`
 - ✅ Use error factory functions from `pkg/metadata/errors.go` and `pkg/metadata/errors/errors.go`
-- ✅ Implement `ReadBlockRange` on payload stores for efficient partial reads
+- ✅ Implement `ReadBlockRange` on block stores for efficient partial reads
 
 **Concurrency Safety:**
 - ✅ Check for data races (maps, slices accessed by multiple goroutines)
