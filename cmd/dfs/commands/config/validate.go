@@ -26,36 +26,29 @@ Examples:
 	RunE: runConfigValidate,
 }
 
-func runConfigValidate(cmd *cobra.Command, args []string) error {
-	// Get config path from parent's persistent flag
+func runConfigValidate(cmd *cobra.Command, _ []string) error {
 	configPath, _ := cmd.Flags().GetString("config")
 
-	// Load and validate configuration
 	cfg, err := config.MustLoad(configPath)
 	if err != nil {
 		return err
 	}
 
-	// Determine path for display
 	displayPath := configPath
 	if displayPath == "" {
 		displayPath = config.GetDefaultConfigPath()
 	}
 
-	// Additional validation checks
 	var warnings []string
 
-	// Check JWT secret is configured
 	if !cfg.ControlPlane.HasJWTSecret() {
 		warnings = append(warnings, "JWT secret not configured - API authentication will fail")
 	}
 
-	// Check for legacy 'payload:' YAML key in config file
 	if legacyWarnings := checkLegacyPayloadKey(displayPath); len(legacyWarnings) > 0 {
 		warnings = append(warnings, legacyWarnings...)
 	}
 
-	// Print results
 	fmt.Printf("Configuration file: %s\n", displayPath)
 	fmt.Println("Validation: OK")
 

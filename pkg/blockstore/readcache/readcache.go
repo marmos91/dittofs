@@ -59,7 +59,6 @@ func (c *ReadCache) Get(payloadID string, blockIdx uint64, dest []byte, offset u
 
 	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
 
-	// Lookup under RLock.
 	c.mu.RLock()
 	elem, ok := c.entries[key]
 	if !ok {
@@ -105,14 +104,12 @@ func (c *ReadCache) Put(payloadID string, blockIdx uint64, data []byte, dataSize
 		dataSize = uint32(len(data))
 	}
 
-	// Make a heap copy of the data.
 	heapCopy := make([]byte, dataSize)
 	copy(heapCopy, data[:dataSize])
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Update existing entry.
 	if elem, ok := c.entries[key]; ok {
 		old := elem.Value.(*cacheEntry)
 		c.curBytes -= int64(old.dataSize)
@@ -120,14 +117,12 @@ func (c *ReadCache) Put(payloadID string, blockIdx uint64, data []byte, dataSize
 		old.dataSize = dataSize
 		c.curBytes += int64(dataSize)
 		c.lru.MoveToFront(elem)
-		// Evict if over budget after update (e.g., replacement with larger data).
 		for c.curBytes > c.maxBytes && c.lru.Len() > 1 {
 			c.evictLRU()
 		}
 		return
 	}
 
-	// Insert new entry.
 	entry := &cacheEntry{
 		key:      key,
 		data:     heapCopy,
@@ -137,7 +132,6 @@ func (c *ReadCache) Put(payloadID string, blockIdx uint64, data []byte, dataSize
 	c.entries[key] = elem
 	c.curBytes += int64(dataSize)
 
-	// Update secondary index.
 	idxSet, ok := c.byFile[payloadID]
 	if !ok {
 		idxSet = make(map[uint64]struct{})
@@ -145,7 +139,6 @@ func (c *ReadCache) Put(payloadID string, blockIdx uint64, data []byte, dataSize
 	}
 	idxSet[blockIdx] = struct{}{}
 
-	// Evict LRU entries until under budget.
 	for c.curBytes > c.maxBytes && c.lru.Len() > 1 {
 		c.evictLRU()
 	}
@@ -305,7 +298,6 @@ func (c *ReadCache) removeEntry(elem *list.Element) {
 	entry := elem.Value.(*cacheEntry)
 	c.unlinkEntry(entry.key)
 
-	// Clean up secondary index.
 	if idxSet, ok := c.byFile[entry.key.payloadID]; ok {
 		delete(idxSet, entry.key.blockIdx)
 		if len(idxSet) == 0 {

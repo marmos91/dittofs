@@ -47,7 +47,7 @@ func init() {
 	evictCmd.Flags().Bool("local-only", false, "Evict only local disk cache (preserves L1)")
 }
 
-func runCacheEvict(cmd *cobra.Command, args []string) error {
+func runCacheEvict(cmd *cobra.Command, _ []string) error {
 	client, err := cmdutil.GetAuthenticatedClient()
 	if err != nil {
 		return err

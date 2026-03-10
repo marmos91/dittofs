@@ -256,7 +256,6 @@ func (s *Service) AddShare(
 
 	// Phase 3: Register metadata store.
 	if err := metadataSvc.RegisterStoreForShare(config.Name, metadataStore); err != nil {
-		// Clean up BlockStore (close outside lock).
 		if share.BlockStore != nil {
 			_ = share.BlockStore.Close()
 		}
@@ -271,7 +270,6 @@ func (s *Service) AddShare(
 	s.mu.Lock()
 	if _, exists := s.registry[config.Name]; exists {
 		s.mu.Unlock()
-		// Race: another goroutine registered the same share. Roll back.
 		if share.BlockStore != nil {
 			_ = share.BlockStore.Close()
 		}
@@ -386,13 +384,11 @@ func (s *Service) createBlockStoreForShare(
 		return fmt.Errorf("block store config %q has kind %q, expected %q", config.LocalBlockStoreID, localCfg.Kind, models.BlockStoreKindLocal)
 	}
 
-	// Create local store.
 	localStore, err := CreateLocalStoreFromConfig(ctx, localCfg.Type, localCfg, config.Name, localStoreDefaults, fileBlockStore)
 	if err != nil {
 		return fmt.Errorf("failed to create local store: %w", err)
 	}
 
-	// Resolve optional remote block store.
 	var remoteStore remote.RemoteStore
 	var remoteConfigID string
 	if config.RemoteBlockStoreID != "" {
@@ -405,15 +401,13 @@ func (s *Service) createBlockStoreForShare(
 
 	localOnly := remoteStore == nil
 
-	// Configure local store behavior based on remote presence.
 	localStore.SetSkipFsync(!localOnly)
 	localStore.SetEvictionEnabled(!localOnly)
 
-	// Build syncer config from defaults.
 	syncerCfg := buildSyncerConfigFromDefaults(syncerDefaults)
 
-	// Wrap shared remote in nonClosingRemote so engine.Close() doesn't close it.
-	// The shares.Service.releaseRemoteStore handles closing via ref counting.
+	// Wrap shared remote in nonClosingRemote so engine.Close() doesn't close it;
+	// releaseRemoteStore handles actual closing via ref counting.
 	var engineRemote remote.RemoteStore
 	if remoteStore != nil {
 		engineRemote = &nonClosingRemote{remoteStore}
@@ -421,7 +415,6 @@ func (s *Service) createBlockStoreForShare(
 
 	syncer := blocksync.New(localStore, engineRemote, fileBlockStore, syncerCfg)
 
-	// cleanup closes all resources created so far on failure.
 	cleanup := func() {
 		_ = syncer.Close()
 		_ = localStore.Close()
@@ -430,7 +423,6 @@ func (s *Service) createBlockStoreForShare(
 		}
 	}
 
-	// Create BlockStore with L1 cache settings from defaults.
 	bs, err := engine.New(engine.Config{
 		Local:           localStore,
 		Remote:          engineRemote,
@@ -443,14 +435,12 @@ func (s *Service) createBlockStoreForShare(
 		return fmt.Errorf("failed to create BlockStore: %w", err)
 	}
 
-	// Start BlockStore (recovery + background goroutines).
 	if err := bs.Start(ctx); err != nil {
 		cleanup()
 		return fmt.Errorf("failed to start BlockStore: %w", err)
 	}
 
-	// Assign to share. Safe without lock: share is not yet in the registry,
-	// so no concurrent readers can access it.
+	// Safe without lock: share is not yet in the registry.
 	share.BlockStore = bs
 	share.remoteConfigID = remoteConfigID
 
@@ -471,7 +461,6 @@ func (s *Service) createBlockStoreForShare(
 // network/DB I/O (config resolution, S3 client initialization).
 // Returns the store, its config ID, and any error.
 func (s *Service) acquireRemoteStore(ctx context.Context, configID string, provider BlockStoreConfigProvider) (remote.RemoteStore, string, error) {
-	// Fast path: check cache under lock.
 	s.mu.Lock()
 	if sr, ok := s.remoteStores[configID]; ok {
 		sr.refCount++
@@ -480,7 +469,7 @@ func (s *Service) acquireRemoteStore(ctx context.Context, configID string, provi
 	}
 	s.mu.Unlock()
 
-	// Slow path: resolve config and create store without holding the lock.
+	// Resolve config and create store without holding the lock.
 	remoteCfg, err := provider.GetBlockStoreByID(ctx, configID)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to resolve remote block store config %q: %w", configID, err)
@@ -494,13 +483,11 @@ func (s *Service) acquireRemoteStore(ctx context.Context, configID string, provi
 		return nil, "", fmt.Errorf("failed to create remote store: %w", err)
 	}
 
-	// Re-lock and double-check: another goroutine may have created it while we
-	// were doing I/O. If so, close our duplicate and use the existing one.
+	// Double-check: another goroutine may have created the store concurrently.
 	s.mu.Lock()
 	if sr, ok := s.remoteStores[configID]; ok {
 		sr.refCount++
 		s.mu.Unlock()
-		// Close the duplicate we just created (outside lock).
 		_ = newStore.Close()
 		return sr.store, configID, nil
 	}
@@ -554,14 +541,12 @@ func (s *Service) RemoveShare(name string) error {
 	delete(s.registry, name)
 	s.mu.Unlock()
 
-	// Close BlockStore outside lock (may block on drain).
 	if bs != nil {
 		if err := bs.Close(); err != nil {
 			logger.Warn("Failed to close BlockStore for share", "share", name, "error", err)
 		}
 	}
 
-	// Decrement remote store ref count.
 	if remoteConfigID != "" {
 		s.releaseRemoteStore(remoteConfigID)
 	}
@@ -769,7 +754,6 @@ func (s *Service) GetCacheStats(shareName string) (*CacheStatsResponse, error) {
 		}, nil
 	}
 
-	// Aggregate across all shares
 	var totals engine.CacheStats
 	var perShare []ShareCacheStats
 
@@ -779,32 +763,36 @@ func (s *Service) GetCacheStats(shareName string) (*CacheStatsResponse, error) {
 		}
 		stats := share.BlockStore.GetCacheStats()
 		perShare = append(perShare, ShareCacheStats{ShareName: name, Stats: stats})
-
-		totals.FileCount += stats.FileCount
-		totals.BlocksDirty += stats.BlocksDirty
-		totals.BlocksLocal += stats.BlocksLocal
-		totals.BlocksRemote += stats.BlocksRemote
-		totals.BlocksTotal += stats.BlocksTotal
-		totals.LocalDiskUsed += stats.LocalDiskUsed
-		totals.LocalDiskMax += stats.LocalDiskMax
-		totals.LocalMemUsed += stats.LocalMemUsed
-		totals.LocalMemMax += stats.LocalMemMax
-		totals.L1Entries += stats.L1Entries
-		totals.L1CurBytes += stats.L1CurBytes
-		totals.L1MaxBytes += stats.L1MaxBytes
-		totals.PendingSyncs += stats.PendingSyncs
-		totals.PendingUploads += stats.PendingUploads
-		totals.CompletedSyncs += stats.CompletedSyncs
-		totals.FailedSyncs += stats.FailedSyncs
-		if stats.HasRemote {
-			totals.HasRemote = true
-		}
+		addCacheStats(&totals, stats)
 	}
 
 	return &CacheStatsResponse{
 		Totals:   totals,
 		PerShare: perShare,
 	}, nil
+}
+
+// addCacheStats accumulates src into dst (field-by-field summation).
+func addCacheStats(dst *engine.CacheStats, src engine.CacheStats) {
+	dst.FileCount += src.FileCount
+	dst.BlocksDirty += src.BlocksDirty
+	dst.BlocksLocal += src.BlocksLocal
+	dst.BlocksRemote += src.BlocksRemote
+	dst.BlocksTotal += src.BlocksTotal
+	dst.LocalDiskUsed += src.LocalDiskUsed
+	dst.LocalDiskMax += src.LocalDiskMax
+	dst.LocalMemUsed += src.LocalMemUsed
+	dst.LocalMemMax += src.LocalMemMax
+	dst.L1Entries += src.L1Entries
+	dst.L1CurBytes += src.L1CurBytes
+	dst.L1MaxBytes += src.L1MaxBytes
+	dst.PendingSyncs += src.PendingSyncs
+	dst.PendingUploads += src.PendingUploads
+	dst.CompletedSyncs += src.CompletedSyncs
+	dst.FailedSyncs += src.FailedSyncs
+	if src.HasRemote {
+		dst.HasRemote = true
+	}
 }
 
 // EvictCache evicts cache data for the given share (or all shares if shareName is empty).
@@ -836,17 +824,14 @@ func (s *Service) EvictCache(ctx context.Context, shareName string, opts EvictOp
 	for _, share := range shares {
 		bs := share.BlockStore
 
-		// Safety: refuse local block eviction if no remote store configured
 		if !opts.L1Only && !bs.HasRemoteStore() {
 			return nil, fmt.Errorf("cannot evict local blocks for share %q: no remote store configured (data would be lost)", share.Name)
 		}
 
-		// Evict L1 cache (always, unless local-only was requested)
 		if !opts.LocalOnly {
 			result.L1EntriesCleared += bs.EvictL1Cache()
 		}
 
-		// Evict local blocks (unless l1-only was requested)
 		if !opts.L1Only {
 			beforeDisk := bs.Local().Stats().DiskUsed
 

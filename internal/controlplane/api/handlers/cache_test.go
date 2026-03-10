@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -106,12 +107,21 @@ func newTestCacheHandler() *testCacheHandler {
 	}
 }
 
+// newChiRequest creates an httptest.Request with a chi route context.
+// If params is non-empty, they are added as URL params (alternating key/value pairs).
+func newChiRequest(method, url string, body io.Reader, params ...string) *http.Request {
+	req := httptest.NewRequest(method, url, body)
+	rctx := chi.NewRouteContext()
+	for i := 0; i+1 < len(params); i += 2 {
+		rctx.URLParams.Add(params[i], params[i+1])
+	}
+	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+}
+
 func TestCacheHandler_Stats_Global(t *testing.T) {
 	th := newTestCacheHandler()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/cache/stats", nil)
-	rctx := chi.NewRouteContext()
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req := newChiRequest(http.MethodGet, "/api/v1/cache/stats", nil)
 	w := httptest.NewRecorder()
 
 	th.handler.Stats(w, req)
@@ -138,10 +148,7 @@ func TestCacheHandler_Stats_Global(t *testing.T) {
 func TestCacheHandler_Stats_PerShare(t *testing.T) {
 	th := newTestCacheHandler()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/shares/test/cache/stats", nil)
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("name", "/test")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req := newChiRequest(http.MethodGet, "/api/v1/shares/test/cache/stats", nil, "name", "/test")
 	w := httptest.NewRecorder()
 
 	th.handler.Stats(w, req)
@@ -158,10 +165,7 @@ func TestCacheHandler_Stats_NotFound(t *testing.T) {
 	th := newTestCacheHandler()
 	th.mock.statsErr = &testError{msg: "share not found"}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/shares/missing/cache/stats", nil)
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("name", "/missing")
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req := newChiRequest(http.MethodGet, "/api/v1/shares/missing/cache/stats", nil, "name", "/missing")
 	w := httptest.NewRecorder()
 
 	th.handler.Stats(w, req)
@@ -175,10 +179,8 @@ func TestCacheHandler_Evict_Global(t *testing.T) {
 	th := newTestCacheHandler()
 
 	body, _ := json.Marshal(CacheEvictRequest{})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/cache/evict", bytes.NewReader(body))
+	req := newChiRequest(http.MethodPost, "/api/v1/cache/evict", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	rctx := chi.NewRouteContext()
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	w := httptest.NewRecorder()
 
 	th.handler.Evict(w, req)
@@ -203,10 +205,8 @@ func TestCacheHandler_Evict_L1Only(t *testing.T) {
 	th := newTestCacheHandler()
 
 	body, _ := json.Marshal(CacheEvictRequest{L1Only: true})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/cache/evict", bytes.NewReader(body))
+	req := newChiRequest(http.MethodPost, "/api/v1/cache/evict", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	rctx := chi.NewRouteContext()
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	w := httptest.NewRecorder()
 
 	th.handler.Evict(w, req)
@@ -224,10 +224,8 @@ func TestCacheHandler_Evict_SafetyError(t *testing.T) {
 	th.mock.evictErr = &testError{msg: "cannot evict local blocks: no remote store configured"}
 
 	body, _ := json.Marshal(CacheEvictRequest{})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/cache/evict", bytes.NewReader(body))
+	req := newChiRequest(http.MethodPost, "/api/v1/cache/evict", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	rctx := chi.NewRouteContext()
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	w := httptest.NewRecorder()
 
 	th.handler.Evict(w, req)
@@ -240,9 +238,7 @@ func TestCacheHandler_Evict_SafetyError(t *testing.T) {
 func TestCacheHandler_Evict_NoBody(t *testing.T) {
 	th := newTestCacheHandler()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/cache/evict", nil)
-	rctx := chi.NewRouteContext()
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req := newChiRequest(http.MethodPost, "/api/v1/cache/evict", nil)
 	w := httptest.NewRecorder()
 
 	th.handler.Evict(w, req)
