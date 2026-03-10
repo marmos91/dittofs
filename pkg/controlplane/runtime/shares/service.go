@@ -723,6 +723,150 @@ func (s *Service) DrainAllBlockStores(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// ShareCacheStats holds cache statistics for a single share.
+type ShareCacheStats struct {
+	ShareName string            `json:"share_name"`
+	Stats     engine.CacheStats `json:"stats"`
+}
+
+// CacheStatsResponse holds aggregated and per-share cache statistics.
+type CacheStatsResponse struct {
+	Totals    engine.CacheStats  `json:"totals"`
+	PerShare  []ShareCacheStats  `json:"per_share,omitempty"`
+}
+
+// EvictOptions controls which cache tiers to evict.
+type EvictOptions struct {
+	L1Only    bool `json:"l1_only"`
+	LocalOnly bool `json:"local_only"`
+}
+
+// EvictResult holds the result of a cache eviction operation.
+type EvictResult struct {
+	L1EntriesCleared int   `json:"l1_entries_cleared"`
+	LocalBlocksEvicted int `json:"local_blocks_evicted"`
+	BytesFreed       int64 `json:"bytes_freed"`
+}
+
+// GetCacheStats returns cache statistics, optionally filtered by share name.
+// If shareName is empty, returns aggregated stats across all shares with per-share breakdown.
+func (s *Service) GetCacheStats(shareName string) (*CacheStatsResponse, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if shareName != "" {
+		share, exists := s.registry[shareName]
+		if !exists {
+			return nil, fmt.Errorf("share %q not found", shareName)
+		}
+		if share.BlockStore == nil {
+			return nil, fmt.Errorf("share %q has no block store configured", shareName)
+		}
+		stats := share.BlockStore.GetCacheStats()
+		return &CacheStatsResponse{
+			Totals:   stats,
+			PerShare: []ShareCacheStats{{ShareName: shareName, Stats: stats}},
+		}, nil
+	}
+
+	// Aggregate across all shares
+	var totals engine.CacheStats
+	var perShare []ShareCacheStats
+
+	for name, share := range s.registry {
+		if share.BlockStore == nil {
+			continue
+		}
+		stats := share.BlockStore.GetCacheStats()
+		perShare = append(perShare, ShareCacheStats{ShareName: name, Stats: stats})
+
+		totals.FileCount += stats.FileCount
+		totals.BlocksDirty += stats.BlocksDirty
+		totals.BlocksLocal += stats.BlocksLocal
+		totals.BlocksRemote += stats.BlocksRemote
+		totals.BlocksTotal += stats.BlocksTotal
+		totals.LocalDiskUsed += stats.LocalDiskUsed
+		totals.LocalDiskMax += stats.LocalDiskMax
+		totals.LocalMemUsed += stats.LocalMemUsed
+		totals.LocalMemMax += stats.LocalMemMax
+		totals.L1Entries += stats.L1Entries
+		totals.L1CurBytes += stats.L1CurBytes
+		totals.L1MaxBytes += stats.L1MaxBytes
+		totals.PendingSyncs += stats.PendingSyncs
+		totals.PendingUploads += stats.PendingUploads
+		totals.CompletedSyncs += stats.CompletedSyncs
+		totals.FailedSyncs += stats.FailedSyncs
+		if stats.HasRemote {
+			totals.HasRemote = true
+		}
+	}
+
+	return &CacheStatsResponse{
+		Totals:   totals,
+		PerShare: perShare,
+	}, nil
+}
+
+// EvictCache evicts cache data for the given share (or all shares if shareName is empty).
+// Returns an error if trying to evict local blocks without a remote store (safety check).
+func (s *Service) EvictCache(ctx context.Context, shareName string, opts EvictOptions) (*EvictResult, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var shares []*Share
+	if shareName != "" {
+		share, exists := s.registry[shareName]
+		if !exists {
+			return nil, fmt.Errorf("share %q not found", shareName)
+		}
+		if share.BlockStore == nil {
+			return nil, fmt.Errorf("share %q has no block store configured", shareName)
+		}
+		shares = []*Share{share}
+	} else {
+		for _, share := range s.registry {
+			if share.BlockStore != nil {
+				shares = append(shares, share)
+			}
+		}
+	}
+
+	var result EvictResult
+
+	for _, share := range shares {
+		bs := share.BlockStore
+
+		// Safety: refuse local block eviction if no remote store configured
+		if !opts.L1Only && !bs.HasRemoteStore() {
+			return nil, fmt.Errorf("cannot evict local blocks for share %q: no remote store configured (data would be lost)", share.Name)
+		}
+
+		// Evict L1 cache (always, unless local-only was requested)
+		if !opts.LocalOnly {
+			result.L1EntriesCleared += bs.EvictL1Cache()
+		}
+
+		// Evict local blocks (unless l1-only was requested)
+		if !opts.L1Only {
+			localStats := bs.Local().Stats()
+			beforeDisk := localStats.DiskUsed
+
+			// Evict all tracked files from local cache memory (in-memory dirty buffers).
+			// This drops all in-memory cached data for files in this share.
+			files := bs.Local().ListFiles()
+			for _, payloadID := range files {
+				_ = bs.Local().EvictMemory(ctx, payloadID)
+				result.LocalBlocksEvicted++
+			}
+
+			afterStats := bs.Local().Stats()
+			result.BytesFreed += beforeDisk - afterStats.DiskUsed
+		}
+	}
+
+	return &result, nil
+}
+
 // CreateLocalStoreFromConfig creates a local store instance from a block store config.
 func CreateLocalStoreFromConfig(
 	ctx context.Context,

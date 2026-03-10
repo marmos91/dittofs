@@ -285,6 +285,78 @@ func (bs *BlockStore) Remote() remote.RemoteStore { return bs.remote }
 // Syncer returns the syncer.
 func (bs *BlockStore) Syncer() *blocksync.Syncer { return bs.syncer }
 
+// CacheStats holds comprehensive cache statistics for a BlockStore.
+type CacheStats struct {
+	// Block counts by state
+	FileCount   int `json:"file_count"`
+	BlocksDirty int `json:"blocks_dirty"`
+	BlocksLocal int `json:"blocks_local"`
+	BlocksRemote int `json:"blocks_remote"`
+	BlocksTotal  int `json:"blocks_total"`
+
+	// Size info
+	LocalDiskUsed  int64 `json:"local_disk_used"`
+	LocalDiskMax   int64 `json:"local_disk_max"`
+	LocalMemUsed   int64 `json:"local_mem_used"`
+	LocalMemMax    int64 `json:"local_mem_max"`
+
+	// L1 read cache
+	L1Entries  int   `json:"l1_entries"`
+	L1CurBytes int64 `json:"l1_cur_bytes"`
+	L1MaxBytes int64 `json:"l1_max_bytes"`
+
+	// Syncer / offloader status
+	HasRemote     bool `json:"has_remote"`
+	PendingSyncs  int  `json:"pending_syncs"`
+	PendingUploads int `json:"pending_uploads"`
+	CompletedSyncs int `json:"completed_syncs"`
+	FailedSyncs    int `json:"failed_syncs"`
+}
+
+// GetCacheStats returns comprehensive cache statistics.
+func (bs *BlockStore) GetCacheStats() CacheStats {
+	localStats := bs.local.Stats()
+	files := bs.local.ListFiles()
+
+	l1Stats := bs.readCache.Stats()
+
+	pending, completed, failed := bs.syncer.Queue().Stats()
+	_, uploads, _ := bs.syncer.Queue().PendingByType()
+
+	return CacheStats{
+		FileCount:      len(files),
+		LocalDiskUsed:  localStats.DiskUsed,
+		LocalDiskMax:   localStats.MaxDisk,
+		LocalMemUsed:   localStats.MemUsed,
+		LocalMemMax:    localStats.MaxMemory,
+		L1Entries:      l1Stats.Entries,
+		L1CurBytes:     l1Stats.CurBytes,
+		L1MaxBytes:     l1Stats.MaxBytes,
+		HasRemote:      bs.remote != nil,
+		PendingSyncs:   pending,
+		PendingUploads: uploads,
+		CompletedSyncs: completed,
+		FailedSyncs:    failed,
+	}
+}
+
+// EvictL1Cache clears all entries from the L1 read cache.
+// Returns the number of entries that were cleared.
+func (bs *BlockStore) EvictL1Cache() int {
+	if bs.readCache == nil {
+		return 0
+	}
+	stats := bs.readCache.Stats()
+	entries := stats.Entries
+	bs.readCache.Close()
+	return entries
+}
+
+// HasRemoteStore returns true if this BlockStore has a remote store configured.
+func (bs *BlockStore) HasRemoteStore() bool {
+	return bs.remote != nil
+}
+
 // readAtInternal reads from primary payloadID, falling back to cowSource on miss.
 // When L1 cache is enabled, checks L1 first and fills L1 after successful read.
 func (bs *BlockStore) readAtInternal(ctx context.Context, payloadID, cowSource string, data []byte, offset uint64) (int, error) {

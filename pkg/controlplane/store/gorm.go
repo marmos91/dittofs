@@ -203,7 +203,7 @@ func New(config *Config) (*GORMStore, error) {
 	}
 
 	// --- Pre-AutoMigrate migrations ---
-	// Step 1: Rename payload_stores -> block_store_configs if old table exists.
+	// Step 1: Migrate legacy payload_stores table to block_store_configs if needed.
 	// This must happen before AutoMigrate so GORM sees the correct table name.
 	preMigrator := db.Migrator()
 	if preMigrator.HasTable("payload_stores") && !preMigrator.HasTable("block_store_configs") {
@@ -216,7 +216,7 @@ func New(config *Config) (*GORMStore, error) {
 		if err := db.Exec("UPDATE block_store_configs SET kind = 'remote'").Error; err != nil {
 			return nil, fmt.Errorf("failed to set default kind: %w", err)
 		}
-		// Drop the old unique index on name alone (from PayloadStoreConfig).
+		// Drop the old unique index on name alone (from legacy table).
 		// AutoMigrate will create the new composite index idx_block_store_name_kind
 		// on (name, kind), but won't drop the old one, which would prevent having
 		// a local and remote store with the same name.
@@ -230,7 +230,7 @@ func New(config *Config) (*GORMStore, error) {
 	}
 
 	// --- Post-AutoMigrate migrations ---
-	// Step 2: Migrate Share payload_store_id -> local/remote block store IDs.
+	// Step 2: Migrate legacy Share payload_store_id column to local/remote block store IDs.
 	postMigrator := db.Migrator()
 	if postMigrator.HasColumn(&models.Share{}, "payload_store_id") {
 		// Create default-local block store for existing shares
@@ -241,7 +241,7 @@ func New(config *Config) (*GORMStore, error) {
 		).Error; err != nil {
 			return nil, fmt.Errorf("failed to create default-local block store: %w", err)
 		}
-		// Populate new columns from old payload_store_id
+		// Populate new columns from legacy payload_store_id column
 		if err := db.Exec("UPDATE shares SET local_block_store_id = ?", defaultLocalID).Error; err != nil {
 			return nil, fmt.Errorf("failed to populate local_block_store_id: %w", err)
 		}

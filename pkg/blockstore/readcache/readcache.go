@@ -240,6 +240,28 @@ func (c *ReadCache) MaxBytes() int64 {
 	return c.maxBytes
 }
 
+// CacheStats holds L1 read cache statistics.
+type CacheStats struct {
+	Entries  int   `json:"entries"`   // Number of cached blocks
+	CurBytes int64 `json:"cur_bytes"` // Current memory usage in bytes
+	MaxBytes int64 `json:"max_bytes"` // Memory budget in bytes
+}
+
+// Stats returns a snapshot of L1 read cache statistics.
+// Returns zero-value stats if the cache is nil (disabled).
+func (c *ReadCache) Stats() CacheStats {
+	if c == nil {
+		return CacheStats{}
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return CacheStats{
+		Entries:  len(c.entries),
+		CurBytes: c.curBytes,
+		MaxBytes: c.maxBytes,
+	}
+}
+
 // Close clears all cache state. After Close, Get returns miss for all keys.
 func (c *ReadCache) Close() {
 	if c == nil {

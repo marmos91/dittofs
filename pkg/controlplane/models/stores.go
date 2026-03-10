@@ -61,7 +61,7 @@ const (
 )
 
 // BlockStoreConfig defines a block store instance configuration.
-// It replaces the former PayloadStoreConfig with an additional Kind discriminator
+// It uses a Kind discriminator
 // to distinguish local (disk-backed) from remote (S3, etc.) block stores.
 type BlockStoreConfig struct {
 	ID        string         `gorm:"primaryKey;size:36" json:"id"`
