@@ -643,7 +643,9 @@ func (s *Service) DrainAllBlockStores(ctx context.Context) error {
 func CreateLocalStoreFromConfig(
 	ctx context.Context,
 	storeType string,
-	cfg interface{ GetConfig() (map[string]any, error) },
+	cfg interface {
+		GetConfig() (map[string]any, error)
+	},
 	shareName string,
 	defaults *LocalStoreDefaults,
 	fileBlockStore blockstore.FileBlockStore,
