@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,10 +164,11 @@ func New() *Service {
 }
 
 // sanitizeShareName converts a share name to a filesystem-safe directory name.
-// Leading slash is trimmed, remaining slashes are replaced with double underscores.
+// Uses URL path-escaping to guarantee an injective mapping (no two distinct
+// share names can produce the same directory name).
 func sanitizeShareName(name string) string {
 	name = strings.TrimPrefix(name, "/")
-	return strings.ReplaceAll(name, "/", "__")
+	return url.PathEscape(name)
 }
 
 // buildSyncerConfigFromDefaults merges SyncerDefaults into a blocksync.Config.
@@ -209,13 +211,17 @@ func (s *Service) AddShare(
 		return fmt.Errorf("cannot add share with empty name")
 	}
 
-	share, metadataStore, err := s.registerShare(ctx, config, storeProvider, metadataSvc)
+	if config.LocalBlockStoreID != "" && blockStoreProvider == nil {
+		return fmt.Errorf("block store provider is required when LocalBlockStoreID is set for share %q", config.Name)
+	}
+
+	share, metadataStore, err := s.registerShare(ctx, config, storeProvider)
 	if err != nil {
 		return err
 	}
 
 	// Create per-share BlockStore if local block store config is provided.
-	if config.LocalBlockStoreID != "" && blockStoreProvider != nil {
+	if config.LocalBlockStoreID != "" {
 		if err := s.createBlockStoreForShare(ctx, share, config, blockStoreProvider, metadataStore, localStoreDefaults, syncerDefaults); err != nil {
 			// Roll back: remove from registry
 			s.mu.Lock()
@@ -225,27 +231,40 @@ func (s *Service) AddShare(
 		}
 	}
 
+	// Register metadata store only after BlockStore is successfully created
+	// to avoid leaving stale state in MetadataService on failure.
+	if err := metadataSvc.RegisterStoreForShare(config.Name, metadataStore); err != nil {
+		// Roll back: close BlockStore and remove from registry
+		s.mu.Lock()
+		if share.BlockStore != nil {
+			_ = share.BlockStore.Close()
+		}
+		if share.remoteConfigID != "" {
+			delete(s.registry, config.Name)
+			s.mu.Unlock()
+			s.releaseRemoteStore(share.remoteConfigID)
+		} else {
+			delete(s.registry, config.Name)
+			s.mu.Unlock()
+		}
+		return fmt.Errorf("failed to configure metadata for share: %w", err)
+	}
+
 	s.notifyShareChange()
 
 	return nil
 }
 
-// registerShare validates config, creates the root directory, registers the share
-// in the registry, and registers the metadata store for the share. All operations
-// happen under s.mu to ensure atomicity. Returns the created share and the
-// metadata store instance (needed by createBlockStoreForShare).
+// registerShare validates config, creates the root directory, and registers the
+// share in the registry. Metadata service registration is deferred to AddShare
+// so that rollback is clean if BlockStore creation fails.
 func (s *Service) registerShare(
 	ctx context.Context,
 	config *ShareConfig,
 	storeProvider MetadataStoreProvider,
-	metadataSvc MetadataServiceRegistrar,
 ) (*Share, metadata.MetadataStore, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	if metadataSvc == nil {
-		return nil, nil, fmt.Errorf("metadata service not initialized")
-	}
 
 	if _, exists := s.registry[config.Name]; exists {
 		return nil, nil, fmt.Errorf("share %q already exists", config.Name)
@@ -311,10 +330,6 @@ func (s *Service) registerShare(
 	}
 
 	s.registry[config.Name] = share
-	if err := metadataSvc.RegisterStoreForShare(config.Name, metadataStore); err != nil {
-		delete(s.registry, config.Name)
-		return nil, nil, fmt.Errorf("failed to configure metadata for share: %w", err)
-	}
 
 	return share, metadataStore, nil
 }
