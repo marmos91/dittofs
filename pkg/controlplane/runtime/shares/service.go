@@ -478,17 +478,25 @@ func (s *Service) acquireRemoteStore(ctx context.Context, configID string, provi
 }
 
 // releaseRemoteStore decrements the reference count and closes the remote store if no longer used.
+// Close happens outside the lock to avoid blocking share operations during network I/O.
 func (s *Service) releaseRemoteStore(configID string) {
+	var storeToClose remote.RemoteStore
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	sr, ok := s.remoteStores[configID]
 	if !ok {
+		s.mu.Unlock()
 		return
 	}
 	sr.refCount--
 	if sr.refCount <= 0 {
-		_ = sr.store.Close()
+		storeToClose = sr.store
 		delete(s.remoteStores, configID)
+	}
+	s.mu.Unlock()
+
+	if storeToClose != nil {
+		_ = storeToClose.Close()
 		logger.Info("Closed shared remote store", "config_id", configID)
 	}
 }

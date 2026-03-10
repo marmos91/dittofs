@@ -526,7 +526,9 @@ func TestGetBlockStoreForHandle(t *testing.T) {
 
 	// Register a metadata store and create a share so we can get a valid handle.
 	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
-	_ = rt.RegisterMetadataStore("test-meta", metaStore)
+	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
+		t.Fatalf("RegisterMetadataStore failed: %v", err)
+	}
 
 	config := &ShareConfig{
 		Name:          "/bs-test",
@@ -537,7 +539,10 @@ func TestGetBlockStoreForHandle(t *testing.T) {
 	}
 
 	// Get the share and set up a minimal BlockStore via injection.
-	share, _ := rt.GetShare("/bs-test")
+	share, err := rt.GetShare("/bs-test")
+	if err != nil {
+		t.Fatalf("GetShare failed: %v", err)
+	}
 
 	// Create a minimal BlockStore with memory local store.
 	localStore := localmemory.New()
