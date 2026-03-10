@@ -115,9 +115,8 @@ type BlockStoreConfigProvider interface {
 
 // LocalStoreDefaults holds default sizing for per-share local stores.
 type LocalStoreDefaults struct {
-	MaxSize        uint64 // Maximum local store size per share (0 = unlimited)
-	MaxPendingSize uint64 // Maximum pending (dirty) data size (0 = default 2GB)
-	MaxMemory      int64  // Memory budget for dirty buffers per share (0 = 256MB)
+	MaxSize   uint64 // Maximum local store size per share (0 = unlimited)
+	MaxMemory int64  // Memory budget for dirty buffers per share (0 = 256MB)
 }
 
 // SyncerDefaults holds default syncer configuration applied to all shares.
@@ -260,24 +259,28 @@ func (s *Service) AddShare(
 }
 
 // registerShare validates config, creates the root directory, and registers the
-// share in the registry. Metadata service registration is deferred to AddShare
-// so that rollback is clean if BlockStore creation fails.
+// share in the registry. Uses a three-phase approach to avoid holding s.mu
+// during potentially slow metadata store resolution and root directory creation.
+// Metadata service registration is deferred to AddShare so that rollback is
+// clean if BlockStore creation fails.
 func (s *Service) registerShare(
 	ctx context.Context,
 	config *ShareConfig,
 	storeProvider MetadataStoreProvider,
 ) (*Share, metadata.MetadataStore, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	// Phase 1: quick duplicate check under lock.
+	s.mu.RLock()
 	if _, exists := s.registry[config.Name]; exists {
+		s.mu.RUnlock()
 		return nil, nil, fmt.Errorf("share %q already exists", config.Name)
 	}
+	s.mu.RUnlock()
 
 	if storeProvider == nil {
 		return nil, nil, fmt.Errorf("metadata store provider not initialized")
 	}
 
+	// Phase 2: resolve metadata store and create root directory without lock.
 	metadataStore, err := storeProvider.GetMetadataStore(config.MetadataStore)
 	if err != nil {
 		return nil, nil, err
@@ -333,7 +336,16 @@ func (s *Service) registerShare(
 		BlockedOperations:  config.BlockedOperations,
 	}
 
+	// Phase 3: re-lock and double-check before inserting into registry.
+	// Another goroutine may have registered the same share while we were
+	// doing I/O.
+	s.mu.Lock()
+	if _, exists := s.registry[config.Name]; exists {
+		s.mu.Unlock()
+		return nil, nil, fmt.Errorf("share %q already exists", config.Name)
+	}
 	s.registry[config.Name] = share
+	s.mu.Unlock()
 
 	return share, metadataStore, nil
 }
@@ -446,35 +458,50 @@ func (s *Service) createBlockStoreForShare(
 }
 
 // acquireRemoteStore returns a shared remote store, creating it if needed.
+// Uses double-checked locking to avoid holding s.mu during potentially slow
+// network/DB I/O (config resolution, S3 client initialization).
 // Returns the store, its config ID, and any error.
 func (s *Service) acquireRemoteStore(ctx context.Context, configID string, provider BlockStoreConfigProvider) (remote.RemoteStore, string, error) {
+	// Fast path: check cache under lock.
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if sr, ok := s.remoteStores[configID]; ok {
 		sr.refCount++
+		s.mu.Unlock()
 		return sr.store, configID, nil
 	}
+	s.mu.Unlock()
 
-	// Resolve and create.
+	// Slow path: resolve config and create store without holding the lock.
 	remoteCfg, err := provider.GetBlockStoreByID(ctx, configID)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to resolve remote block store config %q: %w", configID, err)
 	}
 
-	remoteStore, err := CreateRemoteStoreFromConfig(ctx, remoteCfg.Type, remoteCfg)
+	newStore, err := CreateRemoteStoreFromConfig(ctx, remoteCfg.Type, remoteCfg)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create remote store: %w", err)
 	}
 
+	// Re-lock and double-check: another goroutine may have created it while we
+	// were doing I/O. If so, close our duplicate and use the existing one.
+	s.mu.Lock()
+	if sr, ok := s.remoteStores[configID]; ok {
+		sr.refCount++
+		s.mu.Unlock()
+		// Close the duplicate we just created (outside lock).
+		_ = newStore.Close()
+		return sr.store, configID, nil
+	}
+
 	s.remoteStores[configID] = &sharedRemote{
-		store:    remoteStore,
+		store:    newStore,
 		refCount: 1,
 		configID: configID,
 	}
+	s.mu.Unlock()
 
 	logger.Info("Created shared remote store", "config_id", configID, "type", remoteCfg.Type)
-	return remoteStore, configID, nil
+	return newStore, configID, nil
 }
 
 // releaseRemoteStore decrements the reference count and closes the remote store if no longer used.
