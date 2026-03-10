@@ -180,7 +180,6 @@ func TestStaleNFSHandle(t *testing.T) {
 	}
 
 	for _, ver := range versions {
-		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
 			// Each version runs its own complete test cycle to avoid
 			// server lifecycle conflicts between subtests.
@@ -411,7 +410,6 @@ func TestClientReconnection(t *testing.T) {
 	}
 
 	for _, ver := range versions {
-		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
 			if ver == "4.0" {
 				framework.SkipIfNFSv4Unsupported(t)

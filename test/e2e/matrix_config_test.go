@@ -94,22 +94,20 @@ func isLocalOnly() bool {
 // environment flags. In short mode, returns shortMatrix3D. If --local-only
 // is set, filters to only remoteType="none" combos.
 func getStoreMatrix(short bool) []matrixStoreConfig {
-	var matrix []matrixStoreConfig
+	matrix := storeMatrix3D
 	if short {
 		matrix = shortMatrix3D
-	} else {
-		matrix = storeMatrix3D
 	}
 
-	if isLocalOnly() {
-		var filtered []matrixStoreConfig
-		for _, sc := range matrix {
-			if sc.remoteType == "none" {
-				filtered = append(filtered, sc)
-			}
+	if !isLocalOnly() {
+		return matrix
+	}
+
+	var filtered []matrixStoreConfig
+	for _, sc := range matrix {
+		if sc.remoteType == "none" {
+			filtered = append(filtered, sc)
 		}
-		return filtered
 	}
-
-	return matrix
+	return filtered
 }

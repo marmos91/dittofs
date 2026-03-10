@@ -85,10 +85,11 @@ func checkLegacyPayloadKey(configPath string) []string {
 		trimmed := strings.TrimSpace(line)
 		// Detect top-level or nested 'payload:' or 'payload_store:' keys
 		if strings.HasPrefix(trimmed, "payload:") || strings.HasPrefix(trimmed, "payload_store:") {
+			key := strings.TrimSuffix(trimmed, ":")
 			warnings = append(warnings, fmt.Sprintf(
 				"Line %d: Config key '%s' has been renamed to 'block_store:'. "+
 					"Please update your config file. See docs/CONFIGURATION.md for the new format.",
-				lineNum, strings.TrimSuffix(strings.TrimSpace(trimmed), ":")))
+				lineNum, key))
 		}
 	}
 	return warnings

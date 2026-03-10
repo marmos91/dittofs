@@ -77,6 +77,9 @@ func NewCacheTiersBenchmark(cfg CacheTiersConfig) *CacheTiersBenchmark {
 	return &CacheTiersBenchmark{cfg: cfg}
 }
 
+// Sizes returns the resolved file sizes (after applying defaults).
+func (b *CacheTiersBenchmark) Sizes() []int64 { return b.cfg.FileSizes }
+
 // Run executes the 6-step cache-tiers benchmark for each file size.
 func (b *CacheTiersBenchmark) Run(ctx context.Context, logf func(string, ...any)) (*CacheTiersResult, error) {
 	result := &CacheTiersResult{

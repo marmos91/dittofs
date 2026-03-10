@@ -75,7 +75,6 @@ func TestNFSv4BasicOperations(t *testing.T) {
 
 	versions := []string{"3", "4.0", "4.1"}
 	for _, ver := range versions {
-		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
 			framework.SkipIfNFSVersionUnsupported(t, ver)
 
@@ -184,7 +183,6 @@ func TestNFSv4AdvancedFileOps(t *testing.T) {
 
 	versions := []string{"3", "4.0", "4.1"}
 	for _, ver := range versions {
-		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
 			framework.SkipIfNFSVersionUnsupported(t, ver)
 
@@ -566,7 +564,6 @@ func TestNFSv4READDIRPagination(t *testing.T) {
 
 	versions := []string{"3", "4.0", "4.1"}
 	for _, ver := range versions {
-		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
 			framework.SkipIfNFSVersionUnsupported(t, ver)
 

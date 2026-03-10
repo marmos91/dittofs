@@ -54,9 +54,7 @@ func TestStoreMatrixV4(t *testing.T) {
 	matrix := getStoreMatrix(testing.Short())
 
 	for _, ver := range versions {
-		ver := ver
 		for _, sc := range matrix {
-			sc := sc
 			testName := fmt.Sprintf("v%s/%s", ver, sc.testName())
 
 			t.Run(testName, func(t *testing.T) {
@@ -212,7 +210,6 @@ func TestFileSizeMatrix(t *testing.T) {
 	versions := []string{"3", "4.0", "4.1"}
 
 	for _, ver := range versions {
-		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
 			framework.SkipIfNFSVersionUnsupported(t, ver)
 
@@ -223,7 +220,6 @@ func TestFileSizeMatrix(t *testing.T) {
 			t.Cleanup(mount.Cleanup)
 
 			for _, sz := range sizes {
-				sz := sz
 				t.Run(sz.name, func(t *testing.T) {
 					if sz.skip && testing.Short() {
 						t.Skip("Skipping large file test in short mode")
@@ -310,7 +306,6 @@ func TestMultiShareConcurrent(t *testing.T) {
 
 	versions := []string{"3", "4.0", "4.1"}
 	for _, ver := range versions {
-		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
 			framework.SkipIfNFSVersionUnsupported(t, ver)
 
@@ -368,7 +363,6 @@ func TestMultiClientConcurrency(t *testing.T) {
 
 	versions := []string{"3", "4.0", "4.1"}
 	for _, ver := range versions {
-		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
 			framework.SkipIfNFSVersionUnsupported(t, ver)
 
@@ -412,7 +406,6 @@ func TestMultiClientConcurrency(t *testing.T) {
 
 				// Both mounts write different files simultaneously
 				for i := 0; i < numFiles; i++ {
-					i := i
 					wg.Add(2)
 
 					// Mount1 writes

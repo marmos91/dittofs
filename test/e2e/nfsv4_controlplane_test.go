@@ -39,7 +39,6 @@ func TestNFSv4ControlPlaneBlockedOps(t *testing.T) {
 
 	versions := []string{"3", "4.0"}
 	for _, ver := range versions {
-		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
 			if ver == "4.0" {
 				framework.SkipIfNFSv4Unsupported(t)
@@ -159,7 +158,6 @@ func TestNFSv4ControlPlaneNetgroup(t *testing.T) {
 
 	versions := []string{"3", "4.0"}
 	for _, ver := range versions {
-		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
 			if ver == "4.0" {
 				framework.SkipIfNFSv4Unsupported(t)
@@ -281,7 +279,6 @@ func TestNFSv4ControlPlaneSettingsHotReload(t *testing.T) {
 
 	versions := []string{"3", "4.0"}
 	for _, ver := range versions {
-		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
 			if ver == "4.0" {
 				framework.SkipIfNFSv4Unsupported(t)

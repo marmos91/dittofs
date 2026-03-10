@@ -93,12 +93,9 @@ func runCacheTiers(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(os.Stderr, "Cache Tiers Benchmark - Share: %s\n", cacheTiersShare)
 	fmt.Fprintf(os.Stderr, "Mount: %s\n", cacheTiersMount)
 
-	effectiveSizes := cfg.FileSizes
-	if len(effectiveSizes) == 0 {
-		effectiveSizes = bench.DefaultCacheTiersSizes
-	}
-	sizeLabels := make([]string, len(effectiveSizes))
-	for i, s := range effectiveSizes {
+	// NewCacheTiersBenchmark already applies defaults, so use its resolved sizes.
+	sizeLabels := make([]string, len(bm.Sizes()))
+	for i, s := range bm.Sizes() {
 		sizeLabels[i] = bench.FormatSize(s)
 	}
 	fmt.Fprintf(os.Stderr, "Sizes: %v\n\n", sizeLabels)

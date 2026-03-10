@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -25,18 +26,12 @@ type mockCacheRuntime struct {
 	lastOpts  shares.EvictOptions
 }
 
-// testCacheHandler wraps CacheHandler with a mock runtime for testing.
+// testCacheHandler provides the same interface as CacheHandler but uses a mock.
 type testCacheHandler struct {
-	mock    *mockCacheRuntime
-	handler *testCacheHandlerShim
-}
-
-// testCacheHandlerShim provides the same interface as CacheHandler but uses a mock.
-type testCacheHandlerShim struct {
 	mock *mockCacheRuntime
 }
 
-func (h *testCacheHandlerShim) Stats(w http.ResponseWriter, r *http.Request) {
+func (h *testCacheHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	shareName := chi.URLParam(r, "name")
 	h.mock.lastShare = shareName
 
@@ -48,7 +43,7 @@ func (h *testCacheHandlerShim) Stats(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, h.mock.stats)
 }
 
-func (h *testCacheHandlerShim) Evict(w http.ResponseWriter, r *http.Request) {
+func (h *testCacheHandler) Evict(w http.ResponseWriter, r *http.Request) {
 	shareName := chi.URLParam(r, "name")
 	h.mock.lastShare = shareName
 
@@ -101,10 +96,7 @@ func newTestCacheHandler() *testCacheHandler {
 			BytesFreed:         1024 * 1024,
 		},
 	}
-	return &testCacheHandler{
-		mock:    mock,
-		handler: &testCacheHandlerShim{mock: mock},
-	}
+	return &testCacheHandler{mock: mock}
 }
 
 // newChiRequest creates an httptest.Request with a chi route context.
@@ -124,7 +116,7 @@ func TestCacheHandler_Stats_Global(t *testing.T) {
 	req := newChiRequest(http.MethodGet, "/api/v1/cache/stats", nil)
 	w := httptest.NewRecorder()
 
-	th.handler.Stats(w, req)
+	th.Stats(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("Stats() status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
@@ -151,7 +143,7 @@ func TestCacheHandler_Stats_PerShare(t *testing.T) {
 	req := newChiRequest(http.MethodGet, "/api/v1/shares/test/cache/stats", nil, "name", "/test")
 	w := httptest.NewRecorder()
 
-	th.handler.Stats(w, req)
+	th.Stats(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("Stats() status = %d, want %d", w.Code, http.StatusOK)
@@ -163,12 +155,12 @@ func TestCacheHandler_Stats_PerShare(t *testing.T) {
 
 func TestCacheHandler_Stats_NotFound(t *testing.T) {
 	th := newTestCacheHandler()
-	th.mock.statsErr = &testError{msg: "share not found"}
+	th.mock.statsErr = errors.New("share not found")
 
 	req := newChiRequest(http.MethodGet, "/api/v1/shares/missing/cache/stats", nil, "name", "/missing")
 	w := httptest.NewRecorder()
 
-	th.handler.Stats(w, req)
+	th.Stats(w, req)
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("Stats() status = %d, want %d", w.Code, http.StatusNotFound)
@@ -183,7 +175,7 @@ func TestCacheHandler_Evict_Global(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	th.handler.Evict(w, req)
+	th.Evict(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("Evict() status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
@@ -209,7 +201,7 @@ func TestCacheHandler_Evict_L1Only(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	th.handler.Evict(w, req)
+	th.Evict(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("Evict() status = %d, want %d", w.Code, http.StatusOK)
@@ -221,14 +213,14 @@ func TestCacheHandler_Evict_L1Only(t *testing.T) {
 
 func TestCacheHandler_Evict_SafetyError(t *testing.T) {
 	th := newTestCacheHandler()
-	th.mock.evictErr = &testError{msg: "cannot evict local blocks: no remote store configured"}
+	th.mock.evictErr = errors.New("cannot evict local blocks: no remote store configured")
 
 	body, _ := json.Marshal(CacheEvictRequest{})
 	req := newChiRequest(http.MethodPost, "/api/v1/cache/evict", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
-	th.handler.Evict(w, req)
+	th.Evict(w, req)
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Evict() status = %d, want %d", w.Code, http.StatusBadRequest)
@@ -241,18 +233,10 @@ func TestCacheHandler_Evict_NoBody(t *testing.T) {
 	req := newChiRequest(http.MethodPost, "/api/v1/cache/evict", nil)
 	w := httptest.NewRecorder()
 
-	th.handler.Evict(w, req)
+	th.Evict(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("Evict() status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
 	}
 }
 
-// testError implements the error interface for testing.
-type testError struct {
-	msg string
-}
-
-func (e *testError) Error() string {
-	return e.msg
-}
