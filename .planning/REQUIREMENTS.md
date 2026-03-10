@@ -89,9 +89,9 @@
 - [x] **TEST-01**: E2E store matrix updated for new CLI (block local/remote)
 - [x] **TEST-02**: Multi-share test with different local paths
 - [x] **TEST-03**: Sequential read benchmark validates L1 cache
-- [ ] **DOCS-01**: ARCHITECTURE.md updated for block store model
-- [ ] **DOCS-02**: CONFIGURATION.md updated for new CLI and config
-- [ ] **DOCS-03**: CLAUDE.md updated for new package structure
+- [x] **DOCS-01**: ARCHITECTURE.md updated for block store model
+- [x] **DOCS-02**: CONFIGURATION.md updated for new CLI and config
+- [x] **DOCS-03**: CLAUDE.md updated for new package structure
 - [x] **DOCS-04**: --payload flag backward compat with deprecation warning
 
 ## v4.6 Requirements -- Production Hardening
@@ -229,9 +229,9 @@
 | TEST-01 | Phase 49 | Complete |
 | TEST-02 | Phase 49 | Complete |
 | TEST-03 | Phase 49 | Complete |
-| DOCS-01 | Phase 49 | Pending |
-| DOCS-02 | Phase 49 | Pending |
-| DOCS-03 | Phase 49 | Pending |
+| DOCS-01 | Phase 49 | Complete |
+| DOCS-02 | Phase 49 | Complete |
+| DOCS-03 | Phase 49 | Complete |
 | DOCS-04 | Phase 49 | Complete |
 | PROTO-01 | Phase 63 | Pending |
 | PROTO-02 | Phase 64 | Pending |

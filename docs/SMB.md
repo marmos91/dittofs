@@ -260,7 +260,7 @@ smbclient //localhost/export -p 12445 -U testuser -c "put localfile.txt"
 |---------|--------|-------|
 | CREATE | Implemented | Files and directories, lease V2 request/grant, durable handle create contexts |
 | CLOSE | Implemented | |
-| FLUSH | Implemented | Flushes cache to payload store |
+| FLUSH | Implemented | Flushes data to block store |
 | READ | Implemented | With cache support |
 | WRITE | Implemented | With cache support |
 | QUERY_INFO | Implemented | Multiple info classes |
@@ -319,7 +319,7 @@ smbclient //localhost/export -p 12445 -U testuser -c "put localfile.txt"
 3. SMB2 message decoded (decrypted if transform header present)
 4. Session/tree context validated
 5. Command handler dispatched
-6. Handler calls metadata/payload stores
+6. Handler calls metadata/block stores
 7. Response encoded (encrypted if session requires it) and sent
 
 ### Request Processing
@@ -344,7 +344,7 @@ for {
 - `READ`: Read file content (with cache support)
 - `WRITE`: Write file content (with cache support)
 - `CLOSE`: Close file handle and cleanup
-- `FLUSH`: Flush cached data to payload store
+- `FLUSH`: Flush cached data to block store
 - `QUERY_INFO`: Get file/directory attributes
 - `SET_INFO`: Modify attributes, rename, delete
 - `QUERY_DIRECTORY`: List directory contents
@@ -401,30 +401,27 @@ WRITE operations use a two-phase commit pattern:
 // 1. Prepare write (validate permissions, get ContentID)
 writeOp, err := metadataStore.PrepareWrite(authCtx, handle, newSize)
 
-// 2. Write data to cache or payload store
-cache.WriteAt(writeOp.ContentID, data, offset)
+// 2. Resolve per-share block store and write data
+blockStore, _ := rt.GetBlockStoreForHandle(ctx, handle)
+blockStore.WriteAt(ctx, writeOp.ContentID, data, offset)
 
 // 3. Commit write (update metadata: size, timestamps)
 metadataStore.CommitWrite(authCtx, writeOp)
 ```
 
-### Cache Integration
+### Block Store Integration
 
-SMB handlers use the same cache layer as NFS:
+SMB handlers use the same per-share block store as NFS:
 
 ```go
-// Write path
-if cache != nil {
-    cache.WriteAt(contentID, data, offset)  // Async
-} else {
-    payloadStore.WriteAt(contentID, data, offset)  // Sync
-}
+// Resolve per-share block store from file handle
+blockStore, _ := rt.GetBlockStoreForHandle(ctx, handle)
 
-// Read path
-if cacheHit := tryReadFromCache(cache, contentID, offset, length); cacheHit {
-    return cacheHit.data
-}
-return payloadStore.ReadAt(contentID, buf, offset)
+// Write path (local store, async sync to remote)
+blockStore.WriteAt(ctx, contentID, data, offset)
+
+// Read path (L1 cache -> local -> remote)
+blockStore.ReadAt(ctx, contentID, buf, offset)
 ```
 
 ### Credit Flow Control
@@ -1370,7 +1367,7 @@ sudo go test -tags=e2e -v ./test/e2e/ -run TestCrossProtocol
 ### Operations Timeout
 
 1. Increase timeout in SMB config
-2. Check payload store connectivity (S3, filesystem)
+2. Check block store connectivity (S3, filesystem)
 3. Enable debug logging for detailed timing
 
 ### macOS-Specific Issues

@@ -5,11 +5,14 @@ This document provides a deep dive into DittoFS's architecture, design patterns,
 ## Table of Contents
 
 - [Core Abstraction Layers](#core-abstraction-layers)
+- [Per-Share Block Store Isolation](#per-share-block-store-isolation)
+- [Cache Tiers](#cache-tiers)
 - [Adapter Pattern](#adapter-pattern)
-- [Store Registry Pattern](#store-registry-pattern)
-- [Repository Interfaces](#repository-interfaces)
+- [Control Plane Pattern](#control-plane-pattern)
+- [Service Layer](#service-layer)
 - [Built-In and Custom Backends](#built-in-and-custom-backends)
 - [Directory Structure](#directory-structure)
+- [Horizontal Scaling with PostgreSQL](#horizontal-scaling-with-postgresql)
 - [Durable Handle State Flow](#durable-handle-state-flow)
 
 ## Core Abstraction Layers
@@ -22,70 +25,51 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 │            (NFS, SMB)                   │
 │       pkg/adapter/{nfs,smb}/            │
 └───────────────┬─────────────────────────┘
-                │
+                │ GetBlockStoreForHandle(handle)
                 ▼
 ┌─────────────────────────────────────────┐
 │              Runtime                    │
-│   (Single entrypoint for all ops)       │
+│   (Composition layer + sub-services)    │
 │   pkg/controlplane/runtime/             │
 │                                         │
-│  ┌─────────────────────────────────┐    │
-│  │ Adapter Lifecycle Management    │    │
-│  │ • AddAdapter, CreateAdapter     │    │
-│  │ • StopAdapter, DeleteAdapter    │    │
-│  │ • LoadAdaptersFromStore         │    │
-│  └─────────────────────────────────┘    │
-│                                         │
+│  ┌──────────┐ ┌────────┐ ┌──────────┐  │
+│  │ adapters │ │ stores │ │  shares  │  │
+│  │lifecycle │ │registry│ │per-share │  │
+│  └──────────┘ └────────┘ │BlockStore│  │
+│  ┌──────────┐ ┌────────┐ └──────────┘  │
+│  │  mounts  │ │lifecycl│ ┌──────────┐  │
+│  │ tracking │ │  serve  │ │ identity │  │
+│  └──────────┘ └────────┘ │ mapping  │  │
+│                           └──────────┘  │
 │  ┌────────────┐  ┌───────────────────┐  │
-│  │   Store    │  │   In-Memory       │  │
-│  │ (Persist)  │  │     State         │  │
-│  │ users,     │  │ metadata stores,  │  │
-│  │ groups,    │  │ shares, mounts,   │  │
-│  │ adapters   │  │ running adapters  │  │
+│  │   Store    │  │   Auth Layer      │  │
+│  │ (Persist)  │  │   pkg/auth/       │  │
+│  │ 9 sub-ifs  │  │ AuthProvider,     │  │
+│  │            │  │ IdentityMapper    │  │
 │  └────────────┘  └───────────────────┘  │
-│                                         │
-│  ┌─────────────────────────────────┐    │
-│  │ Auxiliary Servers               │    │
-│  │ • API Server (:8080)            │    │
-│  │ • Metrics Server (:9090)        │    │
-│  └─────────────────────────────────┘    │
-└───────┬─────────────────────────────────┘
-        │
-        ▼
-┌─────────────────────────────────────────┐
-│            Services                     │
-│   (Business logic & coordination)       │
-│                                         │
-│  ┌─────────────────┐ ┌────────────────┐ │
-│  │ MetadataService │ │ PayloadService │ │
-│  │ pkg/metadata/   │ │  pkg/payload/  │ │
-│  │ service.go      │ │  service.go    │ │
-│  └────────┬────────┘ └───────┬────────┘ │
-│           │                  │          │
-│           │    ┌─────────────┼────────┐ │
-│           │    │         ┌───▼──────┐ │ │
-│           │    │ Cache   │Offloader │ │ │
-│           │    │ Layer   │ pkg/     │ │ │
-│           │    │ pkg/    │payload/  │ │ │
-│           │    │ cache/  │offloader/│ │ │
-│           │    │    │    └────┬─────┘ │ │
-│           │    │    │ ┌──────▼──────┐ │ │
-│           │    │    │ │     WAL     │ │ │
-│           │    │    │ │pkg/cache/wal│ │ │
-│           │    │    └─┴─────────────┘ │ │
-│           │    └─────────────────────┘ │
-└───────────┼────────────────────────────┘
-            │
-            ▼
-┌────────────────┐  ┌────────────────────┐
-│   Metadata     │  │   Payload          │
-│     Stores     │  │     Stores         │
-│    (CRUD)      │  │    (CRUD)          │
-│                │  │                    │
-│  - Memory      │  │  - Memory          │
-│  - BadgerDB    │  │  - S3              │
-│  - PostgreSQL  │  │                    │
-└────────────────┘  └────────────────────┘
+└───────┬───────────────────┬─────────────┘
+        │                   │
+        ▼                   ▼
+┌────────────────┐  ┌──────────────────────┐
+│   Metadata     │  │ Per-Share BlockStore │
+│     Stores     │  │  pkg/blockstore/     │
+│                │  │                      │
+│  - Memory      │  │  ┌──────────────┐    │
+│  - BadgerDB    │  │  │ Local Store  │    │
+│  - PostgreSQL  │  │  │ fs / memory  │    │
+│                │  │  └──────┬───────┘    │
+│                │  │         │            │
+│                │  │  ┌──────▼───────┐    │
+│                │  │  │   Syncer     │    │
+│                │  │  │ (async xfer) │    │
+│                │  │  └──────┬───────┘    │
+│                │  │         │            │
+│                │  │  ┌──────▼────────┐   │
+│                │  │  │ Remote Store  │   │
+│                │  │  │ s3 / memory   │   │
+│                │  │  │ (ref counted) │   │
+│                │  │  └───────────────┘   │
+└────────────────┘  └──────────────────────┘
 ```
 
 ### Key Interfaces
@@ -96,7 +80,7 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 - Thin composition layer delegating to 6 focused sub-services:
   - `adapters/`: Protocol adapter lifecycle management (create, start, stop, delete)
   - `stores/`: Metadata store registry
-  - `shares/`: Share registration and configuration
+  - `shares/`: Share registration and configuration; owns per-share `*engine.BlockStore` instances
   - `mounts/`: Unified mount tracking across protocols
   - `lifecycle/`: Server startup/shutdown orchestration
   - `identity/`: Share-level identity mapping
@@ -105,10 +89,11 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
   - `CreateAdapter(ctx, cfg)`: Saves to store AND starts immediately
   - `DeleteAdapter(ctx, type)`: Stops adapter AND removes from store
   - `AddAdapter(adapter)`: Direct adapter injection (for testing)
+  - `GetBlockStoreForHandle(ctx, handle)`: Resolves per-share BlockStore from a file handle via `shares.Service`
 
 **2. Control Plane Store** (`pkg/controlplane/store/`)
 - Persistent configuration (users, groups, permissions, adapters)
-- Decomposed into 9 sub-interfaces: `UserStore`, `GroupStore`, `ShareStore`, `PermissionStore`, `MetadataStoreConfigStore`, `PayloadStoreConfigStore`, `AdapterStore`, `SettingsStore`, `GuestStore`
+- Decomposed into 9 sub-interfaces: `UserStore`, `GroupStore`, `ShareStore`, `PermissionStore`, `MetadataStoreConfigStore`, `BlockStoreConfigStore`, `AdapterStore`, `SettingsStore`, `GuestStore`
 - Composite `Store` interface embeds all sub-interfaces
 - API handlers accept narrowest interface needed
 - SQLite (single-node) or PostgreSQL (distributed)
@@ -141,14 +126,19 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 - Protocol handlers should use this instead of stores directly
 - `storetest/`: Metadata store conformance test suite (all implementations must pass)
 
-**6. PayloadService** (`pkg/payload/`)
-- **Central service for all content operations**
-- Routes operations to the correct store based on share name
-- Coordinates between cache and offloader
+**6. BlockStore** (`pkg/blockstore/`)
+- Per-share block storage orchestrator. Each share gets its own `*engine.BlockStore` instance.
+- `engine.BlockStore` composes `local.LocalStore + remote.RemoteStore + sync.Syncer`
+- Each share gets an isolated local storage directory; remote stores can be shared across shares (ref counted)
+- `shares.Service` owns the lifecycle (create on AddShare, close on RemoveShare)
 - Sub-packages:
-  - `io/`: Extracted read/write I/O operations
-  - `offloader/`: Async cache-to-store transfer (renamed from TransferManager)
-  - `gc/`: Block garbage collection (extracted from offloader)
+  - `engine/`: BlockStore orchestrator (compose local + remote + syncer)
+  - `local/`: Local store interface and implementations (`fs/` filesystem, `memory/` in-memory)
+  - `remote/`: Remote store interface and implementations (`s3/` production, `memory/` testing)
+  - `sync/`: Syncer for async local-to-remote data transfer
+  - `readcache/`: L1 in-memory read cache with LRU eviction and prefetch
+  - `gc/`: Block garbage collection
+  - `io/`: Extracted read/write I/O helpers
 
 **7. Metadata Store** (`pkg/metadata/store.go`)
 - **Simple CRUD interface** for file/directory metadata
@@ -159,37 +149,76 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
   - `pkg/metadata/store/postgres/`: PostgreSQL (persistent, distributed, UUID-based handles)
 - File handles are opaque identifiers (implementation-specific format)
 
-**8. Block Store** (`pkg/payload/store/store.go`)
-- **Simple CRUD interface** for block data (4MB units)
-- Supports put, get, delete, list operations
-- Implementations:
-  - `pkg/payload/store/memory/`: In-memory (fast, ephemeral)
-  - `pkg/payload/store/fs/`: Filesystem storage
-  - `pkg/payload/store/s3/`: S3-backed storage (range reads, multipart uploads)
+## Per-Share Block Store Isolation
 
-**9. Cache Layer** (`pkg/cache/`)
-- Slice-aware caching for the Chunk/Slice/Block storage model
-- Sequential write optimization (merges 16KB-32KB NFS writes into single slices)
-- Newest-wins read merging for overlapping slices
-- LRU eviction with dirty data protection
-- Uses `wal.Persister` interface for crash recovery
-- See [Cache README](../pkg/cache/README.md) for detailed architecture
+Each share in DittoFS gets its own `*engine.BlockStore` instance, providing complete data isolation between shares.
 
-**10. WAL Persistence** (`pkg/cache/wal/`)
-- Write-Ahead Log for cache crash recovery
-- `Persister` interface for pluggable implementations
-- `MmapPersister`: Memory-mapped file for high performance
-- `NullPersister`: No-op for in-memory only deployments
-- Enables cache data survival across restarts
+### How It Works
 
-**11. Offloader** (`pkg/payload/offloader/`)
-- Async cache-to-block-store transfer orchestration (renamed from TransferManager)
-- Split into focused files: `offloader.go`, `upload.go`, `download.go`, `dedup.go`, `queue.go`, `entry.go`, `types.go`, `wal_replay.go`
-- **Eager upload**: Uploads complete 4MB blocks immediately
-- **Download priority**: Downloads pause uploads for read latency
-- **Prefetch**: Speculatively fetches upcoming blocks
-- **Non-blocking flush**: COMMIT returns immediately (data safe in WAL)
-- Handles crash recovery from WAL on startup
+1. **Share Creation**: When a share is added via `dfsctl share create`, the runtime creates a dedicated BlockStore instance with:
+   - An isolated local storage directory (under the configured local store path)
+   - A reference to the configured remote store (shared across shares via ref counting)
+
+2. **Handle Resolution**: Protocol handlers call `GetBlockStoreForHandle(ctx, handle)` which:
+   - Extracts the share name from the file handle
+   - Returns the share's dedicated BlockStore instance
+   - There is no global BlockStore
+
+3. **Share Removal**: When a share is removed, its BlockStore is closed:
+   - Local storage directory is cleaned up
+   - Remote store reference count is decremented
+   - If ref count reaches zero, the remote store connection is closed
+
+### Isolation Properties
+
+- **Data Isolation**: Each share's local blocks are stored in separate directories
+- **Cache Independence**: L1 read cache is per-share (eviction in one share does not affect others)
+- **Remote Sharing**: Multiple shares can reference the same remote store (e.g., same S3 bucket) -- blocks are namespaced by share to prevent collisions
+- **Lifecycle Independence**: Block stores are created/closed with share lifecycle
+
+## Cache Tiers
+
+DittoFS uses a three-tier caching model for block data:
+
+```
+┌─────────────────────────────────────┐
+│  L1: In-Memory Read Cache           │
+│  pkg/blockstore/readcache/          │
+│  - LRU eviction                     │
+│  - Fastest access (nanoseconds)     │
+│  - Volatile (lost on restart)       │
+│  - Configurable memory limit        │
+│  - Prefetch for sequential reads    │
+└──────────────┬──────────────────────┘
+               │ cache miss
+               ▼
+┌─────────────────────────────────────┐
+│  L2: Local Block Store              │
+│  pkg/blockstore/local/fs/           │
+│  - Filesystem-backed                │
+│  - Fast access (disk I/O)           │
+│  - Persistent across restarts       │
+│  - Per-share isolated directories   │
+└──────────────┬──────────────────────┘
+               │ block not local
+               ▼
+┌─────────────────────────────────────┐
+│  L3: Remote Store                   │
+│  pkg/blockstore/remote/s3/          │
+│  - S3 or compatible object store    │
+│  - Slowest (network I/O)            │
+│  - Durable (survives node loss)     │
+│  - Shared across shares (ref count) │
+└─────────────────────────────────────┘
+```
+
+**Read Path**: L1 hit -> return. L1 miss -> L2 hit -> populate L1, return. L2 miss -> L3 fetch -> store in L2, populate L1, return.
+
+**Write Path**: Write to L2 (local store). Syncer asynchronously uploads to L3 (remote store). L1 is populated on subsequent reads.
+
+**Eviction**:
+- L1: LRU eviction when memory limit reached. No data loss (L2 has the data).
+- L2: Manual eviction via `dfsctl cache evict --local-only`. Only blocks already synced to L3 can be evicted (safety check prevents data loss).
 
 ## Adapter Pattern
 
@@ -209,15 +238,17 @@ type RuntimeSetter interface {
     SetRuntime(rt *Runtime)
 }
 
-// Example: NFS Adapter accesses services via runtime
+// Example: NFS Adapter accesses per-share block stores via runtime
 type NFSAdapter struct {
     config  NFSConfig
-    runtime *runtime.Runtime  // Access to MetadataService and PayloadService
+    runtime *runtime.Runtime
 }
 
 func (a *NFSAdapter) handleRead(ctx context.Context, req *ReadRequest) {
-    // Use PayloadService for reads (handles caching automatically)
-    data, err := a.runtime.GetPayloadService().ReadAt(ctx, shareName, contentID, offset, size)
+    // Resolve per-share block store from file handle
+    blockStore, err := a.runtime.GetBlockStoreForHandle(ctx, handle)
+    // Read data via block store
+    data, err := blockStore.ReadAt(ctx, contentID, offset, size)
     // ...
 }
 
@@ -234,7 +265,7 @@ The Control Plane is the central management component enabling flexible, multi-s
 ### How It Works
 
 1. **Named Store Creation**: Stores are created with unique names (e.g., "fast-memory", "s3-archive")
-2. **Share-to-Store Mapping**: Each NFS share references a store by name
+2. **Share-to-Store Mapping**: Each share references metadata and block stores by name
 3. **Handle Identity**: File handles encode both the share ID and file-specific data
 4. **Store Resolution**: When handling operations, the runtime decodes the handle to identify the share, then routes to the correct stores
 
@@ -248,25 +279,28 @@ Stores, shares, and adapters are managed at runtime via `dfsctl` (persisted in t
 ./dfsctl store metadata add --name persistent-meta --type badger \
   --config '{"path":"/data/metadata"}'
 
-./dfsctl store payload add --name fast-payload --type memory
-./dfsctl store payload add --name s3-payload --type s3 \
+# Create block stores (local per-share, remote shared across shares)
+./dfsctl store block add --kind local --name local-cache --type fs \
+  --config '{"path":"/data/cache"}'
+./dfsctl store block add --kind remote --name s3-remote --type s3 \
   --config '{"region":"us-east-1","bucket":"my-bucket"}'
 
-# Create shares that reference stores by name
-./dfsctl share create --name /temp --metadata fast-meta --payload fast-payload
-./dfsctl share create --name /archive --metadata persistent-meta --payload s3-payload
+# Create shares referencing stores by name (each gets its own BlockStore)
+./dfsctl share create --name /temp --metadata fast-meta --local local-cache
+./dfsctl share create --name /archive --metadata persistent-meta \
+  --local local-cache --remote s3-remote
 ```
 
 ### Benefits
 
-- **Resource Efficiency**: One S3 client serves multiple shares
-- **Flexible Topologies**: Mix ephemeral and persistent storage per-share
-- **Isolated Testing**: Each share can use different backends
+- **Per-share isolation**: Each share gets its own BlockStore with isolated local storage directory
+- **Resource Efficiency**: Remote stores are shared (ref counted) when multiple shares reference the same config
+- **Flexible Topologies**: Mix local-only and remote-backed storage per-share
 - **Future Multi-Tenancy**: Foundation for per-tenant store isolation
 
 ## Service Layer
 
-The service layer provides business logic and coordination between stores and caches.
+The service layer provides business logic and coordination between stores.
 
 ### MetadataService
 
@@ -292,50 +326,21 @@ entries, err := metaSvc.ReadDir(ctx, dirHandle)
 lock, err := metaSvc.AcquireLock(ctx, shareName, handle, offset, length, exclusive)
 ```
 
-### PayloadService
+### Write Coordination Pattern
 
-Handles all content operations with caching:
-
-```go
-// PayloadService - central service for content operations
-type PayloadService struct {
-    stores map[string]ContentStore  // shareName -> store
-    caches map[string]cache.Cache   // shareName -> cache (optional)
-}
-
-// Usage by protocol handlers
-payloadSvc := payload.New()
-payloadSvc.RegisterStoreForShare("/export", memoryStore)
-payloadSvc.RegisterCacheForShare("/export", memoryCache)
-
-// High-level operations (cache-aware)
-data, err := payloadSvc.ReadAt(ctx, shareName, contentID, offset, size)  // Checks cache first
-err := payloadSvc.WriteAt(ctx, shareName, contentID, data, offset)       // Writes to cache
-err := payloadSvc.Flush(ctx, shareName, contentID)                       // Flushes cache to store
-```
-
-### Store Interfaces (CRUD)
-
-Stores are now simple CRUD interfaces, with business logic in services:
+WRITE operations require coordination between metadata and block stores:
 
 ```go
-// MetadataStore - simple CRUD for metadata
-type MetadataStore interface {
-    GetFile(ctx context.Context, handle FileHandle) (*FileAttr, error)
-    CreateFile(ctx context.Context, parent FileHandle, name string, attr *FileAttr) (*FileAttr, error)
-    DeleteFile(ctx context.Context, handle FileHandle) error
-    UpdateFile(ctx context.Context, handle FileHandle, attr *FileAttr) error
-    ListDir(ctx context.Context, handle FileHandle) ([]*DirEntry, error)
-}
+// 1. Update metadata (validates permissions, updates size/timestamps)
+attr, preSize, preMtime, preCtime, err := metadataStore.WriteFile(handle, newSize, authCtx)
 
-// ContentStore - simple CRUD for content
-type ContentStore interface {
-    ReadAt(ctx context.Context, id ContentID, offset int64, size int64) ([]byte, error)
-    WriteAt(ctx context.Context, id ContentID, data []byte, offset int64) error
-    Delete(ctx context.Context, id ContentID) error
-    Truncate(ctx context.Context, id ContentID, size int64) error
-    Stats(ctx context.Context, id ContentID) (*ContentStats, error)
-}
+// 2. Resolve per-share block store from file handle
+blockStore, err := rt.GetBlockStoreForHandle(ctx, handle)
+
+// 3. Write actual data via per-share block store
+err = blockStore.WriteAt(ctx, string(attr.PayloadID), data, offset)
+
+// 4. Return updated attributes to client for cache consistency
 ```
 
 ## Built-In and Custom Backends
@@ -347,82 +352,19 @@ No custom code required - configure via CLI:
 ```bash
 # Create stores
 ./dfsctl store metadata add --name default-meta --type memory  # or badger, postgres
-./dfsctl store payload add --name default-payload --type memory  # or filesystem, s3
+./dfsctl store block add --kind local --name default-local --type fs \
+  --config '{"path":"/data/blocks"}'
 
 # Create share referencing stores
-./dfsctl share create --name /export --metadata default-meta --payload default-payload
-```
-
-Or programmatically:
-
-```go
-// Create stores
-metadataStore := memory.NewMemoryMetadataStoreWithDefaults()
-contentStore := fscontent.New("/data/content")
-
-// Create services
-metaSvc := metadata.New()
-metaSvc.RegisterStoreForShare("/export", metadataStore)
-
-payloadSvc := payload.New()
-payloadSvc.RegisterStoreForShare("/export", contentStore)
-
-// Create registry and wire services
-registry := registry.New()
-registry.SetMetadataService(metaSvc)
-registry.SetPayloadService(payloadSvc)
-
-// Start server
-server := server.New(registry)
-server.Serve(ctx)
+./dfsctl share create --name /export --metadata default-meta --local default-local
 ```
 
 ### Implementing Custom Store Backends
 
-Stores are simple CRUD interfaces - implement only what's needed:
-
-```go
-// 1. Implement metadata store (simple CRUD)
-type PostgresStore struct {
-    db *sql.DB
-}
-
-func (s *PostgresStore) GetFile(ctx context.Context, handle FileHandle) (*metadata.FileAttr, error) {
-    var attr metadata.FileAttr
-    err := s.db.QueryRowContext(ctx,
-        "SELECT size, mtime, mode FROM files WHERE handle = $1",
-        handle,
-    ).Scan(&attr.Size, &attr.MTime, &attr.Mode)
-    return &attr, err
-}
-
-func (s *PostgresStore) CreateFile(ctx context.Context, parent FileHandle, name string, attr *metadata.FileAttr) (*metadata.FileAttr, error) {
-    // Simple INSERT - no business logic needed
-}
-
-// 2. Implement content store (simple CRUD)
-type S3Store struct {
-    client *s3.Client
-    bucket string
-}
-
-func (s *S3Store) ReadAt(ctx context.Context, id content.ContentID, offset, size int64) ([]byte, error) {
-    result, err := s.client.GetObject(ctx, &s3.GetObjectInput{
-        Bucket: aws.String(s.bucket),
-        Key:    aws.String(string(id)),
-        Range:  aws.String(fmt.Sprintf("bytes=%d-%d", offset, offset+size-1)),
-    })
-    if err != nil {
-        return nil, err
-    }
-    defer result.Body.Close()
-    return io.ReadAll(result.Body)
-}
-
-// 3. Register with services (business logic is in services, not stores)
-metaSvc.RegisterStoreForShare("/archive", postgresStore)
-payloadSvc.RegisterStoreForShare("/archive", s3Store)
-```
+See [docs/IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md) for detailed implementation guides for:
+- **Local Store**: Implement `pkg/blockstore/local.LocalStore` interface
+- **Remote Store**: Implement `pkg/blockstore/remote.RemoteStore` interface
+- **Metadata Store**: Implement `pkg/metadata/Store` interface
 
 ## Directory Structure
 
@@ -474,42 +416,23 @@ dittofs/
 │   │       ├── badger/           # BadgerDB (persistent)
 │   │       └── postgres/         # PostgreSQL (distributed)
 │   │
-│   ├── payload/                  # Payload storage layer (Chunk/Slice/Block)
-│   │   ├── service.go            # PayloadService (main entry point)
-│   │   ├── types.go              # PayloadID, FlushResult, etc.
-│   │   ├── errors.go             # PayloadError structured type
-│   │   ├── io/                   # Extracted read/write I/O operations
-│   │   │   ├── reader.go         # Cache-aware read operations
-│   │   │   └── writer.go         # Cache-aware write operations
-│   │   ├── offloader/            # Async cache-to-store transfer (was transfer/)
-│   │   │   ├── offloader.go      # Offloader struct and orchestration
-│   │   │   ├── upload.go         # Upload coordination
-│   │   │   ├── download.go       # Download coordination
-│   │   │   ├── dedup.go          # Deduplication handler
-│   │   │   ├── queue.go          # TransferQueue (priority workers)
-│   │   │   ├── entry.go          # TransferQueueEntry interface
-│   │   │   ├── types.go          # Shared types
-│   │   │   └── wal_replay.go     # WAL crash recovery
+│   ├── blockstore/               # Per-share block storage
+│   │   ├── doc.go                # Package documentation
+│   │   ├── store.go              # FileBlockStore interface
+│   │   ├── types.go              # FileBlock, BlockState types
+│   │   ├── errors.go             # BlockStore error types
+│   │   ├── engine/               # BlockStore orchestrator (local + remote + syncer)
+│   │   ├── local/                # Local store interface
+│   │   │   ├── fs/               # Filesystem-backed local store
+│   │   │   └── memory/           # In-memory local store (testing)
+│   │   ├── remote/               # Remote store interface
+│   │   │   ├── s3/               # S3-backed remote store
+│   │   │   └── memory/           # In-memory remote store (testing)
+│   │   ├── sync/                 # Syncer (async local-to-remote transfer)
+│   │   ├── readcache/            # L1 in-memory read cache
 │   │   ├── gc/                   # Block garbage collection
-│   │   │   └── gc.go             # Standalone GC function
-│   │   ├── chunk/                # 64MB chunk calculations
-│   │   ├── block/                # 4MB block calculations
-│   │   └── store/                # Block store implementations
-│   │       ├── store.go          # BlockStore interface
-│   │       ├── memory/           # In-memory (ephemeral)
-│   │       ├── fs/               # Filesystem
-│   │       └── s3/               # S3-backed (range reads, multipart)
-│   │
-│   ├── cache/                    # Slice-aware cache layer
-│   │   ├── cache.go              # Cache implementation (LRU, dirty tracking)
-│   │   ├── read.go               # Read with newest-wins merge
-│   │   ├── write.go              # Write with sequential optimization
-│   │   ├── flush.go              # Flush coordination
-│   │   ├── eviction.go           # LRU eviction
-│   │   ├── types.go              # Slice, SliceState types
-│   │   └── wal/                  # WAL persistence
-│   │       ├── mmap.go           # MmapPersister implementation
-│   │       └── types.go          # SliceEntry, WAL record types
+│   │   ├── io/                   # Read/write I/O helpers
+│   │   └── storetest/            # Conformance test helpers
 │   │
 │   ├── controlplane/             # Control plane (config + runtime)
 │   │   ├── store/                # GORM-based persistent store
@@ -537,7 +460,7 @@ dittofs/
 │   │
 │   └── config/                   # Configuration parsing
 │       ├── config.go             # Main config struct
-│       ├── stores.go             # Store and offloader creation
+│       ├── stores.go             # Store creation
 │       └── runtime.go            # Runtime initialization
 │
 ├── internal/                     # Private implementation details
@@ -568,145 +491,6 @@ dittofs/
 └── test/                         # Test suites
     ├── integration/              # Integration tests (S3, BadgerDB)
     └── e2e/                      # End-to-end tests (real NFS mounts)
-```
-
-## Cache, WAL, and Transfer Architecture
-
-The caching subsystem provides high-performance writes with crash recovery guarantees.
-
-### Data Flow
-
-```
-NFS WRITE Request
-        │
-        ▼
-┌───────────────────┐
-│  PayloadService   │──────────────────────────────┐
-│  pkg/payload/     │                              │
-└────────┬──────────┘                              │
-         │                                         │
-         ▼                                         │
-┌───────────────────┐      ┌──────────────────┐   │
-│      Cache        │─────►│       WAL        │   │
-│   pkg/cache/      │      │    pkg/cache/wal/      │   │
-│                   │      │                  │   │
-│ • Write buffering │      │ • MmapPersister  │   │
-│ • LRU eviction    │      │ • Crash recovery │   │
-│ • Slice merging   │      │ • Append-only    │   │
-└────────┬──────────┘      └──────────────────┘   │
-         │                                         │
-         │ NFS COMMIT                              │
-         ▼                                         │
-┌───────────────────┐                              │
-│    Offloader      │                              │
-│ pkg/payload/      │                              │
-│   offloader/      │                              │
-│ • Flush dirty     │                              │
-│ • Priority queue  │                              │
-│ • Background      │                              │
-└────────┬──────────┘                              │
-         │                                         │
-         ▼                                         │
-┌───────────────────┐                              │
-│   PayloadStore    │◄─────────────────────────────┘
-│ pkg/payload/store/│         (Direct reads bypass cache)
-│                   │
-│ • Memory          │
-│ • S3              │
-└───────────────────┘
-```
-
-### Cache Layer (`pkg/cache/`)
-
-The cache uses a **Chunk/Slice/Block model**:
-
-- **Chunks**: 64MB logical regions of a file
-- **Slices**: Variable-size writes within a chunk (cached in memory)
-- **Blocks**: 4MB units flushed to block store
-
-**Key Features**:
-
-```go
-// Sequential write optimization - extends existing slices
-// Instead of 320 slices for a 10MB file written in 32KB chunks:
-// -> 1 slice (sequential writes merged automatically)
-c.WriteSlice(ctx, fileHandle, chunkIdx, data, offset)
-
-// Newest-wins read merging - overlapping slices resolved by creation time
-data, found, err := c.ReadSlice(ctx, fileHandle, chunkIdx, offset, length)
-
-// LRU eviction - only flushed slices can be evicted
-evicted, err := c.EvictLRU(ctx, targetFreeBytes)
-```
-
-**Slice States**:
-```
-SliceStatePending → SliceStateUploading → SliceStateFlushed
-     (dirty)           (flush in progress)    (safe to evict)
-```
-
-### WAL Persistence (`pkg/cache/wal/`)
-
-The WAL ensures cache data survives crashes:
-
-```go
-// Persister interface - pluggable WAL implementations
-type Persister interface {
-    AppendSlice(entry *SliceEntry) error  // Log a write
-    AppendRemove(fileHandle []byte) error // Log a delete
-    Sync() error                          // Fsync to disk
-    Recover() ([]SliceEntry, error)       // Replay on startup
-    Close() error
-    IsEnabled() bool
-}
-
-// MmapPersister - memory-mapped file for high performance
-persister, err := wal.NewMmapPersister("/var/lib/dfs/wal")
-if err != nil {
-    return err
-}
-
-// NullPersister - no-op for testing/in-memory deployments
-persister := wal.NewNullPersister()
-
-// Create cache with WAL (pass persister created externally)
-cache, err := cache.NewWithWal(maxSize, persister)
-```
-
-### Offloader (`pkg/payload/offloader/`)
-
-Orchestrates async cache-to-block-store transfers (renamed from TransferManager):
-
-```go
-// TransferQueueEntry - generic transfer operation
-type TransferQueueEntry interface {
-    ShareName() string
-    FileHandle() []byte
-    ContentID() string
-    Execute(ctx context.Context, offloader *Offloader) error
-    Priority() int
-}
-
-// Offloader - coordinates flush operations
-o := offloader.New(cache, blockStore, config)
-
-// Flush dirty slices for a file
-result, err := o.FlushFile(ctx, shareName, fileHandle, contentID)
-
-// Background queue for async uploads
-o.EnqueueTransfer(entry)
-
-// Startup recovery from WAL
-offloader.RecoverFromWAL(ctx, persister, cache, o)
-```
-
-### Garbage Collection (`pkg/payload/gc/`)
-
-Block garbage collection extracted to standalone package:
-
-```go
-// CollectGarbage reconciles blocks against metadata and removes orphans
-gc.CollectGarbage(ctx, blockStore, metadataStore)
 ```
 
 ## Horizontal Scaling with PostgreSQL
@@ -799,11 +583,11 @@ Connection pool sizing depends on your workload:
 - **Medium workload** (10-50 concurrent clients): `max_conns: 15`
 - **Heavy workload** (50+ concurrent clients): `max_conns: 20-25`
 
-**Formula**: `max_conns ≈ 2 × expected_concurrent_operations`
+**Formula**: `max_conns ~ 2 x expected_concurrent_operations`
 
-**PostgreSQL Limits**: Ensure PostgreSQL `max_connections` > `(DittoFS instances × max_conns)`
+**PostgreSQL Limits**: Ensure PostgreSQL `max_connections` > `(DittoFS instances x max_conns)`
 
-Example: 3 DittoFS instances × 15 conns = 45 total connections needed from PostgreSQL
+Example: 3 DittoFS instances x 15 conns = 45 total connections needed from PostgreSQL
 
 ### Performance Considerations
 
@@ -825,22 +609,22 @@ Example: 3 DittoFS instances × 15 conns = 45 total connections needed from Post
 SMB3 durable handles allow open file state to survive client disconnects and (with persistent backends) server restarts. The lifecycle is:
 
 ```
-OPEN ─[disconnect]─> ORPHANED ─[scavenger timeout]─> EXPIRED ─[cleanup]─> CLOSED
-                         │                                        │
-                         ├─[reconnect]──> RESTORED ──> OPEN       │
-                         │                                        │
-                         └─[conflict/app-instance]──> FORCE_EXPIRED ──> CLOSED
+OPEN -[disconnect]-> ORPHANED -[scavenger timeout]-> EXPIRED -[cleanup]-> CLOSED
+                         |                                        |
+                         +-[reconnect]--> RESTORED --> OPEN       |
+                         |                                        |
+                         +-[conflict/app-instance]--> FORCE_EXPIRED --> CLOSED
 ```
 
 **Grant**: CREATE with DHnQ/DH2Q context triggers durability check. If the oplock level and share mode allow it, the server grants a durable handle with a configurable timeout (default 60s).
 
 **Disconnect**: On connection loss, `closeFilesWithFilter` checks `IsDurable`. Durable files are persisted to `DurableHandleStore` (locks and leases preserved) rather than closed.
 
-**Scavenger**: A background goroutine (`DurableHandleScavenger`) runs at 10-second intervals. For each expired handle it performs cleanup: releases byte-range locks, flushes payload caches, then deletes the handle from the store. On server restart, the scavenger adjusts remaining timeouts to account for downtime.
+**Scavenger**: A background goroutine (`DurableHandleScavenger`) runs at 10-second intervals. For each expired handle it performs cleanup: releases byte-range locks, flushes block store caches, then deletes the handle from the store. On server restart, the scavenger adjusts remaining timeouts to account for downtime.
 
 **Reconnect**: A new session sends CREATE with DHnC/DH2C. The server validates the durable-handle context against stored state (share name, path, username, session key hash, FileID, DesiredAccess, ShareAccess, expiry, and file existence) and restores the `OpenFile` without data loss.
 
-**Conflict**: When a new open targets a file with an orphaned durable handle, the scavenger force-expires the orphaned handle to allow the new open to proceed. Cleanup includes releasing byte-range locks and flushing payload caches.
+**Conflict**: When a new open targets a file with an orphaned durable handle, the scavenger force-expires the orphaned handle to allow the new open to proceed. Cleanup includes releasing byte-range locks and flushing block store caches.
 
 **App Instance ID**: For Hyper-V failover, a CREATE with a matching `AppInstanceId` triggers force-close of the old handle, allowing the new VM instance to take over.
 
@@ -854,18 +638,18 @@ DittoFS is designed for high performance through several architectural choices:
 - **Goroutine-per-connection model**: Leverages Go's lightweight concurrency
 - **Buffer pooling**: Reduces GC pressure for large I/O operations
 - **Streaming I/O**: Efficient handling of large files without full buffering
-- **Pluggable caching**: Implement custom caching strategies per use case
+- **Three-tier caching**: L1 memory + L2 local disk + L3 remote for optimal read latency
 - **Zero-copy aspirations**: Working toward minimal data copying in hot paths
 
 ## Why Pure Go?
 
 Go provides significant advantages for a project like DittoFS:
 
-- ✅ **Easy deployment**: Single static binary, no runtime dependencies
-- ✅ **Cross-platform**: Native support for Linux, macOS, Windows
-- ✅ **Easy integration**: Embed DittoFS directly into existing Go applications
-- ✅ **Modern concurrency**: Goroutines and channels for natural async I/O
-- ✅ **Memory safety**: No buffer overflows or use-after-free vulnerabilities
-- ✅ **Strong ecosystem**: Rich standard library and third-party packages
-- ✅ **Fast compilation**: Quick iteration during development
-- ✅ **Built-in tooling**: Testing, profiling, and race detection included
+- **Easy deployment**: Single static binary, no runtime dependencies
+- **Cross-platform**: Native support for Linux, macOS, Windows
+- **Easy integration**: Embed DittoFS directly into existing Go applications
+- **Modern concurrency**: Goroutines and channels for natural async I/O
+- **Memory safety**: No buffer overflows or use-after-free vulnerabilities
+- **Strong ecosystem**: Rich standard library and third-party packages
+- **Fast compilation**: Quick iteration during development
+- **Built-in tooling**: Testing, profiling, and race detection included

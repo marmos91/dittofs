@@ -129,7 +129,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 46: Per-Share Block Store Wiring** - Runtime manages per-share BlockStore instances replacing global PayloadService
 - [ ] **Phase 47: L1 Read Cache, Disk Tier, and Prefetch** - Tiered read cache (memory + SSD) with sequential prefetch (#187)
 - [ ] **Phase 48: Auto-Deduced Configuration and Memory Safety** - Derive sizes from CPU/memory, GOMEMLIMIT for OOM prevention (#258)
-- [ ] **Phase 49: Testing and Documentation** - E2E tests for new CLI, multi-share isolation, updated documentation
+- [x] **Phase 49: Testing and Documentation** - E2E tests for new CLI, multi-share isolation, updated documentation (completed 2026-03-10)
 
 ### v4.3 Protocol Gap Fixes
 
@@ -764,7 +764,7 @@ v3.8 (33-40.5) -> v4.2 (57-62) -> v4.0 (41-49) -> v4.6 (63-67) -> v4.7 (68-71) -
 | 46. Per-Share Block Store Wiring | v4.0 | 0/? | Not started | - |
 | 47. L1 Read Cache, Disk Tier, Prefetch | v4.0 | 0/? | Not started | - |
 | 48. Auto-Deduced Config + Memory Safety | v4.0 | 0/? | Not started | - |
-| 49. Testing and Documentation | 4/5 | In Progress|  | - |
+| 49. Testing and Documentation | 5/5 | Complete   | 2026-03-10 | - |
 | 63. SMB3 Signing Fix | v4.6 | 0/? | Not started | - |
 | 64. Protocol Correctness and Hot-Reload | v4.6 | 0/? | Not started | - |
 | 65. Storage Observability and Quotas | v4.6 | 0/? | Not started | - |

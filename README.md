@@ -17,7 +17,7 @@
 
 **A modular virtual filesystem written entirely in Go**
 
-Decouple file interfaces from storage backends. NFSv3/v4/v4.1 and SMB2/3 server with pluggable metadata and payload stores. Kubernetes-ready with official operator.
+Decouple file interfaces from storage backends. NFSv3/v4/v4.1 and SMB2/3 server with pluggable metadata and block stores. Kubernetes-ready with official operator.
 
 [Quick Start](#quick-start) • [Documentation](#documentation) • [Features](#features) • [Use Cases](#use-cases) • [Contributing](docs/CONTRIBUTING.md)
 
@@ -57,7 +57,7 @@ graph TD
         end
 
         Shares --> MetadataStores
-        Shares --> PayloadStores
+        Shares --> BlockStores
 
         subgraph MetadataStores[Metadata Stores]
             MM[Memory]
@@ -65,22 +65,21 @@ graph TD
             MP[PostgreSQL]
         end
 
-        subgraph PayloadStores[Payload Stores]
-            PM[Memory]
-            PF[Filesystem]
-            PS[S3]
+        subgraph BlockStores[Block Stores]
+            BL[Local · fs / memory]
+            BR[Remote · S3 / memory]
         end
 
         CP -.-> Adapters
         CP -.-> Shares
         CP -.-> MetadataStores
-        CP -.-> PayloadStores
+        CP -.-> BlockStores
     end
 
     style Adapters fill:#e1f5fe,color:#01579b
     style Shares fill:#fff3e0,color:#e65100
     style MetadataStores fill:#e8f5e9,color:#1b5e20
-    style PayloadStores fill:#fce4ec,color:#880e4f
+    style BlockStores fill:#fce4ec,color:#880e4f
     style CP fill:#f3e5f5,color:#4a148c
     style CTL fill:#fff,color:#333,stroke:#333
 ```
@@ -91,7 +90,7 @@ graph TD
 - **Control Plane**: Centralized management of users, groups, shares, and configuration via REST API
 - **Shares**: Export points that clients mount, each referencing specific stores
 - **Named Store Registry**: Reusable store instances that can be shared across exports
-- **Pluggable Storage**: Mix and match metadata and payload backends per share
+- **Pluggable Storage**: Mix and match metadata and block store backends per share
 
 ## Features
 
@@ -192,10 +191,10 @@ Get an NFS share running in under a minute:
 
 # 4. Create stores
 ./dfsctl store metadata add --name default --type memory
-./dfsctl store payload add --name default --type memory
+./dfsctl store block add --kind local --name default --type memory
 
 # 5. Create a share and grant access
-./dfsctl share create --name /export --metadata default --payload default
+./dfsctl share create --name /export --metadata default --local default
 ./dfsctl share permission grant /export --user $(whoami) --level read-write
 
 # 6. Enable NFS adapter
@@ -213,7 +212,7 @@ sudo mount -t nfs -o tcp,port=12049,mountport=12049,resvport,nolock localhost:/e
 echo "Hello DittoFS!" > /tmp/nfs/hello.txt
 ```
 
-> **Note:** Memory stores are ephemeral (data lost on restart). For persistence, use `--type badger` for metadata and `--type filesystem` or `--type s3` for payload.
+> **Note:** Memory stores are ephemeral (data lost on restart). For persistence, use `--type badger` for metadata and `--type fs` for local block stores or add an S3 remote block store with `--kind remote --type s3`.
 
 ### CLI Tools
 
@@ -283,7 +282,7 @@ DittoFS provides two CLI binaries for complete management:
 
 # Share Management
 ./dfsctl share list
-./dfsctl share create --name /archive --metadata badger-main --payload s3-content
+./dfsctl share create --name /archive --metadata badger-main --local local-cache --remote s3-content
 ./dfsctl share delete /archive
 
 # Share Permissions
@@ -298,10 +297,11 @@ DittoFS provides two CLI binaries for complete management:
 ./dfsctl store metadata add --name persistent --type badger --config '{"path":"/data/meta"}'
 ./dfsctl store metadata remove fast-meta
 
-# Store Management (Payload/Blocks)
-./dfsctl store payload list
-./dfsctl store payload add --name s3-content --type s3 --config '{"bucket":"my-bucket"}'
-./dfsctl store payload remove s3-content
+# Store Management (Block Stores)
+./dfsctl store block list
+./dfsctl store block add --kind local --name local-cache --type fs --config '{"path":"/data/cache"}'
+./dfsctl store block add --kind remote --name s3-content --type s3 --config '{"bucket":"my-bucket"}'
+./dfsctl store block remove s3-content
 
 # Adapter Management
 ./dfsctl adapter list
@@ -448,7 +448,7 @@ kubectl get dittofs
 The operator manages:
 - DittoFS deployment lifecycle
 - Configuration via Custom Resources
-- Persistent volume claims for metadata and payload stores
+- Persistent volume claims for metadata and block stores
 - Service exposure for NFS/SMB protocols
 
 See the [`operator/`](operator/) directory for detailed documentation and configuration options.
@@ -503,7 +503,7 @@ go test -v -timeout 30m ./test/e2e/...
 
 ### Multi-Tenant Cloud Storage Gateway
 
-Different tenants get isolated metadata and payload stores for security and billing separation.
+Different tenants get isolated metadata and block stores for security and billing separation.
 
 ### Performance-Tiered Storage
 
@@ -528,7 +528,7 @@ See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for detailed examples.
 - **[NFS Implementation](docs/NFS.md)** - NFSv3/v4/v4.1 protocol status and client usage
 - **[SMB Implementation](docs/SMB.md)** - SMB2/3 protocol status, encryption, signing, leases, durable handles, and client usage
 - **[Contributing](docs/CONTRIBUTING.md)** - Development guide and contribution guidelines
-- **[Implementing Stores](docs/IMPLEMENTING_STORES.md)** - Guide for implementing custom metadata and payload stores
+- **[Implementing Stores](docs/IMPLEMENTING_STORES.md)** - Guide for implementing custom metadata and block stores
 
 ### Operational Guides
 
@@ -582,13 +582,14 @@ See [docs/SMB.md](docs/SMB.md) for complete SMB3 protocol documentation, wire fo
 - In-memory metadata (ephemeral, fast)
 - BadgerDB metadata (persistent, path-based handles)
 - PostgreSQL metadata (persistent, distributed)
-- In-memory payload store (ephemeral, testing)
-- S3 payload store (production-ready with range reads, streaming uploads, stats caching)
+- Local block stores: filesystem and in-memory (per-share isolated)
+- Remote block stores: S3 (production-ready, ref-counted across shares) and in-memory (testing)
 
-**Caching & Persistence**
-- Slice-aware cache with sequential write optimization
-- WAL (Write-Ahead Log) persistence for crash recovery
-- Transfer manager for async cache-to-payload-store flushing
+**Block Store Architecture**
+- Two-tier model: local stores for fast access, remote stores for durability
+- Per-share BlockStore isolation with independent local storage directories
+- Async syncer for local-to-remote data transfer
+- In-memory read cache (L1) for frequently accessed blocks
 
 **POSIX Compliance**
 - 99.99% pass rate on pjdfstest (8,788/8,789 tests)
@@ -670,36 +671,23 @@ cache:
   size: "1Gi"               # supports: "512MB", "2Gi", "4GB", etc.
 ```
 
-### Cache
+### Block Store Architecture
 
-DittoFS uses a **mandatory write-through cache** backed by a WAL (Write-Ahead Log) for crash recovery. All file writes pass through the cache before being flushed asynchronously to the configured payload store (S3, filesystem, etc.).
+DittoFS uses a **two-tier block store** model. Each share gets its own `BlockStore` instance composed of a local store (required) and an optional remote store with an async syncer.
 
 **How it works:**
-1. **Write**: Data is written to in-memory 4MB block buffers and journaled to the WAL on disk
-2. **Flush**: Blocks are uploaded asynchronously to the payload store in the background
-3. **Evict**: After a successful upload, cache blocks become evictable under memory pressure (LRU)
-4. **Recovery**: On crash/restart, the WAL replays uncommitted writes automatically
+1. **Write**: Data is written to the local block store (filesystem or memory)
+2. **Sync**: If a remote store is configured, the syncer asynchronously uploads local blocks
+3. **Read**: Reads check the in-memory read cache (L1), then local store (L2), then remote store (L3)
+4. **Evict**: Local blocks can be evicted after syncing to remote (only with remote store configured)
 
 **Key points:**
-- The `path` is **required** - the cache creates a `cache.dat` WAL file in this directory
-- Default `path` is `$TMPDIR/dittofs-cache` (e.g., `/tmp/dittofs-cache`) - fine for development, but use a persistent path for production
-- Default `size` is `1Gi` - increase for workloads with large files or many concurrent writers
-- All shares use the same global cache
-- Dirty (unflushed) blocks cannot be evicted, providing backpressure when the payload store is slower than the write rate
+- Each share gets an isolated local storage directory
+- Remote stores are shared across shares via ref counting
+- Eviction without a remote store is refused to prevent data loss
+- Cache stats and eviction are managed via `dfsctl cache stats` and `dfsctl cache evict`
 
-**Sizing guidance:**
-- **Development/testing**: `512Mi` to `1Gi` (default)
-- **General use**: `2Gi` to `4Gi`
-- **Heavy write workloads** (large files, S3 backend): `4Gi` to `16Gi`
-
-```yaml
-# Production example
-cache:
-  path: /var/lib/dfs/cache   # Use a persistent directory (not /tmp)
-  size: "4Gi"
-```
-
-See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#6-cache-configuration) for full details.
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#6-block-store-configuration) for full details.
 
 ### Runtime Management (CLI)
 
@@ -709,11 +697,14 @@ Stores, shares, and adapters are managed via `dfsctl` and persisted in the datab
 # Create named stores (reusable across shares)
 ./dfsctl store metadata add --name badger-main --type badger \
   --config '{"path":"/var/lib/dfs/metadata"}'
-./dfsctl store payload add --name s3-cloud --type s3 \
+./dfsctl store block add --kind local --name local-cache --type fs \
+  --config '{"path":"/var/lib/dfs/blocks"}'
+./dfsctl store block add --kind remote --name s3-cloud --type s3 \
   --config '{"region":"us-east-1","bucket":"my-dfs-bucket"}'
 
-# Create shares referencing stores
-./dfsctl share create --name /archive --metadata badger-main --payload s3-cloud
+# Create shares referencing stores (each gets its own BlockStore)
+./dfsctl share create --name /archive --metadata badger-main \
+  --local local-cache --remote s3-cloud
 
 # Grant permissions
 ./dfsctl share permission grant /archive --user alice --level read-write

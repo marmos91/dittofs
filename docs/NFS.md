@@ -630,8 +630,8 @@ dittofs/
 - `LOOKUP`: Resolve name in directory to file handle
 - `GETATTR`: Get file attributes
 - `SETATTR`: Update attributes (size, mode, times)
-- `READ`: Read file content (uses payload store)
-- `WRITE`: Write file content (coordinates metadata + payload stores)
+- `READ`: Read file content (uses per-share block store)
+- `WRITE`: Write file content (coordinates metadata + per-share block store)
 - `CREATE`: Create file
 - `MKDIR`: Create directory
 - `REMOVE`: Delete file
@@ -655,16 +655,19 @@ dittofs/
 
 ### Write Coordination Pattern
 
-WRITE operations require coordination between metadata and payload stores:
+WRITE operations require coordination between metadata and per-share block stores:
 
 ```go
 // 1. Update metadata (validates permissions, updates size/timestamps)
 attr, preSize, preMtime, preCtime, err := metadataStore.WriteFile(handle, newSize, authCtx)
 
-// 2. Write actual data via payload store
-err = payloadStore.WriteAt(attr.PayloadID, data, offset)
+// 2. Resolve per-share block store from file handle
+blockStore, err := rt.GetBlockStoreForHandle(ctx, handle)
 
-// 3. Return updated attributes to client for cache consistency
+// 3. Write actual data via per-share block store
+err = blockStore.WriteAt(ctx, string(attr.PayloadID), data, offset)
+
+// 4. Return updated attributes to client for cache consistency
 ```
 
 The metadata store:
@@ -672,7 +675,7 @@ The metadata store:
 - Returns pre-operation attributes (for WCC data)
 - Updates file size if extended
 - Updates mtime/ctime timestamps
-- Ensures PayloadID exists
+- Ensures PayloadID exists (content-addressed block reference)
 
 ### Buffer Pooling
 
@@ -701,7 +704,7 @@ var NfsDispatchTable = map[uint32]*nfsProcedure{
 Each handler follows the same pattern:
 1. Check context cancellation
 2. Validate request
-3. Get stores from registry (metadata store + payload store)
+3. Get stores from registry (metadata store + per-share block store)
 4. Perform operation via store methods
 5. Build and return response
 
