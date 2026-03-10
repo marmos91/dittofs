@@ -566,7 +566,7 @@ v3.8 (33-40.5) -> v4.0 (41-49) -> v4.1 (50-56) -> v4.2 (57-62)
 | 44. Data Model and API/CLI | v4.0 | 3/3 | Complete | 2026-03-09 |
 | 45. Package Restructure | v4.0 | 4/4 | Complete | 2026-03-09 |
 | 46. Per-Share Block Store Wiring | v4.0 | 3/3 | Complete | 2026-03-10 |
-| 47. L1 Read Cache and Prefetch | 2/2 | Complete   | 2026-03-10 | - |
+| 47. L1 Read Cache and Prefetch | 2/2 | Complete    | 2026-03-10 | - |
 | 48. Auto-Deduced Configuration | v4.0 | 0/? | Not started | - |
 | 49. Testing and Documentation | v4.0 | 0/? | Not started | - |
 | 50. Server-Side Copy | v4.1 | 0/? | Not started | - |
