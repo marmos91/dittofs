@@ -169,14 +169,17 @@ dfsctl login --server http://localhost:8080 --username admin --password "${ADMIN
 log "Creating BadgerDB metadata store..."
 dfsctl store metadata add --name badger-meta --type badger --db-path "${BADGER_PATH}"
 
-log "Creating S3 payload store..."
+log "Creating local block store..."
+dfsctl store block local add --name local-payload --type memory
+
+log "Creating S3 remote block store..."
 # Scaleway (and other S3-compatible) always needs explicit endpoint + path style.
 S3_ACTUAL_ENDPOINT="${S3_ENDPOINT:-s3.${S3_REGION}.scw.cloud}"
 S3_JSON="{\"region\":\"${S3_REGION}\",\"bucket\":\"${S3_BUCKET}\",\"prefix\":\"${S3_PREFIX}\",\"endpoint\":\"https://${S3_ACTUAL_ENDPOINT}\",\"force_path_style\":true}"
-dfsctl store payload add --name s3-payload --type s3 --config "${S3_JSON}"
+dfsctl store block remote add --name s3-payload --type s3 --config "${S3_JSON}"
 
 log "Creating /export share..."
-dfsctl share create --name /export --metadata badger-meta --payload s3-payload
+dfsctl share create --name /export --metadata badger-meta --local local-payload --remote s3-payload
 
 # Wait for NFS adapter to be listening (auto-created on port 12049 by default).
 log "Waiting for NFS on port ${NFS_PORT}..."

@@ -301,11 +301,11 @@ func restoreJSON(ctx context.Context, cfg *store.Config, backupPath string) erro
 		}
 	}
 
-	// Restore payload stores
-	fmt.Printf("  Restoring %d payload stores...\n", len(backupData.PayloadStores))
-	for _, s := range backupData.PayloadStores {
-		if _, err := cpStore.CreatePayloadStore(ctx, s); err != nil {
-			return fmt.Errorf("failed to restore payload store %s: %w", s.Name, err)
+	// Restore block stores
+	fmt.Printf("  Restoring %d block stores...\n", len(backupData.BlockStores))
+	for _, s := range backupData.BlockStores {
+		if _, err := cpStore.CreateBlockStore(ctx, s); err != nil {
+			return fmt.Errorf("failed to restore block store %s: %w", s.Name, err)
 		}
 	}
 

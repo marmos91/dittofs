@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/glebarez/sqlite"
+	"github.com/google/uuid"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -200,9 +202,56 @@ func New(config *Config) (*GORMStore, error) {
 		sqlDB.SetMaxIdleConns(config.Postgres.MaxIdleConns)
 	}
 
+	// --- Pre-AutoMigrate migrations ---
+	// Step 1: Rename payload_stores -> block_store_configs if old table exists.
+	// This must happen before AutoMigrate so GORM sees the correct table name.
+	preMigrator := db.Migrator()
+	if preMigrator.HasTable("payload_stores") && !preMigrator.HasTable("block_store_configs") {
+		if err := db.Exec("ALTER TABLE payload_stores RENAME TO block_store_configs").Error; err != nil {
+			return nil, fmt.Errorf("failed to rename payload_stores table: %w", err)
+		}
+		if err := db.Exec("ALTER TABLE block_store_configs ADD COLUMN kind VARCHAR(10) NOT NULL DEFAULT 'remote'").Error; err != nil {
+			return nil, fmt.Errorf("failed to add kind column: %w", err)
+		}
+		if err := db.Exec("UPDATE block_store_configs SET kind = 'remote'").Error; err != nil {
+			return nil, fmt.Errorf("failed to set default kind: %w", err)
+		}
+		// Drop the old unique index on name alone (from PayloadStoreConfig).
+		// AutoMigrate will create the new composite index idx_block_store_name_kind
+		// on (name, kind), but won't drop the old one, which would prevent having
+		// a local and remote store with the same name.
+		_ = db.Exec("DROP INDEX IF EXISTS idx_payload_stores_name")
+		_ = db.Exec("DROP INDEX IF EXISTS idx_block_store_configs_name")
+	}
+
 	// Run auto-migration
 	if err := db.AutoMigrate(models.AllModels()...); err != nil {
 		return nil, fmt.Errorf("failed to run database migration: %w", err)
+	}
+
+	// --- Post-AutoMigrate migrations ---
+	// Step 2: Migrate Share payload_store_id -> local/remote block store IDs.
+	postMigrator := db.Migrator()
+	if postMigrator.HasColumn(&models.Share{}, "payload_store_id") {
+		// Create default-local block store for existing shares
+		defaultLocalID := uuid.New().String()
+		if err := db.Exec(
+			"INSERT INTO block_store_configs (id, name, kind, type, config, created_at) VALUES (?, 'default-local', 'local', 'fs', '{}', ?)",
+			defaultLocalID, time.Now(),
+		).Error; err != nil {
+			return nil, fmt.Errorf("failed to create default-local block store: %w", err)
+		}
+		// Populate new columns from old payload_store_id
+		if err := db.Exec("UPDATE shares SET local_block_store_id = ?", defaultLocalID).Error; err != nil {
+			return nil, fmt.Errorf("failed to populate local_block_store_id: %w", err)
+		}
+		if err := db.Exec("UPDATE shares SET remote_block_store_id = payload_store_id WHERE payload_store_id IS NOT NULL AND payload_store_id != ''").Error; err != nil {
+			return nil, fmt.Errorf("failed to populate remote_block_store_id: %w", err)
+		}
+		// Drop old column
+		if err := postMigrator.DropColumn(&models.Share{}, "payload_store_id"); err != nil {
+			return nil, fmt.Errorf("failed to drop payload_store_id column: %w", err)
+		}
 	}
 
 	// Post-migration: drop protocol-specific columns from shares table.

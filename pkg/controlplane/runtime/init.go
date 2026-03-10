@@ -162,9 +162,9 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 		return errors.New("cache configuration not set - call SetCacheConfig first")
 	}
 
-	payloadStores, err := rt.store.ListPayloadStores(ctx)
+	remoteBlockStores, err := rt.store.ListBlockStores(ctx, models.BlockStoreKindRemote)
 	if err != nil {
-		return fmt.Errorf("failed to list payload stores: %w", err)
+		return fmt.Errorf("failed to list remote block stores: %w", err)
 	}
 
 	cacheDir := filepath.Join(cacheConfig.Path, "blocks")
@@ -196,16 +196,16 @@ func (rt *Runtime) EnsurePayloadService(ctx context.Context) error {
 
 	logger.Info("BlockCache initialized", "path", cacheDir, "max_size", cacheConfig.Size)
 
-	// Create block store from config if payload stores are configured.
-	// When no payload stores exist, blockStore stays nil (local-only mode).
+	// Create block store from config if remote block stores are configured.
+	// When no remote block stores exist, blockStore stays nil (local-only mode).
 	var blockStore blockstore.BlockStore // nil for local-only mode
-	if len(payloadStores) > 0 {
-		payloadStoreCfg := payloadStores[0]
-		blockStore, err = CreateBlockStoreFromConfig(ctx, payloadStoreCfg.Type, payloadStoreCfg)
+	if len(remoteBlockStores) > 0 {
+		remoteStoreCfg := remoteBlockStores[0]
+		blockStore, err = CreateBlockStoreFromConfig(ctx, remoteStoreCfg.Type, remoteStoreCfg)
 		if err != nil {
 			return fmt.Errorf("failed to create block store: %w", err)
 		}
-		logger.Info("Loaded payload store", "name", payloadStoreCfg.Name, "type", payloadStoreCfg.Type)
+		logger.Info("Loaded remote block store", "name", remoteStoreCfg.Name, "type", remoteStoreCfg.Type)
 	}
 
 	localOnly := blockStore == nil
@@ -260,12 +260,12 @@ func CreateBlockStoreFromConfig(ctx context.Context, storeType string, cfg inter
 		return blockmemory.New(), nil
 
 	case "filesystem":
-		return nil, errors.New("payload store type 'filesystem' removed in v4.0 -- use 'memory' or 's3'")
+		return nil, errors.New("block store type 'filesystem' removed in v4.0 -- use 'memory' or 's3'")
 
 	case "s3":
 		bucket, ok := config["bucket"].(string)
 		if !ok || bucket == "" {
-			return nil, errors.New("s3 payload store requires bucket")
+			return nil, errors.New("s3 block store requires bucket")
 		}
 
 		region := "us-east-1"
@@ -290,7 +290,7 @@ func CreateBlockStoreFromConfig(ctx context.Context, storeType string, cfg inter
 		})
 
 	default:
-		return nil, fmt.Errorf("unsupported payload store type: %s", storeType)
+		return nil, fmt.Errorf("unsupported block store type: %s", storeType)
 	}
 }
 

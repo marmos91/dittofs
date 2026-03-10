@@ -425,20 +425,21 @@ func TestDeleteNetgroup_InUse(t *testing.T) {
 	}
 	s.CreateMetadataStore(ctx, metaStore)
 
-	payloadStore := &models.PayloadStoreConfig{
+	localBlockStore := &models.BlockStoreConfig{
 		ID:   uuid.New().String(),
-		Name: "test-payload",
-		Type: "memory",
+		Name: "test-local",
+		Kind: models.BlockStoreKindLocal,
+		Type: "fs",
 	}
-	s.CreatePayloadStore(ctx, payloadStore)
+	s.CreateBlockStore(ctx, localBlockStore)
 
 	// Create share and associate netgroup via NFS adapter config
 	share := &models.Share{
-		ID:              uuid.New().String(),
-		Name:            "/test-share",
-		MetadataStoreID: metaStore.ID,
-		PayloadStoreID:  payloadStore.ID,
-		CreatedAt:       time.Now(),
+		ID:                uuid.New().String(),
+		Name:              "/test-share",
+		MetadataStoreID:   metaStore.ID,
+		LocalBlockStoreID: localBlockStore.ID,
+		CreatedAt:         time.Now(),
 	}
 	s.CreateShare(ctx, share)
 

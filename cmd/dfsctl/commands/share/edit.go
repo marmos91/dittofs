@@ -12,6 +12,8 @@ import (
 )
 
 var (
+	editLocal             string
+	editRemote            string
 	editReadOnly          string
 	editDefaultPermission string
 	editDescription       string
@@ -29,6 +31,12 @@ Examples:
   # Edit share interactively
   dfsctl share edit /archive
 
+  # Update local block store reference
+  dfsctl share edit /archive --local new-fs-cache
+
+  # Update remote block store reference
+  dfsctl share edit /archive --remote new-s3-store
+
   # Make share read-only
   dfsctl share edit /archive --read-only true
 
@@ -45,6 +53,8 @@ Examples:
 }
 
 func init() {
+	editCmd.Flags().StringVar(&editLocal, "local", "", "Local block store name")
+	editCmd.Flags().StringVar(&editRemote, "remote", "", "Remote block store name")
 	editCmd.Flags().StringVar(&editReadOnly, "read-only", "", "Set read-only (true|false)")
 	editCmd.Flags().StringVar(&editDefaultPermission, "default-permission", "", "Default permission (none|read|read-write|admin)")
 	editCmd.Flags().StringVar(&editDescription, "description", "", "Share description")
@@ -59,7 +69,8 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check if any flags were provided
-	hasFlags := cmd.Flags().Changed("read-only") || cmd.Flags().Changed("default-permission") ||
+	hasFlags := cmd.Flags().Changed("local") || cmd.Flags().Changed("remote") ||
+		cmd.Flags().Changed("read-only") || cmd.Flags().Changed("default-permission") ||
 		cmd.Flags().Changed("description")
 
 	// If no flags provided, run interactive mode
@@ -70,6 +81,16 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	// Build update request with only specified fields
 	req := &apiclient.UpdateShareRequest{}
 	hasUpdate := false
+
+	if editLocal != "" {
+		req.LocalBlockStoreID = &editLocal
+		hasUpdate = true
+	}
+
+	if editRemote != "" {
+		req.RemoteBlockStoreID = &editRemote
+		hasUpdate = true
+	}
 
 	if editReadOnly != "" {
 		readOnly := strings.ToLower(editReadOnly) == "true"
@@ -88,7 +109,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 
 	if !hasUpdate {
-		return fmt.Errorf("no fields specified. Use --read-only, --default-permission, or --description")
+		return fmt.Errorf("no fields specified. Use --local, --remote, --read-only, --default-permission, or --description")
 	}
 
 	share, err := client.UpdateShare(name, req)

@@ -69,10 +69,10 @@ jobs:
 
           # Create stores
           ./dfsctl store metadata add --name mem-meta --type memory
-          ./dfsctl store payload add --name mem-payload --type memory
+          ./dfsctl store block local add --name mem-payload --type memory
 
           # Create share
-          ./dfsctl share create --name /smbbasic --metadata mem-meta --payload mem-payload
+          ./dfsctl share create --name /smbbasic --metadata mem-meta --local mem-payload
 
           # Create test user
           ./dfsctl user create --username test --password test123
@@ -188,8 +188,8 @@ jobs:
 
           ./dfsctl login --server http://localhost:8080 --username admin --password "$ADMIN_PASS"
           ./dfsctl store metadata add --name mem-meta --type memory
-          ./dfsctl store payload add --name mem-payload --type memory
-          ./dfsctl share create --name /smbbasic --metadata mem-meta --payload mem-payload
+          ./dfsctl store block local add --name mem-payload --type memory
+          ./dfsctl share create --name /smbbasic --metadata mem-meta --local mem-payload
           ./dfsctl user create --username test --password test123
           ./dfsctl share permission grant /smbbasic --user test --level read-write
           ./dfsctl adapter create --type smb --port 12445
@@ -285,8 +285,8 @@ jobs:
           # Login and bootstrap
           .\dfsctl.exe login --server http://localhost:8080 --username admin --password $adminPass
           .\dfsctl.exe store metadata add --name mem-meta --type memory
-          .\dfsctl.exe store payload add --name mem-payload --type memory
-          .\dfsctl.exe share create --name /smbbasic --metadata mem-meta --payload mem-payload
+          .\dfsctl.exe store block local add --name mem-payload --type memory
+          .\dfsctl.exe share create --name /smbbasic --metadata mem-meta --local mem-payload
           .\dfsctl.exe user create --username test --password test123
           .\dfsctl.exe share permission grant /smbbasic --user test --level read-write
           .\dfsctl.exe adapter create --type smb --port 12445

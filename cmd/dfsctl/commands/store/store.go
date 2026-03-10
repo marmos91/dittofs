@@ -2,8 +2,8 @@
 package store
 
 import (
+	"github.com/marmos91/dittofs/cmd/dfsctl/commands/store/block"
 	"github.com/marmos91/dittofs/cmd/dfsctl/commands/store/metadata"
-	"github.com/marmos91/dittofs/cmd/dfsctl/commands/store/payload"
 	"github.com/spf13/cobra"
 )
 
@@ -11,7 +11,7 @@ import (
 var Cmd = &cobra.Command{
 	Use:   "store",
 	Short: "Store management",
-	Long: `Manage metadata and payload stores on the DittoFS server.
+	Long: `Manage metadata and block stores on the DittoFS server.
 
 Store commands allow you to create, list, update, and delete stores.
 These operations require admin privileges.
@@ -23,14 +23,20 @@ Examples:
   # Add a new metadata store
   dfsctl store metadata add --name new-meta --type memory
 
-  # List payload stores
-  dfsctl store payload list
+  # List local block stores
+  dfsctl store block local list
 
-  # Add a new payload store
-  dfsctl store payload add --name s3-store --type s3 --config '{"bucket":"my-bucket"}'`,
+  # List remote block stores
+  dfsctl store block remote list
+
+  # Add a local block store
+  dfsctl store block local add --name fs-cache --type fs --config '{"path":"/data/blocks"}'
+
+  # Add a remote block store
+  dfsctl store block remote add --name s3-store --type s3 --config '{"bucket":"my-bucket"}'`,
 }
 
 func init() {
 	Cmd.AddCommand(metadata.Cmd)
-	Cmd.AddCommand(payload.Cmd)
+	Cmd.AddCommand(block.Cmd)
 }

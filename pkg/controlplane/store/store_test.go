@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -384,14 +385,14 @@ func TestShareOperations(t *testing.T) {
 	// Create prerequisite stores
 	metaStore := &models.MetadataStoreConfig{Name: "test-meta", Type: "memory"}
 	metaStoreID, _ := store.CreateMetadataStore(ctx, metaStore)
-	payloadStore := &models.PayloadStoreConfig{Name: "test-payload", Type: "memory"}
-	payloadStoreID, _ := store.CreatePayloadStore(ctx, payloadStore)
+	localBlockStore := &models.BlockStoreConfig{Name: "test-local", Kind: models.BlockStoreKindLocal, Type: "fs"}
+	localBlockStoreID, _ := store.CreateBlockStore(ctx, localBlockStore)
 
 	t.Run("create share", func(t *testing.T) {
 		share := &models.Share{
-			Name:            "/export",
-			MetadataStoreID: metaStoreID,
-			PayloadStoreID:  payloadStoreID,
+			Name:              "/export",
+			MetadataStoreID:   metaStoreID,
+			LocalBlockStoreID: localBlockStoreID,
 		}
 
 		id, err := store.CreateShare(ctx, share)
@@ -405,9 +406,9 @@ func TestShareOperations(t *testing.T) {
 
 	t.Run("duplicate share fails", func(t *testing.T) {
 		share := &models.Share{
-			Name:            "/export",
-			MetadataStoreID: metaStoreID,
-			PayloadStoreID:  payloadStoreID,
+			Name:              "/export",
+			MetadataStoreID:   metaStoreID,
+			LocalBlockStoreID: localBlockStoreID,
 		}
 		_, err := store.CreateShare(ctx, share)
 		if !errors.Is(err, models.ErrDuplicateShare) {
@@ -470,12 +471,12 @@ func TestSharePermissions(t *testing.T) {
 	store.CreateGroup(ctx, group)
 	metaStore := &models.MetadataStoreConfig{Name: "perm-meta", Type: "memory"}
 	metaStoreID, _ := store.CreateMetadataStore(ctx, metaStore)
-	payloadStore := &models.PayloadStoreConfig{Name: "perm-payload", Type: "memory"}
-	payloadStoreID, _ := store.CreatePayloadStore(ctx, payloadStore)
+	localBlockStore := &models.BlockStoreConfig{Name: "perm-local", Kind: models.BlockStoreKindLocal, Type: "fs"}
+	localBlockStoreID, _ := store.CreateBlockStore(ctx, localBlockStore)
 	share := &models.Share{
-		Name:            "/permshare",
-		MetadataStoreID: metaStoreID,
-		PayloadStoreID:  payloadStoreID,
+		Name:              "/permshare",
+		MetadataStoreID:   metaStoreID,
+		LocalBlockStoreID: localBlockStoreID,
 	}
 	store.CreateShare(ctx, share)
 
@@ -749,47 +750,48 @@ func TestMetadataStoreOperations(t *testing.T) {
 	})
 }
 
-func TestPayloadStoreOperations(t *testing.T) {
+func TestBlockStoreOperationsBasic(t *testing.T) {
 	store := createTestStore(t)
 	defer store.Close()
 	ctx := context.Background()
 
-	t.Run("create payload store", func(t *testing.T) {
-		payloadStore := &models.PayloadStoreConfig{
-			Name:   "payload-store",
+	t.Run("create block store", func(t *testing.T) {
+		blockStore := &models.BlockStoreConfig{
+			Name:   "block-store",
+			Kind:   models.BlockStoreKindRemote,
 			Type:   "memory",
 			Config: `{}`,
 		}
 
-		id, err := store.CreatePayloadStore(ctx, payloadStore)
+		id, err := store.CreateBlockStore(ctx, blockStore)
 		if err != nil {
-			t.Fatalf("failed to create payload store: %v", err)
+			t.Fatalf("failed to create block store: %v", err)
 		}
 		if id == "" {
 			t.Error("expected non-empty ID")
 		}
 	})
 
-	t.Run("duplicate payload store fails", func(t *testing.T) {
-		payloadStore := &models.PayloadStoreConfig{Name: "payload-store", Type: "memory"}
-		_, err := store.CreatePayloadStore(ctx, payloadStore)
+	t.Run("duplicate block store fails", func(t *testing.T) {
+		blockStore := &models.BlockStoreConfig{Name: "block-store", Kind: models.BlockStoreKindRemote, Type: "memory"}
+		_, err := store.CreateBlockStore(ctx, blockStore)
 		if !errors.Is(err, models.ErrDuplicateStore) {
 			t.Errorf("expected ErrDuplicateStore, got %v", err)
 		}
 	})
 
-	t.Run("get payload store", func(t *testing.T) {
-		payloadStore, err := store.GetPayloadStore(ctx, "payload-store")
+	t.Run("get block store", func(t *testing.T) {
+		blockStore, err := store.GetBlockStore(ctx, "block-store", models.BlockStoreKindRemote)
 		if err != nil {
-			t.Fatalf("failed to get payload store: %v", err)
+			t.Fatalf("failed to get block store: %v", err)
 		}
-		if payloadStore.Name != "payload-store" {
-			t.Errorf("expected name 'payload-store', got %q", payloadStore.Name)
+		if blockStore.Name != "block-store" {
+			t.Errorf("expected name 'block-store', got %q", blockStore.Name)
 		}
 	})
 
-	t.Run("list payload stores", func(t *testing.T) {
-		stores, err := store.ListPayloadStores(ctx)
+	t.Run("list block stores", func(t *testing.T) {
+		stores, err := store.ListBlockStores(ctx, models.BlockStoreKindRemote)
 		if err != nil {
 			t.Fatalf("failed to list stores: %v", err)
 		}
@@ -927,29 +929,13 @@ func TestPostgresDSN(t *testing.T) {
 		t.Error("expected non-empty DSN")
 	}
 	// Check that all parts are present
-	if !contains(dsn, "host=localhost") {
+	if !strings.Contains(dsn, "host=localhost") {
 		t.Error("DSN should contain host")
 	}
-	if !contains(dsn, "port=5432") {
+	if !strings.Contains(dsn, "port=5432") {
 		t.Error("DSN should contain port")
 	}
-	if !contains(dsn, "sslmode=require") {
+	if !strings.Contains(dsn, "sslmode=require") {
 		t.Error("DSN should contain sslmode")
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr ||
-		len(s) > len(substr) && (s[:len(substr)] == substr ||
-			s[len(s)-len(substr):] == substr ||
-			containsMiddle(s, substr)))
-}
-
-func containsMiddle(s, substr string) bool {
-	for i := 1; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

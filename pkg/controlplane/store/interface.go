@@ -290,40 +290,43 @@ type MetadataStoreConfigStore interface {
 	GetSharesByMetadataStore(ctx context.Context, storeName string) ([]*models.Share, error)
 }
 
-// PayloadStoreConfigStore provides payload store configuration CRUD.
+// BlockStoreConfigStore provides block store configuration CRUD.
 //
-// These operations manage the configuration records for payload store backends
-// (memory, S3). The actual payload store instances are created and managed
-// by the Runtime.
-type PayloadStoreConfigStore interface {
-	// GetPayloadStore returns a payload store configuration by name.
+// These operations manage the configuration records for block store backends
+// (local: fs, memory; remote: memory, s3). The Kind discriminator distinguishes
+// local (disk-backed cache) from remote (object storage) block stores.
+// The actual block store instances are created and managed by the Runtime.
+type BlockStoreConfigStore interface {
+	// GetBlockStore returns a block store configuration by name and kind.
 	// Returns models.ErrStoreNotFound if the store doesn't exist.
-	GetPayloadStore(ctx context.Context, name string) (*models.PayloadStoreConfig, error)
+	GetBlockStore(ctx context.Context, name string, kind models.BlockStoreKind) (*models.BlockStoreConfig, error)
 
-	// GetPayloadStoreByID returns a payload store configuration by ID.
+	// GetBlockStoreByID returns a block store configuration by ID.
 	// Returns models.ErrStoreNotFound if the store doesn't exist.
-	GetPayloadStoreByID(ctx context.Context, id string) (*models.PayloadStoreConfig, error)
+	GetBlockStoreByID(ctx context.Context, id string) (*models.BlockStoreConfig, error)
 
-	// ListPayloadStores returns all payload store configurations.
-	ListPayloadStores(ctx context.Context) ([]*models.PayloadStoreConfig, error)
+	// ListBlockStores returns all block store configurations of the given kind.
+	ListBlockStores(ctx context.Context, kind models.BlockStoreKind) ([]*models.BlockStoreConfig, error)
 
-	// CreatePayloadStore creates a new payload store configuration.
-	// The ID will be generated if empty.
+	// CreateBlockStore creates a new block store configuration.
+	// The ID will be generated if empty. Kind must be set on the store.
 	// Returns the generated ID.
 	// Returns models.ErrDuplicateStore if a store with the same name exists.
-	CreatePayloadStore(ctx context.Context, store *models.PayloadStoreConfig) (string, error)
+	CreateBlockStore(ctx context.Context, store *models.BlockStoreConfig) (string, error)
 
-	// UpdatePayloadStore updates an existing payload store configuration.
+	// UpdateBlockStore updates an existing block store configuration.
+	// Kind is immutable and will not be updated.
 	// Returns models.ErrStoreNotFound if the store doesn't exist.
-	UpdatePayloadStore(ctx context.Context, store *models.PayloadStoreConfig) error
+	UpdateBlockStore(ctx context.Context, store *models.BlockStoreConfig) error
 
-	// DeletePayloadStore deletes a payload store configuration by name.
+	// DeleteBlockStore deletes a block store configuration by name and kind.
 	// Returns models.ErrStoreNotFound if the store doesn't exist.
 	// Returns models.ErrStoreInUse if the store is referenced by any shares.
-	DeletePayloadStore(ctx context.Context, name string) error
+	DeleteBlockStore(ctx context.Context, name string, kind models.BlockStoreKind) error
 
-	// GetSharesByPayloadStore returns all shares using the given payload store.
-	GetSharesByPayloadStore(ctx context.Context, storeName string) ([]*models.Share, error)
+	// GetSharesByBlockStore returns all shares using the given block store (by name and kind).
+	// Checks both local_block_store_id and remote_block_store_id references.
+	GetSharesByBlockStore(ctx context.Context, storeName string, kind models.BlockStoreKind) ([]*models.Share, error)
 }
 
 // AdapterStore provides adapter configuration CRUD and protocol-specific settings.
@@ -521,7 +524,7 @@ type Store interface {
 	ShareStore
 	PermissionStore
 	MetadataStoreConfigStore
-	PayloadStoreConfigStore
+	BlockStoreConfigStore
 	AdapterStore
 	SettingsStore
 	AdminStore

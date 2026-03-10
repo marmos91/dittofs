@@ -16,21 +16,23 @@ const (
 // Protocol-specific settings (NFS squash, SMB guest access, etc.) are stored
 // in the share_adapter_configs table via ShareAdapterConfig.
 type Share struct {
-	ID                string    `gorm:"primaryKey;size:36" json:"id"`
-	Name              string    `gorm:"uniqueIndex;not null;size:255" json:"name"` // e.g., "/export"
-	MetadataStoreID   string    `gorm:"not null;size:36" json:"metadata_store_id"`
-	PayloadStoreID    string    `gorm:"not null;size:36" json:"payload_store_id"`
-	ReadOnly          bool      `gorm:"default:false" json:"read_only"`
-	EncryptData       bool      `gorm:"default:false" json:"encrypt_data"`                    // SMB3: set SMB2_SHAREFLAG_ENCRYPT_DATA in TREE_CONNECT
-	DefaultPermission string    `gorm:"default:read-write;size:50" json:"default_permission"` // none, read, read-write, admin
-	Config            string    `gorm:"type:text" json:"-"`                                   // JSON blob for additional share config
-	BlockedOperations string    `gorm:"type:text" json:"-"`                                   // JSON array of blocked operations
-	CreatedAt         time.Time `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt         time.Time `gorm:"autoUpdateTime" json:"updated_at"`
+	ID                 string    `gorm:"primaryKey;size:36" json:"id"`
+	Name               string    `gorm:"uniqueIndex;not null;size:255" json:"name"`
+	MetadataStoreID    string    `gorm:"not null;size:36" json:"metadata_store_id"`
+	LocalBlockStoreID  string    `gorm:"not null;size:36" json:"local_block_store_id"`
+	RemoteBlockStoreID *string   `gorm:"size:36" json:"remote_block_store_id"`
+	ReadOnly           bool      `gorm:"default:false" json:"read_only"`
+	EncryptData        bool      `gorm:"default:false" json:"encrypt_data"`
+	DefaultPermission  string    `gorm:"default:read-write;size:50" json:"default_permission"`
+	Config             string    `gorm:"type:text" json:"-"`
+	BlockedOperations  string    `gorm:"type:text" json:"-"`
+	CreatedAt          time.Time `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt          time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 
 	// Relationships
 	MetadataStore    MetadataStoreConfig    `gorm:"foreignKey:MetadataStoreID" json:"metadata_store,omitempty"`
-	PayloadStore     PayloadStoreConfig     `gorm:"foreignKey:PayloadStoreID" json:"payload_store,omitempty"`
+	LocalBlockStore  BlockStoreConfig       `gorm:"foreignKey:LocalBlockStoreID" json:"local_block_store,omitempty"`
+	RemoteBlockStore *BlockStoreConfig      `gorm:"foreignKey:RemoteBlockStoreID" json:"remote_block_store"`
 	AccessRules      []ShareAccessRule      `gorm:"foreignKey:ShareID" json:"access_rules,omitempty"`
 	UserPermissions  []UserSharePermission  `gorm:"foreignKey:ShareID" json:"user_permissions,omitempty"`
 	GroupPermissions []GroupSharePermission `gorm:"foreignKey:ShareID" json:"group_permissions,omitempty"`

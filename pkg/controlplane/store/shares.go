@@ -15,16 +15,16 @@ import (
 
 func (s *GORMStore) GetShare(ctx context.Context, name string) (*models.Share, error) {
 	return getByField[models.Share](s.db, ctx, "name", name, models.ErrShareNotFound,
-		"MetadataStore", "PayloadStore", "AccessRules", "UserPermissions", "GroupPermissions")
+		"MetadataStore", "LocalBlockStore", "RemoteBlockStore", "AccessRules", "UserPermissions", "GroupPermissions")
 }
 
 func (s *GORMStore) GetShareByID(ctx context.Context, id string) (*models.Share, error) {
 	return getByField[models.Share](s.db, ctx, "id", id, models.ErrShareNotFound,
-		"MetadataStore", "PayloadStore", "AccessRules", "UserPermissions", "GroupPermissions")
+		"MetadataStore", "LocalBlockStore", "RemoteBlockStore", "AccessRules", "UserPermissions", "GroupPermissions")
 }
 
 func (s *GORMStore) ListShares(ctx context.Context) ([]*models.Share, error) {
-	return listAll[models.Share](s.db, ctx, "MetadataStore", "PayloadStore")
+	return listAll[models.Share](s.db, ctx, "MetadataStore", "LocalBlockStore", "RemoteBlockStore")
 }
 
 func (s *GORMStore) CreateShare(ctx context.Context, share *models.Share) (string, error) {
@@ -37,19 +37,27 @@ func (s *GORMStore) CreateShare(ctx context.Context, share *models.Share) (strin
 func (s *GORMStore) UpdateShare(ctx context.Context, share *models.Share) error {
 	share.UpdatedAt = time.Now()
 
-	// Only update fields that don't have foreign key constraints
-	// MetadataStoreID and PayloadStoreID are not updated here to avoid FK issues
-	// Use specific methods to change stores if needed
 	// Protocol-specific fields (Squash, AllowAuthSys, etc.) are stored in share_adapter_configs.
+	updates := map[string]any{
+		"read_only":            share.ReadOnly,
+		"default_permission":   share.DefaultPermission,
+		"blocked_operations":   share.BlockedOperations,
+		"metadata_store_id":    share.MetadataStoreID,
+		"local_block_store_id": share.LocalBlockStoreID,
+		"updated_at":           share.UpdatedAt,
+	}
+	// Handle remote_block_store_id explicitly: GORM map-based Updates may skip
+	// typed nil (*string)(nil). Use gorm.Expr("NULL") to ensure the column is cleared.
+	if share.RemoteBlockStoreID == nil {
+		updates["remote_block_store_id"] = gorm.Expr("NULL")
+	} else {
+		updates["remote_block_store_id"] = *share.RemoteBlockStoreID
+	}
+
 	result := s.db.WithContext(ctx).
 		Model(&models.Share{}).
 		Where("id = ?", share.ID).
-		Updates(map[string]any{
-			"read_only":          share.ReadOnly,
-			"default_permission": share.DefaultPermission,
-			"blocked_operations": share.BlockedOperations,
-			"updated_at":         share.UpdatedAt,
-		})
+		Updates(updates)
 
 	if result.Error != nil {
 		return result.Error

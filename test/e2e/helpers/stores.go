@@ -208,7 +208,7 @@ func (r *CLIRunner) CreatePayloadStore(name, storeType string, opts ...PayloadSt
 		opt(options)
 	}
 
-	args := []string{"store", "payload", "add", "--name", name, "--type", storeType}
+	args := []string{"store", "block", "local", "add", "--name", name, "--type", storeType}
 
 	// Add type-specific options
 	if options.rawConfig != "" {
@@ -245,7 +245,7 @@ func (r *CLIRunner) CreatePayloadStore(name, storeType string, opts ...PayloadSt
 
 // ListPayloadStores lists all payload stores via the CLI.
 func (r *CLIRunner) ListPayloadStores() ([]*PayloadStore, error) {
-	output, err := r.Run("store", "payload", "list")
+	output, err := r.Run("store", "block", "local", "list")
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +282,7 @@ func (r *CLIRunner) EditPayloadStore(name string, opts ...PayloadStoreOption) (*
 		opt(options)
 	}
 
-	args := []string{"store", "payload", "edit", name}
+	args := []string{"store", "block", "local", "edit", name}
 	hasUpdate := false
 
 	// Add type-specific options
@@ -329,6 +329,6 @@ func (r *CLIRunner) EditPayloadStore(name string, opts ...PayloadStoreOption) (*
 // DeletePayloadStore deletes a payload store via the CLI.
 // Uses --force to skip confirmation prompt.
 func (r *CLIRunner) DeletePayloadStore(name string) error {
-	_, err := r.Run("store", "payload", "remove", name, "--force")
+	_, err := r.Run("store", "block", "local", "remove", name, "--force")
 	return err
 }

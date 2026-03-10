@@ -30,7 +30,8 @@ Examples:
 type shareRow struct {
 	Name              string `json:"name"`
 	MetadataStore     string `json:"metadata_store"`
-	PayloadStore      string `json:"payload_store"`
+	LocalBlockStore   string `json:"local_block_store"`
+	RemoteBlockStore  string `json:"remote_block_store"`
 	DefaultPermission string `json:"default_permission"`
 }
 
@@ -39,22 +40,22 @@ type ShareList []shareRow
 
 // Headers implements TableRenderer.
 func (sl ShareList) Headers() []string {
-	return []string{"NAME", "METADATA STORE", "PAYLOAD STORE", "DEFAULT PERMISSION"}
+	return []string{"NAME", "METADATA STORE", "LOCAL STORE", "REMOTE STORE", "DEFAULT PERMISSION"}
 }
 
 // Rows implements TableRenderer.
 func (sl ShareList) Rows() [][]string {
 	rows := make([][]string, 0, len(sl))
 	for _, s := range sl {
-		rows = append(rows, []string{s.Name, s.MetadataStore, s.PayloadStore, s.DefaultPermission})
+		rows = append(rows, []string{s.Name, s.MetadataStore, s.LocalBlockStore, s.RemoteBlockStore, s.DefaultPermission})
 	}
 	return rows
 }
 
-// buildStoreNameMaps fetches metadata and payload stores and builds ID->name lookup maps.
-func buildStoreNameMaps(client *apiclient.Client) (metaMap, payloadMap map[string]string) {
+// buildStoreNameMaps fetches metadata and block stores and builds ID->name lookup maps.
+func buildStoreNameMaps(client *apiclient.Client) (metaMap, blockMap map[string]string) {
 	metaMap = make(map[string]string)
-	payloadMap = make(map[string]string)
+	blockMap = make(map[string]string)
 
 	if metaStores, err := client.ListMetadataStores(); err == nil {
 		for _, s := range metaStores {
@@ -62,13 +63,19 @@ func buildStoreNameMaps(client *apiclient.Client) (metaMap, payloadMap map[strin
 		}
 	}
 
-	if payloadStores, err := client.ListPayloadStores(); err == nil {
-		for _, s := range payloadStores {
-			payloadMap[s.ID] = s.Name
+	// Fetch both local and remote block stores for name resolution
+	if localStores, err := client.ListBlockStores("local"); err == nil {
+		for _, s := range localStores {
+			blockMap[s.ID] = s.Name
+		}
+	}
+	if remoteStores, err := client.ListBlockStores("remote"); err == nil {
+		for _, s := range remoteStores {
+			blockMap[s.ID] = s.Name
 		}
 	}
 
-	return metaMap, payloadMap
+	return metaMap, blockMap
 }
 
 // resolveStoreName returns the human-readable name for a store ID,
@@ -91,14 +98,19 @@ func runList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to list shares: %w", err)
 	}
 
-	metaNames, payloadNames := buildStoreNameMaps(client)
+	metaNames, blockNames := buildStoreNameMaps(client)
 
 	rows := make(ShareList, 0, len(shares))
 	for _, s := range shares {
+		remoteStore := "-"
+		if s.RemoteBlockStoreID != nil && *s.RemoteBlockStoreID != "" {
+			remoteStore = resolveStoreName(blockNames, *s.RemoteBlockStoreID)
+		}
 		rows = append(rows, shareRow{
 			Name:              s.Name,
 			MetadataStore:     resolveStoreName(metaNames, s.MetadataStoreID),
-			PayloadStore:      resolveStoreName(payloadNames, s.PayloadStoreID),
+			LocalBlockStore:   resolveStoreName(blockNames, s.LocalBlockStoreID),
+			RemoteBlockStore:  remoteStore,
 			DefaultPermission: s.DefaultPermission,
 		})
 	}

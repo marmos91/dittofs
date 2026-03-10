@@ -49,46 +49,60 @@ func (m *MetadataStoreConfig) SetConfig(cfg map[string]any) error {
 	return nil
 }
 
-// PayloadStoreConfig defines a payload (content/block) store instance configuration.
-type PayloadStoreConfig struct {
-	ID        string    `gorm:"primaryKey;size:36" json:"id"`
-	Name      string    `gorm:"uniqueIndex;not null;size:255" json:"name"`
-	Type      string    `gorm:"not null;size:50" json:"type"` // memory, filesystem, s3
-	Config    string    `gorm:"type:text" json:"-"`           // JSON blob for type-specific config
-	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
+// BlockStoreKind discriminates between local and remote block store configurations.
+type BlockStoreKind string
+
+const (
+	// BlockStoreKindLocal identifies a local block store (disk-backed cache).
+	BlockStoreKindLocal BlockStoreKind = "local"
+
+	// BlockStoreKindRemote identifies a remote block store (S3, etc.).
+	BlockStoreKindRemote BlockStoreKind = "remote"
+)
+
+// BlockStoreConfig defines a block store instance configuration.
+// It replaces the former PayloadStoreConfig with an additional Kind discriminator
+// to distinguish local (disk-backed) from remote (S3, etc.) block stores.
+type BlockStoreConfig struct {
+	ID        string         `gorm:"primaryKey;size:36" json:"id"`
+	Name      string         `gorm:"uniqueIndex:idx_block_store_name_kind;not null;size:255" json:"name"`
+	Kind      BlockStoreKind `gorm:"uniqueIndex:idx_block_store_name_kind;not null;size:10;index" json:"kind"`
+	Type      string         `gorm:"not null;size:50" json:"type"` // fs, memory, s3
+	Config    string         `gorm:"type:text" json:"-"`           // JSON blob for type-specific config
+	CreatedAt time.Time      `gorm:"autoCreateTime" json:"created_at"`
 
 	// Parsed configuration (not stored in DB)
 	ParsedConfig map[string]any `gorm:"-" json:"config,omitempty"`
 }
 
-// TableName returns the table name for PayloadStoreConfig.
-func (PayloadStoreConfig) TableName() string {
-	return "payload_stores"
+// TableName returns the table name for BlockStoreConfig.
+func (BlockStoreConfig) TableName() string {
+	return "block_store_configs"
 }
 
 // GetConfig returns the parsed configuration.
-func (p *PayloadStoreConfig) GetConfig() (map[string]any, error) {
-	if p.ParsedConfig != nil {
-		return p.ParsedConfig, nil
+func (b *BlockStoreConfig) GetConfig() (map[string]any, error) {
+	if b.ParsedConfig != nil {
+		return b.ParsedConfig, nil
 	}
-	if p.Config == "" {
+	if b.Config == "" {
 		return make(map[string]any), nil
 	}
 	var cfg map[string]any
-	if err := json.Unmarshal([]byte(p.Config), &cfg); err != nil {
+	if err := json.Unmarshal([]byte(b.Config), &cfg); err != nil {
 		return nil, err
 	}
-	p.ParsedConfig = cfg
+	b.ParsedConfig = cfg
 	return cfg, nil
 }
 
 // SetConfig sets the configuration from a map.
-func (p *PayloadStoreConfig) SetConfig(cfg map[string]any) error {
+func (b *BlockStoreConfig) SetConfig(cfg map[string]any) error {
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		return err
 	}
-	p.Config = string(data)
-	p.ParsedConfig = cfg
+	b.Config = string(data)
+	b.ParsedConfig = cfg
 	return nil
 }

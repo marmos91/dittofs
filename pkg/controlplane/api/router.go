@@ -37,8 +37,8 @@ import (
 //   - /api/v1/users/* - User management (admin only)
 //   - /api/v1/groups/* - Group management (admin only)
 //   - /api/v1/shares/* - Share management (admin only)
-//   - /api/v1/metadata-stores/* - Metadata store management (admin only)
-//   - /api/v1/payload-stores/* - Payload store management (admin only)
+//   - /api/v1/store/metadata/* - Metadata store management (admin only)
+//   - /api/v1/store/block/{kind}/* - Block store management (admin only)
 //   - GET /api/v1/adapters - Adapter list (admin + operator)
 //   - /api/v1/adapters/* - Adapter management (admin only)
 //   - /api/v1/adapters/{type}/settings - Adapter settings (admin only)
@@ -196,28 +196,29 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Delete("/{name}/permissions/groups/{groupname}", shareHandler.DeleteGroupPermission)
 			})
 
-			// Metadata store management (admin only)
-			r.Route("/metadata-stores", func(r chi.Router) {
+			// Store management (admin only)
+			r.Route("/store", func(r chi.Router) {
 				r.Use(apiMiddleware.RequireAdmin())
 
-				metadataStoreHandler := handlers.NewMetadataStoreHandler(cpStore, rt)
-				r.Post("/", metadataStoreHandler.Create)
-				r.Get("/", metadataStoreHandler.List)
-				r.Get("/{name}", metadataStoreHandler.Get)
-				r.Put("/{name}", metadataStoreHandler.Update)
-				r.Delete("/{name}", metadataStoreHandler.Delete)
-			})
+				// Block stores (local and remote) via kind URL param
+				r.Route("/block/{kind}", func(r chi.Router) {
+					blockStoreHandler := handlers.NewBlockStoreHandler(cpStore)
+					r.Post("/", blockStoreHandler.Create)
+					r.Get("/", blockStoreHandler.List)
+					r.Get("/{name}", blockStoreHandler.Get)
+					r.Put("/{name}", blockStoreHandler.Update)
+					r.Delete("/{name}", blockStoreHandler.Delete)
+				})
 
-			// Payload store management (admin only)
-			r.Route("/payload-stores", func(r chi.Router) {
-				r.Use(apiMiddleware.RequireAdmin())
-
-				payloadStoreHandler := handlers.NewPayloadStoreHandler(cpStore)
-				r.Post("/", payloadStoreHandler.Create)
-				r.Get("/", payloadStoreHandler.List)
-				r.Get("/{name}", payloadStoreHandler.Get)
-				r.Put("/{name}", payloadStoreHandler.Update)
-				r.Delete("/{name}", payloadStoreHandler.Delete)
+				// Metadata stores (refactored from /metadata-stores)
+				r.Route("/metadata", func(r chi.Router) {
+					metadataStoreHandler := handlers.NewMetadataStoreHandler(cpStore, rt)
+					r.Post("/", metadataStoreHandler.Create)
+					r.Get("/", metadataStoreHandler.List)
+					r.Get("/{name}", metadataStoreHandler.Get)
+					r.Put("/{name}", metadataStoreHandler.Update)
+					r.Delete("/{name}", metadataStoreHandler.Delete)
+				})
 			})
 
 			// Adapter configuration - split read/write access

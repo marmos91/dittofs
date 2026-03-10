@@ -31,7 +31,7 @@ var (
 	_ ShareStore               = (*GORMStore)(nil)
 	_ PermissionStore          = (*GORMStore)(nil)
 	_ MetadataStoreConfigStore = (*GORMStore)(nil)
-	_ PayloadStoreConfigStore  = (*GORMStore)(nil)
+	_ BlockStoreConfigStore    = (*GORMStore)(nil)
 	_ AdapterStore             = (*GORMStore)(nil)
 	_ SettingsStore            = (*GORMStore)(nil)
 	_ AdminStore               = (*GORMStore)(nil)

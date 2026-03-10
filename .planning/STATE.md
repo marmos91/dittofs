@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: BlockStore Unification Refactor
 status: completed
-stopped_at: Completed 43-02-PLAN.md
-last_updated: "2026-03-09T15:42:17.637Z"
-last_activity: 2026-03-09 — Phase 43 Plan 02 complete (Nil-safe offloader with local-only init)
+stopped_at: Completed 44-03-PLAN.md
+last_updated: "2026-03-09T17:34:49Z"
+last_activity: 2026-03-09 — Phase 44 Plan 03 complete (CLI commands for block stores and shares)
 progress:
   total_phases: 22
-  completed_phases: 4
-  total_plans: 7
-  completed_plans: 7
-  percent: 68
+  completed_phases: 5
+  total_plans: 10
+  completed_plans: 10
+  percent: 75
 ---
 
 # Project State
@@ -21,17 +21,17 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-09)
 
 **Core value:** Replace confusing layered storage architecture with clean two-tier block store model (Local + Remote) for per-share isolation and maintainability
-**Current focus:** Phase 43 - Local-Only Block Management
+**Current focus:** Phase 44 - Data Model and API/CLI
 
 ## Current Position
 
-Phase: 43 of 49 (Local-Only Block Management)
+Phase: 44 of 49 (Data Model and API/CLI) -- COMPLETE
 Milestone: v4.0 BlockStore Unification Refactor
-Plan: 2 of 2 in current phase (COMPLETE)
-Status: Phase 43 Complete
-Last activity: 2026-03-09 — Phase 43 Plan 02 complete (Nil-safe offloader with local-only init)
+Plan: 3 of 3 in current phase (COMPLETE)
+Status: Phase 44 complete
+Last activity: 2026-03-09 — Phase 44 Plan 03 complete (CLI commands for block stores and shares)
 
-Progress: [████████████████████████████████████████░░░░░░░░░░░░] 68% (125/186+ total plans across all milestones)
+Progress: [██████████] 98% (125/186+ total plans across all milestones)
 
 ## Completed Milestones
 
@@ -54,7 +54,8 @@ Progress: [███████████████████████
 **v4.0 Current Milestone:**
 - 9 phases defined (41-49)
 - 55 requirements mapped
-- 5 plans completed (41-01, 41-02, 42-01, 43-01, 43-02) -- Phases 41, 42, 43 complete
+- 2 plans completed (41-01, 41-02) -- Phase 41 complete
+- 3 plans completed (44-01, 44-02, 44-03) -- Phase 44 complete
 
 ## Accumulated Context
 
@@ -70,12 +71,16 @@ Recent decisions affecting v4.0 work:
 - **Log messages updated to sync terminology now**: Method/file renames deferred to Phase 45 (Phase 41, Plan 01)
 - **Block index sorting in Go**: Numeric sort after DB fetch for correct multi-digit ordering (Phase 41, Plan 02)
 - **BadgerDB fb-file: index always maintained**: On every PutFileBlock regardless of state (Phase 41, Plan 02)
-- **Keep filesystem case in init.go returning explicit v4.0 removal error**: For upgrade guidance (Phase 42, Plan 01)
-- **Convert gc_integration_test.go filesystem tests to memory**: Rather than deleting them (Phase 42, Plan 01)
-- **Direct blockStore.DeleteFileBlock for deletes**: Not async pendingFBs, ensures immediate consistency (Phase 43, Plan 01)
-- **pendingFBs.Delete as cleanup-only**: Prevents zombie re-creation of deleted FileBlocks (Phase 43, Plan 01)
-- **Local-only mode: eviction disabled, fsync enabled**: Disk is final store, not staging buffer (Phase 43, Plan 02)
-- **SetRemoteStore one-shot**: Prevents re-entrant race from multiple callers (Phase 43, Plan 02)
+- **Single table with Kind discriminator for block stores**: Not separate tables -- simpler queries, matches MetadataStoreConfig pattern (Phase 44, Plan 01)
+- **RemoteBlockStoreID as *string pointer**: GORM nullable FK with pointer type for optional remote references (Phase 44, Plan 01)
+- **Two-phase migration strategy**: Pre-AutoMigrate for table rename, post-AutoMigrate for data migration (Phase 44, Plan 01)
+- **API route /store/block/{kind}**: Kind-aware CRUD replaces /payload-stores (Phase 44, Plan 01)
+- **Type/kind validation on block store create**: Local accepts fs,memory; remote accepts s3,memory (Phase 44, Plan 02)
+- **Unified /api/v1/store/ route prefix**: Metadata at /store/metadata, blocks at /store/block/{kind} (Phase 44, Plan 02)
+- **Share create uses name-based fields**: local_block_store/remote_block_store accept names, resolved to IDs server-side (Phase 44, Plan 02)
+- **Local block store defaults to fs type**: Most common use case for local storage (Phase 44, Plan 03)
+- **Share create --local required via cobra**: MarkFlagRequired enforces local block store at CLI level (Phase 44, Plan 03)
+- **Share edit supports --local/--remote flags**: Enables store migration via share update (Phase 44, Plan 03)
 
 ### Pending Todos
 
@@ -87,7 +92,7 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-09T15:35:35Z
-Stopped at: Completed 43-02-PLAN.md
-Resume file: .planning/phases/43-local-only-block-management/43-02-SUMMARY.md
-Next action: Execute next phase
+Last session: 2026-03-09T17:34:49Z
+Stopped at: Completed 44-03-PLAN.md (Phase 44 complete)
+Resume file: .planning/phases/44-data-model-and-api-cli/44-03-SUMMARY.md
+Next action: Begin Phase 45 planning

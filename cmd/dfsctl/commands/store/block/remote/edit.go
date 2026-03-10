@@ -1,4 +1,4 @@
-package payload
+package remote
 
 import (
 	"encoding/json"
@@ -24,27 +24,27 @@ var (
 
 var editCmd = &cobra.Command{
 	Use:   "edit <name>",
-	Short: "Edit a payload store",
-	Long: `Edit an existing payload store configuration.
+	Short: "Edit a remote block store",
+	Long: `Edit an existing remote block store configuration.
 
 When run without flags, opens an interactive editor to modify store properties.
 When flags are provided, only the specified fields are updated.
 
 Examples:
-  # Edit interactively (default)
-  dfsctl store payload edit default
+  # Edit interactively
+  dfsctl store block remote edit s3-store
 
   # Update config with JSON
-  dfsctl store payload edit default --config '{"bucket":"new-bucket"}'
+  dfsctl store block remote edit s3-store --config '{"bucket":"new-bucket"}'
 
   # Update S3 settings
-  dfsctl store payload edit default --bucket new-bucket --region us-west-2`,
+  dfsctl store block remote edit s3-store --bucket new-bucket --region us-west-2`,
 	Args: cobra.ExactArgs(1),
 	RunE: runEdit,
 }
 
 func init() {
-	editCmd.Flags().StringVar(&editType, "type", "", "Store type: memory, s3")
+	editCmd.Flags().StringVar(&editType, "type", "", "Store type: s3, memory")
 	editCmd.Flags().StringVar(&editConfig, "config", "", "Store configuration as JSON")
 	editCmd.Flags().StringVar(&editBucket, "bucket", "", "S3 bucket name (for s3)")
 	editCmd.Flags().StringVar(&editRegion, "region", "", "AWS region (for s3)")
@@ -61,18 +61,15 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Get current store to show existing values
-	current, err := client.GetPayloadStore(name)
+	current, err := client.GetBlockStore("remote", name)
 	if err != nil {
-		return fmt.Errorf("failed to get payload store: %w", err)
+		return fmt.Errorf("failed to get remote block store: %w", err)
 	}
 
-	// Check if any flags were provided
 	hasFlags := cmd.Flags().Changed("type") || cmd.Flags().Changed("config") ||
 		cmd.Flags().Changed("bucket") || cmd.Flags().Changed("region") || cmd.Flags().Changed("endpoint") ||
 		cmd.Flags().Changed("access-key") || cmd.Flags().Changed("secret-key")
 
-	// If no flags provided, run interactive mode
 	if !hasFlags {
 		return runEditInteractive(client, name, current)
 	}
@@ -80,7 +77,6 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	req := &apiclient.UpdateStoreRequest{}
 	hasUpdate := false
 
-	// Build config from flags
 	if editConfig != "" {
 		var config any
 		if err := json.Unmarshal([]byte(editConfig), &config); err != nil {
@@ -89,14 +85,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		req.Config = config
 		hasUpdate = true
 	} else if editBucket != "" || editRegion != "" || editEndpoint != "" || editAccessKey != "" || editSecretKey != "" {
-		// Parse current config to preserve existing values
-		var currentConfig map[string]any
-		if len(current.Config) > 0 {
-			_ = json.Unmarshal(current.Config, &currentConfig)
-		}
-		if currentConfig == nil {
-			currentConfig = make(map[string]any)
-		}
+		currentConfig := cmdutil.ParseConfigMap(current.Config)
 
 		if editBucket != "" {
 			currentConfig["bucket"] = editBucket
@@ -126,29 +115,24 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no update fields specified. Use --type, --config, --bucket, --region, --endpoint, --access-key, or --secret-key")
 	}
 
-	store, err := client.UpdatePayloadStore(name, req)
+	store, err := client.UpdateBlockStore("remote", name, req)
 	if err != nil {
-		return fmt.Errorf("failed to update payload store: %w", err)
+		return fmt.Errorf("failed to update remote block store: %w", err)
 	}
 
-	return cmdutil.PrintResourceWithSuccess(os.Stdout, store, fmt.Sprintf("Payload store '%s' updated successfully", store.Name))
+	return cmdutil.PrintResourceWithSuccess(os.Stdout, store, fmt.Sprintf("Remote block store '%s' updated successfully", store.Name))
 }
 
-func runEditInteractive(client *apiclient.Client, name string, current *apiclient.PayloadStore) error {
-	fmt.Printf("Editing payload store: %s (type: %s)\n", current.Name, current.Type)
+func runEditInteractive(client *apiclient.Client, name string, current *apiclient.BlockStore) error {
+	fmt.Printf("Editing remote block store: %s (type: %s)\n", current.Name, current.Type)
 	fmt.Println("Press Ctrl+C to abort.")
 	fmt.Println()
 
-	// Parse current config
-	var currentConfig map[string]any
-	if len(current.Config) > 0 {
-		_ = json.Unmarshal(current.Config, &currentConfig)
-	}
+	currentConfig := cmdutil.ParseConfigMap(current.Config)
 
 	req := &apiclient.UpdateStoreRequest{}
 	hasUpdate := false
 
-	// Based on store type, prompt for relevant fields
 	switch current.Type {
 	case "s3":
 		bucket := cmdutil.GetConfigString(currentConfig, "bucket", "")
@@ -170,7 +154,6 @@ func runEditInteractive(client *apiclient.Client, name string, current *apiclien
 			return cmdutil.HandleAbort(err)
 		}
 
-		// Show masked current access key if exists
 		accessKeyPrompt := "Access key ID"
 		if hasCredentials {
 			accessKeyPrompt = fmt.Sprintf("Access key ID (current: %s...)", accessKey[:min(8, len(accessKey))])
@@ -182,13 +165,11 @@ func runEditInteractive(client *apiclient.Client, name string, current *apiclien
 
 		var newSecretKey string
 		if newAccessKey != "" && newAccessKey != accessKey {
-			// New access key, prompt for secret
 			newSecretKey, err = prompt.Password("Secret access key")
 			if err != nil {
 				return cmdutil.HandleAbort(err)
 			}
 		} else if newAccessKey != "" {
-			// Keep existing credentials
 			newSecretKey = cmdutil.GetConfigString(currentConfig, "secret_access_key", "")
 		}
 
@@ -222,10 +203,10 @@ func runEditInteractive(client *apiclient.Client, name string, current *apiclien
 		return nil
 	}
 
-	store, err := client.UpdatePayloadStore(name, req)
+	store, err := client.UpdateBlockStore("remote", name, req)
 	if err != nil {
-		return fmt.Errorf("failed to update payload store: %w", err)
+		return fmt.Errorf("failed to update remote block store: %w", err)
 	}
 
-	return cmdutil.PrintResourceWithSuccess(os.Stdout, store, fmt.Sprintf("Payload store '%s' updated successfully", store.Name))
+	return cmdutil.PrintResourceWithSuccess(os.Stdout, store, fmt.Sprintf("Remote block store '%s' updated successfully", store.Name))
 }

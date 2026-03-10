@@ -32,21 +32,21 @@
 
 ### Data Model
 
-- [ ] **MODEL-01**: BlockStoreConfig model with ID, Name, Kind (local/remote), Type, Config, CreatedAt
-- [ ] **MODEL-02**: Share model updated with LocalBlockStoreID (mandatory) + RemoteBlockStoreID (nullable)
-- [ ] **MODEL-03**: Migration renames payload_store_configs -> block_store_configs with kind column
-- [ ] **MODEL-04**: Migration splits Share.PayloadStoreID into LocalBlockStoreID + RemoteBlockStoreID
-- [ ] **MODEL-05**: BlockStoreConfigStore interface with CRUD filtered by kind replaces PayloadStoreConfigStore
+- [x] **MODEL-01**: BlockStoreConfig model with ID, Name, Kind (local/remote), Type, Config, CreatedAt
+- [x] **MODEL-02**: Share model updated with LocalBlockStoreID (mandatory) + RemoteBlockStoreID (nullable)
+- [x] **MODEL-03**: Migration renames payload_store_configs -> block_store_configs with kind column
+- [x] **MODEL-04**: Migration splits Share.PayloadStoreID into LocalBlockStoreID + RemoteBlockStoreID
+- [x] **MODEL-05**: BlockStoreConfigStore interface with CRUD filtered by kind replaces PayloadStoreConfigStore
 
 ### API & CLI
 
-- [ ] **API-01**: REST endpoints for local block store CRUD (/api/v1/block-stores/local)
-- [ ] **API-02**: REST endpoints for remote block store CRUD (/api/v1/block-stores/remote)
-- [ ] **API-03**: Share endpoints accept --local (required) and --remote (optional)
-- [ ] **CLI-01**: `dfsctl store block local add/list/edit/remove` commands
-- [ ] **CLI-02**: `dfsctl store block remote add/list/edit/remove` commands
-- [ ] **CLI-03**: `dfsctl share create --local X --remote Y` replacing --payload
-- [ ] **CLI-04**: API client methods for block store operations replacing payload store methods
+- [x] **API-01**: REST endpoints for local block store CRUD (/api/v1/store/block/local)
+- [x] **API-02**: REST endpoints for remote block store CRUD (/api/v1/store/block/remote)
+- [x] **API-03**: Share endpoints accept --local (required) and --remote (optional)
+- [x] **CLI-01**: `dfsctl store block local add/list/edit/remove` commands
+- [x] **CLI-02**: `dfsctl store block remote add/list/edit/remove` commands
+- [x] **CLI-03**: `dfsctl share create --local X --remote Y` replacing --payload
+- [x] **CLI-04**: API client methods for block store operations replacing payload store methods
 
 ### Package Architecture
 
@@ -134,18 +134,18 @@
 | LOCAL-02 | Phase 43 | Complete |
 | LOCAL-03 | Phase 43 | Complete |
 | LOCAL-04 | Phase 43 | Complete |
-| MODEL-01 | Phase 44 | Pending |
-| MODEL-02 | Phase 44 | Pending |
-| MODEL-03 | Phase 44 | Pending |
-| MODEL-04 | Phase 44 | Pending |
-| MODEL-05 | Phase 44 | Pending |
-| API-01 | Phase 44 | Pending |
-| API-02 | Phase 44 | Pending |
-| API-03 | Phase 44 | Pending |
-| CLI-01 | Phase 44 | Pending |
-| CLI-02 | Phase 44 | Pending |
-| CLI-03 | Phase 44 | Pending |
-| CLI-04 | Phase 44 | Pending |
+| MODEL-01 | Phase 44 | Complete |
+| MODEL-02 | Phase 44 | Complete |
+| MODEL-03 | Phase 44 | Complete |
+| MODEL-04 | Phase 44 | Complete |
+| MODEL-05 | Phase 44 | Complete |
+| API-01 | Phase 44 | Complete |
+| API-02 | Phase 44 | Complete |
+| API-03 | Phase 44 | Complete |
+| CLI-01 | Phase 44 | Complete |
+| CLI-02 | Phase 44 | Complete |
+| CLI-03 | Phase 44 | Complete |
+| CLI-04 | Phase 44 | Complete |
 | PKG-01 | Phase 45 | Pending |
 | PKG-02 | Phase 45 | Pending |
 | PKG-03 | Phase 45 | Pending |

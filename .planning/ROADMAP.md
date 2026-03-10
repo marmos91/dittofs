@@ -118,7 +118,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 41: Block State Enum and ListFileBlocks** - Rename states (Sealed→Local, Uploaded→Remote), update ListPendingUpload→ListLocalBlocks, add ListFileBlocks method (completed 2026-03-09)
 - [x] **Phase 42: Legacy Cleanup** - Remove DirectWriteStore interface and filesystem payload store (completed 2026-03-09)
 - [x] **Phase 43: Local-Only Block Management** - Block management operations on cache, local-only offloader mode without remote store (completed 2026-03-09)
-- [ ] **Phase 44: Data Model and API/CLI** - BlockStoreConfig DB model, REST endpoints, dfsctl block store commands
+- [x] **Phase 44: Data Model and API/CLI** - BlockStoreConfig DB model, REST endpoints, dfsctl block store commands (completed 2026-03-09)
 - [ ] **Phase 45: Package Restructure** - Create pkg/blockstore/ hierarchy absorbing cache, payload, offloader, gc
 - [ ] **Phase 46: Per-Share Block Store Wiring** - Runtime manages per-share BlockStore instances replacing global PayloadService
 - [ ] **Phase 47: L1 Read Cache and Prefetch** - Read-through LRU cache with sequential prefetch for hot blocks
@@ -207,8 +207,8 @@ Plans:
 **Verification**: `go build ./...` && `go test ./...`
 **Plans**: 2 plans
 Plans:
-- [ ] 43-01-PLAN.md — Cache manage.go methods, EvictMemory rename, SetEvictionEnabled
-- [ ] 43-02-PLAN.md — Offloader nil-blockStore support, SetRemoteStore, init.go local-only wiring
+- [x] 43-01-PLAN.md — Cache manage.go methods, EvictMemory rename, SetEvictionEnabled
+- [x] 43-02-PLAN.md — Offloader nil-blockStore support, SetRemoteStore, init.go local-only wiring
 
 ### Phase 44: Data Model and API/CLI
 **Goal**: Create BlockStoreConfig model and REST/CLI endpoints for local and remote block stores
@@ -220,14 +220,18 @@ Plans:
   3. Database migration renames payload_store_configs to block_store_configs with kind column
   4. Database migration splits Share.PayloadStoreID into LocalBlockStoreID + RemoteBlockStoreID
   5. BlockStoreConfigStore interface with CRUD methods filtered by kind replaces PayloadStoreConfigStore
-  6. REST endpoints /api/v1/block-stores/local and /api/v1/block-stores/remote exist for CRUD
-  7. Share endpoints accept --local (required) and --remote (optional) parameters
+  6. REST endpoints /api/v1/store/block/local and /api/v1/store/block/remote exist for CRUD
+  7. Share endpoints accept local_block_store (required) and remote_block_store (optional)
   8. dfsctl store block local add/list/edit/remove commands work
   9. dfsctl store block remote add/list/edit/remove commands work
   10. dfsctl share create --local X --remote Y replaces --payload flag
   11. API client methods for block store operations replace payload store methods
 **Verification**: `go build ./...` && `go test ./pkg/controlplane/...` && manual CLI test
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 44-01-PLAN.md — BlockStoreConfig model, Share model update, BlockStoreConfigStore interface, GORM migration
+- [ ] 44-02-PLAN.md — BlockStoreHandler, router refactoring to /api/v1/store/, share handler updates, API client
+- [ ] 44-03-PLAN.md — dfsctl store block local/remote CLI commands, share create --local/--remote
 
 ### Phase 45: Package Restructure
 **Goal**: Reorganize storage code into clean pkg/blockstore/ hierarchy
@@ -547,7 +551,7 @@ v3.8 (33-40.5) -> v4.0 (41-49) -> v4.1 (50-56) -> v4.2 (57-62)
 | 41. Block State Enum and ListFileBlocks | 2/2 | Complete    | 2026-03-09 | - |
 | 42. Legacy Cleanup | 1/1 | Complete    | 2026-03-09 | - |
 | 43. Local-Only Block Management | 2/2 | Complete    | 2026-03-09 | - |
-| 44. Data Model and API/CLI | v4.0 | 0/? | Not started | - |
+| 44. Data Model and API/CLI | 3/3 | Complete   | 2026-03-09 | - |
 | 45. Package Restructure | v4.0 | 0/? | Not started | - |
 | 46. Per-Share Block Store Wiring | v4.0 | 0/? | Not started | - |
 | 47. L1 Read Cache and Prefetch | v4.0 | 0/? | Not started | - |
