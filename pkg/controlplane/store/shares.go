@@ -38,17 +38,25 @@ func (s *GORMStore) UpdateShare(ctx context.Context, share *models.Share) error 
 	share.UpdatedAt = time.Now()
 
 	// Protocol-specific fields (Squash, AllowAuthSys, etc.) are stored in share_adapter_configs.
+	updates := map[string]any{
+		"read_only":            share.ReadOnly,
+		"default_permission":   share.DefaultPermission,
+		"blocked_operations":   share.BlockedOperations,
+		"local_block_store_id": share.LocalBlockStoreID,
+		"updated_at":           share.UpdatedAt,
+	}
+	// Handle remote_block_store_id explicitly: GORM map-based Updates may skip
+	// typed nil (*string)(nil). Use gorm.Expr("NULL") to ensure the column is cleared.
+	if share.RemoteBlockStoreID == nil {
+		updates["remote_block_store_id"] = gorm.Expr("NULL")
+	} else {
+		updates["remote_block_store_id"] = *share.RemoteBlockStoreID
+	}
+
 	result := s.db.WithContext(ctx).
 		Model(&models.Share{}).
 		Where("id = ?", share.ID).
-		Updates(map[string]any{
-			"read_only":              share.ReadOnly,
-			"default_permission":     share.DefaultPermission,
-			"blocked_operations":     share.BlockedOperations,
-			"local_block_store_id":   share.LocalBlockStoreID,
-			"remote_block_store_id":  share.RemoteBlockStoreID,
-			"updated_at":             share.UpdatedAt,
-		})
+		Updates(updates)
 
 	if result.Error != nil {
 		return result.Error

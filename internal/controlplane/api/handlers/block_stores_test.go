@@ -276,10 +276,10 @@ func TestShareBlockStore_CreateWithLocal(t *testing.T) {
 
 	remoteName := "remote-s3"
 	body, _ := json.Marshal(CreateShareRequest{
-		Name:              "/test-export",
-		MetadataStoreID:   "meta-1",
-		LocalBlockStore:   "local-fs",
-		RemoteBlockStore:  &remoteName,
+		Name:             "/test-export",
+		MetadataStoreID:  "meta-1",
+		LocalBlockStore:  "local-fs",
+		RemoteBlockStore: &remoteName,
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/shares", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")

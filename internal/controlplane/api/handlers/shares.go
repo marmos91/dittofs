@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -648,10 +649,18 @@ func resolveMetadataStore(ctx context.Context, s ShareHandlerStore, nameOrID str
 }
 
 // resolveBlockStore resolves a block store by name (with kind) or by ID.
+// When falling back to ID lookup, it validates that the resolved store's kind
+// matches the expected kind to prevent cross-kind references.
 func resolveBlockStore(ctx context.Context, s ShareHandlerStore, nameOrID string, kind models.BlockStoreKind) (*models.BlockStoreConfig, error) {
-	store, err := s.GetBlockStore(ctx, nameOrID, kind)
+	bs, err := s.GetBlockStore(ctx, nameOrID, kind)
 	if err != nil {
-		store, err = s.GetBlockStoreByID(ctx, nameOrID)
+		bs, err = s.GetBlockStoreByID(ctx, nameOrID)
+		if err != nil {
+			return nil, err
+		}
+		if bs.Kind != kind {
+			return nil, fmt.Errorf("block store %q is kind %q, expected %q", nameOrID, bs.Kind, kind)
+		}
 	}
-	return store, err
+	return bs, nil
 }

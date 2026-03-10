@@ -40,8 +40,8 @@
 
 ### API & CLI
 
-- [x] **API-01**: REST endpoints for local block store CRUD (/api/v1/block-stores/local)
-- [x] **API-02**: REST endpoints for remote block store CRUD (/api/v1/block-stores/remote)
+- [x] **API-01**: REST endpoints for local block store CRUD (/api/v1/store/block/local)
+- [x] **API-02**: REST endpoints for remote block store CRUD (/api/v1/store/block/remote)
 - [x] **API-03**: Share endpoints accept --local (required) and --remote (optional)
 - [x] **CLI-01**: `dfsctl store block local add/list/edit/remove` commands
 - [x] **CLI-02**: `dfsctl store block remote add/list/edit/remove` commands

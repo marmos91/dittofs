@@ -88,7 +88,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	}
 
 	remote := createRemote
-	if remote == "" && createName == "" {
+	if remote == "" && !cmd.Flags().Changed("remote") {
 		// Interactive mode - ask for optional remote store
 		remote, err = prompt.InputOptional("Remote block store name (optional, Enter to skip)")
 		if err != nil {
@@ -110,7 +110,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	req := &apiclient.CreateShareRequest{
 		Name:              name,
 		MetadataStoreID:   metadata,
-		LocalBlockStore: local,
+		LocalBlockStore:   local,
 		ReadOnly:          createReadOnly,
 		DefaultPermission: defaultPerm,
 		Description:       createDescription,
