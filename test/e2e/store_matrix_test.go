@@ -386,14 +386,7 @@ func testMatrixListDirectory(t *testing.T, mount *framework.Mount) {
 
 	// Verify specific entries
 	for _, name := range fileNames {
-		found := false
-		for _, entry := range entries {
-			if entry == name {
-				found = true
-				break
-			}
-		}
-		assert.True(t, found, "Directory should contain %s", name)
+		assert.Contains(t, entries, name, "Directory should contain %s", name)
 	}
 
 	// Verify counts

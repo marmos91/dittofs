@@ -71,7 +71,6 @@ func (h *CacheHandler) Evict(w http.ResponseWriter, r *http.Request) {
 	result, err := h.runtime.EvictCache(r.Context(), shareName, opts)
 	if err != nil {
 		logger.Debug("Cache evict error", "share", shareName, "error", err)
-		// Check if it's a safety error (no remote store)
 		BadRequest(w, err.Error())
 		return
 	}

@@ -134,7 +134,7 @@ func (b *CacheTiersBenchmark) runForSize(ctx context.Context, fileSize int64, lo
 
 	// Step 2: Evict all cache
 	logf("  %s: Step 2/6 - Evict all cache...\n", sizeLabel)
-	if err := b.evictAll(ctx, logf); err != nil {
+	if err := b.evictAll(ctx); err != nil {
 		logf("  WARNING: evict-all failed: %v (cold read may not be accurate)\n", err)
 	}
 
@@ -158,7 +158,7 @@ func (b *CacheTiersBenchmark) runForSize(ctx context.Context, fileSize int64, lo
 
 	// Step 5: Evict L1 only (keep local FS blocks)
 	logf("  %s: Step 5/6 - Evict L1 cache only...\n", sizeLabel)
-	if err := b.evictL1(ctx, logf); err != nil {
+	if err := b.evictL1(ctx); err != nil {
 		logf("  WARNING: L1-evict failed: %v (L2 read may not be accurate)\n", err)
 	}
 
@@ -191,11 +191,7 @@ func (b *CacheTiersBenchmark) writeFile(_ context.Context, path string, size int
 	var written int64
 
 	for written < size {
-		n := size - written
-		if n > int64(len(buf)) {
-			n = int64(len(buf))
-		}
-
+		n := min(size-written, int64(len(buf)))
 		w, err := f.Write(buf[:n])
 		written += int64(w)
 		if err != nil {
@@ -250,7 +246,7 @@ func (b *CacheTiersBenchmark) readFile(_ context.Context, path string, size int6
 }
 
 // evictAll evicts both L1 and local cache for the share.
-func (b *CacheTiersBenchmark) evictAll(ctx context.Context, logf func(string, ...any)) error {
+func (b *CacheTiersBenchmark) evictAll(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -265,7 +261,7 @@ func (b *CacheTiersBenchmark) evictAll(ctx context.Context, logf func(string, ..
 }
 
 // evictL1 evicts only the L1 (memory) cache for the share.
-func (b *CacheTiersBenchmark) evictL1(ctx context.Context, logf func(string, ...any)) error {
+func (b *CacheTiersBenchmark) evictL1(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

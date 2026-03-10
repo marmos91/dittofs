@@ -177,12 +177,14 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Delete("/{name}/members/{username}", groupHandler.RemoveMember)
 			})
 
+			// Cache handler shared between per-share and global routes.
+			cacheHandler := handlers.NewCacheHandler(rt)
+
 			// Share management (admin only)
 			r.Route("/shares", func(r chi.Router) {
 				r.Use(apiMiddleware.RequireAdmin())
 
 				shareHandler := handlers.NewShareHandler(cpStore, rt)
-				cacheHandler := handlers.NewCacheHandler(rt)
 				r.Post("/", shareHandler.Create)
 				r.Get("/", shareHandler.List)
 				r.Get("/{name}", shareHandler.Get)
@@ -205,7 +207,6 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 			r.Route("/cache", func(r chi.Router) {
 				r.Use(apiMiddleware.RequireAdmin())
 
-				cacheHandler := handlers.NewCacheHandler(rt)
 				r.Get("/stats", cacheHandler.Stats)
 				r.Post("/evict", cacheHandler.Evict)
 			})
