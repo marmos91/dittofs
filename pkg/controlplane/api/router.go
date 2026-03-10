@@ -182,6 +182,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Use(apiMiddleware.RequireAdmin())
 
 				shareHandler := handlers.NewShareHandler(cpStore, rt)
+				cacheHandler := handlers.NewCacheHandler(rt)
 				r.Post("/", shareHandler.Create)
 				r.Get("/", shareHandler.List)
 				r.Get("/{name}", shareHandler.Get)
@@ -194,6 +195,19 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Delete("/{name}/permissions/users/{username}", shareHandler.DeleteUserPermission)
 				r.Put("/{name}/permissions/groups/{groupname}", shareHandler.SetGroupPermission)
 				r.Delete("/{name}/permissions/groups/{groupname}", shareHandler.DeleteGroupPermission)
+
+				// Per-share cache management
+				r.Get("/{name}/cache/stats", cacheHandler.Stats)
+				r.Post("/{name}/cache/evict", cacheHandler.Evict)
+			})
+
+			// Global cache management (admin only)
+			r.Route("/cache", func(r chi.Router) {
+				r.Use(apiMiddleware.RequireAdmin())
+
+				cacheHandler := handlers.NewCacheHandler(rt)
+				r.Get("/stats", cacheHandler.Stats)
+				r.Post("/evict", cacheHandler.Evict)
 			})
 
 			// Store management (admin only)

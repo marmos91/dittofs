@@ -124,6 +124,9 @@ func New(c local.LocalStore, remoteStore remote.RemoteStore, fileBlockStore bloc
 	return m
 }
 
+// Queue returns the transfer queue for stats inspection.
+func (m *Syncer) Queue() *SyncQueue { return m.queue }
+
 // SetFinalizationCallback sets the callback invoked when all blocks for a file are uploaded.
 func (m *Syncer) SetFinalizationCallback(fn FinalizationCallback) {
 	m.mu.Lock()

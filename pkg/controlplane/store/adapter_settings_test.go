@@ -417,7 +417,7 @@ func TestDeleteNetgroup_InUse(t *testing.T) {
 	ng := &models.Netgroup{Name: "in-use-test"}
 	ngID, _ := s.CreateNetgroup(ctx, ng)
 
-	// Need metadata and payload stores for a share
+	// Need metadata and block stores for a share
 	metaStore := &models.MetadataStoreConfig{
 		ID:   uuid.New().String(),
 		Name: "test-meta",

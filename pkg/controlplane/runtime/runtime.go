@@ -310,6 +310,16 @@ func (r *Runtime) DrainAllUploads(ctx context.Context) error {
 	return r.sharesSvc.DrainAllBlockStores(ctx)
 }
 
+// GetCacheStats returns cache statistics, optionally filtered by share name.
+func (r *Runtime) GetCacheStats(shareName string) (*shares.CacheStatsResponse, error) {
+	return r.sharesSvc.GetCacheStats(shareName)
+}
+
+// EvictCache evicts cache data for the given share (or all shares).
+func (r *Runtime) EvictCache(ctx context.Context, shareName string, opts shares.EvictOptions) (*shares.EvictResult, error) {
+	return r.sharesSvc.EvictCache(ctx, shareName, opts)
+}
+
 func (r *Runtime) GetUserStore() models.UserStore         { return r.store }
 func (r *Runtime) GetIdentityStore() models.IdentityStore { return r.store }
 
