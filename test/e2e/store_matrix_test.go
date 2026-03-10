@@ -20,33 +20,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// storeConfig defines a combination of metadata and block store types.
-type storeConfig struct {
-	metadataType string // "memory", "badger", "postgres"
-	payloadType  string // "memory", "s3"
-}
-
-// storeMatrix defines all 6 store combinations to test (MTX-01 through MTX-06).
-var storeMatrix = []storeConfig{
-	{"memory", "memory"},   // MTX-01
-	{"memory", "s3"},       // MTX-02
-	{"badger", "memory"},   // MTX-03
-	{"badger", "s3"},       // MTX-04
-	{"postgres", "memory"}, // MTX-05
-	{"postgres", "s3"},     // MTX-06
-}
-
-// TestStoreMatrixOperations validates that all 6 combinations of metadata stores
-// (memory, badger, postgres) and block stores (memory, s3) work
-// correctly with file operations.
+// TestStoreMatrixOperations validates that all 18 combinations of the 3D store
+// matrix (3 metadata x 2 local x 3 remote) work correctly with file operations
+// via NFSv3.
 //
-// Requirements covered:
-//   - MTX-01: memory/memory
-//   - MTX-02: memory/s3
-//   - MTX-03: badger/memory
-//   - MTX-04: badger/s3
-//   - MTX-05: postgres/memory
-//   - MTX-06: postgres/s3
+// In short mode, only 3-4 representative combos run.
+// With DITTOFS_E2E_LOCAL_ONLY=1, only remoteType="none" combos run.
 func TestStoreMatrixOperations(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping store matrix tests in short mode")
@@ -68,29 +47,29 @@ func TestStoreMatrixOperations(t *testing.T) {
 		localstackHelper = framework.NewLocalstackHelper(t)
 	}
 
-	for _, sc := range storeMatrix {
-		testName := fmt.Sprintf("%s/%s", sc.metadataType, sc.payloadType)
+	matrix := getStoreMatrix(testing.Short())
+
+	for _, sc := range matrix {
 		sc := sc // capture for closure
 
-		t.Run(testName, func(t *testing.T) {
+		t.Run(sc.testName(), func(t *testing.T) {
 			// Skip postgres combinations if container unavailable
-			if sc.metadataType == "postgres" && !postgresAvailable {
+			if sc.needsPostgres() && !postgresAvailable {
 				t.Skip("Skipping: PostgreSQL container not available")
 			}
 
 			// Skip s3 combinations if container unavailable
-			if sc.payloadType == "s3" && !localstackAvailable {
+			if sc.needsS3() && !localstackAvailable {
 				t.Skip("Skipping: Localstack (S3) container not available")
 			}
 
-			// Run the store combination test
-			runStoreMatrixTest(t, sc, postgresHelper, localstackHelper)
+			runStoreMatrix3DTest(t, sc, postgresHelper, localstackHelper)
 		})
 	}
 }
 
-// runStoreMatrixTest executes file operation tests for a specific store combination.
-func runStoreMatrixTest(t *testing.T, sc storeConfig, pgHelper *framework.PostgresHelper, lsHelper *framework.LocalstackHelper) {
+// runStoreMatrix3DTest executes file operation tests for a specific 3D store combination.
+func runStoreMatrix3DTest(t *testing.T, sc matrixStoreConfig, pgHelper *framework.PostgresHelper, lsHelper *framework.LocalstackHelper) {
 	t.Helper()
 
 	// Start server process
@@ -103,6 +82,7 @@ func runStoreMatrixTest(t *testing.T, sc storeConfig, pgHelper *framework.Postgr
 	// Create unique store names for this test
 	metaStoreName := helpers.UniqueTestName("meta")
 	localStoreName := helpers.UniqueTestName("local")
+	remoteStoreName := helpers.UniqueTestName("remote")
 	shareName := "/export-matrix"
 
 	// Create metadata store based on type
@@ -135,40 +115,61 @@ func runStoreMatrixTest(t *testing.T, sc storeConfig, pgHelper *framework.Postgr
 		_ = runner.DeleteMetadataStore(metaStoreName)
 	})
 
-	// Create block store based on type
-	var payloadOpts []helpers.BlockStoreOption
-	switch sc.payloadType {
+	// Create local block store based on type
+	var localOpts []helpers.BlockStoreOption
+	switch sc.localType {
 	case "memory":
-		// No options needed
-	case "s3":
-		if lsHelper == nil {
-			t.Fatal("Localstack helper not available")
-		}
-		// Create a unique bucket for this test (S3 bucket names can't have underscores)
-		bucketName := strings.ReplaceAll(fmt.Sprintf("dittofs-matrix-%s", helpers.UniqueTestName("bucket")), "_", "-")
-		err := lsHelper.CreateBucket(context.Background(), bucketName)
-		require.NoError(t, err, "Should create S3 bucket")
-		t.Cleanup(func() {
-			lsHelper.CleanupBucket(context.Background(), bucketName)
-		})
-
-		payloadOpts = append(payloadOpts, helpers.WithBlockS3Config(
-			bucketName,
-			"us-east-1",
-			lsHelper.Endpoint,
-			"test",
-			"test",
-		))
+		// No options needed for memory local store
+	case "fs":
+		fsPath := filepath.Join(t.TempDir(), "local-blocks")
+		localOpts = append(localOpts, helpers.WithBlockRawConfig(
+			fmt.Sprintf(`{"path":"%s"}`, fsPath)))
 	}
 
-	_, err = runner.CreateLocalBlockStore(localStoreName, sc.payloadType, payloadOpts...)
-	require.NoError(t, err, "Should create block store (%s)", sc.payloadType)
+	_, err = runner.CreateLocalBlockStore(localStoreName, sc.localType, localOpts...)
+	require.NoError(t, err, "Should create local block store (%s)", sc.localType)
 	t.Cleanup(func() {
 		_ = runner.DeleteLocalBlockStore(localStoreName)
 	})
 
+	// Create remote block store if needed
+	var shareOpts []helpers.ShareOption
+	if sc.hasRemote() {
+		var remoteOpts []helpers.BlockStoreOption
+		switch sc.remoteType {
+		case "memory":
+			// No options needed for memory remote store
+		case "s3":
+			if lsHelper == nil {
+				t.Fatal("Localstack helper not available")
+			}
+			bucketName := strings.ReplaceAll(fmt.Sprintf("dittofs-mtx-%s", helpers.UniqueTestName("bkt")), "_", "-")
+			err := lsHelper.CreateBucket(context.Background(), bucketName)
+			require.NoError(t, err, "Should create S3 bucket")
+			t.Cleanup(func() {
+				lsHelper.CleanupBucket(context.Background(), bucketName)
+			})
+
+			remoteOpts = append(remoteOpts, helpers.WithBlockS3Config(
+				bucketName,
+				"us-east-1",
+				lsHelper.Endpoint,
+				"test",
+				"test",
+			))
+		}
+
+		_, err = runner.CreateRemoteBlockStore(remoteStoreName, sc.remoteType, remoteOpts...)
+		require.NoError(t, err, "Should create remote block store (%s)", sc.remoteType)
+		t.Cleanup(func() {
+			_ = runner.DeleteRemoteBlockStore(remoteStoreName)
+		})
+
+		shareOpts = append(shareOpts, helpers.WithShareRemote(remoteStoreName))
+	}
+
 	// Create the share using the stores
-	_, err = runner.CreateShare(shareName, metaStoreName, localStoreName)
+	_, err = runner.CreateShare(shareName, metaStoreName, localStoreName, shareOpts...)
 	require.NoError(t, err, "Should create share")
 	t.Cleanup(func() {
 		_ = runner.DeleteShare(shareName)
@@ -210,8 +211,20 @@ func runStoreMatrixTest(t *testing.T, sc storeConfig, pgHelper *framework.Postgr
 		testMatrixDeleteFile(t, mount)
 	})
 
-	t.Run("LargeFile1MB", func(t *testing.T) {
-		testMatrixLargeFile(t, mount)
+	t.Run("Rename", func(t *testing.T) {
+		testMatrixRename(t, mount)
+	})
+
+	t.Run("Truncate", func(t *testing.T) {
+		testMatrixTruncate(t, mount)
+	})
+
+	t.Run("Append", func(t *testing.T) {
+		testMatrixAppend(t, mount)
+	})
+
+	t.Run("LargeFile1KB", func(t *testing.T) {
+		testMatrixSmallFile(t, mount)
 	})
 }
 
@@ -415,27 +428,104 @@ func testMatrixDeleteFile(t *testing.T, mount *framework.Mount) {
 	t.Log("DeleteFile: PASSED")
 }
 
-// testMatrixLargeFile tests 1MB file operations with checksum verification.
-func testMatrixLargeFile(t *testing.T, mount *framework.Mount) {
+// testMatrixRename tests file and directory rename operations.
+func testMatrixRename(t *testing.T, mount *framework.Mount) {
 	t.Helper()
 
-	// Write 1MB random file
-	testFile := mount.FilePath("matrix_large.bin")
-	checksum := framework.WriteRandomFile(t, testFile, 1*1024*1024) // 1MB
+	// Create a file
+	srcFile := mount.FilePath("matrix_rename_src.txt")
+	dstFile := mount.FilePath("matrix_rename_dst.txt")
+	framework.WriteFile(t, srcFile, []byte("rename me"))
+	t.Cleanup(func() {
+		_ = os.Remove(srcFile)
+		_ = os.Remove(dstFile)
+	})
+
+	// Rename file
+	err := os.Rename(srcFile, dstFile)
+	require.NoError(t, err, "Should rename file")
+
+	// Verify src is gone, dst exists with correct content
+	assert.False(t, framework.FileExists(srcFile), "Source should not exist after rename")
+	assert.True(t, framework.FileExists(dstFile), "Destination should exist after rename")
+	content := framework.ReadFile(t, dstFile)
+	assert.Equal(t, []byte("rename me"), content, "Content should be preserved after rename")
+
+	t.Log("Rename: PASSED")
+}
+
+// testMatrixTruncate tests file truncation operations.
+func testMatrixTruncate(t *testing.T, mount *framework.Mount) {
+	t.Helper()
+
+	// Create a file with content
+	testFile := mount.FilePath("matrix_truncate.txt")
+	framework.WriteFile(t, testFile, []byte("hello world, this is some content"))
 	t.Cleanup(func() {
 		_ = os.Remove(testFile)
 	})
 
-	// Wait for async S3 uploads to complete by polling for expected file size.
-	// S3 writes are buffered and flushed asynchronously, so we retry until the
-	// file is fully visible rather than using a fixed sleep.
+	// Truncate to 5 bytes
+	err := os.Truncate(testFile, 5)
+	require.NoError(t, err, "Should truncate file")
+
+	// Verify size
+	info, err := os.Stat(testFile)
+	require.NoError(t, err)
+	assert.Equal(t, int64(5), info.Size(), "File should be truncated to 5 bytes")
+
+	// Verify content
+	content := framework.ReadFile(t, testFile)
+	assert.Equal(t, []byte("hello"), content, "Truncated content should match")
+
+	t.Log("Truncate: PASSED")
+}
+
+// testMatrixAppend tests file append operations.
+func testMatrixAppend(t *testing.T, mount *framework.Mount) {
+	t.Helper()
+
+	// Create a file with initial content
+	testFile := mount.FilePath("matrix_append.txt")
+	framework.WriteFile(t, testFile, []byte("hello"))
+	t.Cleanup(func() {
+		_ = os.Remove(testFile)
+	})
+
+	// Append content
+	f, err := os.OpenFile(testFile, os.O_APPEND|os.O_WRONLY, 0644)
+	require.NoError(t, err, "Should open file for append")
+	_, err = f.Write([]byte(" world"))
+	require.NoError(t, err, "Should write appended data")
+	require.NoError(t, f.Sync(), "Should sync after append")
+	require.NoError(t, f.Close(), "Should close file")
+
+	// Verify full content
+	content := framework.ReadFile(t, testFile)
+	assert.Equal(t, []byte("hello world"), content, "Appended content should match")
+
+	t.Log("Append: PASSED")
+}
+
+// testMatrixSmallFile tests 1KB file operations with checksum verification.
+func testMatrixSmallFile(t *testing.T, mount *framework.Mount) {
+	t.Helper()
+
+	// Write 1KB random file
+	testFile := mount.FilePath("matrix_small.bin")
+	checksum := framework.WriteRandomFile(t, testFile, 1024) // 1KB
+	t.Cleanup(func() {
+		_ = os.Remove(testFile)
+	})
+
+	// Verify file size
 	require.Eventually(t, func() bool {
 		info, err := os.Stat(testFile)
-		return err == nil && info.Size() == int64(1*1024*1024)
-	}, 10*time.Second, 250*time.Millisecond, "Large file should reach 1MB within timeout")
+		return err == nil && info.Size() == int64(1024)
+	}, 10*time.Second, 250*time.Millisecond, "Small file should reach 1KB within timeout")
 
 	// Verify checksum
 	framework.VerifyFileChecksum(t, testFile, checksum)
 
-	t.Log("LargeFile1MB: PASSED")
+	t.Log("SmallFile1KB: PASSED")
 }

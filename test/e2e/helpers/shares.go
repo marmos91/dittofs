@@ -29,6 +29,7 @@ type shareOptions struct {
 	readOnly          *bool
 	defaultPermission string
 	description       string
+	remoteBlockStore  string
 }
 
 // WithShareReadOnly sets the read-only flag for the share.
@@ -53,6 +54,14 @@ func WithShareDescription(desc string) ShareOption {
 	}
 }
 
+// WithShareRemote sets the remote block store name for the share.
+// This enables tiered storage (local cache + remote durable storage).
+func WithShareRemote(remoteName string) ShareOption {
+	return func(o *shareOptions) {
+		o.remoteBlockStore = remoteName
+	}
+}
+
 // =============================================================================
 // Share CRUD Methods
 // =============================================================================
@@ -68,6 +77,9 @@ func (r *CLIRunner) CreateShare(name, metadataStore, localBlockStore string, opt
 
 	args := []string{"share", "create", "--name", name, "--metadata", metadataStore, "--local", localBlockStore}
 
+	if options.remoteBlockStore != "" {
+		args = append(args, "--remote", options.remoteBlockStore)
+	}
 	if options.readOnly != nil {
 		args = append(args, "--read-only", fmt.Sprintf("%t", *options.readOnly))
 	}

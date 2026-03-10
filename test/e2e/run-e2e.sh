@@ -20,6 +20,8 @@
 #   --timeout DURATION   Set test timeout (default: 30m)
 #   --race               Enable race detector (-race)
 #   --portmap            Run only portmapper tests (TestPortmapper)
+#   --local-only         Only run store matrix combos with remoteType="none"
+#   --with-remote        Explicitly enable remote combos (default behavior)
 #   --help               Show this help message
 #
 # Examples:
@@ -31,6 +33,8 @@
 #   sudo ./run-e2e.sh --s3                             # Include S3 tests
 #   sudo ./run-e2e.sh --portmap                        # Run portmapper tests only
 #   sudo ./run-e2e.sh --nfs-version 4                  # Set NFS version for tests
+#   sudo ./run-e2e.sh --local-only                     # Skip remote store combos
+#   sudo ./run-e2e.sh --with-remote                    # Explicitly enable remotes
 
 set -euo pipefail
 
@@ -50,6 +54,8 @@ NFS_VERSION=""
 TIMEOUT="30m"
 RACE=false
 PORTMAP=false
+LOCAL_ONLY=false
+WITH_REMOTE=false
 
 # =============================================================================
 # Colors for output
@@ -78,6 +84,8 @@ Options:
   --timeout DURATION   Set test timeout (default: 30m)
   --race               Enable race detector (-race)
   --portmap            Run only portmapper tests (TestPortmapper)
+  --local-only         Only run store matrix combos with remoteType="none"
+  --with-remote        Explicitly enable remote combos (default behavior)
   --help               Show this help message
 
 Examples:
@@ -87,6 +95,7 @@ Examples:
   sudo ./run-e2e.sh --s3                             # Include S3 tests
   sudo ./run-e2e.sh --portmap                        # Run portmapper tests only
   sudo ./run-e2e.sh --nfs-version 4                  # Set NFS version for tests
+  sudo ./run-e2e.sh --local-only                     # Skip remote store combos
 USAGE
 }
 
@@ -145,6 +154,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --portmap)
             PORTMAP=true
+            shift
+            ;;
+        --local-only)
+            LOCAL_ONLY=true
+            shift
+            ;;
+        --with-remote)
+            WITH_REMOTE=true
             shift
             ;;
         --help|-h)
@@ -218,6 +235,10 @@ if [[ -n "$NFS_VERSION" ]]; then
     export DITTOFS_E2E_NFS_VERSION="$NFS_VERSION"
 fi
 
+if [[ "$LOCAL_ONLY" == "true" ]]; then
+    export DITTOFS_E2E_LOCAL_ONLY="1"
+fi
+
 # =============================================================================
 # Localstack management (for S3 tests)
 # =============================================================================
@@ -282,6 +303,7 @@ log_info "Stress:        ${STRESS}"
 log_info "S3:            ${USE_S3}"
 log_info "Race:          ${RACE}"
 log_info "Portmap:       ${PORTMAP}"
+log_info "Local only:    ${LOCAL_ONLY}"
 if [[ -n "$NFS_VERSION" ]]; then
     log_info "NFS version:   ${NFS_VERSION}"
 fi
