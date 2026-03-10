@@ -80,20 +80,20 @@
       <Property name="Platform" value="NonWindows">
         <Description>Platform type of the SUT.</Description>
       </Property>
-      <Property name="MaxSmbVersionSupported" value="Smb21">
-        <Description>Maximum SMB version supported by DittoFS (currently 2.1).</Description>
+      <Property name="MaxSmbVersionSupported" value="Smb311">
+        <Description>Maximum SMB version supported by DittoFS (SMB 3.1.1 since Phase 33-34).</Description>
       </Property>
       <Property name="MaxSmbVersionClientSupported" value="Smb311">
         <Description>Maximum SMB version supported by the test client.</Description>
       </Property>
-      <Property name="IsEncryptionSupported" value="false">
-        <Description>SMB3 encryption is not yet implemented.</Description>
+      <Property name="IsEncryptionSupported" value="true">
+        <Description>SMB3 encryption supported (AES-128/256-CCM/GCM since Phase 33).</Description>
       </Property>
       <Property name="IsLeasingSupported" value="true">
         <Description>File leasing (oplocks) is supported.</Description>
       </Property>
-      <Property name="IsDirectoryLeasingSupported" value="false">
-        <Description>Directory leasing is not supported.</Description>
+      <Property name="IsDirectoryLeasingSupported" value="true">
+        <Description>Directory leasing supported (Phase 37, enabled by default).</Description>
       </Property>
       <Property name="IsPersistentHandlesSupported" value="false">
         <Description>Persistent handles are not supported (single-node only).</Description>
@@ -162,8 +162,8 @@
       <Property name="IsChainedCompressionSupported" value="false">
         <Description>Chained compression not supported.</Description>
       </Property>
-      <Property name="SupportedSigningAlgorithms" value="HMAC_SHA256">
-        <Description>Supported signing algorithms.</Description>
+      <Property name="SupportedSigningAlgorithms" value="HMAC_SHA256;AES_CMAC;AES_GMAC">
+        <Description>Supported signing algorithms (HMAC-SHA256 for 2.x, AES-CMAC/GMAC for 3.x since Phase 34).</Description>
       </Property>
       <Property name="IsRDMATransformSupported" value="false">
         <Description>RDMA transform not supported.</Description>

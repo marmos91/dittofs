@@ -1,6 +1,6 @@
 # Known Failures - SMB Conformance (WPTS BVT)
 
-Last updated: 2026-03-03 (Phase 40-06, re-added fix-candidate failures to unblock CI)
+Last updated: 2026-03-09 (Phase 42, added 13 newly exercised tests after ptfconfig update to SMB 3.1.1)
 
 Tests listed here are expected to fail. CI will pass (exit 0) as long as
 all failures are in this list. New failures not listed here will cause CI to fail.
@@ -84,10 +84,20 @@ in `baseline-results.md` for prioritization.
 |-----------|----------|--------|--------|-------|
 | Algorithm_NotingFileAccessed_Dir_LastAccessTime | Timestamp | LastAccessTime auto-update not implemented | Expected | - |
 | Algorithm_NotingFileAccessed_File_LastAccessTime | Timestamp | LastAccessTime auto-update not implemented | Expected | - |
+| BVT_DirectoryLeasing_LeaseBreakOnMultiClients | DirectoryLeasing | Multi-client lease break framing issue (fix candidate) | Expected | - |
+| BVT_DirectoryLeasing_ReadWriteHandleCaching | DirectoryLeasing | Directory handle caching not fully working (fix candidate) | Expected | - |
 | BVT_DurableHandleV1_Reconnect_WithBatchOplock | DurableHandle | Durable handle V1 reconnect not fully working (fix candidate) | Expected | - |
 | BVT_DurableHandleV1_Reconnect_WithLeaseV1 | DurableHandle | Durable handle V1 reconnect with lease not fully working (fix candidate) | Expected | - |
+| BVT_Encryption_GlobalEncryptionEnabled | Encryption | Global encryption enforcement not fully working (fix candidate) | Expected | - |
+| BVT_Encryption_PerShareEncryptionEnabled | Encryption | Per-share encryption enforcement not fully working (fix candidate) | Expected | - |
 | BVT_Leasing_FileLeasingV1 | Leasing | File lease V1 not fully working (fix candidate) | Expected | - |
+| BVT_Leasing_FileLeasingV2 | Leasing | File lease V2 not fully working (fix candidate) | Expected | - |
 | Algorithm_NotingFileModified_Dir_LastAccessTime | Timestamp | Timestamp update algorithm not implemented | Expected | - |
+| BVT_Negotiate_SMB311 | Negotiate | SMB 3.1.1 negotiate with preauthentication not fully passing (fix candidate) | Expected | - |
+| BVT_Negotiate_SMB311_Preauthentication_Encryption_AES_256_CCM | Negotiate | Negotiate with AES-256-CCM encryption not fully passing (fix candidate) | Expected | - |
+| BVT_Negotiate_SMB311_Preauthentication_Encryption_AES_256_GCM | Negotiate | Negotiate with AES-256-GCM encryption not fully passing (fix candidate) | Expected | - |
+| BVT_Negotiate_SMB311_Preauthentication_Encryption_CCM | Negotiate | Negotiate with AES-128-CCM encryption not fully passing (fix candidate) | Expected | - |
+| BVT_Negotiate_SMB311_Preauthentication_Encryption_GCM | Negotiate | Negotiate with AES-128-GCM encryption not fully passing (fix candidate) | Expected | - |
 | Algorithm_NotingFileModified_File_LastAccessTime | Timestamp | Timestamp update algorithm not implemented | Expected | - |
 | AlternateDataStream_FileShareAccess_AlternateStreamExisted | ADS | ADS share access enforcement not implemented | Expected | v3.8 Phase 43 |
 | AlternateDataStream_FileShareAccess_DataFileExisted | ADS | ADS share access enforcement not implemented | Expected | v3.8 Phase 43 |
@@ -139,8 +149,12 @@ in `baseline-results.md` for prioritization.
 | BVT_SMB2Basic_ChangeNotify_ChangeStreamWrite | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
 | BVT_SMB2Basic_ChangeNotify_MaxTransactSizeCheck_Smb2002 | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
 | BVT_SMB2Basic_ChangeNotify_MaxTransactSizeCheck_Smb21 | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
+| BVT_SMB2Basic_ChangeNotify_MaxTransactSizeCheck_Smb30 | ChangeNotify | Change notification not implemented (newly exercised by SMB 3.x config) | Expected | v3.8 Phase 40.5 |
+| BVT_SMB2Basic_ChangeNotify_MaxTransactSizeCheck_Smb302 | ChangeNotify | Change notification not implemented (newly exercised by SMB 3.x config) | Expected | v3.8 Phase 40.5 |
+| BVT_SMB2Basic_ChangeNotify_MaxTransactSizeCheck_Smb311 | ChangeNotify | Change notification not implemented (newly exercised by SMB 3.x config) | Expected | v3.8 Phase 40.5 |
 | BVT_SMB2Basic_ChangeNotify_NoFileListDirectoryInGrantedAccess | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
 | BVT_SMB2Basic_ChangeNotify_ServerReceiveSmb2Close | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
+| BVT_TreeMgmt_SMB311_Disconnect_NoSignedNoEncryptedTreeConnect | TreeMgmt | Tree disconnect without signing/encryption not fully working (fix candidate) | Expected | - |
 | BVT_SWNGetInterfaceList_ClusterSingleNode | SWN | Service Witness Protocol not implemented | Permanent | - |
 | BVT_SWNGetInterfaceList_ScaleOutSingleNode | SWN | Service Witness Protocol not implemented | Permanent | - |
 | BVT_SWN_CheckProtocolVersion | SWN | Service Witness Protocol not implemented | Permanent | - |
@@ -204,13 +218,17 @@ Tests that fail for features not yet implemented:
 | ADS | 9 | Not implemented (planned Phase 43) |
 | Timestamp | 7 | Auto-update algorithms not implemented |
 | DurableHandle | 2 | Fix candidate (partially implemented Phase 38) |
-| Leasing | 1 | Fix candidate (partially implemented Phase 35-37) |
+| Negotiate | 5 | Fix candidate (SMB 3.1.1 preauthentication/encryption, Phase 33-34) |
+| Encryption | 2 | Fix candidate (global/per-share enforcement, Phase 33) |
+| DirectoryLeasing | 2 | Fix candidate (lease break + handle caching, Phase 37) |
+| Leasing | 2 | Fix candidate (V1 + V2, Phase 35-37) |
+| TreeMgmt | 1 | Fix candidate (SMB 3.1.1 disconnect, Phase 33) |
 | FsInfo | 1 | Fix candidate (encryption flag, Phase 33) |
 | NamedPipe | 2 | Named pipe validation not implemented |
 
-**Total expected failures (fixable):** 39 tests
+**Total expected failures (fixable):** 53 tests
 
-**Grand total known failures:** 86 tests (47 permanent + 39 expected)
+**Grand total known failures:** 100 tests (47 permanent + 53 expected)
 
 ## How to Add New Entries
 
@@ -231,6 +249,7 @@ Format:
 
 ## Changelog
 
+- **v3.8 Phase 42 (2026-03-09):** Updated ptfconfig to SMB 3.1.1 (MaxSmbVersionSupported, encryption, directory leasing, signing algorithms). Added 14 newly exercised tests: 5 Negotiate, 3 ChangeNotify (SMB 3.x), 2 Encryption, 2 DirectoryLeasing, 1 Leasing V2, 1 TreeMgmt. Fixed zero-mtime flush bug (5 QueryDirectory + 2 Timestamp regressions). Total: 100 (47 permanent + 53 expected).
 - **v3.8 Phase 40 (2026-03-02):** Post-SMB3 update. Removed 5 tests whose features are now implemented (durable handles V1, leasing V1, oplock break, encryption capability flag). Added Phase 33-39 improvements section. Updated permanently out-of-scope count (47, down from 48 -- encryption flag removed). Updated expected failure count (35, down from 42). Removed "Potentially fixed" status -- all entries are now either Expected or Permanent.
 - **v3.6 Phase 32 (2026-02-28):** Updated baseline after bug fixes (sparse READ, directory listing, parent dir, oplock break, link count), ACL support (SD synthesis, DACL/SACL, SID mapping), and protocol enhancements (MxAc, QFid, FileCompressionInfo, FileAttributeTagInfo, capability flags). Added status column, Phase 30-32 improvement notes, permanently out-of-scope categories section.
 - **v3.6 Phase 29.8 (2026-02-26):** Initial baseline (133/240 BVT tests passing). Created expected failure list with 90 entries across 14 categories.

@@ -28,6 +28,7 @@ services:
     environment:
       - DITTOFS_LOGGING_LEVEL=DEBUG
       - DITTOFS_CONTROLPLANE_SECRET=${DITTOFS_CONTROLPLANE_SECRET:-WptsConformanceTesting2026!Secret}
+      - DITTOFS_ADMIN_INITIAL_PASSWORD=${DITTOFS_CONTROLPLANE_SECRET:-WptsConformanceTesting2026!Secret}
     # Healthcheck is defined in Dockerfile.dittofs
 
   wpts:
@@ -63,8 +64,10 @@ services:
       - "//localhost/smbbasic"
       - "-U"
       - "wpts-admin%TestPassword01!"
+      - "--option=netbios name=localhost"
       - "--option=client min protocol=SMB2_02"
       - "--option=client max protocol=SMB3"
+      - "--option=smb ports=12445"
       - "--option=torture:oplocktimeout=5"
       - "smb2"
     profiles:
