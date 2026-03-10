@@ -11,8 +11,9 @@
 // share's sequential scan cannot evict another share's working set.
 // Setting maxBytes to 0 disables the cache entirely (New returns nil).
 //
-// A secondary index (payloadID -> set of blockIdx) enables O(1) per-file
-// invalidation for delete and truncate operations.
+// A secondary index (payloadID -> set of blockIdx) enables O(1) lookup of
+// all cached blocks for a file, allowing efficient per-file invalidation
+// (O(number_of_cached_blocks_for_file)) for delete and truncate operations.
 //
 // Prefetcher detects sequential access patterns per file and pre-loads
 // upcoming blocks into the ReadCache using a bounded worker pool. It uses

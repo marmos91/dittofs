@@ -66,10 +66,10 @@ type Prefetcher struct {
 
 // NewPrefetcher creates a prefetcher with the specified worker count.
 // It starts worker goroutines that consume from a bounded channel.
-// Returns nil if cache is nil (can't prefetch without cache target).
+// Returns nil if cache is nil or loadFn is nil (can't prefetch without these).
 // If workers <= 0, defaults to defaultPrefetchWorkers.
 func NewPrefetcher(workers int, cache *ReadCache, loadFn LoadBlockFn, local LocalChecker) *Prefetcher {
-	if cache == nil {
+	if cache == nil || loadFn == nil {
 		return nil
 	}
 	if workers <= 0 {

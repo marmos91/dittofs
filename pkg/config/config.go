@@ -561,6 +561,13 @@ func byteSizeDecodeHook() mapstructure.DecodeHookFunc {
 		case float64:
 			// YAML often deserializes numbers as float64
 			result = bytesize.ByteSize(v)
+		case bytesize.ByteSize:
+			result = v
+		case *bytesize.ByteSize:
+			if v == nil {
+				return data, nil
+			}
+			result = *v
 		default:
 			return data, nil
 		}

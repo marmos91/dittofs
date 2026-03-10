@@ -26,9 +26,9 @@ type cacheEntry struct {
 // Eviction is synchronous and inline during Put (O(1) -- just drops []byte ref).
 type ReadCache struct {
 	mu      sync.RWMutex
-	entries map[blockKey]*list.Element // primary index: blockKey -> list element
-	lru     *list.List                // front = most recent, back = LRU victim
-	byFile  map[string]map[uint64]struct{}  // secondary index: payloadID -> set of blockIdx
+	entries map[blockKey]*list.Element     // primary index: blockKey -> list element
+	lru     *list.List                     // front = most recent, back = LRU victim
+	byFile  map[string]map[uint64]struct{} // secondary index: payloadID -> set of blockIdx
 
 	maxBytes int64 // memory budget
 	curBytes int64 // current usage

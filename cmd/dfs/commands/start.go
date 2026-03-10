@@ -288,7 +288,8 @@ func clampToInt64(v uint64) int64 {
 }
 
 // derefByteSizeToInt64 dereferences a *bytesize.ByteSize to int64.
-// Returns 0 when the pointer is nil (disabled).
+// Returns 0 when the pointer is nil. ApplyDefaults runs before this function,
+// so nil here means the feature was explicitly disabled (pointer set to nil after defaults).
 func derefByteSizeToInt64(v *bytesize.ByteSize) int64 {
 	if v == nil {
 		return 0

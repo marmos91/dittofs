@@ -378,7 +378,7 @@ func (bs *BlockStore) invalidateL1ForFile(payloadID string) {
 
 // tryL1Read attempts to serve a read entirely from L1 cache.
 // Returns (bytesRead, true) if all blocks in the range were in L1.
-// Returns (0, false) if any block was missing.
+// Returns (0, false) if any block was missing or returned fewer bytes than needed.
 func (bs *BlockStore) tryL1Read(payloadID string, data []byte, offset uint64) (int, bool) {
 	startBlock := offset / blockstore.BlockSize
 	endBlock := (offset + uint64(len(data)) - 1) / blockstore.BlockSize
@@ -398,8 +398,12 @@ func (bs *BlockStore) tryL1Read(payloadID string, data []byte, offset uint64) (i
 			break
 		}
 
-		_, hit := bs.readCache.Get(payloadID, blockIdx, data[destOff:], blockOff)
-		if !hit {
+		// Limit to what fits in this block starting at blockOff.
+		readLen := min(remaining, blockstore.BlockSize-uint64(blockOff))
+
+		buf := data[destOff : destOff+readLen]
+		n, hit := bs.readCache.Get(payloadID, blockIdx, buf, blockOff)
+		if !hit || uint64(n) != readLen {
 			return 0, false
 		}
 	}
