@@ -36,9 +36,9 @@ func TestNFSFileOperations(t *testing.T) {
 	// Login as admin to get CLI runner
 	runner := helpers.LoginAsAdmin(t, sp.APIURL())
 
-	// Create metadata and payload stores for our test share
+	// Create metadata and block stores for our test share
 	metaStoreName := helpers.UniqueTestName("meta")
-	payloadStoreName := helpers.UniqueTestName("payload")
+	localStoreName := helpers.UniqueTestName("local")
 	shareName := "/export"
 
 	_, err := runner.CreateMetadataStore(metaStoreName, "memory")
@@ -47,14 +47,14 @@ func TestNFSFileOperations(t *testing.T) {
 		_ = runner.DeleteMetadataStore(metaStoreName)
 	})
 
-	_, err = runner.CreatePayloadStore(payloadStoreName, "memory")
-	require.NoError(t, err, "Should create payload store")
+	_, err = runner.CreateLocalBlockStore(localStoreName, "memory")
+	require.NoError(t, err, "Should create block store")
 	t.Cleanup(func() {
-		_ = runner.DeletePayloadStore(payloadStoreName)
+		_ = runner.DeleteLocalBlockStore(localStoreName)
 	})
 
 	// Create the share
-	_, err = runner.CreateShare(shareName, metaStoreName, payloadStoreName)
+	_, err = runner.CreateShare(shareName, metaStoreName, localStoreName)
 	require.NoError(t, err, "Should create share")
 	t.Cleanup(func() {
 		_ = runner.DeleteShare(shareName)

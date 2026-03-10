@@ -92,7 +92,7 @@
 - [ ] **DOCS-01**: ARCHITECTURE.md updated for block store model
 - [ ] **DOCS-02**: CONFIGURATION.md updated for new CLI and config
 - [ ] **DOCS-03**: CLAUDE.md updated for new package structure
-- [ ] **DOCS-04**: --payload flag backward compat with deprecation warning
+- [x] **DOCS-04**: --payload flag backward compat with deprecation warning
 
 ## v4.6 Requirements -- Production Hardening
 
@@ -125,6 +125,28 @@
 ### v4.5 -- BlockStore Security
 - **SEC-01**: Block-level LZ4/Zstd compression (#185)
 - **SEC-02**: Client-side AES-256-GCM encryption (#186)
+
+### v4.7 -- Offline/Edge Resilience
+- **EDGE-01**: Offloader detects remote store unreachability and queues writes locally
+- **EDGE-02**: Queued writes persisted in WAL for crash safety with configurable size limit
+- **EDGE-03**: Background health check probes remote store, replays queued writes on restoration
+- **EDGE-04**: Sync progress observable via metrics, partial failures retried with backoff
+- **EDGE-05**: Cached blocks served for reads when remote store unreachable
+- **EDGE-06**: Cache eviction disabled for dirty/queued blocks during offline mode
+- **EDGE-07**: E2E tests for offline write, reconnect sync, cache-only reads, process restart
+
+### v4.8 -- DX/UX Improvements
+- **DX-01**: Makefile with targets for unit, integration, E2E, lint, build, fmt (#206)
+- **DX-02**: NFS CI scoped path triggers + tiered test matrix (#207)
+- **DX-03**: Adapter config API for netgroup-share association (#220)
+- **DX-04**: Updated contributing guide, prerequisites check, automated dev tasks
+
+### v4.9 -- SMB Protocol Fixes
+- **SMB-01**: Credit granting algorithm conformance per MS-SMB2 (#268)
+- **SMB-02**: IOCTL handler completeness for required function codes (#268)
+- **SMB-03**: Multichannel connection support with channel binding (#268)
+- **SMB-04**: Timestamp precision matching NTFS 100ns intervals (#268)
+- **SMB-05**: Remaining smbtorture failures resolved, 90%+ pass rate (#268)
 
 ### v5.0 -- NFSv4.2
 - **NFS42-01**: Server-side COPY with async OFFLOAD_STATUS polling
@@ -210,7 +232,7 @@
 | DOCS-01 | Phase 49 | Pending |
 | DOCS-02 | Phase 49 | Pending |
 | DOCS-03 | Phase 49 | Pending |
-| DOCS-04 | Phase 49 | Pending |
+| DOCS-04 | Phase 49 | Complete |
 | PROTO-01 | Phase 63 | Pending |
 | PROTO-02 | Phase 64 | Pending |
 | RUNTIME-01 | Phase 64 | Pending |
@@ -225,4 +247,4 @@
 
 ---
 *Requirements defined: 2026-03-09*
-*Last updated: 2026-03-09 after v4.6 roadmap created*
+*Last updated: 2026-03-09 after v4.7/v4.8/v4.9 milestones created*

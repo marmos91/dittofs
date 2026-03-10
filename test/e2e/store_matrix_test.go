@@ -20,7 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// storeConfig defines a combination of metadata and payload store types.
+// storeConfig defines a combination of metadata and block store types.
 type storeConfig struct {
 	metadataType string // "memory", "badger", "postgres"
 	payloadType  string // "memory", "s3"
@@ -37,7 +37,7 @@ var storeMatrix = []storeConfig{
 }
 
 // TestStoreMatrixOperations validates that all 6 combinations of metadata stores
-// (memory, badger, postgres) and payload stores (memory, s3) work
+// (memory, badger, postgres) and block stores (memory, s3) work
 // correctly with file operations.
 //
 // Requirements covered:
@@ -102,7 +102,7 @@ func runStoreMatrixTest(t *testing.T, sc storeConfig, pgHelper *framework.Postgr
 
 	// Create unique store names for this test
 	metaStoreName := helpers.UniqueTestName("meta")
-	payloadStoreName := helpers.UniqueTestName("payload")
+	localStoreName := helpers.UniqueTestName("local")
 	shareName := "/export-matrix"
 
 	// Create metadata store based on type
@@ -135,8 +135,8 @@ func runStoreMatrixTest(t *testing.T, sc storeConfig, pgHelper *framework.Postgr
 		_ = runner.DeleteMetadataStore(metaStoreName)
 	})
 
-	// Create payload store based on type
-	var payloadOpts []helpers.PayloadStoreOption
+	// Create block store based on type
+	var payloadOpts []helpers.BlockStoreOption
 	switch sc.payloadType {
 	case "memory":
 		// No options needed
@@ -152,7 +152,7 @@ func runStoreMatrixTest(t *testing.T, sc storeConfig, pgHelper *framework.Postgr
 			lsHelper.CleanupBucket(context.Background(), bucketName)
 		})
 
-		payloadOpts = append(payloadOpts, helpers.WithPayloadS3Config(
+		payloadOpts = append(payloadOpts, helpers.WithBlockS3Config(
 			bucketName,
 			"us-east-1",
 			lsHelper.Endpoint,
@@ -161,14 +161,14 @@ func runStoreMatrixTest(t *testing.T, sc storeConfig, pgHelper *framework.Postgr
 		))
 	}
 
-	_, err = runner.CreatePayloadStore(payloadStoreName, sc.payloadType, payloadOpts...)
-	require.NoError(t, err, "Should create payload store (%s)", sc.payloadType)
+	_, err = runner.CreateLocalBlockStore(localStoreName, sc.payloadType, payloadOpts...)
+	require.NoError(t, err, "Should create block store (%s)", sc.payloadType)
 	t.Cleanup(func() {
-		_ = runner.DeletePayloadStore(payloadStoreName)
+		_ = runner.DeleteLocalBlockStore(localStoreName)
 	})
 
 	// Create the share using the stores
-	_, err = runner.CreateShare(shareName, metaStoreName, payloadStoreName)
+	_, err = runner.CreateShare(shareName, metaStoreName, localStoreName)
 	require.NoError(t, err, "Should create share")
 	t.Cleanup(func() {
 		_ = runner.DeleteShare(shareName)

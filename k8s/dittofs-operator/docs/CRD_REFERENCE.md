@@ -298,7 +298,7 @@ identity:
 
 ### S3 Configuration (`s3`)
 
-Configures S3-compatible payload store credentials. Credentials are injected as environment variables for the AWS SDK.
+Configures S3-compatible block store credentials. Credentials are injected as environment variables for the AWS SDK.
 
 | Field | Type | Default | Required | Description |
 |-------|------|---------|----------|-------------|
@@ -453,7 +453,7 @@ spec:
     cacheSize: "1Gi"
 ```
 
-### Production with S3 Payload Store
+### Production with S3 Block Store
 
 For production with S3-backed content storage:
 

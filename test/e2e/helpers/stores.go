@@ -154,20 +154,20 @@ func (r *CLIRunner) DeleteMetadataStore(name string) error {
 }
 
 // =============================================================================
-// Payload Store Types
+// Block Store Types
 // =============================================================================
 
-// PayloadStore represents a payload store returned from the API.
-type PayloadStore struct {
+// BlockStore represents a block store returned from the API.
+type BlockStore struct {
 	Name   string          `json:"name"`
 	Type   string          `json:"type"`
 	Config json.RawMessage `json:"config,omitempty"`
 }
 
-// PayloadStoreOption is a functional option for payload store operations.
-type PayloadStoreOption func(*payloadStoreOptions)
+// BlockStoreOption is a functional option for block store operations.
+type BlockStoreOption func(*blockStoreOptions)
 
-type payloadStoreOptions struct {
+type blockStoreOptions struct {
 	// S3 specific
 	bucket    string
 	region    string
@@ -178,9 +178,9 @@ type payloadStoreOptions struct {
 	rawConfig string
 }
 
-// WithPayloadS3Config sets S3 configuration.
-func WithPayloadS3Config(bucket, region, endpoint, accessKey, secretKey string) PayloadStoreOption {
-	return func(o *payloadStoreOptions) {
+// WithBlockS3Config sets S3 configuration for block store creation.
+func WithBlockS3Config(bucket, region, endpoint, accessKey, secretKey string) BlockStoreOption {
+	return func(o *blockStoreOptions) {
 		o.bucket = bucket
 		o.region = region
 		o.endpoint = endpoint
@@ -189,21 +189,21 @@ func WithPayloadS3Config(bucket, region, endpoint, accessKey, secretKey string) 
 	}
 }
 
-// WithPayloadRawConfig sets raw JSON config for advanced use cases.
-func WithPayloadRawConfig(config string) PayloadStoreOption {
-	return func(o *payloadStoreOptions) {
+// WithBlockRawConfig sets raw JSON config for advanced use cases.
+func WithBlockRawConfig(config string) BlockStoreOption {
+	return func(o *blockStoreOptions) {
 		o.rawConfig = config
 	}
 }
 
 // =============================================================================
-// Payload Store CRUD Methods
+// Block Store CRUD Methods
 // =============================================================================
 
-// CreatePayloadStore creates a new payload store via the CLI.
-// Supports memory and s3 store types.
-func (r *CLIRunner) CreatePayloadStore(name, storeType string, opts ...PayloadStoreOption) (*PayloadStore, error) {
-	options := &payloadStoreOptions{}
+// CreateLocalBlockStore creates a new local block store via the CLI.
+// Supports memory and fs store types.
+func (r *CLIRunner) CreateLocalBlockStore(name, storeType string, opts ...BlockStoreOption) (*BlockStore, error) {
+	options := &blockStoreOptions{}
 	for _, opt := range opts {
 		opt(options)
 	}
@@ -235,7 +235,7 @@ func (r *CLIRunner) CreatePayloadStore(name, storeType string, opts ...PayloadSt
 		return nil, err
 	}
 
-	var store PayloadStore
+	var store BlockStore
 	if err := ParseJSONResponse(output, &store); err != nil {
 		return nil, err
 	}
@@ -243,14 +243,57 @@ func (r *CLIRunner) CreatePayloadStore(name, storeType string, opts ...PayloadSt
 	return &store, nil
 }
 
-// ListPayloadStores lists all payload stores via the CLI.
-func (r *CLIRunner) ListPayloadStores() ([]*PayloadStore, error) {
+// CreateRemoteBlockStore creates a new remote block store via the CLI.
+// Supports memory and s3 store types.
+func (r *CLIRunner) CreateRemoteBlockStore(name, storeType string, opts ...BlockStoreOption) (*BlockStore, error) {
+	options := &blockStoreOptions{}
+	for _, opt := range opts {
+		opt(options)
+	}
+
+	args := []string{"store", "block", "remote", "add", "--name", name, "--type", storeType}
+
+	// Add type-specific options
+	if options.rawConfig != "" {
+		args = append(args, "--config", options.rawConfig)
+	} else if options.bucket != "" {
+		// S3 config
+		args = append(args, "--bucket", options.bucket)
+		if options.region != "" {
+			args = append(args, "--region", options.region)
+		}
+		if options.endpoint != "" {
+			args = append(args, "--endpoint", options.endpoint)
+		}
+		if options.accessKey != "" {
+			args = append(args, "--access-key", options.accessKey)
+		}
+		if options.secretKey != "" {
+			args = append(args, "--secret-key", options.secretKey)
+		}
+	}
+
+	output, err := r.Run(args...)
+	if err != nil {
+		return nil, err
+	}
+
+	var store BlockStore
+	if err := ParseJSONResponse(output, &store); err != nil {
+		return nil, err
+	}
+
+	return &store, nil
+}
+
+// ListLocalBlockStores lists all local block stores via the CLI.
+func (r *CLIRunner) ListLocalBlockStores() ([]*BlockStore, error) {
 	output, err := r.Run("store", "block", "local", "list")
 	if err != nil {
 		return nil, err
 	}
 
-	var stores []*PayloadStore
+	var stores []*BlockStore
 	if err := ParseJSONResponse(output, &stores); err != nil {
 		return nil, err
 	}
@@ -258,10 +301,9 @@ func (r *CLIRunner) ListPayloadStores() ([]*PayloadStore, error) {
 	return stores, nil
 }
 
-// GetPayloadStore retrieves a payload store by name.
-// Since there's no dedicated 'store payload get' command, this lists all stores and filters.
-func (r *CLIRunner) GetPayloadStore(name string) (*PayloadStore, error) {
-	stores, err := r.ListPayloadStores()
+// GetLocalBlockStore retrieves a local block store by name.
+func (r *CLIRunner) GetLocalBlockStore(name string) (*BlockStore, error) {
+	stores, err := r.ListLocalBlockStores()
 	if err != nil {
 		return nil, err
 	}
@@ -272,12 +314,12 @@ func (r *CLIRunner) GetPayloadStore(name string) (*PayloadStore, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("payload store not found: %s", name)
+	return nil, fmt.Errorf("local block store not found: %s", name)
 }
 
-// EditPayloadStore edits an existing payload store via the CLI.
-func (r *CLIRunner) EditPayloadStore(name string, opts ...PayloadStoreOption) (*PayloadStore, error) {
-	options := &payloadStoreOptions{}
+// EditLocalBlockStore edits an existing local block store via the CLI.
+func (r *CLIRunner) EditLocalBlockStore(name string, opts ...BlockStoreOption) (*BlockStore, error) {
+	options := &blockStoreOptions{}
 	for _, opt := range opts {
 		opt(options)
 	}
@@ -290,7 +332,6 @@ func (r *CLIRunner) EditPayloadStore(name string, opts ...PayloadStoreOption) (*
 		args = append(args, "--config", options.rawConfig)
 		hasUpdate = true
 	} else if options.bucket != "" || options.region != "" || options.endpoint != "" || options.accessKey != "" || options.secretKey != "" {
-		// S3 config - at least one field was set
 		if options.bucket != "" {
 			args = append(args, "--bucket", options.bucket)
 		}
@@ -310,7 +351,7 @@ func (r *CLIRunner) EditPayloadStore(name string, opts ...PayloadStoreOption) (*
 	}
 
 	if !hasUpdate {
-		return nil, fmt.Errorf("at least one option is required for EditPayloadStore")
+		return nil, fmt.Errorf("at least one option is required for EditLocalBlockStore")
 	}
 
 	output, err := r.Run(args...)
@@ -318,7 +359,7 @@ func (r *CLIRunner) EditPayloadStore(name string, opts ...PayloadStoreOption) (*
 		return nil, err
 	}
 
-	var store PayloadStore
+	var store BlockStore
 	if err := ParseJSONResponse(output, &store); err != nil {
 		return nil, err
 	}
@@ -326,9 +367,57 @@ func (r *CLIRunner) EditPayloadStore(name string, opts ...PayloadStoreOption) (*
 	return &store, nil
 }
 
-// DeletePayloadStore deletes a payload store via the CLI.
+// DeleteLocalBlockStore deletes a local block store via the CLI.
 // Uses --force to skip confirmation prompt.
-func (r *CLIRunner) DeletePayloadStore(name string) error {
+func (r *CLIRunner) DeleteLocalBlockStore(name string) error {
 	_, err := r.Run("store", "block", "local", "remove", name, "--force")
 	return err
+}
+
+// DeleteRemoteBlockStore deletes a remote block store via the CLI.
+// Uses --force to skip confirmation prompt.
+func (r *CLIRunner) DeleteRemoteBlockStore(name string) error {
+	_, err := r.Run("store", "block", "remote", "remove", name, "--force")
+	return err
+}
+
+// --- Legacy aliases for backward compatibility during migration ---
+// These aliases allow existing test files to compile while they are being migrated.
+// TODO: Remove these aliases once all test files use the new names.
+
+// PayloadStore is an alias for BlockStore (legacy compatibility).
+type PayloadStore = BlockStore
+
+// PayloadStoreOption is an alias for BlockStoreOption (legacy compatibility).
+type PayloadStoreOption = BlockStoreOption
+
+// WithPayloadS3Config is a legacy alias for WithBlockS3Config.
+var WithPayloadS3Config = WithBlockS3Config
+
+// WithPayloadRawConfig is a legacy alias for WithBlockRawConfig.
+var WithPayloadRawConfig = WithBlockRawConfig
+
+// CreatePayloadStore is a legacy alias for CreateLocalBlockStore.
+func (r *CLIRunner) CreatePayloadStore(name, storeType string, opts ...BlockStoreOption) (*BlockStore, error) {
+	return r.CreateLocalBlockStore(name, storeType, opts...)
+}
+
+// ListPayloadStores is a legacy alias for ListLocalBlockStores.
+func (r *CLIRunner) ListPayloadStores() ([]*BlockStore, error) {
+	return r.ListLocalBlockStores()
+}
+
+// GetPayloadStore is a legacy alias for GetLocalBlockStore.
+func (r *CLIRunner) GetPayloadStore(name string) (*BlockStore, error) {
+	return r.GetLocalBlockStore(name)
+}
+
+// EditPayloadStore is a legacy alias for EditLocalBlockStore.
+func (r *CLIRunner) EditPayloadStore(name string, opts ...BlockStoreOption) (*BlockStore, error) {
+	return r.EditLocalBlockStore(name, opts...)
+}
+
+// DeletePayloadStore is a legacy alias for DeleteLocalBlockStore.
+func (r *CLIRunner) DeletePayloadStore(name string) error {
+	return r.DeleteLocalBlockStore(name)
 }

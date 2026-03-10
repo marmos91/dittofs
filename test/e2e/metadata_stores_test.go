@@ -235,14 +235,14 @@ func TestMetadataStoresCRUD(t *testing.T) {
 		_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 		require.NoError(t, err, "Should create metadata store")
 
-		// Create payload store (needed for share)
-		payloadStoreName := helpers.UniqueTestName("payload_inuse")
-		_, err = cli.CreatePayloadStore(payloadStoreName, "memory")
-		require.NoError(t, err, "Should create payload store")
+		// Create block store (needed for share)
+		localStoreName := helpers.UniqueTestName("local_inuse")
+		_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
+		require.NoError(t, err, "Should create block store")
 
 		// Create share referencing the metadata store
 		shareName := "/" + helpers.UniqueTestName("share_inuse")
-		_, err = cli.CreateShare(shareName, metaStoreName, payloadStoreName)
+		_, err = cli.CreateShare(shareName, metaStoreName, localStoreName)
 		require.NoError(t, err, "Should create share")
 
 		// Try to delete metadata store - should fail
@@ -265,7 +265,7 @@ func TestMetadataStoresCRUD(t *testing.T) {
 		err = cli.DeleteMetadataStore(metaStoreName)
 		require.NoError(t, err, "Should delete metadata store after share removed")
 
-		// Cleanup payload store
-		_ = cli.DeletePayloadStore(payloadStoreName)
+		// Cleanup block store
+		_ = cli.DeleteLocalBlockStore(localStoreName)
 	})
 }

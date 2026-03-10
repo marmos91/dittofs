@@ -358,7 +358,7 @@ Plans:
 **Verification**: `go build ./...` && `go test -tags=e2e ./test/e2e/...` && documentation review
 **Plans**: 5 plans
 Plans:
-- [ ] 49-01-PLAN.md — Cache CLI/API and backward compatibility clean break
+- [x] 49-01-PLAN.md — Cache CLI/API and backward compatibility clean break
 - [ ] 49-02-PLAN.md — Full legacy payload store cleanup across repository
 - [ ] 49-03-PLAN.md — 18-combo E2E store matrix and multi-share isolation tests
 - [ ] 49-04-PLAN.md — Cache-tiers benchmark workload
@@ -760,7 +760,6 @@ v3.8 (33-40.5) -> v4.2 (57-62) -> v4.0 (41-49) -> v4.6 (63-67) -> v4.7 (68-71) -
 | 33-40.5 | v3.8 | Complete | Complete | 2026-03-04 |
 | 57-62 | v4.2 | Complete | Complete | 2026-03-04 |
 | 41. Block State Enum and ListFileBlocks | v4.0 | 2/2 | Complete | 2026-03-09 |
-<<<<<<< HEAD
 | 42. Legacy Cleanup | v4.0 | 1/1 | Complete | 2026-03-09 |
 | 43. Local-Only Block Management | v4.0 | 2/2 | Complete | 2026-03-09 |
 | 44. Data Model and API/CLI | v4.0 | 3/3 | Complete | 2026-03-09 |
@@ -768,7 +767,7 @@ v3.8 (33-40.5) -> v4.2 (57-62) -> v4.0 (41-49) -> v4.6 (63-67) -> v4.7 (68-71) -
 | 46. Per-Share Block Store Wiring | v4.0 | 3/3 | Complete | 2026-03-10 |
 | 47. L1 Read Cache and Prefetch | v4.0 | 2/2 | Complete | 2026-03-10 |
 | 48. Auto-Deduced Configuration | v4.0 | 2/2 | Complete | 2026-03-10 |
-| 49. Testing and Documentation | v4.0 | 0/5 | Not started | - |
+| 49. Testing and Documentation | v4.0 | 2/5 | In Progress | - |
 | 50. Server-Side Copy | v4.1 | 0/? | Not started | - |
 | 51. Clone/Reflinks | v4.1 | 0/? | Not started | - |
 | 52. Sparse Files | v4.1 | 0/? | Not started | - |

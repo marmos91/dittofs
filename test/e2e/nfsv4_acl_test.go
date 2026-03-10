@@ -354,17 +354,17 @@ func TestNFSv4ACLCrossProtocol(t *testing.T) {
 	runner := helpers.LoginAsAdmin(t, sp.APIURL())
 
 	metaStore := helpers.UniqueTestName("acl-xp-meta")
-	payloadStore := helpers.UniqueTestName("acl-xp-payload")
+	localStore := helpers.UniqueTestName("acl-xp-payload")
 
 	_, err := runner.CreateMetadataStore(metaStore, "memory")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
 
-	_, err = runner.CreatePayloadStore(payloadStore, "memory")
+	_, err = runner.CreateLocalBlockStore(localStore, "memory")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeletePayloadStore(payloadStore) })
+	t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localStore) })
 
-	_, err = runner.CreateShare("/export", metaStore, payloadStore)
+	_, err = runner.CreateShare("/export", metaStore, localStore)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteShare("/export") })
 

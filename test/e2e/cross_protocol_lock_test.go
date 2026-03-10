@@ -47,20 +47,20 @@ func TestCrossProtocolLocking(t *testing.T) {
 	// Login as admin to configure the server
 	cli := helpers.LoginAsAdmin(t, sp.APIURL())
 
-	// Create shared metadata and payload stores
+	// Create shared metadata and block stores
 	// Both NFS and SMB will use the same stores to enable cross-protocol locking
 	metaStoreName := helpers.UniqueTestName("xplockmeta")
-	payloadStoreName := helpers.UniqueTestName("xplockpayload")
+	localStoreName := helpers.UniqueTestName("xplockpayload")
 	shareName := "/export"
 
 	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err, "Should create metadata store")
 
-	_, err = cli.CreatePayloadStore(payloadStoreName, "memory")
-	require.NoError(t, err, "Should create payload store")
+	_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
+	require.NoError(t, err, "Should create block store")
 
 	// Create share with read-write default permission
-	_, err = cli.CreateShare(shareName, metaStoreName, payloadStoreName,
+	_, err = cli.CreateShare(shareName, metaStoreName, localStoreName,
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err, "Should create share")
 
@@ -452,16 +452,16 @@ func TestCrossProtocolLockingByteRange(t *testing.T) {
 
 	// Setup stores and share
 	metaStoreName := helpers.UniqueTestName("xprangemeta")
-	payloadStoreName := helpers.UniqueTestName("xprangepayload")
+	localStoreName := helpers.UniqueTestName("xprangepayload")
 	shareName := "/export"
 
 	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err)
 
-	_, err = cli.CreatePayloadStore(payloadStoreName, "memory")
+	_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
 	require.NoError(t, err)
 
-	_, err = cli.CreateShare(shareName, metaStoreName, payloadStoreName,
+	_, err = cli.CreateShare(shareName, metaStoreName, localStoreName,
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err)
 

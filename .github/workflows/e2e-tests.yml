@@ -25,7 +25,7 @@ on:
       - 'internal/adapter/nfs/**'
       - 'internal/adapter/smb/**'
       - 'pkg/metadata/**'
-      - 'pkg/payload/**'
+      - 'pkg/blockstore/**'
       - 'pkg/cache/**'
       - 'pkg/controlplane/**'
       - 'pkg/config/**'
@@ -132,7 +132,7 @@ jobs:
           echo "### Test Suites" >> $GITHUB_STEP_SUMMARY
           echo "| Suite | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-          for suite in Server Users Groups Shares Permissions MetadataStores PayloadStores Adapters Portmapper Backup Context FileOperations CrossProtocol StoreMatrix Kerberos SMB3 SMB3_Kerberos; do
+          for suite in Server Users Groups Shares Permissions MetadataStores BlockStores Adapters Portmapper Backup Context FileOperations CrossProtocol StoreMatrix Kerberos SMB3 SMB3_Kerberos; do
             if grep -q "Test${suite}.*PASS" "$GITHUB_WORKSPACE/e2e.log"; then
               echo "| ${suite} | :white_check_mark: |" >> $GITHUB_STEP_SUMMARY
             elif grep -q "Test${suite}.*FAIL" "$GITHUB_WORKSPACE/e2e.log"; then

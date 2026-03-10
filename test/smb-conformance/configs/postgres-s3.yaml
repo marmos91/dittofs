@@ -1,7 +1,7 @@
 # DittoFS Configuration for SMB Conformance Testing
 # Profile: postgres/s3
 #
-# Bootstrap creates: PostgreSQL metadata store + S3 payload store (via Localstack)
+# Bootstrap creates: PostgreSQL metadata store + S3 remote block store (via Localstack)
 # Stores, shares, and adapters are managed via the API (bootstrap.sh).
 # Requires both the postgres and s3 Compose profiles to be active.
 
