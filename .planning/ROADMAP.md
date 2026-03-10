@@ -115,12 +115,12 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 ### v4.0 BlockStore Unification Refactor
 
-- [x] **Phase 41: Block State Enum and ListFileBlocks** - Rename states (Sealed→Local, Uploaded→Remote), update ListPendingUpload→ListLocalBlocks, add ListFileBlocks method (completed 2026-03-09)
+- [x] **Phase 41: Block State Enum and ListFileBlocks** - Rename states (Sealed->Local, Uploaded->Remote), update ListPendingUpload->ListLocalBlocks, add ListFileBlocks method (completed 2026-03-09)
 - [x] **Phase 42: Legacy Cleanup** - Remove DirectWriteStore interface and filesystem payload store (completed 2026-03-09)
 - [x] **Phase 43: Local-Only Block Management** - Block management operations on cache, local-only offloader mode without remote store (completed 2026-03-09)
 - [x] **Phase 44: Data Model and API/CLI** - BlockStoreConfig DB model, REST endpoints, dfsctl block store commands (completed 2026-03-09)
 - [x] **Phase 45: Package Restructure** - Create pkg/blockstore/ hierarchy absorbing cache, payload, offloader, gc (completed 2026-03-09)
-- [ ] **Phase 46: Per-Share Block Store Wiring** - Runtime manages per-share BlockStore instances replacing global PayloadService
+- [x] **Phase 46: Per-Share Block Store Wiring** - Runtime manages per-share BlockStore instances replacing global PayloadService (completed 2026-03-10)
 - [ ] **Phase 47: L1 Read Cache and Prefetch** - Read-through LRU cache with sequential prefetch for hot blocks
 - [ ] **Phase 48: Auto-Deduced Configuration** - Derive buffer/cache sizes and concurrency from CPU/memory
 - [ ] **Phase 49: Testing and Documentation** - E2E tests for new CLI, multi-share isolation, updated documentation
@@ -252,10 +252,10 @@ Plans:
 **Verification**: `go build ./...` && `go test ./...`
 **Plans**: 4 plans
 Plans:
-- [ ] 45-01-PLAN.md — Types, interfaces, errors in pkg/blockstore/ root + local/remote interfaces + metadata aliasing
-- [ ] 45-02-PLAN.md — Move implementations: local/fs, local/memory, remote/s3, remote/memory, sync, gc + conformance suites
-- [ ] 45-03-PLAN.md — BlockStore orchestrator + io/ package + runtime/config wiring
-- [ ] 45-04-PLAN.md — Consumer import updates (NFS/SMB handlers) + old package deletion
+- [x] 45-01-PLAN.md — Types, interfaces, errors in pkg/blockstore/ root + local/remote interfaces + metadata aliasing
+- [x] 45-02-PLAN.md — Move implementations: local/fs, local/memory, remote/s3, remote/memory, sync, gc + conformance suites
+- [x] 45-03-PLAN.md — BlockStore orchestrator + io/ package + runtime/config wiring
+- [x] 45-04-PLAN.md — Consumer import updates (NFS/SMB handlers) + old package deletion
 
 ### Phase 46: Per-Share Block Store Wiring
 **Goal**: Replace global PayloadService with per-share BlockStore instances
@@ -268,7 +268,11 @@ Plans:
   4. Multiple shares with different local paths operate in isolation
   5. Share deletion cleans up associated BlockStore
 **Verification**: `go build ./...` && `go test ./pkg/controlplane/...` && multi-share E2E test
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 46-01-PLAN.md — shares.Service refactor with per-share BlockStore lifecycle, remote store cache, factory interfaces
+- [ ] 46-02-PLAN.md — NFS v3/v4, SMB, API handler updates to GetBlockStoreForHandle
+- [ ] 46-03-PLAN.md — Remove global EnsureBlockStore/GetBlockStore/SetBlockStore, update docs
 
 ### Phase 47: L1 Read Cache and Prefetch
 **Goal**: Add read-through LRU cache with sequential prefetch for hot blocks
@@ -557,8 +561,8 @@ v3.8 (33-40.5) -> v4.0 (41-49) -> v4.1 (50-56) -> v4.2 (57-62)
 | 42. Legacy Cleanup | v4.0 | 1/1 | Complete | 2026-03-09 |
 | 43. Local-Only Block Management | v4.0 | 2/2 | Complete | 2026-03-09 |
 | 44. Data Model and API/CLI | v4.0 | 3/3 | Complete | 2026-03-09 |
-| 45. Package Restructure | 4/4 | Complete    | 2026-03-09 | - |
-| 46. Per-Share Block Store Wiring | v4.0 | 0/? | Not started | - |
+| 45. Package Restructure | v4.0 | 4/4 | Complete | 2026-03-09 |
+| 46. Per-Share Block Store Wiring | 3/3 | Complete    | 2026-03-10 | - |
 | 47. L1 Read Cache and Prefetch | v4.0 | 0/? | Not started | - |
 | 48. Auto-Deduced Configuration | v4.0 | 0/? | Not started | - |
 | 49. Testing and Documentation | v4.0 | 0/? | Not started | - |

@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: BlockStore Unification Refactor
 status: completed
-stopped_at: Completed 45-04-PLAN.md (Phase 45 complete)
-last_updated: "2026-03-09T20:15:37.183Z"
-last_activity: 2026-03-09 — Phase 45 Plan 04 complete
+stopped_at: Completed 46-03-PLAN.md
+last_updated: "2026-03-10T11:13:12.822Z"
+last_activity: 2026-03-10 — Phase 46 Plan 03 complete (phase complete)
 progress:
   total_phases: 22
-  completed_phases: 6
-  total_plans: 14
-  completed_plans: 14
-  percent: 99
+  completed_phases: 7
+  total_plans: 17
+  completed_plans: 17
+  percent: 100
 ---
 
 # Project State
@@ -21,17 +21,17 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-09)
 
 **Core value:** Replace confusing layered storage architecture with clean two-tier block store model (Local + Remote) for per-share isolation and maintainability
-**Current focus:** Phase 45 - Package Restructure
+**Current focus:** Phase 46 - Per-Share Block Store Wiring (complete)
 
 ## Current Position
 
-Phase: 45 of 49 (Package Restructure)
+Phase: 46 of 49 (Per-Share Block Store Wiring)
 Milestone: v4.0 BlockStore Unification Refactor
-Plan: 4 of 4 complete
-Status: Phase 45 Complete
-Last activity: 2026-03-09 — Phase 45 Plan 04 complete
+Plan: 3 of 3 complete
+Status: Phase 46 complete
+Last activity: 2026-03-10 — Phase 46 Plan 03 complete (phase complete)
 
-Progress: [██████████] 99% (127/186+ total plans across all milestones)
+Progress: [██████████] 100% (132/132 total plans across all milestones)
 
 ## Completed Milestones
 
@@ -54,8 +54,8 @@ Progress: [██████████] 99% (127/186+ total plans across all 
 **v4.0 Current Milestone:**
 - 9 phases defined (41-49)
 - 55 requirements mapped
-- Phases 41-44 complete
-- 14 plans completed (41-01, 41-02, 42-01, 42-02, 43-01, 43-02, 43-03, 44-01, 44-02, 44-03, 45-01, 45-02, 45-03, 45-04)
+- Phases 41-46 complete
+- 17 plans completed (41-01, 41-02, 42-01, 42-02, 43-01, 43-02, 43-03, 44-01, 44-02, 44-03, 45-01, 45-02, 45-03, 45-04, 46-01, 46-02, 46-03)
 
 ## Accumulated Context
 
@@ -93,6 +93,12 @@ Recent decisions affecting v4.0 work:
 - **Removed all deprecated payload aliases**: GetPayloadService, GetBlockService, EnsurePayloadService, SetOffloaderConfig, OffloaderConfig all removed (Phase 45, Plan 04)
 - **PayloadServiceEnsurer renamed to BlockStoreEnsurer**: Interface and all method signatures updated to blockstore terminology (Phase 45, Plan 04)
 - **pkg/cache and pkg/payload deleted**: 42 files (10,715 lines) of dead code removed after full consumer migration (Phase 45, Plan 04)
+- [Phase 46]: nonClosingRemote wrapper prevents engine.Close() from closing shared remote stores; ref counting in shares.Service manages actual close
+- [Phase 46]: BlockStoreConfigProvider narrow interface avoids importing full store.Store into shares package
+- [Phase 46-02]: Validation ordering matters -- validate request parameters before per-handle resolution to get correct NFS error codes
+- [Phase 46-02]: Health endpoint changed from single block_store to per-share block_stores array (breaking API change)
+- [Phase 46]: Removed CreateRemoteStoreFromConfig from init.go since shares.Service has its own copy and EnsureBlockStore was the only caller
+- [Phase 46]: Removed CacheConfig/SyncerConfig/SetCacheConfig/SetSyncerConfig -- per-share defaults via SetLocalStoreDefaults/SetSyncerDefaults are the canonical path
 
 ### Pending Todos
 
@@ -104,7 +110,7 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-09T20:09:04Z
-Stopped at: Completed 45-04-PLAN.md (Phase 45 complete)
-Resume file: .planning/phases/45-package-restructure/45-04-SUMMARY.md
-Next action: Begin Phase 46
+Last session: 2026-03-10T11:06:52.094Z
+Stopped at: Completed 46-03-PLAN.md
+Resume file: None
+Next action: Phase 46 complete. Proceed to Phase 47 if defined.

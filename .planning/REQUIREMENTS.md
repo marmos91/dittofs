@@ -64,10 +64,10 @@
 
 ### Per-Share Isolation
 
-- [ ] **SHARE-01**: Runtime manages per-share BlockStore instances (map[shareID]*BlockStore) replacing global PayloadService
-- [ ] **SHARE-02**: EnsureBlockStore(share) creates BlockStore with share's local + remote configs
-- [ ] **SHARE-03**: NFS/SMB handlers resolve BlockStore per share handle (getBlockStore(shareHandle))
-- [ ] **SHARE-04**: Multiple shares with different local paths operate in isolation
+- [x] **SHARE-01**: Runtime manages per-share BlockStore instances (map[shareID]*BlockStore) replacing global PayloadService
+- [x] **SHARE-02**: EnsureBlockStore(share) creates BlockStore with share's local + remote configs
+- [x] **SHARE-03**: NFS/SMB handlers resolve BlockStore per share handle (getBlockStore(shareHandle))
+- [x] **SHARE-04**: Multiple shares with different local paths operate in isolation
 
 ### Read Performance
 
@@ -157,10 +157,10 @@
 | PKG-09 | Phase 45 | Complete |
 | PKG-10 | Phase 45 | Complete |
 | PKG-11 | Phase 45 | Complete |
-| SHARE-01 | Phase 46 | Pending |
-| SHARE-02 | Phase 46 | Pending |
-| SHARE-03 | Phase 46 | Pending |
-| SHARE-04 | Phase 46 | Pending |
+| SHARE-01 | Phase 46 | Complete |
+| SHARE-02 | Phase 46 | Complete |
+| SHARE-03 | Phase 46 | Complete |
+| SHARE-04 | Phase 46 | Complete |
 | PERF-01 | Phase 47 | Pending |
 | PERF-02 | Phase 47 | Pending |
 | PERF-03 | Phase 47 | Pending |
