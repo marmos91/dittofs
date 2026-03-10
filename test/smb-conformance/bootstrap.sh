@@ -94,21 +94,22 @@ create_metadata_store() {
     esac
 }
 
-# Create payload store based on profile
-create_payload_store() {
-    log_info "Creating payload store for profile: ${PROFILE}"
+# Create block stores based on profile
+create_block_stores() {
+    log_info "Creating block stores for profile: ${PROFILE}"
 
     case "$PROFILE" in
         memory)
-            $DFSCTL store payload add --name default --type memory
+            $DFSCTL store block local add --name default --type memory
             ;;
         *-s3-legacy|*-fs)
             # Legacy profile names kept for CI compatibility.
             # Filesystem payload store was removed in Phase 42; these use memory.
-            $DFSCTL store payload add --name default --type memory
+            $DFSCTL store block local add --name default --type memory
             ;;
         *-s3)
-            $DFSCTL store payload add --name default --type s3 \
+            $DFSCTL store block local add --name default --type memory
+            $DFSCTL store block remote add --name default --type s3 \
                 --config '{"bucket":"dittofs-test","region":"us-east-1","endpoint":"http://localstack:4566","force_path_style":true}'
             ;;
         *)
@@ -138,14 +139,18 @@ main() {
 
     # Create stores
     create_metadata_store
-    create_payload_store
+    create_block_stores
 
     # Create WPTS-required shares
     # FileShare is the default share name WPTS tests use for TREE_CONNECT
     log_info "Creating WPTS shares..."
-    $DFSCTL share create --name /smbbasic --metadata default --payload default
-    $DFSCTL share create --name /smbencrypted --metadata default --payload default
-    $DFSCTL share create --name /fileshare --metadata default --payload default
+    local share_flags="--metadata default --local default"
+    if [[ "$PROFILE" == *-s3 ]]; then
+        share_flags="$share_flags --remote default"
+    fi
+    $DFSCTL share create --name /smbbasic $share_flags
+    $DFSCTL share create --name /smbencrypted $share_flags
+    $DFSCTL share create --name /fileshare $share_flags
 
     # Create test users
     log_info "Creating test users..."
