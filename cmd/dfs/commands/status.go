@@ -32,13 +32,13 @@ and displays status, uptime, and store health information.
 
 Examples:
   # Check status (uses default settings)
-  dittofs status
+  dfs status
 
   # Check status with custom API port
-  dittofs status --api-port 9080
+  dfs status --api-port 9080
 
   # Output as JSON
-  dittofs status --output json`,
+  dfs status --output json`,
 	RunE: runStatus,
 }
 

@@ -24,10 +24,10 @@ The schema can be used for:
 
 Examples:
   # Print schema to stdout
-  dittofs config schema
+  dfs config schema
 
   # Save schema to file
-  dittofs config schema --output config.schema.json`,
+  dfs config schema --output config.schema.json`,
 	RunE: runSchema,
 }
 

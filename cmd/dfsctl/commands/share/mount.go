@@ -221,7 +221,7 @@ func formatMountError(err error, output, protocol string, port int) error {
 		if protocol == "SMB" {
 			return fmt.Errorf("mount failed: %w\nOutput: %s\nHint: This often indicates wrong password or authentication failure. Verify your credentials and try again", err, output)
 		}
-		return fmt.Errorf("mount failed: %w\nOutput: %s\nHint: Server closed the connection unexpectedly. Check %s adapter logs with 'dittofs logs'", err, output, protocol)
+		return fmt.Errorf("mount failed: %w\nOutput: %s\nHint: Server closed the connection unexpectedly. Check %s adapter logs with 'dfs logs'", err, output, protocol)
 	}
 
 	return fmt.Errorf("mount failed: %w\nOutput: %s\nHint: Server may be running on port %d. Check with 'dfsctl adapter list'", err, output, port)

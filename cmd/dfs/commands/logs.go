@@ -33,19 +33,19 @@ will indicate that logs are not available in a file.
 
 Examples:
   # Show last 100 lines (default)
-  dittofs logs
+  dfs logs
 
   # Show last 50 lines
-  dittofs logs -n 50
+  dfs logs -n 50
 
   # Follow logs in real-time
-  dittofs logs -f
+  dfs logs -f
 
   # Show logs since a specific time
-  dittofs logs --since "2024-01-15T10:00:00Z"
+  dfs logs --since "2024-01-15T10:00:00Z"
 
   # Combine options
-  dittofs logs -f -n 20`,
+  dfs logs -f -n 20`,
 	RunE: runLogs,
 }
 

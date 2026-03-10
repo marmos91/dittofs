@@ -18,10 +18,10 @@ Uses the EDITOR environment variable, falling back to 'vi' if not set.
 
 Examples:
   # Edit default config
-  dittofs config edit
+  dfs config edit
 
   # Edit specific config file
-  dittofs config edit --config /etc/dittofs/config.yaml`,
+  dfs config edit --config /etc/dittofs/config.yaml`,
 	RunE: runConfigEdit,
 }
 
@@ -36,7 +36,7 @@ func runConfigEdit(cmd *cobra.Command, args []string) error {
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		return fmt.Errorf("configuration file not found: %s\n\n"+
 			"Create it first with:\n"+
-			"  dittofs config init --config %s",
+			"  dfs config init --config %s",
 			configPath, configPath)
 	}
 

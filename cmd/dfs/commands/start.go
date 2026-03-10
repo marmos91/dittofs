@@ -40,16 +40,16 @@ default location at $XDG_CONFIG_HOME/dittofs/config.yaml.
 
 Examples:
   # Start in background (default)
-  dittofs start
+  dfs start
 
   # Start in foreground
-  dittofs start --foreground
+  dfs start --foreground
 
   # Start with custom config file
-  dittofs start --config /etc/dittofs/config.yaml
+  dfs start --config /etc/dittofs/config.yaml
 
   # Start with environment variable overrides
-  DITTOFS_LOGGING_LEVEL=DEBUG dittofs start --foreground`,
+  DITTOFS_LOGGING_LEVEL=DEBUG dfs start --foreground`,
 	RunE: runStart,
 }
 

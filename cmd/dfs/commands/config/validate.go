@@ -16,10 +16,10 @@ Checks for syntax errors, missing required fields, and invalid values.
 
 Examples:
   # Validate default config
-  dittofs config validate
+  dfs config validate
 
   # Validate specific config file
-  dittofs config validate --config /etc/dittofs/config.yaml`,
+  dfs config validate --config /etc/dittofs/config.yaml`,
 	RunE: runConfigValidate,
 }
 

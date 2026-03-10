@@ -8,7 +8,8 @@ import "runtime"
 
 // Detector provides system resource information.
 type Detector interface {
-	// AvailableMemory returns the total physical memory in bytes.
+	// AvailableMemory returns the memory available to the process in bytes.
+	// On Linux this may be the cgroup memory limit rather than total physical memory.
 	AvailableMemory() uint64
 	// AvailableCPUs returns the number of CPUs available to the process.
 	AvailableCPUs() int

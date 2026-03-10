@@ -40,13 +40,13 @@ Formats:
 
 Examples:
   # Backup SQLite database (pure Go, recommended)
-  dittofs backup controlplane --output /tmp/controlplane.db
+  dfs backup controlplane --output /tmp/controlplane.db
 
   # Backup using native CLI tools
-  dittofs backup controlplane --format native-cli --output /tmp/controlplane.db
+  dfs backup controlplane --format native-cli --output /tmp/controlplane.db
 
   # Backup as JSON (works for both backends)
-  dittofs backup controlplane --format json --output /tmp/controlplane.json`,
+  dfs backup controlplane --format json --output /tmp/controlplane.json`,
 	RunE: runControlplaneBackup,
 }
 
