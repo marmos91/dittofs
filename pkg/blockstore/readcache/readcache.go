@@ -88,8 +88,12 @@ func (c *ReadCache) Get(payloadID string, blockIdx uint64, dest []byte, offset u
 
 // Put inserts or updates a block in the cache. A heap copy of data is made.
 // If the cache exceeds maxBytes, LRU entries are evicted synchronously.
+// Blocks larger than maxBytes are silently skipped to prevent permanent over-budget.
 func (c *ReadCache) Put(payloadID string, blockIdx uint64, data []byte, dataSize uint32) {
 	if c == nil {
+		return
+	}
+	if int64(dataSize) > c.maxBytes {
 		return
 	}
 

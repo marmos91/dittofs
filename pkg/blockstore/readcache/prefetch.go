@@ -165,6 +165,8 @@ func (p *Prefetcher) Reset(payloadID string) {
 }
 
 // Close stops all workers and waits for them to finish. Idempotent.
+// Workers are stopped via context cancellation (not channel close) to avoid
+// a race where submit() sends on a closed channel.
 func (p *Prefetcher) Close() {
 	if p == nil {
 		return
@@ -175,7 +177,6 @@ func (p *Prefetcher) Close() {
 	}
 
 	p.cancel()
-	close(p.reqCh)
 	p.wg.Wait()
 }
 
@@ -194,33 +195,34 @@ func (p *Prefetcher) submit(payloadID string, blockIdx uint64) {
 }
 
 // worker processes prefetch requests from the channel.
+// Uses select on ctx.Done() to stop (not channel close) to avoid races with submit().
 func (p *Prefetcher) worker(ctx context.Context) {
 	defer p.wg.Done()
 
-	for req := range p.reqCh {
-		// Check context cancellation.
-		if ctx.Err() != nil {
+	for {
+		select {
+		case <-ctx.Done():
 			return
-		}
+		case req := <-p.reqCh:
+			// Skip if already in L1 cache.
+			if p.cache.Contains(req.payloadID, req.blockIdx) {
+				continue
+			}
 
-		// Skip if already in L1 cache.
-		if p.cache.Contains(req.payloadID, req.blockIdx) {
-			continue
-		}
+			// Skip if block is on local disk.
+			if p.local != nil && p.local.IsBlockCached(ctx, req.payloadID, req.blockIdx) {
+				continue
+			}
 
-		// Skip if block is on local disk.
-		if p.local != nil && p.local.IsBlockCached(ctx, req.payloadID, req.blockIdx) {
-			continue
-		}
+			// Load block from underlying store.
+			data, dataSize, err := p.loadFn(ctx, req.payloadID, req.blockIdx)
+			if err != nil {
+				// Prefetch failures are non-fatal -- just skip.
+				continue
+			}
 
-		// Load block from underlying store.
-		data, dataSize, err := p.loadFn(ctx, req.payloadID, req.blockIdx)
-		if err != nil {
-			// Prefetch failures are non-fatal -- just skip.
-			continue
+			// Fill L1 cache with the prefetched data.
+			p.cache.Put(req.payloadID, req.blockIdx, data, dataSize)
 		}
-
-		// Fill L1 cache with the prefetched data.
-		p.cache.Put(req.payloadID, req.blockIdx, data, dataSize)
 	}
 }

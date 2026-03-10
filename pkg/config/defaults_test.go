@@ -3,6 +3,8 @@ package config
 import (
 	"testing"
 	"time"
+
+	"github.com/marmos91/dittofs/internal/bytesize"
 )
 
 func TestApplyDefaults_Logging(t *testing.T) {
@@ -164,6 +166,60 @@ func TestApplyDefaults_OffloaderPreservesExplicit(t *testing.T) {
 	}
 	if cfg.Offloader.PrefetchBlocks != 8 {
 		t.Errorf("Expected explicit PrefetchBlocks 8 preserved, got %d", cfg.Offloader.PrefetchBlocks)
+	}
+}
+
+func TestApplyDefaults_ReadCacheSizeNilGetsDefault(t *testing.T) {
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+
+	if cfg.Cache.ReadCacheSize == nil {
+		t.Fatal("ReadCacheSize should be set to default when nil")
+	}
+	if *cfg.Cache.ReadCacheSize != bytesize.ByteSize(128*bytesize.MiB) {
+		t.Errorf("Expected ReadCacheSize 128MiB, got %v", *cfg.Cache.ReadCacheSize)
+	}
+}
+
+func TestApplyDefaults_ReadCacheSizeZeroPreserved(t *testing.T) {
+	zero := bytesize.ByteSize(0)
+	cfg := &Config{
+		Cache: CacheConfig{ReadCacheSize: &zero},
+	}
+	ApplyDefaults(cfg)
+
+	if cfg.Cache.ReadCacheSize == nil {
+		t.Fatal("ReadCacheSize should not be nil when explicitly set to 0")
+	}
+	if *cfg.Cache.ReadCacheSize != 0 {
+		t.Errorf("Expected ReadCacheSize 0 (disabled), got %v", *cfg.Cache.ReadCacheSize)
+	}
+}
+
+func TestApplyDefaults_PrefetchWorkersNilGetsDefault(t *testing.T) {
+	cfg := &Config{}
+	ApplyDefaults(cfg)
+
+	if cfg.Offloader.PrefetchWorkers == nil {
+		t.Fatal("PrefetchWorkers should be set to default when nil")
+	}
+	if *cfg.Offloader.PrefetchWorkers != 4 {
+		t.Errorf("Expected PrefetchWorkers 4, got %d", *cfg.Offloader.PrefetchWorkers)
+	}
+}
+
+func TestApplyDefaults_PrefetchWorkersZeroPreserved(t *testing.T) {
+	zero := 0
+	cfg := &Config{
+		Offloader: OffloaderConfig{PrefetchWorkers: &zero},
+	}
+	ApplyDefaults(cfg)
+
+	if cfg.Offloader.PrefetchWorkers == nil {
+		t.Fatal("PrefetchWorkers should not be nil when explicitly set to 0")
+	}
+	if *cfg.Offloader.PrefetchWorkers != 0 {
+		t.Errorf("Expected PrefetchWorkers 0 (disabled), got %d", *cfg.Offloader.PrefetchWorkers)
 	}
 }
 

@@ -200,6 +200,22 @@ func TestReadCache_Put_EvictsMultiple(t *testing.T) {
 	assert.True(t, ok, "block 2 should be cached")
 }
 
+func TestReadCache_Put_SkipsOversizedEntry(t *testing.T) {
+	// Budget smaller than a single block
+	c := New(100)
+	require.NotNil(t, c)
+	defer c.Close()
+
+	// Put a block larger than maxBytes -- should be silently skipped
+	bigData := makeData(200, 0xAA)
+	c.Put("f", 0, bigData, 200)
+
+	dest := make([]byte, 200)
+	_, ok := c.Get("f", 0, dest, 0)
+	assert.False(t, ok, "oversized entry should not be cached")
+	assert.Equal(t, int64(0), c.curBytes, "curBytes should remain 0")
+}
+
 // --- LRU Promotion ---
 
 func TestReadCache_LRU_Promotion(t *testing.T) {

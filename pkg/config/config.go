@@ -175,10 +175,11 @@ type CacheConfig struct {
 
 	// ReadCacheSize is the per-share L1 read cache memory budget.
 	// Caches hot blocks in memory to avoid disk I/O on repeated reads.
-	// Set to 0 to disable L1 caching.
+	// Set to 0 to disable L1 caching. Omit (or leave unset) for the default.
 	// Supports human-readable formats: "128MB", "256Mi"
 	// Default: 128MB
-	ReadCacheSize bytesize.ByteSize `mapstructure:"read_cache_size" yaml:"read_cache_size,omitempty"`
+	// Pointer type distinguishes "unset" (nil → apply default) from "explicitly 0" (disable).
+	ReadCacheSize *bytesize.ByteSize `mapstructure:"read_cache_size" yaml:"read_cache_size,omitempty"`
 }
 
 // OffloaderConfig configures the background offloader that transfers cached
@@ -219,9 +220,10 @@ type OffloaderConfig struct {
 
 	// PrefetchWorkers is the number of background workers for sequential prefetch.
 	// Prefetch detects sequential reads and pre-loads upcoming blocks into L1 cache.
-	// Set to 0 to disable prefetching.
+	// Set to 0 to disable prefetching. Omit (or leave unset) for the default.
 	// Default: 4
-	PrefetchWorkers int `mapstructure:"prefetch_workers" yaml:"prefetch_workers,omitempty"`
+	// Pointer type distinguishes "unset" (nil → apply default) from "explicitly 0" (disable).
+	PrefetchWorkers *int `mapstructure:"prefetch_workers" yaml:"prefetch_workers,omitempty"`
 }
 
 // AdminConfig contains initial admin user configuration for bootstrap.
@@ -528,31 +530,45 @@ func configDecodeHooks() mapstructure.DecodeHookFunc {
 }
 
 // byteSizeDecodeHook returns a mapstructure decode hook that converts strings
-// and integers to bytesize.ByteSize. This enables config files to use human-readable
-// sizes like "1Gi", "500Mi", "100MB", or plain numbers.
+// and integers to bytesize.ByteSize or *bytesize.ByteSize. This enables config
+// files to use human-readable sizes like "1Gi", "500Mi", "100MB", or plain numbers.
+// Pointer targets (*bytesize.ByteSize) are supported so that nil can represent
+// "unset" while an explicit 0 means "disabled".
 func byteSizeDecodeHook() mapstructure.DecodeHookFunc {
+	byteSizeType := reflect.TypeOf(bytesize.ByteSize(0))
+	byteSizePtrType := reflect.PointerTo(byteSizeType)
+
 	return func(from reflect.Type, to reflect.Type, data interface{}) (interface{}, error) {
-		// Only handle conversion to ByteSize
-		if to != reflect.TypeOf(bytesize.ByteSize(0)) {
+		isPtr := to == byteSizePtrType
+		if !isPtr && to != byteSizeType {
 			return data, nil
 		}
 
+		var result bytesize.ByteSize
 		switch v := data.(type) {
 		case string:
-			// Parse human-readable string like "1Gi", "500Mi", "100MB"
-			return bytesize.ParseByteSize(v)
+			parsed, err := bytesize.ParseByteSize(v)
+			if err != nil {
+				return nil, err
+			}
+			result = parsed
 		case int:
-			return bytesize.ByteSize(v), nil
+			result = bytesize.ByteSize(v)
 		case int64:
-			return bytesize.ByteSize(v), nil
+			result = bytesize.ByteSize(v)
 		case uint64:
-			return bytesize.ByteSize(v), nil
+			result = bytesize.ByteSize(v)
 		case float64:
 			// YAML often deserializes numbers as float64
-			return bytesize.ByteSize(v), nil
+			result = bytesize.ByteSize(v)
 		default:
 			return data, nil
 		}
+
+		if isPtr {
+			return &result, nil
+		}
+		return result, nil
 	}
 }
 

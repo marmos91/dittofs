@@ -35,7 +35,7 @@ type Config struct {
 	Syncer *blocksync.Syncer
 
 	// ReadCacheBytes is the memory budget for the L1 read cache per share.
-	// 0 disables L1 caching. Internally converts to block count.
+	// 0 disables L1 caching. Passed directly to readcache.New as byte budget.
 	ReadCacheBytes int64
 
 	// PrefetchWorkers is the number of goroutines for sequential prefetch.

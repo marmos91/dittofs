@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
@@ -127,7 +128,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Set per-share defaults BEFORE loading shares (AddShare creates BlockStores).
 	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{
 		MaxSize:        uint64(cfg.Cache.Size),
-		ReadCacheBytes: int64(cfg.Cache.ReadCacheSize),
+		ReadCacheBytes: derefByteSizeToInt64(cfg.Cache.ReadCacheSize),
 	})
 	rt.SetSyncerDefaults(&shares.SyncerDefaults{
 		ParallelUploads:    cfg.Offloader.ParallelUploads,
@@ -136,10 +137,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 		SmallFileThreshold: clampToInt64(uint64(cfg.Offloader.SmallFileThreshold)),
 		UploadInterval:     cfg.Offloader.UploadInterval,
 		UploadDelay:        cfg.Offloader.UploadDelay,
-		PrefetchWorkers:    cfg.Offloader.PrefetchWorkers,
+		PrefetchWorkers:    derefIntOrZero(cfg.Offloader.PrefetchWorkers),
 	})
 	logger.Info("Per-share BlockStore defaults configured", "max_size", cfg.Cache.Size)
-	logger.Info("L1 read cache configuration", "read_cache_size", cfg.Cache.ReadCacheSize, "prefetch_workers", cfg.Offloader.PrefetchWorkers)
+	logger.Info("L1 read cache configuration", "read_cache_size", derefByteSizeToInt64(cfg.Cache.ReadCacheSize), "prefetch_workers", derefIntOrZero(cfg.Offloader.PrefetchWorkers))
 
 	// Load shares (per-share BlockStores are created during AddShare).
 	if err := runtime.LoadSharesFromStore(ctx, rt, cpStore); err != nil {
@@ -284,4 +285,21 @@ func clampToInt64(v uint64) int64 {
 		return math.MaxInt64
 	}
 	return int64(v)
+}
+
+// derefByteSizeToInt64 dereferences a *bytesize.ByteSize to int64.
+// Returns 0 when the pointer is nil (disabled).
+func derefByteSizeToInt64(v *bytesize.ByteSize) int64 {
+	if v == nil {
+		return 0
+	}
+	return int64(*v)
+}
+
+// derefIntOrZero dereferences a *int, returning 0 when nil.
+func derefIntOrZero(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
