@@ -180,12 +180,6 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			}
 		}
 
-		// Resolve block store config IDs from the DB share model.
-		var remoteBlockStoreID string
-		if share.RemoteBlockStoreID != nil {
-			remoteBlockStoreID = *share.RemoteBlockStoreID
-		}
-
 		shareConfig := &ShareConfig{
 			Name:               share.Name,
 			MetadataStore:      metaStoreCfg.Name,
@@ -203,7 +197,7 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			NetgroupName:       netgroupName,
 			BlockedOperations:  share.GetBlockedOps(),
 			LocalBlockStoreID:  share.LocalBlockStoreID,
-			RemoteBlockStoreID: remoteBlockStoreID,
+			RemoteBlockStoreID: derefString(share.RemoteBlockStoreID),
 		}
 
 		if err := rt.AddShare(ctx, shareConfig); err != nil {
@@ -217,4 +211,12 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 	}
 
 	return nil
+}
+
+// derefString safely dereferences a *string, returning "" if nil.
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

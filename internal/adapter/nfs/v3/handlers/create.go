@@ -147,7 +147,7 @@ func (h *Handler) Create(
 	}
 
 	// ========================================================================
-	// Step 3: Build AuthContext with share-level identity mapping
+	// Step 3b: Build AuthContext with share-level identity mapping
 	// ========================================================================
 
 	authCtx, dirWccAfter, err := h.buildAuthContextWithWCCError(ctx, parentHandle, &parentFile.FileAttr, "CREATE", req.Filename, req.DirHandle)

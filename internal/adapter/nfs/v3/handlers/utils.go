@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -26,9 +25,6 @@ func (e *validationError) Error() string {
 
 // ErrMetadataServiceNotInitialized is returned when the metadata service is not available.
 var ErrMetadataServiceNotInitialized = errors.New("metadata service not initialized")
-
-// ErrBlockStoreNotInitialized is returned when the block store is not available.
-var ErrBlockStoreNotInitialized = errors.New("block store not initialized")
 
 // getServicesForHandle returns both the metadata service and the per-share block store
 // resolved from the given file handle.
@@ -60,11 +56,7 @@ func getMetadataService(reg *runtime.Runtime) (*metadata.MetadataService, error)
 // getBlockStoreForHandle returns the per-share block store resolved from the given file handle.
 // The handle encodes the share name, which is used to look up the share's block store.
 func getBlockStoreForHandle(reg *runtime.Runtime, handle metadata.FileHandle) (*engine.BlockStore, error) {
-	blockStore, err := reg.GetBlockStoreForHandle(context.Background(), handle)
-	if err != nil {
-		return nil, fmt.Errorf("block store not available: %w", err)
-	}
-	return blockStore, nil
+	return reg.GetBlockStoreForHandle(context.Background(), handle)
 }
 
 // safeAdd performs checked addition of two uint64 values.
@@ -145,14 +137,6 @@ type MFsymlinkResult struct {
 // checkMFsymlink checks if a file is an unconverted MFsymlink and returns
 // the symlink target if so. This enables NFS clients to see SMB-created
 // symlinks before they are converted on CLOSE.
-//
-// Parameters:
-//   - ctx: Context for cancellation and logging
-//   - reg: Registry to get block store
-//   - handle: File handle for per-share block store resolution
-//   - file: File metadata to check
-//
-// Returns MFsymlinkResult with detection result and modified attributes.
 func checkMFsymlink(
 	ctx context.Context,
 	reg *runtime.Runtime,
@@ -161,35 +145,32 @@ func checkMFsymlink(
 ) MFsymlinkResult {
 	// Quick checks first (no I/O)
 	if file.Type != metadata.FileTypeRegular {
-		return MFsymlinkResult{IsMFsymlink: false}
+		return MFsymlinkResult{}
 	}
 
 	if file.Size != uint64(mfsymlink.Size) {
-		return MFsymlinkResult{IsMFsymlink: false}
+		return MFsymlinkResult{}
 	}
 
 	// File has correct size - need to check content
-	// Read content from block store (checks local cache first)
 	content, err := readMFsymlinkContentForNFS(ctx, reg, handle, file.PayloadID)
 	if err != nil {
 		logger.Debug("checkMFsymlink: failed to read content",
 			"payloadID", file.PayloadID,
 			"error", err)
-		return MFsymlinkResult{IsMFsymlink: false}
+		return MFsymlinkResult{}
 	}
 
-	// Verify MFsymlink format
 	if !mfsymlink.IsMFsymlink(content) {
-		return MFsymlinkResult{IsMFsymlink: false}
+		return MFsymlinkResult{}
 	}
 
-	// Parse symlink target
 	target, err := mfsymlink.Decode(content)
 	if err != nil {
 		logger.Debug("checkMFsymlink: invalid MFsymlink format",
 			"payloadID", file.PayloadID,
 			"error", err)
-		return MFsymlinkResult{IsMFsymlink: false}
+		return MFsymlinkResult{}
 	}
 
 	// Create modified attributes to present as symlink
@@ -221,7 +202,6 @@ func readMFsymlinkContentForNFS(
 		return nil, nil
 	}
 
-	// Use BlockStore.ReadAt (Cache handles caching automatically)
 	blockStore, err := getBlockStoreForHandle(reg, handle)
 	if err != nil {
 		return nil, err

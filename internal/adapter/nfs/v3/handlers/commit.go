@@ -154,7 +154,7 @@ func (h *Handler) Commit(
 	}
 
 	// ========================================================================
-	// Step 4: Perform commit operation - flush write cache to block store
+	// Step 4b: Perform commit operation - flush write cache to block store
 	// ========================================================================
 
 	// Check context before potentially long flush operation

@@ -133,7 +133,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		ParallelUploads:    cfg.Offloader.ParallelUploads,
 		ParallelDownloads:  cfg.Offloader.ParallelDownloads,
 		PrefetchBlocks:     cfg.Offloader.PrefetchBlocks,
-		SmallFileThreshold: int64(min(uint64(cfg.Offloader.SmallFileThreshold), uint64(math.MaxInt64))),
+		SmallFileThreshold: clampToInt64(uint64(cfg.Offloader.SmallFileThreshold)),
 		UploadInterval:     cfg.Offloader.UploadInterval,
 		UploadDelay:        cfg.Offloader.UploadDelay,
 	})
@@ -274,4 +274,12 @@ func createSMBAdapter(cfg *models.AdapterConfig) (runtime.ProtocolAdapter, error
 	}
 
 	return smb.New(smbCfg), nil
+}
+
+// clampToInt64 safely converts a uint64 to int64, clamping at math.MaxInt64.
+func clampToInt64(v uint64) int64 {
+	if v > uint64(math.MaxInt64) {
+		return math.MaxInt64
+	}
+	return int64(v)
 }

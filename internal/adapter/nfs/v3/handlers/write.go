@@ -252,7 +252,7 @@ func (h *Handler) Write(
 	nfsWccAttr := buildWccAttr(writeIntent.PreWriteAttr)
 
 	// ========================================================================
-	// Step 6: Write data to BlockStore (uses local cache internally)
+	// Step 7: Write data to BlockStore (uses local cache internally)
 	// ========================================================================
 
 	// Check context before write operation

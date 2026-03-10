@@ -209,27 +209,55 @@ func (s *Service) AddShare(
 		return fmt.Errorf("cannot add share with empty name")
 	}
 
+	share, metadataStore, err := s.registerShare(ctx, config, storeProvider, metadataSvc)
+	if err != nil {
+		return err
+	}
+
+	// Create per-share BlockStore if local block store config is provided.
+	if config.LocalBlockStoreID != "" && blockStoreProvider != nil {
+		if err := s.createBlockStoreForShare(ctx, share, config, blockStoreProvider, metadataStore, localStoreDefaults, syncerDefaults); err != nil {
+			// Roll back: remove from registry
+			s.mu.Lock()
+			delete(s.registry, config.Name)
+			s.mu.Unlock()
+			return fmt.Errorf("failed to create block store for share %q: %w", config.Name, err)
+		}
+	}
+
+	s.notifyShareChange()
+
+	return nil
+}
+
+// registerShare validates config, creates the root directory, registers the share
+// in the registry, and registers the metadata store for the share. All operations
+// happen under s.mu to ensure atomicity. Returns the created share and the
+// metadata store instance (needed by createBlockStoreForShare).
+func (s *Service) registerShare(
+	ctx context.Context,
+	config *ShareConfig,
+	storeProvider MetadataStoreProvider,
+	metadataSvc MetadataServiceRegistrar,
+) (*Share, metadata.MetadataStore, error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if metadataSvc == nil {
-		s.mu.Unlock()
-		return fmt.Errorf("metadata service not initialized")
+		return nil, nil, fmt.Errorf("metadata service not initialized")
 	}
 
 	if _, exists := s.registry[config.Name]; exists {
-		s.mu.Unlock()
-		return fmt.Errorf("share %q already exists", config.Name)
+		return nil, nil, fmt.Errorf("share %q already exists", config.Name)
 	}
 
 	if storeProvider == nil {
-		s.mu.Unlock()
-		return fmt.Errorf("metadata store provider not initialized")
+		return nil, nil, fmt.Errorf("metadata store provider not initialized")
 	}
 
 	metadataStore, err := storeProvider.GetMetadataStore(config.MetadataStore)
 	if err != nil {
-		s.mu.Unlock()
-		return err
+		return nil, nil, err
 	}
 
 	rootAttr := config.RootAttr
@@ -251,14 +279,12 @@ func (s *Service) AddShare(
 
 	rootFile, err := metadataStore.CreateRootDirectory(ctx, config.Name, rootAttr)
 	if err != nil {
-		s.mu.Unlock()
-		return fmt.Errorf("failed to create root directory: %w", err)
+		return nil, nil, fmt.Errorf("failed to create root directory: %w", err)
 	}
 
 	rootHandle, err := metadata.EncodeFileHandle(rootFile)
 	if err != nil {
-		s.mu.Unlock()
-		return fmt.Errorf("failed to encode root handle: %w", err)
+		return nil, nil, fmt.Errorf("failed to encode root handle: %w", err)
 	}
 
 	allowAuthSys := config.AllowAuthSys
@@ -287,26 +313,10 @@ func (s *Service) AddShare(
 	s.registry[config.Name] = share
 	if err := metadataSvc.RegisterStoreForShare(config.Name, metadataStore); err != nil {
 		delete(s.registry, config.Name)
-		s.mu.Unlock()
-		return fmt.Errorf("failed to configure metadata for share: %w", err)
+		return nil, nil, fmt.Errorf("failed to configure metadata for share: %w", err)
 	}
 
-	s.mu.Unlock()
-
-	// Create per-share BlockStore if local block store config is provided.
-	if config.LocalBlockStoreID != "" && blockStoreProvider != nil {
-		if err := s.createBlockStoreForShare(ctx, share, config, blockStoreProvider, metadataStore, localStoreDefaults, syncerDefaults); err != nil {
-			// Roll back: remove from registry
-			s.mu.Lock()
-			delete(s.registry, config.Name)
-			s.mu.Unlock()
-			return fmt.Errorf("failed to create block store for share %q: %w", config.Name, err)
-		}
-	}
-
-	s.notifyShareChange()
-
-	return nil
+	return share, metadataStore, nil
 }
 
 // createBlockStoreForShare creates and starts a per-share BlockStore.
@@ -333,7 +343,7 @@ func (s *Service) createBlockStoreForShare(
 
 	// Resolve optional remote block store.
 	var remoteStore remote.RemoteStore
-	remoteConfigID := ""
+	var remoteConfigID string
 	if config.RemoteBlockStoreID != "" {
 		remoteStore, remoteConfigID, err = s.acquireRemoteStore(ctx, config.RemoteBlockStoreID, blockStoreProvider)
 		if err != nil {

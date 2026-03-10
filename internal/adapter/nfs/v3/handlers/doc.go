@@ -176,21 +176,13 @@ func (h *Handler) getOplockBreaker() adapter.OplockBreaker {
 // checkMFsymlinkByHandle checks if a file referenced by handle is an unconverted MFsymlink.
 // This is used by READLINK when ReadSymlink fails to check if the file is actually
 // an SMB-created MFsymlink that hasn't been converted yet.
-//
-// Parameters:
-//   - ctx: NFS handler context containing share info
-//   - fileHandle: Handle to the file to check
-//
-// Returns MFsymlinkResult with detection result and modified attributes.
 func (h *Handler) checkMFsymlinkByHandle(ctx *NFSHandlerContext, fileHandle metadata.FileHandle) MFsymlinkResult {
 	metaSvc := h.Registry.GetMetadataService()
 
-	// Get file metadata
 	file, err := metaSvc.GetFile(ctx.Context, fileHandle)
 	if err != nil {
-		return MFsymlinkResult{IsMFsymlink: false}
+		return MFsymlinkResult{}
 	}
 
-	// Use the helper function to check MFsymlink
 	return checkMFsymlink(ctx.Context, h.Registry, fileHandle, file)
 }

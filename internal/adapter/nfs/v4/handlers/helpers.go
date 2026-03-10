@@ -103,11 +103,7 @@ func getBlockStoreForHandle(h *Handler, handle []byte) (*engine.BlockStore, erro
 	if h.Registry == nil {
 		return nil, fmt.Errorf("no registry configured")
 	}
-	bs, err := h.Registry.GetBlockStoreForHandle(context.Background(), metadata.FileHandle(handle))
-	if err != nil {
-		return nil, fmt.Errorf("block store not available for handle: %w", err)
-	}
-	return bs, nil
+	return h.Registry.GetBlockStoreForHandle(context.Background(), metadata.FileHandle(handle))
 }
 
 // encodeChangeInfo4 encodes a change_info4 structure into the buffer.

@@ -196,7 +196,7 @@ func (h *Handler) Read(
 	}
 
 	// ========================================================================
-	// Step 3: Check for empty file or invalid offset
+	// Step 3c: Check for empty file or offset beyond EOF
 	// ========================================================================
 
 	// If file has no content, return empty data with EOF

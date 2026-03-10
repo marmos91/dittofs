@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -159,7 +158,7 @@ func (r *Runtime) GetMetadataStore(name string) (metadata.MetadataStore, error) 
 func (r *Runtime) GetMetadataStoreForShare(shareName string) (metadata.MetadataStore, error) {
 	share, err := r.sharesSvc.GetShare(shareName)
 	if err != nil {
-		return nil, fmt.Errorf("share %q not found", shareName)
+		return nil, err
 	}
 	return r.storesSvc.GetMetadataStore(share.MetadataStore)
 }
@@ -228,14 +227,7 @@ func (r *Runtime) GetBlockStoreForHandle(ctx context.Context, handle metadata.Fi
 	if err != nil {
 		return nil, err
 	}
-	share, err := r.sharesSvc.GetShare(shareName)
-	if err != nil {
-		return nil, err
-	}
-	if share.BlockStore == nil {
-		return nil, fmt.Errorf("share %q has no block store configured", shareName)
-	}
-	return share.BlockStore, nil
+	return r.sharesSvc.GetBlockStoreForShare(shareName)
 }
 
 // --- Lifecycle (delegated to lifecycle.Service) ---
