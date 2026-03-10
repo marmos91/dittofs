@@ -224,6 +224,10 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			RequireKerberos:   nfsOpts.RequireKerberos,
 			MinKerberosLevel:  nfsOpts.MinKerberosLevel,
 			BlockedOperations: share.GetBlockedOps(),
+			LocalBlockStoreID: localBlockStore.ID,
+		}
+		if remoteBlockStoreID != nil {
+			shareConfig.RemoteBlockStoreID = *remoteBlockStoreID
 		}
 
 		if err := h.runtime.AddShare(r.Context(), shareConfig); err != nil {

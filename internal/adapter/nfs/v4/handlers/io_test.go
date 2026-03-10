@@ -60,9 +60,8 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 	}
 	t.Cleanup(func() { _ = blockSvc.Close() })
 
-	// Create runtime with block store
+	// Create runtime
 	rt := runtime.New(nil)
-	rt.SetBlockStore(blockSvc)
 	metaSvc := rt.GetMetadataService()
 	metaSvc.SetDeferredCommit(false)
 
@@ -81,11 +80,12 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 		t.Fatalf("add share: %v", err)
 	}
 
-	// Get root handle
+	// Get share and set per-share BlockStore
 	share, err := rt.GetShare(shareName)
 	if err != nil {
 		t.Fatalf("get share: %v", err)
 	}
+	share.BlockStore = blockSvc
 
 	// Create pseudo-fs
 	pfs := pseudofs.New()

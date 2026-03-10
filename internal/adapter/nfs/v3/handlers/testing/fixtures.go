@@ -97,9 +97,8 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 	}
 	t.Cleanup(func() { _ = blockSvc.Close() })
 
-	// Create registry and set up block store
+	// Create registry
 	reg := runtime.New(nil)
-	reg.SetBlockStore(blockSvc)
 
 	if err := reg.RegisterMetadataStore("test-metaSvc", metaStore); err != nil {
 		t.Fatalf("Failed to register metadata store: %v", err)
@@ -115,11 +114,12 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 		t.Fatalf("Failed to add share: %v", err)
 	}
 
-	// Get root handle
+	// Get share and set per-share BlockStore
 	share, err := reg.GetShare(DefaultShareName)
 	if err != nil {
 		t.Fatalf("Failed to get share: %v", err)
 	}
+	share.BlockStore = blockSvc
 
 	// Create handler
 	handler := &handlers.Handler{
@@ -131,7 +131,7 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 		Handler:         handler,
 		Registry:        reg,
 		MetadataService: reg.GetMetadataService(),
-		BlockStore:      reg.GetBlockStore(),
+		BlockStore:      blockSvc,
 		ShareName:       DefaultShareName,
 		RootHandle:      share.RootHandle,
 	}

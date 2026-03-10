@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 DittoFS is an experimental modular virtual filesystem written in Go that decouples file interfaces from storage backends.
-It implements NFSv3, NFSv4.0, and NFSv4.1 protocol servers in pure Go (userspace, no FUSE required) with pluggable metadata and payload repositories.
+It implements NFSv3, NFSv4.0, and NFSv4.1 protocol servers in pure Go (userspace, no FUSE required) with pluggable metadata and block storage backends.
 
 **Status**: Experimental - not production ready.
 
@@ -19,7 +19,7 @@ DittoFS has comprehensive documentation organized by topic:
 - **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** - Complete configuration guide with examples
 - **[docs/NFS.md](docs/NFS.md)** - NFS protocol implementation details (v3, v4.0, v4.1) and client usage
 - **[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)** - Development guide and contribution guidelines
-- **[docs/IMPLEMENTING_STORES.md](docs/IMPLEMENTING_STORES.md)** - Guide for implementing custom metadata and payload stores
+- **[docs/IMPLEMENTING_STORES.md](docs/IMPLEMENTING_STORES.md)** - Guide for implementing custom metadata and block stores
 
 ### Operational Guides
 - **[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** - Common issues and solutions
@@ -76,7 +76,7 @@ cmd/
         │   └── permission/     # Share permissions
         ├── store/
         │   ├── metadata/       # Metadata store management
-        │   └── payload/        # Payload store management
+        │   └── block/          # Block store management (local + remote)
         ├── adapter/            # Protocol adapter management
         └── settings/           # Server settings
 ```
@@ -143,7 +143,7 @@ go mod download
 
 # Store management
 ./dfsctl store metadata list
-./dfsctl store payload add --name s3-content --type s3 --config '{...}'
+./dfsctl store block add --kind remote --name s3-content --type s3 --config '{...}'
 
 # Adapter management
 ./dfsctl adapter list
@@ -253,11 +253,11 @@ sudo go test -tags=e2e -v -race -timeout 30m ./test/e2e/...
 - Optional Localstack integration for S3 testing
 
 **Available Test Configurations**:
-- `memory/memory` - Both metadata and payload in memory
-- `memory/filesystem` - Memory metadata, filesystem payload
-- `badger/filesystem` - BadgerDB metadata, filesystem payload
-- `memory/s3` - Memory metadata, S3 payload (requires Localstack)
-- `badger/s3` - BadgerDB metadata, S3 payload (requires Localstack)
+- `memory/memory` - Both metadata and block store in memory
+- `memory/filesystem` - Memory metadata, filesystem block store
+- `badger/filesystem` - BadgerDB metadata, filesystem block store
+- `memory/s3` - Memory metadata, S3 block store (requires Localstack)
+- `badger/s3` - BadgerDB metadata, S3 block store (requires Localstack)
 
 See `test/e2e/README.md` for detailed documentation.
 
@@ -393,7 +393,7 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 │            (NFS, SMB)                   │
 │       pkg/adapter/{nfs,smb}/            │
 └───────────────┬─────────────────────────┘
-                │
+                │ GetBlockStoreForHandle(handle)
                 ▼
 ┌─────────────────────────────────────────┐
 │              Runtime                    │
@@ -402,13 +402,13 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 │                                         │
 │  ┌──────────┐ ┌────────┐ ┌──────────┐  │
 │  │ adapters │ │ stores │ │  shares  │  │
-│  │lifecycle │ │registry│ │ config   │  │
-│  └──────────┘ └────────┘ └──────────┘  │
-│  ┌──────────┐ ┌────────┐ ┌──────────┐  │
-│  │  mounts  │ │lifecycl│ │ identity │  │
-│  │ tracking │ │  serve  │ │ mapping  │  │
-│  └──────────┘ └────────┘ └──────────┘  │
-│                                         │
+│  │lifecycle │ │registry│ │per-share │  │
+│  └──────────┘ └────────┘ │BlockStore│  │
+│  ┌──────────┐ ┌────────┐ └──────────┘  │
+│  │  mounts  │ │lifecycl│ ┌──────────┐  │
+│  │ tracking │ │  serve  │ │ identity │  │
+│  └──────────┘ └────────┘ │ mapping  │  │
+│                           └──────────┘  │
 │  ┌────────────┐  ┌───────────────────┐  │
 │  │   Store    │  │   Auth Layer      │  │
 │  │ (Persist)  │  │   pkg/auth/       │  │
@@ -419,24 +419,23 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
         │                   │
         ▼                   ▼
 ┌────────────────┐  ┌──────────────────────┐
-│   Metadata     │  │   Payload Storage    │
-│     Stores     │  │                      │
-│                │  │  ┌──────────────┐    │
-│  - Memory      │  │  │ Cache + WAL  │    │
-│  - BadgerDB    │  │  │ pkg/cache/   │    │
-│  - PostgreSQL  │  │  │ pkg/cache/wal│    │
+│   Metadata     │  │ Per-Share BlockStore │
+│     Stores     │  │  pkg/blockstore/     │
+│                │  │                      │
+│  - Memory      │  │  ┌──────────────┐    │
+│  - BadgerDB    │  │  │ Local Store  │    │
+│  - PostgreSQL  │  │  │ fs / memory  │    │
 │                │  │  └──────┬───────┘    │
 │                │  │         │            │
 │                │  │  ┌──────▼───────┐    │
-│                │  │  │  Offloader   │    │
-│                │  │  │ pkg/payload/ │    │
-│                │  │  │  offloader/  │    │
+│                │  │  │   Syncer     │    │
+│                │  │  │ (async xfer) │    │
 │                │  │  └──────┬───────┘    │
 │                │  │         │            │
 │                │  │  ┌──────▼────────┐   │
-│                │  │  │ Payload Stores│   │
-│                │  │  │ - Memory      │   │
-│                │  │  │ - S3          │   │
+│                │  │  │ Remote Store  │   │
+│                │  │  │ s3 / memory   │   │
+│                │  │  │ (ref counted) │   │
 │                │  │  └───────────────┘   │
 └────────────────┘  └──────────────────────┘
 ```
@@ -445,10 +444,10 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 
 **1. Runtime** (`pkg/controlplane/runtime/`)
 - **Single entrypoint for all operations** - both API handlers and internal code
-- Thin composition layer (~500 lines) delegating to 6 sub-services:
+- Thin composition layer delegating to 6 sub-services:
   - `adapters/`: Protocol adapter lifecycle (create, start, stop, delete)
   - `stores/`: Metadata store registry
-  - `shares/`: Share registration and configuration (owns Share/ShareConfig types)
+  - `shares/`: Share registration and configuration; owns per-share `*engine.BlockStore` instances
   - `mounts/`: Unified mount tracking across protocols
   - `lifecycle/`: Server startup/shutdown orchestration
   - `identity/`: Share-level identity mapping
@@ -457,10 +456,11 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
   - `CreateAdapter(ctx, cfg)`: Saves to store AND starts immediately
   - `DeleteAdapter(ctx, type)`: Stops adapter AND removes from store
   - `AddAdapter(adapter)`: Direct adapter injection (for testing)
+  - `GetBlockStoreForHandle(ctx, handle)`: Resolves per-share BlockStore from a file handle via `shares.Service`
 
 **2. Control Plane Store** (`pkg/controlplane/store/`)
 - GORM-based persistent storage for configuration
-- Decomposed into 9 sub-interfaces: `UserStore`, `GroupStore`, `ShareStore`, `PermissionStore`, `MetadataStoreConfigStore`, `PayloadStoreConfigStore`, `AdapterStore`, `SettingsStore`, `GuestStore`
+- Decomposed into 9 sub-interfaces: `UserStore`, `GroupStore`, `ShareStore`, `PermissionStore`, `MetadataStoreConfigStore`, `BlockStoreConfigStore`, `AdapterStore`, `SettingsStore`, `GuestStore`
 - Composite `Store` interface embeds all sub-interfaces
 - API handlers accept narrowest interface needed
 - Generic GORM helpers: `getByField[T]`, `listAll[T]`, `createWithID[T]`
@@ -495,12 +495,18 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
   - `auth_identity.go`, `auth_permissions.go`
 - `storetest/`: Conformance test suite (all store implementations must pass)
 
-**7. PayloadService** (`pkg/payload/`)
-- Central service for content operations with caching
+**7. BlockStore** (`pkg/blockstore/`)
+- Per-share block storage orchestrator. Each share gets its own `*engine.BlockStore` instance.
+- `engine.BlockStore` composes `local.LocalStore + remote.RemoteStore + sync.Syncer`
+- Each share gets an isolated local storage directory; remote stores can be shared across shares (ref counted)
+- `shares.Service` owns the lifecycle (create on AddShare, close on RemoveShare)
 - Sub-packages:
-  - `io/`: Extracted read/write I/O (cache-aware)
-  - `offloader/`: Async cache-to-store transfer (was TransferManager)
+  - `engine/`: BlockStore orchestrator (compose local + remote + syncer)
+  - `local/`: Local store interface and implementations (`fs/` filesystem, `memory/` in-memory)
+  - `remote/`: Remote store interface and implementations (`s3/` production, `memory/` testing)
+  - `sync/`: Syncer for async local-to-remote data transfer
   - `gc/`: Block garbage collection
+  - `io/`: Extracted read/write I/O helpers
 
 **8. Metadata Store** (`pkg/metadata/store/`)
 - Stores file/directory structure, attributes, permissions
@@ -508,24 +514,6 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 - Implements `ObjectStore` interface for content-addressed deduplication
 - Implementations: memory, BadgerDB, PostgreSQL
 - File handles are opaque identifiers (format varies by implementation)
-
-**9. Payload Store** (`pkg/payload/store/`)
-- Stores actual file data as blocks
-- Supports read, write-at, truncate operations
-- Implementations:
-  - `pkg/payload/store/memory/`: In-memory (fast, ephemeral, testing)
-  - `pkg/payload/store/s3/`: Production-ready S3 storage (range reads, multipart, retry)
-
-**10. Cache Layer** (`pkg/cache/`)
-- Slice-aware caching for the Chunk/Slice/Block storage model
-- Uses **WAL persistence** (`pkg/cache/wal/`) for crash recovery
-- LRU eviction with dirty data protection
-- Sequential write optimization
-
-**11. Offloader** (`pkg/payload/offloader/`)
-- Async cache-to-block-store transfer (renamed from TransferManager)
-- Split: `offloader.go`, `upload.go`, `download.go`, `dedup.go`, `queue.go`, `entry.go`, `types.go`, `wal_replay.go`
-- Eager upload, download priority, prefetch, non-blocking flush
 
 ### Directory Structure
 
@@ -574,22 +562,22 @@ dittofs/
 │   │       ├── badger/           # BadgerDB (persistent)
 │   │       └── postgres/         # PostgreSQL (distributed)
 │   │
-│   ├── payload/                  # Payload storage layer
-│   │   ├── service.go            # PayloadService (main entry point)
-│   │   ├── types.go              # StorageStats, FlushResult, etc.
-│   │   ├── errors.go             # PayloadError structured type
-│   │   ├── io/                   # Extracted read/write I/O
-│   │   ├── offloader/            # Async cache-to-store transfer (was transfer/)
+│   ├── blockstore/               # Per-share block storage
+│   │   ├── doc.go                # Package documentation
+│   │   ├── store.go              # FileBlockStore interface
+│   │   ├── types.go              # FileBlock, BlockState types
+│   │   ├── errors.go             # BlockStore error types
+│   │   ├── engine/               # BlockStore orchestrator (local + remote + syncer)
+│   │   ├── local/                # Local store interface
+│   │   │   ├── fs/               # Filesystem-backed local store
+│   │   │   └── memory/           # In-memory local store (testing)
+│   │   ├── remote/               # Remote store interface
+│   │   │   ├── s3/               # S3-backed remote store
+│   │   │   └── memory/           # In-memory remote store (testing)
+│   │   ├── sync/                 # Syncer (async local-to-remote transfer)
 │   │   ├── gc/                   # Block garbage collection
-│   │   └── store/                # Payload store implementations
-│   │       ├── store.go          # PayloadStore interface (CRUD)
-│   │       ├── memory/           # In-memory (ephemeral)
-│   │       └── s3/               # S3-backed (multipart, streaming)
-│   │
-│   ├── cache/                    # Slice-aware cache layer
-│   │   ├── cache.go              # Cache implementation (LRU, dirty tracking)
-│   │   ├── types.go              # Slice, SliceState types
-│   │   └── wal/                  # WAL persistence
+│   │   ├── io/                   # Read/write I/O helpers
+│   │   └── storetest/            # Conformance test helpers
 │   │
 │   ├── controlplane/             # Control plane (config + runtime)
 │   │   ├── store/                # GORM-based persistent store
@@ -662,12 +650,12 @@ The control plane has two main components:
 1. **Store** (persistent): GORM-based database (SQLite or PostgreSQL) storing:
    - Users and groups with bcrypt password hashes
    - Share configurations and permissions
-   - Metadata/payload store configurations
+   - Metadata/block store configurations
    - Settings
 
 2. **Runtime** (ephemeral): In-memory state for active operations:
    - Loaded metadata store instances
-   - Active shares with root handles
+   - Active shares with root handles and per-share BlockStore instances
    - Mount tracking for NFS/SMB
    - Identity resolution
 
@@ -688,20 +676,23 @@ Stores, shares, and adapters are managed at runtime via `dfsctl` (persisted in t
 ./dfsctl store metadata add --name persistent-meta --type badger \
   --config '{"path":"/data/metadata"}'
 
-./dfsctl store payload add --name fast-payload --type memory
-./dfsctl store payload add --name s3-payload --type s3 \
+# Create block stores (local per-share, remote shared across shares)
+./dfsctl store block add --kind local --name local-cache --type fs \
+  --config '{"path":"/data/cache"}'
+./dfsctl store block add --kind remote --name s3-remote --type s3 \
   --config '{"region":"us-east-1","bucket":"my-bucket"}'
 
-# Create shares that reference stores by name
-./dfsctl share create --name /temp --metadata fast-meta --payload fast-payload
-./dfsctl share create --name /archive --metadata persistent-meta --payload s3-payload
+# Create shares referencing stores by name (each gets its own BlockStore)
+./dfsctl share create --name /temp --metadata fast-meta --local local-cache
+./dfsctl share create --name /archive --metadata persistent-meta \
+  --local local-cache --remote s3-remote
 ```
 
 ### Benefits
 
-- **Resource Efficiency**: One S3 client serves multiple shares
-- **Flexible Topologies**: Mix ephemeral and persistent storage per-share
-- **Isolated Testing**: Each share can use different backends
+- **Per-share isolation**: Each share gets its own BlockStore with isolated local storage directory
+- **Resource Efficiency**: Remote stores are shared (ref counted) when multiple shares reference the same config
+- **Flexible Topologies**: Mix local-only and remote-backed storage per-share
 - **Future Multi-Tenancy**: Foundation for per-tenant store isolation
 
 ## Important Design Principles
@@ -763,7 +754,13 @@ Handles are obtained via:
 - File creation: `CreateFile()`, `CreateDirectory()`, etc.
 - Lookup: `GetChild(parentHandle, name)`
 
-### 4. Error Handling
+### 4. Per-Share Block Store Isolation
+
+Each share has its own `*engine.BlockStore` instance with isolated local storage directory. Remote stores are shared (ref counted) when multiple shares reference the same configuration. Block stores are created during `AddShare` and closed during `RemoveShare`.
+
+Protocol handlers resolve the block store for each operation via `GetBlockStoreForHandle(ctx, handle)`, which extracts the share name from the file handle and returns the share's BlockStore. There is no global BlockStore.
+
+### 5. Error Handling
 
 Return proper NFS error codes via `metadata.ExportError`:
 ```go
@@ -804,8 +801,8 @@ DittoFS supports NFSv3, NFSv4.0, and NFSv4.1. NFSv4 includes built-in file locki
 - `LOOKUP`: Resolve name in directory → file handle
 - `GETATTR`: Get file attributes
 - `SETATTR`: Update attributes (size, mode, times)
-- `READ`: Read file content (uses payload store)
-- `WRITE`: Write file content (coordinates metadata + payload stores)
+- `READ`: Read file content (uses per-share block store)
+- `WRITE`: Write file content (coordinates metadata + per-share block store)
 - `CREATE`: Create file
 - `MKDIR`: Create directory
 - `REMOVE`: Delete file
@@ -815,16 +812,19 @@ DittoFS supports NFSv3, NFSv4.0, and NFSv4.1. NFSv4 includes built-in file locki
 
 ### Write Coordination Pattern
 
-WRITE operations require coordination between metadata and payload stores:
+WRITE operations require coordination between metadata and block stores:
 
 ```go
 // 1. Update metadata (validates permissions, updates size/timestamps)
 attr, preSize, preMtime, preCtime, err := metadataStore.WriteFile(handle, newSize, authCtx)
 
-// 2. Write actual data via payload store
-err = payloadStore.WriteAt(attr.PayloadID, data, offset)
+// 2. Resolve per-share block store from file handle
+blockStore, err := rt.GetBlockStoreForHandle(ctx, handle)
 
-// 3. Return updated attributes to client for cache consistency
+// 3. Write actual data via per-share block store
+err = blockStore.WriteAt(ctx, string(attr.PayloadID), data, offset)
+
+// 4. Return updated attributes to client for cache consistency
 ```
 
 The metadata store:
@@ -862,12 +862,17 @@ Large I/O operations use buffer pools (`internal/adapter/nfs/bufpool.go`):
 5. Ensure thread safety (concurrent access across shares)
 6. Consider persistence strategy for handles
 
-**Payload Store:**
-1. Implement `pkg/payload/store.PayloadStore` interface
-2. Support random-access reads/writes (`ReadAt`/`WriteAt`)
-3. Handle sparse files and truncation
-4. Consider implementing `ReadAtPayloadStore` for efficient partial reads
-5. Test with the integration test suite in `test/integration/`
+**Block Store (Local):**
+1. Implement `pkg/blockstore/local.LocalStore` interface
+2. Support random-access reads/writes, block-level caching, eviction
+3. Handle recovery and flush semantics
+4. Test with conformance suite in `pkg/blockstore/local/localtest/`
+
+**Block Store (Remote):**
+1. Implement `pkg/blockstore/remote.RemoteStore` interface
+2. Support `ReadBlock`, `WriteBlock`, `DeleteBlock`, `HealthCheck`
+3. Test with conformance suite in `pkg/blockstore/remote/remotetest/`
+4. Remote stores are shared (ref counted) when multiple shares reference the same config
 
 ### Adding a New Protocol Adapter
 

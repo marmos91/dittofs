@@ -5,6 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/marmos91/dittofs/pkg/blockstore/engine"
+	localmemory "github.com/marmos91/dittofs/pkg/blockstore/local/memory"
+	blocksync "github.com/marmos91/dittofs/pkg/blockstore/sync"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -514,18 +518,82 @@ func TestGetServices(t *testing.T) {
 			t.Error("expected non-nil metadata service")
 		}
 	})
+}
 
-	t.Run("get block store (nil when not set)", func(t *testing.T) {
-		svc := rt.GetBlockStore()
-		if svc != nil {
-			t.Error("expected nil block store when not set")
+func TestGetBlockStoreForHandle(t *testing.T) {
+	rt := New(nil)
+	ctx := context.Background()
+
+	// Register a metadata store and create a share so we can get a valid handle.
+	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
+	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
+		t.Fatalf("RegisterMetadataStore failed: %v", err)
+	}
+
+	config := &ShareConfig{
+		Name:          "/bs-test",
+		MetadataStore: "test-meta",
+	}
+	if err := rt.AddShare(ctx, config); err != nil {
+		t.Fatalf("AddShare failed: %v", err)
+	}
+
+	// Get the share and set up a minimal BlockStore via injection.
+	share, err := rt.GetShare("/bs-test")
+	if err != nil {
+		t.Fatalf("GetShare failed: %v", err)
+	}
+
+	// Create a minimal BlockStore with memory local store.
+	localStore := localmemory.New()
+	localStore.Start(context.Background())
+	syncer := blocksync.New(localStore, nil, metaStore, blocksync.DefaultConfig())
+	bs, err := engine.New(engine.Config{
+		Local:  localStore,
+		Syncer: syncer,
+	})
+	if err != nil {
+		t.Fatalf("failed to create BlockStore: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = bs.Close()
+		_ = localStore.Close()
+	})
+	share.BlockStore = bs
+
+	// Get a file handle for this share.
+	handle, err := rt.GetRootHandle("/bs-test")
+	if err != nil {
+		t.Fatalf("GetRootHandle failed: %v", err)
+	}
+
+	t.Run("resolves per-share BlockStore from handle", func(t *testing.T) {
+		resolved, err := rt.GetBlockStoreForHandle(ctx, handle)
+		if err != nil {
+			t.Fatalf("GetBlockStoreForHandle failed: %v", err)
+		}
+		if resolved != bs {
+			t.Error("expected resolved BlockStore to match the share's BlockStore")
 		}
 	})
 
-	t.Run("get block store returns nil when not set", func(t *testing.T) {
-		svc := rt.GetBlockStore()
-		if svc != nil {
-			t.Error("expected nil block store when not initialized")
+	t.Run("returns error for invalid handle", func(t *testing.T) {
+		badHandle := metadata.FileHandle([]byte("invalid-handle"))
+		_, err := rt.GetBlockStoreForHandle(ctx, badHandle)
+		if err == nil {
+			t.Error("expected error for invalid handle")
+		}
+	})
+
+	t.Run("returns error for handle of non-existing share", func(t *testing.T) {
+		// Create a handle that encodes a non-existing share name.
+		fakeHandle, encErr := metadata.EncodeShareHandle("/nonexistent", uuid.New())
+		if encErr != nil {
+			t.Skipf("cannot encode fake handle: %v", encErr)
+		}
+		_, err := rt.GetBlockStoreForHandle(ctx, fakeHandle)
+		if err == nil {
+			t.Error("expected error for non-existing share handle")
 		}
 	})
 }

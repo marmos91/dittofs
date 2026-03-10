@@ -10,6 +10,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -184,13 +185,16 @@ func cleanupDurableHandle(ctx context.Context, h *lock.PersistedDurableHandle, r
 		}
 	}
 
-	// Step 2: Flush payload cache
-	if h.PayloadID != "" {
-		if blockStore := rt.GetBlockStore(); blockStore != nil {
+	// Step 2: Flush payload cache (resolved per share from metadata handle)
+	if h.PayloadID != "" && len(h.MetadataHandle) > 0 {
+		if blockStore, bsErr := rt.GetBlockStoreForHandle(ctx, metadata.FileHandle(h.MetadataHandle)); bsErr == nil {
 			if _, err := blockStore.Flush(ctx, h.PayloadID); err != nil {
 				logger.Debug("cleanupDurableHandle: flush failed",
 					"id", handleID, "error", err)
 			}
+		} else {
+			logger.Debug("cleanupDurableHandle: block store not available",
+				"id", handleID, "error", bsErr)
 		}
 	}
 }

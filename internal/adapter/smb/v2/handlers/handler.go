@@ -577,7 +577,13 @@ func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
 		return
 	}
 
-	blockStore := h.Registry.GetBlockStore()
+	blockStore, err := h.Registry.GetBlockStoreForHandle(ctx, openFile.MetadataHandle)
+	if err != nil {
+		logger.Warn("flushFileCache: block store not available for handle",
+			"path", openFile.Path,
+			"error", err)
+		return
+	}
 
 	// Use blocking Flush for immediate durability
 	_, flushErr := blockStore.Flush(ctx, string(openFile.PayloadID))

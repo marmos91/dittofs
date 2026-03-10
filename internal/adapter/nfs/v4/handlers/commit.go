@@ -97,8 +97,8 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 		return encodeCommit4resok()
 	}
 
-	// Get block store and flush
-	blockStore, err := getBlockStoreForCtx(h)
+	// Get per-share block store and flush
+	blockStore, err := getBlockStoreForHandle(h, ctx.Context, ctx.CurrentFH)
 	if err != nil {
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,

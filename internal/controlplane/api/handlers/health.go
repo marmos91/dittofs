@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -109,7 +110,7 @@ type StoreHealth struct {
 // StoresResponse represents the detailed store health response.
 type StoresResponse struct {
 	MetadataStores []StoreHealth `json:"metadata_stores"`
-	BlockStore     *StoreHealth  `json:"block_store,omitempty"`
+	BlockStores    []StoreHealth `json:"block_stores"`
 }
 
 // Stores handles GET /health/stores - detailed store health.
@@ -130,6 +131,7 @@ func (h *HealthHandler) Stores(w http.ResponseWriter, r *http.Request) {
 
 	response := StoresResponse{
 		MetadataStores: make([]StoreHealth, 0),
+		BlockStores:    make([]StoreHealth, 0),
 	}
 
 	allHealthy := true
@@ -169,28 +171,32 @@ func (h *HealthHandler) Stores(w http.ResponseWriter, r *http.Request) {
 		response.MetadataStores = append(response.MetadataStores, health)
 	}
 
-	// Check block store health
-	blockStore := h.registry.GetBlockStore()
-	if blockStore != nil {
+	// Check per-share block store health
+	for _, shareName := range h.registry.ListShares() {
+		share, err := h.registry.GetShare(shareName)
+		if err != nil || share.BlockStore == nil {
+			continue
+		}
+
 		start := time.Now()
-		err := blockStore.HealthCheck(ctx)
+		err = share.BlockStore.HealthCheck(ctx)
 		latency := time.Since(start)
 
-		blockHealth := &StoreHealth{
-			Name:    "block-store",
+		health := StoreHealth{
+			Name:    fmt.Sprintf("block-store/%s", shareName),
 			Type:    "block",
 			Latency: latency.String(),
 		}
 
 		if err != nil {
-			blockHealth.Status = "unhealthy"
-			blockHealth.Error = err.Error()
+			health.Status = "unhealthy"
+			health.Error = err.Error()
 			allHealthy = false
 		} else {
-			blockHealth.Status = "healthy"
+			health.Status = "healthy"
 		}
 
-		response.BlockStore = blockHealth
+		response.BlockStores = append(response.BlockStores, health)
 	}
 
 	if allHealthy {

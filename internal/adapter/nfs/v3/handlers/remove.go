@@ -95,16 +95,16 @@ func (h *Handler) Remove(
 	}
 
 	// ========================================================================
-	// Step 2: Get metadata service and block store from registry
+	// Step 2: Resolve per-share metadata service and block store from directory handle
 	// ========================================================================
 
-	metaSvc, blockStore, err := getServices(h.Registry)
+	dirHandle := metadata.FileHandle(req.DirHandle)
+
+	metaSvc, blockStore, err := getServicesForHandle(h.Registry, ctx.Context, dirHandle)
 	if err != nil {
-		logger.ErrorCtx(ctx.Context, "REMOVE failed: service not initialized", "client", clientIP, "error", err)
+		logger.ErrorCtx(ctx.Context, "REMOVE failed: service not available", "client", clientIP, "error", err)
 		return &RemoveResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
-
-	dirHandle := metadata.FileHandle(req.DirHandle)
 
 	logger.DebugCtx(ctx.Context, "REMOVE", "share", ctx.Share, "name", req.Filename)
 
@@ -136,7 +136,7 @@ func (h *Handler) Remove(
 	}
 
 	// ========================================================================
-	// Step 3: Build authentication context with share-level identity mapping
+	// Step 4: Build authentication context with share-level identity mapping
 	// ========================================================================
 
 	authCtx, wccAfter, err := h.buildAuthContextWithWCCError(ctx, dirHandle, &dirFile.FileAttr, "REMOVE", req.Filename, req.DirHandle)
@@ -149,7 +149,7 @@ func (h *Handler) Remove(
 	}
 
 	// ========================================================================
-	// Step 3.5: Cross-protocol oplock break before deletion
+	// Step 4.5: Cross-protocol oplock break before deletion
 	// ========================================================================
 	// Resolve child handle for oplock break. Best-effort: if lookup fails,
 	// proceed with the removal (the store will report the actual error).
@@ -163,7 +163,7 @@ func (h *Handler) Remove(
 	}
 
 	// ========================================================================
-	// Step 4: Remove file via store
+	// Step 5: Remove file via store
 	// ========================================================================
 	// The store handles:
 	// - Verifying parent is a directory
@@ -213,7 +213,7 @@ func (h *Handler) Remove(
 	}
 
 	// ========================================================================
-	// Step 4.5: Delete content if file has content
+	// Step 5.5: Delete content if file has content
 	// ========================================================================
 	// After successfully removing the metadata, attempt to delete the actual
 	// file content. This is done after metadata removal to ensure consistency:
@@ -236,7 +236,7 @@ func (h *Handler) Remove(
 	}
 
 	// ========================================================================
-	// Step 5: Build success response with updated directory attributes
+	// Step 6: Build success response with updated directory attributes
 	// ========================================================================
 
 	// Get updated directory attributes for WCC data
@@ -323,18 +323,10 @@ func validateRemoveRequest(req *RemoveRequest) *validationError {
 		}
 	}
 
-	// Check for null bytes (string terminator, invalid in filenames)
-	if strings.ContainsAny(req.Filename, "\x00") {
+	// Check for null bytes and path separators (prevents directory traversal)
+	if strings.ContainsAny(req.Filename, "/\x00") {
 		return &validationError{
-			message:   "filename contains null byte",
-			nfsStatus: types.NFS3ErrInval,
-		}
-	}
-
-	// Check for path separators (prevents directory traversal attacks)
-	if strings.ContainsAny(req.Filename, "/") {
-		return &validationError{
-			message:   "filename contains path separator",
+			message:   "filename contains invalid characters (null or path separator)",
 			nfsStatus: types.NFS3ErrInval,
 		}
 	}

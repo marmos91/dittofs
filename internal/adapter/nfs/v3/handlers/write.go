@@ -142,21 +142,7 @@ func (h *Handler) Write(
 	}
 
 	// ========================================================================
-	// Step 2: Get metadata service and block store from registry
-	// ========================================================================
-
-	metaSvc, blockStore, err := getServices(h.Registry)
-	if err != nil {
-		logger.ErrorCtx(ctx.Context, "WRITE failed: service not initialized", "client", clientIP, "error", err)
-		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
-
-	fileHandle := metadata.FileHandle(req.Handle)
-
-	logger.DebugCtx(ctx.Context, "WRITE", "share", ctx.Share)
-
-	// ========================================================================
-	// Step 3: Validate request parameters
+	// Step 2: Validate request parameters
 	// ========================================================================
 	// Note: We use a fixed max write size (1MB) to avoid a metadata lookup.
 	// GetFilesystemCapabilities is expensive and the value rarely changes.
@@ -167,6 +153,20 @@ func (h *Handler) Write(
 		logWarn(ctx.Context, err, "WRITE validation failed", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
+
+	// ========================================================================
+	// Step 3: Resolve per-share metadata service and block store from file handle
+	// ========================================================================
+
+	fileHandle := metadata.FileHandle(req.Handle)
+
+	metaSvc, blockStore, err := getServicesForHandle(h.Registry, ctx.Context, fileHandle)
+	if err != nil {
+		logger.ErrorCtx(ctx.Context, "WRITE failed: service not available", "client", clientIP, "error", err)
+		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+	}
+
+	logger.DebugCtx(ctx.Context, "WRITE", "share", ctx.Share)
 
 	// ========================================================================
 	// Step 4: Calculate new file size
@@ -252,7 +252,7 @@ func (h *Handler) Write(
 	nfsWccAttr := buildWccAttr(writeIntent.PreWriteAttr)
 
 	// ========================================================================
-	// Step 6: Write data to BlockStore (uses local cache internally)
+	// Step 7: Write data to BlockStore (uses local cache internally)
 	// ========================================================================
 
 	// Check context before write operation

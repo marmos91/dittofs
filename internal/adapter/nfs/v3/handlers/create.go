@@ -108,16 +108,16 @@ func (h *Handler) Create(
 	}
 
 	// ========================================================================
-	// Step 2: Get services from registry
+	// Step 2: Resolve per-share services from directory handle
 	// ========================================================================
 
-	metaSvc, blockStore, err := getServices(h.Registry)
-	if err != nil {
-		logger.ErrorCtx(ctx.Context, "CREATE failed: service not initialized", "client", clientIP, "error", err)
-		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
-	}
-
 	parentHandle := metadata.FileHandle(req.DirHandle)
+
+	metaSvc, blockStore, err := getServicesForHandle(h.Registry, ctx.Context, parentHandle)
+	if err != nil {
+		logger.ErrorCtx(ctx.Context, "CREATE failed: service not available", "client", clientIP, "error", err)
+		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
+	}
 	logger.DebugCtx(ctx.Context, "CREATE", "share", ctx.Share, "file", req.Filename)
 
 	// ========================================================================
@@ -147,7 +147,7 @@ func (h *Handler) Create(
 	}
 
 	// ========================================================================
-	// Step 3: Build AuthContext with share-level identity mapping
+	// Step 3b: Build AuthContext with share-level identity mapping
 	// ========================================================================
 
 	authCtx, dirWccAfter, err := h.buildAuthContextWithWCCError(ctx, parentHandle, &parentFile.FileAttr, "CREATE", req.Filename, req.DirHandle)

@@ -272,7 +272,11 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-	blockStore := h.Registry.GetBlockStore()
+	blockStore, err := h.Registry.GetBlockStoreForHandle(ctx.Context, openFile.MetadataHandle)
+	if err != nil {
+		logger.Warn("WRITE: block store not available for handle", "path", openFile.Path, "error", err)
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
+	}
 
 	// ========================================================================
 	// Step 7: Build AuthContext

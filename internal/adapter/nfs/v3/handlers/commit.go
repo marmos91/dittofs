@@ -154,7 +154,7 @@ func (h *Handler) Commit(
 	}
 
 	// ========================================================================
-	// Step 4: Perform commit operation - flush write cache to block store
+	// Step 4b: Perform commit operation - flush write cache to block store
 	// ========================================================================
 
 	// Check context before potentially long flush operation
@@ -195,9 +195,9 @@ func (h *Handler) Commit(
 
 	logger.InfoCtx(ctx.Context, "COMMIT: flushing data", "share", ctx.Share)
 
-	blockStore, err := getBlockStore(h.Registry)
+	blockStore, err := getBlockStoreForHandle(h.Registry, ctx.Context, handle)
 	if err != nil {
-		logger.ErrorCtx(ctx.Context, "COMMIT failed: block store not initialized", "client", clientIP, "error", err)
+		logger.ErrorCtx(ctx.Context, "COMMIT failed: block store not available", "client", clientIP, "error", err)
 		return &CommitResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
 			AttrBefore:      wccBefore,
