@@ -4,7 +4,9 @@ package sysinfo
 
 import (
 	"bufio"
+	"errors"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -26,10 +28,17 @@ func availableMemory() (uint64, string, error) {
 	return mem, "/proc/meminfo", nil
 }
 
-// readCgroupMemory reads the cgroup v2 memory limit.
+// readCgroupMemory reads the cgroup v2 memory limit for this process.
+// It resolves the process's actual cgroup path via /proc/self/cgroup
+// to correctly detect limits inside containers and systemd slices.
 // Returns 0 if the file does not exist or the value is "max" (unlimited).
 func readCgroupMemory() (uint64, error) {
-	data, err := os.ReadFile("/sys/fs/cgroup/memory.max")
+	cgroupPath, err := resolveProcessCgroup()
+	if err != nil {
+		return 0, err
+	}
+	memoryMaxPath := filepath.Join(cgroupPath, "memory.max")
+	data, err := os.ReadFile(memoryMaxPath)
 	if err != nil {
 		return 0, err
 	}
@@ -39,6 +48,23 @@ func readCgroupMemory() (uint64, error) {
 		return 0, nil
 	}
 	return strconv.ParseUint(s, 10, 64)
+}
+
+// resolveProcessCgroup returns the cgroup v2 directory for this process.
+// It parses /proc/self/cgroup to find the unified (v2) hierarchy entry.
+func resolveProcessCgroup() (string, error) {
+	data, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		// cgroup v2 unified hierarchy: "0::/path"
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) == 3 && parts[0] == "0" && parts[1] == "" {
+			return filepath.Join("/sys/fs/cgroup", parts[2]), nil
+		}
+	}
+	return "", errors.New("cgroup v2 unified hierarchy not found in /proc/self/cgroup")
 }
 
 // readProcMeminfo reads MemTotal from /proc/meminfo.
@@ -65,5 +91,8 @@ func readProcMeminfo() (uint64, error) {
 			return kb * 1024, nil // kB -> bytes
 		}
 	}
-	return 0, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return 0, err
+	}
+	return 0, errors.New("MemTotal not found in /proc/meminfo")
 }

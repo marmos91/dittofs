@@ -26,16 +26,16 @@ Use --deduced to show auto-deduced block store defaults based on system resource
 
 Examples:
   # Show default config as YAML
-  dittofs config show
+  dfs config show
 
   # Show as JSON
-  dittofs config show --output json
+  dfs config show --output json
 
   # Show specific config file
-  dittofs config show --config /etc/dittofs/config.yaml
+  dfs config show --config /etc/dittofs/config.yaml
 
   # Show auto-deduced block store defaults
-  dittofs config show --deduced`,
+  dfs config show --deduced`,
 	RunE: runConfigShow,
 }
 
