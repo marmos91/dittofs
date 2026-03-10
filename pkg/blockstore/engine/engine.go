@@ -239,10 +239,13 @@ func (bs *BlockStore) Flush(ctx context.Context, payloadID string) (*blockstore.
 		return result, err
 	}
 
-	// Auto-promote: fill L1 with all flushed blocks.
-	size, found := bs.local.GetFileSize(ctx, payloadID)
-	if found && size > 0 {
-		bs.fillL1FromRead(ctx, payloadID, 0, size)
+	// Auto-promote: fill L1 with flushed blocks (data is in OS page cache, so reads are cheap).
+	// Skip for files larger than L1 budget to avoid thrashing the cache and GC pressure.
+	if bs.readCache != nil {
+		size, found := bs.local.GetFileSize(ctx, payloadID)
+		if found && size > 0 && int64(size) <= bs.readCache.MaxBytes() {
+			bs.fillL1FromRead(ctx, payloadID, 0, size)
+		}
 	}
 
 	return result, nil

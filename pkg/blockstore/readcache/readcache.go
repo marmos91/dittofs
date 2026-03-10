@@ -99,6 +99,12 @@ func (c *ReadCache) Put(payloadID string, blockIdx uint64, data []byte, dataSize
 
 	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
 
+	// Clamp dataSize to len(data) to prevent out-of-bounds panic from callers
+	// passing inconsistent values.
+	if int(dataSize) > len(data) {
+		dataSize = uint32(len(data))
+	}
+
 	// Make a heap copy of the data.
 	heapCopy := make([]byte, dataSize)
 	copy(heapCopy, data[:dataSize])
@@ -223,6 +229,15 @@ func (c *ReadCache) Contains(payloadID string, blockIdx uint64) bool {
 	_, ok := c.entries[key]
 	c.mu.RUnlock()
 	return ok
+}
+
+// MaxBytes returns the memory budget of the cache.
+// Returns 0 if the cache is nil (disabled).
+func (c *ReadCache) MaxBytes() int64 {
+	if c == nil {
+		return 0
+	}
+	return c.maxBytes
 }
 
 // Close clears all cache state. After Close, Get returns miss for all keys.

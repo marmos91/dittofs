@@ -287,7 +287,7 @@ func clampToInt64(v uint64) int64 {
 	return int64(v)
 }
 
-// derefByteSizeToInt64 dereferences a *bytesize.ByteSize to int64.
+// derefByteSizeToInt64 dereferences a *bytesize.ByteSize to int64, clamping at math.MaxInt64.
 // Returns 0 when the pointer is nil (unset/disabled).
 // ApplyDefaults sets a non-nil default for unset pointers, so a nil value here
 // would only occur if user code explicitly sets it to nil after defaults.
@@ -297,7 +297,7 @@ func derefByteSizeToInt64(v *bytesize.ByteSize) int64 {
 	if v == nil {
 		return 0
 	}
-	return int64(*v)
+	return clampToInt64(uint64(*v))
 }
 
 // derefIntOrZero dereferences a *int, returning 0 when nil.
