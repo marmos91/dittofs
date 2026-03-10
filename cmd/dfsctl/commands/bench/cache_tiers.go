@@ -153,18 +153,14 @@ func (t CacheTiersTable) Rows() [][]string {
 func formatCacheTiersRow(size, step string, stats bench.IOStats) []string {
 	throughput := fmt.Sprintf("%.1f MB/s", stats.ThroughputMBps)
 
-	var duration string
-	if stats.DurationMs < 1000 {
-		duration = fmt.Sprintf("%dms", stats.DurationMs)
-	} else {
+	duration := fmt.Sprintf("%dms", stats.DurationMs)
+	if stats.DurationMs >= 1000 {
 		duration = fmt.Sprintf("%.1fs", float64(stats.DurationMs)/1000)
 	}
 
-	var hitRate string
+	hitRate := fmt.Sprintf("%.0f%%", stats.L1HitRate)
 	if stats.L1HitRate < 0 {
 		hitRate = "-"
-	} else {
-		hitRate = fmt.Sprintf("%.0f%%", stats.L1HitRate)
 	}
 
 	return []string{size, step, throughput, duration, hitRate}

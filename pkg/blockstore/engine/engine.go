@@ -121,7 +121,7 @@ func (bs *BlockStore) Start(ctx context.Context) error {
 }
 
 // loadBlock loads a single block from local store, falling back to remote via syncer.
-// This is used by the prefetcher to fill L1 cache with upcoming blocks.
+// Used by the prefetcher to fill L1 cache with upcoming blocks.
 func (bs *BlockStore) loadBlock(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, uint32, error) {
 	data, dataSize, err := bs.local.GetBlockData(ctx, payloadID, blockIdx)
 	if err == nil {
@@ -130,17 +130,11 @@ func (bs *BlockStore) loadBlock(ctx context.Context, payloadID string, blockIdx 
 
 	// Fall back to syncer for remote download.
 	offset := blockIdx * uint64(blockstore.BlockSize)
-	length := uint32(blockstore.BlockSize)
-	if syncErr := bs.syncer.EnsureAvailable(ctx, payloadID, offset, length); syncErr != nil {
+	if syncErr := bs.syncer.EnsureAvailable(ctx, payloadID, offset, uint32(blockstore.BlockSize)); syncErr != nil {
 		return nil, 0, syncErr
 	}
 
-	// Re-read from local after download.
-	data, dataSize, err = bs.local.GetBlockData(ctx, payloadID, blockIdx)
-	if err != nil {
-		return nil, 0, err
-	}
-	return data, dataSize, nil
+	return bs.local.GetBlockData(ctx, payloadID, blockIdx)
 }
 
 // Close releases resources held by the store. Closes prefetcher first (stops workers),
@@ -233,17 +227,15 @@ func (bs *BlockStore) Delete(ctx context.Context, payloadID string) error {
 }
 
 // Flush ensures all dirty data for a payload is persisted.
-// After flush, auto-promotes flushed block data into the L1 cache if the file
-// fits within the L1 budget. Large files are skipped to avoid thrashing.
-// The data is in the OS page cache after flush, so the promotion read is essentially free.
+// After flush, auto-promotes block data into L1 cache if the file fits within
+// the L1 budget (data is in OS page cache, so the read is essentially free).
 func (bs *BlockStore) Flush(ctx context.Context, payloadID string) (*blockstore.FlushResult, error) {
 	result, err := bs.syncer.Flush(ctx, payloadID)
 	if err != nil {
 		return result, err
 	}
 
-	// Auto-promote: fill L1 with flushed blocks (data is in OS page cache, so reads are cheap).
-	// Skip for files larger than L1 budget to avoid thrashing the cache and GC pressure.
+	// Auto-promote flushed blocks into L1 (skip files larger than L1 budget).
 	if bs.readCache != nil {
 		size, found := bs.local.GetFileSize(ctx, payloadID)
 		if found && size > 0 && bs.readCacheBytes > 0 && int64(size) <= bs.readCacheBytes {
@@ -287,25 +279,21 @@ func (bs *BlockStore) Syncer() *blocksync.Syncer { return bs.syncer }
 
 // CacheStats holds comprehensive cache statistics for a BlockStore.
 type CacheStats struct {
-	// Block counts by state
 	FileCount    int `json:"file_count"`
 	BlocksDirty  int `json:"blocks_dirty"`
 	BlocksLocal  int `json:"blocks_local"`
 	BlocksRemote int `json:"blocks_remote"`
 	BlocksTotal  int `json:"blocks_total"`
 
-	// Size info
 	LocalDiskUsed int64 `json:"local_disk_used"`
 	LocalDiskMax  int64 `json:"local_disk_max"`
 	LocalMemUsed  int64 `json:"local_mem_used"`
 	LocalMemMax   int64 `json:"local_mem_max"`
 
-	// L1 read cache
 	L1Entries  int   `json:"l1_entries"`
 	L1CurBytes int64 `json:"l1_cur_bytes"`
 	L1MaxBytes int64 `json:"l1_max_bytes"`
 
-	// Syncer / offloader status
 	HasRemote      bool `json:"has_remote"`
 	PendingSyncs   int  `json:"pending_syncs"`
 	PendingUploads int  `json:"pending_uploads"`

@@ -111,7 +111,6 @@ func (b *CacheTiersBenchmark) Run(ctx context.Context, logf func(string, ...any)
 func (b *CacheTiersBenchmark) runForSize(ctx context.Context, fileSize int64, logf func(string, ...any)) (*CacheTiersSizeResult, error) {
 	sizeLabel := FormatSize(fileSize)
 
-	// Create a temp directory for this test file.
 	dir := filepath.Join(b.cfg.MountPoint, benchDir, fmt.Sprintf("cache_tiers_%d", fileSize))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create bench dir: %w", err)
@@ -126,7 +125,7 @@ func (b *CacheTiersBenchmark) runForSize(ctx context.Context, fileSize int64, lo
 
 	// Step 1: Write
 	logf("  %s: Step 1/6 - Write...\n", sizeLabel)
-	writeStats, err := b.writeFile(ctx, testFile, fileSize)
+	writeStats, err := b.writeFile(testFile, fileSize)
 	if err != nil {
 		return nil, fmt.Errorf("write: %w", err)
 	}
@@ -140,7 +139,7 @@ func (b *CacheTiersBenchmark) runForSize(ctx context.Context, fileSize int64, lo
 
 	// Step 3: Cold read (data from remote store)
 	logf("  %s: Step 3/6 - Cold read...\n", sizeLabel)
-	coldStats, err := b.readFile(ctx, testFile, fileSize)
+	coldStats, err := b.readFile(testFile, fileSize)
 	if err != nil {
 		return nil, fmt.Errorf("cold read: %w", err)
 	}
@@ -149,7 +148,7 @@ func (b *CacheTiersBenchmark) runForSize(ctx context.Context, fileSize int64, lo
 
 	// Step 4: Warm read (data in L1 + local cache)
 	logf("  %s: Step 4/6 - Warm read...\n", sizeLabel)
-	warmStats, err := b.readFile(ctx, testFile, fileSize)
+	warmStats, err := b.readFile(testFile, fileSize)
 	if err != nil {
 		return nil, fmt.Errorf("warm read: %w", err)
 	}
@@ -164,7 +163,7 @@ func (b *CacheTiersBenchmark) runForSize(ctx context.Context, fileSize int64, lo
 
 	// Step 6: L2-only read (data from local FS cache, not L1 memory)
 	logf("  %s: Step 6/6 - L2-only read...\n", sizeLabel)
-	l2Stats, err := b.readFile(ctx, testFile, fileSize)
+	l2Stats, err := b.readFile(testFile, fileSize)
 	if err != nil {
 		return nil, fmt.Errorf("L2 read: %w", err)
 	}
@@ -175,7 +174,7 @@ func (b *CacheTiersBenchmark) runForSize(ctx context.Context, fileSize int64, lo
 }
 
 // writeFile writes a test file of the given size and returns I/O stats.
-func (b *CacheTiersBenchmark) writeFile(_ context.Context, path string, size int64) (*IOStats, error) {
+func (b *CacheTiersBenchmark) writeFile(path string, size int64) (*IOStats, error) {
 	f, err := os.Create(path)
 	if err != nil {
 		return nil, fmt.Errorf("create %s: %w", path, err)
@@ -204,16 +203,15 @@ func (b *CacheTiersBenchmark) writeFile(_ context.Context, path string, size int
 	}
 
 	elapsed := time.Since(start)
-
 	return &IOStats{
 		ThroughputMBps: float64(written) / elapsed.Seconds() / (1 << 20),
 		DurationMs:     elapsed.Milliseconds(),
-		L1HitRate:      -1, // Not applicable for writes
+		L1HitRate:      -1,
 	}, nil
 }
 
 // readFile reads an entire file and returns I/O stats.
-func (b *CacheTiersBenchmark) readFile(_ context.Context, path string, size int64) (*IOStats, error) {
+func (b *CacheTiersBenchmark) readFile(path string, size int64) (*IOStats, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
@@ -237,42 +235,33 @@ func (b *CacheTiersBenchmark) readFile(_ context.Context, path string, size int6
 	}
 
 	elapsed := time.Since(start)
-
 	return &IOStats{
 		ThroughputMBps: float64(totalRead) / elapsed.Seconds() / (1 << 20),
 		DurationMs:     elapsed.Milliseconds(),
-		L1HitRate:      0, // Will be populated from cache stats
 	}, nil
+}
+
+// evictCache evicts cache for the share with the given options.
+// Returns ctx.Err() if the context is already cancelled.
+func (b *CacheTiersBenchmark) evictCache(ctx context.Context, req *apiclient.CacheEvictRequest, label string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := b.cfg.Client.CacheEvictForShare(b.cfg.ShareName, req)
+	if err != nil {
+		return fmt.Errorf("cache evict %s: %w", label, err)
+	}
+	return nil
 }
 
 // evictAll evicts both L1 and local cache for the share.
 func (b *CacheTiersBenchmark) evictAll(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-	}
-
-	_, err := b.cfg.Client.CacheEvictForShare(b.cfg.ShareName, &apiclient.CacheEvictRequest{})
-	if err != nil {
-		return fmt.Errorf("cache evict all: %w", err)
-	}
-	return nil
+	return b.evictCache(ctx, &apiclient.CacheEvictRequest{}, "all")
 }
 
 // evictL1 evicts only the L1 (memory) cache for the share.
 func (b *CacheTiersBenchmark) evictL1(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-	}
-
-	_, err := b.cfg.Client.CacheEvictForShare(b.cfg.ShareName, &apiclient.CacheEvictRequest{L1Only: true})
-	if err != nil {
-		return fmt.Errorf("cache evict L1: %w", err)
-	}
-	return nil
+	return b.evictCache(ctx, &apiclient.CacheEvictRequest{L1Only: true}, "L1")
 }
 
 // getL1HitRate fetches cache stats and computes the L1 hit rate.
@@ -284,7 +273,6 @@ func (b *CacheTiersBenchmark) getL1HitRate(logf func(string, ...any)) float64 {
 		return 0
 	}
 
-	// Compute L1 hit rate from L1 entries vs total blocks.
 	total := stats.Totals.BlocksTotal
 	if total == 0 {
 		return 0

@@ -200,21 +200,13 @@ func WithBlockRawConfig(config string) BlockStoreOption {
 // Block Store CRUD Methods
 // =============================================================================
 
-// CreateLocalBlockStore creates a new local block store via the CLI.
-// Supports memory and fs store types.
-func (r *CLIRunner) CreateLocalBlockStore(name, storeType string, opts ...BlockStoreOption) (*BlockStore, error) {
-	options := &blockStoreOptions{}
-	for _, opt := range opts {
-		opt(options)
-	}
-
-	args := []string{"store", "block", "local", "add", "--name", name, "--type", storeType}
-
-	// Add type-specific options
+// appendBlockStoreConfigArgs appends config-related CLI arguments from blockStoreOptions.
+// Shared by both local and remote block store creation.
+func appendBlockStoreConfigArgs(args []string, options *blockStoreOptions) []string {
 	if options.rawConfig != "" {
-		args = append(args, "--config", options.rawConfig)
-	} else if options.bucket != "" {
-		// S3 config
+		return append(args, "--config", options.rawConfig)
+	}
+	if options.bucket != "" {
 		args = append(args, "--bucket", options.bucket)
 		if options.region != "" {
 			args = append(args, "--region", options.region)
@@ -229,6 +221,19 @@ func (r *CLIRunner) CreateLocalBlockStore(name, storeType string, opts ...BlockS
 			args = append(args, "--secret-key", options.secretKey)
 		}
 	}
+	return args
+}
+
+// CreateLocalBlockStore creates a new local block store via the CLI.
+// Supports memory and fs store types.
+func (r *CLIRunner) CreateLocalBlockStore(name, storeType string, opts ...BlockStoreOption) (*BlockStore, error) {
+	options := &blockStoreOptions{}
+	for _, opt := range opts {
+		opt(options)
+	}
+
+	args := []string{"store", "block", "local", "add", "--name", name, "--type", storeType}
+	args = appendBlockStoreConfigArgs(args, options)
 
 	output, err := r.Run(args...)
 	if err != nil {
@@ -252,26 +257,7 @@ func (r *CLIRunner) CreateRemoteBlockStore(name, storeType string, opts ...Block
 	}
 
 	args := []string{"store", "block", "remote", "add", "--name", name, "--type", storeType}
-
-	// Add type-specific options
-	if options.rawConfig != "" {
-		args = append(args, "--config", options.rawConfig)
-	} else if options.bucket != "" {
-		// S3 config
-		args = append(args, "--bucket", options.bucket)
-		if options.region != "" {
-			args = append(args, "--region", options.region)
-		}
-		if options.endpoint != "" {
-			args = append(args, "--endpoint", options.endpoint)
-		}
-		if options.accessKey != "" {
-			args = append(args, "--access-key", options.accessKey)
-		}
-		if options.secretKey != "" {
-			args = append(args, "--secret-key", options.secretKey)
-		}
-	}
+	args = appendBlockStoreConfigArgs(args, options)
 
 	output, err := r.Run(args...)
 	if err != nil {
@@ -325,32 +311,10 @@ func (r *CLIRunner) EditLocalBlockStore(name string, opts ...BlockStoreOption) (
 	}
 
 	args := []string{"store", "block", "local", "edit", name}
-	hasUpdate := false
+	before := len(args)
+	args = appendBlockStoreConfigArgs(args, options)
 
-	// Add type-specific options
-	if options.rawConfig != "" {
-		args = append(args, "--config", options.rawConfig)
-		hasUpdate = true
-	} else if options.bucket != "" || options.region != "" || options.endpoint != "" || options.accessKey != "" || options.secretKey != "" {
-		if options.bucket != "" {
-			args = append(args, "--bucket", options.bucket)
-		}
-		if options.region != "" {
-			args = append(args, "--region", options.region)
-		}
-		if options.endpoint != "" {
-			args = append(args, "--endpoint", options.endpoint)
-		}
-		if options.accessKey != "" {
-			args = append(args, "--access-key", options.accessKey)
-		}
-		if options.secretKey != "" {
-			args = append(args, "--secret-key", options.secretKey)
-		}
-		hasUpdate = true
-	}
-
-	if !hasUpdate {
+	if len(args) == before {
 		return nil, fmt.Errorf("at least one option is required for EditLocalBlockStore")
 	}
 

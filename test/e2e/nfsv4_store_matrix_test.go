@@ -3,10 +3,8 @@
 package e2e
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -92,105 +90,18 @@ func runStoreMatrixVersionTest(t *testing.T, version string, sc matrixStoreConfi
 	// Login as admin
 	runner := helpers.LoginAsAdmin(t, sp.APIURL())
 
-	// Create unique store names for this test
-	metaStoreName := helpers.UniqueTestName("meta")
-	localStoreName := helpers.UniqueTestName("local")
-	remoteStoreName := helpers.UniqueTestName("remote")
 	shareName := "/export-v4matrix"
 
-	// Create metadata store based on type
-	var metaOpts []helpers.MetadataStoreOption
-	switch sc.metadataType {
-	case "memory":
-		// No options needed
-	case "badger":
-		badgerPath := filepath.Join(t.TempDir(), "badger")
-		metaOpts = append(metaOpts, helpers.WithMetaDBPath(badgerPath))
-	case "postgres":
-		if pgHelper == nil {
-			t.Fatal("PostgreSQL helper not available")
-		}
-		pgConfig := pgHelper.GetConfig()
-		configJSON, err := json.Marshal(map[string]interface{}{
-			"host":     pgConfig.Host,
-			"port":     pgConfig.Port,
-			"database": pgConfig.Database,
-			"user":     pgConfig.User,
-			"password": pgConfig.Password,
-		})
-		require.NoError(t, err, "Failed to marshal postgres config")
-		metaOpts = append(metaOpts, helpers.WithMetaRawConfig(string(configJSON)))
-	}
-
-	_, err := runner.CreateMetadataStore(metaStoreName, sc.metadataType, metaOpts...)
-	require.NoError(t, err, "Should create metadata store (%s)", sc.metadataType)
-	t.Cleanup(func() {
-		_ = runner.DeleteMetadataStore(metaStoreName)
-	})
-
-	// Create local block store based on type
-	var localOpts []helpers.BlockStoreOption
-	switch sc.localType {
-	case "memory":
-		// No options needed for memory local store
-	case "fs":
-		fsPath := filepath.Join(t.TempDir(), "local-blocks")
-		localOpts = append(localOpts, helpers.WithBlockRawConfig(
-			fmt.Sprintf(`{"path":"%s"}`, fsPath)))
-	}
-
-	_, err = runner.CreateLocalBlockStore(localStoreName, sc.localType, localOpts...)
-	require.NoError(t, err, "Should create local block store (%s)", sc.localType)
-	t.Cleanup(func() {
-		_ = runner.DeleteLocalBlockStore(localStoreName)
-	})
-
-	// Create remote block store if needed
-	var shareOpts []helpers.ShareOption
-	if sc.hasRemote() {
-		var remoteOpts []helpers.BlockStoreOption
-		switch sc.remoteType {
-		case "memory":
-			// No options needed for memory remote store
-		case "s3":
-			if lsHelper == nil {
-				t.Fatal("Localstack helper not available")
-			}
-			bucketName := strings.ReplaceAll(fmt.Sprintf("dittofs-v4mtx-%s", helpers.UniqueTestName("bkt")), "_", "-")
-			err := lsHelper.CreateBucket(context.Background(), bucketName)
-			require.NoError(t, err, "Should create S3 bucket")
-			t.Cleanup(func() {
-				lsHelper.CleanupBucket(context.Background(), bucketName)
-			})
-
-			remoteOpts = append(remoteOpts, helpers.WithBlockS3Config(
-				bucketName,
-				"us-east-1",
-				lsHelper.Endpoint,
-				"test",
-				"test",
-			))
-		}
-
-		_, err = runner.CreateRemoteBlockStore(remoteStoreName, sc.remoteType, remoteOpts...)
-		require.NoError(t, err, "Should create remote block store (%s)", sc.remoteType)
-		t.Cleanup(func() {
-			_ = runner.DeleteRemoteBlockStore(remoteStoreName)
-		})
-
-		shareOpts = append(shareOpts, helpers.WithShareRemote(remoteStoreName))
-	}
-
-	// Create the share using the stores
-	_, err = runner.CreateShare(shareName, metaStoreName, localStoreName, shareOpts...)
-	require.NoError(t, err, "Should create share")
-	t.Cleanup(func() {
-		_ = runner.DeleteShare(shareName)
-	})
+	// Create stores and share using the shared helper
+	helpers.SetupStoreMatrix(t, runner, shareName, helpers.MatrixSetupConfig{
+		MetadataType: sc.metadataType,
+		LocalType:    sc.localType,
+		RemoteType:   sc.remoteType,
+	}, pgHelper, lsHelper)
 
 	// Enable NFS adapter
 	nfsPort := helpers.FindFreePort(t)
-	_, err = runner.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
+	_, err := runner.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
 	require.NoError(t, err, "Should enable NFS adapter")
 	t.Cleanup(func() {
 		_, _ = runner.DisableAdapter("nfs")

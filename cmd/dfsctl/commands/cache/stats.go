@@ -34,7 +34,7 @@ func init() {
 	statsCmd.Flags().String("share", "", "Show stats for a specific share only")
 }
 
-func runCacheStats(cmd *cobra.Command, args []string) error {
+func runCacheStats(cmd *cobra.Command, _ []string) error {
 	client, err := cmdutil.GetAuthenticatedClient()
 	if err != nil {
 		return err
@@ -68,7 +68,6 @@ func runCacheStats(cmd *cobra.Command, args []string) error {
 }
 
 func printCacheStatsTable(resp *apiclient.CacheStatsResponse) error {
-	// Print totals summary
 	t := resp.Totals
 	pairs := [][2]string{
 		{"Files", fmt.Sprintf("%d", t.FileCount)},
@@ -94,7 +93,6 @@ func printCacheStatsTable(resp *apiclient.CacheStatsResponse) error {
 		return err
 	}
 
-	// Print per-share breakdown if multiple shares
 	if len(resp.PerShare) > 1 {
 		fmt.Println()
 		fmt.Println("Per-Share Breakdown:")
