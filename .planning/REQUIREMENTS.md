@@ -86,8 +86,8 @@
 
 ### Testing & Documentation
 
-- [ ] **TEST-01**: E2E store matrix updated for new CLI (block local/remote)
-- [ ] **TEST-02**: Multi-share test with different local paths
+- [x] **TEST-01**: E2E store matrix updated for new CLI (block local/remote)
+- [x] **TEST-02**: Multi-share test with different local paths
 - [x] **TEST-03**: Sequential read benchmark validates L1 cache
 - [ ] **DOCS-01**: ARCHITECTURE.md updated for block store model
 - [ ] **DOCS-02**: CONFIGURATION.md updated for new CLI and config
@@ -226,8 +226,8 @@
 | AUTO-03 | Phase 48 | Complete |
 | AUTO-04 | Phase 48 | Complete |
 | AUTO-05 | Phase 48 | Complete |
-| TEST-01 | Phase 49 | Pending |
-| TEST-02 | Phase 49 | Pending |
+| TEST-01 | Phase 49 | Complete |
+| TEST-02 | Phase 49 | Complete |
 | TEST-03 | Phase 49 | Complete |
 | DOCS-01 | Phase 49 | Pending |
 | DOCS-02 | Phase 49 | Pending |

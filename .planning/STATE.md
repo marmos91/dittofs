@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v4.6
-milestone_name: Production Hardening
+milestone: v4.0
+milestone_name: BlockStore Unification Refactor
 status: executing
-stopped_at: Completed 49-04-PLAN.md (cache-tiers benchmark)
-last_updated: "2026-03-10"
-last_activity: 2026-03-10 — Completed Phase 49 Plan 04 (cache-tiers benchmark)
+stopped_at: Completed 49-03-PLAN.md (store matrix + multi-share isolation)
+last_updated: "2026-03-10T16:47:04.639Z"
+last_activity: 2026-03-10 — Completed Plan 04 (cache-tiers benchmark)
 progress:
-  total_phases: 5
-  completed_phases: 0
-  total_plans: 5
-  completed_plans: 4
+  total_phases: 36
+  completed_phases: 9
+  total_plans: 26
+  completed_plans: 25
   percent: 80
 ---
 
@@ -60,6 +60,7 @@ Progress: [########..] 80%
 **v4.6 Current Milestone:**
 - 5 phases (63-67), 7 requirements
 - Phases: SMB signing, protocol correctness, quotas, client tracking, trash
+| Phase 49 P03 | 10min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -74,6 +75,7 @@ Progress: [########..] 80%
 - **v4.6 phase grouping**: SMB signing (#252) standalone due to crypto complexity; NTLM flags (#215) paired with share hot-reload (#235) as both are protocol correctness; payload stats (#216) paired with quotas (#232) as stats feeds into quota reporting; client tracking (#157) and trash (#190) each standalone
 - **Three issues already implemented**: #213 (oplock break), #119 (portmapper), #217 (session limits) — found done during v4.6 scoping
 - Previous decisions in PROJECT.md Key Decisions table
+- [Phase 49]: 49-03 matrixStoreConfig replaces old 2D storeConfig for 3D matrix (metadata x local x remote)
 
 ### Pending Todos
 
@@ -85,6 +87,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-10
-Stopped at: Completed 49-04-PLAN.md (cache-tiers benchmark)
+Last session: 2026-03-10T16:47:04.636Z
+Stopped at: Completed 49-03-PLAN.md (store matrix + multi-share isolation)
 Next action: Execute 49-05-PLAN.md

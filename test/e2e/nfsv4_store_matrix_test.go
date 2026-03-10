@@ -22,15 +22,15 @@ import (
 )
 
 // =============================================================================
-// Test 1: Version-Parameterized Store Matrix (v3 + v4 x all 6 backends)
+// Test 1: Version-Parameterized Store Matrix (v3 + v4 x all 18 backends)
 // =============================================================================
 
-// TestStoreMatrixV4 validates that all 6 combinations of metadata stores
-// (memory, badger, postgres) and block stores (memory, s3) work
-// correctly with file operations across BOTH NFSv3 and NFSv4.0 mounts.
+// TestStoreMatrixV4 validates that all 18 combinations of the 3D store matrix
+// (3 metadata x 2 local x 3 remote) work correctly with file operations
+// across NFSv3, NFSv4.0, and NFSv4.1 mounts.
 //
-// This produces 12 subtests: 2 versions x 6 backend combinations.
-// Extends the existing store_matrix_test.go pattern to the version dimension.
+// In short mode, only representative combos run.
+// With DITTOFS_E2E_LOCAL_ONLY=1, only remoteType="none" combos run.
 func TestStoreMatrixV4(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping version-parameterized store matrix tests in short mode")
@@ -53,23 +53,24 @@ func TestStoreMatrixV4(t *testing.T) {
 	}
 
 	versions := []string{"3", "4.0", "4.1"}
+	matrix := getStoreMatrix(testing.Short())
 
 	for _, ver := range versions {
 		ver := ver
-		for _, sc := range storeMatrix {
+		for _, sc := range matrix {
 			sc := sc
-			testName := fmt.Sprintf("v%s/%s/%s", ver, sc.metadataType, sc.payloadType)
+			testName := fmt.Sprintf("v%s/%s", ver, sc.testName())
 
 			t.Run(testName, func(t *testing.T) {
 				framework.SkipIfNFSVersionUnsupported(t, ver)
 
 				// Skip postgres combinations if container unavailable
-				if sc.metadataType == "postgres" && !postgresAvailable {
+				if sc.needsPostgres() && !postgresAvailable {
 					t.Skip("Skipping: PostgreSQL container not available")
 				}
 
 				// Skip s3 combinations if container unavailable
-				if sc.payloadType == "s3" && !localstackAvailable {
+				if sc.needsS3() && !localstackAvailable {
 					t.Skip("Skipping: Localstack (S3) container not available")
 				}
 
@@ -80,8 +81,8 @@ func TestStoreMatrixV4(t *testing.T) {
 }
 
 // runStoreMatrixVersionTest executes file operation tests for a specific
-// version x store combination.
-func runStoreMatrixVersionTest(t *testing.T, version string, sc storeConfig, pgHelper *framework.PostgresHelper, lsHelper *framework.LocalstackHelper) {
+// version x 3D store combination.
+func runStoreMatrixVersionTest(t *testing.T, version string, sc matrixStoreConfig, pgHelper *framework.PostgresHelper, lsHelper *framework.LocalstackHelper) {
 	t.Helper()
 
 	// Start server process
@@ -94,6 +95,7 @@ func runStoreMatrixVersionTest(t *testing.T, version string, sc storeConfig, pgH
 	// Create unique store names for this test
 	metaStoreName := helpers.UniqueTestName("meta")
 	localStoreName := helpers.UniqueTestName("local")
+	remoteStoreName := helpers.UniqueTestName("remote")
 	shareName := "/export-v4matrix"
 
 	// Create metadata store based on type
@@ -126,39 +128,61 @@ func runStoreMatrixVersionTest(t *testing.T, version string, sc storeConfig, pgH
 		_ = runner.DeleteMetadataStore(metaStoreName)
 	})
 
-	// Create block store based on type
-	var payloadOpts []helpers.BlockStoreOption
-	switch sc.payloadType {
+	// Create local block store based on type
+	var localOpts []helpers.BlockStoreOption
+	switch sc.localType {
 	case "memory":
-		// No options needed
-	case "s3":
-		if lsHelper == nil {
-			t.Fatal("Localstack helper not available")
-		}
-		bucketName := strings.ReplaceAll(fmt.Sprintf("dittofs-v4mtx-%s", helpers.UniqueTestName("bkt")), "_", "-")
-		err := lsHelper.CreateBucket(context.Background(), bucketName)
-		require.NoError(t, err, "Should create S3 bucket")
-		t.Cleanup(func() {
-			lsHelper.CleanupBucket(context.Background(), bucketName)
-		})
-
-		payloadOpts = append(payloadOpts, helpers.WithBlockS3Config(
-			bucketName,
-			"us-east-1",
-			lsHelper.Endpoint,
-			"test",
-			"test",
-		))
+		// No options needed for memory local store
+	case "fs":
+		fsPath := filepath.Join(t.TempDir(), "local-blocks")
+		localOpts = append(localOpts, helpers.WithBlockRawConfig(
+			fmt.Sprintf(`{"path":"%s"}`, fsPath)))
 	}
 
-	_, err = runner.CreateLocalBlockStore(localStoreName, sc.payloadType, payloadOpts...)
-	require.NoError(t, err, "Should create block store (%s)", sc.payloadType)
+	_, err = runner.CreateLocalBlockStore(localStoreName, sc.localType, localOpts...)
+	require.NoError(t, err, "Should create local block store (%s)", sc.localType)
 	t.Cleanup(func() {
 		_ = runner.DeleteLocalBlockStore(localStoreName)
 	})
 
+	// Create remote block store if needed
+	var shareOpts []helpers.ShareOption
+	if sc.hasRemote() {
+		var remoteOpts []helpers.BlockStoreOption
+		switch sc.remoteType {
+		case "memory":
+			// No options needed for memory remote store
+		case "s3":
+			if lsHelper == nil {
+				t.Fatal("Localstack helper not available")
+			}
+			bucketName := strings.ReplaceAll(fmt.Sprintf("dittofs-v4mtx-%s", helpers.UniqueTestName("bkt")), "_", "-")
+			err := lsHelper.CreateBucket(context.Background(), bucketName)
+			require.NoError(t, err, "Should create S3 bucket")
+			t.Cleanup(func() {
+				lsHelper.CleanupBucket(context.Background(), bucketName)
+			})
+
+			remoteOpts = append(remoteOpts, helpers.WithBlockS3Config(
+				bucketName,
+				"us-east-1",
+				lsHelper.Endpoint,
+				"test",
+				"test",
+			))
+		}
+
+		_, err = runner.CreateRemoteBlockStore(remoteStoreName, sc.remoteType, remoteOpts...)
+		require.NoError(t, err, "Should create remote block store (%s)", sc.remoteType)
+		t.Cleanup(func() {
+			_ = runner.DeleteRemoteBlockStore(remoteStoreName)
+		})
+
+		shareOpts = append(shareOpts, helpers.WithShareRemote(remoteStoreName))
+	}
+
 	// Create the share using the stores
-	_, err = runner.CreateShare(shareName, metaStoreName, localStoreName)
+	_, err = runner.CreateShare(shareName, metaStoreName, localStoreName, shareOpts...)
 	require.NoError(t, err, "Should create share")
 	t.Cleanup(func() {
 		_ = runner.DeleteShare(shareName)
@@ -184,7 +208,7 @@ func runStoreMatrixVersionTest(t *testing.T, version string, sc storeConfig, pgH
 
 	// Run basic file operation tests
 	t.Run("CreateReadWriteFile", func(t *testing.T) {
-		content := []byte(fmt.Sprintf("Hello from v%s %s/%s store matrix!", version, sc.metadataType, sc.payloadType))
+		content := []byte(fmt.Sprintf("Hello from v%s %s store matrix!", version, sc.testName()))
 		filePath := mount.FilePath("v4matrix_rw.txt")
 
 		framework.WriteFile(t, filePath, content)
@@ -228,7 +252,25 @@ func runStoreMatrixVersionTest(t *testing.T, version string, sc storeConfig, pgH
 		assert.False(t, framework.FileExists(filePath), "File should not exist after deletion")
 	})
 
-	t.Log("Store matrix v" + version + " " + sc.metadataType + "/" + sc.payloadType + ": PASSED")
+	t.Run("Rename", func(t *testing.T) {
+		srcFile := mount.FilePath("v4matrix_rename_src.txt")
+		dstFile := mount.FilePath("v4matrix_rename_dst.txt")
+		framework.WriteFile(t, srcFile, []byte("rename me"))
+		t.Cleanup(func() {
+			_ = os.Remove(srcFile)
+			_ = os.Remove(dstFile)
+		})
+
+		err := os.Rename(srcFile, dstFile)
+		require.NoError(t, err, "Should rename file")
+
+		assert.False(t, framework.FileExists(srcFile), "Source should not exist after rename")
+		assert.True(t, framework.FileExists(dstFile), "Destination should exist after rename")
+		content := framework.ReadFile(t, dstFile)
+		assert.Equal(t, []byte("rename me"), content, "Content should be preserved after rename")
+	})
+
+	t.Log("Store matrix v" + version + " " + sc.testName() + ": PASSED")
 }
 
 // =============================================================================

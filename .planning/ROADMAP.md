@@ -764,7 +764,7 @@ v3.8 (33-40.5) -> v4.2 (57-62) -> v4.0 (41-49) -> v4.6 (63-67) -> v4.7 (68-71) -
 | 46. Per-Share Block Store Wiring | v4.0 | 0/? | Not started | - |
 | 47. L1 Read Cache, Disk Tier, Prefetch | v4.0 | 0/? | Not started | - |
 | 48. Auto-Deduced Config + Memory Safety | v4.0 | 0/? | Not started | - |
-| 49. Testing and Documentation | 3/5 | In Progress|  | - |
+| 49. Testing and Documentation | 4/5 | In Progress|  | - |
 | 63. SMB3 Signing Fix | v4.6 | 0/? | Not started | - |
 | 64. Protocol Correctness and Hot-Reload | v4.6 | 0/? | Not started | - |
 | 65. Storage Observability and Quotas | v4.6 | 0/? | Not started | - |

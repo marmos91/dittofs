@@ -12,8 +12,8 @@ import (
 )
 
 // TestBlockStoresCRUD validates block store management operations via the dfsctl CLI.
-// These tests verify creation, listing, editing, and deletion of local block stores,
-// including proper error handling for stores in use by shares.
+// These tests verify creation, listing, editing, and deletion of local and remote
+// block stores, including proper error handling for stores in use by shares.
 func TestBlockStoresCRUD(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping block stores tests in short mode")
@@ -28,8 +28,12 @@ func TestBlockStoresCRUD(t *testing.T) {
 	// Login as admin and get CLI runner
 	cli := helpers.LoginAsAdmin(t, serverURL)
 
-	// Create memory block store
-	t.Run("create memory store", func(t *testing.T) {
+	// =====================================================================
+	// Local Block Store Tests
+	// =====================================================================
+
+	// Create memory block store (local)
+	t.Run("local/create memory store", func(t *testing.T) {
 		t.Parallel()
 
 		storeName := helpers.UniqueTestName("block_mem")
@@ -44,28 +48,26 @@ func TestBlockStoresCRUD(t *testing.T) {
 		assert.Equal(t, "memory", store.Type, "Store type should be memory")
 	})
 
-	// Create S3 block store (remote)
-	t.Run("create s3 store", func(t *testing.T) {
+	// Create fs block store (local)
+	t.Run("local/create fs store", func(t *testing.T) {
 		t.Parallel()
 
-		storeName := helpers.UniqueTestName("block_s3")
-
+		storeName := helpers.UniqueTestName("block_fs")
 		t.Cleanup(func() {
 			_ = cli.DeleteLocalBlockStore(storeName)
 		})
 
-		// Use raw config to test S3 store creation without actual S3 connectivity
-		s3Config := `{"bucket":"test-bucket","region":"us-east-1"}`
-		store, err := cli.CreateLocalBlockStore(storeName, "s3",
-			helpers.WithBlockRawConfig(s3Config))
-		require.NoError(t, err, "Should create S3 block store")
+		fsPath := t.TempDir()
+		store, err := cli.CreateLocalBlockStore(storeName, "fs",
+			helpers.WithBlockRawConfig(`{"path":"`+fsPath+`"}`))
+		require.NoError(t, err, "Should create fs block store")
 
 		assert.Equal(t, storeName, store.Name, "Store name should match")
-		assert.Equal(t, "s3", store.Type, "Store type should be s3")
+		assert.Equal(t, "fs", store.Type, "Store type should be fs")
 	})
 
-	// List block stores
-	t.Run("list stores", func(t *testing.T) {
+	// List local block stores
+	t.Run("local/list stores", func(t *testing.T) {
 		t.Parallel()
 
 		store1Name := helpers.UniqueTestName("block_list1")
@@ -102,8 +104,8 @@ func TestBlockStoresCRUD(t *testing.T) {
 		assert.True(t, found2, "Should find second store in list")
 	})
 
-	// Delete store
-	t.Run("delete store", func(t *testing.T) {
+	// Delete local store
+	t.Run("local/delete store", func(t *testing.T) {
 		storeName := helpers.UniqueTestName("block_del")
 
 		// Create store
@@ -120,8 +122,8 @@ func TestBlockStoresCRUD(t *testing.T) {
 		assert.Contains(t, err.Error(), "not found", "Error should indicate store not found")
 	})
 
-	// Duplicate name rejection
-	t.Run("duplicate name rejected", func(t *testing.T) {
+	// Duplicate name rejection (local)
+	t.Run("local/duplicate name rejected", func(t *testing.T) {
 		t.Parallel()
 
 		storeName := helpers.UniqueTestName("block_dup")
@@ -147,8 +149,8 @@ func TestBlockStoresCRUD(t *testing.T) {
 			"Error should indicate store already exists: %s", err.Error())
 	})
 
-	// Cannot delete store in use by share
-	t.Run("cannot delete store in use", func(t *testing.T) {
+	// Cannot delete local store in use by share
+	t.Run("local/cannot delete store in use", func(t *testing.T) {
 		metaStoreName := helpers.UniqueTestName("meta_inuse")
 		localStoreName := helpers.UniqueTestName("block_inuse")
 		shareName := "/" + helpers.UniqueTestName("share_inuse")
@@ -192,8 +194,8 @@ func TestBlockStoresCRUD(t *testing.T) {
 		require.NoError(t, err, "Should delete block store after share deletion")
 	})
 
-	// Get store by name
-	t.Run("get store by name", func(t *testing.T) {
+	// Get local store by name
+	t.Run("local/get store by name", func(t *testing.T) {
 		t.Parallel()
 
 		storeName := helpers.UniqueTestName("block_get")
@@ -212,5 +214,96 @@ func TestBlockStoresCRUD(t *testing.T) {
 
 		assert.Equal(t, created.Name, fetched.Name, "Names should match")
 		assert.Equal(t, created.Type, fetched.Type, "Types should match")
+	})
+
+	// =====================================================================
+	// Remote Block Store Tests
+	// =====================================================================
+
+	// Create memory remote block store
+	t.Run("remote/create memory store", func(t *testing.T) {
+		t.Parallel()
+
+		storeName := helpers.UniqueTestName("remote_mem")
+		t.Cleanup(func() {
+			_ = cli.DeleteRemoteBlockStore(storeName)
+		})
+
+		store, err := cli.CreateRemoteBlockStore(storeName, "memory")
+		require.NoError(t, err, "Should create memory remote block store")
+
+		assert.Equal(t, storeName, store.Name, "Store name should match")
+		assert.Equal(t, "memory", store.Type, "Store type should be memory")
+	})
+
+	// Create S3 remote block store (without actual S3)
+	t.Run("remote/create s3 store", func(t *testing.T) {
+		t.Parallel()
+
+		storeName := helpers.UniqueTestName("remote_s3")
+		t.Cleanup(func() {
+			_ = cli.DeleteRemoteBlockStore(storeName)
+		})
+
+		s3Config := `{"bucket":"test-bucket","region":"us-east-1"}`
+		store, err := cli.CreateRemoteBlockStore(storeName, "s3",
+			helpers.WithBlockRawConfig(s3Config))
+		require.NoError(t, err, "Should create S3 remote block store")
+
+		assert.Equal(t, storeName, store.Name, "Store name should match")
+		assert.Equal(t, "s3", store.Type, "Store type should be s3")
+	})
+
+	// Delete remote block store
+	t.Run("remote/delete store", func(t *testing.T) {
+		storeName := helpers.UniqueTestName("remote_del")
+
+		_, err := cli.CreateRemoteBlockStore(storeName, "memory")
+		require.NoError(t, err, "Should create remote store")
+
+		err = cli.DeleteRemoteBlockStore(storeName)
+		require.NoError(t, err, "Should delete remote store")
+	})
+
+	// =====================================================================
+	// Error Cases
+	// =====================================================================
+
+	// Share creation requires a local store
+	t.Run("error/share requires local store", func(t *testing.T) {
+		metaStoreName := helpers.UniqueTestName("meta_noloc")
+		t.Cleanup(func() {
+			_ = cli.DeleteMetadataStore(metaStoreName)
+		})
+
+		// Create metadata store
+		_, err := cli.CreateMetadataStore(metaStoreName, "memory")
+		require.NoError(t, err, "Should create metadata store")
+
+		// Try to create share with a non-existent local store
+		_, err = cli.CreateShare("/"+helpers.UniqueTestName("share_noloc"), metaStoreName, "nonexistent-local")
+		require.Error(t, err, "Should fail to create share with missing local store")
+	})
+
+	// Invalid remote store type reference
+	t.Run("error/invalid remote type on share", func(t *testing.T) {
+		metaStoreName := helpers.UniqueTestName("meta_invrem")
+		localStoreName := helpers.UniqueTestName("local_invrem")
+		t.Cleanup(func() {
+			_ = cli.DeleteLocalBlockStore(localStoreName)
+			_ = cli.DeleteMetadataStore(metaStoreName)
+		})
+
+		_, err := cli.CreateMetadataStore(metaStoreName, "memory")
+		require.NoError(t, err)
+
+		_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
+		require.NoError(t, err)
+
+		// Try to create share with a non-existent remote store
+		_, err = cli.CreateShare("/"+helpers.UniqueTestName("share_invrem"),
+			metaStoreName, localStoreName,
+			helpers.WithShareRemote("nonexistent-remote"))
+		require.Error(t, err, "Should fail to create share with non-existent remote store")
 	})
 }
