@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v4.6
 milestone_name: Production Hardening
 status: executing
-stopped_at: Completed 49-02-PLAN.md (payload store rename)
+stopped_at: Completed 49-04-PLAN.md (cache-tiers benchmark)
 last_updated: "2026-03-10"
-last_activity: 2026-03-10 — Completed Phase 49 Plan 02 (payload store rename)
+last_activity: 2026-03-10 — Completed Phase 49 Plan 04 (cache-tiers benchmark)
 progress:
   total_phases: 5
   completed_phases: 0
   total_plans: 5
-  completed_plans: 2
-  percent: 40
+  completed_plans: 4
+  percent: 80
 ---
 
 # Project State
@@ -21,17 +21,17 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-09)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Phase 49 Testing & Documentation — executing Plan 03
+**Current focus:** Phase 49 Testing & Documentation — executing Plan 05
 
 ## Current Position
 
 Phase: 49 (Testing & Documentation)
 Milestone: v4.6 Production Hardening
-Plan: 3 of 5
+Plan: 5 of 5
 Status: Executing
-Last activity: 2026-03-10 — Completed Plan 02 (payload store rename)
+Last activity: 2026-03-10 — Completed Plan 04 (cache-tiers benchmark)
 
-Progress: [####......] 40%
+Progress: [########..] 80%
 
 ## Completed Milestones
 
@@ -55,6 +55,7 @@ Progress: [####......] 40%
 |-------|------|----------|-------|-------|
 | 49    | 01   | 8min     | 2     | 13    |
 | 49    | 02   | 12min    | 2     | 47    |
+| 49    | 04   | 2min     | 1     | 3     |
 
 **v4.6 Current Milestone:**
 - 5 phases (63-67), 7 requirements
@@ -64,6 +65,7 @@ Progress: [####......] 40%
 
 ### Decisions
 
+- **49-04 cache-tiers standalone command**: Implemented as separate `bench cache-tiers` subcommand rather than workload in existing runner, since it requires authenticated API client unlike filesystem-only workloads
 - **49-02 migration SQL preserved**: gorm.go migration code keeps old payload_stores table references since it migrates FROM those names
 - **49-02 legacy aliases**: Used type aliases (PayloadStore = BlockStore) for safe incremental migration
 - **49-02 config validator**: Added legacy payload key detection to warn users about deprecated YAML keys
@@ -84,5 +86,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-03-10
-Stopped at: Completed 49-02-PLAN.md (payload store rename)
-Next action: Execute 49-03-PLAN.md
+Stopped at: Completed 49-04-PLAN.md (cache-tiers benchmark)
+Next action: Execute 49-05-PLAN.md
