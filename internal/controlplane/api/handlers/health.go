@@ -170,10 +170,10 @@ func (h *HealthHandler) Stores(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check block store health
-	payloadSvc := h.registry.GetBlockStore()
-	if payloadSvc != nil {
+	blockStore := h.registry.GetBlockStore()
+	if blockStore != nil {
 		start := time.Now()
-		err := payloadSvc.HealthCheck(ctx)
+		err := blockStore.HealthCheck(ctx)
 		latency := time.Since(start)
 
 		blockHealth := &StoreHealth{
