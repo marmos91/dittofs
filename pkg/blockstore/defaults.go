@@ -67,6 +67,26 @@ func DeduceDefaults(d SystemDetector) *DeducedDefaults {
 	}
 }
 
+// HitFloors returns a list of human-readable descriptions for any deduced
+// values that were clamped to their minimum floor. An empty slice means no
+// floors were hit.
+func (d *DeducedDefaults) HitFloors() []string {
+	var floors []string
+	if d.LocalStoreSize == MinLocalStoreSize {
+		floors = append(floors, fmt.Sprintf("local_store_size floored at %s", FormatBytes(MinLocalStoreSize)))
+	}
+	if d.L1CacheSize == MinL1CacheSize {
+		floors = append(floors, fmt.Sprintf("l1_cache_size floored at %s", FormatBytes(uint64(MinL1CacheSize))))
+	}
+	if d.ParallelSyncs == MinParallelSyncs {
+		floors = append(floors, fmt.Sprintf("parallel_syncs floored at %d", MinParallelSyncs))
+	}
+	if d.ParallelFetches == MinParallelFetches {
+		floors = append(floors, fmt.Sprintf("parallel_fetches floored at %d", MinParallelFetches))
+	}
+	return floors
+}
+
 // String returns a human-readable summary of deduced defaults.
 func (d *DeducedDefaults) String() string {
 	return fmt.Sprintf(

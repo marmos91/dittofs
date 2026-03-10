@@ -129,6 +129,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	detector := sysinfo.NewDetector()
 	deduced := blockstore.DeduceDefaults(detector)
 
+	logger.Info("System resources detected",
+		"memory", blockstore.FormatBytes(detector.AvailableMemory()),
+		"memory_source", detector.MemorySource(),
+		"cpus", detector.AvailableCPUs(),
+	)
 	logger.Info("Auto-deduced block store defaults",
 		"local_store_size", blockstore.FormatBytes(deduced.LocalStoreSize),
 		"l1_cache_size", blockstore.FormatBytes(uint64(deduced.L1CacheSize)),
@@ -136,10 +141,15 @@ func runStart(cmd *cobra.Command, args []string) error {
 		"parallel_syncs", deduced.ParallelSyncs,
 		"parallel_fetches", deduced.ParallelFetches,
 		"prefetch_workers", deduced.PrefetchWorkers,
-		"system_memory", blockstore.FormatBytes(detector.AvailableMemory()),
-		"memory_source", detector.MemorySource(),
-		"system_cpus", detector.AvailableCPUs(),
 	)
+
+	if floors := deduced.HitFloors(); len(floors) > 0 {
+		logger.Warn("Some deduced values hit minimum floors; system may be resource-constrained",
+			"floors", floors,
+			"system_memory", blockstore.FormatBytes(detector.AvailableMemory()),
+			"system_cpus", detector.AvailableCPUs(),
+		)
+	}
 
 	// Set per-share defaults BEFORE loading shares (AddShare creates BlockStores).
 	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{

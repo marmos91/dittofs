@@ -4,12 +4,7 @@
 // The detected values are used to derive block store sizing defaults.
 package sysinfo
 
-import (
-	"fmt"
-	"runtime"
-
-	"github.com/marmos91/dittofs/internal/logger"
-)
+import "runtime"
 
 // Detector provides system resource information.
 type Detector interface {
@@ -35,22 +30,11 @@ type defaultDetector struct {
 func NewDetector() Detector {
 	mem, source, err := availableMemory()
 	if err != nil {
-		logger.Warn("Failed to detect system memory, using 4 GiB fallback",
-			"error", err,
-			"source", source,
-		)
 		mem = defaultMemory
-		source = "fallback (detection error)"
+		source = "fallback (detection error: " + err.Error() + ")"
 	}
 
 	cpus := runtime.GOMAXPROCS(0)
-
-	logger.Info("System detected",
-		"memory_bytes", mem,
-		"memory_human", formatBytes(mem),
-		"source", source,
-		"cpus", cpus,
-	)
 
 	return &defaultDetector{
 		memory: mem,
@@ -62,20 +46,3 @@ func NewDetector() Detector {
 func (d *defaultDetector) AvailableMemory() uint64 { return d.memory }
 func (d *defaultDetector) AvailableCPUs() int      { return d.cpus }
 func (d *defaultDetector) MemorySource() string    { return d.source }
-
-func formatBytes(b uint64) string {
-	const gib = 1024 * 1024 * 1024
-	const mib = 1024 * 1024
-	if b >= gib {
-		v := float64(b) / float64(gib)
-		if v == float64(uint64(v)) {
-			return fmt.Sprintf("%d GiB", uint64(v))
-		}
-		return fmt.Sprintf("%.1f GiB", v)
-	}
-	v := float64(b) / float64(mib)
-	if v == float64(uint64(v)) {
-		return fmt.Sprintf("%d MiB", uint64(v))
-	}
-	return fmt.Sprintf("%.1f MiB", v)
-}
