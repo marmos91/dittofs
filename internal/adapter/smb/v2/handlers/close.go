@@ -168,9 +168,15 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// Flush cached data to ensure durability
 	// Unlike NFS COMMIT which is non-blocking, SMB CLOSE requires immediate durability
 	if !openFile.IsDirectory && openFile.PayloadID != "" {
-		blockStore := h.Registry.GetBlockStore()
+		blockStore, bsErr := h.Registry.GetBlockStoreForHandle(ctx.Context, openFile.MetadataHandle)
+		if bsErr != nil {
+			logger.Warn("CLOSE: block store not available for handle", "path", openFile.Path, "error", bsErr)
+		}
 		// Use blocking Flush for immediate durability
-		_, flushErr := blockStore.Flush(ctx.Context, string(openFile.PayloadID))
+		var flushErr error
+		if blockStore != nil {
+			_, flushErr = blockStore.Flush(ctx.Context, string(openFile.PayloadID))
+		}
 		if flushErr != nil {
 			logger.Warn("CLOSE: flush failed", "path", openFile.Path, "error", flushErr)
 			// Continue with close even if flush fails
@@ -439,7 +445,10 @@ func (h *Handler) checkAndConvertMFsymlink(ctx *SMBHandlerContext, openFile *Ope
 // readMFsymlinkContent reads the content of a potential MFsymlink file.
 // It reads from the block store which uses local cache internally.
 func (h *Handler) readMFsymlinkContent(ctx *SMBHandlerContext, openFile *OpenFile) ([]byte, error) {
-	blockStore := h.Registry.GetBlockStore()
+	blockStore, err := h.Registry.GetBlockStoreForHandle(ctx.Context, openFile.MetadataHandle)
+	if err != nil {
+		return nil, fmt.Errorf("block store not available: %w", err)
+	}
 
 	// Read the MFsymlink content (always 1067 bytes)
 	data := make([]byte, mfsymlink.Size)
@@ -476,8 +485,9 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 
 	// Delete content from block store (optional - ignore errors)
 	if openFile.PayloadID != "" {
-		blockStore := h.Registry.GetBlockStore()
-		_ = blockStore.Delete(ctx.Context, string(openFile.PayloadID))
+		if blockStore, bsErr := h.Registry.GetBlockStoreForHandle(ctx.Context, openFile.MetadataHandle); bsErr == nil {
+			_ = blockStore.Delete(ctx.Context, string(openFile.PayloadID))
+		}
 	}
 
 	// Create the real symlink with default attributes

@@ -140,16 +140,16 @@ func (h *Handler) Read(
 	}
 
 	// ========================================================================
-	// Step 2: Get block store from registry
+	// Step 2: Resolve per-share block store from file handle
 	// ========================================================================
 
-	blockStore, err := getBlockStore(h.Registry)
+	fileHandle := metadata.FileHandle(req.Handle)
+
+	blockStore, err := getBlockStoreForHandle(h.Registry, fileHandle)
 	if err != nil {
-		logger.ErrorCtx(ctx.Context, "READ failed: block store not initialized", "client", clientIP, "error", err)
+		logger.ErrorCtx(ctx.Context, "READ failed: block store not available", "client", clientIP, "error", err)
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
-
-	fileHandle := metadata.FileHandle(req.Handle)
 
 	logger.DebugCtx(ctx.Context, "READ: share", "share", ctx.Share)
 

@@ -144,8 +144,8 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 		actualLen = file.Size - offset
 	}
 
-	// Get block store and read data
-	blockStore, err := getBlockStoreForCtx(h)
+	// Get per-share block store and read data
+	blockStore, err := getBlockStoreForHandle(h, ctx.CurrentFH)
 	if err != nil {
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,

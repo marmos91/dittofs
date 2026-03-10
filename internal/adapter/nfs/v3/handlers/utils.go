@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -29,17 +30,18 @@ var ErrMetadataServiceNotInitialized = errors.New("metadata service not initiali
 // ErrBlockStoreNotInitialized is returned when the block store is not available.
 var ErrBlockStoreNotInitialized = errors.New("block store not initialized")
 
-// getServices returns both the metadata and block store services from the runtime.
-// Returns an error if either service is not initialized.
-func getServices(reg *runtime.Runtime) (*metadata.MetadataService, *engine.BlockStore, error) {
+// getServicesForHandle returns both the metadata service and the per-share block store
+// resolved from the given file handle.
+// Returns an error if either service is not initialized or handle resolution fails.
+func getServicesForHandle(reg *runtime.Runtime, handle metadata.FileHandle) (*metadata.MetadataService, *engine.BlockStore, error) {
 	metaSvc := reg.GetMetadataService()
 	if metaSvc == nil {
 		return nil, nil, ErrMetadataServiceNotInitialized
 	}
 
-	blockStore := reg.GetBlockStore()
-	if blockStore == nil {
-		return nil, nil, ErrBlockStoreNotInitialized
+	blockStore, err := getBlockStoreForHandle(reg, handle)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	return metaSvc, blockStore, nil
@@ -55,12 +57,12 @@ func getMetadataService(reg *runtime.Runtime) (*metadata.MetadataService, error)
 	return metaSvc, nil
 }
 
-// getBlockStore returns the block store from the runtime.
-// Returns an error if the block store is not initialized.
-func getBlockStore(reg *runtime.Runtime) (*engine.BlockStore, error) {
-	blockStore := reg.GetBlockStore()
-	if blockStore == nil {
-		return nil, ErrBlockStoreNotInitialized
+// getBlockStoreForHandle returns the per-share block store resolved from the given file handle.
+// The handle encodes the share name, which is used to look up the share's block store.
+func getBlockStoreForHandle(reg *runtime.Runtime, handle metadata.FileHandle) (*engine.BlockStore, error) {
+	blockStore, err := reg.GetBlockStoreForHandle(context.Background(), handle)
+	if err != nil {
+		return nil, fmt.Errorf("block store not available: %w", err)
 	}
 	return blockStore, nil
 }
@@ -147,14 +149,14 @@ type MFsymlinkResult struct {
 // Parameters:
 //   - ctx: Context for cancellation and logging
 //   - reg: Registry to get block store
-//   - share: Share name (unused, reserved for future routing)
+//   - handle: File handle for per-share block store resolution
 //   - file: File metadata to check
 //
 // Returns MFsymlinkResult with detection result and modified attributes.
 func checkMFsymlink(
 	ctx context.Context,
 	reg *runtime.Runtime,
-	share string,
+	handle metadata.FileHandle,
 	file *metadata.File,
 ) MFsymlinkResult {
 	// Quick checks first (no I/O)
@@ -168,7 +170,7 @@ func checkMFsymlink(
 
 	// File has correct size - need to check content
 	// Read content from block store (checks local cache first)
-	content, err := readMFsymlinkContentForNFS(ctx, reg, share, file.PayloadID)
+	content, err := readMFsymlinkContentForNFS(ctx, reg, handle, file.PayloadID)
 	if err != nil {
 		logger.Debug("checkMFsymlink: failed to read content",
 			"payloadID", file.PayloadID,
@@ -212,7 +214,7 @@ func checkMFsymlink(
 func readMFsymlinkContentForNFS(
 	ctx context.Context,
 	reg *runtime.Runtime,
-	_ /* share */ string,
+	handle metadata.FileHandle,
 	payloadID metadata.PayloadID,
 ) ([]byte, error) {
 	if payloadID == "" {
@@ -220,7 +222,7 @@ func readMFsymlinkContentForNFS(
 	}
 
 	// Use BlockStore.ReadAt (Cache handles caching automatically)
-	blockStore, err := getBlockStore(reg)
+	blockStore, err := getBlockStoreForHandle(reg, handle)
 	if err != nil {
 		return nil, err
 	}

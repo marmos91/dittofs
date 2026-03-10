@@ -95,16 +95,16 @@ func (h *Handler) Remove(
 	}
 
 	// ========================================================================
-	// Step 2: Get metadata service and block store from registry
+	// Step 2: Resolve per-share metadata service and block store from directory handle
 	// ========================================================================
 
-	metaSvc, blockStore, err := getServices(h.Registry)
+	dirHandle := metadata.FileHandle(req.DirHandle)
+
+	metaSvc, blockStore, err := getServicesForHandle(h.Registry, dirHandle)
 	if err != nil {
-		logger.ErrorCtx(ctx.Context, "REMOVE failed: service not initialized", "client", clientIP, "error", err)
+		logger.ErrorCtx(ctx.Context, "REMOVE failed: service not available", "client", clientIP, "error", err)
 		return &RemoveResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
-
-	dirHandle := metadata.FileHandle(req.DirHandle)
 
 	logger.DebugCtx(ctx.Context, "REMOVE", "share", ctx.Share, "name", req.Filename)
 

@@ -192,5 +192,5 @@ func (h *Handler) checkMFsymlinkByHandle(ctx *NFSHandlerContext, fileHandle meta
 	}
 
 	// Use the helper function to check MFsymlink
-	return checkMFsymlink(ctx.Context, h.Registry, ctx.Share, file)
+	return checkMFsymlink(ctx.Context, h.Registry, fileHandle, file)
 }

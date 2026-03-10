@@ -145,7 +145,7 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 		}
 	}
 
-	blockStore, err := getBlockStoreForCtx(h)
+	blockStore, err := getBlockStoreForHandle(h, ctx.CurrentFH)
 	if err != nil {
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
