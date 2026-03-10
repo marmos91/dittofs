@@ -4,17 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
-	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
-	"github.com/marmos91/dittofs/pkg/blockstore/remote"
-	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
-	remotes3 "github.com/marmos91/dittofs/pkg/blockstore/remote/s3"
-	blocksync "github.com/marmos91/dittofs/pkg/blockstore/sync"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -148,183 +140,6 @@ func CreateMetadataStoreFromConfig(ctx context.Context, storeType string, cfg in
 	}
 }
 
-// EnsureBlockStore lazily creates the local store, syncer, and BlockStore.
-func (rt *Runtime) EnsureBlockStore(ctx context.Context) error {
-	rt.mu.Lock()
-	if rt.blockStore != nil {
-		rt.mu.Unlock()
-		return nil
-	}
-	cacheConfig := rt.cacheConfig
-	rt.mu.Unlock()
-
-	if cacheConfig == nil {
-		return errors.New("cache configuration not set - call SetCacheConfig first")
-	}
-
-	remoteBlockStores, err := rt.store.ListBlockStores(ctx, models.BlockStoreKindRemote)
-	if err != nil {
-		return fmt.Errorf("failed to list remote block stores: %w", err)
-	}
-
-	cacheDir := filepath.Join(cacheConfig.Path, "blocks")
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
-		return fmt.Errorf("failed to create cache directory: %w", err)
-	}
-
-	// Use the first metadata store as FileBlockStore (it embeds the interface).
-	metaStoreNames := rt.ListMetadataStores()
-	if len(metaStoreNames) == 0 {
-		return errors.New("no metadata stores registered - add a metadata store first")
-	}
-	fileBlockStore, err := rt.GetMetadataStore(metaStoreNames[0])
-	if err != nil {
-		return fmt.Errorf("failed to get metadata store for file blocks: %w", err)
-	}
-
-	localStore, err := fs.New(cacheDir, int64(cacheConfig.Size), 0, fileBlockStore)
-	if err != nil {
-		return fmt.Errorf("failed to create local store: %w", err)
-	}
-
-	logger.Info("Local store initialized", "path", cacheDir, "max_size", cacheConfig.Size)
-
-	// Create remote store from config if remote block stores are configured.
-	// When no remote block stores exist, remoteStore stays nil (local-only mode).
-	var remoteStore remote.RemoteStore // nil for local-only mode
-	if len(remoteBlockStores) > 0 {
-		remoteStoreCfg := remoteBlockStores[0]
-		remoteStore, err = CreateRemoteStoreFromConfig(ctx, remoteStoreCfg.Type, remoteStoreCfg)
-		if err != nil {
-			return fmt.Errorf("failed to create remote store: %w", err)
-		}
-		logger.Info("Loaded remote block store", "name", remoteStoreCfg.Name, "type", remoteStoreCfg.Type)
-	}
-
-	localOnly := remoteStore == nil
-
-	// When a remote store is configured, skip fsync -- data durability comes from
-	// remote sync (e.g. S3), not local disk. The cache .blk files are staging
-	// buffers; losing them on power failure means re-downloading, not data loss.
-	// When local-only (no remote store), disk IS the final store, so fsync matters.
-	localStore.SetSkipFsync(!localOnly)
-
-	// When local-only, disable eviction since blocks cannot be re-fetched from remote.
-	localStore.SetEvictionEnabled(!localOnly)
-
-	syncerCfg := rt.buildSyncerConfig()
-	syncer := blocksync.New(localStore, remoteStore, fileBlockStore, syncerCfg)
-
-	bs, err := engine.New(engine.Config{
-		Local:  localStore,
-		Remote: remoteStore,
-		Syncer: syncer,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create BlockStore: %w", err)
-	}
-
-	// Start handles recovery, then launches local store and syncer goroutines.
-	if err := bs.Start(ctx); err != nil {
-		return fmt.Errorf("failed to start BlockStore: %w", err)
-	}
-
-	rt.mu.Lock()
-	rt.blockStore = bs
-	rt.mu.Unlock()
-
-	mode := "remote-backed"
-	if localOnly {
-		mode = "local-only"
-	}
-	logger.Info("BlockStore initialized",
-		"mode", mode,
-		"parallel_uploads", syncerCfg.ParallelUploads,
-		"parallel_downloads", syncerCfg.ParallelDownloads)
-
-	return nil
-}
-
-// CreateRemoteStoreFromConfig creates a remote store from type and dynamic config.
-func CreateRemoteStoreFromConfig(ctx context.Context, storeType string, cfg interface {
-	GetConfig() (map[string]any, error)
-}) (remote.RemoteStore, error) {
-	config, err := cfg.GetConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get config: %w", err)
-	}
-
-	switch storeType {
-	case "memory":
-		return remotememory.New(), nil
-
-	case "filesystem":
-		return nil, errors.New("remote store type 'filesystem' removed in v4.0 -- use 'memory' or 's3'")
-
-	case "s3":
-		bucket, ok := config["bucket"].(string)
-		if !ok || bucket == "" {
-			return nil, errors.New("s3 remote store requires bucket")
-		}
-
-		region := "us-east-1"
-		if r, ok := config["region"].(string); ok && r != "" {
-			region = r
-		}
-
-		endpoint, _ := config["endpoint"].(string)
-		prefix, _ := config["prefix"].(string)
-		forcePathStyle, _ := config["force_path_style"].(bool)
-
-		// Use NewFromConfig to get the optimized HTTP transport (HTTP/1.1 forced,
-		// high connection limits, large buffers) instead of default AWS HTTP client.
-		return remotes3.NewFromConfig(ctx, remotes3.Config{
-			Bucket:         bucket,
-			Region:         region,
-			Endpoint:       endpoint,
-			KeyPrefix:      prefix,
-			ForcePathStyle: forcePathStyle,
-		})
-
-	default:
-		return nil, fmt.Errorf("unsupported remote store type: %s", storeType)
-	}
-}
-
-// buildSyncerConfig merges user-supplied overrides into the default syncer config.
-func (rt *Runtime) buildSyncerConfig() blocksync.Config {
-	cfg := blocksync.DefaultConfig()
-
-	rt.mu.RLock()
-	sCfg := rt.syncerConfig
-	rt.mu.RUnlock()
-
-	if sCfg == nil {
-		return cfg
-	}
-
-	if sCfg.ParallelUploads > 0 {
-		cfg.ParallelUploads = sCfg.ParallelUploads
-	}
-	if sCfg.ParallelDownloads > 0 {
-		cfg.ParallelDownloads = sCfg.ParallelDownloads
-	}
-	if sCfg.PrefetchBlocks > 0 {
-		cfg.PrefetchBlocks = sCfg.PrefetchBlocks
-	}
-	if sCfg.SmallFileThreshold != 0 {
-		cfg.SmallFileThreshold = sCfg.SmallFileThreshold
-	}
-	if sCfg.UploadInterval > 0 {
-		cfg.UploadInterval = sCfg.UploadInterval
-	}
-	if sCfg.UploadDelay > 0 {
-		cfg.UploadDelay = sCfg.UploadDelay
-	}
-
-	return cfg
-}
-
 // LoadSharesFromStore loads shares from the database into the runtime.
 func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error {
 	shares, err := s.ListShares(ctx)
@@ -365,6 +180,12 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			}
 		}
 
+		// Resolve block store config IDs from the DB share model.
+		var remoteBlockStoreID string
+		if share.RemoteBlockStoreID != nil {
+			remoteBlockStoreID = *share.RemoteBlockStoreID
+		}
+
 		shareConfig := &ShareConfig{
 			Name:               share.Name,
 			MetadataStore:      metaStoreCfg.Name,
@@ -381,6 +202,8 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			DisableReaddirplus: nfsOpts.DisableReaddirplus,
 			NetgroupName:       netgroupName,
 			BlockedOperations:  share.GetBlockedOps(),
+			LocalBlockStoreID:  share.LocalBlockStoreID,
+			RemoteBlockStoreID: remoteBlockStoreID,
 		}
 
 		if err := rt.AddShare(ctx, shareConfig); err != nil {
