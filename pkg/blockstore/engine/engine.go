@@ -327,11 +327,16 @@ func (bs *BlockStore) readAtInternal(ctx context.Context, payloadID, cowSource s
 }
 
 // notifyPrefetcher informs the prefetcher about a read for sequential detection.
+// Notifies for every block in the read range so that multi-block reads
+// (len(data) > BlockSize) are correctly detected as sequential.
 // No-op when the prefetcher is nil (disabled).
 func (bs *BlockStore) notifyPrefetcher(payloadID string, offset, length uint64) {
 	if bs.prefetcher != nil {
+		startBlock := offset / blockstore.BlockSize
 		endBlock := (offset + length - 1) / blockstore.BlockSize
-		bs.prefetcher.OnRead(payloadID, endBlock)
+		for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
+			bs.prefetcher.OnRead(payloadID, blockIdx)
+		}
 	}
 }
 
