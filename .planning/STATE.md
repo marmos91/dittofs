@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: BlockStore Unification Refactor
-status: completed
-stopped_at: Completed 46-03-PLAN.md
-last_updated: "2026-03-10T11:13:12.822Z"
-last_activity: 2026-03-10 — Phase 46 Plan 03 complete (phase complete)
+status: in-progress
+stopped_at: Completed 47-01-PLAN.md
+last_updated: "2026-03-10T12:45:24.923Z"
+last_activity: 2026-03-10 — Phase 47 Plan 01 complete
 progress:
   total_phases: 22
   completed_phases: 7
-  total_plans: 17
-  completed_plans: 17
-  percent: 100
+  total_plans: 19
+  completed_plans: 18
+  percent: 99
 ---
 
 # Project State
@@ -21,17 +21,17 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-09)
 
 **Core value:** Replace confusing layered storage architecture with clean two-tier block store model (Local + Remote) for per-share isolation and maintainability
-**Current focus:** Phase 46 - Per-Share Block Store Wiring (complete)
+**Current focus:** Phase 47 - L1 Read Cache and Prefetch
 
 ## Current Position
 
-Phase: 46 of 49 (Per-Share Block Store Wiring)
+Phase: 47 of 49 (L1 Read Cache and Prefetch)
 Milestone: v4.0 BlockStore Unification Refactor
-Plan: 3 of 3 complete
-Status: Phase 46 complete
-Last activity: 2026-03-10 — Phase 46 Plan 03 complete (phase complete)
+Plan: 1 of 1 complete (47-01 done, more plans may follow)
+Status: Phase 47 Plan 01 complete
+Last activity: 2026-03-10 — Phase 47 Plan 01 complete
 
-Progress: [██████████] 100% (132/132 total plans across all milestones)
+Progress: [██████████] 99% (133/134 total plans across all milestones)
 
 ## Completed Milestones
 
@@ -55,7 +55,7 @@ Progress: [██████████] 100% (132/132 total plans across all 
 - 9 phases defined (41-49)
 - 55 requirements mapped
 - Phases 41-46 complete
-- 17 plans completed (41-01, 41-02, 42-01, 42-02, 43-01, 43-02, 43-03, 44-01, 44-02, 44-03, 45-01, 45-02, 45-03, 45-04, 46-01, 46-02, 46-03)
+- 18 plans completed (41-01, 41-02, 42-01, 42-02, 43-01, 43-02, 43-03, 44-01, 44-02, 44-03, 45-01, 45-02, 45-03, 45-04, 46-01, 46-02, 46-03, 47-01)
 
 ## Accumulated Context
 
@@ -99,6 +99,11 @@ Recent decisions affecting v4.0 work:
 - [Phase 46-02]: Health endpoint changed from single block_store to per-share block_stores array (breaking API change)
 - [Phase 46]: Removed CreateRemoteStoreFromConfig from init.go since shares.Service has its own copy and EnsureBlockStore was the only caller
 - [Phase 46]: Removed CacheConfig/SyncerConfig/SetCacheConfig/SetSyncerConfig -- per-share defaults via SetLocalStoreDefaults/SetSyncerDefaults are the canonical path
+- [Phase 47-01]: ReadCache uses RWMutex with RLock for reads, WLock for mutations (matches existing BlockCache pattern)
+- [Phase 47-01]: Copy-on-read: Get copies into caller buffer, never returns internal slice
+- [Phase 47-01]: Adaptive prefetch depth 1->2->4->8 capped at maxPrefetchDepth=8 (Linux readahead pattern)
+- [Phase 47-01]: Dependency-injected LoadBlockFn avoids import cycles with engine package
+- [Phase 47-01]: NewPrefetcher returns nil if cache is nil (can't prefetch without cache target)
 
 ### Pending Todos
 
@@ -110,7 +115,7 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-10T11:06:52.094Z
-Stopped at: Completed 46-03-PLAN.md
+Last session: 2026-03-10T12:45:24.920Z
+Stopped at: Completed 47-01-PLAN.md
 Resume file: None
-Next action: Phase 46 complete. Proceed to Phase 47 if defined.
+Next action: Continue Phase 47 with Plan 02 if defined.

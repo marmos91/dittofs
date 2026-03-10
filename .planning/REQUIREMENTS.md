@@ -71,10 +71,10 @@
 
 ### Read Performance
 
-- [ ] **PERF-01**: L1 read-through LRU cache (readcache.go) for hot blocks
-- [ ] **PERF-02**: L1 cache invalidation on WriteAt
-- [ ] **PERF-03**: Sequential prefetch (prefetch.go) after 2+ sequential reads
-- [ ] **PERF-04**: Bounded prefetch worker pool, non-blocking
+- [x] **PERF-01**: L1 read-through LRU cache (readcache.go) for hot blocks
+- [x] **PERF-02**: L1 cache invalidation on WriteAt
+- [x] **PERF-03**: Sequential prefetch (prefetch.go) after 2+ sequential reads
+- [x] **PERF-04**: Bounded prefetch worker pool, non-blocking
 
 ### Auto-Configuration
 
@@ -161,10 +161,10 @@
 | SHARE-02 | Phase 46 | Complete |
 | SHARE-03 | Phase 46 | Complete |
 | SHARE-04 | Phase 46 | Complete |
-| PERF-01 | Phase 47 | Pending |
-| PERF-02 | Phase 47 | Pending |
-| PERF-03 | Phase 47 | Pending |
-| PERF-04 | Phase 47 | Pending |
+| PERF-01 | Phase 47 | Complete |
+| PERF-02 | Phase 47 | Complete |
+| PERF-03 | Phase 47 | Complete |
+| PERF-04 | Phase 47 | Complete |
 | AUTO-01 | Phase 48 | Pending |
 | AUTO-02 | Phase 48 | Pending |
 | AUTO-03 | Phase 48 | Pending |
