@@ -156,8 +156,8 @@ func TestBackupRestore(t *testing.T) {
 		// Verify API-created metadata stores are included
 		assert.NotEmpty(t, backup.MetadataStores, "backup should contain API-created metadata stores")
 
-		// Verify API-created payload stores are included
-		assert.NotEmpty(t, backup.PayloadStores, "backup should contain API-created payload stores")
+		// Verify API-created block stores are included
+		assert.NotEmpty(t, backup.BlockStores, "backup should contain API-created block stores")
 
 		// Also verify adapters (which are auto-created and stored in DB)
 		assert.NotEmpty(t, backup.Adapters, "backup should contain adapters")
@@ -241,8 +241,8 @@ func TestBackupRestore(t *testing.T) {
 		// 3. Metadata store - only API-created stores are in backup, not config-defined ones
 		assert.GreaterOrEqual(t, len(backup.MetadataStores), 1, "should have at least 1 metadata store (API-created)")
 
-		// 4. Payload store - only API-created stores are in backup
-		assert.GreaterOrEqual(t, len(backup.PayloadStores), 1, "should have at least 1 payload store (API-created)")
+		// 4. Block store - only API-created stores are in backup
+		assert.GreaterOrEqual(t, len(backup.BlockStores), 1, "should have at least 1 block store (API-created)")
 
 		// 5. Share - only API-created shares are in backup, not config-defined ones
 		assert.GreaterOrEqual(t, len(backup.Shares), 1, "should have at least 1 share (API-created)")

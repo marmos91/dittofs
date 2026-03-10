@@ -155,11 +155,11 @@ dfsctl login --server http://localhost:8080 --username admin --password "${ADMIN
 log "Creating BadgerDB metadata store..."
 dfsctl store metadata add --name badger-meta --type badger --db-path "${BADGER_PATH}"
 
-log "Creating filesystem payload store..."
-dfsctl store payload add --name fs-payload --type filesystem --path "${PAYLOAD_PATH}"
+log "Creating local block store (filesystem)..."
+dfsctl store block local add --name fs-payload --type filesystem --path "${PAYLOAD_PATH}"
 
 log "Creating /export share..."
-dfsctl share create --name /export --metadata badger-meta --payload fs-payload
+dfsctl share create --name /export --metadata badger-meta --local fs-payload
 
 # Wait for NFS adapter to be listening (auto-created on port 12049 by default).
 log "Waiting for NFS on port ${NFS_PORT}..."

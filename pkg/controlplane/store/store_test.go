@@ -750,7 +750,7 @@ func TestMetadataStoreOperations(t *testing.T) {
 	})
 }
 
-func TestBlockStoreOperationsLegacy(t *testing.T) {
+func TestBlockStoreOperationsBasic(t *testing.T) {
 	store := createTestStore(t)
 	defer store.Close()
 	ctx := context.Background()

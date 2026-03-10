@@ -144,16 +144,17 @@ configure_dittofs_fs() {
     log "Configuring DittoFS (FS backend)..."
     ssh_server "dfsctl login --server http://localhost:8080 --username admin --password '$DITTOFS_ADMIN_PASSWORD' && \
         dfsctl store metadata add --name badger-meta --type badger --db-path /data/metadata/badger && \
-        dfsctl store payload add --name fs-payload --type filesystem --path /data/payload && \
-        dfsctl share create --name /export --metadata badger-meta --payload fs-payload"
+        dfsctl store block local add --name fs-payload --type filesystem --path /data/payload && \
+        dfsctl share create --name /export --metadata badger-meta --local fs-payload"
 }
 
 configure_dittofs_s3() {
     log "Configuring DittoFS (S3 backend)..."
     ssh_server "dfsctl login --server http://localhost:8080 --username admin --password '$DITTOFS_ADMIN_PASSWORD' && \
         dfsctl store metadata add --name badger-meta --type badger --db-path /data/metadata/badger && \
-        dfsctl store payload add --name s3-payload --type s3 --config '$S3_CONFIG' && \
-        dfsctl share create --name /export --metadata badger-meta --payload s3-payload"
+        dfsctl store block local add --name local-payload --type memory && \
+        dfsctl store block remote add --name s3-payload --type s3 --config '$S3_CONFIG' && \
+        dfsctl share create --name /export --metadata badger-meta --local local-payload --remote s3-payload"
 }
 
 mount_nfs3() {

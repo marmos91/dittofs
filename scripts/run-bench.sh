@@ -54,10 +54,10 @@ sleep 4
 echo "[3/7] Configuring stores and shares..."
 $SSH root@$SERVER "dfsctl login --server http://localhost:8080 --username admin --password benchadmin123 && \
   dfsctl store metadata add --name badger-meta --type badger --db-path /data/metadata/badger && \
-  dfsctl store payload add --name fs-payload --type filesystem --path /data/payload && \
-  dfsctl store payload add --name s3-payload --type s3 --config '$S3_CONFIG' && \
-  dfsctl share create --name /export --metadata badger-meta --payload fs-payload && \
-  dfsctl share create --name /export-s3 --metadata badger-meta --payload s3-payload"
+  dfsctl store block local add --name fs-payload --type filesystem --path /data/payload && \
+  dfsctl store block remote add --name s3-payload --type s3 --config '$S3_CONFIG' && \
+  dfsctl share create --name /export --metadata badger-meta --local fs-payload && \
+  dfsctl share create --name /export-s3 --metadata badger-meta --local fs-payload --remote s3-payload"
 
 # 4. Mount on client
 echo "[4/7] Mounting shares on client..."

@@ -260,12 +260,12 @@ func CreateBlockStoreFromConfig(ctx context.Context, storeType string, cfg inter
 		return blockmemory.New(), nil
 
 	case "filesystem":
-		return nil, errors.New("payload store type 'filesystem' removed in v4.0 -- use 'memory' or 's3'")
+		return nil, errors.New("block store type 'filesystem' removed in v4.0 -- use 'memory' or 's3'")
 
 	case "s3":
 		bucket, ok := config["bucket"].(string)
 		if !ok || bucket == "" {
-			return nil, errors.New("s3 payload store requires bucket")
+			return nil, errors.New("s3 block store requires bucket")
 		}
 
 		region := "us-east-1"
@@ -290,7 +290,7 @@ func CreateBlockStoreFromConfig(ctx context.Context, storeType string, cfg inter
 		})
 
 	default:
-		return nil, fmt.Errorf("unsupported payload store type: %s", storeType)
+		return nil, fmt.Errorf("unsupported block store type: %s", storeType)
 	}
 }
 

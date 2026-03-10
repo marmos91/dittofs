@@ -66,7 +66,7 @@ func TestSharesCRUD(t *testing.T) {
 		assert.Equal(t, shareName, share.Name, "Share name should match")
 		// Store IDs are UUIDs, not names - just verify they're set
 		assert.NotEmpty(t, share.MetadataStoreID, "Metadata store ID should be set")
-		assert.NotEmpty(t, share.PayloadStoreID, "Payload store ID should be set")
+		assert.NotEmpty(t, share.LocalBlockStoreID, "Local block store ID should be set")
 	})
 
 	// SHR-01: Create share with options
@@ -248,6 +248,6 @@ func TestSharesCRUD(t *testing.T) {
 
 		assert.Equal(t, created.Name, fetched.Name, "Names should match")
 		assert.Equal(t, created.MetadataStoreID, fetched.MetadataStoreID, "Metadata store IDs should match")
-		assert.Equal(t, created.PayloadStoreID, fetched.PayloadStoreID, "Payload store IDs should match")
+		assert.Equal(t, created.LocalBlockStoreID, fetched.LocalBlockStoreID, "Local block store IDs should match")
 	})
 }

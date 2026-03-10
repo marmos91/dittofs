@@ -104,7 +104,7 @@ create_block_stores() {
             ;;
         *-s3-legacy|*-fs)
             # Legacy profile names kept for CI compatibility.
-            # Filesystem payload store was removed in Phase 42; these use memory.
+            # Filesystem block store was removed in Phase 42; these use memory.
             $DFSCTL store block local add --name default --type memory
             ;;
         *-s3)

@@ -13,13 +13,13 @@ import (
 
 // Share represents a share returned from the API.
 type Share struct {
-	Name              string `json:"name"`
+	Name               string  `json:"name"`
 	MetadataStoreID    string  `json:"metadata_store_id"`
 	LocalBlockStoreID  string  `json:"local_block_store_id"`
 	RemoteBlockStoreID *string `json:"remote_block_store_id,omitempty"`
-	ReadOnly          bool   `json:"read_only"`
-	DefaultPermission string `json:"default_permission"`
-	Description       string `json:"description,omitempty"`
+	ReadOnly           bool    `json:"read_only"`
+	DefaultPermission  string  `json:"default_permission"`
+	Description        string  `json:"description,omitempty"`
 }
 
 // ShareOption is a functional option for share operations.
