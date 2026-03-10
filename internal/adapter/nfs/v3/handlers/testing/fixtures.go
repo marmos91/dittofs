@@ -131,7 +131,7 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 		Handler:         handler,
 		Registry:        reg,
 		MetadataService: reg.GetMetadataService(),
-		BlockStore:  reg.GetBlockStore(),
+		BlockStore:      reg.GetBlockStore(),
 		ShareName:       DefaultShareName,
 		RootHandle:      share.RootHandle,
 	}

@@ -484,4 +484,3 @@ func (s *MemoryStore) GetStoredFileSize(_ context.Context, payloadID string) (ui
 func (s *MemoryStore) ExistsOnDisk(_ context.Context, _ string, _ uint64) (bool, error) {
 	return false, nil
 }
-

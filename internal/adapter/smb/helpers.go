@@ -127,7 +127,7 @@ func handleRequest[Req smbRequest, Resp smbResponse](
 		if encErr != nil {
 			return &HandlerResult{Data: nil, Status: errorStatus}, encErr
 		}
-		return &HandlerResult{Data: encoded, Status: errorStatus}, err
+		return &HandlerResult{Data: encoded, Status: errorStatus}, nil
 	}
 
 	// ========================================================================

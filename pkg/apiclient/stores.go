@@ -22,7 +22,7 @@ type BlockStore struct {
 	Config json.RawMessage `json:"config,omitempty"`
 }
 
-// CreateStoreRequest is the request to create a metadata or payload store.
+// CreateStoreRequest is the request to create a metadata or block store.
 type CreateStoreRequest struct {
 	Name   string `json:"name"`
 	Type   string `json:"type"`

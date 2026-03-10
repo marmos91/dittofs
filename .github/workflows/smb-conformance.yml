@@ -158,7 +158,7 @@ jobs:
       - name: Add step summary
         if: always()
         run: |
-          RESULTS_DIR=$(ls -td test/smb-conformance/results/smbtorture-*/ 2>/dev/null | head -1)
+          RESULTS_DIR=$(ls -td test/smb-conformance/results/smbtorture-*/ 2>/dev/null | head -1 || true)
           if [ -n "$RESULTS_DIR" ] && [ -f "$RESULTS_DIR/summary.txt" ]; then
             echo "## smbtorture: ${{ matrix.profile }}" >> "$GITHUB_STEP_SUMMARY"
             cat "$RESULTS_DIR/summary.txt" >> "$GITHUB_STEP_SUMMARY"
@@ -214,7 +214,7 @@ jobs:
       - name: Add step summary
         if: always()
         run: |
-          RESULTS_DIR=$(ls -td test/smb-conformance/results/smbtorture-*/ 2>/dev/null | head -1)
+          RESULTS_DIR=$(ls -td test/smb-conformance/results/smbtorture-*/ 2>/dev/null | head -1 || true)
           if [ -n "$RESULTS_DIR" ] && [ -f "$RESULTS_DIR/summary.txt" ]; then
             echo "## smbtorture Kerberos" >> "$GITHUB_STEP_SUMMARY"
             cat "$RESULTS_DIR/summary.txt" >> "$GITHUB_STEP_SUMMARY"

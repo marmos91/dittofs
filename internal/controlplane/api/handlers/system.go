@@ -43,8 +43,13 @@ func (h *SystemHandler) DrainUploads(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.runtime.DrainAllUploads(ctx); err != nil {
 		logger.Error("Drain uploads failed", "error", err, "duration", time.Since(start))
-		WriteProblem(w, http.StatusGatewayTimeout, "Gateway Timeout",
-			"drain uploads did not complete within timeout: "+err.Error())
+		if ctx.Err() != nil {
+			WriteProblem(w, http.StatusGatewayTimeout, "Gateway Timeout",
+				"drain uploads did not complete within timeout: "+err.Error())
+		} else {
+			WriteProblem(w, http.StatusInternalServerError, "Internal Server Error",
+				"drain uploads failed: "+err.Error())
+		}
 		return
 	}
 

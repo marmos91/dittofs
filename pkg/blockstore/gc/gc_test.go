@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
-	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
 )
 
 // ============================================================================

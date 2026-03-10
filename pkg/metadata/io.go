@@ -436,8 +436,10 @@ func (s *MetadataService) flushPendingWrite(ctx *AuthContext, handle FileHandle,
 		if state.MaxSize > file.Size {
 			file.Size = state.MaxSize
 		}
-		file.Mtime = state.LastMtime
-		file.Ctime = state.LastMtime
+		if !state.LastMtime.IsZero() {
+			file.Mtime = state.LastMtime
+			file.Ctime = state.LastMtime
+		}
 		if state.ClearSetuidSetgid {
 			file.Mode &= ^uint32(0o6000)
 		}
@@ -514,7 +516,7 @@ func (s *MetadataService) PrewarmWriteCache(handle FileHandle, file *File) {
 // The method does NOT perform actual data reading. The protocol handler
 // coordinates between metadata and content stores.
 func (s *MetadataService) PrepareRead(ctx *AuthContext, handle FileHandle) (*ReadMetadata, error) {
-	store, err := s.storeForHandle(handle)
+	_, err := s.storeForHandle(handle)
 	if err != nil {
 		return nil, err
 	}
@@ -524,8 +526,8 @@ func (s *MetadataService) PrepareRead(ctx *AuthContext, handle FileHandle) (*Rea
 		return nil, err
 	}
 
-	// Get file entry
-	file, err := store.GetFile(ctx.Context, handle)
+	// Get file entry (use MetadataService.GetFile to merge pending write state)
+	file, err := s.GetFile(ctx.Context, handle)
 	if err != nil {
 		return nil, err
 	}

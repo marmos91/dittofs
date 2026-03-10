@@ -282,6 +282,11 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	}
 	data = data[:n]
 
+	// MS-SMB2: If available bytes < MinimumCount, return EOF
+	if req.MinimumCount > 0 && uint32(n) < req.MinimumCount {
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusEndOfFile}}, nil
+	}
+
 	logger.Debug("READ successful",
 		"path", openFile.Path,
 		"offset", req.Offset,

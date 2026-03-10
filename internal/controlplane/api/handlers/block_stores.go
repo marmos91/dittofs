@@ -37,12 +37,12 @@ type UpdateBlockStoreRequest struct {
 
 // BlockStoreResponse is the response body for block store endpoints.
 type BlockStoreResponse struct {
-	ID        string              `json:"id"`
-	Name      string              `json:"name"`
+	ID        string                `json:"id"`
+	Name      string                `json:"name"`
 	Kind      models.BlockStoreKind `json:"kind"`
-	Type      string              `json:"type"`
-	Config    string              `json:"config,omitempty"`
-	CreatedAt time.Time           `json:"created_at"`
+	Type      string                `json:"type"`
+	Config    string                `json:"config,omitempty"`
+	CreatedAt time.Time             `json:"created_at"`
 }
 
 // extractKind extracts the block store kind from the URL path parameter.
@@ -203,6 +203,10 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Type != nil {
+		if !validateBlockStoreType(bs.Kind, *req.Type) {
+			BadRequest(w, "Store type '"+*req.Type+"' is not valid for kind '"+string(bs.Kind)+"'")
+			return
+		}
 		bs.Type = *req.Type
 	}
 	if req.Config != nil {

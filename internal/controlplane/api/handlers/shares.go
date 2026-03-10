@@ -174,8 +174,8 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		ID:                 uuid.New().String(),
 		Name:               req.Name,
 		MetadataStoreID:    metaStore.ID,       // Use actual store ID (UUID), not name
-		LocalBlockStoreID:  localBlockStore.ID,  // Use actual store ID (UUID), not name
-		RemoteBlockStoreID: remoteBlockStoreID,  // Nullable
+		LocalBlockStoreID:  localBlockStore.ID, // Use actual store ID (UUID), not name
+		RemoteBlockStoreID: remoteBlockStoreID, // Nullable
 		ReadOnly:           req.ReadOnly,
 		DefaultPermission:  defaultPerm,
 		CreatedAt:          now,

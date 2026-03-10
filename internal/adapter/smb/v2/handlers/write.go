@@ -114,9 +114,8 @@ func DecodeWriteRequest(body []byte) (*WriteRequest, error) {
 		} else if len(body) > 48 && int(req.Length) <= len(body)-48 {
 			// Fallback: data might be right after the 48-byte fixed structure
 			req.Data = body[48 : 48+int(req.Length)]
-		} else if len(body) > 49 {
-			// Last resort: take whatever data is available after fixed part
-			req.Data = body[48:]
+		} else {
+			return nil, fmt.Errorf("write request body too short: need %d bytes, have %d", req.Length, len(body)-48)
 		}
 	}
 
@@ -255,7 +254,13 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Step 9: Prepare write operation
 	// ========================================================================
 
-	newSize := req.Offset + uint64(len(req.Data))
+	// Validate offset + length doesn't overflow
+	writeLen := uint64(len(req.Data))
+	newSize := req.Offset + writeLen
+	if newSize < req.Offset {
+		// Overflow
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusDiskFull}}, nil
+	}
 	writeOp, err := metaSvc.PrepareWrite(authCtx, openFile.MetadataHandle, newSize)
 	if err != nil {
 		logger.Debug("WRITE: prepare failed", "path", openFile.Path, "error", err)

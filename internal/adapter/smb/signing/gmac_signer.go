@@ -50,9 +50,9 @@ func (s *GMACSigner) Sign(message []byte) [SignatureSize]byte {
 	copy(msgCopy, message)
 	zeroSignatureField(msgCopy)
 
-	// Nonce = MessageId (8 bytes at offset 28) zero-padded to 12 bytes
+	// Nonce = MessageId (8 bytes at offset 24) zero-padded to 12 bytes per [MS-SMB2] 3.1.4.1
 	var nonce [12]byte
-	copy(nonce[:8], msgCopy[28:36])
+	copy(nonce[:8], msgCopy[24:32])
 
 	// GMAC = GCM with empty plaintext, message as AAD
 	tag := s.gcm.Seal(nil, nonce[:], nil, msgCopy)
