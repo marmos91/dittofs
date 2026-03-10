@@ -186,7 +186,6 @@ func TestMultiShareIsolation(t *testing.T) {
 
 		// Write 10 files to share A and 10 files to share B simultaneously
 		for i := 0; i < numFiles; i++ {
-			i := i
 			wg.Add(2)
 
 			go func() {

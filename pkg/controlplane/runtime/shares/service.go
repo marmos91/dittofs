@@ -731,8 +731,8 @@ type ShareCacheStats struct {
 
 // CacheStatsResponse holds aggregated and per-share cache statistics.
 type CacheStatsResponse struct {
-	Totals    engine.CacheStats  `json:"totals"`
-	PerShare  []ShareCacheStats  `json:"per_share,omitempty"`
+	Totals   engine.CacheStats `json:"totals"`
+	PerShare []ShareCacheStats `json:"per_share,omitempty"`
 }
 
 // EvictOptions controls which cache tiers to evict.
@@ -743,9 +743,9 @@ type EvictOptions struct {
 
 // EvictResult holds the result of a cache eviction operation.
 type EvictResult struct {
-	L1EntriesCleared int   `json:"l1_entries_cleared"`
-	LocalBlocksEvicted int `json:"local_blocks_evicted"`
-	BytesFreed       int64 `json:"bytes_freed"`
+	L1EntriesCleared   int   `json:"l1_entries_cleared"`
+	LocalBlocksEvicted int   `json:"local_blocks_evicted"`
+	BytesFreed         int64 `json:"bytes_freed"`
 }
 
 // GetCacheStats returns cache statistics, optionally filtered by share name.
@@ -848,19 +848,15 @@ func (s *Service) EvictCache(ctx context.Context, shareName string, opts EvictOp
 
 		// Evict local blocks (unless l1-only was requested)
 		if !opts.L1Only {
-			localStats := bs.Local().Stats()
-			beforeDisk := localStats.DiskUsed
+			beforeDisk := bs.Local().Stats().DiskUsed
 
-			// Evict all tracked files from local cache memory (in-memory dirty buffers).
-			// This drops all in-memory cached data for files in this share.
 			files := bs.Local().ListFiles()
 			for _, payloadID := range files {
 				_ = bs.Local().EvictMemory(ctx, payloadID)
 				result.LocalBlocksEvicted++
 			}
 
-			afterStats := bs.Local().Stats()
-			result.BytesFreed += beforeDisk - afterStats.DiskUsed
+			result.BytesFreed += beforeDisk - bs.Local().Stats().DiskUsed
 		}
 	}
 

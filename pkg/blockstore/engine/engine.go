@@ -288,17 +288,17 @@ func (bs *BlockStore) Syncer() *blocksync.Syncer { return bs.syncer }
 // CacheStats holds comprehensive cache statistics for a BlockStore.
 type CacheStats struct {
 	// Block counts by state
-	FileCount   int `json:"file_count"`
-	BlocksDirty int `json:"blocks_dirty"`
-	BlocksLocal int `json:"blocks_local"`
+	FileCount    int `json:"file_count"`
+	BlocksDirty  int `json:"blocks_dirty"`
+	BlocksLocal  int `json:"blocks_local"`
 	BlocksRemote int `json:"blocks_remote"`
 	BlocksTotal  int `json:"blocks_total"`
 
 	// Size info
-	LocalDiskUsed  int64 `json:"local_disk_used"`
-	LocalDiskMax   int64 `json:"local_disk_max"`
-	LocalMemUsed   int64 `json:"local_mem_used"`
-	LocalMemMax    int64 `json:"local_mem_max"`
+	LocalDiskUsed int64 `json:"local_disk_used"`
+	LocalDiskMax  int64 `json:"local_disk_max"`
+	LocalMemUsed  int64 `json:"local_mem_used"`
+	LocalMemMax   int64 `json:"local_mem_max"`
 
 	// L1 read cache
 	L1Entries  int   `json:"l1_entries"`
@@ -306,11 +306,11 @@ type CacheStats struct {
 	L1MaxBytes int64 `json:"l1_max_bytes"`
 
 	// Syncer / offloader status
-	HasRemote     bool `json:"has_remote"`
-	PendingSyncs  int  `json:"pending_syncs"`
-	PendingUploads int `json:"pending_uploads"`
-	CompletedSyncs int `json:"completed_syncs"`
-	FailedSyncs    int `json:"failed_syncs"`
+	HasRemote      bool `json:"has_remote"`
+	PendingSyncs   int  `json:"pending_syncs"`
+	PendingUploads int  `json:"pending_uploads"`
+	CompletedSyncs int  `json:"completed_syncs"`
+	FailedSyncs    int  `json:"failed_syncs"`
 }
 
 // GetCacheStats returns comprehensive cache statistics.
@@ -346,8 +346,7 @@ func (bs *BlockStore) EvictL1Cache() int {
 	if bs.readCache == nil {
 		return 0
 	}
-	stats := bs.readCache.Stats()
-	entries := stats.Entries
+	entries := bs.readCache.Stats().Entries
 	bs.readCache.Close()
 	return entries
 }
