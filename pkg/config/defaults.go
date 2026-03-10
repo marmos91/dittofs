@@ -92,6 +92,10 @@ func applyCacheDefaults(cfg *CacheConfig) {
 	if cfg.Size == 0 {
 		cfg.Size = bytesize.ByteSize(bytesize.GiB) // 1 GiB
 	}
+	// Default L1 read cache to 128MB per share
+	if cfg.ReadCacheSize == 0 {
+		cfg.ReadCacheSize = bytesize.ByteSize(128 * bytesize.MiB) // 128 MiB
+	}
 	// Path has no default - it's required and must be configured by user
 }
 
@@ -110,6 +114,11 @@ func applyOffloaderDefaults(cfg *OffloaderConfig) {
 	// FileCache on disk ensures durability. Set to e.g. "4MiB" to re-enable
 	// synchronous flush for small files if needed.
 	// UploadInterval and UploadDelay default to 0 (uses offloader defaults: 2s and 10s).
+
+	// Default prefetch workers to 4 (background workers for sequential prefetch into L1).
+	if cfg.PrefetchWorkers == 0 {
+		cfg.PrefetchWorkers = 4
+	}
 }
 
 // applyAdminDefaults sets admin user defaults.

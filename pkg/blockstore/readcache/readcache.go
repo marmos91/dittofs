@@ -175,13 +175,7 @@ func (c *ReadCache) InvalidateFile(payloadID string) {
 	}
 
 	for blockIdx := range idxSet {
-		key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
-		if elem, exists := c.entries[key]; exists {
-			entry := elem.Value.(*cacheEntry)
-			c.curBytes -= int64(entry.dataSize)
-			c.lru.Remove(elem)
-			delete(c.entries, key)
-		}
+		c.unlinkEntry(blockKey{payloadID: payloadID, blockIdx: blockIdx})
 	}
 	delete(c.byFile, payloadID)
 }
@@ -203,13 +197,7 @@ func (c *ReadCache) InvalidateAbove(payloadID string, threshold uint64) {
 
 	for blockIdx := range idxSet {
 		if blockIdx >= threshold {
-			key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
-			if elem, exists := c.entries[key]; exists {
-				entry := elem.Value.(*cacheEntry)
-				c.curBytes -= int64(entry.dataSize)
-				c.lru.Remove(elem)
-				delete(c.entries, key)
-			}
+			c.unlinkEntry(blockKey{payloadID: payloadID, blockIdx: blockIdx})
 			delete(idxSet, blockIdx)
 		}
 	}
@@ -257,12 +245,24 @@ func (c *ReadCache) evictLRU() {
 	c.removeEntry(back)
 }
 
-// removeEntry removes a list element from all data structures. Must be called under WLock.
-func (c *ReadCache) removeEntry(elem *list.Element) {
+// unlinkEntry removes an entry from the primary index and LRU list by key.
+// Does NOT touch the secondary index (byFile). Must be called under WLock.
+func (c *ReadCache) unlinkEntry(key blockKey) {
+	elem, ok := c.entries[key]
+	if !ok {
+		return
+	}
 	entry := elem.Value.(*cacheEntry)
 	c.curBytes -= int64(entry.dataSize)
 	c.lru.Remove(elem)
-	delete(c.entries, entry.key)
+	delete(c.entries, key)
+}
+
+// removeEntry removes a list element from all data structures including the
+// secondary index. Must be called under WLock.
+func (c *ReadCache) removeEntry(elem *list.Element) {
+	entry := elem.Value.(*cacheEntry)
+	c.unlinkEntry(entry.key)
 
 	// Clean up secondary index.
 	if idxSet, ok := c.byFile[entry.key.payloadID]; ok {

@@ -126,7 +126,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// Set per-share defaults BEFORE loading shares (AddShare creates BlockStores).
 	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{
-		MaxSize: uint64(cfg.Cache.Size),
+		MaxSize:        uint64(cfg.Cache.Size),
+		ReadCacheBytes: int64(cfg.Cache.ReadCacheSize),
 	})
 	rt.SetSyncerDefaults(&shares.SyncerDefaults{
 		ParallelUploads:    cfg.Offloader.ParallelUploads,
@@ -135,8 +136,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 		SmallFileThreshold: clampToInt64(uint64(cfg.Offloader.SmallFileThreshold)),
 		UploadInterval:     cfg.Offloader.UploadInterval,
 		UploadDelay:        cfg.Offloader.UploadDelay,
+		PrefetchWorkers:    cfg.Offloader.PrefetchWorkers,
 	})
 	logger.Info("Per-share BlockStore defaults configured", "max_size", cfg.Cache.Size)
+	logger.Info("L1 read cache configuration", "read_cache_size", cfg.Cache.ReadCacheSize, "prefetch_workers", cfg.Offloader.PrefetchWorkers)
 
 	// Load shares (per-share BlockStores are created during AddShare).
 	if err := runtime.LoadSharesFromStore(ctx, rt, cpStore); err != nil {

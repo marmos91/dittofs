@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: BlockStore Unification Refactor
 status: in-progress
-stopped_at: Completed 47-01-PLAN.md
-last_updated: "2026-03-10T12:45:24.923Z"
-last_activity: 2026-03-10 — Phase 47 Plan 01 complete
+stopped_at: Completed 47-02-PLAN.md
+last_updated: "2026-03-10T12:57:20Z"
+last_activity: 2026-03-10 — Phase 47 Plan 02 complete
 progress:
   total_phases: 22
   completed_phases: 7
-  total_plans: 19
-  completed_plans: 18
+  total_plans: 20
+  completed_plans: 19
   percent: 99
 ---
 
@@ -27,11 +27,11 @@ See: .planning/PROJECT.md (updated 2026-03-09)
 
 Phase: 47 of 49 (L1 Read Cache and Prefetch)
 Milestone: v4.0 BlockStore Unification Refactor
-Plan: 1 of 1 complete (47-01 done, more plans may follow)
-Status: Phase 47 Plan 01 complete
-Last activity: 2026-03-10 — Phase 47 Plan 01 complete
+Plan: 2 of 2 complete (47-01 and 47-02 done)
+Status: Phase 47 Plan 02 complete
+Last activity: 2026-03-10 — Phase 47 Plan 02 complete
 
-Progress: [██████████] 99% (133/134 total plans across all milestones)
+Progress: [██████████] 99% (134/135 total plans across all milestones)
 
 ## Completed Milestones
 
@@ -55,7 +55,7 @@ Progress: [██████████] 99% (133/134 total plans across all m
 - 9 phases defined (41-49)
 - 55 requirements mapped
 - Phases 41-46 complete
-- 18 plans completed (41-01, 41-02, 42-01, 42-02, 43-01, 43-02, 43-03, 44-01, 44-02, 44-03, 45-01, 45-02, 45-03, 45-04, 46-01, 46-02, 46-03, 47-01)
+- 19 plans completed (41-01, 41-02, 42-01, 42-02, 43-01, 43-02, 43-03, 44-01, 44-02, 44-03, 45-01, 45-02, 45-03, 45-04, 46-01, 46-02, 46-03, 47-01, 47-02)
 
 ## Accumulated Context
 
@@ -104,6 +104,11 @@ Recent decisions affecting v4.0 work:
 - [Phase 47-01]: Adaptive prefetch depth 1->2->4->8 capped at maxPrefetchDepth=8 (Linux readahead pattern)
 - [Phase 47-01]: Dependency-injected LoadBlockFn avoids import cycles with engine package
 - [Phase 47-01]: NewPrefetcher returns nil if cache is nil (can't prefetch without cache target)
+- [Phase 47-02]: Prefetcher created in Start() not New() to avoid chicken-and-egg with loadBlock closure
+- [Phase 47-02]: L1 only used for primary reads (no COW source) to avoid caching stale data
+- [Phase 47-02]: Auto-promote reads from local store after flush (OS page cache makes this free I/O)
+- [Phase 47-02]: ReadCacheBytes in LocalStoreDefaults, PrefetchWorkers in SyncerDefaults (follows existing pattern)
+- [Phase 47-02]: Default ReadCacheSize=128MB, PrefetchWorkers=4 for good out-of-box performance
 
 ### Pending Todos
 
@@ -115,7 +120,7 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-10T12:45:24.920Z
-Stopped at: Completed 47-01-PLAN.md
+Last session: 2026-03-10T12:57:20Z
+Stopped at: Completed 47-02-PLAN.md
 Resume file: None
-Next action: Continue Phase 47 with Plan 02 if defined.
+Next action: Continue Phase 47 with Plan 03 if defined, or proceed to Phase 48.

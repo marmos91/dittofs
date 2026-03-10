@@ -172,6 +172,13 @@ type CacheConfig struct {
 	// Supports human-readable formats: "512MB", "1GB", "2Gi"
 	// Default: 1GB
 	MaxPendingSize bytesize.ByteSize `mapstructure:"max_pending_size" yaml:"max_pending_size,omitempty"`
+
+	// ReadCacheSize is the per-share L1 read cache memory budget.
+	// Caches hot blocks in memory to avoid disk I/O on repeated reads.
+	// Set to 0 to disable L1 caching.
+	// Supports human-readable formats: "128MB", "256Mi"
+	// Default: 128MB
+	ReadCacheSize bytesize.ByteSize `mapstructure:"read_cache_size" yaml:"read_cache_size,omitempty"`
 }
 
 // OffloaderConfig configures the background offloader that transfers cached
@@ -209,6 +216,12 @@ type OffloaderConfig struct {
 	// Flush() ignores this delay and uploads immediately.
 	// Default: 10s
 	UploadDelay time.Duration `mapstructure:"upload_delay" yaml:"upload_delay,omitempty"`
+
+	// PrefetchWorkers is the number of background workers for sequential prefetch.
+	// Prefetch detects sequential reads and pre-loads upcoming blocks into L1 cache.
+	// Set to 0 to disable prefetching.
+	// Default: 4
+	PrefetchWorkers int `mapstructure:"prefetch_workers" yaml:"prefetch_workers,omitempty"`
 }
 
 // AdminConfig contains initial admin user configuration for bootstrap.

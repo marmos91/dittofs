@@ -19,6 +19,4 @@
 // adaptive depth (1->2->4->8 blocks) following the Linux readahead pattern.
 // Non-blocking submit drops requests when the worker channel is full,
 // providing natural backpressure.
-//
-// Phase 47: L1 Read Cache and Prefetch.
 package readcache

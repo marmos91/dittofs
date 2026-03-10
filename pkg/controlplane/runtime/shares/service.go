@@ -117,6 +117,9 @@ type BlockStoreConfigProvider interface {
 type LocalStoreDefaults struct {
 	MaxSize   uint64 // Maximum local store size per share (0 = unlimited)
 	MaxMemory int64  // Memory budget for dirty buffers per share (0 = 256MB)
+
+	// ReadCacheBytes is the per-share L1 read cache budget in bytes (0 = disabled).
+	ReadCacheBytes int64
 }
 
 // SyncerDefaults holds default syncer configuration applied to all shares.
@@ -127,6 +130,9 @@ type SyncerDefaults struct {
 	SmallFileThreshold int64
 	UploadInterval     time.Duration
 	UploadDelay        time.Duration
+
+	// PrefetchWorkers is the number of L1 prefetch workers per share (0 = disabled).
+	PrefetchWorkers int
 }
 
 // sharedRemote holds a reference-counted remote store shared across shares.
@@ -168,6 +174,22 @@ func New() *Service {
 func sanitizeShareName(name string) string {
 	name = strings.TrimPrefix(name, "/")
 	return url.PathEscape(name)
+}
+
+// readCacheBytesFromDefaults returns the L1 read cache budget from defaults (0 if nil).
+func readCacheBytesFromDefaults(defaults *LocalStoreDefaults) int64 {
+	if defaults == nil {
+		return 0
+	}
+	return defaults.ReadCacheBytes
+}
+
+// prefetchWorkersFromDefaults returns the prefetch worker count from defaults (0 if nil).
+func prefetchWorkersFromDefaults(defaults *SyncerDefaults) int {
+	if defaults == nil {
+		return 0
+	}
+	return defaults.PrefetchWorkers
 }
 
 // buildSyncerConfigFromDefaults merges SyncerDefaults into a blocksync.Config.
@@ -408,11 +430,13 @@ func (s *Service) createBlockStoreForShare(
 		}
 	}
 
-	// Create BlockStore.
+	// Create BlockStore with L1 cache settings from defaults.
 	bs, err := engine.New(engine.Config{
-		Local:  localStore,
-		Remote: engineRemote,
-		Syncer: syncer,
+		Local:           localStore,
+		Remote:          engineRemote,
+		Syncer:          syncer,
+		ReadCacheBytes:  readCacheBytesFromDefaults(localStoreDefaults),
+		PrefetchWorkers: prefetchWorkersFromDefaults(syncerDefaults),
 	})
 	if err != nil {
 		cleanup()
