@@ -140,10 +140,6 @@ controlplane:
 #   - ParallelSyncs: max(4, CPU count)
 #   - ParallelFetches: max(8, CPU count * 2)
 #
-# Override per-share via dfsctl:
-#   dfsctl share create --name /data --metadata my-meta --local my-local \
-#     --local-store-size 4Gi --l1-cache-size 512Mi
-#
 # View current deduced values:
 #   dfs config show --deduced
 

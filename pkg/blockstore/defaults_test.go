@@ -1,6 +1,7 @@
 package blockstore
 
 import (
+	"math"
 	"strings"
 	"testing"
 )
@@ -144,6 +145,44 @@ func TestDeduceDefaults_String(t *testing.T) {
 	for _, want := range []string{"LocalStoreSize", "L1CacheSize", "ParallelSyncs", "ParallelFetches", "MaxPendingSize"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("String() missing %q: %s", want, s)
+		}
+	}
+}
+
+func TestHitFloors_OnlyReportsClamped(t *testing.T) {
+	// 4GiB/4CPU: parallelSyncs=4 and parallelFetches=8 naturally equal
+	// the minimums but are NOT clamped. HitFloors should not report them.
+	d := &mockDetector{memory: 4 * gib, cpus: 4}
+	got := DeduceDefaults(d)
+	floors := got.HitFloors()
+	if len(floors) != 0 {
+		t.Errorf("expected no floors on 4GiB/4CPU, got %v", floors)
+	}
+
+	// 256MiB/1CPU: everything is clamped.
+	d2 := &mockDetector{memory: 256 * mib, cpus: 1}
+	got2 := DeduceDefaults(d2)
+	floors2 := got2.HitFloors()
+	if len(floors2) != 4 {
+		t.Errorf("expected 4 floors on 256MiB/1CPU, got %d: %v", len(floors2), floors2)
+	}
+}
+
+func TestClampToInt64(t *testing.T) {
+	tests := []struct {
+		input uint64
+		want  int64
+	}{
+		{0, 0},
+		{42, 42},
+		{uint64(math.MaxInt64), math.MaxInt64},
+		{uint64(math.MaxInt64) + 1, math.MaxInt64},
+		{math.MaxUint64, math.MaxInt64},
+	}
+	for _, tt := range tests {
+		got := ClampToInt64(tt.input)
+		if got != tt.want {
+			t.Errorf("ClampToInt64(%d) = %d, want %d", tt.input, got, tt.want)
 		}
 	}
 }

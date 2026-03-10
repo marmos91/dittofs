@@ -204,6 +204,12 @@ func (p *Prefetcher) worker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case req := <-p.reqCh:
+			// Check cancellation immediately after dequeue to avoid
+			// slow I/O when Close() has already been called.
+			if ctx.Err() != nil {
+				return
+			}
+
 			// Skip if already in L1 cache.
 			if p.cache.Contains(req.payloadID, req.blockIdx) {
 				continue

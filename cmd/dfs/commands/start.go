@@ -154,7 +154,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// Set per-share defaults BEFORE loading shares (AddShare creates BlockStores).
 	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{
 		MaxSize:        deduced.LocalStoreSize,
-		MaxMemory:      int64(deduced.MaxPendingSize),
+		MaxMemory:      blockstore.ClampToInt64(deduced.MaxPendingSize),
 		ReadCacheBytes: deduced.L1CacheSize,
 	})
 	rt.SetSyncerDefaults(&shares.SyncerDefaults{

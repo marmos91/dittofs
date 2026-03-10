@@ -61,7 +61,10 @@ func resolveProcessCgroup() (string, error) {
 		// cgroup v2 unified hierarchy: "0::/path"
 		parts := strings.SplitN(line, ":", 3)
 		if len(parts) == 3 && parts[0] == "0" && parts[1] == "" {
-			return filepath.Join("/sys/fs/cgroup", parts[2]), nil
+			// parts[2] is typically an absolute path like "/kubepods/...".
+			// Trim the leading "/" so filepath.Join doesn't discard the prefix.
+			cgroupRelPath := strings.TrimPrefix(filepath.Clean(parts[2]), "/")
+			return filepath.Join("/sys/fs/cgroup", cgroupRelPath), nil
 		}
 	}
 	return "", errors.New("cgroup v2 unified hierarchy not found in /proc/self/cgroup")
