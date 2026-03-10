@@ -71,9 +71,10 @@ type WriteResponse struct {
 // DecodeWriteRequest parses an SMB2 WRITE request from wire format [MS-SMB2] 2.2.21.
 // It extracts all fields including the variable-length data buffer, whose
 // location is determined by DataOffset (relative to SMB2 header).
-// Returns an error if the body is less than 49 bytes.
+// The fixed structure is 48 bytes (StructureSize=49 includes 1-byte Buffer placeholder).
+// Returns an error if the body is less than 48 bytes.
 func DecodeWriteRequest(body []byte) (*WriteRequest, error) {
-	if len(body) < 49 {
+	if len(body) < 48 {
 		return nil, fmt.Errorf("WRITE request too short: %d bytes", len(body))
 	}
 
@@ -258,8 +259,8 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	writeLen := uint64(len(req.Data))
 	newSize := req.Offset + writeLen
 	if newSize < req.Offset {
-		// Overflow
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusDiskFull}}, nil
+		// Overflow - invalid parameter, not a disk space issue
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 	}
 	writeOp, err := metaSvc.PrepareWrite(authCtx, openFile.MetadataHandle, newSize)
 	if err != nil {

@@ -3,6 +3,7 @@ package signing
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"encoding/binary"
 )
 
 // GMACSigner implements the Signer interface using AES-128-GMAC.
@@ -10,8 +11,8 @@ import (
 // SIGNING_CAPABILITIES negotiate context.
 //
 // GMAC = AES-GCM with empty plaintext, message as AAD.
-// Nonce is derived from the MessageId field (bytes 28-35 of SMB2 header),
-// zero-padded to 12 bytes.
+// Nonce is derived from the MessageId field (bytes 24-31 of SMB2 header)
+// plus server/cancel flag bits in byte 8.
 type GMACSigner struct {
 	key [KeySize]byte
 	gcm cipher.AEAD
@@ -39,7 +40,12 @@ func NewGMACSigner(key []byte) *GMACSigner {
 
 // Sign computes the GMAC signature for an SMB2 message.
 // The signature field (bytes 48-63) is zeroed before computation.
-// Nonce = MessageId (8 bytes at offset 28) zero-padded to 12 bytes.
+//
+// Per [MS-SMB2] 3.1.4.1, the 12-byte nonce is constructed as:
+//   - Bytes 0-7: MessageId (8 bytes at header offset 24)
+//   - Byte 8: bit 0 = 1 if sender is server (FlagResponse set), 0 if client;
+//     bit 1 = 1 if SMB2 CANCEL, 0 otherwise; bits 2-7 = 0
+//   - Bytes 9-11: zero
 func (s *GMACSigner) Sign(message []byte) [SignatureSize]byte {
 	var sig [SignatureSize]byte
 	if len(message) < SMB2HeaderSize {
@@ -50,9 +56,19 @@ func (s *GMACSigner) Sign(message []byte) [SignatureSize]byte {
 	copy(msgCopy, message)
 	zeroSignatureField(msgCopy)
 
-	// Nonce = MessageId (8 bytes at offset 24) zero-padded to 12 bytes per [MS-SMB2] 3.1.4.1
+	// Nonce: 8 bytes MessageId (offset 24) + 4 bytes flags
 	var nonce [12]byte
-	copy(nonce[:8], msgCopy[24:32])
+	copy(nonce[:8], msgCopy[24:32]) // MessageId at header offset 24
+
+	// Byte 8: bit 0 = server sender, bit 1 = cancel request
+	flags := binary.LittleEndian.Uint32(msgCopy[16:20])
+	if flags&0x00000001 != 0 { // SMB2_FLAGS_SERVER_TO_REDIR (response)
+		nonce[8] |= 0x01
+	}
+	command := binary.LittleEndian.Uint16(msgCopy[12:14])
+	if command == 0x000C { // SMB2 CANCEL
+		nonce[8] |= 0x02
+	}
 
 	// GMAC = GCM with empty plaintext, message as AAD
 	tag := s.gcm.Seal(nil, nonce[:], nil, msgCopy)
