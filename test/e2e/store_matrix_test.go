@@ -45,8 +45,6 @@ func TestStoreMatrixOperations(t *testing.T) {
 	matrix := getStoreMatrix(testing.Short())
 
 	for _, sc := range matrix {
-		sc := sc // capture for closure
-
 		t.Run(sc.testName(), func(t *testing.T) {
 			if sc.needsPostgres() && !postgresAvailable {
 				t.Skip("Skipping: PostgreSQL container not available")

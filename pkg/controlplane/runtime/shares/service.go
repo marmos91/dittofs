@@ -176,22 +176,6 @@ func sanitizeShareName(name string) string {
 	return url.PathEscape(name)
 }
 
-// readCacheBytesFromDefaults returns the L1 read cache budget from defaults (0 if nil).
-func readCacheBytesFromDefaults(defaults *LocalStoreDefaults) int64 {
-	if defaults == nil {
-		return 0
-	}
-	return defaults.ReadCacheBytes
-}
-
-// prefetchWorkersFromDefaults returns the prefetch worker count from defaults (0 if nil).
-func prefetchWorkersFromDefaults(defaults *SyncerDefaults) int {
-	if defaults == nil {
-		return 0
-	}
-	return defaults.PrefetchWorkers
-}
-
 // buildSyncerConfigFromDefaults merges SyncerDefaults into a blocksync.Config.
 func buildSyncerConfigFromDefaults(defaults *SyncerDefaults) blocksync.Config {
 	cfg := blocksync.DefaultConfig()
@@ -423,12 +407,21 @@ func (s *Service) createBlockStoreForShare(
 		}
 	}
 
+	var readCacheBytes int64
+	if localStoreDefaults != nil {
+		readCacheBytes = localStoreDefaults.ReadCacheBytes
+	}
+	var prefetchWorkers int
+	if syncerDefaults != nil {
+		prefetchWorkers = syncerDefaults.PrefetchWorkers
+	}
+
 	bs, err := engine.New(engine.Config{
 		Local:           localStore,
 		Remote:          engineRemote,
 		Syncer:          syncer,
-		ReadCacheBytes:  readCacheBytesFromDefaults(localStoreDefaults),
-		PrefetchWorkers: prefetchWorkersFromDefaults(syncerDefaults),
+		ReadCacheBytes:  readCacheBytes,
+		PrefetchWorkers: prefetchWorkers,
 	})
 	if err != nil {
 		cleanup()
@@ -801,7 +794,7 @@ func (s *Service) EvictCache(ctx context.Context, shareName string, opts EvictOp
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var shares []*Share
+	var targets []*Share
 	if shareName != "" {
 		share, exists := s.registry[shareName]
 		if !exists {
@@ -810,18 +803,18 @@ func (s *Service) EvictCache(ctx context.Context, shareName string, opts EvictOp
 		if share.BlockStore == nil {
 			return nil, fmt.Errorf("share %q has no block store configured", shareName)
 		}
-		shares = []*Share{share}
+		targets = []*Share{share}
 	} else {
 		for _, share := range s.registry {
 			if share.BlockStore != nil {
-				shares = append(shares, share)
+				targets = append(targets, share)
 			}
 		}
 	}
 
 	var result EvictResult
 
-	for _, share := range shares {
+	for _, share := range targets {
 		bs := share.BlockStore
 
 		if !opts.L1Only && !bs.HasRemoteStore() {
