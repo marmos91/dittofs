@@ -29,43 +29,6 @@ type (
 	AuxiliaryServer = lifecycle.AuxiliaryServer
 )
 
-// CacheConfig holds file cache path and size limit.
-// Kept here (instead of pkg/config) to avoid import cycles.
-type CacheConfig struct {
-	Path           string // Directory for the cache block files
-	Size           uint64 // Maximum cache size in bytes (0 = unlimited)
-	MaxPendingSize uint64 // Maximum pending (dirty) data size (0 = default 2GB)
-}
-
-// SyncerConfig holds syncer settings for background data transfer.
-// Kept here (instead of pkg/config) to avoid import cycles.
-type SyncerConfig struct {
-	ParallelUploads    int           // Concurrent block uploads (0 = default 16)
-	ParallelDownloads  int           // Concurrent block downloads per file (0 = default 32)
-	PrefetchBlocks     int           // Blocks to prefetch ahead (0 = default 64)
-	SmallFileThreshold int64         // Sync flush threshold in bytes (0 = disabled)
-	UploadInterval     time.Duration // Periodic upload scan interval (0 = default 2s)
-	UploadDelay        time.Duration // Min age before upload (0 = default 10s)
-}
-
-type blockStoreHelper struct {
-	rt *Runtime
-}
-
-func (h *blockStoreHelper) EnsureBlockStore(ctx context.Context) error {
-	return h.rt.EnsureBlockStore(ctx)
-}
-
-func (h *blockStoreHelper) HasBlockStore() bool {
-	h.rt.mu.RLock()
-	defer h.rt.mu.RUnlock()
-	return h.rt.blockStore != nil
-}
-
-func (h *blockStoreHelper) HasStore() bool {
-	return h.rt.store != nil
-}
-
 type shareIdentityProvider struct {
 	sharesSvc *shares.Service
 }
@@ -90,7 +53,6 @@ type Runtime struct {
 	store store.Store
 
 	metadataService *metadata.MetadataService
-	blockStore      *engine.BlockStore
 
 	adaptersSvc  *adapters.Service
 	storesSvc    *stores.Service
@@ -99,9 +61,9 @@ type Runtime struct {
 	identitySvc  *identity.Service
 	mountTracker *MountTracker
 
-	cacheConfig     *CacheConfig
-	syncerConfig    *SyncerConfig
-	settingsWatcher *SettingsWatcher
+	localStoreDefaults *shares.LocalStoreDefaults
+	syncerDefaults     *shares.SyncerDefaults
+	settingsWatcher    *SettingsWatcher
 
 	adapterProviders   map[string]any
 	adapterProvidersMu sync.RWMutex
@@ -217,7 +179,11 @@ func (r *Runtime) CloseMetadataStores() {
 // --- Share Management (delegated to shares.Service) ---
 
 func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
-	return r.sharesSvc.AddShare(ctx, config, r.storesSvc, r.metadataService, &blockStoreHelper{rt: r})
+	r.mu.RLock()
+	localDefaults := r.localStoreDefaults
+	syncDefaults := r.syncerDefaults
+	r.mu.RUnlock()
+	return r.sharesSvc.AddShare(ctx, config, r.storesSvc, r.metadataService, r.store, localDefaults, syncDefaults)
 }
 
 func (r *Runtime) RemoveShare(name string) error {
@@ -254,6 +220,22 @@ func (r *Runtime) GetShareNameForHandle(ctx context.Context, handle metadata.Fil
 
 func (r *Runtime) CountShares() int {
 	return r.sharesSvc.CountShares()
+}
+
+// GetBlockStoreForHandle resolves the per-share BlockStore from a file handle.
+func (r *Runtime) GetBlockStoreForHandle(ctx context.Context, handle metadata.FileHandle) (*engine.BlockStore, error) {
+	shareName, err := r.sharesSvc.GetShareNameForHandle(ctx, handle)
+	if err != nil {
+		return nil, err
+	}
+	share, err := r.sharesSvc.GetShare(shareName)
+	if err != nil {
+		return nil, err
+	}
+	if share.BlockStore == nil {
+		return nil, fmt.Errorf("share %q has no block store configured", shareName)
+	}
+	return share.BlockStore, nil
 }
 
 // --- Lifecycle (delegated to lifecycle.Service) ---
@@ -312,46 +294,28 @@ func (r *Runtime) ListMounts() []*LegacyMountInfo {
 
 func (r *Runtime) Store() store.Store                            { return r.store }
 func (r *Runtime) GetMetadataService() *metadata.MetadataService { return r.metadataService }
-func (r *Runtime) GetBlockStore() *engine.BlockStore             { return r.blockStore }
 
 // SIDMapper returns the machine SID mapper for Windows identity mapping.
 // Returns nil if the runtime has not been started yet (Serve not called).
 func (r *Runtime) SIDMapper() *sid.SIDMapper { return r.lifecycleSvc.SIDMapper() }
 
-func (r *Runtime) SetBlockStore(bs *engine.BlockStore) {
+// SetLocalStoreDefaults sets the default sizing for per-share local stores.
+func (r *Runtime) SetLocalStoreDefaults(cfg *shares.LocalStoreDefaults) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.blockStore = bs
+	r.localStoreDefaults = cfg
 }
 
-func (r *Runtime) SetCacheConfig(cfg *CacheConfig) {
+// SetSyncerDefaults sets the default syncer configuration for per-share BlockStores.
+func (r *Runtime) SetSyncerDefaults(cfg *shares.SyncerDefaults) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.cacheConfig = cfg
+	r.syncerDefaults = cfg
 }
 
-func (r *Runtime) GetCacheConfig() *CacheConfig {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.cacheConfig
-}
-
-func (r *Runtime) SetSyncerConfig(cfg *SyncerConfig) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.syncerConfig = cfg
-}
-
-// DrainAllUploads waits for all in-flight uploads across all files to complete.
-// Returns nil if no block store is configured or all uploads drained successfully.
+// DrainAllUploads waits for all in-flight uploads across all per-share BlockStores to complete.
 func (r *Runtime) DrainAllUploads(ctx context.Context) error {
-	r.mu.RLock()
-	bs := r.blockStore
-	r.mu.RUnlock()
-	if bs == nil {
-		return nil
-	}
-	return bs.DrainAllUploads(ctx)
+	return r.sharesSvc.DrainAllBlockStores(ctx)
 }
 
 func (r *Runtime) GetUserStore() models.UserStore         { return r.store }
