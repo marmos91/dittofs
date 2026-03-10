@@ -244,7 +244,7 @@ Plans:
   4. pkg/blockstore/local/memory/ created for test MemoryLocalStore
   5. pkg/payload/store/s3/ moved to pkg/blockstore/remote/s3/
   6. pkg/payload/store/memory/ moved to pkg/blockstore/remote/memory/
-  7. pkg/payload/offloader/ moved to pkg/blockstore/sync/
+  7. pkg/payload/offloader/ moved to pkg/blockstore/offloader/
   8. pkg/payload/gc/ moved to pkg/blockstore/gc/
   9. pkg/blockstore/blockstore.go orchestrator absorbs PayloadService responsibilities
   10. All consumer imports updated (NFS handlers, SMB handlers, runtime, shares)
@@ -270,9 +270,9 @@ Plans:
 **Verification**: `go build ./...` && `go test ./pkg/controlplane/...` && multi-share E2E test
 **Plans**: 3 plans
 Plans:
-- [ ] 46-01-PLAN.md — shares.Service refactor with per-share BlockStore lifecycle, remote store cache, factory interfaces
-- [ ] 46-02-PLAN.md — NFS v3/v4, SMB, API handler updates to GetBlockStoreForHandle
-- [ ] 46-03-PLAN.md — Remove global EnsureBlockStore/GetBlockStore/SetBlockStore, update docs
+- [x] 46-01-PLAN.md — shares.Service refactor with per-share BlockStore lifecycle, remote store cache, factory interfaces
+- [x] 46-02-PLAN.md — NFS v3/v4, SMB, API handler updates to GetBlockStoreForHandle
+- [x] 46-03-PLAN.md — Remove global EnsureBlockStore/GetBlockStore/SetBlockStore, update docs
 
 ### Phase 47: L1 Read Cache and Prefetch
 **Goal**: Add read-through LRU cache with sequential prefetch for hot blocks
@@ -285,7 +285,10 @@ Plans:
   4. Prefetch worker pool bounded, non-blocking, avoids cache pollution
   5. Sequential read benchmark shows improved throughput with L1 cache
 **Verification**: `go test ./pkg/blockstore/...` && sequential read benchmark
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 47-01-PLAN.md — ReadCache LRU type + Prefetcher sequential detector in pkg/blockstore/readcache/
+- [ ] 47-02-PLAN.md — Engine integration, config plumbing, auto-promote on flush
 
 ### Phase 48: Auto-Deduced Configuration
 **Goal**: Derive buffer/cache sizes and concurrency from system resources
@@ -562,8 +565,8 @@ v3.8 (33-40.5) -> v4.0 (41-49) -> v4.1 (50-56) -> v4.2 (57-62)
 | 43. Local-Only Block Management | v4.0 | 2/2 | Complete | 2026-03-09 |
 | 44. Data Model and API/CLI | v4.0 | 3/3 | Complete | 2026-03-09 |
 | 45. Package Restructure | v4.0 | 4/4 | Complete | 2026-03-09 |
-| 46. Per-Share Block Store Wiring | 3/3 | Complete    | 2026-03-10 | - |
-| 47. L1 Read Cache and Prefetch | v4.0 | 0/? | Not started | - |
+| 46. Per-Share Block Store Wiring | v4.0 | 3/3 | Complete | 2026-03-10 |
+| 47. L1 Read Cache and Prefetch | v4.0 | 0/2 | Not started | - |
 | 48. Auto-Deduced Configuration | v4.0 | 0/? | Not started | - |
 | 49. Testing and Documentation | v4.0 | 0/? | Not started | - |
 | 50. Server-Side Copy | v4.1 | 0/? | Not started | - |
