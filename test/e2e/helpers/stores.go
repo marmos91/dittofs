@@ -344,4 +344,3 @@ func (r *CLIRunner) DeleteRemoteBlockStore(name string) error {
 	_, err := r.Run("store", "block", "remote", "remove", name, "--force")
 	return err
 }
-

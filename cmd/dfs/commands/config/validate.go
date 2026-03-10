@@ -74,7 +74,7 @@ func checkLegacyPayloadKey(configPath string) []string {
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var warnings []string
 	scanner := bufio.NewScanner(f)

@@ -47,25 +47,25 @@ func (sc matrixStoreConfig) hasRemote() bool {
 // 3 metadata types x 2 local types x 3 remote types.
 var storeMatrix3D = []matrixStoreConfig{
 	// memory metadata (6 combos)
-	{"memory", "fs", "none"},   // MTX-01: local-only, fast
-	{"memory", "fs", "memory"}, // MTX-02: with in-memory remote
-	{"memory", "fs", "s3"},     // MTX-03: with S3 remote
+	{"memory", "fs", "none"},       // MTX-01: local-only, fast
+	{"memory", "fs", "memory"},     // MTX-02: with in-memory remote
+	{"memory", "fs", "s3"},         // MTX-03: with S3 remote
 	{"memory", "memory", "none"},   // MTX-04: fully in-memory
 	{"memory", "memory", "memory"}, // MTX-05: all memory
 	{"memory", "memory", "s3"},     // MTX-06: memory local + S3
 
 	// badger metadata (6 combos)
-	{"badger", "fs", "none"},   // MTX-07: persistent meta, local-only
-	{"badger", "fs", "memory"}, // MTX-08: persistent meta + memory remote
-	{"badger", "fs", "s3"},     // MTX-09: persistent meta + S3
+	{"badger", "fs", "none"},       // MTX-07: persistent meta, local-only
+	{"badger", "fs", "memory"},     // MTX-08: persistent meta + memory remote
+	{"badger", "fs", "s3"},         // MTX-09: persistent meta + S3
 	{"badger", "memory", "none"},   // MTX-10: persistent meta, memory local
 	{"badger", "memory", "memory"}, // MTX-11: persistent meta + memory everywhere
 	{"badger", "memory", "s3"},     // MTX-12: persistent meta + S3
 
 	// postgres metadata (6 combos)
-	{"postgres", "fs", "none"},   // MTX-13: distributed meta, local-only
-	{"postgres", "fs", "memory"}, // MTX-14: distributed meta + memory remote
-	{"postgres", "fs", "s3"},     // MTX-15: full production stack
+	{"postgres", "fs", "none"},       // MTX-13: distributed meta, local-only
+	{"postgres", "fs", "memory"},     // MTX-14: distributed meta + memory remote
+	{"postgres", "fs", "s3"},         // MTX-15: full production stack
 	{"postgres", "memory", "none"},   // MTX-16: distributed meta, memory local
 	{"postgres", "memory", "memory"}, // MTX-17: distributed meta + memory everywhere
 	{"postgres", "memory", "s3"},     // MTX-18: distributed meta + S3

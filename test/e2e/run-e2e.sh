@@ -239,6 +239,10 @@ if [[ "$LOCAL_ONLY" == "true" ]]; then
     export DITTOFS_E2E_LOCAL_ONLY="1"
 fi
 
+if [[ "$WITH_REMOTE" == "true" ]]; then
+    export DITTOFS_E2E_WITH_REMOTE="1"
+fi
+
 # =============================================================================
 # Localstack management (for S3 tests)
 # =============================================================================
@@ -304,6 +308,7 @@ log_info "S3:            ${USE_S3}"
 log_info "Race:          ${RACE}"
 log_info "Portmap:       ${PORTMAP}"
 log_info "Local only:    ${LOCAL_ONLY}"
+log_info "With remote:   ${WITH_REMOTE}"
 if [[ -n "$NFS_VERSION" ]]; then
     log_info "NFS version:   ${NFS_VERSION}"
 fi

@@ -239,4 +239,3 @@ func TestCacheHandler_Evict_NoBody(t *testing.T) {
 		t.Errorf("Evict() status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
 	}
 }
-
