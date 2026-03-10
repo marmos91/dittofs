@@ -218,57 +218,64 @@ func (s *Service) AddShare(
 		return fmt.Errorf("metadata service registrar is required for share %q", config.Name)
 	}
 
-	share, metadataStore, err := s.registerShare(ctx, config, storeProvider)
+	// Phase 1: Build share struct (resolves metadata store, creates root dir).
+	// Does NOT insert into registry yet — share is invisible to handlers.
+	share, metadataStore, err := s.prepareShare(ctx, config, storeProvider)
 	if err != nil {
 		return err
 	}
 
-	// Create per-share BlockStore if local block store config is provided.
+	// Phase 2: Create per-share BlockStore if local block store config is provided.
 	if config.LocalBlockStoreID != "" {
 		if err := s.createBlockStoreForShare(ctx, share, config, blockStoreProvider, metadataStore, localStoreDefaults, syncerDefaults); err != nil {
-			// Roll back: remove from registry
-			s.mu.Lock()
-			delete(s.registry, config.Name)
-			s.mu.Unlock()
 			return fmt.Errorf("failed to create block store for share %q: %w", config.Name, err)
 		}
 	}
 
-	// Register metadata store only after BlockStore is successfully created
-	// to avoid leaving stale state in MetadataService on failure.
+	// Phase 3: Register metadata store.
 	if err := metadataSvc.RegisterStoreForShare(config.Name, metadataStore); err != nil {
-		// Capture state under lock, then close outside to avoid deadlock.
-		s.mu.Lock()
-		bs := share.BlockStore
-		remoteConfigID := share.remoteConfigID
-		delete(s.registry, config.Name)
-		s.mu.Unlock()
-
-		if bs != nil {
-			_ = bs.Close()
+		// Clean up BlockStore (close outside lock).
+		if share.BlockStore != nil {
+			_ = share.BlockStore.Close()
 		}
-		if remoteConfigID != "" {
-			s.releaseRemoteStore(remoteConfigID)
+		if share.remoteConfigID != "" {
+			s.releaseRemoteStore(share.remoteConfigID)
 		}
 		return fmt.Errorf("failed to configure metadata for share: %w", err)
 	}
+
+	// Phase 4: Insert fully-initialized share into registry.
+	// Only now is the share visible to protocol handlers.
+	s.mu.Lock()
+	if _, exists := s.registry[config.Name]; exists {
+		s.mu.Unlock()
+		// Race: another goroutine registered the same share. Roll back.
+		if share.BlockStore != nil {
+			_ = share.BlockStore.Close()
+		}
+		if share.remoteConfigID != "" {
+			s.releaseRemoteStore(share.remoteConfigID)
+		}
+		return fmt.Errorf("share %q already exists", config.Name)
+	}
+	s.registry[config.Name] = share
+	s.mu.Unlock()
 
 	s.notifyShareChange()
 
 	return nil
 }
 
-// registerShare validates config, creates the root directory, and registers the
-// share in the registry. Uses a three-phase approach to avoid holding s.mu
-// during potentially slow metadata store resolution and root directory creation.
-// Metadata service registration is deferred to AddShare so that rollback is
-// clean if BlockStore creation fails.
-func (s *Service) registerShare(
+// prepareShare validates config, resolves the metadata store, and creates the
+// root directory. Returns the built Share (not yet in the registry) and the
+// metadata store. The caller (AddShare) is responsible for inserting the share
+// into the registry after all initialization (including BlockStore) succeeds.
+func (s *Service) prepareShare(
 	ctx context.Context,
 	config *ShareConfig,
 	storeProvider MetadataStoreProvider,
 ) (*Share, metadata.MetadataStore, error) {
-	// Phase 1: quick duplicate check under lock.
+	// Early duplicate check (optimistic — AddShare rechecks under write lock).
 	s.mu.RLock()
 	if _, exists := s.registry[config.Name]; exists {
 		s.mu.RUnlock()
@@ -280,7 +287,6 @@ func (s *Service) registerShare(
 		return nil, nil, fmt.Errorf("metadata store provider not initialized")
 	}
 
-	// Phase 2: resolve metadata store and create root directory without lock.
 	metadataStore, err := storeProvider.GetMetadataStore(config.MetadataStore)
 	if err != nil {
 		return nil, nil, err
@@ -336,17 +342,6 @@ func (s *Service) registerShare(
 		BlockedOperations:  config.BlockedOperations,
 	}
 
-	// Phase 3: re-lock and double-check before inserting into registry.
-	// Another goroutine may have registered the same share while we were
-	// doing I/O.
-	s.mu.Lock()
-	if _, exists := s.registry[config.Name]; exists {
-		s.mu.Unlock()
-		return nil, nil, fmt.Errorf("share %q already exists", config.Name)
-	}
-	s.registry[config.Name] = share
-	s.mu.Unlock()
-
 	return share, metadataStore, nil
 }
 
@@ -379,15 +374,6 @@ func (s *Service) createBlockStoreForShare(
 	var remoteStore remote.RemoteStore
 	var remoteConfigID string
 	if config.RemoteBlockStoreID != "" {
-		remoteCfg, resolveErr := blockStoreProvider.GetBlockStoreByID(ctx, config.RemoteBlockStoreID)
-		if resolveErr != nil {
-			_ = localStore.Close()
-			return fmt.Errorf("failed to resolve remote block store config %q: %w", config.RemoteBlockStoreID, resolveErr)
-		}
-		if remoteCfg.Kind != models.BlockStoreKindRemote {
-			_ = localStore.Close()
-			return fmt.Errorf("block store config %q has kind %q, expected %q", config.RemoteBlockStoreID, remoteCfg.Kind, models.BlockStoreKindRemote)
-		}
 		remoteStore, remoteConfigID, err = s.acquireRemoteStore(ctx, config.RemoteBlockStoreID, blockStoreProvider)
 		if err != nil {
 			_ = localStore.Close()
@@ -439,11 +425,10 @@ func (s *Service) createBlockStoreForShare(
 		return fmt.Errorf("failed to start BlockStore: %w", err)
 	}
 
-	// Assign to share.
-	s.mu.Lock()
+	// Assign to share. Safe without lock: share is not yet in the registry,
+	// so no concurrent readers can access it.
 	share.BlockStore = bs
 	share.remoteConfigID = remoteConfigID
-	s.mu.Unlock()
 
 	mode := "remote-backed"
 	if localOnly {
@@ -475,6 +460,9 @@ func (s *Service) acquireRemoteStore(ctx context.Context, configID string, provi
 	remoteCfg, err := provider.GetBlockStoreByID(ctx, configID)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to resolve remote block store config %q: %w", configID, err)
+	}
+	if remoteCfg.Kind != models.BlockStoreKindRemote {
+		return nil, "", fmt.Errorf("block store config %q has kind %q, expected %q", configID, remoteCfg.Kind, models.BlockStoreKindRemote)
 	}
 
 	newStore, err := CreateRemoteStoreFromConfig(ctx, remoteCfg.Type, remoteCfg)
