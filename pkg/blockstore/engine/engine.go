@@ -278,6 +278,9 @@ func (bs *BlockStore) Remote() remote.RemoteStore { return bs.remote }
 func (bs *BlockStore) Syncer() *blocksync.Syncer { return bs.syncer }
 
 // CacheStats holds comprehensive cache statistics for a BlockStore.
+// BlocksDirty is populated from the local store's in-memory dirty block count.
+// BlocksLocal/BlocksRemote/BlocksTotal require metadata store queries and are
+// populated by the aggregation layer (cache handler), not by the engine directly.
 type CacheStats struct {
 	FileCount    int `json:"file_count"`
 	BlocksDirty  int `json:"blocks_dirty"`
@@ -313,6 +316,7 @@ func (bs *BlockStore) GetCacheStats() CacheStats {
 
 	return CacheStats{
 		FileCount:      len(files),
+		BlocksDirty:    localStats.MemBlockCount,
 		LocalDiskUsed:  localStats.DiskUsed,
 		LocalDiskMax:   localStats.MaxDisk,
 		LocalMemUsed:   localStats.MemUsed,

@@ -33,7 +33,12 @@ THREADS=4
 FILE_SIZE=1GiB
 BLOCK_SIZE=4KiB
 
-S3_CONFIG='{"region":"fr-par","bucket":"dittofs-bench-blocks","endpoint":"https://s3.fr-par.scw.cloud","access_key":"SCW8SK6RJTJEHPJXNC36","secret_key":"81bf6d6c-fc05-4cd6-a84d-9336c2f5eb80","force_path_style":true}'
+S3_REGION="${S3_REGION:-fr-par}"
+S3_BUCKET="${S3_BUCKET:-dittofs-bench-blocks}"
+S3_ENDPOINT="${S3_ENDPOINT:-https://s3.fr-par.scw.cloud}"
+S3_ACCESS_KEY="${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set}"
+S3_SECRET_KEY="${S3_SECRET_KEY:?S3_SECRET_KEY must be set}"
+S3_CONFIG="{\"region\":\"${S3_REGION}\",\"bucket\":\"${S3_BUCKET}\",\"endpoint\":\"${S3_ENDPOINT}\",\"access_key\":\"${S3_ACCESS_KEY}\",\"secret_key\":\"${S3_SECRET_KEY}\",\"force_path_style\":true}"
 
 echo "=== DittoFS Benchmark Suite ==="
 echo "Round: $ROUND"
@@ -54,7 +59,7 @@ sleep 4
 echo "[3/7] Configuring stores and shares..."
 $SSH root@$SERVER "dfsctl login --server http://localhost:8080 --username admin --password benchadmin123 && \
   dfsctl store metadata add --name badger-meta --type badger --db-path /data/metadata/badger && \
-  dfsctl store block local add --name fs-local --type filesystem --path /data/blocks && \
+  dfsctl store block local add --name fs-local --type fs --path /data/blocks && \
   dfsctl store block remote add --name s3-remote --type s3 --config '$S3_CONFIG' && \
   dfsctl share create --name /export --metadata badger-meta --local fs-local && \
   dfsctl share create --name /export-s3 --metadata badger-meta --local fs-local --remote s3-remote"

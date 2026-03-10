@@ -1,6 +1,9 @@
 package apiclient
 
-import "fmt"
+import (
+	"fmt"
+	"net/url"
+)
 
 // CacheStats holds cache statistics returned by the server.
 // Mirrors pkg/blockstore/engine.CacheStats.
@@ -56,7 +59,7 @@ func (c *Client) CacheStatsAll() (*CacheStatsResponse, error) {
 
 // CacheStatsForShare returns cache statistics for a specific share.
 func (c *Client) CacheStatsForShare(shareName string) (*CacheStatsResponse, error) {
-	return getResource[CacheStatsResponse](c, fmt.Sprintf("/api/v1/shares/%s/cache/stats", shareName))
+	return getResource[CacheStatsResponse](c, fmt.Sprintf("/api/v1/shares/%s/cache/stats", url.PathEscape(normalizeShareNameForAPI(shareName))))
 }
 
 // CacheEvict evicts cache data across all shares.
@@ -66,5 +69,5 @@ func (c *Client) CacheEvict(req *CacheEvictRequest) (*CacheEvictResult, error) {
 
 // CacheEvictForShare evicts cache data for a specific share.
 func (c *Client) CacheEvictForShare(shareName string, req *CacheEvictRequest) (*CacheEvictResult, error) {
-	return createResource[CacheEvictResult](c, fmt.Sprintf("/api/v1/shares/%s/cache/evict", shareName), req)
+	return createResource[CacheEvictResult](c, fmt.Sprintf("/api/v1/shares/%s/cache/evict", url.PathEscape(normalizeShareNameForAPI(shareName))), req)
 }
