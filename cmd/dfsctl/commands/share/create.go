@@ -88,7 +88,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	}
 
 	remote := createRemote
-	if remote == "" && !cmd.Flags().Changed("remote") {
+	if remote == "" && !cmd.Flags().Changed("remote") && createName == "" {
 		// Interactive mode - ask for optional remote store
 		remote, err = prompt.InputOptional("Remote block store name (optional, Enter to skip)")
 		if err != nil {
