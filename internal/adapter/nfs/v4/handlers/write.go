@@ -26,7 +26,7 @@ func init() {
 // handleWrite implements the WRITE operation (RFC 7530 Section 16.36).
 // Writes data to a file using two-phase PrepareWrite/CommitWrite pattern with cache-backed I/O.
 // Delegates to MetadataService.PrepareWrite+CommitWrite and BlockStore.WriteAt.
-// Updates file size/timestamps via metadata; writes data to cache (flushed on COMMIT); always returns UNSTABLE4.
+// Updates file size/timestamps via metadata; writes data to local store (flushed on COMMIT); always returns UNSTABLE4.
 // Errors: NFS4ERR_NOFILEHANDLE, NFS4ERR_ISDIR, NFS4ERR_FBIG, NFS4ERR_NOSPC, NFS4ERR_IO.
 func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// Require current filehandle
