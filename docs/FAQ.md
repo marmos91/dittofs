@@ -160,9 +160,9 @@ Yes! This is a core feature. Create stores and shares via CLI:
   --config '{"path":"/var/lib/dfs/metadata"}'
 
 # Create block stores (local for fast access, remote for durability)
-./dfsctl store block add --kind local --name local-disk --type fs \
+./dfsctl store block local add --name local-disk --type fs \
   --config '{"path":"/var/lib/dfs/blocks"}'
-./dfsctl store block add --kind remote --name cloud-s3 --type s3 \
+./dfsctl store block remote add --name cloud-s3 --type s3 \
   --config '{"region":"us-east-1","bucket":"my-bucket"}'
 
 # Create shares referencing different stores

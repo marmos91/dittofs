@@ -42,7 +42,7 @@ func TestSharePermissions(t *testing.T) {
 
 	// Create shared stores for all subtests
 	metaStoreName := helpers.UniqueTestName("perm_meta")
-	localStoreName := helpers.UniqueTestName("perm_payload")
+	localStoreName := helpers.UniqueTestName("perm_local")
 
 	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err, "Should create metadata store")

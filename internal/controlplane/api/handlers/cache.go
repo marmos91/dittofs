@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -56,8 +57,8 @@ func (h *CacheHandler) Evict(w http.ResponseWriter, r *http.Request) {
 	shareName := chi.URLParam(r, "name")
 
 	var req CacheEvictRequest
-	if r.ContentLength > 0 {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
 			BadRequest(w, "invalid request body: "+err.Error())
 			return
 		}

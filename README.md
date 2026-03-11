@@ -191,7 +191,7 @@ Get an NFS share running in under a minute:
 
 # 4. Create stores
 ./dfsctl store metadata add --name default --type memory
-./dfsctl store block add --kind local --name default --type memory
+./dfsctl store block local add --name default --type memory
 
 # 5. Create a share and grant access
 ./dfsctl share create --name /export --metadata default --local default

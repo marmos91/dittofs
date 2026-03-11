@@ -90,24 +90,41 @@ func isLocalOnly() bool {
 	return os.Getenv("DITTOFS_E2E_LOCAL_ONLY") == "1"
 }
 
+// isWithRemote returns true if the DITTOFS_E2E_WITH_REMOTE env var is set,
+// indicating only combos with a remote store should run.
+func isWithRemote() bool {
+	return os.Getenv("DITTOFS_E2E_WITH_REMOTE") == "1"
+}
+
 // getStoreMatrix returns the appropriate matrix based on testing mode and
 // environment flags. In short mode, returns shortMatrix3D. If --local-only
-// is set, filters to only remoteType="none" combos.
+// is set, filters to only remoteType="none" combos. If --with-remote is set,
+// filters to only combos that have a remote store.
 func getStoreMatrix(short bool) []matrixStoreConfig {
 	matrix := storeMatrix3D
 	if short {
 		matrix = shortMatrix3D
 	}
 
-	if !isLocalOnly() {
-		return matrix
+	if isLocalOnly() {
+		var filtered []matrixStoreConfig
+		for _, sc := range matrix {
+			if sc.remoteType == "none" {
+				filtered = append(filtered, sc)
+			}
+		}
+		return filtered
 	}
 
-	var filtered []matrixStoreConfig
-	for _, sc := range matrix {
-		if sc.remoteType == "none" {
-			filtered = append(filtered, sc)
+	if isWithRemote() {
+		var filtered []matrixStoreConfig
+		for _, sc := range matrix {
+			if sc.hasRemote() {
+				filtered = append(filtered, sc)
+			}
 		}
+		return filtered
 	}
-	return filtered
+
+	return matrix
 }

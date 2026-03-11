@@ -41,7 +41,7 @@ func TestServerRestartRecovery(t *testing.T) {
 	runner1 := helpers.LoginAsAdmin(t, sp1.APIURL())
 
 	metaStore := helpers.UniqueTestName("rec-meta")
-	localStore := helpers.UniqueTestName("rec-payload")
+	localStore := helpers.UniqueTestName("rec-local")
 
 	_, err := runner1.CreateMetadataStore(metaStore, "badger",
 		helpers.WithMetaDBPath(badgerDir))
@@ -103,7 +103,7 @@ func TestServerRestartRecovery(t *testing.T) {
 
 	// Re-create stores pointing to the SAME persistent directories
 	metaStore2 := helpers.UniqueTestName("rec-meta2")
-	localStore2 := helpers.UniqueTestName("rec-payload2")
+	localStore2 := helpers.UniqueTestName("rec-local2")
 
 	_, err = runner2.CreateMetadataStore(metaStore2, "badger",
 		helpers.WithMetaDBPath(badgerDir))

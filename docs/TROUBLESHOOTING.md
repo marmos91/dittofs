@@ -325,12 +325,12 @@ tail -f ~/.config/dfs/dfs.log | grep -i "slow\|timeout"
 2. **Use memory stores for development:**
    ```bash
    ./dfsctl store metadata add --name fast --type memory
-   ./dfsctl store block add --kind local --name fast --type memory
+   ./dfsctl store block local add --name fast --type memory
    ```
 
 3. **For S3, verify configuration:**
    ```bash
-   ./dfsctl store block add --kind remote --name s3-store --type s3 \
+   ./dfsctl store block remote add --name s3-store --type s3 \
      --config '{"region":"us-east-1","bucket":"my-bucket"}'
    ```
 
@@ -605,7 +605,7 @@ shares:
 ```bash
 # Create the stores first
 ./dfsctl store metadata add --name my-store --type memory
-./dfsctl store block add --kind local --name my-blocks --type memory
+./dfsctl store block local add --name my-blocks --type memory
 
 # Then create the share referencing them
 ./dfsctl share create --name /export --metadata my-store --local my-blocks

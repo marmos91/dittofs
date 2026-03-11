@@ -40,7 +40,7 @@ func TestPermissionEnforcement(t *testing.T) {
 
 	// Create stores for the share
 	metaStoreName := helpers.UniqueTestName("enf_meta")
-	localStoreName := helpers.UniqueTestName("enf_payload")
+	localStoreName := helpers.UniqueTestName("enf_local")
 
 	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err, "Should create metadata store")
