@@ -152,7 +152,7 @@ log "Creating BadgerDB metadata store..."
 dfsctl store metadata add --name badger-meta --type badger --db-path "${BADGER_PATH}"
 
 log "Creating local block store (filesystem)..."
-dfsctl store block local add --name fs-payload --type filesystem --path "${PAYLOAD_PATH}"
+dfsctl store block local add --name fs-payload --type fs --path "${PAYLOAD_PATH}"
 
 log "Creating /export share..."
 dfsctl share create --name /export --metadata badger-meta --local fs-payload
