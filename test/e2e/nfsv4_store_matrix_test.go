@@ -3,10 +3,8 @@
 package e2e
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,15 +20,15 @@ import (
 )
 
 // =============================================================================
-// Test 1: Version-Parameterized Store Matrix (v3 + v4 x all 6 backends)
+// Test 1: Version-Parameterized Store Matrix (v3 + v4 x all 18 backends)
 // =============================================================================
 
-// TestStoreMatrixV4 validates that all 6 combinations of metadata stores
-// (memory, badger, postgres) and payload stores (memory, s3) work
-// correctly with file operations across BOTH NFSv3 and NFSv4.0 mounts.
+// TestStoreMatrixV4 validates that all 18 combinations of the 3D store matrix
+// (3 metadata x 2 local x 3 remote) work correctly with file operations
+// across NFSv3, NFSv4.0, and NFSv4.1 mounts.
 //
-// This produces 12 subtests: 2 versions x 6 backend combinations.
-// Extends the existing store_matrix_test.go pattern to the version dimension.
+// In short mode, only representative combos run.
+// With DITTOFS_E2E_LOCAL_ONLY=1, only remoteType="none" combos run.
 func TestStoreMatrixV4(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping version-parameterized store matrix tests in short mode")
@@ -53,23 +51,22 @@ func TestStoreMatrixV4(t *testing.T) {
 	}
 
 	versions := []string{"3", "4.0", "4.1"}
+	matrix := getStoreMatrix(testing.Short())
 
 	for _, ver := range versions {
-		ver := ver
-		for _, sc := range storeMatrix {
-			sc := sc
-			testName := fmt.Sprintf("v%s/%s/%s", ver, sc.metadataType, sc.payloadType)
+		for _, sc := range matrix {
+			testName := fmt.Sprintf("v%s/%s", ver, sc.testName())
 
 			t.Run(testName, func(t *testing.T) {
 				framework.SkipIfNFSVersionUnsupported(t, ver)
 
 				// Skip postgres combinations if container unavailable
-				if sc.metadataType == "postgres" && !postgresAvailable {
+				if sc.needsPostgres() && !postgresAvailable {
 					t.Skip("Skipping: PostgreSQL container not available")
 				}
 
 				// Skip s3 combinations if container unavailable
-				if sc.payloadType == "s3" && !localstackAvailable {
+				if sc.needsS3() && !localstackAvailable {
 					t.Skip("Skipping: Localstack (S3) container not available")
 				}
 
@@ -80,8 +77,8 @@ func TestStoreMatrixV4(t *testing.T) {
 }
 
 // runStoreMatrixVersionTest executes file operation tests for a specific
-// version x store combination.
-func runStoreMatrixVersionTest(t *testing.T, version string, sc storeConfig, pgHelper *framework.PostgresHelper, lsHelper *framework.LocalstackHelper) {
+// version x 3D store combination.
+func runStoreMatrixVersionTest(t *testing.T, version string, sc matrixStoreConfig, pgHelper *framework.PostgresHelper, lsHelper *framework.LocalstackHelper) {
 	t.Helper()
 
 	// Start server process
@@ -91,82 +88,18 @@ func runStoreMatrixVersionTest(t *testing.T, version string, sc storeConfig, pgH
 	// Login as admin
 	runner := helpers.LoginAsAdmin(t, sp.APIURL())
 
-	// Create unique store names for this test
-	metaStoreName := helpers.UniqueTestName("meta")
-	payloadStoreName := helpers.UniqueTestName("payload")
 	shareName := "/export-v4matrix"
 
-	// Create metadata store based on type
-	var metaOpts []helpers.MetadataStoreOption
-	switch sc.metadataType {
-	case "memory":
-		// No options needed
-	case "badger":
-		badgerPath := filepath.Join(t.TempDir(), "badger")
-		metaOpts = append(metaOpts, helpers.WithMetaDBPath(badgerPath))
-	case "postgres":
-		if pgHelper == nil {
-			t.Fatal("PostgreSQL helper not available")
-		}
-		pgConfig := pgHelper.GetConfig()
-		configJSON, err := json.Marshal(map[string]interface{}{
-			"host":     pgConfig.Host,
-			"port":     pgConfig.Port,
-			"database": pgConfig.Database,
-			"user":     pgConfig.User,
-			"password": pgConfig.Password,
-		})
-		require.NoError(t, err, "Failed to marshal postgres config")
-		metaOpts = append(metaOpts, helpers.WithMetaRawConfig(string(configJSON)))
-	}
-
-	_, err := runner.CreateMetadataStore(metaStoreName, sc.metadataType, metaOpts...)
-	require.NoError(t, err, "Should create metadata store (%s)", sc.metadataType)
-	t.Cleanup(func() {
-		_ = runner.DeleteMetadataStore(metaStoreName)
-	})
-
-	// Create payload store based on type
-	var payloadOpts []helpers.PayloadStoreOption
-	switch sc.payloadType {
-	case "memory":
-		// No options needed
-	case "s3":
-		if lsHelper == nil {
-			t.Fatal("Localstack helper not available")
-		}
-		bucketName := strings.ReplaceAll(fmt.Sprintf("dittofs-v4mtx-%s", helpers.UniqueTestName("bkt")), "_", "-")
-		err := lsHelper.CreateBucket(context.Background(), bucketName)
-		require.NoError(t, err, "Should create S3 bucket")
-		t.Cleanup(func() {
-			lsHelper.CleanupBucket(context.Background(), bucketName)
-		})
-
-		payloadOpts = append(payloadOpts, helpers.WithPayloadS3Config(
-			bucketName,
-			"us-east-1",
-			lsHelper.Endpoint,
-			"test",
-			"test",
-		))
-	}
-
-	_, err = runner.CreatePayloadStore(payloadStoreName, sc.payloadType, payloadOpts...)
-	require.NoError(t, err, "Should create payload store (%s)", sc.payloadType)
-	t.Cleanup(func() {
-		_ = runner.DeletePayloadStore(payloadStoreName)
-	})
-
-	// Create the share using the stores
-	_, err = runner.CreateShare(shareName, metaStoreName, payloadStoreName)
-	require.NoError(t, err, "Should create share")
-	t.Cleanup(func() {
-		_ = runner.DeleteShare(shareName)
-	})
+	// Create stores and share using the shared helper
+	helpers.SetupStoreMatrix(t, runner, shareName, helpers.MatrixSetupConfig{
+		MetadataType: sc.metadataType,
+		LocalType:    sc.localType,
+		RemoteType:   sc.remoteType,
+	}, pgHelper, lsHelper)
 
 	// Enable NFS adapter
 	nfsPort := helpers.FindFreePort(t)
-	_, err = runner.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
+	_, err := runner.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
 	require.NoError(t, err, "Should enable NFS adapter")
 	t.Cleanup(func() {
 		_, _ = runner.DisableAdapter("nfs")
@@ -184,7 +117,7 @@ func runStoreMatrixVersionTest(t *testing.T, version string, sc storeConfig, pgH
 
 	// Run basic file operation tests
 	t.Run("CreateReadWriteFile", func(t *testing.T) {
-		content := []byte(fmt.Sprintf("Hello from v%s %s/%s store matrix!", version, sc.metadataType, sc.payloadType))
+		content := []byte(fmt.Sprintf("Hello from v%s %s store matrix!", version, sc.testName()))
 		filePath := mount.FilePath("v4matrix_rw.txt")
 
 		framework.WriteFile(t, filePath, content)
@@ -228,7 +161,25 @@ func runStoreMatrixVersionTest(t *testing.T, version string, sc storeConfig, pgH
 		assert.False(t, framework.FileExists(filePath), "File should not exist after deletion")
 	})
 
-	t.Log("Store matrix v" + version + " " + sc.metadataType + "/" + sc.payloadType + ": PASSED")
+	t.Run("Rename", func(t *testing.T) {
+		srcFile := mount.FilePath("v4matrix_rename_src.txt")
+		dstFile := mount.FilePath("v4matrix_rename_dst.txt")
+		framework.WriteFile(t, srcFile, []byte("rename me"))
+		t.Cleanup(func() {
+			_ = os.Remove(srcFile)
+			_ = os.Remove(dstFile)
+		})
+
+		err := os.Rename(srcFile, dstFile)
+		require.NoError(t, err, "Should rename file")
+
+		assert.False(t, framework.FileExists(srcFile), "Source should not exist after rename")
+		assert.True(t, framework.FileExists(dstFile), "Destination should exist after rename")
+		content := framework.ReadFile(t, dstFile)
+		assert.Equal(t, []byte("rename me"), content, "Content should be preserved after rename")
+	})
+
+	t.Log("Store matrix v" + version + " " + sc.testName() + ": PASSED")
 }
 
 // =============================================================================
@@ -259,7 +210,6 @@ func TestFileSizeMatrix(t *testing.T) {
 	versions := []string{"3", "4.0", "4.1"}
 
 	for _, ver := range versions {
-		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
 			framework.SkipIfNFSVersionUnsupported(t, ver)
 
@@ -270,7 +220,6 @@ func TestFileSizeMatrix(t *testing.T) {
 			t.Cleanup(mount.Cleanup)
 
 			for _, sz := range sizes {
-				sz := sz
 				t.Run(sz.name, func(t *testing.T) {
 					if sz.skip && testing.Short() {
 						t.Skip("Skipping large file test in short mode")
@@ -316,32 +265,32 @@ func TestMultiShareConcurrent(t *testing.T) {
 
 	// Create stores for share alpha
 	metaAlpha := helpers.UniqueTestName("meta-alpha")
-	payloadAlpha := helpers.UniqueTestName("payload-alpha")
+	localAlpha := helpers.UniqueTestName("local-alpha")
 	_, err := runner.CreateMetadataStore(metaAlpha, "memory")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaAlpha) })
 
-	_, err = runner.CreatePayloadStore(payloadAlpha, "memory")
+	_, err = runner.CreateLocalBlockStore(localAlpha, "memory")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeletePayloadStore(payloadAlpha) })
+	t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localAlpha) })
 
 	// Create stores for share beta
 	metaBeta := helpers.UniqueTestName("meta-beta")
-	payloadBeta := helpers.UniqueTestName("payload-beta")
+	localBeta := helpers.UniqueTestName("local-beta")
 	_, err = runner.CreateMetadataStore(metaBeta, "memory")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaBeta) })
 
-	_, err = runner.CreatePayloadStore(payloadBeta, "memory")
+	_, err = runner.CreateLocalBlockStore(localBeta, "memory")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeletePayloadStore(payloadBeta) })
+	t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localBeta) })
 
 	// Create two shares
-	_, err = runner.CreateShare("/share-alpha", metaAlpha, payloadAlpha)
+	_, err = runner.CreateShare("/share-alpha", metaAlpha, localAlpha)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteShare("/share-alpha") })
 
-	_, err = runner.CreateShare("/share-beta", metaBeta, payloadBeta)
+	_, err = runner.CreateShare("/share-beta", metaBeta, localBeta)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteShare("/share-beta") })
 
@@ -357,7 +306,6 @@ func TestMultiShareConcurrent(t *testing.T) {
 
 	versions := []string{"3", "4.0", "4.1"}
 	for _, ver := range versions {
-		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
 			framework.SkipIfNFSVersionUnsupported(t, ver)
 
@@ -415,7 +363,6 @@ func TestMultiClientConcurrency(t *testing.T) {
 
 	versions := []string{"3", "4.0", "4.1"}
 	for _, ver := range versions {
-		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
 			framework.SkipIfNFSVersionUnsupported(t, ver)
 
@@ -459,7 +406,6 @@ func TestMultiClientConcurrency(t *testing.T) {
 
 				// Both mounts write different files simultaneously
 				for i := 0; i < numFiles; i++ {
-					i := i
 					wg.Add(2)
 
 					// Mount1 writes

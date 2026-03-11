@@ -58,7 +58,7 @@ make dry-run
 
 ### Storage Profiles
 
-| Profile | Metadata Store | Payload Store | Extra Services |
+| Profile | Metadata Store | Block Store | Extra Services |
 |---------|---------------|---------------|----------------|
 | `memory` | Memory | Memory | None |
 | `memory-fs` | Memory | Filesystem | None |

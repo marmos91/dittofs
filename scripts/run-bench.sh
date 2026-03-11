@@ -12,8 +12,8 @@
 #
 # What it does:
 #   1. Stops DFS and cleans all data directories
-#   2. Starts DFS with fresh controlplane, metadata, and payload stores
-#   3. Creates both filesystem and S3 payload shares
+#   2. Starts DFS with fresh controlplane, metadata, and block stores
+#   3. Creates both filesystem and S3-backed shares
 #   4. Mounts both shares on the client
 #   5. Runs full benchmark suite (seq-write, seq-read, rand-write, rand-read, metadata)
 #   6. Copies results locally to results/<round-name>/
@@ -33,7 +33,12 @@ THREADS=4
 FILE_SIZE=1GiB
 BLOCK_SIZE=4KiB
 
-S3_CONFIG='{"region":"fr-par","bucket":"dittofs-bench-payload","endpoint":"https://s3.fr-par.scw.cloud","access_key":"SCW8SK6RJTJEHPJXNC36","secret_key":"81bf6d6c-fc05-4cd6-a84d-9336c2f5eb80","force_path_style":true}'
+S3_REGION="${S3_REGION:-fr-par}"
+S3_BUCKET="${S3_BUCKET:-dittofs-bench-blocks}"
+S3_ENDPOINT="${S3_ENDPOINT:-https://s3.fr-par.scw.cloud}"
+S3_ACCESS_KEY="${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set}"
+S3_SECRET_KEY="${S3_SECRET_KEY:?S3_SECRET_KEY must be set}"
+S3_CONFIG="{\"region\":\"${S3_REGION}\",\"bucket\":\"${S3_BUCKET}\",\"endpoint\":\"${S3_ENDPOINT}\",\"access_key\":\"${S3_ACCESS_KEY}\",\"secret_key\":\"${S3_SECRET_KEY}\",\"force_path_style\":true}"
 
 echo "=== DittoFS Benchmark Suite ==="
 echo "Round: $ROUND"
@@ -43,7 +48,7 @@ echo ""
 # 1. Stop and clean
 echo "[1/7] Stopping DFS and cleaning data..."
 $SSH root@$CLIENT 'umount /mnt/bench 2>/dev/null; umount /mnt/bench-s3 2>/dev/null; true'
-$SSH root@$SERVER 'killall -9 dfs 2>/dev/null; sleep 1; rm -rf /root/.config/dittofs/controlplane.db /data/cache/* /data/metadata/* /data/payload/* /export/*'
+$SSH root@$SERVER 'killall -9 dfs 2>/dev/null; sleep 1; rm -rf /root/.config/dittofs/controlplane.db /data/cache/* /data/metadata/* /data/blocks/* /export/*'
 
 # 2. Start DFS
 echo "[2/7] Starting DFS..."
@@ -54,10 +59,10 @@ sleep 4
 echo "[3/7] Configuring stores and shares..."
 $SSH root@$SERVER "dfsctl login --server http://localhost:8080 --username admin --password benchadmin123 && \
   dfsctl store metadata add --name badger-meta --type badger --db-path /data/metadata/badger && \
-  dfsctl store block local add --name fs-payload --type filesystem --path /data/payload && \
-  dfsctl store block remote add --name s3-payload --type s3 --config '$S3_CONFIG' && \
-  dfsctl share create --name /export --metadata badger-meta --local fs-payload && \
-  dfsctl share create --name /export-s3 --metadata badger-meta --local fs-payload --remote s3-payload"
+  dfsctl store block local add --name fs-local --type fs --path /data/blocks && \
+  dfsctl store block remote add --name s3-remote --type s3 --config '$S3_CONFIG' && \
+  dfsctl share create --name /export --metadata badger-meta --local fs-local && \
+  dfsctl share create --name /export-s3 --metadata badger-meta --local fs-local --remote s3-remote"
 
 # 4. Mount on client
 echo "[4/7] Mounting shares on client..."

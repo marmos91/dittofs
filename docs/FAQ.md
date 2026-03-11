@@ -20,8 +20,8 @@ Common questions about DittoFS and their answers.
 ### What is DittoFS?
 
 DittoFS is a modular virtual filesystem written entirely in Go that decouples file access protocols
-from storage backends. It supports NFSv3, NFSv4/v4.1, and SMB2 with pluggable metadata and payload
-repositories, making it easy to serve files over multiple protocols from various backends (memory,
+from storage backends. It supports NFSv3, NFSv4/v4.1, and SMB2 with pluggable metadata and block
+stores, making it easy to serve files over multiple protocols from various backends (memory,
 filesystem, S3, BadgerDB, PostgreSQL, etc.).
 
 ### Why not use FUSE?
@@ -65,7 +65,7 @@ Yes. NFSv4 supports Kerberos via RPCSEC_GSS, and SMB supports Kerberos via SPNEG
 
 ### Can I implement my own protocol adapter?
 
-Yes! That's one of the main goals of DittoFS. Implement the `Adapter` interface and wire it to the metadata/payload stores:
+Yes! That's one of the main goals of DittoFS. Implement the `Adapter` interface and wire it to the metadata/block stores:
 
 ```go
 type Adapter interface {
@@ -84,7 +84,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for details.
 Absolutely! Implement either or both of these interfaces:
 
 - **Metadata Store**: `pkg/metadata/Store` interface
-- **Payload Store**: `pkg/payload/store/BlockStore` interface
+- **Local Block Store**: `pkg/blockstore/local.LocalStore` interface
+- **Remote Block Store**: `pkg/blockstore/remote.RemoteStore` interface
 
 See [IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md) for implementation guidelines.
 
@@ -120,8 +121,8 @@ and import possible.
 
 ### Is content deduplication supported?
 
-Not currently, but the payload store abstraction allows for implementing content-addressable storage
-with deduplication. This could be added as a custom payload store or a wrapper around existing stores.
+Not currently, but the block store abstraction allows for implementing content-addressable storage
+with deduplication. This could be added as a custom block store or a wrapper around existing stores.
 
 ## Usage Questions
 
@@ -158,15 +159,16 @@ Yes! This is a core feature. Create stores and shares via CLI:
 ./dfsctl store metadata add --name persistent-db --type badger \
   --config '{"path":"/var/lib/dfs/metadata"}'
 
-# Create payload stores
-./dfsctl store payload add --name local-disk --type filesystem \
-  --config '{"path":"/var/lib/dfs/content"}'
-./dfsctl store payload add --name cloud-s3 --type s3 \
+# Create block stores (local for fast access, remote for durability)
+./dfsctl store block local add --name local-disk --type fs \
+  --config '{"path":"/var/lib/dfs/blocks"}'
+./dfsctl store block remote add --name cloud-s3 --type s3 \
   --config '{"region":"us-east-1","bucket":"my-bucket"}'
 
 # Create shares referencing different stores
-./dfsctl share create --name /temp --metadata fast-memory --payload local-disk
-./dfsctl share create --name /archive --metadata persistent-db --payload cloud-s3
+./dfsctl share create --name /temp --metadata fast-memory --local local-disk
+./dfsctl share create --name /archive --metadata persistent-db \
+  --local local-disk --remote cloud-s3
 ```
 
 See [CONFIGURATION.md](CONFIGURATION.md) for more examples.
@@ -180,15 +182,19 @@ Yes! Multiple shares can reference the same store instance for resource efficien
 ./dfsctl store metadata add --name shared-meta --type badger \
   --config '{"path":"/var/lib/dfs/shared-metadata"}'
 
-# Create separate payload stores
-./dfsctl store payload add --name s3-prod --type s3 \
+# Create separate remote block stores
+./dfsctl store block add --kind local --name shared-local --type fs \
+  --config '{"path":"/var/lib/dfs/blocks"}'
+./dfsctl store block add --kind remote --name s3-prod --type s3 \
   --config '{"region":"us-east-1","bucket":"prod-bucket"}'
-./dfsctl store payload add --name s3-archive --type s3 \
+./dfsctl store block add --kind remote --name s3-archive --type s3 \
   --config '{"region":"us-east-1","bucket":"archive-bucket"}'
 
-# Both shares use the same metadata store
-./dfsctl share create --name /prod --metadata shared-meta --payload s3-prod
-./dfsctl share create --name /archive --metadata shared-meta --payload s3-archive
+# Both shares use the same metadata store; remote stores are ref-counted
+./dfsctl share create --name /prod --metadata shared-meta \
+  --local shared-local --remote s3-prod
+./dfsctl share create --name /archive --metadata shared-meta \
+  --local shared-local --remote s3-archive
 ```
 
 ### How do I enable debug logging?

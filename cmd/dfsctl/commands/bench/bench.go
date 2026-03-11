@@ -31,4 +31,5 @@ Examples:
 func init() {
 	Cmd.AddCommand(runCmd)
 	Cmd.AddCommand(compareCmd)
+	Cmd.AddCommand(cacheTiersCmd)
 }

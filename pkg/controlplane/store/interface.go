@@ -143,7 +143,7 @@ type GroupStore interface {
 // ShareStore provides share CRUD, access rules, and per-share adapter config operations.
 //
 // Shares define NFS/SMB exports. Each share references a metadata store and
-// payload store by ID. ShareAdapterConfig methods manage per-share,
+// block store by ID. ShareAdapterConfig methods manage per-share,
 // per-protocol configuration (e.g., NFS export options, SMB share options).
 type ShareStore interface {
 	// GetShare returns a share by name.

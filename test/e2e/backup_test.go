@@ -131,14 +131,14 @@ func TestBackupRestore(t *testing.T) {
 		_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 		require.NoError(t, err, "should create metadata store")
 
-		// Create a payload store via CLI
-		payloadStoreName := helpers.UniqueTestName("bakpayloadstore")
-		_, err = cli.CreatePayloadStore(payloadStoreName, "memory")
-		require.NoError(t, err, "should create payload store")
+		// Create a block store via CLI
+		localStoreName := helpers.UniqueTestName("bakblockstore")
+		_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
+		require.NoError(t, err, "should create block store")
 
 		// Create a share using the CLI-created stores
 		shareName := "/" + helpers.UniqueTestName("bakshare")
-		_, err = cli.CreateShare(shareName, metaStoreName, payloadStoreName)
+		_, err = cli.CreateShare(shareName, metaStoreName, localStoreName)
 		require.NoError(t, err, "should create share")
 
 		// Run backup
@@ -191,13 +191,13 @@ func TestBackupRestore(t *testing.T) {
 		_, err = cli.CreateMetadataStore(metaStoreName, "memory")
 		require.NoError(t, err, "should create metadata store")
 
-		payloadStoreName := helpers.UniqueTestName("payloadmem")
-		_, err = cli.CreatePayloadStore(payloadStoreName, "memory")
-		require.NoError(t, err, "should create payload store")
+		localStoreName := helpers.UniqueTestName("localmem")
+		_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
+		require.NoError(t, err, "should create block store")
 
 		// 4. Create a share using the API-created stores
 		shareName := "/" + helpers.UniqueTestName("intshare")
-		_, err = cli.CreateShare(shareName, metaStoreName, payloadStoreName,
+		_, err = cli.CreateShare(shareName, metaStoreName, localStoreName,
 			helpers.WithShareDescription("Integrity test share"))
 		require.NoError(t, err, "should create share")
 

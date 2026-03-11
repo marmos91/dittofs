@@ -46,17 +46,17 @@ func TestSMBFileOperations(t *testing.T) {
 
 	// Create stores for the share
 	metaStoreName := helpers.UniqueTestName("meta")
-	payloadStoreName := helpers.UniqueTestName("payload")
+	localStoreName := helpers.UniqueTestName("local")
 
 	_, err := cli.CreateMetadataStore(metaStoreName, "memory")
 	require.NoError(t, err, "Should create metadata store")
 
-	_, err = cli.CreatePayloadStore(payloadStoreName, "memory")
-	require.NoError(t, err, "Should create payload store")
+	_, err = cli.CreateLocalBlockStore(localStoreName, "memory")
+	require.NoError(t, err, "Should create block store")
 
 	// Create share with read-write default permission
 	shareName := "/export"
-	_, err = cli.CreateShare(shareName, metaStoreName, payloadStoreName,
+	_, err = cli.CreateShare(shareName, metaStoreName, localStoreName,
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err, "Should create share")
 

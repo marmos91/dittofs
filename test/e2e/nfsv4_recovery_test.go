@@ -41,16 +41,16 @@ func TestServerRestartRecovery(t *testing.T) {
 	runner1 := helpers.LoginAsAdmin(t, sp1.APIURL())
 
 	metaStore := helpers.UniqueTestName("rec-meta")
-	payloadStore := helpers.UniqueTestName("rec-payload")
+	localStore := helpers.UniqueTestName("rec-local")
 
 	_, err := runner1.CreateMetadataStore(metaStore, "badger",
 		helpers.WithMetaDBPath(badgerDir))
 	require.NoError(t, err, "Should create BadgerDB metadata store")
 
-	_, err = runner1.CreatePayloadStore(payloadStore, "memory")
-	require.NoError(t, err, "Should create memory payload store")
+	_, err = runner1.CreateLocalBlockStore(localStore, "memory")
+	require.NoError(t, err, "Should create memory block store")
 
-	_, err = runner1.CreateShare("/export", metaStore, payloadStore)
+	_, err = runner1.CreateShare("/export", metaStore, localStore)
 	require.NoError(t, err, "Should create share")
 
 	_, err = runner1.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
@@ -103,16 +103,16 @@ func TestServerRestartRecovery(t *testing.T) {
 
 	// Re-create stores pointing to the SAME persistent directories
 	metaStore2 := helpers.UniqueTestName("rec-meta2")
-	payloadStore2 := helpers.UniqueTestName("rec-payload2")
+	localStore2 := helpers.UniqueTestName("rec-local2")
 
 	_, err = runner2.CreateMetadataStore(metaStore2, "badger",
 		helpers.WithMetaDBPath(badgerDir))
 	require.NoError(t, err, "Should create BadgerDB store with existing data dir")
 
-	_, err = runner2.CreatePayloadStore(payloadStore2, "memory")
-	require.NoError(t, err, "Should create memory payload store on new server")
+	_, err = runner2.CreateLocalBlockStore(localStore2, "memory")
+	require.NoError(t, err, "Should create memory block store on new server")
 
-	_, err = runner2.CreateShare("/export", metaStore2, payloadStore2)
+	_, err = runner2.CreateShare("/export", metaStore2, localStore2)
 	require.NoError(t, err, "Should create share on new server")
 
 	_, err = runner2.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
@@ -139,7 +139,7 @@ func TestServerRestartRecovery(t *testing.T) {
 			assert.True(t, framework.FileExists(filePath),
 				"File should still exist after server restart (v%s) -- metadata persisted in BadgerDB", ver)
 
-			// Content verification: memory payload store is ephemeral, so content
+			// Content verification: memory block store is ephemeral, so content
 			// is lost on restart. We only verify metadata persistence (file exists).
 			// Reading content would return zeros or error depending on implementation.
 
@@ -180,7 +180,6 @@ func TestStaleNFSHandle(t *testing.T) {
 	}
 
 	for _, ver := range versions {
-		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
 			// Each version runs its own complete test cycle to avoid
 			// server lifecycle conflicts between subtests.
@@ -193,15 +192,15 @@ func TestStaleNFSHandle(t *testing.T) {
 			runner1 := helpers.LoginAsAdmin(t, sp1.APIURL())
 
 			metaStore := helpers.UniqueTestName("stale-meta")
-			payloadStore := helpers.UniqueTestName("stale-payload")
+			localStore := helpers.UniqueTestName("stale-payload")
 
 			_, err := runner1.CreateMetadataStore(metaStore, "memory")
 			require.NoError(t, err)
 
-			_, err = runner1.CreatePayloadStore(payloadStore, "memory")
+			_, err = runner1.CreateLocalBlockStore(localStore, "memory")
 			require.NoError(t, err)
 
-			_, err = runner1.CreateShare("/export", metaStore, payloadStore)
+			_, err = runner1.CreateShare("/export", metaStore, localStore)
 			require.NoError(t, err)
 
 			_, err = runner1.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
@@ -236,17 +235,17 @@ func TestStaleNFSHandle(t *testing.T) {
 			runner2 := helpers.LoginAsAdmin(t, sp2.APIURL())
 
 			metaStore2 := helpers.UniqueTestName("stale-meta2")
-			payloadStore2 := helpers.UniqueTestName("stale-payload2")
+			localStore2 := helpers.UniqueTestName("stale-payload2")
 
 			_, err = runner2.CreateMetadataStore(metaStore2, "memory")
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = runner2.DeleteMetadataStore(metaStore2) })
 
-			_, err = runner2.CreatePayloadStore(payloadStore2, "memory")
+			_, err = runner2.CreateLocalBlockStore(localStore2, "memory")
 			require.NoError(t, err)
-			t.Cleanup(func() { _ = runner2.DeletePayloadStore(payloadStore2) })
+			t.Cleanup(func() { _ = runner2.DeleteLocalBlockStore(localStore2) })
 
-			_, err = runner2.CreateShare("/export", metaStore2, payloadStore2)
+			_, err = runner2.CreateShare("/export", metaStore2, localStore2)
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = runner2.DeleteShare("/export") })
 
@@ -305,18 +304,18 @@ func TestSquashBehavior(t *testing.T) {
 
 	// Create stores
 	metaStore := helpers.UniqueTestName("squash-meta")
-	payloadStore := helpers.UniqueTestName("squash-payload")
+	localStore := helpers.UniqueTestName("squash-payload")
 
 	_, err := runner.CreateMetadataStore(metaStore, "memory")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
 
-	_, err = runner.CreatePayloadStore(payloadStore, "memory")
+	_, err = runner.CreateLocalBlockStore(localStore, "memory")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeletePayloadStore(payloadStore) })
+	t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localStore) })
 
 	// Create share for squash testing
-	_, err = runner.CreateShare("/export", metaStore, payloadStore)
+	_, err = runner.CreateShare("/export", metaStore, localStore)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteShare("/export") })
 
@@ -382,17 +381,17 @@ func TestClientReconnection(t *testing.T) {
 
 	// Create stores and share
 	metaStore := helpers.UniqueTestName("recon-meta")
-	payloadStore := helpers.UniqueTestName("recon-payload")
+	localStore := helpers.UniqueTestName("recon-payload")
 
 	_, err := runner.CreateMetadataStore(metaStore, "memory")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
 
-	_, err = runner.CreatePayloadStore(payloadStore, "memory")
+	_, err = runner.CreateLocalBlockStore(localStore, "memory")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = runner.DeletePayloadStore(payloadStore) })
+	t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localStore) })
 
-	_, err = runner.CreateShare("/export", metaStore, payloadStore)
+	_, err = runner.CreateShare("/export", metaStore, localStore)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = runner.DeleteShare("/export") })
 
@@ -411,7 +410,6 @@ func TestClientReconnection(t *testing.T) {
 	}
 
 	for _, ver := range versions {
-		ver := ver
 		t.Run(fmt.Sprintf("v%s", ver), func(t *testing.T) {
 			if ver == "4.0" {
 				framework.SkipIfNFSv4Unsupported(t)

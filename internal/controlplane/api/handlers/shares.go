@@ -35,7 +35,7 @@ func normalizeShareName(name string) string {
 
 // ShareHandlerStore is the composite interface required by ShareHandler.
 // ShareHandler needs share CRUD, permission management, store config lookups
-// (to validate metadata/payload store references), and user/group lookups
+// (to validate metadata/block store references), and user/group lookups
 // (to resolve permission display names).
 type ShareHandlerStore interface {
 	store.ShareStore

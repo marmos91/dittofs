@@ -1,7 +1,10 @@
 package config
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/spf13/cobra"
@@ -23,31 +26,29 @@ Examples:
 	RunE: runConfigValidate,
 }
 
-func runConfigValidate(cmd *cobra.Command, args []string) error {
-	// Get config path from parent's persistent flag
+func runConfigValidate(cmd *cobra.Command, _ []string) error {
 	configPath, _ := cmd.Flags().GetString("config")
 
-	// Load and validate configuration
 	cfg, err := config.MustLoad(configPath)
 	if err != nil {
 		return err
 	}
 
-	// Determine path for display
 	displayPath := configPath
 	if displayPath == "" {
 		displayPath = config.GetDefaultConfigPath()
 	}
 
-	// Additional validation checks
 	var warnings []string
 
-	// Check JWT secret is configured
 	if !cfg.ControlPlane.HasJWTSecret() {
 		warnings = append(warnings, "JWT secret not configured - API authentication will fail")
 	}
 
-	// Print results
+	if legacyWarnings := checkLegacyPayloadKey(displayPath); len(legacyWarnings) > 0 {
+		warnings = append(warnings, legacyWarnings...)
+	}
+
 	fmt.Printf("Configuration file: %s\n", displayPath)
 	fmt.Println("Validation: OK")
 
@@ -64,4 +65,37 @@ func runConfigValidate(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  Log level:       %s\n", cfg.Logging.Level)
 
 	return nil
+}
+
+// checkLegacyPayloadKey scans a config file for the deprecated 'payload:' YAML key.
+// Returns warnings if legacy keys are found.
+func checkLegacyPayloadKey(configPath string) []string {
+	f, err := os.Open(configPath)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = f.Close() }()
+
+	var warnings []string
+	scanner := bufio.NewScanner(f)
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+		// Detect top-level or nested 'payload:' or 'payload_store:' keys
+		if strings.HasPrefix(trimmed, "payload:") {
+			warnings = append(warnings, fmt.Sprintf(
+				"Line %d: Config key 'payload' has been renamed to 'block_store'. "+
+					"Please update your config file. See docs/CONFIGURATION.md for the new format.",
+				lineNum))
+		} else if strings.HasPrefix(trimmed, "payload_store:") {
+			warnings = append(warnings, fmt.Sprintf(
+				"Line %d: Config key 'payload_store' is no longer used. "+
+					"Shares are now managed via dfsctl with --local and --remote flags. "+
+					"See docs/CONFIGURATION.md for the new format.",
+				lineNum))
+		}
+	}
+	return warnings
 }

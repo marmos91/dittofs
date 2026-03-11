@@ -176,22 +176,6 @@ func sanitizeShareName(name string) string {
 	return url.PathEscape(name)
 }
 
-// readCacheBytesFromDefaults returns the L1 read cache budget from defaults (0 if nil).
-func readCacheBytesFromDefaults(defaults *LocalStoreDefaults) int64 {
-	if defaults == nil {
-		return 0
-	}
-	return defaults.ReadCacheBytes
-}
-
-// prefetchWorkersFromDefaults returns the prefetch worker count from defaults (0 if nil).
-func prefetchWorkersFromDefaults(defaults *SyncerDefaults) int {
-	if defaults == nil {
-		return 0
-	}
-	return defaults.PrefetchWorkers
-}
-
 // buildSyncerConfigFromDefaults merges SyncerDefaults into a blocksync.Config.
 func buildSyncerConfigFromDefaults(defaults *SyncerDefaults) blocksync.Config {
 	cfg := blocksync.DefaultConfig()
@@ -229,7 +213,7 @@ func (s *Service) AddShare(
 	syncerDefaults *SyncerDefaults,
 ) error {
 	if config.Name == "" {
-		return fmt.Errorf("cannot add share with empty name")
+		return errors.New("cannot add share with empty name")
 	}
 
 	if config.LocalBlockStoreID != "" && blockStoreProvider == nil {
@@ -256,7 +240,6 @@ func (s *Service) AddShare(
 
 	// Phase 3: Register metadata store.
 	if err := metadataSvc.RegisterStoreForShare(config.Name, metadataStore); err != nil {
-		// Clean up BlockStore (close outside lock).
 		if share.BlockStore != nil {
 			_ = share.BlockStore.Close()
 		}
@@ -271,7 +254,6 @@ func (s *Service) AddShare(
 	s.mu.Lock()
 	if _, exists := s.registry[config.Name]; exists {
 		s.mu.Unlock()
-		// Race: another goroutine registered the same share. Roll back.
 		if share.BlockStore != nil {
 			_ = share.BlockStore.Close()
 		}
@@ -306,7 +288,7 @@ func (s *Service) prepareShare(
 	s.mu.RUnlock()
 
 	if storeProvider == nil {
-		return nil, nil, fmt.Errorf("metadata store provider not initialized")
+		return nil, nil, errors.New("metadata store provider not initialized")
 	}
 
 	metadataStore, err := storeProvider.GetMetadataStore(config.MetadataStore)
@@ -386,13 +368,11 @@ func (s *Service) createBlockStoreForShare(
 		return fmt.Errorf("block store config %q has kind %q, expected %q", config.LocalBlockStoreID, localCfg.Kind, models.BlockStoreKindLocal)
 	}
 
-	// Create local store.
 	localStore, err := CreateLocalStoreFromConfig(ctx, localCfg.Type, localCfg, config.Name, localStoreDefaults, fileBlockStore)
 	if err != nil {
 		return fmt.Errorf("failed to create local store: %w", err)
 	}
 
-	// Resolve optional remote block store.
 	var remoteStore remote.RemoteStore
 	var remoteConfigID string
 	if config.RemoteBlockStoreID != "" {
@@ -405,15 +385,13 @@ func (s *Service) createBlockStoreForShare(
 
 	localOnly := remoteStore == nil
 
-	// Configure local store behavior based on remote presence.
 	localStore.SetSkipFsync(!localOnly)
 	localStore.SetEvictionEnabled(!localOnly)
 
-	// Build syncer config from defaults.
 	syncerCfg := buildSyncerConfigFromDefaults(syncerDefaults)
 
-	// Wrap shared remote in nonClosingRemote so engine.Close() doesn't close it.
-	// The shares.Service.releaseRemoteStore handles closing via ref counting.
+	// Wrap shared remote in nonClosingRemote so engine.Close() doesn't close it;
+	// releaseRemoteStore handles actual closing via ref counting.
 	var engineRemote remote.RemoteStore
 	if remoteStore != nil {
 		engineRemote = &nonClosingRemote{remoteStore}
@@ -421,7 +399,6 @@ func (s *Service) createBlockStoreForShare(
 
 	syncer := blocksync.New(localStore, engineRemote, fileBlockStore, syncerCfg)
 
-	// cleanup closes all resources created so far on failure.
 	cleanup := func() {
 		_ = syncer.Close()
 		_ = localStore.Close()
@@ -430,27 +407,33 @@ func (s *Service) createBlockStoreForShare(
 		}
 	}
 
-	// Create BlockStore with L1 cache settings from defaults.
+	var readCacheBytes int64
+	if localStoreDefaults != nil {
+		readCacheBytes = localStoreDefaults.ReadCacheBytes
+	}
+	var prefetchWorkers int
+	if syncerDefaults != nil {
+		prefetchWorkers = syncerDefaults.PrefetchWorkers
+	}
+
 	bs, err := engine.New(engine.Config{
 		Local:           localStore,
 		Remote:          engineRemote,
 		Syncer:          syncer,
-		ReadCacheBytes:  readCacheBytesFromDefaults(localStoreDefaults),
-		PrefetchWorkers: prefetchWorkersFromDefaults(syncerDefaults),
+		ReadCacheBytes:  readCacheBytes,
+		PrefetchWorkers: prefetchWorkers,
 	})
 	if err != nil {
 		cleanup()
 		return fmt.Errorf("failed to create BlockStore: %w", err)
 	}
 
-	// Start BlockStore (recovery + background goroutines).
 	if err := bs.Start(ctx); err != nil {
 		cleanup()
 		return fmt.Errorf("failed to start BlockStore: %w", err)
 	}
 
-	// Assign to share. Safe without lock: share is not yet in the registry,
-	// so no concurrent readers can access it.
+	// Safe without lock: share is not yet in the registry.
 	share.BlockStore = bs
 	share.remoteConfigID = remoteConfigID
 
@@ -471,7 +454,6 @@ func (s *Service) createBlockStoreForShare(
 // network/DB I/O (config resolution, S3 client initialization).
 // Returns the store, its config ID, and any error.
 func (s *Service) acquireRemoteStore(ctx context.Context, configID string, provider BlockStoreConfigProvider) (remote.RemoteStore, string, error) {
-	// Fast path: check cache under lock.
 	s.mu.Lock()
 	if sr, ok := s.remoteStores[configID]; ok {
 		sr.refCount++
@@ -480,7 +462,7 @@ func (s *Service) acquireRemoteStore(ctx context.Context, configID string, provi
 	}
 	s.mu.Unlock()
 
-	// Slow path: resolve config and create store without holding the lock.
+	// Resolve config and create store without holding the lock.
 	remoteCfg, err := provider.GetBlockStoreByID(ctx, configID)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to resolve remote block store config %q: %w", configID, err)
@@ -494,13 +476,11 @@ func (s *Service) acquireRemoteStore(ctx context.Context, configID string, provi
 		return nil, "", fmt.Errorf("failed to create remote store: %w", err)
 	}
 
-	// Re-lock and double-check: another goroutine may have created it while we
-	// were doing I/O. If so, close our duplicate and use the existing one.
+	// Double-check: another goroutine may have created the store concurrently.
 	s.mu.Lock()
 	if sr, ok := s.remoteStores[configID]; ok {
 		sr.refCount++
 		s.mu.Unlock()
-		// Close the duplicate we just created (outside lock).
 		_ = newStore.Close()
 		return sr.store, configID, nil
 	}
@@ -554,14 +534,12 @@ func (s *Service) RemoveShare(name string) error {
 	delete(s.registry, name)
 	s.mu.Unlock()
 
-	// Close BlockStore outside lock (may block on drain).
 	if bs != nil {
 		if err := bs.Close(); err != nil {
 			logger.Warn("Failed to close BlockStore for share", "share", name, "error", err)
 		}
 	}
 
-	// Decrement remote store ref count.
 	if remoteConfigID != "" {
 		s.releaseRemoteStore(remoteConfigID)
 	}
@@ -723,6 +701,146 @@ func (s *Service) DrainAllBlockStores(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// ShareCacheStats holds cache statistics for a single share.
+type ShareCacheStats struct {
+	ShareName string            `json:"share_name"`
+	Stats     engine.CacheStats `json:"stats"`
+}
+
+// CacheStatsResponse holds aggregated and per-share cache statistics.
+type CacheStatsResponse struct {
+	Totals   engine.CacheStats `json:"totals"`
+	PerShare []ShareCacheStats `json:"per_share,omitempty"`
+}
+
+// EvictOptions controls which cache tiers to evict.
+type EvictOptions struct {
+	L1Only    bool `json:"l1_only"`
+	LocalOnly bool `json:"local_only"`
+}
+
+// EvictResult holds the result of a cache eviction operation.
+type EvictResult struct {
+	L1EntriesCleared   int   `json:"l1_entries_cleared"`
+	LocalBlocksEvicted int   `json:"local_blocks_evicted"`
+	BytesFreed         int64 `json:"bytes_freed"`
+}
+
+// GetCacheStats returns cache statistics, optionally filtered by share name.
+// If shareName is empty, returns aggregated stats across all shares with per-share breakdown.
+func (s *Service) GetCacheStats(shareName string) (*CacheStatsResponse, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if shareName != "" {
+		share, exists := s.registry[shareName]
+		if !exists {
+			return nil, fmt.Errorf("share %q not found", shareName)
+		}
+		if share.BlockStore == nil {
+			return nil, fmt.Errorf("share %q has no block store configured", shareName)
+		}
+		stats := share.BlockStore.GetCacheStats()
+		return &CacheStatsResponse{
+			Totals:   stats,
+			PerShare: []ShareCacheStats{{ShareName: shareName, Stats: stats}},
+		}, nil
+	}
+
+	var totals engine.CacheStats
+	var perShare []ShareCacheStats
+
+	for name, share := range s.registry {
+		if share.BlockStore == nil {
+			continue
+		}
+		stats := share.BlockStore.GetCacheStats()
+		perShare = append(perShare, ShareCacheStats{ShareName: name, Stats: stats})
+		addCacheStats(&totals, stats)
+	}
+
+	return &CacheStatsResponse{
+		Totals:   totals,
+		PerShare: perShare,
+	}, nil
+}
+
+// addCacheStats accumulates src into dst (field-by-field summation).
+func addCacheStats(dst *engine.CacheStats, src engine.CacheStats) {
+	dst.FileCount += src.FileCount
+	dst.BlocksDirty += src.BlocksDirty
+	dst.BlocksLocal += src.BlocksLocal
+	dst.BlocksRemote += src.BlocksRemote
+	dst.BlocksTotal += src.BlocksTotal
+	dst.LocalDiskUsed += src.LocalDiskUsed
+	dst.LocalDiskMax += src.LocalDiskMax
+	dst.LocalMemUsed += src.LocalMemUsed
+	dst.LocalMemMax += src.LocalMemMax
+	dst.L1Entries += src.L1Entries
+	dst.L1CurBytes += src.L1CurBytes
+	dst.L1MaxBytes += src.L1MaxBytes
+	dst.PendingSyncs += src.PendingSyncs
+	dst.PendingUploads += src.PendingUploads
+	dst.CompletedSyncs += src.CompletedSyncs
+	dst.FailedSyncs += src.FailedSyncs
+	if src.HasRemote {
+		dst.HasRemote = true
+	}
+}
+
+// EvictCache evicts cache data for the given share (or all shares if shareName is empty).
+// Returns an error if trying to evict local blocks without a remote store (safety check).
+func (s *Service) EvictCache(ctx context.Context, shareName string, opts EvictOptions) (*EvictResult, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var targets []*Share
+	if shareName != "" {
+		share, exists := s.registry[shareName]
+		if !exists {
+			return nil, fmt.Errorf("share %q not found", shareName)
+		}
+		if share.BlockStore == nil {
+			return nil, fmt.Errorf("share %q has no block store configured", shareName)
+		}
+		targets = []*Share{share}
+	} else {
+		for _, share := range s.registry {
+			if share.BlockStore != nil {
+				targets = append(targets, share)
+			}
+		}
+	}
+
+	var result EvictResult
+
+	for _, share := range targets {
+		bs := share.BlockStore
+
+		if !opts.L1Only && !bs.HasRemoteStore() {
+			return nil, fmt.Errorf("cannot evict local blocks for share %q: no remote store configured (data would be lost)", share.Name)
+		}
+
+		if !opts.LocalOnly {
+			result.L1EntriesCleared += bs.EvictL1Cache()
+		}
+
+		if !opts.L1Only {
+			beforeDisk := bs.Local().Stats().DiskUsed
+
+			files := bs.Local().ListFiles()
+			for _, payloadID := range files {
+				_ = bs.Local().EvictMemory(ctx, payloadID)
+				result.LocalBlocksEvicted++
+			}
+
+			result.BytesFreed += beforeDisk - bs.Local().Stats().DiskUsed
+		}
+	}
+
+	return &result, nil
+}
+
 // CreateLocalStoreFromConfig creates a local store instance from a block store config.
 func CreateLocalStoreFromConfig(
 	ctx context.Context,
@@ -750,7 +868,7 @@ func CreateLocalStoreFromConfig(
 	case "fs":
 		basePath, ok := config["path"].(string)
 		if !ok || basePath == "" {
-			return nil, fmt.Errorf("fs local store requires path in config")
+			return nil, errors.New("fs local store requires path in config")
 		}
 		sanitized := sanitizeShareName(shareName)
 		cacheDir := filepath.Join(basePath, "shares", sanitized, "blocks")

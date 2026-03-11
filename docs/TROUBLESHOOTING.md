@@ -288,8 +288,8 @@ ls: cannot access 'file.txt': Stale file handle
    ```bash
    ./dfsctl store metadata add --name persistent --type badger \
      --config '{"path":"/var/lib/dfs/metadata"}'
-   ./dfsctl store payload add --name default --type memory
-   ./dfsctl share create --name /export --metadata persistent --payload default
+   ./dfsctl store block add --kind local --name default --type memory
+   ./dfsctl share create --name /export --metadata persistent --local default
    ```
 
 3. **Clear client NFS cache (Linux):**
@@ -325,12 +325,12 @@ tail -f ~/.config/dfs/dfs.log | grep -i "slow\|timeout"
 2. **Use memory stores for development:**
    ```bash
    ./dfsctl store metadata add --name fast --type memory
-   ./dfsctl store payload add --name fast --type memory
+   ./dfsctl store block local add --name fast --type memory
    ```
 
 3. **For S3, verify configuration:**
    ```bash
-   ./dfsctl store payload add --name s3-store --type s3 \
+   ./dfsctl store block remote add --name s3-store --type s3 \
      --config '{"region":"us-east-1","bucket":"my-bucket"}'
    ```
 
@@ -605,10 +605,10 @@ shares:
 ```bash
 # Create the stores first
 ./dfsctl store metadata add --name my-store --type memory
-./dfsctl store payload add --name my-payload --type memory
+./dfsctl store block local add --name my-blocks --type memory
 
 # Then create the share referencing them
-./dfsctl share create --name /export --metadata my-store --payload my-payload
+./dfsctl share create --name /export --metadata my-store --local my-blocks
 ```
 
 ### NFSv4 Session Issues

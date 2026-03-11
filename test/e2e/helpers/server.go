@@ -511,25 +511,7 @@ database:
   sqlite:
     path: "%s/dittofs.db"
 
-cache:
-  path: "%s/cache"
-  size: 104857600
-
-metadata:
-  stores:
-    - name: default
-      type: memory
-
-payload:
-  stores:
-    - name: default
-      type: memory
-
-shares:
-  - name: /export
-    metadata_store: default
-    payload_store: default
-`, apiPort, stateDir, stateDir)
+`, apiPort, stateDir)
 
 	configFile := filepath.Join(stateDir, "config.yaml")
 	if err := os.WriteFile(configFile, []byte(configContent), 0644); err != nil {

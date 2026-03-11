@@ -1,7 +1,7 @@
 # DittoFS Configuration for SMB Conformance Testing
 # Profile: badger/s3
 #
-# Bootstrap creates: BadgerDB metadata store + S3 payload store (via Localstack)
+# Bootstrap creates: BadgerDB metadata store + S3 remote block store (via Localstack)
 # Stores, shares, and adapters are managed via the API (bootstrap.sh).
 # Requires the localstack Compose profile to be active.
 

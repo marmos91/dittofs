@@ -1,5 +1,34 @@
 # Project Milestones: DittoFS NFS Protocol Evolution
 
+## v4.0 BlockStore Unification Refactor (Shipped: 2026-03-11)
+
+**Delivered:** Complete storage layer refactor replacing confusing PayloadService/Cache/DirectWrite layers with clean two-tier block store model (Local + Remote), per-share isolation, read caching, and auto-configuration.
+
+**Phases completed:** 41-49 (9 phases, 24 plans, ~49 tasks)
+
+**Key accomplishments:**
+
+- Renamed block state enum (Sealed/Uploaded -> Local/Remote) with clean terminology across all consumers
+- Removed DirectWriteStore and filesystem payload store (-1,305 lines dead code)
+- Added block lifecycle methods with eviction control for local-only mode (no remote store required)
+- Created BlockStoreConfig data model with local/remote Kind discriminator, full REST API, and CLI commands
+- Restructured into clean `pkg/blockstore/` hierarchy (local/fs, local/memory, remote/s3, remote/memory, engine, sync, gc, io)
+- Implemented per-share BlockStore lifecycle with ref-counted shared remote stores and isolated local paths
+- Built LRU read cache with copy-on-read semantics and adaptive sequential prefetcher
+- Platform-aware auto-deduction (darwin sysctl, linux cgroup, windows GlobalMemoryStatusEx) for buffer/cache sizing
+- Cache observability via REST API and CLI with per-share breakdown, syncer queue stats, and safety-checked eviction
+
+**Stats:**
+
+- 9 phases, 24 plans, ~49 tasks
+- 394 files changed, +38,015 / -11,410 lines (net +26,605)
+- 283,695 LOC Go
+- Mar 9 - Mar 11, 2026 (2 days)
+
+**Archive:** [v4.0-ROADMAP.md](milestones/v4.0-ROADMAP.md) | [v4.0-REQUIREMENTS.md](milestones/v4.0-REQUIREMENTS.md)
+
+---
+
 ## v3.6 Windows Compatibility (Shipped: 2026-02-28)
 
 **Delivered:** Full Windows SMB compatibility with NT Security Descriptors, SMB bug fixes, conformance test infrastructure, and comprehensive Windows 11 validation.
