@@ -169,16 +169,6 @@ func (b *FileBlock) IsLocal() bool {
 	return b.State == BlockStateLocal
 }
 
-// BlockRef references a single block in storage.
-type BlockRef struct {
-	// Key is the full block key in storage.
-	// Format: "{payloadID}/block-{blockIdx}"
-	Key string
-
-	// Size is the actual size of this block (may be < BlockSize for last block).
-	Size uint32
-}
-
 // FormatStoreKey returns the block store key (S3 object key) for a block.
 // Format: "{payloadID}/block-{blockIdx}".
 func FormatStoreKey(payloadID string, blockIdx uint64) string {
