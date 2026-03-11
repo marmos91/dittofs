@@ -20,6 +20,7 @@ var (
 	runSave           string
 	runMetaFiles      int
 	runSmallFileCount int
+	runClean bool
 )
 
 var runCmd = &cobra.Command{
@@ -52,6 +53,7 @@ func init() {
 	runCmd.Flags().StringVar(&runSave, "save", "", "Save results to JSON file")
 	runCmd.Flags().IntVar(&runMetaFiles, "meta-files", 1000, "Number of files for metadata workload")
 	runCmd.Flags().IntVar(&runSmallFileCount, "small-file-count", 10000, "Number of files for small-files workload")
+	runCmd.Flags().BoolVar(&runClean, "clean", false, "Remove test files after benchmark (default: keep for cold read reruns)")
 }
 
 func runBench(cmd *cobra.Command, args []string) error {
@@ -78,6 +80,7 @@ func runBench(cmd *cobra.Command, args []string) error {
 		Duration:       dur,
 		MetaFiles:      runMetaFiles,
 		SmallFileCount: runSmallFileCount,
+		Clean:          runClean,
 		System:         runSystem,
 	}
 

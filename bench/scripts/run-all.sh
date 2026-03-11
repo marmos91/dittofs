@@ -220,14 +220,56 @@ wait_for_ssh() {
 }
 
 # Drop filesystem caches on the local client.
-drop_caches() {
-    log "Dropping client caches..."
+drop_client_caches() {
+    log "Dropping client OS caches..."
     if $DRY_RUN; then
         log "[DRY-RUN] Would run: sync && echo 3 > /proc/sys/vm/drop_caches"
         return 0
     fi
     timeout 10 sync 2>/dev/null || log "WARN: sync timed out after 10s (NFS mount may be slow)"
     echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || log "WARN: Could not drop caches (not root?)"
+}
+
+# Drop filesystem caches on the remote server.
+drop_server_caches() {
+    log "Dropping server OS caches..."
+    if $DRY_RUN; then
+        log "[DRY-RUN] Would SSH to server and run: sync && echo 3 > /proc/sys/vm/drop_caches"
+        return 0
+    fi
+    ssh_server "sync && echo 3 > /proc/sys/vm/drop_caches" 2>/dev/null \
+        || log "WARN: Could not drop server caches"
+}
+
+# Evict DittoFS server-side caches (L1 read cache + local disk cache).
+# Only meaningful for DittoFS systems; no-op for competitors.
+evict_dittofs_cache() {
+    local name="$1"
+
+    # Only applies to DittoFS systems.
+    case "$name" in
+        dittofs-*) ;;
+        *) return 0 ;;
+    esac
+
+    log "[${name}] Evicting DittoFS server-side cache via dfsctl..."
+
+    if $DRY_RUN; then
+        log "[DRY-RUN] Would SSH to server and run: dfsctl cache evict"
+        return 0
+    fi
+
+    if ! ssh_server "dfsctl cache evict -v" 2>&1; then
+        log "WARN: dfsctl cache evict failed (server cache may still be warm)"
+    fi
+}
+
+# Drop all caches: DittoFS application cache (if applicable), server OS, client OS.
+drop_all_caches() {
+    local name="$1"
+    evict_dittofs_cache "$name"
+    drop_server_caches
+    drop_client_caches
 }
 
 # Mount a remote share on the client.
@@ -491,7 +533,7 @@ main() {
         # Always clean up between systems.
         unmount_share
         cleanup_competitor "$SYS_NAME" "$SYS_SCRIPT"
-        drop_caches
+        drop_client_caches
 
         log ""
     done
@@ -583,7 +625,7 @@ benchmark_system() {
     local result_file="$7"
 
     # Step 1: Install and start the competitor on the server.
-    log "[${name}] Step 1/5: Installing competitor on server..."
+    log "[${name}] Step 1/7: Installing competitor on server..."
     if ! install_competitor "$name" "$script"; then
         log "[${name}] ERROR: Install script failed."
         return 1
@@ -591,7 +633,7 @@ benchmark_system() {
 
     # Step 2: Wait for the service to be ready.
     if [ "$port" -gt 0 ]; then
-        log "[${name}] Step 2/5: Waiting for service on port ${port}..."
+        log "[${name}] Step 2/7: Waiting for service on port ${port}..."
         if ! wait_for_port "$port"; then
             log "[${name}] ERROR: Service did not become ready."
             return 1
@@ -599,25 +641,27 @@ benchmark_system() {
     else
         # FUSE-based systems (like juicefs) expose an NFS gateway or mount
         # directly. Give the service a few seconds to stabilize.
-        log "[${name}] Step 2/5: No port to check (FUSE); waiting 10s for startup..."
+        log "[${name}] Step 2/7: No port to check (FUSE); waiting 10s for startup..."
         if ! $DRY_RUN; then
             sleep 10
         fi
     fi
 
     # Step 3: Mount the remote share on the client.
-    log "[${name}] Step 3/5: Mounting share..."
+    log "[${name}] Step 3/7: Mounting share..."
     if ! mount_share "$protocol" "$port" "$mount_opts" "$export_path"; then
         log "[${name}] ERROR: Mount failed."
         return 1
     fi
 
-    # Step 4: Drop caches before benchmarking.
-    log "[${name}] Step 4/5: Dropping caches before benchmark..."
-    drop_caches
+    # Step 4: Drop all caches before benchmarking.
+    log "[${name}] Step 4/7: Dropping caches before benchmark..."
+    drop_all_caches "$name"
 
-    # Step 5: Run dfsctl bench.
-    log "[${name}] Step 5/5: Running dfsctl bench run..."
+    # Step 5: Run full benchmark (writes + warm reads).
+    # Reads immediately follow writes, so data is warm in cache.
+    # Files are kept by default for the cold read pass in step 7.
+    log "[${name}] Step 5/7: Running full benchmark (warm reads)..."
 
     local bench_cmd=(
         dfsctl bench run "$MOUNT_POINT"
@@ -640,7 +684,43 @@ benchmark_system() {
         fi
     fi
 
-    log "[${name}] Benchmark complete. Results: ${result_file}"
+    log "[${name}] Warm benchmark complete. Results: ${result_file}"
+
+    # Step 6: Evict all caches for cold read test.
+    # For DittoFS: evicts L1 read cache + local disk cache via dfsctl.
+    # For all systems: drops server and client OS page caches.
+    log "[${name}] Step 6/7: Evicting all caches for cold read test..."
+    drop_all_caches "$name"
+
+    # Step 7: Run cold read benchmark (seq-read + rand-read only).
+    # All server and client caches are cold — measures true read-from-storage perf.
+    # Test files from step 5 are still on disk (--keep-files).
+    local cold_result_file="${result_file%.json}-cold.json"
+    log "[${name}] Step 7/7: Running cold read benchmark..."
+
+    local cold_bench_cmd=(
+        dfsctl bench run "$MOUNT_POINT"
+        --system "${name}-cold"
+        --threads "$BENCH_THREADS"
+        --file-size "$BENCH_FILE_SIZE"
+        --block-size "$BENCH_BLOCK_SIZE"
+        --duration "$BENCH_DURATION"
+        --workload "seq-read,rand-read"
+        --clean
+        --save "$cold_result_file"
+    )
+
+    if $DRY_RUN; then
+        log "[DRY-RUN] ${cold_bench_cmd[*]}"
+    else
+        log "[${name}] Running: ${cold_bench_cmd[*]}"
+        if ! "${cold_bench_cmd[@]}" 2>&1 | tee -a "$LOG_FILE"; then
+            log "[${name}] WARN: Cold read benchmark failed (warm results still valid)."
+        else
+            log "[${name}] Cold read benchmark complete. Results: ${cold_result_file}"
+        fi
+    fi
+
     return 0
 }
 

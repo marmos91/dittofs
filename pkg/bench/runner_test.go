@@ -302,6 +302,7 @@ func TestRun_AllWorkloads(t *testing.T) {
 		BlockSize: 4 << 10,  // 4 KiB
 		Duration:  1 * time.Second,
 		MetaFiles: 10,
+		Clean:     true,
 		System:    "test-system",
 	}
 

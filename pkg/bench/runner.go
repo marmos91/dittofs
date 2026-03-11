@@ -55,7 +55,9 @@ func (r *Runner) Run(ctx context.Context) (*Result, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create bench dir: %w", err)
 	}
-	defer func() { _ = os.RemoveAll(dir) }()
+	if r.cfg.Clean {
+		defer func() { _ = os.RemoveAll(dir) }()
+	}
 
 	result := &Result{
 		Timestamp: time.Now().UTC(),

@@ -50,6 +50,10 @@ type Config struct {
 	// Workloads is the list of workloads to run. Nil means all.
 	Workloads []WorkloadType `json:"workloads,omitempty"`
 
+	// Clean removes test files after the benchmark completes.
+	// By default files are kept, allowing cold read reruns against existing data.
+	Clean bool `json:"-"`
+
 	// System is an optional label identifying the system under test (e.g., "dittofs-badger-fs").
 	System string `json:"system,omitempty"`
 }
