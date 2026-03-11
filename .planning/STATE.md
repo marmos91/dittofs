@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v4.0
 milestone_name: BlockStore Unification Refactor
-status: phase-complete
+status: completed
 stopped_at: Completed 49-05-PLAN.md (documentation overhaul) - Phase 49 COMPLETE
-last_updated: "2026-03-10T17:00:00.000Z"
-last_activity: 2026-03-10 — Completed Plan 05 (documentation overhaul) - Phase 49 COMPLETE
+last_updated: "2026-03-11T07:16:46.082Z"
+last_activity: 2026-03-10 — Completed Plan 05 (documentation overhaul)
 progress:
   total_phases: 36
   completed_phases: 10
@@ -18,20 +18,17 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-09)
+See: .planning/PROJECT.md (updated 2026-03-11)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Phase 49 Testing & Documentation — COMPLETE
+**Current focus:** Planning next milestone (v4.6 Production Hardening)
 
 ## Current Position
 
-Phase: 49 (Testing & Documentation)
-Milestone: v4.6 Production Hardening
-Plan: 5 of 5 (COMPLETE)
-Status: Phase Complete
-Last activity: 2026-03-10 — Completed Plan 05 (documentation overhaul)
-
-Progress: [##########] 100%
+Phase: Between milestones
+Milestone: v4.6 Production Hardening (next)
+Status: Planning
+Last activity: 2026-03-11 — Completed v4.0 milestone archival
 
 ## Completed Milestones
 
@@ -44,39 +41,19 @@ Progress: [##########] 100%
 | v3.6 Windows Compatibility | 29.8-32 | 12 | Feb 26-28, 2026 | 2026-02-28 |
 | v3.8 SMB3 Protocol Upgrade | 33-40.5 | 26 | Mar 1-4, 2026 | 2026-03-04 |
 | v4.2 Benchmarking & Performance | 57-62 | — | Mar 4, 2026 | 2026-03-04 |
+| v4.0 BlockStore Unification | 41-49 | 24 | Mar 9-11, 2026 | 2026-03-11 |
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 147+ (across 7 shipped milestones + Phase 49)
-- Average: ~4.6 plans/day
-
-| Phase | Plan | Duration | Tasks | Files |
-|-------|------|----------|-------|-------|
-| 49    | 01   | 8min     | 2     | 13    |
-| 49    | 02   | 12min    | 2     | 47    |
-| 49    | 04   | 2min     | 1     | 3     |
-| 49    | 05   | 5min     | 2     | 10    |
-
-**v4.6 Current Milestone:**
-- 5 phases (63-67), 7 requirements
-- Phases: SMB signing, protocol correctness, quotas, client tracking, trash
-| Phase 49 P03 | 10min | 2 tasks | 8 files |
+- Total plans completed: 170+ (across 8 shipped milestones)
+- Average: ~4.5 plans/day
 
 ## Accumulated Context
 
 ### Decisions
 
-- **49-04 cache-tiers standalone command**: Implemented as separate `bench cache-tiers` subcommand rather than workload in existing runner, since it requires authenticated API client unlike filesystem-only workloads
-- **49-02 migration SQL preserved**: gorm.go migration code keeps old payload_stores table references since it migrates FROM those names
-- **49-02 legacy aliases**: Used type aliases (PayloadStore = BlockStore) for safe incremental migration
-- **49-02 config validator**: Added legacy payload key detection to warn users about deprecated YAML keys
-- **49-01 cache types**: Cache response types defined at each layer (engine, shares, apiclient) following existing pattern rather than shared package
-- **49-01 eviction safety**: Refuse local block eviction without remote store to prevent data loss
-- **v4.6 phase grouping**: SMB signing (#252) standalone due to crypto complexity; NTLM flags (#215) paired with share hot-reload (#235) as both are protocol correctness; payload stats (#216) paired with quotas (#232) as stats feeds into quota reporting; client tracking (#157) and trash (#190) each standalone
-- **Three issues already implemented**: #213 (oplock break), #119 (portmapper), #217 (session limits) — found done during v4.6 scoping
-- Previous decisions in PROJECT.md Key Decisions table
-- [Phase 49]: 49-03 matrixStoreConfig replaces old 2D storeConfig for 3D matrix (metadata x local x remote)
+- Previous decisions archived in PROJECT.md Key Decisions table and v4.0 milestone archive
 
 ### Pending Todos
 
@@ -88,6 +65,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-10
-Stopped at: Completed 49-05-PLAN.md (documentation overhaul) - Phase 49 COMPLETE
-Next action: Phase 49 complete. Proceed to next milestone phase.
+Last session: 2026-03-11
+Stopped at: v4.0 milestone archived
+Next action: Start v4.6 Production Hardening with `/gsd:new-milestone` or `/gsd:plan-phase`

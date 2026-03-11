@@ -12,7 +12,7 @@ DittoFS evolves from NFSv3 to full NFSv4.2 support across fifteen milestones. v1
 - [x] **v3.5 Adapter + Core Refactoring** - Phases 26-29.5 (shipped 2026-02-26) — [archive](milestones/v3.5-ROADMAP.md)
 - [x] **v3.6 Windows Compatibility** - Phases 29.8-32.5 (shipped 2026-02-28) — [archive](milestones/v3.6-ROADMAP.md)
 - [x] **v3.8 SMB3 Protocol Upgrade** - Phases 33-40.5 (shipped 2026-03-04) — [archive](milestones/v3.8-ROADMAP.md)
-- [ ] **v4.0 BlockStore Unification Refactor** - Phases 41-49 (planned)
+- [x] **v4.0 BlockStore Unification Refactor** - Phases 41-49 (shipped 2026-03-11) — [archive](milestones/v4.0-ROADMAP.md)
 - [x] **v4.2 Benchmarking & Performance** - Phases 57-62 (shipped 2026-03-04)
 - [ ] **v4.3 Protocol Gap Fixes** - Phases 49.1-49.3 (planned)
 - [ ] **v4.5 BlockStore Security** - Phases 49.4-49.5 (planned)
@@ -119,17 +119,20 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 </details>
 
-### v4.0 BlockStore Unification Refactor
+<details>
+<summary>[x] v4.0 BlockStore Unification Refactor (Phases 41-49) - SHIPPED 2026-03-11</summary>
 
-- [x] **Phase 41: Block State Enum and ListFileBlocks** - Rename states (Sealed->Local, Uploaded->Remote), update ListPendingUpload->ListLocalBlocks, add ListFileBlocks method (completed 2026-03-09)
-- [ ] **Phase 42: Legacy Cleanup** - Remove DirectWriteStore interface and filesystem payload store
-- [ ] **Phase 43: Local-Only Block Management** - Block management operations on cache, local-only offloader mode without remote store
-- [ ] **Phase 44: Data Model and API/CLI** - BlockStoreConfig DB model, REST endpoints, dfsctl block store commands, `dfs cache clean` (#246), `dfs gc` (#189)
-- [ ] **Phase 45: Package Restructure** - Create pkg/blockstore/ hierarchy absorbing cache, payload, offloader, gc
-- [ ] **Phase 46: Per-Share Block Store Wiring** - Runtime manages per-share BlockStore instances replacing global PayloadService
-- [ ] **Phase 47: L1 Read Cache, Disk Tier, and Prefetch** - Tiered read cache (memory + SSD) with sequential prefetch (#187)
-- [ ] **Phase 48: Auto-Deduced Configuration and Memory Safety** - Derive sizes from CPU/memory, GOMEMLIMIT for OOM prevention (#258)
-- [ ] **Phase 49: Testing and Documentation** - E2E tests for new CLI, multi-share isolation, updated documentation
+- [x] **Phase 41: Block State Enum and ListFileBlocks** - Rename states, query methods, conformance tests (completed 2026-03-09)
+- [x] **Phase 42: Legacy Cleanup** - Remove DirectWriteStore and fs payload store (completed 2026-03-09)
+- [x] **Phase 43: Local-Only Block Management** - Block lifecycle methods, local-only offloader mode (completed 2026-03-09)
+- [x] **Phase 44: Data Model and API/CLI** - BlockStoreConfig model, REST API, CLI commands (completed 2026-03-09)
+- [x] **Phase 45: Package Restructure** - pkg/blockstore/ hierarchy absorbing cache, payload, offloader, gc (completed 2026-03-09)
+- [x] **Phase 46: Per-Share Block Store Wiring** - Per-share BlockStore instances replacing global PayloadService (completed 2026-03-10)
+- [x] **Phase 47: L1 Read Cache and Prefetch** - LRU read cache with adaptive sequential prefetcher (completed 2026-03-10)
+- [x] **Phase 48: Auto-Deduced Configuration** - Platform-aware sysinfo, auto-deduced defaults (completed 2026-03-10)
+- [x] **Phase 49: Testing and Documentation** - E2E store matrix, cache CLI/API, documentation sweep (completed 2026-03-11)
+
+</details>
 
 ### v4.3 Protocol Gap Fixes
 
@@ -206,163 +209,14 @@ Full phase details archived to [milestones/v3.8-ROADMAP.md](milestones/v3.8-ROAD
 
 ---
 
-## v4.0 BlockStore Unification Refactor
+<details>
+<summary>v4.0 BlockStore Unification Refactor (Phases 41-49) -- SHIPPED 2026-03-11</summary>
 
-### Phase 41: Block State Enum and ListFileBlocks
-**Goal**: Rename block state enum values and update query methods to reflect new terminology
-**Depends on**: Phase 40.5 (v3.8 complete)
-**Requirements**: STATE-01, STATE-02, STATE-03, STATE-04, STATE-05, STATE-06
-**Success Criteria** (what must be TRUE):
-  1. Block state constants use new names: Dirty(0), Local(1), Syncing(2), Remote(3)
-  2. All code referencing Sealed or Uploaded updated to Local and Remote
-  3. ListLocalBlocks method replaces ListPendingUpload across all implementations
-  4. ListRemoteBlocks method replaces ListEvictable across all implementations
-  5. ListFileBlocks(payloadID) method exists and returns all blocks for a file
-  6. BadgerDB secondary index uses fb-local: prefix instead of fb-sealed:
-**Verification**: `go build ./...` && `go test ./...`
-**Plans**: 2 plans
-Plans:
-- [x] 41-01-PLAN.md — Rename state enum, query methods, update all consumers in cache/offloader
-- [ ] 41-02-PLAN.md — Add ListFileBlocks method, conformance tests for FileBlockStore
+Full phase details archived to [milestones/v4.0-ROADMAP.md](milestones/v4.0-ROADMAP.md).
 
-### Phase 42: Legacy Cleanup
-**Goal**: Remove DirectWriteStore interface and filesystem payload store dead code
-**Depends on**: Phase 41
-**Requirements**: CLEAN-01, CLEAN-02, CLEAN-03, CLEAN-04, CLEAN-05, CLEAN-06
-**Success Criteria** (what must be TRUE):
-  1. DirectWriteStore interface removed from pkg/payload/store/store.go
-  2. pkg/payload/store/fs/ directory deleted entirely
-  3. Cache methods directWritePath, SetDirectWritePath, IsDirectWrite removed
-  4. Offloader no longer checks IsDirectWrite or handles direct-write paths
-  5. init.go removed blockfs import and DirectWriteStore detection logic
-  6. All direct-write conditional branches removed from cache operations
-**Verification**: `go build ./...` && `go test ./...`
-**Plans**: TBD
+9 phases, 24 plans: block state rename, legacy cleanup, local-only mode, data model/API/CLI, package restructure, per-share wiring, L1 read cache, auto-configuration, testing and documentation.
 
-### Phase 43: Local-Only Block Management
-**Goal**: Add block management operations to cache and support offloader without remote store
-**Depends on**: Phase 42
-**Requirements**: LOCAL-01, LOCAL-02, LOCAL-03, LOCAL-04
-**Success Criteria** (what must be TRUE):
-  1. Cache provides DeleteBlockFile, DeleteAllBlockFiles, TruncateBlockFiles, GetStoredFileSize, ExistsOnDisk methods
-  2. SetEvictionEnabled method exists to control local block retention
-  3. Offloader accepts nil blockStore and operates in local-only mode
-  4. Local-only flush marks blocks BlockStateLocal without upload attempt
-  5. Runtime wiring creates local-only BlockStore when no remote store configured
-**Verification**: `go build ./...` && `go test ./...`
-**Plans**: TBD
-
-### Phase 44: Data Model and API/CLI
-**Goal**: Create BlockStoreConfig model, REST/CLI endpoints for block stores, cache and GC commands
-**Depends on**: Phase 43
-**Requirements**: MODEL-01, MODEL-02, MODEL-03, MODEL-04, MODEL-05, API-01, API-02, API-03, CLI-01, CLI-02, CLI-03, CLI-04
-**Reference**: GitHub #246, #189
-**Success Criteria** (what must be TRUE):
-  1. BlockStoreConfig model exists with ID, Name, Kind (local/remote), Type, Config, CreatedAt fields
-  2. Share model has LocalBlockStoreID (mandatory) and RemoteBlockStoreID (nullable)
-  3. Database migration renames payload_store_configs to block_store_configs with kind column
-  4. Database migration splits Share.PayloadStoreID into LocalBlockStoreID + RemoteBlockStoreID
-  5. BlockStoreConfigStore interface with CRUD methods filtered by kind replaces PayloadStoreConfigStore
-  6. REST endpoints /api/v1/block-stores/local and /api/v1/block-stores/remote exist for CRUD
-  7. Share endpoints accept --local (required) and --remote (optional) parameters
-  8. dfsctl store block local add/list/edit/remove commands work
-  9. dfsctl store block remote add/list/edit/remove commands work
-  10. dfsctl share create --local X --remote Y replaces --payload flag
-  11. API client methods for block store operations replace payload store methods
-  12. `dfs cache clean` command purges cached blocks with --dry-run support (#246)
-  13. `dfs gc` command exposes orphan block scanning with --dry-run and --verbose (#189)
-**Verification**: `go build ./...` && `go test ./pkg/controlplane/...` && manual CLI test
-**Plans**: TBD
-
-### Phase 45: Package Restructure
-**Goal**: Reorganize storage code into clean pkg/blockstore/ hierarchy
-**Depends on**: Phase 44
-**Requirements**: PKG-01, PKG-02, PKG-03, PKG-04, PKG-05, PKG-06, PKG-07, PKG-08, PKG-09, PKG-10, PKG-11
-**Success Criteria** (what must be TRUE):
-  1. pkg/blockstore/local/local.go defines LocalStore interface
-  2. pkg/blockstore/remote/remote.go defines RemoteStore interface
-  3. pkg/cache/ code moved to pkg/blockstore/local/fs/
-  4. pkg/blockstore/local/memory/ created for test MemoryLocalStore
-  5. pkg/payload/store/s3/ moved to pkg/blockstore/remote/s3/
-  6. pkg/payload/store/memory/ moved to pkg/blockstore/remote/memory/
-  7. pkg/payload/offloader/ moved to pkg/blockstore/offloader/
-  8. pkg/payload/gc/ moved to pkg/blockstore/gc/
-  9. pkg/blockstore/blockstore.go orchestrator absorbs PayloadService responsibilities
-  10. All consumer imports updated (NFS handlers, SMB handlers, runtime, shares)
-  11. pkg/cache/ and pkg/payload/ directories deleted
-**Verification**: `go build ./...` && `go test ./...`
-**Plans**: TBD
-
-### Phase 46: Per-Share Block Store Wiring
-**Goal**: Replace global PayloadService with per-share BlockStore instances
-**Depends on**: Phase 45
-**Requirements**: SHARE-01, SHARE-02, SHARE-03, SHARE-04
-**Success Criteria** (what must be TRUE):
-  1. Runtime manages map[shareID]*BlockStore instead of single PayloadService
-  2. EnsureBlockStore(share) creates BlockStore with share's local + remote configs
-  3. NFS/SMB handlers resolve BlockStore per share handle via getBlockStore(shareHandle)
-  4. Multiple shares with different local paths operate in isolation
-  5. Share deletion cleans up associated BlockStore
-**Verification**: `go build ./...` && `go test ./pkg/controlplane/...` && multi-share E2E test
-**Plans**: TBD
-
-### Phase 47: L1 Read Cache, Disk Tier, and Prefetch
-**Goal**: Add tiered read cache (memory + disk) with sequential prefetch for hot blocks
-**Depends on**: Phase 46
-**Requirements**: PERF-01, PERF-02, PERF-03, PERF-04
-**Reference**: GitHub #187
-**Success Criteria** (what must be TRUE):
-  1. L1 read-through LRU cache (readcache.go) caches hot blocks in memory
-  2. Cache invalidation on WriteAt removes stale entries
-  3. Sequential prefetch (prefetch.go) triggered after 2+ sequential reads
-  4. Prefetch worker pool bounded, non-blocking, avoids cache pollution
-  5. Sequential read benchmark shows improved throughput with L1 cache
-  6. Disk cache tier: evicted memory blocks demote to SSD, disk reads promote to memory (#187)
-  7. Disk cache configurable (path, max_size) with free space monitoring
-**Verification**: `go test ./pkg/blockstore/...` && sequential read benchmark
-**Plans**: TBD
-
-### Phase 48: Auto-Deduced Configuration and Memory Safety
-**Goal**: Derive buffer/cache sizes and concurrency from system resources, prevent OOM
-**Depends on**: Phase 47
-**Requirements**: AUTO-01, AUTO-02, AUTO-03, AUTO-04, AUTO-05
-**Reference**: GitHub #258
-**Success Criteria** (what must be TRUE):
-  1. WriteBufferMemory defaults to 25% of available memory if not configured
-  2. ReadCacheMemory defaults to 12.5% of available memory if not configured
-  3. ParallelUploads defaults to max(4, runtime.GOMAXPROCS(0)) if not configured
-  4. ParallelDownloads defaults to max(8, runtime.GOMAXPROCS(0)*2) if not configured
-  5. User-provided config values override auto-deduced defaults
-  6. GOMEMLIMIT set based on configured cache size + headroom to prevent OOM (#258)
-  7. Upload storm memory bounded: offloader respects global memory ceiling
-**Verification**: `go test ./pkg/config/...` && config validation test
-**Plans**: 2 plans
-Plans:
-- [x] 48-01-PLAN.md — System resource detection (internal/sysinfo/) and deduction functions (pkg/blockstore/defaults.go)
-- [x] 48-02-PLAN.md — Config cleanup (remove CacheConfig/OffloaderConfig), start.go wiring, config show --deduced
-
-### Phase 49: Testing and Documentation
-**Goal**: Comprehensive E2E testing, cache CLI/API, legacy cleanup, and documentation for block store architecture
-**Depends on**: Phase 48
-**Requirements**: TEST-01, TEST-02, TEST-03, DOCS-01, DOCS-02, DOCS-03, DOCS-04
-**Success Criteria** (what must be TRUE):
-  1. E2E test matrix updated to 18-combo 3D matrix (3 metadata x 2 local x 3 remote)
-  2. Multi-share E2E test validates isolation with different local paths
-  3. Cache-tiers benchmark validates L1 cache performance improvement
-  4. docs/ARCHITECTURE.md updated to describe two-tier block store model
-  5. docs/CONFIGURATION.md updated for new block store CLI and config schema
-  6. CLAUDE.md updated to reflect pkg/blockstore/ structure
-  7. --payload flag removed entirely (hard error pointing to --local/--remote)
-  8. Zero payload store references remain in the repository
-  9. Cache CLI (dfsctl cache stats/evict) and REST API operational
-**Verification**: `go build ./...` && `go test -tags=e2e ./test/e2e/...` && documentation review
-**Plans**: 5 plans
-Plans:
-- [x] 49-01-PLAN.md — Cache CLI/API and backward compatibility clean break
-- [ ] 49-02-PLAN.md — Full legacy payload store cleanup across repository
-- [ ] 49-03-PLAN.md — 18-combo E2E store matrix and multi-share isolation tests
-- [ ] 49-04-PLAN.md — Cache-tiers benchmark workload
-- [ ] 49-05-PLAN.md — Documentation full sweep
+</details>
 
 ---
 
@@ -759,15 +613,7 @@ v3.8 (33-40.5) -> v4.2 (57-62) -> v4.0 (41-49) -> v4.6 (63-67) -> v4.7 (68-71) -
 | 29.8-32.5 | v3.6 | Complete | Complete | 2026-02-28 |
 | 33-40.5 | v3.8 | Complete | Complete | 2026-03-04 |
 | 57-62 | v4.2 | Complete | Complete | 2026-03-04 |
-| 41. Block State Enum and ListFileBlocks | v4.0 | 2/2 | Complete | 2026-03-09 |
-| 42. Legacy Cleanup | v4.0 | 1/1 | Complete | 2026-03-09 |
-| 43. Local-Only Block Management | v4.0 | 2/2 | Complete | 2026-03-09 |
-| 44. Data Model and API/CLI | v4.0 | 3/3 | Complete | 2026-03-09 |
-| 45. Package Restructure | v4.0 | 4/4 | Complete | 2026-03-09 |
-| 46. Per-Share Block Store Wiring | v4.0 | 3/3 | Complete | 2026-03-10 |
-| 47. L1 Read Cache and Prefetch | v4.0 | 2/2 | Complete | 2026-03-10 |
-| 48. Auto-Deduced Configuration | v4.0 | 2/2 | Complete | 2026-03-10 |
-| 49. Testing and Documentation | v4.0 | 2/5 | In Progress | - |
+| 41-49 | v4.0 | 24/24 | Complete | 2026-03-11 |
 | 50. Server-Side Copy | v4.1 | 0/? | Not started | - |
 | 51. Clone/Reflinks | v4.1 | 0/? | Not started | - |
 | 52. Sparse Files | v4.1 | 0/? | Not started | - |
@@ -802,7 +648,7 @@ v3.8 (33-40.5) -> v4.2 (57-62) -> v4.0 (41-49) -> v4.6 (63-67) -> v4.7 (68-71) -
 | 49.4 Block-Level Compression | v4.5 | 0/? | Not started | - |
 | 49.5 Client-Side Encryption | v4.5 | 0/? | Not started | - |
 
-**Total:** 124/? plans complete
+**Total:** 148/? plans complete
 
 ---
 *Roadmap created: 2026-02-04*
@@ -813,8 +659,4 @@ v3.8 (33-40.5) -> v4.2 (57-62) -> v4.0 (41-49) -> v4.6 (63-67) -> v4.7 (68-71) -
 *v3.6 shipped: 2026-02-28*
 *v3.8 shipped: 2026-03-04*
 *v4.2 shipped: 2026-03-04*
-*v4.0 roadmap created: 2026-03-09*
-*v4.6 roadmap created: 2026-03-09*
-*v4.7 roadmap created: 2026-03-09*
-*v4.8 roadmap created: 2026-03-09*
-*v4.9 roadmap created: 2026-03-09*
+*v4.0 shipped: 2026-03-11*

@@ -21,9 +21,11 @@ Target: Cloud-native enterprise NAS with feature parity exceeding JuiceFS and Ha
 
 ## Upcoming Milestones
 
-- **v4.0 BlockStore Unification Refactor** — Two-tier block store model (in progress, phases 41-49)
 - **v4.3 Protocol Gap Fixes** — NFSv4 READDIR cookie, READDIRPLUS perf, LSA pipe (phases 49.1-49.3)
 - **v4.5 BlockStore Security** — Block-level compression and encryption (phases 49.4-49.5)
+- **v4.7 Offline/Edge Resilience** — Disconnected operation with write queue and auto-sync (phases 68-71)
+- **v4.8 DX/UX Improvements** — Makefile, CI optimization, adapter config API (phases 72-74)
+- **v4.9 SMB Protocol Fixes** — Credits, multichannel, conformance (phases 75-77)
 - **v5.0 NFSv4.2 Extensions** — Server-side copy, clone/reflinks, sparse files, xattrs (phases 50-56)
 
 ## Core Value
@@ -104,23 +106,15 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 - ✓ Client compatibility: Windows 11 verified, multi-OS CI — v3.8
 - ✓ Microsoft WindowsProtocolTestSuites FileServer conformance (BVT + SMB3 infrastructure) — v3.8
 - ✓ Go integration tests (hirochachacha/go-smb2) for native client-server interop — v3.8
+- ✓ Two-tier block store model (Local + Remote) replacing PayloadService — v4.0
+- ✓ Per-share BlockStore with isolated local paths and ref-counted remote stores — v4.0
+- ✓ pkg/blockstore/ package hierarchy (local/fs, remote/s3, engine, sync, gc, io) — v4.0
+- ✓ BlockStoreConfig data model with Kind discriminator, REST API, CLI commands — v4.0
+- ✓ L1 read cache (LRU) with adaptive sequential prefetcher — v4.0
+- ✓ Platform-aware auto-deduced configuration (darwin/linux/windows) — v4.0
+- ✓ Cache observability via REST API and CLI — v4.0
 
 ### Active
-
-#### v4.0 — BlockStore Unification Refactor
-- [ ] Block state enum rename: Sealed->Local, Uploaded->Remote
-- [ ] ListPendingUpload->ListLocalBlocks, ListEvictable->ListRemoteBlocks, add ListFileBlocks
-- [ ] Remove DirectWriteStore and FS payload store (pkg/payload/store/fs/)
-- [ ] Block management ops on cache (manage.go) + local-only offloader mode
-- [ ] DB model: BlockStoreConfig (kind=local/remote) replacing PayloadStoreConfig
-- [ ] API endpoints for block stores (local + remote CRUD)
-- [ ] CLI: `dfsctl store block local/remote` replacing `dfsctl store payload`
-- [ ] Share model: LocalBlockStoreID (mandatory) + RemoteBlockStoreID (optional)
-- [ ] Package restructure: pkg/blockstore/ absorbing cache + payload + offloader + gc
-- [ ] Per-share block store wiring (replace single PayloadService)
-- [ ] L1 read cache (read-through LRU) + sequential prefetch
-- [ ] Auto-deduced defaults from runtime.NumCPU() + available memory
-- [ ] E2E tests updated for new store CLI + documentation updates
 
 #### v4.6 — Production Hardening
 - [ ] SMB 3.1.1 signing on macOS — fix preauth integrity hash mismatch (#252)
@@ -157,8 +151,8 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 
 ## Context
 
-**Current State (post-v3.8):**
-- ~307,000 LOC Go (+44,956 lines in v3.8)
+**Current State (post-v4.0):**
+- ~284,000 LOC Go (net +26,605 in v4.0, includes major refactor with deletions)
 - NFSv3 + NFSv4.0 + NFSv4.1 + NLM + SMB3.1.1 fully implemented
 - SMB3 security: AES encryption (128/256 GCM/CCM), AES signing (CMAC/GMAC), preauth integrity
 - SMB3 features: Lease V2 with directory leasing, durable handles V1/V2, VALIDATE_NEGOTIATE_INFO
@@ -240,9 +234,12 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 | Docker-isolated smbtorture | GPL compliance via container boundary, no direct binary contact | ✓ Good — v3.6 |
 | Zero-fill sparse reads at download level | Single fix benefits both NFS and SMB protocol paths | ✓ Good — v3.6 |
 | BFS for descendant path updates | Iterative queue avoids stack overflow on deep directory trees | ✓ Good — v3.6 |
-| Two-tier block store model | Clean Local+Remote replaces confusing PayloadService/Cache/DirectWrite layers | — Pending (v4.0) |
-| Per-share block stores | Different local paths and remote backends per share, replaces global PayloadService | — Pending (v4.0) |
-| BlockStore refactor before NFSv4.2 | Clean storage architecture enables easier feature development | — Pending (v4.0) |
+| Two-tier block store model | Clean Local+Remote replaces confusing PayloadService/Cache/DirectWrite layers | ✓ Good — v4.0 |
+| Per-share block stores | Different local paths and remote backends per share, replaces global PayloadService | ✓ Good — v4.0 |
+| BlockStore refactor before NFSv4.2 | Clean storage architecture enables easier feature development | ✓ Good — v4.0 |
+| Copy-on-read L1 cache | Prevents buffer corruption from concurrent reads | ✓ Good — Phase 47 |
+| Platform-aware sysinfo | Auto-deduce config from darwin/linux/windows system resources | ✓ Good — Phase 48 |
+| Ref-counted shared remote stores | Multiple shares share one remote store, nonClosingRemote prevents premature close | ✓ Good — Phase 46 |
 | Xattrs in metadata layer | Clean abstraction, expose via NFSv4.2 and SMB | — Pending (v4.1) |
 | Async COPY with polling | Better for large files, standard NFSv4.2 pattern | — Pending (v4.1) |
 | CLONE via content-addressed storage | Efficient reflinks using existing dedup infrastructure | — Pending (v4.1) |
@@ -260,4 +257,4 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 | Per-adapter connection pools | Isolation between NFS and SMB, simpler limits | ✓ Good — Phase 01 |
 
 ---
-*Last updated: 2026-03-09 after v4.6 Production Hardening milestone start*
+*Last updated: 2026-03-11 after v4.0 BlockStore Unification Refactor milestone complete*
