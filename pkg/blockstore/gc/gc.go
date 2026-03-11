@@ -2,7 +2,6 @@ package gc
 
 import (
 	"context"
-	"os"
 	"strings"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -190,84 +189,6 @@ func CollectGarbage(
 		"errors", stats.Errors)
 
 	return stats
-}
-
-// CollectUnreferenced removes FileBlocks with RefCount=0 and their associated
-// remote store objects and cache files. This is the FileBlock-based GC that
-// complements the block-store-scan-based CollectGarbage.
-//
-// Unreferenced blocks occur when:
-//   - A file is deleted but its blocks are shared with other files (RefCount decremented)
-//   - Dedup replaces a pending block with an existing one (old block drops to RefCount=0)
-//
-// Parameters:
-//   - ctx: Context for cancellation
-//   - fileBlockStore: FileBlockStore to query for unreferenced blocks
-//   - remoteStore: Remote store for deleting uploaded objects (may be nil to skip)
-//   - batchSize: Max blocks to process per invocation (0 = 100)
-//   - dryRun: If true, only count without deleting
-//
-// Returns the number of blocks cleaned up and any error.
-func CollectUnreferenced(
-	ctx context.Context,
-	fileBlockStore blockstore.FileBlockStore,
-	remoteStore remote.RemoteStore,
-	batchSize int,
-	dryRun bool,
-) (int, error) {
-	if batchSize <= 0 {
-		batchSize = 100
-	}
-
-	unreferenced, err := fileBlockStore.ListUnreferenced(ctx, batchSize)
-	if err != nil {
-		return 0, err
-	}
-
-	if len(unreferenced) == 0 {
-		return 0, nil
-	}
-
-	logger.Info("GC: found unreferenced blocks", "count", len(unreferenced), "dryRun", dryRun)
-
-	cleaned := 0
-	for _, fb := range unreferenced {
-		if ctx.Err() != nil {
-			break
-		}
-
-		if dryRun {
-			cleaned++
-			continue
-		}
-
-		if fb.BlockStoreKey != "" && remoteStore != nil {
-			if err := remoteStore.DeleteBlock(ctx, fb.BlockStoreKey); err != nil {
-				logger.Warn("GC: failed to delete block from store",
-					"blockID", fb.ID, "key", fb.BlockStoreKey, "error", err)
-			}
-		}
-
-		if fb.CachePath != "" {
-			if err := os.Remove(fb.CachePath); err != nil && !os.IsNotExist(err) {
-				logger.Warn("GC: failed to delete cache file",
-					"blockID", fb.ID, "path", fb.CachePath, "error", err)
-			}
-		}
-
-		if err := fileBlockStore.DeleteFileBlock(ctx, fb.ID); err != nil {
-			logger.Warn("GC: failed to delete file block",
-				"blockID", fb.ID, "error", err)
-			continue
-		}
-
-		cleaned++
-	}
-
-	logger.Info("GC: unreferenced cleanup complete",
-		"cleaned", cleaned, "dryRun", dryRun)
-
-	return cleaned, nil
 }
 
 // parsePayloadIDFromBlockKey extracts payloadID from a block key.

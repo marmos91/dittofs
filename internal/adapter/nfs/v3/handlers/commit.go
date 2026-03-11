@@ -154,7 +154,7 @@ func (h *Handler) Commit(
 	}
 
 	// ========================================================================
-	// Step 4b: Perform commit operation - flush write cache to block store
+	// Step 4b: Perform commit operation - flush block store to stable storage
 	// ========================================================================
 
 	// Check context before potentially long flush operation
@@ -208,7 +208,7 @@ func (h *Handler) Commit(
 	// Flush cache to block store (non-blocking)
 	//
 	// NOTE: Flush is non-blocking because:
-	//   - Data is already safe in WAL-backed cache (crash-safe)
+	//   - Data is already safe in local store (crash-safe)
 	//   - macOS sends COMMIT every 4MB, so blocking would kill performance
 	//   - Background uploads happen via eager upload mechanism
 	//   - This matches the NFS3 spec which allows async commits
@@ -217,7 +217,7 @@ func (h *Handler) Commit(
 	// stable storage. Our WAL cache provides the durability guarantee.
 	_, flushErr := blockStore.Flush(ctx.Context, string(file.PayloadID))
 	if flushErr != nil {
-		logError(ctx.Context, flushErr, "COMMIT failed: flush error", "handle", fmt.Sprintf("0x%x", req.Handle), "content_id", file.PayloadID, "client", clientIP)
+		logError(ctx.Context, flushErr, "COMMIT failed: flush error", "handle", fmt.Sprintf("0x%x", req.Handle), "payload_id", file.PayloadID, "client", clientIP)
 
 		// Try to get updated attributes for error response
 		if updatedFile, getErr := metaSvc.GetFile(ctx.Context, handle); getErr == nil {

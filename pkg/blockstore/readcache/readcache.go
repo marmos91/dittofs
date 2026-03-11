@@ -2,6 +2,7 @@ package readcache
 
 import (
 	"container/list"
+	"context"
 	"sync"
 )
 
@@ -32,6 +33,8 @@ type ReadCache struct {
 
 	maxBytes int64 // memory budget
 	curBytes int64 // current usage
+
+	prefetcher *Prefetcher // optional sequential prefetcher
 }
 
 // New creates a new ReadCache with the given memory budget in bytes.
@@ -252,6 +255,97 @@ func (c *ReadCache) Stats() CacheStats {
 		Entries:  len(c.entries),
 		CurBytes: c.curBytes,
 		MaxBytes: c.maxBytes,
+	}
+}
+
+// SetPrefetcher attaches a prefetcher to this cache. The prefetcher is created
+// after the cache (in BlockStore.Start) so it must be set separately.
+func (c *ReadCache) SetPrefetcher(p *Prefetcher) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.prefetcher = p
+}
+
+// BlockDataFn loads a block's raw data from the local store.
+// Injected to avoid import cycles with the local package.
+type BlockDataFn func(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, uint32, error)
+
+// InvalidateRange invalidates all L1 cache entries covering the byte range
+// [offset, offset+length) and resets the prefetcher for the file.
+// Used by WriteAt to keep L1 consistent with writes.
+func (c *ReadCache) InvalidateRange(payloadID string, offset uint64, length int, blockSize uint64) {
+	if c == nil || length <= 0 {
+		return
+	}
+	startBlock := offset / blockSize
+	endBlock := (offset + uint64(length) - 1) / blockSize
+	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
+		c.Invalidate(payloadID, blockIdx)
+	}
+	c.resetPrefetcher(payloadID)
+}
+
+// InvalidateAboveSize invalidates all L1 entries for blocks above newSize bytes
+// and resets the prefetcher. Used by Truncate.
+func (c *ReadCache) InvalidateAboveSize(payloadID string, newSize uint64, blockSize uint64) {
+	if c == nil {
+		return
+	}
+	newBlockCount := (newSize + blockSize - 1) / blockSize
+	c.InvalidateAbove(payloadID, newBlockCount)
+	c.resetPrefetcher(payloadID)
+}
+
+// InvalidateAndReset invalidates all L1 entries for a file and resets the
+// prefetcher. Used by Delete.
+func (c *ReadCache) InvalidateAndReset(payloadID string) {
+	if c == nil {
+		return
+	}
+	c.InvalidateFile(payloadID)
+	c.resetPrefetcher(payloadID)
+}
+
+// NotifyRead informs the prefetcher about a read covering the byte range
+// [offset, offset+length). Each block in the range is reported individually
+// so multi-block reads are correctly detected as sequential.
+func (c *ReadCache) NotifyRead(payloadID string, offset, length, blockSize uint64) {
+	if c == nil || c.prefetcher == nil || length == 0 {
+		return
+	}
+	startBlock := offset / blockSize
+	endBlock := (offset + length - 1) / blockSize
+	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
+		c.prefetcher.OnRead(payloadID, blockIdx)
+	}
+}
+
+// FillFromStore reads full blocks from the local store and populates the L1 cache
+// for the byte range [offset, offset+length). Skips blocks already present.
+func (c *ReadCache) FillFromStore(ctx context.Context, payloadID string, offset, length, blockSize uint64, getBlockData BlockDataFn) {
+	if c == nil || length == 0 {
+		return
+	}
+	startBlock := offset / blockSize
+	endBlock := (offset + length - 1) / blockSize
+	for blockIdx := startBlock; blockIdx <= endBlock; blockIdx++ {
+		if c.Contains(payloadID, blockIdx) {
+			continue
+		}
+		data, dataSize, err := getBlockData(ctx, payloadID, blockIdx)
+		if err == nil && data != nil {
+			c.Put(payloadID, blockIdx, data, dataSize)
+		}
+	}
+}
+
+// resetPrefetcher resets the prefetcher state for a payloadID.
+func (c *ReadCache) resetPrefetcher(payloadID string) {
+	if c.prefetcher != nil {
+		c.prefetcher.Reset(payloadID)
 	}
 }
 

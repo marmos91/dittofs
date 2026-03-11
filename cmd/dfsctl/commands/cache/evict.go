@@ -84,8 +84,8 @@ func runCacheEvict(cmd *cobra.Command, _ []string) error {
 		return output.PrintYAML(os.Stdout, resp)
 	default:
 		if cmdutil.IsVerbose() {
-			fmt.Printf("Evicted %d blocks (%s freed), L1 entries cleared: %d\n",
-				resp.LocalBlocksEvicted,
+			fmt.Printf("Evicted %d files (%s freed), L1 entries cleared: %d\n",
+				resp.LocalFilesEvicted,
 				formatBytes(resp.BytesFreed),
 				resp.L1EntriesCleared,
 			)

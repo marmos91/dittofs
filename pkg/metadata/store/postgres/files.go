@@ -315,7 +315,7 @@ func (s *PostgresMetadataStore) PutFilesystemMeta(ctx context.Context, shareName
 }
 
 // ============================================================================
-// Content ID Operations
+// Payload ID Operations
 // ============================================================================
 
 // GetFileByPayloadID retrieves a file by its content ID (used by cache flusher)

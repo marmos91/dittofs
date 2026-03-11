@@ -220,18 +220,18 @@ func (h *Handler) Remove(
 	// if metadata is removed but content deletion fails, the content becomes
 	// orphaned but the file is still properly deleted from the client's view.
 	//
-	// Note: With async write mode, cached writes are flushed during COMMIT.
+	// Note: With async write mode, pending writes are flushed during COMMIT.
 	// REMOVE should only delete what's already in the block store.
 	// Any unflushed cache data will be cleaned up by cache eviction.
 
 	if removedFileAttr.PayloadID != "" {
 		if err := blockStore.Delete(ctx.Context, string(removedFileAttr.PayloadID)); err != nil {
 			// Log but don't fail the operation - metadata is already removed
-			logger.WarnCtx(ctx.Context, "REMOVE: failed to delete content", "name", req.Filename, "content_id", removedFileAttr.PayloadID, "error", err)
+			logger.WarnCtx(ctx.Context, "REMOVE: failed to delete content", "name", req.Filename, "payload_id", removedFileAttr.PayloadID, "error", err)
 			// This is non-fatal - the file is successfully removed from metadata
 			// The orphaned content can be cleaned up later via garbage collection
 		} else {
-			logger.DebugCtx(ctx.Context, "REMOVE: deleted content", "name", req.Filename, "content_id", removedFileAttr.PayloadID)
+			logger.DebugCtx(ctx.Context, "REMOVE: deleted content", "name", req.Filename, "payload_id", removedFileAttr.PayloadID)
 		}
 	}
 

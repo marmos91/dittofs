@@ -47,9 +47,9 @@ type CacheEvictRequest struct {
 
 // CacheEvictResult holds the result of a cache eviction operation.
 type CacheEvictResult struct {
-	L1EntriesCleared   int   `json:"l1_entries_cleared"`
-	LocalBlocksEvicted int   `json:"local_blocks_evicted"`
-	BytesFreed         int64 `json:"bytes_freed"`
+	L1EntriesCleared  int   `json:"l1_entries_cleared"`
+	LocalFilesEvicted int   `json:"local_files_evicted"`
+	BytesFreed        int64 `json:"bytes_freed"`
 }
 
 // CacheStatsAll returns aggregated cache statistics across all shares.

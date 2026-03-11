@@ -15,8 +15,8 @@ func TestNewBlockUploadRequest(t *testing.T) {
 		t.Errorf("Type = %v, want TransferUpload", req.Type)
 	}
 
-	if req.BlockIdx != 2 {
-		t.Errorf("BlockIdx = %d, want 2", req.BlockIdx)
+	if req.BlockIndex != 2 {
+		t.Errorf("BlockIndex = %d, want 2", req.BlockIndex)
 	}
 
 	if req.Done != nil {
@@ -34,8 +34,8 @@ func TestNewDownloadRequest(t *testing.T) {
 	if req.PayloadID != "payload-id" {
 		t.Errorf("PayloadID = %s, want payload-id", req.PayloadID)
 	}
-	if req.BlockIdx != 2 {
-		t.Errorf("BlockIdx = %d, want 2", req.BlockIdx)
+	if req.BlockIndex != 2 {
+		t.Errorf("BlockIndex = %d, want 2", req.BlockIndex)
 	}
 	if req.Done != done {
 		t.Error("Done channel not set correctly")
@@ -51,8 +51,8 @@ func TestNewPrefetchRequest(t *testing.T) {
 	if req.PayloadID != "payload-id" {
 		t.Errorf("PayloadID = %s, want payload-id", req.PayloadID)
 	}
-	if req.BlockIdx != 4 {
-		t.Errorf("BlockIdx = %d, want 4", req.BlockIdx)
+	if req.BlockIndex != 4 {
+		t.Errorf("BlockIndex = %d, want 4", req.BlockIndex)
 	}
 	if req.Done != nil {
 		t.Error("Done channel should be nil for prefetch")

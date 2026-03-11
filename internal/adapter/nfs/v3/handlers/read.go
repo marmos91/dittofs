@@ -80,19 +80,15 @@ type ReadResponse struct {
 	// Length matches Count field.
 	// Empty if Count == 0 or Status != types.NFS3OK.
 	Data []byte
-
-	// pooled indicates the Data buffer came from pool and should be returned.
-	pooled bool
 }
 
-// Release returns the Data buffer to the pool if it was pooled.
+// Release returns the Data buffer to the pool.
 // Implements the Releaser interface.
 // Safe to call multiple times - subsequent calls are no-ops.
 func (r *ReadResponse) Release() {
-	if r.pooled && r.Data != nil {
+	if r.Data != nil {
 		pool.Put(r.Data)
 		r.Data = nil
-		r.pooled = false
 	}
 }
 
@@ -236,7 +232,7 @@ func (h *Handler) Read(
 	// ========================================================================
 	// Step 4: Read data from BlockStore
 	// ========================================================================
-	// All reads go through BlockStore.ReadAt which reads from local cache.
+	// All reads go through BlockStore.ReadAt which reads from block store.
 
 	readResult, readErr := readFromBlockStore(ctx, blockStore, file.PayloadID, file.COWSourcePayloadID, req.Offset, actualLength, clientIP, req.Handle)
 	if readErr != nil {
@@ -255,9 +251,8 @@ func (h *Handler) Read(
 	}
 
 	data := readResult.data
-	n := readResult.bytesRead
+	n := len(data)
 	eof := readResult.eof
-	pooled := readResult.pooled
 
 	// Check if we're at or past EOF
 	if req.Offset+uint64(n) >= file.Size {
@@ -280,6 +275,5 @@ func (h *Handler) Read(
 		Count:           uint32(n),
 		Eof:             eof,
 		Data:            data,
-		pooled:          pooled,
 	}, nil
 }
