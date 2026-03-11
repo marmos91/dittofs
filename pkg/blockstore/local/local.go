@@ -44,9 +44,12 @@ type Stats struct {
 	MemBlockCount int   // Number of in-memory dirty blocks
 }
 
-// LocalReader defines cache-aware read operations.
-// Reads check memory first (for unflushed writes) then disk.
-type LocalReader interface {
+// LocalStore is the interface for on-node block caching.
+// It manages the two-tier (memory + disk) cache that sits between
+// protocol adapters and the remote block store.
+type LocalStore interface {
+	// --- Read operations ---
+
 	// ReadAt reads data from the cache at the specified offset into dest.
 	// Returns (true, nil) if all requested bytes were found in cache,
 	// (false, nil) on cache miss for any block in the range.
@@ -62,20 +65,18 @@ type LocalReader interface {
 	// GetBlockData returns the raw data for a specific block, checking memory first
 	// then disk. Returns data, dataSize, and error.
 	GetBlockData(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, uint32, error)
-}
 
-// LocalWriter defines write operations on the local cache.
-type LocalWriter interface {
+	// --- Write operations ---
+
 	// WriteAt writes data to the cache at the specified offset.
 	WriteAt(ctx context.Context, payloadID string, data []byte, offset uint64) error
 
 	// WriteFromRemote caches data fetched from the remote block store.
 	// The block is marked Remote since it already exists remotely.
 	WriteFromRemote(ctx context.Context, payloadID string, data []byte, offset uint64) error
-}
 
-// LocalFlusher defines flush and dirty-block retrieval operations.
-type LocalFlusher interface {
+	// --- Flush operations ---
+
 	// Flush writes all dirty in-memory blocks for a file to disk as .blk files.
 	// Returns the list of blocks that were flushed.
 	Flush(ctx context.Context, payloadID string) ([]FlushedBlock, error)
@@ -90,10 +91,9 @@ type LocalFlusher interface {
 	// SyncFileBlocksForFile persists queued FileBlock metadata only for blocks
 	// belonging to the given payloadID.
 	SyncFileBlocksForFile(ctx context.Context, payloadID string)
-}
 
-// LocalManager defines lifecycle, eviction, deletion, and observability operations.
-type LocalManager interface {
+	// --- Lifecycle and management ---
+
 	// Start launches background goroutines (e.g., periodic metadata persistence).
 	Start(ctx context.Context)
 
@@ -142,13 +142,4 @@ type LocalManager interface {
 
 	// ExistsOnDisk checks if a specific block is present on disk.
 	ExistsOnDisk(ctx context.Context, payloadID string, blockIdx uint64) (bool, error)
-}
-
-// LocalStore is the composed interface for on-node block caching.
-// It combines all four sub-interfaces for complete local block management.
-type LocalStore interface {
-	LocalReader
-	LocalWriter
-	LocalFlusher
-	LocalManager
 }

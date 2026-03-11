@@ -2,9 +2,8 @@
 // implementations.
 //
 // Any implementation of local.LocalStore can run this suite to verify it
-// correctly implements the interface contract. The suite tests all four
-// sub-interfaces (LocalReader, LocalWriter, LocalFlusher, LocalManager)
-// with common scenarios.
+// correctly implements the interface contract covering reads, writes,
+// flush, lifecycle, and block state transitions.
 //
 // Usage:
 //
