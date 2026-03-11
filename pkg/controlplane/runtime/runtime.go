@@ -223,11 +223,7 @@ func (r *Runtime) CountShares() int {
 
 // GetBlockStoreForHandle resolves the per-share BlockStore from a file handle.
 func (r *Runtime) GetBlockStoreForHandle(ctx context.Context, handle metadata.FileHandle) (*engine.BlockStore, error) {
-	shareName, err := r.sharesSvc.GetShareNameForHandle(ctx, handle)
-	if err != nil {
-		return nil, err
-	}
-	return r.sharesSvc.GetBlockStoreForShare(shareName)
+	return r.sharesSvc.GetBlockStoreForHandle(ctx, handle)
 }
 
 // --- Lifecycle (delegated to lifecycle.Service) ---

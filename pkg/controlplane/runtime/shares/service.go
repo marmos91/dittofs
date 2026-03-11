@@ -667,6 +667,28 @@ func (s *Service) CountShares() int {
 	return len(s.registry)
 }
 
+// GetBlockStoreForHandle decodes a file handle and resolves the per-share
+// BlockStore in a single mutex acquisition, avoiding the two-RLock overhead of
+// calling GetShareNameForHandle followed by GetBlockStoreForShare separately.
+func (s *Service) GetBlockStoreForHandle(ctx context.Context, handle metadata.FileHandle) (*engine.BlockStore, error) {
+	shareName, _, err := metadata.DecodeFileHandle(handle)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode share handle: %w", err)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	share, exists := s.registry[shareName]
+	if !exists {
+		return nil, fmt.Errorf("share %q not found", shareName)
+	}
+	if share.BlockStore == nil {
+		return nil, fmt.Errorf("share %q has no block store configured", shareName)
+	}
+	return share.BlockStore, nil
+}
+
 // GetBlockStoreForShare returns the BlockStore for a named share.
 func (s *Service) GetBlockStoreForShare(name string) (*engine.BlockStore, error) {
 	s.mu.RLock()
