@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# dittofs-badger-fs.sh — DittoFS with BadgerDB metadata + filesystem payload
+# dittofs-badger-fs.sh — DittoFS with BadgerDB metadata + filesystem block store
 #
 # Builds DittoFS from source, creates a configuration using BadgerDB for
-# metadata and the local filesystem for payload storage, then starts the
+# metadata and the local filesystem for block storage, then starts the
 # dfs server with an NFS export at /export on port 12049.
 #
 # Usage: Runs on the ephemeral server VM after restoring from base snapshot.
@@ -83,10 +83,6 @@ logging:
   output: stdout
 
 shutdown_timeout: 30s
-
-cache:
-  path: "${DATA_DIR}/cache"
-  size: "512MB"
 YAML
 
 log "Config written."

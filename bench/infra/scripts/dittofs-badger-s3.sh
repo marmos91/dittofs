@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# dittofs-badger-s3.sh — DittoFS with BadgerDB metadata + S3 payload
+# dittofs-badger-s3.sh — DittoFS with BadgerDB metadata + S3 block store
 #
 # Builds DittoFS from source, creates a configuration using BadgerDB for
-# metadata and S3 for payload storage, then starts the dfs server with an
+# metadata and S3 for remote block storage, then starts the dfs server with an
 # NFS export at /export on port 12049.
 #
 # Requires S3 credentials via environment variables:
@@ -91,14 +91,6 @@ logging:
   output: stdout
 
 shutdown_timeout: 30s
-
-cache:
-  path: "/data/cache"
-  size: "2GB"
-  max_pending_size: "2GB"
-
-offloader:
-  small_file_threshold: "0"
 YAML
 
 log "Config written."
