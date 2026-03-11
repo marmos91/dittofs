@@ -331,7 +331,7 @@ func (q *SyncQueue) processDownload(ctx context.Context, req TransferRequest) er
 		return nil
 	}
 
-	_, err := q.manager.fetchBlock(ctx, req.PayloadID, req.BlockIdx)
+	_, err := q.manager.fetchBlock(ctx, req.PayloadID, req.BlockIndex)
 	return err
 }
 
@@ -340,5 +340,5 @@ func (q *SyncQueue) processUpload(ctx context.Context, req TransferRequest) erro
 	if q.manager == nil {
 		return nil
 	}
-	return q.manager.uploadBlock(ctx, req.PayloadID, req.BlockIdx)
+	return q.manager.uploadBlock(ctx, req.PayloadID, req.BlockIndex)
 }
