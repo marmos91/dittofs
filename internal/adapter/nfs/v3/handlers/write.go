@@ -225,7 +225,7 @@ func (h *Handler) Write(
 	// Step 6: Prepare write operation (validate permissions)
 	// ========================================================================
 	// PrepareWrite validates permissions but does NOT modify metadata yet.
-	// Metadata is updated by CommitWrite after content write succeeds.
+	// Metadata is updated by CommitWrite after BlockStore write succeeds.
 
 	// Check context before store call
 	if ctx.isContextCancelled() {
@@ -264,14 +264,14 @@ func (h *Handler) Write(
 	// Write to BlockStore (uses local cache, will be flushed on COMMIT)
 	err = blockStore.WriteAt(ctx.Context, string(writeIntent.PayloadID), req.Data, req.Offset)
 	if err != nil {
-		logError(ctx.Context, err, "WRITE failed: content write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "payload_id", writeIntent.PayloadID, "client", clientIP)
+		logError(ctx.Context, err, "WRITE failed: BlockStore write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "payload_id", writeIntent.PayloadID, "client", clientIP)
 		status := xdr.MapContentErrorToNFSStatus(err)
 		return h.buildWriteErrorResponse(status, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}
 	logger.DebugCtx(ctx.Context, "WRITE: cached successfully", "payload_id", writeIntent.PayloadID)
 
 	// ========================================================================
-	// Step 8: Commit metadata changes after successful content write
+	// Step 8: Commit metadata changes after successful BlockStore write
 	// ========================================================================
 
 	updatedFile, err := metaSvc.CommitWrite(authCtx, writeIntent)
