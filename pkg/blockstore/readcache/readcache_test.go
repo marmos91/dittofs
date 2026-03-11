@@ -1,6 +1,8 @@
 package readcache
 
 import (
+	"context"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -413,4 +415,184 @@ func TestReadCache_Concurrency_ReadWrite(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+// --- InvalidateRange ---
+
+func TestReadCache_InvalidateRange_SingleBlock(t *testing.T) {
+	c := New(testBlockSize * 8)
+	require.NotNil(t, c)
+	defer c.Close()
+
+	for i := uint64(0); i < 4; i++ {
+		c.Put("f", i, makeData(testBlockSize, byte(i)), uint32(testBlockSize))
+	}
+
+	// Invalidate a range within block 1 only
+	c.InvalidateRange("f", uint64(testBlockSize), testBlockSize, uint64(testBlockSize))
+
+	dest := make([]byte, testBlockSize)
+	assert.True(t, c.Contains("f", 0), "block 0 should remain")
+	assert.False(t, c.Contains("f", 1), "block 1 should be invalidated")
+	assert.True(t, c.Contains("f", 2), "block 2 should remain")
+	_ = dest
+}
+
+func TestReadCache_InvalidateRange_SpansMultipleBlocks(t *testing.T) {
+	c := New(testBlockSize * 8)
+	require.NotNil(t, c)
+	defer c.Close()
+
+	for i := uint64(0); i < 4; i++ {
+		c.Put("f", i, makeData(testBlockSize, byte(i)), uint32(testBlockSize))
+	}
+
+	// Invalidate range spanning blocks 1 and 2 (offset in middle of block 1, length into block 2)
+	offset := uint64(testBlockSize) + 100
+	length := testBlockSize // crosses into block 2
+	c.InvalidateRange("f", offset, length, uint64(testBlockSize))
+
+	assert.True(t, c.Contains("f", 0), "block 0 should remain")
+	assert.False(t, c.Contains("f", 1), "block 1 should be invalidated")
+	assert.False(t, c.Contains("f", 2), "block 2 should be invalidated")
+	assert.True(t, c.Contains("f", 3), "block 3 should remain")
+}
+
+func TestReadCache_InvalidateRange_ZeroLength(t *testing.T) {
+	c := New(testBlockSize * 4)
+	require.NotNil(t, c)
+	defer c.Close()
+
+	c.Put("f", 0, makeData(testBlockSize, 0xAA), uint32(testBlockSize))
+
+	// Zero length should be a no-op (no underflow)
+	c.InvalidateRange("f", 0, 0, uint64(testBlockSize))
+
+	assert.True(t, c.Contains("f", 0), "block should remain after zero-length invalidate")
+}
+
+func TestReadCache_InvalidateRange_NilSafe(t *testing.T) {
+	var c *ReadCache
+	// Should not panic
+	c.InvalidateRange("f", 0, 100, uint64(testBlockSize))
+}
+
+// --- NotifyRead ---
+
+func TestReadCache_NotifyRead_ZeroLength(t *testing.T) {
+	c := New(testBlockSize * 4)
+	require.NotNil(t, c)
+	defer c.Close()
+
+	// Should not panic or underflow
+	c.NotifyRead("f", 0, 0, uint64(testBlockSize))
+}
+
+func TestReadCache_NotifyRead_NilSafe(t *testing.T) {
+	var c *ReadCache
+	// Should not panic
+	c.NotifyRead("f", 0, 100, uint64(testBlockSize))
+}
+
+func TestReadCache_NotifyRead_NoPrefetcher(t *testing.T) {
+	c := New(testBlockSize * 4)
+	require.NotNil(t, c)
+	defer c.Close()
+
+	// No prefetcher set -- should not panic
+	c.NotifyRead("f", 0, uint64(testBlockSize), uint64(testBlockSize))
+}
+
+// --- FillFromStore ---
+
+func TestReadCache_FillFromStore_PopulatesCache(t *testing.T) {
+	c := New(testBlockSize * 8)
+	require.NotNil(t, c)
+	defer c.Close()
+
+	// Mock block data loader
+	loader := func(_ context.Context, payloadID string, blockIdx uint64) ([]byte, uint32, error) {
+		data := makeData(testBlockSize, byte(blockIdx))
+		return data, uint32(testBlockSize), nil
+	}
+
+	// Fill blocks 0-2
+	c.FillFromStore(context.Background(), "f", 0, uint64(testBlockSize*3), uint64(testBlockSize), loader)
+
+	for i := uint64(0); i < 3; i++ {
+		assert.True(t, c.Contains("f", i), "block %d should be in cache", i)
+	}
+}
+
+func TestReadCache_FillFromStore_SkipsExisting(t *testing.T) {
+	c := New(testBlockSize * 8)
+	require.NotNil(t, c)
+	defer c.Close()
+
+	// Pre-populate block 1
+	originalData := makeData(testBlockSize, 0xFF)
+	c.Put("f", 1, originalData, uint32(testBlockSize))
+
+	callCount := 0
+	loader := func(_ context.Context, payloadID string, blockIdx uint64) ([]byte, uint32, error) {
+		callCount++
+		return makeData(testBlockSize, 0x00), uint32(testBlockSize), nil
+	}
+
+	// Fill blocks 0-2
+	c.FillFromStore(context.Background(), "f", 0, uint64(testBlockSize*3), uint64(testBlockSize), loader)
+
+	// Loader should have been called for blocks 0 and 2, but NOT block 1
+	assert.Equal(t, 2, callCount, "loader should be called for blocks 0 and 2 only")
+
+	// Block 1 should still have original data
+	dest := make([]byte, testBlockSize)
+	n, ok := c.Get("f", 1, dest, 0)
+	require.True(t, ok)
+	assert.Equal(t, testBlockSize, n)
+	assert.Equal(t, byte(0xFF), dest[0], "block 1 should retain original data")
+}
+
+func TestReadCache_FillFromStore_HandlesLoaderError(t *testing.T) {
+	c := New(testBlockSize * 8)
+	require.NotNil(t, c)
+	defer c.Close()
+
+	loader := func(_ context.Context, payloadID string, blockIdx uint64) ([]byte, uint32, error) {
+		if blockIdx == 1 {
+			return nil, 0, fmt.Errorf("disk error")
+		}
+		return makeData(testBlockSize, byte(blockIdx)), uint32(testBlockSize), nil
+	}
+
+	c.FillFromStore(context.Background(), "f", 0, uint64(testBlockSize*3), uint64(testBlockSize), loader)
+
+	assert.True(t, c.Contains("f", 0), "block 0 should be cached")
+	assert.False(t, c.Contains("f", 1), "block 1 should NOT be cached (loader error)")
+	assert.True(t, c.Contains("f", 2), "block 2 should be cached")
+}
+
+func TestReadCache_FillFromStore_ZeroLength(t *testing.T) {
+	c := New(testBlockSize * 4)
+	require.NotNil(t, c)
+	defer c.Close()
+
+	called := false
+	loader := func(_ context.Context, _ string, _ uint64) ([]byte, uint32, error) {
+		called = true
+		return nil, 0, nil
+	}
+
+	// Zero length should be a no-op (no underflow)
+	c.FillFromStore(context.Background(), "f", 0, 0, uint64(testBlockSize), loader)
+	assert.False(t, called, "loader should not be called for zero-length fill")
+}
+
+func TestReadCache_FillFromStore_NilSafe(t *testing.T) {
+	var c *ReadCache
+	loader := func(_ context.Context, _ string, _ uint64) ([]byte, uint32, error) {
+		return nil, 0, nil
+	}
+	// Should not panic
+	c.FillFromStore(context.Background(), "f", 0, 100, uint64(testBlockSize), loader)
 }

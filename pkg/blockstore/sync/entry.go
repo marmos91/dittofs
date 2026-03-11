@@ -5,7 +5,7 @@ import "github.com/marmos91/dittofs/pkg/blockstore"
 // TransferRequest holds data for a pending transfer operation (download, upload, or prefetch).
 type TransferRequest struct {
 	Type       TransferType // Transfer type and priority
-	PayloadID  string       // Content ID
+	PayloadID  string       // Payload ID
 	BlockIndex uint64       // Flat block index (fileOffset / BlockSize)
 	Done       chan error   // Completion channel; nil for async (fire-and-forget)
 }

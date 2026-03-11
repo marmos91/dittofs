@@ -76,9 +76,9 @@ const (
 	KeyOperation  = "operation"   // Sub-operation type for complex operations
 
 	// ========================================================================
-	// Storage Backend (Content Store)
+	// Storage Backend
 	// ========================================================================
-	KeyPayloadID  = "content_id"  // Content identifier in content store
+	KeyPayloadID  = "payload_id"  // Payload identifier in block store
 	KeyStoreName  = "store_name"  // Named store identifier from registry
 	KeyStoreType  = "store_type"  // Store type: memory, filesystem, s3, azure, gcs
 	KeyBucket     = "bucket"      // Cloud bucket name (S3, GCS)
@@ -373,10 +373,10 @@ func Operation(op string) slog.Attr {
 }
 
 // ----------------------------------------------------------------------------
-// Storage Backend (Content Store)
+// Storage Backend
 // ----------------------------------------------------------------------------
 
-// PayloadID returns a slog.Attr for content identifier
+// PayloadID returns a slog.Attr for payload identifier
 func PayloadID(id string) slog.Attr {
 	return slog.String(KeyPayloadID, id)
 }

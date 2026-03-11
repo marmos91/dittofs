@@ -101,7 +101,7 @@ type Files interface {
 	GenerateHandle(ctx context.Context, shareName string, path string) (FileHandle, error)
 
 	// ========================================================================
-	// Content ID Operations
+	// Payload ID Operations
 	// ========================================================================
 
 	// GetFileByPayloadID retrieves file metadata by its content identifier.

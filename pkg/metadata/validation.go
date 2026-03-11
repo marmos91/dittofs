@@ -58,7 +58,7 @@ func TimePtr(v time.Time) *time.Time { return &v }
 func BoolPtr(v bool) *bool { return &v }
 
 // ============================================================================
-// Content ID Helpers
+// Payload ID Helpers
 // ============================================================================
 
 // BuildPayloadID constructs a PayloadID from share name and full path.
