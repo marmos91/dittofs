@@ -18,19 +18,16 @@ import (
 
 // blockReadResult holds the result of reading from the block store.
 type blockReadResult struct {
-	data      []byte
-	bytesRead int
-	eof       bool
-	pooled    bool // true if data buffer came from pool and should be returned
+	data []byte
+	eof  bool
 }
 
-// Release returns the data buffer to the pool if it was pooled.
+// Release returns the data buffer to the pool.
 // Must be called after the data is no longer needed (e.g., after encoding).
 func (r *blockReadResult) Release() {
-	if r.pooled && r.data != nil {
+	if r.data != nil {
 		pool.Put(r.data)
 		r.data = nil
-		r.pooled = false
 	}
 }
 
@@ -81,10 +78,8 @@ func readFromBlockStore(
 	// Handle ReadAt results
 	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
 		return blockReadResult{
-			data:      data[:n],
-			bytesRead: n,
-			eof:       true,
-			pooled:    true,
+			data: data[:n],
+			eof:  true,
 		}, nil
 	}
 
@@ -102,9 +97,7 @@ func readFromBlockStore(
 	}
 
 	return blockReadResult{
-		data:      data,
-		bytesRead: n,
-		eof:       false,
-		pooled:    true,
+		data: data[:n],
+		eof:  false,
 	}, nil
 }
