@@ -277,7 +277,10 @@ func (bs *BlockStore) ListFiles() []string { return bs.local.ListFiles() }
 
 // EvictLocal removes all cached data (memory and disk) for a file.
 func (bs *BlockStore) EvictLocal(ctx context.Context, payloadID string) error {
-	return bs.local.EvictMemory(ctx, payloadID)
+	if err := bs.local.EvictMemory(ctx, payloadID); err != nil {
+		return err
+	}
+	return bs.local.DeleteAllBlockFiles(ctx, payloadID)
 }
 
 // LocalStats returns a snapshot of local cache statistics.

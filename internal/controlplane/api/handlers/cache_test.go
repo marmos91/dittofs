@@ -91,9 +91,9 @@ func newTestCacheHandler() *testCacheHandler {
 			},
 		},
 		evict: &shares.EvictResult{
-			L1EntriesCleared:   10,
-			LocalBlocksEvicted: 3,
-			BytesFreed:         1024 * 1024,
+			L1EntriesCleared:  10,
+			LocalFilesEvicted: 3,
+			BytesFreed:        1024 * 1024,
 		},
 	}
 	return &testCacheHandler{mock: mock}
@@ -188,8 +188,8 @@ func TestCacheHandler_Evict_Global(t *testing.T) {
 	if resp.L1EntriesCleared != 10 {
 		t.Errorf("L1EntriesCleared = %d, want 10", resp.L1EntriesCleared)
 	}
-	if resp.LocalBlocksEvicted != 3 {
-		t.Errorf("LocalBlocksEvicted = %d, want 3", resp.LocalBlocksEvicted)
+	if resp.LocalFilesEvicted != 3 {
+		t.Errorf("LocalFilesEvicted = %d, want 3", resp.LocalFilesEvicted)
 	}
 }
 

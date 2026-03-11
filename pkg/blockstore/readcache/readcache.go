@@ -264,6 +264,8 @@ func (c *ReadCache) SetPrefetcher(p *Prefetcher) {
 	if c == nil {
 		return
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.prefetcher = p
 }
 
@@ -275,7 +277,7 @@ type BlockDataFn func(ctx context.Context, payloadID string, blockIdx uint64) ([
 // [offset, offset+length) and resets the prefetcher for the file.
 // Used by WriteAt to keep L1 consistent with writes.
 func (c *ReadCache) InvalidateRange(payloadID string, offset uint64, length int, blockSize uint64) {
-	if c == nil {
+	if c == nil || length <= 0 {
 		return
 	}
 	startBlock := offset / blockSize
@@ -311,7 +313,7 @@ func (c *ReadCache) InvalidateAndReset(payloadID string) {
 // [offset, offset+length). Each block in the range is reported individually
 // so multi-block reads are correctly detected as sequential.
 func (c *ReadCache) NotifyRead(payloadID string, offset, length, blockSize uint64) {
-	if c == nil || c.prefetcher == nil {
+	if c == nil || c.prefetcher == nil || length == 0 {
 		return
 	}
 	startBlock := offset / blockSize
@@ -324,7 +326,7 @@ func (c *ReadCache) NotifyRead(payloadID string, offset, length, blockSize uint6
 // FillFromStore reads full blocks from the local store and populates the L1 cache
 // for the byte range [offset, offset+length). Skips blocks already present.
 func (c *ReadCache) FillFromStore(ctx context.Context, payloadID string, offset, length, blockSize uint64, getBlockData BlockDataFn) {
-	if c == nil {
+	if c == nil || length == 0 {
 		return
 	}
 	startBlock := offset / blockSize

@@ -647,7 +647,7 @@ func (s *Service) notifyShareChange() {
 func (s *Service) GetShareNameForHandle(ctx context.Context, handle metadata.FileHandle) (string, error) {
 	shareName, _, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
-		return "", fmt.Errorf("failed to decode share handle: %w", err)
+		return "", fmt.Errorf("failed to decode file handle: %w", err)
 	}
 
 	s.mu.RLock()
@@ -673,7 +673,7 @@ func (s *Service) CountShares() int {
 func (s *Service) GetBlockStoreForHandle(ctx context.Context, handle metadata.FileHandle) (*engine.BlockStore, error) {
 	shareName, _, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode share handle: %w", err)
+		return nil, fmt.Errorf("failed to decode file handle: %w", err)
 	}
 
 	s.mu.RLock()
@@ -743,9 +743,9 @@ type EvictOptions struct {
 
 // EvictResult holds the result of a cache eviction operation.
 type EvictResult struct {
-	L1EntriesCleared   int   `json:"l1_entries_cleared"`
-	LocalBlocksEvicted int   `json:"local_blocks_evicted"`
-	BytesFreed         int64 `json:"bytes_freed"`
+	L1EntriesCleared  int   `json:"l1_entries_cleared"`
+	LocalFilesEvicted int   `json:"local_files_evicted"`
+	BytesFreed        int64 `json:"bytes_freed"`
 }
 
 // GetCacheStats returns cache statistics, optionally filtered by share name.
@@ -853,7 +853,7 @@ func (s *Service) EvictCache(ctx context.Context, shareName string, opts EvictOp
 			files := bs.ListFiles()
 			for _, payloadID := range files {
 				_ = bs.EvictLocal(ctx, payloadID)
-				result.LocalBlocksEvicted++
+				result.LocalFilesEvicted++
 			}
 
 			result.BytesFreed += beforeDisk - bs.LocalStats().DiskUsed
