@@ -848,15 +848,15 @@ func (s *Service) EvictCache(ctx context.Context, shareName string, opts EvictOp
 		}
 
 		if !opts.L1Only {
-			beforeDisk := bs.Local().Stats().DiskUsed
+			beforeDisk := bs.LocalStats().DiskUsed
 
-			files := bs.Local().ListFiles()
+			files := bs.ListFiles()
 			for _, payloadID := range files {
-				_ = bs.Local().EvictMemory(ctx, payloadID)
+				_ = bs.EvictLocal(ctx, payloadID)
 				result.LocalBlocksEvicted++
 			}
 
-			result.BytesFreed += beforeDisk - bs.Local().Stats().DiskUsed
+			result.BytesFreed += beforeDisk - bs.LocalStats().DiskUsed
 		}
 	}
 
