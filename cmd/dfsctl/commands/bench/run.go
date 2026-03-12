@@ -20,7 +20,7 @@ var (
 	runSave           string
 	runMetaFiles      int
 	runSmallFileCount int
-	runClean bool
+	runClean          bool
 )
 
 var runCmd = &cobra.Command{

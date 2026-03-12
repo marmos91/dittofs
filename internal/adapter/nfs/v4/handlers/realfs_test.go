@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"io"
 	"testing"
 	"time"
 
@@ -361,34 +362,52 @@ func parseReadDirResponse(t *testing.T, result *types.CompoundResult) readDirRes
 
 	reader := bytes.NewReader(result.Data)
 
-	status, _ := xdr.DecodeUint32(reader)
+	status, err := xdr.DecodeUint32(reader)
+	if err != nil {
+		t.Fatalf("decode READDIR status: %v", err)
+	}
 	if status != types.NFS4_OK {
 		t.Fatalf("encoded READDIR status = %d, want NFS4_OK", status)
 	}
 
 	var verfBytes [8]byte
-	_, _ = reader.Read(verfBytes[:])
+	if _, err := io.ReadFull(reader, verfBytes[:]); err != nil {
+		t.Fatalf("read cookie verifier: %v", err)
+	}
 	verifier := binary.BigEndian.Uint64(verfBytes[:])
 
 	var names []string
 	var lastCookie uint64
 	for {
 		hasNext, err := xdr.DecodeUint32(reader)
-		if err != nil || hasNext == 0 {
+		if err != nil {
+			t.Fatalf("decode entry value_follows: %v", err)
+		}
+		if hasNext == 0 {
 			break
 		}
-		cookie, _ := xdr.DecodeUint64(reader)
+		cookie, err := xdr.DecodeUint64(reader)
+		if err != nil {
+			t.Fatalf("decode entry cookie: %v", err)
+		}
 		lastCookie = cookie
 		name, err := xdr.DecodeString(reader)
 		if err != nil {
 			t.Fatalf("decode entry name: %v", err)
 		}
 		names = append(names, name)
-		_, _ = attrs.DecodeBitmap4(reader)
-		_, _ = xdr.DecodeOpaque(reader)
+		if _, err := attrs.DecodeBitmap4(reader); err != nil {
+			t.Fatalf("decode entry attrs bitmap: %v", err)
+		}
+		if _, err := xdr.DecodeOpaque(reader); err != nil {
+			t.Fatalf("decode entry attrs data: %v", err)
+		}
 	}
 
-	eof, _ := xdr.DecodeUint32(reader)
+	eof, err := xdr.DecodeUint32(reader)
+	if err != nil {
+		t.Fatalf("decode eof: %v", err)
+	}
 
 	return readDirResponse{
 		verifier:   verifier,
@@ -530,9 +549,12 @@ func TestReadDir_RealFS_PaginationWithTruncation(t *testing.T) {
 func TestReadDir_RealFS_VerifierMismatch(t *testing.T) {
 	fx := newRealFSTestFixture(t, "/export")
 
-	fx.createTestFile(t, fx.rootHandle, "hello.txt", metadata.FileTypeRegular, 0o644, 1000, 1000)
+	// Create multiple files so pagination leaves remaining entries
+	fx.createTestFile(t, fx.rootHandle, "aaa.txt", metadata.FileTypeRegular, 0o644, 1000, 1000)
+	fx.createTestFile(t, fx.rootHandle, "bbb.txt", metadata.FileTypeRegular, 0o644, 1000, 1000)
+	fx.createTestFile(t, fx.rootHandle, "ccc.txt", metadata.FileTypeRegular, 0o644, 1000, 1000)
 
-	// Initial READDIR (cookie=0) to get the verifier
+	// Initial READDIR with small maxcount to force pagination (only first entry fits)
 	ctx := newRealFSContext(0, 0)
 	ctx.CurrentFH = make([]byte, len(fx.rootHandle))
 	copy(ctx.CurrentFH, fx.rootHandle)
@@ -541,7 +563,7 @@ func TestReadDir_RealFS_VerifierMismatch(t *testing.T) {
 	attrs.SetBit(&attrRequest, attrs.FATTR4_TYPE)
 
 	var zeroVerf [8]byte
-	result := fx.handler.readDirRealFS(ctx, 0, zeroVerf, 8192, attrRequest)
+	result := fx.handler.readDirRealFS(ctx, 0, zeroVerf, 80, attrRequest)
 	if result.Status != types.NFS4_OK {
 		t.Fatalf("initial READDIR status = %d, want NFS4_OK", result.Status)
 	}
@@ -550,18 +572,21 @@ func TestReadDir_RealFS_VerifierMismatch(t *testing.T) {
 	if initial.verifier == 0 {
 		t.Fatal("initial verifier should be non-zero")
 	}
+	if initial.lastCookie == 0 {
+		t.Fatal("expected at least one entry in initial READDIR")
+	}
 
 	// Create a stale verifier by XORing with 0xFF
 	var staleVerf [8]byte
 	binary.BigEndian.PutUint64(staleVerf[:], initial.verifier^0xFF)
 
-	// Second READDIR with cookie=1 (non-initial) and stale verifier.
+	// Second READDIR with a real cookie from the first page and stale verifier.
 	// Advisory-only mismatch: should return NFS4_OK, not an error.
 	ctx2 := newRealFSContext(0, 0)
 	ctx2.CurrentFH = make([]byte, len(fx.rootHandle))
 	copy(ctx2.CurrentFH, fx.rootHandle)
 
-	result2 := fx.handler.readDirRealFS(ctx2, 1, staleVerf, 8192, attrRequest)
+	result2 := fx.handler.readDirRealFS(ctx2, initial.lastCookie, staleVerf, 8192, attrRequest)
 	if result2.Status != types.NFS4_OK {
 		t.Fatalf("READDIR with stale verifier status = %d, want NFS4_OK (advisory only)", result2.Status)
 	}

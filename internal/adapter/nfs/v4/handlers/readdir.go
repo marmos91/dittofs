@@ -117,30 +117,6 @@ func (h *Handler) readDirRealFS(ctx *types.CompoundContext, cookie uint64, cooki
 
 	dirHandle := metadata.FileHandle(ctx.CurrentFH)
 
-	// Fetch directory mtime for cookie verifier (RFC 7530 Section 16.24)
-	dirFile, err := metaSvc.GetFile(authCtx.Context, dirHandle)
-	if err != nil {
-		status := types.MapMetadataErrorToNFS4(err)
-		return &types.CompoundResult{
-			Status: status,
-			OpCode: types.OP_READDIR,
-			Data:   encodeStatusOnly(status),
-		}
-	}
-	currentVerifier := directoryMtimeVerifier(dirFile.Mtime)
-
-	// Validate incoming cookie verifier for non-initial requests (advisory only).
-	// cookie=0 means initial request; cookieVerf all-zeros means client doesn't use verifiers.
-	// On mismatch, log at debug level but continue serving entries (matches NFSv3 behavior).
-	incomingVerf := binary.BigEndian.Uint64(cookieVerf[:])
-	if cookie != 0 && incomingVerf != 0 && incomingVerf != currentVerifier {
-		logger.Debug("NFSv4 READDIR: directory modified since last read, continuing with current entries",
-			"handle", fmt.Sprintf("%x", ctx.CurrentFH),
-			"expected_verf", fmt.Sprintf("0x%016x", incomingVerf),
-			"current_verf", fmt.Sprintf("0x%016x", currentVerifier),
-			"client", ctx.ClientAddr)
-	}
-
 	page, err := metaSvc.ReadDirectory(authCtx, dirHandle, cookie, maxcount)
 	if err != nil {
 		status := types.MapMetadataErrorToNFS4(err)
@@ -149,6 +125,23 @@ func (h *Handler) readDirRealFS(ctx *types.CompoundContext, cookie uint64, cooki
 			OpCode: types.OP_READDIR,
 			Data:   encodeStatusOnly(status),
 		}
+	}
+
+	// Compute cookie verifier from directory mtime (RFC 7530 Section 16.24).
+	// DirMtime is populated by ReadDirectory from its internal GetFile call,
+	// avoiding a duplicate store lookup.
+	currentVerifier := directoryMtimeVerifier(page.DirMtime)
+
+	// Validate incoming cookie verifier for non-initial requests (advisory only).
+	// cookie=0 means initial request; cookieVerf all-zeros means client doesn't use verifiers.
+	// On mismatch, log at debug level but continue serving entries (matches NFSv3 behavior).
+	incomingVerf := binary.BigEndian.Uint64(cookieVerf[:])
+	if cookie != 0 && incomingVerf != 0 && incomingVerf != currentVerifier {
+		logger.Debug("NFSv4 READDIR: directory modified since last read, continuing with current entries",
+			"handle", fmt.Sprintf("%x", ctx.CurrentFH),
+			"incoming_verf", fmt.Sprintf("0x%016x", incomingVerf),
+			"current_verf", fmt.Sprintf("0x%016x", currentVerifier),
+			"client", ctx.ClientAddr)
 	}
 
 	// Debug logging for READDIR
