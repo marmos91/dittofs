@@ -19,6 +19,10 @@ type ReadDirPage struct {
 
 	// HasMore indicates whether more entries are available after this page.
 	HasMore bool
+
+	// DirMtime is the directory's modification time at the time of the listing.
+	// Used by NFS cookie verifier to detect directory changes between READDIR calls.
+	DirMtime time.Time
 }
 
 // ============================================================================
@@ -103,6 +107,7 @@ func (s *MetadataService) ReadDirectory(ctx *AuthContext, dirHandle FileHandle, 
 		Entries:    entries,
 		NextCookie: nextCookie,
 		HasMore:    nextToken != "",
+		DirMtime:   dir.Mtime,
 	}, nil
 }
 

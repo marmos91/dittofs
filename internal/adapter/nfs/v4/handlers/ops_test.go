@@ -111,6 +111,11 @@ func encodeGetAttrEmpty() encodedOp {
 }
 
 func encodeReadDir(cookie uint64, maxcount uint32, bits ...uint32) encodedOp {
+	var zeroVerf [8]byte
+	return encodeReadDirWithVerf(cookie, zeroVerf, maxcount, bits...)
+}
+
+func encodeReadDirWithVerf(cookie uint64, verf [8]byte, maxcount uint32, bits ...uint32) encodedOp {
 	var bitmap []uint32
 	for _, bit := range bits {
 		attrs.SetBit(&bitmap, bit)
@@ -118,7 +123,7 @@ func encodeReadDir(cookie uint64, maxcount uint32, bits ...uint32) encodedOp {
 
 	var buf bytes.Buffer
 	_ = xdr.WriteUint64(&buf, cookie)     // cookie
-	buf.Write(make([]byte, 8))            // cookieverf (8 zero bytes)
+	buf.Write(verf[:])                    // cookieverf
 	_ = xdr.WriteUint32(&buf, 4096)       // dircount (hint)
 	_ = xdr.WriteUint32(&buf, maxcount)   // maxcount
 	_ = attrs.EncodeBitmap4(&buf, bitmap) // attr_request

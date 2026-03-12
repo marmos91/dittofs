@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Pre-commit hook for DittoFS
+# Checks formatting, runs vet, and optionally runs golangci-lint on staged Go files.
+
+# Collect staged .go files (excluding deleted files)
+STAGED_GO_FILES=$(git diff --cached --name-only --diff-filter=d -- '*.go')
+
+if [ -z "$STAGED_GO_FILES" ]; then
+    exit 0
+fi
+
+FAILED=0
+
+# 1. Check formatting with gofmt -s
+UNFORMATTED=$(echo "$STAGED_GO_FILES" | xargs gofmt -s -l 2>/dev/null || true)
+if [ -n "$UNFORMATTED" ]; then
+    echo "gofmt: the following files need formatting:"
+    echo "$UNFORMATTED" | while read -r f; do echo "  $f"; done
+    echo ""
+    echo "Run 'gofmt -s -w' on the files above, then re-stage."
+    FAILED=1
+fi
+
+# 2. Run go vet on the whole repo (fast, catches cross-package issues)
+if ! go vet ./... 2>&1; then
+    echo ""
+    echo "go vet: issues found. Fix them before committing."
+    FAILED=1
+fi
+
+# 3. Run golangci-lint if available (optional — warn if missing)
+if command -v golangci-lint &>/dev/null; then
+    if ! golangci-lint run 2>&1; then
+        echo ""
+        echo "golangci-lint: issues found. Fix them before committing."
+        FAILED=1
+    fi
+else
+    echo "golangci-lint: not installed, skipping (install for full lint checks)"
+fi
+
+if [ "$FAILED" -ne 0 ]; then
+    echo ""
+    echo "Pre-commit checks failed. Use 'git commit --no-verify' to skip."
+    exit 1
+fi
