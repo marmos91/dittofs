@@ -21,6 +21,7 @@ NFS_PORT="${NFS_PORT:-12049}"
 DITTOFS_REPO="${DITTOFS_REPO:-https://github.com/marmos91/dittofs.git}"
 DITTOFS_BRANCH="${DITTOFS_BRANCH:-main}"
 BADGER_PATH="${BADGER_PATH:-/data/metadata/badger}"
+PAYLOAD_PATH="${PAYLOAD_PATH:-/data/cache}"
 CONFIG_DIR="${CONFIG_DIR:-/etc/dfs}"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
 
@@ -72,6 +73,7 @@ chmod +x /usr/local/bin/dfsctl
 log "Creating data directories..."
 mkdir -p "${EXPORT_DIR}"
 mkdir -p "${BADGER_PATH}"
+mkdir -p "${PAYLOAD_PATH}"
 mkdir -p "${CONFIG_DIR}"
 
 chmod 777 "${EXPORT_DIR}"
@@ -162,7 +164,7 @@ log "Creating BadgerDB metadata store..."
 dfsctl store metadata add --name badger-meta --type badger --db-path "${BADGER_PATH}"
 
 log "Creating local block store..."
-dfsctl store block local add --name local-payload --type memory
+dfsctl store block local add --name local-payload --type fs --path "${PAYLOAD_PATH}"
 
 log "Creating S3 remote block store..."
 # Scaleway (and other S3-compatible) always needs explicit endpoint + path style.
