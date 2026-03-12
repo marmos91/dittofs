@@ -189,12 +189,14 @@ Get an NFS share running in under a minute:
 # 3. Create a user with your host UID (for NFS write access)
 ./dfsctl user create --username $(whoami) --host-uid
 
-# 4. Create stores
-./dfsctl store metadata add --name default --type memory
-./dfsctl store block local add --name default --type memory
+# 4. Create stores (interactive prompts will ask for paths and S3 credentials)
+./dfsctl store metadata add --name default --type badger
+./dfsctl store block local add --name local-cache --type fs
+./dfsctl store block remote add --name s3-remote --type s3
 
 # 5. Create a share and grant access
-./dfsctl share create --name /export --metadata default --local default
+./dfsctl share create --name /export --metadata default \
+  --local local-cache --remote s3-remote
 ./dfsctl share permission grant /export --user $(whoami) --level read-write
 
 # 6. Enable NFS adapter
@@ -212,7 +214,7 @@ sudo mount -t nfs -o tcp,port=12049,mountport=12049,resvport,nolock localhost:/e
 echo "Hello DittoFS!" > /tmp/nfs/hello.txt
 ```
 
-> **Note:** Memory stores are ephemeral (data lost on restart). For persistence, use `--type badger` for metadata and `--type fs` for local block stores or add an S3 remote block store with `--kind remote --type s3`.
+> **Note:** This quickstart uses persistent storage: BadgerDB for metadata, local filesystem for block cache, and S3 for durable remote storage. Writes land on the local filesystem first and are asynchronously synced to S3. For quick local testing without external dependencies, you can use `--type memory` for both metadata and block stores instead.
 
 ### CLI Tools
 
