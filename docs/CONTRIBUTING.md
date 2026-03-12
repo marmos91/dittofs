@@ -28,6 +28,9 @@ nix develop
 # Or with direnv (auto-activates when entering directory)
 direnv allow
 
+# Set up pre-commit hooks (recommended)
+make setup-hooks
+
 # Build and run
 go build -o dfs cmd/dfs/main.go
 ./dfs init
@@ -58,6 +61,9 @@ If you prefer not to use Nix, install dependencies manually:
 # Clone repository
 git clone https://github.com/marmos91/dittofs.git
 cd dittofs
+
+# Set up pre-commit hooks (recommended)
+make setup-hooks
 
 # Install dependencies
 go mod download
@@ -95,17 +101,27 @@ go mod download
 DITTOFS_LOGGING_LEVEL=DEBUG DITTOFS_ADAPTERS_NFS_PORT=12049 ./dfs start
 ```
 
+### Pre-commit Hooks
+
+DittoFS includes pre-commit hooks that automatically check formatting and run static analysis before each commit. Set them up once after cloning:
+
+```bash
+make setup-hooks
+```
+
+The hook runs `gofmt -s`, `go vet`, and `golangci-lint` (if installed) on staged Go files. Use `git commit --no-verify` to skip when needed (e.g., WIP commits).
+
 ### Linting and Formatting
 
 ```bash
 # Format code
-go fmt ./...
+make fmt          # or: gofmt -s -w .
 
 # Static analysis
-go vet ./...
+make vet          # or: go vet ./...
 
 # Run linters (if golangci-lint is installed)
-golangci-lint run
+make lint         # or: golangci-lint run
 ```
 
 ## Testing
@@ -528,11 +544,11 @@ Key guidelines:
 ## Submitting Changes
 
 1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make your changes
-4. Run tests (`go test ./...`)
-5. Run linters (`go fmt ./...` and `go vet ./...`)
-6. Commit your changes (`git commit -m 'Add amazing feature'`)
+2. Set up pre-commit hooks (`make setup-hooks`)
+3. Create a feature branch (`git checkout -b feature/amazing-feature`)
+4. Make your changes
+5. Run tests (`go test ./...`)
+6. Commit your changes — pre-commit hooks check formatting and lint automatically
 7. Push to the branch (`git push origin feature/amazing-feature`)
 8. Open a Pull Request
 
