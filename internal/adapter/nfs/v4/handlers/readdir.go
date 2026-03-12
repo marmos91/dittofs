@@ -2,7 +2,10 @@ package handlers
 
 import (
 	"bytes"
+	"encoding/binary"
+	"fmt"
 	"io"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
@@ -11,6 +14,12 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// directoryMtimeVerifier generates an 8-byte cookie verifier from directory mtime.
+// Matches NFSv3 pattern in v3/handlers/readdir.go.
+func directoryMtimeVerifier(mtime time.Time) uint64 {
+	return uint64(mtime.UnixNano())
+}
 
 // handleReadDir implements the READDIR operation (RFC 7530 Section 16.24).
 // Lists directory children with names, cookies, and requested per-entry attributes.
@@ -85,11 +94,11 @@ func (h *Handler) handleReadDir(ctx *types.CompoundContext, reader io.Reader) *t
 	}
 
 	// Real filesystem handle -- list directory from metadata service
-	return h.readDirRealFS(ctx, cookie, maxcount, attrRequest)
+	return h.readDirRealFS(ctx, cookie, cookieVerf, maxcount, attrRequest)
 }
 
 // readDirRealFS handles READDIR for real filesystem directories.
-func (h *Handler) readDirRealFS(ctx *types.CompoundContext, cookie uint64, maxcount uint32, attrRequest []uint32) *types.CompoundResult {
+func (h *Handler) readDirRealFS(ctx *types.CompoundContext, cookie uint64, cookieVerf [8]byte, maxcount uint32, attrRequest []uint32) *types.CompoundResult {
 	authCtx, _, err := h.buildV4AuthContext(ctx, ctx.CurrentFH)
 	if err != nil {
 		return &types.CompoundResult{
@@ -106,6 +115,30 @@ func (h *Handler) readDirRealFS(ctx *types.CompoundContext, cookie uint64, maxco
 			OpCode: types.OP_READDIR,
 			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
 		}
+	}
+
+	// Fetch directory mtime for cookie verifier (RFC 7530 Section 16.24)
+	dirFile, err := metaSvc.GetFile(authCtx.Context, metadata.FileHandle(ctx.CurrentFH))
+	if err != nil {
+		status := types.MapMetadataErrorToNFS4(err)
+		return &types.CompoundResult{
+			Status: status,
+			OpCode: types.OP_READDIR,
+			Data:   encodeStatusOnly(status),
+		}
+	}
+	currentVerifier := directoryMtimeVerifier(dirFile.Mtime)
+
+	// Validate incoming cookie verifier for non-initial requests (advisory only).
+	// cookie=0 means initial request; cookieVerf all-zeros means client doesn't use verifiers.
+	// On mismatch, log at debug level but continue serving entries (matches NFSv3 behavior).
+	incomingVerf := binary.BigEndian.Uint64(cookieVerf[:])
+	if cookie != 0 && incomingVerf != 0 && incomingVerf != currentVerifier {
+		logger.Debug("NFSv4 READDIR: directory modified since last read, continuing with current entries",
+			"handle", fmt.Sprintf("%x", ctx.CurrentFH),
+			"expected_verf", fmt.Sprintf("0x%016x", incomingVerf),
+			"current_verf", fmt.Sprintf("0x%016x", currentVerifier),
+			"client", ctx.ClientAddr)
 	}
 
 	page, err := metaSvc.ReadDirectory(authCtx, metadata.FileHandle(ctx.CurrentFH), cookie, maxcount)
@@ -135,8 +168,10 @@ func (h *Handler) readDirRealFS(ctx *types.CompoundContext, cookie uint64, maxco
 	var buf bytes.Buffer
 	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
 
-	// Write cookieverf (8 zero bytes for now -- Phase 9 adds proper verifier)
-	buf.Write(make([]byte, 8))
+	// Write cookie verifier from directory mtime (RFC 7530 Section 16.24)
+	var verfBytes [8]byte
+	binary.BigEndian.PutUint64(verfBytes[:], currentVerifier)
+	buf.Write(verfBytes[:])
 
 	// Encode directory entries
 	encodedSize := uint32(buf.Len())

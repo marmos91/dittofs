@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"testing"
 	"time"
 
@@ -365,7 +366,8 @@ func TestReadDir_RealFS_ListsEntries(t *testing.T) {
 	var attrRequest []uint32
 	attrs.SetBit(&attrRequest, attrs.FATTR4_TYPE)
 
-	result := fx.handler.readDirRealFS(ctx, 0, 8192, attrRequest)
+	var zeroVerf [8]byte
+	result := fx.handler.readDirRealFS(ctx, 0, zeroVerf, 8192, attrRequest)
 
 	if result.Status != types.NFS4_OK {
 		t.Fatalf("READDIR status = %d, want NFS4_OK", result.Status)
@@ -380,9 +382,13 @@ func TestReadDir_RealFS_ListsEntries(t *testing.T) {
 		t.Fatalf("encoded status = %d, want NFS4_OK", status)
 	}
 
-	// Cookie verifier (8 bytes)
+	// Cookie verifier (8 bytes) -- must be non-zero for real-FS directories
 	cookieVerf := make([]byte, 8)
 	_, _ = reader.Read(cookieVerf)
+	verfValue := binary.BigEndian.Uint64(cookieVerf)
+	if verfValue == 0 {
+		t.Error("cookie verifier should be non-zero for real-FS directory, got all zeros")
+	}
 
 	// Read entries
 	var entryNames []string
@@ -448,7 +454,8 @@ func TestReadDir_RealFS_PaginationWithTruncation(t *testing.T) {
 	// Use a very small maxcount to force truncation
 	// Each entry needs: 4 (value_follows) + 8 (cookie) + 4+~12 (name) + 4+4+~8 (attrs) ~= 44+ bytes
 	// With overhead, ~60-80 bytes per entry. Use 150 to force 1-2 entries per batch.
-	result := fx.handler.readDirRealFS(ctx, 0, 150, attrRequest)
+	var zeroVerf [8]byte
+	result := fx.handler.readDirRealFS(ctx, 0, zeroVerf, 150, attrRequest)
 
 	if result.Status != types.NFS4_OK {
 		t.Fatalf("READDIR status = %d, want NFS4_OK", result.Status)
@@ -463,8 +470,13 @@ func TestReadDir_RealFS_PaginationWithTruncation(t *testing.T) {
 		t.Fatalf("encoded status = %d, want NFS4_OK", status)
 	}
 
-	// Skip cookie verifier (8 bytes)
-	_, _ = reader.Read(make([]byte, 8))
+	// Cookie verifier (8 bytes) -- capture for consistency check
+	page1Verf := make([]byte, 8)
+	_, _ = reader.Read(page1Verf)
+	page1VerfValue := binary.BigEndian.Uint64(page1Verf)
+	if page1VerfValue == 0 {
+		t.Error("page 1 cookie verifier should be non-zero for real-FS directory")
+	}
 
 	// Read entries and track last cookie for pagination
 	var entryNames []string
@@ -517,7 +529,7 @@ func TestReadDir_RealFS_PaginationWithTruncation(t *testing.T) {
 	ctx2.CurrentFH = make([]byte, len(fx.rootHandle))
 	copy(ctx2.CurrentFH, fx.rootHandle)
 
-	result2 := fx.handler.readDirRealFS(ctx2, lastCookie, 300, attrRequest)
+	result2 := fx.handler.readDirRealFS(ctx2, lastCookie, zeroVerf, 300, attrRequest)
 
 	if result2.Status != types.NFS4_OK {
 		t.Fatalf("READDIR page 2 status = %d, want NFS4_OK", result2.Status)
@@ -530,8 +542,16 @@ func TestReadDir_RealFS_PaginationWithTruncation(t *testing.T) {
 		t.Fatalf("encoded status page 2 = %d, want NFS4_OK", status2)
 	}
 
-	// Cookie verifier (8 bytes)
-	_, _ = reader2.Read(make([]byte, 8))
+	// Cookie verifier (8 bytes) -- must match page 1 (directory unchanged)
+	page2Verf := make([]byte, 8)
+	_, _ = reader2.Read(page2Verf)
+	page2VerfValue := binary.BigEndian.Uint64(page2Verf)
+	if page2VerfValue == 0 {
+		t.Error("page 2 cookie verifier should be non-zero for real-FS directory")
+	}
+	if page1VerfValue != page2VerfValue {
+		t.Errorf("verifier mismatch across pages: page1=0x%016x, page2=0x%016x", page1VerfValue, page2VerfValue)
+	}
 
 	// Read remaining entries
 	for {
@@ -567,6 +587,88 @@ func TestReadDir_RealFS_PaginationWithTruncation(t *testing.T) {
 		if !found[expected] {
 			t.Errorf("missing entry %q in READDIR result after pagination %v", expected, entryNames)
 		}
+	}
+}
+
+func TestReadDir_RealFS_VerifierMismatch(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+
+	// Create a file in the directory
+	fx.createTestFile(t, fx.rootHandle, "hello.txt", metadata.FileTypeRegular, 0o644, 1000, 1000)
+
+	// Initial READDIR (cookie=0) to get the verifier
+	ctx := newRealFSContext(0, 0)
+	ctx.CurrentFH = make([]byte, len(fx.rootHandle))
+	copy(ctx.CurrentFH, fx.rootHandle)
+
+	var attrRequest []uint32
+	attrs.SetBit(&attrRequest, attrs.FATTR4_TYPE)
+
+	// Use the full handleReadDir path with cookieVerf via the handler
+	var zeroVerf [8]byte
+	result := fx.handler.readDirRealFS(ctx, 0, zeroVerf, 8192, attrRequest)
+	if result.Status != types.NFS4_OK {
+		t.Fatalf("initial READDIR status = %d, want NFS4_OK", result.Status)
+	}
+
+	// Parse response to extract the verifier
+	reader := bytes.NewReader(result.Data)
+	status, _ := xdr.DecodeUint32(reader)
+	if status != types.NFS4_OK {
+		t.Fatalf("encoded status = %d, want NFS4_OK", status)
+	}
+	verf := make([]byte, 8)
+	_, _ = reader.Read(verf)
+	verfValue := binary.BigEndian.Uint64(verf)
+	if verfValue == 0 {
+		t.Fatal("initial verifier should be non-zero")
+	}
+
+	// Create a stale verifier by XORing with 0xFF
+	var staleVerf [8]byte
+	binary.BigEndian.PutUint64(staleVerf[:], verfValue^0xFF)
+
+	// Second READDIR with cookie=1 (non-initial) and stale verifier
+	// This tests the advisory-only mismatch behavior: should return NFS4_OK, not an error
+	ctx2 := newRealFSContext(0, 0)
+	ctx2.CurrentFH = make([]byte, len(fx.rootHandle))
+	copy(ctx2.CurrentFH, fx.rootHandle)
+
+	result2 := fx.handler.readDirRealFS(ctx2, 1, staleVerf, 8192, attrRequest)
+	if result2.Status != types.NFS4_OK {
+		t.Fatalf("READDIR with stale verifier status = %d, want NFS4_OK (advisory only)", result2.Status)
+	}
+
+	// Parse response to verify entries are served normally
+	reader2 := bytes.NewReader(result2.Data)
+	status2, _ := xdr.DecodeUint32(reader2)
+	if status2 != types.NFS4_OK {
+		t.Fatalf("encoded status with stale verifier = %d, want NFS4_OK", status2)
+	}
+
+	// Skip verifier (8 bytes)
+	_, _ = reader2.Read(make([]byte, 8))
+
+	// Read entries -- should still be served normally
+	var entryNames []string
+	for {
+		hasNext, err := xdr.DecodeUint32(reader2)
+		if err != nil || hasNext == 0 {
+			break
+		}
+		_, _ = xdr.DecodeUint64(reader2) // cookie
+		name, err := xdr.DecodeString(reader2)
+		if err != nil {
+			t.Fatalf("decode entry name: %v", err)
+		}
+		entryNames = append(entryNames, name)
+		_, _ = attrs.DecodeBitmap4(reader2)
+		_, _ = xdr.DecodeOpaque(reader2)
+	}
+
+	// Entries should be served despite verifier mismatch
+	if len(entryNames) == 0 {
+		t.Error("expected entries to be served despite verifier mismatch, got none")
 	}
 }
 

@@ -125,6 +125,21 @@ func encodeReadDir(cookie uint64, maxcount uint32, bits ...uint32) encodedOp {
 	return encodedOp{opCode: types.OP_READDIR, args: buf.Bytes()}
 }
 
+func encodeReadDirWithVerf(cookie uint64, verf [8]byte, maxcount uint32, bits ...uint32) encodedOp {
+	var bitmap []uint32
+	for _, bit := range bits {
+		attrs.SetBit(&bitmap, bit)
+	}
+
+	var buf bytes.Buffer
+	_ = xdr.WriteUint64(&buf, cookie)     // cookie
+	buf.Write(verf[:])                    // cookieverf (caller-provided)
+	_ = xdr.WriteUint32(&buf, 4096)       // dircount (hint)
+	_ = xdr.WriteUint32(&buf, maxcount)   // maxcount
+	_ = attrs.EncodeBitmap4(&buf, bitmap) // attr_request
+	return encodedOp{opCode: types.OP_READDIR, args: buf.Bytes()}
+}
+
 func encodeAccess(mask uint32) encodedOp {
 	var buf bytes.Buffer
 	_ = xdr.WriteUint32(&buf, mask)
