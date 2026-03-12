@@ -109,7 +109,7 @@ DittoFS includes pre-commit hooks that automatically check formatting and run st
 make setup-hooks
 ```
 
-The hook runs `gofmt -s`, `go vet`, and `golangci-lint` (if installed) on staged Go files. Use `git commit --no-verify` to skip when needed (e.g., WIP commits).
+The hook checks `gofmt -s` on staged Go files, then runs `go vet ./...` and `golangci-lint run` (if installed) across the full repository. Use `git commit --no-verify` to skip when needed (e.g., WIP commits).
 
 ### Linting and Formatting
 
