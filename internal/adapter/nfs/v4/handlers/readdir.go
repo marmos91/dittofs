@@ -46,17 +46,15 @@ func (h *Handler) handleReadDir(ctx *types.CompoundContext, reader io.Reader) *t
 		}
 	}
 
-	// Read cookieverf (8 bytes, as two uint32s since XDR has no raw byte read)
+	// Read cookieverf (8 raw bytes)
 	var cookieVerf [8]byte
-	verfBuf := make([]byte, 8)
-	if _, err := io.ReadFull(reader, verfBuf); err != nil {
+	if _, err := io.ReadFull(reader, cookieVerf[:]); err != nil {
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_BADXDR,
 			OpCode: types.OP_READDIR,
 			Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
 		}
 	}
-	copy(cookieVerf[:], verfBuf)
 
 	// Read dircount (uint32)
 	_, err = xdr.DecodeUint32(reader) // dircount (hint, not enforced)
@@ -117,8 +115,10 @@ func (h *Handler) readDirRealFS(ctx *types.CompoundContext, cookie uint64, cooki
 		}
 	}
 
+	dirHandle := metadata.FileHandle(ctx.CurrentFH)
+
 	// Fetch directory mtime for cookie verifier (RFC 7530 Section 16.24)
-	dirFile, err := metaSvc.GetFile(authCtx.Context, metadata.FileHandle(ctx.CurrentFH))
+	dirFile, err := metaSvc.GetFile(authCtx.Context, dirHandle)
 	if err != nil {
 		status := types.MapMetadataErrorToNFS4(err)
 		return &types.CompoundResult{
@@ -141,7 +141,7 @@ func (h *Handler) readDirRealFS(ctx *types.CompoundContext, cookie uint64, cooki
 			"client", ctx.ClientAddr)
 	}
 
-	page, err := metaSvc.ReadDirectory(authCtx, metadata.FileHandle(ctx.CurrentFH), cookie, maxcount)
+	page, err := metaSvc.ReadDirectory(authCtx, dirHandle, cookie, maxcount)
 	if err != nil {
 		status := types.MapMetadataErrorToNFS4(err)
 		return &types.CompoundResult{
