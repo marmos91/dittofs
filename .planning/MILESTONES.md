@@ -1,5 +1,30 @@
 # Project Milestones: DittoFS NFS Protocol Evolution
 
+## v4.3 Protocol Gap Fixes (Shipped: 2026-03-13)
+
+**Delivered:** Closed protocol gaps identified during v4.0 development — NFSv4 READDIR cookie verifier, READDIRPLUS performance, and LSA named pipe for Windows SID resolution. Two of three issues were already resolved in earlier milestones.
+
+**Phases completed:** 49.1-49.3 (3 phases, 1 plan, 2 tasks)
+
+**Key accomplishments:**
+
+- NFSv4 READDIR mtime-based cookie verifier preventing macOS Finder error -8062 (#254)
+- Advisory-only verifier mismatch validation (lenient approach per RFC 7530, never NFS4ERR_NOT_SAME)
+- READDIRPLUS performance optimization verified as pre-existing in v4.0 (DirEntry.Attr in all stores) (#222)
+- LSA named pipe (lsarpc) for Windows SID-to-name resolution verified as pre-existing in v3.6/v3.8 (#236)
+
+**Stats:**
+
+- 3 phases, 1 plan, 2 tasks
+- 10 files changed, +354 / -190 lines
+- 283,687 LOC Go
+- Mar 12-13, 2026 (2 days)
+- Git range: 6097b16e..db674ea5
+
+**Archive:** [v4.3-ROADMAP.md](milestones/v4.3-ROADMAP.md)
+
+---
+
 ## v4.0 BlockStore Unification Refactor (Shipped: 2026-03-11)
 
 **Delivered:** Complete storage layer refactor replacing confusing PayloadService/Cache/DirectWrite layers with clean two-tier block store model (Local + Remote), per-share isolation, read caching, and auto-configuration.

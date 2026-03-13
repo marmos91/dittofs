@@ -1,34 +1,49 @@
 ---
 gsd_state_version: 1.0
-milestone: v4.0
-milestone_name: BlockStore Unification Refactor
-status: completed
-stopped_at: Completed 49-05-PLAN.md (documentation overhaul) - Phase 49 COMPLETE
-last_updated: "2026-03-11T07:16:46.082Z"
-last_activity: 2026-03-10 — Completed Plan 05 (documentation overhaul)
+milestone: v4.7
+milestone_name: Offline/Edge Resilience
+status: executing
+stopped_at: Completed 63-03-PLAN.md
+last_updated: "2026-03-13T13:30:39.681Z"
+last_activity: 2026-03-13 — Completed 63-02 (API & CLI Retention Support)
 progress:
-  total_phases: 36
-  completed_phases: 10
-  total_plans: 26
-  completed_plans: 26
-  percent: 100
+  total_phases: 24
+  completed_phases: 1
+  total_plans: 3
+  completed_plans: 3
+  percent: 0
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-11)
+See: .planning/PROJECT.md (updated 2026-03-13)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Planning next milestone (v4.6 Production Hardening)
+**Current focus:** v4.7 Offline/Edge Resilience — Phase 63 (Cache Retention Model)
 
 ## Current Position
 
-Phase: Between milestones
-Milestone: v4.6 Production Hardening (next)
-Status: Planning
-Last activity: 2026-03-11 — Completed v4.0 milestone archival
+Phase: 63 of 66 (Cache Retention Model and Eviction Policy)
+Plan: 2 of 3 in current phase
+Status: executing
+Last activity: 2026-03-13 — Completed 63-02 (API & CLI Retention Support)
+
+Progress: [░░░░░░░░░░] 0%
+
+## Performance Metrics
+
+**Velocity:**
+- Total plans completed: 0 (this milestone)
+- Average duration: —
+- Total execution time: —
+
+**By Phase:**
+
+| Phase | Plans | Total | Avg/Plan |
+|-------|-------|-------|----------|
+| - | - | - | - |
 
 ## Completed Milestones
 
@@ -42,18 +57,19 @@ Last activity: 2026-03-11 — Completed v4.0 milestone archival
 | v3.8 SMB3 Protocol Upgrade | 33-40.5 | 26 | Mar 1-4, 2026 | 2026-03-04 |
 | v4.2 Benchmarking & Performance | 57-62 | — | Mar 4, 2026 | 2026-03-04 |
 | v4.0 BlockStore Unification | 41-49 | 24 | Mar 9-11, 2026 | 2026-03-11 |
-
-## Performance Metrics
-
-**Velocity:**
-- Total plans completed: 170+ (across 8 shipped milestones)
-- Average: ~4.5 plans/day
+| v4.3 Protocol Gap Fixes | 49.1-49.3 | 1 | Mar 12-13, 2026 | 2026-03-13 |
+| Phase 63 P01 | 6min | 2 tasks | 8 files |
+| Phase 63 P02 | 8min | 2 tasks | 10 files |
+| Phase 63 P03 | 18min | 2 tasks | 9 files |
 
 ## Accumulated Context
 
 ### Decisions
 
-- Previous decisions archived in PROJECT.md Key Decisions table and v4.0 milestone archive
+- All decisions archived in PROJECT.md Key Decisions table
+- [Phase 63]: RetentionPolicy as string type for GORM/JSON compatibility, empty defaults to LRU (CACHE-06)
+- [Phase 63]: Retention TTL passed as Go duration string over API; default retention displayed as "lru"
+- [Phase 63]: Per-file access tracking for LRU/TTL eviction; pin mode short-circuits ensureSpace
 
 ### Pending Todos
 
@@ -65,6 +81,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-11
-Stopped at: v4.0 milestone archived
-Next action: Start v4.6 Production Hardening with `/gsd:new-milestone` or `/gsd:plan-phase`
+Last session: 2026-03-13T13:25:32.254Z
+Stopped at: Completed 63-03-PLAN.md
+Next action: Execute 63-03-PLAN.md (Eviction Engine)

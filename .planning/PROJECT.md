@@ -2,31 +2,29 @@
 
 ## What This Is
 
-A comprehensive multi-protocol virtual filesystem with NFSv3/NFSv4.0/NFSv4.1 and SMB3.1.1 support, Kerberos authentication, unified cross-protocol locking, and advanced features like delegations, leases, durable handles, and encryption. v1.0 (NLM + unified locking), v2.0 (NFSv4.0 + Kerberos), v3.0 (NFSv4.1 sessions), v3.5 (adapter/core refactoring), v3.6 (Windows compatibility), and v3.8 (SMB3 protocol upgrade) are shipped. Next: BlockStore unification refactor (v4.0), then NFSv4.2 features (v4.1), then benchmarking (v4.2).
+A comprehensive multi-protocol virtual filesystem with NFSv3/NFSv4.0/NFSv4.1 and SMB3.1.1 support, Kerberos authentication, unified cross-protocol locking, and advanced features like delegations, leases, durable handles, and encryption. v1.0 through v4.3 shipped. Next: Offline/Edge Resilience (v4.7) — fix cache eviction for edge deployments and enable disconnected operation with local-first reads/writes and auto-sync on reconnect.
 
-Target: Cloud-native enterprise NAS with feature parity exceeding JuiceFS and Hammerspace, particularly in security (Kerberos + AES encryption), session reliability (EOS), cross-protocol consistency, and Windows SMB3.1.1 compatibility.
+Target: Cloud-native enterprise NAS with feature parity exceeding JuiceFS and Hammerspace, particularly in security (Kerberos + AES encryption), session reliability (EOS), cross-protocol consistency, Windows SMB3.1.1 compatibility, and edge/offline resilience.
 
-## Current Milestone: v4.6 Production Hardening
+## Current Milestone: v4.7 Offline/Edge Resilience
 
-**Goal:** Fix SMB3 signing, runtime races, and observability gaps; add production features (quotas, trash, unified client tracking) for real-world deployments.
+**Goal:** Fix cache eviction for edge deployments and enable disconnected operation with local-first reads/writes and auto-sync on reconnect.
 
-**Target outcomes:**
-- SMB 3.1.1 signing on macOS (#252) — fix preauth integrity hash mismatch causing client rejection
-- Share hot-reload (#235) — shares created at runtime visible to all adapters without restart
-- NTLM encryption flags (#215) — stop advertising unimplemented encryption capabilities
-- Share quotas (#232) — per-share quota with FSSTAT/FSINFO/SMB size reporting
-- Payload stats (#216) — UsedSize returns actual storage usage instead of hardcoded 0
-- Protocol-agnostic ClientRecord (#157) — unified client tracking across NFS+SMB, `dfsctl client list`
-- Trash / soft-delete (#190) — move-to-trash with configurable retention, background cleanup
+**Target features:**
+- Diagnose & fix local block eviction (movies vanish after 3 days on edge nodes)
+- Per-share retention policy (pin mode + configurable TTL) in control plane share config
+- Offline read resilience — serve from local cache when S3 is unreachable
+- Offline write support — accept writes locally, queue for S3 sync on reconnect
+- Connectivity detection & auto-sync on reconnect
+- Test infrastructure — Scaleway VMs via Pulumi, edge scenario reproduction, offline simulation via S3 endpoint block
 
 ## Upcoming Milestones
 
-- **v4.3 Protocol Gap Fixes** — NFSv4 READDIR cookie, READDIRPLUS perf, LSA pipe (phases 49.1-49.3)
-- **v4.5 BlockStore Security** — Block-level compression and encryption (phases 49.4-49.5)
-- **v4.7 Offline/Edge Resilience** — Disconnected operation with write queue and auto-sync (phases 68-71)
-- **v4.8 DX/UX Improvements** — Makefile, CI optimization, adapter config API (phases 72-74)
-- **v4.9 SMB Protocol Fixes** — Credits, multichannel, conformance (phases 75-77)
-- **v5.0 NFSv4.2 Extensions** — Server-side copy, clone/reflinks, sparse files, xattrs (phases 50-56)
+- **v4.5 BlockStore Security** — Block-level compression and encryption
+- **v4.6 Production Hardening** — SMB3 signing fix, quotas, client tracking, trash
+- **v4.8 DX/UX Improvements** — Makefile, CI optimization, adapter config API
+- **v4.9 SMB Protocol Fixes** — Credits, multichannel, conformance
+- **v5.0 NFSv4.2 Extensions** — Server-side copy, clone/reflinks, sparse files, xattrs
 
 ## Core Value
 
@@ -113,8 +111,19 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 - ✓ L1 read cache (LRU) with adaptive sequential prefetcher — v4.0
 - ✓ Platform-aware auto-deduced configuration (darwin/linux/windows) — v4.0
 - ✓ Cache observability via REST API and CLI — v4.0
+- ✓ NFSv4 READDIR cookie verifier (mtime-based, advisory validation) — v4.3
+- ✓ READDIRPLUS performance (DirEntry.Attr in all stores) — v4.0 (verified v4.3)
+- ✓ LSA named pipe (lsarpc with SID-to-name identity resolution) — v3.6/v3.8 (verified v4.3)
 
 ### Active
+
+#### v4.7 — Offline/Edge Resilience
+- [ ] Cache eviction diagnosis — identify why local blocks vanish after 3 days on edge deployments
+- [ ] Per-share retention policy — pin mode (default) + configurable TTL in share config
+- [ ] Offline read resilience — serve from local cache when S3 is unreachable
+- [ ] Offline write support — write locally, queue for S3 sync on reconnect
+- [ ] Connectivity detection & auto-sync — detect S3 availability, resume sync automatically
+- [ ] Edge test infrastructure — Scaleway VMs via Pulumi, offline simulation via S3 endpoint block
 
 #### v4.6 — Production Hardening
 - [ ] SMB 3.1.1 signing on macOS — fix preauth integrity hash mismatch (#252)
@@ -151,8 +160,8 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 
 ## Context
 
-**Current State (post-v4.0):**
-- ~284,000 LOC Go (net +26,605 in v4.0, includes major refactor with deletions)
+**Current State (post-v4.3):**
+- ~283,700 LOC Go
 - NFSv3 + NFSv4.0 + NFSv4.1 + NLM + SMB3.1.1 fully implemented
 - SMB3 security: AES encryption (128/256 GCM/CCM), AES signing (CMAC/GMAC), preauth integrity
 - SMB3 features: Lease V2 with directory leasing, durable handles V1/V2, VALIDATE_NEGOTIATE_INFO
@@ -255,6 +264,8 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 | Recently-broken cache for anti-storm | 5s TTL prevents lease grant-break storms | ✓ Good — Phase 37 |
 | Auto-register with system rpcbind | NFS clients discover NLM via portmapper | ✓ Good — Embedded portmapper |
 | Per-adapter connection pools | Isolation between NFS and SMB, simpler limits | ✓ Good — Phase 01 |
+| Mtime-based NFSv4 READDIR cookie verifier | Matches NFSv3 pattern, advisory-only mismatch validation | ✓ Good — Phase 49.1 |
+| Advisory verifier (never NFS4ERR_NOT_SAME) | Lenient approach avoids breaking clients on directory changes | ✓ Good — Phase 49.1 |
 
 ---
-*Last updated: 2026-03-11 after v4.0 BlockStore Unification Refactor milestone complete*
+*Last updated: 2026-03-13 after v4.7 Offline/Edge Resilience milestone started*
