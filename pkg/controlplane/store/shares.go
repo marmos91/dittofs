@@ -44,6 +44,8 @@ func (s *GORMStore) UpdateShare(ctx context.Context, share *models.Share) error 
 		"blocked_operations":   share.BlockedOperations,
 		"metadata_store_id":    share.MetadataStoreID,
 		"local_block_store_id": share.LocalBlockStoreID,
+		"retention_policy":     share.RetentionPolicy,
+		"retention_ttl":        share.RetentionTTL,
 		"updated_at":           share.UpdatedAt,
 	}
 	// Handle remote_block_store_id explicitly: GORM map-based Updates may skip

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/auth/sid"
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/adapters"
@@ -189,8 +190,8 @@ func (r *Runtime) RemoveShare(name string) error {
 	return r.sharesSvc.RemoveShare(name)
 }
 
-func (r *Runtime) UpdateShare(name string, readOnly *bool, defaultPermission *string) error {
-	return r.sharesSvc.UpdateShare(name, readOnly, defaultPermission)
+func (r *Runtime) UpdateShare(name string, readOnly *bool, defaultPermission *string, retentionPolicy *blockstore.RetentionPolicy, retentionTTL *time.Duration) error {
+	return r.sharesSvc.UpdateShare(name, readOnly, defaultPermission, retentionPolicy, retentionTTL)
 }
 
 func (r *Runtime) GetShare(name string) (*Share, error) {

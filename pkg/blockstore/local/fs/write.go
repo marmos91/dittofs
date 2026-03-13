@@ -104,6 +104,10 @@ func (bc *FSStore) WriteAt(ctx context.Context, payloadID string, data []byte, o
 	}
 
 	bc.updateFileSize(payloadID, offset+uint64(len(data)))
+
+	// Update per-file access time for eviction ordering (batched, no I/O).
+	bc.accessTracker.Touch(payloadID)
+
 	return nil
 }
 

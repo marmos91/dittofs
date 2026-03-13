@@ -18,6 +18,8 @@ var (
 	createReadOnly          bool
 	createDefaultPermission string
 	createDescription       string
+	createRetention         string
+	createRetentionTTL      string
 )
 
 var createCmd = &cobra.Command{
@@ -42,7 +44,13 @@ Examples:
   dfsctl share create --name /shared --metadata default --local fs-cache --remote s3-store --default-permission read-write
 
   # Create with description
-  dfsctl share create --name /docs --metadata default --local fs-cache --description "Documentation files"`,
+  dfsctl share create --name /docs --metadata default --local fs-cache --description "Documentation files"
+
+  # Create a pinned share (blocks never evicted)
+  dfsctl share create --name /edge-data --metadata default --local fs-cache --retention pin
+
+  # Create with TTL retention (evict after 72 hours of no access)
+  dfsctl share create --name /logs --metadata default --local fs-cache --retention ttl --retention-ttl 72h`,
 	RunE: runCreate,
 }
 
@@ -54,6 +62,8 @@ func init() {
 	createCmd.Flags().BoolVar(&createReadOnly, "read-only", false, "Make share read-only")
 	createCmd.Flags().StringVar(&createDefaultPermission, "default-permission", "read-write", "Default permission (none|read|read-write|admin)")
 	createCmd.Flags().StringVar(&createDescription, "description", "", "Share description")
+	createCmd.Flags().StringVar(&createRetention, "retention", "", "Retention policy (pin|ttl|lru)")
+	createCmd.Flags().StringVar(&createRetentionTTL, "retention-ttl", "", "Retention TTL duration (e.g., 72h, 24h)")
 	_ = createCmd.MarkFlagRequired("local")
 }
 
@@ -117,6 +127,12 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	}
 	if remote != "" {
 		req.RemoteBlockStore = &remote
+	}
+	if createRetention != "" {
+		req.RetentionPolicy = createRetention
+	}
+	if createRetentionTTL != "" {
+		req.RetentionTTL = createRetentionTTL
 	}
 
 	share, err := client.CreateShare(req)

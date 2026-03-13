@@ -41,6 +41,7 @@ func init() {
 	Cmd.AddCommand(createCmd)
 	Cmd.AddCommand(deleteCmd)
 	Cmd.AddCommand(editCmd)
+	Cmd.AddCommand(showCmd)
 	Cmd.AddCommand(permission.Cmd)
 	Cmd.AddCommand(mountCmd)
 	Cmd.AddCommand(unmountCmd)

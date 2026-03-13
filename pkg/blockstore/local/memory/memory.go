@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/local"
@@ -390,6 +391,9 @@ func (s *MemoryStore) SetEvictionEnabled(enabled bool) {
 	defer s.mu.Unlock()
 	s.evictionEnabled = enabled
 }
+
+// SetRetentionPolicy is a no-op in the memory store (memory store doesn't do eviction).
+func (s *MemoryStore) SetRetentionPolicy(_ blockstore.RetentionPolicy, _ time.Duration) {}
 
 // Stats returns cache statistics.
 func (s *MemoryStore) Stats() local.Stats {

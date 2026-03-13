@@ -69,6 +69,9 @@ func (bc *FSStore) ReadAt(ctx context.Context, payloadID string, dest []byte, of
 		currentOffset += uint64(readLen)
 	}
 
+	// Update per-file access time for eviction ordering (batched, no I/O).
+	bc.accessTracker.Touch(payloadID)
+
 	return true, nil
 }
 
@@ -107,6 +110,13 @@ func (bc *FSStore) readFromDisk(ctx context.Context, payloadID string, blockIdx 
 		return false, nil
 	}
 	path := fb.CachePath
+
+	// Seed access tracker from persisted LastAccess on first read after restart.
+	// This ensures eviction decisions remain reasonable before the file is
+	// actively touched via ReadAt/WriteAt (which calls Touch with time.Now()).
+	if !fb.LastAccess.IsZero() {
+		bc.accessTracker.TouchIfAbsent(payloadID, fb.LastAccess)
+	}
 
 	f, err := os.Open(path)
 	if err != nil {

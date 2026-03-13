@@ -10,10 +10,17 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/local"
 )
+
+// retentionConfig holds retention policy settings read/written atomically.
+type retentionConfig struct {
+	policy blockstore.RetentionPolicy
+	ttl    time.Duration
+}
 
 // Errors returned by FSStore.
 var (
@@ -93,6 +100,14 @@ type FSStore struct {
 	// evicting remote blocks. Used by local-only mode where there is no
 	// remote store to re-fetch evicted blocks from.
 	evictionEnabled atomic.Bool
+
+	// retention holds the cache retention policy and TTL, accessed atomically
+	// to avoid data races between SetRetentionPolicy and concurrent eviction.
+	retention unsafe.Pointer // *retentionConfig
+
+	// accessTracker maintains per-file last-access times for eviction ordering.
+	// Updated on read/write paths via Touch(), queried during eviction.
+	accessTracker *accessTracker
 }
 
 // New creates a new FSStore.
@@ -111,16 +126,19 @@ func New(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blocksto
 		maxMemory = 256 * 1024 * 1024 // 256MB default
 	}
 
+	defaultRetention := &retentionConfig{policy: blockstore.RetentionLRU}
 	bc := &FSStore{
-		baseDir:     baseDir,
-		maxDisk:     maxDisk,
-		maxMemory:   maxMemory,
-		blockStore:  fileBlockStore,
-		memBlocks:   make(map[blockKey]*memBlock),
-		fileBlocks:  make(map[string]map[uint64]*memBlock),
-		files:       make(map[string]*fileInfo),
-		fdCache:     newFDCache(defaultFDCacheSize),
-		readFDCache: newFDCache(defaultFDCacheSize),
+		baseDir:       baseDir,
+		maxDisk:       maxDisk,
+		maxMemory:     maxMemory,
+		blockStore:    fileBlockStore,
+		memBlocks:     make(map[blockKey]*memBlock),
+		fileBlocks:    make(map[string]map[uint64]*memBlock),
+		files:         make(map[string]*fileInfo),
+		fdCache:       newFDCache(defaultFDCacheSize),
+		readFDCache:   newFDCache(defaultFDCacheSize),
+		accessTracker: newAccessTracker(),
+		retention:     unsafe.Pointer(defaultRetention),
 	}
 	bc.evictionEnabled.Store(true)
 	return bc, nil
@@ -131,6 +149,22 @@ func New(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blocksto
 // are staging buffers, not the final store. Saves ~0.5-2ms per COMMIT.
 func (bc *FSStore) SetSkipFsync(skip bool) {
 	bc.skipFsync = skip
+}
+
+// SetRetentionPolicy updates the cache retention policy and TTL for eviction decisions.
+// Called during share creation and on runtime policy updates.
+// Safe for concurrent use with ensureSpace/eviction (uses atomic pointer swap).
+//   - pin: never evict cached blocks (ensureSpace returns ErrDiskFull)
+//   - ttl: evict only after file last-access exceeds ttl duration
+//   - lru: evict least-recently-accessed blocks first (default)
+func (bc *FSStore) SetRetentionPolicy(policy blockstore.RetentionPolicy, ttl time.Duration) {
+	cfg := &retentionConfig{policy: policy, ttl: ttl}
+	atomic.StorePointer(&bc.retention, unsafe.Pointer(cfg))
+}
+
+// getRetention returns the current retention config atomically.
+func (bc *FSStore) getRetention() retentionConfig {
+	return *(*retentionConfig)(atomic.LoadPointer(&bc.retention))
 }
 
 // Close flushes pending FileBlock metadata and marks the cache as closed.
@@ -368,6 +402,8 @@ func (bc *FSStore) EvictMemory(_ context.Context, payloadID string) error {
 	delete(bc.files, payloadID)
 	bc.filesMu.Unlock()
 
+	bc.accessTracker.Remove(payloadID)
+
 	return nil
 }
 
@@ -435,6 +471,8 @@ func (bc *FSStore) WriteFromRemote(ctx context.Context, payloadID string, data [
 
 	end := offset + uint64(len(data))
 	bc.updateFileSize(payloadID, end)
+
+	bc.accessTracker.Touch(payloadID)
 
 	return nil
 }

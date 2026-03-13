@@ -343,7 +343,7 @@ func TestShareOperations(t *testing.T) {
 	t.Run("update share", func(t *testing.T) {
 		readOnly := true
 		perm := "read"
-		err := rt.UpdateShare("/export", &readOnly, &perm)
+		err := rt.UpdateShare("/export", &readOnly, &perm, nil, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -359,7 +359,7 @@ func TestShareOperations(t *testing.T) {
 
 	t.Run("update non-existing share fails", func(t *testing.T) {
 		readOnly := true
-		err := rt.UpdateShare("/not-found", &readOnly, nil)
+		err := rt.UpdateShare("/not-found", &readOnly, nil, nil, nil)
 		if err == nil {
 			t.Fatal("expected error for non-existing share")
 		}

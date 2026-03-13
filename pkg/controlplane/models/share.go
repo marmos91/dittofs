@@ -3,6 +3,8 @@ package models
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/marmos91/dittofs/pkg/blockstore"
 )
 
 // KerberosLevel constants for share security policy.
@@ -26,6 +28,8 @@ type Share struct {
 	DefaultPermission  string    `gorm:"default:read-write;size:50" json:"default_permission"` // none, read, read-write, admin
 	Config             string    `gorm:"type:text" json:"-"`                                   // JSON blob for additional share config
 	BlockedOperations  string    `gorm:"type:text" json:"-"`                                   // JSON array of blocked operations
+	RetentionPolicy    string    `gorm:"size:10;default:''" json:"retention_policy"`           // pin, ttl, lru (empty = LRU default)
+	RetentionTTL       int64     `gorm:"default:0" json:"retention_ttl"`                       // TTL in seconds (0 = not set)
 	CreatedAt          time.Time `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt          time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 
@@ -76,6 +80,21 @@ func (s *Share) SetConfig(cfg map[string]any) error {
 // GetDefaultPermission returns the default permission as a SharePermission type.
 func (s *Share) GetDefaultPermission() SharePermission {
 	return ParseSharePermission(s.DefaultPermission)
+}
+
+// GetRetentionPolicy returns the parsed retention policy for this share.
+// Empty or unset defaults to LRU for backward compatibility (CACHE-06).
+func (s *Share) GetRetentionPolicy() blockstore.RetentionPolicy {
+	p, err := blockstore.ParseRetentionPolicy(s.RetentionPolicy)
+	if err != nil {
+		return blockstore.RetentionLRU
+	}
+	return p
+}
+
+// GetRetentionTTL converts the stored TTL (seconds) to a time.Duration.
+func (s *Share) GetRetentionTTL() time.Duration {
+	return time.Duration(s.RetentionTTL) * time.Second
 }
 
 // ShareAccessRule defines client access rules for a share.

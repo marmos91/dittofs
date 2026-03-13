@@ -53,6 +53,10 @@ type Share struct {
 	NetgroupName      string
 	BlockedOperations []string
 
+	// Retention policy for local cache blocks.
+	RetentionPolicy blockstore.RetentionPolicy
+	RetentionTTL    time.Duration
+
 	// BlockStore is the per-share block store orchestrator.
 	// Nil only for metadata-only shares (unlikely in practice).
 	BlockStore *engine.BlockStore
@@ -85,6 +89,10 @@ type ShareConfig struct {
 	MinKerberosLevel  string
 	NetgroupName      string
 	BlockedOperations []string
+
+	// Retention policy for local cache blocks.
+	RetentionPolicy blockstore.RetentionPolicy
+	RetentionTTL    time.Duration
 
 	// Block store config IDs resolved from the DB share model.
 	LocalBlockStoreID  string // Required: references a local BlockStoreConfig
@@ -168,6 +176,14 @@ func New() *Service {
 	}
 }
 
+// modeLabel returns a human-readable label for logging based on whether a remote store is configured.
+func modeLabel(hasRemote bool) string {
+	if hasRemote {
+		return "remote-backed"
+	}
+	return "local-only"
+}
+
 // sanitizeShareName converts a share name to a filesystem-safe directory name.
 // Uses URL path-escaping to guarantee an injective mapping (no two distinct
 // share names can produce the same directory name).
@@ -225,7 +241,7 @@ func (s *Service) AddShare(
 	}
 
 	// Phase 1: Build share struct (resolves metadata store, creates root dir).
-	// Does NOT insert into registry yet — share is invisible to handlers.
+	// Does NOT insert into registry yet -- share is invisible to handlers.
 	share, metadataStore, err := s.prepareShare(ctx, config, storeProvider)
 	if err != nil {
 		return err
@@ -238,14 +254,19 @@ func (s *Service) AddShare(
 		}
 	}
 
-	// Phase 3: Register metadata store.
-	if err := metadataSvc.RegisterStoreForShare(config.Name, metadataStore); err != nil {
+	// cleanupShare releases resources for a share that failed to fully initialize.
+	cleanupShare := func() {
 		if share.BlockStore != nil {
 			_ = share.BlockStore.Close()
 		}
 		if share.remoteConfigID != "" {
 			s.releaseRemoteStore(share.remoteConfigID)
 		}
+	}
+
+	// Phase 3: Register metadata store.
+	if err := metadataSvc.RegisterStoreForShare(config.Name, metadataStore); err != nil {
+		cleanupShare()
 		return fmt.Errorf("failed to configure metadata for share: %w", err)
 	}
 
@@ -254,12 +275,7 @@ func (s *Service) AddShare(
 	s.mu.Lock()
 	if _, exists := s.registry[config.Name]; exists {
 		s.mu.Unlock()
-		if share.BlockStore != nil {
-			_ = share.BlockStore.Close()
-		}
-		if share.remoteConfigID != "" {
-			s.releaseRemoteStore(share.remoteConfigID)
-		}
+		cleanupShare()
 		return fmt.Errorf("share %q already exists", config.Name)
 	}
 	s.registry[config.Name] = share
@@ -279,7 +295,7 @@ func (s *Service) prepareShare(
 	config *ShareConfig,
 	storeProvider MetadataStoreProvider,
 ) (*Share, metadata.MetadataStore, error) {
-	// Early duplicate check (optimistic — AddShare rechecks under write lock).
+	// Early duplicate check (optimistic -- AddShare rechecks under write lock).
 	s.mu.RLock()
 	if _, exists := s.registry[config.Name]; exists {
 		s.mu.RUnlock()
@@ -344,6 +360,8 @@ func (s *Service) prepareShare(
 		MinKerberosLevel:   config.MinKerberosLevel,
 		NetgroupName:       config.NetgroupName,
 		BlockedOperations:  config.BlockedOperations,
+		RetentionPolicy:    config.RetentionPolicy,
+		RetentionTTL:       config.RetentionTTL,
 	}
 
 	return share, metadataStore, nil
@@ -383,10 +401,11 @@ func (s *Service) createBlockStoreForShare(
 		}
 	}
 
-	localOnly := remoteStore == nil
-
-	localStore.SetSkipFsync(!localOnly)
-	localStore.SetEvictionEnabled(!localOnly)
+	// Eviction requires a remote store (so evicted blocks can be re-fetched) and
+	// must not be pin mode (pin keeps blocks cached indefinitely).
+	localStore.SetEvictionEnabled(remoteStore != nil && config.RetentionPolicy != blockstore.RetentionPin)
+	localStore.SetSkipFsync(remoteStore != nil)
+	localStore.SetRetentionPolicy(config.RetentionPolicy, config.RetentionTTL)
 
 	syncerCfg := buildSyncerConfigFromDefaults(syncerDefaults)
 
@@ -407,22 +426,19 @@ func (s *Service) createBlockStoreForShare(
 		}
 	}
 
-	var readCacheBytes int64
-	if localStoreDefaults != nil {
-		readCacheBytes = localStoreDefaults.ReadCacheBytes
+	engineCfg := engine.Config{
+		Local:  localStore,
+		Remote: engineRemote,
+		Syncer: syncer,
 	}
-	var prefetchWorkers int
+	if localStoreDefaults != nil {
+		engineCfg.ReadCacheBytes = localStoreDefaults.ReadCacheBytes
+	}
 	if syncerDefaults != nil {
-		prefetchWorkers = syncerDefaults.PrefetchWorkers
+		engineCfg.PrefetchWorkers = syncerDefaults.PrefetchWorkers
 	}
 
-	bs, err := engine.New(engine.Config{
-		Local:           localStore,
-		Remote:          engineRemote,
-		Syncer:          syncer,
-		ReadCacheBytes:  readCacheBytes,
-		PrefetchWorkers: prefetchWorkers,
-	})
+	bs, err := engine.New(engineCfg)
 	if err != nil {
 		cleanup()
 		return fmt.Errorf("failed to create BlockStore: %w", err)
@@ -437,14 +453,12 @@ func (s *Service) createBlockStoreForShare(
 	share.BlockStore = bs
 	share.remoteConfigID = remoteConfigID
 
-	mode := "remote-backed"
-	if localOnly {
-		mode = "local-only"
-	}
 	logger.Info("Per-share BlockStore initialized",
 		"share", config.Name,
-		"mode", mode,
-		"local_type", localCfg.Type)
+		"mode", modeLabel(remoteStore != nil),
+		"local_type", localCfg.Type,
+		"retention", config.RetentionPolicy,
+		"retention_ttl", config.RetentionTTL)
 
 	return nil
 }
@@ -549,7 +563,7 @@ func (s *Service) RemoveShare(name string) error {
 	return nil
 }
 
-func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *string) error {
+func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *string, retentionPolicy *blockstore.RetentionPolicy, retentionTTL *time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -563,6 +577,26 @@ func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *st
 	}
 	if defaultPermission != nil {
 		share.DefaultPermission = *defaultPermission
+	}
+	if retentionPolicy != nil {
+		share.RetentionPolicy = *retentionPolicy
+	}
+	if retentionTTL != nil {
+		share.RetentionTTL = *retentionTTL
+	}
+
+	// Propagate retention policy changes to the BlockStore at runtime.
+	// The policy applies lazily on the next eviction cycle.
+	if (retentionPolicy != nil || retentionTTL != nil) && share.BlockStore != nil {
+		share.BlockStore.SetRetentionPolicy(share.RetentionPolicy, share.RetentionTTL)
+
+		// Pin mode disables eviction; switching away from pin re-enables it
+		// (unless the share is local-only, in which case eviction stays disabled).
+		if share.RetentionPolicy == blockstore.RetentionPin {
+			share.BlockStore.SetEvictionEnabled(false)
+		} else if share.BlockStore.HasRemoteStore() {
+			share.BlockStore.SetEvictionEnabled(true)
+		}
 	}
 
 	return nil

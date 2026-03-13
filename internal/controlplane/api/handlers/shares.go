@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
@@ -66,6 +67,8 @@ type CreateShareRequest struct {
 	ReadOnly          bool      `json:"read_only,omitempty"`
 	DefaultPermission string    `json:"default_permission,omitempty"`
 	BlockedOperations *[]string `json:"blocked_operations,omitempty"`
+	RetentionPolicy   string    `json:"retention_policy,omitempty"`
+	RetentionTTL      string    `json:"retention_ttl,omitempty"` // Duration string like "72h"
 }
 
 // UpdateShareRequest is the request body for PUT /api/v1/shares/{name}.
@@ -76,6 +79,8 @@ type UpdateShareRequest struct {
 	ReadOnly           *bool     `json:"read_only,omitempty"`
 	DefaultPermission  *string   `json:"default_permission,omitempty"`
 	BlockedOperations  *[]string `json:"blocked_operations,omitempty"`
+	RetentionPolicy    *string   `json:"retention_policy,omitempty"`
+	RetentionTTL       *string   `json:"retention_ttl,omitempty"` // Duration string like "72h"
 }
 
 // ShareResponse is the response body for share endpoints.
@@ -88,6 +93,8 @@ type ShareResponse struct {
 	ReadOnly           bool      `json:"read_only"`
 	DefaultPermission  string    `json:"default_permission"`
 	BlockedOperations  []string  `json:"blocked_operations,omitempty"`
+	RetentionPolicy    string    `json:"retention_policy"`
+	RetentionTTL       string    `json:"retention_ttl,omitempty"` // Human-readable duration
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
 }
@@ -169,6 +176,25 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Parse and validate retention policy
+	retPolicy, err := blockstore.ParseRetentionPolicy(req.RetentionPolicy)
+	if err != nil {
+		BadRequest(w, err.Error())
+		return
+	}
+	var retTTL time.Duration
+	if req.RetentionTTL != "" {
+		retTTL, err = time.ParseDuration(req.RetentionTTL)
+		if err != nil {
+			BadRequest(w, "Invalid retention TTL duration: "+err.Error())
+			return
+		}
+	}
+	if err = blockstore.ValidateRetentionPolicy(retPolicy, retTTL); err != nil {
+		BadRequest(w, err.Error())
+		return
+	}
+
 	now := time.Now()
 	share := &models.Share{
 		ID:                 uuid.New().String(),
@@ -178,6 +204,8 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		RemoteBlockStoreID: remoteBlockStoreID, // Nullable
 		ReadOnly:           req.ReadOnly,
 		DefaultPermission:  defaultPerm,
+		RetentionPolicy:    string(retPolicy),
+		RetentionTTL:       int64(retTTL.Seconds()),
 		CreatedAt:          now,
 		UpdatedAt:          now,
 	}
@@ -225,6 +253,8 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			MinKerberosLevel:  nfsOpts.MinKerberosLevel,
 			BlockedOperations: share.GetBlockedOps(),
 			LocalBlockStoreID: localBlockStore.ID,
+			RetentionPolicy:   retPolicy,
+			RetentionTTL:      retTTL,
 		}
 		if remoteBlockStoreID != nil {
 			shareConfig.RemoteBlockStoreID = *remoteBlockStoreID
@@ -331,6 +361,50 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 		share.SetBlockedOps(*req.BlockedOperations)
 	}
 
+	// Handle retention policy updates
+	var rtRetPolicy *blockstore.RetentionPolicy
+	var rtRetTTL *time.Duration
+	if req.RetentionPolicy != nil {
+		retPolicy, err := blockstore.ParseRetentionPolicy(*req.RetentionPolicy)
+		if err != nil {
+			BadRequest(w, err.Error())
+			return
+		}
+		// Determine effective TTL: use new value if provided, else keep existing
+		var retTTL time.Duration
+		if req.RetentionTTL != nil {
+			retTTL, err = time.ParseDuration(*req.RetentionTTL)
+			if err != nil {
+				BadRequest(w, "Invalid retention TTL duration: "+err.Error())
+				return
+			}
+		} else {
+			retTTL = share.GetRetentionTTL()
+		}
+		if err = blockstore.ValidateRetentionPolicy(retPolicy, retTTL); err != nil {
+			BadRequest(w, err.Error())
+			return
+		}
+		share.RetentionPolicy = string(retPolicy)
+		share.RetentionTTL = int64(retTTL.Seconds())
+		rtRetPolicy = &retPolicy
+		rtRetTTL = &retTTL
+	} else if req.RetentionTTL != nil {
+		// TTL update without policy change -- validate against current policy
+		retTTL, err := time.ParseDuration(*req.RetentionTTL)
+		if err != nil {
+			BadRequest(w, "Invalid retention TTL duration: "+err.Error())
+			return
+		}
+		currentPolicy := share.GetRetentionPolicy()
+		if err = blockstore.ValidateRetentionPolicy(currentPolicy, retTTL); err != nil {
+			BadRequest(w, err.Error())
+			return
+		}
+		share.RetentionTTL = int64(retTTL.Seconds())
+		rtRetTTL = &retTTL
+	}
+
 	share.UpdatedAt = time.Now()
 
 	if err := h.store.UpdateShare(r.Context(), share); err != nil {
@@ -341,7 +415,7 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	// Update runtime if available
 	if h.runtime != nil {
-		if err := h.runtime.UpdateShare(share.Name, req.ReadOnly, req.DefaultPermission); err != nil {
+		if err := h.runtime.UpdateShare(share.Name, req.ReadOnly, req.DefaultPermission, rtRetPolicy, rtRetTTL); err != nil {
 			// Log but don't fail - database was updated successfully
 			logger.Warn("Failed to update share in runtime", "share", share.Name, "error", err)
 		}
@@ -613,6 +687,10 @@ func (h *ShareHandler) ListPermissions(w http.ResponseWriter, r *http.Request) {
 
 // shareToResponse converts a models.Share to ShareResponse.
 func shareToResponse(s *models.Share) ShareResponse {
+	var retTTL string
+	if s.RetentionTTL > 0 {
+		retTTL = s.GetRetentionTTL().String()
+	}
 	return ShareResponse{
 		ID:                 s.ID,
 		Name:               s.Name,
@@ -622,6 +700,8 @@ func shareToResponse(s *models.Share) ShareResponse {
 		ReadOnly:           s.ReadOnly,
 		DefaultPermission:  s.DefaultPermission,
 		BlockedOperations:  s.GetBlockedOps(),
+		RetentionPolicy:    string(s.GetRetentionPolicy()),
+		RetentionTTL:       retTTL,
 		CreatedAt:          s.CreatedAt,
 		UpdatedAt:          s.UpdatedAt,
 	}

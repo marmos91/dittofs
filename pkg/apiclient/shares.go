@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // normalizeShareNameForAPI strips all leading slashes from share names for API URLs.
@@ -15,14 +16,19 @@ func normalizeShareNameForAPI(name string) string {
 
 // Share represents a share in the system.
 type Share struct {
-	Name               string   `json:"name"`
-	MetadataStoreID    string   `json:"metadata_store_id"`
-	LocalBlockStoreID  string   `json:"local_block_store_id"`
-	RemoteBlockStoreID *string  `json:"remote_block_store_id"`
-	ReadOnly           bool     `json:"read_only,omitempty"`
-	DefaultPermission  string   `json:"default_permission,omitempty"`
-	Description        string   `json:"description,omitempty"`
-	BlockedOperations  []string `json:"blocked_operations,omitempty"`
+	ID                 string    `json:"id"`
+	Name               string    `json:"name"`
+	MetadataStoreID    string    `json:"metadata_store_id"`
+	LocalBlockStoreID  string    `json:"local_block_store_id"`
+	RemoteBlockStoreID *string   `json:"remote_block_store_id"`
+	ReadOnly           bool      `json:"read_only,omitempty"`
+	DefaultPermission  string    `json:"default_permission,omitempty"`
+	Description        string    `json:"description,omitempty"`
+	BlockedOperations  []string  `json:"blocked_operations,omitempty"`
+	RetentionPolicy    string    `json:"retention_policy,omitempty"`
+	RetentionTTL       string    `json:"retention_ttl,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 // CreateShareRequest is the request to create a share.
@@ -35,6 +41,8 @@ type CreateShareRequest struct {
 	DefaultPermission string    `json:"default_permission,omitempty"`
 	Description       string    `json:"description,omitempty"`
 	BlockedOperations *[]string `json:"blocked_operations,omitempty"`
+	RetentionPolicy   string    `json:"retention_policy,omitempty"`
+	RetentionTTL      string    `json:"retention_ttl,omitempty"`
 }
 
 // UpdateShareRequest is the request to update a share.
@@ -45,6 +53,8 @@ type UpdateShareRequest struct {
 	DefaultPermission  *string   `json:"default_permission,omitempty"`
 	Description        *string   `json:"description,omitempty"`
 	BlockedOperations  *[]string `json:"blocked_operations,omitempty"`
+	RetentionPolicy    *string   `json:"retention_policy,omitempty"`
+	RetentionTTL       *string   `json:"retention_ttl,omitempty"`
 }
 
 // SharePermission represents a permission on a share.

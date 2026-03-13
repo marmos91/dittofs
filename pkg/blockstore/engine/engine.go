@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/blockstore"
@@ -352,6 +353,18 @@ func (bs *BlockStore) EvictL1Cache() int {
 // HasRemoteStore returns true if this BlockStore has a remote store configured.
 func (bs *BlockStore) HasRemoteStore() bool {
 	return bs.remote != nil
+}
+
+// SetRetentionPolicy updates the retention policy on the underlying local store.
+// Delegates to the local store's SetRetentionPolicy method.
+func (bs *BlockStore) SetRetentionPolicy(policy blockstore.RetentionPolicy, ttl time.Duration) {
+	bs.local.SetRetentionPolicy(policy, ttl)
+}
+
+// SetEvictionEnabled controls whether the local store can evict blocks to free disk space.
+// Delegates to the local store's SetEvictionEnabled method.
+func (bs *BlockStore) SetEvictionEnabled(enabled bool) {
+	bs.local.SetEvictionEnabled(enabled)
 }
 
 // readAtInternal reads from primary payloadID, falling back to cowSource on miss.

@@ -174,14 +174,21 @@ func (s *PostgresMetadataStore) ListLocalBlocks(ctx context.Context, olderThan t
 }
 
 // ListRemoteBlocks returns blocks that are both cached locally and confirmed
-// in remote store, ordered by LRU (oldest LastAccess first), up to limit.
+// in remote store, ordered by LRU (oldest LastAccess first).
+// If limit > 0, returns at most that many rows; if limit <= 0, returns all.
 func (s *PostgresMetadataStore) ListRemoteBlocks(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
-	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state
+	baseQuery := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state
 		FROM file_blocks
 		WHERE state = 3 /* Remote */ AND cache_path IS NOT NULL
-		ORDER BY last_access ASC
-		LIMIT $1`
-	rows, err := s.query(ctx, query, limit)
+		ORDER BY last_access ASC`
+
+	var rows pgx.Rows
+	var err error
+	if limit > 0 {
+		rows, err = s.query(ctx, baseQuery+` LIMIT $1`, limit)
+	} else {
+		rows, err = s.query(ctx, baseQuery)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("list remote blocks: %w", err)
 	}
@@ -189,13 +196,20 @@ func (s *PostgresMetadataStore) ListRemoteBlocks(ctx context.Context, limit int)
 	return scanFileBlockRows(rows)
 }
 
-// ListUnreferenced returns blocks with RefCount=0, up to limit.
+// ListUnreferenced returns blocks with RefCount=0.
+// If limit > 0, returns at most that many rows; if limit <= 0, returns all.
 func (s *PostgresMetadataStore) ListUnreferenced(ctx context.Context, limit int) ([]*metadata.FileBlock, error) {
-	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state
+	baseQuery := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state
 		FROM file_blocks
-		WHERE ref_count = 0
-		LIMIT $1`
-	rows, err := s.query(ctx, query, limit)
+		WHERE ref_count = 0`
+
+	var rows pgx.Rows
+	var err error
+	if limit > 0 {
+		rows, err = s.query(ctx, baseQuery+` LIMIT $1`, limit)
+	} else {
+		rows, err = s.query(ctx, baseQuery)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("list unreferenced: %w", err)
 	}

@@ -196,6 +196,8 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			DisableReaddirplus: nfsOpts.DisableReaddirplus,
 			NetgroupName:       netgroupName,
 			BlockedOperations:  share.GetBlockedOps(),
+			RetentionPolicy:    share.GetRetentionPolicy(),
+			RetentionTTL:       share.GetRetentionTTL(),
 			LocalBlockStoreID:  share.LocalBlockStoreID,
 			RemoteBlockStoreID: derefString(share.RemoteBlockStoreID),
 		}

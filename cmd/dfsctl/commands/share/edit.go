@@ -17,6 +17,8 @@ var (
 	editReadOnly          string
 	editDefaultPermission string
 	editDescription       string
+	editRetention         string
+	editRetentionTTL      string
 )
 
 var editCmd = &cobra.Command{
@@ -47,7 +49,13 @@ Examples:
   dfsctl share edit /archive --default-permission read-write
 
   # Update description
-  dfsctl share edit /archive --description "New description"`,
+  dfsctl share edit /archive --description "New description"
+
+  # Change retention policy to pin (blocks never evicted)
+  dfsctl share edit /archive --retention pin
+
+  # Change retention policy to TTL with 72-hour window
+  dfsctl share edit /archive --retention ttl --retention-ttl 72h`,
 	Args: cobra.ExactArgs(1),
 	RunE: runEdit,
 }
@@ -58,6 +66,8 @@ func init() {
 	editCmd.Flags().StringVar(&editReadOnly, "read-only", "", "Set read-only (true|false)")
 	editCmd.Flags().StringVar(&editDefaultPermission, "default-permission", "", "Default permission (none|read|read-write|admin)")
 	editCmd.Flags().StringVar(&editDescription, "description", "", "Share description")
+	editCmd.Flags().StringVar(&editRetention, "retention", "", "Retention policy (pin|ttl|lru)")
+	editCmd.Flags().StringVar(&editRetentionTTL, "retention-ttl", "", "Retention TTL duration (e.g., 72h)")
 }
 
 func runEdit(cmd *cobra.Command, args []string) error {
@@ -71,7 +81,8 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	// Check if any flags were provided
 	hasFlags := cmd.Flags().Changed("local") || cmd.Flags().Changed("remote") ||
 		cmd.Flags().Changed("read-only") || cmd.Flags().Changed("default-permission") ||
-		cmd.Flags().Changed("description")
+		cmd.Flags().Changed("description") || cmd.Flags().Changed("retention") ||
+		cmd.Flags().Changed("retention-ttl")
 
 	// If no flags provided, run interactive mode
 	if !hasFlags {
@@ -108,8 +119,18 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		hasUpdate = true
 	}
 
+	if editRetention != "" {
+		req.RetentionPolicy = &editRetention
+		hasUpdate = true
+	}
+
+	if editRetentionTTL != "" {
+		req.RetentionTTL = &editRetentionTTL
+		hasUpdate = true
+	}
+
 	if !hasUpdate {
-		return fmt.Errorf("no fields specified. Use --local, --remote, --read-only, --default-permission, or --description")
+		return fmt.Errorf("no fields specified. Use --local, --remote, --read-only, --default-permission, --description, --retention, or --retention-ttl")
 	}
 
 	share, err := client.UpdateShare(name, req)
@@ -184,6 +205,38 @@ func runEditInteractive(client *apiclient.Client, name string) error {
 	if newPerm != currentPerm {
 		req.DefaultPermission = &newPerm
 		hasUpdate = true
+	}
+
+	// Retention policy
+	retOptions := []string{"lru", "ttl", "pin"}
+	currentRet := current.RetentionPolicy
+	if currentRet == "" {
+		currentRet = "lru"
+	}
+	fmt.Printf("Current retention: %s\n", currentRet)
+	newRet, err := prompt.SelectString("Retention policy", retOptions)
+	if err != nil {
+		return cmdutil.HandleAbort(err)
+	}
+	if newRet != currentRet {
+		req.RetentionPolicy = &newRet
+		hasUpdate = true
+	}
+
+	// Retention TTL (only prompt if TTL policy selected)
+	if newRet == "ttl" {
+		currentTTL := current.RetentionTTL
+		if currentTTL == "" {
+			currentTTL = "24h"
+		}
+		newTTLStr, err := prompt.Input("Retention TTL", currentTTL)
+		if err != nil {
+			return cmdutil.HandleAbort(err)
+		}
+		if newTTLStr != current.RetentionTTL {
+			req.RetentionTTL = &newTTLStr
+			hasUpdate = true
+		}
 	}
 
 	if !hasUpdate {

@@ -33,6 +33,7 @@ type shareRow struct {
 	LocalBlockStore   string `json:"local_block_store"`
 	RemoteBlockStore  string `json:"remote_block_store"`
 	DefaultPermission string `json:"default_permission"`
+	Retention         string `json:"retention"`
 }
 
 // ShareList is a list of shares for table rendering.
@@ -40,14 +41,14 @@ type ShareList []shareRow
 
 // Headers implements TableRenderer.
 func (sl ShareList) Headers() []string {
-	return []string{"NAME", "METADATA STORE", "LOCAL STORE", "REMOTE STORE", "DEFAULT PERMISSION"}
+	return []string{"NAME", "METADATA STORE", "LOCAL STORE", "REMOTE STORE", "DEFAULT PERMISSION", "RETENTION"}
 }
 
 // Rows implements TableRenderer.
 func (sl ShareList) Rows() [][]string {
 	rows := make([][]string, 0, len(sl))
 	for _, s := range sl {
-		rows = append(rows, []string{s.Name, s.MetadataStore, s.LocalBlockStore, s.RemoteBlockStore, s.DefaultPermission})
+		rows = append(rows, []string{s.Name, s.MetadataStore, s.LocalBlockStore, s.RemoteBlockStore, s.DefaultPermission, s.Retention})
 	}
 	return rows
 }
@@ -106,12 +107,20 @@ func runList(cmd *cobra.Command, args []string) error {
 		if s.RemoteBlockStoreID != nil && *s.RemoteBlockStoreID != "" {
 			remoteStore = resolveStoreName(blockNames, *s.RemoteBlockStoreID)
 		}
+		retention := s.RetentionPolicy
+		if retention == "" {
+			retention = "lru"
+		}
+		if retention == "ttl" && s.RetentionTTL != "" {
+			retention = fmt.Sprintf("ttl (%s)", s.RetentionTTL)
+		}
 		rows = append(rows, shareRow{
 			Name:              s.Name,
 			MetadataStore:     resolveStoreName(metaNames, s.MetadataStoreID),
 			LocalBlockStore:   resolveStoreName(blockNames, s.LocalBlockStoreID),
 			RemoteBlockStore:  remoteStore,
 			DefaultPermission: s.DefaultPermission,
+			Retention:         retention,
 		})
 	}
 

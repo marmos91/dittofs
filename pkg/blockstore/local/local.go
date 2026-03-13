@@ -2,6 +2,7 @@ package local
 
 import (
 	"context"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
 )
@@ -120,6 +121,12 @@ type LocalStore interface {
 
 	// SetEvictionEnabled controls whether the cache can evict blocks to make room.
 	SetEvictionEnabled(enabled bool)
+
+	// SetRetentionPolicy updates the cache retention policy for eviction decisions.
+	//   - pin: never evict cached blocks
+	//   - ttl: evict only after file last-access exceeds ttl duration
+	//   - lru: evict least-recently-accessed blocks first (default)
+	SetRetentionPolicy(policy blockstore.RetentionPolicy, ttl time.Duration)
 
 	// Stats returns a snapshot of current cache statistics.
 	Stats() Stats
