@@ -936,12 +936,23 @@ func CreateRemoteStoreFromConfig(ctx context.Context, storeType string, cfg inte
 
 		endpoint, _ := config["endpoint"].(string)
 		prefix, _ := config["prefix"].(string)
+		accessKey, _ := config["access_key_id"].(string)
+		secretKey, _ := config["secret_access_key"].(string)
 		forcePathStyle, _ := config["force_path_style"].(bool)
+
+		// When a custom endpoint is set (MinIO, Synology, etc.), default to
+		// path-style addressing — virtual-hosted style rarely works on
+		// non-AWS S3-compatible services. This matches v0.8.x behaviour.
+		if endpoint != "" && !forcePathStyle {
+			forcePathStyle = true
+		}
 
 		return remotes3.NewFromConfig(ctx, remotes3.Config{
 			Bucket:         bucket,
 			Region:         region,
 			Endpoint:       endpoint,
+			AccessKey:      accessKey,
+			SecretKey:      secretKey,
 			KeyPrefix:      prefix,
 			ForcePathStyle: forcePathStyle,
 		})
