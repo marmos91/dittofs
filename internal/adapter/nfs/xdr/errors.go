@@ -5,6 +5,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -190,6 +191,11 @@ func MapContentErrorToNFSStatus(err error) uint32 {
 	if errors.As(err, &storeErr) {
 		// Use the more specific error mapping
 		return MapStoreErrorToNFSStatus(err, "", "content operation")
+	}
+
+	// Check for blockstore sentinel errors
+	if errors.Is(err, blockstore.ErrRemoteUnavailable) {
+		return types.NFS3ErrIO
 	}
 
 	// Analyze error message for common patterns

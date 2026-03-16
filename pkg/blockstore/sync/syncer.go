@@ -92,6 +92,9 @@ type Syncer struct {
 
 	healthMonitor   *HealthMonitor           // Monitors remote store health (nil when no remote)
 	onHealthChanged HealthTransitionCallback // Callback invoked on health state transitions
+
+	firstOfflineRead    atomic.Bool  // Tracks if WARN was already logged since last healthy->unhealthy transition
+	offlineReadsBlocked atomic.Int64 // Count of read operations blocked by remote unavailability
 }
 
 // New creates a new Syncer. The fileBlockStore is required for content-addressed dedup.
@@ -166,6 +169,36 @@ func (m *Syncer) RemoteOutageDuration() time.Duration {
 	return m.healthMonitor.OutageDuration()
 }
 
+// remoteUnavailableError returns an ErrRemoteUnavailable wrapped with outage duration context.
+func (m *Syncer) remoteUnavailableError() error {
+	dur := m.RemoteOutageDuration()
+	return fmt.Errorf("remote store unavailable (offline for %s): %w", dur.Truncate(time.Second), blockstore.ErrRemoteUnavailable)
+}
+
+// OfflineReadsBlocked returns the count of read operations that failed
+// because the requested blocks were remote-only during an outage.
+func (m *Syncer) OfflineReadsBlocked() int64 {
+	return m.offlineReadsBlocked.Load()
+}
+
+// logOfflineRead logs a read failure due to remote unavailability.
+// First failure after a healthy->unhealthy transition logs at WARN level;
+// subsequent failures log at DEBUG to avoid log spam.
+func (m *Syncer) logOfflineRead(method, payloadID string, blockIdx uint64) {
+	if m.firstOfflineRead.CompareAndSwap(false, true) {
+		logger.Warn("Read blocked: remote store unavailable",
+			"method", method,
+			"payloadID", payloadID,
+			"blockIdx", blockIdx,
+			"outage_duration", m.RemoteOutageDuration().Truncate(time.Second))
+	} else {
+		logger.Debug("Read blocked: remote store unavailable",
+			"method", method,
+			"payloadID", payloadID,
+			"blockIdx", blockIdx)
+	}
+}
+
 // checkReady returns nil if the syncer can process requests.
 // Returns ctx.Err() if the context is cancelled, or ErrClosed if the syncer is closed.
 func (m *Syncer) checkReady(ctx context.Context) error {
@@ -196,11 +229,6 @@ func (m *Syncer) Flush(ctx context.Context, payloadID string) (*blockstore.Flush
 		return nil, err
 	}
 
-	// Flush memBlocks to disk cache only.
-	// The data is safe on disk after this call. Remote uploads happen asynchronously
-	// via the periodic syncer -- Local blocks are picked up after UploadDelay
-	// (resettable on new writes), allowing sparse blocks to accumulate more data
-	// before sync.
 	if _, err := m.cache.Flush(ctx, payloadID); err != nil {
 		return nil, fmt.Errorf("cache flush failed: %w", err)
 	}
@@ -265,6 +293,11 @@ func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, err
 		return 0, nil
 	}
 
+	// Health gate: fail fast when remote is unreachable
+	if !m.IsRemoteHealthy() {
+		return 0, m.remoteUnavailableError()
+	}
+
 	prefix := payloadID + "/"
 	blocks, err := m.remoteStore.ListByPrefix(ctx, prefix)
 	if err != nil {
@@ -304,6 +337,11 @@ func (m *Syncer) Exists(ctx context.Context, payloadID string) (bool, error) {
 		return false, nil
 	}
 
+	// Health gate: fail fast when remote is unreachable
+	if !m.IsRemoteHealthy() {
+		return false, m.remoteUnavailableError()
+	}
+
 	firstBlockKey := blockstore.FormatStoreKey(payloadID, 0)
 	_, err := m.remoteStore.ReadBlock(ctx, firstBlockKey)
 	if err == nil {
@@ -322,6 +360,13 @@ func (m *Syncer) Truncate(ctx context.Context, payloadID string, newSize uint64)
 	}
 	if m.remoteStore == nil {
 		logger.Debug("syncer: skipping Truncate, no remote store")
+		return nil
+	}
+	// Health gate: skip remote cleanup when unhealthy. Local cache is the
+	// source of truth for metadata; remote orphans are cleaned up later.
+	if !m.IsRemoteHealthy() {
+		logger.Warn("Truncate: skipping remote cleanup, remote store unhealthy",
+			"payloadID", payloadID, "newSize", newSize)
 		return nil
 	}
 
@@ -367,6 +412,13 @@ func (m *Syncer) Delete(ctx context.Context, payloadID string) error {
 		logger.Debug("syncer: skipping Delete, no remote store")
 		return nil
 	}
+	// Health gate: skip remote cleanup when unhealthy. Remote blocks become
+	// orphans that garbage collection will clean up after recovery.
+	if !m.IsRemoteHealthy() {
+		logger.Warn("Delete: skipping remote cleanup, remote store unhealthy",
+			"payloadID", payloadID)
+		return nil
+	}
 
 	return m.remoteStore.DeleteByPrefix(ctx, payloadID+"/")
 }
@@ -395,9 +447,17 @@ func (m *Syncer) Start(ctx context.Context) {
 // Must be called with m.mu held.
 func (m *Syncer) startHealthMonitor(ctx context.Context) {
 	m.healthMonitor = NewHealthMonitor(m.remoteStore.HealthCheck, m.config)
-	if m.onHealthChanged != nil {
-		m.healthMonitor.SetTransitionCallback(m.onHealthChanged)
-	}
+	// Wrap the user's callback to also reset the offline-read WARN flag
+	// on each healthy->unhealthy transition.
+	userCallback := m.onHealthChanged
+	m.healthMonitor.SetTransitionCallback(func(healthy bool) {
+		if !healthy {
+			m.firstOfflineRead.Store(false)
+		}
+		if userCallback != nil {
+			userCallback(healthy)
+		}
+	})
 	m.healthMonitor.Start(ctx)
 }
 

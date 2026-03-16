@@ -130,6 +130,21 @@ var (
 
 	// ErrFileBlockNotFound is returned when a file block is not found.
 	ErrFileBlockNotFound = errors.New("file block not found")
+
+	// ErrRemoteUnavailable is returned when a remote store operation is needed
+	// but the remote store is currently unreachable. Protocol handlers should
+	// map this to appropriate I/O error codes (NFS3ERR_IO, NFS4ERR_IO,
+	// STATUS_UNEXPECTED_IO_ERROR).
+	//
+	// The error is intentionally returned early (before attempting network I/O)
+	// when the health monitor reports the remote as unhealthy, avoiding network
+	// timeouts.
+	//
+	// Protocol Mapping:
+	//   - NFS: NFS3ErrIO (5) / NFS4ERR_IO (5)
+	//   - SMB: STATUS_UNEXPECTED_IO_ERROR (0xC00000E9)
+	//   - HTTP: 503 Service Unavailable
+	ErrRemoteUnavailable = errors.New("remote store unavailable")
 )
 
 // BlockStoreError wraps sentinel block store errors with structured debugging context.
