@@ -26,7 +26,6 @@ on:
       - 'internal/adapter/smb/**'
       - 'pkg/metadata/**'
       - 'pkg/blockstore/**'
-      - 'pkg/cache/**'
       - 'pkg/controlplane/**'
       - 'pkg/config/**'
       - 'test/e2e/**'
