@@ -23,7 +23,7 @@ func (m *Syncer) resolveStoreKey(ctx context.Context, payloadID string, blockIdx
 	return fb.BlockStoreKey, nil
 }
 
-// fetchBlock downloads a single block from the remote store and caches it.
+// fetchBlock downloads a single block from the remote store and writes it to the local store.
 // Returns nil data for sparse blocks (no FileBlock entry or missing S3 object).
 // Returns nil data when remoteStore is nil (local-only mode -- no remote data exists).
 func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, error) {
@@ -60,8 +60,8 @@ func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint
 	}
 
 	offset := blockIdx * uint64(BlockSize)
-	if err := m.cache.WriteFromRemote(ctx, payloadID, data, offset); err != nil {
-		return nil, fmt.Errorf("cache downloaded block %s: %w", storeKey, err)
+	if err := m.local.WriteFromRemote(ctx, payloadID, data, offset); err != nil {
+		return nil, fmt.Errorf("store downloaded block %s locally: %w", storeKey, err)
 	}
 
 	return data, nil
@@ -72,10 +72,10 @@ func blockRange(offset uint64, length uint32) (start, end uint64) {
 	return offset / uint64(BlockSize), (offset + uint64(length) - 1) / uint64(BlockSize)
 }
 
-// allBlocksCached returns true if every block in the range is already in cache.
-func (m *Syncer) allBlocksCached(ctx context.Context, payloadID string, startIdx, endIdx uint64) bool {
+// allBlocksLocal returns true if every block in the range is already in the local store.
+func (m *Syncer) allBlocksLocal(ctx context.Context, payloadID string, startIdx, endIdx uint64) bool {
 	for blockIdx := startIdx; blockIdx <= endIdx; blockIdx++ {
-		if !m.cache.IsBlockCached(ctx, payloadID, blockIdx) {
+		if !m.local.IsBlockLocal(ctx, payloadID, blockIdx) {
 			return false
 		}
 	}
@@ -83,7 +83,7 @@ func (m *Syncer) allBlocksCached(ctx context.Context, payloadID string, startIdx
 }
 
 // EnsureAvailableAndRead downloads blocks and copies data directly to dest, avoiding
-// a second cache ReadAt. Demanded blocks are downloaded inline in the caller's goroutine;
+// a second local ReadAt. Demanded blocks are downloaded inline in the caller's goroutine;
 // prefetch uses the worker pool. Returns (filled, error).
 func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, offset uint64, length uint32, dest []byte) (bool, error) {
 	if length == 0 {
@@ -93,11 +93,11 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 		return false, ErrClosed
 	}
 	if m.remoteStore == nil {
-		return false, nil // Local-only: all data must be in cache, no downloads possible
+		return false, nil // Local-only: all data must be in local store, no downloads possible
 	}
 
 	startBlockIdx, endBlockIdx := blockRange(offset, length)
-	if m.allBlocksCached(ctx, payloadID, startBlockIdx, endBlockIdx) {
+	if m.allBlocksLocal(ctx, payloadID, startBlockIdx, endBlockIdx) {
 		return false, nil
 	}
 
@@ -109,11 +109,11 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 	}
 
 	filled := false
-	needCacheReadAt := false
+	needLocalReadAt := false
 
 	for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
-		if m.cache.IsBlockCached(ctx, payloadID, blockIdx) {
-			needCacheReadAt = true
+		if m.local.IsBlockLocal(ctx, payloadID, blockIdx) {
+			needLocalReadAt = true
 			continue
 		}
 
@@ -123,7 +123,7 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 		}
 
 		if !downloaded {
-			needCacheReadAt = true
+			needLocalReadAt = true
 			continue
 		}
 
@@ -142,8 +142,8 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 		m.enqueuePrefetch(payloadID, endBlockIdx+1+uint64(i))
 	}
 
-	if needCacheReadAt {
-		return false, nil // Some blocks were in cache -- caller should use cache ReadAt
+	if needLocalReadAt {
+		return false, nil // Some blocks were in local store -- caller should use local store ReadAt
 	}
 	return filled, nil
 }
@@ -201,13 +201,13 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 		return nil, false, fmt.Errorf("download block %s: %w", storeKey, err)
 	}
 
-	// Cache write synchronously; data is already downloaded so there's no
+	// Store locally synchronously; data is already downloaded so there's no
 	// reason to hold it in a background goroutine. Under high concurrency,
 	// background goroutines each holding 8MB data caused OOM.
 	blockOffset := blockIdx * uint64(BlockSize)
-	if cacheErr := m.cache.WriteFromRemote(ctx, payloadID, data, blockOffset); cacheErr != nil {
-		logger.Warn("inline download: cache write failed",
-			"block", key, "error", cacheErr)
+	if writeErr := m.local.WriteFromRemote(ctx, payloadID, data, blockOffset); writeErr != nil {
+		logger.Warn("inline download: local write failed",
+			"block", key, "error", writeErr)
 	}
 	completed = true
 	m.completeInFlight(key, result, nil)
@@ -268,7 +268,7 @@ func copyBlockToDest(dest, data []byte, blockIdx, offset, length uint64) bool {
 	return false
 }
 
-// EnsureAvailable ensures the requested data range is in cache, downloading if needed.
+// EnsureAvailable ensures the requested data range is in the local store, downloading if needed.
 // Blocks until data is available and triggers prefetch for upcoming blocks.
 func (m *Syncer) EnsureAvailable(ctx context.Context, payloadID string, offset uint64, length uint32) error {
 	if length == 0 {
@@ -278,11 +278,11 @@ func (m *Syncer) EnsureAvailable(ctx context.Context, payloadID string, offset u
 		return ErrClosed
 	}
 	if m.remoteStore == nil {
-		return nil // Local-only: all data must be in cache, no downloads possible
+		return nil // Local-only: all data must be in local store, no downloads possible
 	}
 
 	startBlockIdx, endBlockIdx := blockRange(offset, length)
-	if m.allBlocksCached(ctx, payloadID, startBlockIdx, endBlockIdx) {
+	if m.allBlocksLocal(ctx, payloadID, startBlockIdx, endBlockIdx) {
 		return nil
 	}
 
@@ -321,9 +321,9 @@ func (m *Syncer) EnsureAvailable(ctx context.Context, payloadID string, offset u
 }
 
 // enqueueDownload enqueues a download with in-flight dedup (broadcast pattern).
-// Returns a channel to wait on, or nil if already cached.
+// Returns a channel to wait on, or nil if already available locally.
 func (m *Syncer) enqueueDownload(payloadID string, blockIdx uint64) chan error {
-	if m.cache.IsBlockCached(context.Background(), payloadID, blockIdx) {
+	if m.local.IsBlockLocal(context.Background(), payloadID, blockIdx) {
 		return nil
 	}
 
@@ -385,7 +385,7 @@ func (m *Syncer) enqueueDownload(payloadID string, blockIdx uint64) chan error {
 
 // enqueuePrefetch enqueues a prefetch request (non-blocking, best effort).
 func (m *Syncer) enqueuePrefetch(payloadID string, blockIdx uint64) {
-	if m.cache.IsBlockCached(context.Background(), payloadID, blockIdx) {
+	if m.local.IsBlockLocal(context.Background(), payloadID, blockIdx) {
 		return
 	}
 

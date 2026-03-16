@@ -241,7 +241,7 @@ func (h *HealthHandler) getStorageHealth() StorageHealthInfo {
 			continue // Skip local-only shares
 		}
 
-		stats := share.BlockStore.GetCacheStats()
+		stats := share.BlockStore.GetStats()
 		shareInfo := ShareHealthInfo{
 			Name:                shareName,
 			RemoteHealthy:       stats.RemoteHealthy,

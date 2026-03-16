@@ -23,7 +23,7 @@ import (
 // - Data isolation: files on share A are not visible on share B
 // - Deletion isolation: deleting share A does not affect share B
 // - Concurrent writes: simultaneous writes to different shares do not corrupt
-// - Cache independence: per-share caches do not interfere
+// - Local store independence: per-share local stores do not interfere
 // - Cross-protocol lock visibility: locks are per-share, not global
 func TestMultiShareIsolation(t *testing.T) {
 	if testing.Short() {
@@ -259,10 +259,10 @@ func TestMultiShareIsolation(t *testing.T) {
 	})
 
 	// =========================================================================
-	// Subtest d: Cache independence
+	// Subtest d: Local store independence
 	// =========================================================================
-	t.Run("CacheIndependence", func(t *testing.T) {
-		// Create shares with remote stores to enable caching behavior
+	t.Run("LocalStoreIndependence", func(t *testing.T) {
+		// Create shares with remote stores to enable tiered storage behavior
 		remoteA := helpers.UniqueTestName("iso-remote-a")
 		remoteB := helpers.UniqueTestName("iso-remote-b")
 
@@ -296,49 +296,49 @@ func TestMultiShareIsolation(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localCB) })
 
-		_, err = runner.CreateShare("/share-cache-a", metaCA, localCA,
+		_, err = runner.CreateShare("/share-local-a", metaCA, localCA,
 			helpers.WithShareRemote(remoteA))
 		require.NoError(t, err)
-		t.Cleanup(func() { _ = runner.DeleteShare("/share-cache-a") })
+		t.Cleanup(func() { _ = runner.DeleteShare("/share-local-a") })
 
-		_, err = runner.CreateShare("/share-cache-b", metaCB, localCB,
+		_, err = runner.CreateShare("/share-local-b", metaCB, localCB,
 			helpers.WithShareRemote(remoteB))
 		require.NoError(t, err)
-		t.Cleanup(func() { _ = runner.DeleteShare("/share-cache-b") })
+		t.Cleanup(func() { _ = runner.DeleteShare("/share-local-b") })
 
 		// Mount both
-		mountCA := framework.MountNFSExportWithVersion(t, nfsPort, "/share-cache-a", "3")
+		mountCA := framework.MountNFSExportWithVersion(t, nfsPort, "/share-local-a", "3")
 		t.Cleanup(mountCA.Cleanup)
 
-		mountCB := framework.MountNFSExportWithVersion(t, nfsPort, "/share-cache-b", "3")
+		mountCB := framework.MountNFSExportWithVersion(t, nfsPort, "/share-local-b", "3")
 		t.Cleanup(mountCB.Cleanup)
 
-		// Write data to share A (enough to exercise the cache)
+		// Write data to share A (enough to exercise the local store)
 		for i := 0; i < 20; i++ {
-			filePath := mountCA.FilePath(fmt.Sprintf("cache_a_%d.bin", i))
+			filePath := mountCA.FilePath(fmt.Sprintf("local_a_%d.bin", i))
 			framework.WriteFile(t, filePath, framework.GenerateRandomData(t, 8*1024))
 			t.Cleanup(func() { _ = os.Remove(filePath) })
 		}
 
 		// Write data to share B
 		for i := 0; i < 5; i++ {
-			filePath := mountCB.FilePath(fmt.Sprintf("cache_b_%d.bin", i))
+			filePath := mountCB.FilePath(fmt.Sprintf("local_b_%d.bin", i))
 			framework.WriteFile(t, filePath, framework.GenerateRandomData(t, 8*1024))
 			t.Cleanup(func() { _ = os.Remove(filePath) })
 		}
 
-		// Verify share B files are intact (cache A activity did not affect cache B)
+		// Verify share B files are intact (share A activity did not affect share B)
 		for i := 0; i < 5; i++ {
-			filePath := mountCB.FilePath(fmt.Sprintf("cache_b_%d.bin", i))
+			filePath := mountCB.FilePath(fmt.Sprintf("local_b_%d.bin", i))
 			assert.True(t, framework.FileExists(filePath),
-				"Share B cache file %d should still exist", i)
+				"Share B local file %d should still exist", i)
 			info, err := os.Stat(filePath)
 			require.NoError(t, err)
 			assert.Equal(t, int64(8*1024), info.Size(),
-				"Share B cache file %d should have correct size", i)
+				"Share B local file %d should have correct size", i)
 		}
 
-		t.Log("CacheIndependence: PASSED")
+		t.Log("LocalStoreIndependence: PASSED")
 	})
 
 	// =========================================================================

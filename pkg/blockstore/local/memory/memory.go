@@ -83,7 +83,7 @@ func (s *MemoryStore) ReadAt(_ context.Context, payloadID string, dest []byte, o
 		key := blockKey(payloadID, blockIdx)
 		mb, ok := s.blocks[key]
 		if !ok || mb.data == nil {
-			return false, nil // Cache miss
+			return false, nil // Block not available
 		}
 		if blockOffset+readLen > mb.dataSize {
 			return false, nil // Beyond written data
@@ -105,8 +105,8 @@ func (s *MemoryStore) GetFileSize(_ context.Context, payloadID string) (uint64, 
 	return size, ok
 }
 
-// IsBlockCached checks if a specific block is available in the store.
-func (s *MemoryStore) IsBlockCached(_ context.Context, payloadID string, blockIdx uint64) bool {
+// IsBlockLocal checks if a specific block is available in the store.
+func (s *MemoryStore) IsBlockLocal(_ context.Context, payloadID string, blockIdx uint64) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	key := blockKey(payloadID, blockIdx)
@@ -187,7 +187,7 @@ func (s *MemoryStore) WriteAt(_ context.Context, payloadID string, data []byte, 
 	return nil
 }
 
-// WriteFromRemote caches data fetched from the remote block store.
+// WriteFromRemote stores data fetched from the remote block store.
 // The block is marked Remote since it already exists remotely.
 func (s *MemoryStore) WriteFromRemote(_ context.Context, payloadID string, data []byte, offset uint64) error {
 	s.mu.Lock()
@@ -241,7 +241,7 @@ func (s *MemoryStore) Flush(_ context.Context, payloadID string) ([]local.Flushe
 			blockIdx := blockstore.ParseBlockIdx(key, payloadID)
 			flushed = append(flushed, local.FlushedBlock{
 				BlockIndex: blockIdx,
-				CachePath:  key, // Use key as path in memory store
+				LocalPath:  key, // Use key as path in memory store
 				DataSize:   mb.dataSize,
 			})
 		}
@@ -299,7 +299,7 @@ func (s *MemoryStore) Close() error {
 	return nil
 }
 
-// Truncate discards cached blocks beyond newSize.
+// Truncate discards blocks beyond newSize.
 func (s *MemoryStore) Truncate(_ context.Context, payloadID string, newSize uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -323,7 +323,7 @@ func (s *MemoryStore) Truncate(_ context.Context, payloadID string, newSize uint
 	return nil
 }
 
-// EvictMemory removes all cached data for a file.
+// EvictMemory removes all data for a file.
 func (s *MemoryStore) EvictMemory(_ context.Context, payloadID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -395,7 +395,7 @@ func (s *MemoryStore) SetEvictionEnabled(enabled bool) {
 // SetRetentionPolicy is a no-op in the memory store (memory store doesn't do eviction).
 func (s *MemoryStore) SetRetentionPolicy(_ blockstore.RetentionPolicy, _ time.Duration) {}
 
-// Stats returns cache statistics.
+// Stats returns local store statistics.
 func (s *MemoryStore) Stats() local.Stats {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

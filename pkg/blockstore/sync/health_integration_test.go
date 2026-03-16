@@ -55,7 +55,7 @@ func healthTestConfig() Config {
 type healthTestEnv struct {
 	syncer *Syncer
 	remote *controllableRemoteStore
-	cache  *fs.FSStore
+	local  *fs.FSStore
 }
 
 // newHealthTestEnv creates a syncer with a controllable remote store and short
@@ -76,7 +76,7 @@ func newHealthTestEnv(t *testing.T) *healthTestEnv {
 	return &healthTestEnv{
 		syncer: m,
 		remote: rs,
-		cache:  bc,
+		local:  bc,
 	}
 }
 
@@ -86,7 +86,7 @@ func TestHealthMonitorCircuitBreaker(t *testing.T) {
 	env := newHealthTestEnv(t)
 
 	ctx := context.Background()
-	env.cache.Start(ctx)
+	env.local.Start(ctx)
 	env.syncer.Start(ctx)
 
 	// Simulate outage BEFORE writing data, so the circuit breaker is tripped
@@ -100,13 +100,13 @@ func TestHealthMonitorCircuitBreaker(t *testing.T) {
 		t.Fatal("expected remote to be unhealthy after simulated outage")
 	}
 
-	// Write a block to the local cache while unhealthy.
+	// Write a block to the local store while unhealthy.
 	payloadID := "export/circuit-breaker-test.bin"
 	data := make([]byte, 1024)
 	for i := range data {
 		data[i] = byte(i % 256)
 	}
-	if err := env.cache.WriteAt(ctx, payloadID, data, 0); err != nil {
+	if err := env.local.WriteAt(ctx, payloadID, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
@@ -114,7 +114,7 @@ func TestHealthMonitorCircuitBreaker(t *testing.T) {
 	if _, err := env.syncer.Flush(ctx, payloadID); err != nil {
 		t.Fatalf("Flush failed: %v", err)
 	}
-	env.cache.SyncFileBlocks(ctx)
+	env.local.SyncFileBlocks(ctx)
 
 	// Wait for periodic uploader to run -- block should NOT be uploaded.
 	time.Sleep(200 * time.Millisecond)
@@ -147,7 +147,7 @@ func TestHealthMonitorRecoveryDrain(t *testing.T) {
 	env := newHealthTestEnv(t)
 
 	ctx := context.Background()
-	env.cache.Start(ctx)
+	env.local.Start(ctx)
 	env.syncer.Start(ctx)
 
 	// Immediately simulate outage.
@@ -166,7 +166,7 @@ func TestHealthMonitorRecoveryDrain(t *testing.T) {
 			data[j] = byte((i + j) % 256)
 		}
 		offset := uint64(i) * BlockSize // Each write goes to a different block
-		if err := env.cache.WriteAt(ctx, payloadID, data, offset); err != nil {
+		if err := env.local.WriteAt(ctx, payloadID, data, offset); err != nil {
 			t.Fatalf("WriteAt block %d failed: %v", i, err)
 		}
 	}
@@ -174,7 +174,7 @@ func TestHealthMonitorRecoveryDrain(t *testing.T) {
 	if _, err := env.syncer.Flush(ctx, payloadID); err != nil {
 		t.Fatalf("Flush failed: %v", err)
 	}
-	env.cache.SyncFileBlocks(ctx)
+	env.local.SyncFileBlocks(ctx)
 
 	// Verify no uploads during outage.
 	memStore := env.remote.RemoteStore.(*remotememory.Store)
@@ -213,7 +213,7 @@ func TestHealthCallbackInvocation(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	env.cache.Start(ctx)
+	env.local.Start(ctx)
 	env.syncer.Start(ctx)
 
 	// Simulate outage.

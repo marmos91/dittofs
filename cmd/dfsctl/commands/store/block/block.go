@@ -34,4 +34,6 @@ Examples:
 func init() {
 	Cmd.AddCommand(local.Cmd)
 	Cmd.AddCommand(remote.Cmd)
+	Cmd.AddCommand(statsCmd)
+	Cmd.AddCommand(evictCmd)
 }

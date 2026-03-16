@@ -1,4 +1,4 @@
-package readcache
+package readbuffer
 
 import (
 	"container/list"
@@ -12,20 +12,20 @@ type blockKey struct {
 	blockIdx  uint64
 }
 
-// cacheEntry holds the cached block data stored in each list.Element.
+// cacheEntry holds the buffered block data stored in each list.Element.
 type cacheEntry struct {
 	key      blockKey
 	data     []byte // heap-copied block data
 	dataSize uint32 // actual bytes of valid data in the block
 }
 
-// ReadCache is an LRU block cache that stores full blocks as heap-allocated
+// ReadBuffer is an LRU read buffer that stores full blocks as heap-allocated
 // []byte slices. It provides copy-on-read semantics: Get copies data into the
 // caller's buffer and never returns internal slices.
 //
 // Thread safety: reads take RLock, mutations take WLock.
 // Eviction is synchronous and inline during Put (O(1) -- just drops []byte ref).
-type ReadCache struct {
+type ReadBuffer struct {
 	mu      sync.RWMutex
 	entries map[blockKey]*list.Element     // primary index: blockKey -> list element
 	lru     *list.List                     // front = most recent, back = LRU victim
@@ -37,13 +37,13 @@ type ReadCache struct {
 	prefetcher *Prefetcher // optional sequential prefetcher
 }
 
-// New creates a new ReadCache with the given memory budget in bytes.
+// New creates a new ReadBuffer with the given memory budget in bytes.
 // Returns nil if maxBytes <= 0 (disabled mode).
-func New(maxBytes int64) *ReadCache {
+func New(maxBytes int64) *ReadBuffer {
 	if maxBytes <= 0 {
 		return nil
 	}
-	return &ReadCache{
+	return &ReadBuffer{
 		entries:  make(map[blockKey]*list.Element),
 		lru:      list.New(),
 		byFile:   make(map[string]map[uint64]struct{}),
@@ -51,11 +51,11 @@ func New(maxBytes int64) *ReadCache {
 	}
 }
 
-// Get reads a cached block into dest starting from offset within the block data.
+// Get reads a buffered block into dest starting from offset within the block data.
 // Returns the number of bytes copied and whether the block was found.
 // If offset >= dataSize, returns (0, false).
-// Copy-on-read: modifying dest does not affect cached data.
-func (c *ReadCache) Get(payloadID string, blockIdx uint64, dest []byte, offset uint32) (int, bool) {
+// Copy-on-read: modifying dest does not affect buffered data.
+func (c *ReadBuffer) Get(payloadID string, blockIdx uint64, dest []byte, offset uint32) (int, bool) {
 	if c == nil {
 		return 0, false
 	}
@@ -88,10 +88,10 @@ func (c *ReadCache) Get(payloadID string, blockIdx uint64, dest []byte, offset u
 	return n, true
 }
 
-// Put inserts or updates a block in the cache. A heap copy of data is made.
-// If the cache exceeds maxBytes, LRU entries are evicted synchronously.
+// Put inserts or updates a block in the read buffer. A heap copy of data is made.
+// If the read buffer exceeds maxBytes, LRU entries are evicted synchronously.
 // Blocks larger than maxBytes are silently skipped to prevent permanent over-budget.
-func (c *ReadCache) Put(payloadID string, blockIdx uint64, data []byte, dataSize uint32) {
+func (c *ReadBuffer) Put(payloadID string, blockIdx uint64, data []byte, dataSize uint32) {
 	if c == nil {
 		return
 	}
@@ -147,8 +147,8 @@ func (c *ReadCache) Put(payloadID string, blockIdx uint64, data []byte, dataSize
 	}
 }
 
-// Invalidate removes a single block entry from the cache.
-func (c *ReadCache) Invalidate(payloadID string, blockIdx uint64) {
+// Invalidate removes a single block entry from the read buffer.
+func (c *ReadBuffer) Invalidate(payloadID string, blockIdx uint64) {
 	if c == nil {
 		return
 	}
@@ -165,9 +165,9 @@ func (c *ReadCache) Invalidate(payloadID string, blockIdx uint64) {
 	c.removeEntry(elem)
 }
 
-// InvalidateFile removes all cached blocks for the given payloadID.
+// InvalidateFile removes all buffered blocks for the given payloadID.
 // Uses the secondary index for O(entries_for_file) performance.
-func (c *ReadCache) InvalidateFile(payloadID string) {
+func (c *ReadBuffer) InvalidateFile(payloadID string) {
 	if c == nil {
 		return
 	}
@@ -186,9 +186,9 @@ func (c *ReadCache) InvalidateFile(payloadID string) {
 	delete(c.byFile, payloadID)
 }
 
-// InvalidateAbove removes all cached blocks for the given payloadID where
+// InvalidateAbove removes all buffered blocks for the given payloadID where
 // blockIdx >= threshold. Used for truncate support.
-func (c *ReadCache) InvalidateAbove(payloadID string, threshold uint64) {
+func (c *ReadBuffer) InvalidateAbove(payloadID string, threshold uint64) {
 	if c == nil {
 		return
 	}
@@ -213,8 +213,8 @@ func (c *ReadCache) InvalidateAbove(payloadID string, threshold uint64) {
 	}
 }
 
-// Contains checks if a block is present in the cache. Does not promote.
-func (c *ReadCache) Contains(payloadID string, blockIdx uint64) bool {
+// Contains checks if a block is present in the read buffer. Does not promote.
+func (c *ReadBuffer) Contains(payloadID string, blockIdx uint64) bool {
 	if c == nil {
 		return false
 	}
@@ -227,40 +227,40 @@ func (c *ReadCache) Contains(payloadID string, blockIdx uint64) bool {
 	return ok
 }
 
-// MaxBytes returns the memory budget of the cache.
-// Returns 0 if the cache is nil (disabled).
-func (c *ReadCache) MaxBytes() int64 {
+// MaxBytes returns the memory budget of the read buffer.
+// Returns 0 if the read buffer is nil (disabled).
+func (c *ReadBuffer) MaxBytes() int64 {
 	if c == nil {
 		return 0
 	}
 	return c.maxBytes
 }
 
-// CacheStats holds L1 read cache statistics.
-type CacheStats struct {
-	Entries  int   `json:"entries"`   // Number of cached blocks
+// Stats holds read buffer statistics.
+type Stats struct {
+	Entries  int   `json:"entries"`   // Number of buffered blocks
 	CurBytes int64 `json:"cur_bytes"` // Current memory usage in bytes
 	MaxBytes int64 `json:"max_bytes"` // Memory budget in bytes
 }
 
-// Stats returns a snapshot of L1 read cache statistics.
-// Returns zero-value stats if the cache is nil (disabled).
-func (c *ReadCache) Stats() CacheStats {
+// Stats returns a snapshot of read buffer statistics.
+// Returns zero-value stats if the read buffer is nil (disabled).
+func (c *ReadBuffer) Stats() Stats {
 	if c == nil {
-		return CacheStats{}
+		return Stats{}
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return CacheStats{
+	return Stats{
 		Entries:  len(c.entries),
 		CurBytes: c.curBytes,
 		MaxBytes: c.maxBytes,
 	}
 }
 
-// SetPrefetcher attaches a prefetcher to this cache. The prefetcher is created
-// after the cache (in BlockStore.Start) so it must be set separately.
-func (c *ReadCache) SetPrefetcher(p *Prefetcher) {
+// SetPrefetcher attaches a prefetcher to this read buffer. The prefetcher is
+// created after the read buffer (in BlockStore.Start) so it must be set separately.
+func (c *ReadBuffer) SetPrefetcher(p *Prefetcher) {
 	if c == nil {
 		return
 	}
@@ -273,10 +273,10 @@ func (c *ReadCache) SetPrefetcher(p *Prefetcher) {
 // Injected to avoid import cycles with the local package.
 type BlockDataFn func(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, uint32, error)
 
-// InvalidateRange invalidates all L1 cache entries covering the byte range
+// InvalidateRange invalidates all read buffer entries covering the byte range
 // [offset, offset+length) and resets the prefetcher for the file.
-// Used by WriteAt to keep L1 consistent with writes.
-func (c *ReadCache) InvalidateRange(payloadID string, offset uint64, length int, blockSize uint64) {
+// Used by WriteAt to keep the read buffer consistent with writes.
+func (c *ReadBuffer) InvalidateRange(payloadID string, offset uint64, length int, blockSize uint64) {
 	if c == nil || length <= 0 {
 		return
 	}
@@ -288,9 +288,9 @@ func (c *ReadCache) InvalidateRange(payloadID string, offset uint64, length int,
 	c.resetPrefetcher(payloadID)
 }
 
-// InvalidateAboveSize invalidates all L1 entries for blocks above newSize bytes
-// and resets the prefetcher. Used by Truncate.
-func (c *ReadCache) InvalidateAboveSize(payloadID string, newSize uint64, blockSize uint64) {
+// InvalidateAboveSize invalidates all read buffer entries for blocks above
+// newSize bytes and resets the prefetcher. Used by Truncate.
+func (c *ReadBuffer) InvalidateAboveSize(payloadID string, newSize uint64, blockSize uint64) {
 	if c == nil {
 		return
 	}
@@ -299,9 +299,9 @@ func (c *ReadCache) InvalidateAboveSize(payloadID string, newSize uint64, blockS
 	c.resetPrefetcher(payloadID)
 }
 
-// InvalidateAndReset invalidates all L1 entries for a file and resets the
-// prefetcher. Used by Delete.
-func (c *ReadCache) InvalidateAndReset(payloadID string) {
+// InvalidateAndReset invalidates all read buffer entries for a file and resets
+// the prefetcher. Used by Delete.
+func (c *ReadBuffer) InvalidateAndReset(payloadID string) {
 	if c == nil {
 		return
 	}
@@ -312,7 +312,7 @@ func (c *ReadCache) InvalidateAndReset(payloadID string) {
 // NotifyRead informs the prefetcher about a read covering the byte range
 // [offset, offset+length). Each block in the range is reported individually
 // so multi-block reads are correctly detected as sequential.
-func (c *ReadCache) NotifyRead(payloadID string, offset, length, blockSize uint64) {
+func (c *ReadBuffer) NotifyRead(payloadID string, offset, length, blockSize uint64) {
 	if c == nil || c.prefetcher == nil || length == 0 {
 		return
 	}
@@ -323,9 +323,9 @@ func (c *ReadCache) NotifyRead(payloadID string, offset, length, blockSize uint6
 	}
 }
 
-// FillFromStore reads full blocks from the local store and populates the L1 cache
-// for the byte range [offset, offset+length). Skips blocks already present.
-func (c *ReadCache) FillFromStore(ctx context.Context, payloadID string, offset, length, blockSize uint64, getBlockData BlockDataFn) {
+// FillFromStore reads full blocks from the local store and populates the read
+// buffer for the byte range [offset, offset+length). Skips blocks already present.
+func (c *ReadBuffer) FillFromStore(ctx context.Context, payloadID string, offset, length, blockSize uint64, getBlockData BlockDataFn) {
 	if c == nil || length == 0 {
 		return
 	}
@@ -343,14 +343,14 @@ func (c *ReadCache) FillFromStore(ctx context.Context, payloadID string, offset,
 }
 
 // resetPrefetcher resets the prefetcher state for a payloadID.
-func (c *ReadCache) resetPrefetcher(payloadID string) {
+func (c *ReadBuffer) resetPrefetcher(payloadID string) {
 	if c.prefetcher != nil {
 		c.prefetcher.Reset(payloadID)
 	}
 }
 
-// Close clears all cache state. After Close, Get returns miss for all keys.
-func (c *ReadCache) Close() {
+// Close clears all read buffer state. After Close, Get returns miss for all keys.
+func (c *ReadBuffer) Close() {
 	if c == nil {
 		return
 	}
@@ -365,7 +365,7 @@ func (c *ReadCache) Close() {
 }
 
 // evictLRU removes the least recently used entry. Must be called under WLock.
-func (c *ReadCache) evictLRU() {
+func (c *ReadBuffer) evictLRU() {
 	back := c.lru.Back()
 	if back == nil {
 		return
@@ -375,7 +375,7 @@ func (c *ReadCache) evictLRU() {
 
 // unlinkEntry removes an entry from the primary index and LRU list by key.
 // Does NOT touch the secondary index (byFile). Must be called under WLock.
-func (c *ReadCache) unlinkEntry(key blockKey) {
+func (c *ReadBuffer) unlinkEntry(key blockKey) {
 	elem, ok := c.entries[key]
 	if !ok {
 		return
@@ -388,7 +388,7 @@ func (c *ReadCache) unlinkEntry(key blockKey) {
 
 // removeEntry removes a list element from all data structures including the
 // secondary index. Must be called under WLock.
-func (c *ReadCache) removeEntry(elem *list.Element) {
+func (c *ReadBuffer) removeEntry(elem *list.Element) {
 	entry := elem.Value.(*cacheEntry)
 	c.unlinkEntry(entry.key)
 

@@ -57,7 +57,7 @@ func ParseContentHash(s string) (ContentHash, error) {
 //   - Local (1):   Complete block on local disk, eligible for sync to remote.
 //     Set when the next block starts receiving writes, or when DataSize == BlockSize.
 //   - Syncing (2): Sync to remote store in progress. Reverts to Local on failure.
-//   - Remote (3):  Confirmed in remote block store. Eligible for cache eviction.
+//   - Remote (3):  Confirmed in remote block store. Eligible for local eviction.
 //
 // Write-after-sync resets: Remote -> Dirty (clears Hash + BlockStoreKey).
 type BlockState uint8
@@ -89,12 +89,12 @@ func (s BlockState) String() string {
 // Content-addressed: blocks with the same hash are shared across files for dedup.
 //
 // Lifecycle:
-//  1. Created on write: ID=uuid, CachePath=path, State=Dirty
+//  1. Created on write: ID=uuid, LocalPath=path, State=Dirty
 //  2. Local: block is complete (next block started or DataSize==BlockSize)
 //  3. Syncing: sync to remote store in progress
 //  4. Remote: BlockStoreKey set after background sync to remote store
-//  5. Remote + cached: both CachePath and BlockStoreKey set, State=Remote
-//  6. Evicted: CachePath cleared, data only in remote store
+//  5. Remote + local: both LocalPath and BlockStoreKey set, State=Remote
+//  6. Evicted: LocalPath cleared, data only in remote store
 type FileBlock struct {
 	// ID is a stable UUID for this block.
 	ID string
@@ -105,8 +105,8 @@ type FileBlock struct {
 	// DataSize is the actual bytes written in this block.
 	DataSize uint32
 
-	// CachePath is the local cache file path. Empty means not cached.
-	CachePath string
+	// LocalPath is the local file path. Empty means not stored locally.
+	LocalPath string
 
 	// BlockStoreKey is the opaque key in the remote block store (S3 key, FS path, etc.).
 	// Empty means not synced to remote.
@@ -126,12 +126,12 @@ type FileBlock struct {
 	State BlockState `json:"state"`
 }
 
-// NewFileBlock creates a new pending FileBlock with the given ID and cache path.
-func NewFileBlock(id string, cachePath string) *FileBlock {
+// NewFileBlock creates a new pending FileBlock with the given ID and local path.
+func NewFileBlock(id string, localPath string) *FileBlock {
 	now := time.Now()
 	return &FileBlock{
 		ID:         id,
-		CachePath:  cachePath,
+		LocalPath:  localPath,
 		RefCount:   1,
 		LastAccess: now,
 		CreatedAt:  now,
@@ -149,9 +149,9 @@ func (b *FileBlock) IsRemote() bool {
 	return b.State == BlockStateDirty && b.BlockStoreKey != ""
 }
 
-// IsCached returns true if the block exists in the local cache.
-func (b *FileBlock) IsCached() bool {
-	return b.CachePath != ""
+// HasLocalFile returns true if the block exists in the local store.
+func (b *FileBlock) HasLocalFile() bool {
+	return b.LocalPath != ""
 }
 
 // IsFinalized returns true if the block's hash has been computed.

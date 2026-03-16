@@ -10,18 +10,18 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore"
 )
 
-// ReadAt reads data from the cache at the specified file offset into dest.
+// ReadAt reads data from the local store at the specified file offset into dest.
 //
 // Two-tier lookup per block:
 //  1. Memory -- checks for an unflushed memBlock (dirty write data)
 //  2. Disk -- reads from .blk file via FileBlockStore metadata lookup
 //
-// Returns (true, nil) if all requested bytes were found in cache,
-// (false, nil) on cache miss for any block in the range.
-// The caller (I/O layer) handles cache misses by downloading from S3.
+// Returns (true, nil) if all requested bytes were found locally,
+// (false, nil) on miss for any block in the range.
+// The caller (I/O layer) handles misses by downloading from remote.
 func (bc *FSStore) ReadAt(ctx context.Context, payloadID string, dest []byte, offset uint64) (bool, error) {
 	if bc.isClosed() {
-		return false, ErrCacheClosed
+		return false, ErrStoreClosed
 	}
 
 	if len(dest) == 0 {
@@ -62,7 +62,7 @@ func (bc *FSStore) ReadAt(ctx context.Context, payloadID string, dest []byte, of
 			return false, err
 		}
 		if !found {
-			return false, nil // Cache miss
+			return false, nil // Block not available locally
 		}
 
 		remaining = remaining[readLen:]
@@ -76,24 +76,24 @@ func (bc *FSStore) ReadAt(ctx context.Context, payloadID string, dest []byte, of
 }
 
 // readFromDisk reads block data from a .blk file on disk.
-// Returns (true, nil) on success, (false, nil) for cache miss.
+// Returns (true, nil) on success, (false, nil) when block is not on disk.
 //
 // Optimized for random read throughput:
-//   - Uses read fd cache to avoid open+close syscalls per read
-//   - Skips dropPageCache (OS page cache benefits random reads)
+//   - Uses read fd pool to avoid open+close syscalls per read
+//   - Skips dropPageCache (OS page cache benefits subsequent random reads)
 //   - Skips LastAccess update (avoids write amplification on read path)
 func (bc *FSStore) readFromDisk(ctx context.Context, payloadID string, blockIdx uint64, offset, length uint32, dest []byte) (bool, error) {
 	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
 	blockID := makeBlockID(key)
 
-	// Fast path: try cached read fd first (no metadata lookup needed).
-	if f := bc.readFDCache.Get(blockID); f != nil {
+	// Fast path: try pooled read fd first (no metadata lookup needed).
+	if f := bc.readFDPool.Get(blockID); f != nil {
 		_, err := f.ReadAt(dest[:length], int64(offset))
 		if err == nil {
 			return true, nil
 		}
 		// Fd may be stale -- evict and fall through to slow path.
-		bc.readFDCache.Evict(blockID)
+		bc.readFDPool.Evict(blockID)
 	}
 
 	fb, err := bc.lookupFileBlock(ctx, blockID)
@@ -103,13 +103,13 @@ func (bc *FSStore) readFromDisk(ctx context.Context, payloadID string, blockIdx 
 		}
 		return false, fmt.Errorf("get block metadata: %w", err)
 	}
-	if fb.CachePath == "" {
+	if fb.LocalPath == "" {
 		return false, nil
 	}
 	if fb.DataSize > 0 && offset+length > fb.DataSize {
 		return false, nil
 	}
-	path := fb.CachePath
+	path := fb.LocalPath
 
 	// Seed access tracker from persisted LastAccess on first read after restart.
 	// This ensures eviction decisions remain reasonable before the file is
@@ -123,7 +123,7 @@ func (bc *FSStore) readFromDisk(ctx context.Context, payloadID string, blockIdx 
 		if os.IsNotExist(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("open cache file: %w", err)
+		return false, fmt.Errorf("open block file: %w", err)
 	}
 
 	_, err = f.ReadAt(dest[:length], int64(offset))
@@ -135,8 +135,8 @@ func (bc *FSStore) readFromDisk(ctx context.Context, payloadID string, blockIdx 
 		return false, fmt.Errorf("pread: %w", err)
 	}
 
-	// Cache the fd for subsequent reads to this block.
-	bc.readFDCache.Put(blockID, f)
+	// Pool the fd for subsequent reads to this block.
+	bc.readFDPool.Put(blockID, f)
 
 	return true, nil
 }

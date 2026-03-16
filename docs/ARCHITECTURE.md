@@ -6,7 +6,7 @@ This document provides a deep dive into DittoFS's architecture, design patterns,
 
 - [Core Abstraction Layers](#core-abstraction-layers)
 - [Per-Share Block Store Isolation](#per-share-block-store-isolation)
-- [Cache Tiers](#cache-tiers)
+- [Storage Tiers](#storage-tiers)
 - [Adapter Pattern](#adapter-pattern)
 - [Control Plane Pattern](#control-plane-pattern)
 - [Service Layer](#service-layer)
@@ -136,7 +136,7 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
   - `local/`: Local store interface and implementations (`fs/` filesystem, `memory/` in-memory)
   - `remote/`: Remote store interface and implementations (`s3/` production, `memory/` testing)
   - `sync/`: Syncer for async local-to-remote data transfer
-  - `readcache/`: L1 in-memory read cache with LRU eviction and prefetch
+  - `readbuffer/`: In-memory read buffer with LRU eviction and prefetch
   - `gc/`: Block garbage collection
   - `io/`: Extracted read/write I/O helpers
 
@@ -172,28 +172,28 @@ Each share in DittoFS gets its own `*engine.BlockStore` instance, providing comp
 ### Isolation Properties
 
 - **Data Isolation**: Each share's local blocks are stored in separate directories
-- **Cache Independence**: L1 read cache is per-share (eviction in one share does not affect others)
+- **Read Buffer Independence**: Read buffer is per-share (eviction in one share does not affect others)
 - **Remote Sharing**: Multiple shares can reference the same remote store (e.g., same S3 bucket) -- blocks are namespaced by share to prevent collisions
 - **Lifecycle Independence**: Block stores are created/closed with share lifecycle
 
-## Cache Tiers
+## Storage Tiers
 
-DittoFS uses a three-tier caching model for block data:
+DittoFS uses a three-tier storage model for block data:
 
 ```
 ┌─────────────────────────────────────┐
-│  L1: In-Memory Read Cache           │
-│  pkg/blockstore/readcache/          │
+│  Read Buffer (In-Memory)            │
+│  pkg/blockstore/readbuffer/         │
 │  - LRU eviction                     │
 │  - Fastest access (nanoseconds)     │
 │  - Volatile (lost on restart)       │
 │  - Configurable memory limit        │
 │  - Prefetch for sequential reads    │
 └──────────────┬──────────────────────┘
-               │ cache miss
+               │ buffer miss
                ▼
 ┌─────────────────────────────────────┐
-│  L2: Local Block Store              │
+│  Local Block Store                  │
 │  pkg/blockstore/local/fs/           │
 │  - Filesystem-backed                │
 │  - Fast access (disk I/O)           │
@@ -203,7 +203,7 @@ DittoFS uses a three-tier caching model for block data:
                │ block not local
                ▼
 ┌─────────────────────────────────────┐
-│  L3: Remote Store                   │
+│  Remote Store                       │
 │  pkg/blockstore/remote/s3/          │
 │  - S3 or compatible object store    │
 │  - Slowest (network I/O)            │
@@ -212,13 +212,13 @@ DittoFS uses a three-tier caching model for block data:
 └─────────────────────────────────────┘
 ```
 
-**Read Path**: L1 hit -> return. L1 miss -> L2 hit -> populate L1, return. L2 miss -> L3 fetch -> store in L2, populate L1, return.
+**Read Path**: Read buffer hit -> return. Buffer miss -> local hit -> populate buffer, return. Local miss -> remote fetch -> store locally, populate buffer, return.
 
-**Write Path**: Write to L2 (local store). Syncer asynchronously uploads to L3 (remote store). L1 is populated on subsequent reads.
+**Write Path**: Write to local store. Syncer asynchronously uploads to remote store. Read buffer is populated on subsequent reads.
 
 **Eviction**:
-- L1: LRU eviction when memory limit reached. No data loss (L2 has the data).
-- L2: Manual eviction via `dfsctl cache evict --local-only`. Only blocks already synced to L3 can be evicted (safety check prevents data loss).
+- Read buffer: LRU eviction when memory limit reached. No data loss (local store has the data).
+- Local store: Manual eviction via `dfsctl store block evict`. Only blocks already synced to remote can be evicted (safety check prevents data loss).
 
 ## Adapter Pattern
 
@@ -429,7 +429,7 @@ dittofs/
 │   │   │   ├── s3/               # S3-backed remote store
 │   │   │   └── memory/           # In-memory remote store (testing)
 │   │   ├── sync/                 # Syncer (async local-to-remote transfer)
-│   │   ├── readcache/            # L1 in-memory read cache
+│   │   ├── readbuffer/            # In-memory read buffer
 │   │   ├── gc/                   # Block garbage collection
 │   │   ├── io/                   # Read/write I/O helpers
 │   │   └── storetest/            # Conformance test helpers
@@ -638,7 +638,7 @@ DittoFS is designed for high performance through several architectural choices:
 - **Goroutine-per-connection model**: Leverages Go's lightweight concurrency
 - **Buffer pooling**: Reduces GC pressure for large I/O operations
 - **Streaming I/O**: Efficient handling of large files without full buffering
-- **Three-tier caching**: L1 memory + L2 local disk + L3 remote for optimal read latency
+- **Three-tier storage**: Read buffer + local disk + remote store for optimal read latency
 - **Zero-copy aspirations**: Working toward minimal data copying in hot paths
 
 ## Why Pure Go?

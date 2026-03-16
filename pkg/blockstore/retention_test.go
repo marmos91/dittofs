@@ -14,7 +14,7 @@ func TestParseRetentionPolicy(t *testing.T) {
 		{"pin", RetentionPin, false},
 		{"ttl", RetentionTTL, false},
 		{"lru", RetentionLRU, false},
-		{"", RetentionLRU, false},        // empty defaults to LRU (CACHE-06)
+		{"", RetentionLRU, false},        // empty defaults to LRU
 		{"PIN", RetentionPin, false},     // case-insensitive
 		{"TTL", RetentionTTL, false},     // case-insensitive
 		{"LRU", RetentionLRU, false},     // case-insensitive

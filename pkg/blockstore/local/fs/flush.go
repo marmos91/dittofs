@@ -22,10 +22,10 @@ import (
 // directly without a BadgerDB round-trip (SyncFileBlocksForFile + ListLocalBlocks).
 //
 // When skipFsync is set (e.g. S3 backends), fsync is skipped -- data durability
-// comes from remote sync, not local disk. The cache is just a staging buffer.
+// comes from remote sync, not local disk. The local store is just a staging buffer.
 func (bc *FSStore) Flush(ctx context.Context, payloadID string) ([]local.FlushedBlock, error) {
 	if bc.isClosed() {
-		return nil, ErrCacheClosed
+		return nil, ErrStoreClosed
 	}
 
 	// Collect keys for this payloadID via secondary index (O(1) lookup).
@@ -58,7 +58,7 @@ func (bc *FSStore) Flush(ctx context.Context, payloadID string) ([]local.Flushed
 			if path != "" {
 				flushed = append(flushed, local.FlushedBlock{
 					BlockIndex: key.blockIdx,
-					CachePath:  path,
+					LocalPath:  path,
 					DataSize:   dataSize,
 				})
 			}
@@ -66,11 +66,11 @@ func (bc *FSStore) Flush(ctx context.Context, payloadID string) ([]local.Flushed
 	}
 
 	// fsync all flushed files now (COMMIT path only).
-	// Skipped for S3 backends where cache is a staging buffer, not durable store.
+	// Skipped for S3 backends where the local store is a staging buffer, not durable store.
 	if !bc.skipFsync {
 		for _, fb := range flushed {
-			if err := syncFile(fb.CachePath); err != nil {
-				logger.Warn("cache: fsync on COMMIT failed", "path", fb.CachePath, "error", err)
+			if err := syncFile(fb.LocalPath); err != nil {
+				logger.Warn("local store: fsync on COMMIT failed", "path", fb.LocalPath, "error", err)
 			}
 		}
 	}
@@ -105,9 +105,9 @@ func (bc *FSStore) flushBlock(ctx context.Context, payloadID string, blockIdx ui
 
 	path := bc.blockPath(blockID)
 
-	// Evict fds from cache before truncating the file (O_TRUNC invalidates them)
-	bc.fdCache.Evict(blockID)
-	bc.readFDCache.Evict(blockID)
+	// Evict fds from pool before truncating the file (O_TRUNC invalidates them)
+	bc.fdPool.Evict(blockID)
+	bc.readFDPool.Evict(blockID)
 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		mb.mu.Unlock()
@@ -124,14 +124,14 @@ func (bc *FSStore) flushBlock(ctx context.Context, payloadID string, blockIdx ui
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		mb.mu.Unlock()
-		return "", 0, fmt.Errorf("create cache file: %w", err)
+		return "", 0, fmt.Errorf("create block file: %w", err)
 	}
 
 	dataSize := mb.dataSize
 	if _, err := f.Write(mb.data[:dataSize]); err != nil {
 		_ = f.Close()
 		mb.mu.Unlock()
-		return "", 0, fmt.Errorf("write cache file: %w", err)
+		return "", 0, fmt.Errorf("write block file: %w", err)
 	}
 
 	// No fsync here -- deferred to Flush() for throughput.
@@ -147,7 +147,7 @@ func (bc *FSStore) flushBlock(ctx context.Context, payloadID string, blockIdx ui
 		}
 		fb = blockstore.NewFileBlock(blockID, path)
 	}
-	fb.CachePath = path
+	fb.LocalPath = path
 	fb.DataSize = dataSize
 	fb.State = blockstore.BlockStateLocal
 	fb.LastAccess = time.Now()
@@ -193,7 +193,7 @@ func (bc *FSStore) flushOldestDirtyBlock(ctx context.Context) bool {
 
 	if oldestMB != nil {
 		if _, _, err := bc.flushBlock(ctx, oldestKey.payloadID, oldestKey.blockIdx, oldestMB); err != nil {
-			logger.Warn("cache: failed to flush oldest block", "error", err)
+			logger.Warn("local store: failed to flush oldest block", "error", err)
 			return false
 		}
 		return true
@@ -213,7 +213,7 @@ func syncFile(path string) error {
 	return err
 }
 
-// blockPath returns the cache file path for a block ID.
+// blockPath returns the block file path for a block ID.
 // Sharded: <baseDir>/<first-2-chars>/<blockID>.blk
 func (bc *FSStore) blockPath(blockID string) string {
 	if len(blockID) < 2 {

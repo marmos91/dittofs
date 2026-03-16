@@ -37,7 +37,7 @@ func (f *fakeRemoteStore) HealthCheck(ctx context.Context) error {
 
 func (f *fakeRemoteStore) SetHealthy(h bool) { f.healthy.Store(h) }
 
-// newHealthTestEngine creates an engine.BlockStore with an FSStore local cache,
+// newHealthTestEngine creates an engine.BlockStore with an FSStore local store,
 // a controllable fake remote store, and a syncer with short health intervals.
 func newHealthTestEngine(t *testing.T) (*BlockStore, *fakeRemoteStore) {
 	t.Helper()
@@ -89,7 +89,7 @@ func TestEngineHealthEvictionSuspension(t *testing.T) {
 	bs, fakeRemote := newHealthTestEngine(t)
 
 	// Initially, eviction should be enabled and remote should be healthy.
-	stats := bs.GetCacheStats()
+	stats := bs.GetStats()
 	if stats.EvictionSuspended {
 		t.Fatal("expected eviction NOT suspended initially")
 	}
@@ -103,7 +103,7 @@ func TestEngineHealthEvictionSuspension(t *testing.T) {
 	// Wait for health monitor to detect failure (threshold=2 at 20ms interval).
 	time.Sleep(150 * time.Millisecond)
 
-	stats = bs.GetCacheStats()
+	stats = bs.GetStats()
 	if stats.RemoteHealthy {
 		t.Fatal("expected remote unhealthy after simulated outage")
 	}
@@ -117,7 +117,7 @@ func TestEngineHealthEvictionSuspension(t *testing.T) {
 	// Wait for recovery.
 	time.Sleep(100 * time.Millisecond)
 
-	stats = bs.GetCacheStats()
+	stats = bs.GetStats()
 	if !stats.RemoteHealthy {
 		t.Fatal("expected remote healthy after recovery")
 	}
@@ -126,14 +126,14 @@ func TestEngineHealthEvictionSuspension(t *testing.T) {
 	}
 }
 
-// TestEngineCacheStatsHealthFields verifies CacheStats includes correct
+// TestEngineBlockStoreStatsHealthFields verifies BlockStoreStats includes correct
 // remote_healthy, eviction_suspended, and outage_duration_seconds values
 // in both healthy and unhealthy states.
-func TestEngineCacheStatsHealthFields(t *testing.T) {
+func TestEngineBlockStoreStatsHealthFields(t *testing.T) {
 	bs, fakeRemote := newHealthTestEngine(t)
 
 	// Healthy state.
-	stats := bs.GetCacheStats()
+	stats := bs.GetStats()
 	if !stats.RemoteHealthy {
 		t.Fatal("expected RemoteHealthy == true in healthy state")
 	}
@@ -148,7 +148,7 @@ func TestEngineCacheStatsHealthFields(t *testing.T) {
 	fakeRemote.SetHealthy(false)
 	time.Sleep(150 * time.Millisecond)
 
-	stats = bs.GetCacheStats()
+	stats = bs.GetStats()
 	if stats.RemoteHealthy {
 		t.Fatal("expected RemoteHealthy == false during outage")
 	}
@@ -163,7 +163,7 @@ func TestEngineCacheStatsHealthFields(t *testing.T) {
 	fakeRemote.SetHealthy(true)
 	time.Sleep(100 * time.Millisecond)
 
-	stats = bs.GetCacheStats()
+	stats = bs.GetStats()
 	if !stats.RemoteHealthy {
 		t.Fatal("expected RemoteHealthy == true after recovery")
 	}

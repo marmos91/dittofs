@@ -21,7 +21,7 @@ import (
 //   - A single 64KiB pwrite to disk is cheap (~0.1ms on NVMe)
 const directDiskWriteThreshold = 64 * 1024
 
-// WriteAt writes data to the cache at the specified file offset.
+// WriteAt writes data to the local store at the specified file offset.
 //
 // Write path (per block):
 //  1. If the block already has a .blk file on disk and no memBlock in memory,
@@ -33,7 +33,7 @@ const directDiskWriteThreshold = 64 * 1024
 // No disk I/O for partial block writes that go through the memory path.
 func (bc *FSStore) WriteAt(ctx context.Context, payloadID string, data []byte, offset uint64) error {
 	if bc.isClosed() {
-		return ErrCacheClosed
+		return ErrStoreClosed
 	}
 
 	if len(data) == 0 {
@@ -111,7 +111,7 @@ func (bc *FSStore) WriteAt(ctx context.Context, payloadID string, data []byte, o
 	return nil
 }
 
-// tryDirectDiskWrite does a pwrite() directly to a .blk cache file, bypassing
+// tryDirectDiskWrite does a pwrite() directly to a .blk block file, bypassing
 // the 8MB memory buffer. For writes >= directDiskWriteThreshold, it creates the
 // .blk file eagerly if it doesn't exist yet. This eliminates the "first-run
 // penalty" where new files had to go through the slow buffer-then-flush path
@@ -140,8 +140,8 @@ func (bc *FSStore) tryDirectDiskWrite(ctx context.Context, payloadID string, blo
 
 	path := bc.blockPath(blockID)
 
-	// Try cached fd first, then open from disk.
-	f := bc.fdCache.Get(blockID)
+	// Try pooled fd first, then open from disk.
+	f := bc.fdPool.Get(blockID)
 	if f == nil {
 		var err error
 		f, err = os.OpenFile(path, os.O_WRONLY, 0644)
@@ -157,12 +157,12 @@ func (bc *FSStore) tryDirectDiskWrite(ctx context.Context, payloadID string, blo
 				return false
 			}
 		}
-		bc.fdCache.Put(blockID, f)
+		bc.fdPool.Put(blockID, f)
 	}
 
 	if _, err := f.WriteAt(data, int64(blockOffset)); err != nil {
 		// Fd may be stale (file was truncated/recreated). Evict and fall through.
-		bc.fdCache.Evict(blockID)
+		bc.fdPool.Evict(blockID)
 		return false
 	}
 
@@ -184,7 +184,7 @@ func (bc *FSStore) tryDirectDiskWrite(ctx context.Context, payloadID string, blo
 		}
 	}
 
-	fb.CachePath = path
+	fb.LocalPath = path
 	if end > fb.DataSize {
 		fb.DataSize = end
 	}
@@ -200,7 +200,7 @@ func (bc *FSStore) tryDirectDiskWrite(ctx context.Context, payloadID string, blo
 	return true
 }
 
-// createBlockFile creates a new .blk cache file, including any parent
+// createBlockFile creates a new .blk block file, including any parent
 // directories. Used by tryDirectDiskWrite for eager file creation.
 func (bc *FSStore) createBlockFile(path string) (*os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {

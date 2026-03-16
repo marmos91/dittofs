@@ -71,7 +71,7 @@ type CreateShareRequest struct {
 	RetentionPolicy   string    `json:"retention_policy,omitempty"`
 	RetentionTTL      string    `json:"retention_ttl,omitempty"` // Duration string like "72h"
 	LocalStoreSize    string    `json:"local_store_size,omitempty"`
-	ReadCacheSize     string    `json:"read_cache_size,omitempty"`
+	ReadBufferSize    string    `json:"read_buffer_size,omitempty"`
 }
 
 // UpdateShareRequest is the request body for PUT /api/v1/shares/{name}.
@@ -85,7 +85,7 @@ type UpdateShareRequest struct {
 	RetentionPolicy    *string   `json:"retention_policy,omitempty"`
 	RetentionTTL       *string   `json:"retention_ttl,omitempty"` // Duration string like "72h"
 	LocalStoreSize     *string   `json:"local_store_size,omitempty"`
-	ReadCacheSize      *string   `json:"read_cache_size,omitempty"`
+	ReadBufferSize     *string   `json:"read_buffer_size,omitempty"`
 }
 
 // ShareResponse is the response body for share endpoints.
@@ -101,7 +101,7 @@ type ShareResponse struct {
 	RetentionPolicy    string    `json:"retention_policy"`
 	RetentionTTL       string    `json:"retention_ttl,omitempty"`    // Human-readable duration
 	LocalStoreSize     string    `json:"local_store_size,omitempty"` // Human-readable byte size
-	ReadCacheSize      string    `json:"read_cache_size,omitempty"`  // Human-readable byte size
+	ReadBufferSize     string    `json:"read_buffer_size,omitempty"` // Human-readable byte size
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
 }
@@ -202,8 +202,8 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse optional per-share cache size overrides
-	var localStoreSize, readCacheSize int64
+	// Parse optional per-share size overrides
+	var localStoreSize, readBufferSize int64
 	if req.LocalStoreSize != "" {
 		bs, parseErr := bytesize.ParseByteSize(req.LocalStoreSize)
 		if parseErr != nil {
@@ -212,13 +212,13 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 		localStoreSize = bs.Int64()
 	}
-	if req.ReadCacheSize != "" {
-		bs, parseErr := bytesize.ParseByteSize(req.ReadCacheSize)
+	if req.ReadBufferSize != "" {
+		bs, parseErr := bytesize.ParseByteSize(req.ReadBufferSize)
 		if parseErr != nil {
-			BadRequest(w, "Invalid read_cache_size: "+parseErr.Error())
+			BadRequest(w, "Invalid read_buffer_size: "+parseErr.Error())
 			return
 		}
-		readCacheSize = bs.Int64()
+		readBufferSize = bs.Int64()
 	}
 
 	now := time.Now()
@@ -233,7 +233,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		RetentionPolicy:    string(retPolicy),
 		RetentionTTL:       int64(retTTL.Seconds()),
 		LocalStoreSize:     localStoreSize,
-		ReadCacheSize:      readCacheSize,
+		ReadBufferSize:     readBufferSize,
 		CreatedAt:          now,
 		UpdatedAt:          now,
 	}
@@ -281,7 +281,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			MinKerberosLevel:  nfsOpts.MinKerberosLevel,
 			BlockedOperations: share.GetBlockedOps(),
 			LocalStoreSize:    localStoreSize,
-			ReadCacheSize:     readCacheSize,
+			ReadBufferSize:    readBufferSize,
 			LocalBlockStoreID: localBlockStore.ID,
 			RetentionPolicy:   retPolicy,
 			RetentionTTL:      retTTL,
@@ -435,8 +435,8 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 		rtRetTTL = &retTTL
 	}
 
-	// Handle per-share cache size overrides (saved to DB, take effect on restart)
-	cacheSizeChanged := false
+	// Handle per-share size overrides (saved to DB, take effect on restart)
+	sizeChanged := false
 	if req.LocalStoreSize != nil {
 		bs, parseErr := bytesize.ParseByteSize(*req.LocalStoreSize)
 		if parseErr != nil {
@@ -444,16 +444,16 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		share.LocalStoreSize = bs.Int64()
-		cacheSizeChanged = true
+		sizeChanged = true
 	}
-	if req.ReadCacheSize != nil {
-		bs, parseErr := bytesize.ParseByteSize(*req.ReadCacheSize)
+	if req.ReadBufferSize != nil {
+		bs, parseErr := bytesize.ParseByteSize(*req.ReadBufferSize)
 		if parseErr != nil {
-			BadRequest(w, "Invalid read_cache_size: "+parseErr.Error())
+			BadRequest(w, "Invalid read_buffer_size: "+parseErr.Error())
 			return
 		}
-		share.ReadCacheSize = bs.Int64()
-		cacheSizeChanged = true
+		share.ReadBufferSize = bs.Int64()
+		sizeChanged = true
 	}
 
 	share.UpdatedAt = time.Now()
@@ -464,9 +464,9 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if cacheSizeChanged {
-		logger.Info("Cache size override updated for share (takes effect on restart)", "share", share.Name,
-			"local_store_size", share.LocalStoreSize, "read_cache_size", share.ReadCacheSize)
+	if sizeChanged {
+		logger.Info("Store size override updated for share (takes effect on restart)", "share", share.Name,
+			"local_store_size", share.LocalStoreSize, "read_buffer_size", share.ReadBufferSize)
 	}
 
 	// Update runtime if available
@@ -747,12 +747,12 @@ func shareToResponse(s *models.Share) ShareResponse {
 	if s.RetentionTTL > 0 {
 		retTTL = s.GetRetentionTTL().String()
 	}
-	var localStoreSizeStr, readCacheSizeStr string
+	var localStoreSizeStr, readBufferSizeStr string
 	if s.LocalStoreSize > 0 {
 		localStoreSizeStr = bytesize.ByteSize(s.LocalStoreSize).String()
 	}
-	if s.ReadCacheSize > 0 {
-		readCacheSizeStr = bytesize.ByteSize(s.ReadCacheSize).String()
+	if s.ReadBufferSize > 0 {
+		readBufferSizeStr = bytesize.ByteSize(s.ReadBufferSize).String()
 	}
 	return ShareResponse{
 		ID:                 s.ID,
@@ -766,7 +766,7 @@ func shareToResponse(s *models.Share) ShareResponse {
 		RetentionPolicy:    string(s.GetRetentionPolicy()),
 		RetentionTTL:       retTTL,
 		LocalStoreSize:     localStoreSizeStr,
-		ReadCacheSize:      readCacheSizeStr,
+		ReadBufferSize:     readBufferSizeStr,
 		CreatedAt:          s.CreatedAt,
 		UpdatedAt:          s.UpdatedAt,
 	}

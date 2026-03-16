@@ -64,10 +64,10 @@ type fetchResult struct {
 // It receives the payloadID and a list of block hashes for computing the final object hash.
 type FinalizationCallback func(ctx context.Context, payloadID string, blockHashes [][32]byte)
 
-// Syncer handles async cache-to-block-store transfers with eager upload,
+// Syncer handles async local-to-remote transfers with eager upload,
 // parallel download, prefetch, in-flight dedup, and content-addressed dedup.
 type Syncer struct {
-	cache          local.LocalStore
+	local          local.LocalStore
 	remoteStore    remote.RemoteStore
 	fileBlockStore blockstore.FileBlockStore // Required: enables content-addressed deduplication
 	config         Config
@@ -98,7 +98,7 @@ type Syncer struct {
 }
 
 // New creates a new Syncer. The fileBlockStore is required for content-addressed dedup.
-func New(c local.LocalStore, remoteStore remote.RemoteStore, fileBlockStore blockstore.FileBlockStore, config Config) *Syncer {
+func New(local local.LocalStore, remoteStore remote.RemoteStore, fileBlockStore blockstore.FileBlockStore, config Config) *Syncer {
 	if fileBlockStore == nil {
 		panic("fileBlockStore is required for Syncer")
 	}
@@ -113,7 +113,7 @@ func New(c local.LocalStore, remoteStore remote.RemoteStore, fileBlockStore bloc
 	}
 
 	m := &Syncer{
-		cache:          c,
+		local:          local,
 		remoteStore:    remoteStore,
 		fileBlockStore: fileBlockStore,
 		config:         config,
@@ -218,19 +218,19 @@ func (m *Syncer) canProcess(ctx context.Context) bool {
 	return m.checkReady(ctx) == nil
 }
 
-// Flush writes dirty in-memory blocks to disk cache (.blk files).
+// Flush writes dirty in-memory blocks to local store (.blk files).
 // Remote uploads happen asynchronously via the periodic uploader, so this
 // returns without waiting for remote sync. This decouples NFS COMMIT latency
-// from remote upload latency -- with a sufficiently large cache, remote write
+// from remote upload latency -- with a sufficiently large local store, remote write
 // performance equals local performance. Remote latency only matters when
-// backpressure kicks in (cache full) or on cold reads.
+// backpressure kicks in (local store full) or on cold reads.
 func (m *Syncer) Flush(ctx context.Context, payloadID string) (*blockstore.FlushResult, error) {
 	if err := m.checkReady(ctx); err != nil {
 		return nil, err
 	}
 
-	if _, err := m.cache.Flush(ctx, payloadID); err != nil {
-		return nil, fmt.Errorf("cache flush failed: %w", err)
+	if _, err := m.local.Flush(ctx, payloadID); err != nil {
+		return nil, fmt.Errorf("local store flush failed: %w", err)
 	}
 
 	return &blockstore.FlushResult{Finalized: false}, nil
@@ -481,13 +481,13 @@ func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 // Intended for testing -- production code uses the periodic uploader.
 func (m *Syncer) SyncNow(ctx context.Context) {
 	// Flush queued FileBlock metadata to the store so ListLocalBlocks can find them.
-	m.cache.SyncFileBlocks(ctx)
+	m.local.SyncFileBlocks(ctx)
 	pending, err := m.fileBlockStore.ListLocalBlocks(ctx, 0, 0)
 	if err != nil {
 		return
 	}
 	for _, fb := range pending {
-		if fb.CachePath == "" {
+		if fb.LocalPath == "" {
 			continue
 		}
 		m.syncFileBlock(ctx, fb)
@@ -586,7 +586,7 @@ func (m *Syncer) HealthCheck(ctx context.Context) error {
 
 // SetRemoteStore transitions the syncer from local-only mode to remote-backed mode.
 // This is a one-shot operation -- calling it again returns an error.
-// It sets the remoteStore, enables cache eviction, and starts the periodic syncer.
+// It sets the remoteStore, enables local store eviction, and starts the periodic syncer.
 func (m *Syncer) SetRemoteStore(ctx context.Context, remoteStore remote.RemoteStore) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -602,7 +602,7 @@ func (m *Syncer) SetRemoteStore(ctx context.Context, remoteStore remote.RemoteSt
 	}
 
 	m.remoteStore = remoteStore
-	m.cache.SetEvictionEnabled(true)
+	m.local.SetEvictionEnabled(true)
 
 	m.startHealthMonitor(ctx)
 	m.startPeriodicUploader(ctx)

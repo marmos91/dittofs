@@ -53,7 +53,7 @@ func (m *MetadataStoreConfig) SetConfig(cfg map[string]any) error {
 type BlockStoreKind string
 
 const (
-	// BlockStoreKindLocal identifies a local block store (disk-backed cache).
+	// BlockStoreKindLocal identifies a local block store (disk-backed storage).
 	BlockStoreKindLocal BlockStoreKind = "local"
 
 	// BlockStoreKindRemote identifies a remote block store (S3, etc.).

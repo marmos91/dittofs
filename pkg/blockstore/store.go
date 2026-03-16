@@ -37,7 +37,7 @@ type FileBlockStore interface {
 	// If limit > 0, at most limit blocks are returned. If limit <= 0, all are returned.
 	ListLocalBlocks(ctx context.Context, olderThan time.Duration, limit int) ([]*FileBlock, error)
 
-	// ListRemoteBlocks returns blocks that are both cached locally and confirmed
+	// ListRemoteBlocks returns blocks that are both stored locally and confirmed
 	// in remote store, ordered by LRU (oldest LastAccess first), up to limit.
 	ListRemoteBlocks(ctx context.Context, limit int) ([]*FileBlock, error)
 

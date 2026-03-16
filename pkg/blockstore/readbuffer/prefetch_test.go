@@ -1,4 +1,4 @@
-package readcache
+package readbuffer
 
 import (
 	"context"
@@ -13,24 +13,24 @@ import (
 
 // mockLocalChecker implements LocalChecker for tests.
 type mockLocalChecker struct {
-	mu     sync.Mutex
-	cached map[blockKey]bool
+	mu    sync.Mutex
+	local map[blockKey]bool
 }
 
 func newMockLocalChecker() *mockLocalChecker {
-	return &mockLocalChecker{cached: make(map[blockKey]bool)}
+	return &mockLocalChecker{local: make(map[blockKey]bool)}
 }
 
-func (m *mockLocalChecker) IsBlockCached(_ context.Context, payloadID string, blockIdx uint64) bool {
+func (m *mockLocalChecker) IsBlockLocal(_ context.Context, payloadID string, blockIdx uint64) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.cached[blockKey{payloadID: payloadID, blockIdx: blockIdx}]
+	return m.local[blockKey{payloadID: payloadID, blockIdx: blockIdx}]
 }
 
-func (m *mockLocalChecker) setCached(payloadID string, blockIdx uint64) {
+func (m *mockLocalChecker) setLocal(payloadID string, blockIdx uint64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.cached[blockKey{payloadID: payloadID, blockIdx: blockIdx}] = true
+	m.local[blockKey{payloadID: payloadID, blockIdx: blockIdx}] = true
 }
 
 // trackingLoadFn creates a LoadBlockFn that records calls and returns test data.
@@ -79,12 +79,12 @@ func (lt *loadTracker) waitForCalls(n int, timeout time.Duration) bool {
 // --- OnRead: First read ---
 
 func TestPrefetch_OnRead_FirstRead(t *testing.T) {
-	cache := New(testBlockSize * 32)
-	require.NotNil(t, cache)
-	defer cache.Close()
+	buf := New(testBlockSize * 32)
+	require.NotNil(t, buf)
+	defer buf.Close()
 
 	tracker := newLoadTracker()
-	p := NewPrefetcher(2, cache, tracker.loadFn, nil)
+	p := NewPrefetcher(2, buf, tracker.loadFn, nil)
 	require.NotNil(t, p)
 	defer p.Close()
 
@@ -99,12 +99,12 @@ func TestPrefetch_OnRead_FirstRead(t *testing.T) {
 // --- OnRead: Sequential but below threshold ---
 
 func TestPrefetch_OnRead_Sequential(t *testing.T) {
-	cache := New(testBlockSize * 32)
-	require.NotNil(t, cache)
-	defer cache.Close()
+	buf := New(testBlockSize * 32)
+	require.NotNil(t, buf)
+	defer buf.Close()
 
 	tracker := newLoadTracker()
-	p := NewPrefetcher(2, cache, tracker.loadFn, nil)
+	p := NewPrefetcher(2, buf, tracker.loadFn, nil)
 	require.NotNil(t, p)
 	defer p.Close()
 
@@ -119,12 +119,12 @@ func TestPrefetch_OnRead_Sequential(t *testing.T) {
 // --- OnRead: Threshold trigger ---
 
 func TestPrefetch_OnRead_ThresholdTrigger(t *testing.T) {
-	cache := New(testBlockSize * 32)
-	require.NotNil(t, cache)
-	defer cache.Close()
+	buf := New(testBlockSize * 32)
+	require.NotNil(t, buf)
+	defer buf.Close()
 
 	tracker := newLoadTracker()
-	p := NewPrefetcher(2, cache, tracker.loadFn, nil)
+	p := NewPrefetcher(2, buf, tracker.loadFn, nil)
 	require.NotNil(t, p)
 	defer p.Close()
 
@@ -143,12 +143,12 @@ func TestPrefetch_OnRead_ThresholdTrigger(t *testing.T) {
 // --- OnRead: Adaptive depth ---
 
 func TestPrefetch_OnRead_AdaptiveDepth(t *testing.T) {
-	cache := New(testBlockSize * 64)
-	require.NotNil(t, cache)
-	defer cache.Close()
+	buf := New(testBlockSize * 64)
+	require.NotNil(t, buf)
+	defer buf.Close()
 
 	tracker := newLoadTracker()
-	p := NewPrefetcher(4, cache, tracker.loadFn, nil)
+	p := NewPrefetcher(4, buf, tracker.loadFn, nil)
 	require.NotNil(t, p)
 	defer p.Close()
 
@@ -178,12 +178,12 @@ func TestPrefetch_OnRead_AdaptiveDepth(t *testing.T) {
 // --- OnRead: Max depth ---
 
 func TestPrefetch_OnRead_MaxDepth(t *testing.T) {
-	cache := New(testBlockSize * 64)
-	require.NotNil(t, cache)
-	defer cache.Close()
+	buf := New(testBlockSize * 64)
+	require.NotNil(t, buf)
+	defer buf.Close()
 
 	tracker := newLoadTracker()
-	p := NewPrefetcher(4, cache, tracker.loadFn, nil)
+	p := NewPrefetcher(4, buf, tracker.loadFn, nil)
 	require.NotNil(t, p)
 	defer p.Close()
 
@@ -207,12 +207,12 @@ func TestPrefetch_OnRead_MaxDepth(t *testing.T) {
 // --- OnRead: Non-sequential reset ---
 
 func TestPrefetch_OnRead_NonSequentialReset(t *testing.T) {
-	cache := New(testBlockSize * 32)
-	require.NotNil(t, cache)
-	defer cache.Close()
+	buf := New(testBlockSize * 32)
+	require.NotNil(t, buf)
+	defer buf.Close()
 
 	tracker := newLoadTracker()
-	p := NewPrefetcher(2, cache, tracker.loadFn, nil)
+	p := NewPrefetcher(2, buf, tracker.loadFn, nil)
 	require.NotNil(t, p)
 	defer p.Close()
 
@@ -238,42 +238,42 @@ func TestPrefetch_OnRead_NonSequentialReset(t *testing.T) {
 // --- OnRead: Skips cached blocks ---
 
 func TestPrefetch_OnRead_SkipsCachedBlocks(t *testing.T) {
-	cache := New(testBlockSize * 32)
-	require.NotNil(t, cache)
-	defer cache.Close()
+	buf := New(testBlockSize * 32)
+	require.NotNil(t, buf)
+	defer buf.Close()
 
-	// Pre-populate cache with block 3
-	cache.Put("file1", 3, makeData(testBlockSize, 0x33), uint32(testBlockSize))
+	// Pre-populate read buffer with block 3
+	buf.Put("file1", 3, makeData(testBlockSize, 0x33), uint32(testBlockSize))
 
 	tracker := newLoadTracker()
-	p := NewPrefetcher(2, cache, tracker.loadFn, nil)
+	p := NewPrefetcher(2, buf, tracker.loadFn, nil)
 	require.NotNil(t, p)
 	defer p.Close()
 
 	p.OnRead("file1", 0)
 	p.OnRead("file1", 1)
-	p.OnRead("file1", 2) // triggers prefetch of block 3 -- but 3 is in cache
+	p.OnRead("file1", 2) // triggers prefetch of block 3 -- but 3 is in read buffer
 
 	time.Sleep(200 * time.Millisecond)
 	calls := tracker.getCalls()
-	// Block 3 is already in cache, so loadFn should NOT be called for it
+	// Block 3 is already in the read buffer, so loadFn should NOT be called for it
 	for _, c := range calls {
-		assert.NotEqual(t, uint64(3), c.blockIdx, "should not load block 3 (already cached)")
+		assert.NotEqual(t, uint64(3), c.blockIdx, "should not load block 3 (already buffered)")
 	}
 }
 
 // --- OnRead: Skips local blocks ---
 
 func TestPrefetch_OnRead_SkipsLocalBlocks(t *testing.T) {
-	cache := New(testBlockSize * 32)
-	require.NotNil(t, cache)
-	defer cache.Close()
+	buf := New(testBlockSize * 32)
+	require.NotNil(t, buf)
+	defer buf.Close()
 
 	local := newMockLocalChecker()
-	local.setCached("file1", 3) // block 3 is on local disk
+	local.setLocal("file1", 3) // block 3 is on local disk
 
 	tracker := newLoadTracker()
-	p := NewPrefetcher(2, cache, tracker.loadFn, local)
+	p := NewPrefetcher(2, buf, tracker.loadFn, local)
 	require.NotNil(t, p)
 	defer p.Close()
 
@@ -292,12 +292,12 @@ func TestPrefetch_OnRead_SkipsLocalBlocks(t *testing.T) {
 // --- Reset ---
 
 func TestPrefetch_Reset_ClearsTracker(t *testing.T) {
-	cache := New(testBlockSize * 32)
-	require.NotNil(t, cache)
-	defer cache.Close()
+	buf := New(testBlockSize * 32)
+	require.NotNil(t, buf)
+	defer buf.Close()
 
 	tracker := newLoadTracker()
-	p := NewPrefetcher(2, cache, tracker.loadFn, nil)
+	p := NewPrefetcher(2, buf, tracker.loadFn, nil)
 	require.NotNil(t, p)
 	defer p.Close()
 
@@ -313,12 +313,12 @@ func TestPrefetch_Reset_ClearsTracker(t *testing.T) {
 }
 
 func TestPrefetch_Reset_UnknownPayload(t *testing.T) {
-	cache := New(testBlockSize * 32)
-	require.NotNil(t, cache)
-	defer cache.Close()
+	buf := New(testBlockSize * 32)
+	require.NotNil(t, buf)
+	defer buf.Close()
 
 	tracker := newLoadTracker()
-	p := NewPrefetcher(2, cache, tracker.loadFn, nil)
+	p := NewPrefetcher(2, buf, tracker.loadFn, nil)
 	require.NotNil(t, p)
 	defer p.Close()
 
@@ -329,9 +329,9 @@ func TestPrefetch_Reset_UnknownPayload(t *testing.T) {
 // --- Bounded pool ---
 
 func TestPrefetch_BoundedPool_DropsWhenFull(t *testing.T) {
-	cache := New(testBlockSize * 64)
-	require.NotNil(t, cache)
-	defer cache.Close()
+	buf := New(testBlockSize * 64)
+	require.NotNil(t, buf)
+	defer buf.Close()
 
 	var started atomic.Int32
 	blocker := make(chan struct{})
@@ -344,7 +344,7 @@ func TestPrefetch_BoundedPool_DropsWhenFull(t *testing.T) {
 	}
 
 	// 1 worker, channel capacity = 1*4 = 4
-	p := NewPrefetcher(1, cache, slowLoadFn, nil)
+	p := NewPrefetcher(1, buf, slowLoadFn, nil)
 	require.NotNil(t, p)
 
 	// Submit many prefetch requests through OnRead
@@ -370,12 +370,12 @@ func TestPrefetch_BoundedPool_DropsWhenFull(t *testing.T) {
 // --- Close ---
 
 func TestPrefetch_Close_StopsWorkers(t *testing.T) {
-	cache := New(testBlockSize * 32)
-	require.NotNil(t, cache)
-	defer cache.Close()
+	buf := New(testBlockSize * 32)
+	require.NotNil(t, buf)
+	defer buf.Close()
 
 	tracker := newLoadTracker()
-	p := NewPrefetcher(2, cache, tracker.loadFn, nil)
+	p := NewPrefetcher(2, buf, tracker.loadFn, nil)
 	require.NotNil(t, p)
 
 	p.Close()
@@ -385,12 +385,12 @@ func TestPrefetch_Close_StopsWorkers(t *testing.T) {
 }
 
 func TestPrefetch_Close_Idempotent(t *testing.T) {
-	cache := New(testBlockSize * 32)
-	require.NotNil(t, cache)
-	defer cache.Close()
+	buf := New(testBlockSize * 32)
+	require.NotNil(t, buf)
+	defer buf.Close()
 
 	tracker := newLoadTracker()
-	p := NewPrefetcher(2, cache, tracker.loadFn, nil)
+	p := NewPrefetcher(2, buf, tracker.loadFn, nil)
 	require.NotNil(t, p)
 
 	// Calling Close twice should not panic
@@ -401,12 +401,12 @@ func TestPrefetch_Close_Idempotent(t *testing.T) {
 // --- Concurrency ---
 
 func TestPrefetch_Concurrency_OnReadMultiFiles(t *testing.T) {
-	cache := New(testBlockSize * 64)
-	require.NotNil(t, cache)
-	defer cache.Close()
+	buf := New(testBlockSize * 64)
+	require.NotNil(t, buf)
+	defer buf.Close()
 
 	tracker := newLoadTracker()
-	p := NewPrefetcher(4, cache, tracker.loadFn, nil)
+	p := NewPrefetcher(4, buf, tracker.loadFn, nil)
 	require.NotNil(t, p)
 	defer p.Close()
 
@@ -431,19 +431,19 @@ func TestPrefetch_Concurrency_OnReadMultiFiles(t *testing.T) {
 
 // --- NewPrefetcher edge cases ---
 
-func TestPrefetch_NewPrefetcher_NilCache(t *testing.T) {
+func TestPrefetch_NewPrefetcher_NilBuffer(t *testing.T) {
 	tracker := newLoadTracker()
 	p := NewPrefetcher(2, nil, tracker.loadFn, nil)
-	assert.Nil(t, p, "NewPrefetcher with nil cache should return nil")
+	assert.Nil(t, p, "NewPrefetcher with nil read buffer should return nil")
 }
 
 func TestPrefetch_NewPrefetcher_DefaultWorkers(t *testing.T) {
-	cache := New(testBlockSize * 32)
-	require.NotNil(t, cache)
-	defer cache.Close()
+	buf := New(testBlockSize * 32)
+	require.NotNil(t, buf)
+	defer buf.Close()
 
 	tracker := newLoadTracker()
-	p := NewPrefetcher(0, cache, tracker.loadFn, nil)
+	p := NewPrefetcher(0, buf, tracker.loadFn, nil)
 	require.NotNil(t, p, "NewPrefetcher with workers=0 should default to defaultPrefetchWorkers")
 	defer p.Close()
 }

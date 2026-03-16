@@ -281,7 +281,7 @@ func (s *MemoryMetadataStore) listLocalBlocksLocked(_ context.Context, olderThan
 	cutoff := time.Now().Add(-olderThan)
 	var result []*metadata.FileBlock
 	for _, block := range s.fileBlockData.blocks {
-		if block.State == metadata.BlockStateLocal && block.IsCached() && block.LastAccess.Before(cutoff) {
+		if block.State == metadata.BlockStateLocal && block.HasLocalFile() && block.LastAccess.Before(cutoff) {
 			b := *block
 			result = append(result, &b)
 			if limit > 0 && len(result) >= limit {
@@ -299,7 +299,7 @@ func (s *MemoryMetadataStore) listRemoteBlocksLocked(_ context.Context, limit in
 	// Collect all remote blocks (cached + confirmed in remote store)
 	var candidates []*metadata.FileBlock
 	for _, block := range s.fileBlockData.blocks {
-		if block.IsCached() && block.State == metadata.BlockStateRemote {
+		if block.HasLocalFile() && block.State == metadata.BlockStateRemote {
 			b := *block
 			candidates = append(candidates, &b)
 		}

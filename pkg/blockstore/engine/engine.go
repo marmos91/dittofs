@@ -1,4 +1,4 @@
-// Package engine provides the BlockStore orchestrator that composes local cache,
+// Package engine provides the BlockStore orchestrator that composes local store,
 // remote store, and syncer into the blockstore.Store interface.
 //
 // The orchestrator lives in a sub-package (not the root blockstore package) to
@@ -16,7 +16,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/local"
-	"github.com/marmos91/dittofs/pkg/blockstore/readcache"
+	"github.com/marmos91/dittofs/pkg/blockstore/readbuffer"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
 	blocksync "github.com/marmos91/dittofs/pkg/blockstore/sync"
 )
@@ -26,22 +26,22 @@ var _ blockstore.Store = (*BlockStore)(nil)
 
 // Config holds the components that make up a BlockStore.
 type Config struct {
-	// Local is the on-node cache store (required).
+	// Local is the on-node block store (required).
 	Local local.LocalStore
 
 	// Remote is the durable backend store (nil for local-only mode).
 	Remote remote.RemoteStore
 
-	// Syncer handles async cache-to-remote transfers (required).
+	// Syncer handles async local-to-remote transfers (required).
 	Syncer *blocksync.Syncer
 
-	// FileBlockStore provides block metadata for cache statistics.
-	// When set, GetCacheStats() populates BlocksLocal/BlocksRemote/BlocksTotal.
+	// FileBlockStore provides block metadata for block store statistics.
+	// When set, GetStats() populates BlocksLocal/BlocksRemote/BlocksTotal.
 	FileBlockStore blockstore.FileBlockStore
 
-	// ReadCacheBytes is the memory budget for the L1 read cache per share.
-	// 0 disables L1 caching. Passed directly to readcache.New as byte budget.
-	ReadCacheBytes int64
+	// ReadBufferBytes is the memory budget for the read buffer per share.
+	// 0 disables the read buffer. Passed directly to readbuffer.New as byte budget.
+	ReadBufferBytes int64
 
 	// PrefetchWorkers is the number of goroutines for sequential prefetch.
 	// 0 disables prefetching.
@@ -49,13 +49,13 @@ type Config struct {
 }
 
 // BlockStore is the central orchestrator for block storage. It composes a local
-// cache store, optional remote store, and syncer into the blockstore.Store
+// store, optional remote store, and syncer into the blockstore.Store
 // interface. All protocol adapters and runtime code use BlockStore for I/O.
 //
-// Read operations check the L1 read cache first, then the local cache, falling
-// back to remote download via the syncer on cache miss. Write operations go
-// directly to the local cache and invalidate L1; the syncer handles background
-// upload to remote.
+// Read operations check the read buffer first, then the local store, falling
+// back to remote download via the syncer on miss. Write operations go
+// directly to the local store and invalidate the read buffer; the syncer
+// handles background upload to remote.
 type BlockStore struct {
 	local  local.LocalStore
 	remote remote.RemoteStore
@@ -63,8 +63,8 @@ type BlockStore struct {
 
 	fileBlockStore blockstore.FileBlockStore // optional: for block count stats
 
-	readCache  *readcache.ReadCache  // nil when disabled (ReadCacheBytes=0)
-	prefetcher *readcache.Prefetcher // nil when disabled (PrefetchWorkers=0 or readCache nil)
+	readBuffer *readbuffer.ReadBuffer // nil when disabled (ReadBufferBytes=0)
+	prefetcher *readbuffer.Prefetcher // nil when disabled (PrefetchWorkers=0 or readBuffer nil)
 
 	prefetchWorkers int // stored from config, used in Start()
 }
@@ -84,7 +84,7 @@ func New(cfg Config) (*BlockStore, error) {
 		remote:          cfg.Remote,
 		syncer:          cfg.Syncer,
 		fileBlockStore:  cfg.FileBlockStore,
-		readCache:       readcache.New(cfg.ReadCacheBytes),
+		readBuffer:      readbuffer.New(cfg.ReadBufferBytes),
 		prefetchWorkers: cfg.PrefetchWorkers,
 	}, nil
 }
@@ -92,7 +92,7 @@ func New(cfg Config) (*BlockStore, error) {
 // Start initializes the store and starts background goroutines.
 // Recovery runs on the local store first (if supported), then the syncer
 // and local store background goroutines are started. Finally, the prefetcher
-// is created if both L1 cache and prefetch workers are configured.
+// is created if both the read buffer and prefetch workers are configured.
 func (bs *BlockStore) Start(ctx context.Context) error {
 	// Run recovery on local store if it supports it (FSStore has Recover).
 	type recoverer interface {
@@ -123,24 +123,24 @@ func (bs *BlockStore) Start(ctx context.Context) error {
 		}
 	})
 
-	// Create prefetcher if L1 cache is enabled and workers are configured.
+	// Create prefetcher if read buffer is enabled and workers are configured.
 	// Created in Start() (not New()) because the loadBlock closure captures bs,
 	// and NewPrefetcher starts workers immediately.
-	if bs.readCache != nil && bs.prefetchWorkers > 0 {
-		bs.prefetcher = readcache.NewPrefetcher(
+	if bs.readBuffer != nil && bs.prefetchWorkers > 0 {
+		bs.prefetcher = readbuffer.NewPrefetcher(
 			bs.prefetchWorkers,
-			bs.readCache,
+			bs.readBuffer,
 			bs.loadBlock,
 			bs.local,
 		)
-		bs.readCache.SetPrefetcher(bs.prefetcher)
+		bs.readBuffer.SetPrefetcher(bs.prefetcher)
 	}
 
 	return nil
 }
 
 // loadBlock loads a single block from local store, falling back to remote via syncer.
-// Used by the prefetcher to fill L1 cache with upcoming blocks.
+// Used by the prefetcher to fill the read buffer with upcoming blocks.
 func (bs *BlockStore) loadBlock(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, uint32, error) {
 	data, dataSize, err := bs.local.GetBlockData(ctx, payloadID, blockIdx)
 	if err == nil {
@@ -157,11 +157,11 @@ func (bs *BlockStore) loadBlock(ctx context.Context, payloadID string, blockIdx 
 }
 
 // Close releases resources held by the store. Closes prefetcher first (stops workers),
-// then read cache, then syncer (drains uploads), local store, and remote store.
+// then read buffer, then syncer (drains uploads), local store, and remote store.
 func (bs *BlockStore) Close() error {
-	// Prefetcher and ReadCache are nil-safe (handle nil receiver).
+	// Prefetcher and ReadBuffer are nil-safe (handle nil receiver).
 	bs.prefetcher.Close()
-	bs.readCache.Close()
+	bs.readBuffer.Close()
 
 	var errs []error
 	if err := bs.syncer.Close(); err != nil {
@@ -180,7 +180,7 @@ func (bs *BlockStore) Close() error {
 }
 
 // ReadAt reads data from storage at the given offset into dest.
-// Checks L1 read cache first, then local cache, falling back to remote download on miss.
+// Checks read buffer first, then local store, falling back to remote download on miss.
 func (bs *BlockStore) ReadAt(ctx context.Context, payloadID string, data []byte, offset uint64) (int, error) {
 	return bs.readAtInternal(ctx, payloadID, "", data, offset)
 }
@@ -192,7 +192,7 @@ func (bs *BlockStore) ReadAtWithCOWSource(ctx context.Context, payloadID, cowSou
 }
 
 // GetSize returns the stored size of a payload.
-// Checks local cache first, falls back to syncer (remote).
+// Checks local store first, falls back to syncer (remote).
 func (bs *BlockStore) GetSize(ctx context.Context, payloadID string) (uint64, error) {
 	if size, found := bs.local.GetFileSize(ctx, payloadID); found {
 		return size, nil
@@ -201,7 +201,7 @@ func (bs *BlockStore) GetSize(ctx context.Context, payloadID string) (uint64, er
 }
 
 // Exists checks whether a payload exists.
-// Checks local cache first, falls back to syncer (remote).
+// Checks local store first, falls back to syncer (remote).
 func (bs *BlockStore) Exists(ctx context.Context, payloadID string) (bool, error) {
 	if _, found := bs.local.GetFileSize(ctx, payloadID); found {
 		return true, nil
@@ -210,8 +210,8 @@ func (bs *BlockStore) Exists(ctx context.Context, payloadID string) (bool, error
 }
 
 // WriteAt writes data to storage at the given offset.
-// Writes go directly to local cache; the syncer handles background upload.
-// L1 cache entries for affected blocks are invalidated and prefetcher is reset.
+// Writes go directly to the local store; the syncer handles background upload.
+// Read buffer entries for affected blocks are invalidated and prefetcher is reset.
 func (bs *BlockStore) WriteAt(ctx context.Context, payloadID string, data []byte, offset uint64) error {
 	if len(data) == 0 {
 		return nil
@@ -219,47 +219,47 @@ func (bs *BlockStore) WriteAt(ctx context.Context, payloadID string, data []byte
 	if err := bs.local.WriteAt(ctx, payloadID, data, offset); err != nil {
 		return err
 	}
-	bs.readCache.InvalidateRange(payloadID, offset, len(data), blockstore.BlockSize)
+	bs.readBuffer.InvalidateRange(payloadID, offset, len(data), blockstore.BlockSize)
 	return nil
 }
 
-// Truncate changes the size of a payload in both local cache and remote store.
-// Invalidates L1 entries above the new size and resets prefetcher state.
+// Truncate changes the size of a payload in both local store and remote store.
+// Invalidates read buffer entries above the new size and resets prefetcher state.
 func (bs *BlockStore) Truncate(ctx context.Context, payloadID string, newSize uint64) error {
 	if err := bs.local.Truncate(ctx, payloadID, newSize); err != nil {
 		return fmt.Errorf("local truncate failed: %w", err)
 	}
 
-	bs.readCache.InvalidateAboveSize(payloadID, newSize, blockstore.BlockSize)
+	bs.readBuffer.InvalidateAboveSize(payloadID, newSize, blockstore.BlockSize)
 
 	return bs.syncer.Truncate(ctx, payloadID, newSize)
 }
 
-// Delete removes all data for a payload from local cache and remote store.
-// Invalidates all L1 entries for the file and resets prefetcher state.
+// Delete removes all data for a payload from local store and remote store.
+// Invalidates all read buffer entries for the file and resets prefetcher state.
 func (bs *BlockStore) Delete(ctx context.Context, payloadID string) error {
 	if err := bs.local.EvictMemory(ctx, payloadID); err != nil {
 		return fmt.Errorf("local evict memory failed: %w", err)
 	}
-	bs.readCache.InvalidateAndReset(payloadID)
+	bs.readBuffer.InvalidateAndReset(payloadID)
 	return bs.syncer.Delete(ctx, payloadID)
 }
 
 // Flush ensures all dirty data for a payload is persisted.
-// After flush, auto-promotes block data into L1 cache if the file fits within
-// the L1 budget (data is in OS page cache, so the read is essentially free).
+// After flush, auto-promotes block data into the read buffer if the file fits
+// within the budget (data is in OS page cache, so the read is essentially free).
 func (bs *BlockStore) Flush(ctx context.Context, payloadID string) (*blockstore.FlushResult, error) {
 	result, err := bs.syncer.Flush(ctx, payloadID)
 	if err != nil {
 		return result, err
 	}
 
-	// Auto-promote flushed blocks into L1 (skip files larger than L1 budget).
-	// MaxBytes() returns 0 when readCache is nil, so the size check fails naturally.
-	if l1Budget := bs.readCache.MaxBytes(); l1Budget > 0 {
+	// Auto-promote flushed blocks into read buffer (skip files larger than budget).
+	// MaxBytes() returns 0 when readBuffer is nil, so the size check fails naturally.
+	if rbBudget := bs.readBuffer.MaxBytes(); rbBudget > 0 {
 		size, found := bs.local.GetFileSize(ctx, payloadID)
-		if found && size > 0 && int64(size) <= l1Budget {
-			bs.readCache.FillFromStore(ctx, payloadID, 0, size, blockstore.BlockSize, bs.local.GetBlockData)
+		if found && size > 0 && int64(size) <= rbBudget {
+			bs.readBuffer.FillFromStore(ctx, payloadID, 0, size, blockstore.BlockSize, bs.local.GetBlockData)
 		}
 	}
 
@@ -271,7 +271,7 @@ func (bs *BlockStore) DrainAllUploads(ctx context.Context) error {
 	return bs.syncer.DrainAllUploads(ctx)
 }
 
-// Stats returns storage statistics from the local cache.
+// Stats returns storage statistics from the local store.
 func (bs *BlockStore) Stats() (*blockstore.Stats, error) {
 	localStats := bs.local.Stats()
 	files := bs.local.ListFiles()
@@ -292,10 +292,10 @@ func (bs *BlockStore) HealthCheck(ctx context.Context) error {
 // (e.g., shared remote store identity). Do not use in production code.
 func (bs *BlockStore) RemoteForTesting() remote.RemoteStore { return bs.remote }
 
-// ListFiles returns the payloadIDs of all files tracked in the local cache.
+// ListFiles returns the payloadIDs of all files tracked in the local store.
 func (bs *BlockStore) ListFiles() []string { return bs.local.ListFiles() }
 
-// EvictLocal removes all cached data (memory and disk) for a file.
+// EvictLocal removes all local data (memory and disk) for a file.
 func (bs *BlockStore) EvictLocal(ctx context.Context, payloadID string) error {
 	if err := bs.local.EvictMemory(ctx, payloadID); err != nil {
 		return err
@@ -303,11 +303,11 @@ func (bs *BlockStore) EvictLocal(ctx context.Context, payloadID string) error {
 	return bs.local.DeleteAllBlockFiles(ctx, payloadID)
 }
 
-// LocalStats returns a snapshot of local cache statistics.
+// LocalStats returns a snapshot of local store statistics.
 func (bs *BlockStore) LocalStats() local.Stats { return bs.local.Stats() }
 
-// CacheStats holds comprehensive cache statistics for a BlockStore.
-type CacheStats struct {
+// BlockStoreStats holds comprehensive block store statistics for a BlockStore.
+type BlockStoreStats struct {
 	FileCount    int `json:"file_count"`
 	BlocksDirty  int `json:"blocks_dirty"`
 	BlocksLocal  int `json:"blocks_local"`
@@ -319,9 +319,9 @@ type CacheStats struct {
 	LocalMemUsed  int64 `json:"local_mem_used"`
 	LocalMemMax   int64 `json:"local_mem_max"`
 
-	L1Entries  int   `json:"l1_entries"`
-	L1CurBytes int64 `json:"l1_cur_bytes"`
-	L1MaxBytes int64 `json:"l1_max_bytes"`
+	ReadBufferEntries int   `json:"read_buffer_entries"`
+	ReadBufferUsed    int64 `json:"read_buffer_used"`
+	ReadBufferMax     int64 `json:"read_buffer_max"`
 
 	HasRemote      bool `json:"has_remote"`
 	PendingSyncs   int  `json:"pending_syncs"`
@@ -335,12 +335,12 @@ type CacheStats struct {
 	OfflineReadsBlocked int64   `json:"offline_reads_blocked"`
 }
 
-// GetCacheStats returns comprehensive cache statistics.
-func (bs *BlockStore) GetCacheStats() CacheStats {
+// GetStats returns comprehensive block store statistics.
+func (bs *BlockStore) GetStats() BlockStoreStats {
 	localStats := bs.local.Stats()
 	files := bs.local.ListFiles()
 
-	l1Stats := bs.readCache.Stats()
+	rbStats := bs.readBuffer.Stats()
 
 	pending, completed, failed := bs.syncer.Queue().Stats()
 	_, uploads, _ := bs.syncer.Queue().PendingByType()
@@ -348,15 +348,15 @@ func (bs *BlockStore) GetCacheStats() CacheStats {
 	remoteHealthy := bs.syncer.IsRemoteHealthy()
 	outageDuration := bs.syncer.RemoteOutageDuration()
 
-	stats := CacheStats{
+	stats := BlockStoreStats{
 		FileCount:           len(files),
 		LocalDiskUsed:       localStats.DiskUsed,
 		LocalDiskMax:        localStats.MaxDisk,
 		LocalMemUsed:        localStats.MemUsed,
 		LocalMemMax:         localStats.MaxMemory,
-		L1Entries:           l1Stats.Entries,
-		L1CurBytes:          l1Stats.CurBytes,
-		L1MaxBytes:          l1Stats.MaxBytes,
+		ReadBufferEntries:   rbStats.Entries,
+		ReadBufferUsed:      rbStats.CurBytes,
+		ReadBufferMax:       rbStats.MaxBytes,
 		HasRemote:           bs.remote != nil,
 		PendingSyncs:        pending,
 		PendingUploads:      uploads,
@@ -374,7 +374,7 @@ func (bs *BlockStore) GetCacheStats() CacheStats {
 }
 
 // populateBlockCounts fills block count fields from the metadata store.
-func (bs *BlockStore) populateBlockCounts(stats *CacheStats, files []string) {
+func (bs *BlockStore) populateBlockCounts(stats *BlockStoreStats, files []string) {
 	if bs.fileBlockStore == nil {
 		return
 	}
@@ -401,11 +401,11 @@ func (bs *BlockStore) populateBlockCounts(stats *CacheStats, files []string) {
 	}
 }
 
-// EvictL1Cache clears all entries from the L1 read cache.
+// EvictReadBuffer clears all entries from the read buffer.
 // Returns the number of entries that were cleared.
-func (bs *BlockStore) EvictL1Cache() int {
-	entries := bs.readCache.Stats().Entries // nil-safe: returns zero
-	bs.readCache.Close()                    // nil-safe: no-op
+func (bs *BlockStore) EvictReadBuffer() int {
+	entries := bs.readBuffer.Stats().Entries // nil-safe: returns zero
+	bs.readBuffer.Close()                    // nil-safe: no-op
 	return entries
 }
 
@@ -427,7 +427,7 @@ func (bs *BlockStore) SetEvictionEnabled(enabled bool) {
 }
 
 // readAtInternal reads from primary payloadID, falling back to cowSource on miss.
-// When L1 cache is enabled, checks L1 first and fills L1 after successful read.
+// When the read buffer is enabled, checks it first and fills it after successful read.
 func (bs *BlockStore) readAtInternal(ctx context.Context, payloadID, cowSource string, data []byte, offset uint64) (int, error) {
 	if len(data) == 0 {
 		return 0, nil
@@ -435,19 +435,19 @@ func (bs *BlockStore) readAtInternal(ctx context.Context, payloadID, cowSource s
 
 	isPrimaryRead := cowSource == ""
 
-	// L1 fast path: try to serve entirely from L1 cache.
-	// Only for primary reads (no COW source) with L1 enabled.
-	if bs.readCache != nil && isPrimaryRead {
+	// Read buffer fast path: try to serve entirely from read buffer.
+	// Only for primary reads (no COW source) with read buffer enabled.
+	if bs.readBuffer != nil && isPrimaryRead {
 		if n, ok := bs.tryL1Read(payloadID, data, offset); ok {
-			bs.readCache.NotifyRead(payloadID, offset, uint64(len(data)), blockstore.BlockSize)
+			bs.readBuffer.NotifyRead(payloadID, offset, uint64(len(data)), blockstore.BlockSize)
 			return n, nil
 		}
 	}
 
-	// Try primary local cache.
+	// Try primary local store.
 	found, err := bs.local.ReadAt(ctx, payloadID, data, offset)
 	if err != nil {
-		return 0, fmt.Errorf("cache read failed: %w", err)
+		return 0, fmt.Errorf("local read failed: %w", err)
 	}
 	if found {
 		if isPrimaryRead {
@@ -463,7 +463,7 @@ func (bs *BlockStore) readAtInternal(ctx context.Context, payloadID, cowSource s
 		return len(data), nil
 	}
 
-	if err := bs.ensureAndReadFromCache(ctx, payloadID, data, offset); err != nil {
+	if err := bs.ensureAndReadFromLocal(ctx, payloadID, data, offset); err != nil {
 		return 0, err
 	}
 	bs.promoteToL1(ctx, payloadID, offset, uint64(len(data)))
@@ -471,16 +471,16 @@ func (bs *BlockStore) readAtInternal(ctx context.Context, payloadID, cowSource s
 	return len(data), nil
 }
 
-// promoteToL1 fills the L1 read cache from the local store for the given byte
+// promoteToL1 fills the read buffer from the local store for the given byte
 // range and notifies the prefetcher about the read. Both calls are nil-safe
-// (no-op when L1 is disabled).
+// (no-op when the read buffer is disabled).
 func (bs *BlockStore) promoteToL1(ctx context.Context, payloadID string, offset, length uint64) {
-	bs.readCache.FillFromStore(ctx, payloadID, offset, length, blockstore.BlockSize, bs.local.GetBlockData)
-	bs.readCache.NotifyRead(payloadID, offset, length, blockstore.BlockSize)
+	bs.readBuffer.FillFromStore(ctx, payloadID, offset, length, blockstore.BlockSize, bs.local.GetBlockData)
+	bs.readBuffer.NotifyRead(payloadID, offset, length, blockstore.BlockSize)
 }
 
-// tryL1Read attempts to serve a read entirely from L1 cache.
-// Returns (bytesRead, true) if all blocks in the range were in L1.
+// tryL1Read attempts to serve a read entirely from the read buffer.
+// Returns (bytesRead, true) if all blocks in the range were in the buffer.
 // Returns (0, false) if any block was missing or returned fewer bytes than needed.
 func (bs *BlockStore) tryL1Read(payloadID string, data []byte, offset uint64) (int, bool) {
 	startBlock := offset / blockstore.BlockSize
@@ -505,7 +505,7 @@ func (bs *BlockStore) tryL1Read(payloadID string, data []byte, offset uint64) (i
 		readLen := min(remaining, blockstore.BlockSize-uint64(blockOff))
 
 		buf := data[destOff : destOff+readLen]
-		n, hit := bs.readCache.Get(payloadID, blockIdx, buf, blockOff)
+		n, hit := bs.readBuffer.Get(payloadID, blockIdx, buf, blockOff)
 		if !hit || uint64(n) != readLen {
 			return 0, false
 		}
@@ -514,7 +514,7 @@ func (bs *BlockStore) tryL1Read(payloadID string, data []byte, offset uint64) (i
 	return len(data), true
 }
 
-// readFromCOWSource reads from the COW source and copies data to primary cache.
+// readFromCOWSource reads from the COW source and copies data to the primary local store.
 func (bs *BlockStore) readFromCOWSource(ctx context.Context, payloadID, sourcePayloadID string, dest []byte, offset uint64) error {
 	sourceFound, sourceErr := bs.local.ReadAt(ctx, sourcePayloadID, dest, offset)
 	if sourceErr != nil {
@@ -538,16 +538,16 @@ func (bs *BlockStore) readFromCOWSource(ctx context.Context, payloadID, sourcePa
 		}
 	}
 
-	// Copy to primary cache for future reads (non-fatal if fails)
+	// Copy to primary local store for future reads (non-fatal if fails)
 	if err := bs.local.WriteAt(ctx, payloadID, dest, offset); err != nil {
-		logger.Debug("COW cache write failed (non-fatal)", "payloadID", payloadID, "error", err)
+		logger.Debug("COW local write failed (non-fatal)", "payloadID", payloadID, "error", err)
 	}
 
 	return nil
 }
 
-// ensureAndReadFromCache downloads blocks from the store if needed and reads from cache.
-func (bs *BlockStore) ensureAndReadFromCache(ctx context.Context, payloadID string, dest []byte, offset uint64) error {
+// ensureAndReadFromLocal downloads blocks from remote if needed and reads from local store.
+func (bs *BlockStore) ensureAndReadFromLocal(ctx context.Context, payloadID string, dest []byte, offset uint64) error {
 	length := uint32(len(dest))
 
 	// Fast path: direct-serve copies S3 data directly to dest, skipping a second ReadAt.
@@ -565,7 +565,7 @@ func (bs *BlockStore) ensureAndReadFromCache(ctx context.Context, payloadID stri
 	}
 	if !found {
 		clear(dest)
-		logger.Debug("Sparse block: cache miss after download, returning zeros",
+		logger.Debug("Sparse block: miss after download, returning zeros",
 			"payloadID", payloadID)
 	}
 

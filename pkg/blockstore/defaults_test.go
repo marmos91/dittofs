@@ -20,7 +20,7 @@ func TestDeduceDefaults(t *testing.T) {
 		memory         uint64
 		cpus           int
 		wantLocalStore uint64
-		wantL1Cache    int64
+		wantReadBuffer int64
 		wantPending    uint64
 		wantSyncs      int
 		wantFetches    int
@@ -31,7 +31,7 @@ func TestDeduceDefaults(t *testing.T) {
 			memory:         8 * gib,
 			cpus:           8,
 			wantLocalStore: 2 * gib, // 25% of 8GiB
-			wantL1Cache:    1 * gib, // 12.5% of 8GiB
+			wantReadBuffer: 1 * gib, // 12.5% of 8GiB
 			wantPending:    1 * gib, // 50% of 2GiB
 			wantSyncs:      8,       // max(4, 8)
 			wantFetches:    16,      // max(8, 8*2)
@@ -42,7 +42,7 @@ func TestDeduceDefaults(t *testing.T) {
 			memory:         512 * mib,
 			cpus:           1,
 			wantLocalStore: 256 * mib, // 25% of 512MiB = 128MiB, floor 256MiB
-			wantL1Cache:    64 * mib,  // 12.5% of 512MiB = 64MiB, exactly at floor
+			wantReadBuffer: 64 * mib,  // 12.5% of 512MiB = 64MiB, exactly at floor
 			wantPending:    128 * mib, // 50% of 256MiB
 			wantSyncs:      4,         // max(4, 1) = floor
 			wantFetches:    8,         // max(8, 2) = floor
@@ -53,7 +53,7 @@ func TestDeduceDefaults(t *testing.T) {
 			memory:         256 * mib,
 			cpus:           1,
 			wantLocalStore: 256 * mib, // 25% of 256MiB = 64MiB, floor 256MiB
-			wantL1Cache:    64 * mib,  // 12.5% of 256MiB = 32MiB, floor 64MiB
+			wantReadBuffer: 64 * mib,  // 12.5% of 256MiB = 32MiB, floor 64MiB
 			wantPending:    128 * mib, // 50% of 256MiB
 			wantSyncs:      4,         // floor
 			wantFetches:    8,         // floor
@@ -64,7 +64,7 @@ func TestDeduceDefaults(t *testing.T) {
 			memory:         256 * gib,
 			cpus:           64,
 			wantLocalStore: 64 * gib, // 25% of 256GiB
-			wantL1Cache:    32 * gib, // 12.5% of 256GiB
+			wantReadBuffer: 32 * gib, // 12.5% of 256GiB
 			wantPending:    32 * gib, // 50% of 64GiB
 			wantSyncs:      64,       // max(4, 64)
 			wantFetches:    128,      // max(8, 128)
@@ -75,7 +75,7 @@ func TestDeduceDefaults(t *testing.T) {
 			memory:         4 * gib,
 			cpus:           4,
 			wantLocalStore: 1 * gib,   // 25% of 4GiB
-			wantL1Cache:    512 * mib, // 12.5% of 4GiB
+			wantReadBuffer: 512 * mib, // 12.5% of 4GiB
 			wantPending:    512 * mib, // 50% of 1GiB
 			wantSyncs:      4,         // max(4, 4)
 			wantFetches:    8,         // max(8, 8)
@@ -86,7 +86,7 @@ func TestDeduceDefaults(t *testing.T) {
 			memory:         2 * gib,
 			cpus:           32,
 			wantLocalStore: 512 * mib, // 25% of 2GiB
-			wantL1Cache:    256 * mib, // 12.5% of 2GiB
+			wantReadBuffer: 256 * mib, // 12.5% of 2GiB
 			wantPending:    256 * mib, // 50% of 512MiB
 			wantSyncs:      32,        // max(4, 32)
 			wantFetches:    64,        // max(8, 64)
@@ -102,8 +102,8 @@ func TestDeduceDefaults(t *testing.T) {
 			if got.LocalStoreSize != tt.wantLocalStore {
 				t.Errorf("LocalStoreSize = %d, want %d", got.LocalStoreSize, tt.wantLocalStore)
 			}
-			if got.L1CacheSize != tt.wantL1Cache {
-				t.Errorf("L1CacheSize = %d, want %d", got.L1CacheSize, tt.wantL1Cache)
+			if got.ReadBufferSize != tt.wantReadBuffer {
+				t.Errorf("ReadBufferSize = %d, want %d", got.ReadBufferSize, tt.wantReadBuffer)
 			}
 			if got.MaxPendingSize != tt.wantPending {
 				t.Errorf("MaxPendingSize = %d, want %d", got.MaxPendingSize, tt.wantPending)
@@ -142,7 +142,7 @@ func TestDeduceDefaults_String(t *testing.T) {
 	}
 	t.Logf("String() = %s", s)
 
-	for _, want := range []string{"LocalStoreSize", "L1CacheSize", "ParallelSyncs", "ParallelFetches", "MaxPendingSize"} {
+	for _, want := range []string{"LocalStoreSize", "ReadBufferSize", "ParallelSyncs", "ParallelFetches", "MaxPendingSize"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("String() missing %q: %s", want, s)
 		}

@@ -44,8 +44,8 @@ func (s *stubFileBlockStore) ListFileBlocks(_ context.Context, _ string) ([]*blo
 }
 
 // newTestEngine creates an engine.BlockStore with memory local store, nil remote,
-// optional L1 cache and prefetch settings.
-func newTestEngine(t *testing.T, readCacheBytes int64, prefetchWorkers int) *BlockStore {
+// optional read buffer and prefetch settings.
+func newTestEngine(t *testing.T, readBufferBytes int64, prefetchWorkers int) *BlockStore {
 	t.Helper()
 	localStore := memory.New()
 	fbs := &stubFileBlockStore{}
@@ -55,7 +55,7 @@ func newTestEngine(t *testing.T, readCacheBytes int64, prefetchWorkers int) *Blo
 		Local:           localStore,
 		Remote:          nil,
 		Syncer:          syncer,
-		ReadCacheBytes:  readCacheBytes,
+		ReadBufferBytes: readBufferBytes,
 		PrefetchWorkers: prefetchWorkers,
 	})
 	if err != nil {
@@ -68,20 +68,20 @@ func newTestEngine(t *testing.T, readCacheBytes int64, prefetchWorkers int) *Blo
 	return bs
 }
 
-// TestReadAt_L1Hit verifies that ReadAt returns data from L1 cache without hitting local store.
-func TestReadAt_L1Hit(t *testing.T) {
-	bs := newTestEngine(t, 64*1024*1024, 0) // 64MB L1, no prefetch
+// TestReadAt_ReadBufferHit verifies that ReadAt returns data from read buffer without hitting local store.
+func TestReadAt_ReadBufferHit(t *testing.T) {
+	bs := newTestEngine(t, 64*1024*1024, 0) // 64MB read buffer, no prefetch
 
 	ctx := context.Background()
 	payloadID := "test-file-1"
-	data := []byte("hello world, this is a test of L1 cache hit path")
+	data := []byte("hello world, this is a test of read buffer hit path")
 
 	// Write data to the engine (goes to local store).
 	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
-	// First read: should miss L1 and read from local, filling L1.
+	// First read: should miss read buffer and read from local, filling read buffer.
 	buf := make([]byte, len(data))
 	n, err := bs.ReadAt(ctx, payloadID, buf, 0)
 	if err != nil {
@@ -91,12 +91,12 @@ func TestReadAt_L1Hit(t *testing.T) {
 		t.Fatalf("ReadAt (first) returned %d bytes, expected %d", n, len(data))
 	}
 
-	// Verify L1 was filled (block 0 should be cached).
-	if !bs.readCache.Contains(payloadID, 0) {
-		t.Fatal("expected block 0 to be in L1 cache after first read")
+	// Verify read buffer was filled (block 0 should be buffered).
+	if !bs.readBuffer.Contains(payloadID, 0) {
+		t.Fatal("expected block 0 to be in read buffer after first read")
 	}
 
-	// Second read: should hit L1 cache directly.
+	// Second read: should hit read buffer directly.
 	buf2 := make([]byte, len(data))
 	n, err = bs.ReadAt(ctx, payloadID, buf2, 0)
 	if err != nil {
@@ -110,43 +110,43 @@ func TestReadAt_L1Hit(t *testing.T) {
 	}
 }
 
-// TestReadAt_L1Miss_FillsCache verifies ReadAt fills L1 on miss and subsequent read hits.
-func TestReadAt_L1Miss_FillsCache(t *testing.T) {
+// TestReadAt_ReadBufferMiss_FillsBuffer verifies ReadAt fills read buffer on miss and subsequent read hits.
+func TestReadAt_ReadBufferMiss_FillsBuffer(t *testing.T) {
 	bs := newTestEngine(t, 64*1024*1024, 0)
 
 	ctx := context.Background()
 	payloadID := "fill-test"
-	data := []byte("L1 fill test data")
+	data := []byte("read buffer fill test data")
 
 	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
-	// Verify L1 is empty (write should have invalidated).
-	if bs.readCache.Contains(payloadID, 0) {
-		t.Fatal("L1 should be empty before first read")
+	// Verify read buffer is empty (write should have invalidated).
+	if bs.readBuffer.Contains(payloadID, 0) {
+		t.Fatal("read buffer should be empty before first read")
 	}
 
-	// First read fills L1.
+	// First read fills read buffer.
 	buf := make([]byte, len(data))
 	_, err := bs.ReadAt(ctx, payloadID, buf, 0)
 	if err != nil {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
 
-	// L1 should now contain block 0.
-	if !bs.readCache.Contains(payloadID, 0) {
-		t.Fatal("L1 should contain block 0 after read")
+	// Read buffer should now contain block 0.
+	if !bs.readBuffer.Contains(payloadID, 0) {
+		t.Fatal("read buffer should contain block 0 after read")
 	}
 }
 
-// TestReadAt_L1Disabled verifies ReadAt works normally when L1 is disabled (nil readCache).
-func TestReadAt_L1Disabled(t *testing.T) {
-	bs := newTestEngine(t, 0, 0) // L1 disabled
+// TestReadAt_ReadBufferDisabled verifies ReadAt works normally when read buffer is disabled (nil readBuffer).
+func TestReadAt_ReadBufferDisabled(t *testing.T) {
+	bs := newTestEngine(t, 0, 0) // read buffer disabled
 
 	ctx := context.Background()
 	payloadID := "no-cache-test"
-	data := []byte("works without L1")
+	data := []byte("works without read buffer")
 
 	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
@@ -164,15 +164,15 @@ func TestReadAt_L1Disabled(t *testing.T) {
 		t.Fatalf("data mismatch: got %q, want %q", buf, data)
 	}
 
-	// readCache should be nil.
-	if bs.readCache != nil {
-		t.Fatal("readCache should be nil when disabled")
+	// readBuffer should be nil.
+	if bs.readBuffer != nil {
+		t.Fatal("readBuffer should be nil when disabled")
 	}
 }
 
 // TestReadAt_PrefetcherNotified verifies ReadAt calls prefetcher.OnRead after successful read.
 func TestReadAt_PrefetcherNotified(t *testing.T) {
-	bs := newTestEngine(t, 64*1024*1024, 2) // L1 enabled, 2 prefetch workers
+	bs := newTestEngine(t, 64*1024*1024, 2) // read buffer enabled, 2 prefetch workers
 
 	ctx := context.Background()
 	payloadID := "prefetch-notify-test"
@@ -184,7 +184,7 @@ func TestReadAt_PrefetcherNotified(t *testing.T) {
 
 	// Prefetcher should be non-nil.
 	if bs.prefetcher == nil {
-		t.Fatal("prefetcher should be non-nil when workers > 0 and L1 enabled")
+		t.Fatal("prefetcher should be non-nil when workers > 0 and read buffer enabled")
 	}
 
 	// Read to trigger prefetcher notification.
@@ -197,15 +197,15 @@ func TestReadAt_PrefetcherNotified(t *testing.T) {
 	// ensure no panic and the read succeeds.
 }
 
-// TestWriteAt_InvalidatesL1 verifies WriteAt invalidates L1 entries for affected blocks.
-func TestWriteAt_InvalidatesL1(t *testing.T) {
+// TestWriteAt_InvalidatesReadBuffer verifies WriteAt invalidates read buffer entries for affected blocks.
+func TestWriteAt_InvalidatesReadBuffer(t *testing.T) {
 	bs := newTestEngine(t, 64*1024*1024, 0)
 
 	ctx := context.Background()
 	payloadID := "write-invalidate"
 	data := []byte("original data for invalidation test")
 
-	// Write then read to populate L1.
+	// Write then read to populate read buffer.
 	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
@@ -213,18 +213,18 @@ func TestWriteAt_InvalidatesL1(t *testing.T) {
 	if _, err := bs.ReadAt(ctx, payloadID, buf, 0); err != nil {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
-	if !bs.readCache.Contains(payloadID, 0) {
-		t.Fatal("L1 should contain block 0 after read")
+	if !bs.readBuffer.Contains(payloadID, 0) {
+		t.Fatal("read buffer should contain block 0 after read")
 	}
 
-	// Write new data - should invalidate L1.
+	// Write new data - should invalidate read buffer.
 	newData := []byte("modified data")
 	if err := bs.WriteAt(ctx, payloadID, newData, 0); err != nil {
 		t.Fatalf("WriteAt (new) failed: %v", err)
 	}
 
-	if bs.readCache.Contains(payloadID, 0) {
-		t.Fatal("L1 should NOT contain block 0 after write (invalidated)")
+	if bs.readBuffer.Contains(payloadID, 0) {
+		t.Fatal("read buffer should NOT contain block 0 after write (invalidated)")
 	}
 }
 
@@ -256,7 +256,7 @@ func TestTruncate_InvalidatesAbove(t *testing.T) {
 	ctx := context.Background()
 	payloadID := "truncate-invalidate"
 
-	// Write data that spans at least 1 block and read to fill L1.
+	// Write data that spans at least 1 block and read to fill read buffer.
 	data := make([]byte, 100)
 	for i := range data {
 		data[i] = byte(i)
@@ -268,8 +268,8 @@ func TestTruncate_InvalidatesAbove(t *testing.T) {
 	if _, err := bs.ReadAt(ctx, payloadID, buf, 0); err != nil {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
-	if !bs.readCache.Contains(payloadID, 0) {
-		t.Fatal("L1 should contain block 0 after read")
+	if !bs.readBuffer.Contains(payloadID, 0) {
+		t.Fatal("read buffer should contain block 0 after read")
 	}
 
 	// Truncate to 0 should invalidate all blocks.
@@ -277,8 +277,8 @@ func TestTruncate_InvalidatesAbove(t *testing.T) {
 		t.Fatalf("Truncate failed: %v", err)
 	}
 
-	if bs.readCache.Contains(payloadID, 0) {
-		t.Fatal("L1 should NOT contain block 0 after truncate to 0")
+	if bs.readBuffer.Contains(payloadID, 0) {
+		t.Fatal("read buffer should NOT contain block 0 after truncate to 0")
 	}
 }
 
@@ -308,7 +308,7 @@ func TestDelete_InvalidatesFile(t *testing.T) {
 	payloadID := "delete-invalidate"
 	data := []byte("data for delete invalidation")
 
-	// Write then read to populate L1.
+	// Write then read to populate read buffer.
 	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
@@ -316,17 +316,17 @@ func TestDelete_InvalidatesFile(t *testing.T) {
 	if _, err := bs.ReadAt(ctx, payloadID, buf, 0); err != nil {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
-	if !bs.readCache.Contains(payloadID, 0) {
-		t.Fatal("L1 should contain block 0 after read")
+	if !bs.readBuffer.Contains(payloadID, 0) {
+		t.Fatal("read buffer should contain block 0 after read")
 	}
 
-	// Delete should invalidate all L1 entries for this file.
+	// Delete should invalidate all read buffer entries for this file.
 	if err := bs.Delete(ctx, payloadID); err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
 
-	if bs.readCache.Contains(payloadID, 0) {
-		t.Fatal("L1 should NOT contain block 0 after delete")
+	if bs.readBuffer.Contains(payloadID, 0) {
+		t.Fatal("read buffer should NOT contain block 0 after delete")
 	}
 }
 
@@ -348,7 +348,7 @@ func TestDelete_ResetsPrefetcher(t *testing.T) {
 	}
 }
 
-// TestFlush_AutoPromote verifies that after Flush, flushed block data is readable from L1.
+// TestFlush_AutoPromote verifies that after Flush, flushed block data is readable from read buffer.
 func TestFlush_AutoPromote(t *testing.T) {
 	bs := newTestEngine(t, 64*1024*1024, 0)
 
@@ -361,23 +361,23 @@ func TestFlush_AutoPromote(t *testing.T) {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
-	// L1 should be empty (write invalidates).
-	if bs.readCache.Contains(payloadID, 0) {
-		t.Fatal("L1 should be empty before flush")
+	// Read buffer should be empty (write invalidates).
+	if bs.readBuffer.Contains(payloadID, 0) {
+		t.Fatal("read buffer should be empty before flush")
 	}
 
-	// Flush should auto-promote data into L1.
+	// Flush should auto-promote data into read buffer.
 	_, err := bs.Flush(ctx, payloadID)
 	if err != nil {
 		t.Fatalf("Flush failed: %v", err)
 	}
 
-	// L1 should now contain block 0 (auto-promoted).
-	if !bs.readCache.Contains(payloadID, 0) {
-		t.Fatal("L1 should contain block 0 after flush (auto-promote)")
+	// Read buffer should now contain block 0 (auto-promoted).
+	if !bs.readBuffer.Contains(payloadID, 0) {
+		t.Fatal("read buffer should contain block 0 after flush (auto-promote)")
 	}
 
-	// Read should come from L1 now.
+	// Read should come from read buffer now.
 	buf := make([]byte, len(data))
 	n, err := bs.ReadAt(ctx, payloadID, buf, 0)
 	if err != nil {
@@ -391,8 +391,8 @@ func TestFlush_AutoPromote(t *testing.T) {
 	}
 }
 
-// TestClose_ClosesL1AndPrefetcher verifies Close calls readCache.Close() and prefetcher.Close().
-func TestClose_ClosesL1AndPrefetcher(t *testing.T) {
+// TestClose_ClosesReadBufferAndPrefetcher verifies Close calls readBuffer.Close() and prefetcher.Close().
+func TestClose_ClosesReadBufferAndPrefetcher(t *testing.T) {
 	localStore := memory.New()
 	fbs := &stubFileBlockStore{}
 	syncer := blocksync.New(localStore, nil, fbs, blocksync.DefaultConfig())
@@ -401,7 +401,7 @@ func TestClose_ClosesL1AndPrefetcher(t *testing.T) {
 		Local:           localStore,
 		Remote:          nil,
 		Syncer:          syncer,
-		ReadCacheBytes:  64 * 1024 * 1024,
+		ReadBufferBytes: 64 * 1024 * 1024,
 		PrefetchWorkers: 2,
 	})
 	if err != nil {
@@ -411,7 +411,7 @@ func TestClose_ClosesL1AndPrefetcher(t *testing.T) {
 		t.Fatalf("Start failed: %v", err)
 	}
 
-	// Write and read to populate L1.
+	// Write and read to populate read buffer.
 	ctx := context.Background()
 	if err := bs.WriteAt(ctx, "close-test", []byte("data"), 0); err != nil {
 		t.Fatalf("WriteAt failed: %v", err)
@@ -424,14 +424,14 @@ func TestClose_ClosesL1AndPrefetcher(t *testing.T) {
 		t.Fatalf("Close failed: %v", err)
 	}
 
-	// After close, L1 cache should be cleared (Contains returns false).
-	if bs.readCache.Contains("close-test", 0) {
-		t.Fatal("L1 should be empty after Close")
+	// After close, read buffer should be cleared (Contains returns false).
+	if bs.readBuffer.Contains("close-test", 0) {
+		t.Fatal("read buffer should be empty after Close")
 	}
 }
 
-// TestMultiBlockRead_PartialL1 tests ReadAt spanning multiple blocks with partial L1 hits.
-func TestMultiBlockRead_PartialL1(t *testing.T) {
+// TestMultiBlockRead_PartialReadBuffer tests ReadAt spanning multiple blocks with partial read buffer hits.
+func TestMultiBlockRead_PartialReadBuffer(t *testing.T) {
 	bs := newTestEngine(t, 64*1024*1024, 0)
 
 	ctx := context.Background()
@@ -439,7 +439,7 @@ func TestMultiBlockRead_PartialL1(t *testing.T) {
 
 	// Write data that fits in a single block (we won't actually span multiple blocks
 	// in the memory store since BlockSize is 8MB, but we can at least test that
-	// the L1 integration code works for single-block reads).
+	// the read buffer integration code works for single-block reads).
 	data := make([]byte, 1024)
 	for i := range data {
 		data[i] = byte(i % 256)
@@ -448,7 +448,7 @@ func TestMultiBlockRead_PartialL1(t *testing.T) {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
-	// Read to fill L1.
+	// Read to fill read buffer.
 	buf := make([]byte, 1024)
 	n, err := bs.ReadAt(ctx, payloadID, buf, 0)
 	if err != nil {
@@ -465,81 +465,81 @@ func TestMultiBlockRead_PartialL1(t *testing.T) {
 		}
 	}
 
-	// L1 should contain block 0.
-	if !bs.readCache.Contains(payloadID, 0) {
-		t.Fatal("L1 should contain block 0")
+	// Read buffer should contain block 0.
+	if !bs.readBuffer.Contains(payloadID, 0) {
+		t.Fatal("read buffer should contain block 0")
 	}
 
-	// Read again - should hit L1.
+	// Read again - should hit read buffer.
 	buf2 := make([]byte, 512)
 	n, err = bs.ReadAt(ctx, payloadID, buf2, 0)
 	if err != nil {
-		t.Fatalf("ReadAt (L1 hit) failed: %v", err)
+		t.Fatalf("ReadAt (read buffer hit) failed: %v", err)
 	}
 	if n != 512 {
 		t.Fatalf("ReadAt returned %d bytes, expected 512", n)
 	}
 	for i := range buf2 {
 		if buf2[i] != byte(i%256) {
-			t.Fatalf("L1 data mismatch at offset %d: got %d, want %d", i, buf2[i], byte(i%256))
+			t.Fatalf("read buffer data mismatch at offset %d: got %d, want %d", i, buf2[i], byte(i%256))
 		}
 	}
 }
 
-// TestNewWithL1Disabled verifies New works with ReadCacheBytes=0 (disabled).
-func TestNewWithL1Disabled(t *testing.T) {
+// TestNewWithReadBufferDisabled verifies New works with ReadBufferBytes=0 (disabled).
+func TestNewWithReadBufferDisabled(t *testing.T) {
 	bs := newTestEngine(t, 0, 0)
-	if bs.readCache != nil {
-		t.Fatal("readCache should be nil when ReadCacheBytes=0")
+	if bs.readBuffer != nil {
+		t.Fatal("readBuffer should be nil when ReadBufferBytes=0")
 	}
 	if bs.prefetcher != nil {
-		t.Fatal("prefetcher should be nil when ReadCacheBytes=0")
+		t.Fatal("prefetcher should be nil when ReadBufferBytes=0")
 	}
 }
 
 // TestNewWithPrefetchDisabled verifies prefetcher is nil when PrefetchWorkers=0.
 func TestNewWithPrefetchDisabled(t *testing.T) {
 	bs := newTestEngine(t, 64*1024*1024, 0)
-	if bs.readCache == nil {
-		t.Fatal("readCache should be non-nil when ReadCacheBytes > 0")
+	if bs.readBuffer == nil {
+		t.Fatal("readBuffer should be non-nil when ReadBufferBytes > 0")
 	}
 	if bs.prefetcher != nil {
 		t.Fatal("prefetcher should be nil when PrefetchWorkers=0")
 	}
 }
 
-// TestL1AndPrefetchIndependent verifies L1 and prefetch can be configured independently.
-func TestL1AndPrefetchIndependent(t *testing.T) {
-	// L1 enabled, prefetch disabled.
+// TestReadBufferAndPrefetchIndependent verifies read buffer and prefetch can be configured independently.
+func TestReadBufferAndPrefetchIndependent(t *testing.T) {
+	// Read buffer enabled, prefetch disabled.
 	bs1 := newTestEngine(t, 64*1024*1024, 0)
-	if bs1.readCache == nil {
-		t.Fatal("readCache should be non-nil")
+	if bs1.readBuffer == nil {
+		t.Fatal("readBuffer should be non-nil")
 	}
 	if bs1.prefetcher != nil {
 		t.Fatal("prefetcher should be nil when workers=0")
 	}
 
-	// L1 disabled, prefetch configured but should be nil (no cache target).
+	// Read buffer disabled, prefetch configured but should be nil (no buffer target).
 	bs2 := newTestEngine(t, 0, 4)
-	if bs2.readCache != nil {
-		t.Fatal("readCache should be nil when bytes=0")
+	if bs2.readBuffer != nil {
+		t.Fatal("readBuffer should be nil when bytes=0")
 	}
 	if bs2.prefetcher != nil {
-		t.Fatal("prefetcher should be nil when readCache is nil (no cache target)")
+		t.Fatal("prefetcher should be nil when readBuffer is nil (no buffer target)")
 	}
 
 	// Both enabled.
 	bs3 := newTestEngine(t, 64*1024*1024, 4)
-	if bs3.readCache == nil {
-		t.Fatal("readCache should be non-nil")
+	if bs3.readBuffer == nil {
+		t.Fatal("readBuffer should be non-nil")
 	}
 	if bs3.prefetcher == nil {
 		t.Fatal("prefetcher should be non-nil when both enabled")
 	}
 }
 
-// TestReadAtPrefetcherWithL1 is a light integration test showing prefetcher + L1 work together.
-func TestReadAtPrefetcherWithL1(t *testing.T) {
+// TestReadAtPrefetcherWithReadBuffer is a light integration test showing prefetcher + read buffer work together.
+func TestReadAtPrefetcherWithReadBuffer(t *testing.T) {
 	bs := newTestEngine(t, 64*1024*1024, 2)
 
 	ctx := context.Background()
@@ -563,7 +563,7 @@ func TestReadAtPrefetcherWithL1(t *testing.T) {
 	}
 }
 
-// TestReadAtSubBlockOffset verifies reading from non-zero offset within a block works with L1.
+// TestReadAtSubBlockOffset verifies reading from non-zero offset within a block works with read buffer.
 func TestReadAtSubBlockOffset(t *testing.T) {
 	bs := newTestEngine(t, 64*1024*1024, 0)
 
@@ -575,13 +575,13 @@ func TestReadAtSubBlockOffset(t *testing.T) {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
-	// Read entire data to fill L1.
+	// Read entire data to fill read buffer.
 	fullBuf := make([]byte, len(data))
 	if _, err := bs.ReadAt(ctx, payloadID, fullBuf, 0); err != nil {
 		t.Fatalf("ReadAt (full) failed: %v", err)
 	}
 
-	// Read subset at offset 4 from L1.
+	// Read subset at offset 4 from read buffer.
 	subBuf := make([]byte, 8)
 	n, err := bs.ReadAt(ctx, payloadID, subBuf, 4)
 	if err != nil {

@@ -42,7 +42,7 @@ func putBlockBuf(buf []byte) {
 	}
 }
 
-// blockKey uniquely identifies a cached block by the file it belongs to
+// blockKey uniquely identifies a local block by the file it belongs to
 // (payloadID, from metadata) and its position within the file
 // (blockIdx = fileOffset / BlockSize).
 type blockKey struct {
@@ -67,10 +67,10 @@ type memBlock struct {
 	lastWrite time.Time // Timestamp of last write; used for LRU flush ordering
 }
 
-// fileInfo tracks per-file metadata in the cache.
+// fileInfo tracks per-file metadata in the local store.
 // This is a lightweight struct (just file size) -- not related to metadata.File
-// which carries full POSIX attributes. The cache only needs the file size to
-// answer GetFileSize queries without hitting the metadata store.
+// which carries full POSIX attributes. The local store only needs the file size
+// to answer GetFileSize queries without hitting the metadata store.
 type fileInfo struct {
 	mu       sync.RWMutex
 	fileSize uint64 // Highest byte offset written to this file

@@ -19,7 +19,7 @@ func newTestCacheWithDiskLimit(t *testing.T, maxDisk int64) *FSStore {
 	blockStore := memory.NewMemoryMetadataStoreWithDefaults()
 	bc, err := New(dir, maxDisk, 256*1024*1024, blockStore)
 	if err != nil {
-		t.Fatalf("failed to create cache: %v", err)
+		t.Fatalf("failed to create local store: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	bc.Start(ctx)
@@ -38,14 +38,14 @@ func populateRemoteBlock(t *testing.T, bc *FSStore, payloadID string, blockIdx u
 	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
 	blockID := makeBlockID(key)
 
-	// Create cache file on disk
+	// Create block file on disk
 	path := bc.blockPath(blockID)
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		t.Fatalf("failed to create dir: %v", err)
 	}
 	data := make([]byte, size)
 	if err := os.WriteFile(path, data, 0644); err != nil {
-		t.Fatalf("failed to write cache file: %v", err)
+		t.Fatalf("failed to write block file: %v", err)
 	}
 
 	// Create FileBlock metadata in Remote state
@@ -162,13 +162,13 @@ func TestEviction_PinMode_NeverEvicts(t *testing.T) {
 		t.Fatalf("expected ErrDiskFull for pin mode, got %v", err)
 	}
 
-	// Verify block was not evicted (CachePath still set)
+	// Verify block was not evicted (LocalPath still set)
 	ctx := context.Background()
 	fb, err := bc.blockStore.GetFileBlock(ctx, makeBlockID(blockKey{payloadID: "file1", blockIdx: 0}))
 	if err != nil {
 		t.Fatalf("block should still exist: %v", err)
 	}
-	if fb.CachePath == "" {
+	if fb.LocalPath == "" {
 		t.Error("pin mode block should not have been evicted")
 	}
 }
@@ -198,7 +198,7 @@ func TestEviction_TTL_WithinTTL_NotEvicted(t *testing.T) {
 	if fbErr != nil {
 		t.Fatalf("block should still exist: %v", fbErr)
 	}
-	if fb.CachePath == "" {
+	if fb.LocalPath == "" {
 		t.Error("TTL block within threshold should not be evicted")
 	}
 }
@@ -220,14 +220,14 @@ func TestEviction_TTL_Expired_Evicted(t *testing.T) {
 		t.Fatalf("expected successful eviction of TTL-expired block, got %v", err)
 	}
 
-	// Verify block was evicted (CachePath cleared)
+	// Verify block was evicted (LocalPath cleared)
 	ctx := context.Background()
 	fb, err := bc.blockStore.GetFileBlock(ctx, makeBlockID(blockKey{payloadID: "file1", blockIdx: 0}))
 	if err != nil {
 		t.Fatalf("block metadata should still exist: %v", err)
 	}
-	if fb.CachePath != "" {
-		t.Error("TTL-expired block should have been evicted (CachePath should be empty)")
+	if fb.LocalPath != "" {
+		t.Error("TTL-expired block should have been evicted (LocalPath should be empty)")
 	}
 }
 
@@ -261,16 +261,16 @@ func TestEviction_LRU_OldestAccessedFirst(t *testing.T) {
 	if err != nil {
 		t.Fatalf("old block metadata should exist: %v", err)
 	}
-	if fbOld.CachePath != "" {
+	if fbOld.LocalPath != "" {
 		t.Error("oldest-accessed block should have been evicted")
 	}
 
-	// "mid" and "new" should still be cached
+	// "mid" and "new" should still be in local store
 	fbMid, err := bc.blockStore.GetFileBlock(ctx, makeBlockID(blockKey{payloadID: "mid", blockIdx: 0}))
 	if err != nil {
 		t.Fatalf("mid block should exist: %v", err)
 	}
-	if fbMid.CachePath == "" {
+	if fbMid.LocalPath == "" {
 		t.Error("mid block should not have been evicted")
 	}
 
@@ -278,7 +278,7 @@ func TestEviction_LRU_OldestAccessedFirst(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new block should exist: %v", err)
 	}
-	if fbNew.CachePath == "" {
+	if fbNew.LocalPath == "" {
 		t.Error("newest block should not have been evicted")
 	}
 }
@@ -311,7 +311,7 @@ func TestEviction_LRU_RecentlySurvives(t *testing.T) {
 	if err != nil {
 		t.Fatalf("old-file block should exist: %v", err)
 	}
-	if fb.CachePath != "" {
+	if fb.LocalPath != "" {
 		t.Error("old-file should have been evicted")
 	}
 
@@ -320,7 +320,7 @@ func TestEviction_LRU_RecentlySurvives(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recent-file block should exist: %v", err)
 	}
-	if fb.CachePath == "" {
+	if fb.LocalPath == "" {
 		t.Error("recent-file should not have been evicted")
 	}
 }
@@ -352,7 +352,7 @@ func TestEviction_TTL_ReadResetsAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("block should exist: %v", err)
 	}
-	if fb.CachePath == "" {
+	if fb.LocalPath == "" {
 		t.Error("block should not be evicted after access time reset")
 	}
 }
@@ -389,7 +389,7 @@ func TestEviction_PolicySwitch_PinToLRU(t *testing.T) {
 	if err != nil {
 		t.Fatalf("block metadata should exist: %v", err)
 	}
-	if fb.CachePath != "" {
+	if fb.LocalPath != "" {
 		t.Error("block should have been evicted after switch to LRU")
 	}
 }

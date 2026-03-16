@@ -347,7 +347,7 @@ Optional distributed tracing with zero overhead when disabled:
 
 - NFS operation spans (READ, WRITE, LOOKUP, etc.)
 - Storage backend spans (S3, BadgerDB, filesystem)
-- Cache operation spans (hits, misses, flushes)
+- Block store operation spans (hits, misses, flushes)
 - Request context propagation (client IP, file handles, paths)
 
 **Configuration**:

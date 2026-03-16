@@ -171,7 +171,7 @@ func (dh *DurableHandleHandler) ForceClose(w http.ResponseWriter, r *http.Reques
 	NotFound(w, "Durable handle not found")
 }
 
-// cleanupDurableHandle releases locks and flushes caches for a durable handle.
+// cleanupDurableHandle releases locks and flushes block data for a durable handle.
 // Does NOT delete the handle from the store (caller is responsible for that).
 //
 // SYNC: These cleanup steps must match DurableHandleScavenger.cleanupAndDelete()
@@ -185,7 +185,7 @@ func cleanupDurableHandle(ctx context.Context, h *lock.PersistedDurableHandle, r
 		}
 	}
 
-	// Step 2: Flush payload cache (resolved per share from metadata handle)
+	// Step 2: Flush payload data (resolved per share from metadata handle)
 	if h.PayloadID != "" && len(h.MetadataHandle) > 0 {
 		if blockStore, bsErr := rt.GetBlockStoreForHandle(ctx, metadata.FileHandle(h.MetadataHandle)); bsErr == nil {
 			if _, err := blockStore.Flush(ctx, h.PayloadID); err != nil {

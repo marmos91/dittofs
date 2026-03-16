@@ -294,7 +294,7 @@ type MetadataStoreConfigStore interface {
 //
 // These operations manage the configuration records for block store backends
 // (local: fs, memory; remote: memory, s3). The Kind discriminator distinguishes
-// local (disk-backed cache) from remote (object storage) block stores.
+// local (disk-backed storage) from remote (object storage) block stores.
 // The actual block store instances are created and managed by the Runtime.
 type BlockStoreConfigStore interface {
 	// GetBlockStore returns a block store configuration by name and kind.

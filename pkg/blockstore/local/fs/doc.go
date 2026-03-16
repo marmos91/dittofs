@@ -2,7 +2,7 @@
 //
 // Writes are buffered in memory and flushed to disk atomically on NFS COMMIT
 // or when memory budget is exceeded. This avoids per-4KB disk I/O and OS page
-// cache bloat that caused OOM on servers with large caches.
+// bloat that caused OOM on servers with large local stores.
 //
 // Key design:
 //   - Memory buffer tier: 4KB NFS writes go to in-memory []byte buffers (no disk I/O)

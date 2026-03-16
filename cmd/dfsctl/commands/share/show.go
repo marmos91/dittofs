@@ -69,8 +69,8 @@ func (sd ShareDetail) Rows() [][]string {
 	if s.LocalStoreSize != "" {
 		rows = append(rows, []string{"Local Store Size", s.LocalStoreSize})
 	}
-	if s.ReadCacheSize != "" {
-		rows = append(rows, []string{"Read Cache Size", s.ReadCacheSize})
+	if s.ReadBufferSize != "" {
+		rows = append(rows, []string{"Read Buffer Size", s.ReadBufferSize})
 	}
 
 	rows = append(rows,

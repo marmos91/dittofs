@@ -17,7 +17,7 @@ type SystemDetector interface {
 // Minimum floor values for deduced defaults.
 const (
 	MinLocalStoreSize      uint64 = 256 << 20 // 256 MiB
-	MinL1CacheSize         int64  = 64 << 20  // 64 MiB
+	MinReadBufferSize      int64  = 64 << 20  // 64 MiB
 	MinParallelSyncs              = 4
 	MinParallelFetches            = 8
 	DefaultPrefetchWorkers        = 4
@@ -26,7 +26,7 @@ const (
 // DeducedDefaults holds block store sizing values derived from system resources.
 type DeducedDefaults struct {
 	LocalStoreSize  uint64 // 25% of memory, floor 256 MiB
-	L1CacheSize     int64  // 12.5% of memory, floor 64 MiB
+	ReadBufferSize  int64  // 12.5% of memory, floor 64 MiB
 	MaxPendingSize  uint64 // 50% of LocalStoreSize
 	ParallelSyncs   int    // max(4, cpus)
 	ParallelFetches int    // max(8, cpus*2)
@@ -34,7 +34,7 @@ type DeducedDefaults struct {
 
 	// Internal: track whether clamping actually occurred.
 	localStoreClamped      bool
-	l1CacheClamped         bool
+	readBufferClamped      bool
 	parallelSyncsClamped   bool
 	parallelFetchesClamped bool
 }
@@ -50,14 +50,14 @@ func DeduceDefaults(d SystemDetector) *DeducedDefaults {
 		localStoreSize = MinLocalStoreSize
 	}
 
-	l1Raw := mem / 8
-	if l1Raw > uint64(math.MaxInt64) {
-		l1Raw = uint64(math.MaxInt64)
+	rbRaw := mem / 8
+	if rbRaw > uint64(math.MaxInt64) {
+		rbRaw = uint64(math.MaxInt64)
 	}
-	l1CacheSize := int64(l1Raw)
-	l1CacheClamped := l1CacheSize < MinL1CacheSize
-	if l1CacheClamped {
-		l1CacheSize = MinL1CacheSize
+	readBufferSize := int64(rbRaw)
+	readBufferClamped := readBufferSize < MinReadBufferSize
+	if readBufferClamped {
+		readBufferSize = MinReadBufferSize
 	}
 
 	maxPendingSize := localStoreSize / 2
@@ -76,13 +76,13 @@ func DeduceDefaults(d SystemDetector) *DeducedDefaults {
 
 	return &DeducedDefaults{
 		LocalStoreSize:         localStoreSize,
-		L1CacheSize:            l1CacheSize,
+		ReadBufferSize:         readBufferSize,
 		MaxPendingSize:         maxPendingSize,
 		ParallelSyncs:          parallelSyncs,
 		ParallelFetches:        parallelFetches,
 		PrefetchWorkers:        DefaultPrefetchWorkers,
 		localStoreClamped:      localStoreClamped,
-		l1CacheClamped:         l1CacheClamped,
+		readBufferClamped:      readBufferClamped,
 		parallelSyncsClamped:   parallelSyncsClamped,
 		parallelFetchesClamped: parallelFetchesClamped,
 	}
@@ -97,8 +97,8 @@ func (d *DeducedDefaults) HitFloors() []string {
 	if d.localStoreClamped {
 		floors = append(floors, fmt.Sprintf("local_store_size floored at %s", FormatBytes(MinLocalStoreSize)))
 	}
-	if d.l1CacheClamped {
-		floors = append(floors, fmt.Sprintf("l1_cache_size floored at %s", FormatBytes(uint64(MinL1CacheSize))))
+	if d.readBufferClamped {
+		floors = append(floors, fmt.Sprintf("read_buffer_size floored at %s", FormatBytes(uint64(MinReadBufferSize))))
 	}
 	if d.parallelSyncsClamped {
 		floors = append(floors, fmt.Sprintf("parallel_syncs floored at %d", MinParallelSyncs))
@@ -112,9 +112,9 @@ func (d *DeducedDefaults) HitFloors() []string {
 // String returns a human-readable summary of deduced defaults.
 func (d *DeducedDefaults) String() string {
 	return fmt.Sprintf(
-		"LocalStoreSize=%s, L1CacheSize=%s, ParallelSyncs=%d, ParallelFetches=%d, MaxPendingSize=%s, PrefetchWorkers=%d",
+		"LocalStoreSize=%s, ReadBufferSize=%s, ParallelSyncs=%d, ParallelFetches=%d, MaxPendingSize=%s, PrefetchWorkers=%d",
 		FormatBytes(d.LocalStoreSize),
-		FormatBytes(uint64(d.L1CacheSize)),
+		FormatBytes(uint64(d.ReadBufferSize)),
 		d.ParallelSyncs,
 		d.ParallelFetches,
 		FormatBytes(d.MaxPendingSize),

@@ -177,8 +177,8 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Delete("/{name}/members/{username}", groupHandler.RemoveMember)
 			})
 
-			// Cache handler shared between per-share and global routes.
-			cacheHandler := handlers.NewCacheHandler(rt)
+			// Block store handler shared between per-share and global routes.
+			blockStoreHandler := handlers.NewBlockStoreStatsHandler(rt)
 
 			// Share management (admin only)
 			r.Route("/shares", func(r chi.Router) {
@@ -198,17 +198,17 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Put("/{name}/permissions/groups/{groupname}", shareHandler.SetGroupPermission)
 				r.Delete("/{name}/permissions/groups/{groupname}", shareHandler.DeleteGroupPermission)
 
-				// Per-share cache management
-				r.Get("/{name}/cache/stats", cacheHandler.Stats)
-				r.Post("/{name}/cache/evict", cacheHandler.Evict)
+				// Per-share block store management
+				r.Get("/{name}/blockstore/stats", blockStoreHandler.Stats)
+				r.Post("/{name}/blockstore/evict", blockStoreHandler.Evict)
 			})
 
-			// Global cache management (admin only)
-			r.Route("/cache", func(r chi.Router) {
+			// Global block store management (admin only)
+			r.Route("/blockstore", func(r chi.Router) {
 				r.Use(apiMiddleware.RequireAdmin())
 
-				r.Get("/stats", cacheHandler.Stats)
-				r.Post("/evict", cacheHandler.Evict)
+				r.Get("/stats", blockStoreHandler.Stats)
+				r.Post("/evict", blockStoreHandler.Evict)
 			})
 
 			// Store management (admin only)

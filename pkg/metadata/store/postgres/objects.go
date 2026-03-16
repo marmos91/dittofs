@@ -62,8 +62,8 @@ func (s *PostgresMetadataStore) PutFileBlock(ctx context.Context, block *metadat
 		blockStoreKey = &block.BlockStoreKey
 	}
 	var cachePath *string
-	if block.CachePath != "" {
-		cachePath = &block.CachePath
+	if block.LocalPath != "" {
+		cachePath = &block.LocalPath
 	}
 
 	query := `
@@ -276,7 +276,7 @@ func scanFileBlock(row pgx.Row) (*metadata.FileBlock, error) {
 		block.Hash, _ = metadata.ParseContentHash(hashStr.String)
 	}
 	if cachePath.Valid {
-		block.CachePath = cachePath.String
+		block.LocalPath = cachePath.String
 	}
 	if blockStoreKey.Valid {
 		block.BlockStoreKey = blockStoreKey.String
@@ -302,7 +302,7 @@ func scanFileBlockRows(rows pgx.Rows) ([]*metadata.FileBlock, error) {
 			block.Hash, _ = metadata.ParseContentHash(hashStr.String)
 		}
 		if cachePath.Valid {
-			block.CachePath = cachePath.String
+			block.LocalPath = cachePath.String
 		}
 		if blockStoreKey.Valid {
 			block.BlockStoreKey = blockStoreKey.String

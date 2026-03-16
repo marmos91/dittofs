@@ -68,11 +68,11 @@ func testListLocalBlocks(t *testing.T, factory StoreFactory) {
 
 	// Create 5 blocks with different states
 	blocks := []*blockstore.FileBlock{
-		{ID: "file-a/0", State: blockstore.BlockStateLocal, CachePath: "/cache/a0", DataSize: 100, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)},
-		{ID: "file-a/1", State: blockstore.BlockStateLocal, CachePath: "/cache/a1", DataSize: 200, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)},
-		{ID: "file-b/0", State: blockstore.BlockStateDirty, CachePath: "/cache/b0", DataSize: 300, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)},
-		{ID: "file-c/0", State: blockstore.BlockStateRemote, CachePath: "/cache/c0", BlockStoreKey: "s3://c0", DataSize: 400, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)},
-		{ID: "file-d/0", State: blockstore.BlockStateSyncing, CachePath: "/cache/d0", DataSize: 500, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)},
+		{ID: "file-a/0", State: blockstore.BlockStateLocal, LocalPath: "/cache/a0", DataSize: 100, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)},
+		{ID: "file-a/1", State: blockstore.BlockStateLocal, LocalPath: "/cache/a1", DataSize: 200, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)},
+		{ID: "file-b/0", State: blockstore.BlockStateDirty, LocalPath: "/cache/b0", DataSize: 300, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)},
+		{ID: "file-c/0", State: blockstore.BlockStateRemote, LocalPath: "/cache/c0", BlockStoreKey: "s3://c0", DataSize: 400, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)},
+		{ID: "file-d/0", State: blockstore.BlockStateSyncing, LocalPath: "/cache/d0", DataSize: 500, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)},
 	}
 	for _, b := range blocks {
 		if err := store.PutFileBlock(ctx, b); err != nil {
@@ -105,7 +105,7 @@ func testListLocalBlocksLimit(t *testing.T, factory StoreFactory) {
 	for i := 0; i < 3; i++ {
 		b := &blockstore.FileBlock{
 			ID: fmt.Sprintf("file-x/%d", i), State: blockstore.BlockStateLocal,
-			CachePath: fmt.Sprintf("/cache/x%d", i), DataSize: 100, RefCount: 1,
+			LocalPath: fmt.Sprintf("/cache/x%d", i), DataSize: 100, RefCount: 1,
 			LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour),
 		}
 		if err := store.PutFileBlock(ctx, b); err != nil {
@@ -128,12 +128,12 @@ func testListLocalBlocksOlderThan(t *testing.T, factory StoreFactory) {
 
 	// Create 2 blocks: one old, one recent
 	old := &blockstore.FileBlock{
-		ID: "file-old/0", State: blockstore.BlockStateLocal, CachePath: "/cache/old",
+		ID: "file-old/0", State: blockstore.BlockStateLocal, LocalPath: "/cache/old",
 		DataSize: 100, RefCount: 1,
 		LastAccess: time.Now().Add(-2 * time.Hour), CreatedAt: time.Now().Add(-2 * time.Hour),
 	}
 	recent := &blockstore.FileBlock{
-		ID: "file-recent/0", State: blockstore.BlockStateLocal, CachePath: "/cache/recent",
+		ID: "file-recent/0", State: blockstore.BlockStateLocal, LocalPath: "/cache/recent",
 		DataSize: 100, RefCount: 1,
 		LastAccess: time.Now(), CreatedAt: time.Now(),
 	}
@@ -180,11 +180,11 @@ func testListRemoteBlocks(t *testing.T, factory StoreFactory) {
 
 	// Create 5 blocks with different states
 	blocks := []*blockstore.FileBlock{
-		{ID: "file-a/0", State: blockstore.BlockStateRemote, CachePath: "/cache/a0", BlockStoreKey: "s3://a0", DataSize: 100, RefCount: 1, LastAccess: time.Now().Add(-2 * time.Hour), CreatedAt: time.Now()},
-		{ID: "file-a/1", State: blockstore.BlockStateRemote, CachePath: "/cache/a1", BlockStoreKey: "s3://a1", DataSize: 200, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now()},
-		{ID: "file-b/0", State: blockstore.BlockStateRemote, CachePath: "", BlockStoreKey: "s3://b0", DataSize: 300, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},               // Not cached
-		{ID: "file-c/0", State: blockstore.BlockStateLocal, CachePath: "/cache/c0", DataSize: 400, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)}, // Local, not Remote
-		{ID: "file-d/0", State: blockstore.BlockStateDirty, CachePath: "/cache/d0", DataSize: 500, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)}, // Dirty
+		{ID: "file-a/0", State: blockstore.BlockStateRemote, LocalPath: "/cache/a0", BlockStoreKey: "s3://a0", DataSize: 100, RefCount: 1, LastAccess: time.Now().Add(-2 * time.Hour), CreatedAt: time.Now()},
+		{ID: "file-a/1", State: blockstore.BlockStateRemote, LocalPath: "/cache/a1", BlockStoreKey: "s3://a1", DataSize: 200, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now()},
+		{ID: "file-b/0", State: blockstore.BlockStateRemote, LocalPath: "", BlockStoreKey: "s3://b0", DataSize: 300, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},               // Not cached
+		{ID: "file-c/0", State: blockstore.BlockStateLocal, LocalPath: "/cache/c0", DataSize: 400, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)}, // Local, not Remote
+		{ID: "file-d/0", State: blockstore.BlockStateDirty, LocalPath: "/cache/d0", DataSize: 500, RefCount: 1, LastAccess: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour)}, // Dirty
 	}
 	for _, b := range blocks {
 		if err := store.PutFileBlock(ctx, b); err != nil {
@@ -215,7 +215,7 @@ func testListRemoteBlocksLimit(t *testing.T, factory StoreFactory) {
 	for i := 0; i < 3; i++ {
 		b := &blockstore.FileBlock{
 			ID: fmt.Sprintf("file-r/%d", i), State: blockstore.BlockStateRemote,
-			CachePath: fmt.Sprintf("/cache/r%d", i), BlockStoreKey: fmt.Sprintf("s3://r%d", i),
+			LocalPath: fmt.Sprintf("/cache/r%d", i), BlockStoreKey: fmt.Sprintf("s3://r%d", i),
 			DataSize: 100, RefCount: 1,
 			LastAccess: time.Now().Add(-time.Duration(i) * time.Hour), CreatedAt: time.Now(),
 		}
@@ -256,11 +256,11 @@ func testListFileBlocks(t *testing.T, factory StoreFactory) {
 
 	// Create blocks for 2 different files
 	blocks := []*blockstore.FileBlock{
-		{ID: "file-A/0", State: blockstore.BlockStateLocal, CachePath: "/cache/a0", DataSize: 100, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
-		{ID: "file-A/1", State: blockstore.BlockStateLocal, CachePath: "/cache/a1", DataSize: 200, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
-		{ID: "file-A/2", State: blockstore.BlockStateRemote, CachePath: "/cache/a2", BlockStoreKey: "s3://a2", DataSize: 300, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
-		{ID: "file-B/0", State: blockstore.BlockStateLocal, CachePath: "/cache/b0", DataSize: 400, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
-		{ID: "file-B/1", State: blockstore.BlockStateDirty, CachePath: "/cache/b1", DataSize: 500, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-A/0", State: blockstore.BlockStateLocal, LocalPath: "/cache/a0", DataSize: 100, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-A/1", State: blockstore.BlockStateLocal, LocalPath: "/cache/a1", DataSize: 200, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-A/2", State: blockstore.BlockStateRemote, LocalPath: "/cache/a2", BlockStoreKey: "s3://a2", DataSize: 300, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-B/0", State: blockstore.BlockStateLocal, LocalPath: "/cache/b0", DataSize: 400, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-B/1", State: blockstore.BlockStateDirty, LocalPath: "/cache/b1", DataSize: 500, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
 	}
 	for _, b := range blocks {
 		if err := store.PutFileBlock(ctx, b); err != nil {
@@ -321,7 +321,7 @@ func testListFileBlocksOrdering(t *testing.T, factory StoreFactory) {
 	for _, idx := range indices {
 		b := &blockstore.FileBlock{
 			ID: fmt.Sprintf("file-sort/%d", idx), State: blockstore.BlockStateLocal,
-			CachePath: fmt.Sprintf("/cache/s%d", idx), DataSize: uint32(idx * 100),
+			LocalPath: fmt.Sprintf("/cache/s%d", idx), DataSize: uint32(idx * 100),
 			RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now(),
 		}
 		if err := store.PutFileBlock(ctx, b); err != nil {
@@ -361,7 +361,7 @@ func testListFileBlocksMixedStates(t *testing.T, factory StoreFactory) {
 	for i, state := range states {
 		b := &blockstore.FileBlock{
 			ID: fmt.Sprintf("file-mix/%d", i), State: state,
-			CachePath: fmt.Sprintf("/cache/m%d", i), DataSize: uint32((i + 1) * 100),
+			LocalPath: fmt.Sprintf("/cache/m%d", i), DataSize: uint32((i + 1) * 100),
 			RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now(),
 		}
 		if state == blockstore.BlockStateRemote {

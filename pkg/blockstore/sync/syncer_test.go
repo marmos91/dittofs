@@ -46,9 +46,9 @@ func TestMain(m *testing.M) {
 // Test Helpers
 // ============================================================================
 
-// testEnv holds the test environment with cache and remote store.
+// testEnv holds the test environment with local and remote store.
 type testEnv struct {
-	cache          local.LocalStore
+	local          local.LocalStore
 	remoteStore    remote.RemoteStore
 	fileBlockStore blockstore.FileBlockStore
 	syncer         *Syncer
@@ -69,7 +69,7 @@ func newMemoryEnv(t *testing.T) *testEnv {
 	m.Start(context.Background())
 
 	return &testEnv{
-		cache:          bc,
+		local:          bc,
 		remoteStore:    bs,
 		fileBlockStore: ms,
 		syncer:         m,
@@ -329,7 +329,7 @@ func (h *s3BenchHelper) cleanup(b *testing.B) {
 func newS3EnvForBench(b *testing.B) *testEnv {
 	b.Helper()
 	helper := newS3BenchHelper(b)
-	tmpDir, err := os.MkdirTemp("", "syncer-bench-cache-*")
+	tmpDir, err := os.MkdirTemp("", "syncer-bench-local-*")
 	if err != nil {
 		b.Fatalf("failed to create temp dir: %v", err)
 	}
@@ -342,7 +342,7 @@ func newS3EnvForBench(b *testing.B) *testEnv {
 	bs := remotes3.New(helper.client, remotes3.Config{Bucket: helper.bucket, KeyPrefix: "blocks/"})
 	m := New(bc, bs, ms, DefaultConfig())
 	m.Start(context.Background())
-	return &testEnv{cache: bc, remoteStore: bs, fileBlockStore: ms, syncer: m, cleanup: func() {
+	return &testEnv{local: bc, remoteStore: bs, fileBlockStore: ms, syncer: m, cleanup: func() {
 		m.Close()
 		bs.Close()
 		os.RemoveAll(tmpDir)
@@ -363,7 +363,7 @@ func newS3Env(t *testing.T, helper *localstackHelper) *testEnv {
 	bs := remotes3.New(helper.client, remotes3.Config{Bucket: bucket, KeyPrefix: "blocks/"})
 	m := New(bc, bs, ms, DefaultConfig())
 	m.Start(context.Background())
-	return &testEnv{cache: bc, remoteStore: bs, fileBlockStore: ms, syncer: m, cleanup: func() {
+	return &testEnv{local: bc, remoteStore: bs, fileBlockStore: ms, syncer: m, cleanup: func() {
 		m.Close()
 		bs.Close()
 	}}
@@ -402,7 +402,7 @@ func testWriteAndFlush(t *testing.T, env *testEnv) {
 			end = len(data)
 		}
 		chunk := data[offset:end]
-		if err := env.cache.WriteAt(ctx, payloadID, chunk, uint64(offset)); err != nil {
+		if err := env.local.WriteAt(ctx, payloadID, chunk, uint64(offset)); err != nil {
 			t.Fatalf("Write failed: %v", err)
 		}
 	}
@@ -429,19 +429,19 @@ func testWriteAndFlush(t *testing.T, env *testEnv) {
 	}
 }
 
-func TestSyncer_DownloadOnCacheMiss_Memory(t *testing.T) {
+func TestSyncer_DownloadOnLocalMiss_Memory(t *testing.T) {
 	env := newMemoryEnv(t)
 	defer env.cleanup()
-	testDownloadOnCacheMiss(t, env)
+	testDownloadOnLocalMiss(t, env)
 }
 
-func TestSyncer_DownloadOnCacheMiss_S3(t *testing.T) {
+func TestSyncer_DownloadOnLocalMiss_S3(t *testing.T) {
 	env := newS3Env(t, sharedHelper)
 	defer env.cleanup()
-	testDownloadOnCacheMiss(t, env)
+	testDownloadOnLocalMiss(t, env)
 }
 
-func testDownloadOnCacheMiss(t *testing.T, env *testEnv) {
+func testDownloadOnLocalMiss(t *testing.T, env *testEnv) {
 	ctx := context.Background()
 	payloadID := "export/download-test.bin"
 	blockData := randomData(BlockSize)
@@ -462,12 +462,12 @@ func testDownloadOnCacheMiss(t *testing.T, env *testEnv) {
 		t.Fatalf("EnsureAvailable failed: %v", err)
 	}
 	dest := make([]byte, BlockSize)
-	found, err := env.cache.ReadAt(ctx, payloadID, dest, 0)
+	found, err := env.local.ReadAt(ctx, payloadID, dest, 0)
 	if err != nil {
 		t.Fatalf("Read failed: %v", err)
 	}
 	if !found {
-		t.Error("Data should be in cache after EnsureAvailable")
+		t.Error("Data should be in local store after EnsureAvailable")
 	}
 	for i := 0; i < len(blockData); i++ {
 		if dest[i] != blockData[i] {
@@ -495,7 +495,7 @@ func testConcurrentOperations(t *testing.T, env *testEnv) {
 			defer wg.Done()
 			payloadID := fmt.Sprintf("export/concurrent-%d.bin", fileIdx)
 			data := randomData(fileSize)
-			if err := env.cache.WriteAt(ctx, payloadID, data, 0); err != nil {
+			if err := env.local.WriteAt(ctx, payloadID, data, 0); err != nil {
 				errors <- fmt.Errorf("file %d: Write failed: %w", fileIdx, err)
 				return
 			}
@@ -527,7 +527,7 @@ func testConcurrentOperations(t *testing.T, env *testEnv) {
 
 func newMemoryEnvForBench(b *testing.B) *testEnv {
 	b.Helper()
-	tmpDir, err := os.MkdirTemp("", "syncer-bench-cache-*")
+	tmpDir, err := os.MkdirTemp("", "syncer-bench-local-*")
 	if err != nil {
 		b.Fatalf("failed to create temp dir: %v", err)
 	}
@@ -540,7 +540,7 @@ func newMemoryEnvForBench(b *testing.B) *testEnv {
 	bs := remotememory.New()
 	m := New(bc, bs, ms, DefaultConfig())
 	m.Start(context.Background())
-	return &testEnv{cache: bc, remoteStore: bs, fileBlockStore: ms, syncer: m, cleanup: func() { m.Close(); bs.Close(); os.RemoveAll(tmpDir) }}
+	return &testEnv{local: bc, remoteStore: bs, fileBlockStore: ms, syncer: m, cleanup: func() { m.Close(); bs.Close(); os.RemoveAll(tmpDir) }}
 }
 
 func BenchmarkUpload_Memory(b *testing.B) {
@@ -647,7 +647,7 @@ func benchmarkUpload(b *testing.B, env *testEnv) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		payloadID := fmt.Sprintf("export/bench-upload-%d.bin", i)
-		if err := env.cache.WriteAt(ctx, payloadID, data, 0); err != nil {
+		if err := env.local.WriteAt(ctx, payloadID, data, 0); err != nil {
 			b.Fatalf("Write failed: %v", err)
 		}
 
@@ -684,7 +684,7 @@ func benchmarkFlush(b *testing.B, env *testEnv) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		payloadID := fmt.Sprintf("export/bench-flush-%d.bin", i)
-		if err := env.cache.WriteAt(ctx, payloadID, data[:BlockSize/2], 0); err != nil {
+		if err := env.local.WriteAt(ctx, payloadID, data[:BlockSize/2], 0); err != nil {
 			b.Fatalf("Write failed: %v", err)
 		}
 		if _, err := env.syncer.Flush(ctx, payloadID); err != nil {
@@ -705,7 +705,7 @@ func benchmarkConcurrentUpload(b *testing.B, env *testEnv, parallelism int) {
 			go func(fileIdx int) {
 				defer wg.Done()
 				payloadID := fmt.Sprintf("export/bench-concurrent-%d-%d.bin", i, fileIdx)
-				if err := env.cache.WriteAt(ctx, payloadID, data, 0); err != nil {
+				if err := env.local.WriteAt(ctx, payloadID, data, 0); err != nil {
 					return
 				}
 				env.syncer.Flush(ctx, payloadID)
@@ -728,7 +728,7 @@ func benchmarkLargeFile(b *testing.B, env *testEnv, fileSize int) {
 			if end > fileSize {
 				end = fileSize
 			}
-			if err := env.cache.WriteAt(ctx, payloadID, data[offset:end], uint64(offset)); err != nil {
+			if err := env.local.WriteAt(ctx, payloadID, data[offset:end], uint64(offset)); err != nil {
 				b.Fatalf("Write failed: %v", err)
 			}
 		}
@@ -747,7 +747,7 @@ func benchmarkSequentialWrite(b *testing.B, env *testEnv, writeSize int) {
 	payloadID := "export/sequential-write.bin"
 	for i := 0; i < b.N; i++ {
 		fileOffset := uint64(i) * uint64(writeSize)
-		if err := env.cache.WriteAt(ctx, payloadID, data, fileOffset); err != nil {
+		if err := env.local.WriteAt(ctx, payloadID, data, fileOffset); err != nil {
 			b.Fatalf("Write failed: %v", err)
 		}
 	}
@@ -772,7 +772,7 @@ func testDeduplication(t *testing.T, env *testEnv) {
 	}
 	payloadID1 := "export/dedup-file1.bin"
 	payloadID2 := "export/dedup-file2.bin"
-	if err := env.cache.WriteAt(ctx, payloadID1, data, 0); err != nil {
+	if err := env.local.WriteAt(ctx, payloadID1, data, 0); err != nil {
 		t.Fatalf("Write to file1 failed: %v", err)
 	}
 
@@ -780,7 +780,7 @@ func testDeduplication(t *testing.T, env *testEnv) {
 		t.Fatalf("Flush file1 failed: %v", err)
 	}
 	env.syncer.SyncNow(ctx)
-	if err := env.cache.WriteAt(ctx, payloadID2, data, 0); err != nil {
+	if err := env.local.WriteAt(ctx, payloadID2, data, 0); err != nil {
 		t.Fatalf("Write to file2 failed: %v", err)
 	}
 
@@ -821,7 +821,7 @@ func testDedupWithDifferentData(t *testing.T, env *testEnv) {
 	}
 	payloadID1 := "export/unique-file1.bin"
 	payloadID2 := "export/unique-file2.bin"
-	if err := env.cache.WriteAt(ctx, payloadID1, data1, 0); err != nil {
+	if err := env.local.WriteAt(ctx, payloadID1, data1, 0); err != nil {
 		t.Fatalf("Write to file1 failed: %v", err)
 	}
 
@@ -829,7 +829,7 @@ func testDedupWithDifferentData(t *testing.T, env *testEnv) {
 		t.Fatalf("Flush file1 failed: %v", err)
 	}
 	env.syncer.SyncNow(ctx)
-	if err := env.cache.WriteAt(ctx, payloadID2, data2, 0); err != nil {
+	if err := env.local.WriteAt(ctx, payloadID2, data2, 0); err != nil {
 		t.Fatalf("Write to file2 failed: %v", err)
 	}
 

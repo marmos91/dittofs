@@ -13,15 +13,15 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore"
 )
 
-// Recover scans the cache directory for .blk files and reconciles them with
-// the FileBlockStore (BadgerDB). Called on startup to restore cache state:
+// Recover scans the block store directory for .blk files and reconciles them with
+// the FileBlockStore (BadgerDB). Called on startup to restore local store state:
 //
 //   - Rebuilds the in-memory files map (payloadID -> fileSize) from disk
 //   - Deletes orphan .blk files that have no FileBlock metadata
-//   - Fixes stale CachePaths (e.g., cache directory was moved)
+//   - Fixes stale LocalPaths (e.g., block store directory was moved)
 //   - Reverts interrupted syncs (Syncing -> Local) for retry
 func (bc *FSStore) Recover(ctx context.Context) error {
-	logger.Info("cache: starting recovery", "dir", bc.baseDir)
+	logger.Info("local store: starting recovery", "dir", bc.baseDir)
 
 	var totalSize int64
 	var filesFound, orphansDeleted, syncsReverted int
@@ -37,7 +37,7 @@ func (bc *FSStore) Recover(ctx context.Context) error {
 		// blockPath creates: <baseDir>/<shard>/<blockID>.blk where shard = blockID[:2].
 		rel, relErr := filepath.Rel(bc.baseDir, path)
 		if relErr != nil {
-			logger.Warn("cache: recovery skipping file", "path", path, "error", relErr)
+			logger.Warn("local store: recovery skipping file", "path", path, "error", relErr)
 			return nil
 		}
 		rel = strings.TrimSuffix(rel, ".blk")
@@ -53,20 +53,20 @@ func (bc *FSStore) Recover(ctx context.Context) error {
 		if err != nil {
 			if errors.Is(err, blockstore.ErrFileBlockNotFound) {
 				if rmErr := os.Remove(path); rmErr != nil {
-					logger.Warn("cache: recovery failed to remove orphan", "path", path, "error", rmErr)
+					logger.Warn("local store: recovery failed to remove orphan", "path", path, "error", rmErr)
 				}
 				orphansDeleted++
 			} else {
-				logger.Warn("cache: recovery skipping block due to transient error", "blockID", blockID, "error", err)
+				logger.Warn("local store: recovery skipping block due to transient error", "blockID", blockID, "error", err)
 			}
 			return nil
 		}
 
 		needsUpdate := false
 
-		// Fix cache path if it changed (e.g., moved cache directory)
-		if fb.CachePath != path {
-			fb.CachePath = path
+		// Fix local path if it changed (e.g., moved block store directory)
+		if fb.LocalPath != path {
+			fb.LocalPath = path
 			needsUpdate = true
 		}
 
@@ -85,7 +85,7 @@ func (bc *FSStore) Recover(ctx context.Context) error {
 
 		if needsUpdate {
 			if putErr := bc.blockStore.PutFileBlock(ctx, fb); putErr != nil {
-				logger.Warn("cache: recovery failed to update block metadata", "blockID", blockID, "error", putErr)
+				logger.Warn("local store: recovery failed to update block metadata", "blockID", blockID, "error", putErr)
 			}
 		}
 
@@ -105,12 +105,12 @@ func (bc *FSStore) Recover(ctx context.Context) error {
 	})
 
 	if err != nil {
-		return fmt.Errorf("walk cache dir: %w", err)
+		return fmt.Errorf("walk block store dir: %w", err)
 	}
 
 	bc.diskUsed.Store(totalSize)
 
-	logger.Info("cache: recovery complete",
+	logger.Info("local store: recovery complete",
 		"filesFound", filesFound,
 		"orphansDeleted", orphansDeleted,
 		"syncsReverted", syncsReverted,
