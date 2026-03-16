@@ -198,6 +198,8 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			BlockedOperations:  share.GetBlockedOps(),
 			RetentionPolicy:    share.GetRetentionPolicy(),
 			RetentionTTL:       share.GetRetentionTTL(),
+			LocalStoreSize:     share.LocalStoreSize,
+			ReadCacheSize:      share.ReadCacheSize,
 			LocalBlockStoreID:  share.LocalBlockStoreID,
 			RemoteBlockStoreID: derefString(share.RemoteBlockStoreID),
 		}

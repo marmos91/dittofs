@@ -27,6 +27,8 @@ type Share struct {
 	BlockedOperations  []string  `json:"blocked_operations,omitempty"`
 	RetentionPolicy    string    `json:"retention_policy,omitempty"`
 	RetentionTTL       string    `json:"retention_ttl,omitempty"`
+	LocalStoreSize     string    `json:"local_store_size,omitempty"`
+	ReadCacheSize      string    `json:"read_cache_size,omitempty"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
 }
@@ -43,6 +45,8 @@ type CreateShareRequest struct {
 	BlockedOperations *[]string `json:"blocked_operations,omitempty"`
 	RetentionPolicy   string    `json:"retention_policy,omitempty"`
 	RetentionTTL      string    `json:"retention_ttl,omitempty"`
+	LocalStoreSize    string    `json:"local_store_size,omitempty"`
+	ReadCacheSize     string    `json:"read_cache_size,omitempty"`
 }
 
 // UpdateShareRequest is the request to update a share.
@@ -55,6 +59,8 @@ type UpdateShareRequest struct {
 	BlockedOperations  *[]string `json:"blocked_operations,omitempty"`
 	RetentionPolicy    *string   `json:"retention_policy,omitempty"`
 	RetentionTTL       *string   `json:"retention_ttl,omitempty"`
+	LocalStoreSize     *string   `json:"local_store_size,omitempty"`
+	ReadCacheSize      *string   `json:"read_cache_size,omitempty"`
 }
 
 // SharePermission represents a permission on a share.
