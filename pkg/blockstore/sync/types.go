@@ -60,17 +60,25 @@ type Config struct {
 	SmallFileThreshold int64         // Files below this are flushed synchronously; 0 = disabled
 	UploadInterval     time.Duration // Periodic uploader scan interval (default: 2s)
 	UploadDelay        time.Duration // Min block age before periodic upload; Flush ignores this (default: 10s)
+
+	// Health check configuration for remote store monitoring.
+	HealthCheckInterval         time.Duration // Probe interval when healthy (default: 30s)
+	HealthCheckFailureThreshold int           // Consecutive failures to mark unhealthy (default: 3)
+	UnhealthyCheckInterval      time.Duration // Probe interval when unhealthy (default: 5s)
 }
 
 // DefaultConfig returns the default Syncer configuration tuned for S3 performance.
 func DefaultConfig() Config {
 	return Config{
-		ParallelUploads:    DefaultParallelUploads,
-		ParallelDownloads:  DefaultParallelDownloads,
-		PrefetchBlocks:     DefaultPrefetchBlocks,
-		SmallFileThreshold: 0,
-		UploadInterval:     2 * time.Second,
-		UploadDelay:        10 * time.Second,
+		ParallelUploads:             DefaultParallelUploads,
+		ParallelDownloads:           DefaultParallelDownloads,
+		PrefetchBlocks:              DefaultPrefetchBlocks,
+		SmallFileThreshold:          0,
+		UploadInterval:              2 * time.Second,
+		UploadDelay:                 10 * time.Second,
+		HealthCheckInterval:         30 * time.Second,
+		HealthCheckFailureThreshold: 3,
+		UnhealthyCheckInterval:      5 * time.Second,
 	}
 }
 
