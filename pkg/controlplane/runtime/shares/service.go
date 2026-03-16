@@ -94,6 +94,10 @@ type ShareConfig struct {
 	RetentionPolicy blockstore.RetentionPolicy
 	RetentionTTL    time.Duration
 
+	// Per-share cache size overrides (0 = use system default).
+	LocalStoreSize int64
+	ReadCacheSize  int64
+
 	// Block store config IDs resolved from the DB share model.
 	LocalBlockStoreID  string // Required: references a local BlockStoreConfig
 	RemoteBlockStoreID string // Optional: references a remote BlockStoreConfig (empty = local-only)
@@ -367,6 +371,22 @@ func (s *Service) prepareShare(
 	return share, metadataStore, nil
 }
 
+// mergeLocalStoreDefaults returns a copy of the system defaults with per-share
+// overrides applied. Non-zero ShareConfig values take precedence.
+func mergeLocalStoreDefaults(defaults *LocalStoreDefaults, config *ShareConfig) *LocalStoreDefaults {
+	if defaults == nil {
+		defaults = &LocalStoreDefaults{}
+	}
+	merged := *defaults // shallow copy
+	if config.LocalStoreSize > 0 {
+		merged.MaxSize = uint64(config.LocalStoreSize)
+	}
+	if config.ReadCacheSize > 0 {
+		merged.ReadCacheBytes = config.ReadCacheSize
+	}
+	return &merged
+}
+
 // createBlockStoreForShare creates and starts a per-share BlockStore.
 func (s *Service) createBlockStoreForShare(
 	ctx context.Context,
@@ -386,7 +406,10 @@ func (s *Service) createBlockStoreForShare(
 		return fmt.Errorf("block store config %q has kind %q, expected %q", config.LocalBlockStoreID, localCfg.Kind, models.BlockStoreKindLocal)
 	}
 
-	localStore, err := CreateLocalStoreFromConfig(ctx, localCfg.Type, localCfg, config.Name, localStoreDefaults, fileBlockStore)
+	// Merge per-share cache size overrides into effective defaults.
+	effectiveDefaults := mergeLocalStoreDefaults(localStoreDefaults, config)
+
+	localStore, err := CreateLocalStoreFromConfig(ctx, localCfg.Type, localCfg, config.Name, effectiveDefaults, fileBlockStore)
 	if err != nil {
 		return fmt.Errorf("failed to create local store: %w", err)
 	}
@@ -427,12 +450,13 @@ func (s *Service) createBlockStoreForShare(
 	}
 
 	engineCfg := engine.Config{
-		Local:  localStore,
-		Remote: engineRemote,
-		Syncer: syncer,
+		Local:          localStore,
+		Remote:         engineRemote,
+		Syncer:         syncer,
+		FileBlockStore: fileBlockStore,
 	}
-	if localStoreDefaults != nil {
-		engineCfg.ReadCacheBytes = localStoreDefaults.ReadCacheBytes
+	if effectiveDefaults != nil {
+		engineCfg.ReadCacheBytes = effectiveDefaults.ReadCacheBytes
 	}
 	if syncerDefaults != nil {
 		engineCfg.PrefetchWorkers = syncerDefaults.PrefetchWorkers

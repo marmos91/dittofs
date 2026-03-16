@@ -65,6 +65,14 @@ func (sd ShareDetail) Rows() [][]string {
 		rows = append(rows, []string{"Retention TTL", s.RetentionTTL})
 	}
 
+	// Only show cache size overrides when set
+	if s.LocalStoreSize != "" {
+		rows = append(rows, []string{"Local Store Size", s.LocalStoreSize})
+	}
+	if s.ReadCacheSize != "" {
+		rows = append(rows, []string{"Read Cache Size", s.ReadCacheSize})
+	}
+
 	rows = append(rows,
 		[]string{"Created", s.CreatedAt.Format("2006-01-02 15:04:05")},
 		[]string{"Updated", s.UpdatedAt.Format("2006-01-02 15:04:05")},

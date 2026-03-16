@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -69,6 +70,8 @@ type CreateShareRequest struct {
 	BlockedOperations *[]string `json:"blocked_operations,omitempty"`
 	RetentionPolicy   string    `json:"retention_policy,omitempty"`
 	RetentionTTL      string    `json:"retention_ttl,omitempty"` // Duration string like "72h"
+	LocalStoreSize    string    `json:"local_store_size,omitempty"`
+	ReadCacheSize     string    `json:"read_cache_size,omitempty"`
 }
 
 // UpdateShareRequest is the request body for PUT /api/v1/shares/{name}.
@@ -81,6 +84,8 @@ type UpdateShareRequest struct {
 	BlockedOperations  *[]string `json:"blocked_operations,omitempty"`
 	RetentionPolicy    *string   `json:"retention_policy,omitempty"`
 	RetentionTTL       *string   `json:"retention_ttl,omitempty"` // Duration string like "72h"
+	LocalStoreSize     *string   `json:"local_store_size,omitempty"`
+	ReadCacheSize      *string   `json:"read_cache_size,omitempty"`
 }
 
 // ShareResponse is the response body for share endpoints.
@@ -94,7 +99,9 @@ type ShareResponse struct {
 	DefaultPermission  string    `json:"default_permission"`
 	BlockedOperations  []string  `json:"blocked_operations,omitempty"`
 	RetentionPolicy    string    `json:"retention_policy"`
-	RetentionTTL       string    `json:"retention_ttl,omitempty"` // Human-readable duration
+	RetentionTTL       string    `json:"retention_ttl,omitempty"`    // Human-readable duration
+	LocalStoreSize     string    `json:"local_store_size,omitempty"` // Human-readable byte size
+	ReadCacheSize      string    `json:"read_cache_size,omitempty"`  // Human-readable byte size
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
 }
@@ -195,6 +202,25 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Parse optional per-share cache size overrides
+	var localStoreSize, readCacheSize int64
+	if req.LocalStoreSize != "" {
+		bs, parseErr := bytesize.ParseByteSize(req.LocalStoreSize)
+		if parseErr != nil {
+			BadRequest(w, "Invalid local_store_size: "+parseErr.Error())
+			return
+		}
+		localStoreSize = bs.Int64()
+	}
+	if req.ReadCacheSize != "" {
+		bs, parseErr := bytesize.ParseByteSize(req.ReadCacheSize)
+		if parseErr != nil {
+			BadRequest(w, "Invalid read_cache_size: "+parseErr.Error())
+			return
+		}
+		readCacheSize = bs.Int64()
+	}
+
 	now := time.Now()
 	share := &models.Share{
 		ID:                 uuid.New().String(),
@@ -206,6 +232,8 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		DefaultPermission:  defaultPerm,
 		RetentionPolicy:    string(retPolicy),
 		RetentionTTL:       int64(retTTL.Seconds()),
+		LocalStoreSize:     localStoreSize,
+		ReadCacheSize:      readCacheSize,
 		CreatedAt:          now,
 		UpdatedAt:          now,
 	}
@@ -252,6 +280,8 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			RequireKerberos:   nfsOpts.RequireKerberos,
 			MinKerberosLevel:  nfsOpts.MinKerberosLevel,
 			BlockedOperations: share.GetBlockedOps(),
+			LocalStoreSize:    localStoreSize,
+			ReadCacheSize:     readCacheSize,
 			LocalBlockStoreID: localBlockStore.ID,
 			RetentionPolicy:   retPolicy,
 			RetentionTTL:      retTTL,
@@ -405,12 +435,38 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 		rtRetTTL = &retTTL
 	}
 
+	// Handle per-share cache size overrides (saved to DB, take effect on restart)
+	cacheSizeChanged := false
+	if req.LocalStoreSize != nil {
+		bs, parseErr := bytesize.ParseByteSize(*req.LocalStoreSize)
+		if parseErr != nil {
+			BadRequest(w, "Invalid local_store_size: "+parseErr.Error())
+			return
+		}
+		share.LocalStoreSize = bs.Int64()
+		cacheSizeChanged = true
+	}
+	if req.ReadCacheSize != nil {
+		bs, parseErr := bytesize.ParseByteSize(*req.ReadCacheSize)
+		if parseErr != nil {
+			BadRequest(w, "Invalid read_cache_size: "+parseErr.Error())
+			return
+		}
+		share.ReadCacheSize = bs.Int64()
+		cacheSizeChanged = true
+	}
+
 	share.UpdatedAt = time.Now()
 
 	if err := h.store.UpdateShare(r.Context(), share); err != nil {
 		logger.Error("Failed to update share", "share", share.Name, "id", share.ID, "error", err)
 		InternalServerError(w, "Failed to update share")
 		return
+	}
+
+	if cacheSizeChanged {
+		logger.Info("Cache size override updated for share (takes effect on restart)", "share", share.Name,
+			"local_store_size", share.LocalStoreSize, "read_cache_size", share.ReadCacheSize)
 	}
 
 	// Update runtime if available
@@ -691,6 +747,13 @@ func shareToResponse(s *models.Share) ShareResponse {
 	if s.RetentionTTL > 0 {
 		retTTL = s.GetRetentionTTL().String()
 	}
+	var localStoreSizeStr, readCacheSizeStr string
+	if s.LocalStoreSize > 0 {
+		localStoreSizeStr = bytesize.ByteSize(s.LocalStoreSize).String()
+	}
+	if s.ReadCacheSize > 0 {
+		readCacheSizeStr = bytesize.ByteSize(s.ReadCacheSize).String()
+	}
 	return ShareResponse{
 		ID:                 s.ID,
 		Name:               s.Name,
@@ -702,6 +765,8 @@ func shareToResponse(s *models.Share) ShareResponse {
 		BlockedOperations:  s.GetBlockedOps(),
 		RetentionPolicy:    string(s.GetRetentionPolicy()),
 		RetentionTTL:       retTTL,
+		LocalStoreSize:     localStoreSizeStr,
+		ReadCacheSize:      readCacheSizeStr,
 		CreatedAt:          s.CreatedAt,
 		UpdatedAt:          s.UpdatedAt,
 	}

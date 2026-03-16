@@ -20,6 +20,8 @@ var (
 	createDescription       string
 	createRetention         string
 	createRetentionTTL      string
+	createLocalStoreSize    string
+	createReadCacheSize     string
 )
 
 var createCmd = &cobra.Command{
@@ -50,7 +52,10 @@ Examples:
   dfsctl share create --name /edge-data --metadata default --local fs-cache --retention pin
 
   # Create with TTL retention (evict after 72 hours of no access)
-  dfsctl share create --name /logs --metadata default --local fs-cache --retention ttl --retention-ttl 72h`,
+  dfsctl share create --name /logs --metadata default --local fs-cache --retention ttl --retention-ttl 72h
+
+  # Create with per-share cache size overrides
+  dfsctl share create --name /bigdata --metadata default --local fs-cache --local-store-size 10GiB --read-cache-size 2GiB`,
 	RunE: runCreate,
 }
 
@@ -64,6 +69,8 @@ func init() {
 	createCmd.Flags().StringVar(&createDescription, "description", "", "Share description")
 	createCmd.Flags().StringVar(&createRetention, "retention", "", "Retention policy (pin|ttl|lru)")
 	createCmd.Flags().StringVar(&createRetentionTTL, "retention-ttl", "", "Retention TTL duration (e.g., 72h, 24h)")
+	createCmd.Flags().StringVar(&createLocalStoreSize, "local-store-size", "", "Per-share disk cache size override (e.g., 10GiB, 500MiB)")
+	createCmd.Flags().StringVar(&createReadCacheSize, "read-cache-size", "", "Per-share L1 read cache size override (e.g., 2GiB, 256MiB)")
 	_ = createCmd.MarkFlagRequired("local")
 }
 
@@ -133,6 +140,12 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	}
 	if createRetentionTTL != "" {
 		req.RetentionTTL = createRetentionTTL
+	}
+	if createLocalStoreSize != "" {
+		req.LocalStoreSize = createLocalStoreSize
+	}
+	if createReadCacheSize != "" {
+		req.ReadCacheSize = createReadCacheSize
 	}
 
 	share, err := client.CreateShare(req)

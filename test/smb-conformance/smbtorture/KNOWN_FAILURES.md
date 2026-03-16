@@ -68,6 +68,7 @@ sparse_file_attr query work.
 | smb2.ioctl.compress_create_with_attr | IOCTL | Compression not implemented | - |
 | smb2.ioctl.compress_notsup_get | IOCTL | Compression not implemented | - |
 | smb2.ioctl.compress_notsup_set | IOCTL | Compression not implemented | - |
+| smb2.ioctl.compress_perms | IOCTL | Compression not implemented | - |
 | smb2.ioctl.copy_chunk_across_shares | IOCTL | Server-side copy not implemented | - |
 | smb2.ioctl.copy_chunk_across_shares2 | IOCTL | Server-side copy not implemented | - |
 | smb2.ioctl.copy_chunk_across_shares3 | IOCTL | Server-side copy not implemented | - |
@@ -807,6 +808,9 @@ requests with durable handles. Newly reachable after GMAC signing fix.
 | smb2.replay.dhv2-pending2n-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
 | smb2.replay.dhv2-pending2l-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
 | smb2.replay.dhv2-pending2o-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
+| smb2.replay.dhv2-pending2o-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
+| smb2.replay.dhv2-pending2o-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
+| smb2.replay.dhv2-pending2o-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
 | smb2.replay.dhv2-pending3n-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
 | smb2.replay.dhv2-pending3l-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
 | smb2.replay.channel-sequence | Replay | Channel sequence tracking not implemented | - |

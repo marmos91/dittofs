@@ -30,6 +30,8 @@ type Share struct {
 	BlockedOperations  string    `gorm:"type:text" json:"-"`                                   // JSON array of blocked operations
 	RetentionPolicy    string    `gorm:"size:10;default:''" json:"retention_policy"`           // pin, ttl, lru (empty = LRU default)
 	RetentionTTL       int64     `gorm:"default:0" json:"retention_ttl"`                       // TTL in seconds (0 = not set)
+	LocalStoreSize     int64     `gorm:"default:0" json:"local_store_size"`                    // Disk cache override in bytes (0 = system default)
+	ReadCacheSize      int64     `gorm:"default:0" json:"read_cache_size"`                     // L1 read cache override in bytes (0 = system default)
 	CreatedAt          time.Time `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt          time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 
