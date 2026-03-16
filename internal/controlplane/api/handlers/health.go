@@ -14,6 +14,22 @@ import (
 // blocking health probes indefinitely.
 const HealthCheckTimeout = 5 * time.Second
 
+// ShareHealthInfo represents the health state of a single share's remote store.
+type ShareHealthInfo struct {
+	Name                string  `json:"name"`
+	RemoteHealthy       bool    `json:"remote_healthy"`
+	OutageDurationSec   float64 `json:"outage_duration_seconds,omitempty"`
+	PendingUploads      int     `json:"pending_uploads,omitempty"`
+	OfflineReadsBlocked int64   `json:"offline_reads_blocked,omitempty"`
+}
+
+// StorageHealthInfo represents aggregate storage health across all shares.
+type StorageHealthInfo struct {
+	Status       string            `json:"status"` // "healthy", "degraded"
+	Shares       []ShareHealthInfo `json:"shares,omitempty"`
+	TotalPending int               `json:"total_pending"`
+}
+
 // HealthHandler handles health check endpoints.
 //
 // Health endpoints are unauthenticated and provide:
@@ -53,16 +69,27 @@ func (h *HealthHandler) Liveness(w http.ResponseWriter, r *http.Request) {
 		"uptime_sec": int64(uptime.Seconds()),
 	}
 
-	// Include NFS server identity if available (enables trunking verification)
+	// Include NFS server identity and per-share storage health when available.
+	anyDegraded := false
 	if h.registry != nil {
 		if serverInfo := ServerIdentityFromProvider(h.registry.NFSClientProvider()); serverInfo != nil {
 			for k, v := range serverInfo {
 				data[k] = v
 			}
 		}
+
+		storageHealth := h.getStorageHealth()
+		data["storage_health"] = storageHealth
+		anyDegraded = storageHealth.Status == "degraded"
 	}
 
-	writeJSON(w, http.StatusOK, healthyResponse(data))
+	if anyDegraded {
+		// Return 200 (not 503) with "degraded" status.
+		// Edge nodes are expected to operate offline; K8s should NOT restart.
+		WriteJSON(w, http.StatusOK, degradedResponse(data))
+	} else {
+		WriteJSON(w, http.StatusOK, healthyResponse(data))
+	}
 }
 
 // Readiness handles GET /health/ready - readiness probe.
@@ -70,7 +97,7 @@ func (h *HealthHandler) Liveness(w http.ResponseWriter, r *http.Request) {
 // Includes grace period information when a grace period is active.
 func (h *HealthHandler) Readiness(w http.ResponseWriter, r *http.Request) {
 	if h.registry == nil {
-		writeJSON(w, http.StatusServiceUnavailable, unhealthyResponse("registry not initialized"))
+		WriteJSON(w, http.StatusServiceUnavailable, unhealthyResponse("registry not initialized"))
 		return
 	}
 
@@ -95,7 +122,7 @@ func (h *HealthHandler) Readiness(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, healthyResponse(data))
+	WriteJSON(w, http.StatusOK, healthyResponse(data))
 }
 
 // StoreHealth represents the health status of a single store.
@@ -122,7 +149,7 @@ type StoresResponse struct {
 // store is unhealthy.
 func (h *HealthHandler) Stores(w http.ResponseWriter, r *http.Request) {
 	if h.registry == nil {
-		writeJSON(w, http.StatusServiceUnavailable, unhealthyResponse("registry not initialized"))
+		WriteJSON(w, http.StatusServiceUnavailable, unhealthyResponse("registry not initialized"))
 		return
 	}
 
@@ -150,24 +177,10 @@ func (h *HealthHandler) Stores(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		start := time.Now()
-		err = store.Healthcheck(ctx)
-		latency := time.Since(start)
-
-		health := StoreHealth{
-			Name:    name,
-			Type:    "metadata",
-			Latency: latency.String(),
-		}
-
-		if err != nil {
-			health.Status = "unhealthy"
-			health.Error = err.Error()
+		health := checkStoreHealth(ctx, name, "metadata", store.Healthcheck)
+		if health.Status == "unhealthy" {
 			allHealthy = false
-		} else {
-			health.Status = "healthy"
 		}
-
 		response.MetadataStores = append(response.MetadataStores, health)
 	}
 
@@ -178,30 +191,71 @@ func (h *HealthHandler) Stores(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		start := time.Now()
-		err = share.BlockStore.HealthCheck(ctx)
-		latency := time.Since(start)
-
-		health := StoreHealth{
-			Name:    fmt.Sprintf("block-store/%s", shareName),
-			Type:    "block",
-			Latency: latency.String(),
-		}
-
-		if err != nil {
-			health.Status = "unhealthy"
-			health.Error = err.Error()
+		health := checkStoreHealth(ctx, fmt.Sprintf("block-store/%s", shareName), "block", share.BlockStore.HealthCheck)
+		if health.Status == "unhealthy" {
 			allHealthy = false
-		} else {
-			health.Status = "healthy"
 		}
-
 		response.BlockStores = append(response.BlockStores, health)
 	}
 
 	if allHealthy {
-		writeJSON(w, http.StatusOK, healthyResponse(response))
+		WriteJSON(w, http.StatusOK, healthyResponse(response))
 	} else {
-		writeJSON(w, http.StatusServiceUnavailable, unhealthyResponseWithData(response))
+		WriteJSON(w, http.StatusServiceUnavailable, unhealthyResponseWithData(response))
 	}
+}
+
+// checkStoreHealth runs a health check function and returns the result as StoreHealth.
+func checkStoreHealth(ctx context.Context, name, storeType string, check func(context.Context) error) StoreHealth {
+	start := time.Now()
+	err := check(ctx)
+	latency := time.Since(start)
+
+	health := StoreHealth{
+		Name:    name,
+		Type:    storeType,
+		Status:  "healthy",
+		Latency: latency.String(),
+	}
+	if err != nil {
+		health.Status = "unhealthy"
+		health.Error = err.Error()
+	}
+	return health
+}
+
+// getStorageHealth collects per-share remote store health information.
+func (h *HealthHandler) getStorageHealth() StorageHealthInfo {
+	info := StorageHealthInfo{
+		Status: "healthy",
+		Shares: make([]ShareHealthInfo, 0),
+	}
+
+	for _, shareName := range h.registry.ListShares() {
+		share, err := h.registry.GetShare(shareName)
+		if err != nil || share.BlockStore == nil {
+			continue
+		}
+
+		if !share.BlockStore.HasRemoteStore() {
+			continue // Skip local-only shares
+		}
+
+		stats := share.BlockStore.GetCacheStats()
+		shareInfo := ShareHealthInfo{
+			Name:                shareName,
+			RemoteHealthy:       stats.RemoteHealthy,
+			OutageDurationSec:   stats.OutageDurationSecs,
+			PendingUploads:      stats.PendingUploads,
+			OfflineReadsBlocked: stats.OfflineReadsBlocked,
+		}
+		info.Shares = append(info.Shares, shareInfo)
+		info.TotalPending += stats.PendingUploads
+
+		if !stats.RemoteHealthy {
+			info.Status = "degraded"
+		}
+	}
+
+	return info
 }

@@ -38,13 +38,14 @@ func init() {
 
 // ServerStatus represents the server status for display.
 type ServerStatus struct {
-	Server    string `json:"server" yaml:"server"`
-	Status    string `json:"status" yaml:"status"`
-	Healthy   bool   `json:"healthy" yaml:"healthy"`
-	Service   string `json:"service,omitempty" yaml:"service,omitempty"`
-	StartedAt string `json:"started_at,omitempty" yaml:"started_at,omitempty"`
-	Uptime    string `json:"uptime,omitempty" yaml:"uptime,omitempty"`
-	Error     string `json:"error,omitempty" yaml:"error,omitempty"`
+	Server        string                `json:"server" yaml:"server"`
+	Status        string                `json:"status" yaml:"status"`
+	Healthy       bool                  `json:"healthy" yaml:"healthy"`
+	Service       string                `json:"service,omitempty" yaml:"service,omitempty"`
+	StartedAt     string                `json:"started_at,omitempty" yaml:"started_at,omitempty"`
+	Uptime        string                `json:"uptime,omitempty" yaml:"uptime,omitempty"`
+	StorageHealth *health.StorageHealth `json:"storage_health,omitempty" yaml:"storage_health,omitempty"`
+	Error         string                `json:"error,omitempty" yaml:"error,omitempty"`
 }
 
 func runStatus(cmd *cobra.Command, args []string) error {
@@ -66,9 +67,8 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	status := ServerStatus{
-		Server:  serverURL,
-		Status:  "unreachable",
-		Healthy: false,
+		Server: serverURL,
+		Status: "unreachable",
 	}
 
 	// Check health endpoint
@@ -84,13 +84,12 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		var healthResp health.Response
 		if err := json.NewDecoder(resp.Body).Decode(&healthResp); err == nil {
 			status.Status = healthResp.Status
-			status.Healthy = healthResp.Status == "healthy"
+			status.Healthy = healthResp.Status == "healthy" || healthResp.Status == "degraded"
 			status.Service = healthResp.Data.Service
 			status.StartedAt = healthResp.Data.StartedAt
 			status.Uptime = healthResp.Data.Uptime
-			if healthResp.Error != "" {
-				status.Error = healthResp.Error
-			}
+			status.StorageHealth = healthResp.Data.StorageHealth
+			status.Error = healthResp.Error
 		} else {
 			status.Status = "unknown"
 			status.Error = "Failed to parse health response"
@@ -122,11 +121,12 @@ func printStatusTable(status ServerStatus) {
 	fmt.Println()
 	fmt.Printf("  Server:     %s\n", status.Server)
 
-	if status.Healthy {
+	switch {
+	case status.Healthy && status.Status != "degraded":
 		fmt.Printf("  Status:     \033[32m● %s\033[0m\n", status.Status)
-	} else if status.Status == "unreachable" {
+	case status.Status == "unreachable":
 		fmt.Printf("  Status:     \033[31m○ %s\033[0m\n", status.Status)
-	} else {
+	default:
 		fmt.Printf("  Status:     \033[33m● %s\033[0m\n", status.Status)
 	}
 
@@ -139,6 +139,9 @@ func printStatusTable(status ServerStatus) {
 	if status.Uptime != "" {
 		fmt.Printf("  Uptime:     %s\n", timeutil.FormatUptime(status.Uptime))
 	}
+
+	health.PrintStorageHealth(status.StorageHealth)
+
 	if status.Error != "" {
 		fmt.Printf("  Error:      %s\n", status.Error)
 	}
