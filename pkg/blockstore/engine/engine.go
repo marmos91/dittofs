@@ -104,6 +104,18 @@ func (bs *BlockStore) Start(ctx context.Context) error {
 	// Start syncer background goroutines (periodic uploader, transfer queue).
 	bs.syncer.Start(context.Background())
 
+	// Wire health callback to toggle eviction on remote health changes.
+	// When remote goes unhealthy, suspend eviction to prevent evicting blocks
+	// that cannot be re-downloaded. When healthy again, re-enable eviction.
+	bs.syncer.SetHealthCallback(func(healthy bool) {
+		bs.local.SetEvictionEnabled(healthy)
+		if healthy {
+			logger.Info("Remote store healthy: eviction re-enabled")
+		} else {
+			logger.Warn("Remote store unhealthy: eviction suspended")
+		}
+	})
+
 	// Create prefetcher if L1 cache is enabled and workers are configured.
 	// Created in Start() (not New()) because the loadBlock closure captures bs,
 	// and NewPrefetcher starts workers immediately.
@@ -312,6 +324,10 @@ type CacheStats struct {
 	PendingUploads int  `json:"pending_uploads"`
 	CompletedSyncs int  `json:"completed_syncs"`
 	FailedSyncs    int  `json:"failed_syncs"`
+
+	RemoteHealthy      bool    `json:"remote_healthy"`
+	EvictionSuspended  bool    `json:"eviction_suspended"`
+	OutageDurationSecs float64 `json:"outage_duration_seconds"`
 }
 
 // GetCacheStats returns comprehensive cache statistics.
@@ -324,21 +340,27 @@ func (bs *BlockStore) GetCacheStats() CacheStats {
 	pending, completed, failed := bs.syncer.Queue().Stats()
 	_, uploads, _ := bs.syncer.Queue().PendingByType()
 
+	remoteHealthy := bs.syncer.IsRemoteHealthy()
+	outageDuration := bs.syncer.RemoteOutageDuration()
+
 	return CacheStats{
-		FileCount:      len(files),
-		BlocksDirty:    localStats.MemBlockCount,
-		LocalDiskUsed:  localStats.DiskUsed,
-		LocalDiskMax:   localStats.MaxDisk,
-		LocalMemUsed:   localStats.MemUsed,
-		LocalMemMax:    localStats.MaxMemory,
-		L1Entries:      l1Stats.Entries,
-		L1CurBytes:     l1Stats.CurBytes,
-		L1MaxBytes:     l1Stats.MaxBytes,
-		HasRemote:      bs.remote != nil,
-		PendingSyncs:   pending,
-		PendingUploads: uploads,
-		CompletedSyncs: completed,
-		FailedSyncs:    failed,
+		FileCount:          len(files),
+		BlocksDirty:        localStats.MemBlockCount,
+		LocalDiskUsed:      localStats.DiskUsed,
+		LocalDiskMax:       localStats.MaxDisk,
+		LocalMemUsed:       localStats.MemUsed,
+		LocalMemMax:        localStats.MaxMemory,
+		L1Entries:          l1Stats.Entries,
+		L1CurBytes:         l1Stats.CurBytes,
+		L1MaxBytes:         l1Stats.MaxBytes,
+		HasRemote:          bs.remote != nil,
+		PendingSyncs:       pending,
+		PendingUploads:     uploads,
+		CompletedSyncs:     completed,
+		FailedSyncs:        failed,
+		RemoteHealthy:      remoteHealthy,
+		EvictionSuspended:  bs.remote != nil && !remoteHealthy,
+		OutageDurationSecs: outageDuration.Seconds(),
 	}
 }
 
