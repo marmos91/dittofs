@@ -35,6 +35,10 @@ type Config struct {
 	// Syncer handles async cache-to-remote transfers (required).
 	Syncer *blocksync.Syncer
 
+	// FileBlockStore provides block metadata for cache statistics.
+	// When set, GetCacheStats() populates BlocksLocal/BlocksRemote/BlocksTotal.
+	FileBlockStore blockstore.FileBlockStore
+
 	// ReadCacheBytes is the memory budget for the L1 read cache per share.
 	// 0 disables L1 caching. Passed directly to readcache.New as byte budget.
 	ReadCacheBytes int64
@@ -57,6 +61,8 @@ type BlockStore struct {
 	remote remote.RemoteStore
 	syncer *blocksync.Syncer
 
+	fileBlockStore blockstore.FileBlockStore // optional: for block count stats
+
 	readCache  *readcache.ReadCache  // nil when disabled (ReadCacheBytes=0)
 	prefetcher *readcache.Prefetcher // nil when disabled (PrefetchWorkers=0 or readCache nil)
 
@@ -77,6 +83,7 @@ func New(cfg Config) (*BlockStore, error) {
 		local:           cfg.Local,
 		remote:          cfg.Remote,
 		syncer:          cfg.Syncer,
+		fileBlockStore:  cfg.FileBlockStore,
 		readCache:       readcache.New(cfg.ReadCacheBytes),
 		prefetchWorkers: cfg.PrefetchWorkers,
 	}, nil
@@ -300,9 +307,6 @@ func (bs *BlockStore) EvictLocal(ctx context.Context, payloadID string) error {
 func (bs *BlockStore) LocalStats() local.Stats { return bs.local.Stats() }
 
 // CacheStats holds comprehensive cache statistics for a BlockStore.
-// BlocksDirty is populated from the local store's in-memory dirty block count.
-// BlocksLocal/BlocksRemote/BlocksTotal require metadata store queries and are
-// populated by the aggregation layer (cache handler), not by the engine directly.
 type CacheStats struct {
 	FileCount    int `json:"file_count"`
 	BlocksDirty  int `json:"blocks_dirty"`
@@ -343,9 +347,9 @@ func (bs *BlockStore) GetCacheStats() CacheStats {
 	remoteHealthy := bs.syncer.IsRemoteHealthy()
 	outageDuration := bs.syncer.RemoteOutageDuration()
 
-	return CacheStats{
+	stats := CacheStats{
 		FileCount:          len(files),
-		BlocksDirty:        localStats.MemBlockCount,
+		BlocksDirty:        0,
 		LocalDiskUsed:      localStats.DiskUsed,
 		LocalDiskMax:       localStats.MaxDisk,
 		LocalMemUsed:       localStats.MemUsed,
@@ -362,6 +366,31 @@ func (bs *BlockStore) GetCacheStats() CacheStats {
 		EvictionSuspended:  bs.remote != nil && !remoteHealthy,
 		OutageDurationSecs: outageDuration.Seconds(),
 	}
+
+	// Populate block counts from the metadata store if available.
+	if bs.fileBlockStore != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		for _, payloadID := range files {
+			blocks, err := bs.fileBlockStore.ListFileBlocks(ctx, payloadID)
+			if err != nil {
+				continue
+			}
+			for _, b := range blocks {
+				stats.BlocksTotal++
+				switch b.State {
+				case blockstore.BlockStateDirty:
+					stats.BlocksDirty++
+				case blockstore.BlockStateLocal, blockstore.BlockStateSyncing:
+					stats.BlocksLocal++
+				case blockstore.BlockStateRemote:
+					stats.BlocksRemote++
+				}
+			}
+		}
+	}
+
+	return stats
 }
 
 // EvictL1Cache clears all entries from the L1 read cache.

@@ -450,9 +450,10 @@ func (s *Service) createBlockStoreForShare(
 	}
 
 	engineCfg := engine.Config{
-		Local:  localStore,
-		Remote: engineRemote,
-		Syncer: syncer,
+		Local:          localStore,
+		Remote:         engineRemote,
+		Syncer:         syncer,
+		FileBlockStore: fileBlockStore,
 	}
 	if effectiveDefaults != nil {
 		engineCfg.ReadCacheBytes = effectiveDefaults.ReadCacheBytes
