@@ -243,93 +243,72 @@ controlplane:
 
 ### 6. Block Store Configuration
 
-DittoFS uses a **two-tier block store** architecture for file content. Each share gets its own BlockStore instance with isolated local storage and optional remote backing.
+DittoFS uses a **mandatory WAL-backed cache** for all file content operations. Every write passes through the cache before being flushed asynchronously to the payload store (S3, filesystem, etc.). The WAL (Write-Ahead Log) ensures data durability: on crash or restart, uncommitted writes are replayed automatically from the WAL file on disk.
 
-Block stores are managed at runtime via `dfsctl` and persisted in the control plane database. There are two kinds:
+```yaml
+cache:
+  # Directory path for the cache WAL file (required)
+  # The cache creates a cache.dat file in this directory
+  # Default: $TMPDIR/dittofs-cache (e.g., /tmp/dittofs-cache)
+  path: "/var/lib/dfs/cache"
 
-- **Local block stores**: Fast, per-share storage on local disk or in memory
-- **Remote block stores**: Durable storage in S3 or compatible object stores (shared across shares via ref counting)
-
-#### Block Store Instances (CLI)
-
-```bash
-# Local block stores (per-share isolated directories)
-./dfsctl store block add --kind local --name cache-fs --type fs \
-  --config '{"path":"/data/cache"}'
-./dfsctl store block add --kind local --name cache-mem --type memory
-
-# Remote block stores (shared across shares)
-./dfsctl store block add --kind remote --name s3-remote --type s3 \
-  --config '{"region":"us-east-1","bucket":"my-bucket"}'
-./dfsctl store block add --kind remote --name mem-remote --type memory
-
-# List all block stores
-./dfsctl store block list
-
-# Remove a block store
-./dfsctl store block remove cache-fs
+  # Maximum cache size (supports human-readable formats)
+  # Accepts: "512MB", "1GB", "1Gi", "4Gi", "16Gi", etc.
+  # Default: 1Gi
+  size: "1Gi"
 ```
 
-#### Cache Management (CLI)
+**How the cache works:**
 
-```bash
-# View cache statistics for all shares
-./dfsctl cache stats
-
-# View cache statistics for a specific share
-./dfsctl cache stats --share /export
-
-# Evict all cache (L1 memory + local blocks with remote backup)
-./dfsctl cache evict --share /export
-
-# Evict L1 memory cache only
-./dfsctl cache evict --l1-only
-
-# Evict local blocks only (requires remote store configured)
-./dfsctl cache evict --local-only
+```
+Client WRITE ──► Cache (4MB block buffers + WAL on disk)
+                    │
+                    ▼
+              Offloader (async background flush)
+                    │
+                    ▼
+              Payload Store (S3, filesystem, memory)
 ```
 
-**Local Block Store Types:**
+1. **Write**: Incoming data is buffered in 4MB in-memory block buffers and simultaneously journaled to the WAL on disk (via mmap) for durability
+2. **Flush**: The offloader uploads complete blocks to the payload store asynchronously in the background
+3. **Evict**: After a block is successfully uploaded, it becomes evictable. Under memory pressure, the least-recently-used uploaded blocks are freed first
+4. **Backpressure**: Dirty (unflushed) blocks cannot be evicted. If the cache fills with dirty data (e.g., payload store is slow), writes will block until space is freed. A separate pending-data limit (512MB default) prevents OOM even with large cache sizes
+5. **Recovery**: On crash or restart, the WAL replays uncommitted writes, so no data is lost
 
-| Type | Description | Use Case |
-|------|-------------|----------|
-| `fs` | Filesystem-backed local store | Production (persistent across restarts) |
-| `memory` | In-memory local store (ephemeral) | Testing, development |
+**Cache Features:**
 
-**Remote Block Store Types:**
+- **WAL Persistence**: All writes are logged to disk via mmap for crash recovery
+- **LRU Eviction**: Least-recently-used uploaded entries are evicted when cache is full
+- **Dirty Protection**: Entries with unflushed data cannot be evicted
+- **Backpressure**: Writes block when pending data exceeds limits, preventing OOM
+- **Deduplication**: Blocks are content-addressed (SHA-256); identical blocks are stored once
+- **Global**: All shares use the same cache instance
 
-| Type | Description | Use Case |
-|------|-------------|----------|
-| `s3` | AWS S3 or S3-compatible storage | Production, cloud deployments |
-| `memory` | In-memory remote store (ephemeral) | Testing |
+**Configuration Options:**
 
-**Filesystem Local Store Configuration:**
-
-| Option | Required | Description |
-|--------|----------|-------------|
-| `path` | Yes | Root directory for block storage |
-
-**S3 Remote Store Configuration:**
-
-| Option | Required | Description |
-|--------|----------|-------------|
-| `bucket` | Yes | S3 bucket name |
-| `region` | No | AWS region (default: "us-east-1") |
-| `endpoint` | No | S3 endpoint URL (for S3-compatible services like Localstack/MinIO) |
-| `access_key_id` | No | AWS access key (uses SDK default chain if empty) |
-| `secret_access_key` | No | AWS secret key (uses SDK default chain if empty) |
+| Option | Required | Default | Description |
+|--------|----------|---------|-------------|
+| `path` | Yes | `$TMPDIR/dittofs-cache` | Directory for the cache WAL file. Use a persistent path for production (not `/tmp`) |
+| `size` | No | `1Gi` | Maximum cache size. Accepts human-readable formats: `512MB`, `1Gi`, `4GB`, etc. |
 
 **Environment variable overrides:**
 
 ```bash
-export DITTOFS_BLOCK_STORE_LOCAL_TYPE=fs
-export DITTOFS_BLOCK_STORE_LOCAL_PATH=/var/lib/dfs/blocks
-export DITTOFS_BLOCK_STORE_REMOTE_TYPE=s3
-export DITTOFS_BLOCK_STORE_REMOTE_BUCKET=my-bucket
-export DITTOFS_BLOCK_STORE_REMOTE_REGION=us-east-1
+export DITTOFS_CACHE_PATH=/var/lib/dfs/cache
+export DITTOFS_CACHE_SIZE=4Gi
 ```
 
-> **Note**: If your configuration uses the old `payload:` key, `dfs config validate` will detect it and print a migration hint pointing to the new `block_store:` format.
+**Sizing guidance:**
+
+| Use Case | Recommended Size | Notes |
+|----------|-----------------|-------|
+| Development/testing | `512Mi` – `1Gi` | Default is fine |
+| General use | `2Gi` – `4Gi` | Good for mixed read/write |
+| Heavy writes / S3 backend | `4Gi` – `16Gi` | More cache absorbs upload latency |
+| Large file workloads (>100MB files) | `8Gi`+ | Prevents excessive eviction churn |
+
+> **Tip**: If you see `ErrCacheFull` errors or slow write throughput, increase `size`. If using an S3 payload store, a larger cache helps absorb the higher upload latency.
 
 ### 7. Metadata Configuration
 
