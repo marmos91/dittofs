@@ -18,9 +18,9 @@ Requirements for offline/edge resilience. Each maps to roadmap phases.
 
 ### Offline Resilience
 
-- [ ] **RESIL-01**: Read path serves locally cached blocks when S3 is unreachable (graceful degradation)
-- [ ] **RESIL-02**: Read path returns clear error for blocks only in S3 when unreachable (not generic I/O error)
-- [ ] **RESIL-03**: Write path accepts writes to local store when S3 is unreachable
+- [x] **RESIL-01**: Read path serves locally cached blocks when S3 is unreachable (graceful degradation)
+- [x] **RESIL-02**: Read path returns clear error for blocks only in S3 when unreachable (not generic I/O error)
+- [x] **RESIL-03**: Write path accepts writes to local store when S3 is unreachable
 - [x] **RESIL-04**: Eviction is suspended when remote store health check fails (don't evict blocks that can't be re-downloaded)
 - [x] **RESIL-05**: Periodic S3 health check detects connectivity loss and restoration
 - [x] **RESIL-06**: Syncer pauses upload attempts during connectivity loss (exponential backoff)
@@ -68,9 +68,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CACHE-04 | Phase 63 | Complete |
 | CACHE-05 | Phase 63 | Complete |
 | CACHE-06 | Phase 63 | Complete |
-| RESIL-01 | Phase 65 | Pending |
-| RESIL-02 | Phase 65 | Pending |
-| RESIL-03 | Phase 65 | Pending |
+| RESIL-01 | Phase 65 | Complete |
+| RESIL-02 | Phase 65 | Complete |
+| RESIL-03 | Phase 65 | Complete |
 | RESIL-04 | Phase 64 | Complete |
 | RESIL-05 | Phase 64 | Complete |
 | RESIL-06 | Phase 64 | Complete |
