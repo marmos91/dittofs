@@ -89,7 +89,18 @@ func TestHealthMonitorCircuitBreaker(t *testing.T) {
 	env.cache.Start(ctx)
 	env.syncer.Start(ctx)
 
-	// Write a block to the local cache.
+	// Simulate outage BEFORE writing data, so the circuit breaker is tripped
+	// before the periodic uploader can sync the block.
+	env.remote.SetHealthy(false)
+
+	// Wait for health monitor to detect failure (threshold=2 failures at 20ms interval).
+	time.Sleep(150 * time.Millisecond)
+
+	if env.syncer.IsRemoteHealthy() {
+		t.Fatal("expected remote to be unhealthy after simulated outage")
+	}
+
+	// Write a block to the local cache while unhealthy.
 	payloadID := "export/circuit-breaker-test.bin"
 	data := make([]byte, 1024)
 	for i := range data {
@@ -104,16 +115,6 @@ func TestHealthMonitorCircuitBreaker(t *testing.T) {
 		t.Fatalf("Flush failed: %v", err)
 	}
 	env.cache.SyncFileBlocks(ctx)
-
-	// Simulate outage.
-	env.remote.SetHealthy(false)
-
-	// Wait for health monitor to detect failure (threshold=2 failures at 20ms interval).
-	time.Sleep(150 * time.Millisecond)
-
-	if env.syncer.IsRemoteHealthy() {
-		t.Fatal("expected remote to be unhealthy after simulated outage")
-	}
 
 	// Wait for periodic uploader to run -- block should NOT be uploaded.
 	time.Sleep(200 * time.Millisecond)

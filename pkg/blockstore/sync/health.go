@@ -36,7 +36,8 @@ type HealthMonitor struct {
 	onTransition HealthTransitionCallback
 	mu           gosync.Mutex // Protects onTransition
 
-	stopCh chan struct{}
+	stopCh   chan struct{}
+	stopOnce gosync.Once
 }
 
 // NewHealthMonitor creates a new HealthMonitor. If probeFunc is nil, the monitor
@@ -75,14 +76,11 @@ func (hm *HealthMonitor) Start(ctx context.Context) {
 	go hm.monitorLoop(ctx)
 }
 
-// Stop signals the health monitor goroutine to exit.
+// Stop signals the health monitor goroutine to exit. Safe to call multiple times.
 func (hm *HealthMonitor) Stop() {
-	select {
-	case <-hm.stopCh:
-		// Already stopped
-	default:
+	hm.stopOnce.Do(func() {
 		close(hm.stopCh)
-	}
+	})
 }
 
 // IsHealthy returns the current health state. Always true if probeFunc is nil.
@@ -117,6 +115,10 @@ func (hm *HealthMonitor) monitorLoop(ctx context.Context) {
 		case <-ticker.C:
 			err := hm.probeFunc(ctx)
 			if err != nil {
+				// Don't count context cancellation as a health failure — we're shutting down.
+				if ctx.Err() != nil {
+					return
+				}
 				newCount := hm.consecutiveFailures.Add(1)
 				logger.Debug("Health probe failed", "error", err, "consecutive_failures", newCount)
 
