@@ -21,11 +21,11 @@ Requirements for offline/edge resilience. Each maps to roadmap phases.
 - [ ] **RESIL-01**: Read path serves locally cached blocks when S3 is unreachable (graceful degradation)
 - [ ] **RESIL-02**: Read path returns clear error for blocks only in S3 when unreachable (not generic I/O error)
 - [ ] **RESIL-03**: Write path accepts writes to local store when S3 is unreachable
-- [ ] **RESIL-04**: Eviction is suspended when remote store health check fails (don't evict blocks that can't be re-downloaded)
-- [ ] **RESIL-05**: Periodic S3 health check detects connectivity loss and restoration
-- [ ] **RESIL-06**: Syncer pauses upload attempts during connectivity loss (exponential backoff)
-- [ ] **RESIL-07**: Syncer auto-resumes uploads when connectivity returns
-- [ ] **RESIL-08**: Queued blocks drain in upload order (oldest first) on reconnect
+- [x] **RESIL-04**: Eviction is suspended when remote store health check fails (don't evict blocks that can't be re-downloaded)
+- [x] **RESIL-05**: Periodic S3 health check detects connectivity loss and restoration
+- [x] **RESIL-06**: Syncer pauses upload attempts during connectivity loss (exponential backoff)
+- [x] **RESIL-07**: Syncer auto-resumes uploads when connectivity returns
+- [x] **RESIL-08**: Queued blocks drain in upload order (oldest first) on reconnect
 
 ### Test Infrastructure
 
@@ -71,11 +71,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | RESIL-01 | Phase 65 | Pending |
 | RESIL-02 | Phase 65 | Pending |
 | RESIL-03 | Phase 65 | Pending |
-| RESIL-04 | Phase 64 | Pending |
-| RESIL-05 | Phase 64 | Pending |
-| RESIL-06 | Phase 64 | Pending |
-| RESIL-07 | Phase 64 | Pending |
-| RESIL-08 | Phase 64 | Pending |
+| RESIL-04 | Phase 64 | Complete |
+| RESIL-05 | Phase 64 | Complete |
+| RESIL-06 | Phase 64 | Complete |
+| RESIL-07 | Phase 64 | Complete |
+| RESIL-08 | Phase 64 | Complete |
 | INFRA-01 | Phase 66 | Pending |
 | INFRA-02 | Phase 66 | Pending |
 | INFRA-03 | Phase 66 | Pending |

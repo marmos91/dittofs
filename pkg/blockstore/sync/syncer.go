@@ -89,6 +89,9 @@ type Syncer struct {
 
 	periodicStarted bool        // true once periodicUploader goroutine is launched
 	uploading       atomic.Bool // Guards against overlapping periodic upload ticks
+
+	healthMonitor   *HealthMonitor           // Monitors remote store health (nil when no remote)
+	onHealthChanged HealthTransitionCallback // Callback invoked on health state transitions
 }
 
 // New creates a new Syncer. The fileBlockStore is required for content-addressed dedup.
@@ -132,6 +135,35 @@ func (m *Syncer) SetFinalizationCallback(fn FinalizationCallback) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onFinalized = fn
+}
+
+// SetHealthCallback sets the callback invoked when the remote store health state changes.
+// If the HealthMonitor is already running, the callback is forwarded to it immediately.
+func (m *Syncer) SetHealthCallback(fn HealthTransitionCallback) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onHealthChanged = fn
+	if m.healthMonitor != nil {
+		m.healthMonitor.SetTransitionCallback(fn)
+	}
+}
+
+// IsRemoteHealthy returns the health state of the remote store.
+// Returns true when there is no HealthMonitor (local-only mode).
+func (m *Syncer) IsRemoteHealthy() bool {
+	if m.healthMonitor == nil {
+		return true
+	}
+	return m.healthMonitor.IsHealthy()
+}
+
+// RemoteOutageDuration returns how long the remote store has been unhealthy.
+// Returns 0 when healthy or when there is no HealthMonitor.
+func (m *Syncer) RemoteOutageDuration() time.Duration {
+	if m.healthMonitor == nil {
+		return 0
+	}
+	return m.healthMonitor.OutageDuration()
 }
 
 // checkReady returns nil if the syncer can process requests.
@@ -355,8 +387,25 @@ func (m *Syncer) Start(ctx context.Context) {
 		return
 	}
 
+	m.startHealthMonitor(ctx)
+	m.startPeriodicUploader(ctx)
+}
+
+// startHealthMonitor creates and starts the health monitor for the remote store.
+// Must be called with m.mu held.
+func (m *Syncer) startHealthMonitor(ctx context.Context) {
+	m.healthMonitor = NewHealthMonitor(m.remoteStore.HealthCheck, m.config)
+	if m.onHealthChanged != nil {
+		m.healthMonitor.SetTransitionCallback(m.onHealthChanged)
+	}
+	m.healthMonitor.Start(ctx)
+}
+
+// startPeriodicUploader launches the periodic uploader goroutine if not already running.
+// Must be called with m.mu held.
+func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 	if m.periodicStarted {
-		return // Already started (e.g., via SetRemoteStore before Start)
+		return
 	}
 	m.periodicStarted = true
 
@@ -409,6 +458,12 @@ func (m *Syncer) periodicUploader(ctx context.Context, interval time.Duration) {
 				logger.Debug("Periodic syncer: previous tick still running, skipping")
 				continue
 			}
+			// Circuit breaker: skip uploads when remote store is unhealthy
+			if !m.IsRemoteHealthy() {
+				logger.Debug("Periodic syncer: remote unhealthy, skipping upload cycle")
+				m.uploading.Store(false)
+				continue
+			}
 			m.syncLocalBlocks(ctx)
 			m.uploading.Store(false)
 		case <-m.stopCh:
@@ -432,6 +487,10 @@ func (m *Syncer) Close() error {
 	m.mu.Unlock()
 
 	close(m.stopCh)
+
+	if m.healthMonitor != nil {
+		m.healthMonitor.Stop()
+	}
 
 	// Wait for in-flight uploads and flushes to complete before closing.
 	// This prevents "store is closed" races when the remote store is closed
@@ -485,14 +544,8 @@ func (m *Syncer) SetRemoteStore(ctx context.Context, remoteStore remote.RemoteSt
 	m.remoteStore = remoteStore
 	m.cache.SetEvictionEnabled(true)
 
-	if !m.periodicStarted {
-		m.periodicStarted = true
-		interval := m.config.UploadInterval
-		if interval <= 0 {
-			interval = 2 * time.Second
-		}
-		go m.periodicUploader(ctx, interval)
-	}
+	m.startHealthMonitor(ctx)
+	m.startPeriodicUploader(ctx)
 
 	logger.Info("Remote store attached, periodic syncer started")
 	return nil

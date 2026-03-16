@@ -11,6 +11,9 @@ on:
     paths:
       - 'pkg/adapter/smb/**'
       - 'internal/adapter/smb/**'
+      - 'pkg/metadata/**'
+      - 'pkg/blockstore/**'
+      - 'pkg/controlplane/**'
       - 'test/smb-conformance/**'
       - 'pkg/adapter/base.go'
       - '.github/workflows/smb-conformance.yml'
@@ -19,6 +22,9 @@ on:
     paths:
       - 'pkg/adapter/smb/**'
       - 'internal/adapter/smb/**'
+      - 'pkg/metadata/**'
+      - 'pkg/blockstore/**'
+      - 'pkg/controlplane/**'
       - 'test/smb-conformance/**'
       - 'pkg/adapter/base.go'
       - '.github/workflows/smb-conformance.yml'

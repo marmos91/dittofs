@@ -263,12 +263,12 @@ Plans:
   3. When health check reports unhealthy, the syncer stops attempting uploads and enters exponential backoff (no wasted network/CPU on doomed requests)
   4. When health check transitions from unhealthy to healthy, the syncer automatically resumes and drains queued blocks in upload order (oldest first)
   5. Health state transitions are logged and observable via existing metrics/status endpoints
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 64-01: Remote store health check (periodic probe, state machine, logging)
-- [ ] 64-02: Syncer backoff and eviction suspension (pause uploads, skip eviction when unhealthy)
-- [ ] 64-03: Auto-resume and ordered drain (resume on healthy, oldest-first upload queue)
+- [ ] 64-01-PLAN.md — HealthMonitor type with periodic probe, state machine, configurable thresholds
+- [ ] 64-02-PLAN.md — Syncer circuit breaker, eviction suspension callback, CacheStats health fields
+- [ ] 64-03-PLAN.md — Integration tests for circuit breaker, recovery drain, and eviction suspension
 
 ### Phase 65: Offline Read/Write Paths
 **Goal**: NFS/SMB clients can continue reading cached files and writing new data when S3 is unreachable
@@ -603,7 +603,7 @@ v3.8 (33-40.5) -> v4.2 (57-62) -> v4.0 (41-49) -> v4.3 (49.1-49.3) -> v4.7 (63-6
 | 41-49 | v4.0 | 24/24 | Complete | 2026-03-11 |
 | 49.1-49.3 | v4.3 | 1/1 | Complete | 2026-03-13 |
 | 63. Cache Retention Model | 3/3 | Complete    | 2026-03-13 | - |
-| 64. S3 Health Check + Syncer Resilience | v4.7 | 0/3 | Not started | - |
+| 64. S3 Health Check + Syncer Resilience | 3/3 | Complete    | 2026-03-16 | - |
 | 65. Offline Read/Write Paths | v4.7 | 0/2 | Not started | - |
 | 66. Edge Test Infrastructure | v4.7 | 0/2 | Not started | - |
 | 49.4 Block-Level Compression | v4.5 | 0/? | Not started | - |
