@@ -199,6 +199,18 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
 
+	// Per MS-SMB2 3.3.5.14: When there are multiple lock elements and the
+	// first element is a lock (not unlock), it MUST have FailImmediately set.
+	// This prevents blocking lock requests in batch operations.
+	if req.LockCount > 1 {
+		firstIsLock := (req.Locks[0].Flags & SMB2LockFlagUnlock) == 0
+		firstHasFailImm := (req.Locks[0].Flags & SMB2LockFlagFailImmediately) != 0
+		if firstIsLock && !firstHasFailImm {
+			logger.Debug("LOCK: multi-element request without FailImmediately on first lock")
+			return NewErrorResult(types.StatusInvalidParameter), nil
+		}
+	}
+
 	// Track acquired locks for rollback on failure
 	var acquiredLocks []LockElement
 
@@ -230,6 +242,16 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			logger.Debug("LOCK: invalid flags - lock operation without lock type",
 				"index", i,
 				"flags", fmt.Sprintf("0x%08X", lockElem.Flags))
+			rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
+			return NewErrorResult(types.StatusInvalidParameter), nil
+		}
+
+		// Per MS-SMB2 3.3.5.14: Validate offset+length doesn't overflow
+		if lockElem.Length > 0 && lockElem.Offset > ^uint64(0)-lockElem.Length {
+			logger.Debug("LOCK: range overflow",
+				"index", i,
+				"offset", lockElem.Offset,
+				"length", lockElem.Length)
 			rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
 			return NewErrorResult(types.StatusInvalidParameter), nil
 		}

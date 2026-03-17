@@ -161,9 +161,15 @@ const (
 	// StatusNotAReparsePoint indicates the file is not a reparse point.
 	StatusNotAReparsePoint Status = 0xC0000275
 
-	// StatusLockNotGranted indicates the byte-range lock could not be acquired.
-	// Used when a lock request conflicts with an existing lock.
-	StatusLockNotGranted Status = 0xC0000054
+	// StatusFileLockConflict indicates an I/O operation (READ/WRITE) conflicts
+	// with an existing byte-range lock held by another session.
+	// Per MS-SMB2 3.3.5.15 (Read) and 3.3.5.16 (Write).
+	StatusFileLockConflict Status = 0xC0000054
+
+	// StatusLockNotGranted indicates a LOCK request could not be acquired
+	// because it conflicts with an existing lock.
+	// Per MS-SMB2 3.3.5.14 (Lock).
+	StatusLockNotGranted Status = 0xC0000055
 
 	// StatusRangeNotLocked indicates no lock exists for the specified range.
 	// Used when trying to unlock a range that was not locked.
@@ -254,6 +260,8 @@ func (s Status) String() string {
 		return "STATUS_UNEXPECTED_IO_ERROR"
 	case StatusNotAReparsePoint:
 		return "STATUS_NOT_A_REPARSE_POINT"
+	case StatusFileLockConflict:
+		return "STATUS_FILE_LOCK_CONFLICT"
 	case StatusLockNotGranted:
 		return "STATUS_LOCK_NOT_GRANTED"
 	case StatusRangeNotLocked:

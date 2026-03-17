@@ -323,7 +323,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		true, // isWrite = true for write operations
 	); err != nil {
 		logger.Debug("WRITE: blocked by lock", "path", openFile.Path, "offset", req.Offset, "length", len(req.Data))
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusLockNotGranted}}, nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileLockConflict}}, nil
 	}
 
 	// ========================================================================

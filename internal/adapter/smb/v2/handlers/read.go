@@ -278,7 +278,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		false, // isWrite = false for read operations
 	); err != nil {
 		logger.Debug("READ: blocked by lock", "path", openFile.Path, "offset", req.Offset, "length", req.Length)
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusLockNotGranted}}, nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileLockConflict}}, nil
 	}
 
 	// ========================================================================
