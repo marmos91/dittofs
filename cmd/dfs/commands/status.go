@@ -58,13 +58,14 @@ type GracePeriodInfo struct {
 
 // ServerStatus represents the server status information.
 type ServerStatus struct {
-	Running     bool             `json:"running" yaml:"running"`
-	PID         int              `json:"pid,omitempty" yaml:"pid,omitempty"`
-	Message     string           `json:"message" yaml:"message"`
-	StartedAt   string           `json:"started_at,omitempty" yaml:"started_at,omitempty"`
-	Uptime      string           `json:"uptime,omitempty" yaml:"uptime,omitempty"`
-	Healthy     bool             `json:"healthy" yaml:"healthy"`
-	GracePeriod *GracePeriodInfo `json:"grace_period,omitempty" yaml:"grace_period,omitempty"`
+	Running       bool                  `json:"running" yaml:"running"`
+	PID           int                   `json:"pid,omitempty" yaml:"pid,omitempty"`
+	Message       string                `json:"message" yaml:"message"`
+	StartedAt     string                `json:"started_at,omitempty" yaml:"started_at,omitempty"`
+	Uptime        string                `json:"uptime,omitempty" yaml:"uptime,omitempty"`
+	Healthy       bool                  `json:"healthy" yaml:"healthy"`
+	StorageHealth *health.StorageHealth `json:"storage_health,omitempty" yaml:"storage_health,omitempty"`
+	GracePeriod   *GracePeriodInfo      `json:"grace_period,omitempty" yaml:"grace_period,omitempty"`
 }
 
 func runStatus(cmd *cobra.Command, args []string) error {
@@ -74,8 +75,6 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	status := ServerStatus{
-		Running: false,
-		Healthy: false,
 		Message: "Server is not running",
 	}
 
@@ -114,12 +113,17 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		var healthResp health.Response
 		if err := json.NewDecoder(resp.Body).Decode(&healthResp); err == nil {
 			status.Running = true
-			status.Healthy = healthResp.Status == "healthy"
 			status.StartedAt = healthResp.Data.StartedAt
 			status.Uptime = healthResp.Data.Uptime
-			if status.Healthy {
+			status.StorageHealth = healthResp.Data.StorageHealth
+			switch healthResp.Status {
+			case "healthy":
+				status.Healthy = true
 				status.Message = "Server is running and healthy"
-			} else {
+			case "degraded":
+				status.Healthy = true // Still operational
+				status.Message = "Server is running (degraded: some remote stores offline)"
+			default:
 				status.Message = fmt.Sprintf("Server is running but unhealthy: %s", healthResp.Error)
 			}
 		} else {
@@ -181,6 +185,7 @@ func printStatusTable(status ServerStatus) {
 			fmt.Printf("  Grace:      \033[33m%ds remaining (%d/%d clients reclaimed)\033[0m\n",
 				remaining, status.GracePeriod.ReclaimedClients, status.GracePeriod.ExpectedClients)
 		}
+		health.PrintStorageHealth(status.StorageHealth)
 	} else {
 		fmt.Printf("  Status:     \033[31m○ Stopped\033[0m\n")
 	}

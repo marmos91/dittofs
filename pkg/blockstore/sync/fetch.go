@@ -36,6 +36,13 @@ func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint
 		return nil, nil // No remote data exists
 	}
 
+	// Health gate: fail fast when remote is unreachable
+	if !m.IsRemoteHealthy() {
+		m.offlineReadsBlocked.Add(1)
+		m.logOfflineRead("fetchBlock", payloadID, blockIdx)
+		return nil, m.remoteUnavailableError()
+	}
+
 	storeKey, err := m.resolveStoreKey(ctx, payloadID, blockIdx)
 	if err != nil {
 		return nil, err
@@ -94,12 +101,19 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 		return false, nil
 	}
 
+	// Health gate: fail fast when remote is unreachable
+	if !m.IsRemoteHealthy() {
+		m.offlineReadsBlocked.Add(1)
+		m.logOfflineRead("EnsureAvailableAndRead", payloadID, startBlockIdx)
+		return false, m.remoteUnavailableError()
+	}
+
 	filled := false
-	anyNeedCache := false
+	needCacheReadAt := false
 
 	for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
 		if m.cache.IsBlockCached(ctx, payloadID, blockIdx) {
-			anyNeedCache = true
+			needCacheReadAt = true
 			continue
 		}
 
@@ -109,7 +123,7 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 		}
 
 		if !downloaded {
-			anyNeedCache = true
+			needCacheReadAt = true
 			continue
 		}
 
@@ -124,14 +138,11 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 		}
 	}
 
-	if m.config.PrefetchBlocks > 0 {
-		for i := 0; i < m.config.PrefetchBlocks; i++ {
-			prefetchBlockIdx := endBlockIdx + 1 + uint64(i)
-			m.enqueuePrefetch(payloadID, prefetchBlockIdx)
-		}
+	for i := range m.config.PrefetchBlocks {
+		m.enqueuePrefetch(payloadID, endBlockIdx+1+uint64(i))
 	}
 
-	if anyNeedCache {
+	if needCacheReadAt {
 		return false, nil // Some blocks were in cache -- caller should use cache ReadAt
 	}
 	return filled, nil
@@ -180,10 +191,7 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 		return nil, true, nil
 	}
 
-	if m.remoteStore == nil {
-		return nil, true, nil // No remote store -- treat as sparse
-	}
-
+	// Caller (EnsureAvailableAndRead) already verified remoteStore != nil.
 	data, err := m.remoteStore.ReadBlock(ctx, storeKey)
 	if err != nil {
 		if errors.Is(err, blockstore.ErrBlockNotFound) {
@@ -278,6 +286,13 @@ func (m *Syncer) EnsureAvailable(ctx context.Context, payloadID string, offset u
 		return nil
 	}
 
+	// Health gate: fail fast when remote is unreachable
+	if !m.IsRemoteHealthy() {
+		m.offlineReadsBlocked.Add(1)
+		m.logOfflineRead("EnsureAvailable", payloadID, startBlockIdx)
+		return m.remoteUnavailableError()
+	}
+
 	var doneChannels []chan error
 
 	for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
@@ -287,10 +302,8 @@ func (m *Syncer) EnsureAvailable(ctx context.Context, payloadID string, offset u
 		}
 	}
 
-	if m.config.PrefetchBlocks > 0 {
-		for i := 0; i < m.config.PrefetchBlocks; i++ {
-			m.enqueuePrefetch(payloadID, endBlockIdx+1+uint64(i))
-		}
+	for i := range m.config.PrefetchBlocks {
+		m.enqueuePrefetch(payloadID, endBlockIdx+1+uint64(i))
 	}
 
 	for _, done := range doneChannels {
@@ -312,6 +325,13 @@ func (m *Syncer) EnsureAvailable(ctx context.Context, payloadID string, offset u
 func (m *Syncer) enqueueDownload(payloadID string, blockIdx uint64) chan error {
 	if m.cache.IsBlockCached(context.Background(), payloadID, blockIdx) {
 		return nil
+	}
+
+	// Health gate: fail fast when remote is unreachable
+	if !m.IsRemoteHealthy() {
+		ch := make(chan error, 1)
+		ch <- m.remoteUnavailableError()
+		return ch
 	}
 
 	key := blockstore.FormatStoreKey(payloadID, blockIdx)
@@ -366,6 +386,11 @@ func (m *Syncer) enqueueDownload(payloadID string, blockIdx uint64) chan error {
 // enqueuePrefetch enqueues a prefetch request (non-blocking, best effort).
 func (m *Syncer) enqueuePrefetch(payloadID string, blockIdx uint64) {
 	if m.cache.IsBlockCached(context.Background(), payloadID, blockIdx) {
+		return
+	}
+
+	// Suppress prefetch when remote is unreachable
+	if !m.IsRemoteHealthy() {
 		return
 	}
 

@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v4.7
 milestone_name: Offline/Edge Resilience
 status: completed
-stopped_at: Completed 64-03-PLAN.md (Phase 64 complete)
-last_updated: "2026-03-16T12:16:13.447Z"
-last_activity: 2026-03-16 — Completed 64-03 (Health Integration Tests)
+stopped_at: Completed 65-02-PLAN.md
+last_updated: "2026-03-16T21:58:34.672Z"
+last_activity: 2026-03-16 — Completed 65-02 (Status endpoints and health reporting)
 progress:
   total_phases: 24
-  completed_phases: 2
-  total_plans: 6
-  completed_plans: 6
+  completed_phases: 3
+  total_plans: 8
+  completed_plans: 8
   percent: 100
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-13)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** v4.7 Offline/Edge Resilience — Phase 64 (S3 Health Check and Syncer Resilience)
+**Current focus:** v4.7 Offline/Edge Resilience — Phase 65 (Offline Read/Write Paths)
 
 ## Current Position
 
-Phase: 64 of 66 (S3 Health Check and Syncer Resilience)
-Plan: 3 of 3 in current phase (COMPLETE)
+Phase: 65 of 66 (Offline Read/Write Paths)
+Plan: 2 of 2 in current phase
 Status: phase-complete
-Last activity: 2026-03-16 — Completed 64-03 (Health Integration Tests)
+Last activity: 2026-03-16 — Completed 65-02 (Status endpoints and health reporting)
 
 Progress: [██████████] 100%
 
@@ -64,6 +64,8 @@ Progress: [██████████] 100%
 | Phase 64 P01 | 2min | 1 tasks | 3 files |
 | Phase 64 P02 | 3min | 2 tasks | 2 files |
 | Phase 64 P03 | 3min | 2 tasks | 2 files |
+| Phase 65 P01 | 6min | 2 tasks | 7 files |
+| Phase 65 P02 | 5min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -76,6 +78,8 @@ Progress: [██████████] 100%
 - [Phase 64]: Atomic bool/int for lock-free health state; ticker reset on transitions for adaptive intervals
 - [Phase 64]: Circuit breaker at periodicUploader level; EvictionSuspended derived not stored
 - [Phase 64]: atomic.Bool for controllable health in test helpers (not atomic.Value); no build tags needed for memory-based tests
+- [Phase 65]: Health gate at syncer level for GetSize/Exists; WARN on first offline read per transition, DEBUG after; offlineReadsBlocked as atomic int64
+- [Phase 65]: Health endpoint returns 200 (not 503) for degraded state; edge nodes expected to operate offline without K8s restarts
 
 ### Pending Todos
 
@@ -87,6 +91,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-16T12:00:07Z
-Stopped at: Completed 64-03-PLAN.md (Phase 64 complete)
-Next action: Begin Phase 65 (Offline Read/Write Paths)
+Last session: 2026-03-16T21:52:45.000Z
+Stopped at: Completed 65-02-PLAN.md
+Next action: Phase 65 complete. All plans in v4.7 Offline/Edge Resilience executed.

@@ -329,9 +329,10 @@ type CacheStats struct {
 	CompletedSyncs int  `json:"completed_syncs"`
 	FailedSyncs    int  `json:"failed_syncs"`
 
-	RemoteHealthy      bool    `json:"remote_healthy"`
-	EvictionSuspended  bool    `json:"eviction_suspended"`
-	OutageDurationSecs float64 `json:"outage_duration_seconds"`
+	RemoteHealthy       bool    `json:"remote_healthy"`
+	EvictionSuspended   bool    `json:"eviction_suspended"`
+	OutageDurationSecs  float64 `json:"outage_duration_seconds"`
+	OfflineReadsBlocked int64   `json:"offline_reads_blocked"`
 }
 
 // GetCacheStats returns comprehensive cache statistics.
@@ -348,49 +349,56 @@ func (bs *BlockStore) GetCacheStats() CacheStats {
 	outageDuration := bs.syncer.RemoteOutageDuration()
 
 	stats := CacheStats{
-		FileCount:          len(files),
-		BlocksDirty:        0,
-		LocalDiskUsed:      localStats.DiskUsed,
-		LocalDiskMax:       localStats.MaxDisk,
-		LocalMemUsed:       localStats.MemUsed,
-		LocalMemMax:        localStats.MaxMemory,
-		L1Entries:          l1Stats.Entries,
-		L1CurBytes:         l1Stats.CurBytes,
-		L1MaxBytes:         l1Stats.MaxBytes,
-		HasRemote:          bs.remote != nil,
-		PendingSyncs:       pending,
-		PendingUploads:     uploads,
-		CompletedSyncs:     completed,
-		FailedSyncs:        failed,
-		RemoteHealthy:      remoteHealthy,
-		EvictionSuspended:  bs.remote != nil && !remoteHealthy,
-		OutageDurationSecs: outageDuration.Seconds(),
+		FileCount:           len(files),
+		LocalDiskUsed:       localStats.DiskUsed,
+		LocalDiskMax:        localStats.MaxDisk,
+		LocalMemUsed:        localStats.MemUsed,
+		LocalMemMax:         localStats.MaxMemory,
+		L1Entries:           l1Stats.Entries,
+		L1CurBytes:          l1Stats.CurBytes,
+		L1MaxBytes:          l1Stats.MaxBytes,
+		HasRemote:           bs.remote != nil,
+		PendingSyncs:        pending,
+		PendingUploads:      uploads,
+		CompletedSyncs:      completed,
+		FailedSyncs:         failed,
+		RemoteHealthy:       remoteHealthy,
+		EvictionSuspended:   bs.remote != nil && !remoteHealthy,
+		OutageDurationSecs:  outageDuration.Seconds(),
+		OfflineReadsBlocked: bs.syncer.OfflineReadsBlocked(),
 	}
 
-	// Populate block counts from the metadata store if available.
-	if bs.fileBlockStore != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		for _, payloadID := range files {
-			blocks, err := bs.fileBlockStore.ListFileBlocks(ctx, payloadID)
-			if err != nil {
-				continue
-			}
-			for _, b := range blocks {
-				stats.BlocksTotal++
-				switch b.State {
-				case blockstore.BlockStateDirty:
-					stats.BlocksDirty++
-				case blockstore.BlockStateLocal, blockstore.BlockStateSyncing:
-					stats.BlocksLocal++
-				case blockstore.BlockStateRemote:
-					stats.BlocksRemote++
-				}
+	bs.populateBlockCounts(&stats, files)
+
+	return stats
+}
+
+// populateBlockCounts fills block count fields from the metadata store.
+func (bs *BlockStore) populateBlockCounts(stats *CacheStats, files []string) {
+	if bs.fileBlockStore == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	for _, payloadID := range files {
+		blocks, err := bs.fileBlockStore.ListFileBlocks(ctx, payloadID)
+		if err != nil {
+			continue
+		}
+		for _, b := range blocks {
+			stats.BlocksTotal++
+			switch b.State {
+			case blockstore.BlockStateDirty:
+				stats.BlocksDirty++
+			case blockstore.BlockStateLocal, blockstore.BlockStateSyncing:
+				stats.BlocksLocal++
+			case blockstore.BlockStateRemote:
+				stats.BlocksRemote++
 			}
 		}
 	}
-
-	return stats
 }
 
 // EvictL1Cache clears all entries from the L1 read cache.

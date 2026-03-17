@@ -146,7 +146,7 @@ Full phase details archived to [milestones/v4.3-ROADMAP.md](milestones/v4.3-ROAD
 ### v4.7 Offline/Edge Resilience (In Progress)
 
 - [x] **Phase 63: Cache Retention Model and Eviction Policy** - Per-share cache retention config (pin/ttl/lru), control plane API/CLI, eviction policy enforcement (completed 2026-03-13)
-- [ ] **Phase 64: S3 Health Check and Syncer Resilience** - Periodic connectivity detection, syncer backoff during outages, auto-resume and ordered drain on reconnect
+- [x] **Phase 64: S3 Health Check and Syncer Resilience** - Periodic connectivity detection, syncer backoff during outages, auto-resume and ordered drain on reconnect (completed 2026-03-16)
 - [ ] **Phase 65: Offline Read/Write Paths** - Graceful degradation serving cached blocks offline, local write acceptance when S3 unreachable
 - [ ] **Phase 66: Edge Test Infrastructure** - Pulumi Scaleway deployment, persistence verification, offline simulation via iptables, auto-sync validation
 
@@ -249,9 +249,9 @@ Full phase details archived to [milestones/v4.3-ROADMAP.md](milestones/v4.3-ROAD
 **Plans**: 3 plans
 
 Plans:
-- [ ] 63-01-PLAN.md — RetentionPolicy type, Share model fields, runtime config threading
-- [ ] 63-02-PLAN.md — REST API retention fields, CLI --retention/--retention-ttl flags
-- [ ] 63-03-PLAN.md — Eviction policy enforcement (pin skip, TTL threshold, LRU ordering)
+- [x] 63-01-PLAN.md — RetentionPolicy type, Share model fields, runtime config threading
+- [x] 63-02-PLAN.md — REST API retention fields, CLI --retention/--retention-ttl flags
+- [x] 63-03-PLAN.md — Eviction policy enforcement (pin skip, TTL threshold, LRU ordering)
 
 ### Phase 64: S3 Health Check and Syncer Resilience
 **Goal**: The syncer detects S3 connectivity loss, stops wasting resources on failed uploads, and automatically resumes when connectivity returns
@@ -266,9 +266,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 64-01-PLAN.md — HealthMonitor type with periodic probe, state machine, configurable thresholds
-- [ ] 64-02-PLAN.md — Syncer circuit breaker, eviction suspension callback, CacheStats health fields
-- [ ] 64-03-PLAN.md — Integration tests for circuit breaker, recovery drain, and eviction suspension
+- [x] 64-01-PLAN.md — HealthMonitor type with periodic probe, state machine, configurable thresholds
+- [x] 64-02-PLAN.md — Syncer circuit breaker, eviction suspension callback, CacheStats health fields
+- [x] 64-03-PLAN.md — Integration tests for circuit breaker, recovery drain, and eviction suspension
 
 ### Phase 65: Offline Read/Write Paths
 **Goal**: NFS/SMB clients can continue reading cached files and writing new data when S3 is unreachable
@@ -278,11 +278,11 @@ Plans:
   1. READ operations for blocks present in local cache succeed normally when the remote store is unreachable
   2. READ operations for blocks only in S3 (not cached locally) return a clear, descriptive error indicating remote unavailability (not a generic I/O error)
   3. WRITE operations succeed by storing data in the local block store when the remote store is unreachable, with blocks queued for sync on reconnect
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 65-01: Offline read path (serve from local cache, clear error for remote-only blocks)
-- [ ] 65-02: Offline write path (accept writes locally, queue for sync)
+- [ ] 65-01-PLAN.md — ErrRemoteUnavailable sentinel, health-gated read path, protocol error mapping, integration tests
+- [ ] 65-02-PLAN.md — Health endpoint degraded status, per-share health in dfs/dfsctl status
 
 ### Phase 66: Edge Test Infrastructure
 **Goal**: Reproducible edge deployment and offline scenario testing on real infrastructure
@@ -604,7 +604,7 @@ v3.8 (33-40.5) -> v4.2 (57-62) -> v4.0 (41-49) -> v4.3 (49.1-49.3) -> v4.7 (63-6
 | 49.1-49.3 | v4.3 | 1/1 | Complete | 2026-03-13 |
 | 63. Cache Retention Model | 3/3 | Complete    | 2026-03-13 | - |
 | 64. S3 Health Check + Syncer Resilience | 3/3 | Complete    | 2026-03-16 | - |
-| 65. Offline Read/Write Paths | v4.7 | 0/2 | Not started | - |
+| 65. Offline Read/Write Paths | 2/2 | Complete    | 2026-03-16 | - |
 | 66. Edge Test Infrastructure | v4.7 | 0/2 | Not started | - |
 | 49.4 Block-Level Compression | v4.5 | 0/? | Not started | - |
 | 49.5 Client-Side Encryption | v4.5 | 0/? | Not started | - |

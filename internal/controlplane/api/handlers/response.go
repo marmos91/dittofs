@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"net/http"
 	"time"
 )
 
@@ -13,21 +12,14 @@ import (
 //   - Data contains the response payload (optional)
 //   - Error contains error details when Status indicates failure (optional)
 type Response struct {
-	Status    string      `json:"status"`
-	Timestamp time.Time   `json:"timestamp"`
-	Data      interface{} `json:"data,omitempty"`
-	Error     string      `json:"error,omitempty"`
-}
-
-// writeJSON writes a JSON response with the given status code.
-// Deprecated: Use WriteJSON from problem.go instead.
-// This function is kept for backward compatibility with health endpoints.
-func writeJSON(w http.ResponseWriter, status int, data interface{}) {
-	WriteJSON(w, status, data)
+	Status    string    `json:"status"`
+	Timestamp time.Time `json:"timestamp"`
+	Data      any       `json:"data,omitempty"`
+	Error     string    `json:"error,omitempty"`
 }
 
 // healthyResponse creates a successful health check response.
-func healthyResponse(data interface{}) Response {
+func healthyResponse(data any) Response {
 	return Response{
 		Status:    "healthy",
 		Timestamp: time.Now().UTC(),
@@ -45,9 +37,21 @@ func unhealthyResponse(errMsg string) Response {
 }
 
 // unhealthyResponseWithData creates a failed health check response with data payload.
-func unhealthyResponseWithData(data interface{}) Response {
+func unhealthyResponseWithData(data any) Response {
 	return Response{
 		Status:    "unhealthy",
+		Timestamp: time.Now().UTC(),
+		Data:      data,
+	}
+}
+
+// degradedResponse creates a health check response indicating degraded operation.
+// Used when the server is functional but some remote stores are unreachable.
+// Returns status "degraded" (not "unhealthy") because edge deployments are
+// expected to operate offline -- K8s probes should NOT restart the pod.
+func degradedResponse(data any) Response {
+	return Response{
+		Status:    "degraded",
 		Timestamp: time.Now().UTC(),
 		Data:      data,
 	}
