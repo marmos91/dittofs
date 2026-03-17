@@ -8,9 +8,11 @@
 package handlers
 
 import (
+	"crypto/sha256"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // ============================================================================
@@ -150,6 +152,53 @@ func (n *OplockBreakNotification) Encode() ([]byte, error) {
 	w.WriteBytes(n.FileID[:])   // FileId
 
 	return w.Bytes(), w.Err()
+}
+
+// generateSyntheticLeaseKey creates a deterministic 16-byte lease key from an
+// SMB2 FileID. This is used when a client requests traditional oplocks (not
+// leases) — we internally map the oplock to a lease, and need a stable key
+// so that CLOSE can release it and OPLOCK_BREAK can acknowledge it.
+func generateSyntheticLeaseKey(fileID [16]byte) [16]byte {
+	// Use SHA-256 of "oplock:" prefix + fileID to avoid collisions with real lease keys.
+	h := sha256.New()
+	h.Write([]byte("oplock:"))
+	h.Write(fileID[:])
+	digest := h.Sum(nil)
+	var key [16]byte
+	copy(key[:], digest[:16])
+	return key
+}
+
+// leaseStateToOplockLevel maps a granted lease state back to the highest
+// traditional oplock level it corresponds to.
+func leaseStateToOplockLevel(state uint32) uint8 {
+	switch {
+	case state&(lock.LeaseStateRead|lock.LeaseStateWrite|lock.LeaseStateHandle) ==
+		(lock.LeaseStateRead | lock.LeaseStateWrite | lock.LeaseStateHandle):
+		return OplockLevelBatch
+	case state&(lock.LeaseStateRead|lock.LeaseStateWrite) ==
+		(lock.LeaseStateRead | lock.LeaseStateWrite):
+		return OplockLevelExclusive
+	case state&lock.LeaseStateRead != 0:
+		return OplockLevelII
+	default:
+		return OplockLevelNone
+	}
+}
+
+// oplockLevelToLeaseState maps a traditional oplock level to equivalent
+// lease state flags for OPLOCK_BREAK acknowledgment handling.
+func oplockLevelToLeaseState(level uint8) uint32 {
+	switch level {
+	case OplockLevelBatch:
+		return lock.LeaseStateRead | lock.LeaseStateWrite | lock.LeaseStateHandle
+	case OplockLevelExclusive:
+		return lock.LeaseStateRead | lock.LeaseStateWrite
+	case OplockLevelII:
+		return lock.LeaseStateRead
+	default:
+		return lock.LeaseStateNone
+	}
 }
 
 // oplockLevelName returns a human-readable name for an oplock level.

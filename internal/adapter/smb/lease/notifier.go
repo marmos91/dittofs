@@ -18,6 +18,15 @@ type LeaseBreakNotifier interface {
 	SendLeaseBreak(sessionID uint64, leaseKey [16]byte, currentState, newState uint32, epoch uint16) error
 }
 
+// OplockFileIDRegistrar is an optional interface that notifiers can implement
+// to support traditional oplock break notifications. When a traditional oplock
+// is granted (mapped to a lease internally), the FileID is registered so that
+// break notifications use the 24-byte oplock format instead of 44-byte lease format.
+type OplockFileIDRegistrar interface {
+	RegisterOplockFileID(leaseKey [16]byte, fileID [16]byte)
+	UnregisterOplockFileID(leaseKey [16]byte)
+}
+
 // SMBBreakHandler implements lock.BreakCallbacks for SMB lease break dispatch.
 //
 // When the LockManager dispatches an oplock/lease break, this handler:

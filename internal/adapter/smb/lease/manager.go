@@ -249,6 +249,27 @@ func (lm *LeaseManager) GetNotifier() LeaseBreakNotifier {
 	return lm.notifier
 }
 
+// RegisterOplockFileID registers a synthetic lease key → FileID mapping
+// for traditional oplock break notification support.
+func (lm *LeaseManager) RegisterOplockFileID(leaseKey [16]byte, fileID [16]byte) {
+	lm.mu.RLock()
+	notifier := lm.notifier
+	lm.mu.RUnlock()
+	if reg, ok := notifier.(OplockFileIDRegistrar); ok {
+		reg.RegisterOplockFileID(leaseKey, fileID)
+	}
+}
+
+// UnregisterOplockFileID removes a synthetic lease key → FileID mapping.
+func (lm *LeaseManager) UnregisterOplockFileID(leaseKey [16]byte) {
+	lm.mu.RLock()
+	notifier := lm.notifier
+	lm.mu.RUnlock()
+	if reg, ok := notifier.(OplockFileIDRegistrar); ok {
+		reg.UnregisterOplockFileID(leaseKey)
+	}
+}
+
 // resolveLockManager resolves the LockManager for a share name.
 func (lm *LeaseManager) resolveLockManager(shareName string) lock.LockManager {
 	if lm.resolver == nil || shareName == "" {

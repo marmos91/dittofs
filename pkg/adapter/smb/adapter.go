@@ -60,6 +60,14 @@ type Adapter struct {
 	// sessionManager provides unified session and credit management
 	sessionManager *session.Manager
 
+	// sessionConns maps sessionID → *smb.ConnInfo for lease break notification routing.
+	// Populated by connRegistryTracker when sessions are created on connections.
+	sessionConns sync.Map
+
+	// oplockFileIDs maps synthetic lease key hex → [16]byte SMB FileID for
+	// traditional oplock break notifications (24-byte format vs 44-byte lease format).
+	oplockFileIDs sync.Map
+
 	// shareUnsubscribers holds unsubscribe functions returned by rt.OnShareChange.
 	// Called during Stop to prevent stale callbacks from accumulating across restarts.
 	shareUnsubscribers []func()
@@ -156,14 +164,8 @@ func (s *Adapter) SetRuntime(rtAny any) {
 	// at request time.
 	if metaSvc := rt.GetMetadataService(); metaSvc != nil {
 		resolver := &metadataServiceResolver{metaSvc: metaSvc}
-		// TODO(lease-breaks): Wire a concrete LeaseBreakNotifier from the SMB
-		// session/connection layer so break notifications are delivered over the
-		// wire. Without this, breaks are initiated in LockManager but never
-		// sent to clients. Server-side lease state is still correct (conflicts
-		// are detected, breaking state is tracked, timeouts will revoke), but
-		// clients won't flush dirty caches proactively. This should be wired
-		// before leases are used in production.
-		leaseMgr := smblease.NewLeaseManager(resolver, nil)
+		notifier := &transportNotifier{sessionConns: &s.sessionConns, oplockFileIDs: &s.oplockFileIDs}
+		leaseMgr := smblease.NewLeaseManager(resolver, notifier)
 		s.handler.LeaseManager = leaseMgr
 
 		// Register SMBOplockBreaker as the cross-protocol oplock breaker.
@@ -173,8 +175,7 @@ func (s *Adapter) SetRuntime(rtAny any) {
 		rt.SetAdapterProvider(adapter.OplockBreakerProviderKey, oplockBreaker)
 
 		// Register SMBBreakHandler as BreakCallbacks on each share's LockManager.
-		// The notifier is nil until the transport layer is wired (see TODO above).
-		breakHandler := smblease.NewSMBBreakHandler(leaseMgr, nil)
+		breakHandler := smblease.NewSMBBreakHandler(leaseMgr, notifier)
 		registeredLockManagers := make(map[lock.LockManager]struct{})
 		var breakRegMu sync.Mutex
 

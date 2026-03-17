@@ -74,13 +74,13 @@ func (c *Connection) UntrackSession(sessionID uint64) {
 
 // connInfo builds the ConnInfo struct used by internal/ dispatch functions.
 func (c *Connection) connInfo() *smb.ConnInfo {
-	return &smb.ConnInfo{
+	ci := &smb.ConnInfo{
 		Conn:           c.conn,
 		Handler:        c.server.handler,
 		SessionManager: c.server.sessionManager,
 		WriteMu:        &c.writeMu,
 		WriteTimeout:   c.server.config.Timeouts.Write,
-		SessionTracker: c,
+		SessionTracker: c, // overwritten below
 		CryptoState:    c.CryptoState,
 		EncryptionMiddleware: encryption.NewEncryptionMiddleware(
 			func(sessionID uint64) (encryption.EncryptableSession, bool) {
@@ -93,6 +93,16 @@ func (c *Connection) connInfo() *smb.ConnInfo {
 		),
 		DecryptFailures: &atomic.Int32{},
 	}
+	// Wrap the session tracker so that session creation/deletion also
+	// registers/deregisters the ConnInfo in the adapter's session→connection
+	// map. This enables lease break notifications to be routed to the correct
+	// TCP connection.
+	ci.SessionTracker = &connRegistryTracker{
+		inner:        c,
+		connInfo:     ci,
+		sessionConns: &c.server.sessionConns,
+	}
+	return ci
 }
 
 // Serve handles all SMB2 requests for this connection.
@@ -247,6 +257,12 @@ func (c *Connection) cleanupSessions() {
 	}
 	c.sessions = make(map[uint64]struct{})
 	c.sessionsMu.Unlock()
+
+	// Clean up session→ConnInfo mapping so lease break notifications
+	// are no longer routed to this (now-closed) connection.
+	for _, sessionID := range sessions {
+		c.server.sessionConns.Delete(sessionID)
+	}
 
 	if len(sessions) == 0 {
 		return

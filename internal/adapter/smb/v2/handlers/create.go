@@ -697,6 +697,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 
 	var grantedOplock uint8
 	var leaseResponse *LeaseResponseContext
+	var syntheticLeaseKey [16]byte // Set when traditional oplock is mapped to lease
 
 	// Check for lease request (SMB2.1+)
 	if req.OplockLevel == OplockLevelLease && h.LeaseManager != nil {
@@ -734,9 +735,70 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		}
 	}
 
-	// Traditional oplocks (Level II, Exclusive, Batch) are no longer supported
-	// after OplockManager deletion. All caching is via SMB2.1+ leases through
-	// the LeaseManager. Non-lease oplock requests get OplockLevelNone.
+	// Traditional oplocks (Level II, Exclusive, Batch) are mapped to equivalent
+	// lease states internally via the LeaseManager. This allows legacy clients
+	// (or clients not using RqLs contexts) to still benefit from caching.
+	//
+	// Per MS-SMB2 3.3.5.9: If the client requests an oplock, the server
+	// should map it to an equivalent lease:
+	//   Batch     → R|W|H
+	//   Exclusive → R|W
+	//   Level II  → R
+	//
+	// A synthetic lease key is generated from the SMB FileID so that
+	// CLOSE can release the lease and OPLOCK_BREAK acks can find it.
+	if grantedOplock == OplockLevelNone && req.OplockLevel != OplockLevelNone &&
+		req.OplockLevel != OplockLevelLease && h.LeaseManager != nil &&
+		file.Type != metadata.FileTypeDirectory {
+
+		var requestedState uint32
+		switch req.OplockLevel {
+		case OplockLevelBatch:
+			requestedState = lock.LeaseStateRead | lock.LeaseStateWrite | lock.LeaseStateHandle
+		case OplockLevelExclusive:
+			requestedState = lock.LeaseStateRead | lock.LeaseStateWrite
+		case OplockLevelII:
+			requestedState = lock.LeaseStateRead
+		}
+
+		if requestedState != 0 {
+			// Generate a deterministic synthetic lease key from the FileID.
+			// This key is unique per open and allows the lease to be released
+			// on CLOSE and acknowledged on OPLOCK_BREAK.
+			syntheticKey := generateSyntheticLeaseKey(smbFileID)
+			lockFileHandle := lock.FileHandle(fileHandle)
+			ownerID := fmt.Sprintf("smb:oplock:%x", smbFileID)
+			clientID := fmt.Sprintf("smb:%d", ctx.SessionID)
+
+			grantedState, _, err := h.LeaseManager.RequestLease(
+				authCtx.Context,
+				lockFileHandle,
+				syntheticKey,
+				[16]byte{}, // No parent lease key for traditional oplocks
+				ctx.SessionID,
+				ownerID,
+				clientID,
+				tree.ShareName,
+				requestedState,
+				false, // Traditional oplocks are file-only
+			)
+			if err != nil {
+				logger.Debug("CREATE: traditional oplock lease request failed", "error", err)
+			} else {
+				grantedOplock = leaseStateToOplockLevel(grantedState)
+				if grantedOplock != OplockLevelNone {
+					syntheticLeaseKey = syntheticKey
+					// Register FileID mapping so break notifications use
+					// 24-byte oplock format instead of 44-byte lease format
+					h.LeaseManager.RegisterOplockFileID(syntheticKey, smbFileID)
+				}
+				logger.Debug("CREATE: traditional oplock mapped to lease",
+					"requestedOplock", oplockLevelName(req.OplockLevel),
+					"grantedOplock", oplockLevelName(grantedOplock),
+					"leaseState", lock.LeaseStateToString(grantedState))
+			}
+		}
+	}
 
 	// ========================================================================
 	// Step 8c: Process App Instance ID and durable handle grant [MS-SMB2] 3.3.5.9
@@ -780,9 +842,13 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		DeletePending: req.CreateOptions&types.FileDeleteOnClose != 0,
 	}
 
-	// Store lease key on the open so CLOSE can release when last handle closes
+	// Store lease key on the open so CLOSE can release when last handle closes.
+	// For real leases (RqLs context), the key comes from the lease response.
+	// For traditional oplocks mapped to leases, the key is the synthetic one.
 	if leaseResponse != nil && leaseResponse.LeaseState != lock.LeaseStateNone {
 		openFile.LeaseKey = leaseResponse.LeaseKey
+	} else if syntheticLeaseKey != ([16]byte{}) {
+		openFile.LeaseKey = syntheticLeaseKey
 	}
 
 	// Step 2: Process durable handle grant (DHnQ/DH2Q)

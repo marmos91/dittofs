@@ -307,7 +307,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// Step 9: Release oplock/lease if held
 	// ========================================================================
 
-	if openFile.OplockLevel == OplockLevelLease && h.LeaseManager != nil {
+	if openFile.OplockLevel != OplockLevelNone && h.LeaseManager != nil {
 		leaseKey := openFile.LeaseKey
 		zeroKey := [16]byte{}
 
@@ -334,6 +334,10 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 					logger.Debug("CLOSE: released lease (last handle closed)",
 						"path", openFile.Path,
 						"leaseKey", fmt.Sprintf("%x", leaseKey))
+				}
+				// Unregister oplock FileID mapping if this was a traditional oplock
+				if openFile.OplockLevel != OplockLevelLease {
+					h.LeaseManager.UnregisterOplockFileID(leaseKey)
 				}
 			} else {
 				logger.Debug("CLOSE: lease handle closed (other opens share lease key)",
