@@ -139,9 +139,10 @@ func (s *MetadataService) RemoveFile(ctx *AuthContext, parentHandle FileHandle, 
 			return err
 		}
 
-		// Update parent timestamps
+		// Update parent timestamps (including Atime per MS-FSA 2.1.4.4)
 		parent.Mtime = now
 		parent.Ctime = now
+		parent.Atime = now
 		return tx.PutFile(ctx.Context, parent)
 	})
 

@@ -235,6 +235,16 @@ func (lm *LeaseManager) GetSessionForLease(leaseKey [16]byte) (sessionID uint64,
 	return sid, ok
 }
 
+// UpdateSessionForLease updates the session ID associated with a lease key.
+// Used during durable handle reconnect to associate the existing lease with
+// the new session for break notification routing.
+func (lm *LeaseManager) UpdateSessionForLease(leaseKey [16]byte, sessionID uint64) {
+	keyHex := fmt.Sprintf("%x", leaseKey)
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	lm.sessionMap[keyHex] = sessionID
+}
+
 // SetNotifier sets the lease break notifier for sending break notifications.
 func (lm *LeaseManager) SetNotifier(notifier LeaseBreakNotifier) {
 	lm.mu.Lock()

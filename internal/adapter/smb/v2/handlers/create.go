@@ -487,6 +487,106 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			restored.TreeID = ctx.TreeID
 			restored.SessionID = ctx.SessionID
 			smbFileID := restored.FileID
+
+			// Re-grant durability on reconnect. The handle was durable before
+			// disconnect, and the successful reconnect implicitly restores it.
+			restored.IsDurable = true
+			restored.DurableTimeoutMs = h.DurableTimeoutMs
+
+			// Re-register lease/oplock in the LeaseManager. During disconnect,
+			// ReleaseSessionLeases cleared the lease state from the LeaseManager.
+			// We must re-request it so that break notifications work and the
+			// oplock/lease is visible to other opens.
+			var reconnectContexts []CreateContext
+			if h.LeaseManager != nil && len(restored.MetadataHandle) > 0 {
+				lockFileHandle := lock.FileHandle(restored.MetadataHandle)
+
+				if restored.OplockLevel == OplockLevelLease && restored.LeaseKey != ([16]byte{}) {
+					// Re-request the lease. Since this is a durable reconnect and
+					// the handle was the only open, we request full RWH and let
+					// the LeaseManager grant what's appropriate.
+					requestedState := uint32(lock.LeaseStateRead | lock.LeaseStateWrite | lock.LeaseStateHandle)
+
+					ownerID := fmt.Sprintf("smb:lease:%x", restored.LeaseKey)
+					clientID := fmt.Sprintf("smb:%d", ctx.SessionID)
+					grantedState, epoch, leaseErr := h.LeaseManager.RequestLease(
+						authCtx.Context,
+						lockFileHandle,
+						restored.LeaseKey,
+						[16]byte{}, // No parent lease key on reconnect
+						ctx.SessionID,
+						ownerID,
+						clientID,
+						tree.ShareName,
+						requestedState,
+						restored.IsDirectory,
+					)
+					if leaseErr != nil {
+						logger.Debug("CREATE: durable reconnect lease re-request failed", "error", leaseErr)
+					} else {
+						// Build lease response context if client included RqLs
+						if leaseCtx := FindCreateContext(req.CreateContexts, LeaseContextTagRequest); leaseCtx != nil {
+							isV1 := len(leaseCtx.Data) < LeaseV2ContextSize
+							leaseResp := &LeaseResponseContext{
+								LeaseKey:   restored.LeaseKey,
+								LeaseState: grantedState,
+								Epoch:      epoch,
+								IsV1:       isV1,
+							}
+							reconnectContexts = append(reconnectContexts, CreateContext{
+								Name: LeaseContextTagResponse,
+								Data: leaseResp.Encode(),
+							})
+						}
+						if grantedState != lock.LeaseStateNone {
+							restored.OplockLevel = OplockLevelLease
+						}
+					}
+				} else if restored.OplockLevel != OplockLevelNone && restored.OplockLevel != OplockLevelLease {
+					// Traditional oplock: re-request via synthetic lease key
+					var requestedState uint32
+					switch restored.OplockLevel {
+					case OplockLevelBatch:
+						requestedState = lock.LeaseStateRead | lock.LeaseStateWrite | lock.LeaseStateHandle
+					case OplockLevelExclusive:
+						requestedState = lock.LeaseStateRead | lock.LeaseStateWrite
+					case OplockLevelII:
+						requestedState = lock.LeaseStateRead
+					}
+
+					if requestedState != 0 {
+						syntheticKey := generateSyntheticLeaseKey(smbFileID)
+						ownerID := fmt.Sprintf("smb:oplock:%x", smbFileID)
+						clientID := fmt.Sprintf("smb:%d", ctx.SessionID)
+						grantedState, _, leaseErr := h.LeaseManager.RequestLease(
+							authCtx.Context,
+							lockFileHandle,
+							syntheticKey,
+							[16]byte{},
+							ctx.SessionID,
+							ownerID,
+							clientID,
+							tree.ShareName,
+							requestedState,
+							false,
+						)
+						if leaseErr != nil {
+							logger.Debug("CREATE: durable reconnect oplock re-request failed", "error", leaseErr)
+						} else {
+							restored.OplockLevel = leaseStateToOplockLevel(grantedState)
+							restored.LeaseKey = syntheticKey
+							if restored.OplockLevel != OplockLevelNone {
+								h.LeaseManager.RegisterOplockFileID(syntheticKey, smbFileID)
+							}
+						}
+					}
+				}
+			}
+
+			// Per MS-SMB2 3.3.5.9.7/12: A successful reconnect implicitly
+			// re-grants durability. Do NOT process DHnQ/DH2Q create contexts
+			// during reconnect -- the handle is already durable.
+
 			h.StoreOpenFile(restored)
 
 			// Get current file attributes for the response
@@ -515,6 +615,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 					EndOfFile:       size,
 					FileAttributes:  FileAttrToSMBAttributes(&respFile.FileAttr),
 					FileID:          smbFileID,
+					CreateContexts:  reconnectContexts,
 				}, nil
 			}
 
@@ -530,6 +631,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 				ChangeTime:      now,
 				FileAttributes:  types.FileAttributeNormal,
 				FileID:          smbFileID,
+				CreateContexts:  reconnectContexts,
 			}, nil
 		}
 	}
@@ -854,8 +956,11 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// Step 2: Process durable handle grant (DHnQ/DH2Q)
 	// This mutates openFile.IsDurable, openFile.CreateGuid, openFile.DurableTimeoutMs
 	if h.DurableStore != nil {
+		// Per MS-SMB2 3.3.5.9.8: V1 durability can also be granted when the
+		// lease includes Handle caching (not only for batch oplock).
+		hasHandleLease := leaseResponse != nil && leaseResponse.LeaseState&lock.LeaseStateHandle != 0
 		if respCtx := ProcessDurableHandleContext(
-			req.CreateContexts, openFile, h.DurableTimeoutMs,
+			req.CreateContexts, openFile, h.DurableTimeoutMs, hasHandleLease,
 		); respCtx != nil {
 			durableResponseCtx = respCtx
 		}

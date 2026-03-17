@@ -446,6 +446,12 @@ func (h *Handler) closeFilesWithFilter(
 			}
 
 			persisted := buildPersistedDurableHandle(openFile, username, sessionKeyHash, h.StartTime)
+			// Capture current lease state from LeaseManager for reconnect restoration
+			if h.LeaseManager != nil && openFile.LeaseKey != ([16]byte{}) {
+				if state, _, found := h.LeaseManager.GetLeaseState(ctx, openFile.LeaseKey); found {
+					persisted.LeaseState = state
+				}
+			}
 			if err := h.DurableStore.PutDurableHandle(ctx, persisted); err != nil {
 				logger.Warn(caller+": failed to persist durable handle",
 					"path", openFile.Path,
