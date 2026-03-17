@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -111,6 +112,12 @@ func (lm *LeaseManager) RequestLease(
 }
 
 // AcknowledgeLeaseBreak delegates to the shared LockManager.
+//
+// If the lease has already been released (e.g. the client sent CLOSE before
+// the break ack arrived), the acknowledgment is treated as a successful no-op.
+// Per MS-SMB2 3.3.5.22.2, a break ack for a lease that no longer exists is
+// not an error condition -- the desired state (lease relinquished) has already
+// been achieved.
 func (lm *LeaseManager) AcknowledgeLeaseBreak(
 	ctx context.Context,
 	leaseKey [16]byte,
@@ -126,11 +133,27 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
-		return fmt.Errorf("no lock manager for lease %s (share %q)", keyHex, shareName)
+		// Lease was already released (CLOSE cleaned up the maps).
+		// The break ack is a no-op -- the lease is already gone.
+		logger.Debug("AcknowledgeLeaseBreak: lease already released, treating as success",
+			"leaseKey", keyHex)
+		return nil
 	}
 
 	err := lockMgr.AcknowledgeLeaseBreak(ctx, leaseKey, acknowledgedState, epoch)
 	if err != nil {
+		// If the underlying lock manager says "no lease found", the lease was
+		// released between our map lookup and the ack call. Treat as success.
+		if strings.Contains(err.Error(), "no lease found") {
+			logger.Debug("AcknowledgeLeaseBreak: lease not found in lock manager, treating as success",
+				"leaseKey", keyHex)
+			// Clean up our maps if they still have stale entries
+			lm.mu.Lock()
+			delete(lm.sessionMap, keyHex)
+			delete(lm.leaseShare, keyHex)
+			lm.mu.Unlock()
+			return nil
+		}
 		return err
 	}
 
@@ -278,6 +301,138 @@ func (lm *LeaseManager) UnregisterOplockFileID(leaseKey [16]byte) {
 	if reg, ok := notifier.(OplockFileIDRegistrar); ok {
 		reg.UnregisterOplockFileID(leaseKey)
 	}
+}
+
+// BreakConflictingOplocksOnOpen breaks any existing oplocks/leases that conflict
+// with a new open operation on a file. Per MS-SMB2 3.3.5.9, this must happen
+// regardless of whether the new opener requests an oplock/lease.
+//
+// The desiredAccess mask determines the break type:
+//   - Write access (FILE_WRITE_DATA, FILE_APPEND_DATA, GENERIC_WRITE, etc.)
+//     breaks all existing oplocks to None
+//   - Read-only access breaks exclusive/batch (write) oplocks to Read
+func (lm *LeaseManager) BreakConflictingOplocksOnOpen(
+	fileHandle lock.FileHandle,
+	shareName string,
+	desiredAccess uint32,
+) error {
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return nil
+	}
+
+	handleKey := string(fileHandle)
+
+	// Determine if the opener has write access
+	const (
+		fileWriteData  = 0x00000002
+		fileAppendData = 0x00000004
+		writeDAC       = 0x00040000
+		genericWrite   = 0x40000000
+		genericAll     = 0x10000000
+		maximumAllowed = 0x02000000
+	)
+	hasWrite := desiredAccess&(fileWriteData|fileAppendData|writeDAC|genericWrite|genericAll|maximumAllowed) != 0
+
+	// Use SMB-specific break method that strips only the Write bit
+	// (preserves Read and Handle), per MS-SMB2 3.3.5.9.
+	// This is different from cross-protocol breaks which go to NONE.
+	if hasWrite {
+		return lockMgr.CheckAndBreakLeasesForSMBOpen(handleKey, nil)
+	}
+
+	// Read opens also break Write leases (strip W, preserve R+H)
+	return lockMgr.CheckAndBreakLeasesForSMBOpen(handleKey, nil)
+}
+
+// BreakHandleLeasesOnOpen breaks Handle leases before share mode conflict check.
+// Per MS-SMB2 3.3.5.9 Step 10: "If any existing Open on the target file has a
+// lease with Handle caching, the server MUST initiate a lease break to remove
+// Handle caching." This must happen BEFORE the share mode conflict check so that
+// clients relinquish cached handles, avoiding spurious SHARING_VIOLATION errors.
+//
+// After breaking, the caller should wait for break completion and then re-check
+// share mode conflicts.
+func (lm *LeaseManager) BreakHandleLeasesOnOpen(
+	ctx context.Context,
+	fileHandle lock.FileHandle,
+	shareName string,
+) error {
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return nil
+	}
+
+	handleKey := string(fileHandle)
+
+	// Break Handle leases (RWH -> RW, RH -> R)
+	if err := lockMgr.BreakHandleLeasesForSMBOpen(handleKey, nil); err != nil {
+		return err
+	}
+
+	// Wait for break to complete before caller re-checks share modes
+	return lockMgr.WaitForBreakCompletion(ctx, handleKey)
+}
+
+// BreakHandleLeasesOnOpenAsync dispatches Handle lease break notifications
+// without waiting for acknowledgment. Used for directory opens where share
+// mode conflicts are not a concern and blocking would deadlock: the other
+// client needs this CREATE's response before it processes the break.
+func (lm *LeaseManager) BreakHandleLeasesOnOpenAsync(
+	fileHandle lock.FileHandle,
+	shareName string,
+) error {
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return nil
+	}
+
+	handleKey := string(fileHandle)
+	return lockMgr.BreakHandleLeasesForSMBOpen(handleKey, nil)
+}
+
+// BreakParentHandleLeasesOnCreate breaks Handle leases on a parent directory
+// when a file is created, overwritten, or superseded inside it.
+//
+// Per MS-SMB2 3.3.5.9 and MS-FSA 2.1.5.1.2.1: modifying directory contents
+// (create/overwrite/supersede) must break Handle leases on the directory for
+// other clients. The creating client's leases are excluded via excludeClientID.
+//
+// This enables BVT_DirectoryLeasing_LeaseBreakOnMultiClients: when one client
+// creates a file, other clients holding RH leases on the parent directory
+// receive a lease break notification.
+//
+// Unlike BreakHandleLeasesOnOpen (step 6c), this does NOT wait for the break
+// to complete. The parent directory break is an informational notification:
+// the file creation has already committed, and the other client just needs to
+// invalidate its cached directory handle. Blocking here would deadlock when
+// the test framework (or real client) needs the CREATE response to arrive
+// before it processes the break acknowledgment on the other session.
+func (lm *LeaseManager) BreakParentHandleLeasesOnCreate(
+	_ context.Context,
+	parentHandle lock.FileHandle,
+	shareName string,
+	excludeClientID string,
+) error {
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return nil
+	}
+
+	handleKey := string(parentHandle)
+
+	// Build excludeOwner with ClientID so breakOpLocks skips leases from
+	// the session that triggered the CREATE.
+	var excludeOwner *lock.LockOwner
+	if excludeClientID != "" {
+		excludeOwner = &lock.LockOwner{ClientID: excludeClientID}
+	}
+
+	// Break Handle leases on parent directory (RH -> R).
+	// This dispatches the LEASE_BREAK_NOTIFICATION to the other client but
+	// does NOT wait for acknowledgment. The CREATE response is sent immediately
+	// so the other client can process the break asynchronously.
+	return lockMgr.BreakHandleLeasesForSMBOpen(handleKey, excludeOwner)
 }
 
 // resolveLockManager resolves the LockManager for a share name.

@@ -89,15 +89,17 @@ func (h *SMBBreakHandler) OnOpLockBreak(handleKey string, ul *lock.UnifiedLock, 
 		"breakToState", lock.LeaseStateToString(breakToState),
 		"epoch", newEpoch)
 
-	// Send break notification asynchronously to avoid blocking the LockManager
-	go func() {
-		if err := notifier.SendLeaseBreak(sessionID, ul.Lease.LeaseKey, ul.Lease.LeaseState, breakToState, newEpoch); err != nil {
-			logger.Warn("SMBBreakHandler: failed to send lease break notification",
-				"leaseKey", fmt.Sprintf("%x", ul.Lease.LeaseKey),
-				"sessionID", sessionID,
-				"error", err)
-		}
-	}()
+	// Send break notification synchronously. Per MS-SMB2 3.3.4.7, the
+	// lease break notification MUST be sent before the response to the
+	// operation that triggered the break (e.g., CREATE). Synchronous
+	// dispatch is safe here because the LockManager mutex is released
+	// before calling dispatchOpLockBreak -> OnOpLockBreak.
+	if err := notifier.SendLeaseBreak(sessionID, ul.Lease.LeaseKey, ul.Lease.LeaseState, breakToState, newEpoch); err != nil {
+		logger.Warn("SMBBreakHandler: failed to send lease break notification",
+			"leaseKey", fmt.Sprintf("%x", ul.Lease.LeaseKey),
+			"sessionID", sessionID,
+			"error", err)
+	}
 }
 
 // OnByteRangeRevoke is called when a byte-range lock must be revoked.

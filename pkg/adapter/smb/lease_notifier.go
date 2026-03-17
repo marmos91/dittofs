@@ -50,12 +50,12 @@ func (n *transportNotifier) UnregisterOplockFileID(leaseKey [16]byte) {
 //
 // The notification is an unsolicited server-to-client message with:
 //   - MessageID = 0xFFFFFFFFFFFFFFFF (unsolicited)
-//   - SessionID = target session (for encryption key lookup)
+//   - SessionID = 0 (per MS-SMB2 2.2.23.2)
 //   - Command = SMB2_OPLOCK_BREAK
 //
-// Per MS-SMB2 3.3.4.7: if the session requires encryption, the message
-// is encrypted using the session's encryption key via the standard
-// SendMessage path.
+// Per MS-SMB2 3.3.4.7: unsolicited notifications are NOT signed.
+// If the session requires encryption, the message is encrypted using the
+// session's encryption key (the transform header carries the real session ID).
 func (n *transportNotifier) SendLeaseBreak(sessionID uint64, leaseKey [16]byte, currentState, newState uint32, epoch uint16) error {
 	ci, ok := n.sessionConns.Load(sessionID)
 	if !ok {
@@ -65,48 +65,66 @@ func (n *transportNotifier) SendLeaseBreak(sessionID uint64, leaseKey [16]byte, 
 	}
 	connInfo := ci.(*smb.ConnInfo)
 
-	// Build SMB2 header for unsolicited notification
+	// Build SMB2 header for unsolicited notification.
+	// Per MS-SMB2 2.2.23.2: SessionId MUST be 0 in the SMB2 header.
 	hdr := &header.SMB2Header{
 		Command:   types.SMB2OplockBreak,
 		Status:    types.StatusSuccess,
 		Flags:     types.FlagResponse,
 		MessageID: 0xFFFFFFFFFFFFFFFF, // Unsolicited notification
-		SessionID: sessionID,          // For encryption/signing lookup
+		SessionID: 0,                  // Per MS-SMB2 2.2.23.2
 		TreeID:    0,
 		Credits:   0,
 	}
+
+	var body []byte
 
 	// Check if this is a traditional oplock (has FileID mapping)
 	keyHex := fmt.Sprintf("%x", leaseKey)
 	if fileIDVal, isOplock := n.oplockFileIDs.Load(keyHex); isOplock {
 		fileID := fileIDVal.([16]byte)
 		newLevel := leaseStateToOplockLevelNotify(newState)
-		body := encodeOplockBreakNotificationBody(newLevel, fileID)
+		body = encodeOplockBreakNotificationBody(newLevel, fileID)
 
 		logger.Debug("Sending OPLOCK_BREAK_NOTIFICATION",
 			"sessionID", sessionID,
 			"fileID", fmt.Sprintf("%x", fileID),
 			"newLevel", newLevel)
+	} else {
+		// Standard lease break notification
+		var flags uint32
+		if (currentState & (lock.LeaseStateWrite | lock.LeaseStateHandle)) != 0 {
+			flags = 0x01 // SMB2_NOTIFY_BREAK_LEASE_FLAG_ACK_REQUIRED
+		}
 
-		return smb.SendMessage(hdr, body, connInfo)
+		body = encodeLeaseBreakNotificationBody(leaseKey, currentState, newState, epoch, flags)
+
+		logger.Debug("Sending LEASE_BREAK_NOTIFICATION",
+			"sessionID", sessionID,
+			"currentState", lock.LeaseStateToString(currentState),
+			"newState", lock.LeaseStateToString(newState),
+			"epoch", epoch,
+			"ackRequired", flags != 0)
 	}
 
-	// Standard lease break notification
-	var flags uint32
-	if (currentState & (lock.LeaseStateWrite | lock.LeaseStateHandle)) != 0 {
-		flags = 0x01 // SMB2_NOTIFY_BREAK_LEASE_FLAG_ACK_REQUIRED
+	// Encode the SMB2 payload with SessionId = 0 in the header.
+	smbPayload := append(hdr.Encode(), body...)
+
+	// Per MS-SMB2 3.3.4.7: If the session requires encryption, encrypt
+	// the notification. The transform header carries the real session ID
+	// for key lookup; the inner SMB2 header keeps SessionId = 0.
+	// Unsolicited notifications are NOT signed.
+	if sess, ok := connInfo.Handler.GetSession(sessionID); ok {
+		if sess.ShouldEncrypt() && connInfo.EncryptionMiddleware != nil {
+			encrypted, err := connInfo.EncryptionMiddleware.EncryptResponse(sessionID, smbPayload)
+			if err != nil {
+				return fmt.Errorf("encrypt lease break notification: %w", err)
+			}
+			return smb.WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, encrypted)
+		}
 	}
 
-	body := encodeLeaseBreakNotificationBody(leaseKey, currentState, newState, epoch, flags)
-
-	logger.Debug("Sending LEASE_BREAK_NOTIFICATION",
-		"sessionID", sessionID,
-		"currentState", lock.LeaseStateToString(currentState),
-		"newState", lock.LeaseStateToString(newState),
-		"epoch", epoch,
-		"ackRequired", flags != 0)
-
-	return smb.SendMessage(hdr, body, connInfo)
+	return smb.WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, smbPayload)
 }
 
 // encodeLeaseBreakNotificationBody encodes the 44-byte body of an
@@ -136,20 +154,18 @@ func encodeOplockBreakNotificationBody(newLevel uint8, fileID [16]byte) []byte {
 }
 
 // leaseStateToOplockLevelNotify maps a lease state to the oplock level
-// to use in an OPLOCK_BREAK_NOTIFICATION.
+// to use in an OPLOCK_BREAK_NOTIFICATION [MS-SMB2] 2.2.23.1.
+//
+// Per MS-SMB2 2.2.23.1: "OplockLevel: The server MUST set this to one of
+// SMB2_OPLOCK_LEVEL_NONE (0x00) or SMB2_OPLOCK_LEVEL_II (0x01)."
+//
+// Batch (0x09) and Exclusive (0x08) are NOT valid break-to levels.
+// Any state with Read maps to Level II; otherwise None.
 func leaseStateToOplockLevelNotify(state uint32) uint8 {
-	switch {
-	case state&(lock.LeaseStateRead|lock.LeaseStateWrite|lock.LeaseStateHandle) ==
-		(lock.LeaseStateRead | lock.LeaseStateWrite | lock.LeaseStateHandle):
-		return 0x09 // Batch
-	case state&(lock.LeaseStateRead|lock.LeaseStateWrite) ==
-		(lock.LeaseStateRead | lock.LeaseStateWrite):
-		return 0x08 // Exclusive
-	case state&lock.LeaseStateRead != 0:
+	if state&lock.LeaseStateRead != 0 {
 		return 0x01 // Level II
-	default:
-		return 0x00 // None
 	}
+	return 0x00 // None
 }
 
 // connRegistryTracker wraps a SessionTracker to also maintain a

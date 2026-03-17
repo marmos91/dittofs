@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
@@ -379,6 +380,30 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Per MS-FSA 2.1.5.14.2: If timestamps are frozen via SET_INFO with -1,
 	// CommitWrite unconditionally updated Mtime/Ctime. Restore frozen values.
 	h.restoreFrozenTimestamps(authCtx, openFile)
+
+	// Per NTFS: Writing to an ADS updates the base object's ChangeTime and
+	// LastWriteTime. The ADS is an attribute of the base file/directory, so
+	// data writes to the stream propagate timestamp changes to the base
+	// object. Respect frozen state on the ADS handle: if a timestamp is
+	// frozen, the base object's corresponding timestamp remains unchanged.
+	if colonIdx := strings.Index(openFile.FileName, ":"); colonIdx > 0 {
+		baseObjectName := openFile.FileName[:colonIdx]
+		if baseFile, err := metaSvc.Lookup(authCtx, openFile.ParentHandle, baseObjectName); err == nil {
+			if baseHandle, err := metadata.EncodeFileHandle(baseFile); err == nil {
+				now := time.Now()
+				setAttrs := &metadata.SetAttrs{}
+				if !openFile.CtimeFrozen {
+					setAttrs.Ctime = &now
+				}
+				if !openFile.MtimeFrozen {
+					setAttrs.Mtime = &now
+				}
+				if setAttrs.Ctime != nil || setAttrs.Mtime != nil {
+					_ = metaSvc.SetFileAttributes(authCtx, baseHandle, setAttrs)
+				}
+			}
+		}
+	}
 
 	// Per MS-FSA 2.1.5.3: After a successful write, update LastAccessTime
 	// to the current system time, unless frozen via SET_INFO -1.

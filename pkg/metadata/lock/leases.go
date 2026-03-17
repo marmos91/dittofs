@@ -76,16 +76,33 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
 	requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error) {
 
-	// Validate requested state
-	valid := IsValidFileLeaseState(requestedState)
+	// Validate and downgrade requested state
 	if isDirectory {
-		valid = IsValidDirectoryLeaseState(requestedState)
-	}
-	if !valid {
-		logger.Debug("RequestLease: invalid lease state",
+		// Per MS-SMB2 3.3.5.9.8/3.3.5.9.11: directories cannot hold Write (W) caching.
+		// The valid directory lease states are: None, R, and RH (per MS-SMB2 section
+		// "Algorithm for Leasing in an Object Store").
+		//
+		// When the client requests Write caching on a directory, convert it to Handle
+		// caching. Handle caching is the directory equivalent: it allows the client to
+		// cache directory handles and defer close operations. This means:
+		//   RW  → RH  (W converted to H)
+		//   RWH → RH  (W stripped, H already present)
+		//   R   → R   (no change)
+		//   RH  → RH  (no change)
+		if requestedState&LeaseStateWrite != 0 {
+			requestedState &^= LeaseStateWrite
+			requestedState |= LeaseStateHandle
+		}
+		if !IsValidDirectoryLeaseState(requestedState) {
+			logger.Debug("RequestLease: invalid directory lease state after downgrade",
+				"state", LeaseStateToString(requestedState),
+				"fileHandle", string(fileHandle))
+			return LeaseStateNone, 0, nil
+		}
+	} else if !IsValidFileLeaseState(requestedState) {
+		logger.Debug("RequestLease: invalid file lease state",
 			"state", LeaseStateToString(requestedState),
-			"fileHandle", string(fileHandle),
-			"isDirectory", isDirectory)
+			"fileHandle", string(fileHandle))
 		return LeaseStateNone, 0, nil
 	}
 
@@ -184,6 +201,7 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 	}
 
 	// No existing lease with same key. Check for cross-key conflicts.
+	var conflictFound bool
 	for _, lock := range locks {
 		if lock.Lease == nil {
 			continue
@@ -196,17 +214,22 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 		}
 
 		if OpLocksConflict(lock.Lease, requested) {
-			// Conflict detected - initiate break and deny
+			// Compute break-to state: strip only the Write bit from the
+			// existing lease, preserving Read and Handle. Per MS-SMB2
+			// 3.3.5.9.8/3.3.5.9.11, RWH breaks to RH, RW breaks to R.
+			breakTo := lock.Lease.LeaseState &^ LeaseStateWrite
+
 			logger.Debug("RequestLease: cross-key conflict, initiating break",
 				"fileHandle", handleKey,
 				"existingKey", fmt.Sprintf("%x", lock.Lease.LeaseKey),
 				"requestedKey", fmt.Sprintf("%x", leaseKey),
 				"existingState", LeaseStateToString(lock.Lease.LeaseState),
-				"requestedState", LeaseStateToString(requestedState))
+				"requestedState", LeaseStateToString(requestedState),
+				"breakToState", LeaseStateToString(breakTo))
 
 			// Mark lease as breaking before dispatching callbacks
 			lock.Lease.Breaking = true
-			lock.Lease.BreakToState = LeaseStateNone
+			lock.Lease.BreakToState = breakTo
 			lock.Lease.BreakStarted = time.Now()
 			advanceEpoch(lock.Lease)
 
@@ -220,10 +243,32 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 
 			// Release lock before dispatching break callbacks
 			lm.mu.Unlock()
-			lm.dispatchOpLockBreak(handleKey, lock, LeaseStateNone)
+			lm.dispatchOpLockBreak(handleKey, lock, breakTo)
 
-			return LeaseStateNone, 0, nil
+			// Per MS-SMB2 3.3.5.9: The server MUST wait for the break to
+			// complete (or timeout) before returning to the caller, so that
+			// the second opener's response is not sent before the first
+			// client receives the OPLOCK_BREAK_NOTIFICATION.
+			breakCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
+			defer cancel()
+			if err := lm.WaitForBreakCompletion(breakCtx, handleKey); err != nil {
+				logger.Debug("RequestLease: break wait completed with error",
+					"fileHandle", handleKey,
+					"error", err)
+			}
+
+			conflictFound = true
+			// After break, the existing lease state is reduced.
+			// The new lease may now be grantable. We'll re-check below.
+			break
 		}
+	}
+
+	if conflictFound {
+		// After the break resolved, deny the new lease for this CREATE.
+		// The caller (second opener) will get the file open without a lease.
+		// A subsequent CREATE with the same lease key could succeed.
+		return LeaseStateNone, 0, nil
 	}
 
 	// No conflicts - create new lease

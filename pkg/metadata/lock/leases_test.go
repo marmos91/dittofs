@@ -88,7 +88,7 @@ func TestRequestLease_GrantDirectoryLeaseRH(t *testing.T) {
 	assert.Equal(t, uint16(1), epoch)
 }
 
-func TestRequestLease_RejectInvalidDirectoryState_W(t *testing.T) {
+func TestRequestLease_DowngradeDirectoryState_RW(t *testing.T) {
 	t.Parallel()
 
 	mgr := NewManager()
@@ -96,13 +96,17 @@ func TestRequestLease_RejectInvalidDirectoryState_W(t *testing.T) {
 	leaseKey := [16]byte{1, 2, 3}
 	parentKey := [16]byte{}
 
+	// Per MS-SMB2 3.3.5.9.8/3.3.5.9.11: directories cannot hold Write (W).
+	// Per MS-SMB2 "Algorithm for Leasing in an Object Store": valid directory
+	// states are None, R, and RH. When Write is requested for a directory,
+	// it is converted to Handle (the directory equivalent): RW -> RH.
 	state, _, err := mgr.RequestLease(ctx, FileHandle("dir1"), leaseKey, parentKey, "owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite, true)
 
 	require.NoError(t, err)
-	assert.Equal(t, LeaseStateNone, state, "should reject Write on directory")
+	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state, "should convert RW to RH for directory")
 }
 
-func TestRequestLease_RejectInvalidDirectoryState_RWH(t *testing.T) {
+func TestRequestLease_DowngradeDirectoryState_RWH(t *testing.T) {
 	t.Parallel()
 
 	mgr := NewManager()
@@ -110,10 +114,12 @@ func TestRequestLease_RejectInvalidDirectoryState_RWH(t *testing.T) {
 	leaseKey := [16]byte{1, 2, 3}
 	parentKey := [16]byte{}
 
+	// Per MS-SMB2 3.3.5.9.8/3.3.5.9.11: directories cannot hold Write (W).
+	// The server strips the Write bit: RWH -> RH.
 	state, _, err := mgr.RequestLease(ctx, FileHandle("dir1"), leaseKey, parentKey, "owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite|LeaseStateHandle, true)
 
 	require.NoError(t, err)
-	assert.Equal(t, LeaseStateNone, state, "should reject RWH on directory")
+	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state, "should downgrade RWH to RH for directory")
 }
 
 func TestRequestLease_SameKeyUpgrade_R_to_RW(t *testing.T) {

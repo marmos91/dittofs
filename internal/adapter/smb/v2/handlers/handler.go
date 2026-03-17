@@ -563,13 +563,27 @@ func (h *Handler) CleanupSession(ctx context.Context, sessionID uint64, isDiscon
 	// 1. Close all open files (this also releases locks and flushes caches)
 	filesClosed := h.CloseAllFilesForSession(ctx, sessionID, isDisconnect)
 
-	// 2. Delete all tree connections
+	// 2. Release all leases held by this session.
+	// CloseAllFilesForSession releases byte-range locks but not leases.
+	// On explicit LOGOFF all leases are released. On transport disconnect,
+	// leases for durable handles are preserved (already saved in the
+	// DurableHandleStore above), but non-durable leases must be freed so
+	// that subsequent opens on the same file are not blocked by stale state.
+	if h.LeaseManager != nil {
+		if err := h.LeaseManager.ReleaseSessionLeases(ctx, sessionID); err != nil {
+			logger.Warn("CleanupSession: failed to release session leases",
+				"sessionID", sessionID,
+				"error", err)
+		}
+	}
+
+	// 3. Delete all tree connections
 	treesDeleted := h.DeleteAllTreesForSession(sessionID)
 
-	// 3. Clean up any pending auth state
+	// 4. Clean up any pending auth state
 	h.DeletePendingAuth(sessionID)
 
-	// 4. Delete the session itself
+	// 5. Delete the session itself
 	h.DeleteSession(sessionID)
 
 	logger.Debug("CleanupSession: completed",

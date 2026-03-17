@@ -76,7 +76,7 @@ were implemented in phases 33-39. However, the tests still fail and need
 further investigation. They are listed here to unblock CI and also tracked
 in `baseline-results.md` for prioritization.
 
-- `BVT_OpLockBreak` (OpLock) -- Oplock break wiring fixed (Phase 30 BUG-04), now passing
+- (None remaining -- BVT_OpLockBreak and BVT_DirectoryLeasing_LeaseBreakOnMultiClients fixed)
 
 ## Expected Failures
 
