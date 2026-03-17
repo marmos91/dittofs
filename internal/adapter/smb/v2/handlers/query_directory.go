@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -328,95 +329,115 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	// Filter entries and build response
 	filteredEntries := filterDirEntries(page.Entries, req.FileName)
 
+	// Sort entries by name (case-insensitive) for consistent enumeration order.
+	// SMB clients (including smbtorture) expect directory entries in sorted order.
+	sort.Slice(filteredEntries, func(i, j int) bool {
+		return strings.ToLower(filteredEntries[i].Name) < strings.ToLower(filteredEntries[j].Name)
+	})
+
 	isWildcardSearch := req.FileName == "" || req.FileName == "*" || req.FileName == "*.*"
-	// Include "." and ".." when starting a fresh enumeration with a wildcard search
-	includeSpecial := startingFresh && isWildcardSearch
 
-	// For SMB2_RETURN_SINGLE_ENTRY, skip entries already returned in previous calls
-	// and return only one entry at a time, advancing EnumerationIndex.
-	if returnSingleEntry {
-		// For wildcard searches that started fresh, "." and ".." are the first two
-		// entries in the enumeration. We must consistently account for them across
-		// ALL calls during the same enumeration (not just the first call), because
-		// EnumerationIndex tracks position in the combined (specials + real) list.
-		//
-		// Special entries are included when:
-		// - This is a wildcard search ("*", "*.*", or empty)
-		// - AND the enumeration was started fresh (index was 0 at some point)
-		//
-		// We use isWildcardSearch (not includeSpecial) because includeSpecial
-		// requires startingFresh, which is only true on the very first call.
-		// On subsequent calls with the same wildcard enumeration, we still need
-		// specialCount=2 so that totalEntries and index offsets remain consistent.
-		specialCount := 0
-		if isWildcardSearch {
-			specialCount = 2
-		}
-		totalEntries := specialCount + len(filteredEntries)
-		idx := openFile.EnumerationIndex
+	// Compute special entries count ("." and "..")
+	specialCount := 0
+	if isWildcardSearch {
+		specialCount = 2
+	}
+	totalEntries := specialCount + len(filteredEntries)
 
-		if idx >= totalEntries {
-			openFile.EnumerationComplete = true
-			h.StoreOpenFile(openFile)
-			return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNoMoreFiles}}, nil
-		}
-
-		// Build a single entry at the current index
-		fileInfoClass := types.FileInfoClass(req.FileInfoClass)
-		var singleFilteredEntries []metadata.DirEntry
-		singleIncludeSpecial := false
-
-		if idx < specialCount {
-			// Return a "." or ".." entry
-			singleIncludeSpecial = true
-		} else {
-			// Return a regular entry at offset idx-specialCount
-			realIdx := idx - specialCount
-			if realIdx < len(filteredEntries) {
-				singleFilteredEntries = filteredEntries[realIdx : realIdx+1]
-			}
-		}
-
-		var entries []byte
-		if singleIncludeSpecial {
-			// Build both special entries plus nothing else, then truncate to the right one
-			entries = buildDirInfoEntries(fileInfoClass, nil, true, dirAttr)
-			if idx == 0 {
-				entries = truncateToFirstEntry(entries) // "."
-			} else {
-				entries = truncateToNthEntry(entries, 1) // ".."
-			}
-		} else {
-			entries = buildDirInfoEntries(fileInfoClass, singleFilteredEntries, false, dirAttr)
-		}
-
-		if len(entries) == 0 {
-			openFile.EnumerationComplete = true
-			h.StoreOpenFile(openFile)
-			return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNoMoreFiles}}, nil
-		}
-
-		openFile.EnumerationIndex = idx + 1
-		if openFile.EnumerationIndex >= totalEntries {
-			openFile.EnumerationComplete = true
-		}
-		h.StoreOpenFile(openFile)
-
-		return h.buildQueryDirectoryResponse(entries, req.OutputBufferLength, openFile, fileInfoClass)
+	// Determine starting position in the enumeration
+	idx := openFile.EnumerationIndex
+	if startingFresh {
+		idx = 0
 	}
 
-	fileInfoClass := types.FileInfoClass(req.FileInfoClass)
-	entries := buildDirInfoEntries(fileInfoClass, filteredEntries, includeSpecial, dirAttr)
+	// Handle SMB2_INDEX_SPECIFIED: resume from a specific file index
+	indexSpecified := flags&types.SMB2IndexSpecified != 0
+	if indexSpecified && req.FileIndex > 0 {
+		// FileIndex is 1-based in our encoding, convert to 0-based
+		targetIdx := int(req.FileIndex) - 1
+		if targetIdx >= 0 && targetIdx < totalEntries {
+			idx = targetIdx
+		}
+	}
 
-	if len(entries) == 0 {
+	if idx >= totalEntries {
+		status := types.StatusNoMoreFiles
+		if startingFresh && !isWildcardSearch && len(filteredEntries) == 0 {
+			// Per MS-SMB2 3.3.5.17: first query with no matches → STATUS_NO_SUCH_FILE
+			status = types.StatusNoSuchFile
+		}
+		openFile.EnumerationComplete = true
+		h.StoreOpenFile(openFile)
+		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
+	}
+
+	// Build entries incrementally, respecting OutputBufferLength.
+	// This unified loop handles both SMB2_RETURN_SINGLE_ENTRY and batch queries,
+	// and enables proper pagination when entries exceed the output buffer.
+	fileInfoClass := types.FileInfoClass(req.FileInfoClass)
+	maxBytes := req.OutputBufferLength
+	var result []byte
+	var prevNextOffset int
+	entriesReturned := 0
+
+	for idx < totalEntries {
+		var entryBytes []byte
+		fileIndex := uint64(idx + 1) // 1-based
+
+		if idx < specialCount {
+			name := "."
+			fileID := fileIndex
+			if idx == 1 {
+				name = ".."
+				fileID = 0 // parent directory reference
+			}
+			entryBytes = encodeSingleDirEntry(fileInfoClass, name, dirAttr, fileIndex, fileID)
+		} else {
+			realIdx := idx - specialCount
+			e := &filteredEntries[realIdx]
+			entryBytes = encodeSingleDirEntry(fileInfoClass, e.Name, e.Attr, fileIndex, e.ID)
+		}
+
+		// Check if entry fits in the output buffer
+		if uint32(len(result)+len(entryBytes)) > maxBytes {
+			if len(result) == 0 {
+				// First entry doesn't fit — buffer too small
+				return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInfoLengthMismatch}}, nil
+			}
+			break // Remaining entries will be returned in subsequent calls
+		}
+
+		result = linkEntry(result, &prevNextOffset, entryBytes)
+		idx++
+		entriesReturned++
+
+		if returnSingleEntry {
+			break
+		}
+	}
+
+	if len(result) == 0 {
+		openFile.EnumerationComplete = true
+		h.StoreOpenFile(openFile)
 		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNoMoreFiles}}, nil
 	}
 
-	// Mark enumeration as complete - next call without restart will return NO_MORE_FILES
-	openFile.EnumerationComplete = true
+	// Update enumeration state
+	openFile.EnumerationIndex = idx
+	if idx >= totalEntries {
+		openFile.EnumerationComplete = true
+	}
 	h.StoreOpenFile(openFile)
 
-	return h.buildQueryDirectoryResponse(entries, req.OutputBufferLength, openFile, fileInfoClass)
+	logger.Debug("QUERY_DIRECTORY successful",
+		"path", openFile.Path,
+		"bufferSize", len(result),
+		"entries", entriesReturned)
+
+	return &QueryDirectoryResponse{
+		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+		Data:            result,
+	}, nil
 }
 
 // ============================================================================
@@ -508,47 +529,26 @@ func linkEntry(result []byte, prevNextOffset *int, entry []byte) []byte {
 	return append(result, entry...)
 }
 
-// buildDirInfoEntries dispatches to the appropriate per-format builder based on fileInfoClass.
-// dirAttr is the FileAttr of the directory itself, used for "." and ".." entries so they
-// report the directory's actual timestamps instead of NowFiletime(). May be nil as fallback.
-func buildDirInfoEntries(fileInfoClass types.FileInfoClass, entries []metadata.DirEntry, includeSpecial bool, dirAttr *metadata.FileAttr) []byte {
-	switch fileInfoClass {
+// encodeSingleDirEntry encodes a single directory entry for the given FileInfoClass.
+// This is the per-entry dispatcher used by the incremental entry building loop
+// in QueryDirectory, routing to the appropriate format-specific encoder.
+func encodeSingleDirEntry(infoClass types.FileInfoClass, name string, attr *metadata.FileAttr, fileIndex uint64, fileID uint64) []byte {
+	switch infoClass {
 	case types.FileBothDirectoryInformation:
-		return buildFileBothDirInfo(entries, includeSpecial, dirAttr)
+		return encodeBothDirEntry(name, attr, fileIndex)
 	case types.FileIdBothDirectoryInformation:
-		return buildFileIdBothDirInfo(entries, includeSpecial, dirAttr)
+		return encodeIdBothDirEntry(name, attr, fileIndex, fileID)
 	case types.FileIdFullDirectoryInformation:
-		return buildFileIdFullDirInfo(entries, includeSpecial, dirAttr)
+		return encodeIdFullDirEntry(name, attr, fileIndex, fileID)
 	case types.FileFullDirectoryInformation:
-		return buildFileFullDirInfo(entries, includeSpecial, dirAttr)
+		return encodeFullDirEntry(name, attr, fileIndex)
 	case types.FileDirectoryInformation:
-		return buildFileDirInfo(entries, includeSpecial, dirAttr)
+		return encodeDirInfoEntry(name, attr, fileIndex)
 	case types.FileNamesInformation:
-		return buildFileNamesInfo(entries, includeSpecial)
+		return encodeNamesEntry(name, fileIndex)
 	default:
-		return buildFileBothDirInfo(entries, includeSpecial, dirAttr)
+		return encodeBothDirEntry(name, attr, fileIndex)
 	}
-}
-
-// buildFileBothDirInfo builds FILE_BOTH_DIR_INFORMATION structures [MS-FSCC] 2.4.8.
-func buildFileBothDirInfo(entries []metadata.DirEntry, includeSpecial bool, dirAttr *metadata.FileAttr) []byte {
-	var result []byte
-	var prevNextOffset int
-	var fileIndex uint64 = 1
-
-	if includeSpecial {
-		result = linkEntry(result, &prevNextOffset, encodeBothDirEntry(".", dirAttr, fileIndex))
-		fileIndex++
-		result = linkEntry(result, &prevNextOffset, encodeBothDirEntry("..", dirAttr, fileIndex))
-		fileIndex++
-	}
-
-	for i := range entries {
-		result = linkEntry(result, &prevNextOffset, encodeBothDirEntry(entries[i].Name, entries[i].Attr, fileIndex))
-		fileIndex++
-	}
-
-	return result
 }
 
 // encodeBothDirEntry encodes a single FILE_BOTH_DIR_INFORMATION entry (94-byte base + filename).
@@ -576,31 +576,6 @@ func encodeBothDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64) 
 	copy(entry[94:], nameBytes)
 
 	return entry
-}
-
-// buildFileIdBothDirInfo builds FILE_ID_BOTH_DIR_INFORMATION structures [MS-FSCC] 2.4.17.
-func buildFileIdBothDirInfo(entries []metadata.DirEntry, includeSpecial bool, dirAttr *metadata.FileAttr) []byte {
-	var result []byte
-	var prevNextOffset int
-	var fileIndex uint64 = 1
-
-	if includeSpecial {
-		// "." gets a non-zero FileId (the directory's own identifier).
-		// WPTS asserts FileId != 0 for the "." entry.
-		// ".." gets FileId=0 (parent directory reference is unknown/not tracked).
-		// WPTS asserts FileId == 0 for the ".." entry.
-		result = linkEntry(result, &prevNextOffset, encodeIdBothDirEntry(".", dirAttr, fileIndex, fileIndex))
-		fileIndex++
-		result = linkEntry(result, &prevNextOffset, encodeIdBothDirEntry("..", dirAttr, fileIndex, 0))
-		fileIndex++
-	}
-
-	for i := range entries {
-		result = linkEntry(result, &prevNextOffset, encodeIdBothDirEntry(entries[i].Name, entries[i].Attr, fileIndex, entries[i].ID))
-		fileIndex++
-	}
-
-	return result
 }
 
 // encodeIdBothDirEntry encodes a single FILE_ID_BOTH_DIR_INFORMATION entry (104-byte base + filename).
@@ -634,29 +609,6 @@ func encodeIdBothDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64
 	return entry
 }
 
-// buildFileIdFullDirInfo builds FILE_ID_FULL_DIR_INFORMATION structures [MS-FSCC] 2.4.18.
-func buildFileIdFullDirInfo(entries []metadata.DirEntry, includeSpecial bool, dirAttr *metadata.FileAttr) []byte {
-	var result []byte
-	var prevNextOffset int
-	var fileIndex uint64 = 1
-
-	if includeSpecial {
-		// "." gets a non-zero FileId (the directory's own identifier).
-		// ".." gets FileId=0 (parent directory reference is unknown/not tracked).
-		result = linkEntry(result, &prevNextOffset, encodeIdFullDirEntry(".", dirAttr, fileIndex, fileIndex))
-		fileIndex++
-		result = linkEntry(result, &prevNextOffset, encodeIdFullDirEntry("..", dirAttr, fileIndex, 0))
-		fileIndex++
-	}
-
-	for i := range entries {
-		result = linkEntry(result, &prevNextOffset, encodeIdFullDirEntry(entries[i].Name, entries[i].Attr, fileIndex, entries[i].ID))
-		fileIndex++
-	}
-
-	return result
-}
-
 // encodeIdFullDirEntry encodes a single FILE_ID_FULL_DIR_INFORMATION entry (80-byte base + filename).
 func encodeIdFullDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64, fileID uint64) []byte {
 	nameBytes := encodeUTF16LE(name)
@@ -677,27 +629,6 @@ func encodeIdFullDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64
 	return entry
 }
 
-// buildFileFullDirInfo builds FILE_FULL_DIR_INFORMATION structures [MS-FSCC] 2.4.14.
-func buildFileFullDirInfo(entries []metadata.DirEntry, includeSpecial bool, dirAttr *metadata.FileAttr) []byte {
-	var result []byte
-	var prevNextOffset int
-	var fileIndex uint64 = 1
-
-	if includeSpecial {
-		result = linkEntry(result, &prevNextOffset, encodeFullDirEntry(".", dirAttr, fileIndex))
-		fileIndex++
-		result = linkEntry(result, &prevNextOffset, encodeFullDirEntry("..", dirAttr, fileIndex))
-		fileIndex++
-	}
-
-	for i := range entries {
-		result = linkEntry(result, &prevNextOffset, encodeFullDirEntry(entries[i].Name, entries[i].Attr, fileIndex))
-		fileIndex++
-	}
-
-	return result
-}
-
 // encodeFullDirEntry encodes a single FILE_FULL_DIR_INFORMATION entry (68-byte base + filename).
 func encodeFullDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64) []byte {
 	nameBytes := encodeUTF16LE(name)
@@ -715,27 +646,6 @@ func encodeFullDirEntry(name string, attr *metadata.FileAttr, fileIndex uint64) 
 	return entry
 }
 
-// buildFileDirInfo builds FILE_DIRECTORY_INFORMATION structures [MS-FSCC] 2.4.10.
-func buildFileDirInfo(entries []metadata.DirEntry, includeSpecial bool, dirAttr *metadata.FileAttr) []byte {
-	var result []byte
-	var prevNextOffset int
-	var fileIndex uint64 = 1
-
-	if includeSpecial {
-		result = linkEntry(result, &prevNextOffset, encodeDirInfoEntry(".", dirAttr, fileIndex))
-		fileIndex++
-		result = linkEntry(result, &prevNextOffset, encodeDirInfoEntry("..", dirAttr, fileIndex))
-		fileIndex++
-	}
-
-	for i := range entries {
-		result = linkEntry(result, &prevNextOffset, encodeDirInfoEntry(entries[i].Name, entries[i].Attr, fileIndex))
-		fileIndex++
-	}
-
-	return result
-}
-
 // encodeDirInfoEntry encodes a single FILE_DIRECTORY_INFORMATION entry (64-byte base + filename).
 func encodeDirInfoEntry(name string, attr *metadata.FileAttr, fileIndex uint64) []byte {
 	nameBytes := encodeUTF16LE(name)
@@ -750,27 +660,6 @@ func encodeDirInfoEntry(name string, attr *metadata.FileAttr, fileIndex uint64) 
 	copy(entry[64:], nameBytes)
 
 	return entry
-}
-
-// buildFileNamesInfo builds FILE_NAMES_INFORMATION structures [MS-FSCC] 2.4.26.
-func buildFileNamesInfo(entries []metadata.DirEntry, includeSpecial bool) []byte {
-	var result []byte
-	var prevNextOffset int
-	var fileIndex uint64 = 1
-
-	if includeSpecial {
-		result = linkEntry(result, &prevNextOffset, encodeNamesEntry(".", fileIndex))
-		fileIndex++
-		result = linkEntry(result, &prevNextOffset, encodeNamesEntry("..", fileIndex))
-		fileIndex++
-	}
-
-	for i := range entries {
-		result = linkEntry(result, &prevNextOffset, encodeNamesEntry(entries[i].Name, fileIndex))
-		fileIndex++
-	}
-
-	return result
 }
 
 // encodeNamesEntry encodes a single FILE_NAMES_INFORMATION entry (12-byte base + filename).
@@ -936,130 +825,6 @@ func matchDOSWildcard(name, pattern string) bool {
 	}
 
 	return ni >= len(name)
-}
-
-// truncateToFirstEntry returns only the first directory entry from a linked entry chain.
-// Sets the NextEntryOffset of the first entry to 0 (marking it as the last entry).
-func truncateToFirstEntry(buf []byte) []byte {
-	if len(buf) < 4 {
-		return buf
-	}
-	r := smbenc.NewReader(buf)
-	nextOffset := r.ReadUint32()
-	if nextOffset == 0 {
-		return buf // already single entry
-	}
-	result := buf[:nextOffset]
-	w := smbenc.NewWriter(4)
-	w.WriteUint32(0)
-	copy(result[0:4], w.Bytes())
-	return result
-}
-
-// truncateToNthEntry returns only the Nth (0-based) directory entry from a linked entry chain.
-// Sets the NextEntryOffset of the selected entry to 0 (marking it as the last entry).
-func truncateToNthEntry(buf []byte, n int) []byte {
-	offset := 0
-	for i := 0; i < n; i++ {
-		if offset+4 > len(buf) {
-			return nil
-		}
-		r := smbenc.NewReader(buf[offset:])
-		nextOffset := r.ReadUint32()
-		if nextOffset == 0 {
-			return nil // entry chain shorter than n
-		}
-		offset += int(nextOffset)
-	}
-	if offset >= len(buf) {
-		return nil
-	}
-	r := smbenc.NewReader(buf[offset:])
-	nextOffset := r.ReadUint32()
-	var entryEnd int
-	if nextOffset == 0 {
-		entryEnd = len(buf)
-	} else {
-		entryEnd = offset + int(nextOffset)
-	}
-	result := make([]byte, entryEnd-offset)
-	copy(result, buf[offset:entryEnd])
-	w := smbenc.NewWriter(4)
-	w.WriteUint32(0)
-	copy(result[0:4], w.Bytes()) // mark as last entry
-	return result
-}
-
-// buildQueryDirectoryResponse creates a QueryDirectoryResponse from pre-built entry
-// data, truncating at entry boundaries if the data exceeds the output buffer length.
-func (h *Handler) buildQueryDirectoryResponse(entries []byte, outputBufferLength uint32, openFile *OpenFile, fileInfoClass types.FileInfoClass) (*QueryDirectoryResponse, error) {
-	// Truncate at entry boundaries if necessary
-	if uint32(len(entries)) > outputBufferLength {
-		entries = truncateAtEntryBoundary(entries, outputBufferLength)
-		if len(entries) == 0 {
-			return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNoMoreFiles}}, nil
-		}
-	}
-
-	logger.Debug("QUERY_DIRECTORY successful",
-		"path", openFile.Path,
-		"bufferSize", len(entries))
-
-	return &QueryDirectoryResponse{
-		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
-		Data:            entries,
-	}, nil
-}
-
-// truncateAtEntryBoundary walks the directory entry chain and returns the buffer
-// truncated to the last complete entry that fits within maxBytes.
-// Each entry starts with a uint32 NextEntryOffset; the last entry has offset 0.
-func truncateAtEntryBoundary(buf []byte, maxBytes uint32) []byte {
-	var lastEnd uint32
-	offset := uint32(0)
-
-	for offset+4 <= uint32(len(buf)) {
-		r := smbenc.NewReader(buf[offset:])
-		nextOffset := r.ReadUint32()
-
-		var entryEnd uint32
-		if nextOffset == 0 {
-			entryEnd = uint32(len(buf))
-		} else {
-			entryEnd = offset + nextOffset
-		}
-
-		if entryEnd > maxBytes {
-			break
-		}
-
-		lastEnd = entryEnd
-		if nextOffset == 0 {
-			break
-		}
-		offset += nextOffset
-	}
-
-	if lastEnd == 0 {
-		return nil
-	}
-
-	result := buf[:lastEnd]
-	// Zero the NextEntryOffset of the last included entry
-	pos := uint32(0)
-	for {
-		r := smbenc.NewReader(result[pos:])
-		next := r.ReadUint32()
-		if next == 0 || pos+next >= lastEnd {
-			w := smbenc.NewWriter(4)
-			w.WriteUint32(0)
-			copy(result[pos:pos+4], w.Bytes())
-			break
-		}
-		pos += next
-	}
-
-	return result
 }
 
 // generate83ShortName generates a Windows 8.3 short name in UTF-16LE.
