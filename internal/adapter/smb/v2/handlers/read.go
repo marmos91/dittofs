@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -347,7 +348,18 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		"actual", len(data))
 
 	// ========================================================================
-	// Step 12: Return success response
+	// Step 12: Update LastAccessTime (MS-FSA Algorithm for Noting File Accessed)
+	// ========================================================================
+
+	// Per MS-FSA 2.1.5.4, after a successful read the server updates
+	// LastAccessTime to the current system time, unless frozen via SET_INFO -1.
+	if !openFile.AtimeFrozen {
+		now := time.Now()
+		_ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
+	}
+
+	// ========================================================================
+	// Step 13: Return success response
 	// ========================================================================
 
 	return &ReadResponse{

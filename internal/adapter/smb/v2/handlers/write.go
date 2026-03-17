@@ -2,10 +2,12 @@ package handlers
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================
@@ -377,6 +379,13 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Per MS-FSA 2.1.5.14.2: If timestamps are frozen via SET_INFO with -1,
 	// CommitWrite unconditionally updated Mtime/Ctime. Restore frozen values.
 	h.restoreFrozenTimestamps(authCtx, openFile)
+
+	// Per MS-FSA 2.1.5.3: After a successful write, update LastAccessTime
+	// to the current system time, unless frozen via SET_INFO -1.
+	if !openFile.AtimeFrozen {
+		now := time.Now()
+		_ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
+	}
 
 	// Update cached PayloadID in OpenFile
 	openFile.PayloadID = writeOp.PayloadID
