@@ -134,6 +134,30 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		if _, ok := h.GetPendingAuth(ctx.SessionID); ok {
 			return h.completeNTLMAuth(ctx, req.SecurityBuffer)
 		}
+
+		// Re-authentication: client sends SESSION_SETUP on an existing session
+		// with no pending auth. Per MS-SMB2 3.3.5.5.2, this initiates a new
+		// authentication on the existing session (identity update).
+		// The existing session remains valid until re-auth completes.
+		if _, ok := h.GetSession(ctx.SessionID); ok {
+			logger.Debug("SESSION_SETUP: re-authentication on existing session",
+				"sessionID", ctx.SessionID)
+			// Fall through to normal auth flow — the NTLM negotiate handler
+			// will use ctx.SessionID as the session ID for the pending auth
+		}
+	}
+
+	// Handle PreviousSessionID: tear down old session per MS-SMB2 3.3.5.5.3.
+	// When a client reconnects (e.g. after network disruption), it sets
+	// PreviousSessionID to its old session. The server tears down the old
+	// session's resources (open files, locks, tree connections) so the new
+	// session starts clean. This prevents resource leaks and lock conflicts.
+	if req.PreviousSessionID != 0 {
+		if _, ok := h.GetSession(req.PreviousSessionID); ok {
+			logger.Info("SESSION_SETUP: tearing down previous session",
+				"previousSessionID", req.PreviousSessionID)
+			h.CleanupSession(ctx.Context, req.PreviousSessionID, false)
+		}
 	}
 
 	// Try SPNEGO parsing to detect Kerberos vs NTLM
@@ -255,8 +279,24 @@ func findNTLMSSP(data []byte) []byte {
 // The client will respond with Type 3 (AUTHENTICATE) which completes
 // the handshake in completeNTLMAuth().
 func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool) (*HandlerResult, error) {
-	// Generate session ID for this authentication attempt
-	sessionID := h.GenerateSessionID()
+	// Reuse existing session ID for re-authentication, otherwise generate new
+	sessionID := ctx.SessionID
+	isReauth := false
+	if sessionID == 0 {
+		sessionID = h.GenerateSessionID()
+	} else if _, ok := h.GetSession(sessionID); ok {
+		// Session already exists with this ID — this is a re-authentication.
+		// Per MS-SMB2 3.3.5.5.2: existing session keys are retained.
+		isReauth = true
+	}
+
+	// Initialize per-session preauth hash for SMB 3.1.1 key derivation.
+	// Per [MS-SMB2] 3.3.5.5: each session gets its own preauth hash chain
+	// initialized from the connection hash. InitSessionPreauthHash also
+	// consumes any stashed request bytes (SessionID=0 case).
+	if ctx.ConnCryptoState != nil {
+		ctx.ConnCryptoState.InitSessionPreauthHash(sessionID)
+	}
 
 	// Build NTLM Type 2 (CHALLENGE) response
 	// This also returns the server challenge for later validation
@@ -270,6 +310,7 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool) (
 		CreatedAt:       time.Now(),
 		ServerChallenge: serverChallenge,
 		UsedSPNEGO:      usedSPNEGO,
+		IsReauth:        isReauth,
 	}
 	h.StorePendingAuth(pending)
 
@@ -345,8 +386,28 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 		"negotiateFlags", fmt.Sprintf("0x%08x", authMsg.NegotiateFlags),
 		"encryptedRandomSessionKeyLen", len(authMsg.EncryptedRandomSessionKey))
 
-	// If anonymous authentication requested, create guest session
+	// If anonymous authentication requested
 	if authMsg.IsAnonymous || authMsg.Username == "" {
+		if pending.IsReauth {
+			// Re-authentication to anonymous: update session identity, keep crypto state.
+			// Per MS-SMB2 3.3.5.5.2: existing session keys are retained during re-auth.
+			// File handles opened by the original user remain valid.
+			existingSess, _ := h.GetSession(pending.SessionID)
+			if existingSess != nil {
+				existingSess.Username = "anonymous"
+				existingSess.Domain = ""
+				existingSess.User = nil
+				existingSess.IsGuest = true
+
+				logger.Info("Session re-authenticated as anonymous (keys retained)",
+					"sessionID", existingSess.SessionID,
+					"signingEnabled", existingSess.ShouldSign(),
+					"encryptData", existingSess.ShouldEncrypt())
+
+				ctx.IsGuest = true
+				return h.buildAuthenticatedResponse(pending.UsedSPNEGO, existingSess.ShouldEncrypt()), nil
+			}
+		}
 		return h.createGuestSessionWithID(ctx, pending)
 	}
 
@@ -405,6 +466,18 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 						"username", authMsg.Username,
 						"triedDomains", domainsToTry,
 						"error", validationErr)
+					if pending.IsReauth {
+						// Per MS-SMB2 3.3.5.5.2: if re-authentication fails,
+						// the session MUST be deleted. Clean up resources now
+						// but defer session deletion so the LOGON_FAILURE
+						// response can still be signed/encrypted.
+						logger.Info("Re-authentication failed, destroying session",
+							"sessionID", pending.SessionID,
+							"username", authMsg.Username)
+						h.CloseAllFilesForSession(ctx.Context, pending.SessionID, false)
+						h.DeleteAllTreesForSession(pending.SessionID)
+						ctx.DeferredSessionDelete = pending.SessionID
+					}
 					return NewErrorResult(types.StatusLogonFailure), nil
 				}
 
@@ -428,8 +501,32 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 					"usedKeyExch", (authMsg.NegotiateFlags&auth.FlagKeyExch) != 0 && len(authMsg.EncryptedRandomSessionKey) == 16)
 
 				// Authentication successful with validated credentials
-				sess := h.CreateSessionWithUser(pending.SessionID, pending.ClientAddr, user, authMsg.Domain)
 				ctx.IsGuest = false
+
+				if pending.IsReauth {
+					// Re-authentication: update session identity, keep existing crypto state.
+					// Per MS-SMB2 3.3.5.5.2: "Session.SessionKey MUST NOT be regenerated."
+					// Signing/encryption keys are retained from the original authentication.
+					existingSess, _ := h.GetSession(pending.SessionID)
+					if existingSess != nil {
+						existingSess.Username = authMsg.Username
+						existingSess.Domain = authMsg.Domain
+						existingSess.User = user
+						existingSess.IsGuest = false
+
+						logger.Info("Session re-authenticated (keys retained)",
+							"sessionID", existingSess.SessionID,
+							"username", existingSess.Username,
+							"domain", existingSess.Domain,
+							"signingEnabled", existingSess.ShouldSign(),
+							"encryptData", existingSess.ShouldEncrypt())
+
+						return h.buildAuthenticatedResponse(pending.UsedSPNEGO, existingSess.ShouldEncrypt()), nil
+					}
+					// Fallthrough: session disappeared between negotiate and auth (unlikely)
+				}
+
+				sess := h.CreateSessionWithUser(pending.SessionID, pending.ClientAddr, user, authMsg.Domain)
 
 				// Configure signing with derived signing key
 				if errResult := h.configureSessionSigningWithKey(sess, signingKey[:], ctx); errResult != nil {
@@ -456,8 +553,20 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 				"username", authMsg.Username,
 				"action", "run 'dittofs user passwd' to fix")
 
-			sess := h.CreateSessionWithUser(pending.SessionID, pending.ClientAddr, user, authMsg.Domain)
 			ctx.IsGuest = false
+
+			if pending.IsReauth {
+				existingSess, _ := h.GetSession(pending.SessionID)
+				if existingSess != nil {
+					existingSess.Username = authMsg.Username
+					existingSess.Domain = authMsg.Domain
+					existingSess.User = user
+					existingSess.IsGuest = false
+					return h.buildAuthenticatedResponse(pending.UsedSPNEGO, existingSess.ShouldEncrypt()), nil
+				}
+			}
+
+			sess := h.CreateSessionWithUser(pending.SessionID, pending.ClientAddr, user, authMsg.Domain)
 
 			// No signing without proper session key derivation
 			logger.Debug("NTLM authentication complete (no credential validation)",
@@ -560,10 +669,19 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 	if ctx != nil && ctx.ConnCryptoState != nil {
 		dialect = ctx.ConnCryptoState.GetDialect()
 		if dialect >= types.Dialect0300 {
-			preauthHash = ctx.ConnCryptoState.GetPreauthHash()
+			// Per [MS-SMB2] 3.3.5.5: use the per-session preauth hash for key
+			// derivation, not the connection-level hash. Each session maintains
+			// its own hash chain including only that session's NEGOTIATE and
+			// SESSION_SETUP messages.
+			preauthHash = ctx.ConnCryptoState.GetSessionPreauthHash(sess.SessionID)
 			cipherId = ctx.ConnCryptoState.GetCipherId()
 			signingAlgId = ctx.ConnCryptoState.GetSigningAlgorithmId()
 		}
+	}
+
+	// Clean up the per-session preauth hash entry now that keys are derived
+	if ctx != nil && ctx.ConnCryptoState != nil {
+		ctx.ConnCryptoState.DeleteSessionPreauthHash(sess.SessionID)
 	}
 
 	encryptionEnabled := h.EncryptionConfig.Mode == "preferred" || h.EncryptionConfig.Mode == "required"

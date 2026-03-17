@@ -54,8 +54,18 @@ type CryptoState interface {
 	GetSigningAlgorithmId() uint16
 	// GetCipherId returns the selected encryption cipher.
 	GetCipherId() uint16
-	// GetPreauthHash returns a copy of the current preauth integrity hash value.
+	// GetPreauthHash returns a copy of the current connection-level preauth integrity hash value.
 	GetPreauthHash() [64]byte
+	// InitSessionPreauthHash creates a per-session preauth hash from the connection hash.
+	InitSessionPreauthHash(sessionID uint64)
+	// UpdateSessionPreauthHash updates the per-session preauth hash with message bytes.
+	UpdateSessionPreauthHash(sessionID uint64, message []byte)
+	// GetSessionPreauthHash returns the per-session preauth hash (falls back to connection hash).
+	GetSessionPreauthHash(sessionID uint64) [64]byte
+	// DeleteSessionPreauthHash removes the per-session preauth hash entry.
+	DeleteSessionPreauthHash(sessionID uint64)
+	// StashPendingSessionSetup stores raw SESSION_SETUP request bytes for deferred hashing.
+	StashPendingSessionSetup(message []byte)
 }
 
 // SMBHandlerContext carries per-request state through all SMB2 handlers.

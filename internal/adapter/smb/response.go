@@ -344,12 +344,20 @@ func SendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo) error 
 
 	if hdr.SessionID != 0 {
 		if sess, ok := connInfo.Handler.GetSession(hdr.SessionID); ok {
-			// Per MS-SMB2 3.3.5.5.3: the final SESSION_SETUP response that
-			// establishes the session MUST NOT be encrypted. The client has not
+			// Per MS-SMB2 3.3.5.5.3: the initial SESSION_SETUP response that
+			// establishes a NEW session MUST NOT be encrypted. The client has not
 			// yet derived encryption keys at this point — it needs the unencrypted
 			// response to complete key derivation. Only sign the response instead.
-			isSessionSetupSuccess := hdr.Command == types.SMB2SessionSetup && hdr.Status == types.StatusSuccess
-			if sess.ShouldEncrypt() && connInfo.EncryptionMiddleware != nil && !isSessionSetupSuccess {
+			//
+			// For re-authentication (SESSION_SETUP on an existing session), the
+			// client already has encryption keys, so the response MUST be encrypted.
+			// We distinguish the two cases via sess.NewlyCreated, which is true only
+			// for sessions just created during this SESSION_SETUP exchange.
+			isNewSessionSetup := hdr.Command == types.SMB2SessionSetup && hdr.Status == types.StatusSuccess && sess.NewlyCreated
+			if isNewSessionSetup {
+				sess.NewlyCreated = false // Clear so subsequent messages get encrypted
+			}
+			if sess.ShouldEncrypt() && connInfo.EncryptionMiddleware != nil && !isNewSessionSetup {
 				encrypted, err := connInfo.EncryptionMiddleware.EncryptResponse(hdr.SessionID, smbPayload)
 				if err != nil {
 					return fmt.Errorf("encrypt response: %w", err)
@@ -361,6 +369,10 @@ func SendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo) error 
 			}
 			if sess.ShouldSign() {
 				sess.SignMessage(smbPayload)
+				// Sync signature back so callers (e.g. SendResponseWithHooks)
+				// that re-encode the header get the real signature for preauth
+				// integrity hash computation per MS-SMB2 3.3.5.5.
+				copy(hdr.Signature[:], smbPayload[48:64])
 				logger.Debug("Signed outgoing SMB2 message",
 					"command", hdr.Command.String(),
 					"sessionID", hdr.SessionID)

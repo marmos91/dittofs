@@ -161,6 +161,7 @@ type PendingAuth struct {
 	CreatedAt       time.Time
 	ServerChallenge [8]byte // Random challenge sent in Type 2 message
 	UsedSPNEGO      bool    // Whether client used SPNEGO wrapping
+	IsReauth        bool    // True when re-authenticating an existing session
 }
 
 // TreeConnection represents an active tree connection mapping a client
