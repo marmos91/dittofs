@@ -294,7 +294,30 @@ func (h *Handler) setFileInfoFromStore(
 			mtimeFT == 0xFFFFFFFFFFFFFFFF || mtimeFT == 0xFFFFFFFFFFFFFFFE ||
 			ctimeFT == 0xFFFFFFFFFFFFFFFF || ctimeFT == 0xFFFFFFFFFFFFFFFE
 
-		// Apply changes first (may auto-update Ctime if modified == true)
+		// Per MS-FSA 2.1.5.14.2: When a timestamp sentinel (-1 or -2) is used,
+		// the server MUST NOT modify that timestamp in response to THIS operation,
+		// including side-effect auto-updates (e.g., Ctime auto-update when mode changes).
+		// Pin sentinel timestamps to their pre-change values by reading current state
+		// and explicitly setting them in setAttrs to suppress auto-update.
+		isSentinel := func(ft uint64) bool {
+			return ft == 0xFFFFFFFFFFFFFFFF || ft == 0xFFFFFFFFFFFFFFFE
+		}
+		if isSentinel(ctimeFT) || isSentinel(mtimeFT) || isSentinel(atimeFT) {
+			preFile, err := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
+			if err == nil {
+				if isSentinel(ctimeFT) {
+					setAttrs.Ctime = &preFile.Ctime
+				}
+				if isSentinel(mtimeFT) {
+					setAttrs.Mtime = &preFile.Mtime
+				}
+				if isSentinel(atimeFT) {
+					setAttrs.Atime = &preFile.Atime
+				}
+			}
+		}
+
+		// Apply changes (Ctime auto-update is suppressed when sentinel pinning is active)
 		if err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
 			logger.Debug("SET_INFO: failed to set basic info", "path", openFile.Path, "error", err)
 			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil

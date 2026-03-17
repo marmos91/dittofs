@@ -107,6 +107,16 @@ type SMBHandlerContext struct {
 	// Populated from ConnInfo.CryptoState by prepareDispatch. Nil if no
 	// CryptoState is available (e.g., in tests).
 	ConnCryptoState CryptoState
+
+	// RequestEncrypted indicates whether the incoming request was received
+	// inside an SMB3 Transform Header (protocol ID 0xFD). Used to enforce
+	// global and per-share encryption requirements per MS-SMB2 3.3.5.2.1.
+	RequestEncrypted bool
+
+	// DeferredSessionDelete is set by LOGOFF to the session ID that should be
+	// deleted AFTER the response is sent. This ensures the session stays alive
+	// for response signing/encryption per MS-SMB2 3.3.5.6.
+	DeferredSessionDelete uint64
 }
 
 // NewSMBHandlerContext creates a new handler context from request parameters.

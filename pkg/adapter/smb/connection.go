@@ -120,7 +120,7 @@ func (c *Connection) Serve(ctx context.Context) {
 	}
 
 	ci := c.connInfo()
-	verifier := smb.NewSessionSigningVerifier(c.server.handler, c.conn)
+	verifier := smb.NewSessionSigningVerifier(c.server.handler, c.conn, c.CryptoState)
 	handleSMB1 := func(_ context.Context, message []byte) error {
 		return smb.HandleSMB1Negotiate(ci, message)
 	}
@@ -139,7 +139,7 @@ func (c *Connection) Serve(ctx context.Context) {
 
 		// Read and process the request via framing layer.
 		// Pass EncryptionMiddleware so 0xFD transform headers are decrypted transparently.
-		hdr, body, remainingCompound, err := smb.ReadRequest(
+		hdr, body, remainingCompound, isEncrypted, err := smb.ReadRequest(
 			ctx, c.conn, c.server.config.MaxMessageSize,
 			c.server.config.Timeouts.Read, verifier, ci.EncryptionMiddleware, handleSMB1,
 		)
@@ -191,19 +191,19 @@ func (c *Connection) Serve(ctx context.Context) {
 			compoundData := make([]byte, len(remainingCompound))
 			copy(compoundData, remainingCompound)
 
-			go func(reqHeader *header.SMB2Header, reqBody []byte) {
+			go func(reqHeader *header.SMB2Header, reqBody []byte, encrypted bool) {
 				defer c.handleRequestPanic(clientAddr, reqHeader.MessageID)
-				smb.ProcessCompoundRequest(ctx, reqHeader, reqBody, compoundData, ci)
-			}(hdr, body)
+				smb.ProcessCompoundRequest(ctx, reqHeader, reqBody, compoundData, ci, encrypted)
+			}(hdr, body, isEncrypted)
 		} else {
-			go func(reqHeader *header.SMB2Header, reqBody, raw []byte) {
+			go func(reqHeader *header.SMB2Header, reqBody, raw []byte, encrypted bool) {
 				defer c.handleRequestPanic(clientAddr, reqHeader.MessageID)
 
 				asyncCallback := c.makeAsyncNotifyCallback(ci)
-				if err := smb.ProcessSingleRequest(ctx, reqHeader, reqBody, raw, ci, asyncCallback); err != nil {
+				if err := smb.ProcessSingleRequest(ctx, reqHeader, reqBody, raw, ci, encrypted, asyncCallback); err != nil {
 					logger.Debug("Error processing SMB request", "address", clientAddr, "messageID", reqHeader.MessageID, "error", err)
 				}
-			}(hdr, body, rawMessage)
+			}(hdr, body, rawMessage, isEncrypted)
 		}
 
 		// Reset idle timeout after reading request (read-only)

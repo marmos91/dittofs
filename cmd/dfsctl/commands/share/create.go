@@ -16,6 +16,7 @@ var (
 	createLocal             string
 	createRemote            string
 	createReadOnly          bool
+	createEncryptData       bool
 	createDefaultPermission string
 	createDescription       string
 	createRetention         string
@@ -65,6 +66,7 @@ func init() {
 	createCmd.Flags().StringVar(&createLocal, "local", "", "Local block store name (required)")
 	createCmd.Flags().StringVar(&createRemote, "remote", "", "Remote block store name (optional)")
 	createCmd.Flags().BoolVar(&createReadOnly, "read-only", false, "Make share read-only")
+	createCmd.Flags().BoolVar(&createEncryptData, "encrypt-data", false, "Require SMB3 encryption for this share")
 	createCmd.Flags().StringVar(&createDefaultPermission, "default-permission", "read-write", "Default permission (none|read|read-write|admin)")
 	createCmd.Flags().StringVar(&createDescription, "description", "", "Share description")
 	createCmd.Flags().StringVar(&createRetention, "retention", "", "Retention policy (pin|ttl|lru)")
@@ -129,6 +131,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		MetadataStoreID:   metadata,
 		LocalBlockStore:   local,
 		ReadOnly:          createReadOnly,
+		EncryptData:       createEncryptData,
 		DefaultPermission: defaultPerm,
 		Description:       createDescription,
 	}

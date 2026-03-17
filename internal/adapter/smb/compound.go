@@ -20,7 +20,8 @@ import (
 //   - firstBody: body bytes of the first command
 //   - compoundData: remaining compound bytes after the first command
 //   - connInfo: connection metadata for handler dispatch
-func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header, firstBody []byte, compoundData []byte, connInfo *ConnInfo) {
+//   - isEncrypted: whether the compound request was received inside an SMB3 Transform Header
+func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header, firstBody []byte, compoundData []byte, connInfo *ConnInfo, isEncrypted bool) {
 	// Track the last FileID for related operations
 	var lastFileID [16]byte
 	lastSessionID := firstHeader.SessionID
@@ -31,7 +32,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		"command", firstHeader.Command.String(),
 		"messageID", firstHeader.MessageID)
 
-	result, fileID, handlerCtx := ProcessRequestWithFileID(ctx, firstHeader, firstBody, connInfo)
+	result, fileID, handlerCtx := ProcessRequestWithFileID(ctx, firstHeader, firstBody, connInfo, isEncrypted)
 	if fileID != [16]byte{} {
 		lastFileID = fileID
 	}
@@ -92,10 +93,10 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		var result *HandlerResult
 		var cmdCtx *handlers.SMBHandlerContext
 		if hdr.IsRelated() && lastFileID != [16]byte{} {
-			result, cmdCtx = ProcessRequestWithInheritedFileID(ctx, hdr, body, lastFileID, connInfo)
+			result, cmdCtx = ProcessRequestWithInheritedFileID(ctx, hdr, body, lastFileID, connInfo, isEncrypted)
 		} else {
 			var fileID [16]byte
-			result, fileID, cmdCtx = ProcessRequestWithFileID(ctx, hdr, body, connInfo)
+			result, fileID, cmdCtx = ProcessRequestWithFileID(ctx, hdr, body, connInfo, isEncrypted)
 			if fileID != [16]byte{} {
 				lastFileID = fileID
 			}
@@ -176,6 +177,14 @@ func VerifyCompoundCommandSignature(data []byte, hdr *header.SMB2Header, connInf
 	isSigned := hdr.Flags.IsSigned()
 	if sess.CryptoState != nil && sess.CryptoState.SigningRequired && !isSigned {
 		return fmt.Errorf("STATUS_ACCESS_DENIED: compound message not signed")
+	}
+
+	// Per MS-SMB2 3.3.5.2.4: For dialect 3.1.1, unsigned unencrypted requests
+	// from authenticated sessions require disconnect.
+	if !isSigned && connInfo.CryptoState != nil && connInfo.CryptoState.GetDialect() == types.Dialect0311 &&
+		!sess.IsGuest && !sess.IsNull &&
+		sess.CryptoState != nil && sess.CryptoState.ShouldVerify() {
+		return fmt.Errorf("SMB 3.1.1: unsigned unencrypted compound request requires disconnect")
 	}
 
 	if isSigned && sess.ShouldVerify() {

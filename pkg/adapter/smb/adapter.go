@@ -16,6 +16,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
@@ -255,6 +256,14 @@ func (s *Adapter) SetRuntime(rtAny any) {
 	// for thread-safe reads. Settings are consumed here at startup and on
 	// each new connection (grandfathering per locked decision).
 	s.applySMBSettings(rt)
+
+	// Register for live settings changes so encryption mode updates take effect
+	// without requiring adapter restart.
+	if sw := rt.GetSettingsWatcher(); sw != nil {
+		sw.OnSMBSettingsChange(func(_ *models.SMBAdapterSettings) {
+			s.applySMBSettings(rt)
+		})
+	}
 }
 
 // applySMBSettings reads current SMB adapter settings from the runtime's

@@ -183,7 +183,6 @@ in `baseline-results.md` for prioritization.
 | FsCtl_Set_IntegrityInformation_Dir_IsIntegritySupported | NTFS-FsCtl | NTFS integrity streams not supported | Permanent | - |
 | FsCtl_Set_IntegrityInformation_File_IsIntegritySupported | NTFS-FsCtl | NTFS integrity streams not supported | Permanent | - |
 | FsInfo_Query_FileFsAttributeInformation_File_IsCompressionSupported | FsInfo | Compression not supported | Permanent | - |
-| FsInfo_Query_FileFsAttributeInformation_File_IsEncryptionSupported | FsInfo | Encryption capability flag not fully working (fix candidate) | Expected | - |
 | FsInfo_Query_FileFsAttributeInformation_File_IsObjectIDsSupported | FsInfo | Object IDs not supported | Permanent | - |
 
 ## Status Legend
@@ -223,12 +222,12 @@ Tests that fail for features not yet implemented:
 | DirectoryLeasing | 2 | Fix candidate (lease break + handle caching, Phase 37) |
 | Leasing | 2 | Fix candidate (V1 + V2, Phase 35-37) |
 | TreeMgmt | 1 | Fix candidate (SMB 3.1.1 disconnect, Phase 33) |
-| FsInfo | 1 | Fix candidate (encryption flag, Phase 33) |
+| FsInfo | 0 | Fixed (encryption flag was wrong bitmask) |
 | NamedPipe | 2 | Named pipe validation not implemented |
 
-**Total expected failures (fixable):** 53 tests
+**Total expected failures (fixable):** 52 tests
 
-**Grand total known failures:** 100 tests (47 permanent + 53 expected)
+**Grand total known failures:** 99 tests (47 permanent + 52 expected)
 
 ## How to Add New Entries
 

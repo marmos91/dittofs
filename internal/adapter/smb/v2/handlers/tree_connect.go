@@ -21,7 +21,7 @@ const treeConnectFixedSize = 8
 // When set in the ShareFlags of the TREE_CONNECT response, the client
 // must encrypt all requests to this share.
 // [MS-SMB2] Section 2.2.10
-const SMB2ShareFlagEncryptData uint32 = 0x0008
+const SMB2ShareFlagEncryptData uint32 = 0x00008000
 
 // ipcMaximalAccess defines the access rights for the IPC$ virtual share.
 // [MS-SMB2] Section 2.2.10 - MaximalAccess is a bitmask of allowed operations.
@@ -133,12 +133,13 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 	// Create tree connection with permission
 	treeID := h.GenerateTreeID()
 	tree := &TreeConnection{
-		TreeID:     treeID,
-		SessionID:  ctx.SessionID,
-		ShareName:  shareName,
-		ShareType:  types.SMB2ShareTypeDisk,
-		CreatedAt:  time.Now(),
-		Permission: permission,
+		TreeID:      treeID,
+		SessionID:   ctx.SessionID,
+		ShareName:   shareName,
+		ShareType:   types.SMB2ShareTypeDisk,
+		CreatedAt:   time.Now(),
+		Permission:  permission,
+		EncryptData: share.EncryptData,
 	}
 	h.StoreTree(tree)
 

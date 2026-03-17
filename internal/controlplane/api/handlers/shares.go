@@ -66,6 +66,7 @@ type CreateShareRequest struct {
 	LocalBlockStore   string    `json:"local_block_store"`
 	RemoteBlockStore  *string   `json:"remote_block_store,omitempty"`
 	ReadOnly          bool      `json:"read_only,omitempty"`
+	EncryptData       bool      `json:"encrypt_data,omitempty"`
 	DefaultPermission string    `json:"default_permission,omitempty"`
 	BlockedOperations *[]string `json:"blocked_operations,omitempty"`
 	RetentionPolicy   string    `json:"retention_policy,omitempty"`
@@ -80,6 +81,7 @@ type UpdateShareRequest struct {
 	LocalBlockStoreID  *string   `json:"local_block_store_id,omitempty"`
 	RemoteBlockStoreID *string   `json:"remote_block_store_id,omitempty"`
 	ReadOnly           *bool     `json:"read_only,omitempty"`
+	EncryptData        *bool     `json:"encrypt_data,omitempty"`
 	DefaultPermission  *string   `json:"default_permission,omitempty"`
 	BlockedOperations  *[]string `json:"blocked_operations,omitempty"`
 	RetentionPolicy    *string   `json:"retention_policy,omitempty"`
@@ -96,6 +98,7 @@ type ShareResponse struct {
 	LocalBlockStoreID  string    `json:"local_block_store_id"`
 	RemoteBlockStoreID *string   `json:"remote_block_store_id"`
 	ReadOnly           bool      `json:"read_only"`
+	EncryptData        bool      `json:"encrypt_data"`
 	DefaultPermission  string    `json:"default_permission"`
 	BlockedOperations  []string  `json:"blocked_operations,omitempty"`
 	RetentionPolicy    string    `json:"retention_policy"`
@@ -229,6 +232,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		LocalBlockStoreID:  localBlockStore.ID, // Use actual store ID (UUID), not name
 		RemoteBlockStoreID: remoteBlockStoreID, // Nullable
 		ReadOnly:           req.ReadOnly,
+		EncryptData:        req.EncryptData,
 		DefaultPermission:  defaultPerm,
 		RetentionPolicy:    string(retPolicy),
 		RetentionTTL:       int64(retTTL.Seconds()),
@@ -271,6 +275,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			Name:              req.Name,
 			MetadataStore:     metaStore.Name,
 			ReadOnly:          req.ReadOnly,
+			EncryptData:       req.EncryptData,
 			DefaultPermission: defaultPerm,
 			Squash:            nfsOpts.GetSquashMode(),
 			AnonymousUID:      nfsOpts.GetAnonymousUID(),
@@ -377,6 +382,9 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ReadOnly != nil {
 		share.ReadOnly = *req.ReadOnly
+	}
+	if req.EncryptData != nil {
+		share.EncryptData = *req.EncryptData
 	}
 	if req.DefaultPermission != nil {
 		share.DefaultPermission = *req.DefaultPermission
@@ -761,6 +769,7 @@ func shareToResponse(s *models.Share) ShareResponse {
 		LocalBlockStoreID:  s.LocalBlockStoreID,
 		RemoteBlockStoreID: s.RemoteBlockStoreID,
 		ReadOnly:           s.ReadOnly,
+		EncryptData:        s.EncryptData,
 		DefaultPermission:  s.DefaultPermission,
 		BlockedOperations:  s.GetBlockedOps(),
 		RetentionPolicy:    string(s.GetRetentionPolicy()),

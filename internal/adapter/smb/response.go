@@ -21,6 +21,7 @@ import (
 //   - body: request body bytes
 //   - rawMessage: complete raw SMB2 message bytes (header + body) for hooks
 //   - connInfo: connection context for dispatch
+//   - isEncrypted: whether the request was received inside an SMB3 Transform Header
 //   - asyncNotifyCallback: optional callback for CHANGE_NOTIFY async responses (nil = no async)
 func ProcessSingleRequest(
 	ctx context.Context,
@@ -28,6 +29,7 @@ func ProcessSingleRequest(
 	body []byte,
 	rawMessage []byte,
 	connInfo *ConnInfo,
+	isEncrypted bool,
 	asyncNotifyCallback handlers.AsyncResponseCallback,
 ) error {
 	// Check context before processing
@@ -46,6 +48,13 @@ func ProcessSingleRequest(
 
 	cmd, handlerCtx, errStatus := prepareDispatch(ctx, reqHeader, connInfo)
 	if errStatus != 0 {
+		return SendErrorResponse(reqHeader, errStatus, connInfo)
+	}
+
+	handlerCtx.RequestEncrypted = isEncrypted
+
+	// Per MS-SMB2 3.3.5.2.1: enforce encryption requirements.
+	if errStatus := checkEncryptionRequired(reqHeader, handlerCtx, connInfo, isEncrypted); errStatus != 0 {
 		return SendErrorResponse(reqHeader, errStatus, connInfo)
 	}
 
@@ -89,7 +98,17 @@ func ProcessSingleRequest(
 	TrackSessionLifecycle(reqHeader.Command, reqHeader.SessionID, handlerCtx.SessionID, result.Status, connInfo.SessionTracker)
 
 	// Send response and run after-hooks with the response bytes
-	return SendResponseWithHooks(reqHeader, handlerCtx, result, connInfo)
+	if err := SendResponseWithHooks(reqHeader, handlerCtx, result, connInfo); err != nil {
+		return err
+	}
+
+	// Deferred session delete: LOGOFF sets this so the session stays alive for
+	// response signing/encryption, then we delete it here after sending.
+	if handlerCtx.DeferredSessionDelete != 0 {
+		connInfo.Handler.DeleteSession(handlerCtx.DeferredSessionDelete)
+	}
+
+	return nil
 }
 
 // prepareDispatch looks up the command in the dispatch table, builds the handler context,
@@ -140,11 +159,18 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 // Also returns the handler context so callers (compound processing) can pass
 // handler-populated fields (e.g. SessionID from SESSION_SETUP, TreeID from
 // TREE_CONNECT) through to SendResponse.
-func ProcessRequestWithFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte, connInfo *ConnInfo) (*HandlerResult, [16]byte, *handlers.SMBHandlerContext) {
+func ProcessRequestWithFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte, connInfo *ConnInfo, isEncrypted bool) (*HandlerResult, [16]byte, *handlers.SMBHandlerContext) {
 	var fileID [16]byte
 
 	cmd, handlerCtx, errStatus := prepareDispatch(ctx, reqHeader, connInfo)
 	if errStatus != 0 {
+		return &HandlerResult{Status: errStatus, Data: MakeErrorBody()}, fileID, handlerCtx
+	}
+
+	handlerCtx.RequestEncrypted = isEncrypted
+
+	// Per MS-SMB2 3.3.5.2.1: enforce encryption requirements.
+	if errStatus := checkEncryptionRequired(reqHeader, handlerCtx, connInfo, isEncrypted); errStatus != 0 {
 		return &HandlerResult{Status: errStatus, Data: MakeErrorBody()}, fileID, handlerCtx
 	}
 
@@ -178,10 +204,48 @@ func ProcessRequestWithFileID(ctx context.Context, reqHeader *header.SMB2Header,
 
 // ProcessRequestWithInheritedFileID processes a request using an inherited FileID.
 // InjectFileID is a no-op for commands that do not use a FileID, so no pre-filtering is needed.
-func ProcessRequestWithInheritedFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte, inheritedFileID [16]byte, connInfo *ConnInfo) (*HandlerResult, *handlers.SMBHandlerContext) {
+func ProcessRequestWithInheritedFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte, inheritedFileID [16]byte, connInfo *ConnInfo, isEncrypted bool) (*HandlerResult, *handlers.SMBHandlerContext) {
 	body = InjectFileID(reqHeader.Command, body, inheritedFileID)
-	result, _, handlerCtx := ProcessRequestWithFileID(ctx, reqHeader, body, connInfo)
+	result, _, handlerCtx := ProcessRequestWithFileID(ctx, reqHeader, body, connInfo, isEncrypted)
 	return result, handlerCtx
+}
+
+// checkEncryptionRequired enforces global and per-share encryption requirements.
+// Per MS-SMB2 3.3.5.2.1: if the server requires encryption (globally or for the
+// tree's share) and the request was not encrypted, return STATUS_ACCESS_DENIED.
+// NEGOTIATE and SESSION_SETUP are exempt because encryption keys are not yet available.
+func checkEncryptionRequired(reqHeader *header.SMB2Header, handlerCtx *handlers.SMBHandlerContext, connInfo *ConnInfo, isEncrypted bool) types.Status {
+	if isEncrypted {
+		return 0
+	}
+
+	// NEGOTIATE and SESSION_SETUP are always allowed unencrypted
+	if reqHeader.Command == types.SMB2Negotiate || reqHeader.Command == types.SMB2SessionSetup {
+		return 0
+	}
+
+	// Global encryption enforcement: when mode is "required", all post-session-setup
+	// messages must be encrypted.
+	if connInfo.Handler.EncryptionConfig.Mode == "required" && reqHeader.SessionID != 0 {
+		logger.Debug("Rejecting unencrypted request: global encryption required",
+			"command", reqHeader.Command.String(),
+			"sessionID", reqHeader.SessionID)
+		return types.StatusAccessDenied
+	}
+
+	// Per-share encryption enforcement: if the tree was connected to a share
+	// with EncryptData=true, all requests on that tree must be encrypted.
+	if reqHeader.TreeID != 0 {
+		if tree, ok := connInfo.Handler.GetTree(reqHeader.TreeID); ok && tree.EncryptData {
+			logger.Debug("Rejecting unencrypted request: share requires encryption",
+				"command", reqHeader.Command.String(),
+				"treeID", reqHeader.TreeID,
+				"shareName", tree.ShareName)
+			return types.StatusAccessDenied
+		}
+	}
+
+	return 0
 }
 
 // SendResponseWithHooks sends an SMB2 response and runs after-hooks with the
@@ -280,7 +344,12 @@ func SendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo) error 
 
 	if hdr.SessionID != 0 {
 		if sess, ok := connInfo.Handler.GetSession(hdr.SessionID); ok {
-			if sess.ShouldEncrypt() && connInfo.EncryptionMiddleware != nil {
+			// Per MS-SMB2 3.3.5.5.3: the final SESSION_SETUP response that
+			// establishes the session MUST NOT be encrypted. The client has not
+			// yet derived encryption keys at this point — it needs the unencrypted
+			// response to complete key derivation. Only sign the response instead.
+			isSessionSetupSuccess := hdr.Command == types.SMB2SessionSetup && hdr.Status == types.StatusSuccess
+			if sess.ShouldEncrypt() && connInfo.EncryptionMiddleware != nil && !isSessionSetupSuccess {
 				encrypted, err := connInfo.EncryptionMiddleware.EncryptResponse(hdr.SessionID, smbPayload)
 				if err != nil {
 					return fmt.Errorf("encrypt response: %w", err)

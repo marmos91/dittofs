@@ -9,6 +9,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // ============================================================================
@@ -158,20 +159,36 @@ func (h *Handler) Logoff(ctx *SMBHandlerContext, req *LogoffRequest) (*LogoffRes
 	}
 
 	// ========================================================================
-	// Step 2: Perform full session cleanup
+	// Step 2: Partial cleanup — close files, trees, pending auth
 	// ========================================================================
 	//
-	// CleanupSession handles all resource cleanup in the correct order:
-	// 1. Close all open files (releases locks, flushes caches)
-	// 2. Delete all tree connections
-	// 3. Clean up pending auth state
-	// 4. Delete the session itself
+	// Per MS-SMB2 3.3.5.6: the LOGOFF response MUST be signed (or encrypted)
+	// using the session's key. The session must remain alive in the
+	// SessionManager until AFTER the response is sent, otherwise SendMessage
+	// cannot look up the session for signing/encryption.
+	//
+	// We clean up everything EXCEPT the session itself here. The session is
+	// deleted post-response by ProcessSingleRequest (via DeferredSessionDelete).
 
-	h.CleanupSession(ctx.Context, ctx.SessionID, false /* explicit LOGOFF, not disconnect */)
+	logger.Debug("Logoff: partial cleanup (session kept for response signing)",
+		"sessionID", ctx.SessionID)
+
+	filesClosed := h.CloseAllFilesForSession(ctx.Context, ctx.SessionID, false)
+	treesDeleted := h.DeleteAllTreesForSession(ctx.SessionID)
+	h.DeletePendingAuth(ctx.SessionID)
+
+	logger.Debug("Logoff: partial cleanup done",
+		"sessionID", ctx.SessionID,
+		"filesClosed", filesClosed,
+		"treesDeleted", treesDeleted)
 
 	// ========================================================================
-	// Step 3: Return success response
+	// Step 3: Return success response with deferred session delete
 	// ========================================================================
 
-	return &LogoffResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
+	resp := &LogoffResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}
+	// Mark for deferred deletion — the response layer will delete the session
+	// after the response has been sent (and encrypted/signed).
+	ctx.DeferredSessionDelete = ctx.SessionID
+	return resp, nil
 }

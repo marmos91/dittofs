@@ -162,6 +162,9 @@
       <Property name="IsChainedCompressionSupported" value="false">
         <Description>Chained compression not supported.</Description>
       </Property>
+      <Property name="SutSupportedEncryptionAlgorithms" value="ENCRYPTION_AES128_GCM;ENCRYPTION_AES128_CCM;ENCRYPTION_AES256_GCM;ENCRYPTION_AES256_CCM">
+        <Description>Supported encryption algorithms for SMB 3.x.</Description>
+      </Property>
       <Property name="SupportedSigningAlgorithms" value="HMAC_SHA256;AES_CMAC;AES_GMAC">
         <Description>Supported signing algorithms (HMAC-SHA256 for 2.x, AES-CMAC/GMAC for 3.x since Phase 34).</Description>
       </Property>

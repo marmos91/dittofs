@@ -599,25 +599,37 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 				encCipherId = types.CipherAES128CCM
 			}
 
-			cryptoState.EncryptData = true
-			if err := cryptoState.CreateEncryptors(encCipherId); err != nil {
-				if h.EncryptionConfig.Mode == "required" {
-					// Required mode: encryption failure is fatal — destroy the session
-					logger.Warn("Failed to create session encryptors in required mode, rejecting session",
-						"sessionID", sess.SessionID, "error", err)
-					h.DeleteSession(sess.SessionID)
-					return NewErrorResult(types.StatusAccessDenied)
-				}
-				// Preferred mode: degrade gracefully
-				logger.Warn("Failed to create session encryptors, disabling encryption",
-					"sessionID", sess.SessionID, "error", err)
-				cryptoState.EncryptData = false
-			} else {
-				logger.Info("SMB3 encryption enabled for session",
-					"sessionID", sess.SessionID,
-					"cipherId", fmt.Sprintf("0x%04x", encCipherId),
-					"dialect", dialect.String())
+			// SMB 3.1.1 with no encryption negotiate context: cipherId stays 0.
+			// The client explicitly opted out of encryption; skip encryptor creation
+			// in preferred mode. In required mode, reject below.
+			if encCipherId == 0 && h.EncryptionConfig.Mode == "required" {
+				logger.Warn("Rejecting session: encryption required but no cipher negotiated",
+					"sessionID", sess.SessionID, "dialect", dialect.String())
+				h.DeleteSession(sess.SessionID)
+				return NewErrorResult(types.StatusAccessDenied)
 			}
+
+			if encCipherId != 0 {
+				cryptoState.EncryptData = true
+				if err := cryptoState.CreateEncryptors(encCipherId); err != nil {
+					if h.EncryptionConfig.Mode == "required" {
+						logger.Warn("Failed to create session encryptors in required mode, rejecting session",
+							"sessionID", sess.SessionID, "error", err)
+						h.DeleteSession(sess.SessionID)
+						return NewErrorResult(types.StatusAccessDenied)
+					}
+					// Preferred mode: degrade gracefully
+					logger.Warn("Failed to create session encryptors, disabling encryption",
+						"sessionID", sess.SessionID, "error", err)
+					cryptoState.EncryptData = false
+				} else {
+					logger.Info("SMB3 encryption enabled for session",
+						"sessionID", sess.SessionID,
+						"cipherId", fmt.Sprintf("0x%04x", encCipherId),
+						"dialect", dialect.String())
+				}
+			}
+			// encCipherId == 0 && preferred mode: no encryption for this session
 		}
 
 		sess.SetCryptoState(cryptoState)

@@ -15,6 +15,7 @@ var (
 	editLocal             string
 	editRemote            string
 	editReadOnly          string
+	editEncryptData       string
 	editDefaultPermission string
 	editDescription       string
 	editRetention         string
@@ -72,6 +73,7 @@ func init() {
 	editCmd.Flags().StringVar(&editLocal, "local", "", "Local block store name")
 	editCmd.Flags().StringVar(&editRemote, "remote", "", "Remote block store name")
 	editCmd.Flags().StringVar(&editReadOnly, "read-only", "", "Set read-only (true|false)")
+	editCmd.Flags().StringVar(&editEncryptData, "encrypt-data", "", "Require SMB3 encryption (true|false)")
 	editCmd.Flags().StringVar(&editDefaultPermission, "default-permission", "", "Default permission (none|read|read-write|admin)")
 	editCmd.Flags().StringVar(&editDescription, "description", "", "Share description")
 	editCmd.Flags().StringVar(&editRetention, "retention", "", "Retention policy (pin|ttl|lru)")
@@ -90,7 +92,8 @@ func runEdit(cmd *cobra.Command, args []string) error {
 
 	// Check if any flags were provided
 	hasFlags := cmd.Flags().Changed("local") || cmd.Flags().Changed("remote") ||
-		cmd.Flags().Changed("read-only") || cmd.Flags().Changed("default-permission") ||
+		cmd.Flags().Changed("read-only") || cmd.Flags().Changed("encrypt-data") ||
+		cmd.Flags().Changed("default-permission") ||
 		cmd.Flags().Changed("description") || cmd.Flags().Changed("retention") ||
 		cmd.Flags().Changed("retention-ttl") || cmd.Flags().Changed("local-store-size") ||
 		cmd.Flags().Changed("read-buffer-size")
@@ -117,6 +120,12 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	if editReadOnly != "" {
 		readOnly := strings.ToLower(editReadOnly) == "true"
 		req.ReadOnly = &readOnly
+		hasUpdate = true
+	}
+
+	if editEncryptData != "" {
+		encryptData := strings.ToLower(editEncryptData) == "true"
+		req.EncryptData = &encryptData
 		hasUpdate = true
 	}
 

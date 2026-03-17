@@ -43,7 +43,8 @@ type SigningVerifier interface {
 //   - encMiddleware: optional encryption middleware (nil = no encryption support)
 //   - handleSMB1: callback to handle SMB1 NEGOTIATE upgrade (returns error)
 //
-// Returns parsed header, body bytes, remaining compound bytes, and error.
+// Returns parsed header, body bytes, remaining compound bytes, whether the
+// message was encrypted (received inside an SMB3 Transform Header), and error.
 func ReadRequest(
 	ctx context.Context,
 	conn net.Conn,
@@ -52,10 +53,10 @@ func ReadRequest(
 	verifier SigningVerifier,
 	encMiddleware encryption.EncryptionMiddleware,
 	handleSMB1 func(ctx context.Context, message []byte) error,
-) (*header.SMB2Header, []byte, []byte, error) {
+) (*header.SMB2Header, []byte, []byte, bool, error) {
 	message, err := readNetBIOSPayload(ctx, conn, maxMsgSize, readTimeout, 4)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, false, err
 	}
 
 	protocolID := binary.LittleEndian.Uint32(message[0:4])
@@ -64,19 +65,20 @@ func ReadRequest(
 	case types.SMB1ProtocolID:
 		// Legacy SMB1 negotiate - upgrade to SMB2
 		if err := handleSMB1(ctx, message); err != nil {
-			return nil, nil, nil, fmt.Errorf("handle SMB1 negotiate: %w", err)
+			return nil, nil, nil, false, fmt.Errorf("handle SMB1 negotiate: %w", err)
 		}
 		// Read the next message non-recursively -- must be SMB2
-		return readSMB2Message(ctx, conn, maxMsgSize, readTimeout, verifier)
+		hdr, body, remaining, err := readSMB2Message(ctx, conn, maxMsgSize, readTimeout, verifier)
+		return hdr, body, remaining, false, err
 
 	case header.TransformProtocolID:
 		// Encrypted SMB3 message (0xFD 'S' 'M' 'B')
 		if encMiddleware == nil {
-			return nil, nil, nil, fmt.Errorf("encrypted message received but encryption not configured")
+			return nil, nil, nil, false, fmt.Errorf("encrypted message received but encryption not configured")
 		}
 		decrypted, transformSessionID, err := encMiddleware.DecryptRequest(message)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("decrypt transform message: %w", err)
+			return nil, nil, nil, false, fmt.Errorf("decrypt transform message: %w", err)
 		}
 
 		// Parse the inner SMB2 message. Per MS-SMB2 3.3.5.2.1.1:
@@ -84,21 +86,22 @@ func ReadRequest(
 		// Pass nil verifier to skip signature checks.
 		hdr, body, remaining, err := parseSMB2Message(decrypted, nil, true)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, false, err
 		}
 
 		// Per MS-SMB2 3.3.5.2.1.1: validate that the inner SMB2 header's
 		// SessionID matches the transform header's SessionId. A mismatch
 		// would indicate cross-session request confusion.
 		if hdr != nil && hdr.SessionID != transformSessionID {
-			return nil, nil, nil, fmt.Errorf("session ID mismatch: transform header 0x%x vs inner SMB2 header 0x%x",
+			return nil, nil, nil, false, fmt.Errorf("session ID mismatch: transform header 0x%x vs inner SMB2 header 0x%x",
 				transformSessionID, hdr.SessionID)
 		}
-		return hdr, body, remaining, nil
+		return hdr, body, remaining, true, nil
 
 	default:
 		// Normal SMB2 message (0xFE 'S' 'M' 'B') or unexpected protocol
-		return parseSMB2Message(message, verifier, true)
+		hdr, body, remaining, err := parseSMB2Message(message, verifier, true)
+		return hdr, body, remaining, false, err
 	}
 }
 
@@ -284,14 +287,16 @@ func WriteNetBIOSFrame(conn net.Conn, writeMu *LockedWriter, writeTimeout time.D
 // Per MS-SMB2 3.3.5.2.4: verify if session requires signing or message is signed.
 // For compound requests, only the first command's bytes are verified here.
 type sessionSigningVerifier struct {
-	handler *handlers.Handler
-	conn    net.Conn
+	handler    *handlers.Handler
+	conn       net.Conn
+	connCrypto *ConnectionCryptoState
 }
 
 // NewSessionSigningVerifier creates a SigningVerifier backed by the Handler's session
 // state. It verifies message signatures per MS-SMB2 3.3.5.2.4 using session signing keys.
-func NewSessionSigningVerifier(handler *handlers.Handler, conn net.Conn) SigningVerifier {
-	return &sessionSigningVerifier{handler: handler, conn: conn}
+// The connCrypto parameter provides per-connection negotiation state (dialect, etc.).
+func NewSessionSigningVerifier(handler *handlers.Handler, conn net.Conn, connCrypto *ConnectionCryptoState) SigningVerifier {
+	return &sessionSigningVerifier{handler: handler, conn: conn, connCrypto: connCrypto}
 }
 
 func (sv *sessionSigningVerifier) VerifyRequest(hdr *header.SMB2Header, message []byte) error {
@@ -314,6 +319,22 @@ func (sv *sessionSigningVerifier) VerifyRequest(hdr *header.SMB2Header, message 
 			"sessionID", hdr.SessionID,
 			"client", sv.conn.RemoteAddr().String())
 		return fmt.Errorf("STATUS_ACCESS_DENIED: message not signed")
+	}
+
+	// Per MS-SMB2 3.3.5.2.4: For dialect 3.1.1, if the request is not signed
+	// and not encrypted (encrypted messages skip this verifier entirely), and
+	// the session is authenticated (not guest/anonymous), the server MUST
+	// disconnect the connection. This applies regardless of the server's
+	// signing configuration because 3.1.1 implicitly requires message
+	// integrity for all authenticated sessions.
+	if !isSigned && sv.connCrypto != nil && sv.connCrypto.GetDialect() == types.Dialect0311 &&
+		!sess.IsGuest && !sess.IsNull &&
+		sess.CryptoState != nil && sess.CryptoState.ShouldVerify() {
+		logger.Warn("SMB 3.1.1: unsigned unencrypted request from authenticated session, disconnecting",
+			"command", hdr.Command.String(),
+			"sessionID", hdr.SessionID,
+			"client", sv.conn.RemoteAddr().String())
+		return fmt.Errorf("SMB 3.1.1: unsigned unencrypted request requires disconnect")
 	}
 
 	if isSigned && sess.ShouldVerify() {

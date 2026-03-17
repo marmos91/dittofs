@@ -167,12 +167,13 @@ type PendingAuth struct {
 // to a DittoFS share. Created by TreeConnect and removed by TreeDisconnect.
 // Stores the effective permission level for access control during file operations.
 type TreeConnection struct {
-	TreeID     uint32
-	SessionID  uint64
-	ShareName  string
-	ShareType  uint8
-	CreatedAt  time.Time
-	Permission models.SharePermission // User's permission level for this share
+	TreeID      uint32
+	SessionID   uint64
+	ShareName   string
+	ShareType   uint8
+	CreatedAt   time.Time
+	Permission  models.SharePermission // User's permission level for this share
+	EncryptData bool                   // Share requires all requests to be encrypted
 }
 
 // OpenFile represents an open file handle created by the CREATE command.
