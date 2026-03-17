@@ -34,7 +34,7 @@ func (at *accessTracker) Touch(payloadID string) {
 }
 
 // TouchIfAbsent seeds the access time for a file only if not already tracked.
-// Used on cache read hits to restore access times from FileBlock.LastAccess
+// Used on local store read hits to restore access times from FileBlock.LastAccess
 // after a restart, without overwriting times established by active I/O.
 func (at *accessTracker) TouchIfAbsent(payloadID string, t time.Time) {
 	at.mu.Lock()

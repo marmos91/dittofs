@@ -199,7 +199,7 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			RetentionPolicy:    share.GetRetentionPolicy(),
 			RetentionTTL:       share.GetRetentionTTL(),
 			LocalStoreSize:     share.LocalStoreSize,
-			ReadCacheSize:      share.ReadCacheSize,
+			ReadBufferSize:     share.ReadBufferSize,
 			LocalBlockStoreID:  share.LocalBlockStoreID,
 			RemoteBlockStoreID: derefString(share.RemoteBlockStoreID),
 		}

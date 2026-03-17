@@ -6,9 +6,9 @@ import (
 	"sync"
 )
 
-// fdCache is an LRU cache of open file descriptors for .blk cache files.
+// fdPool is an LRU pool of open file descriptors for .blk block files.
 // Eliminates open+close syscalls per 4KB random write in tryDirectDiskWrite.
-type fdCache struct {
+type fdPool struct {
 	mu      sync.Mutex
 	fds     map[string]*fdEntry // blockID -> open fd
 	lru     *list.List
@@ -21,22 +21,22 @@ type fdEntry struct {
 	elem    *list.Element
 }
 
-const defaultFDCacheSize = 256
+const defaultFDPoolSize = 256
 
-func newFDCache(maxSize int) *fdCache {
+func newFDPool(maxSize int) *fdPool {
 	if maxSize <= 0 {
-		maxSize = defaultFDCacheSize
+		maxSize = defaultFDPoolSize
 	}
-	return &fdCache{
+	return &fdPool{
 		fds:     make(map[string]*fdEntry, maxSize),
 		lru:     list.New(),
 		maxSize: maxSize,
 	}
 }
 
-// Get returns a cached fd for blockID, or nil if not cached.
+// Get returns a pooled fd for blockID, or nil if not in the pool.
 // The returned fd is moved to the front of the LRU list.
-func (c *fdCache) Get(blockID string) *os.File {
+func (c *fdPool) Get(blockID string) *os.File {
 	c.mu.Lock()
 	entry, ok := c.fds[blockID]
 	if ok {
@@ -49,13 +49,13 @@ func (c *fdCache) Get(blockID string) *os.File {
 	return nil
 }
 
-// Put adds an fd to the cache. If the cache is full, the least recently
+// Put adds an fd to the pool. If the pool is full, the least recently
 // used fd is evicted and closed.
-func (c *fdCache) Put(blockID string, f *os.File) {
+func (c *fdPool) Put(blockID string, f *os.File) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Already cached -- update and promote
+	// Already pooled -- update and promote
 	if entry, ok := c.fds[blockID]; ok {
 		_ = entry.f.Close()
 		entry.f = f
@@ -81,7 +81,7 @@ func (c *fdCache) Put(blockID string, f *os.File) {
 }
 
 // Evict removes and closes the fd for blockID if present.
-func (c *fdCache) Evict(blockID string) {
+func (c *fdPool) Evict(blockID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -94,8 +94,8 @@ func (c *fdCache) Evict(blockID string) {
 	c.lru.Remove(entry.elem)
 }
 
-// CloseAll closes all cached file descriptors.
-func (c *fdCache) CloseAll() {
+// CloseAll closes all pooled file descriptors.
+func (c *fdPool) CloseAll() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

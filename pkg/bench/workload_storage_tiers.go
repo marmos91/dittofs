@@ -11,30 +11,30 @@ import (
 	"github.com/marmos91/dittofs/pkg/apiclient"
 )
 
-// DefaultCacheTiersSizes are the file sizes benchmarked by default: 10 MB, 100 MB, 1 GB.
-var DefaultCacheTiersSizes = []int64{
+// DefaultStorageTiersSizes are the file sizes benchmarked by default: 10 MB, 100 MB, 1 GB.
+var DefaultStorageTiersSizes = []int64{
 	10 << 20,  // 10 MiB
 	100 << 20, // 100 MiB
 	1 << 30,   // 1 GiB
 }
 
-// CacheTiersConfig holds configuration for the cache-tiers benchmark.
-type CacheTiersConfig struct {
+// StorageTiersConfig holds configuration for the storage-tiers benchmark.
+type StorageTiersConfig struct {
 	// MountPoint is the NFS/SMB mount path for file I/O.
 	MountPoint string
 
-	// ShareName is the DittoFS share name for cache API calls.
+	// ShareName is the DittoFS share name for block store API calls.
 	ShareName string
 
-	// Client is an authenticated API client for cache eviction/stats.
+	// Client is an authenticated API client for block store eviction/stats.
 	Client *apiclient.Client
 
 	// FileSizes are the file sizes to benchmark (default: 10 MB, 100 MB, 1 GB).
 	FileSizes []int64
 }
 
-// CacheTiersResult holds the complete cache-tiers benchmark output.
-type CacheTiersResult struct {
+// StorageTiersResult holds the complete storage-tiers benchmark output.
+type StorageTiersResult struct {
 	// Timestamp is when the benchmark started.
 	Timestamp time.Time `json:"timestamp"`
 
@@ -42,50 +42,50 @@ type CacheTiersResult struct {
 	ShareName string `json:"share_name"`
 
 	// Results contains per-size benchmark results.
-	Results []CacheTiersSizeResult `json:"results"`
+	Results []StorageTiersSizeResult `json:"results"`
 
 	// TotalDuration is the wall-clock time for the entire benchmark.
 	TotalDuration time.Duration `json:"total_duration"`
 }
 
-// CacheTiersSizeResult holds results for a single file size.
-type CacheTiersSizeResult struct {
-	FileSize      int64   `json:"file_size"`
-	WriteStats    IOStats `json:"write_stats"`
-	ColdReadStats IOStats `json:"cold_read_stats"`
-	WarmReadStats IOStats `json:"warm_read_stats"`
-	L2OnlyStats   IOStats `json:"l2_only_stats"`
+// StorageTiersSizeResult holds results for a single file size.
+type StorageTiersSizeResult struct {
+	FileSize       int64   `json:"file_size"`
+	WriteStats     IOStats `json:"write_stats"`
+	ColdReadStats  IOStats `json:"cold_read_stats"`
+	WarmReadStats  IOStats `json:"warm_read_stats"`
+	LocalOnlyStats IOStats `json:"local_only_stats"`
 }
 
-// IOStats holds throughput and cache metrics for a single I/O step.
+// IOStats holds throughput and storage metrics for a single I/O step.
 type IOStats struct {
 	ThroughputMBps float64 `json:"throughput_mbps"`
 	DurationMs     int64   `json:"duration_ms"`
 	L1HitRate      float64 `json:"l1_hit_rate"` // -1 means not applicable
 }
 
-// CacheTiersBenchmark runs the 6-step cache tier benchmark.
-type CacheTiersBenchmark struct {
-	cfg CacheTiersConfig
+// StorageTiersBenchmark runs the 6-step storage tier benchmark.
+type StorageTiersBenchmark struct {
+	cfg StorageTiersConfig
 }
 
-// NewCacheTiersBenchmark creates a new cache-tiers benchmark runner.
-func NewCacheTiersBenchmark(cfg CacheTiersConfig) *CacheTiersBenchmark {
+// NewStorageTiersBenchmark creates a new storage-tiers benchmark runner.
+func NewStorageTiersBenchmark(cfg StorageTiersConfig) *StorageTiersBenchmark {
 	if len(cfg.FileSizes) == 0 {
-		cfg.FileSizes = DefaultCacheTiersSizes
+		cfg.FileSizes = DefaultStorageTiersSizes
 	}
-	return &CacheTiersBenchmark{cfg: cfg}
+	return &StorageTiersBenchmark{cfg: cfg}
 }
 
 // Sizes returns the resolved file sizes (after applying defaults).
-func (b *CacheTiersBenchmark) Sizes() []int64 { return b.cfg.FileSizes }
+func (b *StorageTiersBenchmark) Sizes() []int64 { return b.cfg.FileSizes }
 
-// Run executes the 6-step cache-tiers benchmark for each file size.
-func (b *CacheTiersBenchmark) Run(ctx context.Context, logf func(string, ...any)) (*CacheTiersResult, error) {
-	result := &CacheTiersResult{
+// Run executes the 6-step storage-tiers benchmark for each file size.
+func (b *StorageTiersBenchmark) Run(ctx context.Context, logf func(string, ...any)) (*StorageTiersResult, error) {
+	result := &StorageTiersResult{
 		Timestamp: time.Now().UTC(),
 		ShareName: b.cfg.ShareName,
-		Results:   make([]CacheTiersSizeResult, 0, len(b.cfg.FileSizes)),
+		Results:   make([]StorageTiersSizeResult, 0, len(b.cfg.FileSizes)),
 	}
 
 	start := time.Now()
@@ -111,10 +111,10 @@ func (b *CacheTiersBenchmark) Run(ctx context.Context, logf func(string, ...any)
 }
 
 // runForSize executes the 6-step workflow for a single file size.
-func (b *CacheTiersBenchmark) runForSize(ctx context.Context, fileSize int64, logf func(string, ...any)) (*CacheTiersSizeResult, error) {
+func (b *StorageTiersBenchmark) runForSize(ctx context.Context, fileSize int64, logf func(string, ...any)) (*StorageTiersSizeResult, error) {
 	sizeLabel := FormatSize(fileSize)
 
-	dir := filepath.Join(b.cfg.MountPoint, benchDir, fmt.Sprintf("cache_tiers_%d", fileSize))
+	dir := filepath.Join(b.cfg.MountPoint, benchDir, fmt.Sprintf("storage_tiers_%d", fileSize))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create bench dir: %w", err)
 	}
@@ -122,7 +122,7 @@ func (b *CacheTiersBenchmark) runForSize(ctx context.Context, fileSize int64, lo
 
 	testFile := filepath.Join(dir, "testfile.dat")
 
-	result := &CacheTiersSizeResult{
+	result := &StorageTiersSizeResult{
 		FileSize: fileSize,
 	}
 
@@ -134,8 +134,8 @@ func (b *CacheTiersBenchmark) runForSize(ctx context.Context, fileSize int64, lo
 	}
 	result.WriteStats = *writeStats
 
-	// Step 2: Evict all cache
-	logf("  %s: Step 2/6 - Evict all cache...\n", sizeLabel)
+	// Step 2: Evict all block store data
+	logf("  %s: Step 2/6 - Evict all block store data...\n", sizeLabel)
 	if err := b.evictAll(ctx); err != nil {
 		logf("  WARNING: evict-all failed: %v (cold read may not be accurate)\n", err)
 	}
@@ -146,38 +146,38 @@ func (b *CacheTiersBenchmark) runForSize(ctx context.Context, fileSize int64, lo
 	if err != nil {
 		return nil, fmt.Errorf("cold read: %w", err)
 	}
-	coldStats.L1HitRate = b.getL1HitRate(logf)
+	coldStats.L1HitRate = b.getReadBufferHitRate(logf)
 	result.ColdReadStats = *coldStats
 
-	// Step 4: Warm read (data in L1 + local cache)
+	// Step 4: Warm read (data in read buffer + local store)
 	logf("  %s: Step 4/6 - Warm read...\n", sizeLabel)
 	warmStats, err := b.readFile(testFile, fileSize)
 	if err != nil {
 		return nil, fmt.Errorf("warm read: %w", err)
 	}
-	warmStats.L1HitRate = b.getL1HitRate(logf)
+	warmStats.L1HitRate = b.getReadBufferHitRate(logf)
 	result.WarmReadStats = *warmStats
 
-	// Step 5: Evict L1 only (keep local FS blocks)
-	logf("  %s: Step 5/6 - Evict L1 cache only...\n", sizeLabel)
-	if err := b.evictL1(ctx); err != nil {
-		logf("  WARNING: L1-evict failed: %v (L2 read may not be accurate)\n", err)
+	// Step 5: Evict read buffer only (keep local FS blocks)
+	logf("  %s: Step 5/6 - Evict read buffer only...\n", sizeLabel)
+	if err := b.evictReadBuffer(ctx); err != nil {
+		logf("  WARNING: read-buffer evict failed: %v (local-only read may not be accurate)\n", err)
 	}
 
-	// Step 6: L2-only read (data from local FS cache, not L1 memory)
-	logf("  %s: Step 6/6 - L2-only read...\n", sizeLabel)
-	l2Stats, err := b.readFile(testFile, fileSize)
+	// Step 6: Local-only read (data from local FS store, not read buffer)
+	logf("  %s: Step 6/6 - Local-only read...\n", sizeLabel)
+	localOnlyStats, err := b.readFile(testFile, fileSize)
 	if err != nil {
-		return nil, fmt.Errorf("L2 read: %w", err)
+		return nil, fmt.Errorf("local-only read: %w", err)
 	}
-	l2Stats.L1HitRate = b.getL1HitRate(logf)
-	result.L2OnlyStats = *l2Stats
+	localOnlyStats.L1HitRate = b.getReadBufferHitRate(logf)
+	result.LocalOnlyStats = *localOnlyStats
 
 	return result, nil
 }
 
 // writeFile writes a test file of the given size and returns I/O stats.
-func (b *CacheTiersBenchmark) writeFile(path string, size int64) (*IOStats, error) {
+func (b *StorageTiersBenchmark) writeFile(path string, size int64) (*IOStats, error) {
 	f, err := os.Create(path)
 	if err != nil {
 		return nil, fmt.Errorf("create %s: %w", path, err)
@@ -214,7 +214,7 @@ func (b *CacheTiersBenchmark) writeFile(path string, size int64) (*IOStats, erro
 }
 
 // readFile reads an entire file and returns I/O stats.
-func (b *CacheTiersBenchmark) readFile(path string, size int64) (*IOStats, error) {
+func (b *StorageTiersBenchmark) readFile(path string, size int64) (*IOStats, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
@@ -244,35 +244,35 @@ func (b *CacheTiersBenchmark) readFile(path string, size int64) (*IOStats, error
 	}, nil
 }
 
-// evictCache evicts cache for the share with the given options.
+// evictBlockStore evicts block store data for the share with the given options.
 // Returns ctx.Err() if the context is already cancelled.
-func (b *CacheTiersBenchmark) evictCache(ctx context.Context, req *apiclient.CacheEvictRequest, label string) error {
+func (b *StorageTiersBenchmark) evictBlockStore(ctx context.Context, req *apiclient.BlockStoreEvictOptions, label string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	_, err := b.cfg.Client.CacheEvictForShare(b.cfg.ShareName, req)
+	_, err := b.cfg.Client.BlockStoreEvictForShare(b.cfg.ShareName, req)
 	if err != nil {
-		return fmt.Errorf("cache evict %s: %w", label, err)
+		return fmt.Errorf("block store evict %s: %w", label, err)
 	}
 	return nil
 }
 
-// evictAll evicts both L1 and local cache for the share.
-func (b *CacheTiersBenchmark) evictAll(ctx context.Context) error {
-	return b.evictCache(ctx, &apiclient.CacheEvictRequest{}, "all")
+// evictAll evicts both read buffer and local disk data for the share.
+func (b *StorageTiersBenchmark) evictAll(ctx context.Context) error {
+	return b.evictBlockStore(ctx, &apiclient.BlockStoreEvictOptions{}, "all")
 }
 
-// evictL1 evicts only the L1 (memory) cache for the share.
-func (b *CacheTiersBenchmark) evictL1(ctx context.Context) error {
-	return b.evictCache(ctx, &apiclient.CacheEvictRequest{L1Only: true}, "L1")
+// evictReadBuffer evicts only the read buffer (memory) for the share.
+func (b *StorageTiersBenchmark) evictReadBuffer(ctx context.Context) error {
+	return b.evictBlockStore(ctx, &apiclient.BlockStoreEvictOptions{ReadBufferOnly: true}, "read-buffer")
 }
 
-// getL1HitRate fetches cache stats and computes the L1 hit rate.
+// getReadBufferHitRate fetches block store stats and computes the read buffer hit rate.
 // Returns 0 if stats are unavailable.
-func (b *CacheTiersBenchmark) getL1HitRate(logf func(string, ...any)) float64 {
-	stats, err := b.cfg.Client.CacheStatsForShare(b.cfg.ShareName)
+func (b *StorageTiersBenchmark) getReadBufferHitRate(logf func(string, ...any)) float64 {
+	stats, err := b.cfg.Client.BlockStoreStatsForShare(b.cfg.ShareName)
 	if err != nil {
-		logf("  WARNING: could not fetch cache stats: %v\n", err)
+		logf("  WARNING: could not fetch block store stats: %v\n", err)
 		return 0
 	}
 
@@ -281,5 +281,5 @@ func (b *CacheTiersBenchmark) getL1HitRate(logf func(string, ...any)) float64 {
 		return 0
 	}
 
-	return float64(stats.Totals.L1Entries) / float64(total) * 100
+	return float64(stats.Totals.ReadBufferEntries) / float64(total) * 100
 }

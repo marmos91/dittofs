@@ -16,7 +16,7 @@ type Factory func(t *testing.T) local.LocalStore
 // RunSuite runs the full conformance test suite against a LocalStore implementation.
 func RunSuite(t *testing.T, factory Factory) {
 	t.Run("WriteAndRead", func(t *testing.T) { testWriteAndRead(t, factory) })
-	t.Run("ReadCacheMiss", func(t *testing.T) { testReadCacheMiss(t, factory) })
+	t.Run("ReadMiss", func(t *testing.T) { testReadMiss(t, factory) })
 	t.Run("WriteMultiBlock", func(t *testing.T) { testWriteMultiBlock(t, factory) })
 	t.Run("Flush", func(t *testing.T) { testFlush(t, factory) })
 	t.Run("GetDirtyBlocks", func(t *testing.T) { testGetDirtyBlocks(t, factory) })
@@ -30,7 +30,7 @@ func RunSuite(t *testing.T, factory Factory) {
 	t.Run("WriteFromRemote", func(t *testing.T) { testWriteFromRemote(t, factory) })
 	t.Run("MarkBlockState", func(t *testing.T) { testMarkBlockState(t, factory) })
 	t.Run("GetBlockData", func(t *testing.T) { testGetBlockData(t, factory) })
-	t.Run("IsBlockCached", func(t *testing.T) { testIsBlockCached(t, factory) })
+	t.Run("IsBlockLocal", func(t *testing.T) { testIsBlockLocal(t, factory) })
 	t.Run("CloseRejectsOps", func(t *testing.T) { testCloseRejectsOps(t, factory) })
 }
 
@@ -49,14 +49,14 @@ func testWriteAndRead(t *testing.T, factory Factory) {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
 	if !found {
-		t.Fatal("ReadAt returned cache miss")
+		t.Fatal("ReadAt returned miss")
 	}
 	if !bytes.Equal(dest, data) {
 		t.Fatal("ReadAt returned wrong data")
 	}
 }
 
-func testReadCacheMiss(t *testing.T, factory Factory) {
+func testReadMiss(t *testing.T, factory Factory) {
 	store := factory(t)
 	ctx := context.Background()
 
@@ -66,7 +66,7 @@ func testReadCacheMiss(t *testing.T, factory Factory) {
 		t.Fatalf("ReadAt on missing file should not error: %v", err)
 	}
 	if found {
-		t.Fatal("expected cache miss for nonexistent file")
+		t.Fatal("expected miss for nonexistent file")
 	}
 }
 
@@ -90,7 +90,7 @@ func testWriteMultiBlock(t *testing.T, factory Factory) {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
 	if !found {
-		t.Fatal("ReadAt returned cache miss")
+		t.Fatal("ReadAt returned miss")
 	}
 	if !bytes.Equal(dest, data) {
 		t.Fatal("ReadAt returned wrong data")
@@ -121,7 +121,7 @@ func testFlush(t *testing.T, factory Factory) {
 		t.Fatalf("ReadAt after Flush failed: %v", err)
 	}
 	if !found {
-		t.Fatal("ReadAt after Flush returned cache miss")
+		t.Fatal("ReadAt after Flush returned miss")
 	}
 	if !bytes.Equal(dest, data) {
 		t.Fatal("ReadAt after Flush returned wrong data")
@@ -203,9 +203,9 @@ func testDeleteBlockFile(t *testing.T, factory Factory) {
 		t.Fatalf("DeleteBlockFile failed: %v", err)
 	}
 
-	// Block should no longer be cached
-	if store.IsBlockCached(ctx, "file1", 0) {
-		t.Error("block should not be cached after DeleteBlockFile")
+	// Block should no longer be in local store
+	if store.IsBlockLocal(ctx, "file1", 0) {
+		t.Error("block should not be in local store after DeleteBlockFile")
 	}
 }
 
@@ -315,7 +315,7 @@ func testWriteFromRemote(t *testing.T, factory Factory) {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
 	if !found {
-		t.Fatal("ReadAt cache miss")
+		t.Fatal("ReadAt miss")
 	}
 	if !bytes.Equal(dest, data) {
 		t.Fatal("ReadAt wrong data")
@@ -378,13 +378,13 @@ func testGetBlockData(t *testing.T, factory Factory) {
 	}
 }
 
-func testIsBlockCached(t *testing.T, factory Factory) {
+func testIsBlockLocal(t *testing.T, factory Factory) {
 	store := factory(t)
 	ctx := context.Background()
 
-	// Not cached initially
-	if store.IsBlockCached(ctx, "file1", 0) {
-		t.Fatal("block should not be cached before write")
+	// Not in local store initially
+	if store.IsBlockLocal(ctx, "file1", 0) {
+		t.Fatal("block should not be in local store before write")
 	}
 
 	// Write and check
@@ -392,8 +392,8 @@ func testIsBlockCached(t *testing.T, factory Factory) {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
-	if !store.IsBlockCached(ctx, "file1", 0) {
-		t.Fatal("block should be cached after write")
+	if !store.IsBlockLocal(ctx, "file1", 0) {
+		t.Fatal("block should be in local store after write")
 	}
 }
 

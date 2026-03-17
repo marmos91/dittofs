@@ -51,14 +51,14 @@ func (m *Syncer) syncLocalBlocks(ctx context.Context) {
 
 	// Upload sequentially to minimize memory: only 1 block (~8MB) in memory at a time.
 	for _, fb := range pending {
-		if fb.CachePath == "" {
+		if fb.LocalPath == "" {
 			continue
 		}
 		m.syncFileBlock(ctx, fb)
 	}
 }
 
-// syncFileBlock reads a local block from cache, dedup-checks, and syncs to remote store.
+// syncFileBlock reads a local block from the local store, dedup-checks, and syncs to remote store.
 func (m *Syncer) syncFileBlock(ctx context.Context, fb *blockstore.FileBlock) {
 	if fb.State != blockstore.BlockStateLocal {
 		return
@@ -71,10 +71,10 @@ func (m *Syncer) syncFileBlock(ctx context.Context, fb *blockstore.FileBlock) {
 
 	startTime := time.Now()
 
-	data, err := os.ReadFile(fb.CachePath)
+	data, err := os.ReadFile(fb.LocalPath)
 	if err != nil {
-		logger.Warn("Sync: failed to read cache file",
-			"blockID", fb.ID, "cachePath", fb.CachePath, "error", err)
+		logger.Warn("Sync: failed to read local store file",
+			"blockID", fb.ID, "localPath", fb.LocalPath, "error", err)
 		m.revertToLocal(ctx, fb)
 		return
 	}
@@ -119,7 +119,7 @@ func (m *Syncer) syncFileBlock(ctx context.Context, fb *blockstore.FileBlock) {
 		"blockID", fb.ID, "size", len(data), "duration", time.Since(startTime))
 }
 
-// uploadBlock uploads a single block from cache to remote store.
+// uploadBlock uploads a single block from local store to remote store.
 // Called by queue workers for block-level upload requests.
 func (m *Syncer) uploadBlock(ctx context.Context, payloadID string, blockIdx uint64) error {
 	if !m.canProcess(ctx) {
@@ -129,9 +129,9 @@ func (m *Syncer) uploadBlock(ctx context.Context, payloadID string, blockIdx uin
 		return errors.New("no remote store configured")
 	}
 
-	data, _, err := m.cache.GetBlockData(ctx, payloadID, blockIdx)
+	data, _, err := m.local.GetBlockData(ctx, payloadID, blockIdx)
 	if err != nil {
-		return fmt.Errorf("block not in cache (blockIdx=%d): %w", blockIdx, err)
+		return fmt.Errorf("block not in local store (blockIdx=%d): %w", blockIdx, err)
 	}
 
 	storeKey := blockstore.FormatStoreKey(payloadID, blockIdx)

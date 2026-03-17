@@ -130,7 +130,7 @@ func (bc *FSStore) evictOneTTL(ctx context.Context, candidates []*blockstore.Fil
 	}
 
 	if err := bc.evictBlock(ctx, candidates[oldestIdx]); err != nil {
-		logger.Warn("cache: TTL eviction failed", "blockID", candidates[oldestIdx].ID, "error", err)
+		logger.Warn("local store: TTL eviction failed", "blockID", candidates[oldestIdx].ID, "error", err)
 		return false, candidates
 	}
 
@@ -161,7 +161,7 @@ func (bc *FSStore) evictOneLRU(ctx context.Context, candidates []*blockstore.Fil
 	}
 
 	if err := bc.evictBlock(ctx, candidates[oldestIdx]); err != nil {
-		logger.Warn("cache: LRU eviction failed", "blockID", candidates[oldestIdx].ID, "error", err)
+		logger.Warn("local store: LRU eviction failed", "blockID", candidates[oldestIdx].ID, "error", err)
 		return false, candidates
 	}
 
@@ -188,22 +188,22 @@ func resolveAccessTime(accessTimes map[string]time.Time, fb *blockstore.FileBloc
 	return fb.LastAccess
 }
 
-// evictBlock removes a block's cache file and clears its CachePath.
+// evictBlock removes a block's local file and clears its LocalPath.
 func (bc *FSStore) evictBlock(ctx context.Context, fb *blockstore.FileBlock) error {
-	if fb.CachePath == "" {
+	if fb.LocalPath == "" {
 		return nil
 	}
 
-	fileSize := fileOrFallbackSize(fb.CachePath, int64(fb.DataSize))
-	cachePath := fb.CachePath
+	fileSize := fileOrFallbackSize(fb.LocalPath, int64(fb.DataSize))
+	localPath := fb.LocalPath
 
-	fb.CachePath = ""
+	fb.LocalPath = ""
 	if err := bc.blockStore.PutFileBlock(ctx, fb); err != nil {
 		return fmt.Errorf("update block metadata: %w", err)
 	}
 
-	if err := os.Remove(cachePath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove cache file: %w", err)
+	if err := os.Remove(localPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove block file: %w", err)
 	}
 
 	if fileSize > 0 {
@@ -222,7 +222,7 @@ func fileOrFallbackSize(path string, fallback int64) int64 {
 	return fallback
 }
 
-// recalcDiskUsed walks the cache directory and recalculates diskUsed.
+// recalcDiskUsed walks the block store directory and recalculates diskUsed.
 func (bc *FSStore) recalcDiskUsed() {
 	var actual int64
 	_ = filepath.WalkDir(bc.baseDir, func(path string, d os.DirEntry, err error) error {

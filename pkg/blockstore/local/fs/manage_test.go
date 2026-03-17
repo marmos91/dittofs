@@ -18,7 +18,7 @@ func newTestCacheWithDisk(t *testing.T, maxMemory, maxDisk int64) *FSStore {
 	blockStore := memory.NewMemoryMetadataStoreWithDefaults()
 	bc, err := New(dir, maxDisk, maxMemory, blockStore)
 	if err != nil {
-		t.Fatalf("failed to create cache: %v", err)
+		t.Fatalf("failed to create local store: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	bc.Start(ctx)
@@ -337,7 +337,7 @@ func TestManageSetEvictionDisabled(t *testing.T) {
 	// Put a remote block in the store to ensure it would be evictable
 	fb := &blockstore.FileBlock{
 		ID:            "remote-file/0",
-		CachePath:     "/tmp/fake",
+		LocalPath:     "/tmp/fake",
 		BlockStoreKey: "s3://bucket/key",
 		State:         blockstore.BlockStateRemote,
 		DataSize:      50,
@@ -374,7 +374,7 @@ func TestManageSetEvictionReEnabled(t *testing.T) {
 	}
 	fb := &blockstore.FileBlock{
 		ID:            "evict-file/0",
-		CachePath:     blkPath,
+		LocalPath:     blkPath,
 		BlockStoreKey: "s3://bucket/evict",
 		State:         blockstore.BlockStateRemote,
 		DataSize:      50,

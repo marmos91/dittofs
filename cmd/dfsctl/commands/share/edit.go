@@ -20,7 +20,7 @@ var (
 	editRetention         string
 	editRetentionTTL      string
 	editLocalStoreSize    string
-	editReadCacheSize     string
+	editReadBufferSize    string
 )
 
 var editCmd = &cobra.Command{
@@ -62,8 +62,8 @@ Examples:
   # Override per-share disk cache size
   dfsctl share edit /archive --local-store-size 10GiB
 
-  # Override per-share L1 read cache size
-  dfsctl share edit /archive --read-cache-size 2GiB`,
+  # Override per-share read buffer size
+  dfsctl share edit /archive --read-buffer-size 2GiB`,
 	Args: cobra.ExactArgs(1),
 	RunE: runEdit,
 }
@@ -77,7 +77,7 @@ func init() {
 	editCmd.Flags().StringVar(&editRetention, "retention", "", "Retention policy (pin|ttl|lru)")
 	editCmd.Flags().StringVar(&editRetentionTTL, "retention-ttl", "", "Retention TTL duration (e.g., 72h)")
 	editCmd.Flags().StringVar(&editLocalStoreSize, "local-store-size", "", "Per-share disk cache size override (e.g., 10GiB, 500MiB)")
-	editCmd.Flags().StringVar(&editReadCacheSize, "read-cache-size", "", "Per-share L1 read cache size override (e.g., 2GiB, 256MiB)")
+	editCmd.Flags().StringVar(&editReadBufferSize, "read-buffer-size", "", "Per-share read buffer size override (e.g., 2GiB, 256MiB)")
 }
 
 func runEdit(cmd *cobra.Command, args []string) error {
@@ -93,7 +93,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		cmd.Flags().Changed("read-only") || cmd.Flags().Changed("default-permission") ||
 		cmd.Flags().Changed("description") || cmd.Flags().Changed("retention") ||
 		cmd.Flags().Changed("retention-ttl") || cmd.Flags().Changed("local-store-size") ||
-		cmd.Flags().Changed("read-cache-size")
+		cmd.Flags().Changed("read-buffer-size")
 
 	// If no flags provided, run interactive mode
 	if !hasFlags {
@@ -145,13 +145,13 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		hasUpdate = true
 	}
 
-	if editReadCacheSize != "" {
-		req.ReadCacheSize = &editReadCacheSize
+	if editReadBufferSize != "" {
+		req.ReadBufferSize = &editReadBufferSize
 		hasUpdate = true
 	}
 
 	if !hasUpdate {
-		return fmt.Errorf("no fields specified. Use --local, --remote, --read-only, --default-permission, --description, --retention, --retention-ttl, --local-store-size, or --read-cache-size")
+		return fmt.Errorf("no fields specified. Use --local, --remote, --read-only, --default-permission, --description, --retention, --retention-ttl, --local-store-size, or --read-buffer-size")
 	}
 
 	share, err := client.UpdateShare(name, req)
@@ -275,18 +275,18 @@ func runEditInteractive(client *apiclient.Client, name string) error {
 		hasUpdate = true
 	}
 
-	// Read cache size override
-	currentReadCacheSize := current.ReadCacheSize
-	if currentReadCacheSize == "" {
-		currentReadCacheSize = "0 (system default)"
+	// Read buffer size override
+	currentReadBufferSize := current.ReadBufferSize
+	if currentReadBufferSize == "" {
+		currentReadBufferSize = "0 (system default)"
 	}
-	fmt.Printf("Current read cache size: %s\n", currentReadCacheSize)
-	newReadCacheSize, err := prompt.Input("Read cache size (0 for system default)", current.ReadCacheSize)
+	fmt.Printf("Current read buffer size: %s\n", currentReadBufferSize)
+	newReadBufferSize, err := prompt.Input("Read buffer size (0 for system default)", current.ReadBufferSize)
 	if err != nil {
 		return cmdutil.HandleAbort(err)
 	}
-	if newReadCacheSize != current.ReadCacheSize {
-		req.ReadCacheSize = &newReadCacheSize
+	if newReadBufferSize != current.ReadBufferSize {
+		req.ReadBufferSize = &newReadBufferSize
 		hasUpdate = true
 	}
 

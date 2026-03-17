@@ -136,7 +136,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	)
 	logger.Info("Auto-deduced block store defaults",
 		"local_store_size", blockstore.FormatBytes(deduced.LocalStoreSize),
-		"l1_cache_size", blockstore.FormatBytes(uint64(deduced.L1CacheSize)),
+		"read_buffer_size", blockstore.FormatBytes(uint64(deduced.ReadBufferSize)),
 		"max_pending_size", blockstore.FormatBytes(deduced.MaxPendingSize),
 		"parallel_syncs", deduced.ParallelSyncs,
 		"parallel_fetches", deduced.ParallelFetches,
@@ -153,9 +153,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// Set per-share defaults BEFORE loading shares (AddShare creates BlockStores).
 	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{
-		MaxSize:        deduced.LocalStoreSize,
-		MaxMemory:      blockstore.ClampToInt64(deduced.MaxPendingSize),
-		ReadCacheBytes: deduced.L1CacheSize,
+		MaxSize:         deduced.LocalStoreSize,
+		MaxMemory:       blockstore.ClampToInt64(deduced.MaxPendingSize),
+		ReadBufferBytes: deduced.ReadBufferSize,
 	})
 	rt.SetSyncerDefaults(&shares.SyncerDefaults{
 		ParallelUploads:   deduced.ParallelSyncs,

@@ -166,7 +166,7 @@ func TestOfflineWriteSucceeds(t *testing.T) {
 	}
 }
 
-// TestOfflineReadsBlockedCounter verifies CacheStats tracks blocked reads.
+// TestOfflineReadsBlockedCounter verifies BlockStoreStats tracks blocked reads.
 func TestOfflineReadsBlockedCounter(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on Windows: fsync fails on temp dirs, preventing remote sync")
@@ -196,7 +196,7 @@ func TestOfflineReadsBlockedCounter(t *testing.T) {
 	}
 
 	// Verify initial counter is 0.
-	stats := bs.GetCacheStats()
+	stats := bs.GetStats()
 	if stats.OfflineReadsBlocked != 0 {
 		t.Fatalf("expected OfflineReadsBlocked == 0 initially, got %d", stats.OfflineReadsBlocked)
 	}
@@ -211,7 +211,7 @@ func TestOfflineReadsBlockedCounter(t *testing.T) {
 		_, _ = bs.ReadAt(ctx, payloadID, readBuf, 0)
 	}
 
-	stats = bs.GetCacheStats()
+	stats = bs.GetStats()
 	if stats.OfflineReadsBlocked < 3 {
 		t.Fatalf("expected OfflineReadsBlocked >= 3 after 3 failed reads, got %d", stats.OfflineReadsBlocked)
 	}

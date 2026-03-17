@@ -24,14 +24,14 @@ type Share struct {
 	LocalBlockStoreID  string    `gorm:"not null;size:36" json:"local_block_store_id"`
 	RemoteBlockStoreID *string   `gorm:"size:36" json:"remote_block_store_id"`
 	ReadOnly           bool      `gorm:"default:false" json:"read_only"`
-	EncryptData        bool      `gorm:"default:false" json:"encrypt_data"`                    // SMB3: set SMB2_SHAREFLAG_ENCRYPT_DATA in TREE_CONNECT
-	DefaultPermission  string    `gorm:"default:read-write;size:50" json:"default_permission"` // none, read, read-write, admin
-	Config             string    `gorm:"type:text" json:"-"`                                   // JSON blob for additional share config
-	BlockedOperations  string    `gorm:"type:text" json:"-"`                                   // JSON array of blocked operations
-	RetentionPolicy    string    `gorm:"size:10;default:''" json:"retention_policy"`           // pin, ttl, lru (empty = LRU default)
-	RetentionTTL       int64     `gorm:"default:0" json:"retention_ttl"`                       // TTL in seconds (0 = not set)
-	LocalStoreSize     int64     `gorm:"default:0" json:"local_store_size"`                    // Disk cache override in bytes (0 = system default)
-	ReadCacheSize      int64     `gorm:"default:0" json:"read_cache_size"`                     // L1 read cache override in bytes (0 = system default)
+	EncryptData        bool      `gorm:"default:false" json:"encrypt_data"`                         // SMB3: set SMB2_SHAREFLAG_ENCRYPT_DATA in TREE_CONNECT
+	DefaultPermission  string    `gorm:"default:read-write;size:50" json:"default_permission"`      // none, read, read-write, admin
+	Config             string    `gorm:"type:text" json:"-"`                                        // JSON blob for additional share config
+	BlockedOperations  string    `gorm:"type:text" json:"-"`                                        // JSON array of blocked operations
+	RetentionPolicy    string    `gorm:"size:10;default:''" json:"retention_policy"`                // pin, ttl, lru (empty = LRU default)
+	RetentionTTL       int64     `gorm:"default:0" json:"retention_ttl"`                            // TTL in seconds (0 = not set)
+	LocalStoreSize     int64     `gorm:"default:0" json:"local_store_size"`                         // Per-share disk size override in bytes (0 = system default)
+	ReadBufferSize     int64     `gorm:"default:0;column:read_buffer_size" json:"read_buffer_size"` // Read buffer override in bytes (0 = system default)
 	CreatedAt          time.Time `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt          time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 
@@ -85,7 +85,7 @@ func (s *Share) GetDefaultPermission() SharePermission {
 }
 
 // GetRetentionPolicy returns the parsed retention policy for this share.
-// Empty or unset defaults to LRU for backward compatibility (CACHE-06).
+// Empty or unset defaults to LRU for backward compatibility.
 func (s *Share) GetRetentionPolicy() blockstore.RetentionPolicy {
 	p, err := blockstore.ParseRetentionPolicy(s.RetentionPolicy)
 	if err != nil {

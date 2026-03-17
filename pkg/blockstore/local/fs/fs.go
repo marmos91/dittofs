@@ -24,9 +24,9 @@ type retentionConfig struct {
 
 // Errors returned by FSStore.
 var (
-	ErrCacheClosed    = errors.New("cache: closed")
-	ErrDiskFull       = errors.New("cache: disk full after eviction")
-	ErrFileNotInCache = errors.New("file not in cache")
+	ErrStoreClosed    = errors.New("local store: closed")
+	ErrDiskFull       = errors.New("local store: disk full after eviction")
+	ErrFileNotInStore = errors.New("file not in local store")
 
 	// ErrBlockNotFound is an alias for blockstore.ErrBlockNotFound.
 	ErrBlockNotFound = blockstore.ErrBlockNotFound
@@ -35,14 +35,14 @@ var (
 // Compile-time interface satisfaction check.
 var _ local.LocalStore = (*FSStore)(nil)
 
-// FSStore is a two-tier (memory + disk) block cache for file data.
+// FSStore is a two-tier (memory + disk) block store for file data.
 //
 // NFS WRITE operations (typically 4KB) are buffered in 8MB in-memory blocks.
 // When a block fills up or NFS COMMIT is called, the block is flushed atomically
 // to a .blk file on disk. This design avoids per-4KB disk I/O and prevents OS
 // page cache bloat that caused OOM on earlier versions.
 //
-// Block metadata (cache path, upload state, etc.) is tracked via FileBlockStore
+// Block metadata (local path, upload state, etc.) is tracked via FileBlockStore
 // (BadgerDB) with async batching -- writes are queued in pendingFBs and flushed
 // every 200ms by the background goroutine started via Start().
 //
@@ -81,16 +81,16 @@ type FSStore struct {
 	// Drained every 200ms by SyncFileBlocks, and on Close/Flush.
 	pendingFBs sync.Map
 
-	// fdCache caches open file descriptors for .blk files to avoid
+	// fdPool pools open file descriptors for .blk files to avoid
 	// open+close syscalls on every 4KB random write in tryDirectDiskWrite.
-	fdCache *fdCache
+	fdPool *fdPool
 
-	// readFDCache caches open file descriptors (O_RDONLY) for .blk files
+	// readFDPool pools open file descriptors (O_RDONLY) for .blk files
 	// to avoid open+close syscalls on every 4KB random read in readFromDisk.
-	readFDCache *fdCache
+	readFDPool *fdPool
 
 	// skipFsync skips fsync in Flush() for S3 backends where data durability
-	// comes from S3 upload, not local disk. The cache .blk files are just
+	// comes from S3 upload, not local disk. The local .blk files are just
 	// staging buffers -- losing them on power failure means re-downloading
 	// from S3, not data loss. Saves ~0.5-2ms per COMMIT.
 	skipFsync bool
@@ -101,7 +101,7 @@ type FSStore struct {
 	// remote store to re-fetch evicted blocks from.
 	evictionEnabled atomic.Bool
 
-	// retention holds the cache retention policy and TTL, accessed atomically
+	// retention holds the retention policy and TTL, accessed atomically
 	// to avoid data races between SetRetentionPolicy and concurrent eviction.
 	retention unsafe.Pointer // *retentionConfig
 
@@ -113,13 +113,13 @@ type FSStore struct {
 // New creates a new FSStore.
 //
 // Parameters:
-//   - baseDir: directory for .blk cache files, created if absent.
+//   - baseDir: directory for .blk block files, created if absent.
 //   - maxDisk: maximum total size of on-disk .blk files in bytes. 0 = unlimited.
 //   - maxMemory: memory budget for dirty write buffers in bytes. 0 defaults to 256MB.
-//   - fileBlockStore: persistent store for FileBlock metadata (cache path, upload state, etc.)
+//   - fileBlockStore: persistent store for FileBlock metadata (local path, upload state, etc.)
 func New(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blockstore.FileBlockStore) (*FSStore, error) {
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
-		return nil, fmt.Errorf("cache: create base dir: %w", err)
+		return nil, fmt.Errorf("local store: create base dir: %w", err)
 	}
 
 	if maxMemory <= 0 {
@@ -135,8 +135,8 @@ func New(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blocksto
 		memBlocks:     make(map[blockKey]*memBlock),
 		fileBlocks:    make(map[string]map[uint64]*memBlock),
 		files:         make(map[string]*fileInfo),
-		fdCache:       newFDCache(defaultFDCacheSize),
-		readFDCache:   newFDCache(defaultFDCacheSize),
+		fdPool:        newFDPool(defaultFDPoolSize),
+		readFDPool:    newFDPool(defaultFDPoolSize),
 		accessTracker: newAccessTracker(),
 		retention:     unsafe.Pointer(defaultRetention),
 	}
@@ -145,16 +145,16 @@ func New(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blocksto
 }
 
 // SetSkipFsync disables fsync in Flush() for S3 backends.
-// Data durability comes from S3 upload, not local disk -- the cache .blk files
+// Data durability comes from S3 upload, not local disk -- the local .blk files
 // are staging buffers, not the final store. Saves ~0.5-2ms per COMMIT.
 func (bc *FSStore) SetSkipFsync(skip bool) {
 	bc.skipFsync = skip
 }
 
-// SetRetentionPolicy updates the cache retention policy and TTL for eviction decisions.
+// SetRetentionPolicy updates the retention policy and TTL for eviction decisions.
 // Called during share creation and on runtime policy updates.
 // Safe for concurrent use with ensureSpace/eviction (uses atomic pointer swap).
-//   - pin: never evict cached blocks (ensureSpace returns ErrDiskFull)
+//   - pin: never evict local blocks (ensureSpace returns ErrDiskFull)
 //   - ttl: evict only after file last-access exceeds ttl duration
 //   - lru: evict least-recently-accessed blocks first (default)
 func (bc *FSStore) SetRetentionPolicy(policy blockstore.RetentionPolicy, ttl time.Duration) {
@@ -167,13 +167,13 @@ func (bc *FSStore) getRetention() retentionConfig {
 	return *(*retentionConfig)(atomic.LoadPointer(&bc.retention))
 }
 
-// Close flushes pending FileBlock metadata and marks the cache as closed.
-// After Close, all read/write operations return ErrCacheClosed.
+// Close flushes pending FileBlock metadata and marks the store as closed.
+// After Close, all read/write operations return ErrStoreClosed.
 func (bc *FSStore) Close() error {
 	bc.closedFlag.Store(true)
 	bc.SyncFileBlocks(context.Background())
-	bc.fdCache.CloseAll()
-	bc.readFDCache.CloseAll()
+	bc.fdPool.CloseAll()
+	bc.readFDPool.CloseAll()
 	return nil
 }
 
@@ -248,7 +248,7 @@ func (bc *FSStore) lookupFileBlock(ctx context.Context, blockID string) (*blocks
 	return bc.blockStore.GetFileBlock(ctx, blockID)
 }
 
-// Stats returns a snapshot of current cache statistics.
+// Stats returns a snapshot of current local store statistics.
 func (bc *FSStore) Stats() local.Stats {
 	bc.filesMu.RLock()
 	fileCount := len(bc.files)
@@ -340,7 +340,7 @@ func (bc *FSStore) updateFileSize(payloadID string, end uint64) {
 	fi.mu.Unlock()
 }
 
-// GetFileSize returns the cached file size and whether the file is tracked.
+// GetFileSize returns the tracked file size and whether the file is tracked.
 // This is a fast in-memory lookup -- no disk or store access.
 func (bc *FSStore) GetFileSize(_ context.Context, payloadID string) (uint64, bool) {
 	bc.filesMu.RLock()
@@ -392,7 +392,7 @@ func (bc *FSStore) purgeMemBlocks(payloadID string, shouldRemove func(blockIdx u
 	bc.blocksMu.Unlock()
 }
 
-// EvictMemory removes all cached data (memory and disk tracking) for a file.
+// EvictMemory removes all in-memory data and disk tracking for a file.
 // Does not delete .blk files from disk -- that is handled by eviction or
 // explicit deletion via DeleteAllBlockFiles.
 func (bc *FSStore) EvictMemory(_ context.Context, payloadID string) error {
@@ -407,7 +407,7 @@ func (bc *FSStore) EvictMemory(_ context.Context, payloadID string) error {
 	return nil
 }
 
-// Truncate discards cached blocks beyond newSize and updates the tracked file size.
+// Truncate discards local blocks beyond newSize and updates the tracked file size.
 // Blocks whose start offset (blockIdx * BlockSize) >= newSize are purged from memory.
 func (bc *FSStore) Truncate(_ context.Context, payloadID string, newSize uint64) error {
 	bc.filesMu.RLock()
@@ -426,7 +426,7 @@ func (bc *FSStore) Truncate(_ context.Context, payloadID string, newSize uint64)
 	return nil
 }
 
-// ListFiles returns the payloadIDs of all files currently tracked in the cache.
+// ListFiles returns the payloadIDs of all files currently tracked in the local store.
 func (bc *FSStore) ListFiles() []string {
 	bc.filesMu.RLock()
 	defer bc.filesMu.RUnlock()
@@ -437,7 +437,7 @@ func (bc *FSStore) ListFiles() []string {
 	return result
 }
 
-// WriteFromRemote caches data that was fetched from the remote block store.
+// WriteFromRemote stores data that was fetched from the remote block store locally.
 // Unlike WriteAt (which creates Dirty blocks), the block is marked Remote
 // since it already exists remotely -- making it immediately evictable by the
 // disk space manager without needing a re-sync.
@@ -464,7 +464,7 @@ func (bc *FSStore) WriteFromRemote(ctx context.Context, payloadID string, data [
 
 	bc.diskUsed.Add(int64(len(data)))
 
-	fb.CachePath = path
+	fb.LocalPath = path
 	fb.DataSize = uint32(len(data))
 	fb.LastAccess = time.Now()
 	bc.queueFileBlockUpdate(fb)
@@ -485,7 +485,7 @@ func (bc *FSStore) WriteFromRemote(ctx context.Context, payloadID string, data [
 // avoiding the expensive SyncFileBlocksForFile + ListLocalBlocks round-trip
 // (write to BadgerDB then immediately read back). The pending FileBlock metadata
 // is persisted asynchronously by the background ticker -- the syncer doesn't
-// need it to be in BadgerDB since it gets data from cache files.
+// need it to be in BadgerDB since it gets data from local .blk files.
 func (bc *FSStore) GetDirtyBlocks(ctx context.Context, payloadID string) ([]local.PendingBlock, error) {
 	flushed, err := bc.Flush(ctx, payloadID)
 	if err != nil {
@@ -496,13 +496,13 @@ func (bc *FSStore) GetDirtyBlocks(ctx context.Context, payloadID string) ([]loca
 		return nil, nil
 	}
 
-	// Read data from cache files for each freshly-flushed block.
+	// Read data from local .blk files for each freshly-flushed block.
 	// No BadgerDB round-trip needed -- Flush() already told us which blocks
 	// were written and where. The FileBlock metadata (with state=Local)
 	// is queued in pendingFBs and will be persisted by the background ticker.
 	var result []local.PendingBlock
 	for _, fb := range flushed {
-		data, err := readFile(fb.CachePath, fb.DataSize)
+		data, err := readFile(fb.LocalPath, fb.DataSize)
 		if err != nil {
 			continue
 		}
@@ -537,11 +537,11 @@ func (bc *FSStore) GetBlockData(ctx context.Context, payloadID string, blockIdx 
 	}
 
 	fb, err := bc.lookupFileBlock(ctx, blockID)
-	if err != nil || fb.CachePath == "" || fb.DataSize == 0 {
+	if err != nil || fb.LocalPath == "" || fb.DataSize == 0 {
 		return nil, 0, ErrBlockNotFound
 	}
 
-	data, err := readFile(fb.CachePath, fb.DataSize)
+	data, err := readFile(fb.LocalPath, fb.DataSize)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -585,9 +585,9 @@ func (bc *FSStore) MarkBlockLocal(ctx context.Context, payloadID string, blockId
 	return bc.transitionBlockState(ctx, payloadID, blockIdx, 0, blockstore.BlockStateLocal)
 }
 
-// IsBlockCached checks if a specific block is available in cache (memory or disk).
+// IsBlockLocal checks if a specific block is available locally (memory or disk).
 // Used by the syncer to decide whether to download a block before reading.
-func (bc *FSStore) IsBlockCached(ctx context.Context, payloadID string, blockIdx uint64) bool {
+func (bc *FSStore) IsBlockLocal(ctx context.Context, payloadID string, blockIdx uint64) bool {
 	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
 	// Check memory first (dirty/unflushed blocks)
 	if mb := bc.getMemBlock(key); mb != nil {
@@ -601,7 +601,7 @@ func (bc *FSStore) IsBlockCached(ctx context.Context, payloadID string, blockIdx
 	// Check disk via FileBlockStore metadata
 	blockID := makeBlockID(key)
 	fb, err := bc.lookupFileBlock(ctx, blockID)
-	return err == nil && fb.CachePath != ""
+	return err == nil && fb.LocalPath != ""
 }
 
 // belongsToFile checks if a blockID (format: "payloadID/blockIdx") belongs to
@@ -621,11 +621,11 @@ func writeFile(path string, data []byte) error {
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
-		return fmt.Errorf("create cache file: %w", err)
+		return fmt.Errorf("create block file: %w", err)
 	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
-		return fmt.Errorf("write cache file: %w", err)
+		return fmt.Errorf("write block file: %w", err)
 	}
 	dropPageCache(f)
 	return f.Close()

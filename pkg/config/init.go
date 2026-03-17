@@ -136,7 +136,7 @@ controlplane:
 # DittoFS auto-detects system resources (memory, CPU) at startup and
 # derives optimal block store settings per share:
 #   - LocalStoreSize: 25% of available memory (per share)
-#   - L1CacheSize: 12.5% of available memory (per share)
+#   - ReadBufferSize: 12.5% of available memory (per share)
 #   - ParallelSyncs: max(4, CPU count)
 #   - ParallelFetches: max(8, CPU count * 2)
 #

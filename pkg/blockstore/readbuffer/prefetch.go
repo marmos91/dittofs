@@ -1,4 +1,4 @@
-package readcache
+package readbuffer
 
 import (
 	"context"
@@ -24,7 +24,7 @@ type LoadBlockFn func(ctx context.Context, payloadID string, blockIdx uint64) ([
 // LocalChecker checks if a block is available on local disk, allowing
 // the prefetcher to skip blocks that don't need to be fetched.
 type LocalChecker interface {
-	IsBlockCached(ctx context.Context, payloadID string, blockIdx uint64) bool
+	IsBlockLocal(ctx context.Context, payloadID string, blockIdx uint64) bool
 }
 
 // seqTracker tracks sequential read patterns for a single payloadID.
@@ -41,7 +41,7 @@ type prefetchReq struct {
 }
 
 // Prefetcher detects sequential access patterns per file and pre-loads
-// upcoming blocks into the ReadCache using a bounded worker pool.
+// upcoming blocks into the ReadBuffer using a bounded worker pool.
 //
 // Sequential detection: After seqThreshold (2) consecutive sequential block
 // reads, the prefetcher submits prefetch requests for upcoming blocks.
@@ -56,9 +56,9 @@ type Prefetcher struct {
 	trackers map[string]*seqTracker // payloadID -> sequential tracker
 
 	reqCh  chan prefetchReq // bounded channel for worker pool
-	cache  *ReadCache       // L1 cache to fill with prefetched data
+	buf    *ReadBuffer      // read buffer to fill with prefetched data
 	loadFn LoadBlockFn      // injected block loader
-	local  LocalChecker     // check local disk cache (can be nil)
+	local  LocalChecker     // check local disk (can be nil)
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	closed atomic.Bool
@@ -66,10 +66,10 @@ type Prefetcher struct {
 
 // NewPrefetcher creates a prefetcher with the specified worker count.
 // It starts worker goroutines that consume from a bounded channel.
-// Returns nil if cache is nil or loadFn is nil (can't prefetch without these).
+// Returns nil if buf is nil or loadFn is nil (can't prefetch without these).
 // If workers <= 0, defaults to defaultPrefetchWorkers.
-func NewPrefetcher(workers int, cache *ReadCache, loadFn LoadBlockFn, local LocalChecker) *Prefetcher {
-	if cache == nil || loadFn == nil {
+func NewPrefetcher(workers int, buf *ReadBuffer, loadFn LoadBlockFn, local LocalChecker) *Prefetcher {
+	if buf == nil || loadFn == nil {
 		return nil
 	}
 	if workers <= 0 {
@@ -81,7 +81,7 @@ func NewPrefetcher(workers int, cache *ReadCache, loadFn LoadBlockFn, local Loca
 	p := &Prefetcher{
 		trackers: make(map[string]*seqTracker),
 		reqCh:    make(chan prefetchReq, workers*4),
-		cache:    cache,
+		buf:      buf,
 		loadFn:   loadFn,
 		local:    local,
 		cancel:   cancel,
@@ -132,8 +132,8 @@ func (p *Prefetcher) OnRead(payloadID string, blockIdx uint64) {
 			// Submit prefetch requests for depth blocks ahead.
 			for d := 1; d <= tr.depth; d++ {
 				target := blockIdx + uint64(d)
-				// Skip blocks already in L1 cache.
-				if p.cache.Contains(payloadID, target) {
+				// Skip blocks already in the read buffer.
+				if p.buf.Contains(payloadID, target) {
 					continue
 				}
 				p.submit(payloadID, target)
@@ -210,13 +210,13 @@ func (p *Prefetcher) worker(ctx context.Context) {
 				return
 			}
 
-			// Skip if already in L1 cache.
-			if p.cache.Contains(req.payloadID, req.blockIdx) {
+			// Skip if already in the read buffer.
+			if p.buf.Contains(req.payloadID, req.blockIdx) {
 				continue
 			}
 
 			// Skip if block is on local disk.
-			if p.local != nil && p.local.IsBlockCached(ctx, req.payloadID, req.blockIdx) {
+			if p.local != nil && p.local.IsBlockLocal(ctx, req.payloadID, req.blockIdx) {
 				continue
 			}
 
@@ -227,8 +227,8 @@ func (p *Prefetcher) worker(ctx context.Context) {
 				continue
 			}
 
-			// Fill L1 cache with the prefetched data.
-			p.cache.Put(req.payloadID, req.blockIdx, data, dataSize)
+			// Fill the read buffer with the prefetched data.
+			p.buf.Put(req.payloadID, req.blockIdx, data, dataSize)
 		}
 	}
 }

@@ -224,6 +224,13 @@ func New(config *Config) (*GORMStore, error) {
 		_ = db.Exec("DROP INDEX IF EXISTS idx_block_store_configs_name")
 	}
 
+	// Pre-migration: rename read_cache_size column to read_buffer_size if it exists.
+	if db.Migrator().HasColumn(&models.Share{}, "read_cache_size") {
+		if err := db.Migrator().RenameColumn(&models.Share{}, "read_cache_size", "read_buffer_size"); err != nil {
+			return nil, fmt.Errorf("failed to rename read_cache_size column: %w", err)
+		}
+	}
+
 	// Run auto-migration
 	if err := db.AutoMigrate(models.AllModels()...); err != nil {
 		return nil, fmt.Errorf("failed to run database migration: %w", err)

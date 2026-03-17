@@ -16,9 +16,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 )
 
-// mockCacheRuntime implements the subset of runtime methods needed for cache tests.
-type mockCacheRuntime struct {
-	stats     *shares.CacheStatsResponse
+// mockBlockStoreRuntime implements the subset of runtime methods needed for block store tests.
+type mockBlockStoreRuntime struct {
+	stats     *shares.BlockStoreStatsResponse
 	statsErr  error
 	evict     *shares.EvictResult
 	evictErr  error
@@ -26,12 +26,12 @@ type mockCacheRuntime struct {
 	lastOpts  shares.EvictOptions
 }
 
-// testCacheHandler provides the same interface as CacheHandler but uses a mock.
-type testCacheHandler struct {
-	mock *mockCacheRuntime
+// testBlockStoreHandler provides the same interface as BlockStoreHandler but uses a mock.
+type testBlockStoreHandler struct {
+	mock *mockBlockStoreRuntime
 }
 
-func (h *testCacheHandler) Stats(w http.ResponseWriter, r *http.Request) {
+func (h *testBlockStoreHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	shareName := chi.URLParam(r, "name")
 	h.mock.lastShare = shareName
 
@@ -43,11 +43,11 @@ func (h *testCacheHandler) Stats(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, h.mock.stats)
 }
 
-func (h *testCacheHandler) Evict(w http.ResponseWriter, r *http.Request) {
+func (h *testBlockStoreHandler) Evict(w http.ResponseWriter, r *http.Request) {
 	shareName := chi.URLParam(r, "name")
 	h.mock.lastShare = shareName
 
-	var req CacheEvictRequest
+	var req BlockStoreEvictRequest
 	if r.ContentLength > 0 {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			BadRequest(w, "invalid request body: "+err.Error())
@@ -55,8 +55,8 @@ func (h *testCacheHandler) Evict(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	h.mock.lastOpts = shares.EvictOptions{
-		L1Only:    req.L1Only,
-		LocalOnly: req.LocalOnly,
+		ReadBufferOnly: req.ReadBufferOnly,
+		LocalOnly:      req.LocalOnly,
 	}
 
 	if h.mock.evictErr != nil {
@@ -67,22 +67,22 @@ func (h *testCacheHandler) Evict(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, h.mock.evict)
 }
 
-func newTestCacheHandler() *testCacheHandler {
-	mock := &mockCacheRuntime{
-		stats: &shares.CacheStatsResponse{
-			Totals: engine.CacheStats{
-				FileCount:      5,
-				BlocksTotal:    20,
-				LocalDiskUsed:  1024 * 1024,
-				L1Entries:      10,
-				HasRemote:      true,
-				PendingSyncs:   2,
-				PendingUploads: 1,
+func newTestBlockStoreHandler() *testBlockStoreHandler {
+	mock := &mockBlockStoreRuntime{
+		stats: &shares.BlockStoreStatsResponse{
+			Totals: engine.BlockStoreStats{
+				FileCount:         5,
+				BlocksTotal:       20,
+				LocalDiskUsed:     1024 * 1024,
+				ReadBufferEntries: 10,
+				HasRemote:         true,
+				PendingSyncs:      2,
+				PendingUploads:    1,
 			},
-			PerShare: []shares.ShareCacheStats{
+			PerShare: []shares.ShareBlockStoreStats{
 				{
 					ShareName: "/test",
-					Stats: engine.CacheStats{
+					Stats: engine.BlockStoreStats{
 						FileCount:   5,
 						BlocksTotal: 20,
 						HasRemote:   true,
@@ -91,17 +91,17 @@ func newTestCacheHandler() *testCacheHandler {
 			},
 		},
 		evict: &shares.EvictResult{
-			L1EntriesCleared:  10,
-			LocalFilesEvicted: 3,
-			BytesFreed:        1024 * 1024,
+			ReadBufferEntriesCleared: 10,
+			LocalFilesEvicted:        3,
+			BytesFreed:               1024 * 1024,
 		},
 	}
-	return &testCacheHandler{mock: mock}
+	return &testBlockStoreHandler{mock: mock}
 }
 
-// newChiRequest creates an httptest.Request with a chi route context.
+// newChiRequestForBlockStore creates an httptest.Request with a chi route context.
 // If params is non-empty, they are added as URL params (alternating key/value pairs).
-func newChiRequest(method, url string, body io.Reader, params ...string) *http.Request {
+func newChiRequestForBlockStore(method, url string, body io.Reader, params ...string) *http.Request {
 	req := httptest.NewRequest(method, url, body)
 	rctx := chi.NewRouteContext()
 	for i := 0; i+1 < len(params); i += 2 {
@@ -110,10 +110,10 @@ func newChiRequest(method, url string, body io.Reader, params ...string) *http.R
 	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 }
 
-func TestCacheHandler_Stats_Global(t *testing.T) {
-	th := newTestCacheHandler()
+func TestBlockStoreHandler_Stats_Global(t *testing.T) {
+	th := newTestBlockStoreHandler()
 
-	req := newChiRequest(http.MethodGet, "/api/v1/cache/stats", nil)
+	req := newChiRequestForBlockStore(http.MethodGet, "/api/v1/blockstore/stats", nil)
 	w := httptest.NewRecorder()
 
 	th.Stats(w, req)
@@ -122,7 +122,7 @@ func TestCacheHandler_Stats_Global(t *testing.T) {
 		t.Errorf("Stats() status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
 	}
 
-	var resp shares.CacheStatsResponse
+	var resp shares.BlockStoreStatsResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("Failed to unmarshal response: %v", err)
 	}
@@ -137,10 +137,10 @@ func TestCacheHandler_Stats_Global(t *testing.T) {
 	}
 }
 
-func TestCacheHandler_Stats_PerShare(t *testing.T) {
-	th := newTestCacheHandler()
+func TestBlockStoreHandler_Stats_PerShare(t *testing.T) {
+	th := newTestBlockStoreHandler()
 
-	req := newChiRequest(http.MethodGet, "/api/v1/shares/test/cache/stats", nil, "name", "/test")
+	req := newChiRequestForBlockStore(http.MethodGet, "/api/v1/shares/test/blockstore/stats", nil, "name", "/test")
 	w := httptest.NewRecorder()
 
 	th.Stats(w, req)
@@ -153,11 +153,11 @@ func TestCacheHandler_Stats_PerShare(t *testing.T) {
 	}
 }
 
-func TestCacheHandler_Stats_NotFound(t *testing.T) {
-	th := newTestCacheHandler()
+func TestBlockStoreHandler_Stats_NotFound(t *testing.T) {
+	th := newTestBlockStoreHandler()
 	th.mock.statsErr = errors.New("share not found")
 
-	req := newChiRequest(http.MethodGet, "/api/v1/shares/missing/cache/stats", nil, "name", "/missing")
+	req := newChiRequestForBlockStore(http.MethodGet, "/api/v1/shares/missing/blockstore/stats", nil, "name", "/missing")
 	w := httptest.NewRecorder()
 
 	th.Stats(w, req)
@@ -167,11 +167,11 @@ func TestCacheHandler_Stats_NotFound(t *testing.T) {
 	}
 }
 
-func TestCacheHandler_Evict_Global(t *testing.T) {
-	th := newTestCacheHandler()
+func TestBlockStoreHandler_Evict_Global(t *testing.T) {
+	th := newTestBlockStoreHandler()
 
-	body, _ := json.Marshal(CacheEvictRequest{})
-	req := newChiRequest(http.MethodPost, "/api/v1/cache/evict", bytes.NewReader(body))
+	body, _ := json.Marshal(BlockStoreEvictRequest{})
+	req := newChiRequestForBlockStore(http.MethodPost, "/api/v1/blockstore/evict", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -185,19 +185,19 @@ func TestCacheHandler_Evict_Global(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("Failed to unmarshal response: %v", err)
 	}
-	if resp.L1EntriesCleared != 10 {
-		t.Errorf("L1EntriesCleared = %d, want 10", resp.L1EntriesCleared)
+	if resp.ReadBufferEntriesCleared != 10 {
+		t.Errorf("ReadBufferEntriesCleared = %d, want 10", resp.ReadBufferEntriesCleared)
 	}
 	if resp.LocalFilesEvicted != 3 {
 		t.Errorf("LocalFilesEvicted = %d, want 3", resp.LocalFilesEvicted)
 	}
 }
 
-func TestCacheHandler_Evict_L1Only(t *testing.T) {
-	th := newTestCacheHandler()
+func TestBlockStoreHandler_Evict_ReadBufferOnly(t *testing.T) {
+	th := newTestBlockStoreHandler()
 
-	body, _ := json.Marshal(CacheEvictRequest{L1Only: true})
-	req := newChiRequest(http.MethodPost, "/api/v1/cache/evict", bytes.NewReader(body))
+	body, _ := json.Marshal(BlockStoreEvictRequest{ReadBufferOnly: true})
+	req := newChiRequestForBlockStore(http.MethodPost, "/api/v1/blockstore/evict", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -206,17 +206,17 @@ func TestCacheHandler_Evict_L1Only(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("Evict() status = %d, want %d", w.Code, http.StatusOK)
 	}
-	if !th.mock.lastOpts.L1Only {
-		t.Error("Expected L1Only=true in opts")
+	if !th.mock.lastOpts.ReadBufferOnly {
+		t.Error("Expected ReadBufferOnly=true in opts")
 	}
 }
 
-func TestCacheHandler_Evict_SafetyError(t *testing.T) {
-	th := newTestCacheHandler()
+func TestBlockStoreHandler_Evict_SafetyError(t *testing.T) {
+	th := newTestBlockStoreHandler()
 	th.mock.evictErr = errors.New("cannot evict local blocks: no remote store configured")
 
-	body, _ := json.Marshal(CacheEvictRequest{})
-	req := newChiRequest(http.MethodPost, "/api/v1/cache/evict", bytes.NewReader(body))
+	body, _ := json.Marshal(BlockStoreEvictRequest{})
+	req := newChiRequestForBlockStore(http.MethodPost, "/api/v1/blockstore/evict", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -227,10 +227,10 @@ func TestCacheHandler_Evict_SafetyError(t *testing.T) {
 	}
 }
 
-func TestCacheHandler_Evict_NoBody(t *testing.T) {
-	th := newTestCacheHandler()
+func TestBlockStoreHandler_Evict_NoBody(t *testing.T) {
+	th := newTestBlockStoreHandler()
 
-	req := newChiRequest(http.MethodPost, "/api/v1/cache/evict", nil)
+	req := newChiRequestForBlockStore(http.MethodPost, "/api/v1/blockstore/evict", nil)
 	w := httptest.NewRecorder()
 
 	th.Evict(w, req)

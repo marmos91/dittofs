@@ -1,10 +1,10 @@
-// Package sync implements cache-to-store transfer orchestration.
+// Package sync implements local-to-remote transfer orchestration.
 //
 // The syncer is responsible for moving data between the local store
 // and the remote block store (S3 or memory). It handles:
 //
 //   - Periodic sync: Scan for local blocks and upload them in the background
-//   - Fetch: Retrieve blocks from remote store on cache miss, with download priority
+//   - Fetch: Retrieve blocks from remote store on local miss, with download priority
 //   - Prefetch: Speculatively fetch upcoming blocks for sequential reads
 //   - Flush: Write dirty memory blocks to disk on NFS COMMIT / SMB CLOSE
 //   - Content-addressed deduplication: Skip uploads when identical blocks exist

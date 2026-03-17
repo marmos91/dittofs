@@ -53,7 +53,7 @@ type Share struct {
 	NetgroupName      string
 	BlockedOperations []string
 
-	// Retention policy for local cache blocks.
+	// Retention policy for local blocks.
 	RetentionPolicy blockstore.RetentionPolicy
 	RetentionTTL    time.Duration
 
@@ -90,13 +90,13 @@ type ShareConfig struct {
 	NetgroupName      string
 	BlockedOperations []string
 
-	// Retention policy for local cache blocks.
+	// Retention policy for local blocks.
 	RetentionPolicy blockstore.RetentionPolicy
 	RetentionTTL    time.Duration
 
-	// Per-share cache size overrides (0 = use system default).
+	// Per-share block store size overrides (0 = use system default).
 	LocalStoreSize int64
-	ReadCacheSize  int64
+	ReadBufferSize int64
 
 	// Block store config IDs resolved from the DB share model.
 	LocalBlockStoreID  string // Required: references a local BlockStoreConfig
@@ -130,8 +130,8 @@ type LocalStoreDefaults struct {
 	MaxSize   uint64 // Maximum local store size per share (0 = unlimited)
 	MaxMemory int64  // Memory budget for dirty buffers per share (0 = 256MB)
 
-	// ReadCacheBytes is the per-share L1 read cache budget in bytes (0 = disabled).
-	ReadCacheBytes int64
+	// ReadBufferBytes is the per-share read buffer budget in bytes (0 = disabled).
+	ReadBufferBytes int64
 }
 
 // SyncerDefaults holds default syncer configuration applied to all shares.
@@ -143,7 +143,7 @@ type SyncerDefaults struct {
 	UploadInterval     time.Duration
 	UploadDelay        time.Duration
 
-	// PrefetchWorkers is the number of L1 prefetch workers per share (0 = disabled).
+	// PrefetchWorkers is the number of read buffer prefetch workers per share (0 = disabled).
 	PrefetchWorkers int
 }
 
@@ -381,8 +381,8 @@ func mergeLocalStoreDefaults(defaults *LocalStoreDefaults, config *ShareConfig) 
 	if config.LocalStoreSize > 0 {
 		merged.MaxSize = uint64(config.LocalStoreSize)
 	}
-	if config.ReadCacheSize > 0 {
-		merged.ReadCacheBytes = config.ReadCacheSize
+	if config.ReadBufferSize > 0 {
+		merged.ReadBufferBytes = config.ReadBufferSize
 	}
 	return &merged
 }
@@ -406,7 +406,7 @@ func (s *Service) createBlockStoreForShare(
 		return fmt.Errorf("block store config %q has kind %q, expected %q", config.LocalBlockStoreID, localCfg.Kind, models.BlockStoreKindLocal)
 	}
 
-	// Merge per-share cache size overrides into effective defaults.
+	// Merge per-share size overrides into effective defaults.
 	effectiveDefaults := mergeLocalStoreDefaults(localStoreDefaults, config)
 
 	localStore, err := CreateLocalStoreFromConfig(ctx, localCfg.Type, localCfg, config.Name, effectiveDefaults, fileBlockStore)
@@ -425,7 +425,7 @@ func (s *Service) createBlockStoreForShare(
 	}
 
 	// Eviction requires a remote store (so evicted blocks can be re-fetched) and
-	// must not be pin mode (pin keeps blocks cached indefinitely).
+	// must not be pin mode (pin keeps blocks stored locally indefinitely).
 	localStore.SetEvictionEnabled(remoteStore != nil && config.RetentionPolicy != blockstore.RetentionPin)
 	localStore.SetSkipFsync(remoteStore != nil)
 	localStore.SetRetentionPolicy(config.RetentionPolicy, config.RetentionTTL)
@@ -456,7 +456,7 @@ func (s *Service) createBlockStoreForShare(
 		FileBlockStore: fileBlockStore,
 	}
 	if effectiveDefaults != nil {
-		engineCfg.ReadCacheBytes = effectiveDefaults.ReadCacheBytes
+		engineCfg.ReadBufferBytes = effectiveDefaults.ReadBufferBytes
 	}
 	if syncerDefaults != nil {
 		engineCfg.PrefetchWorkers = syncerDefaults.PrefetchWorkers
@@ -781,34 +781,34 @@ func (s *Service) DrainAllBlockStores(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// ShareCacheStats holds cache statistics for a single share.
-type ShareCacheStats struct {
-	ShareName string            `json:"share_name"`
-	Stats     engine.CacheStats `json:"stats"`
+// ShareBlockStoreStats holds block store statistics for a single share.
+type ShareBlockStoreStats struct {
+	ShareName string                 `json:"share_name"`
+	Stats     engine.BlockStoreStats `json:"stats"`
 }
 
-// CacheStatsResponse holds aggregated and per-share cache statistics.
-type CacheStatsResponse struct {
-	Totals   engine.CacheStats `json:"totals"`
-	PerShare []ShareCacheStats `json:"per_share,omitempty"`
+// BlockStoreStatsResponse holds aggregated and per-share block store statistics.
+type BlockStoreStatsResponse struct {
+	Totals   engine.BlockStoreStats `json:"totals"`
+	PerShare []ShareBlockStoreStats `json:"per_share,omitempty"`
 }
 
-// EvictOptions controls which cache tiers to evict.
+// EvictOptions controls which block store tiers to evict.
 type EvictOptions struct {
-	L1Only    bool `json:"l1_only"`
-	LocalOnly bool `json:"local_only"`
+	ReadBufferOnly bool `json:"read_buffer_only"`
+	LocalOnly      bool `json:"local_only"`
 }
 
-// EvictResult holds the result of a cache eviction operation.
+// EvictResult holds the result of a block store eviction operation.
 type EvictResult struct {
-	L1EntriesCleared  int   `json:"l1_entries_cleared"`
-	LocalFilesEvicted int   `json:"local_files_evicted"`
-	BytesFreed        int64 `json:"bytes_freed"`
+	ReadBufferEntriesCleared int   `json:"read_buffer_entries_cleared"`
+	LocalFilesEvicted        int   `json:"local_files_evicted"`
+	BytesFreed               int64 `json:"bytes_freed"`
 }
 
-// GetCacheStats returns cache statistics, optionally filtered by share name.
+// GetBlockStoreStats returns block store statistics, optionally filtered by share name.
 // If shareName is empty, returns aggregated stats across all shares with per-share breakdown.
-func (s *Service) GetCacheStats(shareName string) (*CacheStatsResponse, error) {
+func (s *Service) GetBlockStoreStats(shareName string) (*BlockStoreStatsResponse, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -820,33 +820,33 @@ func (s *Service) GetCacheStats(shareName string) (*CacheStatsResponse, error) {
 		if share.BlockStore == nil {
 			return nil, fmt.Errorf("share %q has no block store configured", shareName)
 		}
-		stats := share.BlockStore.GetCacheStats()
-		return &CacheStatsResponse{
+		stats := share.BlockStore.GetStats()
+		return &BlockStoreStatsResponse{
 			Totals:   stats,
-			PerShare: []ShareCacheStats{{ShareName: shareName, Stats: stats}},
+			PerShare: []ShareBlockStoreStats{{ShareName: shareName, Stats: stats}},
 		}, nil
 	}
 
-	var totals engine.CacheStats
-	var perShare []ShareCacheStats
+	var totals engine.BlockStoreStats
+	var perShare []ShareBlockStoreStats
 
 	for name, share := range s.registry {
 		if share.BlockStore == nil {
 			continue
 		}
-		stats := share.BlockStore.GetCacheStats()
-		perShare = append(perShare, ShareCacheStats{ShareName: name, Stats: stats})
-		addCacheStats(&totals, stats)
+		stats := share.BlockStore.GetStats()
+		perShare = append(perShare, ShareBlockStoreStats{ShareName: name, Stats: stats})
+		addBlockStoreStats(&totals, stats)
 	}
 
-	return &CacheStatsResponse{
+	return &BlockStoreStatsResponse{
 		Totals:   totals,
 		PerShare: perShare,
 	}, nil
 }
 
-// addCacheStats accumulates src into dst (field-by-field summation).
-func addCacheStats(dst *engine.CacheStats, src engine.CacheStats) {
+// addBlockStoreStats accumulates src into dst (field-by-field summation).
+func addBlockStoreStats(dst *engine.BlockStoreStats, src engine.BlockStoreStats) {
 	dst.FileCount += src.FileCount
 	dst.BlocksDirty += src.BlocksDirty
 	dst.BlocksLocal += src.BlocksLocal
@@ -856,9 +856,9 @@ func addCacheStats(dst *engine.CacheStats, src engine.CacheStats) {
 	dst.LocalDiskMax += src.LocalDiskMax
 	dst.LocalMemUsed += src.LocalMemUsed
 	dst.LocalMemMax += src.LocalMemMax
-	dst.L1Entries += src.L1Entries
-	dst.L1CurBytes += src.L1CurBytes
-	dst.L1MaxBytes += src.L1MaxBytes
+	dst.ReadBufferEntries += src.ReadBufferEntries
+	dst.ReadBufferUsed += src.ReadBufferUsed
+	dst.ReadBufferMax += src.ReadBufferMax
 	dst.PendingSyncs += src.PendingSyncs
 	dst.PendingUploads += src.PendingUploads
 	dst.CompletedSyncs += src.CompletedSyncs
@@ -868,9 +868,9 @@ func addCacheStats(dst *engine.CacheStats, src engine.CacheStats) {
 	}
 }
 
-// EvictCache evicts cache data for the given share (or all shares if shareName is empty).
+// EvictBlockStore evicts block store data for the given share (or all shares if shareName is empty).
 // Returns an error if trying to evict local blocks without a remote store (safety check).
-func (s *Service) EvictCache(ctx context.Context, shareName string, opts EvictOptions) (*EvictResult, error) {
+func (s *Service) EvictBlockStore(ctx context.Context, shareName string, opts EvictOptions) (*EvictResult, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -897,15 +897,15 @@ func (s *Service) EvictCache(ctx context.Context, shareName string, opts EvictOp
 	for _, share := range targets {
 		bs := share.BlockStore
 
-		if !opts.L1Only && !bs.HasRemoteStore() {
+		if !opts.ReadBufferOnly && !bs.HasRemoteStore() {
 			return nil, fmt.Errorf("cannot evict local blocks for share %q: no remote store configured (data would be lost)", share.Name)
 		}
 
 		if !opts.LocalOnly {
-			result.L1EntriesCleared += bs.EvictL1Cache()
+			result.ReadBufferEntriesCleared += bs.EvictReadBuffer()
 		}
 
-		if !opts.L1Only {
+		if !opts.ReadBufferOnly {
 			beforeDisk := bs.LocalStats().DiskUsed
 
 			files := bs.ListFiles()
@@ -951,11 +951,11 @@ func CreateLocalStoreFromConfig(
 			return nil, errors.New("fs local store requires path in config")
 		}
 		sanitized := sanitizeShareName(shareName)
-		cacheDir := filepath.Join(basePath, "shares", sanitized, "blocks")
-		if err := os.MkdirAll(cacheDir, 0755); err != nil {
-			return nil, fmt.Errorf("failed to create cache directory: %w", err)
+		blockDir := filepath.Join(basePath, "shares", sanitized, "blocks")
+		if err := os.MkdirAll(blockDir, 0755); err != nil {
+			return nil, fmt.Errorf("failed to create block store directory: %w", err)
 		}
-		return fs.New(cacheDir, maxDisk, maxMemory, fileBlockStore)
+		return fs.New(blockDir, maxDisk, maxMemory, fileBlockStore)
 
 	case "memory":
 		return localmemory.New(), nil

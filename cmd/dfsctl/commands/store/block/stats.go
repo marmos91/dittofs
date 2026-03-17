@@ -1,4 +1,4 @@
-package cache
+package block
 
 import (
 	"fmt"
@@ -12,29 +12,29 @@ import (
 
 var statsCmd = &cobra.Command{
 	Use:   "stats",
-	Short: "Show cache statistics",
-	Long: `Display block store cache statistics.
+	Short: "Show block store statistics",
+	Long: `Display block store statistics.
 
 Without --share, shows aggregated totals across all shares with a per-share breakdown.
 With --share, shows statistics for a single share only.
 
 Examples:
-  # Show aggregated cache stats
-  dfsctl cache stats
+  # Show aggregated block store stats
+  dfsctl store block stats
 
   # Show stats for a specific share
-  dfsctl cache stats --share /export
+  dfsctl store block stats --share /export
 
   # Output as JSON
-  dfsctl cache stats -o json`,
-	RunE: runCacheStats,
+  dfsctl store block stats -o json`,
+	RunE: runBlockStoreStats,
 }
 
 func init() {
 	statsCmd.Flags().String("share", "", "Show stats for a specific share only")
 }
 
-func runCacheStats(cmd *cobra.Command, _ []string) error {
+func runBlockStoreStats(cmd *cobra.Command, _ []string) error {
 	client, err := cmdutil.GetAuthenticatedClient()
 	if err != nil {
 		return err
@@ -42,14 +42,14 @@ func runCacheStats(cmd *cobra.Command, _ []string) error {
 
 	shareName, _ := cmd.Flags().GetString("share")
 
-	var resp *apiclient.CacheStatsResponse
+	var resp *apiclient.BlockStoreStatsResponse
 	if shareName != "" {
-		resp, err = client.CacheStatsForShare(shareName)
+		resp, err = client.BlockStoreStatsForShare(shareName)
 	} else {
-		resp, err = client.CacheStatsAll()
+		resp, err = client.BlockStoreStatsAll()
 	}
 	if err != nil {
-		return fmt.Errorf("failed to get cache stats: %w", err)
+		return fmt.Errorf("failed to get block store stats: %w", err)
 	}
 
 	format, err := cmdutil.GetOutputFormatParsed()
@@ -63,11 +63,11 @@ func runCacheStats(cmd *cobra.Command, _ []string) error {
 	case output.FormatYAML:
 		return output.PrintYAML(os.Stdout, resp)
 	default:
-		return printCacheStatsTable(resp)
+		return printBlockStoreStatsTable(resp)
 	}
 }
 
-func printCacheStatsTable(resp *apiclient.CacheStatsResponse) error {
+func printBlockStoreStatsTable(resp *apiclient.BlockStoreStatsResponse) error {
 	t := resp.Totals
 	pairs := [][2]string{
 		{"Files", fmt.Sprintf("%d", t.FileCount)},
@@ -79,9 +79,9 @@ func printCacheStatsTable(resp *apiclient.CacheStatsResponse) error {
 		{"Local Disk Max", formatBytes(t.LocalDiskMax)},
 		{"Local Mem Used", formatBytes(t.LocalMemUsed)},
 		{"Local Mem Max", formatBytes(t.LocalMemMax)},
-		{"L1 Entries", fmt.Sprintf("%d", t.L1Entries)},
-		{"L1 Used", formatBytes(t.L1CurBytes)},
-		{"L1 Max", formatBytes(t.L1MaxBytes)},
+		{"Read Buffer Entries", fmt.Sprintf("%d", t.ReadBufferEntries)},
+		{"Read Buffer Used", formatBytes(t.ReadBufferUsed)},
+		{"Read Buffer Max", formatBytes(t.ReadBufferMax)},
 		{"Has Remote", fmt.Sprintf("%v", t.HasRemote)},
 		{"Pending Syncs", fmt.Sprintf("%d", t.PendingSyncs)},
 		{"Pending Uploads", fmt.Sprintf("%d", t.PendingUploads)},
@@ -98,7 +98,7 @@ func printCacheStatsTable(resp *apiclient.CacheStatsResponse) error {
 		fmt.Println("Per-Share Breakdown:")
 		table := output.NewTableData(
 			"SHARE", "BLOCKS", "DIRTY", "LOCAL", "REMOTE",
-			"DISK USED", "L1 ENTRIES", "PENDING",
+			"DISK USED", "READ BUF ENTRIES", "PENDING",
 		)
 		for _, s := range resp.PerShare {
 			table.AddRow(
@@ -108,7 +108,7 @@ func printCacheStatsTable(resp *apiclient.CacheStatsResponse) error {
 				fmt.Sprintf("%d", s.Stats.BlocksLocal),
 				fmt.Sprintf("%d", s.Stats.BlocksRemote),
 				formatBytes(s.Stats.LocalDiskUsed),
-				fmt.Sprintf("%d", s.Stats.L1Entries),
+				fmt.Sprintf("%d", s.Stats.ReadBufferEntries),
 				fmt.Sprintf("%d", s.Stats.PendingSyncs),
 			)
 		}

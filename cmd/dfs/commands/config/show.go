@@ -89,8 +89,8 @@ func runShowDeduced() error {
 
 	fmt.Printf("local_store_size: %s  # 25%% of %s\n",
 		blockstore.FormatBytes(deduced.LocalStoreSize), mem)
-	fmt.Printf("l1_cache_size: %s  # 12.5%% of %s\n",
-		blockstore.FormatBytes(uint64(deduced.L1CacheSize)), mem)
+	fmt.Printf("read_buffer_size: %s  # 12.5%% of %s\n",
+		blockstore.FormatBytes(uint64(deduced.ReadBufferSize)), mem)
 	fmt.Printf("max_pending_size: %s  # 50%% of local_store_size\n",
 		blockstore.FormatBytes(deduced.MaxPendingSize))
 	fmt.Printf("parallel_syncs: %d  # max(4, %d CPUs)\n",

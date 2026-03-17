@@ -1,4 +1,4 @@
-package readcache
+package readbuffer
 
 import (
 	"context"
@@ -23,17 +23,17 @@ func makeData(size int, fill byte) []byte {
 
 // --- New ---
 
-func TestReadCache_New_ZeroDisabled(t *testing.T) {
+func TestReadBuffer_New_ZeroDisabled(t *testing.T) {
 	c := New(0)
 	assert.Nil(t, c, "New(0) should return nil (disabled mode)")
 }
 
-func TestReadCache_New_NegativeDisabled(t *testing.T) {
+func TestReadBuffer_New_NegativeDisabled(t *testing.T) {
 	c := New(-1)
 	assert.Nil(t, c, "New(-1) should return nil")
 }
 
-func TestReadCache_New_Positive(t *testing.T) {
+func TestReadBuffer_New_Positive(t *testing.T) {
 	c := New(testBlockSize * 2)
 	require.NotNil(t, c, "New with positive value should return non-nil")
 	assert.Equal(t, int64(testBlockSize*2), c.maxBytes)
@@ -42,7 +42,7 @@ func TestReadCache_New_Positive(t *testing.T) {
 
 // --- Put and Get ---
 
-func TestReadCache_PutAndGet_Hit(t *testing.T) {
+func TestReadBuffer_PutAndGet_Hit(t *testing.T) {
 	c := New(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -52,23 +52,23 @@ func TestReadCache_PutAndGet_Hit(t *testing.T) {
 
 	dest := make([]byte, testBlockSize)
 	n, ok := c.Get("file1", 0, dest, 0)
-	assert.True(t, ok, "expected cache hit")
+	assert.True(t, ok, "expected hit")
 	assert.Equal(t, testBlockSize, n)
 	assert.Equal(t, data, dest[:n])
 }
 
-func TestReadCache_Get_Miss(t *testing.T) {
+func TestReadBuffer_Get_Miss(t *testing.T) {
 	c := New(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
 
 	dest := make([]byte, testBlockSize)
 	n, ok := c.Get("nonexistent", 0, dest, 0)
-	assert.False(t, ok, "expected cache miss")
+	assert.False(t, ok, "expected miss")
 	assert.Equal(t, 0, n)
 }
 
-func TestReadCache_Get_CopyOnRead(t *testing.T) {
+func TestReadBuffer_Get_CopyOnRead(t *testing.T) {
 	c := New(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -89,10 +89,10 @@ func TestReadCache_Get_CopyOnRead(t *testing.T) {
 	n2, ok2 := c.Get("file1", 0, dest2, 0)
 	assert.True(t, ok2)
 	assert.Equal(t, testBlockSize, n2)
-	assert.Equal(t, byte(0xBB), dest2[0], "cache data should not be affected by caller modification")
+	assert.Equal(t, byte(0xBB), dest2[0], "buffered data should not be affected by caller modification")
 }
 
-func TestReadCache_Get_WithOffset(t *testing.T) {
+func TestReadBuffer_Get_WithOffset(t *testing.T) {
 	c := New(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -110,7 +110,7 @@ func TestReadCache_Get_WithOffset(t *testing.T) {
 	assert.Equal(t, byte(0xDD), dest[1])
 }
 
-func TestReadCache_Get_OffsetBeyondData(t *testing.T) {
+func TestReadBuffer_Get_OffsetBeyondData(t *testing.T) {
 	c := New(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -130,7 +130,7 @@ func TestReadCache_Get_OffsetBeyondData(t *testing.T) {
 
 // --- Put update existing ---
 
-func TestReadCache_Put_UpdateExisting(t *testing.T) {
+func TestReadBuffer_Put_UpdateExisting(t *testing.T) {
 	c := New(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -150,7 +150,7 @@ func TestReadCache_Put_UpdateExisting(t *testing.T) {
 
 // --- Eviction ---
 
-func TestReadCache_Put_EvictsLRU(t *testing.T) {
+func TestReadBuffer_Put_EvictsLRU(t *testing.T) {
 	// Budget for exactly 2 blocks
 	c := New(int64(testBlockSize * 2))
 	require.NotNil(t, c)
@@ -171,13 +171,13 @@ func TestReadCache_Put_EvictsLRU(t *testing.T) {
 	assert.False(t, ok, "block 0 should have been evicted")
 
 	_, ok = c.Get("file1", 1, dest, 0)
-	assert.True(t, ok, "block 1 should still be cached")
+	assert.True(t, ok, "block 1 should still be buffered")
 
 	_, ok = c.Get("file1", 2, dest, 0)
-	assert.True(t, ok, "block 2 should be cached")
+	assert.True(t, ok, "block 2 should be buffered")
 }
 
-func TestReadCache_Put_EvictsMultiple(t *testing.T) {
+func TestReadBuffer_Put_EvictsMultiple(t *testing.T) {
 	// Budget for exactly 2 small blocks (256 bytes each)
 	smallSize := 256
 	c := New(int64(smallSize * 2))
@@ -199,10 +199,10 @@ func TestReadCache_Put_EvictsMultiple(t *testing.T) {
 	_, ok = c.Get("f", 1, dest, 0)
 	assert.False(t, ok, "block 1 should be evicted")
 	_, ok = c.Get("f", 2, dest, 0)
-	assert.True(t, ok, "block 2 should be cached")
+	assert.True(t, ok, "block 2 should be buffered")
 }
 
-func TestReadCache_Put_SkipsOversizedEntry(t *testing.T) {
+func TestReadBuffer_Put_SkipsOversizedEntry(t *testing.T) {
 	// Budget smaller than a single block
 	c := New(100)
 	require.NotNil(t, c)
@@ -214,13 +214,13 @@ func TestReadCache_Put_SkipsOversizedEntry(t *testing.T) {
 
 	dest := make([]byte, 200)
 	_, ok := c.Get("f", 0, dest, 0)
-	assert.False(t, ok, "oversized entry should not be cached")
+	assert.False(t, ok, "oversized entry should not be buffered")
 	assert.Equal(t, int64(0), c.curBytes, "curBytes should remain 0")
 }
 
 // --- LRU Promotion ---
 
-func TestReadCache_LRU_Promotion(t *testing.T) {
+func TestReadBuffer_LRU_Promotion(t *testing.T) {
 	c := New(int64(testBlockSize * 2))
 	require.NotNil(t, c)
 	defer c.Close()
@@ -241,16 +241,16 @@ func TestReadCache_LRU_Promotion(t *testing.T) {
 	c.Put("f", 2, d2, uint32(testBlockSize))
 
 	_, ok = c.Get("f", 0, dest, 0)
-	assert.True(t, ok, "block 0 should still be cached (was promoted)")
+	assert.True(t, ok, "block 0 should still be buffered (was promoted)")
 	_, ok = c.Get("f", 1, dest, 0)
 	assert.False(t, ok, "block 1 should have been evicted (was LRU)")
 	_, ok = c.Get("f", 2, dest, 0)
-	assert.True(t, ok, "block 2 should be cached")
+	assert.True(t, ok, "block 2 should be buffered")
 }
 
 // --- Invalidate ---
 
-func TestReadCache_Invalidate_Existing(t *testing.T) {
+func TestReadBuffer_Invalidate_Existing(t *testing.T) {
 	c := New(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -263,7 +263,7 @@ func TestReadCache_Invalidate_Existing(t *testing.T) {
 	assert.False(t, ok, "invalidated entry should be a miss")
 }
 
-func TestReadCache_Invalidate_Missing(t *testing.T) {
+func TestReadBuffer_Invalidate_Missing(t *testing.T) {
 	c := New(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -274,7 +274,7 @@ func TestReadCache_Invalidate_Missing(t *testing.T) {
 
 // --- InvalidateFile ---
 
-func TestReadCache_InvalidateFile_RemovesAll(t *testing.T) {
+func TestReadBuffer_InvalidateFile_RemovesAll(t *testing.T) {
 	c := New(testBlockSize * 8)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -292,7 +292,7 @@ func TestReadCache_InvalidateFile_RemovesAll(t *testing.T) {
 	}
 }
 
-func TestReadCache_InvalidateFile_EmptyIndex(t *testing.T) {
+func TestReadBuffer_InvalidateFile_EmptyIndex(t *testing.T) {
 	c := New(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -301,7 +301,7 @@ func TestReadCache_InvalidateFile_EmptyIndex(t *testing.T) {
 	c.InvalidateFile("unknown")
 }
 
-func TestReadCache_InvalidateFile_OnlyTargetFile(t *testing.T) {
+func TestReadBuffer_InvalidateFile_OnlyTargetFile(t *testing.T) {
 	c := New(testBlockSize * 8)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -321,7 +321,7 @@ func TestReadCache_InvalidateFile_OnlyTargetFile(t *testing.T) {
 
 // --- InvalidateAbove ---
 
-func TestReadCache_InvalidateAbove_RemovesHighBlocks(t *testing.T) {
+func TestReadBuffer_InvalidateAbove_RemovesHighBlocks(t *testing.T) {
 	c := New(testBlockSize * 16)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -335,7 +335,7 @@ func TestReadCache_InvalidateAbove_RemovesHighBlocks(t *testing.T) {
 	dest := make([]byte, testBlockSize)
 	for _, idx := range []uint64{0, 1, 2} {
 		_, ok := c.Get("file1", idx, dest, 0)
-		assert.True(t, ok, "block %d should still be cached", idx)
+		assert.True(t, ok, "block %d should still be buffered", idx)
 	}
 	for _, idx := range []uint64{3, 4, 5} {
 		_, ok := c.Get("file1", idx, dest, 0)
@@ -343,7 +343,7 @@ func TestReadCache_InvalidateAbove_RemovesHighBlocks(t *testing.T) {
 	}
 }
 
-func TestReadCache_InvalidateAbove_NoMatch(t *testing.T) {
+func TestReadBuffer_InvalidateAbove_NoMatch(t *testing.T) {
 	c := New(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -354,7 +354,7 @@ func TestReadCache_InvalidateAbove_NoMatch(t *testing.T) {
 
 // --- Contains ---
 
-func TestReadCache_Contains_Hit(t *testing.T) {
+func TestReadBuffer_Contains_Hit(t *testing.T) {
 	c := New(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -363,7 +363,7 @@ func TestReadCache_Contains_Hit(t *testing.T) {
 	assert.True(t, c.Contains("f", 0))
 }
 
-func TestReadCache_Contains_Miss(t *testing.T) {
+func TestReadBuffer_Contains_Miss(t *testing.T) {
 	c := New(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -373,7 +373,7 @@ func TestReadCache_Contains_Miss(t *testing.T) {
 
 // --- Close ---
 
-func TestReadCache_Close_ClearsAll(t *testing.T) {
+func TestReadBuffer_Close_ClearsAll(t *testing.T) {
 	c := New(testBlockSize * 4)
 	require.NotNil(t, c)
 
@@ -387,7 +387,7 @@ func TestReadCache_Close_ClearsAll(t *testing.T) {
 
 // --- Concurrency ---
 
-func TestReadCache_Concurrency_ReadWrite(t *testing.T) {
+func TestReadBuffer_Concurrency_ReadWrite(t *testing.T) {
 	c := New(testBlockSize * 8)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -419,7 +419,7 @@ func TestReadCache_Concurrency_ReadWrite(t *testing.T) {
 
 // --- InvalidateRange ---
 
-func TestReadCache_InvalidateRange_SingleBlock(t *testing.T) {
+func TestReadBuffer_InvalidateRange_SingleBlock(t *testing.T) {
 	c := New(testBlockSize * 8)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -438,7 +438,7 @@ func TestReadCache_InvalidateRange_SingleBlock(t *testing.T) {
 	_ = dest
 }
 
-func TestReadCache_InvalidateRange_SpansMultipleBlocks(t *testing.T) {
+func TestReadBuffer_InvalidateRange_SpansMultipleBlocks(t *testing.T) {
 	c := New(testBlockSize * 8)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -458,7 +458,7 @@ func TestReadCache_InvalidateRange_SpansMultipleBlocks(t *testing.T) {
 	assert.True(t, c.Contains("f", 3), "block 3 should remain")
 }
 
-func TestReadCache_InvalidateRange_ZeroLength(t *testing.T) {
+func TestReadBuffer_InvalidateRange_ZeroLength(t *testing.T) {
 	c := New(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -471,15 +471,15 @@ func TestReadCache_InvalidateRange_ZeroLength(t *testing.T) {
 	assert.True(t, c.Contains("f", 0), "block should remain after zero-length invalidate")
 }
 
-func TestReadCache_InvalidateRange_NilSafe(t *testing.T) {
-	var c *ReadCache
+func TestReadBuffer_InvalidateRange_NilSafe(t *testing.T) {
+	var c *ReadBuffer
 	// Should not panic
 	c.InvalidateRange("f", 0, 100, uint64(testBlockSize))
 }
 
 // --- NotifyRead ---
 
-func TestReadCache_NotifyRead_ZeroLength(t *testing.T) {
+func TestReadBuffer_NotifyRead_ZeroLength(t *testing.T) {
 	c := New(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -488,13 +488,13 @@ func TestReadCache_NotifyRead_ZeroLength(t *testing.T) {
 	c.NotifyRead("f", 0, 0, uint64(testBlockSize))
 }
 
-func TestReadCache_NotifyRead_NilSafe(t *testing.T) {
-	var c *ReadCache
+func TestReadBuffer_NotifyRead_NilSafe(t *testing.T) {
+	var c *ReadBuffer
 	// Should not panic
 	c.NotifyRead("f", 0, 100, uint64(testBlockSize))
 }
 
-func TestReadCache_NotifyRead_NoPrefetcher(t *testing.T) {
+func TestReadBuffer_NotifyRead_NoPrefetcher(t *testing.T) {
 	c := New(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -505,7 +505,7 @@ func TestReadCache_NotifyRead_NoPrefetcher(t *testing.T) {
 
 // --- FillFromStore ---
 
-func TestReadCache_FillFromStore_PopulatesCache(t *testing.T) {
+func TestReadBuffer_FillFromStore_PopulatesBuffer(t *testing.T) {
 	c := New(testBlockSize * 8)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -520,11 +520,11 @@ func TestReadCache_FillFromStore_PopulatesCache(t *testing.T) {
 	c.FillFromStore(context.Background(), "f", 0, uint64(testBlockSize*3), uint64(testBlockSize), loader)
 
 	for i := uint64(0); i < 3; i++ {
-		assert.True(t, c.Contains("f", i), "block %d should be in cache", i)
+		assert.True(t, c.Contains("f", i), "block %d should be in read buffer", i)
 	}
 }
 
-func TestReadCache_FillFromStore_SkipsExisting(t *testing.T) {
+func TestReadBuffer_FillFromStore_SkipsExisting(t *testing.T) {
 	c := New(testBlockSize * 8)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -553,7 +553,7 @@ func TestReadCache_FillFromStore_SkipsExisting(t *testing.T) {
 	assert.Equal(t, byte(0xFF), dest[0], "block 1 should retain original data")
 }
 
-func TestReadCache_FillFromStore_HandlesLoaderError(t *testing.T) {
+func TestReadBuffer_FillFromStore_HandlesLoaderError(t *testing.T) {
 	c := New(testBlockSize * 8)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -567,12 +567,12 @@ func TestReadCache_FillFromStore_HandlesLoaderError(t *testing.T) {
 
 	c.FillFromStore(context.Background(), "f", 0, uint64(testBlockSize*3), uint64(testBlockSize), loader)
 
-	assert.True(t, c.Contains("f", 0), "block 0 should be cached")
-	assert.False(t, c.Contains("f", 1), "block 1 should NOT be cached (loader error)")
-	assert.True(t, c.Contains("f", 2), "block 2 should be cached")
+	assert.True(t, c.Contains("f", 0), "block 0 should be buffered")
+	assert.False(t, c.Contains("f", 1), "block 1 should NOT be buffered (loader error)")
+	assert.True(t, c.Contains("f", 2), "block 2 should be buffered")
 }
 
-func TestReadCache_FillFromStore_ZeroLength(t *testing.T) {
+func TestReadBuffer_FillFromStore_ZeroLength(t *testing.T) {
 	c := New(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
@@ -588,8 +588,8 @@ func TestReadCache_FillFromStore_ZeroLength(t *testing.T) {
 	assert.False(t, called, "loader should not be called for zero-length fill")
 }
 
-func TestReadCache_FillFromStore_NilSafe(t *testing.T) {
-	var c *ReadCache
+func TestReadBuffer_FillFromStore_NilSafe(t *testing.T) {
+	var c *ReadBuffer
 	loader := func(_ context.Context, _ string, _ uint64) ([]byte, uint32, error) {
 		return nil, 0, nil
 	}

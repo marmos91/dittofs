@@ -55,7 +55,7 @@ func WithShareDescription(desc string) ShareOption {
 }
 
 // WithShareRemote sets the remote block store name for the share.
-// This enables tiered storage (local cache + remote durable storage).
+// This enables tiered storage (local + remote durable storage).
 func WithShareRemote(remoteName string) ShareOption {
 	return func(o *shareOptions) {
 		o.remoteBlockStore = remoteName

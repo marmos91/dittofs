@@ -6,19 +6,19 @@ import (
 	"time"
 )
 
-// RetentionPolicy controls how cached blocks are retained on local storage.
+// RetentionPolicy controls how blocks are retained on local storage.
 // String-typed for GORM compatibility and JSON serialization.
 type RetentionPolicy string
 
 const (
-	// RetentionPin keeps blocks cached indefinitely (no eviction).
+	// RetentionPin keeps blocks stored locally indefinitely (no eviction).
 	RetentionPin RetentionPolicy = "pin"
 
 	// RetentionTTL evicts blocks after a configurable time-to-live.
 	RetentionTTL RetentionPolicy = "ttl"
 
 	// RetentionLRU evicts least-recently-used blocks when space is needed.
-	// This is the default policy for backward compatibility (CACHE-06).
+	// This is the default policy for backward compatibility.
 	RetentionLRU RetentionPolicy = "lru"
 )
 
@@ -38,7 +38,7 @@ func (p RetentionPolicy) IsValid() bool {
 }
 
 // ParseRetentionPolicy parses a string into a RetentionPolicy.
-// Empty or blank input defaults to LRU for backward compatibility (CACHE-06).
+// Empty or blank input defaults to LRU for backward compatibility.
 // Parsing is case-insensitive.
 func ParseRetentionPolicy(s string) (RetentionPolicy, error) {
 	s = strings.TrimSpace(s)

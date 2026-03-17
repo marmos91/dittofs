@@ -12,7 +12,7 @@ import (
 )
 
 // SetEvictionEnabled controls whether ensureSpace can evict blocks to make room.
-// When disabled (false), ensureSpace returns ErrDiskFull if the cache is over its
+// When disabled (false), ensureSpace returns ErrDiskFull if the store is over its
 // disk limit instead of evicting remote blocks. This is used by local-only mode
 // where there is no remote store to re-fetch evicted blocks from.
 //
@@ -25,10 +25,10 @@ func (bc *FSStore) SetEvictionEnabled(enabled bool) {
 // from memory, disk, and metadata.
 //
 // Order of operations:
-//  1. Close file descriptors (fdCache + readFDCache) to release OS handles
+//  1. Close file descriptors (fdPool + readFDPool) to release OS handles
 //  2. Purge in-memory block data
-//  3. Look up FileBlock metadata (to get CachePath and DataSize)
-//  4. Delete the .blk cache file from disk
+//  3. Look up FileBlock metadata (to get LocalPath and DataSize)
+//  4. Delete the .blk block file from disk
 //  5. Decrement diskUsed counter
 //  6. Delete the FileBlock record from the store (direct call, not async)
 //  7. Clear any pending async update in pendingFBs to prevent zombie re-creation
@@ -39,8 +39,8 @@ func (bc *FSStore) DeleteBlockFile(ctx context.Context, payloadID string, blockI
 	blockID := makeBlockID(key)
 
 	// 1. Close file descriptors before removing the file
-	bc.fdCache.Evict(blockID)
-	bc.readFDCache.Evict(blockID)
+	bc.fdPool.Evict(blockID)
+	bc.readFDPool.Evict(blockID)
 
 	// 2. Purge in-memory block
 	bc.purgeMemBlocks(payloadID, func(idx uint64) bool {
@@ -59,11 +59,11 @@ func (bc *FSStore) DeleteBlockFile(ctx context.Context, payloadID string, blockI
 	}
 
 	// 4-5. Delete .blk file from disk and decrement diskUsed
-	if fb.CachePath != "" {
-		fileSize := fileOrFallbackSize(fb.CachePath, int64(fb.DataSize))
+	if fb.LocalPath != "" {
+		fileSize := fileOrFallbackSize(fb.LocalPath, int64(fb.DataSize))
 
-		if rmErr := os.Remove(fb.CachePath); rmErr != nil && !os.IsNotExist(rmErr) {
-			logger.Warn("cache: failed to remove block file", "path", fb.CachePath, "error", rmErr)
+		if rmErr := os.Remove(fb.LocalPath); rmErr != nil && !os.IsNotExist(rmErr) {
+			logger.Warn("local store: failed to remove block file", "path", fb.LocalPath, "error", rmErr)
 		}
 
 		if fileSize > 0 {
@@ -102,7 +102,7 @@ func (bc *FSStore) DeleteAllBlockFiles(ctx context.Context, payloadID string) er
 		// Extract blockIdx from the block ID (format: "payloadID/blockIdx")
 		blockIdx := extractBlockIdx(fb.ID, payloadID)
 		if delErr := bc.DeleteBlockFile(ctx, payloadID, blockIdx); delErr != nil {
-			logger.Warn("cache: failed to delete block", "blockID", fb.ID, "error", delErr)
+			logger.Warn("local store: failed to delete block", "blockID", fb.ID, "error", delErr)
 		}
 	}
 
@@ -140,7 +140,7 @@ func (bc *FSStore) TruncateBlockFiles(ctx context.Context, payloadID string, new
 		blockIdx := extractBlockIdx(fb.ID, payloadID)
 		if blockIdx*blockstore.BlockSize >= newSize {
 			if delErr := bc.DeleteBlockFile(ctx, payloadID, blockIdx); delErr != nil {
-				logger.Warn("cache: failed to delete truncated block", "blockID", fb.ID, "error", delErr)
+				logger.Warn("local store: failed to delete truncated block", "blockID", fb.ID, "error", delErr)
 			}
 		}
 	}
@@ -165,10 +165,10 @@ func (bc *FSStore) GetStoredFileSize(ctx context.Context, payloadID string) (uin
 }
 
 // ExistsOnDisk checks if a specific block is present on disk by verifying both
-// the FileBlock metadata (CachePath must be non-empty) and the actual file
+// the FileBlock metadata (LocalPath must be non-empty) and the actual file
 // existence via os.Stat.
 //
-// Returns false for stale metadata (CachePath set but file deleted from disk).
+// Returns false for stale metadata (LocalPath set but file deleted from disk).
 func (bc *FSStore) ExistsOnDisk(ctx context.Context, payloadID string, blockIdx uint64) (bool, error) {
 	blockID := makeBlockID(blockKey{payloadID: payloadID, blockIdx: blockIdx})
 
@@ -180,11 +180,11 @@ func (bc *FSStore) ExistsOnDisk(ctx context.Context, payloadID string, blockIdx 
 		return false, err
 	}
 
-	if fb.CachePath == "" {
+	if fb.LocalPath == "" {
 		return false, nil
 	}
 
-	_, statErr := os.Stat(fb.CachePath)
+	_, statErr := os.Stat(fb.LocalPath)
 	return statErr == nil, nil
 }
 

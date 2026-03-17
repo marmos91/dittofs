@@ -28,40 +28,40 @@ type FlushedBlock struct {
 	// BlockIndex is the flat block index.
 	BlockIndex uint64
 
-	// CachePath is the path to the .blk file on disk.
-	CachePath string
+	// LocalPath is the path to the .blk file on disk.
+	LocalPath string
 
 	// DataSize is the actual size of valid data in the block.
 	DataSize uint32
 }
 
-// Stats contains cache statistics for observability.
+// Stats contains local store statistics for observability.
 type Stats struct {
-	DiskUsed      int64 // Current total size of on-disk cached data in bytes
-	MaxDisk       int64 // Configured maximum disk cache size (0 = unlimited)
+	DiskUsed      int64 // Current total size of on-disk block data in bytes
+	MaxDisk       int64 // Configured maximum disk size (0 = unlimited)
 	MemUsed       int64 // Current in-memory dirty buffer usage in bytes
 	MaxMemory     int64 // Configured memory budget for dirty buffers
-	FileCount     int   // Number of files with cached data
+	FileCount     int   // Number of files with local data
 	MemBlockCount int   // Number of in-memory dirty blocks
 }
 
-// LocalStore is the interface for on-node block caching.
-// It manages the two-tier (memory + disk) cache that sits between
+// LocalStore is the interface for on-node block storage.
+// It manages the two-tier (memory + disk) store that sits between
 // protocol adapters and the remote block store.
 type LocalStore interface {
 	// --- Read operations ---
 
-	// ReadAt reads data from the cache at the specified offset into dest.
-	// Returns (true, nil) if all requested bytes were found in cache,
-	// (false, nil) on cache miss for any block in the range.
+	// ReadAt reads data from the local store at the specified offset into dest.
+	// Returns (true, nil) if all requested bytes were found locally,
+	// (false, nil) on miss for any block in the range.
 	ReadAt(ctx context.Context, payloadID string, dest []byte, offset uint64) (bool, error)
 
-	// GetFileSize returns the cached file size and whether the file is tracked.
+	// GetFileSize returns the tracked file size and whether the file is tracked.
 	// This is a fast in-memory lookup -- no disk or store access.
 	GetFileSize(ctx context.Context, payloadID string) (uint64, bool)
 
-	// IsBlockCached checks if a specific block is available in cache (memory or disk).
-	IsBlockCached(ctx context.Context, payloadID string, blockIdx uint64) bool
+	// IsBlockLocal checks if a specific block is available locally (memory or disk).
+	IsBlockLocal(ctx context.Context, payloadID string, blockIdx uint64) bool
 
 	// GetBlockData returns the raw data for a specific block, checking memory first
 	// then disk. Returns data, dataSize, and error.
@@ -69,10 +69,10 @@ type LocalStore interface {
 
 	// --- Write operations ---
 
-	// WriteAt writes data to the cache at the specified offset.
+	// WriteAt writes data to the local store at the specified offset.
 	WriteAt(ctx context.Context, payloadID string, data []byte, offset uint64) error
 
-	// WriteFromRemote caches data fetched from the remote block store.
+	// WriteFromRemote stores data fetched from the remote block store locally.
 	// The block is marked Remote since it already exists remotely.
 	WriteFromRemote(ctx context.Context, payloadID string, data []byte, offset uint64) error
 
@@ -98,13 +98,13 @@ type LocalStore interface {
 	// Start launches background goroutines (e.g., periodic metadata persistence).
 	Start(ctx context.Context)
 
-	// Close flushes pending metadata and marks the cache as closed.
+	// Close flushes pending metadata and marks the store as closed.
 	Close() error
 
-	// Truncate discards cached blocks beyond newSize.
+	// Truncate discards local blocks beyond newSize.
 	Truncate(ctx context.Context, payloadID string, newSize uint64) error
 
-	// EvictMemory removes all cached data (memory and disk tracking) for a file.
+	// EvictMemory removes all in-memory data and disk tracking for a file.
 	EvictMemory(ctx context.Context, payloadID string) error
 
 	// DeleteBlockFile removes a single block from memory, disk, and metadata.
@@ -119,19 +119,19 @@ type LocalStore interface {
 	// SetSkipFsync disables fsync in Flush() for S3 backends.
 	SetSkipFsync(skip bool)
 
-	// SetEvictionEnabled controls whether the cache can evict blocks to make room.
+	// SetEvictionEnabled controls whether the local store can evict blocks to make room.
 	SetEvictionEnabled(enabled bool)
 
-	// SetRetentionPolicy updates the cache retention policy for eviction decisions.
-	//   - pin: never evict cached blocks
+	// SetRetentionPolicy updates the retention policy for eviction decisions.
+	//   - pin: never evict local blocks
 	//   - ttl: evict only after file last-access exceeds ttl duration
 	//   - lru: evict least-recently-accessed blocks first (default)
 	SetRetentionPolicy(policy blockstore.RetentionPolicy, ttl time.Duration)
 
-	// Stats returns a snapshot of current cache statistics.
+	// Stats returns a snapshot of current local store statistics.
 	Stats() Stats
 
-	// ListFiles returns the payloadIDs of all files currently tracked in the cache.
+	// ListFiles returns the payloadIDs of all files currently tracked in the local store.
 	ListFiles() []string
 
 	// MarkBlockRemote marks a block as confirmed in the remote block store.

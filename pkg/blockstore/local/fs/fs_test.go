@@ -19,7 +19,7 @@ func newTestCache(t *testing.T, maxMemory int64) *FSStore {
 	blockStore := memory.NewMemoryMetadataStoreWithDefaults()
 	bc, err := New(dir, 0, maxMemory, blockStore)
 	if err != nil {
-		t.Fatalf("failed to create cache: %v", err)
+		t.Fatalf("failed to create local store: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	bc.Start(ctx)
@@ -45,7 +45,7 @@ func TestWriteAndReadSimple(t *testing.T) {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
 	if !found {
-		t.Fatal("ReadAt returned cache miss")
+		t.Fatal("ReadAt returned local store miss")
 	}
 	if !bytes.Equal(dest, data) {
 		t.Fatal("ReadAt returned wrong data")
@@ -81,7 +81,7 @@ func TestWriteFullBlock(t *testing.T) {
 		t.Fatalf("ReadAt from disk failed: %v", err)
 	}
 	if !found {
-		t.Fatal("ReadAt from disk returned cache miss")
+		t.Fatal("ReadAt from disk returned local store miss")
 	}
 	if !bytes.Equal(dest, data) {
 		t.Fatal("ReadAt from disk returned wrong data")
@@ -109,7 +109,7 @@ func TestMultiBlockWrite(t *testing.T) {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
 	if !found {
-		t.Fatal("ReadAt returned cache miss")
+		t.Fatal("ReadAt returned local store miss")
 	}
 	if !bytes.Equal(dest, data) {
 		t.Fatal("ReadAt returned wrong data")
@@ -163,7 +163,7 @@ func TestFlushCallsFsync(t *testing.T) {
 		t.Fatalf("ReadAt after Flush failed: %v", err)
 	}
 	if !found {
-		t.Fatal("ReadAt after Flush returned cache miss")
+		t.Fatal("ReadAt after Flush returned local store miss")
 	}
 	if !bytes.Equal(dest, data) {
 		t.Fatal("ReadAt after Flush returned wrong data")
@@ -207,7 +207,7 @@ func TestConcurrentWritesDifferentFiles(t *testing.T) {
 			t.Fatalf("ReadAt file %d failed: %v", i, err)
 		}
 		if !found {
-			t.Fatalf("ReadAt file %d cache miss", i)
+			t.Fatalf("ReadAt file %d local store miss", i)
 		}
 		if !bytes.Equal(dest, expected) {
 			t.Fatalf("ReadAt file %d wrong data", i)
@@ -246,7 +246,7 @@ func TestConcurrentWritesSameFile(t *testing.T) {
 			t.Fatalf("ReadAt region %d failed: %v", i, err)
 		}
 		if !found {
-			t.Fatalf("ReadAt region %d cache miss", i)
+			t.Fatalf("ReadAt region %d local store miss", i)
 		}
 		expected := bytes.Repeat([]byte{byte(i)}, writeSize)
 		if !bytes.Equal(dest, expected) {
@@ -282,7 +282,7 @@ func TestBackpressure(t *testing.T) {
 		t.Fatalf("ReadAt after backpressure failed: %v", err)
 	}
 	if !found {
-		t.Fatal("ReadAt after backpressure cache miss")
+		t.Fatal("ReadAt after backpressure local store miss")
 	}
 	if !bytes.Equal(dest, data) {
 		t.Fatal("ReadAt after backpressure wrong data")
@@ -367,7 +367,7 @@ func TestDirectDiskWrite(t *testing.T) {
 		t.Fatalf("ReadAt after direct disk write failed: %v", err)
 	}
 	if !found {
-		t.Fatal("ReadAt after direct disk write returned cache miss")
+		t.Fatal("ReadAt after direct disk write returned local store miss")
 	}
 	if !bytes.Equal(dest, patch) {
 		t.Fatalf("direct disk write wrong data: got %q, want %q", dest, patch)
@@ -496,7 +496,7 @@ func TestNoFsyncOnBlockFill(t *testing.T) {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
 	if !found {
-		t.Fatal("ReadAt cache miss")
+		t.Fatal("ReadAt local store miss")
 	}
 	if !bytes.Equal(dest, data) {
 		t.Fatal("ReadAt wrong data")
@@ -518,7 +518,7 @@ func TestWriteFromRemote(t *testing.T) {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
 	if !found {
-		t.Fatal("ReadAt cache miss")
+		t.Fatal("ReadAt local store miss")
 	}
 	if !bytes.Equal(dest, data) {
 		t.Fatal("ReadAt wrong data")

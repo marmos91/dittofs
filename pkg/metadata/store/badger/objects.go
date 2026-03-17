@@ -291,7 +291,7 @@ func (s *BadgerMetadataStore) ListLocalBlocks(ctx context.Context, olderThan tim
 				continue
 			}
 
-			if block.IsCached() && block.LastAccess.Before(cutoff) {
+			if block.HasLocalFile() && block.LastAccess.Before(cutoff) {
 				result = append(result, &block)
 				if limit > 0 && len(result) >= limit {
 					break
@@ -322,7 +322,7 @@ func (s *BadgerMetadataStore) ListRemoteBlocks(ctx context.Context, limit int) (
 			}); err != nil {
 				continue
 			}
-			if block.IsCached() && block.State == metadata.BlockStateRemote {
+			if block.HasLocalFile() && block.State == metadata.BlockStateRemote {
 				candidates = append(candidates, &block)
 			}
 		}
