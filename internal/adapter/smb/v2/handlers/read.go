@@ -153,6 +153,26 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	}
 
 	// ========================================================================
+	// Step 2b: Validate read access
+	// ========================================================================
+	//
+	// Per MS-SMB2 3.3.5.15: The server MUST verify that the open was created
+	// with read access (FILE_READ_DATA). If the open lacks read access,
+	// return STATUS_ACCESS_DENIED.
+
+	desiredAccess := types.AccessMask(openFile.DesiredAccess)
+	hasRead := desiredAccess&types.FileReadData != 0 ||
+		desiredAccess&types.GenericRead != 0 ||
+		desiredAccess&types.GenericAll != 0 ||
+		desiredAccess&types.MaximumAllowed != 0
+	if !hasRead {
+		logger.Debug("READ: no read access on handle",
+			"path", openFile.Path,
+			"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+	}
+
+	// ========================================================================
 	// Step 3: Validate file type
 	// ========================================================================
 

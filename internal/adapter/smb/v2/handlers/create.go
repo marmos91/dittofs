@@ -705,6 +705,20 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		}
 	}
 
+	// Per MS-FSA 2.1.5.1.2.1: Overwrite/supersede of a read-only file is
+	// not allowed. Return STATUS_ACCESS_DENIED.
+	if fileExists && existingFile.Type != metadata.FileTypeDirectory {
+		if createAction == types.FileOverwritten || createAction == types.FileSuperseded {
+			attrs := FileAttrToSMBAttributes(&existingFile.FileAttr)
+			if attrs&types.FileAttributeReadonly != 0 {
+				logger.Debug("CREATE: cannot overwrite read-only file",
+					"path", filename,
+					"action", createAction)
+				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+			}
+		}
+	}
+
 	// ========================================================================
 	// Step 6b: Check write permission for create/overwrite operations
 	// ========================================================================
@@ -742,6 +756,37 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 					"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
 					"shareAccess", fmt.Sprintf("0x%x", req.ShareAccess))
 				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSharingViolation}}, nil
+			}
+		}
+	}
+
+	// ========================================================================
+	// Step 6d: Validate delete-on-close requirements
+	// ========================================================================
+	//
+	// Per MS-FSA 2.1.5.1.2.1: When FILE_DELETE_ON_CLOSE is set in CreateOptions:
+	// 1. The caller must have DELETE (0x00010000) access — else STATUS_ACCESS_DENIED
+	// 2. Read-only files (non-directories) cannot be deleted — else STATUS_CANNOT_DELETE
+
+	if req.CreateOptions&types.FileDeleteOnClose != 0 {
+		desiredAccess := types.AccessMask(req.DesiredAccess)
+		hasDelete := desiredAccess&types.Delete != 0 ||
+			desiredAccess&types.GenericAll != 0 ||
+			desiredAccess&types.MaximumAllowed != 0
+		if !hasDelete {
+			logger.Debug("CREATE: delete-on-close without DELETE access",
+				"path", filename,
+				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess))
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+		}
+
+		// Read-only files cannot be marked for delete-on-close
+		if fileExists && existingFile.Type != metadata.FileTypeDirectory {
+			attrs := FileAttrToSMBAttributes(&existingFile.FileAttr)
+			if attrs&types.FileAttributeReadonly != 0 {
+				logger.Debug("CREATE: delete-on-close on read-only file",
+					"path", filename)
+				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusCannotDelete}}, nil
 			}
 		}
 	}

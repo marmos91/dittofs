@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -394,6 +395,18 @@ func (h *Handler) setFileInfoFromStore(
 			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 		}
 
+		// Per MS-FSA 2.1.5.14.10: Rename requires DELETE access on the source file
+		desiredAccess := types.AccessMask(openFile.DesiredAccess)
+		hasDelete := desiredAccess&types.Delete != 0 ||
+			desiredAccess&types.GenericAll != 0 ||
+			desiredAccess&types.MaximumAllowed != 0
+		if !hasDelete {
+			logger.Debug("SET_INFO: rename without DELETE access",
+				"path", openFile.Path,
+				"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))
+			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+		}
+
 		// Per MS-FSA 2.1.5.14.10: Before renaming, check that no other open
 		// handle on the same file conflicts with the rename. Specifically,
 		// all other opens must have FILE_SHARE_DELETE (0x04) in ShareAccess.
@@ -469,8 +482,18 @@ func (h *Handler) setFileInfoFromStore(
 		oldFileName := openFile.FileName
 		oldParentPath := GetParentPath(oldPath)
 
-		// Perform the rename/move
+		// Per MS-FSA 2.1.5.14.10: Save mtime/ctime before rename so we can
+		// restore them after. Rename should NOT update the file's timestamps.
 		metaSvc := h.Registry.GetMetadataService()
+		var savedMtime, savedCtime *time.Time
+		if preFile, preErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); preErr == nil {
+			mtime := preFile.Mtime
+			ctime := preFile.Ctime
+			savedMtime = &mtime
+			savedCtime = &ctime
+		}
+
+		// Perform the rename/move
 		err = metaSvc.Move(authCtx, openFile.ParentHandle, openFile.FileName, toDir, toName)
 		if err != nil {
 			logger.Debug("SET_INFO: rename failed",
@@ -478,6 +501,14 @@ func (h *Handler) setFileInfoFromStore(
 				"to", newPath,
 				"error", err)
 			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+		}
+
+		// Restore mtime/ctime after rename (rename should not change timestamps)
+		if savedMtime != nil {
+			_ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{
+				Mtime: savedMtime,
+				Ctime: savedCtime,
+			})
 		}
 
 		// Per MS-FSA 2.1.5.14.10: On successful completion of a rename,
@@ -561,6 +592,33 @@ func (h *Handler) setFileInfoFromStore(
 		if deletePending && len(openFile.ParentHandle) == 0 {
 			logger.Debug("SET_INFO: cannot delete root directory", "path", openFile.Path)
 			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+		}
+
+		// Per MS-FSA 2.1.5.14.3: Setting delete disposition requires DELETE access
+		if deletePending {
+			desiredAccess := types.AccessMask(openFile.DesiredAccess)
+			hasDelete := desiredAccess&types.Delete != 0 ||
+				desiredAccess&types.GenericAll != 0 ||
+				desiredAccess&types.MaximumAllowed != 0
+			if !hasDelete {
+				logger.Debug("SET_INFO: delete disposition without DELETE access",
+					"path", openFile.Path,
+					"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))
+				return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+			}
+
+			// Read-only files cannot be marked for deletion
+			if !openFile.IsDirectory {
+				metaSvc := h.Registry.GetMetadataService()
+				file, fileErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
+				if fileErr == nil {
+					attrs := FileAttrToSMBAttributes(&file.FileAttr)
+					if attrs&types.FileAttributeReadonly != 0 {
+						logger.Debug("SET_INFO: delete disposition on read-only file", "path", openFile.Path)
+						return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusCannotDelete}}, nil
+					}
+				}
+			}
 		}
 
 		// Mark file for deletion on close

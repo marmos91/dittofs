@@ -178,6 +178,27 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	}
 
 	// ========================================================================
+	// Step 2b: Validate write access
+	// ========================================================================
+	//
+	// Per MS-SMB2 3.3.5.16: The server MUST verify that the open was created
+	// with write access (FILE_WRITE_DATA or FILE_APPEND_DATA). If the open
+	// lacks write access, return STATUS_ACCESS_DENIED.
+
+	desiredAccess := types.AccessMask(openFile.DesiredAccess)
+	hasWrite := desiredAccess&types.FileWriteData != 0 ||
+		desiredAccess&types.FileAppendData != 0 ||
+		desiredAccess&types.GenericWrite != 0 ||
+		desiredAccess&types.GenericAll != 0 ||
+		desiredAccess&types.MaximumAllowed != 0
+	if !hasWrite {
+		logger.Debug("WRITE: no write access on handle",
+			"path", openFile.Path,
+			"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+	}
+
+	// ========================================================================
 	// Step 3: Validate file type
 	// ========================================================================
 

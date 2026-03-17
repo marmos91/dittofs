@@ -429,6 +429,13 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	}
 	h.StoreOpenFile(openFile)
 
+	// Per MS-FSA 2.1.5.5: After a successful directory enumeration, update
+	// LastAccessTime to the current system time, unless frozen via SET_INFO -1.
+	if !openFile.AtimeFrozen {
+		now := time.Now()
+		_ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
+	}
+
 	logger.Debug("QUERY_DIRECTORY successful",
 		"path", openFile.Path,
 		"bufferSize", len(result),

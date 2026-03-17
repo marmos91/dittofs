@@ -168,6 +168,11 @@ const (
 	// StatusRangeNotLocked indicates no lock exists for the specified range.
 	// Used when trying to unlock a range that was not locked.
 	StatusRangeNotLocked Status = 0xC000007E
+
+	// StatusCannotDelete indicates the file cannot be deleted because
+	// it is read-only or otherwise protected.
+	// Per MS-FSA 2.1.5.1.2.1 and 2.1.5.14.3.
+	StatusCannotDelete Status = 0xC0000121
 )
 
 // String returns a human-readable name for the status code.
@@ -253,6 +258,8 @@ func (s Status) String() string {
 		return "STATUS_LOCK_NOT_GRANTED"
 	case StatusRangeNotLocked:
 		return "STATUS_RANGE_NOT_LOCKED"
+	case StatusCannotDelete:
+		return "STATUS_CANNOT_DELETE"
 	default:
 		return fmt.Sprintf("STATUS_0x%08X", uint32(s))
 	}
