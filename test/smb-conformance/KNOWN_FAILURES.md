@@ -1,6 +1,6 @@
 # Known Failures - SMB Conformance (WPTS BVT)
 
-Last updated: 2026-03-09 (Phase 42, added 13 newly exercised tests after ptfconfig update to SMB 3.1.1)
+Last updated: 2026-03-18 (removed 6 tests now passing after SMB conformance fixes)
 
 Tests listed here are expected to fail. CI will pass (exit 0) as long as
 all failures are in this list. New failures not listed here will cause CI to fail.
@@ -82,14 +82,10 @@ in `baseline-results.md` for prioritization.
 
 | Test Name | Category | Reason | Status | Issue |
 |-----------|----------|--------|--------|-------|
-| Algorithm_NotingFileAccessed_Dir_LastAccessTime | Timestamp | LastAccessTime auto-update not implemented | Expected | - |
-| Algorithm_NotingFileAccessed_File_LastAccessTime | Timestamp | LastAccessTime auto-update not implemented | Expected | - |
 | BVT_DirectoryLeasing_LeaseBreakOnMultiClients | DirectoryLeasing | Multi-client lease break framing issue (fix candidate) | Expected | - |
 | BVT_DirectoryLeasing_ReadWriteHandleCaching | DirectoryLeasing | Directory handle caching not fully working (fix candidate) | Expected | - |
 | BVT_DurableHandleV1_Reconnect_WithBatchOplock | DurableHandle | Durable handle V1 reconnect not fully working (fix candidate) | Expected | - |
 | BVT_DurableHandleV1_Reconnect_WithLeaseV1 | DurableHandle | Durable handle V1 reconnect with lease not fully working (fix candidate) | Expected | - |
-| BVT_Encryption_GlobalEncryptionEnabled | Encryption | Global encryption enforcement not fully working (fix candidate) | Expected | - |
-| BVT_Encryption_PerShareEncryptionEnabled | Encryption | Per-share encryption enforcement not fully working (fix candidate) | Expected | - |
 | BVT_Leasing_FileLeasingV1 | Leasing | File lease V1 not fully working (fix candidate) | Expected | - |
 | BVT_Leasing_FileLeasingV2 | Leasing | File lease V2 not fully working (fix candidate) | Expected | - |
 | Algorithm_NotingFileModified_Dir_LastAccessTime | Timestamp | Timestamp update algorithm not implemented | Expected | - |
@@ -98,7 +94,6 @@ in `baseline-results.md` for prioritization.
 | BVT_Negotiate_SMB311_Preauthentication_Encryption_AES_256_GCM | Negotiate | Negotiate with AES-256-GCM encryption not fully passing (fix candidate) | Expected | - |
 | BVT_Negotiate_SMB311_Preauthentication_Encryption_CCM | Negotiate | Negotiate with AES-128-CCM encryption not fully passing (fix candidate) | Expected | - |
 | BVT_Negotiate_SMB311_Preauthentication_Encryption_GCM | Negotiate | Negotiate with AES-128-GCM encryption not fully passing (fix candidate) | Expected | - |
-| Algorithm_NotingFileModified_File_LastAccessTime | Timestamp | Timestamp update algorithm not implemented | Expected | - |
 | AlternateDataStream_FileShareAccess_AlternateStreamExisted | ADS | ADS share access enforcement not implemented | Expected | v3.8 Phase 43 |
 | AlternateDataStream_FileShareAccess_DataFileExisted | ADS | ADS share access enforcement not implemented | Expected | v3.8 Phase 43 |
 | AlternateDataStream_FileShareAccess_DirectoryExisted | ADS | ADS share access enforcement not implemented | Expected | v3.8 Phase 43 |
@@ -113,8 +108,8 @@ in `baseline-results.md` for prioritization.
 | BVT_Convert_VHDFile_to_VHDSetFile | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
 | BVT_Create_Delete_Checkpoint | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
 | BVT_Extract_VHDSet | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
-| BVT_FileAccess_OpenNamedPipe | NamedPipe | Named pipe validation not implemented | Expected | - |
-| BVT_FileAccess_OpenNamedPipe_InvalidPathName | NamedPipe | Named pipe validation not implemented | Expected | - |
+| BVT_FileAccess_OpenNamedPipe | NamedPipe | WPTS FSA requires SSH to SUT (unavailable in Docker) | Permanent | - |
+| BVT_FileAccess_OpenNamedPipe_InvalidPathName | NamedPipe | WPTS FSA requires SSH to SUT (unavailable in Docker) | Permanent | - |
 | BVT_FsCtl_CreateOrGetObjectId_Dir_IsSupported | NTFS-FsCtl | NTFS object IDs not supported | Permanent | - |
 | BVT_FsCtl_CreateOrGetObjectId_File_IsSupported | NTFS-FsCtl | NTFS object IDs not supported | Permanent | - |
 | BVT_FsCtl_GetObjectId_Dir_IsSupported | NTFS-FsCtl | NTFS object IDs not supported | Permanent | - |
@@ -177,7 +172,6 @@ in `baseline-results.md` for prioritization.
 | BVT_WriteSharedVHD | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
 | FileInfo_Set_FileBasicInformation_Timestamp_MinusOne_Dir_ChangeTime | Timestamp | FSA directory ChangeTime freeze: SetFileAttributes auto-updates Ctime | Expected | - |
 | FileInfo_Set_FileBasicInformation_Timestamp_MinusTwo_Dir_LastWriteTime | Timestamp | Directory LastWriteTime not auto-updated after unfreeze | Expected | - |
-| FileInfo_Set_FileBasicInformation_Timestamp_MinusTwo_File_LastAccessTime | Timestamp | LastAccessTime auto-update on READ not implemented | Expected | - |
 | FsCtl_Get_IntegrityInformation_Dir_IsIntegritySupported | NTFS-FsCtl | NTFS integrity streams not supported | Permanent | - |
 | FsCtl_Get_IntegrityInformation_File_IsIntegritySupported | NTFS-FsCtl | NTFS integrity streams not supported | Permanent | - |
 | FsCtl_Set_IntegrityInformation_Dir_IsIntegritySupported | NTFS-FsCtl | NTFS integrity streams not supported | Permanent | - |
