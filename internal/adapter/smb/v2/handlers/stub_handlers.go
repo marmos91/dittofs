@@ -29,6 +29,7 @@ const (
 	FsctlSrvCopyChunk           uint32 = 0x001440F2 // [MS-SMB2] 2.2.32.1
 	FsctlSrvCopyChunkWrite      uint32 = 0x001480F2 // [MS-SMB2] 2.2.32.1
 	FsctlGetReparsePoint        uint32 = 0x000900A8 // [MS-FSCC] 2.3.30
+	FsctlIsPathnameValid        uint32 = 0x000900C0 // [MS-FSCC] 2.3.33 - Pathname validation
 	FsctlGetNtfsVolumeData      uint32 = 0x00090064 // [MS-FSCC] 2.3.29 - NTFS volume data
 	FsctlReadFileUsnData        uint32 = 0x000900EB // [MS-FSCC] 2.3.56 - Read file USN data
 )

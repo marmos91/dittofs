@@ -118,8 +118,9 @@ func ProcessSingleRequest(
 func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo *ConnInfo) (*Command, *handlers.SMBHandlerContext, types.Status) {
 	cmd, ok := DispatchTable[reqHeader.Command]
 	if !ok {
+		// Per MS-SMB2 3.3.5.2: invalid command codes → STATUS_INVALID_PARAMETER
 		logger.Debug("Unknown SMB2 command", "command", reqHeader.Command)
-		return nil, nil, types.StatusNotSupported
+		return nil, nil, types.StatusInvalidParameter
 	}
 
 	handlerCtx := handlers.NewSMBHandlerContext(
