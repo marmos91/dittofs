@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-03-18 (removed 41 now-passing tests; compound batching, IOCTL validation)
+Last updated: 2026-03-19 (added 15 newly reachable tests from compound, ADS, and oplock improvements)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -141,6 +141,7 @@ share modes pass due to the stub implementation.
 | smb2.streams.names2 | Streams | ADS name enumeration not implemented | - |
 | smb2.streams.names3 | Streams | ADS name enumeration not implemented | - |
 | smb2.streams.rename2 | Streams | ADS rename semantics not implemented | - |
+| smb2.streams.sharemodes | Streams | ADS share mode enforcement edge cases (newly reachable) | - |
 | smb2.streams.zero-byte | Streams | ADS zero-byte handling not implemented | - |
 | smb2.create_no_streams.no_stream | Streams | No-streams create context not implemented | - |
 
@@ -219,7 +220,9 @@ oplock break notification delivery.
 | smb2.oplock.doc | Oplocks | Delete-on-close + oplock interaction | - |
 | smb2.oplock.statopen1 | Oplocks | Stat open + oplock interaction | - |
 | smb2.oplock.stream1 | Oplocks | Stream + oplock interaction | - |
+| smb2.kernel-oplocks.kernel_oplocks2 | Kernel Oplocks | Kernel oplock break coordination (newly reachable) | - |
 | smb2.kernel-oplocks.kernel_oplocks3 | Kernel Oplocks | Kernel oplock break not implemented | - |
+| smb2.kernel-oplocks.kernel_oplocks4 | Kernel Oplocks | Kernel oplock break coordination (newly reachable) | - |
 | smb2.kernel-oplocks.kernel_oplocks6 | Kernel Oplocks | Kernel oplock break not implemented | - |
 
 ### Directory Leases (Not Implemented)
@@ -357,13 +360,22 @@ operations work but async compounds do not.
 | smb2.compound.related4 | Compound | Access control enforcement in compound CREATE | - |
 | smb2.compound.related7 | Compound | Access control enforcement in compound CREATE | - |
 | smb2.compound.related8 | Compound | CHANGE_NOTIFY not implemented | - |
+| smb2.compound.related3 | Compound | Compound related request edge case (newly reachable) | - |
+| smb2.compound.related5 | Compound | Compound related request edge case (newly reachable) | - |
+| smb2.compound.related6 | Compound | Compound related request edge case (newly reachable) | - |
+| smb2.compound.unrelated1 | Compound | Compound unrelated request handling (newly reachable) | - |
 | smb2.compound.invalid1 | Compound | Invalid compound parameter validation | - |
 | smb2.compound.invalid2 | Compound | Invalid compound parameter validation | - |
 | smb2.compound.invalid3 | Compound | Invalid compound FILE_CLOSED detection | - |
+| smb2.compound.invalid4 | Compound | Invalid compound parameter validation (newly reachable) | - |
+| smb2.compound.compound-break | Compound | Compound + oplock break interaction (newly reachable) | - |
+| smb2.compound.create-write-close | Compound | Compound CREATE+WRITE+CLOSE sequence (newly reachable) | - |
 | smb2.compound.interim1 | Compound | Interim/async response not implemented | - |
 | smb2.compound.interim2 | Compound | Interim/async response not implemented | - |
 | smb2.compound.interim3 | Compound | Interim/async response not implemented | - |
 | smb2.compound.compound-padding | Compound | Compound response 8-byte padding | - |
+| smb2.compound_find.compound_find_related | Compound | Compound find related (newly reachable) | - |
+| smb2.compound_find.compound_find_unrelated | Compound | Compound find unrelated (newly reachable) | - |
 | smb2.compound_find.compound_find_close | Compound | Compound find close not implemented | - |
 
 ### Share Modes and Deny (Advanced Scenarios)
@@ -492,16 +504,20 @@ Session signing edge cases requiring multi-channel binding.
 ### Character Set Edge Cases (Fix Candidate)
 
 Unicode and character set edge cases (partial surrogates, wide-A collision).
+Newly reachable after compound and protocol improvements.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
+| smb2.charset.Testing | Character set | Unicode surrogate pair handling not implemented | - |
 
 ### Delete-on-Close OVERWRITE_IF (Fix Candidate)
 
 Delete-on-close with OVERWRITE_IF disposition needs additional enforcement.
+Newly reachable after access control improvements.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
+| smb2.delete-on-close-perms.OVERWRITE_IF | Delete on close | DOC OVERWRITE_IF permission edge case (newly reachable) | - |
 
 ### Durable Handles V1 (Fix Candidate)
 
