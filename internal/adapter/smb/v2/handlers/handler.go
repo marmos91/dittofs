@@ -915,6 +915,36 @@ func (h *Handler) checkShareDeleteConflict(renameFile *OpenFile) bool {
 	return conflict
 }
 
+// hasReadAccess reports whether the given access mask includes read access.
+// Checks FILE_READ_DATA, GENERIC_READ, GENERIC_ALL, and MAXIMUM_ALLOWED.
+func hasReadAccess(access uint32) bool {
+	m := types.AccessMask(access)
+	return m&types.FileReadData != 0 ||
+		m&types.GenericRead != 0 ||
+		m&types.GenericAll != 0 ||
+		m&types.MaximumAllowed != 0
+}
+
+// hasWriteAccess reports whether the given access mask includes write access.
+// Checks FILE_WRITE_DATA, FILE_APPEND_DATA, GENERIC_WRITE, GENERIC_ALL, and MAXIMUM_ALLOWED.
+func hasWriteAccess(access uint32) bool {
+	m := types.AccessMask(access)
+	return m&types.FileWriteData != 0 ||
+		m&types.FileAppendData != 0 ||
+		m&types.GenericWrite != 0 ||
+		m&types.GenericAll != 0 ||
+		m&types.MaximumAllowed != 0
+}
+
+// hasDeleteAccess reports whether the given access mask includes delete access.
+// Checks DELETE, GENERIC_ALL, and MAXIMUM_ALLOWED.
+func hasDeleteAccess(access uint32) bool {
+	m := types.AccessMask(access)
+	return m&types.Delete != 0 ||
+		m&types.GenericAll != 0 ||
+		m&types.MaximumAllowed != 0
+}
+
 // getCachedShares returns the cached share list, rebuilding if invalidated.
 // Thread-safe via RWMutex (concurrent reads allowed, exclusive write for rebuild).
 func (h *Handler) getCachedShares() []rpc.ShareInfo1 {

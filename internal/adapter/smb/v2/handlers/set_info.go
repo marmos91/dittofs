@@ -268,8 +268,8 @@ func (h *Handler) setFileInfoFromStore(
 		}
 
 		// Per MS-FSA 2.1.5.14.2: Handle timestamp freeze/unfreeze sentinels.
-		// -1 (0xFFFFFFFFFFFFFFFF): Freeze timestamp -- suppress auto-updates on subsequent operations.
-		// -2 (0xFFFFFFFFFFFFFFFE): Unfreeze timestamp -- re-enable auto-updates.
+		// filetimeFreeze (-1): Freeze timestamp -- suppress auto-updates on subsequent operations.
+		// filetimeUnfreeze (-2): Unfreeze timestamp -- re-enable auto-updates.
 		// We capture the current timestamp value BEFORE applying changes so the frozen
 		// value reflects the state at freeze time.
 		metaSvc := h.Registry.GetMetadataService()
@@ -291,9 +291,9 @@ func (h *Handler) setFileInfoFromStore(
 		// Note: CreationTime freeze/unfreeze sentinels are detected but not acted upon.
 		// MS-FSA does not require CreationTime auto-update suppression because
 		// CreationTime is never auto-updated by the server after file creation.
-		hasFreezeOrUnfreeze := atimeFT == 0xFFFFFFFFFFFFFFFF || atimeFT == 0xFFFFFFFFFFFFFFFE ||
-			mtimeFT == 0xFFFFFFFFFFFFFFFF || mtimeFT == 0xFFFFFFFFFFFFFFFE ||
-			ctimeFT == 0xFFFFFFFFFFFFFFFF || ctimeFT == 0xFFFFFFFFFFFFFFFE
+		hasFreezeOrUnfreeze := isFiletimeSentinel(atimeFT) ||
+			isFiletimeSentinel(mtimeFT) ||
+			isFiletimeSentinel(ctimeFT)
 
 		// Per MS-FSA 2.1.5.14.2: Sentinel values (-1, -2) mean the object store
 		// MUST NOT change the timestamp for THIS or subsequent operations on this
@@ -312,13 +312,13 @@ func (h *Handler) setFileInfoFromStore(
 		// Pin sentinel timestamps to their current value so SetFileAttributes
 		// won't auto-update them (e.g., Ctime auto-update when Mode changes).
 		if preFile != nil {
-			if ctimeFT == 0xFFFFFFFFFFFFFFFF || ctimeFT == 0xFFFFFFFFFFFFFFFE {
+			if isFiletimeSentinel(ctimeFT) {
 				setAttrs.Ctime = &preFile.Ctime
 			}
-			if mtimeFT == 0xFFFFFFFFFFFFFFFF || mtimeFT == 0xFFFFFFFFFFFFFFFE {
+			if isFiletimeSentinel(mtimeFT) {
 				setAttrs.Mtime = &preFile.Mtime
 			}
-			if atimeFT == 0xFFFFFFFFFFFFFFFF || atimeFT == 0xFFFFFFFFFFFFFFFE {
+			if isFiletimeSentinel(atimeFT) {
 				setAttrs.Atime = &preFile.Atime
 			}
 		}
@@ -340,50 +340,42 @@ func (h *Handler) setFileInfoFromStore(
 		// Apply freeze/unfreeze state to the open handle using pre-change values.
 		// The frozen value is the timestamp at the moment of the freeze request,
 		// before any auto-updates from other field changes in this operation.
+		// preFile is non-nil only when hasFreezeOrUnfreeze is true, which
+		// guarantees at least one switch case will match.
 		if preFile != nil {
-			needsUpdate := false
-
 			// LastWriteTime (Mtime) - offset 16
 			switch mtimeFT {
-			case 0xFFFFFFFFFFFFFFFF:
+			case filetimeFreeze:
 				openFile.MtimeFrozen = true
 				openFile.FrozenMtime = &preFile.Mtime
-				needsUpdate = true
 				logger.Debug("SET_INFO: froze LastWriteTime", "path", openFile.Path, "value", preFile.Mtime)
-			case 0xFFFFFFFFFFFFFFFE:
+			case filetimeUnfreeze:
 				openFile.MtimeFrozen = false
 				openFile.FrozenMtime = nil
-				needsUpdate = true
 			}
 
 			// ChangeTime (Ctime) - offset 24
 			switch ctimeFT {
-			case 0xFFFFFFFFFFFFFFFF:
+			case filetimeFreeze:
 				openFile.CtimeFrozen = true
 				openFile.FrozenCtime = &preFile.Ctime
-				needsUpdate = true
 				logger.Debug("SET_INFO: froze ChangeTime", "path", openFile.Path, "value", preFile.Ctime)
-			case 0xFFFFFFFFFFFFFFFE:
+			case filetimeUnfreeze:
 				openFile.CtimeFrozen = false
 				openFile.FrozenCtime = nil
-				needsUpdate = true
 			}
 
 			// LastAccessTime (Atime) - offset 8
 			switch atimeFT {
-			case 0xFFFFFFFFFFFFFFFF:
+			case filetimeFreeze:
 				openFile.AtimeFrozen = true
 				openFile.FrozenAtime = &preFile.Atime
-				needsUpdate = true
-			case 0xFFFFFFFFFFFFFFFE:
+			case filetimeUnfreeze:
 				openFile.AtimeFrozen = false
 				openFile.FrozenAtime = nil
-				needsUpdate = true
 			}
 
-			if needsUpdate {
-				h.StoreOpenFile(openFile)
-			}
+			h.StoreOpenFile(openFile)
 		}
 
 		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
@@ -397,11 +389,7 @@ func (h *Handler) setFileInfoFromStore(
 		}
 
 		// Per MS-FSA 2.1.5.14.10: Rename requires DELETE access on the source file
-		desiredAccess := types.AccessMask(openFile.DesiredAccess)
-		hasDelete := desiredAccess&types.Delete != 0 ||
-			desiredAccess&types.GenericAll != 0 ||
-			desiredAccess&types.MaximumAllowed != 0
-		if !hasDelete {
+		if !hasDeleteAccess(openFile.DesiredAccess) {
 			logger.Debug("SET_INFO: rename without DELETE access",
 				"path", openFile.Path,
 				"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))
@@ -447,16 +435,10 @@ func (h *Handler) setFileInfoFromStore(
 			oldParentPath := GetParentPath(oldPath)
 
 			// Per MS-FSA 2.1.5.14.10: Save mtime/ctime before rename
-			metaSvc := h.Registry.GetMetadataService()
-			var savedMtime, savedCtime *time.Time
-			if preFile, preErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); preErr == nil {
-				mtime := preFile.Mtime
-				ctime := preFile.Ctime
-				savedMtime = &mtime
-				savedCtime = &ctime
-			}
+			restoreTimestamps := h.saveTimestamps(authCtx, openFile.MetadataHandle)
 
 			// Perform the rename
+			metaSvc := h.Registry.GetMetadataService()
 			err = metaSvc.Move(authCtx, toDir, openFile.FileName, toDir, toName)
 			if err != nil {
 				logger.Debug("SET_INFO: stream rename failed",
@@ -467,17 +449,10 @@ func (h *Handler) setFileInfoFromStore(
 			}
 
 			// Restore mtime/ctime after rename
-			if savedMtime != nil {
-				_ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{
-					Mtime: savedMtime,
-					Ctime: savedCtime,
-				})
-			}
+			restoreTimestamps()
 
 			// Clear delete-on-close after rename
-			if openFile.DeletePending {
-				openFile.DeletePending = false
-			}
+			openFile.DeletePending = false
 
 			// Notify watchers
 			if h.NotifyRegistry != nil {
@@ -570,16 +545,10 @@ func (h *Handler) setFileInfoFromStore(
 
 		// Per MS-FSA 2.1.5.14.10: Save mtime/ctime before rename so we can
 		// restore them after. Rename should NOT update the file's timestamps.
-		metaSvc := h.Registry.GetMetadataService()
-		var savedMtime, savedCtime *time.Time
-		if preFile, preErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); preErr == nil {
-			mtime := preFile.Mtime
-			ctime := preFile.Ctime
-			savedMtime = &mtime
-			savedCtime = &ctime
-		}
+		restoreTimestamps := h.saveTimestamps(authCtx, openFile.MetadataHandle)
 
 		// Perform the rename/move
+		metaSvc := h.Registry.GetMetadataService()
 		err = metaSvc.Move(authCtx, openFile.ParentHandle, openFile.FileName, toDir, toName)
 		if err != nil {
 			logger.Debug("SET_INFO: rename failed",
@@ -589,13 +558,8 @@ func (h *Handler) setFileInfoFromStore(
 			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
 		}
 
-		// Restore mtime/ctime after rename (rename should not change timestamps)
-		if savedMtime != nil {
-			_ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{
-				Mtime: savedMtime,
-				Ctime: savedCtime,
-			})
-		}
+		// Restore mtime/ctime after rename
+		restoreTimestamps()
 
 		// Per MS-FSA 2.1.5.14.10: On successful completion of a rename,
 		// if the file was marked for delete-on-close, clear that disposition.
@@ -682,11 +646,7 @@ func (h *Handler) setFileInfoFromStore(
 
 		// Per MS-FSA 2.1.5.14.3: Setting delete disposition requires DELETE access
 		if deletePending {
-			desiredAccess := types.AccessMask(openFile.DesiredAccess)
-			hasDelete := desiredAccess&types.Delete != 0 ||
-				desiredAccess&types.GenericAll != 0 ||
-				desiredAccess&types.MaximumAllowed != 0
-			if !hasDelete {
+			if !hasDeleteAccess(openFile.DesiredAccess) {
 				logger.Debug("SET_INFO: delete disposition without DELETE access",
 					"path", openFile.Path,
 					"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))
@@ -780,6 +740,26 @@ func applyFrozenTimestamps(openFile *OpenFile, file *metadata.File) {
 	}
 }
 
+// saveTimestamps reads the current Mtime and Ctime of a file and returns a
+// restore function that writes them back. Used to preserve timestamps across
+// rename operations (per MS-FSA 2.1.5.14.10, rename should not change timestamps).
+// Returns a no-op if the read fails.
+func (h *Handler) saveTimestamps(authCtx *metadata.AuthContext, handle metadata.FileHandle) func() {
+	metaSvc := h.Registry.GetMetadataService()
+	file, err := metaSvc.GetFile(authCtx.Context, handle)
+	if err != nil {
+		return func() {}
+	}
+	mtime := file.Mtime
+	ctime := file.Ctime
+	return func() {
+		_ = metaSvc.SetFileAttributes(authCtx, handle, &metadata.SetAttrs{
+			Mtime: &mtime,
+			Ctime: &ctime,
+		})
+	}
+}
+
 // restoreFrozenTimestamps restores timestamps that are frozen via SET_INFO -1 sentinel.
 // Called after operations that unconditionally update timestamps (WRITE, truncate).
 func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFile *OpenFile) {
@@ -787,20 +767,16 @@ func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFil
 		return
 	}
 	restoreAttrs := &metadata.SetAttrs{}
-	needRestore := false
 	if openFile.MtimeFrozen && openFile.FrozenMtime != nil {
 		restoreAttrs.Mtime = openFile.FrozenMtime
-		needRestore = true
 	}
 	if openFile.CtimeFrozen && openFile.FrozenCtime != nil {
 		restoreAttrs.Ctime = openFile.FrozenCtime
-		needRestore = true
 	}
 	if openFile.AtimeFrozen && openFile.FrozenAtime != nil {
 		restoreAttrs.Atime = openFile.FrozenAtime
-		needRestore = true
 	}
-	if needRestore {
+	if restoreAttrs.Mtime != nil || restoreAttrs.Ctime != nil || restoreAttrs.Atime != nil {
 		logger.Debug("restoreFrozenTimestamps: restoring",
 			"path", openFile.Path,
 			"mtimeFrozen", openFile.MtimeFrozen,

@@ -188,13 +188,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// with write access (FILE_WRITE_DATA or FILE_APPEND_DATA). If the open
 	// lacks write access, return STATUS_ACCESS_DENIED.
 
-	desiredAccess := types.AccessMask(openFile.DesiredAccess)
-	hasWrite := desiredAccess&types.FileWriteData != 0 ||
-		desiredAccess&types.FileAppendData != 0 ||
-		desiredAccess&types.GenericWrite != 0 ||
-		desiredAccess&types.GenericAll != 0 ||
-		desiredAccess&types.MaximumAllowed != 0
-	if !hasWrite {
+	if !hasWriteAccess(openFile.DesiredAccess) {
 		logger.Debug("WRITE: no write access on handle",
 			"path", openFile.Path,
 			"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))
@@ -387,22 +381,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// object. Respect frozen state on the ADS handle: if a timestamp is
 	// frozen, the base object's corresponding timestamp remains unchanged.
 	if colonIdx := strings.Index(openFile.FileName, ":"); colonIdx > 0 {
-		baseObjectName := openFile.FileName[:colonIdx]
-		if baseFile, err := metaSvc.Lookup(authCtx, openFile.ParentHandle, baseObjectName); err == nil {
-			if baseHandle, err := metadata.EncodeFileHandle(baseFile); err == nil {
-				now := time.Now()
-				setAttrs := &metadata.SetAttrs{}
-				if !openFile.CtimeFrozen {
-					setAttrs.Ctime = &now
-				}
-				if !openFile.MtimeFrozen {
-					setAttrs.Mtime = &now
-				}
-				if setAttrs.Ctime != nil || setAttrs.Mtime != nil {
-					_ = metaSvc.SetFileAttributes(authCtx, baseHandle, setAttrs)
-				}
-			}
-		}
+		h.updateBaseObjectTimestampsForADSWrite(authCtx, metaSvc, openFile, openFile.FileName[:colonIdx])
 	}
 
 	// Per MS-FSA 2.1.5.3: After a successful write, update LastAccessTime

@@ -12,6 +12,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
 // SESSION_SETUP request structure offsets [MS-SMB2] 2.2.5
@@ -389,23 +390,9 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 	// If anonymous authentication requested
 	if authMsg.IsAnonymous || authMsg.Username == "" {
 		if pending.IsReauth {
-			// Re-authentication to anonymous: update session identity, keep crypto state.
-			// Per MS-SMB2 3.3.5.5.2: existing session keys are retained during re-auth.
-			// File handles opened by the original user remain valid.
-			existingSess, _ := h.GetSession(pending.SessionID)
-			if existingSess != nil {
-				existingSess.Username = "anonymous"
-				existingSess.Domain = ""
-				existingSess.User = nil
-				existingSess.IsGuest = true
-
-				logger.Info("Session re-authenticated as anonymous (keys retained)",
-					"sessionID", existingSess.SessionID,
-					"signingEnabled", existingSess.ShouldSign(),
-					"encryptData", existingSess.ShouldEncrypt())
-
+			if result := h.tryReauthUpdate(pending, "anonymous", "", nil, true); result != nil {
 				ctx.IsGuest = true
-				return h.buildAuthenticatedResponse(pending.UsedSPNEGO, existingSess.ShouldEncrypt()), nil
+				return result, nil
 			}
 		}
 		return h.createGuestSessionWithID(ctx, pending)
@@ -504,24 +491,8 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 				ctx.IsGuest = false
 
 				if pending.IsReauth {
-					// Re-authentication: update session identity, keep existing crypto state.
-					// Per MS-SMB2 3.3.5.5.2: "Session.SessionKey MUST NOT be regenerated."
-					// Signing/encryption keys are retained from the original authentication.
-					existingSess, _ := h.GetSession(pending.SessionID)
-					if existingSess != nil {
-						existingSess.Username = authMsg.Username
-						existingSess.Domain = authMsg.Domain
-						existingSess.User = user
-						existingSess.IsGuest = false
-
-						logger.Info("Session re-authenticated (keys retained)",
-							"sessionID", existingSess.SessionID,
-							"username", existingSess.Username,
-							"domain", existingSess.Domain,
-							"signingEnabled", existingSess.ShouldSign(),
-							"encryptData", existingSess.ShouldEncrypt())
-
-						return h.buildAuthenticatedResponse(pending.UsedSPNEGO, existingSess.ShouldEncrypt()), nil
+					if result := h.tryReauthUpdate(pending, authMsg.Username, authMsg.Domain, user, false); result != nil {
+						return result, nil
 					}
 					// Fallthrough: session disappeared between negotiate and auth (unlikely)
 				}
@@ -556,13 +527,8 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 			ctx.IsGuest = false
 
 			if pending.IsReauth {
-				existingSess, _ := h.GetSession(pending.SessionID)
-				if existingSess != nil {
-					existingSess.Username = authMsg.Username
-					existingSess.Domain = authMsg.Domain
-					existingSess.User = user
-					existingSess.IsGuest = false
-					return h.buildAuthenticatedResponse(pending.UsedSPNEGO, existingSess.ShouldEncrypt()), nil
+				if result := h.tryReauthUpdate(pending, authMsg.Username, authMsg.Domain, user, false); result != nil {
+					return result, nil
 				}
 			}
 
@@ -838,6 +804,31 @@ func (h *Handler) buildAuthenticatedResponse(usedSPNEGO bool, encryptData bool) 
 		sessionFlags,
 		acceptToken,
 	)
+}
+
+// tryReauthUpdate updates an existing session's identity during re-authentication.
+// Per MS-SMB2 3.3.5.5.2: existing session keys are retained during re-auth;
+// only the identity fields (username, domain, user, isGuest) are updated.
+// Returns a non-nil *HandlerResult if the session was found and updated,
+// or nil if the session no longer exists (caller should fall through).
+func (h *Handler) tryReauthUpdate(pending *PendingAuth, username, domain string, user *models.User, isGuest bool) *HandlerResult {
+	existingSess, ok := h.GetSession(pending.SessionID)
+	if !ok {
+		return nil
+	}
+	existingSess.Username = username
+	existingSess.Domain = domain
+	existingSess.User = user
+	existingSess.IsGuest = isGuest
+
+	logger.Info("Session re-authenticated (keys retained)",
+		"sessionID", existingSess.SessionID,
+		"username", existingSess.Username,
+		"domain", existingSess.Domain,
+		"signingEnabled", existingSess.ShouldSign(),
+		"encryptData", existingSess.ShouldEncrypt())
+
+	return h.buildAuthenticatedResponse(pending.UsedSPNEGO, existingSess.ShouldEncrypt())
 }
 
 // checkGuestPolicy enforces guest session prerequisites.

@@ -806,11 +806,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// 2. Read-only files (non-directories) cannot be deleted — else STATUS_CANNOT_DELETE
 
 	if req.CreateOptions&types.FileDeleteOnClose != 0 {
-		desiredAccess := types.AccessMask(req.DesiredAccess)
-		hasDelete := desiredAccess&types.Delete != 0 ||
-			desiredAccess&types.GenericAll != 0 ||
-			desiredAccess&types.MaximumAllowed != 0
-		if !hasDelete {
+		if !hasDeleteAccess(req.DesiredAccess) {
 			logger.Debug("CREATE: delete-on-close without DELETE access",
 				"path", filename,
 				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess))
@@ -880,24 +876,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// containing the base object), but the base object itself also needs its
 	// ChangeTime updated since the ADS is an attribute of the base object.
 	if colonIdx := strings.Index(baseName, ":"); colonIdx > 0 && (createAction == types.FileCreated || createAction == types.FileOverwritten || createAction == types.FileSuperseded) {
-		baseObjectName := baseName[:colonIdx]
-		baseFile, baseErr := metaSvc.Lookup(authCtx, parentHandle, baseObjectName)
-		if baseErr == nil {
-			baseHandle, encErr := metadata.EncodeFileHandle(baseFile)
-			if encErr == nil {
-				now := time.Now()
-				setAttrs := &metadata.SetAttrs{
-					Ctime: &now,
-				}
-				if updateErr := metaSvc.SetFileAttributes(authCtx, baseHandle, setAttrs); updateErr != nil {
-					logger.Debug("CREATE: failed to update base object ChangeTime for ADS",
-						"baseObject", baseObjectName, "error", updateErr)
-				} else {
-					logger.Debug("CREATE: updated base object ChangeTime for ADS creation",
-						"baseObject", baseObjectName, "stream", baseName[colonIdx:])
-				}
-			}
-		}
+		h.updateBaseObjectCtime(authCtx, metaSvc, parentHandle, baseName[:colonIdx])
 	}
 
 	// ========================================================================
@@ -938,7 +917,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	if fileExists && h.LeaseManager != nil && file.Type != metadata.FileTypeDirectory &&
 		req.OplockLevel == OplockLevelNone {
 		lockFileHandle := lock.FileHandle(fileHandle)
-		if breakErr := h.LeaseManager.BreakConflictingOplocksOnOpen(lockFileHandle, tree.ShareName, req.DesiredAccess); breakErr != nil {
+		if breakErr := h.LeaseManager.BreakConflictingOplocksOnOpen(lockFileHandle, tree.ShareName); breakErr != nil {
 			logger.Debug("CREATE: oplock break on open failed", "error", breakErr)
 		}
 	}
@@ -1589,6 +1568,62 @@ func (h *Handler) overwriteFile(
 	}
 
 	return updatedFile, fileHandle, nil
+}
+
+// updateBaseObjectCtime updates the ChangeTime of the base file or directory
+// that hosts an ADS. Per MS-FSA / NTFS semantics, creating or modifying an
+// alternate data stream propagates a ChangeTime update to the base object.
+func (h *Handler) updateBaseObjectCtime(
+	authCtx *metadata.AuthContext,
+	metaSvc *metadata.MetadataService,
+	parentHandle metadata.FileHandle,
+	baseObjectName string,
+) {
+	baseFile, err := metaSvc.Lookup(authCtx, parentHandle, baseObjectName)
+	if err != nil {
+		return
+	}
+	baseHandle, err := metadata.EncodeFileHandle(baseFile)
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	if updateErr := metaSvc.SetFileAttributes(authCtx, baseHandle, &metadata.SetAttrs{Ctime: &now}); updateErr != nil {
+		logger.Debug("updateBaseObjectCtime: failed",
+			"baseObject", baseObjectName, "error", updateErr)
+	}
+}
+
+// updateBaseObjectTimestampsForADSWrite updates the ChangeTime and LastWriteTime
+// of the base file or directory that hosts an ADS after a WRITE to the stream.
+// Per MS-FSA / NTFS semantics, data writes to an alternate data stream propagate
+// Mtime and Ctime changes to the base object, unless the corresponding timestamp
+// is frozen on the ADS handle.
+func (h *Handler) updateBaseObjectTimestampsForADSWrite(
+	authCtx *metadata.AuthContext,
+	metaSvc *metadata.MetadataService,
+	openFile *OpenFile,
+	baseObjectName string,
+) {
+	baseFile, err := metaSvc.Lookup(authCtx, openFile.ParentHandle, baseObjectName)
+	if err != nil {
+		return
+	}
+	baseHandle, err := metadata.EncodeFileHandle(baseFile)
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	setAttrs := &metadata.SetAttrs{}
+	if !openFile.CtimeFrozen {
+		setAttrs.Ctime = &now
+	}
+	if !openFile.MtimeFrozen {
+		setAttrs.Mtime = &now
+	}
+	if setAttrs.Ctime != nil || setAttrs.Mtime != nil {
+		_ = metaSvc.SetFileAttributes(authCtx, baseHandle, setAttrs)
+	}
 }
 
 // computeSessionKeyHash computes the SHA-256 hash of the session's signing key.

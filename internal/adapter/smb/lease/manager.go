@@ -307,14 +307,10 @@ func (lm *LeaseManager) UnregisterOplockFileID(leaseKey [16]byte) {
 // with a new open operation on a file. Per MS-SMB2 3.3.5.9, this must happen
 // regardless of whether the new opener requests an oplock/lease.
 //
-// The desiredAccess mask determines the break type:
-//   - Write access (FILE_WRITE_DATA, FILE_APPEND_DATA, GENERIC_WRITE, etc.)
-//     breaks all existing oplocks to None
-//   - Read-only access breaks exclusive/batch (write) oplocks to Read
+// Both read and write opens break Write leases (strip W, preserve R+H).
 func (lm *LeaseManager) BreakConflictingOplocksOnOpen(
 	fileHandle lock.FileHandle,
 	shareName string,
-	desiredAccess uint32,
 ) error {
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
@@ -323,25 +319,10 @@ func (lm *LeaseManager) BreakConflictingOplocksOnOpen(
 
 	handleKey := string(fileHandle)
 
-	// Determine if the opener has write access
-	const (
-		fileWriteData  = 0x00000002
-		fileAppendData = 0x00000004
-		writeDAC       = 0x00040000
-		genericWrite   = 0x40000000
-		genericAll     = 0x10000000
-		maximumAllowed = 0x02000000
-	)
-	hasWrite := desiredAccess&(fileWriteData|fileAppendData|writeDAC|genericWrite|genericAll|maximumAllowed) != 0
-
 	// Use SMB-specific break method that strips only the Write bit
 	// (preserves Read and Handle), per MS-SMB2 3.3.5.9.
+	// Both read and write opens break Write leases (strip W, preserve R+H).
 	// This is different from cross-protocol breaks which go to NONE.
-	if hasWrite {
-		return lockMgr.CheckAndBreakLeasesForSMBOpen(handleKey, nil)
-	}
-
-	// Read opens also break Write leases (strip W, preserve R+H)
 	return lockMgr.CheckAndBreakLeasesForSMBOpen(handleKey, nil)
 }
 

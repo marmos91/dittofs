@@ -87,6 +87,21 @@ func NewConnectionCryptoState() *ConnectionCryptoState {
 	}
 }
 
+// chainHash computes the next value in a preauth integrity hash chain:
+//
+//	H(i) = SHA-512(H(i-1) || message)
+//
+// This is the core computation shared by connection-level and per-session
+// preauth hash updates.
+func chainHash(current [64]byte, message []byte) [64]byte {
+	h := sha512.New()
+	h.Write(current[:])
+	h.Write(message)
+	var result [64]byte
+	copy(result[:], h.Sum(nil))
+	return result
+}
+
 // UpdatePreauthHash updates the preauth integrity hash chain:
 //
 //	H(i) = SHA-512(H(i-1) || message)
@@ -98,11 +113,7 @@ func NewConnectionCryptoState() *ConnectionCryptoState {
 func (cs *ConnectionCryptoState) UpdatePreauthHash(message []byte) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
-
-	h := sha512.New()
-	h.Write(cs.preauthHash[:])
-	h.Write(message)
-	copy(cs.preauthHash[:], h.Sum(nil))
+	cs.preauthHash = chainHash(cs.preauthHash, message)
 }
 
 // GetPreauthHash returns a copy of the current preauth integrity hash value.
@@ -132,12 +143,7 @@ func (cs *ConnectionCryptoState) InitSessionPreauthHash(sessionID uint64) {
 
 	// Consume any stashed request bytes from the before-hook
 	if len(cs.pendingSessionSetupReq) > 0 {
-		h := sha512.New()
-		current := cs.sessionPreauthHashes[sessionID]
-		h.Write(current[:])
-		h.Write(cs.pendingSessionSetupReq)
-		var updated [64]byte
-		copy(updated[:], h.Sum(nil))
+		updated := chainHash(cs.sessionPreauthHashes[sessionID], cs.pendingSessionSetupReq)
 		cs.sessionPreauthHashes[sessionID] = updated
 		cs.pendingSessionSetupReq = nil
 		logger.Debug("InitSessionPreauthHash: consumed stashed request",
@@ -163,13 +169,7 @@ func (cs *ConnectionCryptoState) UpdateSessionPreauthHash(sessionID uint64, mess
 	if !ok {
 		return
 	}
-
-	h := sha512.New()
-	h.Write(current[:])
-	h.Write(message)
-	var updated [64]byte
-	copy(updated[:], h.Sum(nil))
-	cs.sessionPreauthHashes[sessionID] = updated
+	cs.sessionPreauthHashes[sessionID] = chainHash(current, message)
 }
 
 // GetSessionPreauthHash returns a copy of the per-session preauth hash for

@@ -268,12 +268,8 @@ func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo) err
 		segments = append(segments, cmdBytes)
 	}
 
-	// Concatenate all signed command segments
-	totalLen := 0
-	for _, seg := range segments {
-		totalLen += len(seg)
-	}
-	payload := make([]byte, 0, totalLen)
+	// Concatenate all signed command segments into a single payload
+	var payload []byte
 	for _, seg := range segments {
 		payload = append(payload, seg...)
 	}
@@ -414,24 +410,30 @@ func VerifyCompoundCommandSignature(data []byte, hdr *header.SMB2Header, connInf
 	return nil
 }
 
-// ExtractFileID reads the FileID from a request body at the command-specific offset.
-// Used in compound processing to track the FileID used by non-related commands
-// so subsequent related commands can inherit it.
-func ExtractFileID(command types.Command, body []byte) [16]byte {
-	var offset int
+// fileIDOffset returns the byte offset of the FileID field within the request
+// body for a given SMB2 command, per [MS-SMB2] wire format specifications.
+// Returns -1 for commands that do not carry a FileID.
+func fileIDOffset(command types.Command) int {
 	switch command {
 	case types.SMB2Close, types.SMB2QueryDirectory, types.SMB2Ioctl,
 		types.SMB2Flush, types.SMB2Lock, types.SMB2OplockBreak,
 		types.SMB2ChangeNotify:
-		offset = 8
+		return 8
 	case types.SMB2Read, types.SMB2Write, types.SMB2SetInfo:
-		offset = 16
+		return 16
 	case types.SMB2QueryInfo:
-		offset = 24
+		return 24
 	default:
-		return [16]byte{}
+		return -1
 	}
-	if len(body) < offset+16 {
+}
+
+// ExtractFileID reads the FileID from a request body at the command-specific offset.
+// Used in compound processing to track the FileID used by non-related commands
+// so subsequent related commands can inherit it.
+func ExtractFileID(command types.Command, body []byte) [16]byte {
+	offset := fileIDOffset(command)
+	if offset < 0 || len(body) < offset+16 {
 		return [16]byte{}
 	}
 	var fid [16]byte
@@ -442,18 +444,8 @@ func ExtractFileID(command types.Command, body []byte) [16]byte {
 // InjectFileID injects a FileID into the appropriate position in the request body.
 // Offsets are per [MS-SMB2] specification for each command.
 func InjectFileID(command types.Command, body []byte, fileID [16]byte) []byte {
-	// FileID offset within the request body, per [MS-SMB2] spec for each command.
-	var offset int
-	switch command {
-	case types.SMB2Close, types.SMB2QueryDirectory, types.SMB2Ioctl,
-		types.SMB2Flush, types.SMB2Lock, types.SMB2OplockBreak,
-		types.SMB2ChangeNotify:
-		offset = 8 // [MS-SMB2] 2.2.15, 2.2.33, 2.2.31, 2.2.17, 2.2.26, 2.2.23, 2.2.35
-	case types.SMB2Read, types.SMB2Write, types.SMB2SetInfo:
-		offset = 16 // [MS-SMB2] 2.2.19, 2.2.21, 2.2.39
-	case types.SMB2QueryInfo:
-		offset = 24 // [MS-SMB2] 2.2.37
-	default:
+	offset := fileIDOffset(command)
+	if offset < 0 {
 		return body
 	}
 

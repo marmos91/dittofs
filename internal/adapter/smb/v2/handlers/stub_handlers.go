@@ -354,8 +354,7 @@ func (h *Handler) handleOplockBreakAck(ctx *SMBHandlerContext, body []byte) (*Ha
 	}
 
 	// The synthetic lease key was stored on the OpenFile during CREATE
-	zeroKey := [16]byte{}
-	if openFile.LeaseKey == zeroKey {
+	if openFile.LeaseKey == ([16]byte{}) {
 		logger.Debug("OPLOCK_BREAK_ACK: no lease key on open file", "fileID", fmt.Sprintf("%x", ack.FileID))
 		return NewErrorResult(types.StatusInvalidDeviceRequest), nil
 	}

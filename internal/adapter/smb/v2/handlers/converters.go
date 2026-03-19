@@ -34,7 +34,21 @@ const (
 	// modeDOSArchive tracks the DOS ARCHIVE bit when DOS attributes have been
 	// explicitly set. Only meaningful when modeDOSExplicit is also set.
 	modeDOSArchive = uint32(0x20000)
+
+	// filetimeFreeze is the FILETIME sentinel value -1 (0xFFFFFFFFFFFFFFFF).
+	// Per MS-FSA 2.1.5.14.2: The object store MUST NOT change this attribute
+	// for this or subsequent operations on this handle.
+	filetimeFreeze = uint64(0xFFFFFFFFFFFFFFFF)
+
+	// filetimeUnfreeze is the FILETIME sentinel value -2 (0xFFFFFFFFFFFFFFFE).
+	// Per MS-FSA 2.1.5.14.2: Re-enable auto-update for subsequent operations.
+	filetimeUnfreeze = uint64(0xFFFFFFFFFFFFFFFE)
 )
+
+// isFiletimeSentinel reports whether ft is a freeze (-1) or unfreeze (-2) sentinel.
+func isFiletimeSentinel(ft uint64) bool {
+	return ft == filetimeFreeze || ft == filetimeUnfreeze
+}
 
 // calculateAllocationSize returns the size rounded up to the nearest cluster boundary.
 func calculateAllocationSize(size uint64) uint64 {
@@ -314,7 +328,7 @@ func DecodeBasicInfoToSetAttrs(buffer []byte) *metadata.SetAttrs {
 // (non-sentinel, non-zero) FILETIME values cause a timestamp update.
 func processFiletimeForSet(ft uint64, target **time.Time) {
 	switch ft {
-	case 0, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFE:
+	case 0, filetimeFreeze, filetimeUnfreeze:
 		// 0, -1, and -2: don't change this timestamp
 	default:
 		t := types.FiletimeToTime(ft)

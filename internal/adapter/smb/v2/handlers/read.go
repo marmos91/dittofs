@@ -161,12 +161,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// with read access (FILE_READ_DATA). If the open lacks read access,
 	// return STATUS_ACCESS_DENIED.
 
-	desiredAccess := types.AccessMask(openFile.DesiredAccess)
-	hasRead := desiredAccess&types.FileReadData != 0 ||
-		desiredAccess&types.GenericRead != 0 ||
-		desiredAccess&types.GenericAll != 0 ||
-		desiredAccess&types.MaximumAllowed != 0
-	if !hasRead {
+	if !hasReadAccess(openFile.DesiredAccess) {
 		logger.Debug("READ: no read access on handle",
 			"path", openFile.Path,
 			"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))

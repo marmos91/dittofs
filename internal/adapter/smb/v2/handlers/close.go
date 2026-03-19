@@ -165,21 +165,14 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// Step 3: Flush cached data to block store (ensures durability)
 	// ========================================================================
 
-	// Flush cached data to ensure durability
-	// Unlike NFS COMMIT which is non-blocking, SMB CLOSE requires immediate durability
+	// Flush cached data to ensure durability.
+	// Unlike NFS COMMIT which is non-blocking, SMB CLOSE requires immediate durability.
 	if !openFile.IsDirectory && openFile.PayloadID != "" {
 		blockStore, bsErr := h.Registry.GetBlockStoreForHandle(ctx.Context, openFile.MetadataHandle)
 		if bsErr != nil {
 			logger.Warn("CLOSE: block store not available for handle", "path", openFile.Path, "error", bsErr)
-		}
-		// Use blocking Flush for immediate durability
-		var flushErr error
-		if blockStore != nil {
-			_, flushErr = blockStore.Flush(ctx.Context, string(openFile.PayloadID))
-		}
-		if flushErr != nil {
+		} else if _, flushErr := blockStore.Flush(ctx.Context, string(openFile.PayloadID)); flushErr != nil {
 			logger.Warn("CLOSE: flush failed", "path", openFile.Path, "error", flushErr)
-			// Continue with close even if flush fails
 		} else {
 			logger.Debug("CLOSE: flushed", "path", openFile.Path, "payloadID", openFile.PayloadID)
 		}
@@ -309,9 +302,8 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 
 	if openFile.OplockLevel != OplockLevelNone && h.LeaseManager != nil {
 		leaseKey := openFile.LeaseKey
-		zeroKey := [16]byte{}
 
-		if leaseKey != zeroKey {
+		if leaseKey != ([16]byte{}) {
 			// Check if any other open shares this lease key
 			hasOtherOpen := false
 			h.files.Range(func(key, value any) bool {
