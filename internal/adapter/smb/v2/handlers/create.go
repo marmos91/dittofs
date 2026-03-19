@@ -773,13 +773,27 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 				}
 			}
 
-			if shareConflict := h.checkShareModeConflict(existingHandle, req.DesiredAccess, req.ShareAccess); shareConflict {
+			if shareConflict := h.checkShareModeConflict(existingHandle, req.DesiredAccess, req.ShareAccess, filename); shareConflict {
 				logger.Debug("CREATE: sharing violation",
 					"path", filename,
 					"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
 					"shareAccess", fmt.Sprintf("0x%x", req.ShareAccess))
 				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSharingViolation}}, nil
 			}
+		}
+	} else {
+		// Per MS-FSA 2.1.5.1.2: Share mode enforcement spans the base file and
+		// all its streams. Even when creating a NEW file (base or ADS), existing
+		// opens on related streams may block this open. For example:
+		// - Creating an ADS when the base file is open with conflicting share mode
+		// - Creating the base file when an ADS is already open
+		// Use a nil handle (path-based matching only).
+		if shareConflict := h.checkShareModeConflict(nil, req.DesiredAccess, req.ShareAccess, filename); shareConflict {
+			logger.Debug("CREATE: cross-stream sharing violation",
+				"path", filename,
+				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
+				"shareAccess", fmt.Sprintf("0x%x", req.ShareAccess))
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSharingViolation}}, nil
 		}
 	}
 

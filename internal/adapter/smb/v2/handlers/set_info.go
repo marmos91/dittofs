@@ -422,6 +422,91 @@ func (h *Handler) setFileInfoFromStore(
 		newPath := strings.ReplaceAll(renameInfo.FileName, "\\", "/")
 		newPath = strings.TrimPrefix(newPath, "/")
 
+		// ================================================================
+		// Stream rename: if the target name starts with ":", this is a
+		// stream-to-stream rename within the same base file.
+		// E.g., renaming ":old:$DATA" to ":new:$DATA" on file "foo.txt"
+		// means renaming "foo.txt:old:$DATA" -> "foo.txt:new:$DATA" in
+		// the parent directory.
+		// ================================================================
+		if strings.HasPrefix(newPath, ":") {
+			// Extract the base file name from the current open file name.
+			// The current file is an ADS: "basefile:streamname:$DATA"
+			baseName := openFile.FileName
+			if colonIdx := strings.Index(baseName, ":"); colonIdx > 0 {
+				baseName = baseName[:colonIdx]
+			}
+
+			// Build new child name: basefile + new stream suffix
+			toName := baseName + newPath
+			toDir := openFile.ParentHandle
+
+			// Save old path info for notification before modification
+			oldPath := openFile.Path
+			oldFileName := openFile.FileName
+			oldParentPath := GetParentPath(oldPath)
+
+			// Per MS-FSA 2.1.5.14.10: Save mtime/ctime before rename
+			metaSvc := h.Registry.GetMetadataService()
+			var savedMtime, savedCtime *time.Time
+			if preFile, preErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); preErr == nil {
+				mtime := preFile.Mtime
+				ctime := preFile.Ctime
+				savedMtime = &mtime
+				savedCtime = &ctime
+			}
+
+			// Perform the rename
+			err = metaSvc.Move(authCtx, toDir, openFile.FileName, toDir, toName)
+			if err != nil {
+				logger.Debug("SET_INFO: stream rename failed",
+					"from", openFile.FileName,
+					"to", toName,
+					"error", err)
+				return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+			}
+
+			// Restore mtime/ctime after rename
+			if savedMtime != nil {
+				_ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{
+					Mtime: savedMtime,
+					Ctime: savedCtime,
+				})
+			}
+
+			// Clear delete-on-close after rename
+			if openFile.DeletePending {
+				openFile.DeletePending = false
+			}
+
+			// Notify watchers
+			if h.NotifyRegistry != nil {
+				tree, ok := h.GetTree(openFile.TreeID)
+				if ok {
+					newParentPath := GetParentPath(openFile.Path)
+					if newParentPath == "" || newParentPath == "." {
+						newParentPath = "/"
+					}
+					h.NotifyRegistry.NotifyRename(tree.ShareName, oldParentPath, oldFileName, newParentPath, toName)
+				}
+			}
+
+			// Update open file state
+			parentPath := GetParentPath(openFile.Path)
+			if parentPath == "" || parentPath == "/" || parentPath == "." {
+				openFile.Path = toName
+			} else {
+				openFile.Path = parentPath + "/" + toName
+			}
+			openFile.FileName = toName
+			h.StoreOpenFile(openFile)
+
+			logger.Debug("SET_INFO: stream rename successful",
+				"oldName", oldFileName,
+				"newName", toName)
+			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
+		}
+
 		// Determine source and destination.
 		//
 		// Per MS-FSCC 2.4.34 / MS-SMB2 2.2.39:

@@ -749,8 +749,13 @@ func (h *Handler) DeletePendingAuth(sessionID uint64) {
 //   - If an existing open has delete access AND the new open doesn't share delete -> conflict
 //   - Vice versa: if the new open requests access that the existing open doesn't share
 //
+// The filePath parameter is the share-relative path of the file being opened (e.g.,
+// "dir/file.txt" or "dir/file.txt:stream:$DATA"). When opening an ADS or the base
+// file, the check also considers opens on other streams of the same base file per
+// MS-FSA 2.1.5.1.2.1 (share mode enforcement spans all streams of a file).
+//
 // Returns true if a conflict exists (CREATE should fail with STATUS_SHARING_VIOLATION).
-func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesiredAccess, newShareAccess uint32) bool {
+func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesiredAccess, newShareAccess uint32, filePath string) bool {
 	const (
 		fileShareRead   = uint32(0x01)
 		fileShareWrite  = uint32(0x02)
@@ -781,15 +786,41 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 		return access&(deleteAccess|genericAll) != 0
 	}
 
+	// Compute the base path for ADS cross-stream checking.
+	// If the file is an ADS (path contains ":"), strip the stream suffix to get
+	// the base file path. Share mode checks must span the base file and all its streams.
+	newBasePath := adsBasePath(filePath)
+
 	conflict := false
 	h.files.Range(func(key, value any) bool {
 		existing := value.(*OpenFile)
-		// Only check handles to the same file
-		if len(existing.MetadataHandle) == 0 || !bytes.Equal(existing.MetadataHandle, fileHandle) {
-			return true
-		}
 		// Skip pipes
 		if existing.IsPipe {
+			return true
+		}
+		if len(existing.MetadataHandle) == 0 {
+			return true
+		}
+
+		// Check if this open is on the same file or a related stream.
+		// Match by: (1) exact metadata handle, or (2) same base file path
+		// when either the new file or existing open is an ADS.
+		// Per MS-FSA 2.1.5.1.2: share mode enforcement spans the base file
+		// and ALL its alternate data streams.
+		sameFile := bytes.Equal(existing.MetadataHandle, fileHandle)
+		if !sameFile {
+			existingBasePath := adsBasePath(existing.Path)
+			if newBasePath != "" {
+				// New file is an ADS: check if existing is the base file or another stream
+				sameFile = (existingBasePath != "" && existingBasePath == newBasePath) ||
+					(existing.Path == newBasePath) ||
+					(existingBasePath == filePath)
+			} else if existingBasePath != "" {
+				// New file is a base file, existing is an ADS: check if it's our stream
+				sameFile = (existingBasePath == filePath)
+			}
+		}
+		if !sameFile {
 			return true
 		}
 
@@ -824,6 +855,33 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 		return true
 	})
 	return conflict
+}
+
+// adsBasePath extracts the base file path from a potentially ADS-qualified path.
+// For "dir/file.txt:stream:$DATA" returns "dir/file.txt".
+// For "dir/file.txt" (no stream) returns "" (not an ADS).
+// The last component's first colon is the stream separator.
+func adsBasePath(filePath string) string {
+	// Find the last path separator to isolate the filename component
+	lastSep := strings.LastIndex(filePath, "/")
+	var fileName string
+	if lastSep >= 0 {
+		fileName = filePath[lastSep+1:]
+	} else {
+		fileName = filePath
+	}
+
+	// Check for stream separator in the filename
+	colonIdx := strings.Index(fileName, ":")
+	if colonIdx <= 0 {
+		return "" // Not an ADS path
+	}
+
+	// Return the path with the stream suffix stripped
+	if lastSep >= 0 {
+		return filePath[:lastSep+1] + fileName[:colonIdx]
+	}
+	return fileName[:colonIdx]
 }
 
 // checkShareDeleteConflict checks if any other open handle on the same file
