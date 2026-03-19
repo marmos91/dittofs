@@ -835,6 +835,7 @@ iterates all QUERY_DIRECTORY information classes. Both hit unimplemented classes
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
+| smb2.scan.scan | Scan | Full operation scan hits unimplemented info classes | - |
 
 ## Notes
 
