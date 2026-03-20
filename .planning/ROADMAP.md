@@ -531,7 +531,7 @@ v3.8 (33-40.5) -> v4.2 (57-62) -> v4.0 (41-49) -> v4.3 (49.1-49.3) -> v4.7 (63-6
 | 41-49 | v4.0 | 24/24 | Complete | 2026-03-11 |
 | 49.1-49.3 | v4.3 | 1/1 | Complete | 2026-03-13 |
 | 63-68 | v4.7 | 10/10 | Complete | 2026-03-20 |
-| 69. SMB Protocol Foundation | v0.10.0 | 0/3 | Planned | - |
+| 69. SMB Protocol Foundation | 2/3 | In Progress|  | - |
 | 70. Storage Observability and Quotas | v0.10.0 | 0/? | Not started | - |
 | 71. Operational Visibility | v0.10.0 | 0/? | Not started | - |
 | 72. WPTS Conformance Push | v0.10.0 | 0/? | Not started | - |
