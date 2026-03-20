@@ -410,7 +410,11 @@ run_offline() {
     block_s3 "${s3_ips}"
     assert "S3 connectivity blocked" verify_s3_blocked
 
-    # Wait for health to show degraded (health check interval ~30s)
+    # Write a trigger file to cause a failed S3 upload, which transitions health to degraded
+    log "Writing trigger file to provoke S3 upload failure..."
+    generate_file "${MOUNT_POINT}/edge-test-offline/trigger.dat" 4096
+
+    # Wait for health to show degraded (syncer detects failed upload)
     wait_for_degraded
     assert "Health endpoint shows 'degraded'" [ "$(check_health_status)" = "degraded" ]
 
@@ -487,11 +491,7 @@ run_sync() {
     block_s3 "${s3_ips}"
     assert "S3 blocked for sync test" verify_s3_blocked
 
-    # Wait for health to show degraded
-    wait_for_degraded
-    assert "Health shows degraded" [ "$(check_health_status)" = "degraded" ]
-
-    # Write files while offline
+    # Write files while offline (also triggers degraded health via failed uploads)
     log "Writing files while S3 is blocked..."
     generate_test_files "edge-test-sync"
     local checksum_tmp
@@ -500,6 +500,10 @@ run_sync() {
     local file_count
     file_count=$(wc -l < "${checksum_tmp}")
     log "Wrote ${file_count} files while offline"
+
+    # Wait for health to show degraded (writes trigger failed S3 uploads)
+    wait_for_degraded
+    assert "Health shows degraded" [ "$(check_health_status)" = "degraded" ]
 
     # Check pending uploads > 0
     local pending
