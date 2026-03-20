@@ -1,13 +1,14 @@
-// Package main implements the Pulumi program for DittoFS benchmark infrastructure.
+// Package main implements the Pulumi program for DittoFS infrastructure
+// (benchmarks and edge tests).
 //
 // Two stacks are used:
 //
-//   - "base": Creates VPC, persistent client VM, and server VM.
-//     Run once before any benchmark session.
+//   - "base": Creates VPC, persistent client VM, and S3 bucket.
+//     Run once before any test session.
 //
 //   - "bench": Creates an ephemeral server VM, provisions it with the selected
-//     competitor's install script, and exports connection details.
-//     Run once per competitor, destroyed between tests for clean isolation.
+//     system's install script, and exports connection details.
+//     Created per test, destroyed after for clean isolation.
 //
 // # Authentication
 //

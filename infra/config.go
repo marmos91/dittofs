@@ -2,7 +2,7 @@ package main
 
 import "github.com/pulumi/pulumi/sdk/v3/go/pulumi/config"
 
-// infraConfig holds all configurable parameters for the benchmark infrastructure.
+// infraConfig holds all configurable parameters for the infrastructure.
 type infraConfig struct {
 	Zone     string
 	VMType   string

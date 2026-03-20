@@ -28,11 +28,11 @@ Client VM (51.15.199.235)          Server VM (pulumi-deployed)
                                           | S3 (blocked by iptables
                                           |      during offline test)
                                           v
-                                   +------------------+
-                                   | s3.fr-par.scw.cloud |
-                                   | Bucket: dittofs-bench |
-                                   | Prefix: dittofs-edge/ |
-                                   +------------------+
+                                   +-------------------------+
+                                   | s3.fr-par.scw.cloud     |
+                                   | Bucket: dittofs-bench   |
+                                   | Prefix: dittofs-edge/   |
+                                   +-------------------------+
 ```
 
 ## Step-by-Step Workflow

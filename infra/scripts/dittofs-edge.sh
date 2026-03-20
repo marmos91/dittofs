@@ -27,7 +27,6 @@ fi
 # Configuration (override via environment)
 # ---------------------------------------------------------------------------
 EXPORT_DIR="${EXPORT_DIR:-/export}"
-DATA_DIR="${DATA_DIR:-/data}"
 NFS_PORT="${NFS_PORT:-12049}"
 DITTOFS_REPO="${DITTOFS_REPO:-https://github.com/marmos91/dittofs.git}"
 DITTOFS_BRANCH="${DITTOFS_BRANCH:-main}"

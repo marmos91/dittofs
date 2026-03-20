@@ -174,7 +174,7 @@ collect_checksums() {
 
 verify_checksums() {
     local dir="${MOUNT_POINT}/$1"
-    local checksum_file="$2"
+    local saved_sums="$2"
     local all_pass=true
     while IFS=' ' read -r expected_sum fname; do
         local actual_sum
@@ -185,7 +185,7 @@ verify_checksums() {
             log "  [MISMATCH] ${fname}: expected=${expected_sum}, got=${actual_sum}"
             all_pass=false
         fi
-    done < "${checksum_file}"
+    done < "${saved_sums}"
     $all_pass
 }
 
@@ -198,6 +198,22 @@ check_health_status() {
 
 get_pending_uploads() {
     ssh_server "curl -sf http://localhost:${API_PORT}/health" | jq -r '.data.storage_health.total_pending'
+}
+
+wait_for_degraded() {
+    local timeout="${1:-90}"
+    log "Waiting for health endpoint to show 'degraded'..."
+    local elapsed=0
+    while [ "$elapsed" -lt "$timeout" ]; do
+        local status
+        status=$(check_health_status 2>/dev/null || echo "unknown")
+        if [ "$status" = "degraded" ]; then
+            return 0
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+    return 1
 }
 
 wait_for_sync() {
@@ -366,6 +382,7 @@ run_offline() {
 
     # Setup
     setup_nfs_mount
+    trap 'restore_s3; teardown_nfs_mount' EXIT
     clean_server_data
     login_server
 
@@ -381,30 +398,17 @@ run_offline() {
     wait_for_sync "${SYNC_TIMEOUT}"
     assert "Pre-sync completed before offline test" [ "$(get_pending_uploads)" = "0" ]
 
-    # Resolve S3 IPs and setup cleanup trap
+    # Resolve S3 IPs before blocking
     local s3_ips
     s3_ips=$(resolve_s3_ips)
     log "Resolved S3 IPs: ${s3_ips}"
-
-    # Set EXIT trap to guarantee cleanup
-    trap 'restore_s3; teardown_nfs_mount' EXIT
 
     # Block S3
     block_s3 "${s3_ips}"
     assert "S3 connectivity blocked" verify_s3_blocked
 
     # Wait for health to show degraded (health check interval ~30s)
-    log "Waiting for health endpoint to show 'degraded'..."
-    local degraded_wait=0
-    while [ "$degraded_wait" -lt 90 ]; do
-        local status
-        status=$(check_health_status 2>/dev/null || echo "unknown")
-        if [ "$status" = "degraded" ]; then
-            break
-        fi
-        sleep 5
-        degraded_wait=$((degraded_wait + 5))
-    done
+    wait_for_degraded
     assert "Health endpoint shows 'degraded'" [ "$(check_health_status)" = "degraded" ]
 
     # Drop NFS client caches
@@ -466,6 +470,7 @@ run_sync() {
 
     # Setup
     setup_nfs_mount
+    trap 'restore_s3; teardown_nfs_mount' EXIT
     clean_server_data
     login_server
 
@@ -474,23 +479,13 @@ run_sync() {
     # Resolve S3 IPs
     local s3_ips
     s3_ips=$(resolve_s3_ips)
-    trap 'restore_s3; teardown_nfs_mount' EXIT
 
     # Block S3
     block_s3 "${s3_ips}"
     assert "S3 blocked for sync test" verify_s3_blocked
 
-    # Wait for degraded
-    local degraded_wait=0
-    while [ "$degraded_wait" -lt 90 ]; do
-        local status
-        status=$(check_health_status 2>/dev/null || echo "unknown")
-        if [ "$status" = "degraded" ]; then
-            break
-        fi
-        sleep 5
-        degraded_wait=$((degraded_wait + 5))
-    done
+    # Wait for health to show degraded
+    wait_for_degraded
     assert "Health shows degraded" [ "$(check_health_status)" = "degraded" ]
 
     # Write files while offline

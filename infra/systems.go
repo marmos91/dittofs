@@ -1,8 +1,8 @@
 package main
 
-// System describes a competitor to benchmark.
+// System describes a file server configuration deployable on the server VM.
 type System struct {
-	// Name is the unique identifier (e.g., "kernel-nfs").
+	// Name is the unique identifier (e.g., "kernel-nfs", "dittofs-edge").
 	Name string
 
 	// Protocol is the mount protocol: "nfs", "smb", or "fuse".
@@ -18,8 +18,9 @@ type System struct {
 	InstallScript string
 }
 
-// allSystems is the full list of competitors to benchmark.
+// allSystems is the registry of all deployable systems (benchmarks and edge tests).
 var allSystems = []System{
+	// DittoFS variants.
 	{
 		Name:          "dittofs-badger-fs",
 		Protocol:      "nfs",
@@ -41,6 +42,7 @@ var allSystems = []System{
 		MountOpts:     "tcp,port=12049,mountport=12049",
 		InstallScript: "dittofs-edge.sh",
 	},
+	// Third-party local-only systems.
 	{
 		Name:          "kernel-nfs",
 		Protocol:      "nfs",
@@ -75,7 +77,7 @@ var allSystems = []System{
 		Port:          0,
 		InstallScript: "juicefs.sh",
 	},
-	// S3-backed competitors.
+	// Third-party S3-backed systems.
 	{
 		Name:          "rclone-s3",
 		Protocol:      "nfs",
@@ -108,7 +110,7 @@ var systemsByName = func() map[string]*System {
 	return m
 }()
 
-// AllSystems returns the full list of competitors to benchmark.
+// AllSystems returns the full list of deployable systems.
 func AllSystems() []System {
 	return allSystems
 }

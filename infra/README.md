@@ -24,6 +24,9 @@ Set `system` in Pulumi config to select which software to install on the server 
 | `rclone` | NFS | 2049 | Benchmark: RClone serve NFS |
 | `samba` | SMB | 445 | Benchmark: Samba |
 | `juicefs` | FUSE | - | Benchmark: JuiceFS |
+| `rclone-s3` | NFS | 2049 | Benchmark: RClone + S3 |
+| `juicefs-s3` | NFS | 2049 | Benchmark: JuiceFS + S3 |
+| `s3ql` | NFS | 2049 | Benchmark: S3QL + S3 |
 
 ## Quick Start
 
