@@ -1,0 +1,12 @@
+# Pulumi state (use local or Pulumi Cloud backend)
+.pulumi/
+
+# Stack config files may contain encrypted secrets
+Pulumi.*.yaml
+
+# Generated hosts file
+.hosts
+
+# Go build artifacts
+bench-infra
+infra
