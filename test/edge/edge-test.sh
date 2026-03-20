@@ -267,7 +267,7 @@ dfsctl_server() {
 }
 
 login_server() {
-    ssh_server "dfsctl login --server http://localhost:${API_PORT} --username admin --password ${ADMIN_PASSWORD}"
+    ssh_server "dfsctl login --server http://localhost:${API_PORT} --username admin --password '${ADMIN_PASSWORD}'"
 }
 
 # ---------------------------------------------------------------------------
@@ -281,7 +281,10 @@ block_s3() {
     local s3_ips="$1"
     log "Blocking S3 traffic on server..."
     ssh_server "iptables -N DITTOFS_EDGE_TEST 2>/dev/null || true"
-    ssh_server "iptables -I OUTPUT -j DITTOFS_EDGE_TEST"
+    if ! ssh_server "iptables -I OUTPUT -j DITTOFS_EDGE_TEST"; then
+        log "ERROR: Failed to insert DITTOFS_EDGE_TEST chain into OUTPUT"
+        return 1
+    fi
     for ip in ${s3_ips}; do
         ssh_server "iptables -A DITTOFS_EDGE_TEST -d ${ip} -j DROP"
         log "  Blocked ${ip}"

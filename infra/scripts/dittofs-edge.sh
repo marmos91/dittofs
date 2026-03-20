@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # dittofs-edge.sh -- DittoFS edge test deployment (BadgerDB metadata + FS local + S3 remote with pin retention)
 #
+# WARNING: This script uses HARDCODED CREDENTIALS for testing only.
+# DO NOT use this configuration in production or on internet-facing servers.
+# The admin password and JWT secret are fixed, publicly known values.
+#
 # Builds DittoFS from source, creates a configuration using BadgerDB for
 # metadata, local filesystem for block cache, and S3 for remote block storage
 # with pin retention policy, then starts the dfs server with an NFS export at
