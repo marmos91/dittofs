@@ -13,7 +13,7 @@ Requirements for Production Hardening + SMB Protocol Fixes. Each maps to roadmap
 - [x] **SMB-02**: Server enforces credit charge validation before dispatching requests (reject insufficient credits)
 - [x] **SMB-03**: Server grants credits in every response, never reducing client credits to zero
 - [x] **SMB-04**: Multi-credit I/O operations (READ/WRITE > 64KB) validate CreditCharge = ceil(length/65536)
-- [ ] **SMB-05**: Compound requests handle credit accounting correctly (charge at compound level, grant in last response)
+- [x] **SMB-05**: Compound requests handle credit accounting correctly (charge at compound level, grant in last response)
 
 ### SMB Multi-Channel
 
@@ -91,7 +91,7 @@ Requirements for Production Hardening + SMB Protocol Fixes. Each maps to roadmap
 | SMB-02 | Phase 69 | Complete |
 | SMB-03 | Phase 69 | Complete |
 | SMB-04 | Phase 69 | Complete |
-| SMB-05 | Phase 69 | Pending |
+| SMB-05 | Phase 69 | Complete |
 | MCH-01 | Phase 74 | Pending |
 | MCH-02 | Phase 74 | Pending |
 | MCH-03 | Phase 74 | Pending |

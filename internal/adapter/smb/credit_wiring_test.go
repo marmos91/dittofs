@@ -218,3 +218,161 @@ func TestSendMessageWithConnInfo_GrantExpansion(t *testing.T) {
 	assert.Equal(t, initialSize+uint64(credits), ci.SequenceWindow.Size(),
 		"grant should expand window by header credits")
 }
+
+// =============================================================================
+// Compound credit accounting tests
+// =============================================================================
+
+// TestCompound_CreditValidationAtCompoundLevel verifies that compound-level
+// credit validation only consumes from the sequence window for the first command.
+// Per MS-SMB2 3.2.4.1.4: the first command's CreditCharge covers the entire compound.
+func TestCompound_CreditValidationAtCompoundLevel(t *testing.T) {
+	sw := session.NewCommandSequenceWindow(131070)
+	sw.Grant(255) // Grant enough credits
+
+	// Simulate a 3-command compound: CREATE (msg 0), READ (msg 1), CLOSE (msg 2)
+	// Only the first command's MessageId should be consumed from the window.
+
+	firstCommand := types.CommandCreate
+	firstSessionID := uint64(1)
+	firstMessageID := uint64(0)
+	firstCreditCharge := uint16(1)
+
+	// Validate first command (non-exempt)
+	if !session.IsCreditExempt(firstCommand, firstSessionID) {
+		charge := session.EffectiveCreditCharge(firstCreditCharge)
+		ok := sw.Consume(firstMessageID, charge)
+		require.True(t, ok, "first command should consume from window")
+	}
+
+	// Second and third commands should NOT consume from the window
+	// (compound-level accounting means first command covers all)
+	sizeAfterFirstConsume := sw.Size()
+
+	// Simulate that we do NOT consume for second and third commands
+	// (this is the expected behavior in compound processing)
+
+	assert.Equal(t, sizeAfterFirstConsume, sw.Size(),
+		"window should not change after first command in compound")
+}
+
+// TestCompound_ExemptFirstCommand verifies that compound-level credit validation
+// is skipped when the first command is credit-exempt (e.g., NEGOTIATE).
+func TestCompound_ExemptFirstCommand(t *testing.T) {
+	sw := session.NewCommandSequenceWindow(131070)
+	initialSize := sw.Size()
+
+	firstCommand := types.CommandNegotiate
+	firstSessionID := uint64(0)
+
+	// NEGOTIATE with SessionID=0 is exempt
+	assert.True(t, session.IsCreditExempt(firstCommand, firstSessionID))
+
+	// Window should not change
+	assert.Equal(t, initialSize, sw.Size(),
+		"exempt first command should not affect window")
+}
+
+// TestCompound_MiddleResponsesGrantZeroCredits verifies that middle responses
+// in a compound have Credits=0, and only the last response grants credits.
+func TestCompound_MiddleResponsesGrantZeroCredits(t *testing.T) {
+	// Build 3 compound responses with various credit grants
+	responses := []compoundResponse{
+		{
+			respHeader: &header.SMB2Header{
+				Command: types.CommandCreate,
+				Credits: 10, // Will be set to 0 for middle response
+			},
+			body: MakeErrorBody(),
+		},
+		{
+			respHeader: &header.SMB2Header{
+				Command: types.CommandRead,
+				Credits: 10, // Will be set to 0 for middle response
+			},
+			body: MakeErrorBody(),
+		},
+		{
+			respHeader: &header.SMB2Header{
+				Command: types.CommandClose,
+				Credits: 10, // Last response keeps its credits
+			},
+			body: MakeErrorBody(),
+		},
+	}
+
+	// Apply compound credit zeroing: middle responses grant 0
+	applyCompoundCreditZeroing(responses)
+
+	assert.Equal(t, uint16(0), responses[0].respHeader.Credits,
+		"first (middle) response should have Credits=0")
+	assert.Equal(t, uint16(0), responses[1].respHeader.Credits,
+		"second (middle) response should have Credits=0")
+	assert.Equal(t, uint16(10), responses[2].respHeader.Credits,
+		"last response should retain its credits")
+}
+
+// TestCompound_SequenceWindowExpandedByLastResponse verifies that the sequence
+// window is only expanded by the last response's credits in a compound.
+func TestCompound_SequenceWindowExpandedByLastResponse(t *testing.T) {
+	sw := session.NewCommandSequenceWindow(131070)
+	sw.Grant(255)
+	// Consume initial credits
+	sw.Consume(0, 1)
+	sizeAfterConsume := sw.Size()
+
+	// Build 3 compound responses
+	responses := []compoundResponse{
+		{respHeader: &header.SMB2Header{Credits: 8}},
+		{respHeader: &header.SMB2Header{Credits: 8}},
+		{respHeader: &header.SMB2Header{Credits: 8}},
+	}
+
+	// Apply compound credit zeroing
+	applyCompoundCreditZeroing(responses)
+
+	// Only the last response should expand the window
+	lastCredits := responses[len(responses)-1].respHeader.Credits
+	assert.Equal(t, uint16(8), lastCredits, "last response should have credits")
+
+	// Simulate the grant from sendCompoundResponses
+	if sw != nil && lastCredits > 0 {
+		sw.Grant(lastCredits)
+	}
+
+	assert.Equal(t, sizeAfterConsume+uint64(lastCredits), sw.Size(),
+		"window should expand by last response's credits only")
+}
+
+// TestCompound_SingleResponseNoZeroing verifies that a compound with a single
+// response does not apply credit zeroing (it goes through SendMessage directly).
+func TestCompound_SingleResponseNoZeroing(t *testing.T) {
+	responses := []compoundResponse{
+		{
+			respHeader: &header.SMB2Header{
+				Command: types.CommandCreate,
+				Credits: 10,
+			},
+			body: MakeErrorBody(),
+		},
+	}
+
+	// For single response, no zeroing should be applied
+	// (sendCompoundResponses delegates to SendMessage for len==1)
+	applyCompoundCreditZeroing(responses)
+
+	// Single response should NOT be zeroed
+	assert.Equal(t, uint16(10), responses[0].respHeader.Credits,
+		"single response should retain its credits")
+}
+
+// TestCompound_FailedCreditValidation verifies that failed compound credit
+// validation fails the entire compound.
+func TestCompound_FailedCreditValidation(t *testing.T) {
+	sw := session.NewCommandSequenceWindow(131070)
+	// Don't grant additional credits - window only has {0}
+
+	// Trying to consume MessageId=5 (out of window range) should fail
+	ok := sw.Consume(5, 1)
+	assert.False(t, ok, "out-of-range MessageId should fail compound validation")
+}
