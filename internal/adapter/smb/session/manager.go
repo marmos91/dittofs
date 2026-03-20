@@ -55,6 +55,11 @@ func NewDefaultManager() *Manager {
 	return NewManager(DefaultCreditConfig())
 }
 
+// Config returns the credit configuration for this manager.
+func (m *Manager) Config() CreditConfig {
+	return m.config
+}
+
 // =============================================================================
 // Session Lifecycle
 // =============================================================================

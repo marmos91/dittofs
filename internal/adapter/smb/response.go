@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/header"
+	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/adapter/smb/v2/handlers"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -45,6 +46,32 @@ func ProcessSingleRequest(
 
 	// Run before-hooks (e.g., preauth hash update for NEGOTIATE request)
 	RunBeforeHooks(connInfo, reqHeader.Command, rawMessage)
+
+	// Credit validation: per MS-SMB2 3.3.5.2.3 and 3.3.5.2.5
+	if !session.IsCreditExempt(reqHeader.Command, reqHeader.SessionID) {
+		// Validate CreditCharge against payload size (MS-SMB2 3.3.5.2.5)
+		if connInfo.SupportsMultiCredit {
+			if err := session.ValidateCreditCharge(reqHeader.Command, reqHeader.CreditCharge, body); err != nil {
+				logger.Debug("Credit charge validation failed",
+					"command", reqHeader.Command.String(),
+					"creditCharge", reqHeader.CreditCharge,
+					"error", err)
+				return SendErrorResponse(reqHeader, types.StatusInvalidParameter, connInfo)
+			}
+		}
+
+		// Validate and consume sequence numbers from window (MS-SMB2 3.3.5.2.3)
+		if connInfo.SequenceWindow != nil {
+			charge := session.EffectiveCreditCharge(reqHeader.CreditCharge)
+			if !connInfo.SequenceWindow.Consume(reqHeader.MessageID, charge) {
+				logger.Debug("Sequence window validation failed",
+					"command", reqHeader.Command.String(),
+					"messageID", reqHeader.MessageID,
+					"creditCharge", charge)
+				return SendErrorResponse(reqHeader, types.StatusInvalidParameter, connInfo)
+			}
+		}
+	}
 
 	cmd, handlerCtx, errStatus := prepareDispatch(ctx, reqHeader, connInfo)
 	if errStatus != 0 {
@@ -373,7 +400,12 @@ func SendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo) error 
 				logger.Debug("Encrypted outgoing SMB2 message",
 					"command", hdr.Command.String(),
 					"sessionID", hdr.SessionID)
-				return WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, encrypted)
+				writeErr := WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, encrypted)
+				// Expand sequence window with granted credits (MS-SMB2 3.3.1.2)
+				if writeErr == nil && connInfo.SequenceWindow != nil && hdr.Credits > 0 {
+					connInfo.SequenceWindow.Grant(hdr.Credits)
+				}
+				return writeErr
 			}
 			if sess.ShouldSign() {
 				sess.SignMessage(smbPayload)
@@ -394,7 +426,16 @@ func SendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo) error 
 		"messageID", hdr.MessageID,
 		"bytes", len(smbPayload))
 
-	return WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, smbPayload)
+	err := WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, smbPayload)
+
+	// Expand sequence window with granted credits (MS-SMB2 3.3.1.2).
+	// This MUST happen after successful write so the client only gets credits
+	// when the response is actually sent.
+	if err == nil && connInfo.SequenceWindow != nil && hdr.Credits > 0 {
+		connInfo.SequenceWindow.Grant(hdr.Credits)
+	}
+
+	return err
 }
 
 // SendAsyncChangeNotifyResponse sends an asynchronous CHANGE_NOTIFY response.
