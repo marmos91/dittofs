@@ -25,7 +25,8 @@ const durableHandleColumns = `
 	create_options, metadata_handle, payload_id, oplock_level,
 	lease_key, lease_state, create_guid, app_instance_id,
 	username, session_key_hash, is_v2, created_at, disconnected_at,
-	timeout_ms, server_start_time
+	timeout_ms, server_start_time,
+	delete_pending, parent_handle, file_name, is_directory
 `
 
 func scanDurableHandle(row pgx.Row) (*lock.PersistedDurableHandle, error) {
@@ -54,6 +55,10 @@ func scanDurableHandle(row pgx.Row) (*lock.PersistedDurableHandle, error) {
 		&h.DisconnectedAt,
 		&h.TimeoutMs,
 		&h.ServerStartTime,
+		&h.DeletePending,
+		&h.ParentHandle,
+		&h.FileName,
+		&h.IsDirectory,
 	)
 
 	if err == pgx.ErrNoRows {
@@ -98,6 +103,10 @@ func scanDurableHandleRows(rows pgx.Rows) ([]*lock.PersistedDurableHandle, error
 			&h.DisconnectedAt,
 			&h.TimeoutMs,
 			&h.ServerStartTime,
+			&h.DeletePending,
+			&h.ParentHandle,
+			&h.FileName,
+			&h.IsDirectory,
 		)
 		if err != nil {
 			return nil, err
@@ -148,9 +157,10 @@ func (s *postgresDurableStore) PutDurableHandle(ctx context.Context, handle *loc
 			create_options, metadata_handle, payload_id, oplock_level,
 			lease_key, lease_state, create_guid, app_instance_id,
 			username, session_key_hash, is_v2, created_at, disconnected_at,
-			timeout_ms, server_start_time
+			timeout_ms, server_start_time,
+			delete_pending, parent_handle, file_name, is_directory
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
 		ON CONFLICT (id) DO UPDATE SET
 			file_id = EXCLUDED.file_id,
 			path = EXCLUDED.path,
@@ -171,7 +181,11 @@ func (s *postgresDurableStore) PutDurableHandle(ctx context.Context, handle *loc
 			created_at = EXCLUDED.created_at,
 			disconnected_at = EXCLUDED.disconnected_at,
 			timeout_ms = EXCLUDED.timeout_ms,
-			server_start_time = EXCLUDED.server_start_time
+			server_start_time = EXCLUDED.server_start_time,
+			delete_pending = EXCLUDED.delete_pending,
+			parent_handle = EXCLUDED.parent_handle,
+			file_name = EXCLUDED.file_name,
+			is_directory = EXCLUDED.is_directory
 	`
 
 	_, err := s.pool.Exec(ctx, query,
@@ -196,6 +210,10 @@ func (s *postgresDurableStore) PutDurableHandle(ctx context.Context, handle *loc
 		handle.DisconnectedAt,
 		handle.TimeoutMs,
 		handle.ServerStartTime,
+		handle.DeletePending,
+		handle.ParentHandle,
+		handle.FileName,
+		handle.IsDirectory,
 	)
 	return err
 }

@@ -487,6 +487,21 @@ Plans:
 **Verification**: `go build ./...` && `go test ./...` && full smbtorture run
 **Plans**: TBD
 
+### Phase 78: SMB Change Notifications (SMB2_CHANGE_NOTIFY)
+**Goal**: Implement directory change notification support so Windows Explorer and SMB clients auto-refresh when directory contents change
+**Depends on**: Phase 77
+**Requirements**: SMB-06
+**Success Criteria** (what must be TRUE):
+  1. SMB2 CHANGE_NOTIFY requests are accepted and held as pending async requests until a matching change occurs or the request is cancelled
+  2. File creation, deletion, rename, and attribute changes in a watched directory trigger FILE_NOTIFY_INFORMATION responses to the pending CHANGE_NOTIFY request
+  3. CompletionFilter flags (FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_ATTRIBUTES, FILE_NOTIFY_CHANGE_SIZE, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_CREATION, FILE_NOTIFY_CHANGE_SECURITY, FILE_NOTIFY_CHANGE_STREAM_NAME, FILE_NOTIFY_CHANGE_STREAM_SIZE, FILE_NOTIFY_CHANGE_STREAM_WRITE, FILE_NOTIFY_CHANGE_LAST_ACCESS, FILE_NOTIFY_CHANGE_EA) are respected to filter notifications
+  4. WATCH_TREE flag enables recursive subdirectory monitoring
+  5. SMB2 CANCEL correctly cancels pending CHANGE_NOTIFY requests and returns STATUS_CANCELLED
+  6. CLOSE on a directory handle with pending CHANGE_NOTIFY returns STATUS_NOTIFY_CLEANUP
+  7. 20 WPTS BVT ChangeNotify tests pass (BVT_SMB2Basic_ChangeNotify_* and BVT_SMB2Basic_CancelRegisteredChangeNotify)
+**Verification**: `go build ./...` && `go test ./...` && WPTS BVT with 0 new ChangeNotify failures
+**Plans**: TBD
+
 ---
 
 ## v5.0 NFSv4.2 Extensions

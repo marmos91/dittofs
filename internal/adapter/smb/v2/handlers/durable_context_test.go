@@ -256,8 +256,8 @@ func TestDecodeAppInstanceId(t *testing.T) {
 
 func TestEncodeDHnQResponse(t *testing.T) {
 	ctx := EncodeDHnQResponse()
-	if ctx.Name != DurableHandleV1ReconnectTag {
-		t.Errorf("Name = %s, want %s", ctx.Name, DurableHandleV1ReconnectTag)
+	if ctx.Name != DurableHandleV1RequestTag {
+		t.Errorf("Name = %s, want %s", ctx.Name, DurableHandleV1RequestTag)
 	}
 	if len(ctx.Data) != 8 {
 		t.Errorf("Data length = %d, want 8", len(ctx.Data))
@@ -302,8 +302,8 @@ func TestProcessDurableHandleContext_V1GrantWithBatchOplock(t *testing.T) {
 	if resp == nil {
 		t.Fatal("Expected V1 grant response, got nil")
 	}
-	if resp.Name != DurableHandleV1ReconnectTag {
-		t.Errorf("Response tag = %s, want %s", resp.Name, DurableHandleV1ReconnectTag)
+	if resp.Name != DurableHandleV1RequestTag {
+		t.Errorf("Response tag = %s, want %s", resp.Name, DurableHandleV1RequestTag)
 	}
 	if !openFile.IsDurable {
 		t.Error("Expected openFile.IsDurable to be true")
@@ -647,7 +647,12 @@ func TestProcessDurableReconnectContext_UsernameMismatch(t *testing.T) {
 	}
 }
 
-func TestProcessDurableReconnectContext_SessionKeyMismatch(t *testing.T) {
+func TestProcessDurableReconnectContext_SessionKeyMismatchAllowed(t *testing.T) {
+	// Per MS-SMB2 3.3.5.9.7/12, durable reconnect validates the user identity
+	// (username), not the session key. With NTLM KEY_EXCH, each session gets a
+	// random ExportedSessionKey, so the session key will always differ between
+	// original and reconnect sessions. This test verifies that a session key
+	// mismatch does NOT cause ACCESS_DENIED when the username matches.
 	store := newMockDurableStore()
 	ctx := context.Background()
 
@@ -680,8 +685,8 @@ func TestProcessDurableReconnectContext_SessionKeyMismatch(t *testing.T) {
 	_, status, _ := ProcessDurableReconnectContext(
 		context.Background(), store, nil, contexts, 999, "alice", differentKeyHash, "/share1", "test.txt",
 	)
-	if status != types.StatusAccessDenied {
-		t.Errorf("Expected STATUS_ACCESS_DENIED for session key mismatch, got %s", status)
+	if status != types.StatusSuccess {
+		t.Errorf("Expected STATUS_SUCCESS for session key mismatch with matching username, got %s", status)
 	}
 }
 

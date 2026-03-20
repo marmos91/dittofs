@@ -25,12 +25,16 @@ func init() {
 		FsctlGetNtfsVolumeData:     (*Handler).handleGetNtfsVolumeData,
 		FsctlReadFileUsnData:       (*Handler).handleReadFileUsnData,
 		FsctlSrvEnumerateSnapshots: (*Handler).handleEnumerateSnapshots,
+		FsctlIsPathnameValid:       (*Handler).handleIsPathnameValid,
 	}
 }
 
 // Ioctl handles the SMB2 IOCTL command [MS-SMB2] 2.2.31, 2.2.32.
 // It dispatches filesystem control codes via a map-based dispatch table.
 // Unsupported FSCTLs return StatusNotSupported gracefully.
+//
+// Per MS-SMB2 3.3.5.15, the FileID must correspond to a valid open file
+// unless the FSCTL uses a special handle (e.g., VALIDATE_NEGOTIATE_INFO).
 func (h *Handler) Ioctl(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	// Read CtlCode at offset 4 (past StructureSize(2) + Reserved(2))
 	r := smbenc.NewReader(body)
@@ -45,6 +49,21 @@ func (h *Handler) Ioctl(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 		"ctlCode", fmt.Sprintf("0x%08X", ctlCode),
 		"bodyLen", len(body))
 
+	// Per MS-SMB2 3.3.5.15: validate that the FileID corresponds to an open
+	// file, unless this is a "no-handle" FSCTL that uses the special sentinel
+	// FileID 0xFFFFFFFFFFFFFFFF (e.g., VALIDATE_NEGOTIATE_INFO, PIPE_TRANSCEIVE).
+	if !ioctlNoHandleFSCTL(ctlCode) {
+		fileID, ok := parseIoctlFileID(body)
+		if ok {
+			if _, found := h.GetOpenFile(fileID); !found {
+				logger.Debug("IOCTL file handle not found (closed)",
+					"ctlCode", fmt.Sprintf("0x%08X", ctlCode),
+					"fileID", fmt.Sprintf("%x", fileID))
+				return NewErrorResult(types.StatusFileClosed), nil
+			}
+		}
+	}
+
 	handler, ok := ioctlDispatch[ctlCode]
 	if !ok {
 		logger.Debug("IOCTL unknown control code - not supported",
@@ -53,6 +72,17 @@ func (h *Handler) Ioctl(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 	}
 
 	return handler(h, ctx, body)
+}
+
+// ioctlNoHandleFSCTL returns true for FSCTLs that use a special/sentinel FileID
+// and do not require an open file handle.
+func ioctlNoHandleFSCTL(ctlCode uint32) bool {
+	switch ctlCode {
+	case FsctlValidateNegotiateInfo, FsctlPipeTransceive:
+		return true
+	default:
+		return false
+	}
 }
 
 // parseIoctlFileID extracts the 16-byte FileID from an IOCTL request body.
@@ -65,6 +95,18 @@ func parseIoctlFileID(body []byte) ([16]byte, bool) {
 	}
 	copy(fileID[:], body[8:24])
 	return fileID, true
+}
+
+// handleIsPathnameValid handles FSCTL_IS_PATHNAME_VALID [MS-FSCC] 2.3.33.
+// Returns STATUS_SUCCESS (all pathnames are considered valid).
+func (h *Handler) handleIsPathnameValid(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
+	logger.Debug("IOCTL FSCTL_IS_PATHNAME_VALID: returning success")
+	fileID, ok := parseIoctlFileID(body)
+	if !ok {
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+	resp := buildIoctlResponse(FsctlIsPathnameValid, fileID, nil)
+	return NewResult(types.StatusSuccess, resp), nil
 }
 
 // handleEnumerateSnapshots handles FSCTL_SRV_ENUMERATE_SNAPSHOTS [MS-SMB2] 2.2.32.2.

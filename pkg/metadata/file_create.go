@@ -321,10 +321,13 @@ func (s *MetadataService) createEntry(
 			}
 		}
 
-		// Update parent timestamps
+		// Update parent timestamps. Per MS-FSA 2.1.4.4 (Algorithm for
+		// Noting File Modified): when a directory is modified (entries
+		// added/removed), LastAccessTime (Atime) is also updated.
 		now := time.Now()
 		parent.Mtime = now
 		parent.Ctime = now
+		parent.Atime = now
 		return tx.PutFile(ctx.Context, parent)
 	})
 

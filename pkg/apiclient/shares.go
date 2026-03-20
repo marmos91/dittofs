@@ -22,6 +22,7 @@ type Share struct {
 	LocalBlockStoreID  string    `json:"local_block_store_id"`
 	RemoteBlockStoreID *string   `json:"remote_block_store_id"`
 	ReadOnly           bool      `json:"read_only,omitempty"`
+	EncryptData        bool      `json:"encrypt_data,omitempty"`
 	DefaultPermission  string    `json:"default_permission,omitempty"`
 	Description        string    `json:"description,omitempty"`
 	BlockedOperations  []string  `json:"blocked_operations,omitempty"`
@@ -40,6 +41,7 @@ type CreateShareRequest struct {
 	LocalBlockStore   string    `json:"local_block_store"`
 	RemoteBlockStore  *string   `json:"remote_block_store,omitempty"`
 	ReadOnly          bool      `json:"read_only,omitempty"`
+	EncryptData       bool      `json:"encrypt_data,omitempty"`
 	DefaultPermission string    `json:"default_permission,omitempty"`
 	Description       string    `json:"description,omitempty"`
 	BlockedOperations *[]string `json:"blocked_operations,omitempty"`
@@ -54,6 +56,7 @@ type UpdateShareRequest struct {
 	LocalBlockStoreID  *string   `json:"local_block_store_id,omitempty"`
 	RemoteBlockStoreID *string   `json:"remote_block_store_id,omitempty"`
 	ReadOnly           *bool     `json:"read_only,omitempty"`
+	EncryptData        *bool     `json:"encrypt_data,omitempty"`
 	DefaultPermission  *string   `json:"default_permission,omitempty"`
 	Description        *string   `json:"description,omitempty"`
 	BlockedOperations  *[]string `json:"blocked_operations,omitempty"`

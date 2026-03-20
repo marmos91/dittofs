@@ -33,6 +33,19 @@ const (
 	LeaseStateHandle uint32 = 0x04
 )
 
+// Sentinel values for breakOpLocks break-to state computation.
+const (
+	// BreakToStripWrite indicates the break-to state should be computed
+	// per-lease by stripping the Write bit (preserving Read and Handle).
+	// Per MS-SMB2 3.3.5.9: RWH -> RH, RW -> R.
+	BreakToStripWrite uint32 = 0xFFFFFFFF
+
+	// BreakToStripHandle indicates the break-to state should be computed
+	// per-lease by stripping the Handle bit (preserving Read and Write).
+	// Per MS-SMB2 3.3.5.9 Step 10: RWH -> RW, RH -> R.
+	BreakToStripHandle uint32 = 0xFFFFFFFE
+)
+
 // ValidFileLeaseStates contains all valid lease state combinations for files.
 // Per MS-SMB2: Write and Handle alone are not valid; they require Read.
 // Valid combinations: None, R, RW, RH, RWH

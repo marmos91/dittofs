@@ -166,6 +166,16 @@ type LockManager interface {
 	// Used for delete operations.
 	CheckAndBreakCachingForDelete(handleKey string, excludeOwner *LockOwner) error
 
+	// CheckAndBreakLeasesForSMBOpen breaks Write leases for an SMB CREATE.
+	// Unlike CheckAndBreakCachingForWrite, this strips only the Write bit,
+	// preserving Read and Handle (RWH -> RH, RW -> R).
+	CheckAndBreakLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error
+
+	// BreakHandleLeasesForSMBOpen breaks Handle leases for an SMB CREATE.
+	// Per MS-SMB2 3.3.5.9 Step 10: Handle leases must be broken before
+	// share mode conflict check. Strips only the Handle bit (RWH -> RW, RH -> R).
+	BreakHandleLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error
+
 	// WaitForBreakCompletion blocks until all breaking locks on a file resolve
 	// or the context is cancelled.
 	WaitForBreakCompletion(ctx context.Context, handleKey string) error
@@ -1140,6 +1150,7 @@ func (lm *Manager) CheckAndBreakOpLocksForDelete(handleKey string, excludeOwner 
 // ============================================================================
 
 // CheckAndBreakCachingForWrite breaks all leases AND all delegations.
+// Used for cross-protocol writes (e.g., NFS write breaking SMB leases).
 func (lm *Manager) CheckAndBreakCachingForWrite(handleKey string, excludeOwner *LockOwner) error {
 	if err := lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, func(lease *OpLock) bool {
 		return lease.HasRead() || lease.HasWrite()
@@ -1166,6 +1177,39 @@ func (lm *Manager) CheckAndBreakCachingForRead(handleKey string, excludeOwner *L
 	})
 
 	return nil
+}
+
+// CheckAndBreakLeasesForSMBOpen breaks conflicting leases for an SMB CREATE.
+//
+// Per MS-SMB2 3.3.5.9 / MS-FSA 2.1.5.17.1: When a new SMB open arrives,
+// existing leases that hold Write caching must be broken. Unlike cross-protocol
+// breaks (CheckAndBreakCachingForWrite), the break strips only the Write bit,
+// preserving Read and Handle caching. This allows clients to continue read
+// and handle caching while flushing dirty data.
+//
+//   - RWH -> RH (strip W, keep Read + Handle)
+//   - RW  -> R  (strip W, keep Read)
+//   - R   -> not broken (no Write to strip)
+//   - RH  -> not broken (no Write to strip)
+func (lm *Manager) CheckAndBreakLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error {
+	return lm.breakOpLocks(handleKey, excludeOwner, BreakToStripWrite, func(lease *OpLock) bool {
+		return lease.HasWrite()
+	})
+}
+
+// BreakHandleLeasesForSMBOpen breaks Handle leases for an SMB CREATE that may
+// conflict with sharing modes. Per MS-SMB2 3.3.5.9 Step 10: "If any existing
+// Open on the target file has a lease with Handle caching, the server MUST
+// initiate a lease break [...] to remove Handle caching."
+//
+// The break strips the Handle bit, preserving Read and Write:
+//   - RWH -> RW
+//   - RH  -> R
+//   - R   -> not broken (no Handle to strip)
+func (lm *Manager) BreakHandleLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error {
+	return lm.breakOpLocks(handleKey, excludeOwner, BreakToStripHandle, func(lease *OpLock) bool {
+		return lease.HasHandle()
+	})
 }
 
 // CheckAndBreakCachingForDelete breaks all leases AND all delegations.
@@ -1243,6 +1287,10 @@ func (lm *Manager) signalBreakWaitLocked(handleKey string) {
 
 // breakOpLocks marks matching oplocks as breaking and dispatches break
 // notifications. Releases mutex before dispatching to avoid deadlock.
+//
+// breakToState is the target state for the break. Pass BreakToStripWrite
+// to compute the per-lease break-to state by stripping the Write bit from
+// each lease's current state (preserving Read and Handle).
 func (lm *Manager) breakOpLocks(
 	handleKey string,
 	excludeOwner *LockOwner,
@@ -1252,29 +1300,47 @@ func (lm *Manager) breakOpLocks(
 	lm.mu.Lock()
 	locks := lm.unifiedLocks[handleKey]
 
-	var toBreak []*UnifiedLock
+	type breakEntry struct {
+		lock         *UnifiedLock
+		breakToState uint32
+	}
+	var toBreak []breakEntry
 	for _, lock := range locks {
 		if lock.Lease == nil {
 			continue
 		}
-		if excludeOwner != nil && lock.Owner.OwnerID == excludeOwner.OwnerID {
+		if excludeOwner != nil &&
+			(lock.Owner.OwnerID == excludeOwner.OwnerID ||
+				(excludeOwner.ClientID != "" && lock.Owner.ClientID == excludeOwner.ClientID)) {
 			continue
 		}
 		if lock.Lease.Breaking {
 			continue
 		}
 		if shouldBreak(lock.Lease) {
+			// Compute per-lease break-to state
+			targetState := breakToState
+			switch targetState {
+			case BreakToStripWrite:
+				// Strip only the Write bit, preserve Read and Handle.
+				// Per MS-SMB2 3.3.5.9: RWH -> RH, RW -> R.
+				targetState = lock.Lease.LeaseState &^ LeaseStateWrite
+			case BreakToStripHandle:
+				// Strip only the Handle bit, preserve Read and Write.
+				// Per MS-SMB2 3.3.5.9 Step 10: RWH -> RW, RH -> R.
+				targetState = lock.Lease.LeaseState &^ LeaseStateHandle
+			}
 			lock.Lease.Breaking = true
-			lock.Lease.BreakToState = breakToState
+			lock.Lease.BreakToState = targetState
 			lock.Lease.BreakStarted = time.Now()
 			advanceEpoch(lock.Lease)
-			toBreak = append(toBreak, lock)
+			toBreak = append(toBreak, breakEntry{lock: lock, breakToState: targetState})
 		}
 	}
 	lm.mu.Unlock()
 
-	for _, lock := range toBreak {
-		lm.dispatchOpLockBreak(handleKey, lock, breakToState)
+	for _, entry := range toBreak {
+		lm.dispatchOpLockBreak(handleKey, entry.lock, entry.breakToState)
 	}
 
 	return nil

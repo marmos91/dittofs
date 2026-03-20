@@ -161,13 +161,24 @@ const (
 	// StatusNotAReparsePoint indicates the file is not a reparse point.
 	StatusNotAReparsePoint Status = 0xC0000275
 
-	// StatusLockNotGranted indicates the byte-range lock could not be acquired.
-	// Used when a lock request conflicts with an existing lock.
-	StatusLockNotGranted Status = 0xC0000054
+	// StatusFileLockConflict indicates an I/O operation (READ/WRITE) conflicts
+	// with an existing byte-range lock held by another session.
+	// Per MS-SMB2 3.3.5.15 (Read) and 3.3.5.16 (Write).
+	StatusFileLockConflict Status = 0xC0000054
+
+	// StatusLockNotGranted indicates a LOCK request could not be acquired
+	// because it conflicts with an existing lock.
+	// Per MS-SMB2 3.3.5.14 (Lock).
+	StatusLockNotGranted Status = 0xC0000055
 
 	// StatusRangeNotLocked indicates no lock exists for the specified range.
 	// Used when trying to unlock a range that was not locked.
 	StatusRangeNotLocked Status = 0xC000007E
+
+	// StatusCannotDelete indicates the file cannot be deleted because
+	// it is read-only or otherwise protected.
+	// Per MS-FSA 2.1.5.1.2.1 and 2.1.5.14.3.
+	StatusCannotDelete Status = 0xC0000121
 )
 
 // String returns a human-readable name for the status code.
@@ -249,10 +260,14 @@ func (s Status) String() string {
 		return "STATUS_UNEXPECTED_IO_ERROR"
 	case StatusNotAReparsePoint:
 		return "STATUS_NOT_A_REPARSE_POINT"
+	case StatusFileLockConflict:
+		return "STATUS_FILE_LOCK_CONFLICT"
 	case StatusLockNotGranted:
 		return "STATUS_LOCK_NOT_GRANTED"
 	case StatusRangeNotLocked:
 		return "STATUS_RANGE_NOT_LOCKED"
+	case StatusCannotDelete:
+		return "STATUS_CANNOT_DELETE"
 	default:
 		return fmt.Sprintf("STATUS_0x%08X", uint32(s))
 	}

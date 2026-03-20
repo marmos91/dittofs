@@ -79,6 +79,14 @@ type Session struct {
 	// For 2.x: HMAC-SHA256 signer. For 3.x: CMAC/GMAC signer + KDF-derived keys.
 	CryptoState *SessionCryptoState
 
+	// NewlyCreated is true for sessions just established via SESSION_SETUP.
+	// The framing layer uses this to suppress encryption on the initial
+	// SESSION_SETUP SUCCESS response (client hasn't derived keys yet).
+	// For re-authenticated sessions this is false, so the response is encrypted
+	// with existing keys as expected by the client.
+	// Cleared by the framing layer after the first response.
+	NewlyCreated bool
+
 	// Credit tracking
 	credits Credits
 
@@ -111,14 +119,15 @@ type Credits struct {
 // Called internally by SessionManager.CreateSession.
 func NewSession(sessionID uint64, clientAddr string, isGuest bool, username, domain string) *Session {
 	s := &Session{
-		SessionID:   sessionID,
-		IsGuest:     isGuest,
-		IsNull:      username == "" && !isGuest,
-		CreatedAt:   time.Now(),
-		ClientAddr:  clientAddr,
-		Username:    username,
-		Domain:      domain,
-		CryptoState: &SessionCryptoState{},
+		SessionID:    sessionID,
+		IsGuest:      isGuest,
+		IsNull:       username == "" && !isGuest,
+		CreatedAt:    time.Now(),
+		ClientAddr:   clientAddr,
+		Username:     username,
+		Domain:       domain,
+		CryptoState:  &SessionCryptoState{},
+		NewlyCreated: true,
 	}
 	s.credits.LastActivity.Store(time.Now().Unix())
 	return s
@@ -128,15 +137,16 @@ func NewSession(sessionID uint64, clientAddr string, isGuest bool, username, dom
 // Use this when the user has been authenticated against the UserStore.
 func NewSessionWithUser(sessionID uint64, clientAddr string, user *models.User, domain string) *Session {
 	s := &Session{
-		SessionID:   sessionID,
-		IsGuest:     false,
-		IsNull:      false,
-		CreatedAt:   time.Now(),
-		ClientAddr:  clientAddr,
-		Username:    user.Username,
-		Domain:      domain,
-		User:        user,
-		CryptoState: &SessionCryptoState{},
+		SessionID:    sessionID,
+		IsGuest:      false,
+		IsNull:       false,
+		CreatedAt:    time.Now(),
+		ClientAddr:   clientAddr,
+		Username:     user.Username,
+		Domain:       domain,
+		User:         user,
+		CryptoState:  &SessionCryptoState{},
+		NewlyCreated: true,
 	}
 	s.credits.LastActivity.Store(time.Now().Unix())
 	return s

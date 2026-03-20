@@ -117,28 +117,35 @@ type mockCryptoState struct {
 	clientDialects     []types.Dialect
 }
 
-func (m *mockCryptoState) SetDialect(d types.Dialect)                    { m.dialect = d }
-func (m *mockCryptoState) GetDialect() types.Dialect                     { return m.dialect }
-func (m *mockCryptoState) SetCipherId(id uint16)                         { m.cipherId = id }
-func (m *mockCryptoState) GetCipherId() uint16                           { return m.cipherId }
-func (m *mockCryptoState) SetSigningAlgorithmId(id uint16)               { m.signingAlgorithmId = id }
-func (m *mockCryptoState) GetSigningAlgorithmId() uint16                 { return m.signingAlgorithmId }
-func (m *mockCryptoState) SetPreauthIntegrityHashId(id uint16)           { m.preauthHashId = id }
-func (m *mockCryptoState) GetPreauthHash() [64]byte                      { return m.preauthHash }
-func (m *mockCryptoState) SetServerGUID(guid [16]byte)                   { m.serverGUID = guid }
-func (m *mockCryptoState) SetServerCapabilities(caps types.Capabilities) { m.serverCapabilities = caps }
-func (m *mockCryptoState) SetServerSecurityMode(mode types.SecurityMode) { m.serverSecurityMode = mode }
-func (m *mockCryptoState) SetClientGUID(guid [16]byte)                   { m.clientGUID = guid }
-func (m *mockCryptoState) GetClientGUID() [16]byte                       { return m.clientGUID }
-func (m *mockCryptoState) SetClientCapabilities(caps types.Capabilities) { m.clientCapabilities = caps }
-func (m *mockCryptoState) GetClientCapabilities() types.Capabilities     { return m.clientCapabilities }
-func (m *mockCryptoState) SetClientSecurityMode(mode types.SecurityMode) { m.clientSecurityMode = mode }
-func (m *mockCryptoState) GetClientSecurityMode() types.SecurityMode     { return m.clientSecurityMode }
-func (m *mockCryptoState) SetClientDialects(dialects []types.Dialect)    { m.clientDialects = dialects }
-func (m *mockCryptoState) GetServerGUID() [16]byte                       { return m.serverGUID }
-func (m *mockCryptoState) GetServerCapabilities() types.Capabilities     { return m.serverCapabilities }
-func (m *mockCryptoState) GetServerSecurityMode() types.SecurityMode     { return m.serverSecurityMode }
-func (m *mockCryptoState) GetClientDialects() []types.Dialect            { return m.clientDialects }
+func (m *mockCryptoState) SetDialect(d types.Dialect)                                { m.dialect = d }
+func (m *mockCryptoState) GetDialect() types.Dialect                                 { return m.dialect }
+func (m *mockCryptoState) SetCipherId(id uint16)                                     { m.cipherId = id }
+func (m *mockCryptoState) GetCipherId() uint16                                       { return m.cipherId }
+func (m *mockCryptoState) SetSigningAlgorithmId(id uint16)                           { m.signingAlgorithmId = id }
+func (m *mockCryptoState) GetSigningAlgorithmId() uint16                             { return m.signingAlgorithmId }
+func (m *mockCryptoState) SetPreauthIntegrityHashId(id uint16)                       { m.preauthHashId = id }
+func (m *mockCryptoState) GetPreauthHash() [64]byte                                  { return m.preauthHash }
+func (m *mockCryptoState) SetServerGUID(guid [16]byte)                               { m.serverGUID = guid }
+func (m *mockCryptoState) SetServerCapabilities(caps types.Capabilities)             { m.serverCapabilities = caps }
+func (m *mockCryptoState) SetServerSecurityMode(mode types.SecurityMode)             { m.serverSecurityMode = mode }
+func (m *mockCryptoState) SetClientGUID(guid [16]byte)                               { m.clientGUID = guid }
+func (m *mockCryptoState) GetClientGUID() [16]byte                                   { return m.clientGUID }
+func (m *mockCryptoState) SetClientCapabilities(caps types.Capabilities)             { m.clientCapabilities = caps }
+func (m *mockCryptoState) GetClientCapabilities() types.Capabilities                 { return m.clientCapabilities }
+func (m *mockCryptoState) SetClientSecurityMode(mode types.SecurityMode)             { m.clientSecurityMode = mode }
+func (m *mockCryptoState) GetClientSecurityMode() types.SecurityMode                 { return m.clientSecurityMode }
+func (m *mockCryptoState) SetClientDialects(dialects []types.Dialect)                { m.clientDialects = dialects }
+func (m *mockCryptoState) GetServerGUID() [16]byte                                   { return m.serverGUID }
+func (m *mockCryptoState) GetServerCapabilities() types.Capabilities                 { return m.serverCapabilities }
+func (m *mockCryptoState) GetServerSecurityMode() types.SecurityMode                 { return m.serverSecurityMode }
+func (m *mockCryptoState) GetClientDialects() []types.Dialect                        { return m.clientDialects }
+func (m *mockCryptoState) InitSessionPreauthHash(sessionID uint64)                   {}
+func (m *mockCryptoState) UpdateSessionPreauthHash(sessionID uint64, message []byte) {}
+func (m *mockCryptoState) GetSessionPreauthHash(sessionID uint64) [64]byte {
+	return m.preauthHash
+}
+func (m *mockCryptoState) DeleteSessionPreauthHash(sessionID uint64) {}
+func (m *mockCryptoState) StashPendingSessionSetup(message []byte)   {}
 
 // newNegotiateTestContextWithCrypto creates a test context with a mock CryptoState.
 func newNegotiateTestContextWithCrypto() (*SMBHandlerContext, *mockCryptoState) {

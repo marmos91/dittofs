@@ -149,7 +149,7 @@ main() {
         share_flags="$share_flags --remote default"
     fi
     $DFSCTL share create --name /smbbasic $share_flags
-    $DFSCTL share create --name /smbencrypted $share_flags
+    $DFSCTL share create --name /smbencrypted --encrypt-data $share_flags
     $DFSCTL share create --name /fileshare $share_flags
 
     # Create test users
@@ -159,6 +159,18 @@ main() {
 
     # Enable SMB adapter
     log_info "Enabling SMB adapter on port ${SMB_PORT}..."
+    $DFSCTL adapter enable smb --port "$SMB_PORT"
+
+    # Enable encryption capability (preferred mode: advertise but don't enforce globally)
+    log_info "Enabling SMB encryption (preferred mode)..."
+    $DFSCTL adapter settings smb update --enable-encryption true
+
+    # Restart adapter to apply encryption settings immediately.
+    # The settings watcher polls every 10s, but tests start within seconds,
+    # so we force a restart to pick up the settings synchronously.
+    log_info "Restarting SMB adapter to apply encryption settings..."
+    $DFSCTL adapter disable smb
+    sleep 1
     $DFSCTL adapter enable smb --port "$SMB_PORT"
 
     # Wait for SMB adapter to start

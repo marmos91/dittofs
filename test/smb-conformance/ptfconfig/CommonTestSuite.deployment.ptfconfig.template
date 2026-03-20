@@ -143,8 +143,8 @@
       <Property name="UnsupportedIoCtlCodes" value="FSCTL_LMR_REQUEST_RESILIENCY;FSCTL_QUERY_NETWORK_INTERFACE_INFO;FSCTL_DFS_GET_REFERRALS;FSCTL_DFS_GET_REFERRALS_EX;FSCTL_PIPE_PEEK;FSCTL_PIPE_TRANSCEIVE;FSCTL_PIPE_WAIT;FSCTL_SET_ZERO_DATA;FSCTL_FILE_LEVEL_TRIM;FSCTL_DUPLICATE_EXTENTS_TO_FILE;FSCTL_QUERY_SHARED_VIRTUAL_DISK_SUPPORT;FSCTL_SVHDX_SYNC_TUNNEL_REQUEST;FSCTL_GET_INTEGRITY_INFORMATION;FSCTL_SET_INTEGRITY_INFORMATION;FSCTL_OFFLOAD_READ;FSCTL_OFFLOAD_WRITE">
         <Description>IOCTL codes not supported by DittoFS.</Description>
       </Property>
-      <Property name="UnsupportedCreateContexts" value="SMB2_CREATE_APP_INSTANCE_ID;SMB2_CREATE_APP_INSTANCE_VERSION;SMB2_CREATE_DURABLE_HANDLE_REQUEST_V2;SMB2_CREATE_DURABLE_HANDLE_RECONNECT_V2;SVHDX_OPEN_DEVICE_CONTEXT">
-        <Description>Create contexts not supported by DittoFS.</Description>
+      <Property name="UnsupportedCreateContexts" value="SMB2_CREATE_APP_INSTANCE_ID;SMB2_CREATE_APP_INSTANCE_VERSION;SVHDX_OPEN_DEVICE_CONTEXT">
+        <Description>Create contexts not supported by DittoFS. DH2Q/DH2C removed (Phase 38).</Description>
       </Property>
 
       <!-- ============================================================== -->
@@ -162,6 +162,9 @@
       <Property name="IsChainedCompressionSupported" value="false">
         <Description>Chained compression not supported.</Description>
       </Property>
+      <Property name="SutSupportedEncryptionAlgorithms" value="ENCRYPTION_AES128_GCM;ENCRYPTION_AES128_CCM;ENCRYPTION_AES256_GCM;ENCRYPTION_AES256_CCM">
+        <Description>Supported encryption algorithms for SMB 3.x.</Description>
+      </Property>
       <Property name="SupportedSigningAlgorithms" value="HMAC_SHA256;AES_CMAC;AES_GMAC">
         <Description>Supported signing algorithms (HMAC-SHA256 for 2.x, AES-CMAC/GMAC for 3.x since Phase 34).</Description>
       </Property>
@@ -170,6 +173,9 @@
       </Property>
       <Property name="MaxResiliencyTimeout" value="300000">
         <Description>Maximum resiliency timeout in milliseconds.</Description>
+      </Property>
+      <Property name="IsServerToClientNotificationsSupported" value="false">
+        <Description>Server-to-client notifications not implemented.</Description>
       </Property>
     </Group>
   </Properties>

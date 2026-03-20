@@ -113,12 +113,12 @@ func DecodeAppInstanceId(data []byte) ([16]byte, error) {
 }
 
 // EncodeDHnQResponse creates the V1 durable handle grant response context.
-// Response tag is "DHnC" with 8 bytes of zeros.
-// [MS-SMB2] 2.2.14.2.3
+// Per MS-SMB2 2.2.14.2.3, the response uses the same tag "DHnQ" as the
+// request, with 8 bytes of reserved (zero) data.
 func EncodeDHnQResponse() CreateContext {
 	return CreateContext{
-		Name: DurableHandleV1ReconnectTag, // Response tag for V1
-		Data: make([]byte, 8),             // Reserved, all zeros
+		Name: DurableHandleV1RequestTag, // Response echoes request tag "DHnQ"
+		Data: make([]byte, 8),           // Reserved, all zeros
 	}
 }
 
@@ -139,10 +139,15 @@ func EncodeDH2QResponse(timeoutMs uint32, flags uint32) CreateContext {
 // V2 (DH2Q) takes precedence over V1 (DHnQ) when both are present.
 // Returns a response CreateContext to include in the CREATE response, or nil if
 // durability was not granted. Mutates openFile (IsDurable, CreateGuid, DurableTimeoutMs).
+//
+// leaseIncludesHandle indicates whether the granted lease includes Handle (H) caching.
+// Per MS-SMB2 3.3.5.9.8, V1 durability can be granted when OplockLevel is Batch OR
+// when the lease includes SMB2_LEASE_HANDLE_CACHING.
 func ProcessDurableHandleContext(
 	contexts []CreateContext,
 	openFile *OpenFile,
 	configuredTimeoutMs uint32,
+	leaseIncludesHandle ...bool,
 ) *CreateContext {
 	// Check for DH2Q first (V2 takes precedence over V1)
 	if dh2qCtx := FindCreateContext(contexts, DurableHandleV2RequestTag); dh2qCtx != nil {
@@ -184,10 +189,15 @@ func ProcessDurableHandleContext(
 			return nil
 		}
 
-		// V1 requires batch oplock (0x09) to grant durability
-		if openFile.OplockLevel != OplockLevelBatch {
-			logger.Debug("ProcessDurableHandleContext: V1 rejected (oplock not Batch)",
-				"oplockLevel", openFile.OplockLevel)
+		// V1 requires batch oplock (0x09) or a lease with Handle caching to
+		// grant durability. Per MS-SMB2 3.3.5.9.8: "If the open supports
+		// leasing, the server SHOULD grant a durable handle if
+		// Open.Lease.LeaseState includes SMB2_LEASE_HANDLE_CACHING."
+		hasHandle := len(leaseIncludesHandle) > 0 && leaseIncludesHandle[0]
+		if openFile.OplockLevel != OplockLevelBatch && !hasHandle {
+			logger.Debug("ProcessDurableHandleContext: V1 rejected (no Batch oplock or Handle lease)",
+				"oplockLevel", openFile.OplockLevel,
+				"hasHandleLease", hasHandle)
 			return nil
 		}
 
@@ -381,15 +391,12 @@ func validateAndRestore(
 		return nil, types.StatusAccessDenied, nil
 	}
 
-	if handle.SessionKeyHash != sessionKeyHash {
-		if handle.IsV2 {
-			logger.Warn("validateAndRestore: session key hash mismatch on V2 handle (may be post-restart)",
-				"username", username,
-				"handleID", handle.ID)
-		}
-		logger.Debug("validateAndRestore: session key hash mismatch")
-		return nil, types.StatusAccessDenied, nil
-	}
+	// NOTE: We intentionally do NOT compare session key hashes here.
+	// Per MS-SMB2 3.3.5.9.7/12, the server validates the user identity
+	// (username check above), not the session key. With NTLM KEY_EXCH,
+	// each session generates a random ExportedSessionKey, so the session
+	// key hash will differ between the original and reconnect sessions
+	// even for the same user with the same credentials.
 
 	// Per [MS-SMB2] 3.3.5.9.9: reject reconnect if DesiredAccess or ShareAccess
 	// differs from the persisted values to prevent privilege escalation.
@@ -444,7 +451,12 @@ func validateAndRestore(
 		ShareAccess:    handle.ShareAccess,
 		CreateOptions:  types.CreateOptions(handle.CreateOptions),
 		OplockLevel:    handle.OplockLevel,
+		LeaseKey:       handle.LeaseKey,
 		OpenTime:       handle.CreatedAt,
+		DeletePending:  handle.DeletePending,
+		ParentHandle:   handle.ParentHandle,
+		FileName:       handle.FileName,
+		IsDirectory:    handle.IsDirectory,
 		// IsDurable is NOT set on restore -- client must re-request durability
 	}
 
@@ -550,9 +562,23 @@ func buildPersistedDurableHandle(
 	metaHandle := make([]byte, len(openFile.MetadataHandle))
 	copy(metaHandle, openFile.MetadataHandle)
 
+	// Clone ParentHandle to avoid aliasing
+	var parentHandle []byte
+	if len(openFile.ParentHandle) > 0 {
+		parentHandle = make([]byte, len(openFile.ParentHandle))
+		copy(parentHandle, openFile.ParentHandle)
+	}
+
+	// Per MS-SMB2 3.2.4.4: when the client reconnects via DHnC, the volatile
+	// part of the FileId is zero ("Data.Volatile: MUST be set to 0"). To ensure
+	// GetDurableHandleByFileID matches correctly, store only the persistent
+	// part (first 8 bytes) with the volatile zeroed.
+	var persistentFileID [16]byte
+	copy(persistentFileID[:8], openFile.FileID[:8])
+
 	return &lock.PersistedDurableHandle{
 		ID:              uuid.New().String(),
-		FileID:          openFile.FileID,
+		FileID:          persistentFileID,
 		Path:            openFile.Path,
 		ShareName:       openFile.ShareName,
 		DesiredAccess:   openFile.DesiredAccess,
@@ -561,6 +587,7 @@ func buildPersistedDurableHandle(
 		MetadataHandle:  metaHandle,
 		PayloadID:       string(openFile.PayloadID),
 		OplockLevel:     openFile.OplockLevel,
+		LeaseKey:        openFile.LeaseKey,
 		CreateGuid:      openFile.CreateGuid,
 		AppInstanceId:   openFile.AppInstanceId,
 		Username:        username,
@@ -570,5 +597,9 @@ func buildPersistedDurableHandle(
 		DisconnectedAt:  time.Now(),
 		TimeoutMs:       openFile.DurableTimeoutMs,
 		ServerStartTime: serverStartTime,
+		DeletePending:   openFile.DeletePending,
+		ParentHandle:    parentHandle,
+		FileName:        openFile.FileName,
+		IsDirectory:     openFile.IsDirectory,
 	}
 }

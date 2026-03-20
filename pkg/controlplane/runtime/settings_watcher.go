@@ -39,9 +39,19 @@ type SettingsWatcher struct {
 	nfsVersion int
 	smbVersion int
 
+	// Callbacks invoked when settings change (after initial load)
+	smbCallbacks []func(*models.SMBAdapterSettings)
+
 	pollInterval time.Duration
 	stopCh       chan struct{}
 	stopped      chan struct{} // closed when polling goroutine exits
+}
+
+// OnSMBSettingsChange registers a callback invoked whenever SMB settings change.
+func (w *SettingsWatcher) OnSMBSettingsChange(cb func(*models.SMBAdapterSettings)) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.smbCallbacks = append(w.smbCallbacks, cb)
 }
 
 // NewSettingsWatcher creates a new SettingsWatcher with the given store and poll interval.
@@ -229,6 +239,14 @@ func (w *SettingsWatcher) pollSMBSettings(ctx context.Context) error {
 				"enable_encryption", settings.EnableEncryption,
 				"directory_leasing_enabled", settings.DirectoryLeasingEnabled,
 			)
+
+			// Notify registered callbacks
+			w.mu.RLock()
+			cbs := w.smbCallbacks
+			w.mu.RUnlock()
+			for _, cb := range cbs {
+				cb(settings)
+			}
 		}
 	}
 

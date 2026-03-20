@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -267,8 +268,8 @@ func (h *Handler) setFileInfoFromStore(
 		}
 
 		// Per MS-FSA 2.1.5.14.2: Handle timestamp freeze/unfreeze sentinels.
-		// -1 (0xFFFFFFFFFFFFFFFF): Freeze timestamp -- suppress auto-updates on subsequent operations.
-		// -2 (0xFFFFFFFFFFFFFFFE): Unfreeze timestamp -- re-enable auto-updates.
+		// filetimeFreeze (-1): Freeze timestamp -- suppress auto-updates on subsequent operations.
+		// filetimeUnfreeze (-2): Unfreeze timestamp -- re-enable auto-updates.
 		// We capture the current timestamp value BEFORE applying changes so the frozen
 		// value reflects the state at freeze time.
 		metaSvc := h.Registry.GetMetadataService()
@@ -290,75 +291,91 @@ func (h *Handler) setFileInfoFromStore(
 		// Note: CreationTime freeze/unfreeze sentinels are detected but not acted upon.
 		// MS-FSA does not require CreationTime auto-update suppression because
 		// CreationTime is never auto-updated by the server after file creation.
-		hasFreezeOrUnfreeze := atimeFT == 0xFFFFFFFFFFFFFFFF || atimeFT == 0xFFFFFFFFFFFFFFFE ||
-			mtimeFT == 0xFFFFFFFFFFFFFFFF || mtimeFT == 0xFFFFFFFFFFFFFFFE ||
-			ctimeFT == 0xFFFFFFFFFFFFFFFF || ctimeFT == 0xFFFFFFFFFFFFFFFE
+		hasFreezeOrUnfreeze := isFiletimeSentinel(atimeFT) ||
+			isFiletimeSentinel(mtimeFT) ||
+			isFiletimeSentinel(ctimeFT)
 
-		// Apply changes first (may auto-update Ctime if modified == true)
-		if err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
-			logger.Debug("SET_INFO: failed to set basic info", "path", openFile.Path, "error", err)
-			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
-		}
-
-		// Read file state AFTER applying changes to capture the post-SET_INFO values.
-		// Per MS-FSA 2.1.5.14.2, the frozen value is the current value of the timestamp
-		// AFTER any other changes in this SET_INFO call take effect. For example, if
-		// FileAttributes change in the same call, Ctime is auto-updated -- the frozen
-		// value must reflect that auto-updated value, not the pre-change value.
-		var postFile *metadata.File
+		// Per MS-FSA 2.1.5.14.2: Sentinel values (-1, -2) mean the object store
+		// MUST NOT change the timestamp for THIS or subsequent operations on this
+		// handle. Pre-read the file to capture current timestamps, then pin
+		// sentinel timestamps to their current value in setAttrs to suppress
+		// auto-updates (e.g., Ctime auto-update when FileAttributes change).
+		var preFile *metadata.File
 		if hasFreezeOrUnfreeze {
 			var err error
-			postFile, err = metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
+			preFile, err = metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
 			if err != nil {
 				logger.Warn("SET_INFO: failed to read file for freeze/unfreeze", "path", openFile.Path, "error", err)
 			}
 		}
 
-		// Apply freeze/unfreeze state to the open handle
-		if postFile != nil {
-			needsUpdate := false
+		// Pin sentinel timestamps to their current value so SetFileAttributes
+		// won't auto-update them (e.g., Ctime auto-update when Mode changes).
+		if preFile != nil {
+			if isFiletimeSentinel(ctimeFT) {
+				setAttrs.Ctime = &preFile.Ctime
+			}
+			if isFiletimeSentinel(mtimeFT) {
+				setAttrs.Mtime = &preFile.Mtime
+			}
+			if isFiletimeSentinel(atimeFT) {
+				setAttrs.Atime = &preFile.Atime
+			}
+		}
 
+		// Per MS-FSA 2.1.5.14.2: When FileAttributes change, the object store
+		// SHOULD also update LastWriteTime. The metadata layer only auto-updates
+		// Ctime (POSIX semantics), so we handle Mtime auto-update here.
+		// Skip if: Mtime is being explicitly set, has a sentinel, or is frozen.
+		if fileAttrs != 0 && setAttrs.Mtime == nil && mtimeFT == 0 && !openFile.MtimeFrozen {
+			now := time.Now()
+			setAttrs.Mtime = &now
+		}
+
+		if err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
+			logger.Debug("SET_INFO: failed to set basic info", "path", openFile.Path, "error", err)
+			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+		}
+
+		// Apply freeze/unfreeze state to the open handle using pre-change values.
+		// The frozen value is the timestamp at the moment of the freeze request,
+		// before any auto-updates from other field changes in this operation.
+		// preFile is non-nil only when hasFreezeOrUnfreeze is true, which
+		// guarantees at least one switch case will match.
+		if preFile != nil {
 			// LastWriteTime (Mtime) - offset 16
 			switch mtimeFT {
-			case 0xFFFFFFFFFFFFFFFF:
+			case filetimeFreeze:
 				openFile.MtimeFrozen = true
-				openFile.FrozenMtime = &postFile.Mtime
-				needsUpdate = true
-				logger.Debug("SET_INFO: froze LastWriteTime", "path", openFile.Path, "value", postFile.Mtime)
-			case 0xFFFFFFFFFFFFFFFE:
+				openFile.FrozenMtime = &preFile.Mtime
+				logger.Debug("SET_INFO: froze LastWriteTime", "path", openFile.Path, "value", preFile.Mtime)
+			case filetimeUnfreeze:
 				openFile.MtimeFrozen = false
 				openFile.FrozenMtime = nil
-				needsUpdate = true
 			}
 
 			// ChangeTime (Ctime) - offset 24
 			switch ctimeFT {
-			case 0xFFFFFFFFFFFFFFFF:
+			case filetimeFreeze:
 				openFile.CtimeFrozen = true
-				openFile.FrozenCtime = &postFile.Ctime
-				needsUpdate = true
-				logger.Debug("SET_INFO: froze ChangeTime", "path", openFile.Path, "value", postFile.Ctime)
-			case 0xFFFFFFFFFFFFFFFE:
+				openFile.FrozenCtime = &preFile.Ctime
+				logger.Debug("SET_INFO: froze ChangeTime", "path", openFile.Path, "value", preFile.Ctime)
+			case filetimeUnfreeze:
 				openFile.CtimeFrozen = false
 				openFile.FrozenCtime = nil
-				needsUpdate = true
 			}
 
 			// LastAccessTime (Atime) - offset 8
 			switch atimeFT {
-			case 0xFFFFFFFFFFFFFFFF:
+			case filetimeFreeze:
 				openFile.AtimeFrozen = true
-				openFile.FrozenAtime = &postFile.Atime
-				needsUpdate = true
-			case 0xFFFFFFFFFFFFFFFE:
+				openFile.FrozenAtime = &preFile.Atime
+			case filetimeUnfreeze:
 				openFile.AtimeFrozen = false
 				openFile.FrozenAtime = nil
-				needsUpdate = true
 			}
 
-			if needsUpdate {
-				h.StoreOpenFile(openFile)
-			}
+			h.StoreOpenFile(openFile)
 		}
 
 		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
@@ -369,6 +386,14 @@ func (h *Handler) setFileInfoFromStore(
 		if err != nil {
 			logger.Debug("SET_INFO: failed to decode rename info", "error", err)
 			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+		}
+
+		// Per MS-FSA 2.1.5.14.10: Rename requires DELETE access on the source file
+		if !hasDeleteAccess(openFile.DesiredAccess) {
+			logger.Debug("SET_INFO: rename without DELETE access",
+				"path", openFile.Path,
+				"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))
+			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
 		}
 
 		// Per MS-FSA 2.1.5.14.10: Before renaming, check that no other open
@@ -384,6 +409,78 @@ func (h *Handler) setFileInfoFromStore(
 		// Normalize path separators (Windows uses backslash, we use forward slash)
 		newPath := strings.ReplaceAll(renameInfo.FileName, "\\", "/")
 		newPath = strings.TrimPrefix(newPath, "/")
+
+		// ================================================================
+		// Stream rename: if the target name starts with ":", this is a
+		// stream-to-stream rename within the same base file.
+		// E.g., renaming ":old:$DATA" to ":new:$DATA" on file "foo.txt"
+		// means renaming "foo.txt:old:$DATA" -> "foo.txt:new:$DATA" in
+		// the parent directory.
+		// ================================================================
+		if strings.HasPrefix(newPath, ":") {
+			// Extract the base file name from the current open file name.
+			// The current file is an ADS: "basefile:streamname:$DATA"
+			baseName := openFile.FileName
+			if colonIdx := strings.Index(baseName, ":"); colonIdx > 0 {
+				baseName = baseName[:colonIdx]
+			}
+
+			// Build new child name: basefile + new stream suffix
+			toName := baseName + newPath
+			toDir := openFile.ParentHandle
+
+			// Save old path info for notification before modification
+			oldPath := openFile.Path
+			oldFileName := openFile.FileName
+			oldParentPath := GetParentPath(oldPath)
+
+			// Per MS-FSA 2.1.5.14.10: Save mtime/ctime before rename
+			restoreTimestamps := h.saveTimestamps(authCtx, openFile.MetadataHandle)
+
+			// Perform the rename
+			metaSvc := h.Registry.GetMetadataService()
+			err = metaSvc.Move(authCtx, toDir, openFile.FileName, toDir, toName)
+			if err != nil {
+				logger.Debug("SET_INFO: stream rename failed",
+					"from", openFile.FileName,
+					"to", toName,
+					"error", err)
+				return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+			}
+
+			// Restore mtime/ctime after rename
+			restoreTimestamps()
+
+			// Clear delete-on-close after rename
+			openFile.DeletePending = false
+
+			// Notify watchers
+			if h.NotifyRegistry != nil {
+				tree, ok := h.GetTree(openFile.TreeID)
+				if ok {
+					newParentPath := GetParentPath(openFile.Path)
+					if newParentPath == "" || newParentPath == "." {
+						newParentPath = "/"
+					}
+					h.NotifyRegistry.NotifyRename(tree.ShareName, oldParentPath, oldFileName, newParentPath, toName)
+				}
+			}
+
+			// Update open file state
+			parentPath := GetParentPath(openFile.Path)
+			if parentPath == "" || parentPath == "/" || parentPath == "." {
+				openFile.Path = toName
+			} else {
+				openFile.Path = parentPath + "/" + toName
+			}
+			openFile.FileName = toName
+			h.StoreOpenFile(openFile)
+
+			logger.Debug("SET_INFO: stream rename successful",
+				"oldName", oldFileName,
+				"newName", toName)
+			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
+		}
 
 		// Determine source and destination.
 		//
@@ -446,6 +543,10 @@ func (h *Handler) setFileInfoFromStore(
 		oldFileName := openFile.FileName
 		oldParentPath := GetParentPath(oldPath)
 
+		// Per MS-FSA 2.1.5.14.10: Save mtime/ctime before rename so we can
+		// restore them after. Rename should NOT update the file's timestamps.
+		restoreTimestamps := h.saveTimestamps(authCtx, openFile.MetadataHandle)
+
 		// Perform the rename/move
 		metaSvc := h.Registry.GetMetadataService()
 		err = metaSvc.Move(authCtx, openFile.ParentHandle, openFile.FileName, toDir, toName)
@@ -456,6 +557,9 @@ func (h *Handler) setFileInfoFromStore(
 				"error", err)
 			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
 		}
+
+		// Restore mtime/ctime after rename
+		restoreTimestamps()
 
 		// Per MS-FSA 2.1.5.14.10: On successful completion of a rename,
 		// if the file was marked for delete-on-close, clear that disposition.
@@ -540,6 +644,29 @@ func (h *Handler) setFileInfoFromStore(
 			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
 		}
 
+		// Per MS-FSA 2.1.5.14.3: Setting delete disposition requires DELETE access
+		if deletePending {
+			if !hasDeleteAccess(openFile.DesiredAccess) {
+				logger.Debug("SET_INFO: delete disposition without DELETE access",
+					"path", openFile.Path,
+					"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))
+				return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+			}
+
+			// Read-only files cannot be marked for deletion
+			if !openFile.IsDirectory {
+				metaSvc := h.Registry.GetMetadataService()
+				file, fileErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
+				if fileErr == nil {
+					attrs := FileAttrToSMBAttributes(&file.FileAttr)
+					if attrs&types.FileAttributeReadonly != 0 {
+						logger.Debug("SET_INFO: delete disposition on read-only file", "path", openFile.Path)
+						return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusCannotDelete}}, nil
+					}
+				}
+			}
+		}
+
 		// Mark file for deletion on close
 		openFile.DeletePending = deletePending
 		h.StoreOpenFile(openFile)
@@ -613,29 +740,51 @@ func applyFrozenTimestamps(openFile *OpenFile, file *metadata.File) {
 	}
 }
 
+// saveTimestamps reads the current Mtime and Ctime of a file and returns a
+// restore function that writes them back. Used to preserve timestamps across
+// rename operations (per MS-FSA 2.1.5.14.10, rename should not change timestamps).
+// Returns a no-op if the read fails.
+func (h *Handler) saveTimestamps(authCtx *metadata.AuthContext, handle metadata.FileHandle) func() {
+	metaSvc := h.Registry.GetMetadataService()
+	file, err := metaSvc.GetFile(authCtx.Context, handle)
+	if err != nil {
+		return func() {}
+	}
+	mtime := file.Mtime
+	ctime := file.Ctime
+	return func() {
+		_ = metaSvc.SetFileAttributes(authCtx, handle, &metadata.SetAttrs{
+			Mtime: &mtime,
+			Ctime: &ctime,
+		})
+	}
+}
+
 // restoreFrozenTimestamps restores timestamps that are frozen via SET_INFO -1 sentinel.
 // Called after operations that unconditionally update timestamps (WRITE, truncate).
 func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFile *OpenFile) {
-	if !openFile.MtimeFrozen && !openFile.CtimeFrozen {
+	if !openFile.MtimeFrozen && !openFile.CtimeFrozen && !openFile.AtimeFrozen {
 		return
 	}
 	restoreAttrs := &metadata.SetAttrs{}
-	needRestore := false
 	if openFile.MtimeFrozen && openFile.FrozenMtime != nil {
 		restoreAttrs.Mtime = openFile.FrozenMtime
-		needRestore = true
 	}
 	if openFile.CtimeFrozen && openFile.FrozenCtime != nil {
 		restoreAttrs.Ctime = openFile.FrozenCtime
-		needRestore = true
 	}
-	if needRestore {
+	if openFile.AtimeFrozen && openFile.FrozenAtime != nil {
+		restoreAttrs.Atime = openFile.FrozenAtime
+	}
+	if restoreAttrs.Mtime != nil || restoreAttrs.Ctime != nil || restoreAttrs.Atime != nil {
 		logger.Debug("restoreFrozenTimestamps: restoring",
 			"path", openFile.Path,
 			"mtimeFrozen", openFile.MtimeFrozen,
 			"ctimeFrozen", openFile.CtimeFrozen,
+			"atimeFrozen", openFile.AtimeFrozen,
 			"frozenMtime", openFile.FrozenMtime,
-			"frozenCtime", openFile.FrozenCtime)
+			"frozenCtime", openFile.FrozenCtime,
+			"frozenAtime", openFile.FrozenAtime)
 		metaSvc := h.Registry.GetMetadataService()
 		if err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, restoreAttrs); err != nil {
 			logger.Debug("restoreFrozenTimestamps: failed", "path", openFile.Path, "error", err)

@@ -100,9 +100,33 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 	var selectedSigningAlg uint16
 	is311 := selectedDialect == types.Dialect0311
 
-	if is311 && negotiateContextCount > 0 && negotiateContextOffset > 0 {
-		responseContexts, selectedCipher, selectedSigningAlg = h.processNegotiateContexts(
-			body, negotiateContextOffset, negotiateContextCount)
+	if is311 {
+		if negotiateContextCount > 0 && negotiateContextOffset > 0 {
+			responseContexts, selectedCipher, selectedSigningAlg = h.processNegotiateContexts(
+				body, negotiateContextOffset, negotiateContextCount)
+		}
+		// Per MS-SMB2 3.3.5.4: SMB 3.1.1 MUST include PREAUTH_INTEGRITY_CAPABILITIES
+		// in the negotiate response even if the client sent no negotiate contexts.
+		hasPreauthCtx := false
+		for _, nc := range responseContexts {
+			if nc.ContextType == types.NegCtxPreauthIntegrity {
+				hasPreauthCtx = true
+				break
+			}
+		}
+		if !hasPreauthCtx {
+			serverSalt := make([]byte, 32)
+			_, _ = rand.Read(serverSalt)
+			respPreauth := types.PreauthIntegrityCaps{
+				HashAlgorithms: []uint16{types.HashAlgSHA512},
+				Salt:           serverSalt,
+			}
+			// Prepend so preauth is always first context
+			responseContexts = append([]types.NegotiateContext{{
+				ContextType: types.NegCtxPreauthIntegrity,
+				Data:        respPreauth.Encode(),
+			}}, responseContexts...)
+		}
 	}
 
 	// Build SPNEGO NegHints for the SecurityBuffer.
@@ -289,11 +313,16 @@ func (h *Handler) buildCapabilities(dialect types.Dialect) types.Capabilities {
 		return caps
 
 	case types.Dialect0311:
-		// SMB 3.1.1: CapLeasing | CapLargeMTU | [CapDirectoryLeasing]
-		// Encryption is signaled via negotiate contexts, not capabilities field.
+		// SMB 3.1.1: CapLeasing | CapLargeMTU | [CapDirectoryLeasing] | [CapEncryption]
+		// While 3.1.1 uses negotiate contexts for cipher selection, Windows servers
+		// still advertise GLOBAL_CAP_ENCRYPTION in the capabilities field when
+		// encryption is supported. WPTS tests expect this flag to be set.
 		caps := types.CapLeasing | types.CapLargeMTU
 		if h.DirectoryLeasingEnabled {
 			caps |= types.CapDirectoryLeasing
+		}
+		if h.EncryptionEnabled {
+			caps |= types.CapEncryption
 		}
 		return caps
 
@@ -362,12 +391,6 @@ func (h *Handler) processNegotiateContexts(
 			})
 
 		case types.NegCtxEncryptionCaps:
-			// Skip encryption context when encryption is disabled
-			if h.EncryptionConfig.Mode == "disabled" {
-				logger.Debug("Skipping encryption negotiate context (encryption disabled)")
-				continue
-			}
-
 			enc, err := types.DecodeEncryptionCaps(nc.Data)
 			if err != nil {
 				logger.Debug("Failed to decode encryption caps", "error", err)

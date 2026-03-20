@@ -54,8 +54,18 @@ type CryptoState interface {
 	GetSigningAlgorithmId() uint16
 	// GetCipherId returns the selected encryption cipher.
 	GetCipherId() uint16
-	// GetPreauthHash returns a copy of the current preauth integrity hash value.
+	// GetPreauthHash returns a copy of the current connection-level preauth integrity hash value.
 	GetPreauthHash() [64]byte
+	// InitSessionPreauthHash creates a per-session preauth hash from the connection hash.
+	InitSessionPreauthHash(sessionID uint64)
+	// UpdateSessionPreauthHash updates the per-session preauth hash with message bytes.
+	UpdateSessionPreauthHash(sessionID uint64, message []byte)
+	// GetSessionPreauthHash returns the per-session preauth hash (falls back to connection hash).
+	GetSessionPreauthHash(sessionID uint64) [64]byte
+	// DeleteSessionPreauthHash removes the per-session preauth hash entry.
+	DeleteSessionPreauthHash(sessionID uint64)
+	// StashPendingSessionSetup stores raw SESSION_SETUP request bytes for deferred hashing.
+	StashPendingSessionSetup(message []byte)
 }
 
 // SMBHandlerContext carries per-request state through all SMB2 handlers.
@@ -107,6 +117,16 @@ type SMBHandlerContext struct {
 	// Populated from ConnInfo.CryptoState by prepareDispatch. Nil if no
 	// CryptoState is available (e.g., in tests).
 	ConnCryptoState CryptoState
+
+	// RequestEncrypted indicates whether the incoming request was received
+	// inside an SMB3 Transform Header (protocol ID 0xFD). Used to enforce
+	// global and per-share encryption requirements per MS-SMB2 3.3.5.2.1.
+	RequestEncrypted bool
+
+	// DeferredSessionDelete is set by LOGOFF to the session ID that should be
+	// deleted AFTER the response is sent. This ensures the session stays alive
+	// for response signing/encryption per MS-SMB2 3.3.5.6.
+	DeferredSessionDelete uint64
 }
 
 // NewSMBHandlerContext creates a new handler context from request parameters.

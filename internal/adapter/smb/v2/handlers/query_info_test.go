@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/binary"
 	"testing"
 
@@ -22,7 +23,7 @@ func TestFileCompressionInformation(t *testing.T) {
 			},
 		}
 
-		info, err := h.buildFileInfoFromStore(file, openFileStub, types.FileCompressionInformation)
+		info, err := h.buildFileInfoFromStore(context.Background(), file, openFileStub, types.FileCompressionInformation)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -61,7 +62,7 @@ func TestFileCompressionInformation(t *testing.T) {
 			},
 		}
 
-		info, err := h.buildFileInfoFromStore(file, openFileStub, types.FileCompressionInformation)
+		info, err := h.buildFileInfoFromStore(context.Background(), file, openFileStub, types.FileCompressionInformation)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -86,7 +87,7 @@ func TestFileAttributeTagInformation(t *testing.T) {
 			},
 		}
 
-		info, err := h.buildFileInfoFromStore(file, openFileStub, types.FileAttributeTagInformation)
+		info, err := h.buildFileInfoFromStore(context.Background(), file, openFileStub, types.FileAttributeTagInformation)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -117,7 +118,7 @@ func TestFileAttributeTagInformation(t *testing.T) {
 			},
 		}
 
-		info, err := h.buildFileInfoFromStore(file, openFileStub, types.FileAttributeTagInformation)
+		info, err := h.buildFileInfoFromStore(context.Background(), file, openFileStub, types.FileAttributeTagInformation)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -144,7 +145,7 @@ func TestBuildFileInfoFromStore_FileStreamInformation(t *testing.T) {
 			},
 		}
 
-		info, err := h.buildFileInfoFromStore(file, openFileStub, types.FileStreamInformation)
+		info, err := h.buildFileInfoFromStore(context.Background(), file, openFileStub, types.FileStreamInformation)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -201,7 +202,7 @@ func TestBuildFileInfoFromStore_FileStreamInformation(t *testing.T) {
 			},
 		}
 
-		info, err := h.buildFileInfoFromStore(file, openFileStub, types.FileStreamInformation)
+		info, err := h.buildFileInfoFromStore(context.Background(), file, openFileStub, types.FileStreamInformation)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -230,7 +231,7 @@ func TestBuildFileInfoFromStore_FileStreamInformation(t *testing.T) {
 			},
 		}
 
-		info, err := h.buildFileInfoFromStore(file, openFileStub, types.FileStreamInformation)
+		info, err := h.buildFileInfoFromStore(context.Background(), file, openFileStub, types.FileStreamInformation)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

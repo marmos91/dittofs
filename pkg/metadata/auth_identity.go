@@ -51,6 +51,25 @@ type AuthContext struct {
 	LockClientID string
 }
 
+// NewSystemAuthContext creates an AuthContext for internal/system operations
+// that bypass normal authentication (e.g., durable handle scavenger cleanup).
+// Uses UID 0 (root) with full write permissions.
+func NewSystemAuthContext(ctx context.Context) *AuthContext {
+	uid := uint32(0)
+	gid := uint32(0)
+	return &AuthContext{
+		Context:       ctx,
+		AuthMethod:    "system",
+		ClientAddr:    "internal",
+		ShareWritable: true,
+		Identity: &Identity{
+			UID:      &uid,
+			GID:      &gid,
+			Username: "root",
+		},
+	}
+}
+
 // Identity represents a client's identity across different authentication systems.
 //
 // This structure supports multiple identity systems to accommodate different protocols:

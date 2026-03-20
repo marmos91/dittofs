@@ -428,9 +428,9 @@ func EncodeCreateContexts(contexts []CreateContext) ([]byte, uint32, uint32) {
 		result = append(result, ctxBuf...)
 	}
 
-	// Offset is after the 89-byte CREATE response header
+	// Offset is after the 88-byte CREATE response fixed fields
 	// Per MS-SMB2, offset is from the start of the SMB2 header (64 bytes before response)
-	offset := uint32(64 + 89) // SMB2 header + CREATE response
+	offset := uint32(64 + 88) // SMB2 header + CREATE response fixed fields
 	length := uint32(len(result))
 
 	return result, offset, length

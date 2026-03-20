@@ -74,13 +74,13 @@ func (c *Connection) UntrackSession(sessionID uint64) {
 
 // connInfo builds the ConnInfo struct used by internal/ dispatch functions.
 func (c *Connection) connInfo() *smb.ConnInfo {
-	return &smb.ConnInfo{
+	ci := &smb.ConnInfo{
 		Conn:           c.conn,
 		Handler:        c.server.handler,
 		SessionManager: c.server.sessionManager,
 		WriteMu:        &c.writeMu,
 		WriteTimeout:   c.server.config.Timeouts.Write,
-		SessionTracker: c,
+		SessionTracker: c, // overwritten below
 		CryptoState:    c.CryptoState,
 		EncryptionMiddleware: encryption.NewEncryptionMiddleware(
 			func(sessionID uint64) (encryption.EncryptableSession, bool) {
@@ -93,6 +93,16 @@ func (c *Connection) connInfo() *smb.ConnInfo {
 		),
 		DecryptFailures: &atomic.Int32{},
 	}
+	// Wrap the session tracker so that session creation/deletion also
+	// registers/deregisters the ConnInfo in the adapter's session→connection
+	// map. This enables lease break notifications to be routed to the correct
+	// TCP connection.
+	ci.SessionTracker = &connRegistryTracker{
+		inner:        c,
+		connInfo:     ci,
+		sessionConns: &c.server.sessionConns,
+	}
+	return ci
 }
 
 // Serve handles all SMB2 requests for this connection.
@@ -120,7 +130,7 @@ func (c *Connection) Serve(ctx context.Context) {
 	}
 
 	ci := c.connInfo()
-	verifier := smb.NewSessionSigningVerifier(c.server.handler, c.conn)
+	verifier := smb.NewSessionSigningVerifier(c.server.handler, c.conn, c.CryptoState)
 	handleSMB1 := func(_ context.Context, message []byte) error {
 		return smb.HandleSMB1Negotiate(ci, message)
 	}
@@ -139,7 +149,7 @@ func (c *Connection) Serve(ctx context.Context) {
 
 		// Read and process the request via framing layer.
 		// Pass EncryptionMiddleware so 0xFD transform headers are decrypted transparently.
-		hdr, body, remainingCompound, err := smb.ReadRequest(
+		hdr, body, remainingCompound, isEncrypted, err := smb.ReadRequest(
 			ctx, c.conn, c.server.config.MaxMessageSize,
 			c.server.config.Timeouts.Read, verifier, ci.EncryptionMiddleware, handleSMB1,
 		)
@@ -191,19 +201,19 @@ func (c *Connection) Serve(ctx context.Context) {
 			compoundData := make([]byte, len(remainingCompound))
 			copy(compoundData, remainingCompound)
 
-			go func(reqHeader *header.SMB2Header, reqBody []byte) {
+			go func(reqHeader *header.SMB2Header, reqBody []byte, encrypted bool) {
 				defer c.handleRequestPanic(clientAddr, reqHeader.MessageID)
-				smb.ProcessCompoundRequest(ctx, reqHeader, reqBody, compoundData, ci)
-			}(hdr, body)
+				smb.ProcessCompoundRequest(ctx, reqHeader, reqBody, compoundData, ci, encrypted)
+			}(hdr, body, isEncrypted)
 		} else {
-			go func(reqHeader *header.SMB2Header, reqBody, raw []byte) {
+			go func(reqHeader *header.SMB2Header, reqBody, raw []byte, encrypted bool) {
 				defer c.handleRequestPanic(clientAddr, reqHeader.MessageID)
 
 				asyncCallback := c.makeAsyncNotifyCallback(ci)
-				if err := smb.ProcessSingleRequest(ctx, reqHeader, reqBody, raw, ci, asyncCallback); err != nil {
+				if err := smb.ProcessSingleRequest(ctx, reqHeader, reqBody, raw, ci, encrypted, asyncCallback); err != nil {
 					logger.Debug("Error processing SMB request", "address", clientAddr, "messageID", reqHeader.MessageID, "error", err)
 				}
-			}(hdr, body, rawMessage)
+			}(hdr, body, rawMessage, isEncrypted)
 		}
 
 		// Reset idle timeout after reading request (read-only)
@@ -247,6 +257,12 @@ func (c *Connection) cleanupSessions() {
 	}
 	c.sessions = make(map[uint64]struct{})
 	c.sessionsMu.Unlock()
+
+	// Clean up session→ConnInfo mapping so lease break notifications
+	// are no longer routed to this (now-closed) connection.
+	for _, sessionID := range sessions {
+		c.server.sessionConns.Delete(sessionID)
+	}
 
 	if len(sessions) == 0 {
 		return

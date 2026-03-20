@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -153,6 +154,21 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	}
 
 	// ========================================================================
+	// Step 2b: Validate read access
+	// ========================================================================
+	//
+	// Per MS-SMB2 3.3.5.15: The server MUST verify that the open was created
+	// with read access (FILE_READ_DATA). If the open lacks read access,
+	// return STATUS_ACCESS_DENIED.
+
+	if !hasReadAccess(openFile.DesiredAccess) {
+		logger.Debug("READ: no read access on handle",
+			"path", openFile.Path,
+			"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+	}
+
+	// ========================================================================
 	// Step 3: Validate file type
 	// ========================================================================
 
@@ -258,7 +274,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		false, // isWrite = false for read operations
 	); err != nil {
 		logger.Debug("READ: blocked by lock", "path", openFile.Path, "offset", req.Offset, "length", req.Length)
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusLockNotGranted}}, nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileLockConflict}}, nil
 	}
 
 	// ========================================================================
@@ -327,7 +343,18 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		"actual", len(data))
 
 	// ========================================================================
-	// Step 12: Return success response
+	// Step 12: Update LastAccessTime (MS-FSA Algorithm for Noting File Accessed)
+	// ========================================================================
+
+	// Per MS-FSA 2.1.5.4, after a successful read the server updates
+	// LastAccessTime to the current system time, unless frozen via SET_INFO -1.
+	if !openFile.AtimeFrozen {
+		now := time.Now()
+		_ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
+	}
+
+	// ========================================================================
+	// Step 13: Return success response
 	// ========================================================================
 
 	return &ReadResponse{

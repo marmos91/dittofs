@@ -159,9 +159,25 @@ func (s *DurableHandleScavenger) cleanupAndDelete(ctx context.Context, h *lock.P
 			}
 		}
 
-		// Delete-on-close would be handled here if the PersistedDurableHandle
-		// tracked a DeletePending flag. Currently this is handled at the OpenFile
-		// level during normal close. For scavenger expiry, the file persists.
+		// Delete-on-close: if the handle had DeletePending set, delete the file
+		// from the metadata store now that the durable timeout has expired.
+		if h.DeletePending && metaSvc != nil && len(h.ParentHandle) > 0 && h.FileName != "" {
+			// Build a system-level auth context for the scavenger (UID 0/root)
+			systemCtx := metadata.NewSystemAuthContext(ctx)
+			var deleteErr error
+			if h.IsDirectory {
+				deleteErr = metaSvc.RemoveDirectory(systemCtx, h.ParentHandle, h.FileName)
+			} else {
+				_, deleteErr = metaSvc.RemoveFile(systemCtx, h.ParentHandle, h.FileName)
+			}
+			if deleteErr != nil {
+				logger.Debug("DurableHandleScavenger: delete-on-close failed",
+					"id", h.ID, "path", h.Path, "error", deleteErr)
+			} else {
+				logger.Debug("DurableHandleScavenger: delete-on-close executed",
+					"id", h.ID, "path", h.Path)
+			}
+		}
 	}
 
 	if err := s.store.DeleteDurableHandle(ctx, h.ID); err != nil {

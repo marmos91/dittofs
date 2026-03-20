@@ -161,18 +161,20 @@ type PendingAuth struct {
 	CreatedAt       time.Time
 	ServerChallenge [8]byte // Random challenge sent in Type 2 message
 	UsedSPNEGO      bool    // Whether client used SPNEGO wrapping
+	IsReauth        bool    // True when re-authenticating an existing session
 }
 
 // TreeConnection represents an active tree connection mapping a client
 // to a DittoFS share. Created by TreeConnect and removed by TreeDisconnect.
 // Stores the effective permission level for access control during file operations.
 type TreeConnection struct {
-	TreeID     uint32
-	SessionID  uint64
-	ShareName  string
-	ShareType  uint8
-	CreatedAt  time.Time
-	Permission models.SharePermission // User's permission level for this share
+	TreeID      uint32
+	SessionID   uint64
+	ShareName   string
+	ShareType   uint8
+	CreatedAt   time.Time
+	Permission  models.SharePermission // User's permission level for this share
+	EncryptData bool                   // Share requires all requests to be encrypted
 }
 
 // OpenFile represents an open file handle created by the CREATE command.
@@ -444,6 +446,12 @@ func (h *Handler) closeFilesWithFilter(
 			}
 
 			persisted := buildPersistedDurableHandle(openFile, username, sessionKeyHash, h.StartTime)
+			// Capture current lease state from LeaseManager for reconnect restoration
+			if h.LeaseManager != nil && openFile.LeaseKey != ([16]byte{}) {
+				if state, _, found := h.LeaseManager.GetLeaseState(ctx, openFile.LeaseKey); found {
+					persisted.LeaseState = state
+				}
+			}
 			if err := h.DurableStore.PutDurableHandle(ctx, persisted); err != nil {
 				logger.Warn(caller+": failed to persist durable handle",
 					"path", openFile.Path,
@@ -555,13 +563,27 @@ func (h *Handler) CleanupSession(ctx context.Context, sessionID uint64, isDiscon
 	// 1. Close all open files (this also releases locks and flushes caches)
 	filesClosed := h.CloseAllFilesForSession(ctx, sessionID, isDisconnect)
 
-	// 2. Delete all tree connections
+	// 2. Release all leases held by this session.
+	// CloseAllFilesForSession releases byte-range locks but not leases.
+	// On explicit LOGOFF all leases are released. On transport disconnect,
+	// leases for durable handles are preserved (already saved in the
+	// DurableHandleStore above), but non-durable leases must be freed so
+	// that subsequent opens on the same file are not blocked by stale state.
+	if h.LeaseManager != nil {
+		if err := h.LeaseManager.ReleaseSessionLeases(ctx, sessionID); err != nil {
+			logger.Warn("CleanupSession: failed to release session leases",
+				"sessionID", sessionID,
+				"error", err)
+		}
+	}
+
+	// 3. Delete all tree connections
 	treesDeleted := h.DeleteAllTreesForSession(sessionID)
 
-	// 3. Clean up any pending auth state
+	// 4. Clean up any pending auth state
 	h.DeletePendingAuth(sessionID)
 
-	// 4. Delete the session itself
+	// 5. Delete the session itself
 	h.DeleteSession(sessionID)
 
 	logger.Debug("CleanupSession: completed",
@@ -727,8 +749,13 @@ func (h *Handler) DeletePendingAuth(sessionID uint64) {
 //   - If an existing open has delete access AND the new open doesn't share delete -> conflict
 //   - Vice versa: if the new open requests access that the existing open doesn't share
 //
+// The filePath parameter is the share-relative path of the file being opened (e.g.,
+// "dir/file.txt" or "dir/file.txt:stream:$DATA"). When opening an ADS or the base
+// file, the check also considers opens on other streams of the same base file per
+// MS-FSA 2.1.5.1.2.1 (share mode enforcement spans all streams of a file).
+//
 // Returns true if a conflict exists (CREATE should fail with STATUS_SHARING_VIOLATION).
-func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesiredAccess, newShareAccess uint32) bool {
+func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesiredAccess, newShareAccess uint32, filePath string) bool {
 	const (
 		fileShareRead   = uint32(0x01)
 		fileShareWrite  = uint32(0x02)
@@ -759,15 +786,41 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 		return access&(deleteAccess|genericAll) != 0
 	}
 
+	// Compute the base path for ADS cross-stream checking.
+	// If the file is an ADS (path contains ":"), strip the stream suffix to get
+	// the base file path. Share mode checks must span the base file and all its streams.
+	newBasePath := adsBasePath(filePath)
+
 	conflict := false
 	h.files.Range(func(key, value any) bool {
 		existing := value.(*OpenFile)
-		// Only check handles to the same file
-		if len(existing.MetadataHandle) == 0 || !bytes.Equal(existing.MetadataHandle, fileHandle) {
-			return true
-		}
 		// Skip pipes
 		if existing.IsPipe {
+			return true
+		}
+		if len(existing.MetadataHandle) == 0 {
+			return true
+		}
+
+		// Check if this open is on the same file or a related stream.
+		// Match by: (1) exact metadata handle, or (2) same base file path
+		// when either the new file or existing open is an ADS.
+		// Per MS-FSA 2.1.5.1.2: share mode enforcement spans the base file
+		// and ALL its alternate data streams.
+		sameFile := bytes.Equal(existing.MetadataHandle, fileHandle)
+		if !sameFile {
+			existingBasePath := adsBasePath(existing.Path)
+			if newBasePath != "" {
+				// New file is an ADS: check if existing is the base file or another stream
+				sameFile = (existingBasePath != "" && existingBasePath == newBasePath) ||
+					(existing.Path == newBasePath) ||
+					(existingBasePath == filePath)
+			} else if existingBasePath != "" {
+				// New file is a base file, existing is an ADS: check if it's our stream
+				sameFile = (existingBasePath == filePath)
+			}
+		}
+		if !sameFile {
 			return true
 		}
 
@@ -804,6 +857,33 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 	return conflict
 }
 
+// adsBasePath extracts the base file path from a potentially ADS-qualified path.
+// For "dir/file.txt:stream:$DATA" returns "dir/file.txt".
+// For "dir/file.txt" (no stream) returns "" (not an ADS).
+// The last component's first colon is the stream separator.
+func adsBasePath(filePath string) string {
+	// Find the last path separator to isolate the filename component
+	lastSep := strings.LastIndex(filePath, "/")
+	var fileName string
+	if lastSep >= 0 {
+		fileName = filePath[lastSep+1:]
+	} else {
+		fileName = filePath
+	}
+
+	// Check for stream separator in the filename
+	colonIdx := strings.Index(fileName, ":")
+	if colonIdx <= 0 {
+		return "" // Not an ADS path
+	}
+
+	// Return the path with the stream suffix stripped
+	if lastSep >= 0 {
+		return filePath[:lastSep+1] + fileName[:colonIdx]
+	}
+	return fileName[:colonIdx]
+}
+
 // checkShareDeleteConflict checks if any other open handle on the same file
 // lacks FILE_SHARE_DELETE in its ShareAccess. Per MS-FSA 2.1.5.14.10, a rename
 // requires all other opens to permit delete sharing. Returns true if a conflict
@@ -833,6 +913,36 @@ func (h *Handler) checkShareDeleteConflict(renameFile *OpenFile) bool {
 		return true
 	})
 	return conflict
+}
+
+// hasReadAccess reports whether the given access mask includes read access.
+// Checks FILE_READ_DATA, GENERIC_READ, GENERIC_ALL, and MAXIMUM_ALLOWED.
+func hasReadAccess(access uint32) bool {
+	m := types.AccessMask(access)
+	return m&types.FileReadData != 0 ||
+		m&types.GenericRead != 0 ||
+		m&types.GenericAll != 0 ||
+		m&types.MaximumAllowed != 0
+}
+
+// hasWriteAccess reports whether the given access mask includes write access.
+// Checks FILE_WRITE_DATA, FILE_APPEND_DATA, GENERIC_WRITE, GENERIC_ALL, and MAXIMUM_ALLOWED.
+func hasWriteAccess(access uint32) bool {
+	m := types.AccessMask(access)
+	return m&types.FileWriteData != 0 ||
+		m&types.FileAppendData != 0 ||
+		m&types.GenericWrite != 0 ||
+		m&types.GenericAll != 0 ||
+		m&types.MaximumAllowed != 0
+}
+
+// hasDeleteAccess reports whether the given access mask includes delete access.
+// Checks DELETE, GENERIC_ALL, and MAXIMUM_ALLOWED.
+func hasDeleteAccess(access uint32) bool {
+	m := types.AccessMask(access)
+	return m&types.Delete != 0 ||
+		m&types.GenericAll != 0 ||
+		m&types.MaximumAllowed != 0
 }
 
 // getCachedShares returns the cached share list, rebuilding if invalidated.

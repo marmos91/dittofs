@@ -2,10 +2,13 @@ package handlers
 
 import (
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================
@@ -178,6 +181,21 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	}
 
 	// ========================================================================
+	// Step 2b: Validate write access
+	// ========================================================================
+	//
+	// Per MS-SMB2 3.3.5.16: The server MUST verify that the open was created
+	// with write access (FILE_WRITE_DATA or FILE_APPEND_DATA). If the open
+	// lacks write access, return STATUS_ACCESS_DENIED.
+
+	if !hasWriteAccess(openFile.DesiredAccess) {
+		logger.Debug("WRITE: no write access on handle",
+			"path", openFile.Path,
+			"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+	}
+
+	// ========================================================================
 	// Step 3: Validate file type
 	// ========================================================================
 
@@ -302,7 +320,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		true, // isWrite = true for write operations
 	); err != nil {
 		logger.Debug("WRITE: blocked by lock", "path", openFile.Path, "offset", req.Offset, "length", len(req.Data))
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusLockNotGranted}}, nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileLockConflict}}, nil
 	}
 
 	// ========================================================================
@@ -356,6 +374,22 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Per MS-FSA 2.1.5.14.2: If timestamps are frozen via SET_INFO with -1,
 	// CommitWrite unconditionally updated Mtime/Ctime. Restore frozen values.
 	h.restoreFrozenTimestamps(authCtx, openFile)
+
+	// Per NTFS: Writing to an ADS updates the base object's ChangeTime and
+	// LastWriteTime. The ADS is an attribute of the base file/directory, so
+	// data writes to the stream propagate timestamp changes to the base
+	// object. Respect frozen state on the ADS handle: if a timestamp is
+	// frozen, the base object's corresponding timestamp remains unchanged.
+	if colonIdx := strings.Index(openFile.FileName, ":"); colonIdx > 0 {
+		h.updateBaseObjectTimestampsForADSWrite(authCtx, metaSvc, openFile, openFile.FileName[:colonIdx])
+	}
+
+	// Per MS-FSA 2.1.5.3: After a successful write, update LastAccessTime
+	// to the current system time, unless frozen via SET_INFO -1.
+	if !openFile.AtimeFrozen {
+		now := time.Now()
+		_ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
+	}
 
 	// Update cached PayloadID in OpenFile
 	openFile.PayloadID = writeOp.PayloadID

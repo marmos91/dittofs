@@ -142,8 +142,8 @@ func init() {
 		types.SMB2OplockBreak: {
 			Name:         "OPLOCK_BREAK",
 			Handler:      handleOplockBreak,
-			NeedsSession: true,
-			NeedsTree:    true,
+			NeedsSession: false, // Break ack identifies by lease key, not session
+			NeedsTree:    false, // Break ack doesn't need tree context
 		},
 	}
 }

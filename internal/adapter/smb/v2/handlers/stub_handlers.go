@@ -29,6 +29,7 @@ const (
 	FsctlSrvCopyChunk           uint32 = 0x001440F2 // [MS-SMB2] 2.2.32.1
 	FsctlSrvCopyChunkWrite      uint32 = 0x001480F2 // [MS-SMB2] 2.2.32.1
 	FsctlGetReparsePoint        uint32 = 0x000900A8 // [MS-FSCC] 2.3.30
+	FsctlIsPathnameValid        uint32 = 0x000900C0 // [MS-FSCC] 2.3.33 - Pathname validation
 	FsctlGetNtfsVolumeData      uint32 = 0x00090064 // [MS-FSCC] 2.3.29 - NTFS volume data
 	FsctlReadFileUsnData        uint32 = 0x000900EB // [MS-FSCC] 2.3.56 - Read file USN data
 )
@@ -263,15 +264,16 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 
 // OplockBreak handles SMB2 OPLOCK_BREAK acknowledgment [MS-SMB2] 2.2.24.
 //
-// After OplockManager deletion, only lease break acks (36 bytes) are supported.
-// Traditional oplock break acks (24 bytes) are rejected since no traditional
-// oplocks can be in flight.
+// Supports both:
+//   - Lease break acks (StructureSize=36): decoded and delegated to LeaseManager
+//   - Traditional oplock break acks (StructureSize=24): the FileID is used to
+//     reconstruct the synthetic lease key, then delegated to LeaseManager
 //
 // **Process:**
 //
 //  1. Read StructureSize to determine oplock vs lease break
 //  2. For lease (36 bytes): decode lease key + state, delegate to LeaseManager
-//  3. For traditional (24 bytes): reject (no OplockManager)
+//  3. For traditional (24 bytes): look up open file, derive synthetic lease key, delegate
 func (h *Handler) OplockBreak(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	if len(body) < 2 {
 		return NewErrorResult(types.StatusInvalidParameter), nil
@@ -284,12 +286,10 @@ func (h *Handler) OplockBreak(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 		return h.handleLeaseBreakAck(ctx, body)
 	}
 
-	// Traditional oplock break ack (StructureSize=24)
-	// No traditional oplocks are granted after OplockManager removal.
-	// Return STATUS_INVALID_PARAMETER per MS-SMB2 3.3.4.6.
-	logger.Debug("OPLOCK_BREAK: traditional oplock ack rejected (no OplockManager)",
-		"structureSize", structSize)
-	return NewErrorResult(types.StatusInvalidParameter), nil
+	// Traditional oplock break ack (StructureSize=24) [MS-SMB2] 2.2.24.1
+	// Traditional oplocks are internally mapped to leases. Reconstruct the
+	// synthetic lease key from the FileID and delegate to LeaseManager.
+	return h.handleOplockBreakAck(ctx, body)
 }
 
 // handleLeaseBreakAck handles an SMB2 Lease Break Acknowledgment [MS-SMB2] 2.2.24.2.
@@ -322,6 +322,75 @@ func (h *Handler) handleLeaseBreakAck(ctx *SMBHandlerContext, body []byte) (*Han
 	logger.Debug("LEASE_BREAK_ACK: acknowledged",
 		"leaseKey", fmt.Sprintf("%x", ack.LeaseKey),
 		"newState", lock.LeaseStateToString(ack.LeaseState))
+
+	return NewResult(types.StatusSuccess, respBytes), nil
+}
+
+// handleOplockBreakAck handles a traditional SMB2 OPLOCK_BREAK acknowledgment [MS-SMB2] 2.2.24.1.
+//
+// Traditional oplocks are internally mapped to leases via synthetic lease keys.
+// This handler:
+//  1. Decodes the 24-byte oplock break ack (extracts FileID and new oplock level)
+//  2. Looks up the OpenFile to find its synthetic lease key
+//  3. Maps the acknowledged oplock level to a lease state
+//  4. Delegates to LeaseManager.AcknowledgeLeaseBreak
+//  5. Returns a 24-byte oplock break response
+func (h *Handler) handleOplockBreakAck(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
+	ack, err := DecodeOplockBreakRequest(body)
+	if err != nil {
+		logger.Debug("OPLOCK_BREAK_ACK: decode error", "error", err)
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	logger.Debug("OPLOCK_BREAK_ACK: traditional oplock acknowledgment",
+		"fileID", fmt.Sprintf("%x", ack.FileID),
+		"newLevel", oplockLevelName(ack.OplockLevel))
+
+	// Look up the open file to find its lease key
+	openFile, ok := h.GetOpenFile(ack.FileID)
+	if !ok {
+		logger.Debug("OPLOCK_BREAK_ACK: file not found", "fileID", fmt.Sprintf("%x", ack.FileID))
+		return NewErrorResult(types.StatusInvalidDeviceRequest), nil
+	}
+
+	// The synthetic lease key was stored on the OpenFile during CREATE
+	if openFile.LeaseKey == ([16]byte{}) {
+		logger.Debug("OPLOCK_BREAK_ACK: no lease key on open file", "fileID", fmt.Sprintf("%x", ack.FileID))
+		return NewErrorResult(types.StatusInvalidDeviceRequest), nil
+	}
+
+	if h.LeaseManager == nil {
+		logger.Warn("OPLOCK_BREAK_ACK: no lease manager")
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	// Map acknowledged oplock level to lease state
+	newState := oplockLevelToLeaseState(ack.OplockLevel)
+
+	if err := h.LeaseManager.AcknowledgeLeaseBreak(ctx.Context, openFile.LeaseKey, newState, 0); err != nil {
+		logger.Warn("OPLOCK_BREAK_ACK: acknowledgment failed",
+			"fileID", fmt.Sprintf("%x", ack.FileID),
+			"error", err)
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	// Update the oplock level on the open file
+	openFile.OplockLevel = ack.OplockLevel
+
+	// Build oplock break response (24 bytes)
+	resp := &OplockBreakResponse{
+		OplockLevel: ack.OplockLevel,
+		FileID:      ack.FileID,
+	}
+	respBytes, err := resp.Encode()
+	if err != nil {
+		logger.Error("OPLOCK_BREAK_ACK: encode error", "error", err)
+		return NewErrorResult(types.StatusInternalError), nil
+	}
+
+	logger.Debug("OPLOCK_BREAK_ACK: acknowledged",
+		"fileID", fmt.Sprintf("%x", ack.FileID),
+		"newLevel", oplockLevelName(ack.OplockLevel))
 
 	return NewResult(types.StatusSuccess, respBytes), nil
 }

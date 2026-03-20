@@ -435,9 +435,9 @@ func TestRootHasAdminAccess(t *testing.T) {
 // =============================================================================
 
 func TestTreeConnect_ShareEncryptDataConstant(t *testing.T) {
-	// SMB2_SHAREFLAG_ENCRYPT_DATA must be 0x0008 per MS-SMB2 2.2.10
-	if SMB2ShareFlagEncryptData != 0x0008 {
-		t.Errorf("SMB2ShareFlagEncryptData = 0x%04x, expected 0x0008", SMB2ShareFlagEncryptData)
+	// SMB2_SHAREFLAG_ENCRYPT_DATA must be 0x00008000 per MS-SMB2 2.2.10
+	if SMB2ShareFlagEncryptData != 0x00008000 {
+		t.Errorf("SMB2ShareFlagEncryptData = 0x%08x, expected 0x00008000", SMB2ShareFlagEncryptData)
 	}
 }
 

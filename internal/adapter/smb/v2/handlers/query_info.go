@@ -316,7 +316,7 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 
 	switch req.InfoType {
 	case types.SMB2InfoTypeFile:
-		info, err = h.buildFileInfoFromStore(file, openFile, types.FileInfoClass(req.FileInfoClass))
+		info, err = h.buildFileInfoFromStore(ctx.Context, file, openFile, types.FileInfoClass(req.FileInfoClass))
 	case types.SMB2InfoTypeFilesystem:
 		info, err = h.buildFilesystemInfo(ctx.Context, types.FileInfoClass(req.FileInfoClass), metaSvc, openFile.MetadataHandle)
 	case types.SMB2InfoTypeSecurity:
@@ -509,7 +509,7 @@ func (h *Handler) handlePipeFileInfo(req *QueryInfoRequest, openFile *OpenFile) 
 }
 
 // buildFileInfoFromStore builds file information based on class using metadata store.
-func (h *Handler) buildFileInfoFromStore(file *metadata.File, openFile *OpenFile, class types.FileInfoClass) ([]byte, error) {
+func (h *Handler) buildFileInfoFromStore(ctx context.Context, file *metadata.File, openFile *OpenFile, class types.FileInfoClass) ([]byte, error) {
 	switch class {
 	case types.FileBasicInformation:
 		basicInfo := FileAttrToFileBasicInfo(&file.FileAttr)
@@ -540,17 +540,9 @@ func (h *Handler) buildFileInfoFromStore(file *metadata.File, openFile *OpenFile
 
 	case types.FileStreamInformation:
 		// FileStreamInformation [MS-FSCC] 2.4.44
-		// Return the default unnamed data stream (::$DATA)
-		streamName := []byte{':', 0, ':', 0, '$', 0, 'D', 0, 'A', 0, 'T', 0, 'A', 0} // "::$DATA" UTF-16LE
-		size := getSMBSize(&file.FileAttr)
-		alloc := calculateAllocationSize(size)
-		w := smbenc.NewWriter(24 + len(streamName))
-		w.WriteUint32(0)                       // NextEntryOffset (last entry)
-		w.WriteUint32(uint32(len(streamName))) // StreamNameLength
-		w.WriteUint64(size)                    // StreamSize
-		w.WriteUint64(alloc)                   // StreamAllocationSize
-		w.WriteBytes(streamName)
-		return w.Bytes(), nil
+		// Must enumerate ALL streams: the default unnamed data stream (::$DATA)
+		// plus any Alternate Data Streams (ADS) stored as siblings in the parent dir.
+		return h.buildFileStreamInformation(ctx, file, openFile)
 
 	case types.FileNetworkOpenInformation:
 		networkInfo := FileAttrToFileNetworkOpenInfo(&file.FileAttr)
@@ -691,6 +683,146 @@ func (h *Handler) buildFileAllInformationFromStore(file *metadata.File, openFile
 	return info
 }
 
+// buildFileStreamInformation builds FILE_STREAM_INFORMATION [MS-FSCC] 2.4.44.
+//
+// Enumerates all streams on a file: the default data stream (::$DATA) plus
+// any Alternate Data Streams (ADS). ADS are stored as children of the parent
+// directory with names like "basefile:streamname:$DATA".
+//
+// Each entry in the response is:
+//
+//	NextEntryOffset (4) + StreamNameLength (4) + StreamSize (8) +
+//	StreamAllocationSize (8) + StreamName (variable, UTF-16LE)
+//
+// Entries are 8-byte aligned and chained via NextEntryOffset (0 for last).
+func (h *Handler) buildFileStreamInformation(ctx context.Context, file *metadata.File, openFile *OpenFile) ([]byte, error) {
+	// Determine the base file name. If the open file is itself an ADS
+	// (e.g., "file.txt:stream1:$DATA"), find the base file first.
+	baseName := openFile.FileName
+	if colonIdx := strings.Index(baseName, ":"); colonIdx > 0 {
+		baseName = baseName[:colonIdx]
+	}
+
+	// Build stream entry list.
+	type streamEntry struct {
+		name  string // e.g., "::$DATA" or ":stream1:$DATA"
+		size  uint64
+		alloc uint64
+	}
+
+	var streams []streamEntry
+
+	// Per MS-FSCC 2.4.44 / NTFS semantics: directories do NOT have a default
+	// unnamed data stream (::$DATA). Only regular files include the default
+	// stream entry. Directories only enumerate their named alternate data streams.
+	//
+	// When the open file is an ADS, the base object might be a directory even
+	// though openFile.IsDirectory is false (the ADS itself is a data stream).
+	// Look up the base file to determine its type.
+	isBaseDirectory := openFile.IsDirectory
+	var defaultSize uint64
+	if !isBaseDirectory && strings.Contains(openFile.FileName, ":") && len(openFile.ParentHandle) > 0 {
+		metaSvc := h.Registry.GetMetadataService()
+		if baseFile, err := metaSvc.Lookup(&metadata.AuthContext{Context: ctx, Identity: &metadata.Identity{}}, openFile.ParentHandle, baseName); err == nil {
+			if baseFile.Type == metadata.FileTypeDirectory {
+				isBaseDirectory = true
+			}
+			defaultSize = getSMBSize(&baseFile.FileAttr)
+		}
+	} else {
+		defaultSize = getSMBSize(&file.FileAttr)
+	}
+
+	if !isBaseDirectory {
+		streams = append(streams, streamEntry{
+			name:  "::$DATA",
+			size:  defaultSize,
+			alloc: calculateAllocationSize(defaultSize),
+		})
+	}
+
+	// Enumerate ADS entries from the parent directory.
+	// ADS are stored as children with names like "baseName:streamname:$DATA".
+	if len(openFile.ParentHandle) > 0 {
+		metaSvc := h.Registry.GetMetadataService()
+		store, storeErr := metaSvc.GetStoreForShare(shareNameForOpenFile(openFile))
+		if storeErr == nil {
+			prefix := baseName + ":"
+			cursor := ""
+			for {
+				entries, nextCursor, listErr := store.ListChildren(ctx, openFile.ParentHandle, cursor, 1000)
+				if listErr != nil {
+					break
+				}
+				for _, entry := range entries {
+					if strings.HasPrefix(entry.Name, prefix) {
+						// Extract stream name portion: "file:stream:$DATA" -> ":stream:$DATA"
+						streamSuffix := entry.Name[len(baseName):]
+						var adsSize uint64
+						if entry.Attr != nil {
+							adsSize = entry.Attr.Size
+						}
+						streams = append(streams, streamEntry{
+							name:  streamSuffix,
+							size:  adsSize,
+							alloc: calculateAllocationSize(adsSize),
+						})
+					}
+				}
+				if nextCursor == "" {
+					break
+				}
+				cursor = nextCursor
+			}
+		}
+	}
+
+	// Build the response buffer with chained entries.
+	// Each entry: header (24 bytes) + stream name (variable, UTF-16LE)
+	// Entries are 8-byte aligned.
+	var result []byte
+	for i, stream := range streams {
+		nameBytes := encodeUTF16LE(stream.name)
+		entrySize := 24 + len(nameBytes)
+		// Align to 8 bytes (except for the last entry)
+		paddedSize := entrySize
+		if i < len(streams)-1 {
+			paddedSize = (entrySize + 7) &^ 7
+		}
+
+		w := smbenc.NewWriter(paddedSize)
+		if i < len(streams)-1 {
+			w.WriteUint32(uint32(paddedSize)) // NextEntryOffset
+		} else {
+			w.WriteUint32(0) // Last entry
+		}
+		w.WriteUint32(uint32(len(nameBytes))) // StreamNameLength
+		w.WriteUint64(stream.size)            // StreamSize
+		w.WriteUint64(stream.alloc)           // StreamAllocationSize
+		w.WriteBytes(nameBytes)
+		// Pad to alignment
+		if paddedSize > entrySize {
+			w.WriteZeros(paddedSize - entrySize)
+		}
+
+		result = append(result, w.Bytes()...)
+	}
+
+	return result, nil
+}
+
+// shareNameForOpenFile extracts the share name from an OpenFile's metadata handle.
+// Falls back to the OpenFile's ShareName field if handle decoding fails.
+func shareNameForOpenFile(openFile *OpenFile) string {
+	if len(openFile.MetadataHandle) > 0 {
+		shareName, _, err := metadata.DecodeFileHandle(openFile.MetadataHandle)
+		if err == nil && shareName != "" {
+			return shareName
+		}
+	}
+	return openFile.ShareName
+}
+
 // buildFilesystemInfo builds filesystem information [MS-FSCC] 2.5.
 func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoClass, metaSvc *metadata.MetadataService, handle metadata.FileHandle) ([]byte, error) {
 	switch class {
@@ -742,7 +874,7 @@ func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoC
 	case 5: // FileFsAttributeInformation [MS-FSCC] 2.5.1
 		fsName := encodeUTF16LE("NTFS")
 		w := smbenc.NewWriter(12 + len(fsName))
-		w.WriteUint32(0x000000CF) // FILE_CASE_SENSITIVE_SEARCH | FILE_CASE_PRESERVED_NAMES | FILE_UNICODE_ON_DISK | FILE_PERSISTENT_ACLS | FILE_SUPPORTS_SPARSE_FILES | FILE_SUPPORTS_REPARSE_POINTS
+		w.WriteUint32(0x000200CF) // FILE_CASE_SENSITIVE_SEARCH | FILE_CASE_PRESERVED_NAMES | FILE_UNICODE_ON_DISK | FILE_PERSISTENT_ACLS | FILE_SUPPORTS_SPARSE_FILES | FILE_SUPPORTS_REPARSE_POINTS | FILE_SUPPORTS_ENCRYPTION (0x00020000)
 		w.WriteUint32(255)
 		w.WriteUint32(uint32(len(fsName)))
 		w.WriteBytes(fsName)

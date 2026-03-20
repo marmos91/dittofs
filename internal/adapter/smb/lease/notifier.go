@@ -18,6 +18,15 @@ type LeaseBreakNotifier interface {
 	SendLeaseBreak(sessionID uint64, leaseKey [16]byte, currentState, newState uint32, epoch uint16) error
 }
 
+// OplockFileIDRegistrar is an optional interface that notifiers can implement
+// to support traditional oplock break notifications. When a traditional oplock
+// is granted (mapped to a lease internally), the FileID is registered so that
+// break notifications use the 24-byte oplock format instead of 44-byte lease format.
+type OplockFileIDRegistrar interface {
+	RegisterOplockFileID(leaseKey [16]byte, fileID [16]byte)
+	UnregisterOplockFileID(leaseKey [16]byte)
+}
+
 // SMBBreakHandler implements lock.BreakCallbacks for SMB lease break dispatch.
 //
 // When the LockManager dispatches an oplock/lease break, this handler:
@@ -80,15 +89,17 @@ func (h *SMBBreakHandler) OnOpLockBreak(handleKey string, ul *lock.UnifiedLock, 
 		"breakToState", lock.LeaseStateToString(breakToState),
 		"epoch", newEpoch)
 
-	// Send break notification asynchronously to avoid blocking the LockManager
-	go func() {
-		if err := notifier.SendLeaseBreak(sessionID, ul.Lease.LeaseKey, ul.Lease.LeaseState, breakToState, newEpoch); err != nil {
-			logger.Warn("SMBBreakHandler: failed to send lease break notification",
-				"leaseKey", fmt.Sprintf("%x", ul.Lease.LeaseKey),
-				"sessionID", sessionID,
-				"error", err)
-		}
-	}()
+	// Send break notification synchronously. Per MS-SMB2 3.3.4.7, the
+	// lease break notification MUST be sent before the response to the
+	// operation that triggered the break (e.g., CREATE). Synchronous
+	// dispatch is safe here because the LockManager mutex is released
+	// before calling dispatchOpLockBreak -> OnOpLockBreak.
+	if err := notifier.SendLeaseBreak(sessionID, ul.Lease.LeaseKey, ul.Lease.LeaseState, breakToState, newEpoch); err != nil {
+		logger.Warn("SMBBreakHandler: failed to send lease break notification",
+			"leaseKey", fmt.Sprintf("%x", ul.Lease.LeaseKey),
+			"sessionID", sessionID,
+			"error", err)
+	}
 }
 
 // OnByteRangeRevoke is called when a byte-range lock must be revoked.

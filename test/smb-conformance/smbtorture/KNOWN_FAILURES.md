@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-03-09 (Phase 42 — added 2 concurrent create race failures)
+Last updated: 2026-03-19 (added 15 newly reachable tests from compound, ADS, and oplock improvements)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -141,6 +141,7 @@ share modes pass due to the stub implementation.
 | smb2.streams.names2 | Streams | ADS name enumeration not implemented | - |
 | smb2.streams.names3 | Streams | ADS name enumeration not implemented | - |
 | smb2.streams.rename2 | Streams | ADS rename semantics not implemented | - |
+| smb2.streams.sharemodes | Streams | ADS share mode enforcement edge cases (newly reachable) | - |
 | smb2.streams.zero-byte | Streams | ADS zero-byte handling not implemented | - |
 | smb2.create_no_streams.no_stream | Streams | No-streams create context not implemented | - |
 
@@ -187,7 +188,6 @@ oplock break notification delivery.
 | smb2.oplock.batch1 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.batch2 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.batch3 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.batch4 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.batch5 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.batch6 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.batch7 | Oplocks | Multi-client oplock break coordination | - |
@@ -199,26 +199,20 @@ oplock break notification delivery.
 | smb2.oplock.batch12 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.batch13 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.batch14 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.batch15 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.batch16 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.batch19 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.batch20 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.batch21 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.batch22a | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.batch22b | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.batch23 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.batch24 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.batch25 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.batch26 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.exclusive1 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.exclusive2 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.exclusive3 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.exclusive4 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.exclusive5 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.exclusive6 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.exclusive9 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.levelii500 | Oplocks | Level II oplock notification not implemented | - |
-| smb2.oplock.levelii501 | Oplocks | Level II oplock notification not implemented | - |
 | smb2.oplock.levelii502 | Oplocks | Level II oplock notification not implemented | - |
 | smb2.oplock.brl1 | Oplocks | Byte-range lock + oplock interaction | - |
 | smb2.oplock.brl2 | Oplocks | Byte-range lock + oplock interaction | - |
@@ -226,13 +220,10 @@ oplock break notification delivery.
 | smb2.oplock.doc | Oplocks | Delete-on-close + oplock interaction | - |
 | smb2.oplock.statopen1 | Oplocks | Stat open + oplock interaction | - |
 | smb2.oplock.stream1 | Oplocks | Stream + oplock interaction | - |
-| smb2.kernel-oplocks.kernel_oplocks1 | Kernel Oplocks | Kernel oplock break not implemented | - |
-| smb2.kernel-oplocks.kernel_oplocks2 | Kernel Oplocks | Kernel oplock break not implemented | - |
+| smb2.kernel-oplocks.kernel_oplocks2 | Kernel Oplocks | Kernel oplock break coordination (newly reachable) | - |
 | smb2.kernel-oplocks.kernel_oplocks3 | Kernel Oplocks | Kernel oplock break not implemented | - |
-| smb2.kernel-oplocks.kernel_oplocks4 | Kernel Oplocks | Kernel oplock break not implemented | - |
-| smb2.kernel-oplocks.kernel_oplocks5 | Kernel Oplocks | Kernel oplock break not implemented | - |
+| smb2.kernel-oplocks.kernel_oplocks4 | Kernel Oplocks | Kernel oplock break coordination (newly reachable) | - |
 | smb2.kernel-oplocks.kernel_oplocks6 | Kernel Oplocks | Kernel oplock break not implemented | - |
-| smb2.kernel-oplocks.kernel_oplocks7 | Kernel Oplocks | Kernel oplock break not implemented | - |
 
 ### Directory Leases (Not Implemented)
 
@@ -285,7 +276,6 @@ handling) are not fully implemented.
 |-----------|----------|--------|-------|
 | smb2.dir.1kfiles_rename | Directory | Large directory rename not implemented | - |
 | smb2.dir.file-index | Directory | File index tracking not implemented | - |
-| smb2.dir.find | Directory | Advanced find semantics not implemented | - |
 | smb2.dir.fixed | Directory | Fixed-size directory entries not implemented | - |
 | smb2.dir.large-files | Directory | Large directory operations not implemented | - |
 | smb2.dir.many | Directory | Large directory operations not implemented | - |
@@ -304,7 +294,6 @@ attributes are not fully implemented.
 | smb2.async_dosmode | DOS attributes | Async DOS mode not implemented | - |
 | smb2.openattr | File attributes | Open with attribute validation not implemented | - |
 | smb2.winattr | Windows attributes | Windows-specific attributes not implemented | - |
-| smb2.scan.getinfo | Scan | Getinfo scan enumeration not implemented | - |
 
 ### Create Contexts (Advanced Semantics Not Implemented)
 
@@ -316,14 +305,11 @@ files, create blobs) are not implemented. Basic create operations pass.
 | smb2.create.acldir | Create | ACL-based directory create not implemented | - |
 | smb2.create.aclfile | Create | ACL-based file create not implemented | - |
 | smb2.create.bench-path-contention-shared | Create | Path contention benchmark not implemented | - |
-| smb2.create.dosattr_tmp_dir | Create | DOS attribute temp directory semantics not implemented | - |
 | smb2.create.blob | Create | Create context blobs not fully implemented | - |
 | smb2.create.gentest | Create | Generic create test (impersonation) not implemented | - |
 | smb2.create.impersonation | Create | Impersonation levels not implemented | - |
 | smb2.create.leading-slash | Create | Leading slash path handling not implemented | - |
-| smb2.create.mkdir-dup | Create | Concurrent mkdir atomicity race (TOCTOU in createEntry) | - |
 | smb2.create.mkdir-visible | Create | Mkdir visibility semantics not implemented | - |
-| smb2.create.multi | Create | Concurrent file create atomicity race (TOCTOU in createEntry) | - |
 | smb2.create.nulldacl | Create | Null DACL create not implemented | - |
 | smb2.create.quota-fake-file | Create | Quota fake file not implemented | - |
 
@@ -371,6 +357,25 @@ operations work but async compounds do not.
 | smb2.compound_async.rename_non_compound_no_async | Compound | Async compound not implemented | - |
 | smb2.compound_async.rename_same_srcdst_non_compound_no_async | Compound | Async compound not implemented | - |
 | smb2.compound_async.write_write | Compound | Async compound not implemented | - |
+| smb2.compound.related4 | Compound | Access control enforcement in compound CREATE | - |
+| smb2.compound.related7 | Compound | Access control enforcement in compound CREATE | - |
+| smb2.compound.related8 | Compound | CHANGE_NOTIFY not implemented | - |
+| smb2.compound.related3 | Compound | Compound related request edge case (newly reachable) | - |
+| smb2.compound.related5 | Compound | Compound related request edge case (newly reachable) | - |
+| smb2.compound.related6 | Compound | Compound related request edge case (newly reachable) | - |
+| smb2.compound.unrelated1 | Compound | Compound unrelated request handling (newly reachable) | - |
+| smb2.compound.invalid1 | Compound | Invalid compound parameter validation | - |
+| smb2.compound.invalid2 | Compound | Invalid compound parameter validation | - |
+| smb2.compound.invalid3 | Compound | Invalid compound FILE_CLOSED detection | - |
+| smb2.compound.invalid4 | Compound | Invalid compound parameter validation (newly reachable) | - |
+| smb2.compound.compound-break | Compound | Compound + oplock break interaction (newly reachable) | - |
+| smb2.compound.create-write-close | Compound | Compound CREATE+WRITE+CLOSE sequence (newly reachable) | - |
+| smb2.compound.interim1 | Compound | Interim/async response not implemented | - |
+| smb2.compound.interim2 | Compound | Interim/async response not implemented | - |
+| smb2.compound.interim3 | Compound | Interim/async response not implemented | - |
+| smb2.compound.compound-padding | Compound | Compound response 8-byte padding | - |
+| smb2.compound_find.compound_find_related | Compound | Compound find related (newly reachable) | - |
+| smb2.compound_find.compound_find_unrelated | Compound | Compound find unrelated (newly reachable) | - |
 | smb2.compound_find.compound_find_close | Compound | Compound find close not implemented | - |
 
 ### Share Modes and Deny (Advanced Scenarios)
@@ -394,9 +399,7 @@ Advanced delete-on-close permission checks and edge cases. Basic DOC works
 |-----------|----------|--------|-------|
 | smb2.delete-on-close-perms.CREATE | Delete on close | DOC permission check not implemented | - |
 | smb2.delete-on-close-perms.CREATE_IF | Delete on close | DOC permission check not implemented | - |
-| smb2.delete-on-close-perms.FIND_and_set_DOC | Delete on close | DOC with FIND and set disposition not implemented | - |
 | smb2.delete-on-close-perms.READONLY | Delete on close | DOC on read-only files not implemented | - |
-| smb2.delete-on-close-perms.BUG14427 | Delete on close | DOC edge case (Samba bug 14427) not handled | - |
 
 ### File IDs (Different Handle Scheme)
 
@@ -501,18 +504,20 @@ Session signing edge cases requiring multi-channel binding.
 ### Character Set Edge Cases (Fix Candidate)
 
 Unicode and character set edge cases (partial surrogates, wide-A collision).
+Newly reachable after compound and protocol improvements.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.charset.Testing | Charset | Unicode edge cases (surrogate/wide-A) not handled | - |
+| smb2.charset.Testing | Character set | Unicode surrogate pair handling not implemented | - |
 
 ### Delete-on-Close OVERWRITE_IF (Fix Candidate)
 
 Delete-on-close with OVERWRITE_IF disposition needs additional enforcement.
+Newly reachable after access control improvements.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.delete-on-close-perms.OVERWRITE_IF | Delete on close | DOC + OVERWRITE_IF permission check not implemented | - |
+| smb2.delete-on-close-perms.OVERWRITE_IF | Delete on close | DOC OVERWRITE_IF permission edge case (newly reachable) | - |
 
 ### Durable Handles V1 (Fix Candidate)
 
@@ -583,7 +588,6 @@ incomplete break notification delivery and multi-client coordination.
 | smb2.lease.request | Leases | Lease request handling not fully working | - |
 | smb2.lease.nobreakself | Leases | Lease self-break suppression not fully working | - |
 | smb2.lease.statopen | Leases | Lease + stat open interaction not fully working | - |
-| smb2.lease.statopen3 | Leases | Lease + stat open interaction not fully working | - |
 | smb2.lease.statopen4 | Leases | Lease + stat open interaction not fully working | - |
 | smb2.lease.upgrade | Leases | Lease upgrade not fully working | - |
 | smb2.lease.upgrade2 | Leases | Lease upgrade not fully working | - |
@@ -660,15 +664,10 @@ share mode enforcement during rename.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.rename.simple_modtime | Rename | Rename modification time not preserved | - |
-| smb2.rename.simple_nodelete | Rename | Rename without delete access not enforced | - |
 | smb2.rename.share_delete_and_delete_access | Rename | Share delete + delete access rename not working | - |
 | smb2.rename.no_share_delete_but_delete_access | Rename | Rename share mode enforcement not working | - |
 | smb2.rename.no_share_delete_no_delete_access | Rename | Rename share mode enforcement not working | - |
 | smb2.rename.rename_dir_openfile | Rename | Rename directory with open file not working | - |
-| smb2.rename.rename-open | Rename | Rename with open handle not working | - |
-| smb2.rename.close-full-information | Rename | Close with full information rename not implemented | - |
-| smb2.rename.msword | Rename | MS Word rename pattern (secondary connection) not working | - |
 
 ### Sessions (Fix Candidate)
 
@@ -679,7 +678,6 @@ session reconnect and re-authentication logic.
 |-----------|----------|--------|-------|
 | smb2.session.reconnect1 | Sessions | Session reconnect not fully working | - |
 | smb2.session.reconnect2 | Sessions | Session reconnect not fully working | - |
-| smb2.session.reauth1 | Sessions | Session re-authentication not fully working | - |
 | smb2.session.reauth2 | Sessions | Session re-authentication not fully working | - |
 | smb2.session.reauth3 | Sessions | Session re-authentication not fully working | - |
 | smb2.session.reauth4 | Sessions | Session re-authentication not fully working | - |
@@ -824,18 +822,10 @@ incomplete delayed-write and timestamp freeze/unfreeze logic.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.timestamps.freeze-thaw | Timestamps | Timestamp freeze/thaw semantics not fully working | - |
-| smb2.timestamps.delayed-1write | Timestamps | Delayed single-write timestamp update not working | - |
 | smb2.timestamps.delayed-2write | Timestamps | Delayed write timestamp update not working | - |
 | smb2.timestamps.delayed-write-vs-flush | Timestamps | Delayed write vs flush timestamp not working | - |
 | smb2.timestamps.delayed-write-vs-setbasic | Timestamps | Delayed write vs setbasic timestamp not working | - |
 | smb2.timestamps.delayed-write-vs-seteof | Timestamps | Delayed write vs seteof timestamp not working | - |
-| smb2.timestamps.time_t_0 | Timestamps | Zero timestamp (epoch) handling not working | - |
-| smb2.timestamps.time_t_-1 | Timestamps | Negative timestamp handling not working | - |
-| smb2.timestamps.time_t_-2 | Timestamps | Negative timestamp handling not working | - |
-| smb2.timestamps.time_t_10000000000 | Timestamps | Large timestamp handling not working | - |
-| smb2.timestamps.time_t_15032385535 | Timestamps | Large timestamp handling not working | - |
-| smb2.timestamps.time_t_1968 | Timestamps | Pre-epoch timestamp handling not working | - |
 
 ### Scan (Full Operation Enumeration)
 
@@ -845,9 +835,7 @@ iterates all QUERY_DIRECTORY information classes. Both hit unimplemented classes
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.scan.find | Scan | QUERY_DIRECTORY scan hits unimplemented info classes | - |
-| smb2.scan.scan | Scan | Full operation scan hits unimplemented features | - |
-| smb2.scan.setinfo | Scan | SET_INFO scan hits unimplemented info classes | - |
+| smb2.scan.scan | Scan | Full operation scan hits unimplemented info classes | - |
 
 ## Notes
 

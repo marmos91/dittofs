@@ -16,6 +16,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
@@ -58,6 +59,14 @@ type Adapter struct {
 
 	// sessionManager provides unified session and credit management
 	sessionManager *session.Manager
+
+	// sessionConns maps sessionID → *smb.ConnInfo for lease break notification routing.
+	// Populated by connRegistryTracker when sessions are created on connections.
+	sessionConns sync.Map
+
+	// oplockFileIDs maps synthetic lease key hex → [16]byte SMB FileID for
+	// traditional oplock break notifications (24-byte format vs 44-byte lease format).
+	oplockFileIDs sync.Map
 
 	// shareUnsubscribers holds unsubscribe functions returned by rt.OnShareChange.
 	// Called during Stop to prevent stale callbacks from accumulating across restarts.
@@ -155,14 +164,8 @@ func (s *Adapter) SetRuntime(rtAny any) {
 	// at request time.
 	if metaSvc := rt.GetMetadataService(); metaSvc != nil {
 		resolver := &metadataServiceResolver{metaSvc: metaSvc}
-		// TODO(lease-breaks): Wire a concrete LeaseBreakNotifier from the SMB
-		// session/connection layer so break notifications are delivered over the
-		// wire. Without this, breaks are initiated in LockManager but never
-		// sent to clients. Server-side lease state is still correct (conflicts
-		// are detected, breaking state is tracked, timeouts will revoke), but
-		// clients won't flush dirty caches proactively. This should be wired
-		// before leases are used in production.
-		leaseMgr := smblease.NewLeaseManager(resolver, nil)
+		notifier := &transportNotifier{sessionConns: &s.sessionConns, oplockFileIDs: &s.oplockFileIDs}
+		leaseMgr := smblease.NewLeaseManager(resolver, notifier)
 		s.handler.LeaseManager = leaseMgr
 
 		// Register SMBOplockBreaker as the cross-protocol oplock breaker.
@@ -172,8 +175,7 @@ func (s *Adapter) SetRuntime(rtAny any) {
 		rt.SetAdapterProvider(adapter.OplockBreakerProviderKey, oplockBreaker)
 
 		// Register SMBBreakHandler as BreakCallbacks on each share's LockManager.
-		// The notifier is nil until the transport layer is wired (see TODO above).
-		breakHandler := smblease.NewSMBBreakHandler(leaseMgr, nil)
+		breakHandler := smblease.NewSMBBreakHandler(leaseMgr, notifier)
 		registeredLockManagers := make(map[lock.LockManager]struct{})
 		var breakRegMu sync.Mutex
 
@@ -255,6 +257,14 @@ func (s *Adapter) SetRuntime(rtAny any) {
 	// for thread-safe reads. Settings are consumed here at startup and on
 	// each new connection (grandfathering per locked decision).
 	s.applySMBSettings(rt)
+
+	// Register for live settings changes so encryption mode updates take effect
+	// without requiring adapter restart.
+	if sw := rt.GetSettingsWatcher(); sw != nil {
+		sw.OnSMBSettingsChange(func(_ *models.SMBAdapterSettings) {
+			s.applySMBSettings(rt)
+		})
+	}
 }
 
 // applySMBSettings reads current SMB adapter settings from the runtime's

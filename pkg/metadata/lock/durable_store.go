@@ -31,6 +31,14 @@ type PersistedDurableHandle struct {
 	DisconnectedAt  time.Time
 	TimeoutMs       uint32    // Handle expires at DisconnectedAt + TimeoutMs
 	ServerStartTime time.Time // For timeout adjustment after server restart
+
+	// Delete-on-close state for scavenger cleanup.
+	// When DeletePending is true and the handle expires, the scavenger
+	// deletes the file from the metadata store.
+	DeletePending bool
+	ParentHandle  []byte // Parent directory handle for deletion
+	FileName      string // File name within parent for deletion
+	IsDirectory   bool   // Whether the file is a directory
 }
 
 // DurableHandleStore provides persistence for SMB3 durable handle state.
