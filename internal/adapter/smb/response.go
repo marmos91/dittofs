@@ -339,7 +339,14 @@ func SendErrorResponse(reqHeader *header.SMB2Header, status types.Status, connIn
 // SendMessage sends an SMB2 message with NetBIOS framing, optional encryption,
 // and optional signing.
 //
-// Per MS-SMB2 3.3.4.1.1: encrypted sessions use AEAD instead of signing.
+// Per MS-SMB2 3.3.4.1.1 — Signing an Outgoing Message:
+// If the session has Session.SigningRequired set and the message is not encrypted,
+// the server MUST sign the response using the session's signing key. Encrypted
+// sessions use AEAD for integrity instead of signing (MS-SMB2 3.3.4.1.3).
+//
+// Per MS-SMB2 3.3.5.5.3: the initial SESSION_SETUP SUCCESS response for a newly
+// created session MUST NOT be encrypted (client hasn't derived keys yet), but
+// MUST be signed. Re-authentication SESSION_SETUP responses ARE encrypted.
 func SendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo) error {
 	smbPayload := append(hdr.Encode(), body...)
 

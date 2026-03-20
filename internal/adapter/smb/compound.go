@@ -211,11 +211,14 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 }
 
 // sendCompoundResponses sends all compound responses in a single NetBIOS frame.
-// Per MS-SMB2 3.3.5.2.7:
+//
+// Per MS-SMB2 3.3.5.2.7 — Sending Compounded Responses:
 //   - Each non-last response is padded to 8-byte alignment
 //   - NextCommand in the header points to the next command's offset
-//   - Each command is signed individually (if signing is active)
-//   - The entire compound may be encrypted as one message
+//   - Per MS-SMB2 3.3.4.1.1: each command is signed individually over its own
+//     bytes (header + body + padding) before concatenation
+//   - Per MS-SMB2 3.3.4.1.3: the entire compound may be encrypted as one message
+//     (AEAD replaces signing when encryption is active)
 func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo) error {
 	if len(responses) == 0 {
 		return nil
@@ -364,8 +367,14 @@ func ParseCompoundCommand(data []byte) (*header.SMB2Header, []byte, []byte, erro
 }
 
 // VerifyCompoundCommandSignature verifies the signature of a compound sub-command.
-// Per MS-SMB2 3.2.4.1.4, each command in a compound is signed individually.
-// The signature covers only this command's bytes (from its header to NextCommand or end).
+//
+// Per MS-SMB2 3.3.5.2.7.2 — Handling Compounded Requests:
+// Each command in a compound request is signed individually over its own bytes
+// (from its SMB2 header to NextCommand offset, or end for the last command).
+// The signature covers ONLY that command's bytes, not the entire compound.
+//
+// Per MS-SMB2 3.3.5.2.4: For dialect 3.1.1, unsigned unencrypted requests from
+// authenticated (non-guest, non-null) sessions are rejected.
 func VerifyCompoundCommandSignature(data []byte, hdr *header.SMB2Header, connInfo *ConnInfo) error {
 	if hdr.SessionID == 0 || hdr.Command == types.SMB2Negotiate || hdr.Command == types.SMB2SessionSetup {
 		return nil

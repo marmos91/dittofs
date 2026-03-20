@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v4.5
 milestone_name: BlockStore Security
 status: executing
-stopped_at: Completed 69-01-PLAN.md
-last_updated: "2026-03-20T16:21:19.210Z"
+stopped_at: Completed 69-02-PLAN.md
+last_updated: "2026-03-20T16:15:19Z"
 last_activity: 2026-03-20 — Completed plan 69-02 (Sequence Window & Credit Validation)
 progress:
   total_phases: 1
@@ -52,8 +52,6 @@ All decisions archived in PROJECT.md Key Decisions table.
 
 - **69-02**: Used absolute low/high watermark tracking for sequence window bitmap (avoids corruption during compaction)
 - **69-02**: NEGOTIATE exempt only when SessionID=0 (pre-auth semantics)
-- [Phase 69-01]: Cherry-picked PR #288 for signing enforcement instead of re-implementing
-- [Phase 69-01]: MS-SMB2 spec section references as code comments for long-term audit trail
 
 ### Pending Todos
 
@@ -65,6 +63,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-20T16:21:19.207Z
-Stopped at: Completed 69-01-PLAN.md
+Last session: 2026-03-20T16:15:19Z
+Stopped at: Completed 69-02-PLAN.md
 Next action: `/gsd:execute-phase 69` to execute plan 69-03

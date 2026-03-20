@@ -365,3 +365,84 @@ func TestDefaultCreditConfig(t *testing.T) {
 		t.Error("LoadThresholdHigh should be > LoadThresholdLow")
 	}
 }
+
+func TestManager_MinimumCreditGrant(t *testing.T) {
+	// Test that GrantCredits never returns 0 under extreme conditions.
+	// Per MS-SMB2 3.3.1.2: The server MUST grant at least 1 credit.
+
+	t.Run("ExceedMaxSessionCredits", func(t *testing.T) {
+		config := DefaultCreditConfig()
+		config.MaxSessionCredits = 10 // Very low session cap
+		mgr := NewManagerWithStrategy(StrategyAdaptive, config)
+		session := mgr.CreateSession("client", true, "guest", "")
+
+		// Grant many credits to exceed MaxSessionCredits
+		for i := 0; i < 100; i++ {
+			mgr.GrantCredits(session.SessionID, 256, 0)
+		}
+
+		// Even with session credits exceeded, should still get at least 1
+		grant := mgr.GrantCredits(session.SessionID, 0, 1)
+		if grant < MinimumCreditGrant {
+			t.Errorf("GrantCredits returned %d, want at least %d", grant, MinimumCreditGrant)
+		}
+	})
+
+	t.Run("AggressiveClientThresholdExceeded", func(t *testing.T) {
+		config := DefaultCreditConfig()
+		config.AggressiveClientThreshold = 1 // Very low aggressive threshold
+		mgr := NewManagerWithStrategy(StrategyAdaptive, config)
+		session := mgr.CreateSession("client", true, "guest", "")
+
+		// Make client extremely aggressive
+		for i := 0; i < 1000; i++ {
+			mgr.RequestStarted(session.SessionID)
+		}
+
+		grant := mgr.GrantCredits(session.SessionID, 0, 1)
+		if grant < MinimumCreditGrant {
+			t.Errorf("GrantCredits returned %d under aggressive load, want at least %d", grant, MinimumCreditGrant)
+		}
+
+		// Cleanup
+		for i := 0; i < 1000; i++ {
+			mgr.RequestCompleted(session.SessionID)
+		}
+	})
+
+	t.Run("HighServerLoad", func(t *testing.T) {
+		config := DefaultCreditConfig()
+		config.LoadThresholdHigh = 1 // Extremely low threshold
+		mgr := NewManagerWithStrategy(StrategyAdaptive, config)
+		session := mgr.CreateSession("client", true, "guest", "")
+
+		// Simulate extreme server load
+		for i := 0; i < 10000; i++ {
+			mgr.RequestStarted(session.SessionID)
+		}
+
+		grant := mgr.GrantCredits(session.SessionID, 0, 1)
+		if grant < MinimumCreditGrant {
+			t.Errorf("GrantCredits returned %d under high load, want at least %d", grant, MinimumCreditGrant)
+		}
+
+		// Cleanup
+		for i := 0; i < 10000; i++ {
+			mgr.RequestCompleted(session.SessionID)
+		}
+	})
+
+	t.Run("AllStrategiesGuaranteeMinimum", func(t *testing.T) {
+		strategies := []CreditStrategy{StrategyFixed, StrategyEcho, StrategyAdaptive}
+		for _, strategy := range strategies {
+			config := DefaultCreditConfig()
+			mgr := NewManagerWithStrategy(strategy, config)
+			session := mgr.CreateSession("client", true, "guest", "")
+
+			grant := mgr.GrantCredits(session.SessionID, 0, 1)
+			if grant < MinimumCreditGrant {
+				t.Errorf("Strategy %v returned %d, want at least %d", strategy, grant, MinimumCreditGrant)
+			}
+		}
+	})
+}

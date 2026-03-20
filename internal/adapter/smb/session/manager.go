@@ -186,6 +186,13 @@ func (m *Manager) GrantCredits(sessionID uint64, requested uint16, creditCharge 
 		grant = m.grantFixed()
 	}
 
+	// Per MS-SMB2 3.3.1.2: The server MUST grant at least 1 credit in every response.
+	// This is the final check after all strategy calculations and cap enforcement,
+	// ensuring clients are never deadlocked with zero credits.
+	if grant < MinimumCreditGrant {
+		grant = MinimumCreditGrant
+	}
+
 	// Record grant
 	session.GrantCredits(grant)
 
