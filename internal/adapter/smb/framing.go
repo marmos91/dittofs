@@ -311,6 +311,13 @@ func (sv *sessionSigningVerifier) VerifyRequest(hdr *header.SMB2Header, message 
 		return nil
 	}
 
+	// If the session has been logged off but not yet deleted (deferred delete
+	// race), skip signing verification and let prepareDispatch return the
+	// proper STATUS_USER_SESSION_DELETED.
+	if sess.LoggedOff.Load() {
+		return nil
+	}
+
 	isSigned := hdr.Flags.IsSigned()
 
 	if sess.CryptoState != nil && sess.CryptoState.SigningRequired && !isSigned {

@@ -153,10 +153,16 @@ func (h *Handler) Logoff(ctx *SMBHandlerContext, req *LogoffRequest) (*LogoffRes
 	// Step 1: Verify session exists
 	// ========================================================================
 
-	_, ok := h.GetSession(ctx.SessionID)
+	sess, ok := h.GetSession(ctx.SessionID)
 	if !ok {
 		return &LogoffResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusUserSessionDeleted}}, nil
 	}
+
+	// Mark the session as logged off immediately. This prevents a race where
+	// the next request arrives before the deferred session delete executes:
+	// the signing verifier and dispatch layer check this flag to return
+	// STATUS_USER_SESSION_DELETED instead of STATUS_ACCESS_DENIED.
+	sess.LoggedOff.Store(true)
 
 	// ========================================================================
 	// Step 2: Partial cleanup — close files, trees, pending auth
