@@ -351,9 +351,11 @@ func BuildChallenge() (message []byte, serverChallenge [8]byte) {
 	targetName := encodeUTF16LE(strings.ToUpper(hostname))
 
 	// Flags for server capabilities.
-	// TODO: Implement encryption. We currently advertise Flag128 and
-	// Flag56 but don't actually encrypt traffic. This requires
-	// implementing session key derivation and RC4/AES encryption per [MS-NLMP].
+	// Note: Flag128, Flag56, and FlagSeal are intentionally NOT set.
+	// NTLM-level sealing (RC4) will not be implemented — SMB3 AES
+	// transport encryption is the only confidentiality path.
+	// If a client requests FlagSeal in Type 1, we silently omit it
+	// from Type 2; the client falls back to SMB3 transport encryption.
 	flags := FlagUnicode | // Support UTF-16LE strings
 		FlagRequestTarget | // We can provide target info
 		FlagNTLM | // Support NTLM authentication
@@ -362,9 +364,7 @@ func BuildChallenge() (message []byte, serverChallenge [8]byte) {
 		FlagTargetTypeServer | // We are a server (not domain controller)
 		FlagExtendedSecurity | // Support NTLMv2 session security
 		FlagTargetInfo | // Include AV_PAIR list
-		FlagKeyExch | // Support session key exchange (required for signing)
-		Flag128 | // Support 128-bit encryption
-		Flag56 // Support 56-bit encryption (legacy)
+		FlagKeyExch // Support session key exchange (required for signing)
 
 	// Build target info with required AV_PAIRs for Windows compatibility.
 	// Windows clients need at minimum: NbDomainName, NbComputerName,
