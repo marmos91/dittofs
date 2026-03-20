@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
@@ -435,12 +436,12 @@ func TestNegotiate_SigningEnabled(t *testing.T) {
 		t.Errorf("Status = 0x%x, expected StatusSuccess", result.Status)
 	}
 
-	securityMode := result.Data[2]
-	if securityMode&0x01 == 0 {
-		t.Errorf("SecurityMode = 0x%02x, expected bit 0 (SIGNING_ENABLED) to be set", securityMode)
+	securityMode := types.SecurityMode(binary.LittleEndian.Uint16(result.Data[2:4]))
+	if securityMode&types.NegSigningEnabled == 0 {
+		t.Errorf("SecurityMode = 0x%04x, expected NegSigningEnabled to be set", securityMode)
 	}
-	if securityMode&0x02 != 0 {
-		t.Errorf("SecurityMode = 0x%02x, expected bit 1 (SIGNING_REQUIRED) to be clear", securityMode)
+	if securityMode&types.NegSigningRequired != 0 {
+		t.Errorf("SecurityMode = 0x%04x, expected NegSigningRequired to be clear", securityMode)
 	}
 }
 
@@ -461,12 +462,12 @@ func TestNegotiate_SigningRequired(t *testing.T) {
 		t.Errorf("Status = 0x%x, expected StatusSuccess", result.Status)
 	}
 
-	securityMode := result.Data[2]
-	if securityMode&0x01 == 0 {
-		t.Errorf("SecurityMode = 0x%02x, expected bit 0 (SIGNING_ENABLED) to be set", securityMode)
+	securityMode := types.SecurityMode(binary.LittleEndian.Uint16(result.Data[2:4]))
+	if securityMode&types.NegSigningEnabled == 0 {
+		t.Errorf("SecurityMode = 0x%04x, expected NegSigningEnabled to be set", securityMode)
 	}
-	if securityMode&0x02 == 0 {
-		t.Errorf("SecurityMode = 0x%02x, expected bit 1 (SIGNING_REQUIRED) to be set", securityMode)
+	if securityMode&types.NegSigningRequired == 0 {
+		t.Errorf("SecurityMode = 0x%04x, expected NegSigningRequired to be set", securityMode)
 	}
 }
 
@@ -487,9 +488,9 @@ func TestNegotiate_SigningDisabled(t *testing.T) {
 		t.Errorf("Status = 0x%x, expected StatusSuccess", result.Status)
 	}
 
-	securityMode := result.Data[2]
+	securityMode := types.SecurityMode(binary.LittleEndian.Uint16(result.Data[2:4]))
 	if securityMode != 0 {
-		t.Errorf("SecurityMode = 0x%02x, expected 0x00 (signing disabled)", securityMode)
+		t.Errorf("SecurityMode = 0x%04x, expected 0 (signing disabled)", securityMode)
 	}
 }
 
@@ -1154,7 +1155,7 @@ func TestNegotiate_SigningCaps_GMACPreferred(t *testing.T) {
 	contexts := []types.NegotiateContext{
 		buildPreauthContext([]uint16{types.HashAlgSHA512}, salt),
 		buildEncryptionContext([]uint16{types.CipherAES128GCM}),
-		buildSigningCapsContext([]uint16{0x0002, 0x0001}), // GMAC, CMAC
+		buildSigningCapsContext([]uint16{signing.SigningAlgAESGMAC, signing.SigningAlgAESCMAC}),
 	}
 
 	body := buildNegotiateRequestFull(
@@ -1171,9 +1172,9 @@ func TestNegotiate_SigningCaps_GMACPreferred(t *testing.T) {
 	}
 
 	// CryptoState should have GMAC selected
-	if cs.signingAlgorithmId != 0x0002 {
-		t.Errorf("CryptoState.SigningAlgorithmId = 0x%04x, expected 0x0002 (AES-128-GMAC)",
-			cs.signingAlgorithmId)
+	if cs.signingAlgorithmId != signing.SigningAlgAESGMAC {
+		t.Errorf("CryptoState.SigningAlgorithmId = 0x%04x, expected 0x%04x (AES-128-GMAC)",
+			cs.signingAlgorithmId, signing.SigningAlgAESGMAC)
 	}
 
 	// Parse response contexts to find SIGNING_CAPABILITIES
@@ -1197,9 +1198,9 @@ func TestNegotiate_SigningCaps_GMACPreferred(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to decode signing caps: %v", err)
 			}
-			if len(sigCaps.SigningAlgorithms) != 1 || sigCaps.SigningAlgorithms[0] != 0x0002 {
-				t.Errorf("Response signing algorithms = %v, expected [0x0002 (GMAC)]",
-					sigCaps.SigningAlgorithms)
+			if len(sigCaps.SigningAlgorithms) != 1 || sigCaps.SigningAlgorithms[0] != signing.SigningAlgAESGMAC {
+				t.Errorf("Response signing algorithms = %v, expected [0x%04x (GMAC)]",
+					sigCaps.SigningAlgorithms, signing.SigningAlgAESGMAC)
 			}
 		}
 	}
@@ -1220,7 +1221,7 @@ func TestNegotiate_SigningCaps_CMACOnly(t *testing.T) {
 	contexts := []types.NegotiateContext{
 		buildPreauthContext([]uint16{types.HashAlgSHA512}, salt),
 		buildEncryptionContext([]uint16{types.CipherAES128GCM}),
-		buildSigningCapsContext([]uint16{0x0001}), // CMAC only
+		buildSigningCapsContext([]uint16{signing.SigningAlgAESCMAC}),
 	}
 
 	body := buildNegotiateRequestFull(
@@ -1236,9 +1237,145 @@ func TestNegotiate_SigningCaps_CMACOnly(t *testing.T) {
 		t.Fatalf("Status = 0x%x, expected StatusSuccess", result.Status)
 	}
 
-	if cs.signingAlgorithmId != 0x0001 {
-		t.Errorf("CryptoState.SigningAlgorithmId = 0x%04x, expected 0x0001 (AES-128-CMAC)",
-			cs.signingAlgorithmId)
+	if cs.signingAlgorithmId != signing.SigningAlgAESCMAC {
+		t.Errorf("CryptoState.SigningAlgorithmId = 0x%04x, expected 0x%04x (AES-128-CMAC)",
+			cs.signingAlgorithmId, signing.SigningAlgAESCMAC)
+	}
+}
+
+// TestNegotiate_SMB311_WireFormat_ContextAlignment validates that the SMB 3.1.1
+// negotiate response wire format has correct negotiate context offset, alignment,
+// and all contexts are parseable. This catches bugs that only manifest when a
+// non-empty security buffer shifts context offsets.
+func TestNegotiate_SMB311_WireFormat_ContextAlignment(t *testing.T) {
+	h := NewHandler()
+	h.MaxDialect = types.Dialect0311
+	h.EncryptionEnabled = true
+	h.SigningConfig.Enabled = true
+	ctx, _ := newNegotiateTestContextWithCrypto()
+
+	salt := make([]byte, 32)
+	_, _ = rand.Read(salt)
+
+	// Full 3.1.1 negotiate with preauth + encryption + signing contexts
+	contexts := []types.NegotiateContext{
+		buildPreauthContext([]uint16{types.HashAlgSHA512}, salt),
+		buildEncryptionContext([]uint16{types.CipherAES128GCM, types.CipherAES128CCM, types.CipherAES256GCM, types.CipherAES256CCM}),
+		buildSigningCapsContext([]uint16{signing.SigningAlgAESGMAC, signing.SigningAlgAESCMAC}),
+	}
+
+	body := buildNegotiateRequestFull(
+		[]uint16{0x0202, 0x0210, 0x0300, 0x0302, 0x0311},
+		uint16(types.NegSigningEnabled|types.NegSigningRequired),
+		0,
+		[16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+		contexts,
+	)
+
+	result, err := h.Negotiate(ctx, body)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if result.Status != types.StatusSuccess {
+		t.Fatalf("Status = 0x%x, expected StatusSuccess", result.Status)
+	}
+
+	resp := result.Data
+
+	// --- Validate fixed fields ---
+
+	structSize := binary.LittleEndian.Uint16(resp[0:2])
+	if structSize != 65 {
+		t.Errorf("StructureSize = %d, want 65", structSize)
+	}
+
+	dialect := binary.LittleEndian.Uint16(resp[4:6])
+	if dialect != 0x0311 {
+		t.Errorf("DialectRevision = 0x%04x, want 0x0311", dialect)
+	}
+
+	ctxCount := int(binary.LittleEndian.Uint16(resp[6:8]))
+	if ctxCount < 3 {
+		t.Errorf("NegotiateContextCount = %d, want >= 3 (preauth + encryption + signing)", ctxCount)
+	}
+
+	secBufOffset := binary.LittleEndian.Uint16(resp[56:58])
+	secBufLen := binary.LittleEndian.Uint16(resp[58:60])
+	ctxOffset := binary.LittleEndian.Uint32(resp[60:64])
+
+	t.Logf("SecurityBufferOffset=%d, SecurityBufferLength=%d, NegotiateContextOffset=%d",
+		secBufOffset, secBufLen, ctxOffset)
+	t.Logf("Response body length=%d", len(resp))
+
+	// SecurityBufferOffset should be 128 (64 header + 64 body fixed)
+	if secBufOffset != 128 {
+		t.Errorf("SecurityBufferOffset = %d, want 128", secBufOffset)
+	}
+
+	// SecurityBuffer should be present (SPNEGO NegHints)
+	if secBufLen == 0 {
+		t.Error("SecurityBufferLength = 0, want non-zero (SPNEGO NegHints)")
+	}
+
+	// NegotiateContextOffset must be 8-byte aligned per MS-SMB2 2.2.4
+	if ctxOffset%8 != 0 {
+		t.Errorf("NegotiateContextOffset = %d, must be 8-byte aligned", ctxOffset)
+	}
+
+	// NegotiateContextOffset should be after the security buffer
+	expectedMinOffset := uint32(secBufOffset) + uint32(secBufLen)
+	if ctxOffset < expectedMinOffset {
+		t.Errorf("NegotiateContextOffset = %d, but security buffer ends at %d (overlap!)",
+			ctxOffset, expectedMinOffset)
+	}
+
+	// Convert to body offset and parse contexts
+	bodyCtxOffset := int(ctxOffset) - 64
+	if bodyCtxOffset < 0 || bodyCtxOffset > len(resp) {
+		t.Fatalf("Invalid body context offset: %d (body len=%d)", bodyCtxOffset, len(resp))
+	}
+
+	// Verify contexts are parseable
+	parsedContexts, err := types.ParseNegotiateContextList(resp[bodyCtxOffset:], ctxCount)
+	if err != nil {
+		t.Fatalf("Failed to parse negotiate contexts: %v", err)
+	}
+
+	if len(parsedContexts) != ctxCount {
+		t.Errorf("Parsed %d contexts, expected %d", len(parsedContexts), ctxCount)
+	}
+
+	// Verify each context type is present
+	var hasPreauth, hasEncryption, hasSigning bool
+	for _, pc := range parsedContexts {
+		switch pc.ContextType {
+		case types.NegCtxPreauthIntegrity:
+			hasPreauth = true
+		case types.NegCtxEncryptionCaps:
+			hasEncryption = true
+		case types.NegCtxSigningCaps:
+			hasSigning = true
+		}
+	}
+
+	if !hasPreauth {
+		t.Error("Response missing PREAUTH_INTEGRITY_CAPABILITIES context")
+	}
+	if !hasEncryption {
+		t.Error("Response missing ENCRYPTION_CAPABILITIES context")
+	}
+	if !hasSigning {
+		t.Error("Response missing SIGNING_CAPABILITIES context")
+	}
+
+	// Verify padding between security buffer and contexts is all zeros
+	if int(secBufOffset-64)+int(secBufLen) < bodyCtxOffset {
+		paddingStart := int(secBufOffset-64) + int(secBufLen)
+		for i := paddingStart; i < bodyCtxOffset; i++ {
+			if resp[i] != 0 {
+				t.Errorf("Non-zero padding byte at body offset %d: 0x%02x", i, resp[i])
+			}
+		}
 	}
 }
 
@@ -1271,8 +1408,8 @@ func TestNegotiate_SigningCaps_OmittedDefaultsCMAC(t *testing.T) {
 	}
 
 	// When SIGNING_CAPABILITIES is omitted, default to AES-128-CMAC
-	if cs.signingAlgorithmId != 0x0001 {
-		t.Errorf("CryptoState.SigningAlgorithmId = 0x%04x, expected 0x0001 (AES-128-CMAC default)",
-			cs.signingAlgorithmId)
+	if cs.signingAlgorithmId != signing.SigningAlgAESCMAC {
+		t.Errorf("CryptoState.SigningAlgorithmId = 0x%04x, expected 0x%04x (AES-128-CMAC default)",
+			cs.signingAlgorithmId, signing.SigningAlgAESCMAC)
 	}
 }

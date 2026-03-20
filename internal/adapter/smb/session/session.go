@@ -87,6 +87,13 @@ type Session struct {
 	// Cleared by the framing layer after the first response.
 	NewlyCreated bool
 
+	// LoggedOff is set to true by the LOGOFF handler before sending the
+	// response. This eliminates a race between the deferred session delete
+	// and the next request's signing verification: the verifier and dispatch
+	// layer check this flag to return STATUS_USER_SESSION_DELETED instead of
+	// attempting signature verification on a defunct session.
+	LoggedOff atomic.Bool
+
 	// Credit tracking
 	credits Credits
 

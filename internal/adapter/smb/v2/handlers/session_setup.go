@@ -643,10 +643,8 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 			cipherId = ctx.ConnCryptoState.GetCipherId()
 			signingAlgId = ctx.ConnCryptoState.GetSigningAlgorithmId()
 		}
-	}
 
-	// Clean up the per-session preauth hash entry now that keys are derived
-	if ctx != nil && ctx.ConnCryptoState != nil {
+		// Clean up the per-session preauth hash entry now that keys are derived
 		ctx.ConnCryptoState.DeleteSessionPreauthHash(sess.SessionID)
 	}
 
@@ -670,7 +668,9 @@ func (h *Handler) configureSessionSigningWithKey(sess *session.Session, sessionK
 
 		if h.SigningConfig.Enabled {
 			cryptoState.SigningEnabled = true
-			cryptoState.SigningRequired = h.SigningConfig.Required
+			// Per MS-SMB2 3.3.5.5: for dialect 3.1.1, Session.SigningRequired
+			// SHOULD be set to TRUE. Both Windows Server and Samba enforce this.
+			cryptoState.SigningRequired = h.SigningConfig.Required || dialect == types.Dialect0311
 		}
 
 		// Encryption: activate encryptors for preferred/required modes on 3.x sessions.

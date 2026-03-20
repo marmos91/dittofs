@@ -162,4 +162,5 @@ Run these on x86_64 Linux to assess relevance:
 
 ## Changelog
 
+- **Phase 67 (2026-03-20):** SMB 3.1.1 preauth integrity hash chain verified correct via conformance tests (7 tests including MS-SMB2 test vectors). All 4 pitfalls from issue #252 confirmed correctly handled. Negotiate response wire format validated (context alignment, security buffer offsets). 5 BVT_Negotiate_SMB311 tests remain in KNOWN_FAILURES.md pending WPTS verbose log diagnosis to identify root cause (not a preauth hash computation issue).
 - **Phase 40 (2026-03-02):** Created baseline-results.md template with Phase 29.8 reference, expected improvements from Phases 30-39, and exploration guide for additional categories.

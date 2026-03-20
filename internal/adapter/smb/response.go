@@ -137,7 +137,7 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 
 	if cmd.NeedsSession && reqHeader.SessionID != 0 {
 		sess, ok := connInfo.Handler.GetSession(reqHeader.SessionID)
-		if !ok {
+		if !ok || sess.LoggedOff.Load() {
 			return nil, nil, types.StatusUserSessionDeleted
 		}
 		handlerCtx.IsGuest = sess.IsGuest

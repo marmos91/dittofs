@@ -89,11 +89,11 @@ in `baseline-results.md` for prioritization.
 | BVT_Leasing_FileLeasingV1 | Leasing | File lease V1 not fully working (fix candidate) | Expected | - |
 | BVT_Leasing_FileLeasingV2 | Leasing | File lease V2 not fully working (fix candidate) | Expected | - |
 | Algorithm_NotingFileModified_Dir_LastAccessTime | Timestamp | Timestamp update algorithm not implemented | Expected | - |
-| BVT_Negotiate_SMB311 | Negotiate | SMB 3.1.1 negotiate with preauthentication not fully passing (fix candidate) | Expected | - |
-| BVT_Negotiate_SMB311_Preauthentication_Encryption_AES_256_CCM | Negotiate | Negotiate with AES-256-CCM encryption not fully passing (fix candidate) | Expected | - |
-| BVT_Negotiate_SMB311_Preauthentication_Encryption_AES_256_GCM | Negotiate | Negotiate with AES-256-GCM encryption not fully passing (fix candidate) | Expected | - |
-| BVT_Negotiate_SMB311_Preauthentication_Encryption_CCM | Negotiate | Negotiate with AES-128-CCM encryption not fully passing (fix candidate) | Expected | - |
-| BVT_Negotiate_SMB311_Preauthentication_Encryption_GCM | Negotiate | Negotiate with AES-128-GCM encryption not fully passing (fix candidate) | Expected | - |
+| BVT_Negotiate_SMB311 | Negotiate | Preauth hash verified correct (Phase 67); needs WPTS verbose log diagnosis | Expected | Phase 67 |
+| BVT_Negotiate_SMB311_Preauthentication_Encryption_AES_256_CCM | Negotiate | Preauth hash verified correct (Phase 67); needs WPTS verbose log diagnosis | Expected | Phase 67 |
+| BVT_Negotiate_SMB311_Preauthentication_Encryption_AES_256_GCM | Negotiate | Preauth hash verified correct (Phase 67); needs WPTS verbose log diagnosis | Expected | Phase 67 |
+| BVT_Negotiate_SMB311_Preauthentication_Encryption_CCM | Negotiate | Preauth hash verified correct (Phase 67); needs WPTS verbose log diagnosis | Expected | Phase 67 |
+| BVT_Negotiate_SMB311_Preauthentication_Encryption_GCM | Negotiate | Preauth hash verified correct (Phase 67); needs WPTS verbose log diagnosis | Expected | Phase 67 |
 | AlternateDataStream_FileShareAccess_AlternateStreamExisted | ADS | ADS share access enforcement not implemented | Expected | v3.8 Phase 43 |
 | AlternateDataStream_FileShareAccess_DataFileExisted | ADS | ADS share access enforcement not implemented | Expected | v3.8 Phase 43 |
 | AlternateDataStream_FileShareAccess_DirectoryExisted | ADS | ADS share access enforcement not implemented | Expected | v3.8 Phase 43 |
@@ -211,7 +211,7 @@ Tests that fail for features not yet implemented:
 | ADS | 9 | Not implemented (planned Phase 43) |
 | Timestamp | 7 | Auto-update algorithms not implemented |
 | DurableHandle | 2 | Fix candidate (partially implemented Phase 38) |
-| Negotiate | 5 | Fix candidate (SMB 3.1.1 preauthentication/encryption, Phase 33-34) |
+| Negotiate | 5 | Preauth hash verified correct (Phase 67); needs WPTS runtime diagnosis |
 | Encryption | 2 | Fix candidate (global/per-share enforcement, Phase 33) |
 | DirectoryLeasing | 2 | Fix candidate (lease break + handle caching, Phase 37) |
 | Leasing | 2 | Fix candidate (V1 + V2, Phase 35-37) |
@@ -242,6 +242,7 @@ Format:
 
 ## Changelog
 
+- **v4.7 Phase 67 (2026-03-20):** SMB 3.1.1 preauth integrity hash chain verified correct via MS-SMB2 test vectors and conformance tests. All 4 pitfalls from issue #252 confirmed correctly handled. Negotiate response wire format validated (context alignment, security buffer offset). WPTS BVT_Negotiate_SMB311 failures require runtime WPTS verbose log diagnosis (not a preauth hash bug). Updated Negotiate test descriptions with Phase 67 findings. Total: 99 (47 permanent + 52 expected, unchanged).
 - **v3.8 Phase 42 (2026-03-09):** Updated ptfconfig to SMB 3.1.1 (MaxSmbVersionSupported, encryption, directory leasing, signing algorithms). Added 14 newly exercised tests: 5 Negotiate, 3 ChangeNotify (SMB 3.x), 2 Encryption, 2 DirectoryLeasing, 1 Leasing V2, 1 TreeMgmt. Fixed zero-mtime flush bug (5 QueryDirectory + 2 Timestamp regressions). Total: 100 (47 permanent + 53 expected).
 - **v3.8 Phase 40 (2026-03-02):** Post-SMB3 update. Removed 5 tests whose features are now implemented (durable handles V1, leasing V1, oplock break, encryption capability flag). Added Phase 33-39 improvements section. Updated permanently out-of-scope count (47, down from 48 -- encryption flag removed). Updated expected failure count (35, down from 42). Removed "Potentially fixed" status -- all entries are now either Expected or Permanent.
 - **v3.6 Phase 32 (2026-02-28):** Updated baseline after bug fixes (sparse READ, directory listing, parent dir, oplock break, link count), ACL support (SD synthesis, DACL/SACL, SID mapping), and protocol enhancements (MxAc, QFid, FileCompressionInfo, FileAttributeTagInfo, capability flags). Added status column, Phase 30-32 improvement notes, permanently out-of-scope categories section.

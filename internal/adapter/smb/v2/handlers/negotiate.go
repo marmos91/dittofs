@@ -85,12 +85,15 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 	// Build capabilities based on selected dialect
 	capabilities := h.buildCapabilities(selectedDialect)
 
-	// Set SecurityMode based on signing configuration
+	// Set SecurityMode based on signing configuration.
+	// Per MS-SMB2 3.3.5.4: for dialect 3.1.1, signing is implicitly required
+	// for all authenticated sessions. Advertise NegSigningRequired so clients
+	// know they MUST sign all requests.
 	var securityMode types.SecurityMode
 	if h.SigningConfig.Enabled {
 		securityMode |= types.NegSigningEnabled
 	}
-	if h.SigningConfig.Required {
+	if h.SigningConfig.Required || selectedDialect == types.Dialect0311 {
 		securityMode |= types.NegSigningRequired
 	}
 
@@ -201,10 +204,11 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 	// For 3.1.1 with negotiate contexts, append them after the fixed body,
 	// padded to 8-byte alignment.
 	if is311 && len(responseContexts) > 0 {
-		// Security buffer is 0 bytes, so contexts follow immediately after the
-		// 65-byte body. Pad to 8-byte alignment relative to SMB2 header start.
-		// SMB2 header = 64 bytes, body starts at 64. Current body end = 64 + 65 = 129.
-		absEnd := 64 + len(resp) // 129
+		// Negotiate contexts follow after the fixed body + security buffer.
+		// Pad to 8-byte alignment relative to SMB2 header start per MS-SMB2 2.2.4.
+		// SMB2 header = 64 bytes, body starts at 64.
+		// resp includes fixed fields (64 bytes) + security buffer (variable).
+		absEnd := 64 + len(resp)
 		if absEnd%8 != 0 {
 			padding := 8 - (absEnd % 8)
 			resp = append(resp, make([]byte, padding)...)
@@ -301,19 +305,8 @@ func (h *Handler) buildCapabilities(dialect types.Dialect) types.Capabilities {
 		// SMB 2.1: CapLeasing | CapLargeMTU
 		return types.CapLeasing | types.CapLargeMTU
 
-	case types.Dialect0300, types.Dialect0302:
-		// SMB 3.0/3.0.2: CapLeasing | CapLargeMTU | [CapDirectoryLeasing] | [CapEncryption]
-		caps := types.CapLeasing | types.CapLargeMTU
-		if h.DirectoryLeasingEnabled {
-			caps |= types.CapDirectoryLeasing
-		}
-		if h.EncryptionEnabled {
-			caps |= types.CapEncryption
-		}
-		return caps
-
-	case types.Dialect0311:
-		// SMB 3.1.1: CapLeasing | CapLargeMTU | [CapDirectoryLeasing] | [CapEncryption]
+	case types.Dialect0300, types.Dialect0302, types.Dialect0311:
+		// SMB 3.x: CapLeasing | CapLargeMTU | [CapDirectoryLeasing] | [CapEncryption]
 		// While 3.1.1 uses negotiate contexts for cipher selection, Windows servers
 		// still advertise GLOBAL_CAP_ENCRYPTION in the capabilities field when
 		// encryption is supported. WPTS tests expect this flag to be set.
@@ -493,14 +486,8 @@ func (h *Handler) selectSigningAlgorithm(clientAlgorithms []uint16) uint16 {
 		}
 	}
 
-	// No intersection with server preference. Check if client offers CMAC
-	// (mandatory-to-implement for 3.x) before defaulting to it.
-	if slices.Contains(clientAlgorithms, signing.SigningAlgAESCMAC) {
-		return signing.SigningAlgAESCMAC
-	}
-
-	// Client offered only unknown algorithms. Default to AES-128-CMAC as
-	// the mandatory baseline per MS-SMB2. The client must support it.
+	// No intersection with server preference. Default to AES-128-CMAC as
+	// the mandatory baseline per MS-SMB2 -- all 3.x clients must support it.
 	return signing.SigningAlgAESCMAC
 }
 
