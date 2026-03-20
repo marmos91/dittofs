@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/pathutil"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -66,6 +67,10 @@ func CreateMetadataStoreFromConfig(ctx context.Context, storeType string, cfg in
 			if !ok || dbPath == "" {
 				return nil, errors.New("badger metadata store requires path as string")
 			}
+		}
+		dbPath, err = pathutil.ExpandPath(dbPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to expand path %q: %w", dbPath, err)
 		}
 		return badger.NewBadgerMetadataStoreWithDefaults(ctx, dbPath)
 

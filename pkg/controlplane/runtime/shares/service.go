@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/pathutil"
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 	"github.com/marmos91/dittofs/pkg/blockstore/local"
@@ -950,8 +951,12 @@ func CreateLocalStoreFromConfig(
 		if !ok || basePath == "" {
 			return nil, errors.New("fs local store requires path in config")
 		}
+		expanded, err := pathutil.ExpandPath(basePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to expand path %q: %w", basePath, err)
+		}
 		sanitized := sanitizeShareName(shareName)
-		blockDir := filepath.Join(basePath, "shares", sanitized, "blocks")
+		blockDir := filepath.Join(expanded, "shares", sanitized, "blocks")
 		if err := os.MkdirAll(blockDir, 0755); err != nil {
 			return nil, fmt.Errorf("failed to create block store directory: %w", err)
 		}
