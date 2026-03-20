@@ -201,10 +201,11 @@ func (h *Handler) Negotiate(ctx *SMBHandlerContext, body []byte) (*HandlerResult
 	// For 3.1.1 with negotiate contexts, append them after the fixed body,
 	// padded to 8-byte alignment.
 	if is311 && len(responseContexts) > 0 {
-		// Security buffer is 0 bytes, so contexts follow immediately after the
-		// 65-byte body. Pad to 8-byte alignment relative to SMB2 header start.
-		// SMB2 header = 64 bytes, body starts at 64. Current body end = 64 + 65 = 129.
-		absEnd := 64 + len(resp) // 129
+		// Negotiate contexts follow after the fixed body + security buffer.
+		// Pad to 8-byte alignment relative to SMB2 header start per MS-SMB2 2.2.4.
+		// SMB2 header = 64 bytes, body starts at 64.
+		// resp includes fixed fields (64 bytes) + security buffer (variable).
+		absEnd := 64 + len(resp)
 		if absEnd%8 != 0 {
 			padding := 8 - (absEnd % 8)
 			resp = append(resp, make([]byte, padding)...)
