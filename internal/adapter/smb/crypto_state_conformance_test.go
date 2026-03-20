@@ -3,6 +3,7 @@ package smb
 import (
 	"bytes"
 	"crypto/sha512"
+	"encoding/binary"
 	"encoding/hex"
 	"testing"
 
@@ -35,7 +36,7 @@ func TestPreauthHashConformance_NegotiateRequest(t *testing.T) {
 	if len(negotiateReq) < 4 {
 		t.Fatal("Negotiate request too short")
 	}
-	if negotiateReq[0] != 0xFE || negotiateReq[1] != 0x53 || negotiateReq[2] != 0x4D || negotiateReq[3] != 0x42 {
+	if binary.LittleEndian.Uint32(negotiateReq[0:4]) != types.SMB2ProtocolID {
 		t.Fatalf("Negotiate request does not start with SMB2 protocol ID: got %x", negotiateReq[0:4])
 	}
 
@@ -293,15 +294,9 @@ func TestRawMessageStartsWithSMB2ProtocolID(t *testing.T) {
 	copy(rawMessage, hdr.Encode())
 	copy(rawMessage[header.HeaderSize:], body)
 
-	// Assert first 4 bytes are SMB2 protocol ID (0xFE, 0x53, 0x4D, 0x42)
-	expectedProtocol := []byte{0xFE, 0x53, 0x4D, 0x42}
-	if !bytes.Equal(rawMessage[0:4], expectedProtocol) {
-		t.Errorf("rawMessage should start with SMB2 protocol ID\ngot:  %x\nwant: %x", rawMessage[0:4], expectedProtocol)
-	}
-
-	// Assert it does NOT start with 0x00 (NetBIOS framing)
-	if rawMessage[0] == 0x00 {
-		t.Error("rawMessage starts with 0x00 (NetBIOS framing leaked into message)")
+	// Assert first 4 bytes are SMB2 protocol ID, not NetBIOS framing (0x00)
+	if binary.LittleEndian.Uint32(rawMessage[0:4]) != types.SMB2ProtocolID {
+		t.Errorf("rawMessage should start with SMB2 protocol ID (0x%08x)\ngot:  %x", types.SMB2ProtocolID, rawMessage[0:4])
 	}
 
 	// Verify Parse+Encode roundtrip produces identical bytes
