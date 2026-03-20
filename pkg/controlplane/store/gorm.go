@@ -16,6 +16,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
+	"github.com/marmos91/dittofs/internal/pathutil"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
@@ -164,6 +165,11 @@ func New(config *Config) (*GORMStore, error) {
 	var dialector gorm.Dialector
 	switch config.Type {
 	case DatabaseTypeSQLite:
+		expanded, err := pathutil.ExpandPath(config.SQLite.Path)
+		if err != nil {
+			return nil, fmt.Errorf("failed to expand database path %q: %w", config.SQLite.Path, err)
+		}
+		config.SQLite.Path = expanded
 		// Ensure parent directory exists for SQLite
 		if err := os.MkdirAll(filepath.Dir(config.SQLite.Path), 0755); err != nil {
 			return nil, fmt.Errorf("failed to create database directory: %w", err)
