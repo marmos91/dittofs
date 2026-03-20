@@ -415,7 +415,7 @@ run_offline() {
     generate_file "${MOUNT_POINT}/edge-test-offline/trigger.dat" 4096
 
     # Check if health detects degraded (informational — syncer may not probe immediately)
-    wait_for_degraded
+    wait_for_degraded || true
     local offline_health
     offline_health=$(check_health_status 2>/dev/null || echo "unknown")
     log "Health status after S3 block: ${offline_health} (degraded detection depends on syncer probe interval)"
@@ -504,7 +504,7 @@ run_sync() {
     log "Wrote ${file_count} files while offline"
 
     # Check if health detects degraded (informational — syncer may not probe immediately)
-    wait_for_degraded
+    wait_for_degraded || true
     local sync_health
     sync_health=$(check_health_status 2>/dev/null || echo "unknown")
     log "Health status after S3 block + writes: ${sync_health}"
