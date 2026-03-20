@@ -324,7 +324,7 @@ run_persist() {
 
     # Set retention to pin (per user decision: exercise Phase 63 features)
     log "Setting retention to 'pin'..."
-    dfsctl_server "share edit --name /export --retention pin"
+    dfsctl_server "share edit /export --retention pin"
 
     # Generate and checksum
     generate_test_files "edge-test-persist"
@@ -355,7 +355,7 @@ run_persist() {
 
     # Test with TTL retention mode
     log "Switching retention to 'ttl' (1h)..."
-    dfsctl_server "share edit --name /export --retention ttl --retention-ttl 1h"
+    dfsctl_server "share edit /export --retention ttl --retention-ttl 1h"
 
     # Verify reads still work under TTL
     assert "Files readable under TTL retention" \
@@ -363,7 +363,7 @@ run_persist() {
 
     # Switch back to LRU
     log "Switching retention to 'lru'..."
-    dfsctl_server "share edit --name /export --retention lru"
+    dfsctl_server "share edit /export --retention lru"
 
     assert "Files readable under LRU retention" \
         verify_checksums "edge-test-persist" "${checksum_tmp}"
@@ -390,7 +390,7 @@ run_offline() {
     login_server
 
     # Ensure pin retention for offline test
-    dfsctl_server "share edit --name /export --retention pin"
+    dfsctl_server "share edit /export --retention pin"
 
     # Pre-populate files while online
     generate_test_files "edge-test-offline"
@@ -477,7 +477,7 @@ run_sync() {
     clean_server_data
     login_server
 
-    dfsctl_server "share edit --name /export --retention pin"
+    dfsctl_server "share edit /export --retention pin"
 
     # Resolve S3 IPs
     local s3_ips
