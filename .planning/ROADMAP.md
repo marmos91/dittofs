@@ -2,7 +2,7 @@
 
 ## Overview
 
-DittoFS evolves from NFSv3 to full NFSv4.2 support across fifteen milestones. v1.0 builds the unified locking foundation (NLM + SMB leases), v2.0 adds NFSv4.0 stateful operations with Kerberos authentication, v3.0 introduces NFSv4.1 sessions for reliability and NAT-friendliness, v3.5 refactors the adapter layer and core for clean protocol separation, v3.6 achieves Windows SMB compatibility with proper ACL support, v3.8 upgrades the SMB implementation to SMB3.0/3.0.2/3.1.1 with encryption, signing, leases, Kerberos, and durable handles, v4.0 refactors the storage layer into a clean two-tier block store model (Local + Remote), v4.2 delivers benchmarking infrastructure, v4.3 fixes NFS/SMB protocol gaps, v4.7 adds offline/edge resilience with cache retention policies and disconnected operation, v4.5 adds block-level compression and encryption, v4.6 hardens the system for production with signing fixes, quotas, client tracking, and trash, v4.8 improves developer experience and CI, v4.9 fixes SMB protocol conformance gaps, and v5.0 completes the protocol suite with NFSv4.2 advanced features. Each milestone delivers complete, testable functionality.
+DittoFS evolves from NFSv3 to full NFSv4.2 support across fifteen milestones. v1.0 builds the unified locking foundation (NLM + SMB leases), v2.0 adds NFSv4.0 stateful operations with Kerberos authentication, v3.0 introduces NFSv4.1 sessions for reliability and NAT-friendliness, v3.5 refactors the adapter layer and core for clean protocol separation, v3.6 achieves Windows SMB compatibility with proper ACL support, v3.8 upgrades the SMB implementation to SMB3.0/3.0.2/3.1.1 with encryption, signing, leases, Kerberos, and durable handles, v4.0 refactors the storage layer into a clean two-tier block store model (Local + Remote), v4.2 delivers benchmarking infrastructure, v4.3 fixes NFS/SMB protocol gaps, v4.7 adds offline/edge resilience with cache retention policies and disconnected operation, v0.10.0 hardens the system for production with share quotas, client tracking, trash/soft-delete, full SMB credit flow control, WPTS conformance fixes, and multi-channel session binding. Future milestones include block-level compression/encryption (v4.5), developer experience improvements (v4.8), and NFSv4.2 extensions (v5.0). Each milestone delivers complete, testable functionality.
 
 ## Milestones
 
@@ -16,10 +16,9 @@ DittoFS evolves from NFSv3 to full NFSv4.2 support across fifteen milestones. v1
 - [x] **v4.2 Benchmarking & Performance** - Phases 57-62 (shipped 2026-03-04)
 - [x] **v4.3 Protocol Gap Fixes** - Phases 49.1-49.3 (shipped 2026-03-13)
 - [x] **v4.7 Offline/Edge Resilience** - Phases 63-68 (shipped 2026-03-20) — [archive](milestones/v4.7-ROADMAP.md)
+- [ ] **v0.10.0 Production Hardening + SMB Protocol Fixes** - Phases 69-75 (planned)
 - [ ] **v4.5 BlockStore Security** - Phases 49.4-49.5 (planned)
-- [ ] **v4.6 Production Hardening** - Phases 67-71 (planned)
-- [ ] **v4.8 DX/UX Improvements** - Phases 72-74 (planned)
-- [ ] **v4.9 SMB Protocol Fixes** - Phases 75-77 (planned)
+- [ ] **v4.8 DX/UX Improvements** - Phases 76-78 (planned)
 - [ ] **v5.0 NFSv4.2 Extensions** - Phases 50-56 (planned)
 
 **USER CHECKPOINT** phases require your manual testing before proceeding. Use `/gsd:verify-work` to validate.
@@ -135,7 +134,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 </details>
 
 <details>
-<summary>[x] v4.3 Protocol Gap Fixes (Phases 49.1-49.3) — SHIPPED 2026-03-13</summary>
+<summary>[x] v4.3 Protocol Gap Fixes (Phases 49.1-49.3) -- SHIPPED 2026-03-13</summary>
 
 Full phase details archived to [milestones/v4.3-ROADMAP.md](milestones/v4.3-ROADMAP.md).
 
@@ -144,7 +143,7 @@ Full phase details archived to [milestones/v4.3-ROADMAP.md](milestones/v4.3-ROAD
 </details>
 
 <details>
-<summary>[x] v4.7 Offline/Edge Resilience (Phases 63-68) — SHIPPED 2026-03-20</summary>
+<summary>[x] v4.7 Offline/Edge Resilience (Phases 63-68) -- SHIPPED 2026-03-20</summary>
 
 - [x] **Phase 63: Cache Retention Model and Eviction Policy** - Per-share cache retention config (pin/ttl/lru), control plane API/CLI, eviction policy enforcement (completed 2026-03-13)
 - [x] **Phase 64: S3 Health Check and Syncer Resilience** - Periodic connectivity detection, syncer backoff during outages, auto-resume and ordered drain on reconnect (completed 2026-03-16)
@@ -154,30 +153,26 @@ Full phase details archived to [milestones/v4.3-ROADMAP.md](milestones/v4.3-ROAD
 
 </details>
 
+### v0.10.0 Production Hardening + SMB Protocol Fixes
+
+- [ ] **Phase 69: SMB Protocol Foundation** - macOS signing fix, credit charge validation, credit granting, multi-credit I/O, compound credit accounting
+- [ ] **Phase 70: Storage Observability and Quotas** - Per-share quotas with FSSTAT/SMB reporting, accurate UsedSize, logical vs physical size distinction
+- [ ] **Phase 71: Operational Visibility** - Protocol-agnostic client tracking with REST API and CLI
+- [ ] **Phase 72: WPTS Conformance Push** - ChangeNotify implementation, negotiate/encryption fixes, leasing edge cases, known failure reduction
+- [ ] **Phase 73: Trash and Soft-Delete** - Per-share trash with configurable retention, background scavenger, GC-aware, quota-aware
+- [ ] **Phase 74: SMB Multi-Channel** - Session binding, per-channel signing, lease break fan-out, connection cleanup, config flag
+- [ ] **Phase 75: Manual Verification v0.10.0** USER CHECKPOINT
+
 ### v4.5 BlockStore Security
 
 - [ ] **Phase 49.4: Block-Level Compression** - LZ4/Zstd compression decorator for remote stores (#185)
 - [ ] **Phase 49.5: Client-Side Encryption** - AES-256-GCM encryption decorator for zero-trust storage (#186)
 
-### v4.6 Production Hardening
-
-- [ ] **Phase 67: SMB3 Signing Fix** - Fix preauth integrity hash mismatch causing macOS mount_smbfs rejection (#252)
-- [ ] **Phase 68: Protocol Correctness and Hot-Reload** - NTLM flag cleanup and runtime share visibility across adapters (#215, #235)
-- [ ] **Phase 69: Storage Observability and Quotas** - Accurate payload stats and per-share quota enforcement (#216, #232)
-- [ ] **Phase 70: Unified Client Tracking** - Protocol-agnostic client registry with REST API and CLI (#157)
-- [ ] **Phase 71: Trash and Soft-Delete** - Move-to-trash with configurable retention and background cleanup (#190)
-
 ### v4.8 DX/UX Improvements
 
-- [ ] **Phase 72: Build & CI Optimization** - Makefile targets for all test suites (#206), NFS CI scoped triggers + tiered matrix (#207)
-- [ ] **Phase 73: Adapter Config API** - Netgroup-share association API for adapter configuration (#220)
-- [ ] **Phase 74: Developer Tooling Polish** - Documentation improvements, developer workflow enhancements
-
-### v4.9 SMB Protocol Fixes
-
-- [ ] **Phase 75: SMB Credits & IOCTL** - Credit granting algorithm conformance, IOCTL handler completeness (#268)
-- [ ] **Phase 76: SMB Multichannel & Timestamps** - Multichannel connection support, timestamp precision fixes (#268)
-- [ ] **Phase 77: SMB Conformance Iteration** - Remaining smbtorture failures, iterative pass rate improvement (#268)
+- [ ] **Phase 76: Build & CI Optimization** - Makefile targets for all test suites (#206), NFS CI scoped triggers + tiered matrix (#207)
+- [ ] **Phase 77: Adapter Config API** - Netgroup-share association API for adapter configuration (#220)
+- [ ] **Phase 78: Developer Tooling Polish** - Documentation improvements, developer workflow enhancements
 
 ### v5.0 NFSv4.2 Extensions
 
@@ -206,7 +201,7 @@ Full phase details archived to [milestones/v4.3-ROADMAP.md](milestones/v4.3-ROAD
 ---
 
 <details>
-<summary>v3.8 SMB3 Protocol Upgrade (Phases 33-40.5) — SHIPPED 2026-03-04</summary>
+<summary>v3.8 SMB3 Protocol Upgrade (Phases 33-40.5) -- SHIPPED 2026-03-04</summary>
 
 Full phase details archived to [milestones/v3.8-ROADMAP.md](milestones/v3.8-ROADMAP.md).
 
@@ -228,7 +223,7 @@ Full phase details archived to [milestones/v4.0-ROADMAP.md](milestones/v4.0-ROAD
 ---
 
 <details>
-<summary>v4.3 Protocol Gap Fixes (Phases 49.1-49.3) — SHIPPED 2026-03-13</summary>
+<summary>v4.3 Protocol Gap Fixes (Phases 49.1-49.3) -- SHIPPED 2026-03-13</summary>
 
 Full phase details archived to [milestones/v4.3-ROADMAP.md](milestones/v4.3-ROADMAP.md).
 
@@ -239,13 +234,108 @@ Full phase details archived to [milestones/v4.3-ROADMAP.md](milestones/v4.3-ROAD
 ---
 
 <details>
-<summary>v4.7 Offline/Edge Resilience (Phases 63-68) — SHIPPED 2026-03-20</summary>
+<summary>v4.7 Offline/Edge Resilience (Phases 63-68) -- SHIPPED 2026-03-20</summary>
 
 Full phase details archived to [milestones/v4.7-ROADMAP.md](milestones/v4.7-ROADMAP.md).
 
 4 phases, 10 plans: cache retention policies (pin/ttl/lru), S3 health monitoring with circuit breaker, offline read/write paths, NTLM flag cleanup, share hot-reload tests.
 
 </details>
+
+---
+
+## v0.10.0 Production Hardening + SMB Protocol Fixes
+
+### Phase 69: SMB Protocol Foundation
+**Goal**: macOS clients can mount DittoFS shares over SMB 3.1.1 with signing, and the server enforces MS-SMB2 credit flow control for all clients
+**Depends on**: Phase 68 (v4.7 complete)
+**Requirements**: SMB-01, SMB-02, SMB-03, SMB-04, SMB-05
+**Success Criteria** (what must be TRUE):
+  1. `mount_smbfs //user@host/share /mnt` succeeds on macOS without signature verification errors, and Windows 11 signing continues to work (no regression)
+  2. Server rejects requests where CreditCharge is insufficient for the payload size (e.g., READ/WRITE > 64KB with CreditCharge=1 returns error)
+  3. Every SMB response grants at least 1 credit; a client that sends valid requests never reaches zero credits and deadlocks
+  4. Multi-credit I/O operations correctly validate CreditCharge = ceil(PayloadSize / 65536) before dispatching to handlers
+  5. Compound requests account credits at the compound level and grant credits only in the final response of the compound
+**Verification**: `go build ./...` && `go test ./...` && macOS mount_smbfs manual test && WPTS BVT regression check
+**Plans**: TBD
+
+### Phase 70: Storage Observability and Quotas
+**Goal**: Operators can see accurate storage consumption per share, and per-share quotas enforce size limits reported consistently via NFS and SMB
+**Depends on**: Phase 69
+**Requirements**: QUOTA-01, QUOTA-02, QUOTA-03, QUOTA-04, QUOTA-05, STATS-01, STATS-02, STATS-03
+**Success Criteria** (what must be TRUE):
+  1. `BlockStore.Stats()` returns non-zero UsedSize reflecting actual aggregate block sizes, with logical size (sum of file sizes) and physical size (block storage consumption) distinguished
+  2. `dfsctl share create --quota-bytes 10GB` and `dfsctl share update --quota-bytes 50GB` persist per-share quota limits in the control plane; `dfsctl share list` displays quota and usage
+  3. Write operations to a share at quota return NFS3ERR_NOSPC (NFSv3) / NFS4ERR_NOSPC (NFSv4) / STATUS_DISK_FULL (SMB) and refuse additional data
+  4. NFSv3 FSSTAT and NFSv4 GETATTR(space_total/space_free/space_avail) report quota-adjusted values so `df` shows quota as total and (quota - used) as available
+  5. SMB FileFsSizeInformation and FileFsFullSizeInformation return quota-aware sizes so Windows Explorer shows correct free space matching the NFS view
+**Verification**: `go build ./...` && `go test ./...` && quota enforcement test with NFS + SMB clients && `df` on both protocols matches
+**Plans**: TBD
+
+### Phase 71: Operational Visibility
+**Goal**: Operators can see all connected NFS and SMB clients in a single unified view with connection metadata and automatic stale cleanup
+**Depends on**: Phase 69
+**Requirements**: CLIENT-01, CLIENT-02, CLIENT-03, CLIENT-04
+**Success Criteria** (what must be TRUE):
+  1. Protocol-agnostic `ClientRecord` model in the runtime tracks client IP, protocol (NFS/SMB), connected-at timestamp, last-activity timestamp, mount points/tree connects, and authentication identity
+  2. NFS and SMB adapters register clients on connect and deregister on disconnect via a shared `ClientRegistry` interface in the runtime
+  3. `dfsctl client list` displays active clients in table format with columns for IP, protocol, user, share, and connected duration; `-o json` outputs JSON
+  4. REST API endpoint `GET /api/clients` returns the list of active client records with protocol, IP, shares, and auth identity
+  5. Stale client records are automatically removed via configurable TTL-based cleanup (default 5 minutes after last activity)
+**Verification**: `go build ./...` && `go test ./...` && mount via NFS and SMB, then `dfsctl client list` shows both
+**Plans**: TBD
+
+### Phase 72: WPTS Conformance Push
+**Goal**: WPTS known failure count reduced from 73 to approximately 40-45, primarily by implementing ChangeNotify and fixing negotiate/leasing edge cases
+**Depends on**: Phase 69 (credit flow baseline stabilizes protocol compliance)
+**Requirements**: WPTS-01, WPTS-02, WPTS-03, WPTS-04
+**Success Criteria** (what must be TRUE):
+  1. SMB2 CHANGE_NOTIFY requests are accepted, held as pending async requests, and dispatched with FILE_NOTIFY_INFORMATION when files are created, removed, renamed, or modified in a watched directory; ~20 BVT ChangeNotify tests pass
+  2. Negotiate and encryption edge cases fixed (preauth hash improvements cascade from Phase 69 macOS fix); ~5 additional tests pass
+  3. Leasing and durable handle reconnect edge cases resolved (lease break state transitions, epoch tracking, DH V2 reconnect corner cases); ~4-6 additional tests pass
+  4. WPTS known failure count is at or below 45 (reduced from 73), with zero new failures introduced (193+ passing tests maintained)
+**Verification**: `go build ./...` && `go test ./...` && full WPTS suite run showing pass/known/new/skipped counts
+**Plans**: TBD
+
+### Phase 73: Trash and Soft-Delete
+**Goal**: Deleted files are recoverable via a per-share server-side trash system with automatic expiration, invisible to protocol clients, and integrated with quotas and block GC
+**Depends on**: Phase 70 (trash must count against quota; quota enforcement infrastructure must exist)
+**Requirements**: TRASH-01, TRASH-02, TRASH-03, TRASH-04, TRASH-05, TRASH-06, TRASH-07
+**Success Criteria** (what must be TRUE):
+  1. Per-share trash is configurable via `dfsctl share create --trash-retention 14d` and `dfsctl share update --trash-retention 0` (0 disables trash); default is disabled
+  2. When trash is enabled, file and directory deletion moves items to a hidden `.dfs-trash/` directory within the share's metadata namespace instead of permanent removal
+  3. `.dfs-trash/` directory and its contents are invisible in NFS READDIR/READDIRPLUS and SMB QueryDirectory responses (filtered at protocol handler level)
+  4. Background scavenger goroutine purges expired trash items based on the configured retention period; `dfsctl trash list /share` shows trashed items with original path, deletion date, and size; `dfsctl trash restore` and `dfsctl trash purge` work correctly
+  5. Trashed files count as live references for block GC (blocks are not collected while trash references them) and trashed file sizes count against share quota
+**Verification**: `go build ./...` && `go test ./...` && delete file via NFS, verify hidden from listing, verify in trash via CLI, verify quota accounting, wait for expiry
+**Plans**: TBD
+
+### Phase 74: SMB Multi-Channel
+**Goal**: SMB clients can establish multiple TCP connections to the same session for aggregate bandwidth and fault tolerance, gated behind a configuration flag
+**Depends on**: Phase 69 (SMB protocol foundation), Phase 72 (WPTS conformance stabilized)
+**Requirements**: MCH-01, MCH-02, MCH-03, MCH-04, MCH-05, MCH-06
+**Success Criteria** (what must be TRUE):
+  1. Server advertises SMB2_GLOBAL_CAP_MULTI_CHANNEL in NEGOTIATE response when multi-channel is enabled in configuration; FSCTL_QUERY_NETWORK_INTERFACE_INFO IOCTL returns available network interfaces
+  2. SESSION_SETUP with SMB2_SESSION_FLAG_BINDING successfully binds a new TCP connection to an existing session, sharing tree connects, open files, and lease state
+  3. Each channel derives its own signing key from the channel-specific preauth integrity hash, and signatures are validated per-channel
+  4. Lease break notifications are sent to all active channels for a session; if one channel fails delivery, other channels still receive the break
+  5. Connection cleanup checks session refcount before destroying session state (last channel close tears down session; earlier channel closes only remove that channel)
+  6. Multi-channel is gated behind `adapters.smb.multichannel.enabled` config flag (default: false); when disabled, session binding requests are rejected
+**Verification**: `go build ./...` && `go test ./...` && Windows multi-NIC client binds 2 channels && WPTS regression check
+**Plans**: TBD
+
+### Phase 75: Manual Verification v0.10.0
+**Goal**: End-to-end manual verification of all v0.10.0 features across macOS, Windows, and Linux clients
+**Depends on**: Phase 74
+**Success Criteria** (what must be TRUE):
+  1. macOS mount_smbfs with signing works without errors
+  2. Share quota enforcement verified on both NFS (`df` shows quota) and SMB (Explorer shows correct free space)
+  3. `dfsctl client list` shows active NFS and SMB clients with correct protocol, share, and user information
+  4. WPTS suite confirms known failures at or below 45 with zero new failures
+  5. Trash: delete via NFS, invisible in listing, visible via `dfsctl trash list`, restore works, expiry purges automatically
+  6. Multi-channel (if enabled): Windows client binds second channel, I/O uses both connections
+**Verification**: Manual testing checklist
+**Plans**: TBD
 
 ---
 
@@ -279,78 +369,11 @@ Full phase details archived to [milestones/v4.7-ROADMAP.md](milestones/v4.7-ROAD
 
 ---
 
-## v4.6 Production Hardening
-
-### Phase 67: SMB3 Signing Fix
-**Goal**: macOS clients can mount DittoFS shares over SMB 3.1.1 with signing enabled
-**Depends on**: Phase 66 (v4.7 complete)
-**Requirements**: PROTO-01
-**Reference**: GitHub #252
-**Success Criteria** (what must be TRUE):
-  1. Preauth integrity hash chain matches between server and macOS mount_smbfs client through NEGOTIATE and SESSION_SETUP exchanges
-  2. Signing key derived from corrected preauth hash produces valid AES-CMAC/GMAC signatures accepted by macOS
-  3. `mount_smbfs //user@host/share /mnt` succeeds on macOS without signature verification errors
-  4. Windows 11 SMB 3.1.1 signing continues to work (no regression)
-**Verification**: `go build ./...` && `go test ./...` && macOS mount_smbfs manual test
-**Plans**: TBD
-
-### Phase 68: Protocol Correctness and Hot-Reload
-**Goal**: NTLM negotiation advertises only implemented capabilities, and shares created at runtime are immediately visible to all adapters
-**Depends on**: Phase 67
-**Requirements**: PROTO-02, RUNTIME-01
-**Reference**: GitHub #215, #235
-**Note**: Executed as part of v4.7 milestone (completed 2026-03-20)
-**Plans**: 2/2 complete
-
-### Phase 69: Storage Observability and Quotas
-**Goal**: Operators can see real storage usage, and per-share quotas enforce size limits reported accurately via NFS and SMB
-**Depends on**: Phase 68
-**Requirements**: OBS-01, OBS-02
-**Reference**: GitHub #216, #232
-**Success Criteria** (what must be TRUE):
-  1. `PayloadService.GetStorageStats()` returns non-zero UsedSize reflecting actual aggregate block sizes from cache and underlying stores
-  2. `dfsctl share create --quota 10GB` and `dfsctl share update --quota 50GB` configure per-share quota limits persisted in control plane
-  3. Write operations to a share at quota return NFS3ERR_NOSPC / STATUS_DISK_FULL and refuse additional data
-  4. NFSv3 FSSTAT/FSINFO and NFSv4 GETATTR report total/free/available space reflecting configured quota and actual usage
-  5. SMB QUERY_FS_SIZE_INFO and QUERY_FS_FULL_SIZE_INFO report quota-aware sizes so Windows Explorer shows correct free space
-**Verification**: `go build ./...` && `go test ./...` && quota enforcement test with NFS + SMB clients
-**Plans**: TBD
-
-### Phase 70: Unified Client Tracking
-**Goal**: Operators can see all connected NFS and SMB clients in a single view with connection metadata
-**Depends on**: Phase 68
-**Requirements**: OPS-01
-**Reference**: GitHub #157
-**Success Criteria** (what must be TRUE):
-  1. Protocol-agnostic `ClientRecord` struct in control plane tracks client IP, protocol, connected-at, last-activity, mount points, and authentication identity
-  2. Both NFS and SMB adapters register/deregister clients via a shared `ClientRegistry` interface on connect/disconnect
-  3. REST API endpoint `GET /api/v1/clients` returns list of active clients with protocol, IP, and mount details
-  4. `dfsctl client list` displays active clients in table format, `dfsctl client list -o json` outputs JSON
-  5. Stale client records are cleaned up automatically when connections close or timeout
-**Verification**: `go build ./...` && `go test ./...` && manual NFS+SMB mount then `dfsctl client list`
-**Plans**: TBD
-
-### Phase 71: Trash and Soft-Delete
-**Goal**: Deleted files are recoverable via a per-share trash folder with automatic expiration
-**Depends on**: Phase 68
-**Requirements**: OPS-02
-**Reference**: GitHub #190
-**Success Criteria** (what must be TRUE):
-  1. File and directory deletion moves items to `.trash/{YYYY-MM-DD}/` within the share instead of permanent removal
-  2. Trash retention period is configurable per share (default 7 days) via `dfsctl share create --trash-retention 14d` or `dfsctl share update --trash-retention 30d`
-  3. Background goroutine scans trash directories and permanently deletes items older than retention period
-  4. Trash is transparent to NFS/SMB clients: `.trash` directory is hidden from READDIR/READDIRPLUS/SMB QUERY_DIRECTORY unless explicitly accessed
-  5. `dfsctl share trash list /share-name` shows trashed items with original path and deletion date
-**Verification**: `go build ./...` && `go test ./...` && delete file via NFS, verify in .trash, wait for expiry
-**Plans**: TBD
-
----
-
 ## v4.8 DX/UX Improvements
 
-### Phase 72: Build & CI Optimization
+### Phase 76: Build & CI Optimization
 **Goal**: Streamline build system with Makefile targets and optimize NFS CI pipeline
-**Depends on**: Phase 71 (v4.6 complete)
+**Depends on**: Phase 75 (v0.10.0 complete)
 **Requirements**: DX-01, DX-02
 **Reference**: GitHub #206, #207
 **Success Criteria** (what must be TRUE):
@@ -362,9 +385,9 @@ Full phase details archived to [milestones/v4.7-ROADMAP.md](milestones/v4.7-ROAD
 **Verification**: `make test` && CI pipeline runs successfully
 **Plans**: TBD
 
-### Phase 73: Adapter Config API
+### Phase 77: Adapter Config API
 **Goal**: API support for netgroup-share association and adapter configuration management
-**Depends on**: Phase 72
+**Depends on**: Phase 76
 **Requirements**: DX-03
 **Reference**: GitHub #220
 **Success Criteria** (what must be TRUE):
@@ -375,9 +398,9 @@ Full phase details archived to [milestones/v4.7-ROADMAP.md](milestones/v4.7-ROAD
 **Verification**: `go build ./...` && `go test ./...` && manual CLI verification
 **Plans**: TBD
 
-### Phase 74: Developer Tooling Polish
+### Phase 78: Developer Tooling Polish
 **Goal**: Improve developer experience with documentation and workflow enhancements
-**Depends on**: Phase 72
+**Depends on**: Phase 76
 **Requirements**: DX-04
 **Success Criteria** (what must be TRUE):
   1. Contributing guide updated with Makefile-based workflow
@@ -385,64 +408,6 @@ Full phase details archived to [milestones/v4.7-ROADMAP.md](milestones/v4.7-ROAD
   3. Common development tasks automated (lint-fix, generate, clean)
   4. README quickstart reflects simplified build/test workflow
 **Verification**: Documentation review && clean checkout build test
-**Plans**: TBD
-
----
-
-## v4.9 SMB Protocol Fixes
-
-### Phase 75: SMB Credits & IOCTL
-**Goal**: Fix SMB credit granting algorithm and complete IOCTL handler coverage
-**Depends on**: Phase 74 (v4.8 complete)
-**Requirements**: SMB-01, SMB-02
-**Reference**: GitHub #268
-**Success Criteria** (what must be TRUE):
-  1. Credit granting follows MS-SMB2 algorithm (dynamic based on client behavior)
-  2. IOCTL handlers implemented for all required function codes per smbtorture
-  3. smbtorture credit-related test failures pass
-  4. smbtorture IOCTL-related test failures pass
-**Verification**: `go build ./...` && `go test ./...` && smbtorture credit/IOCTL suites
-**Plans**: TBD
-
-### Phase 76: SMB Multichannel & Timestamps
-**Goal**: Add multichannel connection support and fix timestamp precision
-**Depends on**: Phase 75
-**Requirements**: SMB-03, SMB-04
-**Reference**: GitHub #268
-**Success Criteria** (what must be TRUE):
-  1. SMB multichannel: clients can establish multiple TCP connections to same session
-  2. Channel binding validates connection identity
-  3. Timestamp precision matches NTFS resolution (100ns intervals)
-  4. smbtorture multichannel and timestamp test failures pass
-**Verification**: `go build ./...` && `go test ./...` && smbtorture multichannel/timestamp suites
-**Plans**: TBD
-
-### Phase 77: SMB Conformance Iteration
-**Goal**: Address remaining smbtorture failures for comprehensive SMB protocol conformance
-**Depends on**: Phase 76
-**Requirements**: SMB-05
-**Reference**: GitHub #268
-**Success Criteria** (what must be TRUE):
-  1. All 13 originally identified smbtorture failures resolved or documented as not-applicable
-  2. smbtorture pass rate improved to 90%+ of applicable tests
-  3. Known failures documented with rationale (intentional deviations vs. future work)
-  4. Regression test suite prevents future conformance regressions
-**Verification**: `go build ./...` && `go test ./...` && full smbtorture run
-**Plans**: TBD
-
-### Phase 78: SMB Change Notifications (SMB2_CHANGE_NOTIFY)
-**Goal**: Implement directory change notification support so Windows Explorer and SMB clients auto-refresh when directory contents change
-**Depends on**: Phase 77
-**Requirements**: SMB-06
-**Success Criteria** (what must be TRUE):
-  1. SMB2 CHANGE_NOTIFY requests are accepted and held as pending async requests until a matching change occurs or the request is cancelled
-  2. File creation, deletion, rename, and attribute changes in a watched directory trigger FILE_NOTIFY_INFORMATION responses to the pending CHANGE_NOTIFY request
-  3. CompletionFilter flags (FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_ATTRIBUTES, FILE_NOTIFY_CHANGE_SIZE, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_CREATION, FILE_NOTIFY_CHANGE_SECURITY, FILE_NOTIFY_CHANGE_STREAM_NAME, FILE_NOTIFY_CHANGE_STREAM_SIZE, FILE_NOTIFY_CHANGE_STREAM_WRITE, FILE_NOTIFY_CHANGE_LAST_ACCESS, FILE_NOTIFY_CHANGE_EA) are respected to filter notifications
-  4. WATCH_TREE flag enables recursive subdirectory monitoring
-  5. SMB2 CANCEL correctly cancels pending CHANGE_NOTIFY requests and returns STATUS_CANCELLED
-  6. CLOSE on a directory handle with pending CHANGE_NOTIFY returns STATUS_NOTIFY_CLEANUP
-  7. 20 WPTS BVT ChangeNotify tests pass (BVT_SMB2Basic_ChangeNotify_* and BVT_SMB2Basic_CancelRegisteredChangeNotify)
-**Verification**: `go build ./...` && `go test ./...` && WPTS BVT with 0 new ChangeNotify failures
 **Plans**: TBD
 
 ---
@@ -536,7 +501,7 @@ Full phase details archived to [milestones/v4.7-ROADMAP.md](milestones/v4.7-ROAD
 ---
 
 <details>
-<summary>[x] v4.2 Benchmarking & Performance (Phases 57-62) — SHIPPED 2026-03-04</summary>
+<summary>[x] v4.2 Benchmarking & Performance (Phases 57-62) -- SHIPPED 2026-03-04</summary>
 
 Full phase details archived. 6 phases: benchmark infrastructure, fio workloads, competitor setup, orchestrator scripts, analysis pipeline, profiling integration.
 
@@ -547,7 +512,7 @@ Full phase details archived. 6 phases: benchmark infrastructure, fio workloads, 
 ## Progress
 
 **Execution Order:**
-v3.8 (33-40.5) -> v4.2 (57-62) -> v4.0 (41-49) -> v4.3 (49.1-49.3) -> v4.7 (63-66) -> v4.5 (49.4-49.5) -> v4.6 (67-71) -> v4.8 (72-74) -> v4.9 (75-77) -> v5.0 (50-56)
+v3.8 (33-40.5) -> v4.2 (57-62) -> v4.0 (41-49) -> v4.3 (49.1-49.3) -> v4.7 (63-68) -> v0.10.0 (69-75) -> v4.5 (49.4-49.5) -> v4.8 (76-78) -> v5.0 (50-56)
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
@@ -561,19 +526,18 @@ v3.8 (33-40.5) -> v4.2 (57-62) -> v4.0 (41-49) -> v4.3 (49.1-49.3) -> v4.7 (63-6
 | 41-49 | v4.0 | 24/24 | Complete | 2026-03-11 |
 | 49.1-49.3 | v4.3 | 1/1 | Complete | 2026-03-13 |
 | 63-68 | v4.7 | 10/10 | Complete | 2026-03-20 |
+| 69. SMB Protocol Foundation | v0.10.0 | 0/? | Not started | - |
+| 70. Storage Observability and Quotas | v0.10.0 | 0/? | Not started | - |
+| 71. Operational Visibility | v0.10.0 | 0/? | Not started | - |
+| 72. WPTS Conformance Push | v0.10.0 | 0/? | Not started | - |
+| 73. Trash and Soft-Delete | v0.10.0 | 0/? | Not started | - |
+| 74. SMB Multi-Channel | v0.10.0 | 0/? | Not started | - |
+| 75. Manual Verification v0.10.0 | v0.10.0 | 0/? | Not started | - |
 | 49.4 Block-Level Compression | v4.5 | 0/? | Not started | - |
 | 49.5 Client-Side Encryption | v4.5 | 0/? | Not started | - |
-| 67. SMB3 Signing Fix | v4.6 | 0/? | Not started | - |
-| 68. Protocol Correctness and Hot-Reload | v4.7 | 2/2 | Complete | 2026-03-20 |
-| 69. Storage Observability and Quotas | v4.6 | 0/? | Not started | - |
-| 70. Unified Client Tracking | v4.6 | 0/? | Not started | - |
-| 71. Trash and Soft-Delete | v4.6 | 0/? | Not started | - |
-| 72. Build & CI Optimization | v4.8 | 0/? | Not started | - |
-| 73. Adapter Config API | v4.8 | 0/? | Not started | - |
-| 74. Developer Tooling Polish | v4.8 | 0/? | Not started | - |
-| 75. SMB Credits & IOCTL | v4.9 | 0/? | Not started | - |
-| 76. SMB Multichannel & Timestamps | v4.9 | 0/? | Not started | - |
-| 77. SMB Conformance Iteration | v4.9 | 0/? | Not started | - |
+| 76. Build & CI Optimization | v4.8 | 0/? | Not started | - |
+| 77. Adapter Config API | v4.8 | 0/? | Not started | - |
+| 78. Developer Tooling Polish | v4.8 | 0/? | Not started | - |
 | 50-56 | v5.0 | 0/? | Not started | - |
 
 **Total:** 148/? plans complete
@@ -591,3 +555,4 @@ v3.8 (33-40.5) -> v4.2 (57-62) -> v4.0 (41-49) -> v4.3 (49.1-49.3) -> v4.7 (63-6
 *v4.3 shipped: 2026-03-13*
 *v4.7 roadmap created: 2026-03-13*
 *v4.7 shipped: 2026-03-20*
+*v0.10.0 roadmap created: 2026-03-20*

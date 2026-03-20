@@ -1,468 +1,340 @@
-# Domain Pitfalls: SMB3 Protocol Upgrade (3.0/3.0.2/3.1.1)
+# Domain Pitfalls: v0.10.0 Production Hardening + SMB Protocol Fixes
 
-**Domain:** Adding SMB3 features (encryption, signing, leases, Kerberos, durable handles, cross-protocol integration) to existing SMB2.0.2/2.1 implementation
-**Researched:** 2026-02-28
-**Confidence:** HIGH for pitfalls 1-7 (verified against MS-SMB2 spec, Microsoft blog test vectors, and DittoFS source code); MEDIUM for pitfalls 8-12 (WebSearch + Samba bug reports + community experience); MEDIUM for pitfall 13-15 (cross-protocol coordination based on existing DittoFS architecture analysis)
+**Domain:** Adding production hardening (quotas, client tracking, trash, payload stats) and completing SMB3 protocol compliance (credits, multi-channel, WPTS fixes, macOS signing) to an existing ~290K LOC multi-protocol filesystem server
+**Researched:** 2026-03-20
+**Confidence:** HIGH for pitfalls 1-5 (verified against MS-SMB2 spec, existing DittoFS source, and Samba wiki); HIGH for pitfalls 6-9 (based on codebase analysis and architecture understanding); MEDIUM for pitfalls 10-15 (domain experience + WebSearch verified patterns); MEDIUM for pitfalls 16-19 (integration concerns based on architecture analysis)
 
 ---
 
 ## Critical Pitfalls
 
-Mistakes that cause Windows clients to refuse to connect, encryption/signing failures, data corruption, or fundamental protocol violations that block all SMB3 functionality.
+Mistakes that cause client disconnections, data loss, protocol violations, or deadlocks that block core functionality.
 
-### Pitfall 1: Preauth Integrity Hash Chain Computed Over Wrong Bytes
+### Pitfall 1: SMB Credit Grant Drops to Zero -- Client Deadlock
 
-**What goes wrong:** The SMB 3.1.1 preauth integrity hash chain must be computed over the *complete wire bytes* of each NEGOTIATE and SESSION_SETUP message (request and response), including the SMB2 header. A common mistake is hashing only the body, only the first command of a compound, or using the parsed/reconstructed message rather than the exact bytes received on the wire.
+**What goes wrong:** The SMB2 specification states: "The server MUST ensure that the number of credits held by the client is never reduced to zero. If the condition occurs, there is no way for the client to send subsequent requests for more credits." A server that grants zero credits in any response permanently deadlocks that client session.
 
-**Why it happens:** The hash chain feeds into key derivation. Developers often store parsed request structures and reconstruct them for hashing, introducing byte differences (padding, alignment, field ordering). The spec says the hash is over "the full message, starting from the beginning of the SMB2 Header to the end of the message" -- meaning the raw TCP payload *excluding* the 4-byte NetBIOS header but *including* the 64-byte SMB2 header.
+**Why it happens:** The existing DittoFS `GrantCredits` in `session/manager.go` already has a `MinGrant` of 16, but the adaptive algorithm applies multiplicative factors (load, client behavior, session outstanding) that could theoretically drive the result below `MinGrant` before the floor check. More dangerously, the current code returns `1` when a session is not found (line 168 in manager.go) -- but if session deletion races with the credit grant call, there is a window where the response carries 0 credits because the grant call returns before the response is assembled.
 
-**Consequences:** Session keys derived from a wrong preauth integrity hash will be incorrect. All subsequent signing verification fails. Windows clients receive STATUS_ACCESS_DENIED on the first signed request after SESSION_SETUP completes. The failure is silent and hard to diagnose because the session setup itself succeeds -- keys are derived after the final SESSION_SETUP response.
-
-**Prevention:**
-1. Store the exact raw bytes of every NEGOTIATE req/resp and SESSION_SETUP req/resp before any parsing
-2. Hash = SHA-512(PreviousHash || MessageBytes) for each message in sequence
-3. For SESSION_SETUP responses with STATUS_MORE_PROCESSING_REQUIRED, the response signature field is zeroed (unsigned) -- hash the bytes as-is including the zero signature
-4. For the final SESSION_SETUP response (STATUS_SUCCESS), hash the bytes *before* computing the signature (the signature itself is computed with the derived signing key)
-5. Write test vectors matching Microsoft's published examples (see Sources) and validate byte-for-byte
-
-**Detection:** Windows client connects, SESSION_SETUP succeeds, but the very first subsequent command (TREE_CONNECT) fails with STATUS_ACCESS_DENIED. The server log shows signature verification failure.
-
-**Phase:** Must be implemented and validated in the negotiate/preauth phase (Phase 1 of SMB3 milestone).
-
----
-
-### Pitfall 2: Key Derivation Label/Context Strings Differ Between 3.0 and 3.1.1
-
-**What goes wrong:** SMB 3.0/3.0.2 and SMB 3.1.1 use different label strings and context values for the SP800-108 KDF. Using the wrong labels for a given dialect produces incorrect keys. All four key types (SigningKey, EncryptionKey, DecryptionKey, ApplicationKey) have different labels between dialect families.
-
-**Why it happens:** The spec defines the labels in different sections, and the change between 3.0.x and 3.1.1 is subtle. The label strings are:
-
-**SMB 3.0 / 3.0.2:**
-- SigningKey: Label="SMB2AESCMAC\0", Context="SmbSign\0"
-- EncryptionKey: Label="SMB2AESCCM\0", Context="ServerIn \0" (note trailing space)
-- DecryptionKey: Label="SMB2AESCCM\0", Context="ServerOut\0"
-- ApplicationKey: Label="SMB2APP\0", Context="SmbRpc\0"
-
-**SMB 3.1.1:**
-- SigningKey: Label="SMBSigningKey\0", Context=PreauthIntegrityHashValue (64 bytes)
-- EncryptionKey: Label="SMBC2SCipherKey\0", Context=PreauthIntegrityHashValue
-- DecryptionKey: Label="SMBS2CCipherKey\0", Context=PreauthIntegrityHashValue
-- ApplicationKey: Label="SMBAppKey\0", Context=PreauthIntegrityHashValue
-
-**Consequences:** Signing and encryption fail completely for the affected dialect. If the server uses 3.1.1 labels when the negotiated dialect is 3.0, Windows clients disconnect immediately after session setup.
+**Consequences:** Windows clients with zero credits cannot send any requests, including LOGOFF. The session hangs indefinitely. The only recovery is TCP connection reset, which triggers durable handle timeouts and potential data loss for uncommitted writes.
 
 **Prevention:**
-1. Implement a single KDF function that takes label and context as parameters
-2. Select labels/contexts based on `Connection.Dialect` at key derivation time
-3. Null-terminate labels correctly (the `\0` is part of the label, not a C string artifact)
-4. For 3.0.x, context is a fixed string; for 3.1.1, context is the 64-byte SHA-512 hash value
-5. Test with both SMB 3.0 and 3.1.1 clients independently
-6. Validate against Microsoft's published test vectors (SMB 3.0 multichannel and SMB 3.1.1 multichannel examples in the MS blog)
+1. **Never return 0 from any credit grant path.** Add a final safety floor: `if grant == 0 { grant = 1 }` as the absolute last check in `GrantCredits`
+2. **Validate at the wire level:** In `buildResponseHeaderAndBody` (response.go line 285), assert that `credits > 0` before encoding the response header. Log an error if the credit manager returned 0
+3. **Credit validation in NEGOTIATE:** Per MS-SMB2, the server MUST grant at least 1 credit in the NEGOTIATE response. Verify this in tests
+4. **Test with minimum credits:** Create a test scenario where the adaptive algorithm is under maximum load with aggressive clients -- verify credits never reach 0
 
-**Detection:** smbtorture signing tests fail. Windows client shows "Access Denied" after session setup.
+**Detection:** Client connects, authenticates, then suddenly stops sending requests. Server shows no errors. Client side shows "network error" or "connection reset."
 
-**Phase:** Must be correct in the cryptographic key derivation phase. This is the most common cause of "works in testing, breaks with Windows" failures.
+**Phase:** Must be addressed first when implementing credit flow control. Validate before any other credit changes.
 
----
+### Pitfall 2: Credit Charge Validation Missing -- Allows Resource Exhaustion
 
-### Pitfall 3: Encryption Transform Header vs Plain SMB2 Header Confusion
+**What goes wrong:** Per MS-SMB2 section 3.3.5.2.5, when `Connection.SupportsMultiCredit` is TRUE, the server MUST verify that the `CreditCharge` field matches the payload size. Currently, DittoFS calculates `CalculateCreditCharge` (credits.go line 101) but never validates incoming requests against it. The dispatch path in `ProcessSingleRequest` (response.go line 43-44) calls `RequestStarted/RequestCompleted` and `GrantCredits`, but never checks whether the client has enough credits or whether the `CreditCharge` matches the payload.
 
-**What goes wrong:** When encryption is active, SMB3 messages are wrapped in an SMB2_TRANSFORM_HEADER (ProtocolId 0xFD534D42 = 0xFD 'S' 'M' 'B') instead of the normal SMB2 header (0xFE 'S' 'M' 'B'). The framing layer must detect the transform header, decrypt the payload, and then dispatch the inner plain SMB2 message. Common mistakes:
+**Why it happens:** The credit system was designed for grant tracking, not enforcement. The existing code tracks credits for adaptive grant decisions but never rejects requests that exceed the client's credit balance. This is a common pattern in incremental development -- tracking before enforcement.
 
-1. **Trying to parse the transform header as a regular SMB2 header** -- the first 4 bytes differ (0xFD vs 0xFE)
-2. **Signing the inner message when encryption is active** -- MS-SMB2 explicitly states that if decryption succeeds, signature verification MUST be skipped
-3. **Using wrong nonce size** -- AES-128-CCM uses 11 bytes of the 16-byte Nonce field; AES-128-GCM uses 12 bytes
-4. **Encrypting responses that should be plain** -- NEGOTIATE and the first SESSION_SETUP leg cannot be encrypted (no keys yet)
-
-**Why it happens:** The existing DittoFS framing layer (`internal/adapter/smb/framing.go`) reads the NetBIOS header then checks for `types.SMB2ProtocolID` (0x424D53FE). Adding transform header support requires intercepting before this check. The transform header has a completely different layout: Signature(16) + Nonce(16) + OriginalMessageSize(4) + Reserved(2) + Flags(2) + SessionId(8).
-
-**Consequences:** Encrypted messages are rejected as malformed. Windows clients that require encryption (per-share or per-server) cannot connect. If the server accidentally signs AND encrypts, the client may reject the inner message.
+**Consequences:** A malicious or misconfigured client can send unlimited concurrent requests with `CreditCharge=0`, each requesting large payloads. Without enforcement, the server allocates unbounded memory and goroutines. This is a denial-of-service vector.
 
 **Prevention:**
-1. In `ReadRequest`, check the first 4 bytes: 0xFE = plain SMB2, 0xFD = transform header, 0xFF = SMB1
-2. For transform headers, read the full transform header (52 bytes), look up the session's decryption key by SessionId, decrypt the payload, then parse the inner SMB2 message
-3. After successful decryption, skip signature verification entirely (per MS-SMB2 3.3.5.2.1.1)
-4. For AES-CCM: nonce is bytes [0:11] of the Nonce field. For AES-GCM: nonce is bytes [0:12]. The remaining bytes must be zero
-5. Never encrypt NEGOTIATE or first SESSION_SETUP (check if session has encryption keys before encrypting)
-6. Set the transform header Flags field: 0x0001 = encrypted (SMB 3.0+)
+1. **Validate CreditCharge against payload:** Before dispatching any request, compute the expected credit charge from the payload/response size. If `CreditCharge < expected`, return `STATUS_INVALID_PARAMETER`
+2. **Track outstanding credits per session:** Before consuming credits, verify `session.Outstanding >= creditCharge`. If not, return `STATUS_INSUFFICIENT_RESOURCES` (not spec-mandated but Windows Server does this)
+3. **Special case for SMB 2.0.2:** CreditCharge MUST be 0 for dialect 2.0.2 -- do not validate payload against charge for this dialect
+4. **Sequence number validation:** Per MS-SMB2 3.3.5.2.1, the server should verify that `MessageID` falls within the valid credit window. This prevents replay and out-of-window requests
 
-**Detection:** Windows client with encryption enabled gets "The specified network name is no longer available" error. tcpdump shows transform headers being sent but server responds with STATUS_INVALID_PARAMETER.
+**Detection:** Server memory grows unboundedly under load. Prometheus metrics (if enabled) show `activeRequests` far exceeding credit grants. Goroutine count climbs linearly with malicious client activity.
 
-**Phase:** Must be implemented alongside the negotiate context phase (encryption capability negotiation) and wired into the framing layer early.
+**Phase:** Implement credit charge validation immediately after the grant safety fix (Pitfall 1).
 
----
+### Pitfall 3: Multi-Channel Session Binding Race With Session State
 
-### Pitfall 4: AES-256 Key Length Mismatch (SMB 3.1.1 with AES-256-CCM/GCM)
+**What goes wrong:** SMB3 multi-channel allows a client to bind an existing session to a new TCP connection. The session state (tree connects, open files, leases, signing keys) must be shared across all connections. If the session binding and a concurrent operation on the original connection race, the server can observe partially initialized state -- for example, a WRITE on connection A references a tree that session binding on connection B is still setting up.
 
-**What goes wrong:** SMB 3.1.1 supports AES-256-CCM and AES-256-GCM in addition to AES-128 variants. When AES-256 is negotiated, the 'L' parameter in the KDF must be 256 (not 128), producing 32-byte keys. Implementations that hardcode L=128 generate 16-byte keys that silently truncate to the wrong length for AES-256 operations.
+**Why it happens:** DittoFS currently uses a per-connection session model. The `Connection` struct (pkg/adapter/smb/connection.go) tracks sessions created on that connection. The `SessionManager` (internal/adapter/smb/session/manager.go) uses `sync.Map` for sessions, which is thread-safe at the key level, but session binding requires atomically associating an existing session with a new connection while preserving all its state including crypto keys and tree connects.
 
-**Why it happens:** SMB 3.0 only supported AES-128-CCM, so early implementations hardcode key length to 16 bytes. The MS-SMB2 spec states: "If Connection.CipherId is AES-128-CCM or AES-128-GCM, 'L' value is initialized to 128. If Connection.CipherId is AES-256-CCM or AES-256-GCM, 'L' value is initialized to 256."
-
-**Consequences:** AES-256 encryption/decryption produces garbage. The client receives corrupted data and disconnects. This only manifests when connecting to Windows Server 2022+ or other servers that prefer AES-256.
+**Consequences:** Data corruption (per Samba 4.4.0 release notes: "corner cases in the treatment of channel failures that may result in data corruption when race conditions hit"). File handle confusion across connections. Lease break notifications routed to the wrong connection. Signing key mismatch if session keys are derived per-connection rather than per-session.
 
 **Prevention:**
-1. Store `Connection.CipherId` after negotiate
-2. Parameterize KDF on cipher ID: L=128 for AES-128-*, L=256 for AES-256-*
-3. EncryptionKey and DecryptionKey buffer size must match: 16 bytes for AES-128, 32 bytes for AES-256
-4. SigningKey remains 16 bytes regardless of cipher (CMAC uses 128-bit keys)
+1. **Session-level mutex for binding:** Add a binding lock to `Session` that is held during the entire `SESSION_SETUP` with `SMB2_SESSION_FLAG_BINDING` flag. All operations on the session must acquire a read lock; binding acquires a write lock
+2. **Session-connection registry is critical:** The existing `sessionConns sync.Map` maps sessionID to ConnInfo. With multi-channel, one sessionID maps to MULTIPLE ConnInfos. Replace `sync.Map` with a concurrent-safe multi-value map (e.g., `map[uint64][]*ConnInfo` protected by `sync.RWMutex`)
+3. **Session key verification:** Per MS-SMB2 3.3.5.2.4, the client must authenticate with the same credentials when binding. Verify the session key matches before allowing binding
+4. **Connection failure isolation:** When one channel fails, do NOT tear down the session. Only remove that connection from the session's channel list. This is the primary source of Samba's data corruption bugs
+5. **Lease break fan-out:** With multi-channel, lease breaks should be sent on any available channel for the session, not just the original connection. Fall back to other channels if the preferred one is broken
 
-**Detection:** Connections work with AES-128-GCM but fail with AES-256-GCM. smbtorture encryption tests with AES-256 fail.
+**Detection:** Intermittent `STATUS_USER_SESSION_DELETED` errors on the second connection. Files appear corrupted when accessed from different connections simultaneously. Lease break notifications fail silently.
 
-**Phase:** Key derivation and encryption implementation phase.
+**Phase:** Multi-channel is the highest-risk feature in this milestone. Implement after credit flow control is stable. Consider shipping as experimental/opt-in.
 
----
+### Pitfall 4: macOS Preauth Integrity Hash Mismatch -- Platform-Specific Byte Ordering
 
-### Pitfall 5: Signing Algorithm Change -- HMAC-SHA256 vs AES-128-CMAC
+**What goes wrong:** The existing DittoFS preauth integrity hash chain (hooks.go) was validated against Windows 11 clients. macOS's SMB client (smbfs) may produce different NEGOTIATE request bytes due to different negotiate context ordering, different salt values, or different capability flags. If the server's hash chain accumulates different bytes than the client expects, session key derivation produces different keys and all subsequent signing/encryption fails.
 
-**What goes wrong:** The existing DittoFS signing implementation (`internal/adapter/smb/signing/signing.go`) uses HMAC-SHA256 exclusively, which is correct for SMB 2.0.2/2.1. SMB 3.0+ requires AES-128-CMAC for signing. If the server negotiates a 3.x dialect but continues using HMAC-SHA256, every signed message will fail verification on the client.
+**Why it happens:** The preauth hash is computed over the exact wire bytes. macOS and Windows clients send slightly different NEGOTIATE payloads (different dialect lists, different negotiate contexts ordering, different padding). The hash chain itself is correct, but if the server modifies or reserializes any bytes between receiving the NEGOTIATE and hashing it, the hash diverges. The existing code in `preauthHashBeforeHook` hashes `rawMessage` which is reconstructed (`hdr.Encode() + body`) rather than the original wire bytes, introducing potential byte differences.
 
-**Why it happens:** The current `SigningKey.Sign()` method hardcodes `hmac.New(sha256.New, sk.key[:])`. When upgrading to support 3.x dialects, developers may forget to switch the algorithm because the signing key size (16 bytes) and signature size (16 bytes) are identical for both algorithms.
-
-**Consequences:** All commands after SESSION_SETUP fail signature verification. Windows clients disconnect with "The cryptographic signature is invalid."
-
-**Prevention:**
-1. Add a `SigningAlgorithm` field to `SigningKey` or `SessionSigningState` (HMAC-SHA256 for 2.x, AES-128-CMAC for 3.x)
-2. The signing key for 3.x is derived via KDF (not directly from session key as in 2.x)
-3. For 3.x signing: use `crypto/aes` + CMAC implementation (Go stdlib does not include CMAC; use a library or implement per RFC 4493)
-4. Keep backward compatibility: if negotiated dialect is 2.0.2 or 2.1, use existing HMAC-SHA256 path
-5. SMB 3.1.1 additionally supports AES-128-GMAC signing (negotiated via SMB2_SIGNING_CAPABILITIES context) -- implement as a third option
-
-**Detection:** Windows client connects with SMB 3.x, SESSION_SETUP succeeds, first subsequent command fails.
-
-**Phase:** Must be implemented alongside key derivation. The signing module needs refactoring before any 3.x dialect can work.
-
----
-
-### Pitfall 6: Negotiate Context Ordering and Padding Requirements
-
-**What goes wrong:** SMB 3.1.1 negotiate contexts must appear in a specific order and each context must be 8-byte aligned. Common mistakes:
-1. Missing PREAUTH_INTEGRITY_CAPABILITIES (mandatory) or placing it after ENCRYPTION_CAPABILITIES
-2. Incorrect padding between contexts (each must start at an 8-byte aligned offset relative to the start of the negotiate context list)
-3. Setting HashAlgorithmCount > 1 in the response (must be exactly 1)
-4. Not echoing back contexts that the client sent -- if client sends ENCRYPTION_CAPABILITIES, server MUST respond with ENCRYPTION_CAPABILITIES even if no common cipher exists
-
-**Why it happens:** The existing negotiate handler (`internal/adapter/smb/v2/handlers/negotiate.go`) has no negotiate context parsing at all -- fields like `negotiateContextOffset`, `negotiateContextCount` are commented out. Adding context support requires careful binary layout work.
-
-**Consequences:** Windows 10+ clients that send SMB 3.1.1 in the dialect list either fall back to 2.1 (losing all 3.x features) or fail the connection entirely if the client requires 3.1.1.
+**Consequences:** macOS clients can connect via SMB 2.x but fail when negotiating SMB 3.1.1. Users see "connection failed" or "the operation could not be completed." This is the exact issue referenced in PROJECT.md as issue #252.
 
 **Prevention:**
-1. Parse negotiate contexts from the request (they start at the offset specified in the negotiate request header)
-2. In the response, emit contexts in order: PREAUTH_INTEGRITY first, then ENCRYPTION
-3. Pad each context to 8-byte boundary (add zero bytes after the context data)
-4. PREAUTH_INTEGRITY response: exactly 1 hash algorithm (SHA-512, ID=0x0001), plus a server-generated 32-byte salt
-5. ENCRYPTION response: exactly 1 cipher (the preferred one from the client's list)
-6. Additional optional contexts: SMB2_SIGNING_CAPABILITIES (cipher 0x0001=AES-CMAC, 0x0002=AES-GMAC), SMB2_COMPRESSION_CAPABILITIES, SMB2_RDMA_TRANSFORM_CAPABILITIES
+1. **Hash the ORIGINAL wire bytes, not reconstructed bytes.** In `Connection.Serve()` (connection.go line 191-193), the code reconstructs rawMessage from `hdr.Encode() + body`. This is the bug vector. Instead, pass the original undecoded bytes from `ReadRequest` to the hooks
+2. **Capture wire bytes before parsing.** Modify `ReadRequest` to return the raw message bytes alongside the parsed header/body. The hooks need exact bytes, not re-encoded versions
+3. **Test with macOS Sonoma/Sequoia.** The macOS SMB client sends negotiate contexts in a different order than Windows. Create a specific E2E test with a macOS SMB mount
+4. **Log and compare hash chains.** Add debug logging of the hash value at each step. Capture a macOS packet trace and manually verify the hash chain matches
 
-**Detection:** Windows client silently negotiates SMB 2.1 instead of 3.1.1 (check negotiated dialect in server logs).
+**Detection:** macOS clients fail to connect with SMB 3.1.1 but succeed when forced to SMB 2.x (`nsmb.conf` setting `smb_neg=smb2_only`). Windows clients work fine.
 
-**Phase:** First phase of SMB3 implementation -- negotiate handling.
+**Phase:** This should be the FIRST fix attempted because it is a known bug (#252) and the fix informs the architecture of hook/framing interaction for all other SMB work.
 
----
+### Pitfall 5: WPTS Conformance Fixes Regress Existing Passing Tests
 
-### Pitfall 7: Session Key Derivation Timing -- Keys Before Signature Verification
+**What goes wrong:** Fixing one WPTS known failure causes a previously passing test to fail. This is common in SMB conformance because tests share server state -- a change to how leases are handled to fix BVT_Leasing_FileLeasingV2 may break BVT_DurableHandleV1_Reconnect_WithLeaseV1 because the durable handle reconnect path depends on specific lease break timing.
 
-**What goes wrong:** In the final SESSION_SETUP exchange, the server must:
-1. Complete GSS authentication (get the session key)
-2. Update the preauth integrity hash with the final SESSION_SETUP request
-3. Derive all cryptographic keys using the preauth hash as context (for 3.1.1)
-4. Sign the SESSION_SETUP response with the newly derived signing key
-5. Send the response
+**Why it happens:** The current WPTS suite has 193 passing, 73 known failures, and 69 skipped tests. Many of the 73 known failures are in categories (leasing, durable handles, negotiate, ADS) that have deep interactions with passing tests. The WPTS tests run sequentially within a category but the test runner does not fully isolate server state between tests. Shared state includes: session table, tree connects, open file handles, lease table, durable handle store.
 
-If steps 2-4 happen in the wrong order, the derived keys are wrong. Specifically:
-- The hash MUST be updated with the final request BEFORE key derivation
-- The hash must NOT include the final response (the response is signed, not hashed)
-- For STATUS_MORE_PROCESSING_REQUIRED responses, hash is updated with both request AND response
-
-**Why it happens:** The multi-leg NTLM/SPNEGO exchange involves multiple SESSION_SETUP round-trips. Each leg updates the hash. The asymmetry (hash the final request but not the final response) is easy to get wrong.
-
-**Consequences:** Derived keys are incorrect. The server signs the final SESSION_SETUP response with a wrong key. Windows client verifies the signature, fails, and disconnects.
+**Consequences:** Each conformance fix is a net-zero or net-negative change. The team spends time on whack-a-mole where fixing one test breaks another. CI becomes unreliable as the known failures list requires constant updating.
 
 **Prevention:**
-1. Maintain a `PreauthIntegrityHashValue` per-connection (initialized from negotiate) and per-session (forked at first SESSION_SETUP)
-2. For each SESSION_SETUP round-trip:
-   - Hash the request: `H = SHA-512(H_prev || request_bytes)`
-   - If response status is MORE_PROCESSING_REQUIRED: `H = SHA-512(H || response_bytes)`
-   - If response status is SUCCESS: derive keys using H as context, then sign the response with derived SigningKey
-3. The response to the final leg is NOT included in the hash used for key derivation
-4. Test with both single-leg (Kerberos) and multi-leg (NTLM) authentication
+1. **Run the FULL WPTS suite after every change, not just the target test.** The existing `test/smb-conformance/run.sh` and `parse-results.sh` infrastructure supports this. Never merge a conformance fix without a clean full-suite run
+2. **Categorize known failures by root cause, not by test name.** The current KNOWN_FAILURES.md lists tests by category. Group them by root cause instead: "lease break timing" (6 tests), "negotiate context ordering" (5 tests), etc. Fix root causes, not individual tests
+3. **Use git bisect for regressions.** When a previously passing test fails, bisect immediately. The regression is often in the most recent 1-2 commits
+4. **Isolate server state between test categories.** If feasible, restart the DittoFS server between WPTS test categories. This eliminates cross-test state pollution
+5. **Pin WPTS version.** The Microsoft WindowsProtocolTestSuites repo receives updates. Pin to a specific commit in `docker-compose.yml` to avoid surprise test changes
 
-**Detection:** Kerberos auth works (single leg) but NTLM fails (multi-leg), or vice versa.
+**Detection:** CI passes on the target test but fails on a previously passing test. The `parse-results.sh` script will catch this because it reports NEW failures not in the known list.
 
-**Phase:** Authentication and key derivation phase.
+**Phase:** Every WPTS conformance fix phase must include a full regression run. Budget 30% of conformance time for regression investigation.
 
 ---
 
 ## Moderate Pitfalls
 
-### Pitfall 8: Lease vs Oplock Backward Compatibility During Dialect Transition
+Mistakes that cause performance degradation, incorrect behavior, or maintenance burden without blocking core functionality.
 
-**What goes wrong:** The existing DittoFS implementation supports both traditional oplocks (SMB 2.0.2/2.1) and leases (SMB 2.1+ via the Unified Lock Manager). When a client negotiates SMB 3.0+, it will exclusively use Lease V2 contexts (SMB2_CREATE_REQUEST_LEASE_V2 with 52 bytes including ParentLeaseKey and Epoch). If the server still processes these as Lease V1 (32 bytes), the ParentLeaseKey (used for directory leases) and Epoch (used for break sequencing) are silently lost.
+### Pitfall 6: Share Quota Enforcement TOCTOU Between Check and Write
 
-**Why it happens:** The existing `DecodeLeaseCreateContext` in `lease.go` already handles both V1 and V2 formats based on data length, which is good. However, the risk is in the *response*: SMB 3.0+ clients that sent V2 contexts expect V2 responses. Sending a V1 response (32 bytes) to a V2 request causes the client to ignore the lease context entirely.
+**What goes wrong:** Quota enforcement follows a check-then-act pattern: read current usage, compare to limit, proceed with write. Between the check and the write, another concurrent request may have consumed the remaining space. Both requests pass the check, both write, and the share exceeds its quota.
 
-**Prevention:**
-1. Track the lease version negotiated per-connection (V1 for dialect <= 2.1, V2 for dialect >= 3.0)
-2. Always respond with the same version the client requested
-3. For directory leases (new in SMB 3.0+): handle the ParentLeaseKey correctly -- it links a file lease to its parent directory lease for hierarchical break notifications
-4. Epoch must be tracked and incremented correctly for V2 -- the existing implementation increments `lease.Lease.Epoch` which is correct, but must ensure it flows through to the response context
+**Why it happens:** DittoFS processes requests concurrently (goroutine per request). Multiple WRITE operations to the same share can be in-flight simultaneously. The metadata store tracks file sizes but does not provide atomic "increment-and-check" operations for quota tracking.
 
-**Detection:** Windows Explorer directory refresh is slow (directory leases not working). File save from Office apps takes extra time (lease upgrade fails).
-
-**Phase:** Lease integration phase.
-
----
-
-### Pitfall 9: SPNEGO Multi-Leg Kerberos with MIC Requirement
-
-**What goes wrong:** The existing SPNEGO/Kerberos implementation in `session_setup.go` handles single-leg Kerberos (AP-REQ -> accept-complete). However, some Kerberos exchanges can be multi-leg (e.g., when mutual authentication is required or when the client requests a MIC). The server must handle:
-1. NegTokenInit with Kerberos AP-REQ -> NegTokenResp with accept-complete + AP-REP (single leg)
-2. NegTokenInit with Kerberos AP-REQ -> NegTokenResp with accept-incomplete + AP-REP -> NegTokenResp with MIC (multi-leg)
-
-Additionally, SPNEGO fallback from Kerberos to NTLM must be handled: if Kerberos fails (wrong SPN, expired ticket), the server should send reject with a hint to try NTLM, not just STATUS_LOGON_FAILURE.
-
-**Why it happens:** The current code (`handleKerberosAuth`) validates AP-REQ and immediately returns accept-complete. It does not build an AP-REP token. While Windows clients accept this for basic scenarios, strict SPNEGO implementations (like MIT Kerberos-based Linux clients) may require the AP-REP for mutual authentication. Samba bug #14106 documents similar SPNEGO fallback issues.
+**Consequences:** Quotas are eventually consistent rather than strictly enforced. A share configured with 1GB quota might temporarily hold 1.1GB of data. For most production use cases this is acceptable (quotas are advisory), but if strict enforcement is required, the TOCTOU window is a correctness bug.
 
 **Prevention:**
-1. Build the AP-REP from the service context and include it in the NegTokenResp
-2. Handle NegStateRequestMIC in subsequent SESSION_SETUP legs
-3. When Kerberos fails, respond with NegStateReject but include NTLM as the supported mech, allowing SPNEGO fallback
-4. Track SPNEGO negotiation state per-session (not just NTLM pending auth state)
-5. The preauth integrity hash must be updated for every SESSION_SETUP leg, including Kerberos multi-leg
+1. **Use an atomic counter for quota tracking.** Add a per-share `atomic.Int64` for `usedBytes` that is atomically incremented before the write and decremented on failure. This is faster than holding a mutex across the entire write path
+2. **Accept eventual consistency as the default.** Document that quotas are "soft" by default. The counter is periodically reconciled with actual usage from the metadata store
+3. **Reject on threshold, not exact limit.** Reject writes when usage exceeds `quota * 0.99`, leaving a 1% buffer for races. This turns the TOCTOU window into a non-issue for practical purposes
+4. **Cross-protocol consistency:** Both NFS WRITE and SMB WRITE must check the same quota counter. Place enforcement in the metadata service layer, not in protocol handlers
 
-**Detection:** Linux `smbclient` with Kerberos fails while Windows client works. MIT Kerberos-based clients report "mutual authentication failed."
+**Detection:** Monitoring shows share usage exceeding configured quota by a small percentage. No user-visible errors.
 
-**Phase:** Authentication phase -- when integrating shared Kerberos layer.
+**Phase:** Implement quota tracking (atomic counter) early, enforcement later. The tracking infrastructure is needed for FSSTAT/FSINFO reporting regardless.
 
----
+### Pitfall 7: Payload Stats (UsedSize) Performance Regression from Scanning
 
-### Pitfall 10: Durable Handle V2 Reconnect Validation Complexity
+**What goes wrong:** Computing actual storage usage (UsedSize) requires scanning all files in the metadata store to sum their sizes, or querying the block store for actual disk usage. If this computation runs on every FSSTAT/FSINFO request, it creates a hot path that scales linearly with file count.
 
-**What goes wrong:** Durable Handle V2 reconnect (SMB2_CREATE_DURABLE_HANDLE_RECONNECT_V2) has an extraordinarily long list of validation conditions (per MS-SMB2 section 3.3.5.9.12). Missing any single check creates a security vulnerability or protocol violation. The complete list includes:
+**Why it happens:** The current `GetFilesystemStatistics` in the memory store (server.go line 180) calls `computeStatistics()` which iterates all files. For BadgerDB, the implementation counts entries and sums file sizes. For PostgreSQL, it runs aggregate queries. None of these are O(1).
 
-1. Look up Open by FileId.Persistent in GlobalOpenTable
-2. If not found and persistent flag set, look up by CreateGuid
-3. Validate Open.Lease is not NULL and Open.ClientGuid matches Connection.ClientGuid
-4. Validate Open.CreateGuid matches the request's CreateGuid
-5. Validate Open.IsDurable or Open.IsResilient is TRUE
-6. Validate Open.Session is NULL (previous session was cleaned up)
-7. If Open.Lease is NULL, lease context must NOT be present in request
-8. If Open.Lease is NOT NULL, matching lease context MUST be present
-9. Lease key must match between Open.Lease.LeaseKey and the create context
-10. Lease version must match (V1 context for V1 lease, V2 for V2)
-11. Open.Lease.LeaseState must contain Handle caching for durable reconnect
-12. Open.DurableOwner must match Session.SecurityContext (same user)
-13. File name must match Open.Lease.FileName (if lease is not null and FileDeleteOnClose is false)
-14. Cannot combine with DurableHandleRequest, DurableReconnect V1, or DurableHandleRequest V2
-
-**Why it happens:** Durable handles interact with sessions, leases, security contexts, and file state simultaneously. Each condition addresses a specific attack vector or protocol invariant. Samba's implementation had multiple bugs (#13318, #13535, #11897, #11898) related to these checks.
+**Consequences:** NFS FSSTAT and SMB QUERY_INFO for `FileFsFullSizeInformation` become slow as the share grows. With 100K files, each FSSTAT call scans 100K metadata entries. Some NFS clients call FSSTAT before every WRITE (to check available space), creating a multiplication effect.
 
 **Prevention:**
-1. Implement checks as a sequential validation pipeline with early return on first failure
-2. Return STATUS_OBJECT_NAME_NOT_FOUND for most validation failures (as spec requires)
-3. Return STATUS_INVALID_PARAMETER for conflicting create contexts
-4. Return STATUS_ACCESS_DENIED for security context mismatch
-5. Store CreateGuid, LeaseKey, DurableOwner, and FileName with each Open for validation
-6. Write a smbtorture `durable_v2_reconnect` test for each validation condition individually
+1. **Maintain a running counter.** Track `usedBytes` as an in-memory counter updated on every write/truncate/delete. Persist it periodically (every N seconds or every N operations) rather than recomputing from scratch
+2. **Cache with TTL.** If running counters are too complex, cache the computed statistics with a 5-10 second TTL. Most clients tolerate slightly stale usage data
+3. **Separate block store usage from metadata size.** `UsedSize` should reflect actual block store disk usage (which the block store already tracks), not sum-of-file-sizes from metadata. The block store engine already has size tracking via `Cache.MaxSize()` and similar
+4. **Do not block writes on stats computation.** Stats computation must not hold any lock that write paths need. Use copy-on-write or atomic snapshots
 
-**Detection:** smbtorture durable_v2 tests fail. Windows Excel "recovered unsaved changes" feature does not work after network interruption.
+**Detection:** `FSSTAT` response time increases linearly with file count. NFS clients show slow `df` output. Prometheus histograms for FSSTAT latency show p99 growing over time.
 
-**Phase:** Durable handles phase -- one of the later phases due to dependency on leases and session management.
+**Phase:** Address when implementing payload stats. The running counter should be added to the metadata service before exposing it via FSSTAT.
 
----
+### Pitfall 8: Client Tracking Memory Leak from Stale Entries
 
-### Pitfall 11: Durable Handle State Persistence Across Server Restart
+**What goes wrong:** Protocol-agnostic client tracking records (`ClientRecord`) accumulate in memory for clients that connected, did some work, and disconnected without clean logout. If the server does not actively garbage-collect stale entries, the client registry grows unboundedly over weeks of uptime.
 
-**What goes wrong:** Durable handles survive connection drops but must also survive server restarts for "persistent handles." The server must persist:
-- Open state (FileId, CreateGuid, DurableOwner)
-- Lease state (LeaseKey, LeaseState, Epoch)
-- File path and metadata handle
+**Why it happens:** NFS clients (especially NFSv3 over UDP) do not have explicit session teardown. SMB clients that lose network connectivity skip LOGOFF. The existing NFS v4.1 session manager has lease-based expiry, but NFSv3 mounts tracked as `ClientRecord` do not. The SMB session manager deletes sessions on LOGOFF or connection close, but the proposed `ClientRecord` is at a higher level of abstraction.
 
-Without persistence, all durable handles are lost on restart, making the feature useless for connection resilience.
-
-**Why it happens:** DittoFS already has lock state persistence in the metadata store (per-share), which the existing lease implementation uses. However, durable handle state (the Open object with its FileId, CreateGuid, and DurableOwner) is separate from lease state and must be stored in a new table/structure. The Unified Lock Manager stores lease info but not the full SMB Open state.
+**Consequences:** Memory usage grows linearly with cumulative unique clients over server lifetime. After weeks of operation, the client registry consumes significant memory and `dfsctl client list` returns an unwieldy number of entries.
 
 **Prevention:**
-1. Design a DurableOpenStore interface (like LockStore but for Open objects)
-2. Store: FileId.Persistent, CreateGuid, LeaseKey, DurableOwner (security context), FilePath, CreateOptions, DesiredAccess
-3. On reconnect, validate stored state against the reconnect request
-4. Set a durable handle timeout (default 60 seconds) -- if no reconnect within timeout, clean up
-5. For DittoFS, implement in the control plane store (GORM-based) alongside session/share data
-6. Grace period on restart: allow reconnects within a configurable window (similar to NFS grace period already implemented)
+1. **TTL-based expiry.** Every `ClientRecord` has a `LastSeen` timestamp updated on each request. A background goroutine sweeps entries older than a configurable TTL (default: 24 hours). This is the pattern used by the existing NFSv4 lease manager
+2. **Cap the registry size.** Set a maximum number of tracked clients (e.g., 10,000). When the limit is reached, evict the oldest entry. This provides a hard upper bound on memory
+3. **Distinguish active vs historical.** Active clients (with open sessions/mounts) are never evicted. Historical clients (disconnected) are subject to TTL and cap limits
+4. **Atomic updates.** Use `sync.Map` or a sharded map for the client registry, consistent with the existing `sessionConns` pattern. Do not introduce a global mutex on the hot path
 
-**Detection:** Server restart causes all SMB clients to show "network path not found" instead of transparently reconnecting.
+**Detection:** Memory usage grows linearly over time even with constant client count. `dfsctl client list` response time increases. Prometheus gauge for tracked clients never decreases.
 
-**Phase:** Durable handles persistence phase.
+**Phase:** Implement TTL expiry from the start. Do not ship client tracking without a cleanup mechanism.
 
----
+### Pitfall 9: Trash Soft-Delete Interacts Badly with Block Store GC
 
-### Pitfall 12: Secure Dialect Negotiation (SMB 3.0.x) vs Preauth Integrity (3.1.1)
+**What goes wrong:** When a file is moved to trash (soft-deleted), its metadata is preserved with a "deleted" flag, but the block store GC may garbage-collect the file's blocks because no "live" file references them. When the user tries to restore the file, the metadata exists but the blocks are gone.
 
-**What goes wrong:** SMB 3.0 and 3.0.2 use a post-authentication FSCTL_VALIDATE_NEGOTIATE_INFO IOCTL to verify the negotiate exchange was not tampered with. SMB 3.1.1 replaced this with preauth integrity (hash chain). If the server negotiates 3.0.x but does not implement FSCTL_VALIDATE_NEGOTIATE_INFO, Windows clients will fail the connection after tree connect.
+**Why it happens:** The block store GC (pkg/blockstore/gc/) identifies unreferenced blocks by scanning live metadata. If the GC does not know about trashed files, it considers their blocks as unreferenced and deletes them. The GC runs asynchronously and does not coordinate with the trash retention system.
 
-**Why it happens:** The IOCTL handler (`internal/adapter/smb/v2/handlers/stub_handlers.go`) likely stubs IOCTL. FSCTL_VALIDATE_NEGOTIATE_INFO is a specific IOCTL (CtlCode=0x00140204) that the server must handle by validating the client's negotiate information matches the server's state.
+**Consequences:** Files restored from trash have zero-length content or corrupt data. This is a silent data loss scenario that only manifests when a user actually tries to restore a file.
 
 **Prevention:**
-1. Implement FSCTL_VALIDATE_NEGOTIATE_INFO handler in IOCTL dispatch
-2. Compare: Capabilities, Guid, SecurityMode, Dialects from the request against the values from the original negotiate
-3. If any mismatch, return STATUS_ACCESS_DENIED (potential MITM)
-4. The IOCTL must be signed (per spec requirement)
-5. For 3.1.1, this IOCTL is not needed (preauth integrity supersedes it), but the server should still handle it gracefully if a client sends it
+1. **Trashed files are still "live" for GC purposes.** The GC must scan both live files AND trashed files when determining block references. Add trash entries to the GC's reference scan
+2. **Alternative: Move blocks to a "trash" prefix.** Instead of keeping blocks in their original location, move them to a trash-specific storage path. The GC ignores the trash path entirely. This is simpler but doubles the storage during retention
+3. **Purge coordination.** When trash retention expires and the file is permanently deleted, THEN the GC can reclaim blocks. Implement a trash-specific purge goroutine that permanently deletes trashed files after retention expires, which then makes their blocks eligible for GC
+4. **Test the full cycle:** Create file -> write data -> delete file (goes to trash) -> wait for GC -> restore from trash -> verify data intact. This test must be in the E2E suite
 
-**Detection:** Windows 8/8.1/Server 2012 clients (which negotiate 3.0/3.0.2) disconnect immediately after tree connect. Windows 10+ clients work fine (negotiate 3.1.1 which does not use FSCTL_VALIDATE_NEGOTIATE_INFO).
+**Detection:** Files restored from trash have size 0 or return I/O errors on read. Server logs show "block not found" errors during restore operations.
 
-**Phase:** Early phase -- must be part of negotiate/IOCTL handling.
+**Phase:** Design trash and GC coordination BEFORE implementing trash. The GC integration is the hardest part of trash, not the metadata flagging.
 
----
+### Pitfall 10: Trash Cross-Protocol Visibility Inconsistency
 
-## Cross-Protocol Pitfalls
+**What goes wrong:** An NFS client deletes a file (which moves it to trash). An SMB client listing the directory no longer sees the file (correct). But when the NFS client tries to list the trash contents, the SMB client cannot see the trash at all because SMB does not expose a trash protocol concept. Conversely, an SMB client using `DELETE_ON_CLOSE` flag should bypass trash entirely, but the server's trash interception does not distinguish between SMB delete semantics and NFS unlink semantics.
 
-Mistakes specific to DittoFS's multi-protocol (NFS + SMB) architecture. These are particularly important because DittoFS's competitive advantage includes cross-protocol consistency.
+**Why it happens:** Trash is not a protocol-level concept in either NFS or SMB. It is a server-side feature implemented at the metadata layer. The "move to .trash" operation must be invisible to protocol handlers, but different protocols have different delete semantics (NFS `REMOVE` vs SMB `CLOSE` with `DELETE_ON_CLOSE`, NFS `RMDIR` vs SMB `CLOSE` on a directory with `DELETE_ON_CLOSE`).
 
-### Pitfall 13: SMB3 Lease Break During NFS Delegation Recall Race
-
-**What goes wrong:** DittoFS already has cross-protocol oplock break coordination (`CheckAndBreakForWrite`, `CheckAndBreakForRead`, `CheckAndBreakForDelete` in `oplock.go`). When upgrading to SMB3 leases (which are more granular than SMB2 oplocks), the break logic must account for:
-
-1. **Directory leases (new in SMB3)**: NFS directory operations (CREATE, REMOVE, RENAME in a directory) must break SMB3 directory leases. The existing cross-protocol code only handles file-level leases.
-2. **Epoch-based sequencing**: SMB3 lease breaks include an epoch counter. NFS-triggered breaks must correctly increment the epoch. Stale epoch values cause clients to ignore the break.
-3. **Simultaneous breaks**: An NFS write can trigger an SMB3 Write lease break while an NFS delegation recall is already in progress for the same file. The Unified Lock Manager must handle concurrent breaks without deadlock.
-
-**Why it happens:** The existing OplockManager uses a single `sync.RWMutex` (`mu`) for all lease operations. When an NFS handler calls `CheckAndBreakForWrite` (which takes `mu`), and the break notification goroutine tries to send the break (which may eventually need `mu` for updating state), there is a potential for contention. The existing code avoids deadlock by sending breaks asynchronously, but the epoch tracking requires careful coordination.
+**Consequences:** Users see different behavior depending on which protocol they use. Files deleted via NFS appear in a `.trash` directory visible to SMB clients (confusing). Files deleted via SMB with `DELETE_ON_CLOSE` are supposed to be immediately deleted but end up in trash (wrong).
 
 **Prevention:**
-1. Add directory lease awareness to cross-protocol break methods (new method: `CheckAndBreakForDirectoryChange`)
-2. Ensure epoch is atomically incremented and persisted before the break notification is sent
-3. Test: NFS CREATE in directory while SMB3 directory lease active -> directory lease break + epoch increment
-4. Test: NFS WRITE while SMB3 R+W+H lease active -> break W to R, increment epoch, keep R+H
-5. Add integration test: simultaneous NFS delegation recall + SMB3 lease break on same file
+1. **Implement trash at the metadata service layer, not at the protocol handler layer.** The `RemoveFile` method in `pkg/metadata/` should check trash configuration and decide whether to soft-delete or hard-delete
+2. **Honor protocol intent:** SMB `DELETE_ON_CLOSE` is an explicit "delete when I close this handle" directive. It should bypass trash. NFS `REMOVE` is a standard delete that should go through trash
+3. **Hide the trash directory from normal listings.** The `.trash` prefix should be filtered from `READDIR`/`READDIRPLUS` and `QUERY_DIRECTORY` results. Only expose trash contents via the `dfsctl` CLI or REST API
+4. **Per-share trash configuration.** Some shares may want trash (user home directories), others may not (temp directories). Make trash a per-share setting, not global
 
-**Detection:** SMB3 clients show stale directory listings after NFS modifications. Files created via NFS not visible in Windows Explorer until manual refresh.
+**Detection:** Users report seeing a `.trash` directory in their file manager. Files deleted with `DELETE_ON_CLOSE` are not immediately freed.
 
-**Phase:** Cross-protocol integration phase (late in milestone).
+**Phase:** Design cross-protocol semantics before implementing trash metadata changes.
 
----
+### Pitfall 11: Credit Flow Control Breaks Compound Requests
 
-### Pitfall 14: Cross-Protocol Lock/Lease Semantics Mismatch with Handle Leases
+**What goes wrong:** Compound requests (multiple SMB2 commands in a single TCP message) share a single credit charge for the first command but each subsequent related command does not have its own credit charge. The existing compound processing in `compound.go` calls `GrantCredits` for each error response (line 314-318) but does not track per-compound credit accounting. Adding strict credit enforcement may reject valid compound requests.
 
-**What goes wrong:** SMB3 Handle (H) leases protect against "surprise deletion" -- the client gets notified before a file is deleted or renamed, allowing it to close gracefully. NFS has no equivalent concept. When an NFS client issues REMOVE or RENAME, DittoFS must break the Handle lease BEFORE completing the operation. The existing `CheckAndBreakForDelete` does this, but:
+**Why it happens:** Per MS-SMB2 3.3.5.2.7, "The server MUST consume 1 credit for each request in the compound chain." But the current code treats each command in a compound as having its own `CreditCharge` from the header, which is only set in the first command's header. Related commands inherit the first command's header fields but their individual `CreditCharge` values may be 0.
 
-1. The break is asynchronous (goroutine) -- the NFS handler may complete the delete before the SMB client acknowledges the break
-2. The method returns `ErrLeaseBreakPending` but the NFS handler may not wait for acknowledgment
-3. If the NFS handler proceeds without waiting, the SMB client loses data (cached writes not flushed)
-
-**Why it happens:** The current design returns `ErrLeaseBreakPending` to signal the caller should wait, but NFS v3/v4 handlers may not have retry logic for this error. NFSv4 delegations have a recall mechanism with a timeout, but the NFS handler dispatching is separate from SMB lease break dispatching.
+**Consequences:** After adding credit enforcement, compound requests (used heavily by Windows Explorer for `CREATE + QUERY_INFO + CLOSE` sequences) start failing with `STATUS_INSUFFICIENT_RESOURCES` or `STATUS_INVALID_PARAMETER`.
 
 **Prevention:**
-1. NFS handlers that trigger lease breaks MUST block until break is acknowledged or times out (the existing `OpLockBreakScanner` handles timeout)
-2. Implement a `WaitForBreakAcknowledgment(leaseKey, timeout)` method on OplockManager
-3. NFS REMOVE/RENAME flow: `CheckAndBreakForDelete -> if pending, WaitForBreakAcknowledgment(30s) -> complete delete`
-4. If timeout expires, the lease is force-revoked (existing scanner behavior) and the NFS operation proceeds
-5. Test: SMB3 client has R+W+H lease, NFS client removes file -> SMB3 gets break notification, flushes writes, acknowledges, NFS delete completes
+1. **Charge credits at the compound level, not per-command.** The credit charge for a compound is the sum of individual charges OR the first command's `CreditCharge` (whichever the implementation chose). Validate at the compound entry point, not per-command
+2. **Grant credits only in the last response of a compound.** Per MS-SMB2, the server returns credits in the last response of a compound chain, not in each intermediate response
+3. **Test with Windows Explorer compound patterns.** Explorer commonly sends `CREATE+CLOSE`, `CREATE+QUERY_INFO+CLOSE`, and `CREATE+SET_INFO+CLOSE` compounds. Validate these work correctly with credit enforcement
 
-**Detection:** NFS delete succeeds but SMB client loses cached (unflushed) writes. Data loss scenario.
+**Detection:** Windows Explorer fails to list directory contents or open files. Error is `STATUS_INSUFFICIENT_RESOURCES` in the second or third command of a compound.
 
-**Phase:** Cross-protocol integration phase. This is a data safety issue and must be thoroughly tested.
+**Phase:** Test compound request handling thoroughly when adding credit enforcement. Use smbtorture's compound tests.
 
----
+### Pitfall 12: Multi-Channel Lease Break Notification Fan-Out Failure
 
-### Pitfall 15: ACL Consistency Between SMB3 Encrypted Sessions and NFS Kerberos
+**What goes wrong:** With multi-channel, a session has multiple TCP connections. Lease break notifications must be sent on a connection that the client is actively reading from. If the server picks a connection that has a full send buffer or is in a broken TCP state, the lease break notification is lost. The client continues using stale cached data, leading to silent data corruption.
 
-**What goes wrong:** SMB3 encrypted sessions authenticate via SPNEGO/Kerberos or NTLM, producing a Windows security context (SID-based). NFS Kerberos produces a Unix identity (UID/GID-based). The existing DittoFS SID mapping (Samba-style RID allocation: uid*2+1000, gid*2+1001) must produce consistent mappings regardless of access path. When SMB3 encryption is enabled, the security context may carry additional claims or group memberships that differ from the NFS Kerberos path.
+**Why it happens:** The existing `transportNotifier` in `adapter.go` uses `sessionConns sync.Map` to route lease breaks to a specific ConnInfo. With multi-channel, there are multiple ConnInfo per session. The notifier must try all channels, not just the first one found.
 
-**Why it happens:** The SMB session maps Kerberos principal -> control plane user -> SID (via RID allocation). The NFS adapter maps Kerberos principal -> control plane user -> UID/GID. Both should resolve to the same control plane user, but edge cases exist:
-1. Username normalization differs (SMB strips realm, NFS may not)
-2. Group membership queries differ (SMB uses Windows token groups, NFS uses supplementary GIDs from AUTH_SYS or Kerberos principal groups)
-3. The POSIX-to-DACL synthesis produces Security Descriptors from mode bits, but mode bits are computed from the Unix identity. If the Unix identity differs between SMB and NFS paths, the generated DACL differs.
+**Consequences:** Lease breaks are silently lost. The SMB client continues reading stale cached data while another client has modified the file. This is the cross-channel data corruption scenario that Samba documented in their 4.4.0 release.
 
 **Prevention:**
-1. Ensure principal-to-username normalization is identical in both `handleKerberosAuth` (SMB) and the NFS RPCSEC_GSS handler
-2. Use the same control plane user lookup for both paths (already done -- both use `userStore.GetUser`)
-3. When generating Security Descriptors, always use the file's stored UID/GID (from metadata), not the accessing user's identity
-4. Test: create file via NFS Kerberos, query Security Descriptor via SMB3 -> Owner SID should match the NFS user's mapped SID
+1. **Try all channels for lease break delivery.** If the first channel fails, fall back to other channels in the session. Only give up if ALL channels fail
+2. **Use a round-robin or least-loaded channel selection.** Do not always pick the same channel for breaks -- distribute break notifications across channels
+3. **Timeout for break acknowledgment.** If no ACK is received within the lease timeout, forcibly break the lease server-side and revoke caching
+4. **Replay missing breaks on channel recovery.** Per Samba bug #11897, "SMB3 multichannel implementation is missing oplock/lease break request replay." When a channel reconnects, replay any unacknowledged lease breaks
 
-**Detection:** `icacls` shows different owners for files created via NFS vs SMB. Permission denied errors when accessing NFS-created files via SMB or vice versa.
+**Detection:** File content diverges between two clients using different channels. Lease break metrics show delivery failures but no retry attempts.
 
-**Phase:** Cross-protocol integration phase.
+**Phase:** Implement alongside multi-channel session binding. Cannot be deferred.
 
 ---
 
 ## Minor Pitfalls
 
-### Pitfall 16: MaxTransactSize / MaxReadSize / MaxWriteSize Negotiation for 3.x
+Issues that cause suboptimal behavior, minor inconsistencies, or increased maintenance burden.
 
-**What goes wrong:** SMB 3.x introduces multi-credit operations where reads/writes can be larger than 64KB. The existing negotiate response sets max sizes but may not coordinate with credit charges. For SMB 3.x, a single operation can use multiple credits (1 credit per 64KB), and the CreditCharge header field indicates how many credits the operation consumes.
+### Pitfall 13: Quota Reporting Inconsistency Between NFS and SMB
 
-**Prevention:** Ensure credit charge validation in the dispatch layer accepts multi-credit operations. The existing credit system tracks outstanding credits per-session but may not validate CreditCharge > 1.
+**What goes wrong:** NFS FSSTAT reports quotas in bytes (TotalSize, AvailableSize) while SMB `FileFsFullSizeInformation` reports in allocation units (TotalAllocationUnits, ActualAvailableAllocationUnits, CallerAvailableAllocationUnits). If the conversion between bytes and allocation units is inconsistent, clients see different available space depending on which protocol they use.
 
-**Phase:** Negotiate phase.
+**Prevention:**
+1. Store quotas in bytes internally
+2. Convert to allocation units at the SMB handler level using a consistent unit size (typically 4096 bytes)
+3. Test that NFS `df` and Windows Explorer "Properties" show the same available space for the same share
 
----
+### Pitfall 14: Client Tracking Double-Counts Multi-Protocol Clients
 
-### Pitfall 17: Connection.ClientGuid Tracking for Durable Handles
+**What goes wrong:** A client machine that mounts the same share via both NFS and SMB appears as two separate `ClientRecord` entries. The `dfsctl client list` output is confusing because it shows the same machine twice with different protocol labels.
 
-**What goes wrong:** SMB 3.x uses ClientGuid (sent in NEGOTIATE) to identify client instances across connections. Durable handle reconnect validates that the reconnecting connection's ClientGuid matches the original. If DittoFS does not track ClientGuid per-connection, durable reconnect validation fails.
+**Prevention:**
+1. Use client IP address as the primary key for `ClientRecord`, not protocol-specific session IDs
+2. Track protocols as a set within the record: `protocols: [nfs, smb]`
+3. Aggregate bandwidth and operation counts across protocols
+4. Allow filtering by protocol in `dfsctl client list --protocol nfs`
 
-**Prevention:** Store ClientGuid from the NEGOTIATE request in Connection state. Validate during durable reconnect. This also enables multi-channel detection (same ClientGuid on different connections = same client).
+### Pitfall 15: Trash Retention Purge Races with Block Store Sync
 
-**Phase:** Negotiate phase (store) and durable handles phase (validate).
+**What goes wrong:** The trash purge goroutine permanently deletes a file's metadata, making its blocks eligible for GC. But the block syncer (pkg/blockstore/sync/) may be in the middle of uploading those blocks to the remote store. The sync completes, uploading blocks that are immediately garbage-collected.
 
----
+**Prevention:**
+1. Purge order: delete remote blocks first, then local blocks, then metadata
+2. Wait for any in-flight sync operations to complete before purging blocks
+3. Use the existing syncer's flush mechanism to ensure all pending uploads are complete before purge starts
 
-### Pitfall 18: TREE_CONNECT Encryption Flag Per-Share
+### Pitfall 16: WPTS Test Infrastructure Docker Image Staleness
 
-**What goes wrong:** SMB 3.x supports per-share encryption via the SMB2_SHAREFLAG_ENCRYPT_DATA flag in TREE_CONNECT response. If the share has encryption enabled and the client does not support encryption, the server must reject the tree connect. The existing tree connect handler does not check encryption capabilities.
+**What goes wrong:** The WPTS Docker image (`test/smb-conformance/Dockerfile.dittofs`) builds against a specific version of the Microsoft test suite. If the test suite is updated upstream, the baseline results become invalid and new tests may appear that are neither in the passing nor known-failures list.
 
-**Prevention:** Add encryption configuration per-share in the control plane. In TREE_CONNECT handler, check if share requires encryption and if the session supports it. Return STATUS_ACCESS_DENIED if the client cannot encrypt.
+**Prevention:**
+1. Pin the WindowsProtocolTestSuites commit hash in the Dockerfile
+2. When updating the pin, run a full baseline comparison and update KNOWN_FAILURES.md
+3. Add the pinned commit hash to CI output so regressions from upstream changes are obvious
 
-**Phase:** Encryption phase.
+### Pitfall 17: Signing Fix Changes Preauth Hash for ALL Clients
+
+**What goes wrong:** Fixing the macOS signing issue (#252) by changing how wire bytes are captured in hooks will also change the preauth hash computation for Windows clients. If the fix introduces a subtle byte difference that was previously masked by the reconstruct-then-hash approach, Windows clients may break.
+
+**Prevention:**
+1. Capture wire bytes AND reconstructed bytes in debug mode. Compare them byte-for-byte
+2. Run both WPTS and macOS E2E tests after any change to the preauth hash path
+3. If wire bytes differ from reconstructed bytes, that IS the bug -- fix the byte capture, do not change the reconstruction
+
+### Pitfall 18: Payload Stats Diverge from Block Store Reality
+
+**What goes wrong:** The `UsedSize` metric tracks file sizes from metadata, but the actual disk usage in the block store may differ due to: content-addressed deduplication (multiple files share the same blocks), sparse file holes (metadata says 1GB but only 100MB of blocks exist), or pending sync (blocks are in local store but not yet uploaded to remote).
+
+**Prevention:**
+1. Report TWO sizes: logical size (sum of file sizes from metadata) and physical size (actual block store disk usage)
+2. For quota purposes, use logical size (this is what users expect)
+3. For capacity planning, expose physical size via REST API and `dfsctl`
+4. Document the distinction clearly in FSSTAT/FSINFO responses
+
+### Pitfall 19: Connection-per-Session Assumption Baked into Adapter Architecture
+
+**What goes wrong:** The current SMB adapter architecture assumes one session lives on one connection. This assumption is embedded in: `Connection.sessions` map (connection.go line 32), `cleanupSessions` on connection close (connection.go line 250), `sessionConns sync.Map` mapping sessionID to single ConnInfo (adapter.go line 64), and `connRegistryTracker` that replaces the previous ConnInfo on session creation. Adding multi-channel requires changing all of these simultaneously, and missing one creates subtle bugs.
+
+**Prevention:**
+1. **Audit all session-connection coupling.** Search for every place that maps sessionID to a single connection/ConnInfo. Document each one before starting multi-channel work
+2. **Introduce a `ChannelSet` abstraction.** Instead of `sessionConns sync.Map[uint64]*ConnInfo`, create `sessionChannels sync.Map[uint64]*ChannelSet` where `ChannelSet` manages multiple connections for a session
+3. **Do not change `Connection.sessions` semantics.** Each `Connection` still tracks which sessions it hosts. But a session can appear in multiple `Connection.sessions` maps. The `cleanupSessions` logic must check whether other connections still reference the session before deleting it
+4. **Feature flag.** Add a `multichannel_enabled` config option (default: false). When false, reject `SESSION_SETUP` with `SMB2_SESSION_FLAG_BINDING`. This allows shipping multi-channel incrementally
+
+**Detection:** Session cleanup on connection close deletes sessions that are still active on other connections. Open files become inaccessible.
+
+**Phase:** This is architectural preparation that should happen before implementing multi-channel itself.
 
 ---
 
 ## Phase-Specific Warnings
 
 | Phase Topic | Likely Pitfall | Mitigation |
-|---|---|---|
-| Negotiate Contexts (3.1.1) | Pitfalls 1, 6 - Hash chain and context ordering | Store raw message bytes; parse contexts in order; 8-byte align; validate with test vectors |
-| Key Derivation | Pitfalls 2, 4, 7 - Wrong labels/lengths/timing | Dialect-aware KDF; parameterized L value; correct hash-before-derive ordering |
-| Signing Upgrade | Pitfall 5 - Wrong algorithm | AES-128-CMAC for 3.x; keep HMAC-SHA256 for 2.x; add algorithm field to signing state |
-| Encryption | Pitfalls 3, 4, 18 - Transform header, nonce, per-share | New framing layer for 0xFD; correct nonce sizes; per-share encryption config |
-| Leases | Pitfall 8 - V1 vs V2 response mismatch | Track lease version per-connection; match response to request version |
-| SPNEGO/Kerberos | Pitfall 9 - Multi-leg, AP-REP, fallback | Build AP-REP; handle MIC; NTLM fallback path |
-| Durable Handles | Pitfalls 10, 11, 17 - Validation, persistence, ClientGuid | Implement all 14+ validation checks; persist Open state; track ClientGuid |
-| Secure Dialect (3.0.x) | Pitfall 12 - Missing IOCTL | Implement FSCTL_VALIDATE_NEGOTIATE_INFO for 3.0/3.0.2 clients |
-| Cross-Protocol | Pitfalls 13, 14, 15 - Directory leases, Handle lease blocking, ACL consistency | Directory lease breaks; blocking wait for Handle lease; unified principal normalization |
+|-------------|---------------|------------|
+| macOS signing fix | Pitfall 4 (byte mismatch), Pitfall 17 (regression to Windows) | Capture raw wire bytes, test both platforms |
+| Credit flow control | Pitfall 1 (zero credits), Pitfall 2 (no enforcement), Pitfall 11 (compound breakage) | Floor at 1, validate charge, test compounds |
+| Multi-channel | Pitfall 3 (session binding race), Pitfall 12 (lease break fan-out), Pitfall 19 (architecture coupling) | Binding lock, channel set abstraction, feature flag |
+| Share quotas | Pitfall 6 (TOCTOU), Pitfall 7 (scanning perf), Pitfall 13 (NFS/SMB inconsistency) | Atomic counter, cached stats, consistent units |
+| Payload stats | Pitfall 7 (scanning perf), Pitfall 18 (divergence from reality) | Running counter, logical vs physical distinction |
+| Client tracking | Pitfall 8 (memory leak), Pitfall 14 (double counting) | TTL expiry, IP-based keying |
+| Trash / soft-delete | Pitfall 9 (GC interaction), Pitfall 10 (cross-protocol), Pitfall 15 (sync race) | GC-aware trash, protocol-specific semantics, purge ordering |
+| WPTS conformance | Pitfall 5 (regression), Pitfall 16 (Docker staleness) | Full suite runs, pinned versions, root-cause grouping |
 
 ---
 
 ## Sources
 
-### Microsoft Official Documentation (HIGH confidence)
-- [MS-SMB2: Generating Cryptographic Keys](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/da4e579e-02ce-4e27-bbce-3fc816a3ff92)
-- [MS-SMB2: Handling SMB2_CREATE_DURABLE_HANDLE_RECONNECT_V2](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/62ba68d0-8806-4aef-a229-eefb5827160f)
-- [MS-SMB2: SMB2_PREAUTH_INTEGRITY_CAPABILITIES](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/5a07bd66-4734-4af8-abcf-5a44ff7ee0e5)
-- [MS-SMB2: Receiving an SMB2 NEGOTIATE Request](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/b39f253e-4963-40df-8dff-2f9040ebbeb1)
-- [MS-SMB2: Receiving an SMB2 SESSION_SETUP Request](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/e545352b-9f2b-4c5e-9350-db46e4f6755e)
-- [SMB 2 and SMB 3 Security: Anatomy of Signing and Cryptographic Keys](https://learn.microsoft.com/en-us/archive/blogs/openspecification/smb-2-and-smb-3-security-in-windows-10-the-anatomy-of-signing-and-cryptographic-keys) -- includes complete test vectors for SMB 3.0 and 3.1.1 key derivation
-- [SMB 3.1.1 Pre-authentication Integrity in Windows 10](https://learn.microsoft.com/en-us/archive/blogs/openspecification/smb-3-1-1-pre-authentication-integrity-in-windows-10)
-- [SMB 3.1.1 Encryption in Windows 10](https://learn.microsoft.com/en-us/archive/blogs/openspecification/smb-3-1-1-encryption-in-windows-10)
-- [Encryption in SMB 3.0: A Protocol Perspective](https://learn.microsoft.com/en-us/archive/blogs/openspecification/encryption-in-smb-3-0-a-protocol-perspective)
-
-### Samba Implementation Experience (MEDIUM confidence)
-- [Implementing Persistent Handles in Samba (SNIA SDC 2018)](https://www.snia.org/sites/default/files/SDC/2018/presentations/SMB/Bohme_Ralph_Implementing_Persistent_Handles_Samba.pdf)
-- [Samba Bug #14106: Fix spnego fallback from kerberos to ntlmssp](https://bugzilla.samba.org/show_bug.cgi?id=14106)
-- [Samba Bug #13722: Enabling SMB3 encryption breaks macOS clients](https://www.illumos.org/issues/13722)
-- [Samba's Way Toward SMB 3.0 (USENIX ;login:)](https://www.usenix.org/system/files/login/articles/03adam_016-025_online.pdf)
-
-### Protocol Specification References
-- [SP800-108: Recommendation for Key Derivation Using Pseudorandom Functions](https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-108.pdf)
-- [RFC 4493: The AES-CMAC Algorithm](https://www.ietf.org/rfc/rfc4493.txt)
-- [RFC 4178: SPNEGO](https://datatracker.ietf.org/doc/html/rfc4178)
-
-### DittoFS Codebase Analysis (HIGH confidence)
-- `internal/adapter/smb/signing/signing.go` -- HMAC-SHA256 only, needs AES-CMAC for 3.x
-- `internal/adapter/smb/v2/handlers/negotiate.go` -- Negotiate contexts commented out, max dialect 2.1
-- `internal/adapter/smb/framing.go` -- Only handles 0xFE protocol ID, no transform header (0xFD)
-- `internal/adapter/smb/v2/handlers/session_setup.go` -- Kerberos single-leg only, no AP-REP
-- `internal/adapter/smb/v2/handlers/lease.go` -- V1/V2 decode exists, cross-protocol breaks exist
-- `internal/adapter/smb/v2/handlers/oplock.go` -- Cross-protocol integration exists, needs directory lease support
-- `internal/adapter/smb/session/session.go` -- No preauth hash state, no durable handle tracking
-- `internal/adapter/smb/types/constants.go` -- Dialect constants and capabilities defined for 3.x already
+- [MS-SMB2: Verifying the Credit Charge and the Payload Size](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/fba3123b-f566-4d8f-9715-0f529e856d25) -- HIGH confidence, official specification
+- [MS-SMB2: Algorithm for the Granting of Credits](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/2e366edb-b006-47e7-aa94-ef6f71043ced) -- HIGH confidence, official specification
+- [Samba Wiki: SMB2 Credits](https://wiki.samba.org/index.php/SMB2_Credits) -- HIGH confidence, verified against spec
+- [Samba 4.4.0 Release Notes](https://www.samba.org/samba/history/samba-4.4.0.html) -- HIGH confidence, documents multi-channel data corruption risk
+- [Samba Bug #11897: SMB3 multichannel missing oplock/lease break replay](https://bugzilla.samba.org/show_bug.cgi?id=11897) -- MEDIUM confidence, Samba-specific but applicable
+- [SMB 3.1.1 Pre-authentication integrity in Windows 10](https://learn.microsoft.com/en-us/archive/blogs/openspecification/smb-3-1-1-pre-authentication-integrity-in-windows-10) -- HIGH confidence, official Microsoft documentation
+- [SNIA: SMB3 Multi-Channel and Beyond (Samba)](https://www.snia.org/sites/default/files/SDC/2016/presentations/smb/Michael_Adam_SMB3_in_Samba_Multi-Channel_and_Beyond.pdf) -- MEDIUM confidence, implementation experience
+- [TOCTOU Race Conditions (Wikipedia)](https://en.wikipedia.org/wiki/Time-of-check_to_time-of-use) -- HIGH confidence, well-established concept
+- [Azure Blob Soft Delete Overview](https://learn.microsoft.com/en-us/azure/storage/blobs/soft-delete-blob-overview) -- MEDIUM confidence, design pattern reference
+- DittoFS source code analysis: `internal/adapter/smb/session/`, `internal/adapter/smb/compound.go`, `internal/adapter/smb/response.go`, `internal/adapter/smb/hooks.go`, `pkg/adapter/smb/connection.go`, `pkg/adapter/smb/adapter.go` -- HIGH confidence, direct code review

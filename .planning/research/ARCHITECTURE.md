@@ -1,750 +1,666 @@
-# Architecture Patterns: SMB3 Protocol Upgrade (v3.8)
+# Architecture Patterns: v0.10.0 Production Hardening + SMB Protocol Fixes
 
-**Domain:** SMB3 protocol features integrated into existing DittoFS SMB2 adapter
-**Researched:** 2026-02-28
-**Confidence:** HIGH (source code analysis + MS-SMB2 spec + MS-NLMP + SP800-108)
+**Domain:** Production hardening and SMB protocol completeness for existing multi-protocol virtual filesystem
+**Researched:** 2026-03-20
+**Confidence:** HIGH (direct source code analysis of all integration points)
 
 ## Executive Summary
 
-The SMB3 upgrade (3.0/3.0.2/3.1.1) maps cleanly onto DittoFS's existing architecture. The key insight is that SMB3's major features -- encryption, upgraded signing, leases, durable handles, and Kerberos -- each have clear integration points in the current codebase. No fundamental architectural changes are needed; the upgrade is additive.
+The v0.10.0 features span three distinct architectural domains: (1) SMB protocol completeness (credits, multi-channel, signing fix, WPTS), (2) metadata-layer features (quotas, payload stats, trash), and (3) operational features (client tracking). The existing architecture accommodates all features without fundamental redesign. The key architectural insight is that the **MetadataService** is the natural hub for quotas, trash, and payload stats, while the **SMB session/connection pipeline** absorbs credit flow and multi-channel. Client tracking requires a new cross-cutting service in the runtime.
 
-The existing code already has forward-looking infrastructure: dialect constants for 3.0/3.0.2/3.1.1 in `types/constants.go`, Kerberos provider in `pkg/auth/kerberos/`, SPNEGO parsing in `internal/adapter/smb/auth/spnego.go`, lease support in `OplockManager`, and cross-protocol coordination. The task is connecting these pieces and adding the missing cryptographic and protocol layers.
+Eight features, three dependency chains, no circular dependencies. Build order should prioritize features that unblock others: macOS signing fix is standalone and high-value; credit flow improves protocol compliance for all WPTS tests; quotas feed into both NFS FSSTAT and SMB FileFsFullSizeInformation; client tracking depends only on adapter hooks.
 
 ## Recommended Architecture
 
-### Packet Pipeline with SMB3 Encryption
-
-The critical architectural question is where encryption/decryption sits. It MUST sit in the framing layer (`framing.go`), wrapping the existing read/write path, because encrypted SMB3 messages use a **Transform Header** that replaces the NetBIOS framing for the SMB2 payload.
+### System Context: Where New Features Live
 
 ```
-Client -> TCP -> NetBIOS Frame -> [Transform Header?] -> SMB2 Header + Body -> Handler
-                                   ^                      ^
-                                   |                      |
-                           Decrypt here              Sign/Verify here
-                           (framing.go)              (framing.go + signing/)
-```
-
-**Current pipeline (SMB2):**
-```
-ReadRequest() -> NetBIOS header -> Read message -> Parse SMB2 header -> Verify signature -> Return
-```
-
-**New pipeline (SMB3):**
-```
-ReadRequest() -> NetBIOS header -> Read message -> Check Transform Header?
-  -> YES: Decrypt -> Parse SMB2 header -> (signature embedded in transform) -> Return
-  -> NO:  Parse SMB2 header -> Verify signature (CMAC/GMAC) -> Return
+                        +----------------------------------+
+                        |         Protocol Adapters         |
+                        |                                   |
+                        | NFS:                  SMB:        |
+                        |  FSSTAT quota check    Credits    |
+                        |  FSINFO quota check    Multi-ch   |
+                        |                        Signing    |
+                        |                        WPTS       |
+                        +--------+--------+--------+-------+
+                                 |        |        |
+                    +------------+        |        +----------+
+                    |                     |                    |
+           +--------v--------+   +--------v--------+  +-------v--------+
+           |  MetadataService |   |     Runtime     |  | Connection     |
+           |                  |   |                 |  | Pool           |
+           | - Quota enforce  |   | - ClientRegistry|  | - Session      |
+           | - Trash logic    |   | - Mount Tracker |  |   binding      |
+           | - Payload stats  |   | - Shares Service|  | - Credit flow  |
+           +--------+---------+   +--------+--------+  +-------+--------+
+                    |                      |                    |
+           +--------v--------+   +--------v--------+          |
+           |  MetadataStore  |   | ControlPlane DB |          |
+           |  (per-share)    |   | (GORM/SQLite)   |          |
+           |                 |   |                  |          |
+           | - UsedSize      |   | - Share.Quota*   |          |
+           | - File counts   |   | - TrashConfig   |          |
+           +-----------------+   +-----------------+          |
+                                                              |
+                                                     +--------v--------+
+                                                     |   BlockStore    |
+                                                     |   (per-share)   |
+                                                     |                 |
+                                                     | - GetStats()    |
+                                                     | - LocalDiskUsed |
+                                                     +-----------------+
 ```
 
 ### Component Boundaries
 
-| Component | Responsibility | Status | Communicates With |
-|-----------|---------------|--------|-------------------|
-| `internal/adapter/smb/framing.go` | NetBIOS framing, Transform Header decrypt/encrypt | **MODIFY** | All (entry/exit point) |
-| `internal/adapter/smb/crypto/` | AES-CCM/GCM encrypt/decrypt, key derivation (SP800-108) | **NEW** | framing.go, session |
-| `internal/adapter/smb/signing/signing.go` | HMAC-SHA256 + AES-CMAC + AES-GMAC | **MODIFY** | framing.go, session |
-| `internal/adapter/smb/v2/handlers/negotiate.go` | Dialect selection 3.0/3.0.2/3.1.1, negotiate contexts | **MODIFY** | session, crypto |
-| `internal/adapter/smb/v2/handlers/session_setup.go` | Key derivation, preauth hash, session binding | **MODIFY** | crypto, signing, auth |
-| `internal/adapter/smb/v2/handlers/create.go` | Durable handle v1/v2 create contexts | **MODIFY** | durable store |
-| `internal/adapter/smb/v2/handlers/lease.go` | Already has V2 lease support | **MINOR MODIFY** | OplockManager |
-| `internal/adapter/smb/session/session.go` | Per-session crypto keys (sign/encrypt/decrypt) | **MODIFY** | crypto |
-| `internal/adapter/smb/auth/authenticator.go` | Kerberos delegation to shared provider | **MODIFY** | pkg/auth/kerberos |
-| `internal/adapter/smb/durable/` | Durable handle persistence and reconnect | **NEW** | metadata store, handler |
-| `pkg/adapter/smb/config.go` | Encryption config, cipher selection | **MODIFY** | adapter |
-| `pkg/metadata/lock/oplock.go` | OpLock struct (already has Epoch, LeaseKey) | **NO CHANGE** | lease handlers |
-| `pkg/auth/kerberos/provider.go` | Shared Kerberos keytab/config | **NO CHANGE** | SMB auth, NFS auth |
+| Component | Responsibility | What Changes | Communicates With |
+|-----------|---------------|--------------|-------------------|
+| `internal/adapter/smb/session/` | Session lifecycle, credit accounting | Credit charge validation, grant enforcement | ConnInfo, Handler |
+| `internal/adapter/smb/v2/handlers/` | SMB command processing | WPTS fixes, quota in QueryInfo | MetadataService, Runtime |
+| `internal/adapter/smb/framing.go` | Wire protocol read/write | No change (signing fix is in crypto_state) | Connection |
+| `internal/adapter/smb/crypto_state.go` | Preauth hash chain | **FIX**: macOS hash mismatch | Session, signing |
+| `pkg/adapter/smb/connection.go` | Per-connection handler | Multi-channel session binding | Adapter, Handler |
+| `pkg/adapter/smb/adapter.go` | SMB adapter lifecycle | Multi-channel connection registry | Runtime, BaseAdapter |
+| `pkg/adapter/base.go` | Shared TCP lifecycle | Client tracking hooks | Runtime, ConnectionFactory |
+| `internal/adapter/nfs/v3/handlers/fsstat.go` | NFS FSSTAT | Quota-aware statistics | MetadataService |
+| `pkg/metadata/service.go` | Metadata business logic | **MODIFY**: Quota enforcement, trash, payload stats | MetadataStore, BlockStore |
+| `pkg/metadata/interface.go` | MetadataService interface | New methods: trash, quota-aware stats | Protocol adapters |
+| `pkg/metadata/types.go` | Core types | QuotaConfig, TrashConfig types | Service, store |
+| `pkg/controlplane/models/share.go` | Share DB model | **MODIFY**: Add Quota*, Trash* columns | Control plane store |
+| `pkg/controlplane/runtime/runtime.go` | Runtime composition | **MODIFY**: Wire ClientRegistry | All sub-services |
+| `pkg/controlplane/runtime/mounts/service.go` | Mount tracking | Extended to track connections | Adapters |
+| `pkg/blockstore/engine/` | Per-share block store | **READ-ONLY**: Stats for payload usage | Shares service |
 
-### Data Flow: Encrypted SMB3 Request
-
-```
-1. TCP accept (BaseAdapter)
-2. Connection.Serve() loop:
-   a. ReadRequest() reads NetBIOS header (4 bytes)
-   b. Read message bytes
-   c. Check first 4 bytes: SMB2_TRANSFORM_HEADER_ID (0x424D53FD)?
-      YES -> Parse Transform Header (52 bytes)
-          -> Decrypt payload using session DecryptionKey + AES-CCM/GCM
-          -> message = decrypted plaintext
-      NO  -> message = raw bytes (unencrypted session)
-   d. Parse SMB2 header from message
-   e. Verify signature (if signed and not encrypted)
-      - SMB 2.x: HMAC-SHA256 (existing)
-      - SMB 3.0/3.0.2: AES-128-CMAC (new)
-      - SMB 3.1.1: AES-128-GMAC or AES-256-GMAC (new, only when encryption negotiated)
-   f. Dispatch to handler
-3. Handler processes, returns result
-4. SendMessage():
-   a. Build SMB2 header + body
-   b. Sign if session requires signing (algorithm depends on dialect)
-   c. If session requires encryption:
-      -> Build Transform Header
-      -> Encrypt (header + body) using EncryptionKey + AES-CCM/GCM
-      -> Frame = NetBIOS(TransformHeader + EncryptedPayload)
-   d. Else: Frame = NetBIOS(SignedMessage)
-   e. WriteNetBIOSFrame()
-```
-
-## Integration Point 1: Encryption in Framing Layer
-
-### Where It Sits
-
-Encryption wraps the **entire SMB2 message** (header + body) inside a Transform Header. This means the framing layer (`framing.go`) must handle it because:
-
-1. The Transform Header is read **before** the SMB2 header is parsed
-2. Decryption must happen **before** signature verification (signatures are inside the encrypted payload for SMB 3.1.1 GMAC)
-3. Encryption on write must happen **after** signing but **before** NetBIOS framing
-
-### Transform Header Structure (MS-SMB2 2.2.41)
+### Data Flow: Quota Enforcement on Write
 
 ```
-Offset  Size  Field                Description
-------  ----  ------------------   --------------------------------
-0       4     ProtocolId           0x424D53FD (0xFD 'S' 'M' 'B')
-4       16    Signature            AES-CCM MAC or AES-GCM tag
-20      4     Nonce (first 4)      Unique nonce for this message
-24      12    Nonce (remaining)    (total 16 bytes, but AES-CCM uses 11, AES-GCM uses 12)
-36      4     OriginalMessageSize  Size of unencrypted SMB2 message
-40      2     Reserved             Must be 0
-42      2     Flags                0x0001 = Encrypted
-44      8     SessionId            Session that owns the encryption keys
-52      var   EncryptedData        AES-CCM/GCM ciphertext
+Client WRITE request
+    |
+    v
+NFS/SMB Handler
+    |
+    v
+MetadataService.PrepareWrite(ctx, handle, newSize)
+    |
+    +-- Lookup share from handle
+    +-- Get quota config from share (QuotaBytes, QuotaFiles)
+    +-- If quota configured:
+    |       Get current stats: FilesystemStatistics
+    |       newUsed = stats.UsedBytes + (newSize - currentSize)
+    |       if newUsed > QuotaBytes:
+    |           return ErrQuotaExceeded (maps to NFS3ERR_NOSPC / STATUS_DISK_FULL)
+    |
+    v
+MetadataService.CommitWrite(ctx, intent)
+    |
+    v
+BlockStore.WriteAt(ctx, payloadID, data, offset)
 ```
 
-### New Files
+### Data Flow: Trash (Soft-Delete)
 
-**`internal/adapter/smb/crypto/crypto.go`** -- Core encryption/decryption:
+```
+Client DELETE request
+    |
+    v
+NFS/SMB Handler
+    |
+    v
+MetadataService.RemoveFile(ctx, parentHandle, name)
+    |
+    +-- Resolve share from handle
+    +-- Check share trash config (enabled? retention?)
+    +-- If trash enabled:
+    |       TrashFile(ctx, file, parentHandle, name)
+    |           Move file to .trash/{YYYY-MM-DD}/{original-name}-{uuid}
+    |           Update parent dir entry (remove original)
+    |           Record original path in trash metadata
+    |           Return success (file appears deleted to client)
+    |   Else:
+    |       Permanent delete (current behavior)
+    |
+    v
+Background TrashScavenger (goroutine per share)
+    |
+    +-- Periodically scan .trash/ directories
+    +-- Delete items older than retention period
+    +-- Permanent deletion via existing RemoveFile path
+```
+
+### Data Flow: Credit Flow Control
+
+```
+SMB2 Request arrives
+    |
+    v
+ProcessSingleRequest(ctx, hdr, body, raw, connInfo, encrypted, asyncCb)
+    |
+    +-- Extract CreditCharge from SMB2 header (offset 12, 2 bytes)
+    +-- Extract CreditRequest from SMB2 header (offset 14, 2 bytes)
+    +-- sessionManager.ValidateCharge(sessionID, creditCharge)
+    |       if outstanding < creditCharge:
+    |           return STATUS_INSUFFICIENT_RESOURCES (before handler dispatch)
+    +-- sessionManager.RequestStarted(sessionID)
+    |
+    v
+Handler processes request
+    |
+    v
+Build response
+    +-- creditGrant = sessionManager.GrantCredits(sessionID, requested, charge)
+    +-- Set CreditResponse in response header
+    +-- sessionManager.RequestCompleted(sessionID)
+```
+
+### Data Flow: Multi-Channel Session Binding
+
+```
+Second TCP connection opens
+    |
+    v
+NEGOTIATE on new connection (independent preauth hash)
+    |
+    v
+SESSION_SETUP with SessionBindingFlag (bit 0x01 in SecurityMode)
+    |
+    v
+handleSessionSetup():
+    +-- SessionID != 0 and Flags.SMB2_SESSION_FLAG_BINDING set
+    +-- Verify: session exists in sessionManager
+    +-- Verify: same username/domain as original session
+    +-- Verify: signing key matches (preauth hash chain for 3.1.1)
+    +-- Bind new connection to existing session:
+    |       adapter.sessionConns.Store(sessionID, newConnInfo)
+    |       connection.TrackSession(sessionID)
+    |       // Both connections now route to same session
+    +-- Derive channel-specific signing key (if 3.1.1)
+    |
+    v
+Both connections serve requests for same SessionID
+    |
+    +-- Reads/writes can use either connection
+    +-- Lease breaks routed to any connection for the session
+    +-- Connection close does NOT destroy session (other connection alive)
+```
+
+## Feature Integration Details
+
+### 1. SMB 3.1.1 Signing on macOS (#252)
+
+**Problem:** macOS `mount_smbfs` rejects signatures because the preauth integrity hash chain diverges between client and server during SESSION_SETUP.
+
+**Root Cause (Hypothesis):** The dispatch hooks in `hooks.go` update the preauth hash for SESSION_SETUP requests/responses, but the timing may be wrong relative to when the session's preauth hash is initialized. Specifically:
+
+- `sessionPreauthBeforeHook` stashes the raw request bytes AND updates the per-session hash if the session already exists
+- For NTLM multi-round auth, the first SESSION_SETUP response (STATUS_MORE_PROCESSING_REQUIRED) must update the per-session hash, but the session may not yet have a per-session hash entry in the PreauthSessionTable
+- macOS uses SMB 3.1.1 with AES-CMAC signing (not GMAC), and the signing key is derived from the preauth hash at SESSION_SETUP completion
+
+**Integration Point:** `internal/adapter/smb/crypto_state.go` and `internal/adapter/smb/hooks.go`
+
+**Components Modified:**
+- `crypto_state.go`: Fix `InitSessionPreauthHash` / `UpdateSessionPreauthHash` ordering
+- `hooks.go`: Ensure session preauth hash entries are created at the right moment
+- Potentially `session_setup.go`: Fix hash consumption timing for NTLM continuation
+
+**No new components needed.** This is a bug fix in existing preauth hash pipeline.
+
+**Verification:** macOS `mount_smbfs //user@host/share /mnt` succeeds with signing enabled.
+
+### 2. SMB Credit Flow Control
+
+**Problem:** Current credit implementation has grant logic but lacks server-side charge validation. The `CreditCharge` field from the SMB2 header is not validated against the session's outstanding credit balance before dispatch.
+
+**Current State (Detailed):**
+- `session/credits.go`: Defines `CreditConfig`, `CreditStrategy` (Fixed/Echo/Adaptive), `CalculateCreditCharge()`
+- `session/session.go`: `ConsumeCredits()`, `GrantCredits()`, `GetOutstanding()` -- all working
+- `session/manager.go`: `GrantCredits()` implements the adaptive algorithm -- working
+- `internal/adapter/smb/response.go`: Sets `CreditResponse` in the SMB2 header -- working
+- **Missing:** Validation that `CreditCharge <= Outstanding` before dispatch
+- **Missing:** Rejection with `STATUS_INSUFFICIENT_RESOURCES` when charge exceeds balance
+- **Missing:** Proper CreditCharge extraction from header for multi-credit operations (READ/WRITE > 64KB)
+
+**Integration Point:** `internal/adapter/smb/response.go` (ProcessSingleRequest)
+
+**Components Modified:**
+- `response.go` (or new `credits.go` in `internal/adapter/smb/`): Add pre-dispatch credit charge validation
+- `session/manager.go`: Add `ValidateCharge(sessionID, charge)` method
+- `v2/handlers/read.go`, `write.go`: Ensure CreditCharge from header is threaded to response
+
+**No new packages needed.** The credit infrastructure exists; this wires up the enforcement path.
+
+### 3. SMB Multi-Channel Session Binding
+
+**Problem:** Currently each TCP connection has exactly one session. Multi-channel allows multiple TCP connections to share a single session for throughput and failover.
+
+**Current State:**
+- `pkg/adapter/smb/connection.go`: `Connection` has `sessions map[uint64]struct{}` tracking sessions on this connection
+- `pkg/adapter/smb/adapter.go`: `sessionConns sync.Map` maps sessionID to ConnInfo for lease break routing
+- `session/manager.go`: Session lookup is by sessionID (already supports multiple connections accessing same session)
+- `Connection.cleanupSessions()`: Destroys sessions on connection close -- **must change** for multi-channel
+
+**Integration Points:**
+1. `v2/handlers/session_setup.go`: Detect `SMB2_SESSION_FLAG_BINDING` in flags, validate binding
+2. `pkg/adapter/smb/adapter.go`: Track multiple connections per session (`sessionConns` becomes `sessionID -> []ConnInfo`)
+3. `pkg/adapter/smb/connection.go`: `cleanupSessions()` must check if other connections still serve the session before destroying it
+4. `internal/adapter/smb/session/session.go`: Add `ChannelCount atomic.Int32` for multi-connection awareness
+
+**Components Modified:**
+- `adapter.go`: Change `sessionConns sync.Map` from `sessionID -> *ConnInfo` to `sessionID -> []*ConnInfo`
+- `connection.go`: `cleanupSessions()` check peer connections before session destruction
+- `session_setup.go`: Session binding validation (username match, signing key derivation per channel)
+- `lease_notifier.go`: Send lease breaks to any/all connections for a session
+
+**New Types:**
 ```go
-package crypto
-
-// TransformHeader represents an SMB3 Transform Header [MS-SMB2 2.2.41]
-type TransformHeader struct {
-    Signature           [16]byte
-    Nonce               [16]byte
-    OriginalMessageSize uint32
-    Flags               uint16
-    SessionID           uint64
-}
-
-// CipherID identifies the negotiated encryption algorithm
-type CipherID uint16
-
-const (
-    CipherAES128CCM CipherID = 0x0001
-    CipherAES128GCM CipherID = 0x0002
-    CipherAES256CCM CipherID = 0x0003
-    CipherAES256GCM CipherID = 0x0004
-)
-
-// Encryptor handles per-session AES encryption/decryption
-type Encryptor struct {
-    cipher    CipherID
-    encKey    []byte // EncryptionKey (derived via SMB3KDF)
-    decKey    []byte // DecryptionKey (derived via SMB3KDF)
-    nonceGen  NonceGenerator
-}
-
-func (e *Encryptor) Encrypt(plaintext []byte, sessionID uint64) ([]byte, error)
-func (e *Encryptor) Decrypt(header *TransformHeader, ciphertext []byte) ([]byte, error)
-```
-
-**`internal/adapter/smb/crypto/kdf.go`** -- Key derivation:
-```go
-package crypto
-
-// SMB3KDF derives keys per SP800-108 Counter Mode with HMAC-SHA256.
-// Used for SigningKey, EncryptionKey, DecryptionKey, ApplicationKey.
-//
-// For SMB 3.0:   Label/Context are ASCII strings
-// For SMB 3.1.1: Context is PreauthIntegrityHashValue (SHA-512)
-func SMB3KDF(sessionKey []byte, label, context string, keyLen int) []byte
-
-// DeriveSessionKeys derives all session keys from the session base key.
-// Returns SigningKey, EncryptionKey, DecryptionKey, ApplicationKey.
-func DeriveSessionKeys(sessionKey []byte, dialect Dialect, preauthHash []byte) *SessionKeys
-
-type SessionKeys struct {
-    SigningKey    []byte
-    EncryptionKey []byte
-    DecryptionKey []byte
-    ApplicationKey []byte
-}
-```
-
-### Modifications to `framing.go`
-
-The existing `ReadRequest()` function needs a new code path after reading the message bytes:
-
-```go
-// After reading the message, check for Transform Header
-protocolID := binary.LittleEndian.Uint32(message[0:4])
-if protocolID == TransformProtocolID { // 0x424D53FD
-    // Parse Transform Header, look up session's Encryptor,
-    // decrypt, then proceed with SMB2 header parsing on plaintext
-    message, err = decryptTransformMessage(message, sessionLookup)
-    if err != nil {
-        return nil, nil, nil, err
-    }
-}
-```
-
-The existing `SendMessage()` in `response.go` needs encryption wrapping:
-
-```go
-// After signing (if applicable), check if session requires encryption
-if sess != nil && sess.EncryptionRequired() {
-    smbPayload = sess.Encrypt(smbPayload)
-}
-```
-
-### Connection State
-
-The `ConnInfo` struct needs a session lookup callback for decryption (since the session ID is in the Transform Header, not the SMB2 header):
-
-```go
-type ConnInfo struct {
-    // ... existing fields ...
-
-    // EncryptionLookup resolves session ID to Encryptor for Transform Header decryption.
-    // nil when encryption is not negotiated on this connection.
-    EncryptionLookup func(sessionID uint64) *crypto.Encryptor
-}
-```
-
-## Integration Point 2: Signing Upgrade (HMAC-SHA256 -> CMAC/GMAC)
-
-### Current State
-
-`internal/adapter/smb/signing/signing.go` implements HMAC-SHA256 only. The `SigningKey` struct holds a 16-byte key and uses `crypto/hmac` + `crypto/sha256`.
-
-### Required Changes
-
-The signing package needs to become algorithm-aware. The approach is to introduce a `Signer` interface that the session holds, with implementations for each algorithm:
-
-```go
-// signing/signer.go (NEW)
-type Algorithm int
-
-const (
-    AlgorithmHMACSHA256 Algorithm = iota // SMB 2.0.2 / 2.1
-    AlgorithmAESCMAC                      // SMB 3.0 / 3.0.2
-    AlgorithmAESGMAC                      // SMB 3.1.1 (only when encryption negotiated)
-)
-
-type Signer interface {
-    Sign(message []byte) [SignatureSize]byte
-    Verify(message []byte) bool
-    SignMessage(message []byte) // In-place signing
-    Algorithm() Algorithm
-}
-
-// HMACSigner wraps existing HMAC-SHA256 logic
-type HMACSigner struct { key [KeySize]byte }
-
-// CMACSigner uses AES-128-CMAC (crypto/aes + CMAC construction)
-type CMACSigner struct { key [KeySize]byte }
-
-// GMACSigner uses AES-128-GMAC (crypto/aes/gcm with empty plaintext)
-type GMACSigner struct { key [KeySize]byte }
-```
-
-The existing `SigningKey` type and its methods become the `HMACSigner` implementation. `SessionSigningState` gets a `Signer` field instead of a raw `SigningKey`:
-
-```go
-type SessionSigningState struct {
-    Signer          Signer  // Algorithm-aware signer
-    SigningRequired  bool
-    SigningEnabled   bool
+// In adapter.go or new file
+type ChannelEntry struct {
+    ConnInfo  *smb.ConnInfo
+    ChannelID uint64  // Connection-unique identifier
+    BoundAt   time.Time
 }
 ```
 
-### Key Derivation Differences by Dialect
+### 4. WPTS Conformance Fixes
 
-| Dialect | Signing Key Derivation | Algorithm |
-|---------|----------------------|-----------|
-| 2.0.2 / 2.1 | SessionKey truncated/padded to 16 bytes | HMAC-SHA256 |
-| 3.0 | SMB3KDF(SessionKey, "SMB2AESCMAC\0", "SmbSign\0") | AES-128-CMAC |
-| 3.0.2 | SMB3KDF(SessionKey, "SMB2AESCMAC\0", "SmbSign\0") | AES-128-CMAC |
-| 3.1.1 | SMB3KDF(SessionKey, "SMBSigningKey\0", PreauthHashValue) | AES-128-CMAC (default) or AES-GMAC (if encryption negotiated) |
+**Current State:** 193 pass / 73 known / 0 new / 69 skipped. The 73 known failures break into categories:
 
-### Go Standard Library Support
+- **ChangeNotify (20 failures):** Requires `CHANGE_NOTIFY` completion on directory modifications. The handler exists but notifications are not triggered on file create/delete/rename within watched directories.
+- **Timestamp flaky (1):** Race condition in timestamp comparison.
+- **Remaining (~52):** Various protocol edge cases in create, set-info, query-info, and oplock/lease scenarios.
 
-- **AES-CMAC**: Not in stdlib. Use `crypto/aes` + RFC 4493 CMAC construction (straightforward, ~50 lines). Alternatively, `golang.org/x/crypto/cmac` if available by implementation time.
-- **AES-GCM**: `crypto/aes` + `crypto/cipher` GCM mode. For GMAC, use GCM with empty plaintext (tag-only).
-- **AES-CCM**: Not in stdlib. Use `golang.org/x/crypto/ccm` or implement per RFC 3610 (~100 lines). The Samba ksmbd implementation is a good reference.
+**Integration Points:** Primarily `internal/adapter/smb/v2/handlers/` -- individual handler fixes.
 
-## Integration Point 3: SMB3 Leases and Unified Lock Manager
+**Components Modified:**
+- `change_notify.go`: Wire up notification dispatch from `MetadataService` file operations
+- `create.go`: Edge cases in open disposition handling
+- `set_info.go`: Additional FileInfoClass implementations
+- `query_info.go`: Missing or incomplete FileInfoClass responses
 
-### Current State (Already Excellent)
+**Cross-Component:** ChangeNotify requires the MetadataService to emit directory change events. The `lock.DirChangeNotifier` interface already exists in `pkg/metadata/lock/` and is wired into the LockManager. The SMB adapter already registers as a break callback handler. ChangeNotify completion needs a similar callback pattern.
 
-The existing lease infrastructure is comprehensive and maps directly to SMB3 requirements:
+### 5. Share Quotas (#232)
 
-- `OplockManager` in `handlers/oplock.go` manages both traditional oplocks AND leases
-- `LeaseCreateContext` in `handlers/lease.go` already supports V1 and V2 formats (including ParentLeaseKey and Epoch)
-- `OpLock` struct in `pkg/metadata/lock/oplock.go` already has `LeaseKey [16]byte`, `LeaseState uint32`, `Epoch uint16`, `Breaking bool`, `BreakToState uint32`
-- Cross-protocol coordination (NFS read/write/delete trigger SMB lease breaks) is fully implemented
-- Lease persistence via `LockStore` is in place
-- Grace period reclaim (`RequestLeaseWithReclaim`) is implemented
+**Problem:** No per-share storage limits. `FilesystemStatistics` returns hardcoded defaults (1TB total).
 
-### What Needs to Change for SMB3
+**Integration Points:**
 
-**Minimal changes.** The existing lease implementation is already SMB3-capable because it was built with LeaseV2 support from the start. Specific additions:
+1. **Control Plane DB:** Add quota columns to `models.Share`
+   ```go
+   // In models/share.go
+   QuotaBytes    int64  `gorm:"default:0" json:"quota_bytes"`     // 0 = unlimited
+   QuotaFiles    int64  `gorm:"default:0" json:"quota_files"`     // 0 = unlimited
+   ```
 
-1. **Directory leases**: Already supported in `RequestLease()` via `isDirectory` parameter and `lock.IsValidDirectoryLeaseState()`. Just needs the `SMB2_GLOBAL_CAP_DIRECTORY_LEASING` capability advertised in NEGOTIATE.
+2. **Runtime Shares Service:** Thread quota into `shares.Share` and `shares.ShareConfig`
+   ```go
+   // In runtime/shares/service.go
+   type Share struct {
+       // ... existing fields ...
+       QuotaBytes int64
+       QuotaFiles int64
+   }
+   ```
 
-2. **Epoch enforcement**: Already tracked in `OpLock.Epoch`. Just needs validation in lease break acknowledgment (epoch must match).
+3. **MetadataService:** Quota enforcement on write and create operations
+   - `PrepareWrite()`: Check byte quota before allowing write
+   - `CreateFile()`: Check file count quota before creation
+   - `CreateDirectory()`: Check file count quota
+   - `GetFilesystemStatistics()`: Return quota-adjusted statistics (TotalBytes = quota when set)
 
-3. **ParentLeaseKey**: Already decoded in `DecodeLeaseCreateContext()`. The `SMB2_LEASE_FLAG_PARENT_LEASE_KEY_SET` flag handling needs to be wired up in the CREATE handler to link directory and file leases.
+4. **NFS FSSTAT handler:** Already delegates to `MetadataService.GetFilesystemStatistics()` -- no change needed if quota is enforced at the metadata level.
 
-4. **Lease V2 response in NEGOTIATE**: Advertise `SMB2_GLOBAL_CAP_LEASING` and `SMB2_GLOBAL_CAP_DIRECTORY_LEASING` when dialect >= 3.0.
+5. **SMB QueryInfo:** `FileFsFullSizeInformation` (case 7) and `FileFsSizeInformation` (case 3) in `query_info.go` already call `MetadataService.GetFilesystemStatistics()` -- no change needed.
 
-### Cross-Protocol Integration (Already Done)
+6. **REST API and CLI:** New endpoints for quota management
+   - `PUT /api/v1/shares/{name}/quota` -- set/update quota
+   - `dfsctl share create --quota-bytes 10G --quota-files 100000`
+   - `dfsctl share update --quota-bytes 20G`
 
-The existing cross-protocol lease break coordination in `OplockManager` works correctly for SMB3:
-- `CheckAndBreakForWrite()` -- NFS write triggers SMB Write lease break
-- `CheckAndBreakForRead()` -- NFS read triggers SMB Write lease break (cached writes)
-- `CheckAndBreakForDelete()` -- NFS delete triggers all lease breaks to None
-- NLM lock conflict check in `RequestLease()` -- NFS byte-range locks deny SMB leases
+**Components Modified:**
+- `pkg/controlplane/models/share.go`: Add QuotaBytes, QuotaFiles columns
+- `pkg/controlplane/runtime/shares/service.go`: Thread quota config
+- `pkg/metadata/service.go`: Quota enforcement in PrepareWrite, CreateFile, CreateDirectory
+- `pkg/metadata/types.go`: QuotaConfig type, ErrQuotaExceeded error
+- `pkg/metadata/store/memory/server.go`: Return quota-adjusted GetFilesystemStatistics
+- `pkg/metadata/store/badger/server.go`: Same
+- `pkg/metadata/store/postgres/server.go`: Same
+- `internal/controlplane/api/handlers/`: Quota API endpoints
+- `cmd/dfsctl/commands/share/`: CLI quota commands
 
-No changes needed for cross-protocol integration.
+### 6. Payload Stats (#216)
 
-## Integration Point 4: Durable Handles Persistence
+**Problem:** `UsedSize` in filesystem statistics reflects metadata-tracked file sizes, not actual block storage consumption. A 1MB file may use 1.5MB on disk due to block alignment.
 
-### Architecture Decision: Where to Persist
+**Integration Points:**
 
-Durable handles MUST persist in the **control plane store** (GORM-based), not the metadata store. Rationale:
+1. **BlockStore Stats:** `engine.BlockStoreStats` already tracks `LocalDiskUsed`, `BlocksLocal`, `BlocksRemote`. The data exists.
 
-1. Durable handles are session-level state (not file-level metadata)
-2. They must survive server restarts (so not in-memory)
-3. They reference file handles, session IDs, and create GUIDs -- control plane concepts
-4. The control plane store already has `GORMStore` with SQLite/PostgreSQL support
+2. **MetadataService:** `GetFilesystemStatistics()` currently delegates entirely to the store. It needs to also query the per-share BlockStore for actual storage usage.
 
-### New Sub-Interface
+3. **Runtime Resolution:** `MetadataService` does not currently have access to BlockStores. Two options:
+   - **Option A (Recommended):** MetadataService gains a `BlockStoreStatsProvider` interface that the Runtime satisfies
+   - **Option B:** FilesystemStatistics is assembled at the Runtime level, not in MetadataService
 
-Add a `DurableHandleStore` sub-interface to `pkg/controlplane/store/`:
+   Option A is cleaner because `GetFilesystemStatistics` is already on MetadataServiceInterface.
 
-```go
-type DurableHandleStore interface {
-    PutDurableHandle(ctx context.Context, handle *DurableHandle) error
-    GetDurableHandle(ctx context.Context, createGUID [16]byte) (*DurableHandle, error)
-    DeleteDurableHandle(ctx context.Context, createGUID [16]byte) error
-    ListDurableHandlesForSession(ctx context.Context, sessionID uint64) ([]*DurableHandle, error)
-    CleanupExpiredHandles(ctx context.Context, olderThan time.Time) (int, error)
-}
-```
+**Components Modified:**
+- `pkg/metadata/service.go`: Accept `BlockStoreStatsProvider` callback for actual disk usage
+- `pkg/metadata/types.go`: Add `ActualUsedBytes` field to `FilesystemStatistics`
+- `pkg/controlplane/runtime/runtime.go`: Wire BlockStore stats into MetadataService
+- `internal/adapter/nfs/v3/handlers/fsstat.go`: Use `ActualUsedBytes` when available
+- `internal/adapter/smb/v2/handlers/query_info.go`: Use `ActualUsedBytes` for FsSize responses
 
-### Durable Handle Model
+### 7. Protocol-Agnostic Client Tracking (#157)
 
-```go
-type DurableHandle struct {
-    CreateGUID      [16]byte   // Unique handle identifier (from client)
-    FileID          [16]byte   // SMB2 FileID
-    MetadataHandle  string     // Underlying metadata file handle
-    PayloadID       string     // Content identifier
-    ShareName       string     // Share the file belongs to
-    Path            string     // File path within share
-    SessionID       uint64     // Owning session (cleared on disconnect)
-    LeaseKey        [16]byte   // Associated lease key (if any)
-    LeaseState      uint32     // Lease state at disconnect
-    DesiredAccess   uint32     // Original access mask
-    CreateOptions   uint32     // Original create options
-    IsPersistent    bool       // Persistent (CA share) vs durable
-    Timeout         time.Duration // Grace period for reconnect
-    DisconnectedAt  time.Time  // When the session disconnected
-    CreatedAt       time.Time
-}
-```
+**Problem:** No unified view of connected NFS and SMB clients. Mount tracker (`mounts/service.go`) tracks mounts but not live connection state.
 
-### New Package
+**Current State:**
+- `mounts.Tracker`: Tracks `MountInfo{ClientAddr, Protocol, ShareName, MountedAt, AdapterData}`
+- NFS adapter records mounts in the tracker at MNT time
+- SMB adapter records tree connects in the tracker
+- `BaseAdapter.ConnCount` tracks active connection count (atomic int32)
+- No per-client record with authentication identity, last-activity, or connection list
 
-**`internal/adapter/smb/durable/`**:
-- `store.go` -- DurableHandleStore GORM implementation
-- `manager.go` -- DurableHandleManager (lifecycle, reconnect, timeout)
-- `context.go` -- Create context parsing (DURABLE_HANDLE_REQUEST_V2, RECONNECT_V2)
-
-### CREATE Handler Integration
-
-In `handlers/create.go`, the durable handle flow:
-
-1. **New open**: If create request includes `SMB2_CREATE_DURABLE_HANDLE_REQUEST_V2` context:
-   - Open the file normally
-   - Persist `DurableHandle` in store
-   - Return `SMB2_CREATE_DURABLE_HANDLE_RESPONSE_V2` in response contexts
-
-2. **Reconnect**: If create request includes `SMB2_CREATE_DURABLE_HANDLE_RECONNECT_V2` context:
-   - Look up `DurableHandle` by CreateGUID
-   - Validate the client (session binding or lease key match)
-   - Restore the `OpenFile` state from persisted data
-   - Delete the disconnect record
-   - Return existing FileID + lease state
-
-3. **Disconnect cleanup**: When a connection drops, `Connection.handleConnectionClose()` should mark durable handles as disconnected rather than closing them:
-   - Files with active durable handles: set `DisconnectedAt`, do NOT delete from `files` sync.Map immediately
-   - Files without durable handles: close normally (existing behavior)
-
-## Integration Point 5: SPNEGO/Kerberos Reuse
-
-### Current State
-
-The Kerberos authentication path is already functional:
-
-1. `pkg/auth/kerberos/Provider` loads keytab, manages hot-reload, implements `AuthProvider`
-2. `internal/adapter/smb/auth/spnego.go` parses SPNEGO tokens, detects NTLM vs Kerberos
-3. `handlers/session_setup.go:handleKerberosAuth()` validates AP-REQ, maps principal to user, creates session
-4. `Adapter.SetKerberosProvider()` injects the shared provider
-
-### SMB3 Kerberos Changes
-
-For SMB3, the Kerberos path needs **session key extraction** for signing/encryption key derivation:
+**Architecture: New ClientRegistry Service**
 
 ```go
-// In handleKerberosAuth(), after service.VerifyAPREQ():
-sessionKey := creds.SessionKey()
-// Then derive SMB3 keys from sessionKey via SMB3KDF
-keys := crypto.DeriveSessionKeys(sessionKey, negotiatedDialect, preauthHash)
-sess.SetSigningKey(keys.SigningKey)
-sess.SetEncryptionKeys(keys.EncryptionKey, keys.DecryptionKey)
-```
+// pkg/controlplane/runtime/clients/service.go (NEW)
 
-The `gokrb5/v8` library's `service.VerifyAPREQ()` returns credentials that include the session key. Currently, `handleKerberosAuth()` ignores this because SMB2 signing with Kerberos was not needed. For SMB3, this is the key material for all cryptographic operations.
-
-### NTLM Path Changes
-
-The NTLM path in `completeNTLMAuth()` already derives a signing key. For SMB3, the derivation changes:
-
-- **SMB 2.x**: `signingKey = sessionBaseKey` (direct or KEY_EXCH decrypted)
-- **SMB 3.x**: `signingKey = SMB3KDF(sessionBaseKey, label, context)`
-
-The existing `auth.DeriveSigningKey()` returns the SMB2 signing key. For SMB3, this needs to be extended to call `crypto.DeriveSessionKeys()` when the negotiated dialect is 3.0+.
-
-## Integration Point 6: Negotiate Contexts (SMB 3.1.1)
-
-### Current State
-
-`handlers/negotiate.go` currently:
-- Selects highest dialect from {0x0202, 0x0210}
-- Advertises `CapLeasing | CapLargeMTU` for dialect >= 2.1
-- Returns 65-byte response body with zeroed NegotiateContextOffset/Count
-
-### Required Changes
-
-For SMB 3.x dialect negotiation:
-
-```go
-// Extend dialect selection
-case types.SMB2Dialect0311:
-    if selectedDialect < types.SMB2Dialect0311 {
-        selectedDialect = types.SMB2Dialect0311
-    }
-case types.SMB2Dialect0302:
-    // ...
-case types.SMB2Dialect0300:
-    // ...
-```
-
-For SMB 3.1.1, parse and respond to negotiate contexts:
-
-1. **SMB2_PREAUTH_INTEGRITY_CAPABILITIES** (0x0001):
-   - Parse: Client offers hash algorithms (SHA-512 is the only one)
-   - Respond: Select SHA-512, generate server salt
-   - Start preauth integrity hash chain
-
-2. **SMB2_ENCRYPTION_CAPABILITIES** (0x0002):
-   - Parse: Client offers cipher IDs (AES-128-CCM, AES-128-GCM, AES-256-CCM, AES-256-GCM)
-   - Respond: Select preferred cipher (AES-128-GCM preferred for performance)
-   - Store on connection state
-
-3. **SMB2_SIGNING_CAPABILITIES** (0x0008):
-   - Parse: Client offers signing algorithms (HMAC-SHA256, AES-CMAC, AES-GMAC)
-   - Respond: Select based on dialect and encryption
-
-### Preauth Integrity Hash Chain
-
-SMB 3.1.1 requires maintaining a SHA-512 hash chain across NEGOTIATE and SESSION_SETUP:
-
-```go
-// On Connection:
-type PreauthState struct {
-    HashAlgorithm uint16    // Always SHA-512 (0x0001)
-    HashValue     [64]byte  // Running SHA-512 hash
+type ClientRecord struct {
+    ID            string    `json:"id"`             // Unique: "protocol:clientIP"
+    ClientAddr    string    `json:"client_addr"`
+    Protocol      string    `json:"protocol"`       // "nfs" or "smb"
+    ConnectedAt   time.Time `json:"connected_at"`
+    LastActivity  time.Time `json:"last_activity"`
+    Username      string    `json:"username"`       // Authenticated user (empty for anonymous)
+    MountPoints   []string  `json:"mount_points"`   // Active share mounts
+    ConnectionIDs []string  `json:"connection_ids"`  // For multi-channel
 }
 
-// Updated after each NEGOTIATE/SESSION_SETUP message:
-// HashValue = SHA-512(HashValue || messageBytes)
-```
-
-This hash becomes the `Context` parameter for SMB3KDF key derivation in SMB 3.1.1.
-
-### Capabilities Flags
-
-For dialect >= 3.0, advertise additional capabilities:
-
-```go
-if selectedDialect >= types.SMB2Dialect0300 {
-    capabilities |= uint32(types.CapDirectoryLeasing | types.CapEncryption)
-    // CapMultiChannel deferred -- single connection per session for now
-    // CapPersistentHandles deferred -- only for CA shares
+type Registry struct {
+    mu      sync.RWMutex
+    clients map[string]*ClientRecord
 }
+
+func (r *Registry) Register(protocol, clientAddr, username string) string
+func (r *Registry) UpdateActivity(id string)
+func (r *Registry) AddMount(id, shareName string)
+func (r *Registry) RemoveMount(id, shareName string)
+func (r *Registry) Deregister(id string)
+func (r *Registry) List() []*ClientRecord
+func (r *Registry) ListByProtocol(protocol string) []*ClientRecord
 ```
+
+**Integration Points:**
+1. **NFS Adapter:** Register client on first RPC call, deregister on connection close
+2. **SMB Adapter:** Register client on SESSION_SETUP, deregister on connection close
+3. **Runtime:** Own ClientRegistry, expose via API
+4. **REST API:** `GET /api/v1/clients` returns client list
+5. **CLI:** `dfsctl client list` with table/JSON output
+
+**Components Created:**
+- `pkg/controlplane/runtime/clients/service.go`
+- `internal/controlplane/api/handlers/clients.go`
+- `cmd/dfsctl/commands/client/`
+
+**Components Modified:**
+- `pkg/controlplane/runtime/runtime.go`: Add ClientRegistry field
+- `pkg/adapter/base.go`: Add ClientRegistryHook interface for adapters
+- `pkg/adapter/smb/connection.go`: Register/deregister on connect/disconnect
+- `internal/adapter/nfs/dispatch.go`: Register/deregister on connect/disconnect
+
+### 8. Trash / Soft-Delete (#190)
+
+**Problem:** File deletion is permanent. Users cannot recover accidentally deleted files.
+
+**Architecture Decision: Trash in Metadata Layer**
+
+Trash operates entirely in the metadata layer. Deleted files are moved to a `.trash/` directory within the share's metadata namespace. Block data is NOT moved -- only the metadata path changes. The blocks remain intact and are garbage-collected only when trash items expire.
+
+**Key Design:**
+- `.trash/` is a real directory in the metadata store, hidden from READDIR
+- Each trash item records its original path in a file attribute (extended attribute or naming convention)
+- TrashScavenger goroutine runs per-share on a configurable interval
+- Trash is per-share (each share has its own `.trash/`)
+- Trash can be disabled per-share (default: disabled for backward compat)
+
+**Integration Points:**
+
+1. **MetadataService:** New `TrashFile()` method; modify `RemoveFile()` to check trash config
+2. **MetadataStore:** No interface change needed -- uses existing Move/CreateDirectory
+3. **Share Config:** `TrashEnabled bool`, `TrashRetention time.Duration`
+4. **Control Plane DB:** Add trash columns to `models.Share`
+5. **READDIR filtering:** Both NFS ReadDirectory and SMB QueryDirectory must hide `.trash/`
+6. **REST API:** `GET /api/v1/shares/{name}/trash` to list trashed items, `POST .../trash/restore` to restore
+
+**Components Modified:**
+- `pkg/metadata/service.go`: `RemoveFile()` checks trash config, new `TrashFile()`, `RestoreFromTrash()`, `PurgeTrash()`
+- `pkg/metadata/types.go`: TrashConfig type
+- `pkg/metadata/file_remove.go`: Redirect to trash instead of permanent delete
+- `pkg/metadata/directory.go`: Hide `.trash/` from directory listings
+- `pkg/controlplane/models/share.go`: TrashEnabled, TrashRetentionSec columns
+- `pkg/controlplane/runtime/shares/service.go`: Thread trash config, start TrashScavenger
+
+**New Components:**
+- `pkg/metadata/trash.go`: TrashScavenger, trash naming conventions, restore logic
 
 ## Patterns to Follow
 
-### Pattern 1: Algorithm Dispatch via Dialect
+### Pattern 1: Quota Enforcement at Service Boundary
 
-**What:** Use the negotiated dialect to select cryptographic algorithms at session creation time, then store the concrete `Signer`/`Encryptor` on the session. Never check dialect in hot paths.
+**What:** Enforce quotas in `MetadataService` methods (PrepareWrite, CreateFile, CreateDirectory), not in protocol handlers. The service already serves as the business logic layer between handlers and stores.
 
-**When:** Signing, encryption, key derivation
+**When:** Any operation that increases storage usage.
 
 **Example:**
 ```go
-func NewSessionCrypto(dialect types.Dialect, sessionKey []byte, preauthHash []byte) *SessionCrypto {
-    switch {
-    case dialect >= types.Dialect0311:
-        keys := crypto.DeriveSessionKeys(sessionKey, dialect, preauthHash)
-        return &SessionCrypto{
-            Signer:    signing.NewCMACSigner(keys.SigningKey),
-            Encryptor: crypto.NewEncryptor(cipher, keys.EncryptionKey, keys.DecryptionKey),
+func (s *MetadataService) PrepareWrite(ctx *AuthContext, handle FileHandle, newSize uint64) (*WriteOperation, error) {
+    // ... existing validation ...
+
+    // Quota check (new)
+    if quota := s.getQuotaForHandle(handle); quota != nil {
+        stats, _ := s.GetFilesystemStatistics(ctx.Context, handle)
+        if stats != nil && quota.ByteLimit > 0 {
+            projected := stats.UsedBytes + (newSize - currentSize)
+            if projected > uint64(quota.ByteLimit) {
+                return nil, NewQuotaExceededError(quota.ByteLimit, projected)
+            }
         }
-    case dialect >= types.Dialect0300:
-        keys := crypto.DeriveSessionKeys(sessionKey, dialect, nil)
-        return &SessionCrypto{
-            Signer: signing.NewCMACSigner(keys.SigningKey),
-            // Encryption optional for 3.0/3.0.2
-        }
-    default:
-        return &SessionCrypto{
-            Signer: signing.NewHMACSigner(sessionKey),
-        }
+    }
+
+    // ... existing logic ...
+}
+```
+
+**Why:** Protocol handlers map errors to protocol-specific codes (`NFS3ERR_NOSPC`, `STATUS_DISK_FULL`). The service returns a domain error; handlers translate it.
+
+### Pattern 2: Registry Pattern for Client Tracking
+
+**What:** Use a runtime-owned registry (not DB-backed) for client tracking. Clients are ephemeral connection state, not persistent configuration.
+
+**When:** Tracking connected clients across protocols.
+
+**Why:** Client records are lost on server restart (correct -- connections are gone). Using a DB would add write overhead per RPC for `UpdateActivity`. The mount tracker already follows this pattern.
+
+### Pattern 3: Dispatch Hook for Credit Validation
+
+**What:** Add credit charge validation as a pre-dispatch step in `ProcessSingleRequest()`, before the handler is called. This mirrors the existing signing verification hook pattern.
+
+**When:** Every SMB2 request that carries a CreditCharge > 0.
+
+**Example:**
+```go
+// In response.go ProcessSingleRequest, before handler dispatch:
+if hdr.CreditCharge > 0 {
+    sess, ok := connInfo.SessionManager.GetSession(hdr.SessionID)
+    if ok && sess.GetOutstanding() < int32(hdr.CreditCharge) {
+        return sendErrorResponse(connInfo, hdr, types.StatusInsufficientResources)
     }
 }
 ```
 
-### Pattern 2: Connection-Level Negotiated State
+**Why:** Credit validation is a cross-cutting concern that applies to all commands. It should not be duplicated in every handler.
 
-**What:** Store negotiated dialect, cipher, and preauth state on the Connection (not globally). Different connections can negotiate different dialects.
+### Pattern 4: Multi-Channel via Session Binding Flag
 
-**When:** Multi-version support
+**What:** Detect multi-channel in SESSION_SETUP via `Flags & 0x01` (SMB2_SESSION_FLAG_BINDING). The new connection joins the existing session rather than creating a new one. Connection teardown checks session refcount.
 
-**Example:**
-```go
-// Add to pkg/adapter/smb/connection.go
-type Connection struct {
-    // ... existing fields ...
+**When:** Client establishes second TCP connection with same session credentials.
 
-    // SMB3 negotiated state (per-connection)
-    NegotiatedDialect types.Dialect
-    NegotiatedCipher  crypto.CipherID
-    PreauthState      *PreauthState // nil for dialect < 3.1.1
-    EncryptData       bool          // Global encryption required
-}
-```
+**Why:** MS-SMB2 3.3.5.5 defines session binding. The session manager already supports multiple callers accessing the same session; the missing piece is the binding validation and connection lifecycle coordination.
 
-### Pattern 3: Durable Handle as CREATE Context Extension
+### Pattern 5: Trash as Metadata-Only Operation
 
-**What:** Parse durable handle create contexts alongside existing create contexts (MxAc, QFid, Lease) in the CREATE handler. Use the same context parsing infrastructure.
+**What:** Trash moves files in the metadata namespace only. Block data stays in place. Trash expiry triggers real deletion (which eventually triggers block GC).
 
-**When:** Durable handle create/reconnect
+**When:** File or directory deletion when trash is enabled for the share.
 
-**Example:**
-```go
-// In create.go, extend context parsing:
-case "DHnQ": // SMB2_CREATE_DURABLE_HANDLE_REQUEST_V2
-    durableReq, err = durable.DecodeRequestV2(contextData)
-case "DH2C": // SMB2_CREATE_DURABLE_HANDLE_RECONNECT_V2
-    reconnectReq, err = durable.DecodeReconnectV2(contextData)
-```
-
-### Pattern 4: Preauth Hash as Pipeline State
-
-**What:** Thread the preauth integrity hash value through the NEGOTIATE and SESSION_SETUP pipeline as connection-level state that accumulates. Each message's raw bytes are hashed into the running value.
-
-**When:** SMB 3.1.1 connections
-
-**Example:**
-```go
-// In framing.go, after reading raw message bytes but before parsing:
-if conn.PreauthState != nil {
-    conn.PreauthState.Update(rawMessageBytes)
-}
-// The hash value is then used as KDF context during SESSION_SETUP completion
-```
+**Why:** Moving block data would be expensive and pointless -- the blocks don't care where the metadata points. Content-addressed storage means the same blocks can be referenced from `.trash/` or the original location. The existing block GC already handles unreferenced blocks.
 
 ## Anti-Patterns to Avoid
 
-### Anti-Pattern 1: Encryption in Handler Layer
+### Anti-Pattern 1: Quotas in Protocol Handlers
 
-**What:** Implementing encryption/decryption inside individual command handlers.
-**Why bad:** Every handler would need to know about encryption. The transform header wraps the entire message, not individual commands. Compound requests must be encrypted as a unit.
-**Instead:** Handle exclusively in the framing layer (`ReadRequest`/`SendMessage`).
+**What:** Checking quotas in NFS FSSTAT, SMB QueryInfo, or write handlers directly.
+**Why bad:** Duplicates quota logic across NFS and SMB. Quota changes require updating multiple handlers.
+**Instead:** Enforce at MetadataService level. Handlers call the same service methods and receive quota-aware responses.
 
-### Anti-Pattern 2: Global Dialect State
+### Anti-Pattern 2: Credit Validation After Handler Dispatch
 
-**What:** Storing the negotiated dialect as a server-wide global.
-**Why bad:** Different connections can negotiate different dialects. A Windows 10 client may negotiate 3.1.1 while a macOS client on the same server negotiates 2.1.
-**Instead:** Store negotiated dialect per-connection. Pass dialect through `ConnInfo` or `SMBHandlerContext`.
+**What:** Checking credit balance after the handler has already processed the request.
+**Why bad:** The handler may have already modified state (written data, created files). Credit rejection after side effects is inconsistent.
+**Instead:** Validate credits before dispatch. Reject immediately with STATUS_INSUFFICIENT_RESOURCES.
 
-### Anti-Pattern 3: Separate Lock Manager for SMB3 Leases
+### Anti-Pattern 3: Database-Backed Client Registry
 
-**What:** Creating a new lease management system for SMB3 alongside the existing `OplockManager`.
-**Why bad:** The existing `OplockManager` already supports V2 leases with all SMB3 features (epoch, parent lease key, directory leases, cross-protocol breaks). Creating a parallel system would fragment lease state and break cross-protocol coordination.
-**Instead:** Continue using the existing `OplockManager` and `LockStore`. Just advertise the capability in NEGOTIATE and ensure epoch validation in lease break acknowledgment.
+**What:** Persisting client connection records in SQLite/PostgreSQL.
+**Why bad:** Every RPC call would need a DB write for `UpdateActivity`. Client records are ephemeral and lost on restart anyway (connections are gone).
+**Instead:** In-memory registry with sync.RWMutex, same pattern as mounts.Tracker.
 
-### Anti-Pattern 4: Storing Durable Handles in Memory
+### Anti-Pattern 4: Multi-Channel via Global Session Table
 
-**What:** Keeping durable handle state only in the `Handler.files` sync.Map.
-**Why bad:** Durable handles must survive server restarts. The entire point is connection resilience.
-**Instead:** Persist in the control plane GORM store. Restore on reconnect by querying the store.
+**What:** Storing all sessions in a single global table and routing by session ID alone.
+**Why bad:** Already the case (session.Manager uses sync.Map). The anti-pattern is NOT adding per-connection binding validation. Without validation, any connection could impersonate any session.
+**Instead:** Session binding must verify credentials match. Each connection must track which sessions it is bound to. The adapter's `sessionConns` map must support multiple connections per session.
 
-### Anti-Pattern 5: Implementing All Ciphers Immediately
+### Anti-Pattern 5: Trash in Block Store
 
-**What:** Building AES-128-CCM, AES-128-GCM, AES-256-CCM, and AES-256-GCM all at once.
-**Why bad:** Windows 10/11 prefer AES-128-GCM and always offer it. AES-256 variants are only needed for specific compliance scenarios. Implementing all four ciphers doubles the test matrix for minimal benefit.
-**Instead:** Start with AES-128-GCM (preferred by all modern clients), add AES-128-CCM second (required for compatibility with older Windows). Defer AES-256 variants to a later phase.
+**What:** Implementing trash as a block-level feature (copying blocks to a "trash" bucket).
+**Why bad:** Wastes storage (data duplicated), breaks content-addressed dedup, and requires complex cross-store coordination.
+**Instead:** Trash is metadata-only. File appears deleted (removed from parent directory listing), but metadata and blocks remain until trash retention expires.
+
+## New Components Summary
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| ClientRegistry | `pkg/controlplane/runtime/clients/service.go` | Protocol-agnostic client tracking |
+| TrashScavenger | `pkg/metadata/trash.go` | Background cleanup of expired trash items |
+| Client API handler | `internal/controlplane/api/handlers/clients.go` | REST endpoints for client listing |
+| Client CLI commands | `cmd/dfsctl/commands/client/` | `dfsctl client list` |
+
+## Modified Components Summary
+
+| Component | What Changes | Why |
+|-----------|-------------|-----|
+| `internal/adapter/smb/crypto_state.go` | Fix preauth hash ordering | macOS signing (#252) |
+| `internal/adapter/smb/hooks.go` | Fix session preauth hash init timing | macOS signing (#252) |
+| `internal/adapter/smb/session/manager.go` | Add ValidateCharge method | Credit flow control |
+| `internal/adapter/smb/response.go` | Pre-dispatch credit validation | Credit flow control |
+| `internal/adapter/smb/v2/handlers/session_setup.go` | Session binding for multi-channel | Multi-channel |
+| `internal/adapter/smb/v2/handlers/change_notify.go` | Wire up directory notifications | WPTS conformance |
+| `pkg/adapter/smb/adapter.go` | Multi-connection session tracking | Multi-channel |
+| `pkg/adapter/smb/connection.go` | Session binding, conditional cleanup | Multi-channel |
+| `pkg/controlplane/models/share.go` | Quota*, Trash* columns | Quotas, Trash |
+| `pkg/controlplane/runtime/runtime.go` | Wire ClientRegistry | Client tracking |
+| `pkg/controlplane/runtime/shares/service.go` | Thread quota/trash config | Quotas, Trash |
+| `pkg/metadata/service.go` | Quota enforcement, trash redirect | Quotas, Trash |
+| `pkg/metadata/interface.go` | Trash methods, quota-aware stats | Quotas, Trash |
+| `pkg/metadata/types.go` | QuotaConfig, TrashConfig, new errors | Quotas, Trash |
+| `pkg/metadata/file_remove.go` | Redirect to trash | Trash |
+| `pkg/metadata/directory.go` | Hide .trash/ from listings | Trash |
+| All MetadataStore implementations | Quota-adjusted GetFilesystemStatistics | Quotas |
 
 ## Suggested Build Order
 
-The build order is driven by **dependency chains**: later features depend on earlier ones.
+The build order considers dependency chains and testability. Features are grouped into dependency-free units.
 
-### Phase 1: SMB3 Negotiate Foundation
+### Chain A: SMB Protocol (sequential)
 
-**What:** Dialect negotiation for 3.0/3.0.2/3.1.1, negotiate contexts (preauth integrity, encryption capabilities, signing capabilities), preauth integrity hash chain.
+```
+A1: macOS Signing Fix (#252)
+    |
+    v
+A2: Credit Flow Control
+    |
+    v
+A3: WPTS Conformance Fixes (iterative)
+    |
+    v
+A4: Multi-Channel Session Binding
+```
 
-**Why first:** Everything else depends on successful dialect negotiation. Without this, no SMB3 features can be tested.
+**Rationale:** Signing fix unblocks macOS testing. Credit fix improves protocol compliance baseline for WPTS. Multi-channel is the most complex SMB feature and can benefit from WPTS test coverage.
 
-**Files modified:**
-- `internal/adapter/smb/v2/handlers/negotiate.go` -- Extend dialect selection, parse/respond to negotiate contexts
-- `internal/adapter/smb/types/constants.go` -- SMB3 negotiate context types and IDs
-- `internal/adapter/smb/session/session.go` -- Add NegotiatedDialect, PreauthState fields
-- `pkg/adapter/smb/connection.go` -- Per-connection negotiated state
-- `pkg/adapter/smb/config.go` -- Encryption/signing configuration options
+### Chain B: Metadata Features (sequential)
 
-**Dependencies:** None
-**Testable with:** Windows `smbclient` dialect negotiation, Wireshark packet capture
+```
+B1: Share Quotas (#232)
+    |
+    v
+B2: Payload Stats (#216)
+    |
+    v
+B3: Trash / Soft-Delete (#190)
+```
 
-### Phase 2: SMB3 Key Derivation and Signing
+**Rationale:** Quotas modify GetFilesystemStatistics, which payload stats also touches -- do quotas first to establish the pattern. Trash depends on the modified RemoveFile path, which should be stable.
 
-**What:** SP800-108 KDF, AES-CMAC signer, AES-GMAC signer, session key derivation for SMB 3.x, signing algorithm selection.
+### Chain C: Operational (independent)
 
-**Why second:** Signing is required before encryption can work (encryption key derivation shares the same KDF). Also, NTLM and Kerberos auth both need the new key derivation path.
+```
+C1: Client Tracking (#157)
+```
 
-**Files created:**
-- `internal/adapter/smb/crypto/kdf.go` -- SMB3KDF implementation
-- `internal/adapter/smb/crypto/kdf_test.go` -- KDF test vectors from MS-SMB2 spec
-- `internal/adapter/smb/signing/cmac.go` -- AES-CMAC signer
-- `internal/adapter/smb/signing/gmac.go` -- AES-GMAC signer
-- `internal/adapter/smb/signing/signer.go` -- Signer interface
+**Rationale:** Client tracking is fully independent. Can be built in parallel with Chain A or Chain B.
 
-**Files modified:**
-- `internal/adapter/smb/signing/signing.go` -- Refactor to use Signer interface
-- `internal/adapter/smb/v2/handlers/session_setup.go` -- Use SMB3KDF for key derivation
-- `internal/adapter/smb/session/session.go` -- Hold Signer instead of raw SigningKey
+### Recommended Phase Ordering
 
-**Dependencies:** Phase 1 (dialect negotiation determines which algorithm to use)
-**Testable with:** smbtorture signing tests, Windows client with signing required
+| Order | Feature | Chain | Depends On | Estimated Complexity |
+|-------|---------|-------|------------|---------------------|
+| 1 | macOS Signing Fix | A1 | None | Medium (debugging preauth hash) |
+| 2 | Share Quotas | B1 | None | Medium (DB migration, service logic) |
+| 3 | Credit Flow Control | A2 | A1 | Low (plumbing existing infrastructure) |
+| 4 | Payload Stats | B2 | B1 | Low (wire existing BlockStore stats) |
+| 5 | Client Tracking | C1 | None | Medium (new service, API, CLI) |
+| 6 | WPTS Conformance | A3 | A2 | High (20+ individual fixes) |
+| 7 | Trash / Soft-Delete | B3 | B1 | High (new subsystem, scavenger, hiding) |
+| 8 | Multi-Channel | A4 | A2, A3 | High (connection lifecycle changes) |
 
-### Phase 3: SMB3 Encryption
-
-**What:** AES-CCM/GCM encrypt/decrypt, Transform Header parsing/building, framing layer integration, per-session and per-share encryption control.
-
-**Why third:** Depends on key derivation (Phase 2) for EncryptionKey/DecryptionKey. Also needs dialect negotiation (Phase 1) for cipher selection.
-
-**Files created:**
-- `internal/adapter/smb/crypto/crypto.go` -- Encryptor, Transform Header
-- `internal/adapter/smb/crypto/crypto_test.go` -- Encryption test vectors
-- `internal/adapter/smb/crypto/ccm.go` -- AES-CCM implementation (if not using x/crypto)
-
-**Files modified:**
-- `internal/adapter/smb/framing.go` -- Transform Header detection, decrypt on read, encrypt on write
-- `internal/adapter/smb/response.go` -- Encrypt outgoing messages in SendMessage
-- `internal/adapter/smb/conn_types.go` -- Add EncryptionLookup to ConnInfo
-- `internal/adapter/smb/session/session.go` -- EncryptionRequired, Encryptor fields
-- `pkg/adapter/smb/config.go` -- Per-share encryption configuration
-
-**Dependencies:** Phase 1 + Phase 2
-**Testable with:** smbtorture encryption tests, Windows client with encryption required, Wireshark verification
-
-### Phase 4: SPNEGO/Kerberos SMB3 Integration
-
-**What:** Extract session key from Kerberos AP-REQ for SMB3 key derivation, session binding for preauth hash, mutual auth support.
-
-**Why fourth:** Depends on key derivation infrastructure (Phase 2). The NTLM path should work first since it is simpler.
-
-**Files modified:**
-- `internal/adapter/smb/v2/handlers/session_setup.go` -- Extract Kerberos session key, derive SMB3 keys
-- `internal/adapter/smb/auth/authenticator.go` -- Return session key in AuthResult
-
-**Dependencies:** Phase 2 (key derivation), Phase 1 (dialect)
-**Testable with:** AD-joined Windows client, kinit + smbclient from Linux
-
-### Phase 5: SMB3 Leases (Directory + Enhanced)
-
-**What:** Advertise directory leasing capability, handle ParentLeaseKey, enforce epoch in break acknowledgment. Wire up to existing OplockManager.
-
-**Why fifth:** Leases are mostly done. This phase is about advertising capabilities and wiring up the remaining SMB3-specific bits.
-
-**Files modified:**
-- `internal/adapter/smb/v2/handlers/negotiate.go` -- Advertise CapDirectoryLeasing
-- `internal/adapter/smb/v2/handlers/create.go` -- Handle ParentLeaseKey in lease context
-- `internal/adapter/smb/v2/handlers/lease.go` -- Epoch validation in AcknowledgeLeaseBreak
-
-**Dependencies:** Phase 1 (dialect >= 3.0 for directory leasing)
-**Testable with:** smbtorture lease tests, Windows Explorer directory caching behavior
-
-### Phase 6: Durable Handles v1/v2
-
-**What:** Durable handle create context parsing, persistence in control plane store, reconnect processing, timeout management.
-
-**Why sixth:** Depends on leases (Phase 5) because durable handles are tightly coupled with leases. Also needs encryption (Phase 3) because persistent handles require encryption.
-
-**Files created:**
-- `internal/adapter/smb/durable/store.go` -- GORM persistence
-- `internal/adapter/smb/durable/manager.go` -- Lifecycle management
-- `internal/adapter/smb/durable/context.go` -- Create context parsing
-- `internal/adapter/smb/durable/store_test.go`
-
-**Files modified:**
-- `internal/adapter/smb/v2/handlers/create.go` -- Parse DHnQ/DH2C contexts
-- `internal/adapter/smb/v2/handlers/handler.go` -- DurableManager field
-- `pkg/adapter/smb/connection.go` -- Mark durable handles on disconnect
-- `pkg/controlplane/store/interface.go` -- Add DurableHandleStore sub-interface
-
-**Dependencies:** Phase 1 + Phase 5 (leases)
-**Testable with:** smbtorture durable_v2 tests, network disconnect/reconnect simulation
-
-### Phase 7: Cross-Protocol Integration and Testing
-
-**What:** Verify SMB3 lease <-> NFS delegation interop, encryption + signing end-to-end, durable handle recovery, Windows/macOS/Linux client compatibility.
-
-**Why last:** Integration testing requires all components to be in place.
-
-**Files created:**
-- E2E test files for encryption, signing, leases, Kerberos
-- smbtorture test configurations for SMB3 features
-- Go integration tests (hirochachacha/go-smb2)
-
-**Dependencies:** All previous phases
+**Phase ordering rationale:**
+- macOS signing is highest priority (unblocks a platform)
+- Quotas are foundational for payload stats and trash
+- Credit flow is low-effort and improves WPTS baseline
+- WPTS before multi-channel ensures protocol compliance foundation
+- Trash is highest complexity and least urgent -- defer to end
+- Multi-channel is highest risk due to connection lifecycle changes -- do last with full test coverage
 
 ## Scalability Considerations
 
 | Concern | At 100 users | At 10K users | At 1M users |
 |---------|--------------|--------------|-------------|
-| Encryption overhead | Negligible (AES-NI) | ~5% CPU increase | May need hardware AES offload |
-| Signing overhead | Negligible | ~2% CPU increase | CMAC faster than HMAC-SHA256 |
-| Durable handle storage | In-process SQLite | PostgreSQL recommended | Shard by session |
-| Preauth hash chain | Per-connection SHA-512 | Memory: 64 bytes/conn | 64MB for 1M connections |
-| Lease persistence | LockStore handles it | Same as existing | Same as existing |
+| Quota checks | Negligible (in-memory stats lookup) | Same | Consider caching quota state |
+| Client registry | sync.RWMutex fine | sync.Map might be better | Shard by protocol |
+| Trash scavenger | Per-share goroutine, fine | May need throttling | Batched deletion |
+| Credit validation | Atomic read per request | Same | Same (lock-free) |
+| Multi-channel | Map lookup per request | Same | Consider connection pooling |
+| Payload stats | BlockStore.GetStats() is fast | Same | Consider caching |
 
 ## Sources
 
-- [MS-SMB2 Generating Cryptographic Keys](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/da4e579e-02ce-4e27-bbce-3fc816a3ff92) -- SP800-108 KDF, key derivation labels/contexts
-- [MS-SMB2 SMB2_PREAUTH_INTEGRITY_CAPABILITIES](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/5a07bd66-4734-4af8-abcf-5a44ff7ee0e5) -- Preauth integrity context structure
-- [SMB 3.1.1 Pre-authentication integrity](https://learn.microsoft.com/en-us/archive/blogs/openspecification/smb-3-1-1-pre-authentication-integrity-in-windows-10) -- SHA-512 hash chain overview
-- [SMB 3.1.1 Encryption in Windows 10](https://learn.microsoft.com/en-us/archive/blogs/openspecification/smb-3-1-1-encryption-in-windows-10) -- AES-CCM/GCM cipher negotiation
-- [Encryption in SMB 3.0](https://learn.microsoft.com/en-us/archive/blogs/openspecification/encryption-in-smb-3-0-a-protocol-perspective) -- Transform Header format, encryption flow
-- [SMB Security Enhancements](https://learn.microsoft.com/en-us/windows-server/storage/file-server/smb-security) -- AES-CMAC/GMAC signing overview
-- [MS-SMB2 SMB2_CREATE_DURABLE_HANDLE_REQUEST_V2](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/5e361a29-81a7-4774-861d-f290ea53a00e) -- Durable handle v2 create context
-- [MS-SMB2 Re-establishing a Durable Open](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/3309c3d1-3daf-4448-9faa-81d2d6aa3315) -- Reconnect processing
-- [MS-SMB2 Handling DURABLE_HANDLE_RECONNECT_V2](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/62ba68d0-8806-4aef-a229-eefb5827160f) -- Server-side reconnect validation
-- [MS-SMB2 Receiving NEGOTIATE Request](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/b39f253e-4963-40df-8dff-2f9040ebbeb1) -- Negotiate context processing
-- [NIST SP800-108](https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-108.pdf) -- KDF in Counter Mode specification
-- [Implementing Persistent Handles in Samba](https://samba.plus/fileadmin/proposals/Persistent-Handles.pdf) -- Reference implementation details
-- DittoFS source code analysis: `internal/adapter/smb/`, `pkg/adapter/smb/`, `pkg/auth/kerberos/`, `pkg/metadata/lock/`
+- DittoFS source code analysis: `pkg/metadata/`, `pkg/adapter/smb/`, `internal/adapter/smb/`, `pkg/controlplane/runtime/`, `pkg/blockstore/engine/`
+- [MS-SMB2 3.3.5.2: Receiving Any Message](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/) -- Credit validation requirement
+- [MS-SMB2 3.3.5.5: Receiving an SMB2 SESSION_SETUP Request](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/) -- Session binding (multi-channel)
+- [MS-SMB2 3.3.5.2.1.1: Verifying the Signature](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/) -- Preauth integrity hash for signing
+- Existing ROADMAP phases 67, 70-77 for feature specifications
+- GitHub issues #252, #232, #216, #157, #190

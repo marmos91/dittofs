@@ -6,13 +6,25 @@ A comprehensive multi-protocol virtual filesystem with NFSv3/NFSv4.0/NFSv4.1 and
 
 Target: Cloud-native enterprise NAS with feature parity exceeding JuiceFS and Hammerspace, particularly in security (Kerberos + AES encryption), session reliability (EOS), cross-protocol consistency, Windows SMB3.1.1 compatibility, and edge/offline resilience.
 
+## Current Milestone: v0.10.0 Production Hardening + SMB Protocol Fixes
+
+**Goal:** Harden DittoFS for production use with share quotas, client tracking, trash/soft-delete, and complete SMB3 protocol compliance (credits, multi-channel, WPTS conformance).
+
+**Target features:**
+- SMB 3.1.1 signing on macOS (fix preauth integrity hash mismatch)
+- Share quotas with FSSTAT/FSINFO/SMB reporting
+- Payload stats (UsedSize returns actual storage usage)
+- Protocol-agnostic client tracking with `dfsctl client list`
+- Trash / soft-delete with configurable retention
+- SMB credit flow control (grant/charge accounting)
+- SMB multi-channel session binding
+- WPTS conformance fixes (reduce known failures from 73)
+
 ## Upcoming Milestones
 
-- **v4.5 BlockStore Security** — Block-level compression and encryption
-- **v4.6 Production Hardening** — SMB3 signing fix, quotas, client tracking, trash
-- **v4.8 DX/UX Improvements** — Makefile, CI optimization, adapter config API
-- **v4.9 SMB Protocol Fixes** — Credits, multichannel, conformance
-- **v5.0 NFSv4.2 Extensions** — Server-side copy, clone/reflinks, sparse files, xattrs
+- **BlockStore Security** — Block-level compression and encryption
+- **DX/UX Improvements** — Makefile, CI optimization, adapter config API
+- **NFSv4.2 Extensions** — Server-side copy, clone/reflinks, sparse files, xattrs
 
 ## Core Value
 
@@ -114,16 +126,17 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 
 ### Active
 
-#### v4.6 — Production Hardening
+#### v0.10.0 — Production Hardening + SMB Protocol Fixes
 - [ ] SMB 3.1.1 signing on macOS — fix preauth integrity hash mismatch (#252)
-- [ ] Share hot-reload — runtime shares visible to all adapters without restart (#235)
-- [ ] NTLM encryption flags — stop advertising unimplemented capabilities (#215)
 - [ ] Share quotas — per-share quota with FSSTAT/FSINFO/SMB reporting (#232)
 - [ ] Payload stats — UsedSize returns actual storage usage (#216)
 - [ ] Protocol-agnostic ClientRecord — unified NFS+SMB client tracking, `dfsctl client list` (#157)
 - [ ] Trash / soft-delete — move-to-trash with configurable retention (#190)
+- [ ] SMB credit flow control — proper grant/charge accounting
+- [ ] SMB multi-channel — session binding across multiple connections
+- [ ] WPTS conformance fixes — reduce known failures (73 → lower)
 
-#### v5.0 — NFSv4.2
+#### Future — NFSv4.2
 - [ ] Server-side COPY (async with OFFLOAD_STATUS polling)
 - [ ] OFFLOAD_CANCEL for in-progress copies
 - [ ] CLONE/reflinks (leverage content-addressed storage)
@@ -270,4 +283,4 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 | NTLM sealing never implemented | SMB3 AES transport encryption is the only confidentiality path | ✓ Good — Phase 68 |
 
 ---
-*Last updated: 2026-03-20 after v4.7 milestone*
+*Last updated: 2026-03-20 after v0.10.0 milestone start*
