@@ -317,6 +317,14 @@ type MetadataStore interface {
 	FileBlockStore // Content-addressed block management
 
 	// ========================================================================
+	// Usage Tracking
+	// ========================================================================
+
+	// GetUsedBytes returns the current total logical bytes used by regular files.
+	// This is an O(1) read from an atomic counter.
+	GetUsedBytes() int64
+
+	// ========================================================================
 	// Store Lifecycle (not transactional)
 	// ========================================================================
 

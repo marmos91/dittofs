@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
@@ -90,6 +91,11 @@ type BadgerMetadataStore struct {
 	// durableStore provides SMB3 durable handle persistence
 	durableStore   *badgerDurableStore
 	durableStoreMu sync.Mutex
+
+	// usedBytes tracks the total logical bytes used by regular files.
+	// Updated atomically on every size-changing operation (create, update, truncate, delete).
+	// Initialized from a full file scan on startup.
+	usedBytes atomic.Int64
 }
 
 // BadgerMetadataStoreConfig contains configuration for creating a BadgerDB metadata store.
@@ -222,7 +228,57 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		return nil, fmt.Errorf("failed to initialize singletons: %w", err)
 	}
 
+	// Initialize the usedBytes counter from a full file scan.
+	if err := store.initUsedBytesCounter(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to initialize used bytes counter: %w", err)
+	}
+
 	return store, nil
+}
+
+// GetUsedBytes returns the current total logical bytes used by regular files.
+// This is an O(1) atomic read, safe for concurrent access without locks.
+func (s *BadgerMetadataStore) GetUsedBytes() int64 {
+	return s.usedBytes.Load()
+}
+
+// initUsedBytesCounter scans all file entries once at startup to initialize the atomic counter.
+func (s *BadgerMetadataStore) initUsedBytesCounter() error {
+	var totalUsed int64
+
+	err := s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = []byte(prefixFile)
+		opts.PrefetchValues = true
+
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			err := item.Value(func(val []byte) error {
+				file, err := decodeFile(val)
+				if err != nil {
+					return nil // Skip corrupted entries
+				}
+				if file.Type == metadata.FileTypeRegular {
+					totalUsed += int64(file.Size)
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	s.usedBytes.Store(totalUsed)
+	return nil
 }
 
 // NewBadgerMetadataStoreWithDefaults creates a new BadgerDB metadata store with sensible defaults.

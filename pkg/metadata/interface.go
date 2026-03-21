@@ -145,6 +145,16 @@ type MetadataServiceInterface interface {
 	CheckShareAccess(ctx context.Context, shareName, clientAddr, authMethod string, identity *Identity) (*AccessDecision, *AuthContext, error)
 
 	// ========================================================================
+	// Quota Management
+	// ========================================================================
+
+	// SetQuotaForShare sets the byte quota for a share. 0 means unlimited.
+	SetQuotaForShare(shareName string, quotaBytes int64)
+
+	// GetQuotaForShare returns the byte quota for a share. 0 means unlimited.
+	GetQuotaForShare(shareName string) int64
+
+	// ========================================================================
 	// Handle and Filesystem Operations
 	// ========================================================================
 

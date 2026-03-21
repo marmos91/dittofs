@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/google/uuid"
@@ -217,6 +218,11 @@ type MemoryMetadataStore struct {
 	// durableStore holds SMB3 durable handle state for reconnection.
 	// Initialized lazily on first use.
 	durableStore *memoryDurableStore
+
+	// usedBytes tracks the total logical bytes used by regular files.
+	// Updated atomically on every size-changing operation (create, update, truncate, delete).
+	// Only regular files count toward usage; directories, symlinks, etc. do not.
+	usedBytes atomic.Int64
 }
 
 // MemoryMetadataStoreConfig contains configuration for creating a memory metadata store.
@@ -351,6 +357,12 @@ func NewMemoryMetadataStoreWithDefaults() *MemoryMetadataStore {
 		MaxStorageBytes: 0, // Unlimited (reported as 1TB)
 		MaxFiles:        0, // Unlimited (reported as 1 million)
 	})
+}
+
+// GetUsedBytes returns the current total logical bytes used by regular files.
+// This is an O(1) atomic read, safe for concurrent access without locks.
+func (store *MemoryMetadataStore) GetUsedBytes() int64 {
+	return store.usedBytes.Load()
 }
 
 // handleToKey converts a FileHandle to a string key for map indexing.

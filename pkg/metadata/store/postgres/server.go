@@ -35,11 +35,7 @@ func (s *PostgresMetadataStore) SetServerConfig(ctx context.Context, config meta
 	`
 
 	_, err := s.exec(ctx, query, config.CustomSettings)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }
 
 // ============================================================================
@@ -114,40 +110,56 @@ func (s *PostgresMetadataStore) SetFilesystemCapabilities(capabilities metadata.
 // Filesystem Statistics
 // ============================================================================
 
-// GetFilesystemStatistics returns filesystem statistics with caching
+// GetFilesystemStatistics returns filesystem statistics with caching.
+// UsedBytes is read from the atomic counter (O(1), always fresh).
+// File count uses the stats cache for efficiency.
 func (s *PostgresMetadataStore) GetFilesystemStatistics(ctx context.Context, handle metadata.FileHandle) (*metadata.FilesystemStatistics, error) {
-	// Check cache first
-	if stats, valid := s.statsCache.get(); valid {
-		return &stats, nil
+	// Read usage from atomic counter (O(1), always fresh).
+	bytesUsed := uint64(s.usedBytes.Load())
+
+	// Check cache for file count.
+	if cached, valid := s.statsCache.get(); valid {
+		// Update UsedBytes from atomic counter (cache may be stale for bytes).
+		cached.UsedBytes = bytesUsed
+		if cached.TotalBytes > bytesUsed {
+			cached.AvailableBytes = cached.TotalBytes - bytesUsed
+		} else {
+			cached.AvailableBytes = 0
+		}
+		return &cached, nil
 	}
 
-	// Cache miss - query database
-	query := `
-		SELECT
-			COALESCE(SUM(size), 0) AS total_bytes_used,
-			COUNT(*) AS total_files_used
-		FROM files
-	`
+	// Cache miss - query file count only (usage comes from atomic counter).
+	query := `SELECT COUNT(*) FROM files`
 
-	var bytesUsed, filesUsed int64
-	err := s.queryRow(ctx, query).Scan(&bytesUsed, &filesUsed)
+	var filesUsed int64
+	err := s.queryRow(ctx, query).Scan(&filesUsed)
 	if err != nil {
 		return nil, mapPgError(err, "GetFilesystemStatistics", "")
 	}
 
-	// For PostgreSQL, we don't have hard limits on storage
-	// Return very large values to indicate "unlimited"
-	// In production, you might want to configure these based on your PostgreSQL instance
+	totalBytes := uint64(1 << 50) // 1 PB (effectively unlimited)
+	availableBytes := uint64(0)
+	if totalBytes > bytesUsed {
+		availableBytes = totalBytes - bytesUsed
+	}
+
+	totalFiles := uint64(1 << 32) // 4 billion files
+	availableFiles := uint64(0)
+	if totalFiles > uint64(filesUsed) {
+		availableFiles = totalFiles - uint64(filesUsed)
+	}
+
 	stats := metadata.FilesystemStatistics{
-		TotalBytes:     1 << 50, // 1 PB (effectively unlimited)
-		AvailableBytes: (1 << 50) - uint64(bytesUsed),
-		UsedBytes:      uint64(bytesUsed),
-		TotalFiles:     1 << 32, // 4 billion files
-		AvailableFiles: (1 << 32) - uint64(filesUsed),
+		TotalBytes:     totalBytes,
+		AvailableBytes: availableBytes,
+		UsedBytes:      bytesUsed,
+		TotalFiles:     totalFiles,
+		AvailableFiles: availableFiles,
 		UsedFiles:      uint64(filesUsed),
 	}
 
-	// Update cache
+	// Update cache.
 	s.statsCache.set(stats)
 
 	return &stats, nil

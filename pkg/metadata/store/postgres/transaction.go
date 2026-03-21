@@ -220,6 +220,19 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		}
 	}
 
+	// Query old size for delta tracking (only for regular files).
+	var oldSize uint64
+	if file.Type == metadata.FileTypeRegular {
+		var oldSizeVal sql.NullInt64
+		_ = tx.tx.QueryRow(ctx,
+			`SELECT size FROM files WHERE id = $1 AND share_name = $2 AND file_type = $3`,
+			file.ID, file.ShareName, int(metadata.FileTypeRegular),
+		).Scan(&oldSizeVal)
+		if oldSizeVal.Valid {
+			oldSize = uint64(oldSizeVal.Int64)
+		}
+	}
+
 	// Try UPDATE first (most common case for existing files)
 	result, err := tx.tx.Exec(ctx, updateQuery,
 		file.Type, file.Mode, file.UID, file.GID, file.Size,
@@ -230,6 +243,16 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 	)
 	if err != nil {
 		return mapPgError(err, "PutFile", "")
+	}
+
+	// Track size delta for regular files after successful update/insert.
+	if file.Type == metadata.FileTypeRegular {
+		if result.RowsAffected() > 0 {
+			delta := int64(file.Size) - int64(oldSize)
+			if delta != 0 {
+				tx.store.usedBytes.Add(delta)
+			}
+		}
 	}
 
 	// If no rows were updated, the file doesn't exist - do an INSERT
@@ -253,6 +276,11 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		)
 		if err != nil {
 			return mapPgError(err, "PutFile", "")
+		}
+
+		// Track new regular file size.
+		if file.Type == metadata.FileTypeRegular && file.Size > 0 {
+			tx.store.usedBytes.Add(int64(file.Size))
 		}
 
 		// Debug logging for new file inserts
@@ -280,6 +308,14 @@ func (tx *postgresTransaction) DeleteFile(ctx context.Context, handle metadata.F
 		}
 	}
 
+	// Read size before deletion for counter tracking.
+	var fileType int
+	var fileSize int64
+	_ = tx.tx.QueryRow(ctx,
+		`SELECT file_type, size FROM files WHERE id = $1 AND share_name = $2`,
+		id, shareName,
+	).Scan(&fileType, &fileSize)
+
 	// Delete related records first
 	// Note: We only delete link_counts and children of this file (if it's a directory).
 	// We do NOT delete this file from its parent's children map here - that's the
@@ -299,6 +335,11 @@ func (tx *postgresTransaction) DeleteFile(ctx context.Context, handle metadata.F
 			Code:    metadata.ErrNotFound,
 			Message: "file not found",
 		}
+	}
+
+	// Subtract size from counter for regular files.
+	if metadata.FileType(fileType) == metadata.FileTypeRegular && fileSize > 0 {
+		tx.store.usedBytes.Add(-fileSize)
 	}
 
 	return nil

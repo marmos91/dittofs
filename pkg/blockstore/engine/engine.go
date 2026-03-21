@@ -275,10 +275,23 @@ func (bs *BlockStore) DrainAllUploads(ctx context.Context) error {
 func (bs *BlockStore) Stats() (*blockstore.Stats, error) {
 	localStats := bs.local.Stats()
 	files := bs.local.ListFiles()
+	used := uint64(localStats.DiskUsed)
+	total := uint64(localStats.MaxDisk)
+	avail := uint64(0)
+	if total > used {
+		avail = total - used
+	}
+	count := uint64(len(files))
+	avg := uint64(0)
+	if count > 0 {
+		avg = used / count
+	}
 	return &blockstore.Stats{
-		UsedSize:     0, // TODO: implement proper stats tracking
-		ContentCount: uint64(len(files)),
-		TotalSize:    uint64(localStats.MaxDisk),
+		UsedSize:      used,
+		ContentCount:  count,
+		TotalSize:     total,
+		AvailableSize: avail,
+		AverageSize:   avg,
 	}, nil
 }
 

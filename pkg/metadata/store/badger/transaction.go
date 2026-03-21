@@ -135,6 +135,25 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		return err
 	}
 
+	// Track size delta for regular files.
+	if file.Type == metadata.FileTypeRegular {
+		var oldSize uint64
+		item, err := tx.txn.Get(keyFile(file.ID))
+		if err == nil {
+			_ = item.Value(func(val []byte) error {
+				existing, decErr := decodeFile(val)
+				if decErr == nil && existing.Type == metadata.FileTypeRegular {
+					oldSize = existing.Size
+				}
+				return nil
+			})
+		}
+		delta := int64(file.Size) - int64(oldSize)
+		if delta != 0 {
+			tx.store.usedBytes.Add(delta)
+		}
+	}
+
 	data, err := encodeFile(file)
 	if err != nil {
 		return err
@@ -157,8 +176,8 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 		}
 	}
 
-	// Check if exists first
-	_, err = tx.txn.Get(keyFile(fileID))
+	// Check if exists first and read for size tracking.
+	item, err := tx.txn.Get(keyFile(fileID))
 	if err == badgerdb.ErrKeyNotFound {
 		return &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
@@ -168,6 +187,15 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 	if err != nil {
 		return err
 	}
+
+	// Subtract size from counter for regular files.
+	_ = item.Value(func(val []byte) error {
+		file, decErr := decodeFile(val)
+		if decErr == nil && file.Type == metadata.FileTypeRegular && file.Size > 0 {
+			tx.store.usedBytes.Add(-int64(file.Size))
+		}
+		return nil
+	})
 
 	// Delete all related keys
 	keys := [][]byte{

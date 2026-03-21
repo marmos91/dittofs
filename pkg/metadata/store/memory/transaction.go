@@ -78,6 +78,18 @@ func (tx *memoryTransaction) PutFile(ctx context.Context, file *metadata.File) e
 	key := handleToKey(handle)
 	attrCopy := file.FileAttr
 
+	// Track size delta for regular files.
+	if file.Type == metadata.FileTypeRegular {
+		var oldSize uint64
+		if existing, exists := tx.store.files[key]; exists && existing.Attr.Type == metadata.FileTypeRegular {
+			oldSize = existing.Attr.Size
+		}
+		delta := int64(file.Size) - int64(oldSize)
+		if delta != 0 {
+			tx.store.usedBytes.Add(delta)
+		}
+	}
+
 	tx.store.files[key] = &fileData{
 		Attr:      &attrCopy,
 		ShareName: file.ShareName,
@@ -101,11 +113,17 @@ func (tx *memoryTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 	}
 
 	key := handleToKey(handle)
-	if _, exists := tx.store.files[key]; !exists {
+	existing, exists := tx.store.files[key]
+	if !exists {
 		return &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
 			Message: "file not found",
 		}
+	}
+
+	// Subtract size from counter for regular files.
+	if existing.Attr.Type == metadata.FileTypeRegular && existing.Attr.Size > 0 {
+		tx.store.usedBytes.Add(-int64(existing.Attr.Size))
 	}
 
 	delete(tx.store.files, key)
@@ -448,6 +466,10 @@ func (tx *memoryTransaction) DeleteShare(ctx context.Context, shareName string) 
 	// Remove all files belonging to this share
 	for key, fd := range tx.store.files {
 		if fd.ShareName == shareName {
+			// Subtract size from counter for regular files.
+			if fd.Attr.Type == metadata.FileTypeRegular && fd.Attr.Size > 0 {
+				tx.store.usedBytes.Add(-int64(fd.Attr.Size))
+			}
 			delete(tx.store.files, key)
 			delete(tx.store.parents, key)
 			delete(tx.store.children, key)

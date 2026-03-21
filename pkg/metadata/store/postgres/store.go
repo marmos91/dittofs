@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -49,6 +50,11 @@ type PostgresMetadataStore struct {
 	// Initialized lazily via getDurableStore().
 	durableStore   *postgresDurableStore
 	durableStoreMu sync.Mutex
+
+	// usedBytes tracks the total logical bytes used by regular files.
+	// Updated atomically on every size-changing operation (create, update, truncate, delete).
+	// Initialized from a SQL SUM query on startup.
+	usedBytes atomic.Int64
 }
 
 // statsCache holds cached filesystem statistics
@@ -111,6 +117,13 @@ func NewPostgresMetadataStore(
 		cancel: cancel,
 	}
 
+	// Initialize the usedBytes counter from a SQL SUM query.
+	if err := store.initUsedBytesCounter(ctx); err != nil {
+		pool.Close()
+		cancel()
+		return nil, fmt.Errorf("failed to initialize used bytes counter: %w", err)
+	}
+
 	log.Info("PostgreSQL metadata store initialized successfully",
 		"host", cfg.Host,
 		"database", cfg.Database,
@@ -120,6 +133,24 @@ func NewPostgresMetadataStore(
 	)
 
 	return store, nil
+}
+
+// GetUsedBytes returns the current total logical bytes used by regular files.
+// This is an O(1) atomic read, safe for concurrent access without locks.
+func (s *PostgresMetadataStore) GetUsedBytes() int64 {
+	return s.usedBytes.Load()
+}
+
+// initUsedBytesCounter initializes the atomic counter from a SQL SUM query.
+func (s *PostgresMetadataStore) initUsedBytesCounter(ctx context.Context) error {
+	query := `SELECT COALESCE(SUM(size), 0) FROM files WHERE file_type = $1`
+	var totalUsed int64
+	err := s.pool.QueryRow(ctx, query, int(metadata.FileTypeRegular)).Scan(&totalUsed)
+	if err != nil {
+		return fmt.Errorf("failed to query used bytes: %w", err)
+	}
+	s.usedBytes.Store(totalUsed)
+	return nil
 }
 
 // Close closes the PostgreSQL connection pool and releases resources

@@ -125,29 +125,39 @@ func (s *BadgerMetadataStore) SetFilesystemCapabilities(capabilities metadata.Fi
 // ============================================================================
 
 // GetFilesystemStatistics returns dynamic filesystem statistics.
+// UsedBytes is read from the atomic counter (O(1), no scan).
+// File count still uses the stats cache for efficiency.
 func (s *BadgerMetadataStore) GetFilesystemStatistics(ctx context.Context, handle metadata.FileHandle) (*metadata.FilesystemStatistics, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	// Check cache first
+	// Read usage from atomic counter (O(1), always fresh).
+	usedSize := uint64(s.usedBytes.Load())
+
+	// For file count, check cache first.
 	s.statsCache.mu.RLock()
 	if s.statsCache.hasStats && time.Since(s.statsCache.timestamp) < s.statsCache.ttl {
 		cached := s.statsCache.stats
 		s.statsCache.mu.RUnlock()
+		// Update UsedBytes from atomic counter (cache may be stale for bytes).
+		cached.UsedBytes = usedSize
+		if cached.TotalBytes > usedSize {
+			cached.AvailableBytes = cached.TotalBytes - usedSize
+		} else {
+			cached.AvailableBytes = 0
+		}
 		return &cached, nil
 	}
 	s.statsCache.mu.RUnlock()
 
-	// Cache miss - compute stats
-	var stats metadata.FilesystemStatistics
+	// Cache miss - count files only (usage comes from atomic counter).
 	var fileCount uint64
-	var usedSize uint64
 
 	err := s.db.View(func(txn *badgerdb.Txn) error {
 		opts := badgerdb.DefaultIteratorOptions
 		opts.Prefix = []byte(prefixFile)
-		opts.PrefetchValues = true
+		opts.PrefetchValues = false // Only counting, don't need values.
 
 		it := txn.NewIterator(opts)
 		defer it.Close()
@@ -158,20 +168,7 @@ func (s *BadgerMetadataStore) GetFilesystemStatistics(ctx context.Context, handl
 					return err
 				}
 			}
-
-			item := it.Item()
-			err := item.Value(func(val []byte) error {
-				file, err := decodeFile(val)
-				if err != nil {
-					return err
-				}
-				fileCount++
-				usedSize += file.Size
-				return nil
-			})
-			if err != nil {
-				return err
-			}
+			fileCount++
 		}
 
 		return nil
@@ -181,6 +178,7 @@ func (s *BadgerMetadataStore) GetFilesystemStatistics(ctx context.Context, handl
 		return nil, fmt.Errorf("failed to calculate filesystem statistics: %w", err)
 	}
 
+	var stats metadata.FilesystemStatistics
 	stats.UsedFiles = fileCount
 	stats.UsedBytes = usedSize
 
@@ -192,9 +190,11 @@ func (s *BadgerMetadataStore) GetFilesystemStatistics(ctx context.Context, handl
 			stats.AvailableBytes = 0
 		}
 	} else {
-		const reportedSize = 1024 * 1024 * 1024 * 1024 // 1TB
+		const reportedSize = 1 << 50 // 1 PiB (unlimited sentinel)
 		stats.TotalBytes = reportedSize
-		stats.AvailableBytes = reportedSize - usedSize
+		if reportedSize > usedSize {
+			stats.AvailableBytes = reportedSize - usedSize
+		}
 	}
 
 	if s.maxFiles > 0 {
@@ -207,16 +207,13 @@ func (s *BadgerMetadataStore) GetFilesystemStatistics(ctx context.Context, handl
 	} else {
 		const reportedFiles = 1000000
 		stats.TotalFiles = reportedFiles
-		stats.AvailableFiles = reportedFiles - fileCount
+		if reportedFiles > fileCount {
+			stats.AvailableFiles = reportedFiles - fileCount
+		}
 	}
 
-	// Update cache
+	// Update cache.
 	s.statsCache.mu.Lock()
-	if s.statsCache.hasStats && time.Since(s.statsCache.timestamp) < s.statsCache.ttl {
-		cached := s.statsCache.stats
-		s.statsCache.mu.Unlock()
-		return &cached, nil
-	}
 	s.statsCache.stats = stats
 	s.statsCache.hasStats = true
 	s.statsCache.timestamp = time.Now()

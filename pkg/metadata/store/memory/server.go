@@ -127,68 +127,21 @@ func (store *MemoryMetadataStore) GetFilesystemStatistics(ctx context.Context, h
 		}
 	}
 
-	// Calculate current usage by summing all file sizes
-	var usedBytes uint64
-	for _, attr := range store.files {
-		// Only count regular files (directories, symlinks have no real content)
-		if attr.Attr.Type == metadata.FileTypeRegular {
-			usedBytes += attr.Attr.Size
-		}
-	}
-
-	// Count total files (including directories)
-	usedFiles := uint64(len(store.files))
-
-	// Get configured limits from store configuration
-	// If not configured (0), use large default values to indicate "unlimited"
-	totalBytes := store.maxStorageBytes
-	if totalBytes == 0 {
-		// Default to 1TB (effectively unlimited for in-memory)
-		totalBytes = 1024 * 1024 * 1024 * 1024
-	}
-
-	totalFiles := store.maxFiles
-	if totalFiles == 0 {
-		// Default to 1 million files
-		totalFiles = 1000000
-	}
-
-	// Calculate available space
-	availableBytes := uint64(0)
-	if totalBytes > usedBytes {
-		availableBytes = totalBytes - usedBytes
-	}
-
-	availableFiles := uint64(0)
-	if totalFiles > usedFiles {
-		availableFiles = totalFiles - usedFiles
-	}
-
-	return &metadata.FilesystemStatistics{
-		TotalBytes:     totalBytes,
-		UsedBytes:      usedBytes,
-		AvailableBytes: availableBytes,
-		TotalFiles:     totalFiles,
-		UsedFiles:      usedFiles,
-		AvailableFiles: availableFiles,
-		ValidFor:       0, // Statistics may change at any time
-	}, nil
+	stats := store.computeStatistics()
+	return &stats, nil
 }
 
 // computeStatistics calculates current filesystem statistics.
 // Must be called with at least a read lock held.
 func (store *MemoryMetadataStore) computeStatistics() metadata.FilesystemStatistics {
-	var totalSize uint64
+	// Read usage from atomic counter (O(1), no scan needed).
+	totalSize := uint64(store.usedBytes.Load())
 	fileCount := uint64(len(store.files))
-
-	for _, fd := range store.files {
-		totalSize += fd.Attr.Size
-	}
 
 	// Report storage limits or defaults
 	totalBytes := store.maxStorageBytes
 	if totalBytes == 0 {
-		totalBytes = 1099511627776 // 1TB default
+		totalBytes = 1 << 50 // 1 PiB (unlimited sentinel)
 	}
 
 	maxFiles := store.maxFiles
@@ -196,12 +149,22 @@ func (store *MemoryMetadataStore) computeStatistics() metadata.FilesystemStatist
 		maxFiles = 1000000 // 1 million default
 	}
 
+	availableBytes := uint64(0)
+	if totalBytes > totalSize {
+		availableBytes = totalBytes - totalSize
+	}
+
+	availableFiles := uint64(0)
+	if maxFiles > fileCount {
+		availableFiles = maxFiles - fileCount
+	}
+
 	return metadata.FilesystemStatistics{
 		TotalBytes:     totalBytes,
 		UsedBytes:      totalSize,
-		AvailableBytes: totalBytes - totalSize,
+		AvailableBytes: availableBytes,
 		TotalFiles:     maxFiles,
 		UsedFiles:      fileCount,
-		AvailableFiles: maxFiles - fileCount,
+		AvailableFiles: availableFiles,
 	}
 }
