@@ -33,17 +33,17 @@ Requirements for Production Hardening + SMB Protocol Fixes. Each maps to roadmap
 
 ### Share Quotas
 
-- [ ] **QUOTA-01**: Per-share byte quota configurable via REST API and dfsctl
-- [ ] **QUOTA-02**: Write operations rejected with NFS3ERR_NOSPC / STATUS_DISK_FULL when quota exceeded
-- [ ] **QUOTA-03**: NFS FSSTAT returns quota-adjusted TotalBytes and AvailableBytes
-- [ ] **QUOTA-04**: SMB FileFsSizeInformation and FileFsFullSizeInformation return quota-adjusted values
-- [ ] **QUOTA-05**: `dfsctl share create/update --quota-bytes` manages quotas
+- [x] **QUOTA-01**: Per-share byte quota configurable via REST API and dfsctl
+- [x] **QUOTA-02**: Write operations rejected with NFS3ERR_NOSPC / STATUS_DISK_FULL when quota exceeded
+- [x] **QUOTA-03**: NFS FSSTAT returns quota-adjusted TotalBytes and AvailableBytes
+- [x] **QUOTA-04**: SMB FileFsSizeInformation and FileFsFullSizeInformation return quota-adjusted values
+- [x] **QUOTA-05**: `dfsctl share create/update --quota-bytes` manages quotas
 
 ### Payload Stats
 
-- [ ] **STATS-01**: UsedSize returns actual block storage consumption (not just metadata file sizes)
-- [ ] **STATS-02**: Per-share storage usage available via REST API and CLI
-- [ ] **STATS-03**: Logical size (file sizes) and physical size (block storage) distinguished
+- [x] **STATS-01**: UsedSize returns actual block storage consumption (not just metadata file sizes)
+- [x] **STATS-02**: Per-share storage usage available via REST API and CLI
+- [x] **STATS-03**: Logical size (file sizes) and physical size (block storage) distinguished
 
 ### Client Tracking
 
@@ -102,14 +102,14 @@ Requirements for Production Hardening + SMB Protocol Fixes. Each maps to roadmap
 | WPTS-02 | Phase 72 | Pending |
 | WPTS-03 | Phase 72 | Pending |
 | WPTS-04 | Phase 72 | Pending |
-| QUOTA-01 | Phase 70 | Pending |
-| QUOTA-02 | Phase 70 | Pending |
-| QUOTA-03 | Phase 70 | Pending |
-| QUOTA-04 | Phase 70 | Pending |
-| QUOTA-05 | Phase 70 | Pending |
-| STATS-01 | Phase 70 | Pending |
-| STATS-02 | Phase 70 | Pending |
-| STATS-03 | Phase 70 | Pending |
+| QUOTA-01 | Phase 70 | Complete |
+| QUOTA-02 | Phase 70 | Complete |
+| QUOTA-03 | Phase 70 | Complete |
+| QUOTA-04 | Phase 70 | Complete |
+| QUOTA-05 | Phase 70 | Complete |
+| STATS-01 | Phase 70 | Complete |
+| STATS-02 | Phase 70 | Complete |
+| STATS-03 | Phase 70 | Complete |
 | CLIENT-01 | Phase 71 | Pending |
 | CLIENT-02 | Phase 71 | Pending |
 | CLIENT-03 | Phase 71 | Pending |

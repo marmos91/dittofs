@@ -2,15 +2,14 @@
 gsd_state_version: 1.0
 milestone: v4.5
 milestone_name: BlockStore Security
-status: executing
-stopped_at: Completed 69-03-PLAN.md
-last_updated: "2026-03-20T16:34:03Z"
-last_activity: 2026-03-20 — Completed plan 69-03 (Credit Validation Wiring)
+status: unknown
+stopped_at: Completed 70-02-PLAN.md
+last_updated: "2026-03-21T10:10:05.921Z"
 progress:
-  total_phases: 1
-  completed_phases: 1
-  total_plans: 3
-  completed_plans: 3
+  total_phases: 3
+  completed_phases: 3
+  total_plans: 8
+  completed_plans: 8
 ---
 
 # Project State
@@ -20,14 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-20)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** v0.10.0 Production Hardening + SMB Protocol Fixes
+**Current focus:** Phase 70 — storage-observability-quotas
 
 ## Current Position
 
-Phase: 69 of 75 (SMB Protocol Foundation) — COMPLETE
+Phase: 70 (storage-observability-quotas) — COMPLETE
 Plan: 3 of 3 (all complete)
-Status: Phase 69 complete
-Last activity: 2026-03-20 — Completed plan 69-03 (Credit Validation Wiring)
 
 ## Completed Milestones
 
@@ -50,6 +47,12 @@ Last activity: 2026-03-20 — Completed plan 69-03 (Credit Validation Wiring)
 
 All decisions archived in PROJECT.md Key Decisions table.
 
+- **70-03**: Interface assertions for GetUsedBytes/SetQuotaForShare to decouple from concrete store types
+- **70-03**: QuotaBytes=0 displayed as 'unlimited' in CLI, empty string in API JSON
+- **70-03**: UsagePercent capped at 100 even when over-quota
+- **70-01**: Track only regular file sizes (directories, symlinks, devices excluded from counter)
+- **70-01**: Delta tracking at transaction layer (PutFile/DeleteFile) for consistency across all stores
+- **70-01**: Badger GetFilesystemStatistics still scans for file count but reads bytes from atomic counter
 - **69-02**: Used absolute low/high watermark tracking for sequence window bitmap (avoids corruption during compaction)
 - **69-02**: NEGOTIATE exempt only when SessionID=0 (pre-auth semantics)
 - **69-03**: SequenceWindow Grant deferred until after successful wire write
@@ -57,6 +60,10 @@ All decisions archived in PROJECT.md Key Decisions table.
 - **69-03**: SupportsMultiCredit set via NEGOTIATE after-hook based on dialect >= 0x0210
 - [Phase 69-01]: Cherry-picked PR #288 for signing enforcement instead of re-implementing
 - [Phase 69-01]: MS-SMB2 spec section references as code comments for long-term audit trail
+- [Phase 70-03]: Interface assertions for GetUsedBytes/SetQuotaForShare to decouple from concrete store types
+- [Phase 70-02]: Quota enforcement at PrepareWrite layer (after file type check, before permission check) for early rejection
+- [Phase 70-02]: Quota overlay in MetadataService.GetFilesystemStatistics rather than per-store
+- [Phase 70-02]: 1 PiB (1<<50) as unlimited sentinel across all stores (was 1TB in memory/badger)
 
 ### Pending Todos
 
@@ -68,6 +75,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-20T16:34:03Z
-Stopped at: Completed 69-03-PLAN.md
-Next action: Phase 69 complete. Proceed to next phase.
+Last session: 2026-03-21T10:02:16.301Z
+Stopped at: Completed 70-02-PLAN.md
+Next action: Phase 70 complete. All 3 plans executed successfully.

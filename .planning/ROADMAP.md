@@ -275,7 +275,12 @@ Plans:
   4. NFSv3 FSSTAT and NFSv4 GETATTR(space_total/space_free/space_avail) report quota-adjusted values so `df` shows quota as total and (quota - used) as available
   5. SMB FileFsSizeInformation and FileFsFullSizeInformation return quota-aware sizes so Windows Explorer shows correct free space matching the NFS view
 **Verification**: `go build ./...` && `go test ./...` && quota enforcement test with NFS + SMB clients && `df` on both protocols matches
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 70-01-PLAN.md — Data model foundation (QuotaBytes field, atomic usage counters, BlockStore.Stats() UsedSize)
+- [ ] 70-02-PLAN.md — Quota enforcement and protocol reporting (PrepareWrite check, quota-aware FSSTAT, NFSv4 attrs, SMB cleanup)
+- [ ] 70-03-PLAN.md — CLI/API quota management (--quota-bytes flags, share list columns, runtime wiring)
 
 ### Phase 71: Operational Visibility
 **Goal**: Operators can see all connected NFS and SMB clients in a single unified view with connection metadata and automatic stale cleanup
@@ -532,7 +537,7 @@ v3.8 (33-40.5) -> v4.2 (57-62) -> v4.0 (41-49) -> v4.3 (49.1-49.3) -> v4.7 (63-6
 | 49.1-49.3 | v4.3 | 1/1 | Complete | 2026-03-13 |
 | 63-68 | v4.7 | 10/10 | Complete | 2026-03-20 |
 | 69. SMB Protocol Foundation | 3/3 | Complete   | 2026-03-20 | - |
-| 70. Storage Observability and Quotas | v0.10.0 | 0/? | Not started | - |
+| 70. Storage Observability and Quotas | 3/3 | Complete    | 2026-03-21 | - |
 | 71. Operational Visibility | v0.10.0 | 0/? | Not started | - |
 | 72. WPTS Conformance Push | v0.10.0 | 0/? | Not started | - |
 | 73. Trash and Soft-Delete | v0.10.0 | 0/? | Not started | - |
