@@ -1,6 +1,6 @@
 # Known Failures - SMB Conformance (WPTS BVT)
 
-Last updated: 2026-03-18 (removed 6 tests now passing after SMB conformance fixes)
+Last updated: 2026-03-20 (Phase 69: signing audit complete, spec references added)
 
 Tests listed here are expected to fail. CI will pass (exit 0) as long as
 all failures are in this list. New failures not listed here will cause CI to fail.
@@ -242,6 +242,7 @@ Format:
 
 ## Changelog
 
+- **v4.5 Phase 69 (2026-03-20):** Full MS-SMB2 3.3.x signing audit completed. Added spec section references (3.3.5.2.4, 3.3.4.1.1, 3.3.5.2.7.2) to framing.go, response.go, compound.go. Enforced NegSigningRequired for 3.1.1 NEGOTIATE and SigningRequired for 3.1.1 SESSION_SETUP. All signing paths verified compliant: incoming verification, outgoing signing, compound signing, tree connect (no signing mutation), re-auth key preservation. No signing violations found.
 - **v4.7 Phase 67 (2026-03-20):** SMB 3.1.1 preauth integrity hash chain verified correct via MS-SMB2 test vectors and conformance tests. All 4 pitfalls from issue #252 confirmed correctly handled. Negotiate response wire format validated (context alignment, security buffer offset). WPTS BVT_Negotiate_SMB311 failures require runtime WPTS verbose log diagnosis (not a preauth hash bug). Updated Negotiate test descriptions with Phase 67 findings. Total: 99 (47 permanent + 52 expected, unchanged).
 - **v3.8 Phase 42 (2026-03-09):** Updated ptfconfig to SMB 3.1.1 (MaxSmbVersionSupported, encryption, directory leasing, signing algorithms). Added 14 newly exercised tests: 5 Negotiate, 3 ChangeNotify (SMB 3.x), 2 Encryption, 2 DirectoryLeasing, 1 Leasing V2, 1 TreeMgmt. Fixed zero-mtime flush bug (5 QueryDirectory + 2 Timestamp regressions). Total: 100 (47 permanent + 53 expected).
 - **v3.8 Phase 40 (2026-03-02):** Post-SMB3 update. Removed 5 tests whose features are now implemented (durable handles V1, leasing V1, oplock break, encryption capability flag). Added Phase 33-39 improvements section. Updated permanently out-of-scope count (47, down from 48 -- encryption flag removed). Updated expected failure count (35, down from 42). Removed "Potentially fixed" status -- all entries are now either Expected or Permanent.

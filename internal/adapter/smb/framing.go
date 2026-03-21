@@ -284,8 +284,15 @@ func WriteNetBIOSFrame(conn net.Conn, writeMu *LockedWriter, writeTimeout time.D
 }
 
 // sessionSigningVerifier implements SigningVerifier using the Handler's session state.
-// Per MS-SMB2 3.3.5.2.4: verify if session requires signing or message is signed.
-// For compound requests, only the first command's bytes are verified here.
+//
+// Per MS-SMB2 3.3.5.2.4 — Verifying the Signature:
+// The server MUST verify the signature on incoming requests when the session
+// has SigningRequired set (or for 3.1.1: when any authenticated, non-guest,
+// non-anonymous session exists). Encrypted messages (received inside a
+// Transform Header) are NOT verified here — AEAD provides integrity.
+//
+// For compound requests, only the first command's bytes are verified here;
+// subsequent commands are verified individually by VerifyCompoundCommandSignature.
 type sessionSigningVerifier struct {
 	handler    *handlers.Handler
 	conn       net.Conn
@@ -299,6 +306,17 @@ func NewSessionSigningVerifier(handler *handlers.Handler, conn net.Conn, connCry
 	return &sessionSigningVerifier{handler: handler, conn: conn, connCrypto: connCrypto}
 }
 
+// VerifyRequest implements MS-SMB2 3.3.5.2.4 signature verification.
+//
+// Verification is skipped for:
+//   - SessionID == 0 (no session context)
+//   - NEGOTIATE and SESSION_SETUP (signing keys not yet established)
+//   - Logged-off sessions (deferred delete race; let prepareDispatch handle)
+//   - Guest/null sessions on non-3.1.1 (signing not required)
+//
+// For SMB 3.1.1 authenticated sessions, unsigned+unencrypted requests are
+// rejected per MS-SMB2 3.3.5.2.4 (implicit signing requirement). Per user
+// decision: error response instead of TCP disconnect.
 func (sv *sessionSigningVerifier) VerifyRequest(hdr *header.SMB2Header, message []byte) error {
 	// Skip verification for messages without a session (SessionID == 0)
 	// and for NEGOTIATE/SESSION_SETUP which may not have signing set up yet.

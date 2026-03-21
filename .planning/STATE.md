@@ -1,15 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.10.0
-milestone_name: Production Hardening + SMB Protocol Fixes
-status: active
-stopped_at: null
-last_updated: "2026-03-20T17:00:00.000Z"
+milestone: v4.5
+milestone_name: BlockStore Security
+status: executing
+stopped_at: Completed 69-03-PLAN.md
+last_updated: "2026-03-20T16:34:03Z"
+last_activity: 2026-03-20 — Completed plan 69-03 (Credit Validation Wiring)
 progress:
-  total_phases: 7
-  completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
+  total_phases: 1
+  completed_phases: 1
+  total_plans: 3
+  completed_plans: 3
 ---
 
 # Project State
@@ -23,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-03-20)
 
 ## Current Position
 
-Phase: 69 of 75 (SMB Protocol Foundation) — not yet started
-Plan: --
-Status: Ready to plan
-Last activity: 2026-03-20 — Roadmap created for v0.10.0 (phases 69-75)
+Phase: 69 of 75 (SMB Protocol Foundation) — COMPLETE
+Plan: 3 of 3 (all complete)
+Status: Phase 69 complete
+Last activity: 2026-03-20 — Completed plan 69-03 (Credit Validation Wiring)
 
 ## Completed Milestones
 
@@ -49,6 +50,14 @@ Last activity: 2026-03-20 — Roadmap created for v0.10.0 (phases 69-75)
 
 All decisions archived in PROJECT.md Key Decisions table.
 
+- **69-02**: Used absolute low/high watermark tracking for sequence window bitmap (avoids corruption during compaction)
+- **69-02**: NEGOTIATE exempt only when SessionID=0 (pre-auth semantics)
+- **69-03**: SequenceWindow Grant deferred until after successful wire write
+- **69-03**: Compound credit validation only for first command per MS-SMB2 3.2.4.1.4
+- **69-03**: SupportsMultiCredit set via NEGOTIATE after-hook based on dialect >= 0x0210
+- [Phase 69-01]: Cherry-picked PR #288 for signing enforcement instead of re-implementing
+- [Phase 69-01]: MS-SMB2 spec section references as code comments for long-term audit trail
+
 ### Pending Todos
 
 None.
@@ -59,6 +68,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-20
-Stopped at: Roadmap created for v0.10.0 (phases 69-75)
-Next action: `/gsd:plan-phase 69` to plan SMB Protocol Foundation
+Last session: 2026-03-20T16:34:03Z
+Stopped at: Completed 69-03-PLAN.md
+Next action: Phase 69 complete. Proceed to next phase.

@@ -92,6 +92,9 @@ func (c *Connection) connInfo() *smb.ConnInfo {
 			},
 		),
 		DecryptFailures: &atomic.Int32{},
+		// Per MS-SMB2 3.3.1.1: Initialize CommandSequenceWindow with {0}.
+		// Max size = 2 * MaxSessionCredits to allow generous window growth.
+		SequenceWindow: smb.NewSequenceWindowForConnection(c.server.sessionManager),
 	}
 	// Wrap the session tracker so that session creation/deletion also
 	// registers/deregisters the ConnInfo in the adapter's session→connection

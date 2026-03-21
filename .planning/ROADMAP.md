@@ -257,7 +257,12 @@ Full phase details archived to [milestones/v4.7-ROADMAP.md](milestones/v4.7-ROAD
   4. Multi-credit I/O operations correctly validate CreditCharge = ceil(PayloadSize / 65536) before dispatching to handlers
   5. Compound requests account credits at the compound level and grant credits only in the final response of the compound
 **Verification**: `go build ./...` && `go test ./...` && macOS mount_smbfs manual test && WPTS BVT regression check
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 69-01-PLAN.md — macOS signing fix (PR #288 absorb) + full MS-SMB2 signing audit
+- [ ] 69-02-PLAN.md — CommandSequenceWindow + credit charge validation helpers + minimum grant enforcement
+- [ ] 69-03-PLAN.md — Credit validation wiring into request pipeline + compound credit accounting
 
 ### Phase 70: Storage Observability and Quotas
 **Goal**: Operators can see accurate storage consumption per share, and per-share quotas enforce size limits reported consistently via NFS and SMB
@@ -526,7 +531,7 @@ v3.8 (33-40.5) -> v4.2 (57-62) -> v4.0 (41-49) -> v4.3 (49.1-49.3) -> v4.7 (63-6
 | 41-49 | v4.0 | 24/24 | Complete | 2026-03-11 |
 | 49.1-49.3 | v4.3 | 1/1 | Complete | 2026-03-13 |
 | 63-68 | v4.7 | 10/10 | Complete | 2026-03-20 |
-| 69. SMB Protocol Foundation | v0.10.0 | 0/? | Not started | - |
+| 69. SMB Protocol Foundation | 3/3 | Complete   | 2026-03-20 | - |
 | 70. Storage Observability and Quotas | v0.10.0 | 0/? | Not started | - |
 | 71. Operational Visibility | v0.10.0 | 0/? | Not started | - |
 | 72. WPTS Conformance Push | v0.10.0 | 0/? | Not started | - |

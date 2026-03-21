@@ -38,6 +38,10 @@ func init() {
 	registerBeforeHook(types.CommandNegotiate, preauthHashBeforeHook)
 	registerAfterHook(types.CommandNegotiate, preauthHashAfterHook)
 
+	// Set SupportsMultiCredit after NEGOTIATE completes based on negotiated dialect.
+	// Per MS-SMB2 3.3.5.4: multi-credit requests are supported for SMB 2.1+.
+	registerAfterHook(types.CommandNegotiate, multiCreditAfterHook)
+
 	registerBeforeHook(types.CommandSessionSetup, sessionPreauthBeforeHook)
 	registerAfterHook(types.CommandSessionSetup, sessionPreauthAfterHook)
 }
@@ -167,4 +171,18 @@ func extractSessionIDFromRaw(rawMessage []byte) uint64 {
 		return 0
 	}
 	return binary.LittleEndian.Uint64(rawMessage[40:48])
+}
+
+// multiCreditAfterHook sets SupportsMultiCredit on the connection after
+// NEGOTIATE completes. Multi-credit requests are supported for SMB 2.1+
+// (dialect >= 0x0210) per MS-SMB2 3.3.5.4.
+func multiCreditAfterHook(connInfo *ConnInfo, _ types.Command, _ []byte) {
+	if connInfo.CryptoState == nil {
+		return
+	}
+	dialect := connInfo.CryptoState.GetDialect()
+	if dialect >= types.Dialect0210 {
+		connInfo.SupportsMultiCredit = true
+		logger.Debug("Multi-credit support enabled", "dialect", dialect)
+	}
 }

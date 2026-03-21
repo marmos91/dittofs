@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/header"
+	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/adapter/smb/v2/handlers"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -62,6 +63,36 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 			logger.Debug("Error sending compound error responses", "error", err)
 		}
 		return
+	}
+
+	// Per MS-SMB2 3.2.4.1.4: compound-level credit accounting.
+	// The first command's CreditCharge covers the entire compound.
+	// Validate and consume from sequence window once for the first command.
+	if !session.IsCreditExempt(firstHeader.Command, firstHeader.SessionID) {
+		// Validate CreditCharge against payload size (MS-SMB2 3.3.5.2.5)
+		if connInfo.SupportsMultiCredit {
+			if err := session.ValidateCreditCharge(firstHeader.Command, firstHeader.CreditCharge, firstBody); err != nil {
+				logger.Debug("Compound credit charge validation failed",
+					"command", firstHeader.Command.String(),
+					"creditCharge", firstHeader.CreditCharge,
+					"error", err)
+				failEntireCompound(firstHeader, compoundData, types.StatusInvalidParameter, connInfo)
+				return
+			}
+		}
+
+		// Consume sequence numbers for the first command
+		if connInfo.SequenceWindow != nil {
+			charge := session.EffectiveCreditCharge(firstHeader.CreditCharge)
+			if !connInfo.SequenceWindow.Consume(firstHeader.MessageID, charge) {
+				logger.Debug("Compound sequence window validation failed",
+					"command", firstHeader.Command.String(),
+					"messageID", firstHeader.MessageID,
+					"creditCharge", charge)
+				failEntireCompound(firstHeader, compoundData, types.StatusInvalidParameter, connInfo)
+				return
+			}
+		}
 	}
 
 	// Track the last FileID for related operations
@@ -211,11 +242,14 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 }
 
 // sendCompoundResponses sends all compound responses in a single NetBIOS frame.
-// Per MS-SMB2 3.3.5.2.7:
+//
+// Per MS-SMB2 3.3.5.2.7 — Sending Compounded Responses:
 //   - Each non-last response is padded to 8-byte alignment
 //   - NextCommand in the header points to the next command's offset
-//   - Each command is signed individually (if signing is active)
-//   - The entire compound may be encrypted as one message
+//   - Per MS-SMB2 3.3.4.1.1: each command is signed individually over its own
+//     bytes (header + body + padding) before concatenation
+//   - Per MS-SMB2 3.3.4.1.3: the entire compound may be encrypted as one message
+//     (AEAD replaces signing when encryption is active)
 func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo) error {
 	if len(responses) == 0 {
 		return nil
@@ -225,6 +259,10 @@ func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo) err
 	if len(responses) == 1 {
 		return SendMessage(responses[0].respHeader, responses[0].body, connInfo)
 	}
+
+	// Per MS-SMB2 3.2.4.1.4: middle compound responses grant 0 credits;
+	// only the last response grants credits to the client.
+	applyCompoundCreditZeroing(responses)
 
 	// Build compound payload: sign each command individually, then concatenate.
 	// Per Windows Server behavior (validated by smbtorture compound-padding test),
@@ -288,7 +326,13 @@ func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo) err
 				logger.Debug("Encrypted compound response",
 					"sessionID", sessionID,
 					"commands", len(responses))
-				return WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, encrypted)
+				writeErr := WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, encrypted)
+				// Expand sequence window with credits from last response only
+				// (middle responses granted 0 credits per MS-SMB2 3.2.4.1.4)
+				if writeErr == nil {
+					expandCompoundSequenceWindow(responses, connInfo)
+				}
+				return writeErr
 			}
 		}
 	}
@@ -297,7 +341,66 @@ func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo) err
 		"commands", len(responses),
 		"totalBytes", len(payload))
 
-	return WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, payload)
+	writeErr := WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, payload)
+	// Expand sequence window with credits from last response only
+	// (middle responses granted 0 credits per MS-SMB2 3.2.4.1.4)
+	if writeErr == nil {
+		expandCompoundSequenceWindow(responses, connInfo)
+	}
+	return writeErr
+}
+
+// expandCompoundSequenceWindow expands the sequence window using credits from the
+// last compound response only. Middle responses have Credits=0 after zeroing.
+func expandCompoundSequenceWindow(responses []compoundResponse, connInfo *ConnInfo) {
+	if connInfo.SequenceWindow == nil || len(responses) == 0 {
+		return
+	}
+	lastCredits := responses[len(responses)-1].respHeader.Credits
+	if lastCredits > 0 {
+		connInfo.SequenceWindow.Grant(lastCredits)
+	}
+}
+
+// failEntireCompound generates error responses for all commands in the compound
+// (first + remaining) and sends them via sendCompoundResponses.
+// Used when compound-level credit validation fails.
+func failEntireCompound(firstHeader *header.SMB2Header, compoundData []byte, status types.Status, connInfo *ConnInfo) {
+	var errResponses []compoundResponse
+
+	// Error for the first command
+	rh, rb := buildErrorResponseHeaderAndBody(firstHeader, status, connInfo)
+	errResponses = append(errResponses, compoundResponse{respHeader: rh, body: rb})
+
+	// Error for remaining commands
+	rem := compoundData
+	for len(rem) >= header.HeaderSize {
+		hdr, _, nextRem, err := ParseCompoundCommand(rem)
+		if err != nil {
+			break
+		}
+		rem = nextRem
+		erh, erb := buildErrorResponseHeaderAndBody(hdr, status, connInfo)
+		errResponses = append(errResponses, compoundResponse{respHeader: erh, body: erb})
+	}
+
+	if err := sendCompoundResponses(errResponses, connInfo); err != nil {
+		logger.Debug("Error sending compound error responses", "error", err)
+	}
+}
+
+// applyCompoundCreditZeroing applies compound-level credit accounting to responses.
+// Per MS-SMB2 3.2.4.1.4: middle compound responses grant 0 credits; only the last
+// response grants credits. For single-response compounds (len <= 1), no zeroing
+// is applied since they go through SendMessage which handles granting normally.
+func applyCompoundCreditZeroing(responses []compoundResponse) {
+	if len(responses) <= 1 {
+		return
+	}
+	// Set Credits=0 for all responses except the last
+	for i := 0; i < len(responses)-1; i++ {
+		responses[i].respHeader.Credits = 0
+	}
 }
 
 // isSessionLevelError returns true if the status indicates a session or tree
@@ -364,8 +467,14 @@ func ParseCompoundCommand(data []byte) (*header.SMB2Header, []byte, []byte, erro
 }
 
 // VerifyCompoundCommandSignature verifies the signature of a compound sub-command.
-// Per MS-SMB2 3.2.4.1.4, each command in a compound is signed individually.
-// The signature covers only this command's bytes (from its header to NextCommand or end).
+//
+// Per MS-SMB2 3.3.5.2.7.2 — Handling Compounded Requests:
+// Each command in a compound request is signed individually over its own bytes
+// (from its SMB2 header to NextCommand offset, or end for the last command).
+// The signature covers ONLY that command's bytes, not the entire compound.
+//
+// Per MS-SMB2 3.3.5.2.4: For dialect 3.1.1, unsigned unencrypted requests from
+// authenticated (non-guest, non-null) sessions are rejected.
 func VerifyCompoundCommandSignature(data []byte, hdr *header.SMB2Header, connInfo *ConnInfo) error {
 	if hdr.SessionID == 0 || hdr.Command == types.SMB2Negotiate || hdr.Command == types.SMB2SessionSetup {
 		return nil

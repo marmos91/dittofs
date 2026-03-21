@@ -56,6 +56,16 @@ type ConnInfo struct {
 	// After 5 consecutive failures, the connection is dropped per security best practice.
 	// Reset to 0 on each successful decrypt.
 	DecryptFailures *atomic.Int32
+
+	// SequenceWindow tracks granted MessageIds per MS-SMB2 3.3.1.1.
+	// Initialized with {0} on connection establishment.
+	// Expanded by credit grants on every response.
+	SequenceWindow *session.CommandSequenceWindow
+
+	// SupportsMultiCredit is true for SMB 2.1+ connections.
+	// Set during NEGOTIATE based on negotiated dialect.
+	// When false, CreditCharge payload validation is skipped (SMB 2.0.2 compat).
+	SupportsMultiCredit bool
 }
 
 // SessionTracker provides callbacks for session lifecycle tracking.
@@ -65,4 +75,16 @@ type ConnInfo struct {
 type SessionTracker interface {
 	TrackSession(sessionID uint64)
 	UntrackSession(sessionID uint64)
+}
+
+// NewSequenceWindowForConnection creates a CommandSequenceWindow sized for the
+// given session manager's credit configuration. The window max size is set to
+// 2 * MaxSessionCredits per MS-SMB2 3.3.1.1, with a reasonable default if
+// the manager is nil.
+func NewSequenceWindowForConnection(mgr *session.Manager) *session.CommandSequenceWindow {
+	maxSize := uint64(131070) // 2 * 65535 default
+	if mgr != nil {
+		maxSize = 2 * uint64(mgr.Config().MaxSessionCredits)
+	}
+	return session.NewCommandSequenceWindow(maxSize)
 }
