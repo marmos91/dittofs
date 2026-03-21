@@ -186,10 +186,10 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	if err := r.sharesSvc.AddShare(ctx, config, r.storesSvc, r.metadataService, r.store, localDefaults, syncDefaults); err != nil {
 		return err
 	}
-	// Wire quota into the metadata service (0 = unlimited, no-op semantically).
-	if config.QuotaBytes > 0 {
-		r.metadataService.SetQuotaForShare(config.Name, config.QuotaBytes)
-	}
+	// Wire quota into the metadata service (0 = unlimited).
+	// Always set explicitly to ensure consistency after restarts when a
+	// quota was removed (set to 0) via the API.
+	r.metadataService.SetQuotaForShare(config.Name, config.QuotaBytes)
 	return nil
 }
 

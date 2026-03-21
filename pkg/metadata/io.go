@@ -129,13 +129,19 @@ func (s *MetadataService) PrepareWrite(ctx *AuthContext, handle FileHandle, newS
 		}
 	}
 
-	// Quota enforcement: check if this write would exceed the share's quota.
-	// Truncate (shrink) is always allowed. Zero-byte writes are allowed.
+	// Quota enforcement: best-effort check before allowing the write.
+	// This is a soft quota (standard NFS/SMB behavior): under high concurrency,
+	// multiple writes may pass the check simultaneously and slightly exceed the
+	// quota until the next check catches up. Hard atomic enforcement would require
+	// kernel-level integration which is impractical for userspace NFS/SMB servers.
+	// Truncate (shrink) and zero-byte writes are always allowed.
 	shareName := shareNameForHandle(handle)
 	quotaBytes := s.GetQuotaForShare(shareName)
 	if quotaBytes > 0 && newSize > file.Size {
 		currentUsed := store.GetUsedBytes()
-		delta := int64(newSize) - int64(file.Size)
+		// Safe unsigned subtraction first (we know newSize > file.Size from guard),
+		// then cast to int64. This avoids overflow when either value exceeds MaxInt64.
+		delta := int64(newSize - file.Size)
 		if currentUsed+delta > quotaBytes {
 			return nil, &StoreError{
 				Code:    ErrNoSpace,
