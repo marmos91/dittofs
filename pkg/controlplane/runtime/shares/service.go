@@ -99,6 +99,9 @@ type ShareConfig struct {
 	LocalStoreSize int64
 	ReadBufferSize int64
 
+	// Per-share byte quota (0 = unlimited).
+	QuotaBytes int64
+
 	// Block store config IDs resolved from the DB share model.
 	LocalBlockStoreID  string // Required: references a local BlockStoreConfig
 	RemoteBlockStoreID string // Optional: references a remote BlockStoreConfig (empty = local-only)

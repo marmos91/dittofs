@@ -61,6 +61,9 @@ const (
 	FATTR4_TIME_MODIFY        = 53 // nfstime4: last modify time
 	FATTR4_TIME_MODIFY_SET    = 54 // settime4: set mtime (writable)
 	FATTR4_MOUNTED_ON_FILEID  = 55 // uint64: fileid of mounted-on dir
+	FATTR4_SPACE_TOTAL        = 59 // uint64: total filesystem space in bytes (RFC 7530 Section 5.8.2.28)
+	FATTR4_SPACE_FREE         = 60 // uint64: free filesystem space in bytes (RFC 7530 Section 5.8.2.29)
+	FATTR4_SPACE_AVAIL        = 61 // uint64: available space for caller in bytes (RFC 7530 Section 5.8.2.30)
 	FATTR4_SUPPATTR_EXCLCREAT = 75 // bitmap4: attrs settable during EXCLUSIVE4_1 create (RFC 8881 Section 5.8.1.10)
 )
 
@@ -194,6 +197,9 @@ func SupportedAttrs() []uint32 {
 	SetBit(&bitmap, FATTR4_OWNER)
 	SetBit(&bitmap, FATTR4_OWNER_GROUP)
 	SetBit(&bitmap, FATTR4_SPACE_USED)
+	SetBit(&bitmap, FATTR4_SPACE_TOTAL)
+	SetBit(&bitmap, FATTR4_SPACE_FREE)
+	SetBit(&bitmap, FATTR4_SPACE_AVAIL)
 	SetBit(&bitmap, FATTR4_TIME_ACCESS)
 	SetBit(&bitmap, FATTR4_TIME_ACCESS_SET)
 	SetBit(&bitmap, FATTR4_TIME_METADATA)
@@ -364,6 +370,18 @@ func encodeSingleAttr(buf *bytes.Buffer, bit uint32, node PseudoFSAttrSource) er
 		// uint64: 0 for pseudo-fs directories
 		return xdr.WriteUint64(buf, 0)
 
+	case FATTR4_SPACE_TOTAL:
+		// Pseudo-fs: report 1 PiB as unlimited sentinel
+		return xdr.WriteUint64(buf, 1<<50)
+
+	case FATTR4_SPACE_FREE:
+		// Pseudo-fs: report 1 PiB
+		return xdr.WriteUint64(buf, 1<<50)
+
+	case FATTR4_SPACE_AVAIL:
+		// Pseudo-fs: report 1 PiB
+		return xdr.WriteUint64(buf, 1<<50)
+
 	case FATTR4_TIME_ACCESS:
 		// nfstime4: {seconds: 0, nseconds: 0} for pseudo-fs
 		if err := xdr.WriteUint64(buf, 0); err != nil { // seconds (int64 on wire but uint64 encoding)
@@ -437,13 +455,20 @@ func SupportedRealAttrs() []uint32 {
 //   - requested: Client-requested attribute bitmap
 //   - file: The real file metadata
 //   - handle: The file handle (used for FILEHANDLE and FILEID attributes)
-func EncodeRealFileAttrs(buf *bytes.Buffer, requested []uint32, file *metadata.File, handle metadata.FileHandle) error {
+//   - fsStats: Optional filesystem statistics for SPACE_TOTAL/FREE/AVAIL (can be nil)
+func EncodeRealFileAttrs(buf *bytes.Buffer, requested []uint32, file *metadata.File, handle metadata.FileHandle, fsStats ...*metadata.FilesystemStatistics) error {
 	supported := SupportedRealAttrs()
 	responseBitmap := Intersect(requested, supported)
 
 	// Encode the response bitmap
 	if err := EncodeBitmap4(buf, responseBitmap); err != nil {
 		return fmt.Errorf("encode response bitmap: %w", err)
+	}
+
+	// Extract optional fsStats
+	var stats *metadata.FilesystemStatistics
+	if len(fsStats) > 0 {
+		stats = fsStats[0]
 	}
 
 	// Build the attribute value data
@@ -456,7 +481,7 @@ func EncodeRealFileAttrs(buf *bytes.Buffer, requested []uint32, file *metadata.F
 			continue
 		}
 
-		if err := encodeRealFileAttr(&attrData, bit, file, handle); err != nil {
+		if err := encodeRealFileAttr(&attrData, bit, file, handle, stats); err != nil {
 			return fmt.Errorf("encode attr bit %d: %w", bit, err)
 		}
 	}
@@ -470,7 +495,7 @@ func EncodeRealFileAttrs(buf *bytes.Buffer, requested []uint32, file *metadata.F
 }
 
 // encodeRealFileAttr encodes a single attribute value for a real file.
-func encodeRealFileAttr(buf *bytes.Buffer, bit uint32, file *metadata.File, handle metadata.FileHandle) error {
+func encodeRealFileAttr(buf *bytes.Buffer, bit uint32, file *metadata.File, handle metadata.FileHandle, fsStats *metadata.FilesystemStatistics) error {
 	switch bit {
 	case FATTR4_SUPPORTED_ATTRS:
 		return EncodeBitmap4(buf, SupportedRealAttrs())
@@ -568,6 +593,27 @@ func encodeRealFileAttr(buf *bytes.Buffer, bit uint32, file *metadata.File, hand
 	case FATTR4_SPACE_USED:
 		return xdr.WriteUint64(buf, file.Size)
 
+	case FATTR4_SPACE_TOTAL:
+		// Filesystem total space (quota-adjusted via GetFilesystemStatistics)
+		if fsStats != nil {
+			return xdr.WriteUint64(buf, fsStats.TotalBytes)
+		}
+		return xdr.WriteUint64(buf, 1<<50) // 1 PiB fallback
+
+	case FATTR4_SPACE_FREE:
+		// Filesystem free space (same as AvailableBytes since quotas are applied upstream)
+		if fsStats != nil {
+			return xdr.WriteUint64(buf, fsStats.AvailableBytes)
+		}
+		return xdr.WriteUint64(buf, 1<<50) // 1 PiB fallback
+
+	case FATTR4_SPACE_AVAIL:
+		// Available space for caller
+		if fsStats != nil {
+			return xdr.WriteUint64(buf, fsStats.AvailableBytes)
+		}
+		return xdr.WriteUint64(buf, 1<<50) // 1 PiB fallback
+
 	case FATTR4_TIME_ACCESS:
 		// nfstime4: seconds (int64) + nseconds (uint32)
 		if err := xdr.WriteUint64(buf, uint64(file.Atime.Unix())); err != nil {
@@ -619,6 +665,16 @@ func MapFileTypeToNFS4(fileType metadata.FileType) uint32 {
 	default:
 		return v4types.NF4REG // Default to regular file
 	}
+}
+
+// NeedsFilesystemStats returns true if the requested bitmap includes any of
+// FATTR4_SPACE_TOTAL (59), FATTR4_SPACE_FREE (60), or FATTR4_SPACE_AVAIL (61).
+// The caller should fetch FilesystemStatistics and pass it to EncodeRealFileAttrs
+// when this returns true.
+func NeedsFilesystemStats(requested []uint32) bool {
+	return IsBitSet(requested, FATTR4_SPACE_TOTAL) ||
+		IsBitSet(requested, FATTR4_SPACE_FREE) ||
+		IsBitSet(requested, FATTR4_SPACE_AVAIL)
 }
 
 // ============================================================================

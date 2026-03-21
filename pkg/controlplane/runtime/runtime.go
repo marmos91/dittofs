@@ -183,7 +183,14 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	localDefaults := r.localStoreDefaults
 	syncDefaults := r.syncerDefaults
 	r.mu.RUnlock()
-	return r.sharesSvc.AddShare(ctx, config, r.storesSvc, r.metadataService, r.store, localDefaults, syncDefaults)
+	if err := r.sharesSvc.AddShare(ctx, config, r.storesSvc, r.metadataService, r.store, localDefaults, syncDefaults); err != nil {
+		return err
+	}
+	// Wire quota into the metadata service (0 = unlimited, no-op semantically).
+	if config.QuotaBytes > 0 {
+		r.metadataService.SetQuotaForShare(config.Name, config.QuotaBytes)
+	}
+	return nil
 }
 
 func (r *Runtime) RemoveShare(name string) error {
@@ -220,6 +227,31 @@ func (r *Runtime) GetShareNameForHandle(ctx context.Context, handle metadata.Fil
 
 func (r *Runtime) CountShares() int {
 	return r.sharesSvc.CountShares()
+}
+
+// UpdateShareQuota hot-updates the byte quota for a share in the metadata service.
+// quotaBytes of 0 means unlimited.
+func (r *Runtime) UpdateShareQuota(shareName string, quotaBytes int64) {
+	r.metadataService.SetQuotaForShare(shareName, quotaBytes)
+}
+
+// GetShareUsage returns the logical used bytes and physical disk bytes for a share.
+// Returns (0, 0) if the share is not found or has no store.
+func (r *Runtime) GetShareUsage(shareName string) (usedBytes int64, physicalBytes int64) {
+	// Get logical used bytes from the metadata store's atomic counter.
+	metaStore, err := r.metadataService.GetStoreForShare(shareName)
+	if err == nil {
+		usedBytes = metaStore.GetUsedBytes()
+	}
+
+	// Get physical bytes from the block store.
+	bs, bsErr := r.sharesSvc.GetBlockStoreForShare(shareName)
+	if bsErr == nil {
+		if stats, statsErr := bs.Stats(); statsErr == nil {
+			physicalBytes = int64(stats.UsedSize)
+		}
+	}
+	return usedBytes, physicalBytes
 }
 
 // GetBlockStoreForHandle resolves the per-share BlockStore from a file handle.

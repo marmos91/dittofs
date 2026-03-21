@@ -112,11 +112,19 @@ func (h *Handler) getAttrRealFS(ctx *types.CompoundContext, requested []uint32) 
 			"client", ctx.ClientAddr)
 	}
 
+	// Fetch filesystem statistics if any space attributes are requested (bits 59-61)
+	var fsStats *metadata.FilesystemStatistics
+	if attrs.NeedsFilesystemStats(requested) {
+		if stats, statsErr := metaSvc.GetFilesystemStatistics(authCtx.Context, metadata.FileHandle(ctx.CurrentFH)); statsErr == nil {
+			fsStats = stats
+		}
+	}
+
 	// Encode response: status + fattr4 (bitmap + opaque attr values)
 	var buf bytes.Buffer
 	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
 
-	if err := attrs.EncodeRealFileAttrs(&buf, requested, file, metadata.FileHandle(ctx.CurrentFH)); err != nil {
+	if err := attrs.EncodeRealFileAttrs(&buf, requested, file, metadata.FileHandle(ctx.CurrentFH), fsStats); err != nil {
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
 			OpCode: types.OP_GETATTR,

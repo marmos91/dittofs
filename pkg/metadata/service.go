@@ -40,6 +40,7 @@ type MetadataService struct {
 	pendingWrites      *PendingWritesTracker             // deferred metadata commits for performance
 	deferredCommit     bool                              // if true, use deferred commits (default: true)
 	cookies            *CookieManager                    // NFS/SMB cookie to store token translation
+	quotas             map[string]int64                  // shareName -> quota in bytes (0 = unlimited)
 }
 
 // New creates a new empty MetadataService instance.
@@ -54,6 +55,7 @@ func New() *MetadataService {
 		pendingWrites:      NewPendingWritesTracker(),
 		deferredCommit:     true, // Enable deferred commits by default
 		cookies:            NewCookieManager(),
+		quotas:             make(map[string]int64),
 	}
 }
 
@@ -300,13 +302,47 @@ func (s *MetadataService) GenerateHandle(ctx context.Context, shareName, path st
 	return store.GenerateHandle(ctx, shareName, path)
 }
 
+// SetQuotaForShare sets the byte quota for a share. 0 means unlimited.
+func (s *MetadataService) SetQuotaForShare(shareName string, quotaBytes int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.quotas[shareName] = quotaBytes
+}
+
+// GetQuotaForShare returns the byte quota for a share. 0 means unlimited.
+func (s *MetadataService) GetQuotaForShare(shareName string) int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.quotas[shareName]
+}
+
 // GetFilesystemStatistics returns filesystem statistics.
+// When a quota is configured for the share, the returned TotalBytes and
+// AvailableBytes are overlaid with quota-adjusted values.
 func (s *MetadataService) GetFilesystemStatistics(ctx context.Context, handle FileHandle) (*FilesystemStatistics, error) {
 	store, err := s.storeForHandle(handle)
 	if err != nil {
 		return nil, err
 	}
-	return store.GetFilesystemStatistics(ctx, handle)
+	stats, err := store.GetFilesystemStatistics(ctx, handle)
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply quota overlay if configured
+	shareName := shareNameForHandle(handle)
+	quotaBytes := s.GetQuotaForShare(shareName)
+	if quotaBytes > 0 {
+		quota := uint64(quotaBytes)
+		stats.TotalBytes = quota
+		if stats.UsedBytes > quota {
+			stats.AvailableBytes = 0
+		} else {
+			stats.AvailableBytes = quota - stats.UsedBytes
+		}
+	}
+
+	return stats, nil
 }
 
 // GetFilesystemCapabilities returns filesystem capabilities.

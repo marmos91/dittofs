@@ -205,6 +205,7 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			RetentionTTL:       share.GetRetentionTTL(),
 			LocalStoreSize:     share.LocalStoreSize,
 			ReadBufferSize:     share.ReadBufferSize,
+			QuotaBytes:         share.QuotaBytes,
 			LocalBlockStoreID:  share.LocalBlockStoreID,
 			RemoteBlockStoreID: derefString(share.RemoteBlockStoreID),
 		}

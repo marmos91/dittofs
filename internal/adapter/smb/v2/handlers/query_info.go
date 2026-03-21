@@ -846,20 +846,15 @@ func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoC
 
 	case 3: // FileFsSizeInformation [MS-FSCC] 2.5.8
 		stats, err := metaSvc.GetFilesystemStatistics(ctx, handle)
-		if err == nil {
-			totalBlocks := stats.TotalBytes / clusterSize
-			availBlocks := stats.AvailableBytes / clusterSize
-			w := smbenc.NewWriter(24)
-			w.WriteUint64(totalBlocks)
-			w.WriteUint64(availBlocks)
-			w.WriteUint32(sectorsPerUnit)
-			w.WriteUint32(bytesPerSector)
-			return w.Bytes(), nil
+		if err != nil {
+			logger.WarnCtx(ctx, "FileFsSizeInformation: failed to get stats", "error", err)
+			return nil, err
 		}
-		// Fallback to hardcoded values
+		totalBlocks := stats.TotalBytes / clusterSize
+		availBlocks := stats.AvailableBytes / clusterSize
 		w := smbenc.NewWriter(24)
-		w.WriteUint64(1000000)
-		w.WriteUint64(500000)
+		w.WriteUint64(totalBlocks)
+		w.WriteUint64(availBlocks)
 		w.WriteUint32(sectorsPerUnit)
 		w.WriteUint32(bytesPerSector)
 		return w.Bytes(), nil
@@ -882,22 +877,16 @@ func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoC
 
 	case 7: // FileFsFullSizeInformation [MS-FSCC] 2.5.4
 		stats, err := metaSvc.GetFilesystemStatistics(ctx, handle)
-		if err == nil {
-			totalBlocks := stats.TotalBytes / clusterSize
-			availBlocks := stats.AvailableBytes / clusterSize
-			w := smbenc.NewWriter(32)
-			w.WriteUint64(totalBlocks)
-			w.WriteUint64(availBlocks)
-			w.WriteUint64(availBlocks)
-			w.WriteUint32(sectorsPerUnit)
-			w.WriteUint32(bytesPerSector)
-			return w.Bytes(), nil
+		if err != nil {
+			logger.WarnCtx(ctx, "FileFsFullSizeInformation: failed to get stats", "error", err)
+			return nil, err
 		}
-		// Fallback
+		totalBlocks := stats.TotalBytes / clusterSize
+		availBlocks := stats.AvailableBytes / clusterSize
 		w := smbenc.NewWriter(32)
-		w.WriteUint64(1000000)
-		w.WriteUint64(500000)
-		w.WriteUint64(500000)
+		w.WriteUint64(totalBlocks)
+		w.WriteUint64(availBlocks)
+		w.WriteUint64(availBlocks) // CallerAvailableAllocationUnits = same as actual for share quotas
 		w.WriteUint32(sectorsPerUnit)
 		w.WriteUint32(bytesPerSector)
 		return w.Bytes(), nil
