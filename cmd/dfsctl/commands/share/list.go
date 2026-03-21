@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
+	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
 )
@@ -32,6 +33,8 @@ type shareRow struct {
 	MetadataStore     string `json:"metadata_store"`
 	LocalBlockStore   string `json:"local_block_store"`
 	RemoteBlockStore  string `json:"remote_block_store"`
+	Quota             string `json:"quota"`
+	Used              string `json:"used"`
 	DefaultPermission string `json:"default_permission"`
 	Retention         string `json:"retention"`
 }
@@ -41,14 +44,14 @@ type ShareList []shareRow
 
 // Headers implements TableRenderer.
 func (sl ShareList) Headers() []string {
-	return []string{"NAME", "METADATA STORE", "LOCAL STORE", "REMOTE STORE", "DEFAULT PERMISSION", "RETENTION"}
+	return []string{"NAME", "METADATA STORE", "LOCAL STORE", "REMOTE STORE", "QUOTA", "USED", "DEFAULT PERMISSION", "RETENTION"}
 }
 
 // Rows implements TableRenderer.
 func (sl ShareList) Rows() [][]string {
 	rows := make([][]string, 0, len(sl))
 	for _, s := range sl {
-		rows = append(rows, []string{s.Name, s.MetadataStore, s.LocalBlockStore, s.RemoteBlockStore, s.DefaultPermission, s.Retention})
+		rows = append(rows, []string{s.Name, s.MetadataStore, s.LocalBlockStore, s.RemoteBlockStore, s.Quota, s.Used, s.DefaultPermission, s.Retention})
 	}
 	return rows
 }
@@ -114,11 +117,22 @@ func runList(cmd *cobra.Command, args []string) error {
 		if retention == "ttl" && s.RetentionTTL != "" {
 			retention = fmt.Sprintf("ttl (%s)", s.RetentionTTL)
 		}
+		quota := "unlimited"
+		if s.QuotaBytes != "" && s.QuotaBytes != "0" {
+			quota = s.QuotaBytes
+		}
+		used := "0 B"
+		if s.UsedBytes > 0 {
+			used = bytesize.ByteSize(s.UsedBytes).String()
+		}
+
 		rows = append(rows, shareRow{
 			Name:              s.Name,
 			MetadataStore:     resolveStoreName(metaNames, s.MetadataStoreID),
 			LocalBlockStore:   resolveStoreName(blockNames, s.LocalBlockStoreID),
 			RemoteBlockStore:  remoteStore,
+			Quota:             quota,
+			Used:              used,
 			DefaultPermission: s.DefaultPermission,
 			Retention:         retention,
 		})

@@ -22,6 +22,7 @@ var (
 	editRetentionTTL      string
 	editLocalStoreSize    string
 	editReadBufferSize    string
+	editQuotaBytes        string
 )
 
 var editCmd = &cobra.Command{
@@ -64,7 +65,13 @@ Examples:
   dfsctl share edit /archive --local-store-size 10GiB
 
   # Override per-share read buffer size
-  dfsctl share edit /archive --read-buffer-size 2GiB`,
+  dfsctl share edit /archive --read-buffer-size 2GiB
+
+  # Set per-share quota
+  dfsctl share edit /archive --quota-bytes 10GiB
+
+  # Remove quota (set to unlimited)
+  dfsctl share edit /archive --quota-bytes 0`,
 	Args: cobra.ExactArgs(1),
 	RunE: runEdit,
 }
@@ -80,6 +87,7 @@ func init() {
 	editCmd.Flags().StringVar(&editRetentionTTL, "retention-ttl", "", "Retention TTL duration (e.g., 72h)")
 	editCmd.Flags().StringVar(&editLocalStoreSize, "local-store-size", "", "Per-share disk cache size override (e.g., 10GiB, 500MiB)")
 	editCmd.Flags().StringVar(&editReadBufferSize, "read-buffer-size", "", "Per-share read buffer size override (e.g., 2GiB, 256MiB)")
+	editCmd.Flags().StringVar(&editQuotaBytes, "quota-bytes", "", "Per-share byte quota (e.g., '10GiB'). 0 = remove quota")
 }
 
 func runEdit(cmd *cobra.Command, args []string) error {
@@ -96,7 +104,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		cmd.Flags().Changed("default-permission") ||
 		cmd.Flags().Changed("description") || cmd.Flags().Changed("retention") ||
 		cmd.Flags().Changed("retention-ttl") || cmd.Flags().Changed("local-store-size") ||
-		cmd.Flags().Changed("read-buffer-size")
+		cmd.Flags().Changed("read-buffer-size") || cmd.Flags().Changed("quota-bytes")
 
 	// If no flags provided, run interactive mode
 	if !hasFlags {
@@ -159,8 +167,13 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		hasUpdate = true
 	}
 
+	if editQuotaBytes != "" {
+		req.QuotaBytes = &editQuotaBytes
+		hasUpdate = true
+	}
+
 	if !hasUpdate {
-		return fmt.Errorf("no fields specified. Use --local, --remote, --read-only, --default-permission, --description, --retention, --retention-ttl, --local-store-size, or --read-buffer-size")
+		return fmt.Errorf("no fields specified. Use --local, --remote, --read-only, --default-permission, --description, --retention, --retention-ttl, --local-store-size, --read-buffer-size, or --quota-bytes")
 	}
 
 	share, err := client.UpdateShare(name, req)
@@ -296,6 +309,21 @@ func runEditInteractive(client *apiclient.Client, name string) error {
 	}
 	if newReadBufferSize != current.ReadBufferSize {
 		req.ReadBufferSize = &newReadBufferSize
+		hasUpdate = true
+	}
+
+	// Quota bytes
+	currentQuota := current.QuotaBytes
+	if currentQuota == "" || currentQuota == "0" {
+		currentQuota = "unlimited"
+	}
+	fmt.Printf("Current quota: %s\n", currentQuota)
+	newQuota, err := prompt.Input("Quota bytes (0 for unlimited)", current.QuotaBytes)
+	if err != nil {
+		return cmdutil.HandleAbort(err)
+	}
+	if newQuota != current.QuotaBytes {
+		req.QuotaBytes = &newQuota
 		hasUpdate = true
 	}
 

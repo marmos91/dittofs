@@ -73,6 +73,7 @@ type CreateShareRequest struct {
 	RetentionTTL      string    `json:"retention_ttl,omitempty"` // Duration string like "72h"
 	LocalStoreSize    string    `json:"local_store_size,omitempty"`
 	ReadBufferSize    string    `json:"read_buffer_size,omitempty"`
+	QuotaBytes        string    `json:"quota_bytes,omitempty"` // Human-readable, e.g., "10GiB" (0 = unlimited)
 }
 
 // UpdateShareRequest is the request body for PUT /api/v1/shares/{name}.
@@ -88,6 +89,7 @@ type UpdateShareRequest struct {
 	RetentionTTL       *string   `json:"retention_ttl,omitempty"` // Duration string like "72h"
 	LocalStoreSize     *string   `json:"local_store_size,omitempty"`
 	ReadBufferSize     *string   `json:"read_buffer_size,omitempty"`
+	QuotaBytes         *string   `json:"quota_bytes,omitempty"` // Human-readable, nil = no change, "0" = remove quota
 }
 
 // ShareResponse is the response body for share endpoints.
@@ -105,6 +107,10 @@ type ShareResponse struct {
 	RetentionTTL       string    `json:"retention_ttl,omitempty"`    // Human-readable duration
 	LocalStoreSize     string    `json:"local_store_size,omitempty"` // Human-readable byte size
 	ReadBufferSize     string    `json:"read_buffer_size,omitempty"` // Human-readable byte size
+	QuotaBytes         string    `json:"quota_bytes,omitempty"`      // Human-readable, e.g., "10 GiB" or empty if unlimited
+	UsedBytes          int64     `json:"used_bytes"`                 // Logical used bytes (sum of file sizes)
+	PhysicalBytes      int64     `json:"physical_bytes"`             // Block store disk usage
+	UsagePercent       float64   `json:"usage_percent"`              // 0-100, 0 if no quota
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
 }
@@ -206,7 +212,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse optional per-share size overrides
-	var localStoreSize, readBufferSize int64
+	var localStoreSize, readBufferSize, quotaBytes int64
 	if req.LocalStoreSize != "" {
 		bs, parseErr := bytesize.ParseByteSize(req.LocalStoreSize)
 		if parseErr != nil {
@@ -223,6 +229,14 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 		readBufferSize = bs.Int64()
 	}
+	if req.QuotaBytes != "" {
+		bs, parseErr := bytesize.ParseByteSize(req.QuotaBytes)
+		if parseErr != nil {
+			BadRequest(w, "Invalid quota_bytes: "+parseErr.Error())
+			return
+		}
+		quotaBytes = bs.Int64()
+	}
 
 	now := time.Now()
 	share := &models.Share{
@@ -238,6 +252,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		RetentionTTL:       int64(retTTL.Seconds()),
 		LocalStoreSize:     localStoreSize,
 		ReadBufferSize:     readBufferSize,
+		QuotaBytes:         quotaBytes,
 		CreatedAt:          now,
 		UpdatedAt:          now,
 	}
@@ -287,6 +302,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			BlockedOperations: share.GetBlockedOps(),
 			LocalStoreSize:    localStoreSize,
 			ReadBufferSize:    readBufferSize,
+			QuotaBytes:        quotaBytes,
 			LocalBlockStoreID: localBlockStore.ID,
 			RetentionPolicy:   retPolicy,
 			RetentionTTL:      retTTL,
@@ -317,7 +333,7 @@ func (h *ShareHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	response := make([]ShareResponse, len(shares))
 	for i, s := range shares {
-		response[i] = shareToResponse(s)
+		response[i] = h.shareToResponseWithUsage(s)
 	}
 
 	WriteJSONOK(w, response)
@@ -342,7 +358,7 @@ func (h *ShareHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	WriteJSONOK(w, shareToResponse(share))
+	WriteJSONOK(w, h.shareToResponseWithUsage(share))
 }
 
 // Update handles PUT /api/v1/shares/{name}.
@@ -464,6 +480,20 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 		sizeChanged = true
 	}
 
+	// Handle quota update
+	if req.QuotaBytes != nil {
+		if *req.QuotaBytes == "" || *req.QuotaBytes == "0" {
+			share.QuotaBytes = 0 // Remove quota
+		} else {
+			bs, parseErr := bytesize.ParseByteSize(*req.QuotaBytes)
+			if parseErr != nil {
+				BadRequest(w, "Invalid quota_bytes: "+parseErr.Error())
+				return
+			}
+			share.QuotaBytes = bs.Int64()
+		}
+	}
+
 	share.UpdatedAt = time.Now()
 
 	if err := h.store.UpdateShare(r.Context(), share); err != nil {
@@ -483,9 +513,13 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 			// Log but don't fail - database was updated successfully
 			logger.Warn("Failed to update share in runtime", "share", share.Name, "error", err)
 		}
+		// Hot-update quota if changed
+		if req.QuotaBytes != nil {
+			h.runtime.UpdateShareQuota(share.Name, share.QuotaBytes)
+		}
 	}
 
-	WriteJSONOK(w, shareToResponse(share))
+	WriteJSONOK(w, h.shareToResponseWithUsage(share))
 }
 
 // Delete handles DELETE /api/v1/shares/{name}.
@@ -749,7 +783,7 @@ func (h *ShareHandler) ListPermissions(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, perms)
 }
 
-// shareToResponse converts a models.Share to ShareResponse.
+// shareToResponse converts a models.Share to ShareResponse (without runtime usage data).
 func shareToResponse(s *models.Share) ShareResponse {
 	var retTTL string
 	if s.RetentionTTL > 0 {
@@ -761,6 +795,10 @@ func shareToResponse(s *models.Share) ShareResponse {
 	}
 	if s.ReadBufferSize > 0 {
 		readBufferSizeStr = bytesize.ByteSize(s.ReadBufferSize).String()
+	}
+	var quotaBytesStr string
+	if s.QuotaBytes > 0 {
+		quotaBytesStr = bytesize.ByteSize(s.QuotaBytes).String()
 	}
 	return ShareResponse{
 		ID:                 s.ID,
@@ -776,9 +814,27 @@ func shareToResponse(s *models.Share) ShareResponse {
 		RetentionTTL:       retTTL,
 		LocalStoreSize:     localStoreSizeStr,
 		ReadBufferSize:     readBufferSizeStr,
+		QuotaBytes:         quotaBytesStr,
 		CreatedAt:          s.CreatedAt,
 		UpdatedAt:          s.UpdatedAt,
 	}
+}
+
+// shareToResponseWithUsage converts a models.Share to ShareResponse with runtime usage data.
+func (h *ShareHandler) shareToResponseWithUsage(s *models.Share) ShareResponse {
+	resp := shareToResponse(s)
+	if h.runtime != nil {
+		usedBytes, physicalBytes := h.runtime.GetShareUsage(s.Name)
+		resp.UsedBytes = usedBytes
+		resp.PhysicalBytes = physicalBytes
+		if s.QuotaBytes > 0 {
+			resp.UsagePercent = float64(usedBytes) / float64(s.QuotaBytes) * 100
+			if resp.UsagePercent > 100 {
+				resp.UsagePercent = 100
+			}
+		}
+	}
+	return resp
 }
 
 // isValidBlockedOperation checks if a blocked operation name is valid for any protocol.
