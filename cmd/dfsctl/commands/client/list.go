@@ -3,30 +3,45 @@ package client
 import (
 	"fmt"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/marmos91/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
 )
 
+var (
+	protocolFlag string
+	shareFlag    string
+)
+
 var listCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List connected NFS clients",
-	Long: `List all connected NFS clients on the DittoFS server.
+	Short: "List connected clients",
+	Long: `List all connected clients on the DittoFS server.
 
-Displays both NFSv4.0 and NFSv4.1 clients with their version,
-address, lease status, and implementation info.
+Displays NFS and SMB clients with their protocol, address,
+user, shares, and connection duration.
 
 Examples:
   # List as table
   dfsctl client list
 
-  # List as JSON
-  dfsctl client list -o json
+  # Filter by protocol
+  dfsctl client list --protocol nfs
 
-  # List as YAML
-  dfsctl client list -o yaml`,
+  # Filter by share
+  dfsctl client list --share /export
+
+  # List as JSON
+  dfsctl client list -o json`,
 	RunE: runList,
+}
+
+func init() {
+	listCmd.Flags().StringVar(&protocolFlag, "protocol", "", "Filter by protocol (nfs, smb)")
+	listCmd.Flags().StringVar(&shareFlag, "share", "", "Filter by share name")
 }
 
 // ClientList is a list of clients for table rendering.
@@ -34,25 +49,25 @@ type ClientList []apiclient.ClientInfo
 
 // Headers implements TableRenderer.
 func (cl ClientList) Headers() []string {
-	return []string{"CLIENT_ID", "VERSION", "ADDRESS", "LEASE", "CONFIRMED", "IMPL_NAME"}
+	return []string{"CLIENT_ID", "PROTOCOL", "ADDRESS", "USER", "SHARES", "CONNECTED"}
 }
 
 // Rows implements TableRenderer.
 func (cl ClientList) Rows() [][]string {
 	rows := make([][]string, 0, len(cl))
 	for _, c := range cl {
-		// Truncate client_id to last 8 hex chars for readability
-		shortID := c.ClientID
-		if len(shortID) > 8 {
-			shortID = "..." + shortID[len(shortID)-8:]
+		shares := "-"
+		if len(c.Shares) > 0 {
+			shares = strings.Join(c.Shares, ", ")
 		}
+		connected := time.Since(c.ConnectedAt).Truncate(time.Second).String()
 		rows = append(rows, []string{
-			shortID,
-			c.NFSVersion,
+			c.ClientID,
+			strings.ToUpper(c.Protocol),
 			c.Address,
-			c.LeaseStatus,
-			cmdutil.BoolToYesNo(c.Confirmed),
-			cmdutil.EmptyOr(c.ImplName, "-"),
+			cmdutil.EmptyOr(c.User, "-"),
+			shares,
+			connected,
 		})
 	}
 	return rows
@@ -64,10 +79,18 @@ func runList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	clients, err := client.ListClients()
+	var opts []apiclient.ListClientsOption
+	if protocolFlag != "" {
+		opts = append(opts, apiclient.WithProtocol(protocolFlag))
+	}
+	if shareFlag != "" {
+		opts = append(opts, apiclient.WithShare(shareFlag))
+	}
+
+	clients, err := client.ListClients(opts...)
 	if err != nil {
 		return fmt.Errorf("failed to list clients: %w", err)
 	}
 
-	return cmdutil.PrintOutput(os.Stdout, clients, len(clients) == 0, "No connected NFS clients.", ClientList(clients))
+	return cmdutil.PrintOutput(os.Stdout, clients, len(clients) == 0, "No connected clients.", ClientList(clients))
 }
