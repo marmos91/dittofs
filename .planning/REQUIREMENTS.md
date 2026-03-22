@@ -47,10 +47,10 @@ Requirements for Production Hardening + SMB Protocol Fixes. Each maps to roadmap
 
 ### Client Tracking
 
-- [ ] **CLIENT-01**: Protocol-agnostic ClientRecord aggregates NFS mounts and SMB sessions
-- [ ] **CLIENT-02**: `dfsctl client list` shows connected clients with protocol, share, user, connection time
-- [ ] **CLIENT-03**: REST API endpoint `GET /api/clients` returns client records
-- [ ] **CLIENT-04**: Stale client records expire via TTL-based cleanup
+- [x] **CLIENT-01**: Protocol-agnostic ClientRecord aggregates NFS mounts and SMB sessions
+- [x] **CLIENT-02**: `dfsctl client list` shows connected clients with protocol, share, user, connection time
+- [x] **CLIENT-03**: REST API endpoint `GET /api/clients` returns client records
+- [x] **CLIENT-04**: Stale client records expire via TTL-based cleanup
 
 ### Trash / Soft-Delete
 
@@ -110,10 +110,10 @@ Requirements for Production Hardening + SMB Protocol Fixes. Each maps to roadmap
 | STATS-01 | Phase 70 | Complete |
 | STATS-02 | Phase 70 | Complete |
 | STATS-03 | Phase 70 | Complete |
-| CLIENT-01 | Phase 71 | Pending |
-| CLIENT-02 | Phase 71 | Pending |
-| CLIENT-03 | Phase 71 | Pending |
-| CLIENT-04 | Phase 71 | Pending |
+| CLIENT-01 | Phase 71 | Complete |
+| CLIENT-02 | Phase 71 | Complete |
+| CLIENT-03 | Phase 71 | Complete |
+| CLIENT-04 | Phase 71 | Complete |
 | TRASH-01 | Phase 73 | Pending |
 | TRASH-02 | Phase 73 | Pending |
 | TRASH-03 | Phase 73 | Pending |
