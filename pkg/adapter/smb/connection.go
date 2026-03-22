@@ -13,6 +13,7 @@ import (
 	smb "github.com/marmos91/dittofs/internal/adapter/smb"
 	"github.com/marmos91/dittofs/internal/adapter/smb/encryption"
 	"github.com/marmos91/dittofs/internal/adapter/smb/header"
+	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/adapter/smb/v2/handlers"
 	"github.com/marmos91/dittofs/internal/logger"
 )
@@ -194,6 +195,18 @@ func (c *Connection) Serve(ctx context.Context) {
 		rawMessage := make([]byte, header.HeaderSize+len(body))
 		copy(rawMessage, hdr.Encode())
 		copy(rawMessage[header.HeaderSize:], body)
+
+		// LOGOFF must be processed synchronously to guarantee the LoggedOff
+		// flag is set before the next request is read from the connection.
+		// Without this, a concurrent goroutine for the next request could
+		// race with the LOGOFF handler, causing the signing verifier to
+		// return STATUS_ACCESS_DENIED instead of STATUS_USER_SESSION_DELETED.
+		if hdr.Command == types.CommandLogoff && len(remainingCompound) == 0 {
+			if err := smb.ProcessSingleRequest(ctx, hdr, body, rawMessage, ci, isEncrypted, nil); err != nil {
+				logger.Debug("Error processing LOGOFF request", "address", clientAddr, "messageID", hdr.MessageID, "error", err)
+			}
+			continue
+		}
 
 		// Acquire semaphore slot and track the request goroutine
 		c.requestSem <- struct{}{}
