@@ -277,6 +277,28 @@ func (s *Service) AddAdapter(adapter ProtocolAdapter) error {
 	return nil
 }
 
+// clientDisconnecter allows force-closing a specific client connection.
+// Defined locally to avoid import cycles with pkg/adapter.
+type clientDisconnecter interface {
+	ForceCloseByAddress(addr string) bool
+}
+
+// ForceCloseClientConnection closes the TCP connection for a specific client address
+// on the adapter handling the given protocol. This triggers the adapter's normal
+// connection cleanup chain.
+func (s *Service) ForceCloseClientConnection(protocol, addr string) bool {
+	s.mu.RLock()
+	entry, ok := s.entries[protocol]
+	s.mu.RUnlock()
+	if !ok || entry.adapter == nil {
+		return false
+	}
+	if dc, ok := entry.adapter.(clientDisconnecter); ok {
+		return dc.ForceCloseByAddress(addr)
+	}
+	return false
+}
+
 // registerAndRunAdapterLocked starts the adapter in a goroutine. Caller must hold mu.
 func (s *Service) registerAndRunAdapterLocked(adp ProtocolAdapter, cfg *models.AdapterConfig) {
 	if setter, ok := adp.(RuntimeSetter); ok && s.runtime != nil {

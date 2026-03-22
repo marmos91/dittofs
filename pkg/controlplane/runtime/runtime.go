@@ -321,6 +321,26 @@ func (r *Runtime) ListMounts() []*LegacyMountInfo {
 	return result
 }
 
+// --- Client Management ---
+
+// DisconnectClient performs protocol-specific teardown for a client.
+// It looks up the client record, finds the adapter by protocol, closes the
+// TCP connection (triggering cleanup chain), then deregisters the client.
+// Returns the removed ClientRecord or nil if not found.
+func (r *Runtime) DisconnectClient(clientID string) *ClientRecord {
+	record := r.clientRegistry.Get(clientID)
+	if record == nil {
+		return nil
+	}
+
+	// Force-close the TCP connection — this triggers handleConnectionClose()
+	// which handles protocol-specific cleanup (NFS state revocation, SMB LOGOFF).
+	r.adaptersSvc.ForceCloseClientConnection(record.Protocol, record.Address)
+
+	// Deregister from the registry (may already be gone if cleanup chain ran).
+	return r.clientRegistry.Deregister(clientID)
+}
+
 // --- Service Access ---
 
 func (r *Runtime) Store() store.Store                            { return r.store }

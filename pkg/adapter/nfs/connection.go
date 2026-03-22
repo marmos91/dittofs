@@ -16,6 +16,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/pool"
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime/clients"
 )
 
 // errBackchannelReply is a sentinel error returned by readRequest when the
@@ -30,6 +31,7 @@ type NFSConnection struct {
 	conn   net.Conn
 
 	connectionID uint64
+	clientID     string // registry key for ClientRegistry
 
 	requestSem chan struct{}
 	wg         sync.WaitGroup
@@ -62,6 +64,17 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 
 	clientAddr := c.conn.RemoteAddr().String()
 	logger.Debug("New connection", "address", clientAddr)
+
+	// Register with the client registry for operational visibility.
+	c.clientID = fmt.Sprintf("nfs-%d", c.connectionID)
+	if rt := c.server.Registry; rt != nil {
+		rt.Clients().Register(&clients.ClientRecord{
+			ClientID: c.clientID,
+			Protocol: "nfs",
+			Address:  clientAddr,
+			NFS:      &clients.NfsDetails{Version: "3"},
+		})
+	}
 
 	c.resetIdleTimeout(clientAddr)
 
@@ -125,6 +138,11 @@ func isNetTimeout(err error) bool {
 // serialized on the wire by writeMu. This mirrors kernel nfsd's thread pool model
 // and allows WRITE+COMMIT to overlap on the same TCP connection.
 func (c *NFSConnection) dispatchRequest(ctx context.Context, clientAddr string, call *rpc.RPCCallMessage, rawMessage []byte) {
+	// Update activity timestamp for the client registry.
+	if rt := c.server.Registry; rt != nil && c.clientID != "" {
+		rt.Clients().UpdateActivity(c.clientID)
+	}
+
 	c.requestSem <- struct{}{}
 	c.wg.Add(1)
 
@@ -251,6 +269,12 @@ func (c *NFSConnection) handleConnectionClose() {
 	}
 
 	c.wg.Wait()
+
+	// Deregister from the client registry.
+	if rt := c.server.Registry; rt != nil && c.clientID != "" {
+		rt.Clients().Deregister(c.clientID)
+	}
+
 	_ = c.conn.Close()
 }
 

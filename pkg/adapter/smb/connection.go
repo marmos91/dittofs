@@ -3,6 +3,7 @@ package smb
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"runtime/debug"
@@ -16,6 +17,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/adapter/smb/v2/handlers"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime/clients"
 )
 
 // Connection handles a single SMB2 client connection.
@@ -51,6 +53,11 @@ func NewConnection(server *Adapter, conn net.Conn) *Connection {
 	}
 }
 
+// smbClientID returns the client registry key for an SMB session.
+func smbClientID(sessionID uint64) string {
+	return fmt.Sprintf("smb-%d", sessionID)
+}
+
 // TrackSession records a session as belonging to this connection.
 // Called when SESSION_SETUP completes successfully.
 func (c *Connection) TrackSession(sessionID uint64) {
@@ -60,6 +67,16 @@ func (c *Connection) TrackSession(sessionID uint64) {
 	logger.Debug("Tracking session on connection",
 		"sessionID", sessionID,
 		"address", c.conn.RemoteAddr().String())
+
+	// Register with the client registry for operational visibility.
+	if rt := c.server.Registry; rt != nil {
+		rt.Clients().Register(&clients.ClientRecord{
+			ClientID: smbClientID(sessionID),
+			Protocol: "smb",
+			Address:  c.conn.RemoteAddr().String(),
+			SMB:      &clients.SmbDetails{SessionID: sessionID},
+		})
+	}
 }
 
 // UntrackSession removes a session from this connection's tracking.
@@ -71,6 +88,11 @@ func (c *Connection) UntrackSession(sessionID uint64) {
 	logger.Debug("Untracking session from connection",
 		"sessionID", sessionID,
 		"address", c.conn.RemoteAddr().String())
+
+	// Deregister from the client registry.
+	if rt := c.server.Registry; rt != nil {
+		rt.Clients().Deregister(smbClientID(sessionID))
+	}
 }
 
 // connInfo builds the ConnInfo struct used by internal/ dispatch functions.
@@ -274,12 +296,6 @@ func (c *Connection) cleanupSessions() {
 	c.sessions = make(map[uint64]struct{})
 	c.sessionsMu.Unlock()
 
-	// Clean up session→ConnInfo mapping so lease break notifications
-	// are no longer routed to this (now-closed) connection.
-	for _, sessionID := range sessions {
-		c.server.sessionConns.Delete(sessionID)
-	}
-
 	if len(sessions) == 0 {
 		return
 	}
@@ -287,6 +303,17 @@ func (c *Connection) cleanupSessions() {
 	logger.Debug("Cleaning up sessions on connection close",
 		"address", clientAddr,
 		"sessionCount", len(sessions))
+
+	// Clean up session→ConnInfo mapping so lease break notifications
+	// are no longer routed to this (now-closed) connection.
+	// Also deregister from the client registry.
+	rt := c.server.Registry
+	for _, sessionID := range sessions {
+		c.server.sessionConns.Delete(sessionID)
+		if rt != nil {
+			rt.Clients().Deregister(smbClientID(sessionID))
+		}
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

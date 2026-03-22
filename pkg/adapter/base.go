@@ -553,6 +553,19 @@ func (b *BaseAdapter) MapError(_ error) ProtocolError {
 	return nil
 }
 
+// ForceCloseByAddress closes the TCP connection matching the given remote address.
+// This triggers the normal connection cleanup chain (handleConnectionClose),
+// which handles protocol-specific teardown (NFS state revocation, SMB session cleanup).
+func (b *BaseAdapter) ForceCloseByAddress(addr string) bool {
+	val, ok := b.ActiveConnections.Load(addr)
+	if !ok {
+		return false
+	}
+	conn := val.(net.Conn)
+	_ = conn.Close()
+	return true
+}
+
 // MapIdentity is a default stub implementation that returns an error.
 // Protocol-specific adapters should override this method to convert auth results
 // into protocol-specific identities (e.g., NFS AUTH_UNIX, SMB NTLM sessions).
