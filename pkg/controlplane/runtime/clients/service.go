@@ -11,7 +11,7 @@ import (
 
 // DefaultTTL is the default time after which inactive client records are
 // removed by the background sweeper.
-const DefaultTTL = 5 * time.Minute
+const DefaultTTL = 30 * time.Minute
 
 // ClientRecord represents a connected protocol client.
 type ClientRecord struct {

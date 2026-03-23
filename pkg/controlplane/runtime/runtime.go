@@ -337,8 +337,13 @@ func (r *Runtime) DisconnectClient(clientID string) *ClientRecord {
 	// which handles protocol-specific cleanup (NFS state revocation, SMB LOGOFF).
 	r.adaptersSvc.ForceCloseClientConnection(record.Protocol, record.Address)
 
-	// Deregister from the registry (may already be gone if cleanup chain ran).
-	return r.clientRegistry.Deregister(clientID)
+	// Best-effort deregister — cleanup chain may have already removed it.
+	r.clientRegistry.Deregister(clientID)
+
+	// Return the snapshot taken before teardown to avoid TOCTOU: the client
+	// existed when we started, and we acted on it regardless of race with
+	// the cleanup chain.
+	return record
 }
 
 // --- Service Access ---
