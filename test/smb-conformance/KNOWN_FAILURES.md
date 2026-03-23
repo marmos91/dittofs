@@ -95,6 +95,9 @@ in `baseline-results.md` for prioritization.
 | BVT_SMB2Basic_ChangeNotify_ChangeStreamName | ChangeNotify | ADS stream rename change notify not wired | Expected | - |
 | BVT_SMB2Basic_ChangeNotify_ChangeStreamSize | ChangeNotify | ADS stream size change notify not wired | Expected | - |
 | BVT_SMB2Basic_ChangeNotify_ChangeStreamWrite | ChangeNotify | ADS stream write change notify not wired | Expected | - |
+| Algorithm_NotingFileModified_Dir_LastAccessTime | Timestamp | Timestamp update algorithm not implemented | Expected | - |
+| FileInfo_Set_FileBasicInformation_Timestamp_MinusOne_Dir_ChangeTime | Timestamp | FSA directory ChangeTime freeze: SetFileAttributes auto-updates Ctime | Expected | - |
+| FileInfo_Set_FileBasicInformation_Timestamp_MinusTwo_Dir_LastWriteTime | Timestamp | Directory LastWriteTime not auto-updated after unfreeze | Expected | - |
 | BVT_ApplySnapshot | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
 | BVT_ChangeTracking | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
 | BVT_Convert_VHDFile_to_VHDSetFile | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |

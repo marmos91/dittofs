@@ -263,10 +263,17 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	}
 
 	// Per MS-SMB2 3.3.5.15: The directory handle must have been opened
-	// with FILE_LIST_DIRECTORY (0x0001) access. If not, reject with
-	// STATUS_ACCESS_DENIED.
-	const fileListDirectory = 0x0001
-	if openFile.DesiredAccess&fileListDirectory == 0 {
+	// with FILE_LIST_DIRECTORY (0x0001) access. Generic rights (GENERIC_READ,
+	// GENERIC_ALL, MAXIMUM_ALLOWED) implicitly include FILE_LIST_DIRECTORY
+	// for directories, so we check both specific and generic forms.
+	const (
+		fileListDirectory = 0x00000001
+		genericRead       = 0x80000000
+		genericAll        = 0x10000000
+		maximumAllowed    = 0x02000000
+	)
+	hasListDir := openFile.DesiredAccess&(fileListDirectory|genericRead|genericAll|maximumAllowed) != 0
+	if !hasListDir {
 		logger.Debug("CHANGE_NOTIFY: missing FILE_LIST_DIRECTORY access",
 			"path", openFile.Path,
 			"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))

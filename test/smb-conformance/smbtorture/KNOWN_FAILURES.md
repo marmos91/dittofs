@@ -827,6 +827,8 @@ incomplete delayed-write and timestamp freeze/unfreeze logic.
 | smb2.timestamps.delayed-write-vs-flush | Timestamps | Delayed write vs flush timestamp not working | - |
 | smb2.timestamps.delayed-write-vs-setbasic | Timestamps | Delayed write vs setbasic timestamp not working | - |
 | smb2.timestamps.delayed-write-vs-seteof | Timestamps | Delayed write vs seteof timestamp not working | - |
+| smb2.timestamps.freeze-thaw | Timestamps | Timestamp freeze/thaw edge cases not fully conformant | - |
+| smb2.replay.dhv2-pending2n-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
 
 ### Scan (Full Operation Enumeration)
 
@@ -837,6 +839,7 @@ iterates all QUERY_DIRECTORY information classes. Both hit unimplemented classes
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.scan.scan | Scan | Full operation scan hits unimplemented info classes | - |
+| smb2.scan.setinfo | Scan | SET_INFO class scan hits unimplemented info classes | - |
 
 ## Notes
 
