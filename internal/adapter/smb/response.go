@@ -483,11 +483,13 @@ func SendAsyncChangeNotifyResponse(sessionID, messageID, asyncId uint64, respons
 		Credits:   1, // Grant 1 credit with async response
 	}
 
-	// For error, cancel, and notify-cleanup/enum-dir responses, use error body format.
-	// STATUS_NOTIFY_CLEANUP (0x10B) and STATUS_NOTIFY_ENUM_DIR (0x10C) are success-severity
-	// codes but carry no output buffer — they signal the client to re-enumerate.
+	// For error responses, use the error body format (MS-SMB2 2.2.2).
+	// STATUS_NOTIFY_CLEANUP (0x10B) and STATUS_NOTIFY_ENUM_DIR (0x10C) are
+	// success-severity codes that carry no output buffer. They use the
+	// command-specific response format with an empty buffer (StructureSize=9,
+	// OutputBufferOffset=0, OutputBufferLength=0), not the error format.
 	var body []byte
-	if status.IsError() || status == types.StatusNotifyCleanup || status == types.StatusNotifyEnumDir {
+	if status.IsError() {
 		body = MakeErrorBody()
 		logger.Debug("Sending async CHANGE_NOTIFY error response",
 			"sessionID", sessionID,
