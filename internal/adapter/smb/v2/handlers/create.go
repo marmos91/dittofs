@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
 	"path"
@@ -481,10 +482,16 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			}
 
 			// Reconnect succeeded: register the restored OpenFile.
-			// Preserve the original FileID per MS-SMB2 3.3.5.9.7.
+			// Per MS-SMB2 3.3.5.9.7: keep the persistent FileId (bytes 0-7)
+			// but regenerate the volatile FileId (bytes 8-15) so it is unique
+			// on this connection.  The old volatile part is stale after the
+			// server restart / disconnect.
 			restored.TreeID = ctx.TreeID
 			restored.SessionID = ctx.SessionID
 			smbFileID := restored.FileID
+			// Regenerate volatile part (bytes 8-15)
+			_, _ = rand.Read(smbFileID[8:16])
+			restored.FileID = smbFileID
 
 			// Re-grant durability on reconnect. The handle was durable before
 			// disconnect, and the successful reconnect implicitly restores it.

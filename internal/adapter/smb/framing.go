@@ -320,7 +320,14 @@ func NewSessionSigningVerifier(handler *handlers.Handler, conn net.Conn, connCry
 func (sv *sessionSigningVerifier) VerifyRequest(hdr *header.SMB2Header, message []byte) error {
 	// Skip verification for messages without a session (SessionID == 0)
 	// and for NEGOTIATE/SESSION_SETUP which may not have signing set up yet.
-	if hdr.SessionID == 0 || hdr.Command == types.SMB2Negotiate || hdr.Command == types.SMB2SessionSetup {
+	// TREE_DISCONNECT and LOGOFF are cleanup operations that should not cause
+	// a TCP disconnect if unsigned — the server processes them gracefully so
+	// the client can tear down resources even when signing state is stale.
+	if hdr.SessionID == 0 ||
+		hdr.Command == types.SMB2Negotiate ||
+		hdr.Command == types.SMB2SessionSetup ||
+		hdr.Command == types.SMB2TreeDisconnect ||
+		hdr.Command == types.SMB2Logoff {
 		return nil
 	}
 
