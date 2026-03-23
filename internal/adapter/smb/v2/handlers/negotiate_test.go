@@ -776,10 +776,10 @@ func TestNegotiate_SMB311_NegotiateContexts(t *testing.T) {
 			if len(enc.Ciphers) != 1 {
 				t.Errorf("Encryption ciphers count = %d, expected 1", len(enc.Ciphers))
 			}
-			// Server preference: AES-128-GCM > AES-128-CCM
-			if len(enc.Ciphers) > 0 && enc.Ciphers[0] != types.CipherAES128GCM {
-				t.Errorf("Selected cipher = 0x%04x, expected 0x%04x (AES-128-GCM)",
-					enc.Ciphers[0], types.CipherAES128GCM)
+			// Client preference: first offered cipher that server supports (CCM first in client list)
+			if len(enc.Ciphers) > 0 && enc.Ciphers[0] != types.CipherAES128CCM {
+				t.Errorf("Selected cipher = 0x%04x, expected 0x%04x (AES-128-CCM, client's first choice)",
+					enc.Ciphers[0], types.CipherAES128CCM)
 			}
 		}
 	}
