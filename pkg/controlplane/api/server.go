@@ -168,6 +168,15 @@ func (s *Server) Stop(ctx context.Context) error {
 	return shutdownErr
 }
 
+// Handler returns the underlying HTTP handler for the API server.
+//
+// This allows external consumers to mount the DittoFS API routes in their own
+// HTTP servers rather than running a separate listener. The returned handler
+// includes all configured middleware (auth, logging, recovery, etc.).
+func (s *Server) Handler() http.Handler {
+	return s.server.Handler
+}
+
 // Port returns the TCP port the server is listening on.
 func (s *Server) Port() int {
 	return s.config.Port
