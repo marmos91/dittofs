@@ -253,6 +253,26 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
+	// Per MS-SMB2 3.3.5.15: If OutputBufferLength exceeds MaxTransactSize,
+	// the server MUST fail the request with STATUS_INVALID_PARAMETER.
+	if req.OutputBufferLength > h.MaxTransactSize {
+		logger.Debug("CHANGE_NOTIFY: OutputBufferLength exceeds MaxTransactSize",
+			"outputBufferLength", req.OutputBufferLength,
+			"maxTransactSize", h.MaxTransactSize)
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	// Per MS-SMB2 3.3.5.15: The directory handle must have been opened
+	// with FILE_LIST_DIRECTORY (0x0001) access. If not, reject with
+	// STATUS_ACCESS_DENIED.
+	const fileListDirectory = 0x0001
+	if openFile.DesiredAccess&fileListDirectory == 0 {
+		logger.Debug("CHANGE_NOTIFY: missing FILE_LIST_DIRECTORY access",
+			"path", openFile.Path,
+			"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))
+		return NewErrorResult(types.StatusAccessDenied), nil
+	}
+
 	// Verify session and tree match
 	if openFile.SessionID != ctx.SessionID || openFile.TreeID != ctx.TreeID {
 		logger.Debug("CHANGE_NOTIFY: session/tree mismatch")

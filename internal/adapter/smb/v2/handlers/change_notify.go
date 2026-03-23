@@ -283,8 +283,8 @@ func MatchesFilter(action uint32, filter uint32) bool {
 		// File/directory created or deleted
 		return filter&(FileNotifyChangeFileName|FileNotifyChangeDirName) != 0
 	case FileActionModified:
-		// File modified
-		return filter&(FileNotifyChangeSize|FileNotifyChangeLastWrite|FileNotifyChangeAttributes) != 0
+		// File modified — matches any content/metadata change filter
+		return filter&(FileNotifyChangeSize|FileNotifyChangeLastWrite|FileNotifyChangeAttributes|FileNotifyChangeLastAccess|FileNotifyChangeCreation|FileNotifyChangeSecurity) != 0
 	case FileActionRenamedOldName, FileActionRenamedNewName:
 		// Rename
 		return filter&(FileNotifyChangeFileName|FileNotifyChangeDirName) != 0
