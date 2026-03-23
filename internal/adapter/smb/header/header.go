@@ -109,6 +109,12 @@ type SMB2Header struct {
 	// Set by TREE_CONNECT response, used in subsequent operations.
 	TreeID uint32
 
+	// AsyncId is a 64-bit identifier for async operations.
+	// When FlagAsync is set, bytes 32-39 of the wire format contain AsyncId
+	// instead of Reserved (ProcessID) and TreeID.
+	// [MS-SMB2] Section 2.2.1.2
+	AsyncId uint64
+
 	// SessionID identifies the session for this operation.
 	// Set by SESSION_SETUP response, used in subsequent operations.
 	SessionID uint64

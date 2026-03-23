@@ -100,9 +100,11 @@ type FileNotifyInformation struct {
 // ============================================================================
 
 // AsyncResponseCallback is called when an async CHANGE_NOTIFY response is ready.
-// The callback receives the session ID, message ID, and response data.
+// The callback receives the session ID, message ID, async ID, and response data.
+// The asyncId must match the one sent in the interim STATUS_PENDING response.
 // Returns an error if the response could not be sent (e.g., connection closed).
-type AsyncResponseCallback func(sessionID, messageID uint64, response *ChangeNotifyResponse) error
+type AsyncResponseCallback func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error
+
 
 // PendingNotify tracks a pending CHANGE_NOTIFY request waiting for filesystem events.
 // Each instance represents one client watch registered via the CHANGE_NOTIFY command.
@@ -114,6 +116,7 @@ type PendingNotify struct {
 	FileID    [16]byte
 	SessionID uint64
 	MessageID uint64
+	AsyncId   uint64 // Unique async ID for interim/final response correlation
 
 	// Watch parameters
 	WatchPath        string // Share-relative directory path
@@ -135,16 +138,18 @@ type PendingNotify struct {
 // matching watchers and delivers async responses via AsyncCallback.
 // Thread-safe: all operations are protected by a read-write mutex.
 type NotifyRegistry struct {
-	mu       sync.RWMutex
-	pending  map[string][]*PendingNotify // path -> pending requests
-	byFileID map[string]*PendingNotify   // fileID string -> pending request
+	mu          sync.RWMutex
+	pending     map[string][]*PendingNotify   // path -> pending requests
+	byFileID    map[string]*PendingNotify     // fileID string -> pending request
+	byMessageID map[uint64]*PendingNotify     // messageID -> pending request (for CANCEL)
 }
 
 // NewNotifyRegistry creates a new notify registry.
 func NewNotifyRegistry() *NotifyRegistry {
 	return &NotifyRegistry{
-		pending:  make(map[string][]*PendingNotify),
-		byFileID: make(map[string]*PendingNotify),
+		pending:     make(map[string][]*PendingNotify),
+		byFileID:    make(map[string]*PendingNotify),
+		byMessageID: make(map[uint64]*PendingNotify),
 	}
 }
 
@@ -172,6 +177,7 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) {
 	}
 
 	r.byFileID[fileIDKey] = notify
+	r.byMessageID[notify.MessageID] = notify
 	r.pending[notify.WatchPath] = append(r.pending[notify.WatchPath], notify)
 
 	logger.Debug("NotifyRegistry: registered watch",
@@ -193,6 +199,7 @@ func (r *NotifyRegistry) Unregister(fileID [16]byte) *PendingNotify {
 	}
 
 	delete(r.byFileID, fileIDKey)
+	delete(r.byMessageID, notify.MessageID)
 
 	// Remove from pending list
 	pending := r.pending[notify.WatchPath]
@@ -204,6 +211,61 @@ func (r *NotifyRegistry) Unregister(fileID [16]byte) *PendingNotify {
 	}
 
 	// Clean up empty entries
+	if len(r.pending[notify.WatchPath]) == 0 {
+		delete(r.pending, notify.WatchPath)
+	}
+
+	return notify
+}
+
+// UnregisterByMessageID removes a pending notification by MessageID.
+// Called by CANCEL to cancel a pending CHANGE_NOTIFY request.
+// Returns the removed PendingNotify, or nil if not found.
+func (r *NotifyRegistry) UnregisterByMessageID(messageID uint64) *PendingNotify {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	notify, ok := r.byMessageID[messageID]
+	if !ok {
+		return nil
+	}
+
+	return r.unregisterLocked(notify)
+}
+
+// UnregisterByAsyncId removes a pending notification by AsyncId.
+// Called by CANCEL when the client sends a cancel with SMB2_FLAGS_ASYNC_COMMAND.
+// Returns the removed PendingNotify, or nil if not found.
+func (r *NotifyRegistry) UnregisterByAsyncId(asyncId uint64) *PendingNotify {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Search all pending entries for the matching AsyncId
+	for _, entries := range r.pending {
+		for _, p := range entries {
+			if p.AsyncId == asyncId {
+				return r.unregisterLocked(p)
+			}
+		}
+	}
+	return nil
+}
+
+// unregisterLocked removes a PendingNotify from all internal maps.
+// Must be called with r.mu held.
+func (r *NotifyRegistry) unregisterLocked(notify *PendingNotify) *PendingNotify {
+	fileIDKey := string(notify.FileID[:])
+	delete(r.byFileID, fileIDKey)
+	delete(r.byMessageID, notify.MessageID)
+
+	// Remove from pending list
+	pending := r.pending[notify.WatchPath]
+	for i, p := range pending {
+		if string(p.FileID[:]) == fileIDKey {
+			r.pending[notify.WatchPath] = append(pending[:i], pending[i+1:]...)
+			break
+		}
+	}
 	if len(r.pending[notify.WatchPath]) == 0 {
 		delete(r.pending, notify.WatchPath)
 	}
@@ -473,8 +535,8 @@ func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, ac
 				"messageID", w.MessageID,
 				"sessionID", w.SessionID)
 
-			// Send the async response
-			if err := w.AsyncCallback(w.SessionID, w.MessageID, response); err != nil {
+			// Send the async response with matching AsyncId
+			if err := w.AsyncCallback(w.SessionID, w.MessageID, w.AsyncId, response); err != nil {
 				logger.Warn("CHANGE_NOTIFY: failed to send async response",
 					"messageID", w.MessageID,
 					"error", err)
@@ -649,7 +711,7 @@ func (r *NotifyRegistry) NotifyRename(shareName, oldParentPath, oldFileName, new
 				"messageID", w.MessageID,
 				"sessionID", w.SessionID)
 
-			if err := w.AsyncCallback(w.SessionID, w.MessageID, response); err != nil {
+			if err := w.AsyncCallback(w.SessionID, w.MessageID, w.AsyncId, response); err != nil {
 				logger.Warn("CHANGE_NOTIFY: failed to send rename notification",
 					"messageID", w.MessageID,
 					"error", err)

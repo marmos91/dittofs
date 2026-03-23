@@ -111,6 +111,10 @@ type SMBHandlerContext struct {
 	// If nil, notifications are logged but not sent.
 	AsyncNotifyCallback AsyncResponseCallback
 
+	// RequestAsyncId is the AsyncId from the request header when FlagAsync is set.
+	// Used by CANCEL to identify which async operation to cancel.
+	RequestAsyncId uint64
+
 	// ConnCryptoState provides access to the per-connection cryptographic state.
 	// Used by the NEGOTIATE handler to store negotiation parameters on the
 	// connection for subsequent VNEG validation and preauth hash computation.

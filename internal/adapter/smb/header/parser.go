@@ -51,18 +51,26 @@ func Parse(data []byte) (*SMB2Header, error) {
 		return nil, ErrInvalidHeaderSize
 	}
 
+	flags := types.HeaderFlags(binary.LittleEndian.Uint32(data[16:20]))
+
 	h := &SMB2Header{
 		StructureSize: structureSize,
 		CreditCharge:  binary.LittleEndian.Uint16(data[6:8]),
 		Status:        types.Status(binary.LittleEndian.Uint32(data[8:12])),
 		Command:       types.Command(binary.LittleEndian.Uint16(data[12:14])),
 		Credits:       binary.LittleEndian.Uint16(data[14:16]),
-		Flags:         types.HeaderFlags(binary.LittleEndian.Uint32(data[16:20])),
+		Flags:         flags,
 		NextCommand:   binary.LittleEndian.Uint32(data[20:24]),
 		MessageID:     binary.LittleEndian.Uint64(data[24:32]),
 		Reserved:      binary.LittleEndian.Uint32(data[32:36]),
 		TreeID:        binary.LittleEndian.Uint32(data[36:40]),
 		SessionID:     binary.LittleEndian.Uint64(data[40:48]),
+	}
+
+	// Per [MS-SMB2] 2.2.1: When FlagAsync is set, bytes 32-39 contain a
+	// 64-bit AsyncId instead of Reserved (ProcessID) and TreeID.
+	if flags.IsAsync() {
+		h.AsyncId = binary.LittleEndian.Uint64(data[32:40])
 	}
 
 	copy(h.ProtocolID[:], data[0:4])

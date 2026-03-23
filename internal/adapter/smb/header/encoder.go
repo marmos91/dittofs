@@ -37,8 +37,16 @@ func (h *SMB2Header) Encode() []byte {
 	binary.LittleEndian.PutUint32(buf[16:20], uint32(h.Flags))
 	binary.LittleEndian.PutUint32(buf[20:24], h.NextCommand)
 	binary.LittleEndian.PutUint64(buf[24:32], h.MessageID)
-	binary.LittleEndian.PutUint32(buf[32:36], h.Reserved)
-	binary.LittleEndian.PutUint32(buf[36:40], h.TreeID)
+
+	// Per [MS-SMB2] 2.2.1: When FlagAsync is set, bytes 32-39 contain a
+	// 64-bit AsyncId instead of Reserved (ProcessID) and TreeID.
+	if h.Flags.IsAsync() {
+		binary.LittleEndian.PutUint64(buf[32:40], h.AsyncId)
+	} else {
+		binary.LittleEndian.PutUint32(buf[32:36], h.Reserved)
+		binary.LittleEndian.PutUint32(buf[36:40], h.TreeID)
+	}
+
 	binary.LittleEndian.PutUint64(buf[40:48], h.SessionID)
 	copy(buf[48:64], h.Signature[:])
 

@@ -90,6 +90,12 @@ func ProcessSingleRequest(
 		handlerCtx.AsyncNotifyCallback = asyncNotifyCallback
 	}
 
+	// For CANCEL, pass the request's AsyncId so the handler can identify
+	// which async operation to cancel (e.g., pending CHANGE_NOTIFY).
+	if reqHeader.Command == types.SMB2Cancel && reqHeader.Flags.IsAsync() {
+		handlerCtx.RequestAsyncId = reqHeader.AsyncId
+	}
+
 	logger.Debug("Dispatching SMB2 command",
 		"command", cmd.Name,
 		"messageID", reqHeader.MessageID,
@@ -344,10 +350,25 @@ func buildResponseHeaderAndBody(reqHeader *header.SMB2Header, ctx *handlers.SMBH
 	// Exceptions where non-success statuses carry meaningful data:
 	//   - StatusMoreProcessingRequired: SPNEGO challenge token in SESSION_SETUP
 	//   - StatusBufferOverflow: truncated data in QUERY_INFO
+	// Per [MS-SMB2] 3.3.5.15: When a handler returns STATUS_PENDING with an
+	// AsyncId, the response is an interim async response. Set FlagAsync and
+	// populate AsyncId on the header.
+	if result.AsyncId != 0 {
+		respHeader.Flags |= types.FlagAsync
+		respHeader.AsyncId = result.AsyncId
+	}
+
 	body := result.Data
 	if (result.Status.IsError() || result.Status.IsWarning()) &&
 		result.Status != types.StatusMoreProcessingRequired &&
 		result.Status != types.StatusBufferOverflow {
+		body = MakeErrorBody()
+	}
+
+	// Per [MS-SMB2] 3.3.5.15: STATUS_PENDING interim responses use the
+	// error response body format (9 bytes) even though STATUS_PENDING is
+	// a success-class status code. Ensure a body is always present.
+	if result.Status == types.StatusPending && body == nil {
 		body = MakeErrorBody()
 	}
 
@@ -446,29 +467,48 @@ func SendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo) error 
 }
 
 // SendAsyncChangeNotifyResponse sends an asynchronous CHANGE_NOTIFY response.
-// This is called when a filesystem change matches a pending watch.
-func SendAsyncChangeNotifyResponse(sessionID, messageID uint64, response *handlers.ChangeNotifyResponse, connInfo *ConnInfo) error {
-	// Encode the response body
-	body, err := response.Encode()
-	if err != nil {
-		return fmt.Errorf("encode change notify response: %w", err)
+// This is called when a filesystem change matches a pending watch, or when
+// a pending request is cancelled (STATUS_CANCELLED).
+// The asyncId must match the one sent in the interim STATUS_PENDING response.
+func SendAsyncChangeNotifyResponse(sessionID, messageID, asyncId uint64, response *handlers.ChangeNotifyResponse, connInfo *ConnInfo) error {
+	// Determine the status from the response
+	status := response.GetStatus()
+	if status == types.StatusSuccess && len(response.Buffer) > 0 {
+		status = types.StatusSuccess
 	}
 
-	// Build async response header
+	// Build async response header with matching AsyncId
 	respHeader := &header.SMB2Header{
 		Command:   types.SMB2ChangeNotify,
-		Status:    types.StatusSuccess,
+		Status:    status,
 		Flags:     types.FlagResponse | types.FlagAsync,
 		MessageID: messageID,
 		SessionID: sessionID,
-		TreeID:    0, // Not used in async responses
+		AsyncId:   asyncId,
 		Credits:   1, // Grant 1 credit with async response
 	}
 
-	logger.Debug("Sending async CHANGE_NOTIFY response",
-		"sessionID", sessionID,
-		"messageID", messageID,
-		"bufferLen", len(response.Buffer))
+	// For error/cancel responses, use error body format
+	var body []byte
+	if status.IsError() {
+		body = MakeErrorBody()
+		logger.Debug("Sending async CHANGE_NOTIFY error response",
+			"sessionID", sessionID,
+			"messageID", messageID,
+			"asyncId", asyncId,
+			"status", status.String())
+	} else {
+		var err error
+		body, err = response.Encode()
+		if err != nil {
+			return fmt.Errorf("encode change notify response: %w", err)
+		}
+		logger.Debug("Sending async CHANGE_NOTIFY response",
+			"sessionID", sessionID,
+			"messageID", messageID,
+			"asyncId", asyncId,
+			"bufferLen", len(response.Buffer))
+	}
 
 	return SendMessage(respHeader, body, connInfo)
 }
