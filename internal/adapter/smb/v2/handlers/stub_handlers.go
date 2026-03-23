@@ -266,13 +266,8 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	// with FILE_LIST_DIRECTORY (0x0001) access. Generic rights (GENERIC_READ,
 	// GENERIC_ALL, MAXIMUM_ALLOWED) implicitly include FILE_LIST_DIRECTORY
 	// for directories, so we check both specific and generic forms.
-	const (
-		fileListDirectory = 0x00000001
-		genericRead       = 0x80000000
-		genericAll        = 0x10000000
-		maximumAllowed    = 0x02000000
-	)
-	hasListDir := openFile.DesiredAccess&(fileListDirectory|genericRead|genericAll|maximumAllowed) != 0
+	const listDirMask = 0x00000001 | 0x80000000 | 0x10000000 | 0x02000000 // FILE_LIST_DIRECTORY | GENERIC_READ | GENERIC_ALL | MAXIMUM_ALLOWED
+	hasListDir := openFile.DesiredAccess&listDirMask != 0
 	if !hasListDir {
 		logger.Debug("CHANGE_NOTIFY: missing FILE_LIST_DIRECTORY access",
 			"path", openFile.Path,

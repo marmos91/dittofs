@@ -1151,8 +1151,6 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		}
 	}
 
-	// Per MS-FSA 2.1.5.14.2: The metadata service updates parent directory
-
 	// ========================================================================
 	// Step 10: Build success response
 	// ========================================================================

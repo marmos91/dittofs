@@ -480,22 +480,10 @@ func (r *NotifyRegistry) NotifyRename(shareName, oldParentPath, oldFileName, new
 
 	r.mu.RUnlock()
 
-	// Send paired rename notifications for watchers found via old path
-	for _, w := range oldWatchers {
-		oldRelativePath := relativePathFromWatch(w.watchPath, oldParentPath, oldFileName)
-		newRelativePath := relativePathFromWatch(w.watchPath, newParentPath, newFileName)
-		changes := []FileNotifyInformation{
-			{Action: FileActionRenamedOldName, FileName: oldRelativePath},
-			{Action: FileActionRenamedNewName, FileName: newRelativePath},
-		}
-		r.sendAndUnregister(w.notify, changes, "RENAME")
-	}
-
-	// Send paired rename notifications for watchers found only via new path.
-	// The old name must also be relative to the watcher's watch path (not the
-	// raw filename), so recursive watchers at higher-level directories report
-	// the correct subdirectory-relative path for both old and new names.
-	for _, w := range newWatchers {
+	// Send paired rename notifications for all matched watchers.
+	// Both old and new names are computed relative to each watcher's watch path,
+	// so recursive watchers at higher-level directories report correct paths.
+	for _, w := range append(oldWatchers, newWatchers...) {
 		oldRelativePath := relativePathFromWatch(w.watchPath, oldParentPath, oldFileName)
 		newRelativePath := relativePathFromWatch(w.watchPath, newParentPath, newFileName)
 		changes := []FileNotifyInformation{

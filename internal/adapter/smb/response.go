@@ -340,15 +340,6 @@ func buildResponseHeaderAndBody(reqHeader *header.SMB2Header, ctx *handlers.SMBH
 		respHeader.TreeID = ctx.TreeID
 	}
 
-	// Per MS-SMB2 2.2.2: If the Status field indicates an error or warning,
-	// the response MUST use the ERROR Response format (9 bytes), not the
-	// command-specific response body. This applies to both error statuses
-	// (severity 11, 0xC0xxxxxx) and warning statuses (severity 10,
-	// 0x80xxxxxx) like STATUS_NO_MORE_FILES.
-	//
-	// Exceptions where non-success statuses carry meaningful data:
-	//   - StatusMoreProcessingRequired: SPNEGO challenge token in SESSION_SETUP
-	//   - StatusBufferOverflow: truncated data in QUERY_INFO
 	// Per [MS-SMB2] 3.3.5.15: When a handler returns STATUS_PENDING with an
 	// AsyncId, the response is an interim async response. Set FlagAsync and
 	// populate AsyncId on the header.
@@ -357,6 +348,9 @@ func buildResponseHeaderAndBody(reqHeader *header.SMB2Header, ctx *handlers.SMBH
 		respHeader.AsyncId = result.AsyncId
 	}
 
+	// Per MS-SMB2 2.2.2: Error/warning responses use the ERROR format (9 bytes)
+	// instead of the command-specific body.
+	// Exceptions: StatusMoreProcessingRequired (SPNEGO token), StatusBufferOverflow (truncated data).
 	body := result.Data
 	if (result.Status.IsError() || result.Status.IsWarning()) &&
 		result.Status != types.StatusMoreProcessingRequired &&
