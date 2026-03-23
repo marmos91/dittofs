@@ -129,11 +129,18 @@ func ProcessSingleRequest(
 		return err
 	}
 
-	// Deferred session delete: LOGOFF sets this so the session stays alive for
-	// response signing/encryption, then we delete it here after sending.
-	if handlerCtx.DeferredSessionDelete != 0 {
-		connInfo.Handler.DeleteSession(handlerCtx.DeferredSessionDelete)
-	}
+	// NOTE: We intentionally do NOT delete the session here, even though the
+	// LOGOFF handler has set DeferredSessionDelete. The session is kept alive
+	// with LoggedOff=true so that in-flight request goroutines (dispatched
+	// before LOGOFF was read) can still sign their responses via SendMessage.
+	// Without this, a concurrent goroutine calling GetSession() after deletion
+	// would get ok=false, send the response unsigned, and the client would
+	// reject it with "Bad SMB2 signature" / STATUS_ACCESS_DENIED.
+	//
+	// The session is cleaned up on connection close via cleanupSessions().
+	// The verifier and prepareDispatch already handle LoggedOff=true correctly:
+	//   - verifier: skips signature verification (lets prepareDispatch handle it)
+	//   - prepareDispatch: returns STATUS_USER_SESSION_DELETED
 
 	return nil
 }
