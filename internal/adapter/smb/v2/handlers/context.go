@@ -126,13 +126,6 @@ type SMBHandlerContext struct {
 	// inside an SMB3 Transform Header (protocol ID 0xFD). Used to enforce
 	// global and per-share encryption requirements per MS-SMB2 3.3.5.2.1.
 	RequestEncrypted bool
-
-	// DeferredSessionDelete was previously used by LOGOFF to delete the session
-	// after the response was sent. This field is now unused — sessions are kept
-	// alive with LoggedOff=true and cleaned up on connection close to avoid a
-	// race with in-flight goroutines that need the session for response signing.
-	// Retained for API compatibility.
-	DeferredSessionDelete uint64
 }
 
 // NewSMBHandlerContext creates a new handler context from request parameters.

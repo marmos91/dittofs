@@ -386,15 +386,12 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 
 	// Per MS-FSA 2.1.5.3: After a successful write, update LastAccessTime
 	// to the current system time, unless frozen via SET_INFO -1.
+	// Per MS-FSA 2.1.4.4: Parent directory's LastAccessTime is also updated.
+	now := time.Now()
 	if !openFile.AtimeFrozen {
-		now := time.Now()
 		_ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
 	}
-
-	// Per MS-FSA 2.1.4.4 (Algorithm for Noting File Modified): When a file
-	// is modified, the parent directory's LastAccessTime is also updated.
 	if len(openFile.ParentHandle) > 0 {
-		now := time.Now()
 		_ = metaSvc.SetFileAttributes(authCtx, openFile.ParentHandle, &metadata.SetAttrs{Atime: &now})
 	}
 

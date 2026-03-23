@@ -311,6 +311,7 @@ func NewSessionSigningVerifier(handler *handlers.Handler, conn net.Conn, connCry
 // Verification is skipped for:
 //   - SessionID == 0 (no session context)
 //   - NEGOTIATE and SESSION_SETUP (signing keys not yet established)
+//   - TREE_DISCONNECT and LOGOFF (cleanup ops; tolerate stale signing state)
 //   - Logged-off sessions (deferred delete race; let prepareDispatch handle)
 //   - Guest/null sessions on non-3.1.1 (signing not required)
 //
@@ -318,11 +319,7 @@ func NewSessionSigningVerifier(handler *handlers.Handler, conn net.Conn, connCry
 // rejected per MS-SMB2 3.3.5.2.4 (implicit signing requirement). Per user
 // decision: error response instead of TCP disconnect.
 func (sv *sessionSigningVerifier) VerifyRequest(hdr *header.SMB2Header, message []byte) error {
-	// Skip verification for messages without a session (SessionID == 0)
-	// and for NEGOTIATE/SESSION_SETUP which may not have signing set up yet.
-	// TREE_DISCONNECT and LOGOFF are cleanup operations that should not cause
-	// a TCP disconnect if unsigned — the server processes them gracefully so
-	// the client can tear down resources even when signing state is stale.
+	// Skip commands that don't require signature verification (see doc comment).
 	if hdr.SessionID == 0 ||
 		hdr.Command == types.SMB2Negotiate ||
 		hdr.Command == types.SMB2SessionSetup ||

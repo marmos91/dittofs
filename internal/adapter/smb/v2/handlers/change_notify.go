@@ -105,7 +105,6 @@ type FileNotifyInformation struct {
 // Returns an error if the response could not be sent (e.g., connection closed).
 type AsyncResponseCallback func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error
 
-
 // PendingNotify tracks a pending CHANGE_NOTIFY request waiting for filesystem events.
 // Each instance represents one client watch registered via the CHANGE_NOTIFY command.
 // It stores the watch path, completion filter, and the async callback for delivering
@@ -139,9 +138,10 @@ type PendingNotify struct {
 // Thread-safe: all operations are protected by a read-write mutex.
 type NotifyRegistry struct {
 	mu          sync.RWMutex
-	pending     map[string][]*PendingNotify   // path -> pending requests
-	byFileID    map[string]*PendingNotify     // fileID string -> pending request
-	byMessageID map[uint64]*PendingNotify     // messageID -> pending request (for CANCEL)
+	pending     map[string][]*PendingNotify // path -> pending requests
+	byFileID    map[string]*PendingNotify   // fileID string -> pending request
+	byMessageID map[uint64]*PendingNotify   // messageID -> pending request (for CANCEL)
+	byAsyncId   map[uint64]*PendingNotify   // asyncId -> pending request (for async CANCEL)
 }
 
 // NewNotifyRegistry creates a new notify registry.
@@ -150,6 +150,7 @@ func NewNotifyRegistry() *NotifyRegistry {
 		pending:     make(map[string][]*PendingNotify),
 		byFileID:    make(map[string]*PendingNotify),
 		byMessageID: make(map[uint64]*PendingNotify),
+		byAsyncId:   make(map[uint64]*PendingNotify),
 	}
 }
 
@@ -159,25 +160,15 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	fileIDKey := string(notify.FileID[:])
-
 	// If there's already a registration for this FileID, remove the old entry
-	// from the pending map to keep data structures consistent.
-	if old, ok := r.byFileID[fileIDKey]; ok {
-		pending := r.pending[old.WatchPath]
-		for i, p := range pending {
-			if string(p.FileID[:]) == fileIDKey {
-				r.pending[old.WatchPath] = append(pending[:i], pending[i+1:]...)
-				break
-			}
-		}
-		if len(r.pending[old.WatchPath]) == 0 {
-			delete(r.pending, old.WatchPath)
-		}
+	// to keep data structures consistent.
+	if old, ok := r.byFileID[string(notify.FileID[:])]; ok {
+		r.unregisterLocked(old)
 	}
 
-	r.byFileID[fileIDKey] = notify
+	r.byFileID[string(notify.FileID[:])] = notify
 	r.byMessageID[notify.MessageID] = notify
+	r.byAsyncId[notify.AsyncId] = notify
 	r.pending[notify.WatchPath] = append(r.pending[notify.WatchPath], notify)
 
 	logger.Debug("NotifyRegistry: registered watch",
@@ -192,30 +183,12 @@ func (r *NotifyRegistry) Unregister(fileID [16]byte) *PendingNotify {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	fileIDKey := string(fileID[:])
-	notify, ok := r.byFileID[fileIDKey]
+	notify, ok := r.byFileID[string(fileID[:])]
 	if !ok {
 		return nil
 	}
 
-	delete(r.byFileID, fileIDKey)
-	delete(r.byMessageID, notify.MessageID)
-
-	// Remove from pending list
-	pending := r.pending[notify.WatchPath]
-	for i, p := range pending {
-		if string(p.FileID[:]) == fileIDKey {
-			r.pending[notify.WatchPath] = append(pending[:i], pending[i+1:]...)
-			break
-		}
-	}
-
-	// Clean up empty entries
-	if len(r.pending[notify.WatchPath]) == 0 {
-		delete(r.pending, notify.WatchPath)
-	}
-
-	return notify
+	return r.unregisterLocked(notify)
 }
 
 // UnregisterByMessageID removes a pending notification by MessageID.
@@ -240,15 +213,12 @@ func (r *NotifyRegistry) UnregisterByAsyncId(asyncId uint64) *PendingNotify {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Search all pending entries for the matching AsyncId
-	for _, entries := range r.pending {
-		for _, p := range entries {
-			if p.AsyncId == asyncId {
-				return r.unregisterLocked(p)
-			}
-		}
+	notify, ok := r.byAsyncId[asyncId]
+	if !ok {
+		return nil
 	}
-	return nil
+
+	return r.unregisterLocked(notify)
 }
 
 // unregisterLocked removes a PendingNotify from all internal maps.
@@ -257,8 +227,9 @@ func (r *NotifyRegistry) unregisterLocked(notify *PendingNotify) *PendingNotify 
 	fileIDKey := string(notify.FileID[:])
 	delete(r.byFileID, fileIDKey)
 	delete(r.byMessageID, notify.MessageID)
+	delete(r.byAsyncId, notify.AsyncId)
 
-	// Remove from pending list
+	// Remove from pending path list
 	pending := r.pending[notify.WatchPath]
 	for i, p := range pending {
 		if string(p.FileID[:]) == fileIDKey {
@@ -438,122 +409,16 @@ func EncodeFileNotifyInformation(changes []FileNotifyInformation) []byte {
 //  3. Calls the AsyncCallback to send the response
 //  4. Unregisters the watcher (CHANGE_NOTIFY is one-shot per request)
 func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, action uint32) {
-	// First, collect matching watchers while holding read lock
 	r.mu.RLock()
-
-	// Build list of watchers to notify
-	type matchedWatcher struct {
-		notify       *PendingNotify
-		relativePath string // Path relative to watch directory
-	}
-	var toNotify []matchedWatcher
-
-	// Walk up the directory hierarchy to support recursive (WatchTree) watchers.
-	// This checks the exact parentPath first, then ancestor directories.
-	currentPath := parentPath
-	for {
-		watchers := r.pending[currentPath]
-
-		for _, w := range watchers {
-			// Only notify watchers on the same share
-			if w.ShareName != shareName {
-				continue
-			}
-
-			// For ancestor paths (recursive watch), require WatchTree flag
-			if currentPath != parentPath && !w.WatchTree {
-				continue
-			}
-
-			if !MatchesFilter(action, w.CompletionFilter) {
-				continue
-			}
-
-			// Calculate the relative path from the watch directory.
-			// For recursive watchers, this includes the subdirectory prefix,
-			// e.g., watching "/" for change in "/subdir/file.txt" -> "subdir/file.txt"
-			relativePath := relativePathFromWatch(currentPath, parentPath, fileName)
-
-			toNotify = append(toNotify, matchedWatcher{
-				notify:       w,
-				relativePath: relativePath,
-			})
-		}
-
-		// Stop after processing the root directory
-		if currentPath == "/" || currentPath == "" {
-			break
-		}
-
-		// Move to the parent directory for recursive watcher lookup
-		currentPath = GetParentPath(currentPath)
-	}
-
+	watchers := r.findWatchersLocked(shareName, parentPath, action)
 	r.mu.RUnlock()
 
-	// Now process the notifications outside the lock
-	for _, match := range toNotify {
-		w := match.notify
-
-		if w.AsyncCallback != nil {
-			// Build the change notification
-			changes := []FileNotifyInformation{
-				{
-					Action:   action,
-					FileName: match.relativePath,
-				},
-			}
-			buffer := EncodeFileNotifyInformation(changes)
-
-			// Ensure we don't exceed the max output length. We must not truncate the
-			// FILE_NOTIFY_INFORMATION structure, as that would corrupt it.
-			if uint32(len(buffer)) > w.MaxOutputLength {
-				logger.Warn("CHANGE_NOTIFY: encoded notification exceeds MaxOutputLength; skipping",
-					"watchPath", w.WatchPath,
-					"fileName", match.relativePath,
-					"action", actionToString(action),
-					"encodedLength", len(buffer),
-					"maxOutputLength", w.MaxOutputLength,
-					"messageID", w.MessageID,
-					"sessionID", w.SessionID)
-				// Unregister the watcher to avoid repeated failures
-				// (the client's buffer is too small for this path's notifications)
-				r.Unregister(w.FileID)
-				continue
-			}
-
-			response := &ChangeNotifyResponse{
-				SMBResponseBase:    SMBResponseBase{},
-				OutputBufferLength: uint32(len(buffer)),
-				Buffer:             buffer,
-			}
-
-			logger.Debug("CHANGE_NOTIFY: sending async response",
-				"watchPath", w.WatchPath,
-				"fileName", match.relativePath,
-				"action", actionToString(action),
-				"messageID", w.MessageID,
-				"sessionID", w.SessionID)
-
-			// Send the async response with matching AsyncId
-			if err := w.AsyncCallback(w.SessionID, w.MessageID, w.AsyncId, response); err != nil {
-				logger.Warn("CHANGE_NOTIFY: failed to send async response",
-					"messageID", w.MessageID,
-					"error", err)
-			}
-			// Always unregister the watcher after notification attempt.
-			// CHANGE_NOTIFY is one-shot per request - the client must re-issue
-			// the request for more notifications. If the callback failed, the
-			// connection is likely broken and the watcher would be useless anyway.
-			r.Unregister(w.FileID)
-		} else {
-			// No callback - just log for debugging
-			logger.Debug("CHANGE_NOTIFY: would notify watcher (no callback)",
-				"watchPath", w.WatchPath,
-				"fileName", match.relativePath,
-				"action", actionToString(action),
-				"messageID", w.MessageID)
+	for _, w := range watchers {
+		relativePath := relativePathFromWatch(w.watchPath, parentPath, fileName)
+		changes := []FileNotifyInformation{
+			{Action: action, FileName: relativePath},
 		}
+		r.sendAndUnregister(w.notify, changes, actionToString(action))
 	}
 }
 
@@ -572,46 +437,81 @@ func (r *NotifyRegistry) NotifyChange(shareName, parentPath, fileName string, ac
 //   - newParentPath: Share-relative directory path of the new location
 //   - newFileName: New filename
 func (r *NotifyRegistry) NotifyRename(shareName, oldParentPath, oldFileName, newParentPath, newFileName string) {
-	// Collect matching watchers while holding read lock.
-	// We match against the OLD parent path as the primary watch target,
-	// since that's where Explorer has its directory watch.
 	r.mu.RLock()
 
-	type matchedWatcher struct {
-		notify          *PendingNotify
-		oldRelativePath string
-		newRelativePath string
+	// Walk up from the old parent path to find watchers.
+	// We match against the old parent path as the primary watch target,
+	// since that's where Explorer has its directory watch.
+	oldWatchers := r.findWatchersLocked(shareName, oldParentPath, FileActionRenamedOldName)
+
+	// Also walk up from the new parent path if different, to catch watchers
+	// on the destination directory that aren't ancestors of the old path.
+	var newWatchers []watcherMatch
+	if newParentPath != oldParentPath {
+		// Build a set of already-matched FileIDs for O(1) dedup lookup
+		matchedFileIDs := make(map[[16]byte]struct{}, len(oldWatchers))
+		for _, m := range oldWatchers {
+			matchedFileIDs[m.notify.FileID] = struct{}{}
+		}
+
+		allNew := r.findWatchersLocked(shareName, newParentPath, FileActionRenamedNewName)
+		for _, m := range allNew {
+			if _, alreadyMatched := matchedFileIDs[m.notify.FileID]; !alreadyMatched {
+				newWatchers = append(newWatchers, m)
+			}
+		}
 	}
-	var toNotify []matchedWatcher
 
-	// Walk up from the old parent path to find watchers
-	currentPath := oldParentPath
+	r.mu.RUnlock()
+
+	// Send paired rename notifications for watchers found via old path
+	for _, w := range oldWatchers {
+		oldRelativePath := relativePathFromWatch(w.watchPath, oldParentPath, oldFileName)
+		newRelativePath := relativePathFromWatch(w.watchPath, newParentPath, newFileName)
+		changes := []FileNotifyInformation{
+			{Action: FileActionRenamedOldName, FileName: oldRelativePath},
+			{Action: FileActionRenamedNewName, FileName: newRelativePath},
+		}
+		r.sendAndUnregister(w.notify, changes, "RENAME")
+	}
+
+	// Send paired rename notifications for watchers found only via new path
+	for _, w := range newWatchers {
+		newRelativePath := relativePathFromWatch(w.watchPath, newParentPath, newFileName)
+		changes := []FileNotifyInformation{
+			{Action: FileActionRenamedOldName, FileName: oldFileName},
+			{Action: FileActionRenamedNewName, FileName: newRelativePath},
+		}
+		r.sendAndUnregister(w.notify, changes, "RENAME")
+	}
+}
+
+// watcherMatch pairs a matched watcher with the watch path that matched it.
+// The watchPath is needed to compute relative paths for notifications.
+type watcherMatch struct {
+	notify    *PendingNotify
+	watchPath string // The path in the hierarchy where the watcher was found
+}
+
+// findWatchersLocked walks up the directory hierarchy from parentPath to find
+// watchers matching the given share and action. Must be called with r.mu held
+// (at least read-locked). Returns matched watchers with their watch paths.
+func (r *NotifyRegistry) findWatchersLocked(shareName, parentPath string, action uint32) []watcherMatch {
+	var matches []watcherMatch
+
+	currentPath := parentPath
 	for {
-		watchers := r.pending[currentPath]
-
-		for _, w := range watchers {
+		for _, w := range r.pending[currentPath] {
 			if w.ShareName != shareName {
 				continue
 			}
-
-			if currentPath != oldParentPath && !w.WatchTree {
+			if currentPath != parentPath && !w.WatchTree {
 				continue
 			}
-
-			// Rename matches FileName and DirName filters
-			if !MatchesFilter(FileActionRenamedOldName, w.CompletionFilter) {
+			if !MatchesFilter(action, w.CompletionFilter) {
 				continue
 			}
-
-			// Calculate relative paths from the watch directory
-			oldRelativePath := relativePathFromWatch(currentPath, oldParentPath, oldFileName)
-			newRelativePath := relativePathFromWatch(currentPath, newParentPath, newFileName)
-
-			toNotify = append(toNotify, matchedWatcher{
-				notify:          w,
-				oldRelativePath: oldRelativePath,
-				newRelativePath: newRelativePath,
-			})
+			matches = append(matches, watcherMatch{notify: w, watchPath: currentPath})
 		}
 
 		if currentPath == "/" || currentPath == "" {
@@ -620,111 +520,53 @@ func (r *NotifyRegistry) NotifyRename(shareName, oldParentPath, oldFileName, new
 		currentPath = GetParentPath(currentPath)
 	}
 
-	// Also walk up from the new parent path if different, to catch watchers
-	// on the destination directory that aren't ancestors of the old path.
-	if newParentPath != oldParentPath {
-		// Build a set of already-matched FileIDs for O(1) dedup lookup
-		matchedFileIDs := make(map[[16]byte]struct{}, len(toNotify))
-		for _, m := range toNotify {
-			matchedFileIDs[m.notify.FileID] = struct{}{}
-		}
+	return matches
+}
 
-		currentPath = newParentPath
-		for {
-			watchers := r.pending[currentPath]
-
-			for _, w := range watchers {
-				if w.ShareName != shareName {
-					continue
-				}
-
-				if currentPath != newParentPath && !w.WatchTree {
-					continue
-				}
-
-				if !MatchesFilter(FileActionRenamedNewName, w.CompletionFilter) {
-					continue
-				}
-
-				// Check if already matched via old parent walk
-				if _, alreadyMatched := matchedFileIDs[w.FileID]; alreadyMatched {
-					continue
-				}
-
-				newRelativePath := relativePathFromWatch(currentPath, newParentPath, newFileName)
-
-				toNotify = append(toNotify, matchedWatcher{
-					notify:          w,
-					oldRelativePath: oldFileName,
-					newRelativePath: newRelativePath,
-				})
-			}
-
-			if currentPath == "/" || currentPath == "" {
-				break
-			}
-			currentPath = GetParentPath(currentPath)
-		}
+// sendAndUnregister encodes a list of FileNotifyInformation changes, sends
+// the notification via the watcher's AsyncCallback, and unregisters the
+// watcher (CHANGE_NOTIFY is one-shot). If the encoded buffer exceeds the
+// watcher's MaxOutputLength, the watcher is unregistered without sending.
+func (r *NotifyRegistry) sendAndUnregister(w *PendingNotify, changes []FileNotifyInformation, label string) {
+	if w.AsyncCallback == nil {
+		logger.Debug("CHANGE_NOTIFY: would notify watcher (no callback)",
+			"watchPath", w.WatchPath,
+			"action", label,
+			"messageID", w.MessageID)
+		return
 	}
 
-	r.mu.RUnlock()
+	buffer := EncodeFileNotifyInformation(changes)
 
-	// Send paired rename notifications
-	for _, match := range toNotify {
-		w := match.notify
-
-		if w.AsyncCallback != nil {
-			// Build paired FILE_NOTIFY_INFORMATION with both old and new names
-			changes := []FileNotifyInformation{
-				{
-					Action:   FileActionRenamedOldName,
-					FileName: match.oldRelativePath,
-				},
-				{
-					Action:   FileActionRenamedNewName,
-					FileName: match.newRelativePath,
-				},
-			}
-			buffer := EncodeFileNotifyInformation(changes)
-
-			if uint32(len(buffer)) > w.MaxOutputLength {
-				logger.Warn("CHANGE_NOTIFY: rename notification exceeds MaxOutputLength; skipping",
-					"watchPath", w.WatchPath,
-					"oldName", match.oldRelativePath,
-					"newName", match.newRelativePath,
-					"encodedLength", len(buffer),
-					"maxOutputLength", w.MaxOutputLength)
-				r.Unregister(w.FileID)
-				continue
-			}
-
-			response := &ChangeNotifyResponse{
-				SMBResponseBase:    SMBResponseBase{},
-				OutputBufferLength: uint32(len(buffer)),
-				Buffer:             buffer,
-			}
-
-			logger.Debug("CHANGE_NOTIFY: sending rename notification",
-				"watchPath", w.WatchPath,
-				"oldName", match.oldRelativePath,
-				"newName", match.newRelativePath,
-				"messageID", w.MessageID,
-				"sessionID", w.SessionID)
-
-			if err := w.AsyncCallback(w.SessionID, w.MessageID, w.AsyncId, response); err != nil {
-				logger.Warn("CHANGE_NOTIFY: failed to send rename notification",
-					"messageID", w.MessageID,
-					"error", err)
-			}
-			r.Unregister(w.FileID)
-		} else {
-			logger.Debug("CHANGE_NOTIFY: would notify rename (no callback)",
-				"watchPath", w.WatchPath,
-				"oldName", match.oldRelativePath,
-				"newName", match.newRelativePath,
-				"messageID", w.MessageID)
-		}
+	if uint32(len(buffer)) > w.MaxOutputLength {
+		logger.Warn("CHANGE_NOTIFY: notification exceeds MaxOutputLength; skipping",
+			"watchPath", w.WatchPath,
+			"action", label,
+			"encodedLength", len(buffer),
+			"maxOutputLength", w.MaxOutputLength,
+			"messageID", w.MessageID)
+		r.Unregister(w.FileID)
+		return
 	}
+
+	response := &ChangeNotifyResponse{
+		OutputBufferLength: uint32(len(buffer)),
+		Buffer:             buffer,
+	}
+
+	logger.Debug("CHANGE_NOTIFY: sending async response",
+		"watchPath", w.WatchPath,
+		"action", label,
+		"messageID", w.MessageID,
+		"sessionID", w.SessionID)
+
+	if err := w.AsyncCallback(w.SessionID, w.MessageID, w.AsyncId, response); err != nil {
+		logger.Warn("CHANGE_NOTIFY: failed to send async response",
+			"messageID", w.MessageID,
+			"error", err)
+	}
+	// Always unregister: CHANGE_NOTIFY is one-shot per request.
+	r.Unregister(w.FileID)
 }
 
 // actionToString converts an action code to a readable string.

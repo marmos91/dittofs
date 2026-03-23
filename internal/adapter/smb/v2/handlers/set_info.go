@@ -406,11 +406,7 @@ func (h *Handler) setFileInfoFromStore(
 
 		// Notify watchers about attribute/timestamp changes
 		if h.NotifyRegistry != nil {
-			parentPath := GetParentPath(openFile.Path)
-			if parentPath == "" || parentPath == "." {
-				parentPath = "/"
-			}
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, openFile.FileName, FileActionModified)
+			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified)
 		}
 
 		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
@@ -735,11 +731,7 @@ func (h *Handler) setFileInfoFromStore(
 
 		// Notify watchers about size changes
 		if h.NotifyRegistry != nil {
-			parentPath := GetParentPath(openFile.Path)
-			if parentPath == "" || parentPath == "." {
-				parentPath = "/"
-			}
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, openFile.FileName, FileActionModified)
+			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified)
 		}
 
 		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil

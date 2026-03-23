@@ -21,8 +21,8 @@
 //	16      4     Flags           Header flags
 //	20      4     NextCommand     Offset to next command (compound)
 //	24      8     MessageID       Unique request identifier
-//	32      4     Reserved        ProcessID (sync) or AsyncID high
-//	36      4     TreeID          Share connection identifier
+//	32      4     Reserved        ProcessID (sync) or AsyncId low 32
+//	36      4     TreeID          Share connection (sync) or AsyncId high 32
 //	40      8     SessionID       Session identifier
 //	48      16    Signature       Message signature (if signed)
 //

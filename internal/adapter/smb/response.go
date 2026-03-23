@@ -135,13 +135,12 @@ func ProcessSingleRequest(
 		return err
 	}
 
-	// NOTE: We intentionally do NOT delete the session here, even though the
-	// LOGOFF handler has set DeferredSessionDelete. The session is kept alive
-	// with LoggedOff=true so that in-flight request goroutines (dispatched
-	// before LOGOFF was read) can still sign their responses via SendMessage.
-	// Without this, a concurrent goroutine calling GetSession() after deletion
-	// would get ok=false, send the response unsigned, and the client would
-	// reject it with "Bad SMB2 signature" / STATUS_ACCESS_DENIED.
+	// NOTE: We intentionally do NOT delete the session here. The session is
+	// kept alive with LoggedOff=true so that in-flight request goroutines
+	// (dispatched before LOGOFF was read) can still sign their responses via
+	// SendMessage. Without this, a concurrent goroutine calling GetSession()
+	// after deletion would get ok=false, send the response unsigned, and the
+	// client would reject it with "Bad SMB2 signature" / STATUS_ACCESS_DENIED.
 	//
 	// The session is cleaned up on connection close via cleanupSessions().
 	// The verifier and prepareDispatch already handle LoggedOff=true correctly:
@@ -471,11 +470,7 @@ func SendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo) error 
 // a pending request is cancelled (STATUS_CANCELLED).
 // The asyncId must match the one sent in the interim STATUS_PENDING response.
 func SendAsyncChangeNotifyResponse(sessionID, messageID, asyncId uint64, response *handlers.ChangeNotifyResponse, connInfo *ConnInfo) error {
-	// Determine the status from the response
 	status := response.GetStatus()
-	if status == types.StatusSuccess && len(response.Buffer) > 0 {
-		status = types.StatusSuccess
-	}
 
 	// Build async response header with matching AsyncId
 	respHeader := &header.SMB2Header{

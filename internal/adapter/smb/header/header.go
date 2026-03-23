@@ -64,7 +64,7 @@ const HeaderSize = 64
 // Some fields have different meanings based on context:
 //   - Status: Contains NT_STATUS in responses, ChannelSequence in requests
 //   - Credits: Contains CreditRequest in requests, CreditResponse in responses
-//   - Reserved: Contains ProcessID in sync requests, high AsyncID in async
+//   - Reserved: Contains ProcessID in sync requests (async uses AsyncId field)
 //
 // [MS-SMB2] Section 2.2.1
 type SMB2Header struct {
@@ -102,7 +102,7 @@ type SMB2Header struct {
 	MessageID uint64
 
 	// Reserved contains ProcessID for synchronous requests.
-	// For async responses, this contains the high 32 bits of AsyncID.
+	// For async responses, bytes 32-39 contain AsyncId instead (see AsyncId field).
 	Reserved uint32
 
 	// TreeID identifies the tree connection (share) for this operation.

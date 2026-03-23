@@ -177,7 +177,7 @@ func TestNotifyRegistry_MultipleWatchers(t *testing.T) {
 func TestNotifyChange_ExactPath(t *testing.T) {
 	r := NewNotifyRegistry()
 
-	var received []FileNotifyInformation
+	notified := false
 	r.Register(&PendingNotify{
 		FileID:           [16]byte{1},
 		SessionID:        1,
@@ -188,11 +188,7 @@ func TestNotifyChange_ExactPath(t *testing.T) {
 		CompletionFilter: FileNotifyChangeFileName,
 		MaxOutputLength:  4096,
 		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
-			// Decode the buffer to verify the change
-			received = append(received, FileNotifyInformation{
-				Action:   FileActionAdded,
-				FileName: "test.txt",
-			})
+			notified = true
 			return nil
 		},
 	})
@@ -200,8 +196,8 @@ func TestNotifyChange_ExactPath(t *testing.T) {
 	// Fire a matching change
 	r.NotifyChange("share1", "/dir", "test.txt", FileActionAdded)
 
-	if len(received) != 1 {
-		t.Fatalf("expected 1 notification, got %d", len(received))
+	if !notified {
+		t.Fatal("expected watcher to be notified")
 	}
 
 	// Watcher should be unregistered (one-shot)
