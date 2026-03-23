@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"path"
+	"strings"
 	"sync"
 	"unicode/utf16"
 
@@ -620,6 +621,13 @@ func actionToString(action uint32) string {
 //   - watchPath="/subdir", parentPath="/subdir", fileName="file.txt" -> "file.txt"
 func relativePathFromWatch(watchPath, parentPath, fileName string) string {
 	if watchPath == parentPath {
+		return fileName
+	}
+	// Guard against cross-path calls (e.g., NotifyRename where the watcher
+	// was found via newParentPath but we're computing the old name relative
+	// to a different directory). Without this check, slicing panics when
+	// watchPath is longer than parentPath or not a prefix.
+	if !strings.HasPrefix(parentPath, watchPath) {
 		return fileName
 	}
 	relDir := parentPath[len(watchPath):]
