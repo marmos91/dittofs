@@ -140,6 +140,14 @@ const (
 	// StatusCancelled indicates the operation was cancelled.
 	StatusCancelled Status = 0xC0000120
 
+	// StatusNotifyCleanup indicates a change notify watch was cleaned up
+	// because the directory handle was closed [MS-ERREF].
+	StatusNotifyCleanup Status = 0x0000010B
+
+	// StatusNotifyEnumDir indicates the change notify buffer was too small
+	// and the client must re-enumerate the directory [MS-ERREF].
+	StatusNotifyEnumDir Status = 0x0000010C
+
 	// StatusFileClosed indicates the file handle was closed.
 	StatusFileClosed Status = 0xC0000128
 
@@ -254,6 +262,10 @@ func (s Status) String() string {
 		return "STATUS_BUFFER_TOO_SMALL"
 	case StatusCancelled:
 		return "STATUS_CANCELLED"
+	case StatusNotifyCleanup:
+		return "STATUS_NOTIFY_CLEANUP"
+	case StatusNotifyEnumDir:
+		return "STATUS_NOTIFY_ENUM_DIR"
 	case StatusDiskFull:
 		return "STATUS_DISK_FULL"
 	case StatusUnexpectedIOError:

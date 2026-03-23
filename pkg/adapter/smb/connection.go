@@ -272,8 +272,8 @@ func (c *Connection) Serve(ctx context.Context) {
 
 // makeAsyncNotifyCallback creates the async callback for CHANGE_NOTIFY responses.
 func (c *Connection) makeAsyncNotifyCallback(ci *smb.ConnInfo) handlers.AsyncResponseCallback {
-	return func(sessionID, messageID uint64, response *handlers.ChangeNotifyResponse) error {
-		return smb.SendAsyncChangeNotifyResponse(sessionID, messageID, response, ci)
+	return func(sessionID, messageID, asyncId uint64, response *handlers.ChangeNotifyResponse) error {
+		return smb.SendAsyncChangeNotifyResponse(sessionID, messageID, asyncId, response, ci)
 	}
 }
 

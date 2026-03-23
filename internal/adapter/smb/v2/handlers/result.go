@@ -71,6 +71,13 @@ type HandlerResult struct {
 	// without sending a response. Used for fatal protocol errors where
 	// continuing is unsafe (e.g., VALIDATE_NEGOTIATE failure per MS-SMB2 3.3.5.15.12).
 	DropConnection bool
+
+	// AsyncId is set when the response should use the async header format.
+	// When non-zero, the response header will have FlagAsync set and AsyncId
+	// will replace the Reserved/TreeID fields. Used for CHANGE_NOTIFY interim
+	// responses (STATUS_PENDING) and async completion responses.
+	// [MS-SMB2] Section 2.2.1.2
+	AsyncId uint64
 }
 
 // NewResult creates a new handler result with the given status and data.

@@ -165,6 +165,12 @@ func buildIoctlResponse(ctlCode uint32, fileID [16]byte, output []byte) []byte {
 // Used to cancel pending operations, particularly CHANGE_NOTIFY requests.
 // Per the spec, CANCEL does not send a response - the cancelled request
 // is completed with STATUS_CANCELLED.
+//
+// Per [MS-SMB2] 3.3.5.16:
+//   - If the request has SMB2_FLAGS_ASYNC_COMMAND set, use AsyncId to find the request
+//   - Otherwise, use MessageID to find the request
+//   - The cancelled request is completed with STATUS_CANCELLED
+//   - The CANCEL command itself gets no response
 func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	// CANCEL request body is just 4 bytes:
 	// - StructureSize (2 bytes) = 4
@@ -176,16 +182,47 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 
 	logger.Debug("CANCEL request received",
 		"sessionID", ctx.SessionID,
-		"messageID", ctx.MessageID)
+		"messageID", ctx.MessageID,
+		"requestAsyncId", ctx.RequestAsyncId)
 
-	// Note: CANCEL is typically used to cancel a pending CHANGE_NOTIFY
-	// The MessageID in the CANCEL header identifies which request to cancel.
-	// For MVP, we don't track message IDs for pending requests,
-	// so we can't cancel specific requests. The watches will be cleaned up
-	// when the directory handle is closed.
+	// Try to cancel a pending CHANGE_NOTIFY request
+	if h.NotifyRegistry != nil {
+		var cancelled *PendingNotify
+
+		// Per [MS-SMB2] 3.3.5.16: If SMB2_FLAGS_ASYNC_COMMAND is set,
+		// look up by AsyncId; otherwise by MessageID.
+		if ctx.RequestAsyncId != 0 {
+			cancelled = h.NotifyRegistry.UnregisterByAsyncId(ctx.RequestAsyncId)
+		} else {
+			cancelled = h.NotifyRegistry.UnregisterByMessageID(ctx.MessageID)
+		}
+
+		if cancelled != nil {
+			logger.Debug("CANCEL: cancelled pending CHANGE_NOTIFY",
+				"watchPath", cancelled.WatchPath,
+				"asyncId", cancelled.AsyncId,
+				"messageID", cancelled.MessageID)
+
+			// Send STATUS_CANCELLED for the original CHANGE_NOTIFY request
+			// via the async callback. This completes the pending request.
+			if cancelled.AsyncCallback != nil {
+				cancelResp := &ChangeNotifyResponse{
+					SMBResponseBase: SMBResponseBase{Status: types.StatusCancelled},
+				}
+				if err := cancelled.AsyncCallback(cancelled.SessionID, cancelled.MessageID, cancelled.AsyncId, cancelResp); err != nil {
+					logger.Warn("CANCEL: failed to send STATUS_CANCELLED",
+						"messageID", cancelled.MessageID,
+						"error", err)
+				}
+			}
+		} else {
+			logger.Debug("CANCEL: no pending request found to cancel",
+				"asyncId", ctx.RequestAsyncId,
+				"messageID", ctx.MessageID)
+		}
+	}
 
 	// Per [MS-SMB2] 3.3.5.16: The server MUST NOT send a response to the CANCEL request.
-	// The cancelled request itself should be completed with STATUS_CANCELLED by the server.
 	// Returning nil ensures no SMB2 response is sent for the CANCEL command itself.
 	return nil, nil
 }
@@ -216,6 +253,33 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
+	// Per MS-SMB2 3.3.5.15: If OutputBufferLength exceeds MaxTransactSize,
+	// the server MUST fail the request with STATUS_INVALID_PARAMETER.
+	if req.OutputBufferLength > h.MaxTransactSize {
+		logger.Debug("CHANGE_NOTIFY: OutputBufferLength exceeds MaxTransactSize",
+			"outputBufferLength", req.OutputBufferLength,
+			"maxTransactSize", h.MaxTransactSize)
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	// Per MS-SMB2 3.3.5.15: The directory handle must have been opened
+	// with FILE_LIST_DIRECTORY (0x0001) access. Generic rights (GENERIC_READ,
+	// GENERIC_ALL, MAXIMUM_ALLOWED) implicitly include FILE_LIST_DIRECTORY
+	// for directories, so we check both specific and generic forms.
+	const (
+		fileListDirectory = 0x00000001
+		genericRead       = 0x80000000
+		genericAll        = 0x10000000
+		maximumAllowed    = 0x02000000
+	)
+	hasListDir := openFile.DesiredAccess&(fileListDirectory|genericRead|genericAll|maximumAllowed) != 0
+	if !hasListDir {
+		logger.Debug("CHANGE_NOTIFY: missing FILE_LIST_DIRECTORY access",
+			"path", openFile.Path,
+			"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))
+		return NewErrorResult(types.StatusAccessDenied), nil
+	}
+
 	// Verify session and tree match
 	if openFile.SessionID != ctx.SessionID || openFile.TreeID != ctx.TreeID {
 		logger.Debug("CHANGE_NOTIFY: session/tree mismatch")
@@ -234,10 +298,17 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		return NewErrorResult(types.StatusNotSupported), nil
 	}
 
+	// Generate a unique AsyncId for this pending request.
+	// Per MS-SMB2 3.3.5.15, the server assigns an AsyncId and sends an
+	// interim response with STATUS_PENDING. The same AsyncId is used in
+	// the final async response when the notification is delivered.
+	asyncId := h.generateAsyncId()
+
 	notify := &PendingNotify{
 		FileID:           req.FileID,
 		SessionID:        ctx.SessionID,
 		MessageID:        ctx.MessageID,
+		AsyncId:          asyncId,
 		WatchPath:        watchPath,
 		ShareName:        openFile.ShareName,
 		CompletionFilter: req.CompletionFilter,
@@ -246,7 +317,12 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		AsyncCallback:    ctx.AsyncNotifyCallback,
 	}
 
-	h.NotifyRegistry.Register(notify)
+	if err := h.NotifyRegistry.Register(notify); err != nil {
+		logger.Warn("CHANGE_NOTIFY: rejected — too many pending watches",
+			"path", watchPath,
+			"sessionID", ctx.SessionID)
+		return NewErrorResult(types.StatusInsufficientResources), nil
+	}
 
 	hasAsyncCallback := ctx.AsyncNotifyCallback != nil
 	logger.Debug("CHANGE_NOTIFY: registered watch",
@@ -255,11 +331,17 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		"filter", fmt.Sprintf("0x%08X", req.CompletionFilter),
 		"recursive", notify.WatchTree,
 		"messageID", ctx.MessageID,
+		"asyncId", asyncId,
 		"asyncEnabled", hasAsyncCallback)
 
-	// Return STATUS_PENDING - the client will receive an async response when
-	// a matching change occurs (if AsyncNotifyCallback is set).
-	return NewErrorResult(types.StatusPending), nil
+	// Return STATUS_PENDING with AsyncId - the client will receive an
+	// interim response with SMB2_FLAGS_ASYNC_COMMAND set and this AsyncId.
+	// When a matching change occurs, the final async response uses the same AsyncId.
+	return &HandlerResult{
+		Status:  types.StatusPending,
+		Data:    nil,
+		AsyncId: asyncId,
+	}, nil
 }
 
 // OplockBreak handles SMB2 OPLOCK_BREAK acknowledgment [MS-SMB2] 2.2.24.

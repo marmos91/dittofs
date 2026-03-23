@@ -58,6 +58,7 @@ type Handler struct {
 
 	// Change notification management
 	NotifyRegistry *NotifyRegistry
+	nextAsyncId    atomic.Uint64
 
 	// Configuration
 	MaxTransactSize uint32
@@ -668,6 +669,12 @@ func (h *Handler) GenerateSessionID() uint64 {
 // GenerateTreeID generates a new unique tree ID
 func (h *Handler) GenerateTreeID() uint32 {
 	return h.nextTreeID.Add(1)
+}
+
+// generateAsyncId generates a new unique async ID for CHANGE_NOTIFY interim responses.
+// AsyncIds must be unique within a connection and non-zero.
+func (h *Handler) generateAsyncId() uint64 {
+	return h.nextAsyncId.Add(1)
 }
 
 // GenerateFileID generates a new unique file ID

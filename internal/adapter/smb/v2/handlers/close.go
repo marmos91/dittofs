@@ -347,6 +347,18 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 
 	if openFile.IsDirectory && h.NotifyRegistry != nil {
 		if notify := h.NotifyRegistry.Unregister(req.FileID); notify != nil {
+			// Per MS-SMB2 3.3.5.16.1: when the directory handle for a pending
+			// CHANGE_NOTIFY is closed, complete the request with STATUS_NOTIFY_CLEANUP.
+			if notify.AsyncCallback != nil {
+				cleanupResp := &ChangeNotifyResponse{
+					SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
+				}
+				if err := notify.AsyncCallback(notify.SessionID, notify.MessageID, notify.AsyncId, cleanupResp); err != nil {
+					logger.Warn("CLOSE: failed to send STATUS_NOTIFY_CLEANUP",
+						"messageID", notify.MessageID,
+						"error", err)
+				}
+			}
 			logger.Debug("CLOSE: unregistered pending CHANGE_NOTIFY",
 				"path", openFile.Path,
 				"messageID", notify.MessageID)
