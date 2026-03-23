@@ -455,15 +455,21 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 						"error", validationErr)
 					if pending.IsReauth {
 						// Per MS-SMB2 3.3.5.5.2: if re-authentication fails,
-						// the session MUST be deleted. Clean up resources now
-						// but defer session deletion so the LOGON_FAILURE
-						// response can still be signed/encrypted.
+						// the session MUST be deleted. Clean up resources and
+						// mark it as logged off so prepareDispatch rejects
+						// subsequent requests with STATUS_USER_SESSION_DELETED.
+						// The session itself is kept alive (not deleted from the
+						// session manager) so that in-flight goroutines can
+						// still sign their responses. Actual session deletion
+						// happens on connection close via cleanupSessions().
 						logger.Info("Re-authentication failed, destroying session",
 							"sessionID", pending.SessionID,
 							"username", authMsg.Username)
+						if sess, ok := h.GetSession(pending.SessionID); ok {
+							sess.LoggedOff.Store(true)
+						}
 						h.CloseAllFilesForSession(ctx.Context, pending.SessionID, false)
 						h.DeleteAllTreesForSession(pending.SessionID)
-						ctx.DeferredSessionDelete = pending.SessionID
 					}
 					return NewErrorResult(types.StatusLogonFailure), nil
 				}

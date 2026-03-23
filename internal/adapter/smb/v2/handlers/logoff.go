@@ -169,12 +169,16 @@ func (h *Handler) Logoff(ctx *SMBHandlerContext, req *LogoffRequest) (*LogoffRes
 	// ========================================================================
 	//
 	// Per MS-SMB2 3.3.5.6: the LOGOFF response MUST be signed (or encrypted)
-	// using the session's key. The session must remain alive in the
-	// SessionManager until AFTER the response is sent, otherwise SendMessage
-	// cannot look up the session for signing/encryption.
+	// using the session's key. The session remains alive in the SessionManager
+	// with LoggedOff=true so that:
+	//   1. The LOGOFF response can be signed/encrypted.
+	//   2. In-flight goroutines (dispatched before LOGOFF was read) can still
+	//      sign their responses via SendMessage -> GetSession.
+	//   3. The verifier skips signature checks for logged-off sessions.
+	//   4. prepareDispatch returns STATUS_USER_SESSION_DELETED.
 	//
-	// We clean up everything EXCEPT the session itself here. The session is
-	// deleted post-response by ProcessSingleRequest (via DeferredSessionDelete).
+	// The session is NOT deleted here. It is cleaned up on connection close
+	// via cleanupSessions -> CleanupSession -> DeleteSession.
 
 	logger.Debug("Logoff: partial cleanup (session kept for response signing)",
 		"sessionID", ctx.SessionID)
@@ -189,12 +193,8 @@ func (h *Handler) Logoff(ctx *SMBHandlerContext, req *LogoffRequest) (*LogoffRes
 		"treesDeleted", treesDeleted)
 
 	// ========================================================================
-	// Step 3: Return success response with deferred session delete
+	// Step 3: Return success response
 	// ========================================================================
 
-	resp := &LogoffResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}
-	// Mark for deferred deletion — the response layer will delete the session
-	// after the response has been sent (and encrypted/signed).
-	ctx.DeferredSessionDelete = ctx.SessionID
-	return resp, nil
+	return &LogoffResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
 }

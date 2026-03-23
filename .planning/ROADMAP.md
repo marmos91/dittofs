@@ -293,7 +293,10 @@ Plans:
   4. REST API endpoint `GET /api/clients` returns the list of active client records with protocol, IP, shares, and auth identity
   5. Stale client records are automatically removed via configurable TTL-based cleanup (default 5 minutes after last activity)
 **Verification**: `go build ./...` && `go test ./...` && mount via NFS and SMB, then `dfsctl client list` shows both
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [x] 71-01-PLAN.md — ClientRecord model, Registry service, TTL sweeper, Runtime wiring
+- [ ] 71-02-PLAN.md — NFS/SMB adapter integration, REST API, apiclient, CLI commands
 
 ### Phase 72: WPTS Conformance Push
 **Goal**: WPTS known failure count reduced from 73 to approximately 40-45, primarily by implementing ChangeNotify and fixing negotiate/leasing edge cases
@@ -538,7 +541,7 @@ v3.8 (33-40.5) -> v4.2 (57-62) -> v4.0 (41-49) -> v4.3 (49.1-49.3) -> v4.7 (63-6
 | 63-68 | v4.7 | 10/10 | Complete | 2026-03-20 |
 | 69. SMB Protocol Foundation | 3/3 | Complete   | 2026-03-20 | - |
 | 70. Storage Observability and Quotas | 3/3 | Complete    | 2026-03-21 | - |
-| 71. Operational Visibility | v0.10.0 | 0/? | Not started | - |
+| 71. Operational Visibility | v0.10.0 | 1/2 | In Progress|  |
 | 72. WPTS Conformance Push | v0.10.0 | 0/? | Not started | - |
 | 73. Trash and Soft-Delete | v0.10.0 | 0/? | Not started | - |
 | 74. SMB Multi-Channel | v0.10.0 | 0/? | Not started | - |

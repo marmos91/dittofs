@@ -8,37 +8,39 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var forceEvict bool
+var forceDisconnect bool
 
-var evictCmd = &cobra.Command{
-	Use:   "evict <client-id>",
-	Short: "Evict an NFS client",
-	Long: `Evict a connected NFS client by its hex-encoded client ID.
+var disconnectCmd = &cobra.Command{
+	Use:     "disconnect <client-id>",
+	Aliases: []string{"evict"},
+	Short:   "Disconnect a client",
+	Long: `Disconnect a connected client by its ID.
 
-This will forcefully disconnect the client and clean up all associated
-state (open files, locks, delegations). Use with caution.
+This performs protocol-specific teardown: for NFS clients it closes the TCP
+connection and triggers state revocation; for SMB clients it triggers session
+cleanup. Use with caution.
 
 Examples:
-  # Evict a client (with confirmation prompt)
-  dfsctl client evict 0000000100000001
+  # Disconnect a client (with confirmation prompt)
+  dfsctl client disconnect nfs-42
 
-  # Evict without confirmation
-  dfsctl client evict 0000000100000001 --force`,
+  # Disconnect without confirmation
+  dfsctl client disconnect nfs-42 --force`,
 	Args: cobra.ExactArgs(1),
-	RunE: runEvict,
+	RunE: runDisconnect,
 }
 
 func init() {
-	evictCmd.Flags().BoolVarP(&forceEvict, "force", "f", false, "Skip confirmation prompt")
+	disconnectCmd.Flags().BoolVarP(&forceDisconnect, "force", "f", false, "Skip confirmation prompt")
 }
 
-func runEvict(cmd *cobra.Command, args []string) error {
+func runDisconnect(cmd *cobra.Command, args []string) error {
 	clientID := args[0]
 
-	// Confirm before eviction
+	// Confirm before disconnection.
 	confirmed, err := prompt.ConfirmWithForce(
-		fmt.Sprintf("Evict client %s? This will disconnect the client.", clientID),
-		forceEvict,
+		fmt.Sprintf("Disconnect client %s? This will close the connection and trigger cleanup.", clientID),
+		forceDisconnect,
 	)
 	if err != nil {
 		return cmdutil.HandleAbort(err)
@@ -53,10 +55,10 @@ func runEvict(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if err := client.EvictClient(clientID); err != nil {
-		return fmt.Errorf("failed to evict client: %w", err)
+	if err := client.DisconnectClient(clientID); err != nil {
+		return fmt.Errorf("failed to disconnect client: %w", err)
 	}
 
-	cmdutil.PrintSuccess(fmt.Sprintf("Client %s evicted", clientID))
+	cmdutil.PrintSuccess(fmt.Sprintf("Client %s disconnected", clientID))
 	return nil
 }

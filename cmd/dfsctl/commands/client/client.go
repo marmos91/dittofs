@@ -1,34 +1,37 @@
-// Package client implements NFS client management commands.
+// Package client implements unified client management commands.
 package client
 
 import (
 	"github.com/spf13/cobra"
 )
 
-// Cmd is the parent command for NFS client management.
+// Cmd is the parent command for client management.
 var Cmd = &cobra.Command{
 	Use:   "client",
-	Short: "NFS client management",
-	Long: `Manage connected NFS clients on the DittoFS server.
+	Short: "Manage connected clients",
+	Long: `Manage connected NFS and SMB clients on the DittoFS server.
 
-Client commands allow you to list connected NFS clients and evict
-misbehaving ones. These operations require admin privileges.
+Client commands allow you to list connected clients across all protocols
+and disconnect misbehaving ones. These operations require admin privileges.
 
 Examples:
-  # List connected clients
+  # List all connected clients
   dfsctl client list
 
-  # List clients in JSON format
-  dfsctl client list -o json
+  # List only NFS clients
+  dfsctl client list --protocol nfs
 
-  # Evict a client by ID
-  dfsctl client evict 0000000100000001`,
+  # List clients on a specific share
+  dfsctl client list --share /export
+
+  # Disconnect a client by ID
+  dfsctl client disconnect nfs-42`,
 }
 
-// sessionsCmd is the parent command for client session management.
+// sessionsCmd is the parent command for NFS client session management.
 var sessionsCmd = &cobra.Command{
 	Use:   "sessions",
-	Short: "Manage client sessions",
+	Short: "Manage NFS client sessions",
 	Long: `Manage NFSv4.1 sessions for a connected NFS client.
 
 Session commands allow you to list active sessions and force-destroy
@@ -47,6 +50,6 @@ func init() {
 	sessionsCmd.AddCommand(sessionsDestroyCmd)
 
 	Cmd.AddCommand(listCmd)
-	Cmd.AddCommand(evictCmd)
+	Cmd.AddCommand(disconnectCmd)
 	Cmd.AddCommand(sessionsCmd)
 }

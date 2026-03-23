@@ -6,36 +6,100 @@ import (
 	"time"
 )
 
-// ClientInfo represents a connected NFS client returned by the API.
-type ClientInfo struct {
-	ClientID    string    `json:"client_id"`
-	Address     string    `json:"address"`
-	NFSVersion  string    `json:"nfs_version"`
-	ConnectedAt time.Time `json:"connected_at"`
-	LastRenewal time.Time `json:"last_renewal"`
-	LeaseStatus string    `json:"lease_status"`
-	Confirmed   bool      `json:"confirmed"`
-	ImplName    string    `json:"impl_name,omitempty"`
-	ImplDomain  string    `json:"impl_domain,omitempty"`
+// ClientRecord represents a connected protocol client returned by the unified API.
+type ClientRecord struct {
+	ClientID     string      `json:"client_id"`
+	Protocol     string      `json:"protocol"`
+	Address      string      `json:"address"`
+	User         string      `json:"user"`
+	ConnectedAt  time.Time   `json:"connected_at"`
+	LastActivity time.Time   `json:"last_activity"`
+	Shares       []string    `json:"shares"`
+	NFS          *NfsDetails `json:"nfs,omitempty"`
+	SMB          *SmbDetails `json:"smb,omitempty"`
 }
 
-// ListClients returns all connected NFS clients.
-func (c *Client) ListClients() ([]ClientInfo, error) {
-	return listResources[ClientInfo](c, "/api/v1/adapters/nfs/clients")
+// NfsDetails holds NFS-specific client information.
+type NfsDetails struct {
+	Version    string `json:"version"`
+	AuthFlavor string `json:"auth_flavor"`
+	UID        uint32 `json:"uid"`
+	GID        uint32 `json:"gid"`
 }
 
-// EvictClient evicts a connected NFS client by hex client ID.
+// SmbDetails holds SMB-specific client information.
+type SmbDetails struct {
+	SessionID uint64 `json:"session_id"`
+	Dialect   string `json:"dialect"`
+	Domain    string `json:"domain,omitempty"`
+	Signed    bool   `json:"signed"`
+	Encrypted bool   `json:"encrypted"`
+}
+
+// ListClientsOption configures a ListClients call.
+type ListClientsOption func(*listClientsOpts)
+
+type listClientsOpts struct {
+	protocol string
+	share    string
+}
+
+// WithProtocol filters client list by protocol ("nfs" or "smb").
+func WithProtocol(protocol string) ListClientsOption {
+	return func(o *listClientsOpts) { o.protocol = protocol }
+}
+
+// WithShare filters client list by share name.
+func WithShare(share string) ListClientsOption {
+	return func(o *listClientsOpts) { o.share = share }
+}
+
+// ListClients returns all connected clients, optionally filtered.
+func (c *Client) ListClients(opts ...ListClientsOption) ([]ClientRecord, error) {
+	var o listClientsOpts
+	for _, opt := range opts {
+		opt(&o)
+	}
+
+	query := url.Values{}
+	if o.protocol != "" {
+		query.Set("protocol", o.protocol)
+	}
+	if o.share != "" {
+		query.Set("share", o.share)
+	}
+
+	path := "/api/v1/clients"
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+
+	return listResources[ClientRecord](c, path)
+}
+
+// DisconnectClient disconnects a client by ID with protocol-specific teardown.
+func (c *Client) DisconnectClient(clientID string) error {
+	return deleteResource(c, fmt.Sprintf("/api/v1/clients/%s", url.PathEscape(clientID)))
+}
+
+// ClientInfo is deprecated: use ClientRecord instead.
+// Kept for backward compatibility with existing CLI code.
+type ClientInfo = ClientRecord
+
+// EvictClient is deprecated: use DisconnectClient instead.
 func (c *Client) EvictClient(clientID string) error {
-	return deleteResource(c, fmt.Sprintf("/api/v1/adapters/nfs/clients/%s", url.PathEscape(clientID)))
+	return c.DisconnectClient(clientID)
 }
+
+// --- Legacy NFS-specific session types (kept for NFS session endpoints) ---
 
 // ConnectionInfo represents a single bound connection in a session.
 type ConnectionInfo struct {
 	ConnectionID uint64 `json:"connection_id"`
-	Direction    string `json:"direction"`     // "fore", "back", "both"
-	ConnType     string `json:"conn_type"`     // "TCP", "RDMA"
-	BoundAt      string `json:"bound_at"`      // RFC3339
-	LastActivity string `json:"last_activity"` // RFC3339
+	Direction    string `json:"direction"`
+	ConnType     string `json:"conn_type"`
+	BoundAt      string `json:"bound_at"`
+	LastActivity string `json:"last_activity"`
 	Draining     bool   `json:"draining"`
 }
 

@@ -42,8 +42,8 @@ import (
 //   - GET /api/v1/adapters - Adapter list (admin + operator)
 //   - /api/v1/adapters/* - Adapter management (admin only)
 //   - /api/v1/adapters/{type}/settings - Adapter settings (admin only)
-//   - /api/v1/adapters/{type}/clients - NFS client management (admin only)
-//   - /api/v1/adapters/{type}/clients/{id}/sessions - NFS client sessions (admin only)
+//   - /api/v1/clients - Unified client listing and disconnect (admin only)
+//   - /api/v1/adapters/nfs/clients/{id}/sessions - NFS client sessions (admin only)
 //   - /api/v1/adapters/{type}/grace - NFS grace period management (admin only)
 //   - /api/v1/adapters/{type}/netgroups - NFS netgroup management (admin only)
 //   - /api/v1/adapters/{type}/identity-mappings - NFS identity mapping management (admin only)
@@ -177,8 +177,9 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Delete("/{name}/members/{username}", groupHandler.RemoveMember)
 			})
 
-			// Block store handler shared between per-share and global routes.
+			// Handlers shared between multiple route groups.
 			blockStoreHandler := handlers.NewBlockStoreStatsHandler(rt)
+			mountHandler := handlers.NewMountHandler(rt)
 
 			// Share management (admin only)
 			r.Route("/shares", func(r chi.Router) {
@@ -245,7 +246,6 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 			r.Route("/adapters", func(r chi.Router) {
 				adapterHandler := handlers.NewAdapterHandler(rt)
 				settingsHandler := handlers.NewAdapterSettingsHandler(cpStore, rt)
-				mountHandler := handlers.NewMountHandler(rt)
 
 				// Read endpoint: admin + operator (list only)
 				r.Group(func(r chi.Router) {
@@ -280,15 +280,11 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 							mountHandler.ListByProtocol(adapterType)(w, req)
 						})
 
-						// NFS client management (handlers are nil if NFS state not available)
-						if clientHandler := newClientHandler(rt); clientHandler != nil {
-							r.Route("/clients", func(r chi.Router) {
-								r.Get("/", clientHandler.List)
-								r.Delete("/{id}", clientHandler.Evict)
-								r.Route("/{id}/sessions", func(r chi.Router) {
-									r.Get("/", clientHandler.ListSessions)
-									r.Delete("/{sid}", clientHandler.ForceDestroySession)
-								})
+						// NFS-specific session management (handlers are nil if NFS state not available)
+						if nfsClientHandler := newNfsClientHandler(rt); nfsClientHandler != nil {
+							r.Route("/clients/{id}/sessions", func(r chi.Router) {
+								r.Get("/", nfsClientHandler.ListSessions)
+								r.Delete("/{sid}", nfsClientHandler.ForceDestroySession)
 							})
 						}
 
@@ -343,10 +339,18 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Delete("/{key}", settingsHandler.Delete)
 			})
 
+			// Unified client listing and disconnect (admin only) - all protocols
+			if clientHandler := handlers.NewClientHandler(rt); clientHandler != nil {
+				r.Route("/clients", func(r chi.Router) {
+					r.Use(apiMiddleware.RequireAdmin())
+					r.Get("/", clientHandler.List)
+					r.Delete("/{id}", clientHandler.Disconnect)
+				})
+			}
+
 			// Unified mount listing (admin only) - all protocols
 			r.Route("/mounts", func(r chi.Router) {
 				r.Use(apiMiddleware.RequireAdmin())
-				mountHandler := handlers.NewMountHandler(rt)
 				r.Get("/", mountHandler.List)
 			})
 
@@ -363,12 +367,12 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 	return r
 }
 
-// newClientHandler returns a ClientHandler if an NFS adapter with state management is configured.
-func newClientHandler(rt *runtime.Runtime) *handlers.ClientHandler {
+// newNfsClientHandler returns an NfsClientHandler if an NFS adapter with state management is configured.
+func newNfsClientHandler(rt *runtime.Runtime) *handlers.NfsClientHandler {
 	if rt == nil {
 		return nil
 	}
-	return handlers.NewClientHandlerFromProvider(rt.NFSClientProvider())
+	return handlers.NewNfsClientHandlerFromProvider(rt.NFSClientProvider())
 }
 
 // newGraceHandler returns a GraceHandler if an NFS adapter with state management is configured.

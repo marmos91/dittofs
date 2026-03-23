@@ -1,15 +1,15 @@
 ---
 gsd_state_version: 1.0
-milestone: v4.5
-milestone_name: BlockStore Security
-status: unknown
-stopped_at: Completed 70-02-PLAN.md
-last_updated: "2026-03-21T10:10:05.921Z"
+milestone: v0.10.0
+milestone_name: Production Hardening + SMB Protocol Fixes
+status: Phase complete — ready for verification
+stopped_at: Completed 71-02-PLAN.md
+last_updated: "2026-03-22T21:41:08.952Z"
 progress:
-  total_phases: 3
+  total_phases: 4
   completed_phases: 3
-  total_plans: 8
-  completed_plans: 8
+  total_plans: 10
+  completed_plans: 9
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-20)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Phase 70 — storage-observability-quotas
+**Current focus:** Phase 71 — operational-visibility
 
 ## Current Position
 
-Phase: 70 (storage-observability-quotas) — COMPLETE
-Plan: 3 of 3 (all complete)
+Phase: 71 (operational-visibility) — EXECUTING
+Plan: 2 of 2
 
 ## Completed Milestones
 
@@ -64,6 +64,11 @@ All decisions archived in PROJECT.md Key Decisions table.
 - [Phase 70-02]: Quota enforcement at PrepareWrite layer (after file type check, before permission check) for early rejection
 - [Phase 70-02]: Quota overlay in MetadataService.GetFilesystemStatistics rather than per-store
 - [Phase 70-02]: 1 PiB (1<<50) as unlimited sentinel across all stores (was 1TB in memory/badger)
+- [Phase 71]: Default TTL 5 min for stale client cleanup, sweep interval TTL/2
+- [Phase 71]: Deep copy Shares slice and protocol detail structs for copy-on-read safety
+- [Phase 71]: Local clientDisconnecter interface in adapters package to avoid import cycle
+- [Phase 71]: ForceCloseByAddress leverages existing ActiveConnections sync.Map
+- [Phase 71]: NFS-specific session handlers split to nfs_clients.go, kept under /adapters/nfs/
 
 ### Pending Todos
 
@@ -75,6 +80,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-21T10:02:16.301Z
-Stopped at: Completed 70-02-PLAN.md
+Last session: 2026-03-22T21:41:08.949Z
+Stopped at: Completed 71-02-PLAN.md
 Next action: Phase 70 complete. All 3 plans executed successfully.

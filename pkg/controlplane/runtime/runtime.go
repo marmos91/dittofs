@@ -54,12 +54,13 @@ type Runtime struct {
 
 	metadataService *metadata.MetadataService
 
-	adaptersSvc  *adapters.Service
-	storesSvc    *stores.Service
-	sharesSvc    *shares.Service
-	lifecycleSvc *lifecycle.Service
-	identitySvc  *identity.Service
-	mountTracker *MountTracker
+	adaptersSvc    *adapters.Service
+	storesSvc      *stores.Service
+	sharesSvc      *shares.Service
+	lifecycleSvc   *lifecycle.Service
+	identitySvc    *identity.Service
+	mountTracker   *MountTracker
+	clientRegistry *ClientRegistry
 
 	localStoreDefaults *shares.LocalStoreDefaults
 	syncerDefaults     *shares.SyncerDefaults
@@ -74,6 +75,7 @@ func New(s store.Store) *Runtime {
 		store:            s,
 		metadataService:  metadata.New(),
 		mountTracker:     NewMountTracker(),
+		clientRegistry:   NewClientRegistry(),
 		adapterProviders: make(map[string]any),
 		storesSvc:        stores.New(),
 		sharesSvc:        shares.New(),
@@ -266,6 +268,7 @@ func (r *Runtime) SetAPIServer(server AuxiliaryServer) {
 }
 
 func (r *Runtime) Serve(ctx context.Context) error {
+	r.clientRegistry.StartSweeper(ctx)
 	return r.lifecycleSvc.Serve(ctx, r.settingsWatcher, r.adaptersSvc, r.metadataService, r.storesSvc, r.store)
 }
 
@@ -273,6 +276,13 @@ func (r *Runtime) Serve(ctx context.Context) error {
 
 func (r *Runtime) ApplyIdentityMapping(shareName string, ident *metadata.Identity) (*metadata.Identity, error) {
 	return r.identitySvc.ApplyIdentityMapping(shareName, ident, &shareIdentityProvider{sharesSvc: r.sharesSvc})
+}
+
+// --- Client Tracking (delegated to ClientRegistry) ---
+
+// Clients returns the client registry for protocol client tracking.
+func (r *Runtime) Clients() *ClientRegistry {
+	return r.clientRegistry
 }
 
 // --- Mount Tracking (delegated to MountTracker) ---
@@ -309,6 +319,31 @@ func (r *Runtime) ListMounts() []*LegacyMountInfo {
 		})
 	}
 	return result
+}
+
+// --- Client Management ---
+
+// DisconnectClient performs protocol-specific teardown for a client.
+// It looks up the client record, finds the adapter by protocol, closes the
+// TCP connection (triggering cleanup chain), then deregisters the client.
+// Returns the removed ClientRecord or nil if not found.
+func (r *Runtime) DisconnectClient(clientID string) *ClientRecord {
+	record := r.clientRegistry.Get(clientID)
+	if record == nil {
+		return nil
+	}
+
+	// Force-close the TCP connection — this triggers handleConnectionClose()
+	// which handles protocol-specific cleanup (NFS state revocation, SMB LOGOFF).
+	r.adaptersSvc.ForceCloseClientConnection(record.Protocol, record.Address)
+
+	// Best-effort deregister — cleanup chain may have already removed it.
+	r.clientRegistry.Deregister(clientID)
+
+	// Return the snapshot taken before teardown to avoid TOCTOU: the client
+	// existed when we started, and we acted on it regardless of race with
+	// the cleanup chain.
+	return record
 }
 
 // --- Service Access ---
