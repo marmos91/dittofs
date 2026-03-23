@@ -1,0 +1,591 @@
+package handlers
+
+import (
+	"sync/atomic"
+	"testing"
+
+	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+)
+
+func mustRegister(t *testing.T, r *NotifyRegistry, n *PendingNotify) {
+	t.Helper()
+	if err := r.Register(n); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+}
+
+func TestNotifyRegistry_RegisterAndUnregister(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	fileID := [16]byte{1, 2, 3}
+	notify := &PendingNotify{
+		FileID:           fileID,
+		SessionID:        100,
+		MessageID:        200,
+		AsyncId:          300,
+		WatchPath:        "/testdir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+	}
+
+	mustRegister(t, r, notify)
+
+	// Verify it's registered
+	watchers := r.GetWatchersForPath("/testdir")
+	if len(watchers) != 1 {
+		t.Fatalf("expected 1 watcher, got %d", len(watchers))
+	}
+	if watchers[0].AsyncId != 300 {
+		t.Errorf("expected asyncId 300, got %d", watchers[0].AsyncId)
+	}
+
+	// Unregister
+	removed := r.Unregister(fileID)
+	if removed == nil {
+		t.Fatal("expected non-nil removed notify")
+	}
+	if removed.AsyncId != 300 {
+		t.Errorf("expected asyncId 300, got %d", removed.AsyncId)
+	}
+
+	// Verify it's gone
+	watchers = r.GetWatchersForPath("/testdir")
+	if len(watchers) != 0 {
+		t.Fatalf("expected 0 watchers after unregister, got %d", len(watchers))
+	}
+}
+
+func TestNotifyRegistry_UnregisterByMessageID(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	notify := &PendingNotify{
+		FileID:           [16]byte{1},
+		SessionID:        100,
+		MessageID:        42,
+		AsyncId:          99,
+		WatchPath:        "/dir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+	}
+	mustRegister(t, r, notify)
+
+	// Unregister by message ID
+	removed := r.UnregisterByMessageID(42)
+	if removed == nil {
+		t.Fatal("expected non-nil removed notify")
+	}
+	if removed.AsyncId != 99 {
+		t.Errorf("expected asyncId 99, got %d", removed.AsyncId)
+	}
+
+	// Should not find it again
+	removed = r.UnregisterByMessageID(42)
+	if removed != nil {
+		t.Error("expected nil on second unregister")
+	}
+}
+
+func TestNotifyRegistry_UnregisterByAsyncId(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	notify := &PendingNotify{
+		FileID:           [16]byte{2},
+		SessionID:        100,
+		MessageID:        50,
+		AsyncId:          777,
+		WatchPath:        "/dir2",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeDirName,
+	}
+	mustRegister(t, r, notify)
+
+	// Unregister by async ID
+	removed := r.UnregisterByAsyncId(777)
+	if removed == nil {
+		t.Fatal("expected non-nil removed notify")
+	}
+	if removed.MessageID != 50 {
+		t.Errorf("expected messageID 50, got %d", removed.MessageID)
+	}
+
+	// Should not find it again
+	removed = r.UnregisterByAsyncId(777)
+	if removed != nil {
+		t.Error("expected nil on second unregister")
+	}
+}
+
+func TestNotifyRegistry_ReplaceExisting(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	fileID := [16]byte{5}
+
+	// Register first notify
+	mustRegister(t, r, &PendingNotify{
+		FileID:           fileID,
+		SessionID:        1,
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/old",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+	})
+
+	// Register replacement (same FileID, different path)
+	mustRegister(t, r, &PendingNotify{
+		FileID:           fileID,
+		SessionID:        1,
+		MessageID:        20,
+		AsyncId:          200,
+		WatchPath:        "/new",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+	})
+
+	// Old path should be empty
+	watchers := r.GetWatchersForPath("/old")
+	if len(watchers) != 0 {
+		t.Errorf("expected 0 watchers on old path, got %d", len(watchers))
+	}
+
+	// New path should have the replacement
+	watchers = r.GetWatchersForPath("/new")
+	if len(watchers) != 1 {
+		t.Fatalf("expected 1 watcher on new path, got %d", len(watchers))
+	}
+	if watchers[0].AsyncId != 200 {
+		t.Errorf("expected asyncId 200, got %d", watchers[0].AsyncId)
+	}
+}
+
+func TestNotifyRegistry_MultipleWatchers(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{1},
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/dir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+	})
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{2},
+		MessageID:        20,
+		AsyncId:          200,
+		WatchPath:        "/dir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeDirName,
+	})
+
+	watchers := r.GetWatchersForPath("/dir")
+	if len(watchers) != 2 {
+		t.Fatalf("expected 2 watchers, got %d", len(watchers))
+	}
+}
+
+func TestNotifyChange_ExactPath(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	notified := false
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{1},
+		SessionID:        1,
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/dir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength:  4096,
+		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
+			notified = true
+			return nil
+		},
+	})
+
+	// Fire a matching change
+	r.NotifyChange("share1", "/dir", "test.txt", FileActionAdded)
+
+	if !notified {
+		t.Fatal("expected watcher to be notified")
+	}
+
+	// Watcher should be unregistered (one-shot)
+	watchers := r.GetWatchersForPath("/dir")
+	if len(watchers) != 0 {
+		t.Errorf("expected 0 watchers after notify (one-shot), got %d", len(watchers))
+	}
+}
+
+func TestNotifyChange_NoMatchDifferentShare(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	notified := false
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{1},
+		SessionID:        1,
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/dir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength:  4096,
+		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
+			notified = true
+			return nil
+		},
+	})
+
+	// Fire change on different share
+	r.NotifyChange("share2", "/dir", "test.txt", FileActionAdded)
+
+	if notified {
+		t.Error("should not notify watcher on different share")
+	}
+}
+
+func TestNotifyChange_RecursiveWatchTree(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	notified := false
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{1},
+		SessionID:        1,
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+		WatchTree:        true,
+		MaxOutputLength:  4096,
+		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
+			notified = true
+			return nil
+		},
+	})
+
+	// Fire change in subdirectory
+	r.NotifyChange("share1", "/subdir", "test.txt", FileActionAdded)
+
+	if !notified {
+		t.Error("recursive watcher should be notified for subdirectory changes")
+	}
+}
+
+func TestNotifyChange_NonRecursiveNoMatch(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	notified := false
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{1},
+		SessionID:        1,
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+		WatchTree:        false, // NOT recursive
+		MaxOutputLength:  4096,
+		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
+			notified = true
+			return nil
+		},
+	})
+
+	// Fire change in subdirectory (should NOT match non-recursive watcher)
+	r.NotifyChange("share1", "/subdir", "test.txt", FileActionAdded)
+
+	if notified {
+		t.Error("non-recursive watcher should not be notified for subdirectory changes")
+	}
+}
+
+func TestNotifyRename_PairedNotification(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	notified := false
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{1},
+		SessionID:        1,
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/dir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength:  4096,
+		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
+			notified = true
+			// Verify the response has content (paired old+new name entries)
+			if len(response.Buffer) == 0 {
+				t.Error("rename response should have non-empty buffer")
+			}
+			return nil
+		},
+	})
+
+	r.NotifyRename("share1", "/dir", "old.txt", "/dir", "new.txt")
+
+	if !notified {
+		t.Error("watcher should be notified on rename")
+	}
+
+	// Watcher should be unregistered (one-shot)
+	watchers := r.GetWatchersForPath("/dir")
+	if len(watchers) != 0 {
+		t.Errorf("expected 0 watchers after rename (one-shot), got %d", len(watchers))
+	}
+}
+
+func TestNotifyRename_CrossDirectory(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	notified := false
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{1},
+		SessionID:        1,
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+		WatchTree:        true,
+		MaxOutputLength:  4096,
+		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
+			notified = true
+			if len(response.Buffer) == 0 {
+				t.Error("cross-dir rename response should have non-empty buffer")
+			}
+			return nil
+		},
+	})
+
+	// Cross-directory rename: /src/old.txt -> /dst/new.txt
+	r.NotifyRename("share1", "/src", "old.txt", "/dst", "new.txt")
+
+	if !notified {
+		t.Error("recursive root watcher should be notified on cross-directory rename")
+	}
+}
+
+func TestNotifyChange_MaxOutputLengthExceeded_SendsEnumDir(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	var receivedStatus types.Status
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{1},
+		SessionID:        1,
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/dir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength:  1, // Too small for any encoded filename
+		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
+			receivedStatus = response.GetStatus()
+			return nil
+		},
+	})
+
+	r.NotifyChange("share1", "/dir", "test.txt", FileActionAdded)
+
+	if receivedStatus != types.StatusNotifyEnumDir {
+		t.Errorf("expected STATUS_NOTIFY_ENUM_DIR (0x%08X), got 0x%08X",
+			uint32(types.StatusNotifyEnumDir), uint32(receivedStatus))
+	}
+
+	// Watcher should still be unregistered
+	watchers := r.GetWatchersForPath("/dir")
+	if len(watchers) != 0 {
+		t.Errorf("expected 0 watchers after enum-dir, got %d", len(watchers))
+	}
+}
+
+func TestNotifyChange_ConcurrentDoubleFire(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	var callbackCount atomic.Int32
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{1},
+		SessionID:        1,
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/dir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength:  4096,
+		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
+			callbackCount.Add(1)
+			return nil
+		},
+	})
+
+	// Fire two concurrent events — only one should trigger the callback
+	done := make(chan struct{})
+	go func() {
+		r.NotifyChange("share1", "/dir", "a.txt", FileActionAdded)
+		done <- struct{}{}
+	}()
+	go func() {
+		r.NotifyChange("share1", "/dir", "b.txt", FileActionAdded)
+		done <- struct{}{}
+	}()
+	<-done
+	<-done
+
+	count := callbackCount.Load()
+	if count != 1 {
+		t.Errorf("expected exactly 1 callback invocation (one-shot), got %d", count)
+	}
+}
+
+func TestNotifyRegistry_MaxWatchesLimit(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	// Fill up to the limit
+	for i := 0; i < MaxPendingWatches; i++ {
+		fileID := [16]byte{}
+		fileID[0] = byte(i)
+		fileID[1] = byte(i >> 8)
+		fileID[2] = byte(i >> 16)
+		err := r.Register(&PendingNotify{
+			FileID:           fileID,
+			MessageID:        uint64(i),
+			AsyncId:          uint64(i),
+			WatchPath:        "/dir",
+			ShareName:        "share1",
+			CompletionFilter: FileNotifyChangeFileName,
+		})
+		if err != nil {
+			t.Fatalf("Register %d failed: %v", i, err)
+		}
+	}
+
+	// One more should fail
+	err := r.Register(&PendingNotify{
+		FileID:           [16]byte{0xFF, 0xFF, 0xFF},
+		MessageID:        99999,
+		AsyncId:          99999,
+		WatchPath:        "/dir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+	})
+	if err == nil {
+		t.Error("expected error when exceeding MaxPendingWatches")
+	}
+}
+
+func TestMatchesFilter(t *testing.T) {
+	tests := []struct {
+		name   string
+		action uint32
+		filter uint32
+		want   bool
+	}{
+		{"Added matches FileName", FileActionAdded, FileNotifyChangeFileName, true},
+		{"Added matches DirName", FileActionAdded, FileNotifyChangeDirName, true},
+		{"Added no match Size", FileActionAdded, FileNotifyChangeSize, false},
+		{"Removed matches FileName", FileActionRemoved, FileNotifyChangeFileName, true},
+		{"Modified matches Size", FileActionModified, FileNotifyChangeSize, true},
+		{"Modified matches LastWrite", FileActionModified, FileNotifyChangeLastWrite, true},
+		{"Modified matches Attributes", FileActionModified, FileNotifyChangeAttributes, true},
+		{"Modified no match FileName", FileActionModified, FileNotifyChangeFileName, false},
+		{"RenamedOld matches FileName", FileActionRenamedOldName, FileNotifyChangeFileName, true},
+		{"RenamedNew matches DirName", FileActionRenamedNewName, FileNotifyChangeDirName, true},
+		{"Combined filter", FileActionAdded, FileNotifyChangeFileName | FileNotifyChangeSize, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := MatchesFilter(tt.action, tt.filter)
+			if got != tt.want {
+				t.Errorf("MatchesFilter(%d, 0x%x) = %v, want %v", tt.action, tt.filter, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEncodeFileNotifyInformation(t *testing.T) {
+	changes := []FileNotifyInformation{
+		{Action: FileActionAdded, FileName: "test.txt"},
+	}
+
+	buf := EncodeFileNotifyInformation(changes)
+	if len(buf) == 0 {
+		t.Fatal("expected non-empty buffer")
+	}
+
+	// Minimum size: 12 bytes header + filename in UTF-16LE
+	// "test.txt" = 8 chars * 2 bytes = 16 bytes
+	// 12 + 16 = 28 bytes, aligned to 4 = 28
+	if len(buf) < 28 {
+		t.Errorf("buffer too short: %d bytes", len(buf))
+	}
+}
+
+func TestEncodeFileNotifyInformation_MultipleEntries(t *testing.T) {
+	changes := []FileNotifyInformation{
+		{Action: FileActionRenamedOldName, FileName: "old.txt"},
+		{Action: FileActionRenamedNewName, FileName: "new.txt"},
+	}
+
+	buf := EncodeFileNotifyInformation(changes)
+	if len(buf) == 0 {
+		t.Fatal("expected non-empty buffer")
+	}
+
+	// First entry should have non-zero NextEntryOffset
+	// (pointing to the second entry)
+	if buf[0] == 0 && buf[1] == 0 && buf[2] == 0 && buf[3] == 0 {
+		t.Error("first entry should have non-zero NextEntryOffset")
+	}
+}
+
+func TestEncodeFileNotifyInformation_Empty(t *testing.T) {
+	buf := EncodeFileNotifyInformation(nil)
+	if buf != nil {
+		t.Errorf("expected nil buffer for empty changes, got %d bytes", len(buf))
+	}
+}
+
+func TestGetParentPath(t *testing.T) {
+	tests := []struct {
+		input, want string
+	}{
+		{"/foo/bar", "/foo"},
+		{"/foo", "/"},
+		{"/", "/"},
+		{"", "/"},
+	}
+	for _, tt := range tests {
+		got := GetParentPath(tt.input)
+		if got != tt.want {
+			t.Errorf("GetParentPath(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestGetFileName(t *testing.T) {
+	tests := []struct {
+		input, want string
+	}{
+		{"/foo/bar/file.txt", "file.txt"},
+		{"/file.txt", "file.txt"},
+		{"/", ""},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := GetFileName(tt.input)
+		if got != tt.want {
+			t.Errorf("GetFileName(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestRelativePathFromWatch_CrossPath(t *testing.T) {
+	// When watchPath is not a prefix of parentPath, should return fileName
+	// (no panic from out-of-bounds slice)
+	got := relativePathFromWatch("/beta", "/a", "file.txt")
+	if got != "file.txt" {
+		t.Errorf("expected 'file.txt' for non-prefix watch path, got %q", got)
+	}
+}
