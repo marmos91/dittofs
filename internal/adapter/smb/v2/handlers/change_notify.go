@@ -7,6 +7,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
+	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
@@ -475,11 +476,15 @@ func (r *NotifyRegistry) NotifyRename(shareName, oldParentPath, oldFileName, new
 		r.sendAndUnregister(w.notify, changes, "RENAME")
 	}
 
-	// Send paired rename notifications for watchers found only via new path
+	// Send paired rename notifications for watchers found only via new path.
+	// The old name must also be relative to the watcher's watch path (not the
+	// raw filename), so recursive watchers at higher-level directories report
+	// the correct subdirectory-relative path for both old and new names.
 	for _, w := range newWatchers {
+		oldRelativePath := relativePathFromWatch(w.watchPath, oldParentPath, oldFileName)
 		newRelativePath := relativePathFromWatch(w.watchPath, newParentPath, newFileName)
 		changes := []FileNotifyInformation{
-			{Action: FileActionRenamedOldName, FileName: oldFileName},
+			{Action: FileActionRenamedOldName, FileName: oldRelativePath},
 			{Action: FileActionRenamedNewName, FileName: newRelativePath},
 		}
 		r.sendAndUnregister(w.notify, changes, "RENAME")
@@ -528,24 +533,44 @@ func (r *NotifyRegistry) findWatchersLocked(shareName, parentPath string, action
 // watcher (CHANGE_NOTIFY is one-shot). If the encoded buffer exceeds the
 // watcher's MaxOutputLength, the watcher is unregistered without sending.
 func (r *NotifyRegistry) sendAndUnregister(w *PendingNotify, changes []FileNotifyInformation, label string) {
-	if w.AsyncCallback == nil {
+	// Unregister FIRST to prevent double-fire: two concurrent NotifyChange calls
+	// can both snapshot the same watcher under RLock. By unregistering before
+	// calling the callback, only the first caller proceeds (Unregister returns
+	// nil for the second). This is critical because sending two async responses
+	// for the same MessageID violates the protocol.
+	removed := r.Unregister(w.FileID)
+	if removed == nil {
+		return // already fired by another goroutine
+	}
+
+	if removed.AsyncCallback == nil {
 		logger.Debug("CHANGE_NOTIFY: would notify watcher (no callback)",
-			"watchPath", w.WatchPath,
+			"watchPath", removed.WatchPath,
 			"action", label,
-			"messageID", w.MessageID)
+			"messageID", removed.MessageID)
 		return
 	}
 
 	buffer := EncodeFileNotifyInformation(changes)
 
-	if uint32(len(buffer)) > w.MaxOutputLength {
-		logger.Warn("CHANGE_NOTIFY: notification exceeds MaxOutputLength; skipping",
-			"watchPath", w.WatchPath,
+	// Per MS-SMB2 3.3.4.4 / MS-FSCC 2.4.42: when the encoded notification
+	// exceeds MaxOutputLength, complete the request with STATUS_NOTIFY_ENUM_DIR
+	// to tell the client to re-enumerate the directory.
+	if uint32(len(buffer)) > removed.MaxOutputLength {
+		logger.Warn("CHANGE_NOTIFY: notification exceeds MaxOutputLength; sending STATUS_NOTIFY_ENUM_DIR",
+			"watchPath", removed.WatchPath,
 			"action", label,
 			"encodedLength", len(buffer),
-			"maxOutputLength", w.MaxOutputLength,
-			"messageID", w.MessageID)
-		r.Unregister(w.FileID)
+			"maxOutputLength", removed.MaxOutputLength,
+			"messageID", removed.MessageID)
+		enumResp := &ChangeNotifyResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyEnumDir},
+		}
+		if err := removed.AsyncCallback(removed.SessionID, removed.MessageID, removed.AsyncId, enumResp); err != nil {
+			logger.Warn("CHANGE_NOTIFY: failed to send STATUS_NOTIFY_ENUM_DIR",
+				"messageID", removed.MessageID,
+				"error", err)
+		}
 		return
 	}
 
@@ -555,18 +580,16 @@ func (r *NotifyRegistry) sendAndUnregister(w *PendingNotify, changes []FileNotif
 	}
 
 	logger.Debug("CHANGE_NOTIFY: sending async response",
-		"watchPath", w.WatchPath,
+		"watchPath", removed.WatchPath,
 		"action", label,
-		"messageID", w.MessageID,
-		"sessionID", w.SessionID)
+		"messageID", removed.MessageID,
+		"sessionID", removed.SessionID)
 
-	if err := w.AsyncCallback(w.SessionID, w.MessageID, w.AsyncId, response); err != nil {
+	if err := removed.AsyncCallback(removed.SessionID, removed.MessageID, removed.AsyncId, response); err != nil {
 		logger.Warn("CHANGE_NOTIFY: failed to send async response",
-			"messageID", w.MessageID,
+			"messageID", removed.MessageID,
 			"error", err)
 	}
-	// Always unregister: CHANGE_NOTIFY is one-shot per request.
-	r.Unregister(w.FileID)
 }
 
 // actionToString converts an action code to a readable string.

@@ -483,9 +483,11 @@ func SendAsyncChangeNotifyResponse(sessionID, messageID, asyncId uint64, respons
 		Credits:   1, // Grant 1 credit with async response
 	}
 
-	// For error/cancel responses, use error body format
+	// For error, cancel, and notify-cleanup/enum-dir responses, use error body format.
+	// STATUS_NOTIFY_CLEANUP (0x10B) and STATUS_NOTIFY_ENUM_DIR (0x10C) are success-severity
+	// codes but carry no output buffer — they signal the client to re-enumerate.
 	var body []byte
-	if status.IsError() {
+	if status.IsError() || status == types.StatusNotifyCleanup || status == types.StatusNotifyEnumDir {
 		body = MakeErrorBody()
 		logger.Debug("Sending async CHANGE_NOTIFY error response",
 			"sessionID", sessionID,
