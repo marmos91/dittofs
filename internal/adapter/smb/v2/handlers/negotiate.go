@@ -461,33 +461,35 @@ var defaultSigningAlgorithmPreference = []uint16{
 	signing.SigningAlgAESCMAC,
 }
 
-// selectSigningAlgorithm selects the server's preferred signing algorithm from
-// the intersection of the server's preference list and the client's offered
-// algorithms. Falls back to AES-128-CMAC only if the client also offers it;
-// otherwise returns AES-128-CMAC as the mandatory baseline per MS-SMB2.
+// selectSigningAlgorithm selects a signing algorithm from the client's offered
+// list using client preference order, consistent with cipher selection per
+// MS-SMB2 3.3.5.4. It iterates the client's array and returns the first
+// algorithm that the server supports.
 //
-// SIGNING_CAPABILITIES is only processed for SMB 3.1.1, so HMAC-SHA256 is
-// excluded from consideration even if present in the configured preference
-// list. HMAC-SHA256 is a 2.x-only algorithm; selecting it for 3.1.1 would
-// cause a mismatch with the KDF-based signing key derivation path.
+// HMAC-SHA256 is excluded because SIGNING_CAPABILITIES is a 3.1.1-only
+// negotiate context, and HMAC-SHA256 is a 2.x-only algorithm. Selecting it
+// for 3.1.1 would cause a mismatch with the KDF-based signing key derivation.
+//
+// Falls back to AES-128-CMAC as the mandatory baseline per MS-SMB2 if no
+// intersection is found.
 func (h *Handler) selectSigningAlgorithm(clientAlgorithms []uint16) uint16 {
-	preference := h.SigningAlgorithmPreference
-	if len(preference) == 0 {
-		preference = defaultSigningAlgorithmPreference
+	allowed := h.SigningAlgorithmPreference
+	if len(allowed) == 0 {
+		allowed = defaultSigningAlgorithmPreference
 	}
 
-	for _, preferred := range preference {
+	for _, clientAlg := range clientAlgorithms {
 		// Skip HMAC-SHA256 -- not valid for 3.1.1 SIGNING_CAPABILITIES
-		if preferred == signing.SigningAlgHMACSHA256 {
+		if clientAlg == signing.SigningAlgHMACSHA256 {
 			continue
 		}
-		if slices.Contains(clientAlgorithms, preferred) {
-			return preferred
+		if slices.Contains(allowed, clientAlg) {
+			return clientAlg
 		}
 	}
 
-	// No intersection with server preference. Default to AES-128-CMAC as
-	// the mandatory baseline per MS-SMB2 -- all 3.x clients must support it.
+	// No intersection. Default to AES-128-CMAC as the mandatory baseline
+	// per MS-SMB2 -- all 3.x clients must support it.
 	return signing.SigningAlgAESCMAC
 }
 
@@ -500,19 +502,23 @@ var defaultCipherPreference = []uint16{
 	types.CipherAES128CCM,
 }
 
-// selectCipher selects the server's preferred cipher from the client's offered list.
-// It iterates over AllowedCiphers (server preference order) and picks the first match
-// from the client's list. Falls back to defaultCipherPreference if AllowedCiphers is empty.
-// This mirrors the selectSigningAlgorithm pattern.
+// selectCipher selects a cipher from the client's offered list using client
+// preference order per MS-SMB2 3.3.5.4. It iterates the client's cipher array
+// and returns the first one that the server supports.
+//
+// The server's AllowedCiphers (or defaultCipherPreference) acts as the set of
+// acceptable ciphers, but the client's ordering is respected. This matches the
+// spec language "select a CipherId value from the Ciphers array of the request"
+// and the behavior that WPTS expects.
 func (h *Handler) selectCipher(clientCiphers []uint16) uint16 {
-	preference := h.EncryptionConfig.AllowedCiphers
-	if len(preference) == 0 {
-		preference = defaultCipherPreference
+	allowed := h.EncryptionConfig.AllowedCiphers
+	if len(allowed) == 0 {
+		allowed = defaultCipherPreference
 	}
 
-	for _, preferred := range preference {
-		if slices.Contains(clientCiphers, preferred) {
-			return preferred
+	for _, clientCipher := range clientCiphers {
+		if slices.Contains(allowed, clientCipher) {
+			return clientCipher
 		}
 	}
 	return 0
