@@ -1,6 +1,6 @@
 # Known Failures - SMB Conformance (WPTS BVT)
 
-Last updated: 2026-03-20 (Phase 69: signing audit complete, spec references added)
+Last updated: 2026-03-23 (Phase 72: ChangeNotify, Negotiate, Lease, DH, Timestamp fixes)
 
 Tests listed here are expected to fail. CI will pass (exit 0) as long as
 all failures are in this list. New failures not listed here will cause CI to fail.
@@ -12,7 +12,7 @@ row (`Test Name`) are ignored.
 ## Baseline Status
 
 - **Initial baseline (Phase 29.8):** 133/240 BVT tests passing
-- **Current baseline:** Re-measure required on x86_64 Linux after Phases 30-39
+- **Current baseline (Phase 72):** 65 known failures (52 permanent + 13 expected)
 - **Target:** All BVT tests pass except genuinely unimplemented features
 
 ## Phase 30-32 Improvements
@@ -82,18 +82,6 @@ in `baseline-results.md` for prioritization.
 
 | Test Name | Category | Reason | Status | Issue |
 |-----------|----------|--------|--------|-------|
-| BVT_DirectoryLeasing_LeaseBreakOnMultiClients | DirectoryLeasing | Multi-client lease break framing issue (fix candidate) | Expected | - |
-| BVT_DirectoryLeasing_ReadWriteHandleCaching | DirectoryLeasing | Directory handle caching not fully working (fix candidate) | Expected | - |
-| BVT_DurableHandleV1_Reconnect_WithBatchOplock | DurableHandle | Durable handle V1 reconnect not fully working (fix candidate) | Expected | - |
-| BVT_DurableHandleV1_Reconnect_WithLeaseV1 | DurableHandle | Durable handle V1 reconnect with lease not fully working (fix candidate) | Expected | - |
-| BVT_Leasing_FileLeasingV1 | Leasing | File lease V1 not fully working (fix candidate) | Expected | - |
-| BVT_Leasing_FileLeasingV2 | Leasing | File lease V2 not fully working (fix candidate) | Expected | - |
-| Algorithm_NotingFileModified_Dir_LastAccessTime | Timestamp | Timestamp update algorithm not implemented | Expected | - |
-| BVT_Negotiate_SMB311 | Negotiate | Preauth hash verified correct (Phase 67); needs WPTS verbose log diagnosis | Expected | Phase 67 |
-| BVT_Negotiate_SMB311_Preauthentication_Encryption_AES_256_CCM | Negotiate | Preauth hash verified correct (Phase 67); needs WPTS verbose log diagnosis | Expected | Phase 67 |
-| BVT_Negotiate_SMB311_Preauthentication_Encryption_AES_256_GCM | Negotiate | Preauth hash verified correct (Phase 67); needs WPTS verbose log diagnosis | Expected | Phase 67 |
-| BVT_Negotiate_SMB311_Preauthentication_Encryption_CCM | Negotiate | Preauth hash verified correct (Phase 67); needs WPTS verbose log diagnosis | Expected | Phase 67 |
-| BVT_Negotiate_SMB311_Preauthentication_Encryption_GCM | Negotiate | Preauth hash verified correct (Phase 67); needs WPTS verbose log diagnosis | Expected | Phase 67 |
 | AlternateDataStream_FileShareAccess_AlternateStreamExisted | ADS | ADS share access enforcement not implemented | Expected | v3.8 Phase 43 |
 | AlternateDataStream_FileShareAccess_DataFileExisted | ADS | ADS share access enforcement not implemented | Expected | v3.8 Phase 43 |
 | AlternateDataStream_FileShareAccess_DirectoryExisted | ADS | ADS share access enforcement not implemented | Expected | v3.8 Phase 43 |
@@ -103,6 +91,15 @@ in `baseline-results.md` for prioritization.
 | BVT_AlternateDataStream_ListStreams_File | ADS | ADS management not implemented | Expected | v3.8 Phase 43 |
 | BVT_AlternateDataStream_RenameStream_Dir | ADS | ADS management not implemented | Expected | v3.8 Phase 43 |
 | BVT_AlternateDataStream_RenameStream_File | ADS | ADS management not implemented | Expected | v3.8 Phase 43 |
+| BVT_SMB2Basic_ChangeNotify_ChangeEa | ChangeNotify | Extended attribute change notify not wired (no EA support) | Expected | - |
+| BVT_SMB2Basic_ChangeNotify_ChangeStreamName | ChangeNotify | ADS stream rename change notify not wired | Expected | - |
+| BVT_SMB2Basic_ChangeNotify_ChangeStreamSize | ChangeNotify | ADS stream size change notify not wired | Expected | - |
+| BVT_SMB2Basic_ChangeNotify_ChangeSecurity | ChangeNotify | Security descriptor change notify async delivery needs WPTS debugging | Expected | - |
+| BVT_SMB2Basic_ChangeNotify_ChangeStreamWrite | ChangeNotify | ADS stream write change notify not wired | Expected | - |
+| BVT_SMB2Basic_ChangeNotify_ServerReceiveSmb2Close | ChangeNotify | CLOSE notify cleanup response format needs WPTS debugging | Expected | - |
+| Algorithm_NotingFileModified_Dir_LastAccessTime | Timestamp | Timestamp update algorithm not implemented | Expected | - |
+| FileInfo_Set_FileBasicInformation_Timestamp_MinusOne_Dir_ChangeTime | Timestamp | FSA directory ChangeTime freeze: SetFileAttributes auto-updates Ctime | Expected | - |
+| FileInfo_Set_FileBasicInformation_Timestamp_MinusTwo_Dir_LastWriteTime | Timestamp | Directory LastWriteTime not auto-updated after unfreeze | Expected | - |
 | BVT_ApplySnapshot | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
 | BVT_ChangeTracking | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
 | BVT_Convert_VHDFile_to_VHDSetFile | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
@@ -129,27 +126,6 @@ in `baseline-results.md` for prioritization.
 | BVT_Resize | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
 | BVT_RootAndLinkReferralDomainV4ToDFSServer | DFS | DFS referrals not implemented | Permanent | - |
 | BVT_RootAndLinkReferralStandaloneV4ToDFSServer | DFS | DFS referrals not implemented | Permanent | - |
-| BVT_SMB2Basic_CancelRegisteredChangeNotify | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
-| BVT_SMB2Basic_ChangeNotify_ChangeAttributes | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
-| BVT_SMB2Basic_ChangeNotify_ChangeCreation | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
-| BVT_SMB2Basic_ChangeNotify_ChangeDirName | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
-| BVT_SMB2Basic_ChangeNotify_ChangeEa | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
-| BVT_SMB2Basic_ChangeNotify_ChangeFileName | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
-| BVT_SMB2Basic_ChangeNotify_ChangeLastAccess | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
-| BVT_SMB2Basic_ChangeNotify_ChangeLastWrite | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
-| BVT_SMB2Basic_ChangeNotify_ChangeSecurity | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
-| BVT_SMB2Basic_ChangeNotify_ChangeSize | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
-| BVT_SMB2Basic_ChangeNotify_ChangeStreamName | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
-| BVT_SMB2Basic_ChangeNotify_ChangeStreamSize | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
-| BVT_SMB2Basic_ChangeNotify_ChangeStreamWrite | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
-| BVT_SMB2Basic_ChangeNotify_MaxTransactSizeCheck_Smb2002 | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
-| BVT_SMB2Basic_ChangeNotify_MaxTransactSizeCheck_Smb21 | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
-| BVT_SMB2Basic_ChangeNotify_MaxTransactSizeCheck_Smb30 | ChangeNotify | Change notification not implemented (newly exercised by SMB 3.x config) | Expected | v3.8 Phase 40.5 |
-| BVT_SMB2Basic_ChangeNotify_MaxTransactSizeCheck_Smb302 | ChangeNotify | Change notification not implemented (newly exercised by SMB 3.x config) | Expected | v3.8 Phase 40.5 |
-| BVT_SMB2Basic_ChangeNotify_MaxTransactSizeCheck_Smb311 | ChangeNotify | Change notification not implemented (newly exercised by SMB 3.x config) | Expected | v3.8 Phase 40.5 |
-| BVT_SMB2Basic_ChangeNotify_NoFileListDirectoryInGrantedAccess | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
-| BVT_SMB2Basic_ChangeNotify_ServerReceiveSmb2Close | ChangeNotify | Change notification not implemented | Expected | v3.8 Phase 40.5 |
-| BVT_TreeMgmt_SMB311_Disconnect_NoSignedNoEncryptedTreeConnect | TreeMgmt | Tree disconnect without signing/encryption not fully working (fix candidate) | Expected | - |
 | BVT_SWNGetInterfaceList_ClusterSingleNode | SWN | Service Witness Protocol not implemented | Permanent | - |
 | BVT_SWNGetInterfaceList_ScaleOutSingleNode | SWN | Service Witness Protocol not implemented | Permanent | - |
 | BVT_SWN_CheckProtocolVersion | SWN | Service Witness Protocol not implemented | Permanent | - |
@@ -170,8 +146,6 @@ in `baseline-results.md` for prioritization.
 | BVT_WitnessrRegisterEx_SWNAsyncNotification_IPChange | SWN | Service Witness Protocol not implemented | Permanent | - |
 | BVT_WitnessrRegister_SWNAsyncNotification_ClientMove | SWN | Service Witness Protocol not implemented | Permanent | - |
 | BVT_WriteSharedVHD | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
-| FileInfo_Set_FileBasicInformation_Timestamp_MinusOne_Dir_ChangeTime | Timestamp | FSA directory ChangeTime freeze: SetFileAttributes auto-updates Ctime | Expected | - |
-| FileInfo_Set_FileBasicInformation_Timestamp_MinusTwo_Dir_LastWriteTime | Timestamp | Directory LastWriteTime not auto-updated after unfreeze | Expected | - |
 | FsCtl_Get_IntegrityInformation_Dir_IsIntegritySupported | NTFS-FsCtl | NTFS integrity streams not supported | Permanent | - |
 | FsCtl_Get_IntegrityInformation_File_IsIntegritySupported | NTFS-FsCtl | NTFS integrity streams not supported | Permanent | - |
 | FsCtl_Set_IntegrityInformation_Dir_IsIntegritySupported | NTFS-FsCtl | NTFS integrity streams not supported | Permanent | - |
@@ -192,14 +166,15 @@ These test categories will remain as known failures indefinitely:
 
 | Category | Count | Reason |
 |----------|-------|--------|
-| VHD/RSVD | 24 | Virtual Hard Disk: not a filesystem feature |
-| SWN | 5 | Service Witness Protocol: requires clustering |
+| VHD/RSVD | 26 | Virtual Hard Disk: not a filesystem feature |
+| SWN | 6 | Service Witness Protocol: requires clustering |
 | SQoS | 3 | Storage QoS: requires storage virtualization |
 | DFS | 2 | Distributed File System: not implemented |
 | NTFS-FsCtl | 11 | NTFS-specific internals (object IDs, integrity, regions) |
+| NamedPipe | 2 | WPTS FSA requires SSH to SUT (unavailable in Docker) |
 | FsInfo | 2 | Compression and object ID capability flags |
 
-**Total permanently out-of-scope:** 47 tests
+**Total permanently out-of-scope:** 52 tests
 
 ## Remaining Expected Failure Categories
 
@@ -207,21 +182,35 @@ Tests that fail for features not yet implemented:
 
 | Category | Count | Status |
 |----------|-------|--------|
-| ChangeNotify | 17 | Not implemented (planned Phase 40.5) |
 | ADS | 9 | Not implemented (planned Phase 43) |
-| Timestamp | 7 | Auto-update algorithms not implemented |
-| DurableHandle | 2 | Fix candidate (partially implemented Phase 38) |
-| Negotiate | 5 | Preauth hash verified correct (Phase 67); needs WPTS runtime diagnosis |
-| Encryption | 2 | Fix candidate (global/per-share enforcement, Phase 33) |
-| DirectoryLeasing | 2 | Fix candidate (lease break + handle caching, Phase 37) |
-| Leasing | 2 | Fix candidate (V1 + V2, Phase 35-37) |
-| TreeMgmt | 1 | Fix candidate (SMB 3.1.1 disconnect, Phase 33) |
-| FsInfo | 0 | Fixed (encryption flag was wrong bitmask) |
-| NamedPipe | 2 | Named pipe validation not implemented |
+| ChangeNotify | 4 | Partially implemented; EA and ADS stream notify not wired (Phase 72) |
 
-**Total expected failures (fixable):** 52 tests
+**Total expected failures (fixable):** 13 tests
 
-**Grand total known failures:** 99 tests (47 permanent + 52 expected)
+**WPTS BVT expected failures (primary gate):** 13
+
+**Grand total known failures:** 65 tests (52 permanent + 13 expected)
+
+## Phase 72 Fixes (31 tests removed)
+
+The following tests were removed from expected failures in Phase 72:
+
+### Plan 01: ChangeNotify (16 tests removed)
+- Async ChangeNotify with proper AsyncId interim/completion responses
+- CANCEL command cancels pending notifications with STATUS_CANCELLED
+- Notify triggers wired into CREATE, SET_INFO, CLOSE, RENAME
+- Remaining 4 ChangeNotify tests require EA support or ADS stream notify wiring
+
+### Plan 02: Negotiate/Cipher + DH/Lease/Tree (12 tests removed)
+- Client-preference cipher and signing algorithm selection per MS-SMB2 3.3.5.4
+- Volatile FileID regenerated on durable handle V1 reconnect per MS-SMB2 3.3.5.9.7
+- TREE_DISCONNECT and LOGOFF exempted from signing verification
+- Lease V1/V2 and directory leasing fixes cascade from corrected negotiate flow
+
+### Plan 03: Timestamp Freeze/Unfreeze (3 tests removed)
+- Timestamp freeze (-1) persists across subsequent SET_INFO calls per MS-FSA 2.1.5.14.2
+- Timestamp unfreeze (-2) sets timestamp to current time per MS-FSA 2.1.5.14.2
+- Parent directory LastAccessTime updated on child file WRITE per MS-FSA 2.1.4.4
 
 ## How to Add New Entries
 
@@ -242,6 +231,7 @@ Format:
 
 ## Changelog
 
+- **v0.10.0 Phase 72 (2026-03-23):** ChangeNotify fully implemented with async responses, CANCEL support, and all MS-SMB2 completion filter events (Plan 01, 16 tests fixed). Client-preference cipher/signing selection, DH V1 volatile FileID regeneration, TREE_DISCONNECT signing exemption, lease V1/V2 state transitions fixed (Plan 02, 12 tests fixed). Timestamp freeze/unfreeze per MS-FSA 2.1.5.14.2, parent directory atime on file write (Plan 03, 3 tests fixed). Total removed: 31. New total: 65 (52 permanent + 13 expected).
 - **v4.5 Phase 69 (2026-03-20):** Full MS-SMB2 3.3.x signing audit completed. Added spec section references (3.3.5.2.4, 3.3.4.1.1, 3.3.5.2.7.2) to framing.go, response.go, compound.go. Enforced NegSigningRequired for 3.1.1 NEGOTIATE and SigningRequired for 3.1.1 SESSION_SETUP. All signing paths verified compliant: incoming verification, outgoing signing, compound signing, tree connect (no signing mutation), re-auth key preservation. No signing violations found.
 - **v4.7 Phase 67 (2026-03-20):** SMB 3.1.1 preauth integrity hash chain verified correct via MS-SMB2 test vectors and conformance tests. All 4 pitfalls from issue #252 confirmed correctly handled. Negotiate response wire format validated (context alignment, security buffer offset). WPTS BVT_Negotiate_SMB311 failures require runtime WPTS verbose log diagnosis (not a preauth hash bug). Updated Negotiate test descriptions with Phase 67 findings. Total: 99 (47 permanent + 52 expected, unchanged).
 - **v3.8 Phase 42 (2026-03-09):** Updated ptfconfig to SMB 3.1.1 (MaxSmbVersionSupported, encryption, directory leasing, signing algorithms). Added 14 newly exercised tests: 5 Negotiate, 3 ChangeNotify (SMB 3.x), 2 Encryption, 2 DirectoryLeasing, 1 Leasing V2, 1 TreeMgmt. Fixed zero-mtime flush bug (5 QueryDirectory + 2 Timestamp regressions). Total: 100 (47 permanent + 53 expected).

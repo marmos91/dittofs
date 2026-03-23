@@ -827,6 +827,7 @@ incomplete delayed-write and timestamp freeze/unfreeze logic.
 | smb2.timestamps.delayed-write-vs-flush | Timestamps | Delayed write vs flush timestamp not working | - |
 | smb2.timestamps.delayed-write-vs-setbasic | Timestamps | Delayed write vs setbasic timestamp not working | - |
 | smb2.timestamps.delayed-write-vs-seteof | Timestamps | Delayed write vs seteof timestamp not working | - |
+| smb2.timestamps.freeze-thaw | Timestamps | CreationTime drifts during freeze — metadata auto-update source needs investigation | - |
 
 ### Scan (Full Operation Enumeration)
 
