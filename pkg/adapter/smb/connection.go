@@ -81,6 +81,13 @@ func (c *Connection) TrackSession(sessionID uint64) {
 
 // UntrackSession removes a session from this connection's tracking.
 // Called when LOGOFF is processed.
+//
+// LOGOFF is processed synchronously on the read loop to guarantee the
+// LoggedOff flag is visible before the next request is read. Registry
+// deregistration is done asynchronously to avoid adding lock contention
+// in this critical path — contention widens the race window, causing
+// the signing verifier to return STATUS_ACCESS_DENIED instead of
+// STATUS_USER_SESSION_DELETED.
 func (c *Connection) UntrackSession(sessionID uint64) {
 	c.sessionsMu.Lock()
 	defer c.sessionsMu.Unlock()
@@ -89,9 +96,9 @@ func (c *Connection) UntrackSession(sessionID uint64) {
 		"sessionID", sessionID,
 		"address", c.conn.RemoteAddr().String())
 
-	// Deregister from the client registry.
+	// Deregister from the client registry asynchronously.
 	if rt := c.server.Registry; rt != nil {
-		rt.Clients().Deregister(smbClientID(sessionID))
+		go rt.Clients().Deregister(smbClientID(sessionID))
 	}
 }
 
