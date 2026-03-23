@@ -292,6 +292,8 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 					parentPath := GetParentPath(openFile.Path)
 					h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, openFile.FileName, FileActionRemoved)
 				}
+				// Restore frozen timestamps on parent directory handles
+				h.restoreParentDirFrozenTimestamps(authCtx, openFile.ParentHandle)
 			}
 		}
 	}

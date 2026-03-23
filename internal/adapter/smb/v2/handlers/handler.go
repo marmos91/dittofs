@@ -225,9 +225,11 @@ type OpenFile struct {
 	// Timestamp freeze/unfreeze state per MS-FSA 2.1.5.14.2.
 	// These flags are per-open-handle state and are lost on server restart,
 	// which is correct per the spec (frozen state is tied to the open handle).
+	BtimeFrozen bool       // CreationTime frozen (don't auto-update)
 	MtimeFrozen bool       // LastWriteTime frozen (don't auto-update on WRITE)
 	CtimeFrozen bool       // ChangeTime frozen (don't auto-update on WRITE)
 	AtimeFrozen bool       // LastAccessTime frozen (don't auto-update on READ)
+	FrozenBtime *time.Time // Saved Btime (CreationTime) value at freeze time
 	FrozenMtime *time.Time // Saved Mtime value at freeze time
 	FrozenCtime *time.Time // Saved Ctime value at freeze time
 	FrozenAtime *time.Time // Saved Atime value at freeze time

@@ -1151,6 +1151,14 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		}
 	}
 
+	// Per MS-FSA 2.1.5.14.2: The metadata service updates parent directory
+	// timestamps (Mtime/Ctime/Atime) when entries are added. If any open
+	// handle on the parent directory has frozen timestamps, restore them
+	// so the frozen values are preserved despite the auto-update.
+	if createAction == types.FileCreated || createAction == types.FileOverwritten || createAction == types.FileSuperseded {
+		h.restoreParentDirFrozenTimestamps(authCtx, parentHandle)
+	}
+
 	// ========================================================================
 	// Step 10: Build success response
 	// ========================================================================

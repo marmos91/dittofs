@@ -288,10 +288,8 @@ func (h *Handler) setFileInfoFromStore(
 			"mtimeFT", fmt.Sprintf("0x%016X", mtimeFT),
 			"ctimeFT", fmt.Sprintf("0x%016X", ctimeFT))
 
-		// Note: CreationTime freeze/unfreeze sentinels are detected but not acted upon.
-		// MS-FSA does not require CreationTime auto-update suppression because
-		// CreationTime is never auto-updated by the server after file creation.
-		hasFreezeOrUnfreeze := isFiletimeSentinel(atimeFT) ||
+		hasFreezeOrUnfreeze := isFiletimeSentinel(creationFT) ||
+			isFiletimeSentinel(atimeFT) ||
 			isFiletimeSentinel(mtimeFT) ||
 			isFiletimeSentinel(ctimeFT)
 
@@ -313,6 +311,9 @@ func (h *Handler) setFileInfoFromStore(
 		// won't auto-update them (e.g., Ctime auto-update when Mode changes).
 		if preFile != nil {
 			// For freeze (-1): pin to pre-change value to prevent auto-update
+			if creationFT == filetimeFreeze {
+				setAttrs.CreationTime = &preFile.CreationTime
+			}
 			if ctimeFT == filetimeFreeze {
 				setAttrs.Ctime = &preFile.Ctime
 			}
@@ -325,6 +326,9 @@ func (h *Handler) setFileInfoFromStore(
 			// For unfreeze (-2): per MS-FSA 2.1.5.14.2, re-enable auto-update
 			// AND set the timestamp to the current time.
 			unfreezeNow := time.Now()
+			if creationFT == filetimeUnfreeze {
+				setAttrs.CreationTime = &unfreezeNow
+			}
 			if ctimeFT == filetimeUnfreeze {
 				setAttrs.Ctime = &unfreezeNow
 			}
@@ -339,6 +343,9 @@ func (h *Handler) setFileInfoFromStore(
 		// Per MS-FSA 2.1.5.14.2: When a timestamp is frozen from a prior
 		// SET_INFO call (no sentinel in this call, ctimeFT==0), pin to the
 		// frozen value to prevent the metadata service from auto-updating it.
+		if creationFT == 0 && openFile.BtimeFrozen && openFile.FrozenBtime != nil {
+			setAttrs.CreationTime = openFile.FrozenBtime
+		}
 		if ctimeFT == 0 && openFile.CtimeFrozen && openFile.FrozenCtime != nil {
 			setAttrs.Ctime = openFile.FrozenCtime
 		}
@@ -369,6 +376,17 @@ func (h *Handler) setFileInfoFromStore(
 		// preFile is non-nil only when hasFreezeOrUnfreeze is true, which
 		// guarantees at least one switch case will match.
 		if preFile != nil {
+			// CreationTime (Btime) - offset 0
+			switch creationFT {
+			case filetimeFreeze:
+				openFile.BtimeFrozen = true
+				openFile.FrozenBtime = &preFile.CreationTime
+				logger.Debug("SET_INFO: froze CreationTime", "path", openFile.Path, "value", preFile.CreationTime)
+			case filetimeUnfreeze:
+				openFile.BtimeFrozen = false
+				openFile.FrozenBtime = nil
+			}
+
 			// LastWriteTime (Mtime) - offset 16
 			switch mtimeFT {
 			case filetimeFreeze:
@@ -623,6 +641,13 @@ func (h *Handler) setFileInfoFromStore(
 			}
 		}
 
+		// Restore frozen timestamps on parent directory handles (source and destination).
+		// Rename modifies both source and destination parent directories' Mtime/Ctime.
+		h.restoreParentDirFrozenTimestamps(authCtx, openFile.ParentHandle)
+		if string(toDir) != string(openFile.ParentHandle) {
+			h.restoreParentDirFrozenTimestamps(authCtx, toDir)
+		}
+
 		// Update open file state to reflect the new path.
 		// Compute actual resulting path from the destination directory and name,
 		// since newPath may be relative when RootDirectory is non-zero.
@@ -765,6 +790,9 @@ func (h *Handler) setFileInfoFromStore(
 // For both files and directories, if a timestamp was frozen via SET_INFO(-1),
 // the frozen value is returned regardless of any subsequent store modifications.
 func applyFrozenTimestamps(openFile *OpenFile, file *metadata.File) {
+	if openFile.BtimeFrozen && openFile.FrozenBtime != nil {
+		file.CreationTime = *openFile.FrozenBtime
+	}
 	if openFile.MtimeFrozen && openFile.FrozenMtime != nil {
 		file.Mtime = *openFile.FrozenMtime
 	}
@@ -799,10 +827,13 @@ func (h *Handler) saveTimestamps(authCtx *metadata.AuthContext, handle metadata.
 // restoreFrozenTimestamps restores timestamps that are frozen via SET_INFO -1 sentinel.
 // Called after operations that unconditionally update timestamps (WRITE, truncate).
 func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFile *OpenFile) {
-	if !openFile.MtimeFrozen && !openFile.CtimeFrozen && !openFile.AtimeFrozen {
+	if !openFile.BtimeFrozen && !openFile.MtimeFrozen && !openFile.CtimeFrozen && !openFile.AtimeFrozen {
 		return
 	}
 	restoreAttrs := &metadata.SetAttrs{}
+	if openFile.BtimeFrozen && openFile.FrozenBtime != nil {
+		restoreAttrs.CreationTime = openFile.FrozenBtime
+	}
 	if openFile.MtimeFrozen && openFile.FrozenMtime != nil {
 		restoreAttrs.Mtime = openFile.FrozenMtime
 	}
@@ -812,7 +843,7 @@ func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFil
 	if openFile.AtimeFrozen && openFile.FrozenAtime != nil {
 		restoreAttrs.Atime = openFile.FrozenAtime
 	}
-	if restoreAttrs.Mtime != nil || restoreAttrs.Ctime != nil || restoreAttrs.Atime != nil {
+	if restoreAttrs.CreationTime != nil || restoreAttrs.Mtime != nil || restoreAttrs.Ctime != nil || restoreAttrs.Atime != nil {
 		logger.Debug("restoreFrozenTimestamps: restoring",
 			"path", openFile.Path,
 			"mtimeFrozen", openFile.MtimeFrozen,
@@ -836,6 +867,26 @@ func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFil
 			}
 		}
 	}
+}
+
+// restoreParentDirFrozenTimestamps iterates all open directory handles and, for
+// any that reference the given parentHandle and have frozen timestamps, restores
+// those frozen values. This is needed because directory metadata is updated by
+// the metadata service directly (e.g., Mtime/Ctime on create/remove) and those
+// updates bypass the SMB handler's timestamp freeze logic.
+func (h *Handler) restoreParentDirFrozenTimestamps(authCtx *metadata.AuthContext, parentHandle metadata.FileHandle) {
+	parentKey := string(parentHandle)
+	h.files.Range(func(key, value any) bool {
+		of := value.(*OpenFile)
+		if !of.IsDirectory || string(of.MetadataHandle) != parentKey {
+			return true
+		}
+		if !of.MtimeFrozen && !of.CtimeFrozen && !of.AtimeFrozen {
+			return true
+		}
+		h.restoreFrozenTimestamps(authCtx, of)
+		return true
+	})
 }
 
 // setSecurityInfo handles SET_INFO for security descriptors.
@@ -889,6 +940,11 @@ func (h *Handler) setSecurityInfo(
 	if err != nil {
 		logger.Debug("SET_INFO: failed to set security info", "path", openFile.Path, "error", err)
 		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+	}
+
+	// Notify watchers about security descriptor changes
+	if h.NotifyRegistry != nil {
+		h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified)
 	}
 
 	return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
