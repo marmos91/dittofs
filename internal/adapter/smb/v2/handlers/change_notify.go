@@ -156,9 +156,18 @@ func NewNotifyRegistry() *NotifyRegistry {
 	}
 }
 
+// MaxPendingWatches is the maximum number of concurrent ChangeNotify watches
+// allowed globally. Prevents memory exhaustion from clients registering
+// unbounded watches without cancelling them.
+const MaxPendingWatches = 4096
+
+// ErrTooManyWatches is returned when the global watch limit is exceeded.
+var ErrTooManyWatches = fmt.Errorf("too many pending ChangeNotify watches (max %d)", MaxPendingWatches)
+
 // Register adds a pending notification request.
 // If a request with the same FileID already exists, it is replaced.
-func (r *NotifyRegistry) Register(notify *PendingNotify) {
+// Returns ErrTooManyWatches if the global limit would be exceeded.
+func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -166,6 +175,8 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) {
 	// to keep data structures consistent.
 	if old, ok := r.byFileID[string(notify.FileID[:])]; ok {
 		r.unregisterLocked(old)
+	} else if len(r.byFileID) >= MaxPendingWatches {
+		return ErrTooManyWatches
 	}
 
 	r.byFileID[string(notify.FileID[:])] = notify
@@ -176,7 +187,10 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) {
 	logger.Debug("NotifyRegistry: registered watch",
 		"path", notify.WatchPath,
 		"filter", fmt.Sprintf("0x%08X", notify.CompletionFilter),
-		"recursive", notify.WatchTree)
+		"recursive", notify.WatchTree,
+		"totalWatches", len(r.byFileID))
+
+	return nil
 }
 
 // Unregister removes a pending notification by FileID.

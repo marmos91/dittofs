@@ -290,7 +290,12 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		AsyncCallback:    ctx.AsyncNotifyCallback,
 	}
 
-	h.NotifyRegistry.Register(notify)
+	if err := h.NotifyRegistry.Register(notify); err != nil {
+		logger.Warn("CHANGE_NOTIFY: rejected — too many pending watches",
+			"path", watchPath,
+			"sessionID", ctx.SessionID)
+		return NewErrorResult(types.StatusInsufficientResources), nil
+	}
 
 	hasAsyncCallback := ctx.AsyncNotifyCallback != nil
 	logger.Debug("CHANGE_NOTIFY: registered watch",
