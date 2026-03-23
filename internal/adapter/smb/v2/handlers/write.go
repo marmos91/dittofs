@@ -391,6 +391,13 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		_ = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{Atime: &now})
 	}
 
+	// Per MS-FSA 2.1.4.4 (Algorithm for Noting File Modified): When a file
+	// is modified, the parent directory's LastAccessTime is also updated.
+	if len(openFile.ParentHandle) > 0 {
+		now := time.Now()
+		_ = metaSvc.SetFileAttributes(authCtx, openFile.ParentHandle, &metadata.SetAttrs{Atime: &now})
+	}
+
 	// Update cached PayloadID in OpenFile
 	openFile.PayloadID = writeOp.PayloadID
 

@@ -312,15 +312,41 @@ func (h *Handler) setFileInfoFromStore(
 		// Pin sentinel timestamps to their current value so SetFileAttributes
 		// won't auto-update them (e.g., Ctime auto-update when Mode changes).
 		if preFile != nil {
-			if isFiletimeSentinel(ctimeFT) {
+			// For freeze (-1): pin to pre-change value to prevent auto-update
+			if ctimeFT == filetimeFreeze {
 				setAttrs.Ctime = &preFile.Ctime
 			}
-			if isFiletimeSentinel(mtimeFT) {
+			if mtimeFT == filetimeFreeze {
 				setAttrs.Mtime = &preFile.Mtime
 			}
-			if isFiletimeSentinel(atimeFT) {
+			if atimeFT == filetimeFreeze {
 				setAttrs.Atime = &preFile.Atime
 			}
+			// For unfreeze (-2): per MS-FSA 2.1.5.14.2, re-enable auto-update
+			// AND set the timestamp to the current time.
+			unfreezeNow := time.Now()
+			if ctimeFT == filetimeUnfreeze {
+				setAttrs.Ctime = &unfreezeNow
+			}
+			if mtimeFT == filetimeUnfreeze {
+				setAttrs.Mtime = &unfreezeNow
+			}
+			if atimeFT == filetimeUnfreeze {
+				setAttrs.Atime = &unfreezeNow
+			}
+		}
+
+		// Per MS-FSA 2.1.5.14.2: When a timestamp is frozen from a prior
+		// SET_INFO call (no sentinel in this call, ctimeFT==0), pin to the
+		// frozen value to prevent the metadata service from auto-updating it.
+		if ctimeFT == 0 && openFile.CtimeFrozen && openFile.FrozenCtime != nil {
+			setAttrs.Ctime = openFile.FrozenCtime
+		}
+		if mtimeFT == 0 && openFile.MtimeFrozen && openFile.FrozenMtime != nil {
+			setAttrs.Mtime = openFile.FrozenMtime
+		}
+		if atimeFT == 0 && openFile.AtimeFrozen && openFile.FrozenAtime != nil {
+			setAttrs.Atime = openFile.FrozenAtime
 		}
 
 		// Per MS-FSA 2.1.5.14.2: When FileAttributes change, the object store
