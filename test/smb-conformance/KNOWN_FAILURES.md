@@ -1,6 +1,6 @@
 # Known Failures - SMB Conformance (WPTS BVT)
 
-Last updated: 2026-03-23 (Phase 72: ChangeNotify, Negotiate, Lease, DH, Timestamp fixes)
+Last updated: 2026-03-24 (Phase 73: ADS, ChangeNotify, timestamp freeze-thaw, compound, lease, DH fixes)
 
 Tests listed here are expected to fail. CI will pass (exit 0) as long as
 all failures are in this list. New failures not listed here will cause CI to fail.
@@ -12,7 +12,7 @@ row (`Test Name`) are ignored.
 ## Baseline Status
 
 - **Initial baseline (Phase 29.8):** 133/240 BVT tests passing
-- **Current baseline (Phase 72):** 65 known failures (52 permanent + 13 expected)
+- **Current baseline (Phase 73):** 56 known failures (53 permanent + 3 expected)
 - **Target:** All BVT tests pass except genuinely unimplemented features
 
 ## Phase 30-32 Improvements
@@ -82,23 +82,8 @@ in `baseline-results.md` for prioritization.
 
 | Test Name | Category | Reason | Status | Issue |
 |-----------|----------|--------|--------|-------|
-| AlternateDataStream_FileShareAccess_AlternateStreamExisted | ADS | ADS share access enforcement not implemented | Expected | v3.8 Phase 43 |
-| AlternateDataStream_FileShareAccess_DataFileExisted | ADS | ADS share access enforcement not implemented | Expected | v3.8 Phase 43 |
-| AlternateDataStream_FileShareAccess_DirectoryExisted | ADS | ADS share access enforcement not implemented | Expected | v3.8 Phase 43 |
-| BVT_AlternateDataStream_DeleteStream_Dir | ADS | ADS management not implemented | Expected | v3.8 Phase 43 |
-| BVT_AlternateDataStream_DeleteStream_File | ADS | ADS management not implemented | Expected | v3.8 Phase 43 |
-| BVT_AlternateDataStream_ListStreams_Dir | ADS | ADS management not implemented | Expected | v3.8 Phase 43 |
-| BVT_AlternateDataStream_ListStreams_File | ADS | ADS management not implemented | Expected | v3.8 Phase 43 |
-| BVT_AlternateDataStream_RenameStream_Dir | ADS | ADS management not implemented | Expected | v3.8 Phase 43 |
-| BVT_AlternateDataStream_RenameStream_File | ADS | ADS management not implemented | Expected | v3.8 Phase 43 |
-| BVT_SMB2Basic_ChangeNotify_ChangeEa | ChangeNotify | Extended attribute change notify not wired (no EA support) | Expected | - |
-| BVT_SMB2Basic_ChangeNotify_ChangeStreamName | ChangeNotify | ADS stream rename change notify not wired | Expected | - |
-| BVT_SMB2Basic_ChangeNotify_ChangeStreamSize | ChangeNotify | ADS stream size change notify not wired | Expected | - |
-| BVT_SMB2Basic_ChangeNotify_ChangeSecurity | ChangeNotify | Security descriptor change notify async delivery needs WPTS debugging | Expected | - |
-| BVT_SMB2Basic_ChangeNotify_ChangeStreamWrite | ChangeNotify | ADS stream write change notify not wired | Expected | - |
-| BVT_SMB2Basic_ChangeNotify_ServerReceiveSmb2Close | ChangeNotify | CLOSE notify cleanup response format needs WPTS debugging | Expected | - |
-| Algorithm_NotingFileModified_Dir_LastAccessTime | Timestamp | Timestamp update algorithm not implemented | Expected | - |
-| FileInfo_Set_FileBasicInformation_Timestamp_MinusOne_Dir_ChangeTime | Timestamp | FSA directory ChangeTime freeze: SetFileAttributes auto-updates Ctime | Expected | - |
+| Algorithm_NotingFileModified_Dir_LastAccessTime | Timestamp | Directory LastAccessTime auto-update on child file modification | Expected | - |
+| FileInfo_Set_FileBasicInformation_Timestamp_MinusOne_Dir_ChangeTime | Timestamp | Directory ChangeTime freeze not enforced during child operations | Expected | - |
 | FileInfo_Set_FileBasicInformation_Timestamp_MinusTwo_Dir_LastWriteTime | Timestamp | Directory LastWriteTime not auto-updated after unfreeze | Expected | - |
 | BVT_ApplySnapshot | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
 | BVT_ChangeTracking | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
@@ -152,6 +137,7 @@ in `baseline-results.md` for prioritization.
 | FsCtl_Set_IntegrityInformation_File_IsIntegritySupported | NTFS-FsCtl | NTFS integrity streams not supported | Permanent | - |
 | FsInfo_Query_FileFsAttributeInformation_File_IsCompressionSupported | FsInfo | Compression not supported | Permanent | - |
 | FsInfo_Query_FileFsAttributeInformation_File_IsObjectIDsSupported | FsInfo | Object IDs not supported | Permanent | - |
+| BVT_SMB2Basic_ChangeNotify_ChangeEa | ChangeNotify | Extended attributes not implemented; ChangeEa never fires | Permanent | - |
 
 ## Status Legend
 
@@ -174,7 +160,7 @@ These test categories will remain as known failures indefinitely:
 | NamedPipe | 2 | WPTS FSA requires SSH to SUT (unavailable in Docker) |
 | FsInfo | 2 | Compression and object ID capability flags |
 
-**Total permanently out-of-scope:** 52 tests
+**Total permanently out-of-scope:** 53 tests
 
 ## Remaining Expected Failure Categories
 
@@ -182,14 +168,13 @@ Tests that fail for features not yet implemented:
 
 | Category | Count | Status |
 |----------|-------|--------|
-| ADS | 9 | Not implemented (planned Phase 43) |
-| ChangeNotify | 4 | Partially implemented; EA and ADS stream notify not wired (Phase 72) |
+| Timestamp | 3 | Directory timestamp edge cases (freeze-thaw, auto-update) |
 
-**Total expected failures (fixable):** 13 tests
+**Total expected failures (fixable):** 3 tests
 
-**WPTS BVT expected failures (primary gate):** 13
+**WPTS BVT expected failures (primary gate):** 3
 
-**Grand total known failures:** 65 tests (52 permanent + 13 expected)
+**Grand total known failures:** 56 tests (53 permanent + 3 expected)
 
 ## Phase 72 Fixes (31 tests removed)
 
@@ -231,6 +216,7 @@ Format:
 
 ## Changelog
 
+- **v0.10.0 Phase 73 (2026-03-24):** SMB Conformance Deep-Dive. Plan 01: ChangeNotify ADS stream notifications wired (5 tests). Plan 02: ADS share access + timestamp conformance (9 ADS + 3 timestamp tests removed). Plan 03: ChangeNotify completion, session re-auth, anonymous encryption (~25 smbtorture tests). Plan 04: DH/lease state machine fixes (~26 smbtorture tests). Plan 05: Per-field CreationTime freeze/unfreeze, ChangeEa reclassified as Permanent. Total: 56 (53 permanent + 3 expected).
 - **v0.10.0 Phase 72 (2026-03-23):** ChangeNotify fully implemented with async responses, CANCEL support, and all MS-SMB2 completion filter events (Plan 01, 16 tests fixed). Client-preference cipher/signing selection, DH V1 volatile FileID regeneration, TREE_DISCONNECT signing exemption, lease V1/V2 state transitions fixed (Plan 02, 12 tests fixed). Timestamp freeze/unfreeze per MS-FSA 2.1.5.14.2, parent directory atime on file write (Plan 03, 3 tests fixed). Total removed: 31. New total: 65 (52 permanent + 13 expected).
 - **v4.5 Phase 69 (2026-03-20):** Full MS-SMB2 3.3.x signing audit completed. Added spec section references (3.3.5.2.4, 3.3.4.1.1, 3.3.5.2.7.2) to framing.go, response.go, compound.go. Enforced NegSigningRequired for 3.1.1 NEGOTIATE and SigningRequired for 3.1.1 SESSION_SETUP. All signing paths verified compliant: incoming verification, outgoing signing, compound signing, tree connect (no signing mutation), re-auth key preservation. No signing violations found.
 - **v4.7 Phase 67 (2026-03-20):** SMB 3.1.1 preauth integrity hash chain verified correct via MS-SMB2 test vectors and conformance tests. All 4 pitfalls from issue #252 confirmed correctly handled. Negotiate response wire format validated (context alignment, security buffer offset). WPTS BVT_Negotiate_SMB311 failures require runtime WPTS verbose log diagnosis (not a preauth hash bug). Updated Negotiate test descriptions with Phase 67 findings. Total: 99 (47 permanent + 52 expected, unchanged).

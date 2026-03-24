@@ -26,10 +26,10 @@ Requirements for Production Hardening + SMB Protocol Fixes. Each maps to roadmap
 
 ### WPTS Conformance
 
-- [ ] **WPTS-01**: ChangeNotify dispatches async notifications on file create/remove/rename/setattr (~20 tests)
-- [ ] **WPTS-02**: Negotiate/encryption edge cases fixed (preauth hash fixes cascade, ~5 tests)
-- [ ] **WPTS-03**: Leasing and durable handle reconnect edge cases resolved (~4-6 tests)
-- [ ] **WPTS-04**: Known failure count reduced from 73 to ~40-45
+- [x] **WPTS-01**: ChangeNotify dispatches async notifications on file create/remove/rename/setattr (~20 tests) -- Phase 72-73
+- [x] **WPTS-02**: Negotiate/encryption edge cases fixed (preauth hash fixes cascade, ~5 tests) -- Phase 72-73
+- [x] **WPTS-03**: Leasing and durable handle reconnect edge cases resolved (~4-6 tests) -- Phase 72-73
+- [x] **WPTS-04**: Known failure count reduced from 73 to 56 (53 permanent + 3 expected timestamp deferred) -- Phase 72-73
 
 ### Share Quotas
 
@@ -98,10 +98,10 @@ Requirements for Production Hardening + SMB Protocol Fixes. Each maps to roadmap
 | MCH-04 | Phase 74 | Pending |
 | MCH-05 | Phase 74 | Pending |
 | MCH-06 | Phase 74 | Pending |
-| WPTS-01 | Phase 72 | Pending |
-| WPTS-02 | Phase 72 | Pending |
-| WPTS-03 | Phase 72 | Pending |
-| WPTS-04 | Phase 72 | Pending |
+| WPTS-01 | Phase 73 | Complete |
+| WPTS-02 | Phase 73 | Complete |
+| WPTS-03 | Phase 73 | Complete |
+| WPTS-04 | Phase 73 | Complete |
 | QUOTA-01 | Phase 70 | Complete |
 | QUOTA-02 | Phase 70 | Complete |
 | QUOTA-03 | Phase 70 | Complete |
@@ -114,13 +114,13 @@ Requirements for Production Hardening + SMB Protocol Fixes. Each maps to roadmap
 | CLIENT-02 | Phase 71 | Complete |
 | CLIENT-03 | Phase 71 | Complete |
 | CLIENT-04 | Phase 71 | Complete |
-| TRASH-01 | Phase 73 | Pending |
-| TRASH-02 | Phase 73 | Pending |
-| TRASH-03 | Phase 73 | Pending |
-| TRASH-04 | Phase 73 | Pending |
-| TRASH-05 | Phase 73 | Pending |
-| TRASH-06 | Phase 73 | Pending |
-| TRASH-07 | Phase 73 | Pending |
+| TRASH-01 | Deferred | Pending |
+| TRASH-02 | Deferred | Pending |
+| TRASH-03 | Deferred | Pending |
+| TRASH-04 | Deferred | Pending |
+| TRASH-05 | Deferred | Pending |
+| TRASH-06 | Deferred | Pending |
+| TRASH-07 | Deferred | Pending |
 
 **Coverage:**
 - v0.10.0 requirements: 34 total

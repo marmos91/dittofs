@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v0.10.0
 milestone_name: Production Hardening + SMB Protocol Fixes
-status: Phase complete — ready for verification
-stopped_at: Completed 71-02-PLAN.md
-last_updated: "2026-03-22T21:41:08.952Z"
+status: Milestone complete
+stopped_at: Completed 73-05-PLAN.md
+last_updated: "2026-03-24T16:15:54.738Z"
 progress:
-  total_phases: 4
-  completed_phases: 3
-  total_plans: 10
-  completed_plans: 9
+  total_phases: 5
+  completed_phases: 5
+  total_plans: 15
+  completed_plans: 15
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-20)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Phase 71 — operational-visibility
+**Current focus:** Phase 73 — smb-conformance-deep-dive
 
 ## Current Position
 
-Phase: 71 (operational-visibility) — EXECUTING
-Plan: 2 of 2
+Phase: 73
+Plan: Not started
 
 ## Completed Milestones
 
@@ -69,6 +69,14 @@ All decisions archived in PROJECT.md Key Decisions table.
 - [Phase 71]: Local clientDisconnecter interface in adapters package to avoid import cycle
 - [Phase 71]: ForceCloseByAddress leverages existing ActiveConnections sync.Map
 - [Phase 71]: NFS-specific session handlers split to nfs_clients.go, kept under /adapters/nfs/
+- [Phase 73]: Extended MatchesFilter for stream filters rather than separate stream notification path
+- [Phase 73]: ChangeEa moved to Permanent status (EA not planned)
+- [Phase 73]: ADS share access, management, and timestamp implementations verified working from Phase 72 -- removed 12 stale expected failures
+- [Phase 73]: AsyncResponseRegistry as separate struct for general-purpose async ops
+- [Phase 73]: Re-auth re-derives keys via configureSessionSigningWithKey on existing session per MS-SMB2 3.3.5.5.3
+- [Phase 73]: Anonymous/guest sessions bypass encryption enforcement per MS-SMB2 3.3.5.2.9
+- [Phase 73]: Store LeaseState in PersistedDurableHandle for reconnect restoration; return DH2Q/DHnQ response on reconnect; ExcludeLeaseKey in LockOwner for same-key break suppression; grant lease after cross-key conflict break resolves
+- [Phase 73]: CreationTime freeze/unfreeze tracked per-handle; ChangeEa reclassified as Permanent
 
 ### Pending Todos
 
@@ -80,6 +88,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-22T21:41:08.949Z
-Stopped at: Completed 71-02-PLAN.md
+Last session: 2026-03-24T15:41:48.280Z
+Stopped at: Completed 73-05-PLAN.md
 Next action: Phase 70 complete. All 3 plans executed successfully.
