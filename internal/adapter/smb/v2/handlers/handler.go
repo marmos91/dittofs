@@ -491,8 +491,17 @@ func (h *Handler) closeFilesWithFilter(
 		return true
 	})
 
-	// Second pass: delete collected file handles
+	// Second pass: delete collected file handles and clean up associated state
 	for _, fileID := range toDelete {
+		// Unregister any pending CHANGE_NOTIFY watchers for this handle.
+		// The CLOSE handler (close.go) does this for explicit closes, but
+		// closeFilesWithFilter bypasses the CLOSE handler. Without this,
+		// stale watchers persist in the NotifyRegistry after connection
+		// cleanup and can fire during subsequent tests, sending async
+		// responses on dead connections with partially-destroyed sessions.
+		if h.NotifyRegistry != nil {
+			h.NotifyRegistry.Unregister(fileID)
+		}
 		h.DeleteOpenFile(fileID)
 	}
 
