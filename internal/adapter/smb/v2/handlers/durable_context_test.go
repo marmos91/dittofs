@@ -509,16 +509,19 @@ func TestProcessDurableReconnectContext_V1Success(t *testing.T) {
 		t.Fatalf("Expected STATUS_SUCCESS, got %s", status)
 	}
 	if restored == nil {
-		t.Fatal("Expected restored OpenFile, got nil")
+		t.Fatal("Expected restored ReconnectResult, got nil")
 	}
-	if restored.Path != "test.txt" {
-		t.Errorf("Path = %s, want test.txt", restored.Path)
+	if restored.OpenFile.Path != "test.txt" {
+		t.Errorf("Path = %s, want test.txt", restored.OpenFile.Path)
 	}
-	if restored.DesiredAccess != 0x12019F {
-		t.Errorf("DesiredAccess = 0x%x, want 0x12019F", restored.DesiredAccess)
+	if restored.OpenFile.DesiredAccess != 0x12019F {
+		t.Errorf("DesiredAccess = 0x%x, want 0x12019F", restored.OpenFile.DesiredAccess)
 	}
-	if restored.OplockLevel != OplockLevelBatch {
-		t.Errorf("OplockLevel = %d, want %d", restored.OplockLevel, OplockLevelBatch)
+	if restored.OpenFile.OplockLevel != OplockLevelBatch {
+		t.Errorf("OplockLevel = %d, want %d", restored.OpenFile.OplockLevel, OplockLevelBatch)
+	}
+	if restored.IsV2 {
+		t.Error("Expected IsV2=false for V1 reconnect")
 	}
 
 	// Verify handle was deleted from store
@@ -576,10 +579,13 @@ func TestProcessDurableReconnectContext_V2Success(t *testing.T) {
 		t.Fatalf("Expected STATUS_SUCCESS, got %s", status)
 	}
 	if restored == nil {
-		t.Fatal("Expected restored OpenFile, got nil")
+		t.Fatal("Expected restored ReconnectResult, got nil")
 	}
-	if restored.Path != "report.docx" {
-		t.Errorf("Path = %s, want report.docx", restored.Path)
+	if restored.OpenFile.Path != "report.docx" {
+		t.Errorf("Path = %s, want report.docx", restored.OpenFile.Path)
+	}
+	if !restored.IsV2 {
+		t.Error("Expected IsV2=true for V2 reconnect")
 	}
 
 	// Verify handle was deleted from store

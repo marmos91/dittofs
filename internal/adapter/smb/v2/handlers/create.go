@@ -466,7 +466,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			sessionKeyHash := computeSessionKeyHash(sess)
 
 			metaSvc := h.Registry.GetMetadataService()
-			restored, status, reconnErr := ProcessDurableReconnectContext(
+			reconnResult, status, reconnErr := ProcessDurableReconnectContext(
 				authCtx.Context, h.DurableStore, metaSvc, req.CreateContexts,
 				ctx.SessionID, sess.Username, sessionKeyHash,
 				tree.ShareName, filename,
@@ -480,6 +480,8 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 					"status", status, "filename", filename)
 				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: status}}, nil
 			}
+
+			restored := reconnResult.OpenFile
 
 			// Reconnect succeeded: register the restored OpenFile.
 			// Per MS-SMB2 3.3.5.9.7: keep the persistent FileId (bytes 0-7)
@@ -498,19 +500,34 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			restored.IsDurable = true
 			restored.DurableTimeoutMs = h.DurableTimeoutMs
 
+			// Build response create contexts: DH2Q/DHnQ response + lease response
+			var reconnectContexts []CreateContext
+
+			// Per MS-SMB2 3.3.5.9.12/7: return DH2Q or DHnQ response on reconnect
+			if reconnResult.IsV2 {
+				resp := EncodeDH2QResponse(h.DurableTimeoutMs, 0)
+				reconnectContexts = append(reconnectContexts, resp)
+			} else {
+				resp := EncodeDHnQResponse()
+				reconnectContexts = append(reconnectContexts, resp)
+			}
+
 			// Re-register lease/oplock in the LeaseManager. During disconnect,
 			// ReleaseSessionLeases cleared the lease state from the LeaseManager.
 			// We must re-request it so that break notifications work and the
 			// oplock/lease is visible to other opens.
-			var reconnectContexts []CreateContext
 			if h.LeaseManager != nil && len(restored.MetadataHandle) > 0 {
 				lockFileHandle := lock.FileHandle(restored.MetadataHandle)
 
 				if restored.OplockLevel == OplockLevelLease && restored.LeaseKey != ([16]byte{}) {
-					// Re-request the lease. Since this is a durable reconnect and
-					// the handle was the only open, we request full RWH and let
-					// the LeaseManager grant what's appropriate.
-					requestedState := uint32(lock.LeaseStateRead | lock.LeaseStateWrite | lock.LeaseStateHandle)
+					// Use persisted lease state for re-request. This preserves the
+					// exact lease state the client had before disconnect rather than
+					// always requesting full RWH which may conflict or be rejected.
+					requestedState := reconnResult.PersistedLease
+					if requestedState == 0 {
+						// Fallback to RWH if lease state was not persisted
+						requestedState = uint32(lock.LeaseStateRead | lock.LeaseStateWrite | lock.LeaseStateHandle)
+					}
 
 					ownerID := fmt.Sprintf("smb:lease:%x", restored.LeaseKey)
 					clientID := fmt.Sprintf("smb:%d", ctx.SessionID)
@@ -529,7 +546,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 					if leaseErr != nil {
 						logger.Debug("CREATE: durable reconnect lease re-request failed", "error", leaseErr)
 					} else {
-						// Build lease response context if client included RqLs
+						// Build lease response context
 						if leaseCtx := FindCreateContext(req.CreateContexts, LeaseContextTagRequest); leaseCtx != nil {
 							isV1 := len(leaseCtx.Data) < LeaseV2ContextSize
 							leaseResp := &LeaseResponseContext{
@@ -547,6 +564,9 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 							restored.OplockLevel = OplockLevelLease
 						}
 					}
+
+					// Update session mapping for break notification routing
+					h.LeaseManager.UpdateSessionForLease(restored.LeaseKey, ctx.SessionID)
 				} else if restored.OplockLevel != OplockLevelNone && restored.OplockLevel != OplockLevelLease {
 					// Traditional oplock: re-request via synthetic lease key
 					var requestedState uint32
@@ -655,6 +675,22 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		}
 	}
 
+	// Extract the opener's lease key from RqLs context (if present).
+	// Used to prevent breaking our own lease on same-key opens (nobreakself).
+	var openerLeaseKey [16]byte
+	if leaseCtx := FindCreateContext(req.CreateContexts, LeaseContextTagRequest); leaseCtx != nil {
+		if lcc, lccErr := DecodeLeaseCreateContext(leaseCtx.Data); lccErr == nil {
+			openerLeaseKey = lcc.LeaseKey
+		}
+	}
+
+	// Build excludeOwner once for lease break calls below.
+	// Prevents breaking our own lease on same-key opens (MS-SMB2 nobreakself).
+	var excludeOwner *lock.LockOwner
+	if openerLeaseKey != ([16]byte{}) {
+		excludeOwner = &lock.LockOwner{ExcludeLeaseKey: openerLeaseKey}
+	}
+
 	// ========================================================================
 	// Step 5: Check if file exists
 	// ========================================================================
@@ -761,20 +797,22 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		existingHandle, handleErr := metadata.EncodeFileHandle(existingFile)
 		if handleErr == nil {
 			// Step 10: Break Handle leases before share mode check.
+			// Per MS-SMB2 3.3.5.9.8: stat-only opens (FILE_READ_ATTRIBUTES
+			// only) do NOT break existing leases.
 			// For files: wait for break to complete so share mode check is
 			// accurate (clients close cached handles during the break).
 			// For directories: dispatch the break but do NOT wait. Directory
 			// opens never conflict on share modes, and blocking here would
 			// deadlock when the other client needs this CREATE's response
 			// before it can process the break notification.
-			if h.LeaseManager != nil {
+			if h.LeaseManager != nil && !isStatOnlyOpen(req.DesiredAccess) {
 				lockFileHandle := lock.FileHandle(existingHandle)
 				if existingFile.Type == metadata.FileTypeDirectory {
-					if breakErr := h.LeaseManager.BreakHandleLeasesOnOpenAsync(lockFileHandle, tree.ShareName); breakErr != nil {
+					if breakErr := h.LeaseManager.BreakHandleLeasesOnOpenAsync(lockFileHandle, tree.ShareName, excludeOwner); breakErr != nil {
 						logger.Debug("CREATE: directory handle lease break failed", "error", breakErr)
 					}
 				} else {
-					if breakErr := h.LeaseManager.BreakHandleLeasesOnOpen(authCtx.Context, lockFileHandle, tree.ShareName); breakErr != nil {
+					if breakErr := h.LeaseManager.BreakHandleLeasesOnOpen(authCtx.Context, lockFileHandle, tree.ShareName, excludeOwner); breakErr != nil {
 						logger.Debug("CREATE: handle lease break failed", "error", breakErr)
 					}
 				}
@@ -922,9 +960,9 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// MUST still be broken. When the opener DOES request an oplock/lease,
 	// RequestLease handles breaking conflicting leases internally.
 	if fileExists && h.LeaseManager != nil && file.Type != metadata.FileTypeDirectory &&
-		req.OplockLevel == OplockLevelNone {
+		req.OplockLevel == OplockLevelNone && !isStatOnlyOpen(req.DesiredAccess) {
 		lockFileHandle := lock.FileHandle(fileHandle)
-		if breakErr := h.LeaseManager.BreakConflictingOplocksOnOpen(lockFileHandle, tree.ShareName); breakErr != nil {
+		if breakErr := h.LeaseManager.BreakConflictingOplocksOnOpen(lockFileHandle, tree.ShareName, excludeOwner); breakErr != nil {
 			logger.Debug("CREATE: oplock break on open failed", "error", breakErr)
 		}
 	}
@@ -1631,6 +1669,20 @@ func (h *Handler) updateBaseObjectTimestampsForADSWrite(
 	if setAttrs.Ctime != nil || setAttrs.Mtime != nil {
 		_ = metaSvc.SetFileAttributes(authCtx, baseHandle, setAttrs)
 	}
+}
+
+// isStatOnlyOpen returns true when DesiredAccess contains only
+// FILE_READ_ATTRIBUTES, optionally combined with SYNCHRONIZE and/or READ_CONTROL.
+// Per MS-SMB2 3.3.5.9.8, stat-only opens must NOT break existing leases.
+func isStatOnlyOpen(desiredAccess uint32) bool {
+	const (
+		fileReadAttributes = 0x00000080
+		readControl        = 0x00020000
+		synchronize        = 0x00100000
+	)
+	// Strip allowed non-conflicting bits, check nothing else is requested.
+	masked := desiredAccess &^ (fileReadAttributes | readControl | synchronize)
+	return masked == 0 && desiredAccess&fileReadAttributes != 0
 }
 
 // computeSessionKeyHash computes the SHA-256 hash of the session's signing key.

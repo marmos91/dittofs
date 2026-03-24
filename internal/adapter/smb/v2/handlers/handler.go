@@ -218,16 +218,17 @@ type OpenFile struct {
 	// used to populate FileModeInformation (FILE_WRITE_THROUGH, FILE_SEQUENTIAL_ONLY, etc.)
 	CreateOptions types.CreateOptions
 
-	// Timestamp frozen state (per MS-FSA 2.1.5.14.2)
+	// Timestamp freeze/unfreeze state per MS-FSA 2.1.5.14.2.
 	// When a client sends SET_INFO with FILETIME -1, the corresponding timestamp
 	// is "frozen" and MUST NOT be auto-updated by subsequent operations (WRITE, etc.).
 	// When a client sends SET_INFO with FILETIME -2, the freeze is lifted.
-	// Timestamp freeze/unfreeze state per MS-FSA 2.1.5.14.2.
 	// These flags are per-open-handle state and are lost on server restart,
 	// which is correct per the spec (frozen state is tied to the open handle).
+	BtimeFrozen bool       // CreationTime frozen (suppress explicit changes on this handle)
 	MtimeFrozen bool       // LastWriteTime frozen (don't auto-update on WRITE)
 	CtimeFrozen bool       // ChangeTime frozen (don't auto-update on WRITE)
 	AtimeFrozen bool       // LastAccessTime frozen (don't auto-update on READ)
+	FrozenBtime *time.Time // Saved CreationTime value at freeze time
 	FrozenMtime *time.Time // Saved Mtime value at freeze time
 	FrozenCtime *time.Time // Saved Ctime value at freeze time
 	FrozenAtime *time.Time // Saved Atime value at freeze time
@@ -446,13 +447,14 @@ func (h *Handler) closeFilesWithFilter(
 				sessionKeyHash = computeSessionKeyHash(sess)
 			}
 
-			persisted := buildPersistedDurableHandle(openFile, username, sessionKeyHash, h.StartTime)
 			// Capture current lease state from LeaseManager for reconnect restoration
+			var leaseState uint32
 			if h.LeaseManager != nil && openFile.LeaseKey != ([16]byte{}) {
 				if state, _, found := h.LeaseManager.GetLeaseState(ctx, openFile.LeaseKey); found {
-					persisted.LeaseState = state
+					leaseState = state
 				}
 			}
+			persisted := buildPersistedDurableHandle(openFile, username, sessionKeyHash, h.StartTime, leaseState)
 			if err := h.DurableStore.PutDurableHandle(ctx, persisted); err != nil {
 				logger.Warn(caller+": failed to persist durable handle",
 					"path", openFile.Path,
@@ -514,7 +516,7 @@ func (h *Handler) closeFilesWithFilter(
 
 // handleDeleteOnClose performs the delete operation for files marked with delete-on-close.
 func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session, openFile *OpenFile, caller string) {
-	authCtx := h.buildCleanupAuthContext(ctx, sess, openFile.ShareName)
+	authCtx := h.buildCleanupAuthContext(ctx, sess)
 	metaSvc := h.Registry.GetMetadataService()
 
 	if openFile.IsDirectory {
@@ -636,7 +638,7 @@ func (h *Handler) flushFileCache(ctx context.Context, openFile *OpenFile) {
 // (like delete-on-close) but don't have a full SMBHandlerContext.
 // If the session is available, it uses the session user's UID/GID.
 // Otherwise, it falls back to root credentials for cleanup operations.
-func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Session, _ string) *metadata.AuthContext {
+func (h *Handler) buildCleanupAuthContext(ctx context.Context, sess *session.Session) *metadata.AuthContext {
 	authCtx := &metadata.AuthContext{
 		Context:  ctx,
 		Identity: &metadata.Identity{},
