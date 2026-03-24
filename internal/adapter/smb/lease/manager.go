@@ -308,9 +308,12 @@ func (lm *LeaseManager) UnregisterOplockFileID(leaseKey [16]byte) {
 // regardless of whether the new opener requests an oplock/lease.
 //
 // Both read and write opens break Write leases (strip W, preserve R+H).
+// excludeOwner is optional and can contain ExcludeLeaseKey to prevent
+// breaking same-key leases (nobreakself per MS-SMB2).
 func (lm *LeaseManager) BreakConflictingOplocksOnOpen(
 	fileHandle lock.FileHandle,
 	shareName string,
+	excludeOwner ...*lock.LockOwner,
 ) error {
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
@@ -319,11 +322,16 @@ func (lm *LeaseManager) BreakConflictingOplocksOnOpen(
 
 	handleKey := string(fileHandle)
 
+	var exclude *lock.LockOwner
+	if len(excludeOwner) > 0 {
+		exclude = excludeOwner[0]
+	}
+
 	// Use SMB-specific break method that strips only the Write bit
 	// (preserves Read and Handle), per MS-SMB2 3.3.5.9.
 	// Both read and write opens break Write leases (strip W, preserve R+H).
 	// This is different from cross-protocol breaks which go to NONE.
-	return lockMgr.CheckAndBreakLeasesForSMBOpen(handleKey, nil)
+	return lockMgr.CheckAndBreakLeasesForSMBOpen(handleKey, exclude)
 }
 
 // BreakHandleLeasesOnOpen breaks Handle leases before share mode conflict check.
@@ -334,10 +342,13 @@ func (lm *LeaseManager) BreakConflictingOplocksOnOpen(
 //
 // After breaking, the caller should wait for break completion and then re-check
 // share mode conflicts.
+// excludeOwner is optional and can contain ExcludeLeaseKey to prevent
+// breaking same-key leases (nobreakself per MS-SMB2).
 func (lm *LeaseManager) BreakHandleLeasesOnOpen(
 	ctx context.Context,
 	fileHandle lock.FileHandle,
 	shareName string,
+	excludeOwner ...*lock.LockOwner,
 ) error {
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
@@ -346,8 +357,13 @@ func (lm *LeaseManager) BreakHandleLeasesOnOpen(
 
 	handleKey := string(fileHandle)
 
+	var exclude *lock.LockOwner
+	if len(excludeOwner) > 0 {
+		exclude = excludeOwner[0]
+	}
+
 	// Break Handle leases (RWH -> RW, RH -> R)
-	if err := lockMgr.BreakHandleLeasesForSMBOpen(handleKey, nil); err != nil {
+	if err := lockMgr.BreakHandleLeasesForSMBOpen(handleKey, exclude); err != nil {
 		return err
 	}
 
@@ -359,9 +375,12 @@ func (lm *LeaseManager) BreakHandleLeasesOnOpen(
 // without waiting for acknowledgment. Used for directory opens where share
 // mode conflicts are not a concern and blocking would deadlock: the other
 // client needs this CREATE's response before it processes the break.
+// excludeOwner is optional and can contain ExcludeLeaseKey to prevent
+// breaking same-key leases (nobreakself per MS-SMB2).
 func (lm *LeaseManager) BreakHandleLeasesOnOpenAsync(
 	fileHandle lock.FileHandle,
 	shareName string,
+	excludeOwner ...*lock.LockOwner,
 ) error {
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
@@ -369,7 +388,13 @@ func (lm *LeaseManager) BreakHandleLeasesOnOpenAsync(
 	}
 
 	handleKey := string(fileHandle)
-	return lockMgr.BreakHandleLeasesForSMBOpen(handleKey, nil)
+
+	var exclude *lock.LockOwner
+	if len(excludeOwner) > 0 {
+		exclude = excludeOwner[0]
+	}
+
+	return lockMgr.BreakHandleLeasesForSMBOpen(handleKey, exclude)
 }
 
 // BreakParentHandleLeasesOnCreate breaks Handle leases on a parent directory

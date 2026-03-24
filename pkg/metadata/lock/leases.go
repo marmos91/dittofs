@@ -250,8 +250,9 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 			// the second opener's response is not sent before the first
 			// client receives the OPLOCK_BREAK_NOTIFICATION.
 			breakCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
-			defer cancel()
-			if err := lm.WaitForBreakCompletion(breakCtx, handleKey); err != nil {
+			err := lm.WaitForBreakCompletion(breakCtx, handleKey)
+			cancel() // cancel immediately, not deferred — avoid context leak
+			if err != nil {
 				logger.Debug("RequestLease: break wait completed with error",
 					"fileHandle", handleKey,
 					"error", err)
@@ -265,13 +266,40 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 	}
 
 	if conflictFound {
-		// After the break resolved, deny the new lease for this CREATE.
-		// The caller (second opener) will get the file open without a lease.
-		// A subsequent CREATE with the same lease key could succeed.
-		return LeaseStateNone, 0, nil
+		// After the break resolved, re-check if any remaining conflicts prevent
+		// granting the new lease. Per MS-SMB2 3.3.5.9, after a break completes
+		// the new open should get its requested lease if no conflicts remain.
+		// lm.mu was released before break dispatch above; re-acquire it now.
+		lm.mu.Lock()
+		locks = lm.unifiedLocks[handleKey]
+		grantState := requestedState
+		for _, existingLock := range locks {
+			if existingLock.Lease == nil || existingLock.Lease.LeaseKey == leaseKey {
+				continue
+			}
+			requested := &OpLock{LeaseKey: leaseKey, LeaseState: requestedState}
+			if !OpLocksConflict(existingLock.Lease, requested) {
+				continue
+			}
+			// Still conflicting after break -- try downgrading to Read-only
+			grantState = LeaseStateRead
+			requestedR := &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead}
+			if OpLocksConflict(existingLock.Lease, requestedR) {
+				// Even Read conflicts -- deny entirely
+				lm.mu.Unlock()
+				return LeaseStateNone, 0, nil
+			}
+			break
+		}
+		requestedState = grantState
+		// lm.mu is still held -- fall through to create new lease below
 	}
 
-	// No conflicts - create new lease
+	// lm.mu is held here: either from the initial Lock() (no conflict)
+	// or from the re-acquisition after break completion above.
+
+	// No conflicts (or conflicts resolved) - create new lease
+	locks = lm.unifiedLocks[handleKey]
 	newLock := &UnifiedLock{
 		ID: uuid.New().String(),
 		Owner: LockOwner{

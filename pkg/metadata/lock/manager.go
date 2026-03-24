@@ -416,20 +416,9 @@ type Manager struct {
 // NFS uses a longer timeout than SMB leases (90s vs 35s).
 const DefaultDelegationRecallTimeout = 90 * time.Second
 
-// NewManager creates a new lock manager.
-func NewManager() *Manager {
-	return &Manager{
-		locks:                   make(map[string][]FileLock),
-		unifiedLocks:            make(map[string][]*UnifiedLock),
-		recentlyBroken:          newRecentlyBrokenCache(defaultRecentlyBrokenTTL),
-		breakWaitChans:          make(map[string]chan struct{}),
-		delegationRecallTimeout: DefaultDelegationRecallTimeout,
-	}
-}
-
-// NewManagerWithTTL creates a new lock manager with a custom recently-broken TTL.
-// Primarily used in tests to avoid waiting for the default 5-second TTL.
-func NewManagerWithTTL(recentlyBrokenTTL time.Duration) *Manager {
+// newBaseManager creates a Manager with all common fields initialized.
+// Callers customize the returned Manager before use.
+func newBaseManager(recentlyBrokenTTL time.Duration) *Manager {
 	return &Manager{
 		locks:                   make(map[string][]FileLock),
 		unifiedLocks:            make(map[string][]*UnifiedLock),
@@ -439,16 +428,22 @@ func NewManagerWithTTL(recentlyBrokenTTL time.Duration) *Manager {
 	}
 }
 
+// NewManager creates a new lock manager.
+func NewManager() *Manager {
+	return newBaseManager(defaultRecentlyBrokenTTL)
+}
+
+// NewManagerWithTTL creates a new lock manager with a custom recently-broken TTL.
+// Primarily used in tests to avoid waiting for the default 5-second TTL.
+func NewManagerWithTTL(recentlyBrokenTTL time.Duration) *Manager {
+	return newBaseManager(recentlyBrokenTTL)
+}
+
 // NewManagerWithGracePeriod creates a new lock manager with a grace period manager.
 func NewManagerWithGracePeriod(gracePeriod *GracePeriodManager) *Manager {
-	return &Manager{
-		locks:                   make(map[string][]FileLock),
-		unifiedLocks:            make(map[string][]*UnifiedLock),
-		gracePeriod:             gracePeriod,
-		recentlyBroken:          newRecentlyBrokenCache(defaultRecentlyBrokenTTL),
-		breakWaitChans:          make(map[string]chan struct{}),
-		delegationRecallTimeout: DefaultDelegationRecallTimeout,
-	}
+	m := newBaseManager(defaultRecentlyBrokenTTL)
+	m.gracePeriod = gracePeriod
+	return m
 }
 
 // Lock attempts to acquire a byte-range lock on a file.
@@ -1309,10 +1304,18 @@ func (lm *Manager) breakOpLocks(
 		if lock.Lease == nil {
 			continue
 		}
-		if excludeOwner != nil &&
-			(lock.Owner.OwnerID == excludeOwner.OwnerID ||
-				(excludeOwner.ClientID != "" && lock.Owner.ClientID == excludeOwner.ClientID)) {
-			continue
+		if excludeOwner != nil {
+			if lock.Owner.OwnerID == excludeOwner.OwnerID ||
+				(excludeOwner.ClientID != "" && lock.Owner.ClientID == excludeOwner.ClientID) {
+				continue
+			}
+			// Per MS-SMB2 3.3.5.9: opens with the same lease key must not
+			// break each other's leases ("If Open.Lease.LeaseKey == the new
+			// open's LeaseKey, no break is required").
+			if excludeOwner.ExcludeLeaseKey != ([16]byte{}) &&
+				lock.Lease.LeaseKey == excludeOwner.ExcludeLeaseKey {
+				continue
+			}
 		}
 		if lock.Lease.Breaking {
 			continue

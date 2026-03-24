@@ -97,6 +97,12 @@ type LockOwner struct {
 	// ShareName is the share this lock belongs to.
 	// Used for per-share lock tracking and cleanup.
 	ShareName string
+
+	// ExcludeLeaseKey is an optional lease key to exclude from break
+	// operations. When set in the excludeOwner parameter of breakOpLocks,
+	// leases with this key are skipped. Per MS-SMB2 3.3.5.9, opens with
+	// the same lease key must not break each other's leases.
+	ExcludeLeaseKey [16]byte
 }
 
 // UnifiedLock represents a byte-range lock or SMB lease with full protocol support.
