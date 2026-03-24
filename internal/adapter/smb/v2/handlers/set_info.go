@@ -61,6 +61,11 @@ type SetInfoResponse struct {
 	SMBResponseBase // Embeds Status field and GetStatus() method
 }
 
+// setInfoStatus creates a SetInfoResponse with the given status code.
+func setInfoStatus(status types.Status) *SetInfoResponse {
+	return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: status}}
+}
+
 // FileRenameInfo represents FILE_RENAME_INFORMATION [MS-FSCC] 2.4.34.
 // Used to rename or move a file.
 type FileRenameInfo struct {
@@ -195,7 +200,7 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
 		logger.Debug("SET_INFO: file handle not found (closed)", "fileID", fmt.Sprintf("%x", req.FileID))
-		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileClosed}}, nil
+		return setInfoStatus(types.StatusFileClosed), nil
 	}
 
 	// ========================================================================
@@ -205,7 +210,7 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		logger.Warn("SET_INFO: failed to build auth context", "error", err)
-		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+		return setInfoStatus(types.StatusAccessDenied), nil
 	}
 
 	// ========================================================================
@@ -218,7 +223,7 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 	case types.SMB2InfoTypeSecurity:
 		return h.setSecurityInfo(authCtx, openFile, req.AdditionalInfo, req.Buffer)
 	default:
-		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+		return setInfoStatus(types.StatusInvalidParameter), nil
 	}
 }
 
@@ -239,7 +244,7 @@ func (h *Handler) setFileInfoFromStore(
 		// Per MS-FSCC, the structure is exactly 40 bytes. If the buffer is smaller,
 		// the server MUST return STATUS_INFO_LENGTH_MISMATCH.
 		if len(buffer) < 40 {
-			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInfoLengthMismatch}}, nil
+			return setInfoStatus(types.StatusInfoLengthMismatch), nil
 		}
 
 		// Validate attribute constraints per MS-FSCC 2.4.7:
@@ -249,10 +254,10 @@ func (h *Handler) setFileInfoFromStore(
 		fileAttrs := types.FileAttributes(attrR.ReadUint32())
 		if fileAttrs != 0 {
 			if fileAttrs&types.FileAttributeDirectory != 0 && !openFile.IsDirectory {
-				return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+				return setInfoStatus(types.StatusInvalidParameter), nil
 			}
 			if fileAttrs&types.FileAttributeTemporary != 0 && openFile.IsDirectory {
-				return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+				return setInfoStatus(types.StatusInvalidParameter), nil
 			}
 		}
 
@@ -288,10 +293,11 @@ func (h *Handler) setFileInfoFromStore(
 			"mtimeFT", fmt.Sprintf("0x%016X", mtimeFT),
 			"ctimeFT", fmt.Sprintf("0x%016X", ctimeFT))
 
-		// Note: CreationTime freeze/unfreeze sentinels are detected but not acted upon.
-		// MS-FSA does not require CreationTime auto-update suppression because
-		// CreationTime is never auto-updated by the server after file creation.
-		hasFreezeOrUnfreeze := isFiletimeSentinel(atimeFT) ||
+		// Per MS-FSA 2.1.5.14.2: All four timestamp fields support freeze/unfreeze.
+		// CreationTime freeze suppresses explicit changes from subsequent SET_INFO
+		// calls on this handle (the frozen value is returned instead).
+		hasFreezeOrUnfreeze := isFiletimeSentinel(creationFT) ||
+			isFiletimeSentinel(atimeFT) ||
 			isFiletimeSentinel(mtimeFT) ||
 			isFiletimeSentinel(ctimeFT)
 
@@ -313,6 +319,9 @@ func (h *Handler) setFileInfoFromStore(
 		// won't auto-update them (e.g., Ctime auto-update when Mode changes).
 		if preFile != nil {
 			// For freeze (-1): pin to pre-change value to prevent auto-update
+			if creationFT == filetimeFreeze {
+				setAttrs.CreationTime = &preFile.CreationTime
+			}
 			if ctimeFT == filetimeFreeze {
 				setAttrs.Ctime = &preFile.Ctime
 			}
@@ -323,8 +332,13 @@ func (h *Handler) setFileInfoFromStore(
 				setAttrs.Atime = &preFile.Atime
 			}
 			// For unfreeze (-2): per MS-FSA 2.1.5.14.2, re-enable auto-update
-			// AND set the timestamp to the current time.
+			// AND set the timestamp to the current time. CreationTime unfreeze
+			// pins to the pre-change value (it is never auto-updated, so "current
+			// time" semantics don't apply — just re-enable future explicit changes).
 			unfreezeNow := time.Now()
+			if creationFT == filetimeUnfreeze {
+				setAttrs.CreationTime = &preFile.CreationTime
+			}
 			if ctimeFT == filetimeUnfreeze {
 				setAttrs.Ctime = &unfreezeNow
 			}
@@ -337,8 +351,11 @@ func (h *Handler) setFileInfoFromStore(
 		}
 
 		// Per MS-FSA 2.1.5.14.2: When a timestamp is frozen from a prior
-		// SET_INFO call (no sentinel in this call, ctimeFT==0), pin to the
+		// SET_INFO call (no sentinel in this call, field==0), pin to the
 		// frozen value to prevent the metadata service from auto-updating it.
+		if creationFT == 0 && openFile.BtimeFrozen && openFile.FrozenBtime != nil {
+			setAttrs.CreationTime = openFile.FrozenBtime
+		}
 		if ctimeFT == 0 && openFile.CtimeFrozen && openFile.FrozenCtime != nil {
 			setAttrs.Ctime = openFile.FrozenCtime
 		}
@@ -360,7 +377,7 @@ func (h *Handler) setFileInfoFromStore(
 
 		if err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
 			logger.Debug("SET_INFO: failed to set basic info", "path", openFile.Path, "error", err)
-			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+			return setInfoStatus(MetadataErrorToSMBStatus(err)), nil
 		}
 
 		// Apply freeze/unfreeze state to the open handle using pre-change values.
@@ -369,6 +386,17 @@ func (h *Handler) setFileInfoFromStore(
 		// preFile is non-nil only when hasFreezeOrUnfreeze is true, which
 		// guarantees at least one switch case will match.
 		if preFile != nil {
+			// CreationTime (Btime) - offset 0
+			switch creationFT {
+			case filetimeFreeze:
+				openFile.BtimeFrozen = true
+				openFile.FrozenBtime = &preFile.CreationTime
+				logger.Debug("SET_INFO: froze CreationTime", "path", openFile.Path, "value", preFile.CreationTime)
+			case filetimeUnfreeze:
+				openFile.BtimeFrozen = false
+				openFile.FrozenBtime = nil
+			}
+
 			// LastWriteTime (Mtime) - offset 16
 			switch mtimeFT {
 			case filetimeFreeze:
@@ -409,14 +437,14 @@ func (h *Handler) setFileInfoFromStore(
 			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified)
 		}
 
-		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
+		return setInfoStatus(types.StatusSuccess), nil
 
 	case types.FileRenameInformation:
 		// FILE_RENAME_INFORMATION [MS-FSCC] 2.4.34
 		renameInfo, err := DecodeFileRenameInfo(buffer)
 		if err != nil {
 			logger.Debug("SET_INFO: failed to decode rename info", "error", err)
-			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+			return setInfoStatus(types.StatusInvalidParameter), nil
 		}
 
 		// Per MS-FSA 2.1.5.14.10: Rename requires DELETE access on the source file
@@ -424,7 +452,7 @@ func (h *Handler) setFileInfoFromStore(
 			logger.Debug("SET_INFO: rename without DELETE access",
 				"path", openFile.Path,
 				"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))
-			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+			return setInfoStatus(types.StatusAccessDenied), nil
 		}
 
 		// Per MS-FSA 2.1.5.14.10: Before renaming, check that no other open
@@ -434,7 +462,7 @@ func (h *Handler) setFileInfoFromStore(
 			logger.Debug("SET_INFO: rename blocked by sharing violation",
 				"path", openFile.Path,
 				"fileID", fmt.Sprintf("%x", openFile.FileID))
-			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSharingViolation}}, nil
+			return setInfoStatus(types.StatusSharingViolation), nil
 		}
 
 		// Normalize path separators (Windows uses backslash, we use forward slash)
@@ -476,7 +504,7 @@ func (h *Handler) setFileInfoFromStore(
 					"from", openFile.FileName,
 					"to", toName,
 					"error", err)
-				return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+				return setInfoStatus(MetadataErrorToSMBStatus(err)), nil
 			}
 
 			// Restore mtime/ctime after rename
@@ -510,7 +538,7 @@ func (h *Handler) setFileInfoFromStore(
 			logger.Debug("SET_INFO: stream rename successful",
 				"oldName", oldFileName,
 				"newName", toName)
-			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
+			return setInfoStatus(types.StatusSuccess), nil
 		}
 
 		// Determine source and destination.
@@ -539,13 +567,13 @@ func (h *Handler) setFileInfoFromStore(
 			tree, ok := h.GetTree(openFile.TreeID)
 			if !ok {
 				logger.Debug("SET_INFO: invalid tree for rename", "treeID", openFile.TreeID)
-				return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
+				return setInfoStatus(types.StatusInvalidHandle), nil
 			}
 
 			rootHandle, err := h.Registry.GetRootHandle(tree.ShareName)
 			if err != nil {
 				logger.Debug("SET_INFO: failed to get root handle", "error", err)
-				return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectPathNotFound}}, nil
+				return setInfoStatus(types.StatusObjectPathNotFound), nil
 			}
 
 			toName = path.Base(newPath)
@@ -558,7 +586,7 @@ func (h *Handler) setFileInfoFromStore(
 				toDir, err = h.walkPath(authCtx, rootHandle, dirPath)
 				if err != nil {
 					logger.Debug("SET_INFO: destination path not found", "path", dirPath, "error", err)
-					return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusObjectPathNotFound}}, nil
+					return setInfoStatus(types.StatusObjectPathNotFound), nil
 				}
 			}
 		}
@@ -566,7 +594,7 @@ func (h *Handler) setFileInfoFromStore(
 		// Validate we have source info
 		if len(openFile.ParentHandle) == 0 {
 			logger.Debug("SET_INFO: cannot rename root directory", "path", openFile.Path)
-			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+			return setInfoStatus(types.StatusAccessDenied), nil
 		}
 
 		// Save old path info for notification before modification
@@ -586,7 +614,7 @@ func (h *Handler) setFileInfoFromStore(
 				"from", openFile.Path,
 				"to", newPath,
 				"error", err)
-			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+			return setInfoStatus(MetadataErrorToSMBStatus(err)), nil
 		}
 
 		// Restore mtime/ctime after rename
@@ -644,14 +672,14 @@ func (h *Handler) setFileInfoFromStore(
 		logger.Debug("SET_INFO: rename successful",
 			"oldPath", oldPath,
 			"newPath", newPath)
-		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
+		return setInfoStatus(types.StatusSuccess), nil
 
 	case types.FileDispositionInformation, types.FileDispositionInformationEx:
 		// FILE_DISPOSITION_INFORMATION [MS-FSCC] 2.4.11
 		// FILE_DISPOSITION_INFORMATION_EX [MS-FSCC] 2.4.11.2
 		// DeletePending (1 byte for class 13, 4 bytes flags for class 64)
 		if len(buffer) < 1 {
-			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+			return setInfoStatus(types.StatusInvalidParameter), nil
 		}
 
 		var deletePending bool
@@ -672,7 +700,7 @@ func (h *Handler) setFileInfoFromStore(
 		// Validate we have parent info for deletion
 		if deletePending && len(openFile.ParentHandle) == 0 {
 			logger.Debug("SET_INFO: cannot delete root directory", "path", openFile.Path)
-			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+			return setInfoStatus(types.StatusAccessDenied), nil
 		}
 
 		// Per MS-FSA 2.1.5.14.3: Setting delete disposition requires DELETE access
@@ -681,7 +709,7 @@ func (h *Handler) setFileInfoFromStore(
 				logger.Debug("SET_INFO: delete disposition without DELETE access",
 					"path", openFile.Path,
 					"desiredAccess", fmt.Sprintf("0x%x", openFile.DesiredAccess))
-				return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+				return setInfoStatus(types.StatusAccessDenied), nil
 			}
 
 			// Read-only files cannot be marked for deletion
@@ -692,7 +720,7 @@ func (h *Handler) setFileInfoFromStore(
 					attrs := FileAttrToSMBAttributes(&file.FileAttr)
 					if attrs&types.FileAttributeReadonly != 0 {
 						logger.Debug("SET_INFO: delete disposition on read-only file", "path", openFile.Path)
-						return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusCannotDelete}}, nil
+						return setInfoStatus(types.StatusCannotDelete), nil
 					}
 				}
 			}
@@ -706,13 +734,13 @@ func (h *Handler) setFileInfoFromStore(
 			"path", openFile.Path,
 			"deletePending", deletePending,
 			"class", class)
-		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
+		return setInfoStatus(types.StatusSuccess), nil
 
 	case types.FileEndOfFileInformation:
 		// FILE_END_OF_FILE_INFORMATION [MS-FSCC] 2.4.13
 		newSize, err := decodeEndOfFileInfo(buffer)
 		if err != nil {
-			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+			return setInfoStatus(types.StatusInvalidParameter), nil
 		}
 
 		setAttrs := &metadata.SetAttrs{
@@ -723,7 +751,7 @@ func (h *Handler) setFileInfoFromStore(
 		err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 		if err != nil {
 			logger.Debug("SET_INFO: failed to set EOF", "path", openFile.Path, "error", err)
-			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+			return setInfoStatus(MetadataErrorToSMBStatus(err)), nil
 		}
 
 		// Restore frozen timestamps after truncation (which updates Mtime/Ctime)
@@ -734,28 +762,28 @@ func (h *Handler) setFileInfoFromStore(
 			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified)
 		}
 
-		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
+		return setInfoStatus(types.StatusSuccess), nil
 
 	case types.FilePositionInformation:
 		// FILE_POSITION_INFORMATION [MS-FSCC] 2.4.32 (8 bytes)
 		// Per MS-FSA 2.1.5.14.23: If InputBufferSize is less than the size of
 		// FILE_POSITION_INFORMATION (8 bytes), return STATUS_INFO_LENGTH_MISMATCH.
 		if len(buffer) < 8 {
-			return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInfoLengthMismatch}}, nil
+			return setInfoStatus(types.StatusInfoLengthMismatch), nil
 		}
 		// Server-side position tracking is not required for network filesystems.
 		// Accept and succeed as a no-op (SMB clients manage their own offsets).
-		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
+		return setInfoStatus(types.StatusSuccess), nil
 
 	case types.FileAllocationInformation:
 		// Set allocation size - accept but treat as no-op (allocation handled automatically)
-		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
+		return setInfoStatus(types.StatusSuccess), nil
 
 	case 11: // FileLinkInformation - hard links not supported
-		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotSupported}}, nil
+		return setInfoStatus(types.StatusNotSupported), nil
 
 	default:
-		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotSupported}}, nil
+		return setInfoStatus(types.StatusNotSupported), nil
 	}
 }
 
@@ -765,6 +793,9 @@ func (h *Handler) setFileInfoFromStore(
 // For both files and directories, if a timestamp was frozen via SET_INFO(-1),
 // the frozen value is returned regardless of any subsequent store modifications.
 func applyFrozenTimestamps(openFile *OpenFile, file *metadata.File) {
+	if openFile.BtimeFrozen && openFile.FrozenBtime != nil {
+		file.CreationTime = *openFile.FrozenBtime
+	}
 	if openFile.MtimeFrozen && openFile.FrozenMtime != nil {
 		file.Mtime = *openFile.FrozenMtime
 	}
@@ -799,10 +830,13 @@ func (h *Handler) saveTimestamps(authCtx *metadata.AuthContext, handle metadata.
 // restoreFrozenTimestamps restores timestamps that are frozen via SET_INFO -1 sentinel.
 // Called after operations that unconditionally update timestamps (WRITE, truncate).
 func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFile *OpenFile) {
-	if !openFile.MtimeFrozen && !openFile.CtimeFrozen && !openFile.AtimeFrozen {
+	if !openFile.BtimeFrozen && !openFile.MtimeFrozen && !openFile.CtimeFrozen && !openFile.AtimeFrozen {
 		return
 	}
 	restoreAttrs := &metadata.SetAttrs{}
+	if openFile.BtimeFrozen && openFile.FrozenBtime != nil {
+		restoreAttrs.CreationTime = openFile.FrozenBtime
+	}
 	if openFile.MtimeFrozen && openFile.FrozenMtime != nil {
 		restoreAttrs.Mtime = openFile.FrozenMtime
 	}
@@ -812,7 +846,7 @@ func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFil
 	if openFile.AtimeFrozen && openFile.FrozenAtime != nil {
 		restoreAttrs.Atime = openFile.FrozenAtime
 	}
-	if restoreAttrs.Mtime != nil || restoreAttrs.Ctime != nil || restoreAttrs.Atime != nil {
+	if restoreAttrs.CreationTime != nil || restoreAttrs.Mtime != nil || restoreAttrs.Ctime != nil || restoreAttrs.Atime != nil {
 		logger.Debug("restoreFrozenTimestamps: restoring",
 			"path", openFile.Path,
 			"mtimeFrozen", openFile.MtimeFrozen,
@@ -849,13 +883,13 @@ func (h *Handler) setSecurityInfo(
 	buffer []byte,
 ) (*SetInfoResponse, error) {
 	if len(buffer) == 0 {
-		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+		return setInfoStatus(types.StatusInvalidParameter), nil
 	}
 
 	ownerUID, ownerGID, fileACL, err := ParseSecurityDescriptor(buffer)
 	if err != nil {
 		logger.Debug("SET_INFO: failed to parse security descriptor", "path", openFile.Path, "error", err)
-		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+		return setInfoStatus(types.StatusInvalidParameter), nil
 	}
 
 	// Build SetAttrs from parsed SD
@@ -880,7 +914,7 @@ func (h *Handler) setSecurityInfo(
 
 	if !changed {
 		// Nothing to change - accept as no-op
-		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
+		return setInfoStatus(types.StatusSuccess), nil
 	}
 
 	// Apply changes
@@ -888,7 +922,7 @@ func (h *Handler) setSecurityInfo(
 	err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 	if err != nil {
 		logger.Debug("SET_INFO: failed to set security info", "path", openFile.Path, "error", err)
-		return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+		return setInfoStatus(MetadataErrorToSMBStatus(err)), nil
 	}
 
 	// Notify watchers about security descriptor changes
@@ -896,5 +930,5 @@ func (h *Handler) setSecurityInfo(
 		h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified)
 	}
 
-	return &SetInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess}}, nil
+	return setInfoStatus(types.StatusSuccess), nil
 }
