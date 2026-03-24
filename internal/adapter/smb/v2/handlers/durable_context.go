@@ -219,8 +219,8 @@ func ProcessDurableHandleContext(
 // ReconnectResult holds the output of a successful durable handle reconnect.
 type ReconnectResult struct {
 	OpenFile       *OpenFile // Restored open file state
-	PersistedLease uint32   // Lease state at disconnect time (for re-granting)
-	IsV2           bool     // True if DH2C (V2), false if DHnC (V1)
+	PersistedLease uint32    // Lease state at disconnect time (for re-granting)
+	IsV2           bool      // True if DH2C (V2), false if DHnC (V1)
 }
 
 // ProcessDurableReconnectContext processes DHnC or DH2C create contexts for reconnection.

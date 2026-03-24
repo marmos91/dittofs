@@ -306,8 +306,8 @@ func (r *NotifyRegistry) GetWatchersForPath(path string) []*PendingNotify {
 
 // Stream change action codes for ADS notifications.
 const (
-	FileActionAddedStream   uint32 = 0x00000006
-	FileActionRemovedStream uint32 = 0x00000007
+	FileActionAddedStream    uint32 = 0x00000006
+	FileActionRemovedStream  uint32 = 0x00000007
 	FileActionModifiedStream uint32 = 0x00000008
 )
 
