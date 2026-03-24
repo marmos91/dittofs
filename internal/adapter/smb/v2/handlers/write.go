@@ -219,24 +219,20 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		logger.Debug("WRITE: invalid offset (high bit set)", "path", openFile.Path, "offset", req.Offset)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 	}
-	if len(req.Data) > 0 && req.Offset > int64Max-uint64(len(req.Data)) {
-		logger.Debug("WRITE: offset+length exceeds INT64_MAX", "path", openFile.Path,
-			"offset", req.Offset, "length", len(req.Data))
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
-	}
 	if len(req.Data) > 0 {
 		writeEnd := req.Offset + uint64(len(req.Data))
+		if writeEnd < req.Offset || writeEnd > int64Max {
+			logger.Debug("WRITE: offset+length overflow or exceeds INT64_MAX", "path", openFile.Path,
+				"offset", req.Offset, "length", len(req.Data))
+			return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+		}
 		if writeEnd > maxFileSize {
 			logger.Debug("WRITE: offset+length exceeds MAXFILESIZE", "path", openFile.Path,
 				"offset", req.Offset, "length", len(req.Data), "maxFileSize", maxFileSize)
 			return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 		}
-		if writeEnd == maxFileSize {
-			// Writing right up to MAXFILESIZE boundary: Windows returns DISK_FULL
-			logger.Debug("WRITE: at MAXFILESIZE boundary", "path", openFile.Path,
-				"offset", req.Offset, "length", len(req.Data))
-			return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusDiskFull}}, nil
-		}
+		// writeEnd == maxFileSize is valid: the write ends exactly at the NTFS limit.
+		// Only writeEnd > maxFileSize (handled above) is an error.
 	}
 
 	// ========================================================================
@@ -327,13 +323,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Step 9: Prepare write operation
 	// ========================================================================
 
-	// Validate offset + length doesn't overflow
-	writeLen := uint64(len(req.Data))
-	newSize := req.Offset + writeLen
-	if newSize < req.Offset {
-		// Overflow - invalid parameter, not a disk space issue
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
-	}
+	newSize := req.Offset + uint64(len(req.Data))
 	writeOp, err := metaSvc.PrepareWrite(authCtx, openFile.MetadataHandle, newSize)
 	if err != nil {
 		logger.Debug("WRITE: prepare failed", "path", openFile.Path, "error", err)
@@ -343,8 +333,6 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// ========================================================================
 	// Step 10: Write data to BlockStore (uses local cache internally)
 	// ========================================================================
-
-	bytesWritten := len(req.Data)
 
 	err = blockStore.WriteAt(authCtx.Context, string(writeOp.PayloadID), req.Data, req.Offset)
 	if err != nil {
@@ -398,10 +386,20 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Update cached PayloadID in OpenFile
 	openFile.PayloadID = writeOp.PayloadID
 
+	// Per MS-FSCC 2.6 / MS-SMB2 3.3.4.4: Writing to an Alternate Data Stream
+	// fires FILE_NOTIFY_CHANGE_STREAM_WRITE and FILE_NOTIFY_CHANGE_STREAM_SIZE
+	// on the parent directory so ChangeNotify watchers are notified.
+	if h.NotifyRegistry != nil {
+		if colonIdx := strings.Index(openFile.FileName, ":"); colonIdx > 0 {
+			parentDirPath := GetParentPath(openFile.Path)
+			h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, openFile.FileName, FileActionModified)
+		}
+	}
+
 	logger.Debug("WRITE successful",
 		"path", openFile.Path,
 		"offset", req.Offset,
-		"bytes", bytesWritten)
+		"bytes", len(req.Data))
 
 	// ========================================================================
 	// Step 12: Return success response
@@ -409,7 +407,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 
 	return &WriteResponse{
 		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
-		Count:           uint32(bytesWritten),
+		Count:           uint32(len(req.Data)),
 		Remaining:       0,
 	}, nil
 }

@@ -589,3 +589,416 @@ func TestRelativePathFromWatch_CrossPath(t *testing.T) {
 		t.Errorf("expected 'file.txt' for non-prefix watch path, got %q", got)
 	}
 }
+
+func TestNotifyChange_StreamNameOnADSCreate(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	var notified bool
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{1},
+		SessionID:        1,
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/dir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeStreamName,
+		MaxOutputLength:  4096,
+		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
+			notified = true
+			return nil
+		},
+	})
+
+	// Simulate ADS stream creation: file:stream:$DATA created in /dir
+	r.NotifyChange("share1", "/dir", "file:stream:$DATA", FileActionAdded)
+
+	if !notified {
+		t.Fatal("expected watcher with FileNotifyChangeStreamName to be notified on ADS create")
+	}
+}
+
+func TestNotifyChange_StreamWriteOnADSWrite(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	var notified bool
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{2},
+		SessionID:        1,
+		MessageID:        20,
+		AsyncId:          200,
+		WatchPath:        "/dir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeStreamWrite,
+		MaxOutputLength:  4096,
+		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
+			notified = true
+			return nil
+		},
+	})
+
+	// Simulate ADS stream write: file:stream:$DATA modified in /dir
+	r.NotifyChange("share1", "/dir", "file:stream:$DATA", FileActionModified)
+
+	if !notified {
+		t.Fatal("expected watcher with FileNotifyChangeStreamWrite to be notified on ADS write")
+	}
+}
+
+func TestNotifyChange_StreamSizeOnADSWrite(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	var notified bool
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{3},
+		SessionID:        1,
+		MessageID:        30,
+		AsyncId:          300,
+		WatchPath:        "/dir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeStreamSize,
+		MaxOutputLength:  4096,
+		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
+			notified = true
+			return nil
+		},
+	})
+
+	// Simulate ADS stream size change
+	r.NotifyChange("share1", "/dir", "file:stream:$DATA", FileActionModified)
+
+	if !notified {
+		t.Fatal("expected watcher with FileNotifyChangeStreamSize to be notified on ADS size change")
+	}
+}
+
+func TestNotifyChange_SecurityDescriptorChange(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	var notified bool
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{4},
+		SessionID:        1,
+		MessageID:        40,
+		AsyncId:          400,
+		WatchPath:        "/dir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeSecurity,
+		MaxOutputLength:  4096,
+		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
+			notified = true
+			return nil
+		},
+	})
+
+	// Simulate security descriptor change on a file in /dir
+	r.NotifyChange("share1", "/dir", "file.txt", FileActionModified)
+
+	if !notified {
+		t.Fatal("expected watcher with FileNotifyChangeSecurity to be notified on security change")
+	}
+}
+
+func TestMatchesFilter_StreamFilters(t *testing.T) {
+	tests := []struct {
+		name   string
+		action uint32
+		filter uint32
+		want   bool
+	}{
+		{"Added matches StreamName", FileActionAdded, FileNotifyChangeStreamName, true},
+		{"Removed matches StreamName", FileActionRemoved, FileNotifyChangeStreamName, true},
+		{"Modified matches StreamSize", FileActionModified, FileNotifyChangeStreamSize, true},
+		{"Modified matches StreamWrite", FileActionModified, FileNotifyChangeStreamWrite, true},
+		{"Modified no match StreamName", FileActionModified, FileNotifyChangeStreamName, false},
+		{"RenamedOld matches StreamName", FileActionRenamedOldName, FileNotifyChangeStreamName, true},
+		{"RenamedNew matches StreamName", FileActionRenamedNewName, FileNotifyChangeStreamName, true},
+		{"Added no match StreamWrite", FileActionAdded, FileNotifyChangeStreamWrite, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := MatchesFilter(tt.action, tt.filter)
+			if got != tt.want {
+				t.Errorf("MatchesFilter(%d, 0x%x) = %v, want %v", tt.action, tt.filter, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNotifyChange_DoubleWatchers_BothNotified(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	var count1, count2 atomic.Int32
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{1},
+		SessionID:        1,
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/dir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength:  4096,
+		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
+			count1.Add(1)
+			return nil
+		},
+	})
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{2},
+		SessionID:        1,
+		MessageID:        20,
+		AsyncId:          200,
+		WatchPath:        "/dir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength:  4096,
+		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
+			count2.Add(1)
+			return nil
+		},
+	})
+
+	// Fire a change — both watchers should be notified
+	r.NotifyChange("share1", "/dir", "test.txt", FileActionAdded)
+
+	if count1.Load() != 1 {
+		t.Errorf("watcher 1: expected 1 notification, got %d", count1.Load())
+	}
+	if count2.Load() != 1 {
+		t.Errorf("watcher 2: expected 1 notification, got %d", count2.Load())
+	}
+
+	// Both should be unregistered (one-shot)
+	watchers := r.GetWatchersForPath("/dir")
+	if len(watchers) != 0 {
+		t.Errorf("expected 0 watchers after double notify, got %d", len(watchers))
+	}
+}
+
+func TestMatchesFilter_MaskFiltering(t *testing.T) {
+	// Only size filter set — should NOT match file create/delete
+	if MatchesFilter(FileActionAdded, FileNotifyChangeSize) {
+		t.Error("FileActionAdded should NOT match FileNotifyChangeSize")
+	}
+
+	// Only attributes filter set — should NOT match file create/delete
+	if MatchesFilter(FileActionAdded, FileNotifyChangeAttributes) {
+		t.Error("FileActionAdded should NOT match FileNotifyChangeAttributes")
+	}
+
+	// Modified matches security
+	if !MatchesFilter(FileActionModified, FileNotifyChangeSecurity) {
+		t.Error("FileActionModified should match FileNotifyChangeSecurity")
+	}
+
+	// Stream filter tests
+	if !MatchesFilter(FileActionAddedStream, FileNotifyChangeStreamName) {
+		t.Error("FileActionAddedStream should match FileNotifyChangeStreamName")
+	}
+	if !MatchesFilter(FileActionModifiedStream, FileNotifyChangeStreamWrite) {
+		t.Error("FileActionModifiedStream should match FileNotifyChangeStreamWrite")
+	}
+	if MatchesFilter(FileActionAddedStream, FileNotifyChangeFileName) {
+		t.Error("FileActionAddedStream should NOT match FileNotifyChangeFileName")
+	}
+}
+
+func TestIsValidCompletionFilter(t *testing.T) {
+	tests := []struct {
+		name   string
+		filter uint32
+		want   bool
+	}{
+		{"zero is invalid", 0, false},
+		{"all valid flags", AllValidCompletionFilterFlags, true},
+		{"single valid flag", FileNotifyChangeFileName, true},
+		{"invalid flag bit", 0x80000000, false},
+		{"valid + invalid mixed", FileNotifyChangeFileName | 0x80000000, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := IsValidCompletionFilter(tt.filter)
+			if got != tt.want {
+				t.Errorf("IsValidCompletionFilter(0x%08X) = %v, want %v", tt.filter, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNotifyRmdir_SendsCleanupToWatchersOnRemovedDir(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	var receivedStatus types.Status
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{1},
+		SessionID:        1,
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/parent/target",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength:  4096,
+		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
+			receivedStatus = response.GetStatus()
+			return nil
+		},
+	})
+
+	// Remove the directory being watched
+	r.NotifyRmdir("share1", "/parent", "target")
+
+	if receivedStatus != types.StatusNotifyCleanup {
+		t.Errorf("expected STATUS_NOTIFY_CLEANUP (0x%08X), got 0x%08X",
+			uint32(types.StatusNotifyCleanup), uint32(receivedStatus))
+	}
+}
+
+func TestNotifyRmdir_NotifiesParentWatcher(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	var parentNotified bool
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{1},
+		SessionID:        1,
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/parent",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeDirName,
+		MaxOutputLength:  4096,
+		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
+			parentNotified = true
+			return nil
+		},
+	})
+
+	r.NotifyRmdir("share1", "/parent", "child")
+
+	if !parentNotified {
+		t.Error("parent watcher should receive FileActionRemoved notification for rmdir")
+	}
+}
+
+func TestUnregisterAllForSession(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{1},
+		SessionID:        100,
+		MessageID:        10,
+		AsyncId:          1000,
+		WatchPath:        "/dir1",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+	})
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{2},
+		SessionID:        100,
+		MessageID:        20,
+		AsyncId:          2000,
+		WatchPath:        "/dir2",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+	})
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{3},
+		SessionID:        200, // different session
+		MessageID:        30,
+		AsyncId:          3000,
+		WatchPath:        "/dir1",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+	})
+
+	removed := r.UnregisterAllForSession(100)
+	if len(removed) != 2 {
+		t.Errorf("expected 2 watchers removed, got %d", len(removed))
+	}
+
+	// Session 200 watcher should still be present
+	watchers := r.GetWatchersForPath("/dir1")
+	if len(watchers) != 1 {
+		t.Errorf("expected 1 watcher remaining, got %d", len(watchers))
+	}
+}
+
+func TestAsyncResponseRegistry(t *testing.T) {
+	r := NewAsyncResponseRegistry(100)
+
+	var completed bool
+	op := &AsyncOperation{
+		AsyncId:   42,
+		SessionID: 1,
+		MessageID: 10,
+		Callback: func(sessionID, messageID, asyncId uint64, status types.Status, data []byte) error {
+			completed = true
+			if status != types.StatusSuccess {
+				t.Errorf("expected StatusSuccess, got %v", status)
+			}
+			return nil
+		},
+	}
+
+	if err := r.Register(op); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	if r.Len() != 1 {
+		t.Errorf("expected 1 pending op, got %d", r.Len())
+	}
+
+	if err := r.Complete(42, types.StatusSuccess, nil); err != nil {
+		t.Fatalf("Complete failed: %v", err)
+	}
+
+	if !completed {
+		t.Error("callback should have been called")
+	}
+
+	if r.Len() != 0 {
+		t.Errorf("expected 0 pending ops after complete, got %d", r.Len())
+	}
+}
+
+func TestAsyncResponseRegistry_Cancel(t *testing.T) {
+	r := NewAsyncResponseRegistry(100)
+
+	var receivedStatus types.Status
+	op := &AsyncOperation{
+		AsyncId:   99,
+		SessionID: 1,
+		MessageID: 10,
+		Callback: func(sessionID, messageID, asyncId uint64, status types.Status, data []byte) error {
+			receivedStatus = status
+			return nil
+		},
+	}
+
+	if err := r.Register(op); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	if err := r.Cancel(99); err != nil {
+		t.Fatalf("Cancel failed: %v", err)
+	}
+
+	if receivedStatus != types.StatusCancelled {
+		t.Errorf("expected STATUS_CANCELLED, got 0x%08X", uint32(receivedStatus))
+	}
+}
+
+func TestAsyncResponseRegistry_MaxLimit(t *testing.T) {
+	r := NewAsyncResponseRegistry(2)
+
+	for i := uint64(1); i <= 2; i++ {
+		if err := r.Register(&AsyncOperation{AsyncId: i}); err != nil {
+			t.Fatalf("Register %d failed: %v", i, err)
+		}
+	}
+
+	// Third should fail
+	err := r.Register(&AsyncOperation{AsyncId: 3})
+	if err == nil {
+		t.Error("expected error when exceeding max limit")
+	}
+}

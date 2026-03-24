@@ -253,6 +253,14 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
+	// Per MS-SMB2 3.3.5.15: CompletionFilter must contain valid flags.
+	// Reject requests with no flags or invalid flags.
+	if !IsValidCompletionFilter(req.CompletionFilter) {
+		logger.Debug("CHANGE_NOTIFY: invalid CompletionFilter",
+			"filter", fmt.Sprintf("0x%08X", req.CompletionFilter))
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
 	// Per MS-SMB2 3.3.5.15: If OutputBufferLength exceeds MaxTransactSize,
 	// the server MUST fail the request with STATUS_INVALID_PARAMETER.
 	if req.OutputBufferLength > h.MaxTransactSize {

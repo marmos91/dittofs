@@ -39,8 +39,31 @@ const (
 	// FileNotifyChangeCreation watches for creation time changes.
 	FileNotifyChangeCreation uint32 = 0x00000040
 
+	// FileNotifyChangeEa watches for extended attribute changes.
+	FileNotifyChangeEa uint32 = 0x00000080
+
 	// FileNotifyChangeSecurity watches for security descriptor changes.
 	FileNotifyChangeSecurity uint32 = 0x00000100
+
+	// FileNotifyChangeStreamName watches for alternate data stream name changes
+	// (create, delete, rename). [MS-SMB2] 2.2.35 / [MS-FSCC] 2.6.
+	FileNotifyChangeStreamName uint32 = 0x00000200
+
+	// FileNotifyChangeStreamSize watches for alternate data stream size changes.
+	// [MS-SMB2] 2.2.35 / [MS-FSCC] 2.6.
+	FileNotifyChangeStreamSize uint32 = 0x00000400
+
+	// FileNotifyChangeStreamWrite watches for alternate data stream write changes.
+	// [MS-SMB2] 2.2.35 / [MS-FSCC] 2.6.
+	FileNotifyChangeStreamWrite uint32 = 0x00000800
+
+	// AllValidCompletionFilterFlags is the bitmask of all valid completion filter flags.
+	// Used to validate CHANGE_NOTIFY requests per MS-SMB2 3.3.5.15.
+	AllValidCompletionFilterFlags uint32 = FileNotifyChangeFileName | FileNotifyChangeDirName |
+		FileNotifyChangeAttributes | FileNotifyChangeSize | FileNotifyChangeLastWrite |
+		FileNotifyChangeLastAccess | FileNotifyChangeCreation | FileNotifyChangeEa |
+		FileNotifyChangeSecurity | FileNotifyChangeStreamName | FileNotifyChangeStreamSize |
+		FileNotifyChangeStreamWrite
 )
 
 // Change action codes for FileNotifyInformation.
@@ -179,6 +202,14 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 		return ErrTooManyWatches
 	}
 
+	// Clean up any existing entry with the same MessageID to prevent orphans
+	// in byFileID/pending (a misbehaving client may reuse MessageIDs).
+	if oldByMsg, ok := r.byMessageID[notify.MessageID]; ok {
+		if string(oldByMsg.FileID[:]) != string(notify.FileID[:]) {
+			r.unregisterLocked(oldByMsg)
+		}
+	}
+
 	r.byFileID[string(notify.FileID[:])] = notify
 	r.byMessageID[notify.MessageID] = notify
 	r.byAsyncId[notify.AsyncId] = notify
@@ -273,6 +304,13 @@ func (r *NotifyRegistry) GetWatchersForPath(path string) []*PendingNotify {
 	return result
 }
 
+// Stream change action codes for ADS notifications.
+const (
+	FileActionAddedStream   uint32 = 0x00000006
+	FileActionRemovedStream uint32 = 0x00000007
+	FileActionModifiedStream uint32 = 0x00000008
+)
+
 // MatchesFilter checks if a filesystem change action matches a CHANGE_NOTIFY
 // completion filter [MS-SMB2] 2.2.35. It maps FileAction* constants to the
 // corresponding FileNotifyChange* flags. For example, FileActionAdded matches
@@ -280,14 +318,22 @@ func (r *NotifyRegistry) GetWatchersForPath(path string) []*PendingNotify {
 func MatchesFilter(action uint32, filter uint32) bool {
 	switch action {
 	case FileActionAdded, FileActionRemoved:
-		// File/directory created or deleted
-		return filter&(FileNotifyChangeFileName|FileNotifyChangeDirName) != 0
+		// File/directory created or deleted; also matches stream name changes
+		// (ADS create/delete fires FILE_ACTION_ADDED/REMOVED with stream name filter).
+		return filter&(FileNotifyChangeFileName|FileNotifyChangeDirName|FileNotifyChangeStreamName) != 0
 	case FileActionModified:
-		// File modified — matches any content/metadata change filter
-		return filter&(FileNotifyChangeSize|FileNotifyChangeLastWrite|FileNotifyChangeAttributes|FileNotifyChangeLastAccess|FileNotifyChangeCreation|FileNotifyChangeSecurity) != 0
+		// File modified — matches any content/metadata change filter,
+		// including stream size/write and security descriptor changes.
+		return filter&(FileNotifyChangeSize|FileNotifyChangeLastWrite|FileNotifyChangeAttributes|FileNotifyChangeLastAccess|FileNotifyChangeCreation|FileNotifyChangeSecurity|FileNotifyChangeStreamSize|FileNotifyChangeStreamWrite) != 0
 	case FileActionRenamedOldName, FileActionRenamedNewName:
-		// Rename
-		return filter&(FileNotifyChangeFileName|FileNotifyChangeDirName) != 0
+		// Rename; also matches stream name changes (ADS rename).
+		return filter&(FileNotifyChangeFileName|FileNotifyChangeDirName|FileNotifyChangeStreamName) != 0
+	case FileActionAddedStream, FileActionRemovedStream:
+		// ADS stream created or deleted
+		return filter&FileNotifyChangeStreamName != 0
+	case FileActionModifiedStream:
+		// ADS stream modified
+		return filter&(FileNotifyChangeStreamSize|FileNotifyChangeStreamWrite) != 0
 	default:
 		return false
 	}
@@ -595,6 +641,177 @@ func (r *NotifyRegistry) sendAndUnregister(w *PendingNotify, changes []FileNotif
 	}
 }
 
+// NotifyRmdir handles directory removal notification: send STATUS_NOTIFY_CLEANUP
+// to any watchers on the removed directory itself, and notify the parent watcher
+// with FileActionRemoved for the directory name.
+//
+// Per MS-SMB2 3.3.5.15: when a directory being watched is deleted, the pending
+// CHANGE_NOTIFY request must be completed with STATUS_NOTIFY_CLEANUP.
+func (r *NotifyRegistry) NotifyRmdir(shareName, parentPath, dirName string) {
+	dirPath := parentPath + "/" + dirName
+	if parentPath == "/" {
+		dirPath = "/" + dirName
+	}
+
+	// First: send STATUS_NOTIFY_CLEANUP to any watchers on the removed directory
+	r.mu.Lock()
+	var cleanupWatchers []*PendingNotify
+	for _, w := range r.pending[dirPath] {
+		if w.ShareName == shareName {
+			cleanupWatchers = append(cleanupWatchers, w)
+		}
+	}
+	// Remove them from the registry while holding the lock
+	for _, w := range cleanupWatchers {
+		r.unregisterLocked(w)
+	}
+	r.mu.Unlock()
+
+	// Send STATUS_NOTIFY_CLEANUP to each removed watcher
+	for _, w := range cleanupWatchers {
+		if w.AsyncCallback != nil {
+			cleanupResp := &ChangeNotifyResponse{
+				SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
+			}
+			if err := w.AsyncCallback(w.SessionID, w.MessageID, w.AsyncId, cleanupResp); err != nil {
+				logger.Warn("CHANGE_NOTIFY: failed to send STATUS_NOTIFY_CLEANUP for rmdir",
+					"dirPath", dirPath,
+					"messageID", w.MessageID,
+					"error", err)
+			}
+		}
+	}
+
+	// Second: notify parent watchers about the directory removal
+	r.NotifyChange(shareName, parentPath, dirName, FileActionRemoved)
+}
+
+// UnregisterAllForSession unregisters all pending watchers for a session.
+// Sends STATUS_NOTIFY_CLEANUP for each. Called during LOGOFF or session cleanup.
+func (r *NotifyRegistry) UnregisterAllForSession(sessionID uint64) []*PendingNotify {
+	r.mu.Lock()
+	var toRemove []*PendingNotify
+	for _, watchers := range r.pending {
+		for _, w := range watchers {
+			if w.SessionID == sessionID {
+				toRemove = append(toRemove, w)
+			}
+		}
+	}
+	for _, w := range toRemove {
+		r.unregisterLocked(w)
+	}
+	r.mu.Unlock()
+	return toRemove
+}
+
+// UnregisterAllForTree unregisters all pending watchers for a specific tree
+// connect (identified by sessionID + shareName). Sends STATUS_NOTIFY_CLEANUP
+// for each. Called during TREE_DISCONNECT cleanup.
+func (r *NotifyRegistry) UnregisterAllForTree(sessionID uint64, shareName string) []*PendingNotify {
+	r.mu.Lock()
+	var toRemove []*PendingNotify
+	for _, watchers := range r.pending {
+		for _, w := range watchers {
+			if w.SessionID == sessionID && w.ShareName == shareName {
+				toRemove = append(toRemove, w)
+			}
+		}
+	}
+	for _, w := range toRemove {
+		r.unregisterLocked(w)
+	}
+	r.mu.Unlock()
+	return toRemove
+}
+
+// ============================================================================
+// Generalized Async Response Registry (D-21)
+// ============================================================================
+// AsyncResponseRegistry provides a general-purpose mechanism for tracking
+// pending async operations. ChangeNotify is the primary consumer; future
+// async operations (lock waits, etc.) can also use it.
+
+// AsyncOperation tracks a pending async operation.
+type AsyncOperation struct {
+	AsyncId   uint64
+	SessionID uint64
+	MessageID uint64
+	// Callback is invoked to send the async completion response.
+	Callback func(sessionID, messageID, asyncId uint64, status types.Status, data []byte) error
+}
+
+// AsyncResponseRegistry tracks pending async operations by AsyncId.
+// Thread-safe: all operations are protected by a read-write mutex.
+type AsyncResponseRegistry struct {
+	mu     sync.RWMutex
+	ops    map[uint64]*AsyncOperation // asyncId -> operation
+	maxOps int
+}
+
+// NewAsyncResponseRegistry creates a new async response registry.
+func NewAsyncResponseRegistry(maxOps int) *AsyncResponseRegistry {
+	return &AsyncResponseRegistry{
+		ops:    make(map[uint64]*AsyncOperation),
+		maxOps: maxOps,
+	}
+}
+
+// Register adds a pending async operation. Returns error if limit exceeded.
+func (r *AsyncResponseRegistry) Register(op *AsyncOperation) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.ops) >= r.maxOps {
+		return fmt.Errorf("async response registry full (max %d)", r.maxOps)
+	}
+	r.ops[op.AsyncId] = op
+	return nil
+}
+
+// Complete sends the completion response and removes the operation.
+func (r *AsyncResponseRegistry) Complete(asyncId uint64, status types.Status, data []byte) error {
+	r.mu.Lock()
+	op, ok := r.ops[asyncId]
+	if ok {
+		delete(r.ops, asyncId)
+	}
+	r.mu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("async operation %d not found", asyncId)
+	}
+	if op.Callback == nil {
+		return nil
+	}
+	return op.Callback(op.SessionID, op.MessageID, asyncId, status, data)
+}
+
+// Cancel cancels a pending operation by sending STATUS_CANCELLED.
+func (r *AsyncResponseRegistry) Cancel(asyncId uint64) error {
+	return r.Complete(asyncId, types.StatusCancelled, nil)
+}
+
+// Unregister removes an operation without sending a response.
+func (r *AsyncResponseRegistry) Unregister(asyncId uint64) {
+	r.mu.Lock()
+	delete(r.ops, asyncId)
+	r.mu.Unlock()
+}
+
+// Len returns the number of pending operations.
+func (r *AsyncResponseRegistry) Len() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.ops)
+}
+
+// IsValidCompletionFilter checks if the CompletionFilter contains only valid flags.
+// Per MS-SMB2 3.3.5.15: if CompletionFilter is 0 or contains invalid flags,
+// return STATUS_INVALID_PARAMETER.
+func IsValidCompletionFilter(filter uint32) bool {
+	return filter != 0 && (filter & ^AllValidCompletionFilterFlags) == 0
+}
+
 // actionToString converts an action code to a readable string.
 func actionToString(action uint32) string {
 	switch action {
@@ -608,6 +825,12 @@ func actionToString(action uint32) string {
 		return "RENAMED_OLD"
 	case FileActionRenamedNewName:
 		return "RENAMED_NEW"
+	case FileActionAddedStream:
+		return "ADDED_STREAM"
+	case FileActionRemovedStream:
+		return "REMOVED_STREAM"
+	case FileActionModifiedStream:
+		return "MODIFIED_STREAM"
 	default:
 		return fmt.Sprintf("UNKNOWN(0x%X)", action)
 	}
@@ -627,15 +850,12 @@ func relativePathFromWatch(watchPath, parentPath, fileName string) string {
 	}
 	// Guard against cross-path calls (e.g., NotifyRename where the watcher
 	// was found via newParentPath but we're computing the old name relative
-	// to a different directory). Without this check, slicing panics when
-	// watchPath is longer than parentPath or not a prefix.
+	// to a different directory). Without this check, TrimPrefix is a no-op
+	// and we'd return an incorrect path.
 	if !strings.HasPrefix(parentPath, watchPath) {
 		return fileName
 	}
-	relDir := parentPath[len(watchPath):]
-	if len(relDir) > 0 && relDir[0] == '/' {
-		relDir = relDir[1:]
-	}
+	relDir := strings.TrimPrefix(parentPath[len(watchPath):], "/")
 	if relDir != "" {
 		return relDir + "/" + fileName
 	}
