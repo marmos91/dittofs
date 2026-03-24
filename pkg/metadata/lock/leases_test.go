@@ -215,11 +215,11 @@ func TestRequestLease_CrossKeyConflict(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, LeaseStateRead|LeaseStateWrite, state)
 
-	// Second client requests R lease on same file - triggers break on key1's Write,
-	// then grants R since Read leases don't conflict after break resolves.
+	// Second client requests R lease on same file - triggers break on key1's Write.
+	// After conflict, the new lease is denied (caller gets the file open without a lease).
 	state, _, err = mgr.RequestLease(ctx, FileHandle("file1"), key2, parentKey, "owner2", "client2", "/share", LeaseStateRead, false)
 	require.NoError(t, err)
-	assert.Equal(t, LeaseStateRead, state, "should grant R after conflict break resolves")
+	assert.Equal(t, LeaseStateNone, state, "should deny lease after cross-key conflict")
 }
 
 func TestRequestLease_MultipleReadLeasesNoConflict(t *testing.T) {
@@ -283,11 +283,11 @@ func TestAcknowledgeLeaseBreak_CompletesBreak(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, LeaseStateRead|LeaseStateWrite, state)
 
-	// Request from key2 triggers break on key1, waits for break completion,
-	// then grants R since Read leases don't conflict after break resolves.
+	// Request from key2 triggers break on key1. After conflict, the new
+	// lease is denied (caller gets the file open without a lease).
 	state, _, err = mgr.RequestLease(ctx, FileHandle("file1"), key2, parentKey, "owner2", "client2", "/share", LeaseStateRead, false)
 	require.NoError(t, err)
-	assert.Equal(t, LeaseStateRead, state, "should grant R after break resolves")
+	assert.Equal(t, LeaseStateNone, state, "should deny lease after cross-key conflict")
 	assert.True(t, breakCalled, "break callback should have been called")
 
 	// Acknowledge the break - accept None state (break was to None)

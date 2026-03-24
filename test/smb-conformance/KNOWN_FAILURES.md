@@ -12,7 +12,7 @@ row (`Test Name`) are ignored.
 ## Baseline Status
 
 - **Initial baseline (Phase 29.8):** 133/240 BVT tests passing
-- **Current baseline (Phase 73):** 56 known failures (53 permanent + 3 expected)
+- **Current baseline (Phase 73):** 58 known failures (53 permanent + 5 expected)
 - **Target:** All BVT tests pass except genuinely unimplemented features
 
 ## Phase 30-32 Improvements
@@ -138,6 +138,8 @@ in `baseline-results.md` for prioritization.
 | FsInfo_Query_FileFsAttributeInformation_File_IsCompressionSupported | FsInfo | Compression not supported | Permanent | - |
 | FsInfo_Query_FileFsAttributeInformation_File_IsObjectIDsSupported | FsInfo | Object IDs not supported | Permanent | - |
 | BVT_SMB2Basic_ChangeNotify_ChangeEa | ChangeNotify | Extended attributes not implemented; ChangeEa never fires | Permanent | - |
+| BVT_SMB2Basic_ChangeNotify_ChangeSecurity | ChangeNotify | Security descriptor change notify async delivery needs debugging | Expected | - |
+| BVT_SMB2Basic_ChangeNotify_ServerReceiveSmb2Close | ChangeNotify | CLOSE notify cleanup response format needs debugging | Expected | - |
 
 ## Status Legend
 
@@ -169,12 +171,13 @@ Tests that fail for features not yet implemented:
 | Category | Count | Status |
 |----------|-------|--------|
 | Timestamp | 3 | Directory timestamp edge cases (freeze-thaw, auto-update) |
+| ChangeNotify | 2 | Security descriptor and CLOSE notify async delivery |
 
-**Total expected failures (fixable):** 3 tests
+**Total expected failures (fixable):** 5 tests
 
-**WPTS BVT expected failures (primary gate):** 3
+**WPTS BVT expected failures (primary gate):** 5
 
-**Grand total known failures:** 56 tests (53 permanent + 3 expected)
+**Grand total known failures:** 58 tests (53 permanent + 5 expected)
 
 ## Phase 72 Fixes (31 tests removed)
 

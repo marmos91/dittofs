@@ -231,8 +231,12 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 				"offset", req.Offset, "length", len(req.Data), "maxFileSize", maxFileSize)
 			return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 		}
-		// writeEnd == maxFileSize is valid: the write ends exactly at the NTFS limit.
-		// Only writeEnd > maxFileSize (handled above) is an error.
+		if writeEnd == maxFileSize {
+			// Writing right up to MAXFILESIZE boundary: Windows returns DISK_FULL
+			logger.Debug("WRITE: at MAXFILESIZE boundary", "path", openFile.Path,
+				"offset", req.Offset, "length", len(req.Data))
+			return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusDiskFull}}, nil
+		}
 	}
 
 	// ========================================================================

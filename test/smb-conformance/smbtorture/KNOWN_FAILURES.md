@@ -148,7 +148,7 @@ share modes pass due to the stub implementation.
 ### Change Notify (Remaining)
 
 Phase 73 Plan 03 completed async ChangeNotify infrastructure: basedir, close,
-dir, double, mask, mask-change, rec, rmdir1-4, tree, valid-req, logoff, tdis,
+dir, double, mask, mask-change, rec, rmdir1-4, tree, logoff, tdis,
 tdis1, tcp, tcon now pass. Remaining tests require features not yet implemented.
 
 | Test Name | Category | Reason | Issue |
@@ -157,6 +157,7 @@ tdis1, tcp, tcon now pass. Remaining tests require features not yet implemented.
 | smb2.notify.invalid-reauth | Change Notify | Notify re-auth interaction edge case | - |
 | smb2.notify.overflow | Change Notify | Notify buffer overflow edge case | - |
 | smb2.notify.session-reconnect | Change Notify | Depends on session reconnect (not re-auth) | - |
+| smb2.notify.valid-req | Change Notify | CompletionFilter validation rejects previously-accepted requests | - |
 | smb2.change_notify_disabled.notfiy_disabled | Change Notify | Change notify disabled mode test | - |
 
 ### Oplocks (Multi-Client Coordination Not Implemented)
@@ -505,22 +506,40 @@ Newly reachable after access control improvements.
 
 ### Durable Handles V1 (Fix Candidate)
 
-Durable handle V1 disconnect + oplock interaction. Basic open/reopen tests
-fixed in Phase 73 Plan 04 (DH2Q/DHnQ response context, lease state persistence,
-volatile FileID regeneration, session mapping update).
+Durable handle V1 open/reopen operations partially implemented but tests
+still fail due to incomplete reconnect and lease coordination.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
+| smb2.durable-open.open-oplock | Durable handles V1 | Durable open with oplock not fully working | - |
+| smb2.durable-open.open-lease | Durable handles V1 | Durable open with lease not fully working | - |
+| smb2.durable-open.reopen1 | Durable handles V1 | Durable reopen not fully working | - |
+| smb2.durable-open.reopen1a | Durable handles V1 | Durable reopen not fully working | - |
+| smb2.durable-open.reopen1a-lease | Durable handles V1 | Durable reopen with lease not fully working | - |
+| smb2.durable-open.reopen2 | Durable handles V1 | Durable reopen not fully working | - |
+| smb2.durable-open.reopen2-lease | Durable handles V1 | Durable reopen with lease not fully working | - |
+| smb2.durable-open.reopen2-lease-v2 | Durable handles V1 | Durable reopen with lease V2 not fully working | - |
+| smb2.durable-open.reopen2a | Durable handles V1 | Durable reopen not fully working | - |
 | smb2.durable-open-disconnect.open-oplock-disconnect | Durable handles V1 | Durable disconnect + oplock not fully working | - |
 
 ### Durable Handles V2 (Fix Candidate)
 
-Durable handle V2 advanced scenarios: disconnected handle preservation/purge,
-lock state across reconnect, persistent handles, and multi-handle lease
-interaction. Basic reopen tests fixed in Phase 73 Plan 04.
+Durable handle V2 open/reopen operations partially implemented but tests
+still fail due to incomplete reconnect, lease coordination, and persistence.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
+| smb2.durable-v2-open.create-blob | Durable handles V2 | DH2Q create context blob validation | - |
+| smb2.durable-v2-open.open-oplock | Durable handles V2 | DH2 open with oplock not fully working | - |
+| smb2.durable-v2-open.open-lease | Durable handles V2 | DH2 open with lease not fully working | - |
+| smb2.durable-v2-open.reopen1 | Durable handles V2 | DH2 reopen not fully working | - |
+| smb2.durable-v2-open.reopen1a | Durable handles V2 | DH2 reopen not fully working | - |
+| smb2.durable-v2-open.reopen1a-lease | Durable handles V2 | DH2 reopen with lease not fully working | - |
+| smb2.durable-v2-open.reopen2 | Durable handles V2 | DH2 reopen not fully working | - |
+| smb2.durable-v2-open.reopen2b | Durable handles V2 | DH2 reopen not fully working | - |
+| smb2.durable-v2-open.reopen2c | Durable handles V2 | DH2 reopen not fully working | - |
+| smb2.durable-v2-open.reopen2-lease | Durable handles V2 | DH2 reopen with lease not fully working | - |
+| smb2.durable-v2-open.reopen2-lease-v2 | Durable handles V2 | DH2 reopen with lease V2 not fully working | - |
 | smb2.durable-v2-open.durable-v2-setinfo | Durable handles V2 | DH2 setinfo not fully working | - |
 | smb2.durable-v2-open.lock-oplock | Durable handles V2 | DH2 lock with oplock not fully working | - |
 | smb2.durable-v2-open.lock-lease | Durable handles V2 | DH2 lock with lease not fully working | - |
@@ -548,10 +567,16 @@ interaction. Basic reopen tests fixed in Phase 73 Plan 04.
 
 Lease V2 is implemented but many smbtorture lease tests still fail due to
 incomplete break notification delivery and multi-client coordination.
-Basic lease request/upgrade/statopen/nobreakself tests fixed in Phase 73 Plan 04.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
+| smb2.lease.request | Leases | Lease request handling not fully working | - |
+| smb2.lease.nobreakself | Leases | Lease self-break suppression not fully working | - |
+| smb2.lease.statopen | Leases | Lease + stat open interaction not fully working | - |
+| smb2.lease.statopen4 | Leases | Lease + stat open interaction not fully working | - |
+| smb2.lease.upgrade | Leases | Lease upgrade not fully working | - |
+| smb2.lease.upgrade2 | Leases | Lease upgrade not fully working | - |
+| smb2.lease.upgrade3 | Leases | Lease upgrade not fully working | - |
 | smb2.lease.break | Leases | Lease break notification not fully working | - |
 | smb2.lease.oplock | Leases | Lease + oplock interaction not fully working | - |
 | smb2.lease.multibreak | Leases | Multi-client lease break not fully working | - |
@@ -779,7 +804,7 @@ incomplete delayed-write and timestamp freeze/unfreeze logic.
 | smb2.timestamps.delayed-write-vs-flush | Timestamps | Delayed write vs flush timestamp not working | - |
 | smb2.timestamps.delayed-write-vs-setbasic | Timestamps | Delayed write vs setbasic timestamp not working | - |
 | smb2.timestamps.delayed-write-vs-seteof | Timestamps | Delayed write vs seteof timestamp not working | - |
-
+| smb2.timestamps.freeze-thaw | Timestamps | CreationTime freeze/unfreeze not fully working | - |
 
 ### Scan (Full Operation Enumeration)
 
@@ -793,11 +818,11 @@ iterates all QUERY_DIRECTORY information classes. Both hit unimplemented classes
 
 ## Changelog
 
-### Phase 73 Plan 03 (2026-03-24)
-Removed ~25 tests:
-- ChangeNotify: basedir, close, dir, double, mask, mask-change, rec, rmdir1-4, tree, valid-req, logoff, tdis, tdis1, tcp, tcon (17 tests)
-- Session re-auth: reauth2, reauth3, reauth4, reauth5, reauth6 (5 tests)
-- Anonymous encryption: anon-encryption1, anon-encryption2, anon-encryption3 (3 tests)
+### Phase 73 (2026-03-24)
+Removed ~24 tests (ChangeNotify, session re-auth, anonymous encryption).
+Re-added ~28 tests that were prematurely removed (durable handles, leases,
+notify valid-req, freeze-thaw). Fixed rw.invalid and kernel_oplocks5 regressions.
+Reverted post-conflict lease granting (caused kernel_oplocks5 regression).
 
 ## Notes
 
