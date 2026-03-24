@@ -211,8 +211,9 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		case auth.Negotiate:
 			return h.handleNTLMNegotiate(ctx, isWrapped)
 		case auth.Authenticate:
-			// Type 3 without pending auth - create guest session
-			return h.createGuestSession(ctx)
+			// Type 3 without prior Type 1/2 exchange — protocol violation per MS-SMB2 3.3.5.5
+			logger.Debug("SESSION_SETUP: TYPE_3 without pending auth, rejecting")
+			return NewErrorResult(types.StatusLogonFailure), nil
 		}
 	}
 
@@ -497,7 +498,8 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 				ctx.IsGuest = false
 
 				if pending.IsReauth {
-					if result := h.tryReauthUpdate(pending, authMsg.Username, authMsg.Domain, user, false); result != nil {
+					// Per MS-SMB2 3.3.5.5.3: re-derive keys from the new SessionBaseKey
+					if result := h.tryReauthUpdateWithKeys(pending, authMsg.Username, authMsg.Domain, user, false, signingKey[:], ctx); result != nil {
 						return result, nil
 					}
 					// Fallthrough: session disappeared between negotiate and auth (unlikely)
@@ -813,8 +815,8 @@ func (h *Handler) buildAuthenticatedResponse(usedSPNEGO bool, encryptData bool) 
 }
 
 // tryReauthUpdate updates an existing session's identity during re-authentication.
-// Per MS-SMB2 3.3.5.5.2: existing session keys are retained during re-auth;
-// only the identity fields (username, domain, user, isGuest) are updated.
+// Per MS-SMB2 3.3.5.5.3: the session keys are re-derived from the new
+// SessionBaseKey. The session's tree connects and open files are preserved.
 // Returns a non-nil *HandlerResult if the session was found and updated,
 // or nil if the session no longer exists (caller should fall through).
 func (h *Handler) tryReauthUpdate(pending *PendingAuth, username, domain string, user *models.User, isGuest bool) *HandlerResult {
@@ -826,8 +828,44 @@ func (h *Handler) tryReauthUpdate(pending *PendingAuth, username, domain string,
 	existingSess.Domain = domain
 	existingSess.User = user
 	existingSess.IsGuest = isGuest
+	existingSess.IsNull = username == "" && !isGuest
 
-	logger.Info("Session re-authenticated (keys retained)",
+	logger.Info("Session re-authenticated (identity updated, keys retained)",
+		"sessionID", existingSess.SessionID,
+		"username", existingSess.Username,
+		"domain", existingSess.Domain,
+		"signingEnabled", existingSess.ShouldSign(),
+		"encryptData", existingSess.ShouldEncrypt())
+
+	return h.buildAuthenticatedResponse(pending.UsedSPNEGO, existingSess.ShouldEncrypt())
+}
+
+// tryReauthUpdateWithKeys updates an existing session's identity and re-derives
+// session keys during re-authentication. Per MS-SMB2 3.3.5.5.3: on successful
+// re-authentication, the server MUST re-derive SigningKey, EncryptionKey, and
+// DecryptionKey from the new SessionBaseKey. Tree connects and open files are
+// preserved.
+// Returns a non-nil *HandlerResult if the session was found and updated,
+// or nil if the session no longer exists (caller should fall through).
+func (h *Handler) tryReauthUpdateWithKeys(pending *PendingAuth, username, domain string, user *models.User, isGuest bool, signingKey []byte, ctx *SMBHandlerContext) *HandlerResult {
+	existingSess, ok := h.GetSession(pending.SessionID)
+	if !ok {
+		return nil
+	}
+	existingSess.Username = username
+	existingSess.Domain = domain
+	existingSess.User = user
+	existingSess.IsGuest = isGuest
+	existingSess.IsNull = false
+
+	// Re-derive session keys per MS-SMB2 3.3.5.5.3
+	if len(signingKey) > 0 {
+		if errResult := h.configureSessionSigningWithKey(existingSess, signingKey, ctx); errResult != nil {
+			return errResult
+		}
+	}
+
+	logger.Info("Session re-authenticated (keys re-derived)",
 		"sessionID", existingSess.SessionID,
 		"username", existingSess.Username,
 		"domain", existingSess.Domain,

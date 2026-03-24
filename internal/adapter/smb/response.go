@@ -264,6 +264,17 @@ func checkEncryptionRequired(reqHeader *header.SMB2Header, handlerCtx *handlers.
 		return 0
 	}
 
+	// Per MS-SMB2 3.3.5.2.9: anonymous/null sessions bypass encryption requirements.
+	// Anonymous sessions have no session key and therefore cannot encrypt/decrypt.
+	// Also skip encryption enforcement for guest sessions (no signing key).
+	if reqHeader.SessionID != 0 {
+		if sess, ok := connInfo.Handler.GetSession(reqHeader.SessionID); ok {
+			if sess.IsNull || sess.IsGuest {
+				return 0
+			}
+		}
+	}
+
 	// Global encryption enforcement: when mode is "required", all post-session-setup
 	// messages must be encrypted.
 	if connInfo.Handler.EncryptionConfig.Mode == "required" && reqHeader.SessionID != 0 {

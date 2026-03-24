@@ -358,9 +358,9 @@ func TestSessionSetup_FullHandshake(t *testing.T) {
 			t.Fatalf("Unexpected error: %v", err)
 		}
 
-		// Should create guest session as fallback
-		if result.Status != types.StatusSuccess {
-			t.Errorf("Should fallback to guest session, got 0x%x", result.Status)
+		// Type 3 without prior Type 1/2 exchange is a protocol violation per MS-SMB2 3.3.5.5
+		if result.Status != types.StatusLogonFailure {
+			t.Errorf("Should reject with STATUS_LOGON_FAILURE, got 0x%x", result.Status)
 		}
 	})
 }
