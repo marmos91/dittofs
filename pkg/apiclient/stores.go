@@ -3,23 +3,26 @@ package apiclient
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // MetadataStore represents a metadata store configuration.
 type MetadataStore struct {
-	ID     string          `json:"id"`
-	Name   string          `json:"name"`
-	Type   string          `json:"type"`
-	Config json.RawMessage `json:"config,omitempty"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Type      string          `json:"type"`
+	Config    json.RawMessage `json:"config,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
 }
 
 // BlockStore represents a block store configuration.
 type BlockStore struct {
-	ID     string          `json:"id"`
-	Name   string          `json:"name"`
-	Kind   string          `json:"kind"`
-	Type   string          `json:"type"`
-	Config json.RawMessage `json:"config,omitempty"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Kind      string          `json:"kind"`
+	Type      string          `json:"type"`
+	Config    json.RawMessage `json:"config,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
 }
 
 // CreateStoreRequest is the request to create a metadata or block store.
