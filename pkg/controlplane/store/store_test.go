@@ -377,6 +377,79 @@ func TestUserGroupMembership(t *testing.T) {
 	})
 }
 
+func TestCreateUserWithGroups(t *testing.T) {
+	s := createTestStore(t)
+	defer s.Close()
+	ctx := context.Background()
+
+	// Create groups
+	s.CreateGroup(ctx, &models.Group{Name: "devs"})
+	s.CreateGroup(ctx, &models.Group{Name: "ops"})
+
+	t.Run("creates user with groups atomically", func(t *testing.T) {
+		user := &models.User{Username: "alice", PasswordHash: "hash", Role: "user"}
+		id, err := s.CreateUserWithGroups(ctx, user, []string{"devs", "ops"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if id == "" {
+			t.Error("expected non-empty ID")
+		}
+
+		groups, err := s.GetUserGroups(ctx, "alice")
+		if err != nil {
+			t.Fatalf("failed to get user groups: %v", err)
+		}
+		if len(groups) != 2 {
+			t.Errorf("expected 2 groups, got %d", len(groups))
+		}
+		names := map[string]bool{}
+		for _, g := range groups {
+			names[g.Name] = true
+		}
+		if !names["devs"] || !names["ops"] {
+			t.Errorf("expected groups devs and ops, got %v", names)
+		}
+	})
+
+	t.Run("fails if group does not exist", func(t *testing.T) {
+		user := &models.User{Username: "bob", PasswordHash: "hash", Role: "user"}
+		_, err := s.CreateUserWithGroups(ctx, user, []string{"devs", "nonexistent"})
+		if !errors.Is(err, models.ErrGroupNotFound) {
+			t.Errorf("expected ErrGroupNotFound, got %v", err)
+		}
+
+		// User should NOT have been created
+		_, err = s.GetUser(ctx, "bob")
+		if !errors.Is(err, models.ErrUserNotFound) {
+			t.Errorf("expected ErrUserNotFound (rollback), got %v", err)
+		}
+	})
+
+	t.Run("fails on duplicate user", func(t *testing.T) {
+		user := &models.User{Username: "alice", PasswordHash: "hash", Role: "user"}
+		_, err := s.CreateUserWithGroups(ctx, user, []string{"devs"})
+		if !errors.Is(err, models.ErrDuplicateUser) {
+			t.Errorf("expected ErrDuplicateUser, got %v", err)
+		}
+	})
+
+	t.Run("empty groups creates user without groups", func(t *testing.T) {
+		user := &models.User{Username: "charlie", PasswordHash: "hash", Role: "user"}
+		id, err := s.CreateUserWithGroups(ctx, user, []string{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if id == "" {
+			t.Error("expected non-empty ID")
+		}
+		groups, _ := s.GetUserGroups(ctx, "charlie")
+		if len(groups) != 0 {
+			t.Errorf("expected 0 groups, got %d", len(groups))
+		}
+	})
+}
+
 func TestShareOperations(t *testing.T) {
 	store := createTestStore(t)
 	defer store.Close()

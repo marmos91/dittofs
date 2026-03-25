@@ -3,10 +3,8 @@ package handlers
 import (
 	"errors"
 	"net/http"
-	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/internal/controlplane/api/auth"
 	"github.com/marmos91/dittofs/internal/controlplane/api/middleware"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -94,35 +92,30 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Create user
-	// Only admin users require password change on first login
-	mustChangePassword := role == models.RoleAdmin
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+
 	user := &models.User{
-		ID:                 uuid.New().String(),
 		Username:           req.Username,
 		PasswordHash:       passwordHash,
 		NTHash:             ntHashHex,
-		Enabled:            true,
-		MustChangePassword: mustChangePassword,
+		Enabled:            enabled,
+		MustChangePassword: role == models.RoleAdmin,
 		Role:               string(role),
+		UID:                req.UID,
 		DisplayName:        req.DisplayName,
 		Email:              req.Email,
-		CreatedAt:          time.Now(),
 	}
 
-	// Override enabled if explicitly set
-	if req.Enabled != nil {
-		user.Enabled = *req.Enabled
-	}
-
-	// Set UID if provided
-	if req.UID != nil {
-		user.UID = req.UID
-	}
-
-	if _, err := h.store.CreateUser(r.Context(), user); err != nil {
+	if _, err := h.store.CreateUserWithGroups(r.Context(), user, req.Groups); err != nil {
 		if errors.Is(err, models.ErrDuplicateUser) {
 			Conflict(w, "User already exists")
+			return
+		}
+		if errors.Is(err, models.ErrGroupNotFound) {
+			BadRequest(w, "One or more specified groups do not exist")
 			return
 		}
 		InternalServerError(w, "Failed to create user")

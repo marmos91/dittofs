@@ -47,6 +47,12 @@ type UserStore interface {
 	// Returns models.ErrDuplicateUser if a user with the same username exists.
 	CreateUser(ctx context.Context, user *models.User) (string, error)
 
+	// CreateUserWithGroups creates a new user and assigns them to the specified groups
+	// in a single transaction. If any group name doesn't exist, the transaction is
+	// rolled back and models.ErrGroupNotFound is returned (the user is not created).
+	// Returns models.ErrDuplicateUser if a user with the same username exists.
+	CreateUserWithGroups(ctx context.Context, user *models.User, groupNames []string) (string, error)
+
 	// UpdateUser updates an existing user.
 	// Returns models.ErrUserNotFound if the user doesn't exist.
 	UpdateUser(ctx context.Context, user *models.User) error

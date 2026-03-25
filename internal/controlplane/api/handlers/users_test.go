@@ -132,6 +132,63 @@ func TestUserHandler_Create(t *testing.T) {
 	}
 }
 
+func TestUserHandler_Create_WithGroups(t *testing.T) {
+	cpStore, _, handler := setupUserTest(t)
+	ctx := context.Background()
+
+	// Create groups first
+	cpStore.CreateGroup(ctx, &models.Group{Name: "devs"})
+	cpStore.CreateGroup(ctx, &models.Group{Name: "ops"})
+
+	t.Run("creates user with groups", func(t *testing.T) {
+		body, _ := json.Marshal(CreateUserRequest{
+			Username: "groupuser",
+			Password: "password123",
+			Groups:   []string{"devs", "ops"},
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/users", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		handler.Create(w, req)
+
+		if w.Code != http.StatusCreated {
+			t.Fatalf("Create() status = %d, want %d, body = %s", w.Code, http.StatusCreated, w.Body.String())
+		}
+
+		var resp UserResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("Failed to unmarshal response: %v", err)
+		}
+		if len(resp.Groups) != 2 {
+			t.Errorf("expected 2 groups in response, got %d: %v", len(resp.Groups), resp.Groups)
+		}
+	})
+
+	t.Run("fails with nonexistent group", func(t *testing.T) {
+		body, _ := json.Marshal(CreateUserRequest{
+			Username: "failuser",
+			Password: "password123",
+			Groups:   []string{"devs", "nonexistent"},
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/users", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		handler.Create(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("Create() status = %d, want %d, body = %s", w.Code, http.StatusBadRequest, w.Body.String())
+		}
+
+		// Verify user was not created (transaction rolled back)
+		_, err := cpStore.GetUser(ctx, "failuser")
+		if err == nil {
+			t.Error("expected user not to exist after failed group assignment")
+		}
+	})
+}
+
 func TestUserHandler_Create_Duplicate(t *testing.T) {
 	cpStore, _, handler := setupUserTest(t)
 	ctx := context.Background()
