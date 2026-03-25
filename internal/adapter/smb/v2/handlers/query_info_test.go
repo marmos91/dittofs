@@ -39,10 +39,11 @@ func TestFileCompressionInformation(t *testing.T) {
 			t.Errorf("CompressedFileSize = %d, want 65536", compressedSize)
 		}
 
-		// CompressionFormat should be 0 (COMPRESSION_FORMAT_NONE)
+		// CompressionFormat should be COMPRESSION_FORMAT_LZNT1 (0x0002)
+		// FileCompressionInformation reports the filesystem's default algorithm
 		compFormat := binary.LittleEndian.Uint16(info[8:10])
-		if compFormat != 0 {
-			t.Errorf("CompressionFormat = %d, want 0", compFormat)
+		if compFormat != 0x0002 {
+			t.Errorf("CompressionFormat = %d, want 2 (LZNT1)", compFormat)
 		}
 
 		// Remaining bytes (shifts + reserved) should all be zero

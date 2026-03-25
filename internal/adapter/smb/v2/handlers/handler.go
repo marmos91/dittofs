@@ -240,6 +240,11 @@ type OpenFile struct {
 	FrozenCtime *time.Time // Saved Ctime value at freeze time
 	FrozenAtime *time.Time // Saved Atime value at freeze time
 
+	// Compression state (per-handle, not persisted to metadata).
+	// Accessed via atomic operations since FSCTL_SET/GET_COMPRESSION
+	// can be called concurrently from different requests.
+	CompressionFormat atomic.Uint32 // 0=NONE, 2=LZNT1 [MS-FSCC] 2.3.9
+
 	// Oplock state
 	// OplockLevel is the current oplock level for this handle.
 	// Thread safety: This field is written during CREATE (before storing in sync.Map)

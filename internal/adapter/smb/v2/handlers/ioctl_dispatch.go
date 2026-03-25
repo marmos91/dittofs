@@ -26,6 +26,14 @@ func init() {
 		FsctlReadFileUsnData:       (*Handler).handleReadFileUsnData,
 		FsctlSrvEnumerateSnapshots: (*Handler).handleEnumerateSnapshots,
 		FsctlIsPathnameValid:       (*Handler).handleIsPathnameValid,
+		FsctlGetCompression:        (*Handler).handleGetCompression,
+		FsctlSetCompression:        (*Handler).handleSetCompression,
+		FsctlGetIntegrityInfo:      (*Handler).handleGetIntegrityInfo,
+		FsctlSetIntegrityInfo:      (*Handler).handleSetIntegrityInfo,
+		FsctlGetObjectID:           (*Handler).handleGetObjectID,
+		FsctlCreateOrGetObjectID:   (*Handler).handleCreateOrGetObjectID,
+		FsctlMarkHandle:            (*Handler).handleMarkHandle,
+		FsctlQueryFileRegions:      (*Handler).handleQueryFileRegions,
 	}
 }
 

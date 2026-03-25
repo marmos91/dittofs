@@ -621,8 +621,12 @@ func (h *Handler) buildFileInfoFromStore(ctx context.Context, file *metadata.Fil
 		// ChunkShift (1) + ClusterShift (1) + Reserved (3)
 		size := getSMBSize(&file.FileAttr)
 		w := smbenc.NewWriter(16)
-		w.WriteUint64(size) // CompressedFileSize = EndOfFile
-		w.WriteZeros(8)     // CompressionFormat(2) + shifts(3) + Reserved(3) all zero = COMPRESSION_FORMAT_NONE
+		w.WriteUint64(size)    // CompressedFileSize = EndOfFile (no actual compression)
+		w.WriteUint16(0x0002) // CompressionFormat = COMPRESSION_FORMAT_LZNT1 (NTFS default)
+		w.WriteUint8(0)        // CompressionUnitShift
+		w.WriteUint8(0)        // ChunkShift
+		w.WriteUint8(0)        // ClusterShift
+		w.WriteZeros(3)        // Reserved
 		return w.Bytes(), nil
 
 	case types.FileAttributeTagInformation:
@@ -869,7 +873,12 @@ func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoC
 	case 5: // FileFsAttributeInformation [MS-FSCC] 2.5.1
 		fsName := encodeUTF16LE("NTFS")
 		w := smbenc.NewWriter(12 + len(fsName))
-		w.WriteUint32(0x000200CF) // FILE_CASE_SENSITIVE_SEARCH | FILE_CASE_PRESERVED_NAMES | FILE_UNICODE_ON_DISK | FILE_PERSISTENT_ACLS | FILE_SUPPORTS_SPARSE_FILES | FILE_SUPPORTS_REPARSE_POINTS | FILE_SUPPORTS_ENCRYPTION (0x00020000)
+		// FILE_CASE_SENSITIVE_SEARCH(0x01) | FILE_CASE_PRESERVED_NAMES(0x02) |
+		// FILE_UNICODE_ON_DISK(0x04) | FILE_PERSISTENT_ACLS(0x08) |
+		// FILE_FILE_COMPRESSION(0x10) | FILE_SUPPORTS_SPARSE_FILES(0x40) |
+		// FILE_SUPPORTS_REPARSE_POINTS(0x80) | FILE_SUPPORTS_OBJECT_IDS(0x10000) |
+		// FILE_SUPPORTS_ENCRYPTION(0x20000)
+		w.WriteUint32(0x000300DF)
 		w.WriteUint32(255)
 		w.WriteUint32(uint32(len(fsName)))
 		w.WriteBytes(fsName)
@@ -954,6 +963,8 @@ func fsInfoClassMinSize(class types.FileInfoClass) uint32 {
 		return 8
 	case 7: // FileFsFullSizeInformation [MS-FSCC] 2.5.4 (32 bytes)
 		return 32
+	case 8: // FileFsObjectIdInformation [MS-FSCC] 2.5.6 (64 bytes)
+		return 64
 	case 11: // FileFsSectorSizeInformation [MS-FSCC] 2.5.8 (28 bytes)
 		return 28
 	default:

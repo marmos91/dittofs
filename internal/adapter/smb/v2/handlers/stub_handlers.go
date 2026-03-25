@@ -29,9 +29,17 @@ const (
 	FsctlSrvCopyChunk           uint32 = 0x001440F2 // [MS-SMB2] 2.2.32.1
 	FsctlSrvCopyChunkWrite      uint32 = 0x001480F2 // [MS-SMB2] 2.2.32.1
 	FsctlGetReparsePoint        uint32 = 0x000900A8 // [MS-FSCC] 2.3.30
-	FsctlIsPathnameValid        uint32 = 0x000900C0 // [MS-FSCC] 2.3.33 - Pathname validation
+	FsctlIsPathnameValid        uint32 = 0x0009002C // [MS-FSCC] 2.3.33 - Pathname validation
 	FsctlGetNtfsVolumeData      uint32 = 0x00090064 // [MS-FSCC] 2.3.29 - NTFS volume data
 	FsctlReadFileUsnData        uint32 = 0x000900EB // [MS-FSCC] 2.3.56 - Read file USN data
+	FsctlGetCompression         uint32 = 0x0009003C // [MS-FSCC] 2.3.9 - Get compression state
+	FsctlSetCompression         uint32 = 0x0009C040 // [MS-FSCC] 2.3.53 - Set compression state
+	FsctlGetIntegrityInfo       uint32 = 0x0009027C // [MS-FSCC] 2.3.25 - Get integrity information
+	FsctlSetIntegrityInfo       uint32 = 0x0009C280 // [MS-FSCC] 2.3.55 - Set integrity information
+	FsctlCreateOrGetObjectID    uint32 = 0x000900C0 // [MS-FSCC] 2.3.7 - Create or get object ID
+	FsctlGetObjectID            uint32 = 0x0009009C // [MS-FSCC] 2.3.28 - Get object ID
+	FsctlMarkHandle             uint32 = 0x000900FC // [MS-FSCC] 2.3.36 - Mark handle
+	FsctlQueryFileRegions       uint32 = 0x00090284 // [MS-FSCC] 2.3.51 - Query file regions
 )
 
 // Reparse point constants [MS-FSCC] 2.1.2.1
