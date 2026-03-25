@@ -65,6 +65,11 @@ sparse_file_attr query work.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.ioctl.bug14769 | IOCTL | IOCTL edge case not implemented | - |
+| smb2.ioctl.compress_file_flag | IOCTL | Full-suite state poisoning (skipped individually) | - |
+| smb2.ioctl.compress_invalid_buf | IOCTL | Full-suite state poisoning (skipped individually) | - |
+| smb2.ioctl.compress_query_file_attr | IOCTL | Full-suite state poisoning (skipped individually) | - |
+| smb2.ioctl.compress_dir_inherit | IOCTL | Compression inheritance to child files not implemented | - |
+| smb2.ioctl.compress_inherit_disable | IOCTL | Compression inheritance disable not implemented | - |
 | smb2.ioctl.compress_create_with_attr | IOCTL | Compression not implemented | - |
 | smb2.ioctl.compress_notsup_get | IOCTL | Compression not implemented | - |
 | smb2.ioctl.compress_notsup_set | IOCTL | Compression not implemented | - |
@@ -98,6 +103,7 @@ sparse_file_attr query work.
 | smb2.ioctl.dup_extents_compressed_src | IOCTL | Duplicate extents not implemented | - |
 | smb2.ioctl.dup_extents_sparse_dest | IOCTL | Duplicate extents not implemented | - |
 | smb2.ioctl.dup_extents_sparse_src | IOCTL | Duplicate extents not implemented | - |
+| smb2.ioctl.dup_extents_bad_handle | IOCTL | Full-suite state poisoning (skipped individually) | - |
 | smb2.ioctl.bug14788.NETWORK_INTERFACE | IOCTL | Network interface enumeration not implemented | - |
 | smb2.ioctl.req_resume_key | IOCTL | Resume key for server-side copy not implemented | - |
 | smb2.ioctl.req_two_resume_keys | IOCTL | Resume key for server-side copy not implemented | - |
@@ -288,6 +294,7 @@ files, create blobs) are not implemented. Basic create operations pass.
 |-----------|----------|--------|-------|
 | smb2.create.acldir | Create | ACL-based directory create not implemented | - |
 | smb2.create.multi | Create | Multi-create fails under full suite (leftover file state) | - |
+| smb2.create.mkdir-dup | Create | Full-suite state poisoning (passes individually) | - |
 | smb2.create.aclfile | Create | ACL-based file create not implemented | - |
 | smb2.create.bench-path-contention-shared | Create | Path contention benchmark not implemented | - |
 | smb2.create.blob | Create | Create context blobs not fully implemented | - |
