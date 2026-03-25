@@ -248,7 +248,8 @@ func (c *Connection) Serve(ctx context.Context) {
 
 			go func(reqHeader *header.SMB2Header, reqBody []byte, encrypted bool) {
 				defer c.handleRequestPanic(clientAddr, reqHeader.MessageID)
-				smb.ProcessCompoundRequest(ctx, reqHeader, reqBody, compoundData, ci, encrypted)
+				asyncCallback := c.makeAsyncNotifyCallback(ci)
+				smb.ProcessCompoundRequest(ctx, reqHeader, reqBody, compoundData, ci, encrypted, asyncCallback)
 			}(hdr, body, isEncrypted)
 		} else {
 			go func(reqHeader *header.SMB2Header, reqBody, raw []byte, encrypted bool) {

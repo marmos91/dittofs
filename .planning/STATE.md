@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v0.10.0
 milestone_name: Production Hardening + SMB Protocol Fixes
-status: Milestone complete
-stopped_at: Completed 73-05-PLAN.md
-last_updated: "2026-03-24T16:15:54.738Z"
+status: Ready to execute
+stopped_at: Completed 73.1-04-PLAN.md
+last_updated: "2026-03-25T07:29:36.967Z"
 progress:
-  total_phases: 5
+  total_phases: 6
   completed_phases: 5
-  total_plans: 15
-  completed_plans: 15
+  total_plans: 19
+  completed_plans: 18
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-20)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Phase 73 — smb-conformance-deep-dive
+**Current focus:** Phase 73.1 — smb-conformance-round-2
 
 ## Current Position
 
-Phase: 73
-Plan: Not started
+Phase: 73.1
+Plan: 4 of 4
 
 ## Completed Milestones
 
@@ -77,6 +77,10 @@ All decisions archived in PROJECT.md Key Decisions table.
 - [Phase 73]: Anonymous/guest sessions bypass encryption enforcement per MS-SMB2 3.3.5.2.9
 - [Phase 73]: Store LeaseState in PersistedDurableHandle for reconnect restoration; return DH2Q/DHnQ response on reconnect; ExcludeLeaseKey in LockOwner for same-key break suppression; grant lease after cross-key conflict break resolves
 - [Phase 73]: CreationTime freeze/unfreeze tracked per-handle; ChangeEa reclassified as Permanent
+- [Phase 73.1]: NextCommand alignment check integrated into ParseCompoundCommand for self-contained parsing
+- [Phase 73.1]: Related commands after failed CREATE get STATUS_INVALID_PARAMETER when inherited FileID is all zeros
+- [Phase 73.1]: TrimLeft for multi-slash normalization; decodeCreateContexts returns error for blob validation; ADS filtered by ':' in entry name
+- [Phase 73.1]: SendAsyncCompletionResponse as general-purpose async completion counterpart to SendAsyncChangeNotifyResponse
 
 ### Pending Todos
 
@@ -88,6 +92,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-24T15:41:48.280Z
-Stopped at: Completed 73-05-PLAN.md
-Next action: Phase 70 complete. All 3 plans executed successfully.
+Last session: 2026-03-25T07:29:36.965Z
+Stopped at: Completed 73.1-04-PLAN.md
+Next action: Execute 73.1-03-PLAN.md

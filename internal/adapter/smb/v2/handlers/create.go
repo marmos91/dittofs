@@ -131,6 +131,21 @@ type CreateResponse struct {
 }
 
 // ============================================================================
+// Path Normalization
+// ============================================================================
+
+// normalizeCreatePath converts backslashes to forward slashes and strips
+// leading slashes from an SMB CREATE request filename. Per MS-SMB2 2.2.13,
+// the Buffer field contains the path relative to the share root. Windows
+// clients may send paths with leading backslashes (e.g., "\foo\bar" or
+// "\\foo") which must be normalized to "foo/bar" and "foo" respectively.
+func normalizeCreatePath(rawPath string) string {
+	filename := strings.ReplaceAll(rawPath, "\\", "/")
+	// Use TrimLeft to handle multiple leading slashes (e.g. "//foo" from "\\foo")
+	return strings.TrimLeft(filename, "/")
+}
+
+// ============================================================================
 // Encoding/Decoding Functions
 // ============================================================================
 
@@ -217,7 +232,11 @@ func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 			ctxEnd := ctxBodyOffset + int(ctxLength)
 
 			if ctxBodyOffset >= 0 && ctxEnd <= len(body) {
-				req.CreateContexts = decodeCreateContexts(body[ctxBodyOffset:ctxEnd])
+				ctxs, ctxErr := decodeCreateContexts(body[ctxBodyOffset:ctxEnd])
+				if ctxErr != nil {
+					return nil, fmt.Errorf("invalid create context blob: %w", ctxErr)
+				}
+				req.CreateContexts = ctxs
 			}
 		}
 	}
@@ -239,14 +258,16 @@ func DecodeCreateRequest(body []byte) (*CreateRequest, error) {
 //	10      2     DataOffset      Offset to Data from start of this context
 //	12      4     DataLength      Length of Data in bytes
 //	16      var   Buffer          Name (padded) + Data
-func decodeCreateContexts(buf []byte) []CreateContext {
+func decodeCreateContexts(buf []byte) ([]CreateContext, error) {
 	var contexts []CreateContext
 	offset := 0
 
 	for offset < len(buf) {
+		remaining := len(buf) - offset
+
 		// Need at least 16 bytes for the context header
-		if offset+16 > len(buf) {
-			break
+		if remaining < 16 {
+			return nil, fmt.Errorf("create context truncated: need 16 bytes, have %d", remaining)
 		}
 
 		ctx := buf[offset:]
@@ -258,16 +279,44 @@ func decodeCreateContexts(buf []byte) []CreateContext {
 		dataOff := ctxR.ReadUint16() // DataOffset
 		dataLen := ctxR.ReadUint32() // DataLength
 
+		// Validate offsets per MS-SMB2 2.2.13.2:
+		// Tag name must be at least 4 bytes per MS-SMB2 2.2.13.2 (all defined
+		// context names are 4+ chars). smbtorture smb2.create.blob tests this.
+		if nameLen < 4 {
+			return nil, fmt.Errorf("create context name too short: %d (must be >= 4)", nameLen)
+		}
+		// NameOffset must be at least 16 (past the fixed header) per MS-SMB2 2.2.13.2
+		if nameOff < 16 {
+			return nil, fmt.Errorf("create context nameOff too small: %d (must be >= 16)", nameOff)
+		}
+		// NameOffset must point within the context buffer (at least past header)
+		if nameLen > 0 && int(nameOff)+int(nameLen) > remaining {
+			return nil, fmt.Errorf("create context name overflows buffer: off=%d len=%d remaining=%d", nameOff, nameLen, remaining)
+		}
+		// DataOffset + DataLength must be within bounds
+		if dataLen > 0 && int(dataOff)+int(dataLen) > remaining {
+			return nil, fmt.Errorf("create context data overflows buffer: off=%d len=%d remaining=%d", dataOff, dataLen, remaining)
+		}
+		// Next must be 8-byte aligned and within buffer (or 0 for last)
+		if next != 0 {
+			if next%8 != 0 {
+				return nil, fmt.Errorf("create context Next not 8-byte aligned: %d", next)
+			}
+			if int(next) > remaining {
+				return nil, fmt.Errorf("create context Next overflows buffer: next=%d remaining=%d", next, remaining)
+			}
+		}
+
 		// Limit parsing to the current context record to prevent reading
 		// across boundaries into subsequent contexts [MS-SMB2 2.2.13.2]
-		ctxLen := len(ctx)
+		ctxLen := remaining
 		if next > 0 && int(next) < ctxLen {
 			ctxLen = int(next)
 		}
 
 		// Extract the context name (ASCII, e.g. "MxAc", "QFid", "RqLs")
 		var name string
-		if int(nameOff)+int(nameLen) <= ctxLen {
+		if nameLen > 0 && int(nameOff)+int(nameLen) <= ctxLen {
 			name = string(ctx[nameOff : nameOff+nameLen])
 		}
 
@@ -291,7 +340,7 @@ func decodeCreateContexts(buf []byte) []CreateContext {
 		offset += int(next)
 	}
 
-	return contexts
+	return contexts, nil
 }
 
 // Encode serializes the CreateResponse into SMB2 wire format [MS-SMB2] 2.2.14.
@@ -413,8 +462,14 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// ========================================================================
 
 	// Normalize the filename (convert backslashes to forward slashes)
-	filename := strings.ReplaceAll(req.FileName, "\\", "/")
-	filename = strings.TrimPrefix(filename, "/")
+	filename := normalizeCreatePath(req.FileName)
+
+	// Per MS-SMB2 2.2.13, the filename is relative to the share root and MUST NOT
+	// start with a path separator. A leading backslash (e.g., "\foo") is invalid.
+	// Return STATUS_INVALID_PARAMETER per smbtorture smb2.create.leading-slash.
+	if strings.HasPrefix(req.FileName, "\\") || strings.HasPrefix(req.FileName, "/") {
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+	}
 
 	// Strip NTFS stream suffixes. The default data stream (::$DATA) and
 	// directory index (::$INDEX_ALLOCATION) are implicit and should not be
@@ -904,6 +959,17 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	}
 
 	// ========================================================================
+	// Step 7a: Restore frozen timestamps on parent directory
+	// ========================================================================
+	//
+	// Per MS-FSA 2.1.5.14.2: The metadata layer unconditionally updates parent
+	// directory Mtime/Ctime/Atime on create/overwrite/supersede. If any open
+	// SMB handle has these timestamps frozen via SET_INFO -1, restore them.
+	if createAction == types.FileCreated || createAction == types.FileOverwritten || createAction == types.FileSuperseded {
+		h.restoreParentDirFrozenTimestamps(authCtx, parentHandle)
+	}
+
+	// ========================================================================
 	// Step 7b: Update base object ChangeTime for ADS operations
 	// ========================================================================
 	//
@@ -1363,9 +1429,8 @@ func computeMaximalAccess(file *metadata.File, authCtx *metadata.AuthContext) ui
 // handlePipeCreate handles CREATE on IPC$ for named pipes.
 // Named pipes are used for DCE/RPC communication, e.g., srvsvc for share enumeration.
 func (h *Handler) handlePipeCreate(ctx *SMBHandlerContext, req *CreateRequest, tree *TreeConnection) (*CreateResponse, error) {
-	// Normalize pipe name (remove leading backslashes and "pipe\" prefix)
-	pipeName := strings.ReplaceAll(req.FileName, "\\", "/")
-	pipeName = strings.TrimPrefix(pipeName, "/")
+	// Normalize pipe name (remove leading/backslashes and "pipe\" prefix)
+	pipeName := normalizeCreatePath(req.FileName)
 	pipeName = strings.TrimPrefix(pipeName, "pipe/")
 	pipeName = strings.ToLower(pipeName)
 

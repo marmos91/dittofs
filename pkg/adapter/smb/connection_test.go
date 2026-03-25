@@ -414,7 +414,8 @@ func TestParseCompoundCommand(t *testing.T) {
 	})
 
 	t.Run("ParsesCompoundWithNextCommand", func(t *testing.T) {
-		cmd1Size := header.HeaderSize + 20
+		// NextCommand must be 8-byte aligned per MS-SMB2 3.3.5.2.7
+		cmd1Size := header.HeaderSize + 24 // 64 + 24 = 88 (8-byte aligned)
 		totalSize := cmd1Size + header.HeaderSize + 10
 		data := make([]byte, totalSize)
 
@@ -439,8 +440,8 @@ func TestParseCompoundCommand(t *testing.T) {
 			t.Errorf("First command = %d, expected NEGOTIATE", hdr.Command)
 		}
 
-		if len(body) != 20 {
-			t.Errorf("Body length = %d, expected 20", len(body))
+		if len(body) != 24 {
+			t.Errorf("Body length = %d, expected 24", len(body))
 		}
 
 		if len(remaining) == 0 {

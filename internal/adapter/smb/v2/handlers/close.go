@@ -288,6 +288,9 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				logger.Debug("CLOSE: failed to delete", "path", openFile.Path, "isDir", openFile.IsDirectory, "error", deleteErr)
 			} else {
 				logger.Debug("CLOSE: deleted", "path", openFile.Path, "isDir", openFile.IsDirectory)
+				// Per MS-FSA 2.1.5.14.2: Restore frozen timestamps on parent directory
+				// after delete updates parent Mtime/Ctime/Atime.
+				h.restoreParentDirFrozenTimestamps(authCtx, openFile.ParentHandle)
 				if h.NotifyRegistry != nil {
 					parentPath := GetParentPath(openFile.Path)
 					h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, openFile.FileName, FileActionRemoved)

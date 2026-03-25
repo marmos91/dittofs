@@ -367,13 +367,18 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// CommitWrite unconditionally updated Mtime/Ctime. Restore frozen values.
 	h.restoreFrozenTimestamps(authCtx, openFile)
 
-	// Per NTFS: Writing to an ADS updates the base object's ChangeTime and
-	// LastWriteTime. The ADS is an attribute of the base file/directory, so
-	// data writes to the stream propagate timestamp changes to the base
-	// object. Respect frozen state on the ADS handle: if a timestamp is
-	// frozen, the base object's corresponding timestamp remains unchanged.
+	// Detect ADS writes once for timestamp propagation and change notification.
+	isADSWrite := false
+	var baseFileName string
 	if colonIdx := strings.Index(openFile.FileName, ":"); colonIdx > 0 {
-		h.updateBaseObjectTimestampsForADSWrite(authCtx, metaSvc, openFile, openFile.FileName[:colonIdx])
+		isADSWrite = true
+		baseFileName = openFile.FileName[:colonIdx]
+	}
+
+	// Per NTFS: Writing to an ADS updates the base object's ChangeTime and
+	// LastWriteTime. Respect frozen state on the ADS handle.
+	if isADSWrite {
+		h.updateBaseObjectTimestampsForADSWrite(authCtx, metaSvc, openFile, baseFileName)
 	}
 
 	// Per MS-FSA 2.1.5.3: After a successful write, update LastAccessTime
@@ -385,6 +390,10 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	}
 	if len(openFile.ParentHandle) > 0 {
 		_ = metaSvc.SetFileAttributes(authCtx, openFile.ParentHandle, &metadata.SetAttrs{Atime: &now})
+		// Per MS-FSA 2.1.5.14.2: Restore frozen timestamps on the parent directory
+		// if any open handle has them frozen. The SetFileAttributes call above
+		// unconditionally updates atime; if a handle has atime frozen, restore it.
+		h.restoreParentDirFrozenTimestamps(authCtx, openFile.ParentHandle)
 	}
 
 	// Update cached PayloadID in OpenFile
@@ -393,11 +402,9 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Per MS-FSCC 2.6 / MS-SMB2 3.3.4.4: Writing to an Alternate Data Stream
 	// fires FILE_NOTIFY_CHANGE_STREAM_WRITE and FILE_NOTIFY_CHANGE_STREAM_SIZE
 	// on the parent directory so ChangeNotify watchers are notified.
-	if h.NotifyRegistry != nil {
-		if colonIdx := strings.Index(openFile.FileName, ":"); colonIdx > 0 {
-			parentDirPath := GetParentPath(openFile.Path)
-			h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, openFile.FileName, FileActionModified)
-		}
+	if isADSWrite && h.NotifyRegistry != nil {
+		parentDirPath := GetParentPath(openFile.Path)
+		h.NotifyRegistry.NotifyChange(openFile.ShareName, parentDirPath, openFile.FileName, FileActionModifiedStream)
 	}
 
 	logger.Debug("WRITE successful",

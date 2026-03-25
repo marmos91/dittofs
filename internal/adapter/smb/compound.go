@@ -2,6 +2,7 @@ package smb
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/header"
@@ -24,6 +25,10 @@ type compoundResponse struct {
 // Per MS-SMB2 3.3.5.2.7, responses are batched into a single compound response
 // frame with NextCommand offsets and 8-byte alignment padding.
 //
+// When a command returns STATUS_PENDING with an AsyncId (e.g., CHANGE_NOTIFY),
+// the compound includes an interim response at that position and continues
+// processing subsequent commands. The actual async completion is sent separately.
+//
 // Parameters:
 //   - ctx: context for cancellation
 //   - firstHeader: parsed header of the first command
@@ -31,7 +36,8 @@ type compoundResponse struct {
 //   - compoundData: remaining compound bytes after the first command
 //   - connInfo: connection metadata for handler dispatch
 //   - isEncrypted: whether the compound request was received inside an SMB3 Transform Header
-func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header, firstBody []byte, compoundData []byte, connInfo *ConnInfo, isEncrypted bool) {
+//   - asyncNotifyCallback: optional callback for CHANGE_NOTIFY async responses (nil = no async)
+func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header, firstBody []byte, compoundData []byte, connInfo *ConnInfo, isEncrypted bool, asyncNotifyCallback handlers.AsyncResponseCallback) {
 	// Per MS-SMB2 3.3.5.2.7.2: the first command in a compound MUST NOT have
 	// the SMB2_FLAGS_RELATED_OPERATIONS flag set. Fail the entire compound.
 	if firstHeader.IsRelated() {
@@ -100,11 +106,15 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 	lastSessionID := firstHeader.SessionID
 	lastTreeID := firstHeader.TreeID
 
-	// Track whether the last command failed at session/tree validation level.
+	// Track whether the last command failed (any error, not just session-level).
 	// Per MS-SMB2 3.3.5.2.7.2, when a related command follows a predecessor that
 	// failed at the session/tree level (USER_SESSION_DELETED, NETWORK_NAME_DELETED),
 	// the server returns INVALID_PARAMETER because there's no valid session/tree to inherit.
+	// When a non-session-level command fails and the inherited FileID is invalid,
+	// subsequent related commands get the predecessor's error status propagated.
 	lastCmdSessionFailed := false
+	lastCmdFailed := false
+	var lastCmdStatus types.Status
 
 	// Collect all responses for compound batching
 	var responses []compoundResponse
@@ -114,9 +124,18 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		"command", firstHeader.Command.String(),
 		"messageID", firstHeader.MessageID)
 
-	result, fileID, handlerCtx := ProcessRequestWithFileID(ctx, firstHeader, firstBody, connInfo, isEncrypted)
+	result, fileID, handlerCtx := ProcessRequestWithFileIDAndCallback(ctx, firstHeader, firstBody, connInfo, isEncrypted, asyncNotifyCallback)
 	if fileID != [16]byte{} {
 		lastFileID = fileID
+	} else {
+		// For non-CREATE first commands, extract the FileID from the request
+		// body so subsequent related commands can inherit it. This is important
+		// when the first command fails (e.g., IOCTL with invalid handle): the
+		// related command should inherit the handle and also get FILE_CLOSED,
+		// not INVALID_PARAMETER.
+		if extracted := ExtractFileID(firstHeader.Command, firstBody); extracted != [16]byte{} {
+			lastFileID = extracted
+		}
 	}
 	// Use handler context for response so handler-assigned SessionID/TreeID
 	// (e.g. from SESSION_SETUP or TREE_CONNECT) propagate to the response.
@@ -133,6 +152,10 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 	responses = append(responses, compoundResponse{respHeader: respHeader, body: body})
 	if result != nil {
 		lastCmdSessionFailed = isSessionLevelError(result.Status)
+		lastCmdFailed = result.Status.IsError()
+		if lastCmdFailed {
+			lastCmdStatus = result.Status
+		}
 	}
 
 	// Process remaining commands from compound data
@@ -144,7 +167,14 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 
 		hdr, cmdBody, nextRemaining, err := ParseCompoundCommand(remaining)
 		if err != nil {
+			// Per MS-SMB2 3.3.5.2.7: if a compound command has an invalid header
+			// (bad magic, bad structure size, bad NextCommand alignment), return
+			// STATUS_INVALID_PARAMETER for this command and stop processing.
 			logger.Debug("Error parsing compound command", "error", err)
+			// Build a minimal error response using what we can extract from the data.
+			// Since parsing failed, we create a synthetic response header.
+			errRh, errRb := buildCompoundParseErrorResponse(remaining, connInfo)
+			responses = append(responses, compoundResponse{respHeader: errRh, body: errRb})
 			break
 		}
 		remaining = nextRemaining
@@ -166,6 +196,24 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 			responses = append(responses, compoundResponse{respHeader: errHeader, body: errBody})
 			// This command also failed at the session level for the next command
 			lastCmdSessionFailed = true
+			lastCmdFailed = true
+			continue
+		}
+
+		// Per MS-SMB2 3.3.5.2.7.2: if a related command follows a predecessor
+		// that failed and the inherited FileID is invalid (all zeros), propagate
+		// the predecessor's error status. Windows Server propagates the original
+		// error (e.g., OBJECT_NAME_NOT_FOUND from a failed CREATE) rather than
+		// always returning INVALID_PARAMETER.
+		if hdr.IsRelated() && lastCmdFailed && lastFileID == [16]byte{} {
+			propagatedStatus := lastCmdStatus
+			if propagatedStatus == 0 {
+				propagatedStatus = types.StatusInvalidParameter
+			}
+			errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, propagatedStatus, connInfo)
+			errHeader.Flags |= types.FlagRelated
+			responses = append(responses, compoundResponse{respHeader: errHeader, body: errBody})
+			lastCmdFailed = true
 			continue
 		}
 
@@ -181,6 +229,26 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 			}
 		}
 
+		// Per Windows Server behavior: CHANGE_NOTIFY can only go async as the
+		// last command in a compound. When it appears in a non-last position,
+		// the server cannot split the compound response around an async operation.
+		// Windows returns STATUS_INTERNAL_ERROR in this case (validated by
+		// smbtorture compound.interim2).
+		isLastCommand := len(remaining) < header.HeaderSize
+		if hdr.Command == types.SMB2ChangeNotify && !isLastCommand {
+			logger.Debug("CHANGE_NOTIFY in non-last compound position - returning INTERNAL_ERROR",
+				"messageID", hdr.MessageID)
+			errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, types.StatusInternalError, connInfo)
+			if hdr.IsRelated() {
+				errHeader.Flags |= types.FlagRelated
+			}
+			responses = append(responses, compoundResponse{respHeader: errHeader, body: errBody})
+			lastCmdFailed = true
+			lastCmdStatus = types.StatusInternalError
+			lastCmdSessionFailed = false
+			continue
+		}
+
 		logger.Debug("Processing compound request - command",
 			"command", hdr.Command.String(),
 			"messageID", hdr.MessageID,
@@ -191,10 +259,17 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		var cmdResult *HandlerResult
 		var cmdCtx *handlers.SMBHandlerContext
 		if hdr.IsRelated() && lastFileID != [16]byte{} {
-			cmdResult, cmdCtx = ProcessRequestWithInheritedFileID(ctx, hdr, cmdBody, lastFileID, connInfo, isEncrypted)
+			var fid [16]byte
+			cmdResult, fid, cmdCtx = ProcessRequestWithInheritedFileID(ctx, hdr, cmdBody, lastFileID, connInfo, isEncrypted, asyncNotifyCallback)
+			// Update lastFileID if a related CREATE returned a new FileID.
+			// This is critical for compound sequences like CREATE+CLOSE+CREATE+NOTIFY
+			// where the second CREATE produces a new handle that NOTIFY must inherit.
+			if fid != [16]byte{} {
+				lastFileID = fid
+			}
 		} else {
 			var fid [16]byte
-			cmdResult, fid, cmdCtx = ProcessRequestWithFileID(ctx, hdr, cmdBody, connInfo, isEncrypted)
+			cmdResult, fid, cmdCtx = ProcessRequestWithFileIDAndCallback(ctx, hdr, cmdBody, connInfo, isEncrypted, asyncNotifyCallback)
 			if fid != [16]byte{} {
 				// CREATE returns the new FileID explicitly
 				lastFileID = fid
@@ -219,11 +294,17 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 			}
 		}
 
-		// Track session-level failures for related command error propagation
+		// Track session-level failures and general failures for related command error propagation
 		if cmdResult != nil {
 			lastCmdSessionFailed = isSessionLevelError(cmdResult.Status)
+			lastCmdFailed = cmdResult.Status.IsError()
+			if lastCmdFailed {
+				lastCmdStatus = cmdResult.Status
+			}
 		} else {
 			lastCmdSessionFailed = false
+			lastCmdFailed = false
+			lastCmdStatus = 0
 		}
 
 		rh, rb := buildResponseHeaderAndBody(hdr, cmdCtx, cmdResult, connInfo)
@@ -268,14 +349,26 @@ func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo) err
 	// Per Windows Server behavior (validated by smbtorture compound-padding test),
 	// ALL responses in a compound frame are padded to 8-byte alignment, including
 	// the last one. Only standalone (non-compound) responses are unpadded.
-	var segments [][]byte
+	//
+	// Per MS-SMB2 3.3.4.1.1: each sub-response is signed individually.
+	// When a sub-response has a SessionID that doesn't map to a known session
+	// (e.g., compound commands with bogus SessionID), fall back to the first
+	// response's session for signing. This ensures the entire compound frame
+	// is signed consistently and the client can verify all sub-responses.
+	var firstSession *session.Session
+	if fid := responses[0].respHeader.SessionID; fid != 0 {
+		if s, ok := connInfo.Handler.GetSession(fid); ok {
+			firstSession = s
+		}
+	}
+
+	var payload []byte
 	for i := range responses {
 		body := responses[i].body
 
-		// Pad body to 8-byte boundary for all compound responses
+		// Pad body to 8-byte boundary
 		totalLen := header.HeaderSize + len(body)
-		padding := (8 - totalLen%8) % 8
-		if padding > 0 {
+		if padding := (8 - totalLen%8) % 8; padding > 0 {
 			body = append(body, make([]byte, padding)...)
 		}
 
@@ -284,32 +377,27 @@ func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo) err
 			responses[i].respHeader.NextCommand = uint32(header.HeaderSize + len(body))
 		}
 
-		// Encode header (after setting NextCommand)
+		// Encode header (after setting NextCommand) and build full command bytes
 		encoded := responses[i].respHeader.Encode()
-
-		// Build full command bytes (header + body)
 		cmdBytes := make([]byte, len(encoded)+len(body))
 		copy(cmdBytes, encoded)
 		copy(cmdBytes[len(encoded):], body)
 
-		// Sign this command individually
-		sessionID := responses[i].respHeader.SessionID
-		if sessionID != 0 {
-			if sess, ok := connInfo.Handler.GetSession(sessionID); ok {
-				// Per MS-SMB2 3.3.4.1.1: encrypted sessions use AEAD, not signing
-				if sess.ShouldSign() && !sess.ShouldEncrypt() {
-					sess.SignMessage(cmdBytes)
-				}
+		// Sign this command individually (encrypted sessions use AEAD instead).
+		// If the sub-response's SessionID doesn't map to a known session,
+		// fall back to the first response's session for signing.
+		if sid := responses[i].respHeader.SessionID; sid != 0 {
+			sess, ok := connInfo.Handler.GetSession(sid)
+			if !ok && firstSession != nil {
+				sess = firstSession
+				ok = true
+			}
+			if ok && sess.ShouldSign() && !sess.ShouldEncrypt() {
+				sess.SignMessage(cmdBytes)
 			}
 		}
 
-		segments = append(segments, cmdBytes)
-	}
-
-	// Concatenate all signed command segments into a single payload
-	var payload []byte
-	for _, seg := range segments {
-		payload = append(payload, seg...)
+		payload = append(payload, cmdBytes...)
 	}
 
 	// Handle encryption for the whole compound
@@ -425,6 +513,9 @@ func buildErrorResponseHeaderAndBody(reqHeader *header.SMB2Header, status types.
 
 // ParseCompoundCommand parses the next command from compound data.
 // Returns header, body, remaining data, and error.
+//
+// Per MS-SMB2 3.3.5.2.7: if NextCommand is non-zero and not 8-byte aligned,
+// the server MUST return STATUS_INVALID_PARAMETER.
 func ParseCompoundCommand(data []byte) (*header.SMB2Header, []byte, []byte, error) {
 	if len(data) < header.HeaderSize {
 		return nil, nil, nil, fmt.Errorf("compound data too small: %d bytes", len(data))
@@ -434,6 +525,11 @@ func ParseCompoundCommand(data []byte) (*header.SMB2Header, []byte, []byte, erro
 	hdr, err := header.Parse(data[:header.HeaderSize])
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("parse compound SMB2 header: %w", err)
+	}
+
+	// Per MS-SMB2 3.3.5.2.7: NextCommand must be 8-byte aligned if non-zero
+	if hdr.NextCommand != 0 && hdr.NextCommand%8 != 0 {
+		return nil, nil, nil, fmt.Errorf("compound NextCommand not 8-byte aligned: %d", hdr.NextCommand)
 	}
 
 	// Extract body for this command
@@ -548,6 +644,30 @@ func ExtractFileID(command types.Command, body []byte) [16]byte {
 	var fid [16]byte
 	copy(fid[:], body[offset:offset+16])
 	return fid
+}
+
+// buildCompoundParseErrorResponse creates a minimal error response when a
+// compound command fails to parse (invalid magic, bad structure size, bad
+// NextCommand alignment). Since parsing failed, we construct a synthetic
+// response header with the MessageID from the raw bytes if possible.
+func buildCompoundParseErrorResponse(data []byte, connInfo *ConnInfo) (*header.SMB2Header, []byte) {
+	// Try to extract MessageID from raw bytes (offset 24, 8 bytes LE) even
+	// though the header itself is invalid. This allows the client to correlate.
+	var messageID uint64
+	if len(data) >= 32 {
+		messageID = binary.LittleEndian.Uint64(data[24:32])
+	}
+
+	credits := connInfo.SessionManager.GrantCredits(0, 1, 0)
+	respHeader := &header.SMB2Header{
+		ProtocolID:    [4]byte{0xFE, 'S', 'M', 'B'},
+		StructureSize: header.HeaderSize,
+		Status:        types.StatusInvalidParameter,
+		Flags:         types.FlagResponse,
+		MessageID:     messageID,
+		Credits:       credits,
+	}
+	return respHeader, MakeErrorBody()
 }
 
 // InjectFileID injects a FileID into the appropriate position in the request body.

@@ -159,7 +159,8 @@ Full phase details archived to [milestones/v4.3-ROADMAP.md](milestones/v4.3-ROAD
 - [ ] **Phase 70: Storage Observability and Quotas** - Per-share quotas with FSSTAT/SMB reporting, accurate UsedSize, logical vs physical size distinction
 - [ ] **Phase 71: Operational Visibility** - Protocol-agnostic client tracking with REST API and CLI
 - [ ] **Phase 72: WPTS Conformance Push** - ChangeNotify implementation, negotiate/encryption fixes, leasing edge cases, known failure reduction
-- [ ] **Phase 73: SMB Conformance Deep-Dive** - WPTS BVT + smbtorture conformance fixes (ChangeNotify, ADS, timestamps, leases, DH, compound)
+- [x] **Phase 73: SMB Conformance Deep-Dive** - WPTS BVT + smbtorture conformance fixes (ChangeNotify, ADS, timestamps, leases, DH, compound) ✅ 2026-03-24
+- [ ] **Phase 73.1: SMB Conformance Round 2** - Fix ~50 smbtorture tests: compound (17), create (10), streams (13), notify (5), WPTS expected (5), compound_async (10) (INSERTED)
 - [ ] **Phase 74: SMB Multi-Channel** - Session binding, per-channel signing, lease break fan-out, connection cleanup, config flag
 - [ ] **Phase 75: Manual Verification v0.10.0** USER CHECKPOINT
 
@@ -329,6 +330,24 @@ Plans:
 - [x] 73-03-PLAN.md -- smbtorture ChangeNotify + session re-auth + anonymous encryption
 - [x] 73-04-PLAN.md -- smbtorture durable handles + leases
 - [x] 73-05-PLAN.md -- Compound edge cases + freeze-thaw + documentation
+
+### Phase 73.1: SMB Conformance Round 2 (INSERTED)
+**Goal**: Fix ~50 smbtorture tests across compound (17), create (10), streams (13), notify (5), WPTS expected (5), and compound_async (10) categories. Focus on tractable fixes without deep protocol rearchitecture.
+**Depends on**: Phase 73 (SMB conformance deep-dive baseline)
+**Requirements**: WPTS-01, WPTS-02, WPTS-03, WPTS-04
+**Success Criteria** (what must be TRUE):
+  1. Compound request handling passes smbtorture: related/unrelated request chaining, error propagation, FileID substitution, 8-byte padding, interim responses
+  2. CREATE edge cases fixed: leading slash path handling, mkdir visibility, create context blob validation, ACL-based create
+  3. ADS/streams tests pass: attributes, create disposition, delete, I/O, rename, names enumeration, share modes
+  4. ChangeNotify remaining tests pass: valid-req validation, handle permissions, overflow, session reconnect
+  5. WPTS BVT expected failures reduced to 0: directory timestamp propagation (3) and ChangeNotify (2) fixed
+**Verification**: `go build ./...` && `go test ./...` && full WPTS + smbtorture suite run showing pass/known/new counts
+**Plans**: 4 plans
+Plans:
+- [x] 73.1-01-PLAN.md -- Compound request conformance (related/unrelated/invalid/interim/padding/find)
+- [x] 73.1-02-PLAN.md -- CREATE edge cases + ADS/streams conformance
+- [x] 73.1-03-PLAN.md -- ChangeNotify remaining + WPTS expected failures (timestamps + notify)
+- [ ] 73.1-04-PLAN.md -- Compound async request handling
 
 ### Phase 74: SMB Multi-Channel
 **Goal**: SMB clients can establish multiple TCP connections to the same session for aggregate bandwidth and fault tolerance, gated behind a configuration flag
