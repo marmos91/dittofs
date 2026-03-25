@@ -179,12 +179,17 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		}
 		remaining = nextRemaining
 
-		// Verify signature for this compound sub-command
-		if err := VerifyCompoundCommandSignature(currentCommandData, hdr, connInfo); err != nil {
-			logger.Warn("Compound command signature verification failed", "error", err)
-			errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, types.StatusAccessDenied, connInfo)
-			responses = append(responses, compoundResponse{respHeader: errHeader, body: errBody})
-			break
+		// Verify signature for this compound sub-command.
+		// Per MS-SMB2 3.2.5.1.1: skip signing verification when the message was
+		// received inside an encrypted (TRANSFORM_HEADER) envelope — encryption
+		// already provides integrity protection.
+		if !isEncrypted {
+			if err := VerifyCompoundCommandSignature(currentCommandData, hdr, connInfo); err != nil {
+				logger.Warn("Compound command signature verification failed", "error", err)
+				errHeader, errBody := buildErrorResponseHeaderAndBody(hdr, types.StatusAccessDenied, connInfo)
+				responses = append(responses, compoundResponse{respHeader: errHeader, body: errBody})
+				break
+			}
 		}
 
 		// Per MS-SMB2 3.3.5.2.7.2: if a related command follows a predecessor
