@@ -648,10 +648,7 @@ func (r *NotifyRegistry) sendAndUnregister(w *PendingNotify, changes []FileNotif
 // Per MS-SMB2 3.3.5.15: when a directory being watched is deleted, the pending
 // CHANGE_NOTIFY request must be completed with STATUS_NOTIFY_CLEANUP.
 func (r *NotifyRegistry) NotifyRmdir(shareName, parentPath, dirName string) {
-	dirPath := parentPath + "/" + dirName
-	if parentPath == "/" {
-		dirPath = "/" + dirName
-	}
+	dirPath := path.Join(parentPath, dirName)
 
 	// First: send STATUS_NOTIFY_CLEANUP to any watchers on the removed directory
 	r.mu.Lock()

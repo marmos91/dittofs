@@ -904,3 +904,129 @@ func TestHandleCreate_QFidContext(t *testing.T) {
 		}
 	})
 }
+
+// =============================================================================
+// Leading Slash Normalization Tests
+// =============================================================================
+
+func TestNormalizeCreatePath(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"SingleLeadingBackslash", `\foo\bar`, "foo/bar"},
+		{"DoubleLeadingBackslash", `\\foo`, "foo"},
+		{"MultipleLeadingSlashes", "////bar", "bar"},
+		{"SingleSlashOnly", "/", ""},
+		{"MultipleSlashesOnly", "///", ""},
+		{"BackslashOnly", `\`, ""},
+		{"NoLeadingSlash", "foo/bar", "foo/bar"},
+		{"MixedSlashes", `/\foo\bar`, "foo/bar"},
+		{"TrailingSlashPreserved", `\foo\bar\`, "foo/bar/"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeCreatePath(tc.input)
+			if got != tc.expected {
+				t.Errorf("normalizeCreatePath(%q) = %q, want %q", tc.input, got, tc.expected)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Create Context Blob Validation Tests
+// =============================================================================
+
+// buildCreateContextBuf builds a raw create context buffer for testing.
+// Fields: Next, NameOffset, NameLength, DataOffset, DataLength, and optional name bytes.
+func buildCreateContextBuf(size int, next uint32, nameOff, nameLen, dataOff uint16, dataLen uint32, name string) []byte {
+	buf := make([]byte, size)
+	binary.LittleEndian.PutUint32(buf[0:4], next)
+	binary.LittleEndian.PutUint16(buf[4:6], nameOff)
+	binary.LittleEndian.PutUint16(buf[6:8], nameLen)
+	binary.LittleEndian.PutUint16(buf[10:12], dataOff)
+	binary.LittleEndian.PutUint32(buf[12:16], dataLen)
+	if name != "" && int(nameOff)+len(name) <= size {
+		copy(buf[nameOff:], name)
+	}
+	return buf
+}
+
+func TestCreate_CreateContextBlobValidation(t *testing.T) {
+	t.Run("NameOverflowsBuffer", func(t *testing.T) {
+		buf := buildCreateContextBuf(20, 0, 16, 100, 0, 0, "")
+		_, err := decodeCreateContexts(buf)
+		if err == nil {
+			t.Error("Expected error for name overflowing buffer")
+		}
+	})
+
+	t.Run("DataOverflowsBuffer", func(t *testing.T) {
+		buf := buildCreateContextBuf(24, 0, 16, 4, 20, 100, "MxAc")
+		_, err := decodeCreateContexts(buf)
+		if err == nil {
+			t.Error("Expected error for data overflowing buffer")
+		}
+	})
+
+	t.Run("NextNotAligned", func(t *testing.T) {
+		buf := buildCreateContextBuf(32, 17, 16, 4, 0, 0, "MxAc")
+		_, err := decodeCreateContexts(buf)
+		if err == nil {
+			t.Error("Expected error for non-8-byte-aligned Next")
+		}
+	})
+
+	t.Run("NextOverflowsBuffer", func(t *testing.T) {
+		buf := buildCreateContextBuf(24, 200, 16, 4, 0, 0, "MxAc")
+		_, err := decodeCreateContexts(buf)
+		if err == nil {
+			t.Error("Expected error for Next overflowing buffer")
+		}
+	})
+
+	t.Run("TruncatedHeader", func(t *testing.T) {
+		buf := make([]byte, 10)
+		_, err := decodeCreateContexts(buf)
+		if err == nil {
+			t.Error("Expected error for truncated header")
+		}
+	})
+
+	t.Run("ValidContext", func(t *testing.T) {
+		buf := buildCreateContextBuf(24, 0, 16, 4, 0, 0, "MxAc")
+		ctxs, err := decodeCreateContexts(buf)
+		if err != nil {
+			t.Fatalf("Expected no error for valid context, got: %v", err)
+		}
+		if len(ctxs) != 1 {
+			t.Fatalf("Expected 1 context, got %d", len(ctxs))
+		}
+		if ctxs[0].Name != "MxAc" {
+			t.Errorf("Expected name 'MxAc', got %q", ctxs[0].Name)
+		}
+	})
+
+	t.Run("DecodeCreateRequest_MalformedContextReturnsError", func(t *testing.T) {
+		body := buildCreateRequestBody("test.txt", types.FileOpenIf, 0)
+
+		// Create a malformed context blob with name overflow
+		ctxBlob := buildCreateContextBuf(20, 0, 16, 100, 0, 0, "")
+
+		// Extend body to include the context blob
+		ctxOffset := 64 + len(body)
+		body = append(body, ctxBlob...)
+
+		// Update CreateContextsOffset and CreateContextsLength in body
+		binary.LittleEndian.PutUint32(body[48:52], uint32(ctxOffset))
+		binary.LittleEndian.PutUint32(body[52:56], uint32(len(ctxBlob)))
+
+		_, err := DecodeCreateRequest(body)
+		if err == nil {
+			t.Error("Expected error for malformed create context blob in CREATE request")
+		}
+	})
+}

@@ -620,6 +620,13 @@ func (h *Handler) setFileInfoFromStore(
 		// Restore mtime/ctime after rename
 		restoreTimestamps()
 
+		// Per MS-FSA 2.1.5.14.2: Restore frozen timestamps on parent directories.
+		// Move updates both source and destination parent directory timestamps.
+		h.restoreParentDirFrozenTimestamps(authCtx, openFile.ParentHandle)
+		if !bytes.Equal(toDir, openFile.ParentHandle) {
+			h.restoreParentDirFrozenTimestamps(authCtx, toDir)
+		}
+
 		// Per MS-FSA 2.1.5.14.10: On successful completion of a rename,
 		// if the file was marked for delete-on-close, clear that disposition.
 		// This prevents the renamed file from being deleted when the handle closes.
@@ -684,15 +691,14 @@ func (h *Handler) setFileInfoFromStore(
 
 		var deletePending bool
 		if class == types.FileDispositionInformationEx {
-			// FileDispositionInformationEx uses a 4-byte Flags field
-			// Bit 0 (FILE_DISPOSITION_DELETE) = delete on close
-			if len(buffer) >= 4 {
-				dispR := smbenc.NewReader(buffer)
-				flags := dispR.ReadUint32()
-				deletePending = (flags & 0x01) != 0
-			} else {
-				deletePending = buffer[0] != 0
+			// FileDispositionInformationEx uses a 4-byte Flags field per MS-FSCC 2.4.11.2
+			if len(buffer) < 4 {
+				return setInfoStatus(types.StatusInfoLengthMismatch), nil
 			}
+			dispR := smbenc.NewReader(buffer)
+			flags := dispR.ReadUint32()
+			// Bit 0 (FILE_DISPOSITION_DELETE) = delete on close
+			deletePending = (flags & 0x01) != 0
 		} else {
 			deletePending = buffer[0] != 0
 		}
@@ -833,43 +839,109 @@ func (h *Handler) restoreFrozenTimestamps(authCtx *metadata.AuthContext, openFil
 	if !openFile.BtimeFrozen && !openFile.MtimeFrozen && !openFile.CtimeFrozen && !openFile.AtimeFrozen {
 		return
 	}
-	restoreAttrs := &metadata.SetAttrs{}
-	if openFile.BtimeFrozen && openFile.FrozenBtime != nil {
-		restoreAttrs.CreationTime = openFile.FrozenBtime
+
+	restoreAttrs := buildFrozenAttrs(openFile)
+	if restoreAttrs == nil {
+		return
 	}
+
+	logger.Debug("restoreFrozenTimestamps: restoring",
+		"path", openFile.Path,
+		"mtimeFrozen", openFile.MtimeFrozen,
+		"ctimeFrozen", openFile.CtimeFrozen,
+		"atimeFrozen", openFile.AtimeFrozen,
+		"frozenMtime", openFile.FrozenMtime,
+		"frozenCtime", openFile.FrozenCtime,
+		"frozenAtime", openFile.FrozenAtime)
+
+	metaSvc := h.Registry.GetMetadataService()
+	if err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, restoreAttrs); err != nil {
+		logger.Debug("restoreFrozenTimestamps: failed", "path", openFile.Path, "error", err)
+		return
+	}
+
+	// Also update the pending write state's LastMtime to the frozen value.
+	// MetadataService.GetFile() merges pending state with stored state, using
+	// max(pending.LastMtime, store.Mtime). If we only update the store but
+	// leave pending.LastMtime at the original WRITE time, GetFile() will
+	// return the non-frozen value. By updating pending.LastMtime to the frozen
+	// Mtime, the merge produces the correct frozen value.
 	if openFile.MtimeFrozen && openFile.FrozenMtime != nil {
-		restoreAttrs.Mtime = openFile.FrozenMtime
+		metaSvc.UpdatePendingMtime(openFile.MetadataHandle, *openFile.FrozenMtime)
 	}
-	if openFile.CtimeFrozen && openFile.FrozenCtime != nil {
-		restoreAttrs.Ctime = openFile.FrozenCtime
+}
+
+// restoreParentDirFrozenTimestamps restores frozen timestamps on open directory handles
+// after child operations (create, delete, write) that unconditionally update parent
+// directory timestamps in the metadata layer.
+//
+// Per MS-FSA 2.1.5.14.2: When a timestamp is frozen via SET_INFO with -1 sentinel,
+// the timestamp MUST NOT be auto-updated by subsequent operations. The metadata layer
+// (createEntry, removeFile, etc.) always updates parent directory timestamps. This
+// method iterates open handles to find directory handles matching the given parent
+// metadata handle and restores any frozen timestamps.
+func (h *Handler) restoreParentDirFrozenTimestamps(authCtx *metadata.AuthContext, parentMetadataHandle metadata.FileHandle) {
+	if len(parentMetadataHandle) == 0 {
+		return
 	}
-	if openFile.AtimeFrozen && openFile.FrozenAtime != nil {
-		restoreAttrs.Atime = openFile.FrozenAtime
-	}
-	if restoreAttrs.CreationTime != nil || restoreAttrs.Mtime != nil || restoreAttrs.Ctime != nil || restoreAttrs.Atime != nil {
-		logger.Debug("restoreFrozenTimestamps: restoring",
-			"path", openFile.Path,
-			"mtimeFrozen", openFile.MtimeFrozen,
-			"ctimeFrozen", openFile.CtimeFrozen,
-			"atimeFrozen", openFile.AtimeFrozen,
-			"frozenMtime", openFile.FrozenMtime,
-			"frozenCtime", openFile.FrozenCtime,
-			"frozenAtime", openFile.FrozenAtime)
+
+	parentHandleStr := string(parentMetadataHandle)
+
+	h.files.Range(func(key, value any) bool {
+		openFile := value.(*OpenFile)
+		if !openFile.IsDirectory || string(openFile.MetadataHandle) != parentHandleStr {
+			return true // continue
+		}
+
+		restoreAttrs := buildFrozenAttrs(openFile)
+		if restoreAttrs == nil {
+			return true // continue
+		}
+
 		metaSvc := h.Registry.GetMetadataService()
 		if err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, restoreAttrs); err != nil {
-			logger.Debug("restoreFrozenTimestamps: failed", "path", openFile.Path, "error", err)
+			logger.Debug("restoreParentDirFrozenTimestamps: failed",
+				"path", openFile.Path, "error", err)
 		} else {
-			// Also update the pending write state's LastMtime to the frozen value.
-			// MetadataService.GetFile() merges pending state with stored state, using
-			// max(pending.LastMtime, store.Mtime). If we only update the store but
-			// leave pending.LastMtime at the original WRITE time, GetFile() will
-			// return the non-frozen value. By updating pending.LastMtime to the frozen
-			// Mtime, the merge produces the correct frozen value.
-			if openFile.MtimeFrozen && openFile.FrozenMtime != nil {
-				metaSvc.UpdatePendingMtime(openFile.MetadataHandle, *openFile.FrozenMtime)
-			}
+			logger.Debug("restoreParentDirFrozenTimestamps: restored",
+				"path", openFile.Path,
+				"mtimeFrozen", openFile.MtimeFrozen,
+				"ctimeFrozen", openFile.CtimeFrozen,
+				"atimeFrozen", openFile.AtimeFrozen)
 		}
+
+		// Don't break early - there may be multiple handles for the same directory
+		return true
+	})
+}
+
+// buildFrozenAttrs constructs a SetAttrs from the frozen timestamp values on an
+// OpenFile. Returns nil if no timestamps need restoring.
+func buildFrozenAttrs(openFile *OpenFile) *metadata.SetAttrs {
+	attrs := &metadata.SetAttrs{}
+	hasAny := false
+
+	if openFile.BtimeFrozen && openFile.FrozenBtime != nil {
+		attrs.CreationTime = openFile.FrozenBtime
+		hasAny = true
 	}
+	if openFile.MtimeFrozen && openFile.FrozenMtime != nil {
+		attrs.Mtime = openFile.FrozenMtime
+		hasAny = true
+	}
+	if openFile.CtimeFrozen && openFile.FrozenCtime != nil {
+		attrs.Ctime = openFile.FrozenCtime
+		hasAny = true
+	}
+	if openFile.AtimeFrozen && openFile.FrozenAtime != nil {
+		attrs.Atime = openFile.FrozenAtime
+		hasAny = true
+	}
+
+	if !hasAny {
+		return nil
+	}
+	return attrs
 }
 
 // setSecurityInfo handles SET_INFO for security descriptors.

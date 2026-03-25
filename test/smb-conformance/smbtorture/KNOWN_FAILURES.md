@@ -292,7 +292,6 @@ files, create blobs) are not implemented. Basic create operations pass.
 | smb2.create.blob | Create | Create context blobs not fully implemented | - |
 | smb2.create.gentest | Create | Generic create test (impersonation) not implemented | - |
 | smb2.create.impersonation | Create | Impersonation levels not implemented | - |
-| smb2.create.leading-slash | Create | Leading slash path handling not implemented | - |
 | smb2.create.mkdir-visible | Create | Mkdir visibility semantics not implemented | - |
 | smb2.create.nulldacl | Create | Null DACL create not implemented | - |
 | smb2.create.quota-fake-file | Create | Quota fake file not implemented | - |
@@ -348,8 +347,6 @@ operations work but async compounds do not.
 | smb2.compound.related5 | Compound | Compound related request edge case (newly reachable) | - |
 | smb2.compound.related6 | Compound | Compound related request edge case (newly reachable) | - |
 | smb2.compound.unrelated1 | Compound | Compound unrelated request handling (newly reachable) | - |
-| smb2.compound.invalid1 | Compound | Invalid compound parameter validation | - |
-| smb2.compound.invalid2 | Compound | Invalid compound parameter validation | - |
 | smb2.compound.invalid3 | Compound | Invalid compound FILE_CLOSED detection | - |
 | smb2.compound.invalid4 | Compound | Invalid compound parameter validation (newly reachable) | - |
 | smb2.compound.compound-break | Compound | Compound + oplock break interaction (newly reachable) | - |

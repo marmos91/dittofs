@@ -81,7 +81,7 @@ func ProcessSingleRequest(
 	handlerCtx.RequestEncrypted = isEncrypted
 
 	// Per MS-SMB2 3.3.5.2.1: enforce encryption requirements.
-	if errStatus := checkEncryptionRequired(reqHeader, handlerCtx, connInfo, isEncrypted); errStatus != 0 {
+	if errStatus := checkEncryptionRequired(reqHeader, connInfo, isEncrypted); errStatus != 0 {
 		return SendErrorResponse(reqHeader, errStatus, connInfo)
 	}
 
@@ -153,7 +153,7 @@ func ProcessSingleRequest(
 // prepareDispatch looks up the command in the dispatch table, builds the handler context,
 // and validates session/tree requirements. Returns the command, context, and an error
 // status (0 on success). This consolidates the shared setup logic used by both
-// ProcessSingleRequest and ProcessRequestWithFileID.
+// ProcessSingleRequest and ProcessRequestWithFileIDAndCallback.
 func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo *ConnInfo) (*Command, *handlers.SMBHandlerContext, types.Status) {
 	cmd, ok := DispatchTable[reqHeader.Command]
 	if !ok {
@@ -194,12 +194,13 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 	return cmd, handlerCtx, 0
 }
 
-// ProcessRequestWithFileID processes a request and returns the FileID if applicable (for CREATE).
-// Used in compound request processing where FileID propagation is needed.
-// Also returns the handler context so callers (compound processing) can pass
-// handler-populated fields (e.g. SessionID from SESSION_SETUP, TreeID from
-// TREE_CONNECT) through to SendResponse.
-func ProcessRequestWithFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte, connInfo *ConnInfo, isEncrypted bool) (*HandlerResult, [16]byte, *handlers.SMBHandlerContext) {
+// ProcessRequestWithFileIDAndCallback processes a request and returns the FileID
+// if applicable (for CREATE). Used in compound request processing where FileID
+// propagation is needed. Also returns the handler context so callers (compound
+// processing) can pass handler-populated fields (e.g. SessionID from
+// SESSION_SETUP, TreeID from TREE_CONNECT) through to SendResponse.
+// The asyncNotifyCallback wires async responses for CHANGE_NOTIFY in compounds.
+func ProcessRequestWithFileIDAndCallback(ctx context.Context, reqHeader *header.SMB2Header, body []byte, connInfo *ConnInfo, isEncrypted bool, asyncNotifyCallback handlers.AsyncResponseCallback) (*HandlerResult, [16]byte, *handlers.SMBHandlerContext) {
 	var fileID [16]byte
 
 	cmd, handlerCtx, errStatus := prepareDispatch(ctx, reqHeader, connInfo)
@@ -210,8 +211,20 @@ func ProcessRequestWithFileID(ctx context.Context, reqHeader *header.SMB2Header,
 	handlerCtx.RequestEncrypted = isEncrypted
 
 	// Per MS-SMB2 3.3.5.2.1: enforce encryption requirements.
-	if errStatus := checkEncryptionRequired(reqHeader, handlerCtx, connInfo, isEncrypted); errStatus != 0 {
+	if errStatus := checkEncryptionRequired(reqHeader, connInfo, isEncrypted); errStatus != 0 {
 		return &HandlerResult{Status: errStatus, Data: MakeErrorBody()}, fileID, handlerCtx
+	}
+
+	// For CHANGE_NOTIFY in compound, wire the async callback so notifications
+	// can be sent separately from the compound response.
+	if reqHeader.Command == types.SMB2ChangeNotify && asyncNotifyCallback != nil {
+		handlerCtx.AsyncNotifyCallback = asyncNotifyCallback
+	}
+
+	// For CANCEL, pass the request's AsyncId so the handler can identify
+	// which async operation to cancel.
+	if reqHeader.Command == types.SMB2Cancel && reqHeader.Flags.IsAsync() {
+		handlerCtx.RequestAsyncId = reqHeader.AsyncId
 	}
 
 	logger.Debug("Dispatching SMB2 command",
@@ -244,17 +257,19 @@ func ProcessRequestWithFileID(ctx context.Context, reqHeader *header.SMB2Header,
 
 // ProcessRequestWithInheritedFileID processes a request using an inherited FileID.
 // InjectFileID is a no-op for commands that do not use a FileID, so no pre-filtering is needed.
-func ProcessRequestWithInheritedFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte, inheritedFileID [16]byte, connInfo *ConnInfo, isEncrypted bool) (*HandlerResult, *handlers.SMBHandlerContext) {
+// The asyncNotifyCallback parameter wires async responses for CHANGE_NOTIFY in compound.
+// Returns the handler result, any new FileID (from CREATE), and the handler context.
+func ProcessRequestWithInheritedFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte, inheritedFileID [16]byte, connInfo *ConnInfo, isEncrypted bool, asyncNotifyCallback handlers.AsyncResponseCallback) (*HandlerResult, [16]byte, *handlers.SMBHandlerContext) {
 	body = InjectFileID(reqHeader.Command, body, inheritedFileID)
-	result, _, handlerCtx := ProcessRequestWithFileID(ctx, reqHeader, body, connInfo, isEncrypted)
-	return result, handlerCtx
+	result, fileID, handlerCtx := ProcessRequestWithFileIDAndCallback(ctx, reqHeader, body, connInfo, isEncrypted, asyncNotifyCallback)
+	return result, fileID, handlerCtx
 }
 
 // checkEncryptionRequired enforces global and per-share encryption requirements.
 // Per MS-SMB2 3.3.5.2.1: if the server requires encryption (globally or for the
 // tree's share) and the request was not encrypted, return STATUS_ACCESS_DENIED.
 // NEGOTIATE and SESSION_SETUP are exempt because encryption keys are not yet available.
-func checkEncryptionRequired(reqHeader *header.SMB2Header, handlerCtx *handlers.SMBHandlerContext, connInfo *ConnInfo, isEncrypted bool) types.Status {
+func checkEncryptionRequired(reqHeader *header.SMB2Header, connInfo *ConnInfo, isEncrypted bool) types.Status {
 	if isEncrypted {
 		return 0
 	}
@@ -513,6 +528,51 @@ func SendAsyncChangeNotifyResponse(sessionID, messageID, asyncId uint64, respons
 			"asyncId", asyncId,
 			"bufferLen", len(response.Buffer))
 	}
+
+	return SendMessage(respHeader, body, connInfo)
+}
+
+// SendAsyncCompletionResponse sends a standalone async completion response for
+// a previously pending operation. This is used when a handler returns
+// STATUS_PENDING with an AsyncId in a compound request: the compound includes
+// an interim response at that position, and this function delivers the final
+// result as a separate message with the matching AsyncId.
+//
+// Per MS-SMB2 3.3.4.4: The async completion response uses the async header
+// format (FlagAsync set, AsyncId in header) and carries the handler's final
+// status and response body.
+//
+// This is the general-purpose counterpart to SendAsyncChangeNotifyResponse --
+// it handles any command type, not just CHANGE_NOTIFY.
+func SendAsyncCompletionResponse(sessionID uint64, messageID uint64, asyncId uint64, command types.Command, status types.Status, body []byte, connInfo *ConnInfo) error {
+	respHeader := &header.SMB2Header{
+		StructureSize: header.HeaderSize,
+		Command:       command,
+		Status:        status,
+		Flags:         types.FlagResponse | types.FlagAsync,
+		MessageID:     messageID,
+		SessionID:     sessionID,
+		AsyncId:       asyncId,
+		Credits:       1, // Grant 1 credit with async completion
+	}
+
+	// Per MS-SMB2 2.2.2: error/warning responses use the ERROR format.
+	if (status.IsError() || status.IsWarning()) &&
+		status != types.StatusMoreProcessingRequired &&
+		status != types.StatusBufferOverflow {
+		body = MakeErrorBody()
+	}
+
+	if body == nil {
+		body = MakeErrorBody()
+	}
+
+	logger.Debug("Sending async completion response",
+		"command", command.String(),
+		"status", status.String(),
+		"sessionID", sessionID,
+		"messageID", messageID,
+		"asyncId", asyncId)
 
 	return SendMessage(respHeader, body, connInfo)
 }

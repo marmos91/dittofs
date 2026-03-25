@@ -708,6 +708,15 @@ func filterDirEntries(entries []metadata.DirEntry, pattern string) []metadata.Di
 			continue
 		}
 
+		// Skip Alternate Data Stream entries (e.g., "file:stream:$DATA").
+		// ADS are stored as children of the parent directory with names
+		// containing colons, but they should NOT appear in directory listings
+		// per MS-FSA. Only the base file appears; streams are enumerated
+		// via FileStreamInformation (QUERY_INFO).
+		if strings.Contains(entry.Name, ":") {
+			continue
+		}
+
 		if matchAll || matchSMBPattern(entry.Name, pattern) {
 			filtered = append(filtered, entry)
 		}

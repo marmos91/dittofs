@@ -1002,3 +1002,135 @@ func TestAsyncResponseRegistry_MaxLimit(t *testing.T) {
 		t.Error("expected error when exceeding max limit")
 	}
 }
+
+func TestIsValidCompletionFilter_AllBits(t *testing.T) {
+	// Each individual valid bit should be accepted
+	validBits := []uint32{
+		FileNotifyChangeFileName,
+		FileNotifyChangeDirName,
+		FileNotifyChangeAttributes,
+		FileNotifyChangeSize,
+		FileNotifyChangeLastWrite,
+		FileNotifyChangeLastAccess,
+		FileNotifyChangeCreation,
+		FileNotifyChangeEa,
+		FileNotifyChangeSecurity,
+		FileNotifyChangeStreamName,
+		FileNotifyChangeStreamSize,
+		FileNotifyChangeStreamWrite,
+	}
+	for _, bit := range validBits {
+		if !IsValidCompletionFilter(bit) {
+			t.Errorf("IsValidCompletionFilter(0x%08X) = false, want true", bit)
+		}
+	}
+
+	// Reserved bits above 0x00000FFF should be rejected
+	reservedBits := []uint32{0x00001000, 0x00010000, 0x01000000, 0x80000000}
+	for _, bit := range reservedBits {
+		if IsValidCompletionFilter(bit) {
+			t.Errorf("IsValidCompletionFilter(0x%08X) = true, want false (reserved bit)", bit)
+		}
+	}
+}
+
+func TestNotifyChange_OverflowWithMultipleChanges(t *testing.T) {
+	// Verify that when we manually build a notification that would exceed
+	// MaxOutputLength, the registry sends STATUS_NOTIFY_ENUM_DIR.
+	r := NewNotifyRegistry()
+
+	var receivedStatus types.Status
+	mustRegister(t, r, &PendingNotify{
+		FileID:           [16]byte{1},
+		SessionID:        1,
+		MessageID:        10,
+		AsyncId:          100,
+		WatchPath:        "/dir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength:  16, // Very small — won't fit even one entry
+		AsyncCallback: func(sessionID, messageID, asyncId uint64, response *ChangeNotifyResponse) error {
+			receivedStatus = response.GetStatus()
+			return nil
+		},
+	})
+
+	// Any file change will produce a FileNotifyInformation entry larger than 16 bytes
+	r.NotifyChange("share1", "/dir", "longfilename.txt", FileActionAdded)
+
+	if receivedStatus != types.StatusNotifyEnumDir {
+		t.Errorf("expected STATUS_NOTIFY_ENUM_DIR (0x%08X), got 0x%08X",
+			uint32(types.StatusNotifyEnumDir), uint32(receivedStatus))
+	}
+}
+
+func TestUnregisterAllForSession_PreservesOtherSessions(t *testing.T) {
+	// Verify that UnregisterAllForSession does NOT affect other sessions.
+	// This is critical for session reconnect/re-auth scenarios.
+	r := NewNotifyRegistry()
+
+	// Session 100: two watches
+	mustRegister(t, r, &PendingNotify{
+		FileID: [16]byte{1}, SessionID: 100, MessageID: 10, AsyncId: 1000,
+		WatchPath: "/dir1", ShareName: "share1", CompletionFilter: FileNotifyChangeFileName,
+	})
+	mustRegister(t, r, &PendingNotify{
+		FileID: [16]byte{2}, SessionID: 100, MessageID: 20, AsyncId: 2000,
+		WatchPath: "/dir2", ShareName: "share1", CompletionFilter: FileNotifyChangeFileName,
+	})
+
+	// Session 200: one watch
+	mustRegister(t, r, &PendingNotify{
+		FileID: [16]byte{3}, SessionID: 200, MessageID: 30, AsyncId: 3000,
+		WatchPath: "/dir1", ShareName: "share1", CompletionFilter: FileNotifyChangeFileName,
+	})
+
+	// Session 300: one watch
+	mustRegister(t, r, &PendingNotify{
+		FileID: [16]byte{4}, SessionID: 300, MessageID: 40, AsyncId: 4000,
+		WatchPath: "/dir2", ShareName: "share1", CompletionFilter: FileNotifyChangeDirName,
+	})
+
+	// Remove session 100 only
+	removed := r.UnregisterAllForSession(100)
+	if len(removed) != 2 {
+		t.Errorf("expected 2 watchers removed for session 100, got %d", len(removed))
+	}
+
+	// Session 200 and 300 watchers must still be present
+	dir1Watchers := r.GetWatchersForPath("/dir1")
+	if len(dir1Watchers) != 1 || dir1Watchers[0].SessionID != 200 {
+		t.Errorf("expected session 200 watcher on /dir1, got %d watchers", len(dir1Watchers))
+	}
+
+	dir2Watchers := r.GetWatchersForPath("/dir2")
+	if len(dir2Watchers) != 1 || dir2Watchers[0].SessionID != 300 {
+		t.Errorf("expected session 300 watcher on /dir2, got %d watchers", len(dir2Watchers))
+	}
+}
+
+func TestUnregisterAllForTree_PreservesOtherTrees(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	// Same session, different shares
+	mustRegister(t, r, &PendingNotify{
+		FileID: [16]byte{1}, SessionID: 100, MessageID: 10, AsyncId: 1000,
+		WatchPath: "/dir1", ShareName: "share1", CompletionFilter: FileNotifyChangeFileName,
+	})
+	mustRegister(t, r, &PendingNotify{
+		FileID: [16]byte{2}, SessionID: 100, MessageID: 20, AsyncId: 2000,
+		WatchPath: "/dir1", ShareName: "share2", CompletionFilter: FileNotifyChangeFileName,
+	})
+
+	// Disconnect share1 tree only
+	removed := r.UnregisterAllForTree(100, "share1")
+	if len(removed) != 1 {
+		t.Errorf("expected 1 watcher removed for share1, got %d", len(removed))
+	}
+
+	// share2 watcher must remain
+	watchers := r.GetWatchersForPath("/dir1")
+	if len(watchers) != 1 || watchers[0].ShareName != "share2" {
+		t.Errorf("expected share2 watcher to remain, got %d watchers", len(watchers))
+	}
+}
