@@ -109,6 +109,19 @@ func (c *Client) DeleteMetadataStore(name string) error {
 	return deleteResource(c, fmt.Sprintf("/api/v1/store/metadata/%s", name))
 }
 
+// MetadataStoreHealthResult holds the result of a metadata store health check.
+type MetadataStoreHealthResult struct {
+	Healthy   bool   `json:"healthy"`
+	LatencyMs int64  `json:"latency_ms"`
+	CheckedAt string `json:"checked_at"`
+	Details   string `json:"details,omitempty"`
+}
+
+// MetadataStoreHealth performs a health check on a metadata store.
+func (c *Client) MetadataStoreHealth(name string) (*MetadataStoreHealthResult, error) {
+	return getResource[MetadataStoreHealthResult](c, fmt.Sprintf("/api/v1/store/metadata/%s/health", name))
+}
+
 // ListBlockStores returns all block stores of a given kind.
 func (c *Client) ListBlockStores(kind string) ([]BlockStore, error) {
 	return listResources[BlockStore](c, fmt.Sprintf("/api/v1/store/block/%s", kind))
@@ -153,4 +166,18 @@ func (c *Client) UpdateBlockStore(kind, name string, req *UpdateStoreRequest) (*
 // DeleteBlockStore deletes a block store.
 func (c *Client) DeleteBlockStore(kind, name string) error {
 	return deleteResource(c, fmt.Sprintf("/api/v1/store/block/%s/%s", kind, name))
+}
+
+// BlockStoreHealthResult holds the result of a block store health check.
+type BlockStoreHealthResult struct {
+	Healthy   bool   `json:"healthy"`
+	LatencyMs int64  `json:"latency_ms"`
+	CheckedAt string `json:"checked_at"`
+	Details   string `json:"details,omitempty"`
+}
+
+// BlockStoreHealth performs a health check on a block store.
+// The server always returns 200 with the health status in the response body.
+func (c *Client) BlockStoreHealth(kind, name string) (*BlockStoreHealthResult, error) {
+	return getResource[BlockStoreHealthResult](c, fmt.Sprintf("/api/v1/store/block/%s/%s/health", kind, name))
 }

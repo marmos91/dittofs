@@ -36,4 +36,5 @@ func init() {
 	Cmd.AddCommand(remote.Cmd)
 	Cmd.AddCommand(statsCmd)
 	Cmd.AddCommand(evictCmd)
+	Cmd.AddCommand(healthCmd)
 }

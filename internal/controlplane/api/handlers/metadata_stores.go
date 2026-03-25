@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
@@ -227,4 +228,66 @@ func metadataStoreToResponse(s *models.MetadataStoreConfig) MetadataStoreRespons
 		Config:    s.Config,
 		CreatedAt: s.CreatedAt,
 	}
+}
+
+// MetadataStoreHealthResponse is the response body for the metadata store health check endpoint.
+type MetadataStoreHealthResponse struct {
+	Healthy   bool   `json:"healthy"`
+	LatencyMs int64  `json:"latency_ms"`
+	CheckedAt string `json:"checked_at"`
+	Details   string `json:"details,omitempty"`
+}
+
+// HealthCheck handles GET /api/v1/store/metadata/{name}/health.
+// If the store is loaded in the runtime, calls its Healthcheck method directly.
+// Otherwise, reports that the store is not loaded.
+func (h *MetadataStoreHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	if name == "" {
+		BadRequest(w, "Store name is required")
+		return
+	}
+
+	// Verify the store config exists
+	if _, err := h.store.GetMetadataStore(r.Context(), name); err != nil {
+		if errors.Is(err, models.ErrStoreNotFound) {
+			NotFound(w, "Metadata store not found")
+			return
+		}
+		InternalServerError(w, "Failed to get metadata store")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
+	defer cancel()
+
+	start := time.Now()
+	healthy, details := h.checkMetadataStoreHealth(ctx, name)
+	latency := time.Since(start)
+
+	WriteJSONOK(w, MetadataStoreHealthResponse{
+		Healthy:   healthy,
+		LatencyMs: latency.Milliseconds(),
+		CheckedAt: start.UTC().Format(time.RFC3339),
+		Details:   details,
+	})
+}
+
+// checkMetadataStoreHealth checks the health of a metadata store.
+// It first tries to use the loaded runtime instance; if unavailable, reports that the store is not loaded.
+func (h *MetadataStoreHandler) checkMetadataStoreHealth(ctx context.Context, name string) (bool, string) {
+	if h.runtime == nil {
+		return false, "store not loaded in runtime"
+	}
+
+	metaStore, err := h.runtime.GetMetadataStore(name)
+	if err != nil {
+		return false, "store not loaded in runtime"
+	}
+
+	if healthErr := metaStore.Healthcheck(ctx); healthErr != nil {
+		return false, "store health check failed: " + healthErr.Error()
+	}
+
+	return true, "store is healthy"
 }

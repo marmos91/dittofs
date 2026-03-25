@@ -387,6 +387,156 @@ func TestShareBlockStore_CreateLocalOnly(t *testing.T) {
 	}
 }
 
+func TestBlockStoreHandler_HealthCheck_LocalMemory(t *testing.T) {
+	cpStore, handler := setupBlockStoreTest(t)
+	ctx := context.Background()
+
+	bs := &models.BlockStoreConfig{
+		ID: uuid.New().String(), Name: "mem-local", Kind: models.BlockStoreKindLocal, Type: "memory",
+		CreatedAt: time.Now(),
+	}
+	cpStore.CreateBlockStore(ctx, bs)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/local/mem-local/health", nil)
+	req = withBlockStoreKindAndName(req, "local", "mem-local")
+	w := httptest.NewRecorder()
+
+	handler.HealthCheck(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("HealthCheck(local/memory) status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp BlockStoreHealthResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+	if !resp.Healthy {
+		t.Errorf("Expected healthy=true, got false")
+	}
+	if resp.CheckedAt == "" {
+		t.Error("Expected checked_at to be set")
+	}
+}
+
+func TestBlockStoreHandler_HealthCheck_LocalFS_Healthy(t *testing.T) {
+	cpStore, handler := setupBlockStoreTest(t)
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	bs := &models.BlockStoreConfig{
+		ID: uuid.New().String(), Name: "fs-local", Kind: models.BlockStoreKindLocal, Type: "fs",
+		Config:    `{"path":"` + dir + `"}`,
+		CreatedAt: time.Now(),
+	}
+	cpStore.CreateBlockStore(ctx, bs)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/local/fs-local/health", nil)
+	req = withBlockStoreKindAndName(req, "local", "fs-local")
+	w := httptest.NewRecorder()
+
+	handler.HealthCheck(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("HealthCheck(local/fs) status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp BlockStoreHealthResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+	if !resp.Healthy {
+		t.Errorf("Expected healthy=true, got false")
+	}
+}
+
+func TestBlockStoreHandler_HealthCheck_LocalFS_PathNotExist(t *testing.T) {
+	cpStore, handler := setupBlockStoreTest(t)
+	ctx := context.Background()
+
+	bs := &models.BlockStoreConfig{
+		ID: uuid.New().String(), Name: "fs-bad", Kind: models.BlockStoreKindLocal, Type: "fs",
+		Config:    `{"path":"/nonexistent/path/that/does/not/exist"}`,
+		CreatedAt: time.Now(),
+	}
+	cpStore.CreateBlockStore(ctx, bs)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/local/fs-bad/health", nil)
+	req = withBlockStoreKindAndName(req, "local", "fs-bad")
+	w := httptest.NewRecorder()
+
+	handler.HealthCheck(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("HealthCheck(local/fs bad path) status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp BlockStoreHealthResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+	if resp.Healthy {
+		t.Errorf("Expected healthy=false for non-existent path")
+	}
+}
+
+func TestBlockStoreHandler_HealthCheck_RemoteMemory(t *testing.T) {
+	cpStore, handler := setupBlockStoreTest(t)
+	ctx := context.Background()
+
+	bs := &models.BlockStoreConfig{
+		ID: uuid.New().String(), Name: "mem-remote", Kind: models.BlockStoreKindRemote, Type: "memory",
+		CreatedAt: time.Now(),
+	}
+	cpStore.CreateBlockStore(ctx, bs)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/remote/mem-remote/health", nil)
+	req = withBlockStoreKindAndName(req, "remote", "mem-remote")
+	w := httptest.NewRecorder()
+
+	handler.HealthCheck(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("HealthCheck(remote/memory) status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp BlockStoreHealthResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+	if !resp.Healthy {
+		t.Errorf("Expected healthy=true, got false")
+	}
+}
+
+func TestBlockStoreHandler_HealthCheck_NotFound(t *testing.T) {
+	_, handler := setupBlockStoreTest(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/local/nonexistent/health", nil)
+	req = withBlockStoreKindAndName(req, "local", "nonexistent")
+	w := httptest.NewRecorder()
+
+	handler.HealthCheck(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("HealthCheck(not found) status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
+func TestBlockStoreHandler_HealthCheck_InvalidKind(t *testing.T) {
+	_, handler := setupBlockStoreTest(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/invalid/test/health", nil)
+	req = withBlockStoreKindAndName(req, "invalid", "test")
+	w := httptest.NewRecorder()
+
+	handler.HealthCheck(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("HealthCheck(invalid kind) status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
 func TestBlockStoreHandler_Update_DoesNotChangeKind(t *testing.T) {
 	cpStore, handler := setupBlockStoreTest(t)
 	ctx := context.Background()
