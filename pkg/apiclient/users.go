@@ -17,8 +17,8 @@ type User struct {
 	Enabled            bool              `json:"enabled"`
 	MustChangePassword bool              `json:"must_change_password"`
 	SharePermissions   map[string]string `json:"share_permissions,omitempty"`
-	CreatedAt          time.Time         `json:"created_at,omitempty"`
-	UpdatedAt          time.Time         `json:"updated_at,omitempty"`
+	CreatedAt          time.Time         `json:"created_at"`
+	LastLogin          *time.Time        `json:"last_login,omitempty"`
 }
 
 // CreateUserRequest is the request to create a user.

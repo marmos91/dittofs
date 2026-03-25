@@ -70,6 +70,19 @@ func createWithID[T any](db *gorm.DB, ctx context.Context, entity *T, idSetter f
 	return id, nil
 }
 
+// dedup returns a new slice with duplicate strings removed, preserving order.
+func dedup(s []string) []string {
+	seen := make(map[string]struct{}, len(s))
+	result := make([]string, 0, len(s))
+	for _, v := range s {
+		if _, ok := seen[v]; !ok {
+			seen[v] = struct{}{}
+			result = append(result, v)
+		}
+	}
+	return result
+}
+
 // deleteByField deletes records of type T matching field=value.
 // Returns notFoundErr if no rows were affected.
 //

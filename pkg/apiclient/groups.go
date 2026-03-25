@@ -1,12 +1,15 @@
 package apiclient
 
+import "time"
+
 // Group represents a group in the system.
 type Group struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	GID         *uint32  `json:"gid,omitempty"`
-	Description string   `json:"description,omitempty"`
-	Members     []string `json:"members,omitempty"`
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	GID         *uint32   `json:"gid,omitempty"`
+	Description string    `json:"description,omitempty"`
+	Members     []string  `json:"members,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // CreateGroupRequest is the request to create a group.

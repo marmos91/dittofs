@@ -47,6 +47,11 @@ func (ul SingleUserList) Rows() [][]string {
 		uidStr = fmt.Sprintf("%d", *u.UID)
 	}
 
+	lastLogin := "Never"
+	if u.LastLogin != nil {
+		lastLogin = u.LastLogin.Format("2006-01-02 15:04:05")
+	}
+
 	return [][]string{
 		{"ID", u.ID},
 		{"Username", u.Username},
@@ -57,6 +62,8 @@ func (ul SingleUserList) Rows() [][]string {
 		{"Groups", groups},
 		{"Enabled", cmdutil.BoolToYesNo(u.Enabled)},
 		{"Must Change Password", cmdutil.BoolToYesNo(u.MustChangePassword)},
+		{"Created", u.CreatedAt.Format("2006-01-02 15:04:05")},
+		{"Last Login", lastLogin},
 	}
 }
 

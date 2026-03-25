@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -45,25 +46,25 @@ func (s *GORMStore) CreateUserWithGroups(ctx context.Context, user *models.User,
 		user.ID = uuid.New().String()
 	}
 
-	// Deduplicate group names
-	seen := make(map[string]struct{}, len(groupNames))
-	unique := make([]string, 0, len(groupNames))
-	for _, name := range groupNames {
-		if _, ok := seen[name]; !ok {
-			seen[name] = struct{}{}
-			unique = append(unique, name)
-		}
-	}
+	unique := dedup(groupNames)
 
 	var groups []models.Group
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		groups = make([]models.Group, 0, len(unique))
-		for _, name := range unique {
-			var group models.Group
-			if err := tx.Where("name = ?", name).First(&group).Error; err != nil {
-				return fmt.Errorf("group %q: %w", name, models.ErrGroupNotFound)
+		if err := tx.Where("name IN ?", unique).Find(&groups).Error; err != nil {
+			return err
+		}
+		if len(groups) != len(unique) {
+			found := make(map[string]struct{}, len(groups))
+			for _, g := range groups {
+				found[g.Name] = struct{}{}
 			}
-			groups = append(groups, group)
+			var missing []string
+			for _, name := range unique {
+				if _, ok := found[name]; !ok {
+					missing = append(missing, name)
+				}
+			}
+			return fmt.Errorf("groups not found: %s: %w", strings.Join(missing, ", "), models.ErrGroupNotFound)
 		}
 
 		if err := tx.Create(user).Error; err != nil {
@@ -79,9 +80,8 @@ func (s *GORMStore) CreateUserWithGroups(ctx context.Context, user *models.User,
 		return "", err
 	}
 
-	// Back-populate for the caller (GORM's Append doesn't update the in-memory struct)
+	// Back-populate for the caller (GORM's Append doesn't reliably update in-memory)
 	user.Groups = groups
-
 	return user.ID, nil
 }
 

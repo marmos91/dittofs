@@ -55,6 +55,7 @@ func (gl SingleGroupList) Rows() [][]string {
 		{"GID", gidStr},
 		{"Description", description},
 		{"Members", members},
+		{"Created", g.CreatedAt.Format("2006-01-02 15:04:05")},
 	}
 }
 

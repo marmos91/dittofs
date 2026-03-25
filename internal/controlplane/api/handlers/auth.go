@@ -44,15 +44,17 @@ type LoginResponse struct {
 
 // UserResponse is a sanitized user representation for API responses.
 type UserResponse struct {
-	ID                 string   `json:"id"`
-	Username           string   `json:"username"`
-	DisplayName        string   `json:"display_name,omitempty"`
-	Email              string   `json:"email,omitempty"`
-	Role               string   `json:"role"`
-	UID                *uint32  `json:"uid,omitempty"`
-	Groups             []string `json:"groups,omitempty"`
-	Enabled            bool     `json:"enabled"`
-	MustChangePassword bool     `json:"must_change_password"`
+	ID                 string     `json:"id"`
+	Username           string     `json:"username"`
+	DisplayName        string     `json:"display_name,omitempty"`
+	Email              string     `json:"email,omitempty"`
+	Role               string     `json:"role"`
+	UID                *uint32    `json:"uid,omitempty"`
+	Groups             []string   `json:"groups,omitempty"`
+	Enabled            bool       `json:"enabled"`
+	MustChangePassword bool       `json:"must_change_password"`
+	CreatedAt          time.Time  `json:"created_at"`
+	LastLogin          *time.Time `json:"last_login,omitempty"`
 }
 
 // RefreshRequest is the request body for POST /api/v1/auth/refresh.
@@ -96,8 +98,11 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update last login time (non-critical, log error for debugging)
-	if err := h.store.UpdateLastLogin(r.Context(), user.Username, time.Now()); err != nil {
+	now := time.Now()
+	if err := h.store.UpdateLastLogin(r.Context(), user.Username, now); err != nil {
 		logger.WarnCtx(r.Context(), "failed to update last login time", "username", user.Username, "error", err)
+	} else {
+		user.LastLogin = &now
 	}
 
 	// Build response
@@ -209,5 +214,7 @@ func userToResponse(user *models.User) UserResponse {
 		Groups:             user.GetGroupNames(),
 		Enabled:            user.Enabled,
 		MustChangePassword: user.MustChangePassword,
+		CreatedAt:          user.CreatedAt,
+		LastLogin:          user.LastLogin,
 	}
 }

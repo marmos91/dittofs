@@ -2,14 +2,16 @@ package apiclient
 
 import (
 	"encoding/json"
+	"time"
 )
 
 // Adapter represents a protocol adapter configuration.
 type Adapter struct {
-	Type    string          `json:"type"`
-	Port    int             `json:"port"`
-	Enabled bool            `json:"enabled"`
-	Config  json.RawMessage `json:"config,omitempty"`
+	Type      string          `json:"type"`
+	Port      int             `json:"port"`
+	Enabled   bool            `json:"enabled"`
+	Config    json.RawMessage `json:"config,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
 }
 
 // CreateAdapterRequest is the request to create an adapter.
