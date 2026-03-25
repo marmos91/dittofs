@@ -235,6 +235,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 					r.Get("/{name}", metadataStoreHandler.Get)
 					r.Put("/{name}", metadataStoreHandler.Update)
 					r.Delete("/{name}", metadataStoreHandler.Delete)
+					r.Get("/{name}/health", metadataStoreHandler.HealthCheck)
 				})
 			})
 

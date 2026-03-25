@@ -109,6 +109,19 @@ func (c *Client) DeleteMetadataStore(name string) error {
 	return deleteResource(c, fmt.Sprintf("/api/v1/store/metadata/%s", name))
 }
 
+// MetadataStoreHealthResult holds the result of a metadata store health check.
+type MetadataStoreHealthResult struct {
+	Healthy   bool   `json:"healthy"`
+	LatencyMs int64  `json:"latency_ms"`
+	CheckedAt string `json:"checked_at"`
+	Details   string `json:"details,omitempty"`
+}
+
+// MetadataStoreHealth performs a health check on a metadata store.
+func (c *Client) MetadataStoreHealth(name string) (*MetadataStoreHealthResult, error) {
+	return getResource[MetadataStoreHealthResult](c, fmt.Sprintf("/api/v1/store/metadata/%s/health", name))
+}
+
 // ListBlockStores returns all block stores of a given kind.
 func (c *Client) ListBlockStores(kind string) ([]BlockStore, error) {
 	return listResources[BlockStore](c, fmt.Sprintf("/api/v1/store/block/%s", kind))

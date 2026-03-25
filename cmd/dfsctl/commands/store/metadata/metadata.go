@@ -30,4 +30,5 @@ func init() {
 	Cmd.AddCommand(addCmd)
 	Cmd.AddCommand(editCmd)
 	Cmd.AddCommand(removeCmd)
+	Cmd.AddCommand(healthCmd)
 }
