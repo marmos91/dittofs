@@ -107,6 +107,14 @@ func parseSessionSetupRequest(body []byte) (*SessionSetupRequest, error) {
 //
 // [MS-SMB2] Section 2.2.5, 2.2.6, 3.3.5.5
 func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
+	// Wait for any in-progress session cleanups to complete before proceeding.
+	// When a client disconnects, its session cleanup (file close, lease release,
+	// notify unregister) runs asynchronously in the old connection's goroutine.
+	// Without this barrier, a new connection's SESSION_SETUP can race with the
+	// old cleanup on shared Handler state (files, leases, notify watchers),
+	// causing stale state to interfere with the new session's operations.
+	h.WaitForCleanup()
+
 	// Parse request
 	req, err := parseSessionSetupRequest(body)
 	if err != nil {
@@ -316,6 +324,10 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool) (
 	}
 	h.StorePendingAuth(pending)
 
+	logger.Debug("Stored pending auth with challenge",
+		"sessionID", sessionID,
+		"serverChallenge", fmt.Sprintf("%x", serverChallenge))
+
 	// Update context so response includes the session ID
 	ctx.SessionID = sessionID
 
@@ -453,7 +465,10 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 					logger.Debug("NTLMv2 validation failed with all domain variants",
 						"username", authMsg.Username,
 						"triedDomains", domainsToTry,
-						"error", validationErr)
+						"error", validationErr,
+						"serverChallenge", fmt.Sprintf("%x", pending.ServerChallenge),
+						"ntHashPrefix", fmt.Sprintf("%x", ntHash[:4]),
+						"pendingSessionID", pending.SessionID)
 					if pending.IsReauth {
 						// Per MS-SMB2 3.3.5.5.2: if re-authentication fails,
 						// the session MUST be deleted. Clean up resources and

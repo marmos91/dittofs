@@ -137,6 +137,13 @@ type Handler struct {
 	// DurableTimeoutMs is the server's configured maximum durable handle timeout.
 	// Defaults to 60000 (60 seconds). Configurable via SMBAdapterSettings.
 	DurableTimeoutMs uint32
+
+	// cleanupWg tracks in-progress session cleanups. New SESSION_SETUP
+	// requests wait for this to reach zero before proceeding, ensuring
+	// that stale state from a disconnected session (open files, leases,
+	// change-notify watchers) is fully removed before a new session's
+	// operations can observe the shared Handler maps.
+	cleanupWg sync.WaitGroup
 }
 
 // EncryptionConfig holds encryption policy for the handler.
@@ -564,16 +571,43 @@ func (h *Handler) DeleteAllTreesForSession(sessionID uint64) int {
 	return deleted
 }
 
+// WaitForCleanup blocks until all in-progress session cleanups have finished.
+// Called at the start of SESSION_SETUP to ensure that stale state from a prior
+// disconnected session (open files, leases, change-notify watchers) is fully
+// removed from the shared Handler maps before a new session starts operating.
+func (h *Handler) WaitForCleanup() {
+	h.cleanupWg.Wait()
+}
+
 // CleanupSession performs full cleanup for a session.
 // This closes all files, releases all locks, removes all tree connections,
 // and deletes the session. Called on LOGOFF or connection close.
 // When isDisconnect is true (transport drop), durable handles are preserved.
 // When false (explicit LOGOFF), all handles are fully closed.
 func (h *Handler) CleanupSession(ctx context.Context, sessionID uint64, isDisconnect bool) {
+	h.cleanupWg.Add(1)
+	defer h.cleanupWg.Done()
+
 	logger.Debug("CleanupSession: starting cleanup", "sessionID", sessionID, "isDisconnect", isDisconnect)
 
 	// 1. Close all open files (this also releases locks and flushes caches)
 	filesClosed := h.CloseAllFilesForSession(ctx, sessionID, isDisconnect)
+
+	// 1.5. Unregister ALL pending CHANGE_NOTIFY watchers for this session.
+	// CloseAllFilesForSession unregisters notifies per-file, but if a file was
+	// already closed by the client (explicit CLOSE) before disconnect, its notify
+	// would already be unregistered in the CLOSE handler. However, there can be
+	// edge cases where a notify was registered after the last file close, or the
+	// file was removed from h.files but the notify wasn't cleaned up. This
+	// belt-and-suspenders call ensures no stale watchers leak across connections.
+	if h.NotifyRegistry != nil {
+		staleNotifies := h.NotifyRegistry.UnregisterAllForSession(sessionID)
+		if len(staleNotifies) > 0 {
+			logger.Debug("CleanupSession: removed stale CHANGE_NOTIFY watchers",
+				"sessionID", sessionID,
+				"count", len(staleNotifies))
+		}
+	}
 
 	// 2. Release all leases held by this session.
 	// CloseAllFilesForSession releases byte-range locks but not leases.

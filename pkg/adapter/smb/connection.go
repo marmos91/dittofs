@@ -286,10 +286,19 @@ func (c *Connection) handleConnectionClose() {
 		logger.Error("Panic in SMB connection handler", "address", clientAddr, "error", r)
 	}
 
+	start := time.Now()
 	c.wg.Wait()
+	waitDur := time.Since(start)
+
+	cleanupStart := time.Now()
 	c.cleanupSessions()
+	cleanupDur := time.Since(cleanupStart)
+
 	_ = c.conn.Close()
-	logger.Debug("SMB connection closed", "address", clientAddr)
+	logger.Debug("SMB connection closed",
+		"address", clientAddr,
+		"waitDuration", waitDur,
+		"cleanupDuration", cleanupDur)
 }
 
 // cleanupSessions cleans up all sessions that were created on this connection.

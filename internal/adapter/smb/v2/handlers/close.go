@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
@@ -288,6 +289,15 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				logger.Debug("CLOSE: failed to delete", "path", openFile.Path, "isDir", openFile.IsDirectory, "error", deleteErr)
 			} else {
 				logger.Debug("CLOSE: deleted", "path", openFile.Path, "isDir", openFile.IsDirectory)
+
+				// Cascade delete ADS streams: when a base file is deleted,
+				// all its alternate data streams (stored as "baseFile:streamName"
+				// children in the same parent directory) must also be removed.
+				// Per MS-FSA 2.1.5.9.7: all streams of a file are deleted when
+				// the file itself is deleted.
+				if !openFile.IsDirectory && !strings.Contains(openFile.FileName, ":") {
+					h.cascadeDeleteADSStreams(authCtx, metaSvc, openFile)
+				}
 				// Per MS-FSA 2.1.5.14.2: Restore frozen timestamps on parent directory
 				// after delete updates parent Mtime/Ctime/Atime.
 				h.restoreParentDirFrozenTimestamps(authCtx, openFile.ParentHandle)
@@ -514,4 +524,36 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 		"target", target)
 
 	return nil
+}
+
+// cascadeDeleteADSStreams removes all alternate data streams belonging to a
+// base file that was just deleted. ADS streams are stored as sibling entries
+// in the parent directory with names like "baseFile:streamName:$DATA".
+// Per MS-FSA 2.1.5.9.7, deleting a file deletes all its streams.
+func (h *Handler) cascadeDeleteADSStreams(authCtx *metadata.AuthContext, metaSvc *metadata.MetadataService, openFile *OpenFile) {
+	prefix := openFile.FileName + ":"
+
+	// Enumerate parent directory children to find ADS entries.
+	// Use ReadDirectory with a large buffer to get all entries.
+	page, err := metaSvc.ReadDirectory(authCtx, openFile.ParentHandle, 0, 1<<20)
+	if err != nil {
+		logger.Debug("CLOSE: cascade ADS delete: failed to read parent directory",
+			"path", openFile.Path,
+			"error", err)
+		return
+	}
+
+	for _, entry := range page.Entries {
+		if strings.HasPrefix(entry.Name, prefix) {
+			_, deleteErr := metaSvc.RemoveFile(authCtx, openFile.ParentHandle, entry.Name)
+			if deleteErr != nil {
+				logger.Debug("CLOSE: cascade ADS delete: failed to remove stream",
+					"stream", entry.Name,
+					"error", deleteErr)
+			} else {
+				logger.Debug("CLOSE: cascade ADS delete: removed stream",
+					"stream", entry.Name)
+			}
+		}
+	}
 }
