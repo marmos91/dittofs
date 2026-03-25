@@ -551,6 +551,7 @@ still fail due to incomplete reconnect, lease coordination, and persistence.
 | smb2.durable-v2-open.persistent-open-oplock | Durable handles V2 | Persistent handles not implemented | - |
 | smb2.durable-v2-open.persistent-open-lease | Durable handles V2 | Persistent handles not implemented | - |
 | smb2.durable-v2-delay.durable_v2_reconnect_delay | Durable handles V2 | DH2 reconnect delay not fully working | - |
+| smb2.durable-v2-delay.durable_v2_reconnect_delay_msec | Durable handles V2 | DH2 reconnect delay (millisecond variant) not fully working | - |
 
 ### Leases (Fix Candidate)
 
