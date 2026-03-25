@@ -287,6 +287,7 @@ files, create blobs) are not implemented. Basic create operations pass.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.create.acldir | Create | ACL-based directory create not implemented | - |
+| smb2.create.multi | Create | Multi-create fails under full suite (leftover file state) | - |
 | smb2.create.aclfile | Create | ACL-based file create not implemented | - |
 | smb2.create.bench-path-contention-shared | Create | Path contention benchmark not implemented | - |
 | smb2.create.blob | Create | Create context blobs not fully implemented | - |
@@ -323,41 +324,25 @@ checks, and ACL-based access control.
 | smb2.getinfo.qsec_buffercheck | Query Info | Security buffer check not implemented | - |
 | smb2.setinfo | Set Info | SET_INFO timestamp preservation not implemented | - |
 
-### Compound Requests (Async Not Implemented)
+### Compound Requests (Remaining)
 
-Compound async request handling is not implemented. Related compound find
-operations work but async compounds do not.
+Phase 73.1 fixed compound related/unrelated chaining, error propagation,
+interim responses, padding, compound find, and async flush. Remaining
+failures require DACL enforcement or full async I/O support.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.compound_async.create_lease_break_async | Compound | Async compound not implemented | - |
-| smb2.compound_async.flush_close | Compound | Async compound not implemented | - |
-| smb2.compound_async.flush_flush | Compound | Async compound not implemented | - |
-| smb2.compound_async.getinfo_middle | Compound | Async compound not implemented | - |
-| smb2.compound_async.read_read | Compound | Async compound not implemented | - |
-| smb2.compound_async.rename_last | Compound | Async compound not implemented | - |
-| smb2.compound_async.rename_middle | Compound | Async compound not implemented | - |
-| smb2.compound_async.rename_non_compound_no_async | Compound | Async compound not implemented | - |
-| smb2.compound_async.rename_same_srcdst_non_compound_no_async | Compound | Async compound not implemented | - |
-| smb2.compound_async.write_write | Compound | Async compound not implemented | - |
-| smb2.compound.related4 | Compound | Access control enforcement in compound CREATE | - |
-| smb2.compound.related7 | Compound | Access control enforcement in compound CREATE | - |
-| smb2.compound.related8 | Compound | CHANGE_NOTIFY not implemented | - |
-| smb2.compound.related3 | Compound | Compound related request edge case (newly reachable) | - |
-| smb2.compound.related5 | Compound | Compound related request edge case (newly reachable) | - |
-| smb2.compound.related6 | Compound | Compound related request edge case (newly reachable) | - |
-| smb2.compound.unrelated1 | Compound | Compound unrelated request handling (newly reachable) | - |
-| smb2.compound.invalid3 | Compound | Invalid compound FILE_CLOSED detection | - |
-| smb2.compound.invalid4 | Compound | Invalid compound parameter validation (newly reachable) | - |
-| smb2.compound.compound-break | Compound | Compound + oplock break interaction (newly reachable) | - |
-| smb2.compound.create-write-close | Compound | Compound CREATE+WRITE+CLOSE sequence (newly reachable) | - |
-| smb2.compound.interim1 | Compound | Interim/async response not implemented | - |
-| smb2.compound.interim2 | Compound | Interim/async response not implemented | - |
-| smb2.compound.interim3 | Compound | Interim/async response not implemented | - |
-| smb2.compound.compound-padding | Compound | Compound response 8-byte padding | - |
-| smb2.compound_find.compound_find_related | Compound | Compound find related (newly reachable) | - |
-| smb2.compound_find.compound_find_unrelated | Compound | Compound find unrelated (newly reachable) | - |
-| smb2.compound_find.compound_find_close | Compound | Compound find close not implemented | - |
+| smb2.compound.related4 | Compound | Access control enforcement in compound CREATE (DACL) | - |
+| smb2.compound.related7 | Compound | Access control enforcement in compound CREATE (DACL) | - |
+| smb2.compound_async.create_lease_break_async | Compound | Async lease break in compound not implemented | - |
+| smb2.compound_async.getinfo_middle | Compound | Async getinfo in compound middle position | - |
+| smb2.compound_async.read_read | Compound | Async read+read compound not implemented | - |
+| smb2.compound_async.rename_last | Compound | Async rename in compound last position | - |
+| smb2.compound_async.rename_middle | Compound | Async rename in compound middle position | - |
+| smb2.compound_async.rename_non_compound_no_async | Compound | Non-compound rename async check | - |
+| smb2.compound_async.rename_same_srcdst_non_compound_no_async | Compound | Same src/dst rename async check | - |
+| smb2.compound_async.write_write | Compound | Async write+write compound not implemented | - |
+| smb2.compound_find.compound_find_close | Compound | Compound find+close sequence | - |
 
 ### Share Modes and Deny (Advanced Scenarios)
 
