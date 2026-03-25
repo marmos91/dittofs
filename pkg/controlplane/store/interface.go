@@ -133,7 +133,7 @@ type GroupStore interface {
 	// Returns models.ErrGroupNotFound if the group doesn't exist.
 	GetGroupMembers(ctx context.Context, groupName string) ([]*models.User, error)
 
-	// EnsureDefaultGroups creates the default groups (admins, users) if they don't exist.
+	// EnsureDefaultGroups creates the default groups (admins, operators, users) if they don't exist.
 	// Also adds the admin user to the admins group if both exist.
 	// Returns true if any groups were created.
 	// This should be called during server startup after EnsureAdminUser.

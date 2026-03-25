@@ -846,6 +846,81 @@ func TestEnsureAdminUser(t *testing.T) {
 	})
 }
 
+func TestEnsureDefaultGroups(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	t.Run("creates all default groups on fresh store", func(t *testing.T) {
+		created, err := store.EnsureDefaultGroups(ctx)
+		if err != nil {
+			t.Fatalf("failed to ensure default groups: %v", err)
+		}
+		if !created {
+			t.Error("expected created=true on first call")
+		}
+
+		expected := []struct {
+			name string
+			gid  uint32
+		}{
+			{"admins", 0},
+			{"operators", 999},
+			{"users", 1000},
+		}
+
+		for _, exp := range expected {
+			group, err := store.GetGroup(ctx, exp.name)
+			if err != nil {
+				t.Fatalf("group %q should exist: %v", exp.name, err)
+			}
+			if group.GID == nil || *group.GID != exp.gid {
+				t.Errorf("group %q: expected GID %d, got %v", exp.name, exp.gid, group.GID)
+			}
+		}
+	})
+
+	t.Run("idempotent on second call", func(t *testing.T) {
+		created, err := store.EnsureDefaultGroups(ctx)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if created {
+			t.Error("expected created=false on second call")
+		}
+	})
+
+	t.Run("adds admin user to admins group", func(t *testing.T) {
+		// Create admin user first
+		_, err := store.EnsureAdminUser(ctx)
+		if err != nil {
+			t.Fatalf("failed to ensure admin user: %v", err)
+		}
+
+		// Re-run to trigger the admin-to-admins logic
+		_, err = store.EnsureDefaultGroups(ctx)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		members, err := store.GetGroupMembers(ctx, "admins")
+		if err != nil {
+			t.Fatalf("failed to get admins members: %v", err)
+		}
+
+		found := false
+		for _, m := range members {
+			if m.Username == "admin" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("admin user should be a member of the admins group")
+		}
+	})
+}
+
 func TestHealthcheck(t *testing.T) {
 	store := createTestStore(t)
 	defer store.Close()

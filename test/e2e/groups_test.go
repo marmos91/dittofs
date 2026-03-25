@@ -138,7 +138,7 @@ func testListGroups(t *testing.T, cli *helpers.CLIRunner) {
 	require.NoError(t, err, "Should list groups")
 
 	// Find our groups and check for system groups
-	var foundGroup1, foundGroup2, foundAdmins, foundUsers bool
+	var foundGroup1, foundGroup2, foundAdmins, foundOperators, foundUsers bool
 	for _, g := range groups {
 		switch g.Name {
 		case group1Name:
@@ -147,6 +147,8 @@ func testListGroups(t *testing.T, cli *helpers.CLIRunner) {
 			foundGroup2 = true
 		case "admins":
 			foundAdmins = true
+		case "operators":
+			foundOperators = true
 		case "users":
 			foundUsers = true
 		}
@@ -157,6 +159,9 @@ func testListGroups(t *testing.T, cli *helpers.CLIRunner) {
 	// System groups may or may not exist depending on server initialization
 	if !foundAdmins {
 		t.Log("Note: System group 'admins' not found")
+	}
+	if !foundOperators {
+		t.Log("Note: System group 'operators' not found")
 	}
 	if !foundUsers {
 		t.Log("Note: System group 'users' not found")
@@ -374,30 +379,39 @@ func testMultiGroupMembership(t *testing.T, cli *helpers.CLIRunner) {
 	assert.Contains(t, user.Groups, group2Name, "User should be in second group")
 }
 
-// testSystemGroupsProtected verifies that system groups (admins, users) cannot be deleted.
+// testSystemGroupsProtected verifies that system groups (admins, operators, users) cannot be deleted.
 func testSystemGroupsProtected(t *testing.T, cli *helpers.CLIRunner) {
 	// Check if system groups exist first
 	groups, err := cli.ListGroups()
 	require.NoError(t, err, "Should list groups")
 
-	var hasAdmins, hasUsers bool
+	var hasAdmins, hasOperators, hasUsers bool
 	for _, g := range groups {
 		if g.Name == "admins" {
 			hasAdmins = true
+		}
+		if g.Name == "operators" {
+			hasOperators = true
 		}
 		if g.Name == "users" {
 			hasUsers = true
 		}
 	}
 
-	if !hasAdmins && !hasUsers {
-		t.Skip("System groups (admins, users) don't exist - skipping protection test")
+	if !hasAdmins && !hasOperators && !hasUsers {
+		t.Skip("System groups (admins, operators, users) don't exist - skipping protection test")
 	}
 
 	// Try to delete 'admins' group if it exists - should fail
 	if hasAdmins {
 		err := cli.DeleteGroup("admins")
 		assert.Error(t, err, "Should reject deletion of 'admins' system group")
+	}
+
+	// Try to delete 'operators' group if it exists - should fail
+	if hasOperators {
+		err := cli.DeleteGroup("operators")
+		assert.Error(t, err, "Should reject deletion of 'operators' system group")
 	}
 
 	// Try to delete 'users' group if it exists - should fail

@@ -782,12 +782,16 @@ requests with durable handles. Newly reachable after GMAC signing fix.
 | smb2.replay.dhv2-pending2n-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
 | smb2.replay.dhv2-pending2n-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
 | smb2.replay.dhv2-pending2n-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
+| smb2.replay.dhv2-pending2n-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
 | smb2.replay.dhv2-pending2l-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
+| smb2.replay.dhv2-pending2l-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
 | smb2.replay.dhv2-pending2o-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
 | smb2.replay.dhv2-pending2o-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
 | smb2.replay.dhv2-pending2o-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
 | smb2.replay.dhv2-pending2o-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
+| smb2.replay.dhv2-pending3n-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
 | smb2.replay.dhv2-pending3n-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
+| smb2.replay.dhv2-pending3l-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
 | smb2.replay.dhv2-pending3l-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
 | smb2.replay.channel-sequence | Replay | Channel sequence tracking not implemented | - |
 | smb2.replay.replay6 | Replay | Replay detection not implemented | - |
@@ -815,6 +819,7 @@ iterates all QUERY_DIRECTORY information classes. Both hit unimplemented classes
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.scan.scan | Scan | Full operation scan hits unimplemented info classes | - |
+| smb2.scan.setinfo | Scan | SET_INFO scan hits unimplemented information classes | - |
 
 ## Changelog
 

@@ -101,13 +101,13 @@ func runStart(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 	}
 
-	// Ensure default groups exist (admins, users) and add admin to admins group
+	// Ensure default groups exist (admins, operators, users) and add admin to admins group
 	groupsCreated, err := cpStore.EnsureDefaultGroups(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to ensure default groups: %w", err)
 	}
 	if groupsCreated {
-		logger.Info("Default groups created", "groups", "admins, users")
+		logger.Info("Default groups created", "groups", "admins, operators, users")
 	}
 
 	// Ensure default adapters exist (NFS and SMB)

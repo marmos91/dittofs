@@ -149,7 +149,7 @@ func (h *GroupHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 // Delete handles DELETE /api/v1/groups/{name}.
 // Deletes a group (admin only).
-// System groups (admins, users) cannot be deleted.
+// System groups (admins, operators, users) cannot be deleted.
 func (h *GroupHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	if name == "" {
@@ -158,7 +158,7 @@ func (h *GroupHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Protect system groups from deletion
-	if name == "admins" || name == "users" {
+	if models.IsSystemGroup(name) {
 		Forbidden(w, "Cannot delete system group")
 		return
 	}

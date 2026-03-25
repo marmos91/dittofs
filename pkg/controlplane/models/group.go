@@ -2,6 +2,7 @@ package models
 
 import (
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -58,9 +59,15 @@ func (GroupSharePermission) TableName() string {
 	return "group_share_permissions"
 }
 
-// WellKnownGroups defines standard group names.
-var WellKnownGroups = []string{
+// SystemGroups defines the names of built-in groups that are created during
+// server initialization and cannot be deleted.
+var SystemGroups = []string{
 	"admins",
-	"editors",
-	"viewers",
+	"operators",
+	"users",
+}
+
+// IsSystemGroup reports whether the given group name is a built-in system group.
+func IsSystemGroup(name string) bool {
+	return slices.Contains(SystemGroups, name)
 }

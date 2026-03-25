@@ -143,7 +143,7 @@ func (s *GORMStore) GetGroupMembers(ctx context.Context, groupName string) ([]*m
 	return users, nil
 }
 
-// EnsureDefaultGroups creates the default groups (admins, users) if they don't exist.
+// EnsureDefaultGroups creates the default groups (admins, operators, users) if they don't exist.
 // Also adds the admin user to the admins group if both exist.
 // Returns true if any groups were created.
 func (s *GORMStore) EnsureDefaultGroups(ctx context.Context) (bool, error) {
@@ -162,8 +162,9 @@ func (s *GORMStore) EnsureDefaultGroups(ctx context.Context) (bool, error) {
 		gid         *uint32
 		description string
 	}{
-		{"admins", uint32Ptr(0), "System administrators"}, // GID 0 for root-level access
-		{"users", uint32Ptr(1000), "Regular users"},       // GID 1000 for regular users
+		{"admins", uint32Ptr(0), "System administrators"},          // GID 0 for root-level access
+		{"operators", uint32Ptr(999), "Service account operators"}, // GID 999 for operator role
+		{"users", uint32Ptr(1000), "Regular users"},                // GID 1000 for regular users
 	}
 
 	for _, d := range defaults {
