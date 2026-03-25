@@ -65,15 +65,12 @@ sparse_file_attr query work.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.ioctl.bug14769 | IOCTL | IOCTL edge case not implemented | - |
-| smb2.ioctl.compress_file_flag | IOCTL | Full-suite state poisoning (skipped individually) | - |
-| smb2.ioctl.compress_invalid_buf | IOCTL | Full-suite state poisoning (skipped individually) | - |
-| smb2.ioctl.compress_query_file_attr | IOCTL | Full-suite state poisoning (skipped individually) | - |
 | smb2.ioctl.compress_dir_inherit | IOCTL | Compression inheritance to child files not implemented | - |
 | smb2.ioctl.compress_inherit_disable | IOCTL | Compression inheritance disable not implemented | - |
-| smb2.ioctl.compress_create_with_attr | IOCTL | Compression not implemented | - |
-| smb2.ioctl.compress_notsup_get | IOCTL | Compression not implemented | - |
-| smb2.ioctl.compress_notsup_set | IOCTL | Compression not implemented | - |
-| smb2.ioctl.compress_perms | IOCTL | Compression not implemented | - |
+| smb2.ioctl.compress_query_file_attr | IOCTL | Compression FILE_ATTRIBUTE not set after FSCTL_SET_COMPRESSION | - |
+| smb2.ioctl.compress_perms | IOCTL | Compression attribute not reflected in file attributes | - |
+| smb2.ioctl.compress_create_with_attr | IOCTL | Compression create with attr not fully implemented | - |
+| smb2.ioctl.compress_set_file_attr | IOCTL | Compression set file attribute not fully implemented | - |
 | smb2.ioctl.copy_chunk_across_shares | IOCTL | Server-side copy not implemented | - |
 | smb2.ioctl.copy_chunk_across_shares2 | IOCTL | Server-side copy not implemented | - |
 | smb2.ioctl.copy_chunk_across_shares3 | IOCTL | Server-side copy not implemented | - |
@@ -105,6 +102,12 @@ sparse_file_attr query work.
 | smb2.ioctl.dup_extents_sparse_src | IOCTL | Duplicate extents not implemented | - |
 | smb2.ioctl.dup_extents_bad_handle | IOCTL | Full-suite state poisoning (skipped individually) | - |
 | smb2.ioctl.dup_extents_len_beyond_src | IOCTL | Full-suite state poisoning (skipped individually) | - |
+| smb2.ioctl.dup_extents_sparse_both | IOCTL | Full-suite state poisoning (skipped individually) | - |
+| smb2.ioctl.dup_extents_src_is_dest | IOCTL | Full-suite state poisoning (skipped individually) | - |
+| smb2.ioctl.dup_extents_src_is_dest_overlap | IOCTL | Full-suite state poisoning (skipped individually) | - |
+| smb2.ioctl.dup_extents_compressed_dest | IOCTL | Full-suite state poisoning (skipped individually) | - |
+| smb2.ioctl.dup_extents_src_lock | IOCTL | Full-suite state poisoning (skipped individually) | - |
+| smb2.ioctl.dup_extents_dest_lock | IOCTL | Full-suite state poisoning (skipped individually) | - |
 | smb2.ioctl.bug14788.NETWORK_INTERFACE | IOCTL | Network interface enumeration not implemented | - |
 | smb2.ioctl.req_resume_key | IOCTL | Resume key for server-side copy not implemented | - |
 | smb2.ioctl.req_two_resume_keys | IOCTL | Resume key for server-side copy not implemented | - |
