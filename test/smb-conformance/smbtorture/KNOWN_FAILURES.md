@@ -104,6 +104,7 @@ sparse_file_attr query work.
 | smb2.ioctl.dup_extents_sparse_dest | IOCTL | Duplicate extents not implemented | - |
 | smb2.ioctl.dup_extents_sparse_src | IOCTL | Duplicate extents not implemented | - |
 | smb2.ioctl.dup_extents_bad_handle | IOCTL | Full-suite state poisoning (skipped individually) | - |
+| smb2.ioctl.dup_extents_len_beyond_src | IOCTL | Full-suite state poisoning (skipped individually) | - |
 | smb2.ioctl.bug14788.NETWORK_INTERFACE | IOCTL | Network interface enumeration not implemented | - |
 | smb2.ioctl.req_resume_key | IOCTL | Resume key for server-side copy not implemented | - |
 | smb2.ioctl.req_two_resume_keys | IOCTL | Resume key for server-side copy not implemented | - |
