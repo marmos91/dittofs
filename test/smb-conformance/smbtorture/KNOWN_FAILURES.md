@@ -69,6 +69,20 @@ skip automatically because FILE_SUPPORTS_BLOCK_REFCOUNTING is not advertised.
 | smb2.ioctl.compress_dir_inherit | IOCTL | Compression inheritance to child files not fully implemented | - |
 | smb2.ioctl.compress_inherit_disable | IOCTL | Compression inheritance disable not fully implemented | - |
 | smb2.ioctl.compress_perms | IOCTL | Compression attribute + ACL permission check not implemented | - |
+| smb2.ioctl.dup_extents_simple | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
+| smb2.ioctl.dup_extents_len_beyond_dest | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
+| smb2.ioctl.dup_extents_len_beyond_src | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
+| smb2.ioctl.dup_extents_len_zero | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
+| smb2.ioctl.dup_extents_compressed_src | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
+| smb2.ioctl.dup_extents_sparse_dest | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
+| smb2.ioctl.dup_extents_sparse_src | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
+| smb2.ioctl.dup_extents_bad_handle | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
+| smb2.ioctl.dup_extents_sparse_both | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
+| smb2.ioctl.dup_extents_src_is_dest | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
+| smb2.ioctl.dup_extents_src_is_dest_overlap | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
+| smb2.ioctl.dup_extents_compressed_dest | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
+| smb2.ioctl.dup_extents_src_lock | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
+| smb2.ioctl.dup_extents_dest_lock | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
 | smb2.ioctl.copy_chunk_across_shares | IOCTL | Server-side copy not implemented | - |
 | smb2.ioctl.copy_chunk_across_shares2 | IOCTL | Server-side copy not implemented | - |
 | smb2.ioctl.copy_chunk_across_shares3 | IOCTL | Server-side copy not implemented | - |
