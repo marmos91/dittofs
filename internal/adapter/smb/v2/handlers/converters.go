@@ -35,6 +35,13 @@ const (
 	// explicitly set. Only meaningful when modeDOSExplicit is also set.
 	modeDOSArchive = uint32(0x20000)
 
+	// modeDOSCompressed tracks whether FSCTL_SET_COMPRESSION has been applied
+	// to a file or directory. When set, FILE_ATTRIBUTE_COMPRESSED (0x0800) is
+	// included in the SMB file attributes returned by GETINFO queries.
+	// This is stored persistently in the metadata Mode field so it survives
+	// handle close/reopen cycles.
+	modeDOSCompressed = uint32(0x40000)
+
 	// filetimeFreeze is the FILETIME sentinel value -1 (0xFFFFFFFFFFFFFFFF).
 	// Per MS-FSA 2.1.5.14.2: The object store MUST NOT change this attribute
 	// for this or subsequent operations on this handle.
@@ -128,6 +135,12 @@ func fileAttrToSMBAttributesInternal(attr *metadata.FileAttr, hidden bool) types
 	// This reflects SET_INFO operations that applied READONLY.
 	if attr.Type == metadata.FileTypeRegular && (attr.Mode&0200) == 0 {
 		attrs |= types.FileAttributeReadonly
+	}
+
+	// Per MS-FSCC 2.6: FILE_ATTRIBUTE_COMPRESSED is set when the file has been
+	// marked compressed via FSCTL_SET_COMPRESSION. Stored in modeDOSCompressed.
+	if attr.Mode&modeDOSCompressed != 0 {
+		attrs |= types.FileAttributeCompressed
 	}
 
 	// Set hidden attribute

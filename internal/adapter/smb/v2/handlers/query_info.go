@@ -620,13 +620,17 @@ func (h *Handler) buildFileInfoFromStore(ctx context.Context, file *metadata.Fil
 		// CompressedFileSize (8) + CompressionFormat (2) + CompressionUnitShift (1) +
 		// ChunkShift (1) + ClusterShift (1) + Reserved (3)
 		size := getSMBSize(&file.FileAttr)
+		var compFmt uint16
+		if file.Mode&modeDOSCompressed != 0 {
+			compFmt = 0x0002 // COMPRESSION_FORMAT_LZNT1
+		}
 		w := smbenc.NewWriter(16)
-		w.WriteUint64(size)   // CompressedFileSize = EndOfFile (no actual compression)
-		w.WriteUint16(0x0002) // CompressionFormat = COMPRESSION_FORMAT_LZNT1 (NTFS default)
-		w.WriteUint8(0)       // CompressionUnitShift
-		w.WriteUint8(0)       // ChunkShift
-		w.WriteUint8(0)       // ClusterShift
-		w.WriteZeros(3)       // Reserved
+		w.WriteUint64(size)    // CompressedFileSize = EndOfFile (no actual compression)
+		w.WriteUint16(compFmt) // CompressionFormat from metadata state
+		w.WriteUint8(0)        // CompressionUnitShift
+		w.WriteUint8(0)        // ChunkShift
+		w.WriteUint8(0)        // ClusterShift
+		w.WriteZeros(3)        // Reserved
 		return w.Bytes(), nil
 
 	case types.FileAttributeTagInformation:

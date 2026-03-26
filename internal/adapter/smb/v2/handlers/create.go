@@ -1626,8 +1626,17 @@ func (h *Handler) createNewFile(
 		fileAttr.Size = 0
 	}
 
-	// Create appropriate file type based on fileAttr.Type
+	// Inherit compression state from parent directory.
+	// Per MS-FSA 2.1.5.1.1: if the parent directory has FILE_ATTRIBUTE_COMPRESSED,
+	// the new file/directory inherits the compression attribute.
 	metaSvc := h.Registry.GetMetadataService()
+	if parentFile, pErr := metaSvc.GetFile(authCtx.Context, parentHandle); pErr == nil {
+		if parentFile.Mode&modeDOSCompressed != 0 {
+			fileAttr.Mode |= modeDOSCompressed
+		}
+	}
+
+	// Create appropriate file type based on fileAttr.Type
 	var file *metadata.File
 	var err error
 	if isDirectory {

@@ -6,11 +6,13 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // handleGetCompression handles FSCTL_GET_COMPRESSION [MS-FSCC] 2.3.9.
 // Returns the compression format for the open file. DittoFS does not actually
-// compress data, but tracks the compression state per-handle for protocol compliance.
+// compress data, but tracks the compression state persistently in metadata.
+// The compression format is derived from the modeDOSCompressed mode bit.
 func (h *Handler) handleGetCompression(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	fileID, ok := parseIoctlFileID(body)
 	if !ok {
@@ -22,7 +24,14 @@ func (h *Handler) handleGetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 		return NewErrorResult(types.StatusFileClosed), nil
 	}
 
-	format := uint16(openFile.CompressionFormat.Load())
+	// Read compression state from metadata (persistent across handles).
+	var format uint16
+	metaSvc := h.Registry.GetMetadataService()
+	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
+	if err == nil && file.Mode&modeDOSCompressed != 0 {
+		format = 0x0002 // COMPRESSION_FORMAT_LZNT1
+	}
+
 	logger.Debug("IOCTL FSCTL_GET_COMPRESSION", "format", format)
 
 	w := smbenc.NewWriter(2)
@@ -32,8 +41,9 @@ func (h *Handler) handleGetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 }
 
 // handleSetCompression handles FSCTL_SET_COMPRESSION [MS-FSCC] 2.3.53.
-// Validates the compression format and tracks the state per-handle.
-// DittoFS does not actually compress data but maintains protocol-correct state.
+// Validates the compression format and persists the state to metadata.
+// DittoFS does not actually compress data but maintains protocol-correct state,
+// including FILE_ATTRIBUTE_COMPRESSED in file attributes.
 // Per MS-FSCC 2.3.53: valid values are 0 (NONE), 1 (DEFAULT), 2 (LZNT1).
 func (h *Handler) handleSetCompression(ctx *SMBHandlerContext, body []byte) (*HandlerResult, error) {
 	fileID, ok := parseIoctlFileID(body)
@@ -57,13 +67,44 @@ func (h *Handler) handleSetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 
 	// Per MS-FSCC 2.3.53: valid formats are 0 (NONE), 1 (DEFAULT), 2 (LZNT1).
 	// DEFAULT and LZNT1 both map to LZNT1 (the only compression algorithm NTFS supports).
+	var storedFormat uint32
 	switch format {
 	case 0x0000: // COMPRESSION_FORMAT_NONE
-		openFile.CompressionFormat.Store(0)
+		storedFormat = 0
 	case 0x0001, 0x0002: // COMPRESSION_FORMAT_DEFAULT, COMPRESSION_FORMAT_LZNT1
-		openFile.CompressionFormat.Store(0x0002)
+		storedFormat = 0x0002
 	default:
 		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	// Update per-handle state
+	openFile.CompressionFormat.Store(storedFormat)
+
+	// Persist compression state to metadata via mode bit (modeDOSCompressed).
+	// This ensures FILE_ATTRIBUTE_COMPRESSED survives handle close/reopen.
+	metaSvc := h.Registry.GetMetadataService()
+	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
+	if err != nil {
+		return NewErrorResult(MetadataErrorToSMBStatus(err)), nil
+	}
+
+	newMode := file.Mode
+	if storedFormat != 0 {
+		newMode |= modeDOSCompressed
+	} else {
+		newMode &^= modeDOSCompressed
+	}
+
+	if newMode != file.Mode {
+		authCtx, authErr := BuildAuthContext(ctx)
+		if authErr != nil {
+			logger.Warn("FSCTL_SET_COMPRESSION: failed to build auth context", "error", authErr)
+		} else if err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{
+			Mode: &newMode,
+		}); err != nil {
+			logger.Warn("FSCTL_SET_COMPRESSION: failed to persist mode", "error", err)
+			// Non-fatal: per-handle state is still set
+		}
 	}
 
 	resp := buildIoctlResponse(FsctlSetCompression, fileID, nil)
