@@ -785,7 +785,14 @@ requests with durable handles. Newly reachable after GMAC signing fix.
 | smb2.replay.dhv2-pending3n-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
 | smb2.replay.dhv2-pending3l-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
 | smb2.replay.dhv2-pending3l-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
+| smb2.replay.dhv2-pending3l-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
+| smb2.replay.dhv2-pending3l-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
+| smb2.replay.dhv2-pending3o-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
+| smb2.replay.dhv2-pending3o-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
+| smb2.replay.dhv2-pending3o-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
+| smb2.replay.dhv2-pending3o-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
 | smb2.replay.channel-sequence | Replay | Channel sequence tracking not implemented | - |
+| smb2.replay.replay4 | Replay | Replay detection not implemented | - |
 | smb2.replay.replay6 | Replay | Replay detection not implemented | - |
 | smb2.replay.replay7 | Replay | Replay detection not implemented | - |
 
