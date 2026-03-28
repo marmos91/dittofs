@@ -992,7 +992,11 @@ func (h *Handler) setSecurityInfo(
 	}
 
 	if !changed {
-		// Nothing to change - accept as no-op
+		// Nothing to change - accept as no-op but still notify watchers
+		// since the client considers the SET_INFO successful.
+		if h.NotifyRegistry != nil {
+			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified)
+		}
 		return setInfoStatus(types.StatusSuccess), nil
 	}
 
