@@ -594,13 +594,15 @@ func (h *Handler) buildFileInfoFromStore(ctx context.Context, file *metadata.Fil
 
 	case types.FileNormalizedNameInformation:
 		// FILE_NORMALIZED_NAME_INFORMATION [MS-FSCC] 2.4.28 (4 bytes + variable)
-		// Returns the normalized name relative to the share root (no leading backslash).
+		// Returns the normalized name relative to the share root.
+		// Per MS-FSCC: for the root directory, the name is empty.
 		filePath := openFile.Path
-		if filePath == "" {
-			filePath = "\\"
-		} else {
-			filePath = strings.ReplaceAll(filePath, "/", "\\")
+		if filePath == "" || filePath == "/" {
+			w := smbenc.NewWriter(4)
+			w.WriteUint32(0) // FileNameLength = 0 (root)
+			return w.Bytes(), nil
 		}
+		filePath = strings.ReplaceAll(filePath, "/", "\\")
 		nameBytes := encodeUTF16LE(filePath)
 		w := smbenc.NewWriter(4 + len(nameBytes))
 		w.WriteUint32(uint32(len(nameBytes))) // FileNameLength
@@ -926,6 +928,18 @@ func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoC
 		w.WriteUint32(0)          // ByteOffsetForPartitionAlignment
 		return w.Bytes(), nil
 
+	case 6: // FileFsControlInformation [MS-FSCC] 2.5.2
+		// Quota control information (48 bytes)
+		w := smbenc.NewWriter(48)
+		w.WriteUint64(0)          // FreeSpaceStartFiltering
+		w.WriteUint64(0)          // FreeSpaceThreshold
+		w.WriteUint64(0)          // FreeSpaceStopFiltering
+		w.WriteUint64(0x7FFFFFFF) // DefaultQuotaThreshold (no quota)
+		w.WriteUint64(0x7FFFFFFF) // DefaultQuotaLimit (no quota)
+		w.WriteUint32(0)          // FileSystemControlFlags (no quotas)
+		w.WriteZeros(4)           // Padding
+		return w.Bytes(), nil
+
 	default:
 		return nil, types.ErrNotSupported
 	}
@@ -951,6 +965,16 @@ func fileInfoClassMinSize(class types.FileInfoClass) uint32 {
 		return 56
 	case types.FileAttributeTagInformation:
 		return 8
+	case types.FileAllInformation:
+		return 100 // 40+24+8+4+4+8+4+4+4 fixed fields before variable NameInformation
+	case types.FileIdInformation:
+		return 24
+	case types.FileNameInformation:
+		return 4 // FileNameLength field minimum
+	case types.FileStreamInformation:
+		return 8 // NextEntryOffset + StreamNameLength minimum
+	case types.FileAlternateNameInformation, types.FileNormalizedNameInformation:
+		return 4 // FileNameLength field minimum
 	default:
 		return 0 // Variable-length or unknown; allow truncation
 	}
@@ -971,8 +995,14 @@ func fsInfoClassMinSize(class types.FileInfoClass) uint32 {
 		return 64
 	case 11: // FileFsSectorSizeInformation [MS-FSCC] 2.5.8 (28 bytes)
 		return 28
+	case 1: // FileFsVolumeInformation [MS-FSCC] 2.5.9 (min 18 bytes)
+		return 18
+	case 5: // FileFsAttributeInformation [MS-FSCC] 2.5.1 (min 12 bytes)
+		return 12
+	case 6: // FileFsControlInformation [MS-FSCC] 2.5.2 (48 bytes)
+		return 48
 	default:
-		return 0 // Variable-length (volume, label, attribute) or unknown
+		return 0 // Variable-length or unknown
 	}
 }
 
