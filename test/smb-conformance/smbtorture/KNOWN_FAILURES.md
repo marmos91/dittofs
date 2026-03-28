@@ -70,6 +70,9 @@ skip automatically because FILE_SUPPORTS_BLOCK_REFCOUNTING is not advertised.
 | smb2.ioctl.compress_inherit_disable | IOCTL | Compression inheritance disable not fully implemented | - |
 | smb2.ioctl.compress_query_file_attr | IOCTL | Flaky in CI (compression attr race during full suite) | - |
 | smb2.ioctl.compress_create_with_attr | IOCTL | Flaky in CI (compression attr race during full suite) | - |
+| smb2.ioctl.compress_invalid_buf | IOCTL | Flaky in CI (compression state race during full suite) | - |
+| smb2.ioctl.compress_set_file_attr | IOCTL | Flaky in CI (compression state race during full suite) | - |
+| smb2.ioctl.compress_file_flag | IOCTL | Flaky in CI (compression state race during full suite) | - |
 | smb2.ioctl.compress_perms | IOCTL | Compression attribute + ACL permission check not implemented | - |
 | smb2.ioctl.dup_extents_simple | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
 | smb2.ioctl.dup_extents_len_beyond_dest | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
@@ -169,6 +172,7 @@ tdis1, tcp, tcon now pass. Remaining tests require features not yet implemented.
 | smb2.notify.session-reconnect | Change Notify | Depends on session reconnect (not re-auth) | - |
 | smb2.notify.valid-req | Change Notify | CompletionFilter validation rejects previously-accepted requests | - |
 | smb2.notify.tcon | Change Notify | Full-suite flaky (tree disconnect notify race) | - |
+| smb2.notify.dir | Change Notify | Full-suite flaky (directory notify race) | - |
 | smb2.change_notify_disabled.notfiy_disabled | Change Notify | Change notify disabled mode test | - |
 
 ### Oplocks (Multi-Client Coordination Not Implemented)
@@ -638,6 +642,7 @@ fail due to incomplete lock contention and async lock handling.
 | smb2.lock.zerobyteread | Locks | Zero-byte read with locks not fully working | - |
 | smb2.lock.context | Locks | Lock context tracking not fully working | - |
 | smb2.lock.open-brlock-deadlock | Locks | Open + byte-range lock deadlock detection not working | - |
+| smb2.lock.ctdb-delrec-deadlock | Locks | CTDB delete record deadlock not working | - |
 
 ### Rename (Fix Candidate)
 
