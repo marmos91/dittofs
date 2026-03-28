@@ -114,6 +114,8 @@ skip automatically because FILE_SUPPORTS_BLOCK_REFCOUNTING is not advertised.
 | smb2.ioctl.copy_chunk_zero_length | IOCTL | Server-side copy not implemented | - |
 | smb2.ioctl.copy-chunk | IOCTL | Server-side copy not implemented | - |
 | smb2.ioctl.bug14788.NETWORK_INTERFACE | IOCTL | Network interface enumeration not implemented | - |
+| smb2.ioctl.network_interface_info | IOCTL | Flaky in CI (network interface query race) | - |
+| smb2.ioctl.sparse_file_attr | IOCTL | Flaky in CI (sparse attr race during full suite) | - |
 | smb2.ioctl.req_resume_key | IOCTL | Resume key for server-side copy not implemented | - |
 | smb2.ioctl.req_two_resume_keys | IOCTL | Resume key for server-side copy not implemented | - |
 | smb2.ioctl.sparse_compressed | IOCTL | Sparse + compression not implemented | - |
@@ -155,6 +157,7 @@ share modes pass due to the stub implementation.
 | smb2.streams.names | Streams | ADS name enumeration not implemented | - |
 | smb2.streams.names2 | Streams | ADS name enumeration not implemented | - |
 | smb2.streams.names3 | Streams | ADS name enumeration not implemented | - |
+| smb2.streams.rename | Streams | ADS rename flaky in CI (state poisoning) | - |
 | smb2.streams.rename2 | Streams | ADS rename semantics not implemented | - |
 | smb2.streams.sharemodes | Streams | ADS share mode enforcement edge cases (newly reachable) | - |
 | smb2.streams.zero-byte | Streams | ADS zero-byte handling not implemented | - |
@@ -522,6 +525,12 @@ still fail due to incomplete reconnect and lease coordination.
 | smb2.durable-open.reopen2-lease | Durable handles V1 | Durable reopen with lease not fully working | - |
 | smb2.durable-open.reopen2-lease-v2 | Durable handles V1 | Durable reopen with lease V2 not fully working | - |
 | smb2.durable-open.reopen2a | Durable handles V1 | Durable reopen not fully working | - |
+| smb2.durable-open.reopen4 | Durable handles V1 | Durable reopen not fully working | - |
+| smb2.durable-open.delete_on_close1 | Durable handles V1 | Durable DOC not fully working | - |
+| smb2.durable-open.delete_on_close2 | Durable handles V1 | Durable DOC not fully working | - |
+| smb2.durable-open.file-position | Durable handles V1 | Durable file position not fully working | - |
+| smb2.durable-open.lock-oplock | Durable handles V1 | Durable lock + oplock not fully working | - |
+| smb2.durable-open.lock-lease | Durable handles V1 | Durable lock + lease not fully working | - |
 | smb2.durable-open-disconnect.open-oplock-disconnect | Durable handles V1 | Durable disconnect + oplock not fully working | - |
 
 ### Durable Handles V2 (Fix Candidate)
