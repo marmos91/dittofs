@@ -352,6 +352,7 @@ failures require DACL enforcement or full async I/O support.
 | smb2.compound_async.rename_same_srcdst_non_compound_no_async | Compound | Same src/dst rename async check | - |
 | smb2.compound_async.write_write | Compound | Async write+write compound not implemented | - |
 | smb2.compound_find.compound_find_close | Compound | Compound find+close sequence | - |
+| smb2.compound.compound-padding | Compound | Full-suite state poisoning (flaky in CI) | - |
 
 ### Share Modes and Deny (Advanced Scenarios)
 
@@ -793,6 +794,7 @@ requests with durable handles. Newly reachable after GMAC signing fix.
 | smb2.replay.dhv2-pending3o-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
 | smb2.replay.channel-sequence | Replay | Channel sequence tracking not implemented | - |
 | smb2.replay.replay4 | Replay | Replay detection not implemented | - |
+| smb2.replay.replay5 | Replay | Replay detection not implemented | - |
 | smb2.replay.replay6 | Replay | Replay detection not implemented | - |
 | smb2.replay.replay7 | Replay | Replay detection not implemented | - |
 
