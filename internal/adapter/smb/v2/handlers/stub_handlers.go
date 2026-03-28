@@ -35,7 +35,7 @@ const (
 	FsctlGetCompression         uint32 = 0x0009003C // [MS-FSCC] 2.3.9 - Get compression state
 	FsctlSetCompression         uint32 = 0x0009C040 // [MS-FSCC] 2.3.53 - Set compression state
 	FsctlGetIntegrityInfo       uint32 = 0x0009027C // [MS-FSCC] 2.3.25 - Get integrity information
-	FsctlSetIntegrityInfo       uint32 = 0x0009C280 // [MS-FSCC] 2.3.55 - Set integrity information
+	FsctlSetIntegrityInfo       uint32 = 0x0009C280 // [MS-FSCC] 2.3.55 - Set integrity information (WPTS uses READ|WRITE access)
 	FsctlCreateOrGetObjectID    uint32 = 0x000900C0 // [MS-FSCC] 2.3.7 - Create or get object ID
 	FsctlGetObjectID            uint32 = 0x0009009C // [MS-FSCC] 2.3.28 - Get object ID
 	FsctlMarkHandle             uint32 = 0x000900FC // [MS-FSCC] 2.3.36 - Mark handle
