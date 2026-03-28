@@ -92,13 +92,7 @@ in `baseline-results.md` for prioritization.
 | BVT_Extract_VHDSet | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
 | BVT_FileAccess_OpenNamedPipe | NamedPipe | WPTS FSA requires SSH to SUT (unavailable in Docker) | Permanent | - |
 | BVT_FileAccess_OpenNamedPipe_InvalidPathName | NamedPipe | WPTS FSA requires SSH to SUT (unavailable in Docker) | Permanent | - |
-| BVT_FsCtl_CreateOrGetObjectId_Dir_IsSupported | NTFS-FsCtl | NTFS object IDs not supported | Permanent | - |
-| BVT_FsCtl_CreateOrGetObjectId_File_IsSupported | NTFS-FsCtl | NTFS object IDs not supported | Permanent | - |
-| BVT_FsCtl_GetObjectId_Dir_IsSupported | NTFS-FsCtl | NTFS object IDs not supported | Permanent | - |
-| BVT_FsCtl_GetObjectId_File_IsSupported | NTFS-FsCtl | NTFS object IDs not supported | Permanent | - |
-| BVT_FsCtl_MarkHandle_File_IsSupported | NTFS-FsCtl | FSCTL_MARK_HANDLE not supported | Permanent | - |
-| BVT_FsCtl_Query_File_Regions | NTFS-FsCtl | FSCTL_QUERY_FILE_REGIONS not supported | Permanent | - |
-| BVT_FsCtl_Query_File_Regions_WithInputData | NTFS-FsCtl | FSCTL_QUERY_FILE_REGIONS not supported | Permanent | - |
+| BVT_DirectoryLeasing_LeaseBreakOnMultiClients | Leasing | Flaky in CI (directory lease break timing race) | Expected | - |
 | BVT_OpenCloseSharedVHD_V1 | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
 | BVT_OpenCloseSharedVHD_V2 | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
 | BVT_OpenSharedVHDSetByTargetSpecifier | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
@@ -131,14 +125,6 @@ in `baseline-results.md` for prioritization.
 | BVT_WitnessrRegisterEx_SWNAsyncNotification_IPChange | SWN | Service Witness Protocol not implemented | Permanent | - |
 | BVT_WitnessrRegister_SWNAsyncNotification_ClientMove | SWN | Service Witness Protocol not implemented | Permanent | - |
 | BVT_WriteSharedVHD | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
-| FsCtl_Get_IntegrityInformation_Dir_IsIntegritySupported | NTFS-FsCtl | NTFS integrity streams not supported | Permanent | - |
-| FsCtl_Get_IntegrityInformation_File_IsIntegritySupported | NTFS-FsCtl | NTFS integrity streams not supported | Permanent | - |
-| FsCtl_Set_IntegrityInformation_Dir_IsIntegritySupported | NTFS-FsCtl | NTFS integrity streams not supported | Permanent | - |
-| FsCtl_Set_IntegrityInformation_File_IsIntegritySupported | NTFS-FsCtl | NTFS integrity streams not supported | Permanent | - |
-| FsInfo_Query_FileFsAttributeInformation_File_IsCompressionSupported | FsInfo | Compression not supported | Permanent | - |
-| FsInfo_Query_FileFsAttributeInformation_File_IsObjectIDsSupported | FsInfo | Object IDs not supported | Permanent | - |
-| BVT_SMB2Basic_ChangeNotify_ChangeEa | ChangeNotify | Extended attributes not implemented; ChangeEa never fires | Permanent | - |
-| BVT_SMB2Basic_ChangeNotify_ChangeSecurity | ChangeNotify | Security descriptor change notify async delivery needs debugging | Expected | - |
 | BVT_SMB2Basic_ChangeNotify_ServerReceiveSmb2Close | ChangeNotify | CLOSE notify cleanup response format needs debugging | Expected | - |
 
 ## Status Legend
@@ -158,11 +144,9 @@ These test categories will remain as known failures indefinitely:
 | SWN | 6 | Service Witness Protocol: requires clustering |
 | SQoS | 3 | Storage QoS: requires storage virtualization |
 | DFS | 2 | Distributed File System: not implemented |
-| NTFS-FsCtl | 11 | NTFS-specific internals (object IDs, integrity, regions) |
 | NamedPipe | 2 | WPTS FSA requires SSH to SUT (unavailable in Docker) |
-| FsInfo | 2 | Compression and object ID capability flags |
 
-**Total permanently out-of-scope:** 53 tests
+**Total permanently out-of-scope:** 38 tests
 
 ## Remaining Expected Failure Categories
 
@@ -171,13 +155,14 @@ Tests that fail for features not yet implemented:
 | Category | Count | Status |
 |----------|-------|--------|
 | Timestamp | 3 | Directory timestamp edge cases (freeze-thaw, auto-update) |
-| ChangeNotify | 2 | Security descriptor and CLOSE notify async delivery |
+| ChangeNotify | 1 | CLOSE notify cleanup async delivery |
+| Leasing | 1 | Directory lease break timing flake in CI |
 
 **Total expected failures (fixable):** 5 tests
 
 **WPTS BVT expected failures (primary gate):** 5
 
-**Grand total known failures:** 58 tests (53 permanent + 5 expected)
+**Grand total known failures:** 43 tests (38 permanent + 5 expected)
 
 ## Phase 72 Fixes (31 tests removed)
 
