@@ -323,8 +323,8 @@ func MatchesFilter(action uint32, filter uint32) bool {
 		return filter&(FileNotifyChangeFileName|FileNotifyChangeDirName|FileNotifyChangeStreamName) != 0
 	case FileActionModified:
 		// File modified — matches any content/metadata change filter,
-		// including stream size/write and security descriptor changes.
-		return filter&(FileNotifyChangeSize|FileNotifyChangeLastWrite|FileNotifyChangeAttributes|FileNotifyChangeLastAccess|FileNotifyChangeCreation|FileNotifyChangeSecurity|FileNotifyChangeStreamSize|FileNotifyChangeStreamWrite) != 0
+		// including EA changes, security descriptor changes, and stream writes.
+		return filter&(FileNotifyChangeSize|FileNotifyChangeLastWrite|FileNotifyChangeAttributes|FileNotifyChangeLastAccess|FileNotifyChangeCreation|FileNotifyChangeEa|FileNotifyChangeSecurity|FileNotifyChangeStreamSize|FileNotifyChangeStreamWrite) != 0
 	case FileActionRenamedOldName, FileActionRenamedNewName:
 		// Rename; also matches stream name changes (ADS rename).
 		return filter&(FileNotifyChangeFileName|FileNotifyChangeDirName|FileNotifyChangeStreamName) != 0

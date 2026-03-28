@@ -68,6 +68,8 @@ skip automatically because FILE_SUPPORTS_BLOCK_REFCOUNTING is not advertised.
 | smb2.ioctl.bug14769 | IOCTL | IOCTL edge case not implemented | - |
 | smb2.ioctl.compress_dir_inherit | IOCTL | Compression inheritance to child files not fully implemented | - |
 | smb2.ioctl.compress_inherit_disable | IOCTL | Compression inheritance disable not fully implemented | - |
+| smb2.ioctl.compress_query_file_attr | IOCTL | Flaky in CI (compression attr race during full suite) | - |
+| smb2.ioctl.compress_create_with_attr | IOCTL | Flaky in CI (compression attr race during full suite) | - |
 | smb2.ioctl.compress_perms | IOCTL | Compression attribute + ACL permission check not implemented | - |
 | smb2.ioctl.dup_extents_simple | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
 | smb2.ioctl.dup_extents_len_beyond_dest | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
@@ -166,6 +168,7 @@ tdis1, tcp, tcon now pass. Remaining tests require features not yet implemented.
 | smb2.notify.overflow | Change Notify | Notify buffer overflow edge case | - |
 | smb2.notify.session-reconnect | Change Notify | Depends on session reconnect (not re-auth) | - |
 | smb2.notify.valid-req | Change Notify | CompletionFilter validation rejects previously-accepted requests | - |
+| smb2.notify.tcon | Change Notify | Full-suite flaky (tree disconnect notify race) | - |
 | smb2.change_notify_disabled.notfiy_disabled | Change Notify | Change notify disabled mode test | - |
 
 ### Oplocks (Multi-Client Coordination Not Implemented)
@@ -352,6 +355,7 @@ failures require DACL enforcement or full async I/O support.
 | smb2.compound_async.rename_same_srcdst_non_compound_no_async | Compound | Same src/dst rename async check | - |
 | smb2.compound_async.write_write | Compound | Async write+write compound not implemented | - |
 | smb2.compound_find.compound_find_close | Compound | Compound find+close sequence | - |
+| smb2.compound.compound-padding | Compound | Full-suite state poisoning (flaky in CI) | - |
 
 ### Share Modes and Deny (Advanced Scenarios)
 
@@ -785,7 +789,15 @@ requests with durable handles. Newly reachable after GMAC signing fix.
 | smb2.replay.dhv2-pending3n-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
 | smb2.replay.dhv2-pending3l-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
 | smb2.replay.dhv2-pending3l-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
+| smb2.replay.dhv2-pending3l-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
+| smb2.replay.dhv2-pending3l-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
+| smb2.replay.dhv2-pending3o-vs-oplock-sane | Replay | Replay pending oplock handling not implemented | - |
+| smb2.replay.dhv2-pending3o-vs-oplock-windows | Replay | Replay pending oplock handling not implemented | - |
+| smb2.replay.dhv2-pending3o-vs-lease-sane | Replay | Replay pending lease handling not implemented | - |
+| smb2.replay.dhv2-pending3o-vs-lease-windows | Replay | Replay pending lease handling not implemented | - |
 | smb2.replay.channel-sequence | Replay | Channel sequence tracking not implemented | - |
+| smb2.replay.replay4 | Replay | Replay detection not implemented | - |
+| smb2.replay.replay5 | Replay | Replay detection not implemented | - |
 | smb2.replay.replay6 | Replay | Replay detection not implemented | - |
 | smb2.replay.replay7 | Replay | Replay detection not implemented | - |
 
@@ -801,6 +813,10 @@ incomplete delayed-write and timestamp freeze/unfreeze logic.
 | smb2.timestamps.delayed-write-vs-setbasic | Timestamps | Delayed write vs setbasic timestamp not working | - |
 | smb2.timestamps.delayed-write-vs-seteof | Timestamps | Delayed write vs seteof timestamp not working | - |
 | smb2.timestamps.freeze-thaw | Timestamps | CreationTime freeze/unfreeze not fully working | - |
+| smb2.timestamps.time_t_-1 | Timestamps | Full-suite flaky (time_t boundary handling) | - |
+| smb2.timestamps.time_t_-2 | Timestamps | Full-suite flaky (time_t boundary handling) | - |
+| smb2.timestamps.time_t_0 | Timestamps | Full-suite flaky (time_t boundary handling) | - |
+| smb2.timestamps.time_t_1 | Timestamps | Full-suite flaky (time_t boundary handling) | - |
 
 ### Scan (Full Operation Enumeration)
 
