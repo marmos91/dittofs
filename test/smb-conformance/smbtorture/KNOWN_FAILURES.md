@@ -318,6 +318,7 @@ edge cases.
 |-----------|----------|--------|-------|
 | smb2.read.access | Read | Read access enforcement not fully implemented (needs DesiredAccess from CREATE) | - |
 | smb2.read.position | Read | Read position tracking not implemented | - |
+| smb2.rw.append | Read/Write | Flaky in CI (append write race during full suite) | - |
 
 ### Query/Set Info (Advanced Scenarios)
 
