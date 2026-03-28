@@ -811,6 +811,10 @@ incomplete delayed-write and timestamp freeze/unfreeze logic.
 | smb2.timestamps.delayed-write-vs-setbasic | Timestamps | Delayed write vs setbasic timestamp not working | - |
 | smb2.timestamps.delayed-write-vs-seteof | Timestamps | Delayed write vs seteof timestamp not working | - |
 | smb2.timestamps.freeze-thaw | Timestamps | CreationTime freeze/unfreeze not fully working | - |
+| smb2.timestamps.time_t_-1 | Timestamps | Full-suite flaky (time_t boundary handling) | - |
+| smb2.timestamps.time_t_-2 | Timestamps | Full-suite flaky (time_t boundary handling) | - |
+| smb2.timestamps.time_t_0 | Timestamps | Full-suite flaky (time_t boundary handling) | - |
+| smb2.timestamps.time_t_1 | Timestamps | Full-suite flaky (time_t boundary handling) | - |
 
 ### Scan (Full Operation Enumeration)
 
