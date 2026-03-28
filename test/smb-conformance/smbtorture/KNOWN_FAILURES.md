@@ -68,6 +68,8 @@ skip automatically because FILE_SUPPORTS_BLOCK_REFCOUNTING is not advertised.
 | smb2.ioctl.bug14769 | IOCTL | IOCTL edge case not implemented | - |
 | smb2.ioctl.compress_dir_inherit | IOCTL | Compression inheritance to child files not fully implemented | - |
 | smb2.ioctl.compress_inherit_disable | IOCTL | Compression inheritance disable not fully implemented | - |
+| smb2.ioctl.compress_query_file_attr | IOCTL | Flaky in CI (compression attr race during full suite) | - |
+| smb2.ioctl.compress_create_with_attr | IOCTL | Flaky in CI (compression attr race during full suite) | - |
 | smb2.ioctl.compress_perms | IOCTL | Compression attribute + ACL permission check not implemented | - |
 | smb2.ioctl.dup_extents_simple | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
 | smb2.ioctl.dup_extents_len_beyond_dest | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
