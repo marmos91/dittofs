@@ -73,6 +73,8 @@ skip automatically because FILE_SUPPORTS_BLOCK_REFCOUNTING is not advertised.
 | smb2.ioctl.compress_invalid_buf | IOCTL | Flaky in CI (compression state race during full suite) | - |
 | smb2.ioctl.compress_set_file_attr | IOCTL | Flaky in CI (compression state race during full suite) | - |
 | smb2.ioctl.compress_file_flag | IOCTL | Flaky in CI (compression state race during full suite) | - |
+| smb2.ioctl.compress_notsup_get | IOCTL | Flaky in CI (should skip when compression supported) | - |
+| smb2.ioctl.compress_notsup_set | IOCTL | Flaky in CI (should skip when compression supported) | - |
 | smb2.ioctl.compress_perms | IOCTL | Compression attribute + ACL permission check not implemented | - |
 | smb2.ioctl.dup_extents_simple | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
 | smb2.ioctl.dup_extents_len_beyond_dest | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
