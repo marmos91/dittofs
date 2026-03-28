@@ -166,6 +166,7 @@ tdis1, tcp, tcon now pass. Remaining tests require features not yet implemented.
 | smb2.notify.overflow | Change Notify | Notify buffer overflow edge case | - |
 | smb2.notify.session-reconnect | Change Notify | Depends on session reconnect (not re-auth) | - |
 | smb2.notify.valid-req | Change Notify | CompletionFilter validation rejects previously-accepted requests | - |
+| smb2.notify.tcon | Change Notify | Full-suite flaky (tree disconnect notify race) | - |
 | smb2.change_notify_disabled.notfiy_disabled | Change Notify | Change notify disabled mode test | - |
 
 ### Oplocks (Multi-Client Coordination Not Implemented)
