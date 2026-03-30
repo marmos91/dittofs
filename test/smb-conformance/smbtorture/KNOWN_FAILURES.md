@@ -311,6 +311,7 @@ files, create blobs) are not implemented. Basic create operations pass.
 | smb2.create.impersonation | Create | Impersonation levels not implemented | - |
 | smb2.create.mkdir-visible | Create | Mkdir visibility semantics not implemented | - |
 | smb2.create.nulldacl | Create | Null DACL create not implemented | - |
+| smb2.create.path-length | Create | Flaky in CI (path length validation race) | - |
 | smb2.create.quota-fake-file | Create | Quota fake file not implemented | - |
 
 ### Read/Write Operations (Advanced Semantics)
