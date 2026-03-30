@@ -792,7 +792,9 @@ func (h *Handler) setFileInfoFromStore(
 		// Accept EA writes as a no-op. DittoFS does not persist extended attributes
 		// but returning SUCCESS allows ChangeNotify EA tests to proceed.
 		logger.Debug("SET_INFO: FileFullEaInformation (no-op)", "path", openFile.Path)
-		h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified)
+		if h.NotifyRegistry != nil {
+			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified)
+		}
 		return setInfoStatus(types.StatusSuccess), nil
 
 	default:
