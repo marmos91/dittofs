@@ -217,6 +217,13 @@ func SetLevel(level string) {
 	reconfigure()
 }
 
+// IsDebugEnabled returns true if the current log level is DEBUG.
+// Use this to guard expensive debug-only operations (e.g. iterating sync.Maps)
+// so they are skipped entirely when the level is above DEBUG.
+func IsDebugEnabled() bool {
+	return Level(currentLevel.Load()) <= LevelDebug
+}
+
 // SetFormat sets the output format (text or json)
 func SetFormat(format string) {
 	format = strings.ToLower(format)

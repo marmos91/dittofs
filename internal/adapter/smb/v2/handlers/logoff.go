@@ -184,6 +184,11 @@ func (h *Handler) Logoff(ctx *SMBHandlerContext, req *LogoffRequest) (*LogoffRes
 		"sessionID", ctx.SessionID)
 
 	filesClosed := h.CloseAllFilesForSession(ctx.Context, ctx.SessionID, false)
+
+	// Release leases and notify watchers that may not have been cleaned up
+	// by per-file CLOSE (e.g. client skipped CLOSE before LOGOFF).
+	h.releaseSessionLeasesAndNotifies(ctx.Context, ctx.SessionID)
+
 	treesDeleted := h.DeleteAllTreesForSession(ctx.SessionID)
 	h.DeletePendingAuth(ctx.SessionID)
 

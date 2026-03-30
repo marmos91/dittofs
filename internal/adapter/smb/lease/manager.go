@@ -441,6 +441,28 @@ func (lm *LeaseManager) BreakParentHandleLeasesOnCreate(
 	return lockMgr.BreakHandleLeasesForSMBOpen(handleKey, excludeOwner)
 }
 
+// LeaseCount returns the number of active leases tracked by this manager.
+// Used for state debugging instrumentation.
+func (lm *LeaseManager) LeaseCount() int {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	return len(lm.sessionMap)
+}
+
+// RangeLeases iterates over all tracked leases, calling fn for each.
+// The callback receives (leaseKeyHex, sessionID, shareName).
+// Return false to stop iteration. Used for state debugging instrumentation.
+func (lm *LeaseManager) RangeLeases(fn func(leaseKeyHex string, sessionID uint64, shareName string) bool) {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	for keyHex, sid := range lm.sessionMap {
+		shareName := lm.leaseShare[keyHex]
+		if !fn(keyHex, sid, shareName) {
+			return
+		}
+	}
+}
+
 // resolveLockManager resolves the LockManager for a share name.
 func (lm *LeaseManager) resolveLockManager(shareName string) lock.LockManager {
 	if lm.resolver == nil || shareName == "" {

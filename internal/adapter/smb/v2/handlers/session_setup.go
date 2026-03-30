@@ -115,6 +115,11 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	// causing stale state to interfere with the new session's operations.
 	h.WaitForCleanup()
 
+	// State leak detection: log a snapshot of shared state after the cleanup
+	// barrier has been passed. In a clean state, all counters should be 0
+	// (or only contain state from other active sessions).
+	h.LogStateSnapshot("SESSION_SETUP: state after cleanup barrier", ctx.SessionID)
+
 	// Parse request
 	req, err := parseSessionSetupRequest(body)
 	if err != nil {
@@ -165,6 +170,7 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		if _, ok := h.GetSession(req.PreviousSessionID); ok {
 			logger.Info("SESSION_SETUP: tearing down previous session",
 				"previousSessionID", req.PreviousSessionID)
+			h.SignalPendingCleanup(1)
 			h.CleanupSession(ctx.Context, req.PreviousSessionID, false)
 		}
 	}
@@ -485,6 +491,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 							sess.LoggedOff.Store(true)
 						}
 						h.CloseAllFilesForSession(ctx.Context, pending.SessionID, false)
+						h.releaseSessionLeasesAndNotifies(ctx.Context, pending.SessionID)
 						h.DeleteAllTreesForSession(pending.SessionID)
 					}
 					return NewErrorResult(types.StatusLogonFailure), nil

@@ -722,6 +722,26 @@ func (r *NotifyRegistry) UnregisterAllForTree(sessionID uint64, shareName string
 	return toRemove
 }
 
+// WatcherCount returns the total number of pending notify watchers.
+// Used for state debugging instrumentation.
+func (r *NotifyRegistry) WatcherCount() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.byFileID)
+}
+
+// RangeWatchers iterates over all pending watchers, calling fn for each.
+// Return false to stop iteration. Used for state debugging instrumentation.
+func (r *NotifyRegistry) RangeWatchers(fn func(n *PendingNotify) bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, n := range r.byFileID {
+		if !fn(n) {
+			return
+		}
+	}
+}
+
 // ============================================================================
 // Generalized Async Response Registry (D-21)
 // ============================================================================

@@ -244,11 +244,6 @@ type OpenFile struct {
 	FrozenCtime *time.Time // Saved Ctime value at freeze time
 	FrozenAtime *time.Time // Saved Atime value at freeze time
 
-	// Compression state (per-handle, not persisted to metadata).
-	// Accessed via atomic operations since FSCTL_SET/GET_COMPRESSION
-	// can be called concurrently from different requests.
-	CompressionFormat atomic.Uint32 // 0=NONE, 2=LZNT1 [MS-FSCC] 2.3.9
-
 	// Oplock state
 	// OplockLevel is the current oplock level for this handle.
 	// Thread safety: This field is written during CREATE (before storing in sync.Map)
@@ -588,13 +583,56 @@ func (h *Handler) WaitForCleanup() {
 	h.cleanupWg.Wait()
 }
 
+// SignalPendingCleanup increments the cleanup WaitGroup by count.
+// This MUST be called before any async cleanup work begins, to ensure
+// that WaitForCleanup() in a new session's SESSION_SETUP will block
+// until the cleanup is done.
+//
+// The race: When a connection drops, cleanup runs in the old connection's
+// goroutine. The accept loop can spawn a new connection goroutine before
+// the old goroutine enters CleanupSession. If Add(1) is inside
+// CleanupSession, there is a window where WaitForCleanup returns 0
+// (no pending cleanup) even though cleanup has not started yet.
+// By calling SignalPendingCleanup before the cleanup loop, the WaitGroup
+// is guaranteed to be non-zero when the new session checks it.
+func (h *Handler) SignalPendingCleanup(count int) {
+	h.cleanupWg.Add(count)
+}
+
+// SignalCleanupDone decrements the cleanup WaitGroup by one.
+// Used by panic recovery in the cleanup loop to release remaining slots
+// when CleanupSession cannot be called (because it would call Done itself).
+func (h *Handler) SignalCleanupDone() {
+	h.cleanupWg.Done()
+}
+
+// releaseSessionLeasesAndNotifies releases all leases and unregisters all
+// CHANGE_NOTIFY watchers for the given session. This is factored out because
+// it is needed in three places: explicit LOGOFF, re-auth failure, and
+// transport disconnect (CleanupSession).
+func (h *Handler) releaseSessionLeasesAndNotifies(ctx context.Context, sessionID uint64) {
+	if h.LeaseManager != nil {
+		if err := h.LeaseManager.ReleaseSessionLeases(ctx, sessionID); err != nil {
+			logger.Warn("releaseSessionLeasesAndNotifies: failed to release leases",
+				"sessionID", sessionID,
+				"error", err)
+		}
+	}
+	if h.NotifyRegistry != nil {
+		h.NotifyRegistry.UnregisterAllForSession(sessionID)
+	}
+}
+
 // CleanupSession performs full cleanup for a session.
 // This closes all files, releases all locks, removes all tree connections,
 // and deletes the session. Called on LOGOFF or connection close.
 // When isDisconnect is true (transport drop), durable handles are preserved.
 // When false (explicit LOGOFF), all handles are fully closed.
+//
+// IMPORTANT: The caller must call SignalPendingCleanup(1) before calling
+// this method to ensure the cleanup barrier is visible to new sessions.
+// The WaitGroup decrement (Done) happens in this method via defer.
 func (h *Handler) CleanupSession(ctx context.Context, sessionID uint64, isDisconnect bool) {
-	h.cleanupWg.Add(1)
 	defer h.cleanupWg.Done()
 
 	logger.Debug("CleanupSession: starting cleanup", "sessionID", sessionID, "isDisconnect", isDisconnect)
@@ -602,35 +640,10 @@ func (h *Handler) CleanupSession(ctx context.Context, sessionID uint64, isDiscon
 	// 1. Close all open files (this also releases locks and flushes caches)
 	filesClosed := h.CloseAllFilesForSession(ctx, sessionID, isDisconnect)
 
-	// 1.5. Unregister ALL pending CHANGE_NOTIFY watchers for this session.
-	// CloseAllFilesForSession unregisters notifies per-file, but if a file was
-	// already closed by the client (explicit CLOSE) before disconnect, its notify
-	// would already be unregistered in the CLOSE handler. However, there can be
-	// edge cases where a notify was registered after the last file close, or the
-	// file was removed from h.files but the notify wasn't cleaned up. This
-	// belt-and-suspenders call ensures no stale watchers leak across connections.
-	if h.NotifyRegistry != nil {
-		staleNotifies := h.NotifyRegistry.UnregisterAllForSession(sessionID)
-		if len(staleNotifies) > 0 {
-			logger.Debug("CleanupSession: removed stale CHANGE_NOTIFY watchers",
-				"sessionID", sessionID,
-				"count", len(staleNotifies))
-		}
-	}
-
-	// 2. Release all leases held by this session.
-	// CloseAllFilesForSession releases byte-range locks but not leases.
-	// On explicit LOGOFF all leases are released. On transport disconnect,
-	// leases for durable handles are preserved (already saved in the
-	// DurableHandleStore above), but non-durable leases must be freed so
-	// that subsequent opens on the same file are not blocked by stale state.
-	if h.LeaseManager != nil {
-		if err := h.LeaseManager.ReleaseSessionLeases(ctx, sessionID); err != nil {
-			logger.Warn("CleanupSession: failed to release session leases",
-				"sessionID", sessionID,
-				"error", err)
-		}
-	}
+	// 1.5. Release leases and notify watchers that may not have been
+	// cleaned up by per-file CLOSE (e.g. client disconnected without
+	// closing all files, or re-auth failure).
+	h.releaseSessionLeasesAndNotifies(ctx, sessionID)
 
 	// 3. Delete all tree connections
 	treesDeleted := h.DeleteAllTreesForSession(sessionID)
@@ -641,10 +654,15 @@ func (h *Handler) CleanupSession(ctx context.Context, sessionID uint64, isDiscon
 	// 5. Delete the session itself
 	h.DeleteSession(sessionID)
 
+	// State leak detection: audit all shared maps for any items still belonging
+	// to the cleaned-up session. Any found items are logged at WARN level.
+	leaked := h.AuditSessionCleanup(sessionID)
+
 	logger.Debug("CleanupSession: completed",
 		"sessionID", sessionID,
 		"filesClosed", filesClosed,
-		"treesDeleted", treesDeleted)
+		"treesDeleted", treesDeleted,
+		"leaked", leaked)
 }
 
 // flushFileCache flushes cached data for an open file.

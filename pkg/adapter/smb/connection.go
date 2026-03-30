@@ -332,12 +332,41 @@ func (c *Connection) cleanupSessions() {
 		}
 	}
 
+	// State leak detection: log state before cleanup starts
+	c.server.handler.LogStateSnapshot("Connection close: state before session cleanup", 0)
+
+	// Signal the cleanup barrier BEFORE starting any cleanup work.
+	// This ensures that WaitForCleanup() in a new connection's SESSION_SETUP
+	// will block even if the new goroutine reaches SESSION_SETUP before we
+	// enter CleanupSession. Without this pre-increment, there is a race window
+	// where cleanupWg is 0 (Add hasn't been called yet) and WaitForCleanup
+	// returns immediately, allowing the new session to access stale state.
+	c.server.handler.SignalPendingCleanup(len(sessions))
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// Guard the cleanup loop against panics. If CleanupSession panics,
+	// call Done() for remaining sessions so cleanupWg doesn't get stuck,
+	// then re-panic to preserve the original failure signal.
+	cleaned := 0
+	defer func() {
+		if r := recover(); r != nil {
+			remaining := len(sessions) - cleaned
+			for i := 0; i < remaining; i++ {
+				c.server.handler.SignalCleanupDone()
+			}
+			panic(r)
+		}
+	}()
+
 	for _, sessionID := range sessions {
 		c.server.handler.CleanupSession(ctx, sessionID, true /* transport disconnect */)
+		cleaned++
 	}
+
+	// State leak detection: log final state after all session cleanups
+	c.server.handler.LogStateSnapshot("Connection close: state after all session cleanups", 0)
 
 	logger.Debug("Session cleanup complete",
 		"address", clientAddr,

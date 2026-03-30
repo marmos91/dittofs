@@ -320,6 +320,15 @@ func (m *Manager) GetStats() ManagerStats {
 	}
 }
 
+// RangeSessions iterates over all sessions, calling fn for each.
+// The callback receives (sessionID, *Session). Return false to stop iteration.
+// Used for state debugging instrumentation.
+func (m *Manager) RangeSessions(fn func(sessionID uint64, value any) bool) {
+	m.sessions.Range(func(key, value any) bool {
+		return fn(key.(uint64), value)
+	})
+}
+
 // GetSessionStats returns statistics for a specific session.
 // Returns nil if the session doesn't exist.
 func (m *Manager) GetSessionStats(sessionID uint64) *SessionStats {
