@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"unicode/utf16"
 
@@ -193,6 +194,10 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 		"messageID", ctx.MessageID,
 		"requestAsyncId", ctx.RequestAsyncId)
 
+	// Per [MS-SMB2] 3.3.5.16: Try to cancel pending async operations.
+	// We check both CHANGE_NOTIFY and blocking LOCK requests.
+	cancelledSomething := false
+
 	// Try to cancel a pending CHANGE_NOTIFY request
 	if h.NotifyRegistry != nil {
 		var cancelled *PendingNotify
@@ -206,6 +211,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 		}
 
 		if cancelled != nil {
+			cancelledSomething = true
 			logger.Debug("CANCEL: cancelled pending CHANGE_NOTIFY",
 				"watchPath", cancelled.WatchPath,
 				"asyncId", cancelled.AsyncId,
@@ -223,11 +229,24 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 						"error", err)
 				}
 			}
-		} else {
-			logger.Debug("CANCEL: no pending request found to cancel",
-				"asyncId", ctx.RequestAsyncId,
-				"messageID", ctx.MessageID)
 		}
+	}
+
+	// Try to cancel a pending blocking LOCK request.
+	// Per MS-SMB2 3.3.5.16: CANCEL uses the same MessageID as the
+	// original request being cancelled. The pending lock goroutine
+	// monitors its context and returns STATUS_CANCELLED when interrupted.
+	if cancelFn, ok := h.pendingLocks.LoadAndDelete(ctx.MessageID); ok {
+		cancelledSomething = true
+		cancelFn.(context.CancelFunc)()
+		logger.Debug("CANCEL: cancelled pending blocking LOCK",
+			"messageID", ctx.MessageID)
+	}
+
+	if !cancelledSomething {
+		logger.Debug("CANCEL: no pending request found to cancel",
+			"asyncId", ctx.RequestAsyncId,
+			"messageID", ctx.MessageID)
 	}
 
 	// Per [MS-SMB2] 3.3.5.16: The server MUST NOT send a response to the CANCEL request.
