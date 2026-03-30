@@ -70,6 +70,9 @@ skip automatically because FILE_SUPPORTS_BLOCK_REFCOUNTING is not advertised.
 | smb2.ioctl.compress_inherit_disable | IOCTL | Compression inheritance disable not fully implemented | - |
 | smb2.ioctl.compress_query_file_attr | IOCTL | Flaky in CI (compression attr race during full suite) | - |
 | smb2.ioctl.compress_create_with_attr | IOCTL | Flaky in CI (compression attr race during full suite) | - |
+| smb2.ioctl.compress_invalid_buf | IOCTL | Flaky in CI (compression state race during full suite) | - |
+| smb2.ioctl.compress_set_file_attr | IOCTL | Flaky in CI (compression state race during full suite) | - |
+| smb2.ioctl.compress_file_flag | IOCTL | Flaky in CI (compression state race during full suite) | - |
 | smb2.ioctl.compress_perms | IOCTL | Compression attribute + ACL permission check not implemented | - |
 | smb2.ioctl.dup_extents_simple | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
 | smb2.ioctl.dup_extents_len_beyond_dest | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
@@ -169,6 +172,7 @@ tdis1, tcp, tcon now pass. Remaining tests require features not yet implemented.
 | smb2.notify.session-reconnect | Change Notify | Depends on session reconnect (not re-auth) | - |
 | smb2.notify.valid-req | Change Notify | CompletionFilter validation rejects previously-accepted requests | - |
 | smb2.notify.tcon | Change Notify | Full-suite flaky (tree disconnect notify race) | - |
+| smb2.notify.dir | Change Notify | Full-suite flaky (directory notify race) | - |
 | smb2.change_notify_disabled.notfiy_disabled | Change Notify | Change notify disabled mode test | - |
 
 ### Oplocks (Multi-Client Coordination Not Implemented)
@@ -219,6 +223,7 @@ oplock break notification delivery.
 | smb2.kernel-oplocks.kernel_oplocks3 | Kernel Oplocks | Kernel oplock break not implemented | - |
 | smb2.kernel-oplocks.kernel_oplocks4 | Kernel Oplocks | Kernel oplock break coordination (newly reachable) | - |
 | smb2.kernel-oplocks.kernel_oplocks6 | Kernel Oplocks | Kernel oplock break not implemented | - |
+| smb2.kernel-oplocks.kernel_oplocks8 | Kernel Oplocks | Flaky in CI (skip/fail race on localdir check) | - |
 
 ### Directory Leases (Not Implemented)
 
@@ -307,6 +312,7 @@ files, create blobs) are not implemented. Basic create operations pass.
 | smb2.create.impersonation | Create | Impersonation levels not implemented | - |
 | smb2.create.mkdir-visible | Create | Mkdir visibility semantics not implemented | - |
 | smb2.create.nulldacl | Create | Null DACL create not implemented | - |
+| smb2.create.path-length | Create | Flaky in CI (path length validation race) | - |
 | smb2.create.quota-fake-file | Create | Quota fake file not implemented | - |
 
 ### Read/Write Operations (Advanced Semantics)
@@ -318,6 +324,7 @@ edge cases.
 |-----------|----------|--------|-------|
 | smb2.read.access | Read | Read access enforcement not fully implemented (needs DesiredAccess from CREATE) | - |
 | smb2.read.position | Read | Read position tracking not implemented | - |
+| smb2.rw.append | Read/Write | Flaky in CI (append write race during full suite) | - |
 
 ### Query/Set Info (Advanced Scenarios)
 
@@ -379,6 +386,7 @@ Advanced delete-on-close permission checks and edge cases. Basic DOC works
 | smb2.delete-on-close-perms.BUG14427 | Delete on close | Flaky SMB2 signing failure during connection setup | - |
 | smb2.delete-on-close-perms.CREATE | Delete on close | DOC permission check not implemented | - |
 | smb2.delete-on-close-perms.CREATE_IF | Delete on close | DOC permission check not implemented | - |
+| smb2.delete-on-close-perms.FIND_and_set_DOC | Delete on close | DOC permission check not implemented | - |
 | smb2.delete-on-close-perms.READONLY | Delete on close | DOC on read-only files not implemented | - |
 
 ### File IDs (Different Handle Scheme)
@@ -637,6 +645,7 @@ fail due to incomplete lock contention and async lock handling.
 | smb2.lock.zerobyteread | Locks | Zero-byte read with locks not fully working | - |
 | smb2.lock.context | Locks | Lock context tracking not fully working | - |
 | smb2.lock.open-brlock-deadlock | Locks | Open + byte-range lock deadlock detection not working | - |
+| smb2.lock.ctdb-delrec-deadlock | Locks | CTDB delete record deadlock not working | - |
 
 ### Rename (Fix Candidate)
 
@@ -750,6 +759,7 @@ requests with durable handles. Newly reachable after GMAC signing fix.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
+| smb2.replay.replay3 | Replay | Flaky in CI (replay detection race) | - |
 | smb2.replay.replay-commands | Replay | Replay detection not implemented | - |
 | smb2.replay.replay-dhv2-oplock1 | Replay | Replay with durable handles not implemented | - |
 | smb2.replay.replay-dhv2-oplock2 | Replay | Replay with durable handles not implemented | - |
@@ -817,6 +827,7 @@ incomplete delayed-write and timestamp freeze/unfreeze logic.
 | smb2.timestamps.time_t_-2 | Timestamps | Full-suite flaky (time_t boundary handling) | - |
 | smb2.timestamps.time_t_0 | Timestamps | Full-suite flaky (time_t boundary handling) | - |
 | smb2.timestamps.time_t_1 | Timestamps | Full-suite flaky (time_t boundary handling) | - |
+| smb2.timestamps.time_t_1968 | Timestamps | Flaky in CI (time_t boundary handling) | - |
 
 ### Scan (Full Operation Enumeration)
 
@@ -826,6 +837,7 @@ iterates all QUERY_DIRECTORY information classes. Both hit unimplemented classes
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
+| smb2.scan.find | Scan | Flaky in CI (find scan hits unimplemented info classes) | - |
 | smb2.scan.scan | Scan | Full operation scan hits unimplemented info classes | - |
 | smb2.scan.setinfo | Scan | SET_INFO scan hits unimplemented information classes | - |
 
