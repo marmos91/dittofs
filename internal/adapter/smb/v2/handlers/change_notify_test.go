@@ -812,8 +812,8 @@ func TestIsValidCompletionFilter(t *testing.T) {
 		{"zero is invalid", 0, false},
 		{"all valid flags", AllValidCompletionFilterFlags, true},
 		{"single valid flag", FileNotifyChangeFileName, true},
-		{"invalid flag bit", 0x80000000, false},
-		{"valid + invalid mixed", FileNotifyChangeFileName | 0x80000000, false},
+		{"reserved-only bit is invalid", 0x80000000, false},
+		{"valid + reserved mixed is valid", FileNotifyChangeFileName | 0x80000000, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1025,11 +1025,19 @@ func TestIsValidCompletionFilter_AllBits(t *testing.T) {
 		}
 	}
 
-	// Reserved bits above 0x00000FFF should be rejected
-	reservedBits := []uint32{0x00001000, 0x00010000, 0x01000000, 0x80000000}
-	for _, bit := range reservedBits {
+	// Reserved bits alone (no valid bits) should be rejected
+	reservedOnlyBits := []uint32{0x00001000, 0x00010000, 0x01000000, 0x80000000}
+	for _, bit := range reservedOnlyBits {
 		if IsValidCompletionFilter(bit) {
-			t.Errorf("IsValidCompletionFilter(0x%08X) = true, want false (reserved bit)", bit)
+			t.Errorf("IsValidCompletionFilter(0x%08X) = true, want false (reserved-only)", bit)
+		}
+	}
+
+	// Reserved bits combined with valid bits should be accepted (Windows behavior)
+	for _, bit := range reservedOnlyBits {
+		mixed := bit | FileNotifyChangeFileName
+		if !IsValidCompletionFilter(mixed) {
+			t.Errorf("IsValidCompletionFilter(0x%08X) = false, want true (valid + reserved)", mixed)
 		}
 	}
 }

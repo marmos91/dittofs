@@ -264,17 +264,21 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// Step 8: Check for conflicting byte-range locks
 	// ========================================================================
 
-	// Reads are blocked by another session's exclusive locks
-	if err := metaSvc.CheckLockForIO(
-		authCtx.Context,
-		openFile.MetadataHandle,
-		ctx.SessionID,
-		req.Offset,
-		uint64(req.Length),
-		false, // isWrite = false for read operations
-	); err != nil {
-		logger.Debug("READ: blocked by lock", "path", openFile.Path, "offset", req.Offset, "length", req.Length)
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileLockConflict}}, nil
+	// Per MS-SMB2 3.3.5.15.2: A READ request with Length field equal to 0
+	// is not considered to conflict with a lock. Skip check for zero-length reads.
+	if req.Length > 0 {
+		// Reads are blocked by another session's exclusive locks
+		if err := metaSvc.CheckLockForIO(
+			authCtx.Context,
+			openFile.MetadataHandle,
+			ctx.SessionID,
+			req.Offset,
+			uint64(req.Length),
+			false, // isWrite = false for read operations
+		); err != nil {
+			logger.Debug("READ: blocked by lock", "path", openFile.Path, "offset", req.Offset, "length", req.Length)
+			return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileLockConflict}}, nil
+		}
 	}
 
 	// ========================================================================

@@ -806,7 +806,10 @@ func (r *AsyncResponseRegistry) Len() int {
 // Per MS-SMB2 3.3.5.15: if CompletionFilter is 0 or contains invalid flags,
 // return STATUS_INVALID_PARAMETER.
 func IsValidCompletionFilter(filter uint32) bool {
-	return filter != 0 && (filter & ^AllValidCompletionFilterFlags) == 0
+	// Per MS-SMB2 3.3.5.15: CompletionFilter must contain at least one valid flag.
+	// Windows Server ignores reserved/unknown bits rather than rejecting them,
+	// so we only check that at least one recognized bit is set.
+	return filter&AllValidCompletionFilterFlags != 0
 }
 
 // actionToString converts an action code to a readable string.

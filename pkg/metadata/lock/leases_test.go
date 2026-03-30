@@ -210,16 +210,32 @@ func TestRequestLease_CrossKeyConflict(t *testing.T) {
 	key2 := [16]byte{2, 0, 0, 0}
 	parentKey := [16]byte{}
 
+	// Register break callback that acknowledges the break immediately.
+	// In real SMB, the client would receive the break notification and ack it.
+	mgr.RegisterBreakCallbacks(&testBreakCallbacks{
+		onOpLockBreak: func(handleKey string, lock *UnifiedLock, breakToState uint32) {
+			// Snapshot values before goroutine to avoid data race on Epoch.
+			key := lock.Lease.LeaseKey
+			epoch := lock.Lease.Epoch
+			// Simulate client acknowledging break to R (strip W)
+			go func() {
+				_ = mgr.AcknowledgeLeaseBreak(ctx, key, breakToState, epoch)
+			}()
+		},
+	})
+
 	// First client gets RW lease
 	state, _, err := mgr.RequestLease(ctx, FileHandle("file1"), key1, parentKey, "owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite, false)
 	require.NoError(t, err)
 	assert.Equal(t, LeaseStateRead|LeaseStateWrite, state)
 
 	// Second client requests R lease on same file - triggers break on key1's Write.
-	// After conflict, the new lease is denied (caller gets the file open without a lease).
+	// Per MS-SMB2 3.3.5.9: after the break completes, the server re-evaluates
+	// the lease request. Since key1 now has R (Write stripped), key2's R lease
+	// should be granted (Read leases can coexist).
 	state, _, err = mgr.RequestLease(ctx, FileHandle("file1"), key2, parentKey, "owner2", "client2", "/share", LeaseStateRead, false)
 	require.NoError(t, err)
-	assert.Equal(t, LeaseStateNone, state, "should deny lease after cross-key conflict")
+	assert.Equal(t, LeaseStateRead, state, "should grant R lease after break reduces existing to R")
 }
 
 func TestRequestLease_MultipleReadLeasesNoConflict(t *testing.T) {
@@ -269,12 +285,18 @@ func TestAcknowledgeLeaseBreak_CompletesBreak(t *testing.T) {
 	key2 := [16]byte{2, 0, 0, 0}
 	parentKey := [16]byte{}
 
-	// Setup: register a break callback that tracks breaks
+	// Setup: register a break callback that tracks breaks and acknowledges them.
 	var breakCalled bool
 	mgr.RegisterBreakCallbacks(&testBreakCallbacks{
 		onOpLockBreak: func(handleKey string, lock *UnifiedLock, breakToState uint32) {
 			breakCalled = true
-			// Manager already set Breaking=true before dispatching
+			// Snapshot values before goroutine to avoid data race on Epoch.
+			key := lock.Lease.LeaseKey
+			epoch := lock.Lease.Epoch
+			// Acknowledge break to None (fully relinquish) asynchronously
+			go func() {
+				_ = mgr.AcknowledgeLeaseBreak(ctx, key, LeaseStateNone, epoch)
+			}()
 		},
 	})
 
@@ -283,20 +305,17 @@ func TestAcknowledgeLeaseBreak_CompletesBreak(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, LeaseStateRead|LeaseStateWrite, state)
 
-	// Request from key2 triggers break on key1. After conflict, the new
-	// lease is denied (caller gets the file open without a lease).
+	// Request from key2 triggers break on key1. The break callback
+	// acknowledges to None, removing key1's lease entirely. After the
+	// break completes, key2's R lease should be granted.
 	state, _, err = mgr.RequestLease(ctx, FileHandle("file1"), key2, parentKey, "owner2", "client2", "/share", LeaseStateRead, false)
 	require.NoError(t, err)
-	assert.Equal(t, LeaseStateNone, state, "should deny lease after cross-key conflict")
+	assert.Equal(t, LeaseStateRead, state, "should grant R lease after break removes existing")
 	assert.True(t, breakCalled, "break callback should have been called")
 
-	// Acknowledge the break - accept None state (break was to None)
-	err = mgr.AcknowledgeLeaseBreak(ctx, key1, LeaseStateNone, 0)
-	require.NoError(t, err)
-
-	// Lease should be removed after ack to None
+	// key1's lease should be removed (acknowledged to None)
 	_, _, found := mgr.GetLeaseState(ctx, key1)
-	assert.False(t, found, "lease should be removed after ack to None")
+	assert.False(t, found, "key1 lease should be removed after ack to None")
 }
 
 func TestAcknowledgeLeaseBreak_ToReadState(t *testing.T) {
@@ -357,24 +376,26 @@ func TestAcknowledgeLeaseBreak_AckToNone_RemovesLease(t *testing.T) {
 	mgr := NewManager()
 	ctx := context.Background()
 	key1 := [16]byte{1, 0, 0, 0}
-	key2 := [16]byte{2, 0, 0, 0}
-	parentKey := [16]byte{}
-
-	mgr.RegisterBreakCallbacks(&testBreakCallbacks{
-		onOpLockBreak: func(handleKey string, lock *UnifiedLock, breakToState uint32) {
-			// Manager already set Breaking=true before dispatching
-		},
-	})
 
 	// Grant RW lease to key1
-	_, _, err := mgr.RequestLease(ctx, FileHandle("file1"), key1, parentKey, "owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite, false)
+	_, _, err := mgr.RequestLease(ctx, FileHandle("file1"), key1, [16]byte{}, "owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite, false)
 	require.NoError(t, err)
 
-	// Trigger break
-	_, _, err = mgr.RequestLease(ctx, FileHandle("file1"), key2, parentKey, "owner2", "client2", "/share", LeaseStateRead, false)
-	require.NoError(t, err)
+	// Manually set the lease to breaking state (simulating a break to R).
+	// This avoids triggering RequestLease which waits for break completion.
+	mgr.mu.Lock()
+	for _, locks := range mgr.unifiedLocks {
+		for _, lock := range locks {
+			if lock.Lease != nil && lock.Lease.LeaseKey == key1 {
+				lock.Lease.Breaking = true
+				lock.Lease.BreakToState = LeaseStateRead
+				lock.Lease.BreakStarted = time.Now()
+			}
+		}
+	}
+	mgr.mu.Unlock()
 
-	// Acknowledge to None
+	// Acknowledge to None (fully release)
 	err = mgr.AcknowledgeLeaseBreak(ctx, key1, LeaseStateNone, 0)
 	require.NoError(t, err)
 

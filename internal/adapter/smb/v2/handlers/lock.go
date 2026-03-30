@@ -311,7 +311,33 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 				ClientAddr: ctx.ClientAddr,
 			}
 
-			err := h.acquireLockWithRetry(authCtx, metaSvc, openFile.MetadataHandle, lock, failImmediately)
+			// For blocking lock requests, register a cancellable context so
+			// CANCEL can interrupt the wait. Per MS-SMB2 3.3.5.14, when a
+			// blocking lock request is outstanding, CANCEL should abort it.
+			lockAuthCtx := authCtx
+			var cancelFn context.CancelFunc
+			if !failImmediately {
+				var cancelCtx context.Context
+				cancelCtx, cancelFn = context.WithCancel(authCtx.Context)
+				lockAuthCtx = &metadata.AuthContext{
+					Context:  cancelCtx,
+					Identity: authCtx.Identity,
+				}
+				h.pendingLocks.Store(ctx.MessageID, cancelFn)
+			}
+
+			err := h.acquireLockWithRetry(lockAuthCtx, metaSvc, openFile.MetadataHandle, lock, failImmediately)
+
+			// Capture context error BEFORE cleanup cancellation, to distinguish
+			// external CANCEL from our own post-return cancellation.
+			ctxErr := lockAuthCtx.Context.Err()
+
+			// Clean up pending lock registration
+			if cancelFn != nil {
+				h.pendingLocks.LoadAndDelete(ctx.MessageID)
+				cancelFn() // prevent context leak
+			}
+
 			if err != nil {
 				logger.Debug("LOCK: lock failed",
 					"offset", lockElem.Offset,
@@ -319,6 +345,13 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 					"exclusive", isExclusive,
 					"failImmediately", failImmediately,
 					"error", err)
+
+				// If the context was cancelled (by CANCEL command), return STATUS_CANCELLED
+				if ctxErr != nil {
+					rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
+					return NewErrorResult(types.StatusCancelled), nil
+				}
+
 				status := lockErrorToStatus(err)
 				// Rollback previously acquired locks
 				rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)

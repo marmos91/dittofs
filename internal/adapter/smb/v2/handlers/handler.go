@@ -60,6 +60,10 @@ type Handler struct {
 	NotifyRegistry *NotifyRegistry
 	nextAsyncId    atomic.Uint64
 
+	// Pending blocking lock operations (messageID -> cancel func).
+	// Used by CANCEL to interrupt blocking lock requests.
+	pendingLocks sync.Map
+
 	// Configuration
 	MaxTransactSize uint32
 	MaxReadSize     uint32

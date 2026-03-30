@@ -266,13 +266,77 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 	}
 
 	if conflictFound {
-		// After the break resolved, deny the new lease for this CREATE.
-		// The caller (second opener) will get the file open without a lease.
-		// A subsequent CREATE with the same lease key could succeed.
-		return LeaseStateNone, 0, nil
+		// After the break resolved, re-check if the new lease can be granted.
+		// Per MS-SMB2 3.3.5.9: after break completion, the server re-evaluates
+		// the lease request with the updated state of existing leases.
+		lm.mu.Lock()
+		locks = lm.unifiedLocks[handleKey]
+
+		// Re-check all existing leases for remaining conflicts
+		requested := &OpLock{
+			LeaseKey:   leaseKey,
+			LeaseState: requestedState,
+		}
+		canGrant := true
+		for _, lock := range locks {
+			if lock.Lease == nil || lock.Lease.LeaseKey == leaseKey {
+				continue
+			}
+			if OpLocksConflict(lock.Lease, requested) {
+				canGrant = false
+				break
+			}
+		}
+
+		if !canGrant {
+			lm.mu.Unlock()
+			logger.Debug("RequestLease: still conflicting after break, denying",
+				"fileHandle", handleKey,
+				"requestedState", LeaseStateToString(requestedState))
+			return LeaseStateNone, 0, nil
+		}
+
+		// No more conflicts - create the new lease
+		granted, epoch := lm.createAndGrantLease(ctx, handleKey, fileHandle,
+			leaseKey, parentLeaseKey, ownerID, clientID, shareName,
+			requestedState, isDirectory)
+		lm.mu.Unlock()
+
+		logger.Debug("RequestLease: granted lease after break",
+			"fileHandle", handleKey,
+			"state", LeaseStateToString(granted),
+			"epoch", epoch)
+
+		return granted, epoch, nil
 	}
 
 	// No conflicts - create new lease
+	granted, epoch := lm.createAndGrantLease(ctx, handleKey, fileHandle,
+		leaseKey, parentLeaseKey, ownerID, clientID, shareName,
+		requestedState, isDirectory)
+	lm.mu.Unlock()
+
+	logger.Debug("RequestLease: granted new lease",
+		"fileHandle", handleKey,
+		"state", LeaseStateToString(granted),
+		"isDirectory", isDirectory,
+		"epoch", epoch)
+
+	return granted, epoch, nil
+}
+
+// createAndGrantLease creates a new lease lock, appends it to unifiedLocks[handleKey],
+// persists it, and returns the granted state. Must be called with lm.mu held; the
+// caller is responsible for unlocking after this returns.
+func (lm *Manager) createAndGrantLease(
+	ctx context.Context,
+	handleKey string,
+	fileHandle FileHandle,
+	leaseKey, parentLeaseKey [16]byte,
+	ownerID, clientID, shareName string,
+	requestedState uint32,
+	isDirectory bool,
+) (uint32, uint16) {
 	newLock := &UnifiedLock{
 		ID: uuid.New().String(),
 		Owner: LockOwner{
@@ -282,7 +346,7 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 		},
 		FileHandle: fileHandle,
 		Offset:     0,
-		Length:     0, // Whole file
+		Length:     0,
 		Type:       lockTypeForLeaseState(requestedState),
 		AcquiredAt: time.Now(),
 		Lease: &OpLock{
@@ -294,9 +358,8 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 		},
 	}
 
-	lm.unifiedLocks[handleKey] = append(locks, newLock)
+	lm.unifiedLocks[handleKey] = append(lm.unifiedLocks[handleKey], newLock)
 
-	// Persist if store available
 	if lm.lockStore != nil {
 		pl := ToPersistedLock(newLock, 0)
 		if err := lm.lockStore.PutLock(ctx, pl); err != nil {
@@ -304,15 +367,7 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 		}
 	}
 
-	lm.mu.Unlock()
-
-	logger.Debug("RequestLease: granted new lease",
-		"fileHandle", handleKey,
-		"state", LeaseStateToString(requestedState),
-		"isDirectory", isDirectory,
-		"epoch", uint16(1))
-
-	return requestedState, 1, nil
+	return requestedState, 1
 }
 
 // lockTypeForLeaseState returns the appropriate LockType for a lease state.
