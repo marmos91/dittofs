@@ -749,11 +749,29 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(types.StatusInvalidParameter), nil
 		}
 
+		metaSvc := h.Registry.GetMetadataService()
+
+		// Per MS-FSA 2.1.5.14.4: Check for conflicting byte-range locks.
+		// When truncating, the region from newSize to the current EOF must not
+		// have locks from other sessions. We check the entire range from newSize
+		// to max as a write operation (truncation is destructive).
+		if err := metaSvc.CheckLockForIO(
+			authCtx.Context,
+			openFile.MetadataHandle,
+			openFile.SessionID,
+			newSize,
+			0, // 0 = unbounded (to EOF)
+			true,
+		); err != nil {
+			logger.Debug("SET_INFO: truncation blocked by lock",
+				"path", openFile.Path, "newSize", newSize)
+			return setInfoStatus(types.StatusFileLockConflict), nil
+		}
+
 		setAttrs := &metadata.SetAttrs{
 			Size: &newSize,
 		}
 
-		metaSvc := h.Registry.GetMetadataService()
 		err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 		if err != nil {
 			logger.Debug("SET_INFO: failed to set EOF", "path", openFile.Path, "error", err)
