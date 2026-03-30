@@ -758,6 +758,7 @@ requests with durable handles. Newly reachable after GMAC signing fix.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
+| smb2.replay.replay3 | Replay | Flaky in CI (replay detection race) | - |
 | smb2.replay.replay-commands | Replay | Replay detection not implemented | - |
 | smb2.replay.replay-dhv2-oplock1 | Replay | Replay with durable handles not implemented | - |
 | smb2.replay.replay-dhv2-oplock2 | Replay | Replay with durable handles not implemented | - |
@@ -825,6 +826,7 @@ incomplete delayed-write and timestamp freeze/unfreeze logic.
 | smb2.timestamps.time_t_-2 | Timestamps | Full-suite flaky (time_t boundary handling) | - |
 | smb2.timestamps.time_t_0 | Timestamps | Full-suite flaky (time_t boundary handling) | - |
 | smb2.timestamps.time_t_1 | Timestamps | Full-suite flaky (time_t boundary handling) | - |
+| smb2.timestamps.time_t_1968 | Timestamps | Flaky in CI (time_t boundary handling) | - |
 
 ### Scan (Full Operation Enumeration)
 
@@ -834,6 +836,7 @@ iterates all QUERY_DIRECTORY information classes. Both hit unimplemented classes
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
+| smb2.scan.find | Scan | Flaky in CI (find scan hits unimplemented info classes) | - |
 | smb2.scan.scan | Scan | Full operation scan hits unimplemented info classes | - |
 | smb2.scan.setinfo | Scan | SET_INFO scan hits unimplemented information classes | - |
 
