@@ -264,11 +264,21 @@ func (h *Handler) setFileInfoFromStore(
 		// Decode directly from raw buffer to handle FILETIME sentinels (0, -1, -2)
 		setAttrs := DecodeBasicInfoToSetAttrs(buffer)
 
+		metaSvc := h.Registry.GetMetadataService()
+
 		// Per MS-FSCC 2.6: Map FILE_ATTRIBUTE_READONLY to Unix mode.
 		// When FileAttributes != 0, the client is explicitly setting attributes.
 		// READONLY removes owner write bits; its absence restores them.
+		// Per MS-FSCC 2.4.7: FILE_ATTRIBUTE_COMPRESSED is NOT settable via
+		// FileBasicInformation; it is controlled only via FSCTL_SET_COMPRESSION.
+		// Preserve the existing modeDOSCompressed bit so SET_INFO doesn't
+		// accidentally clear compression state that was set via FSCTL.
 		if fileAttrs != 0 {
 			mode := SMBModeFromAttrs(fileAttrs, openFile.IsDirectory)
+			// Preserve modeDOSCompressed from existing metadata
+			if curFile, curErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); curErr == nil {
+				mode |= curFile.Mode & modeDOSCompressed
+			}
 			setAttrs.Mode = &mode
 		}
 
@@ -277,7 +287,6 @@ func (h *Handler) setFileInfoFromStore(
 		// filetimeUnfreeze (-2): Unfreeze timestamp -- re-enable auto-updates.
 		// We capture the current timestamp value BEFORE applying changes so the frozen
 		// value reflects the state at freeze time.
-		metaSvc := h.Registry.GetMetadataService()
 
 		// Extract sentinel values from raw buffer
 		ftR := smbenc.NewReader(buffer)

@@ -575,12 +575,24 @@ func (h *Handler) DeleteAllTreesForSession(sessionID uint64) int {
 	return deleted
 }
 
-// WaitForCleanup blocks until all in-progress session cleanups have finished.
-// Called at the start of SESSION_SETUP to ensure that stale state from a prior
-// disconnected session (open files, leases, change-notify watchers) is fully
-// removed from the shared Handler maps before a new session starts operating.
+// WaitForCleanup blocks until all in-progress session cleanups have finished,
+// or until the timeout (3 seconds) expires. Called at the start of SESSION_SETUP
+// to ensure that stale state from a prior disconnected session is fully removed
+// from the shared Handler maps before a new session starts operating.
+//
+// The timeout prevents indefinite blocking when cleanup is slow (e.g., flushing
+// many open files), which would cause smbtorture connection timeouts.
 func (h *Handler) WaitForCleanup() {
-	h.cleanupWg.Wait()
+	done := make(chan struct{})
+	go func() {
+		h.cleanupWg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		logger.Warn("WaitForCleanup: timed out after 3s, proceeding with session setup")
+	}
 }
 
 // SignalPendingCleanup increments the cleanup WaitGroup by count.
@@ -640,7 +652,7 @@ func (h *Handler) CleanupSession(ctx context.Context, sessionID uint64, isDiscon
 	// 1. Close all open files (this also releases locks and flushes caches)
 	filesClosed := h.CloseAllFilesForSession(ctx, sessionID, isDisconnect)
 
-	// 1.5. Release leases and notify watchers that may not have been
+	// 2. Release leases and notify watchers that may not have been
 	// cleaned up by per-file CLOSE (e.g. client disconnected without
 	// closing all files, or re-auth failure).
 	h.releaseSessionLeasesAndNotifies(ctx, sessionID)

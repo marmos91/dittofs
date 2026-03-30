@@ -1629,9 +1629,11 @@ func (h *Handler) createNewFile(
 	// Inherit compression state from parent directory.
 	// Per MS-FSA 2.1.5.1.1: if the parent directory has FILE_ATTRIBUTE_COMPRESSED,
 	// the new file/directory inherits the compression attribute.
+	// Per MS-SMB2 2.2.13: FILE_NO_COMPRESSION in CreateOptions suppresses inheritance.
 	metaSvc := h.Registry.GetMetadataService()
-	if parentFile, pErr := metaSvc.GetFile(authCtx.Context, parentHandle); pErr == nil {
-		if parentFile.Mode&modeDOSCompressed != 0 {
+	if req.CreateOptions&types.FileNoCompression == 0 {
+		parentFile, pErr := metaSvc.GetFile(authCtx.Context, parentHandle)
+		if pErr == nil && parentFile.Mode&modeDOSCompressed != 0 {
 			fileAttr.Mode |= modeDOSCompressed
 		}
 	}
@@ -1668,10 +1670,19 @@ func (h *Handler) overwriteFile(
 		return nil, nil, err
 	}
 
-	// Truncate to zero size
+	// Truncate to zero size and apply requested attributes
 	zeroSize := uint64(0)
 	setAttrs := &metadata.SetAttrs{
 		Size: &zeroSize,
+	}
+
+	// Per MS-FSA 2.1.5.1.1: OVERWRITE/SUPERSEDE should apply FileAttributes
+	// from the request. Preserve modeDOSCompressed from existing metadata since
+	// compression state is controlled only via FSCTL_SET_COMPRESSION.
+	if req.FileAttributes != 0 {
+		mode := SMBModeFromAttrs(req.FileAttributes, existingFile.Type == metadata.FileTypeDirectory)
+		mode |= existingFile.Mode & modeDOSCompressed
+		setAttrs.Mode = &mode
 	}
 
 	metaSvc := h.Registry.GetMetadataService()

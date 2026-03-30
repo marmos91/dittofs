@@ -28,7 +28,10 @@ func (h *Handler) handleGetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 	var format uint16
 	metaSvc := h.Registry.GetMetadataService()
 	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
-	if err == nil && file.Mode&modeDOSCompressed != 0 {
+	if err != nil {
+		return NewErrorResult(MetadataErrorToSMBStatus(err)), nil
+	}
+	if file.Mode&modeDOSCompressed != 0 {
 		format = 0x0002 // COMPRESSION_FORMAT_LZNT1
 	}
 
@@ -67,18 +70,15 @@ func (h *Handler) handleSetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 
 	// Per MS-FSCC 2.3.53: valid formats are 0 (NONE), 1 (DEFAULT), 2 (LZNT1).
 	// DEFAULT and LZNT1 both map to LZNT1 (the only compression algorithm NTFS supports).
-	var storedFormat uint32
+	var compressed bool
 	switch format {
 	case 0x0000: // COMPRESSION_FORMAT_NONE
-		storedFormat = 0
+		compressed = false
 	case 0x0001, 0x0002: // COMPRESSION_FORMAT_DEFAULT, COMPRESSION_FORMAT_LZNT1
-		storedFormat = 0x0002
+		compressed = true
 	default:
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
-
-	// Update per-handle state
-	openFile.CompressionFormat.Store(storedFormat)
 
 	// Persist compression state to metadata via mode bit (modeDOSCompressed).
 	// This ensures FILE_ATTRIBUTE_COMPRESSED survives handle close/reopen.
@@ -89,7 +89,7 @@ func (h *Handler) handleSetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 	}
 
 	newMode := file.Mode
-	if storedFormat != 0 {
+	if compressed {
 		newMode |= modeDOSCompressed
 	} else {
 		newMode &^= modeDOSCompressed

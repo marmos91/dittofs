@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"testing"
@@ -51,6 +52,37 @@ func TestFileCompressionInformation(t *testing.T) {
 			if info[i] != 0 {
 				t.Errorf("info[%d] = %d, want 0", i, info[i])
 			}
+		}
+	})
+
+	t.Run("CompressedFile", func(t *testing.T) {
+		file := &metadata.File{
+			ID: uuid.New(),
+			FileAttr: metadata.FileAttr{
+				Type: metadata.FileTypeRegular,
+				Size: 65536,
+				Mode: modeDOSCompressed | 0o644,
+			},
+		}
+
+		info, err := h.buildFileInfoFromStore(context.Background(), file, openFileStub, types.FileCompressionInformation)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if len(info) != 16 {
+			t.Fatalf("info length = %d, want 16", len(info))
+		}
+
+		compressedSize := binary.LittleEndian.Uint64(info[0:8])
+		if compressedSize != 65536 {
+			t.Errorf("CompressedFileSize = %d, want 65536", compressedSize)
+		}
+
+		// CompressionFormat should be COMPRESSION_FORMAT_LZNT1 (0x0002)
+		compFormat := binary.LittleEndian.Uint16(info[8:10])
+		if compFormat != 0x0002 {
+			t.Errorf("CompressionFormat = %d, want 2 (LZNT1)", compFormat)
 		}
 	})
 
@@ -179,13 +211,8 @@ func TestBuildFileInfoFromStore_FileStreamInformation(t *testing.T) {
 		// Stream name should be "::$DATA" in UTF-16LE
 		expectedName := []byte{':', 0, ':', 0, '$', 0, 'D', 0, 'A', 0, 'T', 0, 'A', 0}
 		streamName := info[24:]
-		if len(streamName) != len(expectedName) {
-			t.Fatalf("StreamName length = %d, want %d", len(streamName), len(expectedName))
-		}
-		for i := range expectedName {
-			if streamName[i] != expectedName[i] {
-				t.Errorf("StreamName[%d] = 0x%02x, want 0x%02x", i, streamName[i], expectedName[i])
-			}
+		if !bytes.Equal(streamName, expectedName) {
+			t.Errorf("StreamName = %x, want %x", streamName, expectedName)
 		}
 
 		// Total size: 24 header + 14 name = 38 bytes

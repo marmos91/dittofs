@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-03-26 (Compression state persistence, dup_extents cleanup, stale known failures removal)
+Last updated: 2026-03-31 (Compression inheritance fix, stale compression known failures cleanup)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -59,23 +59,18 @@ descriptors, and owner rights are not implemented.
 ### IOCTL/FSCTL Operations (Not Implemented)
 
 Server-side copy (SRV_COPYCHUNK), sparse file operations, and most FSCTL operations
-are not implemented. Compression state tracking (FSCTL_GET/SET_COMPRESSION) and
-FILE_ATTRIBUTE_COMPRESSED are supported. Duplicate extents (block refcounting) tests
-skip automatically because FILE_SUPPORTS_BLOCK_REFCOUNTING is not advertised.
+are not implemented. Compression state tracking (FSCTL_GET/SET_COMPRESSION),
+FILE_ATTRIBUTE_COMPRESSED, compression inheritance (parent dir to child), and
+FILE_NO_COMPRESSION create option are supported. Compression permission checks
+(SEC_FILE_WRITE_DATA for SET_COMPRESSION) are not yet implemented.
+Duplicate extents (block refcounting) tests skip automatically because
+FILE_SUPPORTS_BLOCK_REFCOUNTING is not advertised. The compress_notsup_get/set
+tests correctly SKIP because FILE_FILE_COMPRESSION is advertised.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.ioctl.bug14769 | IOCTL | IOCTL edge case not implemented | - |
-| smb2.ioctl.compress_dir_inherit | IOCTL | Compression inheritance to child files not fully implemented | - |
-| smb2.ioctl.compress_inherit_disable | IOCTL | Compression inheritance disable not fully implemented | - |
-| smb2.ioctl.compress_query_file_attr | IOCTL | Flaky in CI (compression attr race during full suite) | - |
-| smb2.ioctl.compress_create_with_attr | IOCTL | Flaky in CI (compression attr race during full suite) | - |
-| smb2.ioctl.compress_invalid_buf | IOCTL | Flaky in CI (compression state race during full suite) | - |
-| smb2.ioctl.compress_set_file_attr | IOCTL | Flaky in CI (compression state race during full suite) | - |
-| smb2.ioctl.compress_file_flag | IOCTL | Flaky in CI (compression state race during full suite) | - |
-| smb2.ioctl.compress_notsup_get | IOCTL | Flaky in CI (should skip when compression supported) | - |
-| smb2.ioctl.compress_notsup_set | IOCTL | Flaky in CI (should skip when compression supported) | - |
-| smb2.ioctl.compress_perms | IOCTL | Compression attribute + ACL permission check not implemented | - |
+| smb2.ioctl.compress_perms | IOCTL | FSCTL_SET_COMPRESSION requires SEC_FILE_WRITE_DATA check (not implemented) | - |
 | smb2.ioctl.dup_extents_simple | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
 | smb2.ioctl.dup_extents_len_beyond_dest | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
 | smb2.ioctl.dup_extents_len_beyond_src | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |

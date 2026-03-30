@@ -79,7 +79,7 @@ func MetadataToNFS(mdAttr *metadata.FileAttr, fileid uint64) *types.NFSFileAttr 
 
 	return &types.NFSFileAttr{
 		Type:  metadataTypeToNFSType(mdAttr.Type),
-		Mode:  mdAttr.Mode,
+		Mode:  mdAttr.Mode & 0o7777, // Mask off DOS extension bits (e.g. modeDOSCompressed 0x40000)
 		Nlink: nlink,
 		UID:   mdAttr.UID,
 		GID:   mdAttr.GID,
