@@ -599,6 +599,7 @@ func (lm *Manager) UnlockAllForOpen(handleKey string, openID string) int {
 
 	return removed
 }
+
 // UnlockAllForSession releases all locks held by a session on a file.
 //
 // Returns the number of locks released.

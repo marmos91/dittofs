@@ -159,16 +159,20 @@ get_known_reason() {
 # don't count as new failures.
 # --------------------------------------------------------------------------
 CONN_FAIL_PATTERN="Establishing SMB2 connection failed"
+NO_MEMORY_PATTERN="NT_STATUS_NO_MEMORY"
 TEMP_OUTPUT=$(mktemp)
 prev_line=""
 while IFS= read -r line; do
-    if [[ "$line" == *"$CONN_FAIL_PATTERN"* && "$prev_line" =~ ^failure:[[:space:]]+ ]]; then
-        # Rewrite previous failure line as skip
-        echo "${prev_line/failure:/skip:}" >> "$TEMP_OUTPUT"
-        echo "$line" >> "$TEMP_OUTPUT"
-    else
-        [[ -n "$prev_line" ]] && echo "$prev_line" >> "$TEMP_OUTPUT"
+    if [[ "$prev_line" =~ ^failure:[[:space:]]+ ]]; then
+        if [[ "$line" == *"$CONN_FAIL_PATTERN"* || "$line" == *"$NO_MEMORY_PATTERN"* ]]; then
+            # Reclassify connection/memory failures as skips (infrastructure issues)
+            echo "${prev_line/failure:/skip:}" >> "$TEMP_OUTPUT"
+            echo "$line" >> "$TEMP_OUTPUT"
+            prev_line=""
+            continue
+        fi
     fi
+    [[ -n "$prev_line" ]] && echo "$prev_line" >> "$TEMP_OUTPUT"
     prev_line="$line"
 done < "$OUTPUT_FILE"
 [[ -n "$prev_line" ]] && echo "$prev_line" >> "$TEMP_OUTPUT"

@@ -65,7 +65,7 @@ type Handler struct {
 	pendingLocks sync.Map
 
 	// Per-open last denied lock request tracking for LOCK_NOT_GRANTED vs
-	// FILE_LOCK_CONFLICT distinction. Key: openID string, Value: *lastDeniedLock.
+	// FILE_LOCK_CONFLICT distinction. Key: openID string, Value: lastDeniedLock.
 	// Per MS-SMB2 3.3.5.14: first denial returns LOCK_NOT_GRANTED, retry of
 	// the same range returns FILE_LOCK_CONFLICT.
 	lastDeniedLocks sync.Map
@@ -205,6 +205,7 @@ type OpenFile struct {
 	SessionID           uint64
 	Path                string
 	ShareName           string
+	cachedOpenID        string // cached hex(FileID) for hot-path lock operations
 	OpenTime            time.Time
 	DesiredAccess       uint32
 	IsDirectory         bool
@@ -285,7 +286,10 @@ type OpenFile struct {
 // This is used for per-open byte-range lock ownership per MS-SMB2.
 // The identifier is derived from the SMB FileID, which is unique per open.
 func (f *OpenFile) OpenID() string {
-	return fmt.Sprintf("%x", f.FileID)
+	if f.cachedOpenID == "" {
+		f.cachedOpenID = fmt.Sprintf("%x", f.FileID)
+	}
+	return f.cachedOpenID
 }
 
 // lastDeniedLock tracks the last denied lock request per open for

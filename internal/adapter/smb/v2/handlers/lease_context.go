@@ -373,7 +373,6 @@ func ProcessLeaseCreateContext(
 	var responseFlags uint32
 	if errors.Is(err, lock.ErrLeaseBreakInProgress) {
 		responseFlags = smbenc.LeaseResponseFlagBreakInProgress
-		err = nil // Not a real error -- state and epoch are valid
 	} else if err != nil {
 		logger.Debug("ProcessLeaseCreateContext: lease request failed", "error", err)
 		grantedState = lock.LeaseStateNone

@@ -491,6 +491,7 @@ func (lm *LeaseManager) BreakReadLeasesOnWrite(
 	// clients are broken when data changes.
 	return lockMgr.CheckAndBreakOpLocksForWrite(handleKey, exclude)
 }
+
 // LeaseCount returns the number of active leases tracked by this manager.
 // Used for state debugging instrumentation.
 func (lm *LeaseManager) LeaseCount() int {
