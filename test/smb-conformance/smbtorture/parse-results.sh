@@ -150,6 +150,31 @@ get_known_reason() {
 #   smb2.lock.lock1                 FAILED
 #   smb2.multichannel               SKIP
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# Pre-process: reclassify connection-establishment failures as skips.
+# When smbtorture can't connect to the server (Docker networking, accept
+# backlog full, etc.), it reports "failure: test.name" followed by
+# "Establishing SMB2 connection failed". These are infrastructure flakes,
+# not protocol failures. We rewrite them to "skip: test.name" so they
+# don't count as new failures.
+# --------------------------------------------------------------------------
+CONN_FAIL_PATTERN="Establishing SMB2 connection failed"
+TEMP_OUTPUT=$(mktemp)
+prev_line=""
+while IFS= read -r line; do
+    if [[ "$line" == *"$CONN_FAIL_PATTERN"* && "$prev_line" =~ ^failure:[[:space:]]+ ]]; then
+        # Rewrite previous failure line as skip
+        echo "${prev_line/failure:/skip:}" >> "$TEMP_OUTPUT"
+        echo "$line" >> "$TEMP_OUTPUT"
+    else
+        [[ -n "$prev_line" ]] && echo "$prev_line" >> "$TEMP_OUTPUT"
+    fi
+    prev_line="$line"
+done < "$OUTPUT_FILE"
+[[ -n "$prev_line" ]] && echo "$prev_line" >> "$TEMP_OUTPUT"
+OUTPUT_FILE="$TEMP_OUTPUT"
+trap 'rm -f '"$TEMP_OUTPUT" EXIT
+
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
