@@ -445,6 +445,52 @@ func (lm *LeaseManager) BreakParentHandleLeasesOnCreate(
 	return lockMgr.BreakHandleLeasesForSMBOpen(handleKey, excludeOwner)
 }
 
+// SetLeaseEpoch sets the epoch on an existing lease identified by leaseKey.
+// Per MS-SMB2 3.3.5.9: For V2 leases, the server should track the client's
+// epoch from the RqLs create context.
+func (lm *LeaseManager) SetLeaseEpoch(leaseKey [16]byte, epoch uint16) {
+	keyHex := fmt.Sprintf("%x", leaseKey)
+
+	lm.mu.RLock()
+	shareName := lm.leaseShare[keyHex]
+	lm.mu.RUnlock()
+
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return
+	}
+
+	lockMgr.SetLeaseEpoch(leaseKey, epoch)
+}
+
+// BreakReadLeasesOnWrite breaks Read (Level II) oplocks/leases held by other
+// opens on a file when a WRITE is performed. Per MS-SMB2 3.3.5.16, writes must
+// break all Read caching on the file so that other clients see the updated data.
+//
+// The writer's own lease (identified by excludeLeaseKey) is NOT broken.
+// Read leases are broken to None (complete revocation).
+func (lm *LeaseManager) BreakReadLeasesOnWrite(
+	fileHandle lock.FileHandle,
+	shareName string,
+	excludeLeaseKey [16]byte,
+) error {
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return nil
+	}
+
+	handleKey := string(fileHandle)
+
+	var exclude *lock.LockOwner
+	if excludeLeaseKey != ([16]byte{}) {
+		exclude = &lock.LockOwner{ExcludeLeaseKey: excludeLeaseKey}
+	}
+
+	// Break all Read/Write leases to None. The writer's own lease is excluded
+	// via ExcludeLeaseKey. This ensures Level II (Read-only) leases from other
+	// clients are broken when data changes.
+	return lockMgr.CheckAndBreakOpLocksForWrite(handleKey, exclude)
+}
 // LeaseCount returns the number of active leases tracked by this manager.
 // Used for state debugging instrumentation.
 func (lm *LeaseManager) LeaseCount() int {

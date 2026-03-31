@@ -88,7 +88,7 @@ func TestRequestLease_GrantDirectoryLeaseRH(t *testing.T) {
 	assert.Equal(t, uint16(1), epoch)
 }
 
-func TestRequestLease_DowngradeDirectoryState_RW(t *testing.T) {
+func TestRequestLease_DirectoryState_RW(t *testing.T) {
 	t.Parallel()
 
 	mgr := NewManager()
@@ -96,17 +96,16 @@ func TestRequestLease_DowngradeDirectoryState_RW(t *testing.T) {
 	leaseKey := [16]byte{1, 2, 3}
 	parentKey := [16]byte{}
 
-	// Per MS-SMB2 3.3.5.9.8/3.3.5.9.11: directories cannot hold Write (W).
-	// Per MS-SMB2 "Algorithm for Leasing in an Object Store": valid directory
-	// states are None, R, and RH. When Write is requested for a directory,
-	// it is converted to Handle (the directory equivalent): RW -> RH.
+	// Per MS-SMB2 3.3.5.9: directories CAN hold Write (W) caching leases.
+	// Write caching on a directory means the client can cache directory
+	// content changes. Both Windows Server and Samba grant RW on directories.
 	state, _, err := mgr.RequestLease(ctx, FileHandle("dir1"), leaseKey, parentKey, "owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite, true)
 
 	require.NoError(t, err)
-	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state, "should convert RW to RH for directory")
+	assert.Equal(t, LeaseStateRead|LeaseStateWrite, state, "should grant RW as-is for directory")
 }
 
-func TestRequestLease_DowngradeDirectoryState_RWH(t *testing.T) {
+func TestRequestLease_DirectoryState_RWH(t *testing.T) {
 	t.Parallel()
 
 	mgr := NewManager()
@@ -114,12 +113,12 @@ func TestRequestLease_DowngradeDirectoryState_RWH(t *testing.T) {
 	leaseKey := [16]byte{1, 2, 3}
 	parentKey := [16]byte{}
 
-	// Per MS-SMB2 3.3.5.9.8/3.3.5.9.11: directories cannot hold Write (W).
-	// The server strips the Write bit: RWH -> RH.
+	// Per MS-SMB2 3.3.5.9: directories CAN hold Write (W) caching leases.
+	// RWH is granted as-is for directories.
 	state, _, err := mgr.RequestLease(ctx, FileHandle("dir1"), leaseKey, parentKey, "owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite|LeaseStateHandle, true)
 
 	require.NoError(t, err)
-	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state, "should downgrade RWH to RH for directory")
+	assert.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, state, "should grant RWH as-is for directory")
 }
 
 func TestRequestLease_SameKeyUpgrade_R_to_RW(t *testing.T) {
@@ -568,4 +567,204 @@ func (t *testBreakCallbacks) OnAccessConflict(handleKey string, existingLock *Un
 
 func (t *testBreakCallbacks) OnDelegationRecall(handleKey string, lock *UnifiedLock) {
 	// No-op for existing lease tests
+}
+
+// ============================================================================
+// downgradeCandidates Tests
+// ============================================================================
+
+func TestDowngradeCandidates_FileRWH(t *testing.T) {
+	t.Parallel()
+
+	candidates := downgradeCandidates(LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	// RWH -> try RWH, then RH (strip W), then RW (strip H), then R (strip both), then R (fallback)
+	// Deduped: RWH, RH, RW, R
+	assert.Equal(t, []uint32{
+		LeaseStateRead | LeaseStateWrite | LeaseStateHandle,
+		LeaseStateRead | LeaseStateHandle,
+		LeaseStateRead | LeaseStateWrite,
+		LeaseStateRead,
+	}, candidates)
+}
+
+func TestDowngradeCandidates_FileRW(t *testing.T) {
+	t.Parallel()
+
+	candidates := downgradeCandidates(LeaseStateRead|LeaseStateWrite, false)
+	// RW -> try RW, then R (strip W), then RW (strip H = no-op), then R (strip both)
+	// Deduped: RW, R
+	assert.Equal(t, []uint32{
+		LeaseStateRead | LeaseStateWrite,
+		LeaseStateRead,
+	}, candidates)
+}
+
+func TestDowngradeCandidates_FileR(t *testing.T) {
+	t.Parallel()
+
+	candidates := downgradeCandidates(LeaseStateRead, false)
+	// R -> only R
+	assert.Equal(t, []uint32{
+		LeaseStateRead,
+	}, candidates)
+}
+
+func TestDowngradeCandidates_DirectoryRWH(t *testing.T) {
+	t.Parallel()
+
+	candidates := downgradeCandidates(LeaseStateRead|LeaseStateWrite|LeaseStateHandle, true)
+	// For directory: RWH, RH (strip W), RW (strip H), R (strip both), R (fallback)
+	// All are valid directory states. Deduped: RWH, RH, RW, R
+	assert.Equal(t, []uint32{
+		LeaseStateRead | LeaseStateWrite | LeaseStateHandle,
+		LeaseStateRead | LeaseStateHandle,
+		LeaseStateRead | LeaseStateWrite,
+		LeaseStateRead,
+	}, candidates)
+}
+
+func TestDowngradeCandidates_DirectoryRH(t *testing.T) {
+	t.Parallel()
+
+	candidates := downgradeCandidates(LeaseStateRead|LeaseStateHandle, true)
+	// RH -> try RH, then RH (strip W = no-op), then R (strip H), then R (strip both)
+	// Deduped: RH, R
+	assert.Equal(t, []uint32{
+		LeaseStateRead | LeaseStateHandle,
+		LeaseStateRead,
+	}, candidates)
+}
+
+// ============================================================================
+// bestGrantableState Tests
+// ============================================================================
+
+func TestBestGrantableState_NoConflicts(t *testing.T) {
+	t.Parallel()
+
+	// Empty lock set - full request granted
+	key := [16]byte{1}
+	state := bestGrantableState(nil, key, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	assert.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, state)
+}
+
+func TestBestGrantableState_FileRWH_DowngradesWithExistingR(t *testing.T) {
+	t.Parallel()
+
+	// Existing Read lease from different key
+	otherKey := [16]byte{2}
+	requestKey := [16]byte{1}
+	locks := []*UnifiedLock{
+		{Lease: &OpLock{LeaseKey: otherKey, LeaseState: LeaseStateRead}},
+	}
+
+	// RWH: Write conflicts with existing Read -> skip
+	// RH: Handle doesn't conflict with Read -> grant RH
+	state := bestGrantableState(locks, requestKey, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state)
+}
+
+func TestBestGrantableState_FileRWH_DowngradesToRH(t *testing.T) {
+	t.Parallel()
+
+	// Existing RH lease from different key
+	otherKey := [16]byte{2}
+	requestKey := [16]byte{1}
+	locks := []*UnifiedLock{
+		{Lease: &OpLock{LeaseKey: otherKey, LeaseState: LeaseStateRead | LeaseStateHandle}},
+	}
+
+	// RWH: Write conflicts with existing Read -> skip
+	// RH: no conflict -> grant RH
+	state := bestGrantableState(locks, requestKey, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state)
+}
+
+func TestBestGrantableState_SameKeyIgnored(t *testing.T) {
+	t.Parallel()
+
+	// Existing lease from same key should be ignored (not a conflict)
+	sameKey := [16]byte{1}
+	locks := []*UnifiedLock{
+		{Lease: &OpLock{LeaseKey: sameKey, LeaseState: LeaseStateRead | LeaseStateWrite}},
+	}
+
+	state := bestGrantableState(locks, sameKey, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	assert.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, state)
+}
+
+func TestBestGrantableState_DirectoryRWH_DowngradeCascade(t *testing.T) {
+	t.Parallel()
+
+	// Existing RWH directory lease from different key
+	otherKey := [16]byte{2}
+	requestKey := [16]byte{1}
+	locks := []*UnifiedLock{
+		{Lease: &OpLock{LeaseKey: otherKey, LeaseState: LeaseStateRead | LeaseStateWrite | LeaseStateHandle}},
+	}
+
+	// RWH: requested W conflicts with existing R/W -> skip
+	// RH: requested R conflicts with existing W (existing W conflicts with requested R) -> skip
+	// RW: requested W conflicts with existing R/W -> skip
+	// R: existing W conflicts with requested R -> skip
+	// All candidates conflict -> None
+	state := bestGrantableState(locks, requestKey, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, true)
+	assert.Equal(t, LeaseStateNone, state)
+}
+
+func TestBestGrantableState_AllConflict_ReturnsNone(t *testing.T) {
+	t.Parallel()
+
+	// Existing RW lease from other key: existing W conflicts with any requested R or W.
+	// All downgrade candidates include R, so all conflict -> None.
+	otherKey := [16]byte{2}
+	requestKey := [16]byte{1}
+	locks := []*UnifiedLock{
+		{Lease: &OpLock{LeaseKey: otherKey, LeaseState: LeaseStateRead | LeaseStateWrite}},
+	}
+
+	// RW: W conflicts with existing R/W -> skip
+	// R: existing W conflicts with requested R -> skip
+	// All candidates conflict -> None
+	state := bestGrantableState(locks, requestKey, LeaseStateRead|LeaseStateWrite, false)
+	assert.Equal(t, LeaseStateNone, state)
+}
+
+// ============================================================================
+// Same-Key Breaking Lease Tests
+// ============================================================================
+
+func TestRequestLease_SameKeyBreaking_ReturnsBreakInProgress(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	key1 := [16]byte{1, 0, 0, 0}
+	parentKey := [16]byte{}
+
+	// Grant RWH lease
+	_, _, err := mgr.RequestLease(ctx, FileHandle("file1"), key1, parentKey, "owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.NoError(t, err)
+
+	// Manually set the lease to breaking state
+	mgr.mu.Lock()
+	for _, locks := range mgr.unifiedLocks {
+		for _, lock := range locks {
+			if lock.Lease != nil && lock.Lease.LeaseKey == key1 {
+				lock.Lease.Breaking = true
+				lock.Lease.BreakToState = LeaseStateRead | LeaseStateHandle
+				lock.Lease.BreakStarted = time.Now()
+				advanceEpoch(lock.Lease) // epoch becomes 2
+			}
+		}
+	}
+	mgr.mu.Unlock()
+
+	// Request with same key while breaking
+	state, epoch, err := mgr.RequestLease(ctx, FileHandle("file1"), key1, parentKey, "owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+
+	// Should return current state with ErrLeaseBreakInProgress
+	assert.ErrorIs(t, err, ErrLeaseBreakInProgress)
+	assert.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, state, "should return current lease state")
+	assert.Equal(t, uint16(2), epoch, "should return current epoch")
 }

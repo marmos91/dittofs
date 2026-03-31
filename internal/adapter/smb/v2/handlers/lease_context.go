@@ -380,6 +380,15 @@ func ProcessLeaseCreateContext(
 		epoch = 0
 	}
 
+	// Per MS-SMB2 3.3.5.9: For V2 lease requests, the server should track
+	// the client's epoch from the RqLs create context. If the client sent a
+	// non-zero epoch and we just granted a new lease (epoch==1), initialize
+	// the lease's epoch to the client's requested value.
+	if !isV1 && leaseReq.Epoch > 0 && grantedState != lock.LeaseStateNone && epoch == 1 {
+		leaseMgr.SetLeaseEpoch(leaseReq.LeaseKey, leaseReq.Epoch)
+		epoch = leaseReq.Epoch
+	}
+
 	// Build response context.
 	// Per MS-SMB2 2.2.14.2.10: Flags MUST be 0 for fresh grants.
 	// SMB2_LEASE_FLAG_BREAK_IN_PROGRESS (0x02) is only set when a break is

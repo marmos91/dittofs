@@ -130,6 +130,11 @@ type LockManager interface {
 	// found=false if no lease exists with that key.
 	GetLeaseState(ctx context.Context, leaseKey [16]byte) (state uint32, epoch uint16, found bool)
 
+	// SetLeaseEpoch sets the epoch on an existing lease identified by leaseKey.
+	// Per MS-SMB2 3.3.5.9: For V2 leases, the server tracks the client's epoch.
+	// Returns false if no lease was found with the given key.
+	SetLeaseEpoch(leaseKey [16]byte, epoch uint16) bool
+
 	// ========================================================================
 	// Delegation Operations
 	// ========================================================================
@@ -731,6 +736,24 @@ func (lm *Manager) ReclaimLease(ctx context.Context, leaseKey [16]byte,
 // GetLeaseState returns the current state and epoch for a lease key.
 func (lm *Manager) GetLeaseState(ctx context.Context, leaseKey [16]byte) (state uint32, epoch uint16, found bool) {
 	return lm.getLeaseStateImpl(ctx, leaseKey)
+}
+
+// SetLeaseEpoch sets the epoch on an existing lease identified by leaseKey.
+// Per MS-SMB2 3.3.5.9: For V2 leases, the server should track the client's
+// epoch from the RqLs create context. This method is called after RequestLease
+// to initialize the epoch to the client's requested value.
+// Returns false if no lease was found with the given key.
+func (lm *Manager) SetLeaseEpoch(leaseKey [16]byte, epoch uint16) bool {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	_, lock, _ := lm.findLeaseByKey(leaseKey)
+	if lock == nil || lock.Lease == nil {
+		return false
+	}
+
+	lock.Lease.Epoch = epoch
+	return true
 }
 
 // ============================================================================
