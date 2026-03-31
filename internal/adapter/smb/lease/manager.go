@@ -11,6 +11,7 @@ package lease
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -95,11 +96,14 @@ func (lm *LeaseManager) RequestLease(
 		ownerID, clientID, shareName,
 		requestedState, isDirectory,
 	)
-	if err != nil {
+	if err != nil && !errors.Is(err, lock.ErrLeaseBreakInProgress) {
 		return 0, 0, err
 	}
 
-	// Record session mapping if lease was granted
+	// Record session mapping if lease was granted (or is in breaking state).
+	// For ErrLeaseBreakInProgress, grantedState contains the current breaking
+	// state which is non-None — we still need the session map entry for
+	// break-notification routing.
 	if grantedState != lock.LeaseStateNone {
 		keyHex := fmt.Sprintf("%x", leaseKey)
 		lm.mu.Lock()
@@ -108,7 +112,7 @@ func (lm *LeaseManager) RequestLease(
 		lm.mu.Unlock()
 	}
 
-	return grantedState, epoch, nil
+	return grantedState, epoch, err
 }
 
 // AcknowledgeLeaseBreak delegates to the shared LockManager.

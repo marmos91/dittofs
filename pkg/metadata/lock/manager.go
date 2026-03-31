@@ -523,6 +523,41 @@ func (lm *Manager) Unlock(handleKey string, sessionID, offset, length uint64) er
 	return NewLockNotFoundError("")
 }
 
+// UnlockAllForOpen releases all locks held by a specific open on a file.
+//
+// Returns the number of locks released.
+func (lm *Manager) UnlockAllForOpen(handleKey string, openID string) int {
+	if openID == "" {
+		return 0 // empty openID would match all unset locks — guard against misuse
+	}
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	existing := lm.locks[handleKey]
+	if len(existing) == 0 {
+		return 0
+	}
+
+	// Filter out locks belonging to this open
+	remaining := make([]FileLock, 0, len(existing))
+	removed := 0
+	for i := range existing {
+		if existing[i].OpenID == openID {
+			removed++
+		} else {
+			remaining = append(remaining, existing[i])
+		}
+	}
+
+	// Update or clean up
+	if len(remaining) == 0 {
+		delete(lm.locks, handleKey)
+	} else {
+		lm.locks[handleKey] = remaining
+	}
+
+	return removed
+}
 // UnlockAllForSession releases all locks held by a session on a file.
 //
 // Returns the number of locks released.
