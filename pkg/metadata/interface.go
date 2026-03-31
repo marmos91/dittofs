@@ -110,17 +110,22 @@ type MetadataServiceInterface interface {
 
 	// CheckLockForIO checks if an I/O operation conflicts with existing locks.
 	// Lightweight check that doesn't verify file existence.
-	CheckLockForIO(ctx context.Context, handle FileHandle, sessionID, offset, length uint64, isWrite bool) error
+	// openID identifies the specific open performing the I/O (empty string falls back to sessionID).
+	CheckLockForIO(ctx context.Context, handle FileHandle, openID string, sessionID uint64, offset, length uint64, isWrite bool) error
 
 	// LockFile acquires a byte-range lock on a file.
 	// Validates file exists, is not a directory, and user has appropriate permission.
 	LockFile(ctx *AuthContext, handle FileHandle, lock FileLock) error
 
 	// UnlockFile releases a byte-range lock.
-	UnlockFile(ctx context.Context, handle FileHandle, sessionID, offset, length uint64) error
+	// openID identifies the specific open that owns the lock (empty string falls back to sessionID).
+	UnlockFile(ctx context.Context, handle FileHandle, openID string, sessionID uint64, offset, length uint64) error
 
 	// UnlockAllForSession releases all locks held by a session on a file.
 	UnlockAllForSession(ctx context.Context, handle FileHandle, sessionID uint64) error
+
+	// UnlockAllForOpen releases all locks held by a specific open on a file.
+	UnlockAllForOpen(ctx context.Context, handle FileHandle, openID string) error
 
 	// TestLock tests if a lock would conflict with existing locks.
 	TestLock(ctx *AuthContext, handle FileHandle, sessionID, offset, length uint64, exclusive bool) (bool, *LockConflict, error)

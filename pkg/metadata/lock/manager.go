@@ -75,7 +75,11 @@ type LockManager interface {
 	Lock(handleKey string, lock FileLock) error
 
 	// Unlock releases a specific byte-range lock.
-	Unlock(handleKey string, sessionID uint64, offset, length uint64) error
+	// openID identifies the open that owns the lock (empty string falls back to sessionID).
+	Unlock(handleKey string, openID string, sessionID uint64, offset, length uint64) error
+
+	// UnlockAllForOpen releases all locks held by a specific open on a file.
+	UnlockAllForOpen(handleKey string, openID string) int
 
 	// TestLock checks if a lock would succeed without acquiring it.
 	TestLock(handleKey string, lock FileLock) (*LockConflict, error)
@@ -245,7 +249,7 @@ var _ LockManager = (*Manager)(nil)
 // Lock Lifetime:
 // Locks are advisory and ephemeral (in-memory only). They persist until:
 //   - Explicitly released via UnlockFile
-//   - File is closed (UnlockAllForSession)
+//   - File is closed (UnlockAllForOpen)
 //   - Session disconnects (cleanup all session locks)
 //   - Server restarts (all locks lost)
 type FileLock struct {
@@ -254,10 +258,19 @@ type FileLock struct {
 	// For NLM: opaque client-provided lock handle
 	ID uint64
 
-	// SessionID identifies who holds the lock.
+	// SessionID identifies the session that holds the lock.
 	// For SMB2: SessionID from SMB header
 	// For NLM: hash of network address + client PID
+	// Used for session-level cleanup (UnlockAllForSession) and backward compatibility.
 	SessionID uint64
+
+	// OpenID identifies the specific open (file handle) that owns this lock.
+	// Per MS-SMB2, byte-range locks are per-open, not per-session. Two opens
+	// from the same session to the same file are independent lock owners.
+	// For SMB2: hex-encoded FileID (unique per open)
+	// For NLM/NFS: empty string (NFS uses session-level locking)
+	// When empty, falls back to SessionID for ownership comparison.
+	OpenID string
 
 	// Offset is the starting byte offset of the lock.
 	Offset uint64
@@ -298,25 +311,42 @@ type LockConflict struct {
 	OwnerSessionID uint64
 }
 
+// lockOwnerID returns the effective owner identifier for a FileLock.
+// If OpenID is set (SMB per-open locking), it is used.
+// Otherwise, falls back to SessionID (NFS/NLM session-level locking).
+func lockOwnerID(fl *FileLock) string {
+	return callerOwnerID(fl.OpenID, fl.SessionID)
+}
+
+// callerOwnerID builds an owner identifier from an openID and sessionID pair.
+// If openID is non-empty it is used directly; otherwise the sessionID is formatted.
+// This is the shared logic behind lockOwnerID, CheckIOConflict, and Unlock.
+func callerOwnerID(openID string, sessionID uint64) string {
+	if openID != "" {
+		return openID
+	}
+	return fmt.Sprintf("session:%d", sessionID)
+}
+
 // IsLockConflicting checks if two locks conflict with each other.
 //
 // Conflict rules:
 //   - Shared locks don't conflict with other shared locks (multiple readers)
 //   - Exclusive locks conflict with all other locks
-//   - Locks from the same session don't conflict (allows re-locking same range)
+//   - Locks from the same open (OpenID) don't conflict (allows re-locking same range)
 //   - Ranges must overlap for a conflict to occur
 //
-// Same-session re-locking: When a session requests a lock on a range it already
-// holds, there is no conflict. This enables changing lock type on a range
-// (e.g., shared -> exclusive) by acquiring a new lock that replaces the old one.
+// Per MS-SMB2, lock ownership is per-open (per FileID), not per-session. Two
+// different opens from the same session are independent lock owners and MUST
+// conflict with each other when acquiring exclusive locks on overlapping ranges.
 func IsLockConflicting(existing, requested *FileLock) bool {
-	// Same session - no conflict (allows re-locking same range with different type)
-	if existing.SessionID == requested.SessionID {
+	// Check range overlap first (common case: no overlap, avoids string allocation)
+	if !RangesOverlap(existing.Offset, existing.Length, requested.Offset, requested.Length) {
 		return false
 	}
 
-	// Check range overlap first (common case: no overlap)
-	if !RangesOverlap(existing.Offset, existing.Length, requested.Offset, requested.Length) {
+	// Same owner - no conflict (allows re-locking same range with different type)
+	if lockOwnerID(existing) == lockOwnerID(requested) {
 		return false
 	}
 
@@ -331,53 +361,57 @@ func IsLockConflicting(existing, requested *FileLock) bool {
 
 // CheckIOConflict checks if an I/O operation conflicts with an existing lock.
 //
-// This implements SMB2 byte-range lock semantics per [MS-SMB2] 3.3.5.15:
-//   - Shared lock: Allows reads from all sessions but blocks writes from ALL
-//     sessions, including the lock holder. This is the key difference from
+// This implements SMB2 byte-range lock semantics per MS-FSA 2.1.4.10:
+//   - Shared lock: Allows reads from all opens but blocks writes from ALL
+//     opens, including the lock holder. This is the key difference from
 //     POSIX advisory locks where a process's own locks never block its own I/O.
-//   - Exclusive lock: Only the lock holder can read or write the range.
+//   - Exclusive lock: Only the lock holder (same open) can read or write the range.
 //
-// Conflict rules:
-//   - READ + same session + any lock type = ALLOW
-//   - READ + different session + shared lock = ALLOW
-//   - READ + different session + exclusive lock = BLOCK
-//   - WRITE + same session + exclusive lock = ALLOW (lock holder can write)
-//   - WRITE + same session + shared lock = BLOCK (shared = read-only for everyone)
-//   - WRITE + different session + any lock = BLOCK
+// Conflict rules (using openID for ownership, falling back to sessionID):
+//   - READ + same open + any lock type = ALLOW
+//   - READ + different open + shared lock = ALLOW
+//   - READ + different open + exclusive lock = BLOCK
+//   - WRITE + same open + exclusive lock = ALLOW (lock holder can write)
+//   - WRITE + same open + shared lock = BLOCK (shared = read-only for everyone)
+//   - WRITE + different open + any lock = BLOCK
 //
 // Parameters:
 //   - existing: The lock to check against
-//   - sessionID: The session performing the I/O
+//   - openID: The open identifier performing the I/O (empty string falls back to sessionID)
+//   - sessionID: The session performing the I/O (used when openID is empty)
 //   - offset: Starting byte offset of the I/O
 //   - length: Number of bytes in the I/O
 //   - isWrite: true for write operations, false for reads
 //
 // Returns true if the I/O is blocked by the existing lock.
-func CheckIOConflict(existing *FileLock, sessionID uint64, offset, length uint64, isWrite bool) bool {
+func CheckIOConflict(existing *FileLock, openID string, sessionID uint64, offset, length uint64, isWrite bool) bool {
 	// Check range overlap first (common case: no overlap)
 	if !RangesOverlap(existing.Offset, existing.Length, offset, length) {
 		return false
 	}
 
-	// Same session handling
-	if existing.SessionID == sessionID {
-		// Reads from the same session are always allowed regardless of lock type
+	// Determine if this is the same owner
+	sameOwner := lockOwnerID(existing) == callerOwnerID(openID, sessionID)
+
+	// Same owner handling
+	if sameOwner {
+		// Reads from the same open are always allowed regardless of lock type
 		if !isWrite {
 			return false
 		}
-		// Writes from the same session:
+		// Writes from the same open:
 		// - Exclusive lock holder CAN write to their own locked range
 		// - Non-exclusive (shared) lock holder CANNOT write; shared locks are read-only
-		//   and prevent writes from all sessions, including the holder.
+		//   and prevent writes from all opens, including the holder.
 		return !existing.Exclusive
 	}
 
-	// Different session: writes are blocked by any lock (shared or exclusive)
+	// Different owner: writes are blocked by any lock (shared or exclusive)
 	if isWrite {
 		return true
 	}
 
-	// Different session reads: only exclusive locks block
+	// Different owner reads: only exclusive locks block
 	return existing.Exclusive
 }
 
@@ -471,10 +505,10 @@ func (lm *Manager) Lock(handleKey string, lock FileLock) error {
 		}
 	}
 
-	// Check if this exact lock already exists (same session, offset, length)
+	// Check if this exact lock already exists (same owner, offset, length)
 	// If so, update it (allows changing exclusive flag)
 	for i := range existing {
-		if existing[i].SessionID == lock.SessionID &&
+		if lockOwnerID(&existing[i]) == lockOwnerID(&lock) &&
 			existing[i].Offset == lock.Offset &&
 			existing[i].Length == lock.Length {
 			// Update existing lock in place
@@ -497,10 +531,11 @@ func (lm *Manager) Lock(handleKey string, lock FileLock) error {
 
 // Unlock releases a specific byte-range lock.
 //
-// The lock is identified by session, offset, and length - all must match exactly.
+// The lock is identified by openID (or sessionID if openID is empty), offset,
+// and length - all must match exactly.
 //
 // Returns nil on success, or ErrLockNotFound if the lock wasn't found.
-func (lm *Manager) Unlock(handleKey string, sessionID, offset, length uint64) error {
+func (lm *Manager) Unlock(handleKey string, openID string, sessionID uint64, offset, length uint64) error {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 
@@ -510,8 +545,9 @@ func (lm *Manager) Unlock(handleKey string, sessionID, offset, length uint64) er
 	}
 
 	// Find and remove the matching lock
+	owner := callerOwnerID(openID, sessionID)
 	for i := range existing {
-		if existing[i].SessionID == sessionID &&
+		if lockOwnerID(&existing[i]) == owner &&
 			existing[i].Offset == offset &&
 			existing[i].Length == length {
 			// Remove this lock
@@ -635,14 +671,14 @@ func (lm *Manager) TestLockByParams(handleKey string, sessionID, offset, length 
 // CheckForIO checks if an I/O operation would conflict with existing locks.
 //
 // Returns nil if I/O is allowed, or conflict details if blocked.
-func (lm *Manager) CheckForIO(handleKey string, sessionID, offset, length uint64, isWrite bool) *LockConflict {
+func (lm *Manager) CheckForIO(handleKey string, openID string, sessionID uint64, offset, length uint64, isWrite bool) *LockConflict {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
 
 	existing := lm.locks[handleKey]
 
 	for i := range existing {
-		if CheckIOConflict(&existing[i], sessionID, offset, length, isWrite) {
+		if CheckIOConflict(&existing[i], openID, sessionID, offset, length, isWrite) {
 			return conflictFrom(&existing[i])
 		}
 	}

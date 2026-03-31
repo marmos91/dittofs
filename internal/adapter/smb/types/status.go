@@ -187,6 +187,10 @@ const (
 	// it is read-only or otherwise protected.
 	// Per MS-FSA 2.1.5.1.2.1 and 2.1.5.14.3.
 	StatusCannotDelete Status = 0xC0000121
+
+	// StatusInvalidLockRange indicates the lock range (offset+length) overflows
+	// the maximum 64-bit value. Per MS-SMB2 3.3.5.14.
+	StatusInvalidLockRange Status = 0xC00000BE
 )
 
 // String returns a human-readable name for the status code.
@@ -280,6 +284,8 @@ func (s Status) String() string {
 		return "STATUS_RANGE_NOT_LOCKED"
 	case StatusCannotDelete:
 		return "STATUS_CANNOT_DELETE"
+	case StatusInvalidLockRange:
+		return "STATUS_INVALID_LOCK_RANGE"
 	default:
 		return fmt.Sprintf("STATUS_0x%08X", uint32(s))
 	}

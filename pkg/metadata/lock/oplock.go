@@ -60,13 +60,7 @@ var ValidFileLeaseStates = []uint32{
 // ValidDirectoryLeaseStates contains valid lease state combinations for directories.
 // Per MS-SMB2 3.3.5.9: directories can hold Write (W) caching leases for
 // caching directory content changes. Same valid states as files.
-var ValidDirectoryLeaseStates = []uint32{
-	LeaseStateNone,                                      // 0x00 - No caching
-	LeaseStateRead,                                      // 0x01 - Read only
-	LeaseStateRead | LeaseStateWrite,                    // 0x03 - Read + Write
-	LeaseStateRead | LeaseStateHandle,                   // 0x05 - Read + Handle
-	LeaseStateRead | LeaseStateWrite | LeaseStateHandle, // 0x07 - Full (RWH)
-}
+var ValidDirectoryLeaseStates = ValidFileLeaseStates
 
 // OpLock holds SMB2/3 lease-specific state.
 //

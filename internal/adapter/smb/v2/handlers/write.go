@@ -314,6 +314,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	if err := metaSvc.CheckLockForIO(
 		authCtx.Context,
 		openFile.MetadataHandle,
+		openFile.OpenID(),
 		ctx.SessionID,
 		req.Offset,
 		uint64(len(req.Data)),

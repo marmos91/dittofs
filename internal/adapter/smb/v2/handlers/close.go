@@ -262,7 +262,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 
 	if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
 		metaSvc := h.Registry.GetMetadataService()
-		if unlockErr := metaSvc.UnlockAllForSession(ctx.Context, openFile.MetadataHandle, ctx.SessionID); unlockErr != nil {
+		if unlockErr := metaSvc.UnlockAllForOpen(ctx.Context, openFile.MetadataHandle, openFile.OpenID()); unlockErr != nil {
 			logger.Warn("CLOSE: failed to release locks", "path", openFile.Path, "error", unlockErr)
 			// Continue with close even if unlock fails
 		}

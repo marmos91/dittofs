@@ -767,6 +767,7 @@ func (h *Handler) setFileInfoFromStore(
 		if err := metaSvc.CheckLockForIO(
 			authCtx.Context,
 			openFile.MetadataHandle,
+			openFile.OpenID(),
 			openFile.SessionID,
 			newSize,
 			0, // 0 = unbounded (to EOF)

@@ -84,17 +84,15 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 	requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error) {
 
 	// Validate requested state against valid lease combinations.
+	isValidState := IsValidFileLeaseState
 	if isDirectory {
-		if !IsValidDirectoryLeaseState(requestedState) {
-			logger.Debug("RequestLease: invalid directory lease state",
-				"state", LeaseStateToString(requestedState),
-				"fileHandle", string(fileHandle))
-			return LeaseStateNone, 0, nil
-		}
-	} else if !IsValidFileLeaseState(requestedState) {
-		logger.Debug("RequestLease: invalid file lease state",
+		isValidState = IsValidDirectoryLeaseState
+	}
+	if !isValidState(requestedState) {
+		logger.Debug("RequestLease: invalid lease state",
 			"state", LeaseStateToString(requestedState),
-			"fileHandle", string(fileHandle))
+			"fileHandle", string(fileHandle),
+			"isDirectory", isDirectory)
 		return LeaseStateNone, 0, nil
 	}
 
@@ -362,7 +360,7 @@ func downgradeCandidates(requestedState uint32, isDirectory bool) []uint32 {
 		isValidState = IsValidDirectoryLeaseState
 	}
 
-	// At most 5 candidates, so linear scan beats map allocation.
+	// At most 4 unique candidates after dedup, so linear scan beats map allocation.
 	var candidates []uint32
 	addIfValid := func(state uint32) {
 		if state == LeaseStateNone || slices.Contains(candidates, state) || !isValidState(state) {

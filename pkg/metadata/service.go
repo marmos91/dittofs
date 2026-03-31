@@ -358,7 +358,8 @@ func (s *MetadataService) GetFilesystemCapabilities(ctx context.Context, handle 
 //
 // This is a lightweight operation that doesn't verify file existence,
 // allowing fast path for I/O operations.
-func (s *MetadataService) CheckLockForIO(ctx context.Context, handle FileHandle, sessionID, offset, length uint64, isWrite bool) error {
+// openID identifies the specific open performing the I/O (empty string falls back to sessionID).
+func (s *MetadataService) CheckLockForIO(ctx context.Context, handle FileHandle, openID string, sessionID uint64, offset, length uint64, isWrite bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -369,7 +370,7 @@ func (s *MetadataService) CheckLockForIO(ctx context.Context, handle FileHandle,
 	}
 
 	handleKey := string(handle)
-	conflict := lm.CheckForIO(handleKey, sessionID, offset, length, isWrite)
+	conflict := lm.CheckForIO(handleKey, openID, sessionID, offset, length, isWrite)
 	if conflict != nil {
 		return NewLockedError("", conflict)
 	}
@@ -434,9 +435,10 @@ func (s *MetadataService) LockFile(ctx *AuthContext, handle FileHandle, lock Fil
 // UnlockFile releases a byte-range lock on a file.
 //
 // Note: Takes context.Context instead of *AuthContext because:
-// - Session ID identifies the lock owner (you can only unlock your own locks)
+// - Open/Session ID identifies the lock owner (you can only unlock your own locks)
 // - No permission checking needed for unlock operations
-func (s *MetadataService) UnlockFile(ctx context.Context, handle FileHandle, sessionID, offset, length uint64) error {
+// openID identifies the specific open that owns the lock (empty string falls back to sessionID).
+func (s *MetadataService) UnlockFile(ctx context.Context, handle FileHandle, openID string, sessionID uint64, offset, length uint64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -458,7 +460,7 @@ func (s *MetadataService) UnlockFile(ctx context.Context, handle FileHandle, ses
 	}
 
 	handleKey := string(handle)
-	return lm.Unlock(handleKey, sessionID, offset, length)
+	return lm.Unlock(handleKey, openID, sessionID, offset, length)
 }
 
 // UnlockAllForSession releases all locks held by a session on a file.
@@ -475,6 +477,23 @@ func (s *MetadataService) UnlockAllForSession(ctx context.Context, handle FileHa
 	// No file existence check - file may have been deleted
 	handleKey := string(handle)
 	lm.UnlockAllForSession(handleKey, sessionID)
+	return nil
+}
+
+// UnlockAllForOpen releases all locks held by a specific open on a file.
+func (s *MetadataService) UnlockAllForOpen(ctx context.Context, handle FileHandle, openID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	lm, err := s.lockManagerForHandle(handle)
+	if err != nil {
+		return err
+	}
+
+	// No file existence check - file may have been deleted
+	handleKey := string(handle)
+	lm.UnlockAllForOpen(handleKey, openID)
 	return nil
 }
 
