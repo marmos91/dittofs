@@ -9,6 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // ============================================================================
@@ -208,6 +209,23 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 		if firstIsLock && !firstHasFailImm {
 			logger.Debug("LOCK: multi-element request without FailImmediately on first lock")
 			return NewErrorResult(types.StatusInvalidParameter), nil
+		}
+	}
+
+	// ========================================================================
+	// Break Batch/Exclusive oplocks before acquiring locks
+	// ========================================================================
+	//
+	// Per MS-SMB2 3.3.5.14: Before processing byte-range lock requests,
+	// the server MUST break any Batch or Exclusive oplocks held on the file
+	// by other clients. The requesting client's own lease is excluded.
+
+	if h.LeaseManager != nil {
+		lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
+		if breakErr := h.LeaseManager.BreakConflictingOplocksOnOpen(lockFileHandle, openFile.ShareName, &lock.LockOwner{
+			ExcludeLeaseKey: openFile.LeaseKey,
+		}); breakErr != nil {
+			logger.Debug("LOCK: oplock break failed (non-fatal)", "path", openFile.Path, "error", breakErr)
 		}
 	}
 
