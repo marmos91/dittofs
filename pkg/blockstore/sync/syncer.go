@@ -520,7 +520,9 @@ func (m *Syncer) periodicUploader(ctx context.Context, interval time.Duration) {
 			}
 			// Circuit breaker: skip uploads when remote store is unhealthy
 			if !m.IsRemoteHealthy() {
-				logger.Debug("Periodic syncer: remote unhealthy, skipping upload cycle")
+				logger.Warn("Periodic syncer: remote unhealthy, skipping upload cycle",
+					"outage_duration", m.RemoteOutageDuration(),
+					"hint", "check S3 credentials, endpoint, and bucket configuration")
 				m.uploading.Store(false)
 				continue
 			}

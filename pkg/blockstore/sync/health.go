@@ -69,10 +69,27 @@ func NewHealthMonitor(probeFunc func(ctx context.Context) error, config Config) 
 }
 
 // Start launches the health monitor goroutine. If probeFunc is nil, this is a no-op.
+//
+// An eager initial probe runs synchronously before launching the background loop.
+// If the probe fails, the monitor starts in unhealthy state so the periodic
+// uploader doesn't waste cycles attempting uploads against a broken remote.
 func (hm *HealthMonitor) Start(ctx context.Context) {
 	if hm.probeFunc == nil {
 		return
 	}
+
+	// Eager probe: verify connectivity before assuming healthy.
+	if err := hm.probeFunc(ctx); err != nil {
+		hm.healthy.Store(false)
+		hm.unhealthySince.Store(time.Now().UnixNano())
+		hm.consecutiveFailures.Store(1)
+		logger.Warn("Remote store initial probe failed, starting as unhealthy",
+			"error", err)
+		hm.fireCallback(false)
+	} else {
+		logger.Info("Remote store initial probe succeeded")
+	}
+
 	go hm.monitorLoop(ctx)
 }
 
