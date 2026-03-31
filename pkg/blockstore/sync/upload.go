@@ -37,6 +37,9 @@ func (m *Syncer) syncLocalBlocks(ctx context.Context) {
 		return
 	}
 
+	// Flush queued FileBlock metadata so ListLocalBlocks can find recently flushed blocks.
+	m.local.SyncFileBlocks(ctx)
+
 	pending, err := m.fileBlockStore.ListLocalBlocks(ctx, m.config.UploadDelay, maxUploadBatch)
 	if err != nil {
 		logger.Warn("Periodic sync: failed to list local blocks", "error", err)
