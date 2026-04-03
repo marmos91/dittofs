@@ -3,6 +3,7 @@ package handlers
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"path"
 	"strings"
@@ -1068,6 +1069,11 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 				file.Type == metadata.FileTypeDirectory,
 			)
 			if err != nil {
+				// Per MS-SMB2 3.3.5.9.8: Invalid lease states (e.g., Write
+				// without Read) must fail CREATE with STATUS_INVALID_PARAMETER.
+				if errors.Is(err, lock.ErrInvalidLeaseState) {
+					return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+				}
 				logger.Debug("CREATE: lease context processing failed", "error", err)
 			}
 

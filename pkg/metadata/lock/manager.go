@@ -1321,6 +1321,11 @@ func (lm *Manager) CheckAndBreakCachingForDelete(handleKey string, excludeOwner 
 // WaitForBreakCompletion blocks until all breaking locks on a file resolve
 // or the context is cancelled. Multiple goroutines may wait concurrently;
 // signalBreakWait uses close() to broadcast to all waiters.
+//
+// On timeout (context cancellation), all leases still in Breaking state are
+// automatically downgraded to their BreakToState, as if the client had
+// acknowledged. Per MS-SMB2 3.3.5.22.2: if the client fails to acknowledge
+// within the timeout, the server completes the break.
 func (lm *Manager) WaitForBreakCompletion(ctx context.Context, handleKey string) error {
 	for {
 		lm.mu.Lock()
@@ -1352,11 +1357,66 @@ func (lm *Manager) WaitForBreakCompletion(ctx context.Context, handleKey string)
 
 		select {
 		case <-ctx.Done():
+			// Timeout: auto-downgrade all breaking leases to their break-to state.
+			lm.forceCompleteBreaks(handleKey)
 			return ctx.Err()
 		case <-ch:
 			continue
 		}
 	}
+}
+
+// forceCompleteBreaks auto-downgrades all breaking leases on a file to their
+// BreakToState, as if the client had acknowledged. Called when the break
+// wait times out. Leases breaking to None are removed entirely.
+func (lm *Manager) forceCompleteBreaks(handleKey string) {
+	lm.mu.Lock()
+	locks := lm.unifiedLocks[handleKey]
+
+	var remaining []*UnifiedLock
+	modified := false
+	for _, l := range locks {
+		if l.Lease != nil && l.Lease.Breaking {
+			modified = true
+			if l.Lease.BreakToState == LeaseStateNone {
+				// Remove entirely
+				if lm.lockStore != nil {
+					_ = lm.lockStore.DeleteLock(context.Background(), l.ID)
+				}
+				logger.Debug("forceCompleteBreaks: removed lease (break-to None)",
+					"handleKey", handleKey,
+					"leaseKey", fmt.Sprintf("%x", l.Lease.LeaseKey))
+				continue // skip adding to remaining
+			}
+			// Downgrade to break-to state
+			l.Lease.LeaseState = l.Lease.BreakToState
+			l.Lease.Breaking = false
+			l.Lease.BreakToState = 0
+			l.Lease.BreakStarted = time.Time{}
+			advanceEpoch(l.Lease)
+			l.Type = lockTypeForLeaseState(l.Lease.LeaseState)
+
+			if lm.lockStore != nil {
+				pl := ToPersistedLock(l, 0)
+				_ = lm.lockStore.PutLock(context.Background(), pl)
+			}
+			logger.Debug("forceCompleteBreaks: auto-downgraded lease",
+				"handleKey", handleKey,
+				"leaseKey", fmt.Sprintf("%x", l.Lease.LeaseKey),
+				"newState", LeaseStateToString(l.Lease.LeaseState))
+		}
+		remaining = append(remaining, l)
+	}
+
+	if modified {
+		if len(remaining) == 0 {
+			delete(lm.unifiedLocks, handleKey)
+		} else {
+			lm.unifiedLocks[handleKey] = remaining
+		}
+		lm.signalBreakWaitLocked(handleKey)
+	}
+	lm.mu.Unlock()
 }
 
 // signalBreakWait broadcasts to all waiters by closing the wait channel and

@@ -81,10 +81,12 @@ func TestRequestLease_GrantDirectoryLeaseRH(t *testing.T) {
 	leaseKey := [16]byte{1, 2, 3}
 	parentKey := [16]byte{}
 
+	// RH requested on directory -> Handle is not valid for directories,
+	// so bestGrantableState downgrades to R.
 	state, epoch, err := mgr.RequestLease(ctx, FileHandle("dir1"), leaseKey, parentKey, "owner1", "client1", "/share", LeaseStateRead|LeaseStateHandle, true)
 
 	require.NoError(t, err)
-	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state)
+	assert.Equal(t, LeaseStateRead, state, "RH should be downgraded to R for directories")
 	assert.Equal(t, uint16(1), epoch)
 }
 
@@ -113,12 +115,12 @@ func TestRequestLease_DirectoryState_RWH(t *testing.T) {
 	leaseKey := [16]byte{1, 2, 3}
 	parentKey := [16]byte{}
 
-	// Per MS-SMB2 3.3.5.9: directories CAN hold Write (W) caching leases.
-	// RWH is granted as-is for directories.
+	// Per MS-SMB2 3.3.5.9: directories support R and RW but NOT Handle caching.
+	// RWH requested on a directory is downgraded to RW.
 	state, _, err := mgr.RequestLease(ctx, FileHandle("dir1"), leaseKey, parentKey, "owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite|LeaseStateHandle, true)
 
 	require.NoError(t, err)
-	assert.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, state, "should grant RWH as-is for directory")
+	assert.Equal(t, LeaseStateRead|LeaseStateWrite, state, "RWH should be downgraded to RW for directory")
 }
 
 func TestRequestLease_SameKeyUpgrade_R_to_RW(t *testing.T) {
@@ -265,9 +267,9 @@ func TestRequestLease_InvalidFileState(t *testing.T) {
 	leaseKey := [16]byte{1, 2, 3}
 	parentKey := [16]byte{}
 
-	// Write alone is invalid for files
+	// Write alone is invalid for files - per MS-SMB2 3.3.5.9.8, must return error
 	state, _, err := mgr.RequestLease(ctx, FileHandle("file1"), leaseKey, parentKey, "owner1", "client1", "/share", LeaseStateWrite, false)
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrInvalidLeaseState)
 	assert.Equal(t, LeaseStateNone, state, "Write alone should be invalid")
 }
 
@@ -613,11 +615,9 @@ func TestDowngradeCandidates_DirectoryRWH(t *testing.T) {
 	t.Parallel()
 
 	candidates := downgradeCandidates(LeaseStateRead|LeaseStateWrite|LeaseStateHandle, true)
-	// For directory: RWH, RH (strip W), RW (strip H), R (strip both), R (fallback)
-	// All are valid directory states. Deduped: RWH, RH, RW, R
+	// For directory: RWH (invalid), RH (invalid, strip W), RW (valid, strip H), R (valid, strip both)
+	// Only valid directory states are included: RW, R
 	assert.Equal(t, []uint32{
-		LeaseStateRead | LeaseStateWrite | LeaseStateHandle,
-		LeaseStateRead | LeaseStateHandle,
 		LeaseStateRead | LeaseStateWrite,
 		LeaseStateRead,
 	}, candidates)
@@ -627,10 +627,9 @@ func TestDowngradeCandidates_DirectoryRH(t *testing.T) {
 	t.Parallel()
 
 	candidates := downgradeCandidates(LeaseStateRead|LeaseStateHandle, true)
-	// RH -> try RH, then RH (strip W = no-op), then R (strip H), then R (strip both)
-	// Deduped: RH, R
+	// RH (invalid for dir) -> strip W = RH (invalid), strip H = R (valid), strip both = R
+	// Only valid: R
 	assert.Equal(t, []uint32{
-		LeaseStateRead | LeaseStateHandle,
 		LeaseStateRead,
 	}, candidates)
 }
@@ -703,8 +702,7 @@ func TestBestGrantableState_DirectoryRWH_DowngradeCascade(t *testing.T) {
 		{Lease: &OpLock{LeaseKey: otherKey, LeaseState: LeaseStateRead | LeaseStateWrite | LeaseStateHandle}},
 	}
 
-	// RWH: requested W conflicts with existing R/W -> skip
-	// RH: requested R conflicts with existing W (existing W conflicts with requested R) -> skip
+	// Directory candidates for RWH: [RW, R] (Handle not valid for dirs)
 	// RW: requested W conflicts with existing R/W -> skip
 	// R: existing W conflicts with requested R -> skip
 	// All candidates conflict -> None
