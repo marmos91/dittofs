@@ -948,6 +948,15 @@ func CreateLocalStoreFromConfig(
 		maxMemory = defaults.MaxMemory
 	}
 
+	// Per-store max_size from config JSON takes precedence over defaults
+	if v, ok := config["max_size"]; ok {
+		if n, ok := v.(float64); ok && n > 0 {
+			maxDisk = int64(n)
+		} else {
+			logger.Warn("block store config has max_size but it is invalid or non-positive; ignoring", "value", v)
+		}
+	}
+
 	switch storeType {
 	case "fs":
 		basePath, ok := config["path"].(string)
