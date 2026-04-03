@@ -205,6 +205,26 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 	}
 
 	// ========================================================================
+	// Step 1b: Validate DesiredAccess for SET_INFO
+	// ========================================================================
+	// Per MS-SMB2 3.3.5.21.1: For attribute-setting info classes, the open
+	// must include FILE_WRITE_ATTRIBUTES. Rename/delete disposition/EOF have
+	// their own access checks later (DELETE, FILE_WRITE_DATA, etc.).
+	if req.InfoType == types.SMB2InfoTypeFile {
+		switch types.FileInfoClass(req.FileInfoClass) {
+		case types.FileRenameInformation,
+			types.FileDispositionInformation, types.FileDispositionInformationEx,
+			types.FileEndOfFileInformation, types.FileAllocationInformation,
+			15: // FileFullEaInformation
+			// These have specific access checks in their handlers
+		default:
+			if !hasAccessRight(openFile.DesiredAccess, uint32(types.FileWriteAttributes)) {
+				return setInfoStatus(types.StatusAccessDenied), nil
+			}
+		}
+	}
+
+	// ========================================================================
 	// Step 2: Build AuthContext
 	// ========================================================================
 

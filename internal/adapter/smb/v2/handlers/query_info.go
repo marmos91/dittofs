@@ -271,6 +271,18 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	}
 
 	// ========================================================================
+	// Step 2b: Validate DesiredAccess for QUERY_INFO
+	// ========================================================================
+	// Per MS-SMB2 3.3.5.20.1: For file and filesystem info, the open must
+	// include FILE_READ_ATTRIBUTES. GENERIC_ALL, MAXIMUM_ALLOWED, GENERIC_READ,
+	// and GENERIC_EXECUTE implicitly include FILE_READ_ATTRIBUTES.
+	if req.InfoType == types.SMB2InfoTypeFile || req.InfoType == types.SMB2InfoTypeFilesystem {
+		if !hasAccessRight(openFile.DesiredAccess, uint32(types.FileReadAttributes)) {
+			return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+		}
+	}
+
+	// ========================================================================
 	// Step 3: Get metadata store and file attributes
 	// ========================================================================
 
@@ -534,8 +546,15 @@ func (h *Handler) buildFileInfoFromStore(ctx context.Context, file *metadata.Fil
 
 	case types.FileAccessInformation:
 		// FILE_ACCESS_INFORMATION [MS-FSCC] 2.4.1 (4 bytes)
+		// Return the granted access mask from the CREATE request.
+		// Per MS-FSCC 2.4.1: AccessFlags reflects the access granted to the caller.
+		accessFlags := openFile.DesiredAccess
+		// MAXIMUM_ALLOWED and GENERIC_ALL resolve to full access.
+		if accessFlags&uint32(types.MaximumAllowed) != 0 || accessFlags&uint32(types.GenericAll) != 0 {
+			accessFlags = 0x001F01FF
+		}
 		w := smbenc.NewWriter(4)
-		w.WriteUint32(0x001F01FF) // AccessFlags (full access)
+		w.WriteUint32(accessFlags)
 		return w.Bytes(), nil
 
 	case types.FileStreamInformation:
@@ -680,8 +699,13 @@ func (h *Handler) buildFileAllInformationFromStore(file *metadata.File, openFile
 
 	w := smbenc.NewWriter(36)
 	w.WriteUint64(fileIndex)              // InternalInformation (8 bytes) at offset 64
-	w.WriteUint32(0)                      // EaInformation (4 bytes) at offset 72
-	w.WriteUint32(0x001F01FF)             // AccessInformation (4 bytes) at offset 76
+	// AccessInformation: return granted access from CREATE.
+	accessFlags := openFile.DesiredAccess
+	if accessFlags&uint32(types.MaximumAllowed) != 0 || accessFlags&uint32(types.GenericAll) != 0 {
+		accessFlags = 0x001F01FF
+	}
+	w.WriteUint32(0)           // EaInformation (4 bytes) at offset 72
+	w.WriteUint32(accessFlags) // AccessInformation (4 bytes) at offset 76
 	w.WriteUint64(0)                      // PositionInformation (8 bytes) at offset 80
 	w.WriteUint32(0)                      // ModeInformation (4 bytes) at offset 88
 	w.WriteUint32(0)                      // AlignmentInformation (4 bytes) at offset 92
@@ -1013,4 +1037,30 @@ func toSMBPath(path string) string {
 		return "\\"
 	}
 	return "\\" + strings.ReplaceAll(path, "/", "\\")
+}
+
+// hasAccessRight checks if the granted access mask includes the required right.
+// Per MS-SMB2 2.2.13.1: MAXIMUM_ALLOWED, GENERIC_ALL, GENERIC_READ, GENERIC_WRITE,
+// and GENERIC_EXECUTE are mapped to specific access rights during CREATE.
+// GENERIC_READ includes FILE_READ_ATTRIBUTES; GENERIC_WRITE includes FILE_WRITE_ATTRIBUTES;
+// GENERIC_EXECUTE includes FILE_READ_ATTRIBUTES; GENERIC_ALL includes everything.
+func hasAccessRight(grantedAccess, requiredRight uint32) bool {
+	// Explicit right present
+	if grantedAccess&requiredRight != 0 {
+		return true
+	}
+	// MAXIMUM_ALLOWED and GENERIC_ALL grant everything
+	if grantedAccess&uint32(types.MaximumAllowed) != 0 || grantedAccess&uint32(types.GenericAll) != 0 {
+		return true
+	}
+	// GENERIC_READ includes FILE_READ_DATA, FILE_READ_EA, FILE_READ_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE
+	if requiredRight == uint32(types.FileReadAttributes) &&
+		(grantedAccess&uint32(types.GenericRead) != 0 || grantedAccess&uint32(types.GenericExecute) != 0) {
+		return true
+	}
+	// GENERIC_WRITE includes FILE_WRITE_DATA, FILE_APPEND_DATA, FILE_WRITE_EA, FILE_WRITE_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE
+	if requiredRight == uint32(types.FileWriteAttributes) && grantedAccess&uint32(types.GenericWrite) != 0 {
+		return true
+	}
+	return false
 }
