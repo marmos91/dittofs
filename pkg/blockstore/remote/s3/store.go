@@ -147,7 +147,7 @@ func NewFromConfig(ctx context.Context, config Config) (*Store, error) {
 
 	if config.Endpoint != "" {
 		s3Opts = append(s3Opts, func(o *s3.Options) {
-			o.BaseEndpoint = aws.String(config.Endpoint)
+			o.BaseEndpoint = aws.String(normalizeEndpoint(config.Endpoint))
 		})
 	}
 
@@ -160,6 +160,44 @@ func NewFromConfig(ctx context.Context, config Config) (*Store, error) {
 	client := s3.NewFromConfig(awsCfg, s3Opts...)
 
 	return New(client, config), nil
+}
+
+// normalizeEndpoint prepends https:// when the endpoint does not already
+// include a URI scheme. Endpoints that already contain a scheme (including
+// non-HTTP ones like s3://) are returned as-is.
+func normalizeEndpoint(endpoint string) string {
+	if endpoint == "" {
+		return ""
+	}
+	// Look for "://" preceded by a valid URI scheme (RFC 3986: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )).
+	// We cannot use url.Parse alone because it misinterprets "host:port" as scheme "host".
+	if i := strings.Index(endpoint, "://"); i > 0 {
+		scheme := endpoint[:i]
+		if isValidScheme(scheme) {
+			return endpoint
+		}
+	}
+	return "https://" + endpoint
+}
+
+// isValidScheme checks whether s is a valid URI scheme per RFC 3986.
+func isValidScheme(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for i, c := range s {
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z':
+			// always valid
+		case '0' <= c && c <= '9', c == '+', c == '-', c == '.':
+			if i == 0 {
+				return false // must start with a letter
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // checkClosed returns ErrStoreClosed if the store has been closed.
