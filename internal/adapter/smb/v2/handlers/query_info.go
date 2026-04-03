@@ -546,15 +546,9 @@ func (h *Handler) buildFileInfoFromStore(ctx context.Context, file *metadata.Fil
 
 	case types.FileAccessInformation:
 		// FILE_ACCESS_INFORMATION [MS-FSCC] 2.4.1 (4 bytes)
-		// Return the granted access mask from the CREATE request.
 		// Per MS-FSCC 2.4.1: AccessFlags reflects the access granted to the caller.
-		accessFlags := openFile.DesiredAccess
-		// MAXIMUM_ALLOWED and GENERIC_ALL resolve to full access.
-		if accessFlags&uint32(types.MaximumAllowed) != 0 || accessFlags&uint32(types.GenericAll) != 0 {
-			accessFlags = 0x001F01FF
-		}
 		w := smbenc.NewWriter(4)
-		w.WriteUint32(accessFlags)
+		w.WriteUint32(resolveAccessFlags(openFile.DesiredAccess))
 		return w.Bytes(), nil
 
 	case types.FileStreamInformation:
@@ -698,18 +692,13 @@ func (h *Handler) buildFileAllInformationFromStore(file *metadata.File, openFile
 	fileIndex := r.ReadUint64()
 
 	w := smbenc.NewWriter(36)
-	w.WriteUint64(fileIndex)              // InternalInformation (8 bytes) at offset 64
-	// AccessInformation: return granted access from CREATE.
-	accessFlags := openFile.DesiredAccess
-	if accessFlags&uint32(types.MaximumAllowed) != 0 || accessFlags&uint32(types.GenericAll) != 0 {
-		accessFlags = 0x001F01FF
-	}
-	w.WriteUint32(0)           // EaInformation (4 bytes) at offset 72
-	w.WriteUint32(accessFlags) // AccessInformation (4 bytes) at offset 76
-	w.WriteUint64(0)                      // PositionInformation (8 bytes) at offset 80
-	w.WriteUint32(0)                      // ModeInformation (4 bytes) at offset 88
-	w.WriteUint32(0)                      // AlignmentInformation (4 bytes) at offset 92
-	w.WriteUint32(uint32(len(nameBytes))) // NameInformation length at offset 96
+	w.WriteUint64(fileIndex)                                  // InternalInformation (8 bytes) at offset 64
+	w.WriteUint32(0)                                          // EaInformation (4 bytes) at offset 72
+	w.WriteUint32(resolveAccessFlags(openFile.DesiredAccess)) // AccessInformation (4 bytes) at offset 76
+	w.WriteUint64(0)                                          // PositionInformation (8 bytes) at offset 80
+	w.WriteUint32(0)                                          // ModeInformation (4 bytes) at offset 88
+	w.WriteUint32(0)                                          // AlignmentInformation (4 bytes) at offset 92
+	w.WriteUint32(uint32(len(nameBytes)))                     // NameInformation length at offset 96
 	copy(info[64:100], w.Bytes())
 
 	copy(info[100:], nameBytes)
@@ -1037,6 +1026,38 @@ func toSMBPath(path string) string {
 		return "\\"
 	}
 	return "\\" + strings.ReplaceAll(path, "/", "\\")
+}
+
+// resolveAccessFlags returns the effective access flags for the open file.
+// MAXIMUM_ALLOWED and GENERIC_ALL are resolved to FILE_ALL_ACCESS (0x001F01FF).
+// resolveAccessFlags normalizes an access mask for FileAccessInformation.
+// Per MS-SMB2: GENERIC_* and MAXIMUM_ALLOWED are resolved to specific rights
+// at CREATE time. FileAccessInformation should report the effective rights.
+func resolveAccessFlags(desiredAccess uint32) uint32 {
+	resolved := desiredAccess
+
+	if resolved&uint32(types.MaximumAllowed) != 0 || resolved&uint32(types.GenericAll) != 0 {
+		resolved |= 0x001F01FF // FILE_ALL_ACCESS
+	}
+	if resolved&uint32(types.GenericRead) != 0 {
+		resolved |= uint32(types.FileReadData) | uint32(types.FileReadEA) |
+			uint32(types.FileReadAttributes) | uint32(types.ReadControl) | uint32(types.Synchronize)
+	}
+	if resolved&uint32(types.GenericWrite) != 0 {
+		resolved |= uint32(types.FileWriteData) | uint32(types.FileAppendData) |
+			uint32(types.FileWriteEA) | uint32(types.FileWriteAttributes) |
+			uint32(types.ReadControl) | uint32(types.Synchronize)
+	}
+	if resolved&uint32(types.GenericExecute) != 0 {
+		resolved |= uint32(types.FileExecute) | uint32(types.FileReadAttributes) |
+			uint32(types.ReadControl) | uint32(types.Synchronize)
+	}
+
+	// Clear generic/maximum bits — only return specific rights
+	resolved &^= uint32(types.MaximumAllowed) | uint32(types.GenericAll) |
+		uint32(types.GenericRead) | uint32(types.GenericWrite) | uint32(types.GenericExecute)
+
+	return resolved
 }
 
 // hasAccessRight checks if the granted access mask includes the required right.

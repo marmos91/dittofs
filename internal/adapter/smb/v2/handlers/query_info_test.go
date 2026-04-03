@@ -275,3 +275,31 @@ func TestBuildFileInfoFromStore_FileStreamInformation(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveAccessFlags(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    uint32
+		expected uint32
+	}{
+		{"explicit read attrs", uint32(types.FileReadAttributes), uint32(types.FileReadAttributes)},
+		{"generic all", uint32(types.GenericAll), 0x001F01FF},
+		{"maximum allowed", uint32(types.MaximumAllowed), 0x001F01FF},
+		{"generic read", uint32(types.GenericRead), uint32(types.FileReadData) | uint32(types.FileReadEA) | uint32(types.FileReadAttributes) | uint32(types.ReadControl) | uint32(types.Synchronize)},
+		{"generic write", uint32(types.GenericWrite), uint32(types.FileWriteData) | uint32(types.FileAppendData) | uint32(types.FileWriteEA) | uint32(types.FileWriteAttributes) | uint32(types.ReadControl) | uint32(types.Synchronize)},
+		{"no generic bits in output", uint32(types.GenericAll) | uint32(types.GenericRead), 0x001F01FF},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveAccessFlags(tt.input)
+			if got != tt.expected {
+				t.Errorf("resolveAccessFlags(0x%x) = 0x%x, want 0x%x", tt.input, got, tt.expected)
+			}
+			// Verify no generic/maximum bits remain
+			genericMask := uint32(types.MaximumAllowed) | uint32(types.GenericAll) | uint32(types.GenericRead) | uint32(types.GenericWrite) | uint32(types.GenericExecute)
+			if got&genericMask != 0 {
+				t.Errorf("resolveAccessFlags(0x%x) still has generic bits: 0x%x", tt.input, got&genericMask)
+			}
+		})
+	}
+}

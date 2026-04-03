@@ -185,6 +185,13 @@ type LockManager interface {
 	// share mode conflict check. Strips only the Handle bit (RWH -> RW, RH -> R).
 	BreakHandleLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error
 
+	// BreakReadLeasesForParentDir breaks Read leases on a parent directory
+	// when directory content changes (CREATE, RENAME, DELETE on close).
+	// Per MS-FSA 2.1.5.14: changes to directory listing invalidate Read
+	// caching, so clients holding R or RW leases must be notified.
+	// Breaks to None (full revocation of Read caching).
+	BreakReadLeasesForParentDir(handleKey string, excludeOwner *LockOwner) error
+
 	// WaitForBreakCompletion blocks until all breaking locks on a file resolve
 	// or the context is cancelled.
 	WaitForBreakCompletion(ctx context.Context, handleKey string) error
@@ -1301,6 +1308,20 @@ func (lm *Manager) CheckAndBreakLeasesForSMBOpen(handleKey string, excludeOwner 
 func (lm *Manager) BreakHandleLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error {
 	return lm.breakOpLocks(handleKey, excludeOwner, BreakToStripHandle, func(lease *OpLock) bool {
 		return lease.HasHandle()
+	})
+}
+
+// BreakReadLeasesForParentDir breaks Read leases on a parent directory when
+// a child file is modified (SET_INFO, WRITE, DELETE). Per MS-FSA 2.1.5.14:
+// changes to directory contents or child metadata invalidate Read caching,
+// so clients holding R or RW leases on the directory must be notified.
+//
+// The break goes to None (full revocation):
+//   - R  -> None
+//   - RW -> None
+func (lm *Manager) BreakReadLeasesForParentDir(handleKey string, excludeOwner *LockOwner) error {
+	return lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, func(lease *OpLock) bool {
+		return lease.IsDirectory && lease.HasRead()
 	})
 }
 

@@ -1007,8 +1007,13 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	if (createAction == types.FileCreated || createAction == types.FileOverwritten || createAction == types.FileSuperseded) && h.LeaseManager != nil {
 		parentLockHandle := lock.FileHandle(parentHandle)
 		excludeClientID := fmt.Sprintf("smb:%d", ctx.SessionID)
+		// Break Handle leases on parent directory
 		if breakErr := h.LeaseManager.BreakParentHandleLeasesOnCreate(authCtx.Context, parentLockHandle, tree.ShareName, excludeClientID); breakErr != nil {
 			logger.Debug("CREATE: parent directory Handle lease break failed", "error", breakErr)
+		}
+		// Break Read leases on parent directory (directory content changed)
+		if breakErr := h.LeaseManager.BreakParentReadLeasesOnModify(authCtx.Context, parentLockHandle, tree.ShareName, excludeClientID); breakErr != nil {
+			logger.Debug("CREATE: parent directory Read lease break failed", "error", breakErr)
 		}
 	}
 

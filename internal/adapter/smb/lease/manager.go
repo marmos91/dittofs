@@ -412,37 +412,60 @@ func (lm *LeaseManager) BreakHandleLeasesOnOpenAsync(
 // creates a file, other clients holding RH leases on the parent directory
 // receive a lease break notification.
 //
-// Unlike BreakHandleLeasesOnOpen (step 6c), this does NOT wait for the break
-// to complete. The parent directory break is an informational notification:
-// the file creation has already committed, and the other client just needs to
-// invalidate its cached directory handle. Blocking here would deadlock when
-// the test framework (or real client) needs the CREATE response to arrive
-// before it processes the break acknowledgment on the other session.
+// resolveParentBreakArgs resolves the lock manager, handle key, and exclude
+// owner for parent directory lease break operations. Returns nil lockMgr if
+// the share has no lock manager.
+func (lm *LeaseManager) resolveParentBreakArgs(
+	parentHandle lock.FileHandle,
+	shareName string,
+	excludeClientID string,
+) (lockMgr lock.LockManager, handleKey string, excludeOwner *lock.LockOwner) {
+	lockMgr = lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return nil, "", nil
+	}
+	handleKey = string(parentHandle)
+	if excludeClientID != "" {
+		excludeOwner = &lock.LockOwner{ClientID: excludeClientID}
+	}
+	return lockMgr, handleKey, excludeOwner
+}
+
+// BreakParentHandleLeasesOnCreate breaks Handle leases on a parent directory
+// when a child is created, overwritten, or superseded (RH -> R, RWH -> RW).
+//
+// This does NOT wait for the break to complete. The parent directory break is
+// an informational notification: the file creation has already committed, and
+// the other client just needs to invalidate its cached directory handle.
 func (lm *LeaseManager) BreakParentHandleLeasesOnCreate(
 	_ context.Context,
 	parentHandle lock.FileHandle,
 	shareName string,
 	excludeClientID string,
 ) error {
-	lockMgr := lm.resolveLockManager(shareName)
+	lockMgr, handleKey, excludeOwner := lm.resolveParentBreakArgs(parentHandle, shareName, excludeClientID)
 	if lockMgr == nil {
 		return nil
 	}
-
-	handleKey := string(parentHandle)
-
-	// Build excludeOwner with ClientID so breakOpLocks skips leases from
-	// the session that triggered the CREATE.
-	var excludeOwner *lock.LockOwner
-	if excludeClientID != "" {
-		excludeOwner = &lock.LockOwner{ClientID: excludeClientID}
-	}
-
-	// Break Handle leases on parent directory (RH -> R).
-	// This dispatches the LEASE_BREAK_NOTIFICATION to the other client but
-	// does NOT wait for acknowledgment. The CREATE response is sent immediately
-	// so the other client can process the break asynchronously.
 	return lockMgr.BreakHandleLeasesForSMBOpen(handleKey, excludeOwner)
+}
+
+// BreakParentReadLeasesOnModify breaks Read leases on a parent directory
+// when a child file's metadata is modified via SET_INFO, WRITE, or DELETE.
+// Per MS-FSA 2.1.5.14: changes to directory contents invalidate Read caching,
+// so clients holding R or RW leases on the directory must be notified.
+// Breaks to None (full revocation of Read caching).
+func (lm *LeaseManager) BreakParentReadLeasesOnModify(
+	_ context.Context,
+	parentHandle lock.FileHandle,
+	shareName string,
+	excludeClientID string,
+) error {
+	lockMgr, handleKey, excludeOwner := lm.resolveParentBreakArgs(parentHandle, shareName, excludeClientID)
+	if lockMgr == nil {
+		return nil
+	}
+	return lockMgr.BreakReadLeasesForParentDir(handleKey, excludeOwner)
 }
 
 // SetLeaseEpoch sets the epoch on an existing lease identified by leaseKey.
