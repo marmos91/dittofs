@@ -789,7 +789,9 @@ func (lm *Manager) SetLeaseEpoch(leaseKey [16]byte, epoch uint16) bool {
 		return false
 	}
 
-	lock.Lease.Epoch = epoch
+	if epoch >= lock.Lease.Epoch {
+		lock.Lease.Epoch = epoch
+	}
 	return true
 }
 
@@ -1435,6 +1437,13 @@ func (lm *Manager) breakOpLocks(
 			toBreak = append(toBreak, breakEntry{lock: lock, breakToState: targetState})
 		}
 	}
+	// Clone locks before releasing mu so that dispatchOpLockBreak receives
+	// snapshots. Without this, concurrent AcknowledgeLeaseBreak can mutate
+	// the live *UnifiedLock while the break callback reads it.
+	// This matches the pattern in requestLeaseImpl (leases.go).
+	for i := range toBreak {
+		toBreak[i].lock = toBreak[i].lock.Clone()
+	}
 	lm.mu.Unlock()
 
 	for _, entry := range toBreak {
@@ -1652,8 +1661,8 @@ func (lm *Manager) breakDelegations(
 		if shouldBreak(lock.Delegation) {
 			lock.Delegation.Breaking = true
 			lock.Delegation.BreakStarted = time.Now()
-			// Recalled is set by the break callback after CB_RECALL is actually sent.
-			toBreak = append(toBreak, lock)
+			// Clone before dispatch to prevent race with concurrent ack/release.
+			toBreak = append(toBreak, lock.Clone())
 		}
 	}
 	lm.mu.Unlock()

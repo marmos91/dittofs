@@ -162,6 +162,15 @@ func (lm *Manager) OnDirChange(parentHandle FileHandle, changeType DirChangeType
 			delegsToBreak = append(delegsToBreak, lock)
 		}
 	}
+	// Clone locks before releasing mu so that dispatch callbacks receive
+	// snapshots. Without this, concurrent AcknowledgeLeaseBreak can mutate
+	// the live *UnifiedLock while the callback reads it.
+	for i := range leasesToBreak {
+		leasesToBreak[i] = leasesToBreak[i].Clone()
+	}
+	for i := range delegsToBreak {
+		delegsToBreak[i] = delegsToBreak[i].Clone()
+	}
 	lm.mu.Unlock()
 
 	totalBreaks := len(leasesToBreak) + len(delegsToBreak)
