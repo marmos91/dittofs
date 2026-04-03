@@ -185,6 +185,13 @@ type LockManager interface {
 	// share mode conflict check. Strips only the Handle bit (RWH -> RW, RH -> R).
 	BreakHandleLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error
 
+	// BreakReadLeasesForParentDir breaks Read leases on a parent directory
+	// when directory content changes (CREATE, RENAME, DELETE on close).
+	// Per MS-FSA 2.1.5.14: changes to directory listing invalidate Read
+	// caching, so clients holding R or RW leases must be notified.
+	// Breaks to None (full revocation of Read caching).
+	BreakReadLeasesForParentDir(handleKey string, excludeOwner *LockOwner) error
+
 	// WaitForBreakCompletion blocks until all breaking locks on a file resolve
 	// or the context is cancelled.
 	WaitForBreakCompletion(ctx context.Context, handleKey string) error
@@ -789,7 +796,9 @@ func (lm *Manager) SetLeaseEpoch(leaseKey [16]byte, epoch uint16) bool {
 		return false
 	}
 
-	lock.Lease.Epoch = epoch
+	if epoch >= lock.Lease.Epoch {
+		lock.Lease.Epoch = epoch
+	}
 	return true
 }
 
@@ -1302,6 +1311,20 @@ func (lm *Manager) BreakHandleLeasesForSMBOpen(handleKey string, excludeOwner *L
 	})
 }
 
+// BreakReadLeasesForParentDir breaks Read leases on a parent directory when
+// a child file is modified (SET_INFO, WRITE, DELETE). Per MS-FSA 2.1.5.14:
+// changes to directory contents or child metadata invalidate Read caching,
+// so clients holding R or RW leases on the directory must be notified.
+//
+// The break goes to None (full revocation):
+//   - R  -> None
+//   - RW -> None
+func (lm *Manager) BreakReadLeasesForParentDir(handleKey string, excludeOwner *LockOwner) error {
+	return lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, func(lease *OpLock) bool {
+		return lease.IsDirectory && lease.HasRead()
+	})
+}
+
 // CheckAndBreakCachingForDelete breaks all leases AND all delegations.
 func (lm *Manager) CheckAndBreakCachingForDelete(handleKey string, excludeOwner *LockOwner) error {
 	if err := lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, func(lease *OpLock) bool {
@@ -1319,6 +1342,11 @@ func (lm *Manager) CheckAndBreakCachingForDelete(handleKey string, excludeOwner 
 // WaitForBreakCompletion blocks until all breaking locks on a file resolve
 // or the context is cancelled. Multiple goroutines may wait concurrently;
 // signalBreakWait uses close() to broadcast to all waiters.
+//
+// On timeout (context cancellation), all leases still in Breaking state are
+// automatically downgraded to their BreakToState, as if the client had
+// acknowledged. Per MS-SMB2 3.3.5.22.2: if the client fails to acknowledge
+// within the timeout, the server completes the break.
 func (lm *Manager) WaitForBreakCompletion(ctx context.Context, handleKey string) error {
 	for {
 		lm.mu.Lock()
@@ -1350,11 +1378,66 @@ func (lm *Manager) WaitForBreakCompletion(ctx context.Context, handleKey string)
 
 		select {
 		case <-ctx.Done():
+			// Timeout: auto-downgrade all breaking leases to their break-to state.
+			lm.forceCompleteBreaks(handleKey)
 			return ctx.Err()
 		case <-ch:
 			continue
 		}
 	}
+}
+
+// forceCompleteBreaks auto-downgrades all breaking leases on a file to their
+// BreakToState, as if the client had acknowledged. Called when the break
+// wait times out. Leases breaking to None are removed entirely.
+func (lm *Manager) forceCompleteBreaks(handleKey string) {
+	lm.mu.Lock()
+	locks := lm.unifiedLocks[handleKey]
+
+	var remaining []*UnifiedLock
+	modified := false
+	for _, l := range locks {
+		if l.Lease != nil && l.Lease.Breaking {
+			modified = true
+			if l.Lease.BreakToState == LeaseStateNone {
+				// Remove entirely
+				if lm.lockStore != nil {
+					_ = lm.lockStore.DeleteLock(context.Background(), l.ID)
+				}
+				logger.Debug("forceCompleteBreaks: removed lease (break-to None)",
+					"handleKey", handleKey,
+					"leaseKey", fmt.Sprintf("%x", l.Lease.LeaseKey))
+				continue // skip adding to remaining
+			}
+			// Downgrade to break-to state
+			l.Lease.LeaseState = l.Lease.BreakToState
+			l.Lease.Breaking = false
+			l.Lease.BreakToState = 0
+			l.Lease.BreakStarted = time.Time{}
+			advanceEpoch(l.Lease)
+			l.Type = lockTypeForLeaseState(l.Lease.LeaseState)
+
+			if lm.lockStore != nil {
+				pl := ToPersistedLock(l, 0)
+				_ = lm.lockStore.PutLock(context.Background(), pl)
+			}
+			logger.Debug("forceCompleteBreaks: auto-downgraded lease",
+				"handleKey", handleKey,
+				"leaseKey", fmt.Sprintf("%x", l.Lease.LeaseKey),
+				"newState", LeaseStateToString(l.Lease.LeaseState))
+		}
+		remaining = append(remaining, l)
+	}
+
+	if modified {
+		if len(remaining) == 0 {
+			delete(lm.unifiedLocks, handleKey)
+		} else {
+			lm.unifiedLocks[handleKey] = remaining
+		}
+		lm.signalBreakWaitLocked(handleKey)
+	}
+	lm.mu.Unlock()
 }
 
 // signalBreakWait broadcasts to all waiters by closing the wait channel and
@@ -1434,6 +1517,13 @@ func (lm *Manager) breakOpLocks(
 			advanceEpoch(lock.Lease)
 			toBreak = append(toBreak, breakEntry{lock: lock, breakToState: targetState})
 		}
+	}
+	// Clone locks before releasing mu so that dispatchOpLockBreak receives
+	// snapshots. Without this, concurrent AcknowledgeLeaseBreak can mutate
+	// the live *UnifiedLock while the break callback reads it.
+	// This matches the pattern in requestLeaseImpl (leases.go).
+	for i := range toBreak {
+		toBreak[i].lock = toBreak[i].lock.Clone()
 	}
 	lm.mu.Unlock()
 
@@ -1652,8 +1742,8 @@ func (lm *Manager) breakDelegations(
 		if shouldBreak(lock.Delegation) {
 			lock.Delegation.Breaking = true
 			lock.Delegation.BreakStarted = time.Now()
-			// Recalled is set by the break callback after CB_RECALL is actually sent.
-			toBreak = append(toBreak, lock)
+			// Clone before dispatch to prevent race with concurrent ack/release.
+			toBreak = append(toBreak, lock.Clone())
 		}
 	}
 	lm.mu.Unlock()

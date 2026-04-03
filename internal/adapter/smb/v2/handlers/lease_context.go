@@ -373,6 +373,11 @@ func ProcessLeaseCreateContext(
 	var responseFlags uint32
 	if errors.Is(err, lock.ErrLeaseBreakInProgress) {
 		responseFlags = smbenc.LeaseResponseFlagBreakInProgress
+	} else if errors.Is(err, lock.ErrInvalidLeaseState) {
+		// Per MS-SMB2 3.3.5.9.8: Invalid lease states (e.g., Write without
+		// Read, Handle without Read) must fail the CREATE with
+		// STATUS_INVALID_PARAMETER. Propagate the error to the caller.
+		return nil, err
 	} else if err != nil {
 		logger.Debug("ProcessLeaseCreateContext: lease request failed", "error", err)
 		grantedState = lock.LeaseStateNone
@@ -380,10 +385,11 @@ func ProcessLeaseCreateContext(
 	}
 
 	// Per MS-SMB2 3.3.5.9: For V2 lease requests, the server should track
-	// the client's epoch from the RqLs create context. If the client sent a
-	// non-zero epoch and we just granted a new lease (epoch==1), initialize
-	// the lease's epoch to the client's requested value.
-	if !isV1 && leaseReq.Epoch > 0 && grantedState != lock.LeaseStateNone && epoch == 1 {
+	// the client's epoch from the RqLs create context. Initialize the epoch
+	// to max(current, client) so re-opens with the same key pick up the
+	// client's evolving epoch value. This covers both first grants (epoch==1)
+	// and subsequent re-opens or upgrades.
+	if !isV1 && leaseReq.Epoch > 0 && grantedState != lock.LeaseStateNone && leaseReq.Epoch > epoch {
 		leaseMgr.SetLeaseEpoch(leaseReq.LeaseKey, leaseReq.Epoch)
 		epoch = leaseReq.Epoch
 	}

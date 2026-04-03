@@ -205,6 +205,27 @@ func (h *Handler) SetInfo(ctx *SMBHandlerContext, req *SetInfoRequest) (*SetInfo
 	}
 
 	// ========================================================================
+	// Step 1b: Validate DesiredAccess for SET_INFO
+	// ========================================================================
+	// Per MS-SMB2 3.3.5.21.1: For attribute-setting info classes, the open
+	// must include FILE_WRITE_ATTRIBUTES. Rename/delete disposition/EOF have
+	// their own access checks later (DELETE, FILE_WRITE_DATA, etc.).
+	if req.InfoType == types.SMB2InfoTypeFile {
+		switch types.FileInfoClass(req.FileInfoClass) {
+		case types.FileRenameInformation,
+			types.FileDispositionInformation, types.FileDispositionInformationEx,
+			types.FileEndOfFileInformation, types.FileAllocationInformation,
+			15: // FileFullEaInformation
+			// These have specific access checks in their handlers or
+			// are validated by the metadata layer
+		default:
+			if !hasAccessRight(openFile.DesiredAccess, uint32(types.FileWriteAttributes)) {
+				return setInfoStatus(types.StatusAccessDenied), nil
+			}
+		}
+	}
+
+	// ========================================================================
 	// Step 2: Build AuthContext
 	// ========================================================================
 
@@ -442,11 +463,6 @@ func (h *Handler) setFileInfoFromStore(
 			h.StoreOpenFile(openFile)
 		}
 
-		// Per MS-FSA 2.1.5.14.2: Modifying file attributes changes the parent
-		// directory entry. Break Handle leases on the parent directory so other
-		// clients invalidate cached directory state.
-		h.breakParentDirLeasesForSetInfo(authCtx, openFile)
-
 		// Notify watchers about attribute/timestamp changes
 		if h.NotifyRegistry != nil {
 			h.NotifyRegistry.NotifyChange(openFile.ShareName, GetParentPath(openFile.Path), openFile.FileName, FileActionModified)
@@ -550,8 +566,8 @@ func (h *Handler) setFileInfoFromStore(
 			openFile.FileName = toName
 			h.StoreOpenFile(openFile)
 
-			// Break parent directory leases on rename
-			h.breakParentDirLeasesForSetInfo(authCtx, openFile)
+			// Break parent directory leases on rename (content change)
+			h.breakParentDirLeasesForContentChange(authCtx, openFile)
 
 			logger.Debug("SET_INFO: stream rename successful",
 				"oldName", oldFileName,
@@ -695,8 +711,8 @@ func (h *Handler) setFileInfoFromStore(
 		h.StoreOpenFile(openFile)
 
 		// Per MS-FSA 2.1.5.14.10: Rename changes directory contents.
-		// Break Handle leases on both source and destination parent directories.
-		h.breakParentDirLeasesForSetInfo(authCtx, openFile)
+		// Break Handle + Read leases on parent directories.
+		h.breakParentDirLeasesForContentChange(authCtx, openFile)
 
 		logger.Debug("SET_INFO: rename successful",
 			"oldPath", oldPath,
@@ -803,10 +819,6 @@ func (h *Handler) setFileInfoFromStore(
 
 		// Restore frozen timestamps after truncation (which updates Mtime/Ctime)
 		h.restoreFrozenTimestamps(authCtx, openFile)
-
-		// Per MS-FSA 2.1.5.14.4: Changing file size modifies the parent
-		// directory entry. Break Handle leases on the parent directory.
-		h.breakParentDirLeasesForSetInfo(authCtx, openFile)
 
 		// Notify watchers about size changes
 		if h.NotifyRegistry != nil {
@@ -1063,18 +1075,27 @@ func (h *Handler) setSecurityInfo(
 	return setInfoStatus(types.StatusSuccess), nil
 }
 
-// breakParentDirLeasesForSetInfo breaks Handle leases on the parent directory
-// when a SET_INFO operation modifies a file's metadata. Per MS-FSA 2.1.5.14,
-// attribute changes, size changes, and renames modify the parent directory
-// entry and must break Handle caching on the parent directory.
-func (h *Handler) breakParentDirLeasesForSetInfo(authCtx *metadata.AuthContext, openFile *OpenFile) {
+// breakParentDirLeases breaks leases on the parent directory when a child
+// file's metadata or content changes (SET_INFO, WRITE, DELETE). Per MS-FSA 2.1.5.14:
+//   - Handle caching is broken so clients revalidate cached directory handles
+//   - Read caching is broken so clients see updated directory listing metadata
+//     (timestamps, sizes, attributes visible in READDIR results)
+//
+// breakParentDirLeasesForContentChange breaks both Handle and Read leases on
+// the parent directory when directory CONTENT changes (rename, delete). These
+// operations affect what READDIR returns, invalidating Read caching.
+func (h *Handler) breakParentDirLeasesForContentChange(authCtx *metadata.AuthContext, openFile *OpenFile) {
 	if h.LeaseManager == nil || len(openFile.ParentHandle) == 0 {
 		return
 	}
 
 	parentLockHandle := lock.FileHandle(openFile.ParentHandle)
 	excludeClientID := fmt.Sprintf("smb:%d", openFile.SessionID)
+
 	if breakErr := h.LeaseManager.BreakParentHandleLeasesOnCreate(authCtx.Context, parentLockHandle, openFile.ShareName, excludeClientID); breakErr != nil {
 		logger.Debug("SET_INFO: parent directory Handle lease break failed", "path", openFile.Path, "error", breakErr)
+	}
+	if breakErr := h.LeaseManager.BreakParentReadLeasesOnModify(authCtx.Context, parentLockHandle, openFile.ShareName, excludeClientID); breakErr != nil {
+		logger.Debug("SET_INFO: parent directory Read lease break failed", "path", openFile.Path, "error", breakErr)
 	}
 }

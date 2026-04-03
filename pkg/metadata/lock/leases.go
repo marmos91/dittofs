@@ -26,6 +26,11 @@ import (
 // The returned state and epoch are the current values of the breaking lease.
 var ErrLeaseBreakInProgress = errors.New("lease break in progress")
 
+// ErrInvalidLeaseState is returned by RequestLease when the requested lease
+// state is not a valid combination (e.g., Write without Read, Handle without
+// Read). Per MS-SMB2 3.3.5.9.8, the caller must return STATUS_INVALID_PARAMETER.
+var ErrInvalidLeaseState = errors.New("invalid lease state")
+
 // validUpgrades defines allowed lease state upgrade transitions.
 // A lease can only be upgraded (more permissions), never downgraded via RequestLease.
 // Downgrade happens only through lease break.
@@ -84,16 +89,16 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 	requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error) {
 
 	// Validate requested state against valid lease combinations.
-	isValidState := IsValidFileLeaseState
-	if isDirectory {
-		isValidState = IsValidDirectoryLeaseState
-	}
-	if !isValidState(requestedState) {
+	// Always validate against file lease states here (which accepts R, RW, RH, RWH).
+	// For directories, states like RH/RWH are not directly grantable but are not
+	// protocol errors -- they will be downgraded by bestGrantableState later.
+	// Only truly invalid states (W, H, WH -- missing Read) return an error.
+	if !IsValidFileLeaseState(requestedState) {
 		logger.Debug("RequestLease: invalid lease state",
 			"state", LeaseStateToString(requestedState),
 			"fileHandle", string(fileHandle),
 			"isDirectory", isDirectory)
-		return LeaseStateNone, 0, nil
+		return LeaseStateNone, 0, ErrInvalidLeaseState
 	}
 
 	// None is always granted trivially

@@ -3,6 +3,7 @@ package handlers
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"path"
 	"strings"
@@ -1006,8 +1007,13 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	if (createAction == types.FileCreated || createAction == types.FileOverwritten || createAction == types.FileSuperseded) && h.LeaseManager != nil {
 		parentLockHandle := lock.FileHandle(parentHandle)
 		excludeClientID := fmt.Sprintf("smb:%d", ctx.SessionID)
+		// Break Handle leases on parent directory
 		if breakErr := h.LeaseManager.BreakParentHandleLeasesOnCreate(authCtx.Context, parentLockHandle, tree.ShareName, excludeClientID); breakErr != nil {
 			logger.Debug("CREATE: parent directory Handle lease break failed", "error", breakErr)
+		}
+		// Break Read leases on parent directory (directory content changed)
+		if breakErr := h.LeaseManager.BreakParentReadLeasesOnModify(authCtx.Context, parentLockHandle, tree.ShareName, excludeClientID); breakErr != nil {
+			logger.Debug("CREATE: parent directory Read lease break failed", "error", breakErr)
 		}
 	}
 
@@ -1068,6 +1074,11 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 				file.Type == metadata.FileTypeDirectory,
 			)
 			if err != nil {
+				// Per MS-SMB2 3.3.5.9.8: Invalid lease states (e.g., Write
+				// without Read) must fail CREATE with STATUS_INVALID_PARAMETER.
+				if errors.Is(err, lock.ErrInvalidLeaseState) {
+					return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
+				}
 				logger.Debug("CREATE: lease context processing failed", "error", err)
 			}
 

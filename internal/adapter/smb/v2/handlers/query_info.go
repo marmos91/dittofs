@@ -271,6 +271,18 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	}
 
 	// ========================================================================
+	// Step 2b: Validate DesiredAccess for QUERY_INFO
+	// ========================================================================
+	// Per MS-SMB2 3.3.5.20.1: For file and filesystem info, the open must
+	// include FILE_READ_ATTRIBUTES. GENERIC_ALL, MAXIMUM_ALLOWED, GENERIC_READ,
+	// and GENERIC_EXECUTE implicitly include FILE_READ_ATTRIBUTES.
+	if req.InfoType == types.SMB2InfoTypeFile || req.InfoType == types.SMB2InfoTypeFilesystem {
+		if !hasAccessRight(openFile.DesiredAccess, uint32(types.FileReadAttributes)) {
+			return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
+		}
+	}
+
+	// ========================================================================
 	// Step 3: Get metadata store and file attributes
 	// ========================================================================
 
@@ -534,8 +546,9 @@ func (h *Handler) buildFileInfoFromStore(ctx context.Context, file *metadata.Fil
 
 	case types.FileAccessInformation:
 		// FILE_ACCESS_INFORMATION [MS-FSCC] 2.4.1 (4 bytes)
+		// Per MS-FSCC 2.4.1: AccessFlags reflects the access granted to the caller.
 		w := smbenc.NewWriter(4)
-		w.WriteUint32(0x001F01FF) // AccessFlags (full access)
+		w.WriteUint32(resolveAccessFlags(openFile.DesiredAccess))
 		return w.Bytes(), nil
 
 	case types.FileStreamInformation:
@@ -679,13 +692,13 @@ func (h *Handler) buildFileAllInformationFromStore(file *metadata.File, openFile
 	fileIndex := r.ReadUint64()
 
 	w := smbenc.NewWriter(36)
-	w.WriteUint64(fileIndex)              // InternalInformation (8 bytes) at offset 64
-	w.WriteUint32(0)                      // EaInformation (4 bytes) at offset 72
-	w.WriteUint32(0x001F01FF)             // AccessInformation (4 bytes) at offset 76
-	w.WriteUint64(0)                      // PositionInformation (8 bytes) at offset 80
-	w.WriteUint32(0)                      // ModeInformation (4 bytes) at offset 88
-	w.WriteUint32(0)                      // AlignmentInformation (4 bytes) at offset 92
-	w.WriteUint32(uint32(len(nameBytes))) // NameInformation length at offset 96
+	w.WriteUint64(fileIndex)                                  // InternalInformation (8 bytes) at offset 64
+	w.WriteUint32(0)                                          // EaInformation (4 bytes) at offset 72
+	w.WriteUint32(resolveAccessFlags(openFile.DesiredAccess)) // AccessInformation (4 bytes) at offset 76
+	w.WriteUint64(0)                                          // PositionInformation (8 bytes) at offset 80
+	w.WriteUint32(0)                                          // ModeInformation (4 bytes) at offset 88
+	w.WriteUint32(0)                                          // AlignmentInformation (4 bytes) at offset 92
+	w.WriteUint32(uint32(len(nameBytes)))                     // NameInformation length at offset 96
 	copy(info[64:100], w.Bytes())
 
 	copy(info[100:], nameBytes)
@@ -1013,4 +1026,62 @@ func toSMBPath(path string) string {
 		return "\\"
 	}
 	return "\\" + strings.ReplaceAll(path, "/", "\\")
+}
+
+// resolveAccessFlags returns the effective access flags for the open file.
+// MAXIMUM_ALLOWED and GENERIC_ALL are resolved to FILE_ALL_ACCESS (0x001F01FF).
+// resolveAccessFlags normalizes an access mask for FileAccessInformation.
+// Per MS-SMB2: GENERIC_* and MAXIMUM_ALLOWED are resolved to specific rights
+// at CREATE time. FileAccessInformation should report the effective rights.
+func resolveAccessFlags(desiredAccess uint32) uint32 {
+	resolved := desiredAccess
+
+	if resolved&uint32(types.MaximumAllowed) != 0 || resolved&uint32(types.GenericAll) != 0 {
+		resolved |= 0x001F01FF // FILE_ALL_ACCESS
+	}
+	if resolved&uint32(types.GenericRead) != 0 {
+		resolved |= uint32(types.FileReadData) | uint32(types.FileReadEA) |
+			uint32(types.FileReadAttributes) | uint32(types.ReadControl) | uint32(types.Synchronize)
+	}
+	if resolved&uint32(types.GenericWrite) != 0 {
+		resolved |= uint32(types.FileWriteData) | uint32(types.FileAppendData) |
+			uint32(types.FileWriteEA) | uint32(types.FileWriteAttributes) |
+			uint32(types.ReadControl) | uint32(types.Synchronize)
+	}
+	if resolved&uint32(types.GenericExecute) != 0 {
+		resolved |= uint32(types.FileExecute) | uint32(types.FileReadAttributes) |
+			uint32(types.ReadControl) | uint32(types.Synchronize)
+	}
+
+	// Clear generic/maximum bits — only return specific rights
+	resolved &^= uint32(types.MaximumAllowed) | uint32(types.GenericAll) |
+		uint32(types.GenericRead) | uint32(types.GenericWrite) | uint32(types.GenericExecute)
+
+	return resolved
+}
+
+// hasAccessRight checks if the granted access mask includes the required right.
+// Per MS-SMB2 2.2.13.1: MAXIMUM_ALLOWED, GENERIC_ALL, GENERIC_READ, GENERIC_WRITE,
+// and GENERIC_EXECUTE are mapped to specific access rights during CREATE.
+// GENERIC_READ includes FILE_READ_ATTRIBUTES; GENERIC_WRITE includes FILE_WRITE_ATTRIBUTES;
+// GENERIC_EXECUTE includes FILE_READ_ATTRIBUTES; GENERIC_ALL includes everything.
+func hasAccessRight(grantedAccess, requiredRight uint32) bool {
+	// Explicit right present
+	if grantedAccess&requiredRight != 0 {
+		return true
+	}
+	// MAXIMUM_ALLOWED and GENERIC_ALL grant everything
+	if grantedAccess&uint32(types.MaximumAllowed) != 0 || grantedAccess&uint32(types.GenericAll) != 0 {
+		return true
+	}
+	// GENERIC_READ includes FILE_READ_DATA, FILE_READ_EA, FILE_READ_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE
+	if requiredRight == uint32(types.FileReadAttributes) &&
+		(grantedAccess&uint32(types.GenericRead) != 0 || grantedAccess&uint32(types.GenericExecute) != 0) {
+		return true
+	}
+	// GENERIC_WRITE includes FILE_WRITE_DATA, FILE_APPEND_DATA, FILE_WRITE_EA, FILE_WRITE_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE
+	if requiredRight == uint32(types.FileWriteAttributes) && grantedAccess&uint32(types.GenericWrite) != 0 {
+		return true
+	}
+	return false
 }

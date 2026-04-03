@@ -41,10 +41,10 @@ func TestOnDirChange_BreaksDirectoryLeases(t *testing.T) {
 		},
 	})
 
-	// Grant directory lease
+	// Grant directory lease (RH requested -> downgraded to R since Handle not valid for dirs)
 	state, _, err := mgr.RequestLease(ctx, FileHandle("dir1"), leaseKey, parentKey, "owner1", "client1", "/share", LeaseStateRead|LeaseStateHandle, true)
 	require.NoError(t, err)
-	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state)
+	assert.Equal(t, LeaseStateRead, state)
 
 	// Simulate directory change from a different client
 	mgr.OnDirChange(FileHandle("dir1"), DirChangeAddEntry, "client2")

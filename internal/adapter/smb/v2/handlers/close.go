@@ -301,6 +301,10 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				// Per MS-FSA 2.1.5.14.2: Restore frozen timestamps on parent directory
 				// after delete updates parent Mtime/Ctime/Atime.
 				h.restoreParentDirFrozenTimestamps(authCtx, openFile.ParentHandle)
+
+				// Break parent directory leases: deletion changes directory content.
+				h.breakParentDirLeasesForContentChange(authCtx, openFile)
+
 				if h.NotifyRegistry != nil {
 					parentPath := GetParentPath(openFile.Path)
 					h.NotifyRegistry.NotifyChange(openFile.ShareName, parentPath, openFile.FileName, FileActionRemoved)
