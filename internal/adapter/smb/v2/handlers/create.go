@@ -1058,6 +1058,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 			// Process lease request through LeaseManager
 			var err error
 			leaseResponse, err = ProcessLeaseCreateContext(
+				authCtx.Context,
 				h.LeaseManager,
 				leaseCtx.Data,
 				lockFileHandle,
@@ -1070,25 +1071,23 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 				logger.Debug("CREATE: lease context processing failed", "error", err)
 			}
 
-			// Set oplock level to lease if lease was granted.
-			// When LeaseState=None the CREATE still succeeds (file is opened),
-			// but without a lease. The response includes LeaseState=0 in the
-			// RqLs context so the client can retry or proceed without caching.
-			if leaseResponse != nil && leaseResponse.LeaseState != lock.LeaseStateNone {
+			// Per MS-SMB2 2.2.14: When an RqLs create context is present in the
+			// response, the server MUST set OplockLevel to SMB2_OPLOCK_LEVEL_LEASE
+			// (0xFF). This tells the client to inspect the lease create context
+			// for the actual caching state. Without 0xFF, clients (including
+			// smbtorture) ignore the lease context entirely.
+			if leaseResponse != nil {
 				grantedOplock = OplockLevelLease
-			} else if leaseResponse != nil {
-				grantedOplock = OplockLevelNone
-				logger.Debug("CREATE: lease denied",
-					"grantedState", lock.LeaseStateToString(leaseResponse.LeaseState))
+				if leaseResponse.LeaseState == lock.LeaseStateNone {
+					logger.Debug("CREATE: lease denied, returning OplockLevel=0xFF with LeaseState=None")
+				}
 			}
-		} else if file.Type != metadata.FileTypeDirectory {
+		} else {
 			// OplockLevel=0xFF (Lease) but no RqLs create context present.
-			// Fall back to Batch oplock. Windows Server grants a Batch oplock
-			// in this case (confirmed by WPTS BVT_OpLockBreak_Lease test).
-			// This allows the oplock-to-lease interaction tests to work where
-			// Client 1 needs a Batch oplock that Client 2's lease will break.
-			req.OplockLevel = OplockLevelBatch
-			logger.Debug("CREATE: OplockLevel=Lease without RqLs context, falling back to Batch oplock")
+			// Per MS-SMB2 2.2.13: OplockLevel=0xFF is only meaningful with
+			// an RqLs create context. Without it, grant no oplock.
+			grantedOplock = OplockLevelNone
+			logger.Debug("CREATE: OplockLevel=Lease without RqLs context, granting None")
 		}
 	}
 

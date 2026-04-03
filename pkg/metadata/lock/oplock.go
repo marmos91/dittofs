@@ -58,13 +58,9 @@ var ValidFileLeaseStates = []uint32{
 }
 
 // ValidDirectoryLeaseStates contains valid lease state combinations for directories.
-// Directories can only have Read or Read+Handle leases.
-// Write leases are not permitted on directories.
-var ValidDirectoryLeaseStates = []uint32{
-	LeaseStateNone,                    // 0x00 - No caching
-	LeaseStateRead,                    // 0x01 - Read only
-	LeaseStateRead | LeaseStateHandle, // 0x05 - Read + Handle
-}
+// Per MS-SMB2 3.3.5.9: directories can hold Write (W) caching leases for
+// caching directory content changes. Same valid states as files.
+var ValidDirectoryLeaseStates = ValidFileLeaseStates
 
 // OpLock holds SMB2/3 lease-specific state.
 //
@@ -119,7 +115,7 @@ type OpLock struct {
 
 	// IsDirectory indicates this lease is on a directory.
 	// When true, valid lease states are restricted to ValidDirectoryLeaseStates
-	// (None, R, RH). Write leases are not permitted on directories.
+	// (None, R, RW, RH, RWH).
 	IsDirectory bool
 }
 
@@ -182,8 +178,8 @@ func IsValidFileLeaseState(state uint32) bool {
 
 // IsValidDirectoryLeaseState returns true if the state is a valid lease combination for directories.
 //
-// Valid directory states: None, R, RH
-// Invalid: W, RW, H, WH, RWH (no Write caching for directories)
+// Valid directory states: None, R, RW, RH, RWH
+// Invalid: W alone, H alone, WH (Write/Handle without Read)
 func IsValidDirectoryLeaseState(state uint32) bool {
 	return slices.Contains(ValidDirectoryLeaseStates, state)
 }

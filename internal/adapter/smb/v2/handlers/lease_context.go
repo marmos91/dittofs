@@ -12,6 +12,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
@@ -322,6 +323,7 @@ func FindCreateContext(contexts []CreateContext, name string) *CreateContext {
 //   - *LeaseResponseContext: Response context to add to CREATE response (nil if not processing)
 //   - error: Parsing or lease request error
 func ProcessLeaseCreateContext(
+	ctx context.Context,
 	leaseMgr *lease.LeaseManager,
 	ctxData []byte,
 	fileHandle lock.FileHandle,
@@ -354,7 +356,7 @@ func ProcessLeaseCreateContext(
 
 	// Request the lease through LeaseManager (delegates to shared LockManager)
 	grantedState, epoch, err := leaseMgr.RequestLease(
-		context.TODO(), // lease operations are quick
+		ctx,
 		fileHandle,
 		leaseReq.LeaseKey,
 		leaseReq.ParentLeaseKey,
@@ -365,32 +367,37 @@ func ProcessLeaseCreateContext(
 		leaseReq.LeaseState,
 		isDirectory,
 	)
-	if err != nil {
+	// Per MS-SMB2 3.3.5.9.8: If the same-key lease is in Breaking state,
+	// RequestLease returns ErrLeaseBreakInProgress with the current state/epoch.
+	// Set SMB2_LEASE_FLAG_BREAK_IN_PROGRESS (0x02) in the response flags.
+	var responseFlags uint32
+	if errors.Is(err, lock.ErrLeaseBreakInProgress) {
+		responseFlags = smbenc.LeaseResponseFlagBreakInProgress
+	} else if err != nil {
 		logger.Debug("ProcessLeaseCreateContext: lease request failed", "error", err)
 		grantedState = lock.LeaseStateNone
 		epoch = 0
 	}
 
-	// Build response context
-	var flags uint32
-	// Check if break is in progress for this key
-	state, _, found := leaseMgr.GetLeaseState(context.TODO(), leaseReq.LeaseKey)
-	if found {
-		// Check for break in progress by comparing to granted
-		if state != grantedState {
-			flags = LeaseBreakFlagAckRequired // SMB2_LEASE_FLAG_BREAK_IN_PROGRESS
-		}
+	// Per MS-SMB2 3.3.5.9: For V2 lease requests, the server should track
+	// the client's epoch from the RqLs create context. If the client sent a
+	// non-zero epoch and we just granted a new lease (epoch==1), initialize
+	// the lease's epoch to the client's requested value.
+	if !isV1 && leaseReq.Epoch > 0 && grantedState != lock.LeaseStateNone && epoch == 1 {
+		leaseMgr.SetLeaseEpoch(leaseReq.LeaseKey, leaseReq.Epoch)
+		epoch = leaseReq.Epoch
 	}
 
-	// Determine if parent lease key is valid (non-zero)
-	hasParent := leaseReq.ParentLeaseKey != [16]byte{}
-
+	// Build response context.
+	// Per MS-SMB2 2.2.14.2.10: Flags MUST be 0 for fresh grants.
+	// SMB2_LEASE_FLAG_BREAK_IN_PROGRESS (0x02) is only set when a break is
+	// actively in progress on a same-key lease.
 	return &LeaseResponseContext{
 		LeaseKey:       leaseReq.LeaseKey,
 		LeaseState:     grantedState,
-		Flags:          flags,
+		Flags:          responseFlags,
 		ParentLeaseKey: leaseReq.ParentLeaseKey,
-		HasParent:      hasParent,
+		HasParent:      leaseReq.ParentLeaseKey != [16]byte{},
 		Epoch:          epoch,
 		IsV1:           isV1,
 	}, nil

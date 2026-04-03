@@ -9,6 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // ============================================================================
@@ -314,6 +315,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	if err := metaSvc.CheckLockForIO(
 		authCtx.Context,
 		openFile.MetadataHandle,
+		openFile.OpenID(),
 		ctx.SessionID,
 		req.Offset,
 		uint64(len(req.Data)),
@@ -321,6 +323,21 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	); err != nil {
 		logger.Debug("WRITE: blocked by lock", "path", openFile.Path, "offset", req.Offset, "length", len(req.Data))
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusFileLockConflict}}, nil
+	}
+
+	// ========================================================================
+	// Step 8b: Break Level II (Read) oplocks from other clients
+	// ========================================================================
+	//
+	// Per MS-SMB2 3.3.5.16: If the write operation will change file data,
+	// the server MUST break Read caching leases held by other clients to
+	// None. The writer's own lease is excluded via its LeaseKey.
+
+	if h.LeaseManager != nil {
+		lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
+		if breakErr := h.LeaseManager.BreakReadLeasesOnWrite(lockFileHandle, openFile.ShareName, openFile.LeaseKey); breakErr != nil {
+			logger.Debug("WRITE: oplock break failed (non-fatal)", "path", openFile.Path, "error", breakErr)
+		}
 	}
 
 	// ========================================================================

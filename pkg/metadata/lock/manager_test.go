@@ -127,7 +127,7 @@ func TestManager_Unlock_Success(t *testing.T) {
 	}
 	_ = lm.Lock("file1", lock)
 
-	err := lm.Unlock("file1", 100, 0, 100)
+	err := lm.Unlock("file1", "", 100, 0, 100)
 	if err != nil {
 		t.Fatalf("Unlock failed: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestManager_Unlock_NotFound(t *testing.T) {
 
 	lm := NewManager()
 
-	err := lm.Unlock("file1", 100, 0, 100)
+	err := lm.Unlock("file1", "", 100, 0, 100)
 	if err == nil {
 		t.Fatal("Expected error for unlock of non-existent lock")
 	}
@@ -272,19 +272,19 @@ func TestManager_CheckForIO(t *testing.T) {
 	_ = lm.Lock("file1", lock)
 
 	// Same session write - allowed
-	conflict := lm.CheckForIO("file1", 100, 0, 50, true)
+	conflict := lm.CheckForIO("file1", "", 100, 0, 50, true)
 	if conflict != nil {
 		t.Fatal("Expected same session write to be allowed")
 	}
 
 	// Different session read with exclusive lock - blocked
-	conflict = lm.CheckForIO("file1", 200, 0, 50, false)
+	conflict = lm.CheckForIO("file1", "", 200, 0, 50, false)
 	if conflict == nil {
 		t.Fatal("Expected read to be blocked by exclusive lock")
 	}
 
 	// Different session write - blocked
-	conflict = lm.CheckForIO("file1", 200, 0, 50, true)
+	conflict = lm.CheckForIO("file1", "", 200, 0, 50, true)
 	if conflict == nil {
 		t.Fatal("Expected write to be blocked")
 	}

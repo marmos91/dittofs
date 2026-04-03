@@ -9,6 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // ============================================================================
@@ -211,8 +212,28 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 		}
 	}
 
+	// ========================================================================
+	// Break Batch/Exclusive oplocks before acquiring locks
+	// ========================================================================
+	//
+	// Per MS-SMB2 3.3.5.14: Before processing byte-range lock requests,
+	// the server MUST break any Batch or Exclusive oplocks held on the file
+	// by other clients. The requesting client's own lease is excluded.
+
+	if h.LeaseManager != nil {
+		lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
+		if breakErr := h.LeaseManager.BreakConflictingOplocksOnOpen(lockFileHandle, openFile.ShareName, &lock.LockOwner{
+			ExcludeLeaseKey: openFile.LeaseKey,
+		}); breakErr != nil {
+			logger.Debug("LOCK: oplock break failed (non-fatal)", "path", openFile.Path, "error", breakErr)
+		}
+	}
+
 	// Track acquired locks for rollback on failure
 	var acquiredLocks []LockElement
+
+	// Per-open lock ownership: use the open's unique ID for lock ownership
+	openID := openFile.OpenID()
 
 	// Process each lock element
 	for i, lockElem := range req.Locks {
@@ -224,25 +245,14 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 		// - SharedLock and ExclusiveLock are mutually exclusive
 		// - Unlock must not be combined with lock type flags
 		// - Lock operations must specify either SharedLock or ExclusiveLock
-		if isShared && isExclusive {
-			logger.Debug("LOCK: invalid flags - shared and exclusive both set",
+		invalidFlags := (isShared && isExclusive) ||
+			(isUnlock && (isShared || isExclusive)) ||
+			(!isUnlock && !isShared && !isExclusive)
+		if invalidFlags {
+			logger.Debug("LOCK: invalid flag combination",
 				"index", i,
 				"flags", fmt.Sprintf("0x%08X", lockElem.Flags))
-			rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
-			return NewErrorResult(types.StatusInvalidParameter), nil
-		}
-		if isUnlock && (isShared || isExclusive) {
-			logger.Debug("LOCK: invalid flags - unlock combined with lock type",
-				"index", i,
-				"flags", fmt.Sprintf("0x%08X", lockElem.Flags))
-			rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
-			return NewErrorResult(types.StatusInvalidParameter), nil
-		}
-		if !isUnlock && !isShared && !isExclusive {
-			logger.Debug("LOCK: invalid flags - lock operation without lock type",
-				"index", i,
-				"flags", fmt.Sprintf("0x%08X", lockElem.Flags))
-			rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
+			rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
 			return NewErrorResult(types.StatusInvalidParameter), nil
 		}
 
@@ -252,8 +262,8 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 				"index", i,
 				"offset", lockElem.Offset,
 				"length", lockElem.Length)
-			rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
-			return NewErrorResult(types.StatusInvalidParameter), nil
+			rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
+			return NewErrorResult(types.StatusInvalidLockRange), nil
 		}
 
 		logger.Debug("LOCK: processing element",
@@ -283,6 +293,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			err := metaSvc.UnlockFile(
 				authCtx.Context,
 				openFile.MetadataHandle,
+				openID,
 				ctx.SessionID,
 				lockElem.Offset,
 				lockElem.Length,
@@ -294,7 +305,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 					"error", err)
 				status := lockErrorToStatus(err)
 				// Rollback previously acquired locks (unlocks are not rolled back)
-				rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
+				rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
 				return NewErrorResult(status), nil
 			}
 		} else {
@@ -304,6 +315,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 			lock := metadata.FileLock{
 				ID:         0, // SMB doesn't use lock IDs in this implementation
 				SessionID:  ctx.SessionID,
+				OpenID:     openID,
 				Offset:     lockElem.Offset,
 				Length:     lockElem.Length,
 				Exclusive:  isExclusive,
@@ -348,15 +360,36 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 
 				// If the context was cancelled (by CANCEL command), return STATUS_CANCELLED
 				if ctxErr != nil {
-					rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
+					rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
 					return NewErrorResult(types.StatusCancelled), nil
 				}
 
 				status := lockErrorToStatus(err)
+
+				// Per MS-SMB2 3.3.5.14: If this lock denial matches the last
+				// denied lock for this open (same offset/length/type), return
+				// FILE_LOCK_CONFLICT instead of LOCK_NOT_GRANTED.
+				if status == types.StatusLockNotGranted {
+					denied := lastDeniedLock{
+						Offset:    lockElem.Offset,
+						Length:    lockElem.Length,
+						Exclusive: isExclusive,
+					}
+					if prev, ok := h.lastDeniedLocks.Load(openID); ok {
+						if prev.(lastDeniedLock) == denied {
+							status = types.StatusFileLockConflict
+						}
+					}
+					h.lastDeniedLocks.Store(openID, denied)
+				}
+
 				// Rollback previously acquired locks
-				rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, ctx.SessionID, acquiredLocks)
+				rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
 				return NewErrorResult(status), nil
 			}
+
+			// Lock succeeded - clear last-denied tracking for this open
+			h.lastDeniedLocks.Delete(openID)
 
 			// Track for potential rollback
 			acquiredLocks = append(acquiredLocks, lockElem)
@@ -468,7 +501,7 @@ func (h *Handler) acquireLockWithRetry(
 // rollbackLocks releases locks that were acquired during a failed request.
 //
 // LIMITATION: Lock type changes (e.g., shared → exclusive on the same range by the
-// same session) are implemented as in-place updates in the lock metaSvc. When such
+// same open) are implemented as in-place updates in the lock metaSvc. When such
 // an "upgraded" lock is rolled back, it is completely removed rather than reverted
 // to its original type. This means lock type changes in batch requests are not
 // fully atomic: if a later operation in the batch fails, the lock type change
@@ -482,11 +515,12 @@ func rollbackLocks(
 	ctx context.Context,
 	metaSvc *metadata.MetadataService,
 	handle metadata.FileHandle,
+	openID string,
 	sessionID uint64,
 	locks []LockElement,
 ) {
 	for _, lock := range locks {
-		if err := metaSvc.UnlockFile(ctx, handle, sessionID, lock.Offset, lock.Length); err != nil {
+		if err := metaSvc.UnlockFile(ctx, handle, openID, sessionID, lock.Offset, lock.Length); err != nil {
 			logger.Warn("LOCK: rollback failed",
 				"offset", lock.Offset,
 				"length", lock.Length,

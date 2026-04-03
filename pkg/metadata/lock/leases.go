@@ -11,6 +11,7 @@ package lock
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -18,6 +19,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/internal/logger"
 )
+
+// ErrLeaseBreakInProgress is returned by RequestLease when a same-key lease
+// is in Breaking state. Per MS-SMB2 3.3.5.9.8, the caller must set
+// SMB2_LEASE_FLAG_BREAK_IN_PROGRESS (0x02) in the CREATE response.
+// The returned state and epoch are the current values of the breaking lease.
+var ErrLeaseBreakInProgress = errors.New("lease break in progress")
 
 // validUpgrades defines allowed lease state upgrade transitions.
 // A lease can only be upgraded (more permissions), never downgraded via RequestLease.
@@ -76,33 +83,16 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
 	requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error) {
 
-	// Validate and downgrade requested state
+	// Validate requested state against valid lease combinations.
+	isValidState := IsValidFileLeaseState
 	if isDirectory {
-		// Per MS-SMB2 3.3.5.9.8/3.3.5.9.11: directories cannot hold Write (W) caching.
-		// The valid directory lease states are: None, R, and RH (per MS-SMB2 section
-		// "Algorithm for Leasing in an Object Store").
-		//
-		// When the client requests Write caching on a directory, convert it to Handle
-		// caching. Handle caching is the directory equivalent: it allows the client to
-		// cache directory handles and defer close operations. This means:
-		//   RW  → RH  (W converted to H)
-		//   RWH → RH  (W stripped, H already present)
-		//   R   → R   (no change)
-		//   RH  → RH  (no change)
-		if requestedState&LeaseStateWrite != 0 {
-			requestedState &^= LeaseStateWrite
-			requestedState |= LeaseStateHandle
-		}
-		if !IsValidDirectoryLeaseState(requestedState) {
-			logger.Debug("RequestLease: invalid directory lease state after downgrade",
-				"state", LeaseStateToString(requestedState),
-				"fileHandle", string(fileHandle))
-			return LeaseStateNone, 0, nil
-		}
-	} else if !IsValidFileLeaseState(requestedState) {
-		logger.Debug("RequestLease: invalid file lease state",
+		isValidState = IsValidDirectoryLeaseState
+	}
+	if !isValidState(requestedState) {
+		logger.Debug("RequestLease: invalid lease state",
 			"state", LeaseStateToString(requestedState),
-			"fileHandle", string(fileHandle))
+			"fileHandle", string(fileHandle),
+			"isDirectory", isDirectory)
 		return LeaseStateNone, 0, nil
 	}
 
@@ -160,6 +150,19 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 		// Same-key found
 		currentState := lock.Lease.LeaseState
 
+		// Per MS-SMB2 3.3.5.9.8: If the lease is in Breaking state, do NOT
+		// modify it. Return the current LeaseState and signal break-in-progress
+		// to the caller so it can set SMB2_LEASE_FLAG_BREAK_IN_PROGRESS (0x02).
+		if lock.Lease.Breaking {
+			epoch := lock.Lease.Epoch
+			lm.mu.Unlock()
+			logger.Debug("RequestLease: same-key lease is breaking, returning current state with break-in-progress",
+				"fileHandle", handleKey,
+				"currentState", LeaseStateToString(currentState),
+				"epoch", epoch)
+			return currentState, epoch, ErrLeaseBreakInProgress
+		}
+
 		// Same state requested - return current (no-op)
 		if currentState == requestedState {
 			lm.mu.Unlock()
@@ -201,7 +204,9 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 	}
 
 	// No existing lease with same key. Check for cross-key conflicts.
-	var conflictFound bool
+	// Per MS-SMB2 3.3.5.9: break conflicting leases, then grant the best
+	// available state (may be less than requested).
+	var breakDispatched bool
 	for _, lock := range locks {
 		if lock.Lease == nil {
 			continue
@@ -218,6 +223,18 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 			// existing lease, preserving Read and Handle. Per MS-SMB2
 			// 3.3.5.9.8/3.3.5.9.11, RWH breaks to RH, RW breaks to R.
 			breakTo := lock.Lease.LeaseState &^ LeaseStateWrite
+
+			// If existing lease has no Write bit, the break is a no-op
+			// (e.g., existing=R, breakTo=R). In this case, don't dispatch
+			// a break -- just proceed to downgrade the new request.
+			if breakTo == lock.Lease.LeaseState {
+				logger.Debug("RequestLease: cross-key conflict but existing has no Write, skipping break",
+					"fileHandle", handleKey,
+					"existingKey", fmt.Sprintf("%x", lock.Lease.LeaseKey),
+					"existingState", LeaseStateToString(lock.Lease.LeaseState),
+					"requestedState", LeaseStateToString(requestedState))
+				break
+			}
 
 			logger.Debug("RequestLease: cross-key conflict, initiating break",
 				"fileHandle", handleKey,
@@ -241,9 +258,14 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 				}
 			}
 
+			// Clone the lock before releasing mu so that dispatchOpLockBreak
+			// receives a snapshot. Without this, concurrent AcknowledgeLeaseBreak
+			// can mutate the live *UnifiedLock while the callback reads it.
+			lockSnapshot := lock.Clone()
+
 			// Release lock before dispatching break callbacks
 			lm.mu.Unlock()
-			lm.dispatchOpLockBreak(handleKey, lock, breakTo)
+			lm.dispatchOpLockBreak(handleKey, lockSnapshot, breakTo)
 
 			// Per MS-SMB2 3.3.5.9: The server MUST wait for the break to
 			// complete (or timeout) before returning to the caller, so that
@@ -258,71 +280,107 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 					"error", err)
 			}
 
-			conflictFound = true
-			// After break, the existing lease state is reduced.
-			// The new lease may now be grantable. We'll re-check below.
+			breakDispatched = true
 			break
 		}
 	}
 
-	if conflictFound {
-		// After the break resolved, re-check if the new lease can be granted.
-		// Per MS-SMB2 3.3.5.9: after break completion, the server re-evaluates
-		// the lease request with the updated state of existing leases.
+	// After any break (or no-op skip), find the best grantable state.
+	// Per MS-SMB2 3.3.5.9: the server MUST grant the best available oplock
+	// level. Try the full requested state first, then progressively lower
+	// states: strip Write, then strip Handle, then Read only, then None.
+	if breakDispatched {
 		lm.mu.Lock()
 		locks = lm.unifiedLocks[handleKey]
+	}
+	// lm.mu is held here (either from initial Lock or re-Lock after break)
 
-		// Re-check all existing leases for remaining conflicts
-		requested := &OpLock{
+	grantState := bestGrantableState(locks, leaseKey, requestedState, isDirectory)
+	if grantState == LeaseStateNone {
+		lm.mu.Unlock()
+		logger.Debug("RequestLease: no compatible state after conflict resolution",
+			"fileHandle", handleKey,
+			"requestedState", LeaseStateToString(requestedState))
+		return LeaseStateNone, 0, nil
+	}
+
+	granted, epoch := lm.createAndGrantLease(ctx, handleKey, fileHandle,
+		leaseKey, parentLeaseKey, ownerID, clientID, shareName,
+		grantState, isDirectory)
+	lm.mu.Unlock()
+
+	logger.Debug("RequestLease: granted lease",
+		"fileHandle", handleKey,
+		"requested", LeaseStateToString(requestedState),
+		"granted", LeaseStateToString(granted),
+		"isDirectory", isDirectory,
+		"downgraded", grantState != requestedState,
+		"epoch", epoch)
+
+	return granted, epoch, nil
+}
+
+// bestGrantableState finds the best lease state that can be granted without
+// conflicting with existing leases from other keys. It tries the requested
+// state first, then progressively lower states per MS-SMB2 3.3.5.9:
+// requested -> strip W -> strip H -> R only -> None.
+//
+// Precondition: caller must hold lm.mu (read or write). The locks slice is
+// read from lm.unifiedLocks[handleKey] under that lock, so no concurrent
+// mutation can occur while this function iterates.
+func bestGrantableState(locks []*UnifiedLock, leaseKey [16]byte, requestedState uint32, isDirectory bool) uint32 {
+	candidates := downgradeCandidates(requestedState, isDirectory)
+
+outer:
+	for _, candidate := range candidates {
+		tempLease := &OpLock{
 			LeaseKey:   leaseKey,
-			LeaseState: requestedState,
+			LeaseState: candidate,
 		}
-		canGrant := true
 		for _, lock := range locks {
 			if lock.Lease == nil || lock.Lease.LeaseKey == leaseKey {
 				continue
 			}
-			if OpLocksConflict(lock.Lease, requested) {
-				canGrant = false
-				break
+			if OpLocksConflict(lock.Lease, tempLease) {
+				continue outer
 			}
 		}
+		return candidate
+	}
+	return LeaseStateNone
+}
 
-		if !canGrant {
-			lm.mu.Unlock()
-			logger.Debug("RequestLease: still conflicting after break, denying",
-				"fileHandle", handleKey,
-				"requestedState", LeaseStateToString(requestedState))
-			return LeaseStateNone, 0, nil
-		}
-
-		// No more conflicts - create the new lease
-		granted, epoch := lm.createAndGrantLease(ctx, handleKey, fileHandle,
-			leaseKey, parentLeaseKey, ownerID, clientID, shareName,
-			requestedState, isDirectory)
-		lm.mu.Unlock()
-
-		logger.Debug("RequestLease: granted lease after break",
-			"fileHandle", handleKey,
-			"state", LeaseStateToString(granted),
-			"epoch", epoch)
-
-		return granted, epoch, nil
+// downgradeCandidates returns the ordered list of lease states to try,
+// starting with the requested state and progressively removing flags.
+// Per MS-SMB2 3.3.5.9: try full request, then strip Write, then strip
+// Handle, then Read only.
+func downgradeCandidates(requestedState uint32, isDirectory bool) []uint32 {
+	isValidState := IsValidFileLeaseState
+	if isDirectory {
+		isValidState = IsValidDirectoryLeaseState
 	}
 
-	// No conflicts - create new lease
-	granted, epoch := lm.createAndGrantLease(ctx, handleKey, fileHandle,
-		leaseKey, parentLeaseKey, ownerID, clientID, shareName,
-		requestedState, isDirectory)
-	lm.mu.Unlock()
+	// At most 4 unique candidates after dedup, so linear scan beats map allocation.
+	var candidates []uint32
+	addIfValid := func(state uint32) {
+		if state == LeaseStateNone || slices.Contains(candidates, state) || !isValidState(state) {
+			return
+		}
+		candidates = append(candidates, state)
+	}
 
-	logger.Debug("RequestLease: granted new lease",
-		"fileHandle", handleKey,
-		"state", LeaseStateToString(granted),
-		"isDirectory", isDirectory,
-		"epoch", epoch)
+	// 1. Try full requested state
+	addIfValid(requestedState)
+	// 2. Strip Write (RWH -> RH, RW -> R)
+	addIfValid(requestedState &^ LeaseStateWrite)
+	// 3. Strip Handle (RWH -> RW, RH -> R)
+	addIfValid(requestedState &^ LeaseStateHandle)
+	// 4. Strip both Write and Handle (RWH -> R)
+	addIfValid(requestedState &^ (LeaseStateWrite | LeaseStateHandle))
+	// 5. Read only as fallback
+	addIfValid(LeaseStateRead)
 
-	return granted, epoch, nil
+	return candidates
 }
 
 // createAndGrantLease creates a new lease lock, appends it to unifiedLocks[handleKey],

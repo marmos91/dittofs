@@ -64,6 +64,12 @@ type Handler struct {
 	// Used by CANCEL to interrupt blocking lock requests.
 	pendingLocks sync.Map
 
+	// Per-open last denied lock request tracking for LOCK_NOT_GRANTED vs
+	// FILE_LOCK_CONFLICT distinction. Key: openID string, Value: lastDeniedLock.
+	// Per MS-SMB2 3.3.5.14: first denial returns LOCK_NOT_GRANTED, retry of
+	// the same range returns FILE_LOCK_CONFLICT.
+	lastDeniedLocks sync.Map
+
 	// Configuration
 	MaxTransactSize uint32
 	MaxReadSize     uint32
@@ -199,6 +205,7 @@ type OpenFile struct {
 	SessionID           uint64
 	Path                string
 	ShareName           string
+	cachedOpenID        string // cached hex(FileID) for hot-path lock operations
 	OpenTime            time.Time
 	DesiredAccess       uint32
 	IsDirectory         bool
@@ -273,6 +280,27 @@ type OpenFile struct {
 	// DurableTimeoutMs is the granted durable handle timeout in milliseconds.
 	// The handle expires this many milliseconds after client disconnects.
 	DurableTimeoutMs uint32
+}
+
+// OpenID returns a unique identifier for this open file handle.
+// This is used for per-open byte-range lock ownership per MS-SMB2.
+// The identifier is derived from the SMB FileID, which is unique per open.
+func (f *OpenFile) OpenID() string {
+	if f.cachedOpenID == "" {
+		f.cachedOpenID = fmt.Sprintf("%x", f.FileID)
+	}
+	return f.cachedOpenID
+}
+
+// lastDeniedLock tracks the last denied lock request per open for
+// LOCK_NOT_GRANTED vs FILE_LOCK_CONFLICT distinction per MS-SMB2 3.3.5.14.
+// The first failed lock attempt returns LOCK_NOT_GRANTED. If the same
+// request (same offset/length/exclusive flag) is retried, FILE_LOCK_CONFLICT
+// is returned instead. This is per-open state tracked in the Handler.
+type lastDeniedLock struct {
+	Offset    uint64
+	Length    uint64
+	Exclusive bool
 }
 
 // NewHandler creates a new SMB2 handler with a default session manager.
@@ -373,11 +401,11 @@ func (h *Handler) ReleaseAllLocksForSession(ctx context.Context, sessionID uint6
 			return true
 		}
 
-		// Release locks for this file
+		// Release locks for this file (per-open ownership)
 		metaSvc := h.Registry.GetMetadataService()
 
-		// UnlockAllForSession doesn't return errors for missing locks
-		if unlockErr := metaSvc.UnlockAllForSession(ctx, openFile.MetadataHandle, sessionID); unlockErr != nil {
+		// UnlockAllForOpen doesn't return errors for missing locks
+		if unlockErr := metaSvc.UnlockAllForOpen(ctx, openFile.MetadataHandle, openFile.OpenID()); unlockErr != nil {
 			logger.Warn("ReleaseAllLocksForSession: failed to release locks",
 				"share", openFile.ShareName,
 				"path", openFile.Path,
@@ -484,9 +512,9 @@ func (h *Handler) closeFilesWithFilter(
 			}
 		}
 
-		// Release locks for this file
+		// Release locks for this file (per-open ownership)
 		if !openFile.IsDirectory && len(openFile.MetadataHandle) > 0 {
-			_ = metaSvc.UnlockAllForSession(ctx, openFile.MetadataHandle, sessionID)
+			_ = metaSvc.UnlockAllForOpen(ctx, openFile.MetadataHandle, openFile.OpenID())
 		}
 
 		// Flush cache if needed

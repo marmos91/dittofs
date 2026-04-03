@@ -1343,8 +1343,7 @@ func TestMetadataService_UnlockFile(t *testing.T) {
 		err = fx.service.LockFile(fx.rootContext(), handle, lock)
 		require.NoError(t, err)
 
-		// Unlock
-		err = fx.service.UnlockFile(context.Background(), handle, 1, 0, 100)
+		err = fx.service.UnlockFile(context.Background(), handle, "", 1, 0, 100)
 
 		require.NoError(t, err)
 	})
@@ -1425,8 +1424,8 @@ func TestMetadataService_CheckLockForIO(t *testing.T) {
 		handle, err := fx.store.GetChild(context.Background(), fx.rootHandle, "test.txt")
 		require.NoError(t, err)
 
-		// Check for I/O - should succeed
-		err = fx.service.CheckLockForIO(context.Background(), handle, 1, 0, 100, true)
+		// No locks exist, I/O should succeed
+		err = fx.service.CheckLockForIO(context.Background(), handle, "", 1, 0, 100, true)
 
 		require.NoError(t, err)
 	})
@@ -1455,8 +1454,8 @@ func TestMetadataService_CheckLockForIO(t *testing.T) {
 		err = fx.service.LockFile(fx.rootContext(), handle, lock)
 		require.NoError(t, err)
 
-		// Check for I/O from different session
-		err = fx.service.CheckLockForIO(context.Background(), handle, 2, 50, 50, true)
+		// Different session write should be blocked
+		err = fx.service.CheckLockForIO(context.Background(), handle, "", 2, 50, 50, true)
 
 		require.Error(t, err)
 	})

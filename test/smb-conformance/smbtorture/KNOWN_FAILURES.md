@@ -110,7 +110,6 @@ tests correctly SKIP because FILE_FILE_COMPRESSION is advertised.
 | smb2.ioctl.copy-chunk | IOCTL | Server-side copy not implemented | - |
 | smb2.ioctl.bug14788.NETWORK_INTERFACE | IOCTL | Network interface enumeration not implemented | - |
 | smb2.ioctl.network_interface_info | IOCTL | Flaky in CI (network interface query race) | - |
-| smb2.ioctl.sparse_file_attr | IOCTL | Flaky in CI (sparse attr race during full suite) | - |
 | smb2.ioctl.req_resume_key | IOCTL | Resume key for server-side copy not implemented | - |
 | smb2.ioctl.req_two_resume_keys | IOCTL | Resume key for server-side copy not implemented | - |
 | smb2.ioctl.sparse_compressed | IOCTL | Sparse + compression not implemented | - |
@@ -130,7 +129,6 @@ tests correctly SKIP because FILE_FILE_COMPRESSION is advertised.
 | smb2.ioctl.sparse_qar_truncated | IOCTL | Sparse query allocated ranges not implemented | - |
 | smb2.ioctl.sparse_set_nobuf | IOCTL | Sparse file set not implemented | - |
 | smb2.ioctl.sparse_set_oversize | IOCTL | Sparse file set not implemented | - |
-| smb2.ioctl-on-stream | IOCTL | IOCTL on ADS not implemented | - |
 | smb2.set-sparse-ioctl | IOCTL | Sparse file IOCTL not implemented | - |
 | smb2.zero-data-ioctl | IOCTL | Zero data IOCTL not implemented | - |
 
@@ -152,7 +150,6 @@ share modes pass due to the stub implementation.
 | smb2.streams.names | Streams | ADS name enumeration not implemented | - |
 | smb2.streams.names2 | Streams | ADS name enumeration not implemented | - |
 | smb2.streams.names3 | Streams | ADS name enumeration not implemented | - |
-| smb2.streams.rename | Streams | ADS rename flaky in CI (state poisoning) | - |
 | smb2.streams.rename2 | Streams | ADS rename semantics not implemented | - |
 | smb2.streams.sharemodes | Streams | ADS share mode enforcement edge cases (newly reachable) | - |
 | smb2.streams.zero-byte | Streams | ADS zero-byte handling not implemented | - |
@@ -185,9 +182,7 @@ oplock break notification delivery.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.oplock.batch1 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.batch2 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.batch3 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.batch5 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.batch6 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.batch7 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.batch8 | Oplocks | Multi-client oplock break coordination | - |
@@ -206,9 +201,7 @@ oplock break notification delivery.
 | smb2.oplock.batch23 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.batch24 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.batch26 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.exclusive2 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.exclusive4 | Oplocks | Multi-client oplock break coordination | - |
-| smb2.oplock.exclusive5 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.exclusive6 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.exclusive9 | Oplocks | Multi-client oplock break coordination | - |
 | smb2.oplock.levelii500 | Oplocks | Level II oplock notification not implemented | - |
@@ -220,10 +213,9 @@ oplock break notification delivery.
 | smb2.oplock.statopen1 | Oplocks | Stat open + oplock interaction | - |
 | smb2.oplock.stream1 | Oplocks | Stream + oplock interaction | - |
 | smb2.kernel-oplocks.kernel_oplocks2 | Kernel Oplocks | Kernel oplock break coordination (newly reachable) | - |
-| smb2.kernel-oplocks.kernel_oplocks3 | Kernel Oplocks | Kernel oplock break not implemented | - |
 | smb2.kernel-oplocks.kernel_oplocks4 | Kernel Oplocks | Kernel oplock break coordination (newly reachable) | - |
-| smb2.kernel-oplocks.kernel_oplocks6 | Kernel Oplocks | Kernel oplock break not implemented | - |
 | smb2.kernel-oplocks.kernel_oplocks8 | Kernel Oplocks | Flaky in CI (skip/fail race on localdir check) | - |
+| smb2.kernel-oplocks.kernel_oplocks5 | Kernel Oplocks | Lease downgrade grants Level II where kernel oplock expects None (kernel oplock semantics not implemented) | - |
 
 ### Directory Leases (Not Implemented)
 
@@ -303,8 +295,6 @@ files, create blobs) are not implemented. Basic create operations pass.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.create.acldir | Create | ACL-based directory create not implemented | - |
-| smb2.create.multi | Create | Multi-create fails under full suite (leftover file state) | - |
-| smb2.create.mkdir-dup | Create | Full-suite state poisoning (passes individually) | - |
 | smb2.create.aclfile | Create | ACL-based file create not implemented | - |
 | smb2.create.bench-path-contention-shared | Create | Path contention benchmark not implemented | - |
 | smb2.create.blob | Create | Create context blobs not fully implemented | - |
@@ -324,7 +314,6 @@ edge cases.
 |-----------|----------|--------|-------|
 | smb2.read.access | Read | Read access enforcement not fully implemented (needs DesiredAccess from CREATE) | - |
 | smb2.read.position | Read | Read position tracking not implemented | - |
-| smb2.rw.append | Read/Write | Flaky in CI (append write race during full suite) | - |
 
 ### Query/Set Info (Advanced Scenarios)
 
@@ -334,7 +323,6 @@ checks, and ACL-based access control.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.getinfo.complex | Query Info | Complex getinfo not implemented | - |
-| smb2.getinfo.fsinfo | Query Info | Filesystem info not fully implemented | - |
 | smb2.getinfo.getinfo_access | Query Info | Access-based getinfo not implemented | - |
 | smb2.getinfo.granted | Query Info | Granted access info not implemented | - |
 | smb2.getinfo.normalized | Query Info | Normalized name info not implemented | - |
@@ -362,7 +350,6 @@ failures require DACL enforcement or full async I/O support.
 | smb2.compound_async.rename_same_srcdst_non_compound_no_async | Compound | Same src/dst rename async check | - |
 | smb2.compound_async.write_write | Compound | Async write+write compound not implemented | - |
 | smb2.compound_find.compound_find_close | Compound | Compound find+close sequence | - |
-| smb2.compound.compound-padding | Compound | Full-suite state poisoning (flaky in CI) | - |
 
 ### Share Modes and Deny (Advanced Scenarios)
 
@@ -386,8 +373,8 @@ Advanced delete-on-close permission checks and edge cases. Basic DOC works
 | smb2.delete-on-close-perms.BUG14427 | Delete on close | Flaky SMB2 signing failure during connection setup | - |
 | smb2.delete-on-close-perms.CREATE | Delete on close | DOC permission check not implemented | - |
 | smb2.delete-on-close-perms.CREATE_IF | Delete on close | DOC permission check not implemented | - |
-| smb2.delete-on-close-perms.FIND_and_set_DOC | Delete on close | DOC permission check not implemented | - |
 | smb2.delete-on-close-perms.READONLY | Delete on close | DOC on read-only files not implemented | - |
+| smb2.delete-on-close-perms.OVERWRITE_IF | Delete on close | OVERWRITE_IF returns OBJECT_NAME_COLLISION instead of ACCESS_DENIED for DOC permission check | - |
 
 ### File IDs (Different Handle Scheme)
 
@@ -487,7 +474,6 @@ Session signing edge cases requiring multi-channel binding.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.session-require-signing.bug15397 | Session signing | Signing enforcement with binding not implemented | - |
 
 ### Character Set Edge Cases (Fix Candidate)
 
@@ -505,7 +491,6 @@ Newly reachable after access control improvements.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.delete-on-close-perms.OVERWRITE_IF | Delete on close | DOC OVERWRITE_IF permission edge case (newly reachable) | - |
 
 ### Durable Handles V1 (Fix Candidate)
 
@@ -514,9 +499,7 @@ still fail due to incomplete reconnect and lease coordination.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.durable-open.open-oplock | Durable handles V1 | Durable open with oplock not fully working | - |
 | smb2.durable-open.open-lease | Durable handles V1 | Durable open with lease not fully working | - |
-| smb2.durable-open.reopen1 | Durable handles V1 | Durable reopen not fully working | - |
 | smb2.durable-open.reopen1a | Durable handles V1 | Durable reopen not fully working | - |
 | smb2.durable-open.reopen1a-lease | Durable handles V1 | Durable reopen with lease not fully working | - |
 | smb2.durable-open.reopen2 | Durable handles V1 | Durable reopen not fully working | - |
@@ -529,7 +512,6 @@ still fail due to incomplete reconnect and lease coordination.
 | smb2.durable-open.file-position | Durable handles V1 | Durable file position not fully working | - |
 | smb2.durable-open.lock-oplock | Durable handles V1 | Durable lock + oplock not fully working | - |
 | smb2.durable-open.lock-lease | Durable handles V1 | Durable lock + lease not fully working | - |
-| smb2.durable-open-disconnect.open-oplock-disconnect | Durable handles V1 | Durable disconnect + oplock not fully working | - |
 
 ### Durable Handles V2 (Fix Candidate)
 
@@ -546,7 +528,6 @@ still fail due to incomplete reconnect, lease coordination, and persistence.
 | smb2.durable-v2-open.reopen1a-lease | Durable handles V2 | DH2 reopen with lease not fully working | - |
 | smb2.durable-v2-open.reopen2 | Durable handles V2 | DH2 reopen not fully working | - |
 | smb2.durable-v2-open.reopen2b | Durable handles V2 | DH2 reopen not fully working | - |
-| smb2.durable-v2-open.reopen2c | Durable handles V2 | DH2 reopen not fully working | - |
 | smb2.durable-v2-open.reopen2-lease | Durable handles V2 | DH2 reopen with lease not fully working | - |
 | smb2.durable-v2-open.reopen2-lease-v2 | Durable handles V2 | DH2 reopen with lease V2 not fully working | - |
 | smb2.durable-v2-open.durable-v2-setinfo | Durable handles V2 | DH2 setinfo not fully working | - |
@@ -571,7 +552,6 @@ still fail due to incomplete reconnect, lease coordination, and persistence.
 | smb2.durable-v2-open.persistent-open-oplock | Durable handles V2 | Persistent handles not implemented | - |
 | smb2.durable-v2-open.persistent-open-lease | Durable handles V2 | Persistent handles not implemented | - |
 | smb2.durable-v2-delay.durable_v2_reconnect_delay | Durable handles V2 | DH2 reconnect delay not fully working | - |
-| smb2.durable-v2-delay.durable_v2_reconnect_delay_msec | Durable handles V2 | DH2 reconnect delay (millisecond variant) not fully working | - |
 
 ### Leases (Fix Candidate)
 
@@ -631,7 +611,6 @@ fail due to incomplete lock contention and async lock handling.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.lock.valid-request | Locks | Lock request validation not fully working | - |
-| smb2.lock.rw-exclusive | Locks | Read/write exclusive lock not fully working | - |
 | smb2.lock.auto-unlock | Locks | Auto-unlock on close not fully working | - |
 | smb2.lock.lock | Locks | Basic lock operation not fully working | - |
 | smb2.lock.cancel | Locks | Lock cancel not fully working | - |
@@ -640,16 +619,14 @@ fail due to incomplete lock contention and async lock handling.
 | smb2.lock.unlock | Locks | Unlock operation not fully working | - |
 | smb2.lock.multiple-unlock | Locks | Multiple unlock not fully working | - |
 | smb2.lock.stacking | Locks | Lock stacking not fully working | - |
-| smb2.lock.contend | Locks | Lock contention not fully working | - |
 | smb2.lock.range | Locks | Lock range validation not fully working | - |
 | smb2.lock.overlap | Locks | Overlapping locks not fully working | - |
-| smb2.lock.truncate | Locks | Lock + truncate interaction not fully working | - |
 | smb2.lock.replay_broken_windows | Locks | Lock replay not fully working | - |
 | smb2.lock.replay_smb3_specification_durable | Locks | Lock replay with durable handles not fully working | - |
 | smb2.lock.replay_smb3_specification_multi | Locks | Lock replay with multi-channel not fully working | - |
 | smb2.lock.cancel-logoff | Locks | Lock cancel on logoff not fully working | - |
-| smb2.lock.zerobyteread | Locks | Zero-byte read with locks not fully working | - |
-| smb2.lock.context | Locks | Lock context tracking not fully working | - |
+| smb2.lock.cancel-tdis | Locks | Blocking lock deadlocks dispatch goroutine (needs async LOCK with interim response) | - |
+| smb2.lock.async | Locks | Blocking lock deadlocks dispatch goroutine (needs async LOCK with interim response) | - |
 | smb2.lock.open-brlock-deadlock | Locks | Open + byte-range lock deadlock detection not working | - |
 | smb2.lock.ctdb-delrec-deadlock | Locks | CTDB delete record deadlock not working | - |
 
@@ -815,7 +792,6 @@ requests with durable handles. Newly reachable after GMAC signing fix.
 | smb2.replay.replay4 | Replay | Replay detection not implemented | - |
 | smb2.replay.replay5 | Replay | Replay detection not implemented | - |
 | smb2.replay.replay6 | Replay | Replay detection not implemented | - |
-| smb2.replay.replay7 | Replay | Replay detection not implemented | - |
 
 ### Timestamps (Fix Candidate)
 
@@ -829,11 +805,6 @@ incomplete delayed-write and timestamp freeze/unfreeze logic.
 | smb2.timestamps.delayed-write-vs-setbasic | Timestamps | Delayed write vs setbasic timestamp not working | - |
 | smb2.timestamps.delayed-write-vs-seteof | Timestamps | Delayed write vs seteof timestamp not working | - |
 | smb2.timestamps.freeze-thaw | Timestamps | CreationTime freeze/unfreeze not fully working | - |
-| smb2.timestamps.time_t_-1 | Timestamps | Full-suite flaky (time_t boundary handling) | - |
-| smb2.timestamps.time_t_-2 | Timestamps | Full-suite flaky (time_t boundary handling) | - |
-| smb2.timestamps.time_t_0 | Timestamps | Full-suite flaky (time_t boundary handling) | - |
-| smb2.timestamps.time_t_1 | Timestamps | Full-suite flaky (time_t boundary handling) | - |
-| smb2.timestamps.time_t_1968 | Timestamps | Flaky in CI (time_t boundary handling) | - |
 
 ### Scan (Full Operation Enumeration)
 
@@ -843,9 +814,7 @@ iterates all QUERY_DIRECTORY information classes. Both hit unimplemented classes
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.scan.find | Scan | Flaky in CI (find scan hits unimplemented info classes) | - |
 | smb2.scan.scan | Scan | Full operation scan hits unimplemented info classes | - |
-| smb2.scan.setinfo | Scan | SET_INFO scan hits unimplemented information classes | - |
 
 ## Changelog
 

@@ -271,6 +271,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		if err := metaSvc.CheckLockForIO(
 			authCtx.Context,
 			openFile.MetadataHandle,
+			openFile.OpenID(),
 			ctx.SessionID,
 			req.Offset,
 			uint64(req.Length),

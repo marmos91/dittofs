@@ -206,7 +206,9 @@ func TestIsValidDirectoryLeaseState(t *testing.T) {
 	}{
 		{LeaseStateNone, "None"},
 		{LeaseStateRead, "R"},
+		{LeaseStateRead | LeaseStateWrite, "RW"},
 		{LeaseStateRead | LeaseStateHandle, "RH"},
+		{LeaseStateRead | LeaseStateWrite | LeaseStateHandle, "RWH"},
 	}
 
 	for _, tc := range validStates {
@@ -220,8 +222,8 @@ func TestIsValidDirectoryLeaseState(t *testing.T) {
 		name  string
 	}{
 		{LeaseStateWrite, "W"},
-		{LeaseStateRead | LeaseStateWrite, "RW"},
-		{LeaseStateRead | LeaseStateWrite | LeaseStateHandle, "RWH"},
+		{LeaseStateHandle, "H"},
+		{LeaseStateWrite | LeaseStateHandle, "WH"},
 	}
 
 	for _, tc := range invalidStates {
