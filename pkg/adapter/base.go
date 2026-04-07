@@ -107,6 +107,13 @@ type BaseAdapter struct {
 	// Used for metrics and shutdown logging.
 	ConnCount atomic.Int32
 
+	// started flips to true once ServeWithFactory has bound the listener
+	// successfully. Used by [BaseAdapter.Healthcheck] to distinguish a
+	// configured-but-not-yet-started adapter (StatusUnknown) from a
+	// running one. Reset is not required: the BaseAdapter is created
+	// fresh per Serve call.
+	started atomic.Bool
+
 	// connSemaphore limits the number of concurrent connections if MaxConnections > 0.
 	// Connections must acquire a slot before being accepted.
 	// nil if MaxConnections is 0 (unlimited).
@@ -210,6 +217,7 @@ func (b *BaseAdapter) ServeWithFactory(
 	b.listenerMu.Lock()
 	b.listener = listener
 	b.listenerMu.Unlock()
+	b.started.Store(true)
 	close(b.ListenerReady)
 
 	logger.Info(b.protocolName+" server listening", "port", b.Config.Port)

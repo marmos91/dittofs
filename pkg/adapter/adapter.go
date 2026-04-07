@@ -5,6 +5,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/auth"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -98,6 +99,30 @@ type Adapter interface {
 	//
 	// Returns nil if the error cannot be mapped to a protocol-specific error.
 	MapError(err error) ProtocolError
+
+	// Healthcheck returns the adapter's current health as a structured
+	// [health.Report] and satisfies [health.Checker]. The API layer
+	// (phase U-E) wraps this in a [health.CachedChecker] and serves it
+	// from /adapter/{name}/status.
+	//
+	// Implementations should derive status from cheap, already-tracked
+	// signals — never run a fresh probe per call. The expected mapping is:
+	//
+	//   - [health.StatusDisabled] when the adapter is configured off
+	//     (config.Enabled == false). Operators turned it off; nothing
+	//     to probe.
+	//   - [health.StatusUnknown] when the adapter exists but Serve()
+	//     hasn't yet been called (startup race window). The runtime
+	//     hasn't given it a chance to fail or succeed.
+	//   - [health.StatusUnhealthy] when configured-on but not running
+	//     (failed to start, listener died, Serve returned early).
+	//   - [health.StatusDegraded] when running but reporting recent
+	//     errors above whatever per-protocol threshold the
+	//     implementation tracks. Phase U-C does not introduce new
+	//     instrumentation, so most adapters will only return this if
+	//     they already had a degraded-detection mechanism.
+	//   - [health.StatusHealthy] when running with no recent issues.
+	Healthcheck(ctx context.Context) health.Report
 }
 
 // OplockBreakerProviderKey is the Runtime adapter provider key for the OplockBreaker.
