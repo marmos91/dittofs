@@ -186,7 +186,20 @@ func (r *Runtime) GetMetadataStoreForShare(shareName string) (metadata.MetadataS
 //     report "configured but not currently loaded" vs "never
 //     registered".
 func (r *Runtime) HealthcheckShare(ctx context.Context, shareName string) health.Report {
-	now := time.Now().UTC()
+	// Capture start so every early-return path populates LatencyMs,
+	// matching what Share.Healthcheck does. A flat zero on
+	// lookup-failure reports would silently mask non-trivial registry
+	// lookup time from any monitoring consumer charting probe latency.
+	start := time.Now()
+	earlyReturn := func(status health.Status, msg string) health.Report {
+		end := time.Now()
+		return health.Report{
+			Status:    status,
+			Message:   msg,
+			CheckedAt: end.UTC(),
+			LatencyMs: end.Sub(start).Milliseconds(),
+		}
+	}
 
 	// Honor caller cancellation before doing any registry lookups.
 	// Otherwise a canceled probe would surface as "share not found"
@@ -194,29 +207,17 @@ func (r *Runtime) HealthcheckShare(ctx context.Context, shareName string) health
 	// context-cancellation StatusUnknown described by the Checker
 	// contract.
 	if err := ctx.Err(); err != nil {
-		return health.Report{
-			Status:    health.StatusUnknown,
-			Message:   err.Error(),
-			CheckedAt: now,
-		}
+		return earlyReturn(health.StatusUnknown, err.Error())
 	}
 
 	share, err := r.sharesSvc.GetShare(shareName)
 	if err != nil {
-		return health.Report{
-			Status:    health.StatusUnknown,
-			Message:   "share not found: " + err.Error(),
-			CheckedAt: now,
-		}
+		return earlyReturn(health.StatusUnknown, "share not found: "+err.Error())
 	}
 
 	metaStore, err := r.storesSvc.GetMetadataStore(share.MetadataStore)
 	if err != nil {
-		return health.Report{
-			Status:    health.StatusUnknown,
-			Message:   "metadata store " + share.MetadataStore + " not loaded: " + err.Error(),
-			CheckedAt: now,
-		}
+		return earlyReturn(health.StatusUnknown, "metadata store "+share.MetadataStore+" not loaded: "+err.Error())
 	}
 
 	return share.Healthcheck(ctx, metaStore)
