@@ -107,13 +107,6 @@ type BaseAdapter struct {
 	// Used for metrics and shutdown logging.
 	ConnCount atomic.Int32
 
-	// started flips to true once ServeWithFactory has bound the listener
-	// successfully. Used by [BaseAdapter.Healthcheck] to distinguish a
-	// configured-but-not-yet-started adapter (StatusUnknown) from a
-	// running one. Reset is not required: the BaseAdapter is created
-	// fresh per Serve call.
-	started atomic.Bool
-
 	// connSemaphore limits the number of concurrent connections if MaxConnections > 0.
 	// Connections must acquire a slot before being accepted.
 	// nil if MaxConnections is 0 (unlimited).
@@ -136,6 +129,13 @@ type BaseAdapter struct {
 	// ListenerReady is closed when the listener is ready to accept connections.
 	// Used by tests to synchronize with server startup.
 	ListenerReady chan struct{}
+
+	// started flips to true once ServeWithFactory has bound the listener
+	// successfully. Used by [BaseAdapter.Healthcheck] to distinguish a
+	// configured-but-not-yet-started adapter (StatusUnknown) from a
+	// running one. Reset is not required: the BaseAdapter is created
+	// fresh per Serve call.
+	started atomic.Bool
 
 	// listenerMu protects access to the listener field.
 	listenerMu sync.RWMutex
