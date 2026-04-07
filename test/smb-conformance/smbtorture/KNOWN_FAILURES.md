@@ -300,6 +300,7 @@ files, create blobs) are not implemented. Basic create operations pass.
 | smb2.create.blob | Create | Create context blobs not fully implemented | - |
 | smb2.create.gentest | Create | Generic create test (impersonation) not implemented | - |
 | smb2.create.impersonation | Create | Impersonation levels not implemented | - |
+| smb2.create.mkdir-dup | Create | Flaky in CI (parallel CREATE OPEN_IF race — passes intermittently on develop, perturbed by unrelated timing changes) | - |
 | smb2.create.mkdir-visible | Create | Mkdir visibility semantics not implemented | - |
 | smb2.create.nulldacl | Create | Null DACL create not implemented | - |
 | smb2.create.path-length | Create | Flaky in CI (path length validation race) | - |
@@ -815,6 +816,7 @@ iterates all QUERY_DIRECTORY information classes. Both hit unimplemented classes
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.scan.scan | Scan | Full operation scan hits unimplemented info classes | - |
+| smb2.scan.setinfo | Scan | Flaky in CI (rare connection-disconnect signature mismatch on brute-force level enumeration) | - |
 
 ## Changelog
 
