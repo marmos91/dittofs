@@ -185,8 +185,16 @@ func TestShareHealthcheck_StampsTimestampAndLatency(t *testing.T) {
 	if rep.CheckedAt.IsZero() {
 		t.Fatal("CheckedAt should be populated by the wrapper")
 	}
-	// LatencyMs may be 0 on very fast probes (the in-memory store is
-	// near-instant), but the timestamp must always be populated.
+	// LatencyMs is int64 so the zero value is 0, which is also a
+	// legitimate result on a sub-millisecond probe (the in-memory
+	// store is near-instant). Asserting >= 0 is a type-level guard
+	// that catches a regression where the stamping line is removed
+	// entirely (the field would still be 0, but a future negative
+	// value would also flag — and at minimum the assertion documents
+	// that the field is part of the contract this test protects).
+	if rep.LatencyMs < 0 {
+		t.Fatalf("LatencyMs should not be negative; got %d", rep.LatencyMs)
+	}
 }
 
 // TestShareHealthcheck_NeitherSidePresent locks the degenerate case
