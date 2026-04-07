@@ -10,17 +10,26 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/marmos91/dittofs/pkg/health"
 )
 
 // DefaultShutdownTimeout is the default timeout for graceful adapter shutdown.
 const DefaultShutdownTimeout = 30 * time.Second
 
 // ProtocolAdapter is the interface for protocol adapters (NFS, SMB).
+//
+// It mirrors a strict subset of [adapter.Adapter]: the methods this
+// service actually calls during lifecycle management. The Healthcheck
+// method is included so the upcoming /status API routes can call it
+// directly on a stored ProtocolAdapter without a runtime type
+// assertion to [adapter.Adapter] (which would risk a panic if a test
+// fake forgets to implement it).
 type ProtocolAdapter interface {
 	Serve(ctx context.Context) error
 	Stop(ctx context.Context) error
 	Protocol() string
 	Port() int
+	Healthcheck(ctx context.Context) health.Report
 }
 
 // RuntimeSetter is implemented by adapters that need runtime access.

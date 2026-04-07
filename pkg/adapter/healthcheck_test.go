@@ -72,3 +72,26 @@ func TestBaseAdapter_Healthcheck_UnhealthyOnceShutdown(t *testing.T) {
 		t.Fatal("expected non-empty message describing the shutdown state")
 	}
 }
+
+// TestBaseAdapter_Healthcheck_UnknownWhenStoppedBeforeStart pins the
+// behaviour for an edge case in the adapter lifecycle: Stop() is legal
+// (idempotent) before Serve() has ever run, and BaseAdapter has no way
+// to distinguish "never started" from "started, then stopped" without
+// the failed-start tracking that's deferred to a follow-up phase.
+//
+// Per the contract documented on [BaseAdapter.Healthcheck], such an
+// adapter must surface as [health.StatusUnknown] (ambiguous lifecycle)
+// rather than [health.StatusUnhealthy]. This test locks the behaviour
+// in so a future refactor doesn't silently change it.
+func TestBaseAdapter_Healthcheck_UnknownWhenStoppedBeforeStart(t *testing.T) {
+	b := newTestBaseAdapter(t, "TEST")
+
+	// Note: started is NOT set to true. We're closing the Shutdown
+	// channel without ever flipping the listener-bound flag.
+	b.initiateShutdown()
+
+	rep := b.Healthcheck(context.Background())
+	if rep.Status != health.StatusUnknown {
+		t.Fatalf("stopped-before-started: got %q (%q), want unknown", rep.Status, rep.Message)
+	}
+}

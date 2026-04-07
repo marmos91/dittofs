@@ -12,18 +12,21 @@ import (
 // to layer protocol-specific concerns (such as the configured-on flag) on
 // top of this baseline.
 //
-// Derivation rules using only signals BaseAdapter already tracks:
+// Derivation rules using only the signals BaseAdapter currently tracks
+// (started flag + Shutdown channel):
 //
 //   - [health.StatusUnknown] when the caller's context is canceled or
-//     deadlined out (the probe was indeterminate, not the adapter), OR
-//     when Serve() has not yet been called and the listener has
-//     therefore not been bound (the adapter exists in the runtime
-//     registry but hasn't had a chance to start).
+//     deadlined out (the probe was indeterminate, not the adapter), or
+//     when the started flag is still false. The latter covers the
+//     pre-Serve startup window AND a hypothetical "Serve called but
+//     net.Listen failed" case — BaseAdapter has no way to distinguish
+//     them today, so both surface as Unknown rather than Unhealthy.
+//     A follow-up phase can add a failed-start state and lift that
+//     limitation; see the [Adapter.Healthcheck] interface doc.
 //   - [health.StatusUnhealthy] when shutdown has been initiated but
-//     Serve() has not yet returned (the adapter is mid-shutdown), or
-//     when the listener has been torn down out of band.
-//   - [health.StatusHealthy] otherwise — the adapter has bound its
-//     listener and is not currently shutting down.
+//     Serve() has not yet returned (the adapter is mid-shutdown).
+//   - [health.StatusHealthy] otherwise — the adapter has started and
+//     is not currently shutting down.
 //
 // This default does not return [health.StatusDegraded] or
 // [health.StatusDisabled]. Concrete adapters that track recent errors

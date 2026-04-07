@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	memoryMeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -33,6 +35,17 @@ func (m *mockAdapter) Protocol() string {
 
 func (m *mockAdapter) Port() int {
 	return m.port
+}
+
+// Healthcheck satisfies the [adapters.ProtocolAdapter] interface (the
+// new method added in phase U-C). The mock has no real lifecycle
+// state, so it always reports healthy with the current timestamp;
+// tests that need richer behaviour should use a dedicated fake.
+func (m *mockAdapter) Healthcheck(_ context.Context) health.Report {
+	return health.Report{
+		Status:    health.StatusHealthy,
+		CheckedAt: time.Now().UTC(),
+	}
 }
 
 func TestLiveness_ReturnsOK(t *testing.T) {

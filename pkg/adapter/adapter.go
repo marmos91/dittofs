@@ -106,21 +106,28 @@ type Adapter interface {
 	// from /adapter/{name}/status.
 	//
 	// Implementations should derive status from cheap, already-tracked
-	// signals — never run a fresh probe per call. The expected mapping is:
+	// signals — never run a fresh probe per call. Mapping:
 	//
 	//   - [health.StatusDisabled] when the adapter is configured off
 	//     (config.Enabled == false). Operators turned it off; nothing
 	//     to probe.
-	//   - [health.StatusUnknown] when the adapter exists but Serve()
-	//     hasn't yet been called (startup race window). The runtime
-	//     hasn't given it a chance to fail or succeed.
-	//   - [health.StatusUnhealthy] when configured-on but not running
-	//     (failed to start, listener died, Serve returned early).
+	//   - [health.StatusUnknown] when the adapter exists but has not
+	//     yet established a known running state — most commonly the
+	//     pre-Serve startup window, but also any state the
+	//     implementation cannot positively classify (canceled probe
+	//     context, BaseAdapter without failed-start tracking, etc.).
+	//   - [health.StatusUnhealthy] when the implementation explicitly
+	//     tracks a failed lifecycle state — for example a stopped or
+	//     crashed adapter, or one whose listener died after running.
+	//     Phase U-C does not introduce that tracking, so the default
+	//     [BaseAdapter] never returns Unhealthy from "configured-on
+	//     but not started"; a future phase can add a serveAttempted /
+	//     lastServeErr field and lift that limitation.
 	//   - [health.StatusDegraded] when running but reporting recent
 	//     errors above whatever per-protocol threshold the
-	//     implementation tracks. Phase U-C does not introduce new
-	//     instrumentation, so most adapters will only return this if
-	//     they already had a degraded-detection mechanism.
+	//     implementation tracks. Phase U-C does not introduce that
+	//     instrumentation either; only adapters that already had a
+	//     degraded-detection mechanism can return this today.
 	//   - [health.StatusHealthy] when running with no recent issues.
 	Healthcheck(ctx context.Context) health.Report
 }

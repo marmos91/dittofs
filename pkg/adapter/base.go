@@ -213,7 +213,15 @@ func (b *BaseAdapter) ServeWithFactory(
 		return fmt.Errorf("failed to create %s listener on port %d: %w", b.protocolName, b.Config.Port, err)
 	}
 
-	// Store listener with mutex protection and signal readiness
+	// Store listener with mutex protection and signal readiness.
+	//
+	// Ordering invariant: started must be flipped BEFORE closing
+	// ListenerReady. Tests (and the API layer's /status routes) treat
+	// "ListenerReady has fired" as proof that the listener is bound,
+	// so any concurrent Healthcheck observing a ready listener must
+	// also see started=true. Inverting these two lines would create a
+	// window where a probe sees a ready listener but reports
+	// StatusUnknown.
 	b.listenerMu.Lock()
 	b.listener = listener
 	b.listenerMu.Unlock()
