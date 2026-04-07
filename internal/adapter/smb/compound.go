@@ -119,6 +119,10 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 	// Collect all responses for compound batching
 	var responses []compoundResponse
 
+	// Collect deferred post-send hooks (e.g. STATUS_NOTIFY_CLEANUP after CLOSE)
+	// that must fire strictly after the entire compound response is written.
+	var postSendHooks []func()
+
 	// Process first command
 	logger.Debug("Processing compound request - first command",
 		"command", firstHeader.Command.String(),
@@ -150,6 +154,9 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 
 	respHeader, body := buildResponseHeaderAndBody(firstHeader, handlerCtx, result, connInfo)
 	responses = append(responses, compoundResponse{respHeader: respHeader, body: body})
+	if handlerCtx != nil && handlerCtx.PostSend != nil {
+		postSendHooks = append(postSendHooks, handlerCtx.PostSend)
+	}
 	if result != nil {
 		lastCmdSessionFailed = isSessionLevelError(result.Status)
 		lastCmdFailed = result.Status.IsError()
@@ -319,11 +326,29 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 			rh.Flags |= types.FlagRelated
 		}
 		responses = append(responses, compoundResponse{respHeader: rh, body: rb})
+
+		// Collect any PostSend hook (CLOSE→CHANGE_NOTIFY cleanup) so it can
+		// fire strictly after the compound frame has been written.
+		if cmdCtx != nil && cmdCtx.PostSend != nil {
+			postSendHooks = append(postSendHooks, cmdCtx.PostSend)
+		}
 	}
 
-	// Send all responses as a single compound response frame
-	if err := sendCompoundResponses(responses, connInfo); err != nil {
-		logger.Debug("Error sending compound responses", "error", err)
+	// Send all responses as a single compound response frame.
+	sendErr := sendCompoundResponses(responses, connInfo)
+	if sendErr != nil {
+		logger.Debug("Error sending compound responses", "error", sendErr)
+	}
+
+	// Per MS-SMB2 3.3.4.1: run deferred post-send hooks (e.g.
+	// STATUS_NOTIFY_CLEANUP after CLOSE) only after the compound response
+	// has been written. Skip them if the compound write failed — the
+	// connection is likely dead and the hooks would just log spurious
+	// SendMessage errors on a torn-down session.
+	if sendErr == nil {
+		for _, hook := range postSendHooks {
+			hook()
+		}
 	}
 }
 

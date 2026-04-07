@@ -364,16 +364,33 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 
 	if openFile.IsDirectory && h.NotifyRegistry != nil {
 		if notify := h.NotifyRegistry.Unregister(req.FileID); notify != nil {
-			// Per MS-SMB2 3.3.5.16.1: when the directory handle for a pending
-			// CHANGE_NOTIFY is closed, complete the request with STATUS_NOTIFY_CLEANUP.
+			// Per MS-SMB2 3.3.4.1 and 3.3.5.16.1: when the directory handle for
+			// a pending CHANGE_NOTIFY is closed, complete the request with
+			// STATUS_NOTIFY_CLEANUP. This response MUST be sent AFTER the CLOSE
+			// response — CHANGE_NOTIFY responses "MUST be the last responses
+			// sent for the FileId". If sent before, WPTS (and Windows clients)
+			// that arm their async-receive callback only after consuming the
+			// CLOSE response miss the cleanup and time out
+			// (BVT_SMB2Basic_ChangeNotify_ServerReceiveSmb2Close). Defer the
+			// delivery via ctx.PostSend, which the dispatch layer invokes after
+			// the CLOSE response has been written. The notify entry is already
+			// unregistered, so capturing the pointer is safe — nothing else can
+			// see or mutate it.
 			if notify.AsyncCallback != nil {
-				cleanupResp := &ChangeNotifyResponse{
-					SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
-				}
-				if err := notify.AsyncCallback(notify.SessionID, notify.MessageID, notify.AsyncId, cleanupResp); err != nil {
-					logger.Warn("CLOSE: failed to send STATUS_NOTIFY_CLEANUP",
+				ctx.PostSend = func() {
+					cleanupResp := &ChangeNotifyResponse{
+						SMBResponseBase: SMBResponseBase{Status: types.StatusNotifyCleanup},
+					}
+					if err := notify.AsyncCallback(notify.SessionID, notify.MessageID, notify.AsyncId, cleanupResp); err != nil {
+						logger.Warn("CLOSE: failed to send STATUS_NOTIFY_CLEANUP",
+							"messageID", notify.MessageID,
+							"error", err)
+						return
+					}
+					logger.Debug("CLOSE: sent STATUS_NOTIFY_CLEANUP (post-close)",
+						"path", openFile.Path,
 						"messageID", notify.MessageID,
-						"error", err)
+						"asyncId", notify.AsyncId)
 				}
 			}
 			logger.Debug("CLOSE: unregistered pending CHANGE_NOTIFY",

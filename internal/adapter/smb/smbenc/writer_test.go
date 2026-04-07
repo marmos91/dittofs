@@ -229,6 +229,33 @@ func TestReaderWriterRoundtrip(t *testing.T) {
 	}
 }
 
+func TestWriterWriteVariableSection(t *testing.T) {
+	t.Run("empty data emits one zero pad byte", func(t *testing.T) {
+		w := NewWriter(0)
+		w.WriteVariableSection(nil)
+		if w.Err() != nil {
+			t.Fatalf("unexpected error: %v", w.Err())
+		}
+		if got := w.Bytes(); !bytes.Equal(got, []byte{0x00}) {
+			t.Errorf("empty input: got %v, want [0x00]", got)
+		}
+	})
+	t.Run("non-empty data is written verbatim", func(t *testing.T) {
+		w := NewWriter(0)
+		w.WriteVariableSection([]byte{0xde, 0xad, 0xbe, 0xef})
+		if got := w.Bytes(); !bytes.Equal(got, []byte{0xde, 0xad, 0xbe, 0xef}) {
+			t.Errorf("non-empty input: got %v", got)
+		}
+	})
+	t.Run("zero-length slice (not nil) still pads", func(t *testing.T) {
+		w := NewWriter(0)
+		w.WriteVariableSection([]byte{})
+		if got := w.Bytes(); !bytes.Equal(got, []byte{0x00}) {
+			t.Errorf("zero-length slice: got %v, want [0x00]", got)
+		}
+	})
+}
+
 func TestWriterGrowsBeyondCapacity(t *testing.T) {
 	w := NewWriter(2) // Start with small capacity
 	w.WriteUint32(0xDEADBEEF)

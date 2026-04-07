@@ -65,6 +65,24 @@ func (w *Writer) WriteBytes(data []byte) {
 	w.buf = append(w.buf, data...)
 }
 
+// WriteVariableSection appends data, or a single zero pad byte if data is empty.
+//
+// Encodes the MS-SMB2 convention that a response body declared with
+// StructureSize=N consists of an (N-1)-byte fixed portion followed by a
+// variable-length section that MUST contain at least one byte. When the
+// payload is empty (e.g. STATUS_NOTIFY_CLEANUP, zero-length READ, IOCTLs
+// like FSCTL_SET_REPARSE_POINT) the trailing pad must still be present —
+// without it, WPTS Smb2Decoder and Samba-derived clients silently drop the
+// response and hang until their receive timeout fires. Samba enforces the
+// same convention via SSVAL(outbody.data, 0x00, fixed_size + 1).
+func (w *Writer) WriteVariableSection(data []byte) {
+	if len(data) == 0 {
+		w.WriteUint8(0)
+		return
+	}
+	w.WriteBytes(data)
+}
+
 // WriteZeros appends n zero bytes.
 func (w *Writer) WriteZeros(n int) {
 	if w.err != nil {

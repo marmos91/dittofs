@@ -376,20 +376,16 @@ func DecodeChangeNotifyRequest(body []byte) (*ChangeNotifyRequest, error) {
 	return req, nil
 }
 
-// Encode serializes the ChangeNotifyResponse to wire format.
+// Encode serializes the ChangeNotifyResponse to wire format [MS-SMB2] 2.2.36.
+// OutputBufferOffset is set to 72 (header + fixed body) unconditionally,
+// matching Samba and Windows reference behavior.
 func (resp *ChangeNotifyResponse) Encode() ([]byte, error) {
 	bufLen := len(resp.Buffer)
-	w := smbenc.NewWriter(8 + bufLen)
-	w.WriteUint16(9) // StructureSize (always 9)
-
-	if bufLen > 0 {
-		w.WriteUint16(72)             // OutputBufferOffset (after SMB2 header)
-		w.WriteUint32(uint32(bufLen)) // OutputBufferLength
-		w.WriteBytes(resp.Buffer)     // Buffer
-	} else {
-		w.WriteUint16(0) // OutputBufferOffset
-		w.WriteUint32(0) // OutputBufferLength
-	}
+	w := smbenc.NewWriter(8 + max(bufLen, 1))
+	w.WriteUint16(9)
+	w.WriteUint16(72)
+	w.WriteUint32(uint32(bufLen))
+	w.WriteVariableSection(resp.Buffer)
 
 	return w.Bytes(), w.Err()
 }

@@ -130,9 +130,23 @@ func ProcessSingleRequest(
 	// Track session lifecycle for connection cleanup
 	TrackSessionLifecycle(reqHeader.Command, reqHeader.SessionID, handlerCtx.SessionID, result.Status, connInfo.SessionTracker)
 
-	// Send response and run after-hooks with the response bytes
+	// Send response and run after-hooks with the response bytes. If the
+	// write fails, return early — any registered PostSend hook is
+	// intentionally dropped because the connection is likely dead and the
+	// hook would just log spurious SendMessage errors on a torn-down
+	// session. (Same contract as the compound dispatch path.)
 	if err := SendResponseWithHooks(reqHeader, handlerCtx, result, connInfo); err != nil {
 		return err
+	}
+
+	// Per MS-SMB2 3.3.4.1: some handlers (currently CLOSE with a pending
+	// CHANGE_NOTIFY) need to deliver an async response strictly AFTER their
+	// own synchronous response has been written. Invoke any PostSend hook
+	// now, with writeMu released, so the hook's own SendMessage re-acquires
+	// the lock cleanly and the cleanup notification is unambiguously ordered
+	// after the CLOSE response.
+	if handlerCtx != nil && handlerCtx.PostSend != nil {
+		handlerCtx.PostSend()
 	}
 
 	// NOTE: We intentionally do NOT delete the session here. The session is
@@ -503,11 +517,15 @@ func SendAsyncChangeNotifyResponse(sessionID, messageID, asyncId uint64, respons
 		Credits:   1, // Grant 1 credit with async response
 	}
 
-	// For error responses, use the error body format (MS-SMB2 2.2.2).
-	// STATUS_NOTIFY_CLEANUP (0x10B) and STATUS_NOTIFY_ENUM_DIR (0x10C) are
-	// success-severity codes that carry no output buffer. They use the
-	// command-specific response format with an empty buffer (StructureSize=9,
-	// OutputBufferOffset=0, OutputBufferLength=0), not the error format.
+	// Body format selection (per MS-SMB2 2.2.2 + WPTS Smb2Decoder.IsErrorPacket):
+	//   - Genuine errors → SMB2 ERROR Response body.
+	//   - STATUS_NOTIFY_CLEANUP / STATUS_NOTIFY_ENUM_DIR on a CHANGE_NOTIFY are
+	//     NOT classified as errors by the WPTS SDK (search Smb2Decoder.cs for
+	//     "STATUS_NOTIFY_CLEANUP"). They parse the body as a regular
+	//     CHANGE_NOTIFY Response with an empty output buffer. The encoder
+	//     enforces the mandatory 1-byte variable pad so the response is 9
+	//     bytes total (matches Samba).
+	//   - Normal completions with notification data → CHANGE_NOTIFY Response body.
 	var body []byte
 	if status.IsError() {
 		body = MakeErrorBody()

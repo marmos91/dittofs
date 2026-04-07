@@ -126,6 +126,22 @@ type SMBHandlerContext struct {
 	// inside an SMB3 Transform Header (protocol ID 0xFD). Used to enforce
 	// global and per-share encryption requirements per MS-SMB2 3.3.5.2.1.
 	RequestEncrypted bool
+
+	// PostSend is an optional hook invoked by the dispatch layer AFTER the
+	// response for this command has been written to the wire. It is used by
+	// handlers (currently only CLOSE) to defer async side-effects that must
+	// be ordered strictly after their own response.
+	//
+	// Per MS-SMB2 3.3.4.1: "CHANGE_NOTIFY responses MUST be the last responses
+	// sent for the FileId". When CLOSE completes a pending CHANGE_NOTIFY watch
+	// with STATUS_NOTIFY_CLEANUP, the cleanup response must be sent AFTER the
+	// CLOSE response, otherwise clients that arm their async-receive loop only
+	// after consuming the CLOSE response will miss the cleanup and time out.
+	//
+	// The hook runs on the same goroutine as the dispatch loop after the
+	// writeMu for the CLOSE response has been released; the hook is responsible
+	// for acquiring writeMu itself (SendMessage handles this transparently).
+	PostSend func()
 }
 
 // NewSMBHandlerContext creates a new handler context from request parameters.

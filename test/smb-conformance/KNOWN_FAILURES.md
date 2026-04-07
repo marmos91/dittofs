@@ -125,7 +125,6 @@ in `baseline-results.md` for prioritization.
 | BVT_WitnessrRegisterEx_SWNAsyncNotification_IPChange | SWN | Service Witness Protocol not implemented | Permanent | - |
 | BVT_WitnessrRegister_SWNAsyncNotification_ClientMove | SWN | Service Witness Protocol not implemented | Permanent | - |
 | BVT_WriteSharedVHD | VHD/RSVD | Virtual Hard Disk not implemented | Permanent | - |
-| BVT_SMB2Basic_ChangeNotify_ServerReceiveSmb2Close | ChangeNotify | CLOSE notify cleanup response format needs debugging | Expected | - |
 
 ## Status Legend
 
@@ -155,14 +154,13 @@ Tests that fail for features not yet implemented:
 | Category | Count | Status |
 |----------|-------|--------|
 | Timestamp | 3 | Directory timestamp edge cases (freeze-thaw, auto-update) |
-| ChangeNotify | 1 | CLOSE notify cleanup async delivery |
 | Leasing | 1 | Directory lease break timing flake in CI |
 
-**Total expected failures (fixable):** 5 tests
+**Total expected failures (fixable):** 4 tests
 
-**WPTS BVT expected failures (primary gate):** 5
+**WPTS BVT expected failures (primary gate):** 4
 
-**Grand total known failures:** 43 tests (38 permanent + 5 expected)
+**Grand total known failures:** 42 tests (38 permanent + 4 expected)
 
 ## Phase 72 Fixes (31 tests removed)
 
