@@ -325,22 +325,13 @@ func (bs *BlockStore) HealthCheck(ctx context.Context) error {
 func (bs *BlockStore) Healthcheck(ctx context.Context) health.Report {
 	start := time.Now()
 
-	makeReport := func(status health.Status, msg string) health.Report {
-		return health.Report{
-			Status:    status,
-			Message:   msg,
-			CheckedAt: time.Now().UTC(),
-			LatencyMs: time.Since(start).Milliseconds(),
-		}
-	}
-
 	if err := ctx.Err(); err != nil {
-		return makeReport(health.StatusUnhealthy, err.Error())
+		return health.NewUnhealthyReport(err.Error(), time.Since(start))
 	}
 
 	localRep := bs.local.Healthcheck(ctx)
 	if localRep.Status == health.StatusUnhealthy {
-		return makeReport(health.StatusUnhealthy, "local: "+localRep.Message)
+		return health.NewUnhealthyReport("local: "+localRep.Message, time.Since(start))
 	}
 
 	if bs.remote != nil {
@@ -348,14 +339,16 @@ func (bs *BlockStore) Healthcheck(ctx context.Context) health.Report {
 		if remoteRep.Status == health.StatusUnhealthy {
 			// Local works, remote is unreachable: degraded — reads
 			// still served from local cache, writes will queue.
-			return makeReport(
-				health.StatusDegraded,
-				"remote unreachable: "+remoteRep.Message,
-			)
+			return health.Report{
+				Status:    health.StatusDegraded,
+				Message:   "remote unreachable: " + remoteRep.Message,
+				CheckedAt: time.Now().UTC(),
+				LatencyMs: time.Since(start).Milliseconds(),
+			}
 		}
 	}
 
-	return makeReport(health.StatusHealthy, "")
+	return health.NewHealthyReport(time.Since(start))
 }
 
 // RemoteForTesting returns the remote store for cross-package test verification

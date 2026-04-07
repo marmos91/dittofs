@@ -186,14 +186,7 @@ func (h *HealthHandler) Stores(w http.ResponseWriter, r *http.Request) {
 		// in phase U-F to consume per-entity Reports directly, so this
 		// adapter is intentionally minimal and throwaway.
 		health := checkStoreHealth(ctx, name, "metadata", func(ctx context.Context) error {
-			rep := store.Healthcheck(ctx)
-			if rep.Status == healthpkg.StatusHealthy {
-				return nil
-			}
-			if rep.Message != "" {
-				return errors.New(rep.Message)
-			}
-			return errors.New(string(rep.Status))
+			return reportAsError(store.Healthcheck(ctx))
 		})
 		if health.Status == "unhealthy" {
 			allHealthy = false
@@ -220,6 +213,21 @@ func (h *HealthHandler) Stores(w http.ResponseWriter, r *http.Request) {
 	} else {
 		WriteJSON(w, http.StatusServiceUnavailable, unhealthyResponseWithData(response))
 	}
+}
+
+// reportAsError flattens a health.Report into the legacy `error` shape
+// expected by checkStoreHealth: a healthy report becomes nil, anything
+// else becomes an error carrying the operator-facing message (or the
+// status name when no message is set). Throwaway adapter — phase U-F
+// will rewrite checkStoreHealth to consume Reports directly.
+func reportAsError(rep healthpkg.Report) error {
+	if rep.Status == healthpkg.StatusHealthy {
+		return nil
+	}
+	if rep.Message != "" {
+		return errors.New(rep.Message)
+	}
+	return errors.New(string(rep.Status))
 }
 
 // checkStoreHealth runs a health check function and returns the result as StoreHealth.

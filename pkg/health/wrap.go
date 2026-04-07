@@ -5,6 +5,31 @@ import (
 	"time"
 )
 
+// NewHealthyReport returns a [StatusHealthy] [Report] stamped with the
+// current UTC time and the supplied probe latency. Use this from store
+// implementations whose Healthcheck method has measured wall-clock time
+// around its probe and just needs to package the result.
+func NewHealthyReport(latency time.Duration) Report {
+	return Report{
+		Status:    StatusHealthy,
+		CheckedAt: time.Now().UTC(),
+		LatencyMs: latency.Milliseconds(),
+	}
+}
+
+// NewUnhealthyReport returns a [StatusUnhealthy] [Report] with the
+// supplied operator-facing message, stamped with the current UTC time
+// and the supplied probe latency. The companion of [NewHealthyReport]
+// for the failure path.
+func NewUnhealthyReport(msg string, latency time.Duration) Report {
+	return Report{
+		Status:    StatusUnhealthy,
+		Message:   msg,
+		CheckedAt: time.Now().UTC(),
+		LatencyMs: latency.Milliseconds(),
+	}
+}
+
 // ReportFromError synthesises a [Report] from an error-returning probe
 // result. This is the bridge between the legacy `func(ctx) error` health
 // check style used inside dittofs and the new [Report]-returning
@@ -21,17 +46,10 @@ import (
 // error to [StatusDegraded] rather than [StatusUnhealthy]), build the
 // [Report] manually instead of using this helper.
 func ReportFromError(err error, latency time.Duration) Report {
-	rep := Report{
-		CheckedAt: time.Now().UTC(),
-		LatencyMs: latency.Milliseconds(),
-	}
 	if err != nil {
-		rep.Status = StatusUnhealthy
-		rep.Message = err.Error()
-		return rep
+		return NewUnhealthyReport(err.Error(), latency)
 	}
-	rep.Status = StatusHealthy
-	return rep
+	return NewHealthyReport(latency)
 }
 
 // CheckerFromErrorFunc adapts a legacy `func(ctx) error` probe into a

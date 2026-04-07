@@ -2,7 +2,6 @@ package badger
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	badgerdb "github.com/dgraph-io/badger/v4"
@@ -27,29 +26,15 @@ import (
 func (s *BadgerMetadataStore) Healthcheck(ctx context.Context) health.Report {
 	start := time.Now()
 	if err := ctx.Err(); err != nil {
-		return health.Report{
-			Status:    health.StatusUnhealthy,
-			Message:   err.Error(),
-			CheckedAt: time.Now().UTC(),
-			LatencyMs: time.Since(start).Milliseconds(),
-		}
+		return health.NewUnhealthyReport(err.Error(), time.Since(start))
 	}
 
 	// A no-op View transaction is enough to verify the DB is open.
 	// BadgerDB returns an error if the handle is closed or the storage
 	// engine has reported corruption.
 	if err := s.db.View(func(txn *badgerdb.Txn) error { return nil }); err != nil {
-		return health.Report{
-			Status:    health.StatusUnhealthy,
-			Message:   fmt.Sprintf("badger view: %v", err),
-			CheckedAt: time.Now().UTC(),
-			LatencyMs: time.Since(start).Milliseconds(),
-		}
+		return health.NewUnhealthyReport("badger view: "+err.Error(), time.Since(start))
 	}
 
-	return health.Report{
-		Status:    health.StatusHealthy,
-		CheckedAt: time.Now().UTC(),
-		LatencyMs: time.Since(start).Milliseconds(),
-	}
+	return health.NewHealthyReport(time.Since(start))
 }

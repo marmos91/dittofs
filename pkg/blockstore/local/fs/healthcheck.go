@@ -34,63 +34,54 @@ import (
 func (bs *FSStore) Healthcheck(ctx context.Context) health.Report {
 	start := time.Now()
 
-	makeReport := func(status health.Status, msg string) health.Report {
-		return health.Report{
-			Status:    status,
-			Message:   msg,
-			CheckedAt: time.Now().UTC(),
-			LatencyMs: time.Since(start).Milliseconds(),
-		}
-	}
-
 	if err := ctx.Err(); err != nil {
-		return makeReport(health.StatusUnhealthy, err.Error())
+		return health.NewUnhealthyReport(err.Error(), time.Since(start))
 	}
 
 	if bs.closedFlag.Load() {
-		return makeReport(health.StatusUnhealthy, "fs block store is closed")
+		return health.NewUnhealthyReport("fs block store is closed", time.Since(start))
 	}
 
 	info, err := os.Stat(bs.baseDir)
 	if err != nil {
-		return makeReport(
-			health.StatusUnhealthy,
-			fmt.Sprintf("baseDir stat: %v", err),
-		)
+		return health.NewUnhealthyReport(fmt.Sprintf("baseDir stat: %v", err), time.Since(start))
 	}
 	if !info.IsDir() {
-		return makeReport(
-			health.StatusUnhealthy,
+		return health.NewUnhealthyReport(
 			fmt.Sprintf("baseDir %q is not a directory", bs.baseDir),
+			time.Since(start),
 		)
 	}
 
-	// Write probe: create a temp file under baseDir, then remove it.
-	// We use a fixed prefix so an unrelated leftover from a crashed
-	// previous probe is recognisable; CreateTemp generates a unique
-	// suffix so multiple concurrent probes don't collide.
-	probePath := filepath.Join(bs.baseDir, ".dfs-health-probe-*")
-	f, err := os.CreateTemp(bs.baseDir, ".dfs-health-probe-*")
+	if err := verifyWritable(bs.baseDir); err != nil {
+		return health.NewUnhealthyReport(err.Error(), time.Since(start))
+	}
+
+	return health.NewHealthyReport(time.Since(start))
+}
+
+// verifyWritable confirms the process can create, close, and unlink a
+// file inside dir. It is the operator-facing notion of "this directory
+// is writable right now": catches read-only mounts, permission
+// regressions, and full filesystems that a plain os.Stat would miss.
+//
+// The probe uses os.CreateTemp with a fixed ".dfs-health-probe-*" prefix
+// so that unrelated leftovers from a crashed previous probe are still
+// recognisable on disk; the random suffix prevents collisions between
+// concurrent probes.
+func verifyWritable(dir string) error {
+	probePath := filepath.Join(dir, ".dfs-health-probe-*")
+	f, err := os.CreateTemp(dir, ".dfs-health-probe-*")
 	if err != nil {
-		return makeReport(
-			health.StatusUnhealthy,
-			fmt.Sprintf("write probe (create %q): %v", probePath, err),
-		)
+		return fmt.Errorf("write probe (create %q): %w", probePath, err)
 	}
 	probeName := f.Name()
 	if closeErr := f.Close(); closeErr != nil {
 		_ = os.Remove(probeName) // best-effort cleanup
-		return makeReport(
-			health.StatusUnhealthy,
-			fmt.Sprintf("write probe (close): %v", closeErr),
-		)
+		return fmt.Errorf("write probe (close): %w", closeErr)
 	}
 	if removeErr := os.Remove(probeName); removeErr != nil {
-		return makeReport(
-			health.StatusUnhealthy,
-			fmt.Sprintf("write probe (remove): %v", removeErr),
-		)
+		return fmt.Errorf("write probe (remove): %w", removeErr)
 	}
-
-	return makeReport(health.StatusHealthy, "")
+	return nil
 }

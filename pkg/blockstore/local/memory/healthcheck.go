@@ -17,12 +17,7 @@ func (s *MemoryStore) Healthcheck(ctx context.Context) health.Report {
 	start := time.Now()
 
 	if err := ctx.Err(); err != nil {
-		return health.Report{
-			Status:    health.StatusUnhealthy,
-			Message:   err.Error(),
-			CheckedAt: time.Now().UTC(),
-			LatencyMs: time.Since(start).Milliseconds(),
-		}
+		return health.NewUnhealthyReport(err.Error(), time.Since(start))
 	}
 
 	s.mu.RLock()
@@ -30,17 +25,8 @@ func (s *MemoryStore) Healthcheck(ctx context.Context) health.Report {
 	s.mu.RUnlock()
 
 	if closed {
-		return health.Report{
-			Status:    health.StatusUnhealthy,
-			Message:   "memory block store is closed",
-			CheckedAt: time.Now().UTC(),
-			LatencyMs: time.Since(start).Milliseconds(),
-		}
+		return health.NewUnhealthyReport("memory block store is closed", time.Since(start))
 	}
 
-	return health.Report{
-		Status:    health.StatusHealthy,
-		CheckedAt: time.Now().UTC(),
-		LatencyMs: time.Since(start).Milliseconds(),
-	}
+	return health.NewHealthyReport(time.Since(start))
 }

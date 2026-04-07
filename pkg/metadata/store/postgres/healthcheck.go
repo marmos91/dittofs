@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/health"
@@ -26,26 +25,12 @@ import (
 func (s *PostgresMetadataStore) Healthcheck(ctx context.Context) health.Report {
 	start := time.Now()
 	if err := ctx.Err(); err != nil {
-		return health.Report{
-			Status:    health.StatusUnhealthy,
-			Message:   err.Error(),
-			CheckedAt: time.Now().UTC(),
-			LatencyMs: time.Since(start).Milliseconds(),
-		}
+		return health.NewUnhealthyReport(err.Error(), time.Since(start))
 	}
 
 	if err := s.pool.Ping(ctx); err != nil {
-		return health.Report{
-			Status:    health.StatusUnhealthy,
-			Message:   fmt.Sprintf("postgres ping: %v", err),
-			CheckedAt: time.Now().UTC(),
-			LatencyMs: time.Since(start).Milliseconds(),
-		}
+		return health.NewUnhealthyReport("postgres ping: "+err.Error(), time.Since(start))
 	}
 
-	return health.Report{
-		Status:    health.StatusHealthy,
-		CheckedAt: time.Now().UTC(),
-		LatencyMs: time.Since(start).Milliseconds(),
-	}
+	return health.NewHealthyReport(time.Since(start))
 }
