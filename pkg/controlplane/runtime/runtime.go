@@ -15,6 +15,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/stores"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -164,6 +165,38 @@ func (r *Runtime) GetMetadataStoreForShare(shareName string) (metadata.MetadataS
 		return nil, err
 	}
 	return r.storesSvc.GetMetadataStore(share.MetadataStore)
+}
+
+// HealthcheckShare returns the named share's overall health, computed
+// as the worst-of its block store engine and metadata store. The
+// runtime owns both registries, so this is the natural place to wire
+// the lookup before delegating to [Share.Healthcheck].
+//
+// Returns [health.StatusUnknown] with a "share not found" message
+// when the named share isn't registered. Returns
+// [health.StatusUnhealthy] when the share is registered but its
+// metadata store can't be looked up — that's a misconfigured share,
+// not an indeterminate probe.
+func (r *Runtime) HealthcheckShare(ctx context.Context, shareName string) health.Report {
+	share, err := r.sharesSvc.GetShare(shareName)
+	if err != nil {
+		return health.Report{
+			Status:    health.StatusUnknown,
+			Message:   "share not found: " + err.Error(),
+			CheckedAt: time.Now().UTC(),
+		}
+	}
+
+	metaStore, err := r.storesSvc.GetMetadataStore(share.MetadataStore)
+	if err != nil {
+		return health.Report{
+			Status:    health.StatusUnhealthy,
+			Message:   "metadata store " + share.MetadataStore + " not loaded: " + err.Error(),
+			CheckedAt: time.Now().UTC(),
+		}
+	}
+
+	return share.Healthcheck(ctx, metaStore)
 }
 
 func (r *Runtime) ListMetadataStores() []string {
