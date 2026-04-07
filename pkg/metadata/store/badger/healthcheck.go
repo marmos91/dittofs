@@ -3,47 +3,53 @@ package badger
 import (
 	"context"
 	"fmt"
+	"time"
 
 	badgerdb "github.com/dgraph-io/badger/v4"
+
+	"github.com/marmos91/dittofs/pkg/health"
 )
 
-// Healthcheck verifies the repository is operational.
+// Healthcheck verifies the BadgerDB-backed store is operational and
+// returns a structured [health.Report].
 //
-// This performs a health check to ensure BadgerDB is accessible and can serve
-// requests. The check:
-//   - Attempts to start a read transaction
-//   - Verifies the database is not closed
-//   - Checks context cancellation
+// The probe attempts a no-op read transaction (db.View) which forces
+// BadgerDB to verify the database handle is open and the underlying
+// LSM tree is accessible. This is the cheapest possible probe that
+// still catches "DB closed" and "DB corrupted" failure modes.
 //
-// For BadgerDB, this is a lightweight operation that doesn't perform extensive
-// checks, as BadgerDB handles most error conditions internally.
+// Returns [health.StatusUnhealthy] when the context is canceled or the
+// View call returns an error; otherwise [health.StatusHealthy] with
+// the measured probe latency.
 //
-// Use Cases:
-//   - Liveness probes in container orchestration
-//   - Load balancer health checks
-//   - Monitoring and alerting systems
-//   - Protocol NULL/ping procedures
-//
-// Thread Safety: Safe for concurrent use.
-//
-// Returns:
-//   - error: Returns error if repository is unhealthy, nil if healthy
-func (s *BadgerMetadataStore) Healthcheck(ctx context.Context) error {
-	// Check context cancellation
+// Thread-safe; designed to be called concurrently from /status routes
+// behind a [health.CachedChecker].
+func (s *BadgerMetadataStore) Healthcheck(ctx context.Context) health.Report {
+	start := time.Now()
 	if err := ctx.Err(); err != nil {
-		return err
+		return health.Report{
+			Status:    health.StatusUnhealthy,
+			Message:   err.Error(),
+			CheckedAt: time.Now().UTC(),
+			LatencyMs: time.Since(start).Milliseconds(),
+		}
 	}
 
-	// Attempt a simple read transaction to verify database is accessible
-	err := s.db.View(func(txn *badgerdb.Txn) error {
-		// Just verify we can start a transaction
-		// BadgerDB will return an error if it's closed or corrupted
-		return nil
-	})
-
-	if err != nil {
-		return fmt.Errorf("healthcheck failed: %w", err)
+	// A no-op View transaction is enough to verify the DB is open.
+	// BadgerDB returns an error if the handle is closed or the storage
+	// engine has reported corruption.
+	if err := s.db.View(func(txn *badgerdb.Txn) error { return nil }); err != nil {
+		return health.Report{
+			Status:    health.StatusUnhealthy,
+			Message:   fmt.Sprintf("badger view: %v", err),
+			CheckedAt: time.Now().UTC(),
+			LatencyMs: time.Since(start).Milliseconds(),
+		}
 	}
 
-	return nil
+	return health.Report{
+		Status:    health.StatusHealthy,
+		CheckedAt: time.Now().UTC(),
+		LatencyMs: time.Since(start).Milliseconds(),
+	}
 }

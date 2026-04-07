@@ -6,9 +6,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
+	"github.com/marmos91/dittofs/pkg/health"
 )
 
 // Compile-time interface satisfaction check.
@@ -155,6 +157,10 @@ func (s *Store) Close() error {
 }
 
 // HealthCheck verifies the store is accessible and operational.
+//
+// Legacy error-returning probe used by the syncer's HealthMonitor.
+// Public callers should prefer Healthcheck (lowercase 'c') which
+// returns a structured [health.Report] and satisfies [health.Checker].
 func (s *Store) HealthCheck(_ context.Context) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -163,6 +169,16 @@ func (s *Store) HealthCheck(_ context.Context) error {
 		return blockstore.ErrStoreClosed
 	}
 	return nil
+}
+
+// Healthcheck implements [health.Checker] by wrapping HealthCheck in
+// a [health.Report] with measured latency. The in-memory remote has
+// no external dependencies, so the only failure mode is "store has
+// been closed".
+func (s *Store) Healthcheck(ctx context.Context) health.Report {
+	start := time.Now()
+	err := s.HealthCheck(ctx)
+	return health.ReportFromError(err, time.Since(start))
 }
 
 // BlockCount returns the number of blocks stored (for testing).

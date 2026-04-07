@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 )
@@ -31,9 +32,8 @@ func TestBadgerMetadataStore_Integration(t *testing.T) {
 		}
 		defer store.Close()
 
-		err = store.Healthcheck(ctx)
-		if err != nil {
-			t.Fatalf("Healthcheck failed: %v", err)
+		if rep := store.Healthcheck(ctx); rep.Status != health.StatusHealthy {
+			t.Fatalf("Healthcheck: got status %q, message %q; want healthy", rep.Status, rep.Message)
 		}
 	})
 
@@ -315,15 +315,13 @@ func TestBadgerMetadataStore_Healthcheck(t *testing.T) {
 	}
 	defer store.Close()
 
-	err = store.Healthcheck(ctx)
-	if err != nil {
-		t.Fatalf("Healthcheck should succeed: %v", err)
+	if rep := store.Healthcheck(ctx); rep.Status != health.StatusHealthy {
+		t.Fatalf("Healthcheck on open store: got %q (%q), want healthy", rep.Status, rep.Message)
 	}
 
 	store.Close()
 
-	err = store.Healthcheck(ctx)
-	if err == nil {
-		t.Error("Healthcheck should fail after close")
+	if rep := store.Healthcheck(ctx); rep.Status == health.StatusHealthy {
+		t.Errorf("Healthcheck on closed store: got %q, want non-healthy", rep.Status)
 	}
 }

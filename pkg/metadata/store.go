@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -328,8 +329,19 @@ type MetadataStore interface {
 	// Store Lifecycle (not transactional)
 	// ========================================================================
 
-	// Healthcheck verifies the store is operational.
-	Healthcheck(ctx context.Context) error
+	// Healthcheck verifies the store is operational and returns a structured
+	// [health.Report]. Implementations should be cheap and idempotent — the
+	// API layer caches results via [health.CachedChecker], but the per-call
+	// cost still affects worst-case probe latency.
+	//
+	// A healthy store returns [health.StatusHealthy] with no message.
+	// A broken store returns [health.StatusUnhealthy] with a non-empty
+	// message describing the failure (e.g. database connection refused,
+	// underlying file missing, transaction roundtrip failed).
+	//
+	// This method satisfies [health.Checker], so any MetadataStore can be
+	// passed where a Checker is expected.
+	Healthcheck(ctx context.Context) health.Report
 
 	// Close releases any resources held by the store.
 	Close() error

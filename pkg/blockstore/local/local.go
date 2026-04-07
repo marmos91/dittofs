@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/health"
 )
 
 // PendingBlock represents a block ready for upload to the remote block store.
@@ -149,4 +150,15 @@ type LocalStore interface {
 
 	// ExistsOnDisk checks if a specific block is present on disk.
 	ExistsOnDisk(ctx context.Context, payloadID string, blockIdx uint64) (bool, error)
+
+	// Healthcheck returns the current health of the local store as a
+	// structured [health.Report]. Implementations must satisfy
+	// [health.Checker] so the upstream API layer can wrap them with a
+	// [health.CachedChecker] and serve /status routes.
+	//
+	// Implementations should be cheap to call (no full directory scans,
+	// no large I/O) and idempotent. The expectation is something on the
+	// order of a stat() and possibly a write probe — see
+	// fs.FSStore.Healthcheck for the canonical pattern.
+	Healthcheck(ctx context.Context) health.Report
 }

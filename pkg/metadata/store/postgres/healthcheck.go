@@ -2,46 +2,50 @@ package postgres
 
 import (
 	"context"
+	"fmt"
+	"time"
 
-	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/health"
 )
 
-// Healthcheck verifies the PostgreSQL connection is healthy.
+// Healthcheck verifies the PostgreSQL connection pool is operational
+// and returns a structured [health.Report].
 //
-// This performs a health check to ensure PostgreSQL is accessible and can serve
-// requests. The check:
-//   - Attempts to ping the connection pool
-//   - Verifies the database connection is alive
-//   - Checks context cancellation
+// The probe pings the pool, which acquires a connection, runs a
+// trivial round-trip query, and releases it back. This catches a
+// closed/exhausted pool, broken network paths, or a server that has
+// stopped accepting new connections — all the failure modes a
+// /status route operator would care about.
 //
-// For PostgreSQL, this uses the connection pool's Ping method which:
-//   - Acquires a connection from the pool
-//   - Executes a simple query to verify the connection
-//   - Returns the connection to the pool
+// Returns [health.StatusUnhealthy] when the context is canceled or
+// the ping returns an error; otherwise [health.StatusHealthy] with
+// the measured probe latency.
 //
-// Use Cases:
-//   - Liveness probes in container orchestration
-//   - Load balancer health checks
-//   - Monitoring and alerting systems
-//   - Protocol NULL/ping procedures
-//
-// Thread Safety: Safe for concurrent use.
-//
-// Returns:
-//   - error: Returns error if repository is unhealthy, nil if healthy
-func (s *PostgresMetadataStore) Healthcheck(ctx context.Context) error {
-	// Check context cancellation
+// Thread-safe; designed to be called concurrently from /status routes
+// behind a [health.CachedChecker].
+func (s *PostgresMetadataStore) Healthcheck(ctx context.Context) health.Report {
+	start := time.Now()
 	if err := ctx.Err(); err != nil {
-		return err
-	}
-
-	// Simple ping to verify connection pool is healthy
-	if err := s.pool.Ping(ctx); err != nil {
-		return &metadata.StoreError{
-			Code:    metadata.ErrIOError,
-			Message: "PostgreSQL health check failed",
+		return health.Report{
+			Status:    health.StatusUnhealthy,
+			Message:   err.Error(),
+			CheckedAt: time.Now().UTC(),
+			LatencyMs: time.Since(start).Milliseconds(),
 		}
 	}
 
-	return nil
+	if err := s.pool.Ping(ctx); err != nil {
+		return health.Report{
+			Status:    health.StatusUnhealthy,
+			Message:   fmt.Sprintf("postgres ping: %v", err),
+			CheckedAt: time.Now().UTC(),
+			LatencyMs: time.Since(start).Milliseconds(),
+		}
+	}
+
+	return health.Report{
+		Status:    health.StatusHealthy,
+		CheckedAt: time.Now().UTC(),
+		LatencyMs: time.Since(start).Milliseconds(),
+	}
 }

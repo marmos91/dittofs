@@ -12,6 +12,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -285,8 +286,13 @@ func (h *MetadataStoreHandler) checkMetadataStoreHealth(ctx context.Context, nam
 		return false, "store not loaded in runtime"
 	}
 
-	if healthErr := metaStore.Healthcheck(ctx); healthErr != nil {
-		return false, "store health check failed: " + healthErr.Error()
+	rep := metaStore.Healthcheck(ctx)
+	if rep.Status != health.StatusHealthy {
+		msg := "store health check failed"
+		if rep.Message != "" {
+			msg = msg + ": " + rep.Message
+		}
+		return false, msg
 	}
 
 	return true, "store is healthy"

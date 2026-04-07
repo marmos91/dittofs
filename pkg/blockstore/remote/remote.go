@@ -1,6 +1,10 @@
 package remote
 
-import "context"
+import (
+	"context"
+
+	"github.com/marmos91/dittofs/pkg/health"
+)
 
 // RemoteStore defines the interface for remote block storage backends.
 // Blocks are immutable chunks of data stored with a string key.
@@ -29,6 +33,14 @@ type RemoteStore interface {
 	// Close releases resources held by the store.
 	Close() error
 
-	// HealthCheck verifies the store is accessible.
+	// HealthCheck verifies the store is accessible. This is the legacy
+	// error-returning probe used internally by the syncer's HealthMonitor.
+	// New callers should prefer Healthcheck (lowercase 'c') which returns
+	// a structured [health.Report] and satisfies [health.Checker].
 	HealthCheck(ctx context.Context) error
+
+	// Healthcheck returns a structured health report and satisfies
+	// [health.Checker]. Implementations typically delegate to HealthCheck
+	// and wrap the result via [health.ReportFromError].
+	Healthcheck(ctx context.Context) health.Report
 }

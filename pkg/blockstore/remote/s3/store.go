@@ -22,6 +22,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
+	"github.com/marmos91/dittofs/pkg/health"
 )
 
 // maxBlockReadSize is the fallback pre-allocation size for ReadBlock when
@@ -427,6 +428,11 @@ func (s *Store) Close() error {
 }
 
 // HealthCheck verifies the S3 bucket is accessible.
+//
+// This is the legacy error-returning probe used internally by the
+// syncer's HealthMonitor. Public callers should prefer Healthcheck
+// (note the lowercase 'c') which returns a structured [health.Report]
+// and satisfies the [health.Checker] interface.
 func (s *Store) HealthCheck(ctx context.Context) error {
 	if err := s.checkClosed(); err != nil {
 		return err
@@ -440,6 +446,17 @@ func (s *Store) HealthCheck(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// Healthcheck implements [health.Checker]: it wraps the existing
+// HealthCheck error probe in a [health.Report] with measured latency.
+// HeadBucket is the same call the syncer's HealthMonitor uses for its
+// periodic probe, so the result reflects exactly what the runtime
+// considers "remote reachable".
+func (s *Store) Healthcheck(ctx context.Context) health.Report {
+	start := time.Now()
+	err := s.HealthCheck(ctx)
+	return health.ReportFromError(err, time.Since(start))
 }
 
 // isNotFoundError checks if an error is an S3 not found error.
