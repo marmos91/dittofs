@@ -188,6 +188,19 @@ func (r *Runtime) GetMetadataStoreForShare(shareName string) (metadata.MetadataS
 func (r *Runtime) HealthcheckShare(ctx context.Context, shareName string) health.Report {
 	now := time.Now().UTC()
 
+	// Honor caller cancellation before doing any registry lookups.
+	// Otherwise a canceled probe would surface as "share not found"
+	// or "metadata store not loaded" instead of the expected
+	// context-cancellation StatusUnknown described by the Checker
+	// contract.
+	if err := ctx.Err(); err != nil {
+		return health.Report{
+			Status:    health.StatusUnknown,
+			Message:   err.Error(),
+			CheckedAt: now,
+		}
+	}
+
 	share, err := r.sharesSvc.GetShare(shareName)
 	if err != nil {
 		return health.Report{

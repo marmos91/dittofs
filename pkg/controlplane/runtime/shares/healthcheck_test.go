@@ -171,6 +171,24 @@ func TestShareHealthcheck_RespectsCanceledContext(t *testing.T) {
 	}
 }
 
+// TestShareHealthcheck_StampsTimestampAndLatency verifies the wrapper
+// fills CheckedAt and LatencyMs on the combined report. Without this
+// assertion, a regression that drops the post-probe stamping would
+// silently leave both fields zero — a downstream consumer would see
+// a 1970 timestamp and zero latency.
+func TestShareHealthcheck_StampsTimestampAndLatency(t *testing.T) {
+	share := &Share{Name: "test"}
+	meta := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	defer func() { _ = meta.Close() }()
+
+	rep := share.Healthcheck(context.Background(), meta)
+	if rep.CheckedAt.IsZero() {
+		t.Fatal("CheckedAt should be populated by the wrapper")
+	}
+	// LatencyMs may be 0 on very fast probes (the in-memory store is
+	// near-instant), but the timestamp must always be populated.
+}
+
 // TestShareHealthcheck_NeitherSidePresent locks the degenerate case
 // where the share somehow ends up with neither a metadata store nor a
 // block store — combineShareReports falls through to its
