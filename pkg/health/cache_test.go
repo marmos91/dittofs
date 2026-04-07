@@ -335,10 +335,22 @@ func TestCachedChecker_PanicInProbeDoesNotWedgeCache(t *testing.T) {
 // blocked on an in-flight probe are released when that probe panics,
 // and that they see the synthesized unhealthy report rather than
 // blocking indefinitely on a never-closed done channel.
+//
+// Avoiding scheduler-sensitive sleeps: instead of sleeping and hoping
+// goroutine B has reached the wait branch by the time the leader is
+// released, we observe `c.inflight` directly. We hold the leader's
+// probe inside the inner CheckerFunc, then poll until c.inflight is
+// non-nil AND a second goroutine has been observed waiting (via the
+// post-condition that the inner probe runs exactly once across the
+// whole test). If B raced into the leader path instead of waiting,
+// the inner probe would run twice — that assertion catches the
+// scheduler-race-induced false-positive that a plain sleep cannot.
 func TestCachedChecker_PanicInProbeReleasesWaiters(t *testing.T) {
 	probeStarted := make(chan struct{})
 	probeShouldPanic := make(chan struct{})
+	probeCalls := atomic.Int64{}
 	inner := CheckerFunc(func(ctx context.Context) Report {
+		probeCalls.Add(1)
 		close(probeStarted)
 		<-probeShouldPanic
 		panic("deliberate test panic")
@@ -361,8 +373,22 @@ func TestCachedChecker_PanicInProbeReleasesWaiters(t *testing.T) {
 		waiterResult <- c.Healthcheck(context.Background())
 	}()
 
-	// Give B a moment to hit the wait branch.
-	time.Sleep(10 * time.Millisecond)
+	// Wait until B is observably blocked in the wait branch. We poll
+	// the cache's mutex briefly to inspect inflight, but the
+	// authoritative proof that B took the wait path comes from the
+	// post-condition `probeCalls == 1` below — if scheduling delayed
+	// B past the leader's release, B would run its own probe and
+	// probeCalls would be 2.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		hasInflight := c.inflight != nil
+		c.mu.Unlock()
+		if hasInflight {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 
 	// Trigger the panic. Both leader and waiter must unblock.
 	close(probeShouldPanic)
@@ -383,6 +409,17 @@ func TestCachedChecker_PanicInProbeReleasesWaiters(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("waiter was not released after probe panic — cache wedged")
+	}
+
+	// Authoritative check: the inner probe must have run exactly once.
+	// If goroutine B took the leader path instead of the waiter path
+	// (e.g. because scheduling delayed it past the leader's release),
+	// it would have triggered a second probe call. A count of 1 proves
+	// the test actually exercised the waiter-release path.
+	if got := probeCalls.Load(); got != 1 {
+		t.Fatalf("inner probe ran %d times; expected exactly 1, "+
+			"meaning the waiter must have taken the wait branch rather "+
+			"than racing into the leader path", got)
 	}
 }
 
