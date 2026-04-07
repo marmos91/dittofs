@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -47,10 +48,28 @@ const DefaultProbeTimeout = 30 * time.Second
 // This matches the [Checker] contract: Healthcheck respects ctx
 // cancellation (rule 2) but doesn't let one impatient caller degrade the
 // service for everyone else (rule 1).
+//
+// # Panic safety
+//
+// If the underlying probe panics, CachedChecker recovers the panic,
+// synthesises a [StatusUnhealthy] [Report] with the panic value as the
+// message, publishes it (so concurrent waiters are released instead of
+// blocking forever on a never-closed done channel), and then re-panics
+// in the leader's goroutine so the caller that triggered the probe
+// still sees the panic. This guarantees the cache cannot wedge even if
+// an upstream implementation misbehaves.
 type CachedChecker struct {
 	inner        Checker
 	ttl          time.Duration
 	probeTimeout time.Duration
+
+	// clock is the time source used for TTL calculations. Defaults to
+	// [time.Now]; tests in this package assign it before any concurrent
+	// callers start. Keeping it as an instance field (rather than a
+	// package-level variable) means tests running in parallel or
+	// mutating clocks on different CachedChecker instances don't race
+	// against each other.
+	clock func() time.Time
 
 	mu       sync.Mutex // guards last, lastAt, inflight
 	last     Report
@@ -96,17 +115,19 @@ func NewCachedCheckerWithTimeout(inner Checker, ttl, probeTimeout time.Duration)
 		inner:        inner,
 		ttl:          ttl,
 		probeTimeout: probeTimeout,
+		clock:        time.Now,
 	}
 }
 
 // Healthcheck returns a Report, serving from cache when possible.
 //
-// See the type-level doc comment for the context-handling contract.
+// See the type-level doc comment for the context-handling and
+// panic-safety contracts.
 func (c *CachedChecker) Healthcheck(ctx context.Context) Report {
 	// Fast path: check cache under the lock.
 	c.mu.Lock()
 
-	if c.ttl > 0 && !c.lastAt.IsZero() && now().Sub(c.lastAt) < c.ttl {
+	if c.ttl > 0 && !c.lastAt.IsZero() && c.clock().Sub(c.lastAt) < c.ttl {
 		rep := c.last
 		c.mu.Unlock()
 		return rep
@@ -124,7 +145,7 @@ func (c *CachedChecker) Healthcheck(ctx context.Context) Report {
 			return Report{
 				Status:    StatusUnknown,
 				Message:   "health check canceled: " + ctx.Err().Error(),
-				CheckedAt: now().UTC(),
+				CheckedAt: c.clock().UTC(),
 			}
 		}
 	}
@@ -136,21 +157,51 @@ func (c *CachedChecker) Healthcheck(ctx context.Context) Report {
 	c.inflight = call
 	c.mu.Unlock()
 
+	// Deferred cancel ensures we don't leak the timeout context's
+	// internal goroutine even if the probe panics on the way out.
 	probeCtx, cancel := context.WithTimeout(context.Background(), c.probeTimeout)
-	rep := c.inner.Healthcheck(probeCtx)
-	cancel()
+	defer cancel()
 
-	// Publish the result under the lock, then write it into the
-	// inflight struct (race-free: the close below is a happens-before
-	// edge for waiters reading call.rep) and release them.
+	// Run the probe inside a recovery closure so a panic in the inner
+	// Checker cannot leave c.inflight set or call.done unclosed —
+	// either of which would wedge every subsequent caller forever.
+	var (
+		rep         Report
+		probePanic  any
+	)
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				probePanic = r
+				rep = Report{
+					Status:    StatusUnhealthy,
+					Message:   fmt.Sprintf("health probe panicked: %v", r),
+					CheckedAt: c.clock().UTC(),
+				}
+			}
+		}()
+		rep = c.inner.Healthcheck(probeCtx)
+	}()
+
+	// Publish the result and release waiters, regardless of whether the
+	// probe returned normally or panicked. Writing call.rep after the
+	// unlock and before close(call.done) is race-free: the close is the
+	// happens-before edge that waiters read through.
 	c.mu.Lock()
 	c.last = rep
-	c.lastAt = now()
+	c.lastAt = c.clock()
 	c.inflight = nil
 	c.mu.Unlock()
 
 	call.rep = rep
 	close(call.done)
+
+	// Re-panic AFTER releasing waiters so the caller that triggered
+	// the panic still sees it (surfacing bugs rather than silently
+	// swallowing them) while no other goroutine is left blocked.
+	if probePanic != nil {
+		panic(probePanic)
+	}
 
 	return rep
 }

@@ -8,20 +8,26 @@ import (
 	"time"
 )
 
-// withFakeNow swaps the package-level clock for the duration of a test
-// and restores it automatically via t.Cleanup. The returned setter lets
-// the test advance the fake clock.
-func withFakeNow(t *testing.T, start time.Time) (advance func(time.Duration)) {
-	t.Helper()
-	fake := start
-	var mu sync.Mutex
-	real := now
-	now = func() time.Time {
+// withFakeClock installs a fake clock on a specific CachedChecker and
+// returns a function that advances it. Using an instance-level clock
+// (rather than a package-level variable) means tests running in parallel
+// don't trample each other, and the race detector has nothing to flag
+// because each checker has its own clock field.
+//
+// The internal mutex guards the fake timestamp against concurrent reads
+// from probe goroutines and writes from the advance() calls: any test
+// that combines fake time with concurrent Healthcheck callers will be
+// correctly synchronised.
+func withFakeClock(c *CachedChecker, start time.Time) (advance func(time.Duration)) {
+	var (
+		mu   sync.Mutex
+		fake = start
+	)
+	c.clock = func() time.Time {
 		mu.Lock()
 		defer mu.Unlock()
 		return fake
 	}
-	t.Cleanup(func() { now = real })
 	return func(d time.Duration) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -68,10 +74,9 @@ func TestCachedChecker_ServesFromCacheWithinTTL(t *testing.T) {
 }
 
 func TestCachedChecker_ProbesAgainAfterTTL(t *testing.T) {
-	advance := withFakeNow(t, time.Unix(1000, 0))
-
 	inner := &countingChecker{report: Report{Status: StatusHealthy}}
 	c := NewCachedChecker(inner, 50*time.Millisecond)
+	advance := withFakeClock(c, time.Unix(1000, 0))
 
 	c.Healthcheck(context.Background())
 
@@ -280,6 +285,104 @@ func TestCachedChecker_ProbeUsesDetachedContext(t *testing.T) {
 	}
 	if !observedHasDeadline {
 		t.Fatal("probe context should carry a deadline from the probeTimeout, got none")
+	}
+}
+
+// TestCachedChecker_PanicInProbeDoesNotWedgeCache ensures that a panic
+// in the underlying probe cannot leave the cache in a state where
+// c.inflight stays non-nil and call.done is never closed — which would
+// block every subsequent caller forever. The cache must recover, cache
+// an unhealthy report, release waiters, and accept new callers.
+func TestCachedChecker_PanicInProbeDoesNotWedgeCache(t *testing.T) {
+	// First call panics; subsequent call should be unblocked (cache
+	// cleaned up) and serve the cached unhealthy report within TTL.
+	inner := CheckerFunc(func(ctx context.Context) Report {
+		panic("probe exploded")
+	})
+	c := NewCachedChecker(inner, time.Hour)
+
+	// Leader call: expect the panic to re-propagate, but the cache
+	// internals must be cleaned up before the panic reaches us.
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected panic to propagate to leader caller")
+			}
+		}()
+		c.Healthcheck(context.Background())
+	}()
+
+	// Subsequent call must not block indefinitely. We give it a
+	// generous 2s budget; a wedged cache would time out here.
+	result := make(chan Report, 1)
+	go func() {
+		result <- c.Healthcheck(context.Background())
+	}()
+	select {
+	case rep := <-result:
+		if rep.Status != StatusUnhealthy {
+			t.Fatalf("after panic: got status %q, want unhealthy", rep.Status)
+		}
+		if rep.Message == "" {
+			t.Fatal("after panic: expected a non-empty message describing the panic")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cache wedged: subsequent Healthcheck blocked after a probe panic")
+	}
+}
+
+// TestCachedChecker_PanicInProbeReleasesWaiters verifies that waiters
+// blocked on an in-flight probe are released when that probe panics,
+// and that they see the synthesized unhealthy report rather than
+// blocking indefinitely on a never-closed done channel.
+func TestCachedChecker_PanicInProbeReleasesWaiters(t *testing.T) {
+	probeStarted := make(chan struct{})
+	probeShouldPanic := make(chan struct{})
+	inner := CheckerFunc(func(ctx context.Context) Report {
+		close(probeStarted)
+		<-probeShouldPanic
+		panic("deliberate test panic")
+	})
+	c := NewCachedChecker(inner, time.Hour)
+
+	// Goroutine A is the leader.
+	leaderPanicked := make(chan bool, 1)
+	go func() {
+		defer func() {
+			leaderPanicked <- (recover() != nil)
+		}()
+		c.Healthcheck(context.Background())
+	}()
+	<-probeStarted
+
+	// Goroutine B is a waiter that joins while the probe is in flight.
+	waiterResult := make(chan Report, 1)
+	go func() {
+		waiterResult <- c.Healthcheck(context.Background())
+	}()
+
+	// Give B a moment to hit the wait branch.
+	time.Sleep(10 * time.Millisecond)
+
+	// Trigger the panic. Both leader and waiter must unblock.
+	close(probeShouldPanic)
+
+	select {
+	case panicked := <-leaderPanicked:
+		if !panicked {
+			t.Fatal("leader did not receive the probe's panic")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("leader did not return after probe panic")
+	}
+
+	select {
+	case rep := <-waiterResult:
+		if rep.Status != StatusUnhealthy {
+			t.Fatalf("waiter after panic: got %q, want unhealthy", rep.Status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waiter was not released after probe panic — cache wedged")
 	}
 }
 

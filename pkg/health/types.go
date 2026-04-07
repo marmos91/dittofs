@@ -100,10 +100,3 @@ type CheckerFunc func(ctx context.Context) Report
 
 // Healthcheck calls f(ctx).
 func (f CheckerFunc) Healthcheck(ctx context.Context) Report { return f(ctx) }
-
-// now is the clock used by cache TTL logic. It is overridable in tests by
-// test files in this package so the cache's time-based behavior can be
-// driven by a fake clock without sleeping. Keeping it unexported prevents
-// external packages from reassigning it and introducing hard-to-debug
-// timing issues or races.
-var now = time.Now
