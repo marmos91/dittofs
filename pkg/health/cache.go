@@ -166,8 +166,8 @@ func (c *CachedChecker) Healthcheck(ctx context.Context) Report {
 	// Checker cannot leave c.inflight set or call.done unclosed —
 	// either of which would wedge every subsequent caller forever.
 	var (
-		rep         Report
-		probePanic  any
+		rep        Report
+		probePanic any
 	)
 	func() {
 		defer func() {
