@@ -15,6 +15,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/stores"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -164,6 +165,62 @@ func (r *Runtime) GetMetadataStoreForShare(shareName string) (metadata.MetadataS
 		return nil, err
 	}
 	return r.storesSvc.GetMetadataStore(share.MetadataStore)
+}
+
+// HealthcheckShare returns the named share's overall health, computed
+// as the worst-of its block store engine and metadata store. The
+// runtime owns both registries, so this is the natural place to wire
+// the lookup before delegating to [Share.Healthcheck].
+//
+// Lookup-failure semantics:
+//
+//   - "share not found" → [health.StatusUnknown]. The runtime can't
+//     say anything definitive about a share it doesn't know about.
+//   - "metadata store not loaded" → [health.StatusUnknown] as well.
+//     The store may have been registered earlier but evicted, or
+//     simply never registered (a startup misconfiguration). Without
+//     a way to distinguish those cases — the registry doesn't expose
+//     the difference — the conservative answer is StatusUnknown:
+//     the probe is indeterminate, not the share itself broken. A
+//     follow-up phase can sharpen this once the store registry can
+//     report "configured but not currently loaded" vs "never
+//     registered".
+func (r *Runtime) HealthcheckShare(ctx context.Context, shareName string) health.Report {
+	// Capture start so every early-return path populates LatencyMs,
+	// matching what Share.Healthcheck does. A flat zero on
+	// lookup-failure reports would silently mask non-trivial registry
+	// lookup time from any monitoring consumer charting probe latency.
+	start := time.Now()
+	earlyReturn := func(status health.Status, msg string) health.Report {
+		end := time.Now()
+		return health.Report{
+			Status:    status,
+			Message:   msg,
+			CheckedAt: end.UTC(),
+			LatencyMs: end.Sub(start).Milliseconds(),
+		}
+	}
+
+	// Honor caller cancellation before doing any registry lookups.
+	// Otherwise a canceled probe would surface as "share not found"
+	// or "metadata store not loaded" instead of the expected
+	// context-cancellation StatusUnknown described by the Checker
+	// contract.
+	if err := ctx.Err(); err != nil {
+		return earlyReturn(health.StatusUnknown, err.Error())
+	}
+
+	share, err := r.sharesSvc.GetShare(shareName)
+	if err != nil {
+		return earlyReturn(health.StatusUnknown, "share not found: "+err.Error())
+	}
+
+	metaStore, err := r.storesSvc.GetMetadataStore(share.MetadataStore)
+	if err != nil {
+		return earlyReturn(health.StatusUnknown, "metadata store "+share.MetadataStore+" not loaded: "+err.Error())
+	}
+
+	return share.Healthcheck(ctx, metaStore)
 }
 
 func (r *Runtime) ListMetadataStores() []string {
