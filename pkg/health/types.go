@@ -14,7 +14,8 @@ import (
 
 // Status is the health state of a single entity. The set is deliberately
 // small — consumers should be able to render a five-way switch and no more.
-// When adding a value, update the String method and every consumer's switch.
+// When adding a value, update every consumer's switch statement and any
+// validation logic that may be introduced in the future.
 type Status string
 
 const (
@@ -63,9 +64,11 @@ type Report struct {
 	// describe the observed failure so an operator can act on it.
 	Message string `json:"message,omitempty"`
 
-	// CheckedAt is the UTC timestamp at which the underlying probe ran.
-	// Set by the Checker implementation, not by the cache wrapper, so
-	// cached results keep the original probe timestamp.
+	// CheckedAt is the timestamp at which the underlying probe ran.
+	// Implementations should produce UTC values (time.Now().UTC()), but
+	// the type itself cannot enforce this — consumers that need UTC must
+	// call .UTC() defensively. Cache wrappers preserve the original probe
+	// timestamp so clients can tell how stale the data is.
 	CheckedAt time.Time `json:"checked_at"`
 
 	// LatencyMs is the wall-clock duration of the probe in milliseconds.
@@ -98,6 +101,9 @@ type CheckerFunc func(ctx context.Context) Report
 // Healthcheck calls f(ctx).
 func (f CheckerFunc) Healthcheck(ctx context.Context) Report { return f(ctx) }
 
-// Now is overridable in tests so the cache's TTL behavior can be driven by
-// a fake clock. Production code should never reassign it.
-var Now = time.Now
+// now is the clock used by cache TTL logic. It is overridable in tests by
+// test files in this package so the cache's time-based behavior can be
+// driven by a fake clock without sleeping. Keeping it unexported prevents
+// external packages from reassigning it and introducing hard-to-debug
+// timing issues or races.
+var now = time.Now
