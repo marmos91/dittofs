@@ -103,14 +103,15 @@ func DecodeReadRequest(body []byte) (*ReadRequest, error) {
 // Encode serializes the ReadResponse to SMB2 wire format [MS-SMB2] 2.2.20.
 // The response header is 16 bytes followed by the data buffer.
 func (resp *ReadResponse) Encode() ([]byte, error) {
-	w := smbenc.NewWriter(16 + len(resp.Data))
-	w.WriteUint16(17)                     // StructureSize (17 per spec)
-	w.WriteUint8(resp.DataOffset)         // DataOffset (relative to header start)
-	w.WriteUint8(0)                       // Reserved
-	w.WriteUint32(uint32(len(resp.Data))) // DataLength
-	w.WriteUint32(resp.DataRemaining)     // DataRemaining
-	w.WriteUint32(0)                      // Reserved2
-	w.WriteBytes(resp.Data)               // Buffer starts at offset 16
+	dataLen := len(resp.Data)
+	w := smbenc.NewWriter(16 + max(dataLen, 1))
+	w.WriteUint16(17)
+	w.WriteUint8(resp.DataOffset)
+	w.WriteUint8(0)
+	w.WriteUint32(uint32(dataLen))
+	w.WriteUint32(resp.DataRemaining)
+	w.WriteUint32(0)
+	w.WriteVariableSection(resp.Data)
 	if w.Err() != nil {
 		return nil, w.Err()
 	}

@@ -138,33 +138,23 @@ func buildSymlinkReparseBuffer(target string) []byte {
 	return w.Bytes()
 }
 
-// buildIoctlResponse builds SMB2 IOCTL response [MS-SMB2] 2.2.32
+// buildIoctlResponse builds SMB2 IOCTL response [MS-SMB2] 2.2.32.
+// Layout: StructureSize(2) Reserved(2) CtlCode(4) FileId(16) InputOffset(4)
+// InputCount(4) OutputOffset(4) OutputCount(4) Flags(4) Reserved2(4) Buffer(≥1).
 func buildIoctlResponse(ctlCode uint32, fileID [16]byte, output []byte) []byte {
-	// IOCTL response structure (48 bytes fixed + output):
-	// - StructureSize (2 bytes) - always 49
-	// - Reserved (2 bytes)
-	// - CtlCode (4 bytes)
-	// - FileId (16 bytes)
-	// - InputOffset (4 bytes)
-	// - InputCount (4 bytes)
-	// - OutputOffset (4 bytes)
-	// - OutputCount (4 bytes)
-	// - Flags (4 bytes)
-	// - Reserved2 (4 bytes)
-	// - Buffer (variable)
-
-	w := smbenc.NewWriter(48 + len(output))
-	w.WriteUint16(49)                  // StructureSize
-	w.WriteUint16(0)                   // Reserved
-	w.WriteUint32(ctlCode)             // CtlCode
-	w.WriteBytes(fileID[:])            // FileId
-	w.WriteUint32(0)                   // InputOffset
-	w.WriteUint32(0)                   // InputCount
-	w.WriteUint32(uint32(64 + 48))     // OutputOffset (header + response header)
-	w.WriteUint32(uint32(len(output))) // OutputCount
-	w.WriteUint32(0)                   // Flags
-	w.WriteUint32(0)                   // Reserved2
-	w.WriteBytes(output)               // Buffer
+	outLen := len(output)
+	w := smbenc.NewWriter(48 + max(outLen, 1))
+	w.WriteUint16(49)
+	w.WriteUint16(0) // Reserved
+	w.WriteUint32(ctlCode)
+	w.WriteBytes(fileID[:])
+	w.WriteUint32(0)               // InputOffset
+	w.WriteUint32(0)               // InputCount
+	w.WriteUint32(uint32(64 + 48)) // OutputOffset (header + fixed body)
+	w.WriteUint32(uint32(outLen))  // OutputCount
+	w.WriteUint32(0)               // Flags
+	w.WriteUint32(0)               // Reserved2
+	w.WriteVariableSection(output)
 
 	return w.Bytes()
 }

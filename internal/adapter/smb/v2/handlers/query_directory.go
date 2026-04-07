@@ -171,12 +171,12 @@ func DecodeQueryDirectoryRequest(body []byte) (*QueryDirectoryRequest, error) {
 
 // Encode serializes the QueryDirectoryResponse into SMB2 wire format [MS-SMB2] 2.2.34.
 func (resp *QueryDirectoryResponse) Encode() ([]byte, error) {
-	// Fixed response header is 8 bytes, data follows immediately
-	w := smbenc.NewWriter(8 + len(resp.Data))
-	w.WriteUint16(9)                      // StructureSize (per spec, always 9)
-	w.WriteUint16(uint16(64 + 8))         // OutputBufferOffset (header + 8 byte response)
-	w.WriteUint32(uint32(len(resp.Data))) // OutputBufferLength
-	w.WriteBytes(resp.Data)
+	dataLen := len(resp.Data)
+	w := smbenc.NewWriter(8 + max(dataLen, 1))
+	w.WriteUint16(9)
+	w.WriteUint16(uint16(64 + 8))
+	w.WriteUint32(uint32(dataLen))
+	w.WriteVariableSection(resp.Data)
 
 	return w.Bytes(), nil
 }

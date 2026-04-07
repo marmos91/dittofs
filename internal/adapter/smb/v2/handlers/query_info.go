@@ -158,16 +158,13 @@ func DecodeQueryInfoRequest(body []byte) (*QueryInfoRequest, error) {
 }
 
 // Encode serializes the QueryInfoResponse into SMB2 wire format [MS-SMB2] 2.2.38.
-//
-// Per MS-SMB2 convention, StructureSize is 9 but the actual fixed part is 8 bytes
-// (StructureSize(2) + OutputBufferOffset(2) + OutputBufferLength(4)). The variable
-// buffer starts at offset 8 from the body, which is 64+8=72 from the header.
 func (resp *QueryInfoResponse) Encode() ([]byte, error) {
-	w := smbenc.NewWriter(8 + len(resp.Data))
-	w.WriteUint16(9)                      // StructureSize (per spec, always 9)
-	w.WriteUint16(uint16(64 + 8))         // OutputBufferOffset (header + fixed part)
-	w.WriteUint32(uint32(len(resp.Data))) // OutputBufferLength
-	w.WriteBytes(resp.Data)
+	dataLen := len(resp.Data)
+	w := smbenc.NewWriter(8 + max(dataLen, 1))
+	w.WriteUint16(9)
+	w.WriteUint16(uint16(64 + 8))
+	w.WriteUint32(uint32(dataLen))
+	w.WriteVariableSection(resp.Data)
 
 	return w.Bytes(), nil
 }
