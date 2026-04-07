@@ -57,8 +57,14 @@ import (
 // transparently because [engine.BlockStore.Healthcheck] already
 // returns healthy when there is no remote configured.
 func (s *Share) Healthcheck(ctx context.Context, metaStore metadata.MetadataStore) health.Report {
+	// Single time.Now() captured up front: start carries the monotonic
+	// reading used by time.Since for latency, and start.UTC() gives us
+	// the wall clock value for CheckedAt. Sampling once keeps the two
+	// fields coherent — CheckedAt + LatencyMs lands exactly at the
+	// probe-completion instant rather than overshooting by the gap
+	// between two separate time.Now() calls.
 	start := time.Now()
-	now := time.Now().UTC()
+	now := start.UTC()
 
 	if err := ctx.Err(); err != nil {
 		return health.Report{
@@ -97,6 +103,13 @@ func (s *Share) Healthcheck(ctx context.Context, metaStore metadata.MetadataStor
 // hasMeta and hasBlock indicate whether each subsystem was actually
 // probed (the corresponding report is meaningless when its
 // "has-side" is false).
+//
+// The returned report intentionally leaves CheckedAt and LatencyMs at
+// zero values: the wrapping [Share.Healthcheck] stamps them with the
+// outer wall-clock time so the report reflects the probe completion
+// instant, not the moment the worst sub-report was synthesised. Direct
+// callers (tests) should either populate those fields themselves or
+// avoid asserting on them.
 func combineShareReports(metaRep, blockRep health.Report, hasMeta, hasBlock bool) health.Report {
 	// If neither subsystem is even present, we have no signal.
 	if !hasMeta && !hasBlock {

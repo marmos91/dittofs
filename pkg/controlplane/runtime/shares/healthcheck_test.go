@@ -1,10 +1,12 @@
 package shares
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/health"
+	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // TestCombineShareReports_WorstOfDerivation drives the pure function
@@ -131,5 +133,56 @@ func TestCombineShareReports_WorstOfDerivation(t *testing.T) {
 				t.Fatalf("message: got %q, want prefix %q", got.Message, tc.wantPrefix)
 			}
 		})
+	}
+}
+
+// TestShareHealthcheck_HealthyWithMetaOnly exercises the wrapper for
+// the metadata-only edge case: a share with no block store should
+// report purely on the metadata store. Uses the real in-memory
+// metadata store implementation to keep the test free of fakes.
+func TestShareHealthcheck_HealthyWithMetaOnly(t *testing.T) {
+	share := &Share{Name: "test", BlockStore: nil}
+	meta := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	defer func() { _ = meta.Close() }()
+
+	rep := share.Healthcheck(context.Background(), meta)
+	if rep.Status != health.StatusHealthy {
+		t.Fatalf("meta-only share with healthy meta: got %q (%q), want healthy", rep.Status, rep.Message)
+	}
+	if rep.CheckedAt.IsZero() {
+		t.Fatal("CheckedAt should be populated by the wrapper")
+	}
+}
+
+// TestShareHealthcheck_RespectsCanceledContext verifies the wrapper
+// short-circuits on a canceled caller context before either sub-probe
+// runs.
+func TestShareHealthcheck_RespectsCanceledContext(t *testing.T) {
+	share := &Share{Name: "test"}
+	meta := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	defer func() { _ = meta.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	rep := share.Healthcheck(ctx, meta)
+	if rep.Status != health.StatusUnknown {
+		t.Fatalf("canceled ctx: got %q (%q), want unknown", rep.Status, rep.Message)
+	}
+}
+
+// TestShareHealthcheck_NeitherSidePresent locks the degenerate case
+// where the share somehow ends up with neither a metadata store nor a
+// block store — combineShareReports falls through to its
+// "neither side present" branch.
+func TestShareHealthcheck_NeitherSidePresent(t *testing.T) {
+	share := &Share{Name: "test", BlockStore: nil}
+
+	rep := share.Healthcheck(context.Background(), nil)
+	if rep.Status != health.StatusUnknown {
+		t.Fatalf("neither side: got %q (%q), want unknown", rep.Status, rep.Message)
+	}
+	if !strings.Contains(rep.Message, "neither") {
+		t.Fatalf("neither side: message should explain the absence; got %q", rep.Message)
 	}
 }

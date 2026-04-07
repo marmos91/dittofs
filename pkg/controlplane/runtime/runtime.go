@@ -172,27 +172,37 @@ func (r *Runtime) GetMetadataStoreForShare(shareName string) (metadata.MetadataS
 // runtime owns both registries, so this is the natural place to wire
 // the lookup before delegating to [Share.Healthcheck].
 //
-// Returns [health.StatusUnknown] with a "share not found" message
-// when the named share isn't registered. Returns
-// [health.StatusUnhealthy] when the share is registered but its
-// metadata store can't be looked up — that's a misconfigured share,
-// not an indeterminate probe.
+// Lookup-failure semantics:
+//
+//   - "share not found" → [health.StatusUnknown]. The runtime can't
+//     say anything definitive about a share it doesn't know about.
+//   - "metadata store not loaded" → [health.StatusUnknown] as well.
+//     The store may have been registered earlier but evicted, or
+//     simply never registered (a startup misconfiguration). Without
+//     a way to distinguish those cases — the registry doesn't expose
+//     the difference — the conservative answer is StatusUnknown:
+//     the probe is indeterminate, not the share itself broken. A
+//     follow-up phase can sharpen this once the store registry can
+//     report "configured but not currently loaded" vs "never
+//     registered".
 func (r *Runtime) HealthcheckShare(ctx context.Context, shareName string) health.Report {
+	now := time.Now().UTC()
+
 	share, err := r.sharesSvc.GetShare(shareName)
 	if err != nil {
 		return health.Report{
 			Status:    health.StatusUnknown,
 			Message:   "share not found: " + err.Error(),
-			CheckedAt: time.Now().UTC(),
+			CheckedAt: now,
 		}
 	}
 
 	metaStore, err := r.storesSvc.GetMetadataStore(share.MetadataStore)
 	if err != nil {
 		return health.Report{
-			Status:    health.StatusUnhealthy,
+			Status:    health.StatusUnknown,
 			Message:   "metadata store " + share.MetadataStore + " not loaded: " + err.Error(),
-			CheckedAt: time.Now().UTC(),
+			CheckedAt: now,
 		}
 	}
 
