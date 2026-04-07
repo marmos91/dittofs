@@ -57,18 +57,19 @@ import (
 // transparently because [engine.BlockStore.Healthcheck] already
 // returns healthy when there is no remote configured.
 func (s *Share) Healthcheck(ctx context.Context, metaStore metadata.MetadataStore) health.Report {
-	// `start` carries the monotonic reading used by time.Since for
-	// latency. CheckedAt is sampled at the END of the probe (via
-	// completedAt below) so it reflects probe completion, matching
-	// the contract on health.Report.CheckedAt.
+	// `start` carries the monotonic reading used to compute latency.
+	// CheckedAt is sampled at the END of the probe (from `end` below)
+	// so it reflects probe completion, matching the contract on
+	// health.Report.CheckedAt.
 	start := time.Now()
 
 	if err := ctx.Err(); err != nil {
+		end := time.Now()
 		return health.Report{
 			Status:    health.StatusUnknown,
 			Message:   err.Error(),
-			CheckedAt: time.Now().UTC(),
-			LatencyMs: time.Since(start).Milliseconds(),
+			CheckedAt: end.UTC(),
+			LatencyMs: end.Sub(start).Milliseconds(),
 		}
 	}
 
@@ -86,9 +87,10 @@ func (s *Share) Healthcheck(ctx context.Context, metaStore metadata.MetadataStor
 		blockRep = s.BlockStore.Healthcheck(ctx)
 	}
 
+	end := time.Now()
 	worst := combineShareReports(metaRep, blockRep, metaStore != nil, s.BlockStore != nil)
-	worst.CheckedAt = time.Now().UTC()
-	worst.LatencyMs = time.Since(start).Milliseconds()
+	worst.CheckedAt = end.UTC()
+	worst.LatencyMs = end.Sub(start).Milliseconds()
 	return worst
 }
 
