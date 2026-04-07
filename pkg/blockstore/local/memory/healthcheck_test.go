@@ -9,7 +9,7 @@ import (
 
 func TestMemoryStore_Healthcheck_HealthyOnFreshStore(t *testing.T) {
 	s := New()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	rep := s.Healthcheck(context.Background())
 	if rep.Status != health.StatusHealthy {
@@ -36,13 +36,13 @@ func TestMemoryStore_Healthcheck_UnhealthyAfterClose(t *testing.T) {
 
 func TestMemoryStore_Healthcheck_RespectsCanceledContext(t *testing.T) {
 	s := New()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	rep := s.Healthcheck(ctx)
-	if rep.Status != health.StatusUnhealthy {
-		t.Fatalf("canceled ctx: got %q, want unhealthy", rep.Status)
+	if rep.Status != health.StatusUnknown {
+		t.Fatalf("canceled ctx: got %q, want unknown (probe was indeterminate, not the store)", rep.Status)
 	}
 }

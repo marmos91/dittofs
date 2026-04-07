@@ -11,12 +11,19 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
+	"github.com/marmos91/dittofs/pkg/health"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // controllableRemoteStore wraps a memory remote store with a controllable
-// health check. When healthy is false, HealthCheck returns an error. All
-// other methods delegate to the wrapped store.
+// health check. When healthy is false, both HealthCheck and Healthcheck
+// simulate an outage. All other methods delegate to the wrapped store.
+//
+// Both probes are overridden because RemoteStore now requires the
+// lowercase-c Healthcheck (returning health.Report) alongside the
+// legacy capital-C HealthCheck. Without overriding both, Go's interface
+// embedding would silently dispatch Healthcheck to the underlying
+// memory store, ignoring this fake's `healthy` flag.
 type controllableRemoteStore struct {
 	remote.RemoteStore
 	healthy atomic.Bool
@@ -33,6 +40,14 @@ func (c *controllableRemoteStore) HealthCheck(ctx context.Context) error {
 		return errors.New("simulated S3 outage")
 	}
 	return c.RemoteStore.HealthCheck(ctx)
+}
+
+func (c *controllableRemoteStore) Healthcheck(ctx context.Context) health.Report {
+	start := time.Now()
+	if !c.healthy.Load() {
+		return health.NewUnhealthyReport("simulated S3 outage", time.Since(start))
+	}
+	return c.RemoteStore.Healthcheck(ctx)
 }
 
 func (c *controllableRemoteStore) SetHealthy(h bool) { c.healthy.Store(h) }

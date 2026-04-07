@@ -9,7 +9,7 @@ import (
 
 func TestRemoteMemoryStore_Healthcheck_HealthyOnFreshStore(t *testing.T) {
 	s := New()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	rep := s.Healthcheck(context.Background())
 	if rep.Status != health.StatusHealthy {

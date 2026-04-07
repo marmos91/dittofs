@@ -17,16 +17,17 @@ import (
 // LSM tree is accessible. This is the cheapest possible probe that
 // still catches "DB closed" and "DB corrupted" failure modes.
 //
-// Returns [health.StatusUnhealthy] when the context is canceled or the
-// View call returns an error; otherwise [health.StatusHealthy] with
-// the measured probe latency.
+// Returns [health.StatusUnknown] when the caller's context is canceled
+// (the probe was indeterminate, not the store), [health.StatusUnhealthy]
+// when the View call itself returns an error, or [health.StatusHealthy]
+// with the measured probe latency on success.
 //
 // Thread-safe; designed to be called concurrently from /status routes
 // behind a [health.CachedChecker].
 func (s *BadgerMetadataStore) Healthcheck(ctx context.Context) health.Report {
 	start := time.Now()
 	if err := ctx.Err(); err != nil {
-		return health.NewUnhealthyReport(err.Error(), time.Since(start))
+		return health.NewUnknownReport(err.Error(), time.Since(start))
 	}
 
 	// A no-op View transaction is enough to verify the DB is open.

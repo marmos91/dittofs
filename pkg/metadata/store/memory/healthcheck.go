@@ -12,9 +12,10 @@ import (
 //
 // The in-memory implementation has no external dependencies — there is
 // nothing that can be unhealthy in the traditional sense. The only
-// failure mode is the caller's context being canceled or timed out
-// (which is reported as [health.StatusUnhealthy] with the context
-// error as the message), so the report is otherwise always healthy.
+// failure mode is the caller's context being canceled or timed out,
+// which surfaces as [health.StatusUnknown] (the probe was indeterminate)
+// rather than [health.StatusUnhealthy] (which would falsely suggest the
+// store itself is broken).
 //
 // This method does not acquire any locks; it is designed to be
 // non-blocking so the cache wrapper can call it from /status routes
@@ -22,7 +23,7 @@ import (
 func (store *MemoryMetadataStore) Healthcheck(ctx context.Context) health.Report {
 	start := time.Now()
 	if err := ctx.Err(); err != nil {
-		return health.NewUnhealthyReport(err.Error(), time.Since(start))
+		return health.NewUnknownReport(err.Error(), time.Since(start))
 	}
 	return health.NewHealthyReport(time.Since(start))
 }

@@ -326,7 +326,7 @@ func (bs *BlockStore) Healthcheck(ctx context.Context) health.Report {
 	start := time.Now()
 
 	if err := ctx.Err(); err != nil {
-		return health.NewUnhealthyReport(err.Error(), time.Since(start))
+		return health.NewUnknownReport(err.Error(), time.Since(start))
 	}
 
 	localRep := bs.local.Healthcheck(ctx)

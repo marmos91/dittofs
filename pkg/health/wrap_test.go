@@ -3,6 +3,7 @@ package health
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -77,5 +78,48 @@ func TestCheckerFromErrorFunc_MeasuresLatency(t *testing.T) {
 	rep := c.Healthcheck(context.Background())
 	if rep.LatencyMs < 10 {
 		t.Fatalf("latency: got %d ms, expected at least 10", rep.LatencyMs)
+	}
+}
+
+// TestReportFromError_ContextCanceledMapsToUnknown verifies the
+// Checker contract: a probe aborted by the caller's context (canceled
+// or deadline exceeded) must surface as StatusUnknown rather than
+// StatusUnhealthy. The probe was indeterminate, not the entity broken.
+func TestReportFromError_ContextCanceledMapsToUnknown(t *testing.T) {
+	rep := ReportFromError(context.Canceled, 5*time.Millisecond)
+	if rep.Status != StatusUnknown {
+		t.Fatalf("context.Canceled: got %q, want unknown", rep.Status)
+	}
+}
+
+func TestReportFromError_DeadlineExceededMapsToUnknown(t *testing.T) {
+	rep := ReportFromError(context.DeadlineExceeded, 5*time.Millisecond)
+	if rep.Status != StatusUnknown {
+		t.Fatalf("context.DeadlineExceeded: got %q, want unknown", rep.Status)
+	}
+}
+
+// TestReportFromError_WrappedContextErrorMapsToUnknown ensures the
+// errors.Is unwrapping works for context errors that have been
+// fmt.Errorf'd with %w by an upstream layer (e.g. the S3 driver
+// wrapping HeadBucket errors).
+func TestReportFromError_WrappedContextErrorMapsToUnknown(t *testing.T) {
+	wrapped := fmt.Errorf("S3 head bucket: %w", context.Canceled)
+	rep := ReportFromError(wrapped, 5*time.Millisecond)
+	if rep.Status != StatusUnknown {
+		t.Fatalf("wrapped context.Canceled: got %q, want unknown", rep.Status)
+	}
+}
+
+func TestNewUnknownReport(t *testing.T) {
+	rep := NewUnknownReport("probe interrupted", 7*time.Millisecond)
+	if rep.Status != StatusUnknown {
+		t.Fatalf("status: got %q, want unknown", rep.Status)
+	}
+	if rep.Message != "probe interrupted" {
+		t.Fatalf("message: got %q, want 'probe interrupted'", rep.Message)
+	}
+	if rep.LatencyMs != 7 {
+		t.Fatalf("latency: got %d ms, want 7", rep.LatencyMs)
 	}
 }

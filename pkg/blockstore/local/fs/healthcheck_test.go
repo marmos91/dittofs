@@ -51,7 +51,7 @@ func TestFSStore_Healthcheck_UnhealthyWhenBaseDirRemoved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWithDefaults: %v", err)
 	}
-	defer bs.Close()
+	defer func() { _ = bs.Close() }()
 
 	// Remove the directory out from under the store. The probe must
 	// detect the missing path via os.Stat.
@@ -90,7 +90,7 @@ func TestFSStore_Healthcheck_RespectsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	rep := bs.Healthcheck(ctx)
-	if rep.Status != health.StatusUnhealthy {
-		t.Fatalf("canceled ctx: got %q, want unhealthy", rep.Status)
+	if rep.Status != health.StatusUnknown {
+		t.Fatalf("canceled ctx: got %q, want unknown", rep.Status)
 	}
 }

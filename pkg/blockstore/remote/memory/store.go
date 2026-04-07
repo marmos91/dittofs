@@ -175,10 +175,17 @@ func (s *Store) HealthCheck(_ context.Context) error {
 // a [health.Report] with measured latency. The in-memory remote has
 // no external dependencies, so the only failure mode is "store has
 // been closed".
+//
+// We check ctx.Err() explicitly because the legacy HealthCheck above
+// ignores its context argument; without this guard, a caller passing a
+// canceled context would still receive [health.StatusHealthy] from a
+// store that wasn't actually probed.
 func (s *Store) Healthcheck(ctx context.Context) health.Report {
 	start := time.Now()
-	err := s.HealthCheck(ctx)
-	return health.ReportFromError(err, time.Since(start))
+	if err := ctx.Err(); err != nil {
+		return health.NewUnknownReport(err.Error(), time.Since(start))
+	}
+	return health.ReportFromError(s.HealthCheck(ctx), time.Since(start))
 }
 
 // BlockCount returns the number of blocks stored (for testing).

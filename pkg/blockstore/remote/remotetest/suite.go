@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
+	"github.com/marmos91/dittofs/pkg/health"
 )
 
 // Factory creates a new RemoteStore instance for testing.
@@ -20,6 +21,7 @@ func RunSuite(t *testing.T, factory Factory) {
 	t.Run("DeleteByPrefix", func(t *testing.T) { testDeleteByPrefix(t, factory) })
 	t.Run("ListByPrefix", func(t *testing.T) { testListByPrefix(t, factory) })
 	t.Run("HealthCheck", func(t *testing.T) { testHealthCheck(t, factory) })
+	t.Run("HealthcheckReport", func(t *testing.T) { testHealthcheckReport(t, factory) })
 	t.Run("ClosedOperations", func(t *testing.T) { testClosedOperations(t, factory) })
 	t.Run("DataIsolation", func(t *testing.T) { testDataIsolation(t, factory) })
 }
@@ -169,6 +171,24 @@ func testHealthCheck(t *testing.T, factory Factory) {
 
 	if err := store.HealthCheck(ctx); err != nil {
 		t.Fatalf("HealthCheck failed: %v", err)
+	}
+}
+
+// testHealthcheckReport is the conformance test for the new
+// Healthcheck (lowercase 'c') method that returns a health.Report.
+// Implementations must populate Status correctly and stamp CheckedAt
+// — without this assertion the conformance suite would silently
+// accept a broken Healthcheck that returns a zero-value Report.
+func testHealthcheckReport(t *testing.T, factory Factory) {
+	store := factory(t)
+	ctx := context.Background()
+
+	rep := store.Healthcheck(ctx)
+	if rep.Status != health.StatusHealthy {
+		t.Fatalf("Healthcheck on fresh store: got status %q (%q), want healthy", rep.Status, rep.Message)
+	}
+	if rep.CheckedAt.IsZero() {
+		t.Fatal("Healthcheck must populate CheckedAt")
 	}
 }
 

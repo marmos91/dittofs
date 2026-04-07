@@ -14,7 +14,7 @@ import (
 // existing health-monitor tests.
 func TestBlockStore_Healthcheck_HealthyEndToEnd(t *testing.T) {
 	bs, _ := newHealthTestEngine(t)
-	defer bs.Close()
+	defer func() { _ = bs.Close() }()
 
 	rep := bs.Healthcheck(context.Background())
 	if rep.Status != health.StatusHealthy {
@@ -30,7 +30,7 @@ func TestBlockStore_Healthcheck_HealthyEndToEnd(t *testing.T) {
 // reads can no longer be served from cache.
 func TestBlockStore_Healthcheck_UnhealthyOnLocalClose(t *testing.T) {
 	bs, _ := newHealthTestEngine(t)
-	defer bs.Close()
+	defer func() { _ = bs.Close() }()
 
 	// Close the underlying local store directly (without going through
 	// engine.Close, which also tears down the syncer). This simulates a
@@ -53,13 +53,13 @@ func TestBlockStore_Healthcheck_UnhealthyOnLocalClose(t *testing.T) {
 // downstream probes.
 func TestBlockStore_Healthcheck_RespectsCanceledContext(t *testing.T) {
 	bs, _ := newHealthTestEngine(t)
-	defer bs.Close()
+	defer func() { _ = bs.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	rep := bs.Healthcheck(ctx)
-	if rep.Status != health.StatusUnhealthy {
-		t.Fatalf("canceled ctx: got %q, want unhealthy", rep.Status)
+	if rep.Status != health.StatusUnknown {
+		t.Fatalf("canceled ctx: got %q, want unknown", rep.Status)
 	}
 }

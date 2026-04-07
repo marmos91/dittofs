@@ -17,14 +17,16 @@ import (
 //
 //  1. The store hasn't been Closed (closedFlag).
 //  2. The configured baseDir exists and is a directory (os.Stat).
-//  3. The process can write to baseDir — verified by creating a temporary
-//     marker file under a hidden subdirectory and immediately removing it.
-//     This catches read-only mounts and permission regressions that a
-//     plain stat() would miss.
+//  3. The process can write to baseDir — verified by [verifyWritable],
+//     which creates a temporary marker file directly inside baseDir and
+//     immediately removes it. This catches read-only mounts and
+//     permission regressions that a plain stat() would miss.
 //
-// On any failure the report is [health.StatusUnhealthy] with a message
-// describing which check tripped. On success it is [health.StatusHealthy]
-// with the measured probe latency.
+// A canceled caller context surfaces as [health.StatusUnknown] (the
+// probe was indeterminate, not the store). Any failed check surfaces
+// as [health.StatusUnhealthy] with a message identifying which one
+// tripped. Success is [health.StatusHealthy] with the measured
+// probe latency.
 //
 // The probe is intentionally light. It does not walk subdirectories,
 // touch the fdPool, or interact with the in-memory block maps; the
@@ -35,7 +37,7 @@ func (bs *FSStore) Healthcheck(ctx context.Context) health.Report {
 	start := time.Now()
 
 	if err := ctx.Err(); err != nil {
-		return health.NewUnhealthyReport(err.Error(), time.Since(start))
+		return health.NewUnknownReport(err.Error(), time.Since(start))
 	}
 
 	if bs.closedFlag.Load() {
