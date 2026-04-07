@@ -40,6 +40,22 @@ func TestBaseAdapter_Healthcheck_HealthyAfterStart(t *testing.T) {
 	}
 }
 
+func TestBaseAdapter_Healthcheck_RespectsCanceledContext(t *testing.T) {
+	b := newTestBaseAdapter(t, "TEST")
+	b.started.Store(true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	rep := b.Healthcheck(ctx)
+	if rep.Status != health.StatusUnknown {
+		t.Fatalf("canceled ctx: got %q, want unknown (probe was indeterminate, not the adapter)", rep.Status)
+	}
+	if rep.Message == "" {
+		t.Fatal("canceled ctx: expected non-empty message describing the cancellation")
+	}
+}
+
 func TestBaseAdapter_Healthcheck_UnhealthyOnceShutdown(t *testing.T) {
 	b := newTestBaseAdapter(t, "TEST")
 	b.started.Store(true)

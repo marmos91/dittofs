@@ -14,9 +14,11 @@ import (
 //
 // Derivation rules using only signals BaseAdapter already tracks:
 //
-//   - [health.StatusUnknown] when Serve() has not yet been called and the
-//     listener has therefore not been bound. The adapter exists in the
-//     runtime registry but hasn't had a chance to start.
+//   - [health.StatusUnknown] when the caller's context is canceled or
+//     deadlined out (the probe was indeterminate, not the adapter), OR
+//     when Serve() has not yet been called and the listener has
+//     therefore not been bound (the adapter exists in the runtime
+//     registry but hasn't had a chance to start).
 //   - [health.StatusUnhealthy] when shutdown has been initiated but
 //     Serve() has not yet returned (the adapter is mid-shutdown), or
 //     when the listener has been torn down out of band.
@@ -31,8 +33,16 @@ import (
 // The method is intentionally cheap — it inspects atomic flags and
 // channel state, never reaches network or disk. The API layer wraps
 // it with a [health.CachedChecker] anyway.
-func (b *BaseAdapter) Healthcheck(_ context.Context) health.Report {
+func (b *BaseAdapter) Healthcheck(ctx context.Context) health.Report {
 	now := time.Now().UTC()
+
+	if err := ctx.Err(); err != nil {
+		return health.Report{
+			Status:    health.StatusUnknown,
+			Message:   err.Error(),
+			CheckedAt: now,
+		}
+	}
 
 	if !b.started.Load() {
 		return health.Report{
