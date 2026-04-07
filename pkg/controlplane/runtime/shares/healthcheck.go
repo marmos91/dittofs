@@ -118,49 +118,44 @@ func combineShareReports(metaRep, blockRep health.Report, hasMeta, hasBlock bool
 		}
 	}
 
-	// Severity from worst to best. Tie-break favours metadata.
-	severity := func(s health.Status) int {
-		switch s {
-		case health.StatusUnhealthy:
-			return 4
-		case health.StatusDegraded:
-			return 3
-		case health.StatusUnknown:
-			return 2
-		case health.StatusHealthy:
-			return 1
-		default:
-			return 0
-		}
+	// Pick the worst side. Tie-break favours metadata because corrupt
+	// metadata is usually the more impactful failure: when only
+	// metadata is present we default to it, and when both sides are
+	// present at equal severity metadata still wins.
+	worstTag, worstRep := "metadata", metaRep
+	switch {
+	case !hasMeta:
+		worstTag, worstRep = "block", blockRep
+	case hasBlock && shareStatusSeverity(blockRep.Status) > shareStatusSeverity(metaRep.Status):
+		worstTag, worstRep = "block", blockRep
 	}
 
-	type sideReport struct {
-		tag string
-		rep health.Report
-	}
-	var sides []sideReport
-	if hasMeta {
-		sides = append(sides, sideReport{tag: "metadata", rep: metaRep})
-	}
-	if hasBlock {
-		sides = append(sides, sideReport{tag: "block", rep: blockRep})
-	}
-
-	worst := sides[0]
-	for _, s := range sides[1:] {
-		if severity(s.rep.Status) > severity(worst.rep.Status) {
-			worst = s
-		}
-	}
-
-	out := health.Report{Status: worst.rep.Status}
-	if msg := worst.rep.Message; msg != "" {
-		out.Message = worst.tag + ": " + msg
-	} else if worst.rep.Status != health.StatusHealthy {
+	out := health.Report{Status: worstRep.Status}
+	switch {
+	case worstRep.Message != "":
+		out.Message = worstTag + ": " + worstRep.Message
+	case worstRep.Status != health.StatusHealthy:
 		// Surface the subsystem name even when the upstream report
 		// has no message — operators still want to know which side
 		// produced the non-healthy state.
-		out.Message = worst.tag + ": " + strings.ToLower(string(worst.rep.Status))
+		out.Message = worstTag + ": " + strings.ToLower(string(worstRep.Status))
 	}
 	return out
+}
+
+// shareStatusSeverity ranks [health.Status] values from best (0/1) to
+// worst (4) so [combineShareReports] can pick the weakest side.
+func shareStatusSeverity(s health.Status) int {
+	switch s {
+	case health.StatusUnhealthy:
+		return 4
+	case health.StatusDegraded:
+		return 3
+	case health.StatusUnknown:
+		return 2
+	case health.StatusHealthy:
+		return 1
+	default:
+		return 0
+	}
 }
