@@ -140,13 +140,13 @@ changelog:
       - merges
   groups:
     - title: Features
-      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      regexp: '^.*?feat(\([\w-]+\))??!?:.+$'
       order: 0
     - title: 'Bug Fixes'
-      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      regexp: '^.*?fix(\([\w-]+\))??!?:.+$'
       order: 1
     - title: 'Performance Improvements'
-      regexp: '^.*?perf(\([[:word:]]+\))??!?:.+$'
+      regexp: '^.*?perf(\([\w-]+\))??!?:.+$'
       order: 2
     - title: Others
       order: 999
