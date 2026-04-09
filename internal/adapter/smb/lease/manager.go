@@ -394,8 +394,13 @@ func (lm *LeaseManager) BreakHandleLeasesOnOpen(
 		exclude = excludeOwner[0]
 	}
 
-	// Break Handle leases (RWH -> RW, RH -> R)
-	if err := lockMgr.BreakHandleLeasesForSMBOpen(handleKey, exclude); err != nil {
+	// Strip Write from leases that have Handle caching (RWH -> RH).
+	// This sends one notification that matches what clients expect:
+	// "flush dirty data" (Write strip). The Handle bit is preserved so
+	// the client can close cached handles in its ack response.
+	// After the ack, the lease is at RH (no Write, no Breaking), and
+	// Step 8a can independently strip Handle if needed.
+	if err := lockMgr.BreakWriteOnHandleLeasesForSMBOpen(handleKey, exclude); err != nil {
 		return err
 	}
 

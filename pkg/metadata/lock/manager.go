@@ -185,6 +185,10 @@ type LockManager interface {
 	// share mode conflict check. Strips only the Handle bit (RWH -> RW, RH -> R).
 	BreakHandleLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error
 
+	// BreakWriteOnHandleLeasesForSMBOpen strips Write from leases that have
+	// Handle caching (RWH → RH). Only targets leases with both W and H.
+	BreakWriteOnHandleLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error
+
 	// BreakReadLeasesForParentDir breaks Read leases on a parent directory
 	// when directory content changes (CREATE, RENAME, DELETE on close).
 	// Per MS-FSA 2.1.5.14: changes to directory listing invalidate Read
@@ -1308,6 +1312,23 @@ func (lm *Manager) CheckAndBreakLeasesForSMBOpen(handleKey string, excludeOwner 
 func (lm *Manager) BreakHandleLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error {
 	return lm.breakOpLocks(handleKey, excludeOwner, BreakToStripHandle, func(lease *OpLock) bool {
 		return lease.HasHandle()
+	})
+}
+
+// BreakWriteOnHandleLeasesForSMBOpen strips Write from leases that have Handle
+// caching. Per MS-SMB2 3.3.5.9 Step 10: before the share mode check, leases
+// with Handle caching must be broken so clients close cached handles. The break
+// strips Write (not Handle) so clients see "RWH → RH" and flush dirty data
+// while preserving Handle for the share mode resolution window.
+//
+// This targets only leases WITH Handle caching:
+//   - RWH -> RH (has Handle → strip Write)
+//   - RH  -> not broken (has Handle but no Write to strip)
+//   - RW  -> not broken (no Handle → not a cached-handle concern)
+//   - R   -> not broken
+func (lm *Manager) BreakWriteOnHandleLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error {
+	return lm.breakOpLocks(handleKey, excludeOwner, BreakToStripWrite, func(lease *OpLock) bool {
+		return lease.HasHandle() && lease.HasWrite()
 	})
 }
 
