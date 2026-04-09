@@ -124,7 +124,6 @@ func (lm *LeaseManager) RequestLease(
 		requestedState, isDirectory,
 	)
 	if err != nil && !errors.Is(err, lock.ErrLeaseBreakInProgress) {
-		// Grant failed — remove pre-registered session mapping
 		lm.mu.Lock()
 		delete(lm.sessionMap, keyHex)
 		delete(lm.leaseShare, keyHex)
@@ -132,7 +131,8 @@ func (lm *LeaseManager) RequestLease(
 		return 0, 0, err
 	}
 
-	// If lease was denied (None) without error, remove pre-registered mapping.
+	// Remove pre-registered mapping if the lease was denied (None state means
+	// the LockManager rejected the request without an error code).
 	if grantedState == lock.LeaseStateNone {
 		lm.mu.Lock()
 		delete(lm.sessionMap, keyHex)
@@ -427,87 +427,6 @@ func (lm *LeaseManager) BreakHandleLeasesOnOpenAsync(
 	}
 
 	return lockMgr.BreakHandleLeasesForSMBOpen(handleKey, exclude)
-}
-
-// BreakDirectoryLeasesOnOpenAsync dispatches Handle AND Write lease break
-// notifications for a directory open without waiting for acknowledgment.
-//
-// Per MS-SMB2 3.3.5.9: when a new open conflicts with existing directory
-// leases, both Handle caching (cached directory handles) and Write caching
-// (cached directory content changes) must be broken so other clients receive
-// LEASE_BREAK_NOTIFICATION before the share mode check. This is required by
-// BVT_DirectoryLeasing_LeaseBreakOnMultiClients where Client3's DELETE access
-// must trigger a Write-lease break notification even when no Handle leases
-// exist.
-//
-// The break is async (fire-and-forget) to avoid deadlock — the other client
-// needs this CREATE's response before it can process the break notification.
-//
-// This method dispatches break notifications directly via the adapter-level
-// session map + notifier, bypassing the LockManager's callback chain. The
-// LockManager callbacks route through dispatchOpLockBreak → registered
-// BreakCallbacks, which may not have the session mapping yet for leases that
-// were registered on a different callback instance. Sending directly from
-// the LeaseManager avoids this routing gap.
-func (lm *LeaseManager) BreakDirectoryLeasesOnOpenAsync(
-	fileHandle lock.FileHandle,
-	shareName string,
-	excludeOwner ...*lock.LockOwner,
-) error {
-	lockMgr := lm.resolveLockManager(shareName)
-	if lockMgr == nil {
-		return nil
-	}
-
-	handleKey := string(fileHandle)
-
-	var exclude *lock.LockOwner
-	if len(excludeOwner) > 0 {
-		exclude = excludeOwner[0]
-	}
-
-	// Break Handle leases via LockManager (RWH -> RW, RH -> R)
-	if err := lockMgr.BreakHandleLeasesForSMBOpen(handleKey, exclude); err != nil {
-		return err
-	}
-
-	// For Write leases: use GetWriteLeasesToBreak to identify leases that need
-	// breaking, then dispatch notifications directly via the adapter's session
-	// map and notifier. This ensures the notification reaches the right SMB
-	// session even when the LockManager's callback chain can't resolve it.
-	toBreak := lockMgr.GetWriteLeasesToBreak(handleKey, exclude)
-	for _, entry := range toBreak {
-		leaseKey := entry.LeaseKey
-		breakTo := entry.BreakToState
-		currentState := entry.CurrentState
-
-		sessionID, found := lm.GetSessionForLease(leaseKey)
-		if !found {
-			logger.Debug("BreakDirectoryLeasesOnOpenAsync: no session for lease, skipping",
-				"leaseKey", fmt.Sprintf("%x", leaseKey),
-				"handleKey", handleKey)
-			continue
-		}
-
-		notifier := lm.GetNotifier()
-		if notifier == nil {
-			continue
-		}
-
-		logger.Debug("BreakDirectoryLeasesOnOpenAsync: dispatching write lease break",
-			"leaseKey", fmt.Sprintf("%x", leaseKey),
-			"sessionID", sessionID,
-			"currentState", lock.LeaseStateToString(currentState),
-			"breakToState", lock.LeaseStateToString(breakTo))
-
-		if err := notifier.SendLeaseBreak(sessionID, leaseKey, currentState, breakTo, entry.Epoch); err != nil {
-			logger.Warn("BreakDirectoryLeasesOnOpenAsync: failed to send break",
-				"leaseKey", fmt.Sprintf("%x", leaseKey),
-				"error", err)
-		}
-	}
-
-	return nil
 }
 
 // BreakParentHandleLeasesOnCreate breaks Handle leases on a parent directory
