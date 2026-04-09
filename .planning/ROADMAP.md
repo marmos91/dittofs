@@ -568,7 +568,7 @@ v3.8 (33-40.5) -> v4.2 (57-62) -> v4.0 (41-49) -> v4.3 (49.1-49.3) -> v4.7 (63-6
 | 69. SMB Protocol Foundation | 3/3 | Complete   | 2026-03-20 | - |
 | 70. Storage Observability and Quotas | 3/3 | Complete    | 2026-03-21 | - |
 | 71. Operational Visibility | v0.10.0 | 1/2 | In Progress|  |
-| 72. WPTS Conformance Push | v0.10.0 | 0/? | Not started | - |
+| 72. WPTS Conformance Push | v0.10.0 | 1/2 | In Progress|  |
 | 73. Trash and Soft-Delete | v0.10.0 | 0/? | Complete    | 2026-03-24 |
 | 74. SMB Multi-Channel | v0.10.0 | 0/? | Not started | - |
 | 75. Manual Verification v0.10.0 | v0.10.0 | 0/? | Not started | - |
