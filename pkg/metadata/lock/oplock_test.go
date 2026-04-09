@@ -15,21 +15,21 @@ import (
 func TestLeaseStateConstants(t *testing.T) {
 	t.Parallel()
 
-	// Verify MS-SMB2 spec values
+	// Verify MS-SMB2 2.2.13.2.8 spec values
 	assert.Equal(t, uint32(0x00), LeaseStateNone, "None should be 0x00")
 	assert.Equal(t, uint32(0x01), LeaseStateRead, "Read should be 0x01")
-	assert.Equal(t, uint32(0x02), LeaseStateWrite, "Write should be 0x02")
-	assert.Equal(t, uint32(0x04), LeaseStateHandle, "Handle should be 0x04")
+	assert.Equal(t, uint32(0x02), LeaseStateHandle, "Handle should be 0x02")
+	assert.Equal(t, uint32(0x04), LeaseStateWrite, "Write should be 0x04")
 }
 
 func TestLeaseStateCombinations(t *testing.T) {
 	t.Parallel()
 
-	// RW = Read | Write = 0x03
-	assert.Equal(t, uint32(0x03), LeaseStateRead|LeaseStateWrite)
+	// RH = Read | Handle = 0x03
+	assert.Equal(t, uint32(0x03), LeaseStateRead|LeaseStateHandle)
 
-	// RH = Read | Handle = 0x05
-	assert.Equal(t, uint32(0x05), LeaseStateRead|LeaseStateHandle)
+	// RW = Read | Write = 0x05
+	assert.Equal(t, uint32(0x05), LeaseStateRead|LeaseStateWrite)
 
 	// RWH = Read | Write | Handle = 0x07
 	assert.Equal(t, uint32(0x07), LeaseStateRead|LeaseStateWrite|LeaseStateHandle)
@@ -206,7 +206,7 @@ func TestIsValidDirectoryLeaseState(t *testing.T) {
 	}{
 		{LeaseStateNone, "None"},
 		{LeaseStateRead, "R"},
-		{LeaseStateRead | LeaseStateWrite, "RW"},
+		{LeaseStateRead | LeaseStateHandle, "RH"},
 	}
 
 	for _, tc := range validStates {
@@ -219,11 +219,11 @@ func TestIsValidDirectoryLeaseState(t *testing.T) {
 		state uint32
 		name  string
 	}{
+		{LeaseStateRead | LeaseStateWrite, "RW"},
+		{LeaseStateRead | LeaseStateWrite | LeaseStateHandle, "RWH"},
 		{LeaseStateWrite, "W"},
 		{LeaseStateHandle, "H"},
 		{LeaseStateWrite | LeaseStateHandle, "WH"},
-		{LeaseStateRead | LeaseStateHandle, "RH"},
-		{LeaseStateRead | LeaseStateWrite | LeaseStateHandle, "RWH"},
 	}
 
 	for _, tc := range invalidStates {

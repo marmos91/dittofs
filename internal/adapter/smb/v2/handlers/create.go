@@ -852,25 +852,25 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	if fileExists {
 		existingHandle, handleErr := metadata.EncodeFileHandle(existingFile)
 		if handleErr == nil {
-			// Step 10: Break Handle leases before share mode check.
+			// Step 10: Break Handle leases on directories before share mode check.
 			// Per MS-SMB2 3.3.5.9.8: stat-only opens (FILE_READ_ATTRIBUTES
 			// only) do NOT break existing leases.
-			// For files: wait for break to complete so share mode check is
-			// accurate (clients close cached handles during the break).
-			// For directories: dispatch the break but do NOT wait. Directory
-			// opens never conflict on share modes, and blocking here would
-			// deadlock when the other client needs this CREATE's response
-			// before it can process the break notification.
-			if h.LeaseManager != nil && !isStatOnlyOpen(req.DesiredAccess) {
+			//
+			// For directories: dispatch Handle-break async (fire-and-forget).
+			// Directory Handle breaks notify clients to release cached dir handles.
+			// Step 8a (BreakConflictingOplocksOnOpen) is skipped for directories,
+			// so this is the only break opportunity.
+			//
+			// For files: do NOT break Handle here. Step 8a dispatches the Write
+			// break via BreakConflictingOplocksOnOpen. If we break Handle first,
+			// the lease is marked Breaking and Step 8a skips the Write break —
+			// but clients need the Write break to flush dirty data. The Handle
+			// break is folded into the eventual lease downgrade (RWH → R after
+			// Write + Handle strips).
+			if h.LeaseManager != nil && !isStatOnlyOpen(req.DesiredAccess) && existingFile.Type == metadata.FileTypeDirectory {
 				lockFileHandle := lock.FileHandle(existingHandle)
-				if existingFile.Type == metadata.FileTypeDirectory {
-					if breakErr := h.LeaseManager.BreakHandleLeasesOnOpenAsync(lockFileHandle, tree.ShareName, excludeOwner); breakErr != nil {
-						logger.Debug("CREATE: directory handle lease break failed", "error", breakErr)
-					}
-				} else {
-					if breakErr := h.LeaseManager.BreakHandleLeasesOnOpen(authCtx.Context, lockFileHandle, tree.ShareName, excludeOwner); breakErr != nil {
-						logger.Debug("CREATE: handle lease break failed", "error", breakErr)
-					}
+				if breakErr := h.LeaseManager.BreakHandleLeasesOnOpenAsync(lockFileHandle, tree.ShareName, excludeOwner); breakErr != nil {
+					logger.Debug("CREATE: directory handle lease break failed", "error", breakErr)
 				}
 			}
 

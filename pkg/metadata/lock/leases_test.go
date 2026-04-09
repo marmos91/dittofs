@@ -81,12 +81,12 @@ func TestRequestLease_GrantDirectoryLeaseRH(t *testing.T) {
 	leaseKey := [16]byte{1, 2, 3}
 	parentKey := [16]byte{}
 
-	// RH requested on directory -> Handle is not valid for directories,
-	// so bestGrantableState downgrades to R.
+	// RH is now valid for directories (Handle caching lets clients cache
+	// directory handles; breaks notify when other clients need access).
 	state, epoch, err := mgr.RequestLease(ctx, FileHandle("dir1"), leaseKey, parentKey, "owner1", "client1", "/share", LeaseStateRead|LeaseStateHandle, true)
 
 	require.NoError(t, err)
-	assert.Equal(t, LeaseStateRead, state, "RH should be downgraded to R for directories")
+	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state, "RH should be granted as-is for directories")
 	assert.Equal(t, uint16(1), epoch)
 }
 
@@ -98,13 +98,12 @@ func TestRequestLease_DirectoryState_RW(t *testing.T) {
 	leaseKey := [16]byte{1, 2, 3}
 	parentKey := [16]byte{}
 
-	// Per MS-SMB2 3.3.5.9: directories CAN hold Write (W) caching leases.
-	// Write caching on a directory means the client can cache directory
-	// content changes. Both Windows Server and Samba grant RW on directories.
+	// Directories do not support Write (W) caching. Requesting RW on a
+	// directory should downgrade to R (strip W).
 	state, _, err := mgr.RequestLease(ctx, FileHandle("dir1"), leaseKey, parentKey, "owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite, true)
 
 	require.NoError(t, err)
-	assert.Equal(t, LeaseStateRead|LeaseStateWrite, state, "should grant RW as-is for directory")
+	assert.Equal(t, LeaseStateRead, state, "RW on directory should downgrade to R (W not valid for dirs)")
 }
 
 func TestRequestLease_DirectoryState_RWH(t *testing.T) {
@@ -115,12 +114,12 @@ func TestRequestLease_DirectoryState_RWH(t *testing.T) {
 	leaseKey := [16]byte{1, 2, 3}
 	parentKey := [16]byte{}
 
-	// Per MS-SMB2 3.3.5.9: directories support R and RW but NOT Handle caching.
-	// RWH requested on a directory is downgraded to RW.
+	// Directories do not support Write (W) caching. Requesting RWH on a
+	// directory should downgrade to RH (strip W).
 	state, _, err := mgr.RequestLease(ctx, FileHandle("dir1"), leaseKey, parentKey, "owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite|LeaseStateHandle, true)
 
 	require.NoError(t, err)
-	assert.Equal(t, LeaseStateRead|LeaseStateWrite, state, "RWH should be downgraded to RW for directory")
+	assert.Equal(t, LeaseStateRead|LeaseStateHandle, state, "RWH on directory should downgrade to RH (W not valid for dirs)")
 }
 
 func TestRequestLease_SameKeyUpgrade_R_to_RW(t *testing.T) {
@@ -307,16 +306,22 @@ func TestAcknowledgeLeaseBreak_CompletesBreak(t *testing.T) {
 	assert.Equal(t, LeaseStateRead|LeaseStateWrite, state)
 
 	// Request from key2 triggers break on key1. The break callback
-	// acknowledges to None, removing key1's lease entirely. After the
-	// break completes, key2's R lease should be granted.
+	// acknowledges to None asynchronously, eventually removing key1's
+	// lease entirely. RequestLease no longer blocks waiting for the ack
+	// (see TestRequestLease_CrossKeyConflict_DoesNotBlockOnAck for the
+	// rationale), so key2's grant is computed against the BreakToState
+	// snapshot (R after stripping W) and key1's removal happens slightly
+	// later when the async ack lands.
 	state, _, err = mgr.RequestLease(ctx, FileHandle("file1"), key2, parentKey, "owner2", "client2", "/share", LeaseStateRead, false)
 	require.NoError(t, err)
 	assert.Equal(t, LeaseStateRead, state, "should grant R lease after break removes existing")
 	assert.True(t, breakCalled, "break callback should have been called")
 
-	// key1's lease should be removed (acknowledged to None)
-	_, _, found := mgr.GetLeaseState(ctx, key1)
-	assert.False(t, found, "key1 lease should be removed after ack to None")
+	// key1's lease should be removed once the async ack-to-None lands.
+	assert.Eventually(t, func() bool {
+		_, _, found := mgr.GetLeaseState(ctx, key1)
+		return !found
+	}, time.Second, time.Millisecond, "key1 lease should be removed after ack to None")
 }
 
 func TestAcknowledgeLeaseBreak_ToReadState(t *testing.T) {
@@ -615,10 +620,9 @@ func TestDowngradeCandidates_DirectoryRWH(t *testing.T) {
 	t.Parallel()
 
 	candidates := downgradeCandidates(LeaseStateRead|LeaseStateWrite|LeaseStateHandle, true)
-	// For directory: RWH (invalid), RH (invalid, strip W), RW (valid, strip H), R (valid, strip both)
-	// Only valid directory states are included: RW, R
+	// For directory: RWH (invalid), RH (valid, strip W), RW (invalid, strip H), R (valid, strip both)
 	assert.Equal(t, []uint32{
-		LeaseStateRead | LeaseStateWrite,
+		LeaseStateRead | LeaseStateHandle,
 		LeaseStateRead,
 	}, candidates)
 }
@@ -627,9 +631,9 @@ func TestDowngradeCandidates_DirectoryRH(t *testing.T) {
 	t.Parallel()
 
 	candidates := downgradeCandidates(LeaseStateRead|LeaseStateHandle, true)
-	// RH (invalid for dir) -> strip W = RH (invalid), strip H = R (valid), strip both = R
-	// Only valid: R
+	// RH (valid for dir), strip W = RH (dedup), strip H = R (valid), strip both = R (dedup)
 	assert.Equal(t, []uint32{
+		LeaseStateRead | LeaseStateHandle,
 		LeaseStateRead,
 	}, candidates)
 }
@@ -702,8 +706,10 @@ func TestBestGrantableState_DirectoryRWH_DowngradeCascade(t *testing.T) {
 		{Lease: &OpLock{LeaseKey: otherKey, LeaseState: LeaseStateRead | LeaseStateWrite | LeaseStateHandle}},
 	}
 
-	// Directory candidates for RWH: [RW, R] (Handle not valid for dirs)
-	// RW: requested W conflicts with existing R/W -> skip
+	// Directory candidates for RWH: [RWH, RW, RH, R] (Handle now valid for dirs)
+	// RWH: W conflicts with existing W -> skip
+	// RW: W conflicts with existing W -> skip
+	// RH: existing W conflicts with requested R -> skip
 	// R: existing W conflicts with requested R -> skip
 	// All candidates conflict -> None
 	state := bestGrantableState(locks, requestKey, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, true)
@@ -765,4 +771,80 @@ func TestRequestLease_SameKeyBreaking_ReturnsBreakInProgress(t *testing.T) {
 	assert.ErrorIs(t, err, ErrLeaseBreakInProgress)
 	assert.Equal(t, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, state, "should return current lease state")
 	assert.Equal(t, uint16(2), epoch, "should return current epoch")
+}
+
+// TestRequestLease_CrossKeyConflict_DoesNotBlockOnAck verifies that the
+// second opener's RequestLease does NOT block waiting for the first client's
+// LEASE_BREAK_ACK. This is the WPTS BVT_DirectoryLeasing_LeaseBreakOnMultiClients
+// scenario: the test orchestrates Client1's ack only AFTER Client2's CREATE
+// returns. If RequestLease blocks Client2 waiting for an ack that the test
+// will only drive after Client2 returns, the test deadlocks until the WPTS
+// client-side ~8s timeout fires (System.TimeoutException).
+//
+// The internal break dispatch is synchronous (the LEASE_BREAK_NOTIFICATION
+// is on the wire before this call returns), and OpLocksConflict already
+// treats a Breaking lease as having its BreakToState (oplock.go:229-233),
+// so bestGrantableState computes the correct downgraded grant without
+// needing to wait for the ack. See also internal/adapter/smb/lease/manager.go
+// BreakHandleLeasesOnOpenAsync, which documents the same deadlock pattern
+// for directory opens: "blocking would deadlock: the other client needs
+// this CREATE's response before it processes the break."
+func TestRequestLease_CrossKeyConflict_DoesNotBlockOnAck(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	key1 := [16]byte{1, 0, 0, 0}
+	key2 := [16]byte{2, 0, 0, 0}
+	parentKey := [16]byte{}
+
+	// Register a break callback that records the break but NEVER acks.
+	// This simulates a slow/non-cooperating client (or, in the WPTS test
+	// case, a client that the test harness has not yet driven to ack).
+	var breakCalled bool
+	mgr.RegisterBreakCallbacks(&testBreakCallbacks{
+		onOpLockBreak: func(handleKey string, lock *UnifiedLock, breakToState uint32) {
+			breakCalled = true
+			// Intentionally do NOT call AcknowledgeLeaseBreak.
+		},
+	})
+
+	// Client1 takes RW file lease. We use a file (not directory) because
+	// RW is no longer valid for directories after the lease constant swap.
+	// The test's purpose is verifying the cross-key path doesn't deadlock.
+	state, _, err := mgr.RequestLease(ctx, FileHandle("file1"), key1, parentKey,
+		"owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite, false)
+	require.NoError(t, err)
+	assert.Equal(t, LeaseStateRead|LeaseStateWrite, state)
+
+	// Client2 requests RW on the same file with a different key.
+	// This must trigger a cross-key conflict, dispatch a break (which is
+	// never acked), and then return promptly with a downgraded grant.
+	//
+	// The test asserts the call returns within 1s. Without the fix, the
+	// 35s WaitForBreakCompletion in leases.go blocks here for the full
+	// timeout, exceeding the 1s budget.
+	type result struct {
+		state uint32
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		s, _, e := mgr.RequestLease(ctx, FileHandle("file1"), key2, parentKey,
+			"owner2", "client2", "/share", LeaseStateRead|LeaseStateWrite, false)
+		done <- result{s, e}
+	}()
+
+	select {
+	case r := <-done:
+		require.NoError(t, r.err)
+		// After break-to-R, Client2 should get R (RW conflict resolved).
+		assert.Equal(t, LeaseStateRead, r.state,
+			"Client2 should get R after Client1's RW is broken-to-R")
+		assert.True(t, breakCalled, "break callback must have fired")
+	case <-time.After(1 * time.Second):
+		t.Fatalf("RequestLease blocked >1s waiting for ack that never comes — "+
+			"this is the WPTS BVT_DirectoryLeasing_LeaseBreakOnMultiClients "+
+			"deadlock. breakCalled=%v", breakCalled)
+	}
 }

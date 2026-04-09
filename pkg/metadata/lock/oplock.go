@@ -23,14 +23,14 @@ const (
 	// Multiple clients can hold Read leases simultaneously.
 	LeaseStateRead uint32 = 0x01
 
+	// LeaseStateHandle (SMB2_LEASE_HANDLE_CACHING) permits caching open handles.
+	// Client can delay close operations until another client needs access.
+	LeaseStateHandle uint32 = 0x02
+
 	// LeaseStateWrite (SMB2_LEASE_WRITE_CACHING) permits caching writes.
 	// Only one client can hold a Write lease; requires exclusive access.
 	// Client with Write lease has dirty data that must be flushed on break.
-	LeaseStateWrite uint32 = 0x02
-
-	// LeaseStateHandle (SMB2_LEASE_HANDLE_CACHING) permits caching open handles.
-	// Client can delay close operations until another client needs access.
-	LeaseStateHandle uint32 = 0x04
+	LeaseStateWrite uint32 = 0x04
 )
 
 // Sentinel values for breakOpLocks break-to state computation.
@@ -48,26 +48,26 @@ const (
 
 // ValidFileLeaseStates contains all valid lease state combinations for files.
 // Per MS-SMB2: Write and Handle alone are not valid; they require Read.
-// Valid combinations: None, R, RW, RH, RWH
+// Valid combinations: None, R, RH, RW, RWH
 var ValidFileLeaseStates = []uint32{
 	LeaseStateNone,                                      // 0x00 - No caching
 	LeaseStateRead,                                      // 0x01 - Read only
-	LeaseStateRead | LeaseStateWrite,                    // 0x03 - Read + Write
-	LeaseStateRead | LeaseStateHandle,                   // 0x05 - Read + Handle
+	LeaseStateRead | LeaseStateHandle,                   // 0x03 - Read + Handle
+	LeaseStateRead | LeaseStateWrite,                    // 0x05 - Read + Write
 	LeaseStateRead | LeaseStateWrite | LeaseStateHandle, // 0x07 - Full (RWH)
 }
 
 // ValidDirectoryLeaseStates contains valid lease state combinations for directories.
-// Per MS-SMB2 3.3.5.9: directories support Read and Write caching but NOT Handle
-// caching. The Handle bit is meaningless for directories because Handle caching
-// protects delayed close semantics which don't apply to directory opens.
-// When RWH is requested, bestGrantableState will downgrade to RW.
-// When RH is requested, bestGrantableState will downgrade to R.
-// Valid combinations: None, R, RW
+// Per MS-SMB2 3.3.5.9: directories support Read and Handle caching but NOT
+// Write caching. Write caching requires exclusive access semantics that don't
+// apply to directory opens.
+// When RWH is requested, bestGrantableState will downgrade to RH.
+// When RW is requested, bestGrantableState will downgrade to R.
+// Valid combinations: None, R, RH
 var ValidDirectoryLeaseStates = []uint32{
-	LeaseStateNone,                   // 0x00 - No caching
-	LeaseStateRead,                   // 0x01 - Read only
-	LeaseStateRead | LeaseStateWrite, // 0x03 - Read + Write
+	LeaseStateNone,                      // 0x00 - No caching
+	LeaseStateRead,                      // 0x01 - Read only
+	LeaseStateRead | LeaseStateHandle,   // 0x03 - Read + Handle
 }
 
 // OpLock holds SMB2/3 lease-specific state.
@@ -123,7 +123,7 @@ type OpLock struct {
 
 	// IsDirectory indicates this lease is on a directory.
 	// When true, valid lease states are restricted to ValidDirectoryLeaseStates
-	// (None, R, RW). Handle caching is not valid for directories.
+	// (None, R, RH).
 	IsDirectory bool
 }
 
@@ -186,8 +186,8 @@ func IsValidFileLeaseState(state uint32) bool {
 
 // IsValidDirectoryLeaseState returns true if the state is a valid lease combination for directories.
 //
-// Valid directory states: None, R, RW
-// Invalid: W alone, H alone, WH, RH, RWH (Handle not valid for directories)
+// Valid directory states: None, R, RH
+// Invalid: W alone, H alone, WH, RW, RWH (Write not valid for directories)
 func IsValidDirectoryLeaseState(state uint32) bool {
 	return slices.Contains(ValidDirectoryLeaseStates, state)
 }
