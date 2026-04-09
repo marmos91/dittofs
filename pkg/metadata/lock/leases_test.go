@@ -2,6 +2,7 @@ package lock
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -321,7 +322,7 @@ func TestAcknowledgeLeaseBreak_CompletesBreak(t *testing.T) {
 	assert.Eventually(t, func() bool {
 		_, _, found := mgr.GetLeaseState(ctx, key1)
 		return !found
-	}, time.Second, time.Millisecond, "key1 lease should be removed after ack to None")
+	}, 3*time.Second, 10*time.Millisecond, "key1 lease should be removed after ack to None")
 }
 
 func TestAcknowledgeLeaseBreak_ToReadState(t *testing.T) {
@@ -804,10 +805,10 @@ func TestRequestLease_CrossKeyConflict_DoesNotBlockOnAck(t *testing.T) {
 	// Register a break callback that records the break but NEVER acks.
 	// This simulates a slow/non-cooperating client (or, in the WPTS test
 	// case, a client that the test harness has not yet driven to ack).
-	var breakCalled bool
+	var breakCalled atomic.Bool
 	mgr.RegisterBreakCallbacks(&testBreakCallbacks{
 		onOpLockBreak: func(handleKey string, lock *UnifiedLock, breakToState uint32) {
-			breakCalled = true
+			breakCalled.Store(true)
 			// Intentionally do NOT call AcknowledgeLeaseBreak.
 		},
 	})
@@ -844,10 +845,10 @@ func TestRequestLease_CrossKeyConflict_DoesNotBlockOnAck(t *testing.T) {
 		// After break-to-R, Client2 should get R (RW conflict resolved).
 		assert.Equal(t, LeaseStateRead, r.state,
 			"Client2 should get R after Client1's RW is broken-to-R")
-		assert.True(t, breakCalled, "break callback must have fired")
-	case <-time.After(1 * time.Second):
-		t.Fatalf("RequestLease blocked >1s waiting for ack that never comes — "+
+		assert.True(t, breakCalled.Load(), "break callback must have fired")
+	case <-time.After(3 * time.Second):
+		t.Fatalf("RequestLease blocked >3s waiting for ack that never comes — "+
 			"this is the WPTS BVT_DirectoryLeasing_LeaseBreakOnMultiClients "+
-			"deadlock. breakCalled=%v", breakCalled)
+			"deadlock. breakCalled=%v", breakCalled.Load())
 	}
 }

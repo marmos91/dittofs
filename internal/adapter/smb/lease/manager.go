@@ -111,7 +111,7 @@ func (lm *LeaseManager) RequestLease(
 	//
 	// Pre-registering is safe: if the grant fails or returns None, we
 	// remove the entry below.
-	keyHex := fmt.Sprintf("%x", leaseKey)
+	keyHex := hex.EncodeToString(leaseKey[:])
 	lm.mu.Lock()
 	lm.sessionMap[keyHex] = sessionID
 	lm.leaseShare[keyHex] = shareName
@@ -156,7 +156,7 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 	acknowledgedState uint32,
 	epoch uint16,
 ) error {
-	keyHex := fmt.Sprintf("%x", leaseKey)
+	keyHex := hex.EncodeToString(leaseKey[:])
 
 	// Resolve the LockManager for this lease's share
 	lm.mu.RLock()
@@ -202,7 +202,7 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 
 // ReleaseLease delegates to the shared LockManager and removes the session mapping.
 func (lm *LeaseManager) ReleaseLease(ctx context.Context, leaseKey [16]byte) error {
-	keyHex := fmt.Sprintf("%x", leaseKey)
+	keyHex := hex.EncodeToString(leaseKey[:])
 
 	// Resolve the LockManager for this lease's share
 	lm.mu.RLock()
@@ -268,7 +268,7 @@ func (lm *LeaseManager) ReleaseSessionLeases(ctx context.Context, sessionID uint
 
 // GetLeaseState delegates to the shared LockManager.
 func (lm *LeaseManager) GetLeaseState(ctx context.Context, leaseKey [16]byte) (state uint32, epoch uint16, found bool) {
-	keyHex := fmt.Sprintf("%x", leaseKey)
+	keyHex := hex.EncodeToString(leaseKey[:])
 
 	lm.mu.RLock()
 	shareName := lm.leaseShare[keyHex]
@@ -286,7 +286,7 @@ func (lm *LeaseManager) GetLeaseState(ctx context.Context, leaseKey [16]byte) (s
 func (lm *LeaseManager) GetSessionForLease(leaseKey [16]byte) (sessionID uint64, found bool) {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
-	sid, ok := lm.sessionMap[fmt.Sprintf("%x", leaseKey)]
+	sid, ok := lm.sessionMap[hex.EncodeToString(leaseKey[:])]
 	return sid, ok
 }
 
@@ -294,7 +294,7 @@ func (lm *LeaseManager) GetSessionForLease(leaseKey [16]byte) (sessionID uint64,
 // Used during durable handle reconnect to associate the existing lease with
 // the new session for break notification routing.
 func (lm *LeaseManager) UpdateSessionForLease(leaseKey [16]byte, sessionID uint64) {
-	keyHex := fmt.Sprintf("%x", leaseKey)
+	keyHex := hex.EncodeToString(leaseKey[:])
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 	lm.sessionMap[keyHex] = sessionID
@@ -524,7 +524,7 @@ func (lm *LeaseManager) BreakParentReadLeasesOnModify(
 // Per MS-SMB2 3.3.5.9: For V2 leases, the server should track the client's
 // epoch from the RqLs create context.
 func (lm *LeaseManager) SetLeaseEpoch(leaseKey [16]byte, epoch uint16) {
-	keyHex := fmt.Sprintf("%x", leaseKey)
+	keyHex := hex.EncodeToString(leaseKey[:])
 
 	lm.mu.RLock()
 	shareName := lm.leaseShare[keyHex]

@@ -65,9 +65,9 @@ var ValidFileLeaseStates = []uint32{
 // When RW is requested, bestGrantableState will downgrade to R.
 // Valid combinations: None, R, RH
 var ValidDirectoryLeaseStates = []uint32{
-	LeaseStateNone,                      // 0x00 - No caching
-	LeaseStateRead,                      // 0x01 - Read only
-	LeaseStateRead | LeaseStateHandle,   // 0x03 - Read + Handle
+	LeaseStateNone,                    // 0x00 - No caching
+	LeaseStateRead,                    // 0x01 - Read only
+	LeaseStateRead | LeaseStateHandle, // 0x03 - Read + Handle
 }
 
 // OpLock holds SMB2/3 lease-specific state.
