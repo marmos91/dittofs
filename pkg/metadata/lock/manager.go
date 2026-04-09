@@ -185,12 +185,6 @@ type LockManager interface {
 	// share mode conflict check. Strips only the Handle bit (RWH -> RW, RH -> R).
 	BreakHandleLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error
 
-	// GetWriteLeasesToBreak identifies Write leases that need breaking,
-	// marks them as Breaking in the lock state, and returns the info needed
-	// for the caller to dispatch notifications directly. Used by the SMB
-	// adapter to send break notifications via the adapter-level session map.
-	GetWriteLeasesToBreak(handleKey string, excludeOwner *LockOwner) []LeaseBreakInfo
-
 	// BreakReadLeasesForParentDir breaks Read leases on a parent directory
 	// when directory content changes (CREATE, RENAME, DELETE on close).
 	// Per MS-FSA 2.1.5.14: changes to directory listing invalidate Read
@@ -1300,59 +1294,6 @@ func (lm *Manager) CheckAndBreakLeasesForSMBOpen(handleKey string, excludeOwner 
 	return lm.breakOpLocks(handleKey, excludeOwner, BreakToStripWrite, func(lease *OpLock) bool {
 		return lease.HasWrite()
 	})
-}
-
-// LeaseBreakInfo holds the information needed to dispatch a lease break
-// notification at the adapter level (bypassing the LockManager callback chain).
-type LeaseBreakInfo struct {
-	LeaseKey     [16]byte
-	CurrentState uint32
-	BreakToState uint32
-	Epoch        uint16
-}
-
-// GetWriteLeasesToBreak identifies Write leases that need breaking, marks them
-// as Breaking in the lock state, and returns info for the caller to dispatch
-// break notifications directly. This avoids the LockManager's dispatchOpLockBreak
-// callback chain, letting the adapter route notifications through its own session
-// map.
-func (lm *Manager) GetWriteLeasesToBreak(handleKey string, excludeOwner *LockOwner) []LeaseBreakInfo {
-	lm.mu.Lock()
-	defer lm.mu.Unlock()
-
-	locks := lm.unifiedLocks[handleKey]
-	var result []LeaseBreakInfo
-
-	for _, l := range locks {
-		if l.Lease == nil || l.Lease.Breaking || !l.Lease.HasWrite() {
-			continue
-		}
-		if excludeOwner != nil {
-			if l.Owner.OwnerID == excludeOwner.OwnerID ||
-				(excludeOwner.ClientID != "" && l.Owner.ClientID == excludeOwner.ClientID) {
-				continue
-			}
-			if excludeOwner.ExcludeLeaseKey != ([16]byte{}) &&
-				l.Lease.LeaseKey == excludeOwner.ExcludeLeaseKey {
-				continue
-			}
-		}
-
-		breakTo := l.Lease.LeaseState &^ LeaseStateWrite
-		l.Lease.Breaking = true
-		l.Lease.BreakToState = breakTo
-		l.Lease.BreakStarted = time.Now()
-		advanceEpoch(l.Lease)
-
-		result = append(result, LeaseBreakInfo{
-			LeaseKey:     l.Lease.LeaseKey,
-			CurrentState: l.Lease.LeaseState,
-			BreakToState: breakTo,
-			Epoch:        l.Lease.Epoch,
-		})
-	}
-
-	return result
 }
 
 // BreakHandleLeasesForSMBOpen breaks Handle leases for an SMB CREATE that may
