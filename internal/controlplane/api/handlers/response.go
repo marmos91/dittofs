@@ -36,15 +36,6 @@ func unhealthyResponse(errMsg string) Response {
 	}
 }
 
-// unhealthyResponseWithData creates a failed health check response with data payload.
-func unhealthyResponseWithData(data any) Response {
-	return Response{
-		Status:    "unhealthy",
-		Timestamp: time.Now().UTC(),
-		Data:      data,
-	}
-}
-
 // degradedResponse creates a health check response indicating degraded operation.
 // Used when the server is functional but some remote stores are unreachable.
 // Returns status "degraded" (not "unhealthy") because edge deployments are

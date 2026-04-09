@@ -29,7 +29,6 @@ import (
 // Routes:
 //   - GET /health - Liveness probe
 //   - GET /health/ready - Readiness probe
-//   - GET /health/stores - Detailed store health
 //   - POST /api/v1/auth/login - User authentication
 //   - POST /api/v1/auth/refresh - Token refresh
 //   - GET /api/v1/auth/me - Current user info
@@ -95,7 +94,6 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 	r.Route("/health", func(r chi.Router) {
 		r.Get("/", healthHandler.Liveness)
 		r.Get("/ready", healthHandler.Readiness)
-		r.Get("/stores", healthHandler.Stores)
 	})
 
 	// Grace period status - unauthenticated (like health probes)

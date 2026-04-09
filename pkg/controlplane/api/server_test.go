@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
@@ -208,49 +207,6 @@ func TestAPIServer_RootRedirectsToHealth(t *testing.T) {
 	location := resp.Header.Get("Location")
 	if location != "/health" {
 		t.Errorf("Expected redirect to '/health', got '%s'", location)
-	}
-}
-
-func TestAPIServer_StoresEndpoint(t *testing.T) {
-	cpStore, cfg := testSetup(t, 18083)
-
-	server, err := NewServer(cfg, nil, cpStore)
-	if err != nil {
-		t.Fatalf("Failed to create server: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Start server in background
-	go func() {
-		_ = server.Start(ctx)
-	}()
-
-	// Give server time to start
-	time.Sleep(100 * time.Millisecond)
-
-	// Test stores endpoint (should be 503 with no runtime)
-	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/health/stores", cfg.Port))
-	if err != nil {
-		t.Fatalf("Failed to make request: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Errorf("Expected status %d, got %d", http.StatusServiceUnavailable, resp.StatusCode)
-	}
-
-	var response struct {
-		Status string `json:"status"`
-		Error  string `json:"error"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		t.Fatalf("Failed to decode response: %v", err)
-	}
-
-	if response.Status != "unhealthy" {
-		t.Errorf("Expected status 'unhealthy', got '%s'", response.Status)
 	}
 }
 

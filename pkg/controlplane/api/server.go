@@ -20,7 +20,6 @@ import (
 // Endpoints:
 //   - GET /health: Liveness probe
 //   - GET /health/ready: Readiness probe
-//   - GET /health/stores: Detailed store health
 //   - POST /api/v1/auth/login: User authentication
 //   - POST /api/v1/auth/refresh: Token refresh
 //   - GET /api/v1/auth/me: Current user info
@@ -117,7 +116,6 @@ func (s *Server) Start(ctx context.Context) error {
 		logger.Debug("API endpoints available",
 			"health", fmt.Sprintf("http://localhost:%d/health", s.config.Port),
 			"ready", fmt.Sprintf("http://localhost:%d/health/ready", s.config.Port),
-			"stores", fmt.Sprintf("http://localhost:%d/health/stores", s.config.Port),
 		)
 
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
