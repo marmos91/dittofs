@@ -20,6 +20,7 @@ var (
 	statusOutput  string
 	statusPidFile string
 	statusAPIPort int
+	statusToken   string
 )
 
 var statusCmd = &cobra.Command{
@@ -28,7 +29,10 @@ var statusCmd = &cobra.Command{
 	Long: `Display the current status of the DittoFS server.
 
 This command checks the server health by calling the health endpoint
-and displays status, uptime, and store health information.
+and displays status, uptime, and control plane DB reachability.
+
+When an API token is provided (--api-token or DFS_API_TOKEN), per-entity
+status is fetched from the list endpoints and displayed as a color-coded table.
 
 Examples:
   # Check status (uses default settings)
@@ -36,6 +40,9 @@ Examples:
 
   # Check status with custom API port
   dfs status --api-port 9080
+
+  # Check status with per-entity details
+  dfs status --api-token <token>
 
   # Output as JSON
   dfs status --output json`,
@@ -46,6 +53,7 @@ func init() {
 	statusCmd.Flags().StringVar(&statusPidFile, "pid-file", "", "Path to PID file (default: $XDG_STATE_HOME/dittofs/dittofs.pid)")
 	statusCmd.Flags().IntVar(&statusAPIPort, "api-port", 8080, "API server port")
 	statusCmd.Flags().StringVarP(&statusOutput, "output", "o", "table", "Output format (table|json|yaml)")
+	statusCmd.Flags().StringVar(&statusToken, "api-token", "", "API token for per-entity status (or set DFS_API_TOKEN)")
 }
 
 // GracePeriodInfo holds grace period information for the status output.
@@ -58,14 +66,15 @@ type GracePeriodInfo struct {
 
 // ServerStatus represents the server status information.
 type ServerStatus struct {
-	Running       bool                  `json:"running" yaml:"running"`
-	PID           int                   `json:"pid,omitempty" yaml:"pid,omitempty"`
-	Message       string                `json:"message" yaml:"message"`
-	StartedAt     string                `json:"started_at,omitempty" yaml:"started_at,omitempty"`
-	Uptime        string                `json:"uptime,omitempty" yaml:"uptime,omitempty"`
-	Healthy       bool                  `json:"healthy" yaml:"healthy"`
-	StorageHealth *health.StorageHealth `json:"storage_health,omitempty" yaml:"storage_health,omitempty"`
-	GracePeriod   *GracePeriodInfo      `json:"grace_period,omitempty" yaml:"grace_period,omitempty"`
+	Running         bool             `json:"running" yaml:"running"`
+	PID             int              `json:"pid,omitempty" yaml:"pid,omitempty"`
+	Message         string           `json:"message" yaml:"message"`
+	StartedAt       string           `json:"started_at,omitempty" yaml:"started_at,omitempty"`
+	Uptime          string           `json:"uptime,omitempty" yaml:"uptime,omitempty"`
+	Healthy         bool             `json:"healthy" yaml:"healthy"`
+	ControlPlaneDB  string           `json:"control_plane_db,omitempty" yaml:"control_plane_db,omitempty"`
+	GracePeriod     *GracePeriodInfo `json:"grace_period,omitempty" yaml:"grace_period,omitempty"`
+	health.Entities `yaml:",inline"`
 }
 
 func runStatus(cmd *cobra.Command, args []string) error {
@@ -104,7 +113,8 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	// Check health endpoint (works for both daemon and foreground mode)
 	healthURL := fmt.Sprintf("http://localhost:%d/health", statusAPIPort)
-	client := &http.Client{Timeout: 2 * time.Second}
+	// 10s timeout: must exceed the server-side 5s HealthCheckTimeout plus network latency.
+	client := &http.Client{Timeout: 10 * time.Second}
 
 	resp, err := client.Get(healthURL)
 	if err == nil {
@@ -115,14 +125,14 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			status.Running = true
 			status.StartedAt = healthResp.Data.StartedAt
 			status.Uptime = healthResp.Data.Uptime
-			status.StorageHealth = healthResp.Data.StorageHealth
+			status.ControlPlaneDB = healthResp.Data.ControlPlaneDB
 			switch healthResp.Status {
 			case "healthy":
 				status.Healthy = true
 				status.Message = "Server is running and healthy"
 			case "degraded":
 				status.Healthy = true // Still operational
-				status.Message = "Server is running (degraded: some remote stores offline)"
+				status.Message = "Server is running (degraded: control plane DB unreachable)"
 			default:
 				status.Message = fmt.Sprintf("Server is running but unhealthy: %s", healthResp.Error)
 			}
@@ -147,6 +157,16 @@ func runStatus(cmd *cobra.Command, args []string) error {
 				status.GracePeriod = &graceInfo
 			}
 		}
+	}
+
+	// Fetch per-entity status if server is running and token available
+	token := statusToken
+	if token == "" {
+		token = os.Getenv("DFS_API_TOKEN")
+	}
+	if status.Running && token != "" {
+		baseURL := fmt.Sprintf("http://localhost:%d/api/v1", statusAPIPort)
+		status.Entities = health.FetchEntities(client, baseURL, token)
 	}
 
 	switch format {
@@ -180,12 +200,15 @@ func printStatusTable(status ServerStatus) {
 		if status.Uptime != "" {
 			fmt.Printf("  Uptime:     %s\n", timeutil.FormatUptime(status.Uptime))
 		}
+		if status.ControlPlaneDB != "" {
+			fmt.Printf("  CP DB:      %s\n", status.ControlPlaneDB)
+		}
 		if status.GracePeriod != nil && status.GracePeriod.Active {
 			remaining := int(status.GracePeriod.RemainingSeconds)
 			fmt.Printf("  Grace:      \033[33m%ds remaining (%d/%d clients reclaimed)\033[0m\n",
 				remaining, status.GracePeriod.ReclaimedClients, status.GracePeriod.ExpectedClients)
 		}
-		health.PrintStorageHealth(status.StorageHealth)
+		health.PrintEntityStatus(status.Entities)
 	} else {
 		fmt.Printf("  Status:     \033[31m○ Stopped\033[0m\n")
 	}
