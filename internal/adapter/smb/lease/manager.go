@@ -111,7 +111,7 @@ func (lm *LeaseManager) RequestLease(
 	//
 	// Pre-registering is safe: if the grant fails or returns None, we
 	// remove the entry below.
-	keyHex := hex.EncodeToString(leaseKey[:])
+	keyHex := fmt.Sprintf("%x", leaseKey)
 	lm.mu.Lock()
 	lm.sessionMap[keyHex] = sessionID
 	lm.leaseShare[keyHex] = shareName
@@ -124,6 +124,7 @@ func (lm *LeaseManager) RequestLease(
 		requestedState, isDirectory,
 	)
 	if err != nil && !errors.Is(err, lock.ErrLeaseBreakInProgress) {
+		// Grant failed — remove pre-registered session mapping
 		lm.mu.Lock()
 		delete(lm.sessionMap, keyHex)
 		delete(lm.leaseShare, keyHex)
@@ -131,8 +132,7 @@ func (lm *LeaseManager) RequestLease(
 		return 0, 0, err
 	}
 
-	// Remove pre-registered mapping if the lease was denied (None state means
-	// the LockManager rejected the request without an error code).
+	// If lease was denied (None) without error, remove pre-registered mapping.
 	if grantedState == lock.LeaseStateNone {
 		lm.mu.Lock()
 		delete(lm.sessionMap, keyHex)
@@ -156,7 +156,7 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 	acknowledgedState uint32,
 	epoch uint16,
 ) error {
-	keyHex := hex.EncodeToString(leaseKey[:])
+	keyHex := fmt.Sprintf("%x", leaseKey)
 
 	// Resolve the LockManager for this lease's share
 	lm.mu.RLock()
@@ -202,7 +202,7 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 
 // ReleaseLease delegates to the shared LockManager and removes the session mapping.
 func (lm *LeaseManager) ReleaseLease(ctx context.Context, leaseKey [16]byte) error {
-	keyHex := hex.EncodeToString(leaseKey[:])
+	keyHex := fmt.Sprintf("%x", leaseKey)
 
 	// Resolve the LockManager for this lease's share
 	lm.mu.RLock()
@@ -268,7 +268,7 @@ func (lm *LeaseManager) ReleaseSessionLeases(ctx context.Context, sessionID uint
 
 // GetLeaseState delegates to the shared LockManager.
 func (lm *LeaseManager) GetLeaseState(ctx context.Context, leaseKey [16]byte) (state uint32, epoch uint16, found bool) {
-	keyHex := hex.EncodeToString(leaseKey[:])
+	keyHex := fmt.Sprintf("%x", leaseKey)
 
 	lm.mu.RLock()
 	shareName := lm.leaseShare[keyHex]
@@ -286,7 +286,7 @@ func (lm *LeaseManager) GetLeaseState(ctx context.Context, leaseKey [16]byte) (s
 func (lm *LeaseManager) GetSessionForLease(leaseKey [16]byte) (sessionID uint64, found bool) {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
-	sid, ok := lm.sessionMap[hex.EncodeToString(leaseKey[:])]
+	sid, ok := lm.sessionMap[fmt.Sprintf("%x", leaseKey)]
 	return sid, ok
 }
 
@@ -294,7 +294,7 @@ func (lm *LeaseManager) GetSessionForLease(leaseKey [16]byte) (sessionID uint64,
 // Used during durable handle reconnect to associate the existing lease with
 // the new session for break notification routing.
 func (lm *LeaseManager) UpdateSessionForLease(leaseKey [16]byte, sessionID uint64) {
-	keyHex := hex.EncodeToString(leaseKey[:])
+	keyHex := fmt.Sprintf("%x", leaseKey)
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 	lm.sessionMap[keyHex] = sessionID
@@ -394,13 +394,8 @@ func (lm *LeaseManager) BreakHandleLeasesOnOpen(
 		exclude = excludeOwner[0]
 	}
 
-	// Strip Write from leases that have Handle caching (RWH -> RH).
-	// This sends one notification that matches what clients expect:
-	// "flush dirty data" (Write strip). The Handle bit is preserved so
-	// the client can close cached handles in its ack response.
-	// After the ack, the lease is at RH (no Write, no Breaking), and
-	// Step 8a can independently strip Handle if needed.
-	if err := lockMgr.BreakWriteOnHandleLeasesForSMBOpen(handleKey, exclude); err != nil {
+	// Break Handle leases (RWH -> RW, RH -> R)
+	if err := lockMgr.BreakHandleLeasesForSMBOpen(handleKey, exclude); err != nil {
 		return err
 	}
 
@@ -432,6 +427,87 @@ func (lm *LeaseManager) BreakHandleLeasesOnOpenAsync(
 	}
 
 	return lockMgr.BreakHandleLeasesForSMBOpen(handleKey, exclude)
+}
+
+// BreakDirectoryLeasesOnOpenAsync dispatches Handle AND Write lease break
+// notifications for a directory open without waiting for acknowledgment.
+//
+// Per MS-SMB2 3.3.5.9: when a new open conflicts with existing directory
+// leases, both Handle caching (cached directory handles) and Write caching
+// (cached directory content changes) must be broken so other clients receive
+// LEASE_BREAK_NOTIFICATION before the share mode check. This is required by
+// BVT_DirectoryLeasing_LeaseBreakOnMultiClients where Client3's DELETE access
+// must trigger a Write-lease break notification even when no Handle leases
+// exist.
+//
+// The break is async (fire-and-forget) to avoid deadlock — the other client
+// needs this CREATE's response before it can process the break notification.
+//
+// This method dispatches break notifications directly via the adapter-level
+// session map + notifier, bypassing the LockManager's callback chain. The
+// LockManager callbacks route through dispatchOpLockBreak → registered
+// BreakCallbacks, which may not have the session mapping yet for leases that
+// were registered on a different callback instance. Sending directly from
+// the LeaseManager avoids this routing gap.
+func (lm *LeaseManager) BreakDirectoryLeasesOnOpenAsync(
+	fileHandle lock.FileHandle,
+	shareName string,
+	excludeOwner ...*lock.LockOwner,
+) error {
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return nil
+	}
+
+	handleKey := string(fileHandle)
+
+	var exclude *lock.LockOwner
+	if len(excludeOwner) > 0 {
+		exclude = excludeOwner[0]
+	}
+
+	// Break Handle leases via LockManager (RWH -> RW, RH -> R)
+	if err := lockMgr.BreakHandleLeasesForSMBOpen(handleKey, exclude); err != nil {
+		return err
+	}
+
+	// For Write leases: use GetWriteLeasesToBreak to identify leases that need
+	// breaking, then dispatch notifications directly via the adapter's session
+	// map and notifier. This ensures the notification reaches the right SMB
+	// session even when the LockManager's callback chain can't resolve it.
+	toBreak := lockMgr.GetWriteLeasesToBreak(handleKey, exclude)
+	for _, entry := range toBreak {
+		leaseKey := entry.LeaseKey
+		breakTo := entry.BreakToState
+		currentState := entry.CurrentState
+
+		sessionID, found := lm.GetSessionForLease(leaseKey)
+		if !found {
+			logger.Debug("BreakDirectoryLeasesOnOpenAsync: no session for lease, skipping",
+				"leaseKey", fmt.Sprintf("%x", leaseKey),
+				"handleKey", handleKey)
+			continue
+		}
+
+		notifier := lm.GetNotifier()
+		if notifier == nil {
+			continue
+		}
+
+		logger.Debug("BreakDirectoryLeasesOnOpenAsync: dispatching write lease break",
+			"leaseKey", fmt.Sprintf("%x", leaseKey),
+			"sessionID", sessionID,
+			"currentState", lock.LeaseStateToString(currentState),
+			"breakToState", lock.LeaseStateToString(breakTo))
+
+		if err := notifier.SendLeaseBreak(sessionID, leaseKey, currentState, breakTo, entry.Epoch); err != nil {
+			logger.Warn("BreakDirectoryLeasesOnOpenAsync: failed to send break",
+				"leaseKey", fmt.Sprintf("%x", leaseKey),
+				"error", err)
+		}
+	}
+
+	return nil
 }
 
 // BreakParentHandleLeasesOnCreate breaks Handle leases on a parent directory
@@ -529,7 +605,7 @@ func (lm *LeaseManager) BreakParentReadLeasesOnModify(
 // Per MS-SMB2 3.3.5.9: For V2 leases, the server should track the client's
 // epoch from the RqLs create context.
 func (lm *LeaseManager) SetLeaseEpoch(leaseKey [16]byte, epoch uint16) {
-	keyHex := hex.EncodeToString(leaseKey[:])
+	keyHex := fmt.Sprintf("%x", leaseKey)
 
 	lm.mu.RLock()
 	shareName := lm.leaseShare[keyHex]
