@@ -69,6 +69,12 @@ type Runtime struct {
 
 	adapterProviders   map[string]any
 	adapterProvidersMu sync.RWMutex
+
+	// statusCheckers is the lazy per-entity cached health-checker
+	// map backing [Runtime.BlockStoreChecker],
+	// [Runtime.MetadataStoreChecker], [Runtime.AdapterChecker], and
+	// [Runtime.ShareChecker]. Initialized in [New].
+	statusCheckers *checkerCache
 }
 
 func New(s store.Store) *Runtime {
@@ -82,6 +88,7 @@ func New(s store.Store) *Runtime {
 		sharesSvc:        shares.New(),
 		lifecycleSvc:     lifecycle.New(DefaultShutdownTimeout),
 		identitySvc:      identity.New(),
+		statusCheckers:   newCheckerCache(StatusCacheTTL),
 	}
 
 	rt.adaptersSvc = adapters.New(s, DefaultShutdownTimeout)

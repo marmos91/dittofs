@@ -14,7 +14,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/marmos91/dittofs/pkg/health"
 )
 
 func setupBlockStoreTest(t *testing.T) (store.Store, *BlockStoreHandler) {
@@ -31,7 +33,7 @@ func setupBlockStoreTest(t *testing.T) (store.Store, *BlockStoreHandler) {
 		t.Fatalf("Failed to create store: %v", err)
 	}
 
-	handler := NewBlockStoreHandler(cpStore)
+	handler := NewBlockStoreHandler(cpStore, nil)
 	return cpStore, handler
 }
 
@@ -573,5 +575,143 @@ func TestBlockStoreHandler_Update_DoesNotChangeKind(t *testing.T) {
 	}
 	if resp.Type != "memory" {
 		t.Errorf("Type after update = %s, want memory", resp.Type)
+	}
+}
+
+// --- U-E status tests ---
+
+// setupBlockStoreTestWithRuntime mirrors setupBlockStoreTest but
+// wires a real runtime so the runtime-backed status paths can be
+// exercised. A nil-runtime fixture (setupBlockStoreTest) keeps the
+// older tests decoupled from the runtime package.
+func setupBlockStoreTestWithRuntime(t *testing.T) (store.Store, *BlockStoreHandler) {
+	t.Helper()
+
+	dbConfig := store.Config{
+		Type:   "sqlite",
+		SQLite: store.SQLiteConfig{Path: ":memory:"},
+	}
+	cpStore, err := store.New(&dbConfig)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	rt := runtime.New(cpStore)
+	return cpStore, NewBlockStoreHandler(cpStore, rt)
+}
+
+func TestBlockStoreHandler_Status_OK(t *testing.T) {
+	cpStore, handler := setupBlockStoreTestWithRuntime(t)
+	ctx := context.Background()
+
+	bs := &models.BlockStoreConfig{
+		ID: uuid.New().String(), Name: "mem-local", Kind: models.BlockStoreKindLocal, Type: "memory",
+		CreatedAt: time.Now(),
+	}
+	cpStore.CreateBlockStore(ctx, bs)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/local/mem-local/status", nil)
+	req = withBlockStoreKindAndName(req, "local", "mem-local")
+	w := httptest.NewRecorder()
+
+	handler.Status(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status(mem-local) status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+	var rep health.Report
+	if err := json.Unmarshal(w.Body.Bytes(), &rep); err != nil {
+		t.Fatalf("Failed to unmarshal status report: %v", err)
+	}
+	if rep.Status != health.StatusHealthy {
+		t.Errorf("memory store Status = %s, want healthy", rep.Status)
+	}
+	if rep.CheckedAt.IsZero() {
+		t.Error("CheckedAt is zero; expected a populated timestamp")
+	}
+}
+
+func TestBlockStoreHandler_Status_NotFound(t *testing.T) {
+	_, handler := setupBlockStoreTestWithRuntime(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/local/nope/status", nil)
+	req = withBlockStoreKindAndName(req, "local", "nope")
+	w := httptest.NewRecorder()
+
+	handler.Status(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("Status(nope) status = %d, want 404, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestBlockStoreHandler_List_IncludesStatus(t *testing.T) {
+	cpStore, handler := setupBlockStoreTestWithRuntime(t)
+	ctx := context.Background()
+
+	cpStore.CreateBlockStore(ctx, &models.BlockStoreConfig{
+		ID: uuid.New().String(), Name: "a", Kind: models.BlockStoreKindLocal, Type: "memory",
+		CreatedAt: time.Now(),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/local", nil)
+	req = withBlockStoreKind(req, "local")
+	w := httptest.NewRecorder()
+
+	handler.List(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("List status = %d, want 200", w.Code)
+	}
+	var resp []BlockStoreResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp) == 0 {
+		t.Fatalf("empty list")
+	}
+	if !isValidHealthStatus(resp[0].Status.Status) {
+		t.Errorf("list[0].Status.Status = %q, expected a valid health.Status", resp[0].Status.Status)
+	}
+}
+
+func TestBlockStoreHandler_Get_IncludesStatus(t *testing.T) {
+	cpStore, handler := setupBlockStoreTestWithRuntime(t)
+	ctx := context.Background()
+
+	cpStore.CreateBlockStore(ctx, &models.BlockStoreConfig{
+		ID: uuid.New().String(), Name: "g", Kind: models.BlockStoreKindLocal, Type: "memory",
+		CreatedAt: time.Now(),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/block/local/g", nil)
+	req = withBlockStoreKindAndName(req, "local", "g")
+	w := httptest.NewRecorder()
+
+	handler.Get(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Get status = %d, want 200", w.Code)
+	}
+	var resp BlockStoreResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !isValidHealthStatus(resp.Status.Status) {
+		t.Errorf("Get.Status.Status = %q, expected a valid health.Status", resp.Status.Status)
+	}
+}
+
+// isValidHealthStatus returns true if s is one of the enumerated
+// health.Status values. Used across U-E wire tests to assert that
+// status fields are populated without pinning the exact value (since
+// some fixtures start an adapter, others don't).
+func isValidHealthStatus(s health.Status) bool {
+	switch s {
+	case health.StatusHealthy,
+		health.StatusDegraded,
+		health.StatusUnhealthy,
+		health.StatusUnknown,
+		health.StatusDisabled:
+		return true
+	default:
+		return false
 	}
 }

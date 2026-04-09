@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/marmos91/dittofs/pkg/health"
 )
 
 // normalizeShareName ensures a share name has exactly one leading slash.
@@ -113,6 +115,12 @@ type ShareResponse struct {
 	UsagePercent       float64   `json:"usage_percent"`              // 0-100, 0 if no quota
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
+
+	// Status is the worst-of health report derived from the share's
+	// metadata store and block store engine. Non-omitempty so
+	// clients can render "unknown" explicitly when the runtime has
+	// not loaded the share yet.
+	Status health.Report `json:"status"`
 }
 
 // Create handles POST /api/v1/shares.
@@ -319,7 +327,10 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	WriteJSONCreated(w, shareToResponse(share))
+	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
+	defer cancel()
+
+	WriteJSONCreated(w, h.shareToResponseWithUsage(ctx, share))
 }
 
 // List handles GET /api/v1/shares.
@@ -331,9 +342,14 @@ func (h *ShareHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Share a single HealthCheckTimeout budget across the populate
+	// loop so N entities do not compound to N*5s on a cold cache.
+	listCtx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
+	defer cancel()
+
 	response := make([]ShareResponse, len(shares))
 	for i, s := range shares {
-		response[i] = h.shareToResponseWithUsage(s)
+		response[i] = h.shareToResponseWithUsage(listCtx, s)
 	}
 
 	WriteJSONOK(w, response)
@@ -358,7 +374,9 @@ func (h *ShareHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	WriteJSONOK(w, h.shareToResponseWithUsage(share))
+	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
+	defer cancel()
+	WriteJSONOK(w, h.shareToResponseWithUsage(ctx, share))
 }
 
 // Update handles PUT /api/v1/shares/{name}.
@@ -519,7 +537,9 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	WriteJSONOK(w, h.shareToResponseWithUsage(share))
+	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
+	defer cancel()
+	WriteJSONOK(w, h.shareToResponseWithUsage(ctx, share))
 }
 
 // Delete handles DELETE /api/v1/shares/{name}.
@@ -543,6 +563,12 @@ func (h *ShareHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		}
 		InternalServerError(w, "Failed to delete share")
 		return
+	}
+
+	// Evict any cached health checker so a re-created share with the
+	// same name does not observe a stale probe.
+	if h.runtime != nil {
+		h.runtime.InvalidateShareChecker(name)
 	}
 
 	WriteNoContent(w)
@@ -820,8 +846,11 @@ func shareToResponse(s *models.Share) ShareResponse {
 	}
 }
 
-// shareToResponseWithUsage converts a models.Share to ShareResponse with runtime usage data.
-func (h *ShareHandler) shareToResponseWithUsage(s *models.Share) ShareResponse {
+// shareToResponseWithUsage converts a models.Share to ShareResponse
+// with runtime usage data and a cached status probe. When the handler
+// is wired without a runtime the probe degrades to a
+// [health.StatusUnknown] report so the response stays well-formed.
+func (h *ShareHandler) shareToResponseWithUsage(ctx context.Context, s *models.Share) ShareResponse {
 	resp := shareToResponse(s)
 	if h.runtime != nil {
 		usedBytes, physicalBytes := h.runtime.GetShareUsage(s.Name)
@@ -833,8 +862,63 @@ func (h *ShareHandler) shareToResponseWithUsage(s *models.Share) ShareResponse {
 				resp.UsagePercent = 100
 			}
 		}
+		resp.Status = h.shareStatus(ctx, s.Name)
+	} else {
+		resp.Status = unknownRuntimeReport()
 	}
 	return resp
+}
+
+// unknownRuntimeReport builds a [health.StatusUnknown] report used
+// when a handler is wired without a runtime. Kept in one place so
+// shares.go's nil-guard branches stay consistent.
+func unknownRuntimeReport() health.Report {
+	return health.Report{
+		Status:    health.StatusUnknown,
+		Message:   "runtime not initialized",
+		CheckedAt: time.Now().UTC(),
+	}
+}
+
+// shareStatus returns a [health.Report] for the named share via the
+// runtime's cached checker layer. Callers MUST ensure h.runtime is
+// non-nil; this helper intentionally does not guard so the panic
+// surface stays visible in tests. Analogous to the statusFor helpers
+// in adapters.go / block_stores.go / metadata_stores.go. The caller is
+// responsible for bounding ctx with [HealthCheckTimeout]: single-entity
+// /status handlers wrap once at the handler level, and list handlers
+// wrap once before the populate loop so all entities share a single
+// 5s budget instead of compounding to N*5s worst case.
+func (h *ShareHandler) shareStatus(ctx context.Context, name string) health.Report {
+	return h.runtime.ShareChecker(name).Healthcheck(ctx)
+}
+
+// Status handles GET /api/v1/shares/{name}/status. Returns 404 when
+// the share config does not exist and 200 with a [health.Report]
+// JSON body otherwise.
+func (h *ShareHandler) Status(w http.ResponseWriter, r *http.Request) {
+	name := normalizeShareName(chi.URLParam(r, "name"))
+	if name == "/" {
+		BadRequest(w, "Share name is required")
+		return
+	}
+
+	if _, err := h.store.GetShare(r.Context(), name); err != nil {
+		if errors.Is(err, models.ErrShareNotFound) {
+			NotFound(w, "Share not found")
+			return
+		}
+		InternalServerError(w, "Failed to get share")
+		return
+	}
+
+	if h.runtime == nil {
+		WriteJSONOK(w, unknownRuntimeReport())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
+	defer cancel()
+	WriteJSONOK(w, h.shareStatus(ctx, name))
 }
 
 // isValidBlockedOperation checks if a blocked operation name is valid for any protocol.

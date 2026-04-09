@@ -3,29 +3,32 @@ package handlers
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/marmos91/dittofs/pkg/blockstore/remote/s3"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime/blockstoreprobe"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/marmos91/dittofs/pkg/health"
 )
 
 // BlockStoreHandler handles block store configuration API endpoints.
 // It serves both local and remote block stores, with kind extracted from the URL path.
 type BlockStoreHandler struct {
-	store store.BlockStoreConfigStore
+	store   store.BlockStoreConfigStore
+	runtime *runtime.Runtime
 }
 
-// NewBlockStoreHandler creates a new BlockStoreHandler.
-func NewBlockStoreHandler(s store.BlockStoreConfigStore) *BlockStoreHandler {
-	return &BlockStoreHandler{store: s}
+// NewBlockStoreHandler creates a new BlockStoreHandler. rt may be
+// nil in unit tests that do not exercise runtime probes; status
+// reads degrade to [health.StatusUnknown] in that case via the
+// runtime accessor methods' nil-receiver handling.
+func NewBlockStoreHandler(s store.BlockStoreConfigStore, rt *runtime.Runtime) *BlockStoreHandler {
+	return &BlockStoreHandler{store: s, runtime: rt}
 }
 
 // CreateBlockStoreRequest is the request body for POST /api/v1/store/block/{kind}.
@@ -42,6 +45,8 @@ type UpdateBlockStoreRequest struct {
 }
 
 // BlockStoreResponse is the response body for block store endpoints.
+// Status is non-omitempty so clients can render "unknown" explicitly
+// when the runtime has no definitive report.
 type BlockStoreResponse struct {
 	ID        string                `json:"id"`
 	Name      string                `json:"name"`
@@ -49,6 +54,7 @@ type BlockStoreResponse struct {
 	Type      string                `json:"type"`
 	Config    string                `json:"config,omitempty"`
 	CreatedAt time.Time             `json:"created_at"`
+	Status    health.Report         `json:"status"`
 }
 
 // extractKind extracts the block store kind from the URL path parameter.
@@ -124,7 +130,12 @@ func (h *BlockStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	WriteJSONCreated(w, blockStoreToResponse(bs))
+	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
+	defer cancel()
+
+	resp := blockStoreToResponse(bs)
+	resp.Status = h.statusForConfig(ctx, bs)
+	WriteJSONCreated(w, resp)
 }
 
 // List handles GET /api/v1/store/block/{kind}.
@@ -142,9 +153,17 @@ func (h *BlockStoreHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Share a single HealthCheckTimeout budget across the populate
+	// loop so N stores do not compound to N*5s on a cold cache.
+	listCtx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
+	defer cancel()
+
 	response := make([]BlockStoreResponse, len(stores))
 	for i, s := range stores {
 		response[i] = blockStoreToResponse(s)
+		// List already holds each config in memory; avoid a second
+		// per-entity round-trip by probing with the loaded pointer.
+		response[i].Status = h.statusForConfig(listCtx, s)
 	}
 
 	WriteJSONOK(w, response)
@@ -175,7 +194,11 @@ func (h *BlockStoreHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	WriteJSONOK(w, blockStoreToResponse(bs))
+	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
+	defer cancel()
+	resp := blockStoreToResponse(bs)
+	resp.Status = h.statusForConfig(ctx, bs)
+	WriteJSONOK(w, resp)
 }
 
 // Update handles PUT /api/v1/store/block/{kind}/{name}.
@@ -224,7 +247,17 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	WriteJSONOK(w, blockStoreToResponse(bs))
+	// Evict the cached checker so the post-update response does not
+	// observe a stale probe from before the config change landed.
+	if h.runtime != nil {
+		h.runtime.InvalidateBlockStoreChecker(kind, name)
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
+	defer cancel()
+	resp := blockStoreToResponse(bs)
+	resp.Status = h.statusForConfig(ctx, bs)
+	WriteJSONOK(w, resp)
 }
 
 // Delete handles DELETE /api/v1/store/block/{kind}/{name}.
@@ -255,6 +288,12 @@ func (h *BlockStoreHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Evict any cached health checker so a subsequently-recreated
+	// store with the same name does not inherit a stale probe.
+	if h.runtime != nil {
+		h.runtime.InvalidateBlockStoreChecker(kind, name)
+	}
+
 	WriteNoContent(w)
 }
 
@@ -279,8 +318,10 @@ type BlockStoreHealthResponse struct {
 }
 
 // HealthCheck handles GET /api/v1/store/block/{kind}/{name}/health.
-// Always returns 200 with health status in the response body.
-// The healthy field indicates whether the store is reachable.
+// Always returns 200 with health status in the response body. This
+// is the legacy probe route; the newer /status route returns a full
+// [health.Report]. Both share [blockstoreprobe.Probe] so answers
+// cannot drift.
 func (h *BlockStoreHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 	kind, ok := extractKind(r)
 	if !ok {
@@ -307,119 +348,64 @@ func (h *BlockStoreHandler) HealthCheck(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
 	defer cancel()
 
-	start := time.Now()
-	healthy, details := checkBlockStoreConfigHealth(ctx, bs)
-	latency := time.Since(start)
+	rep := blockstoreprobe.Probe(ctx, bs)
 
 	WriteJSONOK(w, BlockStoreHealthResponse{
-		Healthy:   healthy,
-		LatencyMs: latency.Milliseconds(),
-		CheckedAt: start.UTC().Format(time.RFC3339),
-		Details:   details,
+		Healthy:   rep.Status == health.StatusHealthy,
+		LatencyMs: rep.LatencyMs,
+		CheckedAt: rep.CheckedAt.Format(time.RFC3339),
+		Details:   rep.Message,
 	})
 }
 
-// checkBlockStoreConfigHealth dispatches a health check based on the block store kind.
-func checkBlockStoreConfigHealth(ctx context.Context, bs *models.BlockStoreConfig) (healthy bool, details string) {
-	switch bs.Kind {
-	case models.BlockStoreKindLocal:
-		return checkLocalBlockStoreHealth(ctx, bs)
-	case models.BlockStoreKindRemote:
-		return checkRemoteBlockStoreHealth(ctx, bs)
-	default:
-		return false, fmt.Sprintf("unknown block store kind: %s", bs.Kind)
-	}
-}
-
-// checkLocalBlockStoreHealth verifies a local block store is accessible.
-func checkLocalBlockStoreHealth(_ context.Context, bs *models.BlockStoreConfig) (bool, string) {
-	if bs.Type == "memory" {
-		return true, "in-memory store is always healthy"
-	}
-	if bs.Type != "fs" {
-		return false, fmt.Sprintf("unknown local store type: %s", bs.Type)
+// Status handles GET /api/v1/store/block/{kind}/{name}/status.
+// Returns 404 when the config does not exist (matching Get
+// semantics) and 200 with a [health.Report] body otherwise.
+func (h *BlockStoreHandler) Status(w http.ResponseWriter, r *http.Request) {
+	kind, ok := extractKind(r)
+	if !ok {
+		BadRequest(w, "Invalid block store kind: must be 'local' or 'remote'")
+		return
 	}
 
-	config, err := bs.GetConfig()
+	name := chi.URLParam(r, "name")
+	if name == "" {
+		BadRequest(w, "Store name is required")
+		return
+	}
+
+	// Existence check preserves 404 semantics. The fetched config is
+	// then handed to statusForConfig so the runtime checker layer
+	// does not issue a second identical round-trip.
+	bs, err := h.store.GetBlockStore(r.Context(), name, kind)
 	if err != nil {
-		return false, "failed to parse store configuration"
-	}
-
-	rawPath, _ := config["path"].(string)
-	if rawPath == "" {
-		return false, "no path configured"
-	}
-	path := filepath.Clean(rawPath)
-
-	info, err := os.Stat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, "configured path does not exist"
+		if errors.Is(err, models.ErrStoreNotFound) {
+			NotFound(w, "Block store not found")
+			return
 		}
-		return false, "cannot access configured path"
-	}
-	if !info.IsDir() {
-		return false, "configured path is not a directory"
+		InternalServerError(w, "Failed to get block store")
+		return
 	}
 
-	f, err := os.CreateTemp(path, ".dfs-health-check-*")
-	if err != nil {
-		return false, "configured path is not writable"
-	}
-	_ = f.Close()
-	_ = os.Remove(f.Name())
-
-	return true, "path accessible and writable"
+	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
+	defer cancel()
+	WriteJSONOK(w, h.statusForConfig(ctx, bs))
 }
 
-// checkRemoteBlockStoreHealth verifies a remote block store is reachable.
-func checkRemoteBlockStoreHealth(ctx context.Context, bs *models.BlockStoreConfig) (bool, string) {
-	if bs.Type == "memory" {
-		return true, "in-memory store is always healthy"
-	}
-	if bs.Type != "s3" {
-		return false, fmt.Sprintf("unknown remote store type: %s", bs.Type)
-	}
-
-	config, err := bs.GetConfig()
-	if err != nil {
-		return false, "failed to parse store configuration"
-	}
-
-	bucket, _ := config["bucket"].(string)
-	if bucket == "" {
-		return false, "no bucket configured"
-	}
-
-	region := "us-east-1"
-	if r, ok := config["region"].(string); ok && r != "" {
-		region = r
-	}
-
-	endpoint, _ := config["endpoint"].(string)
-	accessKey, _ := config["access_key_id"].(string)
-	secretKey, _ := config["secret_access_key"].(string)
-	forcePathStyle, hasPathStyle := config["force_path_style"].(bool)
-	if endpoint != "" && !hasPathStyle {
-		forcePathStyle = true
-	}
-
-	remoteStore, err := s3.NewFromConfig(ctx, s3.Config{
-		Bucket:         bucket,
-		Region:         region,
-		Endpoint:       endpoint,
-		AccessKey:      accessKey,
-		SecretKey:      secretKey,
-		ForcePathStyle: forcePathStyle,
-	})
-	if err != nil {
-		return false, "failed to initialize S3 client"
-	}
-	defer func() { _ = remoteStore.Close() }()
-
-	if err := remoteStore.HealthCheck(ctx); err != nil {
-		return false, "S3 connectivity check failed"
-	}
-
-	return true, fmt.Sprintf("S3 bucket accessible: %s (region: %s)", bucket, region)
+// statusFor returns a [health.Report] for the named block store via
+// the runtime's cached checker layer. A nil runtime is handled by
+// the runtime accessor's nil-receiver path, which returns an
+// "unknown" checker instead of panicking. The caller is responsible
+// for bounding ctx with [HealthCheckTimeout]: single-entity /status
+// handlers wrap once at the handler level, and list handlers wrap
+// once before the populate loop so all entities share a single 5s
+// budget instead of compounding to N*5s worst case.
+//
+// Prefer [statusForConfig] when the caller already holds a fetched
+// statusForConfig probes the block store's cached checker using an already-fetched config: Get,
+// Create, Update, Status (after its 404 check), and List (after its
+// populate fetch) all hold the concrete config and can avoid a second
+// round-trip by probing it directly via [runtime.Runtime.BlockStoreCheckerFor].
+func (h *BlockStoreHandler) statusForConfig(ctx context.Context, bs *models.BlockStoreConfig) health.Report {
+	return h.runtime.BlockStoreCheckerFor(bs).Healthcheck(ctx)
 }
