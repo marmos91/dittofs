@@ -158,7 +158,7 @@ func TestFromPersistedLock_Lease(t *testing.T) {
 		AcquiredAt:   time.Date(2026, 2, 5, 16, 0, 0, 0, time.UTC),
 		ServerEpoch:  20,
 		LeaseKey:     leaseKey,
-		LeaseState:   0x05, // RH
+		LeaseState:   0x05, // RW
 		LeaseEpoch:   55,
 		BreakToState: 0x01, // R
 		Breaking:     true,

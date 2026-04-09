@@ -47,7 +47,7 @@ func TestDecodeLeaseCreateContext(t *testing.T) {
 				for i := 0; i < 16; i++ {
 					buf[i] = byte(i + 10)
 				}
-				// LeaseState = RW (0x03)
+				// LeaseState = RW (0x05)
 				binary.LittleEndian.PutUint32(buf[16:20], lock.LeaseStateRead|lock.LeaseStateWrite)
 				// Epoch = 5
 				binary.LittleEndian.PutUint16(buf[48:50], 5)

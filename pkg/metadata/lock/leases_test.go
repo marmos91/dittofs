@@ -706,9 +706,7 @@ func TestBestGrantableState_DirectoryRWH_DowngradeCascade(t *testing.T) {
 		{Lease: &OpLock{LeaseKey: otherKey, LeaseState: LeaseStateRead | LeaseStateWrite | LeaseStateHandle}},
 	}
 
-	// Directory candidates for RWH: [RWH, RW, RH, R] (Handle now valid for dirs)
-	// RWH: W conflicts with existing W -> skip
-	// RW: W conflicts with existing W -> skip
+	// Directory candidates for RWH: [RH, R] (W invalid for dirs, so RWH and RW skipped)
 	// RH: existing W conflicts with requested R -> skip
 	// R: existing W conflicts with requested R -> skip
 	// All candidates conflict -> None
@@ -775,11 +773,16 @@ func TestRequestLease_SameKeyBreaking_ReturnsBreakInProgress(t *testing.T) {
 
 // TestRequestLease_CrossKeyConflict_DoesNotBlockOnAck verifies that the
 // second opener's RequestLease does NOT block waiting for the first client's
-// LEASE_BREAK_ACK. This is the WPTS BVT_DirectoryLeasing_LeaseBreakOnMultiClients
-// scenario: the test orchestrates Client1's ack only AFTER Client2's CREATE
-// returns. If RequestLease blocks Client2 waiting for an ack that the test
-// will only drive after Client2 returns, the test deadlocks until the WPTS
-// client-side ~8s timeout fires (System.TimeoutException).
+// LEASE_BREAK_ACK. This is the core invariant behind the WPTS
+// BVT_DirectoryLeasing_LeaseBreakOnMultiClients scenario: the test
+// orchestrates Client1's ack only AFTER Client2's CREATE returns. If
+// RequestLease blocks Client2 waiting for an ack that the test will only
+// drive after Client2 returns, the call deadlocks until the WPTS client-side
+// ~8s timeout fires (System.TimeoutException).
+//
+// The test uses a file lease (RW) because Write caching is not valid for
+// directories after the lease constant swap. The cross-key non-blocking
+// guarantee applies to both file and directory leases.
 //
 // The internal break dispatch is synchronous (the LEASE_BREAK_NOTIFICATION
 // is on the wire before this call returns), and OpLocksConflict already
