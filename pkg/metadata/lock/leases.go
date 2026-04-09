@@ -268,23 +268,35 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 			// can mutate the live *UnifiedLock while the callback reads it.
 			lockSnapshot := lock.Clone()
 
-			// Release lock before dispatching break callbacks
+			// Release lock before dispatching break callbacks. The dispatch
+			// itself is synchronous: by the time dispatchOpLockBreak returns,
+			// the LEASE_BREAK_NOTIFICATION is already on the wire to the
+			// existing client (see internal/adapter/smb/lease/notifier.go,
+			// SMBBreakHandler.OnOpLockBreak which calls SendLeaseBreak inline).
+			// Per MS-SMB2 3.3.4.7 the notification ordering requirement is
+			// therefore satisfied without further synchronization.
 			lm.mu.Unlock()
 			lm.dispatchOpLockBreak(handleKey, lockSnapshot, breakTo)
 
-			// Per MS-SMB2 3.3.5.9: The server MUST wait for the break to
-			// complete (or timeout) before returning to the caller, so that
-			// the second opener's response is not sent before the first
-			// client receives the OPLOCK_BREAK_NOTIFICATION.
-			breakCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
-			err := lm.WaitForBreakCompletion(breakCtx, handleKey)
-			cancel() // cancel immediately, not deferred — avoid context leak
-			if err != nil {
-				logger.Debug("RequestLease: break wait completed with error",
-					"fileHandle", handleKey,
-					"error", err)
-			}
-
+			// Do NOT wait for the LEASE_BREAK_ACK before returning to the
+			// second opener. Waiting here causes a fatal deadlock in
+			// multi-client scenarios such as WPTS
+			// BVT_DirectoryLeasing_LeaseBreakOnMultiClients: the test (and
+			// in general any single-threaded client driver) only sends the
+			// ack from the first client AFTER the second client's CREATE
+			// returns. Blocking the second CREATE on that ack prevents the
+			// ack from ever being sent, and the wait either burns the
+			// client's CREATE timeout or runs out our own bounded deadline
+			// for nothing.
+			//
+			// The breaking lease remains in unifiedLocks with Breaking=true
+			// and BreakToState set; OpLocksConflict (oplock.go:229-233)
+			// already evaluates conflicts against BreakToState in that case,
+			// so bestGrantableState below computes the correct downgraded
+			// grant for the new opener without needing the ack to land
+			// first. The same async-dispatch pattern is used by
+			// internal/adapter/smb/lease/manager.go BreakHandleLeasesOnOpenAsync,
+			// whose comment explicitly documents this deadlock.
 			breakDispatched = true
 			break
 		}
