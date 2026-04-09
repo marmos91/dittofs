@@ -270,6 +270,21 @@ func (s *Service) IsAdapterRunning(adapterType string) bool {
 	return exists
 }
 
+// GetAdapter returns the running adapter for the given type, or nil if
+// no adapter of that type is currently running. Used by status probes
+// that need to call [ProtocolAdapter.Healthcheck] without going
+// through a runtime type assertion to the full [adapter.Adapter]
+// interface.
+func (s *Service) GetAdapter(adapterType string) ProtocolAdapter {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e, ok := s.entries[adapterType]
+	if !ok {
+		return nil
+	}
+	return e.adapter
+}
+
 // AddAdapter directly starts a pre-created adapter (for testing, bypasses store).
 func (s *Service) AddAdapter(adapter ProtocolAdapter) error {
 	adapterType := adapter.Protocol()
