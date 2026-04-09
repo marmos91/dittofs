@@ -15,6 +15,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/marmos91/dittofs/pkg/health"
 	memoryMeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
@@ -163,5 +164,104 @@ func TestMetadataStoreHandler_HealthCheck_NoRuntime(t *testing.T) {
 	}
 	if resp.Healthy {
 		t.Errorf("Expected healthy=false when runtime is nil")
+	}
+}
+
+// --- U-E status tests ---
+
+func TestMetadataStoreHandler_Status_OK(t *testing.T) {
+	cpStore, handler, rt := setupMetadataStoreHealthTest(t)
+	ctx := context.Background()
+
+	cfg := &models.MetadataStoreConfig{
+		ID: uuid.New().String(), Name: "m-ok", Type: "memory",
+		CreatedAt: time.Now(),
+	}
+	cpStore.CreateMetadataStore(ctx, cfg)
+	if err := rt.RegisterMetadataStore("m-ok", memoryMeta.NewMemoryMetadataStoreWithDefaults()); err != nil {
+		t.Fatalf("RegisterMetadataStore: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/metadata/m-ok/status", nil)
+	req = withMetadataStoreName(req, "m-ok")
+	w := httptest.NewRecorder()
+
+	handler.Status(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	var rep health.Report
+	if err := json.Unmarshal(w.Body.Bytes(), &rep); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if rep.Status != health.StatusHealthy {
+		t.Errorf("Status = %s, want healthy", rep.Status)
+	}
+}
+
+func TestMetadataStoreHandler_Status_NotFound(t *testing.T) {
+	_, handler, _ := setupMetadataStoreHealthTest(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/metadata/missing/status", nil)
+	req = withMetadataStoreName(req, "missing")
+	w := httptest.NewRecorder()
+
+	handler.Status(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("Status(missing) = %d, want 404", w.Code)
+	}
+}
+
+func TestMetadataStoreHandler_List_IncludesStatus(t *testing.T) {
+	cpStore, handler, rt := setupMetadataStoreHealthTest(t)
+	ctx := context.Background()
+
+	cpStore.CreateMetadataStore(ctx, &models.MetadataStoreConfig{
+		ID: uuid.New().String(), Name: "m-list", Type: "memory",
+		CreatedAt: time.Now(),
+	})
+	_ = rt.RegisterMetadataStore("m-list", memoryMeta.NewMemoryMetadataStoreWithDefaults())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/metadata", nil)
+	w := httptest.NewRecorder()
+	handler.List(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("List = %d, want 200", w.Code)
+	}
+	var resp []MetadataStoreResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp) == 0 {
+		t.Fatalf("empty list")
+	}
+	if !isValidHealthStatus(resp[0].Status.Status) {
+		t.Errorf("list[0].Status.Status = %q, want a valid health.Status", resp[0].Status.Status)
+	}
+}
+
+func TestMetadataStoreHandler_Get_IncludesStatus(t *testing.T) {
+	cpStore, handler, rt := setupMetadataStoreHealthTest(t)
+	ctx := context.Background()
+
+	cpStore.CreateMetadataStore(ctx, &models.MetadataStoreConfig{
+		ID: uuid.New().String(), Name: "m-get", Type: "memory",
+		CreatedAt: time.Now(),
+	})
+	_ = rt.RegisterMetadataStore("m-get", memoryMeta.NewMemoryMetadataStoreWithDefaults())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/store/metadata/m-get", nil)
+	req = withMetadataStoreName(req, "m-get")
+	w := httptest.NewRecorder()
+	handler.Get(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Get = %d, want 200", w.Code)
+	}
+	var resp MetadataStoreResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !isValidHealthStatus(resp.Status.Status) {
+		t.Errorf("Get.Status.Status = %q, want a valid health.Status", resp.Status.Status)
 	}
 }
