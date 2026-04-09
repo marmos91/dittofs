@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
@@ -12,6 +13,7 @@ import (
 	"github.com/marmos91/dittofs/internal/cli/health"
 	"github.com/marmos91/dittofs/internal/cli/output"
 	"github.com/marmos91/dittofs/internal/cli/timeutil"
+	"github.com/marmos91/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
 )
 
@@ -21,7 +23,10 @@ var statusCmd = &cobra.Command{
 	Long: `Display the status of the connected DittoFS server.
 
 This command checks the server health endpoint and displays
-status, uptime, and version information.
+status, uptime, and control plane DB reachability.
+
+When authenticated, per-entity status is fetched from the list
+endpoints and displayed as a color-coded table.
 
 Examples:
   # Check status of connected server
@@ -38,33 +43,47 @@ func init() {
 
 // ServerStatus represents the server status for display.
 type ServerStatus struct {
-	Server        string                `json:"server" yaml:"server"`
-	Status        string                `json:"status" yaml:"status"`
-	Healthy       bool                  `json:"healthy" yaml:"healthy"`
-	Service       string                `json:"service,omitempty" yaml:"service,omitempty"`
-	StartedAt     string                `json:"started_at,omitempty" yaml:"started_at,omitempty"`
-	Uptime        string                `json:"uptime,omitempty" yaml:"uptime,omitempty"`
-	StorageHealth *health.StorageHealth `json:"storage_health,omitempty" yaml:"storage_health,omitempty"`
-	Error         string                `json:"error,omitempty" yaml:"error,omitempty"`
+	Server          string `json:"server" yaml:"server"`
+	Status          string `json:"status" yaml:"status"`
+	Healthy         bool   `json:"healthy" yaml:"healthy"`
+	Service         string `json:"service,omitempty" yaml:"service,omitempty"`
+	StartedAt       string `json:"started_at,omitempty" yaml:"started_at,omitempty"`
+	Uptime          string `json:"uptime,omitempty" yaml:"uptime,omitempty"`
+	ControlPlaneDB  string `json:"control_plane_db,omitempty" yaml:"control_plane_db,omitempty"`
+	Error           string `json:"error,omitempty" yaml:"error,omitempty"`
+	health.Entities `yaml:",inline"`
 }
 
 func runStatus(cmd *cobra.Command, args []string) error {
-	// Load credential store
-	store, err := credentials.NewStore()
-	if err != nil {
-		return fmt.Errorf("failed to initialize credential store: %w", err)
+	// Try to get an authenticated client first so we derive the canonical server
+	// URL from a single source (handles --server flag, stored context, and token
+	// refresh). The health endpoint doesn't require auth, but we need the correct
+	// base URL to avoid checking one server while fetching entities from another.
+	var apiClient *apiclient.Client
+	apiClient, authErr := cmdutil.GetAuthenticatedClient()
+
+	var serverURL string
+	if authErr == nil {
+		serverURL = apiClient.BaseURL()
+	} else {
+		// Fall back to stored context for liveness-only display (no entity fetches).
+		store, err := credentials.NewStore()
+		if err != nil {
+			return fmt.Errorf("failed to initialize credential store: %w", err)
+		}
+
+		ctx, err := store.GetCurrentContext()
+		if err != nil {
+			return fmt.Errorf("not logged in. Run 'dfsctl login' first")
+		}
+
+		serverURL = ctx.ServerURL
+		if serverURL == "" {
+			return fmt.Errorf("no server configured. Run 'dfsctl login' first")
+		}
 	}
 
-	// Get current context
-	ctx, err := store.GetCurrentContext()
-	if err != nil {
-		return fmt.Errorf("not logged in. Run 'dfsctl login' first")
-	}
-
-	serverURL := ctx.ServerURL
-	if serverURL == "" {
-		return fmt.Errorf("no server configured. Run 'dfsctl login' first")
-	}
+	serverURL = strings.TrimRight(serverURL, "/")
 
 	status := ServerStatus{
 		Server: serverURL,
@@ -73,7 +92,8 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	// Check health endpoint
 	healthURL := serverURL + "/health"
-	client := &http.Client{Timeout: 5 * time.Second}
+	// 10s timeout: must exceed the server-side 5s HealthCheckTimeout plus network latency.
+	client := &http.Client{Timeout: 10 * time.Second}
 
 	resp, err := client.Get(healthURL)
 	if err != nil {
@@ -88,12 +108,17 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			status.Service = healthResp.Data.Service
 			status.StartedAt = healthResp.Data.StartedAt
 			status.Uptime = healthResp.Data.Uptime
-			status.StorageHealth = healthResp.Data.StorageHealth
+			status.ControlPlaneDB = healthResp.Data.ControlPlaneDB
 			status.Error = healthResp.Error
 		} else {
 			status.Status = "unknown"
 			status.Error = "Failed to parse health response"
 		}
+	}
+
+	// Fetch per-entity status when authenticated and server reachable.
+	if status.Healthy && apiClient != nil {
+		status.Entities = health.FetchEntities(client, apiClient.BaseURL()+"/api/v1", apiClient.Token())
 	}
 
 	// Output based on format
@@ -139,8 +164,11 @@ func printStatusTable(status ServerStatus) {
 	if status.Uptime != "" {
 		fmt.Printf("  Uptime:     %s\n", timeutil.FormatUptime(status.Uptime))
 	}
+	if status.ControlPlaneDB != "" {
+		fmt.Printf("  CP DB:      %s\n", status.ControlPlaneDB)
+	}
 
-	health.PrintStorageHealth(status.StorageHealth)
+	health.PrintEntityStatus(status.Entities)
 
 	if status.Error != "" {
 		fmt.Printf("  Error:      %s\n", status.Error)

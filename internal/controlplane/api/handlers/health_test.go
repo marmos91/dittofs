@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	memoryMeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -75,6 +76,103 @@ func TestLiveness_ReturnsOK(t *testing.T) {
 
 	if data["service"] != "dittofs" {
 		t.Errorf("Expected service 'dittofs', got '%s'", data["service"])
+	}
+
+	if data["started_at"] == nil || data["started_at"] == "" {
+		t.Error("Expected started_at to be set")
+	}
+
+	if data["uptime"] == nil || data["uptime"] == "" {
+		t.Error("Expected uptime to be set")
+	}
+
+	// With nil registry, control_plane_db should be "unknown"
+	if data["control_plane_db"] != "unknown" {
+		t.Errorf("Expected control_plane_db 'unknown', got '%s'", data["control_plane_db"])
+	}
+}
+
+func TestLiveness_WithRegistry_ReturnsDBReachable(t *testing.T) {
+	// Create a real in-memory SQLite store for the control plane DB
+	cpStore, err := store.New(&store.Config{
+		Type:   store.DatabaseTypeSQLite,
+		SQLite: store.SQLiteConfig{Path: ":memory:"},
+	})
+	if err != nil {
+		t.Fatalf("Failed to create in-memory SQLite store: %v", err)
+	}
+	defer func() { _ = cpStore.Close() }()
+
+	reg := runtime.New(cpStore)
+	handler := NewHealthHandler(reg)
+	req := httptest.NewRequest("GET", "/health", nil)
+	w := httptest.NewRecorder()
+
+	handler.Liveness(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	var resp Response
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if resp.Status != "healthy" {
+		t.Errorf("Expected status 'healthy', got '%s'", resp.Status)
+	}
+
+	data, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected Data to be a map, got %T", resp.Data)
+	}
+
+	if data["control_plane_db"] != "reachable" {
+		t.Errorf("Expected control_plane_db 'reachable', got '%s'", data["control_plane_db"])
+	}
+}
+
+func TestLiveness_WithRegistry_ReturnsDBUnreachableWhenHealthcheckFails(t *testing.T) {
+	// Create a real in-memory SQLite store, then close it so Healthcheck fails.
+	cpStore, err := store.New(&store.Config{
+		Type:   store.DatabaseTypeSQLite,
+		SQLite: store.SQLiteConfig{Path: ":memory:"},
+	})
+	if err != nil {
+		t.Fatalf("Failed to create in-memory SQLite store: %v", err)
+	}
+	// Close the store immediately so the DB ping will fail.
+	_ = cpStore.Close()
+
+	reg := runtime.New(cpStore)
+	handler := NewHealthHandler(reg)
+	req := httptest.NewRequest("GET", "/health", nil)
+	w := httptest.NewRecorder()
+
+	handler.Liveness(w, req)
+
+	// Degraded is still "alive" -- HTTP 200
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	var resp Response
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if resp.Status != "degraded" {
+		t.Errorf("Expected status 'degraded', got '%s'", resp.Status)
+	}
+
+	data, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected Data to be a map, got %T", resp.Data)
+	}
+
+	if data["control_plane_db"] != "unreachable" {
+		t.Errorf("Expected control_plane_db 'unreachable', got '%s'", data["control_plane_db"])
 	}
 }
 
@@ -244,112 +342,5 @@ func TestReadiness_WithSharesAndAdapters_ReturnsOK(t *testing.T) {
 
 	if adapters["running"].(float64) != 1 {
 		t.Errorf("Expected 1 running adapter, got %v", adapters["running"])
-	}
-}
-
-func TestStores_NoRegistry_Returns503(t *testing.T) {
-	handler := NewHealthHandler(nil)
-	req := httptest.NewRequest("GET", "/health/stores", nil)
-	w := httptest.NewRecorder()
-
-	handler.Stores(w, req)
-
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("Expected status %d, got %d", http.StatusServiceUnavailable, w.Code)
-	}
-
-	var resp Response
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("Failed to decode response: %v", err)
-	}
-
-	if resp.Status != "unhealthy" {
-		t.Errorf("Expected status 'unhealthy', got '%s'", resp.Status)
-	}
-}
-
-func TestStores_WithHealthyStores_ReturnsOK(t *testing.T) {
-	reg := runtime.New(nil)
-
-	// Register a healthy metadata store
-	metaStore := memoryMeta.NewMemoryMetadataStoreWithDefaults()
-	if err := reg.RegisterMetadataStore("test-meta", metaStore); err != nil {
-		t.Fatalf("Failed to register metadata store: %v", err)
-	}
-
-	handler := NewHealthHandler(reg)
-	req := httptest.NewRequest("GET", "/health/stores", nil)
-	w := httptest.NewRecorder()
-
-	handler.Stores(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("Expected status %d, got %d", http.StatusOK, w.Code)
-	}
-
-	var resp Response
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("Failed to decode response: %v", err)
-	}
-
-	if resp.Status != "healthy" {
-		t.Errorf("Expected status 'healthy', got '%s'", resp.Status)
-	}
-
-	// Check that we got the stores response
-	data, ok := resp.Data.(map[string]interface{})
-	if !ok {
-		t.Fatalf("Expected Data to be a map, got %T", resp.Data)
-	}
-
-	metadataStores, ok := data["metadata_stores"].([]interface{})
-	if !ok {
-		t.Fatalf("Expected metadata_stores to be an array")
-	}
-	if len(metadataStores) != 1 {
-		t.Errorf("Expected 1 metadata store, got %d", len(metadataStores))
-	}
-}
-
-func TestStores_ChecksMetadataStoreHealth(t *testing.T) {
-	reg := runtime.New(nil)
-
-	// Register a healthy metadata store
-	metaStore := memoryMeta.NewMemoryMetadataStoreWithDefaults()
-	if err := reg.RegisterMetadataStore("test-meta", metaStore); err != nil {
-		t.Fatalf("Failed to register metadata store: %v", err)
-	}
-
-	handler := NewHealthHandler(reg)
-	req := httptest.NewRequest("GET", "/health/stores", nil)
-	w := httptest.NewRecorder()
-
-	handler.Stores(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("Expected status %d, got %d", http.StatusOK, w.Code)
-	}
-
-	var resp Response
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("Failed to decode response: %v", err)
-	}
-
-	data := resp.Data.(map[string]interface{})
-	metadataStores := data["metadata_stores"].([]interface{})
-
-	if len(metadataStores) != 1 {
-		t.Fatalf("Expected 1 metadata store, got %d", len(metadataStores))
-	}
-
-	store := metadataStores[0].(map[string]interface{})
-	if store["name"] != "test-meta" {
-		t.Errorf("Expected store name 'test-meta', got '%s'", store["name"])
-	}
-	if store["status"] != "healthy" {
-		t.Errorf("Expected store status 'healthy', got '%s'", store["status"])
-	}
-	if store["latency"] == nil || store["latency"] == "" {
-		t.Error("Expected latency to be set")
 	}
 }

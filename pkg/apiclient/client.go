@@ -41,6 +41,16 @@ func (c *Client) SetToken(token string) {
 	c.token = token
 }
 
+// Token returns the current authentication token.
+func (c *Client) Token() string {
+	return c.token
+}
+
+// BaseURL returns the base URL of the API client.
+func (c *Client) BaseURL() string {
+	return c.baseURL
+}
+
 // do performs an HTTP request and decodes the response.
 func (c *Client) do(method, path string, body, result any) error {
 	var bodyReader io.Reader

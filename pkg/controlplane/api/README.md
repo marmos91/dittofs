@@ -87,7 +87,6 @@ curl -X POST http://localhost:8080/api/v1/auth/refresh \
 |--------|----------|-------------|
 | GET | `/health` | Liveness probe |
 | GET | `/health/ready` | Readiness probe |
-| GET | `/health/stores` | Detailed store health |
 | POST | `/api/v1/auth/login` | Authenticate and get tokens |
 | POST | `/api/v1/auth/refresh` | Refresh token pair |
 
