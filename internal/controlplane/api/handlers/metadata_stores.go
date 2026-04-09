@@ -41,12 +41,15 @@ type UpdateMetadataStoreRequest struct {
 }
 
 // MetadataStoreResponse is the response body for metadata store endpoints.
+// Status is non-omitempty so clients can render "unknown" explicitly
+// rather than guessing from a missing field.
 type MetadataStoreResponse struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Type      string    `json:"type"`
-	Config    string    `json:"config,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        string        `json:"id"`
+	Name      string        `json:"name"`
+	Type      string        `json:"type"`
+	Config    string        `json:"config,omitempty"`
+	CreatedAt time.Time     `json:"created_at"`
+	Status    health.Report `json:"status"`
 }
 
 // Create handles POST /api/v1/store/metadata.
@@ -111,7 +114,12 @@ func (h *MetadataStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	WriteJSONCreated(w, metadataStoreToResponse(storeCfg))
+	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
+	defer cancel()
+
+	resp := metadataStoreToResponse(storeCfg)
+	resp.Status = h.statusFor(ctx, storeCfg.Name)
+	WriteJSONCreated(w, resp)
 }
 
 // List handles GET /api/v1/store/metadata.
@@ -123,9 +131,15 @@ func (h *MetadataStoreHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Share a single HealthCheckTimeout budget across the populate
+	// loop so N stores do not compound to N*5s on a cold cache.
+	listCtx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
+	defer cancel()
+
 	response := make([]MetadataStoreResponse, len(stores))
 	for i, s := range stores {
 		response[i] = metadataStoreToResponse(s)
+		response[i].Status = h.statusFor(listCtx, s.Name)
 	}
 
 	WriteJSONOK(w, response)
@@ -150,7 +164,46 @@ func (h *MetadataStoreHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	WriteJSONOK(w, metadataStoreToResponse(store))
+	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
+	defer cancel()
+	resp := metadataStoreToResponse(store)
+	resp.Status = h.statusFor(ctx, name)
+	WriteJSONOK(w, resp)
+}
+
+// Status handles GET /api/v1/store/metadata/{name}/status. Returns
+// 404 when the config does not exist (matching Get semantics) and
+// 200 with a [health.Report] JSON body otherwise.
+func (h *MetadataStoreHandler) Status(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	if name == "" {
+		BadRequest(w, "Store name is required")
+		return
+	}
+
+	if _, err := h.store.GetMetadataStore(r.Context(), name); err != nil {
+		if errors.Is(err, models.ErrStoreNotFound) {
+			NotFound(w, "Metadata store not found")
+			return
+		}
+		InternalServerError(w, "Failed to get metadata store")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
+	defer cancel()
+	WriteJSONOK(w, h.statusFor(ctx, name))
+}
+
+// statusFor returns a [health.Report] for the named metadata store
+// via the runtime's cached checker layer. A nil runtime is handled
+// by the accessor's nil-receiver path. The caller is responsible for
+// bounding ctx with [HealthCheckTimeout]: single-entity /status
+// handlers wrap once at the handler level, and list handlers wrap
+// once before the populate loop so all entities share a single 5s
+// budget instead of compounding to N*5s worst case.
+func (h *MetadataStoreHandler) statusFor(ctx context.Context, name string) health.Report {
+	return h.runtime.MetadataStoreChecker(name).Healthcheck(ctx)
 }
 
 // Update handles PUT /api/v1/store/metadata/{name}.
@@ -191,7 +244,11 @@ func (h *MetadataStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	WriteJSONOK(w, metadataStoreToResponse(store))
+	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
+	defer cancel()
+	resp := metadataStoreToResponse(store)
+	resp.Status = h.statusFor(ctx, name)
+	WriteJSONOK(w, resp)
 }
 
 // Delete handles DELETE /api/v1/store/metadata/{name}.
@@ -215,6 +272,12 @@ func (h *MetadataStoreHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		logger.Error("Failed to delete metadata store", "name", name, "error", err)
 		InternalServerError(w, "Failed to delete metadata store")
 		return
+	}
+
+	// Evict any cached health checker so a later store with the same
+	// name starts with a fresh probe instead of a stale cache entry.
+	if h.runtime != nil {
+		h.runtime.InvalidateMetadataStoreChecker(name)
 	}
 
 	WriteNoContent(w)

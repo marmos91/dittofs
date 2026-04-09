@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	"encoding/json"
+	"context"
 	"errors"
 	"net/http"
 	"time"
@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/health"
 )
 
 // AdapterHandler handles adapter configuration API endpoints.
@@ -40,6 +41,8 @@ type UpdateAdapterRequest struct {
 }
 
 // AdapterResponse is the response body for adapter endpoints.
+// Status is non-omitempty so clients can render "unknown" explicitly
+// when an adapter is configured but not running.
 type AdapterResponse struct {
 	ID        string         `json:"id"`
 	Type      string         `json:"type"`
@@ -49,6 +52,7 @@ type AdapterResponse struct {
 	Config    map[string]any `json:"config,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
+	Status    health.Report  `json:"status"`
 }
 
 // Create handles POST /api/v1/adapters.
@@ -97,7 +101,12 @@ func (h *AdapterHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	WriteJSONCreated(w, adapterToResponse(adapter))
+	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
+	defer cancel()
+
+	resp := adapterToResponse(adapter)
+	resp.Status = h.statusFor(ctx, adapter.Type)
+	WriteJSONCreated(w, resp)
 }
 
 // List handles GET /api/v1/adapters.
@@ -109,11 +118,16 @@ func (h *AdapterHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Share a single HealthCheckTimeout budget across the populate
+	// loop so N adapters do not compound to N*5s on a cold cache.
+	listCtx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
+	defer cancel()
+
 	response := make([]AdapterResponse, len(adapters))
 	for i, a := range adapters {
 		resp := adapterToResponse(a)
-		// Add running status
 		resp.Running = h.runtime.IsAdapterRunning(a.Type)
+		resp.Status = h.statusFor(listCtx, a.Type)
 		response[i] = resp
 	}
 
@@ -139,9 +153,48 @@ func (h *AdapterHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
+	defer cancel()
 	resp := adapterToResponse(adapter)
 	resp.Running = h.runtime.IsAdapterRunning(adapterType)
+	resp.Status = h.statusFor(ctx, adapterType)
 	WriteJSONOK(w, resp)
+}
+
+// Status handles GET /api/v1/adapters/{type}/status. Returns 404
+// when the adapter config does not exist (matching Get semantics)
+// and 200 with a [health.Report] JSON body otherwise.
+func (h *AdapterHandler) Status(w http.ResponseWriter, r *http.Request) {
+	adapterType := chi.URLParam(r, "type")
+	if adapterType == "" {
+		BadRequest(w, "Adapter type is required")
+		return
+	}
+
+	if _, err := h.runtime.Store().GetAdapter(r.Context(), adapterType); err != nil {
+		if errors.Is(err, models.ErrAdapterNotFound) {
+			NotFound(w, "Adapter not found")
+			return
+		}
+		InternalServerError(w, "Failed to get adapter")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
+	defer cancel()
+	WriteJSONOK(w, h.statusFor(ctx, adapterType))
+}
+
+// statusFor returns a [health.Report] for the named adapter via the
+// runtime's cached checker layer. The runtime methods handle a nil
+// receiver by returning an "unknown" checker, so no nil check is
+// needed here. The caller is responsible for bounding ctx with
+// [HealthCheckTimeout]: single-entity /status handlers wrap once at
+// the handler level, and list handlers wrap once before the populate
+// loop so all entities share a single 5s budget instead of
+// compounding to N*5s worst case.
+func (h *AdapterHandler) statusFor(ctx context.Context, adapterType string) health.Report {
+	return h.runtime.AdapterChecker(adapterType).Healthcheck(ctx)
 }
 
 // Update handles PUT /api/v1/adapters/{type}.
@@ -189,8 +242,11 @@ func (h *AdapterHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
+	defer cancel()
 	resp := adapterToResponse(adapter)
 	resp.Running = h.runtime.IsAdapterRunning(adapterType)
+	resp.Status = h.statusFor(ctx, adapterType)
 	WriteJSONOK(w, resp)
 }
 
@@ -213,6 +269,10 @@ func (h *AdapterHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Evict any cached health checker so a later adapter of the same
+	// type starts with a fresh probe rather than stale cached output.
+	h.runtime.InvalidateAdapterChecker(adapterType)
+
 	WriteNoContent(w)
 }
 
@@ -228,10 +288,4 @@ func adapterToResponse(a *models.AdapterConfig) AdapterResponse {
 		CreatedAt: a.CreatedAt,
 		UpdatedAt: a.UpdatedAt,
 	}
-}
-
-// decodeJSONBody is needed for the json decoder
-func init() {
-	// Ensure json is imported
-	_ = json.Marshal
 }

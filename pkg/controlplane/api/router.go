@@ -191,6 +191,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Get("/{name}", shareHandler.Get)
 				r.Put("/{name}", shareHandler.Update)
 				r.Delete("/{name}", shareHandler.Delete)
+				r.Get("/{name}/status", shareHandler.Status)
 
 				// Share permissions
 				r.Get("/{name}/permissions", shareHandler.ListPermissions)
@@ -218,13 +219,14 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 
 				// Block stores (local and remote) via kind URL param
 				r.Route("/block/{kind}", func(r chi.Router) {
-					blockStoreHandler := handlers.NewBlockStoreHandler(cpStore)
+					blockStoreHandler := handlers.NewBlockStoreHandler(cpStore, rt)
 					r.Post("/", blockStoreHandler.Create)
 					r.Get("/", blockStoreHandler.List)
 					r.Get("/{name}", blockStoreHandler.Get)
 					r.Put("/{name}", blockStoreHandler.Update)
 					r.Delete("/{name}", blockStoreHandler.Delete)
 					r.Get("/{name}/health", blockStoreHandler.HealthCheck)
+					r.Get("/{name}/status", blockStoreHandler.Status)
 				})
 
 				// Metadata stores (refactored from /metadata-stores)
@@ -236,6 +238,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 					r.Put("/{name}", metadataStoreHandler.Update)
 					r.Delete("/{name}", metadataStoreHandler.Delete)
 					r.Get("/{name}/health", metadataStoreHandler.HealthCheck)
+					r.Get("/{name}/status", metadataStoreHandler.Status)
 				})
 			})
 
@@ -266,6 +269,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 						r.Get("/", adapterHandler.Get)
 						r.Put("/", adapterHandler.Update)
 						r.Delete("/", adapterHandler.Delete)
+						r.Get("/status", adapterHandler.Status)
 
 						// Adapter settings
 						r.Route("/settings", func(r chi.Router) {
