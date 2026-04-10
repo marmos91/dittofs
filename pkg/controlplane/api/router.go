@@ -45,7 +45,7 @@ import (
 //   - /api/v1/adapters/nfs/clients/{id}/sessions - NFS client sessions (admin only)
 //   - /api/v1/adapters/{type}/grace - NFS grace period management (admin only)
 //   - /api/v1/adapters/{type}/netgroups - NFS netgroup management (admin only)
-//   - /api/v1/adapters/{type}/identity-mappings - NFS identity mapping management (admin only)
+//   - /api/v1/adapters/{type}/identity-mappings - Identity mapping management, shared across protocols (admin only)
 //   - /api/v1/adapters/{type}/mounts - Protocol-specific mount listing (admin only)
 //   - /api/v1/settings/* - System settings management (admin only)
 //   - /api/v1/mounts - Unified mount listing (admin only)
@@ -312,7 +312,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 							})
 						}
 
-						// NFS identity mapping management - requires IdentityMappingStore capability
+						// Identity mapping management (shared across NFS/SMB) - requires IdentityMappingStore capability
 						if ims, ok := cpStore.(store.IdentityMappingStore); ok {
 							r.Route("/identity-mappings", func(r chi.Router) {
 								idmapHandler := handlers.NewIdentityMappingHandler(ims)

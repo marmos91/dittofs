@@ -20,9 +20,14 @@ type CreateIdentityMappingRequest struct {
 	Username  string `json:"username"`
 }
 
+// identityMappingsPath is the API path for identity mappings.
+// Mappings are shared across protocols (NFS and SMB) — the /nfs/ segment
+// is the canonical path but the same data is accessible via /smb/.
+const identityMappingsPath = "/api/v1/adapters/nfs/identity-mappings"
+
 // ListIdentityMappings returns all identity mappings.
 func (c *Client) ListIdentityMappings() ([]IdentityMapping, error) {
-	return listResources[IdentityMapping](c, "/api/v1/adapters/nfs/identity-mappings")
+	return listResources[IdentityMapping](c, identityMappingsPath)
 }
 
 // CreateIdentityMapping creates a new identity mapping.
@@ -31,10 +36,10 @@ func (c *Client) CreateIdentityMapping(principal, username string) (*IdentityMap
 		Principal: principal,
 		Username:  username,
 	}
-	return createResource[IdentityMapping](c, "/api/v1/adapters/nfs/identity-mappings", req)
+	return createResource[IdentityMapping](c, identityMappingsPath, req)
 }
 
 // DeleteIdentityMapping deletes an identity mapping by principal.
 func (c *Client) DeleteIdentityMapping(principal string) error {
-	return deleteResource(c, fmt.Sprintf("/api/v1/adapters/nfs/identity-mappings/%s", url.PathEscape(principal)))
+	return deleteResource(c, fmt.Sprintf("%s/%s", identityMappingsPath, url.PathEscape(principal)))
 }

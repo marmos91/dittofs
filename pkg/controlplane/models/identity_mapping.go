@@ -5,9 +5,11 @@ import (
 	"time"
 )
 
-// IdentityMapping maps an NFSv4 principal to a control plane username.
+// IdentityMapping maps an authentication principal to a control plane username.
 // This is used for resolving Kerberos principals (e.g., "alice@EXAMPLE.COM")
-// to local DittoFS user accounts.
+// or NTLM principals (e.g., "CORP\alice") to local DittoFS user accounts.
+// Mappings are shared across protocols (NFS and SMB) to ensure consistent
+// uid/gid resolution in mixed-protocol deployments.
 type IdentityMapping struct {
 	ID        string    `gorm:"primaryKey;type:varchar(36)" json:"id"`
 	Principal string    `gorm:"uniqueIndex;type:varchar(255);not null" json:"principal"`
