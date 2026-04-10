@@ -451,6 +451,15 @@ func (r *Runtime) EvictBlockStore(ctx context.Context, shareName string, opts sh
 func (r *Runtime) GetUserStore() models.UserStore         { return r.store }
 func (r *Runtime) GetIdentityStore() models.IdentityStore { return r.store }
 
+// GetIdentityMappingStore returns the identity mapping store if supported.
+// Returns nil if the underlying store does not implement IdentityMappingStore.
+func (r *Runtime) GetIdentityMappingStore() store.IdentityMappingStore {
+	if ims, ok := r.store.(store.IdentityMappingStore); ok {
+		return ims
+	}
+	return nil
+}
+
 // --- Settings Access ---
 
 func (r *Runtime) GetSettingsWatcher() *SettingsWatcher { return r.settingsWatcher }

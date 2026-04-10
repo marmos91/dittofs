@@ -30,7 +30,7 @@ Examples:
 }
 
 func init() {
-	removeCmd.Flags().StringVar(&removePrincipal, "principal", "", "NFSv4 principal to remove")
+	removeCmd.Flags().StringVar(&removePrincipal, "principal", "", "Authentication principal to remove")
 	removeCmd.Flags().BoolVarP(&removeForce, "force", "f", false, "Skip confirmation prompt")
 	_ = removeCmd.MarkFlagRequired("principal")
 }

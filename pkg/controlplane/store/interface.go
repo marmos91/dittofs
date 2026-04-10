@@ -495,8 +495,9 @@ type NetgroupStore interface {
 }
 
 // IdentityMappingStore provides identity mapping operations.
-// This is a separate interface from Store so that only NFS/Kerberos-aware
+// This is a separate interface from Store so that only identity-mapping-aware
 // components need to depend on identity mapping functionality.
+// Mappings are shared across protocols (NFS and SMB).
 type IdentityMappingStore interface {
 	// GetIdentityMapping returns an identity mapping by principal.
 	// Returns models.ErrMappingNotFound if the mapping doesn't exist.

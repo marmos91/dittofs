@@ -50,8 +50,13 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 	sessionKey := normalizeSessionKey(authResult.SessionKey.KeyValue)
 
 	// Resolve principal to DittoFS username.
-	// Uses configurable mapping (strip-realm default, explicit mapping table).
-	username := pkgkerberos.ResolvePrincipal(authResult.Principal, authResult.Realm, h.IdentityConfig)
+	// First check DB identity mappings (cross-protocol consistency),
+	// then fall back to configurable mapping (strip-realm default, explicit mapping table).
+	fullPrincipal := authResult.Principal + "@" + authResult.Realm
+	username, _ := h.resolveIdentityMapping(ctx.Context, fullPrincipal, "")
+	if username == "" {
+		username = pkgkerberos.ResolvePrincipal(authResult.Principal, authResult.Realm, h.IdentityConfig)
+	}
 
 	logger.Debug("Kerberos authentication succeeded",
 		"principal", authResult.Principal,

@@ -421,8 +421,13 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 	userStore := h.Registry.GetUserStore()
 
 	if userStore != nil {
-		// Look up user by username
-		user, err := userStore.GetUser(ctx.Context, authMsg.Username)
+		// Resolve identity mapping: check if this NTLM principal maps to a different
+		// control plane username (enables cross-protocol uid/gid consistency).
+		principal := formatNTLMPrincipal(authMsg.Domain, authMsg.Username)
+		resolvedUsername, mappingFound := h.resolveIdentityMapping(ctx.Context, principal, authMsg.Username)
+
+		// Look up user by resolved username
+		user, err := userStore.GetUser(ctx.Context, resolvedUsername)
 		if err == nil && user != nil && user.Enabled {
 			// User found and enabled - validate NTLMv2 response if NT hash is available
 			ntHash, hasNTHash := user.GetNTHash()
@@ -521,7 +526,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 
 				if pending.IsReauth {
 					// Per MS-SMB2 3.3.5.5.3: re-derive keys from the new SessionBaseKey
-					if result := h.tryReauthUpdateWithKeys(pending, authMsg.Username, authMsg.Domain, user, false, signingKey[:], ctx); result != nil {
+					if result := h.tryReauthUpdateWithKeys(pending, resolvedUsername, authMsg.Domain, user, false, signingKey[:], ctx); result != nil {
 						return result, nil
 					}
 					// Fallthrough: session disappeared between negotiate and auth (unlikely)
@@ -557,7 +562,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 			ctx.IsGuest = false
 
 			if pending.IsReauth {
-				if result := h.tryReauthUpdate(pending, authMsg.Username, authMsg.Domain, user, false); result != nil {
+				if result := h.tryReauthUpdate(pending, resolvedUsername, authMsg.Domain, user, false); result != nil {
 					return result, nil
 				}
 			}
@@ -576,9 +581,18 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 
 		// User not found or disabled
 		if err != nil {
-			logger.Debug("User not found in UserStore", "username", authMsg.Username, "error", err)
+			logger.Debug("User not found in UserStore", "username", resolvedUsername, "error", err)
 		} else if user != nil && !user.Enabled {
-			logger.Debug("User account disabled", "username", authMsg.Username)
+			logger.Debug("User account disabled", "username", resolvedUsername)
+			return NewErrorResult(types.StatusLogonFailure), nil
+		}
+
+		// If an identity mapping existed but the resolved user doesn't exist,
+		// hard-fail rather than falling through to guest. An operator created
+		// this mapping intentionally — silently granting guest access is wrong.
+		if mappingFound {
+			logger.Info("Identity mapping resolved but user not found, denying access",
+				"principal", principal, "resolvedUsername", resolvedUsername)
 			return NewErrorResult(types.StatusLogonFailure), nil
 		}
 	}
