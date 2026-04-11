@@ -21,6 +21,14 @@ TEST_PASSWORD="${TEST_PASSWORD:-TestPassword01!}"
 PROFILE="${PROFILE:-memory}"
 SMB_PORT="${SMB_PORT:-12445}"
 
+# Kerberos settings (auto-detected from profile name, or forced via KERBEROS=1).
+# When enabled, an identity mapping wpts-admin@${KERBEROS_REALM} -> wpts-admin
+# is created so Kerberos session setup resolves to the right control plane user.
+KERBEROS_REALM="${KERBEROS_REALM:-DITTOFS.TEST}"
+is_kerberos_profile() {
+    [[ "$PROFILE" == *kerberos* ]] || [[ "${KERBEROS:-0}" == "1" ]]
+}
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -76,7 +84,7 @@ create_metadata_store() {
     log_info "Creating metadata store for profile: ${PROFILE}"
 
     case "$PROFILE" in
-        memory|memory-fs)
+        memory|memory-fs|memory-kerberos)
             $DFSCTL store metadata add --name default --type memory
             ;;
         badger*)
@@ -99,7 +107,7 @@ create_block_stores() {
     log_info "Creating block stores for profile: ${PROFILE}"
 
     case "$PROFILE" in
-        memory)
+        memory|memory-kerberos)
             $DFSCTL store block local add --name default --type memory
             ;;
         *-s3-legacy|*-fs)
@@ -156,6 +164,15 @@ main() {
     log_info "Creating test users..."
     $DFSCTL user create --username wpts-admin --password "$TEST_PASSWORD"
     $DFSCTL user create --username nonadmin --password "$TEST_PASSWORD"
+
+    # Identity mapping for Kerberos: the principal "wpts-admin@${KERBEROS_REALM}"
+    # must resolve to the "wpts-admin" control plane user. Strip-realm would
+    # already work implicitly, but we add an explicit mapping to exercise the
+    # SMB identity mapping lookup path end-to-end.
+    if is_kerberos_profile; then
+        log_info "Creating Kerberos identity mapping (wpts-admin@${KERBEROS_REALM} -> wpts-admin)..."
+        $DFSCTL idmap add --principal "wpts-admin@${KERBEROS_REALM}" --username wpts-admin
+    fi
 
     # Enable SMB adapter
     log_info "Enabling SMB adapter on port ${SMB_PORT}..."
