@@ -7,6 +7,7 @@
 #   docker compose --profile smbtorture up         # Start DittoFS + smbtorture
 #   docker compose --profile s3 up -d              # Start with Localstack for S3 profiles
 #   docker compose --profile postgres up           # Start with PostgreSQL
+#   docker compose --profile kerberos up -d kdc    # Start the self-contained KDC
 #
 # Environment variables:
 #   PROFILE              - DittoFS config profile (default: memory)
@@ -25,6 +26,18 @@ services:
       - ./configs/${PROFILE:-memory}.yaml:/config/config.yaml:ro
       - ./bootstrap.sh:/app/bootstrap.sh:ro
       - dittofs-data:/data
+      # Shared volume with the kdc service. Always mounted (harmless when the
+      # kerberos profile is not active — the directory is just empty), so
+      # memory-kerberos.yaml can reference /keytabs/dittofs.keytab.
+      - kdc-keytabs:/keytabs:ro
+    depends_on:
+      # Wait for the KDC to finish writing the keytab before starting, but
+      # only when the kerberos profile is active. required: false makes this
+      # advisory: non-kerberos runs (where the kdc service isn't started)
+      # see no dependency and boot immediately.
+      kdc:
+        condition: service_healthy
+        required: false
     environment:
       - DITTOFS_LOGGING_LEVEL=DEBUG
       - DITTOFS_CONTROLPLANE_SECRET=${DITTOFS_CONTROLPLANE_SECRET:-WptsConformanceTesting2026!Secret}
@@ -67,11 +80,47 @@ services:
       - "--option=netbios name=localhost"
       - "--option=client min protocol=SMB2_02"
       - "--option=client max protocol=SMB3"
-      - "--option=smb ports=12445"
+      # 445 is the port inside the shared dittofs network namespace; the
+      # 12445 host mapping from line 23 is irrelevant here.
+      - "--option=smb ports=445"
       - "--option=torture:oplocktimeout=5"
       - "smb2"
     profiles:
       - smbtorture
+
+  # Kerberos-aware smbtorture runner. Uses the shared kdc-keytabs volume to
+  # pick up krb5.conf (written by the kdc service). Runs in dittofs's network
+  # namespace so "kdc" resolves via the project's default bridge DNS, and
+  # "localhost" targets the DittoFS SMB port.
+  smbtorture-kerberos:
+    image: quay.io/samba.org/samba-toolbox:v0.8
+    platform: linux/amd64
+    depends_on:
+      dittofs:
+        condition: service_healthy
+      kdc:
+        condition: service_healthy
+    network_mode: "service:dittofs"
+    environment:
+      - KRB5_CONFIG=/keytabs/krb5.conf
+    volumes:
+      - kdc-keytabs:/keytabs:ro
+    entrypoint: ["smbtorture"]
+    command:
+      - "//dittofs/smbbasic"
+      - "-U"
+      - "wpts-admin@DITTOFS.TEST%TestPassword01!"
+      - "--use-kerberos=required"
+      - "--realm=DITTOFS.TEST"
+      - "--option=netbios name=localhost"
+      - "--option=client min protocol=SMB2_02"
+      - "--option=client max protocol=SMB3"
+      # 445 is the port inside the shared dittofs network namespace.
+      - "--option=smb ports=445"
+      - "--option=torture:oplocktimeout=5"
+      - "smb2.session"
+    profiles:
+      - kerberos
 
   localstack:
     image: localstack/localstack:4.13.1
@@ -100,5 +149,31 @@ services:
     profiles:
       - postgres
 
+  # Self-contained MIT Kerberos KDC for Kerberos conformance testing.
+  # Creates the DITTOFS.TEST realm, the cifs/dittofs service principal, and
+  # the wpts-admin user principal on first start. The service principal's
+  # keytab is exported to the shared kdc-keytabs volume so the dittofs
+  # container can load it.
+  kdc:
+    build:
+      context: ./kdc
+    hostname: kdc
+    environment:
+      - KRB5_REALM=DITTOFS.TEST
+      - KDC_HOST=kdc
+    volumes:
+      - kdc-keytabs:/keytabs
+    healthcheck:
+      # klist parses the entire keytab structure, so it only exits 0 once the
+      # file has been fully written and flushed — avoids a race where the
+      # dittofs container tries to load a partially-written keytab.
+      test: ["CMD-SHELL", "klist -k /keytabs/dittofs.keytab > /dev/null 2>&1"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    profiles:
+      - kerberos
+
 volumes:
   dittofs-data:
+  kdc-keytabs:

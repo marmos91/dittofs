@@ -18,7 +18,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFORMANCE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-VALID_PROFILES=("memory" "memory-fs" "badger-fs")
+VALID_PROFILES=("memory" "memory-fs" "badger-fs" "memory-kerberos")
 
 # --------------------------------------------------------------------------
 # Colors
@@ -89,9 +89,10 @@ Options:
   --help              Show this help
 
 Profiles:
-  memory        Memory metadata + memory payload (fastest)
-  memory-fs     Memory metadata + memory payload (legacy name, same as memory)
-  badger-fs     BadgerDB metadata + memory payload (legacy name)
+  memory           Memory metadata + memory payload (fastest)
+  memory-fs        Memory metadata + memory payload (legacy name, same as memory)
+  badger-fs        BadgerDB metadata + memory payload (legacy name)
+  memory-kerberos  Memory profile with Kerberos auth enabled (auto-selected by --kerberos)
 
 Examples:
   $(basename "$0")                              # Full smb2 suite with memory
@@ -145,6 +146,25 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# SMBTORTURE_AUTH=kerberos is treated as equivalent to --kerberos so that
+# callers driving the runner via env vars get the full Kerberos setup (KDC
+# service, memory-kerberos profile, bootstrap identity mapping), not just
+# the smbtorture argument switch.
+if [[ "${SMBTORTURE_AUTH:-}" == "kerberos" ]]; then
+    KERBEROS=true
+fi
+
+# When --kerberos is set, force the Kerberos-enabled config profile.
+# memory-kerberos wires up the keytab path and service principal that the
+# self-contained kdc container provisions at startup. Any other profile is
+# silently overridden (with a warning for non-memory variants).
+if $KERBEROS && [[ "$PROFILE" != "memory-kerberos" ]]; then
+    if [[ "$PROFILE" != "memory" && "$PROFILE" != "memory-fs" ]]; then
+        log_warn "Profile ${PROFILE} does not include Kerberos config; forcing memory-kerberos"
+    fi
+    PROFILE="memory-kerberos"
+fi
+
 # --------------------------------------------------------------------------
 # Validate inputs
 # --------------------------------------------------------------------------
@@ -168,6 +188,14 @@ RESULTS_DIR="${CONFORMANCE_DIR}/results/smbtorture-$(date +%Y-%m-%d_%H%M%S)"
 # Dry-run
 # --------------------------------------------------------------------------
 if $DRY_RUN; then
+    if $KERBEROS; then
+        dry_target="//dittofs/smbbasic"
+        dry_auth="wpts-admin@DITTOFS.TEST (Kerberos, SPNEGO)"
+    else
+        dry_target="//localhost/smbbasic"
+        dry_auth="wpts-admin / TestPassword01!"
+    fi
+
     echo ""
     echo -e "${BOLD}=== smbtorture Test Configuration ===${NC}"
     echo ""
@@ -181,8 +209,8 @@ if $DRY_RUN; then
     echo "  Results dir:  ${RESULTS_DIR}"
     echo ""
     echo "  Docker image: quay.io/samba.org/samba-toolbox:v0.8"
-    echo "  Target:       //localhost/smbbasic"
-    echo "  Auth:         wpts-admin / TestPassword01!"
+    echo "  Target:       ${dry_target}"
+    echo "  Auth:         ${dry_auth}"
     echo ""
     exit 0
 fi
@@ -222,6 +250,26 @@ cd "$CONFORMANCE_DIR"
 
 mkdir -p "$RESULTS_DIR"
 
+# Kerberos mode: activate the "kerberos" compose profile (enables the kdc
+# and smbtorture-kerberos services) and start the self-contained KDC first
+# so it has time to create the realm and export /keytabs/dittofs.keytab.
+# DittoFS mounts the same volume read-only and loads the keytab on startup.
+#
+# COMPOSE_PROFILES is exported via env (rather than --profile flags) to
+# sidestep macOS bash 3.2's "empty array + set -u" expansion quirk.
+if $KERBEROS; then
+    export COMPOSE_PROFILES="kerberos"
+
+    log_step "Building KDC Docker image..."
+    docker compose build kdc
+
+    log_step "Starting KDC..."
+    docker compose up -d kdc
+    # klist parses the full keytab; only succeeds once kadmin has finished
+    # writing and flushing the file, avoiding a partial-read race.
+    wait_until "docker compose exec kdc klist -k /keytabs/dittofs.keytab > /dev/null 2>&1" 60 "KDC keytab"
+fi
+
 # Build and start DittoFS
 log_step "Building DittoFS Docker image..."
 PROFILE="$PROFILE" docker compose build dittofs
@@ -243,7 +291,9 @@ if $VERBOSE; then
     log_info "Admin password extracted"
 fi
 
-# Bootstrap DittoFS (same as WPTS -- creates shares, users, SMB adapter)
+# Bootstrap DittoFS (same as WPTS -- creates shares, users, SMB adapter).
+# The KERBEROS env var tells bootstrap.sh to configure the SMB adapter with
+# Kerberos auth and seed the identity mapping for wpts-admin@DITTOFS.TEST.
 log_step "Bootstrapping DittoFS (profile: ${PROFILE})..."
 docker compose exec \
     -e DFSCTL="/app/dfsctl" \
@@ -252,6 +302,7 @@ docker compose exec \
     -e TEST_PASSWORD="TestPassword01!" \
     -e PROFILE="${PROFILE}" \
     -e SMB_PORT="445" \
+    -e KERBEROS="$($KERBEROS && echo 1 || echo 0)" \
     dittofs sh /app/bootstrap.sh
 
 # --------------------------------------------------------------------------
@@ -274,21 +325,32 @@ fi
 # NetBIOS name for secondary IPC$ connections. Without this, the default
 # name ("smbtorture" - the binary name) doesn't resolve in Docker and
 # secondary connections fail with NT_STATUS_OBJECT_NAME_NOT_FOUND.
-SMBTORTURE_ARGS=(
-    "//localhost/smbbasic"
-    "-U" "wpts-admin%TestPassword01!"
-    "--option=netbios name=localhost"
-    "--option=client min protocol=SMB2_02"
-    "--option=client max protocol=SMB3"
-)
-
-# Kerberos mode: add --use-kerberos=required when --kerberos flag or
-# SMBTORTURE_AUTH=kerberos env var is set. This requires a KDC to be
-# configured and the smbtorture container to have Kerberos client libs.
-if $KERBEROS || [[ "${SMBTORTURE_AUTH:-}" == "kerberos" ]]; then
-    SMBTORTURE_ARGS+=("--use-kerberos=required")
-    log_info "Kerberos mode: --use-kerberos=required added to smbtorture args"
-    log_warn "Kerberos requires KDC infrastructure (docker-compose kdc service or external KDC)"
+if $KERBEROS; then
+    # Kerberos mode: target DittoFS by its docker service name "dittofs" so
+    # the client requests a ticket for cifs/dittofs@DITTOFS.TEST (which is
+    # the SPN the kdc service exports to /keytabs/dittofs.keytab). The
+    # smbtorture-kerberos compose service mounts the shared keytab volume
+    # and sets KRB5_CONFIG=/keytabs/krb5.conf so gssapi finds the KDC.
+    SMBTORTURE_SERVICE="smbtorture-kerberos"
+    SMBTORTURE_ARGS=(
+        "//dittofs/smbbasic"
+        "-U" "wpts-admin@DITTOFS.TEST%TestPassword01!"
+        "--use-kerberos=required"
+        "--realm=DITTOFS.TEST"
+        "--option=netbios name=localhost"
+        "--option=client min protocol=SMB2_02"
+        "--option=client max protocol=SMB3"
+    )
+    log_info "Kerberos mode: targeting //dittofs/smbbasic with SPNEGO/Kerberos"
+else
+    SMBTORTURE_SERVICE="smbtorture"
+    SMBTORTURE_ARGS=(
+        "//localhost/smbbasic"
+        "-U" "wpts-admin%TestPassword01!"
+        "--option=netbios name=localhost"
+        "--option=client min protocol=SMB2_02"
+        "--option=client max protocol=SMB3"
+    )
 fi
 
 # run_smbtorture FILTER [PER_TEST_TIMEOUT] [SUITE_PREFIX]
@@ -305,13 +367,13 @@ run_smbtorture() {
     local rc=0
     if [[ -n "$suite_prefix" ]]; then
         ${TIMEOUT_CMD:+$TIMEOUT_CMD --signal=TERM --kill-after=30 "$per_timeout"} \
-            env PROFILE="$PROFILE" docker compose run --rm smbtorture \
+            env PROFILE="$PROFILE" docker compose run --rm "$SMBTORTURE_SERVICE" \
             "${SMBTORTURE_ARGS[@]}" "$filter" \
             2>&1 | sed -E "s/^(test|success|failure|error|skip): /\1: ${suite_prefix}./" \
             | tee -a "${RESULTS_DIR}/smbtorture-output.txt" || rc=${PIPESTATUS[0]}
     else
         ${TIMEOUT_CMD:+$TIMEOUT_CMD --signal=TERM --kill-after=30 "$per_timeout"} \
-            env PROFILE="$PROFILE" docker compose run --rm smbtorture \
+            env PROFILE="$PROFILE" docker compose run --rm "$SMBTORTURE_SERVICE" \
             "${SMBTORTURE_ARGS[@]}" "$filter" \
             2>&1 | tee -a "${RESULTS_DIR}/smbtorture-output.txt" || rc=${PIPESTATUS[0]}
     fi

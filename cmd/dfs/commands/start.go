@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/internal/sysinfo"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
+	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/api"
@@ -250,7 +251,7 @@ func createAdapterFactory(kerberosConfig *config.KerberosConfig) runtime.Adapter
 		case "nfs":
 			return createNFSAdapter(cfg, kerberosConfig)
 		case "smb":
-			return createSMBAdapter(cfg)
+			return createSMBAdapter(cfg, kerberosConfig)
 		default:
 			return nil, fmt.Errorf("unknown adapter type: %s", cfg.Type)
 		}
@@ -270,7 +271,7 @@ func createNFSAdapter(cfg *models.AdapterConfig, kerberosConfig *config.Kerberos
 	return adapter, nil
 }
 
-func createSMBAdapter(cfg *models.AdapterConfig) (runtime.ProtocolAdapter, error) {
+func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.KerberosConfig) (runtime.ProtocolAdapter, error) {
 	port := cfg.Port
 	if port == 0 {
 		port = 12445
@@ -297,5 +298,17 @@ func createSMBAdapter(cfg *models.AdapterConfig) (runtime.ProtocolAdapter, error
 		}
 	}
 
-	return smb.New(smbCfg), nil
+	smbAdapter := smb.New(smbCfg)
+
+	// Wire Kerberos provider for SPNEGO authentication. When Kerberos is not
+	// configured, the SMB adapter only accepts NTLM/guest auth.
+	if kerberosConfig != nil && kerberosConfig.Enabled {
+		provider, err := kerberos.NewProvider(kerberosConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize SMB Kerberos provider: %w", err)
+		}
+		smbAdapter.SetKerberosProvider(provider)
+	}
+
+	return smbAdapter, nil
 }

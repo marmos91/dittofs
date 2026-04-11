@@ -71,6 +71,10 @@ type Adapter struct {
 	// shareUnsubscribers holds unsubscribe functions returned by rt.OnShareChange.
 	// Called during Stop to prevent stale callbacks from accumulating across restarts.
 	shareUnsubscribers []func()
+
+	// kerberosProvider is retained for lifecycle management. It owns a
+	// background keytab-reload goroutine that must be stopped in Stop().
+	kerberosProvider *kerberos.Provider
 }
 
 // New creates a new Adapter with the specified configuration.
@@ -423,6 +427,15 @@ func (s *Adapter) SetKerberosProvider(provider *kerberos.Provider) {
 	if provider == nil {
 		return
 	}
+	// Close any prior provider to stop its keytab-reload goroutine before
+	// replacing it. Makes SetKerberosProvider idempotent and safe across
+	// settings reloads / re-inject scenarios.
+	if s.kerberosProvider != nil && s.kerberosProvider != provider {
+		if err := s.kerberosProvider.Close(); err != nil {
+			logger.Debug("SMB adapter: error closing prior kerberos provider", "error", err)
+		}
+	}
+	s.kerberosProvider = provider
 	s.handler.KerberosProvider = provider
 
 	// Create KerberosService from the provider for AP-REQ verification,
@@ -525,7 +538,8 @@ func (s *Adapter) OnReconnect(ctx context.Context, sessionID uint64, clientID st
 
 // Stop initiates graceful shutdown of the SMB server.
 //
-// Stop unsubscribes from share change notifications first, then delegates to
+// Stop unsubscribes from share change notifications, closes the Kerberos
+// provider (stopping its keytab hot-reload goroutine), then delegates to
 // BaseAdapter.Stop() for the shared shutdown sequence.
 func (s *Adapter) Stop(ctx context.Context) error {
 	// Unsubscribe from share change notifications to prevent stale callbacks
@@ -534,6 +548,15 @@ func (s *Adapter) Stop(ctx context.Context) error {
 		unsub()
 	}
 	s.shareUnsubscribers = nil
+
+	// Close the Kerberos provider to stop its keytab reload goroutine.
+	// Matches the NFS adapter's Stop() behavior (pkg/adapter/nfs/shutdown.go).
+	if s.kerberosProvider != nil {
+		if err := s.kerberosProvider.Close(); err != nil {
+			logger.Debug("SMB adapter: error closing kerberos provider", "error", err)
+		}
+		s.kerberosProvider = nil
+	}
 
 	return s.BaseAdapter.Stop(ctx)
 }
