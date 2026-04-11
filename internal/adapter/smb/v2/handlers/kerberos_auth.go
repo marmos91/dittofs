@@ -8,13 +8,10 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
 	"github.com/marmos91/dittofs/internal/logger"
 	pkgkerberos "github.com/marmos91/dittofs/pkg/auth/kerberos"
 )
-
-// gssKrb5TokenIDAPReq is the 2-byte token identifier for Kerberos AP-REQ
-// inside a GSS-API initial context token (RFC 1964 Section 1.1).
-const gssKrb5TokenIDAPReq = 0x0100
 
 // handleKerberosAuth handles Kerberos authentication via SPNEGO.
 // Validates the AP-REQ, normalizes the session key to 16 bytes for SMB3 KDF,
@@ -41,6 +38,7 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 	// The SPNEGO MechToken is a GSS-API initial context token (RFC 2743
 	// Section 3.1) wrapping the Kerberos AP-REQ. KerberosService.Authenticate
 	// expects a raw AP-REQ, so we need to strip the GSS-API wrapper first.
+	logKrb5Dump("incoming mechToken", mechToken)
 	apReqBytes, err := extractAPReqFromGSSToken(mechToken)
 	if err != nil {
 		logger.Info("Failed to extract AP-REQ from GSS token", "error", err)
@@ -128,26 +126,37 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 		"signingEnabled", sess.ShouldSign(),
 		"encryptData", sess.ShouldEncrypt())
 
-	// Build mutual auth AP-REP via shared service for SPNEGO accept-complete response.
-	// Use the ticket session key for AP-REP encryption per RFC 4120 (not the context
-	// key which may be the subkey). Clients decrypt AP-REP with the ticket session key.
-	//
-	// TODO(#335): the current AP-REP format is not accepted by MIT Kerberos
-	// clients (Samba, smbtorture, smbclient) — they report GSS_S_DEFECTIVE_TOKEN
-	// during gss_init_sec_context continuation. The server-side Kerberos auth
-	// itself works (AP-REQ verification, identity mapping, session creation,
-	// signing), but mutual auth verification on the client fails.
-	ticketSessionKey := authResult.APReq.Ticket.DecryptedEncPart.Key
-	apRepToken, err := h.KerberosService.BuildMutualAuth(&authResult.APReq, ticketSessionKey)
-	if err != nil {
-		logger.Debug("Failed to build AP-REP for mutual auth", "error", err)
-		// Fall back to accept-complete without AP-REP (still functional).
-		apRepToken = nil
-	}
-
 	// Match the client's Kerberos OID in the SPNEGO response.
 	// Windows clients using the MS OID expect to see it echoed back.
 	responseOID := clientKerberosOID(parsedToken)
+
+	// Build mutual auth AP-REP and wrap it in a GSS-API InitialContextToken
+	// (RFC 2743 Section 3.1) for the SPNEGO accept-complete response:
+	//
+	//   0x60 [len] 0x06 <oid-len> <oid-bytes> 0x02 0x00 <AP-REP>
+	//
+	// AP-REP encryption uses the ticket session key per RFC 4120 (not the
+	// context subkey), which is what clients decrypt with.
+	//
+	// CRITICAL: the OID inside this wrapper must be the standard RFC 4121
+	// Kerberos V5 OID (1.2.840.113554.1.2.2), even when the client advertised
+	// the MS legacy OID (1.2.840.48018.1.2.2) in SPNEGO mechTypes. MIT's
+	// krb5_gss and Heimdal only recognize the standard OID internally, so
+	// echoing the MS OID here causes them to reject the token with
+	// GSS_S_DEFECTIVE_TOKEN (issue #335). Windows SSPI accepts both. The
+	// outer SPNEGO supportedMech (responseOID) still mirrors the client's
+	// choice for negTokenResp compatibility.
+	ticketSessionKey := authResult.APReq.Ticket.DecryptedEncPart.Key
+	rawAPRep, err := h.KerberosService.BuildMutualAuth(&authResult.APReq, ticketSessionKey)
+	var apRepToken []byte
+	if err != nil {
+		logger.Debug("Failed to build AP-REP for mutual auth", "error", err)
+		// Fall back to accept-complete without AP-REP (still functional).
+	} else {
+		logKrb5Dump("raw AP-REP (pre-wrap)", rawAPRep)
+		apRepToken = kerbauth.WrapGSSToken(rawAPRep, kerbauth.KerberosV5OIDBytes, kerbauth.GSSTokenIDAPRep)
+		logKrb5Dump("wrapped AP-REP (GSS)", apRepToken)
+	}
 
 	// Handle SPNEGO mechListMIC for downgrade protection.
 	// If the client sent a mechListMIC, verify it.
@@ -278,8 +287,8 @@ func extractAPReqFromGSSToken(token []byte) ([]byte, error) {
 
 	// Token ID (RFC 1964 Section 1.1). Must be 0x0100 for AP-REQ.
 	tokenID := uint16(body[2+oidLen])<<8 | uint16(body[2+oidLen+1])
-	if tokenID != gssKrb5TokenIDAPReq {
-		return nil, fmt.Errorf("unexpected krb5 token ID: 0x%04x (want 0x%04x for AP-REQ)", tokenID, gssKrb5TokenIDAPReq)
+	if tokenID != kerbauth.GSSTokenIDAPReq {
+		return nil, fmt.Errorf("unexpected krb5 token ID: 0x%04x (want 0x%04x for AP-REQ)", tokenID, kerbauth.GSSTokenIDAPReq)
 	}
 
 	return body[apReqStart:], nil
@@ -333,4 +342,21 @@ func sessionEncryptFlag(sess interface{ ShouldEncrypt() bool }) uint16 {
 		return types.SMB2SessionFlagEncryptData
 	}
 	return 0
+}
+
+// logKrb5Dump emits a hex dump of a Kerberos-related byte blob at debug level.
+// Used when diagnosing interop issues with MIT clients — inspecting the exact
+// wire bytes is the fastest way to isolate framing bugs (see issue #335).
+// Safe to leave enabled: only fires under DEBUG and caps the hex to 512 bytes.
+func logKrb5Dump(label string, b []byte) {
+	const maxHex = 512
+	n := len(b)
+	if n > maxHex {
+		b = b[:maxHex]
+	}
+	logger.Debug("krb5 hex dump",
+		"label", label,
+		"len", n,
+		"hex", fmt.Sprintf("%x", b),
+	)
 }
