@@ -75,7 +75,7 @@ func TestRealKDC(t *testing.T) {
 			SeqNum:  0,
 			Service: gss.RPCGSSSvcNone,
 		})
-		initResult := proc.Process(context.Background(), initCred, nil, gssToken)
+		initResult := proc.Process(context.Background(), initCred, nil, xdrFrameToken(gssToken))
 		if initResult.Err != nil {
 			t.Fatalf("INIT failed: %v", initResult.Err)
 		}
@@ -192,7 +192,7 @@ func TestRealKDC(t *testing.T) {
 			SeqNum:  0,
 			Service: gss.RPCGSSSvcIntegrity,
 		})
-		initResult := proc.Process(context.Background(), initCred, nil, gssToken)
+		initResult := proc.Process(context.Background(), initCred, nil, xdrFrameToken(gssToken))
 		if initResult.Err != nil {
 			t.Fatalf("INIT failed: %v", initResult.Err)
 		}
@@ -250,7 +250,7 @@ func TestRealKDC(t *testing.T) {
 			SeqNum:  0,
 			Service: gss.RPCGSSSvcPrivacy,
 		})
-		initResult := proc.Process(context.Background(), initCred, nil, gssToken)
+		initResult := proc.Process(context.Background(), initCred, nil, xdrFrameToken(gssToken))
 		if initResult.Err != nil {
 			t.Fatalf("INIT failed: %v", initResult.Err)
 		}
@@ -325,7 +325,7 @@ func TestRealKDC(t *testing.T) {
 			SeqNum:  0,
 			Service: gss.RPCGSSSvcNone,
 		})
-		initResult := proc.Process(context.Background(), initCred, nil, gssToken)
+		initResult := proc.Process(context.Background(), initCred, nil, xdrFrameToken(gssToken))
 		if initResult.Err != nil {
 			t.Fatalf("INIT failed: %v", initResult.Err)
 		}
@@ -795,4 +795,14 @@ func writeXDROpaque(buf *bytes.Buffer, data []byte) {
 	for range int(padding) {
 		buf.WriteByte(0)
 	}
+}
+
+// xdrFrameToken wraps a raw GSS token in XDR opaque framing (4-byte length
+// prefix + padding) as required by RFC 2203 §5.2.1 rpc_gss_init_arg.
+// proc.Process expects this framing; passing a raw token causes
+// decodeOpaqueToken to misinterpret the first bytes as a length.
+func xdrFrameToken(token []byte) []byte {
+	var buf bytes.Buffer
+	writeXDROpaque(&buf, token)
+	return buf.Bytes()
 }
