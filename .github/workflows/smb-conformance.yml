@@ -184,12 +184,6 @@ jobs:
   smbtorture-kerberos:
     name: smbtorture Kerberos
     if: github.event_name != 'pull_request'
-    # The server-side Kerberos auth succeeds (AP-REQ verification, identity
-    # mapping, session creation, signing) but MIT Kerberos clients currently
-    # reject the AP-REP we send back with GSS_S_DEFECTIVE_TOKEN during
-    # mutual-auth continuation. Tracked for follow-up; until that is fixed
-    # we allow this job to fail without breaking the conformance workflow.
-    continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
