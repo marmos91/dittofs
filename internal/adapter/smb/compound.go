@@ -526,7 +526,8 @@ func applyCompoundCreditZeroing(responses []compoundResponse) {
 // commands cannot inherit a valid session/tree context and must get INVALID_PARAMETER.
 func isSessionLevelError(status types.Status) bool {
 	return status == types.StatusUserSessionDeleted ||
-		status == types.StatusNetworkNameDeleted
+		status == types.StatusNetworkNameDeleted ||
+		status == types.StatusNetworkSessionExpired
 }
 
 // buildErrorResponseHeaderAndBody creates a response header and error body for
@@ -608,6 +609,10 @@ func VerifyCompoundCommandSignature(data []byte, hdr *header.SMB2Header, connInf
 
 	sess, ok := connInfo.Handler.GetSession(hdr.SessionID)
 	if !ok {
+		return nil
+	}
+
+	if sess.LoggedOff.Load() || sess.IsExpired() {
 		return nil
 	}
 
