@@ -124,20 +124,14 @@ func (lm *LeaseManager) RequestLease(
 		requestedState, isDirectory,
 	)
 	if err != nil && !errors.Is(err, lock.ErrLeaseBreakInProgress) {
-		lm.mu.Lock()
-		delete(lm.sessionMap, keyHex)
-		delete(lm.leaseShare, keyHex)
-		lm.mu.Unlock()
+		lm.removeLeaseMapping(keyHex)
 		return 0, 0, err
 	}
 
 	// Remove pre-registered mapping if the lease was denied (None state means
 	// the LockManager rejected the request without an error code).
 	if grantedState == lock.LeaseStateNone {
-		lm.mu.Lock()
-		delete(lm.sessionMap, keyHex)
-		delete(lm.leaseShare, keyHex)
-		lm.mu.Unlock()
+		lm.removeLeaseMapping(keyHex)
 	}
 
 	return grantedState, epoch, err
@@ -180,10 +174,7 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 			logger.Debug("AcknowledgeLeaseBreak: lease not found in lock manager, treating as success",
 				"leaseKey", keyHex)
 			// Clean up our maps if they still have stale entries
-			lm.mu.Lock()
-			delete(lm.sessionMap, keyHex)
-			delete(lm.leaseShare, keyHex)
-			lm.mu.Unlock()
+			lm.removeLeaseMapping(keyHex)
 			return nil
 		}
 		return err
@@ -191,10 +182,7 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 
 	// If acknowledged to None, remove from session map
 	if acknowledgedState == lock.LeaseStateNone {
-		lm.mu.Lock()
-		delete(lm.sessionMap, keyHex)
-		delete(lm.leaseShare, keyHex)
-		lm.mu.Unlock()
+		lm.removeLeaseMapping(keyHex)
 	}
 
 	return nil
@@ -212,10 +200,7 @@ func (lm *LeaseManager) ReleaseLease(ctx context.Context, leaseKey [16]byte) err
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
 		// Already released or no manager
-		lm.mu.Lock()
-		delete(lm.sessionMap, keyHex)
-		delete(lm.leaseShare, keyHex)
-		lm.mu.Unlock()
+		lm.removeLeaseMapping(keyHex)
 		return nil
 	}
 
@@ -224,11 +209,7 @@ func (lm *LeaseManager) ReleaseLease(ctx context.Context, leaseKey [16]byte) err
 		return err
 	}
 
-	lm.mu.Lock()
-	delete(lm.sessionMap, keyHex)
-	delete(lm.leaseShare, keyHex)
-	lm.mu.Unlock()
-
+	lm.removeLeaseMapping(keyHex)
 	return nil
 }
 
@@ -434,17 +415,6 @@ func (lm *LeaseManager) BreakHandleLeasesOnOpenAsync(
 	return lockMgr.BreakHandleLeasesForSMBOpen(handleKey, exclude)
 }
 
-// BreakParentHandleLeasesOnCreate breaks Handle leases on a parent directory
-// when a file is created, overwritten, or superseded inside it.
-//
-// Per MS-SMB2 3.3.5.9 and MS-FSA 2.1.5.1.2.1: modifying directory contents
-// (create/overwrite/supersede) must break Handle leases on the directory for
-// other clients. The creating client's leases are excluded via excludeClientID.
-//
-// This enables BVT_DirectoryLeasing_LeaseBreakOnMultiClients: when one client
-// creates a file, other clients holding RH leases on the parent directory
-// receive a lease break notification.
-//
 // resolveParentBreakArgs resolves the lock manager, handle key, and exclude
 // owner for parent directory lease break operations. Returns nil lockMgr if
 // the share has no lock manager.
@@ -592,6 +562,15 @@ func (lm *LeaseManager) RangeLeases(fn func(leaseKeyHex string, sessionID uint64
 			return
 		}
 	}
+}
+
+// removeLeaseMapping removes a lease key from the session and share maps.
+// Must be called without lm.mu held.
+func (lm *LeaseManager) removeLeaseMapping(keyHex string) {
+	lm.mu.Lock()
+	delete(lm.sessionMap, keyHex)
+	delete(lm.leaseShare, keyHex)
+	lm.mu.Unlock()
 }
 
 // resolveLockManager resolves the LockManager for a share name.
