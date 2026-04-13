@@ -5,7 +5,7 @@ RUN set -eu; \
     for i in 1 2 3; do \
         apt-get update \
           && apt-get install -y --no-install-recommends \
-               nfs-common krb5-user rpcbind \
+               nfs-common krb5-user rpcbind kmod \
           && rm -rf /var/lib/apt/lists/* \
           && exit 0; \
         echo "apt-get attempt $i failed, retrying in 5s..." >&2; \

@@ -45,12 +45,19 @@ echo "$USER_PASSWORD" | kinit "$PRINCIPAL@$REALM" \
     || fail "kinit failed"
 klist || true
 
+# Load NFS kernel module and mount rpc_pipefs (required for kernel NFS client).
+# The container runs with --privileged so we have access to modprobe and mount.
+log "Loading NFS kernel modules..."
+modprobe nfs || fail "modprobe nfs failed (host kernel may not have NFS support)"
+mkdir -p /run/rpc_pipefs
+mount -t rpc_pipefs rpc_pipefs /run/rpc_pipefs || fail "mount rpc_pipefs failed"
+
 # Start rpc.gssd for kernel NFS Kerberos support
 log "Starting rpc.gssd..."
 rpcbind || true
 rpc.gssd -f &
 GSSD_PID=$!
-sleep 1
+sleep 2
 
 # Mount with sec=krb5
 mkdir -p "$MOUNT_POINT"
