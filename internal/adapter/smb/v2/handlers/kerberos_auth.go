@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/jcmturner/gofork/encoding/asn1"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
 	"github.com/marmos91/dittofs/internal/logger"
 	pkgkerberos "github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/identity"
@@ -217,6 +219,66 @@ func (h *Handler) resolveKerberosPrincipal(ctx *SMBHandlerContext, principal, re
 	return pkgkerberos.ResolvePrincipal(principal, realm, h.IdentityConfig)
 }
 
+func extractAPReqFromGSSToken(token []byte) ([]byte, error) {
+	if len(token) == 0 {
+		return nil, fmt.Errorf("empty token")
+	}
+	if token[0] != 0x60 {
+		return token, nil
+	}
+	length, lengthBytes, err := parseGSSASN1Length(token[1:])
+	if err != nil {
+		return nil, fmt.Errorf("parse GSS token length: %w", err)
+	}
+	if uint64(length) > uint64(len(token)) {
+		return nil, fmt.Errorf("GSS token length %d exceeds buffer size %d", length, len(token))
+	}
+	bodyStart := 1 + lengthBytes
+	bodyEnd := bodyStart + int(length)
+	if bodyEnd > len(token) {
+		return nil, fmt.Errorf("GSS token truncated: expected %d bytes, have %d", bodyEnd, len(token))
+	}
+	body := token[bodyStart:bodyEnd]
+	if len(body) < 4 || body[0] != 0x06 {
+		return nil, fmt.Errorf("expected OID tag 0x06 at body start")
+	}
+	if body[1] >= 0x80 {
+		return nil, fmt.Errorf("GSS body OID uses long-form length (0x%02x), not supported", body[1])
+	}
+	oidLen := int(body[1])
+	apReqStart := 2 + oidLen + 2
+	if apReqStart > len(body) {
+		return nil, fmt.Errorf("GSS body truncated: need %d bytes for OID+tokID, have %d", apReqStart, len(body))
+	}
+	tokenID := uint16(body[2+oidLen])<<8 | uint16(body[2+oidLen+1])
+	if tokenID != kerbauth.GSSTokenIDAPReq {
+		return nil, fmt.Errorf("unexpected krb5 token ID: 0x%04x (want 0x%04x for AP-REQ)", tokenID, kerbauth.GSSTokenIDAPReq)
+	}
+	return body[apReqStart:], nil
+}
+
+func parseGSSASN1Length(buf []byte) (uint32, int, error) {
+	if len(buf) == 0 {
+		return 0, 0, fmt.Errorf("empty length field")
+	}
+	first := buf[0]
+	if first < 0x80 {
+		return uint32(first), 1, nil
+	}
+	n := int(first & 0x7f)
+	if n == 0 || n > 4 {
+		return 0, 0, fmt.Errorf("unsupported length encoding 0x%02x", first)
+	}
+	if len(buf) < 1+n {
+		return 0, 0, fmt.Errorf("truncated length field")
+	}
+	var length uint32
+	for i := 1; i <= n; i++ {
+		length = (length << 8) | uint32(buf[i])
+	}
+	return length, 1 + n, nil
+}
+
 // sessionEncryptFlag returns the session encrypt data flag if the session
 // should encrypt, or 0 if encryption is not enabled.
 func sessionEncryptFlag(sess interface{ ShouldEncrypt() bool }) uint16 {
@@ -224,4 +286,20 @@ func sessionEncryptFlag(sess interface{ ShouldEncrypt() bool }) uint16 {
 		return types.SMB2SessionFlagEncryptData
 	}
 	return 0
+}
+
+func logKrb5Dump(label string, b []byte) {
+	if !logger.IsDebugEnabled() {
+		return
+	}
+	const maxHex = 512
+	n := len(b)
+	if n > maxHex {
+		b = b[:maxHex]
+	}
+	logger.Debug("krb5 hex dump",
+		"label", label,
+		"len", n,
+		"hex", fmt.Sprintf("%x", b),
+	)
 }

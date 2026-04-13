@@ -9,35 +9,45 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
-// testStoreWithIDMap embeds store.Store (nil, unused) and adds IdentityMappingStore.
-// This lets runtime.New() accept it while GetIdentityMappingStore() succeeds.
 type testStoreWithIDMap struct {
 	store.Store
-	mappings map[string]*models.IdentityMapping
+	mappings map[string]*models.IdentityMapping // keyed by "provider|principal"
 }
 
-func (s *testStoreWithIDMap) GetIdentityMapping(_ context.Context, principal string) (*models.IdentityMapping, error) {
-	if mapping, ok := s.mappings[principal]; ok {
+func idmapKey(provider, principal string) string {
+	return provider + "|" + principal
+}
+
+func (s *testStoreWithIDMap) GetIdentityMapping(_ context.Context, provider, principal string) (*models.IdentityMapping, error) {
+	if mapping, ok := s.mappings[idmapKey(provider, principal)]; ok {
 		return mapping, nil
 	}
 	return nil, models.ErrMappingNotFound
 }
 
-func (s *testStoreWithIDMap) ListIdentityMappings(_ context.Context) ([]*models.IdentityMapping, error) {
+func (s *testStoreWithIDMap) ListIdentityMappings(_ context.Context, _ string) ([]*models.IdentityMapping, error) {
 	return nil, nil
 }
 
 func (s *testStoreWithIDMap) CreateIdentityMapping(_ context.Context, mapping *models.IdentityMapping) error {
-	s.mappings[mapping.Principal] = mapping
+	if mapping.ProviderName == "" {
+		mapping.ProviderName = "kerberos"
+	}
+	s.mappings[idmapKey(mapping.ProviderName, mapping.Principal)] = mapping
 	return nil
 }
 
-func (s *testStoreWithIDMap) DeleteIdentityMapping(_ context.Context, principal string) error {
-	if _, ok := s.mappings[principal]; !ok {
+func (s *testStoreWithIDMap) DeleteIdentityMapping(_ context.Context, provider, principal string) error {
+	key := idmapKey(provider, principal)
+	if _, ok := s.mappings[key]; !ok {
 		return models.ErrMappingNotFound
 	}
-	delete(s.mappings, principal)
+	delete(s.mappings, key)
 	return nil
+}
+
+func (s *testStoreWithIDMap) ListIdentityMappingsForUser(_ context.Context, _ string) ([]*models.IdentityMapping, error) {
+	return nil, nil
 }
 
 func TestFormatNTLMPrincipal(t *testing.T) {
@@ -62,9 +72,9 @@ func TestFormatNTLMPrincipal(t *testing.T) {
 func TestResolveIdentityMapping(t *testing.T) {
 	mockStore := &testStoreWithIDMap{
 		mappings: map[string]*models.IdentityMapping{
-			`CORP\alice`:      {Principal: `CORP\alice`, Username: "alice-local"},
-			"bob@EXAMPLE.COM": {Principal: "bob@EXAMPLE.COM", Username: "bob-local"},
-			"charlie":         {Principal: "charlie", Username: "charlie-mapped"},
+			idmapKey("kerberos", `CORP\alice`):      {ProviderName: "kerberos", Principal: `CORP\alice`, Username: "alice-local"},
+			idmapKey("kerberos", "bob@EXAMPLE.COM"): {ProviderName: "kerberos", Principal: "bob@EXAMPLE.COM", Username: "bob-local"},
+			idmapKey("kerberos", "charlie"):         {ProviderName: "kerberos", Principal: "charlie", Username: "charlie-mapped"},
 		},
 	}
 
