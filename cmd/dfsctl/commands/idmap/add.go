@@ -9,24 +9,22 @@ import (
 )
 
 var (
+	addProvider  string
 	addPrincipal string
-	addUsername  string
+	addUsername   string
 )
 
 var addCmd = &cobra.Command{
 	Use:   "add",
 	Short: "Add an identity mapping",
-	Long: `Add a new identity mapping from an authentication principal to a control plane user.
-
-Supports NFS Kerberos principals (user@REALM), SMB NTLM principals
-(DOMAIN\user), and SMB Kerberos principals (user@REALM).
+	Long: `Add a new identity mapping from an external identity to a DittoFS user.
 
 Examples:
-  # Map a Kerberos principal (NFS or SMB)
+  # Map a Kerberos principal to a local user
   dfsctl idmap add --principal alice@EXAMPLE.COM --username alice
 
-  # Map an NTLM domain user
-  dfsctl idmap add --principal 'CORP\alice' --username alice
+  # Map with explicit provider
+  dfsctl idmap add --provider kerberos --principal admin@CORP.COM --username alice
 
   # Map a numeric UID principal
   dfsctl idmap add --principal 1000@localdomain --username bob`,
@@ -34,8 +32,9 @@ Examples:
 }
 
 func init() {
-	addCmd.Flags().StringVar(&addPrincipal, "principal", "", "Authentication principal (e.g., alice@EXAMPLE.COM or CORP\\alice)")
-	addCmd.Flags().StringVar(&addUsername, "username", "", "Control plane username")
+	addCmd.Flags().StringVar(&addProvider, "provider", "kerberos", "Identity provider (e.g., kerberos, oidc, ad)")
+	addCmd.Flags().StringVar(&addPrincipal, "principal", "", "External identity (e.g., alice@EXAMPLE.COM)")
+	addCmd.Flags().StringVar(&addUsername, "username", "", "DittoFS username")
 	_ = addCmd.MarkFlagRequired("principal")
 	_ = addCmd.MarkFlagRequired("username")
 }
@@ -46,7 +45,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	mapping, err := client.CreateIdentityMapping(addPrincipal, addUsername)
+	mapping, err := client.CreateIdentityMapping(addProvider, addPrincipal, addUsername)
 	if err != nil {
 		return fmt.Errorf("failed to create identity mapping: %w", err)
 	}
