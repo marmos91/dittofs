@@ -1,0 +1,52 @@
+# NFS Kerberos Conformance Tests
+#
+# Validates NFS sec=krb5 mount + file operations using a real MIT Kerberos
+# KDC and Linux kernel NFS client. Catches interop bugs that the gokrb5-only
+# integration tests cannot detect (see #339, #335).
+
+name: NFS Kerberos
+
+on:
+  push:
+    branches: [develop, main]
+    paths:
+      - 'internal/adapter/nfs/**'
+      - 'internal/auth/kerberos/**'
+      - 'pkg/auth/kerberos/**'
+      - 'test/nfs-conformance/**'
+      - '.github/workflows/nfs-kerberos.yml'
+  pull_request:
+    branches: [develop, main]
+    paths:
+      - 'internal/adapter/nfs/**'
+      - 'internal/auth/kerberos/**'
+      - 'pkg/auth/kerberos/**'
+      - 'test/nfs-conformance/**'
+      - '.github/workflows/nfs-kerberos.yml'
+
+jobs:
+  nfs-kerberos:
+    name: NFS sec=krb5 mount test
+    runs-on: ubuntu-latest
+    # Initially allow failures while the baseline is being established.
+    # Remove once the first green run is confirmed.
+    continue-on-error: true
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run NFS Kerberos tests
+        run: |
+          cd test/nfs-conformance
+          chmod +x run.sh bootstrap.sh
+          ./run.sh --verbose
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nfs-kerberos-results
+          path: test/nfs-conformance/results/
+          retention-days: 30

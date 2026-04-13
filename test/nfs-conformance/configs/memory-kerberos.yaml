@@ -1,0 +1,31 @@
+# DittoFS Configuration for NFS Kerberos Conformance Testing
+# Profile: memory/memory + Kerberos auth
+
+logging:
+  level: "DEBUG"
+  format: "text"
+  output: "stdout"
+
+shutdown_timeout: 30s
+
+database:
+  type: sqlite
+  sqlite:
+    path: "/data/controlplane.db"
+
+controlplane:
+  port: 8080
+  jwt:
+    secret: "nfs-conformance-test-secret-key-32ch"
+    access_token_duration: 15m
+    refresh_token_duration: 168h
+
+cache:
+  path: "/data/cache"
+  size: "256MB"
+
+kerberos:
+  enabled: true
+  keytab_path: "/keytabs/dittofs.keytab"
+  service_principal: "nfs/dittofs@DITTOFS.TEST"
+  krb5_conf: "/keytabs/krb5.conf"

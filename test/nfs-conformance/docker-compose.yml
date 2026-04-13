@@ -1,0 +1,59 @@
+# Docker Compose for NFS Kerberos Conformance Testing
+#
+# Usage:
+#   docker compose up --build --abort-on-container-exit nfs-client
+
+services:
+  dittofs:
+    build:
+      context: ../..
+      dockerfile: test/nfs-conformance/Dockerfile.dittofs
+    volumes:
+      - ./configs/memory-kerberos.yaml:/config/config.yaml:ro
+      - ./bootstrap.sh:/app/bootstrap.sh:ro
+      - dittofs-data:/data
+      - kdc-keytabs:/keytabs:ro
+    depends_on:
+      kdc:
+        condition: service_healthy
+    environment:
+      - DITTOFS_LOGGING_LEVEL=DEBUG
+      - DITTOFS_CONTROLPLANE_SECRET=NfsConformanceTesting2026!Secret
+      - DITTOFS_ADMIN_INITIAL_PASSWORD=NfsConformanceTesting2026!Secret
+
+  kdc:
+    build:
+      context: ./kdc
+    hostname: kdc
+    environment:
+      - KRB5_REALM=DITTOFS.TEST
+      - KDC_HOST=kdc
+    volumes:
+      - kdc-keytabs:/keytabs
+    healthcheck:
+      test: ["CMD-SHELL", "klist -k /keytabs/dittofs.keytab > /dev/null 2>&1 && klist -k /keytabs/client.keytab > /dev/null 2>&1"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  nfs-client:
+    build:
+      context: ./nfs-client
+    privileged: true
+    depends_on:
+      dittofs:
+        condition: service_healthy
+    volumes:
+      - kdc-keytabs:/keytabs:ro
+    environment:
+      - NFS_SERVER=dittofs
+      - NFS_PORT=12049
+      - NFS_EXPORT=/export
+      - KRB5_REALM=DITTOFS.TEST
+      - KRB5_PRINCIPAL=nfs-test
+      - KRB5_CONFIG=/keytabs/krb5.conf
+      - KRB5_TRACE=/dev/stderr
+
+volumes:
+  dittofs-data:
+  kdc-keytabs:
