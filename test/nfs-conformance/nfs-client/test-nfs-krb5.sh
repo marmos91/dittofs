@@ -47,8 +47,13 @@ klist || true
 
 # Load NFS kernel module and mount rpc_pipefs (required for kernel NFS client).
 # The container runs with --privileged so we have access to modprobe and mount.
+# The host runner must have installed linux-modules-extra for NFS support.
 log "Loading NFS kernel modules..."
-modprobe nfs || fail "modprobe nfs failed (host kernel may not have NFS support)"
+if ! modprobe nfs 2>/dev/null; then
+    log "WARNING: NFS kernel module not available — skipping test"
+    log "Install linux-modules-extra-\$(uname -r) on the host to enable NFS tests"
+    exit 0
+fi
 mkdir -p /run/rpc_pipefs
 mount -t rpc_pipefs rpc_pipefs /run/rpc_pipefs || fail "mount rpc_pipefs failed"
 

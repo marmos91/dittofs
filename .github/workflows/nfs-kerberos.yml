@@ -37,6 +37,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install NFS kernel modules
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nfs-common linux-modules-extra-$(uname -r) || true
+          sudo modprobe nfs || echo "WARNING: NFS kernel module not available"
+
       - name: Run NFS Kerberos tests
         run: |
           cd test/nfs-conformance
