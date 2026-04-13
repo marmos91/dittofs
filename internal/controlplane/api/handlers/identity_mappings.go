@@ -111,7 +111,13 @@ func (h *IdentityMappingHandler) Delete(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	h.deleteMapping(w, r, provider)
+	decodedProvider, err := url.PathUnescape(provider)
+	if err != nil {
+		BadRequest(w, "Invalid provider format")
+		return
+	}
+
+	h.deleteMapping(w, r, decodedProvider)
 }
 
 // ListForUser handles GET /api/v1/identity-mappings/users/{username}.
@@ -122,7 +128,13 @@ func (h *IdentityMappingHandler) ListForUser(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	mappings, err := h.store.ListIdentityMappingsForUser(r.Context(), username)
+	decodedUsername, err := url.PathUnescape(username)
+	if err != nil {
+		BadRequest(w, "Invalid username format")
+		return
+	}
+
+	mappings, err := h.store.ListIdentityMappingsForUser(r.Context(), decodedUsername)
 	if err != nil {
 		InternalServerError(w, "Failed to list identity mappings for user")
 		return

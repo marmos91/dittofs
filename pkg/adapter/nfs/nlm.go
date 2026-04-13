@@ -611,6 +611,7 @@ func (s *NFSAdapter) initGSSProcessor(rt *runtime.Runtime) {
 		realm := adapter.ExtractRealm(s.kerberosConfig.ServicePrincipal)
 		resolver := adapter.BuildIdentityResolver(rt, realm)
 		s.gssProcessor.SetResolver(resolver)
+		rt.OnIdentityMappingChange(resolver.InvalidateCache)
 	}
 
 	logger.Info("RPCSEC_GSS (Kerberos) authentication enabled",

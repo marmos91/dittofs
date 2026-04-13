@@ -330,6 +330,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Route("/identity-mappings", func(r chi.Router) {
 					r.Use(apiMiddleware.RequireAdmin())
 					idmapHandler := handlers.NewIdentityMappingHandler(ims)
+					idmapHandler.SetOnChange(rt.NotifyIdentityMappingChange)
 					r.Get("/", idmapHandler.List)
 					r.Post("/", idmapHandler.Create)
 					r.Route("/by-provider/{provider}", func(r chi.Router) {

@@ -258,7 +258,10 @@ func (s *Adapter) SetRuntime(rtAny any) {
 	// Uses DB-backed LinkStore + convention fallback, shared with the NFS adapter.
 	if s.handler.KerberosProvider != nil {
 		realm := adapter.ExtractRealm(s.handler.KerberosProvider.ServicePrincipal())
-		s.handler.IdentityResolver = adapter.BuildIdentityResolver(rt, realm)
+		resolver := adapter.BuildIdentityResolver(rt, realm)
+		s.handler.IdentityResolver = resolver
+		unsub := rt.OnIdentityMappingChange(resolver.InvalidateCache)
+		s.shareUnsubscribers = append(s.shareUnsubscribers, unsub)
 	}
 
 	logger.Debug("SMB adapter configured with runtime", "shares", rt.CountShares())
