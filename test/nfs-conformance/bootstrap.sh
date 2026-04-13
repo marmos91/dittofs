@@ -1,9 +1,9 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # bootstrap.sh - Configure DittoFS for NFS Kerberos conformance testing
 #
 # Provisions stores, shares, users, and NFS adapter on a running DittoFS instance.
 
-set -euo pipefail
+set -eu
 
 DFSCTL="${DFSCTL:-dfsctl}"
 API_URL="${API_URL:-http://localhost:8080}"
@@ -17,7 +17,8 @@ log_info() { echo "[BOOTSTRAP] $*"; }
 log_error() { echo "[BOOTSTRAP] ERROR: $*" >&2; }
 
 wait_for_ready() {
-    local max=30 attempt=1
+    max=30
+    attempt=1
     log_info "Waiting for DittoFS API at ${API_URL}/health/ready ..."
     while [ "$attempt" -le "$max" ]; do
         if curl -sf "${API_URL}/health/ready" >/dev/null 2>&1; then

@@ -27,7 +27,7 @@ docker compose up -d --build dittofs
 
 log "Waiting for DittoFS to be healthy..."
 for i in $(seq 1 30); do
-    if docker compose exec dittofs wget -qO- http://localhost:8080/health/ready >/dev/null 2>&1; then
+    if docker compose exec dittofs curl -sf http://localhost:8080/health/ready >/dev/null 2>&1; then
         break
     fi
     if [ "$i" -eq 30 ]; then
