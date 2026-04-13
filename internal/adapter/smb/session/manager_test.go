@@ -3,6 +3,7 @@ package session
 import (
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestManager_CreateSession(t *testing.T) {
@@ -32,6 +33,29 @@ func TestManager_CreateSession(t *testing.T) {
 	if retrieved != session {
 		t.Error("Retrieved session should be same instance")
 	}
+}
+
+func TestSession_IsExpired(t *testing.T) {
+	t.Run("ZeroExpiresAt_NeverExpires", func(t *testing.T) {
+		s := NewSession(1, "client", false, "user", "DOMAIN")
+		if s.IsExpired() {
+			t.Error("Session with zero ExpiresAt should not be expired")
+		}
+	})
+	t.Run("FutureExpiresAt_NotExpired", func(t *testing.T) {
+		s := NewSession(1, "client", false, "user", "DOMAIN")
+		s.ExpiresAt = time.Now().Add(1 * time.Hour)
+		if s.IsExpired() {
+			t.Error("Session with future ExpiresAt should not be expired")
+		}
+	})
+	t.Run("PastExpiresAt_IsExpired", func(t *testing.T) {
+		s := NewSession(1, "client", false, "user", "DOMAIN")
+		s.ExpiresAt = time.Now().Add(-1 * time.Second)
+		if !s.IsExpired() {
+			t.Error("Session with past ExpiresAt should be expired")
+		}
+	})
 }
 
 func TestManager_DeleteSession(t *testing.T) {
