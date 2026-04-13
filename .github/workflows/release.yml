@@ -39,6 +39,9 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Install Linux packaging tools
+        run: sudo apt-get update && sudo apt-get install -y dpkg-dev createrepo-c
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
@@ -49,6 +52,30 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+
+      - name: Publish Linux repositories
+        if: success()
+        run: ./scripts/publish-linux-repos.sh
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+
+      - name: Upload packages to S3
+        if: success()
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          for ext in deb rpm pkg.tar.zst; do
+            for f in dist/*."${ext}"; do
+              [ -f "$f" ] || continue
+              aws s3 cp "$f" "s3://${S3_BUCKET:-dittofs-binaries}/${VERSION}/$(basename "$f")" \
+                --endpoint-url "${S3_ENDPOINT:-https://s3.cubbit.eu}" \
+                --acl public-read
+            done
+          done
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
   operator:
     name: Build Operator Image

@@ -70,12 +70,62 @@ dfs init && dfs start
 nix develop github:marmos91/dittofs
 ```
 
+#### Quick Install (macOS / Linux)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/marmos91/dittofs/develop/scripts/install.sh | sh
+```
+
 #### Using Homebrew
 
 ```bash
 brew tap marmos91/tap
 brew install marmos91/tap/dfs      # Server daemon
 brew install marmos91/tap/dfsctl   # Client CLI
+```
+
+#### Debian / Ubuntu (APT)
+
+```bash
+echo "deb https://s3.cubbit.eu/dittofs-binaries/apt stable main" | sudo tee /etc/apt/sources.list.d/dfs.list
+sudo apt update && sudo apt install dfs
+sudo systemctl enable --now dfs
+```
+
+#### RHEL / Fedora (YUM)
+
+```bash
+sudo curl -fsSLo /etc/yum.repos.d/dfs.repo https://s3.cubbit.eu/dittofs-binaries/rpm/dfs.repo
+sudo yum install dfs
+sudo systemctl enable --now dfs
+```
+
+#### Arch Linux
+
+```bash
+# Download the latest .pkg.tar.zst from GitHub Releases
+sudo pacman -U dfs_<version>_amd64.pkg.tar.zst
+sudo systemctl enable --now dfs
+```
+
+#### Docker
+
+```bash
+docker run -d \
+  -p 12049:12049 \
+  -p 12445:12445 \
+  -p 8080:8080 \
+  -v /path/to/config.yaml:/config/config.yaml:ro \
+  -v dittofs-data:/data \
+  marmos91c/dittofs:latest
+```
+
+#### Scoop (Windows)
+
+```powershell
+scoop bucket add marmos91 https://github.com/marmos91/scoop-bucket
+scoop install dfs       # Server daemon
+scoop install dfsctl    # Client CLI
 ```
 
 #### Build from Source

@@ -122,6 +122,39 @@ archives:
       - README.md
       - LICENSE
 
+# Native Linux packages (deb, rpm, archlinux)
+nfpms:
+  - id: dfs
+    ids: [dfs]
+    package_name: dfs
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}"
+    vendor: Marco Moschettini
+    homepage: https://github.com/marmos91/dittofs
+    maintainer: Marco Moschettini <marco@marmos91.dev>
+    description: DittoFS server daemon — modular virtual filesystem with pluggable storage backends
+    license: MIT
+    formats: [deb, rpm, archlinux]
+    bindir: /usr/local/bin
+    contents:
+      - src: packaging/dfs.service
+        dst: /usr/lib/systemd/system/dfs.service
+    scripts:
+      postinstall: packaging/postinstall.sh
+      preremove: packaging/preremove.sh
+      postremove: packaging/postremove.sh
+
+  - id: dfsctl
+    ids: [dfsctl]
+    package_name: dfsctl
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}"
+    vendor: Marco Moschettini
+    homepage: https://github.com/marmos91/dittofs
+    maintainer: Marco Moschettini <marco@marmos91.dev>
+    description: DittoFS CLI client — remote management for DittoFS servers
+    license: MIT
+    formats: [deb, rpm, archlinux]
+    bindir: /usr/local/bin
+
 checksum:
   name_template: 'checksums.txt'
   algorithm: sha256
@@ -312,11 +345,37 @@ release:
 
     ### Installation
 
+    **Quick install (macOS / Linux):**
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/marmos91/dittofs/develop/scripts/install.sh | sh
+    ```
+
     **Homebrew (macOS/Linux):**
     ```bash
     brew tap marmos91/tap
     brew install marmos91/tap/dfs      # Server daemon
     brew install marmos91/tap/dfsctl   # Client CLI
+    ```
+
+    **Debian/Ubuntu (APT):**
+    ```bash
+    echo "deb https://s3.cubbit.eu/dittofs-binaries/apt stable main" | sudo tee /etc/apt/sources.list.d/dfs.list
+    sudo apt update && sudo apt install dfs
+    sudo systemctl enable --now dfs
+    ```
+
+    **RHEL/Fedora (YUM):**
+    ```bash
+    sudo curl -fsSLo /etc/yum.repos.d/dfs.repo https://s3.cubbit.eu/dittofs-binaries/rpm/dfs.repo
+    sudo yum install dfs
+    sudo systemctl enable --now dfs
+    ```
+
+    **Arch Linux:**
+    ```bash
+    curl -fsSLO https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfs_{{ .Version }}_amd64.pkg.tar.zst
+    sudo pacman -U dfs_{{ .Version }}_amd64.pkg.tar.zst
+    sudo systemctl enable --now dfs
     ```
 
     **Scoop (Windows):**
@@ -326,47 +385,8 @@ release:
     scoop install dfsctl    # Client CLI
     ```
 
-    **Binary Download:**
-    ```bash
-    # dfs (server daemon)
-    # Linux (x86_64)
-    curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfs_{{ .Version }}_Linux_x86_64.tar.gz | tar xz
-
-    # macOS (Apple Silicon)
-    curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfs_{{ .Version }}_Darwin_arm64.tar.gz | tar xz
-
-    # macOS (Intel)
-    curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfs_{{ .Version }}_Darwin_x86_64.tar.gz | tar xz
-
-    # Windows (x86_64)
-    Invoke-WebRequest -Uri "https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfs_{{ .Version }}_Windows_x86_64.zip" -OutFile dfs.zip; Expand-Archive dfs.zip -DestinationPath .; Remove-Item dfs.zip
-
-    # Windows (arm64)
-    Invoke-WebRequest -Uri "https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfs_{{ .Version }}_Windows_arm64.zip" -OutFile dfs.zip; Expand-Archive dfs.zip -DestinationPath .; Remove-Item dfs.zip
-
-    # dfsctl (client CLI)
-    # Linux (x86_64)
-    curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfsctl_{{ .Version }}_Linux_x86_64.tar.gz | tar xz
-
-    # macOS (Apple Silicon)
-    curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfsctl_{{ .Version }}_Darwin_arm64.tar.gz | tar xz
-
-    # macOS (Intel)
-    curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfsctl_{{ .Version }}_Darwin_x86_64.tar.gz | tar xz
-
-    # Windows (x86_64)
-    Invoke-WebRequest -Uri "https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfsctl_{{ .Version }}_Windows_x86_64.zip" -OutFile dfsctl.zip; Expand-Archive dfsctl.zip -DestinationPath .; Remove-Item dfsctl.zip
-
-    # Windows (arm64)
-    Invoke-WebRequest -Uri "https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfsctl_{{ .Version }}_Windows_arm64.zip" -OutFile dfsctl.zip; Expand-Archive dfsctl.zip -DestinationPath .; Remove-Item dfsctl.zip
-    ```
-
     **Docker:**
     ```bash
-    # Pull the latest image
-    docker pull marmos91c/dittofs:{{ .Tag }}
-
-    # Run with a config file
     docker run -d \
       -p 12049:12049 \
       -p 12445:12445 \
@@ -375,6 +395,17 @@ release:
       -v dittofs-data:/data \
       marmos91c/dittofs:{{ .Tag }}
     ```
+
+    **Binary Download:**
+    ```bash
+    # dfs (server daemon)
+    curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfs_{{ .Version }}_Linux_x86_64.tar.gz | tar xz
+
+    # dfsctl (client CLI)
+    curl -sfL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/dfsctl_{{ .Version }}_Linux_x86_64.tar.gz | tar xz
+    ```
+  extra_files:
+    - glob: scripts/install.sh
 
   footer: |
     ---

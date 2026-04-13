@@ -1,0 +1,17 @@
+[Unit]
+Description=DittoFS - Modular Virtual Filesystem
+Documentation=https://github.com/marmos91/dittofs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dfs start --foreground
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
