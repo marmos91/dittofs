@@ -485,9 +485,13 @@ docker compose logs dittofs > "${RESULTS_DIR}/dittofs.log" 2>&1 || true
 # Parse results
 log_step "Parsing results..."
 parse_exit=0
+KNOWN_FAILURES_PATH="${SCRIPT_DIR}/KNOWN_FAILURES.md"
+if $KERBEROS && [[ -f "${SCRIPT_DIR}/KNOWN_FAILURES_KERBEROS.md" ]]; then
+    KNOWN_FAILURES_PATH="${SCRIPT_DIR}/KNOWN_FAILURES_KERBEROS.md"
+fi
 VERBOSE="$VERBOSE" "${SCRIPT_DIR}/parse-results.sh" \
     "${RESULTS_DIR}/smbtorture-output.txt" \
-    "${SCRIPT_DIR}/KNOWN_FAILURES.md" \
+    "${KNOWN_FAILURES_PATH}" \
     "${RESULTS_DIR}" \
     || parse_exit=$?
 
