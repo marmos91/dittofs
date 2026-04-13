@@ -87,7 +87,8 @@ brew install marmos91/tap/dfsctl   # Client CLI
 #### Debian / Ubuntu (APT)
 
 ```bash
-echo "deb https://s3.cubbit.eu/dittofs-binaries/apt stable main" | sudo tee /etc/apt/sources.list.d/dfs.list
+curl -fsSL https://s3.cubbit.eu/dittofs-binaries/apt/dittofs.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/dittofs.gpg
+echo "deb [signed-by=/usr/share/keyrings/dittofs.gpg] https://s3.cubbit.eu/dittofs-binaries/apt stable main" | sudo tee /etc/apt/sources.list.d/dfs.list
 sudo apt update && sudo apt install dfs
 sudo systemctl enable --now dfs
 ```
