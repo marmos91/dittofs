@@ -87,6 +87,11 @@ type Session struct {
 	// Cleared by the framing layer after the first response.
 	NewlyCreated bool
 
+	// ExpiresAt holds the Kerberos ticket end time for Kerberos-authenticated
+	// sessions. Zero value means no expiration (NTLM or guest sessions).
+	// Checked in the dispatch path to return STATUS_NETWORK_SESSION_EXPIRED.
+	ExpiresAt time.Time
+
 	// LoggedOff is set to true by the LOGOFF handler before sending the
 	// response. This eliminates a race between the deferred session delete
 	// and the next request's signing verification: the verifier and dispatch
@@ -157,6 +162,11 @@ func NewSessionWithUser(sessionID uint64, clientAddr string, user *models.User, 
 	}
 	s.credits.LastActivity.Store(time.Now().Unix())
 	return s
+}
+
+// IsExpired returns true if the session has a Kerberos ticket that has expired.
+func (s *Session) IsExpired() bool {
+	return !s.ExpiresAt.IsZero() && time.Now().After(s.ExpiresAt)
 }
 
 // RequestStarted records that a request has started processing.

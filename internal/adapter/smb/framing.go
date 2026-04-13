@@ -336,6 +336,12 @@ func (sv *sessionSigningVerifier) VerifyRequest(hdr *header.SMB2Header, message 
 		return nil
 	}
 
+	// Skip verification for expired Kerberos sessions — let prepareDispatch
+	// return STATUS_NETWORK_SESSION_EXPIRED.
+	if sess.IsExpired() {
+		return nil
+	}
+
 	isSigned := hdr.Flags.IsSigned()
 
 	if sess.CryptoState != nil && sess.CryptoState.SigningRequired && !isSigned {

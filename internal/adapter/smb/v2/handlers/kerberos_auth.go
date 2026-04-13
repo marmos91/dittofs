@@ -7,6 +7,7 @@ import (
 	"github.com/jcmturner/gofork/encoding/asn1"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
+	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -95,8 +96,12 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 	}
 
 	// Create authenticated session and configure signing/encryption.
+	// Set ExpiresAt before StoreSession to avoid a data race window where
+	// concurrent readers could see a zero ExpiresAt on a published session.
 	sessionID := h.GenerateSessionID()
-	sess := h.CreateSessionWithUser(sessionID, ctx.ClientAddr, user, authResult.Realm)
+	sess := session.NewSessionWithUser(sessionID, ctx.ClientAddr, user, authResult.Realm)
+	sess.ExpiresAt = authResult.APReq.Ticket.DecryptedEncPart.EndTime
+	h.SessionManager.StoreSession(sess)
 	ctx.SessionID = sessionID
 	ctx.IsGuest = false
 
