@@ -167,8 +167,8 @@ func TestResolver_CachePositive(t *testing.T) {
 	}
 	r := NewResolver(WithProvider(p), WithCacheTTL(time.Minute))
 
-	r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "alice"})
-	r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "alice"})
+	_, _ = r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "alice"})
+	_, _ = r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "alice"})
 
 	if p.callCount() != 1 {
 		t.Fatalf("expected 1 provider call (cached), got %d", p.callCount())
@@ -182,7 +182,7 @@ func TestResolver_CacheNegative(t *testing.T) {
 	p := &mockProvider{name: "p", results: map[string]*ResolvedIdentity{}}
 	r := NewResolver(WithProvider(p), WithNegativeCacheTTL(time.Minute))
 
-	r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "unknown"})
+	_, _ = r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "unknown"})
 	result, _ := r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "unknown"})
 
 	if result.Found {

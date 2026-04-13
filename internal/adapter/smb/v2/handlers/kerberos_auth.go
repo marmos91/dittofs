@@ -288,18 +288,3 @@ func sessionEncryptFlag(sess interface{ ShouldEncrypt() bool }) uint16 {
 	return 0
 }
 
-func logKrb5Dump(label string, b []byte) {
-	if !logger.IsDebugEnabled() {
-		return
-	}
-	const maxHex = 512
-	n := len(b)
-	if n > maxHex {
-		b = b[:maxHex]
-	}
-	logger.Debug("krb5 hex dump",
-		"label", label,
-		"len", n,
-		"hex", fmt.Sprintf("%x", b),
-	)
-}

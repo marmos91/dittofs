@@ -30,7 +30,10 @@ func BuildIdentityResolver(rt *runtime.Runtime, realm string) *identity.Resolver
 	userLookup := func(ctx context.Context, username string) (*identity.ResolvedIdentity, error) {
 		user, err := cpStore.GetUser(ctx, username)
 		if err != nil {
-			return &identity.ResolvedIdentity{Found: false}, nil
+			if errors.Is(err, models.ErrUserNotFound) {
+				return &identity.ResolvedIdentity{Found: false}, nil
+			}
+			return nil, err
 		}
 		uid := uint32(1000)
 		if user.UID != nil {
@@ -79,8 +82,8 @@ func BuildIdentityResolver(rt *runtime.Runtime, realm string) *identity.Resolver
 				}
 				return links, nil
 			},
-			CreateLinkFn:       func(_ context.Context, _ identity.IdentityLink) error { return nil },
-			DeleteLinkFn:       func(_ context.Context, _, _ string) error { return nil },
+			// CreateLinkFn and DeleteLinkFn left nil — writes go through the API handler, not the resolver.
+			// Calling them returns identity.ErrNotConfigured.
 			ListLinksForUserFn: func(ctx context.Context, username string) ([]identity.IdentityLink, error) {
 				mappings, err := ims.ListIdentityMappingsForUser(ctx, username)
 				if err != nil {

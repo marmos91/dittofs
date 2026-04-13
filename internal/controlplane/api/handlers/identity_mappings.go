@@ -103,7 +103,7 @@ func (h *IdentityMappingHandler) Create(w http.ResponseWriter, r *http.Request) 
 	WriteJSONCreated(w, mappingToResponse(mapping))
 }
 
-// Delete handles DELETE /api/v1/identity-mappings/{provider}/{principal}.
+// Delete handles DELETE /api/v1/identity-mappings/by-provider/{provider}/{principal}.
 func (h *IdentityMappingHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	provider := chi.URLParam(r, "provider")
 	if provider == "" {
