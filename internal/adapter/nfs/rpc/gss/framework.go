@@ -667,67 +667,9 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 	}
 
 	// 5. Map principal to Unix identity via centralized resolver or legacy mapper.
-	p.mu.RLock()
-	resolver := p.resolver
-	legacyMapper := p.mapper
-	p.mu.RUnlock()
-
-	var ident *metadata.Identity
-	principalKey := gssCtx.Principal + "@" + gssCtx.Realm
-
-	if resolver != nil {
-		cred := &pkgidentity.Credential{
-			Provider:   "kerberos",
-			ExternalID: principalKey,
-			Attributes: map[string]string{"realm": gssCtx.Realm},
-		}
-		resolved, err := resolver.Resolve(ctx, cred)
-		if err == nil && resolved.Found {
-			ident = &metadata.Identity{
-				UID:      &resolved.UID,
-				GID:      &resolved.GID,
-				GIDs:     resolved.GIDs,
-				Username: resolved.Username,
-				Domain:   resolved.Domain,
-			}
-		} else if err == nil && !resolved.Found {
-			nobody := pkgidentity.NobodyIdentity()
-			ident = &metadata.Identity{
-				UID:      &nobody.UID,
-				GID:      &nobody.GID,
-				Username: nobody.Username,
-			}
-		} else {
-			logger.Warn("GSS DATA: identity resolver error, falling back to legacy mapper",
-				"principal", gssCtx.Principal,
-				"realm", gssCtx.Realm,
-				"error", err,
-			)
-			// Fall through to legacy mapper below
-		}
-	}
-	if ident == nil && legacyMapper != nil {
-		resolved, err := legacyMapper.Resolve(ctx, principalKey)
-		if err != nil {
-			return &GSSProcessResult{
-				Err: fmt.Errorf("map identity for %s: %w", principalKey, err),
-			}
-		}
-		if resolved == nil {
-			return &GSSProcessResult{
-				Err: fmt.Errorf("identity mapping returned nil for %s", principalKey),
-			}
-		}
-		if !resolved.Found {
-			resolved = nfsidentity.NobodyIdentity()
-		}
-		ident = &metadata.Identity{
-			UID:      &resolved.UID,
-			GID:      &resolved.GID,
-			GIDs:     resolved.GIDs,
-			Username: resolved.Username,
-			Domain:   resolved.Domain,
-		}
+	ident, identErr := p.resolveIdentity(ctx, gssCtx.Principal, gssCtx.Realm)
+	if identErr != nil {
+		return &GSSProcessResult{Err: identErr}
 	}
 
 	logger.Debug("GSS DATA: request authenticated",
@@ -745,6 +687,70 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 		Service:       cred.Service,
 		SessionKey:    gssCtx.SessionKey,
 	}
+}
+
+// resolveIdentity maps a Kerberos principal to a Unix identity using the
+// centralized resolver (DB-backed) with fallback to the legacy static mapper.
+// Returns a nobody identity when the principal is not found.
+func (p *GSSProcessor) resolveIdentity(ctx context.Context, principal, realm string) (*metadata.Identity, error) {
+	p.mu.RLock()
+	resolver := p.resolver
+	legacyMapper := p.mapper
+	p.mu.RUnlock()
+
+	principalKey := principal + "@" + realm
+
+	// Try centralized resolver first (DB-backed mapping + convention fallback).
+	if resolver != nil {
+		cred := &pkgidentity.Credential{
+			Provider:   "kerberos",
+			ExternalID: principalKey,
+			Attributes: map[string]string{"realm": realm},
+		}
+		resolved, err := resolver.Resolve(ctx, cred)
+		if err != nil {
+			return nil, fmt.Errorf("identity resolver unavailable for %s@%s: %w", principal, realm, err)
+		}
+		if resolved.Found {
+			return &metadata.Identity{
+				UID:      &resolved.UID,
+				GID:      &resolved.GID,
+				GIDs:     resolved.GIDs,
+				Username: resolved.Username,
+				Domain:   resolved.Domain,
+			}, nil
+		} else {
+			nobody := pkgidentity.NobodyIdentity()
+			return &metadata.Identity{
+				UID:      &nobody.UID,
+				GID:      &nobody.GID,
+				Username: nobody.Username,
+			}, nil
+		}
+	}
+
+	// Legacy static mapper fallback.
+	if legacyMapper != nil {
+		resolved, err := legacyMapper.Resolve(ctx, principalKey)
+		if err != nil {
+			return nil, fmt.Errorf("map identity for %s: %w", principalKey, err)
+		}
+		if resolved == nil {
+			return nil, fmt.Errorf("identity mapping returned nil for %s", principalKey)
+		}
+		if !resolved.Found {
+			resolved = nfsidentity.NobodyIdentity()
+		}
+		return &metadata.Identity{
+			UID:      &resolved.UID,
+			GID:      &resolved.GID,
+			GIDs:     resolved.GIDs,
+			Username: resolved.Username,
+			Domain:   resolved.Domain,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("no identity mapper configured for %s", principalKey)
 }
 
 // handleDestroy processes RPCSEC_GSS_DESTROY.

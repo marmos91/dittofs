@@ -85,7 +85,7 @@ func (r *Resolver) Resolve(ctx context.Context, cred *Credential) (*ResolvedIden
 		if result, cachedErr, ok := r.cache.get(key); ok {
 			return &cacheResult{result: result, err: cachedErr}, nil
 		}
-		result, resolveErr := r.resolveUncached(ctx, cred)
+		result, resolveErr := r.resolveUncached(context.WithoutCancel(ctx), cred)
 		r.cache.put(key, result, resolveErr)
 		return &cacheResult{result: result, err: resolveErr}, nil
 	})

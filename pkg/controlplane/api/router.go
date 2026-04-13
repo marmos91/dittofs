@@ -315,7 +315,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 						// Legacy identity mapping route (deprecated: use /api/v1/identity-mappings instead)
 						if ims, ok := cpStore.(store.IdentityMappingStore); ok {
 							r.Route("/identity-mappings", func(r chi.Router) {
-								legacyHandler := handlers.NewIdentityMappingHandler(ims)
+								legacyHandler := handlers.NewIdentityMappingHandler(ims, rt.NotifyIdentityMappingChange)
 								r.Get("/", legacyHandler.List)
 								r.Post("/", legacyHandler.Create)
 								r.Delete("/{principal}", legacyHandler.DeleteLegacy)
@@ -329,13 +329,10 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 			if ims, ok := cpStore.(store.IdentityMappingStore); ok {
 				r.Route("/identity-mappings", func(r chi.Router) {
 					r.Use(apiMiddleware.RequireAdmin())
-					idmapHandler := handlers.NewIdentityMappingHandler(ims)
-					idmapHandler.SetOnChange(rt.NotifyIdentityMappingChange)
+					idmapHandler := handlers.NewIdentityMappingHandler(ims, rt.NotifyIdentityMappingChange)
 					r.Get("/", idmapHandler.List)
 					r.Post("/", idmapHandler.Create)
-					r.Route("/by-provider/{provider}", func(r chi.Router) {
-						r.Delete("/{principal}", idmapHandler.Delete)
-					})
+					r.Delete("/by-provider/{provider}/{principal}", idmapHandler.Delete)
 					r.Get("/users/{username}", idmapHandler.ListForUser)
 				})
 			}

@@ -17,13 +17,9 @@ type IdentityMappingHandler struct {
 }
 
 // NewIdentityMappingHandler creates a new IdentityMappingHandler.
-func NewIdentityMappingHandler(cpStore store.IdentityMappingStore) *IdentityMappingHandler {
-	return &IdentityMappingHandler{store: cpStore}
-}
-
-// SetOnChange registers a callback invoked after successful create/delete.
-func (h *IdentityMappingHandler) SetOnChange(fn func()) {
-	h.onChange = fn
+// The optional onChange callback is invoked after successful create/delete operations.
+func NewIdentityMappingHandler(cpStore store.IdentityMappingStore, onChange func()) *IdentityMappingHandler {
+	return &IdentityMappingHandler{store: cpStore, onChange: onChange}
 }
 
 // CreateIdentityMappingRequest is the request body for POST /api/v1/identity-mappings.
@@ -54,12 +50,7 @@ func (h *IdentityMappingHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := make([]IdentityMappingResponse, len(mappings))
-	for i, m := range mappings {
-		response[i] = mappingToResponse(m)
-	}
-
-	WriteJSONOK(w, response)
+	WriteJSONOK(w, mappingsToResponse(mappings))
 }
 
 // Create handles POST /api/v1/identity-mappings.
@@ -76,9 +67,6 @@ func (h *IdentityMappingHandler) Create(w http.ResponseWriter, r *http.Request) 
 	if req.Username == "" {
 		BadRequest(w, "Username is required")
 		return
-	}
-	if req.ProviderName == "" {
-		req.ProviderName = "kerberos"
 	}
 
 	mapping := &models.IdentityMapping{
@@ -140,12 +128,7 @@ func (h *IdentityMappingHandler) ListForUser(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	response := make([]IdentityMappingResponse, len(mappings))
-	for i, m := range mappings {
-		response[i] = mappingToResponse(m)
-	}
-
-	WriteJSONOK(w, response)
+	WriteJSONOK(w, mappingsToResponse(mappings))
 }
 
 // DeleteLegacy handles DELETE /api/v1/adapters/{type}/identity-mappings/{principal}.
@@ -182,6 +165,14 @@ func (h *IdentityMappingHandler) deleteMapping(w http.ResponseWriter, r *http.Re
 	}
 
 	WriteNoContent(w)
+}
+
+func mappingsToResponse(mappings []*models.IdentityMapping) []IdentityMappingResponse {
+	response := make([]IdentityMappingResponse, len(mappings))
+	for i, m := range mappings {
+		response[i] = mappingToResponse(m)
+	}
+	return response
 }
 
 func mappingToResponse(m *models.IdentityMapping) IdentityMappingResponse {

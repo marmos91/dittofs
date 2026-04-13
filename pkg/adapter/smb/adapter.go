@@ -256,13 +256,7 @@ func (s *Adapter) SetRuntime(rtAny any) {
 
 	// Wire centralized identity resolver for Kerberos principal → DittoFS user mapping.
 	// Uses DB-backed LinkStore + convention fallback, shared with the NFS adapter.
-	if s.handler.KerberosProvider != nil {
-		realm := adapter.ExtractRealm(s.handler.KerberosProvider.ServicePrincipal())
-		resolver := adapter.BuildIdentityResolver(rt, realm)
-		s.handler.IdentityResolver = resolver
-		unsub := rt.OnIdentityMappingChange(resolver.InvalidateCache)
-		s.shareUnsubscribers = append(s.shareUnsubscribers, unsub)
-	}
+	s.wireIdentityResolver(rt)
 
 	logger.Debug("SMB adapter configured with runtime", "shares", rt.CountShares())
 
@@ -459,14 +453,27 @@ func (s *Adapter) SetKerberosProvider(provider *kerberos.Provider) {
 
 	// Wire identity resolver if runtime is already injected (SetRuntime may
 	// have been called before SetKerberosProvider depending on init order).
-	if s.handler.Registry != nil {
-		realm := adapter.ExtractRealm(provider.ServicePrincipal())
-		s.handler.IdentityResolver = adapter.BuildIdentityResolver(s.handler.Registry, realm)
-	}
+	s.wireIdentityResolver(s.handler.Registry)
 
 	logger.Debug("SMB adapter Kerberos provider configured",
 		"principal", provider.ServicePrincipal(),
 		"stripRealm", s.handler.IdentityConfig.StripRealm)
+}
+
+// wireIdentityResolver creates and wires a centralized identity resolver for
+// Kerberos principal to DittoFS user mapping. Both SetRuntime and
+// SetKerberosProvider call this, since either may be called first depending
+// on initialization order. The method is a no-op when either the Kerberos
+// provider or the runtime is not yet available.
+func (s *Adapter) wireIdentityResolver(rt *runtime.Runtime) {
+	if s.handler.KerberosProvider == nil || rt == nil {
+		return
+	}
+	realm := adapter.ExtractRealm(s.handler.KerberosProvider.ServicePrincipal())
+	resolver := adapter.BuildIdentityResolver(rt, realm)
+	s.handler.IdentityResolver = resolver
+	unsub := rt.OnIdentityMappingChange(resolver.InvalidateCache)
+	s.shareUnsubscribers = append(s.shareUnsubscribers, unsub)
 }
 
 const (

@@ -44,6 +44,10 @@ func (p *Provider) CanResolve(cred *identity.Credential) bool {
 	if cred.Provider != "" {
 		return cred.Provider == ProviderName
 	}
+	switch cred.ExternalID {
+	case "OWNER@", "GROUP@", "EVERYONE@":
+		return false
+	}
 	return strings.Contains(cred.ExternalID, "@")
 }
 
@@ -66,8 +70,9 @@ func (p *Provider) Resolve(ctx context.Context, cred *identity.Credential) (*ide
 				return nil, err
 			}
 			if resolved != nil && resolved.Found {
-				resolved.Domain = realmFrom(cred)
-				return resolved, nil
+				out := *resolved
+				out.Domain = realmFrom(cred)
+				return &out, nil
 			}
 		}
 	}
@@ -94,8 +99,9 @@ func (p *Provider) Resolve(ctx context.Context, cred *identity.Credential) (*ide
 	if resolved == nil || !resolved.Found {
 		return &identity.ResolvedIdentity{Found: false}, nil
 	}
-	resolved.Domain = domain
-	return resolved, nil
+	out := *resolved
+	out.Domain = domain
+	return &out, nil
 }
 
 func parsePrincipal(principal string) (name, domain string) {
