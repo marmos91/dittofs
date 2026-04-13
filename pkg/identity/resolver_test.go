@@ -198,7 +198,7 @@ func TestResolver_CacheError(t *testing.T) {
 	p := &mockProvider{name: "p", err: dbErr}
 	r := NewResolver(WithProvider(p), WithErrorCacheTTL(time.Minute))
 
-	r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "x"})
+	_, _ = r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "x"})
 	_, err := r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "x"})
 
 	if !errors.Is(err, dbErr) {
@@ -216,9 +216,9 @@ func TestResolver_CacheExpiry(t *testing.T) {
 	}
 	r := NewResolver(WithProvider(p), WithCacheTTL(time.Millisecond))
 
-	r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "alice"})
+	_, _ = r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "alice"})
 	time.Sleep(5 * time.Millisecond)
-	r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "alice"})
+	_, _ = r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "alice"})
 
 	if p.callCount() != 2 {
 		t.Fatalf("expected 2 calls after TTL expiry, got %d", p.callCount())
@@ -232,9 +232,9 @@ func TestResolver_InvalidateCache(t *testing.T) {
 	}
 	r := NewResolver(WithProvider(p))
 
-	r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "alice"})
+	_, _ = r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "alice"})
 	r.InvalidateCache()
-	r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "alice"})
+	_, _ = r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "alice"})
 
 	if p.callCount() != 2 {
 		t.Fatalf("expected 2 calls after invalidation, got %d", p.callCount())
@@ -251,11 +251,11 @@ func TestResolver_InvalidateKey(t *testing.T) {
 	}
 	r := NewResolver(WithProvider(p))
 
-	r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "alice"})
-	r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "bob"})
+	_, _ = r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "alice"})
+	_, _ = r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "bob"})
 	r.InvalidateKey("p", "alice")
-	r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "alice"})
-	r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "bob"})
+	_, _ = r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "alice"})
+	_, _ = r.Resolve(context.Background(), &Credential{Provider: "p", ExternalID: "bob"})
 
 	// alice: 2 calls (invalidated), bob: 1 call (still cached)
 	if p.callCount() != 3 {
