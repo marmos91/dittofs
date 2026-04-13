@@ -68,16 +68,21 @@ RELEASE
 
   # GPG sign if key is available (isolated keyring)
   if [ -n "${GPG_PRIVATE_KEY:-}" ]; then
-    (
+    if ! (
+      set -e
       GNUPGHOME="${WORK_DIR}/gnupg"
       export GNUPGHOME
       mkdir -p "${GNUPGHOME}"
       chmod 700 "${GNUPGHOME}"
-      echo "$GPG_PRIVATE_KEY" | gpg --batch --import 2>/dev/null
+      printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --import
+      KEY_FP=$(gpg --batch --with-colons --list-keys 2>/dev/null | awk -F: '/^fpr/{print $10; exit}')
       gpg --batch --yes --armor --detach-sign -o Release.gpg Release
       gpg --batch --yes --armor --clearsign -o InRelease Release
-      gpg --batch --yes --armor --export > "${APT_DIR}/dittofs.gpg.key"
-    )
+      gpg --batch --yes --armor --export "$KEY_FP" > "${APT_DIR}/dittofs.gpg.key"
+    ); then
+      echo "ERROR: GPG signing failed" >&2
+      exit 1
+    fi
   fi
 
   cd "${WORK_DIR}"
@@ -106,7 +111,7 @@ else
   cat > "${RPM_DIR}/dfs.repo" <<REPO
 [dfs]
 name=DittoFS
-baseurl=https://s3.cubbit.eu/${S3_BUCKET}/rpm
+baseurl=${S3_ENDPOINT}/${S3_BUCKET}/rpm
 enabled=1
 gpgcheck=0
 REPO
