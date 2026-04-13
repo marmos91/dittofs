@@ -347,7 +347,7 @@ release:
 
     **Quick install (macOS / Linux):**
     ```bash
-    curl -fsSL https://raw.githubusercontent.com/marmos91/dittofs/develop/scripts/install.sh | sh
+    curl -fsSL https://github.com/marmos91/dittofs/releases/download/{{ .Tag }}/install.sh | sh
     ```
 
     **Homebrew (macOS/Linux):**

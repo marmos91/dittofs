@@ -1,6 +1,6 @@
 #!/bin/sh
 # Install DittoFS (dfs + dfsctl) binaries
-# Usage: curl -fsSL https://raw.githubusercontent.com/marmos91/dittofs/develop/scripts/install.sh | sh
+# Usage: curl -fsSL https://github.com/marmos91/dittofs/releases/latest/download/install.sh | sh
 set -e
 
 REPO="marmos91/dittofs"
@@ -37,10 +37,11 @@ case "$OS" in
   windows) ARCHIVE_OS="Windows" ;;
 esac
 
-# Get latest version from GitHub API
+# Get latest version via GitHub redirect (avoids API rate limits)
 echo "Detecting latest version..."
-VERSION=$(curl -sfL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')
-if [ -z "$VERSION" ]; then
+LATEST_URL=$(curl -fsSI "https://github.com/${REPO}/releases/latest" 2>/dev/null | tr -d '\r' | awk 'BEGIN { IGNORECASE = 1 } /^location: / { print $2 }' | tail -n 1)
+VERSION=$(printf '%s\n' "$LATEST_URL" | sed -E 's#.*/tag/([^/?]+).*#\1#')
+if [ -z "$VERSION" ] || [ "$VERSION" = "$LATEST_URL" ]; then
   echo "Error: could not determine latest version"
   exit 1
 fi

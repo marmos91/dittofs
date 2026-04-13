@@ -19,8 +19,7 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 s3_sync() {
   aws s3 sync "$1" "s3://${S3_BUCKET}/$2" \
     --endpoint-url "$S3_ENDPOINT" \
-    --acl public-read \
-    --delete
+    --acl public-read
 }
 
 # ── APT repository ──────────────────────────────────────────────────────────
@@ -66,13 +65,18 @@ RELEASE
     done
   } >> Release
 
-  # GPG sign if key is available
+  # GPG sign if key is available (isolated keyring)
   if [ -n "${GPG_PRIVATE_KEY:-}" ]; then
-    echo "$GPG_PRIVATE_KEY" | gpg --batch --import 2>/dev/null
-    gpg --batch --yes --armor --detach-sign -o Release.gpg Release
-    gpg --batch --yes --armor --clearsign -o InRelease Release
-    # Export public key for users
-    gpg --batch --yes --armor --export > "${APT_DIR}/dittofs.gpg.key"
+    (
+      GNUPGHOME="${WORK_DIR}/gnupg"
+      export GNUPGHOME
+      mkdir -p "${GNUPGHOME}"
+      chmod 700 "${GNUPGHOME}"
+      echo "$GPG_PRIVATE_KEY" | gpg --batch --import 2>/dev/null
+      gpg --batch --yes --armor --detach-sign -o Release.gpg Release
+      gpg --batch --yes --armor --clearsign -o InRelease Release
+      gpg --batch --yes --armor --export > "${APT_DIR}/dittofs.gpg.key"
+    )
   fi
 
   cd "${WORK_DIR}"

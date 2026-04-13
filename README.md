@@ -73,7 +73,7 @@ nix develop github:marmos91/dittofs
 #### Quick Install (macOS / Linux)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/marmos91/dittofs/develop/scripts/install.sh | sh
+curl -fsSL https://github.com/marmos91/dittofs/releases/latest/download/install.sh | sh
 ```
 
 #### Using Homebrew
