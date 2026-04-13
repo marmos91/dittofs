@@ -495,24 +495,27 @@ type NetgroupStore interface {
 }
 
 // IdentityMappingStore provides identity mapping operations.
-// This is a separate interface from Store so that only identity-mapping-aware
+// This is a separate interface from Store so that only identity-aware
 // components need to depend on identity mapping functionality.
-// Mappings are shared across protocols (NFS and SMB).
 type IdentityMappingStore interface {
-	// GetIdentityMapping returns an identity mapping by principal.
+	// GetIdentityMapping returns an identity mapping by provider and principal.
 	// Returns models.ErrMappingNotFound if the mapping doesn't exist.
-	GetIdentityMapping(ctx context.Context, principal string) (*models.IdentityMapping, error)
+	GetIdentityMapping(ctx context.Context, provider, principal string) (*models.IdentityMapping, error)
 
-	// ListIdentityMappings returns all identity mappings.
-	ListIdentityMappings(ctx context.Context) ([]*models.IdentityMapping, error)
+	// ListIdentityMappings returns identity mappings, optionally filtered by provider.
+	// Pass provider="" to list all.
+	ListIdentityMappings(ctx context.Context, provider string) ([]*models.IdentityMapping, error)
 
 	// CreateIdentityMapping creates a new identity mapping.
-	// Returns models.ErrDuplicateMapping if a mapping for this principal already exists.
+	// Returns models.ErrDuplicateMapping if a mapping for this (provider, principal) already exists.
 	CreateIdentityMapping(ctx context.Context, mapping *models.IdentityMapping) error
 
-	// DeleteIdentityMapping deletes an identity mapping by principal.
+	// DeleteIdentityMapping deletes an identity mapping by provider and principal.
 	// Returns models.ErrMappingNotFound if the mapping doesn't exist.
-	DeleteIdentityMapping(ctx context.Context, principal string) error
+	DeleteIdentityMapping(ctx context.Context, provider, principal string) error
+
+	// ListIdentityMappingsForUser returns all identity mappings for a DittoFS user.
+	ListIdentityMappingsForUser(ctx context.Context, username string) ([]*models.IdentityMapping, error)
 }
 
 // Store is the composite control plane persistence interface.

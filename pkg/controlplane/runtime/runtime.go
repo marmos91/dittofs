@@ -70,6 +70,8 @@ type Runtime struct {
 	adapterProviders   map[string]any
 	adapterProvidersMu sync.RWMutex
 
+	identityChangeCallbacks []func()
+
 	// statusCheckers is the lazy per-entity cached health-checker
 	// map backing [Runtime.BlockStoreChecker],
 	// [Runtime.MetadataStoreChecker], [Runtime.AdapterChecker], and
@@ -458,6 +460,36 @@ func (r *Runtime) GetIdentityMappingStore() store.IdentityMappingStore {
 		return ims
 	}
 	return nil
+}
+
+// OnIdentityMappingChange registers a callback invoked when identity mappings
+// are created or deleted via the API. Adapters use this to invalidate their
+// identity resolver caches. Returns an unsubscribe function.
+func (r *Runtime) OnIdentityMappingChange(fn func()) func() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.identityChangeCallbacks = append(r.identityChangeCallbacks, fn)
+	idx := len(r.identityChangeCallbacks) - 1
+	return func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if idx < len(r.identityChangeCallbacks) {
+			r.identityChangeCallbacks[idx] = nil
+		}
+	}
+}
+
+// NotifyIdentityMappingChange fires all registered identity change callbacks.
+func (r *Runtime) NotifyIdentityMappingChange() {
+	r.mu.RLock()
+	cbs := make([]func(), len(r.identityChangeCallbacks))
+	copy(cbs, r.identityChangeCallbacks)
+	r.mu.RUnlock()
+	for _, fn := range cbs {
+		if fn != nil {
+			fn()
+		}
+	}
 }
 
 // --- Settings Access ---

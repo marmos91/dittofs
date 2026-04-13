@@ -82,3 +82,4 @@ test/smb-conformance/results/
 test/smb-conformance/ptfconfig-generated/
 test/smb-conformance/dfs
 test/smb-conformance/dfsctl
+.claude/scheduled_tasks.lock

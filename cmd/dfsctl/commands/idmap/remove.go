@@ -8,6 +8,7 @@ import (
 )
 
 var (
+	removeProvider  string
 	removePrincipal string
 	removeForce     bool
 )
@@ -15,7 +16,7 @@ var (
 var removeCmd = &cobra.Command{
 	Use:   "remove",
 	Short: "Remove an identity mapping",
-	Long: `Remove an identity mapping by principal.
+	Long: `Remove an identity mapping by provider and principal.
 
 This action is irreversible. You will be prompted for confirmation
 unless --force is specified.
@@ -24,13 +25,17 @@ Examples:
   # Remove with confirmation
   dfsctl idmap remove --principal alice@EXAMPLE.COM
 
+  # Remove with explicit provider
+  dfsctl idmap remove --provider kerberos --principal alice@EXAMPLE.COM
+
   # Remove without confirmation
   dfsctl idmap remove --principal alice@EXAMPLE.COM --force`,
 	RunE: runRemove,
 }
 
 func init() {
-	removeCmd.Flags().StringVar(&removePrincipal, "principal", "", "Authentication principal to remove")
+	removeCmd.Flags().StringVar(&removeProvider, "provider", "kerberos", "Identity provider (e.g., kerberos, oidc, ad)")
+	removeCmd.Flags().StringVar(&removePrincipal, "principal", "", "External identity to remove")
 	removeCmd.Flags().BoolVarP(&removeForce, "force", "f", false, "Skip confirmation prompt")
 	_ = removeCmd.MarkFlagRequired("principal")
 }
@@ -42,7 +47,7 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	}
 
 	return cmdutil.RunDeleteWithConfirmation("Identity mapping", removePrincipal, removeForce, func() error {
-		if err := client.DeleteIdentityMapping(removePrincipal); err != nil {
+		if err := client.DeleteIdentityMapping(removeProvider, removePrincipal); err != nil {
 			return fmt.Errorf("failed to delete identity mapping: %w", err)
 		}
 		return nil

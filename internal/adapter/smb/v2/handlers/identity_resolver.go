@@ -30,7 +30,7 @@ func (h *Handler) resolveIdentityMapping(ctx context.Context, principal, fallbac
 	}
 
 	// Try the full principal first (e.g., "DOMAIN\user" or "user@REALM").
-	mapping, err := ims.GetIdentityMapping(ctx, principal)
+	mapping, err := ims.GetIdentityMapping(ctx, "kerberos", principal)
 	if err == nil {
 		logger.Debug("Identity mapping resolved",
 			"principal", principal, "username", mapping.Username)
@@ -44,7 +44,7 @@ func (h *Handler) resolveIdentityMapping(ctx context.Context, principal, fallbac
 	// For NTLM principals ("DOMAIN\user"), also try bare username as fallback.
 	if idx := strings.IndexByte(principal, '\\'); idx >= 0 {
 		bare := principal[idx+1:]
-		mapping, err := ims.GetIdentityMapping(ctx, bare)
+		mapping, err := ims.GetIdentityMapping(ctx, "kerberos", bare)
 		if err == nil {
 			logger.Debug("Identity mapping resolved via bare username",
 				"principal", principal, "bare", bare, "username", mapping.Username)

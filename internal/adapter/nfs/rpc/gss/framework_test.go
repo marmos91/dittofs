@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/jcmturner/gokrb5/v8/types"
-	"github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
+	identity "github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 

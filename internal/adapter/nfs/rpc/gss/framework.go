@@ -11,7 +11,8 @@ import (
 
 	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
+	nfsidentity "github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
+	pkgidentity "github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -364,14 +365,15 @@ type GSSProcessorOption func(*GSSProcessor)
 type GSSProcessor struct {
 	contexts *ContextStore
 	verifier Verifier
-	mapper   identity.IdentityMapper
+	mapper   nfsidentity.IdentityMapper // legacy mapper (used if resolver is nil)
+	resolver *pkgidentity.Resolver      // centralized identity resolver
 	mu       sync.RWMutex
 }
 
 // NewGSSProcessor creates a new GSS processor.
 // Use NewKrb5Verifier for the production verifier.
 // maxContexts of 0 means unlimited; contextTTL controls idle context expiry.
-func NewGSSProcessor(verifier Verifier, mapper identity.IdentityMapper, maxContexts int, contextTTL time.Duration, opts ...GSSProcessorOption) *GSSProcessor {
+func NewGSSProcessor(verifier Verifier, mapper nfsidentity.IdentityMapper, maxContexts int, contextTTL time.Duration, opts ...GSSProcessorOption) *GSSProcessor {
 	p := &GSSProcessor{
 		contexts: NewContextStore(maxContexts, contextTTL),
 		verifier: verifier,
@@ -664,44 +666,10 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 		}
 	}
 
-	// 5. Map principal to Unix identity
-	p.mu.RLock()
-	mapper := p.mapper
-	p.mu.RUnlock()
-
-	var ident *metadata.Identity
-	if mapper != nil {
-		principalKey := gssCtx.Principal + "@" + gssCtx.Realm
-		resolved, err := mapper.Resolve(ctx, principalKey)
-		if err != nil {
-			logger.Debug("GSS DATA: identity mapping failed",
-				"principal", gssCtx.Principal,
-				"realm", gssCtx.Realm,
-				"error", err,
-			)
-			return &GSSProcessResult{
-				Err: fmt.Errorf("map identity for %s@%s: %w", gssCtx.Principal, gssCtx.Realm, err),
-			}
-		}
-		if resolved == nil {
-			return &GSSProcessResult{
-				Err: fmt.Errorf("identity mapping returned nil for %s@%s", gssCtx.Principal, gssCtx.Realm),
-			}
-		}
-		if !resolved.Found {
-			logger.Debug("GSS DATA: identity not found, falling back to nobody",
-				"principal", gssCtx.Principal,
-				"realm", gssCtx.Realm,
-			)
-			resolved = identity.NobodyIdentity()
-		}
-		ident = &metadata.Identity{
-			UID:      &resolved.UID,
-			GID:      &resolved.GID,
-			GIDs:     resolved.GIDs,
-			Username: resolved.Username,
-			Domain:   resolved.Domain,
-		}
+	// 5. Map principal to Unix identity via centralized resolver or legacy mapper.
+	ident, identErr := p.resolveIdentity(ctx, gssCtx.Principal, gssCtx.Realm)
+	if identErr != nil {
+		return &GSSProcessResult{Err: identErr}
 	}
 
 	logger.Debug("GSS DATA: request authenticated",
@@ -719,6 +687,70 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 		Service:       cred.Service,
 		SessionKey:    gssCtx.SessionKey,
 	}
+}
+
+// resolveIdentity maps a Kerberos principal to a Unix identity using the
+// centralized resolver (DB-backed) with fallback to the legacy static mapper.
+// Returns a nobody identity when the principal is not found.
+func (p *GSSProcessor) resolveIdentity(ctx context.Context, principal, realm string) (*metadata.Identity, error) {
+	p.mu.RLock()
+	resolver := p.resolver
+	legacyMapper := p.mapper
+	p.mu.RUnlock()
+
+	principalKey := principal + "@" + realm
+
+	// Try centralized resolver first (DB-backed mapping + convention fallback).
+	if resolver != nil {
+		cred := &pkgidentity.Credential{
+			Provider:   "kerberos",
+			ExternalID: principalKey,
+			Attributes: map[string]string{"realm": realm},
+		}
+		resolved, err := resolver.Resolve(ctx, cred)
+		if err != nil {
+			return nil, fmt.Errorf("identity resolver unavailable for %s@%s: %w", principal, realm, err)
+		}
+		if resolved.Found {
+			return &metadata.Identity{
+				UID:      &resolved.UID,
+				GID:      &resolved.GID,
+				GIDs:     resolved.GIDs,
+				Username: resolved.Username,
+				Domain:   resolved.Domain,
+			}, nil
+		} else {
+			nobody := pkgidentity.NobodyIdentity()
+			return &metadata.Identity{
+				UID:      &nobody.UID,
+				GID:      &nobody.GID,
+				Username: nobody.Username,
+			}, nil
+		}
+	}
+
+	// Legacy static mapper fallback.
+	if legacyMapper != nil {
+		resolved, err := legacyMapper.Resolve(ctx, principalKey)
+		if err != nil {
+			return nil, fmt.Errorf("map identity for %s: %w", principalKey, err)
+		}
+		if resolved == nil {
+			return nil, fmt.Errorf("identity mapping returned nil for %s", principalKey)
+		}
+		if !resolved.Found {
+			resolved = nfsidentity.NobodyIdentity()
+		}
+		return &metadata.Identity{
+			UID:      &resolved.UID,
+			GID:      &resolved.GID,
+			GIDs:     resolved.GIDs,
+			Username: resolved.Username,
+			Domain:   resolved.Domain,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("no identity mapper configured for %s", principalKey)
 }
 
 // handleDestroy processes RPCSEC_GSS_DESTROY.
@@ -783,9 +815,17 @@ func (p *GSSProcessor) SetVerifier(v Verifier) {
 	p.mu.Unlock()
 }
 
-// SetMapper replaces the identity mapper.
-func (p *GSSProcessor) SetMapper(m identity.IdentityMapper) {
+// SetMapper replaces the legacy identity mapper.
+func (p *GSSProcessor) SetMapper(m nfsidentity.IdentityMapper) {
 	p.mu.Lock()
 	p.mapper = m
+	p.mu.Unlock()
+}
+
+// SetResolver sets the centralized identity resolver, which takes precedence
+// over the legacy mapper when both are set.
+func (p *GSSProcessor) SetResolver(r *pkgidentity.Resolver) {
+	p.mu.Lock()
+	p.resolver = r
 	p.mu.Unlock()
 }

@@ -9,21 +9,27 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var listProvider string
+
 var listCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List all identity mappings",
-	Long: `List all identity mappings on the DittoFS server.
+	Short: "List identity mappings",
+	Long: `List identity mappings on the DittoFS server.
 
 Examples:
-  # List mappings as table
+  # List all mappings
   dfsctl idmap list
 
-  # List as JSON
-  dfsctl idmap list -o json
+  # List only Kerberos mappings
+  dfsctl idmap list --provider kerberos
 
-  # List as YAML
-  dfsctl idmap list -o yaml`,
+  # List as JSON
+  dfsctl idmap list -o json`,
 	RunE: runList,
+}
+
+func init() {
+	listCmd.Flags().StringVar(&listProvider, "provider", "", "Filter by identity provider (e.g., kerberos, oidc, ad)")
 }
 
 // MappingList is a list of identity mappings for table rendering.
@@ -31,7 +37,7 @@ type MappingList []apiclient.IdentityMapping
 
 // Headers implements TableRenderer.
 func (ml MappingList) Headers() []string {
-	return []string{"PRINCIPAL", "USERNAME", "CREATED"}
+	return []string{"PROVIDER", "PRINCIPAL", "USERNAME", "CREATED"}
 }
 
 // Rows implements TableRenderer.
@@ -39,7 +45,7 @@ func (ml MappingList) Rows() [][]string {
 	rows := make([][]string, 0, len(ml))
 	for _, m := range ml {
 		created := cmdutil.EmptyOr(m.CreatedAt, "-")
-		rows = append(rows, []string{m.Principal, m.Username, created})
+		rows = append(rows, []string{m.ProviderName, m.Principal, m.Username, created})
 	}
 	return rows
 }
@@ -50,7 +56,7 @@ func runList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	mappings, err := client.ListIdentityMappings()
+	mappings, err := client.ListIdentityMappings(listProvider)
 	if err != nil {
 		return fmt.Errorf("failed to list identity mappings: %w", err)
 	}

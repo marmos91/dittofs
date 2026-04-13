@@ -230,6 +230,12 @@ func New(config *Config) (*GORMStore, error) {
 		_ = db.Exec("DROP INDEX IF EXISTS idx_block_store_configs_name")
 	}
 
+	// Pre-migration: drop legacy single-column unique index on identity_mappings.principal.
+	// The new composite index idx_provider_principal (provider_name, principal) replaces it.
+	if db.Migrator().HasTable(&models.IdentityMapping{}) {
+		_ = db.Exec("DROP INDEX IF EXISTS idx_identity_mappings_principal")
+	}
+
 	// Pre-migration: rename read_cache_size column to read_buffer_size if it exists.
 	if db.Migrator().HasColumn(&models.Share{}, "read_cache_size") {
 		if err := db.Migrator().RenameColumn(&models.Share{}, "read_cache_size", "read_buffer_size"); err != nil {
