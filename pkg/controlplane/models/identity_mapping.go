@@ -5,17 +5,17 @@ import (
 	"time"
 )
 
-// IdentityMapping maps an authentication principal to a control plane username.
-// This is used for resolving Kerberos principals (e.g., "alice@EXAMPLE.COM")
-// or NTLM principals (e.g., "CORP\alice") to local DittoFS user accounts.
-// Mappings are shared across protocols (NFS and SMB) to ensure consistent
-// uid/gid resolution in mixed-protocol deployments.
+// IdentityMapping links an external identity to a DittoFS user account.
+// The composite key (ProviderName, Principal) supports multiple identity
+// providers (Kerberos, OIDC, AD, LDAP) and linked identities where one
+// DittoFS user has credentials from different external systems.
 type IdentityMapping struct {
-	ID        string    `gorm:"primaryKey;type:varchar(36)" json:"id"`
-	Principal string    `gorm:"uniqueIndex;type:varchar(255);not null" json:"principal"`
-	Username  string    `gorm:"type:varchar(255);not null" json:"username"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID           string    `gorm:"primaryKey;type:varchar(36)" json:"id"`
+	ProviderName string    `gorm:"uniqueIndex:idx_provider_principal;type:varchar(50);not null;default:kerberos" json:"provider_name"`
+	Principal    string    `gorm:"uniqueIndex:idx_provider_principal;type:varchar(255);not null" json:"principal"`
+	Username     string    `gorm:"type:varchar(255);not null" json:"username"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // Error types for identity mapping operations.
