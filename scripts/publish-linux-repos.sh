@@ -50,7 +50,7 @@ Origin: DittoFS
 Label: DittoFS
 Suite: stable
 Codename: stable
-Date: $(date -Ru)
+Date: $(LC_ALL=C date -Ru)
 Architectures: amd64 arm64
 Components: main
 Description: DittoFS APT repository
