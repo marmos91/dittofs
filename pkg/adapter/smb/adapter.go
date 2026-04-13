@@ -613,4 +613,3 @@ func (r *metadataServiceResolver) GetLockManagerForHandle(handleKey string) lock
 	}
 	return r.metaSvc.GetLockManagerForShare(shareName)
 }
-

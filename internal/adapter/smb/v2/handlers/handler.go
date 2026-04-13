@@ -19,8 +19,8 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	pkgidentity "github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	pkgidentity "github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )

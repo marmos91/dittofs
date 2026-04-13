@@ -11,7 +11,7 @@ import (
 var (
 	addProvider  string
 	addPrincipal string
-	addUsername   string
+	addUsername  string
 )
 
 var addCmd = &cobra.Command{

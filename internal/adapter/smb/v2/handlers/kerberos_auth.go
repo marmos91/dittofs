@@ -287,4 +287,3 @@ func sessionEncryptFlag(sess interface{ ShouldEncrypt() bool }) uint16 {
 	}
 	return 0
 }
-
