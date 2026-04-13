@@ -65,11 +65,10 @@ func TestWrapGSSToken_MSOID(t *testing.T) {
 	if !bytes.Equal(wrapped[2:2+len(MSKerberosV5OIDBytes)], MSKerberosV5OIDBytes) {
 		t.Fatalf("MS OID not echoed: got % x", wrapped[2:2+len(MSKerberosV5OIDBytes)])
 	}
-	// Byte offset 4 in the MS OID DER (0x82) must distinguish it from the
-	// standard OID (which has 0x86 at the same position). Guards against
-	// accidentally swapping the two constants.
+	// DER index 5 within the OID (wrapped offset 2+5=7) is 0x82 for the MS
+	// OID and 0x86 for the standard OID. Guards against swapping the constants.
 	if wrapped[2+5] != 0x82 {
-		t.Fatalf("expected MS OID marker 0x82 at offset 7, got 0x%02x", wrapped[2+5])
+		t.Fatalf("expected MS OID marker 0x82 at wrapped offset 7 (OID DER index 5), got 0x%02x", wrapped[2+5])
 	}
 }
 

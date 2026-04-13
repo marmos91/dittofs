@@ -349,6 +349,9 @@ func sessionEncryptFlag(sess interface{ ShouldEncrypt() bool }) uint16 {
 // wire bytes is the fastest way to isolate framing bugs (see issue #335).
 // Safe to leave enabled: only fires under DEBUG and caps the hex to 512 bytes.
 func logKrb5Dump(label string, b []byte) {
+	if !logger.IsDebugEnabled() {
+		return
+	}
 	const maxHex = 512
 	n := len(b)
 	if n > maxHex {

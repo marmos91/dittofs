@@ -228,8 +228,8 @@ func TestSPNEGOResponseTokenWrapping(t *testing.T) {
 				t.Fatalf("inner GSS OID must always be standard Kerberos V5 (issue #335)\n  got:  % x\n  want: % x",
 					innerOIDFull, tc.wantInnerOIDFull)
 			}
-			// Sanity check: byte at offset 7 inside the OID distinguishes
-			// standard (0x86) from MS (0x82). Must be 0x86.
+			// Sanity check: OID DER index 5 (wrapped offset 2+5=7) is 0x86
+			// for standard and 0x82 for MS. Must be 0x86.
 			if rt[2+5] != 0x86 {
 				t.Fatalf("inner OID family marker = 0x%02x, want 0x86 (standard Kerberos V5). "+
 					"0x82 would indicate the MS OID leaked into the inner wrapper — MIT will reject.", rt[2+5])
