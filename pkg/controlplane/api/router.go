@@ -45,7 +45,7 @@ import (
 //   - /api/v1/adapters/nfs/clients/{id}/sessions - NFS client sessions (admin only)
 //   - /api/v1/adapters/{type}/grace - NFS grace period management (admin only)
 //   - /api/v1/adapters/{type}/netgroups - NFS netgroup management (admin only)
-//   - /api/v1/adapters/{type}/identity-mappings - Identity mapping management, shared across protocols (admin only)
+//   - /api/v1/adapters/{type}/identity-mappings - NFS identity mapping management (admin only)
 //   - /api/v1/adapters/{type}/mounts - Protocol-specific mount listing (admin only)
 //   - /api/v1/settings/* - System settings management (admin only)
 //   - /api/v1/mounts - Unified mount listing (admin only)
@@ -312,18 +312,32 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 							})
 						}
 
-						// Identity mapping management (shared across NFS/SMB) - requires IdentityMappingStore capability
+						// Legacy identity mapping route (deprecated: use /api/v1/identity-mappings instead)
 						if ims, ok := cpStore.(store.IdentityMappingStore); ok {
 							r.Route("/identity-mappings", func(r chi.Router) {
-								idmapHandler := handlers.NewIdentityMappingHandler(ims)
-								r.Get("/", idmapHandler.List)
-								r.Post("/", idmapHandler.Create)
-								r.Delete("/{principal}", idmapHandler.Delete)
+								legacyHandler := handlers.NewIdentityMappingHandler(ims)
+								r.Get("/", legacyHandler.List)
+								r.Post("/", legacyHandler.Create)
+								r.Delete("/{principal}", legacyHandler.DeleteLegacy)
 							})
 						}
 					})
 				})
 			})
+
+			// Identity mappings — links external identities to DittoFS users (admin only)
+			if ims, ok := cpStore.(store.IdentityMappingStore); ok {
+				r.Route("/identity-mappings", func(r chi.Router) {
+					r.Use(apiMiddleware.RequireAdmin())
+					idmapHandler := handlers.NewIdentityMappingHandler(ims)
+					r.Get("/", idmapHandler.List)
+					r.Post("/", idmapHandler.Create)
+					r.Route("/by-provider/{provider}", func(r chi.Router) {
+						r.Delete("/{principal}", idmapHandler.Delete)
+					})
+					r.Get("/users/{username}", idmapHandler.ListForUser)
+				})
+			}
 
 			// System operations (admin only)
 			r.Route("/system", func(r chi.Router) {

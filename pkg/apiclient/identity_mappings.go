@@ -7,39 +7,54 @@ import (
 
 // IdentityMapping represents an identity mapping in the system.
 type IdentityMapping struct {
-	ID        string `json:"id"`
-	Principal string `json:"principal"`
-	Username  string `json:"username"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	ID           string `json:"id"`
+	ProviderName string `json:"provider_name"`
+	Principal    string `json:"principal"`
+	Username     string `json:"username"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
 }
 
 // CreateIdentityMappingRequest is the request to create an identity mapping.
 type CreateIdentityMappingRequest struct {
-	Principal string `json:"principal"`
-	Username  string `json:"username"`
+	ProviderName string `json:"provider_name"`
+	Principal    string `json:"principal"`
+	Username     string `json:"username"`
 }
 
-// identityMappingsPath is the API path for identity mappings.
-// Mappings are shared across protocols (NFS and SMB) — the /nfs/ segment
-// is the canonical path but the same data is accessible via /smb/.
-const identityMappingsPath = "/api/v1/adapters/nfs/identity-mappings"
-
-// ListIdentityMappings returns all identity mappings.
-func (c *Client) ListIdentityMappings() ([]IdentityMapping, error) {
-	return listResources[IdentityMapping](c, identityMappingsPath)
+// ListIdentityMappings returns all identity mappings, optionally filtered by provider.
+func (c *Client) ListIdentityMappings(provider string) ([]IdentityMapping, error) {
+	path := "/api/v1/identity-mappings"
+	if provider != "" {
+		path += "?provider=" + url.QueryEscape(provider)
+	}
+	return listResources[IdentityMapping](c, path)
 }
 
 // CreateIdentityMapping creates a new identity mapping.
-func (c *Client) CreateIdentityMapping(principal, username string) (*IdentityMapping, error) {
-	req := &CreateIdentityMappingRequest{
-		Principal: principal,
-		Username:  username,
+func (c *Client) CreateIdentityMapping(provider, principal, username string) (*IdentityMapping, error) {
+	if provider == "" {
+		provider = "kerberos"
 	}
-	return createResource[IdentityMapping](c, identityMappingsPath, req)
+	req := &CreateIdentityMappingRequest{
+		ProviderName: provider,
+		Principal:    principal,
+		Username:     username,
+	}
+	return createResource[IdentityMapping](c, "/api/v1/identity-mappings", req)
 }
 
-// DeleteIdentityMapping deletes an identity mapping by principal.
-func (c *Client) DeleteIdentityMapping(principal string) error {
-	return deleteResource(c, fmt.Sprintf("%s/%s", identityMappingsPath, url.PathEscape(principal)))
+// DeleteIdentityMapping deletes an identity mapping by provider and principal.
+func (c *Client) DeleteIdentityMapping(provider, principal string) error {
+	if provider == "" {
+		provider = "kerberos"
+	}
+	return deleteResource(c, fmt.Sprintf("/api/v1/identity-mappings/by-provider/%s/%s",
+		url.PathEscape(provider), url.PathEscape(principal)))
+}
+
+// ListIdentityMappingsForUser returns all identity mappings for a user.
+func (c *Client) ListIdentityMappingsForUser(username string) ([]IdentityMapping, error) {
+	return listResources[IdentityMapping](c, fmt.Sprintf("/api/v1/identity-mappings/users/%s",
+		url.PathEscape(username)))
 }
