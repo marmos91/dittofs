@@ -1,17 +1,15 @@
 package handlers
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/jcmturner/gofork/encoding/asn1"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
-	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
 	"github.com/marmos91/dittofs/internal/logger"
 	pkgkerberos "github.com/marmos91/dittofs/pkg/auth/kerberos"
+	"github.com/marmos91/dittofs/pkg/identity"
 )
 
 // handleKerberosAuth handles Kerberos authentication via SPNEGO.
@@ -36,19 +34,9 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 	}
 	smbPrincipal := deriveSMBPrincipal(basePrincipal, h.SMBServicePrincipal)
 
-	// The SPNEGO MechToken is a GSS-API initial context token (RFC 2743
-	// Section 3.1) wrapping the Kerberos AP-REQ. KerberosService.Authenticate
-	// expects a raw AP-REQ, so we need to strip the GSS-API wrapper first.
-	logKrb5Dump("incoming mechToken", mechToken)
-	apReqBytes, err := extractAPReqFromGSSToken(mechToken)
-	if err != nil {
-		logger.Info("Failed to extract AP-REQ from GSS token", "error", err)
-		return NewErrorResult(types.StatusLogonFailure), nil
-	}
-
 	// Authenticate via shared service (handles AP-REQ parsing, verification,
 	// replay detection, and subkey preference).
-	authResult, err := h.KerberosService.Authenticate(apReqBytes, smbPrincipal)
+	authResult, err := h.KerberosService.Authenticate(mechToken, smbPrincipal)
 	if err != nil {
 		logger.Info("Kerberos authentication failed", "error", err)
 		return NewErrorResult(types.StatusLogonFailure), nil
@@ -62,14 +50,9 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 	//   - DES (8 bytes) -> zero-pad to 16
 	sessionKey := normalizeSessionKey(authResult.SessionKey.KeyValue)
 
-	// Resolve principal to DittoFS username.
-	// First check DB identity mappings (cross-protocol consistency),
-	// then fall back to configurable mapping (strip-realm default, explicit mapping table).
-	fullPrincipal := authResult.Principal + "@" + authResult.Realm
-	username, _ := h.resolveIdentityMapping(ctx.Context, fullPrincipal, "")
-	if username == "" {
-		username = pkgkerberos.ResolvePrincipal(authResult.Principal, authResult.Realm, h.IdentityConfig)
-	}
+	// Resolve principal to DittoFS username via centralized identity resolver
+	// (DB-backed mapping + convention fallback), or legacy IdentityConfig.
+	username := h.resolveKerberosPrincipal(ctx, authResult.Principal, authResult.Realm)
 
 	logger.Debug("Kerberos authentication succeeded",
 		"principal", authResult.Principal,
@@ -96,25 +79,10 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 	}
 
 	// Create authenticated session and configure signing/encryption.
-	// Set ExpiresAt before StoreSession to avoid a data race window where
-	// concurrent readers could see a zero ExpiresAt on a published session.
 	sessionID := h.GenerateSessionID()
-	sess := session.NewSessionWithUser(sessionID, ctx.ClientAddr, user, authResult.Realm)
-	sess.ExpiresAt = authResult.APReq.Ticket.DecryptedEncPart.EndTime
-	h.SessionManager.StoreSession(sess)
+	sess := h.CreateSessionWithUser(sessionID, ctx.ClientAddr, user, authResult.Realm)
 	ctx.SessionID = sessionID
 	ctx.IsGuest = false
-
-	// Initialize per-session preauth hash for SMB 3.1.1 key derivation.
-	// Per MS-SMB2 3.3.5.5: each session gets its own preauth hash chain
-	// initialized from the connection hash. Without this, configureSessionSigningWithKey
-	// falls back to the connection-level hash and produces wrong signing/encryption
-	// keys, causing the client to reject the signed SESSION_SETUP response.
-	// The NTLM path initializes this in handleSessionSetup; Kerberos doesn't go
-	// through that path and must do it here.
-	if ctx.ConnCryptoState != nil {
-		ctx.ConnCryptoState.InitSessionPreauthHash(sessionID)
-	}
 
 	// Configure session signing with normalized 16-byte key.
 	// This goes through the same KDF pipeline as NTLM, producing
@@ -131,37 +99,20 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 		"signingEnabled", sess.ShouldSign(),
 		"encryptData", sess.ShouldEncrypt())
 
-	// Match the client's Kerberos OID in the SPNEGO response.
-	// Windows clients using the MS OID expect to see it echoed back.
-	responseOID := clientKerberosOID(parsedToken)
-
-	// Build mutual auth AP-REP and wrap it in a GSS-API InitialContextToken
-	// (RFC 2743 Section 3.1) for the SPNEGO accept-complete response:
-	//
-	//   0x60 [len] 0x06 <oid-len> <oid-bytes> 0x02 0x00 <AP-REP>
-	//
-	// AP-REP encryption uses the ticket session key per RFC 4120 (not the
-	// context subkey), which is what clients decrypt with.
-	//
-	// CRITICAL: the OID inside this wrapper must be the standard RFC 4121
-	// Kerberos V5 OID (1.2.840.113554.1.2.2), even when the client advertised
-	// the MS legacy OID (1.2.840.48018.1.2.2) in SPNEGO mechTypes. MIT's
-	// krb5_gss and Heimdal only recognize the standard OID internally, so
-	// echoing the MS OID here causes them to reject the token with
-	// GSS_S_DEFECTIVE_TOKEN (issue #335). Windows SSPI accepts both. The
-	// outer SPNEGO supportedMech (responseOID) still mirrors the client's
-	// choice for negTokenResp compatibility.
+	// Build mutual auth AP-REP via shared service for SPNEGO accept-complete response.
+	// Use the ticket session key for AP-REP encryption per RFC 4120 (not the context
+	// key which may be the subkey). Clients decrypt AP-REP with the ticket session key.
 	ticketSessionKey := authResult.APReq.Ticket.DecryptedEncPart.Key
-	rawAPRep, err := h.KerberosService.BuildMutualAuth(&authResult.APReq, ticketSessionKey)
-	var apRepToken []byte
+	apRepToken, err := h.KerberosService.BuildMutualAuth(&authResult.APReq, ticketSessionKey)
 	if err != nil {
 		logger.Debug("Failed to build AP-REP for mutual auth", "error", err)
 		// Fall back to accept-complete without AP-REP (still functional).
-	} else {
-		logKrb5Dump("raw AP-REP (pre-wrap)", rawAPRep)
-		apRepToken = kerbauth.WrapGSSToken(rawAPRep, kerbauth.KerberosV5OIDBytes, kerbauth.GSSTokenIDAPRep)
-		logKrb5Dump("wrapped AP-REP (GSS)", apRepToken)
+		apRepToken = nil
 	}
+
+	// Match the client's Kerberos OID in the SPNEGO response.
+	// Windows clients using the MS OID expect to see it echoed back.
+	responseOID := clientKerberosOID(parsedToken)
 
 	// Handle SPNEGO mechListMIC for downgrade protection.
 	// If the client sent a mechListMIC, verify it.
@@ -231,98 +182,6 @@ func deriveSMBPrincipal(basePrincipal, override string) string {
 	return basePrincipal
 }
 
-// extractAPReqFromGSSToken strips the GSS-API initial context token wrapper
-// (RFC 2743 Section 3.1) from a Kerberos SPNEGO mechToken and returns the
-// raw AP-REQ bytes that gokrb5's messages.APReq.Unmarshal expects.
-//
-// GSS-API token format:
-//
-//	0x60 [ASN.1 length] 0x06 [OID length] [krb5 OID] [token ID (2 bytes)] [AP-REQ]
-//
-// If the token does not begin with 0x60, it is assumed to already be a raw
-// AP-REQ and returned unchanged (defensive behavior matching the NFS path).
-func extractAPReqFromGSSToken(token []byte) ([]byte, error) {
-	if len(token) == 0 {
-		return nil, fmt.Errorf("empty token")
-	}
-
-	// If not a GSS-API wrapped token, assume raw AP-REQ.
-	if token[0] != 0x60 {
-		return token, nil
-	}
-
-	// Parse the [APPLICATION 0] ASN.1 length to locate the wrapped body.
-	length, lengthBytes, err := parseGSSASN1Length(token[1:])
-	if err != nil {
-		return nil, fmt.Errorf("parse GSS token length: %w", err)
-	}
-
-	// Defense-in-depth: cap declared length against the actual buffer before
-	// any int conversion to avoid bodyEnd wrap-around on unusually large
-	// declared lengths. `length` is uint32; on 32-bit platforms int(length)
-	// could overflow negative.
-	if uint64(length) > uint64(len(token)) {
-		return nil, fmt.Errorf("GSS token length %d exceeds buffer size %d", length, len(token))
-	}
-
-	bodyStart := 1 + lengthBytes
-	bodyEnd := bodyStart + int(length)
-	if bodyEnd > len(token) {
-		return nil, fmt.Errorf("GSS token truncated: expected %d bytes, have %d", bodyEnd, len(token))
-	}
-	body := token[bodyStart:bodyEnd]
-
-	// Body layout: 0x06 <oidLen> <oid...> <tokID hi> <tokID lo> <AP-REQ...>
-	// Minimum: OID tag + OID length byte + 2-byte token ID = 4 bytes.
-	if len(body) < 4 || body[0] != 0x06 {
-		return nil, fmt.Errorf("expected OID tag 0x06 at body start")
-	}
-	// Only short-form DER lengths are supported for the OID. Real Kerberos
-	// mechanism OIDs are at most 11 bytes (the KRB5 and MS KRB5 OIDs are 9
-	// and 10 respectively), so reject anything above 0x7f (which would
-	// otherwise signal BER long-form encoding and be mis-parsed as a length).
-	if body[1] >= 0x80 {
-		return nil, fmt.Errorf("GSS body OID uses long-form length (0x%02x), not supported", body[1])
-	}
-	oidLen := int(body[1])
-	apReqStart := 2 + oidLen + 2 // OID tag+length, OID bytes, token ID
-	if apReqStart > len(body) {
-		return nil, fmt.Errorf("GSS body truncated: need %d bytes for OID+tokID, have %d", apReqStart, len(body))
-	}
-
-	// Token ID (RFC 1964 Section 1.1). Must be 0x0100 for AP-REQ.
-	tokenID := uint16(body[2+oidLen])<<8 | uint16(body[2+oidLen+1])
-	if tokenID != kerbauth.GSSTokenIDAPReq {
-		return nil, fmt.Errorf("unexpected krb5 token ID: 0x%04x (want 0x%04x for AP-REQ)", tokenID, kerbauth.GSSTokenIDAPReq)
-	}
-
-	return body[apReqStart:], nil
-}
-
-// parseGSSASN1Length parses an ASN.1 BER/DER length from the start of buf.
-// Returns the length value and the number of bytes consumed.
-func parseGSSASN1Length(buf []byte) (uint32, int, error) {
-	if len(buf) == 0 {
-		return 0, 0, fmt.Errorf("empty length field")
-	}
-	first := buf[0]
-	if first < 0x80 {
-		return uint32(first), 1, nil
-	}
-	n := int(first & 0x7f)
-	if n == 0 || n > 4 {
-		return 0, 0, fmt.Errorf("unsupported length encoding 0x%02x", first)
-	}
-	if len(buf) < 1+n {
-		return 0, 0, fmt.Errorf("truncated length field")
-	}
-	var length uint32
-	for i := 1; i <= n; i++ {
-		length = (length << 8) | uint32(buf[i])
-	}
-	return length, 1 + n, nil
-}
-
 // clientKerberosOID determines which Kerberos OID the client used in SPNEGO
 // and returns it for use in the server's accept-complete response.
 // Windows clients use the MS OID (1.2.840.48018.1.2.2) and expect it echoed back.
@@ -340,6 +199,24 @@ func clientKerberosOID(parsedToken *auth.ParsedToken) asn1.ObjectIdentifier {
 	return auth.OIDKerberosV5
 }
 
+// resolveKerberosPrincipal resolves a Kerberos principal to a DittoFS username.
+// Uses the centralized identity resolver when available, falling back to the
+// legacy IdentityConfig-based resolution for backward compatibility.
+func (h *Handler) resolveKerberosPrincipal(ctx *SMBHandlerContext, principal, realm string) string {
+	if h.IdentityResolver != nil {
+		cred := &identity.Credential{
+			Provider:   "kerberos",
+			ExternalID: principal + "@" + realm,
+			Attributes: map[string]string{"realm": realm},
+		}
+		resolved, err := h.IdentityResolver.Resolve(ctx.Context, cred)
+		if err == nil && resolved.Found {
+			return resolved.Username
+		}
+	}
+	return pkgkerberos.ResolvePrincipal(principal, realm, h.IdentityConfig)
+}
+
 // sessionEncryptFlag returns the session encrypt data flag if the session
 // should encrypt, or 0 if encryption is not enabled.
 func sessionEncryptFlag(sess interface{ ShouldEncrypt() bool }) uint16 {
@@ -347,24 +224,4 @@ func sessionEncryptFlag(sess interface{ ShouldEncrypt() bool }) uint16 {
 		return types.SMB2SessionFlagEncryptData
 	}
 	return 0
-}
-
-// logKrb5Dump emits a hex dump of a Kerberos-related byte blob at debug level.
-// Used when diagnosing interop issues with MIT clients — inspecting the exact
-// wire bytes is the fastest way to isolate framing bugs (see issue #335).
-// Safe to leave enabled: only fires under DEBUG and caps the hex to 512 bytes.
-func logKrb5Dump(label string, b []byte) {
-	if !logger.IsDebugEnabled() {
-		return
-	}
-	const maxHex = 512
-	n := len(b)
-	if n > maxHex {
-		b = b[:maxHex]
-	}
-	logger.Debug("krb5 hex dump",
-		"label", label,
-		"len", n,
-		"hex", fmt.Sprintf("%x", b),
-	)
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
 	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/adapter"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
@@ -573,11 +574,12 @@ func (s *NFSAdapter) performNSMStartup(ctx context.Context) {
 // initGSSProcessor initializes the RPCSEC_GSS processor if Kerberos is configured.
 //
 // This creates a kerberos.Provider from config, a StaticMapper for identity mapping,
-// and a GSSProcessor that handles the INIT/DATA/DESTROY lifecycle.
+// and a GSSProcessor that handles the INIT/DATA/DESTROY lifecycle. When a runtime
+// is available, a centralized identity Resolver is also wired for DB-backed mapping.
 //
 // If Kerberos is not enabled or initialization fails, the adapter continues without
 // GSS support (AUTH_UNIX/AUTH_NULL only).
-func (s *NFSAdapter) initGSSProcessor() {
+func (s *NFSAdapter) initGSSProcessor(rt *runtime.Runtime) {
 	if s.kerberosConfig == nil {
 		return
 	}
@@ -595,7 +597,7 @@ func (s *NFSAdapter) initGSSProcessor() {
 	kerbService := kerbauth.NewKerberosService(provider)
 	verifier := gss.NewKrb5Verifier(kerbService)
 
-	// Create the GSS processor
+	// Create the GSS processor with the legacy static mapper as fallback
 	s.gssProcessor = gss.NewGSSProcessor(
 		verifier,
 		mapper,
@@ -603,9 +605,18 @@ func (s *NFSAdapter) initGSSProcessor() {
 		s.kerberosConfig.ContextTTL,
 	)
 
+	// Wire centralized identity resolver (DB-backed mapping + convention fallback).
+	// This takes precedence over the legacy StaticMapper when resolving principals.
+	if rt != nil {
+		realm := adapter.ExtractRealm(s.kerberosConfig.ServicePrincipal)
+		resolver := adapter.BuildIdentityResolver(rt, realm)
+		s.gssProcessor.SetResolver(resolver)
+	}
+
 	logger.Info("RPCSEC_GSS (Kerberos) authentication enabled",
 		"service_principal", s.kerberosConfig.ServicePrincipal,
 		"max_contexts", s.kerberosConfig.MaxContexts,
 		"context_ttl", s.kerberosConfig.ContextTTL,
 	)
 }
+

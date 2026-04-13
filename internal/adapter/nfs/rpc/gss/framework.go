@@ -11,7 +11,8 @@ import (
 
 	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
+	nfsidentity "github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
+	pkgidentity "github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -364,14 +365,15 @@ type GSSProcessorOption func(*GSSProcessor)
 type GSSProcessor struct {
 	contexts *ContextStore
 	verifier Verifier
-	mapper   identity.IdentityMapper
+	mapper   nfsidentity.IdentityMapper // legacy mapper (used if resolver is nil)
+	resolver *pkgidentity.Resolver      // centralized identity resolver
 	mu       sync.RWMutex
 }
 
 // NewGSSProcessor creates a new GSS processor.
 // Use NewKrb5Verifier for the production verifier.
 // maxContexts of 0 means unlimited; contextTTL controls idle context expiry.
-func NewGSSProcessor(verifier Verifier, mapper identity.IdentityMapper, maxContexts int, contextTTL time.Duration, opts ...GSSProcessorOption) *GSSProcessor {
+func NewGSSProcessor(verifier Verifier, mapper nfsidentity.IdentityMapper, maxContexts int, contextTTL time.Duration, opts ...GSSProcessorOption) *GSSProcessor {
 	p := &GSSProcessor{
 		contexts: NewContextStore(maxContexts, contextTTL),
 		verifier: verifier,
@@ -664,36 +666,60 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 		}
 	}
 
-	// 5. Map principal to Unix identity
+	// 5. Map principal to Unix identity via centralized resolver or legacy mapper.
 	p.mu.RLock()
-	mapper := p.mapper
+	resolver := p.resolver
+	legacyMapper := p.mapper
 	p.mu.RUnlock()
 
 	var ident *metadata.Identity
-	if mapper != nil {
-		principalKey := gssCtx.Principal + "@" + gssCtx.Realm
-		resolved, err := mapper.Resolve(ctx, principalKey)
-		if err != nil {
-			logger.Debug("GSS DATA: identity mapping failed",
+	principalKey := gssCtx.Principal + "@" + gssCtx.Realm
+
+	if resolver != nil {
+		cred := &pkgidentity.Credential{
+			Provider:   "kerberos",
+			ExternalID: principalKey,
+			Attributes: map[string]string{"realm": gssCtx.Realm},
+		}
+		resolved, err := resolver.Resolve(ctx, cred)
+		if err == nil && resolved.Found {
+			ident = &metadata.Identity{
+				UID:      &resolved.UID,
+				GID:      &resolved.GID,
+				GIDs:     resolved.GIDs,
+				Username: resolved.Username,
+				Domain:   resolved.Domain,
+			}
+		} else if err == nil && !resolved.Found {
+			nobody := pkgidentity.NobodyIdentity()
+			ident = &metadata.Identity{
+				UID:      &nobody.UID,
+				GID:      &nobody.GID,
+				Username: nobody.Username,
+			}
+		} else {
+			logger.Warn("GSS DATA: identity resolver error, falling back to legacy mapper",
 				"principal", gssCtx.Principal,
 				"realm", gssCtx.Realm,
 				"error", err,
 			)
+			// Fall through to legacy mapper below
+		}
+	}
+	if ident == nil && legacyMapper != nil {
+		resolved, err := legacyMapper.Resolve(ctx, principalKey)
+		if err != nil {
 			return &GSSProcessResult{
-				Err: fmt.Errorf("map identity for %s@%s: %w", gssCtx.Principal, gssCtx.Realm, err),
+				Err: fmt.Errorf("map identity for %s: %w", principalKey, err),
 			}
 		}
 		if resolved == nil {
 			return &GSSProcessResult{
-				Err: fmt.Errorf("identity mapping returned nil for %s@%s", gssCtx.Principal, gssCtx.Realm),
+				Err: fmt.Errorf("identity mapping returned nil for %s", principalKey),
 			}
 		}
 		if !resolved.Found {
-			logger.Debug("GSS DATA: identity not found, falling back to nobody",
-				"principal", gssCtx.Principal,
-				"realm", gssCtx.Realm,
-			)
-			resolved = identity.NobodyIdentity()
+			resolved = nfsidentity.NobodyIdentity()
 		}
 		ident = &metadata.Identity{
 			UID:      &resolved.UID,
@@ -783,9 +809,17 @@ func (p *GSSProcessor) SetVerifier(v Verifier) {
 	p.mu.Unlock()
 }
 
-// SetMapper replaces the identity mapper.
-func (p *GSSProcessor) SetMapper(m identity.IdentityMapper) {
+// SetMapper replaces the legacy identity mapper.
+func (p *GSSProcessor) SetMapper(m nfsidentity.IdentityMapper) {
 	p.mu.Lock()
 	p.mapper = m
+	p.mu.Unlock()
+}
+
+// SetResolver sets the centralized identity resolver, which takes precedence
+// over the legacy mapper when both are set.
+func (p *GSSProcessor) SetResolver(r *pkgidentity.Resolver) {
+	p.mu.Lock()
+	p.resolver = r
 	p.mu.Unlock()
 }

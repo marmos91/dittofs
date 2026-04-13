@@ -394,7 +394,7 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 	s.initNSMHandler(rt, metadataService)
 
 	// Initialize RPCSEC_GSS processor if Kerberos is enabled
-	s.initGSSProcessor()
+	s.initGSSProcessor(rt)
 
 	logger.Debug("NFS adapter configured with runtime", "shares", rt.CountShares())
 

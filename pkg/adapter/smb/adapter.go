@@ -254,6 +254,13 @@ func (s *Adapter) SetRuntime(rtAny any) {
 		logger.Debug("SMB adapter: identity resolver configured for LSARPC")
 	}
 
+	// Wire centralized identity resolver for Kerberos principal → DittoFS user mapping.
+	// Uses DB-backed LinkStore + convention fallback, shared with the NFS adapter.
+	if s.handler.KerberosProvider != nil {
+		realm := adapter.ExtractRealm(s.handler.KerberosProvider.ServicePrincipal())
+		s.handler.IdentityResolver = adapter.BuildIdentityResolver(rt, realm)
+	}
+
 	logger.Debug("SMB adapter configured with runtime", "shares", rt.CountShares())
 
 	// Apply live SMB adapter settings from SettingsWatcher.
@@ -447,6 +454,13 @@ func (s *Adapter) SetKerberosProvider(provider *kerberos.Provider) {
 		s.handler.IdentityConfig = kerberos.DefaultIdentityConfig()
 	}
 
+	// Wire identity resolver if runtime is already injected (SetRuntime may
+	// have been called before SetKerberosProvider depending on init order).
+	if s.handler.Registry != nil {
+		realm := adapter.ExtractRealm(provider.ServicePrincipal())
+		s.handler.IdentityResolver = adapter.BuildIdentityResolver(s.handler.Registry, realm)
+	}
+
 	logger.Debug("SMB adapter Kerberos provider configured",
 		"principal", provider.ServicePrincipal(),
 		"stripRealm", s.handler.IdentityConfig.StripRealm)
@@ -599,3 +613,4 @@ func (r *metadataServiceResolver) GetLockManagerForHandle(handleKey string) lock
 	}
 	return r.metaSvc.GetLockManagerForShare(shareName)
 }
+

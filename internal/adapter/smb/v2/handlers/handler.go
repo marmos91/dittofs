@@ -19,6 +19,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	pkgidentity "github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
@@ -122,7 +123,13 @@ type Handler struct {
 
 	// IdentityConfig controls Kerberos principal-to-username mapping.
 	// Default: strip realm ("alice@REALM" -> "alice").
+	// Deprecated: use IdentityResolver for DB-backed resolution.
 	IdentityConfig *kerberos.IdentityConfig
+
+	// IdentityResolver resolves Kerberos principals to DittoFS users via
+	// the centralized identity provider chain. When set, takes precedence
+	// over IdentityConfig. When nil, falls back to IdentityConfig.
+	IdentityResolver *pkgidentity.Resolver
 
 	// SMBServicePrincipal overrides the auto-derived CIFS service principal.
 	// When empty, derived from the NFS principal ("nfs/host@REALM" -> "cifs/host@REALM").
