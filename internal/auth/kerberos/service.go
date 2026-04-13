@@ -1,9 +1,14 @@
 package kerberos
 
 import (
-	"encoding/asn1"
 	"fmt"
 
+	// gokrb5 uses gofork's asn1 package, not the Go stdlib, because stdlib's
+	// encoding/asn1 has known bugs with Kerberos types (GeneralizedTime
+	// fractional-second handling, optional field tagging). Marshalling gokrb5
+	// structs with stdlib asn1 produces DER bytes that MIT Kerberos clients
+	// reject as malformed. See issue #335.
+	"github.com/jcmturner/gofork/encoding/asn1"
 	"github.com/jcmturner/gokrb5/v8/asn1tools"
 	"github.com/jcmturner/gokrb5/v8/crypto"
 	"github.com/jcmturner/gokrb5/v8/messages"

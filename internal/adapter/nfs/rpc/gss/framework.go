@@ -15,12 +15,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// GSS-API krb5 mechanism token IDs per RFC 1964 Section 1.1.
-const (
-	gssTokenIDAPReq uint16 = 0x0100 // AP-REQ (context establishment)
-	gssTokenIDAPRep uint16 = 0x0200 // AP-REP (mutual authentication reply)
-)
-
 // apOptionsMutualRequired is the bit mask for mutual authentication in AP-Options.
 // Per RFC 4120, AP-Options bit 2 is MUTUAL-REQUIRED. In ASN.1 BIT STRING encoding
 // (MSB first), bit 2 maps to 0x20 in the first byte.
@@ -131,7 +125,7 @@ func (v *Krb5Verifier) VerifyToken(gssToken []byte) (*VerifiedContext, error) {
 			logger.Debug("Failed to build AP-REP (non-fatal)", "error", buildErr)
 		} else {
 			// NFS-specific: wrap raw AP-REP in GSS-API token (0x60 + OID + 0x0200)
-			apRepToken = wrapGSSToken(rawAPRep, gssTokenIDAPRep)
+			apRepToken = kerbauth.WrapGSSToken(rawAPRep, kerbauth.KerberosV5OIDBytes, kerbauth.GSSTokenIDAPRep)
 			logger.Debug("Built GSS-wrapped AP-REP token (mutual auth required)",
 				"raw_len", len(rawAPRep),
 				"wrapped_len", len(apRepToken),
@@ -218,59 +212,13 @@ func extractAPReq(token []byte) ([]byte, error) {
 	}
 
 	tokenID := (uint16(token[offset]) << 8) | uint16(token[offset+1])
-	if tokenID != gssTokenIDAPReq {
-		return nil, fmt.Errorf("unexpected krb5 token ID: 0x%04x (expected 0x%04x for AP-REQ)", tokenID, gssTokenIDAPReq)
+	if tokenID != kerbauth.GSSTokenIDAPReq {
+		return nil, fmt.Errorf("unexpected krb5 token ID: 0x%04x (expected 0x%04x for AP-REQ)", tokenID, kerbauth.GSSTokenIDAPReq)
 	}
 	offset += 2
 
 	// Everything after the token ID is the raw AP-REQ (ASN.1 APPLICATION 14)
 	return token[offset:], nil
-}
-
-// wrapGSSToken wraps a Kerberos message in a GSS-API MechToken.
-//
-// Format: 0x60 [ASN.1 length] [OID tag] [OID length] [OID bytes] [token ID] [inner token]
-//
-// The OID is 1.2.840.113554.1.2.2 (krb5 mechanism).
-// The token ID identifies the inner token type (0x0100 = AP-REQ, 0x0200 = AP-REP, etc.).
-func wrapGSSToken(innerToken []byte, tokenID uint16) []byte {
-	// KRB5 OID: 1.2.840.113554.1.2.2 = 06 09 2a 86 48 86 f7 12 01 02 02
-	krb5OID := []byte{0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x12, 0x01, 0x02, 0x02}
-
-	// Token ID (2 bytes, big-endian)
-	tokenIDBytes := []byte{byte(tokenID >> 8), byte(tokenID & 0xFF)}
-
-	// Inner content: OID + token ID + inner token
-	innerContent := make([]byte, 0, len(krb5OID)+len(tokenIDBytes)+len(innerToken))
-	innerContent = append(innerContent, krb5OID...)
-	innerContent = append(innerContent, tokenIDBytes...)
-	innerContent = append(innerContent, innerToken...)
-
-	// Encode the length in ASN.1 format
-	lengthBytes := encodeASN1Length(len(innerContent))
-
-	// Build final token: 0x60 [length] [content]
-	result := make([]byte, 0, 1+len(lengthBytes)+len(innerContent))
-	result = append(result, 0x60) // Application tag
-	result = append(result, lengthBytes...)
-	result = append(result, innerContent...)
-
-	return result
-}
-
-// encodeASN1Length encodes a length value in ASN.1 format.
-func encodeASN1Length(length int) []byte {
-	if length < 128 {
-		return []byte{byte(length)}
-	}
-
-	// Long form
-	var lengthBytes []byte
-	for length > 0 {
-		lengthBytes = append([]byte{byte(length & 0xFF)}, lengthBytes...)
-		length >>= 8
-	}
-	return append([]byte{byte(0x80 | len(lengthBytes))}, lengthBytes...)
 }
 
 // parseASN1Length parses an ASN.1 length field.

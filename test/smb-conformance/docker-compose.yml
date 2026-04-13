@@ -103,6 +103,11 @@ services:
     network_mode: "service:dittofs"
     environment:
       - KRB5_CONFIG=/keytabs/krb5.conf
+      # KRB5_TRACE=/dev/stderr surfaces MIT's internal Kerberos state machine
+      # (AS/TGS exchanges, AP-REQ construction, AP-REP verification) into the
+      # smbtorture container stdout. Essential for debugging mutual-auth
+      # rejections — without it gss_init_sec_context failures look opaque.
+      - KRB5_TRACE=/dev/stderr
     volumes:
       - kdc-keytabs:/keytabs:ro
     entrypoint: ["smbtorture"]
