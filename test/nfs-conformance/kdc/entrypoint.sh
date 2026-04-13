@@ -78,7 +78,6 @@ echo "*/admin@$REALM *" > /etc/krb5kdc/kadm5.acl
 
 if [ ! -f /var/lib/krb5kdc/principal ]; then
     keytab="$KEYTAB_DIR/dittofs.keytab"
-    client_keytab="$KEYTAB_DIR/client.keytab"
 
     log "Creating realm database..."
     printf 'masterpassword\nmasterpassword\n' | kdb5_util create -s -r "$REALM"
@@ -91,14 +90,10 @@ if [ ! -f /var/lib/krb5kdc/principal ]; then
     chown "$DITTOFS_UID:$DITTOFS_GID" "$keytab"
     chmod 0400 "$keytab"
 
-    log "Adding user principal $USER_PRINCIPAL@$REALM"
+    log "Adding user principal $USER_PRINCIPAL@$REALM (password-based)"
     printf 'addprinc -pw %s %s@%s\n' \
         "$USER_PASSWORD" "$USER_PRINCIPAL" "$REALM" \
         | kadmin.local > /dev/null
-
-    log "Exporting client keytab to $client_keytab"
-    kadmin.local -q "ktadd -k $client_keytab $USER_PRINCIPAL@$REALM"
-    chmod 0444 "$client_keytab"
 fi
 
 log "Starting krb5kdc on port 88..."

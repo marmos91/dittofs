@@ -31,7 +31,7 @@ services:
     volumes:
       - kdc-keytabs:/keytabs
     healthcheck:
-      test: ["CMD-SHELL", "klist -k /keytabs/dittofs.keytab > /dev/null 2>&1 && klist -k /keytabs/client.keytab > /dev/null 2>&1"]
+      test: ["CMD-SHELL", "klist -k /keytabs/dittofs.keytab > /dev/null 2>&1"]
       interval: 2s
       timeout: 2s
       retries: 30

@@ -38,9 +38,10 @@ for i in $(seq 1 "$MAX_RETRIES"); do
     sleep 1
 done
 
-# Obtain Kerberos ticket
+# Obtain Kerberos ticket using password (not keytab — ktadd randomizes keys).
+USER_PASSWORD="${KRB5_PASSWORD:-TestPassword01!}"
 log "Authenticating as $PRINCIPAL@$REALM..."
-kinit -kt /keytabs/client.keytab "$PRINCIPAL@$REALM" \
+echo "$USER_PASSWORD" | kinit "$PRINCIPAL@$REALM" \
     || fail "kinit failed"
 klist || true
 
