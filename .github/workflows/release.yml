@@ -52,7 +52,7 @@ jobs:
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
-          version: "~> v2"
+          version: "~> v2.11"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -98,7 +98,14 @@ jobs:
 
       - name: Get version from tag
         id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+          TAGS="marmos91c/dittofs-operator:${VERSION}"
+          if [[ "${VERSION}" != *-* ]]; then
+            TAGS="${TAGS},marmos91c/dittofs-operator:latest"
+          fi
+          echo "TAGS=${TAGS}" >> $GITHUB_OUTPUT
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -119,9 +126,7 @@ jobs:
           file: ./k8s/dittofs-operator/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            marmos91c/dittofs-operator:${{ steps.version.outputs.VERSION }}
-            marmos91c/dittofs-operator:latest
+          tags: ${{ steps.version.outputs.TAGS }}
           labels: |
             org.opencontainers.image.title=DittoFS Operator
             org.opencontainers.image.description=Kubernetes operator for DittoFS
