@@ -3,7 +3,7 @@
 
 FROM alpine:3.21
 
-# OCI Image Labels (additional labels added by GoReleaser via build_flag_templates)
+# OCI Image Labels (GoReleaser adds version/revision labels at build time)
 LABEL org.opencontainers.image.title="DittoFS" \
       org.opencontainers.image.description="Modular virtual filesystem with pluggable storage backends" \
       org.opencontainers.image.url="https://github.com/marmos91/dittofs" \
@@ -18,8 +18,9 @@ RUN apk add --no-cache ca-certificates tzdata && \
 
 WORKDIR /app
 
-# Copy the pre-built binary from GoReleaser
-COPY dfs /app/dfs
+# Copy the pre-built binary from GoReleaser (dockers_v2 organizes by platform)
+ARG TARGETPLATFORM=linux/amd64
+COPY ${TARGETPLATFORM}/dfs /app/dfs
 
 # Create data directories with proper permissions
 RUN mkdir -p /data/metadata /data/content /data/cache /config && \
