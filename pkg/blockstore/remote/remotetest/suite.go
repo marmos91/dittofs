@@ -3,8 +3,10 @@ package remotetest
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
 	"github.com/marmos91/dittofs/pkg/health"
 )
@@ -22,6 +24,8 @@ func RunSuite(t *testing.T, factory Factory) {
 	t.Run("ListByPrefix", func(t *testing.T) { testListByPrefix(t, factory) })
 	t.Run("HealthCheck", func(t *testing.T) { testHealthCheck(t, factory) })
 	t.Run("HealthcheckReport", func(t *testing.T) { testHealthcheckReport(t, factory) })
+	t.Run("CopyBlock", func(t *testing.T) { testCopyBlock(t, factory) })
+	t.Run("CopyBlockNotFound", func(t *testing.T) { testCopyBlockNotFound(t, factory) })
 	t.Run("ClosedOperations", func(t *testing.T) { testClosedOperations(t, factory) })
 	t.Run("DataIsolation", func(t *testing.T) { testDataIsolation(t, factory) })
 }
@@ -206,6 +210,58 @@ func testClosedOperations(t *testing.T, factory Factory) {
 
 	if _, err := store.ReadBlock(ctx, "key"); err == nil {
 		t.Error("ReadBlock should fail after Close")
+	}
+
+	if err := store.CopyBlock(ctx, "src", "dst"); err == nil {
+		t.Error("CopyBlock should fail after Close")
+	}
+}
+
+func testCopyBlock(t *testing.T, factory Factory) {
+	store := factory(t)
+	ctx := context.Background()
+
+	data := []byte("source content")
+	srcKey := "src/block-0"
+	dstKey := "dst/block-0"
+
+	if err := store.WriteBlock(ctx, srcKey, data); err != nil {
+		t.Fatalf("WriteBlock failed: %v", err)
+	}
+
+	if err := store.CopyBlock(ctx, srcKey, dstKey); err != nil {
+		t.Fatalf("CopyBlock failed: %v", err)
+	}
+
+	// Verify destination has the same data
+	read, err := store.ReadBlock(ctx, dstKey)
+	if err != nil {
+		t.Fatalf("ReadBlock on destination failed: %v", err)
+	}
+	if !bytes.Equal(read, data) {
+		t.Fatalf("destination data = %q, want %q", read, data)
+	}
+
+	// Verify source is unchanged
+	read, err = store.ReadBlock(ctx, srcKey)
+	if err != nil {
+		t.Fatalf("ReadBlock on source failed: %v", err)
+	}
+	if !bytes.Equal(read, data) {
+		t.Fatalf("source data changed after copy: got %q, want %q", read, data)
+	}
+}
+
+func testCopyBlockNotFound(t *testing.T, factory Factory) {
+	store := factory(t)
+	ctx := context.Background()
+
+	err := store.CopyBlock(ctx, "nonexistent/block-0", "dst/block-0")
+	if err == nil {
+		t.Fatal("CopyBlock should fail for nonexistent source")
+	}
+	if !errors.Is(err, blockstore.ErrBlockNotFound) {
+		t.Fatalf("CopyBlock error = %v, want blockstore.ErrBlockNotFound", err)
 	}
 }
 

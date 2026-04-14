@@ -94,6 +94,26 @@ func (s *Store) ReadBlockRange(_ context.Context, blockKey string, offset, lengt
 	return result, nil
 }
 
+// CopyBlock copies a block from srcKey to dstKey in memory.
+func (s *Store) CopyBlock(_ context.Context, srcKey, dstKey string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return blockstore.ErrStoreClosed
+	}
+
+	data, ok := s.blocks[srcKey]
+	if !ok {
+		return blockstore.ErrBlockNotFound
+	}
+
+	copied := make([]byte, len(data))
+	copy(copied, data)
+	s.blocks[dstKey] = copied
+	return nil
+}
+
 // DeleteBlock removes a single block from memory.
 func (s *Store) DeleteBlock(_ context.Context, blockKey string) error {
 	s.mu.Lock()

@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/blockstore/remote"
+	"github.com/marmos91/dittofs/pkg/blockstore/remote/remotetest"
 )
 
 func TestStore_WriteAndRead(t *testing.T) {
@@ -253,6 +255,14 @@ func TestStore_BlockCount(t *testing.T) {
 	if s.BlockCount() != 2 {
 		t.Errorf("BlockCount returned %d, want 2", s.BlockCount())
 	}
+}
+
+// TestConformanceSuite runs the full RemoteStore conformance suite against the
+// in-memory store. This ensures all interface methods are exercised on CI.
+func TestConformanceSuite(t *testing.T) {
+	remotetest.RunSuite(t, func(t *testing.T) remote.RemoteStore {
+		return New()
+	})
 }
 
 func TestStore_TotalSize(t *testing.T) {
