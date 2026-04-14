@@ -12,6 +12,9 @@ jobs:
   release:
     name: Create Release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write  # Required for cosign keyless OIDC signing
 
     steps:
       - name: Checkout code
@@ -38,6 +41,9 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
 
       - name: Install Linux packaging tools
         run: sudo apt-get update && sudo apt-get install -y dpkg-dev createrepo-c
