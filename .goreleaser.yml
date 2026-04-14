@@ -83,7 +83,7 @@ builds:
 
 archives:
   - id: dfs-archive
-    builds:
+    ids:
       - dfs
     name_template: >-
       dfs_
@@ -96,14 +96,14 @@ archives:
 
     format_overrides:
       - goos: windows
-        format: zip
+        formats: [zip]
 
     files:
       - README.md
       - LICENSE
 
   - id: dfsctl-archive
-    builds:
+    ids:
       - dfsctl
     name_template: >-
       dfsctl_
@@ -116,7 +116,7 @@ archives:
 
     format_overrides:
       - goos: windows
-        format: zip
+        formats: [zip]
 
     files:
       - README.md
@@ -184,116 +184,69 @@ changelog:
     - title: Others
       order: 999
 
-# Docker images configuration
-dockers:
-  # AMD64 image
-  - id: dfs-amd64
-    goos: linux
-    goarch: amd64
-    use: buildx
-    image_templates:
-      - "marmos91c/dittofs:{{ .Tag }}-amd64"
-      - "marmos91c/dittofs:latest-amd64"
-    build_flag_templates:
-      - "--platform=linux/amd64"
-      - "--label=org.opencontainers.image.title=DittoFS"
-      - "--label=org.opencontainers.image.description=Modular virtual filesystem with pluggable storage backends"
-      - "--label=org.opencontainers.image.url=https://github.com/marmos91/dittofs"
-      - "--label=org.opencontainers.image.source=https://github.com/marmos91/dittofs"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.created={{ .Date }}"
-      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
-      - "--label=org.opencontainers.image.licenses=MIT"
+# Docker images (v2 — multi-arch via buildx)
+dockers_v2:
+  - id: dfs
+    ids:
+      - dfs
+    images:
+      - "marmos91c/dittofs"
+    tags:
+      - "{{ .Tag }}"
+      - "{{ if not .Prerelease }}latest{{ end }}"
+      - "{{ if not .Prerelease }}v{{ .Major }}{{ end }}"
+      - "{{ if not .Prerelease }}v{{ .Major }}.{{ .Minor }}{{ end }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
     dockerfile: Dockerfile.goreleaser
+    labels:
+      "org.opencontainers.image.title": "DittoFS"
+      "org.opencontainers.image.description": "Modular virtual filesystem with pluggable storage backends"
+      "org.opencontainers.image.url": "https://github.com/marmos91/dittofs"
+      "org.opencontainers.image.source": "https://github.com/marmos91/dittofs"
+      "org.opencontainers.image.version": "{{ .Version }}"
+      "org.opencontainers.image.created": "{{ .Date }}"
+      "org.opencontainers.image.revision": "{{ .FullCommit }}"
+      "org.opencontainers.image.licenses": "MIT"
 
-  # ARM64 image
-  - id: dfs-arm64
-    goos: linux
-    goarch: arm64
-    use: buildx
-    image_templates:
-      - "marmos91c/dittofs:{{ .Tag }}-arm64"
-      - "marmos91c/dittofs:latest-arm64"
-    build_flag_templates:
-      - "--platform=linux/arm64"
-      - "--label=org.opencontainers.image.title=DittoFS"
-      - "--label=org.opencontainers.image.description=Modular virtual filesystem with pluggable storage backends"
-      - "--label=org.opencontainers.image.url=https://github.com/marmos91/dittofs"
-      - "--label=org.opencontainers.image.source=https://github.com/marmos91/dittofs"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.created={{ .Date }}"
-      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
-      - "--label=org.opencontainers.image.licenses=MIT"
-    dockerfile: Dockerfile.goreleaser
-
-# Docker manifest for multi-arch images
-docker_manifests:
-  - name_template: "marmos91c/dittofs:{{ .Tag }}"
-    image_templates:
-      - "marmos91c/dittofs:{{ .Tag }}-amd64"
-      - "marmos91c/dittofs:{{ .Tag }}-arm64"
-
-  - name_template: "marmos91c/dittofs:latest"
-    image_templates:
-      - "marmos91c/dittofs:latest-amd64"
-      - "marmos91c/dittofs:latest-arm64"
-
-  # Version-specific manifests for major and minor versions
-  - name_template: "marmos91c/dittofs:v{{ .Major }}"
-    image_templates:
-      - "marmos91c/dittofs:{{ .Tag }}-amd64"
-      - "marmos91c/dittofs:{{ .Tag }}-arm64"
-
-  - name_template: "marmos91c/dittofs:v{{ .Major }}.{{ .Minor }}"
-    image_templates:
-      - "marmos91c/dittofs:{{ .Tag }}-amd64"
-      - "marmos91c/dittofs:{{ .Tag }}-arm64"
-
-# Homebrew tap formulae
-brews:
+# Homebrew cask distribution
+homebrew_casks:
   - name: dfs
     ids:
       - dfs-archive
-    directory: Formula
+    binaries:
+      - dfs
+    directory: Casks
     repository:
       owner: marmos91
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    commit_msg_template: "Brew formula update for dfs version {{ .Tag }}"
+    commit_msg_template: "Brew cask update for dfs version {{ .Tag }}"
     commit_author:
       name: goreleaserbot
       email: bot@goreleaser.com
     homepage: "https://github.com/marmos91/dittofs"
     description: "DittoFS server daemon — modular virtual filesystem with pluggable storage backends"
-    license: "MIT"
     skip_upload: auto
-    install: |
-      bin.install "dfs"
-      generate_completions_from_executable(bin/"dfs", "completion")
-    test: |
-      system bin/"dfs", "version", "--short"
 
   - name: dfsctl
     ids:
       - dfsctl-archive
-    directory: Formula
+    binaries:
+      - dfsctl
+    directory: Casks
     repository:
       owner: marmos91
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    commit_msg_template: "Brew formula update for dfsctl version {{ .Tag }}"
+    commit_msg_template: "Brew cask update for dfsctl version {{ .Tag }}"
     commit_author:
       name: goreleaserbot
       email: bot@goreleaser.com
     homepage: "https://github.com/marmos91/dittofs"
     description: "DittoFS CLI client — remote management for DittoFS servers"
-    license: "MIT"
     skip_upload: auto
-    install: |
-      bin.install "dfsctl"
-      generate_completions_from_executable(bin/"dfsctl", "completion")
-    test: |
-      system bin/"dfsctl", "version", "--short"
 
 # Scoop bucket manifests for Windows distribution
 scoops:
