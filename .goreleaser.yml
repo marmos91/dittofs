@@ -159,6 +159,17 @@ checksum:
   name_template: 'checksums.txt'
   algorithm: sha256
 
+# Cosign keyless signing via GitHub Actions OIDC
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - "sign-blob"
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
 
@@ -417,6 +428,18 @@ release:
 
     ```bash
     sha256sum -c checksums.txt
+    ```
+
+    ### Verifying Signatures
+
+    Release checksums are signed with [Sigstore cosign](https://docs.sigstore.dev/) using keyless OIDC:
+
+    ```bash
+    cosign verify-blob \
+      --bundle checksums.txt.sigstore.json \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      --certificate-identity-regexp '^https://github\.com/marmos91/dittofs/\.github/workflows/release\.yml@refs/tags/' \
+      checksums.txt
     ```
 
     ### Docker Images
