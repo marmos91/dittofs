@@ -77,6 +77,12 @@ type Writer interface {
 
 	// Delete removes all data for a payload.
 	Delete(ctx context.Context, payloadID string) error
+
+	// CopyPayload duplicates all blocks from srcPayloadID to dstPayloadID.
+	// For remote-backed stores this leverages server-side copy (e.g., S3 CopyObject)
+	// to avoid data transfer. Local blocks are copied via read+write.
+	// Returns the number of blocks copied and any error encountered.
+	CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID string) (int, error)
 }
 
 // Flusher defines flush/sync operations on the block store.

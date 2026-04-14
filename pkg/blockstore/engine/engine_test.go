@@ -596,3 +596,64 @@ func TestReadAtSubBlockOffset(t *testing.T) {
 		t.Fatalf("sub-block read mismatch: got %q, want %q", subBuf, expected)
 	}
 }
+
+// TestCopyPayload_LocalOnly verifies CopyPayload duplicates data between payloads.
+func TestCopyPayload_LocalOnly(t *testing.T) {
+	bs := newTestEngine(t, 0, 0)
+	ctx := context.Background()
+
+	srcPayload := "src-file"
+	dstPayload := "dst-file"
+	data := []byte("hello world, this is test data for copy payload")
+
+	// Write source data
+	if err := bs.WriteAt(ctx, srcPayload, data, 0); err != nil {
+		t.Fatalf("WriteAt failed: %v", err)
+	}
+
+	// Copy payload
+	copied, err := bs.CopyPayload(ctx, srcPayload, dstPayload)
+	if err != nil {
+		t.Fatalf("CopyPayload failed: %v", err)
+	}
+	if copied != 1 {
+		t.Fatalf("CopyPayload returned %d blocks, expected 1", copied)
+	}
+
+	// Read back from destination
+	buf := make([]byte, len(data))
+	n, err := bs.ReadAt(ctx, dstPayload, buf, 0)
+	if err != nil {
+		t.Fatalf("ReadAt on dest failed: %v", err)
+	}
+	if n != len(data) {
+		t.Fatalf("ReadAt returned %d bytes, expected %d", n, len(data))
+	}
+	if string(buf) != string(data) {
+		t.Fatalf("dest data = %q, want %q", buf, data)
+	}
+
+	// Verify source is unchanged
+	srcBuf := make([]byte, len(data))
+	_, err = bs.ReadAt(ctx, srcPayload, srcBuf, 0)
+	if err != nil {
+		t.Fatalf("ReadAt on src failed: %v", err)
+	}
+	if string(srcBuf) != string(data) {
+		t.Fatalf("source data changed: got %q, want %q", srcBuf, data)
+	}
+}
+
+// TestCopyPayload_EmptySource verifies CopyPayload handles empty source gracefully.
+func TestCopyPayload_EmptySource(t *testing.T) {
+	bs := newTestEngine(t, 0, 0)
+	ctx := context.Background()
+
+	copied, err := bs.CopyPayload(ctx, "nonexistent", "dst")
+	if err != nil {
+		t.Fatalf("CopyPayload should succeed for empty source, got: %v", err)
+	}
+	if copied != 0 {
+		t.Fatalf("CopyPayload returned %d blocks, expected 0", copied)
+	}
+}
