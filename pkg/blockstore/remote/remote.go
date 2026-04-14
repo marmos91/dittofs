@@ -30,6 +30,12 @@ type RemoteStore interface {
 	// ListByPrefix lists all block keys matching the prefix.
 	ListByPrefix(ctx context.Context, prefix string) ([]string, error)
 
+	// CopyBlock copies a block from srcKey to dstKey using server-side copy
+	// when the backend supports it (e.g., S3 CopyObject). Falls back to
+	// read-then-write for backends without native copy.
+	// Returns blockstore.ErrBlockNotFound if the source block does not exist.
+	CopyBlock(ctx context.Context, srcKey, dstKey string) error
+
 	// Close releases resources held by the store.
 	Close() error
 
