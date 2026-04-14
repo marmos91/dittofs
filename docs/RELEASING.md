@@ -26,10 +26,14 @@ DittoFS uses [Semantic Versioning](https://semver.org/) and automated releases v
    ```
 
 4. **GitHub Actions automatically**:
-   - Runs tests
    - Builds binaries for Linux, macOS, Windows (amd64, arm64, arm)
-   - Generates checksums
+   - Generates checksums and signs them with Sigstore cosign (keyless OIDC)
    - Creates GitHub Release with artifacts
+   - Builds multi-arch Docker images via `dockers_v2` (amd64 + arm64)
+   - Publishes Homebrew casks and Scoop manifests
+   - Publishes Linux packages (deb, rpm, archlinux) to APT/YUM repos
+   - Uploads packages and version marker to S3
+   - Verifies all uploaded artifacts are publicly accessible
 
 5. **Verify** at https://github.com/marmos91/dittofs/releases
 
@@ -62,9 +66,21 @@ git merge hotfix/v1.2.4
 git push origin main
 ```
 
+## Verifying Signatures
+
+Release checksums are signed with [Sigstore cosign](https://docs.sigstore.dev/) using keyless OIDC via GitHub Actions:
+
+```bash
+cosign verify-blob \
+  --bundle checksums.txt.sigstore.json \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/marmos91/dittofs/\.github/workflows/release\.yml@refs/tags/' \
+  checksums.txt
+```
+
 ## Homebrew Tap
 
-Releases automatically publish Homebrew formulae to [`marmos91/homebrew-tap`](https://github.com/marmos91/homebrew-tap). Users can install via:
+Releases automatically publish Homebrew casks to [`marmos91/homebrew-tap`](https://github.com/marmos91/homebrew-tap). Users can install via:
 
 ```bash
 brew tap marmos91/tap
@@ -74,16 +90,15 @@ brew install marmos91/tap/dfsctl   # Client CLI
 
 ### How It Works
 
-GoReleaser's `brews` section generates Ruby formula files and pushes them to the tap repository on each non-prerelease tag push. The `skip_upload: auto` setting prevents prerelease versions (e.g., `v1.0.0-beta.1`) from being published to the tap.
+GoReleaser's `homebrew_casks` section generates cask files and pushes them to the tap repository on each non-prerelease tag push. The `skip_upload: auto` setting prevents prerelease versions (e.g., `v1.0.0-beta.1`) from being published to the tap.
 
-Each formula:
+Each cask:
 - Downloads the correct archive for the user's OS/architecture
 - Installs the binary to `$(brew --prefix)/bin`
-- Generates shell completions (bash, zsh, fish) via `generate_completions_from_executable`
 
 ### Prerequisites
 
-1. **Tap repository**: `marmos91/homebrew-tap` must exist on GitHub with a `Formula/` directory
+1. **Tap repository**: `marmos91/homebrew-tap` must exist on GitHub with a `Casks/` directory
 2. **Personal Access Token**: A fine-grained token scoped to `marmos91/homebrew-tap` with Contents read+write permission, stored as `HOMEBREW_TAP_TOKEN` in the `marmos91/dittofs` repository secrets
 
 ### Local Testing
@@ -99,10 +114,6 @@ goreleaser release --snapshot --clean
 # Verify archives
 ls dist/dfs_*
 ls dist/dfsctl_*
-
-# Verify generated formulae
-cat dist/homebrew/Formula/dfs.rb
-cat dist/homebrew/Formula/dfsctl.rb
 ```
 
 ### Token Rotation

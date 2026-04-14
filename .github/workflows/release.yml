@@ -5,8 +5,7 @@ on:
     tags:
       - 'v*.*.*'  # Triggers on version tags like v1.0.0, v0.1.0, etc.
 
-permissions:
-  contents: write  # Required for creating releases
+permissions: {}
 
 jobs:
   release:
@@ -15,6 +14,9 @@ jobs:
     permissions:
       contents: write
       id-token: write  # Required for cosign keyless OIDC signing
+    env:
+      S3_BUCKET: dittofs-binaries
+      S3_ENDPOINT: https://s3.cubbit.eu
 
     steps:
       - name: Checkout code
@@ -28,7 +30,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: "1.25.x"
+          go-version-file: go.mod
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4
@@ -60,7 +62,6 @@ jobs:
           SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
 
       - name: Publish Linux repositories
-        if: success()
         run: ./scripts/publish-linux-repos.sh
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -68,24 +69,98 @@ jobs:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
 
       - name: Upload packages to S3
-        if: success()
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
-          for ext in deb rpm pkg.tar.zst; do
-            for f in dist/*."${ext}"; do
-              [ -f "$f" ] || continue
-              aws s3 cp "$f" "s3://${S3_BUCKET:-dittofs-binaries}/${VERSION}/$(basename "$f")" \
-                --endpoint-url "${S3_ENDPOINT:-https://s3.cubbit.eu}" \
-                --acl public-read
-            done
+
+          shopt -s nullglob
+          ARTIFACTS=(dist/*.deb dist/*.rpm dist/*.pkg.tar.zst)
+          if [ ${#ARTIFACTS[@]} -eq 0 ]; then
+            echo "::error::No Linux packages found in dist/"
+            exit 1
+          fi
+          echo "Uploading ${#ARTIFACTS[@]} packages:"
+          printf '  %s\n' "${ARTIFACTS[@]}"
+
+          for f in "${ARTIFACTS[@]}"; do
+            aws s3 cp "$f" "s3://${S3_BUCKET}/${VERSION}/$(basename "$f")" \
+              --endpoint-url "${S3_ENDPOINT}" \
+              --acl public-read
           done
+
+          # Upload version marker for install script auto-detection (skip pre-releases)
+          if [[ "${VERSION}" != *-* ]]; then
+            echo "${VERSION}" | aws s3 cp - "s3://${S3_BUCKET}/latest" \
+              --endpoint-url "${S3_ENDPOINT}" \
+              --acl public-read \
+              --content-type "text/plain"
+          fi
+
+          # Upload install script to bucket root (always latest)
+          if [ -f scripts/install.sh ]; then
+            aws s3 cp scripts/install.sh "s3://${S3_BUCKET}/install.sh" \
+              --endpoint-url "${S3_ENDPOINT}" \
+              --acl public-read \
+              --content-type "text/plain"
+          fi
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
+      - name: Verify uploaded artifacts are publicly accessible
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          BASE="${S3_ENDPOINT}/${S3_BUCKET}"
+          FAILED=0
+
+          check_url() {
+            local url="$1" level="${2:-error}"
+            local code
+            code=$(curl -s -o /dev/null -w "%{http_code}" -I "$url")
+            if [ "$code" != "200" ]; then
+              echo "::${level}::${url} returned HTTP ${code} (expected 200)"
+              [ "$level" = "error" ] && FAILED=1
+            else
+              echo "ok  $url"
+            fi
+          }
+
+          # Verify Linux packages
+          shopt -s nullglob
+          ARTIFACTS=(dist/*.deb dist/*.rpm dist/*.pkg.tar.zst)
+          if [ ${#ARTIFACTS[@]} -eq 0 ]; then
+            echo "::error::No Linux packages found in dist/ — nothing to verify"
+            exit 1
+          fi
+          for f in "${ARTIFACTS[@]}"; do
+            check_url "${BASE}/${VERSION}/$(basename "$f")"
+          done
+
+          # Verify additional required files
+          check_url "${BASE}/install.sh"
+          if [[ "${VERSION}" != *-* ]]; then
+            check_url "${BASE}/latest"
+          fi
+
+          # Verify APT repo
+          for path in apt/dists/stable/Release apt/dists/stable/InRelease apt/dittofs.gpg.key; do
+            check_url "${BASE}/${path}" warning
+          done
+
+          # Verify YUM repo
+          for path in rpm/repodata/repomd.xml rpm/dfs.repo; do
+            check_url "${BASE}/${path}" warning
+          done
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "::error::One or more release artifacts are not publicly accessible — check bucket ACLs"
+            exit 1
+          fi
+
   operator:
     name: Build Operator Image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
@@ -94,7 +169,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          go-version: "1.25.x"
+          go-version-file: k8s/dittofs-operator/go.mod
 
       - name: Get version from tag
         id: version
