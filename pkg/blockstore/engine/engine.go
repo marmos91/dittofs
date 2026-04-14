@@ -246,6 +246,69 @@ func (bs *BlockStore) Delete(ctx context.Context, payloadID string) error {
 	return bs.syncer.Delete(ctx, payloadID)
 }
 
+// CopyPayload duplicates all blocks from srcPayloadID to dstPayloadID.
+//
+// For each source block, data is read from the local store (falling back to
+// remote download on miss) and written to the destination's local store.
+// If a remote store is configured, blocks are also copied server-side
+// (e.g., S3 CopyObject) to avoid redundant uploads.
+//
+// Returns the number of blocks copied and any error encountered.
+func (bs *BlockStore) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID string) (int, error) {
+	// Get the source file size to determine the block range.
+	srcSize, err := bs.GetSize(ctx, srcPayloadID)
+	if err != nil {
+		return 0, fmt.Errorf("get source size: %w", err)
+	}
+	if srcSize == 0 {
+		return 0, nil
+	}
+
+	// Truncate destination to source size so trailing blocks from a previously
+	// larger payload are removed and the destination is an exact copy.
+	if err := bs.Truncate(ctx, dstPayloadID, srcSize); err != nil {
+		return 0, fmt.Errorf("truncate dest to source size: %w", err)
+	}
+
+	totalBlocks := (srcSize + blockstore.BlockSize - 1) / blockstore.BlockSize
+	buf := make([]byte, blockstore.BlockSize)
+	copied := 0
+
+	for blockIdx := uint64(0); blockIdx < totalBlocks; blockIdx++ {
+		offset := blockIdx * blockstore.BlockSize
+		readLen := min(srcSize-offset, blockstore.BlockSize)
+
+		// Read source block (local with remote fallback)
+		data := buf[:readLen]
+		n, readErr := bs.ReadAt(ctx, srcPayloadID, data, offset)
+		if readErr != nil {
+			return copied, fmt.Errorf("read source block %d: %w", blockIdx, readErr)
+		}
+		data = data[:n]
+
+		// Write to destination via BlockStore.WriteAt (not local.WriteAt directly)
+		// so the read buffer is invalidated for affected blocks.
+		if err := bs.WriteAt(ctx, dstPayloadID, data, offset); err != nil {
+			return copied, fmt.Errorf("write dest block %d: %w", blockIdx, err)
+		}
+
+		// Copy in remote store using server-side copy (avoids re-upload)
+		if bs.remote != nil {
+			srcKey := blockstore.FormatStoreKey(srcPayloadID, blockIdx)
+			dstKey := blockstore.FormatStoreKey(dstPayloadID, blockIdx)
+			if copyErr := bs.remote.CopyBlock(ctx, srcKey, dstKey); copyErr != nil {
+				// Non-fatal: the syncer will upload from local store eventually
+				logger.Debug("CopyPayload: remote copy failed (syncer will upload)",
+					"srcKey", srcKey, "dstKey", dstKey, "error", copyErr)
+			}
+		}
+
+		copied++
+	}
+
+	return copied, nil
+}
+
 // Flush ensures all dirty data for a payload is persisted.
 // After flush, auto-promotes block data into the read buffer if the file fits
 // within the budget (data is in OS page cache, so the read is essentially free).
