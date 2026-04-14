@@ -34,6 +34,9 @@ func init() {
 		FsctlCreateOrGetObjectID:   (*Handler).handleCreateOrGetObjectID,
 		FsctlMarkHandle:            (*Handler).handleMarkHandle,
 		FsctlQueryFileRegions:      (*Handler).handleQueryFileRegions,
+		FsctlSrvRequestResumeKey:   (*Handler).handleSrvRequestResumeKey,
+		FsctlSrvCopyChunk:          (*Handler).handleSrvCopyChunk,
+		FsctlSrvCopyChunkWrite:     (*Handler).handleSrvCopyChunk,
 	}
 }
 

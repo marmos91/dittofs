@@ -335,7 +335,12 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// ========================================================================
 
 	data := make([]byte, actualLength)
-	n, err := blockStore.ReadAt(authCtx.Context, string(readMeta.Attr.PayloadID), data, req.Offset)
+	var n int
+	if readMeta.Attr.COWSourcePayloadID != "" {
+		n, err = blockStore.ReadAtWithCOWSource(authCtx.Context, string(readMeta.Attr.PayloadID), string(readMeta.Attr.COWSourcePayloadID), data, req.Offset)
+	} else {
+		n, err = blockStore.ReadAt(authCtx.Context, string(readMeta.Attr.PayloadID), data, req.Offset)
+	}
 	if err != nil {
 		logger.Warn("READ: content read failed", "path", openFile.Path, "error", err)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil

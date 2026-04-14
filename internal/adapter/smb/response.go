@@ -397,12 +397,23 @@ func buildResponseHeaderAndBody(reqHeader *header.SMB2Header, ctx *handlers.SMBH
 
 	// Per MS-SMB2 2.2.2: Error/warning responses use the ERROR format (9 bytes)
 	// instead of the command-specific body.
-	// Exceptions: StatusMoreProcessingRequired (SPNEGO token), StatusBufferOverflow (truncated data).
+	// Exceptions:
+	//   - StatusMoreProcessingRequired: SPNEGO token in SESSION_SETUP
+	//   - StatusBufferOverflow: truncated data in QUERY_INFO
+	//   - IOCTL with handler-provided body: per MS-SMB2 3.3.5.15.6.2,
+	//     FSCTL_SRV_COPYCHUNK error responses include SRV_COPYCHUNK_RESPONSE
+	//     with server limits or partial results in the output buffer.
 	body := result.Data
 	if (result.Status.IsError() || result.Status.IsWarning()) &&
 		result.Status != types.StatusMoreProcessingRequired &&
 		result.Status != types.StatusBufferOverflow {
-		body = MakeErrorBody()
+		// Preserve IOCTL error response bodies when the handler explicitly set one.
+		// Several FSCTLs (e.g., COPYCHUNK) encode meaningful data in error responses.
+		if reqHeader.Command == types.SMB2Ioctl && result.Data != nil {
+			// keep body = result.Data
+		} else {
+			body = MakeErrorBody()
+		}
 	}
 
 	// Per [MS-SMB2] 3.3.5.15: STATUS_PENDING interim responses use the

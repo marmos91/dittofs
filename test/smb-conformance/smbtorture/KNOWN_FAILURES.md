@@ -85,33 +85,9 @@ tests correctly SKIP because FILE_FILE_COMPRESSION is advertised.
 | smb2.ioctl.dup_extents_compressed_dest | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
 | smb2.ioctl.dup_extents_src_lock | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
 | smb2.ioctl.dup_extents_dest_lock | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
-| smb2.ioctl.copy_chunk_across_shares | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy_chunk_across_shares2 | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy_chunk_across_shares3 | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy_chunk_append | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy_chunk_bad_access | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy_chunk_bad_key | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy_chunk_bug15644 | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy_chunk_dest_lock | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy_chunk_limits | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy_chunk_max_output_sz | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy_chunk_multi | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy_chunk_overwrite | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy_chunk_simple | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy_chunk_sparse_dest | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy_chunk_src_exceed | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy_chunk_src_exceed_multi | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy_chunk_src_is_dest | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy_chunk_src_is_dest_overlap | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy_chunk_src_lock | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy_chunk_tiny | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy_chunk_write_access | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy_chunk_zero_length | IOCTL | Server-side copy not implemented | - |
-| smb2.ioctl.copy-chunk | IOCTL | Server-side copy not implemented | - |
+| smb2.ioctl.copy_chunk_sparse_dest | IOCTL | Sparse file semantics not implemented for server-side copy | - |
 | smb2.ioctl.bug14788.NETWORK_INTERFACE | IOCTL | Network interface enumeration not implemented | - |
 | smb2.ioctl.network_interface_info | IOCTL | Flaky in CI (network interface query race) | - |
-| smb2.ioctl.req_resume_key | IOCTL | Resume key for server-side copy not implemented | - |
-| smb2.ioctl.req_two_resume_keys | IOCTL | Resume key for server-side copy not implemented | - |
 | smb2.ioctl.sparse_compressed | IOCTL | Sparse + compression not implemented | - |
 | smb2.ioctl.sparse_copy_chunk | IOCTL | Sparse + server-side copy not implemented | - |
 | smb2.ioctl.sparse_dir_flag | IOCTL | Sparse file semantics not implemented | - |

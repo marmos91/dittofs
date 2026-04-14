@@ -161,6 +161,10 @@ type Handler struct {
 	// change-notify watchers) is fully removed before a new session's
 	// operations can observe the shared Handler maps.
 	cleanupWg sync.WaitGroup
+
+	// resumeKeys maps opaque 24-byte resume keys to FileIDs for FSCTL_SRV_COPYCHUNK.
+	// Keys are issued via FSCTL_SRV_REQUEST_RESUME_KEY and revoked on file close.
+	resumeKeys *resumeKeyStore
 }
 
 // EncryptionConfig holds encryption policy for the handler.
@@ -341,6 +345,7 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 		NtlmEnabled:             true,
 		GuestEnabled:            true,
 		DurableTimeoutMs:        60000, // 60 seconds default durable handle timeout
+		resumeKeys:              newResumeKeyStore(),
 	}
 
 	// Generate random server GUID
@@ -388,9 +393,11 @@ func (h *Handler) GetOpenFile(fileID [16]byte) (*OpenFile, bool) {
 	return v.(*OpenFile), true
 }
 
-// DeleteOpenFile removes an open file by FileID
+// DeleteOpenFile removes an open file by FileID and revokes any
+// resume keys issued for this handle (used by FSCTL_SRV_COPYCHUNK).
 func (h *Handler) DeleteOpenFile(fileID [16]byte) {
 	h.files.Delete(string(fileID[:]))
+	h.resumeKeys.revoke(fileID)
 }
 
 // ReleaseAllLocksForSession releases all byte-range locks held by a session.
