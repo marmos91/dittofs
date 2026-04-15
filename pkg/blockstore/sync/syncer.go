@@ -210,15 +210,17 @@ func (m *Syncer) Flush(ctx context.Context, payloadID string) (*blockstore.Flush
 }
 
 // DrainAllUploads performs an immediate synchronous upload of every local
-// block to remote, bypassing the UploadDelay. Returns nil when the drain
-// completes, or ctx.Err() if the context is cancelled before acquiring the
-// uploading gate.
+// block to remote, bypassing the UploadDelay. Returns nil when every block
+// reached remote, ctx.Err() on cancellation, or an aggregated error naming
+// the blocks that failed to upload.
 //
 // Exposed via the REST API for the benchmark runner to call between test
 // phases, and used by Close() to ensure no blocks are left stranded in the
 // local store at shutdown.
 func (m *Syncer) DrainAllUploads(ctx context.Context) error {
-	m.SyncNow(ctx)
+	if err := m.SyncNow(ctx); err != nil {
+		return err
+	}
 	return ctx.Err()
 }
 
@@ -412,22 +414,25 @@ func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 }
 
 // SyncNow triggers an immediate upload cycle for all local blocks,
-// bypassing the UploadDelay. Blocks until all eligible blocks are uploaded.
-// Intended for testing -- production code uses the periodic uploader.
+// bypassing the UploadDelay. Blocks until all eligible blocks are uploaded
+// or the context is cancelled. Returns nil on full success, ctx.Err() on
+// cancellation (both at gate acquisition and between blocks), or a joined
+// error listing every block that failed to upload — callers such as the
+// REST /drain-uploads endpoint and Close() rely on this signal.
 //
 // SyncNow serializes against both the periodic uploader and other concurrent
 // SyncNow callers via the m.uploading gate. Without this, two SyncNow
 // callers could each obtain a copy of the same FileBlock from
 // ListLocalBlocks, race on its state transitions, and leave the store
 // flapping between Syncing/Remote.
-func (m *Syncer) SyncNow(ctx context.Context) {
+func (m *Syncer) SyncNow(ctx context.Context) error {
 	if m.remoteStore == nil {
-		return
+		return nil
 	}
 	for !m.uploading.CompareAndSwap(false, true) {
 		select {
 		case <-ctx.Done():
-			return
+			return ctx.Err()
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -437,14 +442,21 @@ func (m *Syncer) SyncNow(ctx context.Context) {
 	m.local.SyncFileBlocks(ctx)
 	pending, err := m.fileBlockStore.ListLocalBlocks(ctx, 0, 0)
 	if err != nil {
-		return
+		return fmt.Errorf("list local blocks: %w", err)
 	}
+	var uploadErrs []error
 	for _, fb := range pending {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if fb.LocalPath == "" {
 			continue
 		}
-		m.syncFileBlock(ctx, fb)
+		if err := m.syncFileBlock(ctx, fb); err != nil {
+			uploadErrs = append(uploadErrs, err)
+		}
 	}
+	return errors.Join(uploadErrs...)
 }
 
 // periodicUploader runs every interval, scanning for blocks to upload.
