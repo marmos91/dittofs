@@ -793,7 +793,7 @@ iterates all QUERY_DIRECTORY information classes. Both hit unimplemented classes
 |-----------|----------|--------|-------|
 | smb2.scan.scan | Scan | Full operation scan hits unimplemented info classes | - |
 | smb2.scan.setinfo | Scan | Flaky in CI (rare connection-disconnect signature mismatch on brute-force level enumeration) | - |
-| smb2.scan.find | Scan | Flaky in CI (signature verification race during rapid QUERY_DIRECTORY enumeration) | #362 |
+| smb2.scan.find | Scan | Hits unimplemented FileInfoClass values in iteration | - |
 
 ## Changelog
 
