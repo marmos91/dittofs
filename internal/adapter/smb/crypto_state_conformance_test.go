@@ -85,10 +85,9 @@ func TestPreauthHashConformance_ChainOrder(t *testing.T) {
 	cs.UpdatePreauthHash(negResp)
 	h2 := cs.GetPreauthHash()
 
-	// Step 3: Stash SESSION_SETUP request and init per-session hash
+	// Step 3: Init per-session hash with SESSION_SETUP request bytes
 	sessionID := uint64(0x17592186044441)
-	cs.StashPendingSessionSetup(ssReq1)
-	cs.InitSessionPreauthHash(sessionID)
+	cs.InitSessionPreauthHash(sessionID, ssReq1)
 	h3 := cs.GetSessionPreauthHash(sessionID)
 
 	// Step 4: Per-session hash with SESSION_SETUP response (MORE_PROCESSING)
@@ -168,44 +167,44 @@ func TestPreauthHashConformance_ChainOrder(t *testing.T) {
 	}
 }
 
-// TestPreauthHash_SessionID0_StashConsumption verifies that StashPendingSessionSetup
-// followed by InitSessionPreauthHash produces the same hash as directly initializing
-// and then calling UpdateSessionPreauthHash with the same message.
+// TestPreauthHash_InitWithRequestBytes verifies that
+// InitSessionPreauthHash(sessionID, ssReq) is equivalent to
+// InitSessionPreauthHash(sessionID, nil) + UpdateSessionPreauthHash(sessionID, ssReq).
 //
-// This proves the stash+init pattern is equivalent to init+update.
-func TestPreauthHash_SessionID0_StashConsumption(t *testing.T) {
+// (Pre-#362 fix this used a stash mechanism, removed because of a concurrent
+// SESSION_SETUP race; the bytes now flow through SMBHandlerContext.RawRequest.)
+func TestPreauthHash_InitWithRequestBytes(t *testing.T) {
 	negReq := buildSyntheticSMB2Message(types.SMB2Negotiate, 0, []byte("neg-req"))
 	negResp := buildSyntheticSMB2Message(types.SMB2Negotiate, types.FlagResponse, []byte("neg-resp"))
 	ssReq := buildSyntheticSMB2Message(types.SMB2SessionSetup, 0, []byte("session-setup-req"))
 
-	// Path 1: Stash + Init (real flow: SESSION_SETUP request arrives with SessionID=0)
+	// Path 1: Init with rawMessage in one call.
 	cs1 := NewConnectionCryptoState()
 	cs1.UpdatePreauthHash(negReq)
 	cs1.UpdatePreauthHash(negResp)
-	cs1.StashPendingSessionSetup(ssReq) // Stash before session ID is known
-	cs1.InitSessionPreauthHash(42)      // Init consumes the stashed bytes
+	cs1.InitSessionPreauthHash(42, ssReq)
 
-	// Path 2: Init + Update (equivalent direct operation)
+	// Path 2: Init then explicit Update.
 	cs2 := NewConnectionCryptoState()
 	cs2.UpdatePreauthHash(negReq)
 	cs2.UpdatePreauthHash(negResp)
-	cs2.InitSessionPreauthHash(42)          // Init without stash
-	cs2.UpdateSessionPreauthHash(42, ssReq) // Explicit update
+	cs2.InitSessionPreauthHash(42, nil)
+	cs2.UpdateSessionPreauthHash(42, ssReq)
 
 	hash1 := cs1.GetSessionPreauthHash(42)
 	hash2 := cs2.GetSessionPreauthHash(42)
 
 	if hash1 != hash2 {
-		t.Errorf("Stash+Init should produce same hash as Init+Update\nstash+init: %x\ninit+update: %x", hash1, hash2)
+		t.Errorf("Init(req) should equal Init(nil)+Update(req)\nInit(req): %x\nInit+Update: %x", hash1, hash2)
 	}
 
-	// Additional verification: both should equal manual computation
+	// Both should equal manual computation.
 	zeroHash := [64]byte{}
 	expectedConnHash := chainHash(chainHash(zeroHash, negReq), negResp)
 	expectedSessionHash := chainHash(expectedConnHash, ssReq)
 
 	if hash1 != expectedSessionHash {
-		t.Errorf("Stash+Init result doesn't match manual computation\ngot:  %x\nwant: %x", hash1, expectedSessionHash)
+		t.Errorf("Init(req) doesn't match manual SHA-512 chain\ngot:  %x\nwant: %x", hash1, expectedSessionHash)
 	}
 }
 
@@ -228,8 +227,7 @@ func TestPreauthHash_FinalResponseNotIncluded(t *testing.T) {
 	// Full chain through to key derivation point
 	cs.UpdatePreauthHash(negReq)
 	cs.UpdatePreauthHash(negResp)
-	cs.StashPendingSessionSetup(ssReq1)
-	cs.InitSessionPreauthHash(sessionID)
+	cs.InitSessionPreauthHash(sessionID, ssReq1)
 	cs.UpdateSessionPreauthHash(sessionID, ssResp1)
 	cs.UpdateSessionPreauthHash(sessionID, ssReq2)
 

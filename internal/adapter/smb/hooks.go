@@ -109,29 +109,27 @@ func preauthHashAfterHook(connInfo *ConnInfo, cmd types.Command, rawMessage []by
 // Per [MS-SMB2] 3.3.5.5: SESSION_SETUP messages update per-session hashes
 // (PreauthSessionTable), NOT the connection-level hash.
 //
-// Three cases:
-//  1. SessionID == 0 (new session): Stash raw bytes for handler to consume
-//     after allocating the session ID via InitSessionPreauthHash.
-//  2. SessionID != 0, per-session hash exists (continuation): Update
-//     the per-session hash directly.
-//  3. SessionID != 0, per-session hash deleted (re-auth): Stash raw bytes
-//     for handler to consume via InitSessionPreauthHash.
+// Two cases:
+//  1. SessionID == 0 (new session, or re-auth where the per-session entry was
+//     deleted after the previous SUCCESS): the SESSION_SETUP handler will call
+//     InitSessionPreauthHash with rawMessage from its own SMBHandlerContext.
+//     Nothing for the before-hook to do here.
+//  2. SessionID != 0, per-session hash exists (continuation between Type 1 and
+//     Type 3): chain the request bytes into the existing hash.
 //
-// We always stash the request. For case 2, we ALSO update the existing hash.
-// The stash is harmless in case 2 — it won't be consumed since the handler
-// calls completeNTLMAuth (not InitSessionPreauthHash) for continuations.
+// Pre-fix: this hook used to also stash rawMessage in a single per-connection
+// slot for InitSessionPreauthHash to later consume. That stash overwrote
+// itself when concurrent SESSION_SETUPs were dispatched on a single connection
+// (issue #362) and produced wrong signing keys → "Bad SMB2 signature". The
+// rawMessage now flows through the handler context instead.
 func sessionPreauthBeforeHook(connInfo *ConnInfo, cmd types.Command, rawMessage []byte) {
 	if connInfo.CryptoState == nil {
 		return
 	}
 
-	// Always stash the raw request for potential consumption by
-	// InitSessionPreauthHash (covers new session and re-auth cases).
-	connInfo.CryptoState.StashPendingSessionSetup(rawMessage)
-
-	// For non-zero SessionID, also update the per-session hash if the entry
-	// exists (continuation case). This is a no-op if the entry was deleted
-	// after original auth (re-auth case — handler will re-init).
+	// For non-zero SessionID, update the per-session hash if the entry
+	// exists (continuation case). No-op if the entry was deleted after
+	// the previous SUCCESS — the handler will re-init from rawMessage.
 	sessionID := extractSessionIDFromRaw(rawMessage)
 	if sessionID != 0 {
 		connInfo.CryptoState.UpdateSessionPreauthHash(sessionID, rawMessage)

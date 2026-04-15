@@ -140,13 +140,12 @@ func (m *mockCryptoState) GetServerGUID() [16]byte                              
 func (m *mockCryptoState) GetServerCapabilities() types.Capabilities                 { return m.serverCapabilities }
 func (m *mockCryptoState) GetServerSecurityMode() types.SecurityMode                 { return m.serverSecurityMode }
 func (m *mockCryptoState) GetClientDialects() []types.Dialect                        { return m.clientDialects }
-func (m *mockCryptoState) InitSessionPreauthHash(sessionID uint64)                   {}
-func (m *mockCryptoState) UpdateSessionPreauthHash(sessionID uint64, message []byte) {}
+func (m *mockCryptoState) InitSessionPreauthHash(sessionID uint64, ssRequestBytes []byte) {}
+func (m *mockCryptoState) UpdateSessionPreauthHash(sessionID uint64, message []byte)      {}
 func (m *mockCryptoState) GetSessionPreauthHash(sessionID uint64) [64]byte {
 	return m.preauthHash
 }
 func (m *mockCryptoState) DeleteSessionPreauthHash(sessionID uint64) {}
-func (m *mockCryptoState) StashPendingSessionSetup(message []byte)   {}
 
 // newNegotiateTestContextWithCrypto creates a test context with a mock CryptoState.
 func newNegotiateTestContextWithCrypto() (*SMBHandlerContext, *mockCryptoState) {

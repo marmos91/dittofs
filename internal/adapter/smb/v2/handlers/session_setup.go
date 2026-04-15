@@ -308,10 +308,12 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool) (
 
 	// Initialize per-session preauth hash for SMB 3.1.1 key derivation.
 	// Per [MS-SMB2] 3.3.5.5: each session gets its own preauth hash chain
-	// initialized from the connection hash. InitSessionPreauthHash also
-	// consumes any stashed request bytes (SessionID=0 case).
+	// initialized from the connection hash. We pass our own request bytes
+	// directly (rather than reading from a per-connection stash, which used
+	// to race when multiple SESSION_SETUPs were dispatched concurrently —
+	// issue #362).
 	if ctx.ConnCryptoState != nil {
-		ctx.ConnCryptoState.InitSessionPreauthHash(sessionID)
+		ctx.ConnCryptoState.InitSessionPreauthHash(sessionID, ctx.RawRequest)
 	}
 
 	// Build NTLM Type 2 (CHALLENGE) response

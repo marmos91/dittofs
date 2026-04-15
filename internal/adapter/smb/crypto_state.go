@@ -72,11 +72,6 @@ type ConnectionCryptoState struct {
 	// Key: session ID, Value: current preauth hash for that session.
 	sessionPreauthHashes map[uint64][64]byte
 
-	// pendingSessionSetupReq holds the raw bytes of a SESSION_SETUP request
-	// that arrived before the session ID was allocated (SessionID=0 in the
-	// first NTLM Type 1 request). The handler consumes these bytes after
-	// allocating the session ID to update the per-session hash.
-	pendingSessionSetupReq []byte
 }
 
 // NewConnectionCryptoState creates a new ConnectionCryptoState with all
@@ -126,27 +121,29 @@ func (cs *ConnectionCryptoState) GetPreauthHash() [64]byte {
 }
 
 // InitSessionPreauthHash creates a new per-session preauth hash entry
-// initialized from the current connection-level preauth hash.
+// initialized from the current connection-level preauth hash, then chains
+// the SESSION_SETUP request bytes into it.
+//
 // Per [MS-SMB2] 3.3.5.5: "Connection.PreauthSession.PreauthIntegrityHashValue
 // MUST be set to Connection.PreauthIntegrityHashValue."
 //
-// If a pending SESSION_SETUP request was stashed (SessionID=0 case), it is
-// consumed and hashed into the new per-session hash.
+// `ssRequestBytes` MUST be the rawMessage from THIS request. The previous
+// implementation pulled them from a per-connection single-slot stash, which
+// raced when multiple SESSION_SETUPs were dispatched concurrently on the
+// same connection (issue #362 — "Bad SMB2 (sign_algo_id=2) signature").
 //
 // Thread-safe: acquires write lock.
-func (cs *ConnectionCryptoState) InitSessionPreauthHash(sessionID uint64) {
+func (cs *ConnectionCryptoState) InitSessionPreauthHash(sessionID uint64, ssRequestBytes []byte) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
 	// Start from connection hash (post-NEGOTIATE)
 	cs.sessionPreauthHashes[sessionID] = cs.preauthHash
 
-	// Consume any stashed request bytes from the before-hook
-	if len(cs.pendingSessionSetupReq) > 0 {
-		updated := chainHash(cs.sessionPreauthHashes[sessionID], cs.pendingSessionSetupReq)
+	if len(ssRequestBytes) > 0 {
+		updated := chainHash(cs.sessionPreauthHashes[sessionID], ssRequestBytes)
 		cs.sessionPreauthHashes[sessionID] = updated
-		cs.pendingSessionSetupReq = nil
-		logger.Debug("InitSessionPreauthHash: consumed stashed request",
+		logger.Debug("InitSessionPreauthHash: chained SESSION_SETUP request",
 			"sessionID", sessionID,
 			"hashPrefix", fmt.Sprintf("%x", updated[:16]),
 			"connHashPrefix", fmt.Sprintf("%x", cs.preauthHash[:16]))
@@ -195,18 +192,6 @@ func (cs *ConnectionCryptoState) DeleteSessionPreauthHash(sessionID uint64) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	delete(cs.sessionPreauthHashes, sessionID)
-}
-
-// StashPendingSessionSetup stores raw SESSION_SETUP request bytes for deferred
-// consumption. Used when the first SESSION_SETUP request has SessionID=0 and
-// the session ID hasn't been allocated yet.
-//
-// Thread-safe: acquires write lock.
-func (cs *ConnectionCryptoState) StashPendingSessionSetup(message []byte) {
-	cs.mu.Lock()
-	defer cs.mu.Unlock()
-	cs.pendingSessionSetupReq = make([]byte, len(message))
-	copy(cs.pendingSessionSetupReq, message)
 }
 
 // ============================================================================

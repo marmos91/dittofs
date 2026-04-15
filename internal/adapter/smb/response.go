@@ -79,6 +79,9 @@ func ProcessSingleRequest(
 	}
 
 	handlerCtx.RequestEncrypted = isEncrypted
+	// Make the raw request bytes available to handlers that need them
+	// for preauth integrity hash chaining (SESSION_SETUP). See #362.
+	handlerCtx.RawRequest = rawMessage
 
 	// Per MS-SMB2 3.3.5.2.1: enforce encryption requirements.
 	if errStatus := checkEncryptionRequired(reqHeader, connInfo, isEncrypted); errStatus != 0 {

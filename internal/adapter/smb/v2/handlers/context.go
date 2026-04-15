@@ -56,16 +56,21 @@ type CryptoState interface {
 	GetCipherId() uint16
 	// GetPreauthHash returns a copy of the current connection-level preauth integrity hash value.
 	GetPreauthHash() [64]byte
-	// InitSessionPreauthHash creates a per-session preauth hash from the connection hash.
-	InitSessionPreauthHash(sessionID uint64)
+	// InitSessionPreauthHash creates a per-session preauth hash from the connection
+	// hash and chains the given SESSION_SETUP request bytes into it. Caller must pass
+	// the rawMessage from THIS request — must NOT come from any per-connection stash,
+	// since concurrent SESSION_SETUPs on a single connection would otherwise overwrite
+	// each other's bytes (the cause of issue #362's "Bad SMB2 (sign_algo_id=2)
+	// signature" failures in bench.* tests).
+	InitSessionPreauthHash(sessionID uint64, ssRequestBytes []byte)
 	// UpdateSessionPreauthHash updates the per-session preauth hash with message bytes.
 	UpdateSessionPreauthHash(sessionID uint64, message []byte)
 	// GetSessionPreauthHash returns the per-session preauth hash (falls back to connection hash).
 	GetSessionPreauthHash(sessionID uint64) [64]byte
 	// DeleteSessionPreauthHash removes the per-session preauth hash entry.
 	DeleteSessionPreauthHash(sessionID uint64)
-	// StashPendingSessionSetup stores raw SESSION_SETUP request bytes for deferred hashing.
-	StashPendingSessionSetup(message []byte)
+	// (removed: StashPendingSessionSetup — see #362 fix; rawMessage now flows
+	// through SMBHandlerContext.RawRequest into InitSessionPreauthHash.)
 }
 
 // SMBHandlerContext carries per-request state through all SMB2 handlers.
@@ -87,6 +92,14 @@ type SMBHandlerContext struct {
 
 	// MessageID from the request header
 	MessageID uint64
+
+	// RawRequest is the complete raw SMB2 message bytes (header + body) for
+	// THIS request. Used by the SESSION_SETUP handler to chain its own bytes
+	// into the per-session preauth integrity hash. Threading the bytes
+	// through context (instead of via a per-connection stash) is what fixes
+	// the concurrent-SESSION_SETUP race in issue #362. Nil for tests that
+	// don't care about preauth hash chaining.
+	RawRequest []byte
 
 	// ShareName resolved from TreeID (populated after TREE_CONNECT)
 	ShareName string
