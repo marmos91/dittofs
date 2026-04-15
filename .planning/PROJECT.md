@@ -6,19 +6,21 @@ A comprehensive multi-protocol virtual filesystem with NFSv3/NFSv4.0/NFSv4.1 and
 
 Target: Cloud-native enterprise NAS with feature parity exceeding JuiceFS and Hammerspace, particularly in security (Kerberos + AES encryption), session reliability (EOS), cross-protocol consistency, Windows SMB3.1.1 compatibility, and edge/offline resilience.
 
-## Current Milestone: v0.10.0 Production Hardening + SMB Protocol Fixes
+## Current Milestone: v0.13.0 Metadata Backup & Restore (issue #368)
 
-**Goal:** Harden DittoFS for production use with share quotas, client tracking, trash/soft-delete, and complete SMB3 protocol compliance (credits, multi-channel, WPTS conformance).
+**Goal:** First-class disaster-recovery for metadata stores — on-demand and scheduled backups to local FS or S3, with restore and listing from CLI/REST. Closes the gap left by `dfs backup/restore controlplane` (config-only).
 
 **Target features:**
-- SMB 3.1.1 signing on macOS (fix preauth integrity hash mismatch)
-- Share quotas with FSSTAT/FSINFO/SMB reporting
-- Payload stats (UsedSize returns actual storage usage)
-- Protocol-agnostic client tracking with `dfsctl client list`
-- Trash / soft-delete with configurable retention
-- SMB credit flow control (grant/charge accounting)
-- SMB multi-channel session binding
-- WPTS conformance fixes (reduce known failures from 73)
+- Backup repository configured on the metadata store itself (destination type, optional cron schedule, retention policy)
+- `dfsctl store metadata <store-name> backup` — on-demand backup using configured repository
+- `dfsctl store metadata <store-name> restore [--from <backup-id>]` — restore (latest by default)
+- `dfsctl store metadata <store-name> backup list` — list backups in the repo
+- In-process scheduler honoring per-store schedule + retention
+- Destination drivers for local FS and S3 (reuse existing abstractions)
+- Control-plane HTTP API mirroring the CLI (drives dittofs-pro UI)
+
+**In flight in parallel (not in this milestone):**
+- **v0.11.x / v0.12.1** — SMB protocol improvements (continuation of v0.10.0 work; phase 73.1-04 carries over)
 
 ## Upcoming Milestones
 

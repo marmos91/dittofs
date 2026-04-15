@@ -1,132 +1,124 @@
-# Requirements: DittoFS v0.10.0
+# Requirements: DittoFS v0.13.0 — Metadata Backup & Restore
 
-**Defined:** 2026-03-20
-**Core Value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
+**Defined:** 2026-04-15
+**Source:** Issue #368 + `.planning/research/SUMMARY.md`
+**Core Value:** Give operators first-class disaster-recovery for metadata store contents — on-demand + scheduled backups to local FS or S3, with restore and listing from CLI and REST.
 
-## v0.10.0 Requirements
+## v0.13.0 Requirements
 
-Requirements for Production Hardening + SMB Protocol Fixes. Each maps to roadmap phases.
+### Repository Model (REPO)
 
-### SMB Protocol Compliance
+- [x] **REPO-01**: Backup repository is a first-class GORM entity (`backup_repos`) with FK to metadata store (enables multiple repos per store for 3-2-1 strategy)
+- [x] **REPO-02**: Each repo stores its own schedule (cron expression, optional) and retention policy
+- [x] **REPO-03**: A backup record can be pinned (non-prunable) so retention never deletes it
+- [x] **REPO-04**: A metadata store can have multiple backup repos active simultaneously (e.g. local + S3)
+- [x] **REPO-05**: Repo config, schedule, and retention are persisted — scheduler and triggers are stateless consumers (per issue #368)
 
-- [ ] **SMB-01**: SMB 3.1.1 signing works correctly on macOS (fix preauth integrity hash mismatch #252)
-- [x] **SMB-02**: Server enforces credit charge validation before dispatching requests (reject insufficient credits)
-- [x] **SMB-03**: Server grants credits in every response, never reducing client credits to zero
-- [x] **SMB-04**: Multi-credit I/O operations (READ/WRITE > 64KB) validate CreditCharge = ceil(length/65536)
-- [x] **SMB-05**: Compound requests handle credit accounting correctly (charge at compound level, grant in last response)
+### Backup Drivers & Destinations (DRV)
 
-### SMB Multi-Channel
+- [ ] **DRV-01**: Local FS destination driver with atomic tmp+rename semantics on completion
+- [ ] **DRV-02**: S3 destination driver with two-phase commit (manifest written last) reusing existing AWS SDK plumbing from `pkg/blockstore/remote/s3`
+- [ ] **DRV-03**: Client-side AES-256-GCM encryption at rest for backup payloads, operator-supplied key (env var or file path)
+- [ ] **DRV-04**: SHA-256 integrity checksum written into manifest at backup time
 
-- [ ] **MCH-01**: Server advertises SMB2_GLOBAL_CAP_MULTI_CHANNEL in NEGOTIATE when enabled
-- [ ] **MCH-02**: SESSION_SETUP with SMB2_SESSION_FLAG_BINDING binds new connection to existing session
-- [ ] **MCH-03**: Each channel derives its own signing key from the connection's preauth integrity hash
-- [ ] **MCH-04**: Lease break notifications fan out across all channels for a session
-- [ ] **MCH-05**: Connection cleanup checks session refcount before destroying session state
-- [ ] **MCH-06**: Multi-channel is gated behind configuration flag (default: disabled)
+### Per-Engine Backup Semantics (ENG)
 
-### WPTS Conformance
+- [ ] **ENG-01**: BadgerDB store implements native `DB.Backup/Load` with SSI consistent snapshot (online backup, no quiesce required)
+- [ ] **ENG-02**: PostgreSQL store implements logical dump via `pgx.CopyTo (FORMAT binary)` under a REPEATABLE READ transaction
+- [ ] **ENG-03**: Memory store implements RWMutex-guarded binary dump (for parity and testing)
+- [ ] **ENG-04**: Each metadata store implements an optional `Backupable` capability interface; unsupported backends return a clear error
 
-- [x] **WPTS-01**: ChangeNotify dispatches async notifications on file create/remove/rename/setattr (~20 tests) -- Phase 72-73
-- [x] **WPTS-02**: Negotiate/encryption edge cases fixed (preauth hash fixes cascade, ~5 tests) -- Phase 72-73
-- [x] **WPTS-03**: Leasing and durable handle reconnect edge cases resolved (~4-6 tests) -- Phase 72-73
-- [x] **WPTS-04**: Known failure count reduced from 73 to 56 (53 permanent + 3 expected timestamp deferred) -- Phase 72-73
+### Scheduler & Retention (SCHED)
 
-### Share Quotas
+- [ ] **SCHED-01**: In-process cron scheduler based on `robfig/cron/v3` with per-repo schedules supporting `CRON_TZ=` timezone prefix
+- [ ] **SCHED-02**: Scheduler prevents overlapping runs for the same repo (mutex); adds startup jitter to avoid thundering herd
+- [ ] **SCHED-03**: Count-based retention — keep last N successful backups per repo
+- [ ] **SCHED-04**: Age-based retention — keep backups ≤ N days per repo
+- [ ] **SCHED-05**: Retention never deletes the only successful backup (safety rail)
+- [ ] **SCHED-06**: Retention runs as a separate pass after each successful backup; retention does not race with an in-flight backup
 
-- [x] **QUOTA-01**: Per-share byte quota configurable via REST API and dfsctl
-- [x] **QUOTA-02**: Write operations rejected with NFS3ERR_NOSPC / STATUS_DISK_FULL when quota exceeded
-- [x] **QUOTA-03**: NFS FSSTAT returns quota-adjusted TotalBytes and AvailableBytes
-- [x] **QUOTA-04**: SMB FileFsSizeInformation and FileFsFullSizeInformation return quota-adjusted values
-- [x] **QUOTA-05**: `dfsctl share create/update --quota-bytes` manages quotas
+### Restore (REST)
 
-### Payload Stats
+- [ ] **REST-01**: Restore in-place via drain → close store → restore files → reopen → resume
+- [ ] **REST-02**: Restore pre-flight REQUIRES all shares referencing the target store to be in disabled state (a disabled share disconnects all clients and refuses new connections until re-enabled) — restore returns 409 Conflict otherwise
+- [ ] **REST-03**: Restore verifies SHA-256 integrity of the backup manifest before performing any swap
+- [ ] **REST-04**: Restore latest backup by default; `--from <backup-id>` selects a specific backup
+- [ ] **REST-05**: Restore is idempotent and safe to retry if interrupted mid-run
 
-- [x] **STATS-01**: UsedSize returns actual block storage consumption (not just metadata file sizes)
-- [x] **STATS-02**: Per-share storage usage available via REST API and CLI
-- [x] **STATS-03**: Logical size (file sizes) and physical size (block storage) distinguished
+### CLI & REST API Surface (API)
 
-### Client Tracking
+- [ ] **API-01**: `dfsctl store metadata <store-name> backup` triggers an on-demand backup using the repo attached to the store (if multiple repos, `--repo <name>`)
+- [ ] **API-02**: `dfsctl store metadata <store-name> restore [--from <backup-id>]` restores from the attached repo (requires shares disabled; interactive confirmation unless `--yes`)
+- [ ] **API-03**: `dfsctl store metadata <store-name> backup list` shows backup id, timestamp, size, status, repo name
+- [ ] **API-04**: `dfsctl store metadata <store-name> repo add/list/remove` manages backup repos on the store (destination config, cron schedule, retention policy)
+- [ ] **API-05**: REST API exposes `POST /api/stores/metadata/{name}/backups`, `GET /api/stores/metadata/{name}/backups`, `POST /api/stores/metadata/{name}/restore` with async-job semantics (202 Accepted + `GET /api/backup-jobs/{id}` for status)
+- [ ] **API-06**: Async job records are persisted so clients can poll after disconnect; dittofs-pro UI drives the same endpoints as `dfsctl`
 
-- [x] **CLIENT-01**: Protocol-agnostic ClientRecord aggregates NFS mounts and SMB sessions
-- [x] **CLIENT-02**: `dfsctl client list` shows connected clients with protocol, share, user, connection time
-- [x] **CLIENT-03**: REST API endpoint `GET /api/clients` returns client records
-- [x] **CLIENT-04**: Stale client records expire via TTL-based cleanup
+### Safety & GC Integration (SAFETY)
 
-### Trash / Soft-Delete
+- [ ] **SAFETY-01**: Block-store GC consults retained backup manifests before deleting block payloads — a block referenced by any retained backup manifest is held
+- [x] **SAFETY-02**: On server startup, orphaned backup jobs in `running` state are transitioned to `interrupted` with a recovery message in the job log
+- [ ] **SAFETY-03**: Backup manifest is self-describing and versioned (`manifest_version: 1`) so future versions can forward-compat
 
-- [ ] **TRASH-01**: Per-share trash enabled/disabled via configuration
-- [ ] **TRASH-02**: Deleted files moved to hidden `.dfs-trash/` directory instead of permanent deletion
-- [ ] **TRASH-03**: Trash items invisible in NFS READDIR and SMB QueryDirectory
-- [ ] **TRASH-04**: Background scavenger purges expired trash items based on configurable retention
-- [ ] **TRASH-05**: `dfsctl trash list/restore/purge` commands for admin management
-- [ ] **TRASH-06**: Trash-aware block GC (trashed files count as live references)
-- [ ] **TRASH-07**: Trash counts against share quota
+## Future Requirements (deferred from v0.13.0)
 
-## Future Requirements
-
-### BlockStore Security
-- **SEC-01**: Block-level compression (zstd/lz4)
-- **SEC-02**: Block-level encryption (AES-256-GCM)
-
-### NFSv4.2
-- **NFS42-01**: Server-side COPY with OFFLOAD_STATUS polling
-- **NFS42-02**: Extended attributes via NFSv4.2 and SMB
+- **INCR-01**: Incremental backups (BadgerDB since-cursor, Postgres LSN)
+- **XENG-01**: Cross-engine restore (JSON IR — Badger → Postgres, etc.)
+- **OBS-01**: Prometheus metrics (`backup_last_success_timestamp_seconds`, counters, failure gauges)
+- **OBS-02**: OpenTelemetry spans for backup/restore operations
+- **KMS-01**: SSE-KMS pass-through for S3 destination
+- **REST2NEW-01**: Restore to a new (different) metadata store for staging/forensic use
+- **GFS-01**: GFS retention (hourly/daily/weekly/monthly/yearly)
+- **AUTO-01**: Automatic test-restore (backup verification job)
+- **SCHED-CATCHUP**: Missed-run catch-up policy after server downtime
 
 ## Out of Scope
 
 | Feature | Reason |
 |---------|--------|
-| Per-user/group quotas | Massively complex, AUTH_UNIX is spoofable, share quotas cover 90% of use cases |
-| SMB compression (LZ77/LZNT1) | Large effort for marginal benefit; focus compression on BlockStore layer |
-| SMB persistent handles | Requires handle serialization to disk; only useful for continuous availability clustering |
-| RQUOTA protocol | Separate RPC program; quotas reported via FSSTAT/FSINFO instead |
-| DFS referrals | Windows-specific namespace feature outside DittoFS scope |
-| Client-side recycle bin ($RECYCLE.BIN) | Server-side trash is protocol-agnostic and simpler |
+| Continuous PITR / streaming replication | Massive surface, not required for DR; single-node project constraint |
+| Multi-node backup coordination (HA) | Project is single-instance per CLAUDE.md |
+| Block-store data backup | Block data is in object storage / local cache — out of scope for this milestone (metadata only) |
+| External KMS integration (HashiCorp Vault, AWS KMS, etc.) | Operator-supplied key covers v0.13.0; revisit in BlockStore Security milestone |
+| Backup to own NFS/SMB mount | Reentrancy trap; not supported |
+| Auto-restore on corruption detection | Never silently mutate user state |
 
 ## Traceability
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SMB-01 | Phase 69 | Pending |
-| SMB-02 | Phase 69 | Complete |
-| SMB-03 | Phase 69 | Complete |
-| SMB-04 | Phase 69 | Complete |
-| SMB-05 | Phase 69 | Complete |
-| MCH-01 | Phase 74 | Pending |
-| MCH-02 | Phase 74 | Pending |
-| MCH-03 | Phase 74 | Pending |
-| MCH-04 | Phase 74 | Pending |
-| MCH-05 | Phase 74 | Pending |
-| MCH-06 | Phase 74 | Pending |
-| WPTS-01 | Phase 73 | Complete |
-| WPTS-02 | Phase 73 | Complete |
-| WPTS-03 | Phase 73 | Complete |
-| WPTS-04 | Phase 73 | Complete |
-| QUOTA-01 | Phase 70 | Complete |
-| QUOTA-02 | Phase 70 | Complete |
-| QUOTA-03 | Phase 70 | Complete |
-| QUOTA-04 | Phase 70 | Complete |
-| QUOTA-05 | Phase 70 | Complete |
-| STATS-01 | Phase 70 | Complete |
-| STATS-02 | Phase 70 | Complete |
-| STATS-03 | Phase 70 | Complete |
-| CLIENT-01 | Phase 71 | Complete |
-| CLIENT-02 | Phase 71 | Complete |
-| CLIENT-03 | Phase 71 | Complete |
-| CLIENT-04 | Phase 71 | Complete |
-| TRASH-01 | Deferred | Pending |
-| TRASH-02 | Deferred | Pending |
-| TRASH-03 | Deferred | Pending |
-| TRASH-04 | Deferred | Pending |
-| TRASH-05 | Deferred | Pending |
-| TRASH-06 | Deferred | Pending |
-| TRASH-07 | Deferred | Pending |
+| REPO-01 | Phase 1 | Complete |
+| REPO-02 | Phase 1 | Complete |
+| REPO-03 | Phase 1 | Complete |
+| REPO-04 | Phase 1 | Complete |
+| REPO-05 | Phase 1 | Complete |
+| ENG-04 | Phase 1 | Pending |
+| SAFETY-03 | Phase 1 | Pending |
+| ENG-01 | Phase 2 | Pending |
+| ENG-02 | Phase 2 | Pending |
+| ENG-03 | Phase 2 | Pending |
+| DRV-01 | Phase 3 | Pending |
+| DRV-02 | Phase 3 | Pending |
+| DRV-03 | Phase 3 | Pending |
+| DRV-04 | Phase 3 | Pending |
+| SCHED-01 | Phase 4 | Pending |
+| SCHED-02 | Phase 4 | Pending |
+| SCHED-03 | Phase 4 | Pending |
+| SCHED-04 | Phase 4 | Pending |
+| SCHED-05 | Phase 4 | Pending |
+| SCHED-06 | Phase 4 | Pending |
+| REST-01 | Phase 5 | Pending |
+| REST-02 | Phase 5 | Pending |
+| REST-03 | Phase 5 | Pending |
+| REST-04 | Phase 5 | Pending |
+| REST-05 | Phase 5 | Pending |
+| SAFETY-01 | Phase 5 | Pending |
+| SAFETY-02 | Phase 5 | Complete |
+| API-01 | Phase 6 | Pending |
+| API-02 | Phase 6 | Pending |
+| API-03 | Phase 6 | Pending |
+| API-04 | Phase 6 | Pending |
+| API-05 | Phase 6 | Pending |
+| API-06 | Phase 6 | Pending |
 
-**Coverage:**
-- v0.10.0 requirements: 34 total
-- Mapped to phases: 34
-- Unmapped: 0
-
----
-*Requirements defined: 2026-03-20*
-*Last updated: 2026-03-20 after roadmap creation (phases 69-75)*
+**Coverage:** 33/33 REQ-IDs mapped (7 REPO/ENG-04/SAFETY-03 + 3 ENG + 4 DRV + 6 SCHED + 5 REST + 2 SAFETY + 6 API) ✓

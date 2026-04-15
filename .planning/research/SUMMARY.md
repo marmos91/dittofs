@@ -1,342 +1,193 @@
 # Project Research Summary
 
-**Project:** DittoFS v0.10.0 - Production Hardening + SMB Protocol Fixes
-**Domain:** Production filesystem server hardening and SMB3 protocol completeness
-**Researched:** 2026-03-20
+**Project:** DittoFS v0.13.0 — Metadata Backup & Restore (issue #368)
+**Domain:** Disaster-recovery subsystem for pluggable metadata stores in a live multi-protocol (NFSv3/v4.x + SMB3) filesystem server
+**Researched:** 2026-04-15
 **Confidence:** HIGH
 
 ## Executive Summary
 
-v0.10.0 represents a production hardening milestone that requires **zero new external dependencies**. All eight features (SMB credit flow control, multi-channel session binding, share quotas, payload stats, client tracking, trash/soft-delete, macOS signing fix, and WPTS conformance fixes) can be implemented using Go's standard library and the existing dependency set. The project already has the foundational infrastructure (session management, crypto state, metadata store interfaces, control plane models, WPTS Docker infrastructure) and this milestone is about hardening, fixing edge cases, and filling protocol gaps.
+This milestone closes the DR gap left by `dfs backup controlplane` (config-only) by adding first-class, per-metadata-store backup/restore with local-FS and S3 destinations, on-demand + scheduled triggers, retention policies, and a REST/CLI/UI surface. Research across the ecosystem (JuiceFS, etcd/k3s/RKE2, restic/kopia) shows a converged design: **per-store repository config → atomic consistent snapshot → tar+manifest envelope → versioned destination → async job with polling → separate retention pass**. DittoFS already ships every heavy dependency needed (BadgerDB, pgx, AWS S3 SDK v2, GORM, Cobra, OpenTelemetry, Localstack test plumbing); **only one new direct dependency is justified — `robfig/cron/v3`** for cron-expression scheduling.
 
-The features span three architectural domains: (1) SMB protocol completeness (credits, multi-channel, signing fix, WPTS), (2) metadata-layer features (quotas, payload stats, trash), and (3) operational features (client tracking). The **MetadataService** is the natural hub for quotas, trash, and payload stats, while the **SMB session/connection pipeline** absorbs credit flow and multi-channel. Client tracking requires a new cross-cutting service in the runtime. Eight features, three dependency chains, no circular dependencies.
+The recommended approach is a new `runtime/backups` sub-service (parallel to existing `adapters/`, `stores/`, `shares/`, `mounts/`, `lifecycle/`, `identity/`) owning a scheduler, driver registry, and orchestrator. Metadata stores opt into a new optional `Backupable` capability interface: BadgerDB uses native `DB.Backup/Load` (SSI snapshot), PostgreSQL uses `pgx` `COPY TO STDOUT (FORMAT binary)` inside a single `REPEATABLE READ` txn (avoids shelling out to `pg_dump`), memory store exports GORM-JSON. Backup destinations are a **new** `pkg/backup/destination/` package — deliberately **not** reused from `pkg/blockstore/remote/` since the semantics (immutable archive objects with retention) differ fundamentally from block-addressable chunks. Repository config is a sibling GORM entity (1:N to `MetadataStoreConfig`), matching issue #368's "persisted alongside store config so triggers and scheduler are stateless consumers" requirement verbatim.
 
-The critical risk is **multi-channel session binding**, which requires fundamental architectural changes to the connection-per-session model and has documented data corruption risks from Samba's implementation history. The macOS signing fix is the highest-priority standalone item as it unblocks an entire platform. Credit flow control is low-effort protocol compliance that improves the baseline for all subsequent WPTS work. The recommended build order prioritizes features that unblock others while deferring the highest-risk items (multi-channel, trash) to later phases after solid test coverage exists.
+The top risks are all silent-corruption / silent-failure modes that plague production backup systems: **(1)** restoring into a live-mounted share poisons client caches (file handles outlive the restore); **(2)** the restored metadata references block-store state that may have been GC'd between backup and restore; **(3)** scheduled backups that fail every night for months before anyone notices at restore time. Mitigations are baked into the architecture: quiesce-swap-resume with NFSv4 boot-verifier bump + SMB durable-handle clear, manifest-recorded `PayloadID` sets with block-GC hold integration, Prometheus `backup_last_success_timestamp_seconds` heartbeat with documented alert rule, ULID backup IDs, two-phase commit on S3, retention as a separate post-upload pass that always retains ≥1 successful backup.
 
 ## Key Findings
 
 ### Recommended Stack
 
-**Core finding:** Zero new dependencies required. Every feature uses existing Go stdlib packages and the current dependency set (Go 1.25, BadgerDB 4.5.2, GORM 1.31.1, Cobra 1.8.1). Total estimated new code: ~2500-3500 LOC across 8 features.
+DittoFS's existing go.mod already covers 95% of the surface. The only new direct dependency is `robfig/cron/v3` (de-facto Go cron standard, zero transitive deps, supports `CRON_TZ=` per-schedule timezones). Everything else maps to existing deps or stdlib: Badger's `DB.Backup`/`DB.Load`, `pgx.Conn.CopyTo` for PostgreSQL, `aws-sdk-go-v2/service/s3` + `manager.Uploader` for S3 (**reuse `pkg/blockstore/remote/s3`'s constructor**, don't fork), `crypto/aes`+`crypto/cipher` for optional client-side AES-256-GCM encryption, `archive/tar` + `gopkg.in/yaml.v3` + `crypto/sha256` for the manifest envelope, `golang-migrate/migrate/v4` for the new `backup_repositories`/`backup_runs`/`backup_jobs` tables.
 
 **Core technologies:**
-- **Go stdlib crypto** (SHA-512, AES-CMAC/GMAC): Already used in SMB signing infrastructure; macOS fix requires debugging existing hash chain, not new primitives
-- **GORM**: Auto-migrate handles new quota/trash columns on Share model; no schema migration framework needed
-- **Existing session/connection infrastructure**: Credit flow and multi-channel extend existing `session.Manager` and `Connection` types
-- **Existing metadata service**: Quotas, trash, and payload stats are pure extensions of the metadata layer interface
-
-**Critical anti-recommendations:**
-- No external quota library (Go syscall.Statfs already used; quotas are metadata-layer)
-- No fsnotify for ChangeNotify (DittoFS metadata is in-memory/BadgerDB, not a real filesystem)
-- No new testing framework for WPTS (Docker-based infrastructure already exists from v3.6/v3.8)
-- No SMB compression libraries (69 WPTS tests skipped require compression; defer to v4.5 BlockStore compression)
+- `robfig/cron/v3` (NEW) — in-process cron-expression parser + runner; matches PROJECT.md per-store schedule model
+- `dgraph-io/badger/v4` `DB.Backup/Load` (reuse) — SSI-snapshot, safe under concurrent writes, supports incremental via `sinceTs`
+- `jackc/pgx/v5` `CopyTo` (reuse) — streaming binary `COPY` from `REPEATABLE READ` txn; avoids shipping `postgresql-client` in container
+- `aws-sdk-go-v2/service/s3` + `manager` (reuse) — multipart upload, same client construction as blockstore
+- `crypto/cipher` AES-256-GCM (stdlib) — default client-side encryption; rejected `filippo.io/age` as unnecessary dep
+- `archive/tar` + `yaml.v3` manifest envelope (stdlib + existing) — `{manifest.yaml, payload/*, checksums.sha256}`; mirrors existing `dfs backup controlplane` pattern
 
 ### Expected Features
 
-**Table stakes (cannot ship without):**
-- **Share quotas with FSSTAT/FSINFO/SMB reporting**: Every production NAS enforces storage limits. Without quotas, one share consumes all storage. `df` on NFS and Explorer free space on SMB must show quota-limited values, not raw disk capacity.
-- **Payload stats (UsedSize)**: Currently `UsedSize` in BlockStore.Stats is zero or inaccurate. Quota enforcement and filesystem statistics depend on accurate storage consumption tracking.
-- **SMB credit flow control**: MS-SMB2 requires credit charge validation and sequence number tracking. Without enforcement, clients can exhaust server resources (DoS vector).
-- **SMB 3.1.1 signing on macOS**: Known bug (#252) where macOS clients reject signatures due to preauth integrity hash mismatch. Blocks an entire platform.
-- **Client tracking**: Admins need unified view of connected NFS/SMB clients. `dfsctl client list` must show all protocols in a single table.
-- **WPTS conformance fixes**: 73 known failures need reduction. Primary target is ChangeNotify (20 failures) where infrastructure exists but dispatch handler returns NOT_IMPLEMENTED.
+Feature landscape converges across JuiceFS, etcd, k3s/RKE2, restic, kopia. MVP must match JuiceFS dump/load + auto-backup baseline, adopt etcd/k3s cron + retention, and borrow restic/kopia's repository-as-first-class-object + integrity verification. Defer CAS dedup/incremental to v1.x — metadata stores are small enough that full backup + good scheduling covers DR for v0.13.0.
 
-**Should have (differentiators):**
-- **Trash/soft-delete with configurable retention**: Server-side trash protects against accidental deletion. Unlike client-side recycle bins, works across all protocols. Most NAS vendors offer this (Synology @Recycle, QNAP Network Recycle Bin).
-- **SMB multi-channel (session binding)**: Allows single session across multiple TCP connections for aggregate bandwidth and fault tolerance. Complex feature with data corruption risks; consider experimental/opt-in.
+**Must have (table stakes):**
+- On-demand + scheduled (cron) backup per store
+- Restore latest by default, restore by ID via `--from`
+- List backups with stable time-ordered IDs (ULIDs), `-o table|json|yaml`
+- Local FS + S3 destinations (S3-compatible covers MinIO/B2/Wasabi/R2)
+- Count + age retention; never delete the only successful backup
+- Consistent snapshot per engine (Badger native, Postgres MVCC, Memory RWMutex)
+- Restore in-place with store drain + maintenance mode; `409 Conflict` if any active mount
+- Async REST API (202 + polling) with CLI `--wait` default / `--async`
+- Integrity: SHA-256 on write + verify on restore
+- Atomic completion: manifest-last on S3, tmp+rename on local FS
+- Prometheus metrics (`backup_last_success_timestamp_seconds` is non-negotiable)
+- Structured logs + self-describing manifest v1 with version field
 
-**Defer (anti-features for v0.10.0):**
-- User/group quotas (per-user limits): Massively complex, requires tracking per-user usage across shares. Share quotas cover 90% of use cases.
-- Client-side recycle bin integration: Windows `$RECYCLE.BIN` requires SID management. Server-side trash is simpler and protocol-agnostic.
-- SMB compression (LZ77, LZNT1): 69 WPTS tests skipped due to compression. Large effort for marginal benefit on modern networks.
-- SMB persistent handles: Different from durable handles (already implemented). Requires serialization to disk and recovery on restart.
-- Full SMB multi-channel in v0.10.0: Session binding requires architectural changes. Implement IOCTL interface advertisement only; full multi-channel in future milestone.
+**Should have (competitive differentiators):**
+- Restore to a **new** metadata store (staging restore, forensic workflows)
+- Cross-engine restore (JSON engine-neutral IR — JuiceFS-style killer feature)
+- Test-restore / verify command (`restic check` analog)
+- Client-side encryption at rest (AES-256-GCM, operator-supplied or KMS key)
+- GFS retention (hourly/daily/weekly/monthly/yearly)
+- OpenTelemetry spans matching existing telemetry pattern
+- Backup repository as first-class object (one store → multiple repos for 3-2-1)
+
+**Defer (v0.14+ / v1.x):**
+- Incremental backups (requires manifest v2 — but version field in v1 now for forward compat)
+- Resumable uploads (requires CAS chunking)
+- External KMS integration (Vault, AWS KMS beyond SSE-KMS pass-through)
+- Webhooks, pre/post hooks
+- Additional destination drivers (GCS, Azure Blob, SFTP)
+- Multi-node / HA-aware backup
+
+**Anti-features (explicitly rejected):**
+- Continuous PITR / WAL streaming (scope explosion; cron + incremental covers RPO)
+- Backup of block-store data (delegated to S3 versioning/lifecycle)
+- Backup via NFS/SMB mount to self (reentrant risk)
+- Silent deletion of the last remaining backup
+- Automatic restore on corruption detection
 
 ### Architecture Approach
 
-Features integrate into existing architecture without redesign. The **MetadataService** becomes the hub for quota enforcement (PrepareWrite checks quota before allowing writes), trash logic (RemoveFile checks share config and routes to soft-delete or hard-delete), and payload stats (GetFilesystemStatistics returns quota-adjusted values). The **SMB session/connection pipeline** absorbs credit flow control (pre-dispatch validation in ProcessSingleRequest) and multi-channel (session binding via SMB2_SESSION_FLAG_BINDING in SESSION_SETUP handler). Client tracking requires a new **ClientRegistry** service in the runtime that aggregates NFS mount tracking and SMB session tracking into protocol-agnostic ClientRecord objects.
+New `pkg/controlplane/runtime/backups/` sub-service composes: `service.go` (orchestrator), `scheduler.go` (cron, tied to `Runtime.Serve` lifecycle), `jobs.go` (state-machine tracking), `quiesce.go` (share pause/resume), `registry.go` (driver factory). A new `Backupable` optional interface on `MetadataStore` keeps per-engine snapshot logic next to each backend. Destination drivers live in a new public `pkg/backup/destination/{fs,s3}` package — distinct from `pkg/blockstore/remote/` (different key-space, different lifecycle, different IAM surface), but internally sharing AWS client construction via a factored `internal/awsclient` helper. Repository config is a sibling GORM entity with a new `BackupRepoStore` sub-interface embedded in the composite `Store` (matches existing 9-sub-interface pattern).
 
 **Major components:**
-1. **MetadataService** (`pkg/metadata/service.go`) — Quota enforcement in PrepareWrite/CreateFile, trash redirect in RemoveFile, quota-aware GetFilesystemStatistics
-2. **SMB session pipeline** (`internal/adapter/smb/`) — Credit charge validation in dispatch layer, session binding in session_setup.go, per-channel signing keys
-3. **ClientRegistry** (NEW: `pkg/controlplane/runtime/clients/`) — Protocol-agnostic client tracking aggregating NFS mounts and SMB sessions
-4. **Control plane models** (`pkg/controlplane/models/share.go`) — Add QuotaBytes, QuotaFiles, TrashEnabled, TrashRetentionDays columns
-5. **BlockStore engine** (`pkg/blockstore/engine/`) — Fix UsedSize tracking (currently returns 0)
-
-**Critical patterns:**
-- **Quota enforcement at service boundary**: Enforce in MetadataService, not protocol handlers. Handlers translate domain errors to protocol-specific codes (NFS3ERR_NOSPC, STATUS_DISK_FULL).
-- **Trash as metadata-only operation**: Trash moves files in metadata namespace only. Block data stays in place. Trash expiry triggers real deletion which eventually triggers block GC.
-- **Dispatch hook for credit validation**: Add credit charge validation as pre-dispatch step in ProcessSingleRequest, before handler is called. Mirrors existing signing verification hook pattern.
-- **Multi-channel via session binding flag**: Detect multi-channel in SESSION_SETUP via `Flags & 0x01`. New connection joins existing session rather than creating new one.
+1. **Models** — `BackupRepoConfig`, `BackupRecord`, `BackupJob` (new GORM entities + migration)
+2. **`Backupable` interface** — optional capability on `MetadataStore`; memory/badger/postgres implementations
+3. **Destination drivers** — `pkg/backup/destination/{fs,s3}`, separate from blockstore remote
+4. **`runtime/backups` sub-service** — orchestrator + scheduler + job tracker + driver registry
+5. **Quiesce hooks** — new `shares.Service.DisableShare/EnableShare`, `stores.Service.CloseStore/ReopenStore`, `MetadataService.PauseShare/ResumeShare`
+6. **REST + CLI + apiclient** — `POST /stores/metadata/{name}/backups` (202 async), `GET /backup-jobs/{id}`, `backup list/show/delete`, `backup repo add/edit`, `restore`; matching Cobra subtree under `dfsctl store metadata <name>/backup/` and sibling `restore`
 
 ### Critical Pitfalls
 
-1. **SMB credit grant drops to zero — client deadlock**: MS-SMB2 states "server MUST ensure credits held by client never reduced to zero." A server that grants zero credits permanently deadlocks that client session. Current adaptive algorithm could theoretically drive result below MinGrant. **Prevention**: Never return 0 from any credit grant path; add final safety floor `if grant == 0 { grant = 1 }`.
+1. **Restore while shares are mounted → client cache poisoning + stale-handle data corruption.** Handles outlive restore; NFSv4 `change` attr goes inconsistent; SMB leases forgotten. **Mitigation:** default-deny on active mounts (`409 Conflict` with list), require `--force --drain`, bump NFSv4 boot verifier, clear SMB durable-handle registry + break all leases, document that clients must remount.
+2. **Silent scheduled-backup failures** (industry's #1 backup failure mode). Cron fires, creds rotate, backup fails nightly for 5 months, admin discovers at restore time. **Mitigation:** `dittofs_backup_last_success_timestamp_seconds{store}` Prom metric + documented alert rule (`time() - last_success > 2 * interval`), structured `event=backup_completed status=...` logs, `backup list` shows failures, `dfs status` + `/healthz` surface backup freshness, K8s operator propagates to CR status.
+3. **Block-store divergence** — backup taken Day 1, blocks GC'd Day 3 (reference-counted against live metadata), restore Day 4 → `NFS3ERR_IO` on every read of old files (S3 NoSuchKey). **Mitigation:** manifest records `PayloadID` set; block GC consults retained-backup manifests before deleting; for v0.13.0, minimum viable is to log warnings listing missing PayloadIDs and require explicit operator ack — but ship the manifest field from day one for forward compat.
 
-2. **Credit charge validation missing — allows resource exhaustion**: DittoFS calculates `CalculateCreditCharge` but never validates incoming requests. Without enforcement, malicious clients can send unlimited concurrent requests with `CreditCharge=0`, exhausting server resources. **Prevention**: Validate CreditCharge against payload before dispatch; verify `session.Outstanding >= creditCharge` before consuming credits.
-
-3. **Multi-channel session binding race with session state**: Session state (tree connects, open files, leases, signing keys) must be shared across all connections. If session binding and concurrent operation on original connection race, server observes partially initialized state. Per Samba 4.4.0 release notes: "corner cases in treatment of channel failures that may result in data corruption when race conditions hit." **Prevention**: Session-level mutex for binding; session-connection registry becomes multi-value map; connection failure isolation (one channel fails ≠ tear down session).
-
-4. **macOS preauth integrity hash mismatch — platform-specific byte ordering**: Existing preauth hash chain validated against Windows 11. macOS SMB client may produce different NEGOTIATE bytes due to different context ordering. If server modifies or reserializes bytes between receiving NEGOTIATE and hashing it, hash diverges. **Prevention**: Hash ORIGINAL wire bytes, not reconstructed bytes; modify ReadRequest to return raw message bytes alongside parsed header/body.
-
-5. **WPTS conformance fixes regress existing passing tests**: Fixing one known failure can cause previously passing test to fail. Current 193 passing tests share server state (session table, tree connects, leases). **Prevention**: Run FULL WPTS suite after every change; categorize known failures by root cause, not test name; use git bisect for regressions; isolate server state between test categories if feasible.
+Also critical but rank-adjacent: **inconsistent-snapshot under concurrent WRITEs** (use atomic engine APIs — `DB.Backup` not `cp -r`, `REPEATABLE READ` txn not key iteration); **cross-store contamination** (manifest with `store_id` UUID + `schema_version` + `dittofs_version`, restore refuses mismatch without `--force-cross-store`); **S3 retention-race data loss** (two-phase commit via `pending/` → `manifests/`, retention is a separate post-upload pass that never deletes a completed manifest unless replaced by a newer one).
 
 ## Implications for Roadmap
 
-Based on research, suggested phase structure with dependency-aware ordering:
+Based on dependency analysis across all four research outputs, a 6-phase structure emerges. Phase 01 is the foundation all others depend on; Phases 02–03 can run largely in parallel; Phase 04 depends on 01+02; Phase 05 depends on 03+04; Phase 06 is cross-cutting validation.
 
-### Phase 1: SMB Protocol Foundation
-**Rationale:** macOS signing fix unblocks entire platform (highest priority standalone item). Credit flow control improves protocol compliance baseline for all subsequent WPTS work. Both are foundational for later SMB features.
+### Phase 01: Foundations — Models, Manifest, `store_id`, `Backupable` interface
+**Rationale:** Schema and manifest are the contract every other phase depends on. Adding `store_id` now (persisted inside each metadata store) prevents the cross-store-contamination pitfall even before restore ships. Defining the manifest with version field + `block_store_refs` + `payload_id_set` up front is cheap insurance; bolting on later is painful.
+**Delivers:** `BackupRepoConfig` / `BackupRecord` / `BackupJob` GORM models + migrations; new `BackupRepoStore` sub-interface embedded in composite `Store`; `pkg/metadata/backup.go` defining `Backupable` interface; `store_id` migration on all metadata store backends; manifest v1 format spec.
+**Addresses:** Repository schema; manifest; store identity — foundation for every feature downstream.
+**Avoids:** Pitfall #4 (cross-store contamination), partial #1 (manifest records block refs), partial #3 (manifest carries PayloadID set).
 
-**Delivers:**
-- macOS SMB 3.1.1 signing support (fix preauth integrity hash)
-- SMB credit charge validation and enforcement
-- Foundation for WPTS conformance improvements
+### Phase 02: Per-Store `Backupable` Drivers — Memory, BadgerDB, PostgreSQL
+**Rationale:** The engine-specific atomic-snapshot APIs are the highest-risk correctness work. Isolating them before destination drivers means we can test round-trips in-process with no S3/local-FS coupling. BadgerDB and Postgres are the production backends; memory is for tests + cross-engine IR.
+**Delivers:** BadgerDB driver using `DB.Backup(w, since)` / `DB.Load`; PostgreSQL driver using `pgx.Conn.CopyTo` with `COPY TO STDOUT (FORMAT binary)` inside `REPEATABLE READ` txn (keep shell-out to `pg_dump` as optional `--format native-cli`); memory store GORM-JSON export; storetest conformance suite extensions.
+**Uses:** `dgraph-io/badger/v4` (existing), `jackc/pgx/v5` (existing).
+**Avoids:** Pitfall #1 (inconsistent snapshot), #5 (wrong Badger API), #6 (Postgres long-txn bloat).
 
-**Addresses:**
-- Issue #252 (macOS signing)
-- Credit flow control (MS-SMB2 3.3.5.2.3 compliance)
+### Phase 03: Destination Drivers + Scheduler + Encryption Hooks
+**Rationale:** Destinations, scheduling, and encryption can land in parallel with Phase 02 once manifest + repo schema are fixed. Two-phase commit on S3, lifecycle-rule validation, and the overlap mutex in the scheduler must all land together — they jointly prevent the retention-race and thundering-herd classes of failure.
+**Delivers:** `pkg/backup/destination/{fs,s3}/` with Put/Get/List/Delete/Stat; tar+YAML envelope + SHA-256 streaming; two-phase commit (`pending/` → `manifests/`) on S3; `AbortIncompleteMultipartUpload` lifecycle validation via `dfsctl validate-repo`; `robfig/cron/v3` scheduler wired to `lifecycle.Service` Serve/Shutdown; per-repo mutex + jitter + missed-run policy + `CRON_TZ=` support; AES-256-GCM encryption hook + SSE-KMS pass-through; factored `internal/awsclient` helper shared with `pkg/blockstore/remote/s3`.
+**Uses:** `robfig/cron/v3` (NEW), `aws-sdk-go-v2/service/s3/manager` (existing), `crypto/cipher` (stdlib).
+**Avoids:** Pitfall #7 (scheduler overlap/DST/thundering-herd), #8 partial (S3 partial uploads + retention race), #9 (encryption + key management).
 
-**Avoids:**
-- Pitfall 1 (credit grant zero)
-- Pitfall 2 (credit validation missing)
-- Pitfall 4 (macOS hash mismatch)
+### Phase 04: Restore Orchestration + CLI/REST API
+**Rationale:** The dangerous path. Depends on 01 (manifest for validation) + 02 (per-store `Restore()`) + 03 (destination `Get`). Quiesce-swap-resume must land with NFSv4 boot-verifier bump + SMB durable-handle clear as a single commit — partial implementations silently corrupt clients.
+**Delivers:** `runtime/backups.Service.CreateBackup/CreateRestore`; new `shares.Service.Disable/EnableShare`, `stores.Service.Close/ReopenStore`, `MetadataService.Pause/ResumeShare`; temp-path + atomic rename swap; NFSv4 boot-verifier bump; SMB durable-handle registry clear + lease break-to-None; async `POST` → 202 + `GET /backup-jobs/{id}` polling; `pkg/apiclient/backups.go` typed client; Cobra subtree `dfsctl store metadata <name>/backup/{on-demand, list, show, delete, repo}` + sibling `restore`; ULID backup IDs; `--wait` default / `--async` / `--dry-run` / confirmation prompt on restore.
+**Addresses:** On-demand backup, list, restore (latest + by-id), restore-in-place.
+**Avoids:** Pitfall #2 (restore while mounted), #11 (CLI UX / Ctrl-C ghost jobs / unsortable IDs).
 
-**Estimated complexity:** Medium (debugging preauth hash + protocol compliance wiring)
+### Phase 05: Retention + Observability + Block-Store GC Integration
+**Rationale:** Retention must be a separate pass that runs only after upload confirmed — collapsing it into the upload path creates the data-loss-by-pruner failure mode. Observability (heartbeat metric + alert rule) is what turns "silent failure for 5 months" into "PagerDuty at hour 49". Block-GC integration closes the divergence pitfall #3.
+**Delivers:** Count + age retention evaluator (separate post-upload pass, never deletes only successful backup, respects `backup pin`); Prometheus `dittofs_backup_*` metrics suite (last-success-timestamp, duration histogram, size, jobs-inflight, retention-pruned counter); structured `backup.*` / `restore.*` log events; OpenTelemetry spans at orchestrator boundary; GC-hold in `pkg/blockstore/gc/` consulting retained-backup PayloadID sets.
+**Avoids:** Pitfall #3 full (GC divergence), #8 full (retention race), #10 (silent failures).
 
-**Research flags:** Standard SMB protocol patterns. No additional research needed.
-
----
-
-### Phase 2: Storage Management
-**Rationale:** Quotas modify GetFilesystemStatistics, which payload stats also touches. Do quotas first to establish the pattern. Payload stats are quick win with existing BlockStore infrastructure. Both needed before trash (trash must count against quota).
-
-**Delivers:**
-- Per-share quota configuration and enforcement
-- FSSTAT/FSINFO quota-aware reporting (NFS)
-- FileFsSizeInformation quota reporting (SMB)
-- Accurate UsedSize in BlockStore.Stats()
-- `dfsctl share` quota management
-
-**Addresses:**
-- Share quotas (#232)
-- Payload stats (#216)
-
-**Avoids:**
-- Pitfall 6 (TOCTOU race — use atomic counter)
-- Pitfall 7 (scanning performance — cached stats)
-- Pitfall 13 (NFS/SMB reporting inconsistency)
-
-**Estimated complexity:** Medium (DB migration + service logic + cross-protocol consistency)
-
-**Research flags:** Standard quota patterns. No additional research needed.
-
----
-
-### Phase 3: Operational Visibility
-**Rationale:** Client tracking is fully independent. Can be built in parallel with Phase 1-2 or immediately after. Provides operational visibility into active connections before tackling complex WPTS fixes.
-
-**Delivers:**
-- Protocol-agnostic ClientRecord model
-- ClientRegistry runtime sub-service
-- `dfsctl client list` command
-- REST API `/api/clients` endpoint
-- TTL-based expiry to prevent memory leak
-
-**Addresses:**
-- Client tracking (#157)
-
-**Avoids:**
-- Pitfall 8 (memory leak from stale entries — TTL expiry)
-- Pitfall 14 (double-counting multi-protocol clients — IP-based keying)
-
-**Estimated complexity:** Medium (new service + API + CLI following established patterns)
-
-**Research flags:** Standard registry patterns. No additional research needed.
-
----
-
-### Phase 4: WPTS Conformance Push
-**Rationale:** Credit flow is stable (Phase 1), so WPTS baseline is solid. Primary target is ChangeNotify (20 failures) where infrastructure exists but needs wiring. Iterative approach with full regression testing after each fix.
-
-**Delivers:**
-- CHANGE_NOTIFY full implementation (wire NotifyRegistry into metadata operations)
-- Negotiate/Encryption fixes (5 tests, same preauth issues as macOS fix)
-- Leasing/DurableHandle edge case fixes (6 tests)
-- Timestamp algorithm fixes (3 tests)
-- Target: 73 known → ~40-45 known (reduce by ~30)
-
-**Addresses:**
-- WPTS conformance (reduce 73 known failures)
-
-**Avoids:**
-- Pitfall 5 (regressions — full suite runs after every change)
-- Pitfall 16 (Docker staleness — pin WPTS version)
-
-**Estimated complexity:** High (20+ individual fixes, iterative process)
-
-**Research flags:** Each fix may need MS-SMB2 spec deep dive. Budget time for root-cause analysis.
-
----
-
-### Phase 5: Advanced Storage Features
-**Rationale:** Trash depends on quota tracking (trash must count against quota) and GC coordination (trashed files are still "live" for GC). Highest complexity and least urgent — defer to end after solid test coverage exists.
-
-**Delivers:**
-- Server-side trash with per-share config
-- Configurable retention (1-180 days)
-- Admin restore via API/CLI (`dfsctl trash list/restore/purge`)
-- Hidden `.trash/` directory filtered from READDIR/QueryDirectory
-- Background TrashScavenger for expired items
-- GC coordination (trashed files still referenced)
-
-**Addresses:**
-- Trash/soft-delete (#190)
-
-**Avoids:**
-- Pitfall 9 (GC interaction — trash files still "live" for GC)
-- Pitfall 10 (cross-protocol visibility — hide .trash from listings)
-- Pitfall 15 (sync race — purge order: remote blocks, local blocks, metadata)
-
-**Estimated complexity:** High (new subsystem, scavenger, cross-protocol semantics, GC integration)
-
-**Research flags:** Trash/GC coordination may need phase-specific research for edge cases.
-
----
-
-### Phase 6: Multi-Channel (Experimental)
-**Rationale:** Most complex feature with highest risk due to connection lifecycle changes and documented data corruption risks from Samba history. Implement after all other features are stable with full test coverage. Consider shipping as experimental/opt-in.
-
-**Delivers:**
-- IOCTL interface advertisement (FSCTL_QUERY_NETWORK_INTERFACE_INFO)
-- SMB2_SESSION_FLAG_BINDING in SESSION_SETUP
-- Per-channel signing keys (channel-specific preauth hash)
-- Session-connection registry multi-value support
-- Lease break fan-out to all channels
-- Feature flag for opt-in enablement
-
-**Addresses:**
-- SMB multi-channel session binding
-
-**Avoids:**
-- Pitfall 3 (session binding race — session-level mutex)
-- Pitfall 12 (lease break fan-out failure — try all channels)
-- Pitfall 19 (architecture coupling — ChannelSet abstraction)
-
-**Estimated complexity:** Very High (architectural changes, connection lifecycle, concurrent access patterns)
-
-**Research flags:** Multi-channel edge cases may need deeper research during implementation. Consider phase-specific research for lease break replay logic.
-
----
+### Phase 06: Test Matrix + Security Review + Documentation
+**Rationale:** Cross-cutting validation. Should start in parallel with Phase 04 — test fixtures take time to build right, and the corrupt/partial/cross-version cases will surface bugs in earlier phases. Localstack E2E hygiene matters (shared container, not per-test — see MEMORY.md on `TestCollectGarbage_S3` flakiness).
+**Delivers:** Integration + E2E matrix in `test/integration/backup/` and `test/e2e/backup/` covering happy path × 3 engines × 2 destinations + truncated / bit-flip / wrong `store_id` / schema-up / schema-down / missing-manifest / missing-payload / concurrent-write+backup+restore byte-compare / restore-while-mounted-refused / chaos (kill mid-backup & mid-restore); cross-version matrix (N-1 binary → current); threat model doc; `docs/BACKUP_RESTORE.md` (scope explicitly metadata only, not block data); mapping between `dfs backup controlplane` and `dfsctl store metadata backup`; update `CLAUDE.md`.
+**Avoids:** Pitfall #12 (missing corruption/cross-version tests).
 
 ### Phase Ordering Rationale
 
-**Dependency chains:**
-```
-Phase 1 (SMB Protocol Foundation)
-    |
-    v
-Phase 4 (WPTS Conformance) — depends on Phase 1 credit flow baseline
-    |
-    v
-Phase 6 (Multi-Channel) — depends on Phase 1 + Phase 4 protocol stability
-
-Phase 2 (Storage Management)
-    |
-    v
-Phase 5 (Trash) — depends on Phase 2 quota tracking and GC coordination
-
-Phase 3 (Operational Visibility) — independent, can run parallel
-```
-
-**Build order prioritizes:**
-1. **Unblock platforms first**: macOS signing fix (Phase 1) is highest priority standalone item
-2. **Foundation before features**: Credit flow (Phase 1) before WPTS (Phase 4) ensures protocol compliance baseline
-3. **Data before behavior**: Quotas/stats (Phase 2) before trash (Phase 5) establishes tracking infrastructure
-4. **Stable before risky**: All other features before multi-channel (Phase 6) provides solid test coverage
-5. **Visibility early**: Client tracking (Phase 3) provides operational insight before tackling complex conformance work
-
-**Risk mitigation:**
-- Multi-channel (highest risk) is last phase with feature flag for opt-in enablement
-- WPTS (high iteration risk) comes after protocol foundation is solid
-- Trash (complex GC interaction) deferred until quota/stats infrastructure proven
+- **Dependency chain:** Models/manifest (P1) gate everything. `Backupable` drivers (P2) and destinations+scheduler (P3) are parallelizable once P1 lands. Restore (P4) needs both. Retention+observability+GC (P5) needs upload paths from P3 and the job model from P4. Tests (P6) cross-cut and should start alongside P4.
+- **Risk ordering:** The correctness-critical pieces (atomic snapshot APIs, restore orchestration, quiesce) land in P2 + P4. The silent-failure preventers (heartbeat metric, retention-as-separate-pass, GC-hold) land in P5. Security posture (encryption default-deny-plaintext) is woven through P3 + P6.
+- **Issue #368 alignment:** Requirement that "triggers and scheduler are stateless consumers" of persisted state is met in P1 (schema) + P3 (scheduler reads DB only). CLI/REST/UI surface lands in P4. Per-store repository model lands in P1, matching "persisted alongside the store config" (sibling FK, not columns on `MetadataStoreConfig`).
+- **Pitfall avoidance timing:** 7 of the 12 critical pitfalls (cross-store, wrong Badger API, Postgres bloat, scheduler edge cases, encryption, CLI UX, retention-race) are structurally prevented by choosing the right API/layout in P1–P3 — not by adding guards later. The remaining 5 (inconsistent snapshot, restore-while-mounted, block-GC divergence, silent failures, missing tests) have dedicated phase mappings above.
 
 ### Research Flags
 
-**Phases with standard patterns (skip research-phase):**
-- **Phase 1 (SMB Protocol Foundation)**: Well-documented MS-SMB2 spec, existing infrastructure
-- **Phase 2 (Storage Management)**: Standard quota patterns, existing metadata service interfaces
-- **Phase 3 (Operational Visibility)**: Established runtime sub-service patterns (mounts, stores)
+Phases likely needing deeper research during planning:
+- **Phase 02 (PostgreSQL driver):** `pgx.Conn.CopyTo` with `COPY (FORMAT binary)` round-trip semantics under heavy concurrent write load; confirm `REPEATABLE READ` vs `SERIALIZABLE DEFERRABLE` tradeoff for backup-worker txn.
+- **Phase 04 (restore orchestration):** Exact NFSv4 boot-verifier semantics (RFC 7530 §3.3.1) — does bumping force reclaim-grace path correctly on every Linux kernel client in our matrix? Also SMB durable-handle + lease-break sequencing (MS-SMB2 §3.3.5.9.7).
+- **Phase 05 (block-GC hold):** Integration surface with existing `pkg/blockstore/gc/` — API shape, persistence of hold set, interaction with per-share BlockStore ref counting.
 
-**Phases likely needing deeper research:**
-- **Phase 4 (WPTS Conformance)**: Each fix may need MS-SMB2 spec deep dive for specific info classes, lease break states, negotiate contexts. Budget time for root-cause analysis per test category (20 ChangeNotify, 5 negotiate, 6 leasing, etc.).
-- **Phase 5 (Trash)**: Trash/GC coordination edge cases may need phase-specific research. Investigate: trash purge ordering with BlockStore sync, cross-protocol delete semantics (DELETE_ON_CLOSE vs REMOVE).
-- **Phase 6 (Multi-Channel)**: Lease break replay logic, channel failure isolation, per-channel signing key derivation with SMB 3.1.1 preauth hash. Consider phase-specific research for production-grade implementation.
+Phases with standard patterns (skip research-phase):
+- **Phase 01:** Standard GORM migration + sub-interface composition; existing 9-sub-interface pattern in `pkg/controlplane/store/interface.go` is the template.
+- **Phase 03 scheduler subset:** `robfig/cron/v3` + overlap mutex + jitter is a well-documented pattern; no deeper research needed beyond confirming `CRON_TZ=` behavior under DST.
+- **Phase 06:** Test-matrix construction; Localstack hygiene lessons already captured in MEMORY.md.
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | **HIGH** | Zero new dependencies verified against existing go.mod. All features use stdlib or existing packages. |
-| Features | **HIGH** (table stakes), **MEDIUM** (differentiators) | Table stakes validated against NetApp, ONTAP, Samba, Windows Server behavior. Multi-channel complexity based on Samba implementation history. |
-| Architecture | **HIGH** | Direct source code analysis of integration points. MetadataService as hub for quotas/trash/stats is natural extension. Credit flow fits existing session pipeline. |
-| Pitfalls | **HIGH** (1-5), **MEDIUM** (6-15) | Critical pitfalls verified against MS-SMB2 spec and Samba release notes. Moderate pitfalls based on TOCTOU patterns, GC interaction analysis, and codebase architecture review. |
+| Stack | HIGH | All reused deps verified present at current versions in go.mod; `robfig/cron/v3` is de-facto standard with zero transitive deps; rejected alternatives (`gocron`, `filippo.io/age`, `pg_dump` shell-out, `minio-go`) have clear documented reasons. |
+| Features | HIGH | Convergent feature set across JuiceFS, etcd/k3s/RKE2, restic/kopia — all well-documented. Competitive positioning is unambiguous. MVP/fast-follow/future split is grounded in priority matrix. |
+| Architecture | HIGH | Grounded in direct source analysis of DittoFS runtime composition, store interface decomposition, and existing `dfs backup controlplane` precedent. Sub-service pattern matches 6 existing siblings. |
+| Pitfalls | HIGH | DittoFS-specific pitfalls (block-GC divergence, boot-verifier, SMB durable-handles, cross-protocol mount quiesce) are derived from actual codebase architecture, not generic advice. Industry patterns (retention race, ghost multiparts, silent cron failure) are pattern-level synthesis of well-documented incident classes. |
 
 **Overall confidence:** HIGH
 
 ### Gaps to Address
 
-**Minimal gaps — most patterns are established:**
-
-1. **Multi-channel lease break replay logic**: Samba bug #11897 documents "missing oplock/lease break request replay" as a known multi-channel issue. The exact replay algorithm when a channel reconnects is not fully specified in MS-SMB2. **Handling**: Phase 6 may need targeted research or Samba source code review for production-grade implementation.
-
-2. **Trash/GC coordination timing**: The exact ordering of trash purge (delete metadata first vs blocks first) when BlockStore syncer is mid-upload is not fully explored. **Handling**: Phase 5 should include E2E test: create file → write data → delete (trash) → trigger sync → trigger GC → restore from trash → verify data intact.
-
-3. **macOS-specific NEGOTIATE differences**: The exact byte differences between macOS and Windows NEGOTIATE requests (context ordering, salt values, capability flags) are inferred but not packet-capture verified. **Handling**: Phase 1 must include macOS packet capture comparison with Windows to identify exact mismatch bytes.
-
-4. **WPTS test interdependencies**: Which of the 73 known failures share root causes vs which are independent bugs is not fully categorized. **Handling**: Phase 4 should begin with root-cause grouping exercise before attempting fixes.
-
-All gaps are addressable during implementation phases with standard debugging techniques (packet captures, source code review, E2E testing). No fundamental unknowns that block planning.
+- **Exact wire-compatibility of `pgx` binary COPY round-trip:** needs a spike test early in Phase 02 — confirm all Postgres types in the metadata schema (enums, arrays, jsonb, bytea, timestamptz) round-trip losslessly via `COPY (FORMAT binary)`. Fallback path (per-model GORM JSON serializer) must be designed in P1's manifest format even if not implemented until later.
+- **Cross-engine restore format (differentiator, P2-scope if pulled forward):** JuiceFS uses JSON for engine-neutral transport. Whether DittoFS ships a JSON IR in v0.13.0 or defers to v0.14 needs a product call during roadmap finalization. Recommend: ship engine-neutral-capable manifest format now, defer the cross-engine restore command to v0.14.
+- **K8s operator integration for backup/restore triggers:** out of scope for v0.13.0 but architecture should not preclude it. Operator would patch `DittoServer.spec.paused=true`, wait for drain, then call `POST /restore`. Leave a note in `docs/BACKUP_RESTORE.md` pointing to this as future work.
+- **Unified Lock Manager state in backup scope:** current stance is "locks are ephemeral, excluded from backup; restored state has no active locks (matches post-crash semantics)." This should be validated with the v1.0 lock-manager design authors before Phase 04 lands.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-
-**Official Microsoft specifications:**
-- [MS-SMB2: Verifying Credit Charge and Payload Size](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/fba3123b-f566-4d8f-9715-0f529e856d25)
-- [MS-SMB2: Algorithm for Granting Credits](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/2e366edb-b006-47e7-aa94-ef6f71043ced)
-- [MS-SMB2: Granting Credits to Client](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/46256e72-b361-4d73-ac7d-d47c04b32e4b)
-- [MS-SMB2: Session Binding](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/9a697646-6085-4597-808c-765bb2280c6e)
-- [MS-SMB2: Per Session State](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/8174c219-2224-4009-b96a-06d84eccb3ae)
-- [SMB 3.1.1 Pre-authentication Integrity in Windows 10](https://learn.microsoft.com/en-us/archive/blogs/openspecification/smb-3-1-1-pre-authentication-integrity-in-windows-10)
-
-**DittoFS codebase analysis:**
-- `internal/adapter/smb/session/`, `internal/adapter/smb/crypto_state.go`, `internal/adapter/smb/hooks.go`
-- `pkg/metadata/service.go`, `pkg/controlplane/runtime/`, `pkg/blockstore/engine/`
-- `test/smb-conformance/KNOWN_FAILURES.md`: 193 pass / 73 known / 69 skipped
+- `pkg/controlplane/runtime/runtime.go`, `pkg/controlplane/store/interface.go`, `pkg/metadata/store.go`, `pkg/blockstore/remote/remote.go`, `pkg/controlplane/models/stores.go` — direct codebase analysis
+- `cmd/dfs/commands/backup/controlplane.go` — existing backup pattern precedent (VACUUM INTO, `pg_dump`, GORM-JSON)
+- `go.mod` — verified all reused dep versions
+- BadgerDB `DB.Backup`/`DB.Load` docs — SSI snapshot, 4MB Stream framework batching
+- PostgreSQL `COPY` docs and `pg_dump` serializable-deferrable semantics
+- robfig/cron/v3 — timezone support, zero transitive deps, feature-frozen since 2019
+- JuiceFS Metadata Backup & Recovery docs + v1.0 auto-backup release notes
+- restic forget/retention, k3s etcd-snapshot CLI, RKE2 backup & restore
+- kopia / restic / borg comparison
+- RFC 7530 §3.3.1 (NFSv4 boot verifier), MS-SMB2 §3.3.5.9.7 (SMB durable-handle reconnect)
 
 ### Secondary (MEDIUM confidence)
+- AWS S3 strong-LIST consistency announcement (Dec 2020); non-AWS S3-compatibles behavior variance — pattern-level
+- Bareos full-vs-incremental-vs-differential backup taxonomy
+- resticprofile retention reference for GFS algorithm
 
-**Implementation references:**
-- [Samba Wiki: SMB2 Credits](https://wiki.samba.org/index.php/SMB2_Credits)
-- [Samba 4.4.0 Release Notes](https://www.samba.org/samba/history/samba-4.4.0.html) — Multi-channel data corruption documentation
-- [NetApp SMB 3.0 Multichannel Technical Report](https://www.netapp.com/media/17136-tr4740.pdf)
-- [NetApp: Quota Display with NFS Clients](https://kb.netapp.com/Advice_and_Troubleshooting/Data_Storage_Software/ONTAP_OS/How_Quotas_display_with_NFS_clients_df_output)
-- [Samba Multi-Channel SNIA Presentation](https://www.snia.org/educational-library/samba-multi-channel-iouring-status-update-2020)
-
-**NAS vendor patterns:**
-- [Synology DSM Recycle Bin](https://mariushosting.com/synology-how-to-empty-all-recycle-bins-on-dsm-7/)
-- [Seagate NAS OS: Network Recycle Bin](https://www.seagate.com/support/kb/nas-os-4x-network-recycle-bin-nrb-006005en/)
-
-### Tertiary (LOW confidence)
-
-**General patterns:**
-- [Filesystem Quota Management in Go (ANEXIA Blog)](https://anexia.com/blog/en/filesystem-quota-management-in-go/) — Go quotactl wrapper approach (not used, pattern reference only)
-- [github.com/nao1215/trash](https://pkg.go.dev/github.com/nao1215/trash/go-trash) — Go FreeDesktop trash library (not used, pattern reference only)
+### Tertiary (LOW confidence — pattern-level)
+- Industry post-mortem classes (retention race, ghost multipart uploads, encryption-key co-location, silent-cron-failure): synthesized from common DBaaS vendor incident reports
+- DittoFS MEMORY.md — Localstack shared-container flakiness, operator credential-rotation loop; directly informs Pitfall #8 (credential refresh) and Pitfall #12 (test hygiene)
 
 ---
-
-**Research completed:** 2026-03-20
-**Ready for roadmap:** Yes
-
-**Total estimated effort:** ~2500-3500 LOC across 8 features, 6 phases, zero new dependencies
+*Research completed: 2026-04-15*
+*Ready for roadmap: yes*
+*Detailed research: STACK.md, FEATURES.md, ARCHITECTURE.md, PITFALLS.md*

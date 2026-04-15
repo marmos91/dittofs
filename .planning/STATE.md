@@ -1,30 +1,34 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.10.0
-milestone_name: Production Hardening + SMB Protocol Fixes
-status: Ready to execute
-stopped_at: Completed 73.1-04-PLAN.md
-last_updated: "2026-03-25T07:29:36.967Z"
+milestone: v0.13.0
+milestone_name: milestone
+status: planning
+stopped_at: Roadmap written, awaiting Phase 1 planning
+last_updated: "2026-04-15T21:22:34.026Z"
+last_activity: 2026-04-15 — Roadmap for v0.13.0 created (7 phases, 24/24 requirements covered)
 progress:
-  total_phases: 6
-  completed_phases: 5
-  total_plans: 19
-  completed_plans: 18
+  total_phases: 7
+  completed_phases: 0
+  total_plans: 3
+  completed_plans: 2
+  percent: 67
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-20)
+See: .planning/PROJECT.md (updated 2026-04-15)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Phase 73.1 — smb-conformance-round-2
+**Current focus:** Milestone v0.13.0 — Metadata Backup & Restore (issue #368)
 
 ## Current Position
 
-Phase: 73.1
-Plan: 4 of 4
+Phase: Not started (roadmap drafted)
+Plan: —
+Status: Roadmap drafted; awaiting phase planning
+Last activity: 2026-04-15 — Roadmap for v0.13.0 created (7 phases, 24/24 requirements covered)
 
 ## Completed Milestones
 
@@ -40,51 +44,28 @@ Plan: 4 of 4
 | v4.0 BlockStore Unification | 41-49 | 24 | Mar 9-11, 2026 | 2026-03-11 |
 | v4.3 Protocol Gap Fixes | 49.1-49.3 | 1 | Mar 12-13, 2026 | 2026-03-13 |
 | v4.7 Offline/Edge Resilience | 63-68 | 10 | Mar 15-20, 2026 | 2026-03-20 |
+| v0.10.0 Production Hardening + SMB fixes | 69-73.1 | — | Mar 20-25, 2026 | in flight |
 
 ## Accumulated Context
 
 ### Decisions
 
-All decisions archived in PROJECT.md Key Decisions table.
+Historical decisions archived in PROJECT.md Key Decisions table.
 
-- **70-03**: Interface assertions for GetUsedBytes/SetQuotaForShare to decouple from concrete store types
-- **70-03**: QuotaBytes=0 displayed as 'unlimited' in CLI, empty string in API JSON
-- **70-03**: UsagePercent capped at 100 even when over-quota
-- **70-01**: Track only regular file sizes (directories, symlinks, devices excluded from counter)
-- **70-01**: Delta tracking at transaction layer (PutFile/DeleteFile) for consistency across all stores
-- **70-01**: Badger GetFilesystemStatistics still scans for file count but reads bytes from atomic counter
-- **69-02**: Used absolute low/high watermark tracking for sequence window bitmap (avoids corruption during compaction)
-- **69-02**: NEGOTIATE exempt only when SessionID=0 (pre-auth semantics)
-- **69-03**: SequenceWindow Grant deferred until after successful wire write
-- **69-03**: Compound credit validation only for first command per MS-SMB2 3.2.4.1.4
-- **69-03**: SupportsMultiCredit set via NEGOTIATE after-hook based on dialect >= 0x0210
-- [Phase 69-01]: Cherry-picked PR #288 for signing enforcement instead of re-implementing
-- [Phase 69-01]: MS-SMB2 spec section references as code comments for long-term audit trail
-- [Phase 70-03]: Interface assertions for GetUsedBytes/SetQuotaForShare to decouple from concrete store types
-- [Phase 70-02]: Quota enforcement at PrepareWrite layer (after file type check, before permission check) for early rejection
-- [Phase 70-02]: Quota overlay in MetadataService.GetFilesystemStatistics rather than per-store
-- [Phase 70-02]: 1 PiB (1<<50) as unlimited sentinel across all stores (was 1TB in memory/badger)
-- [Phase 71]: Default TTL 5 min for stale client cleanup, sweep interval TTL/2
-- [Phase 71]: Deep copy Shares slice and protocol detail structs for copy-on-read safety
-- [Phase 71]: Local clientDisconnecter interface in adapters package to avoid import cycle
-- [Phase 71]: ForceCloseByAddress leverages existing ActiveConnections sync.Map
-- [Phase 71]: NFS-specific session handlers split to nfs_clients.go, kept under /adapters/nfs/
-- [Phase 73]: Extended MatchesFilter for stream filters rather than separate stream notification path
-- [Phase 73]: ChangeEa moved to Permanent status (EA not planned)
-- [Phase 73]: ADS share access, management, and timestamp implementations verified working from Phase 72 -- removed 12 stale expected failures
-- [Phase 73]: AsyncResponseRegistry as separate struct for general-purpose async ops
-- [Phase 73]: Re-auth re-derives keys via configureSessionSigningWithKey on existing session per MS-SMB2 3.3.5.5.3
-- [Phase 73]: Anonymous/guest sessions bypass encryption enforcement per MS-SMB2 3.3.5.2.9
-- [Phase 73]: Store LeaseState in PersistedDurableHandle for reconnect restoration; return DH2Q/DHnQ response on reconnect; ExcludeLeaseKey in LockOwner for same-key break suppression; grant lease after cross-key conflict break resolves
-- [Phase 73]: CreationTime freeze/unfreeze tracked per-handle; ChangeEa reclassified as Permanent
-- [Phase 73.1]: NextCommand alignment check integrated into ParseCompoundCommand for self-contained parsing
-- [Phase 73.1]: Related commands after failed CREATE get STATUS_INVALID_PARAMETER when inherited FileID is all zeros
-- [Phase 73.1]: TrimLeft for multi-slash normalization; decodeCreateContexts returns error for blob validation; ADS filtered by ':' in entry name
-- [Phase 73.1]: SendAsyncCompletionResponse as general-purpose async completion counterpart to SendAsyncChangeNotifyResponse
+**v0.13.0 decisions:**
+
+- Reset phase numbering to 1 for v0.13.0 (previous v0.10.0 phase directories archived under `.planning/milestones/v0.10.0-phases/`)
+- Fine granularity (from config.json) — 7 phases preserving natural boundaries: foundations, per-engine drivers, destinations, scheduler/retention, restore orchestration, API surface, testing
+- Metadata-only scope; block data backup explicitly out of scope
+- Destination drivers live in a new `pkg/backup/destination/` package separate from `pkg/blockstore/remote/` (different semantics: immutable archives vs block-addressable chunks) but share AWS client plumbing
+- Manifest v1 ships with `payload_id_set` field from day one for forward-compat with block-GC hold (SAFETY-01)
+- Restore precondition is share-disabled (REST-02) — shares must be manually disabled before restore; restore returns 409 Conflict otherwise
+- Retention is a separate post-upload pass, never races with in-flight backup (SCHED-06)
+- `robfig/cron/v3` is the only new direct dependency
 
 ### Pending Todos
 
-None.
+- Run `/gsd-plan-phase 1` to decompose Phase 1 (Foundations) into executable plans.
 
 ### Blockers/Concerns
 
@@ -92,6 +73,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-03-25T07:29:36.965Z
-Stopped at: Completed 73.1-04-PLAN.md
-Next action: Execute 73.1-03-PLAN.md
+Last session: 2026-04-15 (roadmap creation)
+Stopped at: Roadmap written, awaiting Phase 1 planning
+Next action: `/gsd-plan-phase 1` — Foundations: models, manifest, capability interface

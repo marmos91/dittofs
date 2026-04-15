@@ -1,666 +1,510 @@
-# Architecture Patterns: v0.10.0 Production Hardening + SMB Protocol Fixes
+# Architecture Research — v0.13.0 Metadata Backup & Restore
 
-**Domain:** Production hardening and SMB protocol completeness for existing multi-protocol virtual filesystem
-**Researched:** 2026-03-20
-**Confidence:** HIGH (direct source code analysis of all integration points)
+**Domain:** Disaster-recovery subsystem for per-store metadata snapshots inside DittoFS's Runtime/Store architecture
+**Researched:** 2026-04-15
+**Confidence:** HIGH (direct source analysis of `pkg/controlplane/runtime/runtime.go`, `pkg/controlplane/store/interface.go`, `pkg/metadata/store.go`, `pkg/blockstore/remote/remote.go`, `cmd/dfs/commands/backup/controlplane.go`, `pkg/controlplane/models/stores.go`)
+**Reference:** Issue #368 ("persisted alongside the store config so triggers and scheduler are stateless consumers")
 
 ## Executive Summary
 
-The v0.10.0 features span three distinct architectural domains: (1) SMB protocol completeness (credits, multi-channel, signing fix, WPTS), (2) metadata-layer features (quotas, payload stats, trash), and (3) operational features (client tracking). The existing architecture accommodates all features without fundamental redesign. The key architectural insight is that the **MetadataService** is the natural hub for quotas, trash, and payload stats, while the **SMB session/connection pipeline** absorbs credit flow and multi-channel. Client tracking requires a new cross-cutting service in the runtime.
+Backup/restore is a **new runtime sub-service** (`pkg/controlplane/runtime/backups/`) that owns three concerns: (1) a scheduler goroutine tied to `Runtime.Serve`, (2) a backup-destination driver registry parallel to `pkg/blockstore/remote/` (but NOT reused — different key-space, different semantics), and (3) an orchestration layer that calls a new `Backupable`/`Restorable` capability on `MetadataStore` implementations.
 
-Eight features, three dependency chains, no circular dependencies. Build order should prioritize features that unblock others: macOS signing fix is standalone and high-value; credit flow improves protocol compliance for all WPTS tests; quotas feed into both NFS FSSTAT and SMB FileFsFullSizeInformation; client tracking depends only on adapter hooks.
+Repository configuration lives in a **new `BackupRepoConfig` row** linked to `MetadataStoreConfig` by store ID (1:1 or 1:N). Triggers (on-demand CLI, REST, scheduler) are stateless consumers that look up the repo config, instantiate the destination driver, call the store's native `Backup(ctx, writer)`, and record a new `BackupRecord` (a new GORM entity for list/retention/status). This matches issue #368's constraint exactly: scheduler and triggers never hold state — all state is in the GORM store.
 
-## Recommended Architecture
+Restore is the **dangerous path**. Architecture must quiesce the share: disable adapters for that share's shares (or refuse with `409 Conflict` if any mount exists), close the live `MetadataStore` instance via `storesSvc`, restore under a temporary handle, swap atomically, re-register, then re-enable. The API model is an async **Job** (new `models.BackupJob`) with `GET /api/jobs/{id}` polling — identical pattern to how NFSv4.2 server-side COPY was planned (async + poll).
 
-### System Context: Where New Features Live
+Six new components, two modified components. Dependency chain: `BackupRepoConfig` + `BackupRecord` models → `Backupable` interface on stores → per-store implementations (memory: no-op, Badger: native backup API, Postgres: `pg_dump`-equivalent via COPY) → destination drivers (local FS, S3) → orchestrator service → scheduler → REST handlers → API client → `dfsctl` subcommands. Telemetry (OTEL spans + Prom metrics) slots in at orchestrator boundary — zero overhead when disabled, matching existing pattern.
 
-```
-                        +----------------------------------+
-                        |         Protocol Adapters         |
-                        |                                   |
-                        | NFS:                  SMB:        |
-                        |  FSSTAT quota check    Credits    |
-                        |  FSINFO quota check    Multi-ch   |
-                        |                        Signing    |
-                        |                        WPTS       |
-                        +--------+--------+--------+-------+
-                                 |        |        |
-                    +------------+        |        +----------+
-                    |                     |                    |
-           +--------v--------+   +--------v--------+  +-------v--------+
-           |  MetadataService |   |     Runtime     |  | Connection     |
-           |                  |   |                 |  | Pool           |
-           | - Quota enforce  |   | - ClientRegistry|  | - Session      |
-           | - Trash logic    |   | - Mount Tracker |  |   binding      |
-           | - Payload stats  |   | - Shares Service|  | - Credit flow  |
-           +--------+---------+   +--------+--------+  +-------+--------+
-                    |                      |                    |
-           +--------v--------+   +--------v--------+          |
-           |  MetadataStore  |   | ControlPlane DB |          |
-           |  (per-share)    |   | (GORM/SQLite)   |          |
-           |                 |   |                  |          |
-           | - UsedSize      |   | - Share.Quota*   |          |
-           | - File counts   |   | - TrashConfig   |          |
-           +-----------------+   +-----------------+          |
-                                                              |
-                                                     +--------v--------+
-                                                     |   BlockStore    |
-                                                     |   (per-share)   |
-                                                     |                 |
-                                                     | - GetStats()    |
-                                                     | - LocalDiskUsed |
-                                                     +-----------------+
-```
+## Standard Architecture
 
-### Component Boundaries
-
-| Component | Responsibility | What Changes | Communicates With |
-|-----------|---------------|--------------|-------------------|
-| `internal/adapter/smb/session/` | Session lifecycle, credit accounting | Credit charge validation, grant enforcement | ConnInfo, Handler |
-| `internal/adapter/smb/v2/handlers/` | SMB command processing | WPTS fixes, quota in QueryInfo | MetadataService, Runtime |
-| `internal/adapter/smb/framing.go` | Wire protocol read/write | No change (signing fix is in crypto_state) | Connection |
-| `internal/adapter/smb/crypto_state.go` | Preauth hash chain | **FIX**: macOS hash mismatch | Session, signing |
-| `pkg/adapter/smb/connection.go` | Per-connection handler | Multi-channel session binding | Adapter, Handler |
-| `pkg/adapter/smb/adapter.go` | SMB adapter lifecycle | Multi-channel connection registry | Runtime, BaseAdapter |
-| `pkg/adapter/base.go` | Shared TCP lifecycle | Client tracking hooks | Runtime, ConnectionFactory |
-| `internal/adapter/nfs/v3/handlers/fsstat.go` | NFS FSSTAT | Quota-aware statistics | MetadataService |
-| `pkg/metadata/service.go` | Metadata business logic | **MODIFY**: Quota enforcement, trash, payload stats | MetadataStore, BlockStore |
-| `pkg/metadata/interface.go` | MetadataService interface | New methods: trash, quota-aware stats | Protocol adapters |
-| `pkg/metadata/types.go` | Core types | QuotaConfig, TrashConfig types | Service, store |
-| `pkg/controlplane/models/share.go` | Share DB model | **MODIFY**: Add Quota*, Trash* columns | Control plane store |
-| `pkg/controlplane/runtime/runtime.go` | Runtime composition | **MODIFY**: Wire ClientRegistry | All sub-services |
-| `pkg/controlplane/runtime/mounts/service.go` | Mount tracking | Extended to track connections | Adapters |
-| `pkg/blockstore/engine/` | Per-share block store | **READ-ONLY**: Stats for payload usage | Shares service |
-
-### Data Flow: Quota Enforcement on Write
+### System Overview
 
 ```
-Client WRITE request
-    |
-    v
-NFS/SMB Handler
-    |
-    v
-MetadataService.PrepareWrite(ctx, handle, newSize)
-    |
-    +-- Lookup share from handle
-    +-- Get quota config from share (QuotaBytes, QuotaFiles)
-    +-- If quota configured:
-    |       Get current stats: FilesystemStatistics
-    |       newUsed = stats.UsedBytes + (newSize - currentSize)
-    |       if newUsed > QuotaBytes:
-    |           return ErrQuotaExceeded (maps to NFS3ERR_NOSPC / STATUS_DISK_FULL)
-    |
-    v
-MetadataService.CommitWrite(ctx, intent)
-    |
-    v
-BlockStore.WriteAt(ctx, payloadID, data, offset)
++--------------------------------------------------------------------+
+|                         Trigger Surfaces                            |
+|                                                                     |
+|  CLI (dfsctl)      REST API          Scheduler          Operator   |
+|  store metadata    POST/GET          cron ticker        (future)   |
+|  <name> backup     /backups          internal only                 |
++-----------+----------------+----------------+---------------------+
+            |                |                |
+            v                v                v
++--------------------------------------------------------------------+
+|                  Runtime (pkg/controlplane/runtime/)                |
+|                                                                     |
+|   +----------+  +--------+  +--------+  +----------------------+   |
+|   | adapters |  | stores |  | shares |  |   backups (NEW)      |   |
+|   |          |  |  svc   |  |        |  |  - Orchestrator      |   |
+|   +----------+  +---+----+  +---+----+  |  - Scheduler         |   |
+|                     |           |       |  - DriverRegistry    |   |
+|                     |  +--------+       |  - JobTracker        |   |
+|                     |  |                +-----------+----------+   |
+|                     v  v                            |               |
+|            +---------------------+                  |               |
+|            | MetadataService     |                  |               |
+|            | (quiesce hooks NEW) |<-----------------+               |
+|            +---------+-----------+                                  |
++----------------------|----------------------------------------------+
+                       |
+                       v
++--------------------------------------------------------------------+
+|           MetadataStore backends (new Backupable capability)        |
+|                                                                     |
+|  +----------+   +-----------+   +-------------+                    |
+|  | memory   |   | badger    |   | postgres    |                    |
+|  | (no-op / |   | native    |   | COPY TO /   |                    |
+|  | JSON     |   | Backup()  |   | pg_dump     |                    |
+|  | export)  |   | API       |   | equivalent  |                    |
+|  +----------+   +-----------+   +-------------+                    |
++--------------------------------------------------------------------+
+                       |
+                       v
++--------------------------------------------------------------------+
+|     Backup Destination Drivers (NEW pkg/backup/destination/)        |
+|                                                                     |
+|     +----------+      +----------+      (future: azure, gcs)        |
+|     |  localfs |      |    s3    |                                  |
+|     +----------+      +----------+                                  |
+|                                                                     |
+|  Separate from pkg/blockstore/remote/ — key-space is backup-IDs,    |
+|  not block keys; semantics are write-once immutable archives.       |
++--------------------------------------------------------------------+
+                       |
+                       v
++--------------------------------------------------------------------+
+|    Persistence (GORM, pkg/controlplane/store/)                      |
+|                                                                     |
+|   metadata_stores                                                   |
+|   +-- backup_repos (NEW: 1:N by metadata_store_id)                  |
+|   +-- backup_records (NEW: 1:N by backup_repo_id)                   |
+|   +-- backup_jobs (NEW: transient for restore/in-progress backup)   |
++--------------------------------------------------------------------+
 ```
 
-### Data Flow: Trash (Soft-Delete)
+### Component Responsibilities
+
+| Component | Responsibility | New / Modified | Typical Implementation |
+|-----------|---------------|----------------|------------------------|
+| `BackupRepoConfig` (models) | Per-store destination + schedule + retention | NEW | GORM row, FK to `MetadataStoreConfig.ID` |
+| `BackupRecord` (models) | Completed backup metadata (id, size, sha256, started/completed, status) | NEW | GORM row, FK to `BackupRepoConfig.ID` |
+| `BackupJob` (models) | In-flight backup/restore tracking | NEW | GORM row with state machine (pending/running/succeeded/failed/canceled) |
+| `BackupRepoStore` (store iface) | CRUD for repos + records + jobs | NEW | New sub-interface in `pkg/controlplane/store/interface.go`, embedded in composite `Store` |
+| `Backupable` (metadata iface) | Per-store snapshot capability | NEW | Optional interface on `MetadataStore`; memory returns `ErrUnsupported` or JSON export |
+| `backups.Service` (runtime) | Orchestrates quiesce → snapshot → upload → record | NEW | `pkg/controlplane/runtime/backups/service.go` |
+| `backups.Scheduler` | Cron ticker, per-repo polling | NEW | `pkg/controlplane/runtime/backups/scheduler.go`; tied to `Runtime.Serve` lifecycle |
+| `backups.Driver` | Destination abstraction (localfs, s3) | NEW | `pkg/backup/destination/` with `fs/` and `s3/` subpackages |
+| `backups.Registry` | Instantiate drivers by type + config | NEW | Mirrors `shares.Service` driver resolution |
+| `MetadataStoreManager` (stores svc) | Safe close/reopen for restore | MODIFIED | Add `ReopenStore(name)` method |
+| `MetadataService` | Quiesce hooks (read-only lock per share) | MODIFIED | Add `PauseShare(name)` / `ResumeShare(name)` |
+| REST handlers | Thin delegation to `backups.Service` | NEW | `pkg/controlplane/api/handlers/backups.go` |
+| `pkg/apiclient` methods | Typed client for backup endpoints | NEW | `backups.go` in apiclient |
+| `dfsctl` subtree | Cobra commands | NEW | `cmd/dfsctl/commands/store/metadata/backup/` |
+
+## Recommended Project Structure
 
 ```
-Client DELETE request
-    |
-    v
-NFS/SMB Handler
-    |
-    v
-MetadataService.RemoveFile(ctx, parentHandle, name)
-    |
-    +-- Resolve share from handle
-    +-- Check share trash config (enabled? retention?)
-    +-- If trash enabled:
-    |       TrashFile(ctx, file, parentHandle, name)
-    |           Move file to .trash/{YYYY-MM-DD}/{original-name}-{uuid}
-    |           Update parent dir entry (remove original)
-    |           Record original path in trash metadata
-    |           Return success (file appears deleted to client)
-    |   Else:
-    |       Permanent delete (current behavior)
-    |
-    v
-Background TrashScavenger (goroutine per share)
-    |
-    +-- Periodically scan .trash/ directories
-    +-- Delete items older than retention period
-    +-- Permanent deletion via existing RemoveFile path
+pkg/
+├── backup/                                  # NEW: driver/destination abstractions (public)
+│   ├── doc.go
+│   ├── destination.go                       # Driver interface: Put(id, io.Reader), Get(id) -> io.Reader, List, Delete, Stat
+│   ├── destination/
+│   │   ├── fs/                              # Local filesystem driver (flat-file archive)
+│   │   └── s3/                              # S3 driver (reuses AWS SDK from pkg/blockstore/remote/s3 where feasible)
+│   ├── archive.go                           # Archive format (magic header, version, compression hint, checksum)
+│   └── errors.go
+│
+├── controlplane/
+│   ├── models/
+│   │   ├── backup_repo.go                   # NEW: BackupRepoConfig
+│   │   ├── backup_record.go                 # NEW: BackupRecord
+│   │   └── backup_job.go                    # NEW: BackupJob
+│   │
+│   ├── store/
+│   │   ├── interface.go                     # MODIFIED: add BackupRepoStore sub-interface to composite Store
+│   │   └── backups.go                       # NEW: GORM implementation
+│   │
+│   ├── runtime/
+│   │   └── backups/                         # NEW sub-service
+│   │       ├── service.go                   # Orchestrator (CreateBackup, Restore, List, Delete)
+│   │       ├── scheduler.go                 # Cron evaluator, retention enforcer
+│   │       ├── jobs.go                      # Job tracking (pending/running/succeeded/failed)
+│   │       ├── quiesce.go                   # Share pause/resume helpers
+│   │       └── registry.go                  # Driver factory
+│   │
+│   └── api/
+│       └── handlers/
+│           └── backups.go                   # NEW: REST handlers
+│
+└── metadata/
+    ├── store.go                             # MODIFIED: add optional Backupable interface
+    └── store/
+        ├── memory/backup.go                 # NEW: JSON export (for completeness/testing)
+        ├── badger/backup.go                 # NEW: wraps *badger.DB.Backup() native API
+        └── postgres/backup.go               # NEW: COPY TO via pgx / pg_dump shell-out
+
+cmd/
+└── dfsctl/
+    └── commands/
+        └── store/
+            └── metadata/
+                └── backup/                  # NEW Cobra subtree
+                    ├── backup.go            # `dfsctl store metadata <name> backup` (on-demand)
+                    ├── list.go              # `backup list`
+                    ├── show.go              # `backup show <id>`
+                    ├── delete.go            # `backup delete <id>`
+                    ├── repo.go              # `backup repo add|show|edit|remove` (configure destination + schedule)
+                    └── restore.go           # `restore [--from <id>]` (sibling, not under backup/)
+
+pkg/apiclient/
+└── backups.go                               # NEW: typed client methods
 ```
 
-### Data Flow: Credit Flow Control
+### Structure Rationale
 
-```
-SMB2 Request arrives
-    |
-    v
-ProcessSingleRequest(ctx, hdr, body, raw, connInfo, encrypted, asyncCb)
-    |
-    +-- Extract CreditCharge from SMB2 header (offset 12, 2 bytes)
-    +-- Extract CreditRequest from SMB2 header (offset 14, 2 bytes)
-    +-- sessionManager.ValidateCharge(sessionID, creditCharge)
-    |       if outstanding < creditCharge:
-    |           return STATUS_INSUFFICIENT_RESOURCES (before handler dispatch)
-    +-- sessionManager.RequestStarted(sessionID)
-    |
-    v
-Handler processes request
-    |
-    v
-Build response
-    +-- creditGrant = sessionManager.GrantCredits(sessionID, requested, charge)
-    +-- Set CreditResponse in response header
-    +-- sessionManager.RequestCompleted(sessionID)
-```
+- **`pkg/backup/` as public package (not `internal/`):** enables external operators, future K8s operator integration, and clean driver registration. Mirrors `pkg/blockstore/` structure.
+- **Destination drivers separate from `pkg/blockstore/remote/`:** different semantics (immutable archive objects vs. block-addressable chunks), different key-space (backup UUIDs vs. `payloadID/block-N`), different lifecycle (retention, not GC). Reusing `RemoteStore` would bleed block-store concerns (`CopyBlock`, `ReadBlockRange`, `ListByPrefix`) into a fundamentally different contract. However, the S3 driver MAY internally reuse the AWS client setup/config loading from `pkg/blockstore/remote/s3/` — share the plumbing, not the interface.
+- **Sub-service under `runtime/backups/` (not a new top-level):** consistent with existing `adapters/`, `stores/`, `shares/`, `lifecycle/`, `identity/`, `mounts/` pattern. Runtime stays the single entrypoint.
+- **Per-backend `backup.go` in metadata stores:** keeps snapshot logic next to the backend implementation. Avoids a monolithic orchestrator that knows every store type.
+- **Repo config is a sibling entity (not a column on `MetadataStoreConfig`):** allows 1:N (future: multiple repos per store for 3-2-1 backup strategy), avoids bloating `MetadataStoreConfig`, matches issue #368's explicit separation.
+- **Scheduler inside runtime, not a standalone daemon:** tied to `Runtime.Serve` lifecycle, stops on SIGTERM, in-flight job drained or marked `interrupted`.
+- **`dfsctl store metadata <name> backup` (not `dfsctl backup`):** scopes the commands to a store, matches issue #368 surface. `backup list` is a sub-verb, not a sibling noun.
 
-### Data Flow: Multi-Channel Session Binding
+## Architectural Patterns
 
-```
-Second TCP connection opens
-    |
-    v
-NEGOTIATE on new connection (independent preauth hash)
-    |
-    v
-SESSION_SETUP with SessionBindingFlag (bit 0x01 in SecurityMode)
-    |
-    v
-handleSessionSetup():
-    +-- SessionID != 0 and Flags.SMB2_SESSION_FLAG_BINDING set
-    +-- Verify: session exists in sessionManager
-    +-- Verify: same username/domain as original session
-    +-- Verify: signing key matches (preauth hash chain for 3.1.1)
-    +-- Bind new connection to existing session:
-    |       adapter.sessionConns.Store(sessionID, newConnInfo)
-    |       connection.TrackSession(sessionID)
-    |       // Both connections now route to same session
-    +-- Derive channel-specific signing key (if 3.1.1)
-    |
-    v
-Both connections serve requests for same SessionID
-    |
-    +-- Reads/writes can use either connection
-    +-- Lease breaks routed to any connection for the session
-    +-- Connection close does NOT destroy session (other connection alive)
-```
+### Pattern 1: Capability-Interface on MetadataStore
 
-## Feature Integration Details
+**What:** Define a new optional `Backupable` interface in `pkg/metadata/`. `MetadataStore` implementations opt in via type assertion at orchestration time — no change to the core `MetadataStore` signature.
 
-### 1. SMB 3.1.1 Signing on macOS (#252)
+**When to use:** A cross-cutting feature that not every backend can implement (memory store: ephemeral, BadgerDB: native API, Postgres: COPY-based).
 
-**Problem:** macOS `mount_smbfs` rejects signatures because the preauth integrity hash chain diverges between client and server during SESSION_SETUP.
-
-**Root Cause (Hypothesis):** The dispatch hooks in `hooks.go` update the preauth hash for SESSION_SETUP requests/responses, but the timing may be wrong relative to when the session's preauth hash is initialized. Specifically:
-
-- `sessionPreauthBeforeHook` stashes the raw request bytes AND updates the per-session hash if the session already exists
-- For NTLM multi-round auth, the first SESSION_SETUP response (STATUS_MORE_PROCESSING_REQUIRED) must update the per-session hash, but the session may not yet have a per-session hash entry in the PreauthSessionTable
-- macOS uses SMB 3.1.1 with AES-CMAC signing (not GMAC), and the signing key is derived from the preauth hash at SESSION_SETUP completion
-
-**Integration Point:** `internal/adapter/smb/crypto_state.go` and `internal/adapter/smb/hooks.go`
-
-**Components Modified:**
-- `crypto_state.go`: Fix `InitSessionPreauthHash` / `UpdateSessionPreauthHash` ordering
-- `hooks.go`: Ensure session preauth hash entries are created at the right moment
-- Potentially `session_setup.go`: Fix hash consumption timing for NTLM continuation
-
-**No new components needed.** This is a bug fix in existing preauth hash pipeline.
-
-**Verification:** macOS `mount_smbfs //user@host/share /mnt` succeeds with signing enabled.
-
-### 2. SMB Credit Flow Control
-
-**Problem:** Current credit implementation has grant logic but lacks server-side charge validation. The `CreditCharge` field from the SMB2 header is not validated against the session's outstanding credit balance before dispatch.
-
-**Current State (Detailed):**
-- `session/credits.go`: Defines `CreditConfig`, `CreditStrategy` (Fixed/Echo/Adaptive), `CalculateCreditCharge()`
-- `session/session.go`: `ConsumeCredits()`, `GrantCredits()`, `GetOutstanding()` -- all working
-- `session/manager.go`: `GrantCredits()` implements the adaptive algorithm -- working
-- `internal/adapter/smb/response.go`: Sets `CreditResponse` in the SMB2 header -- working
-- **Missing:** Validation that `CreditCharge <= Outstanding` before dispatch
-- **Missing:** Rejection with `STATUS_INSUFFICIENT_RESOURCES` when charge exceeds balance
-- **Missing:** Proper CreditCharge extraction from header for multi-credit operations (READ/WRITE > 64KB)
-
-**Integration Point:** `internal/adapter/smb/response.go` (ProcessSingleRequest)
-
-**Components Modified:**
-- `response.go` (or new `credits.go` in `internal/adapter/smb/`): Add pre-dispatch credit charge validation
-- `session/manager.go`: Add `ValidateCharge(sessionID, charge)` method
-- `v2/handlers/read.go`, `write.go`: Ensure CreditCharge from header is threaded to response
-
-**No new packages needed.** The credit infrastructure exists; this wires up the enforcement path.
-
-### 3. SMB Multi-Channel Session Binding
-
-**Problem:** Currently each TCP connection has exactly one session. Multi-channel allows multiple TCP connections to share a single session for throughput and failover.
-
-**Current State:**
-- `pkg/adapter/smb/connection.go`: `Connection` has `sessions map[uint64]struct{}` tracking sessions on this connection
-- `pkg/adapter/smb/adapter.go`: `sessionConns sync.Map` maps sessionID to ConnInfo for lease break routing
-- `session/manager.go`: Session lookup is by sessionID (already supports multiple connections accessing same session)
-- `Connection.cleanupSessions()`: Destroys sessions on connection close -- **must change** for multi-channel
-
-**Integration Points:**
-1. `v2/handlers/session_setup.go`: Detect `SMB2_SESSION_FLAG_BINDING` in flags, validate binding
-2. `pkg/adapter/smb/adapter.go`: Track multiple connections per session (`sessionConns` becomes `sessionID -> []ConnInfo`)
-3. `pkg/adapter/smb/connection.go`: `cleanupSessions()` must check if other connections still serve the session before destroying it
-4. `internal/adapter/smb/session/session.go`: Add `ChannelCount atomic.Int32` for multi-connection awareness
-
-**Components Modified:**
-- `adapter.go`: Change `sessionConns sync.Map` from `sessionID -> *ConnInfo` to `sessionID -> []*ConnInfo`
-- `connection.go`: `cleanupSessions()` check peer connections before session destruction
-- `session_setup.go`: Session binding validation (username match, signing key derivation per channel)
-- `lease_notifier.go`: Send lease breaks to any/all connections for a session
-
-**New Types:**
-```go
-// In adapter.go or new file
-type ChannelEntry struct {
-    ConnInfo  *smb.ConnInfo
-    ChannelID uint64  // Connection-unique identifier
-    BoundAt   time.Time
-}
-```
-
-### 4. WPTS Conformance Fixes
-
-**Current State:** 193 pass / 73 known / 0 new / 69 skipped. The 73 known failures break into categories:
-
-- **ChangeNotify (20 failures):** Requires `CHANGE_NOTIFY` completion on directory modifications. The handler exists but notifications are not triggered on file create/delete/rename within watched directories.
-- **Timestamp flaky (1):** Race condition in timestamp comparison.
-- **Remaining (~52):** Various protocol edge cases in create, set-info, query-info, and oplock/lease scenarios.
-
-**Integration Points:** Primarily `internal/adapter/smb/v2/handlers/` -- individual handler fixes.
-
-**Components Modified:**
-- `change_notify.go`: Wire up notification dispatch from `MetadataService` file operations
-- `create.go`: Edge cases in open disposition handling
-- `set_info.go`: Additional FileInfoClass implementations
-- `query_info.go`: Missing or incomplete FileInfoClass responses
-
-**Cross-Component:** ChangeNotify requires the MetadataService to emit directory change events. The `lock.DirChangeNotifier` interface already exists in `pkg/metadata/lock/` and is wired into the LockManager. The SMB adapter already registers as a break callback handler. ChangeNotify completion needs a similar callback pattern.
-
-### 5. Share Quotas (#232)
-
-**Problem:** No per-share storage limits. `FilesystemStatistics` returns hardcoded defaults (1TB total).
-
-**Integration Points:**
-
-1. **Control Plane DB:** Add quota columns to `models.Share`
-   ```go
-   // In models/share.go
-   QuotaBytes    int64  `gorm:"default:0" json:"quota_bytes"`     // 0 = unlimited
-   QuotaFiles    int64  `gorm:"default:0" json:"quota_files"`     // 0 = unlimited
-   ```
-
-2. **Runtime Shares Service:** Thread quota into `shares.Share` and `shares.ShareConfig`
-   ```go
-   // In runtime/shares/service.go
-   type Share struct {
-       // ... existing fields ...
-       QuotaBytes int64
-       QuotaFiles int64
-   }
-   ```
-
-3. **MetadataService:** Quota enforcement on write and create operations
-   - `PrepareWrite()`: Check byte quota before allowing write
-   - `CreateFile()`: Check file count quota before creation
-   - `CreateDirectory()`: Check file count quota
-   - `GetFilesystemStatistics()`: Return quota-adjusted statistics (TotalBytes = quota when set)
-
-4. **NFS FSSTAT handler:** Already delegates to `MetadataService.GetFilesystemStatistics()` -- no change needed if quota is enforced at the metadata level.
-
-5. **SMB QueryInfo:** `FileFsFullSizeInformation` (case 7) and `FileFsSizeInformation` (case 3) in `query_info.go` already call `MetadataService.GetFilesystemStatistics()` -- no change needed.
-
-6. **REST API and CLI:** New endpoints for quota management
-   - `PUT /api/v1/shares/{name}/quota` -- set/update quota
-   - `dfsctl share create --quota-bytes 10G --quota-files 100000`
-   - `dfsctl share update --quota-bytes 20G`
-
-**Components Modified:**
-- `pkg/controlplane/models/share.go`: Add QuotaBytes, QuotaFiles columns
-- `pkg/controlplane/runtime/shares/service.go`: Thread quota config
-- `pkg/metadata/service.go`: Quota enforcement in PrepareWrite, CreateFile, CreateDirectory
-- `pkg/metadata/types.go`: QuotaConfig type, ErrQuotaExceeded error
-- `pkg/metadata/store/memory/server.go`: Return quota-adjusted GetFilesystemStatistics
-- `pkg/metadata/store/badger/server.go`: Same
-- `pkg/metadata/store/postgres/server.go`: Same
-- `internal/controlplane/api/handlers/`: Quota API endpoints
-- `cmd/dfsctl/commands/share/`: CLI quota commands
-
-### 6. Payload Stats (#216)
-
-**Problem:** `UsedSize` in filesystem statistics reflects metadata-tracked file sizes, not actual block storage consumption. A 1MB file may use 1.5MB on disk due to block alignment.
-
-**Integration Points:**
-
-1. **BlockStore Stats:** `engine.BlockStoreStats` already tracks `LocalDiskUsed`, `BlocksLocal`, `BlocksRemote`. The data exists.
-
-2. **MetadataService:** `GetFilesystemStatistics()` currently delegates entirely to the store. It needs to also query the per-share BlockStore for actual storage usage.
-
-3. **Runtime Resolution:** `MetadataService` does not currently have access to BlockStores. Two options:
-   - **Option A (Recommended):** MetadataService gains a `BlockStoreStatsProvider` interface that the Runtime satisfies
-   - **Option B:** FilesystemStatistics is assembled at the Runtime level, not in MetadataService
-
-   Option A is cleaner because `GetFilesystemStatistics` is already on MetadataServiceInterface.
-
-**Components Modified:**
-- `pkg/metadata/service.go`: Accept `BlockStoreStatsProvider` callback for actual disk usage
-- `pkg/metadata/types.go`: Add `ActualUsedBytes` field to `FilesystemStatistics`
-- `pkg/controlplane/runtime/runtime.go`: Wire BlockStore stats into MetadataService
-- `internal/adapter/nfs/v3/handlers/fsstat.go`: Use `ActualUsedBytes` when available
-- `internal/adapter/smb/v2/handlers/query_info.go`: Use `ActualUsedBytes` for FsSize responses
-
-### 7. Protocol-Agnostic Client Tracking (#157)
-
-**Problem:** No unified view of connected NFS and SMB clients. Mount tracker (`mounts/service.go`) tracks mounts but not live connection state.
-
-**Current State:**
-- `mounts.Tracker`: Tracks `MountInfo{ClientAddr, Protocol, ShareName, MountedAt, AdapterData}`
-- NFS adapter records mounts in the tracker at MNT time
-- SMB adapter records tree connects in the tracker
-- `BaseAdapter.ConnCount` tracks active connection count (atomic int32)
-- No per-client record with authentication identity, last-activity, or connection list
-
-**Architecture: New ClientRegistry Service**
-
-```go
-// pkg/controlplane/runtime/clients/service.go (NEW)
-
-type ClientRecord struct {
-    ID            string    `json:"id"`             // Unique: "protocol:clientIP"
-    ClientAddr    string    `json:"client_addr"`
-    Protocol      string    `json:"protocol"`       // "nfs" or "smb"
-    ConnectedAt   time.Time `json:"connected_at"`
-    LastActivity  time.Time `json:"last_activity"`
-    Username      string    `json:"username"`       // Authenticated user (empty for anonymous)
-    MountPoints   []string  `json:"mount_points"`   // Active share mounts
-    ConnectionIDs []string  `json:"connection_ids"`  // For multi-channel
-}
-
-type Registry struct {
-    mu      sync.RWMutex
-    clients map[string]*ClientRecord
-}
-
-func (r *Registry) Register(protocol, clientAddr, username string) string
-func (r *Registry) UpdateActivity(id string)
-func (r *Registry) AddMount(id, shareName string)
-func (r *Registry) RemoveMount(id, shareName string)
-func (r *Registry) Deregister(id string)
-func (r *Registry) List() []*ClientRecord
-func (r *Registry) ListByProtocol(protocol string) []*ClientRecord
-```
-
-**Integration Points:**
-1. **NFS Adapter:** Register client on first RPC call, deregister on connection close
-2. **SMB Adapter:** Register client on SESSION_SETUP, deregister on connection close
-3. **Runtime:** Own ClientRegistry, expose via API
-4. **REST API:** `GET /api/v1/clients` returns client list
-5. **CLI:** `dfsctl client list` with table/JSON output
-
-**Components Created:**
-- `pkg/controlplane/runtime/clients/service.go`
-- `internal/controlplane/api/handlers/clients.go`
-- `cmd/dfsctl/commands/client/`
-
-**Components Modified:**
-- `pkg/controlplane/runtime/runtime.go`: Add ClientRegistry field
-- `pkg/adapter/base.go`: Add ClientRegistryHook interface for adapters
-- `pkg/adapter/smb/connection.go`: Register/deregister on connect/disconnect
-- `internal/adapter/nfs/dispatch.go`: Register/deregister on connect/disconnect
-
-### 8. Trash / Soft-Delete (#190)
-
-**Problem:** File deletion is permanent. Users cannot recover accidentally deleted files.
-
-**Architecture Decision: Trash in Metadata Layer**
-
-Trash operates entirely in the metadata layer. Deleted files are moved to a `.trash/` directory within the share's metadata namespace. Block data is NOT moved -- only the metadata path changes. The blocks remain intact and are garbage-collected only when trash items expire.
-
-**Key Design:**
-- `.trash/` is a real directory in the metadata store, hidden from READDIR
-- Each trash item records its original path in a file attribute (extended attribute or naming convention)
-- TrashScavenger goroutine runs per-share on a configurable interval
-- Trash is per-share (each share has its own `.trash/`)
-- Trash can be disabled per-share (default: disabled for backward compat)
-
-**Integration Points:**
-
-1. **MetadataService:** New `TrashFile()` method; modify `RemoveFile()` to check trash config
-2. **MetadataStore:** No interface change needed -- uses existing Move/CreateDirectory
-3. **Share Config:** `TrashEnabled bool`, `TrashRetention time.Duration`
-4. **Control Plane DB:** Add trash columns to `models.Share`
-5. **READDIR filtering:** Both NFS ReadDirectory and SMB QueryDirectory must hide `.trash/`
-6. **REST API:** `GET /api/v1/shares/{name}/trash` to list trashed items, `POST .../trash/restore` to restore
-
-**Components Modified:**
-- `pkg/metadata/service.go`: `RemoveFile()` checks trash config, new `TrashFile()`, `RestoreFromTrash()`, `PurgeTrash()`
-- `pkg/metadata/types.go`: TrashConfig type
-- `pkg/metadata/file_remove.go`: Redirect to trash instead of permanent delete
-- `pkg/metadata/directory.go`: Hide `.trash/` from directory listings
-- `pkg/controlplane/models/share.go`: TrashEnabled, TrashRetentionSec columns
-- `pkg/controlplane/runtime/shares/service.go`: Thread trash config, start TrashScavenger
-
-**New Components:**
-- `pkg/metadata/trash.go`: TrashScavenger, trash naming conventions, restore logic
-
-## Patterns to Follow
-
-### Pattern 1: Quota Enforcement at Service Boundary
-
-**What:** Enforce quotas in `MetadataService` methods (PrepareWrite, CreateFile, CreateDirectory), not in protocol handlers. The service already serves as the business logic layer between handlers and stores.
-
-**When:** Any operation that increases storage usage.
+**Trade-offs:**
+- Pro: zero impact on existing callers; memory store can return `ErrUnsupported` cleanly.
+- Pro: matches how `NetgroupStore`, `IdentityMappingStore` are already optional in `pkg/controlplane/store/interface.go`.
+- Con: orchestrator must handle "store doesn't support backup" — but that's the honest behavior.
 
 **Example:**
 ```go
-func (s *MetadataService) PrepareWrite(ctx *AuthContext, handle FileHandle, newSize uint64) (*WriteOperation, error) {
-    // ... existing validation ...
+// pkg/metadata/backup.go (NEW)
+package metadata
 
-    // Quota check (new)
-    if quota := s.getQuotaForHandle(handle); quota != nil {
-        stats, _ := s.GetFilesystemStatistics(ctx.Context, handle)
-        if stats != nil && quota.ByteLimit > 0 {
-            projected := stats.UsedBytes + (newSize - currentSize)
-            if projected > uint64(quota.ByteLimit) {
-                return nil, NewQuotaExceededError(quota.ByteLimit, projected)
-            }
-        }
-    }
+import (
+    "context"
+    "io"
+)
 
-    // ... existing logic ...
+// Backupable is an optional capability for MetadataStore implementations.
+// Stores that implement this can produce a consistent snapshot to a writer
+// and restore from a reader.
+type Backupable interface {
+    // Backup writes a point-in-time snapshot of all metadata for the given
+    // share(s). If shareNames is empty, backs up the entire store.
+    // Must be callable while the store is serving reads (writes may be
+    // quiesced externally by the orchestrator).
+    Backup(ctx context.Context, w io.Writer, shareNames []string) (BackupManifest, error)
+
+    // Restore reads a snapshot from r and replaces the store's contents.
+    // Caller must ensure the store is not serving any share (fully quiesced).
+    Restore(ctx context.Context, r io.Reader) error
+}
+
+// Orchestrator check:
+if b, ok := metaStore.(metadata.Backupable); ok {
+    manifest, err := b.Backup(ctx, archiveWriter, []string{shareName})
+    ...
 }
 ```
 
-**Why:** Protocol handlers map errors to protocol-specific codes (`NFS3ERR_NOSPC`, `STATUS_DISK_FULL`). The service returns a domain error; handlers translate it.
+### Pattern 2: Stateless Trigger + Persistent State
 
-### Pattern 2: Registry Pattern for Client Tracking
+**What:** Every trigger (CLI, REST, scheduler) is stateless. All durable state — schedules, records, in-flight job status — lives in GORM tables. A job is `INSERT`ed first; the worker goroutine updates rows; on server restart, `running` jobs with no active worker are transitioned to `interrupted` during `Runtime.Serve` startup.
 
-**What:** Use a runtime-owned registry (not DB-backed) for client tracking. Clients are ephemeral connection state, not persistent configuration.
+**When to use:** Matches issue #368 requirement verbatim. Standard async-job pattern when process crashes must not corrupt tracking.
 
-**When:** Tracking connected clients across protocols.
-
-**Why:** Client records are lost on server restart (correct -- connections are gone). Using a DB would add write overhead per RPC for `UpdateActivity`. The mount tracker already follows this pattern.
-
-### Pattern 3: Dispatch Hook for Credit Validation
-
-**What:** Add credit charge validation as a pre-dispatch step in `ProcessSingleRequest()`, before the handler is called. This mirrors the existing signing verification hook pattern.
-
-**When:** Every SMB2 request that carries a CreditCharge > 0.
+**Trade-offs:**
+- Pro: scheduler restart is trivial (re-read rows, resume cron evaluation).
+- Pro: multi-instance safe if we ever need HA (advisory lock on job claim).
+- Con: one extra DB write per state transition — negligible given backup is infrequent.
 
 **Example:**
 ```go
-// In response.go ProcessSingleRequest, before handler dispatch:
-if hdr.CreditCharge > 0 {
-    sess, ok := connInfo.SessionManager.GetSession(hdr.SessionID)
-    if ok && sess.GetOutstanding() < int32(hdr.CreditCharge) {
-        return sendErrorResponse(connInfo, hdr, types.StatusInsufficientResources)
+// Scheduler loop (simplified)
+func (s *Scheduler) tick(ctx context.Context) {
+    repos, _ := s.store.ListDueBackupRepos(ctx, time.Now())
+    for _, repo := range repos {
+        job := &models.BackupJob{RepoID: repo.ID, State: "pending", TriggerKind: "scheduled"}
+        s.store.CreateBackupJob(ctx, job)  // Durable claim
+        go s.orch.RunJob(ctx, job.ID)       // Worker updates state
     }
 }
 ```
 
-**Why:** Credit validation is a cross-cutting concern that applies to all commands. It should not be duplicated in every handler.
+### Pattern 3: Async Job + Polling (for Restore)
 
-### Pattern 4: Multi-Channel via Session Binding Flag
+**What:** Restore is not synchronous. `POST /api/stores/metadata/{name}/restore` returns `202 Accepted` with `{"job_id": "..."}`. Client polls `GET /api/backup-jobs/{id}` until terminal state. `dfsctl restore` polls with progress bar; UI drives its own polling.
 
-**What:** Detect multi-channel in SESSION_SETUP via `Flags & 0x01` (SMB2_SESSION_FLAG_BINDING). The new connection joins the existing session rather than creating a new one. Connection teardown checks session refcount.
+**When to use:** Long-running operations (GB-scale metadata restores can take minutes). Same pattern as NFSv4.2 COPY with OFFLOAD_STATUS.
 
-**When:** Client establishes second TCP connection with same session credentials.
+**Trade-offs:**
+- Pro: no HTTP timeout; client disconnect doesn't cancel.
+- Pro: naturally supports UI progress bars.
+- Con: needs cancellation endpoint (`DELETE /api/backup-jobs/{id}`). Minor.
 
-**Why:** MS-SMB2 3.3.5.5 defines session binding. The session manager already supports multiple callers accessing the same session; the missing piece is the binding validation and connection lifecycle coordination.
+### Pattern 4: Quiesce-Swap-Resume for Restore
 
-### Pattern 5: Trash as Metadata-Only Operation
+**What:** Restore cannot be done in-place on a live store. Sequence:
+1. `GET` running mounts for shares using this store. If any exist and `--force` not set → `409 Conflict`.
+2. `shares.Service.DisableShare(name)` for each affected share (new method; returns NFS3ERR_STALE on subsequent ops).
+3. `stores.Service.CloseStore(name)` — close the live `MetadataStore` instance.
+4. Restore into a **temporary path** (e.g., `<origpath>.restore-<jobid>`).
+5. Atomic swap: rename directory (for Badger) or transactional schema swap (for Postgres).
+6. `stores.Service.ReopenStore(name)` — re-instantiate from config.
+7. `shares.Service.EnableShare(name)`.
+8. On failure at any step after (3): abort, mark job failed, leave the original store file intact (temp path is discarded). Original data is untouched because we never mutated it.
 
-**What:** Trash moves files in the metadata namespace only. Block data stays in place. Trash expiry triggers real deletion (which eventually triggers block GC).
+**When to use:** Any store type where live restore is unsafe (all of them except truly in-memory).
 
-**When:** File or directory deletion when trash is enabled for the share.
+**Trade-offs:**
+- Pro: crash-safe — original data never mutated until atomic swap.
+- Pro: honest failure mode — failed restore leaves server in pre-restore state.
+- Con: share IS unavailable during restore. Documented, not worked around.
 
-**Why:** Moving block data would be expensive and pointless -- the blocks don't care where the metadata points. Content-addressed storage means the same blocks can be referenced from `.trash/` or the original location. The existing block GC already handles unreferenced blocks.
+## Data Flow
 
-## Anti-Patterns to Avoid
+### Backup Flow (On-Demand)
 
-### Anti-Pattern 1: Quotas in Protocol Handlers
+```
+dfsctl store metadata my-store backup
+        |
+        v  HTTP POST /api/stores/metadata/my-store/backups
+        |
+[REST handler] --> backups.Service.CreateBackup(ctx, storeName)
+        |
+        +--> store.GetBackupRepoByStore(storeName)           [config lookup]
+        |
+        +--> store.CreateBackupJob(state=running)            [durable claim]
+        |
+        +--> Runtime.GetMetadataStore(storeName)
+        |         |
+        |         v
+        |    if _, ok := ms.(metadata.Backupable); !ok --> fail
+        |
+        +--> quiesce: metadataSvc.PauseShare(s) for s in sharesUsing(store)
+        |    (read-only lock; existing ops finish, new writes block briefly)
+        |
+        +--> driver := registry.Resolve(repo.Destination)    [localfs or s3]
+        |
+        +--> pipe := io.Pipe()
+        |    go backupable.Backup(ctx, pipe.Writer, shares)  [native snapshot]
+        |    driver.Put(ctx, backupID, pipe.Reader)          [streamed upload]
+        |
+        +--> metadataSvc.ResumeShare(s)  [as soon as Badger snapshot done;
+        |                                  upload continues async]
+        |
+        +--> store.CreateBackupRecord(id, size, sha256, duration)
+        |
+        +--> store.UpdateBackupJob(state=succeeded)
+        |
+        +--> retention: delete records older than repo.RetentionPolicy
+```
 
-**What:** Checking quotas in NFS FSSTAT, SMB QueryInfo, or write handlers directly.
-**Why bad:** Duplicates quota logic across NFS and SMB. Quota changes require updating multiple handlers.
-**Instead:** Enforce at MetadataService level. Handlers call the same service methods and receive quota-aware responses.
+### Backup Flow (Scheduled)
 
-### Anti-Pattern 2: Credit Validation After Handler Dispatch
+```
+Runtime.Serve()
+    |
+    v
+lifecycle.Service.Serve()
+    |
+    +--> backups.Scheduler.Start(ctx)
+             |
+             v
+        Every 60s tick:
+            repos := store.ListBackupRepos(ctx)
+            for repo in repos:
+                next := cron.Next(repo.Schedule, repo.LastRunAt)
+                if next <= now:
+                    job := store.CreateBackupJob(repo, trigger="scheduled")
+                    go orchestrator.RunJob(job)
+```
 
-**What:** Checking credit balance after the handler has already processed the request.
-**Why bad:** The handler may have already modified state (written data, created files). Credit rejection after side effects is inconsistent.
-**Instead:** Validate credits before dispatch. Reject immediately with STATUS_INSUFFICIENT_RESOURCES.
+### Restore Flow
 
-### Anti-Pattern 3: Database-Backed Client Registry
+```
+dfsctl store metadata my-store restore --from backup-abc123
+        |
+        v  POST /api/stores/metadata/my-store/restore
+           body: {"backup_id": "backup-abc123", "force": false}
+        |
+[REST handler] --> backups.Service.CreateRestore(ctx, storeName, backupID, force)
+        |
+        +--> mounts := runtime.Mounts().FilterByShares(sharesUsing(store))
+        |    if len(mounts) > 0 && !force: return 409 Conflict
+        |
+        +--> store.CreateBackupJob(kind=restore, state=running)
+        |
+        +--> (async worker)
+        |       |
+        |       v
+        |   for each share s in sharesUsing(store):
+        |       shares.Service.DisableShare(s)  [force close mounts]
+        |
+        |   stores.Service.CloseStore(storeName)
+        |
+        |   tempPath := <orig>.restore-<jobID>
+        |   driver.Get(ctx, backupID) --> pipe
+        |   tempStore := backend.New(tempPath)
+        |   tempStore.(Backupable).Restore(ctx, pipe)
+        |
+        |   ATOMIC SWAP:
+        |       os.Rename(orig, orig.old)
+        |       os.Rename(tempPath, orig)
+        |       os.RemoveAll(orig.old)  [on success]
+        |
+        |   stores.Service.ReopenStore(storeName)
+        |   for each share s:
+        |       shares.Service.EnableShare(s)
+        |
+        +--> store.UpdateBackupJob(state=succeeded)
+        |
+        v
+Client polls GET /api/backup-jobs/{id} until state ∈ {succeeded, failed, canceled}
+```
 
-**What:** Persisting client connection records in SQLite/PostgreSQL.
-**Why bad:** Every RPC call would need a DB write for `UpdateActivity`. Client records are ephemeral and lost on restart anyway (connections are gone).
-**Instead:** In-memory registry with sync.RWMutex, same pattern as mounts.Tracker.
+### List / Show / Delete
 
-### Anti-Pattern 4: Multi-Channel via Global Session Table
+Pure CRUD against `backup_records` table via `BackupRepoStore`. No quiesce. Delete calls `driver.Delete(backupID)` then removes the record.
 
-**What:** Storing all sessions in a single global table and routing by session ID alone.
-**Why bad:** Already the case (session.Manager uses sync.Map). The anti-pattern is NOT adding per-connection binding validation. Without validation, any connection could impersonate any session.
-**Instead:** Session binding must verify credentials match. Each connection must track which sessions it is bound to. The adapter's `sessionConns` map must support multiple connections per session.
+### Key Data Flows Summary
 
-### Anti-Pattern 5: Trash in Block Store
+1. **Config write:** `dfsctl store metadata <name> backup repo add` → `store.CreateBackupRepo`. Stateless triggers read this.
+2. **Backup trigger → durable job → async worker → record.** Three DB writes (create job running, create record, update job succeeded) + N driver calls.
+3. **Restore trigger → quiesce → swap → resume.** Share is OFFLINE during the swap window (seconds for Badger; minutes for large Postgres). This MUST be documented.
+4. **Scheduler loop is a pure GORM consumer** — no in-memory schedule state.
 
-**What:** Implementing trash as a block-level feature (copying blocks to a "trash" bucket).
-**Why bad:** Wastes storage (data duplicated), breaks content-addressed dedup, and requires complex cross-store coordination.
-**Instead:** Trash is metadata-only. File appears deleted (removed from parent directory listing), but metadata and blocks remain until trash retention expires.
+## Scaling Considerations
 
-## New Components Summary
+| Scale | Architecture Adjustments |
+|-------|--------------------------|
+| 1 store, manual backups | Initial implementation. No scheduler needed beyond tick loop. |
+| 10 stores, nightly cron | Scheduler tick loop handles it trivially. Driver connection pool reused (one S3 client per driver instance, cached in registry). |
+| 100+ stores, diverse schedules | Consider per-repo goroutine with timer.Reset instead of O(N) scan every tick. Not needed for v0.13.0. |
+| Multi-instance HA (future) | Advisory lock on job claim (Postgres: `pg_try_advisory_lock(job_id)`, SQLite: single-instance only). Out of scope. |
 
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| ClientRegistry | `pkg/controlplane/runtime/clients/service.go` | Protocol-agnostic client tracking |
-| TrashScavenger | `pkg/metadata/trash.go` | Background cleanup of expired trash items |
-| Client API handler | `internal/controlplane/api/handlers/clients.go` | REST endpoints for client listing |
-| Client CLI commands | `cmd/dfsctl/commands/client/` | `dfsctl client list` |
+### Scaling Priorities
 
-## Modified Components Summary
+1. **First bottleneck:** Simultaneous backup + live NFS writes causing contention on BadgerDB's LSM compactor. Mitigation: schedule during off-hours (already the usual pattern). Metric: `dittofs_backup_duration_seconds` histogram — alert if p95 climbs.
+2. **Second bottleneck:** S3 driver throughput for large Postgres dumps. Mitigation: multipart upload in S3 driver (standard AWS SDK behavior). Do not build our own chunking.
+3. **Third bottleneck:** Retention cleanup walking thousands of records. Mitigation: index `backup_records(repo_id, created_at)` — already standard GORM pattern.
 
-| Component | What Changes | Why |
-|-----------|-------------|-----|
-| `internal/adapter/smb/crypto_state.go` | Fix preauth hash ordering | macOS signing (#252) |
-| `internal/adapter/smb/hooks.go` | Fix session preauth hash init timing | macOS signing (#252) |
-| `internal/adapter/smb/session/manager.go` | Add ValidateCharge method | Credit flow control |
-| `internal/adapter/smb/response.go` | Pre-dispatch credit validation | Credit flow control |
-| `internal/adapter/smb/v2/handlers/session_setup.go` | Session binding for multi-channel | Multi-channel |
-| `internal/adapter/smb/v2/handlers/change_notify.go` | Wire up directory notifications | WPTS conformance |
-| `pkg/adapter/smb/adapter.go` | Multi-connection session tracking | Multi-channel |
-| `pkg/adapter/smb/connection.go` | Session binding, conditional cleanup | Multi-channel |
-| `pkg/controlplane/models/share.go` | Quota*, Trash* columns | Quotas, Trash |
-| `pkg/controlplane/runtime/runtime.go` | Wire ClientRegistry | Client tracking |
-| `pkg/controlplane/runtime/shares/service.go` | Thread quota/trash config | Quotas, Trash |
-| `pkg/metadata/service.go` | Quota enforcement, trash redirect | Quotas, Trash |
-| `pkg/metadata/interface.go` | Trash methods, quota-aware stats | Quotas, Trash |
-| `pkg/metadata/types.go` | QuotaConfig, TrashConfig, new errors | Quotas, Trash |
-| `pkg/metadata/file_remove.go` | Redirect to trash | Trash |
-| `pkg/metadata/directory.go` | Hide .trash/ from listings | Trash |
-| All MetadataStore implementations | Quota-adjusted GetFilesystemStatistics | Quotas |
+## Anti-Patterns
+
+### Anti-Pattern 1: Reusing `pkg/blockstore/remote/RemoteStore` as Backup Destination
+
+**What people do:** "S3 is S3 — reuse `remote/s3`."
+**Why it's wrong:** Block store is block-addressable (`{payloadID}/block-N`), mutable via overwrite, and deleted by GC. Backups are whole-file immutable archives with retention-driven lifecycle. Reusing the interface leaks block semantics (`CopyBlock`, `ReadBlockRange`, `DeleteByPrefix`) into a simpler domain and couples two unrelated rollouts. Also conflates the bucket layout — backups in the same bucket as live blocks makes operator reasoning and IAM policy harder.
+**Do this instead:** New `pkg/backup/destination/Driver` interface with `Put/Get/List/Delete/Stat`. Share AWS client construction code with `pkg/blockstore/remote/s3/` (factor shared config loading into an `internal/awsclient` helper), not the interface.
+
+### Anti-Pattern 2: In-Place Restore of a Live Store
+
+**What people do:** "Just truncate and re-import the Badger directory while the share is mounted."
+**Why it's wrong:** Clients hold open file handles. READ/WRITE operations in flight will hit inconsistent state mid-restore. Badger's goroutines will panic on a rug-pulled directory. Corrupts live data on partial restore.
+**Do this instead:** Quiesce → close → restore into temp path → atomic rename → reopen → resume. Accept the downtime window. Document it.
+
+### Anti-Pattern 3: Fire-and-Forget Scheduler Without Durable Claims
+
+**What people do:** Goroutine reads a schedule, runs backup, no DB writes until completion.
+**Why it's wrong:** Server crash mid-backup leaves no record. User doesn't know a backup was attempted. Scheduler can't resume or mark partial state. UI has nothing to show.
+**Do this instead:** `INSERT BackupJob(state=pending) → UPDATE state=running → UPDATE state=succeeded|failed`. On startup, transition orphaned `running` jobs (no active worker) to `interrupted`.
+
+### Anti-Pattern 4: Storing Backup Config as Column on MetadataStoreConfig
+
+**What people do:** Add `backup_destination`, `backup_schedule`, `backup_retention` columns to `metadata_stores`.
+**Why it's wrong:** Prevents multiple repos per store (3-2-1 backup strategy), bloats a core table, couples backup migrations to store migrations. Issue #368 explicitly says "persisted alongside the store config" — alongside ≠ inside.
+**Do this instead:** New `backup_repos` table with FK to `metadata_stores.id`. 1:N. Composable.
+
+### Anti-Pattern 5: Memory Store Silent No-Op
+
+**What people do:** Memory store's `Backup()` returns nil without doing anything.
+**Why it's wrong:** User thinks backup succeeded. On restart (memory store loses state anyway), "restore" yields nothing. Silent data loss.
+**Do this instead:** Memory store either (a) returns `ErrUnsupported` and UI/CLI rejects backup repo creation on memory stores, or (b) implements JSON export (useful for tests). Be explicit either way.
+
+### Anti-Pattern 6: Long HTTP Request for Restore
+
+**What people do:** Synchronous `POST /restore` that blocks for minutes.
+**Why it's wrong:** Reverse proxies (nginx, K8s Ingress) enforce timeouts (default 60s). Clients disconnect. Server doesn't know if it should continue.
+**Do this instead:** `202 Accepted` + job ID + polling. Same as NFSv4.2 COPY + OFFLOAD_STATUS.
+
+## Integration Points
+
+### External Services
+
+| Service | Integration Pattern | Notes |
+|---------|---------------------|-------|
+| S3 (AWS/Localstack/Scaleway/MinIO) | AWS SDK v2, new `pkg/backup/destination/s3/`. Use multipart for large objects. | Reuse region/endpoint/credential loading from `pkg/blockstore/remote/s3/`. Lifecycle policy on the bucket can complement app-level retention. |
+| Local filesystem | Directory with `<uuid>.archive` files + `manifest.json`. `os.Rename` for atomicity. | Same host as server — useful for single-node or ops bastion. |
+| PostgreSQL (metadata store) | `COPY TO` via pgx for streaming export, or shell out to `pg_dump` when available (match `cmd/dfs/commands/backup/controlplane.go` precedent). | `pg_dump` absence must degrade gracefully with `ErrUnsupported` + clear operator message. |
+| BadgerDB (metadata store) | Native `(*DB).Backup(io.Writer, since uint64)` + `(*DB).Load(io.Reader, numGoroutines)`. | Since=0 for full backups. Incremental is v0.14+ scope. |
+| OpenTelemetry | Spans: `backup.create`, `backup.upload`, `backup.restore`, `backup.quiesce`. Parent span at `backups.Service.RunJob`. | Zero overhead when `telemetry.enabled=false`. Matches existing pattern. |
+| Prometheus | `dittofs_backup_total{store,status}`, `dittofs_backup_duration_seconds{store}`, `dittofs_backup_size_bytes{store}`, `dittofs_backup_jobs_inflight{kind}`. | Exposed at `/metrics`. Zero overhead when `server.metrics.enabled=false`. |
+
+### Internal Boundaries
+
+| Boundary | Communication | Notes |
+|----------|---------------|-------|
+| REST handler ↔ `backups.Service` | Direct Go call, handler is thin | Matches existing adapter/share handlers. Error mapping via `MapStoreError`. |
+| `backups.Service` ↔ `stores.Service` | Needs new `CloseStore`/`ReopenStore` methods on `stores.Service` | Restore path only. |
+| `backups.Service` ↔ `shares.Service` | Needs new `DisableShare`/`EnableShare` methods | Restore path only. `DisableShare` must also terminate active mounts via `mounts.Service`. |
+| `backups.Service` ↔ `MetadataService` | New `PauseShare`/`ResumeShare` (read-only gate) | Backup path (brief) and restore path (long). |
+| `backups.Service` ↔ GORM `Store` | New `BackupRepoStore` sub-interface | Embedded in composite `Store`. Matches 9 existing sub-interfaces. |
+| `Scheduler` ↔ `Orchestrator` | Goroutine per job; scheduler creates `BackupJob` rows, orchestrator claims and runs | Durable handoff via DB. |
+| `dfsctl` ↔ REST API | `pkg/apiclient/backups.go` typed methods | Same auth flow as all other commands. Dittofs-pro UI uses identical endpoints. |
 
 ## Suggested Build Order
 
-The build order considers dependency chains and testability. Features are grouped into dependency-free units.
+Respecting dependency chain (each step compiles + tests independently, per project constraint):
 
-### Chain A: SMB Protocol (sequential)
+1. **Models + GORM migrations** — `BackupRepoConfig`, `BackupRecord`, `BackupJob` in `pkg/controlplane/models/`. Add `BackupRepoStore` sub-interface; embed in `Store`. Migration + CRUD tests.
+2. **`Backupable` interface + memory stub** — define interface in `pkg/metadata/`. Memory store returns `ErrUnsupported` (or JSON export). Storetest conformance stub.
+3. **Destination driver interface + localfs driver** — `pkg/backup/destination/`. Localfs first (no external deps). Unit tests using `t.TempDir()`.
+4. **`backups.Service` orchestrator — on-demand backup path only** — compose driver + store. No scheduler yet. No restore yet. E2E test: memory store (JSON export) → localfs → list → delete.
+5. **BadgerDB `Backupable` implementation** — wraps native `DB.Backup()`. Storetest conformance run.
+6. **S3 destination driver** — with Localstack in integration tests. Share AWS client plumbing with `pkg/blockstore/remote/s3/` (factor to internal helper).
+7. **Restore path** — quiesce helpers on `shares.Service`, `stores.Service.ReopenStore`, `MetadataService.PauseShare`, atomic swap. E2E test: backup → restore → verify.
+8. **Scheduler + retention** — cron evaluator, retention policy enforcement. E2E test with short intervals.
+9. **PostgreSQL `Backupable`** — COPY TO / pg_dump variants. Match existing `cmd/dfs/commands/backup/controlplane.go` logic.
+10. **REST API handlers** — `pkg/controlplane/api/handlers/backups.go`. OpenAPI/handler tests.
+11. **`pkg/apiclient/backups.go`** — typed client methods.
+12. **`dfsctl` commands** — Cobra subtree under `store/metadata/<name>/backup/` + sibling `restore`.
+13. **Telemetry** — OTEL spans + Prom metrics at orchestrator boundary. Zero-overhead-when-disabled check.
+14. **Documentation** — `docs/BACKUP.md`, update `README.md`, `CLAUDE.md`.
 
-```
-A1: macOS Signing Fix (#252)
-    |
-    v
-A2: Credit Flow Control
-    |
-    v
-A3: WPTS Conformance Fixes (iterative)
-    |
-    v
-A4: Multi-Channel Session Binding
-```
+**Critical path:** 1 → 2 → 3 → 4 is the MVP skeleton (memory + localfs on-demand). Everything else is incremental capability extension.
 
-**Rationale:** Signing fix unblocks macOS testing. Credit fix improves protocol compliance baseline for WPTS. Multi-channel is the most complex SMB feature and can benefit from WPTS test coverage.
+## Risks to Live-Share Operation
 
-### Chain B: Metadata Features (sequential)
-
-```
-B1: Share Quotas (#232)
-    |
-    v
-B2: Payload Stats (#216)
-    |
-    v
-B3: Trash / Soft-Delete (#190)
-```
-
-**Rationale:** Quotas modify GetFilesystemStatistics, which payload stats also touches -- do quotas first to establish the pattern. Trash depends on the modified RemoveFile path, which should be stable.
-
-### Chain C: Operational (independent)
-
-```
-C1: Client Tracking (#157)
-```
-
-**Rationale:** Client tracking is fully independent. Can be built in parallel with Chain A or Chain B.
-
-### Recommended Phase Ordering
-
-| Order | Feature | Chain | Depends On | Estimated Complexity |
-|-------|---------|-------|------------|---------------------|
-| 1 | macOS Signing Fix | A1 | None | Medium (debugging preauth hash) |
-| 2 | Share Quotas | B1 | None | Medium (DB migration, service logic) |
-| 3 | Credit Flow Control | A2 | A1 | Low (plumbing existing infrastructure) |
-| 4 | Payload Stats | B2 | B1 | Low (wire existing BlockStore stats) |
-| 5 | Client Tracking | C1 | None | Medium (new service, API, CLI) |
-| 6 | WPTS Conformance | A3 | A2 | High (20+ individual fixes) |
-| 7 | Trash / Soft-Delete | B3 | B1 | High (new subsystem, scavenger, hiding) |
-| 8 | Multi-Channel | A4 | A2, A3 | High (connection lifecycle changes) |
-
-**Phase ordering rationale:**
-- macOS signing is highest priority (unblocks a platform)
-- Quotas are foundational for payload stats and trash
-- Credit flow is low-effort and improves WPTS baseline
-- WPTS before multi-channel ensures protocol compliance foundation
-- Trash is highest complexity and least urgent -- defer to end
-- Multi-channel is highest risk due to connection lifecycle changes -- do last with full test coverage
-
-## Scalability Considerations
-
-| Concern | At 100 users | At 10K users | At 1M users |
-|---------|--------------|--------------|-------------|
-| Quota checks | Negligible (in-memory stats lookup) | Same | Consider caching quota state |
-| Client registry | sync.RWMutex fine | sync.Map might be better | Shard by protocol |
-| Trash scavenger | Per-share goroutine, fine | May need throttling | Batched deletion |
-| Credit validation | Atomic read per request | Same | Same (lock-free) |
-| Multi-channel | Map lookup per request | Same | Consider connection pooling |
-| Payload stats | BlockStore.GetStats() is fast | Same | Consider caching |
+| Risk | Likelihood | Mitigation |
+|------|------------|------------|
+| Backup contends with live writes, causing latency spikes | HIGH (any load) | Read-only quiesce during snapshot only (Badger: seconds). Upload is async after snapshot is captured in-memory. Document recommended schedule windows. |
+| Restore triggered with active mounts → data loss | MEDIUM | Default-deny: require `--force` or explicit acknowledgment. REST returns `409 Conflict` with list of active mounts. `DisableShare` terminates mounts with NFS3ERR_STALE before restore begins. |
+| Restore leaves store in broken state on failure | LOW (with atomic swap) | Temp-path + rename pattern. Original untouched until final rename. On swap failure: abort, rename-back, mark job failed. |
+| Scheduler drift / missed cron during server downtime | MEDIUM | `LastRunAt` per repo in DB. On startup, if `now - LastRunAt > schedule.Interval * 2`, schedule immediate catch-up run (configurable, default on). |
+| Two scheduler ticks racing on same repo | LOW (single-instance) | Single scheduler goroutine. For HA future: advisory lock on job claim. |
+| Backup archive corruption (silent) | MEDIUM | SHA-256 in `BackupRecord`. Restore verifies checksum before swap. Corrupt archive → fail before touching live store. |
+| Memory store backup gives user false confidence | HIGH if unchecked | `CreateBackupRepo` validates target store type; reject memory with clear message unless `allow_ephemeral=true` opt-in. |
+| Orphaned `running` jobs after crash | HIGH | Startup sweep in `backups.Service.Start()`: `UPDATE backup_jobs SET state='interrupted' WHERE state='running' AND updated_at < now() - 5m`. |
 
 ## Sources
 
-- DittoFS source code analysis: `pkg/metadata/`, `pkg/adapter/smb/`, `internal/adapter/smb/`, `pkg/controlplane/runtime/`, `pkg/blockstore/engine/`
-- [MS-SMB2 3.3.5.2: Receiving Any Message](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/) -- Credit validation requirement
-- [MS-SMB2 3.3.5.5: Receiving an SMB2 SESSION_SETUP Request](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/) -- Session binding (multi-channel)
-- [MS-SMB2 3.3.5.2.1.1: Verifying the Signature](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/) -- Preauth integrity hash for signing
-- Existing ROADMAP phases 67, 70-77 for feature specifications
-- GitHub issues #252, #232, #216, #157, #190
+- `/Users/marmos91/Projects/dittofs-368/pkg/controlplane/runtime/runtime.go` — Runtime composition pattern, sub-service layout, Serve lifecycle
+- `/Users/marmos91/Projects/dittofs-368/pkg/controlplane/store/interface.go` — 10 existing sub-interfaces (UserStore, GroupStore, ShareStore, PermissionStore, MetadataStoreConfigStore, BlockStoreConfigStore, AdapterStore, SettingsStore, AdminStore, HealthStore) and composition pattern into `Store`
+- `/Users/marmos91/Projects/dittofs-368/pkg/metadata/store.go` — `Files`, `Shares` interface decomposition; precedent for optional capabilities
+- `/Users/marmos91/Projects/dittofs-368/pkg/blockstore/remote/remote.go` — `RemoteStore` interface (what NOT to reuse for backup, but share AWS plumbing)
+- `/Users/marmos91/Projects/dittofs-368/pkg/controlplane/models/stores.go` — `MetadataStoreConfig`, `BlockStoreConfig` GORM patterns for config storage
+- `/Users/marmos91/Projects/dittofs-368/cmd/dfs/commands/backup/controlplane.go` — existing `dfs backup controlplane` precedent (SQLite VACUUM INTO, pg_dump, JSON export fallback) — reuse approach in Postgres `Backupable`
+- `/Users/marmos91/Projects/dittofs-368/.planning/PROJECT.md` — milestone v0.13.0 goals, issue #368 requirements
+- [BadgerDB native backup/restore](https://pkg.go.dev/github.com/dgraph-io/badger/v4#DB.Backup)
+- [PostgreSQL COPY TO streaming](https://www.postgresql.org/docs/current/sql-copy.html)
+
+---
+*Architecture research for: DittoFS v0.13.0 Metadata Backup & Restore*
+*Researched: 2026-04-15*
