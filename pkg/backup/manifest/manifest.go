@@ -84,12 +84,21 @@ func Parse(data []byte) (*Manifest, error) {
 	return &m, nil
 }
 
-// ReadFrom decodes a YAML manifest from r, capping the read at MaxManifestBytes
-// to bound memory for untrusted storage (T-01-10).
+// ErrManifestTooLarge is returned by ReadFrom when the source exceeds
+// MaxManifestBytes (T-01-10).
+var ErrManifestTooLarge = fmt.Errorf("manifest exceeds %d bytes", MaxManifestBytes)
+
+// ReadFrom decodes a YAML manifest from r, rejecting inputs larger than
+// MaxManifestBytes to bound memory for untrusted storage (T-01-10).
 func ReadFrom(r io.Reader) (*Manifest, error) {
-	data, err := io.ReadAll(io.LimitReader(r, MaxManifestBytes))
+	// Read one byte past the cap to detect oversize inputs rather than
+	// silently truncating to a valid-looking prefix.
+	data, err := io.ReadAll(io.LimitReader(r, MaxManifestBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read manifest: %w", err)
+	}
+	if len(data) > MaxManifestBytes {
+		return nil, ErrManifestTooLarge
 	}
 	return Parse(data)
 }
@@ -118,6 +127,13 @@ func (m *Manifest) Validate() error {
 	}
 	if m.CreatedAt.IsZero() {
 		return fmt.Errorf("created_at is required")
+	}
+	// PayloadIDSet must be present (non-nil) but may be empty (zero-block
+	// backup). Phase 5 block-GC hold distinguishes "empty list" from
+	// "missing field" — a decoded manifest with a missing payload_id_set
+	// yields PayloadIDSet == nil and is rejected here (SAFETY-01).
+	if m.PayloadIDSet == nil {
+		return fmt.Errorf("payload_id_set is required (may be empty)")
 	}
 	return nil
 }

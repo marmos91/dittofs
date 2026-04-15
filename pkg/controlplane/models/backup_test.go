@@ -122,6 +122,7 @@ func TestBackupSentinelsDistinct(t *testing.T) {
 		ErrDuplicateBackupRepo,
 		ErrBackupRepoInUse,
 		ErrBackupRecordNotFound,
+		ErrBackupRecordPinned,
 		ErrDuplicateBackupRecord,
 		ErrBackupJobNotFound,
 		ErrDuplicateBackupJob,

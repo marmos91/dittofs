@@ -62,6 +62,13 @@ func (s *GORMStore) CreateBackupRepo(ctx context.Context, repo *models.BackupRep
 }
 
 func (s *GORMStore) UpdateBackupRepo(ctx context.Context, repo *models.BackupRepo) error {
+	// Mirror CreateBackupRepo: materialize ParsedConfig into the Config JSON blob
+	// if the caller populated the parsed map but left Config empty.
+	if repo.Config == "" && len(repo.ParsedConfig) > 0 {
+		if err := repo.SetConfig(repo.ParsedConfig); err != nil {
+			return err
+		}
+	}
 	result := s.db.WithContext(ctx).
 		Model(&models.BackupRepo{}).
 		Where("id = ?", repo.ID).

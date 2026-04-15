@@ -97,7 +97,7 @@ var ErrBackupUnsupported = errors.New("backup not supported by this metadata sto
 
 ## Note to Downstream (Phase 5)
 
-`manifest.ReadFrom` uses `io.ReadAll` internally. When reading manifests from untrusted storage (S3, external mounts) the caller MUST wrap the reader with `io.LimitReader` to bound memory usage. Reference: threat T-01-10 in 03-PLAN.md.
+`manifest.ReadFrom` caps reads at `MaxManifestBytes` (1 MiB) internally via `io.LimitReader` and returns `ErrManifestTooLarge` when the source exceeds the cap (threat T-01-10). Callers no longer need to wrap the reader themselves.
 
 ## Scope Boundary
 
