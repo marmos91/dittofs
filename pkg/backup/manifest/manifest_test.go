@@ -76,9 +76,9 @@ func TestManifestVersionGuard_AcceptsCurrent(t *testing.T) {
 
 func TestManifestRequiredFields(t *testing.T) {
 	cases := []struct {
-		name  string
+		name   string
 		mutate func(*Manifest)
-		want  string
+		want   string
 	}{
 		{"BackupID", func(m *Manifest) { m.BackupID = "" }, "backup_id"},
 		{"StoreID", func(m *Manifest) { m.StoreID = "" }, "store_id"},
