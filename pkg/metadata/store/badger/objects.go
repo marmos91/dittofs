@@ -264,7 +264,12 @@ func (s *BadgerMetadataStore) FindFileBlockByHash(ctx context.Context, hash meta
 // scanning all fb: entries. This eliminates the BadgerDB full-table scan
 // that was the root cause of sequential write throughput degradation.
 func (s *BadgerMetadataStore) ListLocalBlocks(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
-	cutoff := time.Now().Add(-olderThan)
+	// olderThan <= 0 means "no age filter" — return every local block.
+	var cutoff time.Time
+	filterByAge := olderThan > 0
+	if filterByAge {
+		cutoff = time.Now().Add(-olderThan)
+	}
 	var result []*metadata.FileBlock
 	err := s.db.View(func(txn *badger.Txn) error {
 		prefix := []byte(fileBlockLocalPrefix)
@@ -291,11 +296,15 @@ func (s *BadgerMetadataStore) ListLocalBlocks(ctx context.Context, olderThan tim
 				continue
 			}
 
-			if block.HasLocalFile() && block.LastAccess.Before(cutoff) {
-				result = append(result, &block)
-				if limit > 0 && len(result) >= limit {
-					break
-				}
+			if !block.HasLocalFile() {
+				continue
+			}
+			if filterByAge && !block.LastAccess.Before(cutoff) {
+				continue
+			}
+			result = append(result, &block)
+			if limit > 0 && len(result) >= limit {
+				break
 			}
 		}
 		return nil

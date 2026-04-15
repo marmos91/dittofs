@@ -479,7 +479,22 @@ func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 // SyncNow triggers an immediate upload cycle for all local blocks,
 // bypassing the UploadDelay. Blocks until all eligible blocks are uploaded.
 // Intended for testing -- production code uses the periodic uploader.
+//
+// SyncNow serializes against both the periodic uploader and other concurrent
+// SyncNow callers via the m.uploading gate. Without this, two SyncNow
+// callers could each obtain a copy of the same FileBlock from
+// ListLocalBlocks, race on its state transitions, and leave the store
+// flapping between Syncing/Remote.
 func (m *Syncer) SyncNow(ctx context.Context) {
+	for !m.uploading.CompareAndSwap(false, true) {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	defer m.uploading.Store(false)
+
 	// Flush queued FileBlock metadata to the store so ListLocalBlocks can find them.
 	m.local.SyncFileBlocks(ctx)
 	pending, err := m.fileBlockStore.ListLocalBlocks(ctx, 0, 0)

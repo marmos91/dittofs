@@ -278,15 +278,27 @@ func (s *MemoryMetadataStore) listLocalBlocksLocked(_ context.Context, olderThan
 	if s.fileBlockData == nil {
 		return nil, nil
 	}
-	cutoff := time.Now().Add(-olderThan)
+	// olderThan <= 0 means "no age filter" — return every local block.
+	// Using LastAccess.Before(time.Now()) is unreliable under tight scheduling
+	// (freshly-flushed blocks may tie or beat the cutoff), which flaked
+	// TestSyncer_ConcurrentOperations_Memory.
+	var cutoff time.Time
+	filterByAge := olderThan > 0
+	if filterByAge {
+		cutoff = time.Now().Add(-olderThan)
+	}
 	var result []*metadata.FileBlock
 	for _, block := range s.fileBlockData.blocks {
-		if block.State == metadata.BlockStateLocal && block.HasLocalFile() && block.LastAccess.Before(cutoff) {
-			b := *block
-			result = append(result, &b)
-			if limit > 0 && len(result) >= limit {
-				break
-			}
+		if block.State != metadata.BlockStateLocal || !block.HasLocalFile() {
+			continue
+		}
+		if filterByAge && !block.LastAccess.Before(cutoff) {
+			continue
+		}
+		b := *block
+		result = append(result, &b)
+		if limit > 0 && len(result) >= limit {
+			break
 		}
 	}
 	return result, nil

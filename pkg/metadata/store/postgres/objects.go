@@ -148,24 +148,23 @@ func (s *PostgresMetadataStore) FindFileBlockByHash(ctx context.Context, hash me
 // synced to remote) older than the given duration.
 // If limit > 0, at most limit blocks are returned.
 func (s *PostgresMetadataStore) ListLocalBlocks(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
-	cutoff := time.Now().Add(-olderThan)
-	var query string
-	var rows pgx.Rows
-	var err error
-	if limit > 0 {
-		query = `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state
-			FROM file_blocks
-			WHERE state = 1 /* Local */ AND cache_path IS NOT NULL AND created_at < $1
-			ORDER BY created_at ASC
-			LIMIT $2`
-		rows, err = s.query(ctx, query, cutoff, limit)
-	} else {
-		query = `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state
-			FROM file_blocks
-			WHERE state = 1 /* Local */ AND cache_path IS NOT NULL AND created_at < $1
-			ORDER BY created_at ASC`
-		rows, err = s.query(ctx, query, cutoff)
+	// olderThan <= 0 means "no age filter" — return every local block. The
+	// age predicate is omitted entirely in that case to avoid the corner
+	// where created_at ties or beats time.Now() under tight scheduling.
+	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state
+		FROM file_blocks
+		WHERE state = 1 /* Local */ AND cache_path IS NOT NULL`
+	args := make([]any, 0, 2)
+	if olderThan > 0 {
+		args = append(args, time.Now().Add(-olderThan))
+		query += fmt.Sprintf(" AND created_at < $%d", len(args))
 	}
+	query += " ORDER BY created_at ASC"
+	if limit > 0 {
+		args = append(args, limit)
+		query += fmt.Sprintf(" LIMIT $%d", len(args))
+	}
+	rows, err := s.query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list local blocks: %w", err)
 	}

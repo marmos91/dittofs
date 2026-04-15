@@ -503,6 +503,9 @@ func testConcurrentOperations(t *testing.T, env *testEnv) {
 				errors <- fmt.Errorf("file %d: Flush failed: %w", fileIdx, err)
 				return
 			}
+			// SyncNow now holds the m.uploading gate end-to-end and uploads
+			// synchronously, so by the time it returns every block is in the
+			// remote store.
 			env.syncer.SyncNow(ctx)
 			exists, err := env.syncer.Exists(ctx, payloadID)
 			if err != nil {
