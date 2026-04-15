@@ -95,7 +95,9 @@ func TestOfflineReadRemoteOnlyBlockFails(t *testing.T) {
 	}
 	// SyncNow holds the uploading gate end-to-end and uploads synchronously,
 	// so by the time it returns every block is in the remote store.
-	bs.syncer.SyncNow(ctx)
+	if err := bs.syncer.SyncNow(ctx); err != nil {
+		t.Fatalf("SyncNow failed: %v", err)
+	}
 
 	// Verify block is in remote.
 	memStore := fakeRemote.RemoteStore.(*remotememory.Store)
@@ -184,7 +186,9 @@ func TestOfflineReadsBlockedCounter(t *testing.T) {
 	if _, err := bs.Flush(ctx, payloadID); err != nil {
 		t.Fatalf("Flush failed: %v", err)
 	}
-	bs.syncer.SyncNow(ctx)
+	if err := bs.syncer.SyncNow(ctx); err != nil {
+		t.Fatalf("SyncNow failed: %v", err)
+	}
 	if err := bs.EvictLocal(ctx, payloadID); err != nil {
 		t.Fatalf("EvictLocal failed: %v", err)
 	}
