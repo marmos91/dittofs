@@ -93,12 +93,9 @@ func TestOfflineReadRemoteOnlyBlockFails(t *testing.T) {
 	if _, err := bs.Flush(ctx, payloadID); err != nil {
 		t.Fatalf("Flush failed: %v", err)
 	}
+	// SyncNow holds the uploading gate end-to-end and uploads synchronously,
+	// so by the time it returns every block is in the remote store.
 	bs.syncer.SyncNow(ctx)
-
-	// Wait for upload to complete.
-	if err := bs.syncer.WaitForAllUploads(ctx, payloadID); err != nil {
-		t.Fatalf("WaitForAllUploads failed: %v", err)
-	}
 
 	// Verify block is in remote.
 	memStore := fakeRemote.RemoteStore.(*remotememory.Store)
@@ -188,9 +185,6 @@ func TestOfflineReadsBlockedCounter(t *testing.T) {
 		t.Fatalf("Flush failed: %v", err)
 	}
 	bs.syncer.SyncNow(ctx)
-	if err := bs.syncer.WaitForAllUploads(ctx, payloadID); err != nil {
-		t.Fatalf("WaitForAllUploads failed: %v", err)
-	}
 	if err := bs.EvictLocal(ctx, payloadID); err != nil {
 		t.Fatalf("EvictLocal failed: %v", err)
 	}

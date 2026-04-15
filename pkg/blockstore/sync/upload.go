@@ -53,23 +53,30 @@ func (m *Syncer) syncLocalBlocks(ctx context.Context) {
 	logger.Info("Periodic sync: found local blocks", "count", len(pending))
 
 	// Upload sequentially to minimize memory: only 1 block (~8MB) in memory at a time.
+	// Individual block failures are already logged inside syncFileBlock; the
+	// periodic uploader intentionally continues so a bad block doesn't starve
+	// the queue.
 	for _, fb := range pending {
 		if fb.LocalPath == "" {
 			continue
 		}
-		m.syncFileBlock(ctx, fb)
+		_ = m.syncFileBlock(ctx, fb)
 	}
 }
 
-// syncFileBlock reads a local block from the local store, dedup-checks, and syncs to remote store.
-func (m *Syncer) syncFileBlock(ctx context.Context, fb *blockstore.FileBlock) {
+// syncFileBlock reads a local block from the local store, dedup-checks, and
+// syncs to remote store. Returns nil on success (including the dedup fast path)
+// or an error describing why the block was not uploaded. The block's state is
+// always reverted to Local before a non-nil error is returned so the next
+// drain/tick can retry it.
+func (m *Syncer) syncFileBlock(ctx context.Context, fb *blockstore.FileBlock) error {
 	if fb.State != blockstore.BlockStateLocal {
-		return
+		return nil
 	}
 
 	fb.State = blockstore.BlockStateSyncing
 	if err := m.fileBlockStore.PutFileBlock(ctx, fb); err != nil {
-		return
+		return fmt.Errorf("mark block %s syncing: %w", fb.ID, err)
 	}
 
 	startTime := time.Now()
@@ -79,7 +86,7 @@ func (m *Syncer) syncFileBlock(ctx context.Context, fb *blockstore.FileBlock) {
 		logger.Warn("Sync: failed to read local store file",
 			"blockID", fb.ID, "localPath", fb.LocalPath, "error", err)
 		m.revertToLocal(ctx, fb)
-		return
+		return fmt.Errorf("read local block %s: %w", fb.ID, err)
 	}
 
 	hash := sha256.Sum256(data)
@@ -93,7 +100,7 @@ func (m *Syncer) syncFileBlock(ctx context.Context, fb *blockstore.FileBlock) {
 		fb.State = blockstore.BlockStateRemote
 		_ = m.fileBlockStore.PutFileBlock(ctx, fb)
 		logger.Debug("Sync dedup: block already exists", "blockID", fb.ID)
-		return
+		return nil
 	}
 
 	lastSlash := strings.LastIndex(fb.ID, "/")
@@ -102,14 +109,14 @@ func (m *Syncer) syncFileBlock(ctx context.Context, fb *blockstore.FileBlock) {
 	if err != nil {
 		logger.Warn("Sync: failed to parse block index", "blockID", fb.ID, "error", err)
 		m.revertToLocal(ctx, fb)
-		return
+		return fmt.Errorf("parse block index for %s: %w", fb.ID, err)
 	}
 	storeKey := blockstore.FormatStoreKey(payloadID, blockIdx)
 
 	if err := m.remoteStore.WriteBlock(ctx, storeKey, data); err != nil {
 		logger.Error("Sync: upload to remote failed", "blockID", fb.ID, "error", err)
 		m.revertToLocal(ctx, fb)
-		return
+		return fmt.Errorf("upload block %s: %w", fb.ID, err)
 	}
 
 	fb.Hash = blockstore.ContentHash(hash)
@@ -120,6 +127,7 @@ func (m *Syncer) syncFileBlock(ctx context.Context, fb *blockstore.FileBlock) {
 
 	logger.Info("Sync complete",
 		"blockID", fb.ID, "size", len(data), "duration", time.Since(startTime))
+	return nil
 }
 
 // uploadBlock uploads a single block from local store to remote store.

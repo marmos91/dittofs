@@ -6,23 +6,11 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// getSyncState returns the upload state for a file, or nil if not found.
-func (m *Syncer) getSyncState(payloadID string) *fileSyncState {
-	m.uploadsMu.Lock()
-	state := m.uploads[payloadID]
-	m.uploadsMu.Unlock()
-	return state
-}
-
 // DeleteWithRefCount decrements RefCount for each block and deletes blocks that reach zero.
 func (m *Syncer) DeleteWithRefCount(ctx context.Context, payloadID string, blockIDs []string) error {
 	if !m.canProcess(ctx) {
 		return ErrClosed
 	}
-
-	m.uploadsMu.Lock()
-	delete(m.uploads, payloadID)
-	m.uploadsMu.Unlock()
 
 	if m.fileBlockStore == nil {
 		if m.remoteStore != nil {
