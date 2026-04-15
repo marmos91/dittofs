@@ -161,6 +161,22 @@ jobs:
           cd test/smb-conformance/smbtorture
           ./run.sh --profile ${{ matrix.profile }} --verbose
 
+      # TEMP #362: ensure dittofs.log is captured even if smbtorture step
+      # was cancelled or the runner script didn't finish its log-collection.
+      - name: Ensure dittofs.log captured
+        if: always()
+        run: |
+          cd test/smb-conformance
+          RESULTS_DIR=$(ls -td results/smbtorture-*/ 2>/dev/null | head -1 || true)
+          if [ -z "$RESULTS_DIR" ]; then
+            RESULTS_DIR="results/smbtorture-fallback-$(date +%s)"
+            mkdir -p "$RESULTS_DIR"
+          fi
+          if [ ! -s "$RESULTS_DIR/dittofs.log" ]; then
+            docker compose logs dittofs > "$RESULTS_DIR/dittofs.log" 2>&1 || true
+          fi
+          ls -la "$RESULTS_DIR" || true
+
       - name: Add step summary
         if: always()
         run: |
