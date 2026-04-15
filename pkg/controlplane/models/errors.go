@@ -36,4 +36,14 @@ var (
 
 	// Guest errors
 	ErrGuestDisabled = errors.New("guest access is disabled")
+
+	// Backup sentinels (v0.13.0)
+	ErrBackupRepoNotFound    = errors.New("backup repo not found")
+	ErrDuplicateBackupRepo   = errors.New("backup repo already exists")
+	ErrBackupRepoInUse       = errors.New("backup repo is referenced by backup records or active jobs")
+	ErrBackupRecordNotFound  = errors.New("backup record not found")
+	ErrBackupRecordPinned    = errors.New("backup record is pinned and cannot be deleted")
+	ErrDuplicateBackupRecord = errors.New("backup record already exists")
+	ErrBackupJobNotFound     = errors.New("backup job not found")
+	ErrDuplicateBackupJob    = errors.New("backup job already exists")
 )
