@@ -335,6 +335,101 @@ type BlockStoreConfigStore interface {
 	GetSharesByBlockStore(ctx context.Context, storeName string) ([]*models.Share, error)
 }
 
+// BackupStore provides backup repo, record, and job CRUD operations.
+//
+// A backup repo represents a destination configuration scoped to a metadata
+// store. Backup records track historical backup payloads produced against a
+// repo. Backup jobs track in-flight backup or restore operations — a single
+// backup_jobs table with a kind discriminator column stores both, giving a
+// unified state machine, one polling endpoint, and one interrupted-job
+// recovery path (SAFETY-02).
+//
+// Repo names are unique per (metadata_store_id, name); the same name may be
+// reused across stores. Record and job IDs are ULIDs when left empty on create.
+type BackupStore interface {
+	// Repo operations.
+
+	// GetBackupRepo returns a backup repo by (metadata store ID, name).
+	// Returns models.ErrBackupRepoNotFound if the repo doesn't exist.
+	GetBackupRepo(ctx context.Context, storeID, name string) (*models.BackupRepo, error)
+
+	// GetBackupRepoByID returns a backup repo by its unique ID.
+	// Returns models.ErrBackupRepoNotFound if the repo doesn't exist.
+	GetBackupRepoByID(ctx context.Context, id string) (*models.BackupRepo, error)
+
+	// ListBackupReposByStore returns all repos scoped to the given metadata store ID.
+	ListBackupReposByStore(ctx context.Context, storeID string) ([]*models.BackupRepo, error)
+
+	// ListAllBackupRepos returns every backup repo across all metadata stores.
+	// Used by the Phase 4 scheduler to drive cron evaluation.
+	ListAllBackupRepos(ctx context.Context) ([]*models.BackupRepo, error)
+
+	// CreateBackupRepo creates a new backup repo.
+	// The ID will be generated (UUID) if empty.
+	// Returns models.ErrDuplicateBackupRepo if a repo with the same
+	// (metadata_store_id, name) already exists.
+	CreateBackupRepo(ctx context.Context, repo *models.BackupRepo) (string, error)
+
+	// UpdateBackupRepo updates an existing backup repo.
+	// Returns models.ErrBackupRepoNotFound if the repo doesn't exist.
+	UpdateBackupRepo(ctx context.Context, repo *models.BackupRepo) error
+
+	// DeleteBackupRepo deletes a backup repo by ID.
+	// Returns models.ErrBackupRepoNotFound if the repo doesn't exist.
+	// Returns models.ErrBackupRepoInUse if any backup records reference it.
+	DeleteBackupRepo(ctx context.Context, id string) error
+
+	// Record operations.
+
+	// GetBackupRecord returns a backup record by ID.
+	// Returns models.ErrBackupRecordNotFound if the record doesn't exist.
+	GetBackupRecord(ctx context.Context, id string) (*models.BackupRecord, error)
+
+	// ListBackupRecordsByRepo returns all records for a repo, newest first.
+	ListBackupRecordsByRepo(ctx context.Context, repoID string) ([]*models.BackupRecord, error)
+
+	// CreateBackupRecord creates a new backup record.
+	// The ID will be generated (ULID) if empty.
+	CreateBackupRecord(ctx context.Context, rec *models.BackupRecord) (string, error)
+
+	// UpdateBackupRecord updates an existing backup record.
+	// Returns models.ErrBackupRecordNotFound if the record doesn't exist.
+	UpdateBackupRecord(ctx context.Context, rec *models.BackupRecord) error
+
+	// DeleteBackupRecord deletes a backup record by ID.
+	// Returns models.ErrBackupRecordNotFound if the record doesn't exist.
+	DeleteBackupRecord(ctx context.Context, id string) error
+
+	// SetBackupRecordPinned toggles the Pinned column for a record.
+	// Pinned records are protected from retention pruning (REPO-03).
+	// Returns models.ErrBackupRecordNotFound if the record doesn't exist.
+	SetBackupRecordPinned(ctx context.Context, id string, pinned bool) error
+
+	// Job operations.
+
+	// GetBackupJob returns a backup job by ID.
+	// Returns models.ErrBackupJobNotFound if the job doesn't exist.
+	GetBackupJob(ctx context.Context, id string) (*models.BackupJob, error)
+
+	// ListBackupJobs lists backup jobs, filtered by kind and/or status.
+	// Pass an empty string for either filter to skip that constraint.
+	ListBackupJobs(ctx context.Context, kind models.BackupJobKind, status models.BackupStatus) ([]*models.BackupJob, error)
+
+	// CreateBackupJob creates a new backup job.
+	// The ID will be generated (ULID) if empty.
+	CreateBackupJob(ctx context.Context, job *models.BackupJob) (string, error)
+
+	// UpdateBackupJob updates an existing backup job.
+	// Returns models.ErrBackupJobNotFound if the job doesn't exist.
+	UpdateBackupJob(ctx context.Context, job *models.BackupJob) error
+
+	// RecoverInterruptedJobs transitions all jobs with status=running to
+	// status=interrupted, setting a diagnostic error and finished_at timestamp.
+	// Returns the number of jobs transitioned. Called once on server startup
+	// (SAFETY-02); Phase 5 wires the boot hook in lifecycle.Service.
+	RecoverInterruptedJobs(ctx context.Context) (int, error)
+}
+
 // AdapterStore provides adapter configuration CRUD and protocol-specific settings.
 //
 // Adapter settings (NFS/SMB) are managed alongside adapter CRUD because they
@@ -535,6 +630,7 @@ type Store interface {
 	PermissionStore
 	MetadataStoreConfigStore
 	BlockStoreConfigStore
+	BackupStore
 	AdapterStore
 	SettingsStore
 	AdminStore
