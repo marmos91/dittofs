@@ -440,21 +440,46 @@ func (m *Syncer) SyncNow(ctx context.Context) error {
 
 	// Flush queued FileBlock metadata to the store so ListLocalBlocks can find them.
 	m.local.SyncFileBlocks(ctx)
-	pending, err := m.fileBlockStore.ListLocalBlocks(ctx, 0, 0)
-	if err != nil {
-		return fmt.Errorf("list local blocks: %w", err)
-	}
+
+	// Drain in batches to keep peak memory bounded on large stores — one
+	// ListLocalBlocks call with limit=0 would deserialize every pending
+	// FileBlock at once (potentially thousands). syncFileBlock advances
+	// blocks out of BlockStateLocal on success, so successive ListLocalBlocks
+	// queries return distinct pages; on per-block failure revertToLocal
+	// keeps the block in Local state — we break after one no-progress pass
+	// so a permanently-failing block cannot spin the drain forever.
 	var uploadErrs []error
-	for _, fb := range pending {
+	var prevFailed int
+	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if fb.LocalPath == "" {
-			continue
+		pending, err := m.fileBlockStore.ListLocalBlocks(ctx, 0, maxUploadBatch)
+		if err != nil {
+			return fmt.Errorf("list local blocks: %w", err)
 		}
-		if err := m.syncFileBlock(ctx, fb); err != nil {
-			uploadErrs = append(uploadErrs, err)
+		if len(pending) == 0 {
+			break
 		}
+		failedThisBatch := 0
+		for _, fb := range pending {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if fb.LocalPath == "" {
+				continue
+			}
+			if err := m.syncFileBlock(ctx, fb); err != nil {
+				uploadErrs = append(uploadErrs, err)
+				failedThisBatch++
+			}
+		}
+		// If every block in this batch failed, the next ListLocalBlocks will
+		// return the same set — stop instead of looping.
+		if failedThisBatch == len(pending) && failedThisBatch == prevFailed {
+			break
+		}
+		prevFailed = failedThisBatch
 	}
 	return errors.Join(uploadErrs...)
 }
