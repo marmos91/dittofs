@@ -24,32 +24,9 @@ func parseStoreKeyBlockIdx(storeKey, payloadID string) (uint64, bool) {
 	return blockIdx, true
 }
 
-// waitWithContext runs fn in a goroutine and waits for it to finish or the
-// context to be cancelled. Returns nil on completion, or ctx.Err() on timeout.
-func waitWithContext(ctx context.Context, fn func()) error {
-	done := make(chan struct{})
-	go func() {
-		fn()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
 // defaultShutdownTimeout is the maximum time to wait for the transfer queue
 // to finish processing during graceful shutdown.
 const defaultShutdownTimeout = 30 * time.Second
-
-// fileSyncState tracks in-flight uploads for a single file.
-type fileSyncState struct {
-	inFlight gosync.WaitGroup // Tracks in-flight eager uploads
-	flush    gosync.WaitGroup // Tracks in-flight flush operations
-}
 
 // fetchResult is a broadcast-capable result for in-flight download deduplication.
 // When the download completes, err is set and done is closed. Multiple waiters can
@@ -74,9 +51,6 @@ type Syncer struct {
 
 	// Finalization callback - called when all blocks for a file are uploaded
 	onFinalized FinalizationCallback
-
-	uploads   map[string]*fileSyncState // payloadID -> per-file upload tracking
-	uploadsMu gosync.Mutex
 
 	queue *SyncQueue // Transfer queue for non-blocking operations
 
@@ -117,7 +91,6 @@ func New(local local.LocalStore, remoteStore remote.RemoteStore, fileBlockStore 
 		remoteStore:    remoteStore,
 		fileBlockStore: fileBlockStore,
 		config:         config,
-		uploads:        make(map[string]*fileSyncState),
 		inFlight:       make(map[string]*fetchResult),
 		stopCh:         make(chan struct{}),
 	}
@@ -236,50 +209,17 @@ func (m *Syncer) Flush(ctx context.Context, payloadID string) (*blockstore.Flush
 	return &blockstore.FlushResult{Finalized: false}, nil
 }
 
-// DrainAllUploads waits for all in-flight uploads across all files to complete.
-// This includes both eager uploads (inFlight) and flush operations (flush) for
-// every tracked file.
+// DrainAllUploads performs an immediate synchronous upload of every local
+// block to remote, bypassing the UploadDelay. Returns nil when the drain
+// completes, or ctx.Err() if the context is cancelled before acquiring the
+// uploading gate.
 //
-// Useful for benchmarking and testing to ensure clean boundaries between workloads,
-// and exposed via the REST API for the benchmark runner to call between test phases.
-//
-// Returns nil when all uploads complete, or ctx.Err() if the context is cancelled.
+// Exposed via the REST API for the benchmark runner to call between test
+// phases, and used by Close() to ensure no blocks are left stranded in the
+// local store at shutdown.
 func (m *Syncer) DrainAllUploads(ctx context.Context) error {
-	m.uploadsMu.Lock()
-	states := make([]*fileSyncState, 0, len(m.uploads))
-	for _, state := range m.uploads {
-		states = append(states, state)
-	}
-	m.uploadsMu.Unlock()
-
-	return waitWithContext(ctx, func() {
-		for _, state := range states {
-			state.inFlight.Wait()
-			state.flush.Wait()
-		}
-	})
-}
-
-// WaitForEagerUploads waits for in-flight eager uploads to complete (for testing).
-func (m *Syncer) WaitForEagerUploads(ctx context.Context, payloadID string) error {
-	state := m.getSyncState(payloadID)
-	if state == nil {
-		return nil
-	}
-	return waitWithContext(ctx, state.inFlight.Wait)
-}
-
-// WaitForAllUploads waits for both eager uploads and flush operations to complete.
-// FOR TESTING ONLY -- production code should use non-blocking Flush().
-func (m *Syncer) WaitForAllUploads(ctx context.Context, payloadID string) error {
-	state := m.getSyncState(payloadID)
-	if state == nil {
-		return nil
-	}
-	return waitWithContext(ctx, func() {
-		state.inFlight.Wait()
-		state.flush.Wait()
-	})
+	m.SyncNow(ctx)
+	return ctx.Err()
 }
 
 // GetFileSize returns the total size of a file from the remote store.
@@ -403,11 +343,6 @@ func (m *Syncer) Delete(ctx context.Context, payloadID string) error {
 		return err
 	}
 
-	// Always clean up upload tracking even with nil remoteStore.
-	m.uploadsMu.Lock()
-	delete(m.uploads, payloadID)
-	m.uploadsMu.Unlock()
-
 	if m.remoteStore == nil {
 		logger.Debug("syncer: skipping Delete, no remote store")
 		return nil
@@ -486,6 +421,9 @@ func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 // ListLocalBlocks, race on its state transitions, and leave the store
 // flapping between Syncing/Remote.
 func (m *Syncer) SyncNow(ctx context.Context) {
+	if m.remoteStore == nil {
+		return
+	}
 	for !m.uploading.CompareAndSwap(false, true) {
 		select {
 		case <-ctx.Done():
@@ -533,16 +471,17 @@ func (m *Syncer) periodicUploader(ctx context.Context, interval time.Duration) {
 				logger.Debug("Periodic syncer: previous tick still running, skipping")
 				continue
 			}
-			// Circuit breaker: skip uploads when remote store is unhealthy
-			if !m.IsRemoteHealthy() {
-				logger.Warn("Periodic syncer: remote unhealthy, skipping upload cycle",
-					"outage_duration", m.RemoteOutageDuration(),
-					"hint", "check S3 credentials, endpoint, and bucket configuration")
-				m.uploading.Store(false)
-				continue
-			}
-			m.syncLocalBlocks(ctx)
-			m.uploading.Store(false)
+			func() {
+				defer m.uploading.Store(false)
+				// Circuit breaker: skip uploads when remote store is unhealthy
+				if !m.IsRemoteHealthy() {
+					logger.Warn("Periodic syncer: remote unhealthy, skipping upload cycle",
+						"outage_duration", m.RemoteOutageDuration(),
+						"hint", "check S3 credentials, endpoint, and bucket configuration")
+					return
+				}
+				m.syncLocalBlocks(ctx)
+			}()
 		case <-m.stopCh:
 			logger.Info("Periodic syncer: stopCh received, exiting")
 			return
