@@ -38,6 +38,24 @@ func newHashTeeWriter(dst io.Writer) *hashTeeWriter {
 	}
 }
 
+// HashTeeWriter is the exported handle to the SHA-256 tee — driver
+// packages (e.g. destination/fs, destination/s3) wrap the destination
+// sink with this and read back the hex digest plus byte count via Sum()
+// and Size() when populating manifest.SHA256 and manifest.SizeBytes.
+//
+// The unexported hashTeeWriter keeps fields package-private; exposing it
+// as *HashTeeWriter gives drivers a concrete pointer type they can hold
+// without importing the internal struct.
+type HashTeeWriter = hashTeeWriter
+
+// NewHashTeeWriter is the exported constructor for drivers (D-04
+// integration point). Returns a *HashTeeWriter whose Write method
+// tees to dst while updating a SHA-256 hasher; call Sum() and Size()
+// after the final Write to populate manifest.SHA256 and SizeBytes.
+func NewHashTeeWriter(dst io.Writer) *HashTeeWriter {
+	return newHashTeeWriter(dst)
+}
+
 // Write forwards p to the underlying sink and updates the SHA-256 digest.
 // A zero-length write is a no-op (does not touch the hash or byte count).
 func (t *hashTeeWriter) Write(p []byte) (int, error) {
