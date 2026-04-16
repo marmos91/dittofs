@@ -109,6 +109,15 @@ func TestBlockStoreOperations(t *testing.T) {
 		if gotRemote.Type != "s3" {
 			t.Errorf("remote default: expected type 's3', got %q", gotRemote.Type)
 		}
+
+		// Deleting one kind must not affect the other (regression guard against
+		// a future change reverting DeleteBlockStore to filter by name alone).
+		if err := store.DeleteBlockStore(ctx, "default", models.BlockStoreKindLocal); err != nil {
+			t.Fatalf("delete local default: %v", err)
+		}
+		if _, err := store.GetBlockStore(ctx, "default", models.BlockStoreKindRemote); err != nil {
+			t.Errorf("remote default should survive local deletion: %v", err)
+		}
 	})
 
 	t.Run("get block store by name and kind", func(t *testing.T) {
