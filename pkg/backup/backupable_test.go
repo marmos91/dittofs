@@ -1,4 +1,4 @@
-package metadata
+package backup
 
 import (
 	"errors"
@@ -39,7 +39,7 @@ func TestPayloadIDSetNilSafety(t *testing.T) {
 	require.Equal(t, 0, s.Len())
 }
 
-// Each driver has its own `var _ metadata.Backupable = (*XxxStore)(nil)` so
+// Each driver has its own `var _ backup.Backupable = (*XxxStore)(nil)` so
 // interface drift fails the driver build. Sentinel identity and wrapping are
 // exercised by driver tests that return and match these sentinels on real
 // errors — testing them here would only test the stdlib's errors.Is.
