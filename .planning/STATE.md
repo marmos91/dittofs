@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v0.13.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 05-04-PLAN.md
-last_updated: "2026-04-16T22:17:26.104Z"
+stopped_at: Completed 05-05-PLAN.md
+last_updated: "2026-04-16T22:22:23.878Z"
 last_activity: 2026-04-16
 progress:
   total_phases: 7
   completed_phases: 3
   total_plans: 28
-  completed_plans: 21
-  percent: 75
+  completed_plans: 22
+  percent: 79
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 ## Current Position
 
 Phase: 05 (restore-orchestration-safety-rails) — EXECUTING
-Plan: 5 of 10
+Plan: 6 of 10
 Status: Ready to execute
 Last activity: 2026-04-16
 
@@ -71,6 +71,7 @@ Historical decisions archived in PROJECT.md Key Decisions table.
 - [Phase 05-restore-orchestration-safety-rails]: Plan 04: Postgres schema-scoped open deferred to Plan 06 — Plan 04 ships the signature + dispatch with a clear deferred-construction error for postgres; Plan 06 wires the real search_path construction
 - [Phase 05-restore-orchestration-safety-rails]: Plan 04: ListPostgresRestoreOrphans is REQUIRED (non-optional) — non-Postgres stores produce a clear error rather than silent empty slice, so crash-interrupted restore orphans cannot accumulate undetected
 - [Phase 05-restore-orchestration-safety-rails]: Plan 04: Postgres schema orphan CreatedAt derived from embedded ULID timestamp (Option A) rather than pg_stat_file (Option B) — portable, zero extra DB metadata required
+- [Phase 05]: Use atomic.Pointer[[8]byte] for serverBootVerifier — lock-free hot-path reads, safe cold-path bump from RunRestore
 
 ### Pending Todos
 
@@ -82,6 +83,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-16T22:17:26.101Z
-Stopped at: Completed 05-04-PLAN.md
+Last session: 2026-04-16T22:22:23.875Z
+Stopped at: Completed 05-05-PLAN.md
 Next action: `/gsd-plan-phase 1` — Foundations: models, manifest, capability interface

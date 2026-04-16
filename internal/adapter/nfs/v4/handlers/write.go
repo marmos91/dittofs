@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"sync/atomic"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
@@ -14,13 +15,49 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// serverBootVerifier is an 8-byte verifier derived from server boot time.
-// Clients compare this value across WRITE and COMMIT responses to detect
-// server restarts, at which point they must re-send unstable writes.
-var serverBootVerifier [8]byte
+// serverBootVerifier is an 8-byte verifier derived from server boot
+// time. Clients compare it across WRITE and COMMIT responses to detect
+// server restarts, at which point they re-send unstable writes.
+//
+// Phase 5 restore calls BumpBootVerifier() on successful in-place
+// restore (D-09). NFSv4 clients whose next request lands post-swap
+// see a new verifier, enter reclaim grace, and fail reclaim with
+// NFS4ERR_RECLAIM_BAD — forcing fresh OPENs against the restored
+// metadata state.
+//
+// The value is stored in an atomic.Pointer so BumpBootVerifier can
+// safely swap it concurrently with in-flight WRITE/COMMIT handlers.
+var serverBootVerifier atomic.Pointer[[8]byte]
 
 func init() {
-	binary.BigEndian.PutUint64(serverBootVerifier[:], uint64(time.Now().UnixNano()))
+	var v [8]byte
+	binary.BigEndian.PutUint64(v[:], uint64(time.Now().UnixNano()))
+	serverBootVerifier.Store(&v)
+}
+
+// BumpBootVerifier replaces the current verifier with a fresh
+// time-derived value. Exported for Phase 5 storebackups.Service.
+// RunRestore to invoke after a successful metadata swap.
+//
+// Safe to call concurrently with read-side handlers; the atomic
+// pointer swap is lock-free.
+func BumpBootVerifier() {
+	var v [8]byte
+	binary.BigEndian.PutUint64(v[:], uint64(time.Now().UnixNano()))
+	serverBootVerifier.Store(&v)
+}
+
+// bootVerifierBytes returns a copy of the current verifier so the
+// caller can safely embed it in a response buffer without aliasing
+// the atomic's pointer.
+func bootVerifierBytes() [8]byte {
+	v := serverBootVerifier.Load()
+	if v == nil {
+		// Defensive: init() ran, so this should never trigger.
+		var zero [8]byte
+		return zero
+	}
+	return *v
 }
 
 // handleWrite implements the WRITE operation (RFC 7530 Section 16.36).
@@ -240,7 +277,8 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 	_ = xdr.WriteUint32(&buf, types.UNSTABLE4)
 
 	// writeverf: 8-byte server boot verifier (fixed-length, NOT XDR opaque)
-	buf.Write(serverBootVerifier[:])
+	verf := bootVerifierBytes()
+	buf.Write(verf[:])
 
 	return &types.CompoundResult{
 		Status: types.NFS4_OK,
