@@ -2,7 +2,6 @@ package s3
 
 import (
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 
@@ -43,7 +42,8 @@ func isNotFound(err error) bool {
 }
 
 // classifyS3Error maps AWS SDK errors to destination package D-07 sentinels.
-// Call at every SDK-call boundary. Preserves the original error via %w.
+// Call at every SDK-call boundary. Uses errors.Join so both the sentinel
+// AND the original SDK error remain retrievable via errors.Is / errors.As.
 //
 // Mappings (asserted by TestClassifyS3Error_MapsCodes):
 //   - AccessDenied / Forbidden / InvalidAccessKeyId / SignatureDoesNotMatch → ErrPermissionDenied
@@ -62,13 +62,13 @@ func classifyS3Error(err error) error {
 	if errors.As(err, &ae) {
 		switch ae.ErrorCode() {
 		case "AccessDenied", "Forbidden", "InvalidAccessKeyId", "SignatureDoesNotMatch":
-			return fmt.Errorf("%w: %v", destination.ErrPermissionDenied, err)
+			return errors.Join(destination.ErrPermissionDenied, err)
 		case "SlowDown", "RequestLimitExceeded", "ThrottlingException":
-			return fmt.Errorf("%w: %v", destination.ErrDestinationThrottled, err)
+			return errors.Join(destination.ErrDestinationThrottled, err)
 		case "NoSuchBucket":
-			return fmt.Errorf("%w: %v", destination.ErrIncompatibleConfig, err)
+			return errors.Join(destination.ErrIncompatibleConfig, err)
 		case "InternalError", "ServiceUnavailable", "RequestTimeout":
-			return fmt.Errorf("%w: %v", destination.ErrDestinationUnavailable, err)
+			return errors.Join(destination.ErrDestinationUnavailable, err)
 		}
 	}
 	// HTTP-status fallback for responses that didn't carry a typed code.
@@ -76,19 +76,19 @@ func classifyS3Error(err error) error {
 	if errors.As(err, &re) && re.Response != nil {
 		switch re.Response.StatusCode {
 		case http.StatusTooManyRequests:
-			return fmt.Errorf("%w: %v", destination.ErrDestinationThrottled, err)
+			return errors.Join(destination.ErrDestinationThrottled, err)
 		case http.StatusForbidden:
-			return fmt.Errorf("%w: %v", destination.ErrPermissionDenied, err)
+			return errors.Join(destination.ErrPermissionDenied, err)
 		}
 		if re.Response.StatusCode >= 500 {
-			return fmt.Errorf("%w: %v", destination.ErrDestinationUnavailable, err)
+			return errors.Join(destination.ErrDestinationUnavailable, err)
 		}
 	}
 	// Network-class errors (DNS, connection refused, timeouts) surface as
 	// transient — orchestrator may retry.
 	var netErr net.Error
 	if errors.As(err, &netErr) {
-		return fmt.Errorf("%w: %v", destination.ErrDestinationUnavailable, err)
+		return errors.Join(destination.ErrDestinationUnavailable, err)
 	}
 	return err
 }
