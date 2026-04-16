@@ -404,7 +404,6 @@ Benchmark tests require multi-client coordination and stress scenarios.
 | smb2.bench.oplock1 | Benchmarks | Multi-client oplock benchmark | - |
 | smb2.bench.path-contention-shared | Benchmarks | Multi-client path contention | - |
 | smb2.bench.read | Benchmarks | Multi-client read benchmark | - |
-| smb2.bench.session-setup | Benchmarks | Multi-client session setup benchmark | - |
 
 ### Character Set (Edge Cases)
 

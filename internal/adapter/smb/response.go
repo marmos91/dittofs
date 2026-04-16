@@ -47,29 +47,38 @@ func ProcessSingleRequest(
 	// Run before-hooks (e.g., preauth hash update for NEGOTIATE request)
 	RunBeforeHooks(connInfo, reqHeader.Command, rawMessage)
 
-	// Credit validation: per MS-SMB2 3.3.5.2.3 and 3.3.5.2.5
-	if !session.IsCreditExempt(reqHeader.Command, reqHeader.SessionID) {
-		// Validate CreditCharge against payload size (MS-SMB2 3.3.5.2.5)
-		if connInfo.SupportsMultiCredit {
-			if err := session.ValidateCreditCharge(reqHeader.Command, reqHeader.CreditCharge, body); err != nil {
-				logger.Debug("Credit charge validation failed",
-					"command", reqHeader.Command.String(),
-					"creditCharge", reqHeader.CreditCharge,
-					"error", err)
-				return SendErrorResponse(reqHeader, types.StatusInvalidParameter, connInfo)
-			}
+	// Credit validation: per MS-SMB2 3.3.5.2.3 and 3.3.5.2.5.
+	// CreditCharge size validation is skipped for credit-exempt commands
+	// (NEGOTIATE, CANCEL, first SESSION_SETUP with sessionID=0) — the
+	// client may not have credits yet. But we STILL consume the sequence
+	// number from the window so Grant/Consume stay in sync with the
+	// client's cur_credits counter; otherwise each credit-exempt request
+	// grants without a matching consume and the server's available
+	// counter drifts up until it pins at maxSize and starves the client
+	// of future grants (issue #378).
+	exempt := session.IsCreditExempt(reqHeader.Command, reqHeader.SessionID)
+	if !exempt && connInfo.SupportsMultiCredit {
+		if err := session.ValidateCreditCharge(reqHeader.Command, reqHeader.CreditCharge, body); err != nil {
+			logger.Debug("Credit charge validation failed",
+				"command", reqHeader.Command.String(),
+				"creditCharge", reqHeader.CreditCharge,
+				"error", err)
+			return SendErrorResponse(reqHeader, types.StatusInvalidParameter, connInfo)
 		}
+	}
 
-		// Validate and consume sequence numbers from window (MS-SMB2 3.3.5.2.3)
-		if connInfo.SequenceWindow != nil {
-			charge := session.EffectiveCreditCharge(reqHeader.CreditCharge)
-			if !connInfo.SequenceWindow.Consume(reqHeader.MessageID, charge) {
-				logger.Debug("Sequence window validation failed",
-					"command", reqHeader.Command.String(),
-					"messageID", reqHeader.MessageID,
-					"creditCharge", charge)
-				return SendErrorResponse(reqHeader, types.StatusInvalidParameter, connInfo)
-			}
+	// Validate and consume sequence numbers from window (MS-SMB2 3.3.5.2.3).
+	// Always runs, even for credit-exempt commands, so the window's
+	// Grant/Consume bookkeeping matches the client's counter exactly.
+	if connInfo.SequenceWindow != nil {
+		charge := session.EffectiveCreditCharge(reqHeader.CreditCharge)
+		if !connInfo.SequenceWindow.Consume(reqHeader.MessageID, charge) {
+			logger.Debug("Sequence window validation failed",
+				"command", reqHeader.Command.String(),
+				"messageID", reqHeader.MessageID,
+				"creditCharge", charge,
+				"exempt", exempt)
+			return SendErrorResponse(reqHeader, types.StatusInvalidParameter, connInfo)
 		}
 	}
 
@@ -386,11 +395,7 @@ func buildResponseHeaderAndBody(reqHeader *header.SMB2Header, ctx *handlers.SMBH
 		sessionID = ctx.SessionID
 	}
 
-	credits := connInfo.SessionManager.GrantCredits(
-		sessionID,
-		reqHeader.Credits,
-		reqHeader.CreditCharge,
-	)
+	credits := grantConnectionCredits(connInfo, sessionID, reqHeader.Credits, reqHeader.CreditCharge)
 
 	// Build response header with calculated credits
 	respHeader := header.NewResponseHeaderWithCredits(reqHeader, result.Status, credits)
@@ -444,19 +449,31 @@ func buildResponseHeaderAndBody(reqHeader *header.SMB2Header, ctx *handlers.SMBH
 	return respHeader, body
 }
 
+// grantConnectionCredits computes the per-session credit grant, then atomically
+// extends the connection's sequence window to match the returned value.
+// Returning the window's actual-granted amount (rather than the requested
+// amount with a separate Remaining()-based clamp) closes the TOCTOU window
+// that would otherwise let two concurrent responses on the same connection
+// both advertise the full remaining capacity. Per MS-SMB2 3.3.1.2 and
+// Samba's source3/smbd/smb2_server.c:smb2_set_operation_credit.
+//
+// The grant is extended BEFORE the response is written. If the write later
+// fails, the server's view of available credits exceeds the client's — a
+// harmless undergrant on the next response, not an overgrant.
+func grantConnectionCredits(connInfo *ConnInfo, sessionID uint64, requested, creditCharge uint16) uint16 {
+	credits := connInfo.SessionManager.GrantCredits(sessionID, requested, creditCharge)
+	if connInfo.SequenceWindow != nil {
+		credits = connInfo.SequenceWindow.Grant(credits)
+	}
+	return credits
+}
+
 // SendErrorResponse sends an SMB2 error response.
 // Per user decision: all responses on encrypted sessions are encrypted,
 // including error responses.
 func SendErrorResponse(reqHeader *header.SMB2Header, status types.Status, connInfo *ConnInfo) error {
-	// Use session manager for adaptive credit grants
-	credits := connInfo.SessionManager.GrantCredits(
-		reqHeader.SessionID,
-		reqHeader.Credits,
-		reqHeader.CreditCharge,
-	)
-
+	credits := grantConnectionCredits(connInfo, reqHeader.SessionID, reqHeader.Credits, reqHeader.CreditCharge)
 	respHeader := header.NewResponseHeaderWithCredits(reqHeader, status, credits)
-
 	return SendMessage(respHeader, MakeErrorBody(), connInfo)
 }
 
@@ -514,10 +531,9 @@ func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, preWri
 					"command", hdr.Command.String(),
 					"sessionID", hdr.SessionID)
 				writeErr := WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, encrypted)
-				// Expand sequence window with granted credits (MS-SMB2 3.3.1.2)
-				if writeErr == nil && connInfo.SequenceWindow != nil && hdr.Credits > 0 {
-					connInfo.SequenceWindow.Grant(hdr.Credits)
-				}
+				// NOTE: the sequence window is extended synchronously in
+				// grantConnectionCredits, BEFORE the write, so no post-write
+				// Grant is needed here (#378).
 				// See comment on the non-encrypted branch below: a write failure
 				// after a preWrite hook leaves the preauth-hash chain advanced
 				// for a response the peer never observed, so poison the
@@ -557,12 +573,11 @@ func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, preWri
 
 	err := WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, smbPayload)
 
-	// Expand sequence window with granted credits (MS-SMB2 3.3.1.2).
-	// This MUST happen after successful write so the client only gets credits
-	// when the response is actually sent.
-	if err == nil && connInfo.SequenceWindow != nil && hdr.Credits > 0 {
-		connInfo.SequenceWindow.Grant(hdr.Credits)
-	}
+	// NOTE: the sequence window is extended synchronously in
+	// grantConnectionCredits, BEFORE the write, so no post-write Grant is
+	// needed here. If this write fails the server's view of outstanding
+	// credits stays ahead of the client's — the next response just grants
+	// less, which is harmless (#378).
 
 	// If the write failed after we already ran the preWrite hook, the
 	// connection's preauth-hash chain has been advanced for a response the
@@ -587,7 +602,16 @@ func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, preWri
 func SendAsyncChangeNotifyResponse(sessionID, messageID, asyncId uint64, response *handlers.ChangeNotifyResponse, connInfo *ConnInfo) error {
 	status := response.GetStatus()
 
-	// Build async response header with matching AsyncId
+	// Build async response header with matching AsyncId.
+	// Grant credits through the connection window so the client's cur_credits
+	// counter stays in sync with the server's bookkeeping (#378). A CHANGE_NOTIFY
+	// completion normally arrives without a correlated client request, so ask
+	// for 1 credit — the window may deliver 0 if the connection is already at
+	// the client's uint16 cap.
+	credits := uint16(0)
+	if connInfo.SequenceWindow != nil {
+		credits = connInfo.SequenceWindow.Grant(1)
+	}
 	respHeader := &header.SMB2Header{
 		Command:   types.SMB2ChangeNotify,
 		Status:    status,
@@ -595,7 +619,7 @@ func SendAsyncChangeNotifyResponse(sessionID, messageID, asyncId uint64, respons
 		MessageID: messageID,
 		SessionID: sessionID,
 		AsyncId:   asyncId,
-		Credits:   1, // Grant 1 credit with async response
+		Credits:   credits,
 	}
 
 	// Body format selection (per MS-SMB2 2.2.2 + WPTS Smb2Decoder.IsErrorPacket):
@@ -644,6 +668,12 @@ func SendAsyncChangeNotifyResponse(sessionID, messageID, asyncId uint64, respons
 // This is the general-purpose counterpart to SendAsyncChangeNotifyResponse --
 // it handles any command type, not just CHANGE_NOTIFY.
 func SendAsyncCompletionResponse(sessionID uint64, messageID uint64, asyncId uint64, command types.Command, status types.Status, body []byte, connInfo *ConnInfo) error {
+	// Route the credit grant through the connection window; see
+	// SendAsyncChangeNotifyResponse for the #378 rationale.
+	credits := uint16(0)
+	if connInfo.SequenceWindow != nil {
+		credits = connInfo.SequenceWindow.Grant(1)
+	}
 	respHeader := &header.SMB2Header{
 		StructureSize: header.HeaderSize,
 		Command:       command,
@@ -652,7 +682,7 @@ func SendAsyncCompletionResponse(sessionID uint64, messageID uint64, asyncId uin
 		MessageID:     messageID,
 		SessionID:     sessionID,
 		AsyncId:       asyncId,
-		Credits:       1, // Grant 1 credit with async completion
+		Credits:       credits,
 	}
 
 	// Per MS-SMB2 2.2.2: error/warning responses use the ERROR format.

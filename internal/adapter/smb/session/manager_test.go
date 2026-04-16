@@ -112,7 +112,11 @@ func TestManager_FixedStrategy(t *testing.T) {
 }
 
 func TestManager_EchoStrategy(t *testing.T) {
+	// Use a config with an elevated MinGrant so the "BelowMin" case
+	// exercises the floor (the Samba-compatible default MinGrant=1 has
+	// nothing below it, so it can't cover that branch on its own).
 	config := DefaultCreditConfig()
+	config.MinGrant = 8
 	mgr := NewManagerWithStrategy(StrategyEcho, config)
 
 	session := mgr.CreateSession("client", true, "guest", "")

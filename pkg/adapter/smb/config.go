@@ -337,12 +337,22 @@ func (c *Config) applyDefaults() {
 }
 
 // applyDefaults fills in zero values with sensible defaults.
+//
+// Defaults track Samba's server behavior (source3/smbd/smb2_server.c +
+// smb.conf `smb2 max credits = 8192` default) so the client's per-connection
+// credit accounting (capped at uint16 max = 65535 on the Samba client, see
+// libcli/smb/smbXcli_base.c:4295–4298) never overflows during rapid
+// session-setup/logoff loops. Issue #378.
 func (c *CreditsConfig) applyDefaults() {
 	if c.Strategy == "" {
-		c.Strategy = "adaptive"
+		// Echo the client's CreditRequest, bounded by the connection window.
+		// MS-SMB2 3.3.1.2 — and what Samba's server does in
+		// smb2_set_operation_credit (credits_granted = credit_charge +
+		// (credits_requested − 1)).
+		c.Strategy = "echo"
 	}
 	if c.MinGrant == 0 {
-		c.MinGrant = 16
+		c.MinGrant = 1
 	}
 	if c.MaxGrant == 0 {
 		c.MaxGrant = session.MaximumCreditGrant
@@ -351,7 +361,9 @@ func (c *CreditsConfig) applyDefaults() {
 		c.InitialGrant = session.DefaultInitialCredits
 	}
 	if c.MaxSessionCredits == 0 {
-		c.MaxSessionCredits = 65535
+		// Match Samba's `smb2 max credits = 8192` default
+		// (and Windows 2008R2+).
+		c.MaxSessionCredits = 8192
 	}
 	if c.LoadThresholdHigh == 0 {
 		c.LoadThresholdHigh = 1000

@@ -302,7 +302,7 @@ func TestCompound_MiddleResponsesGrantZeroCredits(t *testing.T) {
 	}
 
 	// Apply compound credit zeroing: middle responses grant 0
-	applyCompoundCreditZeroing(responses)
+	applyCompoundCreditZeroing(responses, &ConnInfo{})
 
 	assert.Equal(t, uint16(0), responses[0].respHeader.Credits,
 		"first (middle) response should have Credits=0")
@@ -329,7 +329,7 @@ func TestCompound_SequenceWindowExpandedByLastResponse(t *testing.T) {
 	}
 
 	// Apply compound credit zeroing
-	applyCompoundCreditZeroing(responses)
+	applyCompoundCreditZeroing(responses, &ConnInfo{})
 
 	// Only the last response should expand the window
 	lastCredits := responses[len(responses)-1].respHeader.Credits
@@ -359,7 +359,7 @@ func TestCompound_SingleResponseNoZeroing(t *testing.T) {
 
 	// For single response, no zeroing should be applied
 	// (sendCompoundResponses delegates to SendMessage for len==1)
-	applyCompoundCreditZeroing(responses)
+	applyCompoundCreditZeroing(responses, &ConnInfo{})
 
 	// Single response should NOT be zeroed
 	assert.Equal(t, uint16(10), responses[0].respHeader.Credits,

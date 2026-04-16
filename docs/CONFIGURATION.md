@@ -672,13 +672,16 @@ adapters:
     metrics_log_interval: 5m  # Metrics logging interval (0 = disabled)
 
     # Credit management configuration
-    # Credits control SMB2 flow control and client parallelism
+    # Credits control SMB2 flow control and client parallelism.
+    # Defaults match Samba (`smb2 max credits = 8192`, initial grant = 1)
+    # and Windows 2008R2+. See docs/SMB.md for the credit-accounting model
+    # and rationale.
     credits:
-      strategy: adaptive      # fixed, echo, adaptive (default: adaptive)
-      min_grant: 16           # Minimum credits per response
-      max_grant: 8192         # Maximum credits per response
-      initial_grant: 256      # Credits for initial requests (NEGOTIATE)
-      max_session_credits: 65535  # Max outstanding credits per session
+      strategy: echo            # fixed, echo, adaptive (default: echo)
+      min_grant: 1              # Minimum credits per response
+      max_grant: 8192           # Maximum credits per response
+      initial_grant: 1          # Floor when client requests 0 credits
+      max_session_credits: 8192 # Per-connection credit window cap
 
       # Adaptive strategy thresholds (ignored for fixed/echo)
       load_threshold_high: 1000       # Start throttling above this load
@@ -690,26 +693,29 @@ adapters:
 
 | Strategy | Description | Use Case |
 |----------|-------------|----------|
+| `echo` | Grants what client requests (bounded by `MinGrant`/`MaxGrant`, clamped by window) | **Recommended, default** — matches Samba and MS-SMB2 3.3.1.2 |
 | `fixed` | Always grants `initial_grant` credits | Simple, predictable behavior |
-| `echo` | Grants what client requests (within bounds) | Maintains client's credit pool |
-| `adaptive` | Adjusts based on server load and client behavior | **Recommended** for production |
+| `adaptive` | Scales grants by live load and client-outstanding factors | Throughput-focused; may grant more aggressively than clients expect |
 
 **SMB Credit Configuration Options:**
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `strategy` | `adaptive` | Credit grant strategy |
-| `min_grant` | `16` | Minimum credits per response (prevents deadlock) |
+| `strategy` | `echo` | Credit grant strategy |
+| `min_grant` | `1` | Minimum credits per response |
 | `max_grant` | `8192` | Maximum credits per response |
-| `initial_grant` | `256` | Credits for NEGOTIATE/SESSION_SETUP |
-| `max_session_credits` | `65535` | Max outstanding credits per session |
-| `load_threshold_high` | `1000` | Server load that triggers throttling |
-| `load_threshold_low` | `100` | Server load that triggers boost |
-| `aggressive_client_threshold` | `256` | Outstanding requests that trigger client throttling |
+| `initial_grant` | `1` | Floor when client requests 0 credits (Samba-compatible) |
+| `max_session_credits` | `8192` | Per-connection credit window cap (Samba's `smb2 max credits`) |
+| `load_threshold_high` | `1000` | (adaptive only) Server load that triggers throttling |
+| `load_threshold_low` | `100` | (adaptive only) Server load that triggers boost |
+| `aggressive_client_threshold` | `256` | (adaptive only) Outstanding requests that trigger client throttling |
 
-> **Note**: SMB2 credits are flow control tokens that limit concurrent operations per client.
-> Higher credits = more parallelism but more server resource consumption.
-> The adaptive strategy balances throughput and protection automatically.
+> **Note**: Every response's credit grant is clamped to the connection's
+> remaining window capacity before being written, regardless of strategy.
+> This prevents the client's per-connection `cur_credits` counter from
+> overflowing — Samba's client hard-caps it at `uint16` max and rejects
+> overflowing responses with `NT_STATUS_INVALID_NETWORK_RESPONSE`
+> (see issue #378 and `docs/SMB.md` §Credit Flow Control).
 
 ### SMB3 Encryption Configuration
 

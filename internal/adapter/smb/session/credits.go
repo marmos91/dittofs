@@ -2,9 +2,20 @@ package session
 
 // Credit-related constants
 const (
-	// DefaultInitialCredits is the default number of credits granted after NEGOTIATE.
-	// This provides a good balance between client responsiveness and server protection.
-	DefaultInitialCredits = 256
+	// DefaultInitialCredits is the base credit floor used when the client
+	// requests 0 credits. Matches Samba's initial server grant
+	// (source3/smbd/smb2_server.c:304 sets xconn->smb2.credits.granted = 1).
+	// The server grows the client's credit pool in response to the client's
+	// CreditRequest field on subsequent operations, bounded by the connection
+	// window cap (see MaxSessionCredits).
+	//
+	// Previously set to 256 with an adaptive load boost to ~384 per response.
+	// That combination overflowed the Samba client's per-connection
+	// uint16_t cur_credits counter (MS-SMB2 3.3.1.2; Samba client check at
+	// libcli/smb/smbXcli_base.c:4295–4298) during rapid SESSION_SETUP/LOGOFF
+	// loops, producing NT_STATUS_INVALID_NETWORK_RESPONSE after ~85 iterations
+	// — see issue #378.
+	DefaultInitialCredits = 1
 
 	// MinimumCreditGrant is the minimum credits to grant per response.
 	// Always granting at least 1 credit prevents client deadlock.
@@ -77,16 +88,18 @@ type CreditConfig struct {
 	AggressiveClientThreshold int64
 }
 
-// DefaultCreditConfig returns a production-ready configuration.
+// DefaultCreditConfig returns a production-ready configuration aligned with
+// Samba's server defaults (`smb2 max credits = 8192`, initial grant = 1).
+// See applyDefaults in pkg/adapter/smb/config.go for the rationale (#378).
 func DefaultCreditConfig() CreditConfig {
 	return CreditConfig{
-		MinGrant:                  16,
+		MinGrant:                  1,
 		MaxGrant:                  MaximumCreditGrant,
 		InitialGrant:              DefaultInitialCredits,
-		MaxSessionCredits:         65535, // ~64K credits max per session
-		LoadThresholdHigh:         1000,  // Start throttling at 1000 active requests
-		LoadThresholdLow:          100,   // Boost credits below 100 active requests
-		AggressiveClientThreshold: 256,   // Throttle if client has 256+ outstanding
+		MaxSessionCredits:         8192,
+		LoadThresholdHigh:         1000,
+		LoadThresholdLow:          100,
+		AggressiveClientThreshold: 256,
 	}
 }
 

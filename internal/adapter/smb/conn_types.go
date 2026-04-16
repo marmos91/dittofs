@@ -78,13 +78,16 @@ type SessionTracker interface {
 }
 
 // NewSequenceWindowForConnection creates a CommandSequenceWindow sized for the
-// given session manager's credit configuration. The window max size is set to
-// 2 * MaxSessionCredits per MS-SMB2 3.3.1.1, with a reasonable default if
-// the manager is nil.
+// given session manager's credit configuration. The window's maxSize is set
+// to MaxSessionCredits — the same cap Samba uses (`smb2 max credits`,
+// source3/smbd/smb2_server.c credits.max = lp_smb2_max_credits()). The Samba
+// client hard-caps its own per-connection cur_credits counter at uint16 max
+// (libcli/smb/smbXcli_base.c:4295–4298), so this cap protects against
+// INVALID_NETWORK_RESPONSE — issue #378.
 func NewSequenceWindowForConnection(mgr *session.Manager) *session.CommandSequenceWindow {
-	maxSize := uint64(131070) // 2 * 65535 default
+	maxSize := uint64(8192) // Samba default
 	if mgr != nil {
-		maxSize = 2 * uint64(mgr.Config().MaxSessionCredits)
+		maxSize = uint64(mgr.Config().MaxSessionCredits)
 	}
 	return session.NewCommandSequenceWindow(maxSize)
 }

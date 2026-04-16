@@ -21,26 +21,32 @@ type CommandSequenceWindow struct {
 	low     uint64   // Lowest tracked sequence number (bitmap base)
 	high    uint64   // Next sequence number to be granted (exclusive upper bound)
 	bitmap  []uint64 // Bit i set = sequence (low + bit_position) is available
-	maxSize uint64   // Maximum window size (2x MaxSessionCredits per MS-SMB2)
+	maxSize uint64   // Maximum window size (Samba-compatible `smb2 max credits`)
+	// available counts sequences still set in the bitmap (i.e., the client's
+	// per-connection credit balance as the server sees it). Needed because
+	// (high - low) overcounts when advanceLow can't advance (the oldest
+	// message is still unconsumed but later ones are). Samba tracks the same
+	// quantity in xconn->smb2.credits.seq_range.
+	available uint64
 }
 
 // NewCommandSequenceWindow creates a new sequence window initialized with
-// sequence {0} available. The maxSize parameter limits the maximum window
-// size to prevent unbounded bitmap growth; it should be set to
-// 2 * CreditConfig.MaxSessionCredits (default: 2 * 65535 = 131070).
+// sequence {0} available. maxSize caps outstanding credits on the connection
+// (the client's cur_credits counter) — callers should pass
+// CreditConfig.MaxSessionCredits (Samba default: 8192). See
+// NewSequenceWindowForConnection in internal/adapter/smb/conn_types.go.
 //
 // Per MS-SMB2 3.3.1.1: Upon creation, the server MUST initialize the
 // CommandSequenceWindow to {0}.
 func NewCommandSequenceWindow(maxSize uint64) *CommandSequenceWindow {
-	w := &CommandSequenceWindow{
-		low:     0,
-		high:    1, // Sequence 0 is available, so next to grant is 1
-		bitmap:  make([]uint64, 1),
-		maxSize: maxSize,
+	// bitmap[0] bit 0 = sequence 0 is available (high-exclusive, so next to grant is 1).
+	return &CommandSequenceWindow{
+		low:       0,
+		high:      1,
+		bitmap:    []uint64{1},
+		maxSize:   maxSize,
+		available: 1,
 	}
-	// Set bit 0 = sequence 0 is available
-	w.bitmap[0] = 1
-	return w
 }
 
 // Consume validates and consumes MessageId sequence numbers [messageId, messageId+charge).
@@ -88,6 +94,7 @@ func (w *CommandSequenceWindow) Consume(messageId uint64, creditCharge uint16) b
 		bitIdx := offset % 64
 		w.bitmap[wordIdx] &^= 1 << bitIdx
 	}
+	w.available -= charge
 
 	// Advance low watermark past fully consumed words
 	w.advanceLow()
@@ -95,25 +102,34 @@ func (w *CommandSequenceWindow) Consume(messageId uint64, creditCharge uint16) b
 	return true
 }
 
-// Grant adds count new available sequence numbers at the high end of the window.
-// If the window would exceed maxSize, the grant is capped to keep the window
-// within bounds.
+// Grant extends the window by up to `count` sequence numbers and returns
+// the actual amount granted, which may be less than `count` if the grant
+// would push the client's outstanding credits past maxSize.
 //
-// Per MS-SMB2 3.3.1.2: The server grants credits by expanding the
-// CommandSequenceWindow with new available sequence numbers.
-func (w *CommandSequenceWindow) Grant(count uint16) {
+// Callers MUST use the returned value as the CreditResponse field in the
+// outgoing SMB2 header. A naïve two-step "read Remaining(), clamp, Grant()"
+// pattern races under pipelining on the same connection: two goroutines
+// read the same remaining capacity, each clamps to it, then both Grant()
+// — the server's own bookkeeping stays correct (Grant caps internally),
+// but the advertised credits on the wire double-count, re-creating the
+// client-side cur_credits overflow that issue #378 fixed.
+//
+// Per MS-SMB2 3.3.1.2. Matches Samba's credits_possible computation in
+// source3/smbd/smb2_server.c:smb2_set_operation_credit, which also caps
+// against outstanding credits atomically. The bitmap's raw span
+// (high - low) can briefly overshoot maxSize when advanceLow is blocked
+// by a stale bit, but bitmap memory stays O(maxSize) because advanceLow
+// reclaims full 64-bit words as consumption catches up.
+func (w *CommandSequenceWindow) Grant(count uint16) uint16 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	grant := uint64(count)
-
-	// Cap the window size at maxSize
-	currentSize := w.high - w.low
-	if currentSize+grant > w.maxSize {
-		if currentSize >= w.maxSize {
-			return // Already at maximum
+	if w.available+grant > w.maxSize {
+		if w.available >= w.maxSize {
+			return 0
 		}
-		grant = w.maxSize - currentSize
+		grant = w.maxSize - w.available
 	}
 
 	newHigh := w.high + grant
@@ -134,6 +150,8 @@ func (w *CommandSequenceWindow) Grant(count uint16) {
 	}
 
 	w.high = newHigh
+	w.available += grant
+	return uint16(grant)
 }
 
 // Size returns the current window size (the span from low to high watermark).
@@ -143,16 +161,66 @@ func (w *CommandSequenceWindow) Size() uint64 {
 	return w.high - w.low
 }
 
+// Reclaim decreases the outstanding-credit counter without retracting any
+// message IDs from the window. Used by the compound response path: each
+// sub-response's Grant() extends the window individually, but MS-SMB2
+// 3.2.4.1.4 requires middle compound responses to advertise Credits=0
+// on the wire. After zeroing those headers, Reclaim rolls back the
+// `available` bookkeeping so the server's view of the client's
+// cur_credits matches what we actually told the client. The underlying
+// message IDs stay marked valid — if the client ever sent one (it won't,
+// because we didn't grant it) we'd still accept it. Reclaim is an
+// over-grant correction, not a credit revocation.
+//
+// Safe to call with n exceeding available; the counter saturates at 0.
+func (w *CommandSequenceWindow) Reclaim(n uint16) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	reclaim := uint64(n)
+	if reclaim > w.available {
+		reclaim = w.available
+	}
+	w.available -= reclaim
+}
+
+// Available returns the number of unconsumed credits currently in the window.
+// Equivalent to the client's cur_credits counter and mirrors Samba's
+// xconn->smb2.credits.seq_range.
+func (w *CommandSequenceWindow) Available() uint64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.available
+}
+
+// MaxSize returns the window's maximum allowed span. Callers use this to
+// bound credit grants so the total outstanding credits on the connection
+// stay within the client's tracked window.
+func (w *CommandSequenceWindow) MaxSize() uint64 {
+	return w.maxSize
+}
+
+// Remaining returns how many new credits the server can extend the window
+// by without overflowing the client's per-connection cur_credits counter
+// (MS-SMB2 3.3.1.2). Callers (buildResponseHeaderAndBody) must clamp the
+// credits field in outgoing responses to this value. Matches Samba's
+// credits_possible = max - seq_range bookkeeping (#378).
+func (w *CommandSequenceWindow) Remaining() uint64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.available >= w.maxSize {
+		return 0
+	}
+	return w.maxSize - w.available
+}
+
 // advanceLow advances the low watermark past fully consumed bitmap words
-// (all-zero uint64 blocks), compacting the bitmap. Must be called with
-// w.mu held.
+// (all-zero uint64 blocks), compacting the bitmap. The `available` counter
+// is the authoritative credit tally — this only reclaims memory. Must be
+// called with w.mu held.
 func (w *CommandSequenceWindow) advanceLow() {
-	// Advance past fully consumed words (all bits zero)
 	for len(w.bitmap) > 0 && w.bitmap[0] == 0 {
-		// Only advance if this word is fully within the tracked range
 		nextLow := w.low + 64
 		if nextLow > w.high {
-			// Don't advance past high watermark
 			break
 		}
 		w.bitmap = w.bitmap[1:]

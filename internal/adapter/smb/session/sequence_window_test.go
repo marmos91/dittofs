@@ -134,8 +134,13 @@ func TestSequenceWindow_MaxSizeCap(t *testing.T) {
 	// Grant way more than maxSize
 	w.Grant(200)
 
-	// Size should be capped at maxSize
-	assert.LessOrEqual(t, w.Size(), maxSize, "window size should not exceed maxSize")
+	// The available credit count — what the client's cur_credits will see
+	// after Grant — must never exceed maxSize (MS-SMB2 3.3.1.2 /
+	// Connection.MaxCredits). The raw window span is allowed to exceed
+	// maxSize briefly when the oldest bit is still in the bitmap, but
+	// Remaining() must still report 0 so further responses grant nothing.
+	assert.LessOrEqual(t, w.Available(), maxSize, "available credits should not exceed maxSize")
+	assert.Equal(t, uint64(0), w.Remaining(), "Remaining should be 0 once available == maxSize")
 }
 
 func TestSequenceWindow_GrantAfterHeavyConsumption(t *testing.T) {
