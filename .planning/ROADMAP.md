@@ -45,7 +45,13 @@ Plans:
   2. PostgreSQL store produces a logical binary dump under a single `REPEATABLE READ` transaction without holding locks against vacuum for longer than the configured budget
   3. Memory store produces an RWMutex-guarded dump and can reload it identically (for parity and tests)
   4. Round-trip (backup → restore → byte-compare) passes for all three engines in unit/integration tests
-**Plans**: TBD
+**Plans:** 4 plans
+
+Plans:
+- [x] 02-01-PLAN.md — Phase-2 sentinel errors (ErrRestoreDestinationNotEmpty/Corrupt/SchemaVersionMismatch/BackupAborted) + shared `pkg/metadata/storetest/backup_conformance.go` suite (RoundTrip/ConcurrentWriter/Corruption/NonEmptyDest/PayloadIDSet)
+- [x] 02-02-PLAN.md — Memory store Backupable driver: gob-encoded root struct, RWMutex-held same-snapshot PayloadIDSet + encode (D-02, D-05, D-06)
+- [x] 02-03-PLAN.md — Badger store Backupable driver: custom streaming inside a single `db.View` txn (D-03 — NOT `DB.Backup`), framed wire format, key_prefix_list defensive check (ENG-01)
+- [x] 02-04-PLAN.md — Postgres store Backupable driver: tar-of-COPYs under `REPEATABLE READ` / `READ ONLY` tx with `manifest.yaml` sidecar + schema_migration_version check (ENG-02, D-04)
 
 ### Phase 3: Destination Drivers + Encryption
 **Goal**: Backups stream to either local filesystem or S3 with atomic completion semantics, SHA-256 integrity, and optional operator-supplied AES-256-GCM encryption.
@@ -114,7 +120,7 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundations — Models, Manifest, Capability Interface | 0/0 | Not started | - |
-| 2. Per-Engine Backup Drivers | 0/0 | Not started | - |
+| 2. Per-Engine Backup Drivers | 0/4 | Not started | - |
 | 3. Destination Drivers + Encryption | 0/0 | Not started | - |
 | 4. Scheduler + Retention | 0/0 | Not started | - |
 | 5. Restore Orchestration + Safety Rails | 0/0 | Not started | - |
