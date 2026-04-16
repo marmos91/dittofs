@@ -107,6 +107,17 @@ func (h *Handler) Mount(
 		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrServerFault}}, nil
 	}
 
+	// REST-02 / D-02: refuse MOUNT on a disabled share. Per-request check is
+	// the last line of defense when adapters hold a stale reference; the
+	// runtime Share.Enabled flag is flipped synchronously by shares.Service
+	// DisableShare before restore begins. MNT3ERR_ACCES (MountErrAccess=13)
+	// is the spec-prescribed refusal code.
+	if !share.Enabled {
+		logger.Warn("NFS MOUNT refused: share disabled",
+			"share", share.Name, "client_ip", clientIP)
+		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrAccess}}, nil
+	}
+
 	// Security policy enforcement: check auth flavor against share policy.
 	// Per locked decision: existing connections are grandfathered; this check
 	// applies to NEW mount requests only.

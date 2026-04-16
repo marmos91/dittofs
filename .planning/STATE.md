@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v0.13.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 05-08-PLAN.md
-last_updated: "2026-04-16T22:57:37.715Z"
+stopped_at: Completed 05-09-PLAN.md (REST-02 adapter gates + minimal observability)
+last_updated: "2026-04-16T23:16:57.319Z"
 last_activity: 2026-04-16
 progress:
   total_phases: 7
   completed_phases: 3
   total_plans: 28
-  completed_plans: 25
-  percent: 89
+  completed_plans: 26
+  percent: 93
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 ## Current Position
 
 Phase: 05 (restore-orchestration-safety-rails) — EXECUTING
-Plan: 9 of 10
+Plan: 10 of 10
 Status: Ready to execute
 Last activity: 2026-04-16
 
@@ -80,6 +80,8 @@ Historical decisions archived in PROJECT.md Key Decisions table.
 - [Phase 05]: Plan 05-07: SetRestoreBumpBootVerifier post-construction setter on runtime.Runtime avoids adapter→runtime import cycle
 - [Phase 05]: Plan 08: block-GC hold uses at-GC-time manifest union; no persisted hold table (D-11)
 - [Phase 05]: Plan 08: provider errors fail-open (under-hold) rather than abort GC
+- [Phase 05]: Plan 09: Shipped MetricsCollector + Tracer interfaces with Noop defaults and OTel concrete; deferred PromMetrics concrete because prometheus/client_golang not in go.mod and Phase 5 forbids new top-level deps.
+- [Phase 05]: Plan 09: Propagate share.Enabled from DB model to runtime ShareConfig in init.go (Rule 3 auto-fix) — without this, production upgrades would load all shares as Enabled=false and adapter gates would refuse everything.
 
 ### Pending Todos
 
@@ -91,6 +93,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-16T22:57:37.712Z
-Stopped at: Completed 05-08-PLAN.md
+Last session: 2026-04-16T23:16:57.316Z
+Stopped at: Completed 05-09-PLAN.md (REST-02 adapter gates + minimal observability)
 Next action: `/gsd-plan-phase 1` — Foundations: models, manifest, capability interface

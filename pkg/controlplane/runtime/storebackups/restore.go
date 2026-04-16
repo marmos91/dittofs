@@ -69,7 +69,7 @@ type MetadataStoreConfigLister interface {
 //   - On failure: registry untouched; fresh engine + temp path reclaimed
 //     by the restore Executor's defer; BackupJob row records terminal
 //     state (failed / interrupted) for SAFETY-02 visibility.
-func (s *Service) RunRestore(ctx context.Context, repoID string, recordID *string) error {
+func (s *Service) RunRestore(ctx context.Context, repoID string, recordID *string) (err error) {
 	if s.restoreExec == nil {
 		return fmt.Errorf("restore path not wired: Service constructed without restore executor")
 	}
@@ -83,6 +83,19 @@ func (s *Service) RunRestore(ctx context.Context, repoID string, recordID *strin
 		return fmt.Errorf("%w: repo %s", ErrBackupAlreadyRunning, repoID)
 	}
 	defer unlock()
+
+	// D-19: open the restore.run span + attach terminal-state metrics.
+	// s.metrics and s.tracer are set once at construction (via Options) so
+	// no mutex is required on the hot path — they always hold valid values.
+	_, finishSpan := s.tracer.Start(ctx, SpanRestoreRun)
+	defer func() {
+		outcome := classifyOutcome(err)
+		s.metrics.RecordOutcome(KindRestore, outcome)
+		if outcome == OutcomeSucceeded {
+			s.metrics.RecordLastSuccess(repoID, KindRestore, s.now())
+		}
+		finishSpan(err)
+	}()
 
 	// Bind the caller ctx to serveCtx so Stop() cancels in-flight restores
 	// (D-17 — mirrors the backup path via deriveRunCtx).

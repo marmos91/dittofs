@@ -59,6 +59,14 @@ type Service struct {
 	// composite Store without any adapter wrapper or noop fallback.
 	metadataConfigs MetadataStoreConfigLister
 
+	// metrics + tracer are the Plan 05-09 D-19 observability hooks. Default
+	// to NoopMetrics + NoopTracer so callers that never call
+	// WithMetricsCollector / WithTracer pay zero overhead. Wire via the
+	// WithMetricsCollector / WithTracer options to enable Prometheus +
+	// OpenTelemetry.
+	metrics MetricsCollector
+	tracer  Tracer
+
 	serveOnce sync.Once
 	serveErr  error
 
@@ -139,6 +147,28 @@ func WithMetadataConfigs(lister MetadataStoreConfigLister) Option {
 	return func(s *Service) { s.metadataConfigs = lister }
 }
 
+// WithMetricsCollector wires the Plan 05-09 D-19 terminal-state counter
+// and last-success gauge. nil is equivalent to NoopMetrics (zero overhead).
+func WithMetricsCollector(m MetricsCollector) Option {
+	return func(s *Service) {
+		if m == nil {
+			m = NoopMetrics{}
+		}
+		s.metrics = m
+	}
+}
+
+// WithTracer wires the Plan 05-09 D-19 backup.run / restore.run span.
+// nil is equivalent to NoopTracer (zero overhead).
+func WithTracer(t Tracer) Option {
+	return func(s *Service) {
+		if t == nil {
+			t = NoopTracer{}
+		}
+		s.tracer = t
+	}
+}
+
 // New constructs the Service. shutdownTimeout of 0 applies DefaultShutdownTimeout.
 func New(s store.BackupStore, resolver StoreResolver, shutdownTimeout time.Duration, opts ...Option) *Service {
 	if shutdownTimeout == 0 {
@@ -151,6 +181,10 @@ func New(s store.BackupStore, resolver StoreResolver, shutdownTimeout time.Durat
 		overlap:         scheduler.NewOverlapGuard(),
 		shutdownTimeout: shutdownTimeout,
 		destFactory:     destination.DestinationFactoryFromRepo,
+		// Default to noop collectors so callers that don't wire
+		// observability still get nil-safe RunBackup/RunRestore paths.
+		metrics: NoopMetrics{},
+		tracer:  NoopTracer{},
 	}
 	svc.sched = scheduler.NewScheduler(scheduler.WithOverlapGuard(svc.overlap))
 	svc.exec = executor.New(s, nil)
@@ -350,12 +384,31 @@ func (s *Service) UpdateRepo(ctx context.Context, repoID string) error {
 // nil and the BackupJob row records the failure (D-16 — no record on fail).
 // Retention failures are logged via RetentionReport and do NOT degrade the
 // parent job's success status (D-15).
-func (s *Service) RunBackup(ctx context.Context, repoID string) (*models.BackupRecord, error) {
+//
+// Named return `err` is observed by the deferred MetricsCollector +
+// Tracer finish so every terminal state (success/failed/interrupted) emits
+// exactly one counter increment plus a span end. Plan 05-09 D-19 / D-20.
+func (s *Service) RunBackup(ctx context.Context, repoID string) (rec *models.BackupRecord, err error) {
 	unlock, acquired := s.overlap.TryLock(repoID)
 	if !acquired {
 		return nil, fmt.Errorf("%w: repo %s", ErrBackupAlreadyRunning, repoID)
 	}
 	defer unlock()
+
+	// D-19: open the backup.run span + attach terminal-state metrics.
+	// s.metrics and s.tracer are set once at construction (via Options) so
+	// no mutex is required on the hot path — they always hold valid values
+	// (Noop* by default). Tests that swap observability mid-flight should
+	// do so only from a single goroutine before calling RunBackup.
+	_, finishSpan := s.tracer.Start(ctx, SpanBackupRun)
+	defer func() {
+		outcome := classifyOutcome(err)
+		s.metrics.RecordOutcome(KindBackup, outcome)
+		if outcome == OutcomeSucceeded {
+			s.metrics.RecordLastSuccess(repoID, KindBackup, s.now())
+		}
+		finishSpan(err)
+	}()
 
 	// Bind the caller ctx to the service's serveCtx so that Stop() cancels
 	// in-flight runs regardless of whether they were launched by the scheduler
@@ -387,7 +440,7 @@ func (s *Service) RunBackup(ctx context.Context, repoID string) (*models.BackupR
 		}
 	}()
 
-	rec, err := s.exec.RunBackup(runCtx, source, dst, repo, storeID, storeKind)
+	rec, err = s.exec.RunBackup(runCtx, source, dst, repo, storeID, storeKind)
 	if err != nil {
 		return nil, err
 	}
@@ -454,4 +507,28 @@ func (s *Service) deriveRunCtx(caller context.Context) (context.Context, context
 		stop()
 		cancel()
 	}
+}
+
+// now returns the current time honoring the injected backup.Clock. Used by
+// the D-19 last-success gauge hook so tests can pin a deterministic
+// timestamp via WithClock.
+func (s *Service) now() time.Time {
+	if s.clock != nil {
+		return s.clock.Now()
+	}
+	return time.Now()
+}
+
+// classifyOutcome maps RunBackup / RunRestore's final error into the
+// observable {succeeded, failed, interrupted} taxonomy (D-19). Kept here
+// rather than in metrics.go because the classification is a property of the
+// Service's error contract, not of the collector.
+func classifyOutcome(err error) string {
+	if err == nil {
+		return OutcomeSucceeded
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return OutcomeInterrupted
+	}
+	return OutcomeFailed
 }

@@ -113,7 +113,7 @@ Plans:
 - [x] 05-06-PLAN.md — pkg/backup/restore/ package (Executor + fresh_store + swap + errors) + ListSucceededRecordsByRepo (REST-01, REST-03..05, SAFETY-02)
 - [x] 05-07-PLAN.md — storebackups.Service.RunRestore + orphan sweep + SAFETY-02 verify (REST-01..05, SAFETY-02)
 - [x] 05-08-PLAN.md — gc.BackupHoldProvider + storebackups.BackupHold (SAFETY-01)
-- [ ] 05-09-PLAN.md — Adapter dispatch gates (NFS mount, NFSv4 PUTFH, SMB TREE_CONNECT) + Prometheus + OTel hooks (REST-02)
+- [x] 05-09-PLAN.md — Adapter dispatch gates (NFS mount, NFSv4 PUTFH, SMB TREE_CONNECT) + Prometheus + OTel hooks (REST-02)
 - [ ] 05-10-PLAN.md — Runtime.RunBlockGC production entrypoint + POST /api/blockgc/run admin endpoint (SAFETY-01 end-to-end)
 
 ### Phase 6: CLI & REST API Surface
