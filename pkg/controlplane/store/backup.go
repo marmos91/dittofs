@@ -283,3 +283,14 @@ func (s *GORMStore) RecoverInterruptedJobs(ctx context.Context) (int, error) {
 		})
 	return int(result.RowsAffected), result.Error
 }
+
+// PruneBackupJobsOlderThan deletes BackupJob rows whose FinishedAt is older
+// than cutoff. Jobs with NULL FinishedAt (pending/running — no worker yet
+// or still in flight) are NEVER deleted. Returns the count of pruned rows.
+// Used by the Phase 4 retention pass per D-17 (30-day default job history).
+func (s *GORMStore) PruneBackupJobsOlderThan(ctx context.Context, cutoff time.Time) (int, error) {
+	result := s.db.WithContext(ctx).
+		Where("finished_at IS NOT NULL AND finished_at < ?", cutoff).
+		Delete(&models.BackupJob{})
+	return int(result.RowsAffected), result.Error
+}

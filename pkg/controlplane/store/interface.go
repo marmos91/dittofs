@@ -440,6 +440,11 @@ type BackupStore interface {
 	// Returns the number of jobs transitioned. Called once on server startup
 	// (SAFETY-02); Phase 5 wires the boot hook in lifecycle.Service.
 	RecoverInterruptedJobs(ctx context.Context) (int, error)
+
+	// PruneBackupJobsOlderThan deletes finished BackupJob rows older than the
+	// cutoff. Running or pending jobs (FinishedAt is nil) are never pruned.
+	// Phase 4 retention invokes this with a 30-day cutoff per D-17.
+	PruneBackupJobsOlderThan(ctx context.Context, cutoff time.Time) (int, error)
 }
 
 // AdapterStore provides adapter configuration CRUD and protocol-specific settings.
