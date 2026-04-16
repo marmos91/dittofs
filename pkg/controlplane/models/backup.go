@@ -49,15 +49,28 @@ const (
 	BackupRepoKindS3 BackupRepoKind = "s3"
 )
 
-// BackupRepo defines a backup destination configuration scoped to a metadata store.
-// A single metadata store may have multiple repos (3-2-1 strategy). Repo names are
-// unique per (metadata_store_id, name) — the same name may be reused across stores.
+// BackupRepo defines a backup destination configuration scoped to a polymorphic
+// target (metadata store in v0.13.0; block store is a plausible future target).
+// A single target may have multiple repos (3-2-1 strategy). Repo names are
+// unique per (target_kind, target_id, name) — the same name may be reused
+// across targets.
+//
+// Phase 4 (D-26) migrated this model from an FK-bound `metadata_store_id`
+// column to a polymorphic `(target_id, target_kind)` pair; the direct FK to
+// metadata_store_configs was dropped so target_kind can be extended without
+// schema change. Validation that (target_id, target_kind) resolves to an
+// actual store moves to the service layer (runtime/storebackups).
+//
+// target_kind is a free-form size:10 column at the database level; allowed
+// values are enforced by the service layer via models.ErrInvalidTargetKind.
+// Today only "metadata" is accepted; "block" is reserved for future work.
 type BackupRepo struct {
-	ID              string         `gorm:"primaryKey;size:36" json:"id"`
-	MetadataStoreID string         `gorm:"not null;size:36;uniqueIndex:idx_backup_repo_store_name" json:"metadata_store_id"`
-	Name            string         `gorm:"not null;size:255;uniqueIndex:idx_backup_repo_store_name" json:"name"`
-	Kind            BackupRepoKind `gorm:"not null;size:10;index" json:"kind"`
-	Config          string         `gorm:"type:text" json:"-"` // JSON blob for destination-specific fields (path, bucket, region, prefix, ...)
+	ID         string         `gorm:"primaryKey;size:36" json:"id"`
+	TargetID   string         `gorm:"not null;size:36;uniqueIndex:idx_backup_repo_target_name" json:"target_id"`
+	TargetKind string         `gorm:"not null;size:10;default:'metadata';index" json:"target_kind"`
+	Name       string         `gorm:"not null;size:255;uniqueIndex:idx_backup_repo_target_name" json:"name"`
+	Kind       BackupRepoKind `gorm:"not null;size:10;index" json:"kind"`
+	Config     string         `gorm:"type:text" json:"-"` // JSON blob for destination-specific fields (path, bucket, region, prefix, ...)
 
 	// Scheduling — nullable means no schedule set.
 	Schedule *string `gorm:"size:255" json:"schedule,omitempty"` // cron expression
@@ -73,9 +86,6 @@ type BackupRepo struct {
 
 	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updated_at"`
-
-	// Relationships
-	MetadataStore MetadataStoreConfig `gorm:"foreignKey:MetadataStoreID" json:"metadata_store,omitzero"`
 
 	// Parsed configuration (not stored in DB)
 	ParsedConfig map[string]any `gorm:"-" json:"config,omitempty"`

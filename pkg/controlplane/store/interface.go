@@ -337,19 +337,23 @@ type BlockStoreConfigStore interface {
 
 // BackupStore provides backup repo, record, and job CRUD operations.
 //
-// A backup repo represents a destination configuration scoped to a metadata
-// store. Backup records track historical backup payloads produced against a
+// A backup repo represents a destination configuration scoped to a polymorphic
+// target — a metadata store in v0.13.0; block store is a plausible future
+// target. Backup records track historical backup payloads produced against a
 // repo. Backup jobs track in-flight backup or restore operations — a single
 // backup_jobs table with a kind discriminator column stores both, giving a
 // unified state machine, one polling endpoint, and one interrupted-job
 // recovery path (SAFETY-02).
 //
-// Repo names are unique per (metadata_store_id, name); the same name may be
-// reused across stores. Record and job IDs are ULIDs when left empty on create.
+// Repo names are unique per (target_kind, target_id, name); the same name may
+// be reused across targets. Record and job IDs are ULIDs when left empty on
+// create.
 type BackupStore interface {
 	// Repo operations.
 
-	// GetBackupRepo returns a backup repo by (metadata store ID, name).
+	// GetBackupRepo returns a backup repo by (target ID, name). The storeID
+	// argument is the polymorphic target_id (D-26); callers that need
+	// kind-aware lookups should prefer ListReposByTarget.
 	// Returns models.ErrBackupRepoNotFound if the repo doesn't exist.
 	GetBackupRepo(ctx context.Context, storeID, name string) (*models.BackupRepo, error)
 
@@ -357,17 +361,20 @@ type BackupStore interface {
 	// Returns models.ErrBackupRepoNotFound if the repo doesn't exist.
 	GetBackupRepoByID(ctx context.Context, id string) (*models.BackupRepo, error)
 
-	// ListBackupReposByStore returns all repos scoped to the given metadata store ID.
-	ListBackupReposByStore(ctx context.Context, storeID string) ([]*models.BackupRepo, error)
+	// ListReposByTarget returns every backup repo attached to a given
+	// polymorphic target (kind + id). The Phase 4 scheduler uses this to load
+	// schedules scoped to a specific metadata store (kind="metadata"); future
+	// block-store backup work is purely additive (kind="block").
+	ListReposByTarget(ctx context.Context, kind, targetID string) ([]*models.BackupRepo, error)
 
-	// ListAllBackupRepos returns every backup repo across all metadata stores.
+	// ListAllBackupRepos returns every backup repo across all targets.
 	// Used by the Phase 4 scheduler to drive cron evaluation.
 	ListAllBackupRepos(ctx context.Context) ([]*models.BackupRepo, error)
 
 	// CreateBackupRepo creates a new backup repo.
 	// The ID will be generated (UUID) if empty.
 	// Returns models.ErrDuplicateBackupRepo if a repo with the same
-	// (metadata_store_id, name) already exists.
+	// (target_kind, target_id, name) already exists.
 	CreateBackupRepo(ctx context.Context, repo *models.BackupRepo) (string, error)
 
 	// UpdateBackupRepo updates an existing backup repo.
@@ -387,6 +394,11 @@ type BackupStore interface {
 
 	// ListBackupRecordsByRepo returns all records for a repo, newest first.
 	ListBackupRecordsByRepo(ctx context.Context, repoID string) ([]*models.BackupRecord, error)
+
+	// ListSucceededRecordsForRetention returns succeeded, non-pinned records
+	// for the repo, sorted oldest-first (retention prunes from the tail).
+	// Used by the Phase 4 retention pass (D-10 pinned skip, D-12 succeeded-only).
+	ListSucceededRecordsForRetention(ctx context.Context, repoID string) ([]*models.BackupRecord, error)
 
 	// CreateBackupRecord creates a new backup record.
 	// The ID will be generated (ULID) if empty.

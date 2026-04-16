@@ -46,4 +46,10 @@ var (
 	ErrDuplicateBackupRecord = errors.New("backup record already exists")
 	ErrBackupJobNotFound     = errors.New("backup job not found")
 	ErrDuplicateBackupJob    = errors.New("backup job already exists")
+
+	// Scheduler / backup runtime sentinels (Phase 4)
+	ErrScheduleInvalid      = errors.New("invalid cron schedule expression")
+	ErrRepoNotFound         = errors.New("backup repo not found in scheduler registry")
+	ErrBackupAlreadyRunning = errors.New("backup already running for this repo")
+	ErrInvalidTargetKind    = errors.New("unknown backup target kind")
 )

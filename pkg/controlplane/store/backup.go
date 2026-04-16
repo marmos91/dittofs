@@ -17,10 +17,13 @@ import (
 
 // ----- Repo operations -----
 
+// GetBackupRepo returns a backup repo by (target_id, name). The storeID
+// argument is the polymorphic target_id (D-26); callers that need kind-aware
+// lookups should prefer ListReposByTarget.
 func (s *GORMStore) GetBackupRepo(ctx context.Context, storeID, name string) (*models.BackupRepo, error) {
 	var repo models.BackupRepo
 	if err := s.db.WithContext(ctx).
-		Where("metadata_store_id = ? AND name = ?", storeID, name).
+		Where("target_id = ? AND name = ?", storeID, name).
 		First(&repo).Error; err != nil {
 		return nil, convertNotFoundError(err, models.ErrBackupRepoNotFound)
 	}
@@ -31,10 +34,14 @@ func (s *GORMStore) GetBackupRepoByID(ctx context.Context, id string) (*models.B
 	return getByField[models.BackupRepo](s.db, ctx, "id", id, models.ErrBackupRepoNotFound)
 }
 
-func (s *GORMStore) ListBackupReposByStore(ctx context.Context, storeID string) ([]*models.BackupRepo, error) {
+// ListReposByTarget returns every backup repo attached to a given polymorphic
+// target (kind + id). The Phase 4 scheduler uses this to load schedules scoped
+// to a specific metadata store (kind="metadata"); future block-store backup
+// work is additive (kind="block").
+func (s *GORMStore) ListReposByTarget(ctx context.Context, kind, targetID string) ([]*models.BackupRepo, error) {
 	var results []*models.BackupRepo
 	if err := s.db.WithContext(ctx).
-		Where("metadata_store_id = ?", storeID).
+		Where("target_kind = ? AND target_id = ?", kind, targetID).
 		Find(&results).Error; err != nil {
 		return nil, err
 	}
@@ -130,6 +137,24 @@ func (s *GORMStore) ListBackupRecordsByRepo(ctx context.Context, repoID string) 
 	if err := s.db.WithContext(ctx).
 		Where("repo_id = ?", repoID).
 		Order("created_at DESC").
+		Find(&results).Error; err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+// ListSucceededRecordsForRetention returns succeeded, non-pinned records for
+// the repo, sorted oldest-first. Used by the Phase 4 retention pass (D-10,
+// D-12): pinned rows are outside the count math, and only succeeded rows are
+// restoration candidates (and therefore pruning candidates). Ordering is
+// reversed vs ListBackupRecordsByRepo because retention prunes from the tail
+// (oldest entries first).
+func (s *GORMStore) ListSucceededRecordsForRetention(ctx context.Context, repoID string) ([]*models.BackupRecord, error) {
+	var results []*models.BackupRecord
+	if err := s.db.WithContext(ctx).
+		Where("repo_id = ? AND status = ? AND pinned = ?",
+			repoID, models.BackupStatusSucceeded, false).
+		Order("created_at ASC").
 		Find(&results).Error; err != nil {
 		return nil, err
 	}
