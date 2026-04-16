@@ -168,3 +168,69 @@ branch.
 Once the run completes, signature errors should be absent.
 
 status: resolved (signature race) — pending CI verification
+
+## Continuation State 2026-04-16 (for fresh session)
+
+**Branch**: `fix/issue-367-362-smb-flaky-tests` @ `87ae0eab` (ahead of develop)
+**CI status**: 3/3 green runs with the fix (24481000968, 24482037533, 24482922640). 0 new failures in all 3.
+**Push**: Use HTTPS — SSH agent broken on this host.
+  `git push https://github.com/marmos91/dittofs.git fix/issue-367-362-smb-flaky-tests`
+
+### Primary fix (DONE, f76290e5)
+- Replaced per-connection single-slot stash with context-threaded rawMessage
+- `SMBHandlerContext.RawRequest` set in `ProcessSingleRequest`
+- `InitSessionPreauthHash(sessionID, ssRequestBytes []byte)` takes bytes directly
+- `StashPendingSessionSetup` method + `pendingSessionSetupReq` field deleted
+- `sessionPreauthBeforeHook` simplified (no longer stashes)
+
+### Residual races still producing "Bad SMB2 sign_algo_id=2" (NOT yet fixed)
+CI run 24482922640 shows 5 occurrences across these tests:
+1. `acls.OWNER-RIGHTS-DENY1` — ACLs, likely single-conn — unexpected
+2. `bench.session-setup` — multi-conn SESSION_SETUP churn — residual race
+3. `delete-on-close-perms.FIND_and_set_DOC` — sequential ops — unexpected
+4. `ioctl.dup_extents_src_is_dest_overlap` — sequential ops — unexpected
+5. `replay.channel-sequence` — SMB3 replay/channel — multi-channel scenario
+
+All in tests already on KNOWN_FAILURES, so CI stays green. But these hint at a SECOND race or another bug class.
+
+### Active instrumentation (TEMP, revert before merge)
+- `internal/adapter/smb/signing/signer.go`: SIGN_TRACE + self-verify on every sign
+- `internal/adapter/smb/session/session.go`: Session.SignMessage entry logging
+- `internal/adapter/smb/response.go`: SendMessage session-lookup-miss ERROR trace
+- `internal/adapter/smb/encryption/middleware.go`: ENCRYPT_TRACE + plaintext mutation check
+- `test/e2e/smb3_signing_stress_test.go`: two stress tests
+- `test/smb-conformance/docker-compose.override.yml` (gitignored) — local only
+- `.github/workflows/smb-conformance.yml`: added "Ensure dittofs.log captured" step
+
+### Local reproducer (still valid)
+```bash
+cd test/smb-conformance
+PROFILE=memory docker compose up -d dittofs
+sleep 8
+PROFILE=memory docker compose exec -e PATH=/app:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin dittofs sh /app/bootstrap.sh
+
+# /tmp/loop_bench.sh reproduces bench.session-setup with mixed
+# signature/INVALID_NETWORK_RESPONSE failures (now mostly
+# INVALID_NETWORK_RESPONSE after the fix — a separate bug).
+
+docker run --rm --platform linux/amd64 --network container:smb-conformance-dittofs-1 \
+  quay.io/samba.org/samba-toolbox:v0.8 smbtorture //localhost/smbbasic -p 12445 \
+  -U "wpts-admin%TestPassword01!" --option="netbios name=localhost" \
+  --option="client min protocol=SMB2_02" --option="client max protocol=SMB3" \
+  smb2.bench.session-setup
+```
+
+NOTE: smbtorture fails with NT_STATUS_NO_MEMORY on port 445 (Rosetta/QEMU issue).
+Must use `-p 12445` to hit dittofs directly.
+
+### Next investigation steps (for fresh session)
+1. Download `/tmp/ci-verify-3/smbtorture-*/dittofs.log` (~27 MB) — grep SIGN_TRACE entries around the timestamps of each failing test (23:09:00, 23:14:17, 23:17:18, 23:23:57)
+2. For `acls.OWNER-RIGHTS-DENY1`: is it opening multiple user sessions? Any NTLM re-auth concurrency?
+3. For `replay.channel-sequence`: multi-channel logic likely shares signing keys across channels — per-channel preauth hash may leak
+4. For `bench.session-setup` residual: INVALID_NETWORK_RESPONSE is most common now — debug with local reproducer + trace
+
+### Open decisions for user
+1. Revert temp instrumentation now or keep for residual investigation?
+2. Chase residual races on this branch or file separate issue?
+3. Handle #367 (WPTS timestamp -1 sentinel + DFS) on same branch or separate?
+
