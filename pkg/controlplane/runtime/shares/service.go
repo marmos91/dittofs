@@ -32,6 +32,10 @@ type Share struct {
 	MetadataStore string
 	RootHandle    metadata.FileHandle
 	ReadOnly      bool
+	// Enabled reflects the DB-row `shares.enabled` flag. REST-02 gate:
+	// restore refuses when any share on the target store is still enabled.
+	// Default true when populated from DB via AddShare.
+	Enabled bool
 
 	// DefaultPermission for users without explicit permission: "none", "read", "read-write", "admin".
 	DefaultPermission string
@@ -71,6 +75,9 @@ type ShareConfig struct {
 	Name          string
 	MetadataStore string
 	ReadOnly      bool
+	// Enabled is the persisted `shares.enabled` flag (D-01/D-22). Callers
+	// pass the DB value; AddShare copies it onto the runtime Share.
+	Enabled bool
 
 	DefaultPermission string
 
@@ -127,6 +134,15 @@ type MetadataServiceRegistrar interface {
 // BlockStoreConfigProvider resolves block store configurations from the control plane DB.
 type BlockStoreConfigProvider interface {
 	GetBlockStoreByID(ctx context.Context, id string) (*models.BlockStoreConfig, error)
+}
+
+// ShareStore is the narrow subset of pkg/controlplane/store.ShareStore that
+// DisableShare / EnableShare need. Defined here so callers can pass any store
+// that satisfies it (the concrete GORMStore does) without importing the
+// `store` package from this subtree and creating a cycle.
+type ShareStore interface {
+	GetShare(ctx context.Context, name string) (*models.Share, error)
+	UpdateShare(ctx context.Context, share *models.Share) error
 }
 
 // LocalStoreDefaults holds default sizing for per-share local stores.
@@ -357,6 +373,7 @@ func (s *Service) prepareShare(
 		MetadataStore:      config.MetadataStore,
 		RootHandle:         rootHandle,
 		ReadOnly:           config.ReadOnly,
+		Enabled:            config.Enabled,
 		EncryptData:        config.EncryptData,
 		DefaultPermission:  config.DefaultPermission,
 		Squash:             config.Squash,
@@ -628,6 +645,102 @@ func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *st
 	}
 
 	return nil
+}
+
+// DisableShare sets enabled=false on the share's DB row and runtime Share
+// struct, then invokes notifyShareChange so adapters drop active sessions
+// (D-02, D-03). DB-first-then-runtime ordering is crash-consistent: if the
+// process dies between the two, the next boot reconciles runtime from DB.
+//
+// Idempotent: re-calling on an already-disabled share returns
+// ErrShareAlreadyDisabled without writing to DB or disturbing adapters.
+//
+// Returns ErrShareNotFound if the share name is unknown at either layer.
+// Timeout bound is whatever the caller provides via ctx (Phase-5 RunRestore
+// composes ctx with lifecycle.ShutdownTimeout).
+//
+// Requires Task 1's `"enabled"` entry in GORMStore.UpdateShare's whitelist —
+// otherwise the store.UpdateShare call silently drops the flag.
+func (s *Service) DisableShare(ctx context.Context, store ShareStore, name string) error {
+	dbShare, err := store.GetShare(ctx, name)
+	if err != nil {
+		return fmt.Errorf("load share %q: %w", name, err)
+	}
+	if !dbShare.Enabled {
+		return ErrShareAlreadyDisabled
+	}
+	dbShare.Enabled = false
+	if err := store.UpdateShare(ctx, dbShare); err != nil {
+		return fmt.Errorf("persist disabled state for share %q: %w", name, err)
+	}
+
+	s.mu.Lock()
+	share, exists := s.registry[name]
+	if !exists {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: runtime registry: %q", ErrShareNotFound, name)
+	}
+	share.Enabled = false
+	s.mu.Unlock()
+
+	s.notifyShareChange()
+	return nil
+}
+
+// EnableShare inverts DisableShare. Idempotent: re-calling on an
+// already-enabled share is a no-op (returns nil, no DB write).
+func (s *Service) EnableShare(ctx context.Context, store ShareStore, name string) error {
+	dbShare, err := store.GetShare(ctx, name)
+	if err != nil {
+		return fmt.Errorf("load share %q: %w", name, err)
+	}
+	if dbShare.Enabled {
+		return nil
+	}
+	dbShare.Enabled = true
+	if err := store.UpdateShare(ctx, dbShare); err != nil {
+		return fmt.Errorf("persist enabled state for share %q: %w", name, err)
+	}
+
+	s.mu.Lock()
+	share, exists := s.registry[name]
+	if !exists {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: runtime registry: %q", ErrShareNotFound, name)
+	}
+	share.Enabled = true
+	s.mu.Unlock()
+
+	s.notifyShareChange()
+	return nil
+}
+
+// IsShareEnabled returns the runtime Enabled flag for the named share.
+// Mirror of GetShare read-path discipline (RLock + registry lookup).
+func (s *Service) IsShareEnabled(name string) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	share, exists := s.registry[name]
+	if !exists {
+		return false, fmt.Errorf("%w: %q", ErrShareNotFound, name)
+	}
+	return share.Enabled, nil
+}
+
+// ListEnabledSharesForStore returns the names of all runtime shares that
+// (a) have Enabled=true AND (b) reference metadataStoreName as their
+// metadata store. Phase-5 RunRestore uses this as the REST-02 pre-flight
+// gate: non-empty slice → restore refuses with 409.
+func (s *Service) ListEnabledSharesForStore(metadataStoreName string) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []string
+	for name, share := range s.registry {
+		if share.Enabled && share.MetadataStore == metadataStoreName {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 func (s *Service) GetShare(name string) (*Share, error) {

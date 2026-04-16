@@ -530,6 +530,51 @@ func TestShareOperations(t *testing.T) {
 			t.Error("expected ReadOnly to be true")
 		}
 	})
+
+	t.Run("new share defaults enabled=true", func(t *testing.T) {
+		share := &models.Share{
+			Name:              "/export-enabled-default",
+			MetadataStoreID:   metaStoreID,
+			LocalBlockStoreID: localBlockStoreID,
+		}
+		if _, err := store.CreateShare(ctx, share); err != nil {
+			t.Fatalf("failed to create share: %v", err)
+		}
+		got, err := store.GetShare(ctx, "/export-enabled-default")
+		if err != nil {
+			t.Fatalf("failed to get share: %v", err)
+		}
+		if !got.Enabled {
+			t.Error("expected newly created share to default Enabled=true (D-01)")
+		}
+	})
+
+	t.Run("update share persists enabled=false (D-25 whitelist fix)", func(t *testing.T) {
+		share, err := store.GetShare(ctx, "/export")
+		if err != nil {
+			t.Fatalf("failed to get share: %v", err)
+		}
+		if !share.Enabled {
+			t.Fatalf("precondition: share must start enabled; got Enabled=%v", share.Enabled)
+		}
+		share.Enabled = false
+		if err := store.UpdateShare(ctx, share); err != nil {
+			t.Fatalf("failed to update share: %v", err)
+		}
+		updated, err := store.GetShare(ctx, "/export")
+		if err != nil {
+			t.Fatalf("failed to re-read share: %v", err)
+		}
+		if updated.Enabled {
+			t.Error("expected Enabled=false to round-trip through UpdateShare; got Enabled=true (whitelist entry missing?)")
+		}
+
+		// Restore to enabled so downstream tests see a clean state.
+		updated.Enabled = true
+		if err := store.UpdateShare(ctx, updated); err != nil {
+			t.Fatalf("failed to restore enabled=true: %v", err)
+		}
+	})
 }
 
 func TestSharePermissions(t *testing.T) {

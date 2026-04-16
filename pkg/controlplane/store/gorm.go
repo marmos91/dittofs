@@ -278,6 +278,18 @@ func New(config *Config) (*GORMStore, error) {
 		return nil, fmt.Errorf("failed to backfill backup_repos.target_kind: %w", err)
 	}
 
+	// Post-migration (D-25): backfill shares.enabled for rows that predate
+	// the column. Mirrors the Phase-4 backup_repos.target_kind backfill
+	// above. SQLite dialects may leave NULL on ALTER TABLE ADD COLUMN even
+	// with DEFAULT; explicit backfill keeps the invariant "every share has
+	// a non-NULL enabled value" across both SQLite and PostgreSQL.
+	if err := db.Exec(
+		"UPDATE shares SET enabled = ? WHERE enabled IS NULL",
+		true,
+	).Error; err != nil {
+		return nil, fmt.Errorf("failed to backfill shares.enabled: %w", err)
+	}
+
 	// --- Post-AutoMigrate migrations ---
 	// Step 2: Migrate legacy Share payload_store_id column to local/remote block store IDs.
 	postMigrator := db.Migrator()

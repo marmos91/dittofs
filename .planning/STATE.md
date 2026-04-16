@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v0.13.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 5 context gathered
-last_updated: "2026-04-16T20:21:50.197Z"
+stopped_at: Completed 05-01-PLAN.md
+last_updated: "2026-04-16T21:49:37.822Z"
 last_activity: 2026-04-16
 progress:
   total_phases: 7
   completed_phases: 3
-  total_plans: 18
-  completed_plans: 17
-  percent: 94
+  total_plans: 28
+  completed_plans: 18
+  percent: 64
 ---
 
 # Project State
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-15)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Phase 04 — scheduler-retention
+**Current focus:** Phase 05 — restore-orchestration-safety-rails
 
 ## Current Position
 
-Phase: 5
-Plan: Not started
-Status: Executing Phase 04
+Phase: 05 (restore-orchestration-safety-rails) — EXECUTING
+Plan: 2 of 10
+Status: Ready to execute
 Last activity: 2026-04-16
 
 ## Completed Milestones
@@ -62,6 +62,8 @@ Historical decisions archived in PROJECT.md Key Decisions table.
 - Restore precondition is share-disabled (REST-02) — shares must be manually disabled before restore; restore returns 409 Conflict otherwise
 - Retention is a separate post-upload pass, never races with in-flight backup (SCHED-06)
 - `robfig/cron/v3` is the only new direct dependency
+- [Phase 05]: Defined narrow shares.ShareStore interface locally (GetShare + UpdateShare only) to avoid runtime→store import cycle
+- [Phase 05]: Share.Enabled GORM tag = 'default:true;not null'; post-AutoMigrate backfill covers SQLite ADD-COLUMN dialect
 
 ### Pending Todos
 
@@ -73,6 +75,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-16T20:21:50.193Z
-Stopped at: Phase 5 context gathered
+Last session: 2026-04-16T21:49:37.819Z
+Stopped at: Completed 05-01-PLAN.md
 Next action: `/gsd-plan-phase 1` — Foundations: models, manifest, capability interface
