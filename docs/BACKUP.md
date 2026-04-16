@@ -44,7 +44,7 @@ DittoFS ships two built-in drivers:
 | Kind   | Driver             | Typical use                                |
 | ------ | ------------------ | ------------------------------------------ |
 | `local`| Local filesystem   | On-host disk, iSCSI-mounted block device   |
-| `s3`   | S3-compatible      | AWS S3, MinIO, Wasabi, Scaleway, B2, R2    |
+| `s3`   | S3-compatible      | AWS S3, Cubbit DS3, MinIO, Wasabi, Scaleway, B2, R2 |
 
 Drivers are registered explicitly at server startup (no init-time magic). Adding a new driver requires a code change and a server restart; existing backup repos continue to function across driver registrations.
 
@@ -104,7 +104,7 @@ Avoid: DittoFS-served NFS/SMB mounts, Samba mounts of the host's own shares, FUS
 | ------------------ | -------- | ------- | -------------------------------------------------------- |
 | `bucket`           | yes      | —       | S3 bucket name                                           |
 | `region`           | no       | SDK     | Falls back to AWS SDK default chain                      |
-| `endpoint`         | no       | ""      | Blank = real AWS; set for MinIO / Wasabi / Scaleway / B2 / R2 |
+| `endpoint`         | no       | ""      | Blank = real AWS; set for Cubbit DS3 / MinIO / Wasabi / Scaleway / B2 / R2 |
 | `access_key`       | no       | ""      | Blank → SDK default credential chain (IRSA / IMDS / env) |
 | `secret_key`       | no       | ""      | Must be set together with `access_key` or omit both      |
 | `prefix`           | no       | ""      | Object-key prefix under the bucket                       |
@@ -119,6 +119,9 @@ In Kubernetes, leave `access_key` / `secret_key` blank and use IAM-Roles-for-Ser
 ```bash
 # AWS (real)
 "region": "eu-west-1", "endpoint": ""
+
+# Cubbit DS3 (geo-distributed, S3-compatible)
+"endpoint": "https://s3.cubbit.eu", "region": "eu-west-1"
 
 # MinIO
 "endpoint": "http://minio.internal:9000", "force_path_style": true
