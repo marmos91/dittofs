@@ -246,11 +246,11 @@ func (c *Connection) Serve(ctx context.Context) {
 			compoundData := make([]byte, len(remainingCompound))
 			copy(compoundData, remainingCompound)
 
-			go func(reqHeader *header.SMB2Header, reqBody []byte, encrypted bool) {
+			go func(reqHeader *header.SMB2Header, reqBody, raw []byte, encrypted bool) {
 				defer c.handleRequestPanic(clientAddr, reqHeader.MessageID)
 				asyncCallback := c.makeAsyncNotifyCallback(ci)
-				smb.ProcessCompoundRequest(ctx, reqHeader, reqBody, compoundData, ci, encrypted, asyncCallback)
-			}(hdr, body, isEncrypted)
+				smb.ProcessCompoundRequest(ctx, reqHeader, reqBody, raw, compoundData, ci, encrypted, asyncCallback)
+			}(hdr, body, rawMessage, isEncrypted)
 		} else {
 			go func(reqHeader *header.SMB2Header, reqBody, raw []byte, encrypted bool) {
 				defer c.handleRequestPanic(clientAddr, reqHeader.MessageID)

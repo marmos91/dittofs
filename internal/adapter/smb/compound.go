@@ -37,7 +37,7 @@ type compoundResponse struct {
 //   - connInfo: connection metadata for handler dispatch
 //   - isEncrypted: whether the compound request was received inside an SMB3 Transform Header
 //   - asyncNotifyCallback: optional callback for CHANGE_NOTIFY async responses (nil = no async)
-func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header, firstBody []byte, compoundData []byte, connInfo *ConnInfo, isEncrypted bool, asyncNotifyCallback handlers.AsyncResponseCallback) {
+func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header, firstBody []byte, firstRaw []byte, compoundData []byte, connInfo *ConnInfo, isEncrypted bool, asyncNotifyCallback handlers.AsyncResponseCallback) {
 	// Per MS-SMB2 3.3.5.2.7.2: the first command in a compound MUST NOT have
 	// the SMB2_FLAGS_RELATED_OPERATIONS flag set. Fail the entire compound.
 	if firstHeader.IsRelated() {
@@ -128,7 +128,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		"command", firstHeader.Command.String(),
 		"messageID", firstHeader.MessageID)
 
-	result, fileID, handlerCtx := ProcessRequestWithFileIDAndCallback(ctx, firstHeader, firstBody, connInfo, isEncrypted, asyncNotifyCallback)
+	result, fileID, handlerCtx := ProcessRequestWithFileIDAndCallback(ctx, firstHeader, firstBody, firstRaw, connInfo, isEncrypted, asyncNotifyCallback)
 	if fileID != [16]byte{} {
 		lastFileID = fileID
 	} else {
@@ -267,12 +267,18 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 			"isRelated", hdr.IsRelated(),
 			"usingFileID", lastFileID != [16]byte{})
 
+		// Raw wire bytes for this subcommand (header + body, up to NextCommand
+		// offset if compounded further). Passed to dispatch so handlers that
+		// hash the request (SESSION_SETUP preauth chain per [MS-SMB2] 3.3.5.5)
+		// see the exact bytes the client hashed.
+		subRaw := currentCommandData[:header.HeaderSize+len(cmdBody)]
+
 		// Process with the inherited FileID for related operations
 		var cmdResult *HandlerResult
 		var cmdCtx *handlers.SMBHandlerContext
 		if hdr.IsRelated() && lastFileID != [16]byte{} {
 			var fid [16]byte
-			cmdResult, fid, cmdCtx = ProcessRequestWithInheritedFileID(ctx, hdr, cmdBody, lastFileID, connInfo, isEncrypted, asyncNotifyCallback)
+			cmdResult, fid, cmdCtx = ProcessRequestWithInheritedFileID(ctx, hdr, cmdBody, subRaw, lastFileID, connInfo, isEncrypted, asyncNotifyCallback)
 			// Update lastFileID if a related CREATE returned a new FileID.
 			// This is critical for compound sequences like CREATE+CLOSE+CREATE+NOTIFY
 			// where the second CREATE produces a new handle that NOTIFY must inherit.
@@ -281,7 +287,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 			}
 		} else {
 			var fid [16]byte
-			cmdResult, fid, cmdCtx = ProcessRequestWithFileIDAndCallback(ctx, hdr, cmdBody, connInfo, isEncrypted, asyncNotifyCallback)
+			cmdResult, fid, cmdCtx = ProcessRequestWithFileIDAndCallback(ctx, hdr, cmdBody, subRaw, connInfo, isEncrypted, asyncNotifyCallback)
 			if fid != [16]byte{} {
 				// CREATE returns the new FileID explicitly
 				lastFileID = fid

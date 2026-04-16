@@ -224,7 +224,12 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 // processing) can pass handler-populated fields (e.g. SessionID from
 // SESSION_SETUP, TreeID from TREE_CONNECT) through to SendResponse.
 // The asyncNotifyCallback wires async responses for CHANGE_NOTIFY in compounds.
-func ProcessRequestWithFileIDAndCallback(ctx context.Context, reqHeader *header.SMB2Header, body []byte, connInfo *ConnInfo, isEncrypted bool, asyncNotifyCallback handlers.AsyncResponseCallback) (*HandlerResult, [16]byte, *handlers.SMBHandlerContext) {
+// rawMessage is the exact wire bytes for this (sub)command — used by handlers
+// that need to hash the original request (SESSION_SETUP preauth chain per
+// [MS-SMB2] 3.3.5.5). Callers on the compound path MUST thread per-subcommand
+// wire bytes here; the first-command caller can pass the concatenation of
+// firstHeader.Encode() and firstBody when no sliced buffer is available.
+func ProcessRequestWithFileIDAndCallback(ctx context.Context, reqHeader *header.SMB2Header, body []byte, rawMessage []byte, connInfo *ConnInfo, isEncrypted bool, asyncNotifyCallback handlers.AsyncResponseCallback) (*HandlerResult, [16]byte, *handlers.SMBHandlerContext) {
 	var fileID [16]byte
 
 	cmd, handlerCtx, errStatus := prepareDispatch(ctx, reqHeader, connInfo)
@@ -233,6 +238,10 @@ func ProcessRequestWithFileIDAndCallback(ctx context.Context, reqHeader *header.
 	}
 
 	handlerCtx.RequestEncrypted = isEncrypted
+	// Thread raw wire bytes so SESSION_SETUP preauth chaining sees the exact
+	// input the client hashed — including compound framing fields like
+	// NextCommand. Re-encoding reqHeader would diverge on those fields.
+	handlerCtx.RawRequest = rawMessage
 
 	// Per MS-SMB2 3.3.5.2.1: enforce encryption requirements.
 	if errStatus := checkEncryptionRequired(reqHeader, connInfo, isEncrypted); errStatus != 0 {
@@ -282,10 +291,12 @@ func ProcessRequestWithFileIDAndCallback(ctx context.Context, reqHeader *header.
 // ProcessRequestWithInheritedFileID processes a request using an inherited FileID.
 // InjectFileID is a no-op for commands that do not use a FileID, so no pre-filtering is needed.
 // The asyncNotifyCallback parameter wires async responses for CHANGE_NOTIFY in compound.
+// rawMessage is the wire bytes for this (sub)command (see
+// ProcessRequestWithFileIDAndCallback for details).
 // Returns the handler result, any new FileID (from CREATE), and the handler context.
-func ProcessRequestWithInheritedFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte, inheritedFileID [16]byte, connInfo *ConnInfo, isEncrypted bool, asyncNotifyCallback handlers.AsyncResponseCallback) (*HandlerResult, [16]byte, *handlers.SMBHandlerContext) {
+func ProcessRequestWithInheritedFileID(ctx context.Context, reqHeader *header.SMB2Header, body []byte, rawMessage []byte, inheritedFileID [16]byte, connInfo *ConnInfo, isEncrypted bool, asyncNotifyCallback handlers.AsyncResponseCallback) (*HandlerResult, [16]byte, *handlers.SMBHandlerContext) {
 	body = InjectFileID(reqHeader.Command, body, inheritedFileID)
-	result, fileID, handlerCtx := ProcessRequestWithFileIDAndCallback(ctx, reqHeader, body, connInfo, isEncrypted, asyncNotifyCallback)
+	result, fileID, handlerCtx := ProcessRequestWithFileIDAndCallback(ctx, reqHeader, body, rawMessage, connInfo, isEncrypted, asyncNotifyCallback)
 	return result, fileID, handlerCtx
 }
 
@@ -507,6 +518,13 @@ func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, preWri
 				if writeErr == nil && connInfo.SequenceWindow != nil && hdr.Credits > 0 {
 					connInfo.SequenceWindow.Grant(hdr.Credits)
 				}
+				// See comment on the non-encrypted branch below: a write failure
+				// after a preWrite hook leaves the preauth-hash chain advanced
+				// for a response the peer never observed, so poison the
+				// connection rather than risk a desynced next SESSION_SETUP.
+				if writeErr != nil && preWrite != nil {
+					_ = connInfo.Conn.Close()
+				}
 				return writeErr
 			}
 			if sess.ShouldSign() {
@@ -544,6 +562,19 @@ func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, preWri
 	// when the response is actually sent.
 	if err == nil && connInfo.SequenceWindow != nil && hdr.Credits > 0 {
 		connInfo.SequenceWindow.Grant(hdr.Credits)
+	}
+
+	// If the write failed after we already ran the preWrite hook, the
+	// connection's preauth-hash chain has been advanced for a response the
+	// peer never observed. Future SESSION_SETUP exchanges on this connection
+	// would derive signing keys from a hash that diverges from the client's
+	// view. Force the connection closed so the read loop terminates and
+	// cleanupSessions() runs, rather than leaving it in a poisoned state.
+	// In practice the TCP layer has already signalled an error to the reader,
+	// but this is defensive — we don't want the hash-desync condition to
+	// depend on timing between the write error and the read-side detection.
+	if err != nil && preWrite != nil {
+		_ = connInfo.Conn.Close()
 	}
 
 	return err
