@@ -984,3 +984,54 @@ See [docs/FAQ.md](docs/FAQ.md) for comprehensive documentation of all limitation
 - See CONTRIBUTING for contribution guidelines
 - Keep in mind the official NFS implementation here: https://github.com/torvalds/linux/tree/master/fs/nfs. Always compare our implementation with the official one to make sure it's correct
 - Keep in mind the official SMB implementation here: https://github.com/samba-team/samba. Always compare our implementation with the official source code, to make sure it's correct
+
+## Debugging Protocol Interop Issues
+
+When a protocol conformance test fails against DittoFS but passes against a reference server (Samba, Windows), the fastest path to root cause is a **byte-level pcap diff**. Source-code reading alone is often insufficient — subtle differences in field ordering, optional elements, or encoding (e.g., SPNEGO token structure, NTLMSSP flags, SMB2 response body format) are easy to miss in code but obvious on the wire.
+
+### Recipe
+
+```bash
+# 1. Run the failing test against a throwaway reference server on port 11445
+#    (DittoFS uses 12445 locally; Samba/Windows use 445; keep them distinct)
+docker run --rm -d --name ref-server --platform linux/amd64 -p 11445:445 \
+  -v /tmp/ref-share:/share \
+  dperson/samba:latest \
+  -u "testuser;TestPassword01!" \
+  -s "share;/share;yes;no;no;testuser"
+
+# 2. Capture traffic on both servers in parallel using tcpdump
+#    (install via `apk add tcpdump` on Alpine, `apt-get install tcpdump` on Debian)
+docker exec -u root -d ref-server tcpdump -i any -w /tmp/ref.pcap -s 0 port 445
+
+# 3. Run the same smbtorture/nfstest/etc. against each server
+
+# 4. Diff specific protocol fields with tshark (from nicolaka/netshoot image)
+docker run --rm -v /tmp:/tmp --platform linux/amd64 nicolaka/netshoot \
+  tshark -r /tmp/ref.pcap -d tcp.port==12445,nbss -V \
+  -Y "smb2.cmd==1 and smb2.nt_status==0 and smb2.flags.response==1" \
+  -c 1 2>/dev/null | grep -iE "spnego|negtoken|mechListMIC|supportedMech"
+```
+
+### When this strategy shines
+
+- **Protocol-level mismatches**: differing SPNEGO/GSS-API token formats, missing optional fields (e.g., the bench.session-setup investigation found a missing NTLMSSP mechListMIC in SESSION_SETUP SUCCESS responses)
+- **Signature/encryption format drift**: byte-for-byte comparison catches nonce derivation bugs, key-direction mixups, flag ordering
+- **Error response format issues**: clients reject responses that parse differently than expected (see smb2.scan.find: our server was sending command-specific body instead of MS-SMB2 2.2.2 ERROR body)
+- **Negotiation edge cases**: advertised vs. actual capability flags, dialect-specific field presence
+
+### Reference server images
+
+| Protocol | Image | Notes |
+|----------|-------|-------|
+| SMB | `dperson/samba:latest` | Alpine-based, configurable via CLI flags |
+| SMB (full) | `quay.io/samba/samba:latest` | Full samba-tool support, domain controller capable |
+| NFSv3/v4 | `erichough/nfs-server` | ext4-backed, supports v3 + v4 |
+
+### Pitfalls
+
+- On Apple Silicon, force `--platform linux/amd64` for consistent behavior
+- Use port `11445` for reference SMB (not `12445` which DittoFS owns locally)
+- tshark needs `-d tcp.port==NNNNN,nbss` to decode non-standard SMB ports
+- Always clean container state between runs (dittofs stack uses `docker compose down -v`)
+- Keep both pcaps for post-mortem — `/tmp/ref.pcap` + `/tmp/dittofs.pcap` saved locally is cheap and saves recapture when follow-up questions come up
