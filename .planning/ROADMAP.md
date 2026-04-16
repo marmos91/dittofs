@@ -62,7 +62,15 @@ Plans:
   2. S3 destination uses two-phase commit (payload first, manifest last) reusing AWS client plumbing from `pkg/blockstore/remote/s3`
   3. AES-256-GCM encryption can be enabled per-repo with an operator-supplied key (env var or file path); archives are unreadable without the key
   4. Every backup archive records a SHA-256 checksum in the manifest that matches the payload bytes on read-back
-**Plans**: TBD
+**Plans:** 6 plans
+
+Plans:
+- [ ] 03-01-PLAN.md — Destination interface + D-07 sentinel errors + Factory/Registry skeleton (DRV-01, DRV-02)
+- [ ] 03-02-PLAN.md — AES-256-GCM streaming envelope (D-05) + key-ref parser (D-08/D-09) + SHA-256 tee (DRV-03, DRV-04)
+- [ ] 03-03-PLAN.md — Local FS driver with atomic rename (D-03) + 0600/0700 perms (D-14) + orphan sweep (DRV-01, DRV-03, DRV-04)
+- [ ] 03-04-PLAN.md — S3 driver with two-phase commit via manager.Uploader (D-02) + orphan+MPU sweep + prefix-collision check (DRV-02, DRV-03, DRV-04)
+- [ ] 03-05-PLAN.md — Registry wiring: DestinationFactoryFromRepo + explicit RegisterBuiltins (DRV-01, DRV-02)
+- [ ] 03-06-PLAN.md — Cross-driver conformance suite + docs/BACKUP.md operator guide (DRV-01..04)
 
 ### Phase 4: Scheduler + Retention
 **Goal**: Scheduled backups run reliably per-repo without overlap, thundering herd, or silent pruner-induced data loss.
