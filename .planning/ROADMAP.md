@@ -110,7 +110,7 @@ Plans:
 - [x] 05-03-PLAN.md — Destination.GetManifestOnly (fs + s3) (REST-03, SAFETY-01)
 - [x] 05-04-PLAN.md — stores.Service.SwapMetadataStore + OpenMetadataStoreAtPath + DropPostgresSchema + ListPostgresRestoreOrphans (REST-01)
 - [x] 05-05-PLAN.md — NFSv4 serverBootVerifier atomic hoist + BumpBootVerifier (REST-01)
-- [ ] 05-06-PLAN.md — pkg/backup/restore/ package (Executor + fresh_store + swap + errors) + ListSucceededRecordsByRepo (REST-01, REST-03..05, SAFETY-02)
+- [x] 05-06-PLAN.md — pkg/backup/restore/ package (Executor + fresh_store + swap + errors) + ListSucceededRecordsByRepo (REST-01, REST-03..05, SAFETY-02)
 - [ ] 05-07-PLAN.md — storebackups.Service.RunRestore + orphan sweep + SAFETY-02 verify (REST-01..05, SAFETY-02)
 - [ ] 05-08-PLAN.md — gc.BackupHoldProvider + storebackups.BackupHold (SAFETY-01)
 - [ ] 05-09-PLAN.md — Adapter dispatch gates (NFS mount, NFSv4 PUTFH, SMB TREE_CONNECT) + Prometheus + OTel hooks (REST-02)
