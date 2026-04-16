@@ -61,3 +61,32 @@ func (s PayloadIDSet) Len() int { return len(s) }
 // ErrBackupUnsupported is returned by capability checks when a metadata store
 // does not implement Backupable (ENG-04).
 var ErrBackupUnsupported = errors.New("backup not supported by this metadata store")
+
+// ErrRestoreDestinationNotEmpty is returned by Restore implementations when
+// the destination store contains pre-existing data (D-06). Phase 2 drivers
+// refuse to overwrite live data as a defense-in-depth measure — Phase 5's
+// restore orchestrator owns all destructive prep (swap-under-temp-path,
+// DROP+CREATE schema, fresh empty store construction) before calling
+// Restore. A direct Restore call against a populated store is a bug and
+// must fail loudly.
+var ErrRestoreDestinationNotEmpty = errors.New("restore destination is not empty")
+
+// ErrRestoreCorrupt is returned when the backup stream cannot be decoded:
+// truncated archive, bit-flipped bytes, invalid frame, unknown tar entry,
+// failed gob decode, etc. Drivers wrap the underlying decode error with
+// fmt.Errorf("%w: %v", ErrRestoreCorrupt, cause) so callers can match via
+// errors.Is while preserving the concrete cause for operator logs.
+var ErrRestoreCorrupt = errors.New("restore stream is corrupt")
+
+// ErrSchemaVersionMismatch is returned by the Postgres driver when the
+// archive's schema_migrations version does not match the current binary's
+// migration set. Memory and Badger drivers do not produce this error
+// (they use format_version in their per-engine headers instead).
+var ErrSchemaVersionMismatch = errors.New("restore archive schema version mismatch")
+
+// ErrBackupAborted is returned when Backup is interrupted mid-stream by
+// context cancellation or an unrecoverable engine error. The writer is
+// left in a partial state — callers (Phase 3 destinations) must either
+// discard the partial archive (tmp+rename, multipart abort) or treat it
+// as corrupt. No recovery / resume semantics are offered.
+var ErrBackupAborted = errors.New("backup aborted")

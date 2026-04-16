@@ -1,9 +1,7 @@
 package metadata
 
 import (
-	"context"
 	"errors"
-	"io"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -41,19 +39,38 @@ func TestPayloadIDSetNilSafety(t *testing.T) {
 	require.Equal(t, 0, s.Len())
 }
 
-func TestErrBackupUnsupportedIs(t *testing.T) {
-	require.True(t, errors.Is(ErrBackupUnsupported, ErrBackupUnsupported))
+// Each driver has its own `var _ metadata.Backupable = (*XxxStore)(nil)` so
+// interface drift fails the driver build. Sentinel identity and wrapping are
+// exercised by driver tests that return and match these sentinels on real
+// errors — testing them here would only test the stdlib's errors.Is.
+func TestSentinelsNonNil(t *testing.T) {
+	for _, s := range []error{
+		ErrBackupUnsupported,
+		ErrRestoreDestinationNotEmpty,
+		ErrRestoreCorrupt,
+		ErrSchemaVersionMismatch,
+		ErrBackupAborted,
+	} {
+		require.NotNil(t, s)
+	}
 }
 
-// stubBackupable is a compile-time assertion that the Backupable interface
-// shape is stable. If this file fails to compile, the interface drifted.
-type stubBackupable struct{}
-
-func (stubBackupable) Backup(ctx context.Context, w io.Writer) (PayloadIDSet, error) {
-	return nil, nil
-}
-func (stubBackupable) Restore(ctx context.Context, r io.Reader) error { return nil }
-
-func TestBackupableInterfaceShape(t *testing.T) {
-	var _ Backupable = (*stubBackupable)(nil)
+// Sanity check: the sentinels are distinct values. A regression that aliased
+// two sentinels to the same errors.New call would collapse the taxonomy.
+func TestSentinelsDistinct(t *testing.T) {
+	sentinels := []error{
+		ErrBackupUnsupported,
+		ErrRestoreDestinationNotEmpty,
+		ErrRestoreCorrupt,
+		ErrSchemaVersionMismatch,
+		ErrBackupAborted,
+	}
+	for i, a := range sentinels {
+		for j, b := range sentinels {
+			if i == j {
+				continue
+			}
+			require.Falsef(t, errors.Is(a, b), "%q must not alias %q", a, b)
+		}
+	}
 }
