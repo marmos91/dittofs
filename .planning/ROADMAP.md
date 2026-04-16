@@ -114,7 +114,7 @@ Plans:
 - [x] 05-07-PLAN.md — storebackups.Service.RunRestore + orphan sweep + SAFETY-02 verify (REST-01..05, SAFETY-02)
 - [x] 05-08-PLAN.md — gc.BackupHoldProvider + storebackups.BackupHold (SAFETY-01)
 - [x] 05-09-PLAN.md — Adapter dispatch gates (NFS mount, NFSv4 PUTFH, SMB TREE_CONNECT) + Prometheus + OTel hooks (REST-02)
-- [ ] 05-10-PLAN.md — Runtime.RunBlockGC production entrypoint + POST /api/blockgc/run admin endpoint (SAFETY-01 end-to-end)
+- [x] 05-10-PLAN.md — Runtime.RunBlockGC production entrypoint + POST /api/blockgc/run admin endpoint (SAFETY-01 end-to-end)
 
 ### Phase 6: CLI & REST API Surface
 **Goal**: Operators drive backup, restore, list, and repo management from `dfsctl` and a REST API that the dittofs-pro UI can consume with async job polling.

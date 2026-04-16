@@ -226,6 +226,19 @@ func (s *Service) SetBumpBootVerifier(fn func()) {
 	s.mu.Unlock()
 }
 
+// BackupStore returns the BackupStore this Service was constructed with.
+// Exposed so the runtime's block-GC entrypoint (Runtime.RunBlockGC) can
+// construct a storebackups.BackupHold without reaching into private state.
+// Returns nil only when the Service itself was constructed with a nil
+// store (test scaffolding).
+func (s *Service) BackupStore() store.BackupStore { return s.store }
+
+// DestFactory returns the destination factory this Service was constructed
+// with. Exposed so the runtime's block-GC entrypoint can pass the same
+// factory to storebackups.NewBackupHold — keeping destination-lifecycle
+// semantics identical between backup and GC-hold paths.
+func (s *Service) DestFactory() DestinationFactoryFn { return s.destFactory }
+
 // Serve starts the scheduler. Runs interrupted-job recovery (D-19 / SAFETY-02),
 // loads all repos from the store, installs schedules for those with a non-empty
 // cron expression (D-06 skip-with-WARN on invalid), and starts the cron loop.

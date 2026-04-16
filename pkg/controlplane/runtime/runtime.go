@@ -449,6 +449,29 @@ func (r *Runtime) ValidateBackupSchedule(expr string) error {
 	return r.storeBackupsSvc.ValidateSchedule(expr)
 }
 
+// BackupStore returns the BackupStore used by the storebackups sub-service,
+// or nil if storebackups is not wired (e.g., Runtime built with nil store).
+// Exposed so runtime-owned subsystems (block-GC entrypoint) can construct a
+// storebackups.BackupHold without reaching into private composition state.
+func (r *Runtime) BackupStore() store.BackupStore {
+	if r.storeBackupsSvc == nil {
+		return nil
+	}
+	return r.storeBackupsSvc.BackupStore()
+}
+
+// DestFactoryFn returns the destination factory used by the storebackups
+// sub-service, or nil if storebackups is not wired. Pairs with BackupStore()
+// to let the block-GC entrypoint (RunBlockGC) construct a BackupHold using
+// the exact same factory as the backup path — identical destination-lifecycle
+// semantics across backup and GC-hold invocations.
+func (r *Runtime) DestFactoryFn() storebackups.DestinationFactoryFn {
+	if r.storeBackupsSvc == nil {
+		return nil
+	}
+	return r.storeBackupsSvc.DestFactory()
+}
+
 // --- Identity Mapping (delegated to identity.Service) ---
 
 func (r *Runtime) ApplyIdentityMapping(shareName string, ident *metadata.Identity) (*metadata.Identity, error) {
