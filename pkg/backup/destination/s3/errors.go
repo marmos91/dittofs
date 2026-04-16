@@ -60,15 +60,14 @@ func classifyS3Error(err error) error {
 	// Prefer the typed API-error code for first-class classification.
 	var ae smithy.APIError
 	if errors.As(err, &ae) {
-		code := ae.ErrorCode()
-		switch {
-		case code == "AccessDenied" || code == "Forbidden" || code == "InvalidAccessKeyId" || code == "SignatureDoesNotMatch":
+		switch ae.ErrorCode() {
+		case "AccessDenied", "Forbidden", "InvalidAccessKeyId", "SignatureDoesNotMatch":
 			return fmt.Errorf("%w: %v", destination.ErrPermissionDenied, err)
-		case code == "SlowDown" || code == "RequestLimitExceeded" || code == "ThrottlingException":
+		case "SlowDown", "RequestLimitExceeded", "ThrottlingException":
 			return fmt.Errorf("%w: %v", destination.ErrDestinationThrottled, err)
-		case code == "NoSuchBucket":
+		case "NoSuchBucket":
 			return fmt.Errorf("%w: %v", destination.ErrIncompatibleConfig, err)
-		case code == "InternalError" || code == "ServiceUnavailable" || code == "RequestTimeout":
+		case "InternalError", "ServiceUnavailable", "RequestTimeout":
 			return fmt.Errorf("%w: %v", destination.ErrDestinationUnavailable, err)
 		}
 	}
