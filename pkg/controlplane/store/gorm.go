@@ -228,8 +228,14 @@ func New(config *Config) (*GORMStore, error) {
 	// AutoMigrate creates the new composite index idx_block_store_name_kind on (name, kind)
 	// but does not drop pre-existing ones, which would prevent having a local and remote
 	// store with the same name. Idempotent via IF EXISTS; safe to run on fresh installs.
-	_ = db.Exec("DROP INDEX IF EXISTS idx_payload_stores_name")
-	_ = db.Exec("DROP INDEX IF EXISTS idx_block_store_configs_name")
+	// Errors here (permissions, dialect mismatch) would silently re-introduce the original
+	// 409 conflict on bootstrap, so surface them.
+	if err := db.Exec("DROP INDEX IF EXISTS idx_payload_stores_name").Error; err != nil {
+		return nil, fmt.Errorf("failed to drop legacy idx_payload_stores_name: %w", err)
+	}
+	if err := db.Exec("DROP INDEX IF EXISTS idx_block_store_configs_name").Error; err != nil {
+		return nil, fmt.Errorf("failed to drop legacy idx_block_store_configs_name: %w", err)
+	}
 
 	// Pre-migration: drop legacy single-column unique index on identity_mappings.principal.
 	// The new composite index idx_provider_principal (provider_name, principal) replaces it.
