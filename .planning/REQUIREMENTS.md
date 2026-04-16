@@ -56,7 +56,7 @@
 
 ### Safety & GC Integration (SAFETY)
 
-- [ ] **SAFETY-01**: Block-store GC consults retained backup manifests before deleting block payloads — a block referenced by any retained backup manifest is held
+- [x] **SAFETY-01**: Block-store GC consults retained backup manifests before deleting block payloads — a block referenced by any retained backup manifest is held
 - [x] **SAFETY-02**: On server startup, orphaned backup jobs in `running` state are transitioned to `interrupted` with a recovery message in the job log
 - [ ] **SAFETY-03**: Backup manifest is self-describing and versioned (`manifest_version: 1`) so future versions can forward-compat
 
@@ -112,7 +112,7 @@
 | REST-03 | Phase 5 | Complete |
 | REST-04 | Phase 5 | Pending |
 | REST-05 | Phase 5 | Pending |
-| SAFETY-01 | Phase 5 | Pending |
+| SAFETY-01 | Phase 5 | Complete |
 | SAFETY-02 | Phase 5 | Complete |
 | API-01 | Phase 6 | Pending |
 | API-02 | Phase 6 | Pending |

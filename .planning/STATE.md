@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v0.13.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 05-02-PLAN.md
-last_updated: "2026-04-16T22:01:22.591Z"
+stopped_at: Completed 05-03-PLAN.md
+last_updated: "2026-04-16T22:08:58.647Z"
 last_activity: 2026-04-16
 progress:
   total_phases: 7
   completed_phases: 3
   total_plans: 28
-  completed_plans: 19
-  percent: 68
+  completed_plans: 20
+  percent: 71
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 ## Current Position
 
 Phase: 05 (restore-orchestration-safety-rails) — EXECUTING
-Plan: 3 of 10
+Plan: 4 of 10
 Status: Ready to execute
 Last activity: 2026-04-16
 
@@ -66,6 +66,8 @@ Historical decisions archived in PROJECT.md Key Decisions table.
 - [Phase 05]: Share.Enabled GORM tag = 'default:true;not null'; post-AutoMigrate backfill covers SQLite ADD-COLUMN dialect
 - [Phase 05]: Engine-persistent store_id: Badger uses cfg:store_id key, Postgres uses server_config.store_id column (migration 000008), Memory uses struct field populated on construction; all return ULID via GetStoreID()
 - [Phase 05]: target.go DefaultResolver.Resolve returns engine-persistent GetStoreID() instead of volatile cfg.ID — D-06 cross-store contamination gate now meaningful
+- [Phase 05-restore-orchestration-safety-rails]: GetManifestOnly returns parsed *manifest.Manifest directly (not raw bytes) — all callers need the parsed form, drivers already parse internally
+- [Phase 05-restore-orchestration-safety-rails]: S3 GetBackup delegates manifest prologue to GetManifestOnly — shared error shape, no code duplication
 
 ### Pending Todos
 
@@ -77,6 +79,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-16T22:01:17.233Z
-Stopped at: Completed 05-02-PLAN.md
+Last session: 2026-04-16T22:08:58.644Z
+Stopped at: Completed 05-03-PLAN.md
 Next action: `/gsd-plan-phase 1` — Foundations: models, manifest, capability interface

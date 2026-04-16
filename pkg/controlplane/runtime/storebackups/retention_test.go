@@ -127,6 +127,10 @@ func (d *fakeDst) GetBackup(ctx context.Context, id string) (*manifest.Manifest,
 	return nil, nil, errors.New("not implemented in fake")
 }
 
+func (d *fakeDst) GetManifestOnly(ctx context.Context, id string) (*manifest.Manifest, error) {
+	return nil, errors.New("not implemented in fake")
+}
+
 func (d *fakeDst) List(ctx context.Context) ([]destination.BackupDescriptor, error) {
 	return nil, nil
 }

@@ -79,6 +79,10 @@ func (d *fakeDest) GetBackup(ctx context.Context, id string) (*manifest.Manifest
 	return nil, nil, nil
 }
 
+func (d *fakeDest) GetManifestOnly(ctx context.Context, id string) (*manifest.Manifest, error) {
+	return nil, nil
+}
+
 func (d *fakeDest) List(ctx context.Context) ([]destination.BackupDescriptor, error) {
 	return nil, nil
 }

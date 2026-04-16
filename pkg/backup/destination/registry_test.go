@@ -23,6 +23,9 @@ func (s *stubDest) PutBackup(ctx context.Context, m *manifest.Manifest, r io.Rea
 func (s *stubDest) GetBackup(ctx context.Context, id string) (*manifest.Manifest, io.ReadCloser, error) {
 	return nil, nil, nil
 }
+func (s *stubDest) GetManifestOnly(ctx context.Context, id string) (*manifest.Manifest, error) {
+	return nil, nil
+}
 func (s *stubDest) List(ctx context.Context) ([]BackupDescriptor, error)           { return nil, nil }
 func (s *stubDest) Stat(ctx context.Context, id string) (*BackupDescriptor, error) { return nil, nil }
 func (s *stubDest) Delete(ctx context.Context, id string) error                    { return nil }

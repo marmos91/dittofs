@@ -28,6 +28,18 @@ type Destination interface {
 	// ErrInvalidKeyMaterial.
 	PutBackup(ctx context.Context, m *manifest.Manifest, payload io.Reader) error
 
+	// GetManifestOnly returns the manifest for a backup id without
+	// fetching the payload. Callers (Phase 5 restore pre-flight, block-GC
+	// hold provider) use this to validate or enumerate manifests cheaply —
+	// S3 drivers spend no payload bandwidth; FS drivers skip the payload
+	// open/close cycle entirely. See Phase 5 CONTEXT.md D-12.
+	//
+	// Errors:
+	//   - ErrManifestMissing: no manifest.yaml for id (orphan, never
+	//     published, or deleted).
+	//   - ErrDestinationUnavailable: transient I/O or parse failure.
+	GetManifestOnly(ctx context.Context, id string) (*manifest.Manifest, error)
+
 	// GetBackup returns the manifest and a payload reader. When
 	// m.Encryption.Enabled is true, the reader yields plaintext
 	// (post-decrypt). The reader verifies SHA-256 as it streams and
