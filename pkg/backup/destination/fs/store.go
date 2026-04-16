@@ -323,7 +323,6 @@ var newHashTeeWriter = destination.NewHashTeeWriter
 // Windows returns ERROR_ACCESS_DENIED when Sync is invoked on a directory
 // handle and the NTFS / ReFS rename is already journaled.
 
-
 // GetBackup returns the manifest and a verify-while-streaming payload
 // reader. When m.Encryption.Enabled, the reader yields plaintext (post
 // decrypt). SHA-256 is verified over the CIPHERTEXT (D-04), so the
