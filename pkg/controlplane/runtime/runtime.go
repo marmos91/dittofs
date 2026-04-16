@@ -108,11 +108,40 @@ func New(s store.Store) *Runtime {
 		// metadata_store_configs. DefaultResolver reads MetadataStoreConfig
 		// by ID from s and looks up the live metadata.MetadataStore by
 		// config.Name from the runtime's stores service.
+		//
+		// Phase-5 wiring (Plan 07): WithShares + WithStores enables the
+		// RunRestore entrypoint; WithMetadataConfigs enables the D-14
+		// startup orphan sweep. The composite store.Store satisfies
+		// storebackups.MetadataStoreConfigLister directly (via
+		// pkg/controlplane/store/metadata.go:20 — no adapter wrapper).
+		// BumpBootVerifier is wired later via SetRestoreBumpBootVerifier
+		// to avoid importing internal/adapter/nfs/v4/handlers from the
+		// runtime package (would create an import cycle).
 		resolver := storebackups.NewDefaultResolver(s, rt.storesSvc)
-		rt.storeBackupsSvc = storebackups.New(s, resolver, DefaultShutdownTimeout)
+		rt.storeBackupsSvc = storebackups.New(
+			s, resolver, DefaultShutdownTimeout,
+			storebackups.WithShares(rt.sharesSvc),
+			storebackups.WithStores(rt.storesSvc),
+			storebackups.WithMetadataConfigs(s),
+		)
 	}
 
 	return rt
+}
+
+// SetRestoreBumpBootVerifier wires the NFSv4 boot-verifier bump hook
+// (D-09) into the storebackups sub-service. Called from the adapter
+// composition site (internal/adapter/nfs/v4/handlers.BumpBootVerifier)
+// — separating this from runtime.New avoids importing the handlers
+// package here and the import cycle it would create.
+//
+// nil is a no-op: Service.RunRestore treats a nil bumpBootVerifier as
+// "no bump needed" (tests, non-NFSv4 deployments).
+func (r *Runtime) SetRestoreBumpBootVerifier(fn func()) {
+	if r.storeBackupsSvc == nil {
+		return
+	}
+	r.storeBackupsSvc.SetBumpBootVerifier(fn)
 }
 
 // --- Adapter Management (delegated to adapters.Service) ---

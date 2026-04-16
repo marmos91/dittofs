@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v0.13.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 05-06-PLAN.md
-last_updated: "2026-04-16T22:34:57.165Z"
+stopped_at: Completed 05-07-PLAN.md
+last_updated: "2026-04-16T22:50:50.916Z"
 last_activity: 2026-04-16
 progress:
   total_phases: 7
   completed_phases: 3
   total_plans: 28
-  completed_plans: 23
-  percent: 82
+  completed_plans: 24
+  percent: 86
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 ## Current Position
 
 Phase: 05 (restore-orchestration-safety-rails) — EXECUTING
-Plan: 7 of 10
+Plan: 8 of 10
 Status: Ready to execute
 Last activity: 2026-04-16
 
@@ -75,6 +75,9 @@ Historical decisions archived in PROJECT.md Key Decisions table.
 - [Phase 05]: Plan 06: JobStore interface uses GetBackupRecord (not GetBackupRecordByID) to match real GORMStore method name; Plan 07 can compose without adapters.
 - [Phase 05]: Plan 06: RenamePostgresSchema implemented as interface-assertion extension point in CommitSwap; concrete impl deferred to Plan 07 (recommended) or orphan sweep fallback.
 - [Phase 05]: Plan 06: Terminal-state UpdateBackupJob uses context.Background() so SAFETY-02 row lands even after parent ctx cancellation.
+- [Phase 05]: Plan 05-07: Phase-5 sentinels canonical in pkg/backup/restore (not storebackups) to avoid import cycle
+- [Phase 05]: Plan 05-07: RestoreResolver extends StoreResolver (ResolveWithName + ResolveCfg) — backward-compat preserved
+- [Phase 05]: Plan 05-07: SetRestoreBumpBootVerifier post-construction setter on runtime.Runtime avoids adapter→runtime import cycle
 
 ### Pending Todos
 
@@ -86,6 +89,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-16T22:34:57.163Z
-Stopped at: Completed 05-06-PLAN.md
+Last session: 2026-04-16T22:50:50.913Z
+Stopped at: Completed 05-07-PLAN.md
 Next action: `/gsd-plan-phase 1` — Foundations: models, manifest, capability interface

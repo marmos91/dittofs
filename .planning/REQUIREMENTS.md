@@ -40,7 +40,7 @@
 ### Restore (REST)
 
 - [x] **REST-01**: Restore in-place via drain → close store → restore files → reopen → resume
-- [ ] **REST-02**: Restore pre-flight REQUIRES all shares referencing the target store to be in disabled state (a disabled share disconnects all clients and refuses new connections until re-enabled) — restore returns 409 Conflict otherwise
+- [x] **REST-02**: Restore pre-flight REQUIRES all shares referencing the target store to be in disabled state (a disabled share disconnects all clients and refuses new connections until re-enabled) — restore returns 409 Conflict otherwise
 - [x] **REST-03**: Restore verifies SHA-256 integrity of the backup manifest before performing any swap
 - [x] **REST-04**: Restore latest backup by default; `--from <backup-id>` selects a specific backup
 - [x] **REST-05**: Restore is idempotent and safe to retry if interrupted mid-run
@@ -108,7 +108,7 @@
 | SCHED-05 | Phase 4 | Pending |
 | SCHED-06 | Phase 4 | Pending |
 | REST-01 | Phase 5 | Complete |
-| REST-02 | Phase 5 | Pending |
+| REST-02 | Phase 5 | Complete |
 | REST-03 | Phase 5 | Complete |
 | REST-04 | Phase 5 | Complete |
 | REST-05 | Phase 5 | Complete |

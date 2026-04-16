@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/backup"
 	"github.com/marmos91/dittofs/pkg/backup/destination"
 	"github.com/marmos91/dittofs/pkg/backup/executor"
+	"github.com/marmos91/dittofs/pkg/backup/restore"
 	"github.com/marmos91/dittofs/pkg/backup/scheduler"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
@@ -41,6 +42,22 @@ type Service struct {
 
 	destFactory     DestinationFactoryFn
 	shutdownTimeout time.Duration
+
+	// Phase-5 dependencies for RunRestore. Any of these may be nil; if so
+	// RunRestore returns a clear "restore not wired" error and the startup
+	// orphan sweep (D-14) logs a warning and no-ops. Keeping the fields
+	// individually nil-safe preserves backward compatibility for callers
+	// (tests, early integrations) that built Service with the Phase-4
+	// constructor signature.
+	shares           SharesService
+	stores           restore.StoresService
+	restoreExec      *restore.Executor
+	bumpBootVerifier func()
+	// metadataConfigs is a narrow typed hook over ListMetadataStores,
+	// satisfied DIRECTLY by the composite pkg/controlplane/store.Store.
+	// Exists only as a testability seam — production wiring passes the
+	// composite Store without any adapter wrapper or noop fallback.
+	metadataConfigs MetadataStoreConfigLister
 
 	serveOnce sync.Once
 	serveErr  error
@@ -77,6 +94,9 @@ func WithClock(c backup.Clock) Option {
 		if s.exec != nil {
 			s.exec.SetClock(c)
 		}
+		if s.restoreExec != nil {
+			s.restoreExec.SetClock(c)
+		}
 	}
 }
 
@@ -88,6 +108,35 @@ func WithShutdownTimeout(d time.Duration) Option {
 		}
 		s.shutdownTimeout = d
 	}
+}
+
+// WithShares wires the shares sub-service for the REST-02 pre-flight gate.
+// Without it, RunRestore refuses with a clear "restore not wired" error.
+func WithShares(sh SharesService) Option {
+	return func(s *Service) { s.shares = sh }
+}
+
+// WithStores wires the stores sub-service for the restore fresh-engine
+// path + D-14 Postgres orphan sweep. Without it, RunRestore refuses and
+// the Postgres branch of SweepRestoreOrphans skips with a log warning.
+func WithStores(st restore.StoresService) Option {
+	return func(s *Service) { s.stores = st }
+}
+
+// WithBumpBootVerifier wires the NFSv4 boot-verifier bump hook (D-09).
+// Typically writehandlers.BumpBootVerifier. nil is acceptable — tests
+// may pass nil; the restore path treats nil as "no bump".
+func WithBumpBootVerifier(fn func()) Option {
+	return func(s *Service) { s.bumpBootVerifier = fn }
+}
+
+// WithMetadataConfigs wires the narrow MetadataStoreConfigLister hook for
+// the D-14 startup orphan sweep. Production callers pass the composite
+// pkg/controlplane/store.Store directly (it implements
+// ListMetadataStores per pkg/controlplane/store/metadata.go:20). No
+// adapter wrapper, no noop fallback.
+func WithMetadataConfigs(lister MetadataStoreConfigLister) Option {
+	return func(s *Service) { s.metadataConfigs = lister }
 }
 
 // New constructs the Service. shutdownTimeout of 0 applies DefaultShutdownTimeout.
@@ -105,6 +154,12 @@ func New(s store.BackupStore, resolver StoreResolver, shutdownTimeout time.Durat
 	}
 	svc.sched = scheduler.NewScheduler(scheduler.WithOverlapGuard(svc.overlap))
 	svc.exec = executor.New(s, nil)
+	// Phase-5: every Service can handle RunRestore even without the runtime
+	// wiring — the executor itself is always constructable from the store
+	// + clock. RunRestore returns a clear error when shares/stores are
+	// missing; callers that don't want restore just skip WithShares /
+	// WithStores / WithBumpBootVerifier.
+	svc.restoreExec = restore.New(s, nil)
 
 	for _, opt := range opts {
 		opt(svc)
@@ -122,6 +177,18 @@ func (s *Service) SetShutdownTimeout(d time.Duration) {
 	}
 	s.mu.Lock()
 	s.shutdownTimeout = d
+	s.mu.Unlock()
+}
+
+// SetBumpBootVerifier wires the NFSv4 boot-verifier bump hook (D-09)
+// after construction. Separated from WithBumpBootVerifier so the
+// runtime composition site — which cannot import
+// internal/adapter/nfs/v4/handlers without creating an import cycle —
+// can wire the hook from the adapter layer after both packages are
+// initialized. nil clears the hook.
+func (s *Service) SetBumpBootVerifier(fn func()) {
+	s.mu.Lock()
+	s.bumpBootVerifier = fn
 	s.mu.Unlock()
 }
 
@@ -153,6 +220,27 @@ func (s *Service) serve(ctx context.Context) error {
 		logger.Warn("Failed to recover interrupted backup jobs on boot", "error", err)
 	} else if n > 0 {
 		logger.Info("Recovered interrupted backup jobs", "count", n)
+	}
+
+	// Phase-5 D-14: sweep orphaned restore temp paths/schemas.
+	//
+	// s.metadataConfigs is the composite store.Store (implements
+	// ListMetadataStores directly per pkg/controlplane/store/metadata.go:20).
+	// s.stores is the live *stores.Service which implements
+	// PostgresOrphanLister (ListPostgresRestoreOrphans + DropPostgresSchema
+	// from Plan 04). If either dependency is missing (partial/test wiring),
+	// log a clear warning and skip — no silent degradation, no noop fallback.
+	if s.metadataConfigs == nil {
+		logger.Warn("SweepRestoreOrphans: MetadataStoreConfigLister not wired; " +
+			"orphan sweep skipped (use WithMetadataConfigs at construction)")
+	} else if s.stores == nil {
+		logger.Warn("SweepRestoreOrphans: stores sub-service not wired; " +
+			"orphan sweep skipped (use WithStores at construction)")
+	} else if lister, ok := s.stores.(PostgresOrphanLister); !ok {
+		logger.Warn("SweepRestoreOrphans: stores.Service does not implement " +
+			"PostgresOrphanLister; orphan sweep skipped (Plan 04 wiring required)")
+	} else {
+		SweepRestoreOrphans(ctx, s.metadataConfigs, lister, DefaultRestoreOrphanGraceWindow)
 	}
 
 	// Load all repos and install schedules for the ones with non-empty crons.

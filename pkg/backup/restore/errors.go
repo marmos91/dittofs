@@ -11,23 +11,48 @@ package restore
 
 import (
 	"errors"
-
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/storebackups"
 )
 
-// Re-exports preserve errors.Is matching across package boundaries.
-// storebackups defines the canonical sentinels for Phase-5 (D-26) so
-// CLI / REST layers (Phase 6) can match with a single import; this
-// package aliases them so the restore engine's callers (unit tests,
-// Plan 07's orchestrator) don't need a second import.
+// Canonical Phase-5 sentinels (D-26). Defined here — not in
+// pkg/controlplane/runtime/storebackups — to break the import cycle
+// between the restore executor and the runtime orchestrator that wraps
+// it in Plan 07. pkg/controlplane/runtime/storebackups/errors.go
+// aliases these values as package-level vars so CLI / REST layers that
+// import either package match with errors.Is.
 var (
-	ErrRestorePreconditionFailed  = storebackups.ErrRestorePreconditionFailed
-	ErrNoRestoreCandidate         = storebackups.ErrNoRestoreCandidate
-	ErrStoreIDMismatch            = storebackups.ErrStoreIDMismatch
-	ErrStoreKindMismatch          = storebackups.ErrStoreKindMismatch
-	ErrRecordNotRestorable        = storebackups.ErrRecordNotRestorable
-	ErrRecordRepoMismatch         = storebackups.ErrRecordRepoMismatch
-	ErrManifestVersionUnsupported = storebackups.ErrManifestVersionUnsupported
+	// ErrRestorePreconditionFailed — one or more shares still enabled
+	// for the target store. Restore refuses to run until operator
+	// explicitly disables (D-01, D-02). Maps to 409 Conflict.
+	ErrRestorePreconditionFailed = errors.New("restore precondition failed: one or more shares still enabled")
+
+	// ErrNoRestoreCandidate — the repo has zero succeeded records to
+	// restore from. Caller asked for default-latest (D-15). Maps to 409.
+	ErrNoRestoreCandidate = errors.New("no succeeded backup record available to restore")
+
+	// ErrStoreIDMismatch — manifest.store_id != target store's
+	// persistent store_id (Pitfall #4 guard, D-06). Hard-reject before
+	// any destructive action. Maps to 400.
+	ErrStoreIDMismatch = errors.New("manifest store_id does not match target store")
+
+	// ErrStoreKindMismatch — manifest.store_kind (memory|badger|postgres)
+	// != target engine kind. Cross-engine restore is deferred (XENG-01).
+	// Maps to 400.
+	ErrStoreKindMismatch = errors.New("manifest store_kind does not match target engine")
+
+	// ErrRecordNotRestorable — --from <id> resolved a record whose
+	// status is not succeeded (pending/running/failed/interrupted).
+	// Maps to 409.
+	ErrRecordNotRestorable = errors.New("backup record status is not succeeded; not restorable")
+
+	// ErrRecordRepoMismatch — --from <id> resolved a record that
+	// belongs to a different repo than the one being restored (D-16).
+	// Maps to 400.
+	ErrRecordRepoMismatch = errors.New("backup record belongs to a different repo")
+
+	// ErrManifestVersionUnsupported — manifest_version != Phase-1
+	// CurrentVersion. Forward-incompatible archive; this binary cannot
+	// restore it. Maps to 400.
+	ErrManifestVersionUnsupported = errors.New("manifest version not supported by this binary")
 )
 
 // Package-local sentinels. Restore-orchestration-specific failure modes
