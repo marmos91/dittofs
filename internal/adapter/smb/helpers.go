@@ -107,12 +107,7 @@ func handleRequest[Req smbRequest, Resp smbResponse](
 	req, err := decode(body)
 	if err != nil {
 		logger.Debug("SMB: error decoding request", "error", err)
-		errorResp := makeErrorResp(errorStatus)
-		encoded, encErr := errorResp.Encode()
-		if encErr != nil {
-			return &HandlerResult{Data: nil, Status: errorStatus}, encErr
-		}
-		return &HandlerResult{Data: encoded, Status: errorStatus}, nil
+		return &HandlerResult{Data: MakeErrorBody(), Status: errorStatus}, nil
 	}
 
 	// ========================================================================
@@ -122,12 +117,7 @@ func handleRequest[Req smbRequest, Resp smbResponse](
 	resp, err := handle(req)
 	if err != nil {
 		logger.Debug("SMB: handler error", "error", err)
-		errorResp := makeErrorResp(errorStatus)
-		encoded, encErr := errorResp.Encode()
-		if encErr != nil {
-			return &HandlerResult{Data: nil, Status: errorStatus}, encErr
-		}
-		return &HandlerResult{Data: encoded, Status: errorStatus}, nil
+		return &HandlerResult{Data: MakeErrorBody(), Status: errorStatus}, nil
 	}
 
 	// ========================================================================
@@ -140,15 +130,26 @@ func handleRequest[Req smbRequest, Resp smbResponse](
 	// Step 4: Encode response
 	// ========================================================================
 
+	// Per [MS-SMB2] 3.3.4.4: when the server returns an error status, the
+	// response body MUST be the SMB2 ERROR Response structure (section 2.2.2),
+	// NOT the command-specific response. Reusing the command's body for error
+	// statuses places command-specific fields at the offsets the client parses
+	// as ErrorContextCount/ByteCount — Samba libsmb rejects this as malformed
+	// and tears down the connection (observed in smb2.scan.find on unsupported
+	// FileInformationClass values).
+	//
+	// Informational/warning statuses (top byte 0x80xx_xxxx) like
+	// STATUS_NO_MORE_FILES and STATUS_BUFFER_OVERFLOW keep using the
+	// command-specific body because clients treat them as partial-success
+	// responses that still carry command data.
+	if status.IsError() {
+		return &HandlerResult{Data: MakeErrorBody(), Status: status}, nil
+	}
+
 	encoded, err := resp.Encode()
 	if err != nil {
 		logger.Debug("SMB: error encoding response", "error", err)
-		errorResp := makeErrorResp(errorStatus)
-		encodedErr, encErr := errorResp.Encode()
-		if encErr != nil {
-			return &HandlerResult{Data: nil, Status: errorStatus}, encErr
-		}
-		return &HandlerResult{Data: encodedErr, Status: types.StatusInternalError}, nil
+		return &HandlerResult{Data: MakeErrorBody(), Status: types.StatusInternalError}, nil
 	}
 
 	return &HandlerResult{Data: encoded, Status: status}, nil

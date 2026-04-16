@@ -792,10 +792,17 @@ iterates all QUERY_DIRECTORY information classes. Both hit unimplemented classes
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.scan.scan | Scan | Full operation scan hits unimplemented info classes | - |
-| smb2.scan.setinfo | Scan | Flaky in CI (rare connection-disconnect signature mismatch on brute-force level enumeration) | - |
-| smb2.scan.find | Scan | Hits unimplemented FileInfoClass values in iteration | - |
 
 ## Changelog
+
+### 2026-04-16 — Tier 1 cleanup after #362 signing fixes
+Removed `smb2.scan.find` and `smb2.scan.setinfo` from known failures.
+QUERY_DIRECTORY now rejects unsupported FileInformationClass values with
+STATUS_INVALID_INFO_CLASS (MS-SMB2 3.3.5.18) instead of silently returning
+FileBothDirectoryInformation, and the generic dispatch pipeline now always
+emits the MS-SMB2 2.2.2 ERROR Response body for error statuses. Combined
+with the #362 signing race fixes, these tests are now deterministic locally
+across 5/3 consecutive runs.
 
 ### Phase 73 (2026-03-24)
 Removed ~24 tests (ChangeNotify, session re-auth, anonymous encryption).

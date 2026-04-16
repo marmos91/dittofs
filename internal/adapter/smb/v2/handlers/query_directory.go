@@ -244,6 +244,17 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 		"fileID", fmt.Sprintf("%x", req.FileID),
 		"fileName", req.FileName)
 
+	// Reject FileInformationClass values that are not valid for QUERY_DIRECTORY.
+	// [MS-SMB2] 3.3.5.18: server SHOULD fail with STATUS_INVALID_INFO_CLASS when
+	// the class is not one of the six defined for FIND in [MS-SMB2] 2.2.33.
+	// Returning any other success payload confuses clients, which may tear down
+	// the connection (observed in smb2.scan.find).
+	if !isSupportedDirInfoClass(types.FileInfoClass(req.FileInfoClass)) {
+		logger.Debug("QUERY_DIRECTORY: unsupported FileInformationClass",
+			"fileInfoClass", req.FileInfoClass)
+		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidInfoClass}}, nil
+	}
+
 	// Get OpenFile by FileID
 	openFile, ok := h.GetOpenFile(req.FileID)
 	if !ok {
@@ -539,6 +550,9 @@ func linkEntry(result []byte, prevNextOffset *int, entry []byte) []byte {
 // encodeSingleDirEntry encodes a single directory entry for the given FileInfoClass.
 // This is the per-entry dispatcher used by the incremental entry building loop
 // in QueryDirectory, routing to the appropriate format-specific encoder.
+// Callers must pre-validate infoClass via isSupportedDirInfoClass; an unknown
+// class here indicates a bug and is encoded as FileBothDirectoryInformation as
+// a defensive fallback.
 func encodeSingleDirEntry(infoClass types.FileInfoClass, name string, attr *metadata.FileAttr, fileIndex uint64, fileID uint64) []byte {
 	switch infoClass {
 	case types.FileBothDirectoryInformation:
@@ -556,6 +570,21 @@ func encodeSingleDirEntry(infoClass types.FileInfoClass, name string, attr *meta
 	default:
 		return encodeBothDirEntry(name, attr, fileIndex)
 	}
+}
+
+// isSupportedDirInfoClass reports whether the given FileInformationClass is one
+// of the six classes valid for SMB2 QUERY_DIRECTORY per [MS-SMB2] 2.2.33.
+func isSupportedDirInfoClass(c types.FileInfoClass) bool {
+	switch c {
+	case types.FileDirectoryInformation,
+		types.FileFullDirectoryInformation,
+		types.FileBothDirectoryInformation,
+		types.FileNamesInformation,
+		types.FileIdBothDirectoryInformation,
+		types.FileIdFullDirectoryInformation:
+		return true
+	}
+	return false
 }
 
 // encodeBothDirEntry encodes a single FILE_BOTH_DIR_INFORMATION entry (94-byte base + filename).
