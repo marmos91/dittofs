@@ -69,6 +69,20 @@ type BackupHoldProvider interface {
 	HeldPayloadIDs(ctx context.Context) (map[metadata.PayloadID]struct{}, error)
 }
 
+// StaticBackupHold wraps a pre-resolved hold set as a BackupHoldProvider.
+// Used by callers that resolve the hold eagerly (e.g. Runtime.RunBlockGC,
+// which fails hard if the hold query errors — see Phase 5 SAFETY-01) to
+// inject the already-known set into CollectGarbage without re-querying.
+func StaticBackupHold(held map[metadata.PayloadID]struct{}) BackupHoldProvider {
+	return staticHold(held)
+}
+
+type staticHold map[metadata.PayloadID]struct{}
+
+func (h staticHold) HeldPayloadIDs(context.Context) (map[metadata.PayloadID]struct{}, error) {
+	return h, nil
+}
+
 // CollectGarbage scans the remote store and removes orphan blocks.
 //
 // Orphan blocks are blocks that exist in the remote store but have no

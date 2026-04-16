@@ -662,6 +662,16 @@ func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *st
 // Requires Task 1's `"enabled"` entry in GORMStore.UpdateShare's whitelist —
 // otherwise the store.UpdateShare call silently drops the flag.
 func (s *Service) DisableShare(ctx context.Context, store ShareStore, name string) error {
+	// Runtime registry must know the share before we touch the DB — prevents
+	// a DB-disabled/runtime-absent inconsistency when the startup load missed
+	// a share (partial boot) or the caller passed a stale name.
+	s.mu.RLock()
+	_, exists := s.registry[name]
+	s.mu.RUnlock()
+	if !exists {
+		return fmt.Errorf("%w: runtime registry: %q", ErrShareNotFound, name)
+	}
+
 	dbShare, err := store.GetShare(ctx, name)
 	if err != nil {
 		return fmt.Errorf("load share %q: %w", name, err)
@@ -675,8 +685,8 @@ func (s *Service) DisableShare(ctx context.Context, store ShareStore, name strin
 	}
 
 	s.mu.Lock()
-	share, exists := s.registry[name]
-	if !exists {
+	share, stillExists := s.registry[name]
+	if !stillExists {
 		s.mu.Unlock()
 		return fmt.Errorf("%w: runtime registry: %q", ErrShareNotFound, name)
 	}
@@ -690,6 +700,15 @@ func (s *Service) DisableShare(ctx context.Context, store ShareStore, name strin
 // EnableShare inverts DisableShare. Idempotent: re-calling on an
 // already-enabled share is a no-op (returns nil, no DB write).
 func (s *Service) EnableShare(ctx context.Context, store ShareStore, name string) error {
+	// Registry-first check: same rationale as DisableShare — avoid a DB row
+	// that moves while the runtime has no matching entry.
+	s.mu.RLock()
+	_, exists := s.registry[name]
+	s.mu.RUnlock()
+	if !exists {
+		return fmt.Errorf("%w: runtime registry: %q", ErrShareNotFound, name)
+	}
+
 	dbShare, err := store.GetShare(ctx, name)
 	if err != nil {
 		return fmt.Errorf("load share %q: %w", name, err)
@@ -703,8 +722,8 @@ func (s *Service) EnableShare(ctx context.Context, store ShareStore, name string
 	}
 
 	s.mu.Lock()
-	share, exists := s.registry[name]
-	if !exists {
+	share, stillExists := s.registry[name]
+	if !stillExists {
 		s.mu.Unlock()
 		return fmt.Errorf("%w: runtime registry: %q", ErrShareNotFound, name)
 	}

@@ -108,7 +108,6 @@ func TestDefaultResolver_ResolveSuccess(t *testing.T) {
 	}
 }
 
-
 // TestDefaultResolver_UnknownKind — T4: non-"metadata" kinds wrap ErrInvalidTargetKind.
 func TestDefaultResolver_UnknownKind(t *testing.T) {
 	ctx := context.Background()

@@ -333,13 +333,10 @@ func (s *Service) DropPostgresSchema(ctx context.Context, originalName, schemaNa
 // semantics for the Postgres engine are an upstream design question that
 // cannot be resolved at the registry layer alone.
 func openPostgresAtSchema(
-	ctx context.Context,
-	cfg *models.MetadataStoreConfig,
-	schema string,
+	_ context.Context,
+	_ *models.MetadataStoreConfig,
+	_ string,
 ) (metadata.MetadataStore, error) {
-	_ = ctx
-	_ = cfg
-	_ = schema
 	return nil, errors.New(
 		"postgres schema-scoped open is not yet wired in Plan 04; " +
 			"Plan 06 (fresh_store.go) replaces this stub with a real " +

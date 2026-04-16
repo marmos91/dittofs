@@ -177,8 +177,8 @@ func (d *restoreDestination) Stat(ctx context.Context, id string) (*destination.
 	return nil, nil
 }
 
-func (d *restoreDestination) Delete(ctx context.Context, id string) error   { return nil }
-func (d *restoreDestination) ValidateConfig(ctx context.Context) error      { return nil }
+func (d *restoreDestination) Delete(ctx context.Context, id string) error { return nil }
+func (d *restoreDestination) ValidateConfig(ctx context.Context) error    { return nil }
 func (d *restoreDestination) Close() error {
 	d.mu.Lock()
 	d.closed = true
@@ -223,9 +223,9 @@ func newRestoreHarness(t *testing.T, sharesEnabled map[string][]string) *restore
 	stSvc := &fakeStoresService{}
 	mem := memory.NewMemoryMetadataStoreWithDefaults()
 	cfg := &models.MetadataStoreConfig{
-		ID:     "cfg-meta",
-		Name:   "default-meta",
-		Type:   "memory",
+		ID:   "cfg-meta",
+		Name: "default-meta",
+		Type: "memory",
 	}
 	resolver := &fakeRestoreResolver{
 		src:       mem,

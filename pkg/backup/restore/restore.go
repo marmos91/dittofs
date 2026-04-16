@@ -176,16 +176,17 @@ func (e *Executor) RunRestore(ctx context.Context, p Params) (err error) {
 	defer func() {
 		finishedAt := e.clock.Now()
 		recIDCopy := p.RecordID
+		finalJob := &models.BackupJob{
+			ID:             jobID,
+			StartedAt:      &startedAt,
+			FinishedAt:     &finishedAt,
+			BackupRecordID: &recIDCopy,
+		}
 
 		if err == nil {
-			if upErr := e.store.UpdateBackupJob(context.Background(), &models.BackupJob{
-				ID:             jobID,
-				Status:         models.BackupStatusSucceeded,
-				StartedAt:      &startedAt,
-				FinishedAt:     &finishedAt,
-				BackupRecordID: &recIDCopy,
-				Progress:       100,
-			}); upErr != nil {
+			finalJob.Status = models.BackupStatusSucceeded
+			finalJob.Progress = 100
+			if upErr := e.store.UpdateBackupJob(context.Background(), finalJob); upErr != nil {
 				logger.Warn("Failed to finalize restore job",
 					"job_id", jobID, "record_id", p.RecordID, "update_error", upErr)
 			}
@@ -197,29 +198,23 @@ func (e *Executor) RunRestore(ctx context.Context, p Params) (err error) {
 			return
 		}
 
-		status := models.BackupStatusFailed
 		// D-17: ctx cancellation or explicit abort → interrupted.
+		finalJob.Status = models.BackupStatusFailed
 		if errors.Is(err, context.Canceled) ||
 			errors.Is(err, context.DeadlineExceeded) ||
 			errors.Is(err, backup.ErrBackupAborted) ||
 			errors.Is(err, ErrRestoreAborted) {
-			status = models.BackupStatusInterrupted
+			finalJob.Status = models.BackupStatusInterrupted
 		}
-		if upErr := e.store.UpdateBackupJob(context.Background(), &models.BackupJob{
-			ID:             jobID,
-			Status:         status,
-			StartedAt:      &startedAt,
-			FinishedAt:     &finishedAt,
-			BackupRecordID: &recIDCopy,
-			Error:          err.Error(),
-		}); upErr != nil {
+		finalJob.Error = err.Error()
+		if upErr := e.store.UpdateBackupJob(context.Background(), finalJob); upErr != nil {
 			logger.Warn("Failed to mark restore job terminal state",
-				"job_id", jobID, "intended_status", status, "update_error", upErr)
+				"job_id", jobID, "intended_status", finalJob.Status, "update_error", upErr)
 		}
 		logger.Warn("Restore failed",
 			"repo_id", p.Repo.ID,
 			"job_id", jobID,
-			"status", status,
+			"status", finalJob.Status,
 			"error", err,
 		)
 	}()

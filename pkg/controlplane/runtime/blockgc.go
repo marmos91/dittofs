@@ -51,6 +51,19 @@ func (r *Runtime) RunBlockGC(ctx context.Context, sharePrefix string, dryRun boo
 	}
 	hold := storebackups.NewBackupHold(backupStore, destFactory)
 
+	// SAFETY-01 eager resolution: query the hold up front and fail hard on
+	// error rather than letting gc.CollectGarbage fall through to a soft
+	// under-hold. A transient DB/destination error here must not permit a
+	// hold-less GC run that could reclaim blocks referenced by retained
+	// backup manifests. The resolved set is injected via a small adapter
+	// so CollectGarbage never re-queries the provider.
+	held, err := hold.HeldPayloadIDs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"RunBlockGC refused: backup-hold query failed (SAFETY-01): %w", err)
+	}
+	resolvedHold := gc.StaticBackupHold(held)
+
 	// Enumerate distinct underlying remote stores. Dedup is by configID (not
 	// by the per-share nonClosingRemote wrapper pointer), so two shares that
 	// reference the same remote-store config produce one GC invocation.
@@ -66,7 +79,7 @@ func (r *Runtime) RunBlockGC(ctx context.Context, sharePrefix string, dryRun boo
 		opts := &gc.Options{
 			SharePrefix: sharePrefix,
 			DryRun:      dryRun,
-			BackupHold:  hold, // SAFETY-01 wiring (Plan 08 -> Plan 10)
+			BackupHold:  resolvedHold, // SAFETY-01: eager-resolved, static
 		}
 		logger.Info("RunBlockGC: starting",
 			"configID", entry.ConfigID,
@@ -74,32 +87,29 @@ func (r *Runtime) RunBlockGC(ctx context.Context, sharePrefix string, dryRun boo
 			"dryRun", dryRun,
 			"sharePrefix", sharePrefix)
 
-		stats := collectGarbageFn(ctx, entry.Store, r, opts) // r satisfies MetadataReconciler
+		// r satisfies MetadataReconciler. stats is nil-safe — CollectGarbage
+		// always returns a non-nil *gc.Stats (see pkg/blockstore/gc/gc.go),
+		// but we defensively read through a zero-valued copy so a future
+		// nil-returning edge case never panics in the log statement.
+		stats := collectGarbageFn(ctx, entry.Store, r, opts)
+		var s gc.Stats
 		if stats != nil {
-			total.SharesScanned += stats.SharesScanned
-			total.BlocksScanned += stats.BlocksScanned
-			total.OrphanFiles += stats.OrphanFiles
-			total.OrphanBlocks += stats.OrphanBlocks
-			total.BytesReclaimed += stats.BytesReclaimed
-			total.Errors += stats.Errors
+			s = *stats
+			total.SharesScanned += s.SharesScanned
+			total.BlocksScanned += s.BlocksScanned
+			total.OrphanFiles += s.OrphanFiles
+			total.OrphanBlocks += s.OrphanBlocks
+			total.BytesReclaimed += s.BytesReclaimed
+			total.Errors += s.Errors
 		}
 		logger.Info("RunBlockGC: complete",
 			"configID", entry.ConfigID,
-			"orphanFiles", statsOrZero(stats).OrphanFiles,
-			"orphanBlocks", statsOrZero(stats).OrphanBlocks,
-			"bytesReclaimed", statsOrZero(stats).BytesReclaimed,
-			"errors", statsOrZero(stats).Errors)
+			"orphanFiles", s.OrphanFiles,
+			"orphanBlocks", s.OrphanBlocks,
+			"bytesReclaimed", s.BytesReclaimed,
+			"errors", s.Errors)
 	}
 	return total, nil
-}
-
-// statsOrZero returns a zero-valued Stats when s is nil so log statements
-// stay panic-safe without allocating a sentinel on every call.
-func statsOrZero(s *gc.Stats) gc.Stats {
-	if s == nil {
-		return gc.Stats{}
-	}
-	return *s
 }
 
 // collectGarbageFn is a package-level indirection that lets tests intercept
