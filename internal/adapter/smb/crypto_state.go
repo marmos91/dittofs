@@ -71,7 +71,6 @@ type ConnectionCryptoState struct {
 	// chain initialized from the connection hash after NEGOTIATE completes.
 	// Key: session ID, Value: current preauth hash for that session.
 	sessionPreauthHashes map[uint64][64]byte
-
 }
 
 // NewConnectionCryptoState creates a new ConnectionCryptoState with all
