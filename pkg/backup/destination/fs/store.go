@@ -318,17 +318,11 @@ func (writeNopCloser) Close() error { return nil }
 // primitive itself lives in the destination package (plan 02).
 var newHashTeeWriter = destination.NewHashTeeWriter
 
-// fsyncDir opens path, fsyncs it, and closes the descriptor. Used to
-// durably persist directory entries after mkdir/create/rename.
-func fsyncDir(path string) error {
-	d, err := os.Open(path) //nolint:gosec // path is driver-constructed
-	if err != nil {
-		return err
-	}
-	err = d.Sync()
-	_ = d.Close()
-	return err
-}
+// fsyncDir delegates to the platform-specific implementation. On Unix it
+// opens the directory and calls fsync; on Windows it is a no-op because
+// Windows returns ERROR_ACCESS_DENIED when Sync is invoked on a directory
+// handle and the NTFS / ReFS rename is already journaled.
+
 
 // GetBackup returns the manifest and a verify-while-streaming payload
 // reader. When m.Encryption.Enabled, the reader yields plaintext (post
