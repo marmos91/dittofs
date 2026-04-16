@@ -93,8 +93,10 @@ func TestResolveKey_FileRelativePath(t *testing.T) {
 }
 
 func TestResolveKey_FileMissing(t *testing.T) {
-	// /nonexistent is never a real absolute path on a test machine.
-	_, err := ResolveKey("file:/nonexistent/abs/path.key")
+	// Build a path that's absolute on every OS (Windows requires a volume
+	// letter) but guaranteed not to exist.
+	missing := filepath.Join(t.TempDir(), "definitely-not-here.key")
+	_, err := ResolveKey("file:" + missing)
 	if !errors.Is(err, ErrEncryptionKeyMissing) {
 		t.Fatalf("err = %v, want errors.Is ErrEncryptionKeyMissing", err)
 	}
@@ -145,7 +147,10 @@ func TestValidateKeyRef_FormatOnly(t *testing.T) {
 		t.Fatalf("ValidateKeyRef returned err: %v", err)
 	}
 	// Similarly for file: the path is absolute-shaped; no Stat happens.
-	if err := ValidateKeyRef("file:/etc/dittofs/nonexistent.key"); err != nil {
+	// Use filepath.Join with TempDir to get an OS-correct absolute path
+	// (Windows requires a volume letter for IsAbs to return true).
+	abs := filepath.Join(t.TempDir(), "nonexistent.key")
+	if err := ValidateKeyRef("file:" + abs); err != nil {
 		t.Fatalf("ValidateKeyRef returned err for absolute path: %v", err)
 	}
 }

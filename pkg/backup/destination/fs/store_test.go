@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -130,6 +131,9 @@ func TestFSStore_PutGet_Encrypted_Roundtrip(t *testing.T) {
 // TestFSStore_Perms_0600_0700 asserts the D-14 umask-defensive file and
 // directory modes stay exactly 0600 / 0700 after publish.
 func TestFSStore_Perms_0600_0700(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission bits not enforced on Windows")
+	}
 	s, root := newTestStore(t)
 	id := ulid.Make().String()
 	m := newTestManifest(id, false, "")
