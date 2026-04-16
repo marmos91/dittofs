@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -59,7 +60,7 @@ func ValidateKeyRef(ref string) error {
 		}
 		return nil
 	case "file":
-		if !strings.HasPrefix(target, "/") {
+		if !filepath.IsAbs(target) {
 			return fmt.Errorf("%w: file path must be absolute, got %q", ErrIncompatibleConfig, target)
 		}
 		return nil
@@ -95,7 +96,7 @@ func resolveEnvKey(name string) ([]byte, error) {
 // before Open is called, so the os.ReadFile below is safe against the
 // gosec G304 tainted-input warning.
 func resolveFileKey(path string) ([]byte, error) {
-	if !strings.HasPrefix(path, "/") {
+	if !filepath.IsAbs(path) {
 		return nil, fmt.Errorf("%w: file path must be absolute, got %q", ErrIncompatibleConfig, path)
 	}
 	info, err := os.Stat(path)
