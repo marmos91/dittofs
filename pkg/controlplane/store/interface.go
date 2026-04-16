@@ -330,9 +330,9 @@ type BlockStoreConfigStore interface {
 	// Returns models.ErrStoreInUse if the store is referenced by any shares.
 	DeleteBlockStore(ctx context.Context, name string, kind models.BlockStoreKind) error
 
-	// GetSharesByBlockStore returns all shares using the given block store (by name).
+	// GetSharesByBlockStore returns all shares using the given block store (by name and kind).
 	// Checks both local_block_store_id and remote_block_store_id references.
-	GetSharesByBlockStore(ctx context.Context, storeName string) ([]*models.Share, error)
+	GetSharesByBlockStore(ctx context.Context, storeName string, kind models.BlockStoreKind) ([]*models.Share, error)
 }
 
 // BackupStore provides backup repo, record, and job CRUD operations.

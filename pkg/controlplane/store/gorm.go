@@ -222,13 +222,14 @@ func New(config *Config) (*GORMStore, error) {
 		if err := db.Exec("UPDATE block_store_configs SET kind = 'remote'").Error; err != nil {
 			return nil, fmt.Errorf("failed to set default kind: %w", err)
 		}
-		// Drop the old unique index on name alone (from legacy table).
-		// AutoMigrate will create the new composite index idx_block_store_name_kind
-		// on (name, kind), but won't drop the old one, which would prevent having
-		// a local and remote store with the same name.
-		_ = db.Exec("DROP INDEX IF EXISTS idx_payload_stores_name")
-		_ = db.Exec("DROP INDEX IF EXISTS idx_block_store_configs_name")
 	}
+
+	// Pre-migration: drop legacy single-column unique index on block_store_configs.name.
+	// AutoMigrate creates the new composite index idx_block_store_name_kind on (name, kind)
+	// but does not drop pre-existing ones, which would prevent having a local and remote
+	// store with the same name. Idempotent via IF EXISTS; safe to run on fresh installs.
+	_ = db.Exec("DROP INDEX IF EXISTS idx_payload_stores_name")
+	_ = db.Exec("DROP INDEX IF EXISTS idx_block_store_configs_name")
 
 	// Pre-migration: drop legacy single-column unique index on identity_mappings.principal.
 	// The new composite index idx_provider_principal (provider_name, principal) replaces it.
