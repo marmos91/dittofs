@@ -1007,8 +1007,17 @@ docker exec -u root -d ref-server tcpdump -i any -w /tmp/ref.pcap -s 0 port 445
 # 3. Run the same smbtorture/nfstest/etc. against each server
 
 # 4. Diff specific protocol fields with tshark (from nicolaka/netshoot image)
+#    - Reference pcap (captured inside the ref container) is on port 445;
+#      tshark auto-decodes as NBSS without a hint.
+#    - DittoFS pcap is on the non-standard port 12445 and needs -d to force
+#      the NBSS dissector.
 docker run --rm -v /tmp:/tmp --platform linux/amd64 nicolaka/netshoot \
-  tshark -r /tmp/ref.pcap -d tcp.port==12445,nbss -V \
+  tshark -r /tmp/ref.pcap -V \
+  -Y "smb2.cmd==1 and smb2.nt_status==0 and smb2.flags.response==1" \
+  -c 1 2>/dev/null | grep -iE "spnego|negtoken|mechListMIC|supportedMech"
+
+docker run --rm -v /tmp:/tmp --platform linux/amd64 nicolaka/netshoot \
+  tshark -r /tmp/dittofs.pcap -d tcp.port==12445,nbss -V \
   -Y "smb2.cmd==1 and smb2.nt_status==0 and smb2.flags.response==1" \
   -c 1 2>/dev/null | grep -iE "spnego|negtoken|mechListMIC|supportedMech"
 ```

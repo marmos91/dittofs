@@ -97,13 +97,15 @@ func handleRequest[Req smbRequest, Resp smbResponse](
 
 	status := resp.GetStatus()
 
-	// Skip encoding when the handler reported an error status: the outer
-	// buildResponseHeaderAndBody replaces the body with MakeErrorBody() per
-	// [MS-SMB2] 2.2.2, so command-specific encoding would be thrown away.
-	// Informational/warning statuses (e.g., STATUS_NO_MORE_FILES,
-	// STATUS_BUFFER_OVERFLOW) still need the command body — they're treated
-	// as partial-success by clients.
-	if status.IsError() {
+	// Skip encoding whenever buildResponseHeaderAndBody will substitute
+	// MakeErrorBody() on the way out — that is, for every error status and
+	// for warning statuses other than StatusBufferOverflow. Only
+	// StatusBufferOverflow (the buffer-truncation signal carried in
+	// QUERY_INFO responses) preserves its command-specific body downstream;
+	// everything else, including StatusNoMoreFiles at end-of-enumeration,
+	// has its encoded body discarded and replaced with the 9-byte ERROR
+	// structure per [MS-SMB2] 2.2.2.
+	if status.IsError() || (status.IsWarning() && status != types.StatusBufferOverflow) {
 		return &HandlerResult{Status: status}, nil
 	}
 
