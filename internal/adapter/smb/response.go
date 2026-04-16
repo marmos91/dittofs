@@ -339,19 +339,23 @@ func checkEncryptionRequired(reqHeader *header.SMB2Header, connInfo *ConnInfo, i
 }
 
 // SendResponseWithHooks sends an SMB2 response and runs after-hooks with the
-// full response bytes. This is used by ProcessSingleRequest where hooks need
-// the raw response bytes (e.g., preauth integrity hash chain).
+// exact wire plaintext bytes (post-sign, pre-encrypt). The after-hook must run
+// BEFORE the wire write to close a race window on the preauth hash chain:
+//
+// Per MS-SMB2 3.3.5.5, each SESSION_SETUP request/response mutates a per-session
+// preauth hash used to derive signing keys. If the response's hash update runs
+// AFTER the wire write, the client can receive the response and pipeline its
+// next SESSION_SETUP request; that request's before-hook (chaining ssReqN+1)
+// may then execute before the previous response's after-hook (chaining ssRespN)
+// completes — the server's chain diverges from the client's, producing a wrong
+// signing key and a "Bad SMB2 signature" rejection. See issue #362.
 func SendResponseWithHooks(reqHeader *header.SMB2Header, ctx *handlers.SMBHandlerContext, result *HandlerResult, connInfo *ConnInfo) error {
 	respHeader, body := buildResponseHeaderAndBody(reqHeader, ctx, result, connInfo)
 
-	if err := SendMessage(respHeader, body, connInfo); err != nil {
-		return err
+	preWrite := func(wirePlaintext []byte) {
+		RunAfterHooks(connInfo, reqHeader.Command, wirePlaintext)
 	}
-
-	// Build raw response bytes for after-hooks (e.g., preauth integrity hash).
-	rawResponse := append(respHeader.Encode(), body...)
-	RunAfterHooks(connInfo, reqHeader.Command, rawResponse)
-	return nil
+	return sendMessage(respHeader, body, connInfo, preWrite)
 }
 
 // SendResponse sends an SMB2 response with credit management and signing.
@@ -457,6 +461,16 @@ func SendErrorResponse(reqHeader *header.SMB2Header, status types.Status, connIn
 // created session MUST NOT be encrypted (client hasn't derived keys yet), but
 // MUST be signed. Re-authentication SESSION_SETUP responses ARE encrypted.
 func SendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo) error {
+	return sendMessage(hdr, body, connInfo, nil)
+}
+
+// sendMessage is the internal implementation used by SendMessage and
+// SendResponseWithHooks. It optionally invokes preWrite with the final
+// wire-plaintext payload (post-sign, pre-encrypt) right before the bytes are
+// written to the TCP connection. SendResponseWithHooks uses this to run the
+// preauth integrity hash update in the window where the client cannot yet have
+// observed the response — see the SendResponseWithHooks docstring.
+func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, preWrite func(wirePlaintext []byte)) error {
 	smbPayload := append(hdr.Encode(), body...)
 
 	// TEMP #362 trace: capture entry state for every SendMessage.
@@ -510,6 +524,11 @@ func SendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo) error 
 				sess.NewlyCreated = false // Clear so subsequent messages get encrypted
 			}
 			if sess.ShouldEncrypt() && connInfo.EncryptionMiddleware != nil && !isNewSessionSetup {
+				// Run pre-write hook on the PLAINTEXT bytes — the preauth chain
+				// hashes plaintext on both sides, not the encrypted wire form.
+				if preWrite != nil {
+					preWrite(smbPayload)
+				}
 				encrypted, err := connInfo.EncryptionMiddleware.EncryptResponse(hdr.SessionID, smbPayload)
 				if err != nil {
 					return fmt.Errorf("encrypt response: %w", err)
@@ -526,15 +545,24 @@ func SendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo) error 
 			}
 			if sess.ShouldSign() {
 				sess.SignMessage(smbPayload)
-				// Sync signature back so callers (e.g. SendResponseWithHooks)
-				// that re-encode the header get the real signature for preauth
-				// integrity hash computation per MS-SMB2 3.3.5.5.
+				// Sync signature back so callers that re-encode the header see
+				// the real signature. Flag-level mutations from signing (setting
+				// SMB2_FLAGS_SIGNED) exist only on smbPayload — the preauth chain
+				// uses smbPayload directly via the preWrite hook to stay in sync
+				// with the client's wire-byte hash.
 				copy(hdr.Signature[:], smbPayload[48:64])
 				logger.Debug("Signed outgoing SMB2 message",
 					"command", hdr.Command.String(),
 					"sessionID", hdr.SessionID)
 			}
 		}
+	}
+
+	// Run pre-write hook with the finalized plaintext wire payload. Must happen
+	// BEFORE WriteNetBIOSFrame so the preauth hash update is visible to any
+	// concurrently-dispatched successor request on the same session.
+	if preWrite != nil {
+		preWrite(smbPayload)
 	}
 
 	logger.Debug("Sent SMB2 response",
