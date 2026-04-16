@@ -102,7 +102,19 @@ Plans:
   4. `restore` defaults to the latest successful backup; `--from <backup-id>` selects a specific one; retries after interruption are safe
   5. On server startup, any `running` backup/restore jobs with no worker are transitioned to `interrupted` with a recovery message
   6. Block-store GC consults the PayloadID set from retained backup manifests and holds blocks referenced by any retained backup
-**Plans**: TBD
+**Plans:** 10 plans
+
+Plans:
+- [ ] 05-01-PLAN.md — Share Enabled schema + runtime Disable/Enable/IsShareEnabled/ListEnabledSharesForStore (REST-02)
+- [ ] 05-02-PLAN.md — Engine-persistent store_id (memory/badger/postgres) + target.go wiring (REST-01, REST-03)
+- [ ] 05-03-PLAN.md — Destination.GetManifestOnly (fs + s3) (REST-03, SAFETY-01)
+- [ ] 05-04-PLAN.md — stores.Service.SwapMetadataStore + OpenMetadataStoreAtPath + DropPostgresSchema + ListPostgresRestoreOrphans (REST-01)
+- [ ] 05-05-PLAN.md — NFSv4 serverBootVerifier atomic hoist + BumpBootVerifier (REST-01)
+- [ ] 05-06-PLAN.md — pkg/backup/restore/ package (Executor + fresh_store + swap + errors) + ListSucceededRecordsByRepo (REST-01, REST-03..05, SAFETY-02)
+- [ ] 05-07-PLAN.md — storebackups.Service.RunRestore + orphan sweep + SAFETY-02 verify (REST-01..05, SAFETY-02)
+- [ ] 05-08-PLAN.md — gc.BackupHoldProvider + storebackups.BackupHold (SAFETY-01)
+- [ ] 05-09-PLAN.md — Adapter dispatch gates (NFS mount, NFSv4 PUTFH, SMB TREE_CONNECT) + Prometheus + OTel hooks (REST-02)
+- [ ] 05-10-PLAN.md — Runtime.RunBlockGC production entrypoint + POST /api/blockgc/run admin endpoint (SAFETY-01 end-to-end)
 
 ### Phase 6: CLI & REST API Surface
 **Goal**: Operators drive backup, restore, list, and repo management from `dfsctl` and a REST API that the dittofs-pro UI can consume with async job polling.
@@ -138,6 +150,6 @@ Plans:
 | 2. Per-Engine Backup Drivers | 0/4 | Not started | - |
 | 3. Destination Drivers + Encryption | 6/6 | Complete    | 2026-04-16 |
 | 4. Scheduler + Retention | 0/5 | Not started | - |
-| 5. Restore Orchestration + Safety Rails | 0/0 | Not started | - |
+| 5. Restore Orchestration + Safety Rails | 0/9 | Not started | - |
 | 6. CLI & REST API Surface | 0/0 | Not started | - |
 | 7. Testing & Hardening | 0/0 | Not started | - |
