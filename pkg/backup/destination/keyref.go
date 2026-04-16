@@ -23,7 +23,7 @@ const aes256KeyLen = 32
 //
 // Supported schemes:
 //
-//	env:NAME       — env var named NAME holds 64 lowercase hex characters
+//	env:NAME       — env var named NAME holds 64 hex characters (upper or lower)
 //	file:/abs/path — regular file containing exactly 32 raw bytes
 //
 // Any other scheme (or a bare target with no scheme separator) returns
@@ -79,7 +79,7 @@ func resolveEnvKey(name string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: env var %s is empty or unset", ErrEncryptionKeyMissing, name)
 	}
 	if len(raw) != 64 {
-		return nil, fmt.Errorf("%w: env var %s must be 64 lowercase hex chars, got %d", ErrInvalidKeyMaterial, name, len(raw))
+		return nil, fmt.Errorf("%w: env var %s must be 64 hex characters, got %d", ErrInvalidKeyMaterial, name, len(raw))
 	}
 	key, err := hex.DecodeString(raw)
 	if err != nil {

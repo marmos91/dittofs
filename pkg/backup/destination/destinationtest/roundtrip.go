@@ -59,9 +59,9 @@ func Run(t *testing.T, f Factory) {
 	t.Run("PayloadIDSet_Preserved", func(t *testing.T) { testPayloadIDSetPreserved(t, f) })
 }
 
-// testKeyHex is 64 lowercase hex chars = 32 decoded bytes, satisfying
-// the AES-256 key contract in keyref.go. The value is deliberately not a
-// sequential pattern so a tampering test cannot collide with the key.
+// testKeyHex is fixed test key material: 64 hex characters = 32 decoded
+// bytes, satisfying the AES-256 key contract in keyref.go. The value is
+// a known constant for deterministic encrypted round-trip tests.
 const testKeyHex = "abababababababababababababababababababababababababababababababab"
 
 // testKeyEnvVar is the env var the suite exports during encrypted

@@ -203,7 +203,7 @@ Key references use a scheme prefix — the raw key material is never stored in t
 
 | Scheme      | Target                | Value                                              |
 | ----------- | --------------------- | -------------------------------------------------- |
-| `env:NAME`  | Environment variable  | 64 lowercase hex characters (32 decoded bytes)     |
+| `env:NAME`  | Environment variable  | 64 hex characters (32 decoded bytes, case-insensitive) |
 | `file:PATH` | Absolute file path    | Regular file containing exactly 32 raw bytes       |
 
 Anything else — bare strings, `http://`, `vault:`, `kms:` — is rejected with `ErrIncompatibleConfig`. External KMS, Vault, and AWS KMS key wrapping are explicitly deferred (see "What this release does NOT include" below).
