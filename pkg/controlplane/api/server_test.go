@@ -3,12 +3,44 @@ package api
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"testing"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
+
+// waitForServerReady waits for the API server to either accept TCP connections
+// on `addr` or fail to start. It races a TCP-dial poll against the server's
+// errChan so a Start failure (bind error, etc.) surfaces immediately rather
+// than as a generic listener timeout — and so the dial loop doesn't spuriously
+// succeed against an unrelated process already listening on `addr`.
+//
+// Calls t.Fatalf on Start error, dial timeout, or unexpected nil from Start
+// (Start returns nil only on graceful shutdown, which hasn't happened yet).
+func waitForServerReady(t *testing.T, addr string, errChan <-chan error, timeout time.Duration) {
+	t.Helper()
+	deadline := time.After(timeout)
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+
+	for {
+		conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+
+		select {
+		case startErr := <-errChan:
+			t.Fatalf("server.Start returned before listener was reachable: %v", startErr)
+		case <-deadline:
+			t.Fatalf("server did not start listening on %s within %s", addr, timeout)
+		case <-tick.C:
+		}
+	}
+}
 
 // testSetup creates control plane store and APIConfig for testing.
 func testSetup(t *testing.T, port int) (store.Store, APIConfig) {
@@ -58,8 +90,9 @@ func TestAPIServer_Lifecycle(t *testing.T) {
 		errChan <- server.Start(ctx)
 	}()
 
-	// Give server time to start
-	time.Sleep(100 * time.Millisecond)
+	// Wait until the server's listener accepts connections — racing against
+	// errChan so a bind failure surfaces as a real error, not a vague timeout.
+	waitForServerReady(t, fmt.Sprintf("localhost:%d", cfg.Port), errChan, 5*time.Second)
 
 	// Make request to health endpoint
 	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/health", cfg.Port))
@@ -138,12 +171,12 @@ func TestAPIServer_HealthEndpoint_NoRuntime(t *testing.T) {
 	defer cancel()
 
 	// Start server in background
+	errChan := make(chan error, 1)
 	go func() {
-		_ = server.Start(ctx)
+		errChan <- server.Start(ctx)
 	}()
 
-	// Give server time to start
-	time.Sleep(100 * time.Millisecond)
+	waitForServerReady(t, fmt.Sprintf("localhost:%d", cfg.Port), errChan, 5*time.Second)
 
 	// Test liveness endpoint (should always be OK)
 	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/health", cfg.Port))
@@ -180,12 +213,12 @@ func TestAPIServer_RootRedirectsToHealth(t *testing.T) {
 	defer cancel()
 
 	// Start server in background
+	errChan := make(chan error, 1)
 	go func() {
-		_ = server.Start(ctx)
+		errChan <- server.Start(ctx)
 	}()
 
-	// Give server time to start
-	time.Sleep(100 * time.Millisecond)
+	waitForServerReady(t, fmt.Sprintf("localhost:%d", cfg.Port), errChan, 5*time.Second)
 
 	// Create a client that doesn't follow redirects
 	client := &http.Client{
