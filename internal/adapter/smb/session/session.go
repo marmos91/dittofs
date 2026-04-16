@@ -45,7 +45,6 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
@@ -335,42 +334,8 @@ func (s *Session) ShouldVerify() bool {
 // SignMessage signs an SMB2 message in place using the session's signer.
 // This should be called before sending a message if signing is enabled.
 func (s *Session) SignMessage(message []byte) {
-	// TEMP #362 trace: capture state observed by THIS goroutine before signing.
-	shouldSign := s.CryptoState.ShouldSign()
-	signerNil := s.CryptoState.Signer == nil
-	signingEnabled := s.CryptoState.SigningEnabled
-	keyLen := len(s.CryptoState.SigningKey)
-	signerType := "<nil>"
-	if s.CryptoState.Signer != nil {
-		signerType = fmt.Sprintf("%T", s.CryptoState.Signer)
-	}
-	keyFingerprint := "<empty>"
-	if keyLen >= 4 {
-		keyFingerprint = fmt.Sprintf("%02x%02x%02x%02x",
-			s.CryptoState.SigningKey[0],
-			s.CryptoState.SigningKey[1],
-			s.CryptoState.SigningKey[2],
-			s.CryptoState.SigningKey[3])
-	}
-	logger.Debug("SIGN_TRACE: Session.SignMessage entry",
-		"sessionID", fmt.Sprintf("0x%x", s.SessionID),
-		"shouldSign", shouldSign,
-		"signingEnabled", signingEnabled,
-		"signerType", signerType,
-		"signerNil", signerNil,
-		"keyLen", keyLen,
-		"keyFP", keyFingerprint,
-		"loggedOff", s.LoggedOff.Load(),
-		"newlyCreated", s.NewlyCreated)
-
-	if shouldSign {
+	if s.CryptoState.ShouldSign() {
 		signing.SignMessage(s.CryptoState.Signer, message)
-	} else {
-		logger.Warn("SIGN_TRACE: Session.SignMessage SKIPPED — ShouldSign()=false",
-			"sessionID", fmt.Sprintf("0x%x", s.SessionID),
-			"signingEnabled", signingEnabled,
-			"signerNil", signerNil,
-			"loggedOff", s.LoggedOff.Load())
 	}
 }
 

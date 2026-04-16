@@ -473,42 +473,8 @@ func SendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo) error 
 func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, preWrite func(wirePlaintext []byte)) error {
 	smbPayload := append(hdr.Encode(), body...)
 
-	// TEMP #362 trace: capture entry state for every SendMessage.
-	logger.Debug("SIGN_TRACE: SendMessage entry",
-		"command", hdr.Command.String(),
-		"messageID", hdr.MessageID,
-		"sessionID", fmt.Sprintf("0x%x", hdr.SessionID),
-		"status", hdr.Status.String(),
-		"flags", fmt.Sprintf("0x%x", hdr.Flags),
-		"asyncID", hdr.AsyncId,
-		"payloadLen", len(smbPayload))
-
 	if hdr.SessionID != 0 {
 		sess, ok := connInfo.Handler.GetSession(hdr.SessionID)
-		if !ok {
-			// TEMP #362 trace: session lookup miss means we send unsigned even if
-			// the session previously required signing. The client will reject this.
-			// SESSION_SETUP intermediate responses (MORE_PROCESSING_REQUIRED) and
-			// LOGON_FAILURE are expected to miss because the session isn't fully
-			// registered until SUCCESS. Any OTHER command hitting this path on a
-			// real session is a likely #362 culprit — log loudly.
-			logLevel := "DEBUG"
-			if hdr.Command != types.SMB2SessionSetup {
-				logLevel = "ERROR"
-				logger.Error("SIGN_TRACE: SendMessage session lookup MISS on non-SESSION_SETUP — sending UNSIGNED (likely #362)",
-					"command", hdr.Command.String(),
-					"messageID", hdr.MessageID,
-					"sessionID", fmt.Sprintf("0x%x", hdr.SessionID),
-					"status", hdr.Status.String())
-			} else {
-				logger.Debug("SIGN_TRACE: SendMessage session lookup MISS (SESSION_SETUP — expected)",
-					"command", hdr.Command.String(),
-					"messageID", hdr.MessageID,
-					"sessionID", fmt.Sprintf("0x%x", hdr.SessionID),
-					"status", hdr.Status.String())
-			}
-			_ = logLevel
-		}
 		if ok {
 			// Per MS-SMB2 3.3.5.5.3: the initial SESSION_SETUP response that
 			// establishes a NEW session MUST NOT be encrypted. The client has not

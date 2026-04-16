@@ -1,16 +1,11 @@
 package encryption
 
 import (
-	"bytes"
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/header"
-	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // ErrDecryptFailed is a sentinel error indicating SMB3 decryption failure.
@@ -147,38 +142,10 @@ func (m *sessionEncryptionMiddleware) EncryptResponse(sessionID uint64, smb2Mess
 	// Compute AAD from the header (includes the nonce we just set)
 	aad := th.AAD()
 
-	// TEMP #362 trace: snapshot what we're about to encrypt so we can verify
-	// the round-trip after Seal returns.
-	var msgID, sessIDHdr uint64
-	var cmd uint16
-	var status uint32
-	if len(smb2Message) >= 48 {
-		status = binary.LittleEndian.Uint32(smb2Message[8:12])
-		cmd = binary.LittleEndian.Uint16(smb2Message[12:14])
-		msgID = binary.LittleEndian.Uint64(smb2Message[24:32])
-		sessIDHdr = binary.LittleEndian.Uint64(smb2Message[40:48])
-	}
-	plaintextSnapshot := make([]byte, len(smb2Message))
-	copy(plaintextSnapshot, smb2Message)
-	ptHashBefore := sha256.Sum256(plaintextSnapshot)
-
 	// Encrypt using EncryptWithNonce so we control the nonce
 	ciphertextWithTag, err := sess.EncryptWithNonce(nonce, smb2Message, aad)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt response for session 0x%x: %w", sessionID, err)
-	}
-
-	// TEMP #362 trace: did Seal mutate the source plaintext?
-	ptHashAfter := sha256.Sum256(smb2Message)
-	if ptHashBefore != ptHashAfter {
-		logger.Error("ENCRYPT_TRACE: plaintext MUTATED during Seal — race or aliasing bug",
-			"sessionID", fmt.Sprintf("0x%x", sessionID),
-			"messageID", msgID,
-			"command", cmd,
-			"status", fmt.Sprintf("0x%x", status),
-			"sessIDHdr", fmt.Sprintf("0x%x", sessIDHdr),
-			"hashBefore", hex.EncodeToString(ptHashBefore[:8]),
-			"hashAfter", hex.EncodeToString(ptHashAfter[:8]))
 	}
 
 	// Split ciphertextWithTag into ciphertext + 16-byte auth tag
@@ -189,47 +156,9 @@ func (m *sessionEncryptionMiddleware) EncryptResponse(sessionID uint64, smb2Mess
 	ciphertext := ciphertextWithTag[:len(ciphertextWithTag)-overhead]
 	tag := ciphertextWithTag[len(ciphertextWithTag)-overhead:]
 
-	// TEMP #362 self-decrypt check: round-trip the just-produced ciphertext
-	// using the same session's Decryptor. If round-trip fails or yields
-	// different bytes than the original plaintext, the encryption layer
-	// produced a corrupted message and the client will reject it. Decryptor
-	// uses a different key (ServerIn vs ServerOut) so we can't actually do
-	// this without the encryption key — instead, we use the pure crypto
-	// primitive: rebuild the same Seal call and confirm output matches.
-	//
-	// Practical check: confirm tag is non-zero and ciphertext length matches
-	// plaintext length (AEAD invariant).
-	if bytes.Equal(tag, make([]byte, len(tag))) {
-		logger.Error("ENCRYPT_TRACE: produced ZERO auth tag (likely encryption no-op)",
-			"sessionID", fmt.Sprintf("0x%x", sessionID),
-			"messageID", msgID,
-			"command", cmd)
-	}
-	if len(ciphertext) != len(plaintextSnapshot) {
-		logger.Error("ENCRYPT_TRACE: ciphertext/plaintext length mismatch (AEAD invariant violated)",
-			"sessionID", fmt.Sprintf("0x%x", sessionID),
-			"messageID", msgID,
-			"plaintextLen", len(plaintextSnapshot),
-			"ciphertextLen", len(ciphertext))
-	}
-
 	// Copy auth tag into header Signature and build wire format
 	copy(th.Signature[:], tag)
 	headerBytes := th.Encode()
-
-	// TEMP #362 trace: log every encrypt with full identifying info so we can
-	// correlate against client-side failures.
-	logger.Debug("ENCRYPT_TRACE: encrypted",
-		"sessionID", fmt.Sprintf("0x%x", sessionID),
-		"messageID", msgID,
-		"command", cmd,
-		"status", fmt.Sprintf("0x%x", status),
-		"plaintextLen", len(plaintextSnapshot),
-		"ciphertextLen", len(ciphertext),
-		"plaintextHash", hex.EncodeToString(ptHashBefore[:8]),
-		"nonce", hex.EncodeToString(nonce),
-		"tag", hex.EncodeToString(tag[:8]),
-		"originalMessageSize", th.OriginalMessageSize)
 
 	return append(headerBytes, ciphertext...), nil
 }
