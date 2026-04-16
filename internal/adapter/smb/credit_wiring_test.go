@@ -39,6 +39,27 @@ func TestCreditValidationLogic_ExemptCommands(t *testing.T) {
 	}
 }
 
+// TestCreditValidationLogic_CancelReusesTargetMessageID verifies the dispatcher
+// invariant that CANCEL does NOT double-consume its target's sequence slot.
+// Per MS-SMB2 3.3.5.16, CANCEL reuses the pending request's MessageID. The
+// original request already consumed that slot; a second Consume would fail
+// and the dispatcher would reply STATUS_INVALID_PARAMETER — a spurious CANCEL
+// response that clients treat as a protocol violation (WPTS
+// BVT_SMB2Basic_CancelRegisteredChangeNotify, smbtorture notify.mask/tdis,
+// replay.replay7).
+func TestCreditValidationLogic_CancelReusesTargetMessageID(t *testing.T) {
+	sw := session.NewCommandSequenceWindow(8192)
+	sw.Grant(10)
+
+	// Client sends CHANGE_NOTIFY MessageID=5; server consumes slot 5.
+	require.True(t, sw.Consume(5, 1), "initial CHANGE_NOTIFY consume should succeed")
+
+	// Client then sends CANCEL MessageID=5 targeting the pending CHANGE_NOTIFY.
+	// The dispatcher MUST NOT call Consume again — slot 5 is already cleared.
+	assert.False(t, sw.Consume(5, 1),
+		"second Consume on same MessageID must fail (proves double-consume would reject CANCEL)")
+}
+
 // TestCreditValidationLogic_NonExemptConsumption verifies that non-exempt commands
 // consume from the sequence window.
 func TestCreditValidationLogic_NonExemptConsumption(t *testing.T) {

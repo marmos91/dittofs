@@ -74,7 +74,8 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 	// Per MS-SMB2 3.2.4.1.4: compound-level credit accounting.
 	// The first command's CreditCharge covers the entire compound.
 	// CreditCharge size validation is skipped for exempt commands; sequence
-	// window Consume still runs — see response.go for rationale (#378).
+	// window Consume still runs for NEGOTIATE and first SESSION_SETUP but is
+	// skipped for CANCEL — see response.go for rationale (#378).
 	exempt := session.IsCreditExempt(firstHeader.Command, firstHeader.SessionID)
 	if !exempt && connInfo.SupportsMultiCredit {
 		if err := session.ValidateCreditCharge(firstHeader.Command, firstHeader.CreditCharge, firstBody); err != nil {
@@ -86,7 +87,7 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 			return
 		}
 	}
-	if connInfo.SequenceWindow != nil {
+	if connInfo.SequenceWindow != nil && firstHeader.Command != types.CommandCancel {
 		charge := session.EffectiveCreditCharge(firstHeader.CreditCharge)
 		if !connInfo.SequenceWindow.Consume(firstHeader.MessageID, charge) {
 			logger.Debug("Compound sequence window validation failed",

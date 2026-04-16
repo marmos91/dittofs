@@ -49,14 +49,23 @@ func ProcessSingleRequest(
 
 	// Credit validation: per MS-SMB2 3.3.5.2.3 and 3.3.5.2.5.
 	// CreditCharge size validation is skipped for credit-exempt commands
-	// (NEGOTIATE, CANCEL, first SESSION_SETUP with SessionID=0). We STILL
-	// consume the sequence number from the window so Grant/Consume stay
-	// in lockstep with the client's cur_credits counter; skipping Consume
-	// causes `available` to drift up by one per credit-exempt request and
-	// the drift compounds over long-lived connections until the server
-	// starves the client of future grants (issue #378). The initial
-	// window covers both NEG MessageID 0 and 1 (smbtorture uses 0, MS
-	// WPTS uses 1) so Consume succeeds regardless of the client's choice.
+	// (NEGOTIATE, CANCEL, first SESSION_SETUP with SessionID=0). We also
+	// consume the sequence number for NEGOTIATE and first SESSION_SETUP so
+	// Grant/Consume stay in lockstep with the client's cur_credits counter —
+	// those commands burn fresh MessageIDs and receive a credit grant on
+	// response; skipping Consume there would drift `available` up by one per
+	// handshake (issue #378). The initial window covers both NEG MessageID
+	// 0 and 1 (smbtorture uses 0, MS WPTS uses 1) so Consume succeeds
+	// regardless of the client's choice.
+	//
+	// CANCEL is the exception: per MS-SMB2 3.3.5.16 it reuses the target
+	// request's MessageID (the pending async operation's slot, already
+	// consumed when that request arrived) and sends no response, so there
+	// is nothing to Grant back. Calling Consume would double-consume the
+	// slot and fail with STATUS_INVALID_PARAMETER, turning the CANCEL into
+	// a spurious error response the client treats as a protocol violation
+	// — observed in WPTS BVT_SMB2Basic_CancelRegisteredChangeNotify and
+	// smbtorture smb2.notify.mask/tdis, replay.replay7.
 	exempt := session.IsCreditExempt(reqHeader.Command, reqHeader.SessionID)
 	if !exempt && connInfo.SupportsMultiCredit {
 		if err := session.ValidateCreditCharge(reqHeader.Command, reqHeader.CreditCharge, body); err != nil {
@@ -67,7 +76,7 @@ func ProcessSingleRequest(
 			return SendErrorResponse(reqHeader, types.StatusInvalidParameter, connInfo)
 		}
 	}
-	if connInfo.SequenceWindow != nil {
+	if connInfo.SequenceWindow != nil && reqHeader.Command != types.CommandCancel {
 		charge := session.EffectiveCreditCharge(reqHeader.CreditCharge)
 		if !connInfo.SequenceWindow.Consume(reqHeader.MessageID, charge) {
 			logger.Debug("Sequence window validation failed",

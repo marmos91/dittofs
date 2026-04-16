@@ -230,6 +230,8 @@ fully implemented. DittoFS grants a fixed credit count.
 | smb2.credits.2conn_ipc_max_async_credits | Credits | Multi-connection IPC async credit management not implemented | - |
 | smb2.credits.multichannel_ipc_max_async_credits | Credits | Multi-channel IPC async credit management not implemented | - |
 | smb2.credits.1conn_notify_max_async_credits | Credits | Change notification async credit management not implemented | - |
+| smb2.credits.2conn_notify_max_async_credits | Credits | Multi-connection change notification async credit management not implemented | - |
+| smb2.credits.multichannel_max_async_credits | Credits | Multi-channel not implemented (blocks session bind) | - |
 | smb2.credits.ipc_max_data_zero | Credits | IPC credit management not implemented | - |
 | smb2.credits.session_setup_credits_granted | Credits | Dynamic credit granting not implemented | - |
 | smb2.credits.single_req_credits_granted | Credits | Dynamic credit granting not implemented | - |
