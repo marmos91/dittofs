@@ -10,7 +10,11 @@ import (
 
 func TestSequenceWindow_NewCreatesWithZeroAvailable(t *testing.T) {
 	w := NewCommandSequenceWindow(131070)
-	assert.Equal(t, uint64(1), w.Size(), "new window should have size 1 (sequence {0})")
+	// Window covers sequences {0, 1} so NEGOTIATE can arrive with either
+	// MessageID (smbtorture uses 0, MS-WPTS uses 1).
+	assert.Equal(t, uint64(2), w.Size(), "new window should cover sequences {0, 1}")
+	assert.Equal(t, uint64(1), w.Available(),
+		"available credits should be 1 (client's initial cur_credits)")
 }
 
 func TestSequenceWindow_ConsumeZeroSucceeds(t *testing.T) {
@@ -212,10 +216,11 @@ func TestSequenceWindow_ConcurrentConsumeAndGrant(t *testing.T) {
 
 func TestSequenceWindow_SizeReturnsCorrectValue(t *testing.T) {
 	w := NewCommandSequenceWindow(131070)
-	assert.Equal(t, uint64(1), w.Size(), "initial window should have size 1")
+	// Initial window covers sequences {0, 1} — see NewCommandSequenceWindow.
+	assert.Equal(t, uint64(2), w.Size(), "initial window should have size 2")
 
 	w.Grant(10)
-	assert.Equal(t, uint64(11), w.Size(), "after granting 10, size should be 11")
+	assert.Equal(t, uint64(12), w.Size(), "after granting 10, size should be 12")
 
 	w.Consume(0, 1)
 	// Size reflects the full window range, not just available slots

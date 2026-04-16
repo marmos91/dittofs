@@ -49,13 +49,14 @@ func ProcessSingleRequest(
 
 	// Credit validation: per MS-SMB2 3.3.5.2.3 and 3.3.5.2.5.
 	// CreditCharge size validation is skipped for credit-exempt commands
-	// (NEGOTIATE, CANCEL, first SESSION_SETUP with sessionID=0) — the
-	// client may not have credits yet. But we STILL consume the sequence
-	// number from the window so Grant/Consume stay in sync with the
-	// client's cur_credits counter; otherwise each credit-exempt request
-	// grants without a matching consume and the server's available
-	// counter drifts up until it pins at maxSize and starves the client
-	// of future grants (issue #378).
+	// (NEGOTIATE, CANCEL, first SESSION_SETUP with SessionID=0). We STILL
+	// consume the sequence number from the window so Grant/Consume stay
+	// in lockstep with the client's cur_credits counter; skipping Consume
+	// causes `available` to drift up by one per credit-exempt request and
+	// the drift compounds over long-lived connections until the server
+	// starves the client of future grants (issue #378). The initial
+	// window covers both NEG MessageID 0 and 1 (smbtorture uses 0, MS
+	// WPTS uses 1) so Consume succeeds regardless of the client's choice.
 	exempt := session.IsCreditExempt(reqHeader.Command, reqHeader.SessionID)
 	if !exempt && connInfo.SupportsMultiCredit {
 		if err := session.ValidateCreditCharge(reqHeader.Command, reqHeader.CreditCharge, body); err != nil {
@@ -66,10 +67,6 @@ func ProcessSingleRequest(
 			return SendErrorResponse(reqHeader, types.StatusInvalidParameter, connInfo)
 		}
 	}
-
-	// Validate and consume sequence numbers from window (MS-SMB2 3.3.5.2.3).
-	// Always runs, even for credit-exempt commands, so the window's
-	// Grant/Consume bookkeeping matches the client's counter exactly.
 	if connInfo.SequenceWindow != nil {
 		charge := session.EffectiveCreditCharge(reqHeader.CreditCharge)
 		if !connInfo.SequenceWindow.Consume(reqHeader.MessageID, charge) {

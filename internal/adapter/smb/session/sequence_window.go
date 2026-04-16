@@ -34,19 +34,23 @@ type CommandSequenceWindow struct {
 }
 
 // NewCommandSequenceWindow creates a new sequence window initialized with
-// sequence {0} available. maxSize caps outstanding credits on the connection
-// (the client's cur_credits counter) — callers should pass
+// sequences {0, 1} available. maxSize caps outstanding credits on the
+// connection (the client's cur_credits counter) — callers should pass
 // CreditConfig.MaxSessionCredits (Samba default: 8192). See
 // NewSequenceWindowForConnection in internal/adapter/smb/conn_types.go.
 //
-// Per MS-SMB2 3.3.1.1: Upon creation, the server MUST initialize the
-// CommandSequenceWindow to {0}.
+// Per MS-SMB2 3.3.1.1, the initial window starts at sequence 0, but in
+// practice clients pick either 0 (Samba smbtorture) or 1 (MS-WPTS) for the
+// NEGOTIATE MessageID. Both are valid SMB2 first MessageIDs — Windows
+// servers accept either. Pre-seeding bits 0 and 1 lets Consume succeed
+// regardless of which convention the client follows, while the `available`
+// counter still starts at 1 because the client's initial cur_credits is 1
+// (the extra bit is just a free MessageID slot, not a credit).
 func NewCommandSequenceWindow(maxSize uint64) *CommandSequenceWindow {
-	// bitmap[0] bit 0 = sequence 0 is available (high-exclusive, so next to grant is 1).
 	return &CommandSequenceWindow{
 		low:       0,
-		high:      1,
-		bitmap:    []uint64{1},
+		high:      2,
+		bitmap:    []uint64{0b11},
 		maxSize:   maxSize,
 		available: 1,
 	}

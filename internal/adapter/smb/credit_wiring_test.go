@@ -126,7 +126,7 @@ func TestConnInfo_SequenceWindowField(t *testing.T) {
 
 	assert.NotNil(t, ci.SequenceWindow, "SequenceWindow field should be accessible")
 	assert.True(t, ci.SupportsMultiCredit, "SupportsMultiCredit field should be accessible")
-	assert.Equal(t, uint64(1), ci.SequenceWindow.Size(), "initial window should have size 1")
+	assert.Equal(t, uint64(2), ci.SequenceWindow.Size(), "initial window covers sequences {0, 1}")
 }
 
 // TestSendMessage_SequenceWindowExpansion verifies the sequence window expansion
