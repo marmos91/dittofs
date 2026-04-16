@@ -115,7 +115,22 @@ func (r *DefaultResolver) Resolve(ctx context.Context, targetKind, targetID stri
 		return nil, "", "", fmt.Errorf("%w: store %q (type=%s)", backup.ErrBackupUnsupported, cfg.Name, cfg.Type)
 	}
 
-	return src, cfg.ID, cfg.Type, nil
+	// Phase 5 D-06: prefer the engine-persistent store_id over cfg.ID. The
+	// control-plane DB row's ID is volatile across DB resets; the engine's
+	// own ULID (Badger: cfg:store_id key; Postgres: server_config.store_id;
+	// Memory: assigned on construction) survives. Using the engine ID here
+	// is what makes the manifest.store_id == target.store_id gate meaningful
+	// for preventing cross-store restore contamination (Pitfall #4).
+	storeIDer, ok := metaStore.(interface{ GetStoreID() string })
+	if !ok {
+		return nil, "", "", fmt.Errorf("store %q (type=%s) does not expose GetStoreID; Phase 5 D-06 contract violated",
+			cfg.Name, cfg.Type)
+	}
+	engineID := storeIDer.GetStoreID()
+	if engineID == "" {
+		return nil, "", "", fmt.Errorf("store %q (type=%s) returned empty store_id", cfg.Name, cfg.Type)
+	}
+	return src, engineID, cfg.Type, nil
 }
 
 // Compile-time assertions that DefaultResolver satisfies StoreResolver

@@ -72,11 +72,19 @@ func TestBackupRepoTarget_Repo(t *testing.T) {
 	}
 }
 
-// TestDefaultResolver_ResolveSuccess — T3 happy path: (metadata, cfgID) with backup-capable store.
+// TestDefaultResolver_ResolveSuccess — T3 happy path: (metadata, engineStoreID) with backup-capable store.
+//
+// Phase 5 D-06 changed the contract: Resolve now returns the engine-persistent
+// store_id (via GetStoreID()), NOT cfg.ID. This test asserts the new contract
+// — the returned storeID matches the memory engine's ULID, not "cfg-abc".
 func TestDefaultResolver_ResolveSuccess(t *testing.T) {
 	ctx := context.Background()
 	cfg := &models.MetadataStoreConfig{ID: "cfg-abc", Name: "test-meta", Type: "memory"}
 	metaStore := memory.NewMemoryMetadataStoreWithDefaults()
+	wantStoreID := metaStore.GetStoreID()
+	if wantStoreID == "" {
+		t.Fatal("memory engine returned empty GetStoreID; Phase 5 D-06 contract violated")
+	}
 
 	configs := &fakeConfigGetter{byID: map[string]*models.MetadataStoreConfig{"cfg-abc": cfg}}
 	registry := &fakeRegistry{byName: map[string]metadata.MetadataStore{"test-meta": metaStore}}
@@ -89,13 +97,17 @@ func TestDefaultResolver_ResolveSuccess(t *testing.T) {
 	if src == nil {
 		t.Fatal("expected non-nil Backupable source")
 	}
-	if storeID != "cfg-abc" {
-		t.Errorf("storeID = %q, want %q", storeID, "cfg-abc")
+	if storeID != wantStoreID {
+		t.Errorf("storeID = %q, want engine-persistent %q (NOT cfg.ID=%q)", storeID, wantStoreID, cfg.ID)
+	}
+	if storeID == cfg.ID {
+		t.Errorf("storeID must NOT equal cfg.ID after Phase 5 D-06; got %q", storeID)
 	}
 	if storeKind != "memory" {
 		t.Errorf("storeKind = %q, want %q", storeKind, "memory")
 	}
 }
+
 
 // TestDefaultResolver_UnknownKind — T4: non-"metadata" kinds wrap ErrInvalidTargetKind.
 func TestDefaultResolver_UnknownKind(t *testing.T) {

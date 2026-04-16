@@ -2,6 +2,7 @@ package badger
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -9,6 +10,8 @@ import (
 
 	badger "github.com/dgraph-io/badger/v4"
 	"github.com/dgraph-io/badger/v4/options"
+	"github.com/oklog/ulid/v2"
+
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -96,6 +99,17 @@ type BadgerMetadataStore struct {
 	// Updated atomically on every size-changing operation (create, update, truncate, delete).
 	// Initialized from a full file scan on startup.
 	usedBytes atomic.Int64
+
+	// storeID is the engine-persistent identifier for this store instance,
+	// backed by the cfg:store_id key in BadgerDB. Created on first open of
+	// a fresh directory with a fresh ULID; read thereafter. Immutable for
+	// the life of the instance.
+	//
+	// Used by Phase 5 restore's D-06 store-identity gate (Pitfall #4) so a
+	// control-plane DB reset (which rotates cfg.ID) does NOT cause the
+	// engine to report a different identity — the ULID persists with the
+	// Badger data directory itself.
+	storeID string
 }
 
 // BadgerMetadataStoreConfig contains configuration for creating a BadgerDB metadata store.
@@ -210,11 +224,21 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		return nil, fmt.Errorf("failed to open BadgerDB at %s: %w", config.DBPath, err)
 	}
 
+	// Phase 5 D-06: bootstrap the engine-persistent store_id before
+	// serving requests. ensureStoreID is idempotent — first open writes a
+	// fresh ULID, subsequent opens read the existing value.
+	sid, err := ensureStoreID(db)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ensure store_id: %w", err)
+	}
+
 	store := &BadgerMetadataStore{
 		db:              db,
 		capabilities:    config.Capabilities,
 		maxStorageBytes: config.MaxStorageBytes,
 		maxFiles:        config.MaxFiles,
+		storeID:         sid,
 	}
 
 	// Initialize stats cache with a 5-second TTL for responsive updates
@@ -235,6 +259,50 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 	}
 
 	return store, nil
+}
+
+// storeIDKey is the BadgerDB key for the engine-persistent store identifier.
+// It lives under the existing "cfg:" singleton-config prefix so it shares a
+// namespace with server config and filesystem capabilities.
+const storeIDKey = prefixConfig + "store_id"
+
+// ensureStoreID reads the persistent engine store_id from the cfg:store_id
+// key, creating it with a fresh ULID on first open. Safe to call on every
+// open — idempotent after bootstrap.
+//
+// See Phase 5 CONTEXT.md D-06 and Pitfall #4 for the invariant this upholds
+// (cross-store restore contamination gate). The key is intentionally written
+// outside the allBackupPrefixes list so a Backup archive does NOT carry the
+// source store's store_id into a Restore receiver — the receiver's ID
+// always wins, enforced by the re-anchor in Restore below.
+func ensureStoreID(db *badger.DB) (string, error) {
+	var existing string
+	err := db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte(storeIDKey))
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return item.Value(func(v []byte) error {
+			existing = string(v)
+			return nil
+		})
+	})
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", storeIDKey, err)
+	}
+	if existing != "" {
+		return existing, nil
+	}
+	fresh := ulid.Make().String()
+	if err := db.Update(func(txn *badger.Txn) error {
+		return txn.Set([]byte(storeIDKey), []byte(fresh))
+	}); err != nil {
+		return "", fmt.Errorf("write %s: %w", storeIDKey, err)
+	}
+	return fresh, nil
 }
 
 // GetUsedBytes returns the current total logical bytes used by regular files.
@@ -398,3 +466,16 @@ func (s *BadgerMetadataStore) Close() error {
 
 	return nil
 }
+
+// GetStoreID returns the Badger-persistent store identifier (stored at key
+// cfg:store_id). Stable across restarts — the ULID is written once on first
+// open of a fresh directory and read on every subsequent open. Immutable
+// for the life of the instance.
+//
+// Used by Phase 5 restore's D-06 store-identity gate (Pitfall #4).
+func (s *BadgerMetadataStore) GetStoreID() string { return s.storeID }
+
+// Compile-time assertion: the Badger engine exposes GetStoreID so the
+// Phase 5 restore orchestrator can fetch the engine-persistent ID via a
+// type assertion (see pkg/controlplane/runtime/storebackups/target.go).
+var _ interface{ GetStoreID() string } = (*BadgerMetadataStore)(nil)

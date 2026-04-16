@@ -115,6 +115,27 @@ func TestBackupMemory_EmptyStoreRoundTrip(t *testing.T) {
 	}
 }
 
+// TestMemoryStoreID_NonEmpty runs the Phase 5 D-06 conformance check: the
+// memory engine always emits a non-empty ULID store_id on construction.
+// The "across restart" clause is not meaningful for an ephemeral engine
+// — this is the applicable contract.
+func TestMemoryStoreID_NonEmpty(t *testing.T) {
+	storetest.TestStoreID_NonEmptyOnConstruction(t, func(t *testing.T) metadata.MetadataStore {
+		return memory.NewMemoryMetadataStoreWithDefaults()
+	})
+}
+
+// TestMemoryStoreID_PreservedAcrossRestore runs the Phase 5 D-06
+// "receiver identity wins" conformance check against the memory engine.
+// The memoryBackupRoot struct deliberately has no StoreID field, so
+// Restore does not overwrite the receiver's storeID.
+func TestMemoryStoreID_PreservedAcrossRestore(t *testing.T) {
+	factory := func(t *testing.T) storetest.BackupTestStore {
+		return memory.NewMemoryMetadataStoreWithDefaults()
+	}
+	storetest.TestStoreID_PreservedAcrossRestore(t, factory, factory)
+}
+
 // TestBackupMemory_EnvelopeShape confirms the Backup output begins with the
 // MDFS envelope header (magic + version + length + CRC32) and that the
 // payload decodes as a gob memoryBackupRoot. Combined with the Corruption

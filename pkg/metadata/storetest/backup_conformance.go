@@ -584,3 +584,147 @@ func payloadSetsEqual(a, b metadata.PayloadIDSet) bool {
 	}
 	return true
 }
+
+// ============================================================================
+// StoreID Conformance (Phase 5 D-06)
+// ============================================================================
+
+// StoreIDFactory opens (or reopens) an engine against the SAME underlying
+// backing storage each time it's called. The first call must produce a
+// fresh store instance; subsequent calls must reopen the SAME directory /
+// schema so the "across restart" clause of the persistence invariant can be
+// exercised.
+//
+// Engines whose identity is ephemeral by construction (Memory) should use
+// TestStoreID_NonEmptyOnConstruction directly; the "across restart" shape
+// is not meaningful for them.
+type StoreIDFactory func(t *testing.T) metadata.MetadataStore
+
+// TestStoreID_PersistedAcrossRestart verifies that each engine's
+// GetStoreID() returns a stable, non-empty identifier that survives
+// close + reopen of the same backing storage. Engines that return
+// different IDs after close+reopen fail the test loudly.
+//
+// Contract notes:
+//   - newStore is expected to produce a store against the SAME
+//     underlying path/schema each time it is called (so close+reopen
+//     exercises persistence, not fresh-instance creation).
+//   - Memory engine is exempt from this clause — for it, callers
+//     should use TestStoreID_NonEmptyOnConstruction.
+//
+// See Phase 5 CONTEXT.md D-06 / Pitfall #4 for the invariant this locks.
+func TestStoreID_PersistedAcrossRestart(t *testing.T, newStore StoreIDFactory) {
+	t.Helper()
+
+	s1 := newStore(t)
+	idr1, ok := s1.(interface{ GetStoreID() string })
+	if !ok {
+		t.Fatalf("store does not implement GetStoreID(): %T", s1)
+	}
+	id1 := idr1.GetStoreID()
+	if id1 == "" {
+		t.Fatalf("GetStoreID() returned empty string on first open")
+	}
+	if closer, ok := s1.(io.Closer); ok {
+		if err := closer.Close(); err != nil {
+			t.Fatalf("close first instance: %v", err)
+		}
+	}
+
+	s2 := newStore(t)
+	idr2, ok := s2.(interface{ GetStoreID() string })
+	if !ok {
+		t.Fatalf("reopened store does not implement GetStoreID(): %T", s2)
+	}
+	id2 := idr2.GetStoreID()
+	if id2 == "" {
+		t.Fatalf("GetStoreID() returned empty string on reopen")
+	}
+	if id1 != id2 {
+		t.Fatalf("store_id must persist across restart: first=%q second=%q", id1, id2)
+	}
+}
+
+// TestStoreID_NonEmptyOnConstruction verifies that GetStoreID returns a
+// non-empty identifier on the first open. Applicable to all engines
+// including memory (where "across restart" is not a meaningful clause).
+func TestStoreID_NonEmptyOnConstruction(t *testing.T, newStore StoreIDFactory) {
+	t.Helper()
+	s := newStore(t)
+	idr, ok := s.(interface{ GetStoreID() string })
+	if !ok {
+		t.Fatalf("store does not implement GetStoreID(): %T", s)
+	}
+	if idr.GetStoreID() == "" {
+		t.Fatalf("GetStoreID() returned empty string")
+	}
+}
+
+// TestStoreID_PreservedAcrossRestore verifies Phase 5 D-06's "receiver
+// identity wins" invariant: backing up a source store into a destination
+// store MUST leave the destination's store_id unchanged (the source's
+// store_id in the restore payload does NOT rebrand the receiver).
+//
+// Both newSource and newDest produce fresh, independent stores. The test
+// populates a trivial single-share layout into the source (so Backup has
+// something to snapshot), captures the destination's store_id before
+// Restore, runs Restore, and asserts the destination's store_id is
+// unchanged afterward.
+//
+// The source's store_id is NOT equal to the destination's store_id — they
+// are independent engines with independent ULIDs. The destination engine
+// enforces this by re-anchoring its own storeID after the restore payload
+// is applied (Badger: cfg:store_id re-write; Postgres: UPDATE
+// server_config; Memory: deliberately not serialized).
+func TestStoreID_PreservedAcrossRestore(t *testing.T, newSource, newDest BackupStoreFactory) {
+	t.Helper()
+	ctx := t.Context()
+
+	src := newSource(t)
+	t.Cleanup(func() { _ = src.Close() })
+	srcIDer, ok := src.(interface{ GetStoreID() string })
+	if !ok {
+		t.Fatalf("source store does not implement GetStoreID(): %T", src)
+	}
+	srcID := srcIDer.GetStoreID()
+	if srcID == "" {
+		t.Fatalf("source GetStoreID() returned empty string")
+	}
+
+	// Populate src with a minimal valid tree (one share + one directory +
+	// one file with PayloadID) so Backup produces a non-trivial payload.
+	_ = populateForBackup(t, src)
+
+	var buf bytes.Buffer
+	if _, err := src.Backup(ctx, &buf); err != nil {
+		t.Fatalf("src.Backup() failed: %v", err)
+	}
+
+	dest := newDest(t)
+	t.Cleanup(func() { _ = dest.Close() })
+	destIDer, ok := dest.(interface{ GetStoreID() string })
+	if !ok {
+		t.Fatalf("dest store does not implement GetStoreID(): %T", dest)
+	}
+	destIDBefore := destIDer.GetStoreID()
+	if destIDBefore == "" {
+		t.Fatalf("dest GetStoreID() before restore returned empty string")
+	}
+	if destIDBefore == srcID {
+		t.Fatalf("source and destination must have distinct IDs (source=%q dest=%q)", srcID, destIDBefore)
+	}
+
+	if err := dest.Restore(ctx, bytes.NewReader(buf.Bytes())); err != nil {
+		t.Fatalf("dest.Restore() failed: %v", err)
+	}
+
+	destIDAfter := destIDer.GetStoreID()
+	if destIDAfter != destIDBefore {
+		t.Fatalf("destination store_id must survive Restore: before=%q after=%q (Phase 5 D-06 invariant)",
+			destIDBefore, destIDAfter)
+	}
+	if destIDAfter == srcID {
+		t.Fatalf("destination store_id was overwritten by the source's ID (dest=%q src=%q)",
+			destIDAfter, srcID)
+	}
+}

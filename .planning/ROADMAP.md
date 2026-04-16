@@ -106,7 +106,7 @@ Plans:
 
 Plans:
 - [x] 05-01-PLAN.md — Share Enabled schema + runtime Disable/Enable/IsShareEnabled/ListEnabledSharesForStore (REST-02)
-- [ ] 05-02-PLAN.md — Engine-persistent store_id (memory/badger/postgres) + target.go wiring (REST-01, REST-03)
+- [x] 05-02-PLAN.md — Engine-persistent store_id (memory/badger/postgres) + target.go wiring (REST-01, REST-03)
 - [ ] 05-03-PLAN.md — Destination.GetManifestOnly (fs + s3) (REST-03, SAFETY-01)
 - [ ] 05-04-PLAN.md — stores.Service.SwapMetadataStore + OpenMetadataStoreAtPath + DropPostgresSchema + ListPostgresRestoreOrphans (REST-01)
 - [ ] 05-05-PLAN.md — NFSv4 serverBootVerifier atomic hoist + BumpBootVerifier (REST-01)

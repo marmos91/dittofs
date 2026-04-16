@@ -303,6 +303,13 @@ func (store *MemoryMetadataStore) Restore(ctx context.Context, r io.Reader) erro
 	// Replace internals atomically. nil-safe for every map so the restored
 	// store is fully usable even if the archive's maps were nil (e.g. an
 	// empty source store).
+	//
+	// Note: store.storeID is NOT assigned from the decoded root — it is
+	// instance identity, not serialized state. The memoryBackupRoot struct
+	// deliberately does not carry a StoreID field (Phase 5 D-06). The
+	// receiver's ULID assigned at construction time survives Restore so a
+	// fresh side-engine opened by the Phase 5 orchestrator keeps its own
+	// identity regardless of what the source archive contained.
 	store.shares = nilSafeMap(root.Shares)
 	store.files = nilSafeMap(root.Files)
 	store.parents = nilSafeMap(root.Parents)

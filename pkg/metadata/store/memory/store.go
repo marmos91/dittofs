@@ -8,6 +8,8 @@ import (
 	"unsafe"
 
 	"github.com/google/uuid"
+	"github.com/oklog/ulid/v2"
+
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -223,6 +225,18 @@ type MemoryMetadataStore struct {
 	// Updated atomically on every size-changing operation (create, update, truncate, delete).
 	// Only regular files count toward usage; directories, symlinks, etc. do not.
 	usedBytes atomic.Int64
+
+	// storeID is the engine-persistent identifier for this store instance.
+	// Assigned on construction with a fresh ULID and immutable for the life
+	// of the instance. Used by Phase 5 restore's D-06 store-identity gate
+	// (Pitfall #4) to reject cross-store restore attempts at the manifest
+	// comparison step.
+	//
+	// The memory engine is ephemeral by nature — "persistence across restart"
+	// is not a meaningful clause for it — but the contract still applies at
+	// the API surface: the ID must be non-empty on construction and stable
+	// across calls on the same instance.
+	storeID string
 }
 
 // MemoryMetadataStoreConfig contains configuration for creating a memory metadata store.
@@ -284,6 +298,11 @@ func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataSto
 		maxFiles:        config.MaxFiles,
 		sessions:        make(map[string]*metadata.ShareSession),
 		sortedDirCache:  make(map[string][]string),
+		// Phase 5 D-06: assign a fresh ULID on construction so Backup's
+		// manifest records a stable engine-persistent identifier. Even though
+		// memory-backed stores do not survive restart, every live instance
+		// must advertise its own non-empty identity at the API surface.
+		storeID: ulid.Make().String(),
 	}
 
 	// Initialize the sync.Pool for FileAttr allocations
@@ -364,6 +383,20 @@ func NewMemoryMetadataStoreWithDefaults() *MemoryMetadataStore {
 func (store *MemoryMetadataStore) GetUsedBytes() int64 {
 	return store.usedBytes.Load()
 }
+
+// GetStoreID returns the engine-persistent store identifier. Assigned on
+// construction with a fresh ULID and immutable for the life of the instance.
+// Used by Phase 5 restore's D-06 store-identity gate (Pitfall #4).
+//
+// The memory engine is exempt from the "persistence across restart" clause
+// of the GetStoreID contract, since the whole store is ephemeral. The
+// instance-lifetime-stability guarantee still holds.
+func (store *MemoryMetadataStore) GetStoreID() string { return store.storeID }
+
+// Compile-time assertion: the memory engine exposes GetStoreID so the
+// Phase 5 restore orchestrator can fetch the engine-persistent ID via a
+// type assertion (see pkg/controlplane/runtime/storebackups/target.go).
+var _ interface{ GetStoreID() string } = (*MemoryMetadataStore)(nil)
 
 // handleToKey converts a FileHandle to a string key for map indexing.
 //

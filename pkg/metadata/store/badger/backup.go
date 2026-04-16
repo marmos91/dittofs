@@ -484,6 +484,23 @@ func (s *BadgerMetadataStore) Restore(ctx context.Context, r io.Reader) error {
 		return fmt.Errorf("writebatch flush: %w", err)
 	}
 
+	// Phase 5 D-06: re-anchor the receiver's store_id after restore. The
+	// cfg:store_id key is intentionally NOT in allBackupPrefixes, so the
+	// source archive does not carry the source store's identity. However,
+	// if a future format change ever includes it (or if a hand-crafted
+	// archive smuggles it in), the re-anchor below is defense-in-depth:
+	// the receiver's existing storeID wins unconditionally.
+	//
+	// This preserves the Phase 5 D-06 invariant: "an opened engine
+	// instance's identity is fixed for its lifetime" — a fresh side-engine
+	// opened by the restore orchestrator keeps its own ULID regardless of
+	// the archive's contents.
+	if err := s.db.Update(func(txn *badgerdb.Txn) error {
+		return txn.Set([]byte(storeIDKey), []byte(s.storeID))
+	}); err != nil {
+		return fmt.Errorf("re-anchor store_id: %w", err)
+	}
+
 	// Rebuild the in-memory used-bytes counter from the restored file set so
 	// the store reports correct statistics without requiring a process
 	// restart. This mirrors the initUsedBytesCounter invocation in the
