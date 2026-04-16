@@ -865,7 +865,15 @@ type NTLMSSPMechListMICDebug struct {
 // Key derivations (MS-NLMP 3.4.5.2 + 3.4.5.3):
 //
 //	ServerSigningKey = MD5(ExportedSessionKey || serverSignMagic)
-//	ServerSealingKey = MD5(ExportedSessionKey || serverSealMagic)
+//
+// The sealing-key *input* to MD5 is truncated by the negotiated strength —
+// Samba's libcli/smb2 does NOT advertise NEGOTIATE_128, so the 40-bit
+// branch is what's exercised in the wild. Using the full key for the
+// 40/56-bit cases is the bug the previous attempt at #371 had:
+//
+//	NEGOTIATE_128: ServerSealingKey = MD5(ExportedSessionKey        || serverSealMagic)
+//	NEGOTIATE_56:  ServerSealingKey = MD5(ExportedSessionKey[:7]    || serverSealMagic)
+//	(neither):     ServerSealingKey = MD5(ExportedSessionKey[:5]    || serverSealMagic)
 //
 // If dbg is non-nil it is populated with intermediates for diagnosis.
 func ComputeNTLMSSPMechListMIC(exportedSessionKey [16]byte, mechListBytes []byte, flags NegotiateFlag, dbg *NTLMSSPMechListMICDebug) []byte {
