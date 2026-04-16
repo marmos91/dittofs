@@ -22,11 +22,14 @@ type CommandSequenceWindow struct {
 	high    uint64   // Next sequence number to be granted (exclusive upper bound)
 	bitmap  []uint64 // Bit i set = sequence (low + bit_position) is available
 	maxSize uint64   // Maximum window size (Samba-compatible `smb2 max credits`)
-	// available counts sequences still set in the bitmap (i.e., the client's
-	// per-connection credit balance as the server sees it). Needed because
-	// (high - low) overcounts when advanceLow can't advance (the oldest
-	// message is still unconsumed but later ones are). Samba tracks the same
-	// quantity in xconn->smb2.credits.seq_range.
+	// available is the server's view of the client-advertised credit balance:
+	// the number of sequence numbers the client is entitled to use. Tracked
+	// separately from (high - low) because advanceLow can lag behind actual
+	// consumption (the oldest unconsumed message pins `low` in place) and
+	// separately from the bitmap popcount because Reclaim decrements only
+	// this counter when compound middle responses have their on-the-wire
+	// Credits zeroed — the corresponding bits stay set but the client was
+	// never told about them. Mirrors Samba's xconn->smb2.credits.seq_range.
 	available uint64
 }
 
@@ -94,7 +97,16 @@ func (w *CommandSequenceWindow) Consume(messageId uint64, creditCharge uint16) b
 		bitIdx := offset % 64
 		w.bitmap[wordIdx] &^= 1 << bitIdx
 	}
-	w.available -= charge
+	// Saturate rather than underflow. After Reclaim the bitmap can hold
+	// more set bits than `available` tracks (we never told the client about
+	// those bits); a client sending one of them is a protocol violation,
+	// but saturating at 0 keeps the accounting invariants intact so a
+	// later grant can proceed from a clean zero baseline.
+	if charge > w.available {
+		w.available = 0
+	} else {
+		w.available -= charge
+	}
 
 	// Advance low watermark past fully consumed words
 	w.advanceLow()

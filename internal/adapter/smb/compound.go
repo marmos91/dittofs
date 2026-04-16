@@ -506,24 +506,19 @@ func failEntireCompound(firstHeader *header.SMB2Header, compoundData []byte, sta
 // Each sub-response was built via buildResponseHeaderAndBody, which already
 // extended the connection's sequence window by that response's grant. Zeroing
 // the middle headers would leave the window over-extended relative to what
-// the client sees, so after zeroing we Reclaim those bookkeeping entries.
+// the client sees, so after zeroing we Reclaim each middle response's grant
+// back from the window. Per-response Reclaim (rather than summing into a
+// single call) avoids capping at uint16 if the aggregate ever exceeds 65535.
 func applyCompoundCreditZeroing(responses []compoundResponse, connInfo *ConnInfo) {
 	if len(responses) <= 1 {
 		return
 	}
-	var reclaim uint64
 	for i := 0; i < len(responses)-1; i++ {
-		reclaim += uint64(responses[i].respHeader.Credits)
+		credits := responses[i].respHeader.Credits
 		responses[i].respHeader.Credits = 0
-	}
-	if reclaim > 0 && connInfo.SequenceWindow != nil {
-		// Cap at uint16 since Reclaim takes uint16. Credits fields are uint16
-		// so `reclaim` is bounded by len(responses) * UINT16_MAX, and the
-		// Samba-compatible window cap (8192) makes a single reclaim fit easily.
-		if reclaim > 0xFFFF {
-			reclaim = 0xFFFF
+		if credits > 0 && connInfo.SequenceWindow != nil {
+			connInfo.SequenceWindow.Reclaim(credits)
 		}
-		connInfo.SequenceWindow.Reclaim(uint16(reclaim))
 	}
 }
 

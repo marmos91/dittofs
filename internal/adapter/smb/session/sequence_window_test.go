@@ -223,3 +223,33 @@ func TestSequenceWindow_SizeReturnsCorrectValue(t *testing.T) {
 	sz := w.Size()
 	assert.Greater(t, sz, uint64(0), "size should still be > 0 after consuming one")
 }
+
+// TestSequenceWindow_ReclaimDecouplesAvailableFromBitmap verifies that
+// Reclaim decrements `available` without clearing bitmap bits. The reclaimed
+// message IDs remain in-range for Consume but the client was never told
+// about them. If such a message arrives anyway (protocol violation or race),
+// Consume must saturate `available` at zero rather than underflowing.
+func TestSequenceWindow_ReclaimDecouplesAvailableFromBitmap(t *testing.T) {
+	w := NewCommandSequenceWindow(8192)
+	w.Grant(10) // high = 11, available = 11, bits 0..10 set
+	w.Consume(0, 1)
+
+	w.Reclaim(5)
+	// available should drop by 5, but the 5 reclaimed bits stay set in
+	// the bitmap — a misbehaving client that sent one of those msgIDs
+	// would still pass bit validation.
+	assert.Equal(t, uint64(5), w.Available(), "Reclaim should drop `available` by 5")
+
+	// Consume reclaimed msgIDs should saturate `available` at 0, not
+	// underflow. Messages 1..5 are still-set reclaimed bits; 6..10 are
+	// legitimately granted. Consume msgs 1..10 (all ten) — `available`
+	// starts at 5, so the last five decrements would underflow without
+	// the saturation guard.
+	for seq := uint64(1); seq <= 10; seq++ {
+		assert.True(t, w.Consume(seq, 1), "seq %d should be consumable", seq)
+	}
+	assert.Equal(t, uint64(0), w.Available(),
+		"available should saturate at 0, not underflow to a huge value")
+	assert.Equal(t, w.MaxSize(), w.Remaining(),
+		"Remaining should reflect a full empty window, not an underflow-distorted value")
+}

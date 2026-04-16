@@ -312,6 +312,38 @@ func TestCompound_MiddleResponsesGrantZeroCredits(t *testing.T) {
 		"last response should retain its credits")
 }
 
+// TestCompound_ReclaimRollsBackMiddleGrants verifies that when middle compound
+// responses are zeroed, the connection sequence window reclaims those credits
+// so `available` stays in sync with what was advertised to the client (#378).
+func TestCompound_ReclaimRollsBackMiddleGrants(t *testing.T) {
+	sw := session.NewCommandSequenceWindow(8192)
+	// Simulate each sub-response's pre-zero grant by extending the window.
+	// Three sub-responses of 10 credits each => available = 31 (1 initial + 30).
+	sw.Grant(10)
+	sw.Grant(10)
+	sw.Grant(10)
+	preZeroAvail := sw.Available()
+
+	responses := []compoundResponse{
+		{respHeader: &header.SMB2Header{Credits: 10}},
+		{respHeader: &header.SMB2Header{Credits: 10}},
+		{respHeader: &header.SMB2Header{Credits: 10}},
+	}
+
+	applyCompoundCreditZeroing(responses, &ConnInfo{SequenceWindow: sw})
+
+	// Middle responses should be zeroed; last retains its credits.
+	assert.Equal(t, uint16(0), responses[0].respHeader.Credits)
+	assert.Equal(t, uint16(0), responses[1].respHeader.Credits)
+	assert.Equal(t, uint16(10), responses[2].respHeader.Credits)
+
+	// Available must have dropped by the reclaimed middle-response credits
+	// (10 + 10 = 20) so it mirrors what the client sees (last response's 10
+	// + whatever was there before the three grants).
+	assert.Equal(t, preZeroAvail-20, sw.Available(),
+		"Reclaim should roll back middle-response grants from `available`")
+}
+
 // TestCompound_SequenceWindowExpandedByLastResponse verifies that the sequence
 // window is only expanded by the last response's credits in a compound.
 func TestCompound_SequenceWindowExpandedByLastResponse(t *testing.T) {

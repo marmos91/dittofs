@@ -454,16 +454,18 @@ higher can break interoperability.
 
 #### Server data structure — `CommandSequenceWindow`
 
-One per connection. Tracks granted-but-not-yet-consumed message IDs as a
-sliding bitmap (`internal/adapter/smb/session/sequence_window.go`):
+One per connection. Tracks granted message IDs as a sliding bitmap
+(`internal/adapter/smb/session/sequence_window.go`):
 
 ```
 low           high
  │    span=high-low    │
  ▼                     ▼
-[0111100011001110000...]  bit i = sequence (low+i) is available
-                           set on Grant, cleared on Consume
-available = popcount(bitmap)   // what the client sees as cur_credits
+[0111100011001110000...]  bit i = sequence (low+i) is granted-and-unconsumed
+                           set by Grant, cleared by Consume
+
+available   = the server's view of the client's cur_credits
+              (initially equal to popcount(bitmap); decoupled by Reclaim)
 ```
 
 Three invariants drive correctness:
@@ -488,25 +490,39 @@ Three invariants drive correctness:
    `MaxSessionCredits`, and future responses carry `credits=0` until
    the client runs out of credits (observed in issue #378).
 
-#### Grant path — two clamps
+##### Reclaim — compound response zeroing
+
+MS-SMB2 3.2.4.1.4 requires middle responses in a compound to advertise
+`Credits=0`. Our response builder grants credits atomically before the
+write (see below), so after zeroing the middle headers the window would
+be over-extended relative to what the client was told. `Reclaim(n)`
+decrements `available` by `n` without touching the bitmap — the
+reclaimed message IDs remain valid on the server (a misbehaving client
+that sent one would still pass Consume), but the client was never told
+about them and will not use them under normal operation. `Consume`
+saturates `available` at zero rather than underflowing if a reclaimed
+message ID is used anyway.
+
+#### Grant path — atomic, pre-write
 
 ```
-GrantCredits (per-session policy)          →  credits
-  └─ strategy-dependent (fixed/echo/adaptive)
+GrantCredits (per-session policy)   →  credits (requested grant)
+  └─ strategy-dependent (echo/fixed/adaptive)
 
-Clamp by CommandSequenceWindow.Remaining()  →  credits'  (may be less)
-  └─ = MaxSessionCredits - available
+CommandSequenceWindow.Grant(credits) →  credits' (may be less; ≤ MaxSessionCredits - available)
+  └─ extends the window and updates `available` atomically under w.mu
 
 respHeader.Credits = credits'
 ...send response...
-CommandSequenceWindow.Grant(credits')       → extends window by credits'
 ```
 
-`Remaining()` is what prevents the `NT_STATUS_INVALID_NETWORK_RESPONSE`
-overflow the Samba client raises at
-`libcli/smb/smbXcli_base.c:4295-4298`. Both `buildResponseHeaderAndBody`
-and `SendErrorResponse` apply this clamp so every response path — error
-and success — respects the connection cap.
+The grant is recorded against the window **before** the response is
+written, and the grant function returns the actual amount extended, so
+the value advertised in `hdr.Credits` is always exactly what the window
+was extended by. This closes the TOCTOU gap that a "read `Remaining()`,
+clamp, write, then `Grant()`" pattern would leave open when pipelined
+responses run on the same connection. All response build sites funnel
+through `grantConnectionCredits` in `internal/adapter/smb/response.go`.
 
 #### Strategies
 
