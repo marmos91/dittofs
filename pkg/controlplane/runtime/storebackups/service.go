@@ -413,7 +413,9 @@ func (s *Service) RunBackup(ctx context.Context, repoID string) (rec *models.Bac
 	// no mutex is required on the hot path — they always hold valid values
 	// (Noop* by default). Tests that swap observability mid-flight should
 	// do so only from a single goroutine before calling RunBackup.
-	_, finishSpan := s.tracer.Start(ctx, SpanBackupRun)
+	// Use the returned span ctx as the parent for downstream work so
+	// storage / destination spans nest under backup.run (Copilot #384).
+	spanCtx, finishSpan := s.tracer.Start(ctx, SpanBackupRun)
 	defer func() {
 		outcome := classifyOutcome(err)
 		s.metrics.RecordOutcome(KindBackup, outcome)
@@ -423,11 +425,11 @@ func (s *Service) RunBackup(ctx context.Context, repoID string) (rec *models.Bac
 		finishSpan(err)
 	}()
 
-	// Bind the caller ctx to the service's serveCtx so that Stop() cancels
+	// Bind the span ctx to the service's serveCtx so that Stop() cancels
 	// in-flight runs regardless of whether they were launched by the scheduler
 	// or by an on-demand caller (D-18). If Serve has not been called yet,
 	// serveCtx is nil and ctx passes through unchanged.
-	runCtx, cancelRun := s.deriveRunCtx(ctx)
+	runCtx, cancelRun := s.deriveRunCtx(spanCtx)
 	defer cancelRun()
 
 	repo, err := s.store.GetBackupRepoByID(runCtx, repoID)

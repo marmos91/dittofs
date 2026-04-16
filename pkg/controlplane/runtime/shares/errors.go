@@ -12,13 +12,6 @@ import (
 // as a benign no-op or surface it (Phase-5 restore treats as OK).
 var ErrShareAlreadyDisabled = errors.New("share is already disabled")
 
-// ErrShareStillInUse is returned when DisableShare completes the DB
-// write and runtime flip but the adapter callbacks time out before
-// tearing down all active connections. DisableShare returns success
-// anyway (D-03 — the side-engine swap is safe regardless); callers
-// may log loudly.
-var ErrShareStillInUse = errors.New("share still has active mounts after disable timeout")
-
 // ErrShareNotFound re-exports models.ErrShareNotFound to preserve
 // errors.Is matching across package boundaries.
 var ErrShareNotFound = models.ErrShareNotFound

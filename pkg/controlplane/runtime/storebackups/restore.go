@@ -87,7 +87,9 @@ func (s *Service) RunRestore(ctx context.Context, repoID string, recordID *strin
 	// D-19: open the restore.run span + attach terminal-state metrics.
 	// s.metrics and s.tracer are set once at construction (via Options) so
 	// no mutex is required on the hot path — they always hold valid values.
-	_, finishSpan := s.tracer.Start(ctx, SpanRestoreRun)
+	// Use the returned span ctx as the parent for the run ctx so downstream
+	// storage / destination spans nest under restore.run (Copilot #384).
+	spanCtx, finishSpan := s.tracer.Start(ctx, SpanRestoreRun)
 	defer func() {
 		outcome := classifyOutcome(err)
 		s.metrics.RecordOutcome(KindRestore, outcome)
@@ -97,9 +99,9 @@ func (s *Service) RunRestore(ctx context.Context, repoID string, recordID *strin
 		finishSpan(err)
 	}()
 
-	// Bind the caller ctx to serveCtx so Stop() cancels in-flight restores
+	// Bind the span ctx to serveCtx so Stop() cancels in-flight restores
 	// (D-17 — mirrors the backup path via deriveRunCtx).
-	runCtx, cancelRun := s.deriveRunCtx(ctx)
+	runCtx, cancelRun := s.deriveRunCtx(spanCtx)
 	defer cancelRun()
 
 	repo, err := s.store.GetBackupRepoByID(runCtx, repoID)

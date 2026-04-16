@@ -261,6 +261,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		LocalStoreSize:     localStoreSize,
 		ReadBufferSize:     readBufferSize,
 		QuotaBytes:         quotaBytes,
+		Enabled:            true, // REST-02: new shares are enabled by default.
 		CreatedAt:          now,
 		UpdatedAt:          now,
 	}
@@ -298,6 +299,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			Name:              req.Name,
 			MetadataStore:     metaStore.Name,
 			ReadOnly:          req.ReadOnly,
+			Enabled:           share.Enabled,
 			EncryptData:       req.EncryptData,
 			DefaultPermission: defaultPerm,
 			Squash:            nfsOpts.GetSquashMode(),

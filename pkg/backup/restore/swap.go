@@ -12,18 +12,27 @@ import (
 // CommitSwap finalizes a successful store swap (D-05 steps 11-12):
 //
 //  1. Close the old store (if it implements io.Closer).
-//  2. Remove the old backing (Badger: os.RemoveAll; Postgres: DROP
-//     SCHEMA via stores.DropPostgresSchema; Memory: no-op).
-//  3. Rename temp → canonical (Badger: os.Rename; Postgres: RENAME
-//     SCHEMA via the stores.Service RenamePostgresSchema extension
-//     point; Memory: no-op — the registry swap in step 10 already made
-//     the fresh instance canonical).
+//  2. Stage old canonical out of the way (Badger: rename to a sibling
+//     `.old-<ulid>` directory; Postgres: rename schema to
+//     `<name>_old_<ulid>`). This frees the canonical name.
+//  3. Move temp → canonical (Badger: os.Rename; Postgres: RENAME SCHEMA
+//     via the stores.Service RenamePostgresSchema extension point;
+//     Memory: no-op — step 10 registry swap already made fresh
+//     canonical).
+//  4. Delete the staged old (Badger: os.RemoveAll; Postgres: DROP
+//     SCHEMA CASCADE). Failure here leaves an orphan that Plan 07's
+//     startup sweep reclaims.
+//
+// Ordering rationale (Copilot #384): the original "delete old, then
+// rename temp" left the canonical backing missing if the rename step
+// failed — a subsequent server restart could not re-open the store.
+// Staging old first preserves a recoverable copy until the rename has
+// landed; only then do we free its storage.
 //
 // Errors are returned so the caller (Executor.RunRestore) can log them;
-// they do NOT fail the restore since the registry swap at D-05 step 10
-// has already committed and clients see the new data. Orphan temp paths
-// / residual old backing are reclaimed by Plan 07's startup orphan
-// sweep.
+// they do NOT fail the restore — the registry swap at D-05 step 10 has
+// already committed and live clients see the new data through the
+// in-memory pointer.
 func CommitSwap(
 	ctx context.Context,
 	stores StoresService,
@@ -38,24 +47,33 @@ func CommitSwap(
 		}
 	}
 
-	// Steps 2 + 3: per-kind post-swap cleanup and rename.
+	// Steps 2-4: per-kind rename-first cleanup.
 	switch id.Kind {
 	case "badger":
 		if id.OriginalPath == "" || id.TempPath == "" {
 			return fmt.Errorf("badger TempIdentity missing paths (orig=%q temp=%q)",
 				id.OriginalPath, id.TempPath)
 		}
-		// Remove the old canonical directory — the old store was just
-		// closed above so no locks remain. RemoveAll is idempotent for
-		// a missing directory.
-		if err := os.RemoveAll(id.OriginalPath); err != nil {
-			return fmt.Errorf("remove old badger path %q: %w", id.OriginalPath, err)
+		// Step 2: stage old canonical out of the way. Reuses the
+		// restore ULID for a unique sibling name; `.old-` prefix is
+		// recognised by Plan 07's orphan sweep.
+		stagedOld := id.OriginalPath + ".old-" + id.ULID
+		if err := os.Rename(id.OriginalPath, stagedOld); err != nil {
+			return fmt.Errorf("stage old badger path %q -> %q: %w",
+				id.OriginalPath, stagedOld, err)
 		}
-		// Rename the temp directory into place. os.Rename is atomic on
-		// the same filesystem (Phase-5 guarantee: temp lives sibling to
-		// canonical).
+		// Step 3: promote temp to canonical. Both paths live on the same
+		// filesystem (Phase-5 guarantee), so rename is atomic.
 		if err := os.Rename(id.TempPath, id.OriginalPath); err != nil {
-			return fmt.Errorf("rename temp %q -> %q: %w", id.TempPath, id.OriginalPath, err)
+			// Best-effort: restore old name so the server can recover
+			// on next restart. Either outcome is logged by caller.
+			_ = os.Rename(stagedOld, id.OriginalPath)
+			return fmt.Errorf("rename temp %q -> %q: %w",
+				id.TempPath, id.OriginalPath, err)
+		}
+		// Step 4: free the old backing. Failure = orphan (sweep-friendly).
+		if err := os.RemoveAll(stagedOld); err != nil {
+			return fmt.Errorf("remove staged old %q: %w", stagedOld, err)
 		}
 		return nil
 
@@ -64,15 +82,23 @@ func CommitSwap(
 			return fmt.Errorf("postgres TempIdentity missing schema names (orig=%q temp=%q)",
 				id.OriginalPath, id.TempPath)
 		}
-		// Drop the old schema (free its storage) then rename temp →
-		// canonical. DropPostgresSchema is CASCADE + IF EXISTS, so a
-		// missing schema is tolerated.
-		if err := stores.DropPostgresSchema(ctx, id.OriginalName, id.OriginalPath); err != nil {
-			return fmt.Errorf("drop old postgres schema %q: %w", id.OriginalPath, err)
+		// Step 2: rename old schema to a unique "_old_<ulid>" name to
+		// free the canonical name for the promote step.
+		stagedOld := id.OriginalPath + "_old_" + id.ULID
+		if err := renamePostgresSchema(ctx, stores, id.OriginalName, id.OriginalPath, stagedOld); err != nil {
+			return fmt.Errorf("stage old postgres schema %q -> %q: %w",
+				id.OriginalPath, stagedOld, err)
 		}
+		// Step 3: promote temp schema to canonical.
 		if err := renamePostgresSchema(ctx, stores, id.OriginalName, id.TempPath, id.OriginalPath); err != nil {
+			// Best-effort rollback so the canonical name is recoverable.
+			_ = renamePostgresSchema(ctx, stores, id.OriginalName, stagedOld, id.OriginalPath)
 			return fmt.Errorf("rename temp postgres schema %q -> %q: %w",
 				id.TempPath, id.OriginalPath, err)
+		}
+		// Step 4: drop the staged-old schema. Failure = orphan (sweep).
+		if err := stores.DropPostgresSchema(ctx, id.OriginalName, stagedOld); err != nil {
+			return fmt.Errorf("drop staged-old postgres schema %q: %w", stagedOld, err)
 		}
 		return nil
 
