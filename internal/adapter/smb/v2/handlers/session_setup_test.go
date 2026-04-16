@@ -457,7 +457,7 @@ func TestBuildSessionSetupResponse(t *testing.T) {
 func TestExtractNTLMToken(t *testing.T) {
 	t.Run("PassesThroughRawNTLM", func(t *testing.T) {
 		ntlmMsg := validNTLMNegotiateMessage()
-		result, isWrapped := extractNTLMToken(ntlmMsg)
+		result, isWrapped, mechList := extractNTLMToken(ntlmMsg)
 
 		if !auth.IsValid(result) {
 			t.Error("Should pass through raw NTLM unchanged")
@@ -465,25 +465,31 @@ func TestExtractNTLMToken(t *testing.T) {
 		if isWrapped {
 			t.Error("Raw NTLM should not be marked as wrapped")
 		}
+		if mechList != nil {
+			t.Error("Raw NTLM should yield nil mechListBytes")
+		}
 	})
 
 	t.Run("ExtractsFromSPNEGO", func(t *testing.T) {
 		ntlmMsg := validNTLMNegotiateMessage()
 		spnegoMsg := wrapInSPNEGO(ntlmMsg)
-		result, _ := extractNTLMToken(spnegoMsg)
+		result, _, mechList := extractNTLMToken(spnegoMsg)
 
 		if !auth.IsValid(result) {
 			t.Error("Should extract NTLM from SPNEGO")
 		}
+		if len(mechList) == 0 {
+			t.Error("SPNEGO NegTokenInit should yield non-empty mechListBytes")
+		}
 	})
 
 	t.Run("ReturnsEmptyForEmpty", func(t *testing.T) {
-		result, _ := extractNTLMToken(nil)
+		result, _, _ := extractNTLMToken(nil)
 		if len(result) != 0 {
 			t.Error("Should return empty for nil input")
 		}
 
-		result, _ = extractNTLMToken([]byte{})
+		result, _, _ = extractNTLMToken([]byte{})
 		if len(result) != 0 {
 			t.Error("Should return empty for empty input")
 		}

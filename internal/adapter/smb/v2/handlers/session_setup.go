@@ -206,7 +206,7 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	}
 
 	// Extract NTLM token (unwrap SPNEGO if needed)
-	ntlmToken, isWrapped := extractNTLMToken(req.SecurityBuffer)
+	ntlmToken, isWrapped, mechListBytes := extractNTLMToken(req.SecurityBuffer)
 
 	// Process NTLM message
 	if auth.IsValid(ntlmToken) {
@@ -223,7 +223,7 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 
 		switch msgType {
 		case auth.Negotiate:
-			return h.handleNTLMNegotiate(ctx, isWrapped)
+			return h.handleNTLMNegotiate(ctx, isWrapped, mechListBytes)
 		case auth.Authenticate:
 			// Type 3 without prior Type 1/2 exchange — protocol violation per MS-SMB2 3.3.5.5
 			logger.Debug("SESSION_SETUP: TYPE_3 without pending auth, rejecting")
@@ -237,10 +237,14 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 
 // extractNTLMToken extracts the NTLM token from a security buffer.
 // Handles both raw NTLM and SPNEGO-wrapped tokens.
-// Returns the token and whether it was wrapped in SPNEGO.
-func extractNTLMToken(securityBuffer []byte) ([]byte, bool) {
+//
+// Returns: (token, wasSPNEGOWrapped, mechListBytes).
+// mechListBytes is the DER SEQUENCE OF OID from the NegTokenInit (nil for
+// raw NTLM, NegTokenResp messages, or when SPNEGO parse falls back to the
+// raw signature scan).
+func extractNTLMToken(securityBuffer []byte) ([]byte, bool, []byte) {
 	if len(securityBuffer) == 0 {
-		return securityBuffer, false
+		return securityBuffer, false, nil
 	}
 
 	// Check if this might be SPNEGO-wrapped (GSSAPI or NegTokenResp)
@@ -252,24 +256,24 @@ func extractNTLMToken(securityBuffer []byte) ([]byte, bool) {
 			// Some clients send NegTokenResp formats that gokrb5 can't parse,
 			// but the NTLM token is still embedded in the ASN.1 structure.
 			if token := findNTLMSSP(securityBuffer); token != nil {
-				return token, true
+				return token, true, nil
 			}
-			return securityBuffer, false
+			return securityBuffer, false, nil
 		}
 
 		// Check if NTLM is offered
 		if parsed.Type == auth.TokenTypeInit && !parsed.HasNTLM() {
 			logger.Debug("SPNEGO token does not offer NTLM")
-			return securityBuffer, false
+			return securityBuffer, false, nil
 		}
 
 		if len(parsed.MechToken) > 0 {
-			return parsed.MechToken, true
+			return parsed.MechToken, true, parsed.MechListBytes
 		}
 	}
 
 	// Already raw NTLM (or unknown format)
-	return securityBuffer, false
+	return securityBuffer, false, nil
 }
 
 // ntlmsspSignature is the NTLMSSP signature that starts every NTLM message.
@@ -294,7 +298,7 @@ func findNTLMSSP(data []byte) []byte {
 //
 // The client will respond with Type 3 (AUTHENTICATE) which completes
 // the handshake in completeNTLMAuth().
-func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool) (*HandlerResult, error) {
+func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool, mechListBytes []byte) (*HandlerResult, error) {
 	// Reuse existing session ID for re-authentication, otherwise generate new
 	sessionID := ctx.SessionID
 	isReauth := false
@@ -329,6 +333,7 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool) (
 		ServerChallenge: serverChallenge,
 		UsedSPNEGO:      usedSPNEGO,
 		IsReauth:        isReauth,
+		MechListBytes:   mechListBytes,
 	}
 	h.StorePendingAuth(pending)
 
@@ -389,7 +394,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 	h.DeletePendingAuth(ctx.SessionID)
 
 	// Extract NTLM token (unwrap SPNEGO if needed)
-	ntlmToken, _ := extractNTLMToken(securityBuffer)
+	ntlmToken, _, _ := extractNTLMToken(securityBuffer)
 
 	// Parse the AUTHENTICATE message to extract username and domain
 	authMsg, err := auth.ParseAuthenticate(ntlmToken)
@@ -528,7 +533,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 
 				if pending.IsReauth {
 					// Per MS-SMB2 3.3.5.5.3: re-derive keys from the new SessionBaseKey
-					if result := h.tryReauthUpdateWithKeys(pending, resolvedUsername, authMsg.Domain, user, false, signingKey[:], ctx); result != nil {
+					if result := h.tryReauthUpdateWithKeys(pending, resolvedUsername, authMsg.Domain, user, false, signingKey[:], authMsg.NegotiateFlags, ctx); result != nil {
 						return result, nil
 					}
 					// Fallthrough: session disappeared between negotiate and auth (unlikely)
@@ -549,7 +554,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 					"signingEnabled", sess.ShouldSign(),
 					"encryptData", sess.ShouldEncrypt())
 
-				return h.buildAuthenticatedResponse(pending.UsedSPNEGO, sess.ShouldEncrypt()), nil
+				return h.buildAuthenticatedResponse(pending, signingKey[:], authMsg.NegotiateFlags, sess.ShouldEncrypt()), nil
 			}
 
 			// SECURITY: User exists but no valid NT hash configured.
@@ -578,7 +583,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 				"domain", sess.Domain,
 				"isGuest", sess.IsGuest)
 
-			return h.buildAuthenticatedResponse(pending.UsedSPNEGO, false), nil
+			return h.buildAuthenticatedResponse(pending, nil, authMsg.NegotiateFlags, false), nil
 		}
 
 		// User not found or disabled
@@ -826,15 +831,26 @@ func (h *Handler) buildSessionSetupResponse(
 }
 
 // buildAuthenticatedResponse builds a SESSION_SETUP success response for an
-// authenticated (non-guest) user. If the client used SPNEGO wrapping, the
-// response includes an accept-completed token to finalize the GSSAPI context.
-// When encryptData is true, SessionFlagEncryptData (0x0004) is set in the
-// response to signal that the session requires encryption (SMB 3.x).
-func (h *Handler) buildAuthenticatedResponse(usedSPNEGO bool, encryptData bool) *HandlerResult {
+// authenticated (non-guest) user. When the client used SPNEGO wrapping and
+// we have both the original mechList bytes and an ExportedSessionKey, the
+// response carries an accept-completed NegTokenResp with an NTLMSSP v2
+// mechListMIC (MS-NLMP 2.2.2.9.1 / RFC 4178). Per RFC 4178 §4.2.2 the
+// supportedMech field is only valid in the first server reply, so it is
+// omitted here — matches Samba's wire format.
+//
+// When the key is absent (no-NT-hash transitional path or reauth without
+// key re-derivation) we emit an accept-completed without a MIC.
+func (h *Handler) buildAuthenticatedResponse(pending *PendingAuth, exportedSessionKey []byte, negFlags auth.NegotiateFlag, encryptData bool) *HandlerResult {
 	var acceptToken []byte
-	if usedSPNEGO {
+	if pending != nil && pending.UsedSPNEGO {
+		var mic []byte
+		if len(pending.MechListBytes) > 0 && len(exportedSessionKey) == 16 {
+			var key [16]byte
+			copy(key[:], exportedSessionKey)
+			mic = auth.ComputeNTLMSSPMechListMIC(key, pending.MechListBytes, negFlags, nil)
+		}
 		var err error
-		acceptToken, err = auth.BuildAcceptComplete(auth.OIDNTLMSSP, nil)
+		acceptToken, err = auth.BuildAcceptCompleteWithMIC(nil, nil, mic)
 		if err != nil {
 			logger.Debug("Failed to build SPNEGO accept token", "error", err)
 		}
@@ -875,7 +891,8 @@ func (h *Handler) tryReauthUpdate(pending *PendingAuth, username, domain string,
 		"signingEnabled", existingSess.ShouldSign(),
 		"encryptData", existingSess.ShouldEncrypt())
 
-	return h.buildAuthenticatedResponse(pending.UsedSPNEGO, existingSess.ShouldEncrypt())
+	// Prior keys retained, no new ExportedSessionKey available.
+	return h.buildAuthenticatedResponse(pending, nil, 0, existingSess.ShouldEncrypt())
 }
 
 // tryReauthUpdateWithKeys updates an existing session's identity and re-derives
@@ -885,7 +902,7 @@ func (h *Handler) tryReauthUpdate(pending *PendingAuth, username, domain string,
 // preserved.
 // Returns a non-nil *HandlerResult if the session was found and updated,
 // or nil if the session no longer exists (caller should fall through).
-func (h *Handler) tryReauthUpdateWithKeys(pending *PendingAuth, username, domain string, user *models.User, isGuest bool, signingKey []byte, ctx *SMBHandlerContext) *HandlerResult {
+func (h *Handler) tryReauthUpdateWithKeys(pending *PendingAuth, username, domain string, user *models.User, isGuest bool, signingKey []byte, negFlags auth.NegotiateFlag, ctx *SMBHandlerContext) *HandlerResult {
 	existingSess, ok := h.GetSession(pending.SessionID)
 	if !ok {
 		return nil
@@ -910,7 +927,7 @@ func (h *Handler) tryReauthUpdateWithKeys(pending *PendingAuth, username, domain
 		"signingEnabled", existingSess.ShouldSign(),
 		"encryptData", existingSess.ShouldEncrypt())
 
-	return h.buildAuthenticatedResponse(pending.UsedSPNEGO, existingSess.ShouldEncrypt())
+	return h.buildAuthenticatedResponse(pending, signingKey, negFlags, existingSess.ShouldEncrypt())
 }
 
 // checkGuestPolicy enforces guest session prerequisites.

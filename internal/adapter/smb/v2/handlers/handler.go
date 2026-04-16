@@ -191,6 +191,11 @@ type PendingAuth struct {
 	ServerChallenge [8]byte // Random challenge sent in Type 2 message
 	UsedSPNEGO      bool    // Whether client used SPNEGO wrapping
 	IsReauth        bool    // True when re-authenticating an existing session
+	// MechListBytes: DER-encoded SEQUENCE OF OID from the NegTokenInit's
+	// mechTypes field, needed to compute the SPNEGO mechListMIC in the
+	// final accept-completed response (MS-NLMP 3.4.5.2 + 2.2.2.9.1).
+	// Nil for clients that send raw NTLM without SPNEGO wrapping.
+	MechListBytes []byte
 }
 
 // TreeConnection represents an active tree connection mapping a client

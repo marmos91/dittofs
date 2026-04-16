@@ -829,3 +829,110 @@ func DeriveSigningKey(sessionBaseKey [16]byte, flags NegotiateFlag, encryptedKey
 
 	return exportedSessionKey
 }
+
+// NTLMSSP key-derivation magic constants (MS-NLMP 3.4.5.2 + 3.4.5.3).
+// The trailing NUL is part of each constant.
+const (
+	serverSignMagic = "session key to server-to-client signing key magic constant\x00"
+	serverSealMagic = "session key to server-to-client sealing key magic constant\x00"
+)
+
+// NTLMSSPMechListMICDebug holds the intermediate values computed during a
+// ComputeNTLMSSPMechListMIC call. Populated only when callers pass a non-nil
+// pointer; used for diagnosing why a peer rejects the emitted signature.
+type NTLMSSPMechListMICDebug struct {
+	SigningKey      [16]byte
+	SealingKey      [16]byte
+	HMACOutputFull  [16]byte // full 16-byte HMAC-MD5 digest
+	HMACChecksum    [8]byte  // first 8 bytes pre-seal
+	SealKeystreamHi [8]byte  // first 8 bytes of fresh RC4(SealingKey) keystream
+	SealedChecksum  [8]byte  // post-seal 8 bytes (what goes on the wire)
+	MIC             [16]byte // final on-wire signature
+}
+
+// ComputeNTLMSSPMechListMIC computes an NTLMSSP v2 message signature over the
+// SPNEGO mechList bytes for downgrade protection per RFC 4178.
+//
+// Signature layout (MS-NLMP 2.2.2.9.1, extended session security v2):
+//
+//	Version  (4 bytes, LE) = 0x00000001
+//	Checksum (8 bytes)     = see below
+//	SeqNum   (4 bytes, LE) = 0x00000000  (fixed for SPNEGO MIC)
+//
+// Without KEY_EXCH: Checksum = HMAC_MD5(ServerSigningKey, SeqNum=0 || mechList)[:8]
+// With KEY_EXCH:    Checksum = RC4(ServerSealingKey, HMAC...)  -- fresh cipher
+//
+// Key derivations (MS-NLMP 3.4.5.2 + 3.4.5.3):
+//
+//	ServerSigningKey = MD5(ExportedSessionKey || serverSignMagic)
+//	ServerSealingKey = MD5(ExportedSessionKey || serverSealMagic)
+//
+// If dbg is non-nil it is populated with intermediates for diagnosis.
+func ComputeNTLMSSPMechListMIC(exportedSessionKey [16]byte, mechListBytes []byte, flags NegotiateFlag, dbg *NTLMSSPMechListMICDebug) []byte {
+	h := md5.New()
+	h.Write(exportedSessionKey[:])
+	h.Write([]byte(serverSignMagic))
+	var signKey [16]byte
+	copy(signKey[:], h.Sum(nil))
+
+	mac := hmac.New(md5.New, signKey[:])
+	var seqNum [4]byte
+	mac.Write(seqNum[:])
+	mac.Write(mechListBytes)
+	fullHMAC := mac.Sum(nil)
+
+	checksum := make([]byte, 8)
+	copy(checksum, fullHMAC[:8])
+
+	var sealKey [16]byte
+	var keystream [8]byte
+
+	if flags&FlagKeyExch != 0 {
+		// Per MS-NLMP 3.4.5.3 SEALKEY, the sealing key's INPUT to MD5 is
+		// the ExportedSessionKey truncated based on negotiated strength.
+		// Samba's smbtorture client does NOT negotiate NEGOTIATE_128 or _56,
+		// so it falls into the 40-bit branch (first 5 bytes of ExportedSessionKey).
+		// Using the full 16 bytes here is the cause of the mechListMIC mismatch.
+		var sealInput []byte
+		switch {
+		case flags&Flag128 != 0:
+			sealInput = exportedSessionKey[:16]
+		case flags&Flag56 != 0:
+			sealInput = exportedSessionKey[:7]
+		default:
+			sealInput = exportedSessionKey[:5]
+		}
+
+		sh := md5.New()
+		sh.Write(sealInput)
+		sh.Write([]byte(serverSealMagic))
+		copy(sealKey[:], sh.Sum(nil))
+
+		if cipher, err := rc4.NewCipher(sealKey[:]); err == nil {
+			// Capture the leading keystream for diagnosis (XOR of zeros == keystream).
+			cipher.XORKeyStream(keystream[:], make([]byte, 8))
+			// Fresh cipher for the actual seal.
+			cipher2, _ := rc4.NewCipher(sealKey[:])
+			sealed := make([]byte, 8)
+			cipher2.XORKeyStream(sealed, checksum)
+			checksum = sealed
+		}
+	}
+
+	mic := make([]byte, 16)
+	binary.LittleEndian.PutUint32(mic[0:4], 0x00000001)
+	copy(mic[4:12], checksum)
+	// SeqNum = 0 (not XOR'd; matches Samba wire format).
+
+	if dbg != nil {
+		dbg.SigningKey = signKey
+		dbg.SealingKey = sealKey
+		copy(dbg.HMACOutputFull[:], fullHMAC)
+		copy(dbg.HMACChecksum[:], fullHMAC[:8])
+		dbg.SealKeystreamHi = keystream
+		copy(dbg.SealedChecksum[:], checksum)
+		copy(dbg.MIC[:], mic)
+	}
+
+	return mic
+}
