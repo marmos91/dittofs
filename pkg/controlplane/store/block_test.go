@@ -72,6 +72,54 @@ func TestBlockStoreOperations(t *testing.T) {
 		}
 	})
 
+	// Regression for #376: WPTS BVT bootstrap creates a local and remote
+	// block store both named "default"; uniqueness must be scoped by (name, kind).
+	t.Run("same name across local and remote kinds succeeds", func(t *testing.T) {
+		local := &models.BlockStoreConfig{
+			Name: "default",
+			Kind: models.BlockStoreKindLocal,
+			Type: "memory",
+		}
+		if _, err := store.CreateBlockStore(ctx, local); err != nil {
+			t.Fatalf("create local 'default': %v", err)
+		}
+
+		remote := &models.BlockStoreConfig{
+			Name:   "default",
+			Kind:   models.BlockStoreKindRemote,
+			Type:   "s3",
+			Config: `{"bucket":"x"}`,
+		}
+		if _, err := store.CreateBlockStore(ctx, remote); err != nil {
+			t.Fatalf("create remote 'default' should succeed alongside local: %v", err)
+		}
+
+		gotLocal, err := store.GetBlockStore(ctx, "default", models.BlockStoreKindLocal)
+		if err != nil {
+			t.Fatalf("get local default: %v", err)
+		}
+		if gotLocal.Type != "memory" {
+			t.Errorf("local default: expected type 'memory', got %q", gotLocal.Type)
+		}
+
+		gotRemote, err := store.GetBlockStore(ctx, "default", models.BlockStoreKindRemote)
+		if err != nil {
+			t.Fatalf("get remote default: %v", err)
+		}
+		if gotRemote.Type != "s3" {
+			t.Errorf("remote default: expected type 's3', got %q", gotRemote.Type)
+		}
+
+		// Deleting one kind must not affect the other (regression guard against
+		// a future change reverting DeleteBlockStore to filter by name alone).
+		if err := store.DeleteBlockStore(ctx, "default", models.BlockStoreKindLocal); err != nil {
+			t.Fatalf("delete local default: %v", err)
+		}
+		if _, err := store.GetBlockStore(ctx, "default", models.BlockStoreKindRemote); err != nil {
+			t.Errorf("remote default should survive local deletion: %v", err)
+		}
+	})
+
 	t.Run("get block store by name and kind", func(t *testing.T) {
 		bs, err := store.GetBlockStore(ctx, "test-local-fs", models.BlockStoreKindLocal)
 		if err != nil {
@@ -294,7 +342,7 @@ func TestShareBlockStore(t *testing.T) {
 	})
 
 	t.Run("get shares by block store", func(t *testing.T) {
-		shares, err := store.GetSharesByBlockStore(ctx, "share-local")
+		shares, err := store.GetSharesByBlockStore(ctx, "share-local", models.BlockStoreKindLocal)
 		if err != nil {
 			t.Fatalf("failed to get shares by block store: %v", err)
 		}
@@ -304,7 +352,7 @@ func TestShareBlockStore(t *testing.T) {
 	})
 
 	t.Run("get shares by remote block store", func(t *testing.T) {
-		shares, err := store.GetSharesByBlockStore(ctx, "share-remote")
+		shares, err := store.GetSharesByBlockStore(ctx, "share-remote", models.BlockStoreKindRemote)
 		if err != nil {
 			t.Fatalf("failed to get shares by block store: %v", err)
 		}
