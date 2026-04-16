@@ -82,7 +82,14 @@ Plans:
   3. Count-based retention keeps the last N successful backups per repo; age-based retention keeps backups newer than N days
   4. Retention never deletes the only successful backup, and never races with an in-flight upload (runs as a separate pass after upload confirms)
   5. Retention correctly skips pinned records
-**Plans**: TBD
+**Plans:** 5 plans
+
+Plans:
+- [x] 04-01-PLAN.md — Framework relocation (pkg/metadata/backup.go → pkg/backup/backupable.go via compat shim) + schema migration (backup_repos.metadata_store_id → target_id + target_kind) + BackupStore method rename + Phase-4 sentinels
+- [x] 04-02-PLAN.md — pkg/backup/scheduler: robfig/cron/v3 wrapper + FNV-1a stable per-repo jitter + per-repo OverlapGuard + ValidateSchedule (SCHED-01, SCHED-02)
+- [x] 04-03-PLAN.md — pkg/backup/executor: io.Pipe producer/consumer pipeline implementing D-21 sequence (ULID-first, Backupable → Destination.PutBackup, BackupJob + BackupRecord persistence)
+- [x] 04-04-PLAN.md — runtime/storebackups/retention.go: D-08..D-17 inline retention (union policy, pinned skip, safety rail, destination-first delete, continue-on-error, 30-day BackupJob pruner) (SCHED-03, SCHED-04, SCHED-05, SCHED-06)
+- [x] 04-05-PLAN.md — runtime/storebackups/service.go: 9th sub-service composing scheduler + executor + retention, SAFETY-02 recovery on Serve (D-19), explicit RegisterRepo/UnregisterRepo hot-reload (D-22), unified RunBackup for cron + on-demand (D-23), runtime wiring
 
 ### Phase 5: Restore Orchestration + Safety Rails
 **Goal**: Operators can safely restore a metadata store in place without corrupting live clients, without losing referenced block data, and without leaving ghost jobs after a crash.
@@ -130,7 +137,7 @@ Plans:
 | 1. Foundations — Models, Manifest, Capability Interface | 0/0 | Not started | - |
 | 2. Per-Engine Backup Drivers | 0/4 | Not started | - |
 | 3. Destination Drivers + Encryption | 6/6 | Complete    | 2026-04-16 |
-| 4. Scheduler + Retention | 0/0 | Not started | - |
+| 4. Scheduler + Retention | 0/5 | Not started | - |
 | 5. Restore Orchestration + Safety Rails | 0/0 | Not started | - |
 | 6. CLI & REST API Surface | 0/0 | Not started | - |
 | 7. Testing & Hardening | 0/0 | Not started | - |
