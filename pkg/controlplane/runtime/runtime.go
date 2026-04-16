@@ -2,9 +2,11 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/auth/sid"
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
@@ -13,6 +15,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/identity"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/lifecycle"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime/storebackups"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/stores"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/health"
@@ -55,13 +58,14 @@ type Runtime struct {
 
 	metadataService *metadata.MetadataService
 
-	adaptersSvc    *adapters.Service
-	storesSvc      *stores.Service
-	sharesSvc      *shares.Service
-	lifecycleSvc   *lifecycle.Service
-	identitySvc    *identity.Service
-	mountTracker   *MountTracker
-	clientRegistry *ClientRegistry
+	adaptersSvc     *adapters.Service
+	storesSvc       *stores.Service
+	sharesSvc       *shares.Service
+	lifecycleSvc    *lifecycle.Service
+	identitySvc     *identity.Service
+	storeBackupsSvc *storebackups.Service
+	mountTracker    *MountTracker
+	clientRegistry  *ClientRegistry
 
 	localStoreDefaults *shares.LocalStoreDefaults
 	syncerDefaults     *shares.SyncerDefaults
@@ -98,6 +102,14 @@ func New(s store.Store) *Runtime {
 
 	if s != nil {
 		rt.settingsWatcher = NewSettingsWatcher(s, DefaultPollInterval)
+
+		// storebackups composes scheduler + executor + retention + the
+		// service-layer target resolver that replaces the dropped FK to
+		// metadata_store_configs. DefaultResolver reads MetadataStoreConfig
+		// by ID from s and looks up the live metadata.MetadataStore by
+		// config.Name from the runtime's stores service.
+		resolver := storebackups.NewDefaultResolver(s, rt.storesSvc)
+		rt.storeBackupsSvc = storebackups.New(s, resolver, DefaultShutdownTimeout)
 	}
 
 	return rt
@@ -335,7 +347,77 @@ func (r *Runtime) SetAPIServer(server AuxiliaryServer) {
 
 func (r *Runtime) Serve(ctx context.Context) error {
 	r.clientRegistry.StartSweeper(ctx)
+
+	// Start the storebackups scheduler BEFORE the API server accepts
+	// connections so cron entries are live immediately. Errors here are
+	// logged but do NOT block server startup — a failed storebackups boot
+	// is degraded, not fatal (matches D-06 skip-with-WARN philosophy).
+	// The parent ctx propagates into the scheduler; Stop is wired via defer
+	// so Runtime.Serve's exit path cancels any in-flight backup runs (D-18).
+	if r.storeBackupsSvc != nil {
+		if err := r.storeBackupsSvc.Serve(ctx); err != nil {
+			logger.Warn("storebackups.Serve failed — scheduler disabled", "error", err)
+		}
+		defer func() {
+			stopCtx, cancel := context.WithTimeout(context.Background(), DefaultShutdownTimeout)
+			defer cancel()
+			if err := r.storeBackupsSvc.Stop(stopCtx); err != nil {
+				logger.Warn("storebackups.Stop failed", "error", err)
+			}
+		}()
+	}
+
 	return r.lifecycleSvc.Serve(ctx, r.settingsWatcher, r.adaptersSvc, r.metadataService, r.storesSvc, r.store)
+}
+
+// --- Store Backup Management (delegated to storebackups.Service) ---
+
+// RegisterBackupRepo installs a scheduler entry for the given repo after
+// its DB row has been committed by a Phase 6 handler.
+func (r *Runtime) RegisterBackupRepo(ctx context.Context, repoID string) error {
+	if r.storeBackupsSvc == nil {
+		return fmt.Errorf("storebackups service not initialized")
+	}
+	return r.storeBackupsSvc.RegisterRepo(ctx, repoID)
+}
+
+// UnregisterBackupRepo removes a repo's scheduler entry. No-op (returns nil)
+// if the service is not initialized (testing) or the repo was never registered.
+func (r *Runtime) UnregisterBackupRepo(ctx context.Context, repoID string) error {
+	if r.storeBackupsSvc == nil {
+		return nil
+	}
+	return r.storeBackupsSvc.UnregisterRepo(ctx, repoID)
+}
+
+// UpdateBackupRepo = UnregisterRepo + RegisterRepo. Safe to call when the
+// schedule is unchanged (the scheduler is idempotent on (ID, schedule) pairs).
+func (r *Runtime) UpdateBackupRepo(ctx context.Context, repoID string) error {
+	if r.storeBackupsSvc == nil {
+		return fmt.Errorf("storebackups service not initialized")
+	}
+	return r.storeBackupsSvc.UpdateRepo(ctx, repoID)
+}
+
+// RunBackup runs one backup attempt for repoID. Called by Phase 6's on-demand
+// POST /backups handler and shares the per-repo mutex with the cron path
+// (D-23). Returns storebackups.ErrBackupAlreadyRunning on contention (409 in
+// the API layer).
+func (r *Runtime) RunBackup(ctx context.Context, repoID string) (*models.BackupRecord, error) {
+	if r.storeBackupsSvc == nil {
+		return nil, fmt.Errorf("storebackups service not initialized")
+	}
+	return r.storeBackupsSvc.RunBackup(ctx, repoID)
+}
+
+// ValidateBackupSchedule exposes the scheduler's strict validator for Phase 6
+// handlers that need synchronous cron-expression validation before persisting
+// a repo row.
+func (r *Runtime) ValidateBackupSchedule(expr string) error {
+	if r.storeBackupsSvc == nil {
+		return storebackups.ErrScheduleInvalid
+	}
+	return r.storeBackupsSvc.ValidateSchedule(expr)
 }
 
 // --- Identity Mapping (delegated to identity.Service) ---

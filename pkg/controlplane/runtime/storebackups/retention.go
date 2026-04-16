@@ -2,11 +2,11 @@ package storebackups
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/backup"
 	"github.com/marmos91/dittofs/pkg/backup/destination"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
@@ -33,16 +33,10 @@ type RetentionStore interface {
 	PruneBackupJobsOlderThan(ctx context.Context, cutoff time.Time) (int, error)
 }
 
-// Clock is an injectable time source (real clock used in production; test-
-// controlled clock used in retention_test.go). Passing nil defaults to the
-// real clock.
-type Clock interface {
-	Now() time.Time
-}
-
-type realClock struct{}
-
-func (realClock) Now() time.Time { return time.Now().UTC() }
+// Clock is re-exported from pkg/backup so retention_test.go and existing
+// callers don't have to rename their references. The real clock is
+// backup.RealClock{}; tests inject their own.
+type Clock = backup.Clock
 
 // RetentionReport summarizes a retention pass outcome for the caller
 // (Plan 05's RunBackup path). Per D-15 these failures do NOT degrade
@@ -97,7 +91,7 @@ func RunRetention(
 	clock Clock,
 ) (RetentionReport, error) {
 	if clock == nil {
-		clock = realClock{}
+		clock = backup.RealClock{}
 	}
 	report := RetentionReport{
 		RepoID:        repo.ID,
@@ -235,26 +229,4 @@ func RunRetention(
 	}
 
 	return report, nil
-}
-
-// PruneOldJobs is a thin wrapper around the store's PruneBackupJobsOlderThan
-// exposed for callers (Plan 05 service startup) that want to run the pruner
-// without going through the full RunRetention pass. Uses the real clock.
-func PruneOldJobs(ctx context.Context, store RetentionStore, maxAge time.Duration) (int, error) {
-	if maxAge <= 0 {
-		maxAge = DefaultJobRetention
-	}
-	return store.PruneBackupJobsOlderThan(ctx, time.Now().UTC().Add(-maxAge))
-}
-
-// IsRetryableDeleteError reports whether a destination-delete error indicates
-// a transient failure (worth retrying on the next pass) vs a permanent
-// failure. Reserved for future use — Plan 04 currently retries ALL failures
-// per D-13 continue-on-error semantics.
-func IsRetryableDeleteError(err error) bool {
-	if err == nil {
-		return false
-	}
-	return errors.Is(err, destination.ErrDestinationUnavailable) ||
-		errors.Is(err, destination.ErrDestinationThrottled)
 }

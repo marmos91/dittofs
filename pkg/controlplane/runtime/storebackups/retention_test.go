@@ -596,7 +596,7 @@ func TestPruneOldJobs(t *testing.T) {
 			addJob(store, fmt.Sprintf("new-%d", i), repoID, models.BackupStatusSucceeded, &t2)
 		}
 
-		count, err := PruneOldJobs(ctx, store, 30*24*time.Hour)
+		count, err := store.PruneBackupJobsOlderThan(ctx, time.Now().UTC().Add(-30*24*time.Hour))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -622,7 +622,7 @@ func TestPruneOldJobs(t *testing.T) {
 		oldFinish := time.Now().UTC().Add(-60 * 24 * time.Hour)
 		addJob(store, "old-done", repoID, models.BackupStatusSucceeded, &oldFinish)
 
-		_, err := PruneOldJobs(ctx, store, 30*24*time.Hour)
+		_, err := store.PruneBackupJobsOlderThan(ctx, time.Now().UTC().Add(-30*24*time.Hour))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

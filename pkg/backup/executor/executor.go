@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"time"
 
 	"github.com/oklog/ulid/v2"
 
@@ -26,28 +25,28 @@ type JobStore interface {
 	CreateBackupRecord(ctx context.Context, rec *models.BackupRecord) (string, error)
 }
 
-// Clock is an injectable time source for testability. Plan 05 wires the
-// real UTC clock; tests inject a fixedClock.
-type Clock interface {
-	Now() time.Time
-}
-
-type realClock struct{}
-
-func (realClock) Now() time.Time { return time.Now().UTC() }
-
 // Executor runs one backup attempt per RunBackup call.
 type Executor struct {
 	store JobStore
-	clock Clock
+	clock backup.Clock
 }
 
-// New constructs an Executor. clock may be nil; a real UTC clock is used.
-func New(store JobStore, clock Clock) *Executor {
+// New constructs an Executor. clock may be nil; backup.RealClock is used.
+func New(store JobStore, clock backup.Clock) *Executor {
 	if clock == nil {
-		clock = realClock{}
+		clock = backup.RealClock{}
 	}
 	return &Executor{store: store, clock: clock}
+}
+
+// SetClock swaps the clock at runtime. Safe to call before any RunBackup
+// invocation; callers use this to reach into an Executor constructed with
+// defaults and inject a test clock after the fact.
+func (e *Executor) SetClock(c backup.Clock) {
+	if c == nil {
+		c = backup.RealClock{}
+	}
+	e.clock = c
 }
 
 // RunBackup executes one backup attempt. Returns (*BackupRecord, nil) on
