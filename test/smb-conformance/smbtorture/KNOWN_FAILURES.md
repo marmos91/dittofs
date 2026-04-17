@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-04-17 (Prune stale #268 entries — 5 tests now pass/skip, 3 credits tests are unreachable)
+Last updated: 2026-04-17 (Reconcile credits subsuite after #378 grant fix — 3 tests now pass, 4 reclassified, subsuite no longer aborts)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -214,29 +214,35 @@ DittoFS implements file leases (Phase 37) but not directory leases.
 | smb2.dirlease.v2_request | Directory Leases | Directory leases not implemented | - |
 | smb2.dirlease.v2_request_parent | Directory Leases | Directory leases not implemented | - |
 
-### Credit Management (Not Fully Implemented)
+### Credit Management (IPC Async Subset Not Implemented)
 
-SMB3 credit management (credit grants, async credits, IPC credits) is not
-fully implemented. DittoFS grants a fixed credit count.
+Credit grant arithmetic is correct post-#378: `session_setup_credits_granted`,
+`single_req_credits_granted`, and `skipped_mid` all pass, and the `cur_credits`
+assertion at `credits.c:460` (previously `granted 529, expected 514`) now
+succeeds on every `*_ipc_max_async_credits` variant. The subsuite no longer
+aborts via talloc panic, so all entries below are reachable.
 
-The `1conn_ipc_max_async_credits` failure (credit grant off-by-15 in DittoFS)
-triggers an smbtorture client-side talloc panic during the next test's tcase
-setup, which aborts the remaining `credits.*` subsuite. Subsequent entries in
-this table are therefore *unreachable* until the upstream grant arithmetic is
-fixed.
+The remaining failures are two independent gaps in the IPC/named-pipe path,
+not credit arithmetic:
+
+1. **Named-pipe async READ never pends.** On an empty pipe the server returns
+   `STATUS_SUCCESS` instead of going async with `STATUS_PENDING`. Samba
+   handles this in `source3/smbd/smb2_read.c` via the `read_nowait` /
+   `STATUS_PENDING` path.
+2. **`max_async_credits` cap not enforced.** Once a client has
+   `max_async_credits` (default 512) outstanding async operations, further
+   async requests must return `STATUS_INSUFFICIENT_RESOURCES` per MS-SMB2
+   3.3.5.2.5. DittoFS lets all requests pend.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.credits.1conn_ipc_max_async_credits | Credits | Credit grant off-by-15 (granted 529, expected 514); server hands out excess credits on IPC$ tree | - |
-| smb2.credits.2conn_ipc_max_async_credits | Credits | Unreachable — smbtorture panics in tcase setup after `1conn_ipc_max_async_credits` failure | - |
-| smb2.credits.multichannel_ipc_max_async_credits | Credits | Unreachable — smbtorture panics in tcase setup after `1conn_ipc_max_async_credits` failure | - |
-| smb2.credits.1conn_notify_max_async_credits | Credits | Unreachable — smbtorture panics in tcase setup after `1conn_ipc_max_async_credits` failure | - |
-| smb2.credits.2conn_notify_max_async_credits | Credits | Multi-connection change notification async credit management not implemented | - |
-| smb2.credits.multichannel_max_async_credits | Credits | Multi-channel not implemented (blocks session bind) | - |
-| smb2.credits.ipc_max_data_zero | Credits | IPC credit management not implemented | - |
-| smb2.credits.session_setup_credits_granted | Credits | Dynamic credit granting not implemented | - |
-| smb2.credits.single_req_credits_granted | Credits | Dynamic credit granting not implemented | - |
-| smb2.credits.skipped_mid | Credits | Skipped message ID tracking not implemented | - |
+| smb2.credits.1conn_ipc_max_async_credits | Credits | Named-pipe async READ returns OK without pending; `max_async_credits` cap not enforced | - |
+| smb2.credits.2conn_ipc_max_async_credits | Credits | Named-pipe async READ returns OK without pending; `max_async_credits` cap not enforced | - |
+| smb2.credits.multichannel_ipc_max_async_credits | Credits | Multi-channel not implemented (second-connection CREATE disconnects) | #361 |
+| smb2.credits.1conn_notify_max_async_credits | Credits | Server does not cap async ops at `max_async_credits` (all 514 reads pend, test expects 511 pending + 3 INSUFFICIENT_RESOURCES) | - |
+| smb2.credits.2conn_notify_max_async_credits | Credits | Server does not cap async ops at `max_async_credits`; multi-connection async credit coordination not implemented | - |
+| smb2.credits.multichannel_max_async_credits | Credits | Multi-channel not implemented (blocks session bind) | #361 |
+| smb2.credits.ipc_max_data_zero | Credits | Named-pipe async READ returns OK without pending on IPC$ | - |
 
 ### Directory Operations (Advanced Queries Not Implemented)
 
@@ -786,6 +792,31 @@ incomplete delayed-write and timestamp freeze/unfreeze logic.
 | smb2.timestamps.freeze-thaw | Timestamps | CreationTime freeze/unfreeze not fully working | - |
 
 ## Changelog
+
+### 2026-04-17 — Reconcile credits subsuite after #378 grant fix (close #397)
+The #378 credit-grant cap (commit `191e683e`) resolved both arms of #397: the
+off-by-15 overgrant at `credits.c:460` (`granted 529, expected 514`) is gone
+on every `*_ipc_max_async_credits` variant, and the follow-on smbtorture
+talloc panic no longer fires — the whole `smb2.credits` subsuite now runs to
+completion.
+
+- Removed 3 entries that now pass against current HEAD:
+  `smb2.credits.session_setup_credits_granted`,
+  `smb2.credits.single_req_credits_granted`,
+  `smb2.credits.skipped_mid`.
+- Reclassified the 3 previously "unreachable" tests plus
+  `1conn_ipc_max_async_credits` with their real new blockers. Every
+  `*_ipc_max_async_credits` variant now fails at `credits.c:401` because
+  named-pipe async READ returns `STATUS_SUCCESS` on an empty pipe instead of
+  going async with `STATUS_PENDING` (Samba does this in
+  `source3/smbd/smb2_read.c`). `1conn_notify_max_async_credits` fails at
+  `credits.c:1281` because the server does not cap async operations at
+  `max_async_credits=512` — all 514 reads pend instead of 511 pending + 3
+  `STATUS_INSUFFICIENT_RESOURCES` (MS-SMB2 3.3.5.2.5).
+- Linked the two multi-channel credits tests to #361.
+
+Remaining IPC async work (named-pipe pending reads + `max_async_credits`
+enforcement) is a separate feature area, not a credit-accounting bug.
 
 ### 2026-04-17 — Prune stale #268 entries
 Removed 7 stale entries added in #268 as "newly reachable" failures after the
