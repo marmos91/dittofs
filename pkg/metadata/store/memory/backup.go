@@ -143,14 +143,34 @@ func (store *MemoryMetadataStore) Backup(ctx context.Context, w io.Writer) (meta
 	defer store.mu.RUnlock()
 
 	// D-02: PayloadIDSet computed under the SAME RLock that wraps the encode.
+	// Walk from share roots through children so orphaned files (mid-multi-op
+	// writes still holding only PutFile without a SetChild link) are
+	// excluded from the live-reachability set. Matches the conformance
+	// test's enumeration semantics (ListChildren from root).
 	ids := metadata.NewPayloadIDSet()
-	for _, fd := range store.files {
+	visited := make(map[string]struct{}, len(store.files))
+	var walk func(handleKey string)
+	walk = func(handleKey string) {
+		if _, seen := visited[handleKey]; seen {
+			return
+		}
+		visited[handleKey] = struct{}{}
+		fd := store.files[handleKey]
 		if fd == nil || fd.Attr == nil {
-			continue
+			return
 		}
 		if fd.Attr.PayloadID != "" {
 			ids.Add(string(fd.Attr.PayloadID))
 		}
+		for _, childHandle := range store.children[handleKey] {
+			walk(handleToKey(childHandle))
+		}
+	}
+	for _, sd := range store.shares {
+		if sd == nil {
+			continue
+		}
+		walk(handleToKey(sd.RootHandle))
 	}
 
 	root := memoryBackupRoot{
