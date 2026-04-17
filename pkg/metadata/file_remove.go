@@ -48,11 +48,6 @@ func (s *MetadataService) RemoveFile(ctx *AuthContext, parentHandle FileHandle, 
 		}
 	}
 
-	// Check write permission on parent
-	if err := s.checkWritePermission(ctx, parentHandle); err != nil {
-		return nil, err
-	}
-
 	// Get child handle
 	fileHandle, err := store.GetChild(ctx.Context, parentHandle, name)
 	if err != nil {
@@ -72,6 +67,11 @@ func (s *MetadataService) RemoveFile(ctx *AuthContext, parentHandle FileHandle, 
 			Message: "cannot remove directory with RemoveFile, use RemoveDirectory",
 			Path:    name,
 		}
+	}
+
+	// Check delete permission: WRITE on parent (POSIX) or owner-of-file (Windows DELETE).
+	if err := s.checkDeletePermission(ctx, parentHandle, fileHandle); err != nil {
+		return nil, err
 	}
 
 	// Check sticky bit restriction

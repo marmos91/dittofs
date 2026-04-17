@@ -138,11 +138,6 @@ func (s *MetadataService) RemoveDirectory(ctx *AuthContext, parentHandle FileHan
 		}
 	}
 
-	// Check write permission on parent
-	if err := s.checkWritePermission(ctx, parentHandle); err != nil {
-		return err
-	}
-
 	// Get child handle
 	dirHandle, err := store.GetChild(ctx.Context, parentHandle, name)
 	if err != nil {
@@ -162,6 +157,11 @@ func (s *MetadataService) RemoveDirectory(ctx *AuthContext, parentHandle FileHan
 			Message: "not a directory",
 			Path:    name,
 		}
+	}
+
+	// Check delete permission: WRITE on parent (POSIX) or owner-of-dir (Windows DELETE).
+	if err := s.checkDeletePermission(ctx, parentHandle, dirHandle); err != nil {
+		return err
 	}
 
 	// Check sticky bit restriction

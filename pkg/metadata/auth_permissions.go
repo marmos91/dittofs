@@ -433,6 +433,43 @@ func (s *MetadataService) checkWritePermission(ctx *AuthContext, handle FileHand
 	return s.checkPermission(ctx, handle, PermissionWrite, "write permission denied")
 }
 
+// checkDeletePermission checks permission to unlink an entry from a parent directory.
+//
+// Per MS-FSA 2.1.5.1.2.1, a caller can delete a file entry when it holds DELETE
+// access. DittoFS maps this to any of:
+//
+//   - WRITE permission on the parent directory — classic POSIX unlink(2).
+//   - The caller owns the target — the file's stored UID matches ctx.Identity.UID.
+//     Covers the Windows case where DELETE access was granted on the file at open
+//     (e.g. FILE_DELETE_ON_CLOSE with desiredAccess=DELETE only) but no WRITE was
+//     requested on the parent. Without this, SMB DELETE_ON_CLOSE loops forever
+//     when the file's owner asks the server to clean up its own temp file.
+//
+// Sticky-bit semantics are enforced separately by CheckStickyBitRestriction,
+// which the caller must invoke after this check on the resolved file entry.
+func (s *MetadataService) checkDeletePermission(ctx *AuthContext, parentHandle, fileHandle FileHandle) error {
+	// Rule 1: WRITE on parent (POSIX).
+	if err := s.checkWritePermission(ctx, parentHandle); err == nil {
+		return nil
+	}
+
+	// Rule 2: caller owns the target.
+	if ctx != nil && ctx.Identity != nil && ctx.Identity.UID != nil {
+		if store, err := s.storeForHandle(fileHandle); err == nil {
+			if file, err := store.GetFile(ctx.Context, fileHandle); err == nil {
+				if file.FileAttr.UID == *ctx.Identity.UID {
+					return nil
+				}
+			}
+		}
+	}
+
+	return &StoreError{
+		Code:    ErrAccessDenied,
+		Message: "delete permission denied",
+	}
+}
+
 // checkReadPermission checks read permission on a file.
 func (s *MetadataService) checkReadPermission(ctx *AuthContext, handle FileHandle) error {
 	return s.checkPermission(ctx, handle, PermissionRead, "read permission denied")
