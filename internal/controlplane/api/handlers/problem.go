@@ -3,6 +3,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 )
 
@@ -100,4 +101,62 @@ func WriteJSONCreated(w http.ResponseWriter, data any) {
 // WriteNoContent writes a 204 No Content response.
 func WriteNoContent(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// BackupAlreadyRunningProblem extends Problem with the conflicting running
+// BackupJob ID so clients can surface the in-flight run (D-13). The
+// embedded Problem base fields serialize at the top level per RFC 7807.
+type BackupAlreadyRunningProblem struct {
+	Problem
+	RunningJobID string `json:"running_job_id"`
+}
+
+// RestorePreconditionFailedProblem extends Problem with the list of shares
+// still enabled on the target store, so the operator knows which shares to
+// disable before retrying (D-29).
+type RestorePreconditionFailedProblem struct {
+	Problem
+	EnabledShares []string `json:"enabled_shares"`
+}
+
+// WriteBackupAlreadyRunningProblem emits a 409 Conflict problem+json body
+// with the running BackupJob ID (D-13). Paired with the
+// storebackups.ErrBackupAlreadyRunning sentinel in the handler layer.
+func WriteBackupAlreadyRunningProblem(w http.ResponseWriter, runningJobID string) {
+	p := &BackupAlreadyRunningProblem{
+		Problem: Problem{
+			Type:   "about:blank",
+			Title:  "Conflict",
+			Status: http.StatusConflict,
+			Detail: "backup already running",
+		},
+		RunningJobID: runningJobID,
+	}
+	writeProblemJSON(w, http.StatusConflict, p)
+}
+
+// WriteRestorePreconditionFailedProblem emits a 409 Conflict problem+json
+// body with the enabled_shares list (D-29). Detail text reports the count
+// so the CLI can render a short summary without reflowing the list.
+func WriteRestorePreconditionFailedProblem(w http.ResponseWriter, enabledShares []string) {
+	p := &RestorePreconditionFailedProblem{
+		Problem: Problem{
+			Type:   "about:blank",
+			Title:  "Restore precondition failed",
+			Status: http.StatusConflict,
+			Detail: fmt.Sprintf("%d share(s) still enabled", len(enabledShares)),
+		},
+		EnabledShares: enabledShares,
+	}
+	writeProblemJSON(w, http.StatusConflict, p)
+}
+
+// writeProblemJSON serializes a typed problem variant using the RFC 7807
+// content type. Separate from WriteProblem (which composes a generic
+// *Problem) so typed variants can emit their extra fields as peers of the
+// embedded base.
+func writeProblemJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", ContentTypeProblemJSON)
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
 }
