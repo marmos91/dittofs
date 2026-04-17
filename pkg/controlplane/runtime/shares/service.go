@@ -32,6 +32,10 @@ type Share struct {
 	MetadataStore string
 	RootHandle    metadata.FileHandle
 	ReadOnly      bool
+	// Enabled reflects the DB-row `shares.enabled` flag. REST-02 gate:
+	// restore refuses when any share on the target store is still enabled.
+	// Default true when populated from DB via AddShare.
+	Enabled bool
 
 	// DefaultPermission for users without explicit permission: "none", "read", "read-write", "admin".
 	DefaultPermission string
@@ -71,6 +75,9 @@ type ShareConfig struct {
 	Name          string
 	MetadataStore string
 	ReadOnly      bool
+	// Enabled is the persisted `shares.enabled` flag (D-01/D-22). Callers
+	// pass the DB value; AddShare copies it onto the runtime Share.
+	Enabled bool
 
 	DefaultPermission string
 
@@ -127,6 +134,15 @@ type MetadataServiceRegistrar interface {
 // BlockStoreConfigProvider resolves block store configurations from the control plane DB.
 type BlockStoreConfigProvider interface {
 	GetBlockStoreByID(ctx context.Context, id string) (*models.BlockStoreConfig, error)
+}
+
+// ShareStore is the narrow subset of pkg/controlplane/store.ShareStore that
+// DisableShare / EnableShare need. Defined here so callers can pass any store
+// that satisfies it (the concrete GORMStore does) without importing the
+// `store` package from this subtree and creating a cycle.
+type ShareStore interface {
+	GetShare(ctx context.Context, name string) (*models.Share, error)
+	UpdateShare(ctx context.Context, share *models.Share) error
 }
 
 // LocalStoreDefaults holds default sizing for per-share local stores.
@@ -357,6 +373,7 @@ func (s *Service) prepareShare(
 		MetadataStore:      config.MetadataStore,
 		RootHandle:         rootHandle,
 		ReadOnly:           config.ReadOnly,
+		Enabled:            config.Enabled,
 		EncryptData:        config.EncryptData,
 		DefaultPermission:  config.DefaultPermission,
 		Squash:             config.Squash,
@@ -630,6 +647,121 @@ func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *st
 	return nil
 }
 
+// DisableShare sets enabled=false on the share's DB row and runtime Share
+// struct, then invokes notifyShareChange so adapters drop active sessions
+// (D-02, D-03). DB-first-then-runtime ordering is crash-consistent: if the
+// process dies between the two, the next boot reconciles runtime from DB.
+//
+// Idempotent: re-calling on an already-disabled share returns
+// ErrShareAlreadyDisabled without writing to DB or disturbing adapters.
+//
+// Returns ErrShareNotFound if the share name is unknown at either layer.
+// Timeout bound is whatever the caller provides via ctx (Phase-5 RunRestore
+// composes ctx with lifecycle.ShutdownTimeout).
+//
+// Requires Task 1's `"enabled"` entry in GORMStore.UpdateShare's whitelist —
+// otherwise the store.UpdateShare call silently drops the flag.
+func (s *Service) DisableShare(ctx context.Context, store ShareStore, name string) error {
+	// Runtime registry must know the share before we touch the DB — prevents
+	// a DB-disabled/runtime-absent inconsistency when the startup load missed
+	// a share (partial boot) or the caller passed a stale name.
+	s.mu.RLock()
+	_, exists := s.registry[name]
+	s.mu.RUnlock()
+	if !exists {
+		return fmt.Errorf("%w: runtime registry: %q", ErrShareNotFound, name)
+	}
+
+	dbShare, err := store.GetShare(ctx, name)
+	if err != nil {
+		return fmt.Errorf("load share %q: %w", name, err)
+	}
+	if !dbShare.Enabled {
+		return ErrShareAlreadyDisabled
+	}
+	dbShare.Enabled = false
+	if err := store.UpdateShare(ctx, dbShare); err != nil {
+		return fmt.Errorf("persist disabled state for share %q: %w", name, err)
+	}
+
+	s.mu.Lock()
+	share, stillExists := s.registry[name]
+	if !stillExists {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: runtime registry: %q", ErrShareNotFound, name)
+	}
+	share.Enabled = false
+	s.mu.Unlock()
+
+	s.notifyShareChange()
+	return nil
+}
+
+// EnableShare inverts DisableShare. Idempotent: re-calling on an
+// already-enabled share is a no-op (returns nil, no DB write).
+func (s *Service) EnableShare(ctx context.Context, store ShareStore, name string) error {
+	// Registry-first check: same rationale as DisableShare — avoid a DB row
+	// that moves while the runtime has no matching entry.
+	s.mu.RLock()
+	_, exists := s.registry[name]
+	s.mu.RUnlock()
+	if !exists {
+		return fmt.Errorf("%w: runtime registry: %q", ErrShareNotFound, name)
+	}
+
+	dbShare, err := store.GetShare(ctx, name)
+	if err != nil {
+		return fmt.Errorf("load share %q: %w", name, err)
+	}
+	if dbShare.Enabled {
+		return nil
+	}
+	dbShare.Enabled = true
+	if err := store.UpdateShare(ctx, dbShare); err != nil {
+		return fmt.Errorf("persist enabled state for share %q: %w", name, err)
+	}
+
+	s.mu.Lock()
+	share, stillExists := s.registry[name]
+	if !stillExists {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: runtime registry: %q", ErrShareNotFound, name)
+	}
+	share.Enabled = true
+	s.mu.Unlock()
+
+	s.notifyShareChange()
+	return nil
+}
+
+// IsShareEnabled returns the runtime Enabled flag for the named share.
+// Mirror of GetShare read-path discipline (RLock + registry lookup).
+func (s *Service) IsShareEnabled(name string) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	share, exists := s.registry[name]
+	if !exists {
+		return false, fmt.Errorf("%w: %q", ErrShareNotFound, name)
+	}
+	return share.Enabled, nil
+}
+
+// ListEnabledSharesForStore returns the names of all runtime shares that
+// (a) have Enabled=true AND (b) reference metadataStoreName as their
+// metadata store. Phase-5 RunRestore uses this as the REST-02 pre-flight
+// gate: non-empty slice → restore refuses with 409.
+func (s *Service) ListEnabledSharesForStore(metadataStoreName string) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []string
+	for name, share := range s.registry {
+		if share.Enabled && share.MetadataStore == metadataStoreName {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 func (s *Service) GetShare(name string) (*Share, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -763,6 +895,91 @@ func (s *Service) GetBlockStoreForShare(name string) (*engine.BlockStore, error)
 		return nil, fmt.Errorf("share %q has no block store configured", name)
 	}
 	return share.BlockStore, nil
+}
+
+// RemoteStoreEntry describes a distinct remote block store that is referenced
+// by one or more shares. Surface used by production block-GC enumeration
+// (Runtime.RunBlockGC): we want each underlying remote store scanned exactly
+// once per run, not once per share.
+type RemoteStoreEntry struct {
+	// Store is the underlying remote store (NOT the nonClosingRemote wrapper).
+	Store remote.RemoteStore
+	// ConfigID is the remote block-store config UUID this entry represents.
+	// Empty string indicates a test-only binding (SetShareRemoteForTest).
+	ConfigID string
+	// Shares are the registered share names that reference this remote.
+	Shares []string
+}
+
+// DistinctRemoteStores returns every distinct underlying remote.RemoteStore
+// referenced by at least one registered share. Shares that reference the same
+// remote-store config (ref-counted via remoteStores) are grouped into a
+// single entry — deduped by ConfigID, NOT by the per-share nonClosingRemote
+// wrapper pointer. Local-only shares (no remote) contribute nothing.
+//
+// Returned entries have a non-nil Store and a non-empty Shares slice. Order
+// is unspecified (map iteration).
+func (s *Service) DistinctRemoteStores() []RemoteStoreEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Bucket share names by the configID they reference. configID == "" means
+	// "local-only share" — skipped entirely.
+	sharesByConfigID := make(map[string][]string, len(s.remoteStores))
+	for name, sh := range s.registry {
+		if sh.remoteConfigID == "" {
+			continue
+		}
+		sharesByConfigID[sh.remoteConfigID] = append(sharesByConfigID[sh.remoteConfigID], name)
+	}
+
+	out := make([]RemoteStoreEntry, 0, len(sharesByConfigID))
+	for cid, shareNames := range sharesByConfigID {
+		sr, ok := s.remoteStores[cid]
+		if !ok || sr == nil || sr.store == nil {
+			// Orphaned configID → skip. DistinctRemoteStores is a read-only
+			// surface; we don't try to self-heal bookkeeping here.
+			continue
+		}
+		out = append(out, RemoteStoreEntry{
+			Store:    sr.store,
+			ConfigID: cid,
+			Shares:   shareNames,
+		})
+	}
+	return out
+}
+
+// SetShareRemoteForTest installs a remote.RemoteStore for the named share
+// and registers it under a synthetic configID derived from the store's
+// pointer identity. Two calls with the same remote store for different
+// shares share one configID — matching production ref-counting behavior
+// — so DistinctRemoteStores() dedupes correctly.
+//
+// Test-only: panics if the share does not exist. Intended for runtime-
+// package tests that need to exercise RunBlockGC's enumeration without
+// standing up a full engine.BlockStore. Not safe for production callers.
+func (s *Service) SetShareRemoteForTest(shareName string, rs remote.RemoteStore) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	share, ok := s.registry[shareName]
+	if !ok {
+		panic(fmt.Sprintf("SetShareRemoteForTest: share %q not registered", shareName))
+	}
+	// Derive a stable configID from the remote store pointer so calls that
+	// pass the same rs for different shares land in the same sharedRemote
+	// bucket (mirroring production ref-count semantics).
+	cid := fmt.Sprintf("test-remote-%p", rs)
+	if existing, ok := s.remoteStores[cid]; ok {
+		existing.refCount++
+	} else {
+		s.remoteStores[cid] = &sharedRemote{
+			store:    rs,
+			refCount: 1,
+			configID: cid,
+		}
+	}
+	share.remoteConfigID = cid
 }
 
 // DrainAllBlockStores drains all pending uploads across all per-share BlockStores.

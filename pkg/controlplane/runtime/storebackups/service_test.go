@@ -83,6 +83,10 @@ func (d *controlledDestination) GetBackup(ctx context.Context, id string) (*mani
 	return nil, nil, errors.New("not implemented")
 }
 
+func (d *controlledDestination) GetManifestOnly(ctx context.Context, id string) (*manifest.Manifest, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (d *controlledDestination) List(ctx context.Context) ([]destination.BackupDescriptor, error) {
 	return nil, nil
 }

@@ -461,25 +461,42 @@ func (s *Store) PutBackup(ctx context.Context, m *manifest.Manifest, payload io.
 	return nil
 }
 
-// GetBackup streams the manifest + payload (post-decrypt if encrypted). The
-// returned reader verifies SHA-256 while it streams and returns
-// ErrSHA256Mismatch from Close if the computed digest differs.
-func (s *Store) GetBackup(ctx context.Context, id string) (*manifest.Manifest, io.ReadCloser, error) {
+// GetManifestOnly implements destination.Destination. Single GetObject
+// call against the manifest key — no payload bandwidth spent. See Phase 5
+// CONTEXT.md D-12: used by the restore pre-flight (validate store_id /
+// store_kind before committing to a payload download) and the block-GC
+// hold provider (union PayloadIDSet across all retained manifests).
+func (s *Store) GetManifestOnly(ctx context.Context, id string) (*manifest.Manifest, error) {
 	mOut, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(s.manifestKey(id)),
 	})
 	if err != nil {
 		if isNotFound(err) {
-			return nil, nil, fmt.Errorf("%w: %s", destination.ErrManifestMissing, id)
+			return nil, fmt.Errorf("%w: %s", destination.ErrManifestMissing, id)
 		}
-		return nil, nil, classifyS3Error(fmt.Errorf("get manifest: %w", err))
+		return nil, classifyS3Error(fmt.Errorf("get manifest: %w", err))
 	}
-	// Manifest body is small; read and parse fully before opening payload.
+	defer func() { _ = mOut.Body.Close() }()
 	m, perr := manifest.ReadFrom(mOut.Body)
-	_ = mOut.Body.Close()
 	if perr != nil {
-		return nil, nil, fmt.Errorf("%w: parse manifest: %v", destination.ErrDestinationUnavailable, perr)
+		return nil, fmt.Errorf("%w: parse manifest: %v", destination.ErrDestinationUnavailable, perr)
+	}
+	return m, nil
+}
+
+// GetBackup streams the manifest + payload (post-decrypt if encrypted). The
+// returned reader verifies SHA-256 while it streams and returns
+// ErrSHA256Mismatch from Close if the computed digest differs.
+//
+// The manifest prologue delegates to GetManifestOnly so both call sites
+// share the single "fetch + parse manifest" path (Phase 5 D-12 dedup).
+func (s *Store) GetBackup(ctx context.Context, id string) (*manifest.Manifest, io.ReadCloser, error) {
+	m, err := s.GetManifestOnly(ctx, id)
+	if err != nil {
+		// GetManifestOnly already wraps ErrManifestMissing and
+		// ErrDestinationUnavailable correctly — preserve error shape.
+		return nil, nil, err
 	}
 
 	pOut, err := s.client.GetObject(ctx, &s3.GetObjectInput{

@@ -400,6 +400,16 @@ type BackupStore interface {
 	// Used by the Phase 4 retention pass (D-10 pinned skip, D-12 succeeded-only).
 	ListSucceededRecordsForRetention(ctx context.Context, repoID string) ([]*models.BackupRecord, error)
 
+	// ListSucceededRecordsByRepo returns ALL succeeded records for a repo
+	// (INCLUDING pinned records), sorted newest-first. Used by:
+	//   - Phase 5 restore to select the latest-successful candidate (D-15)
+	//   - Phase 5 block-GC hold provider to union all retained-manifest
+	//     PayloadIDSets (D-11)
+	//
+	// Contrast with ListSucceededRecordsForRetention which excludes
+	// pinned and sorts oldest-first (retention prunes from the tail).
+	ListSucceededRecordsByRepo(ctx context.Context, repoID string) ([]*models.BackupRecord, error)
+
 	// CreateBackupRecord creates a new backup record.
 	// The ID will be generated (ULID) if empty.
 	CreateBackupRecord(ctx context.Context, rec *models.BackupRecord) (string, error)

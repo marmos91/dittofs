@@ -158,7 +158,8 @@ func encodeCommit4resok() *types.CompoundResult {
 	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
 
 	// writeverf: 8-byte server boot verifier (fixed-length, NOT XDR opaque)
-	buf.Write(serverBootVerifier[:])
+	verf := bootVerifierBytes()
+	buf.Write(verf[:])
 
 	return &types.CompoundResult{
 		Status: types.NFS4_OK,

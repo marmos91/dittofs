@@ -57,6 +57,7 @@ func Run(t *testing.T, f Factory) {
 	t.Run("Delete_InverseOrder", func(t *testing.T) { testDeleteInverseOrder(t, f) })
 	t.Run("Missing_Backup", func(t *testing.T) { testMissingBackup(t, f) })
 	t.Run("PayloadIDSet_Preserved", func(t *testing.T) { testPayloadIDSetPreserved(t, f) })
+	t.Run("GetManifestOnly", func(t *testing.T) { testGetManifestOnly(t, f) })
 }
 
 // testKeyHex is fixed test key material: 64 hex characters = 32 decoded
@@ -272,4 +273,33 @@ func testPayloadIDSetPreserved(t *testing.T, f Factory) {
 	_, _ = io.ReadAll(rc)
 	_ = rc.Close()
 	require.ElementsMatch(t, ids, m.PayloadIDSet)
+}
+
+// testGetManifestOnly validates the Phase 5 D-12 cheap manifest-fetch
+// contract. Every driver must satisfy the same shape: published backup →
+// parsed manifest with SHA256, StoreID, StoreKind, and PayloadIDSet
+// populated; unknown id → error wrapping ErrManifestMissing. Callers
+// (restore pre-flight, block-GC hold) rely on the sentinel to branch.
+func testGetManifestOnly(t *testing.T, f Factory) {
+	s := f(t, "")
+	id := ulid.Make().String()
+	payloadIDs := []string{"pid-1", "pid-2", "pid-3"}
+	m := newManifest(id, false, "", payloadIDs)
+	payload := randBytes(t, 64*1024)
+	require.NoError(t, s.PutBackup(context.Background(), m, bytes.NewReader(payload)))
+
+	// Happy path: published backup → parsed manifest with the identifying
+	// fields Phase 5 restore pre-flight validates against the target store.
+	got, err := s.GetManifestOnly(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, id, got.BackupID, "BackupID must round-trip")
+	require.Equal(t, m.SHA256, got.SHA256, "SHA256 must round-trip")
+	require.Equal(t, m.StoreID, got.StoreID, "StoreID must round-trip (D-06 identity gate)")
+	require.Equal(t, m.StoreKind, got.StoreKind, "StoreKind must round-trip (D-06 identity gate)")
+	require.ElementsMatch(t, payloadIDs, got.PayloadIDSet, "PayloadIDSet must round-trip (SAFETY-01 hold set)")
+
+	// Missing id: must surface ErrManifestMissing so callers can branch.
+	_, err = s.GetManifestOnly(context.Background(), "01JFAKEFAKEFAKEFAKEFAKEFAKE")
+	require.Error(t, err)
+	require.ErrorIs(t, err, destination.ErrManifestMissing)
 }

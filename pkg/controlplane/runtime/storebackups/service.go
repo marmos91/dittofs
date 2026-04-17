@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/backup"
 	"github.com/marmos91/dittofs/pkg/backup/destination"
 	"github.com/marmos91/dittofs/pkg/backup/executor"
+	"github.com/marmos91/dittofs/pkg/backup/restore"
 	"github.com/marmos91/dittofs/pkg/backup/scheduler"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
@@ -41,6 +42,30 @@ type Service struct {
 
 	destFactory     DestinationFactoryFn
 	shutdownTimeout time.Duration
+
+	// Phase-5 dependencies for RunRestore. Any of these may be nil; if so
+	// RunRestore returns a clear "restore not wired" error and the startup
+	// orphan sweep (D-14) logs a warning and no-ops. Keeping the fields
+	// individually nil-safe preserves backward compatibility for callers
+	// (tests, early integrations) that built Service with the Phase-4
+	// constructor signature.
+	shares           SharesService
+	stores           restore.StoresService
+	restoreExec      *restore.Executor
+	bumpBootVerifier func()
+	// metadataConfigs is a narrow typed hook over ListMetadataStores,
+	// satisfied DIRECTLY by the composite pkg/controlplane/store.Store.
+	// Exists only as a testability seam — production wiring passes the
+	// composite Store without any adapter wrapper or noop fallback.
+	metadataConfigs MetadataStoreConfigLister
+
+	// metrics + tracer are the Plan 05-09 D-19 observability hooks. Default
+	// to NoopMetrics + NoopTracer so callers that never call
+	// WithMetricsCollector / WithTracer pay zero overhead. Wire via the
+	// WithMetricsCollector / WithTracer options to enable Prometheus +
+	// OpenTelemetry.
+	metrics MetricsCollector
+	tracer  Tracer
 
 	serveOnce sync.Once
 	serveErr  error
@@ -77,6 +102,9 @@ func WithClock(c backup.Clock) Option {
 		if s.exec != nil {
 			s.exec.SetClock(c)
 		}
+		if s.restoreExec != nil {
+			s.restoreExec.SetClock(c)
+		}
 	}
 }
 
@@ -87,6 +115,57 @@ func WithShutdownTimeout(d time.Duration) Option {
 			d = DefaultShutdownTimeout
 		}
 		s.shutdownTimeout = d
+	}
+}
+
+// WithShares wires the shares sub-service for the REST-02 pre-flight gate.
+// Without it, RunRestore refuses with a clear "restore not wired" error.
+func WithShares(sh SharesService) Option {
+	return func(s *Service) { s.shares = sh }
+}
+
+// WithStores wires the stores sub-service for the restore fresh-engine
+// path + D-14 Postgres orphan sweep. Without it, RunRestore refuses and
+// the Postgres branch of SweepRestoreOrphans skips with a log warning.
+func WithStores(st restore.StoresService) Option {
+	return func(s *Service) { s.stores = st }
+}
+
+// WithBumpBootVerifier wires the NFSv4 boot-verifier bump hook (D-09).
+// Typically writehandlers.BumpBootVerifier. nil is acceptable — tests
+// may pass nil; the restore path treats nil as "no bump".
+func WithBumpBootVerifier(fn func()) Option {
+	return func(s *Service) { s.bumpBootVerifier = fn }
+}
+
+// WithMetadataConfigs wires the narrow MetadataStoreConfigLister hook for
+// the D-14 startup orphan sweep. Production callers pass the composite
+// pkg/controlplane/store.Store directly (it implements
+// ListMetadataStores per pkg/controlplane/store/metadata.go:20). No
+// adapter wrapper, no noop fallback.
+func WithMetadataConfigs(lister MetadataStoreConfigLister) Option {
+	return func(s *Service) { s.metadataConfigs = lister }
+}
+
+// WithMetricsCollector wires the Plan 05-09 D-19 terminal-state counter
+// and last-success gauge. nil is equivalent to NoopMetrics (zero overhead).
+func WithMetricsCollector(m MetricsCollector) Option {
+	return func(s *Service) {
+		if m == nil {
+			m = NoopMetrics{}
+		}
+		s.metrics = m
+	}
+}
+
+// WithTracer wires the Plan 05-09 D-19 backup.run / restore.run span.
+// nil is equivalent to NoopTracer (zero overhead).
+func WithTracer(t Tracer) Option {
+	return func(s *Service) {
+		if t == nil {
+			t = NoopTracer{}
+		}
+		s.tracer = t
 	}
 }
 
@@ -102,9 +181,19 @@ func New(s store.BackupStore, resolver StoreResolver, shutdownTimeout time.Durat
 		overlap:         scheduler.NewOverlapGuard(),
 		shutdownTimeout: shutdownTimeout,
 		destFactory:     destination.DestinationFactoryFromRepo,
+		// Default to noop collectors so callers that don't wire
+		// observability still get nil-safe RunBackup/RunRestore paths.
+		metrics: NoopMetrics{},
+		tracer:  NoopTracer{},
 	}
 	svc.sched = scheduler.NewScheduler(scheduler.WithOverlapGuard(svc.overlap))
 	svc.exec = executor.New(s, nil)
+	// Phase-5: every Service can handle RunRestore even without the runtime
+	// wiring — the executor itself is always constructable from the store
+	// + clock. RunRestore returns a clear error when shares/stores are
+	// missing; callers that don't want restore just skip WithShares /
+	// WithStores / WithBumpBootVerifier.
+	svc.restoreExec = restore.New(s, nil)
 
 	for _, opt := range opts {
 		opt(svc)
@@ -124,6 +213,31 @@ func (s *Service) SetShutdownTimeout(d time.Duration) {
 	s.shutdownTimeout = d
 	s.mu.Unlock()
 }
+
+// SetBumpBootVerifier wires the NFSv4 boot-verifier bump hook (D-09)
+// after construction. Separated from WithBumpBootVerifier so the
+// runtime composition site — which cannot import
+// internal/adapter/nfs/v4/handlers without creating an import cycle —
+// can wire the hook from the adapter layer after both packages are
+// initialized. nil clears the hook.
+func (s *Service) SetBumpBootVerifier(fn func()) {
+	s.mu.Lock()
+	s.bumpBootVerifier = fn
+	s.mu.Unlock()
+}
+
+// BackupStore returns the BackupStore this Service was constructed with.
+// Exposed so the runtime's block-GC entrypoint (Runtime.RunBlockGC) can
+// construct a storebackups.BackupHold without reaching into private state.
+// Returns nil only when the Service itself was constructed with a nil
+// store (test scaffolding).
+func (s *Service) BackupStore() store.BackupStore { return s.store }
+
+// DestFactory returns the destination factory this Service was constructed
+// with. Exposed so the runtime's block-GC entrypoint can pass the same
+// factory to storebackups.NewBackupHold — keeping destination-lifecycle
+// semantics identical between backup and GC-hold paths.
+func (s *Service) DestFactory() DestinationFactoryFn { return s.destFactory }
 
 // Serve starts the scheduler. Runs interrupted-job recovery (D-19 / SAFETY-02),
 // loads all repos from the store, installs schedules for those with a non-empty
@@ -153,6 +267,27 @@ func (s *Service) serve(ctx context.Context) error {
 		logger.Warn("Failed to recover interrupted backup jobs on boot", "error", err)
 	} else if n > 0 {
 		logger.Info("Recovered interrupted backup jobs", "count", n)
+	}
+
+	// Phase-5 D-14: sweep orphaned restore temp paths/schemas.
+	//
+	// s.metadataConfigs is the composite store.Store (implements
+	// ListMetadataStores directly per pkg/controlplane/store/metadata.go:20).
+	// s.stores is the live *stores.Service which implements
+	// PostgresOrphanLister (ListPostgresRestoreOrphans + DropPostgresSchema
+	// from Plan 04). If either dependency is missing (partial/test wiring),
+	// log a clear warning and skip — no silent degradation, no noop fallback.
+	if s.metadataConfigs == nil {
+		logger.Warn("SweepRestoreOrphans: MetadataStoreConfigLister not wired; " +
+			"orphan sweep skipped (use WithMetadataConfigs at construction)")
+	} else if s.stores == nil {
+		logger.Warn("SweepRestoreOrphans: stores sub-service not wired; " +
+			"orphan sweep skipped (use WithStores at construction)")
+	} else if lister, ok := s.stores.(PostgresOrphanLister); !ok {
+		logger.Warn("SweepRestoreOrphans: stores.Service does not implement " +
+			"PostgresOrphanLister; orphan sweep skipped (Plan 04 wiring required)")
+	} else {
+		SweepRestoreOrphans(ctx, s.metadataConfigs, lister, DefaultRestoreOrphanGraceWindow)
 	}
 
 	// Load all repos and install schedules for the ones with non-empty crons.
@@ -262,18 +397,39 @@ func (s *Service) UpdateRepo(ctx context.Context, repoID string) error {
 // nil and the BackupJob row records the failure (D-16 — no record on fail).
 // Retention failures are logged via RetentionReport and do NOT degrade the
 // parent job's success status (D-15).
-func (s *Service) RunBackup(ctx context.Context, repoID string) (*models.BackupRecord, error) {
+//
+// Named return `err` is observed by the deferred MetricsCollector +
+// Tracer finish so every terminal state (success/failed/interrupted) emits
+// exactly one counter increment plus a span end. Plan 05-09 D-19 / D-20.
+func (s *Service) RunBackup(ctx context.Context, repoID string) (rec *models.BackupRecord, err error) {
 	unlock, acquired := s.overlap.TryLock(repoID)
 	if !acquired {
 		return nil, fmt.Errorf("%w: repo %s", ErrBackupAlreadyRunning, repoID)
 	}
 	defer unlock()
 
-	// Bind the caller ctx to the service's serveCtx so that Stop() cancels
+	// D-19: open the backup.run span + attach terminal-state metrics.
+	// s.metrics and s.tracer are set once at construction (via Options) so
+	// no mutex is required on the hot path — they always hold valid values
+	// (Noop* by default). Tests that swap observability mid-flight should
+	// do so only from a single goroutine before calling RunBackup.
+	// Use the returned span ctx as the parent for downstream work so
+	// storage / destination spans nest under backup.run (Copilot #384).
+	spanCtx, finishSpan := s.tracer.Start(ctx, SpanBackupRun)
+	defer func() {
+		outcome := classifyOutcome(err)
+		s.metrics.RecordOutcome(KindBackup, outcome)
+		if outcome == OutcomeSucceeded {
+			s.metrics.RecordLastSuccess(repoID, KindBackup, s.now())
+		}
+		finishSpan(err)
+	}()
+
+	// Bind the span ctx to the service's serveCtx so that Stop() cancels
 	// in-flight runs regardless of whether they were launched by the scheduler
 	// or by an on-demand caller (D-18). If Serve has not been called yet,
 	// serveCtx is nil and ctx passes through unchanged.
-	runCtx, cancelRun := s.deriveRunCtx(ctx)
+	runCtx, cancelRun := s.deriveRunCtx(spanCtx)
 	defer cancelRun()
 
 	repo, err := s.store.GetBackupRepoByID(runCtx, repoID)
@@ -299,7 +455,7 @@ func (s *Service) RunBackup(ctx context.Context, repoID string) (*models.BackupR
 		}
 	}()
 
-	rec, err := s.exec.RunBackup(runCtx, source, dst, repo, storeID, storeKind)
+	rec, err = s.exec.RunBackup(runCtx, source, dst, repo, storeID, storeKind)
 	if err != nil {
 		return nil, err
 	}
@@ -366,4 +522,28 @@ func (s *Service) deriveRunCtx(caller context.Context) (context.Context, context
 		stop()
 		cancel()
 	}
+}
+
+// now returns the current time honoring the injected backup.Clock. Used by
+// the D-19 last-success gauge hook so tests can pin a deterministic
+// timestamp via WithClock.
+func (s *Service) now() time.Time {
+	if s.clock != nil {
+		return s.clock.Now()
+	}
+	return time.Now()
+}
+
+// classifyOutcome maps RunBackup / RunRestore's final error into the
+// observable {succeeded, failed, interrupted} taxonomy (D-19). Kept here
+// rather than in metrics.go because the classification is a property of the
+// Service's error contract, not of the collector.
+func classifyOutcome(err error) string {
+	if err == nil {
+		return OutcomeSucceeded
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return OutcomeInterrupted
+	}
+	return OutcomeFailed
 }

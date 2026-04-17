@@ -185,6 +185,49 @@ func TestIntegration_S3_MissingManifest_ReturnsManifestMissing(t *testing.T) {
 	require.ErrorIs(t, err, destination.ErrManifestMissing)
 }
 
+// TestIntegration_S3_GetManifestOnly_Roundtrip exercises the Phase 5
+// D-12 cheap manifest-fetch path against Localstack. Published backup →
+// parsed manifest with identifying fields populated; no payload GetObject
+// is required so this succeeds even when the payload is deleted
+// out-of-band (simulating an operator's `aws s3 rm`).
+func TestIntegration_S3_GetManifestOnly_Roundtrip(t *testing.T) {
+	bucket := uniqueBucket(t)
+	s := newIntegrationStore(t, bucket, "", false, "")
+	id := ulid.Make().String()
+	m := mkManifest(id, false, "")
+	m.PayloadIDSet = []string{"pid-a", "pid-b"}
+	payload := randBytes(t, 8*1024)
+	require.NoError(t, s.PutBackup(context.Background(), m, bytes.NewReader(payload)))
+
+	got, err := s.GetManifestOnly(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, id, got.BackupID)
+	require.Equal(t, m.SHA256, got.SHA256)
+	require.ElementsMatch(t, []string{"pid-a", "pid-b"}, got.PayloadIDSet)
+
+	// Drop the payload; GetManifestOnly still succeeds.
+	_, err = sharedHelper.client.DeleteObject(context.Background(), &s3client.DeleteObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(id + "/payload.bin"),
+	})
+	require.NoError(t, err)
+
+	got2, err := s.GetManifestOnly(context.Background(), id)
+	require.NoError(t, err, "GetManifestOnly must not depend on payload.bin presence")
+	require.Equal(t, id, got2.BackupID)
+}
+
+// TestIntegration_S3_GetManifestOnly_MissingReturnsSentinel asserts the
+// D-12 error-shape contract: an unknown id surfaces ErrManifestMissing
+// so Phase 5 restore pre-flight and block-GC hold can branch cleanly.
+func TestIntegration_S3_GetManifestOnly_MissingReturnsSentinel(t *testing.T) {
+	bucket := uniqueBucket(t)
+	s := newIntegrationStore(t, bucket, "", false, "")
+	_, err := s.GetManifestOnly(context.Background(), ulid.Make().String())
+	require.Error(t, err)
+	require.ErrorIs(t, err, destination.ErrManifestMissing)
+}
+
 // TestIntegration_S3_OrphanSweep — linear setup:
 //  1. createBucket (with teardown registered)
 //  2. PutObject the stale payload (exactly once)

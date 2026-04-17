@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v0.13.0
 milestone_name: milestone
-status: executing
-stopped_at: Phase 4 context gathered
-last_updated: "2026-04-16T17:36:31.070Z"
+status: verifying
+stopped_at: Completed 05-10-PLAN.md
+last_updated: "2026-04-16T23:27:10.927Z"
 last_activity: 2026-04-16
 progress:
   total_phases: 7
-  completed_phases: 3
-  total_plans: 18
-  completed_plans: 17
-  percent: 94
+  completed_phases: 4
+  total_plans: 28
+  completed_plans: 27
+  percent: 96
 ---
 
 # Project State
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-15)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Phase 04 — scheduler-retention
+**Current focus:** Phase 05 — restore-orchestration-safety-rails
 
 ## Current Position
 
-Phase: 5
-Plan: Not started
-Status: Executing Phase 04
+Phase: 05 (restore-orchestration-safety-rails) — EXECUTING
+Plan: 10 of 10
+Status: Phase complete — ready for verification
 Last activity: 2026-04-16
 
 ## Completed Milestones
@@ -62,6 +62,27 @@ Historical decisions archived in PROJECT.md Key Decisions table.
 - Restore precondition is share-disabled (REST-02) — shares must be manually disabled before restore; restore returns 409 Conflict otherwise
 - Retention is a separate post-upload pass, never races with in-flight backup (SCHED-06)
 - `robfig/cron/v3` is the only new direct dependency
+- [Phase 05]: Defined narrow shares.ShareStore interface locally (GetShare + UpdateShare only) to avoid runtime→store import cycle
+- [Phase 05]: Share.Enabled GORM tag = 'default:true;not null'; post-AutoMigrate backfill covers SQLite ADD-COLUMN dialect
+- [Phase 05]: Engine-persistent store_id: Badger uses cfg:store_id key, Postgres uses server_config.store_id column (migration 000008), Memory uses struct field populated on construction; all return ULID via GetStoreID()
+- [Phase 05]: target.go DefaultResolver.Resolve returns engine-persistent GetStoreID() instead of volatile cfg.ID — D-06 cross-store contamination gate now meaningful
+- [Phase 05-restore-orchestration-safety-rails]: GetManifestOnly returns parsed *manifest.Manifest directly (not raw bytes) — all callers need the parsed form, drivers already parse internally
+- [Phase 05-restore-orchestration-safety-rails]: S3 GetBackup delegates manifest prologue to GetManifestOnly — shared error shape, no code duplication
+- [Phase 05-restore-orchestration-safety-rails]: Plan 04: Postgres schema-scoped open deferred to Plan 06 — Plan 04 ships the signature + dispatch with a clear deferred-construction error for postgres; Plan 06 wires the real search_path construction
+- [Phase 05-restore-orchestration-safety-rails]: Plan 04: ListPostgresRestoreOrphans is REQUIRED (non-optional) — non-Postgres stores produce a clear error rather than silent empty slice, so crash-interrupted restore orphans cannot accumulate undetected
+- [Phase 05-restore-orchestration-safety-rails]: Plan 04: Postgres schema orphan CreatedAt derived from embedded ULID timestamp (Option A) rather than pg_stat_file (Option B) — portable, zero extra DB metadata required
+- [Phase 05]: Use atomic.Pointer[[8]byte] for serverBootVerifier — lock-free hot-path reads, safe cold-path bump from RunRestore
+- [Phase 05]: Plan 06: JobStore interface uses GetBackupRecord (not GetBackupRecordByID) to match real GORMStore method name; Plan 07 can compose without adapters.
+- [Phase 05]: Plan 06: RenamePostgresSchema implemented as interface-assertion extension point in CommitSwap; concrete impl deferred to Plan 07 (recommended) or orphan sweep fallback.
+- [Phase 05]: Plan 06: Terminal-state UpdateBackupJob uses context.Background() so SAFETY-02 row lands even after parent ctx cancellation.
+- [Phase 05]: Plan 05-07: Phase-5 sentinels canonical in pkg/backup/restore (not storebackups) to avoid import cycle
+- [Phase 05]: Plan 05-07: RestoreResolver extends StoreResolver (ResolveWithName + ResolveCfg) — backward-compat preserved
+- [Phase 05]: Plan 05-07: SetRestoreBumpBootVerifier post-construction setter on runtime.Runtime avoids adapter→runtime import cycle
+- [Phase 05]: Plan 08: block-GC hold uses at-GC-time manifest union; no persisted hold table (D-11)
+- [Phase 05]: Plan 08: provider errors fail-open (under-hold) rather than abort GC
+- [Phase 05]: Plan 09: Shipped MetricsCollector + Tracer interfaces with Noop defaults and OTel concrete; deferred PromMetrics concrete because prometheus/client_golang not in go.mod and Phase 5 forbids new top-level deps.
+- [Phase 05]: Plan 09: Propagate share.Enabled from DB model to runtime ShareConfig in init.go (Rule 3 auto-fix) — without this, production upgrades would load all shares as Enabled=false and adapter gates would refuse everything.
+- [Phase 05]: Runtime.RunBlockGC production entrypoint closes SAFETY-01 — refuses without BackupHold wiring; dedups distinct remotes by configID via shares.Service.DistinctRemoteStores
 
 ### Pending Todos
 
@@ -73,6 +94,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-16T16:01:15.346Z
-Stopped at: Phase 4 context gathered
+Last session: 2026-04-16T23:27:10.924Z
+Stopped at: Completed 05-10-PLAN.md
 Next action: `/gsd-plan-phase 1` — Foundations: models, manifest, capability interface

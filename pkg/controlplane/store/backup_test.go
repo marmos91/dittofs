@@ -403,6 +403,100 @@ func TestListSucceededRecordsForRetention(t *testing.T) {
 	}
 }
 
+// TestListSucceededRecordsByRepo exercises the Phase 5 restore helper:
+// succeeded records INCLUDING pinned, sorted newest-first. Failed records
+// are excluded; pinned records appear at their chronological position
+// (opposite of retention's pinned-skip semantics).
+func TestListSucceededRecordsByRepo(t *testing.T) {
+	s := createTestStore(t)
+	defer s.Close()
+	ctx := context.Background()
+
+	storeID := seedMetaStore(t, s, "ms-restore-select")
+	repo := seedRepo(t, s, storeID, "primary")
+
+	// Seed 3 succeeded records (one pinned) + 1 failed, in chronological
+	// order so the CreatedAt ordering is deterministic. We capture the IDs
+	// to assert newest-first ordering at the end.
+	var aID, bID, cID string
+
+	a := &models.BackupRecord{RepoID: repo.ID, Status: models.BackupStatusSucceeded}
+	if _, err := s.CreateBackupRecord(ctx, a); err != nil {
+		t.Fatalf("seed a: %v", err)
+	}
+	aID = a.ID
+	time.Sleep(5 * time.Millisecond)
+
+	b := &models.BackupRecord{RepoID: repo.ID, Status: models.BackupStatusSucceeded, Pinned: true}
+	if _, err := s.CreateBackupRecord(ctx, b); err != nil {
+		t.Fatalf("seed b (pinned): %v", err)
+	}
+	bID = b.ID
+	time.Sleep(5 * time.Millisecond)
+
+	c := &models.BackupRecord{RepoID: repo.ID, Status: models.BackupStatusSucceeded}
+	if _, err := s.CreateBackupRecord(ctx, c); err != nil {
+		t.Fatalf("seed c: %v", err)
+	}
+	cID = c.ID
+	time.Sleep(5 * time.Millisecond)
+
+	failed := &models.BackupRecord{
+		RepoID: repo.ID,
+		Status: models.BackupStatusFailed,
+		Error:  "boom",
+	}
+	if _, err := s.CreateBackupRecord(ctx, failed); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	got, err := s.ListSucceededRecordsByRepo(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("ListSucceededRecordsByRepo: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 records (all succeeded incl. pinned), got %d", len(got))
+	}
+
+	// Newest-first ordering: c, b, a.
+	wantIDs := []string{cID, bID, aID}
+	gotIDs := []string{got[0].ID, got[1].ID, got[2].ID}
+	for i := range wantIDs {
+		if gotIDs[i] != wantIDs[i] {
+			t.Fatalf("position %d: got %q, want %q (full got=%v, want=%v)",
+				i, gotIDs[i], wantIDs[i], gotIDs, wantIDs)
+		}
+	}
+
+	// Pinned record IS present in the result set (opposite of retention).
+	foundPinned := false
+	for _, rec := range got {
+		if rec.ID == bID {
+			foundPinned = true
+			if !rec.Pinned {
+				t.Errorf("expected record %s to have Pinned=true", bID)
+			}
+		}
+		if rec.Status != models.BackupStatusSucceeded {
+			t.Errorf("record %s status=%s, want succeeded", rec.ID, rec.Status)
+		}
+	}
+	if !foundPinned {
+		t.Errorf("pinned record %s missing from ListSucceededRecordsByRepo result", bID)
+	}
+
+	// Empty repo edge case: a repo with zero succeeded records returns
+	// empty slice (no error, safe downstream).
+	emptyRepo := seedRepo(t, s, storeID, "empty")
+	empty, err := s.ListSucceededRecordsByRepo(ctx, emptyRepo.ID)
+	if err != nil {
+		t.Fatalf("empty repo: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("expected empty slice for repo with no records, got %d", len(empty))
+	}
+}
+
 func TestBackupJobKindFilter(t *testing.T) {
 	s := createTestStore(t)
 	defer s.Close()

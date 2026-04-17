@@ -323,6 +323,19 @@ var newHashTeeWriter = destination.NewHashTeeWriter
 // Windows returns ERROR_ACCESS_DENIED when Sync is invoked on a directory
 // handle and the NTFS / ReFS rename is already journaled.
 
+// GetManifestOnly implements destination.Destination. Reads
+// <root>/<id>/manifest.yaml without touching payload.bin. See Phase 5
+// CONTEXT.md D-12: used by the restore pre-flight (validate store_id /
+// store_kind before committing to a payload download) and the block-GC
+// hold provider (union PayloadIDSet across all retained manifests).
+func (s *Store) GetManifestOnly(ctx context.Context, id string) (*manifest.Manifest, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(s.root, id)
+	return readManifest(dir)
+}
+
 // GetBackup returns the manifest and a verify-while-streaming payload
 // reader. When m.Encryption.Enabled, the reader yields plaintext (post
 // decrypt). SHA-256 is verified over the CIPHERTEXT (D-04), so the

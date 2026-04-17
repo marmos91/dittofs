@@ -58,11 +58,31 @@ func (t *BackupRepoTarget) Repo() *models.BackupRepo { return t.repo }
 //   - Return backup.ErrBackupUnsupported wrapped when the runtime store
 //     does not implement backup.Backupable.
 //   - On success return (source, storeID, storeKind) where storeID is the
-//     metadata_store_configs.id (snapshotted into manifest.StoreID and
-//     BackupRecord.StoreID for cross-store restore guard) and storeKind is
-//     the driver kind ("memory"|"badger"|"postgres").
+//     engine-persistent store_id (Phase-5 D-06) and storeKind is the
+//     driver kind ("memory"|"badger"|"postgres").
 type StoreResolver interface {
 	Resolve(ctx context.Context, targetKind, targetID string) (source backup.Backupable, storeID, storeKind string, err error)
+}
+
+// RestoreResolver extends StoreResolver with the lookups Phase-5 RunRestore
+// needs beyond the plain Resolve return value:
+//
+//   - ResolveWithName is identical to Resolve but additionally returns the
+//     metadata store's config.Name. The name drives
+//     shares.Service.ListEnabledSharesForStore for the REST-02 pre-flight
+//     gate.
+//
+//   - ResolveCfg returns the full *models.MetadataStoreConfig so the
+//     restore executor can populate Params.TargetStoreCfg without another
+//     round-trip through the config getter.
+//
+// DefaultResolver satisfies this interface; Phase-5 RunRestore type-asserts
+// the Service's StoreResolver to RestoreResolver and errors cleanly if the
+// caller plugged in a custom resolver that doesn't implement it.
+type RestoreResolver interface {
+	StoreResolver
+	ResolveWithName(ctx context.Context, targetKind, targetID string) (source backup.Backupable, storeID, storeKind, storeName string, err error)
+	ResolveCfg(ctx context.Context, targetKind, targetID string) (*models.MetadataStoreConfig, error)
 }
 
 // MetadataStoreRegistry is the minimum shape DefaultResolver needs from
@@ -96,31 +116,69 @@ func NewDefaultResolver(configs MetadataStoreConfigGetter, registry MetadataStor
 
 // Resolve implements StoreResolver.
 func (r *DefaultResolver) Resolve(ctx context.Context, targetKind, targetID string) (backup.Backupable, string, string, error) {
+	src, storeID, storeKind, _, err := r.ResolveWithName(ctx, targetKind, targetID)
+	return src, storeID, storeKind, err
+}
+
+// ResolveWithName implements RestoreResolver. Mirrors Resolve but also
+// surfaces cfg.Name — the metadata store's registry key, used by Phase-5
+// RunRestore to drive shares.Service.ListEnabledSharesForStore.
+func (r *DefaultResolver) ResolveWithName(ctx context.Context, targetKind, targetID string) (backup.Backupable, string, string, string, error) {
 	if targetKind != TargetKindMetadata {
-		return nil, "", "", fmt.Errorf("%w: %q", ErrInvalidTargetKind, targetKind)
+		return nil, "", "", "", fmt.Errorf("%w: %q", ErrInvalidTargetKind, targetKind)
 	}
 
 	cfg, err := r.configs.GetMetadataStoreByID(ctx, targetID)
 	if err != nil {
-		return nil, "", "", fmt.Errorf("%w: target_id=%q: %v", models.ErrStoreNotFound, targetID, err)
+		return nil, "", "", "", fmt.Errorf("%w: target_id=%q: %v", models.ErrStoreNotFound, targetID, err)
 	}
 
 	metaStore, err := r.registry.GetMetadataStore(cfg.Name)
 	if err != nil {
-		return nil, "", "", fmt.Errorf("%w: metadata store %q not loaded: %v", models.ErrStoreNotFound, cfg.Name, err)
+		return nil, "", "", "", fmt.Errorf("%w: metadata store %q not loaded: %v", models.ErrStoreNotFound, cfg.Name, err)
 	}
 
 	src, ok := metaStore.(backup.Backupable)
 	if !ok {
-		return nil, "", "", fmt.Errorf("%w: store %q (type=%s)", backup.ErrBackupUnsupported, cfg.Name, cfg.Type)
+		return nil, "", "", "", fmt.Errorf("%w: store %q (type=%s)", backup.ErrBackupUnsupported, cfg.Name, cfg.Type)
 	}
 
-	return src, cfg.ID, cfg.Type, nil
+	// Phase 5 D-06: prefer the engine-persistent store_id over cfg.ID. The
+	// control-plane DB row's ID is volatile across DB resets; the engine's
+	// own ULID (Badger: cfg:store_id key; Postgres: server_config.store_id;
+	// Memory: assigned on construction) survives. Using the engine ID here
+	// is what makes the manifest.store_id == target.store_id gate meaningful
+	// for preventing cross-store restore contamination (Pitfall #4).
+	storeIDer, ok := metaStore.(interface{ GetStoreID() string })
+	if !ok {
+		return nil, "", "", "", fmt.Errorf("store %q (type=%s) does not expose GetStoreID; Phase 5 D-06 contract violated",
+			cfg.Name, cfg.Type)
+	}
+	engineID := storeIDer.GetStoreID()
+	if engineID == "" {
+		return nil, "", "", "", fmt.Errorf("store %q (type=%s) returned empty store_id", cfg.Name, cfg.Type)
+	}
+	return src, engineID, cfg.Type, cfg.Name, nil
+}
+
+// ResolveCfg implements RestoreResolver. Returns the full
+// *models.MetadataStoreConfig for the given (kind, id) — Phase-5
+// RunRestore passes this into restore.Params.TargetStoreCfg.
+func (r *DefaultResolver) ResolveCfg(ctx context.Context, targetKind, targetID string) (*models.MetadataStoreConfig, error) {
+	if targetKind != TargetKindMetadata {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidTargetKind, targetKind)
+	}
+	cfg, err := r.configs.GetMetadataStoreByID(ctx, targetID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: target_id=%q: %v", models.ErrStoreNotFound, targetID, err)
+	}
+	return cfg, nil
 }
 
 // Compile-time assertions that DefaultResolver satisfies StoreResolver
-// and that store.Store satisfies MetadataStoreConfigGetter.
+// + RestoreResolver and that store.Store satisfies MetadataStoreConfigGetter.
 var (
 	_ StoreResolver             = (*DefaultResolver)(nil)
+	_ RestoreResolver           = (*DefaultResolver)(nil)
 	_ MetadataStoreConfigGetter = (store.Store)(nil)
 )

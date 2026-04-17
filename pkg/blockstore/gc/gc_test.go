@@ -337,6 +337,148 @@ func TestCollectGarbage_ProgressCallback(t *testing.T) {
 	assert.Equal(t, 5, progressCalls)
 }
 
+// ============================================================================
+// BackupHoldProvider Tests (Phase 5 D-11)
+// ============================================================================
+
+// fakeBackupHold is a testing fake for gc.BackupHoldProvider. If err != nil it
+// is returned from HeldPayloadIDs; otherwise the preconfigured held set is
+// returned (nil held map is allowed — equivalent to empty set).
+type fakeBackupHold struct {
+	held map[metadata.PayloadID]struct{}
+	err  error
+}
+
+func (f *fakeBackupHold) HeldPayloadIDs(_ context.Context) (map[metadata.PayloadID]struct{}, error) {
+	return f.held, f.err
+}
+
+// TestGC_BackupHold_PreservesHeldPayload verifies that a payloadID which has
+// no live metadata reference but IS in the backup hold set is retained (not
+// treated as an orphan, not deleted from the remote store).
+func TestGC_BackupHold_PreservesHeldPayload(t *testing.T) {
+	ctx := context.Background()
+	remoteStore := remotememory.New()
+	defer func() { _ = remoteStore.Close() }()
+
+	// Add a block that no metadata references (would normally be orphan).
+	heldPayloadID := "export/held-file.txt"
+	blockKey := heldPayloadID + "/block-0"
+	require.NoError(t, remoteStore.WriteBlock(ctx, blockKey, []byte("held data")))
+
+	// Share exists but no file references this payloadID.
+	reconciler := newGCTestReconciler()
+	reconciler.addShare("/export")
+
+	hold := &fakeBackupHold{
+		held: map[metadata.PayloadID]struct{}{
+			metadata.PayloadID(heldPayloadID): {},
+		},
+	}
+
+	stats := CollectGarbage(ctx, remoteStore, reconciler, &Options{BackupHold: hold})
+
+	assert.Equal(t, 1, stats.BlocksScanned)
+	assert.Equal(t, 0, stats.OrphanFiles, "held payload should not be accounted as orphan")
+	assert.Equal(t, 0, stats.OrphanBlocks)
+	assert.Equal(t, int64(0), stats.BytesReclaimed)
+
+	// Block should still exist — hold preserved it.
+	data, err := remoteStore.ReadBlock(ctx, blockKey)
+	assert.NoError(t, err, "held block must NOT be deleted")
+	assert.Equal(t, []byte("held data"), data)
+}
+
+// TestGC_BackupHold_OrphanStillDeletedWhenNotHeld verifies that payloads
+// absent from the hold set AND the metadata store are still reclaimed.
+func TestGC_BackupHold_OrphanStillDeletedWhenNotHeld(t *testing.T) {
+	ctx := context.Background()
+	remoteStore := remotememory.New()
+	defer func() { _ = remoteStore.Close() }()
+
+	// Orphan: no metadata, not in hold set.
+	orphanPayloadID := "export/orphan-file.txt"
+	orphanKey := orphanPayloadID + "/block-0"
+	require.NoError(t, remoteStore.WriteBlock(ctx, orphanKey, []byte("orphan")))
+
+	// Hold set covers a DIFFERENT payloadID — does not protect the orphan.
+	reconciler := newGCTestReconciler()
+	reconciler.addShare("/export")
+	hold := &fakeBackupHold{
+		held: map[metadata.PayloadID]struct{}{
+			metadata.PayloadID("export/some-other-file.txt"): {},
+		},
+	}
+
+	stats := CollectGarbage(ctx, remoteStore, reconciler, &Options{BackupHold: hold})
+
+	assert.Equal(t, 1, stats.BlocksScanned)
+	assert.Equal(t, 1, stats.OrphanFiles)
+	assert.Equal(t, 1, stats.OrphanBlocks)
+
+	// Orphan should be deleted.
+	_, err := remoteStore.ReadBlock(ctx, orphanKey)
+	assert.Error(t, err, "unheld orphan should be deleted")
+}
+
+// TestGC_BackupHold_ProviderError_FailsOpen verifies that when the hold
+// provider returns an error, GC proceeds WITHOUT a hold (logs WARN) and
+// continues to delete orphans. Under-hold is preferred over aborting GC.
+func TestGC_BackupHold_ProviderError_FailsOpen(t *testing.T) {
+	ctx := context.Background()
+	remoteStore := remotememory.New()
+	defer func() { _ = remoteStore.Close() }()
+
+	// Orphan block that would be protected IF the hold set were consulted.
+	payloadID := "export/would-be-held.txt"
+	blockKey := payloadID + "/block-0"
+	require.NoError(t, remoteStore.WriteBlock(ctx, blockKey, []byte("data")))
+
+	reconciler := newGCTestReconciler()
+	reconciler.addShare("/export")
+
+	// Provider fails — fail-open means the orphan is still reclaimed.
+	hold := &fakeBackupHold{
+		err: errors.New("destination unavailable"),
+	}
+
+	stats := CollectGarbage(ctx, remoteStore, reconciler, &Options{BackupHold: hold})
+
+	assert.Equal(t, 1, stats.BlocksScanned)
+	assert.Equal(t, 1, stats.OrphanFiles, "fail-open: orphan still accounted")
+	assert.Equal(t, 1, stats.OrphanBlocks)
+
+	// Orphan deleted — GC did not abort on provider error.
+	_, err := remoteStore.ReadBlock(ctx, blockKey)
+	assert.Error(t, err, "fail-open: orphan should still be deleted")
+}
+
+// TestGC_NilBackupHold_PreservesLegacyBehavior is a regression test verifying
+// that Options.BackupHold == nil keeps pre-Phase-5 behavior intact.
+func TestGC_NilBackupHold_PreservesLegacyBehavior(t *testing.T) {
+	ctx := context.Background()
+	remoteStore := remotememory.New()
+	defer func() { _ = remoteStore.Close() }()
+
+	// Plain orphan.
+	blockKey := "export/orphan.txt/block-0"
+	require.NoError(t, remoteStore.WriteBlock(ctx, blockKey, []byte("data")))
+
+	reconciler := newGCTestReconciler()
+	reconciler.addShare("/export")
+
+	// Options with BackupHold explicitly nil.
+	stats := CollectGarbage(ctx, remoteStore, reconciler, &Options{BackupHold: nil})
+
+	assert.Equal(t, 1, stats.BlocksScanned)
+	assert.Equal(t, 1, stats.OrphanFiles)
+	assert.Equal(t, 1, stats.OrphanBlocks)
+
+	// Orphan deleted as in pre-Phase-5 behavior.
+	_, err := remoteStore.ReadBlock(ctx, blockKey)
+	assert.Error(t, err)
+}
+
 func TestCollectGarbage_DryRun(t *testing.T) {
 	ctx := context.Background()
 	remoteStore := remotememory.New()

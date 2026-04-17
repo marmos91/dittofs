@@ -26,6 +26,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
+	"github.com/marmos91/dittofs/pkg/metadata/storetest"
 )
 
 // ----------------------------------------------------------------------------
@@ -521,4 +522,37 @@ func TestBackupable_CompileTimeAssertion(t *testing.T) {
 	// this test exists so CI surfaces a coherent test name when the
 	// assertion fires.
 	var _ metadata.Backupable = (*postgres.PostgresMetadataStore)(nil)
+}
+
+// ----------------------------------------------------------------------------
+// Phase 5 D-06: store_id conformance
+// ----------------------------------------------------------------------------
+
+// TestPostgresStoreID_PersistedAcrossRestart runs the Phase 5 D-06
+// conformance check: opening the SAME Postgres schema twice returns the
+// same store_id. The isolated database is created once and reused across
+// both openStore calls so the close+reopen exercise observes persistence,
+// not fresh-schema creation.
+func TestPostgresStoreID_PersistedAcrossRestart(t *testing.T) {
+	env := loadPostgresEnv(t)
+	dbName := createIsolatedDatabase(t, env)
+
+	// storetest.StoreIDFactory receives *testing.T; we close the factory
+	// over env + dbName so each invocation opens a store against the same
+	// database.
+	storetest.TestStoreID_PersistedAcrossRestart(t, func(t *testing.T) metadata.MetadataStore {
+		return openStore(t, env, dbName)
+	})
+}
+
+// TestPostgresStoreID_PreservedAcrossRestore runs the Phase 5 D-06
+// "receiver identity wins" conformance check. A fresh destination schema
+// keeps its own store_id after Restore — server_config.store_id is
+// re-anchored inside the Restore transaction to the receiver's ULID.
+func TestPostgresStoreID_PreservedAcrossRestore(t *testing.T) {
+	env := loadPostgresEnv(t)
+	factory := func(t *testing.T) storetest.BackupTestStore {
+		return newIsolatedStore(t, env)
+	}
+	storetest.TestStoreID_PreservedAcrossRestore(t, factory, factory)
 }

@@ -189,6 +189,7 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			Name:               share.Name,
 			MetadataStore:      metaStoreCfg.Name,
 			ReadOnly:           share.ReadOnly,
+			Enabled:            share.Enabled, // Plan 05-09 D-02: propagate DB Enabled flag so adapter gates read the correct runtime value.
 			EncryptData:        share.EncryptData,
 			DefaultPermission:  share.DefaultPermission,
 			Squash:             nfsOpts.GetSquashMode(),

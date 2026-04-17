@@ -1,6 +1,9 @@
 package storebackups
 
-import "github.com/marmos91/dittofs/pkg/controlplane/models"
+import (
+	"github.com/marmos91/dittofs/pkg/backup/restore"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
+)
 
 // Re-exports of Phase-4 sentinels for caller convenience. Callers may
 // import either the models or the storebackups package; both identities
@@ -11,4 +14,46 @@ var (
 	ErrRepoNotFound         = models.ErrRepoNotFound
 	ErrBackupAlreadyRunning = models.ErrBackupAlreadyRunning
 	ErrInvalidTargetKind    = models.ErrInvalidTargetKind
+)
+
+// Phase-5 restore sentinels (D-26). Canonical definitions live in
+// pkg/backup/restore/errors.go — this file aliases them so callers at
+// the runtime layer (Phase-6 CLI / REST handlers) match with errors.Is
+// against the same identity the restore executor returns. The
+// canonical-in-restore-package direction is chosen to avoid the import
+// cycle between storebackups → restore (Plan 07 wiring).
+var (
+	// ErrRestorePreconditionFailed — one or more shares still enabled
+	// for the target store. Restore refuses to run until operator
+	// explicitly disables (D-01, D-02). Maps to 409 Conflict.
+	ErrRestorePreconditionFailed = restore.ErrRestorePreconditionFailed
+
+	// ErrNoRestoreCandidate — the repo has zero succeeded records to
+	// restore from. Caller asked for default-latest (D-15). Maps to 409.
+	ErrNoRestoreCandidate = restore.ErrNoRestoreCandidate
+
+	// ErrStoreIDMismatch — manifest.store_id != target store's
+	// persistent store_id (Pitfall #4 guard, D-06). Hard-reject before
+	// any destructive action. Maps to 400.
+	ErrStoreIDMismatch = restore.ErrStoreIDMismatch
+
+	// ErrStoreKindMismatch — manifest.store_kind (memory|badger|postgres)
+	// != target engine kind. Cross-engine restore is deferred (XENG-01).
+	// Maps to 400.
+	ErrStoreKindMismatch = restore.ErrStoreKindMismatch
+
+	// ErrRecordNotRestorable — --from <id> resolved a record whose
+	// status is not succeeded (pending/running/failed/interrupted).
+	// Maps to 409.
+	ErrRecordNotRestorable = restore.ErrRecordNotRestorable
+
+	// ErrRecordRepoMismatch — --from <id> resolved a record that
+	// belongs to a different repo than the one being restored (D-16).
+	// Maps to 400.
+	ErrRecordRepoMismatch = restore.ErrRecordRepoMismatch
+
+	// ErrManifestVersionUnsupported — manifest_version != Phase-1
+	// CurrentVersion. Forward-incompatible archive; this binary cannot
+	// restore it. Maps to 400.
+	ErrManifestVersionUnsupported = restore.ErrManifestVersionUnsupported
 )

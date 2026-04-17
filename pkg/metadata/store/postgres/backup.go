@@ -357,6 +357,20 @@ func (s *PostgresMetadataStore) Restore(ctx context.Context, r io.Reader) error 
 		}
 	}
 
+	// Phase 5 D-06: re-anchor the receiver's store_id after the COPY FROM
+	// wave. The `server_config` table is part of backupTables, so the
+	// source archive's store_id just got written into this schema. That
+	// would hand the receiver the source's identity — the exact failure
+	// mode D-06 exists to prevent. Re-write server_config.store_id back to
+	// the receiver's persistent ULID before commit so the engine's
+	// identity is unchanged by restore.
+	//
+	// Runs inside the same tx as the COPYs so a commit failure still
+	// leaves the receiver atomically back to pre-restore state.
+	if _, err := tx.Exec(ctx, `UPDATE server_config SET store_id = $1 WHERE id = 1`, s.storeID); err != nil {
+		return fmt.Errorf("postgres restore: re-anchor store_id: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("postgres restore: commit: %w", err)
 	}

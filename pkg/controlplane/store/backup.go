@@ -161,6 +161,22 @@ func (s *GORMStore) ListSucceededRecordsForRetention(ctx context.Context, repoID
 	return results, nil
 }
 
+// ListSucceededRecordsByRepo implements BackupStore.
+// See interface doc for semantics contrast with the retention variant:
+// this method returns ALL succeeded records (including pinned), sorted
+// newest-first. Used by the Phase 5 restore default-latest path (D-15)
+// and the block-GC hold union (D-11).
+func (s *GORMStore) ListSucceededRecordsByRepo(ctx context.Context, repoID string) ([]*models.BackupRecord, error) {
+	var results []*models.BackupRecord
+	if err := s.db.WithContext(ctx).
+		Where("repo_id = ? AND status = ?", repoID, models.BackupStatusSucceeded).
+		Order("created_at DESC").
+		Find(&results).Error; err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
 func (s *GORMStore) CreateBackupRecord(ctx context.Context, rec *models.BackupRecord) (string, error) {
 	if rec.ID == "" {
 		rec.ID = ulid.Make().String()

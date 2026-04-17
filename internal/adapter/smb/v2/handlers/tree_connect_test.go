@@ -9,6 +9,8 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
+	"github.com/marmos91/dittofs/pkg/metadata"
+	memorymeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // =============================================================================
@@ -643,4 +645,88 @@ func TestResolveSharePermission_RootBypass(t *testing.T) {
 			t.Errorf("Username should be 'guest', got %q", username)
 		}
 	})
+}
+
+// =============================================================================
+// REST-02 Adapter Gate Tests (Plan 05-09 D-02)
+// =============================================================================
+
+// newTreeConnectGateHandler builds an SMB handler with a registry containing
+// a single share. `enabled` controls the runtime Share.Enabled flag post-add.
+// Returns the handler and the session ID of an authenticated session already
+// registered with the handler's session manager.
+func newTreeConnectGateHandler(t *testing.T, shareName string, enabled bool) (*Handler, uint64) {
+	t.Helper()
+
+	rt := runtime.New(nil)
+	metaStore := memorymeta.NewMemoryMetadataStoreWithDefaults()
+	if err := rt.RegisterMetadataStore("test-meta", metaStore); err != nil {
+		t.Fatalf("RegisterMetadataStore: %v", err)
+	}
+
+	cfg := &runtime.ShareConfig{
+		Name:          shareName,
+		MetadataStore: "test-meta",
+		Enabled:       true,
+		RootAttr: &metadata.FileAttr{
+			Type: metadata.FileTypeDirectory,
+			Mode: 0o755,
+		},
+	}
+	if err := rt.AddShare(context.Background(), cfg); err != nil {
+		t.Fatalf("AddShare: %v", err)
+	}
+
+	// Flip Enabled directly (mirrors mount_test pattern).
+	share, err := rt.GetShare(shareName)
+	if err != nil {
+		t.Fatalf("GetShare: %v", err)
+	}
+	share.Enabled = enabled
+
+	h := NewHandler()
+	h.Registry = rt
+
+	sess := h.CreateSession("127.0.0.1:12345", false, "testuser", "")
+	return h, sess.SessionID
+}
+
+// TestTreeConnect_DisabledShare_ReturnsNameDeleted covers REST-02: TREE_CONNECT
+// to a share with Enabled=false must refuse with STATUS_NETWORK_NAME_DELETED
+// (MS-SMB2 2.2.9 error response). The disabled flag is how shares.Service
+// signals "the underlying metadata store is being restored, do not touch".
+func TestTreeConnect_DisabledShare_ReturnsNameDeleted(t *testing.T) {
+	h, sessionID := newTreeConnectGateHandler(t, "/disabled", false)
+	ctx := newTreeConnectTestContext(sessionID)
+
+	body := buildTreeConnectRequestBody("\\\\server\\disabled")
+	result, err := h.TreeConnect(ctx, body)
+	if err != nil {
+		t.Fatalf("TreeConnect returned unexpected error: %v", err)
+	}
+	if result.Status != types.StatusNetworkNameDeleted {
+		t.Errorf("Status = 0x%x, want StatusNetworkNameDeleted (0x%x)",
+			result.Status, types.StatusNetworkNameDeleted)
+	}
+	if ctx.TreeID != 0 {
+		t.Errorf("TreeID = %d, want 0 (no tree should be established)", ctx.TreeID)
+	}
+}
+
+// TestTreeConnect_EnabledShare_Succeeds is the regression guard — an enabled
+// share must still complete TREE_CONNECT so the REST-02 gate doesn't refuse
+// every share.
+func TestTreeConnect_EnabledShare_Succeeds(t *testing.T) {
+	h, sessionID := newTreeConnectGateHandler(t, "/export", true)
+	ctx := newTreeConnectTestContext(sessionID)
+
+	body := buildTreeConnectRequestBody("\\\\server\\export")
+	result, err := h.TreeConnect(ctx, body)
+	if err != nil {
+		t.Fatalf("TreeConnect returned unexpected error: %v", err)
+	}
+	if result.Status != types.StatusSuccess {
+		t.Errorf("Status = 0x%x, want StatusSuccess (0x%x)",
+			result.Status, types.StatusSuccess)
+	}
 }

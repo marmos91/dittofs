@@ -345,3 +345,48 @@ func TestFSStore_NilPayloadIDSet_Rejected(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorIs(t, err, destination.ErrIncompatibleConfig)
 }
+
+// TestFSStore_GetManifestOnly_Roundtrip exercises the Phase 5 D-12 cheap
+// manifest fetch: publish a backup, then GetManifestOnly returns the
+// parsed manifest without opening payload.bin.
+func TestFSStore_GetManifestOnly_Roundtrip(t *testing.T) {
+	s, _ := newTestStore(t)
+	id := ulid.Make().String()
+	m := newTestManifest(id, false, "")
+	m.PayloadIDSet = []string{"pid-a", "pid-b"}
+	payload := randBytes(t, 16*1024)
+	require.NoError(t, s.PutBackup(context.Background(), m, bytes.NewReader(payload)))
+
+	got, err := s.GetManifestOnly(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, id, got.BackupID)
+	require.Equal(t, m.SHA256, got.SHA256)
+	require.ElementsMatch(t, []string{"pid-a", "pid-b"}, got.PayloadIDSet)
+}
+
+// TestFSStore_GetManifestOnly_MissingReturnsSentinel asserts the
+// ErrManifestMissing contract: an unknown id must surface the sentinel so
+// the restore pre-flight and block-GC hold provider can branch on it.
+func TestFSStore_GetManifestOnly_MissingReturnsSentinel(t *testing.T) {
+	s, _ := newTestStore(t)
+	_, err := s.GetManifestOnly(context.Background(), "01JFAKEFAKEFAKEFAKEFAKEFAKE")
+	require.Error(t, err)
+	require.ErrorIs(t, err, destination.ErrManifestMissing)
+}
+
+// TestFSStore_GetManifestOnly_DoesNotOpenPayload verifies the D-12
+// "payload untouched" promise: GetManifestOnly must succeed even when
+// payload.bin has been deleted out-of-band (the manifest alone suffices).
+func TestFSStore_GetManifestOnly_DoesNotOpenPayload(t *testing.T) {
+	s, root := newTestStore(t)
+	id := ulid.Make().String()
+	m := newTestManifest(id, false, "")
+	require.NoError(t, s.PutBackup(context.Background(), m, bytes.NewReader([]byte("p"))))
+
+	// Remove payload.bin after publish — GetManifestOnly must still work.
+	require.NoError(t, os.Remove(filepath.Join(root, id, "payload.bin")))
+
+	got, err := s.GetManifestOnly(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, id, got.BackupID)
+}

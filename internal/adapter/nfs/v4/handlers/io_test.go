@@ -974,7 +974,8 @@ func TestWrite_Success(t *testing.T) {
 	}
 
 	// Verify verifier matches serverBootVerifier
-	if !bytes.Equal(verf, serverBootVerifier[:]) {
+	want := bootVerifierBytes()
+	if !bytes.Equal(verf, want[:]) {
 		t.Error("writeverf should match server boot verifier")
 	}
 
@@ -1097,7 +1098,8 @@ func TestCommit_Success(t *testing.T) {
 	}
 
 	// Verifier should match WRITE verifier
-	if !bytes.Equal(verf, serverBootVerifier[:]) {
+	want := bootVerifierBytes()
+	if !bytes.Equal(verf, want[:]) {
 		t.Error("COMMIT writeverf should match server boot verifier")
 	}
 }
