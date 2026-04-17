@@ -436,45 +436,43 @@ func (s *MetadataService) checkWritePermission(ctx *AuthContext, handle FileHand
 
 // checkDeletePermission checks permission to unlink an entry from a parent directory.
 //
-// Per MS-FSA 2.1.5.1.2.1, a caller can delete a file entry when it holds DELETE
-// access. DittoFS honors any of:
+// Two rules, in order:
 //
-//   - WRITE permission on the parent directory — classic POSIX unlink(2).
-//   - The caller owns the target AND the protocol handler set
-//     ctx.HasDeleteAccess — covers the Windows case where DELETE access was
-//     granted at open (e.g. FILE_DELETE_ON_CLOSE with desiredAccess=DELETE
-//     only) but no WRITE was requested on the parent. Gated so NFS unlink(2)
-//     stays strict POSIX.
+//  1. If the protocol handler set ctx.HasDeleteAccess, DELETE access was
+//     already authorized upstream (e.g. SMB CREATE with
+//     FILE_DELETE_ON_CLOSE + desiredAccess=DELETE or SET_INFO
+//     FileDispositionInformation, both of which verify the caller's grant
+//     at open time). Per MS-FSA 2.1.5.4, DELETE_ON_CLOSE honors the handle's
+//     frozen authorization regardless of the current identity — critical for
+//     SMB reauth flows where the session's UID/GID may shift between open
+//     and close for the same Kerberos principal (issue #388). Read-only
+//     shares still block this path as defense in depth.
+//  2. Otherwise, fall back to POSIX unlink(2): require WRITE on the parent
+//     directory. Keeps NFS strict.
 //
 // Sticky-bit semantics are enforced separately by CheckStickyBitRestriction,
 // which the caller must invoke after this check on the resolved file entry.
-func (s *MetadataService) checkDeletePermission(ctx *AuthContext, parentHandle FileHandle, file *File) error {
-	// Rule 1: WRITE on parent (POSIX).
-	writeErr := s.checkWritePermission(ctx, parentHandle)
-	if writeErr == nil {
-		return nil
-	}
-	// Only fall through to rule 2 when rule 1 was a permission denial. Surface
-	// non-permission failures (context cancellation, store errors, etc.) as-is
-	// so they aren't silently rewritten to "delete permission denied".
-	var storeErr *StoreError
-	if !errors.As(writeErr, &storeErr) || storeErr.Code != ErrAccessDenied {
-		return writeErr
-	}
-
-	// Rule 2: caller owns the target AND an upstream DELETE-access check passed.
-	// Blocked on read-only shares so a root-owned file on a read-only share
-	// can't be deleted by root through the owner path.
-	if ctx.HasDeleteAccess && !ctx.ShareReadOnly &&
-		file != nil && ctx.Identity != nil && ctx.Identity.UID != nil &&
-		file.UID == *ctx.Identity.UID {
+// The `file` parameter is currently unused but reserved for future rule
+// extensions (e.g. explicit DELETE ACE evaluation) and kept for signature
+// stability across call sites.
+func (s *MetadataService) checkDeletePermission(ctx *AuthContext, parentHandle FileHandle, _ *File) error {
+	// Rule 1: upstream DELETE-access grant.
+	if ctx.HasDeleteAccess && !ctx.ShareReadOnly {
 		return nil
 	}
 
-	return &StoreError{
-		Code:    ErrAccessDenied,
-		Message: "delete permission denied",
+	// Rule 2: POSIX WRITE on parent.
+	if err := s.checkWritePermission(ctx, parentHandle); err != nil {
+		var storeErr *StoreError
+		if errors.As(err, &storeErr) && storeErr.Code == ErrAccessDenied {
+			return &StoreError{
+				Code:    ErrAccessDenied,
+				Message: "delete permission denied",
+			}
+		}
+		return err
 	}
+	return nil
 }
 
 // checkReadPermission checks read permission on a file.
