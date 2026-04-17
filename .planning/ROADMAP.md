@@ -133,9 +133,9 @@ Plans:
 Plans:
 - [x] 06-01-PLAN.md — BackupStore methods (ListBackupRecords/ListBackupJobsFiltered/UpdateBackupRecordPinned/UpdateBackupJobProgress) + D-50 progress instrumentation in backup/restore executors + Share.Enabled JSON tag
 - [x] 06-02-PLAN.md — REST handlers (backups, backup_jobs, backup_repos) + typed problem variants (D-13, D-29, D-46) + shares.go Disable/Enable + router wiring + apiclient typed methods
-- [ ] 06-03-PLAN.md — CLI share restructure (D-35 breaking flip) + dfsctl share <name> disable|enable + ENABLED column on list/show (D-27, D-28, D-36..D-39) + CHANGELOG v0.13.0 entry
-- [ ] 06-04-PLAN.md — CLI repo subtree (add/list/show/edit/remove) with interactive per-kind prompts, partial-patch edit, --purge-archives cascade (D-14..D-22)
-- [ ] 06-05-PLAN.md — CLI backup subtree (run/list/show/pin/unpin + job list/show/cancel) + shared async-poll helper (D-01..D-11, D-13, D-24..D-26, D-42..D-48)
+- [x] 06-03-PLAN.md — CLI share restructure (D-35 breaking flip) + dfsctl share <name> disable|enable + ENABLED column on list/show (D-27, D-28, D-36..D-39) + CHANGELOG v0.13.0 entry
+- [x] 06-04-PLAN.md — CLI repo subtree (add/list/show/edit/remove) with interactive per-kind prompts, partial-patch edit, --purge-archives cascade (D-14..D-22)
+- [x] 06-05-PLAN.md — CLI backup subtree (run/list/show/pin/unpin + job list/show/cancel) + shared async-poll helper (D-01..D-11, D-13, D-24..D-26, D-42..D-48)
 - [ ] 06-06-PLAN.md — CLI restore verb (D-29/D-30/D-31/D-33/D-40) reusing Plan 05 poll helper + metadata.go final AddCommand wiring + end-to-end human-verify checkpoint
 
 ### Phase 7: Testing & Hardening
