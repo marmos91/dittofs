@@ -8,6 +8,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	stdruntime "runtime"
 	"testing"
 	"time"
 
@@ -56,8 +59,9 @@ func TestBlockStoreHandler_Create(t *testing.T) {
 	_, handler := setupBlockStoreTest(t)
 
 	body, _ := json.Marshal(CreateBlockStoreRequest{
-		Name: "test-local-store",
-		Type: "fs",
+		Name:   "test-local-store",
+		Type:   "fs",
+		Config: `{"path":"` + t.TempDir() + `"}`,
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block/local", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -133,6 +137,195 @@ func TestBlockStoreHandler_Create_TypeKindMismatch(t *testing.T) {
 				t.Errorf("Create(%s) status = %d, want %d, body = %s", tt.name, w.Code, http.StatusBadRequest, w.Body.String())
 			}
 		})
+	}
+}
+
+func TestBlockStoreHandler_Create_FS_AutoCreatesBaseDir(t *testing.T) {
+	_, handler := setupBlockStoreTest(t)
+
+	// Path does not exist yet; Create must materialise it.
+	basePath := filepath.Join(t.TempDir(), "fresh", "store")
+
+	body, _ := json.Marshal(CreateBlockStoreRequest{
+		Name:   "auto-mkdir",
+		Type:   "fs",
+		Config: `{"path":"` + basePath + `"}`,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block/local", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withBlockStoreKind(req, "local")
+	w := httptest.NewRecorder()
+
+	handler.Create(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("Create() status = %d, want %d, body = %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+	info, err := os.Stat(basePath)
+	if err != nil {
+		t.Fatalf("Expected base dir created at %s, stat failed: %v", basePath, err)
+	}
+	if !info.IsDir() {
+		t.Errorf("Expected %s to be a directory", basePath)
+	}
+}
+
+func TestBlockStoreHandler_Create_FS_MissingPath(t *testing.T) {
+	_, handler := setupBlockStoreTest(t)
+
+	body, _ := json.Marshal(CreateBlockStoreRequest{
+		Name: "no-path",
+		Type: "fs",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block/local", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withBlockStoreKind(req, "local")
+	w := httptest.NewRecorder()
+
+	handler.Create(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Create(no path) status = %d, want %d, body = %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+}
+
+func TestBlockStoreHandler_Create_FS_UncreatablePath(t *testing.T) {
+	_, handler := setupBlockStoreTest(t)
+
+	// /dev/null is a char device, MkdirAll under it must fail.
+	body, _ := json.Marshal(CreateBlockStoreRequest{
+		Name:   "bad-path",
+		Type:   "fs",
+		Config: `{"path":"/dev/null/cannot-create"}`,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block/local", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withBlockStoreKind(req, "local")
+	w := httptest.NewRecorder()
+
+	handler.Create(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Create(uncreatable path) status = %d, want %d, body = %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+}
+
+func TestBlockStoreHandler_Create_FS_RelativePath(t *testing.T) {
+	_, handler := setupBlockStoreTest(t)
+
+	body, _ := json.Marshal(CreateBlockStoreRequest{
+		Name:   "rel-path",
+		Type:   "fs",
+		Config: `{"path":"relative/dir"}`,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block/local", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withBlockStoreKind(req, "local")
+	w := httptest.NewRecorder()
+
+	handler.Create(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Create(relative path) status = %d, want %d, body = %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+}
+
+// TestBlockStoreHandler_Create_FS_TildePath is the dittofs-pro #110 / dittofs
+// #391 regression: a ~-prefixed path must be expanded before the IsAbs guard,
+// so users configuring "~/foo" in the UI are not rejected.
+func TestBlockStoreHandler_Create_FS_TildePath(t *testing.T) {
+	if stdruntime.GOOS == "windows" {
+		t.Skip("tilde expansion test uses HOME redirection (not applicable on Windows)")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	_, handler := setupBlockStoreTest(t)
+
+	body, _ := json.Marshal(CreateBlockStoreRequest{
+		Name:   "tilde-path",
+		Type:   "fs",
+		Config: `{"path":"~/localstore"}`,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block/local", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withBlockStoreKind(req, "local")
+	w := httptest.NewRecorder()
+
+	handler.Create(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("Create(~/localstore) status = %d, want %d, body = %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+	expanded := filepath.Join(home, "localstore")
+	if info, err := os.Stat(expanded); err != nil {
+		t.Fatalf("Expected expanded path %s created, stat failed: %v", expanded, err)
+	} else if !info.IsDir() {
+		t.Errorf("Expected %s to be a directory", expanded)
+	}
+}
+
+func TestBlockStoreHandler_Create_S3_MissingCredentials(t *testing.T) {
+	_, handler := setupBlockStoreTest(t)
+
+	tests := []struct {
+		name   string
+		config string
+	}{
+		{"missing bucket", `{"access_key_id":"k","secret_access_key":"s"}`},
+		{"missing access_key_id", `{"bucket":"b","secret_access_key":"s"}`},
+		{"missing secret_access_key", `{"bucket":"b","access_key_id":"k"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, _ := json.Marshal(CreateBlockStoreRequest{
+				Name:   "s3-" + tt.name,
+				Type:   "s3",
+				Config: tt.config,
+			})
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block/remote", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req = withBlockStoreKind(req, "remote")
+			w := httptest.NewRecorder()
+
+			handler.Create(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("Create(%s) status = %d, want %d, body = %s", tt.name, w.Code, http.StatusBadRequest, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestBlockStoreHandler_Update_FS_RevalidatesPath(t *testing.T) {
+	cpStore, handler := setupBlockStoreTest(t)
+	ctx := context.Background()
+
+	initialPath := t.TempDir()
+	bs := &models.BlockStoreConfig{
+		ID: uuid.New().String(), Name: "revalidate", Kind: models.BlockStoreKindLocal, Type: "fs",
+		Config:    `{"path":"` + initialPath + `"}`,
+		CreatedAt: time.Now(),
+	}
+	cpStore.CreateBlockStore(ctx, bs)
+
+	// Path does not exist yet; Update must materialise it.
+	newPath := filepath.Join(t.TempDir(), "moved", "store")
+	newConfig := `{"path":"` + newPath + `"}`
+	body, _ := json.Marshal(UpdateBlockStoreRequest{Config: &newConfig})
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/store/block/local/revalidate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withBlockStoreKindAndName(req, "local", "revalidate")
+	w := httptest.NewRecorder()
+
+	handler.Update(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Update() status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		t.Errorf("Expected new path %s created by Update, stat failed: %v", newPath, err)
 	}
 }
 
