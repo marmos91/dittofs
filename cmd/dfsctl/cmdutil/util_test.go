@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -247,10 +248,16 @@ func TestIsVerbose(t *testing.T) {
 }
 
 // seedExpiredContext writes a config.json with one expired-but-refreshable
-// context pointing at serverURL, using an isolated XDG_CONFIG_HOME.
+// context pointing at serverURL, using an isolated config dir. credentials.Store
+// reads APPDATA on Windows and XDG_CONFIG_HOME elsewhere.
 func seedExpiredContext(t *testing.T, serverURL string) {
 	t.Helper()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir := t.TempDir()
+	if runtime.GOOS == "windows" {
+		t.Setenv("APPDATA", dir)
+	} else {
+		t.Setenv("XDG_CONFIG_HOME", dir)
+	}
 	store, err := credentials.NewStore()
 	if err != nil {
 		t.Fatalf("new store: %v", err)

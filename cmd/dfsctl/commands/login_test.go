@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -45,12 +46,17 @@ func withLoginFlags(t *testing.T, server, username, password string) {
 	})
 }
 
-// withIsolatedConfig redirects XDG_CONFIG_HOME to a temp dir so the test
-// doesn't touch the real ~/.config/dfsctl/config.json.
+// withIsolatedConfig redirects the config home to a temp dir so the test
+// doesn't touch the real config. credentials.Store reads APPDATA on Windows
+// and XDG_CONFIG_HOME elsewhere, so set the right one for the current OS.
 func withIsolatedConfig(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
+	if runtime.GOOS == "windows" {
+		t.Setenv("APPDATA", dir)
+	} else {
+		t.Setenv("XDG_CONFIG_HOME", dir)
+	}
 	return dir
 }
 
