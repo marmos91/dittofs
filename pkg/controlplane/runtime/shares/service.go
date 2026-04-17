@@ -1184,6 +1184,13 @@ func CreateLocalStoreFromConfig(
 		if err != nil {
 			return nil, fmt.Errorf("failed to expand path %q: %w", basePath, err)
 		}
+		// Defense-in-depth: ValidateBlockStoreConfig rejects relative paths at
+		// create/update time, but pre-existing or out-of-band configs could
+		// still carry them. Guard here so filepath.Join doesn't resolve
+		// against the server's CWD.
+		if !filepath.IsAbs(expanded) {
+			return nil, fmt.Errorf("fs local store path must be absolute, got %q", basePath)
+		}
 		sanitized := sanitizeShareName(shareName)
 		blockDir := filepath.Join(expanded, "shares", sanitized, "blocks")
 		if err := os.MkdirAll(blockDir, 0755); err != nil {

@@ -33,7 +33,14 @@ func ValidateBlockStoreConfig(kind models.BlockStoreKind, storeType string, cfg 
 		case "memory":
 			return nil
 		case "fs":
-			basePath, _ := config["path"].(string)
+			rawPath, exists := config["path"]
+			if !exists {
+				return errors.New("fs local block store requires path in config")
+			}
+			basePath, ok := rawPath.(string)
+			if !ok {
+				return errors.New("fs local block store path must be a string")
+			}
 			if basePath == "" {
 				return errors.New("fs local block store requires path in config")
 			}
@@ -60,8 +67,17 @@ func ValidateBlockStoreConfig(kind models.BlockStoreKind, storeType string, cfg 
 		case "memory":
 			return nil
 		case "s3":
-			if bucket, _ := config["bucket"].(string); bucket == "" {
+			bucket, ok := config["bucket"].(string)
+			if !ok || bucket == "" {
 				return errors.New("s3 remote block store requires bucket in config")
+			}
+			accessKeyID, ok := config["access_key_id"].(string)
+			if !ok || accessKeyID == "" {
+				return errors.New("s3 remote block store requires access_key_id in config")
+			}
+			secretAccessKey, ok := config["secret_access_key"].(string)
+			if !ok || secretAccessKey == "" {
+				return errors.New("s3 remote block store requires secret_access_key in config")
 			}
 			return nil
 		default:

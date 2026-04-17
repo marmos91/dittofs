@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	stdruntime "runtime"
 	"testing"
 	"time"
 
@@ -226,6 +227,74 @@ func TestBlockStoreHandler_Create_FS_RelativePath(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Create(relative path) status = %d, want %d, body = %s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+}
+
+// TestBlockStoreHandler_Create_FS_TildePath is the dittofs-pro #110 / dittofs
+// #391 regression: a ~-prefixed path must be expanded before the IsAbs guard,
+// so users configuring "~/foo" in the UI are not rejected.
+func TestBlockStoreHandler_Create_FS_TildePath(t *testing.T) {
+	if stdruntime.GOOS == "windows" {
+		t.Skip("tilde expansion test uses HOME redirection (not applicable on Windows)")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	_, handler := setupBlockStoreTest(t)
+
+	body, _ := json.Marshal(CreateBlockStoreRequest{
+		Name:   "tilde-path",
+		Type:   "fs",
+		Config: `{"path":"~/localstore"}`,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block/local", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withBlockStoreKind(req, "local")
+	w := httptest.NewRecorder()
+
+	handler.Create(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("Create(~/localstore) status = %d, want %d, body = %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+	expanded := filepath.Join(home, "localstore")
+	if info, err := os.Stat(expanded); err != nil {
+		t.Fatalf("Expected expanded path %s created, stat failed: %v", expanded, err)
+	} else if !info.IsDir() {
+		t.Errorf("Expected %s to be a directory", expanded)
+	}
+}
+
+func TestBlockStoreHandler_Create_S3_MissingCredentials(t *testing.T) {
+	_, handler := setupBlockStoreTest(t)
+
+	tests := []struct {
+		name   string
+		config string
+	}{
+		{"missing bucket", `{"access_key_id":"k","secret_access_key":"s"}`},
+		{"missing access_key_id", `{"bucket":"b","secret_access_key":"s"}`},
+		{"missing secret_access_key", `{"bucket":"b","access_key_id":"k"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, _ := json.Marshal(CreateBlockStoreRequest{
+				Name:   "s3-" + tt.name,
+				Type:   "s3",
+				Config: tt.config,
+			})
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/store/block/remote", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req = withBlockStoreKind(req, "remote")
+			w := httptest.NewRecorder()
+
+			handler.Create(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("Create(%s) status = %d, want %d, body = %s", tt.name, w.Code, http.StatusBadRequest, w.Body.String())
+			}
+		})
 	}
 }
 
