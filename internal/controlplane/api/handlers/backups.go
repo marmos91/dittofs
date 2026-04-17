@@ -65,9 +65,24 @@ type BackupHandler struct {
 }
 
 // NewBackupHandler constructs a BackupHandler. destFactory may be nil for
-// tests that don't exercise DELETE ?purge_archives=true.
+// tests that don't exercise DELETE ?purge_archives=true. svc may be nil
+// when the server starts without a runtime (tests, degraded mode) — every
+// handler method checks h.requireService and returns 503 if so.
 func NewBackupHandler(s BackupHandlerStore, svc BackupService, destFactory BackupDestinationFactory) *BackupHandler {
 	return &BackupHandler{store: s, svc: svc, destFactory: destFactory}
+}
+
+// requireService gates handler entry when the backup subsystem is not
+// wired (h.svc == nil). Writes 503 ServiceUnavailable and returns false
+// so the caller short-circuits. Registering routes unconditionally and
+// returning 503 here keeps clients able to distinguish "endpoint missing"
+// (404) from "endpoint present, backend down" (503).
+func (h *BackupHandler) requireService(w http.ResponseWriter) bool {
+	if h.svc == nil {
+		ServiceUnavailable(w, "Backup subsystem is not initialized on this server.")
+		return false
+	}
+	return true
 }
 
 // -----------------------------------------------------------------------------
@@ -175,6 +190,9 @@ type BackupRepoResponse struct {
 // Returns 202 Accepted + TriggerBackupResponse{Record, Job} on success.
 // Conflict → 409 with running_job_id (D-13).
 func (h *BackupHandler) TriggerBackup(w http.ResponseWriter, r *http.Request) {
+	if !h.requireService(w) {
+		return
+	}
 	storeName := chi.URLParam(r, "name")
 	if storeName == "" {
 		BadRequest(w, "Store name is required")
@@ -279,6 +297,9 @@ func (h *BackupHandler) writeBackupError(w http.ResponseWriter, ctx context.Cont
 // ListRecords handles GET /api/v1/store/metadata/{name}/backups.
 // Query parameters: ?repo=<name> and ?status=<BackupStatus>.
 func (h *BackupHandler) ListRecords(w http.ResponseWriter, r *http.Request) {
+	if !h.requireService(w) {
+		return
+	}
 	storeName := chi.URLParam(r, "name")
 	storeCfg, err := h.store.GetMetadataStore(r.Context(), storeName)
 	if err != nil {
@@ -340,6 +361,9 @@ func (h *BackupHandler) ListRecords(w http.ResponseWriter, r *http.Request) {
 
 // ShowRecord handles GET /api/v1/store/metadata/{name}/backups/{id}.
 func (h *BackupHandler) ShowRecord(w http.ResponseWriter, r *http.Request) {
+	if !h.requireService(w) {
+		return
+	}
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		BadRequest(w, "Record id is required")
@@ -360,6 +384,9 @@ func (h *BackupHandler) ShowRecord(w http.ResponseWriter, r *http.Request) {
 // PatchRecord handles PATCH /api/v1/store/metadata/{name}/backups/{id}.
 // Body: {"pinned": bool}. Only the pinned field is patchable today (D-23).
 func (h *BackupHandler) PatchRecord(w http.ResponseWriter, r *http.Request) {
+	if !h.requireService(w) {
+		return
+	}
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		BadRequest(w, "Record id is required")
@@ -394,6 +421,9 @@ func (h *BackupHandler) PatchRecord(w http.ResponseWriter, r *http.Request) {
 // Restore handles POST /api/v1/store/metadata/{name}/restore.
 // Returns 202 Accepted + BackupJobResponse on success.
 func (h *BackupHandler) Restore(w http.ResponseWriter, r *http.Request) {
+	if !h.requireService(w) {
+		return
+	}
 	storeName := chi.URLParam(r, "name")
 	if storeName == "" {
 		BadRequest(w, "Store name is required")
@@ -431,6 +461,9 @@ func (h *BackupHandler) Restore(w http.ResponseWriter, r *http.Request) {
 // Returns 200 OK + RestoreDryRunResponse. SKIPS the shares-enabled gate (D-31)
 // — the enabled_shares list is reported, never enforced.
 func (h *BackupHandler) RestoreDryRun(w http.ResponseWriter, r *http.Request) {
+	if !h.requireService(w) {
+		return
+	}
 	storeName := chi.URLParam(r, "name")
 	if storeName == "" {
 		BadRequest(w, "Store name is required")

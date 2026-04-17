@@ -81,6 +81,13 @@ func InternalServerError(w http.ResponseWriter, detail string) {
 	WriteProblem(w, http.StatusInternalServerError, "Internal Server Error", detail)
 }
 
+// ServiceUnavailable writes a 503 Service Unavailable problem response.
+// Use when the route exists but a backing subsystem is not initialized —
+// distinguishable from 404 (route/version mismatch) by clients.
+func ServiceUnavailable(w http.ResponseWriter, detail string) {
+	WriteProblem(w, http.StatusServiceUnavailable, "Service Unavailable", detail)
+}
+
 // WriteJSON writes a JSON response with the given status code.
 func WriteJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")

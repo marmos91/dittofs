@@ -16,6 +16,9 @@ import (
 // Query parameters: ?status=<BackupStatus>&kind=<BackupJobKind>&repo=<name>&limit=<int>.
 // D-42: limit defaults to 50 and caps at 200 in the store layer.
 func (h *BackupHandler) ListJobs(w http.ResponseWriter, r *http.Request) {
+	if !h.requireService(w) {
+		return
+	}
 	storeName := chi.URLParam(r, "name")
 	storeCfg, err := h.store.GetMetadataStore(r.Context(), storeName)
 	if err != nil {
@@ -80,6 +83,9 @@ func (h *BackupHandler) ListJobs(w http.ResponseWriter, r *http.Request) {
 // GetJob handles GET /api/v1/store/metadata/{name}/backup-jobs/{id}. Polling
 // endpoint for CLI `--wait` flows.
 func (h *BackupHandler) GetJob(w http.ResponseWriter, r *http.Request) {
+	if !h.requireService(w) {
+		return
+	}
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		BadRequest(w, "Job id is required")
@@ -108,6 +114,9 @@ func (h *BackupHandler) GetJob(w http.ResponseWriter, r *http.Request) {
 //     after a DB-present pre-check is a race (job became terminal between
 //     the read and the registry lookup) — treat as 200 OK idempotent.
 func (h *BackupHandler) CancelJob(w http.ResponseWriter, r *http.Request) {
+	if !h.requireService(w) {
+		return
+	}
 	id := chi.URLParam(r, "id")
 	if id == "" {
 		BadRequest(w, "Job id is required")

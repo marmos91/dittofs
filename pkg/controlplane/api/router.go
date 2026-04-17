@@ -248,39 +248,45 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 					// Phase 6 — backup/restore/job/repo REST surface.
 					// Mounted under the EXISTING singular /store/metadata/{name}
 					// group (D-12); admin-middleware inherited from parent.
-					// nil-guard so tests that wire NewRouter with a nil runtime
-					// (server_test.go lifecycle) don't panic.
+					//
+					// Routes are registered UNCONDITIONALLY so clients can
+					// distinguish "endpoint missing" (404) from "endpoint
+					// present, subsystem down" (503). When rt or the backup
+					// service is nil (test wiring, degraded start), handler
+					// methods return 503 ServiceUnavailable via requireService.
+					var svc handlers.BackupService
 					if rt != nil {
-						if svc := rt.StoreBackupsService(); svc != nil {
-							destFactory := handlers.BackupDestinationFactory(func(ctx context.Context, repo *models.BackupRepo) (handlers.BackupDestinationDeleter, error) {
-								return destination.DestinationFactoryFromRepo(ctx, repo)
-							})
-							backupHandler := handlers.NewBackupHandler(cpStore, svc, destFactory)
-
-							r.Route("/{name}/backups", func(r chi.Router) {
-								r.Post("/", backupHandler.TriggerBackup)    // D-13 → 202 + {Record, Job}
-								r.Get("/", backupHandler.ListRecords)       // D-26
-								r.Get("/{id}", backupHandler.ShowRecord)    // D-48
-								r.Patch("/{id}", backupHandler.PatchRecord) // D-23 pin/unpin
-							})
-							r.Route("/{name}/backup-jobs", func(r chi.Router) {
-								r.Get("/", backupHandler.ListJobs)              // D-42
-								r.Get("/{id}", backupHandler.GetJob)            // polling
-								r.Post("/{id}/cancel", backupHandler.CancelJob) // D-43/D-44/D-45
-							})
-							r.Route("/{name}/restore", func(r chi.Router) {
-								r.Post("/", backupHandler.Restore)              // D-29 → 202 + BackupJob
-								r.Post("/dry-run", backupHandler.RestoreDryRun) // D-31 → 200 + DryRunResult
-							})
-							r.Route("/{name}/repos", func(r chi.Router) {
-								r.Post("/", backupHandler.CreateRepo)
-								r.Get("/", backupHandler.ListRepos)
-								r.Get("/{repo}", backupHandler.GetRepo)
-								r.Patch("/{repo}", backupHandler.PatchRepo)   // D-19 partial
-								r.Delete("/{repo}", backupHandler.DeleteRepo) // D-21 ?purge_archives
-							})
+						if real := rt.StoreBackupsService(); real != nil {
+							svc = real
 						}
 					}
+					destFactory := handlers.BackupDestinationFactory(func(ctx context.Context, repo *models.BackupRepo) (handlers.BackupDestinationDeleter, error) {
+						return destination.DestinationFactoryFromRepo(ctx, repo)
+					})
+					backupHandler := handlers.NewBackupHandler(cpStore, svc, destFactory)
+
+					r.Route("/{name}/backups", func(r chi.Router) {
+						r.Post("/", backupHandler.TriggerBackup)    // D-13 → 202 + {Record, Job}
+						r.Get("/", backupHandler.ListRecords)       // D-26
+						r.Get("/{id}", backupHandler.ShowRecord)    // D-48
+						r.Patch("/{id}", backupHandler.PatchRecord) // D-23 pin/unpin
+					})
+					r.Route("/{name}/backup-jobs", func(r chi.Router) {
+						r.Get("/", backupHandler.ListJobs)              // D-42
+						r.Get("/{id}", backupHandler.GetJob)            // polling
+						r.Post("/{id}/cancel", backupHandler.CancelJob) // D-43/D-44/D-45
+					})
+					r.Route("/{name}/restore", func(r chi.Router) {
+						r.Post("/", backupHandler.Restore)              // D-29 → 202 + BackupJob
+						r.Post("/dry-run", backupHandler.RestoreDryRun) // D-31 → 200 + DryRunResult
+					})
+					r.Route("/{name}/repos", func(r chi.Router) {
+						r.Post("/", backupHandler.CreateRepo)
+						r.Get("/", backupHandler.ListRepos)
+						r.Get("/{repo}", backupHandler.GetRepo)
+						r.Patch("/{repo}", backupHandler.PatchRepo)   // D-19 partial
+						r.Delete("/{repo}", backupHandler.DeleteRepo) // D-21 ?purge_archives
+					})
 				})
 			})
 

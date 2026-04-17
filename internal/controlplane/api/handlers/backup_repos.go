@@ -16,6 +16,9 @@ import (
 // BackupRepo row then calls svc.RegisterRepo so the scheduler picks it up
 // (D-22).
 func (h *BackupHandler) CreateRepo(w http.ResponseWriter, r *http.Request) {
+	if !h.requireService(w) {
+		return
+	}
 	storeName := chi.URLParam(r, "name")
 	storeCfg, ok := h.resolveMetadataStore(w, r, storeName)
 	if !ok {
@@ -92,6 +95,9 @@ func (h *BackupHandler) CreateRepo(w http.ResponseWriter, r *http.Request) {
 
 // ListRepos handles GET /api/v1/store/metadata/{name}/repos.
 func (h *BackupHandler) ListRepos(w http.ResponseWriter, r *http.Request) {
+	if !h.requireService(w) {
+		return
+	}
 	storeName := chi.URLParam(r, "name")
 	storeCfg, ok := h.resolveMetadataStore(w, r, storeName)
 	if !ok {
@@ -107,6 +113,9 @@ func (h *BackupHandler) ListRepos(w http.ResponseWriter, r *http.Request) {
 
 // GetRepo handles GET /api/v1/store/metadata/{name}/repos/{repo}.
 func (h *BackupHandler) GetRepo(w http.ResponseWriter, r *http.Request) {
+	if !h.requireService(w) {
+		return
+	}
 	storeName := chi.URLParam(r, "name")
 	repoName := chi.URLParam(r, "repo")
 	if repoName == "" {
@@ -134,6 +143,9 @@ func (h *BackupHandler) GetRepo(w http.ResponseWriter, r *http.Request) {
 // schedule is validated before persist; svc.UpdateRepo is invoked to
 // trigger Unregister+Register (D-22).
 func (h *BackupHandler) PatchRepo(w http.ResponseWriter, r *http.Request) {
+	if !h.requireService(w) {
+		return
+	}
 	storeName := chi.URLParam(r, "name")
 	repoName := chi.URLParam(r, "repo")
 	storeCfg, ok := h.resolveMetadataStore(w, r, storeName)
@@ -209,6 +221,9 @@ func (h *BackupHandler) PatchRepo(w http.ResponseWriter, r *http.Request) {
 // iterates Destination.Delete across every record before removing the row.
 // Partial failures are reported via a problem body carrying failed_record_ids.
 func (h *BackupHandler) DeleteRepo(w http.ResponseWriter, r *http.Request) {
+	if !h.requireService(w) {
+		return
+	}
 	storeName := chi.URLParam(r, "name")
 	repoName := chi.URLParam(r, "repo")
 	storeCfg, ok := h.resolveMetadataStore(w, r, storeName)
