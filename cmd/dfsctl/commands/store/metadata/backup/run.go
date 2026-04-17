@@ -31,17 +31,37 @@ var exitFunc = os.Exit
 // human success summaries. Overridable from tests; production = os.Stdout.
 var stdoutOut io.Writer = os.Stdout
 
-// registerRunFlags wires the trigger flags on the parent Cmd. Called from
-// backup.go init() so the parent `backup` verb accepts --repo / --wait /
-// --async / --timeout even when no subcommand is present.
-func registerRunFlags(c *cobra.Command) {
-	c.Flags().StringVar(&runRepo, "repo", "",
+// runCmd is the explicit `backup run <store-name>` verb that triggers an
+// on-demand backup. Registered as a child of backup.Cmd.
+var runCmd = &cobra.Command{
+	Use:   "run <store-name>",
+	Short: "Trigger an on-demand backup of a metadata store",
+	Long: `Trigger an on-demand backup of a metadata store.
+
+By default the command blocks until the backup reaches a terminal state
+(D-01). Use --async to return immediately with the job record.
+
+Examples:
+  # Block until backup completes (default)
+  dfsctl store metadata fast-meta backup run --repo daily-s3
+
+  # Return immediately with the job record
+  dfsctl store metadata fast-meta backup run --repo daily-s3 --async
+
+  # Set a wait timeout
+  dfsctl store metadata fast-meta backup run --repo daily-s3 --timeout 30s`,
+	Args: cobra.ExactArgs(1),
+	RunE: runRun,
+}
+
+func init() {
+	runCmd.Flags().StringVar(&runRepo, "repo", "",
 		"Backup repo name (required when >1 repo attached per D-24)")
-	c.Flags().BoolVar(&runWait, "wait", true,
+	runCmd.Flags().BoolVar(&runWait, "wait", true,
 		"Block until the backup job terminates (D-01 default)")
-	c.Flags().BoolVar(&runAsync, "async", false,
+	runCmd.Flags().BoolVar(&runAsync, "async", false,
 		"Return immediately with the job record (D-01 opt-out of default wait)")
-	c.Flags().DurationVar(&runTimeout, "timeout", 0,
+	runCmd.Flags().DurationVar(&runTimeout, "timeout", 0,
 		"Wait timeout (0 = indefinite per D-04)")
 }
 

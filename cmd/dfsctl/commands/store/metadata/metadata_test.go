@@ -4,28 +4,31 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/commands/store/metadata/backup"
-	"github.com/marmos91/dittofs/cmd/dfsctl/commands/store/metadata/repo"
-	"github.com/marmos91/dittofs/cmd/dfsctl/commands/store/metadata/restore"
 )
 
-// TestMetadataCmd_RegistersPhase6Subtrees verifies that the three Phase 6
-// subtrees (backup / repo / restore) are wired into metadata.Cmd. The parent
-// explicitly owns the AddCommand calls — the leaf packages cannot self-wire
-// without creating an import cycle through metadata.go.
-func TestMetadataCmd_RegistersPhase6Subtrees(t *testing.T) {
-	want := map[string]bool{
-		backup.Cmd.Name():  false,
-		repo.Cmd.Name():    false,
-		restore.Cmd.Name(): false,
-	}
+// TestMetadataCmd_RegistersBackupSubtree verifies that the Phase 6 backup
+// subtree is wired into metadata.Cmd. The backup subtree owns repo, restore,
+// run, list, show, pin, unpin, and job verbs.
+func TestMetadataCmd_RegistersBackupSubtree(t *testing.T) {
+	found := false
 	for _, c := range Cmd.Commands() {
-		if _, ok := want[c.Name()]; ok {
-			want[c.Name()] = true
+		if c.Name() == backup.Cmd.Name() {
+			found = true
 		}
 	}
-	for name, found := range want {
-		if !found {
-			t.Errorf("metadata.Cmd does not register subtree %q", name)
+	if !found {
+		t.Errorf("metadata.Cmd does not register backup subtree")
+	}
+}
+
+// TestBackupSubtree_ExposesPhase6Verbs verifies that the backup subtree
+// exposes every Phase 6 verb (run / list / show / pin / unpin / restore /
+// repo / job). Guards against accidental drops after refactors.
+func TestBackupSubtree_ExposesPhase6Verbs(t *testing.T) {
+	required := []string{"run", "list", "show", "pin", "unpin", "restore", "repo", "job"}
+	for _, want := range required {
+		if _, _, err := backup.Cmd.Find([]string{want}); err != nil {
+			t.Errorf("backup subtree missing verb %q: %v", want, err)
 		}
 	}
 }
