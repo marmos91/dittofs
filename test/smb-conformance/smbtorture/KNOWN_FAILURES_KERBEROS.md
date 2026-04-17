@@ -67,6 +67,12 @@ multi-channel. These fail identically on the NTLM path.
 | smb2.bind_negative_smb3encCtoCd | Multi-channel | Multi-channel not implemented | - |
 | smb2.bind_negative_smb3encCtoGs | Multi-channel | Multi-channel not implemented | - |
 | smb2.bind_negative_smb3encCtoGd | Multi-channel | Multi-channel not implemented | - |
+| smb2.bind_negative_smb3sneHtoGs | Multi-channel | Multi-channel not implemented | #361 |
+| smb2.bind_negative_smb3sneHtoGd | Multi-channel | Multi-channel not implemented | #361 |
+| smb2.bind_negative_smb3signC30toGs | Multi-channel | Multi-channel not implemented | #361 |
+| smb2.bind_negative_smb3signC30toGd | Multi-channel | Multi-channel not implemented | #361 |
+| smb2.bind_negative_smb3signGtoC30s | Multi-channel | Multi-channel not implemented | #361 |
+| smb2.bind_negative_smb3signGtoC30d | Multi-channel | Multi-channel not implemented | #361 |
 
 ## Anonymous Authentication (Not Supported)
 
