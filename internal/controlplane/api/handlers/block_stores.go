@@ -121,6 +121,13 @@ func (h *BlockStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 	}
 
+	// Validate (and materialise the fs base path) before persisting so a
+	// saved config is never one that would fail on attach.
+	if err := runtime.ValidateBlockStoreConfig(kind, req.Type, bs); err != nil {
+		BadRequest(w, "Invalid block store config: "+err.Error())
+		return
+	}
+
 	if _, err := h.store.CreateBlockStore(r.Context(), bs); err != nil {
 		if errors.Is(err, models.ErrDuplicateStore) {
 			Conflict(w, "Block store already exists")
@@ -240,6 +247,16 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Config != nil {
 		bs.Config = *req.Config
+		bs.ParsedConfig = nil
+	}
+
+	// Re-validate on any type/config change so a no-op PUT does not
+	// re-touch the filesystem, mirroring Create's pre-persist check.
+	if req.Type != nil || req.Config != nil {
+		if err := runtime.ValidateBlockStoreConfig(bs.Kind, bs.Type, bs); err != nil {
+			BadRequest(w, "Invalid block store config: "+err.Error())
+			return
+		}
 	}
 
 	if err := h.store.UpdateBlockStore(r.Context(), bs); err != nil {
