@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v0.13.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 06-05-PLAN.md (Wave 3 merged)
-last_updated: "2026-04-17T10:45:00.000Z"
-last_activity: 2026-04-17 -- Phase 06 Wave 3 merged (06-03/04/05); Wave 4 (06-06) pending
+stopped_at: Completed 06-06-PLAN.md (Phase 06 plans all done — pending code-simplifier + code-reviewer + PR)
+last_updated: "2026-04-17T11:10:00.000Z"
+last_activity: 2026-04-17 -- Phase 06 execution complete (all 6 plans); Task 3 live checkpoint deferred
 progress:
   total_phases: 7
   completed_phases: 4
   total_plans: 34
-  completed_plans: 30
-  percent: 88
+  completed_plans: 31
+  percent: 91
 ---
 
 # Project State
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-04-15)
 
 ## Current Position
 
-Phase: 06 (cli-rest-api-surface) — EXECUTING
-Plan: 5 of 6 complete — Wave 4 (06-06 restore CLI + metadata hub) pending
-Status: Executing Phase 06
-Last activity: 2026-04-17 -- Wave 3 merged (06-03 share, 06-04 repo, 06-05 backup); post-merge tests pass
+Phase: 06 (cli-rest-api-surface) — ALL PLANS COMPLETE (pending reviews + PR)
+Plan: 6 of 6 complete — code-simplifier + code-reviewer + PR next; Task 3 live checkpoint deferred
+Status: Phase 06 implementation complete; quality gates pending
+Last activity: 2026-04-17 -- 06-06 restore verb + metadata hub wiring shipped; all tests green
 
 ## Completed Milestones
 
