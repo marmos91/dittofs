@@ -29,6 +29,8 @@ Examples:
 	RunE: runList,
 }
 
+func init() { Cmd.AddCommand(listCmd) }
+
 // RepoList is a slice of BackupRepos that implements output.TableRenderer
 // with the D-20 column layout.
 type RepoList []apiclient.BackupRepo

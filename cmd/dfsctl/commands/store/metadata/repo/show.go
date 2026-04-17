@@ -31,6 +31,8 @@ Examples:
 	RunE: runShow,
 }
 
+func init() { Cmd.AddCommand(showCmd) }
+
 // RepoDetail wraps a BackupRepo for grouped-section table rendering.
 type RepoDetail struct {
 	r *apiclient.BackupRepo

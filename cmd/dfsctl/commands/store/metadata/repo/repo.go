@@ -31,9 +31,5 @@ Examples:
   dfsctl store metadata fast-meta repo remove daily-s3 --purge-archives`,
 }
 
-func init() {
-	// Each verb registers itself in its own file's init() — keeps the
-	// parent command agnostic to verb composition order.
-	Cmd.AddCommand(listCmd)
-	Cmd.AddCommand(showCmd)
-}
+// Verbs self-register in their own file's init() — keeps the parent
+// command agnostic to verb composition order.
