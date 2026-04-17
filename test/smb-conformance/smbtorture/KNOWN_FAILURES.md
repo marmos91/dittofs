@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-03-31 (Compression inheritance fix, stale compression known failures cleanup)
+Last updated: 2026-04-17 (Track delete-on-close-perms.FIND_and_set_DOC cascade — #388)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -354,6 +354,7 @@ Advanced delete-on-close permission checks and edge cases. Basic DOC works
 | smb2.delete-on-close-perms.CREATE_IF | Delete on close | DOC permission check not implemented | - |
 | smb2.delete-on-close-perms.READONLY | Delete on close | DOC on read-only files not implemented | - |
 | smb2.delete-on-close-perms.OVERWRITE_IF | Delete on close | OVERWRITE_IF returns OBJECT_NAME_COLLISION instead of ACCESS_DENIED for DOC permission check | - |
+| smb2.delete-on-close-perms.FIND_and_set_DOC | Delete on close | Cascade from the CREATE/CREATE_IF/OVERWRITE_IF Existing DOC failures above: those subtests leak `test_dir/test_create.dat` that `smb2_deltree` can't recover from, so `torture_smb2_testdir` reopens a non-empty `test_dir` and the final CLOSE correctly returns DIRECTORY_NOT_EMPTY. Pre-#388 the unlink error was silently swallowed by CLOSE so the test "passed" by accident. Will self-resolve once the upstream DOC permission checks are implemented. | - |
 
 ### File IDs (Different Handle Scheme)
 
