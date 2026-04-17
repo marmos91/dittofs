@@ -355,7 +355,7 @@ func TestRunRestore_HappyPath(t *testing.T) {
 
 	bumpCalls := 0
 	e := New(js, fixedClock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)})
-	err := e.RunRestore(context.Background(), buildParams(d, ss, &bumpCalls))
+	_, err := e.RunRestore(context.Background(), buildParams(d, ss, &bumpCalls))
 
 	require.NoError(t, err)
 	require.True(t, fresh.restoreCalled, "Backupable.Restore must be called on the fresh engine")
@@ -377,7 +377,7 @@ func TestRunRestore_StoreIDMismatch(t *testing.T) {
 	}
 
 	e := New(js, nil)
-	err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
+	_, err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
 
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrStoreIDMismatch), "expected ErrStoreIDMismatch, got %v", err)
@@ -397,7 +397,7 @@ func TestRunRestore_StoreKindMismatch(t *testing.T) {
 	}
 
 	e := New(js, nil)
-	err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
+	_, err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
 
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrStoreKindMismatch), "expected ErrStoreKindMismatch, got %v", err)
@@ -417,7 +417,7 @@ func TestRunRestore_ManifestVersionUnsupported(t *testing.T) {
 	}
 
 	e := New(js, nil)
-	err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
+	_, err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
 
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrManifestVersionUnsupported),
@@ -437,7 +437,7 @@ func TestRunRestore_EmptyManifestSHA256(t *testing.T) {
 	}
 
 	e := New(js, nil)
-	err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
+	_, err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
 
 	require.Error(t, err)
 	require.Equal(t, 0, ss.swapCount(), "swap must NOT be called when SHA-256 is empty")
@@ -469,7 +469,7 @@ func TestRunRestore_SHA256Mismatch(t *testing.T) {
 	}
 
 	e := New(js, nil)
-	err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
+	_, err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
 
 	require.Error(t, err)
 	require.True(t, errors.Is(err, destination.ErrSHA256Mismatch),
@@ -504,7 +504,7 @@ func TestRunRestore_CtxCanceled(t *testing.T) {
 	e := New(js, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // pre-cancel; engine returns ctx.Err() via restoreErr
-	err := e.RunRestore(ctx, buildParams(d, ss, nil))
+	_, err := e.RunRestore(ctx, buildParams(d, ss, nil))
 
 	require.Error(t, err)
 	require.True(t, errors.Is(err, context.Canceled),
@@ -549,7 +549,7 @@ func TestRunRestore_PostSwapCleanupError(t *testing.T) {
 
 	bumpCalls := 0
 	e := New(js, nil)
-	err := e.RunRestore(context.Background(), buildParams(d, ss, &bumpCalls))
+	_, err := e.RunRestore(context.Background(), buildParams(d, ss, &bumpCalls))
 
 	// Post-swap errors are logged, NOT returned. Restore is a success.
 	require.NoError(t, err)
@@ -580,13 +580,15 @@ func TestRunRestore_BumpBootVerifierCalled(t *testing.T) {
 
 	bumpCalls := 0
 	e := New(js, nil)
-	require.NoError(t, e.RunRestore(context.Background(), buildParams(d, ss, &bumpCalls)))
+	_, err := e.RunRestore(context.Background(), buildParams(d, ss, &bumpCalls))
+	require.NoError(t, err)
 	require.Equal(t, 1, bumpCalls)
 
 	// Re-run with a NIL BumpBootVerifier — must not panic.
 	p := buildParams(d, ss, nil)
 	p.BumpBootVerifier = nil
-	require.NoError(t, e.RunRestore(context.Background(), p))
+	_, err = e.RunRestore(context.Background(), p)
+	require.NoError(t, err)
 }
 
 // closeErrMemStore is a real memory store whose Close returns a

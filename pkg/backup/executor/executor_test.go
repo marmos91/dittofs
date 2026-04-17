@@ -168,7 +168,7 @@ func TestRunBackup_HappyPath(t *testing.T) {
 	clk := fixedClock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	e := New(store, clk)
 
-	rec, err := e.RunBackup(context.Background(), src, dst, repo, "store-xyz", "memory")
+	rec, _, err := e.RunBackup(context.Background(), src, dst, repo, "store-xyz", "memory")
 	require.NoError(t, err)
 	require.NotNil(t, rec)
 	require.Equal(t, rec.ID, dst.gotManifest.BackupID)
@@ -187,7 +187,7 @@ func TestRunBackup_ULIDIdentity(t *testing.T) {
 	repo := newRepo(false, "")
 
 	e := New(store, nil)
-	rec, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
+	rec, _, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
 	require.NoError(t, err)
 
 	require.Equal(t, rec.ID, dst.gotManifest.BackupID, "manifest BackupID must equal record ID")
@@ -210,7 +210,7 @@ func TestRunBackup_JobLifecycleHappyPath(t *testing.T) {
 	repo := newRepo(false, "")
 
 	e := New(store, nil)
-	_, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
+	_, _, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
 	require.NoError(t, err)
 
 	require.Len(t, store.createdJobs, 1)
@@ -235,7 +235,7 @@ func TestRunBackup_DestinationFailure(t *testing.T) {
 	repo := newRepo(false, "")
 
 	e := New(store, nil)
-	rec, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
+	rec, _, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
 	require.Error(t, err)
 	require.Nil(t, rec)
 	require.Empty(t, store.createdRecords, "no BackupRecord should be created on destination failure (D-16)")
@@ -255,7 +255,7 @@ func TestRunBackup_SourceFailure(t *testing.T) {
 	repo := newRepo(false, "")
 
 	e := New(store, nil)
-	rec, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
+	rec, _, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
 	require.Error(t, err)
 	require.True(t, errors.Is(err, backup.ErrBackupAborted), "err should wrap ErrBackupAborted")
 	require.Nil(t, rec)
@@ -279,7 +279,7 @@ func TestRunBackup_ContextCancelled(t *testing.T) {
 	repo := newRepo(false, "")
 
 	e := New(store, nil)
-	rec, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
+	rec, _, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
 	require.Error(t, err)
 	require.Nil(t, rec)
 	require.Empty(t, store.createdRecords)
@@ -301,7 +301,7 @@ func TestRunBackup_PipePlumbingBytesExact(t *testing.T) {
 	repo := newRepo(false, "")
 
 	e := New(store, nil)
-	_, err = e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
+	_, _, err = e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
 	require.NoError(t, err)
 
 	require.True(t, bytes.Equal(payload, dst.gotPayload), "destination must receive source bytes exactly")
@@ -316,7 +316,7 @@ func TestRunBackup_ManifestFields(t *testing.T) {
 
 	e := New(store, nil)
 	start := time.Now().UTC().Add(-1 * time.Second)
-	_, err := e.RunBackup(context.Background(), src, dst, repo, "store-xyz", "badger")
+	_, _, err := e.RunBackup(context.Background(), src, dst, repo, "store-xyz", "badger")
 	require.NoError(t, err)
 	end := time.Now().UTC().Add(1 * time.Second)
 
@@ -338,7 +338,7 @@ func TestRunBackup_EncryptionEnabled(t *testing.T) {
 	repo := newRepo(true, "env:TESTKEY")
 
 	e := New(store, nil)
-	_, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
+	_, _, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
 	require.NoError(t, err)
 
 	m := dst.gotManifest
@@ -356,7 +356,7 @@ func TestRunBackup_EncryptionDisabled(t *testing.T) {
 	repo := newRepo(false, "")
 
 	e := New(store, nil)
-	_, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
+	_, _, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
 	require.NoError(t, err)
 
 	m := dst.gotManifest
@@ -371,12 +371,12 @@ func TestRunBackup_NilGuards(t *testing.T) {
 	store := &fakeStore{}
 	e := New(store, nil)
 
-	_, err := e.RunBackup(context.Background(), nil, &fakeDest{}, newRepo(false, ""), "s", "memory")
+	_, _, err := e.RunBackup(context.Background(), nil, &fakeDest{}, newRepo(false, ""), "s", "memory")
 	require.Error(t, err)
 
-	_, err = e.RunBackup(context.Background(), &fakeSource{}, nil, newRepo(false, ""), "s", "memory")
+	_, _, err = e.RunBackup(context.Background(), &fakeSource{}, nil, newRepo(false, ""), "s", "memory")
 	require.Error(t, err)
 
-	_, err = e.RunBackup(context.Background(), &fakeSource{}, &fakeDest{}, nil, "s", "memory")
+	_, _, err = e.RunBackup(context.Background(), &fakeSource{}, &fakeDest{}, nil, "s", "memory")
 	require.Error(t, err)
 }

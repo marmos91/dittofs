@@ -46,6 +46,23 @@ type Executor struct {
 	clock backup.Clock
 }
 
+// RunRestoreOption tunes a single RunRestore invocation. Options are
+// per-call so concurrent RunRestore calls (different repos) do not race
+// on shared executor state.
+type RunRestoreOption func(*runRestoreConfig)
+
+type runRestoreConfig struct {
+	onJobCreated func(*models.BackupJob)
+}
+
+// WithOnJobCreated installs a callback invoked synchronously inside
+// RunRestore immediately after CreateBackupJob succeeds. Phase 6 (D-43)
+// uses this hook to register the run-ctx cancel func against job.ID so
+// CancelBackupJob can interrupt the in-flight restore.
+func WithOnJobCreated(fn func(*models.BackupJob)) RunRestoreOption {
+	return func(c *runRestoreConfig) { c.onJobCreated = fn }
+}
+
 // New constructs an Executor with the given job store and clock. A nil
 // clock falls back to backup.RealClock{} — matches executor.New.
 func New(store JobStore, clock backup.Clock) *Executor {
@@ -136,12 +153,17 @@ type Params struct {
 //     the defer does NOT wipe the now-live fresh engine.
 //   - Steps 11-12 errors: restore has already succeeded; logged WARN,
 //     return nil.
-func (e *Executor) RunRestore(ctx context.Context, p Params) (err error) {
+func (e *Executor) RunRestore(ctx context.Context, p Params, opts ...RunRestoreOption) (job *models.BackupJob, err error) {
 	if p.Repo == nil || p.Dst == nil || p.TargetStoreCfg == nil || p.StoresService == nil {
-		return fmt.Errorf("invalid restore Params: repo/dst/cfg/stores must be non-nil")
+		return nil, fmt.Errorf("invalid restore Params: repo/dst/cfg/stores must be non-nil")
 	}
 	if p.RecordID == "" {
-		return fmt.Errorf("invalid restore Params: RecordID is empty")
+		return nil, fmt.Errorf("invalid restore Params: RecordID is empty")
+	}
+
+	var cfg runRestoreConfig
+	for _, opt := range opts {
+		opt(&cfg)
 	}
 
 	// Step 5 (hoisted before pre-flight so every attempt produces an
@@ -149,7 +171,7 @@ func (e *Executor) RunRestore(ctx context.Context, p Params) (err error) {
 	// executor.RunBackup ordering.
 	startedAt := e.clock.Now()
 	jobID := ulid.Make().String()
-	job := &models.BackupJob{
+	job = &models.BackupJob{
 		ID:        jobID,
 		Kind:      models.BackupJobKindRestore,
 		RepoID:    p.Repo.ID,
@@ -157,7 +179,13 @@ func (e *Executor) RunRestore(ctx context.Context, p Params) (err error) {
 		StartedAt: &startedAt,
 	}
 	if _, cerr := e.store.CreateBackupJob(ctx, job); cerr != nil {
-		return fmt.Errorf("create restore job: %w", cerr)
+		return nil, fmt.Errorf("create restore job: %w", cerr)
+	}
+
+	// Phase 6 D-43: notify the runtime so CancelBackupJob can interrupt
+	// this run mid-flight.
+	if cfg.onJobCreated != nil {
+		cfg.onJobCreated(job)
 	}
 
 	logger.Info("Restore starting",
@@ -222,32 +250,32 @@ func (e *Executor) RunRestore(ctx context.Context, p Params) (err error) {
 	// Step 3: fetch manifest only (cheap; no payload bandwidth).
 	m, err := p.Dst.GetManifestOnly(ctx, p.RecordID)
 	if err != nil {
-		return fmt.Errorf("fetch manifest: %w", err)
+		return job, fmt.Errorf("fetch manifest: %w", err)
 	}
 
 	// Step 4: validate. Hard-reject on any mismatch per D-05 /
 	// Pitfall #4. Ordered from cheapest guard (version) to identity
 	// guards (kind, id) — all before any destructive action.
 	if m.ManifestVersion != manifest.CurrentVersion {
-		return fmt.Errorf("%w: got %d want %d",
+		return job, fmt.Errorf("%w: got %d want %d",
 			ErrManifestVersionUnsupported, m.ManifestVersion, manifest.CurrentVersion)
 	}
 	if m.StoreKind != p.TargetStoreKind {
-		return fmt.Errorf("%w: manifest=%q target=%q",
+		return job, fmt.Errorf("%w: manifest=%q target=%q",
 			ErrStoreKindMismatch, m.StoreKind, p.TargetStoreKind)
 	}
 	if m.StoreID != p.TargetStoreID {
-		return fmt.Errorf("%w: manifest=%q target=%q",
+		return job, fmt.Errorf("%w: manifest=%q target=%q",
 			ErrStoreIDMismatch, m.StoreID, p.TargetStoreID)
 	}
 	if m.SHA256 == "" {
-		return fmt.Errorf("manifest SHA-256 is empty: record %s", p.RecordID)
+		return job, fmt.Errorf("manifest SHA-256 is empty: record %s", p.RecordID)
 	}
 
 	// Step 6: open fresh engine at temp path/schema.
 	freshStore, tempIdentity, err := OpenFreshEngineAtTemp(ctx, p.StoresService, p.TargetStoreCfg)
 	if err != nil {
-		return fmt.Errorf("open fresh engine: %w", err)
+		return job, fmt.Errorf("open fresh engine: %w", err)
 	}
 
 	// cleanupTemp is flipped to false immediately after a successful
@@ -274,7 +302,7 @@ func (e *Executor) RunRestore(ctx context.Context, p Params) (err error) {
 	// Step 7: stream payload.
 	_, reader, err := p.Dst.GetBackup(ctx, p.RecordID)
 	if err != nil {
-		return fmt.Errorf("fetch backup payload: %w", err)
+		return job, fmt.Errorf("fetch backup payload: %w", err)
 	}
 
 	// Step 8: restore into the fresh engine. Phase 2 D-06 "destination
@@ -282,7 +310,7 @@ func (e *Executor) RunRestore(ctx context.Context, p Params) (err error) {
 	freshBackupable, ok := freshStore.(backup.Backupable)
 	if !ok {
 		_ = reader.Close()
-		return fmt.Errorf("%w: fresh engine %q does not implement Backupable",
+		return job, fmt.Errorf("%w: fresh engine %q does not implement Backupable",
 			backup.ErrBackupUnsupported, p.TargetStoreCfg.Type)
 	}
 	restoreErr := freshBackupable.Restore(ctx, reader)
@@ -292,17 +320,17 @@ func (e *Executor) RunRestore(ctx context.Context, p Params) (err error) {
 	// manifest's declared digest.
 	closeErr := reader.Close()
 	if restoreErr != nil {
-		return fmt.Errorf("restore into fresh engine: %w", restoreErr)
+		return job, fmt.Errorf("restore into fresh engine: %w", restoreErr)
 	}
 	if closeErr != nil {
-		return fmt.Errorf("verify payload: %w", closeErr)
+		return job, fmt.Errorf("verify payload: %w", closeErr)
 	}
 
 	// Step 10: atomic commit. From this moment on, clients see the
 	// restored data via the live registry pointer.
 	oldStore, err := p.StoresService.SwapMetadataStore(p.TargetStoreCfg.Name, freshStore)
 	if err != nil {
-		return fmt.Errorf("swap store: %w", err)
+		return job, fmt.Errorf("swap store: %w", err)
 	}
 	cleanupTemp = false // fresh engine is live; do NOT wipe on defer.
 
@@ -327,5 +355,5 @@ func (e *Executor) RunRestore(ctx context.Context, p Params) (err error) {
 		p.BumpBootVerifier()
 	}
 
-	return nil
+	return job, nil
 }

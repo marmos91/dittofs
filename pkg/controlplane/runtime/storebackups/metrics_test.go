@@ -83,7 +83,7 @@ func TestRunRestore_Observability_FailureClassified(t *testing.T) {
 	WithMetricsCollector(metrics)(h.svc)
 	WithTracer(tracer)(h.svc)
 
-	err := h.svc.RunRestore(context.Background(), h.repoID, nil)
+	_, err := h.svc.RunRestore(context.Background(), h.repoID, nil)
 	if err == nil {
 		t.Fatal("expected pre-flight error, got nil")
 	}
@@ -134,7 +134,7 @@ func TestRunRestore_Observability_InterruptedClassified(t *testing.T) {
 	// fake destination.
 	h.dst.manifestErrToReturn = context.Canceled
 
-	err := h.svc.RunRestore(ctx, h.repoID, nil)
+	_, err := h.svc.RunRestore(ctx, h.repoID, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -157,7 +157,7 @@ func TestRunBackup_Observability_FailureClassified(t *testing.T) {
 	WithMetricsCollector(metrics)(h.svc)
 	WithTracer(tracer)(h.svc)
 
-	_, err := h.svc.RunBackup(context.Background(), h.repoID)
+	_, _, err := h.svc.RunBackup(context.Background(), h.repoID)
 	if err == nil {
 		t.Fatal("expected resolver error, got nil")
 	}

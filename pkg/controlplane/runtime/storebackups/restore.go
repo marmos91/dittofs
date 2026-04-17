@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/backup/manifest"
 	"github.com/marmos91/dittofs/pkg/backup/restore"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
@@ -69,18 +70,18 @@ type MetadataStoreConfigLister interface {
 //   - On failure: registry untouched; fresh engine + temp path reclaimed
 //     by the restore Executor's defer; BackupJob row records terminal
 //     state (failed / interrupted) for SAFETY-02 visibility.
-func (s *Service) RunRestore(ctx context.Context, repoID string, recordID *string) (err error) {
+func (s *Service) RunRestore(ctx context.Context, repoID string, recordID *string) (job *models.BackupJob, err error) {
 	if s.restoreExec == nil {
-		return fmt.Errorf("restore path not wired: Service constructed without restore executor")
+		return nil, fmt.Errorf("restore path not wired: Service constructed without restore executor")
 	}
 	if s.shares == nil || s.stores == nil {
-		return fmt.Errorf("restore path not wired: Service constructed without shares and/or stores sub-services " +
+		return nil, fmt.Errorf("restore path not wired: Service constructed without shares and/or stores sub-services " +
 			"(use WithShares + WithStores)")
 	}
 
 	unlock, acquired := s.overlap.TryLock(repoID)
 	if !acquired {
-		return fmt.Errorf("%w: repo %s", ErrBackupAlreadyRunning, repoID)
+		return nil, fmt.Errorf("%w: repo %s", ErrBackupAlreadyRunning, repoID)
 	}
 	defer unlock()
 
@@ -107,42 +108,42 @@ func (s *Service) RunRestore(ctx context.Context, repoID string, recordID *strin
 	repo, err := s.store.GetBackupRepoByID(runCtx, repoID)
 	if err != nil {
 		if errors.Is(err, models.ErrBackupRepoNotFound) {
-			return fmt.Errorf("%w: %s", ErrRepoNotFound, repoID)
+			return nil, fmt.Errorf("%w: %s", ErrRepoNotFound, repoID)
 		}
-		return fmt.Errorf("load repo: %w", err)
+		return nil, fmt.Errorf("load repo: %w", err)
 	}
 
 	// Resolve target + surface cfg + storeName for the REST-02 gate and
 	// for restore.Params.TargetStoreCfg.
 	resolver, ok := s.resolver.(RestoreResolver)
 	if !ok {
-		return fmt.Errorf("resolver does not implement RestoreResolver (need ResolveWithName + ResolveCfg)")
+		return nil, fmt.Errorf("resolver does not implement RestoreResolver (need ResolveWithName + ResolveCfg)")
 	}
 	_, storeID, storeKind, storeName, err := resolver.ResolveWithName(runCtx, repo.TargetKind, repo.TargetID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	targetCfg, err := resolver.ResolveCfg(runCtx, repo.TargetKind, repo.TargetID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// REST-02 pre-flight gate — shares must be disabled before restore.
 	if enabled := s.shares.ListEnabledSharesForStore(storeName); len(enabled) > 0 {
-		return fmt.Errorf("%w: store %q has %d enabled share(s): %v",
+		return nil, fmt.Errorf("%w: store %q has %d enabled share(s): %v",
 			ErrRestorePreconditionFailed, storeName, len(enabled), enabled)
 	}
 
 	// D-15 / D-16 record selection.
 	selectedID, err := s.selectRestoreRecord(runCtx, repoID, recordID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Build the destination driver for this repo.
 	dst, err := s.destFactory(runCtx, repo)
 	if err != nil {
-		return fmt.Errorf("build destination: %w", err)
+		return nil, fmt.Errorf("build destination: %w", err)
 	}
 	defer func() {
 		if cerr := dst.Close(); cerr != nil {
@@ -166,7 +167,139 @@ func (s *Service) RunRestore(ctx context.Context, repoID string, recordID *strin
 		StoresService:    s.stores,
 		BumpBootVerifier: bump,
 	}
-	return s.restoreExec.RunRestore(runCtx, params)
+	// Phase 6 D-43: pass the onJobCreated callback so the run-ctx cancel
+	// func is registered as soon as the BackupJob row is persisted —
+	// BEFORE the payload streaming begins — so CancelBackupJob can abort
+	// an in-flight restore. Per-call option, safe for concurrent restores.
+	var registeredJobID string
+	job, err = s.restoreExec.RunRestore(runCtx, params,
+		restore.WithOnJobCreated(func(j *models.BackupJob) {
+			if j == nil {
+				return
+			}
+			registeredJobID = j.ID
+			s.registerRunCtx(j.ID, cancelRun)
+		}),
+	)
+	if registeredJobID != "" {
+		defer s.unregisterRunCtx(registeredJobID)
+	}
+	return job, err
+}
+
+// DryRunResult is returned by Service.RunRestoreDryRun — pre-flight only,
+// no state mutation, no payload download (Phase 6 D-31).
+type DryRunResult struct {
+	// Record is the BackupRecord that would be restored (latest-succeeded
+	// per D-15 when recordID==nil, or the explicit --from selection).
+	Record *models.BackupRecord
+
+	// ManifestValid is true when the manifest envelope passes the
+	// non-destructive guards (store_id, store_kind, sha256 non-empty).
+	// Forward-incompatible manifest_version is NOT reported via this flag
+	// — it surfaces as ErrManifestVersionUnsupported so the CLI refuses to
+	// proceed with an unusable candidate.
+	ManifestValid bool
+
+	// EnabledShares lists shares currently enabled on the target store.
+	// Reported (NOT enforced — D-31) so the CLI can show a hint. The real
+	// RunRestore path enforces the REST-02 gate and refuses with 409.
+	EnabledShares []string
+}
+
+// RunRestoreDryRun performs the D-31 pre-flight: record resolution plus
+// Dst.GetManifestOnly plus envelope validation. Does NOT enforce the
+// shares-enabled gate (unlike RunRestore). Cheap — manifests are KBs, not
+// GBs, so the CLI's --dry-run flow can run this freely.
+//
+// Errors:
+//
+//   - ErrRepoNotFound / ErrNoRestoreCandidate / ErrRecordRepoMismatch /
+//     ErrRecordNotRestorable — as in RunRestore.
+//   - ErrManifestVersionUnsupported — fatal; CLI cannot proceed.
+//
+// Non-fatal manifest mismatches (store_id, store_kind, empty sha256) are
+// surfaced via ManifestValid=false so the CLI can render the selected
+// record plus a "would fail validation" hint.
+func (s *Service) RunRestoreDryRun(ctx context.Context, repoID string, recordID *string) (*DryRunResult, error) {
+	if s.restoreExec == nil {
+		return nil, fmt.Errorf("restore path not wired: Service constructed without restore executor")
+	}
+	if s.shares == nil || s.stores == nil {
+		return nil, fmt.Errorf("restore path not wired: Service constructed without shares and/or stores sub-services " +
+			"(use WithShares + WithStores)")
+	}
+
+	repo, err := s.store.GetBackupRepoByID(ctx, repoID)
+	if err != nil {
+		if errors.Is(err, models.ErrBackupRepoNotFound) {
+			return nil, fmt.Errorf("%w: %s", ErrRepoNotFound, repoID)
+		}
+		return nil, fmt.Errorf("load repo: %w", err)
+	}
+
+	resolver, ok := s.resolver.(RestoreResolver)
+	if !ok {
+		return nil, fmt.Errorf("resolver does not implement RestoreResolver (need ResolveWithName + ResolveCfg)")
+	}
+	_, storeID, storeKind, storeName, err := resolver.ResolveWithName(ctx, repo.TargetKind, repo.TargetID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Record selection (same logic as RunRestore).
+	selectedID, err := s.selectRestoreRecord(ctx, repoID, recordID)
+	if err != nil {
+		return nil, err
+	}
+	rec, err := s.store.GetBackupRecord(ctx, selectedID)
+	if err != nil {
+		return nil, fmt.Errorf("load record %q: %w", selectedID, err)
+	}
+
+	// Build the destination and fetch ONLY the manifest — no payload
+	// stream, no store mutation.
+	dst, err := s.destFactory(ctx, repo)
+	if err != nil {
+		return nil, fmt.Errorf("build destination: %w", err)
+	}
+	defer func() {
+		if cerr := dst.Close(); cerr != nil {
+			logger.Warn("Destination close error", "repo_id", repoID, "error", cerr)
+		}
+	}()
+
+	m, err := dst.GetManifestOnly(ctx, rec.ManifestPath)
+	if err != nil {
+		return nil, fmt.Errorf("fetch manifest: %w", err)
+	}
+
+	// Version mismatch is fatal (CLI cannot proceed). All other guards
+	// (store_id, store_kind, sha256) are reported via ManifestValid=false
+	// without failing the dry-run so the CLI can render context.
+	if m.ManifestVersion != manifest.CurrentVersion {
+		return nil, fmt.Errorf("%w: got %d want %d",
+			ErrManifestVersionUnsupported, m.ManifestVersion, manifest.CurrentVersion)
+	}
+	manifestValid := true
+	if m.StoreKind != storeKind {
+		manifestValid = false
+	}
+	if m.StoreID != storeID {
+		manifestValid = false
+	}
+	if m.SHA256 == "" {
+		manifestValid = false
+	}
+
+	// Report (do NOT enforce) enabled shares — D-31.
+	enabled := s.shares.ListEnabledSharesForStore(storeName)
+
+	return &DryRunResult{
+		Record:        rec,
+		ManifestValid: manifestValid,
+		EnabledShares: enabled,
+	}, nil
 }
 
 // selectRestoreRecord implements D-15 (default latest) + D-16 (validate

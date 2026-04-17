@@ -290,7 +290,7 @@ func TestRunRestore_SharesStillEnabled(t *testing.T) {
 	h := newRestoreHarness(t, map[string][]string{
 		"default-meta": {"/foo", "/bar"},
 	})
-	err := h.svc.RunRestore(context.Background(), h.repoID, nil)
+	_, err := h.svc.RunRestore(context.Background(), h.repoID, nil)
 	if err == nil {
 		t.Fatal("expected ErrRestorePreconditionFailed, got nil")
 	}
@@ -319,7 +319,7 @@ func TestRunRestore_OverlapGuard(t *testing.T) {
 	}
 	defer unlock()
 
-	err := h.svc.RunRestore(context.Background(), h.repoID, nil)
+	_, err := h.svc.RunRestore(context.Background(), h.repoID, nil)
 	if err == nil {
 		t.Fatal("expected ErrBackupAlreadyRunning, got nil")
 	}
@@ -344,7 +344,7 @@ func TestRunRestore_DefaultLatest(t *testing.T) {
 	// observe that the manifest was requested for the newest record ID.
 	h.dst.manifestErrToReturn = fmt.Errorf("stop-here: test-induced")
 
-	err := h.svc.RunRestore(context.Background(), h.repoID, nil)
+	_, err := h.svc.RunRestore(context.Background(), h.repoID, nil)
 	if err == nil {
 		t.Fatal("expected error (test-induced stop), got nil")
 	}
@@ -371,7 +371,7 @@ func TestRunRestore_NoSucceededRecords(t *testing.T) {
 	// Seed only a failed record — it must NOT be selectable for restore.
 	h.seedRecord(t, h.repoID, models.BackupStatusFailed, time.Now())
 
-	err := h.svc.RunRestore(context.Background(), h.repoID, nil)
+	_, err := h.svc.RunRestore(context.Background(), h.repoID, nil)
 	if err == nil {
 		t.Fatal("expected ErrNoRestoreCandidate, got nil")
 	}
@@ -398,7 +398,7 @@ func TestRunRestore_ByID_RepoMismatch(t *testing.T) {
 	}
 	rec := h.seedRecord(t, otherID, models.BackupStatusSucceeded, time.Now())
 
-	err = h.svc.RunRestore(context.Background(), h.repoID, &rec.ID)
+	_, err = h.svc.RunRestore(context.Background(), h.repoID, &rec.ID)
 	if err == nil {
 		t.Fatal("expected ErrRecordRepoMismatch, got nil")
 	}
@@ -414,7 +414,7 @@ func TestRunRestore_ByID_NotRestorable(t *testing.T) {
 
 	rec := h.seedRecord(t, h.repoID, models.BackupStatusFailed, time.Now())
 
-	err := h.svc.RunRestore(context.Background(), h.repoID, &rec.ID)
+	_, err := h.svc.RunRestore(context.Background(), h.repoID, &rec.ID)
 	if err == nil {
 		t.Fatal("expected ErrRecordNotRestorable, got nil")
 	}
@@ -448,7 +448,7 @@ func TestRunRestore_HappyPath_DelegatesToExecutor(t *testing.T) {
 		PayloadIDSet:    []string{},
 	}
 
-	err := h.svc.RunRestore(context.Background(), h.repoID, nil)
+	_, err := h.svc.RunRestore(context.Background(), h.repoID, nil)
 	if err == nil {
 		t.Fatal("expected manifest validation error, got nil")
 	}
@@ -488,7 +488,7 @@ func TestRunRestore_NotWired(t *testing.T) {
 	}
 	svc := New(s, &fakeRestoreResolver{}, 500*time.Millisecond)
 	t.Cleanup(func() { _ = svc.Stop(context.Background()) })
-	err = svc.RunRestore(context.Background(), id, nil)
+	_, err = svc.RunRestore(context.Background(), id, nil)
 	if err == nil {
 		t.Fatal("expected 'restore path not wired' error, got nil")
 	}
@@ -698,5 +698,158 @@ func TestSAFETY02_RestoreKindJobsRecovered(t *testing.T) {
 	}
 	if len(running) != 0 {
 		t.Errorf("expected 0 running restore jobs after recovery, got %d", len(running))
+	}
+}
+
+// --- Phase 6 Task 2 tests: RunRestore return-shape + DryRun path ---
+
+// TestRunRestore_ReturnsBackupJob — even on an early abort (manifest
+// validation error after the executor has persisted the BackupJob row),
+// RunRestore returns the non-nil job so Phase 6 handlers can surface
+// job.ID. This doubles as a smoke test for the delegation path.
+func TestRunRestore_ReturnsBackupJob(t *testing.T) {
+	h := newRestoreHarness(t, nil)
+	rec := h.seedSucceededRecord(t, time.Now())
+
+	// Return a manifest with a mismatched store_id so the executor fails
+	// pre-swap — the BackupJob row is still persisted (D-16 / SAFETY-02)
+	// and returned to the caller.
+	h.dst.manifestToReturn = &manifest.Manifest{
+		ManifestVersion: manifest.CurrentVersion,
+		BackupID:        rec.ID,
+		CreatedAt:       time.Now(),
+		StoreID:         "mismatched-store-id",
+		StoreKind:       "memory",
+		SHA256:          "deadbeef",
+		SizeBytes:       1,
+		PayloadIDSet:    []string{},
+	}
+
+	job, err := h.svc.RunRestore(context.Background(), h.repoID, nil)
+	if err == nil {
+		t.Fatal("expected store-id mismatch error, got nil")
+	}
+	if !errors.Is(err, ErrStoreIDMismatch) {
+		t.Fatalf("expected ErrStoreIDMismatch-wrapped, got %v", err)
+	}
+	if job == nil {
+		t.Fatal("expected non-nil BackupJob even on pre-swap failure")
+	}
+	if job.Kind != models.BackupJobKindRestore {
+		t.Errorf("job.Kind = %q, want restore", job.Kind)
+	}
+	if len(job.ID) != 26 {
+		t.Errorf("expected 26-char ULID for job.ID, got %d (%q)", len(job.ID), job.ID)
+	}
+}
+
+// TestRunRestoreDryRun_ValidatesManifest_SkipsSharesGate — pre-flight with a
+// valid manifest on a store that has ENABLED shares. The dry-run reports
+// the enabled shares but does NOT refuse (D-31).
+func TestRunRestoreDryRun_ValidatesManifest_SkipsSharesGate(t *testing.T) {
+	h := newRestoreHarness(t, map[string][]string{
+		"default-meta": {"/a", "/b"},
+	})
+	rec := h.seedSucceededRecord(t, time.Now())
+
+	// Program a valid manifest. The resolver provides a live store ID
+	// from the fake memory store; we must match it to pass validation.
+	h.dst.manifestToReturn = &manifest.Manifest{
+		ManifestVersion: manifest.CurrentVersion,
+		BackupID:        rec.ID,
+		CreatedAt:       time.Now(),
+		StoreID:         h.resolver.storeID,
+		StoreKind:       "memory",
+		SHA256:          "deadbeef",
+		SizeBytes:       1,
+		PayloadIDSet:    []string{},
+	}
+
+	res, err := h.svc.RunRestoreDryRun(context.Background(), h.repoID, nil)
+	if err != nil {
+		t.Fatalf("dry-run should succeed despite enabled shares (D-31): %v", err)
+	}
+	if res == nil {
+		t.Fatal("expected non-nil DryRunResult")
+	}
+	if !res.ManifestValid {
+		t.Errorf("expected ManifestValid=true with matching store identity")
+	}
+	if res.Record == nil || res.Record.ID != rec.ID {
+		t.Errorf("expected selected record %q, got %+v", rec.ID, res.Record)
+	}
+	if len(res.EnabledShares) != 2 {
+		t.Errorf("expected 2 enabled shares reported, got %v", res.EnabledShares)
+	}
+}
+
+// TestRunRestoreDryRun_InvalidManifest_Fails — a manifest with a
+// forward-incompatible version surfaces ErrManifestVersionUnsupported
+// (CLI cannot proceed).
+func TestRunRestoreDryRun_InvalidManifest_Fails(t *testing.T) {
+	h := newRestoreHarness(t, nil)
+	rec := h.seedSucceededRecord(t, time.Now())
+
+	h.dst.manifestToReturn = &manifest.Manifest{
+		ManifestVersion: manifest.CurrentVersion + 1, // forward-incompat
+		BackupID:        rec.ID,
+		CreatedAt:       time.Now(),
+		StoreID:         h.resolver.storeID,
+		StoreKind:       "memory",
+		SHA256:          "deadbeef",
+		SizeBytes:       1,
+		PayloadIDSet:    []string{},
+	}
+
+	_, err := h.svc.RunRestoreDryRun(context.Background(), h.repoID, nil)
+	if err == nil {
+		t.Fatal("expected ErrManifestVersionUnsupported, got nil")
+	}
+	if !errors.Is(err, ErrManifestVersionUnsupported) {
+		t.Fatalf("expected ErrManifestVersionUnsupported-wrapped, got %v", err)
+	}
+}
+
+// TestRunRestoreDryRun_NoRestoreCandidate_Fails — an empty repo (no
+// succeeded records) returns ErrNoRestoreCandidate.
+func TestRunRestoreDryRun_NoRestoreCandidate_Fails(t *testing.T) {
+	h := newRestoreHarness(t, nil)
+
+	_, err := h.svc.RunRestoreDryRun(context.Background(), h.repoID, nil)
+	if err == nil {
+		t.Fatal("expected ErrNoRestoreCandidate, got nil")
+	}
+	if !errors.Is(err, ErrNoRestoreCandidate) {
+		t.Fatalf("expected ErrNoRestoreCandidate-wrapped, got %v", err)
+	}
+}
+
+// TestRunRestoreDryRun_ManifestInvalid_NonFatal — store_id mismatch does
+// NOT fail the dry-run; it surfaces via ManifestValid=false so the CLI
+// can render the selected record with a "would fail validation" hint.
+func TestRunRestoreDryRun_ManifestInvalid_NonFatal(t *testing.T) {
+	h := newRestoreHarness(t, nil)
+	rec := h.seedSucceededRecord(t, time.Now())
+
+	h.dst.manifestToReturn = &manifest.Manifest{
+		ManifestVersion: manifest.CurrentVersion,
+		BackupID:        rec.ID,
+		CreatedAt:       time.Now(),
+		StoreID:         "mismatched",
+		StoreKind:       "memory",
+		SHA256:          "deadbeef",
+		SizeBytes:       1,
+		PayloadIDSet:    []string{},
+	}
+
+	res, err := h.svc.RunRestoreDryRun(context.Background(), h.repoID, nil)
+	if err != nil {
+		t.Fatalf("dry-run should not fail on store_id mismatch (D-31 non-fatal), got %v", err)
+	}
+	if res.ManifestValid {
+		t.Errorf("expected ManifestValid=false on store_id mismatch")
+	}
+	if res.Record == nil || res.Record.ID != rec.ID {
+		t.Errorf("expected selected record %q, got %+v", rec.ID, res.Record)
 	}
 }
