@@ -83,6 +83,15 @@ func (f *testFixture) userContext() *metadata.AuthContext {
 	return f.authContext(1000, 1000)
 }
 
+// smbDeleteContext returns an AuthContext with HasDeleteAccess=true, simulating
+// the SMB handler path where DELETE access was verified at CREATE time before
+// reaching a delete-on-close unlink.
+func (f *testFixture) smbDeleteContext(uid, gid uint32) *metadata.AuthContext {
+	ctx := f.authContext(uid, gid)
+	ctx.HasDeleteAccess = true
+	return ctx
+}
+
 // ============================================================================
 // Service Registration Tests
 // ============================================================================
@@ -568,28 +577,64 @@ func TestMetadataService_RemoveFile_DeletePermission(t *testing.T) {
 		require.NoError(t, err)
 	})
 
-	// Rule 2 (new): no WRITE on parent but caller owns target → allow.
-	t.Run("no-WRITE-on-parent but owner allowed", func(t *testing.T) {
+	// Rule 2 (new, SMB-gated): no WRITE on parent but caller owns target
+	// AND the handler signaled HasDeleteAccess → allow.
+	t.Run("no-WRITE-on-parent owner SMB-delete allowed", func(t *testing.T) {
 		t.Parallel()
 		fx := newTestFixture(t)
 
 		// Parent owned by 1000 with mode 0755 (no world write). File owned by 2000.
 		parentHandle, name := prepareDeletePermTest(t, fx, 0755, 1000, 2000)
 
-		// Caller 2000 is the file owner. Pre-fix this would fail with "write
-		// permission denied"; post-fix it must succeed.
-		_, err := fx.service.RemoveFile(fx.authContext(2000, 2000), parentHandle, name)
+		// SMB DELETE_ON_CLOSE path: caller 2000 owns the file and the CREATE
+		// handler already verified DELETE access (HasDeleteAccess=true).
+		_, err := fx.service.RemoveFile(fx.smbDeleteContext(2000, 2000), parentHandle, name)
 		require.NoError(t, err)
 	})
 
-	// Rule 3 (still denied): no WRITE on parent + not owner → deny.
+	// NFS POSIX semantics: owner without HasDeleteAccess cannot delete if
+	// parent is not writable. Preserves unlink(2) / pjdfstest behavior.
+	t.Run("no-WRITE-on-parent owner NFS-style denied", func(t *testing.T) {
+		t.Parallel()
+		fx := newTestFixture(t)
+
+		parentHandle, name := prepareDeletePermTest(t, fx, 0755, 1000, 2000)
+
+		// Caller 2000 owns the file but HasDeleteAccess is not set (NFS path).
+		_, err := fx.service.RemoveFile(fx.authContext(2000, 2000), parentHandle, name)
+		require.Error(t, err)
+		var storeErr *metadata.StoreError
+		require.ErrorAs(t, err, &storeErr)
+		assert.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
+	})
+
+	// Rule 3 (still denied): no WRITE on parent + not owner → deny even with
+	// HasDeleteAccess. Rule 2 requires ownership.
 	t.Run("no-WRITE-on-parent non-owner denied", func(t *testing.T) {
 		t.Parallel()
 		fx := newTestFixture(t)
 
 		parentHandle, name := prepareDeletePermTest(t, fx, 0755, 1000, 2000)
 
-		_, err := fx.service.RemoveFile(fx.authContext(3000, 3000), parentHandle, name)
+		_, err := fx.service.RemoveFile(fx.smbDeleteContext(3000, 3000), parentHandle, name)
+		require.Error(t, err)
+		var storeErr *metadata.StoreError
+		require.ErrorAs(t, err, &storeErr)
+		assert.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
+	})
+
+	// Read-only share: even with HasDeleteAccess and ownership, rule 2 must
+	// not bypass share-level read-only enforcement.
+	t.Run("read-only-share owner SMB-delete denied", func(t *testing.T) {
+		t.Parallel()
+		fx := newTestFixture(t)
+
+		parentHandle, name := prepareDeletePermTest(t, fx, 0755, 1000, 2000)
+
+		ctx := fx.smbDeleteContext(2000, 2000)
+		ctx.ShareReadOnly = true
+
+		_, err := fx.service.RemoveFile(ctx, parentHandle, name)
 		require.Error(t, err)
 		var storeErr *metadata.StoreError
 		require.ErrorAs(t, err, &storeErr)
@@ -614,7 +659,8 @@ func TestMetadataService_RemoveFile_DeletePermission(t *testing.T) {
 		assert.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
 	})
 
-	// Sticky bit + caller owns file → allow (regardless of parent WRITE).
+	// Sticky bit + caller owns file → allow (caller also has WRITE via
+	// world bit, so rule 1 grants; sticky then permits owner-of-file).
 	t.Run("sticky-bit owner-of-file allowed", func(t *testing.T) {
 		t.Parallel()
 		fx := newTestFixture(t)

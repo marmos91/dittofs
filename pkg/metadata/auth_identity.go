@@ -49,6 +49,18 @@ type AuthContext struct {
 	// For SMB: "smb:<sessionID>", for NFS: the NFS client identifier.
 	// If empty, ClientAddr is used as fallback.
 	LockClientID string
+
+	// HasDeleteAccess signals that the protocol handler already verified
+	// Windows-style DELETE access on the target of an unlink. Per MS-FSA
+	// 2.1.5.1.2.1, DELETE access on the file itself is sufficient to unlink,
+	// without POSIX WRITE on the parent. The metadata layer uses this flag to
+	// unlock the owner-of-target delete rule that would otherwise diverge from
+	// POSIX unlink(2) for NFS clients.
+	//
+	// Set this ONLY on paths that passed a DELETE-access check — e.g. SMB
+	// CREATE with FILE_DELETE_ON_CLOSE + desiredAccess=DELETE. Leave false for
+	// NFS and any operation that must enforce strict POSIX write-on-parent.
+	HasDeleteAccess bool
 }
 
 // NewSystemAuthContext creates an AuthContext for internal/system operations

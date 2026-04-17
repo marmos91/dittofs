@@ -436,14 +436,14 @@ func (s *MetadataService) checkWritePermission(ctx *AuthContext, handle FileHand
 // checkDeletePermission checks permission to unlink an entry from a parent directory.
 //
 // Per MS-FSA 2.1.5.1.2.1, a caller can delete a file entry when it holds DELETE
-// access. DittoFS maps this to any of:
+// access. DittoFS honors any of:
 //
 //   - WRITE permission on the parent directory — classic POSIX unlink(2).
-//   - The caller owns the target — the file's stored UID matches ctx.Identity.UID.
-//     Covers the Windows case where DELETE access was granted on the file at open
-//     (e.g. FILE_DELETE_ON_CLOSE with desiredAccess=DELETE only) but no WRITE was
-//     requested on the parent. Without this, SMB DELETE_ON_CLOSE loops forever
-//     when the file's owner asks the server to clean up its own temp file.
+//   - The caller owns the target AND the protocol handler set
+//     ctx.HasDeleteAccess — covers the Windows case where DELETE access was
+//     granted at open (e.g. FILE_DELETE_ON_CLOSE with desiredAccess=DELETE
+//     only) but no WRITE was requested on the parent. Gated so NFS unlink(2)
+//     stays strict POSIX.
 //
 // Sticky-bit semantics are enforced separately by CheckStickyBitRestriction,
 // which the caller must invoke after this check on the resolved file entry.
@@ -453,8 +453,12 @@ func (s *MetadataService) checkDeletePermission(ctx *AuthContext, parentHandle F
 		return nil
 	}
 
-	// Rule 2: caller owns the target.
-	if file != nil && ctx.Identity != nil && ctx.Identity.UID != nil && file.FileAttr.UID == *ctx.Identity.UID {
+	// Rule 2: caller owns the target AND an upstream DELETE-access check passed.
+	// Blocked on read-only shares so a root-owned file on a read-only share
+	// can't be deleted by root through the owner path.
+	if ctx.HasDeleteAccess && !ctx.ShareReadOnly &&
+		file != nil && ctx.Identity != nil && ctx.Identity.UID != nil &&
+		file.FileAttr.UID == *ctx.Identity.UID {
 		return nil
 	}
 

@@ -277,6 +277,11 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 		if err != nil {
 			logger.Warn("CLOSE: failed to build auth context for delete", "error", err)
 		} else {
+			// CREATE already verified DELETE access when honoring
+			// FILE_DELETE_ON_CLOSE (create.go:913). Signal that to the
+			// metadata layer so the owner-of-target delete rule applies
+			// without loosening POSIX unlink(2) for NFS callers.
+			authCtx.HasDeleteAccess = true
 			metaSvc := h.Registry.GetMetadataService()
 			var deleteErr error
 			if openFile.IsDirectory {
