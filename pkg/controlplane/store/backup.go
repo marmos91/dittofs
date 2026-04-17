@@ -253,6 +253,87 @@ func (s *GORMStore) ListBackupJobs(ctx context.Context, kind models.BackupJobKin
 	return results, nil
 }
 
+// ListBackupJobsFiltered returns jobs matching the filter (D-42). Implements
+// the BackupStore sibling of ListBackupJobs with:
+//   - repo filter (joining the other two kind+status filters),
+//   - newest-first StartedAt DESC ordering (NULLS LAST via the Postgres and
+//     SQLite-safe `started_at IS NULL` compound expression),
+//   - a hard cap of 200 on Limit and a default of 50 when Limit <= 0.
+func (s *GORMStore) ListBackupJobsFiltered(ctx context.Context, filter BackupJobFilter) ([]*models.BackupJob, error) {
+	q := s.db.WithContext(ctx)
+	if filter.RepoID != "" {
+		q = q.Where("repo_id = ?", filter.RepoID)
+	}
+	if filter.Status != "" {
+		q = q.Where("status = ?", filter.Status)
+	}
+	if filter.Kind != "" {
+		q = q.Where("kind = ?", filter.Kind)
+	}
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	// `started_at IS NULL` first sorts NULL rows (pending, no worker yet) to
+	// the tail regardless of dialect; the secondary `started_at DESC` gives
+	// newest-first for non-null rows.
+	q = q.Order("started_at IS NULL, started_at DESC").Limit(limit)
+	var results []*models.BackupJob
+	if err := q.Find(&results).Error; err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+// ListBackupRecords returns records for a repo, optionally filtered by
+// status. Empty status returns all statuses. Sort: CreatedAt DESC.
+// Sibling of ListBackupRecordsByRepo but with the status filter Phase 6 needs
+// for `dfsctl backup list --status <status>` (D-26).
+func (s *GORMStore) ListBackupRecords(ctx context.Context, repoID string, statusFilter models.BackupStatus) ([]*models.BackupRecord, error) {
+	q := s.db.WithContext(ctx).Where("repo_id = ?", repoID)
+	if statusFilter != "" {
+		q = q.Where("status = ?", statusFilter)
+	}
+	var results []*models.BackupRecord
+	if err := q.Order("created_at DESC").Find(&results).Error; err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+// UpdateBackupRecordPinned flips the Pinned column for a record. Alias of
+// SetBackupRecordPinned — provided so Phase 6 callers can use the verb that
+// matches the REST semantic (PATCH /backups/{id}) without leaking the older
+// "Set" prefix.
+func (s *GORMStore) UpdateBackupRecordPinned(ctx context.Context, recordID string, pinned bool) error {
+	return s.SetBackupRecordPinned(ctx, recordID, pinned)
+}
+
+// UpdateBackupJobProgress updates the Progress column (D-50). pct must be in
+// the closed interval [0, 100] — out-of-range values return ErrInvalidProgress
+// without touching the row. Callers are expected to swallow ErrBackupJobNotFound
+// / ErrInvalidProgress at WARN level and continue the parent op (best-effort
+// semantics).
+func (s *GORMStore) UpdateBackupJobProgress(ctx context.Context, jobID string, pct int) error {
+	if pct < 0 || pct > 100 {
+		return ErrInvalidProgress
+	}
+	result := s.db.WithContext(ctx).
+		Model(&models.BackupJob{}).
+		Where("id = ?", jobID).
+		Update("progress", pct)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return models.ErrBackupJobNotFound
+	}
+	return nil
+}
+
 func (s *GORMStore) CreateBackupJob(ctx context.Context, job *models.BackupJob) (string, error) {
 	if job.ID == "" {
 		job.ID = ulid.Make().String()

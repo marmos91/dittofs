@@ -103,6 +103,16 @@ type fakeStore struct {
 	createdRecords []models.BackupRecord
 	createJobErr   error
 	createRecErr   error
+
+	// progressCalls records every UpdateBackupJobProgress call in order —
+	// used by Phase 6 D-50 tests to assert the 0/10/50/95 sequence.
+	progressCalls  []progressCall
+	progressUpdErr error // injected error for the WARN-on-error test
+}
+
+type progressCall struct {
+	jobID string
+	pct   int
 }
 
 func (s *fakeStore) CreateBackupJob(ctx context.Context, j *models.BackupJob) (string, error) {
@@ -116,6 +126,11 @@ func (s *fakeStore) CreateBackupJob(ctx context.Context, j *models.BackupJob) (s
 func (s *fakeStore) UpdateBackupJob(ctx context.Context, j *models.BackupJob) error {
 	s.updatedJobs = append(s.updatedJobs, *j)
 	return nil
+}
+
+func (s *fakeStore) UpdateBackupJobProgress(ctx context.Context, jobID string, pct int) error {
+	s.progressCalls = append(s.progressCalls, progressCall{jobID: jobID, pct: pct})
+	return s.progressUpdErr
 }
 
 func (s *fakeStore) CreateBackupRecord(ctx context.Context, r *models.BackupRecord) (string, error) {
@@ -168,7 +183,7 @@ func TestRunBackup_HappyPath(t *testing.T) {
 	clk := fixedClock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	e := New(store, clk)
 
-	rec, err := e.RunBackup(context.Background(), src, dst, repo, "store-xyz", "memory")
+	rec, _, err := e.RunBackup(context.Background(), src, dst, repo, "store-xyz", "memory")
 	require.NoError(t, err)
 	require.NotNil(t, rec)
 	require.Equal(t, rec.ID, dst.gotManifest.BackupID)
@@ -187,7 +202,7 @@ func TestRunBackup_ULIDIdentity(t *testing.T) {
 	repo := newRepo(false, "")
 
 	e := New(store, nil)
-	rec, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
+	rec, _, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
 	require.NoError(t, err)
 
 	require.Equal(t, rec.ID, dst.gotManifest.BackupID, "manifest BackupID must equal record ID")
@@ -210,7 +225,7 @@ func TestRunBackup_JobLifecycleHappyPath(t *testing.T) {
 	repo := newRepo(false, "")
 
 	e := New(store, nil)
-	_, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
+	_, _, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
 	require.NoError(t, err)
 
 	require.Len(t, store.createdJobs, 1)
@@ -235,7 +250,7 @@ func TestRunBackup_DestinationFailure(t *testing.T) {
 	repo := newRepo(false, "")
 
 	e := New(store, nil)
-	rec, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
+	rec, _, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
 	require.Error(t, err)
 	require.Nil(t, rec)
 	require.Empty(t, store.createdRecords, "no BackupRecord should be created on destination failure (D-16)")
@@ -255,7 +270,7 @@ func TestRunBackup_SourceFailure(t *testing.T) {
 	repo := newRepo(false, "")
 
 	e := New(store, nil)
-	rec, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
+	rec, _, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
 	require.Error(t, err)
 	require.True(t, errors.Is(err, backup.ErrBackupAborted), "err should wrap ErrBackupAborted")
 	require.Nil(t, rec)
@@ -279,7 +294,7 @@ func TestRunBackup_ContextCancelled(t *testing.T) {
 	repo := newRepo(false, "")
 
 	e := New(store, nil)
-	rec, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
+	rec, _, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
 	require.Error(t, err)
 	require.Nil(t, rec)
 	require.Empty(t, store.createdRecords)
@@ -301,7 +316,7 @@ func TestRunBackup_PipePlumbingBytesExact(t *testing.T) {
 	repo := newRepo(false, "")
 
 	e := New(store, nil)
-	_, err = e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
+	_, _, err = e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
 	require.NoError(t, err)
 
 	require.True(t, bytes.Equal(payload, dst.gotPayload), "destination must receive source bytes exactly")
@@ -316,7 +331,7 @@ func TestRunBackup_ManifestFields(t *testing.T) {
 
 	e := New(store, nil)
 	start := time.Now().UTC().Add(-1 * time.Second)
-	_, err := e.RunBackup(context.Background(), src, dst, repo, "store-xyz", "badger")
+	_, _, err := e.RunBackup(context.Background(), src, dst, repo, "store-xyz", "badger")
 	require.NoError(t, err)
 	end := time.Now().UTC().Add(1 * time.Second)
 
@@ -338,7 +353,7 @@ func TestRunBackup_EncryptionEnabled(t *testing.T) {
 	repo := newRepo(true, "env:TESTKEY")
 
 	e := New(store, nil)
-	_, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
+	_, _, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
 	require.NoError(t, err)
 
 	m := dst.gotManifest
@@ -356,7 +371,7 @@ func TestRunBackup_EncryptionDisabled(t *testing.T) {
 	repo := newRepo(false, "")
 
 	e := New(store, nil)
-	_, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
+	_, _, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
 	require.NoError(t, err)
 
 	m := dst.gotManifest
@@ -366,17 +381,69 @@ func TestRunBackup_EncryptionDisabled(t *testing.T) {
 	require.Empty(t, m.Encryption.KeyRef)
 }
 
+// --- Phase 6 D-50 progress-marker tests ---
+
+// TestRunBackup_RecordsProgress_0_10_50_95_100 — the 4 intermediate D-50
+// milestones fire in order, and the existing final 100 is preserved via the
+// finalize UpdateBackupJob.
+func TestRunBackup_RecordsProgress_0_10_50_95_100(t *testing.T) {
+	src := &fakeSource{payload: []byte("x"), ids: newPayloadSet("p1")}
+	dst := &fakeDest{setSHA256: "h", setSize: 1}
+	store := &fakeStore{}
+	repo := newRepo(false, "")
+
+	e := New(store, nil)
+	rec, _, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
+	require.NoError(t, err)
+	require.NotNil(t, rec)
+
+	// The 4 explicit progress markers, in order.
+	wantPcts := []int{0, 10, 50, 95}
+	require.Equal(t, len(wantPcts), len(store.progressCalls),
+		"expected exactly %d progress calls, got %d (%+v)",
+		len(wantPcts), len(store.progressCalls), store.progressCalls)
+	for i, want := range wantPcts {
+		require.Equal(t, want, store.progressCalls[i].pct,
+			"progress call %d: got pct=%d, want %d", i, store.progressCalls[i].pct, want)
+	}
+
+	// Final 100 lives on the finalize UpdateBackupJob, not the progress
+	// hook — verify it on the last updated job.
+	require.NotEmpty(t, store.updatedJobs)
+	final := store.updatedJobs[len(store.updatedJobs)-1]
+	require.Equal(t, 100, final.Progress, "final UpdateBackupJob should carry Progress=100")
+}
+
+// TestRunBackup_ProgressUpdateError_DoesNotFailBackup — if every
+// UpdateBackupJobProgress call errors, the parent RunBackup still succeeds
+// (D-50 best-effort semantics).
+func TestRunBackup_ProgressUpdateError_DoesNotFailBackup(t *testing.T) {
+	src := &fakeSource{payload: []byte("x"), ids: newPayloadSet("p1")}
+	dst := &fakeDest{setSHA256: "h", setSize: 1}
+	store := &fakeStore{progressUpdErr: errors.New("boom: DB unreachable")}
+	repo := newRepo(false, "")
+
+	e := New(store, nil)
+	rec, _, err := e.RunBackup(context.Background(), src, dst, repo, "s1", "memory")
+	require.NoError(t, err, "progress update errors must NOT fail the backup (D-50)")
+	require.NotNil(t, rec)
+	require.Equal(t, models.BackupStatusSucceeded, rec.Status)
+
+	// Progress calls were still attempted.
+	require.Len(t, store.progressCalls, 4, "all 4 progress markers should attempt even on error")
+}
+
 // Defensive: nil args must be rejected before doing anything.
 func TestRunBackup_NilGuards(t *testing.T) {
 	store := &fakeStore{}
 	e := New(store, nil)
 
-	_, err := e.RunBackup(context.Background(), nil, &fakeDest{}, newRepo(false, ""), "s", "memory")
+	_, _, err := e.RunBackup(context.Background(), nil, &fakeDest{}, newRepo(false, ""), "s", "memory")
 	require.Error(t, err)
 
-	_, err = e.RunBackup(context.Background(), &fakeSource{}, nil, newRepo(false, ""), "s", "memory")
+	_, _, err = e.RunBackup(context.Background(), &fakeSource{}, nil, newRepo(false, ""), "s", "memory")
 	require.Error(t, err)
 
-	_, err = e.RunBackup(context.Background(), &fakeSource{}, &fakeDest{}, nil, "s", "memory")
+	_, _, err = e.RunBackup(context.Background(), &fakeSource{}, &fakeDest{}, nil, "s", "memory")
 	require.Error(t, err)
 }

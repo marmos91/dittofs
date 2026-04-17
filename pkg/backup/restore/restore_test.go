@@ -30,6 +30,15 @@ type fakeJobStore struct {
 	createJobErr   error
 	records        map[string]*models.BackupRecord
 	recordsForRepo map[string][]*models.BackupRecord
+
+	// Phase 6 D-50 progress markers, recorded in order.
+	progressCalls  []progressCall
+	progressUpdErr error
+}
+
+type progressCall struct {
+	jobID string
+	pct   int
 }
 
 func newFakeJobStore() *fakeJobStore {
@@ -54,6 +63,13 @@ func (s *fakeJobStore) UpdateBackupJob(ctx context.Context, j *models.BackupJob)
 	defer s.mu.Unlock()
 	s.updatedJobs = append(s.updatedJobs, *j)
 	return nil
+}
+
+func (s *fakeJobStore) UpdateBackupJobProgress(ctx context.Context, jobID string, pct int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.progressCalls = append(s.progressCalls, progressCall{jobID: jobID, pct: pct})
+	return s.progressUpdErr
 }
 
 func (s *fakeJobStore) GetBackupRecord(ctx context.Context, id string) (*models.BackupRecord, error) {
@@ -355,7 +371,7 @@ func TestRunRestore_HappyPath(t *testing.T) {
 
 	bumpCalls := 0
 	e := New(js, fixedClock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)})
-	err := e.RunRestore(context.Background(), buildParams(d, ss, &bumpCalls))
+	_, err := e.RunRestore(context.Background(), buildParams(d, ss, &bumpCalls))
 
 	require.NoError(t, err)
 	require.True(t, fresh.restoreCalled, "Backupable.Restore must be called on the fresh engine")
@@ -377,7 +393,7 @@ func TestRunRestore_StoreIDMismatch(t *testing.T) {
 	}
 
 	e := New(js, nil)
-	err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
+	_, err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
 
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrStoreIDMismatch), "expected ErrStoreIDMismatch, got %v", err)
@@ -397,7 +413,7 @@ func TestRunRestore_StoreKindMismatch(t *testing.T) {
 	}
 
 	e := New(js, nil)
-	err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
+	_, err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
 
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrStoreKindMismatch), "expected ErrStoreKindMismatch, got %v", err)
@@ -417,7 +433,7 @@ func TestRunRestore_ManifestVersionUnsupported(t *testing.T) {
 	}
 
 	e := New(js, nil)
-	err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
+	_, err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
 
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrManifestVersionUnsupported),
@@ -437,7 +453,7 @@ func TestRunRestore_EmptyManifestSHA256(t *testing.T) {
 	}
 
 	e := New(js, nil)
-	err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
+	_, err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
 
 	require.Error(t, err)
 	require.Equal(t, 0, ss.swapCount(), "swap must NOT be called when SHA-256 is empty")
@@ -469,7 +485,7 @@ func TestRunRestore_SHA256Mismatch(t *testing.T) {
 	}
 
 	e := New(js, nil)
-	err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
+	_, err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
 
 	require.Error(t, err)
 	require.True(t, errors.Is(err, destination.ErrSHA256Mismatch),
@@ -504,7 +520,7 @@ func TestRunRestore_CtxCanceled(t *testing.T) {
 	e := New(js, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // pre-cancel; engine returns ctx.Err() via restoreErr
-	err := e.RunRestore(ctx, buildParams(d, ss, nil))
+	_, err := e.RunRestore(ctx, buildParams(d, ss, nil))
 
 	require.Error(t, err)
 	require.True(t, errors.Is(err, context.Canceled),
@@ -549,7 +565,7 @@ func TestRunRestore_PostSwapCleanupError(t *testing.T) {
 
 	bumpCalls := 0
 	e := New(js, nil)
-	err := e.RunRestore(context.Background(), buildParams(d, ss, &bumpCalls))
+	_, err := e.RunRestore(context.Background(), buildParams(d, ss, &bumpCalls))
 
 	// Post-swap errors are logged, NOT returned. Restore is a success.
 	require.NoError(t, err)
@@ -580,13 +596,83 @@ func TestRunRestore_BumpBootVerifierCalled(t *testing.T) {
 
 	bumpCalls := 0
 	e := New(js, nil)
-	require.NoError(t, e.RunRestore(context.Background(), buildParams(d, ss, &bumpCalls)))
+	_, err := e.RunRestore(context.Background(), buildParams(d, ss, &bumpCalls))
+	require.NoError(t, err)
 	require.Equal(t, 1, bumpCalls)
 
 	// Re-run with a NIL BumpBootVerifier — must not panic.
 	p := buildParams(d, ss, nil)
 	p.BumpBootVerifier = nil
-	require.NoError(t, e.RunRestore(context.Background(), p))
+	_, err = e.RunRestore(context.Background(), p)
+	require.NoError(t, err)
+}
+
+// --- Phase 6 D-50 progress-marker tests ---
+
+// TestRunRestore_RecordsProgress_0_10_30_60_95_100 — the 5 intermediate
+// D-50 markers fire in order, and the existing final 100 is preserved
+// via the defer's finalize UpdateBackupJob.
+func TestRunRestore_RecordsProgress_0_10_30_60_95_100(t *testing.T) {
+	js := newFakeJobStore()
+	fresh := newTolerantMemStore()
+	ss := &fakeStores{
+		openFn: func(ctx context.Context, cfg *models.MetadataStoreConfig, pathOverride string) (metadata.MetadataStore, error) {
+			return fresh, nil
+		},
+	}
+	d := &fakeDest{
+		getManifestFn: func(ctx context.Context, id string) (*manifest.Manifest, error) {
+			return validManifest(), nil
+		},
+		getBackupFn: func(ctx context.Context, id string) (*manifest.Manifest, io.ReadCloser, error) {
+			return validManifest(), &programmableReader{data: []byte("payload")}, nil
+		},
+	}
+
+	e := New(js, nil)
+	_, err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
+	require.NoError(t, err)
+
+	wantPcts := []int{0, 10, 30, 60, 95}
+	require.Equal(t, len(wantPcts), len(js.progressCalls),
+		"expected %d progress calls, got %d (%+v)",
+		len(wantPcts), len(js.progressCalls), js.progressCalls)
+	for i, want := range wantPcts {
+		require.Equal(t, want, js.progressCalls[i].pct,
+			"progress call %d: got pct=%d, want %d", i, js.progressCalls[i].pct, want)
+	}
+
+	// Final 100 lives on the finalize UpdateBackupJob (terminal-state defer).
+	require.Equal(t, models.BackupStatusSucceeded, js.finalStatus())
+	final := js.updatedJobs[len(js.updatedJobs)-1]
+	require.Equal(t, 100, final.Progress)
+}
+
+// TestRunRestore_ProgressUpdateError_DoesNotFailRestore — if every
+// UpdateBackupJobProgress errors, restore still succeeds (D-50 best-effort).
+func TestRunRestore_ProgressUpdateError_DoesNotFailRestore(t *testing.T) {
+	js := newFakeJobStore()
+	js.progressUpdErr = errors.New("boom: DB unreachable")
+	fresh := newTolerantMemStore()
+	ss := &fakeStores{
+		openFn: func(ctx context.Context, cfg *models.MetadataStoreConfig, pathOverride string) (metadata.MetadataStore, error) {
+			return fresh, nil
+		},
+	}
+	d := &fakeDest{
+		getManifestFn: func(ctx context.Context, id string) (*manifest.Manifest, error) {
+			return validManifest(), nil
+		},
+		getBackupFn: func(ctx context.Context, id string) (*manifest.Manifest, io.ReadCloser, error) {
+			return validManifest(), &programmableReader{data: []byte("payload")}, nil
+		},
+	}
+
+	e := New(js, nil)
+	_, err := e.RunRestore(context.Background(), buildParams(d, ss, nil))
+	require.NoError(t, err, "progress update errors must NOT fail the restore (D-50)")
+	require.Equal(t, models.BackupStatusSucceeded, js.finalStatus())
+	require.Len(t, js.progressCalls, 5, "all 5 progress markers should attempt even on error")
 }
 
 // closeErrMemStore is a real memory store whose Close returns a

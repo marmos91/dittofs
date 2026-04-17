@@ -1,9 +1,20 @@
 package storebackups
 
 import (
+	"errors"
+
 	"github.com/marmos91/dittofs/pkg/backup/restore"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
+
+// ErrBackupJobNotFound — canceling / looking up a backup or restore job
+// whose run-ctx is not registered (either unknown ID or already terminal).
+// The REST handler (Phase 6 Plan 02) maps this to 200 OK + current job per
+// D-45 idempotent-on-terminal semantics; runtime itself just reports
+// absence. Distinct identity from models.ErrBackupJobNotFound: the model
+// sentinel signals "DB row missing", this one signals "no active run-ctx
+// to cancel".
+var ErrBackupJobNotFound = errors.New("backup job not found or already terminal")
 
 // Re-exports of Phase-4 sentinels for caller convenience. Callers may
 // import either the models or the storebackups package; both identities

@@ -676,6 +676,239 @@ func TestBackupJobAutoULID(t *testing.T) {
 	}
 }
 
+// TestListBackupRecords_FilterByStatus exercises the Phase-6 D-26 listing
+// contract: repo-scoped + optional status filter + newest-first.
+func TestListBackupRecords_FilterByStatus(t *testing.T) {
+	s := createTestStore(t)
+	defer s.Close()
+	ctx := context.Background()
+
+	storeID := seedMetaStore(t, s, "ms-list-records")
+	repo := seedRepo(t, s, storeID, "primary")
+
+	succ1 := &models.BackupRecord{RepoID: repo.ID, Status: models.BackupStatusSucceeded}
+	if _, err := s.CreateBackupRecord(ctx, succ1); err != nil {
+		t.Fatalf("seed succ1: %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+
+	failed := &models.BackupRecord{RepoID: repo.ID, Status: models.BackupStatusFailed, Error: "boom"}
+	if _, err := s.CreateBackupRecord(ctx, failed); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+
+	succ2 := &models.BackupRecord{RepoID: repo.ID, Status: models.BackupStatusSucceeded}
+	if _, err := s.CreateBackupRecord(ctx, succ2); err != nil {
+		t.Fatalf("seed succ2: %v", err)
+	}
+
+	// Status filter returns only succeeded records.
+	gotSucceeded, err := s.ListBackupRecords(ctx, repo.ID, models.BackupStatusSucceeded)
+	if err != nil {
+		t.Fatalf("list by status: %v", err)
+	}
+	if len(gotSucceeded) != 2 {
+		t.Fatalf("expected 2 succeeded records, got %d", len(gotSucceeded))
+	}
+	// Newest-first ordering.
+	if gotSucceeded[0].ID != succ2.ID {
+		t.Errorf("expected succ2 at position 0, got %q (want %q)", gotSucceeded[0].ID, succ2.ID)
+	}
+
+	// Empty status returns all rows.
+	gotAll, err := s.ListBackupRecords(ctx, repo.ID, "")
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	if len(gotAll) != 3 {
+		t.Errorf("expected 3 total records, got %d", len(gotAll))
+	}
+}
+
+// TestListBackupRecords_EmptyRepo — a repo with zero records returns an empty
+// slice and no error (safe downstream).
+func TestListBackupRecords_EmptyRepo(t *testing.T) {
+	s := createTestStore(t)
+	defer s.Close()
+	ctx := context.Background()
+
+	storeID := seedMetaStore(t, s, "ms-empty-records")
+	repo := seedRepo(t, s, storeID, "empty")
+
+	got, err := s.ListBackupRecords(ctx, repo.ID, "")
+	if err != nil {
+		t.Fatalf("list empty: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty slice, got %d records", len(got))
+	}
+}
+
+// TestListBackupJobsFiltered_Filter exercises the Phase-6 D-42 contract:
+// repo+kind+status filtering, newest-first StartedAt DESC, default limit 50,
+// hard-cap 200.
+func TestListBackupJobsFiltered_Filter(t *testing.T) {
+	s := createTestStore(t)
+	defer s.Close()
+	ctx := context.Background()
+
+	storeID := seedMetaStore(t, s, "ms-list-jobs")
+	repoA := seedRepo(t, s, storeID, "A")
+	repoB := seedRepo(t, s, storeID, "B")
+
+	now := time.Now()
+	seed := func(repoID string, kind models.BackupJobKind, status models.BackupStatus, startedAt *time.Time) string {
+		job := &models.BackupJob{
+			Kind:      kind,
+			RepoID:    repoID,
+			Status:    status,
+			StartedAt: startedAt,
+		}
+		if _, err := s.CreateBackupJob(ctx, job); err != nil {
+			t.Fatalf("seed job: %v", err)
+		}
+		return job.ID
+	}
+
+	t1 := now.Add(-3 * time.Hour)
+	t2 := now.Add(-2 * time.Hour)
+	t3 := now.Add(-1 * time.Hour)
+
+	seed(repoA.ID, models.BackupJobKindBackup, models.BackupStatusSucceeded, &t1)
+	seed(repoA.ID, models.BackupJobKindRestore, models.BackupStatusSucceeded, &t2)
+	newestRestoreID := seed(repoA.ID, models.BackupJobKindRestore, models.BackupStatusSucceeded, &t3)
+	seed(repoB.ID, models.BackupJobKindRestore, models.BackupStatusSucceeded, &t2)
+	// A failed restore to ensure status filter excludes it.
+	seed(repoA.ID, models.BackupJobKindRestore, models.BackupStatusFailed, &t2)
+
+	// Full filter: kind=restore, status=succeeded, repoID=repoA.
+	got, err := s.ListBackupJobsFiltered(ctx, BackupJobFilter{
+		RepoID: repoA.ID,
+		Kind:   models.BackupJobKindRestore,
+		Status: models.BackupStatusSucceeded,
+		Limit:  10,
+	})
+	if err != nil {
+		t.Fatalf("filtered: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 succeeded restore jobs for repoA, got %d", len(got))
+	}
+	if got[0].ID != newestRestoreID {
+		t.Errorf("expected newest restore at position 0 (%q), got %q", newestRestoreID, got[0].ID)
+	}
+
+	// Limit=0 applies default 50 — with 5 total rows we should see all of them.
+	all, err := s.ListBackupJobsFiltered(ctx, BackupJobFilter{})
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	if len(all) != 5 {
+		t.Errorf("expected 5 rows (default limit 50), got %d", len(all))
+	}
+
+	// Limit above the cap is clamped at 200 (no error, just capped).
+	_, err = s.ListBackupJobsFiltered(ctx, BackupJobFilter{Limit: 1_000_000})
+	if err != nil {
+		t.Fatalf("list with huge limit: %v", err)
+	}
+}
+
+// TestUpdateBackupRecordPinned exercises the Phase-6 pinned PATCH path —
+// Pinned true/false toggle + ErrBackupRecordNotFound on miss.
+func TestUpdateBackupRecordPinned(t *testing.T) {
+	s := createTestStore(t)
+	defer s.Close()
+	ctx := context.Background()
+
+	storeID := seedMetaStore(t, s, "ms-pin-v2")
+	repo := seedRepo(t, s, storeID, "primary")
+
+	rec := &models.BackupRecord{RepoID: repo.ID, Status: models.BackupStatusSucceeded}
+	if _, err := s.CreateBackupRecord(ctx, rec); err != nil {
+		t.Fatalf("seed record: %v", err)
+	}
+
+	if err := s.UpdateBackupRecordPinned(ctx, rec.ID, true); err != nil {
+		t.Fatalf("pin true: %v", err)
+	}
+	reloaded, _ := s.GetBackupRecord(ctx, rec.ID)
+	if !reloaded.Pinned {
+		t.Errorf("expected Pinned=true after reload")
+	}
+
+	if err := s.UpdateBackupRecordPinned(ctx, rec.ID, false); err != nil {
+		t.Fatalf("pin false: %v", err)
+	}
+	reloaded, _ = s.GetBackupRecord(ctx, rec.ID)
+	if reloaded.Pinned {
+		t.Errorf("expected Pinned=false after toggle")
+	}
+
+	// Unknown ID surfaces ErrBackupRecordNotFound.
+	err := s.UpdateBackupRecordPinned(ctx, "no-such-record", true)
+	if !errors.Is(err, models.ErrBackupRecordNotFound) {
+		t.Errorf("expected ErrBackupRecordNotFound, got %v", err)
+	}
+}
+
+// TestUpdateBackupJobProgress exercises the Phase-6 D-50 progress-column
+// update: successful write, clamping rejection (ErrInvalidProgress), and
+// ErrBackupJobNotFound on miss.
+func TestUpdateBackupJobProgress(t *testing.T) {
+	s := createTestStore(t)
+	defer s.Close()
+	ctx := context.Background()
+
+	storeID := seedMetaStore(t, s, "ms-progress")
+	repo := seedRepo(t, s, storeID, "primary")
+
+	job := &models.BackupJob{
+		Kind:   models.BackupJobKindBackup,
+		RepoID: repo.ID,
+		Status: models.BackupStatusRunning,
+	}
+	if _, err := s.CreateBackupJob(ctx, job); err != nil {
+		t.Fatalf("seed job: %v", err)
+	}
+
+	if err := s.UpdateBackupJobProgress(ctx, job.ID, 50); err != nil {
+		t.Fatalf("update progress 50: %v", err)
+	}
+	reloaded, _ := s.GetBackupJob(ctx, job.ID)
+	if reloaded.Progress != 50 {
+		t.Errorf("expected progress=50, got %d", reloaded.Progress)
+	}
+
+	// Out-of-range pct rejected without mutating the row.
+	if err := s.UpdateBackupJobProgress(ctx, job.ID, -1); !errors.Is(err, ErrInvalidProgress) {
+		t.Errorf("expected ErrInvalidProgress for pct=-1, got %v", err)
+	}
+	if err := s.UpdateBackupJobProgress(ctx, job.ID, 101); !errors.Is(err, ErrInvalidProgress) {
+		t.Errorf("expected ErrInvalidProgress for pct=101, got %v", err)
+	}
+	// Value must still be 50 after rejected updates.
+	reloaded, _ = s.GetBackupJob(ctx, job.ID)
+	if reloaded.Progress != 50 {
+		t.Errorf("progress should be unchanged at 50 after rejected updates, got %d", reloaded.Progress)
+	}
+
+	// Unknown ID surfaces ErrBackupJobNotFound.
+	err := s.UpdateBackupJobProgress(ctx, "no-such-job", 75)
+	if !errors.Is(err, models.ErrBackupJobNotFound) {
+		t.Errorf("expected ErrBackupJobNotFound, got %v", err)
+	}
+
+	// Boundary values 0 and 100 accepted.
+	if err := s.UpdateBackupJobProgress(ctx, job.ID, 0); err != nil {
+		t.Errorf("pct=0 should be accepted, got %v", err)
+	}
+	if err := s.UpdateBackupJobProgress(ctx, job.ID, 100); err != nil {
+		t.Errorf("pct=100 should be accepted, got %v", err)
+	}
+}
+
 // TestBackupRepoTargetKindBackfill seeds a legacy-style row directly via raw
 // SQL (simulating a pre-D-26 database where target_kind didn't exist or was
 // NULL) and confirms the post-AutoMigrate backfill stamped `metadata` on it.

@@ -14,10 +14,28 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
+
+// ErrInvalidProgress is returned by BackupStore.UpdateBackupJobProgress when
+// pct is outside the closed interval [0, 100]. Phase 6 D-50: progress values
+// are best-effort stage markers; out-of-range values are a caller bug, not a
+// runtime condition, so the store surfaces them as a distinct sentinel.
+var ErrInvalidProgress = errors.New("progress must be between 0 and 100")
+
+// BackupJobFilter bundles the filter inputs to BackupStore.ListBackupJobsFiltered.
+// All string fields use empty-string-means-no-filter semantics; Limit=0 means
+// "use default 50". Implementations MUST cap Limit at 200 regardless of input
+// (Phase 6 D-42).
+type BackupJobFilter struct {
+	RepoID string               // "" = all repos
+	Status models.BackupStatus  // "" = all statuses
+	Kind   models.BackupJobKind // "" = all kinds
+	Limit  int                  // 0 = default 50, max 200 (D-42)
+}
 
 // UserStore provides user CRUD and credential operations.
 //
@@ -436,6 +454,28 @@ type BackupStore interface {
 	// ListBackupJobs lists backup jobs, filtered by kind and/or status.
 	// Pass an empty string for either filter to skip that constraint.
 	ListBackupJobs(ctx context.Context, kind models.BackupJobKind, status models.BackupStatus) ([]*models.BackupJob, error)
+
+	// ListBackupJobsFiltered returns jobs matching the filter. Sort: StartedAt DESC
+	// (NULLS LAST). Implementations MUST cap filter.Limit at 200 and default it
+	// to 50 when 0. Per Phase 6 D-42.
+	ListBackupJobsFiltered(ctx context.Context, filter BackupJobFilter) ([]*models.BackupJob, error)
+
+	// ListBackupRecords returns records for a repo, optionally filtered by status.
+	// Empty statusFilter returns all statuses. Sort: CreatedAt DESC (newest-first).
+	ListBackupRecords(ctx context.Context, repoID string, statusFilter models.BackupStatus) ([]*models.BackupRecord, error)
+
+	// UpdateBackupRecordPinned flips the Pinned flag. Returns
+	// models.ErrBackupRecordNotFound on miss. Semantically equivalent to
+	// SetBackupRecordPinned; provided as a Phase-6 method-name alias so the
+	// REST handler naming (PATCH /backups/{id} → update-pinned) lines up with
+	// the store vocabulary.
+	UpdateBackupRecordPinned(ctx context.Context, recordID string, pinned bool) error
+
+	// UpdateBackupJobProgress updates the Progress column. Callers log WARN on
+	// error and do NOT fail the parent op (Phase 6 D-50). Returns
+	// models.ErrBackupJobNotFound on miss; ErrInvalidProgress if pct is outside
+	// [0,100].
+	UpdateBackupJobProgress(ctx context.Context, jobID string, pct int) error
 
 	// CreateBackupJob creates a new backup job.
 	// The ID will be generated (ULID) if empty.

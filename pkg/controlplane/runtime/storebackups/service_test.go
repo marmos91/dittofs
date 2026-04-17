@@ -342,7 +342,7 @@ func TestService_RunBackup_Happy(t *testing.T) {
 	dst := &controlledDestination{}
 	svc := newServiceWithStubs(t, s, src, dst)
 
-	rec, err := svc.RunBackup(ctx, repo.ID)
+	rec, _, err := svc.RunBackup(ctx, repo.ID)
 	if err != nil {
 		t.Fatalf("RunBackup failed: %v", err)
 	}
@@ -378,7 +378,7 @@ func TestService_RunBackup_MutexContention(t *testing.T) {
 
 	launch := func() {
 		defer wg.Done()
-		_, err := svc.RunBackup(ctx, repo.ID)
+		_, _, err := svc.RunBackup(ctx, repo.ID)
 		switch {
 		case err == nil:
 			successCnt.Add(1)
@@ -443,11 +443,11 @@ func TestService_RunBackup_SequencePutBeforeDelete(t *testing.T) {
 	svc := newServiceWithStubs(t, s, src, dst)
 
 	// First backup populates the record store; no retention candidates yet.
-	if _, err := svc.RunBackup(ctx, repo.ID); err != nil {
+	if _, _, err := svc.RunBackup(ctx, repo.ID); err != nil {
 		t.Fatalf("first RunBackup: %v", err)
 	}
 	// Second backup triggers retention — retention.Delete should run after PutBackup.
-	if _, err := svc.RunBackup(ctx, repo.ID); err != nil {
+	if _, _, err := svc.RunBackup(ctx, repo.ID); err != nil {
 		t.Fatalf("second RunBackup: %v", err)
 	}
 
@@ -486,7 +486,7 @@ func TestService_RunBackup_ResolverErrors(t *testing.T) {
 		svc := New(s, resolver, 100*time.Millisecond, WithDestinationFactory(factory))
 		t.Cleanup(func() { _ = svc.Stop(context.Background()) })
 
-		_, err := svc.RunBackup(ctx, repo.ID)
+		_, _, err := svc.RunBackup(ctx, repo.ID)
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -504,7 +504,7 @@ func TestService_RunBackup_ResolverErrors(t *testing.T) {
 		svc := New(s, resolver, 100*time.Millisecond, WithDestinationFactory(factory))
 		t.Cleanup(func() { _ = svc.Stop(context.Background()) })
 
-		_, err := svc.RunBackup(ctx, repo.ID)
+		_, _, err := svc.RunBackup(ctx, repo.ID)
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -552,7 +552,7 @@ func TestService_Stop_CancelsInFlight(t *testing.T) {
 	}
 	resultCh := make(chan runResult, 1)
 	go func() {
-		rec, err := svc.RunBackup(ctx, repo.ID)
+		rec, _, err := svc.RunBackup(ctx, repo.ID)
 		resultCh <- runResult{rec: rec, err: err}
 	}()
 
@@ -621,7 +621,7 @@ func TestService_ScheduledAndOnDemandShareMutex(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, onDemandErr = svc.RunBackup(ctx, repo.ID)
+		_, _, onDemandErr = svc.RunBackup(ctx, repo.ID)
 	}()
 
 	// Wait until on-demand has entered PutBackup.
@@ -645,5 +645,184 @@ func TestService_ScheduledAndOnDemandShareMutex(t *testing.T) {
 	wg.Wait()
 	if onDemandErr != nil {
 		t.Errorf("on-demand RunBackup failed: %v", onDemandErr)
+	}
+}
+
+// --- Phase 6 Task 2 tests: cancel registry + return-shape amendments ---
+
+// TestRunBackup_ReturnsBackupJob — happy path: RunBackup returns the persisted
+// BackupJob alongside the record so Phase 6 handlers can surface job.ID for
+// client polling.
+func TestRunBackup_ReturnsBackupJob(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	repo := seedRepo(t, s)
+
+	src := memory.NewMemoryMetadataStoreWithDefaults()
+	dst := &controlledDestination{}
+	svc := newServiceWithStubs(t, s, src, dst)
+
+	rec, job, err := svc.RunBackup(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("RunBackup failed: %v", err)
+	}
+	if rec == nil {
+		t.Fatal("expected non-nil record")
+	}
+	if job == nil {
+		t.Fatal("expected non-nil job")
+	}
+	if len(job.ID) != 26 {
+		t.Errorf("expected 26-char ULID, got %d (%q)", len(job.ID), job.ID)
+	}
+	if job.Kind != models.BackupJobKindBackup {
+		t.Errorf("job.Kind = %q, want backup", job.Kind)
+	}
+	if job.Status != models.BackupStatusSucceeded {
+		t.Errorf("job.Status = %q, want succeeded", job.Status)
+	}
+}
+
+// TestRunBackup_FailurePath_StillReturnsJob — on executor failure, rec is
+// nil but job is non-nil (the BackupJob row has been persisted with the
+// terminal-state fields — D-16). Callers can still report job.ID.
+func TestRunBackup_FailurePath_StillReturnsJob(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	repo := seedRepo(t, s)
+
+	src := memory.NewMemoryMetadataStoreWithDefaults()
+	// Destination errors on PutBackup → executor returns (nil, job, err).
+	dst := &controlledDestination{
+		onPut: func(ctx context.Context) error { return errors.New("boom: destination unavailable") },
+	}
+	svc := newServiceWithStubs(t, s, src, dst)
+
+	rec, job, err := svc.RunBackup(ctx, repo.ID)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if rec != nil {
+		t.Errorf("expected nil record on failure, got %+v", rec)
+	}
+	if job == nil {
+		t.Fatal("expected non-nil job even on failure")
+	}
+	if job.Status != models.BackupStatusFailed {
+		t.Errorf("job.Status = %q, want failed", job.Status)
+	}
+}
+
+// TestCancelBackupJob_InFlight_CancelsRunCtx — starts a backup that blocks
+// in PutBackup, then calls CancelBackupJob with the job.ID before unblocking.
+// The executor observes ctx cancellation and transitions the job to
+// interrupted.
+func TestCancelBackupJob_InFlight_CancelsRunCtx(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	repo := seedRepo(t, s)
+
+	src := memory.NewMemoryMetadataStoreWithDefaults()
+	blockCh := make(chan struct{})
+	defer close(blockCh) // safety net
+	dst := &controlledDestination{putBlockCh: blockCh}
+	svc := newServiceWithStubs(t, s, src, dst)
+
+	// Drive Serve so the overlap guard + run-ctx registry are wired.
+	if err := svc.Serve(ctx); err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+
+	// Start the backup in a goroutine.
+	type runResult struct {
+		job *models.BackupJob
+		err error
+	}
+	resultCh := make(chan runResult, 1)
+	go func() {
+		_, job, err := svc.RunBackup(ctx, repo.ID)
+		resultCh <- runResult{job: job, err: err}
+	}()
+
+	// Wait for the executor to register its run-ctx. Since registration
+	// happens right after CreateBackupJob (synchronous) and PutBackup blocks,
+	// we poll the registry directly.
+	var jobID string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		svc.runCtxRegistry.Lock()
+		for id := range svc.runCtxRegistry.cancels {
+			jobID = id
+			break
+		}
+		svc.runCtxRegistry.Unlock()
+		if jobID != "" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if jobID == "" {
+		t.Fatal("no run-ctx registered within 2s")
+	}
+
+	// Cancel mid-flight — the executor goroutine should observe ctx.Done()
+	// and exit promptly.
+	if err := svc.CancelBackupJob(ctx, jobID); err != nil {
+		t.Fatalf("CancelBackupJob returned error: %v", err)
+	}
+
+	// The PutBackup destination observes ctx.Done() and returns ctx.Err(),
+	// so the executor terminates without waiting for blockCh. We only need
+	// the RunBackup goroutine to finish.
+	select {
+	case res := <-resultCh:
+		if res.err == nil {
+			t.Error("RunBackup should return an error after CancelBackupJob")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunBackup did not terminate within 2s of CancelBackupJob")
+	}
+}
+
+// TestCancelBackupJob_UnknownID_ReturnsErrBackupJobNotFound — unknown jobID
+// returns ErrBackupJobNotFound (D-45 idempotent-on-terminal semantic at the
+// REST layer).
+func TestCancelBackupJob_UnknownID_ReturnsErrBackupJobNotFound(t *testing.T) {
+	s := newTestStore(t)
+	svc := New(s, &stubResolver{}, 100*time.Millisecond)
+	t.Cleanup(func() { _ = svc.Stop(context.Background()) })
+
+	err := svc.CancelBackupJob(context.Background(), "01UNKNOWN00000000000000000")
+	if !errors.Is(err, ErrBackupJobNotFound) {
+		t.Errorf("expected ErrBackupJobNotFound, got %v", err)
+	}
+}
+
+// TestCancelBackupJob_Terminal_IdempotentNoOp — once a job has terminated
+// (its run-ctx has been unregistered via defer), CancelBackupJob returns
+// ErrBackupJobNotFound. The REST handler interprets this as 200 OK + current
+// job per D-45 — this test verifies only the runtime primitive.
+func TestCancelBackupJob_Terminal_IdempotentNoOp(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	repo := seedRepo(t, s)
+
+	src := memory.NewMemoryMetadataStoreWithDefaults()
+	dst := &controlledDestination{}
+	svc := newServiceWithStubs(t, s, src, dst)
+
+	// Run a normal backup to completion; its defer unregisters the run-ctx.
+	_, job, err := svc.RunBackup(ctx, repo.ID)
+	if err != nil {
+		t.Fatalf("RunBackup: %v", err)
+	}
+	if job == nil {
+		t.Fatal("expected non-nil job")
+	}
+
+	// Canceling a terminal job surfaces ErrBackupJobNotFound.
+	err = svc.CancelBackupJob(ctx, job.ID)
+	if !errors.Is(err, ErrBackupJobNotFound) {
+		t.Errorf("expected ErrBackupJobNotFound on terminal job, got %v", err)
 	}
 }

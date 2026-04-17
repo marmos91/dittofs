@@ -18,10 +18,14 @@ import (
 
 // JobStore is the narrow persistence interface the Executor needs. A subset
 // of store.BackupStore — callers pass the full store but the Executor only
-// consumes these three methods, which keeps test fakes trivial.
+// consumes these four methods, which keeps test fakes trivial.
+//
+// UpdateBackupJobProgress is the Phase 6 D-50 stage-marker hook. Callers log
+// WARN on failure and do NOT fail the parent op (best-effort semantics).
 type JobStore interface {
 	CreateBackupJob(ctx context.Context, job *models.BackupJob) (string, error)
 	UpdateBackupJob(ctx context.Context, job *models.BackupJob) error
+	UpdateBackupJobProgress(ctx context.Context, jobID string, pct int) error
 	CreateBackupRecord(ctx context.Context, rec *models.BackupRecord) (string, error)
 }
 
@@ -29,6 +33,28 @@ type JobStore interface {
 type Executor struct {
 	store JobStore
 	clock backup.Clock
+}
+
+// RunBackupOption tunes a single RunBackup invocation. Options are
+// per-call so concurrent RunBackup calls (different repos) do not race
+// on shared executor state.
+type RunBackupOption func(*runBackupConfig)
+
+type runBackupConfig struct {
+	onJobCreated func(*models.BackupJob)
+}
+
+// WithOnJobCreated installs a callback invoked synchronously inside
+// RunBackup immediately after CreateBackupJob succeeds (i.e. the
+// BackupJob row is persisted with Status=running) and BEFORE the
+// destination PutBackup begins. Phase 6 (D-43) uses this hook to
+// register the run-ctx's cancel func against job.ID so CancelBackupJob
+// can interrupt the in-flight run.
+//
+// The callback must not block for long — it executes on the RunBackup
+// goroutine and delays the payload stream.
+func WithOnJobCreated(fn func(*models.BackupJob)) RunBackupOption {
+	return func(c *runBackupConfig) { c.onJobCreated = fn }
 }
 
 // New constructs an Executor. clock may be nil; backup.RealClock is used.
@@ -49,10 +75,12 @@ func (e *Executor) SetClock(c backup.Clock) {
 	e.clock = c
 }
 
-// RunBackup executes one backup attempt. Returns (*BackupRecord, nil) on
-// success; (nil, err) on any failure. The returned record has been
-// persisted via JobStore.CreateBackupRecord and its ID matches the
-// manifest's BackupID and the Destination's published archive key (D-21).
+// RunBackup executes one backup attempt. Returns (rec, job, nil) on success
+// where rec is the persisted BackupRecord and job is the synchronously
+// persisted BackupJob row; (nil, job-or-nil, err) on failure — job is non-nil
+// after the synchronous CreateBackupJob has succeeded (so Phase 6 callers can
+// still surface the job ID to clients for polling). Pre-CreateBackupJob
+// failures (nil-arg guards, createJobErr) return (nil, nil, err).
 //
 // storeID is the source metadata store ID snapshotted into manifest.StoreID
 // AND BackupRecord.StoreID (cross-store restore guard per Phase 1).
@@ -73,15 +101,21 @@ func (e *Executor) RunBackup(
 	repo *models.BackupRepo,
 	storeID string,
 	storeKind string,
-) (*models.BackupRecord, error) {
+	opts ...RunBackupOption,
+) (*models.BackupRecord, *models.BackupJob, error) {
 	if repo == nil {
-		return nil, fmt.Errorf("executor: repo is nil")
+		return nil, nil, fmt.Errorf("executor: repo is nil")
 	}
 	if source == nil {
-		return nil, fmt.Errorf("executor: source is nil")
+		return nil, nil, fmt.Errorf("executor: source is nil")
 	}
 	if dst == nil {
-		return nil, fmt.Errorf("executor: destination is nil")
+		return nil, nil, fmt.Errorf("executor: destination is nil")
+	}
+
+	var cfg runBackupConfig
+	for _, opt := range opts {
+		opt(&cfg)
 	}
 
 	// Step 1 (D-21): allocate the record ULID now so it flows through the
@@ -99,8 +133,25 @@ func (e *Executor) RunBackup(
 		StartedAt: &startedAt,
 	}
 	if _, err := e.store.CreateBackupJob(ctx, job); err != nil {
-		return nil, fmt.Errorf("create backup job: %w", err)
+		return nil, nil, fmt.Errorf("create backup job: %w", err)
 	}
+
+	// Phase 6 D-43: notify the runtime so it can register the run-ctx
+	// cancel func against job.ID before the blocking payload stream begins.
+	if cfg.onJobCreated != nil {
+		cfg.onJobCreated(job)
+	}
+
+	// Phase 6 D-50: best-effort progress markers. Log WARN on failure and
+	// continue — the UpdateBackupJobProgress call MUST NOT fail the parent
+	// op. Captured closure so every call logs with consistent fields.
+	updateProgress := func(pct int) {
+		if err := e.store.UpdateBackupJobProgress(ctx, jobID, pct); err != nil {
+			logger.Warn("Failed to update backup job progress",
+				"job_id", jobID, "pct", pct, "error", err)
+		}
+	}
+	updateProgress(0)
 
 	logger.Info("Backup starting",
 		"repo_id", repo.ID,
@@ -130,6 +181,9 @@ func (e *Executor) RunBackup(
 		m.Encryption.KeyRef = repo.EncryptionKeyRef
 	}
 
+	// D-50 marker: destination prep complete; about to wire payload pipe.
+	updateProgress(10)
+
 	// Step 4: io.Pipe. Source goroutine writes cleartext; destination reads
 	// it. Source closes the write side with any error so PutBackup's reader
 	// observes EOF or a read error. We wait on srcDone after PutBackup
@@ -150,6 +204,9 @@ func (e *Executor) RunBackup(
 		}
 		_ = pw.Close()
 	}()
+
+	// D-50 marker: about to begin payload stream (destination drains pipe).
+	updateProgress(50)
 
 	// Destination consumes the reader and writes the manifest last. It
 	// populates m.SHA256 + m.SizeBytes through the pointer.
@@ -205,7 +262,15 @@ func (e *Executor) RunBackup(
 			"status", status,
 			"error", runErr,
 		)
-		return nil, runErr
+		// Surface the job so Phase-6 callers can report job.ID even on
+		// failure. The job struct has been populated with the terminal-state
+		// fields via the UpdateBackupJob above; mirror those onto our
+		// return-value copy so the caller sees a consistent view even
+		// without a follow-up read.
+		job.Status = status
+		job.FinishedAt = &finishedAt
+		job.Error = runErr.Error()
+		return nil, job, runErr
 	}
 
 	// Step 5 (happy path): persist the BackupRecord. CreateBackupRecord must
@@ -243,8 +308,14 @@ func (e *Executor) RunBackup(
 			"record_id", recordID,
 			"error", err,
 		)
-		return nil, fmt.Errorf("create backup record: %w", err)
+		job.Status = models.BackupStatusFailed
+		job.FinishedAt = &finishedAt
+		job.Error = errMsg
+		return nil, job, fmt.Errorf("create backup record: %w", err)
 	}
+
+	// D-50 marker: record persisted; about to finalize the job row.
+	updateProgress(95)
 
 	// Step 6: finalize the job — succeeded, BackupRecordID populated.
 	recIDRef := recordID
@@ -267,7 +338,13 @@ func (e *Executor) RunBackup(
 		"size_bytes", m.SizeBytes,
 		"sha256", m.SHA256,
 	)
-	return rec, nil
+	// Mirror the terminal-state fields the final UpdateBackupJob just
+	// persisted so the returned job pointer carries a consistent snapshot.
+	job.Status = models.BackupStatusSucceeded
+	job.FinishedAt = &finishedAt
+	job.BackupRecordID = &recIDRef
+	job.Progress = 100
+	return rec, job, nil
 }
 
 // payloadIDSetToSlice converts a backup.PayloadIDSet to a deterministically

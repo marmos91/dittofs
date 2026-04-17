@@ -430,11 +430,12 @@ func (r *Runtime) UpdateBackupRepo(ctx context.Context, repoID string) error {
 
 // RunBackup runs one backup attempt for repoID. Called by Phase 6's on-demand
 // POST /backups handler and shares the per-repo mutex with the cron path
-// (D-23). Returns storebackups.ErrBackupAlreadyRunning on contention (409 in
-// the API layer).
-func (r *Runtime) RunBackup(ctx context.Context, repoID string) (*models.BackupRecord, error) {
+// (D-23). Returns (rec, job, nil) on success so handlers can surface the
+// BackupJob ID for client polling. Returns storebackups.ErrBackupAlreadyRunning
+// on contention (409 in the API layer).
+func (r *Runtime) RunBackup(ctx context.Context, repoID string) (*models.BackupRecord, *models.BackupJob, error) {
 	if r.storeBackupsSvc == nil {
-		return nil, fmt.Errorf("storebackups service not initialized")
+		return nil, nil, fmt.Errorf("storebackups service not initialized")
 	}
 	return r.storeBackupsSvc.RunBackup(ctx, repoID)
 }

@@ -40,6 +40,16 @@ type Service struct {
 	exec    *executor.Executor
 	clock   backup.Clock
 
+	// runCtxRegistry maps active BackupJob IDs to the context.CancelFunc
+	// owned by the in-flight RunBackup / RunRestore. CancelBackupJob reads
+	// this map to propagate cancellation into the executor goroutine.
+	// Entries are inserted right after CreateBackupJob succeeds and removed
+	// via defer on terminal exit (success or error).
+	runCtxRegistry struct {
+		sync.Mutex
+		cancels map[string]context.CancelFunc
+	}
+
 	destFactory     DestinationFactoryFn
 	shutdownTimeout time.Duration
 
@@ -186,6 +196,7 @@ func New(s store.BackupStore, resolver StoreResolver, shutdownTimeout time.Durat
 		metrics: NoopMetrics{},
 		tracer:  NoopTracer{},
 	}
+	svc.runCtxRegistry.cancels = make(map[string]context.CancelFunc)
 	svc.sched = scheduler.NewScheduler(scheduler.WithOverlapGuard(svc.overlap))
 	svc.exec = executor.New(s, nil)
 	// Phase-5: every Service can handle RunRestore even without the runtime
@@ -388,23 +399,25 @@ func (s *Service) UpdateRepo(ctx context.Context, repoID string) error {
 //     if held (mapped to HTTP 409 by Phase 6).
 //  2. Resolve (target_kind, target_id) → source + storeID + storeKind.
 //  3. Build Destination via destFactory(repo).
-//  4. executor.RunBackup(ctx, source, dst, repo, storeID, storeKind).
+//  4. executor.RunBackup(ctx, source, dst, repo, storeID, storeKind) →
+//     returns (*BackupRecord, *BackupJob, error). The job is persisted
+//     synchronously before the payload stream so its cancel-func can be
+//     registered for Service.CancelBackupJob (Phase 6 D-43).
 //  5. On success: inline RunRetention(ctx, repo, dst, store, clock) under
 //     the same mutex so retention never races with an in-flight upload.
 //  6. Release mutex + close Destination.
 //
-// Returns the new BackupRecord on success. On failure, the record return is
-// nil and the BackupJob row records the failure (D-16 — no record on fail).
-// Retention failures are logged via RetentionReport and do NOT degrade the
-// parent job's success status (D-15).
+// Returns (rec, job, nil) on success. On failure, rec is nil and job is
+// non-nil after CreateBackupJob succeeded (D-16 — no record on fail, but a
+// terminal BackupJob row is always persisted).
 //
 // Named return `err` is observed by the deferred MetricsCollector +
 // Tracer finish so every terminal state (success/failed/interrupted) emits
 // exactly one counter increment plus a span end. Plan 05-09 D-19 / D-20.
-func (s *Service) RunBackup(ctx context.Context, repoID string) (rec *models.BackupRecord, err error) {
+func (s *Service) RunBackup(ctx context.Context, repoID string) (rec *models.BackupRecord, job *models.BackupJob, err error) {
 	unlock, acquired := s.overlap.TryLock(repoID)
 	if !acquired {
-		return nil, fmt.Errorf("%w: repo %s", ErrBackupAlreadyRunning, repoID)
+		return nil, nil, fmt.Errorf("%w: repo %s", ErrBackupAlreadyRunning, repoID)
 	}
 	defer unlock()
 
@@ -435,19 +448,19 @@ func (s *Service) RunBackup(ctx context.Context, repoID string) (rec *models.Bac
 	repo, err := s.store.GetBackupRepoByID(runCtx, repoID)
 	if err != nil {
 		if errors.Is(err, models.ErrBackupRepoNotFound) {
-			return nil, fmt.Errorf("%w: %s", ErrRepoNotFound, repoID)
+			return nil, nil, fmt.Errorf("%w: %s", ErrRepoNotFound, repoID)
 		}
-		return nil, fmt.Errorf("load repo: %w", err)
+		return nil, nil, fmt.Errorf("load repo: %w", err)
 	}
 
 	source, storeID, storeKind, err := s.resolver.Resolve(runCtx, repo.TargetKind, repo.TargetID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	dst, err := s.destFactory(runCtx, repo)
 	if err != nil {
-		return nil, fmt.Errorf("build destination: %w", err)
+		return nil, nil, fmt.Errorf("build destination: %w", err)
 	}
 	defer func() {
 		if cerr := dst.Close(); cerr != nil {
@@ -455,9 +468,25 @@ func (s *Service) RunBackup(ctx context.Context, repoID string) (rec *models.Bac
 		}
 	}()
 
-	rec, err = s.exec.RunBackup(runCtx, source, dst, repo, storeID, storeKind)
+	// Phase 6 D-43: pass an onJobCreated hook for THIS invocation so the
+	// run-ctx cancel func is registered before the destination PutBackup
+	// begins. Per-call option — no shared executor state, safe for
+	// concurrent RunBackup calls targeting different repos.
+	var registeredJobID string
+	rec, job, err = s.exec.RunBackup(runCtx, source, dst, repo, storeID, storeKind,
+		executor.WithOnJobCreated(func(j *models.BackupJob) {
+			if j == nil {
+				return
+			}
+			registeredJobID = j.ID
+			s.registerRunCtx(j.ID, cancelRun)
+		}),
+	)
+	if registeredJobID != "" {
+		defer s.unregisterRunCtx(registeredJobID)
+	}
 	if err != nil {
-		return nil, err
+		return nil, job, err
 	}
 
 	// Inline retention (D-08, SCHED-06). Retention failures do NOT degrade
@@ -479,7 +508,7 @@ func (s *Service) RunBackup(ctx context.Context, repoID string) (rec *models.Bac
 		"jobs_pruned", report.JobsPruned,
 	)
 
-	return rec, nil
+	return rec, job, nil
 }
 
 // runScheduledBackup is the JobFn registered with the scheduler. Delegates to
@@ -495,8 +524,48 @@ func (s *Service) runScheduledBackup(ctx context.Context, targetID string) error
 	if runCtx == nil {
 		runCtx = ctx
 	}
-	_, err := s.RunBackup(runCtx, targetID)
+	_, _, err := s.RunBackup(runCtx, targetID)
 	return err
+}
+
+// registerRunCtx stores the cancel func for an in-flight BackupJob so
+// CancelBackupJob can propagate cancellation into the executor goroutine.
+// Safe to call from any goroutine — serialized via runCtxRegistry.Mutex.
+func (s *Service) registerRunCtx(jobID string, cancel context.CancelFunc) {
+	s.runCtxRegistry.Lock()
+	s.runCtxRegistry.cancels[jobID] = cancel
+	s.runCtxRegistry.Unlock()
+}
+
+// unregisterRunCtx drops the run-ctx entry for jobID. No-op if not
+// registered. Called via defer on terminal exit so CancelBackupJob on a
+// terminal job returns ErrBackupJobNotFound (idempotent-on-terminal — the
+// REST handler maps that to 200 OK + current job per D-45).
+func (s *Service) unregisterRunCtx(jobID string) {
+	s.runCtxRegistry.Lock()
+	delete(s.runCtxRegistry.cancels, jobID)
+	s.runCtxRegistry.Unlock()
+}
+
+// CancelBackupJob cancels the in-flight executor run-ctx for jobID.
+// Returns ErrBackupJobNotFound if the job has no registered run-ctx
+// (unknown ID or already terminal — the REST handler maps the latter
+// to 200 OK + current job per D-45 idempotent semantics).
+//
+// Cancellation is synchronous w.r.t. ctx propagation: the run-ctx is
+// canceled before this call returns. The executor goroutine observes
+// ctx.Done() and winds down its own cleanup path (writing the final
+// BackupJob row with Status=interrupted). Waiting for the goroutine to
+// finish is the caller's responsibility (Phase 4 D-18 path).
+func (s *Service) CancelBackupJob(ctx context.Context, jobID string) error {
+	s.runCtxRegistry.Lock()
+	cancel, ok := s.runCtxRegistry.cancels[jobID]
+	s.runCtxRegistry.Unlock()
+	if !ok {
+		return ErrBackupJobNotFound
+	}
+	cancel()
+	return nil
 }
 
 // deriveRunCtx returns a context that cancels when EITHER the caller ctx or
