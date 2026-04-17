@@ -333,4 +333,3 @@ func (h *BackupHandler) resolveMetadataStore(w http.ResponseWriter, r *http.Requ
 	}
 	return cfg, true
 }
-

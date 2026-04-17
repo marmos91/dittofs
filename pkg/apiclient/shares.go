@@ -16,12 +16,12 @@ func normalizeShareNameForAPI(name string) string {
 
 // Share represents a share in the system.
 type Share struct {
-	ID                 string    `json:"id"`
-	Name               string    `json:"name"`
-	MetadataStoreID    string    `json:"metadata_store_id"`
-	LocalBlockStoreID  string    `json:"local_block_store_id"`
-	RemoteBlockStoreID *string   `json:"remote_block_store_id"`
-	ReadOnly           bool      `json:"read_only,omitempty"`
+	ID                 string  `json:"id"`
+	Name               string  `json:"name"`
+	MetadataStoreID    string  `json:"metadata_store_id"`
+	LocalBlockStoreID  string  `json:"local_block_store_id"`
+	RemoteBlockStoreID *string `json:"remote_block_store_id"`
+	ReadOnly           bool    `json:"read_only,omitempty"`
 	// Enabled mirrors models.Share.Enabled — Phase 6 D-28. The tag is
 	// deliberately NOT omitempty: `false` is semantically meaningful
 	// ("share is disabled") whereas read_only:false is the inert default.

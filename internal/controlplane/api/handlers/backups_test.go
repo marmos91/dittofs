@@ -40,10 +40,10 @@ type fakeBackupStore struct {
 	listFilteredErr       error
 
 	// Call recorders
-	updatedPinnedID     string
-	updatedPinnedValue  bool
-	deleteRepoCalledID  string
-	lastListFilter      store.BackupJobFilter
+	updatedPinnedID    string
+	updatedPinnedValue bool
+	deleteRepoCalledID string
+	lastListFilter     store.BackupJobFilter
 }
 
 func (f *fakeBackupStore) GetMetadataStore(_ context.Context, name string) (*models.MetadataStoreConfig, error) {
@@ -710,7 +710,7 @@ type enabledSharesErr struct {
 func (e *enabledSharesErr) Error() string {
 	return fmt.Sprintf("%s: %v", e.base.Error(), e.enabled)
 }
-func (e *enabledSharesErr) Unwrap() error          { return e.base }
+func (e *enabledSharesErr) Unwrap() error           { return e.base }
 func (e *enabledSharesErr) EnabledShares() []string { return e.enabled }
 
 func errWithEnabledShares(base error, enabled []string) error {

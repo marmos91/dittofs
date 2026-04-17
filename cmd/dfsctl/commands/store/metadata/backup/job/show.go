@@ -99,4 +99,3 @@ func durationOf(j *apiclient.BackupJob) string {
 	}
 	return d.Round(time.Second).String()
 }
-

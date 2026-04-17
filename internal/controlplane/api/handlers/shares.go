@@ -97,29 +97,29 @@ type UpdateShareRequest struct {
 
 // ShareResponse is the response body for share endpoints.
 type ShareResponse struct {
-	ID                 string `json:"id"`
-	Name               string `json:"name"`
-	MetadataStoreID    string `json:"metadata_store_id"`
-	LocalBlockStoreID  string `json:"local_block_store_id"`
+	ID                 string  `json:"id"`
+	Name               string  `json:"name"`
+	MetadataStoreID    string  `json:"metadata_store_id"`
+	LocalBlockStoreID  string  `json:"local_block_store_id"`
 	RemoteBlockStoreID *string `json:"remote_block_store_id"`
-	ReadOnly           bool   `json:"read_only"`
+	ReadOnly           bool    `json:"read_only"`
 	// Enabled mirrors models.Share.Enabled. No omitempty — `false` is
 	// semantically meaningful (the share is disabled) and consumers must
 	// render that state explicitly (D-28).
-	Enabled            bool      `json:"enabled"`
-	EncryptData        bool      `json:"encrypt_data"`
-	DefaultPermission  string    `json:"default_permission"`
-	BlockedOperations  []string  `json:"blocked_operations,omitempty"`
-	RetentionPolicy    string    `json:"retention_policy"`
-	RetentionTTL       string    `json:"retention_ttl,omitempty"`    // Human-readable duration
-	LocalStoreSize     string    `json:"local_store_size,omitempty"` // Human-readable byte size
-	ReadBufferSize     string    `json:"read_buffer_size,omitempty"` // Human-readable byte size
-	QuotaBytes         string    `json:"quota_bytes,omitempty"`      // Human-readable, e.g., "10 GiB" or empty if unlimited
-	UsedBytes          int64     `json:"used_bytes"`                 // Logical used bytes (sum of file sizes)
-	PhysicalBytes      int64     `json:"physical_bytes"`             // Block store disk usage
-	UsagePercent       float64   `json:"usage_percent"`              // 0-100, 0 if no quota
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	Enabled           bool      `json:"enabled"`
+	EncryptData       bool      `json:"encrypt_data"`
+	DefaultPermission string    `json:"default_permission"`
+	BlockedOperations []string  `json:"blocked_operations,omitempty"`
+	RetentionPolicy   string    `json:"retention_policy"`
+	RetentionTTL      string    `json:"retention_ttl,omitempty"`    // Human-readable duration
+	LocalStoreSize    string    `json:"local_store_size,omitempty"` // Human-readable byte size
+	ReadBufferSize    string    `json:"read_buffer_size,omitempty"` // Human-readable byte size
+	QuotaBytes        string    `json:"quota_bytes,omitempty"`      // Human-readable, e.g., "10 GiB" or empty if unlimited
+	UsedBytes         int64     `json:"used_bytes"`                 // Logical used bytes (sum of file sizes)
+	PhysicalBytes     int64     `json:"physical_bytes"`             // Block store disk usage
+	UsagePercent      float64   `json:"usage_percent"`              // 0-100, 0 if no quota
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 
 	// Status is the worst-of health report derived from the share's
 	// metadata store and block store engine. Non-omitempty so

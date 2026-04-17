@@ -44,4 +44,3 @@ func (c *Client) DeleteBackupRepo(storeName, repoName string, purgeArchives bool
 	}
 	return c.delete(p, nil)
 }
-

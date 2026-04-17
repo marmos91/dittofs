@@ -47,4 +47,3 @@ func (c *Client) CancelBackupJob(storeName, jobID string) (*BackupJob, error) {
 	}
 	return &job, nil
 }
-

@@ -55,12 +55,12 @@ func withListFlags(t *testing.T, status, kind, repo string, limit int) {
 // listHandler captures the query parameters of the most recent GET so tests
 // can assert what the apiclient serialised.
 type listHandler struct {
-	jobs         []apiclient.BackupJob
-	lastStatus   string
-	lastKind     string
-	lastRepo     string
-	lastLimit    string
-	callCount    int
+	jobs       []apiclient.BackupJob
+	lastStatus string
+	lastKind   string
+	lastRepo   string
+	lastLimit  string
+	callCount  int
 }
 
 func (h *listHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
