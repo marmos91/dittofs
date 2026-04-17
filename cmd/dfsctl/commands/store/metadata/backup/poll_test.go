@@ -59,6 +59,8 @@ func (f *fakePoller) CancelBackupJob(_, jobID string) (*apiclient.BackupJob, err
 	if f.cancelErr != nil {
 		return nil, f.cancelErr
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.cancelledJob = &apiclient.BackupJob{ID: jobID, Status: "interrupted"}
 	return f.cancelledJob, nil
 }
