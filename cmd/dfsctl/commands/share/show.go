@@ -26,10 +26,10 @@ var showCmd = &cobra.Command{
 
 Examples:
   # Show share details
-  dfsctl share /edge-data show
+  dfsctl share show /edge-data
 
   # Show as JSON
-  dfsctl share /edge-data show -o json`,
+  dfsctl share show /edge-data -o json`,
 	Args: cobra.ExactArgs(1),
 	RunE: runShow,
 }

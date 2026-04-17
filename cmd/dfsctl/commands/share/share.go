@@ -12,13 +12,9 @@ var Cmd = &cobra.Command{
 	Short: "Share management",
 	Long: `Manage shares on the DittoFS server.
 
-The ` + "`share`" + ` tree has two shapes:
-  - Root-level verbs (no target name): ` + "`list`, `create`" + `
-  - Per-share verbs: ` + "`share <name> <verb>`" + ` — the canonical layout
-    for ` + "`show`, `edit`, `delete`, `mount`, `unmount`, `disable`, `enable`" + `
-    and the ` + "`permission`" + ` sub-tree.
-
-These operations require admin privileges.
+The ` + "`share`" + ` tree uses ` + "`share <verb> <name>`" + ` — Cobra
+resolves the verb as the subcommand and ` + "`<name>`" + ` as its positional
+argument. These operations require admin privileges.
 
 Examples:
   # List all shares
@@ -28,22 +24,22 @@ Examples:
   dfsctl share create --name /archive --metadata default --local fs-cache --remote s3-store
 
   # Show share details
-  dfsctl share /archive show
+  dfsctl share show /archive
 
   # Edit a share interactively
-  dfsctl share /archive edit
+  dfsctl share edit /archive
 
   # Edit a share with flags
-  dfsctl share /archive edit --read-only true
+  dfsctl share edit /archive --read-only true
 
   # Disable a share (drain clients, block new connections)
-  dfsctl share /archive disable
+  dfsctl share disable /archive
 
   # Re-enable a share
-  dfsctl share /archive enable
+  dfsctl share enable /archive
 
   # Delete a share
-  dfsctl share /archive delete
+  dfsctl share delete /archive
 
   # Grant permission
   dfsctl share permission grant /archive --user alice --level read-write`,

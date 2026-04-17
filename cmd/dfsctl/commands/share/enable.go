@@ -19,10 +19,10 @@ mid-restore safety check is performed — the operator owns the timing.
 
 Examples:
   # Enable a share after a completed metadata-store restore
-  dfsctl share /archive enable
+  dfsctl share enable /archive
 
   # Emit the updated Share record as JSON
-  dfsctl share /archive enable -o json`,
+  dfsctl share enable /archive -o json`,
 	Args: cobra.ExactArgs(1),
 	RunE: runEnable,
 }

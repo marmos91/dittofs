@@ -24,10 +24,10 @@ marked disabled and all in-flight clients have been notified.
 
 Examples:
   # Disable a share before restoring its metadata store
-  dfsctl share /archive disable
+  dfsctl share disable /archive
 
   # Emit the updated Share record as JSON
-  dfsctl share /archive disable -o json`,
+  dfsctl share disable /archive -o json`,
 	Args: cobra.ExactArgs(1),
 	RunE: runDisable,
 }
