@@ -32,6 +32,9 @@ import (
 type JobStore interface {
 	CreateBackupJob(ctx context.Context, job *models.BackupJob) (string, error)
 	UpdateBackupJob(ctx context.Context, job *models.BackupJob) error
+	// UpdateBackupJobProgress is the Phase 6 D-50 stage-marker hook. Callers
+	// log WARN on failure and do NOT fail the parent op.
+	UpdateBackupJobProgress(ctx context.Context, jobID string, pct int) error
 	GetBackupRecord(ctx context.Context, id string) (*models.BackupRecord, error)
 	ListSucceededRecordsByRepo(ctx context.Context, repoID string) ([]*models.BackupRecord, error)
 }
@@ -188,6 +191,16 @@ func (e *Executor) RunRestore(ctx context.Context, p Params, opts ...RunRestoreO
 		cfg.onJobCreated(job)
 	}
 
+	// Phase 6 D-50: best-effort progress markers. Log WARN on failure and
+	// continue — UpdateBackupJobProgress MUST NOT fail the parent op.
+	updateProgress := func(pct int) {
+		if uerr := e.store.UpdateBackupJobProgress(ctx, jobID, pct); uerr != nil {
+			logger.Warn("Failed to update restore job progress",
+				"job_id", jobID, "pct", pct, "error", uerr)
+		}
+	}
+	updateProgress(0)
+
 	logger.Info("Restore starting",
 		"repo_id", p.Repo.ID,
 		"job_id", jobID,
@@ -272,11 +285,17 @@ func (e *Executor) RunRestore(ctx context.Context, p Params, opts ...RunRestoreO
 		return job, fmt.Errorf("manifest SHA-256 is empty: record %s", p.RecordID)
 	}
 
+	// D-50 marker: manifest fetched + validated.
+	updateProgress(10)
+
 	// Step 6: open fresh engine at temp path/schema.
 	freshStore, tempIdentity, err := OpenFreshEngineAtTemp(ctx, p.StoresService, p.TargetStoreCfg)
 	if err != nil {
 		return job, fmt.Errorf("open fresh engine: %w", err)
 	}
+
+	// D-50 marker: fresh engine ready; payload stream begins next.
+	updateProgress(30)
 
 	// cleanupTemp is flipped to false immediately after a successful
 	// SwapMetadataStore (step 10). Before that flip, any early return
@@ -326,6 +345,9 @@ func (e *Executor) RunRestore(ctx context.Context, p Params, opts ...RunRestoreO
 		return job, fmt.Errorf("verify payload: %w", closeErr)
 	}
 
+	// D-50 marker: payload streamed and SHA verified; pre-swap.
+	updateProgress(60)
+
 	// Step 10: atomic commit. From this moment on, clients see the
 	// restored data via the live registry pointer.
 	oldStore, err := p.StoresService.SwapMetadataStore(p.TargetStoreCfg.Name, freshStore)
@@ -333,6 +355,10 @@ func (e *Executor) RunRestore(ctx context.Context, p Params, opts ...RunRestoreO
 		return job, fmt.Errorf("swap store: %w", err)
 	}
 	cleanupTemp = false // fresh engine is live; do NOT wipe on defer.
+
+	// D-50 marker: swap committed; post-swap cleanup + boot-verifier bump
+	// still pending but they don't affect restore visibility.
+	updateProgress(95)
 
 	// Steps 11-12: close old engine + reclaim its backing + rename
 	// temp → canonical. Errors are logged, NOT fatal: the restore has

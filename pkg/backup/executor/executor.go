@@ -18,10 +18,14 @@ import (
 
 // JobStore is the narrow persistence interface the Executor needs. A subset
 // of store.BackupStore — callers pass the full store but the Executor only
-// consumes these three methods, which keeps test fakes trivial.
+// consumes these four methods, which keeps test fakes trivial.
+//
+// UpdateBackupJobProgress is the Phase 6 D-50 stage-marker hook. Callers log
+// WARN on failure and do NOT fail the parent op (best-effort semantics).
 type JobStore interface {
 	CreateBackupJob(ctx context.Context, job *models.BackupJob) (string, error)
 	UpdateBackupJob(ctx context.Context, job *models.BackupJob) error
+	UpdateBackupJobProgress(ctx context.Context, jobID string, pct int) error
 	CreateBackupRecord(ctx context.Context, rec *models.BackupRecord) (string, error)
 }
 
@@ -138,6 +142,17 @@ func (e *Executor) RunBackup(
 		cfg.onJobCreated(job)
 	}
 
+	// Phase 6 D-50: best-effort progress markers. Log WARN on failure and
+	// continue — the UpdateBackupJobProgress call MUST NOT fail the parent
+	// op. Captured closure so every call logs with consistent fields.
+	updateProgress := func(pct int) {
+		if err := e.store.UpdateBackupJobProgress(ctx, jobID, pct); err != nil {
+			logger.Warn("Failed to update backup job progress",
+				"job_id", jobID, "pct", pct, "error", err)
+		}
+	}
+	updateProgress(0)
+
 	logger.Info("Backup starting",
 		"repo_id", repo.ID,
 		"job_id", jobID,
@@ -166,6 +181,9 @@ func (e *Executor) RunBackup(
 		m.Encryption.KeyRef = repo.EncryptionKeyRef
 	}
 
+	// D-50 marker: destination prep complete; about to wire payload pipe.
+	updateProgress(10)
+
 	// Step 4: io.Pipe. Source goroutine writes cleartext; destination reads
 	// it. Source closes the write side with any error so PutBackup's reader
 	// observes EOF or a read error. We wait on srcDone after PutBackup
@@ -186,6 +204,9 @@ func (e *Executor) RunBackup(
 		}
 		_ = pw.Close()
 	}()
+
+	// D-50 marker: about to begin payload stream (destination drains pipe).
+	updateProgress(50)
 
 	// Destination consumes the reader and writes the manifest last. It
 	// populates m.SHA256 + m.SizeBytes through the pointer.
@@ -292,6 +313,9 @@ func (e *Executor) RunBackup(
 		job.Error = errMsg
 		return nil, job, fmt.Errorf("create backup record: %w", err)
 	}
+
+	// D-50 marker: record persisted; about to finalize the job row.
+	updateProgress(95)
 
 	// Step 6: finalize the job — succeeded, BackupRecordID populated.
 	recIDRef := recordID
