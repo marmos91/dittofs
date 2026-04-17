@@ -184,8 +184,8 @@ func (s *PostgresMetadataStore) initUsedBytesCounter(ctx context.Context) error 
 // after bootstrap.
 //
 // The UPDATE ... RETURNING form performs the check-and-set in a single
-// round-trip: COALESCE(NULLIF(store_id, ''), $1) keeps any existing
-// non-empty value and substitutes the fresh ULID when empty.
+// round-trip: COALESCE + NULLIF treats an empty string as NULL and then
+// substitutes the fresh ULID; any existing non-empty value is preserved.
 //
 // Used by Phase 5 D-06 store-identity gate (Pitfall #4).
 func (s *PostgresMetadataStore) ensureStoreID(ctx context.Context) (string, error) {
