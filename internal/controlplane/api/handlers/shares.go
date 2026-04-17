@@ -601,7 +601,7 @@ func (h *ShareHandler) Disable(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// ErrShareAlreadyDisabled is benign — fall through to re-read + 200.
-		if !errorIsShareAlreadyDisabled(err) {
+		if !errors.Is(err, shares.ErrShareAlreadyDisabled) {
 			InternalServerError(w, "Failed to disable share")
 			return
 		}
@@ -652,13 +652,6 @@ func (h *ShareHandler) Enable(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
 	defer cancel()
 	WriteJSONOK(w, h.shareToResponseWithUsage(ctx, share))
-}
-
-// errorIsShareAlreadyDisabled matches on shares.ErrShareAlreadyDisabled via
-// errors.Is. Returning 200 OK (re-read and respond) is correct: the caller
-// asked for the disabled state and got it.
-func errorIsShareAlreadyDisabled(err error) bool {
-	return errors.Is(err, shares.ErrShareAlreadyDisabled)
 }
 
 // SetUserPermission handles PUT /api/v1/shares/{name}/users/{username}.

@@ -10,7 +10,6 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/storebackups"
 )
 
 // CreateRepo handles POST /api/v1/store/metadata/{name}/repos. Persists the
@@ -335,6 +334,3 @@ func (h *BackupHandler) resolveMetadataStore(w http.ResponseWriter, r *http.Requ
 	return cfg, true
 }
 
-// Ensure the local `storebackups` package is linked (sentinel usage above
-// via writeRestoreError / writeBackupError in backups.go).
-var _ = storebackups.ErrBackupAlreadyRunning
