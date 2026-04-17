@@ -7,7 +7,6 @@ import (
 	"github.com/jcmturner/gofork/encoding/asn1"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
-	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -91,14 +90,19 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 		return NewErrorResult(types.StatusLogonFailure), nil
 	}
 
-	// Create authenticated session and configure signing/encryption.
-	// Set ExpiresAt before StoreSession to avoid a data race window where a
-	// concurrent reader could observe a zero ExpiresAt on the published
-	// session and skip the per-request expiry check in prepareDispatch.
+	// Create authenticated session with the Kerberos ticket end-time as the
+	// session expiry. The helper sets ExpiresAt before StoreSession to avoid
+	// a data race window where a concurrent reader could observe a zero
+	// ExpiresAt on the published session and skip the per-request expiry
+	// check in prepareDispatch (see #341 A1).
 	sessionID := h.GenerateSessionID()
-	sess := session.NewSessionWithUser(sessionID, ctx.ClientAddr, user, authResult.Realm)
-	sess.ExpiresAt = authResult.APReq.Ticket.DecryptedEncPart.EndTime
-	h.SessionManager.StoreSession(sess)
+	sess := h.CreateSessionWithUserAndExpiry(
+		sessionID,
+		ctx.ClientAddr,
+		user,
+		authResult.Realm,
+		authResult.APReq.Ticket.DecryptedEncPart.EndTime,
+	)
 	ctx.SessionID = sessionID
 	ctx.IsGuest = false
 
