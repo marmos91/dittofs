@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -285,19 +286,10 @@ func parseTypedProblem(resp *http.Response, body []byte) error {
 	return nil
 }
 
-func isProblemJSON(ct string) bool {
-	return matchContentType(ct, "application/problem+json")
-}
-func isJSON(ct string) bool {
-	return matchContentType(ct, "application/json")
-}
-func matchContentType(ct, target string) bool {
-	// Accept "application/problem+json" and "application/problem+json; charset=utf-8".
-	if len(ct) < len(target) {
-		return false
-	}
-	return ct[:len(target)] == target
-}
+// isProblemJSON / isJSON accept both the bare media type and a parameterised
+// form like "application/problem+json; charset=utf-8".
+func isProblemJSON(ct string) bool { return strings.HasPrefix(ct, "application/problem+json") }
+func isJSON(ct string) bool        { return strings.HasPrefix(ct, "application/json") }
 
 // genericAPIError mirrors client.go's error path: try to decode the body as
 // an APIError, else wrap the raw body as a message.
