@@ -325,6 +325,16 @@ func (h *BackupHandler) purgeRepoArchives(ctx context.Context, repo *models.Back
 			logger.Warn("purge_archives Delete failed",
 				"repo_id", repo.ID, "record_id", rec.ID, "error", err)
 			failed = append(failed, rec.ID)
+			continue
+		}
+		// After the on-disk archive is gone, drop the DB row so the
+		// subsequent DeleteBackupRepo's in-use check passes. If the row
+		// delete fails, log and treat the record as failed so the repo
+		// row is preserved for retry (D-21 partial-failure semantics).
+		if err := h.store.DeleteBackupRecord(ctx, rec.ID); err != nil {
+			logger.Warn("purge_archives DeleteBackupRecord failed",
+				"repo_id", repo.ID, "record_id", rec.ID, "error", err)
+			failed = append(failed, rec.ID)
 		}
 	}
 	return failed, nil
