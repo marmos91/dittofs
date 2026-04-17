@@ -180,6 +180,9 @@ func probeRemote(ctx context.Context, bs *models.BlockStoreConfig) (bool, string
 	endpoint, _ := config["endpoint"].(string)
 	accessKey, _ := config["access_key_id"].(string)
 	secretKey, _ := config["secret_access_key"].(string)
+	if accessKey == "" || secretKey == "" {
+		return false, "missing access_key_id or secret_access_key"
+	}
 	forcePathStyle, hasPathStyle := config["force_path_style"].(bool)
 	if endpoint != "" && !hasPathStyle {
 		forcePathStyle = true

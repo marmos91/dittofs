@@ -296,35 +296,18 @@ identity:
       key: password
 ```
 
-### S3 Configuration (`s3`)
+### S3 stores (provisioned via REST API)
 
-Configures S3-compatible block store credentials. Credentials are injected as environment variables for the AWS SDK.
+S3 block stores and backup destinations are created and managed dynamically through the DittoFS REST API, not via the CRD. Each store holds its own `access_key` / `secret_key` so a single DittoServer can serve multiple independent S3 backends.
 
-| Field | Type | Default | Required | Description |
-|-------|------|---------|----------|-------------|
-| `s3.region` | string | `eu-west-1` | No | Region for S3 bucket |
-| `s3.bucket` | string | - | No | Bucket name (informational; actual config via REST API) |
+Example:
 
-**S3 Credentials (`s3.credentialsSecretRef`):**
-
-| Field | Type | Default | Required | Description |
-|-------|------|---------|----------|-------------|
-| `s3.credentialsSecretRef.secretName` | string | - | **Yes** (if s3 configured) | Name of the Secret in the same namespace |
-| `s3.credentialsSecretRef.accessKeyIdKey` | string | `accessKeyId` | No | Key for access key ID in Secret |
-| `s3.credentialsSecretRef.secretAccessKeyKey` | string | `secretAccessKey` | No | Key for secret access key in Secret |
-| `s3.credentialsSecretRef.endpointKey` | string | `endpoint` | No | Key for S3 endpoint URL (optional, for S3-compatible services like Cubbit DS3) |
-
-**Examples:**
-```yaml
-s3:
-  region: "eu-west-1"
-  bucket: "my-dittofs-bucket"
-  credentialsSecretRef:
-    secretName: s3-credentials
-    accessKeyIdKey: access-key
-    secretAccessKeyKey: secret-key
-    endpointKey: endpoint  # For S3-compatible services
+```bash
+dfsctl store block remote add --name s3-content --type s3 \
+  --config '{"bucket":"my-bucket","region":"eu-west-1","access_key_id":"AKIA...","secret_access_key":"..."}'
 ```
+
+SDK-level credential chains (AWS env vars, IMDS, IRSA) are intentionally not supported — credentials must be passed explicitly per store.
 
 ### Percona PostgreSQL Configuration (`percona`)
 
@@ -498,12 +481,6 @@ spec:
         name: dittofs-admin
         key: password-hash
 
-  s3:
-    region: "eu-west-1"
-    bucket: "my-dittofs-content"
-    credentialsSecretRef:
-      secretName: aws-s3-credentials
-
   resources:
     limits:
       cpu: "2"
@@ -529,16 +506,13 @@ metadata:
 type: Opaque
 stringData:
   password-hash: "$2a$10$..."  # bcrypt hash of admin password
----
-# S3 Credentials Secret
-apiVersion: v1
-kind: Secret
-metadata:
-  name: aws-s3-credentials
-type: Opaque
-stringData:
-  accessKeyId: "AKIAIOSFODNN7EXAMPLE"
-  secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+```
+
+Once the DittoServer is Ready, create the S3 block store via the REST API (credentials must be passed explicitly per store):
+
+```bash
+dfsctl store block remote add --name s3-content --type s3 \
+  --config '{"bucket":"my-dittofs-content","region":"eu-west-1","access_key_id":"AKIA...","secret_access_key":"..."}'
 ```
 
 ### Production with Percona PostgreSQL
@@ -593,12 +567,6 @@ spec:
       passwordSecretRef:
         name: dittofs-admin
         key: password-hash
-
-  s3:
-    region: "eu-west-1"
-    bucket: "dittofs-content"
-    credentialsSecretRef:
-      secretName: s3-credentials
 
   resources:
     limits:

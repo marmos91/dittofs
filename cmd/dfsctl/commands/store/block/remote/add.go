@@ -140,38 +140,32 @@ func buildRemoteConfig(storeType, jsonConfig, bucket, region, endpoint, prefix, 
 			}
 		}
 
-		// Prompt for credentials if not provided
 		if s3AccessKey == "" {
 			var err error
-			s3AccessKey, err = prompt.InputOptional("Access key ID (leave empty for instance profile/env vars)")
+			s3AccessKey, err = prompt.InputRequired("Access key ID")
 			if err != nil {
 				return nil, err
 			}
 		}
-
-		if s3AccessKey != "" && s3SecretKey == "" {
+		if s3SecretKey == "" {
 			var err error
-			s3SecretKey, err = prompt.Password("Secret access key")
+			s3SecretKey, err = prompt.PasswordWithValidation("Secret access key", 1)
 			if err != nil {
 				return nil, err
 			}
 		}
 
 		config := map[string]any{
-			"bucket": s3Bucket,
-			"region": s3Region,
+			"bucket":            s3Bucket,
+			"region":            s3Region,
+			"access_key_id":     s3AccessKey,
+			"secret_access_key": s3SecretKey,
 		}
 		if s3Endpoint != "" {
 			config["endpoint"] = s3Endpoint
 		}
 		if s3Prefix != "" {
 			config["prefix"] = s3Prefix
-		}
-		if s3AccessKey != "" {
-			config["access_key_id"] = s3AccessKey
-		}
-		if s3SecretKey != "" {
-			config["secret_access_key"] = s3SecretKey
 		}
 		return config, nil
 

@@ -42,7 +42,7 @@ MOUNT_POINT=/mnt/bench
 # DittoFS config
 DITTOFS_ADMIN_PASSWORD="benchadmin123"
 DITTOFS_SECRET="dittofs-bench-secret-key-for-jwt-1234567890"
-S3_CONFIG='{"region":"fr-par","bucket":"dittofs-bench-payload","endpoint":"https://s3.fr-par.scw.cloud","access_key":"SCW8SK6RJTJEHPJXNC36","secret_key":"81bf6d6c-fc05-4cd6-a84d-9336c2f5eb80","force_path_style":true}'
+S3_CONFIG='{"region":"fr-par","bucket":"dittofs-bench-payload","endpoint":"https://s3.fr-par.scw.cloud","access_key_id":"SCW8SK6RJTJEHPJXNC36","secret_access_key":"81bf6d6c-fc05-4cd6-a84d-9336c2f5eb80","force_path_style":true}'
 
 # ---------------------------------------------------------------------------
 # Logging

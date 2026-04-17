@@ -921,9 +921,8 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 				initContainers = append(initContainers, buildPostgresInitContainer(dittoServer.Name))
 			}
 
-			// Merge env vars: secrets first, then S3, then Percona
+			// Merge env vars: secrets first, then Percona
 			envVars := buildSecretEnvVars(dittoServer)
-			envVars = append(envVars, buildS3EnvVars(dittoServer.Spec.S3)...)
 			if isPerconaEnabled(dittoServer) {
 				envVars = append(envVars, buildPostgresEnvVars(dittoServer.Name)...)
 			}
@@ -1079,37 +1078,6 @@ func buildContainerPorts(dittoServer *dittoiov1alpha1.DittoServer, existingPorts
 	return ports
 }
 
-// buildS3EnvVars creates environment variables for S3 credentials from Secret reference.
-// Returns nil if S3 is not configured.
-func buildS3EnvVars(spec *dittoiov1alpha1.S3StoreConfig) []corev1.EnvVar {
-	if spec == nil || spec.CredentialsSecretRef == nil {
-		return nil
-	}
-
-	ref := spec.CredentialsSecretRef
-
-	// Apply defaults for key names
-	accessKeyIDKey := stringOrDefault(ref.AccessKeyIDKey, "accessKeyId")
-	secretAccessKeyKey := stringOrDefault(ref.SecretAccessKeyKey, "secretAccessKey")
-	endpointKey := stringOrDefault(ref.EndpointKey, "endpoint")
-
-	envVars := []corev1.EnvVar{
-		secretEnvVar("AWS_ACCESS_KEY_ID", ref.SecretName, accessKeyIDKey, false),
-		secretEnvVar("AWS_SECRET_ACCESS_KEY", ref.SecretName, secretAccessKeyKey, false),
-		secretEnvVar("AWS_ENDPOINT_URL", ref.SecretName, endpointKey, true),
-	}
-
-	// Add region if specified
-	if spec.Region != "" {
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  "AWS_REGION",
-			Value: spec.Region,
-		})
-	}
-
-	return envVars
-}
-
 // secretEnvVar creates an environment variable sourced from a Kubernetes Secret.
 func secretEnvVar(envName, secretName, key string, optional bool) corev1.EnvVar {
 	env := corev1.EnvVar{
@@ -1127,13 +1095,6 @@ func secretEnvVar(envName, secretName, key string, optional bool) corev1.EnvVar 
 		env.ValueFrom.SecretKeyRef.Optional = &optional
 	}
 	return env
-}
-
-func stringOrDefault(value, defaultValue string) string {
-	if value == "" {
-		return defaultValue
-	}
-	return value
 }
 
 // buildSecretEnvVars creates environment variables for secrets that should NOT be in the ConfigMap.
@@ -1394,22 +1355,6 @@ func (r *DittoServerReconciler) collectSecretData(ctx context.Context, dittoServ
 		// Hash all keys so any credential change triggers pod restart.
 		for k, v := range secret.Data {
 			secrets["postgres:"+k] = v
-		}
-	}
-
-	// S3 credentials secret (if configured)
-	if dittoServer.Spec.S3 != nil && dittoServer.Spec.S3.CredentialsSecretRef != nil {
-		secret := &corev1.Secret{}
-		if err := r.Get(ctx, client.ObjectKey{
-			Namespace: dittoServer.Namespace,
-			Name:      dittoServer.Spec.S3.CredentialsSecretRef.SecretName,
-		}, secret); err != nil {
-			return nil, fmt.Errorf("failed to get S3 credentials secret: %w", err)
-		}
-
-		// Include all data from the secret for hash
-		for k, v := range secret.Data {
-			secrets["s3:"+k] = v
 		}
 	}
 

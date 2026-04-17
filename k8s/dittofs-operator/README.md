@@ -105,7 +105,6 @@ sudo mount -t nfs -o tcp,port=12049,mountport=12049 $EXTERNAL_IP:/export /mnt/di
 - **Declarative Management** - Define DittoFS configuration as Kubernetes resources
 - **Automatic Resource Management** - StatefulSets, Services, ConfigMaps, PVCs
 - **Protocol Support** - NFS and SMB with configurable ports
-- **S3 Credentials Injection** - Automatic AWS SDK environment variables
 - **Percona PostgreSQL Integration** - Production-grade metadata store
 - **Status Conditions** - Ready, Available, ConfigReady, DatabaseReady
 - **Observability** - Prometheus metrics, events, structured logging

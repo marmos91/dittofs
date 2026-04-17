@@ -558,64 +558,16 @@ kubectl logs -n dittofs deployment/dittofs-operator-controller-manager -f | grep
 
 ---
 
-### S3 Secret Not Found or Invalid
+### S3 Store Credentials
 
-**Symptom:**
-
-Webhook validation returns a warning about S3 Secret:
-
-```
-Warning: S3 credentials secret "s3-credentials" not found in namespace "default"
-```
-
-Or pod fails to start with secret mount error.
-
-**Cause:**
-
-- Secret doesn't exist
-- Secret exists but in wrong namespace
-- Secret missing required keys
-
-**Solution:**
-
-**Step 1: Verify Secret exists**
+S3 block stores and backup destinations are configured through the DittoFS REST API, not via the CRD. Each store carries its own `access_key_id` / `secret_access_key`; the operator does not inject AWS environment variables, and IMDS/IRSA fallbacks are not supported.
 
 ```bash
-kubectl get secret s3-credentials -n <namespace>
+dfsctl store block remote add --name s3-content --type s3 \
+  --config '{"bucket":"my-bucket","region":"eu-west-1","access_key_id":"AKIA...","secret_access_key":"..."}'
 ```
 
-**Step 2: Check Secret has required keys**
-
-```bash
-kubectl get secret s3-credentials -o jsonpath='{.data}' | jq 'keys'
-
-# Required keys (default names):
-# - accessKeyId
-# - secretAccessKey
-# - endpoint (optional)
-```
-
-**Step 3: Create Secret if missing**
-
-```bash
-kubectl create secret generic s3-credentials \
-  --from-literal=accessKeyId=YOUR_ACCESS_KEY \
-  --from-literal=secretAccessKey=YOUR_SECRET_KEY \
-  --from-literal=endpoint=https://s3.cubbit.eu
-```
-
-**Debug commands:**
-
-```bash
-# List secrets in namespace
-kubectl get secrets
-
-# Describe specific secret
-kubectl describe secret s3-credentials
-
-# Check pod environment variables
-kubectl exec dittofs-sample-0 -- env | grep AWS
-```
+If a store call fails with `missing access_key_id or secret_access_key`, re-issue with explicit credentials.
 
 ---
 
