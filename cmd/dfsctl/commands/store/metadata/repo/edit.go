@@ -112,7 +112,7 @@ func buildEditRequest(cmd *cobra.Command) (*apiclient.BackupRepoRequest, error) 
 	}
 
 	if changed == 0 {
-		return nil, fmt.Errorf("No fields to update. Pass at least one of --schedule / --keep-count / --keep-age-days / --encryption / --encryption-key-ref.")
+		return nil, fmt.Errorf("no fields to update; pass at least one of --schedule / --keep-count / --keep-age-days / --encryption / --encryption-key-ref")
 	}
 
 	return req, nil

@@ -65,8 +65,8 @@ func runRun(cmd *cobra.Command, args []string) error {
 		// D-13 BackupAlreadyRunningError: surface the running job id + hint.
 		var already *apiclient.BackupAlreadyRunningError
 		if errors.As(err, &already) {
-			fmt.Fprintf(stderrOut, "Backup already running: %s.\n", already.RunningJobID)
-			fmt.Fprintf(stderrOut, "Show: dfsctl store metadata %s backup job show %s\n",
+			_, _ = fmt.Fprintf(stderrOut, "Backup already running: %s.\n", already.RunningJobID)
+			_, _ = fmt.Fprintf(stderrOut, "Show: dfsctl store metadata %s backup job show %s\n",
 				storeName, already.RunningJobID)
 			return fmt.Errorf("backup already running")
 		}
@@ -83,7 +83,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	// --wait default (D-01 / D-02).
-	fmt.Fprintf(stderrOut, "Backup job %s started (record %s). Polling...\n",
+	_, _ = fmt.Fprintf(stderrOut, "Backup job %s started (record %s). Polling...\n",
 		resp.Job.ID, resp.Record.ID)
 
 	format := parseFormat()
@@ -126,10 +126,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	default:
-		fmt.Fprintf(stdoutOut, "\u2713 Backup completed\n")
-		fmt.Fprintf(stdoutOut, "  Record:    %s\n", resp.Record.ID)
-		fmt.Fprintf(stdoutOut, "  Duration:  %s\n", renderDuration(job))
-		fmt.Fprintf(stdoutOut, "  Size:      %s\n", humanSize(resp.Record.SizeBytes))
+		_, _ = fmt.Fprintf(stdoutOut, "\u2713 Backup completed\n")
+		_, _ = fmt.Fprintf(stdoutOut, "  Record:    %s\n", resp.Record.ID)
+		_, _ = fmt.Fprintf(stdoutOut, "  Duration:  %s\n", renderDuration(job))
+		_, _ = fmt.Fprintf(stdoutOut, "  Size:      %s\n", humanSize(resp.Record.SizeBytes))
 	}
 
 	exitFunc(SuccessExitCode(job.Status))
@@ -154,7 +154,7 @@ func emitAsyncOutput(storeName string, rec *apiclient.BackupRecord, job *apiclie
 		if err := output.PrintTable(stdoutOut, asyncJobSummary{record: rec, job: job}); err != nil {
 			return err
 		}
-		fmt.Fprintf(stderrOut, "Poll: dfsctl store metadata %s backup job show %s\n",
+		_, _ = fmt.Fprintf(stderrOut, "Poll: dfsctl store metadata %s backup job show %s\n",
 			storeName, job.ID)
 	}
 	return nil

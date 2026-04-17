@@ -110,13 +110,13 @@ func WaitForJob(ctx context.Context, client jobPoller, opts WaitOptions) (*apicl
 			action := interruptHandler(opts.StoreName, opts.JobID)
 			switch action {
 			case "d":
-				fmt.Fprintf(stderrOut,
+				_, _ = fmt.Fprintf(stderrOut,
 					"Detached — job still running. Poll: dfsctl store metadata %s backup job show %s\n",
 					opts.StoreName, opts.JobID)
 				return nil, ErrPollDetached
 			case "c":
 				if _, err := client.CancelBackupJob(opts.StoreName, opts.JobID); err != nil {
-					fmt.Fprintf(stderrOut, "Cancel failed: %v (continuing to poll)\n", err)
+					_, _ = fmt.Fprintf(stderrOut, "Cancel failed: %v (continuing to poll)\n", err)
 				}
 				// Re-arm the signal watcher for a future Ctrl-C.
 				stop()
@@ -126,7 +126,7 @@ func WaitForJob(ctx context.Context, client jobPoller, opts WaitOptions) (*apicl
 				pollCtx, stop = notifyInterrupt(ctx)
 			}
 		case <-deadline:
-			fmt.Fprintf(stderrOut,
+			_, _ = fmt.Fprintf(stderrOut,
 				"Timeout — job still running. Poll: dfsctl store metadata %s backup job show %s\n",
 				opts.StoreName, opts.JobID)
 			return nil, ErrPollTimeout

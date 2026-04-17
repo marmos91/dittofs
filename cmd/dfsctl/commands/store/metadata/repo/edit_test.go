@@ -75,8 +75,8 @@ func TestRepoEdit_NoFlags_Errors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when no edit flags changed")
 	}
-	if !strings.Contains(err.Error(), "No fields to update") {
-		t.Errorf("error = %q, want message containing 'No fields to update'", err.Error())
+	if !strings.Contains(err.Error(), "no fields to update") {
+		t.Errorf("error = %q, want message containing 'no fields to update'", err.Error())
 	}
 }
 

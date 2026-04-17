@@ -281,16 +281,7 @@ func (s *Service) RunRestoreDryRun(ctx context.Context, repoID string, recordID 
 		return nil, fmt.Errorf("%w: got %d want %d",
 			ErrManifestVersionUnsupported, m.ManifestVersion, manifest.CurrentVersion)
 	}
-	manifestValid := true
-	if m.StoreKind != storeKind {
-		manifestValid = false
-	}
-	if m.StoreID != storeID {
-		manifestValid = false
-	}
-	if m.SHA256 == "" {
-		manifestValid = false
-	}
+	manifestValid := m.StoreKind == storeKind && m.StoreID == storeID && m.SHA256 != ""
 
 	// Report (do NOT enforce) enabled shares — D-31.
 	enabled := s.shares.ListEnabledSharesForStore(storeName)

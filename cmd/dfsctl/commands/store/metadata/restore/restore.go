@@ -144,7 +144,7 @@ This will REPLACE all metadata in %s. Continue?`, storeName, pickFromLabel(resto
 			return cmdutil.HandleAbort(err)
 		}
 		if !confirmed {
-			fmt.Fprintln(stdoutOut, "Aborted.")
+			_, _ = fmt.Fprintln(stdoutOut, "Aborted.")
 			return nil
 		}
 	}
@@ -170,7 +170,7 @@ This will REPLACE all metadata in %s. Continue?`, storeName, pickFromLabel(resto
 		return emitAsyncRestoreOutput(storeName, job)
 	}
 
-	fmt.Fprintf(stderrOut, "Restore job %s started. Polling...\n", job.ID)
+	_, _ = fmt.Fprintf(stderrOut, "Restore job %s started. Polling...\n", job.ID)
 	pollCtx := cmd.Context()
 	if pollCtx == nil {
 		pollCtx = context.Background()
@@ -207,10 +207,10 @@ This will REPLACE all metadata in %s. Continue?`, storeName, pickFromLabel(resto
 			return err
 		}
 	default:
-		fmt.Fprintf(stdoutOut, "\u2713 Restore %s\n", finalJob.Status)
+		_, _ = fmt.Fprintf(stdoutOut, "\u2713 Restore %s\n", finalJob.Status)
 		if finalJob.Status == "succeeded" {
-			fmt.Fprintln(stdoutOut, "Shares remain disabled. Re-enable with:")
-			fmt.Fprintln(stdoutOut, "  dfsctl share <name> enable")
+			_, _ = fmt.Fprintln(stdoutOut, "Shares remain disabled. Re-enable with:")
+			_, _ = fmt.Fprintln(stdoutOut, "  dfsctl share <name> enable")
 		}
 	}
 	exitFunc(backup.SuccessExitCode(finalJob.Status))
@@ -224,9 +224,9 @@ This will REPLACE all metadata in %s. Continue?`, storeName, pickFromLabel(resto
 //	  dfsctl share <a> disable
 //	  dfsctl share <b> disable
 func renderPreconditionFailure(_ string, enabledShares []string) error {
-	fmt.Fprintf(stderrOut, "Cannot restore: %d share(s) enabled \u2014 disable them first.\n", len(enabledShares))
+	_, _ = fmt.Fprintf(stderrOut, "Cannot restore: %d share(s) enabled \u2014 disable them first.\n", len(enabledShares))
 	for _, s := range enabledShares {
-		fmt.Fprintf(stderrOut, "  dfsctl share '%s' disable\n", s)
+		_, _ = fmt.Fprintf(stderrOut, "  dfsctl share '%s' disable\n", s)
 	}
 	return fmt.Errorf("restore precondition failed: %d share(s) still enabled", len(enabledShares))
 }
@@ -260,29 +260,29 @@ func runDryRun(client *apiclient.Client, storeName, fromID string) error {
 	}
 
 	// Table mode.
-	fmt.Fprintln(stdoutOut, "Dry run: pre-flight only (no data mutation, no payload download).")
-	fmt.Fprintf(stdoutOut, "  Target store:     %s\n", storeName)
+	_, _ = fmt.Fprintln(stdoutOut, "Dry run: pre-flight only (no data mutation, no payload download).")
+	_, _ = fmt.Fprintf(stdoutOut, "  Target store:     %s\n", storeName)
 	if result.Record != nil {
-		fmt.Fprintf(stdoutOut, "  Selected record:  %s  (created %s, size %s)\n",
+		_, _ = fmt.Fprintf(stdoutOut, "  Selected record:  %s  (created %s, size %s)\n",
 			result.Record.ID,
 			result.Record.CreatedAt.UTC().Format("2006-01-02 15:04:05 UTC"),
 			humanSize(result.Record.SizeBytes))
 	} else {
-		fmt.Fprintln(stdoutOut, "  Selected record:  <none>")
+		_, _ = fmt.Fprintln(stdoutOut, "  Selected record:  <none>")
 	}
 	if result.ManifestValid {
-		fmt.Fprintln(stdoutOut, "  Manifest:         valid")
+		_, _ = fmt.Fprintln(stdoutOut, "  Manifest:         valid")
 	} else {
-		fmt.Fprintln(stdoutOut, "  Manifest:         INVALID (restore will refuse)")
+		_, _ = fmt.Fprintln(stdoutOut, "  Manifest:         INVALID (restore will refuse)")
 	}
 	if len(result.EnabledShares) > 0 {
-		fmt.Fprintf(stdoutOut, "\n  Note: %d share(s) currently enabled on %s:\n", len(result.EnabledShares), storeName)
+		_, _ = fmt.Fprintf(stdoutOut, "\n  Note: %d share(s) currently enabled on %s:\n", len(result.EnabledShares), storeName)
 		for _, s := range result.EnabledShares {
-			fmt.Fprintf(stdoutOut, "    %s\n", s)
+			_, _ = fmt.Fprintf(stdoutOut, "    %s\n", s)
 		}
-		fmt.Fprintln(stdoutOut, "  Disable them before running the real restore:")
+		_, _ = fmt.Fprintln(stdoutOut, "  Disable them before running the real restore:")
 		for _, s := range result.EnabledShares {
-			fmt.Fprintf(stdoutOut, "    dfsctl share '%s' disable\n", s)
+			_, _ = fmt.Fprintf(stdoutOut, "    dfsctl share '%s' disable\n", s)
 		}
 	}
 	return nil
@@ -298,8 +298,8 @@ func emitAsyncRestoreOutput(storeName string, job *apiclient.BackupJob) error {
 	case output.FormatYAML:
 		return output.PrintYAML(stdoutOut, job)
 	}
-	fmt.Fprintf(stdoutOut, "Restore job %s started (status: %s).\n", job.ID, job.Status)
-	fmt.Fprintf(stderrOut, "Poll: dfsctl store metadata %s backup job show %s\n", storeName, job.ID)
+	_, _ = fmt.Fprintf(stdoutOut, "Restore job %s started (status: %s).\n", job.ID, job.Status)
+	_, _ = fmt.Fprintf(stderrOut, "Poll: dfsctl store metadata %s backup job show %s\n", storeName, job.ID)
 	return nil
 }
 

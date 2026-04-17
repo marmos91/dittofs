@@ -2,7 +2,6 @@ package job
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/marmos91/dittofs/internal/cli/output"
@@ -49,19 +48,13 @@ func runCancel(cmd *cobra.Command, args []string) error {
 		return cmdutil.PrintResource(stdoutOut, job, nil)
 	}
 
-	// Table mode. In production stdoutOut == os.Stdout, so we delegate to
-	// cmdutil.PrintSuccessWithInfo which writes the colored success banner
-	// + info lines to os.Stdout. Under tests stdoutOut is a *bytes.Buffer,
-	// and cmdutil.PrintSuccessWithInfo hard-codes os.Stdout — so we bypass
-	// it and write plain text to the injected sink instead. Either path
-	// delivers the same user-visible hint.
+	// Table mode: write banner + hint to the injected sink via output.Printer
+	// so colors render in production and tests still capture the bytes.
 	banner := fmt.Sprintf("Cancel requested for job %s.", jobID)
 	hint := fmt.Sprintf("Poll: dfsctl store metadata %s backup job show %s", storeName, jobID)
-	if stdoutOut == os.Stdout {
-		cmdutil.PrintSuccessWithInfo(banner, hint)
-	} else {
-		fmt.Fprintln(stdoutOut, banner)
-		fmt.Fprintln(stdoutOut, hint)
+	output.NewPrinter(stdoutOut, output.FormatTable, !cmdutil.IsColorDisabled()).Success(banner)
+	if _, err := fmt.Fprintln(stdoutOut, hint); err != nil {
+		return err
 	}
 	return nil
 }
