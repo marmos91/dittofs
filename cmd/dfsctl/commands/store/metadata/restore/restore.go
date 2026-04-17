@@ -314,9 +314,8 @@ func parseFormat() output.Format {
 }
 
 // humanSize renders a byte count using binary units ("1.0MB", "234KB",
-// "12B"). Duplicated from backup/format.go — importing the backup package
-// only for this helper would bloat the restore package's dependency graph
-// for 8 lines of trivial code.
+// "12B"). Kept inline rather than exporting from the backup package —
+// eight trivial lines aren't worth the indirection for a single caller.
 func humanSize(b int64) string {
 	const unit = 1024
 	if b < unit {
