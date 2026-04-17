@@ -264,8 +264,8 @@ func TestRestore_SharesEnabled409_RendersHint(t *testing.T) {
 	if !strings.Contains(stderrStr, "Cannot restore: 2 share(s) enabled") {
 		t.Errorf("expected D-29 header on stderr; got %q", stderrStr)
 	}
-	if !strings.Contains(stderrStr, "dfsctl share /a disable") ||
-		!strings.Contains(stderrStr, "dfsctl share /b disable") {
+	if !strings.Contains(stderrStr, "dfsctl share '/a' disable") ||
+		!strings.Contains(stderrStr, "dfsctl share '/b' disable") {
 		t.Errorf("expected per-share disable commands on stderr; got %q", stderrStr)
 	}
 }
@@ -304,7 +304,7 @@ func TestRestore_DryRun_CallsServerEndpoint(t *testing.T) {
 		"Selected record:",
 		"01HABCDEFGHJKMNPQRSTUVWXY1",
 		"Manifest:         valid",
-		"dfsctl share /a disable",
+		"dfsctl share '/a' disable",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("expected stdout to contain %q; got %q", want, stdout)

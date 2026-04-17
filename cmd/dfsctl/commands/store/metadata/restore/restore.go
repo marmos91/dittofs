@@ -226,7 +226,7 @@ This will REPLACE all metadata in %s. Continue?`, storeName, pickFromLabel(resto
 func renderPreconditionFailure(_ string, enabledShares []string) error {
 	fmt.Fprintf(stderrOut, "Cannot restore: %d share(s) enabled \u2014 disable them first.\n", len(enabledShares))
 	for _, s := range enabledShares {
-		fmt.Fprintf(stderrOut, "  dfsctl share %s disable\n", s)
+		fmt.Fprintf(stderrOut, "  dfsctl share '%s' disable\n", s)
 	}
 	return fmt.Errorf("restore precondition failed: %d share(s) still enabled", len(enabledShares))
 }
@@ -282,7 +282,7 @@ func runDryRun(client *apiclient.Client, storeName, fromID string) error {
 		}
 		fmt.Fprintln(stdoutOut, "  Disable them before running the real restore:")
 		for _, s := range result.EnabledShares {
-			fmt.Fprintf(stdoutOut, "    dfsctl share %s disable\n", s)
+			fmt.Fprintf(stdoutOut, "    dfsctl share '%s' disable\n", s)
 		}
 	}
 	return nil
