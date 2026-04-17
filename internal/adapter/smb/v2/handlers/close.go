@@ -286,7 +286,18 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			}
 
 			if deleteErr != nil {
-				logger.Debug("CLOSE: failed to delete", "path", openFile.Path, "isDir", openFile.IsDirectory, "error", deleteErr)
+				// Per MS-SMB2 3.3.5.10 and MS-FSA 2.1.5.4, a CLOSE that cannot
+				// honor DELETE_ON_CLOSE must surface the failure to the client.
+				// Returning STATUS_SUCCESS while the underlying unlink failed
+				// causes the client to believe the file is gone and reissue
+				// CREATE/CLOSE in a tight loop (smbtorture smb2.session.reauth5,
+				// issue #388).
+				resp.Status = MetadataErrorToSMBStatus(deleteErr)
+				logger.Debug("CLOSE: failed to delete",
+					"path", openFile.Path,
+					"isDir", openFile.IsDirectory,
+					"status", resp.Status,
+					"error", deleteErr)
 			} else {
 				logger.Debug("CLOSE: deleted", "path", openFile.Path, "isDir", openFile.IsDirectory)
 
