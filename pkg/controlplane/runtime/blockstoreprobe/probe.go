@@ -31,6 +31,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/pathutil"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote/s3"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/health"
@@ -108,7 +109,11 @@ func probeLocal(ctx context.Context, bs *models.BlockStoreConfig) (health.Status
 	if rawPath == "" {
 		return health.StatusUnhealthy, "no path configured"
 	}
-	path := filepath.Clean(rawPath)
+	expanded, err := pathutil.ExpandPath(rawPath)
+	if err != nil {
+		return health.StatusUnhealthy, "cannot resolve configured path"
+	}
+	path := filepath.Clean(expanded)
 
 	info, err := os.Stat(path)
 	if err != nil {
