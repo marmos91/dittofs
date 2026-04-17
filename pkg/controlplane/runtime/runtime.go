@@ -488,6 +488,16 @@ func (r *Runtime) DestFactoryFn() storebackups.DestinationFactoryFn {
 	return r.storeBackupsSvc.DestFactory()
 }
 
+// StoreBackupsService returns the storebackups sub-service so Phase 6's
+// REST handlers can reach RunBackup / RunRestore / RunRestoreDryRun /
+// CancelBackupJob / ValidateSchedule / RegisterRepo / UnregisterRepo /
+// UpdateRepo without the thin Runtime wrappers (which only expose a subset).
+// Returns nil when the runtime was constructed with a nil store (test
+// scaffolding) — callers must nil-check.
+func (r *Runtime) StoreBackupsService() *storebackups.Service {
+	return r.storeBackupsSvc
+}
+
 // --- Identity Mapping (delegated to identity.Service) ---
 
 func (r *Runtime) ApplyIdentityMapping(shareName string, ident *metadata.Identity) (*metadata.Identity, error) {

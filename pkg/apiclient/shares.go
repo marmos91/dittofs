@@ -150,3 +150,24 @@ func (c *Client) SetGroupSharePermission(shareName, groupName, level string) err
 func (c *Client) RemoveGroupSharePermission(shareName, groupName string) error {
 	return c.delete(fmt.Sprintf("/api/v1/shares/%s/permissions/groups/%s", url.PathEscape(normalizeShareNameForAPI(shareName)), groupName), nil)
 }
+
+// DisableShare flips Enabled=false on the share. Returns the updated Share
+// (with Enabled=false). Admin-only on the server side (D-27).
+func (c *Client) DisableShare(name string) (*Share, error) {
+	var share Share
+	if err := c.post(fmt.Sprintf("/api/v1/shares/%s/disable",
+		url.PathEscape(normalizeShareNameForAPI(name))), nil, &share); err != nil {
+		return nil, err
+	}
+	return &share, nil
+}
+
+// EnableShare flips Enabled=true on the share. Idempotent server-side.
+func (c *Client) EnableShare(name string) (*Share, error) {
+	var share Share
+	if err := c.post(fmt.Sprintf("/api/v1/shares/%s/enable",
+		url.PathEscape(normalizeShareNameForAPI(name))), nil, &share); err != nil {
+		return nil, err
+	}
+	return &share, nil
+}
