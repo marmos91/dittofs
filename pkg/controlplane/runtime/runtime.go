@@ -310,6 +310,21 @@ func (r *Runtime) UpdateShare(name string, readOnly *bool, defaultPermission *st
 	return r.sharesSvc.UpdateShare(name, readOnly, defaultPermission, retentionPolicy, retentionTTL)
 }
 
+// DisableShare sets enabled=false on the share's DB row and runtime
+// registry, then notifies adapters so active sessions drop (Phase 5 D-02/D-03).
+// Idempotent on already-disabled shares (returns shares.ErrShareAlreadyDisabled
+// which callers typically treat as a benign no-op). Exposed for Phase 6's
+// POST /api/v1/shares/{name}/disable handler (D-27).
+func (r *Runtime) DisableShare(ctx context.Context, name string) error {
+	return r.sharesSvc.DisableShare(ctx, r.store, name)
+}
+
+// EnableShare inverts DisableShare. Idempotent on already-enabled shares
+// (no DB write). Phase 6's POST /api/v1/shares/{name}/enable handler (D-27).
+func (r *Runtime) EnableShare(ctx context.Context, name string) error {
+	return r.sharesSvc.EnableShare(ctx, r.store, name)
+}
+
 func (r *Runtime) GetShare(name string) (*Share, error) {
 	return r.sharesSvc.GetShare(name)
 }

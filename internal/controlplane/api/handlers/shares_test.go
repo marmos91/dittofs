@@ -159,3 +159,59 @@ func TestShareHandler_Get_IncludesStatus(t *testing.T) {
 		t.Errorf("Get.Status.Status = %q, want valid health.Status", resp.Status.Status)
 	}
 }
+
+// TestShareHandler_Disable_NotFound verifies Disable returns 404 for shares
+// the runtime does not know about (not-yet-loaded or truly missing). The
+// DB-only seedShare test fixture leaves the runtime registry empty, so every
+// Disable call naturally exercises the not-found path — which is all the
+// integration layer can reasonably cover without wiring a full runtime with
+// real block/metadata stores.
+func TestShareHandler_Disable_NotFound(t *testing.T) {
+	cpStore, _, handler := setupShareTestWithRuntime(t)
+	seedShare(t, cpStore, "s-dis")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/shares/s-dis/disable", nil)
+	req = withShareName(req, "s-dis")
+	w := httptest.NewRecorder()
+	handler.Disable(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("Disable runtime-unknown = %d, want 404; body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestShareHandler_Enable_NotFound mirrors the Disable path.
+func TestShareHandler_Enable_NotFound(t *testing.T) {
+	cpStore, _, handler := setupShareTestWithRuntime(t)
+	seedShare(t, cpStore, "s-en")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/shares/s-en/enable", nil)
+	req = withShareName(req, "s-en")
+	w := httptest.NewRecorder()
+	handler.Enable(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("Enable runtime-unknown = %d, want 404; body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestShareHandler_Get_IncludesEnabledField verifies D-28 at the integration
+// layer: the `enabled` JSON field is always present and mirrors the DB row.
+func TestShareHandler_Get_IncludesEnabledField(t *testing.T) {
+	cpStore, _, handler := setupShareTestWithRuntime(t)
+	seedShare(t, cpStore, "s-enabled-json")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/shares/s-enabled-json", nil)
+	req = withShareName(req, "s-enabled-json")
+	w := httptest.NewRecorder()
+	handler.Get(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Get = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	// Decode raw so we can assert the key is present.
+	var raw map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := raw["enabled"]; !ok {
+		t.Errorf("ShareResponse JSON missing `enabled` key: %v", raw)
+	}
+}
