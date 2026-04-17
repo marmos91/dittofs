@@ -51,7 +51,7 @@
 - [ ] **API-02**: `dfsctl store metadata <store-name> restore [--from <backup-id>]` restores from the attached repo (requires shares disabled; interactive confirmation unless `--yes`)
 - [ ] **API-03**: `dfsctl store metadata <store-name> backup list` shows backup id, timestamp, size, status, repo name
 - [ ] **API-04**: `dfsctl store metadata <store-name> repo add/list/remove` manages backup repos on the store (destination config, cron schedule, retention policy)
-- [ ] **API-05**: REST API exposes `POST /api/stores/metadata/{name}/backups`, `GET /api/stores/metadata/{name}/backups`, `POST /api/stores/metadata/{name}/restore` with async-job semantics (202 Accepted + `GET /api/backup-jobs/{id}` for status)
+- [ ] **API-05**: REST API exposes `POST /api/v1/store/metadata/{name}/backups`, `GET /api/v1/store/metadata/{name}/backups`, `POST /api/v1/store/metadata/{name}/restore` with async-job semantics (202 Accepted + `GET /api/v1/store/metadata/{name}/backup-jobs/{id}` for status)
 - [ ] **API-06**: Async job records are persisted so clients can poll after disconnect; dittofs-pro UI drives the same endpoints as `dfsctl`
 
 ### Safety & GC Integration (SAFETY)

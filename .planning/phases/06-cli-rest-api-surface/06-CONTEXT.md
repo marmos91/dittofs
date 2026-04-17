@@ -37,7 +37,7 @@ Specifically:
    verbs affected: `delete`, `edit`, `show`, `mount`, `unmount`. Only
    `share list` and `share create` stay root-level (no target name).
 
-6. **REST endpoints** under `/api/v1/stores/metadata/{name}/`:
+6. **REST endpoints** under `/api/v1/store/metadata/{name}/`:
    `POST backups` (trigger), `GET backups` (list records), `GET backups/{id}`
    (show record), `PATCH backups/{id}` (pin/unpin), `POST restore`, `GET
    backup-jobs?status=&kind=&limit=` (list jobs), `GET backup-jobs/{id}`
@@ -142,7 +142,7 @@ Specifically:
   dfsctl store metadata <name> restore                # restore
   dfsctl store metadata <name> repo add/list/show/edit/remove
   ```
-  REST mirror: everything under `/api/v1/stores/metadata/{name}/`. No
+  REST mirror: everything under `/api/v1/store/metadata/{name}/`. No
   top-level `GET /api/backup-jobs` or `dfsctl backup-job` — strict per-store
   symmetry per user directive.
 
@@ -185,7 +185,7 @@ Specifically:
 - **D-19 — `repo edit` is partial patch.**
   Only flags the operator passes are updated; the rest preserve DB values.
   Runtime D-22 treats every edit as Unregister + Register. REST:
-  `PATCH /api/v1/stores/metadata/{name}/repos/{repo_name}` with nullable
+  `PATCH /api/v1/store/metadata/{name}/repos/{repo_name}` with nullable
   fields in body.
 
 - **D-20 — `repo list` default table columns: `NAME | KIND | SCHEDULE |
@@ -213,7 +213,7 @@ Specifically:
 
 - **D-23 — `backup pin/unpin <id>` lives under the per-store subtree.**
   `dfsctl store metadata <name> backup pin <id>` / `unpin <id>`. REST:
-  `PATCH /api/v1/stores/metadata/{name}/backups/{id}` with
+  `PATCH /api/v1/store/metadata/{name}/backups/{id}` with
   `{"pinned": true}` / `false`.
 
 ### Backup List UX
@@ -361,7 +361,7 @@ Specifically:
 
 ### Job API Surface
 
-- **D-42 — Job list endpoint: `GET /api/v1/stores/metadata/{name}/backup-jobs?
+- **D-42 — Job list endpoint: `GET /api/v1/store/metadata/{name}/backup-jobs?
   status=&kind=&limit=`.**
   Filters: `status ∈ {pending, running, succeeded, failed, interrupted}`,
   `kind ∈ {backup, restore}`, `limit` capped at 200 (default 50).
@@ -369,7 +369,7 @@ Specifically:
   (multi-repo store), add `?repo=<name>`. No `since` / cursor pagination
   in v0.13.0 — D-17 30-day pruner bounds the row count.
 
-- **D-43 — Cancel endpoint: `POST /api/v1/stores/metadata/{name}/backup-jobs/
+- **D-43 — Cancel endpoint: `POST /api/v1/store/metadata/{name}/backup-jobs/
   {id}/cancel`.**
   Server cancels the executor run ctx (Phase 4 D-18 path); job transitions
   to `status=interrupted` with `error="canceled by operator"`. No new
@@ -414,7 +414,7 @@ Specifically:
   `-o json` / `-o yaml`: flat `BackupJob` model (no derived Duration).
 
 - **D-48 — `backup show <id>` exposes the BackupRecord.**
-  REST: `GET /api/v1/stores/metadata/{name}/backups/{id}`. Response =
+  REST: `GET /api/v1/store/metadata/{name}/backups/{id}`. Response =
   full `BackupRecord` (id, created_at, size_bytes, status, pinned,
   sha256, store_id, manifest_path, repo_id). CLI table mode: grouped
   sections mirroring Job show. **Does not** parse/render
@@ -625,7 +625,7 @@ implementing.**
 - **"Everything per-store" (user, session 2026-04-17).** No top-level `dfsctl
   backup-job` or `GET /api/backup-jobs` endpoints in v0.13.0 — every command
   and every REST path is nested under the store. Job lookups by ULID go
-  through `GET /api/stores/metadata/{name}/backup-jobs/{id}`. Explicitly
+  through `GET /api/v1/store/metadata/{name}/backup-jobs/{id}`. Explicitly
   chosen for symmetry with `backup`, `restore`, `backup list`, `repo *`
   — one subtree per store.
 
