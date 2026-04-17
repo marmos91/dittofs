@@ -10,6 +10,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// shareEnabledString renders the Share.Enabled field as "yes" / "no" for
+// human-readable table output. D-28 specifies the two-valued display.
+func shareEnabledString(enabled bool) string {
+	if enabled {
+		return "yes"
+	}
+	return "no"
+}
+
 var showCmd = &cobra.Command{
 	Use:   "show <name>",
 	Short: "Show share details",
@@ -17,10 +26,10 @@ var showCmd = &cobra.Command{
 
 Examples:
   # Show share details
-  dfsctl share show /edge-data
+  dfsctl share /edge-data show
 
   # Show as JSON
-  dfsctl share show /edge-data -o json`,
+  dfsctl share /edge-data show -o json`,
 	Args: cobra.ExactArgs(1),
 	RunE: runShow,
 }
@@ -56,6 +65,7 @@ func (sd ShareDetail) Rows() [][]string {
 		{"Local Block Store", s.LocalBlockStoreID},
 		{"Remote Block Store", remoteStore},
 		{"Read Only", fmt.Sprintf("%v", s.ReadOnly)},
+		{"Enabled", shareEnabledString(s.Enabled)},
 		{"Default Permission", s.DefaultPermission},
 		{"Retention", retPolicy},
 	}

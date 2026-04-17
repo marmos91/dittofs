@@ -19,10 +19,10 @@ unless --force is specified.
 
 Examples:
   # Delete share with confirmation
-  dfsctl share delete /archive
+  dfsctl share /archive delete
 
   # Delete share without confirmation
-  dfsctl share delete /archive --force`,
+  dfsctl share /archive delete --force`,
 	Args: cobra.ExactArgs(1),
 	RunE: runDelete,
 }

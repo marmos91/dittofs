@@ -15,7 +15,7 @@ var unmountCmd = &cobra.Command{
 	Long: `Unmount a DittoFS share from a local mount point.
 
 Examples:
-  # Unmount a share
+  # Unmount a share (positional argument is the mount point path)
   dfsctl share unmount /mnt/dittofs
 
   # Force unmount if busy
@@ -24,7 +24,10 @@ Examples:
   # Windows: unmount a mapped drive
   dfsctl share unmount Z:
 
-Note: Unmount commands typically require sudo/root privileges on Unix systems.`,
+Note: Unmount commands typically require sudo/root privileges on Unix systems.
+Unmount identifies the target by mount-point path rather than share name
+because a single share can be mounted to multiple local paths; the D-35
+` + "`share <name> <verb>`" + ` shape therefore does not extend to unmount.`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		if len(args) < 1 {
 			return fmt.Errorf("requires mount point path\n\nUsage: dfsctl share unmount [mountpoint]\n\nExample: dfsctl share unmount /mnt/dittofs")
