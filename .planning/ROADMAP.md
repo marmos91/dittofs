@@ -14,7 +14,7 @@
 - [x] **Phase 3: Destination Drivers + Encryption** - Local FS + S3 destination drivers with atomic completion, SHA-256 integrity, and AES-256-GCM encryption at rest (completed 2026-04-16)
 - [ ] **Phase 4: Scheduler + Retention** - robfig/cron/v3 scheduler with overlap guard, jitter, count/age retention, pin, and separate post-upload retention pass
 - [ ] **Phase 5: Restore Orchestration + Safety Rails** - Quiesce-swap-resume restore, share-disable precondition, manifest verification, interrupted-job recovery, block-GC hold integration
-- [ ] **Phase 6: CLI & REST API Surface** - `dfsctl store metadata ... backup/restore/repo` subtree and REST API with async job semantics
+- [x] **Phase 6: CLI & REST API Surface** - `dfsctl store metadata ... backup/restore/repo` subtree and REST API with async job semantics (completed 2026-04-17)
 - [ ] **Phase 7: Testing & Hardening** - Localstack S3 E2E matrix, corruption/partial-restore coverage, cross-version tests, chaos tests
 
 ## Phase Details
@@ -154,10 +154,10 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundations — Models, Manifest, Capability Interface | 0/0 | Not started | - |
-| 2. Per-Engine Backup Drivers | 0/4 | Not started | - |
+| 1. Foundations — Models, Manifest, Capability Interface | 3/3 | Complete    | 2026-04-15 |
+| 2. Per-Engine Backup Drivers | 4/4 | Complete    | 2026-04-15 |
 | 3. Destination Drivers + Encryption | 6/6 | Complete    | 2026-04-16 |
-| 4. Scheduler + Retention | 0/5 | Not started | - |
-| 5. Restore Orchestration + Safety Rails | 8/10 | In Progress|  |
-| 6. CLI & REST API Surface | 0/6 | Not started | - |
+| 4. Scheduler + Retention | 5/5 | Complete    | 2026-04-16 |
+| 5. Restore Orchestration + Safety Rails | 10/10 | Complete    | 2026-04-17 |
+| 6. CLI & REST API Surface | 6/6 | Complete    | 2026-04-17 |
 | 7. Testing & Hardening | 0/0 | Not started | - |
