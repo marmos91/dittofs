@@ -7,6 +7,7 @@ import (
 	"github.com/jcmturner/gofork/encoding/asn1"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
+	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -36,9 +37,19 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 	}
 	smbPrincipal := deriveSMBPrincipal(basePrincipal, h.SMBServicePrincipal)
 
+	// The SPNEGO MechToken is a GSS-API initial context token (RFC 2743
+	// Section 3.1) wrapping the Kerberos AP-REQ. KerberosService.Authenticate
+	// expects a raw AP-REQ, so we need to strip the GSS-API wrapper first.
+	// NFS performs the equivalent step at rpc/gss/framework.go.
+	apReqBytes, err := extractAPReqFromGSSToken(mechToken)
+	if err != nil {
+		logger.Info("Failed to extract AP-REQ from GSS token", "error", err)
+		return NewErrorResult(types.StatusLogonFailure), nil
+	}
+
 	// Authenticate via shared service (handles AP-REQ parsing, verification,
 	// replay detection, and subkey preference).
-	authResult, err := h.KerberosService.Authenticate(mechToken, smbPrincipal)
+	authResult, err := h.KerberosService.Authenticate(apReqBytes, smbPrincipal)
 	if err != nil {
 		logger.Info("Kerberos authentication failed", "error", err)
 		return NewErrorResult(types.StatusLogonFailure), nil
@@ -81,10 +92,26 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 	}
 
 	// Create authenticated session and configure signing/encryption.
+	// Set ExpiresAt before StoreSession to avoid a data race window where a
+	// concurrent reader could observe a zero ExpiresAt on the published
+	// session and skip the per-request expiry check in prepareDispatch.
 	sessionID := h.GenerateSessionID()
-	sess := h.CreateSessionWithUser(sessionID, ctx.ClientAddr, user, authResult.Realm)
+	sess := session.NewSessionWithUser(sessionID, ctx.ClientAddr, user, authResult.Realm)
+	sess.ExpiresAt = authResult.APReq.Ticket.DecryptedEncPart.EndTime
+	h.SessionManager.StoreSession(sess)
 	ctx.SessionID = sessionID
 	ctx.IsGuest = false
+
+	// Initialize per-session preauth hash for SMB 3.1.1 key derivation.
+	// Per MS-SMB2 3.3.5.5: each session gets its own preauth hash chain
+	// seeded from the connection hash and chained with the SESSION_SETUP
+	// request bytes. Without this, configureSessionSigningWithKey falls
+	// back to the connection-level hash and produces wrong signing/encryption
+	// keys, causing the client to reject the signed SESSION_SETUP response.
+	// The NTLM path does the equivalent in handleSessionSetup.
+	if ctx.ConnCryptoState != nil {
+		ctx.ConnCryptoState.InitSessionPreauthHash(sessionID, ctx.RawRequest)
+	}
 
 	// Configure session signing with normalized 16-byte key.
 	// This goes through the same KDF pipeline as NTLM, producing
@@ -101,15 +128,30 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 		"signingEnabled", sess.ShouldSign(),
 		"encryptData", sess.ShouldEncrypt())
 
-	// Build mutual auth AP-REP via shared service for SPNEGO accept-complete response.
-	// Use the ticket session key for AP-REP encryption per RFC 4120 (not the context
-	// key which may be the subkey). Clients decrypt AP-REP with the ticket session key.
+	// Build mutual auth AP-REP and wrap it in a GSS-API InitialContextToken
+	// (RFC 2743 Section 3.1) for the SPNEGO accept-complete response:
+	//
+	//   0x60 [len] 0x06 <oid-len> <oid-bytes> 0x02 0x00 <AP-REP>
+	//
+	// AP-REP encryption uses the ticket session key per RFC 4120 (not the
+	// context subkey), which is what clients decrypt with.
+	//
+	// CRITICAL: the OID inside this wrapper must be the standard RFC 4121
+	// Kerberos V5 OID (1.2.840.113554.1.2.2), even when the client advertised
+	// the MS legacy OID (1.2.840.48018.1.2.2) in SPNEGO mechTypes. MIT's
+	// krb5_gss and Heimdal only recognize the standard OID internally, so
+	// echoing the MS OID here causes them to reject the token with
+	// GSS_S_DEFECTIVE_TOKEN (issue #335, resolved by #337). Windows SSPI
+	// accepts both. The outer SPNEGO supportedMech (responseOID) still
+	// mirrors the client's choice for negTokenResp compatibility.
 	ticketSessionKey := authResult.APReq.Ticket.DecryptedEncPart.Key
-	apRepToken, err := h.KerberosService.BuildMutualAuth(&authResult.APReq, ticketSessionKey)
+	rawAPRep, err := h.KerberosService.BuildMutualAuth(&authResult.APReq, ticketSessionKey)
+	var apRepToken []byte
 	if err != nil {
 		logger.Debug("Failed to build AP-REP for mutual auth", "error", err)
 		// Fall back to accept-complete without AP-REP (still functional).
-		apRepToken = nil
+	} else {
+		apRepToken = kerbauth.WrapGSSToken(rawAPRep, kerbauth.KerberosV5OIDBytes, kerbauth.GSSTokenIDAPRep)
 	}
 
 	// Match the client's Kerberos OID in the SPNEGO response.

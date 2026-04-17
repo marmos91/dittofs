@@ -172,9 +172,13 @@ func (s *KerberosService) Authenticate(apReqBytes []byte, servicePrincipal strin
 // BuildMutualAuth constructs a raw AP-REP token for mutual authentication.
 //
 // The returned bytes are raw AP-REP (APPLICATION 15), NOT GSS-wrapped.
-// Protocol-specific framing is handled by callers:
-//   - NFS: wraps in GSS-API token (0x60 + OID + 0x0200 header)
-//   - SMB: passes raw AP-REP to SPNEGO
+// Both protocol adapters wrap in a GSS-API InitialContextToken
+// (0x60 + OID + 0x0200 header per RFC 2743 §3.1) before delivery:
+//   - NFS: rpc/gss/framework.go adds the wrapper for RPCSEC_GSS replies.
+//   - SMB: v2/handlers/kerberos_auth.go adds the wrapper via WrapGSSToken
+//     before placing the token inside the SPNEGO accept-complete response.
+//     MIT krb5_gss and Heimdal reject raw AP-REPs with GSS_S_DEFECTIVE_TOKEN
+//     (see #337). Do not skip the wrap.
 //
 // Per RFC 4120 Section 5.5.2, the EncAPRepPart contains:
 //   - ctime/cusec copied from the authenticator (proves we decrypted the ticket)
