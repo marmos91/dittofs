@@ -85,7 +85,7 @@ func NewFromConfig(ctx context.Context, config Config) (*Store, error) {
 		return nil, errors.New("s3 block store: bucket is required")
 	}
 	if config.AccessKey == "" || config.SecretKey == "" {
-		return nil, errors.New("s3 block store: access_key and secret_key are required")
+		return nil, errors.New("s3 block store: access_key_id and secret_access_key are required")
 	}
 
 	var opts []func(*awsconfig.LoadOptions) error

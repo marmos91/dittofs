@@ -298,9 +298,14 @@ identity:
 
 ### S3 stores (provisioned via REST API)
 
-S3 block stores and backup destinations are created and managed dynamically through the DittoFS REST API, not via the CRD. Each store holds its own `access_key` / `secret_key` so a single DittoServer can serve multiple independent S3 backends.
+S3 block stores and backup destinations are created and managed dynamically through the DittoFS REST API, not via the CRD. Each store holds its own credentials so a single DittoServer can serve multiple independent S3 backends.
 
-Example:
+The two store types use different JSON key names for credentials:
+
+- **Block store remote** — uses `access_key_id` / `secret_access_key`.
+- **Backup destination** — uses `access_key` / `secret_key` (see `docs/BACKUP.md`).
+
+Example (block store):
 
 ```bash
 dfsctl store block remote add --name s3-content --type s3 \

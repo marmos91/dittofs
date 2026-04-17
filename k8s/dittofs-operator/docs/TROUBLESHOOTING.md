@@ -560,14 +560,20 @@ kubectl logs -n dittofs deployment/dittofs-operator-controller-manager -f | grep
 
 ### S3 Store Credentials
 
-S3 block stores and backup destinations are configured through the DittoFS REST API, not via the CRD. Each store carries its own `access_key_id` / `secret_access_key`; the operator does not inject AWS environment variables, and IMDS/IRSA fallbacks are not supported.
+S3 block stores and backup destinations are configured through the DittoFS REST API, not via the CRD. The operator does not inject AWS environment variables, and IMDS/IRSA fallbacks are not supported — credentials must be passed explicitly per store.
+
+The two store types use different JSON key names for credentials:
+
+- **Block store remote** (`pkg/blockstore/remote/s3`) — uses `access_key_id` / `secret_access_key`.
+- **Backup destination** (`pkg/backup/destination/s3`, see `docs/BACKUP.md`) — uses `access_key` / `secret_key`.
 
 ```bash
+# Block store
 dfsctl store block remote add --name s3-content --type s3 \
   --config '{"bucket":"my-bucket","region":"eu-west-1","access_key_id":"AKIA...","secret_access_key":"..."}'
 ```
 
-If a store call fails with `missing access_key_id or secret_access_key`, re-issue with explicit credentials.
+If a block-store call fails with `access_key_id and secret_access_key are required`, re-issue with explicit credentials using those exact keys. Backup destination configs use different key names — consult `docs/BACKUP.md` for the correct JSON shape.
 
 ---
 

@@ -55,10 +55,14 @@ const (
 	orphanSweepTimeout = 2 * time.Minute
 )
 
-// Config mirrors the field names and JSON keys of
-// pkg/blockstore/remote/s3.Config so operators can copy-paste between
-// block-store and backup-repo configs (D-12). The field names here are the
-// exact keys runtime/shares/service.go reads — see PITFALL #8 / D-13.
+// Config is the JSON contract for backup-repo S3 destinations. The field
+// names here (access_key / secret_key) are the exact keys
+// runtime/shares/service.go reads for backup repos — see PITFALL #8 / D-13.
+//
+// NOTE: these keys intentionally differ from the block-store S3 config in
+// pkg/blockstore/remote/s3.Config, which uses access_key_id /
+// secret_access_key. Do not copy-paste between the two — operators must
+// use the correct key names for each store type.
 type Config struct {
 	Bucket         string `json:"bucket"`
 	Region         string `json:"region,omitempty"`
