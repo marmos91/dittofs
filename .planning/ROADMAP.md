@@ -131,7 +131,7 @@ Plans:
 **Plans:** 6 plans
 
 Plans:
-- [ ] 06-01-PLAN.md — BackupStore methods (ListBackupRecords/ListBackupJobsFiltered/UpdateBackupRecordPinned/UpdateBackupJobProgress) + D-50 progress instrumentation in backup/restore executors + Share.Enabled JSON tag
+- [x] 06-01-PLAN.md — BackupStore methods (ListBackupRecords/ListBackupJobsFiltered/UpdateBackupRecordPinned/UpdateBackupJobProgress) + D-50 progress instrumentation in backup/restore executors + Share.Enabled JSON tag
 - [ ] 06-02-PLAN.md — REST handlers (backups, backup_jobs, backup_repos) + typed problem variants (D-13, D-29, D-46) + shares.go Disable/Enable + router wiring + apiclient typed methods
 - [ ] 06-03-PLAN.md — CLI share restructure (D-35 breaking flip) + dfsctl share <name> disable|enable + ENABLED column on list/show (D-27, D-28, D-36..D-39) + CHANGELOG v0.13.0 entry
 - [ ] 06-04-PLAN.md — CLI repo subtree (add/list/show/edit/remove) with interactive per-kind prompts, partial-patch edit, --purge-archives cascade (D-14..D-22)
