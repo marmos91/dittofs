@@ -158,10 +158,10 @@ func (s *Store) PutBackup(ctx context.Context, m *manifest.Manifest, payload io.
 	if m.StoreKind == "" {
 		return fmt.Errorf("%w: manifest.StoreKind is required", destination.ErrIncompatibleConfig)
 	}
-	// PayloadIDSet == nil is rejected; empty slice is valid (zero-block backup).
-	if m.PayloadIDSet == nil {
-		return fmt.Errorf("%w: manifest.PayloadIDSet is required (may be empty, not nil)", destination.ErrIncompatibleConfig)
-	}
+	// PayloadIDSet is populated by the executor AFTER source.Backup returns,
+	// which happens AFTER our io.Copy drains the pipe below. Accept nil here
+	// and rely on the manifest write path to serialize whatever slice the
+	// executor has stamped by then (empty or populated).
 
 	id := m.BackupID
 	tmpDir := filepath.Join(s.root, id+tmpSuffix)

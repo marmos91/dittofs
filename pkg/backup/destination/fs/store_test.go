@@ -324,13 +324,12 @@ func TestFSStore_List_ChronologicalOrder(t *testing.T) {
 	}
 }
 
-// TestFSStore_NilPayloadIDSet_Rejected is a regression test for the
-// explicit pre-write field check that replaced the full manifest
-// Validate method. nil PayloadIDSet would previously have crashed the
-// call inside Validate on the SHA256-is-empty branch before reaching
-// PayloadIDSet; the explicit field check surfaces it cleanly with
-// ErrIncompatibleConfig BEFORE any files are created.
-func TestFSStore_NilPayloadIDSet_Rejected(t *testing.T) {
+// TestFSStore_NilPayloadIDSet_Accepted verifies the executor-handoff
+// contract: PayloadIDSet is populated by the executor AFTER source.Backup
+// returns (which is AFTER our io.Copy drains the pipe). Accepting nil on
+// entry + serializing whatever slice is stamped by manifest-write time is
+// required to avoid a pipe deadlock in the success path.
+func TestFSStore_NilPayloadIDSet_Accepted(t *testing.T) {
 	s, _ := newTestStore(t)
 	id := ulid.Make().String()
 	m := &manifest.Manifest{
@@ -341,9 +340,7 @@ func TestFSStore_NilPayloadIDSet_Rejected(t *testing.T) {
 		StoreKind:       "memory",
 		PayloadIDSet:    nil,
 	}
-	err := s.PutBackup(context.Background(), m, bytes.NewReader([]byte("x")))
-	require.Error(t, err)
-	require.ErrorIs(t, err, destination.ErrIncompatibleConfig)
+	require.NoError(t, s.PutBackup(context.Background(), m, bytes.NewReader([]byte("x"))))
 }
 
 // TestFSStore_GetManifestOnly_Roundtrip exercises the Phase 5 D-12 cheap

@@ -202,6 +202,11 @@ func (e *Executor) RunBackup(
 			_ = pw.CloseWithError(srcErr)
 			return
 		}
+		// Stamp PayloadIDSet on the shared manifest BEFORE closing the pipe.
+		// Destination writes manifest.yaml AFTER io.Copy returns (which
+		// happens when we close the pipe below), so the stamp must land
+		// first or the manifest ships with PayloadIDSet=nil.
+		m.PayloadIDSet = payloadIDSetToSlice(ids)
 		_ = pw.Close()
 	}()
 
@@ -212,18 +217,17 @@ func (e *Executor) RunBackup(
 	// populates m.SHA256 + m.SizeBytes through the pointer.
 	dstErr := dst.PutBackup(ctx, m, pr)
 
+	// Close the reader side of the pipe BEFORE waiting on srcDone. If
+	// PutBackup returned early (validation error, mkdir failure, etc.) it
+	// never drained the pipe, so the source goroutine is blocked on
+	// pw.Write. Closing pr here unblocks that write with io.ErrClosedPipe
+	// so srcDone can close. Closing a pipe reader is idempotent, so this
+	// is also safe after successful PutBackup.
+	_ = pr.CloseWithError(dstErr)
+
 	// Ensure the source goroutine has finished before we inspect srcErr /
 	// build the error aggregation.
 	<-srcDone
-
-	// Close reader — idempotent on an already-closed pipe.
-	_ = pr.Close()
-
-	// Stamp PayloadIDSet into the manifest from the source's return value.
-	// Sorted for deterministic YAML output (destination writes manifest last
-	// on the destination side; here we update the in-memory copy so callers
-	// with a manifest pointer observe the final set).
-	m.PayloadIDSet = payloadIDSetToSlice(ids)
 
 	// Aggregate errors in priority order: source beats destination beats ctx.
 	var runErr error

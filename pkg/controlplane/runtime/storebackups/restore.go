@@ -130,8 +130,7 @@ func (s *Service) RunRestore(ctx context.Context, repoID string, recordID *strin
 
 	// REST-02 pre-flight gate — shares must be disabled before restore.
 	if enabled := s.shares.ListEnabledSharesForStore(storeName); len(enabled) > 0 {
-		return nil, fmt.Errorf("%w: store %q has %d enabled share(s): %v",
-			ErrRestorePreconditionFailed, storeName, len(enabled), enabled)
+		return nil, newRestorePreconditionError(storeName, enabled)
 	}
 
 	// D-15 / D-16 record selection.
@@ -269,7 +268,10 @@ func (s *Service) RunRestoreDryRun(ctx context.Context, repoID string, recordID 
 		}
 	}()
 
-	m, err := dst.GetManifestOnly(ctx, rec.ManifestPath)
+	// GetManifestOnly takes the backup ID (ULID), not the manifest path —
+	// the driver appends /manifest.yaml internally. rec.ManifestPath is the
+	// relative on-disk path ("<id>/manifest.yaml") and would double-append.
+	m, err := dst.GetManifestOnly(ctx, rec.ID)
 	if err != nil {
 		return nil, fmt.Errorf("fetch manifest: %w", err)
 	}
