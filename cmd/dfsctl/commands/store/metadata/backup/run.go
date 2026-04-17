@@ -116,15 +116,16 @@ func runRun(cmd *cobra.Command, args []string) error {
 	// D-10 success summary. JSON mode emits the bare BackupJob; table mode
 	// prints a human banner + the BackupRecord.ID so operators can chain
 	// `backup show <id>` / `backup pin <id>` immediately.
-	if format == output.FormatJSON {
+	switch format {
+	case output.FormatJSON:
 		if err := output.PrintJSON(stdoutOut, job); err != nil {
 			return err
 		}
-	} else if format == output.FormatYAML {
+	case output.FormatYAML:
 		if err := output.PrintYAML(stdoutOut, job); err != nil {
 			return err
 		}
-	} else {
+	default:
 		fmt.Fprintf(stdoutOut, "\u2713 Backup completed\n")
 		fmt.Fprintf(stdoutOut, "  Record:    %s\n", resp.Record.ID)
 		fmt.Fprintf(stdoutOut, "  Duration:  %s\n", renderDuration(job))
