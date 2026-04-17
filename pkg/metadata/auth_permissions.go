@@ -447,21 +447,15 @@ func (s *MetadataService) checkWritePermission(ctx *AuthContext, handle FileHand
 //
 // Sticky-bit semantics are enforced separately by CheckStickyBitRestriction,
 // which the caller must invoke after this check on the resolved file entry.
-func (s *MetadataService) checkDeletePermission(ctx *AuthContext, parentHandle, fileHandle FileHandle) error {
+func (s *MetadataService) checkDeletePermission(ctx *AuthContext, parentHandle FileHandle, file *File) error {
 	// Rule 1: WRITE on parent (POSIX).
 	if err := s.checkWritePermission(ctx, parentHandle); err == nil {
 		return nil
 	}
 
 	// Rule 2: caller owns the target.
-	if ctx != nil && ctx.Identity != nil && ctx.Identity.UID != nil {
-		if store, err := s.storeForHandle(fileHandle); err == nil {
-			if file, err := store.GetFile(ctx.Context, fileHandle); err == nil {
-				if file.FileAttr.UID == *ctx.Identity.UID {
-					return nil
-				}
-			}
-		}
+	if file != nil && ctx.Identity != nil && ctx.Identity.UID != nil && file.FileAttr.UID == *ctx.Identity.UID {
+		return nil
 	}
 
 	return &StoreError{

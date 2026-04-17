@@ -160,7 +160,7 @@ func (s *MetadataService) RemoveDirectory(ctx *AuthContext, parentHandle FileHan
 	}
 
 	// Check delete permission: WRITE on parent (POSIX) or owner-of-dir (Windows DELETE).
-	if err := s.checkDeletePermission(ctx, parentHandle, dirHandle); err != nil {
+	if err := s.checkDeletePermission(ctx, parentHandle, dir); err != nil {
 		return err
 	}
 

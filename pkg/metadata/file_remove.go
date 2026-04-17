@@ -70,7 +70,7 @@ func (s *MetadataService) RemoveFile(ctx *AuthContext, parentHandle FileHandle, 
 	}
 
 	// Check delete permission: WRITE on parent (POSIX) or owner-of-file (Windows DELETE).
-	if err := s.checkDeletePermission(ctx, parentHandle, fileHandle); err != nil {
+	if err := s.checkDeletePermission(ctx, parentHandle, file); err != nil {
 		return nil, err
 	}
 
