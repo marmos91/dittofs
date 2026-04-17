@@ -10,7 +10,9 @@ import (
 //
 // This handles:
 //   - Input validation
-//   - Permission checking (write on parent)
+//   - Permission checking via checkDeletePermission: WRITE on parent (POSIX)
+//     or owner-of-target with ctx.HasDeleteAccess (Windows DELETE semantics,
+//     used by SMB DELETE_ON_CLOSE)
 //   - Sticky bit enforcement
 //   - Hard link management (decrement or set nlink=0)
 //   - Parent timestamp updates

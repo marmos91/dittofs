@@ -129,8 +129,10 @@ func (resp *CloseResponse) Encode() ([]byte, error) {
 // conversion (SMB-to-NFS symlink interop), handles delete-on-close, releases
 // byte-range locks and oplocks, and unregisters any pending CHANGE_NOTIFY watches.
 //
-// Flush and delete errors are logged but do not fail the CLOSE -- the handle
-// is always released to prevent resource leaks.
+// Flush errors are logged but do not fail the CLOSE. Delete-on-close unlink
+// failures are surfaced to the client per MS-SMB2 3.3.5.10 / MS-FSA 2.1.5.4
+// (#388) — the client must know the file was not removed. The handle itself
+// is always released regardless, to prevent resource leaks.
 func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseResponse, error) {
 	logger.Debug("CLOSE request",
 		"fileID", fmt.Sprintf("%x", req.FileID),
@@ -277,10 +279,11 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 		if err != nil {
 			logger.Warn("CLOSE: failed to build auth context for delete", "error", err)
 		} else {
-			// CREATE already verified DELETE access when honoring
-			// FILE_DELETE_ON_CLOSE (create.go:913). Signal that to the
-			// metadata layer so the owner-of-target delete rule applies
-			// without loosening POSIX unlink(2) for NFS callers.
+			// DELETE access was verified upstream before DeletePending was set:
+			// either by CREATE honoring FILE_DELETE_ON_CLOSE (create.go:913) or
+			// by SET_INFO FileDispositionInformation (set_info.go:752). Signal
+			// that to the metadata layer so the owner-of-target delete rule
+			// applies without loosening POSIX unlink(2) for NFS callers.
 			authCtx.HasDeleteAccess = true
 			metaSvc := h.Registry.GetMetadataService()
 			var deleteErr error

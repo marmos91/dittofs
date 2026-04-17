@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"context"
+	"errors"
 
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
@@ -449,8 +450,16 @@ func (s *MetadataService) checkWritePermission(ctx *AuthContext, handle FileHand
 // which the caller must invoke after this check on the resolved file entry.
 func (s *MetadataService) checkDeletePermission(ctx *AuthContext, parentHandle FileHandle, file *File) error {
 	// Rule 1: WRITE on parent (POSIX).
-	if err := s.checkWritePermission(ctx, parentHandle); err == nil {
+	writeErr := s.checkWritePermission(ctx, parentHandle)
+	if writeErr == nil {
 		return nil
+	}
+	// Only fall through to rule 2 when rule 1 was a permission denial. Surface
+	// non-permission failures (context cancellation, store errors, etc.) as-is
+	// so they aren't silently rewritten to "delete permission denied".
+	var storeErr *StoreError
+	if !errors.As(writeErr, &storeErr) || storeErr.Code != ErrAccessDenied {
+		return writeErr
 	}
 
 	// Rule 2: caller owns the target AND an upstream DELETE-access check passed.
@@ -458,7 +467,7 @@ func (s *MetadataService) checkDeletePermission(ctx *AuthContext, parentHandle F
 	// can't be deleted by root through the owner path.
 	if ctx.HasDeleteAccess && !ctx.ShareReadOnly &&
 		file != nil && ctx.Identity != nil && ctx.Identity.UID != nil &&
-		file.FileAttr.UID == *ctx.Identity.UID {
+		file.UID == *ctx.Identity.UID {
 		return nil
 	}
 

@@ -674,6 +674,115 @@ func TestMetadataService_RemoveFile_DeletePermission(t *testing.T) {
 	})
 }
 
+// prepareDeletePermDirTest mirrors prepareDeletePermTest for empty directory
+// targets. Returns the parent handle and the name of an empty directory inside
+// it owned by `dirTargetOwner`.
+func prepareDeletePermDirTest(t *testing.T, fx *testFixture, parentMode uint32, parentOwner, dirTargetOwner uint32) (metadata.FileHandle, string) {
+	t.Helper()
+
+	_, err := fx.service.CreateDirectory(fx.rootContext(), fx.rootHandle, "parent", &metadata.FileAttr{
+		Mode: 0777,
+	})
+	require.NoError(t, err)
+
+	parentHandle, err := fx.store.GetChild(t.Context(), fx.rootHandle, "parent")
+	require.NoError(t, err)
+
+	_, err = fx.service.CreateDirectory(fx.rootContext(), parentHandle, "target", &metadata.FileAttr{
+		Mode: 0755,
+	})
+	require.NoError(t, err)
+
+	targetHandle, err := fx.store.GetChild(t.Context(), parentHandle, "target")
+	require.NoError(t, err)
+
+	err = fx.service.SetFileAttributes(fx.rootContext(), targetHandle, &metadata.SetAttrs{
+		UID: metadata.Uint32Ptr(dirTargetOwner),
+		GID: metadata.Uint32Ptr(dirTargetOwner),
+	})
+	require.NoError(t, err)
+
+	err = fx.service.SetFileAttributes(fx.rootContext(), parentHandle, &metadata.SetAttrs{
+		Mode: metadata.Uint32Ptr(parentMode),
+		UID:  metadata.Uint32Ptr(parentOwner),
+		GID:  metadata.Uint32Ptr(parentOwner),
+	})
+	require.NoError(t, err)
+
+	return parentHandle, "target"
+}
+
+func TestMetadataService_RemoveDirectory_DeletePermission(t *testing.T) {
+	t.Parallel()
+
+	// Rule 1 (POSIX): WRITE on parent + non-owner → allow.
+	t.Run("WRITE-on-parent non-owner allowed", func(t *testing.T) {
+		t.Parallel()
+		fx := newTestFixture(t)
+
+		parentHandle, name := prepareDeletePermDirTest(t, fx, 0777, 1000, 2000)
+
+		err := fx.service.RemoveDirectory(fx.authContext(3000, 3000), parentHandle, name)
+		require.NoError(t, err)
+	})
+
+	// Rule 2 (SMB-gated): no WRITE on parent, owner, HasDeleteAccess → allow.
+	t.Run("no-WRITE-on-parent owner SMB-delete allowed", func(t *testing.T) {
+		t.Parallel()
+		fx := newTestFixture(t)
+
+		parentHandle, name := prepareDeletePermDirTest(t, fx, 0755, 1000, 2000)
+
+		err := fx.service.RemoveDirectory(fx.smbDeleteContext(2000, 2000), parentHandle, name)
+		require.NoError(t, err)
+	})
+
+	// NFS POSIX: owner without HasDeleteAccess denied when parent not writable.
+	t.Run("no-WRITE-on-parent owner NFS-style denied", func(t *testing.T) {
+		t.Parallel()
+		fx := newTestFixture(t)
+
+		parentHandle, name := prepareDeletePermDirTest(t, fx, 0755, 1000, 2000)
+
+		err := fx.service.RemoveDirectory(fx.authContext(2000, 2000), parentHandle, name)
+		require.Error(t, err)
+		var storeErr *metadata.StoreError
+		require.ErrorAs(t, err, &storeErr)
+		assert.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
+	})
+
+	// Non-owner with HasDeleteAccess still denied (no WRITE on parent).
+	t.Run("no-WRITE-on-parent non-owner denied", func(t *testing.T) {
+		t.Parallel()
+		fx := newTestFixture(t)
+
+		parentHandle, name := prepareDeletePermDirTest(t, fx, 0755, 1000, 2000)
+
+		err := fx.service.RemoveDirectory(fx.smbDeleteContext(3000, 3000), parentHandle, name)
+		require.Error(t, err)
+		var storeErr *metadata.StoreError
+		require.ErrorAs(t, err, &storeErr)
+		assert.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
+	})
+
+	// Read-only share blocks rule 2 even for owner with HasDeleteAccess.
+	t.Run("read-only-share owner SMB-delete denied", func(t *testing.T) {
+		t.Parallel()
+		fx := newTestFixture(t)
+
+		parentHandle, name := prepareDeletePermDirTest(t, fx, 0755, 1000, 2000)
+
+		ctx := fx.smbDeleteContext(2000, 2000)
+		ctx.ShareReadOnly = true
+
+		err := fx.service.RemoveDirectory(ctx, parentHandle, name)
+		require.Error(t, err)
+		var storeErr *metadata.StoreError
+		require.ErrorAs(t, err, &storeErr)
+		assert.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
+	})
+}
+
 // ============================================================================
 // Move Tests
 // ============================================================================
