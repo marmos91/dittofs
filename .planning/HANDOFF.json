@@ -1,0 +1,35 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-04-17T10:19:31.486Z",
+  "phase": "06",
+  "phase_name": "cli-rest-api-surface",
+  "phase_dir": ".planning/phases/06-cli-rest-api-surface",
+  "plan": null,
+  "task": null,
+  "total_tasks": 20,
+  "status": "paused",
+  "completed_tasks": [
+    {"id": "06-01", "name": "Backup foundation (BackupStore + runtime + executor/restore progress)", "status": "done", "commit": "838f9e4d"},
+    {"id": "06-02", "name": "REST surface (handlers + router + apiclient)", "status": "done", "commit": "b3adb511"},
+    {"id": "06-03", "name": "dfsctl share tree restructure + enable/disable", "status": "done_unmerged", "commit": "23d3aab4", "worktree_branch": "worktree-agent-ae5e73c1"},
+    {"id": "06-04", "name": "dfsctl store metadata repo subtree CRUD", "status": "done_unmerged", "commit": "e40f3643", "worktree_branch": "worktree-agent-a08b7fef"}
+  ],
+  "remaining_tasks": [
+    {"id": "06-05", "name": "dfsctl store metadata backup subtree (+ job/)", "status": "in_progress_background", "agent_id": "a67b213544af4a13b", "worktree_branch": "worktree-agent-a67b2135", "note": "Background agent was still running at pause time — may have finished in its worktree. Check `git worktree list` and `git log worktree-agent-a67b2135`."},
+    {"id": "06-06", "name": "Restore CLI + metadata hub wiring (autonomous: false — has checkpoints)", "status": "not_started"}
+  ],
+  "blockers": [],
+  "human_actions_pending": [
+    {"action": "Run code-simplifier on phase 06 diff once all waves are merged", "context": "User explicit ask during execution", "blocking": false},
+    {"action": "Run code-reviewer on phase 06 diff once all waves are merged", "context": "User explicit ask during execution", "blocking": false},
+    {"action": "Open PR after verification + reviews", "context": "User explicit ask during execution", "blocking": false}
+  ],
+  "decisions": [
+    {"decision": "All commits use `git commit -S --no-verify` and avoid AI/Claude references", "rationale": "Project CLAUDE.md + user global memory", "phase": "06"},
+    {"decision": "Use worktree isolation for parallel Wave 3 executors", "rationale": "Three disjoint CLI subtrees; no files_modified overlap", "phase": "06"},
+    {"decision": "Orchestrator owns STATE.md / ROADMAP.md — subagents never touch them", "rationale": "Last-merge-wins overwrite risk in parallel mode", "phase": "06"}
+  ],
+  "uncommitted_files": [],
+  "next_action": "Check whether background agent a67b213544af4a13b finished (`git log worktree-agent-a67b2135`). If SUMMARY.md present + all tasks committed → merge Wave 3 (06-03, 06-04, 06-05) into feat/v0.13.0-phase-6-cli-rest-api with STATE/ROADMAP snapshot-restore protocol, remove worktrees, then execute Wave 4 (06-06).",
+  "context_notes": "Phase 06 executed wave-by-wave with gsd-executor agents in isolated git worktrees. Waves 1 & 2 merged cleanly; Wave 3 spawned 3 parallel agents (share / repo / backup CLI subtrees). 06-03 + 06-04 returned SUMMARY and signed commits; 06-05 (backup CLI) was still running in its worktree when the user paused. After resume, finish Wave 3 merge → Wave 4 (06-06 restore + metadata hub wiring, non-autonomous) → verifier + code-review gates → run code-simplifier + code-reviewer on the full phase diff → open PR to develop. Do NOT kill the 06-05 background agent; let it finish and merge its worktree. Current branch: feat/v0.13.0-phase-6-cli-rest-api @ dce5b449. Tracking plans complete: 2/6."
+}
