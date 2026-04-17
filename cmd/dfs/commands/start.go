@@ -12,6 +12,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
 	"github.com/marmos91/dittofs/pkg/adapter/smb"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
+	"github.com/marmos91/dittofs/pkg/backup/destination/builtins"
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/api"
@@ -119,6 +120,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	if adaptersCreated {
 		logger.Info("Default adapters created", "adapters", "nfs, smb")
 	}
+
+	// Register built-in backup destination drivers (local fs + s3) before
+	// runtime init so any scheduled repos can resolve their kind.
+	builtins.RegisterBuiltins()
 
 	// Initialize runtime from database (loads metadata stores and shares)
 	rt, err := runtime.InitializeFromStore(ctx, cpStore)
