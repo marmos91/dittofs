@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-04-17 (Track delete-on-close-perms.FIND_and_set_DOC cascade — #388)
+Last updated: 2026-04-17 (Prune stale #268 entries — 5 tests now pass/skip, 3 credits tests are unreachable)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -28,8 +28,6 @@ session, which DittoFS does not implement.
 | smb2.multichannel.leases.test2 | Multi-channel | Multi-channel lease coordination not implemented | - |
 | smb2.multichannel.oplocks.test1 | Multi-channel | Multi-channel oplock coordination not implemented | - |
 | smb2.multichannel.oplocks.test2 | Multi-channel | Multi-channel oplock coordination not implemented | - |
-| smb2.multichannel.oplocks.test3_specification | Multi-channel | Multi-channel oplock coordination not implemented | - |
-| smb2.multichannel.leases.test1 | Multi-channel | Multi-channel lease coordination not implemented | - |
 
 ### ACLs and Security Descriptors (Not Implemented)
 
@@ -72,10 +70,7 @@ tests correctly SKIP because FILE_FILE_COMPRESSION is advertised.
 | smb2.ioctl.bug14769 | IOCTL | IOCTL edge case not implemented | - |
 | smb2.ioctl.compress_perms | IOCTL | FSCTL_SET_COMPRESSION requires SEC_FILE_WRITE_DATA check (not implemented) | - |
 | smb2.ioctl.dup_extents_simple | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
-| smb2.ioctl.dup_extents_len_beyond_dest | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
 | smb2.ioctl.dup_extents_len_beyond_src | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
-| smb2.ioctl.dup_extents_len_zero | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
-| smb2.ioctl.dup_extents_compressed_src | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
 | smb2.ioctl.dup_extents_sparse_dest | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
 | smb2.ioctl.dup_extents_sparse_src | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
 | smb2.ioctl.dup_extents_bad_handle | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
@@ -224,12 +219,18 @@ DittoFS implements file leases (Phase 37) but not directory leases.
 SMB3 credit management (credit grants, async credits, IPC credits) is not
 fully implemented. DittoFS grants a fixed credit count.
 
+The `1conn_ipc_max_async_credits` failure (credit grant off-by-15 in DittoFS)
+triggers an smbtorture client-side talloc panic during the next test's tcase
+setup, which aborts the remaining `credits.*` subsuite. Subsequent entries in
+this table are therefore *unreachable* until the upstream grant arithmetic is
+fixed.
+
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.credits.1conn_ipc_max_async_credits | Credits | IPC async credit management not implemented | - |
-| smb2.credits.2conn_ipc_max_async_credits | Credits | Multi-connection IPC async credit management not implemented | - |
-| smb2.credits.multichannel_ipc_max_async_credits | Credits | Multi-channel IPC async credit management not implemented | - |
-| smb2.credits.1conn_notify_max_async_credits | Credits | Change notification async credit management not implemented | - |
+| smb2.credits.1conn_ipc_max_async_credits | Credits | Credit grant off-by-15 (granted 529, expected 514); server hands out excess credits on IPC$ tree | - |
+| smb2.credits.2conn_ipc_max_async_credits | Credits | Unreachable — smbtorture panics in tcase setup after `1conn_ipc_max_async_credits` failure | - |
+| smb2.credits.multichannel_ipc_max_async_credits | Credits | Unreachable — smbtorture panics in tcase setup after `1conn_ipc_max_async_credits` failure | - |
+| smb2.credits.1conn_notify_max_async_credits | Credits | Unreachable — smbtorture panics in tcase setup after `1conn_ipc_max_async_credits` failure | - |
 | smb2.credits.2conn_notify_max_async_credits | Credits | Multi-connection change notification async credit management not implemented | - |
 | smb2.credits.multichannel_max_async_credits | Credits | Multi-channel not implemented (blocks session bind) | - |
 | smb2.credits.ipc_max_data_zero | Credits | IPC credit management not implemented | - |
@@ -349,7 +350,6 @@ Advanced delete-on-close permission checks and edge cases. Basic DOC works
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.delete-on-close-perms.BUG14427 | Delete on close | Flaky SMB2 signing failure during connection setup | - |
 | smb2.delete-on-close-perms.CREATE | Delete on close | DOC permission check not implemented | - |
 | smb2.delete-on-close-perms.CREATE_IF | Delete on close | DOC permission check not implemented | - |
 | smb2.delete-on-close-perms.READONLY | Delete on close | DOC on read-only files not implemented | - |
@@ -785,17 +785,29 @@ incomplete delayed-write and timestamp freeze/unfreeze logic.
 | smb2.timestamps.delayed-write-vs-seteof | Timestamps | Delayed write vs seteof timestamp not working | - |
 | smb2.timestamps.freeze-thaw | Timestamps | CreationTime freeze/unfreeze not fully working | - |
 
-### Scan (Full Operation Enumeration)
-
-The scan tests enumerate all supported operations and fail on unimplemented ones.
-smb2.scan.setinfo iterates all SET_INFO information classes; smb2.scan.find
-iterates all QUERY_DIRECTORY information classes. Both hit unimplemented classes.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.scan.scan | Scan | Full operation scan hits unimplemented info classes | - |
-
 ## Changelog
+
+### 2026-04-17 — Prune stale #268 entries
+Removed 7 stale entries added in #268 as "newly reachable" failures after the
+GMAC/read/write fixes in 27b2b8d0:
+
+- Now passing reliably across full-suite runs:
+  `smb2.scan.scan`, `smb2.delete-on-close-perms.BUG14427`
+- Now skipping correctly via feature-flag guards (never consume a failure
+  slot): `smb2.ioctl.dup_extents_len_beyond_dest`,
+  `smb2.ioctl.dup_extents_len_zero`,
+  `smb2.ioctl.dup_extents_compressed_src`,
+  `smb2.multichannel.oplocks.test3_specification`,
+  `smb2.multichannel.leases.test1`
+
+Re-annotated 3 credits entries (also from #268) as *unreachable* rather than
+failing: `credits.2conn_ipc_max_async_credits`, `multichannel_ipc_max_async_credits`,
+`1conn_notify_max_async_credits`. These never run because the preceding
+`credits.1conn_ipc_max_async_credits` failure (credit grant off-by-15) triggers
+an smbtorture client-side talloc panic in the next tcase setup. Fixing the
+grant arithmetic is tracked separately.
+
+Dropped the now-empty "Scan" section.
 
 ### 2026-04-16 — Tier 1 cleanup after #362 signing fixes
 Removed `smb2.scan.find` and `smb2.scan.setinfo` from known failures.
