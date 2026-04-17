@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
+	"github.com/marmos91/dittofs/internal/cli/backupfmt"
 	"github.com/marmos91/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
 )
@@ -91,7 +92,7 @@ func (bl BackupJobList) Rows() [][]string {
 		started := "-"
 		dur := "-"
 		if j.StartedAt != nil {
-			started = timeAgo(*j.StartedAt)
+			started = backupfmt.TimeAgo(*j.StartedAt)
 			endpoint := time.Now()
 			if j.FinishedAt != nil {
 				endpoint = *j.FinishedAt
@@ -103,7 +104,7 @@ func (bl BackupJobList) Rows() [][]string {
 			dur = d.Round(time.Second).String()
 		}
 		rows = append(rows, []string{
-			shortULID(j.ID),
+			backupfmt.ShortULID(j.ID),
 			j.Kind,
 			j.RepoID,
 			j.Status,

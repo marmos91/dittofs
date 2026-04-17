@@ -2,10 +2,10 @@ package job
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
+	"github.com/marmos91/dittofs/internal/cli/backupfmt"
 	"github.com/marmos91/dittofs/internal/cli/output"
 	"github.com/marmos91/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
@@ -51,7 +51,7 @@ func (d BackupJobDetail) Rows() [][]string {
 	rows = append(rows, []string{"Status", j.Status})
 	// Progress bar only when running (D-47).
 	if j.Status == "running" {
-		rows = append(rows, []string{"Progress", renderProgressBar(j.Progress)})
+		rows = append(rows, []string{"Progress", backupfmt.RenderProgressBar(j.Progress)})
 	}
 	if j.Error != "" {
 		rows = append(rows, []string{"Error", j.Error})
@@ -100,54 +100,3 @@ func durationOf(j *apiclient.BackupJob) string {
 	return d.Round(time.Second).String()
 }
 
-// ---------------------------------------------------------------------------
-// Format helpers — duplicated from backup/format.go because the `backup/job`
-// sub-package can't import its parent `backup` (the parent imports
-// `backup/job` to wire Cmd.AddCommand). The plan explicitly flags these as
-// "vendor inline" helpers.
-// ---------------------------------------------------------------------------
-
-// shortULID returns the first 8 chars of a ULID followed by an ellipsis
-// (U+2026 "…"). Mirrors backup/format.go:shortULID (D-26).
-func shortULID(id string) string {
-	const prefixLen = 8
-	if len(id) <= prefixLen {
-		return id
-	}
-	return id[:prefixLen] + "\u2026"
-}
-
-// timeAgo renders a duration relative to now such as "30s ago", "3m ago",
-// "3h ago", or "2d ago". Mirrors backup/format.go:timeAgo.
-func timeAgo(t time.Time) string {
-	d := time.Since(t)
-	if d < 0 {
-		d = 0
-	}
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds ago", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
-	}
-}
-
-// renderProgressBar renders a fixed-width 20-cell progress bar. Mirrors
-// backup/format.go:renderProgressBar (D-47).
-func renderProgressBar(pct int) string {
-	const width = 20
-	if pct < 0 {
-		pct = 0
-	}
-	if pct > 100 {
-		pct = 100
-	}
-	filled := pct * width / 100
-	return fmt.Sprintf("%d%%  [%s%s]", pct,
-		strings.Repeat("\u2593", filled),
-		strings.Repeat("\u2591", width-filled))
-}

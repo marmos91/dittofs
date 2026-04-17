@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
+	"github.com/marmos91/dittofs/internal/cli/backupfmt"
 	"github.com/marmos91/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
 )
@@ -43,8 +44,8 @@ func (bl BackupRecordList) Rows() [][]string {
 			pinned = "yes"
 		}
 		rows = append(rows, []string{
-			shortULID(r.ID),
-			timeAgo(r.CreatedAt),
+			backupfmt.ShortULID(r.ID),
+			backupfmt.TimeAgo(r.CreatedAt),
 			humanSize(r.SizeBytes),
 			r.Status,
 			r.RepoID,
