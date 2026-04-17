@@ -10,12 +10,6 @@ spec:
     metadataSize: "10Gi"
     cacheSize: "5Gi"
     # No contentSize needed - using S3 for payload
-  s3:
-    credentialsSecretRef:
-      secretName: dittofs-s3-credentials
-      # Using defaults for keys: accessKeyId, secretAccessKey, endpoint
-    region: "eu-west-1"
-    bucket: "dittofs-data"
   identity:
     jwt:
       secretRef:
@@ -26,3 +20,9 @@ spec:
       passwordSecretRef:
         name: dittofs-admin-secret
         key: password-hash
+# After this DittoServer is Ready, create S3-backed stores via the REST API:
+#
+#   dfsctl store block remote add --name s3-content --type s3 \
+#     --config '{"bucket":"dittofs-data","region":"eu-west-1","access_key_id":"AKIA...","secret_access_key":"..."}'
+#
+# Each store carries its own credentials; the operator does not inject AWS env vars.

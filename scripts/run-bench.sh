@@ -38,7 +38,7 @@ S3_BUCKET="${S3_BUCKET:-dittofs-bench-blocks}"
 S3_ENDPOINT="${S3_ENDPOINT:-https://s3.fr-par.scw.cloud}"
 S3_ACCESS_KEY="${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set}"
 S3_SECRET_KEY="${S3_SECRET_KEY:?S3_SECRET_KEY must be set}"
-S3_CONFIG="{\"region\":\"${S3_REGION}\",\"bucket\":\"${S3_BUCKET}\",\"endpoint\":\"${S3_ENDPOINT}\",\"access_key\":\"${S3_ACCESS_KEY}\",\"secret_key\":\"${S3_SECRET_KEY}\",\"force_path_style\":true}"
+S3_CONFIG="{\"region\":\"${S3_REGION}\",\"bucket\":\"${S3_BUCKET}\",\"endpoint\":\"${S3_ENDPOINT}\",\"access_key_id\":\"${S3_ACCESS_KEY}\",\"secret_access_key\":\"${S3_SECRET_KEY}\",\"force_path_style\":true}"
 
 echo "=== DittoFS Benchmark Suite ==="
 echo "Round: $ROUND"

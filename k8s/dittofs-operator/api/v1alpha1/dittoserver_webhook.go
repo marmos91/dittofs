@@ -119,14 +119,6 @@ func (r *DittoServer) validatePorts() (admission.Warnings, error) { //nolint:unp
 	return warnings, nil
 }
 
-// stringOrDefault returns the value if non-empty, otherwise returns the default.
-func stringOrDefault(value, defaultValue string) string {
-	if value == "" {
-		return defaultValue
-	}
-	return value
-}
-
 // ValidateCreate implements webhook.CustomValidator for DittoServerValidator
 func (v *DittoServerValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 	ds := obj.(*DittoServer)
@@ -147,8 +139,8 @@ func (v *DittoServerValidator) ValidateDelete(ctx context.Context, obj runtime.O
 	return nil, nil
 }
 
-// validateDittoServerWithClient performs validation that requires cluster access.
-// This includes StorageClass validation and S3 Secret validation.
+// validateDittoServerWithClient performs validation that requires cluster access
+// (StorageClass existence, Percona CRD presence, backup credentials Secret).
 func (v *DittoServerValidator) validateDittoServerWithClient(ctx context.Context, ds *DittoServer) (admission.Warnings, error) {
 	var warnings admission.Warnings
 
@@ -171,39 +163,6 @@ func (v *DittoServerValidator) validateDittoServerWithClient(ctx context.Context
 			// Transient error - warn but allow (API server might be temporarily unavailable)
 			warnings = append(warnings,
 				fmt.Sprintf("Could not verify StorageClass %q exists: %v", scName, err))
-		}
-	}
-
-	// Validate S3 credentials Secret if configured (warning only, not error)
-	if ds.Spec.S3 != nil && ds.Spec.S3.CredentialsSecretRef != nil {
-		secretName := ds.Spec.S3.CredentialsSecretRef.SecretName
-		secret := &corev1.Secret{}
-		err := v.Client.Get(ctx, types.NamespacedName{
-			Name:      secretName,
-			Namespace: ds.Namespace,
-		}, secret)
-		if err != nil {
-			if apierrors.IsNotFound(err) {
-				warnings = append(warnings,
-					fmt.Sprintf("S3 credentials Secret %q not found; ensure it exists before DittoFS pod starts", secretName))
-			} else {
-				warnings = append(warnings,
-					fmt.Sprintf("Could not verify S3 credentials Secret %q: %v", secretName, err))
-			}
-		} else {
-			// Secret exists, validate it has required keys
-			ref := ds.Spec.S3.CredentialsSecretRef
-			accessKeyIDKey := stringOrDefault(ref.AccessKeyIDKey, "accessKeyId")
-			secretAccessKeyKey := stringOrDefault(ref.SecretAccessKeyKey, "secretAccessKey")
-
-			if _, ok := secret.Data[accessKeyIDKey]; !ok {
-				warnings = append(warnings,
-					fmt.Sprintf("S3 credentials Secret %q missing key %q", secretName, accessKeyIDKey))
-			}
-			if _, ok := secret.Data[secretAccessKeyKey]; !ok {
-				warnings = append(warnings,
-					fmt.Sprintf("S3 credentials Secret %q missing key %q", secretName, secretAccessKeyKey))
-			}
 		}
 	}
 

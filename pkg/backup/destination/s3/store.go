@@ -63,8 +63,8 @@ type Config struct {
 	Bucket         string `json:"bucket"`
 	Region         string `json:"region,omitempty"`
 	Endpoint       string `json:"endpoint,omitempty"`
-	AccessKey      string `json:"access_key,omitempty"`
-	SecretKey      string `json:"secret_key,omitempty"`
+	AccessKey      string `json:"access_key"`
+	SecretKey      string `json:"secret_key"`
 	Prefix         string `json:"prefix,omitempty"`
 	ForcePathStyle bool   `json:"force_path_style,omitempty"`
 	MaxRetries     int    `json:"max_retries,omitempty"`
@@ -165,6 +165,9 @@ func parseConfig(repo *models.BackupRepo) (Config, error) {
 	if cfg.Bucket == "" {
 		return Config{}, fmt.Errorf("%w: bucket is required", destination.ErrIncompatibleConfig)
 	}
+	if cfg.AccessKey == "" || cfg.SecretKey == "" {
+		return Config{}, fmt.Errorf("%w: access_key and secret_key are required", destination.ErrIncompatibleConfig)
+	}
 	if cfg.MaxRetries == 0 {
 		cfg.MaxRetries = defaultMaxRetries
 	}
@@ -209,11 +212,9 @@ func buildS3Client(ctx context.Context, cfg Config) (*s3.Client, error) {
 		opts = append(opts, awsconfig.WithRegion(cfg.Region))
 	}
 
-	if cfg.AccessKey != "" && cfg.SecretKey != "" {
-		opts = append(opts, awsconfig.WithCredentialsProvider(
-			credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, ""),
-		))
-	}
+	opts = append(opts, awsconfig.WithCredentialsProvider(
+		credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, ""),
+	))
 
 	// HTTP transport tuning matches pkg/blockstore/remote/s3/store.go:99-125.
 	httpTransport := &http.Transport{

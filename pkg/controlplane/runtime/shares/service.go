@@ -1230,6 +1230,9 @@ func CreateRemoteStoreFromConfig(ctx context.Context, storeType string, cfg inte
 		prefix, _ := config["prefix"].(string)
 		accessKey, _ := config["access_key_id"].(string)
 		secretKey, _ := config["secret_access_key"].(string)
+		if accessKey == "" || secretKey == "" {
+			return nil, errors.New("s3 remote store requires access_key_id and secret_access_key")
+		}
 		// When a custom endpoint is set (MinIO, Synology, etc.), default to
 		// path-style addressing — virtual-hosted style rarely works on
 		// non-AWS S3-compatible services. This matches v0.8.x behavior.

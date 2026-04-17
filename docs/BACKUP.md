@@ -91,8 +91,8 @@ Avoid: DittoFS-served NFS/SMB mounts, Samba mounts of the host's own shares, FUS
   "bucket": "dittofs-backups",
   "region": "eu-west-1",
   "endpoint": "",
-  "access_key": "",
-  "secret_key": "",
+  "access_key": "AKIA...",
+  "secret_key": "...",
   "prefix": "metadata/prod-store/",
   "force_path_style": false,
   "max_retries": 5,
@@ -103,16 +103,16 @@ Avoid: DittoFS-served NFS/SMB mounts, Samba mounts of the host's own shares, FUS
 | Field              | Required | Default | Notes                                                    |
 | ------------------ | -------- | ------- | -------------------------------------------------------- |
 | `bucket`           | yes      | —       | S3 bucket name                                           |
-| `region`           | no       | SDK     | Falls back to AWS SDK default chain                      |
+| `region`           | no       | SDK     | Defaults to AWS SDK region resolution                    |
 | `endpoint`         | no       | ""      | Blank = real AWS; set for Cubbit DS3 / MinIO / Wasabi / Scaleway / B2 / R2 |
-| `access_key`       | no       | ""      | Blank → SDK default credential chain (IRSA / IMDS / env) |
-| `secret_key`       | no       | ""      | Must be set together with `access_key` or omit both      |
+| `access_key`       | yes      | —       | S3 access key ID — must be set per repo                  |
+| `secret_key`       | yes      | —       | S3 secret access key — must be set per repo              |
 | `prefix`           | no       | ""      | Object-key prefix under the bucket                       |
 | `force_path_style` | no       | false   | Set `true` for most S3-compatibles (MinIO / Scaleway)    |
 | `max_retries`      | no       | 5       | AWS SDK retry cap for transient 5xx / 429                |
 | `grace_window`     | no       | `24h`   | Age threshold for orphan-sweep and stale multipart abort |
 
-In Kubernetes, leave `access_key` / `secret_key` blank and use IAM-Roles-for-Service-Accounts (IRSA) or an IMDS-provided role. Static credentials in the repo config are the least-preferred option.
+Credentials are required per repo. DittoFS does **not** read AWS env vars, IRSA, or IMDS — each destination carries its own `access_key` / `secret_key` so a single DittoFS process can back up to multiple independent S3 accounts.
 
 ### Endpoint examples
 

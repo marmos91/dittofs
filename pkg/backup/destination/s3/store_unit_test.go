@@ -54,10 +54,33 @@ func TestParseConfig_AllFields(t *testing.T) {
 // reasonable default when the operator omits max_retries.
 func TestParseConfig_DefaultMaxRetries(t *testing.T) {
 	repo := &models.BackupRepo{ID: "r", Kind: models.BackupRepoKindS3}
-	require.NoError(t, repo.SetConfig(map[string]any{"bucket": "b"}))
+	require.NoError(t, repo.SetConfig(map[string]any{
+		"bucket":     "b",
+		"access_key": "AK",
+		"secret_key": "SK",
+	}))
 	cfg, err := parseConfig(repo)
 	require.NoError(t, err)
 	require.Equal(t, defaultMaxRetries, cfg.MaxRetries)
+}
+
+// TestParseConfig_MissingCredentials asserts that access_key / secret_key
+// are both required; empty values fail with ErrIncompatibleConfig and are
+// never silently resolved from the AWS SDK default chain.
+func TestParseConfig_MissingCredentials(t *testing.T) {
+	cases := map[string]map[string]any{
+		"no credentials":  {"bucket": "b"},
+		"access_key only": {"bucket": "b", "access_key": "AK"},
+		"secret_key only": {"bucket": "b", "secret_key": "SK"},
+	}
+	for name, cfg := range cases {
+		t.Run(name, func(t *testing.T) {
+			repo := &models.BackupRepo{ID: "r", Kind: models.BackupRepoKindS3}
+			require.NoError(t, repo.SetConfig(cfg))
+			_, err := parseConfig(repo)
+			require.ErrorIs(t, err, destination.ErrIncompatibleConfig)
+		})
+	}
 }
 
 // TestParseGrace covers the three parseGrace paths: default, valid, and

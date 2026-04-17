@@ -124,8 +124,6 @@ LimitNOFILE=65536
 Environment=DITTOFS_LOGGING_LEVEL=INFO
 Environment=DITTOFS_CONTROLPLANE_SECRET=dittofs-bench-secret-key-for-jwt-1234567890
 Environment=DITTOFS_ADMIN_INITIAL_PASSWORD=dittofs-bench-admin-1234567890
-Environment=AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-Environment=AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
 
 [Install]
 WantedBy=multi-user.target
@@ -178,7 +176,7 @@ dfsctl store block local add --name local-payload --type fs --path "${PAYLOAD_PA
 log "Creating S3 remote block store..."
 # Scaleway (and other S3-compatible) always needs explicit endpoint + path style.
 S3_ACTUAL_ENDPOINT="${S3_ENDPOINT:-s3.${S3_REGION}.scw.cloud}"
-S3_JSON="{\"region\":\"${S3_REGION}\",\"bucket\":\"${S3_BUCKET}\",\"prefix\":\"${S3_PREFIX}\",\"endpoint\":\"https://${S3_ACTUAL_ENDPOINT}\",\"force_path_style\":true}"
+S3_JSON="{\"region\":\"${S3_REGION}\",\"bucket\":\"${S3_BUCKET}\",\"prefix\":\"${S3_PREFIX}\",\"endpoint\":\"https://${S3_ACTUAL_ENDPOINT}\",\"force_path_style\":true,\"access_key_id\":\"${AWS_ACCESS_KEY_ID}\",\"secret_access_key\":\"${AWS_SECRET_ACCESS_KEY}\"}"
 dfsctl store block remote add --name s3-payload --type s3 --config "${S3_JSON}"
 
 log "Creating /export share..."

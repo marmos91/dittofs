@@ -43,10 +43,10 @@ type Config struct {
 	// Endpoint is the S3 endpoint URL (optional, for S3-compatible services).
 	Endpoint string
 
-	// AccessKey is the S3 access key ID (optional, uses AWS SDK default chain if empty).
+	// AccessKey is the S3 access key ID (required).
 	AccessKey string
 
-	// SecretKey is the S3 secret access key (optional, uses AWS SDK default chain if empty).
+	// SecretKey is the S3 secret access key (required).
 	SecretKey string
 
 	// KeyPrefix is prepended to all block keys (e.g., "blocks/").
@@ -81,19 +81,22 @@ func New(client *s3.Client, config Config) *Store {
 // NewFromConfig creates a new S3 remote block store by creating an S3 client from config.
 // This is the preferred constructor when you don't have an existing S3 client.
 func NewFromConfig(ctx context.Context, config Config) (*Store, error) {
-	// Build AWS SDK config options
+	if config.Bucket == "" {
+		return nil, errors.New("s3 block store: bucket is required")
+	}
+	if config.AccessKey == "" || config.SecretKey == "" {
+		return nil, errors.New("s3 block store: access_key and secret_key are required")
+	}
+
 	var opts []func(*awsconfig.LoadOptions) error
 
 	if config.Region != "" {
 		opts = append(opts, awsconfig.WithRegion(config.Region))
 	}
 
-	// Use static credentials if provided
-	if config.AccessKey != "" && config.SecretKey != "" {
-		opts = append(opts, awsconfig.WithCredentialsProvider(
-			credentials.NewStaticCredentialsProvider(config.AccessKey, config.SecretKey, ""),
-		))
-	}
+	opts = append(opts, awsconfig.WithCredentialsProvider(
+		credentials.NewStaticCredentialsProvider(config.AccessKey, config.SecretKey, ""),
+	))
 
 	// Configure HTTP client for parallel uploads. Pool size kept moderate
 	// to limit memory overhead (~50 conns x 512KB buffers = ~25MB).
