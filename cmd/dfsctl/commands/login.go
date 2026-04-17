@@ -93,6 +93,19 @@ func runLogin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("login failed: %w", err)
 	}
 
+	// Guard against empty tokens — a server that omits them from the response
+	// body would cause every later command to fail with "no access token".
+	if tokens == nil {
+		return fmt.Errorf("login succeeded but server returned an empty response body")
+	}
+	if tokens.AccessToken == "" || tokens.RefreshToken == "" {
+		return fmt.Errorf(
+			"login succeeded but server returned no tokens (access=%t, refresh=%t); "+
+				"the server may be misconfigured or returning a stripped response",
+			tokens.AccessToken != "", tokens.RefreshToken != "",
+		)
+	}
+
 	// Determine context name
 	contextName := loginContextName
 	if contextName == "" {

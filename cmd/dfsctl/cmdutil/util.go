@@ -70,6 +70,12 @@ func GetAuthenticatedClient() (*apiclient.Client, error) {
 			return nil, fmt.Errorf("session expired. Run 'dfsctl login' to re-authenticate")
 		}
 
+		// If either token is missing, UpdateTokens would overwrite the stored
+		// refresh token with "" and poison the next refresh cycle.
+		if newTokens == nil || newTokens.AccessToken == "" || newTokens.RefreshToken == "" {
+			return nil, fmt.Errorf("token refresh succeeded but server returned incomplete tokens; run 'dfsctl login' to re-authenticate")
+		}
+
 		// Save new tokens
 		if err := store.UpdateTokens(newTokens.AccessToken, newTokens.RefreshToken, newTokens.ExpiresAt); err != nil {
 			return nil, fmt.Errorf("failed to save refreshed tokens: %w", err)
