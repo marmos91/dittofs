@@ -12,8 +12,12 @@ var Cmd = &cobra.Command{
 	Short: "Share management",
 	Long: `Manage shares on the DittoFS server.
 
-Share commands allow you to create, list, edit, and delete shares,
-as well as manage share permissions.
+The ` + "`share`" + ` tree has two shapes:
+  - Root-level verbs (no target name): ` + "`list`, `create`" + `
+  - Per-share verbs: ` + "`share <name> <verb>`" + ` — the canonical layout
+    for ` + "`show`, `edit`, `delete`, `mount`, `unmount`, `disable`, `enable`" + `
+    and the ` + "`permission`" + ` sub-tree.
+
 These operations require admin privileges.
 
 Examples:
@@ -23,27 +27,43 @@ Examples:
   # Create a new share
   dfsctl share create --name /archive --metadata default --local fs-cache --remote s3-store
 
+  # Show share details
+  dfsctl share /archive show
+
   # Edit a share interactively
-  dfsctl share edit /archive
+  dfsctl share /archive edit
 
   # Edit a share with flags
-  dfsctl share edit /archive --read-only true
+  dfsctl share /archive edit --read-only true
+
+  # Disable a share (drain clients, block new connections)
+  dfsctl share /archive disable
+
+  # Re-enable a share
+  dfsctl share /archive enable
 
   # Delete a share
-  dfsctl share delete /archive
+  dfsctl share /archive delete
 
   # Grant permission
   dfsctl share permission grant /archive --user alice --level read-write`,
 }
 
 func init() {
+	// Root-level verbs (no target name — D-35 canonical shape)
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(createCmd)
-	Cmd.AddCommand(deleteCmd)
-	Cmd.AddCommand(editCmd)
+	Cmd.AddCommand(permission.Cmd) // nested sub-tree keeps its own shape
+	Cmd.AddCommand(listMountsCmd)  // list-mounts is a list, not a per-share verb
+
+	// Per-share verbs — each leaf uses cobra.ExactArgs(1) with args[0] = <name>
 	Cmd.AddCommand(showCmd)
-	Cmd.AddCommand(permission.Cmd)
+	Cmd.AddCommand(editCmd)
+	Cmd.AddCommand(deleteCmd)
 	Cmd.AddCommand(mountCmd)
 	Cmd.AddCommand(unmountCmd)
-	Cmd.AddCommand(listMountsCmd)
+
+	// Phase 6 additions
+	Cmd.AddCommand(disableCmd)
+	Cmd.AddCommand(enableCmd)
 }

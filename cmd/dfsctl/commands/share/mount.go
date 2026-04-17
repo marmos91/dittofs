@@ -39,19 +39,19 @@ For SMB mounts, credentials are resolved in order:
 
 Examples:
   # Mount via NFS
-  dfsctl share mount --protocol nfs /export /mnt/dittofs
+  dfsctl share /export mount --protocol nfs /mnt/dittofs
 
   # Mount via SMB
-  dfsctl share mount --protocol smb /export /mnt/dittofs
+  dfsctl share /export mount --protocol smb /mnt/dittofs
 
   # Mount via SMB with explicit credentials
-  dfsctl share mount --protocol smb --username alice /export /mnt/dittofs
+  dfsctl share /export mount --protocol smb --username alice /mnt/dittofs
 
   # Mount via SMB with password from environment
-  DITTOFS_PASSWORD=secret dfsctl share mount --protocol smb /export /mnt/dittofs
+  DITTOFS_PASSWORD=secret dfsctl share /export mount --protocol smb /mnt/dittofs
 
   # Mount to user directory without sudo (macOS only, recommended)
-  mkdir -p ~/mnt/dittofs && dfsctl share mount --protocol smb /export ~/mnt/dittofs
+  mkdir -p ~/mnt/dittofs && dfsctl share /export mount --protocol smb ~/mnt/dittofs
 
 Note: Mount commands typically require sudo/root privileges on Unix systems.
 
@@ -59,7 +59,7 @@ Platform differences for SMB with sudo:
   - Linux: Mount owner set to your user via uid/gid options (default mode 0755)
   - macOS: Mount owned by root (uid/gid removed in Catalina), default mode 0777
   - macOS alternative: mount to ~/mnt without sudo for user-owned mount
-  - Windows: Uses 'net use' to map network drives (e.g., dfsctl share mount --protocol smb /export Z:)`,
+  - Windows: Uses 'net use' to map network drives (e.g., dfsctl share /export mount --protocol smb Z:)`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		if len(args) < 2 {
 			return fmt.Errorf("requires share path and mount point\n\nUsage: dfsctl share mount [share] [mountpoint] --protocol <nfs|smb>\n\nExample: dfsctl share mount --protocol nfs /export /mnt/dittofs")

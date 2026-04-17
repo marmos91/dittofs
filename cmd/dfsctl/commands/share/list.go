@@ -37,6 +37,7 @@ type shareRow struct {
 	Used              string `json:"used"`
 	DefaultPermission string `json:"default_permission"`
 	Retention         string `json:"retention"`
+	Enabled           bool   `json:"enabled"`
 }
 
 // ShareList is a list of shares for table rendering.
@@ -44,14 +45,18 @@ type ShareList []shareRow
 
 // Headers implements TableRenderer.
 func (sl ShareList) Headers() []string {
-	return []string{"NAME", "METADATA STORE", "LOCAL STORE", "REMOTE STORE", "QUOTA", "USED", "DEFAULT PERMISSION", "RETENTION"}
+	return []string{"NAME", "METADATA STORE", "LOCAL STORE", "REMOTE STORE", "QUOTA", "USED", "DEFAULT PERMISSION", "RETENTION", "ENABLED"}
 }
 
 // Rows implements TableRenderer.
 func (sl ShareList) Rows() [][]string {
 	rows := make([][]string, 0, len(sl))
 	for _, s := range sl {
-		rows = append(rows, []string{s.Name, s.MetadataStore, s.LocalBlockStore, s.RemoteBlockStore, s.Quota, s.Used, s.DefaultPermission, s.Retention})
+		enabled := "-"
+		if s.Enabled {
+			enabled = "yes"
+		}
+		rows = append(rows, []string{s.Name, s.MetadataStore, s.LocalBlockStore, s.RemoteBlockStore, s.Quota, s.Used, s.DefaultPermission, s.Retention, enabled})
 	}
 	return rows
 }
@@ -135,6 +140,7 @@ func runList(cmd *cobra.Command, args []string) error {
 			Used:              used,
 			DefaultPermission: s.DefaultPermission,
 			Retention:         retention,
+			Enabled:           s.Enabled,
 		})
 	}
 

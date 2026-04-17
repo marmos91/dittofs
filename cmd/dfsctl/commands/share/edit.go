@@ -35,43 +35,43 @@ When flags are provided, only the specified fields are updated.
 
 Examples:
   # Edit share interactively
-  dfsctl share edit /archive
+  dfsctl share /archive edit
 
   # Update local block store reference
-  dfsctl share edit /archive --local new-fs-cache
+  dfsctl share /archive edit --local new-fs-cache
 
   # Update remote block store reference
-  dfsctl share edit /archive --remote new-s3-store
+  dfsctl share /archive edit --remote new-s3-store
 
   # Make share read-only
-  dfsctl share edit /archive --read-only true
+  dfsctl share /archive edit --read-only true
 
   # Make share writable
-  dfsctl share edit /archive --read-only false
+  dfsctl share /archive edit --read-only false
 
   # Set default permission to allow all users read-write access
-  dfsctl share edit /archive --default-permission read-write
+  dfsctl share /archive edit --default-permission read-write
 
   # Update description
-  dfsctl share edit /archive --description "New description"
+  dfsctl share /archive edit --description "New description"
 
   # Change retention policy to pin (blocks never evicted)
-  dfsctl share edit /archive --retention pin
+  dfsctl share /archive edit --retention pin
 
   # Change retention policy to TTL with 72-hour window
-  dfsctl share edit /archive --retention ttl --retention-ttl 72h
+  dfsctl share /archive edit --retention ttl --retention-ttl 72h
 
   # Override per-share disk cache size
-  dfsctl share edit /archive --local-store-size 10GiB
+  dfsctl share /archive edit --local-store-size 10GiB
 
   # Override per-share read buffer size
-  dfsctl share edit /archive --read-buffer-size 2GiB
+  dfsctl share /archive edit --read-buffer-size 2GiB
 
   # Set per-share quota
-  dfsctl share edit /archive --quota-bytes 10GiB
+  dfsctl share /archive edit --quota-bytes 10GiB
 
   # Remove quota (set to unlimited)
-  dfsctl share edit /archive --quota-bytes 0`,
+  dfsctl share /archive edit --quota-bytes 0`,
 	Args: cobra.ExactArgs(1),
 	RunE: runEdit,
 }
