@@ -151,10 +151,10 @@ Plans:
 **Plans:** 4 plans
 
 Plans:
-- [ ] 07-01-PLAN.md — Corruption test suite (5 vectors × 2 drivers) in pkg/backup/destination/corruption_test.go (SAFETY-03, DRV-02)
-- [ ] 07-02-PLAN.md — MetadataBackupRunner E2E helper + pkg/backup/restore manifest version-gate test (SAFETY-03, ENG-01/02)
-- [ ] 07-03-PLAN.md — TestBackupMatrix E2E: 3 engines × 2 destinations round-trip (ENG-01, ENG-02, DRV-02)
-- [ ] 07-04-PLAN.md — Chaos tests (kill-mid-backup/restore) + restore-while-mounted 409 rejection (SAFETY-01/02, DRV-02, REST-02/03)
+- [x] 07-01-PLAN.md — Corruption test suite (5 vectors × 2 drivers) in pkg/backup/destination/corruption_test.go (SAFETY-03, DRV-02)
+- [x] 07-02-PLAN.md — MetadataBackupRunner E2E helper + pkg/backup/restore manifest version-gate test (SAFETY-03, ENG-01/02)
+- [x] 07-03-PLAN.md — TestBackupMatrix E2E: 3 engines × 2 destinations round-trip (ENG-01, ENG-02, DRV-02)
+- [x] 07-04-PLAN.md — Chaos tests (kill-mid-backup/restore) + restore-while-mounted 409 rejection (SAFETY-01/02, DRV-02, REST-02/03)
 
 ## Progress
 
