@@ -456,6 +456,13 @@ func (h *Handler) handlePipeRead(ctx *SMBHandlerContext, req *ReadRequest, openF
 		// completes this pending read via PipeReadRegistry.
 		logger.Debug("READ: no data in pipe, pending async", "pipeName", openFile.PipeName)
 
+		if h.PipeReadRegistry == nil || ctx.AsyncPipeReadCallback == nil {
+			logger.Warn("READ: async pipe read not supported (registry or callback missing)",
+				"pipeName", openFile.PipeName)
+			return &ReadResponse{
+				SMBResponseBase: SMBResponseBase{Status: types.StatusNotSupported},
+			}, nil
+		}
 		if ctx.TryReserveAsync == nil || !ctx.TryReserveAsync() {
 			logger.Debug("READ: max_async_credits reached, rejecting pipe read",
 				"pipeName", openFile.PipeName)
