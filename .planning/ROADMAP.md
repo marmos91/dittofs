@@ -148,7 +148,13 @@ Plans:
   3. Chaos tests (kill server mid-backup, kill mid-restore) leave the system in a recoverable state with no ghost multipart uploads
   4. Restore-while-mounted is rejected in CI; concurrent-write + backup + restore byte-compare passes
   5. Localstack tests use the shared-container helper pattern (not per-test container) to avoid known flakiness
-**Plans**: TBD
+**Plans:** 4 plans
+
+Plans:
+- [ ] 07-01-PLAN.md — Corruption test suite (5 vectors × 2 drivers) in pkg/backup/destination/corruption_test.go (SAFETY-03, DRV-02)
+- [ ] 07-02-PLAN.md — MetadataBackupRunner E2E helper + pkg/backup/restore manifest version-gate test (SAFETY-03, ENG-01/02)
+- [ ] 07-03-PLAN.md — TestBackupMatrix E2E: 3 engines × 2 destinations round-trip (ENG-01, ENG-02, DRV-02)
+- [ ] 07-04-PLAN.md — Chaos tests (kill-mid-backup/restore) + restore-while-mounted 409 rejection (SAFETY-01/02, DRV-02, REST-02/03)
 
 ## Progress
 
@@ -160,4 +166,4 @@ Plans:
 | 4. Scheduler + Retention | 5/5 | Complete    | 2026-04-16 |
 | 5. Restore Orchestration + Safety Rails | 10/10 | Complete    | 2026-04-17 |
 | 6. CLI & REST API Surface | 6/6 | Complete    | 2026-04-17 |
-| 7. Testing & Hardening | 0/0 | Not started | - |
+| 7. Testing & Hardening | 0/4 | In progress | - |
