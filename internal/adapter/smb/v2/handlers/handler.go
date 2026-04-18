@@ -495,7 +495,11 @@ func (h *Handler) closeFilesWithFilter(
 			if h.PipeReadRegistry != nil {
 				if pending := h.PipeReadRegistry.UnregisterByFileID(openFile.FileID); pending != nil {
 					if pending.Callback != nil {
-						go pending.Callback(pending.SessionID, pending.MessageID, pending.AsyncId, types.StatusCancelled, nil)
+						go func(pr *PendingPipeRead) {
+							if err := pr.Callback(pr.SessionID, pr.MessageID, pr.AsyncId, types.StatusCancelled, nil); err != nil {
+								logger.Warn("pipe close: failed to cancel pending READ", "asyncId", pr.AsyncId, "error", err)
+							}
+						}(pending)
 					}
 				}
 			}
@@ -695,7 +699,11 @@ func (h *Handler) releaseSessionLeasesAndNotifies(ctx context.Context, sessionID
 	if h.PipeReadRegistry != nil {
 		for _, pending := range h.PipeReadRegistry.UnregisterAllForSession(sessionID) {
 			if pending.Callback != nil {
-				go pending.Callback(pending.SessionID, pending.MessageID, pending.AsyncId, types.StatusCancelled, nil)
+				go func(pr *PendingPipeRead) {
+					if err := pr.Callback(pr.SessionID, pr.MessageID, pr.AsyncId, types.StatusCancelled, nil); err != nil {
+						logger.Warn("session cleanup: failed to cancel pending pipe READ", "asyncId", pr.AsyncId, "error", err)
+					}
+				}(pending)
 			}
 		}
 	}

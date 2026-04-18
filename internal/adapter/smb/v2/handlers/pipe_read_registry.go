@@ -61,7 +61,11 @@ func (r *PipeReadRegistry) Register(p *PendingPipeRead) {
 	r.mu.Unlock()
 
 	if displaced != nil && displaced.Callback != nil {
-		go displaced.Callback(displaced.SessionID, displaced.MessageID, displaced.AsyncId, types.StatusCancelled, nil)
+		go func(pr *PendingPipeRead) {
+			if err := pr.Callback(pr.SessionID, pr.MessageID, pr.AsyncId, types.StatusCancelled, nil); err != nil {
+				logger.Warn("PipeReadRegistry: failed to cancel displaced READ", "asyncId", pr.AsyncId, "error", err)
+			}
+		}(displaced)
 	}
 }
 
