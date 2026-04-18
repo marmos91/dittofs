@@ -66,6 +66,36 @@ type ConnInfo struct {
 	// Set during NEGOTIATE based on negotiated dialect.
 	// When false, CreditCharge payload validation is skipped (SMB 2.0.2 compat).
 	SupportsMultiCredit bool
+
+	// asyncPendingCount tracks outstanding async operations (CHANGE_NOTIFY + pipe READs)
+	// for this connection. Per MS-SMB2 §3.3.5.2.5, when this reaches MaxAsyncCredits,
+	// further async requests must return STATUS_INSUFFICIENT_RESOURCES.
+	asyncPendingCount atomic.Int32
+}
+
+// MaxAsyncCredits is the maximum number of outstanding async operations per
+// connection per MS-SMB2 §3.3.5.2.5 (Connection.MaxAsyncCredits default = 512).
+const MaxAsyncCredits = 512
+
+// TryReserveAsync atomically checks and reserves one async slot on the connection.
+// Returns false when the connection is at MaxAsyncCredits; the caller must
+// return STATUS_INSUFFICIENT_RESOURCES without registering an async operation.
+func (c *ConnInfo) TryReserveAsync() bool {
+	for {
+		cur := c.asyncPendingCount.Load()
+		if cur >= MaxAsyncCredits {
+			return false
+		}
+		if c.asyncPendingCount.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
+// ReleaseAsync decrements the async slot counter. Must be called exactly once
+// when a pending async operation delivers its final response (any status).
+func (c *ConnInfo) ReleaseAsync() {
+	c.asyncPendingCount.Add(-1)
 }
 
 // SessionTracker provides callbacks for session lifecycle tracking.

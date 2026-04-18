@@ -97,6 +97,17 @@ func handleRequest[Req smbRequest, Resp smbResponse](
 
 	status := resp.GetStatus()
 
+	// STATUS_PENDING is an async interim response. Propagate the AsyncId if the
+	// response carries one (e.g. a pending named-pipe READ). The body is omitted
+	// here; buildResponseHeaderAndBody supplies MakeErrorBody() for STATUS_PENDING.
+	if status == types.StatusPending {
+		type asyncIdCarrier interface{ GetAsyncId() uint64 }
+		if ar, ok := any(resp).(asyncIdCarrier); ok {
+			return &HandlerResult{Status: status, AsyncId: ar.GetAsyncId()}, nil
+		}
+		return &HandlerResult{Status: status}, nil
+	}
+
 	// Skip encoding whenever buildResponseHeaderAndBody will substitute
 	// MakeErrorBody() on the way out — that is, for every error status and
 	// for warning statuses other than StatusBufferOverflow. Only

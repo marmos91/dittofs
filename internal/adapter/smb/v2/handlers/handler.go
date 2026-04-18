@@ -61,6 +61,9 @@ type Handler struct {
 	NotifyRegistry *NotifyRegistry
 	nextAsyncId    atomic.Uint64
 
+	// Named-pipe async READ tracking
+	PipeReadRegistry *PipeReadRegistry
+
 	// Pending blocking lock operations (messageID -> cancel func).
 	// Used by CANCEL to interrupt blocking lock requests.
 	pendingLocks sync.Map
@@ -339,6 +342,7 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 		SessionManager:          sessionManager,
 		PipeManager:             rpc.NewPipeManager(),
 		NotifyRegistry:          NewNotifyRegistry(),
+		PipeReadRegistry:        NewPipeReadRegistry(),
 		MaxTransactSize:         1048576, // 1MB (supports large directory listings; increases per-request memory)
 		MaxReadSize:             1048576, // 1MB
 		MaxWriteSize:            1048576, // 1MB
@@ -487,6 +491,18 @@ func (h *Handler) closeFilesWithFilter(
 
 		// Handle pipe close
 		if openFile.IsPipe {
+			// Complete any pending async READ with STATUS_CANCELLED before closing.
+			if h.PipeReadRegistry != nil {
+				if pending := h.PipeReadRegistry.UnregisterByFileID(openFile.FileID); pending != nil {
+					if pending.Callback != nil {
+						go func(pr *PendingPipeRead) {
+							if err := pr.Callback(pr.SessionID, pr.MessageID, pr.AsyncId, types.StatusCancelled, nil); err != nil {
+								logger.Warn("pipe close: failed to cancel pending READ", "asyncId", pr.AsyncId, "error", err)
+							}
+						}(pending)
+					}
+				}
+			}
 			h.PipeManager.ClosePipe(openFile.FileID)
 			toDelete = append(toDelete, openFile.FileID)
 			closed++
@@ -679,6 +695,17 @@ func (h *Handler) releaseSessionLeasesAndNotifies(ctx context.Context, sessionID
 	}
 	if h.NotifyRegistry != nil {
 		h.NotifyRegistry.UnregisterAllForSession(sessionID)
+	}
+	if h.PipeReadRegistry != nil {
+		for _, pending := range h.PipeReadRegistry.UnregisterAllForSession(sessionID) {
+			if pending.Callback != nil {
+				go func(pr *PendingPipeRead) {
+					if err := pr.Callback(pr.SessionID, pr.MessageID, pr.AsyncId, types.StatusCancelled, nil); err != nil {
+						logger.Warn("session cleanup: failed to cancel pending pipe READ", "asyncId", pr.AsyncId, "error", err)
+					}
+				}(pending)
+			}
+		}
 	}
 }
 

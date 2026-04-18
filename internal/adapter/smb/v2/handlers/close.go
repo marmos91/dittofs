@@ -153,7 +153,16 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// ========================================================================
 
 	if openFile.IsPipe {
-		// Clean up pipe state
+		// Cancel any pending async READ before closing the pipe.
+		if h.PipeReadRegistry != nil {
+			if pending := h.PipeReadRegistry.UnregisterByFileID(req.FileID); pending != nil && pending.Callback != nil {
+				go func(pr *PendingPipeRead) {
+					if err := pr.Callback(pr.SessionID, pr.MessageID, pr.AsyncId, types.StatusCancelled, nil); err != nil {
+						logger.Warn("CLOSE: failed to cancel pending pipe READ", "asyncId", pr.AsyncId, "error", err)
+					}
+				}(pending)
+			}
+		}
 		h.PipeManager.ClosePipe(req.FileID)
 		h.DeleteOpenFile(req.FileID)
 

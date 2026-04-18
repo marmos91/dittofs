@@ -109,9 +109,7 @@ func DecodeWriteRequest(body []byte) (*WriteRequest, error) {
 		dataStart := int(req.DataOffset) - 64
 
 		// Clamp to valid range - data can't start before byte 48 (after fixed fields)
-		if dataStart < 48 {
-			dataStart = 48
-		}
+		dataStart = max(dataStart, 48)
 
 		// Try to extract data from calculated offset
 		if dataStart+int(req.Length) <= len(body) {
@@ -458,6 +456,23 @@ func (h *Handler) handlePipeWrite(ctx *SMBHandlerContext, req *WriteRequest, ope
 	if err != nil {
 		logger.Warn("WRITE: pipe write failed", "error", err)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
+	}
+
+	// Complete any pending async READ for this pipe handle.
+	// The WRITE produced response data in ReadBuffer; deliver it now.
+	if h.PipeReadRegistry != nil {
+		if pending := h.PipeReadRegistry.UnregisterByFileID(req.FileID); pending != nil {
+			data := pipe.ProcessRead(pending.MaxLen)
+			if pending.Callback != nil {
+				go func() {
+					if err := pending.Callback(pending.SessionID, pending.MessageID, pending.AsyncId, types.StatusSuccess, data); err != nil {
+						logger.Warn("WRITE: failed to complete pending pipe READ",
+							"asyncId", pending.AsyncId,
+							"error", err)
+					}
+				}()
+			}
+		}
 	}
 
 	logger.Debug("WRITE to pipe successful",

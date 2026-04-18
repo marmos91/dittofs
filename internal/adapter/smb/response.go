@@ -103,9 +103,23 @@ func ProcessSingleRequest(
 		return SendErrorResponse(reqHeader, errStatus, connInfo)
 	}
 
+	// Wire async slot accounting for max_async_credits enforcement (MS-SMB2 §3.3.5.2.5).
+	handlerCtx.TryReserveAsync = connInfo.TryReserveAsync
+	handlerCtx.ReleaseAsync = connInfo.ReleaseAsync
+
 	// For CHANGE_NOTIFY, set up async callback so notifications can be sent
 	if reqHeader.Command == types.SMB2ChangeNotify && asyncNotifyCallback != nil {
 		handlerCtx.AsyncNotifyCallback = asyncNotifyCallback
+	}
+
+	// For READ commands, provide the async pipe-read completion callback so that
+	// handlePipeRead can pend reads on empty named pipes (MS-SMB2 §3.3.5.12).
+	if reqHeader.Command == types.SMB2Read {
+		ci := connInfo // capture for closure
+		handlerCtx.AsyncPipeReadCallback = func(sessionID, messageID, asyncId uint64, status types.Status, data []byte) error {
+			ci.ReleaseAsync()
+			return SendAsyncCompletionResponse(sessionID, messageID, asyncId, types.SMB2Read, status, encodeReadResponseBody(data), ci)
+		}
 	}
 
 	// For CANCEL, pass the request's AsyncId so the handler can identify
@@ -263,10 +277,23 @@ func ProcessRequestWithFileIDAndCallback(ctx context.Context, reqHeader *header.
 		return &HandlerResult{Status: errStatus, Data: MakeErrorBody()}, fileID, handlerCtx
 	}
 
+	// Wire async slot accounting for max_async_credits enforcement (MS-SMB2 §3.3.5.2.5).
+	handlerCtx.TryReserveAsync = connInfo.TryReserveAsync
+	handlerCtx.ReleaseAsync = connInfo.ReleaseAsync
+
 	// For CHANGE_NOTIFY in compound, wire the async callback so notifications
 	// can be sent separately from the compound response.
 	if reqHeader.Command == types.SMB2ChangeNotify && asyncNotifyCallback != nil {
 		handlerCtx.AsyncNotifyCallback = asyncNotifyCallback
+	}
+
+	// For READ commands, wire the async pipe-read completion callback.
+	if reqHeader.Command == types.SMB2Read {
+		ci := connInfo
+		handlerCtx.AsyncPipeReadCallback = func(sessionID, messageID, asyncId uint64, status types.Status, data []byte) error {
+			ci.ReleaseAsync()
+			return SendAsyncCompletionResponse(sessionID, messageID, asyncId, types.SMB2Read, status, encodeReadResponseBody(data), ci)
+		}
 	}
 
 	// For CANCEL, pass the request's AsyncId so the handler can identify
@@ -606,6 +633,10 @@ func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, preWri
 // a pending request is cancelled (STATUS_CANCELLED).
 // The asyncId must match the one sent in the interim STATUS_PENDING response.
 func SendAsyncChangeNotifyResponse(sessionID, messageID, asyncId uint64, response *handlers.ChangeNotifyResponse, connInfo *ConnInfo) error {
+	// Release the async slot reserved when the CHANGE_NOTIFY was first pended.
+	// This must happen exactly once per operation, regardless of outcome.
+	connInfo.ReleaseAsync()
+
 	status := response.GetStatus()
 
 	// Build async response header with matching AsyncId.
@@ -710,6 +741,29 @@ func SendAsyncCompletionResponse(sessionID uint64, messageID uint64, asyncId uin
 		"asyncId", asyncId)
 
 	return SendMessage(respHeader, body, connInfo)
+}
+
+// encodeReadResponseBody encodes a READ response body for async pipe-read completion.
+// Format per MS-SMB2 §2.2.20: StructureSize(2) + DataOffset(1) + Reserved(1) +
+// DataLength(4) + DataRemaining(4) + Reserved2(4) + Data(variable).
+// DataOffset 0x50 = 80 = SMB2 header (64) + READ response fixed header (16).
+func encodeReadResponseBody(data []byte) []byte {
+	dataLen := len(data)
+	buf := make([]byte, 16+max(dataLen, 1))
+	buf[0] = 17   // StructureSize low byte
+	buf[1] = 0    // StructureSize high byte
+	buf[2] = 0x50 // DataOffset
+	buf[3] = 0    // Reserved
+	buf[4] = byte(dataLen)
+	buf[5] = byte(dataLen >> 8)
+	buf[6] = byte(dataLen >> 16)
+	buf[7] = byte(dataLen >> 24)
+	// DataRemaining (4 bytes) = 0
+	// Reserved2 (4 bytes) = 0
+	if dataLen > 0 {
+		copy(buf[16:], data)
+	}
+	return buf
 }
 
 // HandleSMB1Negotiate handles legacy SMB1 NEGOTIATE requests by responding with

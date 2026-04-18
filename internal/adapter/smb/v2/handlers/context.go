@@ -124,6 +124,19 @@ type SMBHandlerContext struct {
 	// If nil, notifications are logged but not sent.
 	AsyncNotifyCallback AsyncResponseCallback
 
+	// AsyncPipeReadCallback delivers the final async READ response for a pending
+	// named-pipe read. Set by the dispatch layer for SMB2Read commands.
+	AsyncPipeReadCallback AsyncPipeReadCallback
+
+	// TryReserveAsync checks and atomically reserves one async connection slot.
+	// Returns false when the connection is at max_async_credits (512); the caller
+	// must return STATUS_INSUFFICIENT_RESOURCES without registering the operation.
+	TryReserveAsync func() bool
+
+	// ReleaseAsync releases a previously reserved async slot. Called by the
+	// handler when registration fails after a successful TryReserveAsync call.
+	ReleaseAsync func()
+
 	// RequestAsyncId is the AsyncId from the request header when FlagAsync is set.
 	// Used by CANCEL to identify which async operation to cancel.
 	RequestAsyncId uint64
