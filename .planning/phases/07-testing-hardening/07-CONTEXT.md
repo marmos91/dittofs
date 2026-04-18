@@ -97,11 +97,11 @@ Specifically:
 
   | Vector | Injection method | Expected error |
   |--------|-----------------|----------------|
-  | Truncated archive | write partial bytes, close early | io.ErrUnexpectedEOF or ErrChecksumMismatch |
-  | Bit-flip in payload | read archive, flip one byte, write back | ErrChecksumMismatch (SHA-256 mismatch) |
-  | Missing manifest | upload payload without manifest file | ErrManifestNotFound or ErrNoRestoreCandidate |
-  | Wrong store_id | manifest.store_id ≠ target store GetStoreID() | ErrStoreIdMismatch |
-  | manifest_version: 2 | set Version=2 in manifest YAML | ErrManifestVersionUnsupported |
+  | Truncated archive | write partial bytes, close early | io.ErrUnexpectedEOF or destination.ErrSHA256Mismatch |
+  | Bit-flip in payload | read archive, flip one byte, write back | destination.ErrSHA256Mismatch |
+  | Missing manifest | upload payload without manifest file | destination.ErrManifestMissing or restore.ErrNoRestoreCandidate |
+  | Wrong store_id | manifest.store_id ≠ target store GetStoreID() | restore.ErrStoreIDMismatch |
+  | manifest_version: 2 | set Version=2 in manifest YAML | restore.ErrManifestVersionUnsupported |
 
   Run against both local FS and S3 destinations to ensure error paths are
   consistent across drivers. Use the shared Localstack helper (no per-test

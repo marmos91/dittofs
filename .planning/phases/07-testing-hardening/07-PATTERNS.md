@@ -1,15 +1,16 @@
 # Phase 7: Testing & Hardening - Pattern Map
 
 **Mapped:** 2026-04-17
-**Files analyzed:** 5
-**Analogs found:** 5 / 5
+**Files analyzed:** 6
+**Analogs found:** 6 / 6
 
 ## File Classification
 
 | New/Modified File | Role | Data Flow | Closest Analog | Match Quality |
 |---|---|---|---|---|
 | `pkg/backup/destination/corruption_test.go` | test (integration) | CRUD | `pkg/backup/destination/fs/store_test.go` | exact |
-| `pkg/backup/manifest/version_gate_test.go` | test (unit) | transform | `pkg/backup/manifest/manifest_test.go` | exact |
+| `pkg/backup/restore/version_gate_restore_test.go` | test (unit) | transform | `pkg/backup/manifest/manifest_test.go` | exact |
+| `pkg/backup/concurrent_write_backup_restore_test.go` | test (integration) | request-response | `pkg/backup/backup_restore_test.go` | role-match |
 | `test/e2e/backup_matrix_test.go` | test (e2e) | request-response | `test/e2e/store_matrix_test.go` | exact |
 | `test/e2e/backup_chaos_test.go` | test (e2e) | event-driven | `test/e2e/store_matrix_test.go` + `test/e2e/helpers/server.go` | role-match |
 | `test/e2e/backup_restore_mounted_test.go` | test (e2e) | request-response | `test/e2e/shares_test.go` + `test/e2e/backup_test.go` | role-match |
