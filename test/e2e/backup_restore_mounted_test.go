@@ -13,11 +13,6 @@ import (
 	"github.com/marmos91/dittofs/test/e2e/helpers"
 )
 
-// setupMountedRestoreFixture starts a server, creates a memory metadata
-// store, a memory block store, a share (Enabled=true by default), runs
-// one successful backup, and returns the backup runner + share name +
-// record ID. Caller decides whether to disable the share before
-// attempting restore.
 func setupMountedRestoreFixture(t *testing.T) (*helpers.MetadataBackupRunner, string, string) {
 	t.Helper()
 
@@ -39,7 +34,6 @@ func setupMountedRestoreFixture(t *testing.T) (*helpers.MetadataBackupRunner, st
 	require.NoError(t, err, "create share")
 	require.NotNil(t, share, "create share must return share")
 
-	// Run a backup so we have a record to restore from.
 	mbr := helpers.NewMetadataBackupRunner(t, apiClient, storeName)
 	repoName := helpers.UniqueTestName("mr_repo")
 	repoPath := filepath.Join(t.TempDir(), "mr-backups")
@@ -54,32 +48,25 @@ func setupMountedRestoreFixture(t *testing.T) (*helpers.MetadataBackupRunner, st
 	return mbr, shareName, rec.ID
 }
 
-// TestBackupRestoreMounted_Rejected409 proves REST-02:
-// POST /api/v1/store/metadata/{name}/restore returns 409 Conflict with
-// an `enabled_shares` array when any share on the target store has
-// Enabled=true. The apiclient unwraps this into *RestorePreconditionError.
+// TestBackupRestoreMounted_Rejected409 asserts that restore returns 409 when any
+// share on the target store has Enabled=true.
 func TestBackupRestoreMounted_Rejected409(t *testing.T) {
 	mbr, shareName, recordID := setupMountedRestoreFixture(t)
 
-	// Share is Enabled=true by default. Attempting restore must 409.
 	enabledShares := mbr.StartRestoreExpectPrecondition(recordID)
 	assert.Contains(t, enabledShares, shareName,
 		"enabled_shares must include the share blocking restore; got %v", enabledShares)
 }
 
-// TestBackupRestoreMounted_DisabledAcceptsRestore proves that the same
-// fixture accepts a restore once the blocking share is disabled — i.e.
-// the 409 rejection is narrowly scoped to the Enabled precondition,
-// not a broader misconfiguration.
+// TestBackupRestoreMounted_DisabledAcceptsRestore asserts that disabling the
+// blocking share clears the 409 precondition and restore succeeds.
 func TestBackupRestoreMounted_DisabledAcceptsRestore(t *testing.T) {
 	mbr, shareName, recordID := setupMountedRestoreFixture(t)
 
-	// Disable the share via apiclient.
 	share, err := mbr.Client.DisableShare(shareName)
 	require.NoError(t, err, "DisableShare")
 	require.False(t, share.Enabled, "share must be disabled after DisableShare")
 
-	// Restore must now succeed.
 	restoreJob := mbr.StartRestoreMustSucceed(recordID)
 	require.NotNil(t, restoreJob)
 	final := mbr.PollJobUntilTerminal(restoreJob.ID, 60*time.Second)

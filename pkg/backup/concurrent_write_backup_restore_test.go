@@ -18,31 +18,17 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// TestConcurrentWriteBackupRestore proves ROADMAP Phase 7 SC4:
-// concurrent writers running against the source store while Backup
-// streams out, followed by Restore to a fresh engine and byte-compare
-// of the PayloadIDSet. Uses the Phase 2 ConcurrentWriter pattern
-// (100ms writer window, atomic error counter) against the memory
-// engine. No server process; no Docker. Build tag `integration`.
-//
-// Placement: pkg/backup/ (not test/e2e/) because SC4 is about the
-// metadata-store backup primitive, not the server's REST surface —
-// the server is covered by the Phase-7 matrix test.
 func TestConcurrentWriteBackupRestore(t *testing.T) {
 	ctx := context.Background()
 
 	src := memory.NewMemoryMetadataStoreWithDefaults()
 	t.Cleanup(func() { _ = src.Close() })
 
-	// --- 1. Seed the source with a deterministic tree ---
 	shareName := "/concurrent"
 	require.NoError(t, src.CreateShare(ctx, &metadata.Share{Name: shareName}),
 		"CreateShare")
-	// CreateRootDirectory materialises the root File entry under the
-	// share's pre-assigned root handle. Without this the Backup walker
-	// in pkg/metadata/store/memory treats the root as a missing node
-	// (fd == nil) and returns before enumerating children, so no
-	// PayloadIDs would be collected.
+	// CreateRootDirectory is required before Backup: without a root node the
+	// walker treats the share as empty and collects no PayloadIDs.
 	_, err := src.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
 		Type: metadata.FileTypeDirectory,
 		Mode: 0o755,
@@ -77,9 +63,7 @@ func TestConcurrentWriteBackupRestore(t *testing.T) {
 		seedFile(fmt.Sprintf("seed-%d", i), fmt.Sprintf("payload-seed-%d", i))
 	}
 
-	// --- 2. Spawn concurrent writer goroutine, Phase 2 style ---
-	// 100ms window matches ConcurrentWriterDuration default in
-	// pkg/metadata/storetest/backup_conformance.go.
+	// 100ms matches ConcurrentWriterDuration in pkg/metadata/storetest/backup_conformance.go.
 	writerCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
 
@@ -151,7 +135,6 @@ func TestConcurrentWriteBackupRestore(t *testing.T) {
 		}
 	}()
 
-	// --- 3. Backup concurrently with writer ---
 	var buf bytes.Buffer
 	ids, err := src.Backup(ctx, &buf)
 	require.NoError(t, err, "Backup during concurrent writes")
@@ -160,25 +143,17 @@ func TestConcurrentWriteBackupRestore(t *testing.T) {
 	require.Zero(t, writerErrs.Load(),
 		"writer goroutine must not encounter intermediate errors during concurrent backup")
 
-	// --- 4. Restore to fresh engine ---
 	dest := memory.NewMemoryMetadataStoreWithDefaults()
 	t.Cleanup(func() { _ = dest.Close() })
 	require.NoError(t, dest.Restore(ctx, bytes.NewReader(buf.Bytes())),
 		"Restore into fresh engine")
 
-	// --- 5. Byte-compare via PayloadIDSet invariants ---
-	// Enumerate all PayloadIDs from the restored store.
 	restoredIDs := metadata.NewPayloadIDSet()
 	shares, err := dest.ListShares(ctx)
 	require.NoError(t, err, "dest.ListShares")
 	require.Contains(t, shares, shareName, "restored store must expose /concurrent")
 	restoredRoot, err := dest.GetRootHandle(ctx, shareName)
 	require.NoError(t, err, "dest.GetRootHandle")
-	// NOTE: MetadataStore uses ListChildren (cursor-paginated), NOT ListDir.
-	// Signature: ListChildren(ctx, handle, cursor, limit) ([]DirEntry, string, error).
-	// We pass cursor="" (start) and limit=1000 (more than enough for this test's
-	// ~5 seed + N concurrent files). The returned cursor is discarded because
-	// a single page covers the full set at this scale.
 	entries, _, err := dest.ListChildren(ctx, restoredRoot, "", 1000)
 	require.NoError(t, err, "dest.ListChildren(root)")
 	for _, entry := range entries {
@@ -187,38 +162,27 @@ func TestConcurrentWriteBackupRestore(t *testing.T) {
 			continue
 		}
 		if f.PayloadID != "" {
-			// PayloadIDSet.Add takes a plain string; PayloadID is a named
-			// string type, so cast explicitly to satisfy the signature.
 			restoredIDs.Add(string(f.PayloadID))
 		}
 	}
 
-	// Invariant (a): every PayloadID the Backup reported must be
-	// present in the restored store. No dangling refs.
 	for pid := range ids {
 		require.True(t, restoredIDs.Contains(pid),
 			"Backup reported PayloadID %q but restored store has no file with it", pid)
 	}
-	// Invariant (b): every PayloadID in the restored store must be
-	// in the Backup's returned set. No uncounted files.
 	for pid := range restoredIDs {
 		require.True(t, ids.Contains(pid),
 			"restored PayloadID %q is not in the Backup's returned set", pid)
 	}
 
-	// --- 6. Byte-compare of a re-backup (best-effort). ---
-	// If the engine's encoding is deterministic, buf2 == buf. If the
-	// encoding is map-iteration-dependent (memory gob), the byte-compare
-	// will diverge — treat that as acceptable and skip the equality
-	// check, relying on the PayloadIDSet invariants above. Document
-	// which path was taken in the SUMMARY.
+	// Re-backup: gob map iteration is non-deterministic so byte equality is best-effort.
 	var buf2 bytes.Buffer
 	_, err = dest.Backup(ctx, &buf2)
 	require.NoError(t, err, "re-Backup from dest")
 	if bytes.Equal(buf.Bytes(), buf2.Bytes()) {
 		t.Logf("byte-compare PASSED: backup stream is deterministic (%d bytes)", buf.Len())
 	} else {
-		t.Logf("byte-compare streams differ (%d vs %d bytes) — engine encoding is non-deterministic; PayloadIDSet invariants cover SC4",
+		t.Logf("byte-compare streams differ (%d vs %d bytes) — engine encoding is non-deterministic; PayloadIDSet invariants cover correctness",
 			buf.Len(), buf2.Len())
 	}
 }
