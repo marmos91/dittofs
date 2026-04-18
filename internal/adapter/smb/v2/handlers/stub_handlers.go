@@ -188,12 +188,11 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 	// We check both CHANGE_NOTIFY and blocking LOCK requests.
 	cancelledSomething := false
 
-	// Try to cancel a pending CHANGE_NOTIFY request
+	// Try to cancel a pending CHANGE_NOTIFY request.
+	// Per [MS-SMB2] 3.3.5.16: If SMB2_FLAGS_ASYNC_COMMAND is set, look up by
+	// AsyncId; otherwise by MessageID.
 	if h.NotifyRegistry != nil {
 		var cancelled *PendingNotify
-
-		// Per [MS-SMB2] 3.3.5.16: If SMB2_FLAGS_ASYNC_COMMAND is set,
-		// look up by AsyncId; otherwise by MessageID.
 		if ctx.RequestAsyncId != 0 {
 			cancelled = h.NotifyRegistry.UnregisterByAsyncId(ctx.RequestAsyncId)
 		} else {
@@ -218,6 +217,31 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 						"messageID", cancelled.MessageID,
 						"error", err)
 				}
+			}
+		}
+	}
+
+	// Try to cancel a pending async pipe READ.
+	if h.PipeReadRegistry != nil {
+		var pendingRead *PendingPipeRead
+		if ctx.RequestAsyncId != 0 {
+			pendingRead = h.PipeReadRegistry.UnregisterByAsyncId(ctx.RequestAsyncId)
+		} else {
+			pendingRead = h.PipeReadRegistry.UnregisterByMessageID(ctx.MessageID)
+		}
+		if pendingRead != nil {
+			cancelledSomething = true
+			logger.Debug("CANCEL: cancelled pending pipe READ",
+				"asyncId", pendingRead.AsyncId,
+				"messageID", pendingRead.MessageID)
+			if pendingRead.Callback != nil {
+				go func(pr *PendingPipeRead) {
+					if err := pr.Callback(pr.SessionID, pr.MessageID, pr.AsyncId, types.StatusCancelled, nil); err != nil {
+						logger.Warn("CANCEL: failed to send STATUS_CANCELLED for pipe READ",
+							"messageID", pr.MessageID,
+							"error", err)
+					}
+				}(pendingRead)
 			}
 		}
 	}
@@ -337,7 +361,16 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 		AsyncCallback:    ctx.AsyncNotifyCallback,
 	}
 
+	// Per MS-SMB2 §3.3.5.2.5: enforce max_async_credits before going async.
+	if ctx.TryReserveAsync == nil || !ctx.TryReserveAsync() {
+		logger.Debug("CHANGE_NOTIFY: max_async_credits reached",
+			"path", watchPath,
+			"sessionID", ctx.SessionID)
+		return NewErrorResult(types.StatusInsufficientResources), nil
+	}
+
 	if err := h.NotifyRegistry.Register(notify); err != nil {
+		ctx.ReleaseAsync()
 		logger.Warn("CHANGE_NOTIFY: rejected — too many pending watches",
 			"path", watchPath,
 			"sessionID", ctx.SessionID)

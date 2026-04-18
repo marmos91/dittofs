@@ -69,7 +69,15 @@ type ReadResponse struct {
 	// DataRemaining indicates bytes remaining to be read.
 	// 0 means this is the last chunk of the read operation.
 	DataRemaining uint32
+
+	// AsyncId is non-zero for async interim responses (STATUS_PENDING on named pipes).
+	// Propagated via the asyncIdCarrier interface in helpers.go handleRequest.
+	AsyncId uint64
 }
+
+// GetAsyncId implements the asyncIdCarrier interface used by helpers.go
+// handleRequest to propagate STATUS_PENDING async interim responses.
+func (r *ReadResponse) GetAsyncId() uint64 { return r.AsyncId }
 
 // ============================================================================
 // Encoding and Decoding
@@ -316,10 +324,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// Step 10: Calculate read range
 	// ========================================================================
 
-	readEnd := req.Offset + uint64(req.Length)
-	if readEnd > fileSize {
-		readEnd = fileSize
-	}
+	readEnd := min(req.Offset+uint64(req.Length), fileSize)
 	actualLength := uint32(readEnd - req.Offset)
 
 	// Per MS-SMB2: if actual bytes available < MinimumCount, return EOF.
@@ -409,10 +414,7 @@ func (h *Handler) handleSymlinkRead(
 	}
 
 	// Calculate read range
-	readEnd := req.Offset + uint64(req.Length)
-	if readEnd > fileSize {
-		readEnd = fileSize
-	}
+	readEnd := min(req.Offset+uint64(req.Length), fileSize)
 
 	// Extract the requested portion
 	data := mfsymlinkData[req.Offset:readEnd]
@@ -449,13 +451,33 @@ func (h *Handler) handlePipeRead(ctx *SMBHandlerContext, req *ReadRequest, openF
 	// Read buffered RPC response
 	data := pipe.ProcessRead(int(req.Length))
 	if len(data) == 0 {
-		// No data available - this could be normal if WRITE hasn't happened yet
-		logger.Debug("READ: no data available in pipe", "pipeName", openFile.PipeName)
+		// No data available — pend the read as async per MS-SMB2 §3.3.5.12.
+		// When the client's subsequent WRITE produces data, handlePipeWrite
+		// completes this pending read via PipeReadRegistry.
+		logger.Debug("READ: no data in pipe, pending async", "pipeName", openFile.PipeName)
+
+		if ctx.TryReserveAsync == nil || !ctx.TryReserveAsync() {
+			logger.Debug("READ: max_async_credits reached, rejecting pipe read",
+				"pipeName", openFile.PipeName)
+			return &ReadResponse{
+				SMBResponseBase: SMBResponseBase{Status: types.StatusInsufficientResources},
+			}, nil
+		}
+
+		asyncId := h.generateAsyncId()
+		pending := &PendingPipeRead{
+			FileID:    req.FileID,
+			SessionID: ctx.SessionID,
+			MessageID: ctx.MessageID,
+			AsyncId:   asyncId,
+			MaxLen:    int(req.Length),
+			Callback:  ctx.AsyncPipeReadCallback,
+		}
+		h.PipeReadRegistry.Register(pending)
+
 		return &ReadResponse{
-			SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
-			DataOffset:      0x50,
-			Data:            []byte{},
-			DataRemaining:   0,
+			SMBResponseBase: SMBResponseBase{Status: types.StatusPending},
+			AsyncId:         asyncId,
 		}, nil
 	}
 
