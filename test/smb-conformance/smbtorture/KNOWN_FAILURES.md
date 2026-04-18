@@ -236,13 +236,13 @@ not credit arithmetic:
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.credits.1conn_ipc_max_async_credits | Credits | Named-pipe async READ returns OK without pending; `max_async_credits` cap not enforced | - |
-| smb2.credits.2conn_ipc_max_async_credits | Credits | Named-pipe async READ returns OK without pending; `max_async_credits` cap not enforced | - |
+| smb2.credits.1conn_ipc_max_async_credits | Credits | Named-pipe async READ returns OK without pending; `max_async_credits` cap not enforced | #399 |
+| smb2.credits.2conn_ipc_max_async_credits | Credits | Named-pipe async READ returns OK without pending; `max_async_credits` cap not enforced | #399 |
 | smb2.credits.multichannel_ipc_max_async_credits | Credits | Multi-channel not implemented (second-connection CREATE disconnects) | #361 |
-| smb2.credits.1conn_notify_max_async_credits | Credits | Server does not cap async ops at `max_async_credits` (all 514 reads pend, test expects 511 pending + 3 INSUFFICIENT_RESOURCES) | - |
-| smb2.credits.2conn_notify_max_async_credits | Credits | Server does not cap async ops at `max_async_credits`; multi-connection async credit coordination not implemented | - |
+| smb2.credits.1conn_notify_max_async_credits | Credits | Server does not cap async ops at `max_async_credits` (all 514 reads pend, test expects 511 pending + 3 INSUFFICIENT_RESOURCES) | #399 |
+| smb2.credits.2conn_notify_max_async_credits | Credits | Server does not cap async ops at `max_async_credits`; multi-connection async credit coordination not implemented | #399 |
 | smb2.credits.multichannel_max_async_credits | Credits | Multi-channel not implemented (blocks session bind) | #361 |
-| smb2.credits.ipc_max_data_zero | Credits | Named-pipe async READ returns OK without pending on IPC$ | - |
+| smb2.credits.ipc_max_data_zero | Credits | Named-pipe async READ returns OK without pending on IPC$ | #399 |
 
 ### Directory Operations (Advanced Queries Not Implemented)
 
