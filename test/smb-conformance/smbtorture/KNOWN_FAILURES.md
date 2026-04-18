@@ -61,25 +61,16 @@ are not implemented. Compression state tracking (FSCTL_GET/SET_COMPRESSION),
 FILE_ATTRIBUTE_COMPRESSED, compression inheritance (parent dir to child), and
 FILE_NO_COMPRESSION create option are supported. Compression permission checks
 (SEC_FILE_WRITE_DATA for SET_COMPRESSION) are not yet implemented.
-Duplicate extents (block refcounting) tests skip automatically because
-FILE_SUPPORTS_BLOCK_REFCOUNTING is not advertised. The compress_notsup_get/set
-tests correctly SKIP because FILE_FILE_COMPRESSION is advertised.
+All `smb2.ioctl.dup_extents_*` tests skip automatically (verified in
+smbtorture-2026-03-25 results) because `FILE_SUPPORTS_BLOCK_REFCOUNTING` is
+not advertised — they consume no failure slots and are not listed below.
+The compress_notsup_get/set tests correctly SKIP because FILE_FILE_COMPRESSION
+is advertised.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.ioctl.bug14769 | IOCTL | IOCTL edge case not implemented | - |
 | smb2.ioctl.compress_perms | IOCTL | FSCTL_SET_COMPRESSION requires SEC_FILE_WRITE_DATA check (not implemented) | - |
-| smb2.ioctl.dup_extents_simple | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
-| smb2.ioctl.dup_extents_len_beyond_src | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
-| smb2.ioctl.dup_extents_sparse_dest | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
-| smb2.ioctl.dup_extents_sparse_src | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
-| smb2.ioctl.dup_extents_bad_handle | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
-| smb2.ioctl.dup_extents_sparse_both | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
-| smb2.ioctl.dup_extents_src_is_dest | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
-| smb2.ioctl.dup_extents_src_is_dest_overlap | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
-| smb2.ioctl.dup_extents_compressed_dest | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
-| smb2.ioctl.dup_extents_src_lock | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
-| smb2.ioctl.dup_extents_dest_lock | IOCTL | Duplicate extents not implemented (may state-poison in CI) | - |
 | smb2.ioctl.copy_chunk_sparse_dest | IOCTL | Sparse file semantics not implemented for server-side copy | - |
 | smb2.ioctl.bug14788.NETWORK_INTERFACE | IOCTL | Network interface enumeration not implemented | - |
 | smb2.ioctl.network_interface_info | IOCTL | Flaky in CI (network interface query race) | - |
