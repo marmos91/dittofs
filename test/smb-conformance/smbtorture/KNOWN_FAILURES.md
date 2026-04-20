@@ -205,35 +205,20 @@ DittoFS implements file leases (Phase 37) but not directory leases.
 | smb2.dirlease.v2_request | Directory Leases | Directory leases not implemented | - |
 | smb2.dirlease.v2_request_parent | Directory Leases | Directory leases not implemented | - |
 
-### Credit Management (IPC Async Subset Not Implemented)
+### Credit Management (Multi-Channel Subset Not Implemented)
 
-Credit grant arithmetic is correct post-#378: `session_setup_credits_granted`,
-`single_req_credits_granted`, and `skipped_mid` all pass, and the `cur_credits`
-assertion at `credits.c:460` (previously `granted 529, expected 514`) now
-succeeds on every `*_ipc_max_async_credits` variant. The subsuite no longer
-aborts via talloc panic, so all entries below are reachable.
+Credit grant arithmetic and the `max_async_credits` cap are both correct
+post-#399 follow-up: `ipc_max_data_zero`, `1conn_ipc_max_async_credits`,
+`2conn_ipc_max_async_credits`, and `1conn_notify_max_async_credits` all pass.
 
-The remaining failures are two independent gaps in the IPC/named-pipe path,
-not credit arithmetic:
-
-1. **Named-pipe async READ never pends.** On an empty pipe the server returns
-   `STATUS_SUCCESS` instead of going async with `STATUS_PENDING`. Samba
-   handles this in `source3/smbd/smb2_read.c` via the `read_nowait` /
-   `STATUS_PENDING` path.
-2. **`max_async_credits` cap not enforced.** Once a client has
-   `max_async_credits` (default 512) outstanding async operations, further
-   async requests must return `STATUS_INSUFFICIENT_RESOURCES` per MS-SMB2
-   3.3.5.2.5. DittoFS lets all requests pend.
+The remaining failures all require multi-channel session binding (MS-SMB2
+§3.3.5.5.2) and are tracked under #361.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.credits.1conn_ipc_max_async_credits | Credits | Named-pipe async READ returns OK without pending; `max_async_credits` cap not enforced | #399 |
-| smb2.credits.2conn_ipc_max_async_credits | Credits | Named-pipe async READ returns OK without pending; `max_async_credits` cap not enforced | #399 |
 | smb2.credits.multichannel_ipc_max_async_credits | Credits | Multi-channel not implemented (second-connection CREATE disconnects) | #361 |
-| smb2.credits.1conn_notify_max_async_credits | Credits | Server does not cap async ops at `max_async_credits` (all 514 reads pend, test expects 511 pending + 3 INSUFFICIENT_RESOURCES) | #399 |
-| smb2.credits.2conn_notify_max_async_credits | Credits | Server does not cap async ops at `max_async_credits`; multi-connection async credit coordination not implemented | #399 |
-| smb2.credits.multichannel_max_async_credits | Credits | Multi-channel not implemented (blocks session bind) | #361 |
-| smb2.credits.ipc_max_data_zero | Credits | Named-pipe async READ returns OK without pending on IPC$ | #399 |
+| smb2.credits.2conn_notify_max_async_credits | Credits | Multi-channel not implemented (second connection disconnects mid-test) | #361 |
+| smb2.credits.multichannel_max_async_credits | Credits | Multi-channel not implemented (session bind returns ACCESS_DENIED) | #361 |
 
 ### Directory Operations (Advanced Queries Not Implemented)
 

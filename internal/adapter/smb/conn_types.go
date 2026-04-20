@@ -78,12 +78,15 @@ type ConnInfo struct {
 const MaxAsyncCredits = 512
 
 // TryReserveAsync atomically checks and reserves one async slot on the connection.
-// Returns false when the connection is at MaxAsyncCredits; the caller must
-// return STATUS_INSUFFICIENT_RESOURCES without registering an async operation.
+// Returns false when the connection has MaxAsyncCredits-1 slots outstanding; the
+// caller must return STATUS_INSUFFICIENT_RESOURCES without registering an async
+// operation. Samba (source3/smbd/smb2_server.c) caps outstanding async ops at
+// max_async_credits-1 so one slot stays free for synchronous work and CANCEL;
+// smbtorture smb2.credits.*_max_async_credits asserts this behavior.
 func (c *ConnInfo) TryReserveAsync() bool {
 	for {
 		cur := c.asyncPendingCount.Load()
-		if cur >= MaxAsyncCredits {
+		if cur >= MaxAsyncCredits-1 {
 			return false
 		}
 		if c.asyncPendingCount.CompareAndSwap(cur, cur+1) {
