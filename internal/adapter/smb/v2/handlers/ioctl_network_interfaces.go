@@ -100,6 +100,10 @@ func collectNetworkInterfaceEntries() []networkInterfaceEntry {
 		}
 		addrs, err := iface.Addrs()
 		if err != nil {
+			logger.Debug("IOCTL network interface address enumeration failed",
+				"interface_name", iface.Name,
+				"interface_index", iface.Index,
+				"error", err)
 			continue
 		}
 		for _, addr := range addrs {

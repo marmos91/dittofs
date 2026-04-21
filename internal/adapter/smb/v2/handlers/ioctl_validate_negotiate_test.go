@@ -398,25 +398,24 @@ func TestIoctlDispatchTable_RoutesCorrectly(t *testing.T) {
 	}
 
 	// FSCTL_QUERY_NETWORK_INTERFACE_INFO now dispatches to a real handler.
-	// Request layout: StructureSize(2) Reserved(2) CtlCode(4) FileId(16 sentinel).
+	// Assert on a behavior UNIQUE to the handler — not a status value the
+	// generic "unknown IOCTL" path could also produce. A non-sentinel FileID
+	// must yield StatusInvalidParameter per MS-SMB2 §3.3.5.15.13; the
+	// generic path would return StatusNotSupported. This asserts dispatch
+	// routing independent of host interface enumerability.
 	w2 := smbenc.NewWriter(24)
 	w2.WriteUint16(57)
 	w2.WriteUint16(0)
 	w2.WriteUint32(FsctlQueryNetworkInterfInfo)
-	w2.WriteBytes(bytes.Repeat([]byte{0xFF}, 16))
+	w2.WriteBytes(make([]byte, 16)) // zero FileID — not the 0xFF sentinel
 	body2 := w2.Bytes()
 
 	result2, err := h.Ioctl(ctx, body2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// This test verifies dispatch only: the handler accepts either
-	// StatusSuccess (interfaces enumerable) or StatusNotSupported (sandboxed
-	// runner with no non-loopback interface). What we must NOT see is
-	// StatusNotSupported for an UNKNOWN IOCTL — that would indicate the
-	// dispatch table is missing the entry.
-	if result2.Status != types.StatusSuccess && result2.Status != types.StatusNotSupported {
-		t.Errorf("expected StatusSuccess or StatusNotSupported for FSCTL_QUERY_NETWORK_INTERFACE_INFO, got %v", result2.Status)
+	if result2.Status != types.StatusInvalidParameter {
+		t.Errorf("expected StatusInvalidParameter for non-sentinel FileID (proves dispatch routed to handler), got %v", result2.Status)
 	}
 }
 
