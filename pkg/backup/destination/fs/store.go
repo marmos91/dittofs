@@ -81,6 +81,9 @@ func New(ctx context.Context, repo *models.BackupRepo) (destination.Destination,
 	if err != nil {
 		return nil, err
 	}
+	if err := os.MkdirAll(cfg.Path, 0700); err != nil {
+		return nil, fmt.Errorf("%w: mkdir %s: %v", destination.ErrDestinationUnavailable, cfg.Path, err)
+	}
 	s := &Store{
 		root:          cfg.Path,
 		graceWindow:   cfg.GraceWindow,
