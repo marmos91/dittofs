@@ -19,24 +19,25 @@ var ioctlDispatch map[uint32]IOCTLHandler
 
 func init() {
 	ioctlDispatch = map[uint32]IOCTLHandler{
-		FsctlValidateNegotiateInfo: (*Handler).handleValidateNegotiateInfo,
-		FsctlGetReparsePoint:       (*Handler).handleGetReparsePoint,
-		FsctlPipeTransceive:        (*Handler).handlePipeTransceive,
-		FsctlGetNtfsVolumeData:     (*Handler).handleGetNtfsVolumeData,
-		FsctlReadFileUsnData:       (*Handler).handleReadFileUsnData,
-		FsctlSrvEnumerateSnapshots: (*Handler).handleEnumerateSnapshots,
-		FsctlIsPathnameValid:       (*Handler).handleIsPathnameValid,
-		FsctlGetCompression:        (*Handler).handleGetCompression,
-		FsctlSetCompression:        (*Handler).handleSetCompression,
-		FsctlGetIntegrityInfo:      (*Handler).handleGetIntegrityInfo,
-		FsctlSetIntegrityInfo:      (*Handler).handleSetIntegrityInfo,
-		FsctlGetObjectID:           (*Handler).handleGetObjectID,
-		FsctlCreateOrGetObjectID:   (*Handler).handleCreateOrGetObjectID,
-		FsctlMarkHandle:            (*Handler).handleMarkHandle,
-		FsctlQueryFileRegions:      (*Handler).handleQueryFileRegions,
-		FsctlSrvRequestResumeKey:   (*Handler).handleSrvRequestResumeKey,
-		FsctlSrvCopyChunk:          (*Handler).handleSrvCopyChunk,
-		FsctlSrvCopyChunkWrite:     (*Handler).handleSrvCopyChunk,
+		FsctlValidateNegotiateInfo:  (*Handler).handleValidateNegotiateInfo,
+		FsctlGetReparsePoint:        (*Handler).handleGetReparsePoint,
+		FsctlPipeTransceive:         (*Handler).handlePipeTransceive,
+		FsctlGetNtfsVolumeData:      (*Handler).handleGetNtfsVolumeData,
+		FsctlReadFileUsnData:        (*Handler).handleReadFileUsnData,
+		FsctlSrvEnumerateSnapshots:  (*Handler).handleEnumerateSnapshots,
+		FsctlIsPathnameValid:        (*Handler).handleIsPathnameValid,
+		FsctlGetCompression:         (*Handler).handleGetCompression,
+		FsctlSetCompression:         (*Handler).handleSetCompression,
+		FsctlGetIntegrityInfo:       (*Handler).handleGetIntegrityInfo,
+		FsctlSetIntegrityInfo:       (*Handler).handleSetIntegrityInfo,
+		FsctlGetObjectID:            (*Handler).handleGetObjectID,
+		FsctlCreateOrGetObjectID:    (*Handler).handleCreateOrGetObjectID,
+		FsctlMarkHandle:             (*Handler).handleMarkHandle,
+		FsctlQueryFileRegions:       (*Handler).handleQueryFileRegions,
+		FsctlSrvRequestResumeKey:    (*Handler).handleSrvRequestResumeKey,
+		FsctlSrvCopyChunk:           (*Handler).handleSrvCopyChunk,
+		FsctlSrvCopyChunkWrite:      (*Handler).handleSrvCopyChunk,
+		FsctlQueryNetworkInterfInfo: (*Handler).handleQueryNetworkInterfaceInfo,
 	}
 }
 
@@ -89,7 +90,7 @@ func (h *Handler) Ioctl(ctx *SMBHandlerContext, body []byte) (*HandlerResult, er
 // and do not require an open file handle.
 func ioctlNoHandleFSCTL(ctlCode uint32) bool {
 	switch ctlCode {
-	case FsctlValidateNegotiateInfo, FsctlPipeTransceive:
+	case FsctlValidateNegotiateInfo, FsctlPipeTransceive, FsctlQueryNetworkInterfInfo:
 		return true
 	default:
 		return false

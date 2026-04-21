@@ -33,7 +33,6 @@ Phase 2 of #361.
 |-----------|----------|--------|-------|
 | smb2.multichannel.bugs.bug_15346 | Multi-channel | Wide multi-channel coordination (Phase 2 of #361) | #361 |
 | smb2.multichannel.generic.num_channels | Multi-channel | Wide multi-channel coordination (Phase 2 of #361) | #361 |
-| smb2.multichannel.generic.interface_info | Multi-channel | FSCTL_QUERY_NETWORK_INTERFACE_INFO not yet implemented (Phase 2 of #361) | #361 |
 | smb2.multichannel.leases.test1 | Multi-channel | Cross-channel lease break dispatch not yet implemented (Phase 2 of #361) | #361 |
 | smb2.multichannel.leases.test2 | Multi-channel | Cross-channel lease break dispatch not yet implemented (Phase 2 of #361) | #361 |
 | smb2.multichannel.leases.test3 | Multi-channel | Cross-channel lease break dispatch not yet implemented (Phase 2 of #361) | #361 |
