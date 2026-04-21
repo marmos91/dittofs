@@ -20,8 +20,18 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/clients"
 )
 
+// nextConnID is the global monotonic counter for Connection.ID. Starts at 1
+// so the zero value remains a sentinel for "no connection assigned" in
+// internal code paths that don't go through NewConnection.
+var nextConnID atomic.Uint64
+
 // Connection handles a single SMB2 client connection.
 type Connection struct {
+	// ID is a stable, process-wide monotonic identifier for this TCP
+	// connection. Used by Session.Channels to key per-channel signing state
+	// when SMB2 multi-channel session binding is in play (MS-SMB2 §3.3.5.5.2).
+	ID uint64
+
 	server *Adapter
 	conn   net.Conn
 
@@ -45,6 +55,7 @@ type Connection struct {
 // preauth integrity hash computation from the very first message.
 func NewConnection(server *Adapter, conn net.Conn) *Connection {
 	return &Connection{
+		ID:          nextConnID.Add(1),
 		server:      server,
 		conn:        conn,
 		requestSem:  make(chan struct{}, server.config.MaxRequestsPerConnection),
@@ -105,6 +116,7 @@ func (c *Connection) UntrackSession(sessionID uint64) {
 // connInfo builds the ConnInfo struct used by internal/ dispatch functions.
 func (c *Connection) connInfo() *smb.ConnInfo {
 	ci := &smb.ConnInfo{
+		ConnID:         c.ID,
 		Conn:           c.conn,
 		Handler:        c.server.handler,
 		SessionManager: c.server.sessionManager,

@@ -116,6 +116,32 @@ func DeriveAllKeys(sessionKey []byte, dialect types.Dialect, preauthHash [64]byt
 	return cs
 }
 
+// DeriveChannelSigningKey derives a per-channel signing key for a connection
+// bound via SMB2_SESSION_FLAG_BINDING (MS-SMB2 §3.1.4.2 and §3.3.5.5.2).
+//
+// The input session key is the session-wide key established by the original
+// authentication. The output is a channel-specific 16-byte signing key used
+// to verify signatures on requests arriving over the bound connection.
+//
+// Label/context rules (matching Samba libcli/smb/smb2_signing.c:38-84):
+//   - SMB 3.1.1 (Dialect0311): label "SMBSigningKey\0", context = the
+//     channel's own preauth integrity hash (64 bytes).
+//   - SMB 3.0 / 3.0.2: label "SMB2AESCMAC\0", context = "SmbSign\0" (the
+//     preauth hash is ignored — SMB 3.0 has no preauth).
+//
+// Returns an error if the dialect is SMB 2.x (binding requires 3.0+) or the
+// session key is empty.
+func DeriveChannelSigningKey(sessionKey []byte, dialect types.Dialect, preauthHash [64]byte) ([]byte, error) {
+	if dialect < types.Dialect0300 {
+		return nil, fmt.Errorf("session binding requires SMB 3.0+, got dialect 0x%04x", uint16(dialect))
+	}
+	if len(sessionKey) == 0 {
+		return nil, errors.New("empty session key")
+	}
+	label, context := kdf.LabelAndContext(kdf.SigningKeyPurpose, dialect, preauthHash)
+	return kdf.DeriveKey(sessionKey, label, context, 128), nil
+}
+
 // CreateEncryptors creates Encryptor and Decryptor instances from the derived keys.
 //
 // Key direction (from CLIENT perspective):

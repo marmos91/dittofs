@@ -104,6 +104,15 @@ type Session struct {
 
 	// mu protects credit mutation operations
 	mu sync.Mutex
+
+	// channels holds every TCP connection bound to this session, keyed by
+	// ConnID. The primary connection is registered when the session is
+	// created (see NewSession / NewSessionWithUser); additional channels are
+	// added by SESSION_SETUP with SMB2_SESSION_FLAG_BINDING per MS-SMB2
+	// §3.3.5.5.2. All channels share the session key but each derives its
+	// own signing key. Access via AddChannel / GetChannel / RemoveChannel /
+	// ListChannels (channel.go).
+	channels sync.Map
 }
 
 // Credits tracks credit accounting for a session.
