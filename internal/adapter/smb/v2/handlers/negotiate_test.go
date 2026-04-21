@@ -607,9 +607,9 @@ func TestNegotiate_SMB300(t *testing.T) {
 		t.Errorf("DialectRevision = 0x%04x, expected 0x0300", dialectRevision)
 	}
 
-	// SMB 3.0 should advertise CapLeasing | CapLargeMTU | CapDirectoryLeasing
+	// SMB 3.0 should advertise CapLeasing | CapLargeMTU | CapMultiChannel | CapDirectoryLeasing
 	caps := binary.LittleEndian.Uint32(result.Data[24:28])
-	expectedCaps := uint32(types.CapLeasing | types.CapLargeMTU | types.CapDirectoryLeasing)
+	expectedCaps := uint32(types.CapLeasing | types.CapLargeMTU | types.CapMultiChannel | types.CapDirectoryLeasing)
 	if caps != expectedCaps {
 		t.Errorf("Capabilities = 0x%08x, expected 0x%08x", caps, expectedCaps)
 	}
@@ -820,14 +820,14 @@ func TestNegotiate_CapabilityGating(t *testing.T) {
 			name:            "SMB300_WithDirLeasing",
 			dialects:        []uint16{0x0300},
 			expectedDialect: 0x0300,
-			expectedCaps:    types.CapLeasing | types.CapLargeMTU | types.CapDirectoryLeasing,
+			expectedCaps:    types.CapLeasing | types.CapLargeMTU | types.CapMultiChannel | types.CapDirectoryLeasing,
 			dirLeasing:      true,
 		},
 		{
 			name:            "SMB300_WithEncryption",
 			dialects:        []uint16{0x0300},
 			expectedDialect: 0x0300,
-			expectedCaps:    types.CapLeasing | types.CapLargeMTU | types.CapDirectoryLeasing | types.CapEncryption,
+			expectedCaps:    types.CapLeasing | types.CapLargeMTU | types.CapMultiChannel | types.CapDirectoryLeasing | types.CapEncryption,
 			encryption:      true,
 			dirLeasing:      true,
 		},
@@ -835,7 +835,7 @@ func TestNegotiate_CapabilityGating(t *testing.T) {
 			name:            "SMB302_WithEncryption",
 			dialects:        []uint16{0x0302},
 			expectedDialect: 0x0302,
-			expectedCaps:    types.CapLeasing | types.CapLargeMTU | types.CapDirectoryLeasing | types.CapEncryption,
+			expectedCaps:    types.CapLeasing | types.CapLargeMTU | types.CapMultiChannel | types.CapDirectoryLeasing | types.CapEncryption,
 			encryption:      true,
 			dirLeasing:      true,
 		},
@@ -843,7 +843,7 @@ func TestNegotiate_CapabilityGating(t *testing.T) {
 			name:            "SMB311_NoCapsEncryption",
 			dialects:        []uint16{0x0311},
 			expectedDialect: 0x0311,
-			expectedCaps:    types.CapLeasing | types.CapLargeMTU | types.CapDirectoryLeasing,
+			expectedCaps:    types.CapLeasing | types.CapLargeMTU | types.CapMultiChannel | types.CapDirectoryLeasing,
 			dirLeasing:      true,
 		},
 	}

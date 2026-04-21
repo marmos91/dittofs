@@ -220,6 +220,10 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 	// negotiation parameters on the connection.
 	handlerCtx.ConnCryptoState = connInfo.CryptoState
 
+	// Thread the stable per-connection ID so SMB2 multi-channel session
+	// binding (MS-SMB2 §3.3.5.5.2) can key per-channel signing state.
+	handlerCtx.ConnID = connInfo.ConnID
+
 	if cmd.NeedsSession && reqHeader.SessionID != 0 {
 		sess, ok := connInfo.Handler.GetSession(reqHeader.SessionID)
 		if !ok || sess.LoggedOff.Load() {

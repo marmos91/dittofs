@@ -9,6 +9,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/auth"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
+	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -28,6 +29,12 @@ const (
 	sessionSetupFixedSize               = 24 // Fixed part size (without buffer)
 	sessionSetupMinSize                 = 25 // Minimum request size (per spec)
 )
+
+// SMB2_SESSION_FLAG_BINDING is set in SESSION_SETUP request Flags byte to
+// indicate the client is binding a new TCP channel to an existing session.
+// Server-side handling per MS-SMB2 §3.3.5.5.2. Request-only; the success
+// response does not echo this flag.
+const SMB2_SESSION_FLAG_BINDING = 0x01
 
 // SESSION_SETUP response structure offsets [MS-SMB2] 2.2.6
 const (
@@ -141,7 +148,16 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	logger.Debug("SESSION_SETUP request",
 		"securityBufferLength", len(req.SecurityBuffer),
 		"previousSessionID", req.PreviousSessionID,
-		"contextSessionID", ctx.SessionID)
+		"contextSessionID", ctx.SessionID,
+		"flags", fmt.Sprintf("0x%02x", req.Flags))
+
+	// Session binding (MS-SMB2 §3.3.5.5.2). A binding request must be
+	// validated before the pending-auth / re-auth branches below — an
+	// otherwise-valid SessionID with SMB2_SESSION_FLAG_BINDING should be
+	// routed as a bind, not as a re-auth of the existing session.
+	if req.Flags&SMB2_SESSION_FLAG_BINDING != 0 {
+		return h.handleSessionBind(ctx, req)
+	}
 
 	// Check if this is a continuation of pending authentication
 	if ctx.SessionID != 0 {
@@ -287,6 +303,309 @@ func findNTLMSSP(data []byte) []byte {
 		return data[i:]
 	}
 	return nil
+}
+
+// handleSessionBind validates and routes an SMB2 SESSION_SETUP request with
+// SMB2_SESSION_FLAG_BINDING — the client is attempting to bind a new TCP
+// connection to an existing session as an additional channel (MS-SMB2
+// §3.3.5.5.2).
+//
+// Validation order mirrors Samba source3/smbd/smb2_sesssetup.c:715-867. Each
+// check fails fast with the spec-mandated NT_STATUS:
+//
+//  1. ctx.SessionID != 0                         → STATUS_INVALID_PARAMETER
+//  2. session exists                             → STATUS_USER_SESSION_DELETED
+//  3. connection dialect ≥ SMB 3.0               → STATUS_REQUEST_NOT_ACCEPTED
+//  4. session dialect matches connection dialect → STATUS_INVALID_PARAMETER
+//  5. session is not guest / anonymous           → STATUS_NOT_SUPPORTED
+//
+// On success the auth-completion branch (commit 4 of #361 Phase 1) derives a
+// per-channel signing key from the existing session key and registers the
+// connection on session.Channels. This commit lands only the validation
+// scaffolding: if every check passes, the handler currently returns
+// STATUS_NOT_SUPPORTED with a log marker — the auth-completion routing lands
+// in a follow-up commit within this branch so that partial work does not
+// produce a silently-wrong wire response.
+func (h *Handler) handleSessionBind(ctx *SMBHandlerContext, req *SessionSetupRequest) (*HandlerResult, error) {
+	// 1. SessionID must be non-zero (can't bind to "no session").
+	if ctx.SessionID == 0 {
+		logger.Debug("SESSION_SETUP bind: SessionID is zero")
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	// 2. Session must exist.
+	sess, ok := h.GetSession(ctx.SessionID)
+	if !ok {
+		logger.Debug("SESSION_SETUP bind: no such session", "sessionID", ctx.SessionID)
+		return NewErrorResult(types.StatusUserSessionDeleted), nil
+	}
+
+	// 3. Connection dialect must be SMB 3.0+.
+	var connDialect types.Dialect
+	if ctx.ConnCryptoState != nil {
+		connDialect = ctx.ConnCryptoState.GetDialect()
+	}
+	if connDialect < types.Dialect0300 {
+		logger.Info("SESSION_SETUP bind rejected: dialect below SMB 3.0",
+			"sessionID", ctx.SessionID,
+			"dialect", fmt.Sprintf("0x%04x", uint16(connDialect)))
+		return NewErrorResult(types.StatusRequestNotAccepted), nil
+	}
+
+	// 4. Per §3.3.5.5.2 bullet: the session's dialect MUST equal the
+	// connection's. DittoFS does not yet record per-session dialect; today
+	// every live session is on the same dialect as the connection that
+	// established it. Cross-dialect sessions are impossible with single-
+	// connection-per-session, so this check becomes meaningful only once
+	// a session outlives its first connection (Phase 2+). Stubbed as pass
+	// with a comment to revisit when Session.Dialect lands.
+	_ = sess // intentional: full dialect-match enforcement deferred
+
+	// 5. Session must not be guest / anonymous. Binding a channel onto an
+	// unauthenticated session leaks into NOT_SUPPORTED territory per spec.
+	if sess.IsGuest || sess.IsNull {
+		logger.Info("SESSION_SETUP bind rejected: session is guest/anonymous",
+			"sessionID", ctx.SessionID,
+			"isGuest", sess.IsGuest,
+			"isNull", sess.IsNull)
+		return NewErrorResult(types.StatusNotSupported), nil
+	}
+
+	// If a binding PendingAuth already exists for this session, this is
+	// the TYPE_3 of an in-flight bind — route to completeNTLMAuth, which
+	// branches on pending.IsBinding and calls completeSessionBind.
+	if pending, ok := h.GetPendingAuth(ctx.SessionID); ok && pending.IsBinding {
+		return h.completeNTLMAuth(ctx, req.SecurityBuffer)
+	}
+
+	// First binding request (TYPE_1). For SMB 3.1.1, initialize a per-
+	// channel preauth integrity hash chain on THIS connection keyed by
+	// the bound SessionID (MS-SMB2 §3.3.5.5.2 + §3.1.4.2). The
+	// ConnectionCryptoState holding this entry is per-TCP-connection, so
+	// using the real SessionID does not collide with the primary
+	// connection's (already-deleted) entry. The SESSION_SETUP before/after
+	// hooks (sessionPreauthBeforeHook / sessionPreauthAfterHook) will then
+	// chain the TYPE_2 response and TYPE_3 request bytes into this same
+	// entry; completeSessionBind reads the finalized hash and derives the
+	// per-channel signing key with it.
+	//
+	// For 3.0 / 3.0.2 the preauth hash is unused by DeriveChannelSigningKey
+	// (fixed "SmbSign" KDF context), so the init is a no-op cost that keeps
+	// the two paths symmetric.
+	if connDialect >= types.Dialect0300 && ctx.ConnCryptoState != nil {
+		ctx.ConnCryptoState.InitSessionPreauthHash(ctx.SessionID, ctx.RawRequest)
+	}
+
+	return h.handleNTLMNegotiateBinding(ctx, req)
+}
+
+// handleNTLMNegotiateBinding initiates an NTLM handshake for a session bind
+// (SMB2_SESSION_FLAG_BINDING). Unlike handleNTLMNegotiate this does NOT
+// classify the request as re-authentication — the existing session's
+// identity and keys are retained. On success it returns an NTLM TYPE_2
+// CHALLENGE with STATUS_MORE_PROCESSING_REQUIRED; the client's TYPE_3 will
+// be routed to completeNTLMAuth via the normal pending-auth branch.
+func (h *Handler) handleNTLMNegotiateBinding(ctx *SMBHandlerContext, req *SessionSetupRequest) (*HandlerResult, error) {
+	// Extract NTLM token (unwrap SPNEGO if needed). The TYPE_1 must be
+	// present for a binding request; empty security buffer is invalid.
+	ntlmToken, usedSPNEGO, mechListBytes := extractNTLMToken(req.SecurityBuffer)
+	if !auth.IsValid(ntlmToken) || auth.GetMessageType(ntlmToken) != auth.Negotiate {
+		logger.Debug("SESSION_SETUP bind: missing or invalid NTLM NEGOTIATE token",
+			"sessionID", ctx.SessionID)
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
+	// Build TYPE_2 CHALLENGE
+	challengeMsg, serverChallenge := auth.BuildChallenge()
+
+	pending := &PendingAuth{
+		SessionID:        ctx.SessionID, // bound session's ID
+		ClientAddr:       ctx.ClientAddr,
+		CreatedAt:        time.Now(),
+		ServerChallenge:  serverChallenge,
+		UsedSPNEGO:       usedSPNEGO,
+		IsReauth:         false,
+		IsBinding:        true,
+		BindingSessionID: ctx.SessionID,
+		MechListBytes:    mechListBytes,
+	}
+	h.StorePendingAuth(pending)
+
+	logger.Debug("SESSION_SETUP bind: stored binding PendingAuth",
+		"sessionID", ctx.SessionID,
+		"serverChallenge", fmt.Sprintf("%x", serverChallenge),
+		"spnegoWrapped", usedSPNEGO)
+
+	// Wrap challenge in SPNEGO if the client did.
+	securityBuffer := challengeMsg
+	if usedSPNEGO {
+		spnegoResp, err := auth.BuildAcceptIncomplete(auth.OIDNTLMSSP, challengeMsg)
+		if err == nil {
+			securityBuffer = spnegoResp
+		}
+	}
+
+	return h.buildSessionSetupResponse(
+		types.StatusMoreProcessingRequired,
+		0, // no session flags on an interim response
+		securityBuffer,
+	), nil
+}
+
+// completeSessionBind finalizes an SMB2 session bind after NTLM auth proved
+// identity on the new connection. Instead of creating a new session (normal
+// completeNTLMAuth path), it registers a session.Channel on the existing
+// session with a per-channel signing key derived from the ORIGINAL session's
+// raw session key (MS-SMB2 §3.1.4.2 / §3.3.5.5.2, Samba source3/smbd/
+// smb2_sesssetup.c:635-643).
+//
+// Preconditions enforced by callers (handleSessionBind → handleNTLMNegotiateBinding
+// → completeNTLMAuth): pending.IsBinding = true; connection dialect is SMB 3.0
+// or 3.0.2 (3.1.1 rejected at handleSessionBind); NTLMv2 validation already
+// succeeded.
+//
+// Returns a non-nil *HandlerResult with the appropriate status. Never returns
+// nil.
+func (h *Handler) completeSessionBind(
+	ctx *SMBHandlerContext,
+	pending *PendingAuth,
+	authUser *models.User,
+	authDomain string,
+	bindSessionKey []byte,
+	bindNegFlags auth.NegotiateFlag,
+) *HandlerResult {
+	sess, ok := h.GetSession(pending.BindingSessionID)
+	if !ok {
+		// Session disappeared between TYPE_1 validation and TYPE_3 arrival.
+		logger.Info("SESSION_SETUP bind: target session vanished",
+			"sessionID", pending.BindingSessionID)
+		return NewErrorResult(types.StatusUserSessionDeleted)
+	}
+
+	// Verify the re-authenticated identity matches the existing session's
+	// user (MS-SMB2 §3.3.5.5.2: "If the user represented by
+	// Session.SecurityContext is not the same as the user authenticated by
+	// the security subsystem, the server MUST return STATUS_ACCESS_DENIED").
+	if authUser == nil || sess.User == nil || authUser.Username != sess.User.Username {
+		sessUser := "<nil>"
+		if sess.User != nil {
+			sessUser = sess.User.Username
+		}
+		authUserName := "<nil>"
+		if authUser != nil {
+			authUserName = authUser.Username
+		}
+		logger.Info("SESSION_SETUP bind: identity mismatch",
+			"sessionID", pending.BindingSessionID,
+			"sessionUser", sessUser,
+			"bindUser", authUserName,
+			"domain", authDomain)
+		return NewErrorResult(types.StatusAccessDenied)
+	}
+
+	// Per MS-SMB2 §3.3.5.5.2, Channel.SigningKey is derived from the session
+	// key produced by THIS binding's authentication exchange — not the
+	// original session's. Samba reference: smb2_sesssetup.c:633-637 passes
+	// `session_info->session_key` from the bind's own GENSEC context. NTLM
+	// derives a fresh ExportedSessionKey per handshake (KEY_EXCH randomizes
+	// it), so using sess.CryptoState.SessionKey here diverges from the
+	// client's channel key → SUCCESS signature fails → client reports
+	// NT_STATUS_INVALID_PARAMETER.
+	if len(bindSessionKey) == 0 {
+		logger.Warn("SESSION_SETUP bind: no bind session key from auth",
+			"sessionID", pending.BindingSessionID)
+		return NewErrorResult(types.StatusAccessDenied)
+	}
+
+	// Determine the new channel's dialect and signing algorithm.
+	connDialect := types.Dialect0300
+	var signingAlgId uint16
+	if ctx.ConnCryptoState != nil {
+		connDialect = ctx.ConnCryptoState.GetDialect()
+		signingAlgId = ctx.ConnCryptoState.GetSigningAlgorithmId()
+	}
+
+	// For SMB 3.1.1 the channel's preauth integrity hash is the KDF context
+	// for the per-channel signing key (MS-SMB2 §3.1.4.2). It was initialized
+	// from this connection's post-NEGOTIATE hash in handleSessionBind and
+	// chained with TYPE_2 response + TYPE_3 request bytes by the
+	// sessionPreauthBeforeHook / sessionPreauthAfterHook using this session's
+	// ID on this connection's ConnectionCryptoState.
+	//
+	// For SMB 3.0 / 3.0.2 the preauth hash is unused by DeriveChannelSigningKey
+	// (fixed "SmbSign" context) — pass zero bytes.
+	var preauthHash [64]byte
+	if connDialect == types.Dialect0311 && ctx.ConnCryptoState != nil {
+		preauthHash = ctx.ConnCryptoState.GetSessionPreauthHash(pending.BindingSessionID)
+	}
+
+	channelSigningKey, err := session.DeriveChannelSigningKey(
+		bindSessionKey,
+		connDialect,
+		preauthHash,
+	)
+	if err != nil {
+		logger.Warn("SESSION_SETUP bind: channel key derivation failed",
+			"sessionID", pending.BindingSessionID,
+			"error", err)
+		return NewErrorResult(types.StatusInvalidParameter)
+	}
+	channelSigner := signing.NewSigner(connDialect, signingAlgId, channelSigningKey)
+
+	channel := &session.Channel{
+		ConnID:      ctx.ConnID,
+		RemoteAddr:  ctx.ClientAddr,
+		Dialect:     connDialect,
+		SigningAlgo: signingAlgId,
+		SigningKey:  channelSigningKey,
+		Signer:      channelSigner,
+		PreauthHash: preauthHash,
+	}
+	sess.AddChannel(channel)
+
+	// Drop the binding preauth hash entry — it was scoped to the handshake
+	// and keeping it would corrupt any future handshake that reused the
+	// same SessionID key on this connection.
+	if ctx.ConnCryptoState != nil {
+		ctx.ConnCryptoState.DeleteSessionPreauthHash(pending.BindingSessionID)
+	}
+
+	logger.Info("SESSION_SETUP bind: channel registered",
+		"sessionID", pending.BindingSessionID,
+		"connID", channel.ConnID,
+		"dialect", fmt.Sprintf("0x%04x", uint16(connDialect)),
+		"totalChannels", len(sess.ListChannels()))
+
+	// Binding response matches existing session's encrypt-data state per
+	// §3.3.5.5. No SMB2_SESSION_FLAG_BINDING in response (request-only flag;
+	// Samba does not set it on the response either).
+	var sessionFlags uint16
+	if sess.ShouldEncrypt() {
+		sessionFlags |= types.SMB2SessionFlagEncryptData
+	}
+
+	// If the client used SPNEGO, the SUCCESS response MUST carry an
+	// accept-complete NegTokenResp (with mechListMIC when the bind's
+	// ExportedSessionKey is available). Without it the client's gensec
+	// finalization fails with NT_STATUS_INVALID_PARAMETER. Mirrors the
+	// non-binding path's buildAuthenticatedResponse.
+	var acceptToken []byte
+	if pending.UsedSPNEGO {
+		var mic []byte
+		if len(pending.MechListBytes) > 0 && len(bindSessionKey) == 16 {
+			var key [16]byte
+			copy(key[:], bindSessionKey)
+			mic = auth.ComputeNTLMSSPMechListMIC(key, pending.MechListBytes, bindNegFlags, nil)
+		}
+		tok, err := auth.BuildAcceptCompleteWithMIC(nil, nil, mic)
+		if err != nil {
+			logger.Debug("SESSION_SETUP bind: failed to build SPNEGO accept token", "error", err)
+		} else {
+			acceptToken = tok
+		}
+	}
+
+	return h.buildSessionSetupResponse(types.StatusSuccess, sessionFlags, acceptToken)
 }
 
 // handleNTLMNegotiate handles NTLM Type 1 (NEGOTIATE) message.
@@ -530,6 +849,16 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 
 				// Authentication successful with validated credentials
 				ctx.IsGuest = false
+
+				// Session bind (MS-SMB2 §3.3.5.5.2): the client has proved
+				// identity on a new TCP connection. Register a Channel on
+				// the existing session using a signing key derived from the
+				// session key produced by THIS binding's NTLM exchange.
+				// Samba reference: smb2_sesssetup.c:633-637 passes
+				// session_info->session_key from the bind's GENSEC context.
+				if pending.IsBinding {
+					return h.completeSessionBind(ctx, pending, user, authMsg.Domain, signingKey[:], authMsg.NegotiateFlags), nil
+				}
 
 				if pending.IsReauth {
 					// Per MS-SMB2 3.3.5.5.3: re-derive keys from the new SessionBaseKey

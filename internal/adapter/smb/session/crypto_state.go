@@ -23,7 +23,16 @@ type SessionCryptoState struct {
 	// For 2.x: HMACSigner, for 3.0+: CMACSigner or GMACSigner.
 	Signer signing.Signer
 
-	// SigningKey is the raw signing key bytes.
+	// SessionKey is the raw session key from NTLM/Kerberos authentication,
+	// before any SP800-108 KDF derivation. Retained on the session so that
+	// SMB2_SESSION_FLAG_BINDING requests on a later connection can derive
+	// per-channel signing keys from the same input (MS-SMB2 §3.1.4.2,
+	// §3.3.5.5.2). For SMB 2.x this is the same material as SigningKey, but
+	// for 3.x SigningKey is a KDF output — only SessionKey is the raw input
+	// needed for per-channel derivation. Zeroed by Destroy.
+	SessionKey []byte
+
+	// SigningKey is the signing key bytes actually used by Signer.
 	// For 2.x: copy of the raw session key (signer handles normalization).
 	// For 3.x: KDF-derived 16-byte signing key.
 	SigningKey []byte
@@ -84,6 +93,8 @@ type SessionCryptoState struct {
 //   - signingAlgId: the negotiated signing algorithm ID
 func DeriveAllKeys(sessionKey []byte, dialect types.Dialect, preauthHash [64]byte, cipherId uint16, signingAlgId uint16) *SessionCryptoState {
 	cs := &SessionCryptoState{}
+	cs.SessionKey = make([]byte, len(sessionKey))
+	copy(cs.SessionKey, sessionKey)
 
 	if dialect < types.Dialect0300 {
 		// SMB 2.x: direct HMAC-SHA256 from session key, no KDF
@@ -179,6 +190,7 @@ func (cs *SessionCryptoState) Destroy() {
 	if cs == nil {
 		return
 	}
+	clear(cs.SessionKey)
 	clear(cs.SigningKey)
 	clear(cs.EncryptionKey)
 	clear(cs.DecryptionKey)

@@ -306,11 +306,11 @@ func (h *Handler) buildCapabilities(dialect types.Dialect) types.Capabilities {
 		return types.CapLeasing | types.CapLargeMTU
 
 	case types.Dialect0300, types.Dialect0302, types.Dialect0311:
-		// SMB 3.x: CapLeasing | CapLargeMTU | [CapDirectoryLeasing] | [CapEncryption]
+		// SMB 3.x: CapLeasing | CapLargeMTU | CapMultiChannel | [CapDirectoryLeasing] | [CapEncryption]
 		// While 3.1.1 uses negotiate contexts for cipher selection, Windows servers
 		// still advertise GLOBAL_CAP_ENCRYPTION in the capabilities field when
 		// encryption is supported. WPTS tests expect this flag to be set.
-		caps := types.CapLeasing | types.CapLargeMTU
+		caps := types.CapLeasing | types.CapLargeMTU | types.CapMultiChannel
 		if h.DirectoryLeasingEnabled {
 			caps |= types.CapDirectoryLeasing
 		}

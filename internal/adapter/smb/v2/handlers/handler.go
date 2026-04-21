@@ -194,6 +194,13 @@ type PendingAuth struct {
 	ServerChallenge [8]byte // Random challenge sent in Type 2 message
 	UsedSPNEGO      bool    // Whether client used SPNEGO wrapping
 	IsReauth        bool    // True when re-authenticating an existing session
+	// IsBinding is true when this pending auth is driving an SMB2 session
+	// bind (SESSION_SETUP with SMB2_SESSION_FLAG_BINDING). In that case
+	// BindingSessionID holds the existing session the client is binding to
+	// and auth completion must register the connection as an additional
+	// channel rather than creating a new session. MS-SMB2 §3.3.5.5.2.
+	IsBinding        bool
+	BindingSessionID uint64
 	// MechListBytes: DER-encoded SEQUENCE OF OID from the NegTokenInit's
 	// mechTypes field, needed to compute the SPNEGO mechListMIC in the
 	// final accept-completed response (MS-NLMP 3.4.5.2 + 2.2.2.9.1).
