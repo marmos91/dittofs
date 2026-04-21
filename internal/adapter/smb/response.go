@@ -541,20 +541,18 @@ func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, preWri
 	if hdr.SessionID != 0 {
 		sess, ok := connInfo.Handler.GetSession(hdr.SessionID)
 		if ok {
-			// Per MS-SMB2 3.3.5.5.3: the initial SESSION_SETUP response that
-			// establishes a NEW session MUST NOT be encrypted. The client has not
-			// yet derived encryption keys at this point — it needs the unencrypted
-			// response to complete key derivation. Only sign the response instead.
-			//
-			// For re-authentication (SESSION_SETUP on an existing session), the
-			// client already has encryption keys, so the response MUST be encrypted.
-			// We distinguish the two cases via sess.NewlyCreated, which is true only
-			// for sessions just created during this SESSION_SETUP exchange.
-			isNewSessionSetup := hdr.Command == types.SMB2SessionSetup && hdr.Status == types.StatusSuccess && sess.NewlyCreated
-			if isNewSessionSetup {
+			// Per MS-SMB2 3.3.5.5.3 and 3.3.5.5.2: SESSION_SETUP SUCCESS
+			// responses MUST be signed and MUST NOT be encrypted, in all three
+			// cases: new session (client has no encryption keys yet), re-auth,
+			// and channel bind (client must validate Channel.SigningKey from the
+			// plaintext response before treating the channel as bound). Windows
+			// clients reject an encrypted bind SUCCESS with
+			// STATUS_INVALID_PARAMETER — see issue #361.
+			isSessionSetupSuccess := hdr.Command == types.SMB2SessionSetup && hdr.Status == types.StatusSuccess
+			if isSessionSetupSuccess && sess.NewlyCreated {
 				sess.NewlyCreated = false // Clear so subsequent messages get encrypted
 			}
-			if sess.ShouldEncrypt() && connInfo.EncryptionMiddleware != nil && !isNewSessionSetup {
+			if sess.ShouldEncrypt() && connInfo.EncryptionMiddleware != nil && !isSessionSetupSuccess {
 				// Run pre-write hook on the PLAINTEXT bytes — the preauth chain
 				// hashes plaintext on both sides, not the encrypted wire form.
 				if preWrite != nil {
