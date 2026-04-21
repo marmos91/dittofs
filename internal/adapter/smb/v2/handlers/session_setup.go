@@ -584,7 +584,9 @@ func (h *Handler) completeSessionBind(
 		}
 	}
 
-	return h.buildSessionSetupResponse(types.StatusSuccess, sessionFlags, acceptToken)
+	result := h.buildSessionSetupResponse(types.StatusSuccess, sessionFlags, acceptToken)
+	result.IsBinding = true
+	return result
 }
 
 // handleNTLMNegotiate handles NTLM Type 1 (NEGOTIATE) message.

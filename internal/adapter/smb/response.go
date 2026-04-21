@@ -160,7 +160,7 @@ func ProcessSingleRequest(
 	}
 
 	// Track session lifecycle for connection cleanup
-	TrackSessionLifecycle(reqHeader.Command, reqHeader.SessionID, handlerCtx.SessionID, result.Status, connInfo.SessionTracker)
+	TrackSessionLifecycle(reqHeader.Command, reqHeader.SessionID, handlerCtx.SessionID, result.Status, result.IsBinding, connInfo.SessionTracker)
 
 	// Send response and run after-hooks with the response bytes. If the
 	// write fails, return early — any registered PostSend hook is
@@ -324,7 +324,7 @@ func ProcessRequestWithFileIDAndCallback(ctx context.Context, reqHeader *header.
 	}
 
 	// Track session lifecycle for connection cleanup
-	TrackSessionLifecycle(reqHeader.Command, reqHeader.SessionID, handlerCtx.SessionID, result.Status, connInfo.SessionTracker)
+	TrackSessionLifecycle(reqHeader.Command, reqHeader.SessionID, handlerCtx.SessionID, result.Status, result.IsBinding, connInfo.SessionTracker)
 
 	// Extract FileID from CREATE response (bytes 64-80)
 	if reqHeader.Command == types.SMB2Create && result.Status == types.StatusSuccess && len(result.Data) >= 80 {
@@ -851,25 +851,29 @@ func HandleSMB1Negotiate(connInfo *ConnInfo, message []byte) error {
 // TrackSessionLifecycle tracks session creation/deletion for connection cleanup.
 // This ensures proper cleanup when connections close ungracefully.
 //
-// Only genuinely new sessions (SESSION_SETUP with reqSessionID == 0) are
-// tracked on the connection. Re-authentication and channel binding both
-// arrive with a non-zero reqSessionID and must NOT be tracked here: for
-// re-auth the session is already tracked on this connection, and for a
-// channel bind (MS-SMB2 §3.3.5.5.2) the session lives on a different
-// connection — tracking it here would cause this connection's close to
-// delete the original session via cleanupSessions().
-func TrackSessionLifecycle(command types.Command, reqSessionID, ctxSessionID uint64, status types.Status, tracker SessionTracker) {
+// Channel-bind responses (isBinding==true) are explicitly skipped: a
+// successful bind does not create a session on this connection — the
+// session lives on a different connection, and tracking it here would
+// cause this connection's close to delete the original session via
+// cleanupSessions() (MS-SMB2 §3.3.5.5.2).
+func TrackSessionLifecycle(command types.Command, reqSessionID, ctxSessionID uint64, status types.Status, isBinding bool, tracker SessionTracker) {
 	if tracker == nil {
 		return
 	}
 
 	switch command {
 	case types.SMB2SessionSetup:
-		if status == types.StatusSuccess && reqSessionID == 0 && ctxSessionID != 0 {
-			tracker.TrackSession(ctxSessionID)
+		if status != types.StatusSuccess || isBinding {
+			return
+		}
+		sessionIDToTrack := ctxSessionID
+		if sessionIDToTrack == 0 {
+			sessionIDToTrack = reqSessionID
+		}
+		if sessionIDToTrack != 0 {
+			tracker.TrackSession(sessionIDToTrack)
 		}
 	case types.SMB2Logoff:
-		// Untrack sessions on LOGOFF (they are already cleaned up by the handler)
 		if status == types.StatusSuccess && reqSessionID != 0 {
 			tracker.UntrackSession(reqSessionID)
 		}
