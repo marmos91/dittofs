@@ -428,7 +428,7 @@ func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo) err
 				ok = true
 			}
 			if ok && sess.ShouldSign() && !sess.ShouldEncrypt() {
-				sess.SignMessage(cmdBytes)
+				signOutgoingWithChannel(sess, connInfo.ConnID, cmdBytes)
 			}
 		}
 
@@ -631,10 +631,20 @@ func VerifyCompoundCommandSignature(data []byte, hdr *header.SMB2Header, connInf
 			verifyBytes = data[:hdr.NextCommand]
 		}
 
-		if !sess.VerifyMessage(verifyBytes) {
+		// Per-channel signer if this connection is bound as a channel on
+		// the session (MS-SMB2 §3.3.5.5.2); otherwise session-level signer.
+		verified := false
+		if channel := sess.GetChannel(connInfo.ConnID); channel != nil && channel.Signer != nil {
+			verified = channel.Signer.Verify(verifyBytes)
+		} else {
+			verified = sess.VerifyMessage(verifyBytes)
+		}
+
+		if !verified {
 			logger.Warn("SMB2 compound command signature verification failed",
 				"command", hdr.Command.String(),
 				"sessionID", hdr.SessionID,
+				"connID", connInfo.ConnID,
 				"verifyLen", len(verifyBytes))
 			return fmt.Errorf("STATUS_ACCESS_DENIED: compound signature verification failed")
 		}

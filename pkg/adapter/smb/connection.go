@@ -175,7 +175,7 @@ func (c *Connection) Serve(ctx context.Context) {
 	}
 
 	ci := c.connInfo()
-	verifier := smb.NewSessionSigningVerifier(c.server.handler, c.conn, c.CryptoState)
+	verifier := smb.NewSessionSigningVerifier(c.server.handler, c.conn, c.CryptoState, c.ID)
 	handleSMB1 := func(_ context.Context, message []byte) error {
 		return smb.HandleSMB1Negotiate(ci, message)
 	}

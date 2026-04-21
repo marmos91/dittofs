@@ -2,10 +2,28 @@
 package smb
 
 import (
+	"github.com/marmos91/dittofs/internal/adapter/smb/session"
+	sbsigning "github.com/marmos91/dittofs/internal/adapter/smb/signing"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/adapter/smb/v2/handlers"
 	"github.com/marmos91/dittofs/internal/logger"
 )
+
+// signOutgoingWithChannel signs an outgoing SMB2 response in place. If the
+// session has a Channel registered for connID (MS-SMB2 §3.3.5.5.2 multi-
+// channel session binding), the per-channel signer is used; otherwise the
+// session-level signer. Setting SMB2_FLAGS_SIGNED is handled by
+// signing.SignMessage.
+func signOutgoingWithChannel(sess *session.Session, connID uint64, message []byte) {
+	if sess == nil {
+		return
+	}
+	if channel := sess.GetChannel(connID); channel != nil && channel.Signer != nil {
+		sbsigning.SignMessage(channel.Signer, message)
+		return
+	}
+	sess.SignMessage(message)
+}
 
 // ============================================================================
 // Generic Request/Response Handling
