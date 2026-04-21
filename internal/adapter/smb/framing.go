@@ -297,13 +297,21 @@ type sessionSigningVerifier struct {
 	handler    *handlers.Handler
 	conn       net.Conn
 	connCrypto *ConnectionCryptoState
+
+	// connID identifies this TCP connection. Used to look up the per-
+	// channel signer when the session has channels bound via SMB2
+	// session binding (MS-SMB2 §3.3.5.5.2). Zero means "no channel
+	// registry; fall through to session-level verification".
+	connID uint64
 }
 
 // NewSessionSigningVerifier creates a SigningVerifier backed by the Handler's session
 // state. It verifies message signatures per MS-SMB2 3.3.5.2.4 using session signing keys.
 // The connCrypto parameter provides per-connection negotiation state (dialect, etc.).
-func NewSessionSigningVerifier(handler *handlers.Handler, conn net.Conn, connCrypto *ConnectionCryptoState) SigningVerifier {
-	return &sessionSigningVerifier{handler: handler, conn: conn, connCrypto: connCrypto}
+// The connID ties this verifier to a specific TCP connection so that bound-channel
+// signing keys can be routed correctly.
+func NewSessionSigningVerifier(handler *handlers.Handler, conn net.Conn, connCrypto *ConnectionCryptoState, connID uint64) SigningVerifier {
+	return &sessionSigningVerifier{handler: handler, conn: conn, connCrypto: connCrypto, connID: connID}
 }
 
 // VerifyRequest implements MS-SMB2 3.3.5.2.4 signature verification.
@@ -375,10 +383,11 @@ func (sv *sessionSigningVerifier) VerifyRequest(hdr *header.SMB2Header, message 
 			verifyBytes = message[:hdr.NextCommand]
 		}
 
-		if !sess.VerifyMessage(verifyBytes) {
+		if !sess.VerifyMessageOnChannel(sv.connID, verifyBytes) {
 			logger.Warn("SMB2 message signature verification failed",
 				"command", hdr.Command.String(),
 				"sessionID", hdr.SessionID,
+				"connID", sv.connID,
 				"client", sv.conn.RemoteAddr().String(),
 				"msgSignature", fmt.Sprintf("%x", message[48:64]))
 			return fmt.Errorf("STATUS_ACCESS_DENIED: signature verification failed")

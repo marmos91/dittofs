@@ -428,7 +428,7 @@ func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo) err
 				ok = true
 			}
 			if ok && sess.ShouldSign() && !sess.ShouldEncrypt() {
-				sess.SignMessage(cmdBytes)
+				sess.SignMessageOnChannel(connInfo.ConnID, cmdBytes)
 			}
 		}
 
@@ -631,10 +631,11 @@ func VerifyCompoundCommandSignature(data []byte, hdr *header.SMB2Header, connInf
 			verifyBytes = data[:hdr.NextCommand]
 		}
 
-		if !sess.VerifyMessage(verifyBytes) {
+		if !sess.VerifyMessageOnChannel(connInfo.ConnID, verifyBytes) {
 			logger.Warn("SMB2 compound command signature verification failed",
 				"command", hdr.Command.String(),
 				"sessionID", hdr.SessionID,
+				"connID", connInfo.ConnID,
 				"verifyLen", len(verifyBytes))
 			return fmt.Errorf("STATUS_ACCESS_DENIED: compound signature verification failed")
 		}

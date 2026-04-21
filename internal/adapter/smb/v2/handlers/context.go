@@ -84,6 +84,13 @@ type SMBHandlerContext struct {
 	// ClientAddr is the remote address of the client
 	ClientAddr string
 
+	// ConnID identifies the TCP connection carrying this request. Used by
+	// SMB2 multi-channel session binding (MS-SMB2 §3.3.5.5.2) to key the
+	// Channel registry on a bound session and to route request-signature
+	// verification through the channel's signing key. Populated from
+	// ConnInfo.ConnID by prepareDispatch.
+	ConnID uint64
+
 	// SessionID from the request (0 before SESSION_SETUP completes)
 	SessionID uint64
 

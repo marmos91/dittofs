@@ -160,7 +160,7 @@ func ProcessSingleRequest(
 	}
 
 	// Track session lifecycle for connection cleanup
-	TrackSessionLifecycle(reqHeader.Command, reqHeader.SessionID, handlerCtx.SessionID, result.Status, connInfo.SessionTracker)
+	TrackSessionLifecycle(reqHeader.Command, reqHeader.SessionID, handlerCtx.SessionID, result.Status, result.IsBinding, connInfo.SessionTracker)
 
 	// Send response and run after-hooks with the response bytes. If the
 	// write fails, return early — any registered PostSend hook is
@@ -219,6 +219,10 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 	// Populate CryptoState so handlers (e.g., NEGOTIATE) can store
 	// negotiation parameters on the connection.
 	handlerCtx.ConnCryptoState = connInfo.CryptoState
+
+	// Thread the stable per-connection ID so SMB2 multi-channel session
+	// binding (MS-SMB2 §3.3.5.5.2) can key per-channel signing state.
+	handlerCtx.ConnID = connInfo.ConnID
 
 	if cmd.NeedsSession && reqHeader.SessionID != 0 {
 		sess, ok := connInfo.Handler.GetSession(reqHeader.SessionID)
@@ -320,7 +324,7 @@ func ProcessRequestWithFileIDAndCallback(ctx context.Context, reqHeader *header.
 	}
 
 	// Track session lifecycle for connection cleanup
-	TrackSessionLifecycle(reqHeader.Command, reqHeader.SessionID, handlerCtx.SessionID, result.Status, connInfo.SessionTracker)
+	TrackSessionLifecycle(reqHeader.Command, reqHeader.SessionID, handlerCtx.SessionID, result.Status, result.IsBinding, connInfo.SessionTracker)
 
 	// Extract FileID from CREATE response (bytes 64-80)
 	if reqHeader.Command == types.SMB2Create && result.Status == types.StatusSuccess && len(result.Data) >= 80 {
@@ -537,20 +541,18 @@ func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, preWri
 	if hdr.SessionID != 0 {
 		sess, ok := connInfo.Handler.GetSession(hdr.SessionID)
 		if ok {
-			// Per MS-SMB2 3.3.5.5.3: the initial SESSION_SETUP response that
-			// establishes a NEW session MUST NOT be encrypted. The client has not
-			// yet derived encryption keys at this point — it needs the unencrypted
-			// response to complete key derivation. Only sign the response instead.
-			//
-			// For re-authentication (SESSION_SETUP on an existing session), the
-			// client already has encryption keys, so the response MUST be encrypted.
-			// We distinguish the two cases via sess.NewlyCreated, which is true only
-			// for sessions just created during this SESSION_SETUP exchange.
-			isNewSessionSetup := hdr.Command == types.SMB2SessionSetup && hdr.Status == types.StatusSuccess && sess.NewlyCreated
-			if isNewSessionSetup {
+			// Per MS-SMB2 3.3.5.5.3 and 3.3.5.5.2: SESSION_SETUP SUCCESS
+			// responses MUST be signed and MUST NOT be encrypted, in all three
+			// cases: new session (client has no encryption keys yet), re-auth,
+			// and channel bind (client must validate Channel.SigningKey from the
+			// plaintext response before treating the channel as bound). Windows
+			// clients reject an encrypted bind SUCCESS with
+			// STATUS_INVALID_PARAMETER — see issue #361.
+			isSessionSetupSuccess := hdr.Command == types.SMB2SessionSetup && hdr.Status == types.StatusSuccess
+			if isSessionSetupSuccess && sess.NewlyCreated {
 				sess.NewlyCreated = false // Clear so subsequent messages get encrypted
 			}
-			if sess.ShouldEncrypt() && connInfo.EncryptionMiddleware != nil && !isNewSessionSetup {
+			if sess.ShouldEncrypt() && connInfo.EncryptionMiddleware != nil && !isSessionSetupSuccess {
 				// Run pre-write hook on the PLAINTEXT bytes — the preauth chain
 				// hashes plaintext on both sides, not the encrypted wire form.
 				if preWrite != nil {
@@ -577,7 +579,7 @@ func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, preWri
 				return writeErr
 			}
 			if sess.ShouldSign() {
-				sess.SignMessage(smbPayload)
+				sess.SignMessageOnChannel(connInfo.ConnID, smbPayload)
 				// Sync signature back so callers that re-encode the header see
 				// the real signature. Flag-level mutations from signing (setting
 				// SMB2_FLAGS_SIGNED) exist only on smbPayload — the preauth chain
@@ -848,25 +850,30 @@ func HandleSMB1Negotiate(connInfo *ConnInfo, message []byte) error {
 
 // TrackSessionLifecycle tracks session creation/deletion for connection cleanup.
 // This ensures proper cleanup when connections close ungracefully.
-func TrackSessionLifecycle(command types.Command, reqSessionID, ctxSessionID uint64, status types.Status, tracker SessionTracker) {
+//
+// Channel-bind responses (isBinding==true) are explicitly skipped: a
+// successful bind does not create a session on this connection — the
+// session lives on a different connection, and tracking it here would
+// cause this connection's close to delete the original session via
+// cleanupSessions() (MS-SMB2 §3.3.5.5.2).
+func TrackSessionLifecycle(command types.Command, reqSessionID, ctxSessionID uint64, status types.Status, isBinding bool, tracker SessionTracker) {
 	if tracker == nil {
 		return
 	}
 
 	switch command {
 	case types.SMB2SessionSetup:
-		// Track newly created sessions on successful SESSION_SETUP completion.
-		if status == types.StatusSuccess {
-			sessionIDToTrack := ctxSessionID
-			if sessionIDToTrack == 0 {
-				sessionIDToTrack = reqSessionID
-			}
-			if sessionIDToTrack != 0 {
-				tracker.TrackSession(sessionIDToTrack)
-			}
+		if status != types.StatusSuccess || isBinding {
+			return
+		}
+		sessionIDToTrack := ctxSessionID
+		if sessionIDToTrack == 0 {
+			sessionIDToTrack = reqSessionID
+		}
+		if sessionIDToTrack != 0 {
+			tracker.TrackSession(sessionIDToTrack)
 		}
 	case types.SMB2Logoff:
-		// Untrack sessions on LOGOFF (they are already cleaned up by the handler)
 		if status == types.StatusSuccess && reqSessionID != 0 {
 			tracker.UntrackSession(reqSessionID)
 		}

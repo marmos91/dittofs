@@ -16,18 +16,32 @@ features (sessions, leases, durable handles, locks) that still need work.
 
 ## Expected Failures
 
-### Multi-Channel (Not Implemented)
+### Multi-Channel (Partial — Phase 1 of #361)
 
-Multi-channel support requires establishing multiple TCP connections to the same
-session, which DittoFS does not implement.
+Phase 1 of #361 lands the session-binding architecture: `Channel` struct
++ `Session.channels` registry, `DeriveChannelSigningKey`, SMB 3.0 / 3.0.2
+and SMB 3.1.1 session-bind auth-completion with per-channel preauth hash
+chaining, and per-channel sign/verify routing through dispatch. DittoFS
+advertises `SMB2_GLOBAL_CAP_MULTI_CHANNEL` in NEGOTIATE so conformant
+clients now exercise the multi-channel test surface.
+
+The remaining known failures are cross-channel notification fan-out
+(lease/oplock breaks) and wide-channel orchestration, all deferred to
+Phase 2 of #361.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.multichannel.bugs.bug_15346 | Multi-channel | Multi-channel not implemented | - |
-| smb2.multichannel.generic.num_channels | Multi-channel | Multi-channel not implemented | - |
-| smb2.multichannel.leases.test2 | Multi-channel | Multi-channel lease coordination not implemented | - |
-| smb2.multichannel.oplocks.test1 | Multi-channel | Multi-channel oplock coordination not implemented | - |
-| smb2.multichannel.oplocks.test2 | Multi-channel | Multi-channel oplock coordination not implemented | - |
+| smb2.multichannel.bugs.bug_15346 | Multi-channel | Wide multi-channel coordination (Phase 2 of #361) | #361 |
+| smb2.multichannel.generic.num_channels | Multi-channel | Wide multi-channel coordination (Phase 2 of #361) | #361 |
+| smb2.multichannel.generic.interface_info | Multi-channel | FSCTL_QUERY_NETWORK_INTERFACE_INFO not yet implemented (Phase 2 of #361) | #361 |
+| smb2.multichannel.leases.test1 | Multi-channel | Cross-channel lease break dispatch not yet implemented (Phase 2 of #361) | #361 |
+| smb2.multichannel.leases.test2 | Multi-channel | Cross-channel lease break dispatch not yet implemented (Phase 2 of #361) | #361 |
+| smb2.multichannel.leases.test3 | Multi-channel | Cross-channel lease break dispatch not yet implemented (Phase 2 of #361) | #361 |
+| smb2.multichannel.leases.test4 | Multi-channel | Cross-channel lease break dispatch not yet implemented (Phase 2 of #361) | #361 |
+| smb2.multichannel.oplocks.test1 | Multi-channel | Cross-channel oplock break dispatch not yet implemented (Phase 2 of #361) | #361 |
+| smb2.multichannel.oplocks.test2 | Multi-channel | Cross-channel oplock break dispatch not yet implemented (Phase 2 of #361) | #361 |
+| smb2.multichannel.oplocks.test3_windows | Multi-channel | Cross-channel oplock break dispatch not yet implemented (Phase 2 of #361) | #361 |
+| smb2.multichannel.oplocks.test3_specification | Multi-channel | 32-channel break fan-out with retry logic not yet implemented (Phase 2 of #361) | #361 |
 
 ### ACLs and Security Descriptors (Not Implemented)
 
@@ -216,9 +230,9 @@ The remaining failures all require multi-channel session binding (MS-SMB2
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.credits.multichannel_ipc_max_async_credits | Credits | Multi-channel not implemented (second-connection CREATE disconnects) | #361 |
+| smb2.credits.multichannel_ipc_max_async_credits | Credits | Multi-channel async credit coordination across channels not yet implemented (Phase 2 of #361) | #361 |
 | smb2.credits.2conn_notify_max_async_credits | Credits | Multi-channel not implemented (second connection disconnects mid-test) | #361 |
-| smb2.credits.multichannel_max_async_credits | Credits | Multi-channel not implemented (session bind returns ACCESS_DENIED) | #361 |
+| smb2.credits.multichannel_max_async_credits | Credits | Multi-channel async credit coordination across channels not yet implemented (Phase 2 of #361) | #361 |
 
 ### Directory Operations (Advanced Queries Not Implemented)
 

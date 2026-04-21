@@ -23,7 +23,17 @@ type SessionCryptoState struct {
 	// For 2.x: HMACSigner, for 3.0+: CMACSigner or GMACSigner.
 	Signer signing.Signer
 
-	// SigningKey is the raw signing key bytes.
+	// SessionKey is the raw session key from NTLM/Kerberos authentication,
+	// before any SP800-108 KDF derivation. For SMB 2.x this is the same
+	// underlying material as SigningKey; for 3.x SigningKey is a KDF output
+	// derived from this raw input. Zeroed by Destroy.
+	//
+	// Per MS-SMB2 §3.3.5.5.2, channel signing keys for a bound connection
+	// are derived from the session key produced by the binding handshake's
+	// own authentication exchange, not this field — see completeSessionBind.
+	SessionKey []byte
+
+	// SigningKey is the signing key bytes actually used by Signer.
 	// For 2.x: copy of the raw session key (signer handles normalization).
 	// For 3.x: KDF-derived 16-byte signing key.
 	SigningKey []byte
@@ -84,6 +94,8 @@ type SessionCryptoState struct {
 //   - signingAlgId: the negotiated signing algorithm ID
 func DeriveAllKeys(sessionKey []byte, dialect types.Dialect, preauthHash [64]byte, cipherId uint16, signingAlgId uint16) *SessionCryptoState {
 	cs := &SessionCryptoState{}
+	cs.SessionKey = make([]byte, len(sessionKey))
+	copy(cs.SessionKey, sessionKey)
 
 	if dialect < types.Dialect0300 {
 		// SMB 2.x: direct HMAC-SHA256 from session key, no KDF
@@ -114,6 +126,35 @@ func DeriveAllKeys(sessionKey []byte, dialect types.Dialect, preauthHash [64]byt
 	cs.ApplicationKey = kdf.DeriveKey(sessionKey, appLabel, appCtx, 128)
 
 	return cs
+}
+
+// DeriveChannelSigningKey derives a per-channel signing key for a connection
+// bound via SMB2_SESSION_FLAG_BINDING (MS-SMB2 §3.1.4.2 and §3.3.5.5.2).
+//
+// The input sessionKey is the session key produced by the authentication
+// exchange associated with the channel being established — for a bound
+// channel this is the binding handshake's own session key, not the original
+// session key (MS-SMB2 §3.3.5.5.2; Samba smb2_sesssetup.c:633-643). The
+// output is a channel-specific 16-byte signing key used to verify
+// signatures on requests arriving over the bound connection.
+//
+// Label/context rules (matching Samba libcli/smb/smb2_signing.c:38-84):
+//   - SMB 3.1.1 (Dialect0311): label "SMBSigningKey\0", context = the
+//     channel's own preauth integrity hash (64 bytes).
+//   - SMB 3.0 / 3.0.2: label "SMB2AESCMAC\0", context = "SmbSign\0" (the
+//     preauth hash is ignored — SMB 3.0 has no preauth).
+//
+// Returns an error if the dialect is SMB 2.x (binding requires 3.0+) or the
+// session key is empty.
+func DeriveChannelSigningKey(sessionKey []byte, dialect types.Dialect, preauthHash [64]byte) ([]byte, error) {
+	if dialect < types.Dialect0300 {
+		return nil, fmt.Errorf("session binding requires SMB 3.0+, got dialect 0x%04x", uint16(dialect))
+	}
+	if len(sessionKey) == 0 {
+		return nil, errors.New("empty session key")
+	}
+	label, context := kdf.LabelAndContext(kdf.SigningKeyPurpose, dialect, preauthHash)
+	return kdf.DeriveKey(sessionKey, label, context, 128), nil
 }
 
 // CreateEncryptors creates Encryptor and Decryptor instances from the derived keys.
@@ -153,6 +194,7 @@ func (cs *SessionCryptoState) Destroy() {
 	if cs == nil {
 		return
 	}
+	clear(cs.SessionKey)
 	clear(cs.SigningKey)
 	clear(cs.EncryptionKey)
 	clear(cs.DecryptionKey)

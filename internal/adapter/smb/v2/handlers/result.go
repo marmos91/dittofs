@@ -78,6 +78,13 @@ type HandlerResult struct {
 	// responses (STATUS_PENDING) and async completion responses.
 	// [MS-SMB2] Section 2.2.1.2
 	AsyncId uint64
+
+	// IsBinding is true when this result completes an SMB2 session bind
+	// (MS-SMB2 §3.3.5.5.2). The response dispatch layer must NOT treat a
+	// successful bind response as session-creation on the bound connection:
+	// the session lives on a different connection, and tracking it here
+	// would cause this connection's close to delete the original session.
+	IsBinding bool
 }
 
 // NewResult creates a new handler result with the given status and data.

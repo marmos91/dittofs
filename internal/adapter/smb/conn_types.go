@@ -25,6 +25,14 @@ type LockedWriter struct {
 // Rather than passing the entire Connection, callers construct a ConnInfo
 // with only the fields needed by internal functions.
 type ConnInfo struct {
+	// ConnID is a stable, monotonic identifier assigned when the TCP
+	// connection is accepted. It identifies the connection within a session's
+	// Channel registry for per-channel signing-key lookup (MS-SMB2 §3.3.5.5.2
+	// multi-channel; issue #361). Zero for connections that predate channel
+	// bookkeeping; callers must treat zero as "no channel registered" and
+	// fall back to session-level signing state.
+	ConnID uint64
+
 	// Conn is the underlying TCP connection (for RemoteAddr).
 	Conn net.Conn
 

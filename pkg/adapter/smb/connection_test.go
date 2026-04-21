@@ -483,7 +483,7 @@ func TestTrackSessionLifecycle(t *testing.T) {
 
 		c := newTestConnection(server)
 
-		smb.TrackSessionLifecycle(types.SMB2SessionSetup, 0, 42, types.StatusSuccess, c)
+		smb.TrackSessionLifecycle(types.SMB2SessionSetup, 0, 42, types.StatusSuccess, false, c)
 
 		c.sessionsMu.Lock()
 		_, exists := c.sessions[42]
@@ -501,7 +501,7 @@ func TestTrackSessionLifecycle(t *testing.T) {
 
 		c := newTestConnection(server)
 
-		smb.TrackSessionLifecycle(types.SMB2SessionSetup, 0, 42, types.StatusMoreProcessingRequired, c)
+		smb.TrackSessionLifecycle(types.SMB2SessionSetup, 0, 42, types.StatusMoreProcessingRequired, false, c)
 
 		c.sessionsMu.Lock()
 		_, exists := c.sessions[42]
@@ -521,7 +521,7 @@ func TestTrackSessionLifecycle(t *testing.T) {
 
 		c.TrackSession(42)
 
-		smb.TrackSessionLifecycle(types.SMB2Logoff, 42, 0, types.StatusSuccess, c)
+		smb.TrackSessionLifecycle(types.SMB2Logoff, 42, 0, types.StatusSuccess, false, c)
 
 		c.sessionsMu.Lock()
 		_, exists := c.sessions[42]
@@ -541,7 +541,7 @@ func TestTrackSessionLifecycle(t *testing.T) {
 
 		c.TrackSession(100)
 
-		smb.TrackSessionLifecycle(types.SMB2Logoff, 100, 0, types.StatusSuccess, c)
+		smb.TrackSessionLifecycle(types.SMB2Logoff, 100, 0, types.StatusSuccess, false, c)
 
 		c.sessionsMu.Lock()
 		_, exists := c.sessions[100]
@@ -552,21 +552,48 @@ func TestTrackSessionLifecycle(t *testing.T) {
 		}
 	})
 
-	t.Run("FallsBackToReqSessionID", func(t *testing.T) {
+	t.Run("DoesNotTrackOnSessionBind", func(t *testing.T) {
+		// A successful bind response (isBinding=true) must NOT cause the
+		// bound session to be tracked on this connection — the session
+		// lives on a different connection and tracking it here would
+		// make this connection's close delete the original session
+		// (MS-SMB2 §3.3.5.5.2, issue #361).
 		server, client := net.Pipe()
 		defer func() { _ = server.Close() }()
 		defer func() { _ = client.Close() }()
 
 		c := newTestConnection(server)
 
-		smb.TrackSessionLifecycle(types.SMB2SessionSetup, 55, 0, types.StatusSuccess, c)
+		smb.TrackSessionLifecycle(types.SMB2SessionSetup, 55, 55, types.StatusSuccess, true, c)
 
 		c.sessionsMu.Lock()
 		_, exists := c.sessions[55]
 		c.sessionsMu.Unlock()
 
+		if exists {
+			t.Error("Channel bind must not track bound session on this connection")
+		}
+	})
+
+	t.Run("TracksNTLMType3WithNonZeroReqSessionID", func(t *testing.T) {
+		// NTLM SESSION_SETUP Type 3 (AUTHENTICATE) arrives with the
+		// server-assigned SessionID in the request header (non-zero)
+		// because it was set by the Type 2 response. The final success
+		// still represents a genuinely new session and must be tracked.
+		server, client := net.Pipe()
+		defer func() { _ = server.Close() }()
+		defer func() { _ = client.Close() }()
+
+		c := newTestConnection(server)
+
+		smb.TrackSessionLifecycle(types.SMB2SessionSetup, 77, 77, types.StatusSuccess, false, c)
+
+		c.sessionsMu.Lock()
+		_, exists := c.sessions[77]
+		c.sessionsMu.Unlock()
+
 		if !exists {
-			t.Error("Should fall back to reqSessionID when ctxSessionID is 0")
+			t.Error("NTLM Type 3 success must track the session on this connection")
 		}
 	})
 
@@ -577,7 +604,7 @@ func TestTrackSessionLifecycle(t *testing.T) {
 
 		c := newTestConnection(server)
 
-		smb.TrackSessionLifecycle(types.SMB2Create, 0, 42, types.StatusSuccess, c)
+		smb.TrackSessionLifecycle(types.SMB2Create, 0, 42, types.StatusSuccess, false, c)
 
 		c.sessionsMu.Lock()
 		count := len(c.sessions)
