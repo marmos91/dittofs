@@ -1,6 +1,6 @@
 // Package fs implements the local-filesystem Destination driver per
 // Phase 3 CONTEXT.md D-03 (atomic-rename publish) and D-14 (0600 files /
-// 0700 dirs, no chown, pre-created repo root, remote-FS warning).
+// 0700 dirs, no chown, auto-created repo root, remote-FS warning).
 //
 // A backup is published by writing payload.bin and manifest.yaml under
 // <repo-root>/<id>.tmp/, fsyncing both files + the tmp dir, and then
@@ -59,7 +59,7 @@ const (
 // Field names mirror D-12 exactly: path (required, absolute), grace_window
 // (optional Go duration string; defaults to 24h when absent).
 type Config struct {
-	Path        string        // required, absolute directory, pre-created by operator
+	Path        string        // required, absolute directory; auto-created by New if absent
 	GraceWindow time.Duration // D-06, defaults to defaultGraceWindow when zero
 }
 
@@ -80,6 +80,23 @@ func New(ctx context.Context, repo *models.BackupRepo) (destination.Destination,
 	cfg, err := parseConfig(repo)
 	if err != nil {
 		return nil, err
+	}
+	// Reject paths that exist but are not directories before attempting mkdir.
+	if fi, err := os.Stat(cfg.Path); err == nil && !fi.IsDir() {
+		return nil, fmt.Errorf("%w: %s is not a directory", destination.ErrIncompatibleConfig, cfg.Path)
+	}
+	if err := os.MkdirAll(cfg.Path, dirMode); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return nil, fmt.Errorf("%w: mkdir %s: %v", destination.ErrIncompatibleConfig, cfg.Path, err)
+		}
+		return nil, fmt.Errorf("%w: mkdir %s: %v", destination.ErrDestinationUnavailable, cfg.Path, err)
+	}
+	// Defense against process umask: explicit chmod after MkdirAll.
+	if err := os.Chmod(cfg.Path, dirMode); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return nil, fmt.Errorf("%w: chmod %s: %v", destination.ErrIncompatibleConfig, cfg.Path, err)
+		}
+		return nil, fmt.Errorf("%w: chmod %s: %v", destination.ErrDestinationUnavailable, cfg.Path, err)
 	}
 	s := &Store{
 		root:          cfg.Path,

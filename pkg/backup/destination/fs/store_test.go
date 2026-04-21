@@ -255,10 +255,9 @@ func TestFSStore_OrphanSweep_On_New(t *testing.T) {
 	require.NoError(t, err, "fresh tmp must be preserved")
 }
 
-// TestFSStore_ValidateConfig drives the happy path + two rejection
-// branches (non-existent path, not-a-directory). The remote-FS warning
-// path is not asserted here — detectFilesystemType is a best-effort
-// platform probe and has no unit-test hook.
+// TestFSStore_ValidateConfig drives the happy path + rejection branches.
+// The remote-FS warning path is not asserted here — detectFilesystemType
+// is a best-effort platform probe and has no unit-test hook.
 func TestFSStore_ValidateConfig(t *testing.T) {
 	dir := t.TempDir()
 	repo := &models.BackupRepo{ID: "r", Kind: models.BackupRepoKindLocal}
@@ -267,25 +266,46 @@ func TestFSStore_ValidateConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, s.ValidateConfig(context.Background()))
 
-	// Non-existent path: New must still construct (sweep no-ops on
-	// ReadDir failure) but ValidateConfig must reject.
-	repo2 := &models.BackupRepo{ID: "r", Kind: models.BackupRepoKindLocal}
-	require.NoError(t, repo2.SetConfig(map[string]any{"path": "/definitely/does/not/exist/dittofs-test"}))
-	s2, _ := fs.New(context.Background(), repo2)
-	if s2 != nil {
-		vErr := s2.ValidateConfig(context.Background())
-		require.ErrorIs(t, vErr, destination.ErrIncompatibleConfig)
+	// Uncreateable path (EACCES on non-writable parent): New must return
+	// ErrIncompatibleConfig, not a retryable error.
+	// Windows does not honour Unix chmod bits — skip this sub-case there.
+	if runtime.GOOS != "windows" {
+		noWrite := filepath.Join(dir, "no-write")
+		require.NoError(t, os.Mkdir(noWrite, 0o500))
+		t.Cleanup(func() { _ = os.Chmod(noWrite, 0o700) })
+		repo2 := &models.BackupRepo{ID: "r", Kind: models.BackupRepoKindLocal}
+		require.NoError(t, repo2.SetConfig(map[string]any{"path": filepath.Join(noWrite, "dittofs-test")}))
+		_, err2 := fs.New(context.Background(), repo2)
+		require.ErrorIs(t, err2, destination.ErrIncompatibleConfig)
 	}
 
-	// Not-a-directory path.
+	// Not-a-directory path: New must return ErrIncompatibleConfig.
 	file := filepath.Join(dir, "not-a-dir")
 	require.NoError(t, os.WriteFile(file, []byte("x"), 0o600))
 	repo3 := &models.BackupRepo{ID: "r", Kind: models.BackupRepoKindLocal}
 	require.NoError(t, repo3.SetConfig(map[string]any{"path": file}))
-	s3, err3 := fs.New(context.Background(), repo3)
-	if err3 == nil && s3 != nil {
-		require.ErrorIs(t, s3.ValidateConfig(context.Background()), destination.ErrIncompatibleConfig)
+	_, err3 := fs.New(context.Background(), repo3)
+	require.ErrorIs(t, err3, destination.ErrIncompatibleConfig)
+}
+
+// TestFSStore_New_AutoCreatesRoot verifies that New creates a missing repo
+// root directory with mode 0700.
+func TestFSStore_New_AutoCreatesRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permission model not applicable")
 	}
+	base := t.TempDir()
+	root := filepath.Join(base, "auto", "created")
+	repo := &models.BackupRepo{ID: "r", Kind: models.BackupRepoKindLocal}
+	require.NoError(t, repo.SetConfig(map[string]any{"path": root}))
+	s, err := fs.New(context.Background(), repo)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+
+	fi, err := os.Stat(root)
+	require.NoError(t, err)
+	require.True(t, fi.IsDir())
+	require.Equal(t, os.FileMode(0o700), fi.Mode().Perm())
 }
 
 // TestFSStore_DuplicateID_Rejected confirms the double-publish guard.
