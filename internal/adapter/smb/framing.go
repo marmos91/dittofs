@@ -383,19 +383,7 @@ func (sv *sessionSigningVerifier) VerifyRequest(hdr *header.SMB2Header, message 
 			verifyBytes = message[:hdr.NextCommand]
 		}
 
-		// If this connection has a bound Channel on the session (MS-SMB2
-		// §3.3.5.5.2 multi-channel), verify using the per-channel signer.
-		// Otherwise fall back to the session's signer — this covers the
-		// primary connection, every SMB 2.x path, and 3.x sessions without
-		// any bound channels.
-		verified := false
-		if channel := sess.GetChannel(sv.connID); channel != nil && channel.Signer != nil {
-			verified = channel.Signer.Verify(verifyBytes)
-		} else {
-			verified = sess.VerifyMessage(verifyBytes)
-		}
-
-		if !verified {
+		if !sess.VerifyMessageOnChannel(sv.connID, verifyBytes) {
 			logger.Warn("SMB2 message signature verification failed",
 				"command", hdr.Command.String(),
 				"sessionID", hdr.SessionID,

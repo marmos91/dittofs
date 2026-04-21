@@ -317,30 +317,23 @@ func findNTLMSSP(data []byte) []byte {
 //  2. session exists                             → STATUS_USER_SESSION_DELETED
 //  3. connection dialect ≥ SMB 3.0               → STATUS_REQUEST_NOT_ACCEPTED
 //  4. session dialect matches connection dialect → STATUS_INVALID_PARAMETER
+//     (deferred: DittoFS does not yet record a per-session dialect, and
+//     every live session today runs on the dialect of its first connection,
+//     making this check meaningful only once sessions outlive their
+//     establishing connection)
 //  5. session is not guest / anonymous           → STATUS_NOT_SUPPORTED
-//
-// On success the auth-completion branch (commit 4 of #361 Phase 1) derives a
-// per-channel signing key from the existing session key and registers the
-// connection on session.Channels. This commit lands only the validation
-// scaffolding: if every check passes, the handler currently returns
-// STATUS_NOT_SUPPORTED with a log marker — the auth-completion routing lands
-// in a follow-up commit within this branch so that partial work does not
-// produce a silently-wrong wire response.
 func (h *Handler) handleSessionBind(ctx *SMBHandlerContext, req *SessionSetupRequest) (*HandlerResult, error) {
-	// 1. SessionID must be non-zero (can't bind to "no session").
 	if ctx.SessionID == 0 {
 		logger.Debug("SESSION_SETUP bind: SessionID is zero")
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
-	// 2. Session must exist.
 	sess, ok := h.GetSession(ctx.SessionID)
 	if !ok {
 		logger.Debug("SESSION_SETUP bind: no such session", "sessionID", ctx.SessionID)
 		return NewErrorResult(types.StatusUserSessionDeleted), nil
 	}
 
-	// 3. Connection dialect must be SMB 3.0+.
 	var connDialect types.Dialect
 	if ctx.ConnCryptoState != nil {
 		connDialect = ctx.ConnCryptoState.GetDialect()
@@ -352,17 +345,6 @@ func (h *Handler) handleSessionBind(ctx *SMBHandlerContext, req *SessionSetupReq
 		return NewErrorResult(types.StatusRequestNotAccepted), nil
 	}
 
-	// 4. Per §3.3.5.5.2 bullet: the session's dialect MUST equal the
-	// connection's. DittoFS does not yet record per-session dialect; today
-	// every live session is on the same dialect as the connection that
-	// established it. Cross-dialect sessions are impossible with single-
-	// connection-per-session, so this check becomes meaningful only once
-	// a session outlives its first connection (Phase 2+). Stubbed as pass
-	// with a comment to revisit when Session.Dialect lands.
-	_ = sess // intentional: full dialect-match enforcement deferred
-
-	// 5. Session must not be guest / anonymous. Binding a channel onto an
-	// unauthenticated session leaks into NOT_SUPPORTED territory per spec.
 	if sess.IsGuest || sess.IsNull {
 		logger.Info("SESSION_SETUP bind rejected: session is guest/anonymous",
 			"sessionID", ctx.SessionID,
@@ -455,17 +437,14 @@ func (h *Handler) handleNTLMNegotiateBinding(ctx *SMBHandlerContext, req *Sessio
 // completeSessionBind finalizes an SMB2 session bind after NTLM auth proved
 // identity on the new connection. Instead of creating a new session (normal
 // completeNTLMAuth path), it registers a session.Channel on the existing
-// session with a per-channel signing key derived from the ORIGINAL session's
-// raw session key (MS-SMB2 §3.1.4.2 / §3.3.5.5.2, Samba source3/smbd/
-// smb2_sesssetup.c:635-643).
+// session with a per-channel signing key derived from the session key
+// produced by THIS binding's NTLM exchange (MS-SMB2 §3.1.4.2 / §3.3.5.5.2;
+// Samba source3/smbd/smb2_sesssetup.c:633-643 passes session_info->session_key
+// from the bind's own GENSEC context, not the original session's key).
 //
 // Preconditions enforced by callers (handleSessionBind → handleNTLMNegotiateBinding
-// → completeNTLMAuth): pending.IsBinding = true; connection dialect is SMB 3.0
-// or 3.0.2 (3.1.1 rejected at handleSessionBind); NTLMv2 validation already
-// succeeded.
-//
-// Returns a non-nil *HandlerResult with the appropriate status. Never returns
-// nil.
+// → completeNTLMAuth): pending.IsBinding = true; connection dialect ≥ SMB 3.0;
+// NTLMv2 validation already succeeded.
 func (h *Handler) completeSessionBind(
 	ctx *SMBHandlerContext,
 	pending *PendingAuth,

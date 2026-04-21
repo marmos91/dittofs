@@ -348,6 +348,18 @@ func (s *Session) SignMessage(message []byte) {
 	}
 }
 
+// SignMessageOnChannel signs an outgoing SMB2 message using the per-channel
+// signer when connID is bound via SMB2 session binding (MS-SMB2 §3.3.5.5.2),
+// and the session-level signer otherwise. Safe to call when the session does
+// not have signing enabled — it becomes a no-op.
+func (s *Session) SignMessageOnChannel(connID uint64, message []byte) {
+	if ch := s.GetChannel(connID); ch != nil && ch.Signer != nil {
+		signing.SignMessage(ch.Signer, message)
+		return
+	}
+	s.SignMessage(message)
+}
+
 // VerifyMessage verifies the signature of an SMB2 message.
 // Returns true if the signature is valid or if signing is not enabled.
 func (s *Session) VerifyMessage(message []byte) bool {
@@ -355,4 +367,14 @@ func (s *Session) VerifyMessage(message []byte) bool {
 		return true
 	}
 	return s.CryptoState.Signer.Verify(message)
+}
+
+// VerifyMessageOnChannel verifies an incoming message's signature against the
+// per-channel signing key if connID is bound via SMB2 session binding
+// (MS-SMB2 §3.3.5.5.2); otherwise falls back to the session-level key.
+func (s *Session) VerifyMessageOnChannel(connID uint64, message []byte) bool {
+	if ch := s.GetChannel(connID); ch != nil && ch.Signer != nil {
+		return ch.Signer.Verify(message)
+	}
+	return s.VerifyMessage(message)
 }

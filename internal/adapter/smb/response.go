@@ -579,7 +579,7 @@ func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, preWri
 				return writeErr
 			}
 			if sess.ShouldSign() {
-				signOutgoingWithChannel(sess, connInfo.ConnID, smbPayload)
+				sess.SignMessageOnChannel(connInfo.ConnID, smbPayload)
 				// Sync signature back so callers that re-encode the header see
 				// the real signature. Flag-level mutations from signing (setting
 				// SMB2_FLAGS_SIGNED) exist only on smbPayload — the preauth chain
