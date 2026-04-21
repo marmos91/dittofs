@@ -552,21 +552,26 @@ func TestTrackSessionLifecycle(t *testing.T) {
 		}
 	})
 
-	t.Run("FallsBackToReqSessionID", func(t *testing.T) {
+	t.Run("DoesNotTrackOnSessionBindOrReauth", func(t *testing.T) {
+		// SESSION_SETUP with a non-zero reqSessionID is either a channel
+		// bind (MS-SMB2 §3.3.5.5.2, on a different connection) or a
+		// re-auth (same connection). Neither case must (re)track the
+		// session on this connection — bind must not cause this
+		// connection's close to delete the original session (#361).
 		server, client := net.Pipe()
 		defer func() { _ = server.Close() }()
 		defer func() { _ = client.Close() }()
 
 		c := newTestConnection(server)
 
-		smb.TrackSessionLifecycle(types.SMB2SessionSetup, 55, 0, types.StatusSuccess, c)
+		smb.TrackSessionLifecycle(types.SMB2SessionSetup, 55, 55, types.StatusSuccess, c)
 
 		c.sessionsMu.Lock()
 		_, exists := c.sessions[55]
 		c.sessionsMu.Unlock()
 
-		if !exists {
-			t.Error("Should fall back to reqSessionID when ctxSessionID is 0")
+		if exists {
+			t.Error("Session bind / re-auth must not track session on this connection")
 		}
 	})
 

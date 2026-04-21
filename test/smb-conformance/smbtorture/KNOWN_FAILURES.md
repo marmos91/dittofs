@@ -19,22 +19,21 @@ features (sessions, leases, durable handles, locks) that still need work.
 ### Multi-Channel (Partial — Phase 1 of #361)
 
 Phase 1 of #361 lands the session-binding architecture: `Channel` struct
-+ `Session.channels` registry, `DeriveChannelSigningKey`, binding detection
-in SESSION_SETUP with full MS-SMB2 §3.3.5.5.2 prerequisite validation, and
-SMB 3.0 / 3.0.2 binding auth-completion (per-channel signer registered and
-routed through dispatch sign/verify).
++ `Session.channels` registry, `DeriveChannelSigningKey`, SMB 3.0 / 3.0.2
+and SMB 3.1.1 session-bind auth-completion with per-channel preauth hash
+chaining, and per-channel sign/verify routing through dispatch. DittoFS
+advertises `SMB2_GLOBAL_CAP_MULTI_CHANNEL` in NEGOTIATE so conformant
+clients now exercise the multi-channel test surface.
 
-SMB 3.1.1 binding is explicitly rejected with `STATUS_NOT_SUPPORTED`
-pending per-channel preauth integrity hash chaining (follow-up within
-#361). DittoFS does NOT yet advertise `SMB2_GLOBAL_CAP_MULTI_CHANNEL` in
-NEGOTIATE, so conformant clients skip multi-channel tests entirely until
-the 3.1.1 path and cross-channel break fan-out (Phase 2) land.
+The remaining known failures are cross-channel notification fan-out
+(lease/oplock breaks) and wide-channel orchestration, all deferred to
+Phase 2 of #361.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.multichannel.bugs.bug_15346 | Multi-channel | Server does not advertise CAP_MULTI_CHANNEL; test skipped | #361 |
-| smb2.multichannel.generic.num_channels | Multi-channel | Server does not advertise CAP_MULTI_CHANNEL; test skipped | #361 |
-| smb2.multichannel.leases.test1 | Multi-channel | Server does not advertise CAP_MULTI_CHANNEL; test skipped | #361 |
+| smb2.multichannel.bugs.bug_15346 | Multi-channel | Wide multi-channel coordination (Phase 2 of #361) | #361 |
+| smb2.multichannel.generic.num_channels | Multi-channel | Wide multi-channel coordination (Phase 2 of #361) | #361 |
+| smb2.multichannel.leases.test1 | Multi-channel | Cross-channel lease break dispatch not yet implemented (Phase 2 of #361) | #361 |
 | smb2.multichannel.leases.test2 | Multi-channel | Cross-channel lease break dispatch not yet implemented (Phase 2 of #361) | #361 |
 | smb2.multichannel.oplocks.test1 | Multi-channel | Cross-channel oplock break dispatch not yet implemented (Phase 2 of #361) | #361 |
 | smb2.multichannel.oplocks.test2 | Multi-channel | Cross-channel oplock break dispatch not yet implemented (Phase 2 of #361) | #361 |

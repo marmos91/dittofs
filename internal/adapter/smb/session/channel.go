@@ -97,4 +97,3 @@ func (s *Session) ListChannels() []*Channel {
 	})
 	return out
 }
-

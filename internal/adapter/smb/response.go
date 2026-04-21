@@ -850,6 +850,14 @@ func HandleSMB1Negotiate(connInfo *ConnInfo, message []byte) error {
 
 // TrackSessionLifecycle tracks session creation/deletion for connection cleanup.
 // This ensures proper cleanup when connections close ungracefully.
+//
+// Only genuinely new sessions (SESSION_SETUP with reqSessionID == 0) are
+// tracked on the connection. Re-authentication and channel binding both
+// arrive with a non-zero reqSessionID and must NOT be tracked here: for
+// re-auth the session is already tracked on this connection, and for a
+// channel bind (MS-SMB2 §3.3.5.5.2) the session lives on a different
+// connection — tracking it here would cause this connection's close to
+// delete the original session via cleanupSessions().
 func TrackSessionLifecycle(command types.Command, reqSessionID, ctxSessionID uint64, status types.Status, tracker SessionTracker) {
 	if tracker == nil {
 		return
@@ -857,15 +865,8 @@ func TrackSessionLifecycle(command types.Command, reqSessionID, ctxSessionID uin
 
 	switch command {
 	case types.SMB2SessionSetup:
-		// Track newly created sessions on successful SESSION_SETUP completion.
-		if status == types.StatusSuccess {
-			sessionIDToTrack := ctxSessionID
-			if sessionIDToTrack == 0 {
-				sessionIDToTrack = reqSessionID
-			}
-			if sessionIDToTrack != 0 {
-				tracker.TrackSession(sessionIDToTrack)
-			}
+		if status == types.StatusSuccess && reqSessionID == 0 && ctxSessionID != 0 {
+			tracker.TrackSession(ctxSessionID)
 		}
 	case types.SMB2Logoff:
 		// Untrack sessions on LOGOFF (they are already cleaned up by the handler)

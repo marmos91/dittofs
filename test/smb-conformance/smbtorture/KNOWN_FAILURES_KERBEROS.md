@@ -15,8 +15,14 @@ These are genuine Kerberos-specific bugs tracked in #340.
 |-----------|----------|--------|-------|
 | smb2.reconnect1 | Reconnect | STATUS_ACCESS_DENIED instead of STATUS_USER_SESSION_DELETED | #340-A3 |
 | smb2.reconnect2 | Reconnect | STATUS_ACCESS_DENIED instead of STATUS_USER_SESSION_DELETED | #340-A3 |
+| smb2.reauth1 | Reauth | Kerberos reauth path returns ACCESS_DENIED on SESSION_SETUP (Kerberos-specific, unblocked after reauth5 hang fix #388) | #340-A2 |
+| smb2.reauth2 | Reauth | Kerberos reauth path returns ACCESS_DENIED on SESSION_SETUP (Kerberos-specific, unblocked after reauth5 hang fix #388) | #340-A2 |
+| smb2.reauth3 | Reauth | Kerberos reauth path returns ACCESS_DENIED on SESSION_SETUP (Kerberos-specific, unblocked after reauth5 hang fix #388) | #340-A2 |
 | smb2.reauth4 | Reauth | Signing keys wrong after Kerberos reauth | #340-A2 |
 | smb2.reauth5 | Reauth | Signing keys wrong after Kerberos reauth | #340-A2 |
+| smb2.bind1 | Bind | Kerberos session bind not wired — Phase 1 of #361 implements NTLM bind only | #361 |
+| smb2.bind2 | Bind | Kerberos session bind not wired — Phase 1 of #361 implements NTLM bind only | #361 |
+| smb2.bind_invalid_auth | Bind | Kerberos session bind not wired — Phase 1 of #361 implements NTLM bind only | #361 |
 | smb2.expire1n | Expire | Ticket expiration not enforced correctly | #340-A1 |
 | smb2.expire1s | Expire | Ticket expiration not enforced correctly | #340-A1 |
 | smb2.expire1e | Expire | Ticket expiration not enforced correctly | #340-A1 |

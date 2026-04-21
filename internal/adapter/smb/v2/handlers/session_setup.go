@@ -698,7 +698,11 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 	authMsg, err := auth.ParseAuthenticate(ntlmToken)
 	if err != nil {
 		logger.Debug("Failed to parse NTLM AUTHENTICATE message", "error", err)
-		// Fall back to guest session
+		if pending.IsBinding {
+			// Binding must be terminal: a failed bind must never create or
+			// replace the existing session (including a guest downgrade).
+			return NewErrorResult(types.StatusLogonFailure), nil
+		}
 		return h.createGuestSessionWithID(ctx, pending)
 	}
 
@@ -718,6 +722,9 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 				ctx.IsGuest = true
 				return result, nil
 			}
+		}
+		if pending.IsBinding {
+			return NewErrorResult(types.StatusLogonFailure), nil
 		}
 		return h.createGuestSessionWithID(ctx, pending)
 	}
@@ -876,6 +883,12 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 
 			ctx.IsGuest = false
 
+			if pending.IsBinding {
+				// Without a validated signing key we cannot derive a channel
+				// signing key; a bind here would leave the channel unsigned.
+				return NewErrorResult(types.StatusLogonFailure), nil
+			}
+
 			if pending.IsReauth {
 				if result := h.tryReauthUpdate(pending, resolvedUsername, authMsg.Domain, user, false); result != nil {
 					return result, nil
@@ -912,7 +925,12 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 		}
 	}
 
-	// Fall back to guest session
+	// Fall back to guest session (never for binding — a bind must only succeed
+	// via completeSessionBind above or fail closed without replacing the
+	// existing session).
+	if pending.IsBinding {
+		return NewErrorResult(types.StatusLogonFailure), nil
+	}
 	return h.createGuestSessionWithID(ctx, pending)
 }
 

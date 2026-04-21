@@ -24,12 +24,13 @@ type SessionCryptoState struct {
 	Signer signing.Signer
 
 	// SessionKey is the raw session key from NTLM/Kerberos authentication,
-	// before any SP800-108 KDF derivation. Retained on the session so that
-	// SMB2_SESSION_FLAG_BINDING requests on a later connection can derive
-	// per-channel signing keys from the same input (MS-SMB2 §3.1.4.2,
-	// §3.3.5.5.2). For SMB 2.x this is the same material as SigningKey, but
-	// for 3.x SigningKey is a KDF output — only SessionKey is the raw input
-	// needed for per-channel derivation. Zeroed by Destroy.
+	// before any SP800-108 KDF derivation. For SMB 2.x this is the same
+	// underlying material as SigningKey; for 3.x SigningKey is a KDF output
+	// derived from this raw input. Zeroed by Destroy.
+	//
+	// Per MS-SMB2 §3.3.5.5.2, channel signing keys for a bound connection
+	// are derived from the session key produced by the binding handshake's
+	// own authentication exchange, not this field — see completeSessionBind.
 	SessionKey []byte
 
 	// SigningKey is the signing key bytes actually used by Signer.
@@ -130,9 +131,12 @@ func DeriveAllKeys(sessionKey []byte, dialect types.Dialect, preauthHash [64]byt
 // DeriveChannelSigningKey derives a per-channel signing key for a connection
 // bound via SMB2_SESSION_FLAG_BINDING (MS-SMB2 §3.1.4.2 and §3.3.5.5.2).
 //
-// The input session key is the session-wide key established by the original
-// authentication. The output is a channel-specific 16-byte signing key used
-// to verify signatures on requests arriving over the bound connection.
+// The input sessionKey is the session key produced by the authentication
+// exchange associated with the channel being established — for a bound
+// channel this is the binding handshake's own session key, not the original
+// session key (MS-SMB2 §3.3.5.5.2; Samba smb2_sesssetup.c:633-643). The
+// output is a channel-specific 16-byte signing key used to verify
+// signatures on requests arriving over the bound connection.
 //
 // Label/context rules (matching Samba libcli/smb/smb2_signing.c:38-84):
 //   - SMB 3.1.1 (Dialect0311): label "SMBSigningKey\0", context = the
