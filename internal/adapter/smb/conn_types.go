@@ -73,8 +73,11 @@ type ConnInfo struct {
 	asyncPendingCount atomic.Int32
 }
 
-// MaxAsyncCredits is the maximum number of outstanding async operations per
-// connection per MS-SMB2 §3.3.5.2.5 (Connection.MaxAsyncCredits default = 512).
+// MaxAsyncCredits is the advertised/configured max_async_credits value per
+// MS-SMB2 §3.3.5.2.5 (Connection.MaxAsyncCredits default = 512). The
+// enforced cap on outstanding async operations is MaxAsyncCredits-1 — see
+// TryReserveAsync — matching Samba behaviour so one slot stays free for
+// synchronous work and CANCEL.
 const MaxAsyncCredits = 512
 
 // TryReserveAsync atomically checks and reserves one async slot on the connection.
