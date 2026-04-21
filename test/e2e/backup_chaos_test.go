@@ -50,6 +50,7 @@ func TestBackupChaos_KillMidBackup(t *testing.T) {
 	lsHelper := framework.NewLocalstackHelper(t)
 
 	sp1 := helpers.StartServerProcess(t, "")
+	t.Cleanup(sp1.ForceKill)
 	runner1 := helpers.LoginAsAdmin(t, sp1.APIURL())
 	apiClient1 := helpers.GetAPIClient(t, sp1.APIURL())
 
