@@ -268,13 +268,16 @@ func TestFSStore_ValidateConfig(t *testing.T) {
 
 	// Uncreateable path (EACCES on non-writable parent): New must return
 	// ErrIncompatibleConfig, not a retryable error.
-	noWrite := filepath.Join(dir, "no-write")
-	require.NoError(t, os.Mkdir(noWrite, 0o500))
-	t.Cleanup(func() { _ = os.Chmod(noWrite, 0o700) })
-	repo2 := &models.BackupRepo{ID: "r", Kind: models.BackupRepoKindLocal}
-	require.NoError(t, repo2.SetConfig(map[string]any{"path": filepath.Join(noWrite, "dittofs-test")}))
-	_, err2 := fs.New(context.Background(), repo2)
-	require.ErrorIs(t, err2, destination.ErrIncompatibleConfig)
+	// Windows does not honour Unix chmod bits — skip this sub-case there.
+	if runtime.GOOS != "windows" {
+		noWrite := filepath.Join(dir, "no-write")
+		require.NoError(t, os.Mkdir(noWrite, 0o500))
+		t.Cleanup(func() { _ = os.Chmod(noWrite, 0o700) })
+		repo2 := &models.BackupRepo{ID: "r", Kind: models.BackupRepoKindLocal}
+		require.NoError(t, repo2.SetConfig(map[string]any{"path": filepath.Join(noWrite, "dittofs-test")}))
+		_, err2 := fs.New(context.Background(), repo2)
+		require.ErrorIs(t, err2, destination.ErrIncompatibleConfig)
+	}
 
 	// Not-a-directory path: New must return ErrIncompatibleConfig.
 	file := filepath.Join(dir, "not-a-dir")
