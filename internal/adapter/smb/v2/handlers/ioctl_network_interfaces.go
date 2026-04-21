@@ -161,10 +161,10 @@ func encodeNetworkInterfaceInfoList(entries []networkInterfaceEntry) []byte {
 //
 // SOCKADDR_IN (IPv4, 16 used bytes, padded to 128):
 //
-//	 0  Family   u16   0x0002
-//	 2  Port     u16   0 (unused for interface enumeration)
-//	 4  IPv4     4B    address bytes (network order)
-//	 8  Reserved 8B    zero
+//	0  Family   u16   0x0002
+//	2  Port     u16   0 (unused for interface enumeration)
+//	4  IPv4     4B    address bytes (network order)
+//	8  Reserved 8B    zero
 //
 // SOCKADDR_IN6 (IPv6, 28 used bytes, padded to 128):
 //
