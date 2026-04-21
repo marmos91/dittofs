@@ -30,6 +30,9 @@ func newPipeConnInfo(connID uint64) (*smb.ConnInfo, net.Conn) {
 // Returns the SMB2 payload (framing stripped).
 func readNetBIOSFrame(t *testing.T, client net.Conn) []byte {
 	t.Helper()
+	if err := client.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
 	hdr := make([]byte, 4)
 	if _, err := io.ReadFull(client, hdr); err != nil {
 		t.Fatalf("read netbios header: %v", err)
