@@ -81,8 +81,15 @@ func New(ctx context.Context, repo *models.BackupRepo) (destination.Destination,
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(cfg.Path, 0700); err != nil {
+	if err := os.MkdirAll(cfg.Path, dirMode); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return nil, fmt.Errorf("%w: mkdir %s: %v", destination.ErrIncompatibleConfig, cfg.Path, err)
+		}
 		return nil, fmt.Errorf("%w: mkdir %s: %v", destination.ErrDestinationUnavailable, cfg.Path, err)
+	}
+	// Defense against process umask: explicit chmod after MkdirAll.
+	if err := os.Chmod(cfg.Path, dirMode); err != nil {
+		return nil, fmt.Errorf("%w: chmod %s: %v", destination.ErrDestinationUnavailable, cfg.Path, err)
 	}
 	s := &Store{
 		root:          cfg.Path,
