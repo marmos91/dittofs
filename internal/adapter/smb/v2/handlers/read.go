@@ -463,14 +463,9 @@ func (h *Handler) handlePipeRead(ctx *SMBHandlerContext, req *ReadRequest, openF
 				SMBResponseBase: SMBResponseBase{Status: types.StatusNotSupported},
 			}, nil
 		}
-		if ctx.TryReserveAsync == nil || !ctx.TryReserveAsync() {
-			logger.Debug("READ: max_async_credits reached, rejecting pipe read",
-				"pipeName", openFile.PipeName)
-			return &ReadResponse{
-				SMBResponseBase: SMBResponseBase{Status: types.StatusInsufficientResources},
-			}, nil
-		}
-
+		// Register before reserving an async slot so that if TryReserveAsync
+		// fails we haven't consumed a credit for a read we never issued.
+		// UnregisterByFileID rolls back the registration in that case.
 		asyncId := h.generateAsyncId()
 		pending := &PendingPipeRead{
 			FileID:    req.FileID,
@@ -481,6 +476,15 @@ func (h *Handler) handlePipeRead(ctx *SMBHandlerContext, req *ReadRequest, openF
 			Callback:  ctx.AsyncPipeReadCallback,
 		}
 		h.PipeReadRegistry.Register(pending)
+
+		if ctx.TryReserveAsync == nil || !ctx.TryReserveAsync() {
+			h.PipeReadRegistry.UnregisterByFileID(req.FileID)
+			logger.Debug("READ: max_async_credits reached, rejecting pipe read",
+				"pipeName", openFile.PipeName)
+			return &ReadResponse{
+				SMBResponseBase: SMBResponseBase{Status: types.StatusInsufficientResources},
+			}, nil
+		}
 
 		return &ReadResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusPending},
