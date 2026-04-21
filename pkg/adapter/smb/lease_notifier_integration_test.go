@@ -54,8 +54,8 @@ func TestSendLeaseBreak_IntegrationPrimaryGetsBreak(t *testing.T) {
 	const sessionID uint64 = 42
 	sess := session.NewSession(sessionID, "127.0.0.1:445", false, "user", "")
 	primaryCI, primaryClient := newPipeConnInfo(1)
-	defer primaryClient.Close()
-	defer primaryCI.Conn.Close()
+	defer func() { _ = primaryClient.Close() }()
+	defer func() { _ = primaryCI.Conn.Close() }()
 
 	sessionConns := &sync.Map{}
 	sessionConns.Store(sessionID, primaryCI)
@@ -111,12 +111,12 @@ func TestSendLeaseBreak_IntegrationFailsOverToSecondaryOnClosedPrimary(t *testin
 
 	primaryCI, primaryClient := newPipeConnInfo(1)
 	secondaryCI, secondaryClient := newPipeConnInfo(2)
-	defer secondaryClient.Close()
-	defer secondaryCI.Conn.Close()
+	defer func() { _ = secondaryClient.Close() }()
+	defer func() { _ = secondaryCI.Conn.Close() }()
 
 	// Close the primary pipe so SendFrame on it fails.
-	primaryCI.Conn.Close()
-	primaryClient.Close()
+	_ = primaryCI.Conn.Close()
+	_ = primaryClient.Close()
 
 	sessionConns := &sync.Map{}
 	sessionConns.Store(sessionID, primaryCI)
