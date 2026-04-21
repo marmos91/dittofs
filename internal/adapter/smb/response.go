@@ -224,6 +224,11 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 	// binding (MS-SMB2 §3.3.5.5.2) can key per-channel signing state.
 	handlerCtx.ConnID = connInfo.ConnID
 
+	// Thread the connection's transport so completeSessionBind can attach
+	// it to the newly-registered Channel, enabling break notifications
+	// (MS-SMB2 §3.3.4.7) to fan out across bound secondary channels.
+	handlerCtx.ConnTransport = connInfo
+
 	if cmd.NeedsSession && reqHeader.SessionID != 0 {
 		sess, ok := connInfo.Handler.GetSession(reqHeader.SessionID)
 		if !ok || sess.LoggedOff.Load() {

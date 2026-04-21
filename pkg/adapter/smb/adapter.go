@@ -168,7 +168,11 @@ func (s *Adapter) SetRuntime(rtAny any) {
 	// at request time.
 	if metaSvc := rt.GetMetadataService(); metaSvc != nil {
 		resolver := &metadataServiceResolver{metaSvc: metaSvc}
-		notifier := &transportNotifier{sessionConns: &s.sessionConns, oplockFileIDs: &s.oplockFileIDs}
+		notifier := &transportNotifier{
+			sessionConns:  &s.sessionConns,
+			oplockFileIDs: &s.oplockFileIDs,
+			handler:       s.handler,
+		}
 		leaseMgr := smblease.NewLeaseManager(resolver, notifier)
 		s.handler.LeaseManager = leaseMgr
 

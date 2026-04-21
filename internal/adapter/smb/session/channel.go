@@ -7,19 +7,29 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 )
 
-// Channel represents a TCP connection bound to an SMB session via
-// SESSION_SETUP with SMB2_SESSION_FLAG_BINDING (MS-SMB2 §3.3.5.5.2).
-//
-// In Phase 1 only bound (secondary) connections register a Channel. The
-// original connection that established the session continues to use the
-// session-level Signer via the dispatch fallback. This keeps the change
-// surface-area narrow; a future refactor may register every connection as a
-// Channel and remove the fallback.
+// ChannelTransport is the minimal interface a channel exposes to senders
+// that need to push bytes out on its TCP connection — specifically the
+// lease/oplock break notifier (MS-SMB2 §3.3.4.7). Implementations are
+// responsible for framing (NetBIOS), write-mutex coordination, and optional
+// SMB3 Transform-Header encryption.
+type ChannelTransport interface {
+	// SendFrame serializes plaintext as a NetBIOS-framed SMB2 message on the
+	// underlying connection. When encrypt is true and the implementation has
+	// encryption keys for sessionID, plaintext is wrapped in a Transform
+	// Header before the write.
+	SendFrame(sessionID uint64, plaintext []byte, encrypt bool) error
+}
+
+// Channel represents a TCP connection attached to an SMB session. The primary
+// connection (established by the initial SESSION_SETUP) and any secondary
+// connections bound via SMB2_SESSION_FLAG_BINDING (MS-SMB2 §3.3.5.5.2) are
+// each registered as a Channel.
 //
 // All channels on a session share the session key and session identity, but
 // each bound channel derives its own signing key from the session key via the
-// dialect-specific KDF (MS-SMB2 §3.1.4.2). The per-channel signing key is used
-// to verify signatures on requests arriving on that connection.
+// dialect-specific KDF (MS-SMB2 §3.1.4.2). The primary channel uses the
+// session-level signer (Signer is nil) — the dispatch path falls back via
+// Session.SignMessageOnChannel.
 //
 // Samba reference: smbXsrv_channel_global0 in source3/smbd/smbXsrv_session.c —
 // each entry holds a signing_algo, encryption_cipher, and signing_key that
@@ -55,6 +65,12 @@ type Channel struct {
 
 	// BoundAt is the time the channel was registered on the session.
 	BoundAt time.Time
+
+	// Transport is the write-side adapter for this channel's TCP connection.
+	// Used by the break notifier (MS-SMB2 §3.3.4.7) to deliver unsolicited
+	// lease / oplock break notifications on every channel of a session. Nil
+	// for channels in tests that never emit breaks.
+	Transport ChannelTransport
 }
 
 // AddChannel registers a channel on the session, keyed by ConnID. A subsequent

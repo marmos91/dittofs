@@ -143,9 +143,10 @@ func (c *Connection) connInfo() *smb.ConnInfo {
 	// map. This enables lease break notifications to be routed to the correct
 	// TCP connection.
 	ci.SessionTracker = &connRegistryTracker{
-		inner:        c,
-		connInfo:     ci,
-		sessionConns: &c.server.sessionConns,
+		inner:         c,
+		connInfo:      ci,
+		sessionConns:  &c.server.sessionConns,
+		sessionLookup: c.server.handler,
 	}
 	return ci
 }
