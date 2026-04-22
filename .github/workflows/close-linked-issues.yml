@@ -1,0 +1,54 @@
+name: Close linked issues on main
+
+# Closes issues referenced with "Closes #N" / "Fixes #N" / "Resolves #N"
+# in any commit pushed to main. GitHub's built-in auto-close only fires
+# when a PR merges into the default branch; since we merge PRs into
+# develop and only rebase main at release time, this workflow handles
+# the close on release instead.
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  close:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Close referenced issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+
+          # Force-push (release rebase) leaves BEFORE as the old tip; the
+          # range BEFORE..AFTER still enumerates every newly-reachable commit.
+          # On first push to a branch BEFORE is all zeros — fall back to AFTER alone.
+          if [[ "$BEFORE" =~ ^0+$ ]]; then
+            RANGE="$AFTER"
+          else
+            RANGE="$BEFORE..$AFTER"
+          fi
+
+          git log --format=%B "$RANGE" \
+            | grep -oiE '(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed))[[:space:]]+#[0-9]+' \
+            | grep -oE '#[0-9]+' \
+            | sort -u \
+            | while read -r ref; do
+                num="${ref#\#}"
+                state=$(gh issue view "$num" --json state -q .state 2>/dev/null || echo "MISSING")
+                if [[ "$state" == "OPEN" ]]; then
+                  echo "Closing #$num"
+                  gh issue close "$num" --comment "Closed by release commit on \`main\` (${GITHUB_SHA:0:7})." || true
+                else
+                  echo "Skipping #$num (state=$state)"
+                fi
+              done
