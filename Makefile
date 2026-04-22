@@ -18,12 +18,11 @@ setup-hooks:
 # Verify every hook in .githooks/ is executable and wired via core.hooksPath.
 check-hooks:
 	@set -e; \
-	want=$$(cd "$$(git rev-parse --show-toplevel)" && pwd)/.githooks; \
 	got=$$(git config --get core.hooksPath || true); \
-	resolved=$$(cd "$$(git rev-parse --show-toplevel)" && cd "$$got" 2>/dev/null && pwd || echo "$$got"); \
-	if [ "$$resolved" != "$$want" ]; then \
-	    echo "core.hooksPath = '$$got' (want '.githooks'). Run 'make setup-hooks'."; exit 1; \
-	fi; \
+	case "$$got" in \
+	    .githooks|"$$(git rev-parse --show-toplevel)/.githooks") ;; \
+	    *) echo "core.hooksPath = '$$got' (want '.githooks'). Run 'make setup-hooks'."; exit 1 ;; \
+	esac; \
 	for h in .githooks/*; do \
 	    [ -f "$$h" ] || continue; \
 	    [ -x "$$h" ] || { echo "$$h is not executable"; exit 1; }; \

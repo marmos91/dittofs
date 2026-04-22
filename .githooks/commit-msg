@@ -16,12 +16,14 @@ if [ -n "${DITTOFS_SKIP_COMMITMSG:-}" ]; then
     exit 0
 fi
 
-MSG_FILE="$1"
-SUBJECT=$(grep -Ev '^(#|$)' "$MSG_FILE" | head -n1 || true)
+SUBJECT=""
+while IFS= read -r line; do
+    case "$line" in ''|'#'*) continue ;; esac
+    SUBJECT="$line"; break
+done < "$1"
 
 case "$SUBJECT" in
-    "Merge "*|"Revert "*|"fixup!"*|"squash!"*|"amend!"*)
-        exit 0 ;;
+    "Merge "*|"Revert "*|"fixup!"*|"squash!"*|"amend!"*) exit 0 ;;
 esac
 
 if [ -z "$SUBJECT" ]; then
@@ -34,7 +36,7 @@ if [ "${#SUBJECT}" -gt 100 ]; then
     exit 1
 fi
 
-if ! echo "$SUBJECT" | grep -Eq '^(feat|fix|chore|docs|refactor|test|perf|ci|build|style|revert)(\([a-zA-Z0-9/_.-]+\))?!?: .+'; then
+if ! [[ "$SUBJECT" =~ ^(feat|fix|chore|docs|refactor|test|perf|ci|build|style|revert)(\([a-zA-Z0-9/_.-]+\))?!?:\ .+ ]]; then
     cat >&2 <<EOF
 commit-msg: subject does not match expected format.
 
