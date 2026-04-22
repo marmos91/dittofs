@@ -374,4 +374,3 @@ func TestPatchRepo_KeepsOwnPath_Returns200(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
 	}
 }
-
