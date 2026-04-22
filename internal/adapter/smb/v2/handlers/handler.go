@@ -913,13 +913,15 @@ func (h *Handler) StoreOpenFile(file *OpenFile) {
 	h.files.Store(string(file.FileID[:]), file)
 }
 
-// pendingAuthKey is the composite key for pendingAuth lookups. It combines the
-// target SessionID (0 for an initial handshake, the bound session for a bind,
-// or the existing session for re-auth) with the carrying ConnID so that
-// concurrent SESSION_SETUPs on the same session from different TCP connections
-// do not clobber each other. Without per-connection keying, the regression
-// guarded by smb2.multichannel.bugs.bug_15346 fails (Samba bug 15346): parallel
-// binds race on a single slot and the TYPE_3 of one channel picks up the
+// pendingAuthKey is the composite key for pendingAuth lookups. SessionID is
+// the session the handshake targets — the server-generated ID for an initial
+// NTLM NEGOTIATE, the bound session for a bind, or the existing session for
+// re-auth — and is the ID the client carries in the TYPE_3 header. ConnID
+// disambiguates concurrent handshakes on the same SessionID so that parallel
+// SESSION_SETUPs from different TCP connections do not clobber each other.
+// Without per-connection keying, the regression guarded by
+// smb2.multichannel.bugs.bug_15346 fails (Samba bug 15346): parallel binds
+// race on a single slot and the TYPE_3 of one channel picks up the
 // ServerChallenge of another.
 type pendingAuthKey struct {
 	SessionID uint64

@@ -141,8 +141,10 @@ func TestSession_AddChannel_ReplaceDoesNotCountAgainstCap(t *testing.T) {
 }
 
 // TestSession_AddChannel_ConcurrentCap stresses concurrent binds far in excess
-// of the cap and verifies exactly MaxChannelsPerSession succeed. Guards against
-// the race that smb2.multichannel.bugs.bug_15346 targets at the channel layer.
+// of the cap and verifies exactly MaxChannelsPerSession succeed — guarding the
+// atomicity of the count-and-insert under concurrent AddChannel calls. A naive
+// sync.Map-backed registry with a "len() < cap then Store" sequence would
+// admit more than MaxChannelsPerSession under race.
 func TestSession_AddChannel_ConcurrentCap(t *testing.T) {
 	s := NewSession(1, "", false, "", "")
 
