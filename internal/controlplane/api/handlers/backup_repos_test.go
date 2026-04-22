@@ -5,10 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/backup/destination"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/storebackups"
 )
@@ -135,8 +139,10 @@ func TestDeleteRepo_Default_RemovesRow(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 type fakeDest struct {
-	deletes map[string]error // id -> error to return
-	closed  bool
+	deletes     map[string]error // id -> error to return
+	validateErr error
+	closed      bool
+	validated   int
 }
 
 func (d *fakeDest) Delete(_ context.Context, id string) error {
@@ -144,6 +150,10 @@ func (d *fakeDest) Delete(_ context.Context, id string) error {
 		return err
 	}
 	return nil
+}
+func (d *fakeDest) ValidateConfig(_ context.Context) error {
+	d.validated++
+	return d.validateErr
 }
 func (d *fakeDest) Close() error { d.closed = true; return nil }
 
@@ -185,3 +195,183 @@ func TestDeleteRepo_PurgeArchives_CascadesDestination(t *testing.T) {
 		t.Errorf("Destination.Close should have been called")
 	}
 }
+
+// -----------------------------------------------------------------------------
+// #409 — ValidateConfig wiring + cross-repo collision detection
+// -----------------------------------------------------------------------------
+
+func TestCreateRepo_DuplicateLocalPath_Returns422(t *testing.T) {
+	storeFake, _ := seedStoreWithRepo(0)
+	// Seed an existing local repo at /tmp/shared.
+	existing := &models.BackupRepo{
+		ID: "repo-existing", Name: "existing", Kind: models.BackupRepoKindLocal,
+		TargetID: "store-1", TargetKind: "metadata",
+	}
+	if err := existing.SetConfig(map[string]any{"path": "/tmp/shared"}); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	storeFake.repos = append(storeFake.repos, existing)
+	h := newTestHandler(storeFake, &fakeBackupService{})
+
+	body := []byte(`{"name":"dup","kind":"local","config":{"path":"/tmp/shared"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/metadata/fast-meta/repos", bytes.NewReader(body))
+	req = withRouteParams(req, map[string]string{"name": "fast-meta"})
+	rr := httptest.NewRecorder()
+	h.CreateRepo(rr, req)
+
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rr.Code, rr.Body.String())
+	}
+	// Repo row must not be created.
+	if len(storeFake.repos) != 1 {
+		t.Errorf("repo persisted despite collision; repos=%d", len(storeFake.repos))
+	}
+}
+
+func TestCreateRepo_DuplicateLocalPathViaSymlink_Returns422(t *testing.T) {
+	// Different lexical paths that EvalSymlinks resolves to the same target
+	// must collide. Cover the /tmp → /private/tmp macOS case and the
+	// general "two paths, one inode" case.
+	realDir := t.TempDir()
+	linkDir := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	storeFake, _ := seedStoreWithRepo(0)
+	existing := &models.BackupRepo{
+		ID: "repo-existing", Name: "existing", Kind: models.BackupRepoKindLocal,
+		TargetID: "store-1", TargetKind: "metadata",
+	}
+	if err := existing.SetConfig(map[string]any{"path": realDir}); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	storeFake.repos = append(storeFake.repos, existing)
+	h := newTestHandler(storeFake, &fakeBackupService{})
+
+	body := []byte(fmt.Sprintf(`{"name":"dup","kind":"local","config":{"path":%q}}`, linkDir))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/metadata/fast-meta/repos", bytes.NewReader(body))
+	req = withRouteParams(req, map[string]string{"name": "fast-meta"})
+	rr := httptest.NewRecorder()
+	h.CreateRepo(rr, req)
+
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestCreateRepo_DuplicateS3BucketPrefix_Returns422(t *testing.T) {
+	storeFake, _ := seedStoreWithRepo(0)
+	existing := &models.BackupRepo{
+		ID: "repo-existing", Name: "existing", Kind: models.BackupRepoKindS3,
+		TargetID: "store-1", TargetKind: "metadata",
+	}
+	if err := existing.SetConfig(map[string]any{"bucket": "b1", "prefix": "backups/"}); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	storeFake.repos = append(storeFake.repos, existing)
+	h := newTestHandler(storeFake, &fakeBackupService{})
+
+	// Same bucket + prefix (with normalization) → 422.
+	body := []byte(`{"name":"dup","kind":"s3","config":{"bucket":"b1","prefix":"/backups"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/metadata/fast-meta/repos", bytes.NewReader(body))
+	req = withRouteParams(req, map[string]string{"name": "fast-meta"})
+	rr := httptest.NewRecorder()
+	h.CreateRepo(rr, req)
+
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestCreateRepo_ValidateConfigFails_Returns422(t *testing.T) {
+	storeFake, _ := seedStoreWithRepo(0)
+	dest := &fakeDest{validateErr: fmt.Errorf("%w: bucket not found", destination.ErrIncompatibleConfig)}
+	factory := func(_ context.Context, _ *models.BackupRepo) (BackupDestinationDeleter, error) {
+		return dest, nil
+	}
+	h := NewBackupHandler(storeFake, &fakeBackupService{}, factory)
+
+	body := []byte(`{"name":"new","kind":"local","config":{"path":"/tmp/new"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/metadata/fast-meta/repos", bytes.NewReader(body))
+	req = withRouteParams(req, map[string]string{"name": "fast-meta"})
+	rr := httptest.NewRecorder()
+	h.CreateRepo(rr, req)
+
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rr.Code, rr.Body.String())
+	}
+	if dest.validated != 1 {
+		t.Errorf("ValidateConfig call count = %d, want 1", dest.validated)
+	}
+	if !dest.closed {
+		t.Errorf("destination not closed after validation")
+	}
+	if len(storeFake.repos) != 0 {
+		t.Errorf("repo persisted despite ValidateConfig failure; repos=%d", len(storeFake.repos))
+	}
+}
+
+func TestCreateRepo_ValidateConfigSucceeds_Returns201(t *testing.T) {
+	storeFake, _ := seedStoreWithRepo(0)
+	dest := &fakeDest{}
+	factory := func(_ context.Context, _ *models.BackupRepo) (BackupDestinationDeleter, error) {
+		return dest, nil
+	}
+	h := NewBackupHandler(storeFake, &fakeBackupService{}, factory)
+
+	body := []byte(`{"name":"new","kind":"local","config":{"path":"/tmp/new"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/metadata/fast-meta/repos", bytes.NewReader(body))
+	req = withRouteParams(req, map[string]string{"name": "fast-meta"})
+	rr := httptest.NewRecorder()
+	h.CreateRepo(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rr.Code, rr.Body.String())
+	}
+	if dest.validated != 1 {
+		t.Errorf("ValidateConfig call count = %d, want 1", dest.validated)
+	}
+}
+
+func TestPatchRepo_OntoAnotherRepoPath_Returns422(t *testing.T) {
+	storeFake, repos := seedStoreWithRepo(2)
+	// repos[0]=primary (/tmp/a), repos[1]=repo1 (/tmp/b).
+	if err := repos[0].SetConfig(map[string]any{"path": "/tmp/a"}); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	if err := repos[1].SetConfig(map[string]any{"path": "/tmp/b"}); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	h := newTestHandler(storeFake, &fakeBackupService{})
+
+	body := []byte(`{"config":{"path":"/tmp/b"}}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/store/metadata/fast-meta/repos/primary", bytes.NewReader(body))
+	req = withRouteParams(req, map[string]string{"name": "fast-meta", "repo": "primary"})
+	rr := httptest.NewRecorder()
+	h.PatchRepo(rr, req)
+
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestPatchRepo_KeepsOwnPath_Returns200(t *testing.T) {
+	storeFake, repos := seedStoreWithRepo(1)
+	if err := repos[0].SetConfig(map[string]any{"path": "/tmp/a"}); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	h := newTestHandler(storeFake, &fakeBackupService{})
+
+	// Same path — must not self-collide.
+	body := []byte(`{"config":{"path":"/tmp/a"}, "keep_count": 5}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/store/metadata/fast-meta/repos/primary", bytes.NewReader(body))
+	req = withRouteParams(req, map[string]string{"name": "fast-meta", "repo": "primary"})
+	rr := httptest.NewRecorder()
+	h.PatchRepo(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+}
+

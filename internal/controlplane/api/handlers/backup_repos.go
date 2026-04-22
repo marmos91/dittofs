@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/backup/destination"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
@@ -70,6 +73,10 @@ func (h *BackupHandler) CreateRepo(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.EncryptionKeyRef != nil {
 		repo.EncryptionKeyRef = *req.EncryptionKeyRef
+	}
+
+	if !h.validateRepoDestination(w, r.Context(), repo) {
+		return
 	}
 
 	id, err := h.store.CreateBackupRepo(r.Context(), repo)
@@ -200,6 +207,10 @@ func (h *BackupHandler) PatchRepo(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.EncryptionKeyRef != nil {
 		repo.EncryptionKeyRef = *req.EncryptionKeyRef
+	}
+
+	if !h.validateRepoDestination(w, r.Context(), repo) {
+		return
 	}
 
 	if err := h.store.UpdateBackupRepo(r.Context(), repo); err != nil {
@@ -338,6 +349,113 @@ func (h *BackupHandler) purgeRepoArchives(ctx context.Context, repo *models.Back
 		}
 	}
 	return failed, nil
+}
+
+// validateRepoDestination probes the repo config before persist (D-12/D-13):
+// cross-repo collision (same local path or same s3 bucket+prefix) then a
+// driver-level ValidateConfig via destFactory. Writes 422 on
+// ErrIncompatibleConfig, 500 on anything else, and returns false when the
+// response has been written. destFactory==nil skips the driver probe.
+func (h *BackupHandler) validateRepoDestination(w http.ResponseWriter, ctx context.Context, repo *models.BackupRepo) bool {
+	writeErr := func(op string, err error) bool {
+		if errors.Is(err, destination.ErrIncompatibleConfig) {
+			UnprocessableEntity(w, err.Error())
+			return false
+		}
+		logger.Error(op, "repo", repo.Name, "error", err)
+		InternalServerError(w, "Failed to validate repo configuration")
+		return false
+	}
+
+	if err := h.checkRepoDestinationCollision(ctx, repo); err != nil {
+		return writeErr("Repo collision check failed", err)
+	}
+	if h.destFactory == nil {
+		return true
+	}
+	dst, err := h.destFactory(ctx, repo)
+	if err != nil {
+		return writeErr("Build destination for validation failed", err)
+	}
+	defer func() {
+		if cerr := dst.Close(); cerr != nil {
+			logger.Warn("Destination close after validation", "repo", repo.Name, "error", cerr)
+		}
+	}()
+	if err := dst.ValidateConfig(ctx); err != nil {
+		return writeErr("ValidateConfig failed", err)
+	}
+	return true
+}
+
+// checkRepoDestinationCollision rejects repos sharing a destination with
+// an existing row. Self (same ID) is skipped so PATCH of an unchanged
+// path still succeeds.
+func (h *BackupHandler) checkRepoDestinationCollision(ctx context.Context, repo *models.BackupRepo) error {
+	existing, err := h.store.ListAllBackupRepos(ctx)
+	if err != nil {
+		return fmt.Errorf("list repos: %w", err)
+	}
+	for _, other := range existing {
+		if other == nil || other.ID == repo.ID || other.Kind != repo.Kind {
+			continue
+		}
+		// Bad config on either side — let ValidateConfig surface it later.
+		if collision, _ := sameDestination(repo, other); collision {
+			return fmt.Errorf("%w: destination already used by repo %q",
+				destination.ErrIncompatibleConfig, other.Name)
+		}
+	}
+	return nil
+}
+
+// sameDestination reports whether `a` and `b` point at the same backing
+// location: resolved absolute path (local) or (bucket, normalized-prefix) (s3).
+func sameDestination(a, b *models.BackupRepo) (bool, error) {
+	cfgA, err := a.GetConfig()
+	if err != nil {
+		return false, err
+	}
+	cfgB, err := b.GetConfig()
+	if err != nil {
+		return false, err
+	}
+	switch a.Kind {
+	case models.BackupRepoKindLocal:
+		pa, _ := cfgA["path"].(string)
+		pb, _ := cfgB["path"].(string)
+		if pa == "" || pb == "" {
+			return false, nil
+		}
+		return resolveLocalPath(pa) == resolveLocalPath(pb), nil
+	case models.BackupRepoKindS3:
+		ba, _ := cfgA["bucket"].(string)
+		bb, _ := cfgB["bucket"].(string)
+		if ba == "" || bb == "" || ba != bb {
+			return false, nil
+		}
+		pa, _ := cfgA["prefix"].(string)
+		pb, _ := cfgB["prefix"].(string)
+		return strings.Trim(pa, "/") == strings.Trim(pb, "/"), nil
+	default:
+		return false, nil
+	}
+}
+
+// resolveLocalPath returns a canonical form of p for collision comparison:
+// absolute + symlinks resolved when possible (catches /tmp vs /private/tmp
+// on macOS), else falls back to filepath.Clean(Abs(...)) for paths that
+// don't yet exist. Returns the raw input on Abs failure so two identical
+// bad inputs still match.
+func resolveLocalPath(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return filepath.Clean(p)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return filepath.Clean(abs)
 }
 
 // resolveMetadataStore writes a problem + returns ok=false on lookup error,

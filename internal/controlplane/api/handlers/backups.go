@@ -42,10 +42,12 @@ type BackupService interface {
 }
 
 // BackupDestinationDeleter is the narrow interface over a destination
-// driver's Delete method used by DeleteRepo(?purge_archives=true). Kept
-// local so tests can stub it without importing pkg/backup/destination.
+// driver used by DeleteRepo(?purge_archives=true) (Delete/Close) and
+// CreateRepo / PatchRepo (ValidateConfig, D-12/D-13). Kept local so tests
+// can stub it without importing pkg/backup/destination.
 type BackupDestinationDeleter interface {
 	Delete(ctx context.Context, id string) error
+	ValidateConfig(ctx context.Context) error
 	Close() error
 }
 
