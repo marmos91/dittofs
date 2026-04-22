@@ -400,8 +400,11 @@ func (h *BackupHandler) checkRepoDestinationCollision(ctx context.Context, repo 
 		if other == nil || other.ID == repo.ID || other.Kind != repo.Kind {
 			continue
 		}
-		// Bad config on either side — let ValidateConfig surface it later.
-		if collision, _ := sameDestination(repo, other); collision {
+		collision, err := sameDestination(repo, other)
+		if err != nil {
+			return fmt.Errorf("compare destination with repo %q: %w", other.Name, err)
+		}
+		if collision {
 			return fmt.Errorf("%w: destination already used by repo %q",
 				destination.ErrIncompatibleConfig, other.Name)
 		}
@@ -443,17 +446,36 @@ func sameDestination(a, b *models.BackupRepo) (bool, error) {
 }
 
 // resolveLocalPath returns a canonical form of p for collision comparison:
-// absolute + symlinks resolved when possible (catches /tmp vs /private/tmp
-// on macOS), else falls back to filepath.Clean(Abs(...)) for paths that
-// don't yet exist. Returns the raw input on Abs failure so two identical
-// bad inputs still match.
+// absolute + symlinks resolved (catches /tmp vs /private/tmp on macOS).
+// If the leaf doesn't exist yet — common at repo-create time —
+// EvalSymlinks on the full path fails, so we walk up to the nearest
+// existing ancestor, resolve that, and rejoin the unresolved suffix so
+// non-existent paths still canonicalize consistently. Returns the
+// cleaned input on Abs failure so two identical bad inputs still match.
 func resolveLocalPath(p string) string {
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		return filepath.Clean(p)
 	}
 	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		return resolved
+		return filepath.Clean(resolved)
+	}
+	current := abs
+	var suffix []string
+	for {
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
+		if resolved, err := filepath.EvalSymlinks(current); err == nil {
+			out := resolved
+			for i := len(suffix) - 1; i >= 0; i-- {
+				out = filepath.Join(out, suffix[i])
+			}
+			return filepath.Clean(out)
+		}
 	}
 	return filepath.Clean(abs)
 }

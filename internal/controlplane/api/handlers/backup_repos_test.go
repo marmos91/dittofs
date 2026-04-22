@@ -260,6 +260,42 @@ func TestCreateRepo_DuplicateLocalPathViaSymlink_Returns422(t *testing.T) {
 	}
 }
 
+func TestCreateRepo_DuplicateLocalPathViaSymlinkLeafMissing_Returns422(t *testing.T) {
+	// Variant of the symlink case where the leaf doesn't exist yet —
+	// e.g. the operator is about to create /tmp/new-repo. EvalSymlinks
+	// fails on the full path, so resolveLocalPath must walk up to the
+	// first existing ancestor (here: the symlink target) and rejoin the
+	// suffix. Without the walk-up, this collision slips through.
+	realDir := t.TempDir()
+	linkDir := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	leafReal := filepath.Join(realDir, "new-repo")
+	leafLink := filepath.Join(linkDir, "new-repo")
+
+	storeFake, _ := seedStoreWithRepo(0)
+	existing := &models.BackupRepo{
+		ID: "repo-existing", Name: "existing", Kind: models.BackupRepoKindLocal,
+		TargetID: "store-1", TargetKind: "metadata",
+	}
+	if err := existing.SetConfig(map[string]any{"path": leafReal}); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	storeFake.repos = append(storeFake.repos, existing)
+	h := newTestHandler(storeFake, &fakeBackupService{})
+
+	body := []byte(fmt.Sprintf(`{"name":"dup","kind":"local","config":{"path":%q}}`, leafLink))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/store/metadata/fast-meta/repos", bytes.NewReader(body))
+	req = withRouteParams(req, map[string]string{"name": "fast-meta"})
+	rr := httptest.NewRecorder()
+	h.CreateRepo(rr, req)
+
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestCreateRepo_DuplicateS3BucketPrefix_Returns422(t *testing.T) {
 	storeFake, _ := seedStoreWithRepo(0)
 	existing := &models.BackupRepo{
