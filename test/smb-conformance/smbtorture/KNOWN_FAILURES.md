@@ -25,14 +25,15 @@ chaining, and per-channel sign/verify routing through dispatch. DittoFS
 advertises `SMB2_GLOBAL_CAP_MULTI_CHANNEL` in NEGOTIATE so conformant
 clients now exercise the multi-channel test surface.
 
-The remaining known failures are cross-channel notification fan-out
-(lease/oplock breaks) and wide-channel orchestration, all deferred to
-Phase 2 of #361.
+Phase 2 landed break fan-out (#408). Phase 2.3 landed the per-session
+32-channel cap and fixed a concurrent-bind race on the PendingAuth slot
+(Samba bug 15346 class) — `bug_15346` and `generic.num_channels` now pass.
+The remaining known failures are pre-existing lease-break `new_epoch`
+drift, Samba-internal test-harness FSCTL requirements, and cross-channel
+async credit coordination.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.multichannel.bugs.bug_15346 | Multi-channel | Wide multi-channel coordination (Phase 2 of #361) | #361 |
-| smb2.multichannel.generic.num_channels | Multi-channel | Wide multi-channel coordination (Phase 2 of #361) | #361 |
 | smb2.multichannel.leases.test1 | Multi-channel | Pre-existing lease break new_epoch mismatch, surfaced once interface enumeration works — not a Phase 2 fan-out issue | - |
 | smb2.multichannel.leases.test2 | Multi-channel | Pre-existing lease break new_epoch mismatch — not a Phase 2 fan-out issue | - |
 | smb2.multichannel.leases.test3 | Multi-channel | Pre-existing lease break new_epoch mismatch — not a Phase 2 fan-out issue | - |

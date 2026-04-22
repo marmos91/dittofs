@@ -542,7 +542,16 @@ func (h *Handler) completeSessionBind(
 		PreauthHash: preauthHash,
 		Transport:   ctx.ConnTransport,
 	}
-	sess.AddChannel(channel)
+	if !sess.AddChannel(channel) {
+		// MS-SMB2 §3.3.5.5.2: reject the bind once the per-session channel
+		// table is full. Windows/Samba cap at 32; see
+		// smb2.multichannel.generic.num_channels.
+		logger.Info("SESSION_SETUP bind rejected: channel cap reached",
+			"sessionID", pending.BindingSessionID,
+			"cap", session.MaxChannelsPerSession,
+			"connID", channel.ConnID)
+		return NewErrorResult(types.StatusInsufficientResources)
+	}
 
 	// Drop the binding preauth hash entry — it was scoped to the handshake
 	// and keeping it would corrupt any future handshake that reused the

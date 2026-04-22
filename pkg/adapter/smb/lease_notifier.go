@@ -240,11 +240,18 @@ func (t *connRegistryTracker) TrackSession(sessionID uint64) {
 	if !ok {
 		return
 	}
-	sess.AddChannel(&session.Channel{
+	// Primary-channel registration. The cap (§3.3.5.5.2) is enforced at the
+	// SESSION_SETUP bind path; the primary channel always gets a slot and, if
+	// already present with this ConnID, AddChannel updates in place.
+	if !sess.AddChannel(&session.Channel{
 		ConnID:     t.connInfo.ConnID,
 		RemoteAddr: t.connInfo.Conn.RemoteAddr().String(),
 		Transport:  t.connInfo,
-	})
+	}) {
+		logger.Warn("primary channel registration hit cap",
+			"sessionID", sessionID,
+			"connID", t.connInfo.ConnID)
+	}
 }
 
 // UntrackSession removes a session from the connection, deregisters its
