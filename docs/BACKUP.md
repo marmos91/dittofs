@@ -327,7 +327,8 @@ dispatch; `hint` is an operator-facing fallback. Persisted `BackupRecord` and
 | `code`                            | HTTP | Meaning                                                                                     |
 | --------------------------------- | ---- | ------------------------------------------------------------------------------------------- |
 | `destination_permission_denied`   | 403  | EACCES on a local path, S3 `AccessDenied` / `Forbidden` at the driver or on `HeadBucket`    |
-| `destination_not_found`           | 404  | Missing bucket, non-existent parent directory, incompatible destination config              |
+| `destination_not_found`           | 404  | Missing bucket, non-existent parent directory (runtime path)                                |
+| `destination_config_invalid`      | 422  | Pre-persist ValidateConfig failure on repo create/patch (bad bucket, unwritable path, …)    |
 | `destination_no_space`            | 507  | `ENOSPC` while writing a local archive                                                      |
 | `destination_unreachable`         | 502  | Network timeout, DNS lookup failure, S3 5xx, S3 throttling                                  |
 | `destination_credentials_invalid` | 401  | S3 `InvalidAccessKeyId` / `SignatureDoesNotMatch`, missing or malformed encryption key ref  |

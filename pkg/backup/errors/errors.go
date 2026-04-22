@@ -28,6 +28,7 @@ const (
 	CodeDestinationUnreachable        Code = "destination_unreachable"
 	CodeDestinationCredentialsInvalid Code = "destination_credentials_invalid"
 	CodeDestinationPathConflict       Code = "destination_path_conflict"
+	CodeDestinationConfigInvalid      Code = "destination_config_invalid"
 	CodeSourceUnavailable             Code = "source_unavailable"
 	CodeBackupAlreadyRunning          Code = "backup_already_running"
 	CodeRestorePreconditionFailed     Code = "restore_precondition_failed"
@@ -147,6 +148,8 @@ func HintFor(code Code) string {
 		return "re-enter the S3 credentials for this backup repo"
 	case CodeDestinationPathConflict:
 		return "this destination path is already used by another backup repo or block store"
+	case CodeDestinationConfigInvalid:
+		return "check the destination config (path writable, bucket name valid, required fields set)"
 	case CodeSourceUnavailable:
 		return "the metadata store could not be read; check that it is running and healthy"
 	case CodeBackupAlreadyRunning:

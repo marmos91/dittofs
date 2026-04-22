@@ -361,13 +361,17 @@ func (h *BackupHandler) validateRepoDestination(w http.ResponseWriter, ctx conte
 	writeErr := func(op string, err error) bool {
 		var be *bkperrors.BackupError
 		if errors.As(err, &be) {
+			detail := err.Error()
+			if be.Err != nil {
+				detail = be.Err.Error()
+			}
 			status, title := statusForBackupCode(be.Code)
-			WriteBackupProblem(w, status, title, err.Error(), be.Code, be.Hint)
+			WriteBackupProblem(w, status, title, detail, be.Code, be.Hint)
 			return false
 		}
 		if errors.Is(err, destination.ErrIncompatibleConfig) {
 			WriteBackupProblem(w, http.StatusUnprocessableEntity, "Unprocessable Entity",
-				err.Error(), bkperrors.CodeDestinationNotFound, "")
+				err.Error(), bkperrors.CodeDestinationConfigInvalid, "")
 			return false
 		}
 		logger.Error(op, "repo", repo.Name, "error", err)

@@ -83,6 +83,7 @@ func TestHintFor_AllCodesCovered(t *testing.T) {
 		CodeDestinationUnreachable,
 		CodeDestinationCredentialsInvalid,
 		CodeDestinationPathConflict,
+		CodeDestinationConfigInvalid,
 		CodeSourceUnavailable,
 		CodeBackupAlreadyRunning,
 		CodeRestorePreconditionFailed,

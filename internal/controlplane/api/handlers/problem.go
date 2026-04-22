@@ -207,7 +207,8 @@ func statusForBackupCode(code bkperrors.Code) (int, string) {
 		return http.StatusBadGateway, "Bad Gateway"
 	case bkperrors.CodeDestinationCredentialsInvalid:
 		return http.StatusUnauthorized, "Unauthorized"
-	case bkperrors.CodeDestinationPathConflict:
+	case bkperrors.CodeDestinationPathConflict,
+		bkperrors.CodeDestinationConfigInvalid:
 		return http.StatusUnprocessableEntity, "Unprocessable Entity"
 	case bkperrors.CodeSourceUnavailable:
 		return http.StatusServiceUnavailable, "Service Unavailable"
@@ -222,7 +223,8 @@ func statusForBackupCode(code bkperrors.Code) (int, string) {
 func WriteClassifiedBackupError(w http.ResponseWriter, err error) {
 	be := bkperrors.Classify(err)
 	if be == nil {
-		InternalServerError(w, "unexpected error")
+		WriteBackupProblem(w, http.StatusInternalServerError, "Internal Server Error",
+			"unexpected error", bkperrors.CodeInternal, "")
 		return
 	}
 	status, title := statusForBackupCode(be.Code)
