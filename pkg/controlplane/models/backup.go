@@ -137,8 +137,9 @@ type BackupRecord struct {
 	SHA256       string       `gorm:"size:64" json:"sha256"`
 	// StoreID is a snapshot of the source metadata store ID at backup time.
 	// Used as a guard against restoring into the wrong (or a renamed) store.
-	StoreID string `gorm:"size:36" json:"store_id"`
-	Error   string `gorm:"type:text" json:"error,omitempty"`
+	StoreID   string `gorm:"size:36" json:"store_id"`
+	Error     string `gorm:"type:text" json:"error,omitempty"`
+	ErrorCode string `gorm:"size:48;index" json:"error_code,omitempty"`
 
 	// Relationships
 	Repo BackupRepo `gorm:"foreignKey:RepoID" json:"repo,omitzero"`
@@ -162,6 +163,7 @@ type BackupJob struct {
 	StartedAt      *time.Time   `json:"started_at,omitempty"`
 	FinishedAt     *time.Time   `json:"finished_at,omitempty"`
 	Error          string       `gorm:"type:text" json:"error,omitempty"`
+	ErrorCode      string       `gorm:"size:48;index" json:"error_code,omitempty"`
 	Progress       int          `json:"progress"` // 0-100
 
 	// Relationships

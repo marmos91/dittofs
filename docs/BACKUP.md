@@ -316,6 +316,43 @@ Phase 4 retention (count / age / pin) operates **only** on published backups (ma
 
 Warnings do not reject. DittoFS emits them at WARN on `ValidateConfig`; operators can decide to override.
 
+## HTTP error responses
+
+Backup endpoints (`/backups`, `/backups/{id}/cancel`, `/restore`, `/repos`) return
+RFC 7807 `application/problem+json` bodies with a stable `code` field for
+machine-readable classification. Pair `code` with the HTTP status for UI
+dispatch; `hint` is an operator-facing fallback. Persisted `BackupRecord` and
+`BackupJob` rows carry the same value under `error_code`.
+
+| `code`                            | HTTP | Meaning                                                                                     |
+| --------------------------------- | ---- | ------------------------------------------------------------------------------------------- |
+| `destination_permission_denied`   | 403  | EACCES on a local path, S3 `AccessDenied` / `Forbidden` at the driver or on `HeadBucket`    |
+| `destination_not_found`           | 404  | Missing bucket, non-existent parent directory, incompatible destination config              |
+| `destination_no_space`            | 507  | `ENOSPC` while writing a local archive                                                      |
+| `destination_unreachable`         | 502  | Network timeout, DNS lookup failure, S3 5xx, S3 throttling                                  |
+| `destination_credentials_invalid` | 401  | S3 `InvalidAccessKeyId` / `SignatureDoesNotMatch`, missing or malformed encryption key ref  |
+| `destination_path_conflict`       | 422  | Two repos collide on the same local path (after resolving symlinks) or same S3 bucket+prefix |
+| `source_unavailable`              | 503  | Metadata store read failed, or post-publish DB persistence failed                           |
+| `backup_already_running`          | 409  | A run is already in flight on the repo; `running_job_id` is included in the body            |
+| `restore_precondition_failed`     | 409  | Target store still has enabled shares; `enabled_shares` is included in the body             |
+| `internal`                        | 500  | Uncategorized failure; consult server logs                                                  |
+
+Example body:
+
+```json
+{
+  "type": "about:blank",
+  "title": "Forbidden",
+  "status": 403,
+  "detail": "open /var/backups/repo: permission denied",
+  "code": "destination_permission_denied",
+  "hint": "ensure the DittoFS process user can write to the backup destination"
+}
+```
+
+Codes are additive — new ones may be introduced in minor releases. Clients
+should fall back to dispatching on HTTP status when an unknown code is seen.
+
 ## What this release does NOT include
 
 - **External KMS or SSE-S3 / SSE-KMS pass-through** — operator-supplied raw 32-byte keys only. A future "External KMS" milestone will add Vault and AWS KMS key wrapping.

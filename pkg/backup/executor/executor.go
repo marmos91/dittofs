@@ -12,6 +12,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/backup"
 	"github.com/marmos91/dittofs/pkg/backup/destination"
+	bkperrors "github.com/marmos91/dittofs/pkg/backup/errors"
 	"github.com/marmos91/dittofs/pkg/backup/manifest"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
@@ -250,12 +251,14 @@ func (e *Executor) RunBackup(
 			errors.Is(runErr, backup.ErrBackupAborted) {
 			status = models.BackupStatusInterrupted
 		}
+		errCode := string(bkperrors.Classify(runErr).Code)
 		if upErr := e.store.UpdateBackupJob(ctx, &models.BackupJob{
 			ID:         jobID,
 			Status:     status,
 			StartedAt:  &startedAt,
 			FinishedAt: &finishedAt,
 			Error:      runErr.Error(),
+			ErrorCode:  errCode,
 		}); upErr != nil {
 			logger.Warn("Failed to mark backup job terminal state",
 				"job_id", jobID, "intended_status", status, "update_error", upErr)
@@ -264,16 +267,13 @@ func (e *Executor) RunBackup(
 			"repo_id", repo.ID,
 			"job_id", jobID,
 			"status", status,
+			"error_code", errCode,
 			"error", runErr,
 		)
-		// Surface the job so Phase-6 callers can report job.ID even on
-		// failure. The job struct has been populated with the terminal-state
-		// fields via the UpdateBackupJob above; mirror those onto our
-		// return-value copy so the caller sees a consistent view even
-		// without a follow-up read.
 		job.Status = status
 		job.FinishedAt = &finishedAt
 		job.Error = runErr.Error()
+		job.ErrorCode = errCode
 		return nil, job, runErr
 	}
 
@@ -296,12 +296,14 @@ func (e *Executor) RunBackup(
 		// discrepancy in job logs. Phase 5 orphan sweep will NOT delete the
 		// archive because manifest.yaml is present (published invariant).
 		errMsg := fmt.Sprintf("archive published but record persist failed: %v", err)
+		errCode := string(bkperrors.CodeSourceUnavailable)
 		if upErr := e.store.UpdateBackupJob(ctx, &models.BackupJob{
 			ID:         jobID,
 			Status:     models.BackupStatusFailed,
 			StartedAt:  &startedAt,
 			FinishedAt: &finishedAt,
 			Error:      errMsg,
+			ErrorCode:  errCode,
 		}); upErr != nil {
 			logger.Warn("Failed to mark backup job failed after record persist failure",
 				"job_id", jobID, "update_error", upErr)
@@ -315,6 +317,7 @@ func (e *Executor) RunBackup(
 		job.Status = models.BackupStatusFailed
 		job.FinishedAt = &finishedAt
 		job.Error = errMsg
+		job.ErrorCode = errCode
 		return nil, job, fmt.Errorf("create backup record: %w", err)
 	}
 

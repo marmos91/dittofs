@@ -151,7 +151,7 @@ func (h *BackupHandler) CancelJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		logger.Error("Cancel backup job failed", "job_id", id, "error", err)
-		InternalServerError(w, "Failed to cancel backup job")
+		WriteClassifiedBackupError(w, err)
 		return
 	}
 

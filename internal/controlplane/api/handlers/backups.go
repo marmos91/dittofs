@@ -137,6 +137,7 @@ type BackupRecordResponse struct {
 	SHA256       string    `json:"sha256"`
 	StoreID      string    `json:"store_id"`
 	Error        string    `json:"error,omitempty"`
+	ErrorCode    string    `json:"error_code,omitempty"`
 }
 
 // BackupJobResponse is the wire shape for a BackupJob row.
@@ -149,6 +150,7 @@ type BackupJobResponse struct {
 	StartedAt      *time.Time `json:"started_at,omitempty"`
 	FinishedAt     *time.Time `json:"finished_at,omitempty"`
 	Error          string     `json:"error,omitempty"`
+	ErrorCode      string     `json:"error_code,omitempty"`
 	Progress       int        `json:"progress"`
 }
 
@@ -292,7 +294,7 @@ func (h *BackupHandler) writeBackupError(w http.ResponseWriter, ctx context.Cont
 		BadRequest(w, err.Error())
 	default:
 		logger.Error("Backup run failed", "repo_id", repoID, "error", err)
-		InternalServerError(w, "Backup run failed")
+		WriteClassifiedBackupError(w, err)
 	}
 }
 
@@ -552,7 +554,7 @@ func (h *BackupHandler) writeRestoreError(w http.ResponseWriter, err error) {
 		NotFound(w, err.Error())
 	default:
 		logger.Error("Restore run failed", "error", err)
-		InternalServerError(w, "Restore run failed")
+		WriteClassifiedBackupError(w, err)
 	}
 }
 
@@ -658,6 +660,7 @@ func recordToResponse(r *models.BackupRecord) *BackupRecordResponse {
 		SHA256:       r.SHA256,
 		StoreID:      r.StoreID,
 		Error:        r.Error,
+		ErrorCode:    r.ErrorCode,
 	}
 }
 
@@ -682,6 +685,7 @@ func jobToResponse(j *models.BackupJob) *BackupJobResponse {
 		StartedAt:      j.StartedAt,
 		FinishedAt:     j.FinishedAt,
 		Error:          j.Error,
+		ErrorCode:      j.ErrorCode,
 		Progress:       j.Progress,
 	}
 }

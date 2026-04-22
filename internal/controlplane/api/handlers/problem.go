@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	bkperrors "github.com/marmos91/dittofs/pkg/backup/errors"
 )
 
 // Problem represents an RFC 7807 "problem details" response.
@@ -25,6 +27,15 @@ type Problem struct {
 
 	// Instance is a URI reference that identifies the specific occurrence.
 	Instance string `json:"instance,omitempty"`
+
+	// Code is a stable, machine-readable error taxonomy value (#414).
+	// Clients dispatch i18n / UI hints on this field without parsing Detail.
+	Code string `json:"code,omitempty"`
+
+	// Hint is a short operator-facing string paired with Code. Clients
+	// typically localize via Code, but Hint is a useful fallback for CLI
+	// output and log readers.
+	Hint string `json:"hint,omitempty"`
 }
 
 // ContentTypeProblemJSON is the Content-Type for RFC 7807 problem responses.
@@ -130,12 +141,15 @@ type RestorePreconditionFailedProblem struct {
 // with the running BackupJob ID (D-13). Paired with the
 // storebackups.ErrBackupAlreadyRunning sentinel in the handler layer.
 func WriteBackupAlreadyRunningProblem(w http.ResponseWriter, runningJobID string) {
+	code := bkperrors.CodeBackupAlreadyRunning
 	p := &BackupAlreadyRunningProblem{
 		Problem: Problem{
 			Type:   "about:blank",
 			Title:  "Conflict",
 			Status: http.StatusConflict,
 			Detail: "backup already running",
+			Code:   string(code),
+			Hint:   bkperrors.HintFor(code),
 		},
 		RunningJobID: runningJobID,
 	}
@@ -146,16 +160,77 @@ func WriteBackupAlreadyRunningProblem(w http.ResponseWriter, runningJobID string
 // body with the enabled_shares list (D-29). Detail text reports the count
 // so the CLI can render a short summary without reflowing the list.
 func WriteRestorePreconditionFailedProblem(w http.ResponseWriter, enabledShares []string) {
+	code := bkperrors.CodeRestorePreconditionFailed
 	p := &RestorePreconditionFailedProblem{
 		Problem: Problem{
 			Type:   "about:blank",
 			Title:  "Restore precondition failed",
 			Status: http.StatusConflict,
 			Detail: fmt.Sprintf("%d share(s) still enabled", len(enabledShares)),
+			Code:   string(code),
+			Hint:   bkperrors.HintFor(code),
 		},
 		EnabledShares: enabledShares,
 	}
 	writeProblemJSON(w, http.StatusConflict, p)
+}
+
+// WriteBackupProblem emits an RFC 7807 problem body that includes a
+// machine-readable code plus hint (#414). Prefer this over WriteProblem
+// on any backup / restore error path so clients get a stable taxonomy.
+func WriteBackupProblem(w http.ResponseWriter, status int, title, detail string, code bkperrors.Code, hint string) {
+	if hint == "" {
+		hint = bkperrors.HintFor(code)
+	}
+	p := &Problem{
+		Type:   "about:blank",
+		Title:  title,
+		Status: status,
+		Detail: detail,
+		Code:   string(code),
+		Hint:   hint,
+	}
+	writeProblemJSON(w, status, p)
+}
+
+// statusForBackupCode maps a classified backup error code to the HTTP
+// status that best conveys it to clients (#414).
+func statusForBackupCode(code bkperrors.Code) (int, string) {
+	switch code {
+	case bkperrors.CodeDestinationPermissionDenied:
+		return http.StatusForbidden, "Forbidden"
+	case bkperrors.CodeDestinationNotFound:
+		return http.StatusNotFound, "Not Found"
+	case bkperrors.CodeDestinationNoSpace:
+		return http.StatusInsufficientStorage, "Insufficient Storage"
+	case bkperrors.CodeDestinationUnreachable:
+		return http.StatusBadGateway, "Bad Gateway"
+	case bkperrors.CodeDestinationCredentialsInvalid:
+		return http.StatusUnauthorized, "Unauthorized"
+	case bkperrors.CodeDestinationPathConflict:
+		return http.StatusUnprocessableEntity, "Unprocessable Entity"
+	case bkperrors.CodeSourceUnavailable:
+		return http.StatusServiceUnavailable, "Service Unavailable"
+	case bkperrors.CodeBackupAlreadyRunning, bkperrors.CodeRestorePreconditionFailed:
+		return http.StatusConflict, "Conflict"
+	}
+	return http.StatusInternalServerError, "Internal Server Error"
+}
+
+// WriteClassifiedBackupError classifies err and emits the matching
+// problem+json body. The default fallback is 500 + code=internal.
+func WriteClassifiedBackupError(w http.ResponseWriter, err error) {
+	be := bkperrors.Classify(err)
+	if be == nil {
+		InternalServerError(w, "unexpected error")
+		return
+	}
+	status, title := statusForBackupCode(be.Code)
+	detail := ""
+	if be.Err != nil {
+		detail = be.Err.Error()
+	}
+	WriteBackupProblem(w, status, title, detail, be.Code, be.Hint)
 }
 
 // writeProblemJSON serializes a typed problem variant using the RFC 7807
