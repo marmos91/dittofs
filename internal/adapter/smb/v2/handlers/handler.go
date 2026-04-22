@@ -40,8 +40,11 @@ type Handler struct {
 	// Session management (unified with credit tracking)
 	SessionManager *session.Manager
 
-	// Pending auth sessions (mid-handshake)
-	pendingAuth sync.Map // sessionID -> *PendingAuth
+	// Pending auth sessions (mid-handshake). Keyed by pendingAuthKey so that
+	// concurrent SESSION_SETUPs on the same session from different connections
+	// (e.g. multiple parallel channel binds, MS-SMB2 §3.3.5.5.2) do not clobber
+	// each other's TYPE_2 challenge / ServerChallenge. See Samba bug 15346.
+	pendingAuth sync.Map // pendingAuthKey -> *PendingAuth
 
 	// Tree connections
 	trees      sync.Map // treeID -> *TreeConnection
@@ -201,6 +204,10 @@ type PendingAuth struct {
 	// channel rather than creating a new session. MS-SMB2 §3.3.5.5.2.
 	IsBinding        bool
 	BindingSessionID uint64
+	// ConnID is the TCP connection carrying this authentication. Pending auth
+	// is keyed by (SessionID, ConnID) so concurrent binds on the same session
+	// from different connections (MS-SMB2 §3.3.5.5.2) do not collide.
+	ConnID uint64
 	// MechListBytes: DER-encoded SEQUENCE OF OID from the NegTokenInit's
 	// mechTypes field, needed to compute the SPNEGO mechListMIC in the
 	// final accept-completed response (MS-NLMP 3.4.5.2 + 2.2.2.9.1).
@@ -741,8 +748,8 @@ func (h *Handler) CleanupSession(ctx context.Context, sessionID uint64, isDiscon
 	// 3. Delete all tree connections
 	treesDeleted := h.DeleteAllTreesForSession(sessionID)
 
-	// 4. Clean up any pending auth state
-	h.DeletePendingAuth(sessionID)
+	// 4. Clean up any pending auth state (all channels)
+	h.DeleteAllPendingAuthForSession(sessionID)
 
 	// 5. Delete the session itself
 	h.DeleteSession(sessionID)
@@ -906,23 +913,51 @@ func (h *Handler) StoreOpenFile(file *OpenFile) {
 	h.files.Store(string(file.FileID[:]), file)
 }
 
-// StorePendingAuth stores a pending authentication
-func (h *Handler) StorePendingAuth(pending *PendingAuth) {
-	h.pendingAuth.Store(pending.SessionID, pending)
+// pendingAuthKey is the composite key for pendingAuth lookups. SessionID is
+// the session the handshake targets — the server-generated ID for an initial
+// NTLM NEGOTIATE, the bound session for a bind, or the existing session for
+// re-auth — and is the ID the client carries in the TYPE_3 header. ConnID
+// disambiguates concurrent handshakes on the same SessionID so that parallel
+// SESSION_SETUPs from different TCP connections do not clobber each other.
+// Without per-connection keying, the regression guarded by
+// smb2.multichannel.bugs.bug_15346 fails (Samba bug 15346): parallel binds
+// race on a single slot and the TYPE_3 of one channel picks up the
+// ServerChallenge of another.
+type pendingAuthKey struct {
+	SessionID uint64
+	ConnID    uint64
 }
 
-// GetPendingAuth retrieves a pending authentication by session ID
-func (h *Handler) GetPendingAuth(sessionID uint64) (*PendingAuth, bool) {
-	v, ok := h.pendingAuth.Load(sessionID)
+// StorePendingAuth stores a pending authentication. pending.SessionID and
+// pending.ConnID together form the lookup key.
+func (h *Handler) StorePendingAuth(pending *PendingAuth) {
+	h.pendingAuth.Store(pendingAuthKey{pending.SessionID, pending.ConnID}, pending)
+}
+
+// GetPendingAuth retrieves a pending authentication by (sessionID, connID).
+func (h *Handler) GetPendingAuth(sessionID, connID uint64) (*PendingAuth, bool) {
+	v, ok := h.pendingAuth.Load(pendingAuthKey{sessionID, connID})
 	if !ok {
 		return nil, false
 	}
 	return v.(*PendingAuth), true
 }
 
-// DeletePendingAuth removes a pending authentication
-func (h *Handler) DeletePendingAuth(sessionID uint64) {
-	h.pendingAuth.Delete(sessionID)
+// DeletePendingAuth removes a pending authentication for a specific connection.
+func (h *Handler) DeletePendingAuth(sessionID, connID uint64) {
+	h.pendingAuth.Delete(pendingAuthKey{sessionID, connID})
+}
+
+// DeleteAllPendingAuthForSession removes every pending-auth record associated
+// with sessionID, regardless of connection. Used on session teardown (LOGOFF,
+// connection cleanup) to invalidate any in-flight binds for the session.
+func (h *Handler) DeleteAllPendingAuthForSession(sessionID uint64) {
+	h.pendingAuth.Range(func(k, _ any) bool {
+		if key, ok := k.(pendingAuthKey); ok && key.SessionID == sessionID {
+			h.pendingAuth.Delete(key)
+		}
+		return true
+	})
 }
 
 // checkShareModeConflict checks if opening a file with the given access and sharing

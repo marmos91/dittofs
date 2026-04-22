@@ -73,43 +73,73 @@ type Channel struct {
 	Transport ChannelTransport
 }
 
-// AddChannel registers a channel on the session, keyed by ConnID. A subsequent
-// AddChannel with the same ConnID replaces the prior entry — callers must not
-// rely on deduplication since MS-SMB2 explicitly rejects binding an already-
-// bound connection at the handler layer (§3.3.5.5.2).
-func (s *Session) AddChannel(c *Channel) {
+// MaxChannelsPerSession is the spec-mandated upper bound on the number of
+// concurrent channels bound to a single SMB session. MS-SMB2 §3.3.5.5.2
+// requires the server to reject further binds once the per-session channel
+// table is full; Windows and Samba enforce 32 (`smbXsrv_client.max_channels`),
+// and smb2.multichannel.generic.num_channels asserts the 33rd bind is
+// rejected with STATUS_INSUFFICIENT_RESOURCES.
+const MaxChannelsPerSession = 32
+
+// AddChannel registers a channel on the session, keyed by ConnID. Returns
+// true on success, false when the per-session channel cap would be exceeded.
+//
+// A replacement of an existing ConnID (which callers must not rely on per the
+// §3.3.5.5.2 language "server MUST return STATUS_REQUEST_NOT_ACCEPTED if the
+// connection is already bound to the session") does not count against the cap:
+// it's the same slot.
+//
+// The count-and-insert are held under channelsMu to keep the cap race-free
+// under concurrent binds — see smb2.multichannel.bugs.bug_15346.
+func (s *Session) AddChannel(c *Channel) bool {
 	if c == nil {
-		return
+		return false
 	}
 	if c.BoundAt.IsZero() {
 		c.BoundAt = time.Now()
 	}
-	s.channels.Store(c.ConnID, c)
+	s.channelsMu.Lock()
+	defer s.channelsMu.Unlock()
+	if _, replacing := s.channels[c.ConnID]; !replacing {
+		if len(s.channels) >= MaxChannelsPerSession {
+			return false
+		}
+	}
+	s.channels[c.ConnID] = c
+	return true
 }
 
 // GetChannel returns the channel for the given ConnID, or nil if none is
 // registered. Safe for concurrent use.
 func (s *Session) GetChannel(connID uint64) *Channel {
-	v, ok := s.channels.Load(connID)
-	if !ok {
-		return nil
-	}
-	return v.(*Channel)
+	s.channelsMu.RLock()
+	defer s.channelsMu.RUnlock()
+	return s.channels[connID]
 }
 
 // RemoveChannel unregisters a channel. Called when the TCP connection closes.
 func (s *Session) RemoveChannel(connID uint64) {
-	s.channels.Delete(connID)
+	s.channelsMu.Lock()
+	defer s.channelsMu.Unlock()
+	delete(s.channels, connID)
 }
 
 // ListChannels returns a snapshot of all channels currently bound to the
 // session. Used for break-notification fan-out in the lease/oplock layer.
 // Order is not guaranteed.
 func (s *Session) ListChannels() []*Channel {
-	var out []*Channel
-	s.channels.Range(func(_, v any) bool {
-		out = append(out, v.(*Channel))
-		return true
-	})
+	s.channelsMu.RLock()
+	defer s.channelsMu.RUnlock()
+	out := make([]*Channel, 0, len(s.channels))
+	for _, c := range s.channels {
+		out = append(out, c)
+	}
 	return out
+}
+
+// ChannelCount returns the current number of channels bound to the session.
+func (s *Session) ChannelCount() int {
+	s.channelsMu.RLock()
+	defer s.channelsMu.RUnlock()
+	return len(s.channels)
 }

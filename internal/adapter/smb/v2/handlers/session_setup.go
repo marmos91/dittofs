@@ -161,7 +161,7 @@ func (h *Handler) SessionSetup(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 
 	// Check if this is a continuation of pending authentication
 	if ctx.SessionID != 0 {
-		if _, ok := h.GetPendingAuth(ctx.SessionID); ok {
+		if _, ok := h.GetPendingAuth(ctx.SessionID, ctx.ConnID); ok {
 			return h.completeNTLMAuth(ctx, req.SecurityBuffer)
 		}
 
@@ -356,7 +356,7 @@ func (h *Handler) handleSessionBind(ctx *SMBHandlerContext, req *SessionSetupReq
 	// If a binding PendingAuth already exists for this session, this is
 	// the TYPE_3 of an in-flight bind — route to completeNTLMAuth, which
 	// branches on pending.IsBinding and calls completeSessionBind.
-	if pending, ok := h.GetPendingAuth(ctx.SessionID); ok && pending.IsBinding {
+	if pending, ok := h.GetPendingAuth(ctx.SessionID, ctx.ConnID); ok && pending.IsBinding {
 		return h.completeNTLMAuth(ctx, req.SecurityBuffer)
 	}
 
@@ -402,6 +402,7 @@ func (h *Handler) handleNTLMNegotiateBinding(ctx *SMBHandlerContext, req *Sessio
 
 	pending := &PendingAuth{
 		SessionID:        ctx.SessionID, // bound session's ID
+		ConnID:           ctx.ConnID,
 		ClientAddr:       ctx.ClientAddr,
 		CreatedAt:        time.Now(),
 		ServerChallenge:  serverChallenge,
@@ -541,7 +542,16 @@ func (h *Handler) completeSessionBind(
 		PreauthHash: preauthHash,
 		Transport:   ctx.ConnTransport,
 	}
-	sess.AddChannel(channel)
+	if !sess.AddChannel(channel) {
+		// MS-SMB2 §3.3.5.5.2: reject the bind once the per-session channel
+		// table is full. Windows/Samba cap at 32; see
+		// smb2.multichannel.generic.num_channels.
+		logger.Info("SESSION_SETUP bind rejected: channel cap reached",
+			"sessionID", pending.BindingSessionID,
+			"cap", session.MaxChannelsPerSession,
+			"connID", channel.ConnID)
+		return NewErrorResult(types.StatusInsufficientResources)
+	}
 
 	// Drop the binding preauth hash entry — it was scoped to the handshake
 	// and keeping it would corrupt any future handshake that reused the
@@ -629,6 +639,7 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool, m
 	// Include the server challenge for NTLMv2 validation in completeNTLMAuth
 	pending := &PendingAuth{
 		SessionID:       sessionID,
+		ConnID:          ctx.ConnID,
 		ClientAddr:      ctx.ClientAddr,
 		CreatedAt:       time.Now(),
 		ServerChallenge: serverChallenge,
@@ -685,14 +696,16 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool, m
 //  8. Cleaning up the pending authentication state
 func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte) (*HandlerResult, error) {
 	// Get and validate pending auth
-	pending, ok := h.GetPendingAuth(ctx.SessionID)
+	pending, ok := h.GetPendingAuth(ctx.SessionID, ctx.ConnID)
 	if !ok {
-		logger.Debug("No pending auth for session", "sessionID", ctx.SessionID)
+		logger.Debug("No pending auth for session",
+			"sessionID", ctx.SessionID,
+			"connID", ctx.ConnID)
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
 	// Remove pending auth (handshake complete)
-	h.DeletePendingAuth(ctx.SessionID)
+	h.DeletePendingAuth(ctx.SessionID, ctx.ConnID)
 
 	// Extract NTLM token (unwrap SPNEGO if needed)
 	ntlmToken, _, _ := extractNTLMToken(securityBuffer)

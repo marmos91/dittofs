@@ -1,6 +1,8 @@
 package session
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,5 +93,79 @@ func TestSession_AddChannel_ReplaceSameConnID(t *testing.T) {
 	}
 	if l := s.ListChannels(); len(l) != 1 {
 		t.Fatalf("ListChannels len=%d, want 1 after same-ConnID replacement", len(l))
+	}
+}
+
+// TestSession_AddChannel_CapReject verifies the per-session channel cap
+// (MS-SMB2 §3.3.5.5.2 / smb2.multichannel.generic.num_channels): channels 1..N
+// where N = MaxChannelsPerSession must succeed, channel N+1 must fail.
+func TestSession_AddChannel_CapReject(t *testing.T) {
+	s := NewSession(1, "", false, "", "")
+	for i := 0; i < MaxChannelsPerSession; i++ {
+		if !s.AddChannel(&Channel{ConnID: uint64(i + 1)}) {
+			t.Fatalf("AddChannel #%d rejected unexpectedly", i+1)
+		}
+	}
+	if s.AddChannel(&Channel{ConnID: uint64(MaxChannelsPerSession + 1)}) {
+		t.Fatalf("AddChannel past cap (%d) succeeded; must be rejected",
+			MaxChannelsPerSession)
+	}
+	if got := s.ChannelCount(); got != MaxChannelsPerSession {
+		t.Fatalf("ChannelCount=%d, want %d", got, MaxChannelsPerSession)
+	}
+
+	// Removing a slot must free capacity for a new channel.
+	s.RemoveChannel(1)
+	if !s.AddChannel(&Channel{ConnID: 999}) {
+		t.Fatalf("AddChannel after RemoveChannel rejected; cap slot should free")
+	}
+}
+
+// TestSession_AddChannel_ReplaceDoesNotCountAgainstCap verifies that updating
+// an already-registered ConnID does not consume an additional slot.
+func TestSession_AddChannel_ReplaceDoesNotCountAgainstCap(t *testing.T) {
+	s := NewSession(1, "", false, "", "")
+	for i := 0; i < MaxChannelsPerSession; i++ {
+		if !s.AddChannel(&Channel{ConnID: uint64(i + 1)}) {
+			t.Fatalf("AddChannel #%d rejected unexpectedly", i+1)
+		}
+	}
+	// Re-adding an existing ConnID with updated state must succeed even at cap.
+	if !s.AddChannel(&Channel{ConnID: 1, RemoteAddr: "updated"}) {
+		t.Fatal("replacing existing ConnID was rejected at cap; it should not count")
+	}
+	got := s.GetChannel(1)
+	if got == nil || got.RemoteAddr != "updated" {
+		t.Fatalf("replacement did not take effect: %+v", got)
+	}
+}
+
+// TestSession_AddChannel_ConcurrentCap stresses concurrent binds far in excess
+// of the cap and verifies exactly MaxChannelsPerSession succeed — guarding the
+// atomicity of the count-and-insert under concurrent AddChannel calls. A naive
+// sync.Map-backed registry with a "len() < cap then Store" sequence would
+// admit more than MaxChannelsPerSession under race.
+func TestSession_AddChannel_ConcurrentCap(t *testing.T) {
+	s := NewSession(1, "", false, "", "")
+
+	const totalAttempts = 200
+	var accepted atomic.Int64
+	var wg sync.WaitGroup
+	for i := 0; i < totalAttempts; i++ {
+		wg.Add(1)
+		go func(id uint64) {
+			defer wg.Done()
+			if s.AddChannel(&Channel{ConnID: id}) {
+				accepted.Add(1)
+			}
+		}(uint64(i + 1))
+	}
+	wg.Wait()
+
+	if got := accepted.Load(); got != int64(MaxChannelsPerSession) {
+		t.Fatalf("accepted=%d, want exactly %d", got, MaxChannelsPerSession)
+	}
+	if got := s.ChannelCount(); got != MaxChannelsPerSession {
+		t.Fatalf("ChannelCount=%d, want %d", got, MaxChannelsPerSession)
 	}
 }

@@ -112,7 +112,12 @@ type Session struct {
 	// session-level Signer via the dispatch fallback. All channels share
 	// the session key but each derives its own signing key. Access via
 	// AddChannel / GetChannel / RemoveChannel / ListChannels (channel.go).
-	channels sync.Map
+	//
+	// A plain map + RWMutex (rather than sync.Map) is used so the cap
+	// enforcement in AddChannel — "count < MaxChannelsPerSession, then
+	// insert" — is atomic under concurrent binds.
+	channelsMu sync.RWMutex
+	channels   map[uint64]*Channel
 }
 
 // Credits tracks credit accounting for a session.
@@ -149,6 +154,7 @@ func NewSession(sessionID uint64, clientAddr string, isGuest bool, username, dom
 		Domain:       domain,
 		CryptoState:  &SessionCryptoState{},
 		NewlyCreated: true,
+		channels:     make(map[uint64]*Channel),
 	}
 	s.credits.LastActivity.Store(time.Now().Unix())
 	return s
@@ -168,6 +174,7 @@ func NewSessionWithUser(sessionID uint64, clientAddr string, user *models.User, 
 		User:         user,
 		CryptoState:  &SessionCryptoState{},
 		NewlyCreated: true,
+		channels:     make(map[uint64]*Channel),
 	}
 	s.credits.LastActivity.Store(time.Now().Unix())
 	return s
