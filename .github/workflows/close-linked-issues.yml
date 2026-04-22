@@ -31,8 +31,10 @@ jobs:
 
           # Force-push (release rebase) leaves BEFORE as the old tip; the
           # range BEFORE..AFTER still enumerates every newly-reachable commit.
-          # On first push to a branch BEFORE is all zeros — fall back to AFTER alone.
-          if [[ "$BEFORE" =~ ^0+$ ]]; then
+          # On first push to a branch BEFORE is all zeros; after a force-push
+          # rebase BEFORE may be unreachable (old tip GC'd or not fetched).
+          # Fall back to walking AFTER alone in either case.
+          if [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "$BEFORE" 2>/dev/null; then
             RANGE="$AFTER"
           else
             RANGE="$BEFORE..$AFTER"
