@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/backup"
 	"github.com/marmos91/dittofs/pkg/backup/destination"
+	bkperrors "github.com/marmos91/dittofs/pkg/backup/errors"
 	"github.com/marmos91/dittofs/pkg/backup/manifest"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
@@ -248,6 +249,7 @@ func (e *Executor) RunRestore(ctx context.Context, p Params, opts ...RunRestoreO
 			finalJob.Status = models.BackupStatusInterrupted
 		}
 		finalJob.Error = err.Error()
+		finalJob.ErrorCode = string(bkperrors.Classify(err).Code)
 		if upErr := e.store.UpdateBackupJob(context.Background(), finalJob); upErr != nil {
 			logger.Warn("Failed to mark restore job terminal state",
 				"job_id", jobID, "intended_status", finalJob.Status, "update_error", upErr)

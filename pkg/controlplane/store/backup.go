@@ -197,6 +197,7 @@ func (s *GORMStore) UpdateBackupRecord(ctx context.Context, rec *models.BackupRe
 			"manifest_path": rec.ManifestPath,
 			"sha256":        rec.SHA256,
 			"error":         rec.Error,
+			"error_code":    rec.ErrorCode,
 		})
 	if result.Error != nil {
 		return result.Error
@@ -352,6 +353,7 @@ func (s *GORMStore) UpdateBackupJob(ctx context.Context, job *models.BackupJob) 
 			"started_at":       job.StartedAt,
 			"finished_at":      job.FinishedAt,
 			"error":            job.Error,
+			"error_code":       job.ErrorCode,
 			"progress":         job.Progress,
 			"backup_record_id": job.BackupRecordID,
 		})

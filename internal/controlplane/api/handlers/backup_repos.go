@@ -12,6 +12,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/backup/destination"
+	bkperrors "github.com/marmos91/dittofs/pkg/backup/errors"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
@@ -358,8 +359,19 @@ func (h *BackupHandler) purgeRepoArchives(ctx context.Context, repo *models.Back
 // response has been written. destFactory==nil skips the driver probe.
 func (h *BackupHandler) validateRepoDestination(w http.ResponseWriter, ctx context.Context, repo *models.BackupRepo) bool {
 	writeErr := func(op string, err error) bool {
+		var be *bkperrors.BackupError
+		if errors.As(err, &be) {
+			detail := err.Error()
+			if be.Err != nil {
+				detail = be.Err.Error()
+			}
+			status, title := statusForBackupCode(be.Code)
+			WriteBackupProblem(w, status, title, detail, be.Code, be.Hint)
+			return false
+		}
 		if errors.Is(err, destination.ErrIncompatibleConfig) {
-			UnprocessableEntity(w, err.Error())
+			WriteBackupProblem(w, http.StatusUnprocessableEntity, "Unprocessable Entity",
+				err.Error(), bkperrors.CodeDestinationConfigInvalid, "")
 			return false
 		}
 		logger.Error(op, "repo", repo.Name, "error", err)
@@ -405,8 +417,9 @@ func (h *BackupHandler) checkRepoDestinationCollision(ctx context.Context, repo 
 			return fmt.Errorf("compare destination with repo %q: %w", other.Name, err)
 		}
 		if collision {
-			return fmt.Errorf("%w: destination already used by repo %q",
-				destination.ErrIncompatibleConfig, other.Name)
+			return bkperrors.New(bkperrors.CodeDestinationPathConflict,
+				fmt.Errorf("%w: destination already used by repo %q",
+					destination.ErrIncompatibleConfig, other.Name))
 		}
 	}
 	return nil
