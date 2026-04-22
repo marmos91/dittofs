@@ -39,15 +39,14 @@ jobs:
           fi
 
           git log --format=%B "$RANGE" \
-            | grep -oiE '(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed))[[:space:]]+#[0-9]+' \
-            | grep -oE '#[0-9]+' \
+            | grep -oiE '(close[ds]?|fix(e[ds])?|resolve[ds]?)[[:space:]]+#[0-9]+' \
+            | grep -oE '[0-9]+' \
             | sort -u \
-            | while read -r ref; do
-                num="${ref#\#}"
+            | while read -r num; do
                 state=$(gh issue view "$num" --json state -q .state 2>/dev/null || echo "MISSING")
                 if [[ "$state" == "OPEN" ]]; then
                   echo "Closing #$num"
-                  gh issue close "$num" --comment "Closed by release commit on \`main\` (${GITHUB_SHA:0:7})." || true
+                  gh issue close "$num" --comment "Closed by release commit on \`main\` (${GITHUB_SHA:0:7})."
                 else
                   echo "Skipping #$num (state=$state)"
                 fi
