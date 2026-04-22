@@ -220,13 +220,17 @@ func (h *Handler) AuditSessionCleanup(sessionID uint64) int {
 		return true
 	})
 
-	// Check pending auth
-	if _, ok := h.pendingAuth.Load(sessionID); ok {
-		leaked++
-		logger.Warn("LEAKED pending auth after session cleanup",
-			"sessionID", sessionID,
-		)
-	}
+	// Check pending auth (any channel for this session)
+	h.pendingAuth.Range(func(k, _ any) bool {
+		if key, ok := k.(pendingAuthKey); ok && key.SessionID == sessionID {
+			leaked++
+			logger.Warn("LEAKED pending auth after session cleanup",
+				"sessionID", sessionID,
+				"connID", key.ConnID,
+			)
+		}
+		return true
+	})
 
 	// Check sessions in SessionManager
 	if _, ok := h.SessionManager.GetSession(sessionID); ok {

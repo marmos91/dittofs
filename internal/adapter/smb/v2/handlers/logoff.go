@@ -190,7 +190,7 @@ func (h *Handler) Logoff(ctx *SMBHandlerContext, req *LogoffRequest) (*LogoffRes
 	h.releaseSessionLeasesAndNotifies(ctx.Context, ctx.SessionID)
 
 	treesDeleted := h.DeleteAllTreesForSession(ctx.SessionID)
-	h.DeletePendingAuth(ctx.SessionID)
+	h.DeleteAllPendingAuthForSession(ctx.SessionID)
 
 	logger.Debug("Logoff: partial cleanup done",
 		"sessionID", ctx.SessionID,

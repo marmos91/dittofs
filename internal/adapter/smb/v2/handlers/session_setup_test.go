@@ -211,7 +211,7 @@ func TestSessionSetup(t *testing.T) {
 		}
 
 		// Pending auth should be stored
-		_, ok := h.GetPendingAuth(ctx.SessionID)
+		_, ok := h.GetPendingAuth(ctx.SessionID, ctx.ConnID)
 		if !ok {
 			t.Error("PendingAuth should be stored")
 		}
@@ -338,7 +338,7 @@ func TestSessionSetup_FullHandshake(t *testing.T) {
 		}
 
 		// Verify pending auth was removed
-		_, ok = h.GetPendingAuth(sessionID)
+		_, ok = h.GetPendingAuth(sessionID, ctx2.ConnID)
 		if ok {
 			t.Error("PendingAuth should be removed after AUTHENTICATE")
 		}

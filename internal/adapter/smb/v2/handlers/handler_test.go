@@ -197,13 +197,14 @@ func TestPendingAuthStorage(t *testing.T) {
 
 		pending := &PendingAuth{
 			SessionID:  1,
+			ConnID:     10,
 			ClientAddr: "127.0.0.1:12345",
 			CreatedAt:  time.Now(),
 		}
 
 		h.StorePendingAuth(pending)
 
-		retrieved, ok := h.GetPendingAuth(1)
+		retrieved, ok := h.GetPendingAuth(1, 10)
 		if !ok {
 			t.Fatal("PendingAuth not found")
 		}
@@ -219,7 +220,7 @@ func TestPendingAuthStorage(t *testing.T) {
 	t.Run("GetNonexistentPendingAuth", func(t *testing.T) {
 		h := NewHandler()
 
-		pending, ok := h.GetPendingAuth(99999)
+		pending, ok := h.GetPendingAuth(99999, 0)
 		if ok {
 			t.Error("Should not find nonexistent pending auth")
 		}
@@ -231,14 +232,63 @@ func TestPendingAuthStorage(t *testing.T) {
 	t.Run("DeletePendingAuth", func(t *testing.T) {
 		h := NewHandler()
 
-		pending := &PendingAuth{SessionID: 1}
+		pending := &PendingAuth{SessionID: 1, ConnID: 7}
 		h.StorePendingAuth(pending)
 
-		h.DeletePendingAuth(1)
+		h.DeletePendingAuth(1, 7)
 
-		_, ok := h.GetPendingAuth(1)
+		_, ok := h.GetPendingAuth(1, 7)
 		if ok {
 			t.Error("PendingAuth should be deleted")
+		}
+	})
+
+	t.Run("CompositeKey", func(t *testing.T) {
+		// Two connections binding to the same session must each get their own
+		// pending-auth slot. Keyed by (SessionID, ConnID) — see Samba bug 15346
+		// and smb2.multichannel.bugs.bug_15346.
+		h := NewHandler()
+
+		p1 := &PendingAuth{SessionID: 42, ConnID: 1, ServerChallenge: [8]byte{1, 1, 1, 1, 1, 1, 1, 1}}
+		p2 := &PendingAuth{SessionID: 42, ConnID: 2, ServerChallenge: [8]byte{2, 2, 2, 2, 2, 2, 2, 2}}
+		h.StorePendingAuth(p1)
+		h.StorePendingAuth(p2)
+
+		got1, ok1 := h.GetPendingAuth(42, 1)
+		got2, ok2 := h.GetPendingAuth(42, 2)
+		if !ok1 || !ok2 {
+			t.Fatal("both pending auths should exist")
+		}
+		if got1.ServerChallenge == got2.ServerChallenge {
+			t.Error("distinct ConnIDs must not share a ServerChallenge slot")
+		}
+
+		h.DeletePendingAuth(42, 1)
+		if _, ok := h.GetPendingAuth(42, 1); ok {
+			t.Error("(42,1) should be deleted")
+		}
+		if _, ok := h.GetPendingAuth(42, 2); !ok {
+			t.Error("(42,2) must survive deletion of (42,1)")
+		}
+	})
+
+	t.Run("DeleteAllPendingAuthForSession", func(t *testing.T) {
+		h := NewHandler()
+
+		h.StorePendingAuth(&PendingAuth{SessionID: 100, ConnID: 1})
+		h.StorePendingAuth(&PendingAuth{SessionID: 100, ConnID: 2})
+		h.StorePendingAuth(&PendingAuth{SessionID: 200, ConnID: 1})
+
+		h.DeleteAllPendingAuthForSession(100)
+
+		if _, ok := h.GetPendingAuth(100, 1); ok {
+			t.Error("(100,1) should be gone")
+		}
+		if _, ok := h.GetPendingAuth(100, 2); ok {
+			t.Error("(100,2) should be gone")
+		}
+		if _, ok := h.GetPendingAuth(200, 1); !ok {
+			t.Error("(200,1) must survive — different session")
 		}
 	})
 }
@@ -464,6 +514,7 @@ func TestConcurrentPendingAuthOperations(t *testing.T) {
 			defer wg.Done()
 			pending := &PendingAuth{
 				SessionID:  id,
+				ConnID:     id,
 				ClientAddr: "127.0.0.1:12345",
 				CreatedAt:  time.Now(),
 			}
@@ -471,7 +522,7 @@ func TestConcurrentPendingAuthOperations(t *testing.T) {
 
 			// Simulate auth completion
 			time.Sleep(time.Millisecond)
-			h.DeletePendingAuth(id)
+			h.DeletePendingAuth(id, id)
 		}(uint64(i))
 	}
 
@@ -569,10 +620,10 @@ func TestConcurrentMixedOperations(t *testing.T) {
 				return
 			default:
 				id := h.GenerateSessionID()
-				pending := &PendingAuth{SessionID: id}
+				pending := &PendingAuth{SessionID: id, ConnID: id}
 				h.StorePendingAuth(pending)
-				h.GetPendingAuth(id)
-				h.DeletePendingAuth(id)
+				h.GetPendingAuth(id, id)
+				h.DeletePendingAuth(id, id)
 			}
 		}
 	}()
