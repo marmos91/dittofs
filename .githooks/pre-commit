@@ -10,13 +10,13 @@ set -euo pipefail
 FAILED=0
 fail() { echo "$1" >&2; FAILED=1; }
 
-STAGED_GO=$(git diff --cached --name-only --diff-filter=d -- '*.go' || true)
-STAGED_SH=$(git diff --cached --name-only --diff-filter=d -- '*.sh' || true)
-STAGED_ALL=$(git diff --cached --name-only --diff-filter=d || true)
+STAGED_GO=$(git diff --cached --name-only --diff-filter=d -- '*.go')
+STAGED_SH=$(git diff --cached --name-only --diff-filter=d -- '*.sh')
+STAGED_ALL=$(git diff --cached --name-only --diff-filter=d)
 
 # 1. Conflict markers in any staged text file.
 if [ -z "${DITTOFS_SKIP_CONFLICT:-}" ] && [ -n "$STAGED_ALL" ]; then
-    if git diff --cached -U0 | grep -E '^\+(<<<<<<< |======= |>>>>>>> )' >/dev/null; then
+    if git diff --cached -U0 | grep -Eq '^\+(<<<<<<< |======= |>>>>>>> )'; then
         fail "conflict markers: staged content contains unresolved merge markers"
     fi
 fi
@@ -42,19 +42,17 @@ if [ -n "$STAGED_GO" ]; then
         fi
     fi
 
-    if [ -z "${DITTOFS_SKIP_VET:-}" ] && ! go vet ./... >&2; then
-        fail "go vet: issues found."
+    if [ -z "${DITTOFS_SKIP_VET:-}" ]; then
+        go vet ./... >&2 || fail "go vet: issues found."
     fi
 
-    if [ -z "${DITTOFS_SKIP_BUILD:-}" ] && ! go build ./... >&2; then
-        fail "go build: compile errors."
+    if [ -z "${DITTOFS_SKIP_BUILD:-}" ]; then
+        go build ./... >&2 || fail "go build: compile errors."
     fi
 
     if [ -z "${DITTOFS_SKIP_LINT:-}" ]; then
         if command -v golangci-lint >/dev/null 2>&1; then
-            if ! golangci-lint run >&2; then
-                fail "golangci-lint: issues found."
-            fi
+            golangci-lint run >&2 || fail "golangci-lint: issues found."
         else
             echo "golangci-lint: not installed, skipping (install for parity with CI)" >&2
         fi
@@ -62,9 +60,11 @@ if [ -n "$STAGED_GO" ]; then
 fi
 
 # 4. go.mod / go.sum drift — only when those files or any .go file are staged.
-if [ -z "${DITTOFS_SKIP_TIDY:-}" ] && { [ -n "$STAGED_GO" ] || echo "$STAGED_ALL" | grep -Eq '^go\.(mod|sum)$'; }; then
+if [ -z "${DITTOFS_SKIP_TIDY:-}" ] && { [ -n "$STAGED_GO" ] || grep -Eq '^go\.(mod|sum)$' <<< "$STAGED_ALL"; }; then
     TIDY_TMP=$(mktemp -d)
-    trap 'rm -rf "$TIDY_TMP"' EXIT
+    # Always restore the originals before cleaning up so Ctrl-C or a
+    # mid-tidy failure doesn't leave the working tree mutated.
+    trap '[ -f "$TIDY_TMP/go.mod" ] && cp "$TIDY_TMP/go.mod" "$TIDY_TMP/go.sum" ./; rm -rf "$TIDY_TMP"' EXIT
     cp go.mod go.sum "$TIDY_TMP/"
     if ! GOFLAGS=-mod=mod go mod tidy >&2 2>&1; then
         fail "go mod tidy: failed."
@@ -80,9 +80,7 @@ fi
 # 5. Shellcheck — matches CI's shellcheck-changes job.
 if [ -z "${DITTOFS_SKIP_SHELLCHECK:-}" ] && [ -n "$STAGED_SH" ]; then
     if command -v shellcheck >/dev/null 2>&1; then
-        if ! echo "$STAGED_SH" | xargs shellcheck --severity=warning >&2; then
-            fail "shellcheck: issues found."
-        fi
+        echo "$STAGED_SH" | xargs shellcheck --severity=warning >&2 || fail "shellcheck: issues found."
     else
         echo "shellcheck: not installed, skipping (CI will fail if you changed .sh files)" >&2
     fi

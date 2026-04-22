@@ -20,18 +20,13 @@ if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
 fi
 
 CHANGED_GO=$(git diff --name-only "$BASE_REF"...HEAD -- '*.go' 2>/dev/null || true)
-if [ -z "$CHANGED_GO" ]; then
-    exit 0
-fi
+[ -n "$CHANGED_GO" ] || exit 0
 
-# Map changed files → unique package dirs.
-PKGS=$(echo "$CHANGED_GO" | xargs -n1 dirname | sort -u | sed 's|^|./|')
-if [ -z "$PKGS" ]; then
-    exit 0
-fi
+# Map changed files → unique package dirs. Collect into an array so
+# paths with spaces survive.
+mapfile -t PKGS < <(echo "$CHANGED_GO" | xargs -n1 dirname | sort -u | sed 's|^|./|')
 
-# shellcheck disable=SC2086  # intentional word-splitting
-if ! go test -short -race -timeout=60s $PKGS; then
+if ! go test -short -race -timeout=60s "${PKGS[@]}"; then
     echo "" >&2
     echo "pre-push: tests failed on changed packages. 'git push --no-verify' skips." >&2
     exit 1
