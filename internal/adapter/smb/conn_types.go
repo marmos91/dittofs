@@ -1,6 +1,7 @@
 package smb
 
 import (
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -111,6 +112,28 @@ func (c *ConnInfo) TryReserveAsync() bool {
 func (c *ConnInfo) ReleaseAsync() {
 	c.asyncPendingCount.Add(-1)
 }
+
+// SendFrame implements session.ChannelTransport. It wraps plaintext in a
+// NetBIOS frame on this connection's TCP socket, optionally under an SMB3
+// Transform Header when the caller requests encryption and the connection
+// has a middleware with keys for sessionID.
+//
+// Used by the break notifier (MS-SMB2 §3.3.4.7) to deliver unsolicited lease
+// and oplock break notifications across every channel of a session. The
+// WriteMu coordinates with regular response writes on the same connection.
+func (c *ConnInfo) SendFrame(sessionID uint64, plaintext []byte, encrypt bool) error {
+	if encrypt && c.EncryptionMiddleware != nil {
+		encrypted, err := c.EncryptionMiddleware.EncryptResponse(sessionID, plaintext)
+		if err != nil {
+			return fmt.Errorf("encrypt outgoing frame: %w", err)
+		}
+		return WriteNetBIOSFrame(c.Conn, c.WriteMu, c.WriteTimeout, encrypted)
+	}
+	return WriteNetBIOSFrame(c.Conn, c.WriteMu, c.WriteTimeout, plaintext)
+}
+
+// Compile-time assertion that *ConnInfo satisfies session.ChannelTransport.
+var _ session.ChannelTransport = (*ConnInfo)(nil)
 
 // SessionTracker provides callbacks for session lifecycle tracking.
 // The Connection struct in pkg/ implements this interface so that

@@ -539,6 +539,7 @@ func (h *Handler) completeSessionBind(
 		SigningKey:  channelSigningKey,
 		Signer:      channelSigner,
 		PreauthHash: preauthHash,
+		Transport:   ctx.ConnTransport,
 	}
 	sess.AddChannel(channel)
 

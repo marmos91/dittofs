@@ -4,6 +4,7 @@ package handlers
 import (
 	"context"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
@@ -90,6 +91,13 @@ type SMBHandlerContext struct {
 	// verification through the channel's signing key. Populated from
 	// ConnInfo.ConnID by prepareDispatch.
 	ConnID uint64
+
+	// ConnTransport is the write-side adapter for the TCP connection that
+	// carries this request. Populated from ConnInfo by prepareDispatch. Used
+	// by completeSessionBind to attach the bound channel's transport so
+	// break notifications (MS-SMB2 §3.3.4.7) fan out to the secondary
+	// connection. Nil in unit tests that do not exercise break dispatch.
+	ConnTransport session.ChannelTransport
 
 	// SessionID from the request (0 before SESSION_SETUP completes)
 	SessionID uint64

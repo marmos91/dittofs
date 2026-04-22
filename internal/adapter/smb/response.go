@@ -224,6 +224,11 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 	// binding (MS-SMB2 §3.3.5.5.2) can key per-channel signing state.
 	handlerCtx.ConnID = connInfo.ConnID
 
+	// Thread the connection's transport so completeSessionBind can attach
+	// it to the newly-registered Channel, enabling break notifications
+	// (MS-SMB2 §3.3.4.7) to fan out across bound secondary channels.
+	handlerCtx.ConnTransport = connInfo
+
 	if cmd.NeedsSession && reqHeader.SessionID != 0 {
 		sess, ok := connInfo.Handler.GetSession(reqHeader.SessionID)
 		if !ok || sess.LoggedOff.Load() {
@@ -541,18 +546,21 @@ func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, preWri
 	if hdr.SessionID != 0 {
 		sess, ok := connInfo.Handler.GetSession(hdr.SessionID)
 		if ok {
-			// Per MS-SMB2 3.3.5.5.3 and 3.3.5.5.2: SESSION_SETUP SUCCESS
-			// responses MUST be signed and MUST NOT be encrypted, in all three
-			// cases: new session (client has no encryption keys yet), re-auth,
-			// and channel bind (client must validate Channel.SigningKey from the
-			// plaintext response before treating the channel as bound). Windows
-			// clients reject an encrypted bind SUCCESS with
-			// STATUS_INVALID_PARAMETER — see issue #361.
-			isSessionSetupSuccess := hdr.Command == types.SMB2SessionSetup && hdr.Status == types.StatusSuccess
+			// Per MS-SMB2 3.3.5.5.3 and 3.3.5.5.2: SESSION_SETUP responses
+			// MUST be signed and MUST NOT be encrypted, in all three cases:
+			// new session (client has no encryption keys yet), re-auth, and
+			// channel bind (client must validate Channel.SigningKey from the
+			// plaintext response before treating the channel as bound).
+			// Applies to both the final SUCCESS response AND interim
+			// STATUS_MORE_PROCESSING_REQUIRED challenges — the bind peer has
+			// no channel-scoped keys yet, so encrypting the challenge makes
+			// the client drop the connection with ACCESS_DENIED (#361).
+			isSessionSetup := hdr.Command == types.SMB2SessionSetup
+			isSessionSetupSuccess := isSessionSetup && hdr.Status == types.StatusSuccess
 			if isSessionSetupSuccess && sess.NewlyCreated {
 				sess.NewlyCreated = false // Clear so subsequent messages get encrypted
 			}
-			if sess.ShouldEncrypt() && connInfo.EncryptionMiddleware != nil && !isSessionSetupSuccess {
+			if sess.ShouldEncrypt() && connInfo.EncryptionMiddleware != nil && !isSessionSetup {
 				// Run pre-write hook on the PLAINTEXT bytes — the preauth chain
 				// hashes plaintext on both sides, not the encrypted wire form.
 				if preWrite != nil {
