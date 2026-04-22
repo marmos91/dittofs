@@ -40,16 +40,25 @@ jobs:
             RANGE="$BEFORE..$AFTER"
           fi
 
-          git log --format=%B "$RANGE" \
+          # Capture into a variable so grep exiting 1 on "no matches" (the
+          # common case for releases with no closing keywords) does not
+          # abort the pipeline under `set -o pipefail`.
+          issues=$(git log --format=%B "$RANGE" \
             | grep -oiE '(close[ds]?|fix(e[ds])?|resolve[ds]?)[[:space:]]+#[0-9]+' \
             | grep -oE '[0-9]+' \
-            | sort -u \
-            | while read -r num; do
-                state=$(gh issue view "$num" --json state -q .state 2>/dev/null || echo "MISSING")
-                if [[ "$state" == "OPEN" ]]; then
-                  echo "Closing #$num"
-                  gh issue close "$num" --comment "Closed by release commit on \`main\` (${GITHUB_SHA:0:7})."
-                else
-                  echo "Skipping #$num (state=$state)"
-                fi
-              done
+            | sort -u || true)
+
+          if [ -z "$issues" ]; then
+            echo "No closing keywords in $RANGE"
+            exit 0
+          fi
+
+          while read -r num; do
+            state=$(gh issue view "$num" --json state -q .state 2>/dev/null || echo "MISSING")
+            if [[ "$state" == "OPEN" ]]; then
+              echo "Closing #$num"
+              gh issue close "$num" --comment "Closed by release commit on \`main\` (${GITHUB_SHA:0:7})."
+            else
+              echo "Skipping #$num (state=$state)"
+            fi
+          done <<< "$issues"
