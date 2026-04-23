@@ -1,4 +1,4 @@
-package sync
+package engine
 
 import (
 	"context"
@@ -14,16 +14,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
 )
 
-// parseStoreKeyBlockIdx extracts the block index from a store key for a known payloadID.
-// Delegates to blockstore.ParseStoreKey, verifying the key belongs to the expected file.
-func parseStoreKeyBlockIdx(storeKey, payloadID string) (uint64, bool) {
-	pid, blockIdx, ok := blockstore.ParseStoreKey(storeKey)
-	if !ok || pid != payloadID {
-		return 0, false
-	}
-	return blockIdx, true
-}
-
 // defaultShutdownTimeout is the maximum time to wait for the transfer queue
 // to finish processing during graceful shutdown.
 const defaultShutdownTimeout = 30 * time.Second
@@ -37,20 +27,13 @@ type fetchResult struct {
 	mu   gosync.Mutex  // Protects err during write
 }
 
-// FinalizationCallback is called when all blocks for a file have been uploaded.
-// It receives the payloadID and a list of block hashes for computing the final object hash.
-type FinalizationCallback func(ctx context.Context, payloadID string, blockHashes [][32]byte)
-
 // Syncer handles async local-to-remote transfers with eager upload,
 // parallel download, prefetch, in-flight dedup, and content-addressed dedup.
 type Syncer struct {
 	local          local.LocalStore
 	remoteStore    remote.RemoteStore
 	fileBlockStore blockstore.FileBlockStore // Required: enables content-addressed deduplication
-	config         Config
-
-	// Finalization callback - called when all blocks for a file are uploaded
-	onFinalized FinalizationCallback
+	config         SyncerConfig
 
 	queue *SyncQueue // Transfer queue for non-blocking operations
 
@@ -71,8 +54,8 @@ type Syncer struct {
 	offlineReadsBlocked atomic.Int64 // Count of read operations blocked by remote unavailability
 }
 
-// New creates a new Syncer. The fileBlockStore is required for content-addressed dedup.
-func New(local local.LocalStore, remoteStore remote.RemoteStore, fileBlockStore blockstore.FileBlockStore, config Config) *Syncer {
+// NewSyncer creates a new Syncer. The fileBlockStore is required for content-addressed dedup.
+func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlockStore blockstore.FileBlockStore, config SyncerConfig) *Syncer {
 	if fileBlockStore == nil {
 		panic("fileBlockStore is required for Syncer")
 	}
@@ -105,13 +88,6 @@ func New(local local.LocalStore, remoteStore remote.RemoteStore, fileBlockStore 
 
 // Queue returns the transfer queue for stats inspection.
 func (m *Syncer) Queue() *SyncQueue { return m.queue }
-
-// SetFinalizationCallback sets the callback invoked when all blocks for a file are uploaded.
-func (m *Syncer) SetFinalizationCallback(fn FinalizationCallback) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.onFinalized = fn
-}
 
 // SetHealthCallback sets the callback invoked when the remote store health state changes.
 // If the HealthMonitor is already running, the callback is forwarded to it immediately.
@@ -251,8 +227,8 @@ func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, err
 
 	var maxBlockIdx uint64
 	for _, bk := range blocks {
-		blockIdx, ok := parseStoreKeyBlockIdx(bk, payloadID)
-		if !ok {
+		pid, blockIdx, ok := blockstore.ParseStoreKey(bk)
+		if !ok || pid != payloadID {
 			continue
 		}
 		if blockIdx > maxBlockIdx {
@@ -325,8 +301,8 @@ func (m *Syncer) Truncate(ctx context.Context, payloadID string, newSize uint64)
 	}
 
 	for _, bk := range blocks {
-		blockIdx, ok := parseStoreKeyBlockIdx(bk, payloadID)
-		if !ok {
+		pid, blockIdx, ok := blockstore.ParseStoreKey(bk)
+		if !ok || pid != payloadID {
 			continue
 		}
 		if blockIdx > keepBlockIdx {

@@ -39,19 +39,6 @@ type WriteOperation struct {
 	// PreWriteAttr contains the file attributes before the write
 	// Used for protocol responses (e.g., NFS WCC data)
 	PreWriteAttr *FileAttr
-
-	// IsCOW indicates this write triggered copy-on-write for a hard-linked file.
-	// When true, PayloadID is a newly generated ID (not the original file's PayloadID).
-	IsCOW bool
-
-	// COWSourcePayloadID is the original PayloadID to copy unmodified blocks from.
-	// Only set when IsCOW is true.
-	COWSourcePayloadID PayloadID
-
-	// OldObjectID is the original ObjectID before COW was triggered.
-	// Used for decrementing reference counts.
-	// Only set when IsCOW is true.
-	OldObjectID ContentHash
 }
 
 // ReadMetadata contains metadata returned by PrepareRead.
@@ -165,12 +152,6 @@ func (s *MetadataService) PrepareWrite(ctx *AuthContext, handle FileHandle, newS
 	// Make a copy of current attributes for PreWriteAttr
 	preWriteAttr := CopyFileAttr(&file.FileAttr)
 
-	// Detect COW trigger: hard-linked file with finalized content
-	// When a file has multiple hard links (Nlink > 1) and has finalized content
-	// (ObjectID is set), writing to it requires copy-on-write semantics to
-	// ensure other hard links continue to see the original content.
-	needsCOW := file.Nlink > 1 && !file.ObjectID.IsZero()
-
 	// Determine mtime: reuse the frozen mtime from existing write session
 	// (if any) to ensure all WRITE responses return identical timestamps.
 	// This prevents NFS client page cache invalidation — the Linux NFS client
@@ -189,17 +170,6 @@ func (s *MetadataService) PrepareWrite(ctx *AuthContext, handle FileHandle, newS
 		NewMtime:     newMtime,
 		PayloadID:    file.PayloadID,
 		PreWriteAttr: preWriteAttr,
-	}
-
-	if needsCOW {
-		// Generate new PayloadID for this file's private copy
-		// Format: {originalPayloadID}-cow-{shortUUID}
-		newPayloadID := PayloadID(string(file.PayloadID) + "-cow-" + uuid.New().String()[:8])
-
-		writeOp.PayloadID = newPayloadID
-		writeOp.IsCOW = true
-		writeOp.COWSourcePayloadID = file.PayloadID
-		writeOp.OldObjectID = file.ObjectID
 	}
 
 	return writeOp, nil
@@ -231,15 +201,6 @@ func (s *MetadataService) CommitWrite(ctx *AuthContext, intent *WriteOperation) 
 		return s.deferredCommitWrite(ctx, intent)
 	}
 	return s.immediateCommitWrite(ctx, intent)
-}
-
-// applyCOWState updates file attributes for copy-on-write operations.
-// When a hard-linked file is written to, it gets a new PayloadID and tracks
-// the original PayloadID as the COW source for lazy copying of unmodified blocks.
-func applyCOWState(attr *FileAttr, payloadID PayloadID, cowSource PayloadID) {
-	attr.PayloadID = payloadID
-	attr.COWSourcePayloadID = cowSource
-	attr.ObjectID = ContentHash{} // Clear - file is no longer finalized
 }
 
 // deferredCommitWrite records the write in pending state without touching the store.
@@ -296,10 +257,6 @@ func (s *MetadataService) deferredCommitWrite(ctx *AuthContext, intent *WriteOpe
 		resultAttr.Mode &= ^uint32(0o6000)
 	}
 
-	if state.IsCOW {
-		applyCOWState(&resultAttr, state.PayloadID, state.COWSourcePayloadID)
-	}
-
 	// Extract share name and ID from handle for File struct
 	shareName, id, err := DecodeFileHandle(intent.Handle)
 	if err != nil {
@@ -348,10 +305,6 @@ func (s *MetadataService) immediateCommitWrite(ctx *AuthContext, intent *WriteOp
 
 		// Apply metadata changes
 		now := time.Now()
-
-		if intent.IsCOW {
-			applyCOWState(&file.FileAttr, intent.PayloadID, intent.COWSourcePayloadID)
-		}
 
 		// Use max(current_size, new_size) to handle concurrent writes completing out of order
 		// This prevents a write at an earlier offset from shrinking the file
@@ -427,7 +380,7 @@ func (s *MetadataService) FlushPendingWriteForFile(ctx *AuthContext, handle File
 	// SetCachedFile creates PendingWriteState entries with only CachedFile set
 	// (MaxSize=0, LastMtime=zero) for fast-path PrepareWrite. Flushing these
 	// would be a no-op at best, or could overwrite valid timestamps at worst.
-	hasWriteData := state.MaxSize > 0 || !state.LastMtime.IsZero() || state.ClearSetuidSetgid || state.IsCOW
+	hasWriteData := state.MaxSize > 0 || !state.LastMtime.IsZero() || state.ClearSetuidSetgid
 	if !hasWriteData {
 		// Re-cache without flushing
 		if state.CachedFile != nil {
@@ -461,10 +414,6 @@ func (s *MetadataService) flushPendingWrite(ctx *AuthContext, handle FileHandle,
 		file, err := tx.GetFile(ctx.Context, handle)
 		if err != nil {
 			return err
-		}
-
-		if state.IsCOW {
-			applyCOWState(&file.FileAttr, state.PayloadID, state.COWSourcePayloadID)
 		}
 
 		// Apply pending changes

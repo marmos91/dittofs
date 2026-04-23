@@ -1,18 +1,12 @@
-package sync
+package engine
 
 import (
 	"errors"
 	"time"
-
-	"github.com/marmos91/dittofs/pkg/blockstore"
 )
 
 // ErrClosed is returned when an operation is attempted on a closed Syncer.
 var ErrClosed = errors.New("syncer is closed")
-
-// BlockSize is the size of a single block (8MB).
-// Re-exported from blockstore package for convenience.
-const BlockSize = blockstore.BlockSize
 
 // DefaultParallelUploads is the default number of concurrent uploads.
 // At ~8 MB/s per S3 connection, 16 connections yields ~128 MB/s upload bandwidth.
@@ -53,7 +47,7 @@ func (t TransferType) String() string {
 }
 
 // Config holds configuration for the Syncer.
-type Config struct {
+type SyncerConfig struct {
 	ParallelUploads    int           // Concurrent block uploads (default: 16)
 	ParallelDownloads  int           // Concurrent block downloads per file (default: 32)
 	PrefetchBlocks     int           // Blocks to prefetch ahead of reads; 0 = disabled (default: 64)
@@ -68,8 +62,8 @@ type Config struct {
 }
 
 // DefaultConfig returns the default Syncer configuration tuned for S3 performance.
-func DefaultConfig() Config {
-	return Config{
+func DefaultConfig() SyncerConfig {
+	return SyncerConfig{
 		ParallelUploads:             DefaultParallelUploads,
 		ParallelDownloads:           DefaultParallelDownloads,
 		PrefetchBlocks:              DefaultPrefetchBlocks,

@@ -1,4 +1,4 @@
-package readbuffer
+package engine
 
 import (
 	"container/list"
@@ -37,9 +37,9 @@ type ReadBuffer struct {
 	prefetcher *Prefetcher // optional sequential prefetcher
 }
 
-// New creates a new ReadBuffer with the given memory budget in bytes.
+// NewReadBuffer creates a new ReadBuffer with the given memory budget in bytes.
 // Returns nil if maxBytes <= 0 (disabled mode).
-func New(maxBytes int64) *ReadBuffer {
+func NewReadBuffer(maxBytes int64) *ReadBuffer {
 	if maxBytes <= 0 {
 		return nil
 	}
@@ -236,8 +236,8 @@ func (c *ReadBuffer) MaxBytes() int64 {
 	return c.maxBytes
 }
 
-// Stats holds read buffer statistics.
-type Stats struct {
+// CacheStats holds read buffer statistics.
+type CacheStats struct {
 	Entries  int   `json:"entries"`   // Number of buffered blocks
 	CurBytes int64 `json:"cur_bytes"` // Current memory usage in bytes
 	MaxBytes int64 `json:"max_bytes"` // Memory budget in bytes
@@ -245,13 +245,13 @@ type Stats struct {
 
 // Stats returns a snapshot of read buffer statistics.
 // Returns zero-value stats if the read buffer is nil (disabled).
-func (c *ReadBuffer) Stats() Stats {
+func (c *ReadBuffer) Stats() CacheStats {
 	if c == nil {
-		return Stats{}
+		return CacheStats{}
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return Stats{
+	return CacheStats{
 		Entries:  len(c.entries),
 		CurBytes: c.curBytes,
 		MaxBytes: c.maxBytes,

@@ -57,9 +57,6 @@ type Reader interface {
 	// ReadAt reads data from storage at the given offset into dest.
 	ReadAt(ctx context.Context, payloadID string, data []byte, offset uint64) (int, error)
 
-	// ReadAtWithCOWSource reads data with copy-on-write source fallback.
-	ReadAtWithCOWSource(ctx context.Context, payloadID, cowSource string, data []byte, offset uint64) (int, error)
-
 	// GetSize returns the stored size of a payload.
 	GetSize(ctx context.Context, payloadID string) (uint64, error)
 

@@ -1,4 +1,4 @@
-package sync
+package engine
 
 import (
 	"context"
@@ -21,7 +21,7 @@ func newNilRemoteStoreEnv(t *testing.T) (*Syncer, local.LocalStore, func()) {
 		t.Fatalf("fs.New() error = %v", err)
 	}
 	// nil remoteStore = local-only mode
-	m := New(bc, nil, ms, DefaultConfig())
+	m := NewSyncer(bc, nil, ms, DefaultConfig())
 	return m, bc, func() {
 		_ = m.Close()
 	}

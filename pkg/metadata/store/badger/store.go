@@ -105,10 +105,9 @@ type BadgerMetadataStore struct {
 	// a fresh directory with a fresh ULID; read thereafter. Immutable for
 	// the life of the instance.
 	//
-	// Used by Phase 5 restore's D-06 store-identity gate (Pitfall #4) so a
-	// control-plane DB reset (which rotates cfg.ID) does NOT cause the
-	// engine to report a different identity — the ULID persists with the
-	// Badger data directory itself.
+	// Persisting the ULID with the Badger data directory means a control-plane
+	// DB reset (which rotates cfg.ID) does NOT cause the engine to report a
+	// different identity.
 	storeID string
 }
 
@@ -224,9 +223,9 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		return nil, fmt.Errorf("failed to open BadgerDB at %s: %w", config.DBPath, err)
 	}
 
-	// Phase 5 D-06: bootstrap the engine-persistent store_id before
-	// serving requests. ensureStoreID is idempotent — first open writes a
-	// fresh ULID, subsequent opens read the existing value.
+	// Bootstrap the engine-persistent store_id before serving requests.
+	// ensureStoreID is idempotent — first open writes a fresh ULID,
+	// subsequent opens read the existing value.
 	sid, err := ensureStoreID(db)
 	if err != nil {
 		_ = db.Close()
@@ -269,12 +268,6 @@ const storeIDKey = prefixConfig + "store_id"
 // ensureStoreID reads the persistent engine store_id from the cfg:store_id
 // key, creating it with a fresh ULID on first open. Safe to call on every
 // open — idempotent after bootstrap.
-//
-// See Phase 5 CONTEXT.md D-06 and Pitfall #4 for the invariant this upholds
-// (cross-store restore contamination gate). The key is intentionally written
-// outside the allBackupPrefixes list so a Backup archive does NOT carry the
-// source store's store_id into a Restore receiver — the receiver's ID
-// always wins, enforced by the re-anchor in Restore below.
 func ensureStoreID(db *badger.DB) (string, error) {
 	var existing string
 	err := db.View(func(txn *badger.Txn) error {
@@ -471,11 +464,7 @@ func (s *BadgerMetadataStore) Close() error {
 // cfg:store_id). Stable across restarts — the ULID is written once on first
 // open of a fresh directory and read on every subsequent open. Immutable
 // for the life of the instance.
-//
-// Used by Phase 5 restore's D-06 store-identity gate (Pitfall #4).
 func (s *BadgerMetadataStore) GetStoreID() string { return s.storeID }
 
-// Compile-time assertion: the Badger engine exposes GetStoreID so the
-// Phase 5 restore orchestrator can fetch the engine-persistent ID via a
-// type assertion (see pkg/controlplane/runtime/storebackups/target.go).
+// Compile-time assertion: the Badger engine exposes GetStoreID.
 var _ interface{ GetStoreID() string } = (*BadgerMetadataStore)(nil)

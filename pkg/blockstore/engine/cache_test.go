@@ -1,4 +1,4 @@
-package readbuffer
+package engine
 
 import (
 	"context"
@@ -24,17 +24,17 @@ func makeData(size int, fill byte) []byte {
 // --- New ---
 
 func TestReadBuffer_New_ZeroDisabled(t *testing.T) {
-	c := New(0)
+	c := NewReadBuffer(0)
 	assert.Nil(t, c, "New(0) should return nil (disabled mode)")
 }
 
 func TestReadBuffer_New_NegativeDisabled(t *testing.T) {
-	c := New(-1)
+	c := NewReadBuffer(-1)
 	assert.Nil(t, c, "New(-1) should return nil")
 }
 
 func TestReadBuffer_New_Positive(t *testing.T) {
-	c := New(testBlockSize * 2)
+	c := NewReadBuffer(testBlockSize * 2)
 	require.NotNil(t, c, "New with positive value should return non-nil")
 	assert.Equal(t, int64(testBlockSize*2), c.maxBytes)
 	c.Close()
@@ -43,7 +43,7 @@ func TestReadBuffer_New_Positive(t *testing.T) {
 // --- Put and Get ---
 
 func TestReadBuffer_PutAndGet_Hit(t *testing.T) {
-	c := New(testBlockSize * 4)
+	c := NewReadBuffer(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -58,7 +58,7 @@ func TestReadBuffer_PutAndGet_Hit(t *testing.T) {
 }
 
 func TestReadBuffer_Get_Miss(t *testing.T) {
-	c := New(testBlockSize * 4)
+	c := NewReadBuffer(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -69,7 +69,7 @@ func TestReadBuffer_Get_Miss(t *testing.T) {
 }
 
 func TestReadBuffer_Get_CopyOnRead(t *testing.T) {
-	c := New(testBlockSize * 4)
+	c := NewReadBuffer(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -93,7 +93,7 @@ func TestReadBuffer_Get_CopyOnRead(t *testing.T) {
 }
 
 func TestReadBuffer_Get_WithOffset(t *testing.T) {
-	c := New(testBlockSize * 4)
+	c := NewReadBuffer(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -111,7 +111,7 @@ func TestReadBuffer_Get_WithOffset(t *testing.T) {
 }
 
 func TestReadBuffer_Get_OffsetBeyondData(t *testing.T) {
-	c := New(testBlockSize * 4)
+	c := NewReadBuffer(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -131,7 +131,7 @@ func TestReadBuffer_Get_OffsetBeyondData(t *testing.T) {
 // --- Put update existing ---
 
 func TestReadBuffer_Put_UpdateExisting(t *testing.T) {
-	c := New(testBlockSize * 4)
+	c := NewReadBuffer(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -152,7 +152,7 @@ func TestReadBuffer_Put_UpdateExisting(t *testing.T) {
 
 func TestReadBuffer_Put_EvictsLRU(t *testing.T) {
 	// Budget for exactly 2 blocks
-	c := New(int64(testBlockSize * 2))
+	c := NewReadBuffer(int64(testBlockSize * 2))
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -180,7 +180,7 @@ func TestReadBuffer_Put_EvictsLRU(t *testing.T) {
 func TestReadBuffer_Put_EvictsMultiple(t *testing.T) {
 	// Budget for exactly 2 small blocks (256 bytes each)
 	smallSize := 256
-	c := New(int64(smallSize * 2))
+	c := NewReadBuffer(int64(smallSize * 2))
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -204,7 +204,7 @@ func TestReadBuffer_Put_EvictsMultiple(t *testing.T) {
 
 func TestReadBuffer_Put_SkipsOversizedEntry(t *testing.T) {
 	// Budget smaller than a single block
-	c := New(100)
+	c := NewReadBuffer(100)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -221,7 +221,7 @@ func TestReadBuffer_Put_SkipsOversizedEntry(t *testing.T) {
 // --- LRU Promotion ---
 
 func TestReadBuffer_LRU_Promotion(t *testing.T) {
-	c := New(int64(testBlockSize * 2))
+	c := NewReadBuffer(int64(testBlockSize * 2))
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -251,7 +251,7 @@ func TestReadBuffer_LRU_Promotion(t *testing.T) {
 // --- Invalidate ---
 
 func TestReadBuffer_Invalidate_Existing(t *testing.T) {
-	c := New(testBlockSize * 4)
+	c := NewReadBuffer(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -264,7 +264,7 @@ func TestReadBuffer_Invalidate_Existing(t *testing.T) {
 }
 
 func TestReadBuffer_Invalidate_Missing(t *testing.T) {
-	c := New(testBlockSize * 4)
+	c := NewReadBuffer(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -275,7 +275,7 @@ func TestReadBuffer_Invalidate_Missing(t *testing.T) {
 // --- InvalidateFile ---
 
 func TestReadBuffer_InvalidateFile_RemovesAll(t *testing.T) {
-	c := New(testBlockSize * 8)
+	c := NewReadBuffer(testBlockSize * 8)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -293,7 +293,7 @@ func TestReadBuffer_InvalidateFile_RemovesAll(t *testing.T) {
 }
 
 func TestReadBuffer_InvalidateFile_EmptyIndex(t *testing.T) {
-	c := New(testBlockSize * 4)
+	c := NewReadBuffer(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -302,7 +302,7 @@ func TestReadBuffer_InvalidateFile_EmptyIndex(t *testing.T) {
 }
 
 func TestReadBuffer_InvalidateFile_OnlyTargetFile(t *testing.T) {
-	c := New(testBlockSize * 8)
+	c := NewReadBuffer(testBlockSize * 8)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -322,7 +322,7 @@ func TestReadBuffer_InvalidateFile_OnlyTargetFile(t *testing.T) {
 // --- InvalidateAbove ---
 
 func TestReadBuffer_InvalidateAbove_RemovesHighBlocks(t *testing.T) {
-	c := New(testBlockSize * 16)
+	c := NewReadBuffer(testBlockSize * 16)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -344,7 +344,7 @@ func TestReadBuffer_InvalidateAbove_RemovesHighBlocks(t *testing.T) {
 }
 
 func TestReadBuffer_InvalidateAbove_NoMatch(t *testing.T) {
-	c := New(testBlockSize * 4)
+	c := NewReadBuffer(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -355,7 +355,7 @@ func TestReadBuffer_InvalidateAbove_NoMatch(t *testing.T) {
 // --- Contains ---
 
 func TestReadBuffer_Contains_Hit(t *testing.T) {
-	c := New(testBlockSize * 4)
+	c := NewReadBuffer(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -364,7 +364,7 @@ func TestReadBuffer_Contains_Hit(t *testing.T) {
 }
 
 func TestReadBuffer_Contains_Miss(t *testing.T) {
-	c := New(testBlockSize * 4)
+	c := NewReadBuffer(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -374,7 +374,7 @@ func TestReadBuffer_Contains_Miss(t *testing.T) {
 // --- Close ---
 
 func TestReadBuffer_Close_ClearsAll(t *testing.T) {
-	c := New(testBlockSize * 4)
+	c := NewReadBuffer(testBlockSize * 4)
 	require.NotNil(t, c)
 
 	c.Put("f", 0, makeData(testBlockSize, 0xAA), uint32(testBlockSize))
@@ -388,7 +388,7 @@ func TestReadBuffer_Close_ClearsAll(t *testing.T) {
 // --- Concurrency ---
 
 func TestReadBuffer_Concurrency_ReadWrite(t *testing.T) {
-	c := New(testBlockSize * 8)
+	c := NewReadBuffer(testBlockSize * 8)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -420,7 +420,7 @@ func TestReadBuffer_Concurrency_ReadWrite(t *testing.T) {
 // --- InvalidateRange ---
 
 func TestReadBuffer_InvalidateRange_SingleBlock(t *testing.T) {
-	c := New(testBlockSize * 8)
+	c := NewReadBuffer(testBlockSize * 8)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -439,7 +439,7 @@ func TestReadBuffer_InvalidateRange_SingleBlock(t *testing.T) {
 }
 
 func TestReadBuffer_InvalidateRange_SpansMultipleBlocks(t *testing.T) {
-	c := New(testBlockSize * 8)
+	c := NewReadBuffer(testBlockSize * 8)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -459,7 +459,7 @@ func TestReadBuffer_InvalidateRange_SpansMultipleBlocks(t *testing.T) {
 }
 
 func TestReadBuffer_InvalidateRange_ZeroLength(t *testing.T) {
-	c := New(testBlockSize * 4)
+	c := NewReadBuffer(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -480,7 +480,7 @@ func TestReadBuffer_InvalidateRange_NilSafe(t *testing.T) {
 // --- NotifyRead ---
 
 func TestReadBuffer_NotifyRead_ZeroLength(t *testing.T) {
-	c := New(testBlockSize * 4)
+	c := NewReadBuffer(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -495,7 +495,7 @@ func TestReadBuffer_NotifyRead_NilSafe(t *testing.T) {
 }
 
 func TestReadBuffer_NotifyRead_NoPrefetcher(t *testing.T) {
-	c := New(testBlockSize * 4)
+	c := NewReadBuffer(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -506,7 +506,7 @@ func TestReadBuffer_NotifyRead_NoPrefetcher(t *testing.T) {
 // --- FillFromStore ---
 
 func TestReadBuffer_FillFromStore_PopulatesBuffer(t *testing.T) {
-	c := New(testBlockSize * 8)
+	c := NewReadBuffer(testBlockSize * 8)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -525,7 +525,7 @@ func TestReadBuffer_FillFromStore_PopulatesBuffer(t *testing.T) {
 }
 
 func TestReadBuffer_FillFromStore_SkipsExisting(t *testing.T) {
-	c := New(testBlockSize * 8)
+	c := NewReadBuffer(testBlockSize * 8)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -554,7 +554,7 @@ func TestReadBuffer_FillFromStore_SkipsExisting(t *testing.T) {
 }
 
 func TestReadBuffer_FillFromStore_HandlesLoaderError(t *testing.T) {
-	c := New(testBlockSize * 8)
+	c := NewReadBuffer(testBlockSize * 8)
 	require.NotNil(t, c)
 	defer c.Close()
 
@@ -573,7 +573,7 @@ func TestReadBuffer_FillFromStore_HandlesLoaderError(t *testing.T) {
 }
 
 func TestReadBuffer_FillFromStore_ZeroLength(t *testing.T) {
-	c := New(testBlockSize * 4)
+	c := NewReadBuffer(testBlockSize * 4)
 	require.NotNil(t, c)
 	defer c.Close()
 

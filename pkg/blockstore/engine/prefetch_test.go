@@ -1,4 +1,4 @@
-package readbuffer
+package engine
 
 import (
 	"context"
@@ -79,7 +79,7 @@ func (lt *loadTracker) waitForCalls(n int, timeout time.Duration) bool {
 // --- OnRead: First read ---
 
 func TestPrefetch_OnRead_FirstRead(t *testing.T) {
-	buf := New(testBlockSize * 32)
+	buf := NewReadBuffer(testBlockSize * 32)
 	require.NotNil(t, buf)
 	defer buf.Close()
 
@@ -99,7 +99,7 @@ func TestPrefetch_OnRead_FirstRead(t *testing.T) {
 // --- OnRead: Sequential but below threshold ---
 
 func TestPrefetch_OnRead_Sequential(t *testing.T) {
-	buf := New(testBlockSize * 32)
+	buf := NewReadBuffer(testBlockSize * 32)
 	require.NotNil(t, buf)
 	defer buf.Close()
 
@@ -119,7 +119,7 @@ func TestPrefetch_OnRead_Sequential(t *testing.T) {
 // --- OnRead: Threshold trigger ---
 
 func TestPrefetch_OnRead_ThresholdTrigger(t *testing.T) {
-	buf := New(testBlockSize * 32)
+	buf := NewReadBuffer(testBlockSize * 32)
 	require.NotNil(t, buf)
 	defer buf.Close()
 
@@ -143,7 +143,7 @@ func TestPrefetch_OnRead_ThresholdTrigger(t *testing.T) {
 // --- OnRead: Adaptive depth ---
 
 func TestPrefetch_OnRead_AdaptiveDepth(t *testing.T) {
-	buf := New(testBlockSize * 64)
+	buf := NewReadBuffer(testBlockSize * 64)
 	require.NotNil(t, buf)
 	defer buf.Close()
 
@@ -178,7 +178,7 @@ func TestPrefetch_OnRead_AdaptiveDepth(t *testing.T) {
 // --- OnRead: Max depth ---
 
 func TestPrefetch_OnRead_MaxDepth(t *testing.T) {
-	buf := New(testBlockSize * 64)
+	buf := NewReadBuffer(testBlockSize * 64)
 	require.NotNil(t, buf)
 	defer buf.Close()
 
@@ -207,7 +207,7 @@ func TestPrefetch_OnRead_MaxDepth(t *testing.T) {
 // --- OnRead: Non-sequential reset ---
 
 func TestPrefetch_OnRead_NonSequentialReset(t *testing.T) {
-	buf := New(testBlockSize * 32)
+	buf := NewReadBuffer(testBlockSize * 32)
 	require.NotNil(t, buf)
 	defer buf.Close()
 
@@ -238,7 +238,7 @@ func TestPrefetch_OnRead_NonSequentialReset(t *testing.T) {
 // --- OnRead: Skips cached blocks ---
 
 func TestPrefetch_OnRead_SkipsCachedBlocks(t *testing.T) {
-	buf := New(testBlockSize * 32)
+	buf := NewReadBuffer(testBlockSize * 32)
 	require.NotNil(t, buf)
 	defer buf.Close()
 
@@ -265,7 +265,7 @@ func TestPrefetch_OnRead_SkipsCachedBlocks(t *testing.T) {
 // --- OnRead: Skips local blocks ---
 
 func TestPrefetch_OnRead_SkipsLocalBlocks(t *testing.T) {
-	buf := New(testBlockSize * 32)
+	buf := NewReadBuffer(testBlockSize * 32)
 	require.NotNil(t, buf)
 	defer buf.Close()
 
@@ -292,7 +292,7 @@ func TestPrefetch_OnRead_SkipsLocalBlocks(t *testing.T) {
 // --- Reset ---
 
 func TestPrefetch_Reset_ClearsTracker(t *testing.T) {
-	buf := New(testBlockSize * 32)
+	buf := NewReadBuffer(testBlockSize * 32)
 	require.NotNil(t, buf)
 	defer buf.Close()
 
@@ -313,7 +313,7 @@ func TestPrefetch_Reset_ClearsTracker(t *testing.T) {
 }
 
 func TestPrefetch_Reset_UnknownPayload(t *testing.T) {
-	buf := New(testBlockSize * 32)
+	buf := NewReadBuffer(testBlockSize * 32)
 	require.NotNil(t, buf)
 	defer buf.Close()
 
@@ -329,7 +329,7 @@ func TestPrefetch_Reset_UnknownPayload(t *testing.T) {
 // --- Bounded pool ---
 
 func TestPrefetch_BoundedPool_DropsWhenFull(t *testing.T) {
-	buf := New(testBlockSize * 64)
+	buf := NewReadBuffer(testBlockSize * 64)
 	require.NotNil(t, buf)
 	defer buf.Close()
 
@@ -370,7 +370,7 @@ func TestPrefetch_BoundedPool_DropsWhenFull(t *testing.T) {
 // --- Close ---
 
 func TestPrefetch_Close_StopsWorkers(t *testing.T) {
-	buf := New(testBlockSize * 32)
+	buf := NewReadBuffer(testBlockSize * 32)
 	require.NotNil(t, buf)
 	defer buf.Close()
 
@@ -385,7 +385,7 @@ func TestPrefetch_Close_StopsWorkers(t *testing.T) {
 }
 
 func TestPrefetch_Close_Idempotent(t *testing.T) {
-	buf := New(testBlockSize * 32)
+	buf := NewReadBuffer(testBlockSize * 32)
 	require.NotNil(t, buf)
 	defer buf.Close()
 
@@ -401,7 +401,7 @@ func TestPrefetch_Close_Idempotent(t *testing.T) {
 // --- Concurrency ---
 
 func TestPrefetch_Concurrency_OnReadMultiFiles(t *testing.T) {
-	buf := New(testBlockSize * 64)
+	buf := NewReadBuffer(testBlockSize * 64)
 	require.NotNil(t, buf)
 	defer buf.Close()
 
@@ -438,7 +438,7 @@ func TestPrefetch_NewPrefetcher_NilBuffer(t *testing.T) {
 }
 
 func TestPrefetch_NewPrefetcher_DefaultWorkers(t *testing.T) {
-	buf := New(testBlockSize * 32)
+	buf := NewReadBuffer(testBlockSize * 32)
 	require.NotNil(t, buf)
 	defer buf.Close()
 

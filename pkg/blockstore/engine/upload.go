@@ -1,4 +1,4 @@
-package sync
+package engine
 
 import (
 	"context"
@@ -98,7 +98,12 @@ func (m *Syncer) syncFileBlock(ctx context.Context, fb *blockstore.FileBlock) er
 		fb.DataSize = uint32(len(data))
 		fb.BlockStoreKey = existing.BlockStoreKey
 		fb.State = blockstore.BlockStateRemote
-		_ = m.fileBlockStore.PutFileBlock(ctx, fb)
+		if err := m.fileBlockStore.PutFileBlock(ctx, fb); err != nil {
+			logger.Error("Sync: failed to persist dedup block metadata",
+				"blockID", fb.ID, "error", err)
+			m.revertToLocal(ctx, fb)
+			return fmt.Errorf("persist dedup block %s: %w", fb.ID, err)
+		}
 		logger.Debug("Sync dedup: block already exists", "blockID", fb.ID)
 		return nil
 	}
@@ -123,7 +128,12 @@ func (m *Syncer) syncFileBlock(ctx context.Context, fb *blockstore.FileBlock) er
 	fb.DataSize = uint32(len(data))
 	fb.BlockStoreKey = storeKey
 	fb.State = blockstore.BlockStateRemote
-	_ = m.fileBlockStore.PutFileBlock(ctx, fb)
+	if err := m.fileBlockStore.PutFileBlock(ctx, fb); err != nil {
+		logger.Error("Sync: failed to persist remote block metadata",
+			"blockID", fb.ID, "error", err)
+		m.revertToLocal(ctx, fb)
+		return fmt.Errorf("persist remote block %s: %w", fb.ID, err)
+	}
 
 	logger.Info("Sync complete",
 		"blockID", fb.ID, "size", len(data), "duration", time.Since(startTime))

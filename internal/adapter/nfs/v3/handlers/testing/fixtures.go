@@ -12,7 +12,6 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
-	blocksync "github.com/marmos91/dittofs/pkg/blockstore/sync"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -83,7 +82,7 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 		t.Fatalf("Failed to create local store: %v", err)
 	}
 	t.Cleanup(func() { _ = localStore.Close() })
-	syncer := blocksync.New(localStore, nil, metaStore, blocksync.DefaultConfig())
+	syncer := engine.NewSyncer(localStore, nil, metaStore, engine.DefaultConfig())
 
 	blockSvc, err := engine.New(engine.Config{
 		Local:  localStore,

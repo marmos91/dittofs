@@ -2,7 +2,6 @@ package fs
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -139,12 +138,12 @@ func (bc *FSStore) flushBlock(ctx context.Context, payloadID string, blockIdx ui
 	// (only lost on power failure, which NFS UNSTABLE semantics allow).
 	_ = f.Close()
 
-	fb, err := bc.lookupFileBlock(ctx, blockID)
-	if err != nil {
-		if !errors.Is(err, blockstore.ErrFileBlockNotFound) {
-			mb.mu.Unlock()
-			return "", 0, fmt.Errorf("lookup file block: %w", err)
-		}
+	// Update metadata via the in-process diskIndex only — must not consult
+	// FileBlockStore on the write hot path (TD-02d / D-19). Eventual
+	// persistence still happens via queueFileBlockUpdate -> pendingFBs ->
+	// SyncFileBlocks (background goroutine).
+	fb, ok := bc.diskIndexLookup(blockID)
+	if !ok {
 		fb = blockstore.NewFileBlock(blockID, path)
 	}
 	fb.LocalPath = path

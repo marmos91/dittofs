@@ -81,6 +81,23 @@ type FSStore struct {
 	// Drained every 200ms by SyncFileBlocks, and on Close/Flush.
 	pendingFBs sync.Map
 
+	// diskIndex is the authoritative in-process cache of FileBlock metadata
+	// for blocks currently stored on the local filesystem. It is populated
+	// whenever a block lands on disk (flushBlock, tryDirectDiskWrite eager-
+	// create, WriteFromRemote, Recover) and pruned on delete/evict. The
+	// write hot path and eviction consult diskIndex INSTEAD of the
+	// FileBlockStore, decoupling those paths from the underlying metadata
+	// backend (TD-02d / D-19).
+	//
+	// Entries survive pendingFBs drain so subsequent hot-path operations
+	// (e.g., a second pwrite into the same block after BadgerDB persistence)
+	// can still observe the block's existing State / BlockStoreKey without
+	// a FileBlockStore round-trip.
+	//
+	// Keyed by blockID (string) -> *blockstore.FileBlock. The stored pointer
+	// is SHARED with pendingFBs so queued updates mutate a single instance.
+	diskIndex sync.Map
+
 	// fdPool pools open file descriptors for .blk files to avoid
 	// open+close syscalls on every 4KB random write in tryDirectDiskWrite.
 	fdPool *fdPool
@@ -108,6 +125,15 @@ type FSStore struct {
 	// accessTracker maintains per-file last-access times for eviction ordering.
 	// Updated on read/write paths via Touch(), queried during eviction.
 	accessTracker *accessTracker
+
+	// done signals the Start goroutine to exit. Closed exactly once by Close
+	// (guarded by closeOnce) so the goroutine can terminate independently of
+	// the ctx passed to Start. wg joins the Start goroutine so Close() returns
+	// only after the goroutine has exited — no leaked goroutines across
+	// repeated Start/Close cycles.
+	done      chan struct{}
+	closeOnce sync.Once
+	wg        sync.WaitGroup
 }
 
 // New creates a new FSStore.
@@ -139,6 +165,7 @@ func New(baseDir string, maxDisk int64, maxMemory int64, fileBlockStore blocksto
 		readFDPool:    newFDPool(defaultFDPoolSize),
 		accessTracker: newAccessTracker(),
 		retention:     unsafe.Pointer(defaultRetention),
+		done:          make(chan struct{}),
 	}
 	bc.evictionEnabled.Store(true)
 	return bc, nil
@@ -169,8 +196,20 @@ func (bc *FSStore) getRetention() retentionConfig {
 
 // Close flushes pending FileBlock metadata and marks the store as closed.
 // After Close, all read/write operations return ErrStoreClosed.
+//
+// Close is idempotent: multiple calls signal the background goroutine launched
+// by Start() exactly once (via closeOnce), then deterministically join the
+// goroutine via wg.Wait() before returning. This prevents the goroutine leak
+// previously possible when Start's ctx outlived Close (TD-02a).
 func (bc *FSStore) Close() error {
 	bc.closedFlag.Store(true)
+	bc.closeOnce.Do(func() {
+		close(bc.done)
+	})
+	// Join the Start goroutine (if any) before proceeding with teardown.
+	// Safe to call even when Start was never invoked — Wait() on a zero
+	// counter returns immediately.
+	bc.wg.Wait()
 	bc.SyncFileBlocks(context.Background())
 	bc.fdPool.CloseAll()
 	bc.readFDPool.CloseAll()
@@ -186,14 +225,21 @@ func (bc *FSStore) isClosed() bool {
 // calls (one per 4KB NFS write) into fewer store writes (every 200ms).
 //
 // Must be called after New and before any writes.
-// The goroutine stops when ctx is cancelled, with a final drain on exit.
+// The goroutine stops on either ctx cancellation or Close() (whichever fires
+// first), with a final drain on exit. Close() waits for the goroutine to
+// terminate so teardown is deterministic — see TD-02a.
 func (bc *FSStore) Start(ctx context.Context) {
+	bc.wg.Add(1)
 	go func() {
+		defer bc.wg.Done()
 		ticker := time.NewTicker(200 * time.Millisecond)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
+				bc.SyncFileBlocks(context.Background())
+				return
+			case <-bc.done:
 				bc.SyncFileBlocks(context.Background())
 				return
 			case <-ticker.C:
@@ -233,14 +279,48 @@ func (bc *FSStore) SyncFileBlocksForFile(ctx context.Context, payloadID string) 
 	})
 }
 
-// queueFileBlockUpdate queues a FileBlock metadata update for async persistence.
-// The update will be written to the store by the next SyncFileBlocks call.
+// queueFileBlockUpdate queues a FileBlock metadata update for async persistence
+// AND registers the block in the in-process diskIndex so the write hot path and
+// eviction can see it without a FileBlockStore round-trip (TD-02d / D-19).
+//
+// pendingFBs and diskIndex share the same *FileBlock pointer, so mutations
+// applied by the hot path (e.g., fb.LastAccess = now) are visible to both the
+// drain goroutine and subsequent hot-path lookups.
 func (bc *FSStore) queueFileBlockUpdate(fb *blockstore.FileBlock) {
 	bc.pendingFBs.Store(fb.ID, fb)
+	bc.diskIndex.Store(fb.ID, fb)
+}
+
+// diskIndexStore registers a FileBlock in the in-process diskIndex without
+// queuing an async persistence. Used by Recover to seed the index from disk
+// state without triggering redundant PutFileBlock writes.
+func (bc *FSStore) diskIndexStore(fb *blockstore.FileBlock) {
+	bc.diskIndex.Store(fb.ID, fb)
+}
+
+// diskIndexLookup returns the FileBlock metadata for a block currently on
+// disk, or (nil, false) if no entry exists. This is the hot-path replacement
+// for the FileBlockStore.GetFileBlock + pendingFBs fallback: all callers on
+// the write hot path and eviction must use this instead of lookupFileBlock.
+func (bc *FSStore) diskIndexLookup(blockID string) (*blockstore.FileBlock, bool) {
+	v, ok := bc.diskIndex.Load(blockID)
+	if !ok {
+		return nil, false
+	}
+	return v.(*blockstore.FileBlock), true
+}
+
+// diskIndexDelete removes a block from the in-process diskIndex. Called when
+// a block is deleted (DeleteBlockFile) or evicted.
+func (bc *FSStore) diskIndexDelete(blockID string) {
+	bc.diskIndex.Delete(blockID)
 }
 
 // lookupFileBlock retrieves a FileBlock, checking the pending queue first
-// (for recently-written metadata not yet persisted) then falling back to the store.
+// (for recently-written metadata not yet persisted) then falling back to the
+// store. NOTE: this helper hits the FileBlockStore and MUST NOT be called
+// from the local write hot path or from eviction (TD-02d / D-19). Non-hot-
+// path callers (recovery, manage, state transitions) may use it.
 func (bc *FSStore) lookupFileBlock(ctx context.Context, blockID string) (*blockstore.FileBlock, error) {
 	if v, ok := bc.pendingFBs.Load(blockID); ok {
 		return v.(*blockstore.FileBlock), nil
@@ -441,13 +521,17 @@ func (bc *FSStore) ListFiles() []string {
 // Unlike WriteAt (which creates Dirty blocks), the block is marked Remote
 // since it already exists remotely -- making it immediately evictable by the
 // disk space manager without needing a re-sync.
+//
+// Metadata lookup uses the in-process diskIndex first (TD-02d / D-19) so
+// repopulation after an evict-then-refetch cycle does not round-trip through
+// the FileBlockStore.
 func (bc *FSStore) WriteFromRemote(ctx context.Context, payloadID string, data []byte, offset uint64) error {
 	blockIdx := offset / blockstore.BlockSize
 	key := blockKey{payloadID: payloadID, blockIdx: blockIdx}
 	blockID := makeBlockID(key)
 
-	fb, err := bc.lookupFileBlock(ctx, blockID)
-	if err != nil {
+	fb, ok := bc.diskIndexLookup(blockID)
+	if !ok {
 		fb = blockstore.NewFileBlock(blockID, "")
 	}
 	fb.BlockStoreKey = blockstore.FormatStoreKey(payloadID, blockIdx)

@@ -2,12 +2,15 @@ package engine
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
+	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
 	"github.com/marmos91/dittofs/pkg/blockstore/local/memory"
-	blocksync "github.com/marmos91/dittofs/pkg/blockstore/sync"
+	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // stubFileBlockStore is a minimal FileBlockStore for testing that satisfies the
@@ -49,7 +52,7 @@ func newTestEngine(t *testing.T, readBufferBytes int64, prefetchWorkers int) *Bl
 	t.Helper()
 	localStore := memory.New()
 	fbs := &stubFileBlockStore{}
-	syncer := blocksync.New(localStore, nil, fbs, blocksync.DefaultConfig())
+	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
 
 	bs, err := New(Config{
 		Local:           localStore,
@@ -395,7 +398,7 @@ func TestFlush_AutoPromote(t *testing.T) {
 func TestClose_ClosesReadBufferAndPrefetcher(t *testing.T) {
 	localStore := memory.New()
 	fbs := &stubFileBlockStore{}
-	syncer := blocksync.New(localStore, nil, fbs, blocksync.DefaultConfig())
+	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
 
 	bs, err := New(Config{
 		Local:           localStore,
@@ -655,5 +658,98 @@ func TestCopyPayload_EmptySource(t *testing.T) {
 	}
 	if copied != 0 {
 		t.Fatalf("CopyPayload returned %d blocks, expected 0", copied)
+	}
+}
+
+// newFSTestEngine constructs an engine.BlockStore backed by an on-disk FSStore
+// rooted at a temp dir, so .blk files can be observed on the filesystem.
+// Returns the engine and the base directory holding the FSStore's .blk files.
+func newFSTestEngine(t *testing.T) (*BlockStore, string) {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	localStore, err := fs.New(tmpDir, 100*1024*1024, 16*1024*1024, ms)
+	if err != nil {
+		t.Fatalf("fs.New failed: %v", err)
+	}
+
+	syncer := NewSyncer(localStore, nil, ms, DefaultConfig())
+
+	bs, err := New(Config{
+		Local:           localStore,
+		Remote:          nil,
+		Syncer:          syncer,
+		FileBlockStore:  ms,
+		ReadBufferBytes: 0,
+		PrefetchWorkers: 0,
+	})
+	if err != nil {
+		t.Fatalf("engine.New failed: %v", err)
+	}
+	if err := bs.Start(context.Background()); err != nil {
+		t.Fatalf("engine.Start failed: %v", err)
+	}
+	t.Cleanup(func() { _ = bs.Close() })
+
+	return bs, tmpDir
+}
+
+// countBlkFiles walks dir and returns the number of .blk files present.
+func countBlkFiles(t *testing.T, dir string) int {
+	t.Helper()
+
+	count := 0
+	err := filepath.Walk(dir, func(_ string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !info.IsDir() && filepath.Ext(info.Name()) == ".blk" {
+			count++
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s failed: %v", dir, err)
+	}
+	return count
+}
+
+// TestEngineDelete_RemovesBlockFiles verifies engine.Delete removes on-disk
+// .blk files for the payloadID. Regression test for TD-02c: before the fix,
+// Delete only called EvictMemory + syncer.Delete, leaving .blk files orphaned
+// on local disk.
+func TestEngineDelete_RemovesBlockFiles(t *testing.T) {
+	bs, baseDir := newFSTestEngine(t)
+	ctx := context.Background()
+	payloadID := "export/td-02c/test.bin"
+
+	// Write data spanning 2 blocks so at least 2 .blk files land on disk.
+	data := make([]byte, int(blockstore.BlockSize)+4096)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+	if err := bs.WriteAt(ctx, payloadID, data, 0); err != nil {
+		t.Fatalf("WriteAt failed: %v", err)
+	}
+
+	// Flush dirty in-memory blocks to disk as .blk files.
+	if _, err := bs.Flush(ctx, payloadID); err != nil {
+		t.Fatalf("Flush failed: %v", err)
+	}
+
+	// Sanity check: at least one .blk file must exist before Delete.
+	if got := countBlkFiles(t, baseDir); got < 1 {
+		t.Fatalf("expected >=1 .blk file before Delete, got %d", got)
+	}
+
+	// Delete the payload.
+	if err := bs.Delete(ctx, payloadID); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+
+	// After Delete, zero .blk files must remain for the deleted payload.
+	if got := countBlkFiles(t, baseDir); got != 0 {
+		t.Fatalf("expected 0 .blk files after Delete, got %d (TD-02c regression)", got)
 	}
 }

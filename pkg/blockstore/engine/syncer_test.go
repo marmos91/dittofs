@@ -1,6 +1,6 @@
 //go:build integration
 
-package sync
+package engine
 
 import (
 	"context"
@@ -65,7 +65,7 @@ func newMemoryEnv(t *testing.T) *testEnv {
 		t.Fatalf("fs.New() error = %v", err)
 	}
 	bs := remotememory.New()
-	m := New(bc, bs, ms, DefaultConfig())
+	m := NewSyncer(bc, bs, ms, DefaultConfig())
 	m.Start(context.Background())
 
 	return &testEnv{
@@ -340,7 +340,7 @@ func newS3EnvForBench(b *testing.B) *testEnv {
 		b.Fatalf("fs.New() error = %v", err)
 	}
 	bs := remotes3.New(helper.client, remotes3.Config{Bucket: helper.bucket, KeyPrefix: "blocks/"})
-	m := New(bc, bs, ms, DefaultConfig())
+	m := NewSyncer(bc, bs, ms, DefaultConfig())
 	m.Start(context.Background())
 	return &testEnv{local: bc, remoteStore: bs, fileBlockStore: ms, syncer: m, cleanup: func() {
 		m.Close()
@@ -361,7 +361,7 @@ func newS3Env(t *testing.T, helper *localstackHelper) *testEnv {
 	bucket := fmt.Sprintf("test-bucket-%d", time.Now().UnixNano())
 	helper.createBucket(t, bucket)
 	bs := remotes3.New(helper.client, remotes3.Config{Bucket: bucket, KeyPrefix: "blocks/"})
-	m := New(bc, bs, ms, DefaultConfig())
+	m := NewSyncer(bc, bs, ms, DefaultConfig())
 	m.Start(context.Background())
 	return &testEnv{local: bc, remoteStore: bs, fileBlockStore: ms, syncer: m, cleanup: func() {
 		m.Close()
@@ -541,7 +541,7 @@ func newMemoryEnvForBench(b *testing.B) *testEnv {
 		b.Fatalf("fs.New() error = %v", err)
 	}
 	bs := remotememory.New()
-	m := New(bc, bs, ms, DefaultConfig())
+	m := NewSyncer(bc, bs, ms, DefaultConfig())
 	m.Start(context.Background())
 	return &testEnv{local: bc, remoteStore: bs, fileBlockStore: ms, syncer: m, cleanup: func() { m.Close(); bs.Close(); os.RemoveAll(tmpDir) }}
 }

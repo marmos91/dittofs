@@ -1,4 +1,4 @@
-package sync
+package engine
 
 import (
 	"context"
@@ -26,7 +26,7 @@ func controllableProbe(shouldFail *atomic.Bool) (func(ctx context.Context) error
 }
 
 // fastHealthConfig returns a Config with short probe intervals for unit tests.
-func fastHealthConfig() Config {
+func fastHealthConfig() SyncerConfig {
 	cfg := DefaultConfig()
 	cfg.HealthCheckInterval = 10 * time.Millisecond
 	cfg.UnhealthyCheckInterval = 10 * time.Millisecond

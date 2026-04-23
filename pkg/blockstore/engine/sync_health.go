@@ -1,4 +1,4 @@
-package sync
+package engine
 
 import (
 	"context"
@@ -42,7 +42,7 @@ type HealthMonitor struct {
 
 // NewHealthMonitor creates a new HealthMonitor. If probeFunc is nil, the monitor
 // always reports healthy and Start() is a no-op.
-func NewHealthMonitor(probeFunc func(ctx context.Context) error, config Config) *HealthMonitor {
+func NewHealthMonitor(probeFunc func(ctx context.Context) error, config SyncerConfig) *HealthMonitor {
 	interval := config.HealthCheckInterval
 	if interval <= 0 {
 		interval = 30 * time.Second

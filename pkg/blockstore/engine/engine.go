@@ -1,10 +1,3 @@
-// Package engine provides the BlockStore orchestrator that composes local store,
-// remote store, and syncer into the blockstore.Store interface.
-//
-// The orchestrator lives in a sub-package (not the root blockstore package) to
-// avoid import cycles: blockstore/local and blockstore/sync both import the root
-// blockstore package for types and interfaces, so the root package cannot import
-// them back.
 package engine
 
 import (
@@ -16,9 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/local"
-	"github.com/marmos91/dittofs/pkg/blockstore/readbuffer"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
-	blocksync "github.com/marmos91/dittofs/pkg/blockstore/sync"
 	"github.com/marmos91/dittofs/pkg/health"
 )
 
@@ -34,14 +25,14 @@ type Config struct {
 	Remote remote.RemoteStore
 
 	// Syncer handles async local-to-remote transfers (required).
-	Syncer *blocksync.Syncer
+	Syncer *Syncer
 
 	// FileBlockStore provides block metadata for block store statistics.
 	// When set, GetStats() populates BlocksLocal/BlocksRemote/BlocksTotal.
 	FileBlockStore blockstore.FileBlockStore
 
 	// ReadBufferBytes is the memory budget for the read buffer per share.
-	// 0 disables the read buffer. Passed directly to readbuffer.New as byte budget.
+	// 0 disables the read buffer. Passed directly to NewReadBuffer as byte budget.
 	ReadBufferBytes int64
 
 	// PrefetchWorkers is the number of goroutines for sequential prefetch.
@@ -60,12 +51,12 @@ type Config struct {
 type BlockStore struct {
 	local  local.LocalStore
 	remote remote.RemoteStore
-	syncer *blocksync.Syncer
+	syncer *Syncer
 
 	fileBlockStore blockstore.FileBlockStore // optional: for block count stats
 
-	readBuffer *readbuffer.ReadBuffer // nil when disabled (ReadBufferBytes=0)
-	prefetcher *readbuffer.Prefetcher // nil when disabled (PrefetchWorkers=0 or readBuffer nil)
+	readBuffer *ReadBuffer // nil when disabled (ReadBufferBytes=0)
+	prefetcher *Prefetcher // nil when disabled (PrefetchWorkers=0 or readBuffer nil)
 
 	prefetchWorkers int // stored from config, used in Start()
 }
@@ -85,7 +76,7 @@ func New(cfg Config) (*BlockStore, error) {
 		remote:          cfg.Remote,
 		syncer:          cfg.Syncer,
 		fileBlockStore:  cfg.FileBlockStore,
-		readBuffer:      readbuffer.New(cfg.ReadBufferBytes),
+		readBuffer:      NewReadBuffer(cfg.ReadBufferBytes),
 		prefetchWorkers: cfg.PrefetchWorkers,
 	}, nil
 }
@@ -128,7 +119,7 @@ func (bs *BlockStore) Start(ctx context.Context) error {
 	// Created in Start() (not New()) because the loadBlock closure captures bs,
 	// and NewPrefetcher starts workers immediately.
 	if bs.readBuffer != nil && bs.prefetchWorkers > 0 {
-		bs.prefetcher = readbuffer.NewPrefetcher(
+		bs.prefetcher = NewPrefetcher(
 			bs.prefetchWorkers,
 			bs.readBuffer,
 			bs.loadBlock,
@@ -183,13 +174,7 @@ func (bs *BlockStore) Close() error {
 // ReadAt reads data from storage at the given offset into dest.
 // Checks read buffer first, then local store, falling back to remote download on miss.
 func (bs *BlockStore) ReadAt(ctx context.Context, payloadID string, data []byte, offset uint64) (int, error) {
-	return bs.readAtInternal(ctx, payloadID, "", data, offset)
-}
-
-// ReadAtWithCOWSource reads data with copy-on-write source fallback.
-// If data is not found in the primary payloadID, it falls back to cowSource.
-func (bs *BlockStore) ReadAtWithCOWSource(ctx context.Context, payloadID, cowSource string, data []byte, offset uint64) (int, error) {
-	return bs.readAtInternal(ctx, payloadID, cowSource, data, offset)
+	return bs.readAtInternal(ctx, payloadID, data, offset)
 }
 
 // GetSize returns the stored size of a payload.
@@ -238,9 +223,20 @@ func (bs *BlockStore) Truncate(ctx context.Context, payloadID string, newSize ui
 
 // Delete removes all data for a payload from local store and remote store.
 // Invalidates all read buffer entries for the file and resets prefetcher state.
+//
+// Local cleanup uses DeleteAllBlockFiles (not EvictMemory) so on-disk .blk
+// files are removed alongside in-memory state. TD-02c: previously only memory
+// was evicted, which left orphan .blk files growing unbounded across
+// delete-and-recreate workloads.
+//
+// SyncFileBlocksForFile runs first so any FileBlock metadata that is still
+// queued (queueFileBlockUpdate after flushBlock) is persisted before
+// DeleteAllBlockFiles enumerates the store — otherwise freshly-flushed .blk
+// files would be missed and leaked.
 func (bs *BlockStore) Delete(ctx context.Context, payloadID string) error {
-	if err := bs.local.EvictMemory(ctx, payloadID); err != nil {
-		return fmt.Errorf("local evict memory failed: %w", err)
+	bs.local.SyncFileBlocksForFile(ctx, payloadID)
+	if err := bs.local.DeleteAllBlockFiles(ctx, payloadID); err != nil {
+		return fmt.Errorf("local delete all block files failed: %w", err)
 	}
 	bs.readBuffer.InvalidateAndReset(payloadID)
 	return bs.syncer.Delete(ctx, payloadID)
@@ -552,18 +548,15 @@ func (bs *BlockStore) SetEvictionEnabled(enabled bool) {
 	bs.local.SetEvictionEnabled(enabled)
 }
 
-// readAtInternal reads from primary payloadID, falling back to cowSource on miss.
+// readAtInternal reads from the primary payloadID.
 // When the read buffer is enabled, checks it first and fills it after successful read.
-func (bs *BlockStore) readAtInternal(ctx context.Context, payloadID, cowSource string, data []byte, offset uint64) (int, error) {
+func (bs *BlockStore) readAtInternal(ctx context.Context, payloadID string, data []byte, offset uint64) (int, error) {
 	if len(data) == 0 {
 		return 0, nil
 	}
 
-	isPrimaryRead := cowSource == ""
-
 	// Read buffer fast path: try to serve entirely from read buffer.
-	// Only for primary reads (no COW source) with read buffer enabled.
-	if bs.readBuffer != nil && isPrimaryRead {
+	if bs.readBuffer != nil {
 		if n, ok := bs.tryL1Read(payloadID, data, offset); ok {
 			bs.readBuffer.NotifyRead(payloadID, offset, uint64(len(data)), blockstore.BlockSize)
 			return n, nil
@@ -576,16 +569,7 @@ func (bs *BlockStore) readAtInternal(ctx context.Context, payloadID, cowSource s
 		return 0, fmt.Errorf("local read failed: %w", err)
 	}
 	if found {
-		if isPrimaryRead {
-			bs.promoteToL1(ctx, payloadID, offset, uint64(len(data)))
-		}
-		return len(data), nil
-	}
-
-	if !isPrimaryRead {
-		if err := bs.readFromCOWSource(ctx, payloadID, cowSource, data, offset); err != nil {
-			return 0, err
-		}
+		bs.promoteToL1(ctx, payloadID, offset, uint64(len(data)))
 		return len(data), nil
 	}
 
@@ -638,38 +622,6 @@ func (bs *BlockStore) tryL1Read(payloadID string, data []byte, offset uint64) (i
 	}
 
 	return len(data), true
-}
-
-// readFromCOWSource reads from the COW source and copies data to the primary local store.
-func (bs *BlockStore) readFromCOWSource(ctx context.Context, payloadID, sourcePayloadID string, dest []byte, offset uint64) error {
-	sourceFound, sourceErr := bs.local.ReadAt(ctx, sourcePayloadID, dest, offset)
-	if sourceErr != nil {
-		return fmt.Errorf("COW source read failed: %w", sourceErr)
-	}
-
-	if !sourceFound {
-		err := bs.syncer.EnsureAvailable(ctx, sourcePayloadID, offset, uint32(len(dest)))
-		if err != nil {
-			return fmt.Errorf("ensure available for COW source failed: %w", err)
-		}
-
-		sourceFound, sourceErr = bs.local.ReadAt(ctx, sourcePayloadID, dest, offset)
-		if sourceErr != nil {
-			return fmt.Errorf("COW source read after download failed: %w", sourceErr)
-		}
-		if !sourceFound {
-			clear(dest)
-			logger.Debug("Sparse COW block: returning zeros",
-				"payloadID", sourcePayloadID)
-		}
-	}
-
-	// Copy to primary local store for future reads (non-fatal if fails)
-	if err := bs.local.WriteAt(ctx, payloadID, dest, offset); err != nil {
-		logger.Debug("COW local write failed (non-fatal)", "payloadID", payloadID, "error", err)
-	}
-
-	return nil
 }
 
 // ensureAndReadFromLocal downloads blocks from remote if needed and reads from local store.

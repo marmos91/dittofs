@@ -1,4 +1,4 @@
-package sync
+package engine
 
 import (
 	"context"
@@ -53,8 +53,8 @@ func (c *controllableRemoteStore) Healthcheck(ctx context.Context) health.Report
 func (c *controllableRemoteStore) SetHealthy(h bool) { c.healthy.Store(h) }
 
 // healthTestConfig returns a syncer Config with short intervals for testing.
-func healthTestConfig() Config {
-	return Config{
+func healthTestConfig() SyncerConfig {
+	return SyncerConfig{
 		ParallelUploads:             4,
 		ParallelDownloads:           4,
 		PrefetchBlocks:              0,
@@ -85,7 +85,7 @@ func newHealthTestEnv(t *testing.T) *healthTestEnv {
 	}
 
 	rs := newControllableRemoteStore()
-	m := New(bc, rs, ms, healthTestConfig())
+	m := NewSyncer(bc, rs, ms, healthTestConfig())
 	t.Cleanup(func() { _ = m.Close() })
 
 	return &healthTestEnv{
@@ -263,7 +263,7 @@ func TestHealthMonitorNilRemoteStore(t *testing.T) {
 		t.Fatalf("fs.New() error = %v", err)
 	}
 
-	m := New(bc, nil, ms, healthTestConfig())
+	m := NewSyncer(bc, nil, ms, healthTestConfig())
 	defer func() { _ = m.Close() }()
 
 	ctx := context.Background()

@@ -385,7 +385,6 @@ func (h *Handler) executeCopyChunks(
 	}
 
 	srcPayloadID := string(srcFile.PayloadID)
-	srcCOWSource := string(srcFile.COWSourcePayloadID)
 	srcSize := srcFile.Size
 
 	// Per MS-SMB2 3.3.5.16: Break Read caching leases held by other clients on
@@ -442,12 +441,7 @@ func (h *Handler) executeCopyChunks(
 
 		// Read from source using pre-allocated buffer
 		data := buf[:chunk.Length]
-		var n int
-		if srcCOWSource != "" {
-			n, err = srcBlockStore.ReadAtWithCOWSource(ctx.Context, srcPayloadID, srcCOWSource, data, chunk.SourceOffset)
-		} else {
-			n, err = srcBlockStore.ReadAt(ctx.Context, srcPayloadID, data, chunk.SourceOffset)
-		}
+		n, err := srcBlockStore.ReadAt(ctx.Context, srcPayloadID, data, chunk.SourceOffset)
 		if err != nil {
 			logger.Warn("COPYCHUNK: source read failed",
 				"chunk", i, "srcPath", srcOpen.Path, "error", err)

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -89,8 +88,13 @@ func (bc *FSStore) Recover(ctx context.Context) error {
 			}
 		}
 
-		payloadID, blockIdx := parseBlockID(blockID)
-		if payloadID != "" {
+		// Seed the in-process diskIndex so the post-Recover write hot path
+		// and eviction can see this block without a FileBlockStore query
+		// (TD-02d / D-19).
+		bc.diskIndexStore(fb)
+
+		payloadID, blockIdx, parseErr := blockstore.ParseBlockID(blockID)
+		if parseErr == nil {
 			end := (blockIdx + 1) * blockstore.BlockSize
 			if fb.DataSize > 0 && fb.DataSize < uint32(blockstore.BlockSize) {
 				end = blockIdx*blockstore.BlockSize + uint64(fb.DataSize)
@@ -117,19 +121,4 @@ func (bc *FSStore) Recover(ctx context.Context) error {
 		"totalSize", totalSize)
 
 	return nil
-}
-
-// parseBlockID extracts payloadID and blockIdx from a blockID ("{payloadID}/{blockIdx}").
-// Returns empty payloadID if format is invalid.
-func parseBlockID(blockID string) (string, uint64) {
-	lastSlash := strings.LastIndex(blockID, "/")
-	if lastSlash < 0 {
-		return "", 0
-	}
-	payloadID := blockID[:lastSlash]
-	idx, err := strconv.ParseUint(blockID[lastSlash+1:], 10, 64)
-	if err != nil {
-		return "", 0
-	}
-	return payloadID, idx
 }

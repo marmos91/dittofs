@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strconv"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/blockstore"
@@ -53,6 +52,7 @@ func (bc *FSStore) DeleteBlockFile(ctx context.Context, payloadID string, blockI
 		if errors.Is(err, blockstore.ErrFileBlockNotFound) {
 			// Block doesn't exist -- idempotent success
 			bc.pendingFBs.Delete(blockID)
+			bc.diskIndexDelete(blockID)
 			return nil
 		}
 		return err
@@ -78,8 +78,9 @@ func (bc *FSStore) DeleteBlockFile(ctx context.Context, payloadID string, blockI
 		}
 	}
 
-	// 7. Clear pendingFBs entry to prevent zombie re-creation
+	// 7. Clear pendingFBs + diskIndex entries to prevent zombie re-creation
 	bc.pendingFBs.Delete(blockID)
+	bc.diskIndexDelete(blockID)
 
 	return nil
 }
@@ -100,7 +101,11 @@ func (bc *FSStore) DeleteAllBlockFiles(ctx context.Context, payloadID string) er
 	// Delete each block
 	for _, fb := range blocks {
 		// Extract blockIdx from the block ID (format: "payloadID/blockIdx")
-		blockIdx := extractBlockIdx(fb.ID, payloadID)
+		_, blockIdx, parseErr := blockstore.ParseBlockID(fb.ID)
+		if parseErr != nil {
+			logger.Warn("local store: failed to parse blockID", "blockID", fb.ID, "error", parseErr)
+			continue
+		}
 		if delErr := bc.DeleteBlockFile(ctx, payloadID, blockIdx); delErr != nil {
 			logger.Warn("local store: failed to delete block", "blockID", fb.ID, "error", delErr)
 		}
@@ -137,7 +142,11 @@ func (bc *FSStore) TruncateBlockFiles(ctx context.Context, payloadID string, new
 	}
 
 	for _, fb := range blocks {
-		blockIdx := extractBlockIdx(fb.ID, payloadID)
+		_, blockIdx, parseErr := blockstore.ParseBlockID(fb.ID)
+		if parseErr != nil {
+			logger.Warn("local store: failed to parse blockID", "blockID", fb.ID, "error", parseErr)
+			continue
+		}
 		if blockIdx*blockstore.BlockSize >= newSize {
 			if delErr := bc.DeleteBlockFile(ctx, payloadID, blockIdx); delErr != nil {
 				logger.Warn("local store: failed to delete truncated block", "blockID", fb.ID, "error", delErr)
@@ -186,12 +195,4 @@ func (bc *FSStore) ExistsOnDisk(ctx context.Context, payloadID string, blockIdx 
 
 	_, statErr := os.Stat(fb.LocalPath)
 	return statErr == nil, nil
-}
-
-// extractBlockIdx extracts the block index from a blockID string.
-// blockID format: "{payloadID}/{blockIdx}"
-func extractBlockIdx(blockID, payloadID string) uint64 {
-	suffix := blockID[len(payloadID)+1:] // skip "payloadID/"
-	idx, _ := strconv.ParseUint(suffix, 10, 64)
-	return idx
 }

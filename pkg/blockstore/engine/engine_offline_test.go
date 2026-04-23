@@ -11,7 +11,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
 	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
-	blocksync "github.com/marmos91/dittofs/pkg/blockstore/sync"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
@@ -227,7 +226,7 @@ func TestPrefetchSuppressedWhenUnhealthy(t *testing.T) {
 
 	fakeRemote := newFakeRemoteStore()
 
-	syncCfg := blocksync.Config{
+	syncCfg := SyncerConfig{
 		ParallelUploads:             4,
 		ParallelDownloads:           4,
 		PrefetchBlocks:              2, // Enable prefetch
@@ -238,7 +237,7 @@ func TestPrefetchSuppressedWhenUnhealthy(t *testing.T) {
 		UnhealthyCheckInterval:      10 * time.Millisecond,
 	}
 
-	syncer := blocksync.New(localStore, fakeRemote, ms, syncCfg)
+	syncer := NewSyncer(localStore, fakeRemote, ms, syncCfg)
 
 	bsEngine, err := New(Config{
 		Local:  localStore,

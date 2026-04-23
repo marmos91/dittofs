@@ -234,7 +234,7 @@ func (h *Handler) Read(
 	// ========================================================================
 	// All reads go through BlockStore.ReadAt which reads from block store.
 
-	readResult, readErr := readFromBlockStore(ctx, blockStore, file.PayloadID, file.COWSourcePayloadID, req.Offset, actualLength, clientIP, req.Handle)
+	readResult, readErr := readFromBlockStore(ctx, blockStore, file.PayloadID, req.Offset, actualLength, clientIP, req.Handle)
 	if readErr != nil {
 		// Check if cancellation error
 		if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {

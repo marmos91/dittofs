@@ -1,4 +1,4 @@
-package gc
+package engine
 
 import (
 	"context"
@@ -13,8 +13,8 @@ import (
 // BlockSize is the size of a single block (8MB), used for byte estimation.
 const BlockSize = blockstore.BlockSize
 
-// Stats holds statistics about the garbage collection run.
-type Stats struct {
+// GCStats holds statistics about the garbage collection run.
+type GCStats struct {
 	SharesScanned  int   // Number of shares processed
 	BlocksScanned  int   // Total blocks examined
 	OrphanFiles    int   // Files with orphan blocks (no metadata)
@@ -38,14 +38,7 @@ type Options struct {
 
 	// ProgressCallback is called periodically with progress updates.
 	// May be nil.
-	ProgressCallback func(stats Stats)
-
-	// BackupHold is consulted once per CollectGarbage run. PayloadIDs
-	// returned by HeldPayloadIDs are treated as live even when no
-	// metadata references them. nil disables the hold check.
-	//
-	// See Phase 5 CONTEXT.md D-11.
-	BackupHold BackupHoldProvider
+	ProgressCallback func(stats GCStats)
 }
 
 // MetadataReconciler provides access to metadata operations for reconciliation.
@@ -53,34 +46,6 @@ type Options struct {
 type MetadataReconciler interface {
 	// GetMetadataStoreForShare returns the metadata store for a given share name.
 	GetMetadataStoreForShare(shareName string) (metadata.MetadataStore, error)
-}
-
-// BackupHoldProvider returns the set of PayloadIDs that are "held"
-// by retained backup manifests and must NOT be treated as orphans
-// even if no live metadata references them. Implementations compute
-// the set at GC time by unioning PayloadIDSet fields from every
-// succeeded BackupRecord's manifest.
-//
-// A nil BackupHoldProvider passed via Options disables the hold
-// check (pre-Phase-5 behavior / tests without backup infra).
-//
-// See Phase 5 CONTEXT.md D-11, D-12, D-13 and Pitfall #3.
-type BackupHoldProvider interface {
-	HeldPayloadIDs(ctx context.Context) (map[metadata.PayloadID]struct{}, error)
-}
-
-// StaticBackupHold wraps a pre-resolved hold set as a BackupHoldProvider.
-// Used by callers that resolve the hold eagerly (e.g. Runtime.RunBlockGC,
-// which fails hard if the hold query errors — see Phase 5 SAFETY-01) to
-// inject the already-known set into CollectGarbage without re-querying.
-func StaticBackupHold(held map[metadata.PayloadID]struct{}) BackupHoldProvider {
-	return staticHold(held)
-}
-
-type staticHold map[metadata.PayloadID]struct{}
-
-func (h staticHold) HeldPayloadIDs(context.Context) (map[metadata.PayloadID]struct{}, error) {
-	return h, nil
 }
 
 // CollectGarbage scans the remote store and removes orphan blocks.
@@ -102,14 +67,14 @@ func (h staticHold) HeldPayloadIDs(context.Context) (map[metadata.PayloadID]stru
 //   - options: GC configuration (nil uses defaults)
 //
 // Returns:
-//   - *Stats: Summary of GC actions
+//   - *GCStats: Summary of GC actions
 func CollectGarbage(
 	ctx context.Context,
 	remoteStore remote.RemoteStore,
 	reconciler MetadataReconciler,
 	options *Options,
-) *Stats {
-	stats := &Stats{}
+) *GCStats {
+	stats := &GCStats{}
 
 	if options == nil {
 		options = &Options{}
@@ -130,29 +95,13 @@ func CollectGarbage(
 
 	logger.Info("GC: scanning blocks", "count", len(blocks), "prefix", options.SharePrefix)
 
-	// Phase-5 D-11: compute the hold set at the start of the run. Errors
-	// are logged and swallowed (fail-open: under-hold slightly rather
-	// than abort GC).
-	var heldSet map[metadata.PayloadID]struct{}
-	if options.BackupHold != nil {
-		held, err := options.BackupHold.HeldPayloadIDs(ctx)
-		if err != nil {
-			logger.Warn("GC: backup hold provider failed, proceeding without hold",
-				"error", err)
-		} else {
-			heldSet = held
-			logger.Info("GC: backup hold computed",
-				"payloadIDs", len(heldSet))
-		}
-	}
-
 	// Group blocks by payloadID
 	blocksByPayload := make(map[string][]string)
 	for _, blockKey := range blocks {
 		stats.BlocksScanned++
 
-		payloadID := parsePayloadIDFromBlockKey(blockKey)
-		if payloadID == "" {
+		payloadID, _, ok := blockstore.ParseStoreKey(blockKey)
+		if !ok || payloadID == "" {
 			logger.Warn("GC: invalid block key format", "blockKey", blockKey)
 			stats.Errors++
 			continue
@@ -193,18 +142,6 @@ func CollectGarbage(
 		} else {
 			_, err = metaStore.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
 			if err == nil {
-				continue
-			}
-		}
-
-		// Phase-5 D-11: consult the backup hold set before accounting this
-		// payload as orphan. Held PayloadIDs are referenced by at least one
-		// retained backup manifest and must be preserved.
-		if heldSet != nil {
-			if _, isHeld := heldSet[metadata.PayloadID(payloadID)]; isHeld {
-				logger.Info("GC: holding orphan for backup",
-					"payloadID", payloadID,
-					"shareName", shareName)
 				continue
 			}
 		}
@@ -252,20 +189,6 @@ func CollectGarbage(
 		"errors", stats.Errors)
 
 	return stats
-}
-
-// parsePayloadIDFromBlockKey extracts payloadID from a block key.
-//
-// Block key format: {payloadID}/block-{N}
-// Example: "export/documents/report.pdf/block-0" -> "export/documents/report.pdf"
-//
-// Returns empty string if format is invalid.
-func parsePayloadIDFromBlockKey(blockKey string) string {
-	idx := strings.Index(blockKey, "/block-")
-	if idx <= 0 {
-		return ""
-	}
-	return blockKey[:idx]
 }
 
 // parseShareName extracts the share name from a payloadID.
