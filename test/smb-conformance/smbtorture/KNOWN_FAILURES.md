@@ -217,20 +217,16 @@ DittoFS implements file leases (Phase 37) but not directory leases.
 | smb2.dirlease.v2_request | Directory Leases | Directory leases not implemented | - |
 | smb2.dirlease.v2_request_parent | Directory Leases | Directory leases not implemented | - |
 
-### Credit Management (Multi-Channel Subset Not Implemented)
+### Credit Management
 
-Credit grant arithmetic and the `max_async_credits` cap are both correct
-post-#399 follow-up: `ipc_max_data_zero`, `1conn_ipc_max_async_credits`,
-`2conn_ipc_max_async_credits`, and `1conn_notify_max_async_credits` all pass.
-
-The remaining failures all require multi-channel session binding (MS-SMB2
-§3.3.5.5.2) and are tracked under #361.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.credits.multichannel_ipc_max_async_credits | Credits | Multi-channel async credit coordination across channels not yet implemented (Phase 2 of #361) | #361 |
-| smb2.credits.2conn_notify_max_async_credits | Credits | Multi-channel not implemented (second connection disconnects mid-test) | #361 |
-| smb2.credits.multichannel_max_async_credits | Credits | Multi-channel async credit coordination across channels not yet implemented (Phase 2 of #361) | #361 |
+Credit grant arithmetic and the `max_async_credits` cap are correct post-#399
+and post-#416: the full `smb2.credits` subsuite (10 tests) passes. Samba
+enforces the 511-slot cap **per TCP connection** —
+`source4/torture/smb2/credits.c:1346` asserts
+`num_status_pending == 511` per tree — which DittoFS's per-`ConnInfo`
+counter already matched. The `2conn_notify_max_async_credits` failure that
+remained here was a cross-connection MessageID collision in
+`NotifyRegistry`, fixed in #416.
 
 ### Directory Operations (Advanced Queries Not Implemented)
 
