@@ -6,24 +6,31 @@ A comprehensive multi-protocol virtual filesystem with NFSv3/NFSv4.0/NFSv4.1 and
 
 Target: Cloud-native enterprise NAS with feature parity exceeding JuiceFS and Hammerspace, particularly in security (Kerberos + AES encryption), session reliability (EOS), cross-protocol consistency, Windows SMB3.1.1 compatibility, and edge/offline resilience.
 
-## Current Milestone: v0.13.0 Metadata Backup & Restore (issue #368)
+## Current Milestone: v0.15.0 Block Store + Core-Flow Refactor (issue #419)
 
-**Goal:** First-class disaster-recovery for metadata stores — on-demand and scheduled backups to local FS or S3, with restore and listing from CLI/REST. Closes the gap left by `dfs backup/restore controlplane` (config-only).
+**Goal:** Refactor the block-storage subsystem to content-addressable storage (CAS) with FastCDC chunking and BLAKE3 hashing. Immutable block keys unblock future per-share atomic backups and deliver 40–80% cross-VM dedup for the primary VM-backed NAS workload. Bundle cleanup of the adapter → engine → metadata/block core flow accumulated across iterations.
 
 **Target features:**
-- Backup repository configured on the metadata store itself (destination type, optional cron schedule, retention policy)
-- `dfsctl store metadata <store-name> backup` — on-demand backup using configured repository
-- `dfsctl store metadata <store-name> restore [--from <backup-id>]` — restore (latest by default)
-- `dfsctl store metadata <store-name> backup list` — list backups in the repo
-- In-process scheduler honoring per-store schedule + retention
-- Destination drivers for local FS and S3 (reuse existing abstractions)
-- Control-plane HTTP API mirroring the CLI (drives dittofs-pro UI)
+- Content-addressable block keys (`cas/{hash[0:2]}/{hash[2:4]}/{hash_hex}`) — immutable by construction
+- FastCDC content-defined chunking (1 MB / 4 MB / 16 MB min/avg/max) — byte-shift resistant
+- BLAKE3 hashing (3–5× SHA-256 throughput) via `github.com/zeebo/blake3`
+- Merkle-root `FileAttr.ObjectID` + file-level dedup short-circuit
+- Hybrid local store: per-file append log (Logs) + hash-keyed chunk directory (Blocks)
+- Unified in-memory Cache: LRU + sequential prefetch, keyed by ContentHash
+- Engine API: caller passes `[]BlockRef` to `ReadAt`/`WriteAt` (cleaner layering)
+- Mark-sweep GC (fail-closed) replacing path-prefix scan
+- NFS/SMB adapter layer cleanup: shared helpers, buffer-pool parity, error-mapping consolidation
+- Migration tooling: `dfsctl blockstore migrate` offline re-chunk + re-hash
+- Simplified block state machine: Pending → Syncing → Remote (was 4 states)
+
+**Prerequisite for:** v0.16.0 per-share atomic backup refactor. CAS key immutability makes backup manifests structurally race-free.
 
 **In flight in parallel (not in this milestone):**
-- **v0.11.x / v0.12.1** — SMB protocol improvements (continuation of v0.10.0 work; phase 73.1-04 carries over)
+- **v0.10.0 / v0.11.x / v0.12.1** — SMB protocol improvements (continuation work)
 
 ## Upcoming Milestones
 
+- **v0.16.0 Per-Share Atomic Backup** — depends on v0.15.0 CAS
 - **BlockStore Security** — Block-level compression and encryption
 - **DX/UX Improvements** — Makefile, CI optimization, adapter config API
 - **NFSv4.2 Extensions** — Server-side copy, clone/reflinks, sparse files, xattrs
@@ -285,4 +292,4 @@ Enable enterprise-grade multi-protocol file access (NFSv3, NFSv4.x, SMB3) with u
 | NTLM sealing never implemented | SMB3 AES transport encryption is the only confidentiality path | ✓ Good — Phase 68 |
 
 ---
-*Last updated: 2026-03-20 after v0.10.0 milestone start*
+*Last updated: 2026-04-23 at v0.15.0 milestone start*
