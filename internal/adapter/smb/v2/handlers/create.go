@@ -616,7 +616,15 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 								Data: leaseResp.Encode(),
 							})
 						}
+						// Re-mark V2 regardless of whether the client repeated
+						// RqLs on this reconnect. Lease-backed durable handles
+						// require SMB 3.0+ (MS-SMB2 §3.3.5.9.7 / §3.3.5.9.12),
+						// and SMB 3.x leases are always V2-context. Without
+						// this, an omitted-RqLs reconnect would leave the
+						// lease untracked and subsequent breaks would send
+						// NewEpoch = 0 even though the lease is V2 (#417).
 						if grantedState != lock.LeaseStateNone {
+							h.LeaseManager.MarkLeaseV2(restored.LeaseKey)
 							restored.OplockLevel = OplockLevelLease
 						}
 					}

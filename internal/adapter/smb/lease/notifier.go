@@ -78,9 +78,15 @@ func (h *SMBBreakHandler) OnOpLockBreak(handleKey string, ul *lock.UnifiedLock, 
 		}
 	}
 
-	// Use the current lease epoch for V2 break notifications. The LockManager
-	// already advanced the epoch when initiating the break.
-	newEpoch := ul.Lease.Epoch
+	// Per MS-SMB2 §2.2.23.2: NewEpoch is the V2 lease epoch; for V1 leases
+	// it MUST be set to zero. The LeaseManager records which leases were
+	// granted from a V2 create context. Unknown keys default to V1 (safe:
+	// zero is always valid and avoids leaking stale epochs to V1 clients).
+	var newEpoch uint16
+	if h.leaseManager.IsV2(ul.Lease.LeaseKey) {
+		// LockManager already advanced the epoch when initiating the break.
+		newEpoch = ul.Lease.Epoch
+	}
 
 	logger.Debug("SMBBreakHandler: dispatching lease break notification",
 		"leaseKey", fmt.Sprintf("%x", ul.Lease.LeaseKey),
