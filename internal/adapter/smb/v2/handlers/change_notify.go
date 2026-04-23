@@ -139,6 +139,13 @@ type PendingNotify struct {
 	// Request identification
 	FileID    [16]byte
 	SessionID uint64
+	// ConnID is the stable per-TCP-connection identifier on which this
+	// CHANGE_NOTIFY arrived. Needed alongside MessageID because SMB2 scopes
+	// MessageID to a single connection — two independent sessions on two
+	// TCP connections will routinely pick the same MessageID values, and
+	// keying the registry by MessageID alone silently evicts the earlier
+	// pending notify when the later one registers (issue #416).
+	ConnID    uint64
 	MessageID uint64
 	AsyncId   uint64 // Unique async ID for interim/final response correlation
 
@@ -162,20 +169,31 @@ type PendingNotify struct {
 // matching watchers and delivers async responses via AsyncCallback.
 // Thread-safe: all operations are protected by a read-write mutex.
 type NotifyRegistry struct {
-	mu          sync.RWMutex
-	pending     map[string][]*PendingNotify // path -> pending requests
-	byFileID    map[string]*PendingNotify   // fileID string -> pending request
-	byMessageID map[uint64]*PendingNotify   // messageID -> pending request (for CANCEL)
-	byAsyncId   map[uint64]*PendingNotify   // asyncId -> pending request (for async CANCEL)
+	mu       sync.RWMutex
+	pending  map[string][]*PendingNotify // path -> pending requests
+	byFileID map[string]*PendingNotify   // fileID string -> pending request
+	// byMsgKey is keyed by (ConnID, MessageID) because MessageID is scoped
+	// per TCP connection in SMB2. Keying by MessageID alone conflates
+	// independent pending notifies from different connections and silently
+	// evicts them on Register (issue #416).
+	byMsgKey  map[notifyMsgKey]*PendingNotify
+	byAsyncId map[uint64]*PendingNotify // asyncId -> pending request (for async CANCEL)
+}
+
+// notifyMsgKey identifies a pending notify by the tuple that uniquely names
+// an SMB2 request: the per-connection ID plus the per-connection MessageID.
+type notifyMsgKey struct {
+	ConnID    uint64
+	MessageID uint64
 }
 
 // NewNotifyRegistry creates a new notify registry.
 func NewNotifyRegistry() *NotifyRegistry {
 	return &NotifyRegistry{
-		pending:     make(map[string][]*PendingNotify),
-		byFileID:    make(map[string]*PendingNotify),
-		byMessageID: make(map[uint64]*PendingNotify),
-		byAsyncId:   make(map[uint64]*PendingNotify),
+		pending:   make(map[string][]*PendingNotify),
+		byFileID:  make(map[string]*PendingNotify),
+		byMsgKey:  make(map[notifyMsgKey]*PendingNotify),
+		byAsyncId: make(map[uint64]*PendingNotify),
 	}
 }
 
@@ -202,16 +220,21 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 		return ErrTooManyWatches
 	}
 
-	// Clean up any existing entry with the same MessageID to prevent orphans
-	// in byFileID/pending (a misbehaving client may reuse MessageIDs).
-	if oldByMsg, ok := r.byMessageID[notify.MessageID]; ok {
+	// Clean up any existing entry from the same (ConnID, MessageID) slot
+	// with a different FileID. SMB2 MessageIDs are unique per connection,
+	// so a same-connection collision means the client reused a MessageID
+	// — a client bug we defensively recover from. Cross-connection
+	// duplicates MUST NOT fall into this branch: they represent distinct
+	// pending requests on independent TCP connections (issue #416).
+	msgKey := notifyMsgKey{ConnID: notify.ConnID, MessageID: notify.MessageID}
+	if oldByMsg, ok := r.byMsgKey[msgKey]; ok {
 		if string(oldByMsg.FileID[:]) != string(notify.FileID[:]) {
 			r.unregisterLocked(oldByMsg)
 		}
 	}
 
 	r.byFileID[string(notify.FileID[:])] = notify
-	r.byMessageID[notify.MessageID] = notify
+	r.byMsgKey[msgKey] = notify
 	r.byAsyncId[notify.AsyncId] = notify
 	r.pending[notify.WatchPath] = append(r.pending[notify.WatchPath], notify)
 
@@ -238,14 +261,16 @@ func (r *NotifyRegistry) Unregister(fileID [16]byte) *PendingNotify {
 	return r.unregisterLocked(notify)
 }
 
-// UnregisterByMessageID removes a pending notification by MessageID.
-// Called by CANCEL to cancel a pending CHANGE_NOTIFY request.
-// Returns the removed PendingNotify, or nil if not found.
-func (r *NotifyRegistry) UnregisterByMessageID(messageID uint64) *PendingNotify {
+// UnregisterByMessageID removes a pending notification by (ConnID, MessageID).
+// Called by CANCEL when SMB2_FLAGS_ASYNC_COMMAND is not set on the cancel
+// request (spec requires the server to match the original request's
+// MessageID on its connection). Returns the removed PendingNotify, or nil
+// if not found.
+func (r *NotifyRegistry) UnregisterByMessageID(connID, messageID uint64) *PendingNotify {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	notify, ok := r.byMessageID[messageID]
+	notify, ok := r.byMsgKey[notifyMsgKey{ConnID: connID, MessageID: messageID}]
 	if !ok {
 		return nil
 	}
@@ -273,7 +298,7 @@ func (r *NotifyRegistry) UnregisterByAsyncId(asyncId uint64) *PendingNotify {
 func (r *NotifyRegistry) unregisterLocked(notify *PendingNotify) *PendingNotify {
 	fileIDKey := string(notify.FileID[:])
 	delete(r.byFileID, fileIDKey)
-	delete(r.byMessageID, notify.MessageID)
+	delete(r.byMsgKey, notifyMsgKey{ConnID: notify.ConnID, MessageID: notify.MessageID})
 	delete(r.byAsyncId, notify.AsyncId)
 
 	// Remove from pending path list
