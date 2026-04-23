@@ -58,7 +58,14 @@ func isValidUpgrade(currentState, requestedState uint32) bool {
 }
 
 // advanceEpoch increments the epoch counter on a lease.
-// Called on every state change: grant, break initiate, break ack, upgrade.
+// Called on every state change: grant, break initiate, upgrade.
+//
+// Break ACK is NOT a state change: MS-SMB2 §3.3.4.7 specifies that the
+// server sets NewEpoch = Epoch + 1 and commits Epoch = Epoch + 1 when
+// the break notification is dispatched. The subsequent ACK confirms a
+// transition already announced and counted; advancing again on ACK
+// drifts the server one past what the client tracks and trips V2 lease
+// verification on any subsequent break (see #417).
 func advanceEpoch(lease *OpLock) {
 	lease.Epoch++
 }
@@ -505,12 +512,14 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 		return nil
 	}
 
-	// Update lease state
+	// Update lease state. Do NOT advance Epoch here: the state change was
+	// already counted when the break notification was dispatched per MS-SMB2
+	// §3.3.4.7 ("NewEpoch = Epoch + 1 ... Epoch = Epoch + 1"). Advancing on
+	// ACK drifts the server one past the client (#417).
 	lock.Lease.LeaseState = acknowledgedState
 	lock.Lease.Breaking = false
 	lock.Lease.BreakToState = 0
 	lock.Lease.BreakStarted = time.Time{}
-	advanceEpoch(lock.Lease)
 
 	// Update lock type based on new state
 	lock.Type = lockTypeForLeaseState(acknowledgedState)

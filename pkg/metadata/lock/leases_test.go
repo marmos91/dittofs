@@ -545,6 +545,95 @@ func TestEpoch_IncrementOnUpgrade(t *testing.T) {
 	assert.Equal(t, uint16(3), epoch3)
 }
 
+// epochForLease returns the current Epoch of the lease with the given key.
+// Helper for the epoch-accounting tests below.
+func epochForLease(t *testing.T, mgr *Manager, key [16]byte) uint16 {
+	t.Helper()
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	_, lock, _ := mgr.findLeaseByKey(key)
+	if lock == nil || lock.Lease == nil {
+		t.Fatalf("no lease found for key %x", key)
+	}
+	return lock.Lease.Epoch
+}
+
+// setBreaking drives the lease into the Breaking state without going through
+// RequestLease (which would block on the break). Mirrors
+// TestAcknowledgeLeaseBreak_ToReadState's setup and bumps the epoch exactly
+// like RequestLease does at the real break-initiation site.
+func setBreaking(t *testing.T, mgr *Manager, key [16]byte, breakTo uint32) {
+	t.Helper()
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	for _, locks := range mgr.unifiedLocks {
+		for _, lock := range locks {
+			if lock.Lease != nil && lock.Lease.LeaseKey == key {
+				lock.Lease.Breaking = true
+				lock.Lease.BreakToState = breakTo
+				lock.Lease.BreakStarted = time.Now()
+				advanceEpoch(lock.Lease) // matches RequestLease at leases.go:256
+				return
+			}
+		}
+	}
+	t.Fatalf("no lease with key %x to mark breaking", key)
+}
+
+// TestEpoch_BreakPlusAck_SingleIncrement verifies MS-SMB2 §3.3.4.7: a break
+// (notification + subsequent ACK) advances Epoch exactly once — not twice.
+// The break-initiation increment is the state change announced on the wire;
+// the ACK confirms that change and must not add a second increment. See #417.
+func TestEpoch_BreakPlusAck_SingleIncrement(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	key := [16]byte{1, 0, 0, 0}
+
+	// Grant RWH. Epoch = 1.
+	_, epochGrant, err := mgr.RequestLease(ctx, FileHandle("file1"), key, [16]byte{}, "owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.NoError(t, err)
+	require.Equal(t, uint16(1), epochGrant)
+
+	// Break initiated (RWH → RH). Epoch must advance to 2 — this is what the
+	// notification carries as NewEpoch.
+	setBreaking(t, mgr, key, LeaseStateRead|LeaseStateHandle)
+	require.Equal(t, uint16(2), epochForLease(t, mgr, key),
+		"break initiation must advance epoch to grant + 1")
+
+	// ACK. Epoch must stay at 2: the state change was already counted.
+	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx, key, LeaseStateRead|LeaseStateHandle, 2))
+	assert.Equal(t, uint16(2), epochForLease(t, mgr, key),
+		"ACK must not advance epoch — would drift one past the client (#417)")
+}
+
+// TestEpoch_TwoBreakCycles_TwoIncrements verifies the per-break accounting
+// across consecutive break/ACK pairs. After grant + two breaks, Epoch must be
+// grant + 2 (not grant + 4, which is the pre-fix double-increment behavior).
+func TestEpoch_TwoBreakCycles_TwoIncrements(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	key := [16]byte{2, 0, 0, 0}
+
+	_, epochGrant, err := mgr.RequestLease(ctx, FileHandle("file2"), key, [16]byte{}, "owner1", "client1", "/share", LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.NoError(t, err)
+	require.Equal(t, uint16(1), epochGrant)
+
+	// Cycle 1: break RWH → RH, ACK.
+	setBreaking(t, mgr, key, LeaseStateRead|LeaseStateHandle)
+	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx, key, LeaseStateRead|LeaseStateHandle, 2))
+	require.Equal(t, uint16(2), epochForLease(t, mgr, key))
+
+	// Cycle 2: break RH → R, ACK. One more increment expected.
+	setBreaking(t, mgr, key, LeaseStateRead)
+	require.NoError(t, mgr.AcknowledgeLeaseBreak(ctx, key, LeaseStateRead, 3))
+	assert.Equal(t, uint16(3), epochForLease(t, mgr, key),
+		"two break/ack cycles must yield exactly two increments total")
+}
+
 // ============================================================================
 // testBreakCallbacks helper
 // ============================================================================

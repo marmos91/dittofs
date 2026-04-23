@@ -34,10 +34,9 @@ async credit coordination.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.multichannel.leases.test1 | Multi-channel | Pre-existing lease break new_epoch mismatch, surfaced once interface enumeration works — not a Phase 2 fan-out issue | - |
-| smb2.multichannel.leases.test2 | Multi-channel | Pre-existing lease break new_epoch mismatch — not a Phase 2 fan-out issue | - |
-| smb2.multichannel.leases.test3 | Multi-channel | Pre-existing lease break new_epoch mismatch — not a Phase 2 fan-out issue | - |
-| smb2.multichannel.leases.test4 | Multi-channel | Pre-existing lease break new_epoch mismatch — not a Phase 2 fan-out issue | - |
+| smb2.multichannel.leases.test2 | Multi-channel | Requires torture_block_tcp_transport (Samba-internal test-harness operation) to simulate a blocked channel — not implementable | - |
+| smb2.multichannel.leases.test3 | Multi-channel | Spurious lease break on uncontested open — separate bug from #417 epoch drift | - |
+| smb2.multichannel.leases.test4 | Multi-channel | Requires torture_block_tcp_transport (Samba-internal test-harness operation) — not implementable | - |
 | smb2.multichannel.oplocks.test2 | Multi-channel | Requires FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT (Samba test-harness FSCTL) to simulate connection failure — not implementable | - |
 | smb2.multichannel.oplocks.test3_windows | Multi-channel | Requires FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT to block TCP transport — not implementable | - |
 | smb2.multichannel.oplocks.test3_specification | Multi-channel | Requires FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT + 32-channel coordination — not implementable | - |

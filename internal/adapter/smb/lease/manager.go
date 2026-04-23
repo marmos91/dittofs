@@ -50,7 +50,14 @@ type LeaseManager struct {
 	notifier   LeaseBreakNotifier
 	sessionMap map[string]uint64 // hex(leaseKey) -> sessionID
 	leaseShare map[string]string // hex(leaseKey) -> shareName (for resolution)
-	mu         sync.RWMutex
+	// leaseV2 records whether each lease was granted from an
+	// SMB2_CREATE_REQUEST_LEASE_V2 context. Per MS-SMB2 §2.2.23.2 the
+	// NewEpoch field of a break notification MUST be zero for V1 leases;
+	// for V2 leases it carries the incremented lease epoch. Sending a
+	// non-zero NewEpoch on a V1 break trips the client (#417 root cause
+	// for smb2.multichannel.leases.test1-3).
+	leaseV2 map[string]bool // hex(leaseKey) -> true iff V2 lease
+	mu      sync.RWMutex
 }
 
 // NewLeaseManager creates a new SMB LeaseManager.
@@ -65,6 +72,7 @@ func NewLeaseManager(resolver LockManagerResolver, notifier LeaseBreakNotifier) 
 		notifier:   notifier,
 		sessionMap: make(map[string]uint64),
 		leaseShare: make(map[string]string),
+		leaseV2:    make(map[string]bool),
 	}
 }
 
@@ -570,7 +578,30 @@ func (lm *LeaseManager) removeLeaseMapping(keyHex string) {
 	lm.mu.Lock()
 	delete(lm.sessionMap, keyHex)
 	delete(lm.leaseShare, keyHex)
+	delete(lm.leaseV2, keyHex)
 	lm.mu.Unlock()
+}
+
+// MarkLeaseV2 records that the lease with the given key was granted from an
+// SMB2_CREATE_REQUEST_LEASE_V2 context. Callers must invoke this after a
+// successful RequestLease whenever the originating create context was V2 so
+// that subsequent break notifications carry the epoch per MS-SMB2 §2.2.23.2.
+// Leases not marked are treated as V1 and get NewEpoch = 0 on break.
+func (lm *LeaseManager) MarkLeaseV2(leaseKey [16]byte) {
+	keyHex := hex.EncodeToString(leaseKey[:])
+	lm.mu.Lock()
+	lm.leaseV2[keyHex] = true
+	lm.mu.Unlock()
+}
+
+// IsV2 reports whether the lease was granted from a V2 create context.
+// Returns false for unknown keys (safe default: treat as V1 and send
+// NewEpoch = 0 rather than leak a non-zero epoch).
+func (lm *LeaseManager) IsV2(leaseKey [16]byte) bool {
+	keyHex := hex.EncodeToString(leaseKey[:])
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	return lm.leaseV2[keyHex]
 }
 
 // resolveLockManager resolves the LockManager for a share name.

@@ -384,14 +384,31 @@ func ProcessLeaseCreateContext(
 		epoch = 0
 	}
 
-	// Per MS-SMB2 3.3.5.9: For V2 lease requests, the server should track
-	// the client's epoch from the RqLs create context. Initialize the epoch
-	// to max(current, client) so re-opens with the same key pick up the
-	// client's evolving epoch value. This covers both first grants (epoch==1)
-	// and subsequent re-opens or upgrades.
-	if !isV1 && leaseReq.Epoch > 0 && grantedState != lock.LeaseStateNone && leaseReq.Epoch > epoch {
-		leaseMgr.SetLeaseEpoch(leaseReq.LeaseKey, leaseReq.Epoch)
-		epoch = leaseReq.Epoch
+	// Per MS-SMB2 3.3.5.9.8: a V2 lease grant is a state change that MUST
+	// advance Epoch by 1 over the client's requested value — unconditionally,
+	// including a first-grant Epoch=0 (server must respond with Epoch=1).
+	// Seed server state to max(current, client+1) so re-opens with the same
+	// key pick up the client's evolving view while still advancing past any
+	// server-side increments the client hasn't seen yet (e.g. prior breaks).
+	//
+	// Gate on err == nil: on ErrLeaseBreakInProgress the LockManager returns
+	// the breaking lease's current state/epoch read-only and explicitly must
+	// not be mutated. Advancing its epoch here would drift the state that
+	// the in-flight break ACK will re-persist.
+	if !isV1 && err == nil && grantedState != lock.LeaseStateNone {
+		nextEpoch := leaseReq.Epoch + 1
+		if nextEpoch > epoch {
+			leaseMgr.SetLeaseEpoch(leaseReq.LeaseKey, nextEpoch)
+			epoch = nextEpoch
+		}
+	}
+
+	// Record V1/V2 so break notifications carry NewEpoch correctly
+	// (MS-SMB2 §2.2.23.2 — V1 breaks MUST send NewEpoch = 0). ACK-in-progress
+	// (ErrLeaseBreakInProgress) responses reference an already-tracked lease
+	// — skip re-marking to avoid racing the in-flight state transition.
+	if !isV1 && err == nil && grantedState != lock.LeaseStateNone {
+		leaseMgr.MarkLeaseV2(leaseReq.LeaseKey)
 	}
 
 	// Build response context.
