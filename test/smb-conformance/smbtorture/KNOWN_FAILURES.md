@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-04-17 (Reconcile credits subsuite after #378 grant fix — 3 tests now pass, 4 reclassified, subsuite no longer aborts)
+Last updated: 2026-04-23 (Filed tracking issues for fix-candidate clusters: #429 leases, #430 byte-range locks, #431 DH V1, #432 DH V2, #433 rename, #434 timestamps, #435 charset, #436 multichannel.leases.test3)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -35,7 +35,7 @@ async credit coordination.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.multichannel.leases.test2 | Multi-channel | Requires torture_block_tcp_transport (Samba-internal test-harness operation) to simulate a blocked channel — not implementable | - |
-| smb2.multichannel.leases.test3 | Multi-channel | Spurious lease break on uncontested open — separate bug from #417 epoch drift | - |
+| smb2.multichannel.leases.test3 | Multi-channel | Spurious lease break on uncontested open — separate bug from #417 epoch drift | #436 |
 | smb2.multichannel.leases.test4 | Multi-channel | Requires torture_block_tcp_transport (Samba-internal test-harness operation) — not implementable | - |
 | smb2.multichannel.oplocks.test2 | Multi-channel | Requires FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT (Samba test-harness FSCTL) to simulate connection failure — not implementable | - |
 | smb2.multichannel.oplocks.test3_windows | Multi-channel | Requires FSCTL_SMBTORTURE_FORCE_UNACKED_TIMEOUT to block TCP transport — not implementable | - |
@@ -451,7 +451,7 @@ Newly reachable after compound and protocol improvements.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.charset.Testing | Character set | Unicode surrogate pair handling not implemented | - |
+| smb2.charset.Testing | Character set | Unicode surrogate pair handling not implemented | #435 |
 
 ### Delete-on-Close OVERWRITE_IF (Fix Candidate)
 
@@ -468,19 +468,19 @@ still fail due to incomplete reconnect and lease coordination.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.durable-open.open-lease | Durable handles V1 | Durable open with lease not fully working | - |
-| smb2.durable-open.reopen1a | Durable handles V1 | Durable reopen not fully working | - |
-| smb2.durable-open.reopen1a-lease | Durable handles V1 | Durable reopen with lease not fully working | - |
-| smb2.durable-open.reopen2 | Durable handles V1 | Durable reopen not fully working | - |
-| smb2.durable-open.reopen2-lease | Durable handles V1 | Durable reopen with lease not fully working | - |
-| smb2.durable-open.reopen2-lease-v2 | Durable handles V1 | Durable reopen with lease V2 not fully working | - |
-| smb2.durable-open.reopen2a | Durable handles V1 | Durable reopen not fully working | - |
-| smb2.durable-open.reopen4 | Durable handles V1 | Durable reopen not fully working | - |
-| smb2.durable-open.delete_on_close1 | Durable handles V1 | Durable DOC not fully working | - |
-| smb2.durable-open.delete_on_close2 | Durable handles V1 | Durable DOC not fully working | - |
-| smb2.durable-open.file-position | Durable handles V1 | Durable file position not fully working | - |
-| smb2.durable-open.lock-oplock | Durable handles V1 | Durable lock + oplock not fully working | - |
-| smb2.durable-open.lock-lease | Durable handles V1 | Durable lock + lease not fully working | - |
+| smb2.durable-open.open-lease | Durable handles V1 | Durable open with lease not fully working | #431 |
+| smb2.durable-open.reopen1a | Durable handles V1 | Durable reopen not fully working | #431 |
+| smb2.durable-open.reopen1a-lease | Durable handles V1 | Durable reopen with lease not fully working | #431 |
+| smb2.durable-open.reopen2 | Durable handles V1 | Durable reopen not fully working | #431 |
+| smb2.durable-open.reopen2-lease | Durable handles V1 | Durable reopen with lease not fully working | #431 |
+| smb2.durable-open.reopen2-lease-v2 | Durable handles V1 | Durable reopen with lease V2 not fully working | #431 |
+| smb2.durable-open.reopen2a | Durable handles V1 | Durable reopen not fully working | #431 |
+| smb2.durable-open.reopen4 | Durable handles V1 | Durable reopen not fully working | #431 |
+| smb2.durable-open.delete_on_close1 | Durable handles V1 | Durable DOC not fully working | #431 |
+| smb2.durable-open.delete_on_close2 | Durable handles V1 | Durable DOC not fully working | #431 |
+| smb2.durable-open.file-position | Durable handles V1 | Durable file position not fully working | #431 |
+| smb2.durable-open.lock-oplock | Durable handles V1 | Durable lock + oplock not fully working | #431 |
+| smb2.durable-open.lock-lease | Durable handles V1 | Durable lock + lease not fully working | #431 |
 
 ### Durable Handles V2 (Fix Candidate)
 
@@ -489,38 +489,38 @@ still fail due to incomplete reconnect, lease coordination, and persistence.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.durable-v2-open.create-blob | Durable handles V2 | DH2Q create context blob validation | - |
-| smb2.durable-v2-open.open-oplock | Durable handles V2 | DH2 open with oplock not fully working | - |
-| smb2.durable-v2-open.open-lease | Durable handles V2 | DH2 open with lease not fully working | - |
-| smb2.durable-v2-open.reopen1 | Durable handles V2 | DH2 reopen not fully working | - |
-| smb2.durable-v2-open.reopen1a | Durable handles V2 | DH2 reopen not fully working | - |
-| smb2.durable-v2-open.reopen1a-lease | Durable handles V2 | DH2 reopen with lease not fully working | - |
-| smb2.durable-v2-open.reopen2 | Durable handles V2 | DH2 reopen not fully working | - |
-| smb2.durable-v2-open.reopen2b | Durable handles V2 | DH2 reopen not fully working | - |
-| smb2.durable-v2-open.reopen2-lease | Durable handles V2 | DH2 reopen with lease not fully working | - |
-| smb2.durable-v2-open.reopen2-lease-v2 | Durable handles V2 | DH2 reopen with lease V2 not fully working | - |
-| smb2.durable-v2-open.durable-v2-setinfo | Durable handles V2 | DH2 setinfo not fully working | - |
-| smb2.durable-v2-open.lock-oplock | Durable handles V2 | DH2 lock with oplock not fully working | - |
-| smb2.durable-v2-open.lock-lease | Durable handles V2 | DH2 lock with lease not fully working | - |
-| smb2.durable-v2-open.lock-noW-lease | Durable handles V2 | DH2 lock without write lease not fully working | - |
-| smb2.durable-v2-open.stat-and-lease | Durable handles V2 | DH2 stat + lease interaction not fully working | - |
-| smb2.durable-v2-open.nonstat-and-lease | Durable handles V2 | DH2 non-stat + lease interaction not fully working | - |
-| smb2.durable-v2-open.statRH-and-lease | Durable handles V2 | DH2 stat-RH + lease interaction not fully working | - |
-| smb2.durable-v2-open.two-same-lease | Durable handles V2 | DH2 two handles same lease not fully working | - |
-| smb2.durable-v2-open.two-different-lease | Durable handles V2 | DH2 two handles different leases not fully working | - |
-| smb2.durable-v2-open.keep-disconnected-rh-with-stat-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | - |
-| smb2.durable-v2-open.keep-disconnected-rh-with-rh-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | - |
-| smb2.durable-v2-open.keep-disconnected-rh-with-rwh-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | - |
-| smb2.durable-v2-open.keep-disconnected-rwh-with-stat-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | - |
-| smb2.durable-v2-open.purge-disconnected-rwh-with-rwh-open | Durable handles V2 | DH2 disconnected handle purge not fully working | - |
-| smb2.durable-v2-open.purge-disconnected-rwh-with-rh-open | Durable handles V2 | DH2 disconnected handle purge not fully working | - |
-| smb2.durable-v2-open.purge-disconnected-rh-with-share-none-open | Durable handles V2 | DH2 disconnected handle purge not fully working | - |
-| smb2.durable-v2-open.purge-disconnected-rh-with-write | Durable handles V2 | DH2 disconnected handle purge not fully working | - |
-| smb2.durable-v2-open.purge-disconnected-rh-with-rename | Durable handles V2 | DH2 disconnected handle purge not fully working | - |
-| smb2.durable-v2-open.app-instance | Durable handles V2 | App instance ID not fully working | - |
-| smb2.durable-v2-open.persistent-open-oplock | Durable handles V2 | Persistent handles not implemented | - |
-| smb2.durable-v2-open.persistent-open-lease | Durable handles V2 | Persistent handles not implemented | - |
-| smb2.durable-v2-delay.durable_v2_reconnect_delay | Durable handles V2 | DH2 reconnect delay not fully working | - |
+| smb2.durable-v2-open.create-blob | Durable handles V2 | DH2Q create context blob validation | #432 |
+| smb2.durable-v2-open.open-oplock | Durable handles V2 | DH2 open with oplock not fully working | #432 |
+| smb2.durable-v2-open.open-lease | Durable handles V2 | DH2 open with lease not fully working | #432 |
+| smb2.durable-v2-open.reopen1 | Durable handles V2 | DH2 reopen not fully working | #432 |
+| smb2.durable-v2-open.reopen1a | Durable handles V2 | DH2 reopen not fully working | #432 |
+| smb2.durable-v2-open.reopen1a-lease | Durable handles V2 | DH2 reopen with lease not fully working | #432 |
+| smb2.durable-v2-open.reopen2 | Durable handles V2 | DH2 reopen not fully working | #432 |
+| smb2.durable-v2-open.reopen2b | Durable handles V2 | DH2 reopen not fully working | #432 |
+| smb2.durable-v2-open.reopen2-lease | Durable handles V2 | DH2 reopen with lease not fully working | #432 |
+| smb2.durable-v2-open.reopen2-lease-v2 | Durable handles V2 | DH2 reopen with lease V2 not fully working | #432 |
+| smb2.durable-v2-open.durable-v2-setinfo | Durable handles V2 | DH2 setinfo not fully working | #432 |
+| smb2.durable-v2-open.lock-oplock | Durable handles V2 | DH2 lock with oplock not fully working | #432 |
+| smb2.durable-v2-open.lock-lease | Durable handles V2 | DH2 lock with lease not fully working | #432 |
+| smb2.durable-v2-open.lock-noW-lease | Durable handles V2 | DH2 lock without write lease not fully working | #432 |
+| smb2.durable-v2-open.stat-and-lease | Durable handles V2 | DH2 stat + lease interaction not fully working | #432 |
+| smb2.durable-v2-open.nonstat-and-lease | Durable handles V2 | DH2 non-stat + lease interaction not fully working | #432 |
+| smb2.durable-v2-open.statRH-and-lease | Durable handles V2 | DH2 stat-RH + lease interaction not fully working | #432 |
+| smb2.durable-v2-open.two-same-lease | Durable handles V2 | DH2 two handles same lease not fully working | #432 |
+| smb2.durable-v2-open.two-different-lease | Durable handles V2 | DH2 two handles different leases not fully working | #432 |
+| smb2.durable-v2-open.keep-disconnected-rh-with-stat-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #432 |
+| smb2.durable-v2-open.keep-disconnected-rh-with-rh-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #432 |
+| smb2.durable-v2-open.keep-disconnected-rh-with-rwh-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #432 |
+| smb2.durable-v2-open.keep-disconnected-rwh-with-stat-open | Durable handles V2 | DH2 disconnected handle preservation not fully working | #432 |
+| smb2.durable-v2-open.purge-disconnected-rwh-with-rwh-open | Durable handles V2 | DH2 disconnected handle purge not fully working | #432 |
+| smb2.durable-v2-open.purge-disconnected-rwh-with-rh-open | Durable handles V2 | DH2 disconnected handle purge not fully working | #432 |
+| smb2.durable-v2-open.purge-disconnected-rh-with-share-none-open | Durable handles V2 | DH2 disconnected handle purge not fully working | #432 |
+| smb2.durable-v2-open.purge-disconnected-rh-with-write | Durable handles V2 | DH2 disconnected handle purge not fully working | #432 |
+| smb2.durable-v2-open.purge-disconnected-rh-with-rename | Durable handles V2 | DH2 disconnected handle purge not fully working | #432 |
+| smb2.durable-v2-open.app-instance | Durable handles V2 | App instance ID not fully working | #432 |
+| smb2.durable-v2-open.persistent-open-oplock | Durable handles V2 | Persistent handles not implemented | #432 |
+| smb2.durable-v2-open.persistent-open-lease | Durable handles V2 | Persistent handles not implemented | #432 |
+| smb2.durable-v2-delay.durable_v2_reconnect_delay | Durable handles V2 | DH2 reconnect delay not fully working | #432 |
 
 ### Leases (Fix Candidate)
 
@@ -529,48 +529,48 @@ incomplete break notification delivery and multi-client coordination.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.lease.request | Leases | Lease request handling not fully working | - |
-| smb2.lease.nobreakself | Leases | Lease self-break suppression not fully working | - |
-| smb2.lease.statopen | Leases | Lease + stat open interaction not fully working | - |
-| smb2.lease.statopen4 | Leases | Lease + stat open interaction not fully working | - |
-| smb2.lease.upgrade | Leases | Lease upgrade not fully working | - |
-| smb2.lease.upgrade2 | Leases | Lease upgrade not fully working | - |
-| smb2.lease.upgrade3 | Leases | Lease upgrade not fully working | - |
-| smb2.lease.break | Leases | Lease break notification not fully working | - |
-| smb2.lease.oplock | Leases | Lease + oplock interaction not fully working | - |
-| smb2.lease.multibreak | Leases | Multi-client lease break not fully working | - |
-| smb2.lease.breaking1 | Leases | Lease breaking state handling not fully working | - |
-| smb2.lease.breaking2 | Leases | Lease breaking state handling not fully working | - |
-| smb2.lease.breaking3 | Leases | Lease breaking state handling not fully working | - |
-| smb2.lease.breaking4 | Leases | Lease breaking state handling not fully working | - |
-| smb2.lease.breaking5 | Leases | Lease breaking state handling not fully working | - |
-| smb2.lease.breaking6 | Leases | Lease breaking state handling not fully working | - |
-| smb2.lease.lock1 | Leases | Lease + lock interaction not fully working | - |
-| smb2.lease.complex1 | Leases | Complex lease scenario not fully working | - |
-| smb2.lease.timeout | Leases | Lease timeout handling not fully working | - |
-| smb2.lease.unlink | Leases | Lease + unlink interaction not fully working | - |
-| smb2.lease.timeout-disconnect | Leases | Lease timeout on disconnect not fully working | - |
-| smb2.lease.rename_wait | Leases | Lease + rename wait not fully working | - |
-| smb2.lease.duplicate_create | Leases | Duplicate lease create not fully working | - |
-| smb2.lease.duplicate_open | Leases | Duplicate lease open not fully working | - |
-| smb2.lease.v1_bug15148 | Leases | Lease V1 edge case not fully working | - |
-| smb2.lease.initial_delete_tdis | Leases | Lease + delete on tree disconnect not fully working | - |
-| smb2.lease.initial_delete_logoff | Leases | Lease + delete on logoff not fully working | - |
-| smb2.lease.initial_delete_disconnect | Leases | Lease + delete on disconnect not fully working | - |
-| smb2.lease.rename_dir_openfile | Leases | Lease + directory rename with open file not fully working | - |
-| smb2.lease.lease-epoch | Leases | Lease epoch tracking not fully working | - |
-| smb2.lease.break_twice | Leases | Double lease break not fully working | - |
-| smb2.lease.v2_breaking3 | Leases V2 | Lease V2 breaking state handling not fully working | - |
-| smb2.lease.v2_flags_breaking | Leases V2 | Lease V2 flags during break not fully working | - |
-| smb2.lease.v2_flags_parentkey | Leases V2 | Lease V2 parent key flags not fully working | - |
-| smb2.lease.v2_epoch1 | Leases V2 | Lease V2 epoch tracking not fully working | - |
-| smb2.lease.v2_epoch2 | Leases V2 | Lease V2 epoch tracking not fully working | - |
-| smb2.lease.v2_epoch3 | Leases V2 | Lease V2 epoch tracking not fully working | - |
-| smb2.lease.v2_complex1 | Leases V2 | Lease V2 complex scenario not fully working | - |
-| smb2.lease.v2_complex2 | Leases V2 | Lease V2 complex scenario not fully working | - |
-| smb2.lease.v2_rename | Leases V2 | Lease V2 rename interaction not fully working | - |
-| smb2.lease.v2_bug15148 | Leases V2 | Lease V2 edge case not fully working | - |
-| smb2.lease.v2_rename_target_overwrite | Leases V2 | Lease V2 rename target overwrite not fully working | - |
+| smb2.lease.request | Leases | Lease request handling not fully working | #429 |
+| smb2.lease.nobreakself | Leases | Lease self-break suppression not fully working | #429 |
+| smb2.lease.statopen | Leases | Lease + stat open interaction not fully working | #429 |
+| smb2.lease.statopen4 | Leases | Lease + stat open interaction not fully working | #429 |
+| smb2.lease.upgrade | Leases | Lease upgrade not fully working | #429 |
+| smb2.lease.upgrade2 | Leases | Lease upgrade not fully working | #429 |
+| smb2.lease.upgrade3 | Leases | Lease upgrade not fully working | #429 |
+| smb2.lease.break | Leases | Lease break notification not fully working | #429 |
+| smb2.lease.oplock | Leases | Lease + oplock interaction not fully working | #429 |
+| smb2.lease.multibreak | Leases | Multi-client lease break not fully working | #429 |
+| smb2.lease.breaking1 | Leases | Lease breaking state handling not fully working | #429 |
+| smb2.lease.breaking2 | Leases | Lease breaking state handling not fully working | #429 |
+| smb2.lease.breaking3 | Leases | Lease breaking state handling not fully working | #429 |
+| smb2.lease.breaking4 | Leases | Lease breaking state handling not fully working | #429 |
+| smb2.lease.breaking5 | Leases | Lease breaking state handling not fully working | #429 |
+| smb2.lease.breaking6 | Leases | Lease breaking state handling not fully working | #429 |
+| smb2.lease.lock1 | Leases | Lease + lock interaction not fully working | #429 |
+| smb2.lease.complex1 | Leases | Complex lease scenario not fully working | #429 |
+| smb2.lease.timeout | Leases | Lease timeout handling not fully working | #429 |
+| smb2.lease.unlink | Leases | Lease + unlink interaction not fully working | #429 |
+| smb2.lease.timeout-disconnect | Leases | Lease timeout on disconnect not fully working | #429 |
+| smb2.lease.rename_wait | Leases | Lease + rename wait not fully working | #429 |
+| smb2.lease.duplicate_create | Leases | Duplicate lease create not fully working | #429 |
+| smb2.lease.duplicate_open | Leases | Duplicate lease open not fully working | #429 |
+| smb2.lease.v1_bug15148 | Leases | Lease V1 edge case not fully working | #429 |
+| smb2.lease.initial_delete_tdis | Leases | Lease + delete on tree disconnect not fully working | #429 |
+| smb2.lease.initial_delete_logoff | Leases | Lease + delete on logoff not fully working | #429 |
+| smb2.lease.initial_delete_disconnect | Leases | Lease + delete on disconnect not fully working | #429 |
+| smb2.lease.rename_dir_openfile | Leases | Lease + directory rename with open file not fully working | #429 |
+| smb2.lease.lease-epoch | Leases | Lease epoch tracking not fully working | #429 |
+| smb2.lease.break_twice | Leases | Double lease break not fully working | #429 |
+| smb2.lease.v2_breaking3 | Leases V2 | Lease V2 breaking state handling not fully working | #429 |
+| smb2.lease.v2_flags_breaking | Leases V2 | Lease V2 flags during break not fully working | #429 |
+| smb2.lease.v2_flags_parentkey | Leases V2 | Lease V2 parent key flags not fully working | #429 |
+| smb2.lease.v2_epoch1 | Leases V2 | Lease V2 epoch tracking not fully working | #429 |
+| smb2.lease.v2_epoch2 | Leases V2 | Lease V2 epoch tracking not fully working | #429 |
+| smb2.lease.v2_epoch3 | Leases V2 | Lease V2 epoch tracking not fully working | #429 |
+| smb2.lease.v2_complex1 | Leases V2 | Lease V2 complex scenario not fully working | #429 |
+| smb2.lease.v2_complex2 | Leases V2 | Lease V2 complex scenario not fully working | #429 |
+| smb2.lease.v2_rename | Leases V2 | Lease V2 rename interaction not fully working | #429 |
+| smb2.lease.v2_bug15148 | Leases V2 | Lease V2 edge case not fully working | #429 |
+| smb2.lease.v2_rename_target_overwrite | Leases V2 | Lease V2 rename target overwrite not fully working | #429 |
 
 ### Byte-Range Locks (Fix Candidate)
 
@@ -579,25 +579,25 @@ fail due to incomplete lock contention and async lock handling.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.lock.valid-request | Locks | Lock request validation not fully working | - |
-| smb2.lock.auto-unlock | Locks | Auto-unlock on close not fully working | - |
-| smb2.lock.lock | Locks | Basic lock operation not fully working | - |
-| smb2.lock.cancel | Locks | Lock cancel not fully working | - |
-| smb2.lock.errorcode | Locks | Lock error codes not fully working | - |
-| smb2.lock.zerobytelength | Locks | Zero-length lock not fully working | - |
-| smb2.lock.unlock | Locks | Unlock operation not fully working | - |
-| smb2.lock.multiple-unlock | Locks | Multiple unlock not fully working | - |
-| smb2.lock.stacking | Locks | Lock stacking not fully working | - |
-| smb2.lock.range | Locks | Lock range validation not fully working | - |
-| smb2.lock.overlap | Locks | Overlapping locks not fully working | - |
-| smb2.lock.replay_broken_windows | Locks | Lock replay not fully working | - |
-| smb2.lock.replay_smb3_specification_durable | Locks | Lock replay with durable handles not fully working | - |
-| smb2.lock.replay_smb3_specification_multi | Locks | Lock replay with multi-channel not fully working | - |
-| smb2.lock.cancel-logoff | Locks | Lock cancel on logoff not fully working | - |
-| smb2.lock.cancel-tdis | Locks | Blocking lock deadlocks dispatch goroutine (needs async LOCK with interim response) | - |
-| smb2.lock.async | Locks | Blocking lock deadlocks dispatch goroutine (needs async LOCK with interim response) | - |
-| smb2.lock.open-brlock-deadlock | Locks | Open + byte-range lock deadlock detection not working | - |
-| smb2.lock.ctdb-delrec-deadlock | Locks | CTDB delete record deadlock not working | - |
+| smb2.lock.valid-request | Locks | Lock request validation not fully working | #430 |
+| smb2.lock.auto-unlock | Locks | Auto-unlock on close not fully working | #430 |
+| smb2.lock.lock | Locks | Basic lock operation not fully working | #430 |
+| smb2.lock.cancel | Locks | Lock cancel not fully working | #430 |
+| smb2.lock.errorcode | Locks | Lock error codes not fully working | #430 |
+| smb2.lock.zerobytelength | Locks | Zero-length lock not fully working | #430 |
+| smb2.lock.unlock | Locks | Unlock operation not fully working | #430 |
+| smb2.lock.multiple-unlock | Locks | Multiple unlock not fully working | #430 |
+| smb2.lock.stacking | Locks | Lock stacking not fully working | #430 |
+| smb2.lock.range | Locks | Lock range validation not fully working | #430 |
+| smb2.lock.overlap | Locks | Overlapping locks not fully working | #430 |
+| smb2.lock.replay_broken_windows | Locks | Lock replay not fully working | #430 |
+| smb2.lock.replay_smb3_specification_durable | Locks | Lock replay with durable handles not fully working | #430 |
+| smb2.lock.replay_smb3_specification_multi | Locks | Lock replay with multi-channel not fully working | #430 |
+| smb2.lock.cancel-logoff | Locks | Lock cancel on logoff not fully working | #430 |
+| smb2.lock.cancel-tdis | Locks | Blocking lock deadlocks dispatch goroutine (needs async LOCK with interim response) | #430 |
+| smb2.lock.async | Locks | Blocking lock deadlocks dispatch goroutine (needs async LOCK with interim response) | #430 |
+| smb2.lock.open-brlock-deadlock | Locks | Open + byte-range lock deadlock detection not working | #430 |
+| smb2.lock.ctdb-delrec-deadlock | Locks | CTDB delete record deadlock not working | #430 |
 
 ### Rename (Fix Candidate)
 
@@ -606,10 +606,10 @@ share mode enforcement during rename.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.rename.share_delete_and_delete_access | Rename | Share delete + delete access rename not working | - |
-| smb2.rename.no_share_delete_but_delete_access | Rename | Rename share mode enforcement not working | - |
-| smb2.rename.no_share_delete_no_delete_access | Rename | Rename share mode enforcement not working | - |
-| smb2.rename.rename_dir_openfile | Rename | Rename directory with open file not working | - |
+| smb2.rename.share_delete_and_delete_access | Rename | Share delete + delete access rename not working | #433 |
+| smb2.rename.no_share_delete_but_delete_access | Rename | Rename share mode enforcement not working | #433 |
+| smb2.rename.no_share_delete_no_delete_access | Rename | Rename share mode enforcement not working | #433 |
+| smb2.rename.rename_dir_openfile | Rename | Rename directory with open file not working | #433 |
 
 ### Sessions (Remaining)
 
@@ -773,13 +773,35 @@ incomplete delayed-write and timestamp freeze/unfreeze logic.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.timestamps.delayed-2write | Timestamps | Delayed write timestamp update not working | - |
-| smb2.timestamps.delayed-write-vs-flush | Timestamps | Delayed write vs flush timestamp not working | - |
-| smb2.timestamps.delayed-write-vs-setbasic | Timestamps | Delayed write vs setbasic timestamp not working | - |
-| smb2.timestamps.delayed-write-vs-seteof | Timestamps | Delayed write vs seteof timestamp not working | - |
-| smb2.timestamps.freeze-thaw | Timestamps | CreationTime freeze/unfreeze not fully working | - |
+| smb2.timestamps.delayed-2write | Timestamps | Delayed write timestamp update not working | #434 |
+| smb2.timestamps.delayed-write-vs-flush | Timestamps | Delayed write vs flush timestamp not working | #434 |
+| smb2.timestamps.delayed-write-vs-setbasic | Timestamps | Delayed write vs setbasic timestamp not working | #434 |
+| smb2.timestamps.delayed-write-vs-seteof | Timestamps | Delayed write vs seteof timestamp not working | #434 |
+| smb2.timestamps.freeze-thaw | Timestamps | CreationTime freeze/unfreeze not fully working | #434 |
 
 ## Changelog
+
+### 2026-04-23 — File tracking issues for fix-candidate clusters
+
+Previously all "Fix Candidate" sections had their `Issue` column set to `-`
+because no GH issue was tracking them. Filed eight issues so each fixable
+test cluster has a home to land work against:
+
+- **#429** — Leases (umbrella, 42 tests): break delivery + multi-client
+  coordination + V2 epoch edge cases that remain after #417.
+- **#430** — Byte-Range Locks (19 tests): async LOCK with interim response,
+  contention + deadlock detection, replay.
+- **#431** — Durable Handles V1 (13 tests): reconnect + lease coordination.
+- **#432** — Durable Handles V2 (33 tests): reopen, disconnected-handle
+  preservation/purge, app-instance, persistent-open flagged as separate
+  feature work.
+- **#433** — Rename (4 tests): share-mode enforcement during rename.
+- **#434** — Timestamps (5 tests): delayed-write + freeze/thaw.
+- **#435** — Charset (1 test): unicode surrogate pair handling.
+- **#436** — `multichannel.leases.test3` spurious lease break on uncontested
+  open (split out of #417 / PR #418 follow-up).
+
+No test reclassifications or pass/fail transitions — pure issue tracking.
 
 ### 2026-04-17 — Reconcile credits subsuite after #378 grant fix (close #397)
 The #378 credit-grant cap (commit `191e683e`) resolved both arms of #397: the
