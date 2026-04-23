@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 )
 
@@ -16,11 +17,12 @@ type stubCall struct {
 
 // stubServer is a test-only httptest.Server wrapper that records every
 // request and echoes back a configurable status+body+content-type.
+// Concurrent requests from parallel subtests are serialized by mu.
 type stubServer struct {
 	*httptest.Server
-	calls []stubCall
 
-	// Response controls
+	mu          sync.Mutex
+	calls       []stubCall
 	status      int
 	body        []byte
 	contentType string
@@ -28,10 +30,21 @@ type stubServer struct {
 
 // reset clears recorded calls and restores default response controls.
 func (s *stubServer) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.calls = nil
 	s.status = http.StatusOK
 	s.body = nil
 	s.contentType = "application/json"
+}
+
+// observedCalls returns a snapshot of recorded calls for assertions.
+func (s *stubServer) observedCalls() []stubCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]stubCall, len(s.calls))
+	copy(out, s.calls)
+	return out
 }
 
 // newStubServer builds an httptest.Server that records request method+path
@@ -40,15 +53,29 @@ func newStubServer(t *testing.T) *stubServer {
 	t.Helper()
 	s := &stubServer{status: http.StatusOK, contentType: "application/json"}
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		_ = r.Body.Close()
-		s.calls = append(s.calls, stubCall{Method: r.Method, Path: r.URL.RequestURI(), Body: b})
-		if s.contentType != "" {
-			w.Header().Set("Content-Type", s.contentType)
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "stubserver: read body: "+err.Error(), http.StatusInternalServerError)
+			return
 		}
-		w.WriteHeader(s.status)
-		if s.body != nil {
-			_, _ = w.Write(s.body)
+		if err := r.Body.Close(); err != nil {
+			http.Error(w, "stubserver: close body: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		s.mu.Lock()
+		s.calls = append(s.calls, stubCall{Method: r.Method, Path: r.URL.RequestURI(), Body: b})
+		status := s.status
+		body := s.body
+		contentType := s.contentType
+		s.mu.Unlock()
+
+		if contentType != "" {
+			w.Header().Set("Content-Type", contentType)
+		}
+		w.WriteHeader(status)
+		if body != nil {
+			_, _ = w.Write(body)
 		}
 	}))
 	return s
