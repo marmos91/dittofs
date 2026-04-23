@@ -390,7 +390,12 @@ func ProcessLeaseCreateContext(
 	// Seed server state to max(current, client+1) so re-opens with the same
 	// key pick up the client's evolving view while still advancing past any
 	// server-side increments the client hasn't seen yet (e.g. prior breaks).
-	if !isV1 && grantedState != lock.LeaseStateNone {
+	//
+	// Gate on err == nil: on ErrLeaseBreakInProgress the LockManager returns
+	// the breaking lease's current state/epoch read-only and explicitly must
+	// not be mutated. Advancing its epoch here would drift the state that
+	// the in-flight break ACK will re-persist.
+	if !isV1 && err == nil && grantedState != lock.LeaseStateNone {
 		nextEpoch := leaseReq.Epoch + 1
 		if nextEpoch > epoch {
 			leaseMgr.SetLeaseEpoch(leaseReq.LeaseKey, nextEpoch)
@@ -399,8 +404,10 @@ func ProcessLeaseCreateContext(
 	}
 
 	// Record V1/V2 so break notifications carry NewEpoch correctly
-	// (MS-SMB2 §2.2.23.2 — V1 breaks MUST send NewEpoch = 0).
-	if !isV1 && grantedState != lock.LeaseStateNone {
+	// (MS-SMB2 §2.2.23.2 — V1 breaks MUST send NewEpoch = 0). ACK-in-progress
+	// (ErrLeaseBreakInProgress) responses reference an already-tracked lease
+	// — skip re-marking to avoid racing the in-flight state transition.
+	if !isV1 && err == nil && grantedState != lock.LeaseStateNone {
 		leaseMgr.MarkLeaseV2(leaseReq.LeaseKey)
 	}
 
