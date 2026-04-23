@@ -128,17 +128,14 @@ DittoFS uses a **Runtime-centric architecture** where the Runtime is the single 
 
 **6. BlockStore** (`pkg/blockstore/`)
 - Per-share block storage orchestrator. Each share gets its own `*engine.BlockStore` instance.
-- `engine.BlockStore` composes `local.LocalStore + remote.RemoteStore + sync.Syncer`
+- `engine.BlockStore` composes `local.LocalStore + remote.RemoteStore + engine.Syncer`
 - Each share gets an isolated local storage directory; remote stores can be shared across shares (ref counted)
 - `shares.Service` owns the lifecycle (create on AddShare, close on RemoveShare)
 - Sub-packages:
-  - `engine/`: BlockStore orchestrator (compose local + remote + syncer)
+  - `engine/`: BlockStore orchestrator — composes local + remote stores and owns the read cache, syncer, prefetcher, and garbage collector (merged from former `readbuffer/`, `sync/`, `gc/` packages per TD-01)
   - `local/`: Local store interface and implementations (`fs/` filesystem, `memory/` in-memory)
   - `remote/`: Remote store interface and implementations (`s3/` production, `memory/` testing)
-  - `sync/`: Syncer for async local-to-remote data transfer
-  - `readbuffer/`: In-memory read buffer with LRU eviction and prefetch
-  - `gc/`: Block garbage collection
-  - `io/`: Extracted read/write I/O helpers
+  - `storetest/`: Conformance test helpers for new backend implementations
 
 **7. Metadata Store** (`pkg/metadata/store.go`)
 - **Simple CRUD interface** for file/directory metadata
@@ -183,7 +180,7 @@ DittoFS uses a three-tier storage model for block data:
 ```
 ┌─────────────────────────────────────┐
 │  Read Buffer (In-Memory)            │
-│  pkg/blockstore/readbuffer/         │
+│  pkg/blockstore/engine/ (cache)     │
 │  - LRU eviction                     │
 │  - Fastest access (nanoseconds)     │
 │  - Volatile (lost on restart)       │
@@ -373,7 +370,7 @@ dittofs/
 ├── cmd/
 │   ├── dfs/                      # Server CLI binary
 │   │   ├── main.go               # Entry point
-│   │   └── commands/             # Cobra commands (start, stop, config, logs, backup)
+│   │   └── commands/             # Cobra commands (start, stop, config, logs)
 │   └── dfsctl/                   # Client CLI binary
 │       ├── main.go               # Entry point
 │       ├── cmdutil/              # Shared utilities (auth, output, flags)
@@ -421,18 +418,13 @@ dittofs/
 │   │   ├── store.go              # FileBlockStore interface
 │   │   ├── types.go              # FileBlock, BlockState types
 │   │   ├── errors.go             # BlockStore error types
-│   │   ├── engine/               # BlockStore orchestrator (local + remote + syncer)
+│   │   ├── engine/               # BlockStore orchestrator + read cache + syncer + GC
 │   │   ├── local/                # Local store interface
 │   │   │   ├── fs/               # Filesystem-backed local store
 │   │   │   └── memory/           # In-memory local store (testing)
-│   │   ├── remote/               # Remote store interface
-│   │   │   ├── s3/               # S3-backed remote store
-│   │   │   └── memory/           # In-memory remote store (testing)
-│   │   ├── sync/                 # Syncer (async local-to-remote transfer)
-│   │   ├── readbuffer/            # In-memory read buffer
-│   │   ├── gc/                   # Block garbage collection
-│   │   ├── io/                   # Read/write I/O helpers
-│   │   └── storetest/            # Conformance test helpers
+│   │   └── remote/               # Remote store interface
+│   │       ├── s3/               # S3-backed remote store
+│   │       └── memory/           # In-memory remote store (testing)
 │   │
 │   ├── controlplane/             # Control plane (config + runtime)
 │   │   ├── store/                # GORM-based persistent store

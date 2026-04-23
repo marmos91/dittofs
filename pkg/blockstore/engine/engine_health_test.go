@@ -10,7 +10,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore/local/fs"
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
-	blocksync "github.com/marmos91/dittofs/pkg/blockstore/sync"
 	"github.com/marmos91/dittofs/pkg/health"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -67,7 +66,7 @@ func newHealthTestEngine(t *testing.T) (*BlockStore, *fakeRemoteStore) {
 
 	fakeRemote := newFakeRemoteStore()
 
-	syncCfg := blocksync.Config{
+	syncCfg := SyncerConfig{
 		ParallelUploads:             4,
 		ParallelDownloads:           4,
 		PrefetchBlocks:              0,
@@ -78,7 +77,7 @@ func newHealthTestEngine(t *testing.T) (*BlockStore, *fakeRemoteStore) {
 		UnhealthyCheckInterval:      10 * time.Millisecond,
 	}
 
-	syncer := blocksync.New(localStore, fakeRemote, ms, syncCfg)
+	syncer := NewSyncer(localStore, fakeRemote, ms, syncCfg)
 
 	bs, err := New(Config{
 		Local:  localStore,

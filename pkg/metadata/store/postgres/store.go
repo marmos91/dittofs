@@ -63,10 +63,9 @@ type PostgresMetadataStore struct {
 	// (or after migration 000008 on an existing database) with a fresh
 	// ULID; read thereafter. Immutable for the life of the instance.
 	//
-	// Used by Phase 5 restore's D-06 store-identity gate (Pitfall #4) so a
-	// control-plane DB reset (which rotates cfg.ID) does NOT cause the
-	// engine to report a different identity — the ULID persists with the
-	// Postgres schema itself.
+	// Persisting the ULID with the Postgres schema means a control-plane
+	// DB reset (which rotates cfg.ID) does NOT cause the engine to report
+	// a different identity.
 	storeID string
 }
 
@@ -137,10 +136,10 @@ func NewPostgresMetadataStore(
 		return nil, fmt.Errorf("failed to initialize used bytes counter: %w", err)
 	}
 
-	// Phase 5 D-06: bootstrap the engine-persistent store_id after
-	// migrations have run (migration 000008 adds the column). ensureStoreID
-	// is idempotent — first call on a fresh schema writes a ULID, later
-	// calls read the existing value.
+	// Bootstrap the engine-persistent store_id after migrations have run
+	// (migration 000008 adds the column). ensureStoreID is idempotent —
+	// first call on a fresh schema writes a ULID, later calls read the
+	// existing value.
 	sid, err := store.ensureStoreID(ctx)
 	if err != nil {
 		pool.Close()
@@ -186,8 +185,6 @@ func (s *PostgresMetadataStore) initUsedBytesCounter(ctx context.Context) error 
 // The UPDATE ... RETURNING form performs the check-and-set in a single
 // round-trip: COALESCE + NULLIF treats an empty string as NULL and then
 // substitutes the fresh ULID; any existing non-empty value is preserved.
-//
-// Used by Phase 5 D-06 store-identity gate (Pitfall #4).
 func (s *PostgresMetadataStore) ensureStoreID(ctx context.Context) (string, error) {
 	fresh := ulid.Make().String()
 	var existing string
@@ -207,13 +204,9 @@ func (s *PostgresMetadataStore) ensureStoreID(ctx context.Context) (string, erro
 // server_config.store_id). Stable across restarts — the ULID is written
 // once on first open of a freshly-migrated schema and read on every
 // subsequent open. Immutable for the life of the instance.
-//
-// Used by Phase 5 restore's D-06 store-identity gate (Pitfall #4).
 func (s *PostgresMetadataStore) GetStoreID() string { return s.storeID }
 
-// Compile-time assertion: the Postgres engine exposes GetStoreID so the
-// Phase 5 restore orchestrator can fetch the engine-persistent ID via a
-// type assertion (see pkg/controlplane/runtime/storebackups/target.go).
+// Compile-time assertion: the Postgres engine exposes GetStoreID.
 var _ interface{ GetStoreID() string } = (*PostgresMetadataStore)(nil)
 
 // Close closes the PostgreSQL connection pool and releases resources

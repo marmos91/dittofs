@@ -22,11 +22,12 @@ func TestClient_DisableShare_ReturnsEnabledFalse(t *testing.T) {
 	if share.Enabled {
 		t.Errorf("Enabled should be false, got true")
 	}
-	if s.calls[0].Method != http.MethodPost {
-		t.Errorf("method = %q, want POST", s.calls[0].Method)
+	calls := s.observedCalls()
+	if calls[0].Method != http.MethodPost {
+		t.Errorf("method = %q, want POST", calls[0].Method)
 	}
-	if s.calls[0].Path != "/api/v1/shares/alice/disable" {
-		t.Errorf("path = %q", s.calls[0].Path)
+	if calls[0].Path != "/api/v1/shares/alice/disable" {
+		t.Errorf("path = %q", calls[0].Path)
 	}
 }
 
@@ -44,7 +45,8 @@ func TestClient_EnableShare_ReturnsEnabledTrue(t *testing.T) {
 	if !share.Enabled {
 		t.Errorf("Enabled should be true")
 	}
-	if s.calls[0].Path != "/api/v1/shares/alice/enable" {
-		t.Errorf("path = %q", s.calls[0].Path)
+	calls := s.observedCalls()
+	if calls[0].Path != "/api/v1/shares/alice/enable" {
+		t.Errorf("path = %q", calls[0].Path)
 	}
 }

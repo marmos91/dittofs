@@ -166,22 +166,23 @@ func (bc *FSStore) tryDirectDiskWrite(ctx context.Context, payloadID string, blo
 		return false
 	}
 
-	// File write succeeded. Update metadata.
-	// Fast path: if we already have a pending FileBlock update, mutate it
-	// in-place instead of doing a full lookupFileBlock (which hits BadgerDB).
+	// File write succeeded. Update metadata via the in-process diskIndex ONLY;
+	// the write hot path must not consult the metadata backend (TD-02d / D-19).
+	// Eventual persistence still happens asynchronously via queueFileBlockUpdate
+	// -> pendingFBs -> SyncFileBlocks (background drainer).
 	end := blockOffset + uint32(len(data))
 	now := time.Now()
 
-	var fb *blockstore.FileBlock
-	if v, ok := bc.pendingFBs.Load(blockID); ok {
-		fb = v.(*blockstore.FileBlock)
-	} else {
-		// Slow path: lookup from store or create new
-		var err error
-		fb, err = bc.lookupFileBlock(ctx, blockID)
-		if err != nil {
-			fb = blockstore.NewFileBlock(blockID, path)
-		}
+	fb, ok := bc.diskIndexLookup(blockID)
+	if !ok {
+		// No cached metadata for this on-disk block yet (e.g., a file recovered
+		// from disk before its diskIndex entry was rebuilt, or the direct-disk
+		// write raced with a concurrent evict). Create a fresh block record —
+		// any previously persisted state in the metadata backend will be
+		// overwritten by the next async drain; this is acceptable because
+		// pwrite is a hot-path best-effort update and state transitions go
+		// through the explicit MarkBlock* helpers.
+		fb = blockstore.NewFileBlock(blockID, path)
 	}
 
 	fb.LocalPath = path
@@ -196,6 +197,8 @@ func (bc *FSStore) tryDirectDiskWrite(ctx context.Context, payloadID string, blo
 	// re-syncs on every 4KB random write. Re-sync on explicit Flush.
 	fb.LastAccess = now
 	bc.queueFileBlockUpdate(fb)
+
+	_ = ctx // retained in signature for parity with WriteAt; no longer needed on the hot path
 
 	return true
 }

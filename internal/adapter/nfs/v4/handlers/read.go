@@ -155,14 +155,7 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 	}
 
 	data := make([]byte, actualLen)
-	var n int
-
-	// Check for COW source
-	if file.COWSourcePayloadID != "" {
-		n, err = blockStore.ReadAtWithCOWSource(ctx.Context, string(file.PayloadID), string(file.COWSourcePayloadID), data, offset)
-	} else {
-		n, err = blockStore.ReadAt(ctx.Context, string(file.PayloadID), data, offset)
-	}
+	n, err := blockStore.ReadAt(ctx.Context, string(file.PayloadID), data, offset)
 
 	if err != nil {
 		logger.Debug("NFSv4 READ payload error", "error", err, "client", ctx.ClientAddr)

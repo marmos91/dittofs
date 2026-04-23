@@ -14,28 +14,10 @@ package store
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
-
-// ErrInvalidProgress is returned by BackupStore.UpdateBackupJobProgress when
-// pct is outside the closed interval [0, 100]. Phase 6 D-50: progress values
-// are best-effort stage markers; out-of-range values are a caller bug, not a
-// runtime condition, so the store surfaces them as a distinct sentinel.
-var ErrInvalidProgress = errors.New("progress must be between 0 and 100")
-
-// BackupJobFilter bundles the filter inputs to BackupStore.ListBackupJobsFiltered.
-// All string fields use empty-string-means-no-filter semantics; Limit=0 means
-// "use default 50". Implementations MUST cap Limit at 200 regardless of input
-// (Phase 6 D-42).
-type BackupJobFilter struct {
-	RepoID string               // "" = all repos
-	Status models.BackupStatus  // "" = all statuses
-	Kind   models.BackupJobKind // "" = all kinds
-	Limit  int                  // 0 = default 50, max 200 (D-42)
-}
 
 // UserStore provides user CRUD and credential operations.
 //
@@ -353,150 +335,6 @@ type BlockStoreConfigStore interface {
 	GetSharesByBlockStore(ctx context.Context, storeName string, kind models.BlockStoreKind) ([]*models.Share, error)
 }
 
-// BackupStore provides backup repo, record, and job CRUD operations.
-//
-// A backup repo represents a destination configuration scoped to a polymorphic
-// target — a metadata store in v0.13.0; block store is a plausible future
-// target. Backup records track historical backup payloads produced against a
-// repo. Backup jobs track in-flight backup or restore operations — a single
-// backup_jobs table with a kind discriminator column stores both, giving a
-// unified state machine, one polling endpoint, and one interrupted-job
-// recovery path (SAFETY-02).
-//
-// Repo names are unique per (target_kind, target_id, name); the same name may
-// be reused across targets. Record and job IDs are ULIDs when left empty on
-// create.
-type BackupStore interface {
-	// Repo operations.
-
-	// GetBackupRepo returns a backup repo by (target ID, name). The storeID
-	// argument is the polymorphic target_id (D-26); callers that need
-	// kind-aware lookups should prefer ListReposByTarget.
-	// Returns models.ErrBackupRepoNotFound if the repo doesn't exist.
-	GetBackupRepo(ctx context.Context, storeID, name string) (*models.BackupRepo, error)
-
-	// GetBackupRepoByID returns a backup repo by its unique ID.
-	// Returns models.ErrBackupRepoNotFound if the repo doesn't exist.
-	GetBackupRepoByID(ctx context.Context, id string) (*models.BackupRepo, error)
-
-	// ListReposByTarget returns every backup repo attached to a given
-	// polymorphic target (kind + id). The Phase 4 scheduler uses this to load
-	// schedules scoped to a specific metadata store (kind="metadata"); future
-	// block-store backup work is purely additive (kind="block").
-	ListReposByTarget(ctx context.Context, kind, targetID string) ([]*models.BackupRepo, error)
-
-	// ListAllBackupRepos returns every backup repo across all targets.
-	// Used by the Phase 4 scheduler to drive cron evaluation.
-	ListAllBackupRepos(ctx context.Context) ([]*models.BackupRepo, error)
-
-	// CreateBackupRepo creates a new backup repo.
-	// The ID will be generated (UUID) if empty.
-	// Returns models.ErrDuplicateBackupRepo if a repo with the same
-	// (target_kind, target_id, name) already exists.
-	CreateBackupRepo(ctx context.Context, repo *models.BackupRepo) (string, error)
-
-	// UpdateBackupRepo updates an existing backup repo.
-	// Returns models.ErrBackupRepoNotFound if the repo doesn't exist.
-	UpdateBackupRepo(ctx context.Context, repo *models.BackupRepo) error
-
-	// DeleteBackupRepo deletes a backup repo by ID.
-	// Returns models.ErrBackupRepoNotFound if the repo doesn't exist.
-	// Returns models.ErrBackupRepoInUse if any backup records reference it.
-	DeleteBackupRepo(ctx context.Context, id string) error
-
-	// Record operations.
-
-	// GetBackupRecord returns a backup record by ID.
-	// Returns models.ErrBackupRecordNotFound if the record doesn't exist.
-	GetBackupRecord(ctx context.Context, id string) (*models.BackupRecord, error)
-
-	// ListBackupRecordsByRepo returns all records for a repo, newest first.
-	ListBackupRecordsByRepo(ctx context.Context, repoID string) ([]*models.BackupRecord, error)
-
-	// ListSucceededRecordsForRetention returns succeeded, non-pinned records
-	// for the repo, sorted oldest-first (retention prunes from the tail).
-	// Used by the Phase 4 retention pass (D-10 pinned skip, D-12 succeeded-only).
-	ListSucceededRecordsForRetention(ctx context.Context, repoID string) ([]*models.BackupRecord, error)
-
-	// ListSucceededRecordsByRepo returns ALL succeeded records for a repo
-	// (INCLUDING pinned records), sorted newest-first. Used by:
-	//   - Phase 5 restore to select the latest-successful candidate (D-15)
-	//   - Phase 5 block-GC hold provider to union all retained-manifest
-	//     PayloadIDSets (D-11)
-	//
-	// Contrast with ListSucceededRecordsForRetention which excludes
-	// pinned and sorts oldest-first (retention prunes from the tail).
-	ListSucceededRecordsByRepo(ctx context.Context, repoID string) ([]*models.BackupRecord, error)
-
-	// CreateBackupRecord creates a new backup record.
-	// The ID will be generated (ULID) if empty.
-	CreateBackupRecord(ctx context.Context, rec *models.BackupRecord) (string, error)
-
-	// UpdateBackupRecord updates an existing backup record.
-	// Returns models.ErrBackupRecordNotFound if the record doesn't exist.
-	UpdateBackupRecord(ctx context.Context, rec *models.BackupRecord) error
-
-	// DeleteBackupRecord deletes a backup record by ID.
-	// Returns models.ErrBackupRecordNotFound if the record doesn't exist.
-	DeleteBackupRecord(ctx context.Context, id string) error
-
-	// SetBackupRecordPinned toggles the Pinned column for a record.
-	// Pinned records are protected from retention pruning (REPO-03).
-	// Returns models.ErrBackupRecordNotFound if the record doesn't exist.
-	SetBackupRecordPinned(ctx context.Context, id string, pinned bool) error
-
-	// Job operations.
-
-	// GetBackupJob returns a backup job by ID.
-	// Returns models.ErrBackupJobNotFound if the job doesn't exist.
-	GetBackupJob(ctx context.Context, id string) (*models.BackupJob, error)
-
-	// ListBackupJobs lists backup jobs, filtered by kind and/or status.
-	// Pass an empty string for either filter to skip that constraint.
-	ListBackupJobs(ctx context.Context, kind models.BackupJobKind, status models.BackupStatus) ([]*models.BackupJob, error)
-
-	// ListBackupJobsFiltered returns jobs matching the filter. Sort: StartedAt DESC
-	// (NULLS LAST). Implementations MUST cap filter.Limit at 200 and default it
-	// to 50 when 0. Per Phase 6 D-42.
-	ListBackupJobsFiltered(ctx context.Context, filter BackupJobFilter) ([]*models.BackupJob, error)
-
-	// ListBackupRecords returns records for a repo, optionally filtered by status.
-	// Empty statusFilter returns all statuses. Sort: CreatedAt DESC (newest-first).
-	ListBackupRecords(ctx context.Context, repoID string, statusFilter models.BackupStatus) ([]*models.BackupRecord, error)
-
-	// UpdateBackupRecordPinned flips the Pinned flag. Returns
-	// models.ErrBackupRecordNotFound on miss. Semantically equivalent to
-	// SetBackupRecordPinned; provided as a Phase-6 method-name alias so the
-	// REST handler naming (PATCH /backups/{id} → update-pinned) lines up with
-	// the store vocabulary.
-	UpdateBackupRecordPinned(ctx context.Context, recordID string, pinned bool) error
-
-	// UpdateBackupJobProgress updates the Progress column. Callers log WARN on
-	// error and do NOT fail the parent op (Phase 6 D-50). Returns
-	// models.ErrBackupJobNotFound on miss; ErrInvalidProgress if pct is outside
-	// [0,100].
-	UpdateBackupJobProgress(ctx context.Context, jobID string, pct int) error
-
-	// CreateBackupJob creates a new backup job.
-	// The ID will be generated (ULID) if empty.
-	CreateBackupJob(ctx context.Context, job *models.BackupJob) (string, error)
-
-	// UpdateBackupJob updates an existing backup job.
-	// Returns models.ErrBackupJobNotFound if the job doesn't exist.
-	UpdateBackupJob(ctx context.Context, job *models.BackupJob) error
-
-	// RecoverInterruptedJobs transitions all jobs with status=running to
-	// status=interrupted, setting a diagnostic error and finished_at timestamp.
-	// Returns the number of jobs transitioned. Called once on server startup
-	// (SAFETY-02); Phase 5 wires the boot hook in lifecycle.Service.
-	RecoverInterruptedJobs(ctx context.Context) (int, error)
-
-	// PruneBackupJobsOlderThan deletes finished BackupJob rows older than the
-	// cutoff. Running or pending jobs (FinishedAt is nil) are never pruned.
-	// Phase 4 retention invokes this with a 30-day cutoff per D-17.
-	PruneBackupJobsOlderThan(ctx context.Context, cutoff time.Time) (int, error)
-}
-
 // AdapterStore provides adapter configuration CRUD and protocol-specific settings.
 //
 // Adapter settings (NFS/SMB) are managed alongside adapter CRUD because they
@@ -697,7 +535,6 @@ type Store interface {
 	PermissionStore
 	MetadataStoreConfigStore
 	BlockStoreConfigStore
-	BackupStore
 	AdapterStore
 	SettingsStore
 	AdminStore

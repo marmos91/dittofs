@@ -5,12 +5,126 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
+
+// countingFileBlockStore wraps a blockstore.FileBlockStore and counts calls
+// per method. Used by TestLocalWritePath_NoFileBlockStoreCall to assert that
+// the local write hot path (WriteAt / flushBlock / tryDirectDiskWrite) and
+// eviction no longer touch the FileBlockStore directly (TD-02d / D-19).
+//
+// Counters are atomic so tests may observe them without racing the background
+// SyncFileBlocks goroutine that Start() launches.
+type countingFileBlockStore struct {
+	inner blockstore.FileBlockStore
+
+	getFileBlock        atomic.Int64
+	putFileBlock        atomic.Int64
+	deleteFileBlock     atomic.Int64
+	incrementRefCount   atomic.Int64
+	decrementRefCount   atomic.Int64
+	findFileBlockByHash atomic.Int64
+	listLocalBlocks     atomic.Int64
+	listRemoteBlocks    atomic.Int64
+	listUnreferenced    atomic.Int64
+	listFileBlocks      atomic.Int64
+}
+
+func newCountingFileBlockStore(inner blockstore.FileBlockStore) *countingFileBlockStore {
+	return &countingFileBlockStore{inner: inner}
+}
+
+func (c *countingFileBlockStore) GetFileBlock(ctx context.Context, id string) (*blockstore.FileBlock, error) {
+	c.getFileBlock.Add(1)
+	return c.inner.GetFileBlock(ctx, id)
+}
+
+func (c *countingFileBlockStore) PutFileBlock(ctx context.Context, block *blockstore.FileBlock) error {
+	c.putFileBlock.Add(1)
+	return c.inner.PutFileBlock(ctx, block)
+}
+
+func (c *countingFileBlockStore) DeleteFileBlock(ctx context.Context, id string) error {
+	c.deleteFileBlock.Add(1)
+	return c.inner.DeleteFileBlock(ctx, id)
+}
+
+func (c *countingFileBlockStore) IncrementRefCount(ctx context.Context, id string) error {
+	c.incrementRefCount.Add(1)
+	return c.inner.IncrementRefCount(ctx, id)
+}
+
+func (c *countingFileBlockStore) DecrementRefCount(ctx context.Context, id string) (uint32, error) {
+	c.decrementRefCount.Add(1)
+	return c.inner.DecrementRefCount(ctx, id)
+}
+
+func (c *countingFileBlockStore) FindFileBlockByHash(ctx context.Context, hash blockstore.ContentHash) (*blockstore.FileBlock, error) {
+	c.findFileBlockByHash.Add(1)
+	return c.inner.FindFileBlockByHash(ctx, hash)
+}
+
+func (c *countingFileBlockStore) ListLocalBlocks(ctx context.Context, olderThan time.Duration, limit int) ([]*blockstore.FileBlock, error) {
+	c.listLocalBlocks.Add(1)
+	return c.inner.ListLocalBlocks(ctx, olderThan, limit)
+}
+
+func (c *countingFileBlockStore) ListRemoteBlocks(ctx context.Context, limit int) ([]*blockstore.FileBlock, error) {
+	c.listRemoteBlocks.Add(1)
+	return c.inner.ListRemoteBlocks(ctx, limit)
+}
+
+func (c *countingFileBlockStore) ListUnreferenced(ctx context.Context, limit int) ([]*blockstore.FileBlock, error) {
+	c.listUnreferenced.Add(1)
+	return c.inner.ListUnreferenced(ctx, limit)
+}
+
+func (c *countingFileBlockStore) ListFileBlocks(ctx context.Context, payloadID string) ([]*blockstore.FileBlock, error) {
+	c.listFileBlocks.Add(1)
+	return c.inner.ListFileBlocks(ctx, payloadID)
+}
+
+// snapshot captures the current call counts for comparison.
+type fbsCallSnapshot struct {
+	get, put, del, inc, dec, find, listLocal, listRemote, listUnref, listFile int64
+}
+
+func (c *countingFileBlockStore) snapshot() fbsCallSnapshot {
+	return fbsCallSnapshot{
+		get:        c.getFileBlock.Load(),
+		put:        c.putFileBlock.Load(),
+		del:        c.deleteFileBlock.Load(),
+		inc:        c.incrementRefCount.Load(),
+		dec:        c.decrementRefCount.Load(),
+		find:       c.findFileBlockByHash.Load(),
+		listLocal:  c.listLocalBlocks.Load(),
+		listRemote: c.listRemoteBlocks.Load(),
+		listUnref:  c.listUnreferenced.Load(),
+		listFile:   c.listFileBlocks.Load(),
+	}
+}
+
+func diffSnapshot(before, after fbsCallSnapshot) fbsCallSnapshot {
+	return fbsCallSnapshot{
+		get:        after.get - before.get,
+		put:        after.put - before.put,
+		del:        after.del - before.del,
+		inc:        after.inc - before.inc,
+		dec:        after.dec - before.dec,
+		find:       after.find - before.find,
+		listLocal:  after.listLocal - before.listLocal,
+		listRemote: after.listRemote - before.listRemote,
+		listUnref:  after.listUnref - before.listUnref,
+		listFile:   after.listFile - before.listFile,
+	}
+}
 
 // newTestCache creates an FSStore with a temporary directory and in-memory block store.
 func newTestCache(t *testing.T, maxMemory int64) *FSStore {
@@ -525,6 +639,48 @@ func TestWriteFromRemote(t *testing.T) {
 	}
 }
 
+// TestFSStoreStartCloseNoGoroutineLeak verifies that FSStore.Close() joins the
+// background goroutine launched by Start(), preventing a goroutine leak across
+// repeated Start/Close cycles. Regression test for TD-02a.
+//
+// Uses a never-cancelled parent context so the ONLY termination signal
+// available to the Start goroutine is Close() itself. Without the fix,
+// goroutines accumulate linearly with the cycle count.
+func TestFSStoreStartCloseNoGoroutineLeak(t *testing.T) {
+	// Warm-up: allow any package-init goroutines to settle before measuring.
+	time.Sleep(50 * time.Millisecond)
+	runtime.GC()
+	before := runtime.NumGoroutine()
+
+	const cycles = 20
+	ctx := context.Background() // never cancelled — only Close may stop the goroutine
+	for i := 0; i < cycles; i++ {
+		dir := t.TempDir()
+		blockStore := memory.NewMemoryMetadataStoreWithDefaults()
+		bc, err := New(dir, 0, 256*1024*1024, blockStore)
+		if err != nil {
+			t.Fatalf("cycle %d: New failed: %v", i, err)
+		}
+		bc.Start(ctx)
+		// Close must deterministically join the Start goroutine.
+		if err := bc.Close(); err != nil {
+			t.Fatalf("cycle %d: Close failed: %v", i, err)
+		}
+	}
+
+	// Small settle window — Close() should have joined already; this accounts
+	// only for scheduler jitter, not for goroutines still selecting on ticker.
+	time.Sleep(100 * time.Millisecond)
+	runtime.GC()
+	after := runtime.NumGoroutine()
+
+	// A real leak accumulates linearly with cycles (20). A small tolerance
+	// absorbs unrelated test-runner background goroutines.
+	if delta := after - before; delta > 2 {
+		t.Fatalf("goroutine leak: before=%d after=%d delta=%d (cycles=%d)", before, after, delta, cycles)
+	}
+}
+
 func TestBlockPathSharding(t *testing.T) {
 	bc := newTestCache(t, 256*1024*1024)
 
@@ -534,4 +690,105 @@ func TestBlockPathSharding(t *testing.T) {
 	if path != expected {
 		t.Errorf("blockPath wrong: got %s, want %s", path, expected)
 	}
+}
+
+// TestLocalWritePath_NoFileBlockStoreCall enforces TD-02d / D-19: the local
+// tier's write hot path and eviction must make zero calls into the
+// FileBlockStore interface. Any lookup or list must come from on-disk state
+// or an on-process index.
+//
+// The test wraps the backing FileBlockStore with a counter. Note: the Start()
+// background goroutine periodically drains queued FileBlock metadata via
+// PutFileBlock (SyncFileBlocks); that ASYNC drain is out of scope — the
+// assertion is only about the synchronous hot-path/eviction call paths. We
+// therefore disable Start() here and never invoke SyncFileBlocks, so any
+// counter increment during the write or eviction section is a real hot-path
+// regression rather than background noise.
+func TestLocalWritePath_NoFileBlockStoreCall(t *testing.T) {
+	t.Run("write_hot_path", func(t *testing.T) {
+		dir := t.TempDir()
+		inner := memory.NewMemoryMetadataStoreWithDefaults()
+		counter := newCountingFileBlockStore(inner)
+
+		bc, err := New(dir, 0, 256*1024*1024, counter)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+		// Intentionally do NOT call bc.Start: the async drain path legitimately
+		// calls PutFileBlock. We want the assertion to cover only synchronous
+		// hot-path behavior.
+		t.Cleanup(func() { _ = bc.Close() })
+
+		ctx := context.Background()
+		before := counter.snapshot()
+
+		// Representative writes exercising both the memBlock path and the
+		// direct-disk (pwrite) path:
+		//  1. Partial-block write -> fills memBlock, no disk.
+		if err := bc.WriteAt(ctx, "file1", bytes.Repeat([]byte{0xAA}, 4096), 0); err != nil {
+			t.Fatalf("WriteAt small failed: %v", err)
+		}
+		//  2. Full-block write -> triggers flushBlock (mem -> disk).
+		full := bytes.Repeat([]byte{0xBB}, int(blockstore.BlockSize))
+		if err := bc.WriteAt(ctx, "file2", full, 0); err != nil {
+			t.Fatalf("WriteAt full failed: %v", err)
+		}
+		//  3. Partial write to the now-on-disk block -> tryDirectDiskWrite path
+		//     (exercises the fd-pool pwrite branch).
+		if err := bc.WriteAt(ctx, "file2", []byte("patch"), 100); err != nil {
+			t.Fatalf("WriteAt direct-disk failed: %v", err)
+		}
+		//  4. Explicit Flush (NFS COMMIT) -> exercises flushBlock on file1.
+		if _, err := bc.Flush(ctx, "file1"); err != nil {
+			t.Fatalf("Flush failed: %v", err)
+		}
+
+		after := counter.snapshot()
+		delta := diffSnapshot(before, after)
+		if delta != (fbsCallSnapshot{}) {
+			t.Errorf("write hot path called FileBlockStore: %+v", delta)
+		}
+	})
+
+	t.Run("eviction_path", func(t *testing.T) {
+		dir := t.TempDir()
+		inner := memory.NewMemoryMetadataStoreWithDefaults()
+		counter := newCountingFileBlockStore(inner)
+
+		bc, err := New(dir, 1500, 256*1024*1024, counter)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+		t.Cleanup(func() { _ = bc.Close() })
+
+		ctx := context.Background()
+
+		// Seed two Remote-state blocks directly on disk. populateRemoteBlock
+		// calls bc.blockStore.PutFileBlock internally to register them — those
+		// seed-time calls are expected. The counter is snapshotted AFTER
+		// seeding so only the eviction path is measured.
+		populateRemoteBlock(t, bc, "rfile1", 0, 500)
+		populateRemoteBlock(t, bc, "rfile2", 0, 500)
+		bc.accessTracker.mu.Lock()
+		bc.accessTracker.times["rfile1"] = time.Now().Add(-2 * time.Hour) // oldest
+		bc.accessTracker.times["rfile2"] = time.Now().Add(-1 * time.Hour)
+		bc.accessTracker.mu.Unlock()
+
+		bc.SetEvictionEnabled(true)
+		bc.SetRetentionPolicy(blockstore.RetentionLRU, 0)
+
+		before := counter.snapshot()
+
+		// diskUsed=1000, maxDisk=1500, needed=600 -> over limit by 100 bytes,
+		// forcing eviction of at least one of the 500B blocks.
+		if err := bc.ensureSpace(ctx, 600); err != nil {
+			t.Fatalf("ensureSpace failed: %v", err)
+		}
+
+		after := counter.snapshot()
+		delta := diffSnapshot(before, after)
+		if delta != (fbsCallSnapshot{}) {
+			t.Errorf("eviction called FileBlockStore: %+v", delta)
+		}
+	})
 }

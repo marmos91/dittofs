@@ -191,6 +191,32 @@ func ParseStoreKey(storeKey string) (payloadID string, blockIdx uint64, ok bool)
 	return payloadID, blockIdx, true
 }
 
+// ParseBlockID extracts the payloadID and block index from an internal
+// blockID string. BlockID format: "{payloadID}/{blockIdx}" where payloadID
+// may itself contain '/' characters (only the LAST '/' separates the index).
+//
+// Example: "export/docs/report.pdf/7" -> ("export/docs/report.pdf", 7, nil).
+//
+// Returns a wrapped error for malformed inputs: missing separator,
+// empty trailing index, or non-numeric index. Callers that previously
+// relied on silent zero-value returns must now propagate the error.
+func ParseBlockID(blockID string) (payloadID string, blockIdx uint64, err error) {
+	lastSlash := strings.LastIndex(blockID, "/")
+	if lastSlash <= 0 {
+		return "", 0, fmt.Errorf("parse blockID %q: missing payloadID/idx separator: %w", blockID, ErrInvalidPayloadID)
+	}
+	payloadID = blockID[:lastSlash]
+	idxStr := blockID[lastSlash+1:]
+	if idxStr == "" {
+		return "", 0, fmt.Errorf("parse blockID %q: empty block index: %w", blockID, ErrInvalidPayloadID)
+	}
+	blockIdx, parseErr := strconv.ParseUint(idxStr, 10, 64)
+	if parseErr != nil {
+		return "", 0, fmt.Errorf("parse blockID %q: invalid block index: %w", blockID, parseErr)
+	}
+	return payloadID, blockIdx, nil
+}
+
 // KeyBelongsToFile checks if a store key belongs to the given payloadID.
 // Store key format: "{payloadID}/block-{blockIdx}".
 func KeyBelongsToFile(key, payloadID string) bool {

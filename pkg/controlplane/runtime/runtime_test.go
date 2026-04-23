@@ -8,7 +8,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 	localmemory "github.com/marmos91/dittofs/pkg/blockstore/local/memory"
-	blocksync "github.com/marmos91/dittofs/pkg/blockstore/sync"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -561,7 +560,7 @@ func TestGetBlockStoreForHandle(t *testing.T) {
 	// Create a minimal BlockStore with memory local store.
 	localStore := localmemory.New()
 	localStore.Start(context.Background())
-	syncer := blocksync.New(localStore, nil, metaStore, blocksync.DefaultConfig())
+	syncer := engine.NewSyncer(localStore, nil, metaStore, engine.DefaultConfig())
 	bs, err := engine.New(engine.Config{
 		Local:  localStore,
 		Syncer: syncer,

@@ -1,34 +1,42 @@
 ---
 gsd_state_version: 1.0
-milestone: v0.13.0
+milestone: v0.15.0
 milestone_name: milestone
-status: Milestone complete
-stopped_at: Phase 7 context gathered
-last_updated: "2026-04-18T20:05:17.371Z"
-last_activity: 2026-04-18
+status: ready_to_plan
+stopped_at: Phase 8 context updated with D-30/D-31 (PR ordering)
+last_updated: "2026-04-23T16:55:41.278Z"
+last_activity: 2026-04-23 -- Phase 08 execution started
 progress:
-  total_phases: 7
-  completed_phases: 6
-  total_plans: 38
-  completed_plans: 37
-  percent: 97
+  total_phases: 8
+  completed_phases: 1
+  total_plans: 17
+  completed_plans: 0
+  percent: 13
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-04-15)
+See: .planning/PROJECT.md (updated 2026-04-23)
 
 **Core value:** Enable enterprise-grade multi-protocol file access with unified locking, Kerberos auth, and immediate cross-protocol visibility
-**Current focus:** Phase 07 — testing-hardening
+**Current focus:** Phase 08 — pre-refactor-cleanup-a0
 
 ## Current Position
 
-Phase: 07
+Milestone: v0.15.0
+Phase: 09
 Plan: Not started
-Phase: 07 (testing-hardening) — PLANNED, ready to execute (4 plans: 07-01..07-04)
-Last activity: 2026-04-18
+Status: Ready to plan
+Last activity: 2026-04-23
+
+## Next Actionable
+
+Phase 08 (A0 — Pre-refactor cleanup) and Phase 09 (ADAPT — Adapter layer cleanup) are both pre-A1 tracks with no dependencies. Either can start immediately; they proceed in parallel.
+
+- `/gsd-plan-phase 8` — Pre-refactor cleanup (TD-01..TD-04), GH #420
+- `/gsd-plan-phase 9` — Adapter layer cleanup (ADAPT-01..ADAPT-05), GH #427
 
 ## Completed Milestones
 
@@ -45,48 +53,36 @@ Last activity: 2026-04-18
 | v4.3 Protocol Gap Fixes | 49.1-49.3 | 1 | Mar 12-13, 2026 | 2026-03-13 |
 | v4.7 Offline/Edge Resilience | 63-68 | 10 | Mar 15-20, 2026 | 2026-03-20 |
 | v0.10.0 Production Hardening + SMB fixes | 69-73.1 | — | Mar 20-25, 2026 | in flight |
+| v0.13.0 Metadata Backup & Restore | 1-7 | 38 | Apr 2026 | phases complete; not released |
 
 ## Accumulated Context
 
-### Decisions
+### v0.15.0 Decisions
 
-Historical decisions archived in PROJECT.md Key Decisions table.
+- Phase numbering continues from v0.13.0 last phase (7) → v0.15.0 starts at 8 and runs 08-15 (8 phases total)
+- Phase directories under `.planning/phases/01-*` through `07-*` (v0.13.0) remain for historical reference; v0.15.0 phase dirs will be `08-*` through `15-*`
+- v0.13.0 archive lives at `.planning/milestones/v0.13.0-archive/`
+- Fine granularity (from config.json) — 8 phases preserving natural plan boundaries: A0, ADAPT, A1–A6
+- Two parallel pre-cleanup tracks (A0 / ADAPT) converge at A3 (engine API change consumes ADAPT groundwork)
+- Block key scheme: content-addressable `cas/{hash[0:2]}/{hash[2:4]}/{hash_hex}` with BLAKE3 (via `github.com/zeebo/blake3`)
+- Chunking: in-house FastCDC (~200 LoC), min=1MB / avg=4MB / max=16MB, normalization level 2
+- Dedup scope: global per metadata store (RefCount spans shares when remote config shared)
+- Merkle-root `FileAttr.ObjectID` is lazy (computed at file quiesce), not eager — revisit if dedup hit rate demands eager update
+- Migration via `dfsctl blockstore migrate --share <name>`; dual-read shim lives A2–A5; removed in A6 after production rollout confirmed
+- v0.13.0 backup backward compatibility NOT required (v0.13.0 never released) — backup code paths are free to break across phases
+- Performance regression tolerance: ≤6% on random write (≥600 IOPS), random read (≥1350), sequential write (≥48 MB/s), sequential read (≥60 MB/s)
+- A6 (Phase 15) intentionally deferred until A5 (Phase 14) rollout confirmed in production
 
-**v0.13.0 decisions:**
+### v0.13.0 Decisions (archived context)
 
-- Reset phase numbering to 1 for v0.13.0 (previous v0.10.0 phase directories archived under `.planning/milestones/v0.10.0-phases/`)
-- Fine granularity (from config.json) — 7 phases preserving natural boundaries: foundations, per-engine drivers, destinations, scheduler/retention, restore orchestration, API surface, testing
-- Metadata-only scope; block data backup explicitly out of scope
-- Destination drivers live in a new `pkg/backup/destination/` package separate from `pkg/blockstore/remote/` (different semantics: immutable archives vs block-addressable chunks) but share AWS client plumbing
-- Manifest v1 ships with `payload_id_set` field from day one for forward-compat with block-GC hold (SAFETY-01)
-- Restore precondition is share-disabled (REST-02) — shares must be manually disabled before restore; restore returns 409 Conflict otherwise
-- Retention is a separate post-upload pass, never races with in-flight backup (SCHED-06)
-- `robfig/cron/v3` is the only new direct dependency
-- [Phase 05]: Defined narrow shares.ShareStore interface locally (GetShare + UpdateShare only) to avoid runtime→store import cycle
-- [Phase 05]: Share.Enabled GORM tag = 'default:true;not null'; post-AutoMigrate backfill covers SQLite ADD-COLUMN dialect
-- [Phase 05]: Engine-persistent store_id: Badger uses cfg:store_id key, Postgres uses server_config.store_id column (migration 000008), Memory uses struct field populated on construction; all return ULID via GetStoreID()
-- [Phase 05]: target.go DefaultResolver.Resolve returns engine-persistent GetStoreID() instead of volatile cfg.ID — D-06 cross-store contamination gate now meaningful
-- [Phase 05-restore-orchestration-safety-rails]: GetManifestOnly returns parsed *manifest.Manifest directly (not raw bytes) — all callers need the parsed form, drivers already parse internally
-- [Phase 05-restore-orchestration-safety-rails]: S3 GetBackup delegates manifest prologue to GetManifestOnly — shared error shape, no code duplication
-- [Phase 05-restore-orchestration-safety-rails]: Plan 04: Postgres schema-scoped open deferred to Plan 06 — Plan 04 ships the signature + dispatch with a clear deferred-construction error for postgres; Plan 06 wires the real search_path construction
-- [Phase 05-restore-orchestration-safety-rails]: Plan 04: ListPostgresRestoreOrphans is REQUIRED (non-optional) — non-Postgres stores produce a clear error rather than silent empty slice, so crash-interrupted restore orphans cannot accumulate undetected
-- [Phase 05-restore-orchestration-safety-rails]: Plan 04: Postgres schema orphan CreatedAt derived from embedded ULID timestamp (Option A) rather than pg_stat_file (Option B) — portable, zero extra DB metadata required
-- [Phase 05]: Use atomic.Pointer[[8]byte] for serverBootVerifier — lock-free hot-path reads, safe cold-path bump from RunRestore
-- [Phase 05]: Plan 06: JobStore interface uses GetBackupRecord (not GetBackupRecordByID) to match real GORMStore method name; Plan 07 can compose without adapters.
-- [Phase 05]: Plan 06: RenamePostgresSchema implemented as interface-assertion extension point in CommitSwap; concrete impl deferred to Plan 07 (recommended) or orphan sweep fallback.
-- [Phase 05]: Plan 06: Terminal-state UpdateBackupJob uses context.Background() so SAFETY-02 row lands even after parent ctx cancellation.
-- [Phase 05]: Plan 05-07: Phase-5 sentinels canonical in pkg/backup/restore (not storebackups) to avoid import cycle
-- [Phase 05]: Plan 05-07: RestoreResolver extends StoreResolver (ResolveWithName + ResolveCfg) — backward-compat preserved
-- [Phase 05]: Plan 05-07: SetRestoreBumpBootVerifier post-construction setter on runtime.Runtime avoids adapter→runtime import cycle
-- [Phase 05]: Plan 08: block-GC hold uses at-GC-time manifest union; no persisted hold table (D-11)
-- [Phase 05]: Plan 08: provider errors fail-open (under-hold) rather than abort GC
-- [Phase 05]: Plan 09: Shipped MetricsCollector + Tracer interfaces with Noop defaults and OTel concrete; deferred PromMetrics concrete because prometheus/client_golang not in go.mod and Phase 5 forbids new top-level deps.
-- [Phase 05]: Plan 09: Propagate share.Enabled from DB model to runtime ShareConfig in init.go (Rule 3 auto-fix) — without this, production upgrades would load all shares as Enabled=false and adapter gates would refuse everything.
-- [Phase 05]: Runtime.RunBlockGC production entrypoint closes SAFETY-01 — refuses without BackupHold wiring; dedups distinct remotes by configID via shares.Service.DistinctRemoteStores
+Historical v0.13.0 decisions preserved in `.planning/milestones/v0.13.0-archive/` for reference; the v0.15.0 refactor deletes `BackupHoldProvider` + `FinalizationCallback` (v0.13.0 scaffolding) in Phase 08.
 
 ### Pending Todos
 
-- After Wave 4 merges: run `code-simplifier` + `code-reviewer` agents on full phase 06 diff, then open PR to `develop`.
+- After Phase 08 + Phase 09 planning: run both phases in parallel (independent cleanup tracks)
+- Before Phase 11 (A2) start: ensure `TestBlockStoreImmutableOverwrites` E2E skeleton is drafted and is confirmed failing on `develop` (proof of bug)
+- Before Phase 14 (A5) ship: benchmark VM-fleet dedup fixture achieves ≥40% reduction (VER-03 gate)
+- Before Phase 15 (A6) merge: confirm `dfsctl blockstore migrate status` reports 100% for every production share
 
 ### Blockers/Concerns
 
@@ -94,6 +90,8 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-04-17T16:27:20.896Z
-Stopped at: Phase 7 context gathered
-Next action: Execute Phase 7 plans (07-01..07-04) via `gsd-executor` (autonomous: false, human-verify checkpoints expected)
+Last session: --stopped-at
+Stopped at: Phase 8 context updated with D-30/D-31 (PR ordering)
+Next action: `/gsd-plan-phase 8` (A0 — Pre-refactor cleanup) OR `/gsd-plan-phase 9` (ADAPT) — both are actionable in parallel
+
+**Planned Phase:** 08 (pre-refactor-cleanup-a0) — 17 plans — 2026-04-23T15:58:23.168Z

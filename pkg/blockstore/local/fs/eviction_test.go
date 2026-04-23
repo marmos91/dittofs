@@ -31,7 +31,9 @@ func newTestCacheWithDiskLimit(t *testing.T, maxDisk int64) *FSStore {
 }
 
 // populateRemoteBlock creates a block on disk in Remote state (evictable),
-// registers it in the FileBlockStore, and updates diskUsed.
+// registers it in BOTH the FileBlockStore and the in-process diskIndex, and
+// updates diskUsed. Represents what Recover() would reconstruct after a
+// restart — tests use this to simulate pre-existing on-disk blocks.
 func populateRemoteBlock(t *testing.T, bc *FSStore, payloadID string, blockIdx uint64, size int) {
 	t.Helper()
 	ctx := context.Background()
@@ -58,6 +60,9 @@ func populateRemoteBlock(t *testing.T, bc *FSStore, payloadID string, blockIdx u
 	if err := bc.blockStore.PutFileBlock(ctx, fb); err != nil {
 		t.Fatalf("failed to put file block: %v", err)
 	}
+	// Register in the in-process diskIndex so eviction sees the block without
+	// querying the FileBlockStore (TD-02d / D-19).
+	bc.diskIndexStore(fb)
 
 	// Update disk usage tracking
 	bc.diskUsed.Add(int64(size))
@@ -220,8 +225,12 @@ func TestEviction_TTL_Expired_Evicted(t *testing.T) {
 		t.Fatalf("expected successful eviction of TTL-expired block, got %v", err)
 	}
 
-	// Verify block was evicted (LocalPath cleared)
+	// Eviction now persists metadata asynchronously via pendingFBs (TD-02d);
+	// drain the queue so the assertion observes the cleared LocalPath.
 	ctx := context.Background()
+	bc.SyncFileBlocks(ctx)
+
+	// Verify block was evicted (LocalPath cleared)
 	fb, err := bc.blockStore.GetFileBlock(ctx, makeBlockID(blockKey{payloadID: "file1", blockIdx: 0}))
 	if err != nil {
 		t.Fatalf("block metadata should still exist: %v", err)
@@ -255,6 +264,8 @@ func TestEviction_LRU_OldestAccessedFirst(t *testing.T) {
 	}
 
 	ctx := context.Background()
+	// Drain async-queued metadata updates so GetFileBlock sees cleared LocalPath.
+	bc.SyncFileBlocks(ctx)
 
 	// "old" (oldest access) should be evicted
 	fbOld, err := bc.blockStore.GetFileBlock(ctx, makeBlockID(blockKey{payloadID: "old", blockIdx: 0}))
@@ -305,6 +316,8 @@ func TestEviction_LRU_RecentlySurvives(t *testing.T) {
 	}
 
 	ctx := context.Background()
+	// Drain async-queued metadata updates so GetFileBlock sees cleared LocalPath.
+	bc.SyncFileBlocks(ctx)
 
 	// old-file should be evicted
 	fb, err := bc.blockStore.GetFileBlock(ctx, makeBlockID(blockKey{payloadID: "old-file", blockIdx: 0}))
@@ -385,6 +398,8 @@ func TestEviction_PolicySwitch_PinToLRU(t *testing.T) {
 	}
 
 	ctx := context.Background()
+	// Drain async-queued metadata updates so GetFileBlock sees cleared LocalPath.
+	bc.SyncFileBlocks(ctx)
 	fb, err := bc.blockStore.GetFileBlock(ctx, makeBlockID(blockKey{payloadID: "file1", blockIdx: 0}))
 	if err != nil {
 		t.Fatalf("block metadata should exist: %v", err)

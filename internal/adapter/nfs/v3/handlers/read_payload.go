@@ -34,23 +34,16 @@ func readFromBlockStore(
 	ctx *NFSHandlerContext,
 	blockStore *engine.BlockStore,
 	payloadID metadata.PayloadID,
-	cowSource metadata.PayloadID,
 	offset uint64,
 	count uint32,
 	clientIP string,
 	handle []byte,
 ) (blockReadResult, error) {
-	logger.DebugCtx(ctx.Context, "READ: reading from BlockStore", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "count", count, "payload_id", payloadID, "cow_source", cowSource)
+	logger.DebugCtx(ctx.Context, "READ: reading from BlockStore", "handle", fmt.Sprintf("0x%x", handle), "offset", offset, "count", count, "payload_id", payloadID)
 
 	data := pool.Get(int(count))
 
-	var n int
-	var readErr error
-	if cowSource != "" {
-		n, readErr = blockStore.ReadAtWithCOWSource(ctx.Context, string(payloadID), string(cowSource), data, offset)
-	} else {
-		n, readErr = blockStore.ReadAt(ctx.Context, string(payloadID), data, offset)
-	}
+	n, readErr := blockStore.ReadAt(ctx.Context, string(payloadID), data, offset)
 
 	if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
 		return blockReadResult{

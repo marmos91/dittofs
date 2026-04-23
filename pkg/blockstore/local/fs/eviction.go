@@ -2,7 +2,6 @@ package fs
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +20,11 @@ import (
 // Uses backpressure: waits up to 30s for syncs to make blocks evictable.
 // When evictionEnabled is false, returns ErrDiskFull immediately if over limit
 // instead of attempting eviction (used by local-only mode with no remote store).
+//
+// Candidates are gathered from the in-process diskIndex rather than from
+// metadata-backend queries (TD-02d / D-19). The diskIndex is populated by the
+// write hot path (flushBlock, tryDirectDiskWrite), WriteFromRemote, and
+// Recover() so it reflects the authoritative on-disk state.
 func (bc *FSStore) ensureSpace(ctx context.Context, needed int64) error {
 	if bc.maxDisk <= 0 {
 		return nil
@@ -48,21 +52,15 @@ func (bc *FSStore) ensureSpace(ctx context.Context, needed int64) error {
 	const maxWait = 30 * time.Second
 	deadline := time.Now().Add(maxWait)
 	recalculated := false
-	// Fetch eviction candidates once to avoid repeated full scans.
-	// Refreshed only after backpressure waits (new blocks may become evictable).
+	// Gather eviction candidates from the in-process diskIndex once to avoid
+	// repeated full scans. Refreshed only after backpressure waits (state
+	// transitions may turn additional blocks Remote and therefore evictable).
 	var candidates []*blockstore.FileBlock
 
 	for bc.diskUsed.Load()+needed > bc.maxDisk {
-		// Fetch or refresh candidate list.
+		// Fetch or refresh candidate list from diskIndex.
 		if candidates == nil {
-			var err error
-			candidates, err = bc.blockStore.ListRemoteBlocks(ctx, 0)
-			if err != nil {
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-				candidates = nil // will retry after backpressure
-			}
+			candidates = bc.collectRemoteCandidates()
 		}
 
 		var evicted bool
@@ -100,6 +98,22 @@ func (bc *FSStore) ensureSpace(ctx context.Context, needed int64) error {
 	}
 
 	return nil
+}
+
+// collectRemoteCandidates returns all Remote-state blocks tracked in the
+// in-process diskIndex. Replaces the metadata-backend ListRemoteBlocks query
+// that previously drove eviction — decisions are now derived entirely from
+// on-disk state (TD-02d / D-19).
+func (bc *FSStore) collectRemoteCandidates() []*blockstore.FileBlock {
+	var out []*blockstore.FileBlock
+	bc.diskIndex.Range(func(_, v any) bool {
+		fb := v.(*blockstore.FileBlock)
+		if fb.State == blockstore.BlockStateRemote && fb.LocalPath != "" {
+			out = append(out, fb)
+		}
+		return true
+	})
+	return out
 }
 
 // evictOneTTL picks the oldest TTL-expired block from candidates, evicts it,
@@ -188,8 +202,17 @@ func resolveAccessTime(accessTimes map[string]time.Time, fb *blockstore.FileBloc
 	return fb.LastAccess
 }
 
-// evictBlock removes a block's local file and clears its LocalPath.
-func (bc *FSStore) evictBlock(ctx context.Context, fb *blockstore.FileBlock) error {
+// evictBlock removes a block's local file and clears its LocalPath. The
+// metadata update is NOT persisted synchronously to the metadata backend —
+// doing so would couple eviction to the backend (TD-02d / D-19). Instead:
+//   - the file is removed from disk (authoritative state change),
+//   - the in-process diskIndex entry is pruned (eviction-visible immediately),
+//   - the mutated block record is queued in pendingFBs for the background
+//     SyncFileBlocks drainer to persist eventually.
+//
+// Consumers that need the updated metadata synchronously (e.g., test
+// harnesses) can call SyncFileBlocks to flush pendingFBs on demand.
+func (bc *FSStore) evictBlock(_ context.Context, fb *blockstore.FileBlock) error {
 	if fb.LocalPath == "" {
 		return nil
 	}
@@ -197,18 +220,25 @@ func (bc *FSStore) evictBlock(ctx context.Context, fb *blockstore.FileBlock) err
 	fileSize := fileOrFallbackSize(fb.LocalPath, int64(fb.DataSize))
 	localPath := fb.LocalPath
 
-	fb.LocalPath = ""
-	if err := bc.blockStore.PutFileBlock(ctx, fb); err != nil {
-		return fmt.Errorf("update block metadata: %w", err)
-	}
+	// Close any cached file descriptors so the unlink actually reclaims disk
+	// space on platforms where an open fd keeps the inode alive.
+	bc.fdPool.Evict(fb.ID)
+	bc.readFDPool.Evict(fb.ID)
 
 	if err := os.Remove(localPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove block file: %w", err)
+		return err
 	}
 
 	if fileSize > 0 {
 		bc.diskUsed.Add(-fileSize)
 	}
+
+	// Update in-memory metadata + schedule async persistence. Removing from
+	// diskIndex ensures subsequent eviction scans and hot-path lookups do not
+	// see this block as locally present.
+	fb.LocalPath = ""
+	bc.pendingFBs.Store(fb.ID, fb)
+	bc.diskIndexDelete(fb.ID)
 
 	return nil
 }

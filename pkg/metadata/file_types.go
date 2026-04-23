@@ -56,20 +56,7 @@ type FileAttr struct {
 
 	// PayloadID is the identifier for retrieving file content.
 	// This is the legacy path-based content identifier (e.g., "{shareName}/{path}").
-	// When deduplication is enabled, ObjectID is the primary identifier.
 	PayloadID PayloadID `json:"content_id"`
-
-	// ObjectID is the content-addressed identifier for the file's content.
-	// This is the SHA-256 hash of the file's content (or Merkle root of chunk hashes).
-	// Used for deduplication: files with the same ObjectID share the same content.
-	// Zero value indicates the object is not finalized or deduplication is disabled.
-	ObjectID ContentHash `json:"object_id,omitempty"`
-
-	// COWSourcePayloadID is the source PayloadID for copy-on-write semantics.
-	// When a hard-linked file with finalized content is written to, it gets a new
-	// PayloadID and this field tracks where to lazily copy unmodified blocks from.
-	// Empty means no COW source (normal file or blocks already copied).
-	COWSourcePayloadID PayloadID `json:"cow_source,omitempty"`
 
 	// LinkTarget is the target path for symbolic links
 	LinkTarget string `json:"link_target,omitempty"`
@@ -87,10 +74,6 @@ type FileAttr struct {
 
 	// IdempotencyToken for detecting duplicate creation requests.
 	IdempotencyToken uint64 `json:"idempotency_token,omitempty"`
-
-	// Blocks is an ordered list of FileBlock IDs by position (index = blockIdx).
-	// Used by the new file-backed cache to map file offsets to blocks.
-	Blocks []string `json:"blocks,omitempty"`
 }
 
 // SetAttrs specifies which attributes to update in a SetFileAttributes call.
