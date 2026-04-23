@@ -220,7 +220,7 @@ DittoFS provides two CLI binaries for complete management:
 
 | Binary | Purpose | Examples |
 |--------|---------|----------|
-| **`dfs`** | Server daemon management | start, stop, status, config, logs, backup |
+| **`dfs`** | Server daemon management | start, stop, status, config, logs |
 | **`dfsctl`** | Remote API client | users, groups, shares, stores, adapters |
 
 #### Server Management (`dfs`)
@@ -243,9 +243,6 @@ DittoFS provides two CLI binaries for complete management:
 ./dfs logs -f                  # Follow logs in real-time
 ./dfs logs -n 50               # Show last 50 lines
 ./dfs logs --since "2024-01-15T10:00:00Z"
-
-# Backup
-./dfs backup controlplane --output /tmp/backup.json
 
 # Shell completion (bash, zsh, fish, powershell)
 ./dfs completion bash > /etc/bash_completion.d/dfs
@@ -648,7 +645,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for complete roadmap.
 
 DittoFS uses a **two-layer configuration** approach:
 
-1. **Config file** (`~/.config/dfs/config.yaml`): Server infrastructure settings (logging, telemetry, cache, database, API)
+1. **Config file** (`~/.config/dfs/config.yaml`): Server infrastructure settings (logging, telemetry, database, API)
 2. **CLI/API** (`dfsctl`): Runtime resources (stores, shares, adapters) persisted in the control plane database
 
 ### Server Config File
@@ -663,42 +660,11 @@ controlplane:
   port: 8080
   jwt:
     secret: "your-secret-key-at-least-32-characters"
-
-cache:
-  path: /var/lib/dfs/cache
-  size: "1Gi"               # supports: "512MB", "2Gi", "4GB", etc.
 ```
 
-### Cache
+### Block storage and caching
 
-DittoFS uses a **mandatory write-through cache** backed by a WAL (Write-Ahead Log) for crash recovery. All file writes pass through the cache before being flushed asynchronously to the configured payload store (S3, filesystem, etc.).
-
-**How it works:**
-1. **Write**: Data is written to in-memory 4MB block buffers and journaled to the WAL on disk
-2. **Flush**: Blocks are uploaded asynchronously to the payload store in the background
-3. **Evict**: After a successful upload, cache blocks become evictable under memory pressure (LRU)
-4. **Recovery**: On crash/restart, the WAL replays uncommitted writes automatically
-
-**Key points:**
-- The `path` is **required** - the cache creates a `cache.dat` WAL file in this directory
-- Default `path` is `$TMPDIR/dittofs-cache` (e.g., `/tmp/dittofs-cache`) - fine for development, but use a persistent path for production
-- Default `size` is `1Gi` - increase for workloads with large files or many concurrent writers
-- All shares use the same global cache
-- Dirty (unflushed) blocks cannot be evicted, providing backpressure when the payload store is slower than the write rate
-
-**Sizing guidance:**
-- **Development/testing**: `512Mi` to `1Gi` (default)
-- **General use**: `2Gi` to `4Gi`
-- **Heavy write workloads** (large files, S3 backend): `4Gi` to `16Gi`
-
-```yaml
-# Production example
-cache:
-  path: /var/lib/dfs/cache   # Use a persistent directory (not /tmp)
-  size: "4Gi"
-```
-
-See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#6-cache-configuration) for full details.
+Per-share block storage is configured via the store/share CLI (not the server config file). Each share has an isolated local storage directory and its own memory/disk caching tiers managed internally by `pkg/blockstore/engine/`. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for store and share configuration.
 
 ### Runtime Management (CLI)
 
@@ -791,6 +757,10 @@ See [docs/SECURITY.md](docs/SECURITY.md) for details and recommendations.
 ## License
 
 MIT License - See [LICENSE](LICENSE) file for details
+
+## Changelog
+
+- **v0.15.0**: Removed unreleased v0.13.0 backup system (REST API, `dfsctl backup` commands, `pkg/backup`, scheduler). A new backup system built atop content-addressable storage (CAS) will ship in v0.16.0. Since v0.13.0 was never released, there is no backward-compatibility concern.
 
 ## Disclaimer
 

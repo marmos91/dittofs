@@ -243,72 +243,9 @@ controlplane:
 
 ### 6. Block Store Configuration
 
-DittoFS uses a **mandatory WAL-backed cache** for all file content operations. Every write passes through the cache before being flushed asynchronously to the payload store (S3, filesystem, etc.). The WAL (Write-Ahead Log) ensures data durability: on crash or restart, uncommitted writes are replayed automatically from the WAL file on disk.
+Per-share block storage is configured via `dfsctl store` / `dfsctl share` commands (not the server config file). Each share owns an isolated local storage directory plus a reference to a remote store (S3 or filesystem). The block store lives in `pkg/blockstore/engine/` and composes a local tier, a remote tier, an in-memory read cache, a syncer (async local-to-remote transfer), a prefetcher, and a garbage collector.
 
-```yaml
-cache:
-  # Directory path for the cache WAL file (required)
-  # The cache creates a cache.dat file in this directory
-  # Default: $TMPDIR/dittofs-cache (e.g., /tmp/dittofs-cache)
-  path: "/var/lib/dfs/cache"
-
-  # Maximum cache size (supports human-readable formats)
-  # Accepts: "512MB", "1GB", "1Gi", "4Gi", "16Gi", etc.
-  # Default: 1Gi
-  size: "1Gi"
-```
-
-**How the cache works:**
-
-```
-Client WRITE ──► Cache (4MB block buffers + WAL on disk)
-                    │
-                    ▼
-              Offloader (async background flush)
-                    │
-                    ▼
-              Payload Store (S3, filesystem, memory)
-```
-
-1. **Write**: Incoming data is buffered in 4MB in-memory block buffers and simultaneously journaled to the WAL on disk (via mmap) for durability
-2. **Flush**: The offloader uploads complete blocks to the payload store asynchronously in the background
-3. **Evict**: After a block is successfully uploaded, it becomes evictable. Under memory pressure, the least-recently-used uploaded blocks are freed first
-4. **Backpressure**: Dirty (unflushed) blocks cannot be evicted. If the cache fills with dirty data (e.g., payload store is slow), writes will block until space is freed. A separate pending-data limit (512MB default) prevents OOM even with large cache sizes
-5. **Recovery**: On crash or restart, the WAL replays uncommitted writes, so no data is lost
-
-**Cache Features:**
-
-- **WAL Persistence**: All writes are logged to disk via mmap for crash recovery
-- **LRU Eviction**: Least-recently-used uploaded entries are evicted when cache is full
-- **Dirty Protection**: Entries with unflushed data cannot be evicted
-- **Backpressure**: Writes block when pending data exceeds limits, preventing OOM
-- **Deduplication**: Blocks are content-addressed (SHA-256); identical blocks are stored once
-- **Global**: All shares use the same cache instance
-
-**Configuration Options:**
-
-| Option | Required | Default | Description |
-|--------|----------|---------|-------------|
-| `path` | Yes | `$TMPDIR/dittofs-cache` | Directory for the cache WAL file. Use a persistent path for production (not `/tmp`) |
-| `size` | No | `1Gi` | Maximum cache size. Accepts human-readable formats: `512MB`, `1Gi`, `4GB`, etc. |
-
-**Environment variable overrides:**
-
-```bash
-export DITTOFS_CACHE_PATH=/var/lib/dfs/cache
-export DITTOFS_CACHE_SIZE=4Gi
-```
-
-**Sizing guidance:**
-
-| Use Case | Recommended Size | Notes |
-|----------|-----------------|-------|
-| Development/testing | `512Mi` – `1Gi` | Default is fine |
-| General use | `2Gi` – `4Gi` | Good for mixed read/write |
-| Heavy writes / S3 backend | `4Gi` – `16Gi` | More cache absorbs upload latency |
-| Large file workloads (>100MB files) | `8Gi`+ | Prevents excessive eviction churn |
-
-> **Tip**: If you see `ErrCacheFull` errors or slow write throughput, increase `size`. If using an S3 payload store, a larger cache helps absorb the higher upload latency.
+There is no top-level `cache:` section in the server config — cache sizing for a share follows the share's local storage limits, and the read cache is tuned internally by the engine. See `dfsctl share create --help` and `dfsctl store create --help` for the per-share knobs.
 
 ### 7. Metadata Configuration
 

@@ -23,13 +23,11 @@ dfs
 ├── init          Initialize configuration file
 ├── migrate       Run database migrations
 ├── version       Show version information
-├── config        Configuration management
-│   ├── init      Initialize config file
-│   ├── edit      Open config in editor
-│   ├── validate  Validate configuration
-│   └── show      Display current config
-└── backup        Backup operations
-    └── controlplane  Backup control plane database
+└── config        Configuration management
+    ├── init      Initialize config file
+    ├── edit      Open config in editor
+    ├── validate  Validate configuration
+    └── show      Display current config
 ```
 
 ### dfsctl (Client CLI)
