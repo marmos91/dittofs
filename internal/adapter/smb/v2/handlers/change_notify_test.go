@@ -55,12 +55,96 @@ func TestNotifyRegistry_RegisterAndUnregister(t *testing.T) {
 	}
 }
 
+// TestNotifyRegistry_Register_CrossConnectionMessageIDNoEvict is a regression
+// test for issue #416. Before the fix, the registry keyed byMessageID
+// globally: when a second TCP connection registered a CHANGE_NOTIFY with
+// the same MessageID value as a live pending notify on another connection
+// (common because MessageID is per-connection), Register silently
+// unregistered the first one. The client on the first connection then hung
+// — no final response, CANCEL couldn't find the entry, connection
+// eventually dropped. After the fix, (ConnID, MessageID) is the key.
+func TestNotifyRegistry_Register_CrossConnectionMessageIDNoEvict(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	a := &PendingNotify{
+		FileID:           [16]byte{0xA},
+		SessionID:        100,
+		ConnID:           1,
+		MessageID:        521,
+		AsyncId:          3600,
+		WatchPath:        "/testdir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+	}
+	b := &PendingNotify{
+		FileID:           [16]byte{0xB},
+		SessionID:        200,
+		ConnID:           2,
+		MessageID:        521, // same MessageID, different ConnID
+		AsyncId:          3605,
+		WatchPath:        "/testdir",
+		ShareName:        "share1",
+		CompletionFilter: FileNotifyChangeFileName,
+	}
+	mustRegister(t, r, a)
+	mustRegister(t, r, b)
+
+	// Both must still be resolvable — B's Register must NOT have evicted A.
+	if got := r.UnregisterByAsyncId(3600); got == nil || got.AsyncId != 3600 {
+		t.Fatalf("A (asyncId=3600) missing after B registered with same MessageID on a different ConnID")
+	}
+	if got := r.UnregisterByAsyncId(3605); got == nil || got.AsyncId != 3605 {
+		t.Fatalf("B (asyncId=3605) missing")
+	}
+}
+
+// TestNotifyRegistry_UnregisterByMessageID_DisambiguatesByConnID verifies the
+// CANCEL-by-MessageID path scopes its lookup to the requesting connection,
+// so two pending notifies sharing a MessageID across two TCP connections
+// can each be cancelled independently.
+func TestNotifyRegistry_UnregisterByMessageID_DisambiguatesByConnID(t *testing.T) {
+	r := NewNotifyRegistry()
+
+	a := &PendingNotify{
+		FileID:           [16]byte{0xA},
+		SessionID:        100,
+		ConnID:           1,
+		MessageID:        521,
+		AsyncId:          1,
+		WatchPath:        "/d",
+		ShareName:        "s",
+		CompletionFilter: FileNotifyChangeFileName,
+	}
+	b := &PendingNotify{
+		FileID:           [16]byte{0xB},
+		SessionID:        200,
+		ConnID:           2,
+		MessageID:        521,
+		AsyncId:          2,
+		WatchPath:        "/d",
+		ShareName:        "s",
+		CompletionFilter: FileNotifyChangeFileName,
+	}
+	mustRegister(t, r, a)
+	mustRegister(t, r, b)
+
+	got := r.UnregisterByMessageID(1, 521)
+	if got == nil || got.AsyncId != 1 {
+		t.Fatalf("UnregisterByMessageID(connID=1) returned %+v, want A", got)
+	}
+	// B must still be there.
+	if got := r.UnregisterByMessageID(2, 521); got == nil || got.AsyncId != 2 {
+		t.Fatalf("UnregisterByMessageID(connID=2) returned %+v, want B", got)
+	}
+}
+
 func TestNotifyRegistry_UnregisterByMessageID(t *testing.T) {
 	r := NewNotifyRegistry()
 
 	notify := &PendingNotify{
 		FileID:           [16]byte{1},
 		SessionID:        100,
+		ConnID:           7,
 		MessageID:        42,
 		AsyncId:          99,
 		WatchPath:        "/dir",
@@ -69,8 +153,8 @@ func TestNotifyRegistry_UnregisterByMessageID(t *testing.T) {
 	}
 	mustRegister(t, r, notify)
 
-	// Unregister by message ID
-	removed := r.UnregisterByMessageID(42)
+	// Unregister by (ConnID, MessageID)
+	removed := r.UnregisterByMessageID(7, 42)
 	if removed == nil {
 		t.Fatal("expected non-nil removed notify")
 	}
@@ -79,7 +163,7 @@ func TestNotifyRegistry_UnregisterByMessageID(t *testing.T) {
 	}
 
 	// Should not find it again
-	removed = r.UnregisterByMessageID(42)
+	removed = r.UnregisterByMessageID(7, 42)
 	if removed != nil {
 		t.Error("expected nil on second unregister")
 	}

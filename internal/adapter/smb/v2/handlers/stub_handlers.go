@@ -196,7 +196,7 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 		if ctx.RequestAsyncId != 0 {
 			cancelled = h.NotifyRegistry.UnregisterByAsyncId(ctx.RequestAsyncId)
 		} else {
-			cancelled = h.NotifyRegistry.UnregisterByMessageID(ctx.MessageID)
+			cancelled = h.NotifyRegistry.UnregisterByMessageID(ctx.ConnID, ctx.MessageID)
 		}
 
 		if cancelled != nil {
@@ -351,6 +351,7 @@ func (h *Handler) ChangeNotify(ctx *SMBHandlerContext, body []byte) (*HandlerRes
 	notify := &PendingNotify{
 		FileID:           req.FileID,
 		SessionID:        ctx.SessionID,
+		ConnID:           ctx.ConnID,
 		MessageID:        ctx.MessageID,
 		AsyncId:          asyncId,
 		WatchPath:        watchPath,
