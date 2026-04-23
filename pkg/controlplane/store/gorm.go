@@ -250,37 +250,13 @@ func New(config *Config) (*GORMStore, error) {
 		}
 	}
 
-	// Pre-migration (D-26 step 1): rename backup_repos.metadata_store_id → target_id.
-	// AutoMigrate does not handle renames; mirrors the Share.read_cache_size pattern
-	// above. Idempotent via HasColumn guard so re-running on an already-migrated DB
-	// is a no-op. Errors here abort boot rather than silently leaving the schema in
-	// a half-migrated state (T-04-01-02).
-	if db.Migrator().HasColumn(&models.BackupRepo{}, "metadata_store_id") {
-		if err := db.Migrator().RenameColumn(&models.BackupRepo{}, "metadata_store_id", "target_id"); err != nil {
-			return nil, fmt.Errorf("failed to rename backup_repos.metadata_store_id: %w", err)
-		}
-	}
-
 	// Run auto-migration
 	if err := db.AutoMigrate(models.AllModels()...); err != nil {
 		return nil, fmt.Errorf("failed to run database migration: %w", err)
 	}
 
-	// Post-migration (D-26 step 3): backfill target_kind for rows that existed
-	// before the column was added. Some dialects (SQLite ADD COLUMN with default)
-	// leave NULL on legacy rows — mirrors the portmapper_port backfill below.
-	// Scoped to '' OR NULL so subsequent boots do not rewrite operator-set values
-	// (T-04-01-01).
-	if err := db.Exec(
-		"UPDATE backup_repos SET target_kind = ? WHERE target_kind = '' OR target_kind IS NULL",
-		"metadata",
-	).Error; err != nil {
-		return nil, fmt.Errorf("failed to backfill backup_repos.target_kind: %w", err)
-	}
-
 	// Post-migration (D-25): backfill shares.enabled for rows that predate
-	// the column. Mirrors the Phase-4 backup_repos.target_kind backfill
-	// above. SQLite dialects may leave NULL on ALTER TABLE ADD COLUMN even
+	// the column. SQLite dialects may leave NULL on ALTER TABLE ADD COLUMN even
 	// with DEFAULT; explicit backfill keeps the invariant "every share has
 	// a non-NULL enabled value" across both SQLite and PostgreSQL.
 	if err := db.Exec(

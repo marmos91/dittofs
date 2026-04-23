@@ -2,11 +2,9 @@ package runtime
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/auth/sid"
 	"github.com/marmos91/dittofs/pkg/blockstore"
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
@@ -15,7 +13,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/identity"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/lifecycle"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime/storebackups"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/stores"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/health"
@@ -58,14 +55,13 @@ type Runtime struct {
 
 	metadataService *metadata.MetadataService
 
-	adaptersSvc     *adapters.Service
-	storesSvc       *stores.Service
-	sharesSvc       *shares.Service
-	lifecycleSvc    *lifecycle.Service
-	identitySvc     *identity.Service
-	storeBackupsSvc *storebackups.Service
-	mountTracker    *MountTracker
-	clientRegistry  *ClientRegistry
+	adaptersSvc    *adapters.Service
+	storesSvc      *stores.Service
+	sharesSvc      *shares.Service
+	lifecycleSvc   *lifecycle.Service
+	identitySvc    *identity.Service
+	mountTracker   *MountTracker
+	clientRegistry *ClientRegistry
 
 	localStoreDefaults *shares.LocalStoreDefaults
 	syncerDefaults     *shares.SyncerDefaults
@@ -102,46 +98,9 @@ func New(s store.Store) *Runtime {
 
 	if s != nil {
 		rt.settingsWatcher = NewSettingsWatcher(s, DefaultPollInterval)
-
-		// storebackups composes scheduler + executor + retention + the
-		// service-layer target resolver that replaces the dropped FK to
-		// metadata_store_configs. DefaultResolver reads MetadataStoreConfig
-		// by ID from s and looks up the live metadata.MetadataStore by
-		// config.Name from the runtime's stores service.
-		//
-		// Phase-5 wiring (Plan 07): WithShares + WithStores enables the
-		// RunRestore entrypoint; WithMetadataConfigs enables the D-14
-		// startup orphan sweep. The composite store.Store satisfies
-		// storebackups.MetadataStoreConfigLister directly (via
-		// pkg/controlplane/store/metadata.go:20 — no adapter wrapper).
-		// BumpBootVerifier is wired later via SetRestoreBumpBootVerifier
-		// to avoid importing internal/adapter/nfs/v4/handlers from the
-		// runtime package (would create an import cycle).
-		resolver := storebackups.NewDefaultResolver(s, rt.storesSvc)
-		rt.storeBackupsSvc = storebackups.New(
-			s, resolver, DefaultShutdownTimeout,
-			storebackups.WithShares(rt.sharesSvc),
-			storebackups.WithStores(rt.storesSvc),
-			storebackups.WithMetadataConfigs(s),
-		)
 	}
 
 	return rt
-}
-
-// SetRestoreBumpBootVerifier wires the NFSv4 boot-verifier bump hook
-// (D-09) into the storebackups sub-service. Called from the adapter
-// composition site (internal/adapter/nfs/v4/handlers.BumpBootVerifier)
-// — separating this from runtime.New avoids importing the handlers
-// package here and the import cycle it would create.
-//
-// nil is a no-op: Service.RunRestore treats a nil bumpBootVerifier as
-// "no bump needed" (tests, non-NFSv4 deployments).
-func (r *Runtime) SetRestoreBumpBootVerifier(fn func()) {
-	if r.storeBackupsSvc == nil {
-		return
-	}
-	r.storeBackupsSvc.SetBumpBootVerifier(fn)
 }
 
 // --- Adapter Management (delegated to adapters.Service) ---
@@ -311,16 +270,16 @@ func (r *Runtime) UpdateShare(name string, readOnly *bool, defaultPermission *st
 }
 
 // DisableShare sets enabled=false on the share's DB row and runtime
-// registry, then notifies adapters so active sessions drop (Phase 5 D-02/D-03).
+// registry, then notifies adapters so active sessions drop.
 // Idempotent on already-disabled shares (returns shares.ErrShareAlreadyDisabled
-// which callers typically treat as a benign no-op). Exposed for Phase 6's
-// POST /api/v1/shares/{name}/disable handler (D-27).
+// which callers typically treat as a benign no-op). Backs the
+// POST /api/v1/shares/{name}/disable handler.
 func (r *Runtime) DisableShare(ctx context.Context, name string) error {
 	return r.sharesSvc.DisableShare(ctx, r.store, name)
 }
 
 // EnableShare inverts DisableShare. Idempotent on already-enabled shares
-// (no DB write). Phase 6's POST /api/v1/shares/{name}/enable handler (D-27).
+// (no DB write). Backs the POST /api/v1/shares/{name}/enable handler.
 func (r *Runtime) EnableShare(ctx context.Context, name string) error {
 	return r.sharesSvc.EnableShare(ctx, r.store, name)
 }
@@ -392,110 +351,7 @@ func (r *Runtime) SetAPIServer(server AuxiliaryServer) {
 func (r *Runtime) Serve(ctx context.Context) error {
 	r.clientRegistry.StartSweeper(ctx)
 
-	// Start the storebackups scheduler BEFORE the API server accepts
-	// connections so cron entries are live immediately. Errors here are
-	// logged but do NOT block server startup — a failed storebackups boot
-	// is degraded, not fatal (matches D-06 skip-with-WARN philosophy).
-	// The parent ctx propagates into the scheduler; Stop is wired via defer
-	// so Runtime.Serve's exit path cancels any in-flight backup runs (D-18).
-	if r.storeBackupsSvc != nil {
-		if err := r.storeBackupsSvc.Serve(ctx); err != nil {
-			logger.Warn("storebackups.Serve failed — scheduler disabled", "error", err)
-		}
-		defer func() {
-			stopCtx, cancel := context.WithTimeout(context.Background(), DefaultShutdownTimeout)
-			defer cancel()
-			if err := r.storeBackupsSvc.Stop(stopCtx); err != nil {
-				logger.Warn("storebackups.Stop failed", "error", err)
-			}
-		}()
-	}
-
 	return r.lifecycleSvc.Serve(ctx, r.settingsWatcher, r.adaptersSvc, r.metadataService, r.storesSvc, r.store)
-}
-
-// --- Store Backup Management (delegated to storebackups.Service) ---
-
-// RegisterBackupRepo installs a scheduler entry for the given repo after
-// its DB row has been committed by a Phase 6 handler.
-func (r *Runtime) RegisterBackupRepo(ctx context.Context, repoID string) error {
-	if r.storeBackupsSvc == nil {
-		return fmt.Errorf("storebackups service not initialized")
-	}
-	return r.storeBackupsSvc.RegisterRepo(ctx, repoID)
-}
-
-// UnregisterBackupRepo removes a repo's scheduler entry. No-op (returns nil)
-// if the service is not initialized (testing) or the repo was never registered.
-func (r *Runtime) UnregisterBackupRepo(ctx context.Context, repoID string) error {
-	if r.storeBackupsSvc == nil {
-		return nil
-	}
-	return r.storeBackupsSvc.UnregisterRepo(ctx, repoID)
-}
-
-// UpdateBackupRepo = UnregisterRepo + RegisterRepo. Safe to call when the
-// schedule is unchanged (the scheduler is idempotent on (ID, schedule) pairs).
-func (r *Runtime) UpdateBackupRepo(ctx context.Context, repoID string) error {
-	if r.storeBackupsSvc == nil {
-		return fmt.Errorf("storebackups service not initialized")
-	}
-	return r.storeBackupsSvc.UpdateRepo(ctx, repoID)
-}
-
-// RunBackup runs one backup attempt for repoID. Called by Phase 6's on-demand
-// POST /backups handler and shares the per-repo mutex with the cron path
-// (D-23). Returns (rec, job, nil) on success so handlers can surface the
-// BackupJob ID for client polling. Returns storebackups.ErrBackupAlreadyRunning
-// on contention (409 in the API layer).
-func (r *Runtime) RunBackup(ctx context.Context, repoID string) (*models.BackupRecord, *models.BackupJob, error) {
-	if r.storeBackupsSvc == nil {
-		return nil, nil, fmt.Errorf("storebackups service not initialized")
-	}
-	return r.storeBackupsSvc.RunBackup(ctx, repoID)
-}
-
-// ValidateBackupSchedule exposes the scheduler's strict validator for Phase 6
-// handlers that need synchronous cron-expression validation before persisting
-// a repo row.
-func (r *Runtime) ValidateBackupSchedule(expr string) error {
-	if r.storeBackupsSvc == nil {
-		return storebackups.ErrScheduleInvalid
-	}
-	return r.storeBackupsSvc.ValidateSchedule(expr)
-}
-
-// BackupStore returns the BackupStore used by the storebackups sub-service,
-// or nil if storebackups is not wired (e.g., Runtime built with nil store).
-// Exposed so runtime-owned subsystems (block-GC entrypoint) can construct a
-// storebackups.BackupHold without reaching into private composition state.
-func (r *Runtime) BackupStore() store.BackupStore {
-	if r.storeBackupsSvc == nil {
-		return nil
-	}
-	return r.storeBackupsSvc.BackupStore()
-}
-
-// DestFactoryFn returns the destination factory used by the storebackups
-// sub-service, or nil if storebackups is not wired. Pairs with BackupStore()
-// to let the block-GC entrypoint (RunBlockGC) construct a BackupHold using
-// the exact same factory as the backup path — identical destination-lifecycle
-// semantics across backup and GC-hold invocations.
-func (r *Runtime) DestFactoryFn() storebackups.DestinationFactoryFn {
-	if r.storeBackupsSvc == nil {
-		return nil
-	}
-	return r.storeBackupsSvc.DestFactory()
-}
-
-// StoreBackupsService returns the storebackups sub-service so Phase 6's
-// REST handlers can reach RunBackup / RunRestore / RunRestoreDryRun /
-// CancelBackupJob / ValidateSchedule / RegisterRepo / UnregisterRepo /
-// UpdateRepo without the thin Runtime wrappers (which only expose a subset).
-// Returns nil when the runtime was constructed with a nil store (test
-// scaffolding) — callers must nil-check.
-func (r *Runtime) StoreBackupsService() *storebackups.Service {
-	return r.storeBackupsSvc
 }
 
 // --- Identity Mapping (delegated to identity.Service) ---

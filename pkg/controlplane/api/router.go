@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"net/http"
 	"net/http/pprof"
 	"strings"
@@ -14,8 +13,6 @@ import (
 	"github.com/marmos91/dittofs/internal/controlplane/api/handlers"
 	apiMiddleware "github.com/marmos91/dittofs/internal/controlplane/api/middleware"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/backup/destination"
-	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
@@ -244,49 +241,6 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 					r.Delete("/{name}", metadataStoreHandler.Delete)
 					r.Get("/{name}/health", metadataStoreHandler.HealthCheck)
 					r.Get("/{name}/status", metadataStoreHandler.Status)
-
-					// Phase 6 — backup/restore/job/repo REST surface.
-					// Mounted under the EXISTING singular /store/metadata/{name}
-					// group (D-12); admin-middleware inherited from parent.
-					//
-					// Routes are registered UNCONDITIONALLY so clients can
-					// distinguish "endpoint missing" (404) from "endpoint
-					// present, subsystem down" (503). When rt or the backup
-					// service is nil (test wiring, degraded start), handler
-					// methods return 503 ServiceUnavailable via requireService.
-					var svc handlers.BackupService
-					if rt != nil {
-						if real := rt.StoreBackupsService(); real != nil {
-							svc = real
-						}
-					}
-					destFactory := handlers.BackupDestinationFactory(func(ctx context.Context, repo *models.BackupRepo) (handlers.BackupDestinationDeleter, error) {
-						return destination.DestinationFactoryFromRepo(ctx, repo)
-					})
-					backupHandler := handlers.NewBackupHandler(cpStore, svc, destFactory)
-
-					r.Route("/{name}/backups", func(r chi.Router) {
-						r.Post("/", backupHandler.TriggerBackup)    // D-13 → 202 + {Record, Job}
-						r.Get("/", backupHandler.ListRecords)       // D-26
-						r.Get("/{id}", backupHandler.ShowRecord)    // D-48
-						r.Patch("/{id}", backupHandler.PatchRecord) // D-23 pin/unpin
-					})
-					r.Route("/{name}/backup-jobs", func(r chi.Router) {
-						r.Get("/", backupHandler.ListJobs)              // D-42
-						r.Get("/{id}", backupHandler.GetJob)            // polling
-						r.Post("/{id}/cancel", backupHandler.CancelJob) // D-43/D-44/D-45
-					})
-					r.Route("/{name}/restore", func(r chi.Router) {
-						r.Post("/", backupHandler.Restore)              // D-29 → 202 + BackupJob
-						r.Post("/dry-run", backupHandler.RestoreDryRun) // D-31 → 200 + DryRunResult
-					})
-					r.Route("/{name}/repos", func(r chi.Router) {
-						r.Post("/", backupHandler.CreateRepo)
-						r.Get("/", backupHandler.ListRepos)
-						r.Get("/{repo}", backupHandler.GetRepo)
-						r.Patch("/{repo}", backupHandler.PatchRepo)   // D-19 partial
-						r.Delete("/{repo}", backupHandler.DeleteRepo) // D-21 ?purge_archives
-					})
 				})
 			})
 

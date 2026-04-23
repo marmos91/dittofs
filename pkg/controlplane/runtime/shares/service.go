@@ -21,7 +21,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/blockstore/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/blockstore/remote/memory"
 	remotes3 "github.com/marmos91/dittofs/pkg/blockstore/remote/s3"
-	blocksync "github.com/marmos91/dittofs/pkg/blockstore/sync"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -32,8 +31,8 @@ type Share struct {
 	MetadataStore string
 	RootHandle    metadata.FileHandle
 	ReadOnly      bool
-	// Enabled reflects the DB-row `shares.enabled` flag. REST-02 gate:
-	// restore refuses when any share on the target store is still enabled.
+	// Enabled reflects the DB-row `shares.enabled` flag. Disabled shares
+	// reject new MOUNT / TREE_CONNECT and in-flight operations.
 	// Default true when populated from DB via AddShare.
 	Enabled bool
 
@@ -75,8 +74,8 @@ type ShareConfig struct {
 	Name          string
 	MetadataStore string
 	ReadOnly      bool
-	// Enabled is the persisted `shares.enabled` flag (D-01/D-22). Callers
-	// pass the DB value; AddShare copies it onto the runtime Share.
+	// Enabled is the persisted `shares.enabled` flag. Callers pass the
+	// DB value; AddShare copies it onto the runtime Share.
 	Enabled bool
 
 	DefaultPermission string
@@ -216,9 +215,9 @@ func sanitizeShareName(name string) string {
 	return url.PathEscape(name)
 }
 
-// buildSyncerConfigFromDefaults merges SyncerDefaults into a blocksync.Config.
-func buildSyncerConfigFromDefaults(defaults *SyncerDefaults) blocksync.Config {
-	cfg := blocksync.DefaultConfig()
+// buildSyncerConfigFromDefaults merges SyncerDefaults into a engine.SyncerConfig.
+func buildSyncerConfigFromDefaults(defaults *SyncerDefaults) engine.SyncerConfig {
+	cfg := engine.DefaultConfig()
 	if defaults == nil {
 		return cfg
 	}
@@ -460,7 +459,7 @@ func (s *Service) createBlockStoreForShare(
 		engineRemote = &nonClosingRemote{remoteStore}
 	}
 
-	syncer := blocksync.New(localStore, engineRemote, fileBlockStore, syncerCfg)
+	syncer := engine.NewSyncer(localStore, engineRemote, fileBlockStore, syncerCfg)
 
 	cleanup := func() {
 		_ = syncer.Close()
@@ -648,18 +647,17 @@ func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *st
 }
 
 // DisableShare sets enabled=false on the share's DB row and runtime Share
-// struct, then invokes notifyShareChange so adapters drop active sessions
-// (D-02, D-03). DB-first-then-runtime ordering is crash-consistent: if the
-// process dies between the two, the next boot reconciles runtime from DB.
+// struct, then invokes notifyShareChange so adapters drop active sessions.
+// DB-first-then-runtime ordering is crash-consistent: if the process dies
+// between the two, the next boot reconciles runtime from DB.
 //
 // Idempotent: re-calling on an already-disabled share returns
 // ErrShareAlreadyDisabled without writing to DB or disturbing adapters.
 //
 // Returns ErrShareNotFound if the share name is unknown at either layer.
-// Timeout bound is whatever the caller provides via ctx (Phase-5 RunRestore
-// composes ctx with lifecycle.ShutdownTimeout).
+// Timeout bound is whatever the caller provides via ctx.
 //
-// Requires Task 1's `"enabled"` entry in GORMStore.UpdateShare's whitelist —
+// Requires `"enabled"` in GORMStore.UpdateShare's update whitelist —
 // otherwise the store.UpdateShare call silently drops the flag.
 func (s *Service) DisableShare(ctx context.Context, store ShareStore, name string) error {
 	// Runtime registry must know the share before we touch the DB — prevents
@@ -748,8 +746,7 @@ func (s *Service) IsShareEnabled(name string) (bool, error) {
 
 // ListEnabledSharesForStore returns the names of all runtime shares that
 // (a) have Enabled=true AND (b) reference metadataStoreName as their
-// metadata store. Phase-5 RunRestore uses this as the REST-02 pre-flight
-// gate: non-empty slice → restore refuses with 409.
+// metadata store.
 func (s *Service) ListEnabledSharesForStore(metadataStoreName string) []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

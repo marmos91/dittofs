@@ -19,8 +19,5 @@ func AllModels() []any {
 		&SMBAdapterSettings{},
 		&Netgroup{},
 		&NetgroupMember{},
-		&BackupRepo{},
-		&BackupRecord{},
-		&BackupJob{},
 	}
 }
