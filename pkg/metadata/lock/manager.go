@@ -1541,14 +1541,17 @@ func (lm *Manager) breakOpLocks(
 		breakToState uint32
 	}
 	var toBreak []breakEntry
-	var toRemove []*UnifiedLock
+	kept := locks[:0]
+	removed := false
 	for _, lock := range locks {
 		if lock.Lease == nil {
+			kept = append(kept, lock)
 			continue
 		}
 		if excludeOwner != nil {
 			if lock.Owner.OwnerID == excludeOwner.OwnerID ||
 				(excludeOwner.ClientID != "" && lock.Owner.ClientID == excludeOwner.ClientID) {
+				kept = append(kept, lock)
 				continue
 			}
 			// Per MS-SMB2 3.3.5.9: opens with the same lease key must not
@@ -1556,75 +1559,56 @@ func (lm *Manager) breakOpLocks(
 			// open's LeaseKey, no break is required").
 			if excludeOwner.ExcludeLeaseKey != ([16]byte{}) &&
 				lock.Lease.LeaseKey == excludeOwner.ExcludeLeaseKey {
+				kept = append(kept, lock)
 				continue
 			}
 		}
-		if lock.Lease.Breaking {
-			continue
-		}
-		if !shouldBreak(lock.Lease) {
+		if lock.Lease.Breaking || !shouldBreak(lock.Lease) {
+			kept = append(kept, lock)
 			continue
 		}
 
-		// Compute per-lease break-to state
 		targetState := breakToState
 		switch targetState {
 		case BreakToStripWrite:
-			// Strip only the Write bit, preserve Read and Handle.
 			// Per MS-SMB2 3.3.5.9: RWH -> RH, RW -> R.
 			targetState = lock.Lease.LeaseState &^ LeaseStateWrite
 		case BreakToStripHandle:
-			// Strip only the Handle bit, preserve Read and Write.
 			// Per MS-SMB2 3.3.5.9 Step 10: RWH -> RW, RH -> R.
 			targetState = lock.Lease.LeaseState &^ LeaseStateHandle
 		}
 
-		// Per MS-SMB2 2.2.23.2 / transportNotifier.SendLeaseBreak: a break
-		// carries SMB2_NOTIFY_BREAK_LEASE_FLAG_ACK_REQUIRED iff the current
-		// state contains Write or Handle. Read-only breaks (e.g. R→None on
-		// WRITE) get no AckRequired flag, so the client never responds;
-		// leaving the lease in Breaking=true would permanently block
-		// same-key reopens (nobreakself) until the 5s wait + forceComplete
-		// path fires. Downgrade inline instead, matching the state the
-		// client observes immediately.
+		// Per MS-SMB2 2.2.23.2, the break carries ACK_REQUIRED iff the
+		// current state holds Write or Handle. Without ACK_REQUIRED the
+		// client never responds, so leaving Breaking=true would block
+		// same-key reopens (nobreakself) until forceCompleteBreaks fires.
+		// Downgrade inline for those cases.
 		ackRequired := (lock.Lease.LeaseState & (LeaseStateWrite | LeaseStateHandle)) != 0
 
 		advanceEpoch(lock.Lease)
-		if ackRequired {
+		switch {
+		case ackRequired:
 			lock.Lease.Breaking = true
 			lock.Lease.BreakToState = targetState
 			lock.Lease.BreakStarted = time.Now()
-		} else if targetState == LeaseStateNone {
-			toRemove = append(toRemove, lock)
-		} else {
+			kept = append(kept, lock)
+		case targetState == LeaseStateNone:
+			if lm.lockStore != nil {
+				_ = lm.lockStore.DeleteLock(context.Background(), lock.ID)
+			}
+			removed = true
+		default:
 			lock.Lease.LeaseState = targetState
 			lock.Type = lockTypeForLeaseState(targetState)
 			if lm.lockStore != nil {
 				pl := ToPersistedLock(lock, 0)
 				_ = lm.lockStore.PutLock(context.Background(), pl)
 			}
+			kept = append(kept, lock)
 		}
 		toBreak = append(toBreak, breakEntry{lock: lock, breakToState: targetState})
 	}
-	if len(toRemove) > 0 {
-		current := lm.unifiedLocks[handleKey]
-		kept := current[:0]
-		for _, l := range current {
-			drop := false
-			for _, r := range toRemove {
-				if l == r {
-					drop = true
-					break
-				}
-			}
-			if !drop {
-				kept = append(kept, l)
-				continue
-			}
-			if lm.lockStore != nil {
-				_ = lm.lockStore.DeleteLock(context.Background(), l.ID)
-			}
-		}
+	if removed {
 		if len(kept) == 0 {
 			delete(lm.unifiedLocks, handleKey)
 		} else {
