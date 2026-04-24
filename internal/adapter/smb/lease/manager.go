@@ -232,6 +232,30 @@ func (lm *LeaseManager) ReleaseLease(ctx context.Context, leaseKey [16]byte) err
 	return nil
 }
 
+// ReleaseLeaseForHandle releases lease records only under a specific handleKey
+// bucket. Used by CLOSE so that opens on OTHER files sharing the same
+// LeaseKey constant (typical in smbtorture, which reuses fixed LEASE1/LEASE2
+// macros across tests) retain their records. The session/share mappings are
+// only torn down when the last record for the key is gone.
+func (lm *LeaseManager) ReleaseLeaseForHandle(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, shareName string) error {
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return nil
+	}
+
+	if err := lockMgr.ReleaseLeaseForHandle(ctx, string(fileHandle), leaseKey); err != nil {
+		return err
+	}
+
+	// Only drop session/share mappings if no lease records remain anywhere for
+	// this key — otherwise a concurrent open on a different file would lose
+	// break-dispatch routing.
+	if _, _, found := lockMgr.GetLeaseState(ctx, leaseKey); !found {
+		lm.removeLeaseMapping(hex.EncodeToString(leaseKey[:]))
+	}
+	return nil
+}
+
 // ReleaseSessionLeases releases all leases owned by a session.
 // This is called during session cleanup (LOGOFF / connection close).
 func (lm *LeaseManager) ReleaseSessionLeases(ctx context.Context, sessionID uint64) error {

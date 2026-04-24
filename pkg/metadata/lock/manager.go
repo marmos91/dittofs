@@ -122,8 +122,16 @@ type LockManager interface {
 	AcknowledgeLeaseBreak(ctx context.Context, leaseKey [16]byte,
 		acknowledgedState uint32, epoch uint16) error
 
-	// ReleaseLease releases all lease state for the given lease key.
+	// ReleaseLease releases ALL lease state for the given lease key across
+	// every handleKey bucket. Callers with per-handle scope should prefer
+	// ReleaseLeaseForHandle — see its doc for why this matters under
+	// smbtorture's fixed LEASE1/LEASE2 key pattern.
 	ReleaseLease(ctx context.Context, leaseKey [16]byte) error
+
+	// ReleaseLeaseForHandle removes lease records matching leaseKey from a
+	// single handleKey bucket only. Use this on CLOSE so that concurrent
+	// opens on OTHER files sharing the same LeaseKey keep their records.
+	ReleaseLeaseForHandle(ctx context.Context, handleKey string, leaseKey [16]byte) error
 
 	// ReclaimLease reclaims a lease during grace period (both SMB and NFS).
 	// Returns the reclaimed lock or error if lease doesn't exist or directory deleted.
@@ -780,6 +788,12 @@ func (lm *Manager) ReclaimLease(ctx context.Context, leaseKey [16]byte,
 	return lm.reclaimLeaseImpl(ctx, leaseKey, requestedState, isDirectory)
 }
 
+// ReleaseLeaseForHandle removes lease records matching leaseKey from a
+// single handleKey bucket only. See releaseLeaseForHandleImpl for details.
+func (lm *Manager) ReleaseLeaseForHandle(ctx context.Context, handleKey string, leaseKey [16]byte) error {
+	return lm.releaseLeaseForHandleImpl(ctx, handleKey, leaseKey)
+}
+
 // GetLeaseState returns the current state and epoch for a lease key.
 func (lm *Manager) GetLeaseState(ctx context.Context, leaseKey [16]byte) (state uint32, epoch uint16, found bool) {
 	return lm.getLeaseStateImpl(ctx, leaseKey)
@@ -794,15 +808,29 @@ func (lm *Manager) SetLeaseEpoch(leaseKey [16]byte, epoch uint16) bool {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 
-	_, lock, _ := lm.findLeaseByKey(leaseKey)
-	if lock == nil || lock.Lease == nil {
-		return false
+	// Update every lease record matching leaseKey, not just the first found.
+	// Stale records from prior tests (same LEASE1 constant across smbtorture
+	// tests) or from multiple opens by different clients can coexist in
+	// lm.unifiedLocks under different handleKey buckets. findLeaseByKey's
+	// map-iteration order is non-deterministic, so scoping to the first
+	// match can miss the lease that RequestLease just granted — leaving it
+	// at Epoch=1 (createAndGrantLease default) while the response to the
+	// client carries the higher requested epoch. Subsequent break
+	// notifications then dispatch with Epoch=2 instead of requestedEpoch+2,
+	// regressing smbtorture V2 tests (break_twice, breaking*, v2_breaking3).
+	found := false
+	for _, locks := range lm.unifiedLocks {
+		for _, lock := range locks {
+			if lock.Lease == nil || lock.Lease.LeaseKey != leaseKey {
+				continue
+			}
+			if epoch >= lock.Lease.Epoch {
+				lock.Lease.Epoch = epoch
+			}
+			found = true
+		}
 	}
-
-	if epoch >= lock.Lease.Epoch {
-		lock.Lease.Epoch = epoch
-	}
-	return true
+	return found
 }
 
 // ============================================================================

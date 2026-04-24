@@ -571,6 +571,44 @@ func (lm *Manager) releaseLeaseImpl(ctx context.Context, leaseKey [16]byte) erro
 	return nil
 }
 
+// ReleaseLeaseForHandle removes lease records matching leaseKey from a single
+// handleKey bucket. Unlike ReleaseLease, this does NOT touch records on other
+// handles that happen to share the same key.
+//
+// The same LeaseKey constant can appear on different files (different
+// handleKey buckets) — typical for smbtorture which uses fixed LEASE1/LEASE2
+// macros across tests. Releasing one open on file A must not erase the lease
+// record for a concurrent open on file B; otherwise stale records accumulate
+// on the surviving file and break ACK lookup / break-to matching.
+func (lm *Manager) releaseLeaseForHandleImpl(ctx context.Context, handleKey string, leaseKey [16]byte) error {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+
+	locks := lm.unifiedLocks[handleKey]
+	if len(locks) == 0 {
+		return nil
+	}
+
+	var remaining []*UnifiedLock
+	for _, lock := range locks {
+		if lock.Lease != nil && lock.Lease.LeaseKey == leaseKey {
+			if lm.lockStore != nil {
+				_ = lm.lockStore.DeleteLock(ctx, lock.ID)
+			}
+			continue
+		}
+		remaining = append(remaining, lock)
+	}
+
+	if len(remaining) == 0 {
+		delete(lm.unifiedLocks, handleKey)
+	} else {
+		lm.unifiedLocks[handleKey] = remaining
+	}
+
+	return nil
+}
+
 // GetLeaseState returns the current state and epoch for a lease key.
 func (lm *Manager) getLeaseStateImpl(_ context.Context, leaseKey [16]byte) (state uint32, epoch uint16, found bool) {
 	lm.mu.RLock()

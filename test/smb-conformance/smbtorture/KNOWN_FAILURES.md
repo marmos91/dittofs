@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-04-24 (Phase 2 matrix + delete-pending file-lease break — #429 cluster 36→33 after 2-run confirmation)
+Last updated: 2026-04-24 (Handle-scoped lease release — #429 cluster 33→31 after 2-run confirmation)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -509,7 +509,6 @@ incomplete break notification delivery and multi-client coordination.
 | smb2.lease.breaking5 | Leases | Lease breaking state handling not fully working | #429 |
 | smb2.lease.breaking6 | Leases | Lease breaking state handling not fully working | #429 |
 | smb2.lease.lock1 | Leases | Lease + lock interaction not fully working | #429 |
-| smb2.lease.complex1 | Leases | Complex lease scenario not fully working | #429 |
 | smb2.lease.timeout | Leases | Lease timeout handling not fully working | #429 |
 | smb2.lease.unlink | Leases | Lease + unlink interaction not fully working | #429 |
 | smb2.lease.timeout-disconnect | Leases | Lease timeout on disconnect not fully working | #429 |
@@ -518,7 +517,6 @@ incomplete break notification delivery and multi-client coordination.
 | smb2.lease.duplicate_open | Leases | Duplicate lease open not fully working | #429 |
 | smb2.lease.rename_dir_openfile | Leases | Lease + directory rename with open file not fully working | #429 |
 | smb2.lease.lease-epoch | Leases | Lease epoch tracking not fully working | #429 |
-| smb2.lease.break_twice | Leases | Double lease break not fully working | #429 |
 | smb2.lease.v2_breaking3 | Leases V2 | Lease V2 breaking state handling not fully working | #429 |
 | smb2.lease.v2_flags_parentkey | Leases V2 | Lease V2 parent key flags not fully working | #429 |
 | smb2.lease.v2_epoch2 | Leases V2 | Lease V2 epoch tracking not fully working | #429 |
@@ -735,6 +733,46 @@ incomplete delayed-write and timestamp freeze/unfreeze logic.
 | smb2.timestamps.freeze-thaw | Timestamps | CreationTime freeze/unfreeze not fully working | #434 |
 
 ## Changelog
+
+### 2026-04-24 — Handle-scoped lease release fixes stale-record accumulation
+
+smbtorture reuses fixed `LEASE1`/`LEASE2` constants across every test in the
+`smb2.lease` subsuite. When a test closed its last handle, DittoFS's
+`ReleaseLease(leaseKey)` removed every record matching the key across all
+handleKey buckets — including records for opens on OTHER files that happened
+to share the same constant. Worse, the `hasOtherOpen` check gating the
+release compared by FileID alone, so any concurrent open anywhere with the
+same key skipped the release entirely, leaving the current handle's record
+orphaned in `unifiedLocks`.
+
+The orphaned records accumulated across tests. By the time `break_twice`
+ran, three `LEASE1` records sat in the same file's bucket (two from prior
+tests where cleanup was skipped, one freshly granted). Every cross-key break
+therefore dispatched three times, and `findLeaseByKey`-based lookups
+(`SetLeaseEpoch`, `AcknowledgeLeaseBreak`) routinely returned the wrong
+record — producing the `new_epoch got 0x2 should 0x13` and
+`acknowledged state RW exceeds break-to state RH` signatures.
+
+Fix:
+
+- `pkg/metadata/lock` gains `ReleaseLeaseForHandle(ctx, handleKey, leaseKey)`
+  that removes only records in one bucket, leaving other buckets intact.
+- `SetLeaseEpoch` now iterates every record matching the key and updates
+  each one, so V2 grant-epoch tracking works even when stale records
+  briefly coexist.
+- `internal/adapter/smb/lease` adds a corresponding `ReleaseLeaseForHandle`
+  that only tears down the session/share mapping once the last record for
+  the key is actually gone.
+- `internal/adapter/smb/v2/handlers/close.go` scopes `hasOtherOpen` to opens
+  on the SAME file (matches `MetadataHandle`, not just `FileID`) and always
+  releases this handle's record — other files keep theirs.
+
+Confirmed 2× stable — 2 additional tests now pass:
+
+- `smb2.lease.break_twice`
+- `smb2.lease.complex1`
+
+**#429 lease cluster: 33 → 31 tests remaining.**
 
 ### 2026-04-24 — #429 Phase 2 matrix + delete-pending file-lease break
 
