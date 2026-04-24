@@ -9,6 +9,7 @@ package smb
 // Per plan 09-02 Task 1 (ADAPT-02).
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -73,7 +74,7 @@ func newTestReqHeader() *header.SMB2Header {
 }
 
 func newTestHandlerCtx(ci *ConnInfo) *handlers.SMBHandlerContext {
-	ctx := handlers.NewSMBHandlerContext(nil, "test-client", 0, 0, 1)
+	ctx := handlers.NewSMBHandlerContext(context.TODO(), "test-client", 0, 0, 1)
 	_ = ci
 	return ctx
 }

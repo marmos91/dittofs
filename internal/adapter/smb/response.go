@@ -156,6 +156,12 @@ func ProcessSingleRequest(
 	if result.DropConnection {
 		logger.Debug("Handler requested connection drop",
 			"command", cmd.Name, "client", handlerCtx.ClientAddr)
+		// Return any pooled buffer the handler acquired before dropping the
+		// connection. Today no handler combines DropConnection with a pooled
+		// response, but this guard prevents a latent leak if one is added.
+		if result.ReleaseData != nil {
+			result.ReleaseData()
+		}
 		return connInfo.Conn.Close()
 	}
 

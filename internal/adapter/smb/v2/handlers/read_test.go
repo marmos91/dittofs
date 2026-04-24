@@ -12,6 +12,7 @@ package handlers
 // grep-based acceptance criteria in the plan.
 
 import (
+	"context"
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/rpc"
@@ -29,7 +30,7 @@ func TestRead_PipeRead_LeavesReleaseDataNil(t *testing.T) {
 	h := NewHandler()
 	h.PipeManager = rpc.NewPipeManager()
 
-	ctx := NewSMBHandlerContext(nil, "test-client", 1, 1, 1)
+	ctx := NewSMBHandlerContext(context.TODO(), "test-client", 1, 1, 1)
 	req := &ReadRequest{
 		Length: 4096,
 		Offset: 0,
@@ -67,7 +68,7 @@ func TestRead_PipeRead_LeavesReleaseDataNil(t *testing.T) {
 func TestRead_SymlinkRead_LeavesReleaseDataNil(t *testing.T) {
 	h := NewHandler()
 
-	ctx := NewSMBHandlerContext(nil, "test-client", 1, 1, 1)
+	ctx := NewSMBHandlerContext(context.TODO(), "test-client", 1, 1, 1)
 	req := &ReadRequest{
 		Length: 1067, // MFsymlink spec size
 		Offset: 0,

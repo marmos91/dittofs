@@ -273,8 +273,6 @@ func exoticCodes() []merrs.ErrorCode {
 		merrs.ErrPrivilegeRequired,
 		merrs.ErrQuotaExceeded,
 		merrs.ErrLockConflict,
-		merrs.ErrLockNotFound,
-		merrs.ErrIOError, // Triggerable only via backend fault injection.
 	}
 }
 
@@ -351,24 +349,24 @@ func TestCrossProtocolUnitConformance(t *testing.T) {
 	// e2e table changes, this list must change too — coverage will drift
 	// silently otherwise.
 	e2eTriggerableCodes := map[merrs.ErrorCode]bool{
-		merrs.ErrNotFound:          true,
-		merrs.ErrAccessDenied:      true,
-		merrs.ErrAlreadyExists:     true,
-		merrs.ErrNotEmpty:          true,
-		merrs.ErrIsDirectory:       true,
-		merrs.ErrNotDirectory:      true,
-		merrs.ErrInvalidArgument:   true,
-		merrs.ErrNoSpace:           true,
-		merrs.ErrReadOnly:          true,
-		merrs.ErrStaleHandle:       true,
-		merrs.ErrNameTooLong:       true,
-		merrs.ErrIOError:           true,
-		merrs.ErrInvalidHandle:     true,
-		merrs.ErrNotSupported:      true,
-		merrs.ErrAuthRequired:      true,
-		merrs.ErrPermissionDenied:  true,
-		merrs.ErrLocked:            true,
-		merrs.ErrLockNotFound:      true,
+		merrs.ErrNotFound:         true,
+		merrs.ErrAccessDenied:     true,
+		merrs.ErrAlreadyExists:    true,
+		merrs.ErrNotEmpty:         true,
+		merrs.ErrIsDirectory:      true,
+		merrs.ErrNotDirectory:     true,
+		merrs.ErrInvalidArgument:  true,
+		merrs.ErrNoSpace:          true,
+		merrs.ErrReadOnly:         true,
+		merrs.ErrStaleHandle:      true,
+		merrs.ErrNameTooLong:      true,
+		merrs.ErrIOError:          true,
+		merrs.ErrInvalidHandle:    true,
+		merrs.ErrNotSupported:     true,
+		merrs.ErrAuthRequired:     true,
+		merrs.ErrPermissionDenied: true,
+		merrs.ErrLocked:           true,
+		merrs.ErrLockNotFound:     true,
 	}
 
 	exoticSet := map[merrs.ErrorCode]bool{}
@@ -381,6 +379,9 @@ func TestCrossProtocolUnitConformance(t *testing.T) {
 		inUnit := exoticSet[code]
 		if !inE2E && !inUnit {
 			t.Errorf("code %v is in allErrorCodes() but neither e2e-triggerable nor exotic — add to TestCrossProtocol_ErrorConformance or exoticCodes()", code)
+		}
+		if inE2E && inUnit {
+			t.Errorf("code %v is listed in BOTH e2eTriggerableCodes and exoticCodes() — pick one tier so coverage drift is detectable", code)
 		}
 	}
 }

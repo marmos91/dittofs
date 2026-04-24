@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	goerrors "errors"
 	"fmt"
 	"time"
 
@@ -438,9 +439,10 @@ func (h *Handler) acquireLockWithRetry(
 		return nil
 	}
 
-	// Check if it's a lock conflict error
-	storeErr, isStoreErr := err.(*metadata.StoreError)
-	if !isStoreErr || storeErr.Code != metadata.ErrLocked {
+	// Check if it's a lock conflict error. Use errors.As to unwrap wrapped
+	// StoreErrors produced by production call paths (fmt.Errorf("...: %w", storeErr)).
+	var storeErr *metadata.StoreError
+	if !goerrors.As(err, &storeErr) || storeErr.Code != metadata.ErrLocked {
 		// Not a lock conflict - return immediately
 		return err
 	}
@@ -489,9 +491,10 @@ func (h *Handler) acquireLockWithRetry(
 				return nil
 			}
 
-			// If it's not a lock conflict anymore, return the error
-			storeErr, isStoreErr := err.(*metadata.StoreError)
-			if !isStoreErr || storeErr.Code != metadata.ErrLocked {
+			// If it's not a lock conflict anymore, return the error.
+			// Use errors.As to unwrap wrapped StoreErrors.
+			var storeErr *metadata.StoreError
+			if !goerrors.As(err, &storeErr) || storeErr.Code != metadata.ErrLocked {
 				return err
 			}
 			// Still locked, continue retrying

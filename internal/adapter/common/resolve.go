@@ -2,6 +2,7 @@ package common
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -18,7 +19,12 @@ type BlockStoreRegistry interface {
 // ResolveForRead returns the per-share BlockStore for the given handle.
 // Read-only resolution — no permission side effects. Handles are opaque
 // (CLAUDE.md invariant 3); this helper never inspects the handle bytes.
+// A nil registry produces a typed error rather than a panic so mis-wired
+// handler tests fail with a readable message.
 func ResolveForRead(ctx context.Context, reg BlockStoreRegistry, handle metadata.FileHandle) (*engine.BlockStore, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("common.ResolveForRead: nil BlockStoreRegistry")
+	}
 	return reg.GetBlockStoreForHandle(ctx, handle)
 }
 
@@ -27,5 +33,8 @@ func ResolveForRead(ctx context.Context, reg BlockStoreRegistry, handle metadata
 // is already in place for Phase 12 (API-01) when the signatures diverge
 // to take []BlockRef (see D-12). One edit later, not two.
 func ResolveForWrite(ctx context.Context, reg BlockStoreRegistry, handle metadata.FileHandle) (*engine.BlockStore, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("common.ResolveForWrite: nil BlockStoreRegistry")
+	}
 	return reg.GetBlockStoreForHandle(ctx, handle)
 }

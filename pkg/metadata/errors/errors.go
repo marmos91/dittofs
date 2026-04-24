@@ -7,6 +7,7 @@
 package errors
 
 import (
+	goerrors "errors"
 	"fmt"
 )
 
@@ -286,8 +287,11 @@ func NewConnectionLimitError(adapterType string, limit int) *StoreError {
 // ============================================================================
 
 // IsNotFoundError returns true if the error is a NotFound error.
+// Unwraps via errors.As so wrapped StoreErrors (fmt.Errorf("...: %w", storeErr))
+// still classify correctly.
 func IsNotFoundError(err error) bool {
-	if storeErr, ok := err.(*StoreError); ok {
+	var storeErr *StoreError
+	if goerrors.As(err, &storeErr) {
 		return storeErr.Code == ErrNotFound || storeErr.Code == ErrLockNotFound
 	}
 	return false
@@ -295,7 +299,8 @@ func IsNotFoundError(err error) bool {
 
 // IsLockConflictError returns true if the error is a lock conflict.
 func IsLockConflictError(err error) bool {
-	if storeErr, ok := err.(*StoreError); ok {
+	var storeErr *StoreError
+	if goerrors.As(err, &storeErr) {
 		return storeErr.Code == ErrLocked || storeErr.Code == ErrLockConflict
 	}
 	return false
@@ -303,7 +308,8 @@ func IsLockConflictError(err error) bool {
 
 // IsDeadlockError returns true if the error indicates a deadlock.
 func IsDeadlockError(err error) bool {
-	if storeErr, ok := err.(*StoreError); ok {
+	var storeErr *StoreError
+	if goerrors.As(err, &storeErr) {
 		return storeErr.Code == ErrDeadlock
 	}
 	return false
@@ -311,7 +317,8 @@ func IsDeadlockError(err error) bool {
 
 // IsGracePeriodError returns true if the error is due to grace period.
 func IsGracePeriodError(err error) bool {
-	if storeErr, ok := err.(*StoreError); ok {
+	var storeErr *StoreError
+	if goerrors.As(err, &storeErr) {
 		return storeErr.Code == ErrGracePeriod
 	}
 	return false
@@ -319,7 +326,8 @@ func IsGracePeriodError(err error) bool {
 
 // IsLockLimitError returns true if the error is due to lock limits.
 func IsLockLimitError(err error) bool {
-	if storeErr, ok := err.(*StoreError); ok {
+	var storeErr *StoreError
+	if goerrors.As(err, &storeErr) {
 		return storeErr.Code == ErrLockLimitExceeded
 	}
 	return false

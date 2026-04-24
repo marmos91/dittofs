@@ -263,13 +263,15 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 	// Phase 3: CommitWrite -- updates metadata (size, timestamps)
 	_, err = metaSvc.CommitWrite(authCtx, intent)
 	if err != nil {
+		status := common.MapToNFS4(err)
 		logger.Debug("NFSv4 WRITE CommitWrite failed",
 			"error", err,
+			"status", status,
 			"client", ctx.ClientAddr)
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_IO,
+			Status: status,
 			OpCode: types.OP_WRITE,
-			Data:   encodeStatusOnly(types.NFS4ERR_IO),
+			Data:   encodeStatusOnly(status),
 		}
 	}
 
