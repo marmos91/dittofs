@@ -9,7 +9,6 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/lease"
-	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -24,7 +23,6 @@ import (
 type createDraft struct {
 	req            *CreateRequest
 	tree           *TreeConnection
-	sess           *session.Session
 	authCtx        *metadata.AuthContext
 	filename       string
 	baseName       string
@@ -41,45 +39,17 @@ type createDraft struct {
 	excludeOwner *lock.LockOwner
 }
 
-// newCreateDraft bundles the pre-break state that both the sync and async
-// CREATE paths need. Computing existingHandle once here (and letting it be nil
-// on encode error) keeps Create() readable while still failing safe: a nil
-// existingHandle skips the share-mode recheck and the lease-break dispatch
-// without invalidating the rest of the post-break flow.
-func (h *Handler) newCreateDraft(
-	req *CreateRequest,
-	tree *TreeConnection,
-	sess *session.Session,
-	authCtx *metadata.AuthContext,
-	filename, baseName string,
-	parentHandle metadata.FileHandle,
-	existingFile *metadata.File,
-	fileExists bool,
-	createAction types.CreateAction,
-	isDirectoryRequest bool,
-	excludeOwner *lock.LockOwner,
-) *createDraft {
-	var existingHandle metadata.FileHandle
-	if fileExists {
-		if enc, err := metadata.EncodeFileHandle(existingFile); err == nil {
-			existingHandle = enc
+// finalize computes the opaque file handle for the existing file (if any) and
+// returns the draft ready for completeCreateAfterBreak. A nil existingHandle
+// on encode failure is safe: the share-mode recheck and lease-break dispatch
+// both treat it as "no pre-existing open to contend with".
+func (d *createDraft) finalize() *createDraft {
+	if d.fileExists {
+		if enc, err := metadata.EncodeFileHandle(d.existingFile); err == nil {
+			d.existingHandle = enc
 		}
 	}
-	return &createDraft{
-		req:                req,
-		tree:               tree,
-		sess:               sess,
-		authCtx:            authCtx,
-		filename:           filename,
-		baseName:           baseName,
-		parentHandle:       parentHandle,
-		existingFile:       existingFile,
-		existingHandle:     existingHandle,
-		fileExists:         fileExists,
-		createAction:       createAction,
-		isDirectoryRequest: isDirectoryRequest,
-		excludeOwner:       excludeOwner,
-	}
+	return d
 }
 
 // breakAndMaybeParkCreate dispatches the handle-lease break required before
@@ -158,7 +128,6 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraft) *CreateResponse {
 	req := d.req
 	tree := d.tree
-	sess := d.sess
 	authCtx := d.authCtx
 	filename := d.filename
 	baseName := d.baseName
@@ -475,7 +444,6 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 			"diskFileId", fmt.Sprintf("%x", file.ID[:16]))
 	}
 
-	_ = sess // captured by draft for future use; reference silences linter.
 	return resp
 }
 
@@ -530,9 +498,6 @@ func (h *Handler) parkCreateOnLeaseBreak(
 	}
 
 	shareName := d.tree.ShareName
-	leaseMgr := h.LeaseManager
-	registry := h.PendingCreateRegistry
-	sessionID := ctx.SessionID
 	messageID := ctx.MessageID
 
 	go func() {
@@ -542,31 +507,20 @@ func (h *Handler) parkCreateOnLeaseBreak(
 		// Errors here are logged but not propagated: on timeout the lease
 		// manager has auto-downgraded other-key leases, so the CREATE can
 		// still proceed (same semantics as the sync wait path).
-		if leaseMgr != nil {
-			if err := leaseMgr.WaitForBreakCompletionExceptKeyCtx(waitCtx, lockFileHandle, shareName, waitExceptKey); err != nil {
-				logger.Debug("CREATE async: break wait completed",
-					"messageID", messageID,
-					"asyncID", asyncID,
-					"error", err)
-			}
+		if err := h.LeaseManager.WaitForBreakCompletionExceptKeyCtx(waitCtx, lockFileHandle, shareName, waitExceptKey); err != nil {
+			logger.Debug("CREATE async: break wait completed",
+				"messageID", messageID,
+				"asyncID", asyncID,
+				"error", err)
 		}
 
 		// Ensure our entry is still live (not preempted by CANCEL or teardown).
 		// If it was, CANCEL / teardown already sent the final response.
-		if registry.Unregister(asyncID) == nil {
+		if h.PendingCreateRegistry.Unregister(asyncID) == nil {
 			return
 		}
 
 		resp := h.completeCreateAfterBreak(ctx, d)
-		if resp == nil {
-			// Defensive: should never happen. Send a generic error so the
-			// client sees SOMETHING and the async slot is released.
-			if err := pending.Callback(sessionID, messageID, asyncID, types.StatusInternalError, nil); err != nil {
-				logger.Warn("CREATE async: failed to deliver fallback error", "error", err)
-			}
-			return
-		}
-
 		status := resp.GetStatus()
 		var body []byte
 		if status == types.StatusSuccess {
@@ -579,7 +533,7 @@ func (h *Handler) parkCreateOnLeaseBreak(
 			}
 		}
 
-		if err := pending.Callback(sessionID, messageID, asyncID, status, body); err != nil {
+		if err := pending.Callback(pending.SessionID, messageID, asyncID, status, body); err != nil {
 			logger.Warn("CREATE async: failed to send final response",
 				"messageID", messageID,
 				"asyncID", asyncID,

@@ -878,9 +878,19 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		}
 	}
 
-	draft := h.newCreateDraft(req, tree, sess, authCtx, filename, baseName,
-		parentHandle, existingFile, fileExists, createAction,
-		isDirectoryRequest, excludeOwner)
+	draft := (&createDraft{
+		req:                req,
+		tree:               tree,
+		authCtx:            authCtx,
+		filename:           filename,
+		baseName:           baseName,
+		parentHandle:       parentHandle,
+		existingFile:       existingFile,
+		fileExists:         fileExists,
+		createAction:       createAction,
+		isDirectoryRequest: isDirectoryRequest,
+		excludeOwner:       excludeOwner,
+	}).finalize()
 
 	// Dispatch lease break and either park the CREATE async (emit interim
 	// STATUS_PENDING) or wait for the break to drain inline.
@@ -893,7 +903,6 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 
 	return h.completeCreateAfterBreak(ctx, draft), nil
 }
-
 
 // computeMaximalAccess computes the maximal access mask for a file based on
 // POSIX permissions and the requesting user's identity.
