@@ -276,6 +276,52 @@ func TestOpLock_Clone_Nil(t *testing.T) {
 }
 
 // ============================================================================
+// ComputeLeaseBreakTo Matrix Tests
+// ============================================================================
+
+// TestComputeLeaseBreakTo_Matrix covers every valid existing-state row × both
+// sharing-violation outcomes. Mirrors Samba delay_for_oplock_fn semantics per
+// MS-SMB2 3.3.4.7.
+func TestComputeLeaseBreakTo_Matrix(t *testing.T) {
+	t.Parallel()
+
+	R := LeaseStateRead
+	W := LeaseStateWrite
+	H := LeaseStateHandle
+
+	tests := []struct {
+		name          string
+		existing      uint32
+		hasViolation  bool
+		expectedBreak uint32
+	}{
+		// No violation → strip Write, keep Handle.
+		{"None/noViolation", LeaseStateNone, false, LeaseStateNone},
+		{"R/noViolation", R, false, R},
+		{"RH/noViolation", R | H, false, R | H},
+		{"RW/noViolation", R | W, false, R},
+		{"RWH/noViolation", R | W | H, false, R | H},
+
+		// Violation → strip Handle, keep Write.
+		{"None/violation", LeaseStateNone, true, LeaseStateNone},
+		{"R/violation", R, true, R},
+		{"RH/violation", R | H, true, R},
+		{"RW/violation", R | W, true, R | W},
+		{"RWH/violation", R | W | H, true, R | W},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ComputeLeaseBreakTo(tc.existing, tc.hasViolation)
+			assert.Equalf(t, tc.expectedBreak, got,
+				"ComputeLeaseBreakTo(%s, violation=%v) = %s, want %s",
+				LeaseStateToString(tc.existing), tc.hasViolation,
+				LeaseStateToString(got), LeaseStateToString(tc.expectedBreak))
+		})
+	}
+}
+
+// ============================================================================
 // Lease Conflict Detection Tests
 // ============================================================================
 

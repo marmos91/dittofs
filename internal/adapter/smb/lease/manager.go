@@ -31,6 +31,17 @@ import (
 // SMB2_NOTIFY_BREAK_LEASE_FLAG_ACK_REQUIRED is set).
 const parentLeaseBreakWaitTimeout = 5 * time.Second
 
+// handleLeaseBreakWaitTimeout bounds how long a CREATE waits for the existing
+// lease holder to acknowledge a Handle-strip break before falling back to
+// forceCompleteBreaks (auto-downgrade) and proceeding to the share-mode check.
+//
+// Without a bound, the wait inherits the auth context which only cancels on
+// session disconnect — non-acking clients hang the conflicting open for as
+// long as the test harness tolerates. Samba bounds this at ~32 s
+// (2× OPLOCK_BREAK_TIMEOUT, schedule_defer_open in source3/smbd/open.c); we
+// use the same 5 s as the parent break for consistency.
+const handleLeaseBreakWaitTimeout = 5 * time.Second
+
 // LockManagerResolver resolves the LockManager for a given share name.
 // This allows the LeaseManager to work across multiple shares without
 // holding a reference to a specific share's LockManager.
@@ -221,6 +232,30 @@ func (lm *LeaseManager) ReleaseLease(ctx context.Context, leaseKey [16]byte) err
 	return nil
 }
 
+// ReleaseLeaseForHandle releases lease records only under a specific handleKey
+// bucket. Used by CLOSE so that opens on OTHER files sharing the same
+// LeaseKey constant (typical in smbtorture, which reuses fixed LEASE1/LEASE2
+// macros across tests) retain their records. The session/share mappings are
+// only torn down when the last record for the key is gone.
+func (lm *LeaseManager) ReleaseLeaseForHandle(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, shareName string) error {
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return nil
+	}
+
+	if err := lockMgr.ReleaseLeaseForHandle(ctx, string(fileHandle), leaseKey); err != nil {
+		return err
+	}
+
+	// Only drop session/share mappings if no lease records remain anywhere for
+	// this key — otherwise a concurrent open on a different file would lose
+	// break-dispatch routing.
+	if _, _, found := lockMgr.GetLeaseState(ctx, leaseKey); !found {
+		lm.removeLeaseMapping(hex.EncodeToString(leaseKey[:]))
+	}
+	return nil
+}
+
 // ReleaseSessionLeases releases all leases owned by a session.
 // This is called during session cleanup (LOGOFF / connection close).
 func (lm *LeaseManager) ReleaseSessionLeases(ctx context.Context, sessionID uint64) error {
@@ -355,20 +390,29 @@ func (lm *LeaseManager) BreakConflictingOplocksOnOpen(
 	return lockMgr.CheckAndBreakLeasesForSMBOpen(handleKey, exclude)
 }
 
-// BreakHandleLeasesOnOpen breaks Handle leases before share mode conflict check.
-// Per MS-SMB2 3.3.5.9 Step 10: "If any existing Open on the target file has a
-// lease with Handle caching, the server MUST initiate a lease break to remove
-// Handle caching." This must happen BEFORE the share mode conflict check so that
-// clients relinquish cached handles, avoiding spurious SHARING_VIOLATION errors.
+// BreakHandleLeasesOnOpen breaks leases before the share-mode conflict check
+// for an SMB CREATE on a file, per MS-SMB2 3.3.4.7 and Samba
+// `source3/smbd/open.c::delay_for_oplock_fn`:
 //
-// After breaking, the caller should wait for break completion and then re-check
-// share mode conflicts.
+//   - hasSharingViolation == true → strip Handle (keep Read + Write). The
+//     existing holder must release cached open handles so the new opener can
+//     proceed; writes stay cached because the holder will close the handle
+//     anyway.
+//   - hasSharingViolation == false → strip Write (keep Read + Handle). The
+//     holder flushes dirty data but may keep cached handles, and the new
+//     opener coexists.
+//
+// After breaking, the caller waits for completion and re-runs the share-mode
+// check. On timeout, forceCompleteBreaks auto-downgrades the lease so the
+// re-check runs against a deterministic post-break state.
+//
 // excludeOwner is optional and can contain ExcludeLeaseKey to prevent
 // breaking same-key leases (nobreakself per MS-SMB2).
 func (lm *LeaseManager) BreakHandleLeasesOnOpen(
 	ctx context.Context,
 	fileHandle lock.FileHandle,
 	shareName string,
+	hasSharingViolation bool,
 	excludeOwner ...*lock.LockOwner,
 ) error {
 	lockMgr := lm.resolveLockManager(shareName)
@@ -383,27 +427,65 @@ func (lm *LeaseManager) BreakHandleLeasesOnOpen(
 		exclude = excludeOwner[0]
 	}
 
-	// Strip Write from leases that have Handle caching (RWH -> RH).
-	// This sends one notification that matches what clients expect:
-	// "flush dirty data" (Write strip). The Handle bit is preserved so
-	// the client can close cached handles in its ack response.
-	// After the ack, the lease is at RH (no Write, no Breaking), and
-	// Step 8a can independently strip Handle if needed.
-	if err := lockMgr.BreakWriteOnHandleLeasesForSMBOpen(handleKey, exclude); err != nil {
+	if err := lockMgr.BreakLeasesOnOpenConflict(handleKey, exclude, hasSharingViolation); err != nil {
 		return err
 	}
 
-	// Wait for break to complete before caller re-checks share modes
-	return lockMgr.WaitForBreakCompletion(ctx, handleKey)
+	waitCtx, cancel := context.WithTimeout(ctx, handleLeaseBreakWaitTimeout)
+	defer cancel()
+
+	// A same-key reopen must still wait for any OTHER breaking leases on
+	// this handle to drain (MS-SMB2 3.3.4.7), but it must not force-complete
+	// the opener's own Breaking lease — RequestLease needs to observe it and
+	// emit SMB2_LEASE_FLAG_BREAK_IN_PROGRESS per MS-SMB2 3.3.5.9.8.
+	if exclude != nil && exclude.ExcludeLeaseKey != ([16]byte{}) {
+		return lockMgr.WaitForBreakCompletionExceptKey(waitCtx, handleKey, exclude.ExcludeLeaseKey)
+	}
+	return lockMgr.WaitForBreakCompletion(waitCtx, handleKey)
 }
 
-// BreakHandleLeasesOnOpenAsync dispatches Handle lease break notifications
-// without waiting for acknowledgment. Used for directory opens where share
-// mode conflicts are not a concern and blocking would deadlock: the other
-// client needs this CREATE's response before it processes the break.
+// BreakHandleLeasesOnOpenAsync dispatches lease break notifications without
+// waiting for acknowledgment. Used for directory opens where blocking would
+// deadlock the single-threaded test driver: the other client only acks after
+// this CREATE returns.
+//
+// Break-to semantics match BreakHandleLeasesOnOpen (see that doc comment).
 // excludeOwner is optional and can contain ExcludeLeaseKey to prevent
 // breaking same-key leases (nobreakself per MS-SMB2).
 func (lm *LeaseManager) BreakHandleLeasesOnOpenAsync(
+	fileHandle lock.FileHandle,
+	shareName string,
+	hasSharingViolation bool,
+	excludeOwner ...*lock.LockOwner,
+) error {
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return nil
+	}
+
+	handleKey := string(fileHandle)
+
+	var exclude *lock.LockOwner
+	if len(excludeOwner) > 0 {
+		exclude = excludeOwner[0]
+	}
+
+	return lockMgr.BreakLeasesOnOpenConflict(handleKey, exclude, hasSharingViolation)
+}
+
+// BreakFileHandleLeasesOnDelete strips Handle caching from all leases on a
+// file that is about to be unlinked (RH → R, RWH → RW). Per MS-FSA 2.1.5.1.5
+// and Samba: deleting a file invalidates Handle caching for every other open
+// (the reopen path no longer exists), but Read and Write remain valid for as
+// long as the in-flight handles stay alive.
+//
+// Async dispatch: the break is triggered from the close/TDIS/LOGOFF/disconnect
+// teardown path, where the lease holder is a DIFFERENT session on the same
+// transport. Waiting for the ACK here would deadlock the in-flight SMB
+// request; the holder acks on its own transport after we return.
+//
+// Required by smbtorture smb2.lease.initial_delete_tdis / logoff / disconnect.
+func (lm *LeaseManager) BreakFileHandleLeasesOnDelete(
 	fileHandle lock.FileHandle,
 	shareName string,
 	excludeOwner ...*lock.LockOwner,
@@ -413,14 +495,14 @@ func (lm *LeaseManager) BreakHandleLeasesOnOpenAsync(
 		return nil
 	}
 
-	handleKey := string(fileHandle)
-
 	var exclude *lock.LockOwner
 	if len(excludeOwner) > 0 {
 		exclude = excludeOwner[0]
 	}
-
-	return lockMgr.BreakHandleLeasesForSMBOpen(handleKey, exclude)
+	// hasSharingViolation=true selects the strip-Handle mask via
+	// ComputeLeaseBreakTo; the triggering "conflict" here is the unlink,
+	// not a share-mode violation, but the break-to outcome is identical.
+	return lockMgr.BreakLeasesOnOpenConflict(string(fileHandle), exclude, true)
 }
 
 // resolveParentBreakArgs resolves the lock manager, handle key, and exclude
@@ -467,7 +549,14 @@ func (lm *LeaseManager) BreakParentHandleLeasesOnCreate(
 	if lockMgr == nil {
 		return nil
 	}
-	if err := lockMgr.BreakHandleLeasesForSMBOpen(handleKey, excludeOwner); err != nil {
+	// Parent directory Handle-lease break on child create: strip Handle
+	// (not Write) so cached entries are invalidated. Pass
+	// hasSharingViolation=true to BreakLeasesOnOpenConflict because that
+	// selects the Handle-strip mask; semantically this is MS-FSA 2.1.5.14
+	// (child-set change invalidates directory Handle caching), not a
+	// share-mode violation, but the break-to matrix collapses to the same
+	// strip-H outcome.
+	if err := lockMgr.BreakLeasesOnOpenConflict(handleKey, excludeOwner, true); err != nil {
 		return err
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, parentLeaseBreakWaitTimeout)

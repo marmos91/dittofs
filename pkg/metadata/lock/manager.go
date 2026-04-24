@@ -122,8 +122,16 @@ type LockManager interface {
 	AcknowledgeLeaseBreak(ctx context.Context, leaseKey [16]byte,
 		acknowledgedState uint32, epoch uint16) error
 
-	// ReleaseLease releases all lease state for the given lease key.
+	// ReleaseLease releases ALL lease state for the given lease key across
+	// every handleKey bucket. Callers with per-handle scope should prefer
+	// ReleaseLeaseForHandle — see its doc for why this matters under
+	// smbtorture's fixed LEASE1/LEASE2 key pattern.
 	ReleaseLease(ctx context.Context, leaseKey [16]byte) error
+
+	// ReleaseLeaseForHandle removes lease records matching leaseKey from a
+	// single handleKey bucket only. Use this on CLOSE so that concurrent
+	// opens on OTHER files sharing the same LeaseKey keep their records.
+	ReleaseLeaseForHandle(ctx context.Context, handleKey string, leaseKey [16]byte) error
 
 	// ReclaimLease reclaims a lease during grace period (both SMB and NFS).
 	// Returns the reclaimed lock or error if lease doesn't exist or directory deleted.
@@ -180,14 +188,13 @@ type LockManager interface {
 	// preserving Read and Handle (RWH -> RH, RW -> R).
 	CheckAndBreakLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error
 
-	// BreakHandleLeasesForSMBOpen breaks Handle leases for an SMB CREATE.
-	// Per MS-SMB2 3.3.5.9 Step 10: Handle leases must be broken before
-	// share mode conflict check. Strips only the Handle bit (RWH -> RW, RH -> R).
-	BreakHandleLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error
-
-	// BreakWriteOnHandleLeasesForSMBOpen strips Write from leases that have
-	// Handle caching (RWH → RH). Only targets leases with both W and H.
-	BreakWriteOnHandleLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error
+	// BreakLeasesOnOpenConflict breaks existing leases before an SMB CREATE
+	// proceeds, per MS-SMB2 3.3.4.7 and Samba `source3/smbd/open.c::delay_for_oplock_fn`.
+	// The bit stripped depends on whether the new open conflicts on share mode:
+	//   - Sharing violation → strip Handle (keep Read + Write).
+	//   - No sharing violation → strip Write (keep Read + Handle).
+	// Each per-lease target state is computed via ComputeLeaseBreakTo.
+	BreakLeasesOnOpenConflict(handleKey string, excludeOwner *LockOwner, hasSharingViolation bool) error
 
 	// BreakReadLeasesForParentDir breaks Read leases on a parent directory
 	// when directory content changes (CREATE, RENAME, DELETE on close).
@@ -199,6 +206,14 @@ type LockManager interface {
 	// WaitForBreakCompletion blocks until all breaking locks on a file resolve
 	// or the context is cancelled.
 	WaitForBreakCompletion(ctx context.Context, handleKey string) error
+
+	// WaitForBreakCompletionExceptKey is WaitForBreakCompletion scoped to
+	// ignore any breaking lease keyed on exceptKey. The SMB CREATE path uses
+	// this on same-key reopens: MS-SMB2 3.3.5.9.8 requires the opener to
+	// observe Breaking=true on its own key (to emit
+	// SMB2_LEASE_FLAG_BREAK_IN_PROGRESS), which forceCompleteBreaks would
+	// otherwise clear, while other-key breaks still need to drain first.
+	WaitForBreakCompletionExceptKey(ctx context.Context, handleKey string, exceptKey [16]byte) error
 
 	// ========================================================================
 	// Break Callbacks
@@ -781,6 +796,12 @@ func (lm *Manager) ReclaimLease(ctx context.Context, leaseKey [16]byte,
 	return lm.reclaimLeaseImpl(ctx, leaseKey, requestedState, isDirectory)
 }
 
+// ReleaseLeaseForHandle removes lease records matching leaseKey from a
+// single handleKey bucket only. See releaseLeaseForHandleImpl for details.
+func (lm *Manager) ReleaseLeaseForHandle(ctx context.Context, handleKey string, leaseKey [16]byte) error {
+	return lm.releaseLeaseForHandleImpl(ctx, handleKey, leaseKey)
+}
+
 // GetLeaseState returns the current state and epoch for a lease key.
 func (lm *Manager) GetLeaseState(ctx context.Context, leaseKey [16]byte) (state uint32, epoch uint16, found bool) {
 	return lm.getLeaseStateImpl(ctx, leaseKey)
@@ -795,15 +816,29 @@ func (lm *Manager) SetLeaseEpoch(leaseKey [16]byte, epoch uint16) bool {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 
-	_, lock, _ := lm.findLeaseByKey(leaseKey)
-	if lock == nil || lock.Lease == nil {
-		return false
+	// Update every lease record matching leaseKey, not just the first found.
+	// Stale records from prior tests (same LEASE1 constant across smbtorture
+	// tests) or from multiple opens by different clients can coexist in
+	// lm.unifiedLocks under different handleKey buckets. findLeaseByKey's
+	// map-iteration order is non-deterministic, so scoping to the first
+	// match can miss the lease that RequestLease just granted — leaving it
+	// at Epoch=1 (createAndGrantLease default) while the response to the
+	// client carries the higher requested epoch. Subsequent break
+	// notifications then dispatch with Epoch=2 instead of requestedEpoch+2,
+	// regressing smbtorture V2 tests (break_twice, breaking*, v2_breaking3).
+	found := false
+	for _, locks := range lm.unifiedLocks {
+		for _, lock := range locks {
+			if lock.Lease == nil || lock.Lease.LeaseKey != leaseKey {
+				continue
+			}
+			if epoch >= lock.Lease.Epoch {
+				lock.Lease.Epoch = epoch
+			}
+			found = true
+		}
 	}
-
-	if epoch >= lock.Lease.Epoch {
-		lock.Lease.Epoch = epoch
-	}
-	return true
+	return found
 }
 
 // ============================================================================
@@ -1300,35 +1335,27 @@ func (lm *Manager) CheckAndBreakLeasesForSMBOpen(handleKey string, excludeOwner 
 	})
 }
 
-// BreakHandleLeasesForSMBOpen breaks Handle leases for an SMB CREATE that may
-// conflict with sharing modes. Per MS-SMB2 3.3.5.9 Step 10: "If any existing
-// Open on the target file has a lease with Handle caching, the server MUST
-// initiate a lease break [...] to remove Handle caching."
+// BreakLeasesOnOpenConflict breaks leases held by other clients when an SMB
+// CREATE arrives. Per MS-SMB2 3.3.4.7 and Samba
+// `source3/smbd/open.c::delay_for_oplock_fn`:
 //
-// The break strips the Handle bit, preserving Read and Write:
-//   - RWH -> RW
-//   - RH  -> R
-//   - R   -> not broken (no Handle to strip)
-func (lm *Manager) BreakHandleLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error {
-	return lm.breakOpLocks(handleKey, excludeOwner, BreakToStripHandle, func(lease *OpLock) bool {
-		return lease.HasHandle()
-	})
-}
-
-// BreakWriteOnHandleLeasesForSMBOpen strips Write from leases that have Handle
-// caching. Per MS-SMB2 3.3.5.9 Step 10: before the share mode check, leases
-// with Handle caching must be broken so clients close cached handles. The break
-// strips Write (not Handle) so clients see "RWH → RH" and flush dirty data
-// while preserving Handle for the share mode resolution window.
+//   - hasSharingViolation == true → strip Handle (keep Read + Write). The
+//     existing holder must release cached open handles; dirty writes stay
+//     cached because the holder will close the handle anyway.
+//     (RWH → RW, RH → R)
+//   - hasSharingViolation == false → strip Write (keep Read + Handle). The
+//     existing holder flushes dirty data while keeping cached handles.
+//     (RWH → RH, RW → R)
 //
-// This targets only leases WITH Handle caching:
-//   - RWH -> RH (has Handle → strip Write)
-//   - RH  -> not broken (has Handle but no Write to strip)
-//   - RW  -> not broken (no Handle → not a cached-handle concern)
-//   - R   -> not broken
-func (lm *Manager) BreakWriteOnHandleLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error {
-	return lm.breakOpLocks(handleKey, excludeOwner, BreakToStripWrite, func(lease *OpLock) bool {
-		return lease.HasHandle() && lease.HasWrite()
+// Per-lease target state is computed via ComputeLeaseBreakTo. A lease is
+// broken only when the computed target differs from its current state.
+func (lm *Manager) BreakLeasesOnOpenConflict(handleKey string, excludeOwner *LockOwner, hasSharingViolation bool) error {
+	sentinel := BreakToStripWrite
+	if hasSharingViolation {
+		sentinel = BreakToStripHandle
+	}
+	return lm.breakOpLocks(handleKey, excludeOwner, sentinel, func(lease *OpLock) bool {
+		return ComputeLeaseBreakTo(lease.LeaseState, hasSharingViolation) != lease.LeaseState
 	})
 }
 
@@ -1358,6 +1385,49 @@ func (lm *Manager) CheckAndBreakCachingForDelete(handleKey string, excludeOwner 
 	})
 
 	return nil
+}
+
+// WaitForBreakCompletionExceptKey is WaitForBreakCompletion scoped to ignore
+// any breaking lease whose LeaseKey matches exceptKey. Used by the SMB CREATE
+// path on a same-key reopen: MS-SMB2 3.3.5.9.8 requires the opener to observe
+// Breaking=true on its own key (to emit SMB2_LEASE_FLAG_BREAK_IN_PROGRESS),
+// which forceCompleteBreaks would otherwise clear — but any other-key breaks
+// still need to drain before the CREATE proceeds (MS-SMB2 3.3.4.7). On
+// timeout, own-key is preserved and only other-key leases are force-completed.
+func (lm *Manager) WaitForBreakCompletionExceptKey(ctx context.Context, handleKey string, exceptKey [16]byte) error {
+	for {
+		lm.mu.Lock()
+		hasOther := false
+		for _, l := range lm.unifiedLocks[handleKey] {
+			if l.Lease != nil && l.Lease.Breaking && l.Lease.LeaseKey != exceptKey {
+				hasOther = true
+				break
+			}
+			if l.Delegation != nil && l.Delegation.Breaking {
+				hasOther = true
+				break
+			}
+		}
+		if !hasOther {
+			lm.mu.Unlock()
+			return nil
+		}
+
+		ch, ok := lm.breakWaitChans[handleKey]
+		if !ok {
+			ch = make(chan struct{})
+			lm.breakWaitChans[handleKey] = ch
+		}
+		lm.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			lm.forceCompleteBreaksExceptKey(handleKey, exceptKey)
+			return ctx.Err()
+		case <-ch:
+			continue
+		}
+	}
 }
 
 // WaitForBreakCompletion blocks until all breaking locks on a file resolve
@@ -1412,25 +1482,30 @@ func (lm *Manager) WaitForBreakCompletion(ctx context.Context, handleKey string)
 // BreakToState, as if the client had acknowledged. Called when the break
 // wait times out. Leases breaking to None are removed entirely.
 func (lm *Manager) forceCompleteBreaks(handleKey string) {
+	lm.forceCompleteBreaksExceptKey(handleKey, [16]byte{})
+}
+
+// forceCompleteBreaksExceptKey is forceCompleteBreaks that leaves any lease
+// keyed on exceptKey untouched. Zero exceptKey means "no exclusion" (same
+// semantics as forceCompleteBreaks).
+func (lm *Manager) forceCompleteBreaksExceptKey(handleKey string, exceptKey [16]byte) {
 	lm.mu.Lock()
 	locks := lm.unifiedLocks[handleKey]
 
 	var remaining []*UnifiedLock
 	modified := false
 	for _, l := range locks {
-		if l.Lease != nil && l.Lease.Breaking {
+		if l.Lease != nil && l.Lease.Breaking && l.Lease.LeaseKey != exceptKey {
 			modified = true
 			if l.Lease.BreakToState == LeaseStateNone {
-				// Remove entirely
 				if lm.lockStore != nil {
 					_ = lm.lockStore.DeleteLock(context.Background(), l.ID)
 				}
 				logger.Debug("forceCompleteBreaks: removed lease (break-to None)",
 					"handleKey", handleKey,
 					"leaseKey", fmt.Sprintf("%x", l.Lease.LeaseKey))
-				continue // skip adding to remaining
+				continue
 			}
-			// Downgrade to break-to state
 			l.Lease.LeaseState = l.Lease.BreakToState
 			l.Lease.Breaking = false
 			l.Lease.BreakToState = 0
@@ -1499,13 +1574,17 @@ func (lm *Manager) breakOpLocks(
 		breakToState uint32
 	}
 	var toBreak []breakEntry
+	kept := locks[:0]
+	removed := false
 	for _, lock := range locks {
 		if lock.Lease == nil {
+			kept = append(kept, lock)
 			continue
 		}
 		if excludeOwner != nil {
 			if lock.Owner.OwnerID == excludeOwner.OwnerID ||
 				(excludeOwner.ClientID != "" && lock.Owner.ClientID == excludeOwner.ClientID) {
+				kept = append(kept, lock)
 				continue
 			}
 			// Per MS-SMB2 3.3.5.9: opens with the same lease key must not
@@ -1513,38 +1592,66 @@ func (lm *Manager) breakOpLocks(
 			// open's LeaseKey, no break is required").
 			if excludeOwner.ExcludeLeaseKey != ([16]byte{}) &&
 				lock.Lease.LeaseKey == excludeOwner.ExcludeLeaseKey {
+				kept = append(kept, lock)
 				continue
 			}
 		}
-		if lock.Lease.Breaking {
+		if lock.Lease.Breaking || !shouldBreak(lock.Lease) {
+			kept = append(kept, lock)
 			continue
 		}
-		if shouldBreak(lock.Lease) {
-			// Compute per-lease break-to state
-			targetState := breakToState
-			switch targetState {
-			case BreakToStripWrite:
-				// Strip only the Write bit, preserve Read and Handle.
-				// Per MS-SMB2 3.3.5.9: RWH -> RH, RW -> R.
-				targetState = lock.Lease.LeaseState &^ LeaseStateWrite
-			case BreakToStripHandle:
-				// Strip only the Handle bit, preserve Read and Write.
-				// Per MS-SMB2 3.3.5.9 Step 10: RWH -> RW, RH -> R.
-				targetState = lock.Lease.LeaseState &^ LeaseStateHandle
-			}
+
+		targetState := breakToState
+		switch targetState {
+		case BreakToStripWrite:
+			// Per MS-SMB2 3.3.5.9: RWH -> RH, RW -> R.
+			targetState = lock.Lease.LeaseState &^ LeaseStateWrite
+		case BreakToStripHandle:
+			// Per MS-SMB2 3.3.5.9 Step 10: RWH -> RW, RH -> R.
+			targetState = lock.Lease.LeaseState &^ LeaseStateHandle
+		}
+
+		// Per MS-SMB2 3.3.4.7, a break is ack-required iff the current state
+		// is NOT pure Read. Without ACK_REQUIRED the client never responds,
+		// so leaving Breaking=true would block same-key reopens (nobreakself)
+		// until forceCompleteBreaks fires — downgrade inline for those cases.
+		ackRequired := lock.Lease.LeaseState != LeaseStateRead
+
+		// Advance the lease epoch on the live record first so the snapshot
+		// that feeds dispatchOpLockBreak carries the new epoch (NewEpoch per
+		// MS-SMB2 2.2.23.2), then snapshot while LeaseState still holds the
+		// pre-break value for the notification's CurrentLeaseState field.
+		advanceEpoch(lock.Lease)
+		snapshot := lock.Clone()
+
+		switch {
+		case ackRequired:
 			lock.Lease.Breaking = true
 			lock.Lease.BreakToState = targetState
 			lock.Lease.BreakStarted = time.Now()
-			advanceEpoch(lock.Lease)
-			toBreak = append(toBreak, breakEntry{lock: lock, breakToState: targetState})
+			kept = append(kept, lock)
+		case targetState == LeaseStateNone:
+			if lm.lockStore != nil {
+				_ = lm.lockStore.DeleteLock(context.Background(), lock.ID)
+			}
+			removed = true
+		default:
+			lock.Lease.LeaseState = targetState
+			lock.Type = lockTypeForLeaseState(targetState)
+			if lm.lockStore != nil {
+				pl := ToPersistedLock(lock, 0)
+				_ = lm.lockStore.PutLock(context.Background(), pl)
+			}
+			kept = append(kept, lock)
 		}
+		toBreak = append(toBreak, breakEntry{lock: snapshot, breakToState: targetState})
 	}
-	// Clone locks before releasing mu so that dispatchOpLockBreak receives
-	// snapshots. Without this, concurrent AcknowledgeLeaseBreak can mutate
-	// the live *UnifiedLock while the break callback reads it.
-	// This matches the pattern in requestLeaseImpl (leases.go).
-	for i := range toBreak {
-		toBreak[i].lock = toBreak[i].lock.Clone()
+	if removed {
+		if len(kept) == 0 {
+			delete(lm.unifiedLocks, handleKey)
+		} else {
+			lm.unifiedLocks[handleKey] = kept
+		}
 	}
 	lm.mu.Unlock()
 

@@ -1087,3 +1087,50 @@ func TestMergeLocks_DifferentOwners(t *testing.T) {
 		t.Fatalf("Expected 2 locks (different owners), got %d", len(result))
 	}
 }
+
+// TestSetLeaseEpoch_UpdatesAllMatchingRecords covers the broadened behavior
+// added with the #429 lease work: the same LeaseKey can appear under
+// different handleKey buckets (smbtorture reuses fixed LEASE1/LEASE2 macros),
+// and SetLeaseEpoch must update every record so subsequent break
+// notifications dispatch with the right NewEpoch regardless of which record
+// findLeaseByKey happens to return.
+func TestSetLeaseEpoch_UpdatesAllMatchingRecords(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	leaseKey := [16]byte{0xaa, 0xbb, 0xcc}
+
+	lm.mu.Lock()
+	lm.unifiedLocks["/share:fileA"] = []*UnifiedLock{
+		{Owner: LockOwner{OwnerID: "oA"}, Lease: &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead, Epoch: 1}},
+	}
+	lm.unifiedLocks["/share:fileB"] = []*UnifiedLock{
+		{Owner: LockOwner{OwnerID: "oB"}, Lease: &OpLock{LeaseKey: leaseKey, LeaseState: LeaseStateRead, Epoch: 1}},
+	}
+	lm.mu.Unlock()
+
+	if !lm.SetLeaseEpoch(leaseKey, 7) {
+		t.Fatalf("SetLeaseEpoch returned false, expected true when records exist")
+	}
+
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	for _, handle := range []string{"/share:fileA", "/share:fileB"} {
+		locks := lm.unifiedLocks[handle]
+		if len(locks) != 1 {
+			t.Fatalf("%s: expected 1 record, got %d", handle, len(locks))
+		}
+		if got := locks[0].Lease.Epoch; got != 7 {
+			t.Errorf("%s: Epoch = %d, want 7", handle, got)
+		}
+	}
+}
+
+func TestSetLeaseEpoch_ReturnsFalseForUnknownKey(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+	if lm.SetLeaseEpoch([16]byte{0xff, 0xee}, 5) {
+		t.Fatalf("SetLeaseEpoch returned true for unknown key")
+	}
+}

@@ -452,6 +452,36 @@ func TestReleaseLease_NonexistentKey(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// TestReleaseLeaseForHandle_ScopedToSingleBucket covers the fix in 249fd668:
+// smbtorture reuses fixed LEASE1/LEASE2 keys across tests, so the same
+// LeaseKey can live under two distinct handleKey buckets at the same time.
+// Releasing one bucket must not erase the other — otherwise stale records
+// accumulate on the surviving file and break ACK lookup.
+func TestReleaseLeaseForHandle_ScopedToSingleBucket(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	leaseKey := [16]byte{1, 2, 3}
+
+	_, _, err := mgr.RequestLease(ctx, FileHandle("/share:fileA"), leaseKey, [16]byte{}, "ownerA", "client", "/share", LeaseStateRead, false)
+	require.NoError(t, err)
+	_, _, err = mgr.RequestLease(ctx, FileHandle("/share:fileB"), leaseKey, [16]byte{}, "ownerB", "client", "/share", LeaseStateRead, false)
+	require.NoError(t, err)
+
+	// Release only fileA's bucket.
+	require.NoError(t, mgr.ReleaseLeaseForHandle(ctx, "/share:fileA", leaseKey))
+
+	// fileA's bucket should be gone; fileB's lease record must survive.
+	mgr.mu.RLock()
+	_, aStillThere := mgr.unifiedLocks["/share:fileA"]
+	bBucket := mgr.unifiedLocks["/share:fileB"]
+	mgr.mu.RUnlock()
+	assert.False(t, aStillThere, "fileA bucket should be removed when emptied")
+	require.Len(t, bBucket, 1, "fileB bucket must survive intact")
+	assert.Equal(t, leaseKey, bBucket[0].Lease.LeaseKey)
+}
+
 // ============================================================================
 // GetLeaseState Tests
 // ============================================================================

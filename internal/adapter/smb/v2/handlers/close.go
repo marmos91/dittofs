@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/mfsymlink"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
 // ============================================================================
@@ -352,26 +354,37 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 		leaseKey := openFile.LeaseKey
 
 		if leaseKey != ([16]byte{}) {
-			// Check if any other open shares this lease key
-			hasOtherOpen := false
+			// Check if any other open on the SAME FILE shares this lease key.
+			// Two opens on the same file share one lease record (requestLeaseImpl
+			// upgrades in place). Different files with the same key are separate
+			// records in distinct handleKey buckets and must not be disturbed.
+			hasOtherOpenSameFile := false
 			h.files.Range(func(key, value any) bool {
 				other := value.(*OpenFile)
-				if other.FileID != openFile.FileID && other.LeaseKey == leaseKey {
-					hasOtherOpen = true
-					return false // stop iteration
+				if other.FileID == openFile.FileID {
+					return true // skip self
+				}
+				if other.LeaseKey != leaseKey {
+					return true
+				}
+				if bytes.Equal(other.MetadataHandle, openFile.MetadataHandle) {
+					hasOtherOpenSameFile = true
+					return false
 				}
 				return true
 			})
 
-			if !hasOtherOpen {
-				// Last handle with this lease key - release the lease
-				if err := h.LeaseManager.ReleaseLease(ctx.Context, leaseKey); err != nil {
+			if !hasOtherOpenSameFile {
+				// Last open on this file with this lease key — release only
+				// this handle's lease record. Other files sharing the key
+				// (smbtorture reuses LEASE1/LEASE2 across tests) keep theirs.
+				if err := h.LeaseManager.ReleaseLeaseForHandle(ctx.Context, lock.FileHandle(openFile.MetadataHandle), leaseKey, openFile.ShareName); err != nil {
 					logger.Debug("CLOSE: failed to release lease",
 						"path", openFile.Path,
 						"leaseKey", fmt.Sprintf("%x", leaseKey),
 						"error", err)
 				} else {
-					logger.Debug("CLOSE: released lease (last handle closed)",
+					logger.Debug("CLOSE: released lease (last open on this file)",
 						"path", openFile.Path,
 						"leaseKey", fmt.Sprintf("%x", leaseKey))
 				}
@@ -380,7 +393,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 					h.LeaseManager.UnregisterOplockFileID(leaseKey)
 				}
 			} else {
-				logger.Debug("CLOSE: lease handle closed (other opens share lease key)",
+				logger.Debug("CLOSE: lease handle closed (other opens share lease key on same file)",
 					"path", openFile.Path)
 			}
 		}
