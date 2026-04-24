@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -195,7 +196,7 @@ func (h *Handler) Commit(
 
 	logger.InfoCtx(ctx.Context, "COMMIT: flushing data", "share", ctx.Share)
 
-	blockStore, err := getBlockStoreForHandle(h.Registry, ctx.Context, handle)
+	blockStore, err := common.ResolveForWrite(ctx.Context, h.Registry, handle)
 	if err != nil {
 		logger.ErrorCtx(ctx.Context, "COMMIT failed: block store not available", "client", clientIP, "error", err)
 		return &CommitResponse{

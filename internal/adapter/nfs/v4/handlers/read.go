@@ -2,8 +2,10 @@ package handlers
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
@@ -144,8 +146,19 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 		actualLen = file.Size - offset
 	}
 
-	// Get per-share block store and read data
-	blockStore, err := getBlockStoreForHandle(h, ctx.Context, ctx.CurrentFH)
+	// Get per-share block store and read data.
+	// Preserve the NFSv4-specific nil-Registry guard at the call site (previously
+	// lived inside the local getBlockStoreForHandle). Keeping the guard here
+	// avoids leaking an NFSv4 concern into common.ResolveForRead.
+	if h.Registry == nil {
+		logger.Debug("NFSv4 READ no registry configured", "client", ctx.ClientAddr)
+		return &types.CompoundResult{
+			Status: types.NFS4ERR_SERVERFAULT,
+			OpCode: types.OP_READ,
+			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+		}
+	}
+	blockStore, err := common.ResolveForRead(ctx.Context, h.Registry, metadata.FileHandle(ctx.CurrentFH))
 	if err != nil {
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
@@ -154,9 +167,11 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 		}
 	}
 
-	data := make([]byte, actualLen)
-	n, err := blockStore.ReadAt(ctx.Context, string(file.PayloadID), data, offset)
-
+	// NOTE: NFSv4 READ now allocates via internal/adapter/pool (through
+	// common.ReadFromBlockStore) for parity with NFSv3 — positive perf delta,
+	// per-request alloc → pool reuse. Release fires via defer after response
+	// encoding below.
+	readResult, err := common.ReadFromBlockStore(ctx.Context, blockStore, file.PayloadID, offset, uint32(actualLen))
 	if err != nil {
 		logger.Debug("NFSv4 READ payload error", "error", err, "client", ctx.ClientAddr)
 		return &types.CompoundResult{
@@ -165,18 +180,23 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 			Data:   encodeStatusOnly(types.NFS4ERR_IO),
 		}
 	}
+	// Release the pooled buffer after the compound result has been encoded.
+	// encodeRead4resok copies readResult.Data into a fresh bytes.Buffer before
+	// returning, so it is safe to release immediately after that call.
+	defer readResult.Release()
 
-	// Detect EOF
-	eof := offset+uint64(n) >= file.Size
+	n := len(readResult.Data)
+	// Detect EOF (either EOF from the block store or offset+n reached file.Size).
+	eof := readResult.EOF || offset+uint64(n) >= file.Size
 
 	logger.Debug("NFSv4 READ successful",
 		"offset", offset,
 		"requested", count,
-		"read", n,
+		"read", fmt.Sprintf("%d", n),
 		"eof", eof,
 		"client", ctx.ClientAddr)
 
-	return encodeRead4resok(eof, data[:n])
+	return encodeRead4resok(eof, readResult.Data)
 }
 
 // encodeRead4resok encodes a successful READ4 response.

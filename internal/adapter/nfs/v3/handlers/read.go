@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/adapter/pool"
@@ -141,7 +142,7 @@ func (h *Handler) Read(
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
-	blockStore, err := getBlockStoreForHandle(h.Registry, ctx.Context, fileHandle)
+	blockStore, err := common.ResolveForRead(ctx.Context, h.Registry, fileHandle)
 	if err != nil {
 		logger.ErrorCtx(ctx.Context, "READ failed: block store not available", "client", clientIP, "error", err)
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
@@ -234,10 +235,12 @@ func (h *Handler) Read(
 	// ========================================================================
 	// All reads go through BlockStore.ReadAt which reads from block store.
 
-	readResult, readErr := readFromBlockStore(ctx, blockStore, file.PayloadID, req.Offset, actualLength, clientIP, req.Handle)
+	logger.DebugCtx(ctx.Context, "READ: reading from BlockStore", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", actualLength, "payload_id", file.PayloadID)
+	readResult, readErr := common.ReadFromBlockStore(ctx.Context, blockStore, file.PayloadID, req.Offset, actualLength)
 	if readErr != nil {
 		// Check if cancellation error
 		if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
+			logger.DebugCtx(ctx.Context, "READ: request cancelled during ReadAt", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "client", clientIP)
 			return nil, readErr
 		}
 
@@ -250,9 +253,9 @@ func (h *Handler) Read(
 		}, nil
 	}
 
-	data := readResult.data
+	data := readResult.Data
 	n := len(data)
-	eof := readResult.eof
+	eof := readResult.EOF
 
 	// Check if we're at or past EOF
 	if req.Offset+uint64(n) >= file.Size {

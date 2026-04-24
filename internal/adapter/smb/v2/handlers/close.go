@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -180,7 +181,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// Flush cached data to ensure durability.
 	// Unlike NFS COMMIT which is non-blocking, SMB CLOSE requires immediate durability.
 	if !openFile.IsDirectory && openFile.PayloadID != "" {
-		blockStore, bsErr := h.Registry.GetBlockStoreForHandle(ctx.Context, openFile.MetadataHandle)
+		blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, openFile.MetadataHandle)
 		if bsErr != nil {
 			logger.Warn("CLOSE: block store not available for handle", "path", openFile.Path, "error", bsErr)
 		} else if _, flushErr := blockStore.Flush(ctx.Context, string(openFile.PayloadID)); flushErr != nil {
@@ -515,7 +516,7 @@ func (h *Handler) checkAndConvertMFsymlink(ctx *SMBHandlerContext, openFile *Ope
 // readMFsymlinkContent reads the content of a potential MFsymlink file.
 // It reads from the block store which uses local cache internally.
 func (h *Handler) readMFsymlinkContent(ctx *SMBHandlerContext, openFile *OpenFile) ([]byte, error) {
-	blockStore, err := h.Registry.GetBlockStoreForHandle(ctx.Context, openFile.MetadataHandle)
+	blockStore, err := common.ResolveForRead(ctx.Context, h.Registry, openFile.MetadataHandle)
 	if err != nil {
 		return nil, fmt.Errorf("block store not available: %w", err)
 	}
@@ -555,7 +556,7 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 
 	// Delete content from block store (optional - ignore errors)
 	if openFile.PayloadID != "" {
-		if blockStore, bsErr := h.Registry.GetBlockStoreForHandle(ctx.Context, openFile.MetadataHandle); bsErr == nil {
+		if blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, openFile.MetadataHandle); bsErr == nil {
 			_ = blockStore.Delete(ctx.Context, string(openFile.PayloadID))
 		}
 	}
