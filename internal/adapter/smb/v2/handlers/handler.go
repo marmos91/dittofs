@@ -602,23 +602,59 @@ func (h *Handler) closeFilesWithFilter(
 	return closed
 }
 
-// handleDeleteOnClose performs the delete operation for files marked with delete-on-close.
+// handleDeleteOnClose performs the delete operation for files marked with
+// delete-on-close during session/tree/connection teardown.
+//
+// Two lease breaks fire around the delete:
+//
+//  1. Before the unlink, strip Handle from other sessions' leases on the
+//     file being deleted (RH → R, RWH → RW). The file is going away, so
+//     Handle caching becomes stale. Required by
+//     smb2.lease.initial_delete_tdis / logoff / disconnect.
+//
+//  2. After the unlink, break the parent directory's Handle and Read leases
+//     (content change). Matches the explicit CLOSE path at close.go:334.
+//
+// Both breaks are async: the triggering SMB request (TDIS / LOGOFF / CLOSE /
+// transport close) is on tree2/session2, while the lease holder is on a
+// different session/tree on the same transport. Waiting for an ACK here
+// would deadlock — the holder can only ack after the triggering request
+// returns.
 func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session, openFile *OpenFile, caller string) {
 	authCtx := h.buildCleanupAuthContext(ctx, sess)
 	metaSvc := h.Registry.GetMetadataService()
 
+	if h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
+		lockFileHandle := lock.FileHandle(openFile.MetadataHandle)
+		// Exclude the closing session: its leases on this file are about to
+		// be released anyway, and firing self-breaks creates spurious
+		// notifications that leak into later tests (observed regressing
+		// smb2.lease.v1_bug15148 to count=2).
+		excludeOwner := &lock.LockOwner{ClientID: fmt.Sprintf("smb:%d", openFile.SessionID)}
+		if breakErr := h.LeaseManager.BreakFileHandleLeasesOnDelete(lockFileHandle, openFile.ShareName, excludeOwner); breakErr != nil {
+			logger.Debug(caller+": file Handle lease break on delete failed", "path", openFile.Path, "error", breakErr)
+		}
+	}
+
+	var deleted bool
 	if openFile.IsDirectory {
 		if err := metaSvc.RemoveDirectory(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
 			logger.Debug(caller+": failed to delete directory", "path", openFile.Path, "error", err)
 		} else {
 			logger.Debug(caller+": directory deleted", "path", openFile.Path)
+			deleted = true
 		}
 	} else {
 		if _, err := metaSvc.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
 			logger.Debug(caller+": failed to delete file", "path", openFile.Path, "error", err)
 		} else {
 			logger.Debug(caller+": file deleted", "path", openFile.Path)
+			deleted = true
 		}
+	}
+
+	if deleted {
+		h.breakParentDirLeasesForContentChange(authCtx, openFile)
 	}
 }
 

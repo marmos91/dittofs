@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-04-24 (Bound Handle lease break wait — lease subsuite runnable; #429 cluster 42→36 after 2-run confirmation)
+Last updated: 2026-04-24 (Phase 2 matrix + delete-pending file-lease break — #429 cluster 36→33 after 2-run confirmation)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -516,9 +516,6 @@ incomplete break notification delivery and multi-client coordination.
 | smb2.lease.rename_wait | Leases | Lease + rename wait not fully working | #429 |
 | smb2.lease.duplicate_create | Leases | Duplicate lease create not fully working | #429 |
 | smb2.lease.duplicate_open | Leases | Duplicate lease open not fully working | #429 |
-| smb2.lease.initial_delete_tdis | Leases | Lease + delete on tree disconnect not fully working | #429 |
-| smb2.lease.initial_delete_logoff | Leases | Lease + delete on logoff not fully working | #429 |
-| smb2.lease.initial_delete_disconnect | Leases | Lease + delete on disconnect not fully working | #429 |
 | smb2.lease.rename_dir_openfile | Leases | Lease + directory rename with open file not fully working | #429 |
 | smb2.lease.lease-epoch | Leases | Lease epoch tracking not fully working | #429 |
 | smb2.lease.break_twice | Leases | Double lease break not fully working | #429 |
@@ -738,6 +735,34 @@ incomplete delayed-write and timestamp freeze/unfreeze logic.
 | smb2.timestamps.freeze-thaw | Timestamps | CreationTime freeze/unfreeze not fully working | #434 |
 
 ## Changelog
+
+### 2026-04-24 — #429 Phase 2 matrix + delete-pending file-lease break
+
+`fix(smb): compute lease break-to by sharing-violation — #429`
+(commit `5c781938`) collapsed `BreakHandleLeasesForSMBOpen` +
+`BreakWriteOnHandleLeasesForSMBOpen` into
+`BreakLeasesOnOpenConflict(handleKey, excludeOwner, hasSharingViolation)`,
+selecting the strip mask per MS-SMB2 3.3.4.7 and Samba
+`source3/smbd/open.c::delay_for_oplock_fn` (violation → strip Handle;
+no violation → strip Write). Matrix now passes `break_twice`'s
+RWH→RW acks and `v2_complex2`'s RWH→RH, though both still fail on
+downstream assertions tracked below.
+
+A follow-up commit wired the file's own Handle-strip break into
+`handleDeleteOnClose` (the teardown path that runs for
+TDIS/LOGOFF/DISCONNECT-triggered deletes) and into
+`BreakFileHandleLeasesOnDelete` on the lease manager. The closing
+session is passed as `excludeOwner` so the break only fires against
+OTHER holders — self-breaks were leaking into the next test's
+`lease_break_info.count` and regressing `v1_bug15148`.
+
+Confirmed 2× stable:
+
+- `smb2.lease.initial_delete_tdis`
+- `smb2.lease.initial_delete_logoff`
+- `smb2.lease.initial_delete_disconnect`
+
+**#429 lease cluster: 36 → 33 tests remaining.**
 
 ### 2026-04-24 — Lease subsuite unblocked + 6 #429 collapses
 

@@ -441,6 +441,38 @@ func (lm *LeaseManager) BreakHandleLeasesOnOpenAsync(
 	return lockMgr.BreakLeasesOnOpenConflict(handleKey, exclude, hasSharingViolation)
 }
 
+// BreakFileHandleLeasesOnDelete strips Handle caching from all leases on a
+// file that is about to be unlinked (RH → R, RWH → RW). Per MS-FSA 2.1.5.1.5
+// and Samba: deleting a file invalidates Handle caching for every other open
+// (the reopen path no longer exists), but Read and Write remain valid for as
+// long as the in-flight handles stay alive.
+//
+// Async dispatch: the break is triggered from the close/TDIS/LOGOFF/disconnect
+// teardown path, where the lease holder is a DIFFERENT session on the same
+// transport. Waiting for the ACK here would deadlock the in-flight SMB
+// request; the holder acks on its own transport after we return.
+//
+// Required by smbtorture smb2.lease.initial_delete_tdis / logoff / disconnect.
+func (lm *LeaseManager) BreakFileHandleLeasesOnDelete(
+	fileHandle lock.FileHandle,
+	shareName string,
+	excludeOwner ...*lock.LockOwner,
+) error {
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return nil
+	}
+
+	var exclude *lock.LockOwner
+	if len(excludeOwner) > 0 {
+		exclude = excludeOwner[0]
+	}
+	// hasSharingViolation=true selects the strip-Handle mask via
+	// ComputeLeaseBreakTo; the triggering "conflict" here is the unlink,
+	// not a share-mode violation, but the break-to outcome is identical.
+	return lockMgr.BreakLeasesOnOpenConflict(string(fileHandle), exclude, true)
+}
+
 // resolveParentBreakArgs resolves the lock manager, handle key, and exclude
 // owner for parent directory lease break operations. Returns nil lockMgr if
 // the share has no lock manager.
