@@ -246,23 +246,34 @@ var errorMap = map[merrs.ErrorCode]protoCodes{
 	},
 }
 
+// lookupErrorRow returns the errorMap row for err, or defaultCodes when err is
+// nil, is not a *merrs.StoreError, or has a Code that is not in errorMap. Uses
+// goerrors.As so wrapped StoreErrors unwrap correctly — this is the
+// consolidation fix for the pre-consolidation SMB type-assertion bug
+// (converters.go:364) which did not unwrap.
+//
+// Callers use the returned row directly; nil is handled at the per-protocol
+// accessor so each protocol returns its own SUCCESS constant (NFS3OK / NFS4_OK
+// / StatusSuccess) instead of defaultCodes.
+func lookupErrorRow(err error) protoCodes {
+	var storeErr *merrs.StoreError
+	if !goerrors.As(err, &storeErr) {
+		return defaultCodes
+	}
+	if codes, ok := errorMap[storeErr.Code]; ok {
+		return codes
+	}
+	return defaultCodes
+}
+
 // MapToNFS3 translates err to an NFS3 status code. Returns NFS3OK for nil,
 // defaultCodes.NFS3 when err is not a *merrs.StoreError, and the errorMap
-// row's NFS3 column otherwise. Uses goerrors.As so wrapped StoreErrors
-// unwrap correctly — this is the consolidation fix for the pre-consolidation
-// SMB type-assertion bug (converters.go:364) which did not unwrap.
+// row's NFS3 column otherwise.
 func MapToNFS3(err error) uint32 {
 	if err == nil {
 		return nfs3types.NFS3OK
 	}
-	var storeErr *merrs.StoreError
-	if !goerrors.As(err, &storeErr) {
-		return defaultCodes.NFS3
-	}
-	if codes, ok := errorMap[storeErr.Code]; ok {
-		return codes.NFS3
-	}
-	return defaultCodes.NFS3
+	return lookupErrorRow(err).NFS3
 }
 
 // MapToNFS4 translates err to an NFS4 status code.
@@ -270,14 +281,7 @@ func MapToNFS4(err error) uint32 {
 	if err == nil {
 		return nfs4types.NFS4_OK
 	}
-	var storeErr *merrs.StoreError
-	if !goerrors.As(err, &storeErr) {
-		return defaultCodes.NFS4
-	}
-	if codes, ok := errorMap[storeErr.Code]; ok {
-		return codes.NFS4
-	}
-	return defaultCodes.NFS4
+	return lookupErrorRow(err).NFS4
 }
 
 // MapToSMB translates err to an SMB NT status code.
@@ -285,12 +289,5 @@ func MapToSMB(err error) smbtypes.Status {
 	if err == nil {
 		return smbtypes.StatusSuccess
 	}
-	var storeErr *merrs.StoreError
-	if !goerrors.As(err, &storeErr) {
-		return defaultCodes.SMB
-	}
-	if codes, ok := errorMap[storeErr.Code]; ok {
-		return codes.SMB
-	}
-	return defaultCodes.SMB
+	return lookupErrorRow(err).SMB
 }

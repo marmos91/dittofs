@@ -85,23 +85,30 @@ var lockErrorMap = map[merrs.ErrorCode]protoCodes{
 	},
 }
 
+// lookupLockErrorRow resolves err via the fallback chain
+// lockErrorMap → errorMap (general) → defaultCodes. Callers handle the nil
+// case separately so each protocol can return its own SUCCESS constant.
+func lookupLockErrorRow(err error) protoCodes {
+	var storeErr *merrs.StoreError
+	if !goerrors.As(err, &storeErr) {
+		return defaultCodes
+	}
+	if codes, ok := lockErrorMap[storeErr.Code]; ok {
+		return codes
+	}
+	if codes, ok := errorMap[storeErr.Code]; ok {
+		return codes
+	}
+	return defaultCodes
+}
+
 // MapLockToNFS3 translates a lock-operation error to an NFS3 status code.
 // Fallback chain: lockErrorMap → errorMap (general) → defaultCodes.
 func MapLockToNFS3(err error) uint32 {
 	if err == nil {
 		return nfs3types.NFS3OK
 	}
-	var storeErr *merrs.StoreError
-	if !goerrors.As(err, &storeErr) {
-		return defaultCodes.NFS3
-	}
-	if codes, ok := lockErrorMap[storeErr.Code]; ok {
-		return codes.NFS3
-	}
-	if codes, ok := errorMap[storeErr.Code]; ok {
-		return codes.NFS3
-	}
-	return defaultCodes.NFS3
+	return lookupLockErrorRow(err).NFS3
 }
 
 // MapLockToNFS4 translates a lock-operation error to an NFS4 status code.
@@ -109,17 +116,7 @@ func MapLockToNFS4(err error) uint32 {
 	if err == nil {
 		return nfs4types.NFS4_OK
 	}
-	var storeErr *merrs.StoreError
-	if !goerrors.As(err, &storeErr) {
-		return defaultCodes.NFS4
-	}
-	if codes, ok := lockErrorMap[storeErr.Code]; ok {
-		return codes.NFS4
-	}
-	if codes, ok := errorMap[storeErr.Code]; ok {
-		return codes.NFS4
-	}
-	return defaultCodes.NFS4
+	return lookupLockErrorRow(err).NFS4
 }
 
 // MapLockToSMB translates a lock-operation error to an SMB status code.
@@ -127,15 +124,5 @@ func MapLockToSMB(err error) smbtypes.Status {
 	if err == nil {
 		return smbtypes.StatusSuccess
 	}
-	var storeErr *merrs.StoreError
-	if !goerrors.As(err, &storeErr) {
-		return defaultCodes.SMB
-	}
-	if codes, ok := lockErrorMap[storeErr.Code]; ok {
-		return codes.SMB
-	}
-	if codes, ok := errorMap[storeErr.Code]; ok {
-		return codes.SMB
-	}
-	return defaultCodes.SMB
+	return lookupLockErrorRow(err).SMB
 }
