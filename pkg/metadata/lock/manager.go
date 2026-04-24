@@ -1440,13 +1440,17 @@ func (lm *Manager) WaitForBreakCompletionExceptKey(ctx context.Context, handleKe
 // HasOtherBreakingLeases reports whether any lease (other than exceptKey) or
 // any delegation on handleKey is currently Breaking. Non-blocking. Used by the
 // SMB CREATE async-park path to decide whether to emit STATUS_PENDING and
-// resume the CREATE from a goroutine. Zero exceptKey matches any lease.
+// resume the CREATE from a goroutine. A zero exceptKey means "no exclusion" —
+// any Breaking lease matches.
 func (lm *Manager) HasOtherBreakingLeases(handleKey string, exceptKey [16]byte) bool {
-	lm.mu.Lock()
-	defer lm.mu.Unlock()
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	hasExclusion := exceptKey != ([16]byte{})
 	for _, l := range lm.unifiedLocks[handleKey] {
-		if l.Lease != nil && l.Lease.Breaking && l.Lease.LeaseKey != exceptKey {
-			return true
+		if l.Lease != nil && l.Lease.Breaking {
+			if !hasExclusion || l.Lease.LeaseKey != exceptKey {
+				return true
+			}
 		}
 		if l.Delegation != nil && l.Delegation.Breaking {
 			return true

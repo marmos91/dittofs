@@ -402,16 +402,22 @@ func (lm *LeaseManager) HasOtherBreakingLeases(fileHandle lock.FileHandle, share
 	return lockMgr.HasOtherBreakingLeases(string(fileHandle), excludeKey)
 }
 
-// WaitForOtherKeyBreaks waits on ctx for all other-key breaks on
-// fileHandle to drain. Unlike BreakHandleLeasesOnOpen, the caller controls the
-// cancellation context — the SMB CREATE async-park path passes a context whose
-// lifetime is bound to session teardown + a bounded server-side timeout. On
-// ctx.Err, breaks on non-excluded keys are auto-downgraded exactly as the
-// synchronous timeout path does (see Manager.forceCompleteBreaksExceptKey).
+// WaitForOtherKeyBreaks waits on ctx for all breaks on fileHandle other than
+// excludeKey to drain. The caller controls the cancellation context — the
+// SMB CREATE async-park path passes a context whose lifetime is bound to
+// session teardown + a bounded server-side timeout. On ctx.Err, breaks on
+// non-excluded keys are auto-downgraded exactly as the synchronous timeout
+// path does (see Manager.forceCompleteBreaksExceptKey).
+//
+// A zero excludeKey means "no exclusion" — wait for every Breaking lease to
+// drain, routed to WaitForBreakCompletion.
 func (lm *LeaseManager) WaitForOtherKeyBreaks(ctx context.Context, fileHandle lock.FileHandle, shareName string, excludeKey [16]byte) error {
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
 		return nil
+	}
+	if excludeKey == ([16]byte{}) {
+		return lockMgr.WaitForBreakCompletion(ctx, string(fileHandle))
 	}
 	return lockMgr.WaitForBreakCompletionExceptKey(ctx, string(fileHandle), excludeKey)
 }

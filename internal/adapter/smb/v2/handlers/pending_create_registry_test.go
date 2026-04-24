@@ -123,6 +123,43 @@ func TestPendingCreateRegistry_UnregisterAllForSession(t *testing.T) {
 	}
 }
 
+func TestPendingCreateRegistry_RegisterRejectsDuplicateMessageID(t *testing.T) {
+	r := NewPendingCreateRegistry()
+	var calls atomic.Int32
+	a := newTestPendingCreate(1, 100, 42, 7, &calls)
+	b := newTestPendingCreate(1, 100, 42, 8, &calls) // same (ConnID, MessageID), new AsyncId
+
+	if err := r.Register(a); err != nil {
+		t.Fatalf("Register a: %v", err)
+	}
+	err := r.Register(b)
+	if err != ErrDuplicateMessageID {
+		t.Fatalf("Register b: got %v, want ErrDuplicateMessageID", err)
+	}
+	// Original entry must be intact.
+	if got := r.Unregister(7); got != a {
+		t.Errorf("Original entry not intact: got %v, want %v", got, a)
+	}
+}
+
+func TestPendingCreateRegistry_RegisterRejectsDuplicateAsyncId(t *testing.T) {
+	r := NewPendingCreateRegistry()
+	var calls atomic.Int32
+	a := newTestPendingCreate(1, 100, 42, 7, &calls)
+	b := newTestPendingCreate(2, 100, 43, 7, &calls) // different conn+msgid, same AsyncId
+
+	if err := r.Register(a); err != nil {
+		t.Fatalf("Register a: %v", err)
+	}
+	err := r.Register(b)
+	if err != ErrDuplicateAsyncId {
+		t.Fatalf("Register b: got %v, want ErrDuplicateAsyncId", err)
+	}
+	if got := r.Unregister(7); got != a {
+		t.Errorf("Original entry not intact: got %v, want %v", got, a)
+	}
+}
+
 func TestPendingCreateRegistry_RegisterOverflow(t *testing.T) {
 	r := NewPendingCreateRegistry()
 	r.maxOps = 2 // shrink for test speed
