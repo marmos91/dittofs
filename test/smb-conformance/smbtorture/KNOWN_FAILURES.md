@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-04-24 (Pruned 20 collapsed entries against post-#418 baseline; closed #435; chipped #431 by 1)
+Last updated: 2026-04-24 (Bound Handle lease break wait — lease subsuite runnable; #429 cluster 42→36 after 2-run confirmation)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -494,7 +494,6 @@ incomplete break notification delivery and multi-client coordination.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.lease.request | Leases | Lease request handling not fully working | #429 |
-| smb2.lease.nobreakself | Leases | Lease self-break suppression not fully working | #429 |
 | smb2.lease.statopen | Leases | Lease + stat open interaction not fully working | #429 |
 | smb2.lease.statopen4 | Leases | Lease + stat open interaction not fully working | #429 |
 | smb2.lease.upgrade | Leases | Lease upgrade not fully working | #429 |
@@ -517,7 +516,6 @@ incomplete break notification delivery and multi-client coordination.
 | smb2.lease.rename_wait | Leases | Lease + rename wait not fully working | #429 |
 | smb2.lease.duplicate_create | Leases | Duplicate lease create not fully working | #429 |
 | smb2.lease.duplicate_open | Leases | Duplicate lease open not fully working | #429 |
-| smb2.lease.v1_bug15148 | Leases | Lease V1 edge case not fully working | #429 |
 | smb2.lease.initial_delete_tdis | Leases | Lease + delete on tree disconnect not fully working | #429 |
 | smb2.lease.initial_delete_logoff | Leases | Lease + delete on logoff not fully working | #429 |
 | smb2.lease.initial_delete_disconnect | Leases | Lease + delete on disconnect not fully working | #429 |
@@ -525,15 +523,11 @@ incomplete break notification delivery and multi-client coordination.
 | smb2.lease.lease-epoch | Leases | Lease epoch tracking not fully working | #429 |
 | smb2.lease.break_twice | Leases | Double lease break not fully working | #429 |
 | smb2.lease.v2_breaking3 | Leases V2 | Lease V2 breaking state handling not fully working | #429 |
-| smb2.lease.v2_flags_breaking | Leases V2 | Lease V2 flags during break not fully working | #429 |
 | smb2.lease.v2_flags_parentkey | Leases V2 | Lease V2 parent key flags not fully working | #429 |
-| smb2.lease.v2_epoch1 | Leases V2 | Lease V2 epoch tracking not fully working | #429 |
 | smb2.lease.v2_epoch2 | Leases V2 | Lease V2 epoch tracking not fully working | #429 |
 | smb2.lease.v2_epoch3 | Leases V2 | Lease V2 epoch tracking not fully working | #429 |
 | smb2.lease.v2_complex1 | Leases V2 | Lease V2 complex scenario not fully working | #429 |
-| smb2.lease.v2_complex2 | Leases V2 | Lease V2 complex scenario not fully working | #429 |
 | smb2.lease.v2_rename | Leases V2 | Lease V2 rename interaction not fully working | #429 |
-| smb2.lease.v2_bug15148 | Leases V2 | Lease V2 edge case not fully working | #429 |
 | smb2.lease.v2_rename_target_overwrite | Leases V2 | Lease V2 rename target overwrite not fully working | #429 |
 
 ### Byte-Range Locks (Fix Candidate)
@@ -744,6 +738,33 @@ incomplete delayed-write and timestamp freeze/unfreeze logic.
 | smb2.timestamps.freeze-thaw | Timestamps | CreationTime freeze/unfreeze not fully working | #434 |
 
 ## Changelog
+
+### 2026-04-24 — Lease subsuite unblocked + 6 #429 collapses
+
+`fix(smb): bound Handle lease break wait on CREATE — #429`
+(commit `931ed6f1`) added a 5 s timeout to `BreakHandleLeasesOnOpen`'s
+wait, mirroring the existing `parentLeaseBreakWaitTimeout`. Without it,
+`WaitForBreakCompletion` inherited the auth context (which only cancels
+on session disconnect), so any non-acking client hung the conflicting
+CREATE indefinitely. `lease.break_twice` alone hung 57 minutes,
+consuming the entire suite-level smbtorture timeout and leaving the rest
+of the lease subsuite untested.
+
+With the bound, the lease subsuite now runs end-to-end in ~14 minutes.
+Surfaced 6 lease tests as stably passing across 2 confirmation runs:
+
+- `smb2.lease.nobreakself`
+- `smb2.lease.v2_flags_breaking`
+- `smb2.lease.v2_epoch1`
+- `smb2.lease.v2_complex2`
+- `smb2.lease.v1_bug15148`
+- `smb2.lease.v2_bug15148`
+
+Most were already correct post-#418 but masked by the unrunnable suite.
+**#429 lease cluster: 42 → 36 tests remaining.**
+
+A 3rd confirmation run is queued; if any test flips back, it will be
+re-added to KNOWN_FAILURES with annotation.
 
 ### 2026-04-24 — Prune 20 collapsed entries after post-#418 baseline
 
