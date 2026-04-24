@@ -258,6 +258,33 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 			"messageID", ctx.MessageID)
 	}
 
+	// Try to cancel a pending CREATE parked on a lease break. The resume
+	// goroutine's wait context is torn down via Cancel(); we also send a
+	// STATUS_CANCELLED final response so the client's async slot is released.
+	if h.PendingCreateRegistry != nil {
+		var parked *PendingCreate
+		if ctx.RequestAsyncId != 0 {
+			parked = h.PendingCreateRegistry.UnregisterByAsyncID(ctx.RequestAsyncId)
+		} else {
+			parked = h.PendingCreateRegistry.UnregisterByMessageID(ctx.ConnID, ctx.MessageID)
+		}
+		if parked != nil {
+			cancelledSomething = true
+			logger.Debug("CANCEL: cancelled pending CREATE",
+				"asyncID", parked.AsyncID,
+				"messageID", parked.MessageID)
+			if parked.Callback != nil {
+				go func(p *PendingCreate) {
+					if err := p.Callback(p.SessionID, p.MessageID, p.AsyncID, types.StatusCancelled, nil); err != nil {
+						logger.Warn("CANCEL: failed to send STATUS_CANCELLED for CREATE",
+							"messageID", p.MessageID,
+							"error", err)
+					}
+				}(parked)
+			}
+		}
+	}
+
 	if !cancelledSomething {
 		logger.Debug("CANCEL: no pending request found to cancel",
 			"asyncId", ctx.RequestAsyncId,

@@ -67,6 +67,11 @@ type Handler struct {
 	// Named-pipe async READ tracking
 	PipeReadRegistry *PipeReadRegistry
 
+	// PendingCreateRegistry tracks CREATE requests parked on a lease break
+	// (MS-SMB2 §3.3.5.9 + §3.3.4.7). The resume goroutine waits for the break
+	// to drain, then delivers the final response via AsyncCreateCompleteCallback.
+	PendingCreateRegistry *PendingCreateRegistry
+
 	// Pending blocking lock operations (messageID -> cancel func).
 	// Used by CANCEL to interrupt blocking lock requests.
 	pendingLocks sync.Map
@@ -357,6 +362,7 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 		PipeManager:             rpc.NewPipeManager(),
 		NotifyRegistry:          NewNotifyRegistry(),
 		PipeReadRegistry:        NewPipeReadRegistry(),
+		PendingCreateRegistry:   NewPendingCreateRegistry(),
 		MaxTransactSize:         1048576, // 1MB (supports large directory listings; increases per-request memory)
 		MaxReadSize:             1048576, // 1MB
 		MaxWriteSize:            1048576, // 1MB
@@ -754,6 +760,21 @@ func (h *Handler) releaseSessionLeasesAndNotifies(ctx context.Context, sessionID
 						logger.Warn("session cleanup: failed to cancel pending pipe READ", "asyncId", pr.AsyncId, "error", err)
 					}
 				}(pending)
+			}
+		}
+	}
+	if h.PendingCreateRegistry != nil {
+		for _, parked := range h.PendingCreateRegistry.UnregisterAllForSession(sessionID) {
+			// Fire a STATUS_CANCELLED so the client releases the async slot
+			// and does not wait indefinitely for our interim response.
+			// Connection is likely tearing down so the send may fail; log and move on.
+			if parked.Callback != nil {
+				go func(p *PendingCreate) {
+					if err := p.Callback(p.SessionID, p.MessageID, p.AsyncID, types.StatusCancelled, nil); err != nil {
+						logger.Debug("session cleanup: failed to cancel pending CREATE",
+							"asyncID", p.AsyncID, "messageID", p.MessageID, "error", err)
+					}
+				}(parked)
 			}
 		}
 	}

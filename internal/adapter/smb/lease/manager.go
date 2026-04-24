@@ -444,6 +444,38 @@ func (lm *LeaseManager) BreakHandleLeasesOnOpen(
 	return lockMgr.WaitForBreakCompletion(waitCtx, handleKey)
 }
 
+// HasOtherKeyBreaks reports whether any lease on fileHandle except excludeKey
+// is currently Breaking. Non-blocking. Used by the SMB CREATE async-park path
+// to decide whether to emit STATUS_PENDING after dispatching the break.
+// Returns false when no LockManager is bound for the share.
+func (lm *LeaseManager) HasOtherKeyBreaks(fileHandle lock.FileHandle, shareName string, excludeKey [16]byte) bool {
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return false
+	}
+	return lockMgr.HasOtherBreakingLeases(string(fileHandle), excludeKey)
+}
+
+// WaitForBreakCompletionExceptKeyCtx waits on ctx for all other-key breaks on
+// fileHandle to drain. Unlike BreakHandleLeasesOnOpen, the caller controls the
+// cancellation context — the SMB CREATE async-park path passes a context whose
+// lifetime is bound to session teardown + a bounded server-side timeout. On
+// ctx.Err, breaks on non-excluded keys are auto-downgraded exactly as the
+// synchronous timeout path does (see Manager.forceCompleteBreaksExceptKey).
+func (lm *LeaseManager) WaitForBreakCompletionExceptKeyCtx(ctx context.Context, fileHandle lock.FileHandle, shareName string, excludeKey [16]byte) error {
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return nil
+	}
+	return lockMgr.WaitForBreakCompletionExceptKey(ctx, string(fileHandle), excludeKey)
+}
+
+// AsyncCreateBreakWaitTimeout bounds the server-side wait for a parked CREATE.
+// Matches handleLeaseBreakWaitTimeout so sync and async paths have identical
+// auto-downgrade timing — the difference is that async emits an interim
+// STATUS_PENDING first, letting the client observe the request as cancellable.
+const AsyncCreateBreakWaitTimeout = handleLeaseBreakWaitTimeout
+
 // BreakHandleLeasesOnOpenAsync dispatches lease break notifications without
 // waiting for acknowledgment. Used for directory opens where blocking would
 // deadlock the single-threaded test driver: the other client only acks after

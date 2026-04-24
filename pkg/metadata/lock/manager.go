@@ -215,6 +215,13 @@ type LockManager interface {
 	// otherwise clear, while other-key breaks still need to drain first.
 	WaitForBreakCompletionExceptKey(ctx context.Context, handleKey string, exceptKey [16]byte) error
 
+	// HasOtherBreakingLeases reports whether any lease on handleKey (excluding
+	// exceptKey) or any delegation is currently Breaking. Non-blocking peek
+	// used by the SMB CREATE async-park path: if BreakLeasesOnOpenConflict
+	// marked other-key leases as Breaking, the handler emits a STATUS_PENDING
+	// interim and resumes from a goroutine. Zero exceptKey means "match any".
+	HasOtherBreakingLeases(handleKey string, exceptKey [16]byte) bool
+
 	// ========================================================================
 	// Break Callbacks
 	// ========================================================================
@@ -1428,6 +1435,24 @@ func (lm *Manager) WaitForBreakCompletionExceptKey(ctx context.Context, handleKe
 			continue
 		}
 	}
+}
+
+// HasOtherBreakingLeases reports whether any lease (other than exceptKey) or
+// any delegation on handleKey is currently Breaking. Non-blocking. Used by the
+// SMB CREATE async-park path to decide whether to emit STATUS_PENDING and
+// resume the CREATE from a goroutine. Zero exceptKey matches any lease.
+func (lm *Manager) HasOtherBreakingLeases(handleKey string, exceptKey [16]byte) bool {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	for _, l := range lm.unifiedLocks[handleKey] {
+		if l.Lease != nil && l.Lease.Breaking && l.Lease.LeaseKey != exceptKey {
+			return true
+		}
+		if l.Delegation != nil && l.Delegation.Breaking {
+			return true
+		}
+	}
+	return false
 }
 
 // WaitForBreakCompletion blocks until all breaking locks on a file resolve

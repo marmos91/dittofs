@@ -122,6 +122,18 @@ func ProcessSingleRequest(
 		}
 	}
 
+	// For CREATE commands, provide the async completion callback so the CREATE
+	// handler can park on a lease break, emit an interim STATUS_PENDING, and
+	// deliver the final response from a resume goroutine once the break drains
+	// (MS-SMB2 §3.3.5.9 + §3.3.4.7).
+	if reqHeader.Command == types.SMB2Create {
+		ci := connInfo
+		handlerCtx.AsyncCreateCompleteCallback = func(sessionID, messageID, asyncID uint64, status types.Status, body []byte) error {
+			ci.ReleaseAsync()
+			return SendAsyncCompletionResponse(sessionID, messageID, asyncID, types.SMB2Create, status, body, ci)
+		}
+	}
+
 	// For CANCEL, pass the request's AsyncId so the handler can identify
 	// which async operation to cancel (e.g., pending CHANGE_NOTIFY).
 	if reqHeader.Command == types.SMB2Cancel && reqHeader.Flags.IsAsync() {
@@ -222,6 +234,11 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 		reqHeader.MessageID,
 	)
 
+	// Propagate the compound chain position: nonzero NextCommand means another
+	// subcommand follows this one, so async interim responses are unsafe here
+	// (MS-SMB2 §3.3.4.4). Zero means standalone or last-in-compound — async OK.
+	handlerCtx.NextCommand = reqHeader.NextCommand
+
 	// Populate CryptoState so handlers (e.g., NEGOTIATE) can store
 	// negotiation parameters on the connection.
 	handlerCtx.ConnCryptoState = connInfo.CryptoState
@@ -308,6 +325,16 @@ func ProcessRequestWithFileIDAndCallback(ctx context.Context, reqHeader *header.
 		handlerCtx.AsyncPipeReadCallback = func(sessionID, messageID, asyncId uint64, status types.Status, data []byte) error {
 			ci.ReleaseAsync()
 			return SendAsyncCompletionResponse(sessionID, messageID, asyncId, types.SMB2Read, status, encodeReadResponseBody(data), ci)
+		}
+	}
+
+	// For CREATE commands in a compound, wire the async completion callback.
+	// See ProcessSingleRequest for the rationale.
+	if reqHeader.Command == types.SMB2Create {
+		ci := connInfo
+		handlerCtx.AsyncCreateCompleteCallback = func(sessionID, messageID, asyncID uint64, status types.Status, body []byte) error {
+			ci.ReleaseAsync()
+			return SendAsyncCompletionResponse(sessionID, messageID, asyncID, types.SMB2Create, status, body, ci)
 		}
 	}
 

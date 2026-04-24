@@ -3,7 +3,6 @@ package handlers
 import (
 	"crypto/rand"
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"path"
 	"strings"
@@ -130,6 +129,20 @@ type CreateResponse struct {
 
 	// CreateContexts contains response create contexts (if any).
 	CreateContexts []CreateContext
+
+	// AsyncID, when non-zero together with Status == StatusPending, signals the
+	// dispatch layer to emit an interim async response (FlagAsync + AsyncId) for
+	// this CREATE. The handler must have already registered a resume goroutine
+	// in PendingCreateRegistry that will deliver the final response via
+	// AsyncCreateCompleteCallback. See create.go park-on-lease-break path.
+	AsyncID uint64
+}
+
+// GetAsyncId satisfies the asyncIdCarrier interface in helpers.go so the
+// generic handleRequest wrapper forwards AsyncID to the wire-level
+// HandlerResult when Status == StatusPending.
+func (resp *CreateResponse) GetAsyncId() uint64 {
+	return resp.AsyncID
 }
 
 // ============================================================================
@@ -845,69 +858,17 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
 	}
 
-	// ========================================================================
-	// Step 6c: Break Handle leases and check share mode conflicts
-	// ========================================================================
+	// Step 6c: Break Handle leases and check share-mode conflicts.
 	//
-	// Per MS-SMB2 3.3.5.9 Step 10 and MS-FSA 2.1.5.1.2: When opening an
-	// existing file, if any existing open has a lease with Handle caching,
-	// the server MUST break that lease to remove Handle caching BEFORE
-	// checking share mode conflicts. This allows clients to close cached
-	// handles, avoiding spurious SHARING_VIOLATION errors.
-	//
-	// After Handle lease breaks complete, the server checks if the requested
-	// access and sharing modes are compatible with all existing opens.
+	// Per MS-SMB2 3.3.5.9 Step 10 and MS-FSA 2.1.5.1.2: when opening an
+	// existing file with a conflicting Handle lease, the server MUST break
+	// that lease BEFORE the final share-mode check so holders can release
+	// cached handles. The post-break flow (recheck + create + response) runs
+	// in completeCreateAfterBreak so the same code path serves both the sync
+	// wait and the async park-on-break goroutine (MS-SMB2 §3.3.4.4/§3.3.4.7).
 
-	if fileExists {
-		existingHandle, handleErr := metadata.EncodeFileHandle(existingFile)
-		if handleErr == nil {
-			// Step 10: Break leases before share mode check.
-			// Per MS-SMB2 3.3.4.7 and Samba delay_for_oplock_fn, the break
-			// target depends on whether this open sharing-conflicts with an
-			// existing one:
-			//   - violation → strip Handle (holder releases cached handles)
-			//   - no violation → strip Write (holder flushes dirty data)
-			// Per MS-SMB2 3.3.5.9.8: stat-only opens do NOT break leases.
-			//
-			// The share-mode check runs against current opens before the
-			// break; it is re-run after the break to decide the final CREATE
-			// outcome. A violation pre-break selects the Handle-strip path
-			// so the holder can close cached handles in its ack; if so, the
-			// post-break re-check may clear the violation.
-			//
-			// For files: synchronous wait for break ack. For directories:
-			// async (fire-and-forget). Directory opens use a single-threaded
-			// test driver where the client can't ack until this CREATE
-			// returns — waiting would deadlock.
-			hasSharingViolation := h.checkShareModeConflict(existingHandle, req.DesiredAccess, req.ShareAccess, filename)
-			if h.LeaseManager != nil && !isStatOnlyOpen(req.DesiredAccess) {
-				lockFileHandle := lock.FileHandle(existingHandle)
-				if existingFile.Type == metadata.FileTypeDirectory {
-					if breakErr := h.LeaseManager.BreakHandleLeasesOnOpenAsync(lockFileHandle, tree.ShareName, hasSharingViolation, excludeOwner); breakErr != nil {
-						logger.Debug("CREATE: directory handle lease break failed", "error", breakErr)
-					}
-				} else {
-					if breakErr := h.LeaseManager.BreakHandleLeasesOnOpen(authCtx.Context, lockFileHandle, tree.ShareName, hasSharingViolation, excludeOwner); breakErr != nil {
-						logger.Debug("CREATE: handle lease break failed", "error", breakErr)
-					}
-				}
-			}
-
-			if shareConflict := h.checkShareModeConflict(existingHandle, req.DesiredAccess, req.ShareAccess, filename); shareConflict {
-				logger.Debug("CREATE: sharing violation",
-					"path", filename,
-					"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess),
-					"shareAccess", fmt.Sprintf("0x%x", req.ShareAccess))
-				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusSharingViolation}}, nil
-			}
-		}
-	} else {
-		// Per MS-FSA 2.1.5.1.2: Share mode enforcement spans the base file and
-		// all its streams. Even when creating a NEW file (base or ADS), existing
-		// opens on related streams may block this open. For example:
-		// - Creating an ADS when the base file is open with conflicting share mode
-		// - Creating the base file when an ADS is already open
-		// Use a nil handle (path-based matching only).
+	// Cross-stream share-mode check for new files (no lease break needed).
+	if !fileExists {
 		if shareConflict := h.checkShareModeConflict(nil, req.DesiredAccess, req.ShareAccess, filename); shareConflict {
 			logger.Debug("CREATE: cross-stream sharing violation",
 				"path", filename,
@@ -917,475 +878,22 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		}
 	}
 
-	// ========================================================================
-	// Step 6d: Validate delete-on-close requirements
-	// ========================================================================
-	//
-	// Per MS-FSA 2.1.5.1.2.1: When FILE_DELETE_ON_CLOSE is set in CreateOptions:
-	// 1. The caller must have DELETE (0x00010000) access — else STATUS_ACCESS_DENIED
-	// 2. Read-only files (non-directories) cannot be deleted — else STATUS_CANNOT_DELETE
+	draft := h.newCreateDraft(req, tree, sess, authCtx, filename, baseName,
+		parentHandle, existingFile, fileExists, createAction,
+		isDirectoryRequest, excludeOwner)
 
-	if req.CreateOptions&types.FileDeleteOnClose != 0 {
-		if !hasDeleteAccess(req.DesiredAccess) {
-			logger.Debug("CREATE: delete-on-close without DELETE access",
-				"path", filename,
-				"desiredAccess", fmt.Sprintf("0x%x", req.DesiredAccess))
-			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
-		}
-
-		// Read-only files cannot be marked for delete-on-close
-		if fileExists && existingFile.Type != metadata.FileTypeDirectory {
-			attrs := FileAttrToSMBAttributes(&existingFile.FileAttr)
-			if attrs&types.FileAttributeReadonly != 0 {
-				logger.Debug("CREATE: delete-on-close on read-only file",
-					"path", filename)
-				return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusCannotDelete}}, nil
-			}
-		}
+	// Dispatch lease break and either park the CREATE async (emit interim
+	// STATUS_PENDING) or wait for the break to drain inline.
+	if asyncID := h.breakAndMaybeParkCreate(ctx, draft); asyncID != 0 {
+		return &CreateResponse{
+			SMBResponseBase: SMBResponseBase{Status: types.StatusPending},
+			AsyncID:         asyncID,
+		}, nil
 	}
 
-	// ========================================================================
-	// Step 7: Perform create/open operation
-	// ========================================================================
-
-	var file *metadata.File
-	var fileHandle metadata.FileHandle
-
-	switch createAction {
-	case types.FileOpened:
-		// Open existing file
-		file = existingFile
-		fileHandle, err = metadata.EncodeFileHandle(file)
-		if err != nil {
-			logger.Warn("CREATE: failed to encode handle", "error", err)
-			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
-		}
-
-	case types.FileCreated:
-		// Create new file or directory
-		file, fileHandle, err = h.createNewFile(authCtx, parentHandle, baseName, req, isDirectoryRequest)
-		if err != nil {
-			logger.Warn("CREATE: failed to create file", "name", baseName, "error", err)
-			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
-		}
-
-	case types.FileOverwritten, types.FileSuperseded:
-		// Open and truncate/replace existing file
-		file, fileHandle, err = h.overwriteFile(authCtx, existingFile, req)
-		if err != nil {
-			logger.Warn("CREATE: failed to overwrite file", "name", baseName, "error", err)
-			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
-		}
-	}
-
-	// ========================================================================
-	// Step 7a: Restore frozen timestamps on parent directory
-	// ========================================================================
-	//
-	// Per MS-FSA 2.1.5.14.2: The metadata layer unconditionally updates parent
-	// directory Mtime/Ctime/Atime on create/overwrite/supersede. If any open
-	// SMB handle has these timestamps frozen via SET_INFO -1, restore them.
-	if createAction == types.FileCreated || createAction == types.FileOverwritten || createAction == types.FileSuperseded {
-		h.restoreParentDirFrozenTimestamps(authCtx, parentHandle)
-	}
-
-	// ========================================================================
-	// Step 7b: Update base object ChangeTime for ADS operations
-	// ========================================================================
-	//
-	// Per MS-FSA / NTFS: Creating or modifying an Alternate Data Stream (ADS)
-	// updates the base object's ChangeTime. The base object is the file or
-	// directory that hosts the stream (e.g., for "dir:stream:$DATA", the
-	// base object is "dir").
-	//
-	// Important: Only ChangeTime (Ctime) is updated - NOT LastWriteTime
-	// (Mtime). ADS creation is a metadata change on the base object, not a
-	// data write. LastWriteTime only changes when stream data content is
-	// written.
-	//
-	// createEntry already updates the parent directory timestamps (the dir
-	// containing the base object), but the base object itself also needs its
-	// ChangeTime updated since the ADS is an attribute of the base object.
-	if colonIdx := strings.Index(baseName, ":"); colonIdx > 0 && (createAction == types.FileCreated || createAction == types.FileOverwritten || createAction == types.FileSuperseded) {
-		h.updateBaseObjectCtime(authCtx, metaSvc, parentHandle, baseName[:colonIdx])
-	}
-
-	// ========================================================================
-	// Step 7c: Break parent directory Handle leases for create/overwrite/supersede
-	// ========================================================================
-	//
-	// Per MS-SMB2 3.3.5.9 and MS-FSA 2.1.5.1.2.1: When a file is created,
-	// overwritten, or superseded in a directory, existing Handle leases on the
-	// parent directory MUST be broken. This notifies other clients that the
-	// directory contents have changed so they invalidate cached directory handles.
-	//
-	// This enables BVT_DirectoryLeasing_LeaseBreakOnMultiClients: when one client
-	// creates a file in a directory, other clients holding RH leases on that
-	// directory receive a lease break notification to remove Handle caching.
-
-	if (createAction == types.FileCreated || createAction == types.FileOverwritten || createAction == types.FileSuperseded) && h.LeaseManager != nil {
-		parentLockHandle := lock.FileHandle(parentHandle)
-		excludeClientID := fmt.Sprintf("smb:%d", ctx.SessionID)
-		// Break Handle leases on parent directory
-		if breakErr := h.LeaseManager.BreakParentHandleLeasesOnCreate(authCtx.Context, parentLockHandle, tree.ShareName, excludeClientID); breakErr != nil {
-			logger.Debug("CREATE: parent directory Handle lease break failed", "error", breakErr)
-		}
-		// Break Read leases on parent directory (directory content changed)
-		if breakErr := h.LeaseManager.BreakParentReadLeasesOnModify(authCtx.Context, parentLockHandle, tree.ShareName, excludeClientID); breakErr != nil {
-			logger.Debug("CREATE: parent directory Read lease break failed", "error", breakErr)
-		}
-	}
-
-	// ========================================================================
-	// Step 8: Store open file with metadata handle
-	// ========================================================================
-
-	smbFileID := h.GenerateFileID()
-
-	// ========================================================================
-	// Step 8a: Break conflicting oplocks/leases on existing files
-	// ========================================================================
-	//
-	// Per MS-SMB2 3.3.5.9: When a file is opened WITHOUT requesting an
-	// oplock/lease, existing oplocks/leases that conflict with the new open
-	// MUST still be broken. When the opener DOES request an oplock/lease,
-	// RequestLease handles breaking conflicting leases internally.
-	if fileExists && h.LeaseManager != nil && file.Type != metadata.FileTypeDirectory &&
-		req.OplockLevel == OplockLevelNone && !isStatOnlyOpen(req.DesiredAccess) {
-		lockFileHandle := lock.FileHandle(fileHandle)
-		if breakErr := h.LeaseManager.BreakConflictingOplocksOnOpen(lockFileHandle, tree.ShareName, excludeOwner); breakErr != nil {
-			logger.Debug("CREATE: oplock break on open failed", "error", breakErr)
-		}
-	}
-
-	// ========================================================================
-	// Step 8b: Request oplock or lease if applicable
-	// ========================================================================
-	//
-	// Oplocks/leases are only granted for regular files, not directories.
-	// The client's requested oplock level may be downgraded if there
-	// are conflicting opens.
-	//
-	// SMB2.1+ clients prefer leases over oplocks (indicated by OplockLevel=0xFF).
-	// When OplockLevel=0xFF, look for RqLs create context.
-
-	var grantedOplock uint8
-	var leaseResponse *LeaseResponseContext
-	var syntheticLeaseKey [16]byte // Set when traditional oplock is mapped to lease
-
-	// Check for lease request (SMB2.1+)
-	if req.OplockLevel == OplockLevelLease && h.LeaseManager != nil {
-		// Look for RqLs create context
-		if leaseCtx := FindCreateContext(req.CreateContexts, LeaseContextTagRequest); leaseCtx != nil {
-			// Use metadata handle as lock file handle
-			lockFileHandle := lock.FileHandle(fileHandle)
-
-			// Process lease request through LeaseManager
-			var err error
-			leaseResponse, err = ProcessLeaseCreateContext(
-				authCtx.Context,
-				h.LeaseManager,
-				leaseCtx.Data,
-				lockFileHandle,
-				ctx.SessionID,
-				fmt.Sprintf("smb:%d", ctx.SessionID), // Client ID
-				tree.ShareName,
-				file.Type == metadata.FileTypeDirectory,
-			)
-			if err != nil {
-				// Per MS-SMB2 3.3.5.9.8: Invalid lease states (e.g., Write
-				// without Read) must fail CREATE with STATUS_INVALID_PARAMETER.
-				if errors.Is(err, lock.ErrInvalidLeaseState) {
-					return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
-				}
-				logger.Debug("CREATE: lease context processing failed", "error", err)
-			}
-
-			// Per MS-SMB2 2.2.14: When an RqLs create context is present in the
-			// response, the server MUST set OplockLevel to SMB2_OPLOCK_LEVEL_LEASE
-			// (0xFF). This tells the client to inspect the lease create context
-			// for the actual caching state. Without 0xFF, clients (including
-			// smbtorture) ignore the lease context entirely.
-			if leaseResponse != nil {
-				grantedOplock = OplockLevelLease
-				if leaseResponse.LeaseState == lock.LeaseStateNone {
-					logger.Debug("CREATE: lease denied, returning OplockLevel=0xFF with LeaseState=None")
-				}
-			}
-		} else {
-			// OplockLevel=0xFF (Lease) but no RqLs create context present.
-			// Per MS-SMB2 2.2.13: OplockLevel=0xFF is only meaningful with
-			// an RqLs create context. Without it, grant no oplock.
-			grantedOplock = OplockLevelNone
-			logger.Debug("CREATE: OplockLevel=Lease without RqLs context, granting None")
-		}
-	}
-
-	// Traditional oplocks (Level II, Exclusive, Batch) are mapped to equivalent
-	// lease states internally via the LeaseManager. This allows legacy clients
-	// (or clients not using RqLs contexts) to still benefit from caching.
-	//
-	// Per MS-SMB2 3.3.5.9: If the client requests an oplock, the server
-	// should map it to an equivalent lease:
-	//   Batch     → R|W|H
-	//   Exclusive → R|W
-	//   Level II  → R
-	//
-	// A synthetic lease key is generated from the SMB FileID so that
-	// CLOSE can release the lease and OPLOCK_BREAK acks can find it.
-	if grantedOplock == OplockLevelNone && req.OplockLevel != OplockLevelNone &&
-		req.OplockLevel != OplockLevelLease && h.LeaseManager != nil &&
-		file.Type != metadata.FileTypeDirectory {
-
-		var requestedState uint32
-		switch req.OplockLevel {
-		case OplockLevelBatch:
-			requestedState = lock.LeaseStateRead | lock.LeaseStateWrite | lock.LeaseStateHandle
-		case OplockLevelExclusive:
-			requestedState = lock.LeaseStateRead | lock.LeaseStateWrite
-		case OplockLevelII:
-			requestedState = lock.LeaseStateRead
-		}
-
-		if requestedState != 0 {
-			// Generate a deterministic synthetic lease key from the FileID.
-			// This key is unique per open and allows the lease to be released
-			// on CLOSE and acknowledged on OPLOCK_BREAK.
-			syntheticKey := generateSyntheticLeaseKey(smbFileID)
-			lockFileHandle := lock.FileHandle(fileHandle)
-			ownerID := fmt.Sprintf("smb:oplock:%x", smbFileID)
-			clientID := fmt.Sprintf("smb:%d", ctx.SessionID)
-
-			grantedState, _, err := h.LeaseManager.RequestLease(
-				authCtx.Context,
-				lockFileHandle,
-				syntheticKey,
-				[16]byte{}, // No parent lease key for traditional oplocks
-				ctx.SessionID,
-				ownerID,
-				clientID,
-				tree.ShareName,
-				requestedState,
-				false, // Traditional oplocks are file-only
-			)
-			if err != nil {
-				logger.Debug("CREATE: traditional oplock lease request failed", "error", err)
-			} else {
-				grantedOplock = leaseStateToOplockLevel(grantedState)
-				if grantedOplock != OplockLevelNone {
-					syntheticLeaseKey = syntheticKey
-					// Register FileID mapping so break notifications use
-					// 24-byte oplock format instead of 44-byte lease format
-					h.LeaseManager.RegisterOplockFileID(syntheticKey, smbFileID)
-				}
-				logger.Debug("CREATE: traditional oplock mapped to lease",
-					"requestedOplock", oplockLevelName(req.OplockLevel),
-					"grantedOplock", oplockLevelName(grantedOplock),
-					"leaseState", lock.LeaseStateToString(grantedState))
-			}
-		}
-	}
-
-	// ========================================================================
-	// Step 8c: Process App Instance ID and durable handle grant [MS-SMB2] 3.3.5.9
-	// ========================================================================
-	//
-	// 1. Process AppInstanceId: force-close existing handles with same ID
-	// 2. Process DHnQ/DH2Q: potentially grant durability to this new handle
-	// 3. Store AppInstanceId on openFile if durability was granted
-
-	var durableResponseCtx *CreateContext
-	var appInstanceId [16]byte
-
-	if h.DurableStore != nil {
-		// Step 1: Process App Instance ID collisions (Hyper-V failover)
-		appInstanceId = ProcessAppInstanceId(
-			authCtx.Context, h.DurableStore, h, req.CreateContexts,
-		)
-	}
-
-	openFile := &OpenFile{
-		FileID:         smbFileID,
-		TreeID:         ctx.TreeID,
-		SessionID:      ctx.SessionID,
-		Path:           filename,
-		ShareName:      tree.ShareName,
-		OpenTime:       time.Now(),
-		DesiredAccess:  req.DesiredAccess,
-		IsDirectory:    file.Type == metadata.FileTypeDirectory,
-		MetadataHandle: fileHandle,
-		PayloadID:      file.PayloadID,
-		// Store parent info for delete-on-close support
-		ParentHandle: parentHandle,
-		FileName:     baseName,
-		// Store oplock level
-		OplockLevel: grantedOplock,
-		// Store share access for share mode conflict checking
-		ShareAccess: req.ShareAccess,
-		// Store original create options for FileModeInformation
-		CreateOptions: req.CreateOptions,
-		// Set delete-on-close from create options
-		DeletePending: req.CreateOptions&types.FileDeleteOnClose != 0,
-	}
-
-	// Store lease key on the open so CLOSE can release when last handle closes.
-	// For real leases (RqLs context), the key comes from the lease response.
-	// For traditional oplocks mapped to leases, the key is the synthetic one.
-	if leaseResponse != nil && leaseResponse.LeaseState != lock.LeaseStateNone {
-		openFile.LeaseKey = leaseResponse.LeaseKey
-	} else if syntheticLeaseKey != ([16]byte{}) {
-		openFile.LeaseKey = syntheticLeaseKey
-	}
-
-	// Step 2: Process durable handle grant (DHnQ/DH2Q)
-	// This mutates openFile.IsDurable, openFile.CreateGuid, openFile.DurableTimeoutMs
-	if h.DurableStore != nil {
-		// Per MS-SMB2 3.3.5.9.8: V1 durability can also be granted when the
-		// lease includes Handle caching (not only for batch oplock).
-		hasHandleLease := leaseResponse != nil && leaseResponse.LeaseState&lock.LeaseStateHandle != 0
-		if respCtx := ProcessDurableHandleContext(
-			req.CreateContexts, openFile, h.DurableTimeoutMs, hasHandleLease,
-		); respCtx != nil {
-			durableResponseCtx = respCtx
-		}
-
-		// Step 3: Store AppInstanceId if durability was granted
-		if openFile.IsDurable && appInstanceId != ([16]byte{}) {
-			openFile.AppInstanceId = appInstanceId
-		}
-	}
-
-	h.StoreOpenFile(openFile)
-
-	logger.Debug("CREATE successful",
-		"fileID", fmt.Sprintf("%x", smbFileID),
-		"filename", filename,
-		"action", createAction,
-		"isDirectory", openFile.IsDirectory,
-		"fileType", int(file.Type),
-		"fileSize", file.Size,
-		"oplock", oplockLevelName(grantedOplock))
-
-	// ========================================================================
-	// Step 9: Notify change watchers
-	// ========================================================================
-
-	// Notify CHANGE_NOTIFY watchers about file system changes
-	if h.NotifyRegistry != nil {
-		parentPath := GetParentPath(filename)
-
-		switch createAction {
-		case types.FileCreated:
-			// New file or directory created
-			h.NotifyRegistry.NotifyChange(tree.ShareName, parentPath, baseName, FileActionAdded)
-		case types.FileOverwritten, types.FileSuperseded:
-			// Existing file was modified/replaced
-			h.NotifyRegistry.NotifyChange(tree.ShareName, parentPath, baseName, FileActionModified)
-		}
-	}
-
-	// ========================================================================
-	// Step 10: Build success response
-	// ========================================================================
-
-	creation, access, write, change := FileAttrToSMBTimes(&file.FileAttr)
-	// Use MFsymlink size for symlinks
-	size := getSMBSize(&file.FileAttr)
-	allocationSize := calculateAllocationSize(size)
-
-	resp := &CreateResponse{
-		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
-		OplockLevel:     grantedOplock,
-		CreateAction:    createAction,
-		CreationTime:    creation,
-		LastAccessTime:  access,
-		LastWriteTime:   write,
-		ChangeTime:      change,
-		AllocationSize:  allocationSize,
-		EndOfFile:       size,
-		FileAttributes:  FileAttrToSMBAttributes(&file.FileAttr),
-		FileID:          smbFileID,
-	}
-
-	// ========================================================================
-	// Step 10b: Add lease response context if lease was granted
-	// ========================================================================
-
-	if leaseResponse != nil {
-		resp.CreateContexts = append(resp.CreateContexts, CreateContext{
-			Name: LeaseContextTagResponse,
-			Data: leaseResponse.Encode(),
-		})
-
-		logger.Debug("CREATE: lease granted in response",
-			"leaseKey", fmt.Sprintf("%x", leaseResponse.LeaseKey),
-			"grantedState", lock.LeaseStateToString(leaseResponse.LeaseState),
-			"epoch", leaseResponse.Epoch)
-	}
-
-	// ========================================================================
-	// Step 10b2: Add durable handle response context if durability was granted
-	// ========================================================================
-
-	if durableResponseCtx != nil {
-		resp.CreateContexts = append(resp.CreateContexts, *durableResponseCtx)
-
-		logger.Debug("CREATE: durable handle granted in response",
-			"isDurable", openFile.IsDurable,
-			"createGuid", fmt.Sprintf("%x", openFile.CreateGuid),
-			"timeoutMs", openFile.DurableTimeoutMs)
-	}
-
-	// ========================================================================
-	// Step 10c: Add MxAc (Maximal Access) response context [MS-SMB2] 2.2.14.2.5
-	// ========================================================================
-	//
-	// Windows 11 Explorer sends MxAc create context with every CREATE to learn
-	// the maximum access rights the user has on the file. The response is 8 bytes:
-	//   QueryStatus (uint32) + MaximalAccess (uint32)
-
-	if FindCreateContext(req.CreateContexts, "MxAc") != nil {
-		// MaximalAccess: compute from file permissions and auth context
-		maxAccess := computeMaximalAccess(file, authCtx)
-		mxW := smbenc.NewWriter(8)
-		mxW.WriteUint32(0)         // QueryStatus = STATUS_SUCCESS
-		mxW.WriteUint32(maxAccess) // MaximalAccess
-		mxAcResp := mxW.Bytes()
-
-		resp.CreateContexts = append(resp.CreateContexts, CreateContext{
-			Name: "MxAc",
-			Data: mxAcResp,
-		})
-
-		logger.Debug("CREATE: MxAc response added",
-			"maximalAccess", fmt.Sprintf("0x%08x", maxAccess))
-	}
-
-	// ========================================================================
-	// Step 10d: Add QFid (Query on Disk ID) response context [MS-SMB2] 2.2.14.2.9
-	// ========================================================================
-	//
-	// Windows 11 Explorer sends QFid create context to obtain the on-disk file ID.
-	// The response is 32 bytes: DiskFileId (16 bytes) + VolumeId (16 bytes)
-
-	if FindCreateContext(req.CreateContexts, "QFid") != nil {
-		qfidResp := make([]byte, 32)
-		// DiskFileId: use first 16 bytes of file UUID
-		copy(qfidResp[0:16], file.ID[:16])
-		// VolumeId: use ServerGUID as the volume identifier
-		copy(qfidResp[16:32], h.ServerGUID[:])
-
-		resp.CreateContexts = append(resp.CreateContexts, CreateContext{
-			Name: "QFid",
-			Data: qfidResp,
-		})
-
-		logger.Debug("CREATE: QFid response added",
-			"diskFileId", fmt.Sprintf("%x", file.ID[:16]))
-	}
-
-	return resp, nil
+	return h.completeCreateAfterBreak(ctx, draft), nil
 }
+
 
 // computeMaximalAccess computes the maximal access mask for a file based on
 // POSIX permissions and the requesting user's identity.
