@@ -411,18 +411,83 @@ metadataStore.CommitWrite(authCtx, writeOp)
 
 ### Block Store Integration
 
-SMB handlers use the same per-share block store as NFS:
+SMB handlers use the same per-share block store as NFS, routed through the
+shared `internal/adapter/common/` helpers so NFS and SMB share one code
+path for block-store resolution and pooled READ:
 
 ```go
 // Resolve per-share block store from file handle
-blockStore, _ := rt.GetBlockStoreForHandle(ctx, handle)
+blockStore, err := common.ResolveForRead(ctx.Context, h.Registry, handle)
 
-// Write path (local store, async sync to remote)
-blockStore.WriteAt(ctx, contentID, data, offset)
+// Read path (pooled buffer; release fires after wire write completes)
+readResult, err := common.ReadFromBlockStore(ctx.Context, blockStore,
+    payloadID, offset, count)
+// Response hands readResult.Release to the encoder via SMBResponseBase.ReleaseData
 
-// Read path (L1 cache -> local -> remote)
-blockStore.ReadAt(ctx, contentID, buf, offset)
+// Write path (data is caller-owned, no Release closure)
+err := common.WriteToBlockStore(ctx.Context, blockStore, payloadID, data, offset)
+
+// Commit path (flush + discard *FlushResult)
+err := common.CommitBlockStore(ctx.Context, blockStore, payloadID)
 ```
+
+These three helpers (`ReadFromBlockStore`, `WriteToBlockStore`,
+`CommitBlockStore`) are the Phase-12 seam where v0.15.0 A3 (META-01 +
+API-01) will plumb `[]BlockRef` into the engine — handler code does not
+change.
+
+### Error mapping
+
+As of v0.15.0 (Phase 09 ADAPT-03), every `metadata.ErrorCode` is
+translated to an `NTSTATUS` via `internal/adapter/common.MapToSMB`, which
+consumes the same shared table as NFSv3 / NFSv4
+(`internal/adapter/common/errmap.go`). Examples:
+
+- `ErrNotFound` → `STATUS_OBJECT_NAME_NOT_FOUND`
+- `ErrAlreadyExists` → `STATUS_OBJECT_NAME_COLLISION`
+- `ErrAccessDenied` / `ErrPermissionDenied` / `ErrAuthRequired` →
+  `STATUS_ACCESS_DENIED` (SMB has no EPERM distinction per MS-ERREF 2.3)
+- `ErrIsDirectory` → `STATUS_FILE_IS_A_DIRECTORY`
+- `ErrStaleHandle` → `STATUS_FILE_CLOSED`
+
+#### Lock-context vs general-context divergence
+
+Lock-operation errors (SMB2 LOCK requests) use a separate accessor
+`common.MapLockToSMB` backed by `internal/adapter/common/lock_errmap.go`.
+The divergence matters: **`ErrLocked` in lock context →
+`STATUS_LOCK_NOT_GRANTED`; `ErrLocked` in general READ/WRITE I/O context →
+`STATUS_FILE_LOCK_CONFLICT`**. Clients react differently to the two codes
+(retry-later vs. hard-fail-with-indication), so the distinction is wire-
+visible.
+
+See `internal/adapter/common/lock_errmap.go` for the full lock-context
+override table.
+
+#### Wrapped error unwrapping
+
+`common.MapToSMB` uses `errors.As`, so wrapped `StoreError` values
+(`fmt.Errorf("context: %w", storeErr)`) unwrap correctly. Prior to
+v0.15.0 the SMB handler used an unwrapped type assertion that failed on
+wrapped errors and fell through to `STATUS_INTERNAL_ERROR` — the
+consolidation fixed that latent bug.
+
+### READ response buffer pool
+
+SMB2 READ responses for regular files allocate the data buffer through
+`internal/adapter/pool` (4 KB / 64 KB / 1 MB tiered `sync.Pool`, with a
+direct-alloc fallback for sizes above `LargeSize`). The pooled buffer is
+handed to the response encoder via `SMBResponseBase.ReleaseData` (a
+`func()` field); the encoder invokes the closure after
+`WriteNetBIOSFrame` returns, safe across plain, encrypted, and compound-
+response paths. Non-pooled responses leave `ReleaseData` nil and the
+encoder null-checks before invoking.
+
+Pipe and symlink READ variants deliberately stay on heap allocations —
+memcpy overhead with no reuse benefit for the small buffer sizes
+involved, and pipes have an ownership model that conflicts with a
+pool-managed return buffer. Regression tests
+(`TestRead_PipeRead_LeavesReleaseDataNil` / `TestRead_SymlinkRead_...`)
+guard the non-pool decision.
 
 ### Credit Flow Control
 

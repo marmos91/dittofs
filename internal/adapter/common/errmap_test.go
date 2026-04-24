@@ -246,3 +246,141 @@ func TestMapLockToNFS4(t *testing.T) {
 		t.Errorf("MapLockToNFS4(ErrGracePeriod) = %d, want NFS4ERR_GRACE", got)
 	}
 }
+
+// ============================================================================
+// Unit-tier exotic codes (ADAPT-05 / D-13 unit tier).
+// ============================================================================
+
+// exoticCodes is the D-13 unit-tier list: codes that cannot be reliably
+// e2e-triggered through kernel NFS/SMB file-I/O syscalls (they require
+// backend fault injection, quota-constrained fixtures, domain controllers,
+// or protocol-specific lock RPCs). The unit tier covers them by synthesizing
+// a *merrs.StoreError directly and asserting the mapper returns the expected
+// per-protocol code from common/'s errmap.
+//
+// Adding a new code that becomes e2e-triggerable: remove from this list and
+// add a row to TestCrossProtocol_ErrorConformance in
+// test/e2e/cross_protocol_test.go with a real trigger helper.
+//
+// Adding a new code that is purely exotic: add to this list; the row in
+// errorMap (enforced by TestErrorMapCoverage) provides the expected values.
+func exoticCodes() []merrs.ErrorCode {
+	return []merrs.ErrorCode{
+		merrs.ErrConnectionLimitReached,
+		merrs.ErrLockLimitExceeded,
+		merrs.ErrDeadlock,
+		merrs.ErrGracePeriod,
+		merrs.ErrPrivilegeRequired,
+		merrs.ErrQuotaExceeded,
+		merrs.ErrLockConflict,
+		merrs.ErrLockNotFound,
+		merrs.ErrIOError, // Triggerable only via backend fault injection.
+	}
+}
+
+// TestExoticErrorCodes asserts that every exotic (non-e2e-triggerable)
+// ErrorCode per D-13 has an errorMap row AND that each protocol mapper
+// returns the row's expected value when given a synthesized StoreError.
+//
+// This is the "unit tier" leg of the ADAPT-05 two-tier conformance test —
+// the e2e tier in test/e2e/cross_protocol_test.go covers the ~18
+// kernel-triggerable codes; this test covers the ~9 remaining codes that
+// need error injection to reproduce.
+//
+// Both tiers drive assertions from common/'s tables: this test iterates
+// exoticCodes() and looks up errorMap (and, where applicable, lockErrorMap)
+// — so adding a new exotic code requires only updating exoticCodes() and
+// adding a row in errorMap (the latter is already enforced by
+// TestErrorMapCoverage).
+func TestExoticErrorCodes(t *testing.T) {
+	for _, code := range exoticCodes() {
+		code := code
+		t.Run(code.String(), func(t *testing.T) {
+			row, ok := errorMap[code]
+			if !ok {
+				t.Fatalf("exoticCodes() lists %v but errorMap has no row — update errorMap", code)
+			}
+
+			storeErr := &merrs.StoreError{Code: code, Message: code.String()}
+
+			if got := MapToNFS3(storeErr); got != row.NFS3 {
+				t.Errorf("MapToNFS3(%v) = %d, want row.NFS3 = %d", code, got, row.NFS3)
+			}
+			if got := MapToNFS4(storeErr); got != row.NFS4 {
+				t.Errorf("MapToNFS4(%v) = %d, want row.NFS4 = %d", code, got, row.NFS4)
+			}
+			if got := MapToSMB(storeErr); got != row.SMB {
+				t.Errorf("MapToSMB(%v) = %v, want row.SMB = %v", code, got, row.SMB)
+			}
+
+			// For codes that ALSO live in lockErrorMap, assert the
+			// lock-context mappers surface the lockErrorMap values (not
+			// errorMap's general-context values). This catches the
+			// lock-vs-general divergence that D-13 calls out for
+			// ErrDeadlock, ErrGracePeriod, ErrLockLimitExceeded,
+			// ErrLockConflict, ErrLockNotFound.
+			if lockRow, lockOK := lockErrorMap[code]; lockOK {
+				if got := MapLockToNFS3(storeErr); got != lockRow.NFS3 {
+					t.Errorf("MapLockToNFS3(%v) = %d, want lockRow.NFS3 = %d", code, got, lockRow.NFS3)
+				}
+				if got := MapLockToNFS4(storeErr); got != lockRow.NFS4 {
+					t.Errorf("MapLockToNFS4(%v) = %d, want lockRow.NFS4 = %d", code, got, lockRow.NFS4)
+				}
+				if got := MapLockToSMB(storeErr); got != lockRow.SMB {
+					t.Errorf("MapLockToSMB(%v) = %v, want lockRow.SMB = %v", code, got, lockRow.SMB)
+				}
+			}
+		})
+	}
+}
+
+// TestCrossProtocolUnitConformance is the unit-tier belt-and-braces for
+// ADAPT-05: every code in allErrorCodes() must be covered by EITHER the
+// e2e-triggerable tier (denoted implicitly — not in exoticCodes()) OR the
+// exotic unit tier (in exoticCodes()). A code that falls off both lists is
+// drift and fails here.
+//
+// Defined in addition to TestErrorMapCoverage (which asserts errorMap has a
+// row for every code) — this test asserts the TEST COVERAGE list itself is
+// complete. The e2e-tier list lives at
+// test/e2e/cross_protocol_test.go:TestCrossProtocol_ErrorConformance; this
+// unit test reconstructs it by subtraction: all codes minus exoticCodes().
+func TestCrossProtocolUnitConformance(t *testing.T) {
+	// e2eTriggerableCodes mirrors the D-13 e2e-triggerable list and must
+	// match the table driving TestCrossProtocol_ErrorConformance. When the
+	// e2e table changes, this list must change too — coverage will drift
+	// silently otherwise.
+	e2eTriggerableCodes := map[merrs.ErrorCode]bool{
+		merrs.ErrNotFound:          true,
+		merrs.ErrAccessDenied:      true,
+		merrs.ErrAlreadyExists:     true,
+		merrs.ErrNotEmpty:          true,
+		merrs.ErrIsDirectory:       true,
+		merrs.ErrNotDirectory:      true,
+		merrs.ErrInvalidArgument:   true,
+		merrs.ErrNoSpace:           true,
+		merrs.ErrReadOnly:          true,
+		merrs.ErrStaleHandle:       true,
+		merrs.ErrNameTooLong:       true,
+		merrs.ErrIOError:           true,
+		merrs.ErrInvalidHandle:     true,
+		merrs.ErrNotSupported:      true,
+		merrs.ErrAuthRequired:      true,
+		merrs.ErrPermissionDenied:  true,
+		merrs.ErrLocked:            true,
+		merrs.ErrLockNotFound:      true,
+	}
+
+	exoticSet := map[merrs.ErrorCode]bool{}
+	for _, c := range exoticCodes() {
+		exoticSet[c] = true
+	}
+
+	for _, code := range allErrorCodes() {
+		inE2E := e2eTriggerableCodes[code]
+		inUnit := exoticSet[code]
+		if !inE2E && !inUnit {
+			t.Errorf("code %v is in allErrorCodes() but neither e2e-triggerable nor exotic — add to TestCrossProtocol_ErrorConformance or exoticCodes()", code)
+		}
+	}
+}
