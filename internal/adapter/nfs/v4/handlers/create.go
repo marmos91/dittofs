@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"io"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -174,7 +175,7 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 	// Get pre-operation parent attributes for change_info
 	parentFile, err := metaSvc.GetFile(ctx.Context, parentHandle)
 	if err != nil {
-		status := types.MapMetadataErrorToNFS4(err)
+		status := common.MapToNFS4(err)
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_CREATE,
@@ -313,7 +314,7 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 	}
 
 	if createErr != nil {
-		status := types.MapMetadataErrorToNFS4(createErr)
+		status := common.MapToNFS4(createErr)
 		logger.Debug("NFSv4 CREATE failed",
 			"name", objName,
 			"type", objType,

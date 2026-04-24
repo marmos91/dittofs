@@ -310,7 +310,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				// causes the client to believe the file is gone and reissue
 				// CREATE/CLOSE in a tight loop (smbtorture smb2.session.reauth5,
 				// issue #388).
-				resp.Status = MetadataErrorToSMBStatus(deleteErr)
+				resp.Status = common.MapToSMB(deleteErr)
 				logger.Debug("CLOSE: failed to delete",
 					"path", openFile.Path,
 					"isDir", openFile.IsDirectory,

@@ -93,17 +93,6 @@ func TestFileAttrToFileStandardInfo_Sizes(t *testing.T) {
 }
 
 // =============================================================================
-// MetadataErrorToSMBStatus Tests
-// =============================================================================
-
-func TestMetadataErrorToSMBStatus_NilError(t *testing.T) {
-	status := MetadataErrorToSMBStatus(nil)
-	if status != 0 { // StatusSuccess
-		t.Errorf("Expected StatusSuccess for nil error, got %v", status)
-	}
-}
-
-// =============================================================================
 // FileAttrToSMBAttributes Tests
 // =============================================================================
 

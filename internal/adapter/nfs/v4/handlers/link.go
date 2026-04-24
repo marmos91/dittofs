@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"io"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -109,7 +110,7 @@ func (h *Handler) handleLink(ctx *types.CompoundContext, reader io.Reader) *type
 	// Get pre-operation target directory attributes for change_info4
 	dirFile, err := metaSvc.GetFile(ctx.Context, dirHandle)
 	if err != nil {
-		status := types.MapMetadataErrorToNFS4(err)
+		status := common.MapToNFS4(err)
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_LINK,
@@ -121,7 +122,7 @@ func (h *Handler) handleLink(ctx *types.CompoundContext, reader io.Reader) *type
 	// Create the hard link: dirHandle (target dir) + newName + sourceHandle (source file)
 	linkErr := metaSvc.CreateHardLink(authCtx, dirHandle, newName, sourceHandle)
 	if linkErr != nil {
-		status := types.MapMetadataErrorToNFS4(linkErr)
+		status := common.MapToNFS4(linkErr)
 		logger.Debug("NFSv4 LINK failed",
 			"newname", newName,
 			"error", linkErr,

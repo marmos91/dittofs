@@ -5,9 +5,10 @@ import (
 	goerrors "errors"
 	"io"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metaerrors "github.com/marmos91/dittofs/pkg/metadata/errors"
@@ -83,7 +84,7 @@ func (h *Handler) handleRemove(ctx *types.CompoundContext, reader io.Reader) *ty
 	// Get pre-operation parent attributes for change_info
 	parentFile, err := metaSvc.GetFile(ctx.Context, parentHandle)
 	if err != nil {
-		status := types.MapMetadataErrorToNFS4(err)
+		status := common.MapToNFS4(err)
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_REMOVE,
@@ -118,7 +119,7 @@ func (h *Handler) handleRemove(ctx *types.CompoundContext, reader io.Reader) *ty
 	}
 
 	if removeErr != nil {
-		status := types.MapMetadataErrorToNFS4(removeErr)
+		status := common.MapToNFS4(removeErr)
 		logger.Debug("NFSv4 REMOVE failed",
 			"target", target,
 			"error", removeErr,

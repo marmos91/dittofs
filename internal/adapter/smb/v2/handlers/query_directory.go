@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -325,7 +326,7 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 	page, err := metaSvc.ReadDirectory(authCtx, openFile.MetadataHandle, 0, maxDirectoryReadBytes)
 	if err != nil {
 		logger.Debug("QUERY_DIRECTORY: failed to read directory", "path", openFile.Path, "error", err)
-		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+		return &QueryDirectoryResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 	}
 
 	// Fetch the directory's own attributes so "." and ".." entries report the

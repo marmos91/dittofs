@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -251,7 +252,7 @@ func (h *Handler) ReadDir(
 		logError(ctx.Context, err, "READDIR failed: store error", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
 		// Map store error to NFS status
-		status := mapMetadataErrorToNFS(err)
+		status := common.MapToNFS3(err)
 
 		// Include directory attributes for cache consistency
 		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)

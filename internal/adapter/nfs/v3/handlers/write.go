@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/bytesize"
@@ -240,7 +241,7 @@ func (h *Handler) Write(
 	writeIntent, err := metaSvc.PrepareWrite(authCtx, fileHandle, newSize)
 	if err != nil {
 		// Map store error to NFS status
-		status := mapMetadataErrorToNFS(err)
+		status := common.MapToNFS3(err)
 
 		logger.WarnCtx(ctx.Context, "WRITE failed: PrepareWrite error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "client", clientIP, "error", err)
 
@@ -280,7 +281,7 @@ func (h *Handler) Write(
 
 		// Content is written but metadata not updated - this is an inconsistent state
 		// Map error to NFS status
-		status := mapMetadataErrorToNFS(err)
+		status := common.MapToNFS3(err)
 
 		return h.buildWriteErrorResponse(status, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}

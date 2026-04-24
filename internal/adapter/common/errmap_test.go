@@ -1,0 +1,248 @@
+package common
+
+import (
+	goerrors "errors"
+	"fmt"
+	"testing"
+
+	nfs3types "github.com/marmos91/dittofs/internal/adapter/nfs/types"
+	nfs4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	smbtypes "github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/pkg/blockstore"
+	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
+)
+
+// allErrorCodes enumerates every merrs.ErrorCode re-exported from
+// pkg/metadata/errors.go. This is the canonical list TestErrorMapCoverage
+// iterates over: adding a new ErrorCode without updating this list AND
+// adding a row in errorMap will fail the count-length assertion.
+func allErrorCodes() []merrs.ErrorCode {
+	return []merrs.ErrorCode{
+		merrs.ErrNotFound,
+		merrs.ErrAccessDenied,
+		merrs.ErrAuthRequired,
+		merrs.ErrPermissionDenied,
+		merrs.ErrAlreadyExists,
+		merrs.ErrNotEmpty,
+		merrs.ErrIsDirectory,
+		merrs.ErrNotDirectory,
+		merrs.ErrInvalidArgument,
+		merrs.ErrIOError,
+		merrs.ErrNoSpace,
+		merrs.ErrQuotaExceeded,
+		merrs.ErrReadOnly,
+		merrs.ErrNotSupported,
+		merrs.ErrInvalidHandle,
+		merrs.ErrStaleHandle,
+		merrs.ErrLocked,
+		merrs.ErrLockNotFound,
+		merrs.ErrPrivilegeRequired,
+		merrs.ErrNameTooLong,
+		merrs.ErrDeadlock,
+		merrs.ErrGracePeriod,
+		merrs.ErrLockLimitExceeded,
+		merrs.ErrLockConflict,
+		merrs.ErrConnectionLimitReached,
+	}
+}
+
+// TestErrorMapCoverage asserts every merrs.ErrorCode constant has a row in
+// errorMap. Also asserts the enumeration itself has the expected count so a
+// drift in pkg/metadata/errors.go is caught by a failing test here.
+func TestErrorMapCoverage(t *testing.T) {
+	const expectedCount = 25
+	if n := len(allErrorCodes()); n != expectedCount {
+		t.Fatalf("allErrorCodes has %d entries; update allErrorCodes() AND errorMap when adding ErrorCodes (expected %d)", n, expectedCount)
+	}
+	for _, code := range allErrorCodes() {
+		if _, ok := errorMap[code]; !ok {
+			t.Errorf("errorMap missing row for %v", code)
+		}
+	}
+}
+
+// TestMapToNFS3 exercises nil, non-StoreError, wrapped, and every row.
+func TestMapToNFS3(t *testing.T) {
+	if got := MapToNFS3(nil); got != nfs3types.NFS3OK {
+		t.Errorf("MapToNFS3(nil) = %d, want NFS3OK", got)
+	}
+	if got := MapToNFS3(goerrors.New("random")); got != defaultCodes.NFS3 {
+		t.Errorf("MapToNFS3(non-StoreError) = %d, want defaultCodes.NFS3 = %d", got, defaultCodes.NFS3)
+	}
+	// Wrapped-error unwrap (goerrors.As path).
+	wrapped := fmt.Errorf("wrap: %w", &merrs.StoreError{Code: merrs.ErrNotFound, Message: "x"})
+	if got := MapToNFS3(wrapped); got != nfs3types.NFS3ErrNoEnt {
+		t.Errorf("MapToNFS3(wrapped ErrNotFound) = %d, want NFS3ErrNoEnt", got)
+	}
+	// Every row.
+	for code, want := range errorMap {
+		err := &merrs.StoreError{Code: code, Message: code.String()}
+		if got := MapToNFS3(err); got != want.NFS3 {
+			t.Errorf("MapToNFS3(%v) = %d, want %d", code, got, want.NFS3)
+		}
+	}
+}
+
+// TestMapToNFS4 exercises nil, non-StoreError, wrapped, and every row.
+func TestMapToNFS4(t *testing.T) {
+	if got := MapToNFS4(nil); got != nfs4types.NFS4_OK {
+		t.Errorf("MapToNFS4(nil) = %d, want NFS4_OK", got)
+	}
+	if got := MapToNFS4(goerrors.New("random")); got != defaultCodes.NFS4 {
+		t.Errorf("MapToNFS4(non-StoreError) = %d, want defaultCodes.NFS4 = %d", got, defaultCodes.NFS4)
+	}
+	wrapped := fmt.Errorf("wrap: %w", &merrs.StoreError{Code: merrs.ErrLocked})
+	if got := MapToNFS4(wrapped); got != nfs4types.NFS4ERR_LOCKED {
+		t.Errorf("MapToNFS4(wrapped ErrLocked) = %d, want NFS4ERR_LOCKED", got)
+	}
+	for code, want := range errorMap {
+		err := &merrs.StoreError{Code: code, Message: code.String()}
+		if got := MapToNFS4(err); got != want.NFS4 {
+			t.Errorf("MapToNFS4(%v) = %d, want %d", code, got, want.NFS4)
+		}
+	}
+}
+
+// TestMapToSMB exercises nil, non-StoreError, wrapped (Test D — latent bug
+// fix), and every row.
+func TestMapToSMB(t *testing.T) {
+	if got := MapToSMB(nil); got != smbtypes.StatusSuccess {
+		t.Errorf("MapToSMB(nil) = %v, want StatusSuccess", got)
+	}
+	if got := MapToSMB(goerrors.New("random")); got != defaultCodes.SMB {
+		t.Errorf("MapToSMB(non-StoreError) = %v, want defaultCodes.SMB", got)
+	}
+	// Test D: wrapped StoreError unwraps correctly — this is the fix for
+	// converters.go:364's pre-consolidation type assertion bug.
+	wrapped := fmt.Errorf("wrap: %w", &merrs.StoreError{Code: merrs.ErrNotFound, Message: "x"})
+	if got := MapToSMB(wrapped); got != smbtypes.StatusObjectNameNotFound {
+		t.Errorf("MapToSMB(wrapped ErrNotFound) = %v, want StatusObjectNameNotFound", got)
+	}
+	for code, want := range errorMap {
+		err := &merrs.StoreError{Code: code, Message: code.String()}
+		if got := MapToSMB(err); got != want.SMB {
+			t.Errorf("MapToSMB(%v) = %v, want %v", code, got, want.SMB)
+		}
+	}
+}
+
+// TestMapContentToNFS3 exercises nil + ErrRemoteUnavailable + unknown.
+func TestMapContentToNFS3(t *testing.T) {
+	if got := MapContentToNFS3(nil); got != nfs3types.NFS3OK {
+		t.Errorf("MapContentToNFS3(nil) = %d, want NFS3OK", got)
+	}
+	if got := MapContentToNFS3(blockstore.ErrRemoteUnavailable); got != nfs3types.NFS3ErrIO {
+		t.Errorf("MapContentToNFS3(ErrRemoteUnavailable) = %d, want NFS3ErrIO", got)
+	}
+	if got := MapContentToNFS3(goerrors.New("unknown")); got != nfs3types.NFS3ErrIO {
+		t.Errorf("MapContentToNFS3(unknown) = %d, want NFS3ErrIO", got)
+	}
+}
+
+// TestMapContentToNFS4 exercises nil + ErrRemoteUnavailable + unknown.
+func TestMapContentToNFS4(t *testing.T) {
+	if got := MapContentToNFS4(nil); got != nfs4types.NFS4_OK {
+		t.Errorf("MapContentToNFS4(nil) = %d, want NFS4_OK", got)
+	}
+	if got := MapContentToNFS4(blockstore.ErrRemoteUnavailable); got != nfs4types.NFS4ERR_IO {
+		t.Errorf("MapContentToNFS4(ErrRemoteUnavailable) = %d, want NFS4ERR_IO", got)
+	}
+	if got := MapContentToNFS4(goerrors.New("unknown")); got != nfs4types.NFS4ERR_IO {
+		t.Errorf("MapContentToNFS4(unknown) = %d, want NFS4ERR_IO", got)
+	}
+}
+
+// TestMapContentToSMB exercises nil + unknown fallback (Test F per plan).
+func TestMapContentToSMB(t *testing.T) {
+	if got := MapContentToSMB(nil); got != smbtypes.StatusSuccess {
+		t.Errorf("MapContentToSMB(nil) = %v, want StatusSuccess", got)
+	}
+	// Plan Test F: "cache full" and other unknown content errors fall back to
+	// StatusUnexpectedIOError per D-08 §2.
+	if got := MapContentToSMB(goerrors.New("cache full")); got != smbtypes.StatusUnexpectedIOError {
+		t.Errorf("MapContentToSMB(cache full) = %v, want StatusUnexpectedIOError", got)
+	}
+	if got := MapContentToSMB(blockstore.ErrRemoteUnavailable); got != smbtypes.StatusUnexpectedIOError {
+		t.Errorf("MapContentToSMB(ErrRemoteUnavailable) = %v, want StatusUnexpectedIOError", got)
+	}
+}
+
+// TestMapLockToSMB covers Test G (lock-context codes) and Test H
+// (lock-vs-general divergence for merrs.ErrLocked).
+func TestMapLockToSMB(t *testing.T) {
+	// Test G: lock-context codes.
+	tests := []struct {
+		name string
+		code merrs.ErrorCode
+		want smbtypes.Status
+	}{
+		{"ErrLocked → StatusLockNotGranted", merrs.ErrLocked, smbtypes.StatusLockNotGranted},
+		{"ErrLockNotFound → StatusRangeNotLocked", merrs.ErrLockNotFound, smbtypes.StatusRangeNotLocked},
+		{"ErrNotFound → StatusFileClosed", merrs.ErrNotFound, smbtypes.StatusFileClosed},
+		{"ErrPermissionDenied → StatusAccessDenied", merrs.ErrPermissionDenied, smbtypes.StatusAccessDenied},
+		{"ErrIsDirectory → StatusFileIsADirectory", merrs.ErrIsDirectory, smbtypes.StatusFileIsADirectory},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := &merrs.StoreError{Code: tt.code}
+			if got := MapLockToSMB(err); got != tt.want {
+				t.Errorf("MapLockToSMB(%v) = %v, want %v", tt.code, got, tt.want)
+			}
+		})
+	}
+
+	// Nil handling.
+	if got := MapLockToSMB(nil); got != smbtypes.StatusSuccess {
+		t.Errorf("MapLockToSMB(nil) = %v, want StatusSuccess", got)
+	}
+
+	// Test H: lock-vs-general divergence for ErrLocked.
+	// In general context (errorMap) ErrLocked → StatusFileLockConflict
+	// In lock context (lockErrorMap) ErrLocked → StatusLockNotGranted
+	lockedErr := &merrs.StoreError{Code: merrs.ErrLocked}
+	general := MapToSMB(lockedErr)
+	lockCtx := MapLockToSMB(lockedErr)
+	if general != smbtypes.StatusFileLockConflict {
+		t.Errorf("MapToSMB(ErrLocked) = %v, want StatusFileLockConflict (general context)", general)
+	}
+	if lockCtx != smbtypes.StatusLockNotGranted {
+		t.Errorf("MapLockToSMB(ErrLocked) = %v, want StatusLockNotGranted (lock context)", lockCtx)
+	}
+	if general == lockCtx {
+		t.Errorf("Expected general-vs-lock divergence for ErrLocked; both returned %v", general)
+	}
+}
+
+// TestMapLockToNFS3 spot-checks a handful of lock-context rows.
+func TestMapLockToNFS3(t *testing.T) {
+	if got := MapLockToNFS3(nil); got != nfs3types.NFS3OK {
+		t.Errorf("MapLockToNFS3(nil) = %d, want NFS3OK", got)
+	}
+	locked := &merrs.StoreError{Code: merrs.ErrLocked}
+	if got := MapLockToNFS3(locked); got != nfs3types.NFS3ErrJukebox {
+		t.Errorf("MapLockToNFS3(ErrLocked) = %d, want NFS3ErrJukebox", got)
+	}
+	lnf := &merrs.StoreError{Code: merrs.ErrLockNotFound}
+	if got := MapLockToNFS3(lnf); got != nfs3types.NFS3ErrInval {
+		t.Errorf("MapLockToNFS3(ErrLockNotFound) = %d, want NFS3ErrInval", got)
+	}
+}
+
+// TestMapLockToNFS4 spot-checks a handful of lock-context rows.
+func TestMapLockToNFS4(t *testing.T) {
+	if got := MapLockToNFS4(nil); got != nfs4types.NFS4_OK {
+		t.Errorf("MapLockToNFS4(nil) = %d, want NFS4_OK", got)
+	}
+	locked := &merrs.StoreError{Code: merrs.ErrLocked}
+	if got := MapLockToNFS4(locked); got != nfs4types.NFS4ERR_DENIED {
+		t.Errorf("MapLockToNFS4(ErrLocked) = %d, want NFS4ERR_DENIED", got)
+	}
+	deadlock := &merrs.StoreError{Code: merrs.ErrDeadlock}
+	if got := MapLockToNFS4(deadlock); got != nfs4types.NFS4ERR_DEADLOCK {
+		t.Errorf("MapLockToNFS4(ErrDeadlock) = %d, want NFS4ERR_DEADLOCK", got)
+	}
+	grace := &merrs.StoreError{Code: merrs.ErrGracePeriod}
+	if got := MapLockToNFS4(grace); got != nfs4types.NFS4ERR_GRACE {
+		t.Errorf("MapLockToNFS4(ErrGracePeriod) = %d, want NFS4ERR_GRACE", got)
+	}
+}

@@ -347,7 +347,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	writeOp, err := metaSvc.PrepareWrite(authCtx, openFile.MetadataHandle, newSize)
 	if err != nil {
 		logger.Debug("WRITE: prepare failed", "path", openFile.Path, "error", err)
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 	}
 
 	// ========================================================================
@@ -357,7 +357,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	err = blockStore.WriteAt(authCtx.Context, string(writeOp.PayloadID), req.Data, req.Offset)
 	if err != nil {
 		logger.Warn("WRITE: content write failed", "path", openFile.Path, "error", err)
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: common.MapContentToSMB(err)}}, nil
 	}
 
 	// ========================================================================
@@ -369,7 +369,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		logger.Warn("WRITE: commit failed", "path", openFile.Path, "error", err)
 		// Data was written but metadata not updated - this is an inconsistent state
 		// but we still report the error
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 	}
 
 	// SMB requires immediate metadata visibility across sessions (unlike NFS

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -408,7 +409,7 @@ func (h *Handler) setFileInfoFromStore(
 
 		if err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs); err != nil {
 			logger.Debug("SET_INFO: failed to set basic info", "path", openFile.Path, "error", err)
-			return setInfoStatus(MetadataErrorToSMBStatus(err)), nil
+			return setInfoStatus(common.MapToSMB(err)), nil
 		}
 
 		// Apply freeze/unfreeze state to the open handle using pre-change values.
@@ -535,7 +536,7 @@ func (h *Handler) setFileInfoFromStore(
 					"from", openFile.FileName,
 					"to", toName,
 					"error", err)
-				return setInfoStatus(MetadataErrorToSMBStatus(err)), nil
+				return setInfoStatus(common.MapToSMB(err)), nil
 			}
 
 			// Restore mtime/ctime after rename
@@ -648,7 +649,7 @@ func (h *Handler) setFileInfoFromStore(
 				"from", openFile.Path,
 				"to", newPath,
 				"error", err)
-			return setInfoStatus(MetadataErrorToSMBStatus(err)), nil
+			return setInfoStatus(common.MapToSMB(err)), nil
 		}
 
 		// Restore mtime/ctime after rename
@@ -814,7 +815,7 @@ func (h *Handler) setFileInfoFromStore(
 		err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 		if err != nil {
 			logger.Debug("SET_INFO: failed to set EOF", "path", openFile.Path, "error", err)
-			return setInfoStatus(MetadataErrorToSMBStatus(err)), nil
+			return setInfoStatus(common.MapToSMB(err)), nil
 		}
 
 		// Restore frozen timestamps after truncation (which updates Mtime/Ctime)
@@ -1064,7 +1065,7 @@ func (h *Handler) setSecurityInfo(
 	err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 	if err != nil {
 		logger.Debug("SET_INFO: failed to set security info", "path", openFile.Path, "error", err)
-		return setInfoStatus(MetadataErrorToSMBStatus(err)), nil
+		return setInfoStatus(common.MapToSMB(err)), nil
 	}
 
 	// Notify watchers about security descriptor changes

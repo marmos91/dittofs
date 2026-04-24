@@ -255,7 +255,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	file, err := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
 	if err != nil {
 		logger.Debug("READ: failed to get file metadata", "path", openFile.Path, "error", err)
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 	}
 
 	// Handle symlink reads - SMB clients expect MFsymlink content for symlinks
@@ -267,7 +267,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	readMeta, err := metaSvc.PrepareRead(authCtx, openFile.MetadataHandle)
 	if err != nil {
 		logger.Debug("READ: permission check failed", "path", openFile.Path, "error", err)
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 	}
 
 	// ========================================================================
@@ -349,12 +349,11 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	readResult, err := common.ReadFromBlockStore(authCtx.Context, blockStore, readMeta.Attr.PayloadID, req.Offset, actualLength)
 	if err != nil {
 		logger.Warn("READ: content read failed", "path", openFile.Path, "error", err)
-		// NOTE: error-mapping consolidation (common.MapContentToSMB) lands in
-		// plan 03 (ADAPT-03). For now keep ContentErrorToSMBStatus to preserve
-		// behavior — plan 03 swaps the function name as a one-line mechanical
-		// change. ReleaseData stays nil because the helper has already
-		// released the pooled buffer on the error path.
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil
+		// common.MapContentToSMB mirrors the old ContentErrorToSMBStatus
+		// behavior and handles ErrRemoteUnavailable. ReleaseData stays nil
+		// because ReadFromBlockStore has already released the pooled buffer
+		// on the error path.
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: common.MapContentToSMB(err)}}, nil
 	}
 
 	logger.Debug("READ successful",
