@@ -1,73 +1,18 @@
 package types
 
 import (
-	goerrors "errors"
 	"strings"
 	"unicode/utf8"
-
-	"github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
-// MapMetadataErrorToNFS4 maps internal metadata errors to NFSv4 status codes.
-//
-// This mirrors the NFSv3 error mapping pattern but uses NFSv4-specific error
-// codes from RFC 7530 Section 13. The mapping uses errors.As to match
-// *errors.StoreError and switches on the error code.
-//
-// Returns NFS4ERR_SERVERFAULT for unrecognized errors.
-func MapMetadataErrorToNFS4(err error) uint32 {
-	if err == nil {
-		return NFS4_OK
-	}
-
-	var storeErr *errors.StoreError
-	if !goerrors.As(err, &storeErr) {
-		return NFS4ERR_SERVERFAULT
-	}
-
-	switch storeErr.Code {
-	case errors.ErrNotFound:
-		return NFS4ERR_NOENT
-	case errors.ErrAccessDenied, errors.ErrAuthRequired:
-		return NFS4ERR_ACCESS
-	case errors.ErrPermissionDenied:
-		return NFS4ERR_PERM
-	case errors.ErrAlreadyExists:
-		return NFS4ERR_EXIST
-	case errors.ErrNotEmpty:
-		return NFS4ERR_NOTEMPTY
-	case errors.ErrIsDirectory:
-		return NFS4ERR_ISDIR
-	case errors.ErrNotDirectory:
-		return NFS4ERR_NOTDIR
-	case errors.ErrInvalidArgument:
-		return NFS4ERR_INVAL
-	case errors.ErrNoSpace:
-		return NFS4ERR_NOSPC
-	case errors.ErrQuotaExceeded:
-		return NFS4ERR_DQUOT
-	case errors.ErrReadOnly:
-		return NFS4ERR_ROFS
-	case errors.ErrNotSupported:
-		return NFS4ERR_NOTSUPP
-	case errors.ErrStaleHandle:
-		return NFS4ERR_STALE
-	case errors.ErrInvalidHandle:
-		return NFS4ERR_BADHANDLE
-	case errors.ErrNameTooLong:
-		return NFS4ERR_NAMETOOLONG
-	case errors.ErrLocked:
-		return NFS4ERR_LOCKED
-	case errors.ErrDeadlock:
-		return NFS4ERR_DEADLOCK
-	case errors.ErrGracePeriod:
-		return NFS4ERR_GRACE
-	case errors.ErrIOError:
-		return NFS4ERR_IO
-	default:
-		return NFS4ERR_SERVERFAULT
-	}
-}
+// Note (ADAPT-03, D-06/D-07): MapMetadataErrorToNFS4 was removed as part of
+// consolidating every metadata.ErrorCode -> protocol-code translator into
+// internal/adapter/common/errmap.go. NFSv4 handlers now call
+// common.MapToNFS4(err) directly. Keeping a wrapper here would have created
+// an import cycle (internal/adapter/common imports internal/adapter/nfs/v4/types
+// for the NFS4ERR_* constants), so the cleanest resolution is to delete the
+// wrapper and migrate callers. The coverage test for every ErrorCode lives
+// in internal/adapter/common/errmap_test.go.
 
 // ValidateUTF8Filename validates an NFSv4 filename component per RFC 7530 Section 12.7.
 //

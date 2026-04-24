@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -308,7 +309,7 @@ func (h *Handler) Mkdir(
 		wccAfter := h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
 
 		// Map store errors to NFS status codes
-		status := mapMetadataErrorToNFS(err)
+		status := common.MapToNFS3(err)
 
 		return &MkdirResponse{
 			NFSResponseBase: NFSResponseBase{Status: status},

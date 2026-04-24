@@ -8,9 +8,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -182,7 +183,17 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 		}
 	}
 
-	blockStore, err := getBlockStoreForHandle(h, ctx.Context, ctx.CurrentFH)
+	// Preserve the NFSv4-specific nil-Registry guard at the call site
+	// (previously lived inside the local getBlockStoreForHandle).
+	if h.Registry == nil {
+		logger.Debug("NFSv4 WRITE no registry configured", "client", ctx.ClientAddr)
+		return &types.CompoundResult{
+			Status: types.NFS4ERR_SERVERFAULT,
+			OpCode: types.OP_WRITE,
+			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+		}
+	}
+	blockStore, err := common.ResolveForWrite(ctx.Context, h.Registry, metadata.FileHandle(ctx.CurrentFH))
 	if err != nil {
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
@@ -207,7 +218,7 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 	// Phase 1: PrepareWrite -- validates permissions, returns intent
 	intent, err := metaSvc.PrepareWrite(authCtx, fileHandle, newSize)
 	if err != nil {
-		status := types.MapMetadataErrorToNFS4(err)
+		status := common.MapToNFS4(err)
 		logger.Debug("NFSv4 WRITE PrepareWrite failed",
 			"error", err,
 			"status", status,
@@ -233,8 +244,10 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 			"client", ctx.ClientAddr)
 	}
 
-	// Phase 2: Write actual data via BlockStore
-	err = blockStore.WriteAt(ctx.Context, string(intent.PayloadID), data, offset)
+	// Phase 2: Write actual data via BlockStore.
+	// Routed through common.WriteToBlockStore so the Phase-12 []BlockRef
+	// plumbing lands in one place (see common/doc.go Phase-12 seam / D-12).
+	err = common.WriteToBlockStore(ctx.Context, blockStore, intent.PayloadID, data, offset)
 	if err != nil {
 		logger.Debug("NFSv4 WRITE payload error",
 			"error", err,
@@ -250,13 +263,15 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 	// Phase 3: CommitWrite -- updates metadata (size, timestamps)
 	_, err = metaSvc.CommitWrite(authCtx, intent)
 	if err != nil {
+		status := common.MapToNFS4(err)
 		logger.Debug("NFSv4 WRITE CommitWrite failed",
 			"error", err,
+			"status", status,
 			"client", ctx.ClientAddr)
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_IO,
+			Status: status,
 			OpCode: types.OP_WRITE,
-			Data:   encodeStatusOnly(types.NFS4ERR_IO),
+			Data:   encodeStatusOnly(status),
 		}
 	}
 

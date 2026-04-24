@@ -16,6 +16,15 @@ import (
 type compoundResponse struct {
 	respHeader *header.SMB2Header
 	body       []byte
+	// releaseData, when non-nil, returns a pooled response buffer to the pool
+	// AFTER the single composed wire write completes (D-09). Sub-response Data
+	// buffers are still referenced inside the composed frame until the write
+	// returns, so firing between sub-responses would be a use-after-release;
+	// sendCompoundResponses collects these closures and invokes every non-nil
+	// one in a loop post-write, on both success and error paths.
+	//
+	// Non-pooled sub-responses leave this nil — the sender null-checks.
+	releaseData func()
 }
 
 // ProcessCompoundRequest processes all commands in a compound request sequentially.
@@ -152,7 +161,13 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 	}
 
 	respHeader, body := buildResponseHeaderAndBody(firstHeader, handlerCtx, result, connInfo)
-	responses = append(responses, compoundResponse{respHeader: respHeader, body: body})
+	// Per D-09: collect ReleaseData from the sub-result so sendCompoundResponses
+	// can fire it AFTER the composed wire write — not between sub-responses.
+	var firstRelease func()
+	if result != nil {
+		firstRelease = result.ReleaseData
+	}
+	responses = append(responses, compoundResponse{respHeader: respHeader, body: body, releaseData: firstRelease})
 	if handlerCtx != nil && handlerCtx.PostSend != nil {
 		postSendHooks = append(postSendHooks, handlerCtx.PostSend)
 	}
@@ -330,7 +345,13 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		if hdr.IsRelated() {
 			rh.Flags |= types.FlagRelated
 		}
-		responses = append(responses, compoundResponse{respHeader: rh, body: rb})
+		// Per D-09: propagate the sub-result's ReleaseData so the composed wire
+		// write can fire it post-write (see compoundResponse doc comment).
+		var subRelease func()
+		if cmdResult != nil {
+			subRelease = cmdResult.ReleaseData
+		}
+		responses = append(responses, compoundResponse{respHeader: rh, body: rb, releaseData: subRelease})
 
 		// Collect any PostSend hook (CLOSE→CHANGE_NOTIFY cleanup) so it can
 		// fire strictly after the compound frame has been written.
@@ -370,6 +391,21 @@ func sendCompoundResponses(responses []compoundResponse, connInfo *ConnInfo) err
 	if len(responses) == 0 {
 		return nil
 	}
+
+	// Per D-09: fire every sub-response's ReleaseData closure AFTER the single
+	// composed wire write completes. Deferring the loop covers the single-
+	// response shortcut, plain compound, and encrypted compound paths alike,
+	// and still runs on write error — the pooled buffer is no longer
+	// referenced once WriteNetBIOSFrame returns. Firing between sub-responses
+	// would be a use-after-release because sub-bodies live inside the
+	// composed frame until the write completes.
+	defer func() {
+		for i := range responses {
+			if responses[i].releaseData != nil {
+				responses[i].releaseData()
+			}
+		}
+	}()
 
 	// Single response - no compound framing needed
 	if len(responses) == 1 {

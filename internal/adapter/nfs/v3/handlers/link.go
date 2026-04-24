@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -265,7 +266,7 @@ func (h *Handler) Link(
 		dirWccAfter := h.convertFileAttrToNFS(dirHandle, &updatedDirFile.FileAttr)
 
 		// Map store errors to NFS status codes
-		status := mapMetadataErrorToNFS(err)
+		status := common.MapToNFS3(err)
 
 		return &LinkResponse{
 			NFSResponseBase: NFSResponseBase{Status: status},

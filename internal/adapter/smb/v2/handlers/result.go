@@ -36,6 +36,23 @@ type SMBResponseBase struct {
 	//   - types.StatusAccessDenied: Permission denied
 	//   - types.StatusInvalidHandle: Invalid file handle
 	Status types.Status
+
+	// ReleaseData, when non-nil, is invoked by the response encoder AFTER the
+	// wire write completes (plain or encrypted path, success or failure). It is
+	// the hook by which pooled response buffers are returned to
+	// internal/adapter/pool.
+	//
+	// Per D-09 (phase 09 context): SMB regular-file READ hands
+	// common.BlockReadResult.Release here instead of deferring in the handler,
+	// so the buffer lifetime extends through compound response assembly +
+	// encryption and the release fires exactly once AFTER the bytes reach the
+	// socket.
+	//
+	// Non-pooled responses — which is every non-READ command AND the
+	// pipe/symlink READ variants whose buffer sources (mfsymlink.Encode,
+	// pipe.ProcessRead) are already heap-allocated or owned by other
+	// subsystems — MUST leave this nil. The encoder null-checks.
+	ReleaseData func()
 }
 
 // GetStatus returns the NT_STATUS code for this response.
@@ -44,6 +61,19 @@ type SMBResponseBase struct {
 // responses to be used with the generic handleRequest helper.
 func (b SMBResponseBase) GetStatus() types.Status {
 	return b.Status
+}
+
+// GetReleaseData returns the release closure (if any) that the response
+// encoder must invoke after the wire write completes. Returns nil for
+// non-pooled responses — callers MUST null-check before invoking.
+//
+// This is the optional-interface hook consumed by the generic handleRequest
+// helper (internal/adapter/smb/helpers.go) to propagate ReleaseData from a
+// typed response envelope (e.g. *ReadResponse) onto the wire-level
+// HandlerResult. The encoder then fires it in SendResponse /
+// SendResponseWithHooks / compound paths.
+func (b SMBResponseBase) GetReleaseData() func() {
+	return b.ReleaseData
 }
 
 // ============================================================================
@@ -85,6 +115,18 @@ type HandlerResult struct {
 	// the session lives on a different connection, and tracking it here
 	// would cause this connection's close to delete the original session.
 	IsBinding bool
+
+	// ReleaseData, when non-nil, is invoked by the response encoder AFTER the
+	// wire write completes. Mirrors SMBResponseBase.ReleaseData — the generic
+	// handleRequest helper copies the typed response envelope's ReleaseData
+	// here so the wire-level encoder (response.go sendMessage and compound.go
+	// sendCompoundResponses) can fire it in one canonical place.
+	//
+	// Non-pooled commands leave this nil; the encoder null-checks. Firing
+	// order: AFTER WriteNetBIOSFrame returns (plain, encrypted, compound),
+	// regardless of write success. This ensures the pooled buffer stays valid
+	// through the full response-assembly pipeline and is never double-freed.
+	ReleaseData func()
 }
 
 // NewResult creates a new handler result with the given status and data.

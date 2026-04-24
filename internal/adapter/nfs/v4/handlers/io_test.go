@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
@@ -144,8 +145,10 @@ func (fx *ioTestFixture) writeContent(t *testing.T, fileHandle metadata.FileHand
 		t.Fatalf("get file for write: %v", err)
 	}
 
-	// Write via block store
-	if err := fx.blockStore.WriteAt(ctx, string(file.PayloadID), data, 0); err != nil {
+	// Write via block store (test oracle — route through common helper so
+	// the Phase-12 []BlockRef plumbing covers fixtures too, not just
+	// production handlers).
+	if err := common.WriteToBlockStore(ctx, fx.blockStore, file.PayloadID, data, 0); err != nil {
 		t.Fatalf("write payload: %v", err)
 	}
 
@@ -985,13 +988,15 @@ func TestWrite_Success(t *testing.T) {
 		t.Errorf("file size = %d, want %d", file.Size, len(content))
 	}
 
-	readBuf := make([]byte, len(content))
-	n2, err := fx.blockStore.ReadAt(context.Background(), string(file.PayloadID), readBuf, 0)
-	if err != nil {
-		t.Fatalf("read back: %v", err)
+	// Read back via test oracle — route through common helper for Phase-12
+	// seam coverage.
+	readResult, readErr := common.ReadFromBlockStore(context.Background(), fx.blockStore, file.PayloadID, 0, uint32(len(content)))
+	if readErr != nil {
+		t.Fatalf("read back: %v", readErr)
 	}
-	if !bytes.Equal(readBuf[:n2], content) {
-		t.Errorf("read back = %q, want %q", string(readBuf[:n2]), string(content))
+	defer readResult.Release()
+	if !bytes.Equal(readResult.Data, content) {
+		t.Errorf("read back = %q, want %q", string(readResult.Data), string(content))
 	}
 }
 

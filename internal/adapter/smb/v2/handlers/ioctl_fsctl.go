@@ -3,6 +3,7 @@ package handlers
 import (
 	"crypto/md5"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -29,7 +30,7 @@ func (h *Handler) handleGetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 	metaSvc := h.Registry.GetMetadataService()
 	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
 	if err != nil {
-		return NewErrorResult(MetadataErrorToSMBStatus(err)), nil
+		return NewErrorResult(common.MapToSMB(err)), nil
 	}
 	if file.Mode&modeDOSCompressed != 0 {
 		format = 0x0002 // COMPRESSION_FORMAT_LZNT1
@@ -85,7 +86,7 @@ func (h *Handler) handleSetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 	metaSvc := h.Registry.GetMetadataService()
 	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
 	if err != nil {
-		return NewErrorResult(MetadataErrorToSMBStatus(err)), nil
+		return NewErrorResult(common.MapToSMB(err)), nil
 	}
 
 	newMode := file.Mode
@@ -219,7 +220,7 @@ func (h *Handler) handleQueryFileRegions(ctx *SMBHandlerContext, body []byte) (*
 	metaSvc := h.Registry.GetMetadataService()
 	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
 	if err != nil {
-		return NewErrorResult(MetadataErrorToSMBStatus(err)), nil
+		return NewErrorResult(common.MapToSMB(err)), nil
 	}
 	size := getSMBSize(&file.FileAttr)
 

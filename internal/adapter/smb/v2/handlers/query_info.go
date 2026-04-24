@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -288,7 +289,7 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
 	if err != nil {
 		logger.Debug("QUERY_INFO: failed to get file", "path", openFile.Path, "error", err)
-		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 	}
 
 	// Per MS-FSA 2.1.5.14.2: Apply frozen timestamp overrides.

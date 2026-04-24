@@ -255,6 +255,40 @@ rt.SetAdapterFactory(createAdapterFactory())
 rt.Serve(ctx)  // Loads adapters from store and starts them
 ```
 
+### Shared adapter helpers (internal/adapter/common)
+
+NFSv3, NFSv4, and SMB v2/3 handlers share a single package of helpers at
+`internal/adapter/common/` so the three adapters do not each carry a
+private copy of the same logic. The package exposes:
+
+- **Block-store resolution**: `common.ResolveForRead` / `common.ResolveForWrite`
+  wrap `Runtime.GetBlockStoreForHandle` via a narrow `BlockStoreRegistry`
+  interface (satisfied implicitly by `*runtime.Runtime`). All three
+  protocols' READ/WRITE/COMMIT paths route through these two calls.
+- **Pooled read buffer**: `common.ReadFromBlockStore` returns a
+  `BlockReadResult` whose `Release()` is handed to the response encoder,
+  which invokes it after the wire write completes. NFSv3, NFSv4, and SMB
+  regular-file READ all adopt the pool; pipe/symlink READ paths stay on
+  heap allocations by design (documented in SMB.md).
+- **Phase-12 `[]BlockRef` seam**: `common.ReadFromBlockStore`,
+  `common.WriteToBlockStore`, and `common.CommitBlockStore` are the single
+  edit points where Phase 12 (v0.15.0 A3 / META-01 + API-01) will feed
+  resolved `[]BlockRef` into the engine. Handler code stays untouched;
+  Phase 12's blast radius is confined to `common/`.
+- **Metadata error translation**: a struct-per-code table (`errorMap` in
+  `common/errmap.go`) with NFS3/NFS4/SMB columns; `common.MapToNFS3`,
+  `common.MapToNFS4`, and `common.MapToSMB` are thin accessors. Lock-
+  operation context uses the parallel `lockErrorMap` (`common/lock_errmap.go`)
+  which overrides a handful of codes (e.g., `ErrLocked` →
+  `STATUS_LOCK_NOT_GRANTED` in lock context vs. `STATUS_FILE_LOCK_CONFLICT`
+  in general I/O context). Adding a new `metadata.ErrorCode` is one edit
+  across all three protocols — the struct literal requires every column
+  to be populated, so you cannot ship a code that is missing an NFS or
+  SMB mapping.
+
+See CONTRIBUTING.md "Adding a new metadata.ErrorCode" for the recipe and
+NFS.md / SMB.md "Error mapping" for protocol-specific notes.
+
 ## Control Plane Pattern
 
 The Control Plane is the central management component enabling flexible, multi-share configurations.
@@ -456,6 +490,21 @@ dittofs/
 │       └── runtime.go            # Runtime initialization
 │
 ├── internal/                     # Private implementation details
+│   ├── adapter/common/           # Shared NFS/SMB adapter helpers: block-store
+│   │   │                         # resolution (ResolveForRead/Write), pooled
+│   │   │                         # ReadFromBlockStore + WriteToBlockStore +
+│   │   │                         # CommitBlockStore seams (Phase 12 entry
+│   │   │                         # point for []BlockRef), consolidated
+│   │   │                         # metadata.ErrorCode -> NFS3/NFS4/SMB
+│   │   │                         # mapping table (errmap + content_errmap +
+│   │   │                         # lock_errmap).
+│   │   ├── resolve.go            # BlockStoreRegistry narrow interface +
+│   │   │                         # ResolveForRead/Write
+│   │   ├── read_payload.go       # Pooled BlockReadResult + ReadFromBlockStore
+│   │   ├── write_payload.go      # WriteToBlockStore + CommitBlockStore seams
+│   │   ├── errmap.go             # Struct-per-code table (NFS3/NFS4/SMB columns)
+│   │   ├── content_errmap.go     # Block-store content error table (D-08 §2)
+│   │   └── lock_errmap.go        # Lock-context error table (D-08 §3)
 │   ├── adapter/nfs/              # NFS protocol implementation
 │   │   ├── dispatch.go           # RPC procedure routing
 │   │   ├── rpc/                  # RPC layer (call/reply handling)

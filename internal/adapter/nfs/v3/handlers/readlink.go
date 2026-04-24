@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -233,5 +234,5 @@ func validateReadLinkRequest(req *ReadLinkRequest) *validationError {
 // This provides consistent error handling across the READLINK operation.
 func mapReadLinkErrorToNFSStatus(err error) uint32 {
 	// Use the common metadata error mapper
-	return mapMetadataErrorToNFS(err)
+	return common.MapToNFS3(err)
 }

@@ -2,14 +2,12 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/blockstore/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -95,15 +93,6 @@ func getMetadataServiceForCtx(h *Handler) (*metadata.MetadataService, error) {
 		return nil, fmt.Errorf("no registry configured")
 	}
 	return h.Registry.GetMetadataService(), nil
-}
-
-// getBlockStoreForHandle returns the per-share BlockStore resolved from the given file handle.
-// The handle encodes the share name, which is used to look up the share's block store.
-func getBlockStoreForHandle(h *Handler, ctx context.Context, handle []byte) (*engine.BlockStore, error) {
-	if h.Registry == nil {
-		return nil, fmt.Errorf("no registry configured")
-	}
-	return h.Registry.GetBlockStoreForHandle(ctx, metadata.FileHandle(handle))
 }
 
 // encodeChangeInfo4 encodes a change_info4 structure into the buffer.

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -289,7 +290,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-	blockStore, err := h.Registry.GetBlockStoreForHandle(ctx.Context, openFile.MetadataHandle)
+	blockStore, err := common.ResolveForWrite(ctx.Context, h.Registry, openFile.MetadataHandle)
 	if err != nil {
 		logger.Warn("WRITE: block store not available for handle", "path", openFile.Path, "error", err)
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
@@ -346,17 +347,19 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	writeOp, err := metaSvc.PrepareWrite(authCtx, openFile.MetadataHandle, newSize)
 	if err != nil {
 		logger.Debug("WRITE: prepare failed", "path", openFile.Path, "error", err)
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 	}
 
 	// ========================================================================
 	// Step 10: Write data to BlockStore (uses local cache internally)
 	// ========================================================================
 
-	err = blockStore.WriteAt(authCtx.Context, string(writeOp.PayloadID), req.Data, req.Offset)
+	// Routed through common.WriteToBlockStore so the Phase-12 []BlockRef
+	// plumbing lands in one place (see common/doc.go Phase-12 seam / D-12).
+	err = common.WriteToBlockStore(authCtx.Context, blockStore, writeOp.PayloadID, req.Data, req.Offset)
 	if err != nil {
 		logger.Warn("WRITE: content write failed", "path", openFile.Path, "error", err)
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: common.MapContentToSMB(err)}}, nil
 	}
 
 	// ========================================================================
@@ -368,7 +371,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		logger.Warn("WRITE: commit failed", "path", openFile.Path, "error", err)
 		// Data was written but metadata not updated - this is an inconsistent state
 		// but we still report the error
-		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 	}
 
 	// SMB requires immediate metadata visibility across sessions (unlike NFS

@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -195,7 +196,7 @@ func (h *Handler) Commit(
 
 	logger.InfoCtx(ctx.Context, "COMMIT: flushing data", "share", ctx.Share)
 
-	blockStore, err := getBlockStoreForHandle(h.Registry, ctx.Context, handle)
+	blockStore, err := common.ResolveForWrite(ctx.Context, h.Registry, handle)
 	if err != nil {
 		logger.ErrorCtx(ctx.Context, "COMMIT failed: block store not available", "client", clientIP, "error", err)
 		return &CommitResponse{
@@ -215,7 +216,10 @@ func (h *Handler) Commit(
 	//
 	// Per RFC 1813 Section 3.3.21, the server MAY choose when data reaches
 	// stable storage. Our WAL cache provides the durability guarantee.
-	_, flushErr := blockStore.Flush(ctx.Context, string(file.PayloadID))
+	//
+	// Routed through common.CommitBlockStore so the Phase-12 []BlockRef
+	// plumbing lands in one place (see common/doc.go Phase-12 seam / D-12).
+	flushErr := common.CommitBlockStore(ctx.Context, blockStore, file.PayloadID)
 	if flushErr != nil {
 		logError(ctx.Context, flushErr, "COMMIT failed: flush error", "handle", fmt.Sprintf("0x%x", req.Handle), "payload_id", file.PayloadID, "client", clientIP)
 

@@ -319,6 +319,55 @@ NFS uses RPC authentication flavors:
 
 Internal errors are mapped to NFS status codes in `pkg/metadata/errors.go`.
 
+#### Canonical translation table
+
+As of v0.15.0 (Phase 09 ADAPT-03), every `metadata.ErrorCode` value is
+translated to an NFSv3 or NFSv4 status code by a single shared table in
+`internal/adapter/common/errmap.go`. The accessors are:
+
+- `common.MapToNFS3(err) uint32` — NFSv3 status (e.g., `NFS3ERR_NOENT`)
+- `common.MapToNFS4(err) uint32` — NFSv4 status (e.g., `NFS4ERR_NOENT`)
+
+Both NFSv3 and NFSv4 handlers consume the **same** table — adding a new
+error code requires exactly one struct-literal row edit that populates all
+three protocol columns (NFSv3, NFSv4, SMB) at once. The Go type system
+enforces this: you cannot add a row without filling every column.
+
+Unwrapping uses `errors.As`, so wrapped StoreError values
+(`fmt.Errorf("...: %w", storeErr)`) map correctly in every handler path.
+
+#### Audit-logging wrapper
+
+The NFSv3 audit wrapper at `internal/adapter/nfs/xdr/errors.go`
+(`MapStoreErrorToNFSStatus`) is preserved as a thin logging layer: its body
+calls `common.MapToNFS3(err)` and adds a severity-based log dispatch
+(Warn for client-side faults, Error for server-side I/O/space exhaustion)
+with structured fields (`operation`, `code`, `message`, `path`, `client`).
+Callers that want raw mapping call `common.MapToNFS3` directly; callers
+that want audit output call `xdr.MapStoreErrorToNFSStatus`.
+
+#### Lock-context translation
+
+`metadata.ErrLocked`, `ErrDeadlock`, `ErrGracePeriod`, and other
+lock-operation codes have different NFS status codes in lock context
+(NLM_LOCK / NFSv4 LOCK) versus general I/O context (READ/WRITE). The
+dedicated `common.MapLockToNFS3` / `common.MapLockToNFS4` accessors
+consult the parallel `lockErrorMap` table first and fall through to
+`errorMap` for non-lock codes. See `internal/adapter/common/lock_errmap.go`
+for the exact divergences (e.g., `ErrDeadlock` → `NFS4ERR_DEADLOCK` in
+lock context vs. `NFS4ERR_DEADLOCK` also in general context — NFSv4
+converged; SMB diverges).
+
+#### Conformance testing
+
+`test/e2e/cross_protocol_test.go:TestCrossProtocol_ErrorConformance`
+table-drives every triggerable code through real NFS/SMB mounts and
+asserts the kernel delivers the expected errno. Exotic codes that cannot
+be e2e-triggered (quota, grace-period, connection-limit) are covered by
+`internal/adapter/common/errmap_test.go:TestExoticErrorCodes`. Both tiers
+iterate over the same `common/` tables — adding a new code without adding
+a test case fails `TestErrorMapCoverage` at CI time.
+
 ---
 
 ## Implementation Status

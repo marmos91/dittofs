@@ -1,11 +1,8 @@
 package types
 
 import (
-	goerrors "errors"
 	"strings"
 	"testing"
-
-	"github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
 // ============================================================================
@@ -143,138 +140,6 @@ func TestRequireSavedFH(t *testing.T) {
 			t.Errorf("RequireSavedFH(non-nil) = %d, want %d (NFS4_OK)", status, NFS4_OK)
 		}
 	})
-}
-
-// ============================================================================
-// MapMetadataErrorToNFS4 Tests
-// ============================================================================
-
-func TestMapMetadataErrorToNFS4(t *testing.T) {
-	tests := []struct {
-		name     string
-		err      error
-		expected uint32
-	}{
-		{
-			name:     "nil error returns NFS4_OK",
-			err:      nil,
-			expected: NFS4_OK,
-		},
-		{
-			name:     "ErrNotFound maps to NFS4ERR_NOENT",
-			err:      errors.NewNotFoundError("/test", "file"),
-			expected: NFS4ERR_NOENT,
-		},
-		{
-			name:     "ErrAccessDenied maps to NFS4ERR_ACCESS",
-			err:      errors.NewAccessDeniedError("denied"),
-			expected: NFS4ERR_ACCESS,
-		},
-		{
-			name:     "ErrPermissionDenied maps to NFS4ERR_PERM",
-			err:      errors.NewPermissionDeniedError("/test"),
-			expected: NFS4ERR_PERM,
-		},
-		{
-			name:     "ErrAlreadyExists maps to NFS4ERR_EXIST",
-			err:      errors.NewAlreadyExistsError("/test"),
-			expected: NFS4ERR_EXIST,
-		},
-		{
-			name:     "ErrNotEmpty maps to NFS4ERR_NOTEMPTY",
-			err:      errors.NewNotEmptyError("/test"),
-			expected: NFS4ERR_NOTEMPTY,
-		},
-		{
-			name:     "ErrIsDirectory maps to NFS4ERR_ISDIR",
-			err:      errors.NewIsDirectoryError("/test"),
-			expected: NFS4ERR_ISDIR,
-		},
-		{
-			name:     "ErrNotDirectory maps to NFS4ERR_NOTDIR",
-			err:      errors.NewNotDirectoryError("/test"),
-			expected: NFS4ERR_NOTDIR,
-		},
-		{
-			name:     "ErrInvalidArgument maps to NFS4ERR_INVAL",
-			err:      errors.NewInvalidArgumentError("bad arg"),
-			expected: NFS4ERR_INVAL,
-		},
-		{
-			name:     "ErrStaleHandle maps to NFS4ERR_STALE",
-			err:      &errors.StoreError{Code: errors.ErrStaleHandle, Message: "stale"},
-			expected: NFS4ERR_STALE,
-		},
-		{
-			name:     "ErrInvalidHandle maps to NFS4ERR_BADHANDLE",
-			err:      errors.NewInvalidHandleError(),
-			expected: NFS4ERR_BADHANDLE,
-		},
-		{
-			name:     "ErrNameTooLong maps to NFS4ERR_NAMETOOLONG",
-			err:      errors.NewNameTooLongError("/test"),
-			expected: NFS4ERR_NAMETOOLONG,
-		},
-		{
-			name:     "ErrNoSpace maps to NFS4ERR_NOSPC",
-			err:      &errors.StoreError{Code: errors.ErrNoSpace, Message: "no space"},
-			expected: NFS4ERR_NOSPC,
-		},
-		{
-			name:     "ErrQuotaExceeded maps to NFS4ERR_DQUOT",
-			err:      errors.NewQuotaExceededError("/test"),
-			expected: NFS4ERR_DQUOT,
-		},
-		{
-			name:     "ErrReadOnly maps to NFS4ERR_ROFS",
-			err:      &errors.StoreError{Code: errors.ErrReadOnly, Message: "ro"},
-			expected: NFS4ERR_ROFS,
-		},
-		{
-			name:     "ErrNotSupported maps to NFS4ERR_NOTSUPP",
-			err:      &errors.StoreError{Code: errors.ErrNotSupported, Message: "unsupported"},
-			expected: NFS4ERR_NOTSUPP,
-		},
-		{
-			name:     "ErrLocked maps to NFS4ERR_LOCKED",
-			err:      &errors.StoreError{Code: errors.ErrLocked, Message: "locked"},
-			expected: NFS4ERR_LOCKED,
-		},
-		{
-			name:     "ErrDeadlock maps to NFS4ERR_DEADLOCK",
-			err:      &errors.StoreError{Code: errors.ErrDeadlock, Message: "deadlock"},
-			expected: NFS4ERR_DEADLOCK,
-		},
-		{
-			name:     "ErrGracePeriod maps to NFS4ERR_GRACE",
-			err:      &errors.StoreError{Code: errors.ErrGracePeriod, Message: "grace"},
-			expected: NFS4ERR_GRACE,
-		},
-		{
-			name:     "ErrIOError maps to NFS4ERR_IO",
-			err:      &errors.StoreError{Code: errors.ErrIOError, Message: "io error"},
-			expected: NFS4ERR_IO,
-		},
-		{
-			name:     "unknown StoreError code maps to NFS4ERR_SERVERFAULT",
-			err:      &errors.StoreError{Code: errors.ErrConnectionLimitReached, Message: "limit"},
-			expected: NFS4ERR_SERVERFAULT,
-		},
-		{
-			name:     "non-StoreError maps to NFS4ERR_SERVERFAULT",
-			err:      goerrors.New("random error"),
-			expected: NFS4ERR_SERVERFAULT,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := MapMetadataErrorToNFS4(tt.err)
-			if result != tt.expected {
-				t.Errorf("MapMetadataErrorToNFS4(%v) = %d, want %d", tt.err, result, tt.expected)
-			}
-		})
-	}
 }
 
 // ============================================================================

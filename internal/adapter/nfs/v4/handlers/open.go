@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"io"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -228,7 +229,7 @@ func (h *Handler) handleOpenClaimNull(
 	// Get pre-operation parent attributes for change_info
 	parentFile, err := metaSvc.GetFile(ctx.Context, parentHandle)
 	if err != nil {
-		return openError(types.MapMetadataErrorToNFS4(err))
+		return openError(common.MapToNFS4(err))
 	}
 	beforeCtime := uint64(parentFile.Ctime.UnixNano())
 
@@ -243,7 +244,7 @@ func (h *Handler) handleOpenClaimNull(
 		// Open existing file
 		child, lookupErr := metaSvc.Lookup(authCtx, parentHandle, filename)
 		if lookupErr != nil {
-			return openError(types.MapMetadataErrorToNFS4(lookupErr))
+			return openError(common.MapToNFS4(lookupErr))
 		}
 		fh, encErr := metadata.EncodeFileHandle(child)
 		if encErr != nil {
@@ -251,7 +252,7 @@ func (h *Handler) handleOpenClaimNull(
 		}
 		// Check access permissions for the requested share_access
 		if accessErr := checkOpenAccess(metaSvc, authCtx, fh, shareAccess); accessErr != nil {
-			return openError(types.MapMetadataErrorToNFS4(accessErr))
+			return openError(common.MapToNFS4(accessErr))
 		}
 		fileHandle = fh
 	} else {
@@ -269,7 +270,7 @@ func (h *Handler) handleOpenClaimNull(
 			}
 			// Check access permissions for the requested share_access
 			if accessErr := checkOpenAccess(metaSvc, authCtx, fh, shareAccess); accessErr != nil {
-				return openError(types.MapMetadataErrorToNFS4(accessErr))
+				return openError(common.MapToNFS4(accessErr))
 			}
 			fileHandle = fh
 		} else {
@@ -285,7 +286,7 @@ func (h *Handler) handleOpenClaimNull(
 				GID:  gid,
 			})
 			if createErr != nil {
-				return openError(types.MapMetadataErrorToNFS4(createErr))
+				return openError(common.MapToNFS4(createErr))
 			}
 			fh, encErr := metadata.EncodeFileHandle(newFile)
 			if encErr != nil {
@@ -622,14 +623,14 @@ func (h *Handler) handleOpenClaimDelegateCur(
 	// Get pre-operation parent attributes for change_info
 	parentFile, err := metaSvc.GetFile(ctx.Context, parentHandle)
 	if err != nil {
-		return openError(types.MapMetadataErrorToNFS4(err))
+		return openError(common.MapToNFS4(err))
 	}
 	beforeCtime := uint64(parentFile.Ctime.UnixNano())
 
 	// Lookup the file (delegation holder opening an existing file)
 	child, lookupErr := metaSvc.Lookup(authCtx, parentHandle, filename)
 	if lookupErr != nil {
-		return openError(types.MapMetadataErrorToNFS4(lookupErr))
+		return openError(common.MapToNFS4(lookupErr))
 	}
 
 	fileHandle, encErr := metadata.EncodeFileHandle(child)

@@ -315,6 +315,61 @@ func (s *MyLocalStore) WriteAt(ctx context.Context, blockID string, data []byte,
 
 See [IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md) for detailed implementation guide.
 
+### Adding a new metadata.ErrorCode
+
+Every `metadata.ErrorCode` that should surface to NFS and/or SMB clients is
+mapped to protocol-specific status codes through a single consolidated
+table at `internal/adapter/common/errmap.go`. Adding a new code is a
+one-edit-per-table contract — the Go type system forces you to populate
+every protocol column.
+
+1. **Declare the constant** — add the new value in
+   `pkg/metadata/errors/errors.go` and re-export it from
+   `pkg/metadata/errors.go`.
+
+2. **Add the general-context row** — insert a new row in
+   `internal/adapter/common/errmap.go`'s `errorMap`:
+
+   ```go
+   merrs.ErrFooBar: {
+       NFS3: nfs3types.NFS3ErrXXX,
+       NFS4: nfs4types.NFS4ERR_XXX,
+       SMB:  smbtypes.StatusXXX,
+   },
+   ```
+
+   The `protoCodes` struct literal requires all three columns — you
+   cannot accidentally forget a protocol.
+
+3. **Lock-context override (if applicable)** — if the code has different
+   semantics in SMB2 LOCK / NFSv4 LOCK requests versus general I/O, add a
+   row in `internal/adapter/common/lock_errmap.go`'s `lockErrorMap` with
+   the lock-context codes. `MapLockTo*` accessors consult this table
+   first and fall through to `errorMap`.
+
+4. **Update the coverage enumeration** — append the new code to
+   `allErrorCodes()` in `internal/adapter/common/errmap_test.go` and bump
+   the `expectedCount` constant in `TestErrorMapCoverage`. The coverage
+   test fails if you forget this step.
+
+5. **Add a test case** — pick the right tier:
+   - **E2E tier** (triggerable via real NFS/SMB file operations): add a
+     trigger helper in `test/e2e/helpers/error_triggers.go` and a row in
+     `TestCrossProtocol_ErrorConformance` in
+     `test/e2e/cross_protocol_test.go`. Expected errnos are derived at
+     runtime from `common.MapToNFS3` / `common.MapToSMB` — you do not
+     hand-transcribe protocol codes into the test table.
+   - **Unit tier** (exotic codes — quota, grace-period, deadlock,
+     connection-limits): add the code to `exoticCodes()` in
+     `internal/adapter/common/errmap_test.go`. `TestExoticErrorCodes`
+     picks it up automatically and asserts every protocol mapper
+     returns the `errorMap` row's expected value.
+   - **Not sure which tier**: run `TestCrossProtocolUnitConformance` —
+     it fails if the new code lives in neither list.
+
+6. **Run the test suite** — `go test -race ./internal/adapter/common/...`
+   must stay green.
+
 ### Adding a New Protocol Adapter
 
 Adapters receive a runtime reference and **interact with services, not stores directly**.

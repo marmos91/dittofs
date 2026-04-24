@@ -3,6 +3,7 @@ package xdr
 import (
 	"errors"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/blockstore"
@@ -52,115 +53,26 @@ func MapStoreErrorToNFSStatus(err error, clientIP string, operation string) uint
 		return types.NFS3OK
 	}
 
-	// Check if it's a typed StoreError (using errors.As to handle wrapped errors)
+	// Delegate the code translation to common.MapToNFS3 (ADAPT-03, D-06 —
+	// single source of truth across NFSv3/NFSv4/SMB). This wrapper only adds
+	// audit logging at appropriate levels.
+	nfsCode := common.MapToNFS3(err)
+
 	var storeErr *metadata.StoreError
 	if !errors.As(err, &storeErr) {
-		// Generic error: log and return I/O error
+		// Generic error — log as server-side failure.
 		logger.Error("Operation failed", "operation", operation, "error", err, "client", clientIP)
-		return types.NFS3ErrIO
+		return nfsCode
 	}
 
-	// Map StoreError codes to NFS status codes
+	// Client-visible errors are warnings; server-side failures are errors.
 	switch storeErr.Code {
-	case metadata.ErrNotFound:
-		// File or directory not found
-		logger.Warn("Operation failed", "operation", operation, "message", storeErr.Message, "client", clientIP)
-		return types.NFS3ErrNoEnt
-
-	case metadata.ErrAccessDenied:
-		// Access denied (EACCES - e.g., search permission on directory, file access)
-		logger.Warn("Operation failed", "operation", operation, "message", storeErr.Message, "client", clientIP)
-		return types.NFS3ErrAccess
-
-	case metadata.ErrPermissionDenied:
-		// Permission denied (EPERM - e.g., chmod by non-owner, chown by non-root)
-		logger.Warn("Operation failed", "operation", operation, "message", storeErr.Message, "client", clientIP)
-		return types.NFS3ErrPerm
-
-	case metadata.ErrAuthRequired:
-		// Authentication required (map to access denied for NFS)
-		logger.Warn("Operation failed: authentication required", "operation", operation, "client", clientIP)
-		return types.NFS3ErrAccess
-
-	case metadata.ErrNotDirectory:
-		// Attempting to create/lookup within a non-directory
-		logger.Warn("Operation failed: not a directory", "operation", operation, "client", clientIP)
-		return types.NFS3ErrNotDir
-
-	case metadata.ErrIsDirectory:
-		// Attempting to remove a directory with REMOVE instead of RMDIR
-		logger.Warn("Operation failed: is a directory", "operation", operation, "client", clientIP)
-		return types.NFS3ErrIsDir
-
-	case metadata.ErrAlreadyExists:
-		// File or directory already exists
-		logger.Warn("Operation failed: already exists", "operation", operation, "client", clientIP)
-		return types.NFS3ErrExist
-
-	case metadata.ErrNotEmpty:
-		// Directory not empty (cannot remove)
-		logger.Warn("Operation failed: directory not empty", "operation", operation, "client", clientIP)
-		return types.NFS3ErrNotEmpty
-
-	case metadata.ErrNoSpace:
-		// No space left on device
-		logger.Error("Operation failed: no space left", "operation", operation, "client", clientIP)
-		return types.NFS3ErrNoSpc
-
-	case metadata.ErrReadOnly:
-		// Read-only filesystem
-		logger.Warn("Operation failed: read-only filesystem", "operation", operation, "client", clientIP)
-		return types.NFS3ErrRofs
-
-	case metadata.ErrStaleHandle:
-		// Stale file handle
-		logger.Warn("Operation failed: stale handle", "operation", operation, "client", clientIP)
-		return types.NFS3ErrStale
-
-	case metadata.ErrInvalidHandle:
-		// Invalid file handle
-		logger.Warn("Operation failed: invalid handle", "operation", operation, "client", clientIP)
-		return types.NFS3ErrBadHandle
-
-	case metadata.ErrNotSupported:
-		// Operation not supported
-		logger.Warn("Operation failed: not supported", "operation", operation, "client", clientIP)
-		return types.NFS3ErrNotSupp
-
-	case metadata.ErrInvalidArgument:
-		// Invalid argument (map to I/O error or INVAL depending on NFS version)
-		logger.Warn("Operation failed: invalid argument", "operation", operation, "client", clientIP)
-		return types.NFS3ErrIO
-
-	case metadata.ErrIOError:
-		// Generic I/O error
-		logger.Error("Operation failed: I/O error", "operation", operation, "message", storeErr.Message, "client", clientIP)
-		return types.NFS3ErrIO
-
-	case metadata.ErrLocked:
-		// File is locked/busy - map to JUKEBOX (retry later) per RFC 8881 Section 18.9.4
-		// This is used for transient errors like lock conflicts or delegation conflicts.
-		// Clients receiving JUKEBOX should retry the operation after a short delay.
-		// This matches Linux kernel behavior for -EBUSY on non-directories.
-		logger.Warn("Operation failed: file locked", "operation", operation, "message", storeErr.Message, "client", clientIP)
-		return types.NFS3ErrJukebox
-
-	case metadata.ErrPrivilegeRequired:
-		// Operation requires elevated privileges (e.g., setting arbitrary timestamps as non-owner)
-		// Maps to EPERM per POSIX - "Operation not permitted"
-		logger.Warn("Operation failed: privilege required", "operation", operation, "message", storeErr.Message, "client", clientIP)
-		return types.NFS3ErrPerm
-
-	case metadata.ErrNameTooLong:
-		// Path or filename exceeds limits
-		logger.Warn("Operation failed: name too long", "operation", operation, "path", storeErr.Path, "client", clientIP)
-		return types.NFS3ErrNameTooLong
-
+	case metadata.ErrNoSpace, metadata.ErrIOError:
+		logger.Error("Operation failed", "operation", operation, "code", storeErr.Code, "message", storeErr.Message, "client", clientIP)
 	default:
-		// Unknown error code
-		logger.Error("Operation failed: unknown error code", "operation", operation, "code", storeErr.Code, "message", storeErr.Message, "client", clientIP)
-		return types.NFS3ErrIO
+		logger.Warn("Operation failed", "operation", operation, "code", storeErr.Code, "message", storeErr.Message, "path", storeErr.Path, "client", clientIP)
 	}
+	return nfsCode
 }
 
 // MapContentErrorToNFSStatus maps content repository errors to appropriate

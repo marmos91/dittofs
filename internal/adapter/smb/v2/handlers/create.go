@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
@@ -787,7 +788,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 
 	createAction, dispErr := ResolveCreateDisposition(req.CreateDisposition, fileExists)
 	if dispErr != nil {
-		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(dispErr)}}, nil
+		return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(dispErr)}}, nil
 	}
 
 	// Validate directory vs file constraints for existing files.
@@ -959,7 +960,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		file, fileHandle, err = h.createNewFile(authCtx, parentHandle, baseName, req, isDirectoryRequest)
 		if err != nil {
 			logger.Warn("CREATE: failed to create file", "name", baseName, "error", err)
-			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 		}
 
 	case types.FileOverwritten, types.FileSuperseded:
@@ -967,7 +968,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		file, fileHandle, err = h.overwriteFile(authCtx, existingFile, req)
 		if err != nil {
 			logger.Warn("CREATE: failed to overwrite file", "name", baseName, "error", err)
-			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+			return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 		}
 	}
 

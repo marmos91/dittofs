@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -368,7 +369,7 @@ func (h *Handler) executeCopyChunks(
 	srcFile, err := metaSvc.GetFile(ctx.Context, srcOpen.MetadataHandle)
 	if err != nil {
 		logger.Debug("COPYCHUNK: failed to get source file", "path", srcOpen.Path, "error", err)
-		return NewErrorResult(MetadataErrorToSMBStatus(err)), nil
+		return NewErrorResult(common.MapToSMB(err)), nil
 	}
 
 	// Get destination block store
@@ -467,7 +468,7 @@ func (h *Handler) executeCopyChunks(
 			logger.Warn("COPYCHUNK: prepare write failed",
 				"chunk", i, "dstPath", dstOpen.Path, "error", err)
 			return copyChunkPartialResponse(ctlCode, dstFileID,
-				MetadataErrorToSMBStatus(err), chunksWritten, totalBytesWritten), nil
+				common.MapToSMB(err), chunksWritten, totalBytesWritten), nil
 		}
 
 		// Write to destination

@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"io"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -83,7 +84,7 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 	fileHandle := metadata.FileHandle(ctx.CurrentFH)
 	file, err := metaSvc.GetFile(authCtx.Context, fileHandle)
 	if err != nil {
-		status := types.MapMetadataErrorToNFS4(err)
+		status := common.MapToNFS4(err)
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_COMMIT,
@@ -97,8 +98,18 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 		return encodeCommit4resok()
 	}
 
+	// Preserve the NFSv4-specific nil-Registry guard at the call site
+	// (previously lived inside the local getBlockStoreForHandle).
+	if h.Registry == nil {
+		logger.Debug("NFSv4 COMMIT no registry configured", "client", ctx.ClientAddr)
+		return &types.CompoundResult{
+			Status: types.NFS4ERR_SERVERFAULT,
+			OpCode: types.OP_COMMIT,
+			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+		}
+	}
 	// Get per-share block store and flush
-	blockStore, err := getBlockStoreForHandle(h, ctx.Context, ctx.CurrentFH)
+	blockStore, err := common.ResolveForWrite(ctx.Context, h.Registry, metadata.FileHandle(ctx.CurrentFH))
 	if err != nil {
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_SERVERFAULT,
@@ -107,7 +118,9 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 		}
 	}
 
-	_, flushErr := blockStore.Flush(authCtx.Context, string(file.PayloadID))
+	// Routed through common.CommitBlockStore so the Phase-12 []BlockRef
+	// plumbing lands in one place (see common/doc.go Phase-12 seam / D-12).
+	flushErr := common.CommitBlockStore(authCtx.Context, blockStore, file.PayloadID)
 	if flushErr != nil {
 		logger.Debug("NFSv4 COMMIT flush failed",
 			"error", flushErr,

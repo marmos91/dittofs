@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -111,7 +112,7 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 
 	// 7. Apply attributes via MetadataService (all-or-nothing semantics)
 	if err := metaSvc.SetFileAttributes(authCtx, metadata.FileHandle(ctx.CurrentFH), setAttrs); err != nil {
-		nfsStatus := types.MapMetadataErrorToNFS4(err)
+		nfsStatus := common.MapToNFS4(err)
 		logger.Debug("NFSv4 SETATTR failed",
 			"error", err,
 			"nfs4status", nfsStatus,

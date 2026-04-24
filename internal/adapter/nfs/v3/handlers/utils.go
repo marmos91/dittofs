@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/mfsymlink"
@@ -35,7 +36,7 @@ func getServicesForHandle(reg *runtime.Runtime, ctx context.Context, handle meta
 		return nil, nil, ErrMetadataServiceNotInitialized
 	}
 
-	blockStore, err := getBlockStoreForHandle(reg, ctx, handle)
+	blockStore, err := common.ResolveForWrite(ctx, reg, handle)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -51,12 +52,6 @@ func getMetadataService(reg *runtime.Runtime) (*metadata.MetadataService, error)
 		return nil, ErrMetadataServiceNotInitialized
 	}
 	return metaSvc, nil
-}
-
-// getBlockStoreForHandle returns the per-share block store resolved from the given file handle.
-// The handle encodes the share name, which is used to look up the share's block store.
-func getBlockStoreForHandle(reg *runtime.Runtime, ctx context.Context, handle metadata.FileHandle) (*engine.BlockStore, error) {
-	return reg.GetBlockStoreForHandle(ctx, handle)
 }
 
 // safeAdd performs checked addition of two uint64 values.
@@ -202,16 +197,22 @@ func readMFsymlinkContentForNFS(
 		return nil, nil
 	}
 
-	blockStore, err := getBlockStoreForHandle(reg, ctx, handle)
+	blockStore, err := common.ResolveForRead(ctx, reg, handle)
 	if err != nil {
 		return nil, err
 	}
 
-	data := make([]byte, mfsymlink.Size)
-	n, err := blockStore.ReadAt(ctx, string(payloadID), data, 0)
+	// Routed through common.ReadFromBlockStore so the Phase-12 []BlockRef
+	// plumbing lands in one place (see common/doc.go Phase-12 seam / D-12).
+	// The copy below materialises the pooled buffer into a caller-owned
+	// slice because the MFsymlink path retains the bytes past Release().
+	result, err := common.ReadFromBlockStore(ctx, blockStore, payloadID, 0, uint32(mfsymlink.Size))
 	if err != nil {
 		return nil, err
 	}
+	defer result.Release()
 
-	return data[:n], nil
+	out := make([]byte, len(result.Data))
+	copy(out, result.Data)
+	return out, nil
 }

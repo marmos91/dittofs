@@ -351,59 +351,13 @@ func processFiletimeForSet(ft uint64, target **time.Time) {
 	}
 }
 
-// MetadataErrorToSMBStatus maps metadata store errors to SMB NT status codes
-// per MS-ERREF 2.3. Translates DittoFS error codes (ErrNotFound, ErrAccessDenied,
-// etc.) to their SMB equivalents (STATUS_OBJECT_NAME_NOT_FOUND, STATUS_ACCESS_DENIED).
-// Returns StatusInternalError for unrecognized errors or nil input returns StatusSuccess.
-func MetadataErrorToSMBStatus(err error) types.Status {
-	if err == nil {
-		return types.StatusSuccess
-	}
-
-	// Check for metadata store errors
-	if storeErr, ok := err.(*metadata.StoreError); ok {
-		switch storeErr.Code {
-		case metadata.ErrNotFound:
-			return types.StatusObjectNameNotFound
-		case metadata.ErrAlreadyExists:
-			return types.StatusObjectNameCollision
-		case metadata.ErrNotDirectory:
-			return types.StatusNotADirectory
-		case metadata.ErrIsDirectory:
-			return types.StatusFileIsADirectory
-		case metadata.ErrNotEmpty:
-			return types.StatusDirectoryNotEmpty
-		case metadata.ErrAccessDenied:
-			return types.StatusAccessDenied
-		case metadata.ErrInvalidArgument:
-			return types.StatusInvalidParameter
-		case metadata.ErrInvalidHandle:
-			return types.StatusInvalidHandle
-		case metadata.ErrNotSupported:
-			return types.StatusNotSupported
-		case metadata.ErrIOError:
-			return types.StatusUnexpectedIOError
-		case metadata.ErrNoSpace:
-			return types.StatusDiskFull
-		default:
-			return types.StatusInternalError
-		}
-	}
-
-	// Generic error
-	return types.StatusInternalError
-}
-
-// ContentErrorToSMBStatus maps block store errors to SMB NT status codes.
-// All block store errors (including ErrRemoteUnavailable) map to
-// StatusUnexpectedIOError since they are I/O-related (S3 failures, disk errors).
-// Nil returns StatusSuccess.
-func ContentErrorToSMBStatus(err error) types.Status {
-	if err == nil {
-		return types.StatusSuccess
-	}
-	return types.StatusUnexpectedIOError
-}
+// Note (ADAPT-03, D-06/D-08 §2): MetadataErrorToSMBStatus and
+// ContentErrorToSMBStatus were consolidated into
+// internal/adapter/common/errmap.go and content_errmap.go. Handlers now call
+// common.MapToSMB and common.MapContentToSMB directly — common uses
+// errors.As (via the goerrors alias) so wrapped StoreErrors unwrap
+// correctly, fixing a latent bug in the pre-consolidation type-assertion
+// path.
 
 // ResolveCreateDisposition determines the CREATE action based on the requested
 // disposition and whether the file already exists [MS-SMB2] 2.2.13.

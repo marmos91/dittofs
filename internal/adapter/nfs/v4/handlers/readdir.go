@@ -7,10 +7,11 @@ import (
 	"io"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -119,7 +120,7 @@ func (h *Handler) readDirRealFS(ctx *types.CompoundContext, cookie uint64, cooki
 
 	page, err := metaSvc.ReadDirectory(authCtx, dirHandle, cookie, maxcount)
 	if err != nil {
-		status := types.MapMetadataErrorToNFS4(err)
+		status := common.MapToNFS4(err)
 		return &types.CompoundResult{
 			Status: status,
 			OpCode: types.OP_READDIR,

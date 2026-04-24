@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -231,7 +232,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-	blockStore, err := h.Registry.GetBlockStoreForHandle(ctx.Context, openFile.MetadataHandle)
+	blockStore, err := common.ResolveForRead(ctx.Context, h.Registry, openFile.MetadataHandle)
 	if err != nil {
 		logger.Warn("READ: block store not available for handle", "path", openFile.Path, "error", err)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil
@@ -254,7 +255,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	file, err := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
 	if err != nil {
 		logger.Debug("READ: failed to get file metadata", "path", openFile.Path, "error", err)
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 	}
 
 	// Handle symlink reads - SMB clients expect MFsymlink content for symlinks
@@ -266,7 +267,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	readMeta, err := metaSvc.PrepareRead(authCtx, openFile.MetadataHandle)
 	if err != nil {
 		logger.Debug("READ: permission check failed", "path", openFile.Path, "error", err)
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: MetadataErrorToSMBStatus(err)}}, nil
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 	}
 
 	// ========================================================================
@@ -339,19 +340,27 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// Step 11: Read data from BlockStore (uses local cache internally)
 	// ========================================================================
 
-	data := make([]byte, actualLength)
-	n, err := blockStore.ReadAt(authCtx.Context, string(readMeta.Attr.PayloadID), data, req.Offset)
+	// Per D-09/D-10 (narrowed): regular-file READ routes through the pooled
+	// common.ReadFromBlockStore helper. The returned buffer is pool-backed,
+	// and readResult.Release is handed to the response encoder via
+	// SMBResponseBase.ReleaseData so the pool.Put fires AFTER the wire write
+	// completes (plain, encrypted, compound). On error paths the helper
+	// already returns the buffer internally, so ReleaseData stays nil.
+	readResult, err := common.ReadFromBlockStore(authCtx.Context, blockStore, readMeta.Attr.PayloadID, req.Offset, actualLength)
 	if err != nil {
 		logger.Warn("READ: content read failed", "path", openFile.Path, "error", err)
-		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: ContentErrorToSMBStatus(err)}}, nil
+		// common.MapContentToSMB mirrors the old ContentErrorToSMBStatus
+		// behavior and handles ErrRemoteUnavailable. ReleaseData stays nil
+		// because ReadFromBlockStore has already released the pooled buffer
+		// on the error path.
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: common.MapContentToSMB(err)}}, nil
 	}
-	data = data[:n]
 
 	logger.Debug("READ successful",
 		"path", openFile.Path,
 		"offset", req.Offset,
 		"requested", req.Length,
-		"actual", len(data))
+		"actual", len(readResult.Data))
 
 	// ========================================================================
 	// Step 12: Update LastAccessTime (MS-FSA Algorithm for Noting File Accessed)
@@ -368,11 +377,18 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// Step 13: Return success response
 	// ========================================================================
 
+	// Hand readResult.Release to the encoder (D-09) — NOT a defer in the
+	// handler. The encoder fires it once AFTER the wire write completes so
+	// the pooled buffer stays valid through compound response assembly and
+	// encryption.
 	return &ReadResponse{
-		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
-		DataOffset:      0x50, // Standard offset (header + response struct)
-		Data:            data,
-		DataRemaining:   0,
+		SMBResponseBase: SMBResponseBase{
+			Status:      types.StatusSuccess,
+			ReleaseData: readResult.Release,
+		},
+		DataOffset:    0x50, // Standard offset (header + response struct)
+		Data:          readResult.Data,
+		DataRemaining: 0,
 	}, nil
 }
 
@@ -381,6 +397,15 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 // regular files with a special XSym format containing the symlink target.
 // This function generates that content on-the-fly from the symlink's LinkTarget
 // and returns the appropriate portion based on the request offset and length.
+//
+// NOTE (D-10 narrowed scope, plan 09-02): symlink READ buffers are not pool-backed.
+// mfsymlink.Encode returns a freshly heap-allocated slice (always 1067 bytes per
+// MFsymlink spec). A pool-backed path would memcpy that output into a pooled
+// slice for no benefit — the encoder's allocation already dominates the
+// fixed-size return. The returned *ReadResponse therefore leaves
+// SMBResponseBase.ReleaseData nil; the response encoder's null-check handles
+// this deliberately. Regression coverage lives in
+// TestRead_SymlinkRead_LeavesReleaseDataNil.
 func (h *Handler) handleSymlinkRead(
 	ctx *SMBHandlerContext,
 	openFile *OpenFile,
@@ -431,6 +456,17 @@ func (h *Handler) handleSymlinkRead(
 }
 
 // handlePipeRead handles READ from a named pipe for DCE/RPC communication.
+//
+// NOTE (D-10 narrowed scope, plan 09-02): pipe READ buffers are not pool-backed.
+// pipe.ProcessRead returns a slice whose lifetime is owned by PipeManager's
+// internal state machine — coercing it through internal/adapter/pool would
+// require an extra memcpy per read (to copy into a pool-backed slice before
+// returning) with no observable benefit. Pipe reads are typically small and
+// infrequent compared with the regular-file READ hot path that ADAPT-02
+// targets. The returned *ReadResponse therefore leaves
+// SMBResponseBase.ReleaseData nil; the response encoder's null-check handles
+// this deliberately. Regression coverage lives in
+// TestRead_PipeRead_LeavesReleaseDataNil.
 func (h *Handler) handlePipeRead(ctx *SMBHandlerContext, req *ReadRequest, openFile *OpenFile) (*ReadResponse, error) {
 	logger.Debug("READ from named pipe",
 		"pipeName", openFile.PipeName,

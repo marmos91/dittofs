@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"context"
+	goerrors "errors"
 	"fmt"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -303,7 +305,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 					"offset", lockElem.Offset,
 					"length", lockElem.Length,
 					"error", err)
-				status := lockErrorToStatus(err)
+				status := common.MapLockToSMB(err)
 				// Rollback previously acquired locks (unlocks are not rolled back)
 				rollbackLocks(authCtx.Context, metaSvc, openFile.MetadataHandle, openID, ctx.SessionID, acquiredLocks)
 				return NewErrorResult(status), nil
@@ -364,7 +366,7 @@ func (h *Handler) Lock(ctx *SMBHandlerContext, body []byte) (*HandlerResult, err
 					return NewErrorResult(types.StatusCancelled), nil
 				}
 
-				status := lockErrorToStatus(err)
+				status := common.MapLockToSMB(err)
 
 				// Per MS-SMB2 3.3.5.14: If this lock denial matches the last
 				// denied lock for this open (same offset/length/type), return
@@ -437,9 +439,10 @@ func (h *Handler) acquireLockWithRetry(
 		return nil
 	}
 
-	// Check if it's a lock conflict error
-	storeErr, isStoreErr := err.(*metadata.StoreError)
-	if !isStoreErr || storeErr.Code != metadata.ErrLocked {
+	// Check if it's a lock conflict error. Use errors.As to unwrap wrapped
+	// StoreErrors produced by production call paths (fmt.Errorf("...: %w", storeErr)).
+	var storeErr *metadata.StoreError
+	if !goerrors.As(err, &storeErr) || storeErr.Code != metadata.ErrLocked {
 		// Not a lock conflict - return immediately
 		return err
 	}
@@ -488,9 +491,10 @@ func (h *Handler) acquireLockWithRetry(
 				return nil
 			}
 
-			// If it's not a lock conflict anymore, return the error
-			storeErr, isStoreErr := err.(*metadata.StoreError)
-			if !isStoreErr || storeErr.Code != metadata.ErrLocked {
+			// If it's not a lock conflict anymore, return the error.
+			// Use errors.As to unwrap wrapped StoreErrors.
+			var storeErr *metadata.StoreError
+			if !goerrors.As(err, &storeErr) || storeErr.Code != metadata.ErrLocked {
 				return err
 			}
 			// Still locked, continue retrying
@@ -529,21 +533,7 @@ func rollbackLocks(
 	}
 }
 
-// lockErrorToStatus converts a metadata store error to an SMB status code.
-func lockErrorToStatus(err error) types.Status {
-	if storeErr, ok := err.(*metadata.StoreError); ok {
-		switch storeErr.Code {
-		case metadata.ErrLocked:
-			return types.StatusLockNotGranted
-		case metadata.ErrLockNotFound:
-			return types.StatusRangeNotLocked
-		case metadata.ErrNotFound:
-			return types.StatusFileClosed
-		case metadata.ErrPermissionDenied:
-			return types.StatusAccessDenied
-		case metadata.ErrIsDirectory:
-			return types.StatusFileIsADirectory
-		}
-	}
-	return types.StatusInternalError
-}
+// Note (ADAPT-03, D-08 §3): lockErrorToStatus was consolidated into
+// internal/adapter/common/lock_errmap.go. Callers now use
+// common.MapLockToSMB — lock-context and general-context mappings are now
+// driven by the same three-column tables used by NFSv3/NFSv4.

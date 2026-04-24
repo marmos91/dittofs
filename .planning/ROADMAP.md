@@ -94,7 +94,12 @@ Phase 08 (A0) and Phase 09 (ADAPT) proceed in parallel as independent pre-A1 cle
 **Key risks**:
   - Error-mapping consolidation could silently change user-visible error codes if current mappings disagree — add test coverage before changing any mapping
   - SMB pool integration must correctly free buffers on all success/error paths to avoid pool exhaustion — wire `defer pool.Put(...)` at handler entry
-**Plans**: TBD
+**Plans**: 5 plans
+  - [ ] 09-01-PLAN.md — ADAPT-01: extract internal/adapter/common helpers (BlockStoreRegistry, ResolveForRead/Write, ReadFromBlockStore); migrate NFSv3/v4/SMB call sites; delete duplicates
+  - [ ] 09-02-PLAN.md — ADAPT-02: SMB READ pool integration (remove inline make, add nil-safe ReleaseData on SMBResponseBase/HandlerResult, fire after wire write in plain+encrypted+compound paths)
+  - [ ] 09-03-PLAN.md — ADAPT-03: consolidated errmap.go struct-per-code table (NFS3/NFS4/SMB columns) + content_errmap + lock_errmap; migrate all translators; fix SMB errors.As latent bug
+  - [ ] 09-04-PLAN.md — ADAPT-04: add common.WriteToBlockStore; refactor every NFS/SMB WRITE+COMMIT call site through common helpers; document Phase-12 []BlockRef seam in common/doc.go
+  - [ ] 09-05-PLAN.md — ADAPT-05: cross-protocol conformance test (e2e tier ~18 codes + unit tier ~9 exotic codes) driven from common table; docs updates (ARCHITECTURE/NFS/SMB/CONTRIBUTING) per D-17
 
 ### Phase 10: FastCDC chunker + hybrid local store (A1)
 **Goal**: Land the new chunking + local-store infrastructure (FastCDC + BLAKE3 + hybrid Logs/Blocks directory) behind a feature flag, so Phase 11 can wire the CAS write path on top of a tested foundation.
@@ -266,7 +271,7 @@ Verification requirements VER-01 through VER-06 are phase-independent and gate t
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 08. Pre-refactor cleanup (A0) | 17/17 | Complete    | 2026-04-23 |
-| 09. Adapter layer cleanup (ADAPT) | 0/? | Not started | - |
+| 09. Adapter layer cleanup (ADAPT) | 0/5 | Not started | - |
 | 10. FastCDC chunker + hybrid local store (A1) | 0/? | Not started | - |
 | 11. CAS write path + GC rewrite (A2) | 0/? | Not started | - |
 | 12. CDC read path + metadata schema + engine API (A3) | 0/? | Not started | - |

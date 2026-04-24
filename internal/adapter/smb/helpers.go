@@ -97,15 +97,26 @@ func handleRequest[Req smbRequest, Resp smbResponse](
 
 	status := resp.GetStatus()
 
+	// Per D-09: propagate any pooled-buffer release closure from the typed
+	// response envelope onto the wire-level HandlerResult so SendResponse /
+	// SendResponseWithHooks / compound path can fire it once AFTER the wire
+	// write. Non-pooled responses return nil from GetReleaseData() — the
+	// encoder null-checks.
+	type releaseCarrier interface{ GetReleaseData() func() }
+	var release func()
+	if rc, ok := any(resp).(releaseCarrier); ok {
+		release = rc.GetReleaseData()
+	}
+
 	// STATUS_PENDING is an async interim response. Propagate the AsyncId if the
 	// response carries one (e.g. a pending named-pipe READ). The body is omitted
 	// here; buildResponseHeaderAndBody supplies MakeErrorBody() for STATUS_PENDING.
 	if status == types.StatusPending {
 		type asyncIdCarrier interface{ GetAsyncId() uint64 }
 		if ar, ok := any(resp).(asyncIdCarrier); ok {
-			return &HandlerResult{Status: status, AsyncId: ar.GetAsyncId()}, nil
+			return &HandlerResult{Status: status, AsyncId: ar.GetAsyncId(), ReleaseData: release}, nil
 		}
-		return &HandlerResult{Status: status}, nil
+		return &HandlerResult{Status: status, ReleaseData: release}, nil
 	}
 
 	// Skip encoding whenever buildResponseHeaderAndBody will substitute
@@ -117,14 +128,14 @@ func handleRequest[Req smbRequest, Resp smbResponse](
 	// has its encoded body discarded and replaced with the 9-byte ERROR
 	// structure per [MS-SMB2] 2.2.2.
 	if status.IsError() || (status.IsWarning() && status != types.StatusBufferOverflow) {
-		return &HandlerResult{Status: status}, nil
+		return &HandlerResult{Status: status, ReleaseData: release}, nil
 	}
 
 	encoded, err := resp.Encode()
 	if err != nil {
 		logger.Debug("SMB: error encoding response", "error", err)
-		return &HandlerResult{Status: types.StatusInternalError}, nil
+		return &HandlerResult{Status: types.StatusInternalError, ReleaseData: release}, nil
 	}
 
-	return &HandlerResult{Data: encoded, Status: status}, nil
+	return &HandlerResult{Data: encoded, Status: status, ReleaseData: release}, nil
 }

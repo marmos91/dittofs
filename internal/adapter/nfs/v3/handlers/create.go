@@ -2,9 +2,9 @@ package handlers
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -311,7 +311,7 @@ func (h *Handler) Create(
 		logError(ctx.Context, err, "CREATE failed: repository error", "file", req.Filename, "client", clientIP)
 
 		// Map repository errors to NFS status codes
-		nfsStatus := mapMetadataErrorToNFS(err)
+		nfsStatus := common.MapToNFS3(err)
 
 		dirWccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
 
@@ -572,52 +572,6 @@ func applySetAttrsToFileAttr(fileAttr *metadata.FileAttr, setAttrs *metadata.Set
 	}
 	// Size is always 0 for new files, ignore setAttrs.Size
 	// Atime/Mtime will be set by repository to current time
-}
-
-// mapMetadataErrorToNFS maps metadata repository errors to NFS status codes.
-// Uses errors.As to handle wrapped errors (e.g., from fmt.Errorf).
-func mapMetadataErrorToNFS(err error) uint32 {
-	var storeErr *metadata.StoreError
-	if errors.As(err, &storeErr) {
-		switch storeErr.Code {
-		case metadata.ErrNotFound:
-			return types.NFS3ErrNoEnt
-		case metadata.ErrAccessDenied, metadata.ErrAuthRequired:
-			return types.NFS3ErrAccess
-		case metadata.ErrPermissionDenied:
-			return types.NFS3ErrPerm
-		case metadata.ErrPrivilegeRequired:
-			// RFC 1813: EPERM for privilege violations (e.g., creating device files as non-root)
-			return types.NFS3ErrPerm
-		case metadata.ErrAlreadyExists:
-			return types.NFS3ErrExist
-		case metadata.ErrNotEmpty:
-			return types.NFS3ErrNotEmpty
-		case metadata.ErrIsDirectory:
-			return types.NFS3ErrIsDir
-		case metadata.ErrNotDirectory:
-			return types.NFS3ErrNotDir
-		case metadata.ErrInvalidArgument:
-			return types.NFS3ErrInval
-		case metadata.ErrNoSpace:
-			return types.NFS3ErrNoSpc
-		case metadata.ErrQuotaExceeded:
-			return types.NFS3ErrDquot
-		case metadata.ErrReadOnly:
-			return types.NFS3ErrRofs
-		case metadata.ErrNotSupported:
-			return types.NFS3ErrNotSupp
-		case metadata.ErrInvalidHandle, metadata.ErrStaleHandle:
-			return types.NFS3ErrStale
-		case metadata.ErrNameTooLong:
-			return types.NFS3ErrNameTooLong
-		case metadata.ErrIOError:
-			return types.NFS3ErrIO
-		default:
-			return types.NFS3ErrIO
-		}
-	}
-	return types.NFS3ErrIO
 }
 
 // ============================================================================

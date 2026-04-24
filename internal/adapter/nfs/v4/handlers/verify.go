@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"io"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
-	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -68,7 +69,7 @@ func verifyAttributes(h *Handler, ctx *types.CompoundContext, reader io.Reader) 
 
 		file, getErr := metaSvc.GetFile(authCtx.Context, metadata.FileHandle(ctx.CurrentFH))
 		if getErr != nil {
-			return false, types.MapMetadataErrorToNFS4(getErr)
+			return false, common.MapToNFS4(getErr)
 		}
 
 		serverAttrData, err = encodeAttrValsOnly(func(buf *bytes.Buffer, responseBitmap []uint32) error {

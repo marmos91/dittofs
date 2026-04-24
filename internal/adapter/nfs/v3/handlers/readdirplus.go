@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -280,7 +281,7 @@ func (h *Handler) ReadDirPlus(
 		logError(ctx.Context, err, "READDIRPLUS failed: error retrieving entries", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
 		// Map store error to NFS status
-		status := mapMetadataErrorToNFS(err)
+		status := common.MapToNFS3(err)
 
 		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
