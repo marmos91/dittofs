@@ -1,6 +1,6 @@
 # smbtorture Known Failures
 
-Last updated: 2026-04-23 (Filed tracking issues for fix-candidate clusters: #429 leases, #430 byte-range locks, #431 DH V1, #432 DH V2, #433 rename, #434 timestamps, #435 charset, #436 multichannel.leases.test3)
+Last updated: 2026-04-24 (Pruned 20 collapsed entries against post-#418 baseline; closed #435; chipped #431 by 1)
 
 Tests listed here are expected to fail and will NOT cause CI to report failure.
 Only NEW failures (not in this list) will cause CI to fail.
@@ -215,7 +215,6 @@ DittoFS implements file leases (Phase 37) but not directory leases.
 | smb2.dirlease.unlink_same_initial_and_close | Directory Leases | Directory leases not implemented | - |
 | smb2.dirlease.unlink_same_set_and_close | Directory Leases | Directory leases not implemented | - |
 | smb2.dirlease.v2_request | Directory Leases | Directory leases not implemented | - |
-| smb2.dirlease.v2_request_parent | Directory Leases | Directory leases not implemented | - |
 
 ### Credit Management
 
@@ -236,13 +235,9 @@ handling) are not fully implemented.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 | smb2.dir.1kfiles_rename | Directory | Large directory rename not implemented | - |
-| smb2.dir.file-index | Directory | File index tracking not implemented | - |
 | smb2.dir.fixed | Directory | Fixed-size directory entries not implemented | - |
-| smb2.dir.large-files | Directory | Large directory operations not implemented | - |
-| smb2.dir.many | Directory | Large directory operations not implemented | - |
 | smb2.dir.modify | Directory | Directory modify during enumeration not implemented | - |
 | smb2.dir.one | Directory | Single-entry directory query not implemented | - |
-| smb2.dir.sorted | Directory | Sorted directory results not implemented | - |
 
 ### File Attributes (Limited Support)
 
@@ -265,7 +260,6 @@ files, create blobs) are not implemented. Basic create operations pass.
 |-----------|----------|--------|-------|
 | smb2.create.acldir | Create | ACL-based directory create not implemented | - |
 | smb2.create.aclfile | Create | ACL-based file create not implemented | - |
-| smb2.create.bench-path-contention-shared | Create | Path contention benchmark not implemented | - |
 | smb2.create.blob | Create | Create context blobs not fully implemented | - |
 | smb2.create.gentest | Create | Generic create test (impersonation) not implemented | - |
 | smb2.create.impersonation | Create | Impersonation levels not implemented | - |
@@ -294,7 +288,6 @@ checks, and ACL-based access control.
 |-----------|----------|--------|-------|
 | smb2.getinfo.complex | Query Info | Complex getinfo not implemented | - |
 | smb2.getinfo.getinfo_access | Query Info | Access-based getinfo not implemented | - |
-| smb2.getinfo.granted | Query Info | Granted access info not implemented | - |
 | smb2.getinfo.normalized | Query Info | Normalized name info not implemented | - |
 | smb2.getinfo.qfile_buffercheck | Query Info | Buffer check validation not implemented | - |
 | smb2.getinfo.qfs_buffercheck | Query Info | FS buffer check not implemented | - |
@@ -319,7 +312,6 @@ failures require DACL enforcement or full async I/O support.
 | smb2.compound_async.rename_non_compound_no_async | Compound | Non-compound rename async check | - |
 | smb2.compound_async.rename_same_srcdst_non_compound_no_async | Compound | Same src/dst rename async check | - |
 | smb2.compound_async.write_write | Compound | Async write+write compound not implemented | - |
-| smb2.compound_find.compound_find_close | Compound | Compound find+close sequence | - |
 
 ### Share Modes and Deny (Advanced Scenarios)
 
@@ -327,11 +319,7 @@ Advanced share mode enforcement and deny mode scenarios.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.sharemode.access-sharemode | Share modes | Advanced share mode enforcement not implemented | - |
 | smb2.sharemode.bug14375 | Share modes | Share mode edge case not implemented | - |
-| smb2.sharemode.sharemode-access | Share modes | Share mode access check not implemented | - |
-| smb2.deny.deny1 | Deny modes | Deny mode enforcement not implemented | - |
-| smb2.deny.deny2 | Deny modes | Deny mode enforcement not implemented | - |
 
 ### Delete-on-Close (Advanced Semantics)
 
@@ -343,7 +331,6 @@ Advanced delete-on-close permission checks and edge cases. Basic DOC works
 | smb2.delete-on-close-perms.CREATE | Delete on close | DOC permission check not implemented | - |
 | smb2.delete-on-close-perms.CREATE_IF | Delete on close | DOC permission check not implemented | - |
 | smb2.delete-on-close-perms.READONLY | Delete on close | DOC on read-only files not implemented | - |
-| smb2.delete-on-close-perms.OVERWRITE_IF | Delete on close | OVERWRITE_IF returns OBJECT_NAME_COLLISION instead of ACCESS_DENIED for DOC permission check | - |
 | smb2.delete-on-close-perms.FIND_and_set_DOC | Delete on close | Cascade from the CREATE/CREATE_IF/OVERWRITE_IF Existing DOC failures above: those subtests leak `test_dir/test_create.dat` that `smb2_deltree` can't recover from, so `torture_smb2_testdir` reopens a non-empty `test_dir` and the final CLOSE correctly returns DIRECTORY_NOT_EMPTY. Pre-#388 the unlink error was silently swallowed by CLOSE so the test "passed" by accident. Will self-resolve once the upstream DOC permission checks are implemented. | - |
 
 ### File IDs (Different Handle Scheme)
@@ -356,8 +343,6 @@ implemented.
 |-----------|----------|--------|-------|
 | smb2.fileid.fileid | File IDs | Stable file ID not implemented | - |
 | smb2.fileid.fileid-dir | File IDs | Stable directory file ID not implemented | - |
-| smb2.fileid.unique | File IDs | Unique file ID guarantee not implemented | - |
-| smb2.fileid.unique-dir | File IDs | Unique directory file ID not implemented | - |
 
 ### Maximum Allowed Access (Partial)
 
@@ -393,10 +378,7 @@ Benchmark tests require multi-client coordination and stress scenarios.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.bench.echo | Benchmarks | Multi-client echo benchmark | - |
 | smb2.bench.oplock1 | Benchmarks | Multi-client oplock benchmark | - |
-| smb2.bench.path-contention-shared | Benchmarks | Multi-client path contention | - |
-| smb2.bench.read | Benchmarks | Multi-client read benchmark | - |
 
 ### Character Set (Edge Cases)
 
@@ -444,23 +426,6 @@ Session signing edge cases requiring multi-channel binding.
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
 
-### Character Set Edge Cases (Fix Candidate)
-
-Unicode and character set edge cases (partial surrogates, wide-A collision).
-Newly reachable after compound and protocol improvements.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-| smb2.charset.Testing | Character set | Unicode surrogate pair handling not implemented | #435 |
-
-### Delete-on-Close OVERWRITE_IF (Fix Candidate)
-
-Delete-on-close with OVERWRITE_IF disposition needs additional enforcement.
-Newly reachable after access control improvements.
-
-| Test Name | Category | Reason | Issue |
-|-----------|----------|--------|-------|
-
 ### Durable Handles V1 (Fix Candidate)
 
 Durable handle V1 open/reopen operations partially implemented but tests
@@ -468,7 +433,6 @@ still fail due to incomplete reconnect and lease coordination.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
-| smb2.durable-open.open-lease | Durable handles V1 | Durable open with lease not fully working | #431 |
 | smb2.durable-open.reopen1a | Durable handles V1 | Durable reopen not fully working | #431 |
 | smb2.durable-open.reopen1a-lease | Durable handles V1 | Durable reopen with lease not fully working | #431 |
 | smb2.durable-open.reopen2 | Durable handles V1 | Durable reopen not fully working | #431 |
@@ -780,6 +744,46 @@ incomplete delayed-write and timestamp freeze/unfreeze logic.
 | smb2.timestamps.freeze-thaw | Timestamps | CreationTime freeze/unfreeze not fully working | #434 |
 
 ## Changelog
+
+### 2026-04-24 — Prune 20 collapsed entries after post-#418 baseline
+
+Full smbtorture suite baseline against current `develop` (run
+`smbtorture-2026-04-23_224339`) confirmed 22 previously-known failures now
+pass. Pruned 20 of them (kept `smb2.create.mkdir-dup` and
+`smb2.ioctl.network_interface_info` since their own reason text flags them
+as flaky — single-run greens are insufficient evidence to remove).
+
+Pruned entries:
+
+- **Benchmarks**: `bench.echo`, `bench.path-contention-shared`, `bench.read`
+- **Compound**: `compound_find.compound_find_close`
+- **Create**: `create.bench-path-contention-shared`
+- **Delete-on-Close**: `delete-on-close-perms.OVERWRITE_IF`
+- **Deny modes**: `deny.deny1`, `deny.deny2`
+- **Directory**: `dir.file-index`, `dir.large-files`, `dir.many`,
+  `dir.sorted`
+- **Directory leases**: `dirlease.v2_request_parent`
+- **Durable V1** (chips #431): `durable-open.open-lease`
+- **File IDs**: `fileid.unique`, `fileid.unique-dir`
+- **Query Info**: `getinfo.granted`
+- **Share modes**: `sharemode.access-sharemode`,
+  `sharemode.sharemode-access`
+
+Two empty fix-candidate section headers are removed:
+
+- **Charset Edge Cases (Fix Candidate)**: only entry was `charset.Testing`.
+  **Closes #435.**
+- **Delete-on-Close OVERWRITE_IF (Fix Candidate)**: a placeholder header
+  whose table was already empty (no entries had ever been filed under it).
+
+Stats vs prior baseline (`smbtorture-2026-04-22_162101`, pre-#418):
+160 PASS / 240 KNOWN / 0 NEW → 168 PASS / 233 KNOWN / 0 NEW.
+
+Note: the `smb2.lease.*` subsuite hit the smbtorture per-suite timeout in
+this run because `lease.break_twice` alone took 57 minutes (DittoFS
+hangs the conflicting open instead of returning `STATUS_SHARING_VIOLATION`).
+This is the next target for #429 work; baseline data for the lease cluster
+is incomplete until that bug is resolved.
 
 ### 2026-04-23 — File tracking issues for fix-candidate clusters
 
