@@ -330,6 +330,7 @@ Advanced delete-on-close permission checks and edge cases. Basic DOC works
 |-----------|----------|--------|-------|
 | smb2.delete-on-close-perms.CREATE | Delete on close | DOC permission check not implemented | - |
 | smb2.delete-on-close-perms.CREATE_IF | Delete on close | DOC permission check not implemented | - |
+| smb2.delete-on-close-perms.OVERWRITE_IF | Delete on close | OVERWRITE_IF returns OBJECT_NAME_COLLISION instead of ACCESS_DENIED for DOC permission check | - |
 | smb2.delete-on-close-perms.READONLY | Delete on close | DOC on read-only files not implemented | - |
 | smb2.delete-on-close-perms.FIND_and_set_DOC | Delete on close | Cascade from the CREATE/CREATE_IF/OVERWRITE_IF Existing DOC failures above: those subtests leak `test_dir/test_create.dat` that `smb2_deltree` can't recover from, so `torture_smb2_testdir` reopens a non-empty `test_dir` and the final CLOSE correctly returns DIRECTORY_NOT_EMPTY. Pre-#388 the unlink error was silently swallowed by CLOSE so the test "passed" by accident. Will self-resolve once the upstream DOC permission checks are implemented. | - |
 
@@ -385,6 +386,10 @@ Benchmark tests require multi-client coordination and stress scenarios.
 Unicode and character set edge cases (partial surrogates, wide-A collision) are
 tracked as fix candidates in baseline-results.md rather than known failures,
 since basic charset support works.
+
+| Test Name | Category | Reason | Issue |
+|-----------|----------|--------|-------|
+| smb2.charset.Testing | Character set | Unicode surrogate pair / wide-A handling not implemented | #435 |
 
 ### Name Mangling (Not Implemented)
 
