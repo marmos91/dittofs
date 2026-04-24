@@ -207,6 +207,12 @@ type LockManager interface {
 	// or the context is cancelled.
 	WaitForBreakCompletion(ctx context.Context, handleKey string) error
 
+	// HasBreakingLeaseForKey reports whether any lease on handleKey is both
+	// keyed on leaseKey and in Breaking state. The SMB CREATE path uses this
+	// to skip the break-completion wait on same-key reopens so the response
+	// can carry SMB2_LEASE_FLAG_BREAK_IN_PROGRESS per MS-SMB2 3.3.5.9.8.
+	HasBreakingLeaseForKey(handleKey string, leaseKey [16]byte) bool
+
 	// ========================================================================
 	// Break Callbacks
 	// ========================================================================
@@ -1379,6 +1385,23 @@ func (lm *Manager) CheckAndBreakCachingForDelete(handleKey string, excludeOwner 
 	return nil
 }
 
+// HasBreakingLeaseForKey reports whether any lease on handleKey has
+// LeaseKey == leaseKey AND Breaking == true. Used by the SMB CREATE path
+// to decide whether to skip WaitForBreakCompletion when the opener's own
+// lease is already mid-break: per MS-SMB2 3.3.5.9.8 the same-key reopener
+// must observe Breaking=true (and receive SMB2_LEASE_FLAG_BREAK_IN_PROGRESS
+// in its response), which forceCompleteBreaks would otherwise clear.
+func (lm *Manager) HasBreakingLeaseForKey(handleKey string, leaseKey [16]byte) bool {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	for _, l := range lm.unifiedLocks[handleKey] {
+		if l.Lease != nil && l.Lease.LeaseKey == leaseKey && l.Lease.Breaking {
+			return true
+		}
+	}
+	return false
+}
+
 // WaitForBreakCompletion blocks until all breaking locks on a file resolve
 // or the context is cancelled. Multiple goroutines may wait concurrently;
 // signalBreakWait uses close() to broadcast to all waiters.
@@ -1518,6 +1541,7 @@ func (lm *Manager) breakOpLocks(
 		breakToState uint32
 	}
 	var toBreak []breakEntry
+	var toRemove []*UnifiedLock
 	for _, lock := range locks {
 		if lock.Lease == nil {
 			continue
@@ -1538,24 +1562,73 @@ func (lm *Manager) breakOpLocks(
 		if lock.Lease.Breaking {
 			continue
 		}
-		if shouldBreak(lock.Lease) {
-			// Compute per-lease break-to state
-			targetState := breakToState
-			switch targetState {
-			case BreakToStripWrite:
-				// Strip only the Write bit, preserve Read and Handle.
-				// Per MS-SMB2 3.3.5.9: RWH -> RH, RW -> R.
-				targetState = lock.Lease.LeaseState &^ LeaseStateWrite
-			case BreakToStripHandle:
-				// Strip only the Handle bit, preserve Read and Write.
-				// Per MS-SMB2 3.3.5.9 Step 10: RWH -> RW, RH -> R.
-				targetState = lock.Lease.LeaseState &^ LeaseStateHandle
-			}
+		if !shouldBreak(lock.Lease) {
+			continue
+		}
+
+		// Compute per-lease break-to state
+		targetState := breakToState
+		switch targetState {
+		case BreakToStripWrite:
+			// Strip only the Write bit, preserve Read and Handle.
+			// Per MS-SMB2 3.3.5.9: RWH -> RH, RW -> R.
+			targetState = lock.Lease.LeaseState &^ LeaseStateWrite
+		case BreakToStripHandle:
+			// Strip only the Handle bit, preserve Read and Write.
+			// Per MS-SMB2 3.3.5.9 Step 10: RWH -> RW, RH -> R.
+			targetState = lock.Lease.LeaseState &^ LeaseStateHandle
+		}
+
+		// Per MS-SMB2 2.2.23.2 / transportNotifier.SendLeaseBreak: a break
+		// carries SMB2_NOTIFY_BREAK_LEASE_FLAG_ACK_REQUIRED iff the current
+		// state contains Write or Handle. Read-only breaks (e.g. R→None on
+		// WRITE) get no AckRequired flag, so the client never responds;
+		// leaving the lease in Breaking=true would permanently block
+		// same-key reopens (nobreakself) until the 5s wait + forceComplete
+		// path fires. Downgrade inline instead, matching the state the
+		// client observes immediately.
+		ackRequired := (lock.Lease.LeaseState & (LeaseStateWrite | LeaseStateHandle)) != 0
+
+		advanceEpoch(lock.Lease)
+		if ackRequired {
 			lock.Lease.Breaking = true
 			lock.Lease.BreakToState = targetState
 			lock.Lease.BreakStarted = time.Now()
-			advanceEpoch(lock.Lease)
-			toBreak = append(toBreak, breakEntry{lock: lock, breakToState: targetState})
+		} else if targetState == LeaseStateNone {
+			toRemove = append(toRemove, lock)
+		} else {
+			lock.Lease.LeaseState = targetState
+			lock.Type = lockTypeForLeaseState(targetState)
+			if lm.lockStore != nil {
+				pl := ToPersistedLock(lock, 0)
+				_ = lm.lockStore.PutLock(context.Background(), pl)
+			}
+		}
+		toBreak = append(toBreak, breakEntry{lock: lock, breakToState: targetState})
+	}
+	if len(toRemove) > 0 {
+		current := lm.unifiedLocks[handleKey]
+		kept := current[:0]
+		for _, l := range current {
+			drop := false
+			for _, r := range toRemove {
+				if l == r {
+					drop = true
+					break
+				}
+			}
+			if !drop {
+				kept = append(kept, l)
+				continue
+			}
+			if lm.lockStore != nil {
+				_ = lm.lockStore.DeleteLock(context.Background(), l.ID)
+			}
+		}
+		if len(kept) == 0 {
+			delete(lm.unifiedLocks, handleKey)
+		} else {
+			lm.unifiedLocks[handleKey] = kept
 		}
 	}
 	// Clone locks before releasing mu so that dispatchOpLockBreak receives
