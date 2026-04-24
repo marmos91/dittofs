@@ -31,6 +31,17 @@ import (
 // SMB2_NOTIFY_BREAK_LEASE_FLAG_ACK_REQUIRED is set).
 const parentLeaseBreakWaitTimeout = 5 * time.Second
 
+// handleLeaseBreakWaitTimeout bounds how long a CREATE waits for the existing
+// lease holder to acknowledge a Handle-strip break before falling back to
+// forceCompleteBreaks (auto-downgrade) and proceeding to the share-mode check.
+//
+// Without a bound, the wait inherits the auth context which only cancels on
+// session disconnect — non-acking clients hang the conflicting open for as
+// long as the test harness tolerates. Samba bounds this at ~32 s
+// (2× OPLOCK_BREAK_TIMEOUT, schedule_defer_open in source3/smbd/open.c); we
+// use the same 5 s as the parent break for consistency.
+const handleLeaseBreakWaitTimeout = 5 * time.Second
+
 // LockManagerResolver resolves the LockManager for a given share name.
 // This allows the LeaseManager to work across multiple shares without
 // holding a reference to a specific share's LockManager.
@@ -393,8 +404,12 @@ func (lm *LeaseManager) BreakHandleLeasesOnOpen(
 		return err
 	}
 
-	// Wait for break to complete before caller re-checks share modes
-	return lockMgr.WaitForBreakCompletion(ctx, handleKey)
+	// Wait for break to complete (bounded) before caller re-checks share
+	// modes. On timeout, forceCompleteBreaks auto-downgrades the lease so
+	// the share-mode check runs against a deterministic post-break state.
+	waitCtx, cancel := context.WithTimeout(ctx, handleLeaseBreakWaitTimeout)
+	defer cancel()
+	return lockMgr.WaitForBreakCompletion(waitCtx, handleKey)
 }
 
 // BreakHandleLeasesOnOpenAsync dispatches Handle lease break notifications
