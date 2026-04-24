@@ -431,6 +431,19 @@ func (lm *LeaseManager) BreakHandleLeasesOnOpen(
 		return err
 	}
 
+	// Same-key reopen while the opener's own lease is mid-break: skip the
+	// wait. Per MS-SMB2 3.3.5.9.8 the CREATE response MUST carry
+	// SMB2_LEASE_FLAG_BREAK_IN_PROGRESS whenever the lease is in Breaking
+	// state, and ProcessLeaseCreateContext reads that state from RequestLease.
+	// If we wait here, WaitForBreakCompletion's timeout path
+	// (forceCompleteBreaks) clears Breaking before the read, dropping the
+	// flag — matches smbtorture smb2.lease.breaking1/2/.. and
+	// duplicate_create/duplicate_open expectations.
+	if exclude != nil && exclude.ExcludeLeaseKey != ([16]byte{}) &&
+		lockMgr.HasBreakingLeaseForKey(handleKey, exclude.ExcludeLeaseKey) {
+		return nil
+	}
+
 	waitCtx, cancel := context.WithTimeout(ctx, handleLeaseBreakWaitTimeout)
 	defer cancel()
 	return lockMgr.WaitForBreakCompletion(waitCtx, handleKey)
