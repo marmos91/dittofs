@@ -390,65 +390,11 @@ func (lm *LeaseManager) BreakConflictingOplocksOnOpen(
 	return lockMgr.CheckAndBreakLeasesForSMBOpen(handleKey, exclude)
 }
 
-// BreakHandleLeasesOnOpen breaks leases before the share-mode conflict check
-// for an SMB CREATE on a file, per MS-SMB2 3.3.4.7 and Samba
-// `source3/smbd/open.c::delay_for_oplock_fn`:
-//
-//   - hasSharingViolation == true → strip Handle (keep Read + Write). The
-//     existing holder must release cached open handles so the new opener can
-//     proceed; writes stay cached because the holder will close the handle
-//     anyway.
-//   - hasSharingViolation == false → strip Write (keep Read + Handle). The
-//     holder flushes dirty data but may keep cached handles, and the new
-//     opener coexists.
-//
-// After breaking, the caller waits for completion and re-runs the share-mode
-// check. On timeout, forceCompleteBreaks auto-downgrades the lease so the
-// re-check runs against a deterministic post-break state.
-//
-// excludeOwner is optional and can contain ExcludeLeaseKey to prevent
-// breaking same-key leases (nobreakself per MS-SMB2).
-func (lm *LeaseManager) BreakHandleLeasesOnOpen(
-	ctx context.Context,
-	fileHandle lock.FileHandle,
-	shareName string,
-	hasSharingViolation bool,
-	excludeOwner ...*lock.LockOwner,
-) error {
-	lockMgr := lm.resolveLockManager(shareName)
-	if lockMgr == nil {
-		return nil
-	}
-
-	handleKey := string(fileHandle)
-
-	var exclude *lock.LockOwner
-	if len(excludeOwner) > 0 {
-		exclude = excludeOwner[0]
-	}
-
-	if err := lockMgr.BreakLeasesOnOpenConflict(handleKey, exclude, hasSharingViolation); err != nil {
-		return err
-	}
-
-	waitCtx, cancel := context.WithTimeout(ctx, handleLeaseBreakWaitTimeout)
-	defer cancel()
-
-	// A same-key reopen must still wait for any OTHER breaking leases on
-	// this handle to drain (MS-SMB2 3.3.4.7), but it must not force-complete
-	// the opener's own Breaking lease — RequestLease needs to observe it and
-	// emit SMB2_LEASE_FLAG_BREAK_IN_PROGRESS per MS-SMB2 3.3.5.9.8.
-	if exclude != nil && exclude.ExcludeLeaseKey != ([16]byte{}) {
-		return lockMgr.WaitForBreakCompletionExceptKey(waitCtx, handleKey, exclude.ExcludeLeaseKey)
-	}
-	return lockMgr.WaitForBreakCompletion(waitCtx, handleKey)
-}
-
-// HasOtherKeyBreaks reports whether any lease on fileHandle except excludeKey
+// HasOtherBreakingLeases reports whether any lease on fileHandle except excludeKey
 // is currently Breaking. Non-blocking. Used by the SMB CREATE async-park path
 // to decide whether to emit STATUS_PENDING after dispatching the break.
 // Returns false when no LockManager is bound for the share.
-func (lm *LeaseManager) HasOtherKeyBreaks(fileHandle lock.FileHandle, shareName string, excludeKey [16]byte) bool {
+func (lm *LeaseManager) HasOtherBreakingLeases(fileHandle lock.FileHandle, shareName string, excludeKey [16]byte) bool {
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
 		return false
@@ -456,13 +402,13 @@ func (lm *LeaseManager) HasOtherKeyBreaks(fileHandle lock.FileHandle, shareName 
 	return lockMgr.HasOtherBreakingLeases(string(fileHandle), excludeKey)
 }
 
-// WaitForBreakCompletionExceptKeyCtx waits on ctx for all other-key breaks on
+// WaitForOtherKeyBreaks waits on ctx for all other-key breaks on
 // fileHandle to drain. Unlike BreakHandleLeasesOnOpen, the caller controls the
 // cancellation context — the SMB CREATE async-park path passes a context whose
 // lifetime is bound to session teardown + a bounded server-side timeout. On
 // ctx.Err, breaks on non-excluded keys are auto-downgraded exactly as the
 // synchronous timeout path does (see Manager.forceCompleteBreaksExceptKey).
-func (lm *LeaseManager) WaitForBreakCompletionExceptKeyCtx(ctx context.Context, fileHandle lock.FileHandle, shareName string, excludeKey [16]byte) error {
+func (lm *LeaseManager) WaitForOtherKeyBreaks(ctx context.Context, fileHandle lock.FileHandle, shareName string, excludeKey [16]byte) error {
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
 		return nil

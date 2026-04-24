@@ -14,7 +14,7 @@ import (
 // stamping FlagAsync + AsyncId, signing, and releasing the async credit slot.
 // The body is the encoded SMB2 CREATE response body (or nil for error status,
 // in which case SendAsyncCompletionResponse substitutes MakeErrorBody).
-type AsyncCreateCompleteCallback func(sessionID, messageID, asyncID uint64, status types.Status, body []byte) error
+type AsyncCreateCompleteCallback func(sessionID, messageID, asyncId uint64, status types.Status, body []byte) error
 
 // PendingCreate tracks a CREATE request parked on a lease break. It holds the
 // identifiers needed to locate the entry on CANCEL / session teardown and the
@@ -24,7 +24,7 @@ type PendingCreate struct {
 	ConnID    uint64
 	SessionID uint64
 	MessageID uint64
-	AsyncID   uint64
+	AsyncId   uint64
 
 	// Cancel tears down the resume goroutine's break-wait (via context cancel)
 	// so CANCEL / session teardown can unblock it promptly.
@@ -49,8 +49,8 @@ type PendingCreate struct {
 type PendingCreateRegistry struct {
 	mu        sync.Mutex
 	byMsgKey  map[createMsgKey]*PendingCreate
-	byAsyncID map[uint64]*PendingCreate
-	bySession map[uint64]map[uint64]*PendingCreate // sessionID -> asyncID -> entry
+	byAsyncId map[uint64]*PendingCreate
+	bySession map[uint64]map[uint64]*PendingCreate // sessionID -> asyncId -> entry
 	maxOps    int
 }
 
@@ -71,7 +71,7 @@ var ErrTooManyPendingCreates = fmt.Errorf("too many pending CREATEs (max %d)", M
 func NewPendingCreateRegistry() *PendingCreateRegistry {
 	return &PendingCreateRegistry{
 		byMsgKey:  make(map[createMsgKey]*PendingCreate),
-		byAsyncID: make(map[uint64]*PendingCreate),
+		byAsyncId: make(map[uint64]*PendingCreate),
 		bySession: make(map[uint64]map[uint64]*PendingCreate),
 		maxOps:    MaxPendingCreates,
 	}
@@ -84,38 +84,38 @@ func (r *PendingCreateRegistry) Register(p *PendingCreate) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if len(r.byAsyncID) >= r.maxOps {
+	if len(r.byAsyncId) >= r.maxOps {
 		return ErrTooManyPendingCreates
 	}
 
 	key := createMsgKey{ConnID: p.ConnID, MessageID: p.MessageID}
 	r.byMsgKey[key] = p
-	r.byAsyncID[p.AsyncID] = p
+	r.byAsyncId[p.AsyncId] = p
 
 	bucket, ok := r.bySession[p.SessionID]
 	if !ok {
 		bucket = make(map[uint64]*PendingCreate)
 		r.bySession[p.SessionID] = bucket
 	}
-	bucket[p.AsyncID] = p
+	bucket[p.AsyncId] = p
 
 	logger.Debug("PendingCreateRegistry: registered",
 		"connID", p.ConnID,
 		"sessionID", p.SessionID,
 		"messageID", p.MessageID,
-		"asyncID", p.AsyncID,
-		"total", len(r.byAsyncID))
+		"asyncId", p.AsyncId,
+		"total", len(r.byAsyncId))
 	return nil
 }
 
-// Unregister removes a pending CREATE by AsyncID without calling Cancel. Used
+// Unregister removes a pending CREATE by AsyncId without calling Cancel. Used
 // by the resume goroutine AFTER it has successfully delivered the final
 // response. Returns the removed entry, or nil if it was already unregistered
 // (e.g. by a concurrent CANCEL).
-func (r *PendingCreateRegistry) Unregister(asyncID uint64) *PendingCreate {
+func (r *PendingCreateRegistry) Unregister(asyncId uint64) *PendingCreate {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.removeLocked(asyncID)
+	return r.removeLocked(asyncId)
 }
 
 // UnregisterByMessageID removes a pending CREATE matching (connID, messageID)
@@ -128,7 +128,7 @@ func (r *PendingCreateRegistry) UnregisterByMessageID(connID, messageID uint64) 
 		r.mu.Unlock()
 		return nil
 	}
-	r.removeLocked(p.AsyncID)
+	r.removeLocked(p.AsyncId)
 	r.mu.Unlock()
 	if p.Cancel != nil {
 		p.Cancel()
@@ -136,11 +136,11 @@ func (r *PendingCreateRegistry) UnregisterByMessageID(connID, messageID uint64) 
 	return p
 }
 
-// UnregisterByAsyncID removes a pending CREATE matching asyncID and invokes
+// UnregisterByAsyncId removes a pending CREATE matching asyncId and invokes
 // its Cancel closure. Used by async-flagged SMB2_CANCEL.
-func (r *PendingCreateRegistry) UnregisterByAsyncID(asyncID uint64) *PendingCreate {
+func (r *PendingCreateRegistry) UnregisterByAsyncId(asyncId uint64) *PendingCreate {
 	r.mu.Lock()
-	p := r.removeLocked(asyncID)
+	p := r.removeLocked(asyncId)
 	r.mu.Unlock()
 	if p != nil && p.Cancel != nil {
 		p.Cancel()
@@ -159,8 +159,8 @@ func (r *PendingCreateRegistry) UnregisterAllForSession(sessionID uint64) []*Pen
 		return nil
 	}
 	removed := make([]*PendingCreate, 0, len(bucket))
-	for asyncID := range bucket {
-		if p := r.removeLocked(asyncID); p != nil {
+	for asyncId := range bucket {
+		if p := r.removeLocked(asyncId); p != nil {
 			removed = append(removed, p)
 		}
 	}
@@ -173,16 +173,16 @@ func (r *PendingCreateRegistry) UnregisterAllForSession(sessionID uint64) []*Pen
 	return removed
 }
 
-// removeLocked drops entries keyed on asyncID from all maps. Caller holds mu.
-func (r *PendingCreateRegistry) removeLocked(asyncID uint64) *PendingCreate {
-	p, ok := r.byAsyncID[asyncID]
+// removeLocked drops entries keyed on asyncId from all maps. Caller holds mu.
+func (r *PendingCreateRegistry) removeLocked(asyncId uint64) *PendingCreate {
+	p, ok := r.byAsyncId[asyncId]
 	if !ok {
 		return nil
 	}
-	delete(r.byAsyncID, asyncID)
+	delete(r.byAsyncId, asyncId)
 	delete(r.byMsgKey, createMsgKey{ConnID: p.ConnID, MessageID: p.MessageID})
 	if bucket, ok := r.bySession[p.SessionID]; ok {
-		delete(bucket, asyncID)
+		delete(bucket, asyncId)
 		if len(bucket) == 0 {
 			delete(r.bySession, p.SessionID)
 		}
@@ -194,5 +194,5 @@ func (r *PendingCreateRegistry) removeLocked(asyncID uint64) *PendingCreate {
 func (r *PendingCreateRegistry) Len() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return len(r.byAsyncID)
+	return len(r.byAsyncId)
 }

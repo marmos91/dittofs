@@ -130,19 +130,19 @@ type CreateResponse struct {
 	// CreateContexts contains response create contexts (if any).
 	CreateContexts []CreateContext
 
-	// AsyncID, when non-zero together with Status == StatusPending, signals the
+	// AsyncId, when non-zero together with Status == StatusPending, signals the
 	// dispatch layer to emit an interim async response (FlagAsync + AsyncId) for
 	// this CREATE. The handler must have already registered a resume goroutine
 	// in PendingCreateRegistry that will deliver the final response via
 	// AsyncCreateCompleteCallback. See create.go park-on-lease-break path.
-	AsyncID uint64
+	AsyncId uint64
 }
 
 // GetAsyncId satisfies the asyncIdCarrier interface in helpers.go so the
-// generic handleRequest wrapper forwards AsyncID to the wire-level
+// generic handleRequest wrapper forwards AsyncId to the wire-level
 // HandlerResult when Status == StatusPending.
 func (resp *CreateResponse) GetAsyncId() uint64 {
-	return resp.AsyncID
+	return resp.AsyncId
 }
 
 // ============================================================================
@@ -894,10 +894,10 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 
 	// Dispatch lease break and either park the CREATE async (emit interim
 	// STATUS_PENDING) or wait for the break to drain inline.
-	if asyncID := h.breakAndMaybeParkCreate(ctx, draft); asyncID != 0 {
+	if asyncId := h.breakAndMaybeParkCreate(ctx, draft); asyncId != 0 {
 		return &CreateResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusPending},
-			AsyncID:         asyncID,
+			AsyncId:         asyncId,
 		}, nil
 	}
 

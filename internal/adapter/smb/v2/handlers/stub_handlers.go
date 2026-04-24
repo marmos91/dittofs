@@ -264,18 +264,18 @@ func (h *Handler) Cancel(ctx *SMBHandlerContext, body []byte) (*HandlerResult, e
 	if h.PendingCreateRegistry != nil {
 		var parked *PendingCreate
 		if ctx.RequestAsyncId != 0 {
-			parked = h.PendingCreateRegistry.UnregisterByAsyncID(ctx.RequestAsyncId)
+			parked = h.PendingCreateRegistry.UnregisterByAsyncId(ctx.RequestAsyncId)
 		} else {
 			parked = h.PendingCreateRegistry.UnregisterByMessageID(ctx.ConnID, ctx.MessageID)
 		}
 		if parked != nil {
 			cancelledSomething = true
 			logger.Debug("CANCEL: cancelled pending CREATE",
-				"asyncID", parked.AsyncID,
+				"asyncId", parked.AsyncId,
 				"messageID", parked.MessageID)
 			if parked.Callback != nil {
 				go func(p *PendingCreate) {
-					if err := p.Callback(p.SessionID, p.MessageID, p.AsyncID, types.StatusCancelled, nil); err != nil {
+					if err := p.Callback(p.SessionID, p.MessageID, p.AsyncId, types.StatusCancelled, nil); err != nil {
 						logger.Warn("CANCEL: failed to send STATUS_CANCELLED for CREATE",
 							"messageID", p.MessageID,
 							"error", err)

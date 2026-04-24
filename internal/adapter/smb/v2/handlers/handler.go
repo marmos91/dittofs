@@ -770,9 +770,9 @@ func (h *Handler) releaseSessionLeasesAndNotifies(ctx context.Context, sessionID
 			// Connection is likely tearing down so the send may fail; log and move on.
 			if parked.Callback != nil {
 				go func(p *PendingCreate) {
-					if err := p.Callback(p.SessionID, p.MessageID, p.AsyncID, types.StatusCancelled, nil); err != nil {
+					if err := p.Callback(p.SessionID, p.MessageID, p.AsyncId, types.StatusCancelled, nil); err != nil {
 						logger.Debug("session cleanup: failed to cancel pending CREATE",
-							"asyncID", p.AsyncID, "messageID", p.MessageID, "error", err)
+							"asyncId", p.AsyncId, "messageID", p.MessageID, "error", err)
 					}
 				}(parked)
 			}

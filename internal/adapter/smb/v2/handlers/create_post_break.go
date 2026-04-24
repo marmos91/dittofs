@@ -54,7 +54,7 @@ func (d *createDraft) finalize() *createDraft {
 
 // breakAndMaybeParkCreate dispatches the handle-lease break required before
 // the post-break share-mode check, then decides between parking the CREATE on
-// an interim STATUS_PENDING (returning a non-zero AsyncID) or waiting
+// an interim STATUS_PENDING (returning a non-zero AsyncId) or waiting
 // synchronously (returning 0). The caller proceeds to completeCreateAfterBreak
 // when 0 is returned.
 //
@@ -62,7 +62,7 @@ func (d *createDraft) finalize() *createDraft {
 //   - 0: no break dispatched OR break dispatched and waited inline. Caller
 //     continues with the sync post-break flow.
 //   - non-zero: CREATE is parked; caller must emit a STATUS_PENDING interim
-//     response carrying this AsyncID. The resume goroutine delivers the final
+//     response carrying this AsyncId. The resume goroutine delivers the final
 //     response via AsyncCreateCompleteCallback.
 func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft) uint64 {
 	// No existing file → no lease holder on this handle to break.
@@ -105,9 +105,9 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 	// (MS-SMB2 §3.3.4.4). NextCommand == 0 ⇒ standalone or last-in-compound;
 	// nonzero means a related follow-up wants a FileID we haven't allocated
 	// yet, so we must block inline instead.
-	if ctx.NextCommand == 0 && h.LeaseManager.HasOtherKeyBreaks(lockFileHandle, shareName, waitExceptKey) {
-		if asyncID := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey); asyncID != 0 {
-			return asyncID
+	if ctx.NextCommand == 0 && h.LeaseManager.HasOtherBreakingLeases(lockFileHandle, shareName, waitExceptKey) {
+		if asyncId := h.parkCreateOnLeaseBreak(ctx, d, lockFileHandle, waitExceptKey); asyncId != 0 {
+			return asyncId
 		}
 	}
 
@@ -115,7 +115,7 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 	// other-key leases so the post-break recheck runs against deterministic state.
 	waitCtx, cancelWait := context.WithTimeout(d.authCtx.Context, lease.AsyncCreateBreakWaitTimeout)
 	defer cancelWait()
-	if err := h.LeaseManager.WaitForBreakCompletionExceptKeyCtx(waitCtx, lockFileHandle, shareName, waitExceptKey); err != nil {
+	if err := h.LeaseManager.WaitForOtherKeyBreaks(waitCtx, lockFileHandle, shareName, waitExceptKey); err != nil {
 		logger.Debug("CREATE: sync break wait completed", "error", err)
 	}
 	return 0
@@ -450,7 +450,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 // parkCreateOnLeaseBreak reserves an async slot, registers a pending CREATE,
 // and spawns a resume goroutine that waits for the break to drain and then
 // completes the CREATE via AsyncCreateCompleteCallback. Returns the generated
-// AsyncID on success, or 0 when async parking is not possible (e.g. no async
+// AsyncId on success, or 0 when async parking is not possible (e.g. no async
 // slots left; registry rejected the entry). Callers fall back to sync wait.
 func (h *Handler) parkCreateOnLeaseBreak(
 	ctx *SMBHandlerContext,
@@ -470,7 +470,7 @@ func (h *Handler) parkCreateOnLeaseBreak(
 		return 0
 	}
 
-	asyncID := h.generateAsyncId()
+	asyncId := h.generateAsyncId()
 
 	// Wait context: independent of the request's Context (which would be torn
 	// down as soon as we return StatusPending). Cancellable by SMB2_CANCEL and
@@ -482,7 +482,7 @@ func (h *Handler) parkCreateOnLeaseBreak(
 		ConnID:    ctx.ConnID,
 		SessionID: ctx.SessionID,
 		MessageID: ctx.MessageID,
-		AsyncID:   asyncID,
+		AsyncId:         asyncId,
 		Cancel:    cancel,
 		Callback:  ctx.AsyncCreateCompleteCallback,
 	}
@@ -507,16 +507,31 @@ func (h *Handler) parkCreateOnLeaseBreak(
 		// Errors here are logged but not propagated: on timeout the lease
 		// manager has auto-downgraded other-key leases, so the CREATE can
 		// still proceed (same semantics as the sync wait path).
-		if err := h.LeaseManager.WaitForBreakCompletionExceptKeyCtx(waitCtx, lockFileHandle, shareName, waitExceptKey); err != nil {
+		if err := h.LeaseManager.WaitForOtherKeyBreaks(waitCtx, lockFileHandle, shareName, waitExceptKey); err != nil {
 			logger.Debug("CREATE async: break wait completed",
 				"messageID", messageID,
-				"asyncID", asyncID,
+				"asyncId", asyncId,
 				"error", err)
 		}
 
 		// Ensure our entry is still live (not preempted by CANCEL or teardown).
 		// If it was, CANCEL / teardown already sent the final response.
-		if h.PendingCreateRegistry.Unregister(asyncID) == nil {
+		if h.PendingCreateRegistry.Unregister(asyncId) == nil {
+			return
+		}
+
+		// Guard against tree disconnect that happened while we were parked.
+		// If the tree is gone, the session-level OpenFile map would leak a
+		// stale handle because CloseAllFilesForTree ran before we stored
+		// ours. Fail the CREATE with STATUS_NETWORK_NAME_DELETED instead.
+		if _, ok := h.GetTree(ctx.TreeID); !ok {
+			logger.Debug("CREATE async: tree disconnected while parked",
+				"messageID", messageID,
+				"asyncId", asyncId,
+				"treeID", ctx.TreeID)
+			if err := pending.Callback(pending.SessionID, messageID, asyncId, types.StatusNetworkNameDeleted, nil); err != nil {
+				logger.Debug("CREATE async: failed to send tree-deleted response", "error", err)
+			}
 			return
 		}
 
@@ -533,10 +548,10 @@ func (h *Handler) parkCreateOnLeaseBreak(
 			}
 		}
 
-		if err := pending.Callback(pending.SessionID, messageID, asyncID, status, body); err != nil {
+		if err := pending.Callback(pending.SessionID, messageID, asyncId, status, body); err != nil {
 			logger.Warn("CREATE async: failed to send final response",
 				"messageID", messageID,
-				"asyncID", asyncID,
+				"asyncId", asyncId,
 				"error", err)
 		}
 	}()
@@ -544,6 +559,6 @@ func (h *Handler) parkCreateOnLeaseBreak(
 	logger.Debug("CREATE: parked on lease break — sent interim STATUS_PENDING",
 		"sessionID", ctx.SessionID,
 		"messageID", ctx.MessageID,
-		"asyncID", asyncID)
-	return asyncID
+		"asyncId", asyncId)
+	return asyncId
 }
