@@ -34,6 +34,7 @@ async credit coordination.
 
 | Test Name | Category | Reason | Issue |
 |-----------|----------|--------|-------|
+| smb2.multichannel.leases.test1 | Multi-channel | Cross-channel lease break fan-out is Phase 2 work on #361; test flakes on DittoFS until the primary/secondary channel coordination lands | #361 |
 | smb2.multichannel.leases.test2 | Multi-channel | Requires torture_block_tcp_transport (Samba-internal test-harness operation) to simulate a blocked channel — not implementable | - |
 | smb2.multichannel.leases.test3 | Multi-channel | Spurious lease break on uncontested open — separate bug from #417 epoch drift | #436 |
 | smb2.multichannel.leases.test4 | Multi-channel | Requires torture_block_tcp_transport (Samba-internal test-harness operation) — not implementable | - |
@@ -304,6 +305,7 @@ failures require DACL enforcement or full async I/O support.
 |-----------|----------|--------|-------|
 | smb2.compound.related4 | Compound | Access control enforcement in compound CREATE (DACL) | - |
 | smb2.compound.related7 | Compound | Access control enforcement in compound CREATE (DACL) | - |
+| smb2.compound_find.compound_find_close | Compound | Compound FIND + CLOSE ordering — directory enumeration state handoff across compound subcommands not implemented | - |
 | smb2.compound_async.create_lease_break_async | Compound | Async lease break in compound not implemented | - |
 | smb2.compound_async.getinfo_middle | Compound | Async getinfo in compound middle position | - |
 | smb2.compound_async.read_read | Compound | Async read+read compound not implemented | - |

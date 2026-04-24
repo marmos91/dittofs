@@ -108,6 +108,13 @@ type SMBHandlerContext struct {
 	// MessageID from the request header
 	MessageID uint64
 
+	// NextCommand is the SMB2 header NextCommand offset for this request.
+	// Nonzero iff this request is NOT the last in a compound chain. Handlers
+	// that may emit an async interim response (STATUS_PENDING) consult this to
+	// avoid parking a non-last compound command — per MS-SMB2 §3.3.4.4 an async
+	// operation MUST be the last in a compound. Populated by prepareDispatch.
+	NextCommand uint32
+
 	// RawRequest is the complete raw SMB2 message bytes (header + body) for
 	// THIS request. Used by the SESSION_SETUP handler to chain its own bytes
 	// into the per-session preauth integrity hash. Threading the bytes
@@ -142,6 +149,12 @@ type SMBHandlerContext struct {
 	// AsyncPipeReadCallback delivers the final async READ response for a pending
 	// named-pipe read. Set by the dispatch layer for SMB2Read commands.
 	AsyncPipeReadCallback AsyncPipeReadCallback
+
+	// AsyncCreateCompleteCallback delivers the final async CREATE response for
+	// a request that was parked on a lease break (MS-SMB2 §3.3.5.9 + §3.3.4.7).
+	// Set by the dispatch layer for SMB2Create commands. See
+	// AsyncCreateCompleteCallback docs in pending_create_registry.go.
+	AsyncCreateCompleteCallback AsyncCreateCompleteCallback
 
 	// TryReserveAsync checks and atomically reserves one async connection slot.
 	// Returns false when the connection is at max_async_credits (512); the caller
