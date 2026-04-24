@@ -46,6 +46,33 @@ const (
 	BreakToStripHandle uint32 = 0xFFFFFFFE
 )
 
+// ComputeLeaseBreakTo returns the new lease state for a break triggered by a
+// conflicting SMB open. The bit stripped depends on whether the new open
+// conflicts with the existing open on share mode.
+//
+// Per MS-SMB2 3.3.4.7 and Samba `source3/smbd/open.c::delay_for_oplock_fn`:
+//   - Sharing violation → strip Handle (keep Read + Write). The existing holder
+//     must release its cached open handles so the new opener can proceed;
+//     writes stay cached because the holder will close the handle anyway.
+//   - No sharing violation → strip Write (keep Read + Handle). The existing
+//     holder must flush dirty data but may keep cached handles, and the new
+//     opener will coexist.
+//
+// Examples:
+//
+//	existing=RWH, violation=true  → RW  (strip H)
+//	existing=RWH, violation=false → RH  (strip W)
+//	existing=RH,  violation=true  → R   (strip H)
+//	existing=RW,  violation=false → R   (strip W)
+//	existing=R,   violation=*     → R   (no-op, nothing to strip)
+func ComputeLeaseBreakTo(existingState uint32, hasSharingViolation bool) uint32 {
+	mask := LeaseStateWrite
+	if hasSharingViolation {
+		mask = LeaseStateHandle
+	}
+	return existingState &^ mask
+}
+
 // ValidFileLeaseStates contains all valid lease state combinations for files.
 // Per MS-SMB2: Write and Handle alone are not valid; they require Read.
 // Valid combinations: None, R, RH, RW, RWH

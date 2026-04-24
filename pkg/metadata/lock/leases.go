@@ -231,10 +231,13 @@ func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, 
 		}
 
 		if OpLocksConflict(lock.Lease, requested) {
-			// Compute break-to state: strip only the Write bit from the
-			// existing lease, preserving Read and Handle. Per MS-SMB2
-			// 3.3.5.9.8/3.3.5.9.11, RWH breaks to RH, RW breaks to R.
-			breakTo := lock.Lease.LeaseState &^ LeaseStateWrite
+			// Compute break-to state via ComputeLeaseBreakTo per MS-SMB2
+			// 3.3.4.7 and Samba delay_for_oplock_fn. RequestLease runs only
+			// after the new opener's CREATE has already passed share-mode
+			// resolution (STATUS_SHARING_VIOLATION would have returned
+			// before RqLs processing), so hasSharingViolation is always
+			// false here — strip Write, keep Read + Handle. RWH→RH, RW→R.
+			breakTo := ComputeLeaseBreakTo(lock.Lease.LeaseState, false)
 
 			// If existing lease has no Write bit, the break is a no-op
 			// (e.g., existing=R, breakTo=R). In this case, don't dispatch

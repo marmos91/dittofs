@@ -180,14 +180,13 @@ type LockManager interface {
 	// preserving Read and Handle (RWH -> RH, RW -> R).
 	CheckAndBreakLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error
 
-	// BreakHandleLeasesForSMBOpen breaks Handle leases for an SMB CREATE.
-	// Per MS-SMB2 3.3.5.9 Step 10: Handle leases must be broken before
-	// share mode conflict check. Strips only the Handle bit (RWH -> RW, RH -> R).
-	BreakHandleLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error
-
-	// BreakWriteOnHandleLeasesForSMBOpen strips Write from leases that have
-	// Handle caching (RWH → RH). Only targets leases with both W and H.
-	BreakWriteOnHandleLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error
+	// BreakLeasesOnOpenConflict breaks existing leases before an SMB CREATE
+	// proceeds, per MS-SMB2 3.3.4.7 and Samba `source3/smbd/open.c::delay_for_oplock_fn`.
+	// The bit stripped depends on whether the new open conflicts on share mode:
+	//   - Sharing violation → strip Handle (keep Read + Write).
+	//   - No sharing violation → strip Write (keep Read + Handle).
+	// Each per-lease target state is computed via ComputeLeaseBreakTo.
+	BreakLeasesOnOpenConflict(handleKey string, excludeOwner *LockOwner, hasSharingViolation bool) error
 
 	// BreakReadLeasesForParentDir breaks Read leases on a parent directory
 	// when directory content changes (CREATE, RENAME, DELETE on close).
@@ -1300,35 +1299,27 @@ func (lm *Manager) CheckAndBreakLeasesForSMBOpen(handleKey string, excludeOwner 
 	})
 }
 
-// BreakHandleLeasesForSMBOpen breaks Handle leases for an SMB CREATE that may
-// conflict with sharing modes. Per MS-SMB2 3.3.5.9 Step 10: "If any existing
-// Open on the target file has a lease with Handle caching, the server MUST
-// initiate a lease break [...] to remove Handle caching."
+// BreakLeasesOnOpenConflict breaks leases held by other clients when an SMB
+// CREATE arrives. Per MS-SMB2 3.3.4.7 and Samba
+// `source3/smbd/open.c::delay_for_oplock_fn`:
 //
-// The break strips the Handle bit, preserving Read and Write:
-//   - RWH -> RW
-//   - RH  -> R
-//   - R   -> not broken (no Handle to strip)
-func (lm *Manager) BreakHandleLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error {
-	return lm.breakOpLocks(handleKey, excludeOwner, BreakToStripHandle, func(lease *OpLock) bool {
-		return lease.HasHandle()
-	})
-}
-
-// BreakWriteOnHandleLeasesForSMBOpen strips Write from leases that have Handle
-// caching. Per MS-SMB2 3.3.5.9 Step 10: before the share mode check, leases
-// with Handle caching must be broken so clients close cached handles. The break
-// strips Write (not Handle) so clients see "RWH → RH" and flush dirty data
-// while preserving Handle for the share mode resolution window.
+//   - hasSharingViolation == true → strip Handle (keep Read + Write). The
+//     existing holder must release cached open handles; dirty writes stay
+//     cached because the holder will close the handle anyway.
+//     (RWH → RW, RH → R)
+//   - hasSharingViolation == false → strip Write (keep Read + Handle). The
+//     existing holder flushes dirty data while keeping cached handles.
+//     (RWH → RH, RW → R)
 //
-// This targets only leases WITH Handle caching:
-//   - RWH -> RH (has Handle → strip Write)
-//   - RH  -> not broken (has Handle but no Write to strip)
-//   - RW  -> not broken (no Handle → not a cached-handle concern)
-//   - R   -> not broken
-func (lm *Manager) BreakWriteOnHandleLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error {
-	return lm.breakOpLocks(handleKey, excludeOwner, BreakToStripWrite, func(lease *OpLock) bool {
-		return lease.HasHandle() && lease.HasWrite()
+// Per-lease target state is computed via ComputeLeaseBreakTo. A lease is
+// broken only when the computed target differs from its current state.
+func (lm *Manager) BreakLeasesOnOpenConflict(handleKey string, excludeOwner *LockOwner, hasSharingViolation bool) error {
+	sentinel := BreakToStripWrite
+	if hasSharingViolation {
+		sentinel = BreakToStripHandle
+	}
+	return lm.breakOpLocks(handleKey, excludeOwner, sentinel, func(lease *OpLock) bool {
+		return ComputeLeaseBreakTo(lease.LeaseState, hasSharingViolation) != lease.LeaseState
 	})
 }
 

@@ -21,7 +21,7 @@ type fakeLockManager struct {
 	breakReadCalls             []breakCall
 	waitForBreakCompletionKeys []string
 	// callOrder records the relative order of all observed calls so tests can
-	// assert that BreakHandleLeasesForSMBOpen / BreakReadLeasesForParentDir
+	// assert that BreakLeasesOnOpenConflict / BreakReadLeasesForParentDir
 	// happen BEFORE WaitForBreakCompletion returns.
 	callOrder []string
 
@@ -31,15 +31,20 @@ type fakeLockManager struct {
 }
 
 type breakCall struct {
-	HandleKey    string
-	ExcludeOwner *lock.LockOwner
+	HandleKey           string
+	ExcludeOwner        *lock.LockOwner
+	HasSharingViolation bool
 }
 
-func (f *fakeLockManager) BreakHandleLeasesForSMBOpen(handleKey string, excludeOwner *lock.LockOwner) error {
+func (f *fakeLockManager) BreakLeasesOnOpenConflict(handleKey string, excludeOwner *lock.LockOwner, hasSharingViolation bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.breakHandleCalls = append(f.breakHandleCalls, breakCall{HandleKey: handleKey, ExcludeOwner: excludeOwner})
-	f.callOrder = append(f.callOrder, "BreakHandleLeasesForSMBOpen")
+	f.breakHandleCalls = append(f.breakHandleCalls, breakCall{
+		HandleKey:           handleKey,
+		ExcludeOwner:        excludeOwner,
+		HasSharingViolation: hasSharingViolation,
+	})
+	f.callOrder = append(f.callOrder, "BreakLeasesOnOpenConflict")
 	return nil
 }
 
@@ -78,8 +83,10 @@ func (r *fakeResolver) GetLockManagerForShare(_ string) lock.LockManager {
 
 // TestBreakParentHandleLeasesOnCreate_WaitsForAck asserts that
 // BreakParentHandleLeasesOnCreate calls WaitForBreakCompletion AFTER
-// BreakHandleLeasesForSMBOpen and BEFORE returning. Per MS-SMB2 3.3.4.7, the
+// BreakLeasesOnOpenConflict and BEFORE returning. Per MS-SMB2 3.3.4.7, the
 // server must wait for LEASE_BREAK_ACK before completing the triggering CREATE.
+// The parent-dir break uses hasSharingViolation=true to select the Handle-strip
+// mask (MS-FSA 2.1.5.14: child-set change invalidates directory Handle cache).
 func TestBreakParentHandleLeasesOnCreate_WaitsForAck(t *testing.T) {
 	t.Parallel()
 
@@ -95,11 +102,14 @@ func TestBreakParentHandleLeasesOnCreate_WaitsForAck(t *testing.T) {
 	defer fake.mu.Unlock()
 
 	if got := len(fake.breakHandleCalls); got != 1 {
-		t.Fatalf("BreakHandleLeasesForSMBOpen call count = %d, want 1", got)
+		t.Fatalf("BreakLeasesOnOpenConflict call count = %d, want 1", got)
 	}
 	if fake.breakHandleCalls[0].HandleKey != string(parentHandle) {
-		t.Errorf("BreakHandleLeasesForSMBOpen handleKey = %q, want %q",
+		t.Errorf("BreakLeasesOnOpenConflict handleKey = %q, want %q",
 			fake.breakHandleCalls[0].HandleKey, string(parentHandle))
+	}
+	if !fake.breakHandleCalls[0].HasSharingViolation {
+		t.Errorf("parent-dir Handle break must pass hasSharingViolation=true (strip Handle mask); got false")
 	}
 
 	if got := len(fake.waitForBreakCompletionKeys); got != 1 {
@@ -114,8 +124,8 @@ func TestBreakParentHandleLeasesOnCreate_WaitsForAck(t *testing.T) {
 	if len(fake.callOrder) < 2 {
 		t.Fatalf("expected at least 2 calls in order, got %v", fake.callOrder)
 	}
-	if fake.callOrder[0] != "BreakHandleLeasesForSMBOpen" {
-		t.Errorf("first call = %q, want BreakHandleLeasesForSMBOpen", fake.callOrder[0])
+	if fake.callOrder[0] != "BreakLeasesOnOpenConflict" {
+		t.Errorf("first call = %q, want BreakLeasesOnOpenConflict", fake.callOrder[0])
 	}
 	if fake.callOrder[1] != "WaitForBreakCompletion" {
 		t.Errorf("second call = %q, want WaitForBreakCompletion", fake.callOrder[1])
@@ -204,7 +214,7 @@ func TestBreakParentHandle_ExcludesTriggeringClient(t *testing.T) {
 	defer fake.mu.Unlock()
 
 	if len(fake.breakHandleCalls) != 1 {
-		t.Fatalf("BreakHandleLeasesForSMBOpen call count = %d, want 1", len(fake.breakHandleCalls))
+		t.Fatalf("BreakLeasesOnOpenConflict call count = %d, want 1", len(fake.breakHandleCalls))
 	}
 	excludeOwner := fake.breakHandleCalls[0].ExcludeOwner
 	if excludeOwner == nil {
